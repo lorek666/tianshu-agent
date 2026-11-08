@@ -18,6 +18,8 @@ from .events import EventLog
 from .loop import Limits, run
 from .model import OpenAICompatibleModel, ScriptedModel
 from .replay import replay
+from .snapshot import SnapshotStore
+from .workspace import Workspace
 
 DEFAULT_DB = Path(".tianshu/events.db")
 
@@ -38,6 +40,12 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-total-tokens", type=int, default=20_000)
     r.add_argument("--db", type=Path, default=DEFAULT_DB)
     r.add_argument("--json", action="store_true", help="输出 JSON 而不是人话")
+
+    u = sub.add_parser("undo", help="撤销某次 run 的文件变更")
+    u.add_argument("--run-id", required=True)
+    u.add_argument("--workspace", required=True, type=Path)
+    u.add_argument("--db", type=Path, default=DEFAULT_DB)
+    u.add_argument("--json", action="store_true")
 
     v = sub.add_parser("replay", help="从事件日志回放并校验")
     v.add_argument("--run-id", required=True)
@@ -80,6 +88,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     else:
         model = OpenAICompatibleModel(args.model_name, base_url=args.base_url)
 
+    snapshots = SnapshotStore(args.db.parent / "artifacts")
+
     result = run(
         task=args.task,
         workspace_dir=args.workspace,
@@ -87,6 +97,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         model=model,
         log=log,
         limits=Limits(args.max_turns, args.max_total_tokens),
+        snapshots=snapshots,
     )
 
     report = replay(log, result.run_id)
@@ -109,6 +120,26 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     log.close()
     return 0 if result.outcome in {"succeeded", "noop"} and report.ok else 1
+
+
+def _cmd_undo(args: argparse.Namespace) -> int:
+    store = SnapshotStore(args.db.parent / "artifacts")
+    ws = Workspace(args.workspace)
+    report = store.undo(args.run_id, ws)
+
+    if args.json:
+        print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
+    else:
+        print(f"结论   : {'已撤销' if report.ok else '未撤销'}")
+        for p in report.restored:
+            print(f"  还原 : {p}")
+        for p in report.deleted:
+            print(f"  删除 : {p}")
+        for c in report.conflicts:
+            print(f"  冲突 : {c}")
+        for p in report.problems:
+            print(f"  ! {p}")
+    return 0 if report.ok else 1
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
@@ -137,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             return _cmd_run(args)
+        if args.cmd == "undo":
+            return _cmd_undo(args)
         return _cmd_replay(args)
     except Exception as exc:  # CLI 边界：打印可读错误，不抛栈
         print(f"错误：{exc}", file=sys.stderr)

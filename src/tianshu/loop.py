@@ -18,7 +18,8 @@ from typing import Any
 from .events import EventLog, canonical_bytes
 from .model import Model, ModelResponse, ToolCall
 from .receipt import build_receipt
-from .tools import SPECS, ToolResult, execute, tool_manifest
+from .snapshot import SnapshotStore
+from .tools import SPECS, ToolContext, ToolResult, execute, tool_manifest
 from .workspace import Workspace
 from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
 
@@ -102,10 +103,12 @@ def run(
     log: EventLog,
     limits: Limits | None = None,
     run_id: str | None = None,
+    snapshots: SnapshotStore | None = None,
 ) -> RunResult:
     limits = limits or Limits()
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     ws = Workspace(workspace_dir)
+    ctx = ToolContext(snapshots=snapshots, run_id=run_id)
 
     log.append(
         run_id,
@@ -224,7 +227,7 @@ def run(
             )
 
             try:
-                result = execute(ws, call.name, args)
+                result = execute(ws, call.name, args, ctx)
             except (WorkspaceViolation, OverwriteRefused, ToolArgumentError) as exc:
                 result = ToolResult("rejected", "none_applied",
                                     {"error": f"{type(exc).__name__}: {exc}"})
