@@ -265,3 +265,25 @@ def test_seq_monotonic_and_hashed(tmp_path):
         canonical_bytes({"x": 1})
     ).hexdigest()
     log.close()
+
+
+# ---------------------------------------------------------------- A7 扩展
+
+
+@pytest.mark.parametrize("bad_args", [{}, None, ["path", "a.md"]])
+def test_a7b_empty_or_wrong_shape_args_not_dispatched(tmp_path, bad_args):
+    """真实模型会给出 arguments 为 {} / null / 非对象的情况，都必须拒绝派发。"""
+    ws = make_ws(tmp_path, {"a.md": "内容"})
+    model = ScriptedModel(
+        [
+            ModelResponse("tool_use", tool_calls=[ToolCall("c1", "read_text", bad_args)]),
+            ModelResponse("end_turn", content="参数不可用，未执行。"),
+        ]
+    )
+    result, report, log = run_once(tmp_path, ws, model)
+
+    events = log.read_run(result.run_id)
+    assert not [e for e in events if e.type == "tool.intent"], "不得产生执行意图"
+    nd = [e for e in events if e.type == "tool.not_dispatched"]
+    assert nd, "必须留下未派发记录"
+    assert report.ok
