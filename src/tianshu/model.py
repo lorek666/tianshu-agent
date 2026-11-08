@@ -64,7 +64,7 @@ class ModelResponse:
         }
 
     @classmethod
-    def from_payload(cls, p: dict[str, Any]) -> "ModelResponse":
+    def from_payload(cls, p: dict[str, Any]) -> ModelResponse:
         return cls(
             finish_reason=p["finish_reason"],
             content=p.get("content", ""),

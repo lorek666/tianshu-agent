@@ -13,9 +13,10 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .errors import EventLogCorrupt
 
@@ -128,7 +129,7 @@ class EventLog:
             INSERT INTO events
               (run_id, task_id, type, ts, actor_kind, actor_id,
                payload, payload_ref, payload_hash, parent_seq, idem_key)
-            VALUES (?,?  ,?,    ?,     ?,          ?,        ?,       ?,          ?,           ?,          ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tianshu.events import EventLog
 from tianshu.loop import Limits, run
-from tianshu.model import ModelResponse, ScriptedModel, ToolCall, normalize_usage
+from tianshu.model import ModelResponse, ScriptedModel, normalize_usage
 from tianshu.replay import replay
 
 ENTITY = ""

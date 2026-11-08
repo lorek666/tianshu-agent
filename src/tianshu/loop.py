@@ -17,13 +17,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
 from .events import EventLog, canonical_bytes
 from .model import Model, ModelResponse, ToolCall
 from .receipt import build_receipt
 from .snapshot import SnapshotStore
 from .tools import SPECS, ToolContext, ToolResult, execute, tool_manifest
 from .workspace import Workspace
-from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
+
 
 def _failpoint(name: str, *, only_if: bool = True) -> None:
     """故障注入点。用 os._exit 硬退，模拟断电/被 kill —— 不走任何清理逻辑。
@@ -206,7 +207,8 @@ def run(
                     {"tool_calls": [
                         {"id": c.call_id, "type": "function",
                          "function": {"name": c.name,
-                                      "arguments": json.dumps(c.arguments, ensure_ascii=False, sort_keys=True)}}
+                                      "arguments": json.dumps(
+                                          c.arguments, ensure_ascii=False, sort_keys=True)}}
                         for c in resp.tool_calls
                     ]}
                     if resp.tool_calls else {}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "changes": [
+    {
+      "call_id": "c1",
+      "path": "a.md",
+      "before_state": "80e814687c97d5c625691f1da95875da517c55067912b258958273876246a1a7",
+      "expected_after": "c934e748b37aa2506b9c4b98f79430db47790a78209203685aae96cdeec3cc31",
+      "blob_ref": "/Volumes/Date/天枢Agent/.tmp/pytest-of-ronfee/pytest-0/test_snapshot_dedups_identical0/artifacts/blobs/80e814687c97d5c625691f1da95875da517c55067912b258958273876246a1a7"
+    },
+    {
+      "call_id": "c2",
+      "path": "b.md",
+      "before_state": "80e814687c97d5c625691f1da95875da517c55067912b258958273876246a1a7",
+      "expected_after": "4aa4b9dff005bb9cc344ce6bdc86e7ec73b62ce309f3e4ae15f419c63ffa3fe6",
+      "blob_ref": "/Volumes/Date/天枢Agent/.tmp/pytest-of-ronfee/pytest-0/test_snapshot_dedups_identical0/artifacts/blobs/80e814687c97d5c625691f1da95875da517c55067912b258958273876246a1a7"
+    }
+  ]
+}

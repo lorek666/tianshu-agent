@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "changes": [
+    {
+      "call_id": "c1",
+      "path": "note.md",
+      "before_state": "494bdd740cf0e5c296798ef66228083776908c3d18d6e539b31dc8224cd3ef73",
+      "expected_after": "494bdd740cf0e5c296798ef66228083776908c3d18d6e539b31dc8224cd3ef73",
+      "blob_ref": "/Volumes/Date/天枢Agent/.tmp/pytest-of-ronfee/pytest-0/test_s1_modify_to_identical_co0/art/blobs/494bdd740cf0e5c296798ef66228083776908c3d18d6e539b31dc8224cd3ef73"
+    }
+  ]
+}

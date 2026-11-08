@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "changes": [
+    {
+      "call_id": "c2",
+      "path": "report.md",
+      "before_state": "absent",
+      "expected_after": "f445f7fcb9b71acd219b15d62883150096217b3583542848988df39bc42ca8d1",
+      "blob_ref": null
+    }
+  ]
+}

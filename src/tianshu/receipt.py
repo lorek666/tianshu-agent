@@ -15,13 +15,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from .events import canonical_bytes
 from .tools import ToolResult
 
 ISSUER = "tianshu/0.1"

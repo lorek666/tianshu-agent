@@ -22,7 +22,6 @@ import pytest
 from tianshu.events import EventLog
 from tianshu.recovery import blocked_workspaces, recover_run
 from tianshu.snapshot import SnapshotStore
-from tianshu.workspace import Workspace
 
 FAILPOINTS = ["after_intent", "after_write", "after_result", "after_receipt"]
 
@@ -186,7 +185,7 @@ def test_100_random_fault_injections(tmp_path):
         run_id = _latest_run_id(db)
         log = EventLog(db)
         store = SnapshotStore(case / "artifacts")
-        report = recover_run(log, run_id, ws, store)
+        recover_run(log, run_id, ws, store)
 
         # A：内容只能是两种之一
         text = (ws / "note.md").read_text(encoding="utf-8")

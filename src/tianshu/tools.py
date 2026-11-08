@@ -7,14 +7,14 @@ M0 白名单只有三个（docs/M0-scope.md §4）。任何额外写入路径都
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .errors import OverwriteRefused, ToolArgumentError, ToolNotAllowed
 from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked
-from .snapshot import ABSENT, Change, SnapshotStore
+from .snapshot import ABSENT, SnapshotStore
 from .workspace import Workspace, normalize_name
 
 READ_TEXT_LIMIT = 64 * 1024  # 单次读取上限，超出截断并标记
