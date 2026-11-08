@@ -49,6 +49,7 @@ class RunResult:
     artifact: dict[str, Any] | None = None
     turns: int = 0
     tokens: int = 0
+    unknown_usage_calls: int = 0
     error: str | None = None
 
 
@@ -58,6 +59,7 @@ class _State:
     artifact: dict[str, Any] | None = None
     turns: int = 0
     tokens: int = 0
+    unknown_usage_calls: int = 0
 
 
 def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
@@ -152,9 +154,13 @@ def run(
         log.append(run_id, "model.result", {"request_id": request_id, **resp.to_payload()},
                    actor_kind="core", idem_key=request_id)
 
-        state.tokens += resp.usage.get("input_tokens", 0) + resp.usage.get(
-            "output_tokens", 0
-        )
+        inp = resp.usage.get("input_tokens")
+        outp = resp.usage.get("output_tokens")
+        if inp is None and outp is None:
+            # provider 没给 usage：预算无法核实。不能记 0 冒充，必须留痕。
+            state.unknown_usage_calls += 1
+        else:
+            state.tokens += (inp or 0) + (outp or 0)
 
         if state.tokens > limits.max_total_tokens:
             error = f"token 预算耗尽（{state.tokens} > {limits.max_total_tokens}）"
@@ -251,6 +257,8 @@ def run(
             "artifact": state.artifact,
             "turns": state.turns,
             "tokens": state.tokens,
+            "tokens_unknown_calls": state.unknown_usage_calls,
+            "budget_enforced": state.unknown_usage_calls == 0,
             "error": error,
         },
         actor_kind="core",
@@ -264,5 +272,6 @@ def run(
         artifact=state.artifact,
         turns=state.turns,
         tokens=state.tokens,
+        unknown_usage_calls=state.unknown_usage_calls,
         error=error,
     )
