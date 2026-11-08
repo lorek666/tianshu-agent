@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+uv.lock
+
+# 参考仓库（762MB，不进库）
+refs/
+
+# 学习练习
+playground/
+
+# 构建产物
+dist/
+build/
+target/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 本地数据与日志
+*.log
+crash-*.txt
+data/
