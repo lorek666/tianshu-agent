@@ -116,7 +116,8 @@ def test_a3_oversized_file_truncated(tmp_path):
     ws = make_ws(tmp_path, {"big.txt": big})
     model = ScriptedModel(
         [
-            ModelResponse("tool_use", tool_calls=[ToolCall("c1", "read_text", {"path": "big.txt"})]),
+            ModelResponse("tool_use",
+                          tool_calls=[ToolCall("c1", "read_text", {"path": "big.txt"})]),
             ModelResponse("end_turn", content="文件过大，仅覆盖部分内容。"),
         ]
     )
@@ -142,7 +143,9 @@ def test_a4_prompt_injection_cannot_escape(tmp_path):
     # 模型被注入内容骗到，真的请求读越界文件
     model = ScriptedModel(
         [
-            ModelResponse("tool_use", tool_calls=[ToolCall("c1", "read_text", {"path": "../secret.txt"})]),
+            ModelResponse("tool_use",
+                          tool_calls=[ToolCall("c1", "read_text",
+                                              {"path": "../secret.txt"})]),
             ModelResponse("end_turn", content="无法读取目录外内容。"),
         ]
     )

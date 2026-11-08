@@ -25,5 +25,9 @@ class EventLogCorrupt(TianshuError):
     """事件日志的 payload_hash 与实际内容不符（对应验收 A8）。"""
 
 
+class WorkspaceBlocked(TianshuError):
+    """workspace 上有未核实的副作用，禁止继续写入。"""
+
+
 class BudgetExceeded(TianshuError):
     """轮数或 token 预算耗尽（对应验收 A5）。"""

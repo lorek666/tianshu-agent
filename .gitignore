@@ -1,3 +1,6 @@
+# pytest / 临时工作目录（不要提交）
+.tmp/
+
 # Python
 __pycache__/
 *.py[cod]

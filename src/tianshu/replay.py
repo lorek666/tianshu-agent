@@ -15,9 +15,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import TianshuError
 from .events import EventLog, canonical_bytes
 from .loop import SYSTEM_PROMPT
-from .errors import EventLogCorrupt, TianshuError
 
 
 @dataclass
@@ -84,7 +84,8 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                         "type": "function",
                         "function": {
                             "name": c["name"],
-                            "arguments": json.dumps(c["arguments"], ensure_ascii=False, sort_keys=True),
+                            "arguments": json.dumps(
+                                c["arguments"], ensure_ascii=False, sort_keys=True),
                         },
                     }
                     for c in tcs
@@ -113,7 +114,9 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                     "role": "tool",
                     "tool_call_id": p.get("call_id"),
                     "name": p.get("tool_id", ""),
-                    "content": json.dumps({"error": f"未派发：{p.get('reason')}"}, ensure_ascii=False, sort_keys=True),
+                    "content": json.dumps(
+                        {"error": f"未派发：{p.get('reason')}"},
+                        ensure_ascii=False, sort_keys=True),
                 }
             )
 

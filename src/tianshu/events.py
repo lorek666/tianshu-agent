@@ -13,11 +13,13 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .errors import EventLogCorrupt
+from .fsutil import atomic_write_bytes
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -121,14 +123,16 @@ class EventLog:
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
             ref = str(self._blob_dir / digest)
-            Path(ref).write_bytes(raw)
+            # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
+            if not Path(ref).exists():
+                atomic_write_bytes(Path(ref), raw)
 
         cur = self._conn.execute(
             """
             INSERT INTO events
               (run_id, task_id, type, ts, actor_kind, actor_id,
                payload, payload_ref, payload_hash, parent_seq, idem_key)
-            VALUES (?,?  ,?,    ?,     ?,          ?,        ?,       ?,          ?,           ?,          ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -145,6 +149,21 @@ class EventLog:
             ),
         )
         return int(cur.lastrowid)
+
+    def append_many(self, items: list[dict[str, Any]]) -> list[int]:
+        """同一事务内写多条事件。
+
+        用途：result 与 receipt 必须同生同死——只写出 result 没写 receipt，
+        就产生"记为已执行但无凭据"的窗口。
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            ids = [self.append(**item) for item in items]
+            self._conn.execute("COMMIT")
+            return ids
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
 
     # ---- 读 ----
 

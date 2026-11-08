@@ -1,11 +1,16 @@
-"""崩溃恢复。
+"""崩溃恢复（v2：只认写前证据）。
 
-回答第三个问题：**进程在中间被杀掉，重启后怎么知道上一次到底改了没改？**
+上一版用「磁盘现在像不像执行后的样子」推断「本次调用执行过」。
+这在文件本来就有相同内容时必然误报成功——哈希相同不能证明写者是谁，
+更不能证明这次调用发生过。
 
-核心思路：不猜。用磁盘现状和事件里的参数去**核实**。
-- 能核实 → 补一条 result，标明是恢复出来的
-- 核实不了 → 标 unknown，并阻断依赖它的后续写入
-- 绝不把"不知道"写成"成功"
+v2 的判据只有一条：**写前证据是否存在**。
+证据（preimage + expected_after，以 call_id 为键）在写文件之前原子落盘，
+所以：
+- 没有证据 → 本次调用根本没进入写入阶段 → `none_applied`
+- 有证据 → 用证据里的 before/after 对磁盘做三方比对 → applied / none_applied / unknown
+
+其余一律 unknown，绝不编造 before_state，绝不生成成功凭据。
 """
 
 from __future__ import annotations
@@ -13,13 +18,20 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from .events import EventLog
-from .receipt import Receipt, build_receipt
+from .guard import blocked_workspaces, ensure_not_blocked
+from .receipt import build_receipt
 from .snapshot import ABSENT, SnapshotStore
 from .tools import SPECS, ToolResult
 from .workspace import Workspace
+
+__all__ = [
+    "RecoveryReport",
+    "recover_run",
+    "blocked_workspaces",
+    "ensure_not_blocked",
+]
 
 
 @dataclass
@@ -39,7 +51,7 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _current_state(ws: Workspace, rel: str) -> str:
+def _observe(ws: Workspace, rel: str) -> str:
     target = ws.resolve(rel)
     if not target.exists():
         return ABSENT
@@ -52,103 +64,108 @@ def recover_run(
     workspace_dir: Path,
     snapshots: SnapshotStore | None = None,
 ) -> RecoveryReport:
-    """核对并补全一次被打断的 run。幂等：重复调用不会再补事件。"""
+    """核对并补全一次被打断的 run。幂等。"""
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
 
-    intents = {
-        e.payload["call_id"]: e
-        for e in events
-        if e.type == "tool.intent"
-    }
+    intents = {e.payload["call_id"]: e for e in events if e.type == "tool.intent"}
     results = {e.payload["call_id"] for e in events if e.type == "tool.result"}
-
     pending = {cid: ev for cid, ev in intents.items() if cid not in results}
+
+    if (snapshots is not None and not snapshots.has_manifest(run_id)
+            and len(events) == 1 and events[0].type == "run.start"):
+        # 最早的启动窗口：尚无 tool intent，不可能已经发生受控文件写入。
+        snapshots.init_run(run_id)
+
     report = RecoveryReport(run_id=run_id)
 
     for call_id, ev in pending.items():
         payload = ev.payload
         tool_id = payload["tool_id"]
-        args = payload.get("args") or {}
-        rel = args.get("name") or args.get("path")
-        content = args.get("content")
-
-        # 只读工具没有副作用，无论何时被杀都不需要核查
         spec = SPECS.get(tool_id)
+
+        # 只读工具：没有副作用，直接被中断也不影响任何东西
         if spec is not None and spec.side_effect_level == "pure":
-            result = ToolResult(
-                "failed", "none_applied",
-                {"error": "recovered: 只读工具无副作用", "recovered": True},
-            )
-            _record_result(log, run_id, call_id, tool_id, result)
-            report.none_applied.append(call_id)
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("failed", "none_applied",
+                               {"error": "recovered: 只读工具无副作用",
+                                "recovered": True}),
+                    bucket=report.none_applied)
             continue
 
-        if not isinstance(rel, str) or not isinstance(content, str):
-            # 写工具但参数不完整：无法核实 → 记 unknown 并阻断。
-            # 但必须补一条 result，否则这条 intent 会永远悬空（intent/result 不配对）。
-            result = ToolResult(
-                "unknown", "unknown",
-                {"error": "recovered: 参数不可重建，无法判定", "recovered": True},
-            )
-            _record_result(log, run_id, call_id, tool_id, result)
-            report.unresolved.append(call_id)
-            report.problems.append(f"{call_id}：参数不可重建，无法核实")
+        # 写工具：唯一判据是写前证据
+        if snapshots is None:
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 未提供快照存储，无法核实",
+                                "recovered": True}),
+                    bucket=report.unresolved)
             continue
 
-        expected_after = _sha(content.encode("utf-8"))
-        current = _current_state(ws, rel)
+        # run.start 与 init_run 之间崩溃时尚未产生任何 tool intent，能安全补建
+        # 空清单；一旦已有写 intent，缺清单仍是异常，绝不能推断为未写入。
+        if not snapshots.has_manifest(run_id):
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 清单缺失，无法确认是否写入",
+                                "recovered": True}),
+                    bucket=report.unresolved)
+            continue
 
-        if current == expected_after:
-            # 副作用确实发生了：补 result + 凭据
-            result = ToolResult(
-                "succeeded",
-                "applied",
-                {
-                    "path": rel,
-                    "bytes": len(content.encode("utf-8")),
-                    "sha256": expected_after,
-                    "after_state": expected_after,
-                    "before_state": ABSENT,
-                    "recovered": True,
-                },
-            )
-            _record_result(log, run_id, call_id, tool_id, result)
-            _record_receipt(log, run_id, call_id, tool_id,
-                            payload.get("args_hash", ""), result)
-            report.applied.append(call_id)
+        change = snapshots.find(run_id, call_id)
 
-        elif current == ABSENT:
-            # 文件不在：新建类工具肯定没写成功，修改类需要写前状态才能确认
-            result = ToolResult(
-                "failed", "none_applied",
-                {"error": "recovered: 未执行（目标不存在）", "recovered": True},
-            )
-            _record_result(log, run_id, call_id, tool_id, result)
-            report.none_applied.append(call_id)
+        if change is None:
+            # 清单存在但没有本次调用的条目 → 没进到写前证据那一步 → 确定未写
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("failed", "none_applied",
+                               {"error": "recovered: 清单中无本次调用证据，写入未开始",
+                                "recovered": True}),
+                    bucket=report.none_applied)
+            continue
 
-        else:
-            # 别的哈希：可能是没执行（原内容），也可能被别人改过——分不清
-            before = None
-            if snapshots is not None:
-                for c in snapshots.load(run_id):
-                    if c.path == rel and c.before_state != ABSENT:
-                        before = c.before_state
-            if before is not None and current == before:
-                result = ToolResult(
-                    "failed", "none_applied",
-                    {"error": "recovered: 未执行（内容仍为写前状态）", "recovered": True},
-                )
-                _record_result(log, run_id, call_id, tool_id, result)
-                report.none_applied.append(call_id)
-            else:
-                result = ToolResult(
-                    "unknown", "unknown",
-                    {"error": "recovered: 无法判定是否已写入，需人工核查",
-                     "recovered": True},
-                )
-                _record_result(log, run_id, call_id, tool_id, result)
-                report.unresolved.append(call_id)
+        current = _observe(ws, change.path)
+
+        if change.before_state == change.expected_after:
+            # 写前写后内容一致：没有任何可观测副作用。不声称成功、也不阻断。
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult(
+                        "failed", "none_applied",
+                        {"error": "recovered: 写入前后内容一致，无可观测副作用",
+                         "recovered": True}),
+                    bucket=report.none_applied)
+            continue
+
+        if current == change.before_state:
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("failed", "none_applied",
+                               {"error": "recovered: 内容仍为写前状态，未执行",
+                                "recovered": True}),
+                    bucket=report.none_applied)
+            continue
+
+        if current == change.expected_after:
+            # 有证据 + 磁盘与证据一致 → 可以确认执行过，且写前状态来自证据本身
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult(
+                        "succeeded", "applied",
+                        {"path": change.path,
+                         "bytes": (ws.resolve(change.path)).stat().st_size,
+                         "sha256": change.expected_after,
+                         "after_state": change.expected_after,
+                         "before_state": change.before_state,
+                         "recovered": True}),
+                    bucket=report.applied, with_receipt=True)
+            continue
+
+        # 既不是写前也不是写后：被第三方改过，或写到一半
+        _settle(log, report, run_id, call_id, tool_id, payload,
+                ToolResult("unknown", "unknown",
+                           {"error": "recovered: 磁盘状态既非写前也非写后，需人工核查",
+                            "recovered": True,
+                            "observed": current,
+                            "expected_after": change.expected_after,
+                            "before_state": change.before_state}),
+                bucket=report.unresolved)
 
     if report.unresolved:
         log.append(
@@ -165,55 +182,48 @@ def recover_run(
     return report
 
 
-def _record_result(log, run_id, call_id, tool_id, result: ToolResult) -> None:
-    log.append(
-        run_id,
-        "tool.result",
-        {
+def _settle(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    intent_payload: dict,
+    result: ToolResult,
+    *,
+    bucket: list[str],
+    with_receipt: bool = False,
+) -> None:
+    batch = [{
+        "run_id": run_id,
+        "type": "tool.result",
+        "payload": {
             "call_id": call_id,
             "tool_id": tool_id,
             "status": result.status,
             "effect_state": result.effect_state,
             "output": result.output,
         },
-        actor_kind="system",
-        idem_key=call_id,
-    )
+        "actor_kind": "system",
+        "idem_key": call_id,
+    }]
 
-
-def _record_receipt(log, run_id, call_id, tool_id, args_hash, result) -> None:
-    receipt = build_receipt(
-        run_id=run_id,
-        call_id=call_id,
-        tool_id=tool_id,
-        args_hash=args_hash,
-        result=result,
-    )
-    if receipt is not None:
-        log.append(run_id, "receipt", receipt.to_payload(),
-                   actor_kind="system", idem_key=receipt.receipt_id)
-
-
-def blocked_workspaces(log: EventLog) -> set[str]:
-    """哪些 workspace 上有未核实的副作用。新 run 写这些目录前必须先核查。"""
-    out: set[str] = set()
-    rows = log._conn.execute(
-        "SELECT payload FROM events WHERE type = 'recovery.blocked'"
-    ).fetchall()
-    import json as _json
-
-    for r in rows:
-        try:
-            out.add(_json.loads(r["payload"])["workspace"])
-        except Exception:
-            continue
-    return out
-
-
-def ensure_not_blocked(log: EventLog, workspace_dir: Path) -> None:
-    ws = str(Path(workspace_dir).resolve())
-    if ws in blocked_workspaces(log):
-        raise RuntimeError(
-            f"workspace 存在未核实的副作用（{ws}），"
-            "请先处理 unknown 记录再写入"
+    if with_receipt:
+        receipt = build_receipt(
+            run_id=run_id,
+            call_id=call_id,
+            tool_id=tool_id,
+            args_hash=intent_payload.get("args_hash", ""),
+            result=result,
         )
+        if receipt is not None:
+            batch.append({
+                "run_id": run_id,
+                "type": "receipt",
+                "payload": receipt.to_payload(),
+                "actor_kind": "system",
+                "idem_key": receipt.receipt_id,
+            })
+
+    log.append_many(batch)
+    bucket.append(call_id)

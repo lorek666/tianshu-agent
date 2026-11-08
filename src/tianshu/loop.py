@@ -17,13 +17,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .errors import (
+    OverwriteRefused,
+    ToolArgumentError,
+    WorkspaceBlocked,
+    WorkspaceViolation,
+)
 from .events import EventLog, canonical_bytes
 from .model import Model, ModelResponse, ToolCall
 from .receipt import build_receipt
 from .snapshot import SnapshotStore
 from .tools import SPECS, ToolContext, ToolResult, execute, tool_manifest
 from .workspace import Workspace
-from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
+
 
 def _failpoint(name: str, *, only_if: bool = True) -> None:
     """故障注入点。用 os._exit 硬退，模拟断电/被 kill —— 不走任何清理逻辑。
@@ -129,7 +135,7 @@ def run(
     limits = limits or Limits()
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     ws = Workspace(workspace_dir)
-    ctx = ToolContext(snapshots=snapshots, run_id=run_id)
+    ctx = ToolContext(snapshots=snapshots, log=log, run_id=run_id)
 
     log.append(
         run_id,
@@ -145,6 +151,9 @@ def run(
         actor_kind="core",
     )
 
+    if snapshots is not None:
+        snapshots.init_run(run_id)
+
     state = _State(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -154,6 +163,7 @@ def run(
 
     outcome = "failed"
     error: str | None = None
+    blocked_hit = False
 
     for turn in range(1, limits.max_turns + 1):
         state.turns = turn
@@ -206,7 +216,8 @@ def run(
                     {"tool_calls": [
                         {"id": c.call_id, "type": "function",
                          "function": {"name": c.name,
-                                      "arguments": json.dumps(c.arguments, ensure_ascii=False, sort_keys=True)}}
+                                      "arguments": json.dumps(
+                                          c.arguments, ensure_ascii=False, sort_keys=True)}}
                         for c in resp.tool_calls
                     ]}
                     if resp.tool_calls else {}
@@ -215,7 +226,12 @@ def run(
         )
 
         if resp.finish_reason != "tool_use" or not resp.tool_calls:
-            outcome = "succeeded" if state.artifact else "noop"
+            if resp.finish_reason == "end_turn":
+                outcome = "succeeded" if state.artifact else "noop"
+            else:
+                # 截断、未知结束原因和错误都不是“没有工作要做”的成功 noop。
+                outcome = "failed"
+                error = f"模型调用未正常结束：{resp.finish_reason}：" + resp.content[:200]
             break
 
         for call in resp.tool_calls:
@@ -248,8 +264,17 @@ def run(
             )
             _failpoint("after_intent", only_if=spec_is_write(call.name))
 
+            ctx.call_id = call.call_id
             try:
                 result = execute(ws, call.name, args, ctx)
+            except WorkspaceBlocked as exc:
+                # 阻断不是普通工具失败：任务必须明确失败，不能悄悄变成 noop
+                result = ToolResult(
+                    "rejected", "none_applied",
+                    {"error": f"WorkspaceBlocked: {exc}"},
+                )
+                error = f"workspace 已被阻断，拒绝写入：{exc}"
+                blocked_hit = True
             except (WorkspaceViolation, OverwriteRefused, ToolArgumentError) as exc:
                 result = ToolResult("rejected", "none_applied",
                                     {"error": f"{type(exc).__name__}: {exc}"})
@@ -258,21 +283,6 @@ def run(
 
             _failpoint("after_write", only_if=spec_is_write(call.name))
 
-            log.append(
-                run_id,
-                "tool.result",
-                {"call_id": call.call_id, "tool_id": call.name, "status": result.status,
-                 "effect_state": result.effect_state, "output": result.output},
-                actor_kind="tool",
-                idem_key=call.call_id,
-            )
-            _failpoint("after_result", only_if=spec_is_write(call.name))
-
-            if result.effect_state == "applied":
-                state.n_applied += 1
-            elif result.effect_state in ("partial", "unknown"):
-                state.n_unknown += 1
-
             receipt = build_receipt(
                 run_id=run_id,
                 call_id=call.call_id,
@@ -280,14 +290,34 @@ def run(
                 args_hash=args_hash,
                 result=result,
             )
+
+            batch = [{
+                "run_id": run_id,
+                "type": "tool.result",
+                "payload": {"call_id": call.call_id, "tool_id": call.name,
+                            "status": result.status,
+                            "effect_state": result.effect_state,
+                            "output": result.output},
+                "actor_kind": "tool",
+                "idem_key": call.call_id,
+            }]
             if receipt is not None:
-                log.append(
-                    run_id,
-                    "receipt",
-                    receipt.to_payload(),
-                    actor_kind="core",
-                    idem_key=receipt.receipt_id,
-                )
+                batch.append({
+                    "run_id": run_id,
+                    "type": "receipt",
+                    "payload": receipt.to_payload(),
+                    "actor_kind": "core",
+                    "idem_key": receipt.receipt_id,
+                })
+            # 同事务：要么都有，要么都没有
+            log.append_many(batch)
+            _failpoint("after_result", only_if=spec_is_write(call.name))
+
+            if result.effect_state == "applied":
+                state.n_applied += 1
+            elif result.effect_state in ("partial", "unknown"):
+                state.n_unknown += 1
+            if receipt is not None:
                 state.receipts.append(receipt.receipt_id)
             _failpoint("after_receipt", only_if=spec_is_write(call.name))
 
@@ -296,7 +326,8 @@ def run(
 
             state.messages.append(_tool_message(call, result))
 
-            if result.status == "rejected" and call.name == "create_report":
+            if (result.status == "rejected" and call.name == "create_report"
+                    and not blocked_hit):
                 error = f"报告写入被拒绝：{result.output.get('error')}"
     else:
         error = f"达到最大轮数 {limits.max_turns}（验收 A5）"
@@ -304,6 +335,9 @@ def run(
 
     # effect_state 必须反映「实际发生了什么」，不是「有没有报错」。
     # 写入被拒绝 = 什么都没发生 = none_applied，不是 partial。
+    if blocked_hit:
+        outcome = "failed"
+
     if state.n_applied and state.n_unknown:
         effect_state = "partial"
     elif state.n_applied:
