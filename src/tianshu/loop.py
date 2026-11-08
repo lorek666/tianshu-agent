@@ -226,11 +226,12 @@ def run(
         )
 
         if resp.finish_reason != "tool_use" or not resp.tool_calls:
-            if resp.finish_reason in ("error", "cancelled", "content_filtered"):
+            if resp.finish_reason == "end_turn":
+                outcome = "succeeded" if state.artifact else "noop"
+            else:
+                # 截断、未知结束原因和错误都不是“没有工作要做”的成功 noop。
                 outcome = "failed"
                 error = f"模型调用未正常结束：{resp.finish_reason}：" + resp.content[:200]
-            else:
-                outcome = "succeeded" if state.artifact else "noop"
             break
 
         for call in resp.tool_calls:

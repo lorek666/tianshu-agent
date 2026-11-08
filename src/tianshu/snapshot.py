@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .errors import ToolNotAllowed
 from .fsutil import atomic_write_bytes
 from .workspace import Workspace
 
@@ -151,8 +152,9 @@ class SnapshotStore:
         2. 同一个文件被写过多次时，按**调用逆序**处理——正序检查会自相冲突。
         3. 预检阶段用内存模拟最终状态，全部通过才动手。
         """
-        if guard is not None:
-            guard()
+        if guard is None:
+            raise ToolNotAllowed("undo 必须提供执行侧 guard，不能绕过阻断检查")
+        guard()
 
         changes = self.load(run_id)
         if not changes:
@@ -160,8 +162,9 @@ class SnapshotStore:
 
         report = UndoReport(ok=False)
 
-        # ---- 预检：按逆序模拟，不碰磁盘 ----
+        # ---- 预检：校验当前磁盘等于最后一次 after，再按逆序模拟 ----
         disk_state: dict[str, str] = {}
+        preimages: dict[str, bytes] = {}
         for c in changes:
             target = ws.resolve(c.path)
             disk_state[c.path] = (
@@ -177,26 +180,33 @@ class SnapshotStore:
                     f"{c.path}：当前内容与 Agent 写完时不一致"
                     f"（{current[:12]}… ≠ {c.expected_after[:12]}…），拒绝覆盖"
                 )
-                continue
-            simulated[c.path] = c.before_state
+                return self._refuse(report)
             if c.before_state != ABSENT:
-                if not c.blob_ref or not Path(c.blob_ref).exists():
+                if not c.blob_ref or not Path(c.blob_ref).is_file():
                     report.missing_blobs.append(f"{c.path}：写前内容丢失，无法还原")
+                    return self._refuse(report)
+                preimage = Path(c.blob_ref).read_bytes()
+                if hashlib.sha256(preimage).hexdigest() != c.before_state:
+                    report.problems.append(f"{c.path}：写前 blob 哈希不符")
+                    return self._refuse(report)
+                # 每条证据可能引用同一内容；预检一次性保存字节，执行不再读可变引用。
+                preimages[c.call_id] = preimage
+            simulated[c.path] = c.before_state
 
-        if report.conflicts or report.missing_blobs:
-            report.problems.append("预检未通过，未做任何修改")
-            return report
-
-        # ---- 执行：同样按逆序 ----
+        # ---- 执行：逆序恢复调用链。跨多文件的崩溃仍须如实记 partial ----
         for c in reversed(changes):
             target = ws.resolve(c.path)
             if c.before_state == ABSENT:
                 target.unlink(missing_ok=True)
                 report.deleted.append(c.path)
             else:
-                assert c.blob_ref is not None
-                atomic_write_bytes(target, Path(c.blob_ref).read_bytes())
+                atomic_write_bytes(target, preimages[c.call_id])
                 report.restored.append(c.path)
 
         report.ok = True
+        return report
+
+    @staticmethod
+    def _refuse(report: UndoReport) -> UndoReport:
+        report.problems.append("预检未通过，未做任何修改")
         return report

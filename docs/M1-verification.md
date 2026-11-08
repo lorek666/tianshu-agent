@@ -75,7 +75,8 @@ $ 凭据数: 1 | 对账: 一致
 ## 5. 测试总览
 
 ```
-uv run pytest  →  41 passed  (4.8s)
+uv run pytest       →  63 passed（独立复验与修复后）
+uv run ruff check . →  All checks passed
 ```
 
 | 文件 | 用例数 | 覆盖 |
@@ -94,3 +95,13 @@ uv run pytest  →  41 passed  (4.8s)
 | 真实断电（文件系统层缓冲） | 用 `os._exit` 模拟，未测 fsync 边界 |
 | 多进程并发写同一 workspace | M1 是单 writer，未做锁 |
 | 大 workspace（数百文件）性能 | 未压测 |
+| undo 中途崩溃的多文件一致性 | 预检阶段保证缺/坏证据零修改；执行中异常仍可能部分还原，完整 undo journal 由 M2 统一执行入口实现，不能宣称已解决 |
+| 并发调用与权威数据目录 | 当前 guard 只在指定数据库上检查；换库/多进程租约由 M2 实现 |
+
+## 7. 独立复验与修复记录（PR #6）
+
+`docs/DEBUG-M0M1.md` 保存逐条反例与复验过程。最终由独立复核直接补齐：undo 必须提供 guard；三层写入逆序撤销与中间链冲突预检；preimage 哈希预检；最早启动窗口安全初始化；未知/截断模型结束原因失败；大 payload 先 fsync + 原子发布再提交引用。
+
+实际 CLI 验证：同一文件 `create → modify(v2) → modify(v3)` 后 undo 成功回到文件不存在，事件含 `undo.completed`，receipt 对账一致。
+
+**范围声明**：这里证明的是进程中断下受控工具路径的恢复与证据约束，不是物理断电或任意 shell 的安全沙箱。外部 blob 与 SQLite 是 durable publish + 引用，不是跨介质 ACID 事务。

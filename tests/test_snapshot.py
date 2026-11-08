@@ -46,6 +46,15 @@ def run_with(tmp_path, ws_dir, store, responses):
     return result, log
 
 
+def undo_with(log, run_id, ws_dir):
+    """所有调用方都必须显式通过同一执行侧阻断检查。"""
+    from tianshu.guard import ensure_not_blocked
+
+    return SnapshotStore(log._db_path.parent / "artifacts").undo(
+        run_id, Workspace(ws_dir), guard=lambda: ensure_not_blocked(log, ws_dir)
+    )
+
+
 ORIGINAL = "原始内容\n"
 
 
@@ -75,7 +84,7 @@ def test_modify_captures_preimage_and_undo_restores(tmp_path):
     assert r["before_state"] == c.before_state, "凭据必须记录写前状态"
     assert r["effect_state"] == "applied"
 
-    undo = store.undo(result.run_id, Workspace(ws_dir))
+    undo = undo_with(log, result.run_id, ws_dir)
     assert undo.ok and undo.restored == ["note.md"]
     assert (ws_dir / "note.md").read_text(encoding="utf-8") == ORIGINAL
     log.close()
@@ -94,7 +103,7 @@ def test_undo_deletes_newly_created_file(tmp_path):
     assert (ws_dir / "out.md").exists()
     assert store.load(result.run_id)[0].before_state == ABSENT
 
-    undo = store.undo(result.run_id, Workspace(ws_dir))
+    undo = undo_with(log, result.run_id, ws_dir)
     assert undo.ok and undo.deleted == ["out.md"]
     assert not (ws_dir / "out.md").exists(), "新建的文件撤销后应消失"
     log.close()
@@ -116,7 +125,7 @@ def test_undo_refuses_when_user_modified_after(tmp_path):
     user_text = "用户后来手写的\n"
     (ws_dir / "note.md").write_text(user_text, encoding="utf-8")
 
-    undo = store.undo(result.run_id, Workspace(ws_dir))
+    undo = undo_with(log, result.run_id, ws_dir)
     assert not undo.ok
     assert undo.conflicts, "必须报告冲突"
     assert "拒绝覆盖" in undo.conflicts[0]
@@ -141,7 +150,7 @@ def test_undo_is_atomic_across_multiple_files(tmp_path):
 
     (ws_dir / "b.md").write_text("乙又被用户改了", encoding="utf-8")
 
-    undo = store.undo(result.run_id, Workspace(ws_dir))
+    undo = undo_with(log, result.run_id, ws_dir)
     assert not undo.ok
     assert (ws_dir / "a.md").read_text(encoding="utf-8") == "甲改", \
         "有冲突时不应部分还原"

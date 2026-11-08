@@ -219,6 +219,7 @@ def test_s3_atomic_write_leaves_no_partial_file(tmp_path):
 def test_s4_undo_aborts_when_blob_missing(tmp_path):
     """一个 blob 丢失，另一个文件也不能被还原——不留部分撤销。"""
     ws = _ws(tmp_path, {"a.md": "A原", "b.md": "B原"})
+    log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
     store.record_preimage("r1", "c1", "a.md", "A原".encode(), _sha("A改"))
     store.record_preimage("r1", "c2", "b.md", "B原".encode(), _sha("B改"))
@@ -230,7 +231,7 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
         if c.path == "b.md" and c.blob_ref:
             Path(c.blob_ref).unlink()
 
-    report = store.undo("r1", Workspace(ws))
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
     assert not report.ok
     assert report.missing_blobs
     assert (ws / "a.md").read_text(encoding="utf-8") == "A改", \
@@ -279,6 +280,20 @@ def test_m1_result_and_receipt_are_atomic(tmp_path):
     log.close()
 
 
+def test_startup_crash_before_manifest_is_safe_to_initialize(tmp_path):
+    """run.start 后还没有 tool intent，崩溃可安全补建空清单，无需永久阻断。"""
+    ws = _ws(tmp_path, {})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+    log.append("r1", "run.start", {"task": "t", "workspace": str(ws), "out": "x"})
+
+    report = recover_run(log, "r1", ws, store)
+    assert report.none_applied == []
+    assert report.unresolved == []
+    assert store.has_manifest("r1")
+    log.close()
+
+
 # ---------------------------------------------------------------- R2 / R3
 
 
@@ -306,6 +321,7 @@ def test_r2_undo_refused_on_blocked_workspace(tmp_path):
 def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
     """同一 run 里先 create 后 modify 同一文件，撤销要能回到最初状态。"""
     ws = _ws(tmp_path, {})
+    log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
     store.init_run("r1")
 
@@ -316,7 +332,7 @@ def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
     store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"))
     (ws / "a.md").write_text("v2", encoding="utf-8")
 
-    report = store.undo("r1", Workspace(ws))
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
     assert report.ok, report.problems
     assert not (ws / "a.md").exists(), "回到最初状态：文件不存在"
 
@@ -363,4 +379,98 @@ def test_r4_blocked_tool_makes_run_fail_not_noop(tmp_path):
     assert result.outcome == "failed", f"应为 failed，实际 {result.outcome}"
     assert "阻断" in (result.error or "")
     assert not (ws / "r.md").exists()
+    assert result.effect_state == "none_applied"
+    assert blocked_workspaces(log) == {str(ws.resolve())}, "原有阻断必须保留"
+    log.close()
+
+
+def test_m1_large_payload_is_durable_before_reference_commit(tmp_path):
+    from tianshu.events import MAX_INLINE_BYTES
+
+    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES})
+    event = log.read_run("r1")[0]
+    assert event.payload["content"] == "x" * MAX_INLINE_BYTES
+    refs = [row[0] for row in log._conn.execute(
+        "SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL"
+    )]
+    assert len(refs) == 1 and Path(refs[0]).is_file()
+    log.close()
+
+
+def test_m3_unknown_finish_reason_is_failure(tmp_path):
+    ws = _ws(tmp_path, {})
+    log = EventLog(tmp_path / "e.db")
+    result = run(
+        task="t", workspace_dir=ws, out_name="x",
+        model=ScriptedModel([ModelResponse("length", content="truncated")]), log=log,
+    )
+    assert result.outcome == "failed"
+    log.close()
+
+
+def test_undo_requires_guard_at_library_boundary(tmp_path):
+    ws = _ws(tmp_path, {"a.md": "agent"})
+    store = SnapshotStore(tmp_path / "art")
+    store.init_run("r1")
+    store.record_preimage("r1", "c1", "a.md", b"original", _sha("agent"))
+
+    with pytest.raises(Exception, match="guard"):
+        store.undo("r1", Workspace(ws))
+    assert (ws / "a.md").read_text() == "agent"
+
+
+def test_three_writes_undo_to_original_and_middle_conflict_is_atomic(tmp_path):
+    for corrupt_call in (None, "c2", "c3"):
+        case = tmp_path / str(corrupt_call)
+        ws = case / "ws"
+        ws.mkdir(parents=True)
+        log = EventLog(case / "e.db")
+        store = SnapshotStore(case / "art")
+        store.init_run("r1")
+        for cid, before, after in (
+            ("c1", "v0", "v1"), ("c2", "v1", "v2"), ("c3", "v2", "v3")
+        ):
+            store.record_preimage("r1", cid, "note.md", before.encode(), _sha(after))
+            (ws / "note.md").write_text(after)
+        if corrupt_call is not None:
+            manifest = store.manifest_dir / "r1.json"
+            import json
+
+            payload = json.loads(manifest.read_text())
+            for change in payload["changes"]:
+                if change["call_id"] == corrupt_call:
+                    change["expected_after"] = _sha("unexpected")
+            manifest.write_text(json.dumps(payload))
+
+        report = store.undo(
+            "r1", Workspace(ws), guard=lambda log=log, ws=ws: ensure_not_blocked(log, ws)
+        )
+        if corrupt_call is None:
+            assert report.ok
+            assert (ws / "note.md").read_text() == "v0"
+        else:
+            assert not report.ok
+            assert report.conflicts
+            assert report.restored == [] and report.deleted == []
+            assert (ws / "note.md").read_text() == "v3"
+        log.close()
+
+
+def test_undo_rejects_corrupt_preimage_before_touching_any_file(tmp_path):
+    ws = _ws(tmp_path, {"a.md": "A-after", "b.md": "B-after"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+    store.init_run("r1")
+    store.record_preimage("r1", "c1", "a.md", b"A-before", _sha("A-after"))
+    store.record_preimage("r1", "c2", "b.md", b"B-before", _sha("B-after"))
+    for change in store.load("r1"):
+        if change.path == "b.md":
+            Path(change.blob_ref).write_bytes(b"corrupt")
+
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
+    assert not report.ok
+    assert report.restored == [] and report.deleted == []
+    assert (ws / "a.md").read_text() == "A-after"
+    assert (ws / "b.md").read_text() == "B-after"
     log.close()

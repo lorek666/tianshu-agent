@@ -237,4 +237,4 @@ class OpenAICompatibleModel:
             "length": "limit_output_tokens",
             "tool_calls": "tool_use",
             "content_filter": "content_filtered",
-        }.get(raw or "", "end_turn")
+        }.get(raw or "", "unknown")

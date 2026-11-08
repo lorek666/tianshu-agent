@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import EventLogCorrupt
+from .fsutil import atomic_write_bytes
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -122,7 +123,9 @@ class EventLog:
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
             ref = str(self._blob_dir / digest)
-            Path(ref).write_bytes(raw)
+            # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
+            if not Path(ref).exists():
+                atomic_write_bytes(Path(ref), raw)
 
         cur = self._conn.execute(
             """

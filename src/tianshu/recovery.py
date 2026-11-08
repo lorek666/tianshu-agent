@@ -72,6 +72,11 @@ def recover_run(
     results = {e.payload["call_id"] for e in events if e.type == "tool.result"}
     pending = {cid: ev for cid, ev in intents.items() if cid not in results}
 
+    if (snapshots is not None and not snapshots.has_manifest(run_id)
+            and len(events) == 1 and events[0].type == "run.start"):
+        # 最早的启动窗口：尚无 tool intent，不可能已经发生受控文件写入。
+        snapshots.init_run(run_id)
+
     report = RecoveryReport(run_id=run_id)
 
     for call_id, ev in pending.items():
@@ -97,8 +102,8 @@ def recover_run(
                     bucket=report.unresolved)
             continue
 
-        # 清单不存在 = 异常（正常 run 启动时就建了空清单）。
-        # 不能解释成「什么都没写」——那会把有副作用的 intent 判成未执行。
+        # run.start 与 init_run 之间崩溃时尚未产生任何 tool intent，能安全补建
+        # 空清单；一旦已有写 intent，缺清单仍是异常，绝不能推断为未写入。
         if not snapshots.has_manifest(run_id):
             _settle(log, report, run_id, call_id, tool_id, payload,
                     ToolResult("unknown", "unknown",
