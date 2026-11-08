@@ -11,7 +11,7 @@
 
 ```
 天枢Agent/
-├── docs/              架构与 PRD（唯一权威版本）
+├── docs/              架构与 PRD（唯一权威版本）；archive/ 为历史记录
 ├── src/tianshu/       Python 主包
 ├── tests/             测试与验收样例
 ├── playground/        学习练习（不进版本库）
@@ -24,10 +24,9 @@
 |---|---|
 | [docs/PRD-v1.md](docs/PRD-v1.md) | **产品需求与架构：范围、契约、红线、里程碑** |
 | [docs/TECH-ARCH.md](docs/TECH-ARCH.md) | **技术架构：选型、进程模型、打包、平台差异** |
-| [docs/convergence-v1.md](docs/convergence-v1.md) | 架构收敛：四象限、11 条红线、协议分级 |
-| [docs/general-agent-v2.md](docs/general-agent-v2.md) | 三执行模型（E1/E2/E3）与通用 agent 分析 |
-| [docs/review-8-projects.md](docs/review-8-projects.md) | 8 个参考项目的源码级核对报告 |
 | [docs/REFS.md](docs/REFS.md) | 参考仓库与固定 commit |
+| [docs/archive/](docs/archive/) | 历史研究记录，**已被 PRD-v1 取代，勿作为实现依据** |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、什么该推什么不该推 |
 
 **改动任何契约前先读 PRD §5、§6**（五道契约 + 十一条红线）。红线与功能需求冲突时以红线为准。
 
