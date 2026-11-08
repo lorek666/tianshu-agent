@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import OverwriteRefused, ToolArgumentError, ToolNotAllowed
+from .snapshot import ABSENT, Change, SnapshotStore
 from .workspace import Workspace, normalize_name
 
 READ_TEXT_LIMIT = 64 * 1024  # 单次读取上限，超出截断并标记
@@ -25,6 +26,23 @@ class ToolSpec:
     input_schema: dict[str, Any]
     side_effect_level: str  # pure | idempotent | non_idempotent
     exec_model: str = "E1"  # E1 | E3
+
+
+@dataclass
+class ToolContext:
+    """执行期上下文。快照与 run_id 由主循环注入，工具自己不管存储细节。"""
+
+    snapshots: SnapshotStore | None = None
+    run_id: str = ""
+
+    def capture(self, rel_path: str, before: bytes | None) -> Change | None:
+        if self.snapshots is None:
+            return None
+        return self.snapshots.capture(self.run_id, rel_path, before)
+
+    def record(self, change: Change | None) -> None:
+        if self.snapshots is not None and change is not None:
+            self.snapshots.record(self.run_id, change)
 
 
 @dataclass
@@ -87,7 +105,7 @@ def validate_args(args: Any, schema: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- 具体实现
 
 
-def _list_files(ws: Workspace, args: dict[str, Any]) -> ToolResult:
+def _list_files(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     sub = args.get("path", ".")
     target = ws.resolve(sub)
     if not target.is_dir():
@@ -109,7 +127,7 @@ def _list_files(ws: Workspace, args: dict[str, Any]) -> ToolResult:
     return ToolResult("succeeded", "none_applied", {"entries": entries})
 
 
-def _read_text(ws: Workspace, args: dict[str, Any]) -> ToolResult:
+def _read_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     target = ws.resolve(args["path"])
     if not target.is_file():
         return ToolResult("failed", "none_applied", {"error": "不是文件"})
@@ -144,34 +162,82 @@ def _read_text(ws: Workspace, args: dict[str, Any]) -> ToolResult:
     )
 
 
-def _create_report(ws: Workspace, args: dict[str, Any]) -> ToolResult:
+def _create_report(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     target = ws.resolve(args["name"])
 
     # 验收 A6：已存在必须拒绝，不留覆盖的可能
     if target.exists():
         raise OverwriteRefused(f"目标已存在，拒绝覆盖：{args['name']}")
 
+    rel = ws.relative(target)
+    # 先拍快照，再落盘。顺序反了就等于没拍——原内容已经没了。
+    change = ctx.capture(rel, None)
+
     target.parent.mkdir(parents=True, exist_ok=True)
     data = args["content"].encode("utf-8")
     target.write_bytes(data)
+    after = hashlib.sha256(data).hexdigest()
+
+    if change is not None:
+        change.after_state = after
+        ctx.record(change)
 
     return ToolResult(
         "succeeded",
         "applied",
         {
-            "path": ws.relative(target),
+            "path": rel,
             "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
+            "sha256": after,
+            "after_state": after,
+            "before_state": ABSENT,
+        },
+    )
+
+
+def _modify_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """修改已有文本文件。新建请用 create_report。"""
+    target = ws.resolve(args["path"])
+    if not target.exists():
+        return ToolResult(
+            "failed", "none_applied",
+            {"error": "文件不存在；新建请用 create_report"},
+        )
+    if not target.is_file():
+        return ToolResult("failed", "none_applied", {"error": "不是文件"})
+
+    before = target.read_bytes()
+    rel = ws.relative(target)
+    change = ctx.capture(rel, before)  # 写前内容进 blob
+
+    data = args["content"].encode("utf-8")
+    target.write_bytes(data)
+    after = hashlib.sha256(data).hexdigest()
+
+    if change is not None:
+        change.after_state = after
+        ctx.record(change)
+
+    return ToolResult(
+        "succeeded",
+        "applied",
+        {
+            "path": rel,
+            "bytes": len(data),
+            "sha256": after,
+            "after_state": after,
+            "before_state": change.before_state if change else ABSENT,
         },
     )
 
 
 # ---------------------------------------------------------------- 注册表
 
-_HANDLERS: dict[str, Callable[[Workspace, dict[str, Any]], ToolResult]] = {
+_HANDLERS: dict[str, Callable[[Workspace, dict[str, Any], ToolContext], ToolResult]] = {
     "list_files": _list_files,
     "read_text": _read_text,
     "create_report": _create_report,
+    "modify_text": _modify_text,
 }
 
 SPECS: dict[str, ToolSpec] = {
@@ -214,6 +280,25 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
     ),
+    "modify_text": ToolSpec(
+        tool_id="modify_text",
+        version="1.0",
+        description=(
+            "覆盖写入一个已存在的文本文件。写前内容会进快照，可用于撤销。"
+            "新建文件请用 create_report。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+    ),
 }
 
 
@@ -229,10 +314,15 @@ def tool_manifest() -> list[dict[str, Any]]:
     ]
 
 
-def execute(ws: Workspace, tool_id: str, args: dict[str, Any]) -> ToolResult:
+def execute(
+    ws: Workspace,
+    tool_id: str,
+    args: dict[str, Any],
+    ctx: ToolContext | None = None,
+) -> ToolResult:
     """执行入口。这里是唯一的授权/校验点（PRD §8.1）。"""
     if tool_id not in _HANDLERS:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
     validate_args(args, SPECS[tool_id].input_schema)
-    return _HANDLERS[tool_id](ws, args)
+    return _HANDLERS[tool_id](ws, args, ctx or ToolContext())

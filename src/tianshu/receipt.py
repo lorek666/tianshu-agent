@@ -98,7 +98,7 @@ def build_receipt(
         args_hash=args_hash,
         resource=resource,
         effect_state=result.effect_state,
-        before_state="absent",  # M1-PR1 只有新建；修改已有文件在 PR2 里实现
+        before_state=str(out.get("before_state") or "absent"),
         after_state=str(after),
         backend=BACKEND,
         evidence=[f"tool.result:{result.status}"],
