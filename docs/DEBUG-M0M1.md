@@ -222,3 +222,63 @@ undo 第一遍只校验文件 after hash，不检查 preimage blob 是否存在�
 2. 再重做 S3/S4/M1 的写前证据、原子替换与提交协议，避免在错误恢复算法上继续加分支。
 3. 把 undo 纳入同一事件/恢复协议，再扩测试矩阵。
 4. 最后修 M3 的真实 provider 失败语义，通过 M1 准入复核后才进入 M2。
+
+---
+
+## PR #6 独立复验（c9f7c61，附查 e30901b）
+
+**裁决：不通过，不建议合并为“M1 已完成”。** 在独立 detached worktree 固定审查 `c9f7c61`，`uv run pytest` → **52 passed in 5.63s**；后续 `e30901b` 仍 **52 passed**，且其恢复/undo 的相关逻辑未修。并行工作期间主工作树曾变化，因此以下反例均以独立提交中的实现为准，未把未提交修改算作 PR 内容。
+
+| 指定检查 | 复验结果 | 判定 |
+|---|---|---|
+| create 目标已存在且相同，无证据 | `applied=[]`，`none_applied=['c1']`，不生成凭据 | 原假阳性已修；但见 R1 缺 manifest 反例 |
+| modify 前后内容一致 | 有可信证据且磁盘匹配时 `none_applied` | **接受内容副作用口径**：`none_applied` 而非 `applied/failed`；执行状态可另用 `succeeded/noop`，不能混淆写入成功和效果有无 |
+| 直接 `run()` / `execute()` | 不写目标文件；`run()` 返回 `outcome=noop` 但 `effect_state=unknown`；execute 无 log 拒绝 | 文件阻断有效，但 run outcome 错，见 R4 |
+| 已阻断 workspace 下 undo | `ok=True`，`restored=['note.md']`，原文被还原 | **仍完全可绕过**，见 R2 |
+| 缺一个 preimage blob 后 undo | 两文件都不动，`restored=[]`，报 missing_blobs | 指定反例已修 |
+| manifest 与 result 的提交窗口 | manifest 虽改为写前落盘，但缺 manifest/条目仍直接 `none_applied` | **仍阻塞 M2**，见 R1 |
+
+### R1（严重）缺 manifest 或条目仍把副作用 intent 判成未执行
+
+[recovery.py:91–102](src/tianshu/recovery.py#L91-L102) 将“没有证据”无条件解释为“写入未开始”；[snapshot.py:95–119](src/tianshu/snapshot.py#L95-L119) 已能区分无 manifest，却没有被用于恢复。
+
+实测：只有 `modify_text` intent，SnapshotStore 没有任何 manifest，`has_manifest=False`；恢复仍返回 `none_applied=['c1']`，不阻断。未知写工具没有证据时也走同一路径。
+
+“写前证据”解决了正常崩溃的顺序，但**无法证明证据从未存在**：磁盘故障、丢文件、旧版本数据、错误 artifacts 路径、多进程 manifest 覆盖均会形成同样外观。不能把“未观测到证据”升格为“证明没有写”。
+
+**修法**：有副作用 intent 且无可用 manifest/条目 → `unknown` + 阻断；只有顺序明确的 intent 在 prepare 尚未开始且能证明存储完整时才能 none_applied。未知 tool/version 也 fail closed。正常运行可把 intent 和 preimage preparation 移入同一事务化执行记录，减少无证据歧义；缺证据仍不能自动通过。
+
+### R2（严重）undo 仍未经过 guard，CLI 与库入口都能写已阻断 workspace
+
+[cli.py:152–156](src/tianshu/cli.py#L152-L156) 仍直接 `store.undo()`，[snapshot.py:123–162](src/tianshu/snapshot.py#L123-L162) 无 log/guard 参数。
+
+实测 `is_blocked=True` 后走当前 `store.undo()`，返回 `ok=True, restored=['note.md']`。这正是原 S2 的一个复现分支，不能标为全部修复。
+
+**修法**：undo 使用带 log/run lease 的执行上下文，在 dispatcher 校验授权、workspace 阻断和租约；不能只给 CLI 加预检。undo 本身是写操作，须产生 intent/result/receipt。
+
+### R3（严重）同一路径多步写入使 undo 自相冲突，undo 后日志仍声称 applied
+
+实测同一 Run：`create_report(x=agent)` 后 `modify_text(x=changed)`。manifest 顺序是 c1 absent→agent，c2 agent→changed。undo 预检先要求当前文件等于 agent，但实际为 changed，因此 `ok=False`，不能撤销整个 Run。按 call 保存证据是对的，但按调用顺序 undo 是错的。
+
+另测一次正常 create 后 undo：文件确实删除，但事件中的旧 result 仍为 applied，没有 undo intent/result；`recover_run()` 返回空报告，无法说明后续变化。
+
+**修法**：同 Run undo 按调用逆序处理，同一路径只恢复调用链最早的 preimage，并以最终 after 为冲突校验基准。写 undo 事件并纳入恢复状态；旧 applied result 不应被误读为撤销后的当前状态。重复 undo、部分 undo 和 undo 中途崩溃均须有明确状态。
+
+### R4（中等）阻断被吞成 `outcome=noop`
+
+[loop.py:257–263](src/tianshu/loop.py#L257-L263) 未捕获 `WorkspaceBlocked`，落入通用异常后 result 为 failed/unknown；随后 [loop.py:218–224](src/tianshu/loop.py#L218-L224) 无 artifact 便给 `noop`。CLI 可能以成功语义呈现，虽然目标文件未写。
+
+**修法**：权限拒绝与执行中断单独映射 rejected/cancelled/blocked，不能进入 noop；CLI 对 unknown 或阻断非零退出。该问题不是文件越权，但会误导 M2 任务状态机。
+
+### R5（中等）“result/receipt 原子”只覆盖小 payload
+
+[events.py:150–163](src/tianshu/events.py#L150-L163) 的 `append_many()` 确有 BEGIN/COMMIT，但 [events.py:114–146](src/tianshu/events.py#L114-L146) 在事务内直接写外部 blob；大 payload 文件没有 fsync，且崩溃可留下“数据库 ref 已提交、文件未持久化”的跨介质不一致。小 payload 的 result/receipt 原子成立，不能概括为全部原子性成立。
+
+**修法**：payload 先完整写入、fsync、原子发布并校验，再在一个 DB 事务中提交引用；读取缺失 ref 要显式报 unknown。文件与 SQLite 不可能靠 BEGIN 变成同一 ACID 事务，应采用 durable evidence + reconciliation。
+
+### PR 准入判断
+
+1. **必须在本 PR 或前置修复 PR 解决 R1–R4**，否则 M2 的租约/审批会继承错误阻断与不可审计 undo。
+2. R5 至少修复大 payload 的 durable publish 和缺失处理；不需要声称文件系统与 DB 单次原子提交。
+3. `modify_text` 同内容的建议口径：`status=succeeded`（若调用本身成功），`effect_state=none_applied`，不产生 applied receipt；恢复无法确认调用完成时则保持 interrupted/unknown，不用 `failed` 代替。
+4. `e30901b` 还加入了数百个 `.tmp` 下的 SQLite、报告和快照文件到提交。它们不是本次实现修改，但属于 PR 卫生问题：合入前移除并忽略测试临时产物，避免仓库膨胀和本机路径/测试数据进入源码历史。
