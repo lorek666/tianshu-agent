@@ -50,7 +50,7 @@ class ModelResponse:
     finish_reason: FinishReason
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int | None] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -74,6 +74,36 @@ class ModelResponse:
             ],
             usage=p.get("usage", {}),
         )
+
+
+# 各家 usage 字段名不同，归一化成这两个键；缺失一律 None，绝不用 0 冒充。
+_USAGE_KEYS: dict[str, str] = {
+    # OpenAI / DeepSeek / Moonshot / vLLM
+    "prompt_tokens": "input_tokens",
+    "completion_tokens": "output_tokens",
+    # Anthropic
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    # Gemini
+    "promptTokenCount": "input_tokens",
+    "candidatesTokenCount": "output_tokens",
+}
+
+
+def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
+    """把任意 provider 的 usage 归一化。
+
+    关键约束（PRD §5.1）：未知为 None，不是 0。
+    把未知当 0 会让预算统计看起来正常，实际已经失控——比报错更危险。
+    """
+    out: dict[str, int | None] = {"input_tokens": None, "output_tokens": None}
+    if not isinstance(raw, dict):
+        return out
+    for src, dst in _USAGE_KEYS.items():
+        v = raw.get(src)
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[dst] = v
+    return out
 
 
 class Model(Protocol):
@@ -193,15 +223,11 @@ class OpenAICompatibleModel:
                 )
             )
 
-        usage = data.get("usage") or {}
         return ModelResponse(
             finish_reason=finish,
             content=msg.get("content") or "",
             tool_calls=calls,
-            usage={
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-            },
+            usage=normalize_usage(data.get("usage")),
         )
 
     @staticmethod
