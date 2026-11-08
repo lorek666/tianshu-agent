@@ -182,3 +182,50 @@ def test_dead_owner_lease_can_be_stolen(db, tmp_path):
         assert s.holder(key).run_id == "run_new"
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------- 写前校验
+
+
+def test_assert_held_passes_for_owner(db, tmp_path):
+    d = tmp_path / "ws"
+    d.mkdir()
+    key = Workspace(d).identity().key
+    c = _conn(db)
+    try:
+        s = LeaseStore(c)
+        s.acquire_many([key], "run_a")
+        s.assert_held([key], "run_a")  # 不抛
+    finally:
+        c.close()
+
+
+def test_assert_held_rejects_after_takeover(db, tmp_path):
+    """被接管后再写就是不安全的：必须抛。"""
+    from tianshu.leases import LeaseLost
+
+    d = tmp_path / "ws"
+    d.mkdir()
+    key = Workspace(d).identity().key
+    c = _conn(db)
+    try:
+        s = LeaseStore(c)
+        s.acquire_many([key], "run_a", ttl_ms=1)
+        time.sleep(0.05)
+        s.acquire_many([key], "run_b")  # 接管
+        with pytest.raises(LeaseLost):
+            s.assert_held([key], "run_a")
+        s.assert_held([key], "run_b")
+    finally:
+        c.close()
+
+
+def test_assert_held_rejects_unknown_key(db, tmp_path):
+    from tianshu.leases import LeaseLost
+
+    c = _conn(db)
+    try:
+        with pytest.raises(LeaseLost):
+            LeaseStore(c).assert_held(["nope"], "run_a")
+    finally:
+        c.close()

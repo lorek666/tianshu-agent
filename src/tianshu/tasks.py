@@ -12,6 +12,7 @@ Run 绑定创建时的这两个值；任一与 Task 当前值不符，即为被 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import time
@@ -91,6 +92,20 @@ class TaskStore:
         self._conn = conn
         self._conn.executescript(SCHEMA)
 
+    @contextlib.contextmanager
+    def _tx(self):
+        """跨进程可见的写事务。
+
+        任务状态是读-改-写，没有事务时两个进程会同时改出不一致的版本号。
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+
     # ---- Task ----
 
     def create_task(self, goal: str, workspaces: list[str] | None = None) -> Task:
@@ -112,46 +127,59 @@ class TaskStore:
 
     def revise_goal(self, task_id: str, new_goal: str) -> Task:
         """用户改主意。旧目标下的 Run 立即失效，历史保留。"""
-        task = self.get_task(task_id)
-        if task is None:
-            raise TianshuError(f"task 不存在：{task_id}")
+        with self._tx():
+            task = self.get_task(task_id)
+            if task is None:
+                raise TianshuError(f"task 不存在：{task_id}")
+            self._revise_locked(task, new_goal)
+        return self.get_task(task_id)
 
+    def _revise_locked(self, task: Task, new_goal: str) -> None:
         now = _now()
         self._conn.execute(
             "UPDATE tasks SET goal=?, goal_revision=goal_revision+1,"
             " lease_epoch=lease_epoch+1, active_run_id=NULL, updated_at=?"
             " WHERE task_id=?",
-            (new_goal, now, task_id),
+            (new_goal, now, task.task_id),
         )
-        # 旧的活跃 Run 标记为 fenced（不是在跑的话就保持原状）
+        # 旧的活跃 Run 标记为 fenced（已终结的保持原状）
         if task.active_run_id:
             self._conn.execute(
                 "UPDATE runs SET state='fenced', ended_at=?"
                 " WHERE run_id=? AND state NOT IN ('succeeded','failed','cancelled')",
                 (now, task.active_run_id),
             )
-        return self.get_task(task_id)
 
     # ---- Run ----
 
     def start_run(self, task_id: str) -> Run:
-        task = self.get_task(task_id)
-        if task is None:
-            raise TianshuError(f"task 不存在：{task_id}")
-        if task.status != "open":
-            raise TianshuError(f"task 已关闭：{task.status}")
-
-        now = _now()
         run_id = f"run_{uuid.uuid4().hex[:12]}"
-        self._conn.execute(
-            "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
-            " state, created_at) VALUES (?,?,?,?,'created',?)",
-            (run_id, task_id, task.goal_revision, task.lease_epoch, now),
-        )
-        self._conn.execute(
-            "UPDATE tasks SET active_run_id=?, updated_at=? WHERE task_id=?",
-            (run_id, now, task_id),
-        )
+        with self._tx():
+            task = self.get_task(task_id)
+            if task is None:
+                raise TianshuError(f"task 不存在：{task_id}")
+            if task.status != "open":
+                raise TianshuError(f"task 已关闭：{task.status}")
+
+            # 同一个 Task 同时只能有一个活跃 Run，否则两个 Run 会互相覆盖成果
+            if task.active_run_id:
+                active = self.get_run(task.active_run_id)
+                if active is not None and active.state not in TERMINAL_STATES:
+                    raise TianshuError(
+                        f"task {task_id} 已有活跃 run {active.run_id}"
+                        f"（state={active.state}），请先收尾或取消"
+                    )
+
+            now = _now()
+            self._conn.execute(
+                "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
+                " state, created_at) VALUES (?,?,?,?,'created',?)",
+                (run_id, task_id, task.goal_revision, task.lease_epoch, now),
+            )
+            self._conn.execute(
+                "UPDATE tasks SET active_run_id=?, updated_at=? WHERE task_id=?",
+                (run_id, now, task_id),
+            )
         return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> Run | None:
@@ -175,24 +203,35 @@ class TaskStore:
     def finish_run(
         self, run_id: str, *, outcome: str, effect_state: str
     ) -> Run:
-        """收尾。被 fence 的 Run 不许报成功——否则旧目标会"复活"。"""
-        run = self.get_run(run_id)
-        if run is None:
-            raise TianshuError(f"run 不存在：{run_id}")
-        if run.state == "fenced" or self.is_fenced(run_id):
-            raise RunFenced(f"run {run_id} 已被 fence，不得提交结果")
+        """收尾。被 fence 的 Run 不许报成功——否则旧目标会"复活"。
 
+        校验与写入放在同一条条件 UPDATE 里，避免「检查完到写入之间被改目标」
+        的竞态。
+        """
         now = _now()
-        self._conn.execute(
-            "UPDATE runs SET state=?, outcome=?, effect_state=?, ended_at=?"
-            " WHERE run_id=?",
-            (outcome, outcome, effect_state, now, run_id),
-        )
-        self._conn.execute(
-            "UPDATE tasks SET active_run_id=NULL, updated_at=?"
-            " WHERE task_id=? AND active_run_id=?",
-            (now, run.task_id, run_id),
-        )
+        with self._tx():
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+
+            cur = self._conn.execute(
+                "UPDATE runs SET state=?, outcome=?, effect_state=?, ended_at=?"
+                " WHERE run_id=?"
+                "   AND state NOT IN ('succeeded','failed','cancelled','fenced')"
+                "   AND goal_revision = (SELECT goal_revision FROM tasks"
+                "                        WHERE task_id = runs.task_id)"
+                "   AND lease_epoch = (SELECT lease_epoch FROM tasks"
+                "                      WHERE task_id = runs.task_id)",
+                (outcome, outcome, effect_state, now, run_id),
+            )
+            if cur.rowcount == 0:
+                raise RunFenced(f"run {run_id} 已被 fence 或已终结，不得提交结果")
+
+            self._conn.execute(
+                "UPDATE tasks SET active_run_id=NULL, updated_at=?"
+                " WHERE task_id=? AND active_run_id=?",
+                (now, run.task_id, run_id),
+            )
         return self.get_run(run_id)
 
     def list_runs(self, task_id: str) -> list[Run]:

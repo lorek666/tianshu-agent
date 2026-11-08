@@ -38,6 +38,10 @@ class LeaseConflict(TianshuError):
     """资源已被别的持有者占用。"""
 
 
+class LeaseLost(TianshuError):
+    """租约已不属于自己，或已过期——此时继续写入是不安全的。"""
+
+
 @dataclass
 class Lease:
     resource_key: str
@@ -127,6 +131,25 @@ class LeaseStore:
             self._conn.execute("ROLLBACK")
             raise
 
+    def is_held_by(self, resource_key: str, run_id: str) -> bool:
+        """当前是否仍由这个 run 有效持有（未过期、未失效）。"""
+        row = self._conn.execute(
+            "SELECT * FROM leases WHERE resource_key = ?", (resource_key,)
+        ).fetchone()
+        if row is None or row["run_id"] != run_id:
+            return False
+        return not self._is_stale(row, _now())
+
+    def assert_held(self, resource_keys: list[str], run_id: str) -> None:
+        """写操作之前必须调用。
+
+        租约会过期、会被别人接管，所以"曾经拿到过"不等于"现在还持有"。
+        在执行侧校验，才能保证过期后不会再写。
+        """
+        for key in resource_keys:
+            if not self.is_held_by(key, run_id):
+                raise LeaseLost(f"租约已失效或被接管：{key}（run={run_id}）")
+
     def renew(
         self, resource_keys: list[str], run_id: str, *, ttl_ms: int = DEFAULT_TTL_MS
     ) -> int:
@@ -196,4 +219,10 @@ class LeaseStore:
         return not _pid_alive(row["owner_pid"])
 
 
-__all__ = ["LeaseStore", "Lease", "LeaseConflict", "DEFAULT_TTL_MS"]
+__all__ = [
+    "LeaseStore",
+    "Lease",
+    "LeaseConflict",
+    "LeaseLost",
+    "DEFAULT_TTL_MS",
+]

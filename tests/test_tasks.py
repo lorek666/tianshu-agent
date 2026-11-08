@@ -111,3 +111,20 @@ def test_finish_after_fence_raises_even_if_state_cleared(store):
 def test_revise_unknown_task_raises(store):
     with pytest.raises(TianshuError):
         store.revise_goal("task_nope", "x")
+
+
+def test_start_run_refuses_second_active_run(store):
+    """同一 Task 不允许两个活跃 Run，否则会互相覆盖成果。"""
+    t = store.create_task("x")
+    store.start_run(t.task_id)
+    with pytest.raises(TianshuError) as ei:
+        store.start_run(t.task_id)
+    assert "活跃" in str(ei.value)
+
+
+def test_start_run_allowed_after_finish(store):
+    t = store.create_task("x")
+    r1 = store.start_run(t.task_id)
+    store.finish_run(r1.run_id, outcome="failed", effect_state="none_applied")
+    r2 = store.start_run(t.task_id)
+    assert r2.run_id != r1.run_id
