@@ -96,6 +96,14 @@ class EventLog:
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(_SCHEMA)
 
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """给同库的其他存储（tasks/leases）复用同一连接。
+
+        桌面单用户场景下，一个写者一个连接，避免多连接互相抢锁。
+        """
+        return self._conn
+
     # ---- 写 ----
 
     def append(
