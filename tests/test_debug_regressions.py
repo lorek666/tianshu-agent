@@ -12,7 +12,12 @@ import pytest
 
 from tianshu.errors import WorkspaceBlocked
 from tianshu.events import EventLog
-from tianshu.guard import ensure_not_blocked, is_blocked, unblock
+from tianshu.guard import (
+    blocked_workspaces,
+    ensure_not_blocked,
+    is_blocked,
+    unblock,
+)
 from tianshu.loop import Limits, run
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.recovery import recover_run
@@ -53,13 +58,29 @@ def test_s1_existing_identical_file_is_not_treated_as_executed(tmp_path):
 
     _intent(log, "r1", "c1", "create_report",
             {"name": "report.md", "content": "同样的内容"}, ws)
-    # 没有写前证据：说明在写文件之前就中断了
+    store.init_run("r1")  # 清单存在但没有该调用条目 → 确定未进入写入
     report = recover_run(log, "r1", ws, store)
 
     assert report.applied == [], "没有证据不得判为已执行"
     assert report.none_applied == ["c1"]
     assert not [e for e in log.read_run("r1") if e.type == "receipt"], \
         "不得凭空生成凭据"
+    log.close()
+
+
+def test_r1_missing_manifest_is_unknown_not_none_applied(tmp_path):
+    """清单整个缺失是异常状态，不能据此断言「从未写入」。"""
+    ws = _ws(tmp_path, {"note.md": "旧"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+
+    _intent(log, "r1", "c1", "modify_text",
+            {"path": "note.md", "content": "新"}, ws)
+    # 故意不调 init_run，模拟清单被清理/损坏
+    report = recover_run(log, "r1", ws, store)
+
+    assert report.unresolved == ["c1"], "清单缺失必须判 unknown"
+    assert str(ws.resolve()) in blocked_workspaces(log), "并且要阻断"
     log.close()
 
 
@@ -71,6 +92,7 @@ def test_s1_modify_to_identical_content_is_not_applied(tmp_path):
 
     _intent(log, "r1", "c1", "modify_text",
             {"path": "note.md", "content": "不变"}, ws)
+    store.init_run("r1")
     store.record_preimage("r1", "c1", "note.md",
                           before="不变".encode(), expected_after=_sha("不变"))
 
@@ -89,6 +111,7 @@ def test_s1_deleted_target_is_unknown_not_none_applied(tmp_path):
 
     _intent(log, "r1", "c1", "modify_text",
             {"path": "note.md", "content": "新内容"}, ws)
+    store.init_run("r1")
     store.record_preimage("r1", "c1", "note.md",
                           before="旧内容".encode(), expected_after=_sha("新内容"))
 
@@ -105,6 +128,7 @@ def test_s1_no_fabricated_before_state(tmp_path):
 
     _intent(log, "r1", "c1", "modify_text",
             {"path": "note.md", "content": "新内容\n"}, ws)
+    store.init_run("r1")
     before = _sha("旧内容\n")
     store.record_preimage("r1", "c1", "note.md",
                           before="旧内容\n".encode(),
@@ -129,6 +153,7 @@ def test_s2_blocking_is_enforced_at_dispatcher(tmp_path):
 
     _intent(log, "r1", "c1", "modify_text",
             {"path": "a.md", "content": "x"}, ws)
+    store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", b"\xe6\x97\xa7", _sha("x"))
     (ws / "a.md").write_text("第三种内容", encoding="utf-8")
     recover_run(log, "r1", ws, store)
@@ -155,6 +180,7 @@ def test_s2_unblock_restores_writability(tmp_path):
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
     _intent(log, "r1", "c1", "modify_text", {"path": "a.md", "content": "x"}, ws)
+    store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", b"\xe5\xa5\xbd", _sha("x"))
     (ws / "a.md").write_text("第三种", encoding="utf-8")
     recover_run(log, "r1", ws, store)
@@ -250,4 +276,91 @@ def test_m1_result_and_receipt_are_atomic(tmp_path):
                if e.type == "tool.result" and e.payload["effect_state"] == "applied"]
     receipts = [e for e in events if e.type == "receipt"]
     assert len(applied) == len(receipts) == 1
+    log.close()
+
+
+# ---------------------------------------------------------------- R2 / R3
+
+
+def test_r2_undo_refused_on_blocked_workspace(tmp_path):
+    """撤销也是写操作：workspace 被阻断时不得执行。"""
+    ws = _ws(tmp_path, {"a.md": "原"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+    store.init_run("r1")
+    store.record_preimage("r1", "c1", "a.md", "原".encode(), _sha("新"))
+    (ws / "a.md").write_text("新", encoding="utf-8")
+
+    # 制造阻断
+    log.append("r1", "recovery.blocked",
+               {"workspace": str(ws.resolve()), "call_ids": ["c9"],
+                "reason": "test"}, actor_kind="system")
+
+    with pytest.raises(WorkspaceBlocked):
+        store.undo("r1", Workspace(ws),
+                   guard=lambda: ensure_not_blocked(log, ws))
+    assert (ws / "a.md").read_text(encoding="utf-8") == "新", "被拒时不得修改"
+    log.close()
+
+
+def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
+    """同一 run 里先 create 后 modify 同一文件，撤销要能回到最初状态。"""
+    ws = _ws(tmp_path, {})
+    store = SnapshotStore(tmp_path / "art")
+    store.init_run("r1")
+
+    # c1: create a.md = "v1"
+    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"))
+    (ws / "a.md").write_text("v1", encoding="utf-8")
+    # c2: modify a.md -> "v2"
+    store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"))
+    (ws / "a.md").write_text("v2", encoding="utf-8")
+
+    report = store.undo("r1", Workspace(ws))
+    assert report.ok, report.problems
+    assert not (ws / "a.md").exists(), "回到最初状态：文件不存在"
+
+
+def test_r3_undo_appends_audit_event(tmp_path):
+    """撤销必须留痕，否则旧 applied 记录永远看起来成立。"""
+    ws = _ws(tmp_path, {})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "artifacts")
+    store.init_run("r1")
+    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"))
+    (ws / "a.md").write_text("v1", encoding="utf-8")
+
+    from tianshu.cli import main
+
+    assert main(["undo", "--run-id", "r1", "--workspace", str(ws),
+                 "--db", str(tmp_path / "e.db")]) == 0
+
+    types = [e.type for e in log.read_run("r1")]
+    assert "undo.completed" in types
+    log.close()
+
+
+def test_r4_blocked_tool_makes_run_fail_not_noop(tmp_path):
+    """阻断不能被吞成 noop：任务必须显式失败。"""
+    ws = _ws(tmp_path, {"a.md": "内容"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+
+    log.append("r0", "recovery.blocked",
+               {"workspace": str(ws.resolve()), "call_ids": ["x"],
+                "reason": "test"}, actor_kind="system")
+
+    result = run(
+        task="t", workspace_dir=ws, out_name="r.md",
+        model=ScriptedModel([
+            ModelResponse("tool_use", tool_calls=[
+                ToolCall("c1", "create_report", {"name": "r.md", "content": "x"})]),
+            ModelResponse("end_turn", content="ok"),
+        ]),
+        log=log, limits=Limits(4, 1000), snapshots=store,
+    )
+
+    assert result.outcome == "failed", f"应为 failed，实际 {result.outcome}"
+    assert "阻断" in (result.error or "")
+    assert not (ws / "r.md").exists()
     log.close()

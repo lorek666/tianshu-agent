@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
+from .errors import (
+    OverwriteRefused,
+    ToolArgumentError,
+    WorkspaceBlocked,
+    WorkspaceViolation,
+)
 from .events import EventLog, canonical_bytes
 from .model import Model, ModelResponse, ToolCall
 from .receipt import build_receipt
@@ -146,6 +151,9 @@ def run(
         actor_kind="core",
     )
 
+    if snapshots is not None:
+        snapshots.init_run(run_id)
+
     state = _State(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -155,6 +163,7 @@ def run(
 
     outcome = "failed"
     error: str | None = None
+    blocked_hit = False
 
     for turn in range(1, limits.max_turns + 1):
         state.turns = turn
@@ -257,6 +266,14 @@ def run(
             ctx.call_id = call.call_id
             try:
                 result = execute(ws, call.name, args, ctx)
+            except WorkspaceBlocked as exc:
+                # 阻断不是普通工具失败：任务必须明确失败，不能悄悄变成 noop
+                result = ToolResult(
+                    "rejected", "none_applied",
+                    {"error": f"WorkspaceBlocked: {exc}"},
+                )
+                error = f"workspace 已被阻断，拒绝写入：{exc}"
+                blocked_hit = True
             except (WorkspaceViolation, OverwriteRefused, ToolArgumentError) as exc:
                 result = ToolResult("rejected", "none_applied",
                                     {"error": f"{type(exc).__name__}: {exc}"})
@@ -308,7 +325,8 @@ def run(
 
             state.messages.append(_tool_message(call, result))
 
-            if result.status == "rejected" and call.name == "create_report":
+            if (result.status == "rejected" and call.name == "create_report"
+                    and not blocked_hit):
                 error = f"报告写入被拒绝：{result.output.get('error')}"
     else:
         error = f"达到最大轮数 {limits.max_turns}（验收 A5）"
@@ -316,6 +334,9 @@ def run(
 
     # effect_state 必须反映「实际发生了什么」，不是「有没有报错」。
     # 写入被拒绝 = 什么都没发生 = none_applied，不是 partial。
+    if blocked_hit:
+        outcome = "failed"
+
     if state.n_applied and state.n_unknown:
         effect_state = "partial"
     elif state.n_applied:

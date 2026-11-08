@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from .events import EventLog
+from .guard import ensure_not_blocked
 from .loop import Limits, run
 from .model import OpenAICompatibleModel, ScriptedModel
 from .recovery import recover_run
@@ -150,9 +151,29 @@ def _cmd_recover(args: argparse.Namespace) -> int:
 
 
 def _cmd_undo(args: argparse.Namespace) -> int:
+    log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
     store = SnapshotStore(args.db.parent / "artifacts")
     ws = Workspace(args.workspace)
-    report = store.undo(args.run_id, ws)
+
+    try:
+        # 撤销也是写操作：必须过阻断检查，不能绕过去
+        report = store.undo(
+            args.run_id, ws, guard=lambda: ensure_not_blocked(log, ws.root)
+        )
+    finally:
+        pass
+
+    # 撤销本身要留痕，否则日志里旧的 applied 记录看起来仍然成立
+    if report.ok:
+        log.append(
+            args.run_id,
+            "undo.completed",
+            {"run_id": args.run_id,
+             "restored": report.restored,
+             "deleted": report.deleted},
+            actor_kind="human",
+        )
+    log.close()
 
     if args.json:
         print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))

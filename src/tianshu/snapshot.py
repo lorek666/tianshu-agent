@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,22 @@ class SnapshotStore:
         self.manifest_dir = root / "snapshots"
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    def init_run(self, run_id: str) -> None:
+        """run 启动时创建空清单。
+
+        这样「清单不存在」才能被解释成异常（被清理/损坏），
+        而不是「这个 run 什么都没写」——后者会让恢复把有副作用的 intent
+        判成 none_applied。
+        """
+        path = self.manifest_dir / f"{run_id}.json"
+        if path.exists():
+            return
+        payload = json.dumps(
+            {"version": MANIFEST_VERSION, "changes": []},
+            ensure_ascii=False, indent=2,
+        ).encode("utf-8")
+        atomic_write_bytes(path, payload)
 
     # ---- 证据 ----
 
@@ -120,25 +137,48 @@ class SnapshotStore:
 
     # ---- 撤销 ----
 
-    def undo(self, run_id: str, ws: Workspace) -> UndoReport:
+    def undo(
+        self,
+        run_id: str,
+        ws: Workspace,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> UndoReport:
+        """把该 run 的变更撤回。
+
+        三条规矩：
+        1. 撤销也是写操作，必须先过 guard（阻断检查）。
+        2. 同一个文件被写过多次时，按**调用逆序**处理——正序检查会自相冲突。
+        3. 预检阶段用内存模拟最终状态，全部通过才动手。
+        """
+        if guard is not None:
+            guard()
+
         changes = self.load(run_id)
         if not changes:
             return UndoReport(ok=False, problems=[f"run {run_id} 没有可撤销的变更"])
 
         report = UndoReport(ok=False)
 
-        # 第一遍：只检查。冲突、blob 缺失都在这里挡住，不动任何文件。
+        # ---- 预检：按逆序模拟，不碰磁盘 ----
+        disk_state: dict[str, str] = {}
         for c in changes:
             target = ws.resolve(c.path)
-            current = (
+            disk_state[c.path] = (
                 ABSENT if not target.exists()
                 else hashlib.sha256(target.read_bytes()).hexdigest()
             )
+
+        simulated = dict(disk_state)
+        for c in reversed(changes):
+            current = simulated[c.path]
             if current != c.expected_after:
                 report.conflicts.append(
                     f"{c.path}：当前内容与 Agent 写完时不一致"
                     f"（{current[:12]}… ≠ {c.expected_after[:12]}…），拒绝覆盖"
                 )
+                continue
+            simulated[c.path] = c.before_state
             if c.before_state != ABSENT:
                 if not c.blob_ref or not Path(c.blob_ref).exists():
                     report.missing_blobs.append(f"{c.path}：写前内容丢失，无法还原")
@@ -147,8 +187,8 @@ class SnapshotStore:
             report.problems.append("预检未通过，未做任何修改")
             return report
 
-        # 第二遍：确认可逆，执行
-        for c in changes:
+        # ---- 执行：同样按逆序 ----
+        for c in reversed(changes):
             target = ws.resolve(c.path)
             if c.before_state == ABSENT:
                 target.unlink(missing_ok=True)
@@ -158,5 +198,5 @@ class SnapshotStore:
                 atomic_write_bytes(target, Path(c.blob_ref).read_bytes())
                 report.restored.append(c.path)
 
-        report.ok = not report.problems
+        report.ok = True
         return report

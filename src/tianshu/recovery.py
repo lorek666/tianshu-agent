@@ -89,14 +89,31 @@ def recover_run(
             continue
 
         # 写工具：唯一判据是写前证据
-        change = snapshots.find(run_id, call_id) if snapshots is not None else None
+        if snapshots is None:
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 未提供快照存储，无法核实",
+                                "recovered": True}),
+                    bucket=report.unresolved)
+            continue
+
+        # 清单不存在 = 异常（正常 run 启动时就建了空清单）。
+        # 不能解释成「什么都没写」——那会把有副作用的 intent 判成未执行。
+        if not snapshots.has_manifest(run_id):
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 清单缺失，无法确认是否写入",
+                                "recovered": True}),
+                    bucket=report.unresolved)
+            continue
+
+        change = snapshots.find(run_id, call_id)
 
         if change is None:
-            # 证据没落盘 → 说明在「写 intent」和「写 preimage」之间就死了，
-            # 文件根本没被碰过。这是安全的结论，不是猜测。
+            # 清单存在但没有本次调用的条目 → 没进到写前证据那一步 → 确定未写
             _settle(log, report, run_id, call_id, tool_id, payload,
                     ToolResult("failed", "none_applied",
-                               {"error": "recovered: 无写前证据，写入未开始",
+                               {"error": "recovered: 清单中无本次调用证据，写入未开始",
                                 "recovered": True}),
                     bucket=report.none_applied)
             continue
