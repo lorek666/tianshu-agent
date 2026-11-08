@@ -124,11 +124,14 @@ def test_recovery_is_idempotent(tmp_path):
 
 
 def test_unknown_blocks_subsequent_writes(tmp_path):
-    """核实不了的时候：标 unknown，并阻断同 workspace 的新写入。"""
+    """核实不了的时候：标 unknown，并阻断同 workspace 的新写入。
+
+    v2 的判据是「写前证据」：先有证据，磁盘又既非写前也非写后，才是 unknown。
+    """
     ws, db = _setup(tmp_path)
     log = EventLog(db)
+    store = SnapshotStore(tmp_path / "artifacts")
 
-    # 造一个「写入后又被别人改过」的局面：既不是期望内容，也不是写前内容
     run_id = "run_manual"
     args = {"name": "note.md", "content": "agent 想写的内容\n"}
     log.append(run_id, "run.start",
@@ -137,9 +140,17 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
     log.append(run_id, "tool.intent",
                {"call_id": "c1", "tool_id": "modify_text", "args": args,
                 "args_hash": hashlib.sha256(b"x").hexdigest()}, actor_kind="core")
+
+    # 写前证据存在（说明确实进入了写入阶段）
+    store.record_preimage(
+        run_id, "c1", "note.md",
+        before="原始内容\n".encode(),
+        expected_after=hashlib.sha256("agent 想写的内容\n".encode()).hexdigest(),
+    )
+    # 但磁盘上是第三种内容 —— 既非写前也非写后
     (ws / "note.md").write_text("完全不相干的内容\n", encoding="utf-8")
 
-    report = recover_run(log, run_id, ws, SnapshotStore(tmp_path / "artifacts"))
+    report = recover_run(log, run_id, ws, store)
     assert report.unresolved == ["c1"], "既非期望也非写前状态，必须判 unknown"
     assert str(ws.resolve()) in blocked_workspaces(log)
     log.close()

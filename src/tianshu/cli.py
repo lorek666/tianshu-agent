@@ -17,7 +17,7 @@ from pathlib import Path
 from .events import EventLog
 from .loop import Limits, run
 from .model import OpenAICompatibleModel, ScriptedModel
-from .recovery import ensure_not_blocked, recover_run
+from .recovery import recover_run
 from .replay import replay
 from .snapshot import SnapshotStore
 from .workspace import Workspace
@@ -96,7 +96,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         model = OpenAICompatibleModel(args.model_name, base_url=args.base_url)
 
     snapshots = SnapshotStore(args.db.parent / "artifacts")
-    ensure_not_blocked(log, args.workspace)
 
     result = run(
         task=args.task,

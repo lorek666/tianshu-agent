@@ -67,7 +67,7 @@ def test_modify_captures_preimage_and_undo_restores(tmp_path):
     c = changes[0]
     assert c.before_state == hashlib.sha256(ORIGINAL.encode()).hexdigest(), \
         "写前状态必须是原文哈希，不是 absent"
-    assert c.after_state == hashlib.sha256("改后的内容\n".encode()).hexdigest()
+    assert c.expected_after == hashlib.sha256("改后的内容\n".encode()).hexdigest()
     assert c.blob_ref and Path(c.blob_ref).exists(), "写前内容必须真的落盘了"
 
     # 凭据的 before_state 也必须是真哈希

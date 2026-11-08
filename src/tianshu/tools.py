@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import OverwriteRefused, ToolArgumentError, ToolNotAllowed
+from .fsutil import atomic_write_bytes
+from .guard import ensure_not_blocked
 from .snapshot import ABSENT, Change, SnapshotStore
 from .workspace import Workspace, normalize_name
 
@@ -30,19 +32,22 @@ class ToolSpec:
 
 @dataclass
 class ToolContext:
-    """执行期上下文。快照与 run_id 由主循环注入，工具自己不管存储细节。"""
+    """执行期上下文。快照、日志与 run_id 由主循环注入。
+
+    `log` 不是可选的：有副作用的工具必须能检查阻断，否则阻断可以被绕过。
+    """
 
     snapshots: SnapshotStore | None = None
+    log: object | None = None
     run_id: str = ""
+    call_id: str = ""
 
-    def capture(self, rel_path: str, before: bytes | None) -> Change | None:
-        if self.snapshots is None:
-            return None
-        return self.snapshots.capture(self.run_id, rel_path, before)
-
-    def record(self, change: Change | None) -> None:
-        if self.snapshots is not None and change is not None:
-            self.snapshots.record(self.run_id, change)
+    def prewrite(self, rel_path: str, before: bytes | None, expected_after: str) -> None:
+        """写入前的证据落盘。必须在真正写文件之前调用。"""
+        if self.snapshots is not None:
+            self.snapshots.record_preimage(
+                self.run_id, self.call_id, rel_path, before, expected_after
+            )
 
 
 @dataclass
@@ -170,17 +175,12 @@ def _create_report(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> Too
         raise OverwriteRefused(f"目标已存在，拒绝覆盖：{args['name']}")
 
     rel = ws.relative(target)
-    # 先拍快照，再落盘。顺序反了就等于没拍——原内容已经没了。
-    change = ctx.capture(rel, None)
-
-    target.parent.mkdir(parents=True, exist_ok=True)
     data = args["content"].encode("utf-8")
-    target.write_bytes(data)
     after = hashlib.sha256(data).hexdigest()
 
-    if change is not None:
-        change.after_state = after
-        ctx.record(change)
+    # 先落证据，再写文件。顺序反了就等于没证据——崩溃窗口里无从核实。
+    ctx.prewrite(rel, None, after)
+    atomic_write_bytes(target, data)
 
     return ToolResult(
         "succeeded",
@@ -208,15 +208,11 @@ def _modify_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 
     before = target.read_bytes()
     rel = ws.relative(target)
-    change = ctx.capture(rel, before)  # 写前内容进 blob
-
     data = args["content"].encode("utf-8")
-    target.write_bytes(data)
     after = hashlib.sha256(data).hexdigest()
 
-    if change is not None:
-        change.after_state = after
-        ctx.record(change)
+    ctx.prewrite(rel, before, after)
+    atomic_write_bytes(target, data)
 
     return ToolResult(
         "succeeded",
@@ -226,7 +222,7 @@ def _modify_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             "bytes": len(data),
             "sha256": after,
             "after_state": after,
-            "before_state": change.before_state if change else ABSENT,
+            "before_state": hashlib.sha256(before).hexdigest(),
         },
     )
 
@@ -324,5 +320,15 @@ def execute(
     if tool_id not in _HANDLERS:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
-    validate_args(args, SPECS[tool_id].input_schema)
-    return _HANDLERS[tool_id](ws, args, ctx or ToolContext())
+    ctx = ctx or ToolContext()
+    spec = SPECS[tool_id]
+
+    # 有副作用的工具必须带 log，并且 workspace 未被阻断。
+    # 把检查放在执行入口而不是 CLI，绕不过去。
+    if spec.side_effect_level != "pure":
+        if ctx.log is None:
+            raise ToolNotAllowed("有副作用的工具必须提供 ToolContext.log 才能执行")
+        ensure_not_blocked(ctx.log, ws.root)
+
+    validate_args(args, spec.input_schema)
+    return _HANDLERS[tool_id](ws, args, ctx)

@@ -129,7 +129,7 @@ def run(
     limits = limits or Limits()
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     ws = Workspace(workspace_dir)
-    ctx = ToolContext(snapshots=snapshots, run_id=run_id)
+    ctx = ToolContext(snapshots=snapshots, log=log, run_id=run_id)
 
     log.append(
         run_id,
@@ -215,7 +215,11 @@ def run(
         )
 
         if resp.finish_reason != "tool_use" or not resp.tool_calls:
-            outcome = "succeeded" if state.artifact else "noop"
+            if resp.finish_reason in ("error", "cancelled", "content_filtered"):
+                outcome = "failed"
+                error = f"模型调用未正常结束：{resp.finish_reason}：" + resp.content[:200]
+            else:
+                outcome = "succeeded" if state.artifact else "noop"
             break
 
         for call in resp.tool_calls:
@@ -248,6 +252,7 @@ def run(
             )
             _failpoint("after_intent", only_if=spec_is_write(call.name))
 
+            ctx.call_id = call.call_id
             try:
                 result = execute(ws, call.name, args, ctx)
             except (WorkspaceViolation, OverwriteRefused, ToolArgumentError) as exc:
@@ -258,21 +263,6 @@ def run(
 
             _failpoint("after_write", only_if=spec_is_write(call.name))
 
-            log.append(
-                run_id,
-                "tool.result",
-                {"call_id": call.call_id, "tool_id": call.name, "status": result.status,
-                 "effect_state": result.effect_state, "output": result.output},
-                actor_kind="tool",
-                idem_key=call.call_id,
-            )
-            _failpoint("after_result", only_if=spec_is_write(call.name))
-
-            if result.effect_state == "applied":
-                state.n_applied += 1
-            elif result.effect_state in ("partial", "unknown"):
-                state.n_unknown += 1
-
             receipt = build_receipt(
                 run_id=run_id,
                 call_id=call.call_id,
@@ -280,14 +270,34 @@ def run(
                 args_hash=args_hash,
                 result=result,
             )
+
+            batch = [{
+                "run_id": run_id,
+                "type": "tool.result",
+                "payload": {"call_id": call.call_id, "tool_id": call.name,
+                            "status": result.status,
+                            "effect_state": result.effect_state,
+                            "output": result.output},
+                "actor_kind": "tool",
+                "idem_key": call.call_id,
+            }]
             if receipt is not None:
-                log.append(
-                    run_id,
-                    "receipt",
-                    receipt.to_payload(),
-                    actor_kind="core",
-                    idem_key=receipt.receipt_id,
-                )
+                batch.append({
+                    "run_id": run_id,
+                    "type": "receipt",
+                    "payload": receipt.to_payload(),
+                    "actor_kind": "core",
+                    "idem_key": receipt.receipt_id,
+                })
+            # 同事务：要么都有，要么都没有
+            log.append_many(batch)
+            _failpoint("after_result", only_if=spec_is_write(call.name))
+
+            if result.effect_state == "applied":
+                state.n_applied += 1
+            elif result.effect_state in ("partial", "unknown"):
+                state.n_unknown += 1
+            if receipt is not None:
                 state.receipts.append(receipt.receipt_id)
             _failpoint("after_receipt", only_if=spec_is_write(call.name))
 

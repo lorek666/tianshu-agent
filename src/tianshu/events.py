@@ -146,6 +146,21 @@ class EventLog:
         )
         return int(cur.lastrowid)
 
+    def append_many(self, items: list[dict[str, Any]]) -> list[int]:
+        """同一事务内写多条事件。
+
+        用途：result 与 receipt 必须同生同死——只写出 result 没写 receipt，
+        就产生"记为已执行但无凭据"的窗口。
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            ids = [self.append(**item) for item in items]
+            self._conn.execute("COMMIT")
+            return ids
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+
     # ---- 读 ----
 
     def read_run(self, run_id: str, *, verify: bool = True) -> list[Event]:
