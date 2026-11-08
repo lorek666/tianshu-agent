@@ -9,8 +9,7 @@ venv/
 .mypy_cache/
 
 # uv
-uv.lock
-
+# 注意：uv.lock 必须提交——四目标构建门禁依赖它做哈希锁定（见 TECH-ARCH §8.3）
 # 参考仓库（762MB，不进库）
 refs/
 
