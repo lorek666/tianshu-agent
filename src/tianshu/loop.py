@@ -17,6 +17,7 @@ from typing import Any
 
 from .events import EventLog, canonical_bytes
 from .model import Model, ModelResponse, ToolCall
+from .receipt import build_receipt
 from .tools import SPECS, ToolResult, execute, tool_manifest
 from .workspace import Workspace
 from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
@@ -50,6 +51,9 @@ class RunResult:
     turns: int = 0
     tokens: int = 0
     unknown_usage_calls: int = 0
+    receipts: list[str] = field(default_factory=list)
+    n_applied: int = 0
+    n_unknown: int = 0
     error: str | None = None
 
 
@@ -60,6 +64,9 @@ class _State:
     turns: int = 0
     tokens: int = 0
     unknown_usage_calls: int = 0
+    receipts: list[str] = field(default_factory=list)
+    n_applied: int = 0
+    n_unknown: int = 0
 
 
 def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
@@ -233,6 +240,28 @@ def run(
                 idem_key=call.call_id,
             )
 
+            if result.effect_state == "applied":
+                state.n_applied += 1
+            elif result.effect_state in ("partial", "unknown"):
+                state.n_unknown += 1
+
+            receipt = build_receipt(
+                run_id=run_id,
+                call_id=call.call_id,
+                tool_id=call.name,
+                args_hash=args_hash,
+                result=result,
+            )
+            if receipt is not None:
+                log.append(
+                    run_id,
+                    "receipt",
+                    receipt.to_payload(),
+                    actor_kind="core",
+                    idem_key=receipt.receipt_id,
+                )
+                state.receipts.append(receipt.receipt_id)
+
             if call.name == "create_report" and result.ok:
                 state.artifact = result.output
 
@@ -244,9 +273,16 @@ def run(
         error = f"达到最大轮数 {limits.max_turns}（验收 A5）"
         outcome = "failed"
 
-    effect_state = (
-        "applied" if state.artifact else ("partial" if error else "none_applied")
-    )
+    # effect_state 必须反映「实际发生了什么」，不是「有没有报错」。
+    # 写入被拒绝 = 什么都没发生 = none_applied，不是 partial。
+    if state.n_applied and state.n_unknown:
+        effect_state = "partial"
+    elif state.n_applied:
+        effect_state = "applied"
+    elif state.n_unknown:
+        effect_state = "unknown"
+    else:
+        effect_state = "none_applied"
 
     log.append(
         run_id,
@@ -258,6 +294,7 @@ def run(
             "turns": state.turns,
             "tokens": state.tokens,
             "tokens_unknown_calls": state.unknown_usage_calls,
+            "receipt_ids": state.receipts,
             "budget_enforced": state.unknown_usage_calls == 0,
             "error": error,
         },
@@ -273,5 +310,6 @@ def run(
         turns=state.turns,
         tokens=state.tokens,
         unknown_usage_calls=state.unknown_usage_calls,
+        receipts=state.receipts,
         error=error,
     )
