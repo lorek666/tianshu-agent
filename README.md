@@ -40,6 +40,42 @@ M0 目标：单 run 闭环 + 事件日志可重放。
 
 **验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
 
+### 已实现（M0 骨架）
+
+```
+src/tianshu/
+├── events.py     SQLite WAL append-only 事件日志（触发器禁止 UPDATE/DELETE）
+├── workspace.py  路径规范化 + 边界校验（唯一跨平台一致的那层）
+├── tools.py      三个受限工具 + schema 校验
+├── model.py      Model 协议 + Scripted / Recorded / OpenAI-compatible 三个实现
+├── loop.py       E1 主循环，派发三元组判定
+├── replay.py     回放校验：seq 连续 / messages_hash / 产物哈希三方核对
+└── cli.py        命令行入口
+```
+
+### 跑起来
+
+```bash
+uv sync --python 3.12
+uv run pytest                       # 10 个测试（A1–A8 + 2 个附加）
+
+# 离线演示（scripted 模型，不调真实模型）
+uv run python -m tianshu run \
+  --workspace /tmp/ws --task "阅读并生成摘要" --out summary.md
+
+# 回放校验
+uv run python -m tianshu replay --run-id run_xxxx
+```
+
+接真实模型（OpenAI-compatible）：
+
+```bash
+export TIANSHU_API_KEY=sk-...
+export TIANSHU_BASE_URL=https://api.openai.com/v1   # 可选，支持任意兼容端点
+uv run python -m tianshu run --workspace /tmp/ws --task "..." \
+  --out summary.md --model openai-compatible --model-name gpt-4o-mini
+```
+
 ## 开发约定
 
 - Python **3.12**（不是 3.14）。用 `uv`。
