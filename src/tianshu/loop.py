@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,19 @@ from .snapshot import SnapshotStore
 from .tools import SPECS, ToolContext, ToolResult, execute, tool_manifest
 from .workspace import Workspace
 from .errors import OverwriteRefused, ToolArgumentError, WorkspaceViolation
+
+def _failpoint(name: str, *, only_if: bool = True) -> None:
+    """故障注入点。用 os._exit 硬退，模拟断电/被 kill —— 不走任何清理逻辑。
+
+    只在设置了 TIANSHU_FAILPOINT 时生效；生产路径不触发。
+    only_if=False 时跳过——用来把注入限定在有副作用的工具上，
+    否则第一个只读工具就会引爆，测不到真正想测的写入路径。
+    """
+    if only_if and os.environ.get("TIANSHU_FAILPOINT") == name:
+        sys.stderr.write(f"[failpoint] {name}\n")
+        sys.stderr.flush()
+        os._exit(77)
+
 
 SYSTEM_PROMPT = """你是天枢 Agent，一个在用户指定目录内工作的助手。
 
@@ -68,6 +83,12 @@ class _State:
     receipts: list[str] = field(default_factory=list)
     n_applied: int = 0
     n_unknown: int = 0
+
+
+def spec_is_write(tool_id: str) -> bool:
+    """该工具是否有副作用。故障注入只打在这类工具上。"""
+    spec = SPECS.get(tool_id)
+    return spec is not None and spec.side_effect_level != "pure"
 
 
 def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
@@ -225,6 +246,7 @@ def run(
                  "args": args, "args_hash": args_hash},
                 actor_kind="core",
             )
+            _failpoint("after_intent", only_if=spec_is_write(call.name))
 
             try:
                 result = execute(ws, call.name, args, ctx)
@@ -234,6 +256,8 @@ def run(
             except Exception as exc:  # 工具自身炸了：结果未知，不可重放
                 result = ToolResult("failed", "unknown", {"error": repr(exc)})
 
+            _failpoint("after_write", only_if=spec_is_write(call.name))
+
             log.append(
                 run_id,
                 "tool.result",
@@ -242,6 +266,7 @@ def run(
                 actor_kind="tool",
                 idem_key=call.call_id,
             )
+            _failpoint("after_result", only_if=spec_is_write(call.name))
 
             if result.effect_state == "applied":
                 state.n_applied += 1
@@ -264,6 +289,7 @@ def run(
                     idem_key=receipt.receipt_id,
                 )
                 state.receipts.append(receipt.receipt_id)
+            _failpoint("after_receipt", only_if=spec_is_write(call.name))
 
             if call.name == "create_report" and result.ok:
                 state.artifact = result.output

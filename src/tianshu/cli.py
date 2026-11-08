@@ -17,6 +17,7 @@ from pathlib import Path
 from .events import EventLog
 from .loop import Limits, run
 from .model import OpenAICompatibleModel, ScriptedModel
+from .recovery import ensure_not_blocked, recover_run
 from .replay import replay
 from .snapshot import SnapshotStore
 from .workspace import Workspace
@@ -40,6 +41,12 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-total-tokens", type=int, default=20_000)
     r.add_argument("--db", type=Path, default=DEFAULT_DB)
     r.add_argument("--json", action="store_true", help="输出 JSON 而不是人话")
+
+    rc = sub.add_parser("recover", help="核对并补全一次被打断的 run")
+    rc.add_argument("--run-id", required=True)
+    rc.add_argument("--workspace", required=True, type=Path)
+    rc.add_argument("--db", type=Path, default=DEFAULT_DB)
+    rc.add_argument("--json", action="store_true")
 
     u = sub.add_parser("undo", help="撤销某次 run 的文件变更")
     u.add_argument("--run-id", required=True)
@@ -89,6 +96,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         model = OpenAICompatibleModel(args.model_name, base_url=args.base_url)
 
     snapshots = SnapshotStore(args.db.parent / "artifacts")
+    ensure_not_blocked(log, args.workspace)
 
     result = run(
         task=args.task,
@@ -120,6 +128,26 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     log.close()
     return 0 if result.outcome in {"succeeded", "noop"} and report.ok else 1
+
+
+def _cmd_recover(args: argparse.Namespace) -> int:
+    log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
+    snapshots = SnapshotStore(args.db.parent / "artifacts")
+    try:
+        report = recover_run(log, args.run_id, args.workspace, snapshots)
+    finally:
+        log.close()
+
+    if args.json:
+        print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
+    else:
+        print(f"run_id : {report.run_id}")
+        print(f"已确认执行 : {report.applied or '（无）'}")
+        print(f"确认未执行 : {report.none_applied or '（无）'}")
+        print(f"无法核实   : {report.unresolved or '（无）'}")
+        for p in report.problems:
+            print(f"  ! {p}")
+    return 0 if report.ok else 1
 
 
 def _cmd_undo(args: argparse.Namespace) -> int:
@@ -168,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             return _cmd_run(args)
+        if args.cmd == "recover":
+            return _cmd_recover(args)
         if args.cmd == "undo":
             return _cmd_undo(args)
         return _cmd_replay(args)
