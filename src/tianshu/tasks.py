@@ -15,6 +15,13 @@ Run 绑定创建时的这两个值；任一与 Task 当前值不符，即为被 
 `run.fenced`）在同一个 SQLite 事务里提交，投影被删掉也能按事件重建。
 否则"用户改过目标"这件事只存在于一张可被覆写的表里，回放无法解释
 某个 Run 为什么被 fence。
+
+**锁序（全局唯一顺序）：执行守卫 → SQLite 事务。**
+
+守卫是跨进程文件锁，SQLite 事务是跨进程写锁，两者都只有一把。如果某条路径
+先拿事务再等守卫，就会和"先拿守卫再等事务"的另一条路径互相卡死。
+所以凡是需要守卫的方法（`begin_execution` / `revise_goal`）都显式拒绝在
+已打开的事务里被调用，而不是靠调用方自觉。
 """
 
 from __future__ import annotations
@@ -238,18 +245,25 @@ class TaskStore:
         """与事件日志共用的可组合事务；已在事务中时复用外层事务。"""
         return self._log.transaction()
 
-    def _guard(self):
+    def _guard(self, data_root: Path | None = None):
         """本机执行守卫。所有"会改变执行资格"的写操作都要走这里。
 
         必须成对：`begin_execution` 拿守卫确认"可以开始写"，`revise_goal` 拿
         同一把守卫改 revision/epoch。只让其中一方拿锁，就等于没锁——复核通过的
         下一刻目标被人改掉，写出去的仍然是旧目标的成果。
         """
-        if self._data_root is None:
+        root = data_root or self._data_root
+        if root is None:
             raise TianshuError(
                 "未配置 data_root：无法串行化目标变更与执行开始（会留下 TOCTOU 窗口）"
             )
-        return execution_guard(self._data_root, timeout_ms=self._guard_timeout_ms)
+        if self._log.in_transaction:
+            # 锁序必须是"守卫 → 事务"。已经在事务里再去等守卫，会和
+            # "持有守卫、等事务"的另一条路径形成循环等待。
+            raise TianshuError(
+                "不能在已打开的事务中获取执行守卫（锁序必须是：守卫 → 事务）"
+            )
+        return execution_guard(root, timeout_ms=self._guard_timeout_ms)
 
     # ---- Task ----
 
@@ -430,10 +444,11 @@ class TaskStore:
         )
 
     def assert_current(self, run_id: str) -> Run:
-        """执行前核验：这个 Run 现在还有资格写入吗。
+        """这个 Run 现在还有资格写入吗（只读判断，不留证据）。
 
-        与 `LeaseStore.assert_held` 一起构成执行侧双检；两者都通过仍不是
-        线性化保证（需要 execution_guard 把核验与开始执行放进同一把锁）。
+        单用不够：读完到真正写之间目标可能被改。真正要写文件时必须改用
+        `begin_execution`——它把同样的核验放进执行守卫，并留下
+        `execution.started` 作为"已在执行"的线性化证据。
         """
         run = self.get_run(run_id)
         if run is None:
@@ -477,15 +492,13 @@ class TaskStore:
         revision/epoch/租约三件事，缺一项就拒绝。
         """
         resources = list(resources or [])
+        if not resources:
+            # 有副作用的执行必须绑定到具体资源上，否则"没传资源"就等于
+            # 绕过租约校验。纯对话任务不会走到这里。
+            raise TianshuError("begin_execution 必须声明要写的资源（不能为空）")
         if self._leases is None:
             raise TianshuError("未配置 LeaseStore：begin_execution 需要校验租约")
-        root = data_root or self._data_root
-        if root is None:
-            raise TianshuError(
-                "未配置 data_root：begin_execution 必须在执行守卫下进行"
-            )
-
-        with execution_guard(root, timeout_ms=self._guard_timeout_ms):
+        with self._guard(data_root):
             run = self.assert_current(run_id)
             self._leases.assert_held(resources, run_id)
             if resources:

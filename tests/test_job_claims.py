@@ -439,6 +439,30 @@ def test_begin_execution_rejects_lost_lease(env):
             pass
 
 
+def test_begin_execution_requires_resources(env):
+    """不声明资源就等于不校验租约——直接拒绝。"""
+    _, tasks, _, _, ws, data_root = env
+    _, run = _run_with_lease(tasks, env[2], ws)
+    with pytest.raises(TianshuError) as ei:
+        with tasks.begin_execution(data_root, run.run_id, []):
+            pass
+    assert "资源" in str(ei.value)
+
+
+def test_guard_cannot_be_taken_inside_transaction(env):
+    """锁序必须是"守卫 → 事务"。反过来会和守卫持有者循环等待。"""
+    _, tasks, leases, _, ws, data_root = env
+    task, run = _run_with_lease(tasks, leases, ws)
+
+    with tasks.transaction():
+        with pytest.raises(TianshuError) as ei:
+            tasks.revise_goal(task.task_id, "y")
+        assert "锁序" in str(ei.value)
+        with pytest.raises(TianshuError):
+            with tasks.begin_execution(data_root, run.run_id, [ws]):
+                pass
+
+
 def test_begin_execution_requires_lease_store(tmp_path):
     log = EventLog(tmp_path / "db.sqlite")
     try:
