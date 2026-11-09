@@ -53,6 +53,7 @@ from .model import Model, ModelResponse, ToolCall
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
 from .snapshot import SnapshotStore
 from .tasks import (
+    CANCEL_REASON,
     CONTROL_CANCEL,
     CONTROL_PAUSE,
     RUN_FENCED,
@@ -436,9 +437,7 @@ class AgentLoop:
                         run_id,
                         progress,
                         state=self._state_of(run_id),
-                        error=None
-                        if action == CONTROL_PAUSE
-                        else "取消：已停止派发新的副作用（已发生的修改不撤回）",
+                        error=None if action == CONTROL_PAUSE else CANCEL_REASON,
                     )
 
                 if not progress.pending:
@@ -461,8 +460,7 @@ class AgentLoop:
                                 state=self._state_of(run_id),
                                 error=None
                                 if action == CONTROL_PAUSE
-                                else "取消：已停止派发新的副作用"
-                                "（已发生的修改不撤回）",
+                                else CANCEL_REASON,
                             )
                         return self._finish(
                             run_id, claim, progress, outcome=message, error=None
@@ -475,7 +473,7 @@ class AgentLoop:
                             run_id,
                             progress,
                             state=self._state_of(run_id),
-                            error="取消：已停止派发新的副作用（已发生的修改不撤回）"
+                            error=CANCEL_REASON
                             if action == CONTROL_CANCEL
                             else None,
                         )

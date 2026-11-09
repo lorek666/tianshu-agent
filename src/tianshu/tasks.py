@@ -1219,6 +1219,14 @@ class TaskStore:
                 "请先 resume 或 cancel"
             )
 
+        # 公开收尾要求"这个 Run 现在不是在停着的状态里"；把这条也塞进同一条
+        # 条件 UPDATE，否则"检查通过 → 另一个进程把它暂停了 → 仍然收尾成功"
+        # 这个窗口还开着。检查与写入必须在同一条语句里，这是本模块的老规矩。
+        stopped = (
+            " AND state NOT IN ('paused','waiting_approval','reconciling','cancelling')"
+            if require_running
+            else ""
+        )
         cur = self._conn.execute(
             "UPDATE runs SET state=?, outcome=?, effect_state=?,"
             " control_requested=NULL, ended_at=?"
@@ -1227,7 +1235,7 @@ class TaskStore:
             "   AND goal_revision = (SELECT goal_revision FROM tasks"
             "                        WHERE task_id = runs.task_id)"
             "   AND lease_epoch = (SELECT lease_epoch FROM tasks"
-            "                      WHERE task_id = runs.task_id)",
+            "                      WHERE task_id = runs.task_id)" + stopped,
             (outcome, outcome, effect_state, now, run_id),
         )
         if cur.rowcount == 0:
