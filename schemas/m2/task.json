@@ -80,6 +80,13 @@
           }
         }
       }
+    },
+    "exec_policy": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "任务级 ExecPolicy（F2）。null/缺失 = 未配置 = run_command 全拒；开启 exec 是显式动作。"
     }
   }
 }

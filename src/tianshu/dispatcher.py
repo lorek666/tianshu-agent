@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -48,6 +49,14 @@ from .errors import (
     WorkspaceViolation,
 )
 from .events import EventLog, canonical_bytes, sha256_hex
+from .exec import LOCAL_EXEC_CAPABILITIES
+from .execpolicy import (
+    PolicyDenied,
+    PolicyUnsupported,
+    check_capabilities,
+    check_spawn,
+    filtered_env,
+)
 from .guard import ensure_not_blocked
 from .jobs import JobClaim, JobLost, JobStore
 from .leases import (
@@ -61,6 +70,7 @@ from .leases import (
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
+    ACTION_EXEC,
     ACTION_OVERWRITE,
     APPROVAL_ACTIONS,
     POLICY_DENIED,
@@ -73,7 +83,7 @@ from .permissions import (
     PolicyDecision,
     PolicyEngine,
 )
-from .receipt import build_receipt
+from .receipt import build_exec_receipt, build_receipt
 from .rules import check_rule_id
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
@@ -416,6 +426,8 @@ class Dispatcher:
         try:
             auth = self._authority(request, claim)
             target = self._resolve_target(request, auth)
+            if request.action == ACTION_EXEC:
+                self._precheck_exec(request, args, target.path)
             ok, reason = check_request_preconditions(
                 request.action, target.path, request.preconditions or {}
             )
@@ -551,6 +563,8 @@ class Dispatcher:
             with self._log.transaction() as tx:
                 auth = self._authority(request, claim)
                 target = self._resolve_target(request, auth)
+                if request.action == ACTION_EXEC:
+                    self._precheck_exec(request, args, target.path)
 
                 existing = self.dispatch_record(request.run_id, request.call_id)
                 if existing is not None:
@@ -773,6 +787,49 @@ class Dispatcher:
             pass
 
     # ---- 内部：核验 ----
+
+    def _precheck_exec(
+        self, request: ActionRequest, args: dict[str, Any], target: Path
+    ) -> None:
+        """在发起审批**之前**跑一遍 F2 的判定。
+
+        两件事必须在审批前知道，否则用户会为一条注定跑不了的命令签字：
+        - argv / cwd / env 是否被 exec 策略允许（`PolicyDenied`）；
+        - 本次请求的执行方式后端做不做得到（`PolicyUnsupported`）。
+
+        这里调用的是 F2 的同一个 `check_spawn()`，不是第二套策略实现；执行时
+        `spawn()` 会再核一次（两边看到的必须是同一个世界）。
+        """
+        task = self._tasks.get_task(request.task_id)
+        policy = task.exec_policy if task is not None else None
+        if policy is None:
+            # 没配置策略：交给 classify 报 c4.exec_not_configured。
+            return
+
+        argv = args.get("argv")
+        try:
+            check_spawn(
+                policy,
+                argv,
+                target,
+                filtered_env(policy, dict(os.environ)),
+            )
+            if args.get("pty"):
+                if not policy.allow_pty:
+                    raise PolicyDenied(
+                        "本次调用请求了 PTY，但策略没有允许"
+                        "（ExecPolicy.allow_pty=False）",
+                        rule_id="f2.pty_not_allowed",
+                    )
+                check_capabilities(policy, LOCAL_EXEC_CAPABILITIES)
+        except PolicyDenied as exc:
+            raise DispatchDenied(
+                f"exec 策略拒绝：{exc}", "c4.exec_policy_denied"
+            ) from exc
+        except PolicyUnsupported as exc:
+            raise DispatchDenied(
+                f"exec 后端不支持：{exc}", "c4.exec_unsupported"
+            ) from exc
 
     def _typecheck(
         self, request: ActionRequest, claim: JobClaim, args: dict[str, Any]
@@ -1326,22 +1383,38 @@ class Dispatcher:
                 "idem_key": request.call_id,
             }
         ]
-        receipt = build_receipt(
-            run_id=request.run_id,
-            call_id=request.call_id,
-            tool_id=request.tool_id,
-            args_hash=request.args_hash,
-            result=result,
-            backend=self._executor.backend_name,
-            # 证据键是 (workspace 根, 相对路径)：根从**这次派发**解析出来的
-            # 目标里取，而不是从某个默认目录取。多 workspace 任务里只有这里
-            # 知道文件真正落在哪个目录。
-            root=target.workspace_root,
-            resource=str(target.path),
-            action=request.action,
-            intent_seq=intent_seq,
-            blob_ref=self._snapshot_blob(request.run_id, request.call_id),
-        )
+        if request.action == ACTION_EXEC:
+            # 命令的"写后状态"不是文件哈希：凭据记的是执行摘要，磁盘核对
+            # 由 verify_receipts 明确跳过（见 receipt.build_exec_receipt）。
+            receipt = build_exec_receipt(
+                run_id=request.run_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                args_hash=request.args_hash,
+                result=result,
+                backend=self._executor.backend_name,
+                root=target.workspace_root,
+                resource=str(target.path),
+                action=request.action,
+                intent_seq=intent_seq,
+            )
+        else:
+            receipt = build_receipt(
+                run_id=request.run_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                args_hash=request.args_hash,
+                result=result,
+                backend=self._executor.backend_name,
+                # 证据键是 (workspace 根, 相对路径)：根从**这次派发**解析出来的
+                # 目标里取，而不是从某个默认目录取。多 workspace 任务里只有这里
+                # 知道文件真正落在哪个目录。
+                root=target.workspace_root,
+                resource=str(target.path),
+                action=request.action,
+                intent_seq=intent_seq,
+                blob_ref=self._snapshot_blob(request.run_id, request.call_id),
+            )
         if receipt is not None:
             batch.append(
                 {
@@ -1410,6 +1483,9 @@ def build_request(
         preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
     elif spec.action in (ACTION_OVERWRITE, ACTION_DELETE):
         preconditions = {"before_state": observe_state(target, backend=io)}
+    elif spec.action == ACTION_EXEC:
+        # 这个标记进 actions 摘要：任务有没有开启 exec 策略，必须由审批绑住。
+        preconditions = {"exec_configured": task.exec_policy is not None}
     else:  # pragma: no cover - 只读动作不走派发
         preconditions = {}
 

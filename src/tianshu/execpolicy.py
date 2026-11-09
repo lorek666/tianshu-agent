@@ -35,6 +35,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .errors import TianshuError
 from .pathkeys import is_ancestor_or_self, overlap_key
@@ -208,6 +209,30 @@ class ExecPolicy:
     max_output_bytes: int = 0
     timeout_ms: int = 0
     allow_pty: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """可持久化的声明形式（任务级策略存进 tasks 表用）。
+
+        `cwd_roots` 存绝对路径字符串——读回来时 `ExecPolicy` 会再 resolve 一次，
+        所以即使工作区根在两次运行之间换了挂载点，读回来的仍是 canonical 形式。
+        """
+        return {
+            "argv_allowlist": list(self.argv_allowlist),
+            "argv_denylist": list(self.argv_denylist),
+            "cwd_roots": [str(p) for p in self.cwd_roots],
+            "env_allowlist": list(self.env_allowlist),
+            "max_output_bytes": self.max_output_bytes,
+            "timeout_ms": self.timeout_ms,
+            "allow_pty": self.allow_pty,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any] | None) -> ExecPolicy | None:
+        """从持久化形式读回；空/None 返回 None（= 没有配置 = 全拒）。"""
+        if not raw:
+            return None
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in raw.items() if k in known})
 
     def __post_init__(self) -> None:
         object.__setattr__(
