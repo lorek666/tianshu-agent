@@ -11,10 +11,15 @@ on:
     branches: [main]
   pull_request:
 
-# 同一分支连续推送时取消上一轮，省 runner 的时间也省队列
+# PR：按分支分组，连推时取消上一轮——省 runner，也不会有过期的绿色。
+# main：按 commit 分组，每个 commit 都要拿到自己的结论。
+#   一开始两种都用 ref 分组 + cancel-in-progress: true，结果连续合并时
+#   后一个把前一个取消掉了：PR #20 的合并提交 d69e7f8（就是引入本 CI 的
+#   那个提交）的 CI 被 #22 的合并取消，从未拿到结论。CONTRIBUTING §2 说
+#   "main 永远可运行"，那就得每个 commit 都真跑过，不能靠前一个绿色顶替。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
