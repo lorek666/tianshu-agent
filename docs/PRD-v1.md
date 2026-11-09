@@ -168,6 +168,13 @@ CREATED → QUEUED → RUNNING ─┬→ WAITING_APPROVAL → RUNNING
                             └→ SUCCEEDED | FAILED
 ```
 
+**`WAITING_APPROVAL` 只是"在等人对某个动作做决定"，不是"一直在等人批准"。**
+人否决一个动作之后，这个动作在同一 Run 内即被否决（§5.4 的 `c4.approval_rejected`），
+Run **不会**再为它回到 `WAITING_APPROVAL`：resume 后要么由模型改参数/改目标
+重新发起（那会是一张新的、可以再批的审批），要么以 `FAILED` 收束且
+`effect_state` 如实。把"被否决"实现成"再问一次"会让 Run 永远收不了尾，也让
+用户以为自己的决定没有生效。
+
 **终态必须两个维度，不是一个枚举：**
 
 ```python
@@ -516,6 +523,32 @@ Approval { approval_id, request, digest,
 审批一次性消费。**改目标、改参数、改绑定**都会让 `goal_revision` 或
 `lease_epoch` 进入动作摘要而变化 → 旧审批 `superseded`，与上面那条一致。
 
+**否决是终局，不是"再问一次"（issue #40）。** 人拒绝一张审批（`approvals
+reject`）之后，同一 Run 内**同一动作内容**的派发请求不再发起新审批，而是直接以
+`c4.approval_rejected` 拒绝：
+
+- 否决的缓存键是 `subject_digest`：动作内容（`action / resources / args_hash /
+  preconditions / goal_revision / lease_epoch / tool_id / tool_version /
+  schema_hash / policy_version / contract_version`），**不含** `call_id /
+  attempt_id / request_id / job_id / claim_epoch / owner_instance_id`。
+  三个子结论：
+  1. 换参数、换目标（任何进入摘要的授权字段变化）→ 键变 → 旧否决失效，人可以
+     改主意后重新批准；
+  2. 模型换一个 `call_id` 重发同一个动作、或进程重启推进 `claim_epoch` / 换
+     owner → 键不变 → 否决继续有效。这些是**调用身份**，不是动作内容：若把
+     它们算进否决键，模型只要重发一次就能把人的否决变成一张新的待批门票；
+  3. 旧库升级前的审批行没有 `subject_digest` 记录，回退到 `action_digest`，
+     再回退到 `request_digest`（与 `find_for` / `consume` 同一套回退口径）。
+
+- 被否决的动作必须落 `tool.result(status=rejected, effect_state=none_applied)`，
+  payload 带 `rule_id=c4.approval_rejected`。**不许**把它记成 `unknown/partial`
+  ——"一个字节都没动"在这里是可以证明的，记成未知等于把可证明的结论降级成猜测。
+
+- Run 不得停在 `WAITING_APPROVAL` 上等人反复点拒绝：模型若拿不出替代动作
+  （原样重发同一动作，或在得知否决后结束本轮且此后没有任何效果落地），Run 以
+  `failed` 收束，`effect_state` 如实给出，`run.end` 的 `reason` 写明审批被拒绝。
+  反过来，模型改参数/改目标并被人批准执行之后，这次 Run 仍可正常 `succeeded`。
+
 #### 5.4.1 拒绝规则编号（`payload.rule_id`）
 
 `dispatch.requested` / `dispatch.rejected` / `policy.denied` 的 payload 里都有一个
@@ -550,6 +583,7 @@ Approval { approval_id, request, digest,
 | `dispatch.task_mismatch` | 身份失配 | 请求的 task_id 与该 Run 实际所属的 Task 不符。 | `run status` 核对 run_id 与 task_id 的对应关系，确认没拿错任务。 |
 | `c4.approval_expired` | 审批不可用 | 批准已过期。 | 重新发起审批。 |
 | `c4.approval_mismatch` | 审批不可用 | 批准的动作摘要与本次请求不一致（参数/目标被改过）。 | 参数或目标变了，旧批准已作废；确认内容后重新批准。 |
+| `c4.approval_rejected` | 审批不可用 | 同一 Run 内这个动作已经被人**否决**：不再发起新审批，直接拒绝并写 `tool.result`。 | 不要反复点拒绝：要做就改参数或改目标后重新发起；不改就说明这次 Run 没做成（Run 会以 `failed` 收束）。 |
 | `c4.approval_run_mismatch` | 审批不可用 | 批准属于另一个 Run。 | 这张批准属于别的 Run；到目标 Run 上重新发起。 |
 | `c4.approval_state` | 审批不可用 | 批准不在可用状态（proposed/pending/rejected 等）。 | 等审批走完（pending）再 resume；已拒绝就重新发起。 |
 | `c4.multi_resource` | 审批不可用 | 一次请求声明了多个资源，审批无法覆盖。 | 一次只改一个文件，把动作拆开。 |

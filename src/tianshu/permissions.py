@@ -167,6 +167,12 @@ class ActionRequest:
     #: `docs/REVIEW-PRA.md` §4.6。
     OWNER_FIELDS = ("request_id", "job_id", "claim_epoch", "owner_instance_id")
 
+    #: 这两个字段是**调用身份**，不是"动作内容"：provider 每轮从 `call_0`
+    #: 重新编号是常见的，模型重发同一个动作时它们会变。人**否决**的是那件事
+    #: 本身，所以否决缓存键（`subject_digest`）必须把它们去掉；否则模型只要换
+    #: 一个 call_id 重发同一个动作，就能绕过人的否决（issue #40 的复现路径）。
+    CALL_FIELDS = ("call_id", "attempt_id")
+
     def action_fields(self) -> dict[str, Any]:
         """人审批时真正看过的那部分。"""
         raw = self.to_canonical_dict()
@@ -179,6 +185,21 @@ class ActionRequest:
 
     def action_digest(self) -> str:
         return jcs_sha256(self.action_fields())
+
+    def subject_fields(self) -> dict[str, Any]:
+        """人**否决**时绑住的那部分：动作内容，不含调用编号与执行身份。
+
+        批准绑定的是"哪一次调用"（`action_digest` 里含 call_id / attempt_id），
+        因为一次批准只能被消费一次；否决绑定的却是"这件事本身"：否决是终局，
+        不能因为模型换了个 call_id 重发就重新变成一张待批门票。
+        """
+        raw = self.action_fields()
+        for key in self.CALL_FIELDS:
+            raw.pop(key, None)
+        return raw
+
+    def subject_digest(self) -> str:
+        return jcs_sha256(self.subject_fields())
 
     @classmethod
     def of(cls, raw: dict[str, Any]) -> ActionRequest:
@@ -301,6 +322,22 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_approvals_digest ON approvals(request_digest);
+
+-- 否决缓存键：approval_id → "人否决时真正看过的那件事"（subject_digest）。
+--
+-- 为什么单独一张表而不是 approvals 加一列：`Approval` 的字段集合是与
+-- `schemas/m2/approval.json` 逐字段绑定的契约（tests/test_schemas.py），
+-- 而这里存的是审批的**内部索引**，不是审批对象的一部分。表是后加的，旧库
+-- 升级后自然为空；历史行回退到 action_digest / request_digest 比较。
+CREATE TABLE IF NOT EXISTS approval_subjects (
+    approval_id    TEXT PRIMARY KEY,
+    run_id         TEXT NOT NULL,
+    subject_digest TEXT NOT NULL,
+    created_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_subjects
+    ON approval_subjects(run_id, subject_digest);
 
 CREATE TABLE IF NOT EXISTS grants (
     grant_id       TEXT PRIMARY KEY,
@@ -461,6 +498,7 @@ class ApprovalStore:
 
         digest = request.digest()
         action = request.action_digest()
+        subject = request.subject_digest()
         now = self._clock()
         with self._log.transaction() as tx:
             existing = self._find(
@@ -491,6 +529,13 @@ class ApprovalStore:
                     now + ttl_ms,
                 ),
             )
+            # 否决缓存键：人一旦拒绝这张审批，同一 Run 内"同一件事"就被否决了。
+            # 写在同一个事务里，否则崩溃窗口里会出现"审批被拒但否决查不到"。
+            self._conn.execute(
+                "INSERT INTO approval_subjects (approval_id, run_id,"
+                " subject_digest, created_at) VALUES (?,?,?,?)",
+                (approval_id, request.run_id, subject, now),
+            )
             tx.append(
                 request.run_id,
                 APPROVAL_REQUESTED,
@@ -499,6 +544,7 @@ class ApprovalStore:
                     "request_id": request.request_id,
                     "request_digest": digest,
                     "action_digest": action,
+                    "action_subject": subject,
                     "action": request.action,
                     "resources": sorted(request.resources),
                     "rule_id": decision.rule_id,
@@ -727,6 +773,42 @@ class ApprovalStore:
             return None
         found = self._row(row)
         return found if found.action_digest in ("", action) else None
+
+    def rejected_for(self, request: ActionRequest) -> Approval | None:
+        """这个动作在**本次 Run 内**是否已经被人否决（issue #40 的否决缓存）。
+
+        命中 = "这个动作被否决了"：派发要直接拒绝，**不得**再发起一张新审批。
+        否则 `approvals reject` → `run resume` 会立刻再建一张待批，Run 又回到
+        `waiting_approval`，用户只能反复点拒绝，Run 永远收不了尾。
+
+        比较的是 `subject_digest`（动作内容：参数/资源/目标/preconditions/
+        goal_revision/lease_epoch/工具版本），**不含** call_id / attempt_id /
+        owner / claim_epoch：
+
+        - 换参数、换目标 → subject 变 → 旧否决失效，人可以改主意重新批准；
+        - 换 call_id（模型重发同一个动作）、换进程（claim_epoch 推进）→
+          subject 不变 → 否决继续有效，不能靠重发把否决变成新的待批项。
+
+        旧库升级前的审批行没有 subject 记录（表是后加的），按 `find_for` /
+        `consume` 同一套回退口径退到 `action_digest`，再退到 `request_digest`。
+        """
+        row = self._conn.execute(
+            "SELECT a.* FROM approvals a"
+            " LEFT JOIN approval_subjects s ON s.approval_id = a.approval_id"
+            " WHERE a.state = 'rejected' AND a.run_id = ?"
+            "   AND (s.subject_digest = ?"
+            "        OR (s.approval_id IS NULL AND a.action_digest = ?)"
+            "        OR (s.approval_id IS NULL AND a.action_digest = ''"
+            "            AND a.request_digest = ?))"
+            " ORDER BY a.created_at LIMIT 1",
+            (
+                request.run_id,
+                request.subject_digest(),
+                request.action_digest(),
+                request.digest(),
+            ),
+        ).fetchone()
+        return self._row(row) if row is not None else None
 
     def expire_due(self) -> int:
         """把过期未处理的审批标成 expired。"""

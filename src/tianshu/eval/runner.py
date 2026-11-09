@@ -192,14 +192,20 @@ def _run_standard(
                     approval.approval_id, decision=decision, actor=actor
                 )
             if case.approval == "reject":
-                # 人拒绝之后 Run 停在安全位置：当前实现里 resume 会重新请求审批
-                # （issue #40），继续驱动只会把"拒绝"变成"再问一次"。
-                break
+                # 人拒绝之后必须继续驱动：新语义（issue #40）下这次 resume 会把
+                # cursor 里那张待批动作按"否决"拒绝，模型拿不出替代动作时 Run
+                # 以 failed 收束；**不该**再出现第二张审批。
+                #
+                # 旧语义下这里会立刻再停在 waiting_approval，于是下一轮循环又
+                # 点一次拒绝……`MAX_APPROVAL_ROUNDS` 保证评测器不会卡死，
+                # 而 `approval.requested` 的精确计数判据会把这件事判红。
+                res = engine.resume_run(res.run_id)
+                continue
             res = engine.resume_run(res.run_id)
 
-        if res.state == RUN_WAITING_APPROVAL and case.approval not in ("hold", "reject"):
-            # hold / reject 都是有意的终点（恶意输入被人拦下、审批被拒）；
-            # 其余情况停在审批 = 审批往返没有收敛，属于评测器/case 不一致。
+        if res.state == RUN_WAITING_APPROVAL and case.approval != "hold":
+            # 只有 hold 是有意的终点（恶意输入被人拦下、人还没决定）。其余情况
+            # 停在审批 = 审批往返没有收敛，属于评测器/case 与实现不一致。
             error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
 
         events = log.read_run(res.run_id)
