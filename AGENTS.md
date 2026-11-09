@@ -18,7 +18,7 @@
 ## 三、流程门禁（机械，不可绕过）
 
 - **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。**（required 检查目前是 ubuntu + macOS 两项；Windows 在矩阵里但只跑不挡，见 CONTRIBUTING §6。）
-- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`（与 CI 逐条相同）。
+- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的前后两条与之逐字相同，只有 pytest 那条多带 `-o addopts="" -q`（为了强制打印汇总行），本地不需要加。
 - **高危改动必须独立复审**：碰授权 / 租约 / 并发写 / 事件日志 / 计费，须由「第二读者」（另一会话或人）复审，不读作者自查结论，只按计划验收项逐条对照，并给出**可复现探针证据**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决。
 - **契约变更单独提交**：`docs(contract):` 单独 commit / 单独 PR，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」，不夹带代码。
 - **红就是红，不装作绿**：不用 `continue-on-error` 掩盖失败、不用 `type: ignore` 压契约越界。**失败要么修掉，要么如实摘除并记 issue**；摘除必须在配置里留下指向该 issue 的注释，不许让失败悄悄消失。历史上 Windows 曾因首跑 12 项失败被摘出 CI 矩阵（issue #21），后来逐项修好、issue 关闭、job 加回矩阵——这条规则的价值不在于"永远摘除"，而在于**摘除必须留痕、修好后必须归位**。

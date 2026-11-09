@@ -27,7 +27,7 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **里程碑**：**M0–M4 已完成并合并**（M4 由 PR #41 / #45 合入，代码在 `src/tianshu/eval/`）；**M5（桌面闭环）未开始**。
-- **测试**：**942 passed, 3 skipped**（macOS 本机，`uv run --frozen pytest -o addopts="" -q`）；测试文件 33 个 `tests/test_*.py`。注意 `pyproject.toml` 的 addopts 已带 `-q`，直接跑会叠成 `-qq` 把汇总行吞掉，计数要显式清空 addopts。
+- **测试**：**942 passed, 3 skipped**（macOS 本机，`uv run --frozen pytest -o addopts="" -q`）；测试文件 33 个 `tests/test_*.py`。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **32** 个模块，另有子包 `eval/`（6 个 .py）。
 - **平台**：CI 矩阵是 **ubuntu / macos / windows 三个平台 × Python 3.12**，`7abad75` 的 run `42652194348` 三平台全 success。**Windows 在矩阵里且是绿的**（issue #21 已 closed），但只有 `windows-latest`（Server 2022 runner）证据，没有实机验证。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。required status checks 目前是 `test (ubuntu-latest) · py3.12` 与 `test (macos-latest) · py3.12` 两项；Windows job 在矩阵里跑但**还没加进 required 列表**（见 §7）。
