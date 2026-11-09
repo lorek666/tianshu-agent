@@ -21,6 +21,7 @@ from tianshu.jobs import JOB_OUTCOMES, JobClaim
 from tianshu.permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
+    ACTION_EXEC,
     ACTION_OVERWRITE,
     ACTION_READ,
     APPROVAL_STATES,
@@ -89,7 +90,7 @@ def test_approval_state_enum_is_complete():
 
 
 def test_action_enum_is_complete():
-    expected = {ACTION_READ, ACTION_CREATE, ACTION_OVERWRITE, ACTION_DELETE}
+    expected = {ACTION_READ, ACTION_CREATE, ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC}
     assert set(_schema("approval.json")["properties"]["action"]["enum"]) == expected
     assert set(_schema("grant.json")["properties"]["action"]["enum"]) == expected
 

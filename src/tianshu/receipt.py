@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import TianshuError
-from .permissions import ACTION_CREATE, ACTION_DELETE, ACTION_OVERWRITE
+from .permissions import ACTION_CREATE, ACTION_DELETE, ACTION_EXEC, ACTION_OVERWRITE
 from .sandbox import FileBackend, current_backend
 from .snapshot import ABSENT
 from .tools import ToolResult
@@ -64,7 +64,7 @@ class Receipt:
     resource: str  # 目标文件的绝对路径
     effect_state: str
     before_state: str  # "absent" | sha256 | "unknown"
-    after_state: str | None  # sha256 | "absent"
+    after_state: str | None  # sha256 | "absent" | "exec:<digest>"
     backend: str
     intent_seq: int  # 产生这次写的 tool.intent 事件 seq（真实引用）
     evidence: list[dict[str, Any]] = field(default_factory=list)
@@ -198,6 +198,87 @@ def build_receipt(
     )
 
 
+def build_exec_receipt(
+    *,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    args_hash: str,
+    result: ToolResult,
+    root: str = "",
+    resource: str = "",
+    action: str = "",
+    intent_seq: int = 0,
+    backend: str = BACKEND,
+) -> Receipt | None:
+    """执行命令的凭据。
+
+    命令没有"文件写后哈希"：`after_state` 是执行摘要（`exec:<sha256>`，由
+    `run_command` 按 argv/退出码/信号/输出算出），`before_state` 显式记
+    `"unknown"`——我们只知道它跑了，不知道它动了哪些文件。**磁盘核对不适用**：
+    `verify_receipts` 对 exec 凭据只核对事件引用与结果字段，不比较磁盘。
+
+    `resource` 是命令的 cwd（绝对路径），必须落在记录的 workspace 根内；
+    `root` 是那个 workspace 根。这样"这条命令在哪棵树里跑的"仍可核对。
+    """
+    if result.effect_state != "applied":
+        return None
+
+    out = result.output
+    after = out.get("after_state")
+    if not after:
+        raise ValueError(
+            f"exec 结果 applied 但没有 after_state（执行摘要）：{out!r}"
+        )
+    missing = [
+        name
+        for name, value in (
+            ("root", root),
+            ("resource", resource),
+            ("action", action),
+            ("intent_seq", intent_seq),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(
+            f"exec 结果 applied 但缺少凭据定位信息 {missing}，无法产出可核对的凭据"
+        )
+    if action != ACTION_EXEC:
+        raise ValueError(f"exec 凭据的 action 必须是 {ACTION_EXEC}，收到 {action!r}")
+
+    root_p = Path(root).resolve()
+    target = Path(resource).resolve()
+    if target != root_p and root_p not in target.parents:
+        raise ValueError(
+            f"exec 凭据的 cwd 不在记录的 workspace 根内：{target}（root={root_p}）"
+        )
+
+    return Receipt(
+        receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
+        run_id=run_id,
+        call_id=call_id,
+        tool_id=tool_id,
+        action=ACTION_EXEC,
+        args_hash=args_hash,
+        root=str(root_p),
+        resource=str(target),
+        effect_state=result.effect_state,
+        before_state="unknown",
+        after_state=str(after),
+        backend=backend,
+        intent_seq=int(intent_seq),
+        evidence=_evidence_refs(
+            call_id=call_id,
+            intent_seq=int(intent_seq),
+            blob_ref=None,
+            before_state="unknown",
+        ),
+        blob_ref=None,
+        issued_at=int(time.time() * 1000),
+    )
+
+
 def receipts_of(log, run_id: str) -> list[dict[str, Any]]:
     return [e.payload for e in log.read_run(run_id) if e.type == "receipt"]
 
@@ -221,6 +302,7 @@ def _verify_evidence(
     *,
     by_seq: dict[int, Any],
     intents: dict[str, Any],
+    required: tuple[str, ...] = ("result", "intent", "blob"),
 ) -> list[str]:
     """逐条解析凭据自己带的证据引用。解析不了 = 核对不了 = 问题。"""
     refs = payload.get("evidence")
@@ -284,9 +366,9 @@ def _verify_evidence(
         else:
             problems.append(f"凭据 {label} 有无法识别的证据引用：{ref!r}")
 
-    for required in ("result", "intent", "blob"):
-        if required not in kinds:
-            problems.append(f"凭据 {label} 缺少 {required} 证据引用")
+    for required_kind in required:
+        if required_kind not in kinds:
+            problems.append(f"凭据 {label} 缺少 {required_kind} 证据引用")
     return problems
 
 
@@ -391,13 +473,40 @@ def verify_receipts(log, run_id: str) -> list[str]:
                 f"凭据 {label} 的 tool_id 与工具结果不一致："
                 f"{p.get('tool_id')!r} ≠ {res.get('tool_id')!r}"
             )
-        if p.get("root") and p.get("resource"):
-            # 新格式才谈得上"逐条解析证据"；旧格式凭据没有指向任何东西，
-            # `_verify_disk` 会给出唯一一条明确的"无法核对"，不必刷三遍。
+        if p.get("action") == ACTION_EXEC:
+            # 执行命令没有文件写后哈希，磁盘核对不适用；核对的是
+            # "结果字段齐全" + "证据引用能逐条解析"。
             problems.extend(
-                _verify_evidence(p, label, by_seq=by_seq, intents=intents)
+                _verify_evidence(
+                    p,
+                    label,
+                    by_seq=by_seq,
+                    intents=intents,
+                    required=("result", "intent"),
+                )
             )
-        problems.extend(_verify_disk(p, label, io, undone))
+            for field in (
+                "exit_code",
+                "signal",
+                "timed_out",
+                "truncated",
+                "stdout_ref",
+                "stderr_ref",
+                "stderr_merged",
+                "duration_ms",
+            ):
+                if field not in out:
+                    problems.append(
+                        f"凭据 {label} 的 exec 结果缺少审计字段：{field}"
+                    )
+        else:
+            if p.get("root") and p.get("resource"):
+                # 新格式才谈得上"逐条解析证据"；旧格式凭据没有指向任何东西，
+                # `_verify_disk` 会给出唯一一条明确的"无法核对"，不必刷三遍。
+                problems.extend(
+                    _verify_evidence(p, label, by_seq=by_seq, intents=intents)
+                )
+            problems.extend(_verify_disk(p, label, io, undone))
 
     # 反向：所有 applied 的结果都应当有凭据
     receipt_calls = {e.payload["call_id"] for e in events if e.type == "receipt"}
