@@ -7,12 +7,18 @@
 不能拿着旧目标继续改文件。
 - `goal_revision`：目标改一次加一
 - `lease_epoch`：工作区所有权变更加一
+
 Run 绑定创建时的这两个值；任一与 Task 当前值不符，即为被 fence。
+
+**事实源是事件日志，不是这两张表。** tasks/runs 只是投影：每次状态变更都和
+对应事件（`task.created` / `task.revised` / `run.start` / `run.finish` /
+`run.fenced`）在同一个 SQLite 事务里提交，投影被删掉也能按事件重建。
+否则"用户改过目标"这件事只存在于一张可被覆写的表里，回放无法解释
+某个 Run 为什么被 fence。
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sqlite3
 import time
@@ -21,6 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import TianshuError
+from .events import EventLog
+from .leases import LeaseStore
+from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -51,6 +60,17 @@ CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, created_at);
 """
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
+RUN_OUTCOMES = TERMINAL_STATES
+EFFECT_STATES = {"none_applied", "applied", "partial", "unknown"}
+
+TASK_CREATED = "task.created"
+TASK_REVISED = "task.revised"
+RUN_START = "run.start"
+RUN_FINISH = "run.finish"
+RUN_FENCED = "run.fenced"
+
+# Task 级事件不属于某个 Run；用空 run_id 把它们与 run 作用域事件分开。
+TASK_SCOPE = ""
 
 
 class RunFenced(TianshuError):
@@ -65,7 +85,7 @@ class Task:
     lease_epoch: int
     active_run_id: str | None
     status: str
-    workspaces: list[str] = field(default_factory=list)
+    workspaces: list[WorkspaceBinding] = field(default_factory=list)
     created_at: int = 0
     updated_at: int = 0
 
@@ -88,36 +108,72 @@ def _now() -> int:
 
 
 class TaskStore:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+    def __init__(self, log: EventLog, *, leases: LeaseStore | None = None) -> None:
+        if log.in_transaction:
+            # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
+            # 状态提交出去。只能在事务外构造。
+            raise TianshuError("TaskStore 不能在已打开的事务中构造")
+        self._log = log
+        self._conn = log.conn
+        self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._leases = leases
 
-    @contextlib.contextmanager
-    def _tx(self):
-        """跨进程可见的写事务。
+    @property
+    def conn(self) -> sqlite3.Connection:
+        return self._conn
 
-        任务状态是读-改-写，没有事务时两个进程会同时改出不一致的版本号。
-        """
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-            self._conn.execute("COMMIT")
-        except BaseException:
-            self._conn.execute("ROLLBACK")
-            raise
+    @property
+    def leases(self) -> LeaseStore | None:
+        return self._leases
+
+    def transaction(self):
+        """与事件日志共用的可组合事务；已在事务中时复用外层事务。"""
+        return self._log.transaction()
 
     # ---- Task ----
 
-    def create_task(self, goal: str, workspaces: list[str] | None = None) -> Task:
+    def create_task(
+        self,
+        goal: str,
+        bindings: list[WorkspaceBinding | str | dict[str, Any]] | None = None,
+    ) -> Task:
+        goal = (goal or "").strip()
+        if not goal:
+            raise TianshuError("goal 不能为空")
+        parsed = parse_bindings(
+            [b.to_dict() if isinstance(b, WorkspaceBinding) else b
+             for b in (bindings or [])]
+        )
         now = _now()
         task_id = f"task_{uuid.uuid4().hex[:12]}"
-        self._conn.execute(
-            "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-            " active_run_id, status, workspaces, created_at, updated_at)"
-            " VALUES (?,?,1,1,NULL,'open',?,?,?)",
-            (task_id, goal, json.dumps(workspaces or [], ensure_ascii=False), now, now),
-        )
-        return self.get_task(task_id)
+        with self._log.transaction() as tx:
+            self._conn.execute(
+                "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
+                " active_run_id, status, workspaces, created_at, updated_at)"
+                " VALUES (?,?,1,1,NULL,'open',?,?,?)",
+                (
+                    task_id,
+                    goal,
+                    json.dumps([b.to_dict() for b in parsed], ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            tx.append(
+                TASK_SCOPE,
+                TASK_CREATED,
+                {
+                    "task_id": task_id,
+                    "goal": goal,
+                    "goal_revision": 1,
+                    "lease_epoch": 1,
+                    "workspaces": [b.to_dict() for b in parsed],
+                },
+                task_id=task_id,
+                actor_kind="human",
+            )
+        return self.get_task(task_id)  # type: ignore[return-value]
 
     def get_task(self, task_id: str) -> Task | None:
         row = self._conn.execute(
@@ -127,34 +183,73 @@ class TaskStore:
 
     def revise_goal(self, task_id: str, new_goal: str) -> Task:
         """用户改主意。旧目标下的 Run 立即失效，历史保留。"""
-        with self._tx():
+        new_goal = (new_goal or "").strip()
+        if not new_goal:
+            raise TianshuError("goal 不能为空")
+        with self._log.transaction() as tx:
             task = self.get_task(task_id)
             if task is None:
                 raise TianshuError(f"task 不存在：{task_id}")
-            self._revise_locked(task, new_goal)
-        return self.get_task(task_id)
+            if task.status != "open":
+                raise TianshuError(f"task 已关闭，不能改目标：{task.status}")
+            self._revise_locked(tx, task, new_goal)
+        return self.get_task(task_id)  # type: ignore[return-value]
 
-    def _revise_locked(self, task: Task, new_goal: str) -> None:
+    def _revise_locked(self, tx, task: Task, new_goal: str) -> None:
         now = _now()
+        revision = task.goal_revision + 1
+        epoch = task.lease_epoch + 1
         self._conn.execute(
-            "UPDATE tasks SET goal=?, goal_revision=goal_revision+1,"
-            " lease_epoch=lease_epoch+1, active_run_id=NULL, updated_at=?"
+            "UPDATE tasks SET goal=?, goal_revision=?,"
+            " lease_epoch=?, active_run_id=NULL, updated_at=?"
             " WHERE task_id=?",
-            (new_goal, now, task.task_id),
+            (new_goal, revision, epoch, now, task.task_id),
+        )
+        tx.append(
+            TASK_SCOPE,
+            TASK_REVISED,
+            {
+                "task_id": task.task_id,
+                "goal": new_goal,
+                "goal_revision": revision,
+                "lease_epoch": epoch,
+            },
+            task_id=task.task_id,
+            actor_kind="human",
         )
         # 旧的活跃 Run 标记为 fenced（已终结的保持原状）
         if task.active_run_id:
-            self._conn.execute(
-                "UPDATE runs SET state='fenced', ended_at=?"
-                " WHERE run_id=? AND state NOT IN ('succeeded','failed','cancelled')",
-                (now, task.active_run_id),
-            )
+            self._fence_run(tx, task.active_run_id, now, reason="goal_revised")
+
+    def _fence_run(self, tx, run_id: str, now: int, *, reason: str) -> None:
+        cur = self._conn.execute(
+            "UPDATE runs SET state='fenced', ended_at=?"
+            " WHERE run_id=? AND state NOT IN ('succeeded','failed','cancelled','fenced')",
+            (now, run_id),
+        )
+        if cur.rowcount == 0:
+            return
+        run = self.get_run(run_id)
+        tx.append(
+            run_id,
+            RUN_FENCED,
+            {
+                "run_id": run_id,
+                "task_id": run.task_id if run else None,
+                "reason": reason,
+            },
+            task_id=run.task_id if run else None,
+        )
+        # fence 之后旧 Run 不再拥有工作区，租约必须交出来；
+        # 否则同一 Task 的新 Run 会被上一个 Run 的残留租约挡住，直到 TTL 到期。
+        if self._leases is not None:
+            self._leases.release_run(run_id)
 
     # ---- Run ----
 
     def start_run(self, task_id: str) -> Run:
         run_id = f"run_{uuid.uuid4().hex[:12]}"
-        with self._tx():
+        with self._log.transaction() as tx:
             task = self.get_task(task_id)
             if task is None:
                 raise TianshuError(f"task 不存在：{task_id}")
@@ -180,7 +275,18 @@ class TaskStore:
                 "UPDATE tasks SET active_run_id=?, updated_at=? WHERE task_id=?",
                 (run_id, now, task_id),
             )
-        return self.get_run(run_id)
+            tx.append(
+                run_id,
+                RUN_START,
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "goal_revision": task.goal_revision,
+                    "lease_epoch": task.lease_epoch,
+                },
+                task_id=task_id,
+            )
+        return self.get_run(run_id)  # type: ignore[return-value]
 
     def get_run(self, run_id: str) -> Run | None:
         row = self._conn.execute(
@@ -200,6 +306,34 @@ class TaskStore:
             or run.lease_epoch != task.lease_epoch
         )
 
+    def assert_current(self, run_id: str) -> Run:
+        """执行前核验：这个 Run 现在还有资格写入吗。
+
+        与 `LeaseStore.assert_held` 一起构成执行侧双检；两者都通过仍不是
+        线性化保证（需要 execution_guard 把核验与开始执行放进同一把锁）。
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            raise RunFenced(f"run 不存在：{run_id}")
+        if run.state in TERMINAL_STATES:
+            raise RunFenced(f"run 已终结：{run_id}（state={run.state}）")
+        if run.state == "fenced" or self.is_fenced(run_id):
+            raise RunFenced(f"run 已被 fence：{run_id}")
+        return run
+
+    def assert_write_allowed(
+        self, run_id: str, resources: list[ResourceIdentity] | None = None
+    ) -> Run:
+        """执行侧统一入口：Run 仍有效 + 资源租约仍在手。"""
+        run = self.assert_current(run_id)
+        if resources:
+            if self._leases is None:
+                raise TianshuError(
+                    "未配置 LeaseStore：有写入资源的操作必须同时校验租约"
+                )
+            self._leases.assert_held(resources, run_id)
+        return run
+
     def finish_run(
         self, run_id: str, *, outcome: str, effect_state: str
     ) -> Run:
@@ -208,8 +342,16 @@ class TaskStore:
         校验与写入放在同一条条件 UPDATE 里，避免「检查完到写入之间被改目标」
         的竞态。
         """
+        if outcome not in RUN_OUTCOMES:
+            raise TianshuError(
+                f"未知 outcome：{outcome}（可选 {sorted(RUN_OUTCOMES)}）"
+            )
+        if effect_state not in EFFECT_STATES:
+            raise TianshuError(
+                f"未知 effect_state：{effect_state}（可选 {sorted(EFFECT_STATES)}）"
+            )
         now = _now()
-        with self._tx():
+        with self._log.transaction() as tx:
             run = self.get_run(run_id)
             if run is None:
                 raise TianshuError(f"run 不存在：{run_id}")
@@ -232,13 +374,132 @@ class TaskStore:
                 " WHERE task_id=? AND active_run_id=?",
                 (now, run.task_id, run_id),
             )
-        return self.get_run(run_id)
+            tx.append(
+                run_id,
+                RUN_FINISH,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "outcome": outcome,
+                    "effect_state": effect_state,
+                },
+                task_id=run.task_id,
+            )
+            # Run 结束即交还工作区，下一个 Run 才拿得到租约
+            if self._leases is not None:
+                self._leases.release_run(run_id)
+        return self.get_run(run_id)  # type: ignore[return-value]
 
     def list_runs(self, task_id: str) -> list[Run]:
         rows = self._conn.execute(
             "SELECT * FROM runs WHERE task_id=? ORDER BY created_at", (task_id,)
         ).fetchall()
         return [self._row_to_run(r) for r in rows]
+
+    # ---- 投影重建 ----
+
+    def rebuild_from_events(self) -> None:
+        """按事件重建 tasks/runs 投影。事件是事实源，投影是可丢的缓存。
+
+        只对"状态变更都记了事件"的库成立。PR #7 之前建的库只有投影表、
+        没有对应事件，重建会把它们清空——那种库只能当只读历史，不能重建。
+        """
+        events = self._log.read_types(
+            [TASK_CREATED, TASK_REVISED, RUN_START, RUN_FINISH, RUN_FENCED]
+        )
+        tasks: dict[str, dict[str, Any]] = {}
+        runs: dict[str, dict[str, Any]] = {}
+
+        for ev in events:
+            p = ev.payload
+            if ev.type == TASK_CREATED:
+                tasks[p["task_id"]] = {
+                    "task_id": p["task_id"],
+                    "goal": p["goal"],
+                    "goal_revision": p["goal_revision"],
+                    "lease_epoch": p["lease_epoch"],
+                    "active_run_id": None,
+                    "status": "open",
+                    "workspaces": json.dumps(
+                        [
+                            b.to_dict()
+                            for b in parse_bindings(p.get("workspaces") or [])
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    "created_at": ev.ts,
+                    "updated_at": ev.ts,
+                }
+            elif ev.type == TASK_REVISED:
+                t = tasks.get(p["task_id"])
+                if t is None:
+                    continue
+                t.update(
+                    goal=p["goal"],
+                    goal_revision=p["goal_revision"],
+                    lease_epoch=p["lease_epoch"],
+                    active_run_id=None,
+                    updated_at=ev.ts,
+                )
+            elif ev.type == RUN_START:
+                runs[p["run_id"]] = {
+                    "run_id": p["run_id"],
+                    "task_id": p["task_id"],
+                    "goal_revision": p["goal_revision"],
+                    "lease_epoch": p["lease_epoch"],
+                    "state": "created",
+                    "outcome": None,
+                    "effect_state": None,
+                    "created_at": ev.ts,
+                    "ended_at": None,
+                }
+                t = tasks.get(p["task_id"])
+                if t is not None:
+                    t["active_run_id"] = p["run_id"]
+                    t["updated_at"] = ev.ts
+            elif ev.type == RUN_FINISH:
+                r = runs.get(p["run_id"])
+                if r is None:
+                    continue
+                r.update(
+                    state=p["outcome"],
+                    outcome=p["outcome"],
+                    effect_state=p["effect_state"],
+                    ended_at=ev.ts,
+                )
+                t = tasks.get(p["task_id"])
+                if t is not None and t["active_run_id"] == p["run_id"]:
+                    t["active_run_id"] = None
+                    t["updated_at"] = ev.ts
+            elif ev.type == RUN_FENCED:
+                r = runs.get(p["run_id"])
+                if r is None:
+                    continue
+                r.update(state="fenced", ended_at=ev.ts)
+                t = tasks.get(r["task_id"])
+                if t is not None and t["active_run_id"] == p["run_id"]:
+                    t["active_run_id"] = None
+                    t["updated_at"] = ev.ts
+
+        with self._log.transaction():
+            self._conn.execute("DELETE FROM tasks")
+            self._conn.execute("DELETE FROM runs")
+            for t in tasks.values():
+                self._conn.execute(
+                    "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
+                    " active_run_id, status, workspaces, created_at, updated_at)"
+                    " VALUES (:task_id,:goal,:goal_revision,:lease_epoch,"
+                    " :active_run_id,:status,:workspaces,:created_at,:updated_at)",
+                    t,
+                )
+            for r in runs.values():
+                self._conn.execute(
+                    "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
+                    " state, outcome, effect_state, created_at, ended_at)"
+                    " VALUES (:run_id,:task_id,:goal_revision,:lease_epoch,"
+                    " :state,:outcome,:effect_state,:created_at,:ended_at)",
+                    r,
+                )
 
     # ---- 行映射 ----
 
@@ -251,7 +512,7 @@ class TaskStore:
             lease_epoch=row["lease_epoch"],
             active_run_id=row["active_run_id"],
             status=row["status"],
-            workspaces=json.loads(row["workspaces"]),
+            workspaces=parse_bindings(json.loads(row["workspaces"])),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -272,4 +533,12 @@ class TaskStore:
         )
 
 
-__all__: list[Any] = ["TaskStore", "Task", "Run", "RunFenced", "TERMINAL_STATES"]
+__all__: list[Any] = [
+    "TaskStore",
+    "Task",
+    "Run",
+    "RunFenced",
+    "TERMINAL_STATES",
+    "RUN_OUTCOMES",
+    "EFFECT_STATES",
+]

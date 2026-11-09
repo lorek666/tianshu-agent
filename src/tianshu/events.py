@@ -9,11 +9,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,46 @@ class Event:
     idem_key: str | None
 
 
+class EventTransaction:
+    """一个已打开的写事务。
+
+    用途：状态投影（tasks/runs/leases）与事件必须同一次提交。各服务不再自己
+    新开连接、自己 `BEGIN`，否则两个服务无法组合成一个事务，只能写半份状态。
+    """
+
+    __slots__ = ("_log",)
+
+    def __init__(self, log: EventLog) -> None:
+        self._log = log
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        return self._log.conn
+
+    def append(
+        self,
+        run_id: str,
+        type: str,
+        payload: dict[str, Any],
+        *,
+        task_id: str | None = None,
+        actor_kind: str = "core",
+        actor_id: str = "",
+        parent_seq: int | None = None,
+        idem_key: str | None = None,
+    ) -> int:
+        return self._log.append(
+            run_id,
+            type,
+            payload,
+            task_id=task_id,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            parent_seq=parent_seq,
+            idem_key=idem_key,
+        )
+
+
 class EventLog:
     """单 writer 的 append-only 事件日志。"""
 
@@ -95,6 +136,7 @@ class EventLog:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(_SCHEMA)
+        self._tx_depth = 0
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -103,6 +145,43 @@ class EventLog:
         桌面单用户场景下，一个写者一个连接，避免多连接互相抢锁。
         """
         return self._conn
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._tx_depth > 0
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[EventTransaction]:
+        """跨存储的可组合写事务。
+
+        已在事务中时**不重复 BEGIN**（SQLite 不允许嵌套），而是复用外层事务；
+        这样 TaskStore + LeaseStore + 事件可以一次提交，异常一起回滚。
+        """
+        if self._tx_depth:
+            self._tx_depth += 1
+            try:
+                yield EventTransaction(self)
+            finally:
+                self._tx_depth -= 1
+            return
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        self._tx_depth = 1
+        try:
+            yield EventTransaction(self)
+        except BaseException:
+            self._tx_depth = 0
+            with contextlib.suppress(sqlite3.Error):
+                self._conn.execute("ROLLBACK")
+            raise
+        self._tx_depth = 0
+        try:
+            self._conn.execute("COMMIT")
+        except BaseException:
+            # 提交失败时事务可能仍然开着；不清理会让下一次 BEGIN 直接报错。
+            with contextlib.suppress(sqlite3.Error):
+                self._conn.execute("ROLLBACK")
+            raise
 
     # ---- 写 ----
 
@@ -164,14 +243,8 @@ class EventLog:
         用途：result 与 receipt 必须同生同死——只写出 result 没写 receipt，
         就产生"记为已执行但无凭据"的窗口。
         """
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            ids = [self.append(**item) for item in items]
-            self._conn.execute("COMMIT")
-            return ids
-        except BaseException:
-            self._conn.execute("ROLLBACK")
-            raise
+        with self.transaction() as tx:
+            return [tx.append(**item) for item in items]
 
     # ---- 读 ----
 
@@ -180,6 +253,17 @@ class EventLog:
             "SELECT * FROM events WHERE run_id = ? ORDER BY seq", (run_id,)
         ).fetchall()
         return [self._row_to_event(r, verify=verify) for r in rows]
+
+    def read_types(self, types: Iterable[str]) -> list[Event]:
+        """按类型读事件（跨 run）。投影重建用。"""
+        wanted = list(types)
+        if not wanted:
+            return []
+        marks = ",".join("?" * len(wanted))
+        rows = self._conn.execute(
+            f"SELECT * FROM events WHERE type IN ({marks}) ORDER BY seq", wanted
+        ).fetchall()
+        return [self._row_to_event(r, verify=True) for r in rows]
 
     def all_event_types(self) -> Iterable[str]:
         for r in self._conn.execute("SELECT DISTINCT type FROM events"):
