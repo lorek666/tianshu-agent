@@ -37,7 +37,6 @@ def _latest_run_id(log: EventLog) -> str:
 
 def test_evaluate_calls_model_and_replay_does_not(tmp_path, capsys):
     workdir = tmp_path / "eval"
-    out = tmp_path / "baseline.json"
     code = main(
         [
             "evaluate",
@@ -48,8 +47,6 @@ def test_evaluate_calls_model_and_replay_does_not(tmp_path, capsys):
             "--workdir",
             str(workdir),
             "--keep",
-            "--out",
-            str(out),
             "--json",
         ]
     )
@@ -77,25 +74,35 @@ def test_evaluate_calls_model_and_replay_does_not(tmp_path, capsys):
     assert total_after == total_before, "replay 往事件库里写了新事件：它不该调模型"
     assert model_after == model_before, "replay 调用了模型：审计与评测混了"
 
-    # 落盘的是报告本体，可以直接当下一次的 --baseline
-    saved = json.loads(out.read_text(encoding="utf-8"))
-    assert saved["schema"] == "tianshu.eval.v1"
-    assert saved["verdict"] == "pass"
+    # 更强的静态证据：replay 的 API 里根本没有模型入口，也不 import 模型模块。
+    # （不能只搜源码里的 "model" 字样：docstring 里就写着 model.intent。）
+    import ast as _ast
+    import inspect as _inspect
+
+    import tianshu.replay as replay_mod
+
+    assert list(_inspect.signature(replay_mod.replay).parameters) == ["log", "run_id"]
+    source = _inspect.getsource(replay_mod)
+    imported: set[str] = set()
+    for node in _ast.walk(_ast.parse(source)):
+        if isinstance(node, _ast.ImportFrom):
+            imported.add(node.module or "")
+        elif isinstance(node, _ast.Import):
+            imported.update(alias.name for alias in node.names)
+    assert not any(module.endswith("model") for module in imported), imported
 
 
 def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys):
-    workdir_a = tmp_path / "eval-a"
+    # 完整 20 条才有资格当"可比报告"；子集只用于冒烟（见下一条测试）。
     baseline = tmp_path / "a.json"
     assert (
         main(
             [
                 "evaluate",
-                "--case",
-                "N1",
                 "--repeat",
                 "3",
                 "--workdir",
-                str(workdir_a),
+                str(tmp_path / "eval-a"),
                 "--out",
                 str(baseline),
             ]
@@ -107,8 +114,6 @@ def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys):
     code = main(
         [
             "evaluate",
-            "--case",
-            "N1",
             "--repeat",
             "3",
             "--workdir",
@@ -123,6 +128,9 @@ def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys):
     comparison = json.loads(captured.out)["compare"]
     assert comparison["comparable"] is True
     assert comparison["summary"]["delta"] == 0.0
+    saved = json.loads(baseline.read_text(encoding="utf-8"))
+    assert saved["schema"] == "tianshu.eval.v1"
+    assert saved["selection"]["complete"] is True
 
 
 def test_cli_refuses_repeat_below_three(tmp_path, capsys):
@@ -276,3 +284,22 @@ def test_cli_maps_unsafe_verdict_to_exit_code_four(tmp_path, capsys, monkeypatch
         ]
     )
     assert code == 4
+
+
+def test_cli_refuses_subset_report_as_formal_artifact(tmp_path, capsys):
+    """子集报告的安全门槛只覆盖选中的几条：不能写出去当"可比分数"。"""
+    for extra in (["--out", str(tmp_path / "x.json")], ["--baseline", "whatever.json"]):
+        code = main(
+            [
+                "evaluate",
+                "--case",
+                "N1",
+                "--repeat",
+                "3",
+                "--workdir",
+                str(tmp_path / f"eval-{len(extra)}"),
+                *extra,
+            ]
+        )
+        assert code == 2
+        assert "子集" in capsys.readouterr().err

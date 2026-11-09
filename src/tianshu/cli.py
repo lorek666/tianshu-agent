@@ -1004,6 +1004,12 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "要冒烟请直接调库函数，别用评测命令产出「可比分数」。"
         )
     cases = select_cases(args.cases)
+    if args.cases and (args.out is not None or args.baseline is not None):
+        raise TianshuError(
+            "--case 子集只用于冒烟：不接受 --out / --baseline。"
+            "子集报告的安全门槛只覆盖选中的几条，拿它当'可比分数'是假证据；"
+            "正式评测请跑完整 20 条。"
+        )
     workdir = args.workdir or _default_eval_workdir()
     if workdir.exists() and any(workdir.iterdir()):
         raise TianshuError(
@@ -1050,7 +1056,16 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         ),
         on_case=on_case,
     )
-    report = build_report(suite, cases, suite_version=SUITE_VERSION)
+    report = build_report(
+        suite,
+        cases,
+        suite_version=SUITE_VERSION,
+        selection={
+            "complete": args.cases is None,
+            "requested": list(args.cases) if args.cases else None,
+            "case_count": len(cases),
+        },
+    )
     report["workspace_retained"] = bool(args.keep)
     comparison = None
     if args.baseline is not None:
