@@ -256,6 +256,17 @@ class EventLog:
 
     # ---- 读 ----
 
+    def seqs_in_range(self, start: int, end: int) -> set[int]:
+        """[start, end] 区间里实际存在的 seq。
+
+        给回放校验用：判断"全库序号有没有缺口"不该让别的模块直接摸 `_conn`，
+        那样每个用的人都在赌内部结构不变。
+        """
+        rows = self._conn.execute(
+            "SELECT seq FROM events WHERE seq BETWEEN ? AND ?", (start, end)
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def read_run(self, run_id: str, *, verify: bool = True) -> list[Event]:
         rows = self._conn.execute(
             "SELECT * FROM events WHERE run_id = ? ORDER BY seq", (run_id,)

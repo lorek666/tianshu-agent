@@ -342,6 +342,18 @@ class Dispatcher:
             approval_id=row["approval_id"],
         )
 
+    def request_ids_for_run(self, run_id: str) -> list[str]:
+        """这个 Run 签发过的请求号（按时间顺序）。
+
+        恢复时要用它回答一个问题："同一个动作是不是已经有一张请求/审批在库里
+        了？" 只靠游标不够——崩溃窗口里游标可能还没记下请求号。
+        """
+        rows = self._conn.execute(
+            "SELECT request_id FROM dispatch_requests WHERE run_id=? ORDER BY created_at",
+            (run_id,),
+        ).fetchall()
+        return [r["request_id"] for r in rows]
+
     def waiting(self, *, run_id: str | None = None) -> list[StoredRequest]:
         if run_id is None:
             rows = self._conn.execute(

@@ -646,9 +646,14 @@ def test_cli_task_create_start_status_and_cancel(env, tmp_path):
     assert code == 0
     assert _json.loads(out) == []
 
-    # 已结束的 Run 再取消：请求是幂等的，不会把终态改写
+    # 已结束的 Run 再取消：终态不会被改写，但也不能说"已取消"——
+    # 那是撒谎（它可能是成功结束的），退出码必须是失败。
     code, out = _cli("run", "cancel", "--run-id", run_id, "--db", db)
-    assert code == 0, out
+    assert code == 1, out
+    assert "没有取消" in out
+    assert _json.loads(_cli("run", "status", "--run-id", run_id, "--db", db, "--json")[1])[
+        "state"
+    ] == "succeeded", "取消不得改写终态"
 
 
 def test_cli_revise_fences_old_run(env, tmp_path):
@@ -979,3 +984,356 @@ def test_dispatch_time_rejection_still_gets_a_result_event(env):
 
     report = replay_run(env.log, result.run_id)
     assert report.ok, report.problems
+
+
+# ---------------------------------------------------------------- 独立复审的五个阻断项
+
+
+def test_cancel_confirmed_at_safe_point_closes_run_with_run_end(env):
+    """取消确认之后 Run 必须留下 run.end，而且不能把成功取消报成收尾失败。
+
+    反例（真实存在过）：`confirm_control` 把 Run 收尾并**有意**取消作业，
+    紧接着 `_safe_point` 还想写游标 → claim 已失效 → JobLost → 主循环把它
+    当成"收尾被拒绝"报出去。用户正常取消一次，看到的是错误。
+    """
+    engine = env.engine([_write_turn([_create("a.md", "甲", "c1")]), _end()])
+    task = env.task()
+
+    def hook(run_id: str, call_id: str) -> None:
+        env.stack.tasks.request_cancel(run_id)
+
+    env.dispatcher.hook = hook
+    result = engine.start(task.task_id)
+    env.dispatcher.hook = None
+
+    assert result.state == "cancelled"
+    assert result.outcome == "cancelled"
+    assert result.error is not None and "取消" in result.error
+    assert "收尾被拒绝" not in (result.error or ""), "正常取消不是收尾失败"
+    ends = [e.payload for e in env.log.read_run(result.run_id) if e.type == "run.end"]
+    assert len(ends) == 1, "取消必须留下 run.end（M0 的 S3 对取消也成立）"
+    assert ends[0]["outcome"] == "cancelled"
+    assert ends[0]["effect_state"] == "applied", "已经发生的那次写入要如实记账"
+    assert ends[0]["artifact"], "产物也要一起记下来"
+    assert ends[0]["receipt_ids"], "凭据索引不能丢"
+
+
+def test_cancel_from_control_plane_on_paused_run_writes_run_end(env):
+    """CLI 直接取消（没有主循环在场）同样要写 run.end。"""
+    engine = env.engine([_write_turn([_overwrite("note.md", "新内容", "c1")])])
+    task = env.task()
+    waiting = engine.start(task.task_id)
+    assert waiting.state == RUN_WAITING_APPROVAL
+
+    cancelled = env.stack.tasks.request_cancel(waiting.run_id)
+    assert cancelled.state == "cancelled"
+    ends = [e.payload for e in env.log.read_run(waiting.run_id) if e.type == "run.end"]
+    assert len(ends) == 1
+    assert ends[0]["outcome"] == "cancelled"
+    assert ends[0]["error"] == "取消：已停止派发新的副作用（已发生的修改不撤回）"
+
+
+def test_pause_cannot_displace_queued_cancel(env):
+    """取消排队之后，后到的暂停不能把它顶掉。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING)
+
+    assert env.stack.tasks.request_cancel(run.run_id).control_requested == "cancel"
+    after = env.stack.tasks.request_pause(run.run_id)
+    assert after.control_requested == "cancel", "取消不能被暂停降级"
+    assert after.state == RUN_RUNNING, "还没到安全点，状态不能先变"
+
+    controls = [
+        e.payload for e in env.log.read_run(run.run_id) if e.type == "run.control"
+    ]
+    assert [c["action"] for c in controls] == ["cancel", "pause"]
+    assert controls[1]["request_effective"] is False, "没生效的请求要如实记下来"
+    assert controls[1]["stronger_request"] == "cancel"
+
+
+def test_reconciling_run_can_be_cancelled_immediately(env):
+    """RECONCILING 没有驱动者在跑，取消必须就地生效，不能让人等一个不存在的安全点。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, "reconciling", reason="inflight_dispatch")
+
+    cancelled = env.stack.tasks.request_cancel(run.run_id)
+    assert cancelled.state == "cancelled"
+    assert cancelled.control_requested is None
+
+
+def test_foreign_live_owner_blocks_resume_in_any_state(env):
+    """别的实例还活着就不可能 resume，不管这个 Run 当前是 running 还是 paused。
+
+    反例（真实存在过）：只在 state==RUNNING 时拒绝。于是"暂停 + 作业仍被
+    另一个活实例持有"的 Run 会被第三个实例改成 RUNNING，然后卡在既没 owner
+    也没人能接手的状态上。
+    """
+    from tianshu.loop import AgentLoop
+
+    engine = env.engine([_write_turn([_overwrite("note.md", "新内容", "c1")])])
+    task = env.task()
+    waiting = engine.start(task.task_id)
+    assert waiting.state == RUN_WAITING_APPROVAL
+
+    # 人工暂停（就地生效），但作业仍归这个实例、且它活着
+    assert env.stack.tasks.request_pause(waiting.run_id).state == RUN_PAUSED
+    job = env.stack.claims.job_for_run(waiting.run_id)
+    assert env.stack.claims.is_live(job), "前提：作业仍被活着的实例持有"
+
+    # 换一个进程实例身份（同一个真实 pid，但 instance_id 不同）
+    takers = build_stack(
+        env.log,
+        data_root=env.root / "authority",
+        clock=env.clock,
+        identity=ProcessIdentity.mint(),
+    )
+    other = AgentLoop(
+        tasks=takers.tasks,
+        leases=takers.leases,
+        claims=takers.claims,
+        dispatcher=takers.dispatcher,
+        approvals=takers.approvals,
+        snapshots=takers.snapshots,
+        model=ScriptedModel([_end()]),
+        limits=Limits(8, 20_000),
+    )
+    with pytest.raises(TianshuError) as ei:
+        other.resume_run(waiting.run_id)
+    assert "另一个实例" in str(ei.value)
+    assert env.stack.tasks.get_run(waiting.run_id).state == RUN_PAUSED, "状态不许被改"
+    assert job.claim_epoch == env.stack.claims.job_for_run(waiting.run_id).claim_epoch
+
+
+def test_effect_counts_are_not_double_counted_when_cursor_lags(env):
+    """游标落后时"改了几个文件"不能虚高。
+
+    `_index_events` 已经按事件数过一遍，`_absorb` 在补消息时又加一次，
+    于是两次写入变成"applied=3"。effect_state 看不出这个错，只有计数露馅。
+    """
+    engine = env.engine([
+        _write_turn([_create("a.md", "甲", "c1"), _create("b.md", "乙", "c2")]),
+        _end(),
+    ])
+    task = env.task()
+
+    def hook(run_id: str, call_id: str) -> None:
+        if call_id == "c1":
+            env.stack.tasks.request_pause(run_id)
+
+    env.dispatcher.hook = hook
+    result = engine.start(task.task_id)
+    env.dispatcher.hook = None
+    assert result.state == RUN_PAUSED and result.n_applied == 1
+
+    # 把游标退回到"两个调用都还没做"的崩溃形状
+    stored = env.stack.tasks.load_cursor(result.run_id)
+    stale = stored[0]
+    stale.messages = stale.messages[:3]
+    stale.completed_call_ids = []
+    stale.pending_proposals = [
+        {
+            "call_id": "c1", "tool_id": "create_report",
+            "args": {"name": "a.md", "content": "甲"}, "kind": "write",
+            "request_id": None, "approval_id": None, "attempt_id": 1,
+        },
+        {
+            "call_id": "c2", "tool_id": "create_report",
+            "args": {"name": "b.md", "content": "乙"}, "kind": "write",
+            "request_id": None, "approval_id": None, "attempt_id": 1,
+        },
+    ]
+    env.log.conn.execute(
+        "UPDATE run_cursors SET payload=? WHERE run_id=?",
+        (canonical_bytes(stale.to_dict()).decode("utf-8"), result.run_id),
+    )
+
+    resumed = env.engine([_end()]).resume_run(result.run_id)
+    assert resumed.state == "succeeded", resumed.error
+    assert resumed.n_applied == 2, "两次写入只能数成两次"
+    effects = [e.payload for e in env.log.read_run(result.run_id) if e.type == "run.effect"]
+    assert effects[-1]["n_applied"] == 2
+    end = [e.payload for e in env.log.read_run(result.run_id) if e.type == "run.end"][-1]
+    assert end["effect_state"] == "applied"
+
+
+def test_reused_call_id_is_not_silently_dropped(env):
+    """模型复用 call_id 时，第二次调用必须明确告知，不能悄悄消失。
+
+    静默丢掉会留下一个没有 tool 消息的 assistant tool_call（多数 provider
+    下一轮直接 400），而 Run 还记成 succeeded。
+    """
+    engine = env.engine([
+        _write_turn([_create("a.md", "甲", "call_1")]),
+        _write_turn([_create("b.md", "乙", "call_1")]),
+        _end(),
+    ])
+    task = env.task()
+    result = engine.start(task.task_id)
+
+    assert not (env.ws / "b.md").exists(), "重复编号的第二次调用不该执行"
+    skipped = [
+        e.payload for e in env.log.read_run(result.run_id)
+        if e.type == "tool.not_dispatched"
+    ]
+    assert skipped and "call_id" in skipped[0]["reason"]
+    # 每一次 assistant tool_call 都必须有对应的 tool 消息，否则下一轮会被拒
+    cursor = env.stack.tasks.load_cursor(result.run_id)[0]
+    answered = {m["tool_call_id"] for m in cursor.messages if m.get("role") == "tool"}
+    asked = {
+        call["id"]
+        for m in cursor.messages if m.get("role") == "assistant"
+        for call in (m.get("tool_calls") or [])
+    }
+    assert asked == answered, f"悬空 tool_call：{asked - answered}"
+
+
+def test_rebuild_keeps_queued_control_request(env):
+    """重建投影不能把"已排队、还没到安全点"的请求抹掉。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING)
+    env.stack.tasks.request_pause(run.run_id)
+    # 随后因为别的原因过一次状态迁移（这里模拟 _advance 转 waiting_approval）
+    env.stack.tasks.transition(run.run_id, RUN_WAITING_APPROVAL, reason="approval_pending")
+
+    before = env.stack.tasks.get_run(run.run_id)
+    assert before.control_requested == "pause", "请求还在排队"
+    env.stack.tasks.rebuild_from_events()
+    after = env.stack.tasks.get_run(run.run_id)
+    assert after.state == RUN_WAITING_APPROVAL
+    assert after.control_requested == "pause", "重建把排队的请求弄丢了"
+
+
+def test_finish_run_refuses_stopped_run(env):
+    """暂停/等审批/待核查的 Run 不能一句话被收尾成成功。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_PAUSED, reason="test")
+
+    with pytest.raises(RunFenced) as ei:
+        env.stack.tasks.finish_run(run.run_id, outcome="succeeded", effect_state="applied")
+    assert "resume" in str(ei.value)
+    assert env.stack.tasks.get_run(run.run_id).state == RUN_PAUSED
+
+
+def test_prepare_is_effectively_idempotent_across_crash(env):
+    """崩在 prepare 与 save_cursor 之间时，恢复不能给同一个动作再发一张审批。"""
+    engine = env.engine([_write_turn([_overwrite("note.md", "新内容", "c1")]), _end()])
+    task = env.task()
+    first = engine.start(task.task_id)
+    assert first.state == RUN_WAITING_APPROVAL
+    pending_before = env.stack.approvals.pending(run_id=first.run_id)
+    assert len(pending_before) == 1
+    old_request = pending_before[0].request_id
+
+    # 模拟"审批已建、游标还没写"：把游标退回到提案刚生成的样子
+    stored = env.stack.tasks.load_cursor(first.run_id)
+    stale = stored[0]
+    for proposal in stale.pending_proposals:
+        proposal["request_id"] = None
+        proposal["approval_id"] = None
+    env.log.conn.execute(
+        "UPDATE run_cursors SET payload=? WHERE run_id=?",
+        (canonical_bytes(stale.to_dict()).decode("utf-8"), first.run_id),
+    )
+
+    resumed = env.engine([_end()]).resume_run(first.run_id)
+    assert resumed.state == RUN_WAITING_APPROVAL
+    pending_after = env.stack.approvals.pending(run_id=first.run_id)
+    assert [a.request_id for a in pending_after] == [old_request], (
+        "同一个动作只能有一张待批"
+    )
+    assert len(env.stack.approvals.pending()) == 1
+
+
+def test_unbilled_model_intents_counts_events_not_request_ids(env):
+    """崩溃重发的那一轮沿用同一个 request_id：按 id 去重会把已付的钱抹成 0。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING)
+    # 两次 intent、一次 result（同一 request_id）——正是"模型调用中崩溃重发"
+    for _ in range(2):
+        env.log.append(
+            run.run_id, "model.intent",
+            {"request_id": "req_same", "attempt": 1, "messages_hash": "x"},
+            actor_kind="core", idem_key="req_same",
+        )
+    env.log.append(
+        run.run_id, "model.result",
+        {"request_id": "req_same", "finish_reason": "end_turn", "content": "ok"},
+        actor_kind="core", idem_key="req_same",
+    )
+    env.stack.tasks.finish_run(run.run_id, outcome="succeeded", effect_state="none_applied")
+
+    end = [e.payload for e in env.log.read_run(run.run_id) if e.type == "run.end"][0]
+    assert end["unbilled_model_intents"] == 1, "有一次已发生但没记账的调用"
+    assert end["budget_enforced"] is False, "有未记账调用时不能声称预算可信"
+
+
+def test_status_exit_code_follows_the_documented_contract(env):
+    """`run status` 的退出码必须和 README 一致，否则脚本没法区分"等你"和"完了"。"""
+    from tianshu.cli import _status_exit_code
+
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    assert _status_exit_code(env.stack.tasks.get_run(run.run_id)) == 0, "created"
+
+    env.stack.tasks.transition(run.run_id, RUN_PAUSED)
+    assert _status_exit_code(env.stack.tasks.get_run(run.run_id)) == 3, "暂停要人决定"
+
+    env.stack.tasks.request_cancel(run.run_id)
+    assert _status_exit_code(env.stack.tasks.get_run(run.run_id)) == 1, "取消是失败"
+
+    other = env.stack.tasks.start_run(env.task("子任务").task_id)
+    env.stack.tasks.finish_run(other.run_id, outcome="succeeded", effect_state="applied")
+    assert _status_exit_code(env.stack.tasks.get_run(other.run_id)) == 0, "成功"
+
+    fenced_task = env.task("会被改目标的")
+    fenced = env.stack.tasks.start_run(fenced_task.task_id)
+    env.stack.tasks.transition(fenced.run_id, RUN_RUNNING)
+    env.stack.tasks.revise_task(fenced_task.task_id, goal="新目标")
+    assert _status_exit_code(env.stack.tasks.get_run(fenced.run_id)) == 1, "fenced 也是失败"
+
+
+def test_repeated_pause_is_idempotent_not_a_downgrade(env):
+    """同一个暂停请求重复一次仍然算生效，不能被记成"被更强的请求压住"。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING)
+
+    assert env.stack.tasks.request_pause(run.run_id).control_requested == "pause"
+    again = env.stack.tasks.request_pause(run.run_id)
+    assert again.control_requested == "pause", "重复暂停不能把它自己撤掉"
+    controls = [
+        e.payload for e in env.log.read_run(run.run_id) if e.type == "run.control"
+    ]
+    assert [c["request_effective"] for c in controls] == [True, True]
+    assert all(c["stronger_request"] is None for c in controls)
+
+
+def test_safe_point_renews_the_claim(env):
+    """每个安全点都要续心跳。
+
+    少了这一步，一个"没人暂停、没人取消"的正常多轮任务会在若干轮之后
+    被别的 worker 接管——owner 还活着，只是没人给它续过期限。
+    """
+    calls: list = []
+    original = env.stack.claims.heartbeat
+
+    def counting(claim, **kwargs):
+        calls.append(claim.claim_epoch)
+        return original(claim, **kwargs)
+
+    env.stack.claims.heartbeat = counting
+    engine = env.engine([
+        _write_turn([_create("a.md", "甲", "c1")]),
+        _write_turn([_create("b.md", "乙", "c2")]),
+        _end(),
+    ])
+    task = env.task()
+    result = engine.start(task.task_id)
+    assert result.state == "succeeded", result.error
+    # 两个待办 + 收尾前各过一次安全点
+    assert len(calls) >= 2, f"安全点没续心跳（只续了 {len(calls)} 次）"

@@ -47,13 +47,7 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     seqs = [e.seq for e in events]
     if seqs != sorted(set(seqs)):
         problems.append("seq 不单调：存在重复或倒序的事件")
-    present = {
-        row[0]
-        for row in log._conn.execute(
-            "SELECT seq FROM events WHERE seq BETWEEN ? AND ?",
-            (seqs[0], seqs[-1]),
-        ).fetchall()
-    }
+    present = log.seqs_in_range(seqs[0], seqs[-1])
     gaps = sorted(set(range(seqs[0], seqs[-1] + 1)) - present)
     if gaps:
         problems.append(f"全局事件日志存在缺号，缺口：{gaps[:10]}")
