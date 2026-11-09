@@ -1,0 +1,167 @@
+{
+  "$id": "https://tianshu-agent/schemas/c4/rules.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "C4 RuleId",
+  "description": "C4 事件 payload 里 rule_id 的封闭集合（docs/PRD-v1.md §5.4.1）。rule_id 回答“为什么被拒/为什么放行”，是用户可见字段。这些是规则编号，不是事件类型——不要登记进 C3 的 EVENT_TYPES。rule_id.enum 与 src/tianshu/rules.py 的 RULE_IDS 由 tests/test_rule_ids.py 绑定，改一处忘另一处会红。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "rule_id": {
+      "type": "string",
+      "enum": [
+        "c4.approval_expired",
+        "c4.approval_mismatch",
+        "c4.approval_run_mismatch",
+        "c4.approval_state",
+        "c4.auto",
+        "c4.create_over_existing",
+        "c4.delete",
+        "c4.multi_resource",
+        "c4.no_approval",
+        "c4.no_binding",
+        "c4.no_resource",
+        "c4.outside_workspace",
+        "c4.outside_workspace_unsupported",
+        "c4.overwrite",
+        "c4.readonly_binding",
+        "c4.unhandled",
+        "c4.unsupported",
+        "dispatch.approval_revoked",
+        "dispatch.approval_unusable",
+        "dispatch.call_id_reused",
+        "dispatch.claim_lost",
+        "dispatch.claim_mismatch",
+        "dispatch.create_over_existing",
+        "dispatch.denied",
+        "dispatch.foreign_instance",
+        "dispatch.guard_timeout",
+        "dispatch.lease_lost",
+        "dispatch.no_parent",
+        "dispatch.no_task",
+        "dispatch.not_admitted",
+        "dispatch.not_running",
+        "dispatch.refused",
+        "dispatch.run_fenced",
+        "dispatch.stale_precondition",
+        "dispatch.stale_revision",
+        "dispatch.target_is_directory",
+        "dispatch.task_mismatch",
+        "dispatch.workspace_blocked"
+      ],
+      "description": "封闭集合。已登记但当前无产生路径：dispatch.denied, c4.unhandled（防御性兜底，见 rules.py 的 DECLARED_UNUSED_RULE_IDS）。非拒绝的判定结果：c4.auto, c4.overwrite, c4.delete, c4.outside_workspace。"
+    }
+  },
+  "required": [
+    "rule_id"
+  ],
+  "x-rule-descriptions": {
+    "c4.approval_expired": "批准已过期。",
+    "c4.approval_mismatch": "批准的动作摘要与本次请求不一致（参数/目标被改过）。",
+    "c4.approval_run_mismatch": "批准属于另一个 Run。",
+    "c4.approval_state": "批准不在可用状态（proposed/pending/rejected 等）。",
+    "c4.auto": "判定结果：目录内读/新建，自动放行。",
+    "c4.create_over_existing": "策略判定：新建动作的目标已存在，应改用覆盖类工具。",
+    "c4.delete": "判定结果：删除，需审批。",
+    "c4.multi_resource": "一次请求声明了多个资源，审批无法覆盖。",
+    "c4.no_approval": "该动作需要审批，但没有找到可用批准。",
+    "c4.no_binding": "任务没有绑定任何工作区（0 目录任务不能隐式获得 cwd 权限）。",
+    "c4.no_resource": "动作没有声明任何资源。",
+    "c4.outside_workspace": "判定结果：目录外访问，需审批。",
+    "c4.outside_workspace_unsupported": "目标在工作区之外，且当前后端不支持域外操作。",
+    "c4.overwrite": "判定结果：覆盖已有内容，属删除类操作，需审批。",
+    "c4.readonly_binding": "目标目录是只读绑定。",
+    "c4.unhandled": "保留未使用：策略分类的兜底分支，当前 SUPPORTED_ACTIONS 已全覆盖。",
+    "c4.unsupported": "动作不在支持的动作集合内。",
+    "dispatch.approval_revoked": "审批在派发瞬间已被撤销。",
+    "dispatch.approval_unusable": "审批对象存在但无法用于这次动作（已消费/已作废/不匹配）。",
+    "dispatch.call_id_reused": "同一 Run 内复用了已被其它参数占用的 call_id。",
+    "dispatch.claim_lost": "派发过程中 claim 失效（作业被接管或已终结）。",
+    "dispatch.claim_mismatch": "请求携带的 job claim 与库里记录的不一致（别人的或已过期）。",
+    "dispatch.create_over_existing": "新建动作的目标已存在（新建不允许覆盖）。",
+    "dispatch.denied": "保留未使用：DispatchDenied 的默认编号，当前无调用方使用。",
+    "dispatch.foreign_instance": "claim 属于另一个实例，本实例无权执行。",
+    "dispatch.guard_timeout": "执行守卫在限定时间内没有完成复核。",
+    "dispatch.lease_lost": "派发过程中工作区租约丢失。",
+    "dispatch.no_parent": "请求缺少可追溯的父身份（run/task 未绑定）。",
+    "dispatch.no_task": "请求引用的 Task 不存在。",
+    "dispatch.not_admitted": "工具未通过准入白名单。",
+    "dispatch.not_running": "Run 当前不在 running 状态（暂停/等待/已结束）。",
+    "dispatch.refused": "守卫内复核抛出未分类异常时的兜底拒绝。",
+    "dispatch.run_fenced": "Run 已被更新的目标/租约版本接管（fencing 生效）。",
+    "dispatch.stale_precondition": "目标在被批准之后被改动（前置条件失效）。",
+    "dispatch.stale_revision": "goal_revision 已过期，请求基于旧目标。",
+    "dispatch.target_is_directory": "目标是目录，而该动作只作用于文件。",
+    "dispatch.task_mismatch": "请求的 task_id 与该 Run 实际所属的 Task 不符。",
+    "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。"
+  },
+  "x-rule-groups": {
+    "身份失配": [
+      "dispatch.claim_mismatch",
+      "dispatch.foreign_instance",
+      "dispatch.no_parent",
+      "dispatch.no_task",
+      "dispatch.not_running",
+      "dispatch.run_fenced",
+      "dispatch.stale_revision",
+      "dispatch.task_mismatch"
+    ],
+    "审批不可用": [
+      "c4.approval_expired",
+      "c4.approval_mismatch",
+      "c4.approval_run_mismatch",
+      "c4.approval_state",
+      "c4.multi_resource",
+      "c4.no_approval",
+      "dispatch.approval_revoked",
+      "dispatch.approval_unusable"
+    ],
+    "租约与作业": [
+      "dispatch.call_id_reused",
+      "dispatch.claim_lost",
+      "dispatch.guard_timeout",
+      "dispatch.lease_lost"
+    ],
+    "准入": [
+      "dispatch.not_admitted"
+    ],
+    "前置条件": [
+      "dispatch.stale_precondition"
+    ],
+    "目标不合法": [
+      "c4.create_over_existing",
+      "dispatch.create_over_existing",
+      "dispatch.target_is_directory"
+    ],
+    "工作区阻断": [
+      "c4.no_binding",
+      "c4.no_resource",
+      "c4.outside_workspace_unsupported",
+      "c4.readonly_binding",
+      "dispatch.workspace_blocked"
+    ],
+    "判定结果（非拒绝）": [
+      "c4.auto",
+      "c4.delete",
+      "c4.outside_workspace",
+      "c4.overwrite"
+    ],
+    "兜底": [
+      "c4.unsupported",
+      "dispatch.refused"
+    ],
+    "保留未使用": [
+      "c4.unhandled",
+      "dispatch.denied"
+    ]
+  },
+  "x-declared-unused": [
+    "c4.unhandled",
+    "dispatch.denied"
+  ],
+  "x-decision-rule-ids": [
+    "c4.auto",
+    "c4.delete",
+    "c4.outside_workspace",
+    "c4.overwrite"
+  ]
+}

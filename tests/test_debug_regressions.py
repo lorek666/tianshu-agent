@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from support import tool_capable_profile
 
 from tianshu.errors import WorkspaceBlocked
 from tianshu.events import EventLog
@@ -245,6 +246,10 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
 class _FailingModel:
     """传输层失败的替身：抛 ModelError，而不是伪造一个 finish_reason。"""
 
+    def capability_profile(self):
+        # F9a：准入要求每个模型如实声明能力（没声明会被拒绝，不是"先试试看"）。
+        return tool_capable_profile("test-double", "_FailingModel")
+
     def complete(self, messages, tools):  # noqa: ANN001, ARG002
         raise ModelError.from_http(500, "upstream exploded")
 
@@ -255,14 +260,21 @@ def test_m3_provider_error_is_failure_not_noop(tmp_path):
     log = EventLog(tmp_path / "e.db")
     result = run(
         task="t", workspace_dir=ws, out_name="r.md",
-        model=_FailingModel(), log=log, limits=Limits(4, 1000),
+        model=_FailingModel(), log=log,
+        # F9a 起 5xx 是可重试错误：3 次尝试都会失败。退避置 0 让用例不睡觉
+        # （退避序列本身由 test_capability 用注入的 sleeper 验）。
+        limits=Limits(4, 1000, retry_backoff_ms=0),
     )
     assert result.outcome == "failed"
     assert "HTTP 500" in (result.error or "")
-    # 错误类别要落到事件里：事后才能判断该重试还是该换 key
+    assert "3 次都失败" in (result.error or ""), "重试耗尽必须说清尝试次数"
+    # 错误类别要落到事件里：事后才能判断该重试还是该换 key。
+    # 每次 attempt 一条：3 次尝试 = 3 条，这是审计要的粒度。
     errors = [e for e in log.read_run(result.run_id) if e.type == "model.error"]
-    assert len(errors) == 1
+    assert len(errors) == 3
+    assert [e.payload["attempt"] for e in errors] == [1, 2, 3]
     assert "kind=http_status" in errors[0].payload["error"]
+    assert errors[0].payload["retryable"] is True
     log.close()
 
 

@@ -769,11 +769,15 @@ def test_directory_target_is_refused_by_policy(env, tool_id, args):
 
 
 def test_directory_target_is_a_tool_result_not_a_run_failure(tmp_path):
-    """三种写工具指向目录：模型收到的是工具结果，整轮 run 不该被判失败。
+    """模型能碰到的写工具指向目录：模型收到的是工具结果，整轮 run 不该被判失败。
 
     复审复现的缺口：`observe_state` 读目录抛 IsADirectoryError，异常冒到
     loop 的兜底 `except Exception`，run 直接 failed——模型连"这是目录"都
     看不到，更没法自我修正。
+
+    `restore_file` 不再出现在这条路径上：它是内部工具（exposed=False），
+    模型提案也不会被派发（见 `test_internal_tool_not_dispatched`）。它自己
+    的目录拒绝由 `test_directory_target_is_refused_by_policy` 在派发层覆盖。
     """
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -785,6 +789,7 @@ def test_directory_target_is_a_tool_result_not_a_run_failure(tmp_path):
                 tool_calls=[
                     ToolCall("c1", "delete_file", {"path": "."}),
                     ToolCall("c2", "modify_text", {"path": ".", "content": "x"}),
+                    # 内部工具：提案可以出现，但不该被派发，也不该让整轮失败
                     ToolCall(
                         "c3", "restore_file", {"path": ".", "content_b64": "aGk="}
                     ),
@@ -810,8 +815,16 @@ def test_directory_target_is_a_tool_result_not_a_run_failure(tmp_path):
             for e in log.read_run(result.run_id)
             if e.type == "tool.result"
         ]
-        assert [r["status"] for r in results] == ["rejected"] * 3
+        assert [r["status"] for r in results] == ["rejected"] * 2
         assert all("目录" in r["output"]["error"] for r in results)
+        # 内部工具没有被派发：没有 tool.result，只有一条留痕
+        skipped = [
+            e.payload
+            for e in log.read_run(result.run_id)
+            if e.type == "tool.not_dispatched"
+        ]
+        assert [s["call_id"] for s in skipped] == ["c3"]
+        assert "内部工具" in skipped[0]["reason"]
     finally:
         log.close()
 
