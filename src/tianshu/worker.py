@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -65,6 +66,17 @@ from .tasks import (
 
 #: 一次 `drain` 最多跑多少个作业。防的是"队列里有一万个作业，进程再也不回来"。
 MAX_JOBS_PER_DRAIN = 64
+
+#: 撞上别人的工作区租约时，最多等几轮再放弃。
+#:
+#: 交还作业本身是对的（那是"排队"，不是故障），但**交还完立刻放手**会留下
+#: 一个没人捡的作业：持有者最后一次扫描时看到的还是"这个作业被活人占着"，
+#: 于是它判定队空退出；之后交还才落到 `pending`，而这时已经没有活着的
+#: worker 了（issue #31 的红就是这么来的）。所以这里等一小会儿再看。
+MAX_CONTENTION_WAITS = 20
+
+#: 每次等多久。这是**排队**不是忙等：持有者正在写盘，等的时候无事可做。
+CONTENTION_WAIT_MS = 25
 
 
 class HeartbeatLoop:
@@ -256,18 +268,39 @@ class Worker:
 
         `exhausted` 记录"这一趟是不是因为没活干了才停"：只有它成立才敢对外
         说 `idle`——否则 `--max-jobs 1` 跑满上限时也会自称空闲，而队里还有活。
+
+        **这不等于"队列已经清空"的保证。** 撞上别人的工作区租约会交还作业
+        （见模块注释第 3 条）：这种情况下这里会等一小会儿再试（最多
+        `MAX_CONTENTION_WAITS` 轮）；等不到就带着 `exhausted=False` 返回，
+        语义是"我还有活没干完，你隔一会儿再来"。
+
+        调用方必须按 `exhausted`（CLI 里就是 `idle`）决定要不要再调一次，
+        **不能把一次 `drain()` 当成"队列已空"**。issue #31 就是这么红的：
+        测试只调一次 drain、随后断言 5 个作业全都写完，而"一次 drain 清空
+        队列"从来不是这里提供的性质。
         """
         done: list[str] = []
         self.exhausted = False
-        for _ in range(max(1, max_jobs)):
+        budget = max(1, max_jobs)
+        waits = 0
+        # 等待不该吃掉作业预算，但也不能无限转：上限 = 预算 + 允许的等待轮数。
+        for _ in range(budget + MAX_CONTENTION_WAITS + 1):
+            if len(done) >= budget:
+                return done
             if not self.run_once():
                 self.exhausted = True
-                break
-            done.append(self.run_ids[-1])
-            if self.contended:
-                # 这一趟再认领下去只会把整队作业一个个交还：先停下来，
-                # 让持有工作区的那个 Run 跑完。调用方隔一会儿再来。
-                break
+                return done
+            # 交还过的 Run 会在 run_ids 里反复出现（认领→交还→再认领），
+            # 报给调用方时去掉重复：同一个 Run 列三遍会让人以为跑了三次。
+            if self.run_ids[-1] not in done:
+                done.append(self.run_ids[-1])
+            if not self.contended:
+                waits = 0
+                continue
+            if waits >= MAX_CONTENTION_WAITS:
+                return done
+            waits += 1
+            time.sleep(CONTENTION_WAIT_MS / 1000)
         return done
 
     def close(self) -> None:

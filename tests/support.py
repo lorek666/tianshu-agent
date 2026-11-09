@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tianshu.capability import CapabilityProfile
 from tianshu.events import EventLog
 from tianshu.loop import AgentLoop, Limits, Stack, build_stack
 from tianshu.model import Model
@@ -45,6 +46,20 @@ def engine_for(
     )
 
 
+def tool_capable_profile(provider: str, model: str = "test-double") -> CapabilityProfile:
+    """测试替身的能力声明（F9a：每个模型都要如实声明自己会什么）。
+
+    这些替身在用例里就是要返回工具调用的，所以声明 `tool_calling`；其余能力
+    留**未声明**——替身不假装自己没有的东西，未声明 ≠ 支持这条对它同样成立。
+    """
+    return CapabilityProfile(
+        provider=provider,
+        model=model,
+        supports_tool_calling=True,
+        declared_by="tests/support.py（测试替身）",
+    )
+
+
 def pending_approvals(stack: Stack, run_id: str) -> list[str]:
     return [a.approval_id for a in stack.approvals.pending(run_id=run_id)]
 
@@ -63,4 +78,5 @@ __all__ = [
     "engine_for",
     "pending_approvals",
     "stack_for",
+    "tool_capable_profile",
 ]
