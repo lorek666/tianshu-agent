@@ -249,3 +249,86 @@ PR #12 合并**之后**，一次独立复审（作者之外）才跑完，报告
   而不是看测试数量。
 - "测试通过"不等于"验收项通过"：88 个用例里没有一个真子进程，也没有一个 sleep 之外的
   时间控制手段，所以"跨进程"这四个字在 PR #7 里没有证据。
+---
+
+# 附：M2 · PR C · Task 6 端到端验收发现（§4.6）
+
+- 复审对象：`feat/m2-worker`（`e5cf172` 契约修订 + `af0da35` 实现），基线 `main@6cc985e`
+- 发现方式：按计划 Task 6 的验收项写**端到端**用例（真子进程 + 真 CLI），而不是再加
+  单元测试。三条缺陷都是"跑一遍主流程"就出现的，没有一条需要深挖代码。
+
+## 4.6.1 审批跨进程永远重批（阻断）
+
+**现象**（实测，非推演）：
+
+```text
+$ tianshu run start --task-id T      # 覆盖写入 → 需要审批
+退出码 3  state=waiting_approval  待批 ['appr_x']
+$ tianshu approvals approve appr_x
+$ tianshu run resume --run-id R      # 另一个进程
+退出码 3  state=waiting_approval  待批 ['appr_x', 'appr_y']   文件未改动
+```
+
+**根因**：`Approval.digest` 覆盖了 `job_id / owner_instance_id / claim_epoch`。
+README 写的主流程 `approvals approve` → `run resume` 每一步都是新进程，每次
+`claim_epoch +1`，所以旧批准**必然**作废。计划 §2.3 末句本来要求"不会形成每次
+resume 换 epoch、每次审批立即作废的循环"——旧实现没有兑现。
+
+**处置**：拆成两个摘要（`docs/PRD-v1.md` §5.4，提交 `e5cf172`）。审批绑动作；
+执行仍要求当前 claim/租约/revision 全部有效，且一次性消费。改参数/改目标/改绑定
+照样让旧审批 `superseded`。回归测试：
+`test_approval_survives_restart_and_executes_once`、
+`test_approval_survives_takeover_without_reapproval`。
+
+## 4.6.2 worker 驱动的 Run 没有写前快照清单（阻断）
+
+**现象**：`worker --once` 驱动一条写操作，在 `after_intent` 硬退；`recover` 报
+`无法核实 ['c1']` 并**永久**阻断该目录——即使什么都没写。
+
+**根因**：`init_run` 只在 `AgentLoop.start()` 里调用。worker / `run resume` 走的
+是 `resume_run`，不建清单；而 `recover` 的判据是"清单存在 + 无本条证据 = 未执行"，
+清单缺失直接被判成异常。
+
+**处置**：清单改由驱动方 `_drive()` 建（幂等）。回归测试：
+`test_m2_acceptance.py::test_recover_is_not_resume`。
+
+## 4.6.3 改过文件却记 noop（中等）
+
+**现象**：`modify_text` 成功的 Run，`run.end.outcome=noop`、`run.finish.outcome=succeeded`、
+`effect_state=applied`——三处各说一套，`jq '.outcome'` 的脚本会读错。
+
+**处置**：`noop` 只在 `effect_state=none_applied` 时成立，判断口径与 `_result()` 一致。
+
+## 4.6.4 并发认领的判定与写入不在同一事务（阻断）
+
+**现象**：4 个真子进程抢同一作业，稳定出现**两个进程都认为自己认领成功**：
+
+```text
+rc=1 ids=['run_x'] err=['正由另一个实例持有…', '结算未生效：挂起被拒绝…']
+rc=0 ids=['run_x'] err=[]
+```
+
+**根因**：`claim_next` 先读候选行（旧快照里是 `pending`），再调用 `claim()` 的条件
+UPDATE；而 `claim()` 是从**当前**行 `claim_epoch + 1`。A 刚提交 `epoch=1`，B 接着
+写成 `epoch=2`，两个 owner 都通过 `assert_claim`。
+
+**处置**：`claim_next` 用一次 `BEGIN IMMEDIATE` 包住"扫描 + 判定 + 认领"；
+`claim()` 默认拒绝从活着的 owner 手里接管（`take_over_live=True` 才允许，且判断
+发生在写事务内）。回归测试：`test_two_workers_claim_once`（4 子进程）、
+`test_job_claims.py` 全部。
+
+## 4.6.5 取消一个"等审批"的 Run 会留下永不结束的作业（中等）
+
+**根因**：`_finish_locked` 只收 `pending/claimed` 作业；新增的 `waiting` 没进去。
+
+**处置**：`waiting` 一起取消。回归测试：`test_run_control.py` 取消路径用例。
+
+## 4.6.6 流程意见（本轮）
+
+- 上一轮（§4.5）的教训是"先合并再复审"。本轮的实际顺序是：**先写端到端用例**，
+  再实现，再复审，**复审返回前不合并**。
+- 三条阻断项都不是"读代码能看出"的：它们是"把 README 的流程真跑一遍"才出现的。
+  这说明 M2 之前的 314 个用例**覆盖的是组件，不是用户路径**。以后每个 PR 至少要有
+  一条"从 CLI 进去、从文件出来"的用例。
+- 契约修订单独一个 `docs(contract):` 提交，并在计划 §2.3 里写明"执行期修订"的缘由，
+  避免下一个读计划的人以为实现偏离了计划。

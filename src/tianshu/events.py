@@ -95,11 +95,6 @@ class EventTransaction:
         self._log = log
 
     @property
-    def blob_dir(self) -> Path | None:
-        """payload 超长时的落盘目录。心跳线程重开连接要沿用同一个。"""
-        return self._blob_dir
-
-    @property
     def conn(self) -> sqlite3.Connection:
         return self._log.conn
 

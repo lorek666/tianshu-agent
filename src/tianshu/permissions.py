@@ -785,13 +785,21 @@ class ApprovalStore:
             raise ApprovalError("审批已过期，请重新发起")
 
     def _find(
-        self, states: tuple[str, ...], digest: str, run_id: str, *, by: str = "request_digest"
+        self,
+        states: tuple[str, ...],
+        digest: str,
+        run_id: str,
+        *,
+        by: str = "request_digest",
     ):
         """找可以复用的同摘要审批。
 
         已过期的 pending 不算——否则过了 TTL 之后同一个动作再也发不出新审批，
         用户只能手动跑一次 expire_due 才能重试。
         """
+        # `by` 只允许这两个列名：它是内插进 SQL 的，不接受任意字符串。
+        if by not in ("request_digest", "action_digest"):
+            raise TianshuError(f"不支持的摘要列：{by}")
         marks = ",".join("?" * len(states))
         return self._conn.execute(
             f"SELECT * FROM approvals WHERE state IN ({marks})"

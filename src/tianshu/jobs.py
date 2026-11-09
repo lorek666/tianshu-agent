@@ -38,7 +38,13 @@ from typing import Any
 
 from .errors import TianshuError
 from .events import EventLog
-from .leases import DEFAULT_TTL_MS, ProcessIdentity, current_process, pid_alive
+from .leases import (
+    DEFAULT_TTL_MS,
+    LeaseStore,
+    ProcessIdentity,
+    current_process,
+    pid_alive,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -138,7 +144,13 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
-def renew_claim(leases, claims, claim: JobClaim, *, ttl_ms: int = DEFAULT_TTL_MS) -> None:
+def renew_claim(
+    leases: LeaseStore,
+    claims: JobStore,
+    claim: JobClaim,
+    *,
+    ttl_ms: int = DEFAULT_TTL_MS,
+) -> None:
     """续一次 claim：租约 + 作业 deadline。
 
     为什么值得单独抽出来：worker 的后台心跳线程用**另一条 SQLite 连接**
@@ -471,16 +483,15 @@ class JobStore:
         审批会被下一轮作废，于是"批准之后永远执行不了"。留在 `claimed` 也是
         错的：进程已经要把控制权交出来了，`claimed` 对外说的是"有人正在跑"。
         """
-        now = self._clock()
         with self._log.transaction() as tx:
             cur = self._conn.execute(
+                # `ended_at` 保持 NULL：作业没结束，只是没人该自动跑它。
                 "UPDATE jobs SET state='waiting', owner_instance_id=NULL,"
                 " owner_pid=NULL, heartbeat_at=NULL, deadline_at=NULL,"
-                " claimed_at=NULL, ended_at=?"
+                " claimed_at=NULL"
                 " WHERE job_id=? AND owner_instance_id=? AND claim_epoch=?"
                 "   AND owner_pid=? AND state='claimed'",
                 (
-                    now,
                     claim.job_id,
                     claim.owner_instance_id,
                     claim.claim_epoch,

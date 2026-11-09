@@ -195,6 +195,12 @@ Approval 绑定该请求的**动作摘要**及 `approval_id, state, decided_by, 
 > 炸 JobLost 且无 `run.end`、外来 live owner 没被拦住、暂停顶掉取消、效果计数重复
 > 累加、复用 call_id 被静默吞掉），全部已在 PR #13 修复并加回归测试；详见
 > `docs/REVIEW-PRA.md` §4.5。
+>
+> 再补记（2026-11-09，Task 6 端到端验收）：`test_reclaimed_approval_can_complete_after_one_reapproval`
+> 的前提**已随契约修订作废**——它断言的"接管后旧批准作废、必须重批一次"正是
+> §2.3 修订要排除的行为。该测试已改名为 `test_approval_survives_takeover_without_reapproval`，
+> 断言改为"动作没变 → 批准继续有效、恰好消费一次"。原验收意图（不重复执行）
+> 不变，见 `docs/REVIEW-PRA.md` §4.6.1。
 
 #### Task 6：作业表与端到端验收
 
@@ -202,12 +208,33 @@ Approval 绑定该请求的**动作摘要**及 `approval_id, state, decided_by, 
 
 **Interfaces:** 消费 Task 2 的 `JobStore`/`JobClaim`，新增 `run_worker_once(store: JobStore, owner: ProcessIdentity) -> bool` 驱动认领→执行/等待→结算。Job 为本地 E1/E3 Run 调度，字段 `job_id, run_id, state, owner_instance_id, claim_epoch, process_identity, heartbeat_at, deadline_at, cancel_requested, output_ref`。所有心跳/完成提交传 JobClaim，不能以裸 job_id 提交。v2 的生成作业 E2 继续不实现。
 
-- [ ] 先写 `test_two_workers_claim_once`、`test_job_restart_preserves_pending_approval`、`test_recover_is_not_resume`、`test_read_a_write_b_and_chat_without_workspace`。CLI 子进程调用真实 service 路径，不只用内存 mock 证明并发。
-- [ ] 运行 `uv run pytest tests/test_m2_acceptance.py`，确认红灯。
-- [ ] 以同库事务认领作业并关联 Run；心跳仅延长正确 owner，进程死亡或租约失效转核查流程。foreground CLI 与 worker 用同一执行入口，排队/暂停/审批等待不持数据库事务或 execution_guard。
-- [ ] 运行全部 `uv run pytest` 与 `uv run ruff check .`；保留 M0/M1回归与100次注入，新增跨进程授权/租约屏障测试。无需为这些机械验收再次调用付费模型。
-- [ ] 用临时夹具演示：零目录对话、A只读/B可写、拒绝覆盖、审批后改参数、双实例争用、改目标旧调用失效、暂停后重启、unknown 阻断 undo/写入。报告逐项结果和未验证平台。
-- [ ] 完成独立 verifier pass 后提交 `feat(m2): coordinate resumable local jobs`，创建 PR C；不以计划复选框代替测试输出。
+- [x] 先写 `test_two_workers_claim_once`、`test_job_restart_preserves_pending_approval`、`test_recover_is_not_resume`、`test_read_a_write_b_and_chat_without_workspace`。CLI 子进程调用真实 service 路径，不只用内存 mock 证明并发。
+- [x] 运行 `uv run pytest tests/test_m2_acceptance.py`，确认红灯。
+- [x] 以同库事务认领作业并关联 Run；心跳仅延长正确 owner，进程死亡或租约失效转核查流程。foreground CLI 与 worker 用同一执行入口，排队/暂停/审批等待不持数据库事务或 execution_guard。
+- [x] 运行全部 `uv run pytest` 与 `uv run ruff check .`；保留 M0/M1回归与100次注入，新增跨进程授权/租约屏障测试。无需为这些机械验收再次调用付费模型。
+- [x] 用临时夹具演示：零目录对话、A只读/B可写、拒绝覆盖、审批后改参数、双实例争用、改目标旧调用失效、暂停后重启、unknown 阻断 undo/写入。报告逐项结果和未验证平台。
+- [x] 完成独立 verifier pass 后提交 `feat(m2): coordinate resumable local jobs`，创建 PR C；不以计划复选框代替测试输出。
+
+> 执行记录（2026-11-09）：`tests/test_m2_acceptance.py`（16 例，其中 4 条走真子进程 /
+> 真 CLI），全量 **330 passed** / `ruff check .` 通过。验收矩阵、CLI 实录与未验证
+> 平台清单在 `docs/M2-verification.md`。
+>
+> 本轮端到端跑了三条**此前没人走过**的路，因此发现并修掉 6 个缺陷（详见
+> `docs/REVIEW-PRA.md` §4.6）：
+> (1) 审批绑 `claim_epoch` 导致 `approvals approve` → `run resume` 永远重批——修法是
+> 拆成"请求摘要 / 动作摘要"两个摘要，契约改动单独提交 `e5cf172`，并回写 §2.3；
+> (2) worker 驱动的 Run 没有写前快照清单，崩溃后 `recover` 永久阻断目录；
+> (3) 改过文件却记 `noop`；
+> (4) `claim_next` 先读后写，两个 worker 可同时持有同一 Run 的 claim；
+> (5) 取消"等审批"的 Run 留下永不结束的作业；
+> (6) 只读绑定被拒时报错说的是"租约不覆盖"而不是真实原因。
+>
+> 仍是 Task 6 worker 的取舍：`waiting` 的作业**不**被轮询认领（否则每轮涨一次
+> epoch 把刚批的审批作废），所以"等审批/已暂停"的 Run 只能由人 `run resume`
+> 继续；`worker` 只跑"该自动跑"的作业。E2 生成作业仍未实现。
+>
+> 未验证项（不得当成通过）：Windows x64/arm64 原生、macOS x64、真实断电、
+> 完整 takeover（持守卫核对未决副作用）、`authority` 数据根逃逸防护。
 
 ## 4. M2 总验收与最终交接
 
