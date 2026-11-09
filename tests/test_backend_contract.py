@@ -30,6 +30,8 @@ from tianshu.events import EventLog
 from tianshu.guard import blocked_workspaces
 from tianshu.jobs import JobStore
 from tianshu.leases import LeaseLost, LeaseStore
+from tianshu.loop import Limits, run
+from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import ApprovalStore, GrantStore, HumanIdentity, PolicyEngine
 from tianshu.receipt import receipts_of, verify_receipts
 from tianshu.sandbox import MemBackend
@@ -221,6 +223,40 @@ def assert_read_limit(env: Env) -> None:
     assert result.output["bytes"] == READ_TEXT_LIMIT
 
 
+def assert_backend_sees_directories(env: Env) -> None:
+    """文件与目录必须被区分开：exists 看得见目录、is_file/is_dir 互斥。"""
+    _mkdir(env, "d")
+    env.backend.write_bytes_atomic(env.path("d/f.txt"), b"x")
+    d, f = env.path("d"), env.path("d/f.txt")
+
+    assert env.backend.exists(d) is True, "目录也是存在的对象：exists 不能只认文件"
+    assert env.backend.is_dir(d) is True
+    assert env.backend.is_file(d) is False, "目录不是文件"
+    assert env.backend.is_file(f) is True
+    assert env.backend.is_dir(f) is False, "文件不是目录"
+    for p in (d, f):
+        assert not (env.backend.is_file(p) and env.backend.is_dir(p)), (
+            "is_file 与 is_dir 必须互斥"
+        )
+    try:
+        env.backend.size(d)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("目录没有 size；size() 只对普通文件有定义")
+
+
+def assert_directory_entries_report_zero_size(env: Env) -> None:
+    """目录项的 size 是契约值 0，不是平台相关的 st_size。"""
+    _mkdir(env, "d")
+    result = _read(env, "list_files", {"path": "."})
+    dirs = [e for e in result.output["entries"] if e["is_dir"]]
+    assert dirs, "测试前提：至少有一个目录条目"
+    assert [e["size"] for e in dirs] == [0] * len(dirs), (
+        "目录 size 跨平台没有一致含义，契约把它定成 0"
+    )
+
+
 # ---------------------------------------------------------------- 读语义
 
 
@@ -230,6 +266,14 @@ def test_create_roundtrip_is_satisfied_by_both_backends(env):
 
 def test_read_limit_is_satisfied_by_both_backends(env):
     assert_read_limit(env)
+
+
+def test_backends_distinguish_files_from_directories(env):
+    assert_backend_sees_directories(env)
+
+
+def test_directory_entries_report_zero_size(env):
+    assert_directory_entries_report_zero_size(env)
 
 
 def test_read_reports_exact_64k_boundary(env):
@@ -698,5 +742,142 @@ def test_read_failure_is_failed_not_an_exception(tmp_path):
         assert result.status == "failed"
         assert result.effect_state == "none_applied"
         assert "读取失败" in result.output["error"]
+    finally:
+        env.log.close()
+
+# ---------------------------------------------------------------- 目录目标
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "args"),
+    [
+        ("delete_file", {"path": "."}),
+        ("modify_text", {"path": ".", "content": "x"}),
+        ("restore_file", {"path": ".", "content_b64": "aGk="}),
+        ("create_report", {"name": ".", "content": "x"}),
+    ],
+)
+def test_directory_target_is_refused_by_policy(env, tool_id, args):
+    """覆盖/删除类工具指向目录：策略层明确拒绝，rule id 能指路。"""
+    rc = _new_run(env)
+    decision, result = _dispatch(env, rc, tool_id, env.ws, args)
+
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "dispatch.target_is_directory"
+    assert result is None
+    assert env.backend.is_dir(env.path("."))
+
+
+def test_directory_target_is_a_tool_result_not_a_run_failure(tmp_path):
+    """三种写工具指向目录：模型收到的是工具结果，整轮 run 不该被判失败。
+
+    复审复现的缺口：`observe_state` 读目录抛 IsADirectoryError，异常冒到
+    loop 的兜底 `except Exception`，run 直接 failed——模型连"这是目录"都
+    看不到，更没法自我修正。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    log = EventLog(tmp_path / "events.db")
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                "tool_use",
+                tool_calls=[
+                    ToolCall("c1", "delete_file", {"path": "."}),
+                    ToolCall("c2", "modify_text", {"path": ".", "content": "x"}),
+                    ToolCall(
+                        "c3", "restore_file", {"path": ".", "content_b64": "aGk="}
+                    ),
+                ],
+            ),
+            ModelResponse("end_turn", content="这些是目录，不能这样改。"),
+        ]
+    )
+    try:
+        result = run(
+            task="目录目标",
+            workspace_dir=ws,
+            out_name="summary.md",
+            model=model,
+            log=log,
+            limits=Limits(6, 20_000),
+        )
+        # 没有副作用时 run 的自然结论是 noop；关键是**不能是 failed**。
+        assert result.outcome in ("succeeded", "noop"), result.outcome
+        assert result.outcome != "failed"
+        results = [
+            e.payload
+            for e in log.read_run(result.run_id)
+            if e.type == "tool.result"
+        ]
+        assert [r["status"] for r in results] == ["rejected"] * 3
+        assert all("目录" in r["output"]["error"] for r in results)
+    finally:
+        log.close()
+
+
+# ---------------------------------------------------------------- C0（目录）
+
+
+class _FileAlwaysTrueBackend(MemBackend):
+    def is_file(self, p: Path) -> bool:
+        return True
+
+
+class _ExistsBlindToDirsBackend(MemBackend):
+    def exists(self, p: Path) -> bool:
+        return p.as_posix() in self._files
+
+
+class _BogusDirectorySizeBackend(MemBackend):
+    def list_dir(self, p: Path) -> list[tuple[str, bool, int]]:
+        return [
+            (name, is_dir, 7 if is_dir else size)
+            for name, is_dir, size in super().list_dir(p)
+        ]
+
+
+class _DirectorySizeDoesNotRaiseBackend(MemBackend):
+    def size(self, p: Path) -> int:
+        return 0
+
+
+def _meta(tmp_path, backend):
+    env = _bad_env(tmp_path, backend(namespace=tmp_path / "mem"))
+    return env
+
+
+def test_contract_catches_is_file_that_is_always_true(tmp_path):
+    env = _meta(tmp_path, _FileAlwaysTrueBackend)
+    try:
+        with pytest.raises(AssertionError):
+            assert_backend_sees_directories(env)
+    finally:
+        env.log.close()
+
+
+def test_contract_catches_exists_that_cannot_see_directories(tmp_path):
+    env = _meta(tmp_path, _ExistsBlindToDirsBackend)
+    try:
+        with pytest.raises(AssertionError):
+            assert_backend_sees_directories(env)
+    finally:
+        env.log.close()
+
+
+def test_contract_catches_bogus_directory_sizes(tmp_path):
+    env = _meta(tmp_path, _BogusDirectorySizeBackend)
+    try:
+        with pytest.raises(AssertionError):
+            assert_directory_entries_report_zero_size(env)
+    finally:
+        env.log.close()
+
+
+def test_contract_catches_size_that_does_not_reject_directories(tmp_path):
+    env = _meta(tmp_path, _DirectorySizeDoesNotRaiseBackend)
+    try:
+        with pytest.raises(AssertionError):
+            assert_backend_sees_directories(env)
     finally:
         env.log.close()

@@ -73,10 +73,19 @@ class FileBackend(Protocol):
     def is_dir(self, p: Path) -> bool: ...
 
     def size(self, p: Path) -> int:
-        """普通文件字节数。不存在抛 FileNotFoundError。"""
+        """普通文件的字节数。
+
+        不存在抛 FileNotFoundError；是目录抛 IsADirectoryError——
+        目录没有可移植的"文件大小"，别让调用方拿到一个随平台变化的值。
+        """
 
     def list_dir(self, p: Path) -> list[tuple[str, bool, int]]:
-        """直接子项：(原始名字, 是否目录, 字节数)。读不到的条目跳过。"""
+        """直接子项：(原始名字, 是否目录, 字节数)。读不到的条目跳过。
+
+        **目录条目的字节数恒为 0。** 目录大小跨平台没有一致含义
+        （macOS 96 / ext4 4096 / tmpfs 又不同），同一份 list_files 输出
+        不该因为平台不同而不一样。
+        """
 
     def read_bytes(self, p: Path, limit: int | None = None) -> tuple[bytes, int]:
         """返回 (前 limit 字节或全部, 文件总字节数)。一次打开，避免 stat/read 竞态。"""
@@ -109,7 +118,10 @@ class LocalBackend:
         return p.is_dir()
 
     def size(self, p: Path) -> int:
-        return p.stat().st_size
+        st = p.stat()
+        if p.is_dir():
+            raise IsADirectoryError(str(p))
+        return st.st_size
 
     def list_dir(self, p: Path) -> list[tuple[str, bool, int]]:
         out: list[tuple[str, bool, int]] = []
@@ -119,7 +131,9 @@ class LocalBackend:
             except OSError:
                 # 读不到 size 的条目跳过：这一点与 M2 的行为一致。
                 continue
-            out.append((child.name, child.is_dir(), st.st_size))
+            is_dir = child.is_dir()
+            # 目录项的 size 固定为 0（见 FileBackend.list_dir 的约定）。
+            out.append((child.name, is_dir, 0 if is_dir else st.st_size))
         return out
 
     def read_bytes(self, p: Path, limit: int | None = None) -> tuple[bytes, int]:
@@ -198,8 +212,11 @@ class MemBackend:
         return p.as_posix() in self._dirs
 
     def size(self, p: Path) -> int:
+        key = p.as_posix()
+        if key in self._dirs:
+            raise IsADirectoryError(str(p))
         try:
-            return len(self._files[p.as_posix()])
+            return len(self._files[key])
         except KeyError:
             raise FileNotFoundError(str(p)) from None
 
@@ -245,6 +262,19 @@ class MemBackend:
 
     def identity_key(self, p: Path) -> str:
         return "path:" + overlap_key(p)
+
+    # ---- 测试复位 ----
+
+    def clear(self) -> None:
+        """清空虚拟状态（命名空间保留）。
+
+        `reset_backend()` 会调它：memfs 是进程级单例，只清 `_current` 的话，
+        下一个用例会看见上一个用例的文件（症状是 `OverwriteRefused:
+        目标已存在`，或者 list_files 列出不该存在的条目）。
+        """
+        with self._lock:
+            self._files.clear()
+            self._dirs = {self.namespace.as_posix()}
 
     # ---- 内部 ----
 
@@ -312,9 +342,16 @@ def current_backend() -> FileBackend:
 
 
 def reset_backend() -> None:
-    """回到"按环境变量解析"的初始状态。测试用来防止后端串扰。"""
+    """回到"按环境变量解析"的初始状态，并清空 memfs 单例的虚拟状态。
+
+    两件事必须一起做：memfs 的后端实例是模块级单例，只把 `_current` 置空
+    并不会清掉它的 `_files`/`_dirs`，下一个用例会看见上一个用例写过的文件
+    （典型症状：`OverwriteRefused: 目标已存在`，或 list_files 多出条目）。
+    显式创建并传入的 `MemBackend(...)` 实例归调用方所有，这里不动。
+    """
     global _current
     _current = None
+    _MEM.clear()
 
 
 def memfs_root(name: str) -> Path:

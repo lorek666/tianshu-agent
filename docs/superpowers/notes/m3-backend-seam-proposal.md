@@ -508,12 +508,10 @@ git diff --stat main -- src/tianshu/loop.py     # 必须无输出
    不引用事件 seq / blob）→ PR G。
 3. **存在性与删除的竞态**（`create_report` 的 exists 与写入、`delete_file`
    的读与 unlink）→ 原样保留。
-4. **目录目标会让 `build_request` 抛 `IsADirectoryError`/`FileNotFoundError`**
-   （新发现）：`delete_file`/`modify_text` 指向目录时，`observe_state` 在
-   生成 preconditions 阶段直接读目录失败，异常逃出 `prepare`，既不是
-   `rejected` 也不是 `failed`。M2 起就是这样，接缝只是让它更明显。
-   修复方式应该是让 `observe_state` 对目录返回一个可判定的状态（或让
-   `build_request` 先做 `is_file` 判定并抛 `DispatchDenied`），单独开票。
+4. **（已在复审补丁里修掉，见附录 C）目录目标会让 `build_request` 抛
+   `IsADirectoryError`/`FileNotFoundError`**：`delete_file`/`modify_text`/
+   `restore_file` 指向目录时，`observe_state` 在生成 preconditions 阶段
+   直接读目录失败，异常逃出 `prepare`，被主循环兜底成 `run.failed`。
 5. **`effect_state=partial` / `status=cancelled` 仍是死枚举**：契约测试断言
    "不会出现 partial"，而不是假装它存在。
 
@@ -527,3 +525,53 @@ git diff --stat main -- src/tianshu/loop.py     # 必须无输出
 | 越界：符号链接 | ✅ | 不承诺（无 symlink） |
 | 覆盖写入保留 mode、新建 0600 | ✅ | 不适用（无 mode） |
 | kill -9 / failpoint / 权限拒绝 / ENOSPC | ✅（M1 证据） | ❌ 状态随进程消失 |
+
+---
+
+## 附录 C：复审补丁（同一 PR）
+
+独立复审给了四条具体缺口，都在这一个补丁里改掉，另加一条新发现记账。
+
+1. **测试默认后端钉死 `local_fs`。** 之前 `conftest` 只做 `reset_backend()`
+   （回到按 env 解析），CI/本地带着 `TIANSHU_SANDBOX_BACKEND=memfs` 跑全套会
+   集体撞 `WorkspaceViolation`，看起来像 M1/M2 大回归。现在 fixture 显式
+   `configure_backend(local_fs)` **并**把 env 钉成 `local_fs`（部分用例会
+   spawn 子进程，子进程继承 environ）；要测 env 通道的用例自己 `setenv`。
+   实测 `TIANSHU_SANDBOX_BACKEND=memfs uv run pytest` 与不带 env 的结果一致。
+2. **`reset_backend()` 连 memfs 的虚拟状态一起清。** memfs 是进程级单例，
+   只置 `_current=None` 会让 `_files`/`_dirs` 跨用例残留（症状：
+   `OverwriteRefused: 目标已存在`，或 `list_files` 多出条目）。现在
+   `reset_backend()` 调 `MemBackend.clear()`。
+3. **契约补上"文件 vs 目录"的洞。** 之前 `is_file` 恒真、`exists` 看不见
+   目录、目录 size 任意，违约后端都能全绿。新增三条断言：
+   `exists(dir) is True`；`is_file` / `is_dir` 互斥（文件与目录各测一遍）；
+   目录项的 size 恒为 0、`size(dir)` 抛 `IsADirectoryError`。并配套四个
+   C0 元测试（`is_file` 恒真 / `exists` 无视目录 / 目录 size 乱填 /
+   `size` 不拒目录），每个都必须让金丝雀断言变红。
+4. **目录目标不再炸穿主循环。** 根因是 `observe_state` 读目录抛异常，而它
+   在 `build_request` 生成 preconditions 时就被调用。修法：`observe_state`
+   把目录当作 `ABSENT`（目录没有"文件写前状态"），拒绝交给
+   `check_request_preconditions`；后者对覆盖/删除给出"目标是目录"的明确
+   结论，`prepare` 用独立 rule id `dispatch.target_is_directory` 说明下一步
+   该换目标。派发阶段（已批准后的复核）仍统一记 `dispatch.stale_precondition`
+   ——对一张已消费的批准而言，结论是"状态被改过、需重新发起"。
+   四个工具（`delete_file` / `modify_text` / `restore_file`，以及把
+   `create_report` 建在目录上）都有 dispatcher 级断言，另有一条 loop 级
+   回归证明 run 的结论是 `succeeded`/`noop` 而不是 `failed`。
+
+**新发现、只记账不改**：`_dispatchable` 只校验"工具在 `SPECS` 里"，不校验
+`exposed`——模型可以提案内部工具 `restore_file`（它出现在给模型的清单之外，
+但会被派发，仍然要审批）。M2 起如此，与本 PR 无关，建议单独开票。
+
+**实测（补丁后）**
+
+```
+$ uv run pytest -o addopts="" -q
+514 passed, 1 skipped
+
+$ TIANSHU_SANDBOX_BACKEND=memfs uv run pytest -o addopts="" -q
+514 passed, 1 skipped
+
+$ uv run ruff check .
+All checks passed!
+```

@@ -57,16 +57,22 @@ def _sha(data: bytes) -> str:
 
 
 def observe_state(target: Path, *, backend: FileBackend | None = None) -> str:
-    """目标当前的写前状态：不存在返回 ABSENT，否则返回 sha256。
+    """目标当前的写前状态：不是普通文件返回 ABSENT，否则返回 sha256。
 
     审批绑定的是"执行前状态"，所以这个函数既用于申请审批时取值，也用于
     真正写文件前复核——两次取值必须相同，否则说明目标被人换过了。
 
     读盘一律经当前后端：审批看到的世界与写入进入的世界必须是同一个，
     否则会出现"批的是真盘、写的是虚拟盘"这种半真半假的状态。
+
+    **目录按 ABSENT 处理**（目录没有"文件写前状态"）：读目录会抛
+    `IsADirectoryError`，而这个函数在 `build_request` 生成 preconditions
+    时就被调用，异常会一路冒到主循环、把整轮 run 判成失败。拒绝目录是
+    `check_request_preconditions` 的职责（它给出"目标是目录"的明确结论），
+    不是这里抛异常。
     """
     io = backend if backend is not None else current_backend()
-    if not io.exists(target):
+    if not io.exists(target) or io.is_dir(target):
         return ABSENT
     data, _ = io.read_bytes(target)
     return _sha(data)
@@ -838,6 +844,8 @@ def check_request_preconditions(
                 f"目标是否已存在与请求声明不符（声明 {declared}，实际 {actual}）"
             )
         if actual:
+            if io.is_dir(target):
+                return False, "目标已存在且是目录：create_report 只能新建普通文件"
             return False, (
                 "目标已存在：create_report 不覆盖已有文件；"
                 "要覆盖请改用 modify_text（删除类，需审批）"
@@ -848,6 +856,11 @@ def check_request_preconditions(
         declared = pre.get("before_state")
         if declared is None:
             return False, "覆盖/删除动作必须声明写前状态 before_state"
+        if io.is_dir(target):
+            return False, (
+                "目标是目录：覆盖/删除只支持普通文件"
+                "（目录没有单一 preimage 边界，也没有可回滚的文件状态）"
+            )
         actual = observe_state(target, backend=io)
         if actual != declared:
             return False, (

@@ -182,3 +182,22 @@ def test_configure_backend_accepts_an_instance(tmp_path):
     backend = MemBackend(namespace=tmp_path / "ns")
     assert sandbox.configure_backend(backend) is backend
     assert sandbox.current_backend() is backend
+
+def test_reset_backend_clears_memfs_state(monkeypatch):
+    """reset 必须把 memfs 单例的虚拟状态一起清掉。
+
+    只置 `_current=None` 的话，下一个用例会看见上一个用例的文件
+    （典型症状：OverwriteRefused，或 list_files 多出条目）。
+    """
+    monkeypatch.setenv(ENV_VAR, "memfs")
+    backend = sandbox.configure_backend("memfs")
+    root = sandbox.MEM_NAMESPACE / "reset-case"
+    backend.require_root(root)
+    backend.write_bytes_atomic(root / "a.md", b"x")
+    assert backend.exists(root / "a.md")
+
+    sandbox.reset_backend()
+
+    fresh = sandbox.configure_backend("memfs")
+    assert fresh is backend, "memfs 是进程级单例"
+    assert not fresh.exists(root / "a.md"), "reset 必须清掉虚拟状态"
