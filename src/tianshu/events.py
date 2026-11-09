@@ -3,6 +3,7 @@
 设计约束来自 docs/PRD-v1.md §5.3：
 - `seq` 单调递增、不可跳号（SQLite AUTOINCREMENT，不复用已删除的 rowid）
 - 无 UPDATE / DELETE（用触发器强制，不是靠自觉）
+- `type` 是**封闭集合**：只有 `EVENT_TYPES` 里登记的类型允许写入（见下）
 - payload > MAX_INLINE_BYTES 落盘，表内只留 payload_ref + payload_hash
 - 恢复裁决只看本表，不看导出文件
 """
@@ -19,10 +20,115 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import EventLogCorrupt
+from .errors import EventLogCorrupt, TianshuError
 from .fsutil import atomic_write_bytes
 
 MAX_INLINE_BYTES = 256 * 1024
+
+# ---------------------------------------------------------------- C3 类型注册表
+#
+# `seq` 与 `payload_hash` 只能证明"这条记录没被改过"，证明不了"这条记录的
+# 类型是契约里承认的类型"。在加上这张表之前，`type` 是"代码写什么就是什么"：
+# 一个拼错的类型名会原样进库，回放、审计、投影重建都发现不了。
+#
+# 规则：
+# 1. 只有这里登记的类型允许写入。`EventLog.append` 在**任何副作用之前**校验，
+#    未知类型抛 `TianshuError`（信息带上传入的类型名）。
+# 2. 机器可校验的副本是 `schemas/c3/event.json` 的 `type.enum`；
+#    `tests/test_events.py` 把两边绑在一起，改一处忘另一处会红。
+# 3. 族 = 类型的名字空间前缀（PRD §5.3 的映射表按它排）。`receipt` 是唯一的
+#    裸类型：历史名字，改名会让既有事件日志失去可比性，所以保留。
+EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        # 审批（C4）
+        "approval.requested",
+        "approval.decided",
+        "approval.revoked",
+        "approval.consumed",
+        "approval.expired",
+        "approval.superseded",
+        # 派发（C4）
+        "dispatch.requested",
+        "dispatch.admitted",
+        "dispatch.rejected",
+        "dispatch.revoked",
+        # 执行守卫
+        "execution.started",
+        # 票据
+        "grant.issued",
+        "grant.consumed",
+        # 作业队列
+        "job.enqueued",
+        "job.claimed",
+        "job.requeued",
+        "job.parked",
+        "job.finished",
+        # 模型（C1）
+        "model.intent",
+        "model.result",
+        "model.error",
+        # 策略判定
+        "policy.denied",
+        # 副作用凭据
+        "receipt",
+        # 恢复
+        "recovery.blocked",
+        "recovery.unblocked",
+        # Run 生命周期
+        "run.start",
+        "run.state",
+        "run.control",
+        "run.cursor",
+        "run.model_turn",
+        "run.effect",
+        "run.end",
+        "run.finish",
+        "run.fenced",
+        # Task
+        "task.created",
+        "task.revised",
+        # 工具（C2）
+        "tool.intent",
+        "tool.result",
+        "tool.not_dispatched",
+        # 撤销
+        "undo.completed",
+        "undo.failed",
+    }
+)
+
+#: 已定义、但当前**没有任何发射点**的类型。
+#:
+#: 单独列出而不是混进 `EVENT_TYPES`：注册表要回答"代码实际会写什么"。把一个
+#: 没人写的类型登记成合法，等于让校验替它作证——那是另一种撒谎。
+#:
+#: 接上发射点时**必须**把它移进 `EVENT_TYPES`（同时改 `schemas/c3/event.json`
+#: 与 PRD §5.3）。校验会先拒绝它，这不是障碍，而是刻意的：注册表不能悄悄变长。
+DECLARED_UNEMITTED_EVENT_TYPES: frozenset[str] = frozenset({"job.lost"})
+
+#: PRD §5.3 曾经声明过、但代码里**从未实现**的抽象族。
+#:
+#: 登记在这里是为了让"未实现"有一个机器可读的位置。它们不是事件类型前缀，
+#: 作为事件类型在代码里零命中（`model.py` 的 `checkpoint` 是模型结束原因，
+#: 与事件无关）；不写下来，读者会以为 §5.3 的九值枚举每个都有实现。
+UNIMPLEMENTED_EVENT_FAMILIES: frozenset[str] = frozenset(
+    {"compaction", "checkpoint", "audit"}
+)
+
+
+def _check_event_type(type_name: str) -> None:
+    """写入前的类型校验。必须在产生任何副作用之前调用。"""
+    if type_name in EVENT_TYPES:
+        return
+    hint = ""
+    if type_name in DECLARED_UNEMITTED_EVENT_TYPES:
+        hint = "（该类型已定义但当前没有发射点；接上发射点时必须移入 EVENT_TYPES）"
+    raise TianshuError(
+        f"未知事件类型：{type_name!r}。事件类型是封闭集合（C3），"
+        f"新增类型必须同时登记 src/tianshu/events.py 的 EVENT_TYPES 与 "
+        f"schemas/c3/event.json 的 type.enum{hint}"
+    )
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -69,6 +175,15 @@ def sha256_hex(data: bytes) -> str:
 
 @dataclass(frozen=True)
 class Event:
+    """一条事件。
+
+    `parent_seq` 是**保留字段**：列还在（历史库里已经有这一列，删列要迁移），
+    schema 里不是 required，当前没有任何写入点会传值——新写入恒为 `None`。
+    保留的原因和"什么时候会真的用上"写在 PRD §5.3；一句话：现有的因果边都能
+    从 payload（`call_id` / `intent_seq` / `run_id`/`seq` 顺序）推出来，接一套
+    没人读的指针只会制造第二套事实源。
+    """
+
     seq: int
     run_id: str
     task_id: str | None
@@ -226,6 +341,9 @@ class EventLog:
         parent_seq: int | None = None,
         idem_key: str | None = None,
     ) -> int:
+        # 第一行就校验：不能等 payload 落盘之后才发现类型是错的——
+        # 那样会留下一个没有行的孤儿 blob。
+        _check_event_type(type)
         raw = canonical_bytes(payload)
         digest = sha256_hex(raw)
 

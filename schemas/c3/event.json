@@ -1,0 +1,132 @@
+{
+  "$id": "https://tianshu-agent/schemas/c3/event.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "C3 事件（docs/PRD-v1.md §5.3）。这是**事件信封**的字段级契约：类型集合封闭、信封字段固定；每种类型自己的 payload 形状尚未冻结（见 PRD §5.3.4）。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "properties": {
+    "actor": {
+      "additionalProperties": false,
+      "description": "存储层拆成两列 actor_kind / actor_id；这里是逻辑形状。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "PRD §5.3 的 actor 枚举；harness 已定义但当前无写入点。",
+          "enum": [
+            "core",
+            "harness",
+            "tool",
+            "human",
+            "system"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "idem_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_seq": {
+      "description": "保留字段，当前不写（新写入恒为 null），因此不在 required 里。保留原因与启用条件见 PRD §5.3.3。",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "payload": {
+      "description": "每种类型自己的字段尚未冻结；>256KiB 落内容寻址文件，逻辑形状不变。",
+      "type": "object"
+    },
+    "payload_hash": {
+      "description": "canonical_bytes(payload) 的 sha256（键排序、无空白、保留中文）。",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "seq": {
+      "description": "单 writer 单调分配，不可跳号（SQLite AUTOINCREMENT）。",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "task_id": {
+      "description": "可空：不是每条事件都能在写入时确定 task_id。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ts": {
+      "description": "墙钟毫秒（与 EventLog 写入一致；单调时钟对在 PRD 里，尚未实现）。",
+      "type": "integer"
+    },
+    "type": {
+      "description": "封闭集合。未登记的类型在写入侧就会被 EventLog.append 拒绝。已定义但无发射点：job.lost；PRD 声明过但从未实现的族：audit, checkpoint, compaction",
+      "enum": [
+        "approval.consumed",
+        "approval.decided",
+        "approval.expired",
+        "approval.requested",
+        "approval.revoked",
+        "approval.superseded",
+        "dispatch.admitted",
+        "dispatch.rejected",
+        "dispatch.requested",
+        "dispatch.revoked",
+        "execution.started",
+        "grant.consumed",
+        "grant.issued",
+        "job.claimed",
+        "job.enqueued",
+        "job.finished",
+        "job.parked",
+        "job.requeued",
+        "model.error",
+        "model.intent",
+        "model.result",
+        "policy.denied",
+        "receipt",
+        "recovery.blocked",
+        "recovery.unblocked",
+        "run.control",
+        "run.cursor",
+        "run.effect",
+        "run.end",
+        "run.fenced",
+        "run.finish",
+        "run.model_turn",
+        "run.start",
+        "run.state",
+        "task.created",
+        "task.revised",
+        "tool.intent",
+        "tool.not_dispatched",
+        "tool.result",
+        "undo.completed",
+        "undo.failed"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "run_id",
+    "type",
+    "ts",
+    "actor",
+    "payload",
+    "payload_hash"
+  ],
+  "title": "Event",
+  "type": "object"
+}

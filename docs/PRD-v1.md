@@ -374,13 +374,12 @@ ToolDefinition {
 Event {
   seq          uint64       # 单调递增，主键，不可跳号
   run_id, task_id?
-  type         enum         # intent|result|model_call|approval|receipt|
-                            # compaction|job|checkpoint|audit
-  ts           int64        # 单调时钟 + 墙钟双写
+  type         string       # 必须是 §5.3.2 注册表里的具体类型（封闭集合）
+  ts           int64        # 墙钟毫秒（"单调时钟 + 墙钟双写"尚未实现，见 §5.3.4）
   actor        {kind, id}   # core|harness|tool|human|system
-  payload      object|ref   # >256KiB 落盘，此处留 ref
-  payload_hash sha256
-  parent_seq   uint64?      # 因果前驱
+  payload      object|ref   # >256KiB 落盘，此处留 ref；每种类型的字段形状尚未冻结
+  payload_hash sha256       # canonical_bytes(payload) 的 sha256
+  parent_seq   uint64?      # 保留字段：当前不写，新写入恒为 null（见 §5.3.3）
   idem_key     string?
 }
 ```
@@ -392,10 +391,93 @@ Event {
 规则：
 
 - 单个写事务内**同时**提交：`event.seq`、run fencing（`goal_revision + lease_epoch`）、`approval.consumed`、`grant`、`tool intent`。禁止跨库/跨文件各提交一次。
+- **`type` 必须是 §5.3.2 注册表里的具体类型。** `EventLog.append()` 在产生任何副作用之前校验，未登记的类型抛 `TianshuError`（信息带上传入的类型名），不写行、不落 blob。注册表是写入边界，不是建议：为了"先跑通"临时加类型，等于把契约改回"代码写什么就是什么"。
 - `seq` 由单 writer 单调分配，无跳号、无空洞
 - 表上禁 `UPDATE / DELETE`（用触发器强制）；订正靠追加新事件
 - payload > 256 KiB 落内容寻址文件，表内只留 `payload_ref + payload_hash`
 - 文件形态日志仍可导出，用于人工排查与外部审计，**但不参与恢复裁决**
+
+#### 5.3.1 为什么把 9 值抽象枚举换成"族 + 具体类型注册表"
+
+**原方案**：`type` 是一个 9 值抽象枚举 `intent|result|model_call|approval|receipt|compaction|job|checkpoint|audit`。
+
+**新方案**：两层——**族**（`type` 的名字空间前缀；13 个在用 + 3 个声明未实现）→ **具体类型注册表**（41 个，机器可校验，写入侧强制）。
+
+**为什么改**（三条都是实测出来的）：
+
+1. **抽象枚举根本无法机器校验。** 代码里 `type` 一直是自由文本：拼错的类型名会原样进库，`seq` 与 `payload_hash` 只能证明"记录没被改过"，证明不了"记录的类型是契约承认的类型"。这次补契约时，一份机械扫描出的"全部事件类型"清单里就混进了 21 个 `dispatch.*` **规则 id**（`dispatch.lease_lost` 等）和 1 个锁文件名（`execution.guard`），还漏掉了真实存在的 `receipt`——没有注册表时，"有哪些类型"这个问题只能靠猜。
+2. **抽象枚举不反映真实类型，也没有映射层。** 真实落库的有 41 种具体类型，抽象值只有 9 个，两者之间没有任何映射；`task`、`run`、`tool`、`model`、`dispatch`、`grant`、`policy`、`recovery`、`execution`、`undo` 这些名字空间在抽象枚举里连位置都没有，而 `model_call` 实际叫 `model.*`。
+3. **3 个抽象值从未实现。** `compaction` / `checkpoint` / `audit` 作为**事件类型**在 `src/` 里零命中（`model.py` 里的 `checkpoint` 是 PRD §5.5 的模型结束原因，与事件无关；`compaction` 与 `audit` 全库零命中）。把它们留在"枚举"里，读者会以为实现了；写进注册表又会让校验替不存在的类型作证。所以它们单独列在 §5.3.2 的"未实现的族"，并在代码里登记为 `UNIMPLEMENTED_EVENT_FAMILIES`，让"未实现"这件事可被机器读到。
+
+**旧 9 值去哪了**（避免"以前写进契约的东西凭空消失"）：
+
+| 旧抽象值 | 新落点 |
+|---|---|
+| `intent` | 各族的 `*.intent`：`tool.intent`、`model.intent` |
+| `result` | 各族的 `*.result`：`tool.result`、`model.result` |
+| `model_call` | 族 `model`：`model.intent` / `model.result` / `model.error` |
+| `approval` | 族 `approval`（6 种） |
+| `receipt` | 裸类型 `receipt`（历史名字，不改名——改名会让既有事件日志失去可比性） |
+| `job` | 族 `job`（5 种；`job.lost` 无发射点，见下） |
+| `compaction` / `checkpoint` / `audit` | **未实现**，登记在 `UNIMPLEMENTED_EVENT_FAMILIES` |
+
+#### 5.3.2 注册表：13 个族 / 41 个具体类型
+
+族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
+
+| 族 | 语义 | 具体类型 |
+|---|---|---|
+| `approval` | 审批：请求、决定、撤销、兑现、过期、被新审批取代（C4） | `approval.consumed` / `approval.decided` / `approval.expired` / `approval.requested` / `approval.revoked` / `approval.superseded` |
+| `dispatch` | 派发：判定通过后的登记、放行、拒绝、撤销（唯一判定点在 Dispatcher） | `dispatch.admitted` / `dispatch.rejected` / `dispatch.requested` / `dispatch.revoked` |
+| `execution` | 执行守卫：真正打开文件前建立守卫 | `execution.started` |
+| `grant` | 票据：一次性授权的签发与兑现 | `grant.consumed` / `grant.issued` |
+| `job` | 作业队列：入队、认领、重排、停放、完成 | `job.claimed` / `job.enqueued` / `job.finished` / `job.parked` / `job.requeued` |
+| `model` | 模型调用：意图、结果、错误（C1） | `model.error` / `model.intent` / `model.result` |
+| `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
+| `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
+| `recovery` | 崩溃恢复：阻断与解除阻断 | `recovery.blocked` / `recovery.unblocked` |
+| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
+| `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
+| `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
+| `undo` | 撤销：完成与中断 | `undo.completed` / `undo.failed` |
+
+**未实现的族**（声明过、作为事件类型零命中，不参与校验）：
+
+| 族 | 原意 | 状态 |
+|---|---|---|
+| `compaction` | 上下文压缩检查点 | 未实现：当前没有压缩机制，也没有对应事件 |
+| `checkpoint` | 恢复指针 | 未实现：恢复靠快照 manifest + intent/result 配对，不靠事件检查点 |
+| `audit` | 审计事件 | 未实现：审计目前由凭据（`receipt`）与 append-only 本表承担 |
+
+**已定义但无发射点**：`job.lost`（`src/tianshu/jobs.py` 有常量，全库零写入）。它**不在**注册表里，硬写会被校验拒绝并提示原因。接上发射点时必须同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
+
+#### 5.3.3 `parent_seq`：降级为保留字段
+
+**原方案**：照抄 OpenHands 的事件因果前驱（§8 参考表把"`parent_seq` 因果链语义"列为采纳项）。
+
+**实测**：列存在、`append()` 接受、但**零调用方写入**——真实 run 99/99 条、测试库 34/34 条恒为 NULL。
+
+**新方案（选 b：降级，不硬接）**：列保留、写入恒 `null`、schema 里 `parent_seq` 允许 `integer|null` **但不在 `required` 里**，本节明确"当前不写"。理由：
+
+- 现有的因果边已经能从 payload + `seq` 顺序**唯一**推出来：`tool.intent`/`tool.result` 的 `call_id`、`dispatch.admitted.payload.intent_seq`（真实的 seq 指针）、`receipt.payload.call_id`、`run.state.from/to`、`idem_key`。再写一套 `parent_seq` 就是同一因果的**第二份指针**；两份不一致时没有裁决者，而 §5.3 的规则恰恰是"恢复裁决只看本表"。
+- 反方向（选 a：接上真实因果）要求**每个**写入方在事务内知道前驱 seq——覆盖十几个模块的写入点，而当前**没有任何读者**。纯成本，没有收益。
+- 不删列：历史库里已经有这一列，删列要迁移；而且它是 §8 里"采纳 OpenHands 语义"那条决策的落点，删掉会让决策记录失去锚点。
+
+**什么时候会真的用上**（写清楚，免得变成永久死字段）：出现**跨 run**、跨存储的因果时——例如记忆抽取 / 评测 / 上下文压缩把多个 run 的事件串成一条链，或把事件导出成 DAG 交给外部审计。那时 payload 推不出前驱，`parent_seq` 才有意义。届时要一次性做三件事：接上写入点、把 `parent_seq` 加进 schema 的 `required`、把本节改成"已启用"并给历史事件补一条"该区间无因果"的迁移说明。
+
+#### 5.3.4 这次封闭到什么程度（别把绿当全绿）
+
+**已封闭**：
+
+- **类型集合**：41 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
+- **信封必填字段**：`seq / run_id / type / ts / actor / payload / payload_hash`；`task_id`、`idem_key`、`parent_seq` 可空。
+- **`payload_hash` 形状**（sha256 hex）与 `seq` 语义。
+
+**未封闭**（本版不做，不能假装做了）：
+
+- **每种类型自己的 payload 字段形状**：现在统一是 `object`。这是 C3 真正冻结前的最后一层。
+- `ts` 的"单调时钟 + 墙钟双写"：代码只写墙钟毫秒。
+- 事件导出格式的版本协商（§5 的版本策略）尚未落地到导出上。
 
 
 ### 5.4 C4 Permission / Approval
