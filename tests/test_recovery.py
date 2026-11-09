@@ -91,6 +91,17 @@ def test_recover_after_each_failpoint(tmp_path, fp):
     results = [e.payload["call_id"] for e in events if e.type == "tool.result"]
     assert intents, f"{fp}：这个场景里必须有写入，应当留下 intent"
     assert set(intents) <= set(results), f"{fp}：写入 intent 没有配对 result"
+    # 反过来：有 result 却没 intent 的，只允许是只读工具。
+    # 少了这一句，"写入结果没有写前证据"这种绕过会被当成正常差异放过去。
+    read_only = {
+        e.payload["call_id"]
+        for e in events
+        if e.type == "tool.result"
+        and e.payload.get("tool_id") in ("list_files", "read_text")
+    }
+    assert set(results) - set(intents) <= read_only, (
+        f"{fp}：有写入结果却没有写前 intent"
+    )
     assert not report.unresolved, f"{fp}：本场景应当可核实，不该有 unknown"
 
     created = ws / "report.md"
@@ -204,6 +215,14 @@ def test_100_random_fault_injections(tmp_path):
             f"第 {i} 次：同一 intent 被记了两次（{intents}）"
         assert set(intents) <= set(results), \
             f"第 {i} 次：写入 intent 没有配对 result（{intents} vs {results}）"
+        read_only = {
+            e.payload["call_id"]
+            for e in events
+            if e.type == "tool.result"
+            and e.payload.get("tool_id") in ("list_files", "read_text")
+        }
+        assert set(results) - set(intents) <= read_only, \
+            f"第 {i} 次：有写入结果却没有写前 intent（{set(results) - set(intents)}）"
         results_seen += len(results)
 
         # C：applied 必须对应真实内容
