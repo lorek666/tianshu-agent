@@ -204,7 +204,12 @@ $ tianshu run resume --run-id R          # 另一个进程 → 新的 claim_epoc
 16. **`JobStore.is_live` 不查 pid 复用**：只看 deadline + `pid_alive`；租约那一侧
     用 `pid_started_at`。死 owner 的 pid 被系统复用时最长 30s 不接管（保守，不会
     造成双写），与租约口径不一致。
-17. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
+17. **"全被拒绝"的 Run 仍可能记成 `noop/succeeded`**：`create_report` 撞上已存在文件、
+    审批被拒等情况下，工具调用有明确的 `tool.result(rejected)`，但 Run 只要没有
+    任何副作用就会被记为 `noop`（M0 语义：无副作用即成功）。真实模型会看到拒绝并
+    改主意，脚本模型不会——所以"结论 noop 但实际什么都没做"要靠 `tool.result`
+    才能看清。UI 必须把拒绝项列出来，不能只显示"完成"。
+18. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
     再建新的唯一索引。若历史库里已经存在同一 Run 的两个未完成作业，构造
     `JobStore` 会直接抛 `IntegrityError`（新库与测试库均正常）。
 
