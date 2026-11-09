@@ -27,6 +27,12 @@ from tianshu.tools import execute
 from tianshu.workspace import Workspace
 
 
+def write_exact(path, text: str) -> None:
+    """按字节落盘：Windows 的文本模式会把 \\n 翻成 \\r\\n，
+    而恢复/证据算的是 sha256(原始字节)。"""
+    path.write_bytes(text.encode("utf-8"))
+
+
 def _sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -35,7 +41,7 @@ def _ws(tmp_path: Path, files: dict[str, str]) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
     for name, content in files.items():
-        (ws / name).write_text(content, encoding="utf-8")
+        write_exact(ws / name, content)
     return ws
 
 
@@ -134,7 +140,7 @@ def test_s1_no_fabricated_before_state(tmp_path):
     store.record_preimage("r1", "c1", "note.md",
                           before="旧内容\n".encode(),
                           expected_after=_sha("新内容\n"), root=ws)
-    (ws / "note.md").write_text("新内容\n", encoding="utf-8")
+    write_exact(ws / "note.md", "新内容\n")
 
     report = recover_run(log, "r1", ws, store)
     assert report.applied == ["c1"]
@@ -156,7 +162,7 @@ def test_s2_blocking_is_enforced_at_dispatcher(tmp_path):
             {"path": "a.md", "content": "x"}, ws)
     store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", b"\xe6\x97\xa7", _sha("x"), root=ws)
-    (ws / "a.md").write_text("第三种内容", encoding="utf-8")
+    write_exact(ws / "a.md", "第三种内容")
     recover_run(log, "r1", ws, store)
     assert is_blocked(log, ws)
 
@@ -183,7 +189,7 @@ def test_s2_unblock_restores_writability(tmp_path):
     _intent(log, "r1", "c1", "modify_text", {"path": "a.md", "content": "x"}, ws)
     store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", b"\xe5\xa5\xbd", _sha("x"), root=ws)
-    (ws / "a.md").write_text("第三种", encoding="utf-8")
+    write_exact(ws / "a.md", "第三种")
     recover_run(log, "r1", ws, store)
 
     assert is_blocked(log, ws)
@@ -224,8 +230,8 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
     store = SnapshotStore(tmp_path / "art")
     store.record_preimage("r1", "c1", "a.md", "A原".encode(), _sha("A改"), root=ws)
     store.record_preimage("r1", "c2", "b.md", "B原".encode(), _sha("B改"), root=ws)
-    (ws / "a.md").write_text("A改", encoding="utf-8")
-    (ws / "b.md").write_text("B改", encoding="utf-8")
+    write_exact(ws / "a.md", "A改")
+    write_exact(ws / "b.md", "B改")
 
     # 删掉 b 的写前 blob
     for c in store.load("r1"):
@@ -327,7 +333,7 @@ def test_r2_undo_refused_on_blocked_workspace(tmp_path):
     store = SnapshotStore(tmp_path / "art")
     store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", "原".encode(), _sha("新"), root=ws)
-    (ws / "a.md").write_text("新", encoding="utf-8")
+    write_exact(ws / "a.md", "新")
 
     # 制造阻断
     log.append("r1", "recovery.blocked",
@@ -351,10 +357,10 @@ def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
 
     # c1: create a.md = "v1"
     store.record_preimage("r1", "c1", "a.md", None, _sha("v1"), root=ws)
-    (ws / "a.md").write_text("v1", encoding="utf-8")
+    write_exact(ws / "a.md", "v1")
     # c2: modify a.md -> "v2"
     store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"), root=ws)
-    (ws / "a.md").write_text("v2", encoding="utf-8")
+    write_exact(ws / "a.md", "v2")
 
     report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws),
                allow_direct_write=True)
@@ -373,7 +379,7 @@ def test_r3_undo_appends_audit_event(tmp_path):
     store = SnapshotStore(tmp_path / "artifacts")
     store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", None, _sha("v1"), root=ws)
-    (ws / "a.md").write_text("v1", encoding="utf-8")
+    write_exact(ws / "a.md", "v1")
 
     from tianshu.cli import main
 
@@ -468,7 +474,7 @@ def test_three_writes_undo_to_original_and_middle_conflict_is_atomic(tmp_path):
             ("c1", "v0", "v1"), ("c2", "v1", "v2"), ("c3", "v2", "v3")
         ):
             store.record_preimage("r1", cid, "note.md", before.encode(), _sha(after), root=ws)
-            (ws / "note.md").write_text(after)
+            write_exact(ws / "note.md", after)
         if corrupt_call is not None:
             manifest = store.manifest_dir / "r1.json"
             import json

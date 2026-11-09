@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from support import tool_capable_profile
+from support import CHILD_TEXT, tool_capable_profile
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -271,7 +271,7 @@ def _child(argv, *, model=None, env_extra=None, timeout=180) -> subprocess.Compl
     return subprocess.run(
         [sys.executable, "-c", child, *argv],
         capture_output=True,
-        text=True,
+        **CHILD_TEXT,
         timeout=timeout,
         env=environment,
     )
@@ -332,7 +332,7 @@ def test_two_workers_claim_once(env):
              *_cli_args(env), "--json"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            **CHILD_TEXT,
             env=child_env,
         )
         for _ in range(4)
@@ -657,14 +657,23 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     这里用真实短 TTL + 真实阻塞来验证，探针走**另一条数据库连接**。
     """
     run_id, _, job_id = env.enqueue(root=env.ws, out="slow.md")
-    ttl, interval = 150, 40
+    # TTL 与心跳间隔的比例就是"调度抖动余量"：150/40 只有 3.75 个心跳周期，
+    # Windows runner 上任何一次 ~100ms 的停顿（杀毒扫描、桌面合成、CI agent
+    # 抢占）都会让心跳晚于 TTL，测试就红——那是 runner 的抖动，不是心跳没工作。
+    # 400/40 = 10 个周期，仍然远小于生产默认（30s TTL / 5s 间隔 = 750 个周期），
+    # 也仍然满足"阻塞 4×TTL 时没有心跳就一定能被抢走"这个反例。
+    ttl, interval = 400, 40
     probe = _ProbeModel(ttl / 1000 * 4, env)
 
     worker = Worker(
         env.stack, model=probe, ttl_ms=ttl, heartbeat_interval_ms=interval
     )
     assert worker.run_once() is True
-    assert probe.probes == [False], "有心跳时别人不该抢得走"
+    assert probe.probes == [False], (
+        "有心跳时别人不该抢得走"
+        f"（beats={worker.beats}, deadline_slack={probe.deadline_slack},"
+        f" worker.errors={worker.errors}）"
+    )
     assert worker.beats >= 2, f"心跳次数太少：{worker.beats}"
     # 心跳必须用**认领时那个 ttl**：把 deadline 续成 30s 的话，"抢不走"是因为
     # 30 秒太长，而不是因为心跳在工作——那样的断言什么也没测到。
@@ -681,7 +690,11 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
         env.stack, model=probe2, ttl_ms=ttl, heartbeat_interval_ms=None
     )
     assert worker2.run_once() is True
-    assert probe2.probes == [True], "没有心跳就该被抢走——否则这个反例是假的"
+    assert probe2.probes == [True], (
+        "没有心跳就该被抢走——否则这个反例是假的"
+        f"（beats={worker2.beats}, deadline_slack={probe2.deadline_slack},"
+        f" worker.errors={worker2.errors}）"
+    )
     assert worker2.beats == 0
     assert env.stack.tasks.get_run(run_id2).state not in ("succeeded",)
     assert worker2.errors, "被抢走之后必须留下痕迹，不能静默成功"
@@ -1033,7 +1046,6 @@ def test_concurrent_workers_serialize_on_one_directory(env):
     ids = [env.enqueue(root=env.ws, goal=f"写第 {i} 份")[0] for i in range(5)]
     child_env = dict(os.environ)
     child_env["TIANSHU_TEST_MODEL"] = json.dumps({"mode": "by_goal"})
-
     payloads = []
     rounds = 0
     deadline = time.monotonic() + 90
@@ -1042,7 +1054,7 @@ def test_concurrent_workers_serialize_on_one_directory(env):
         procs = [
             subprocess.Popen(
                 [sys.executable, "-c", _child_src(), "worker", *_cli_args(env), "--json"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, **CHILD_TEXT, env=child_env,
             )
             for _ in range(4)
         ]

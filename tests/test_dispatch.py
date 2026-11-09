@@ -56,6 +56,11 @@ from tianshu.workspace import Workspace, WorkspaceBinding
 ORIGINAL = "原始内容\n"
 
 
+def write_exact(path: Path, text: str) -> None:
+    """按字节落盘：Windows 的文本模式会把 \\n 翻成 \\r\\n，哈希就对不上了。"""
+    path.write_bytes(text.encode("utf-8"))
+
+
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -95,7 +100,7 @@ class Env:
 def _env(tmp_path: Path) -> Env:
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "note.md").write_text(ORIGINAL, encoding="utf-8")
+    write_exact(ws / "note.md", ORIGINAL)
     data = tmp_path / "authority"
     data.mkdir()
 
@@ -521,7 +526,7 @@ def test_dispatch_rejected_when_lease_not_covering(env):
     """租约持有的是 /ws，目标在 /outside：不覆盖就拒绝（目录外不授权）。"""
     task, run, claim = env.new_run()
     outside = env.root / "outside.md"
-    outside.write_text("外面\n", encoding="utf-8")
+    write_exact(outside, "外面\n")
     args = {"path": str(outside), "content": "改外面"}
     request = build_request(
         task=task, run=run, claim=claim, call_id="c_out",
@@ -557,7 +562,7 @@ def test_changed_file_after_approval_is_rejected(env):
     """批准之后用户改了目标 → 写前状态不符，旧审批不能执行。"""
     task, run, claim, request, args, decision = _admit_overwrite(env)
 
-    (env.ws / "note.md").write_text("用户自己改的\n", encoding="utf-8")
+    write_exact(env.ws / "note.md", "用户自己改的\n")
 
     result = env.dispatcher.dispatch(request.request_id, claim)
     assert result.status == "rejected"
@@ -788,7 +793,7 @@ def test_same_call_id_in_two_runs_does_not_collide(env):
     """
     ws_b = env.root / "ws_b"
     ws_b.mkdir()
-    (ws_b / "note.md").write_text(ORIGINAL, encoding="utf-8")
+    write_exact(ws_b / "note.md", ORIGINAL)
 
     task_a, run_a, claim_a = env.new_run(goal="甲", root=env.ws)
     task_b, run_b, claim_b = env.new_run(goal="乙", root=ws_b)

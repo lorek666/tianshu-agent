@@ -191,7 +191,9 @@ class SnapshotStore:
         path = self.manifest_path(run_id)
         if not path.exists():
             return []
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # 按字节读再显式解码：文本模式在 Windows 上会做换行翻译，
+        # 而快照清单是审计材料——读它就该和写它一样"字节进字节出"。
+        raw = json.loads(path.read_bytes().decode("utf-8"))
         if isinstance(raw, dict):
             version = raw.get("version")
             if isinstance(version, int) and version not in _READABLE_VERSIONS:

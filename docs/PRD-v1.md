@@ -709,7 +709,7 @@ class Limits(TypedDict, total=False):
 | **F9a** | 模型准入 | CapabilityProfile 登记、必需能力缺失即拒绝、schema/上下文核验、有界重试（默认 3 次 attempt） | PRD v1 |
 | **F11** | 产物存储与可回滚工作区 | 内容寻址 `{artifacts_root}/blobs/<sha256>`，状态只存 ref；**首次写入前取写前副本（preimage）**，按 Run 生成 manifest（变更路径 + 前后哈希 + 重命名/删除记录），reflink/COW 优先、不支持则复制 + 内容去重。保留策略见 §8.4 | Deep Agents `_blob_offload.py` |
 
-| **F12** | 凭据 | 按 `(provider, capability_class)` 分域；密钥只存 OS Keychain，绝不落 config 明文、不进 prompt/日志/trace | OpenHands `credential_binding.py` |
+| **F12** | 凭据 | 按 `(provider, capability_class)` 分域。v1 交付的是**凭据接缝 + 环境变量后端 + 全链路脱敏**：密钥不进 prompt、不进事件日志，错误信息与 `repr()` 一律打码（含 HTTP 响应体回显 key 的情况）。**OS Keychain 在 v1 未实现**：请求它一律报 `unsupported`，绝不静默降级成环境变量；环境变量后端只算开发/CI 用（对子进程可见、可能进 core dump、可被 `ps -E` 看到）。Keychain 留给后续工单（零依赖下需 ctypes 直调 Security.framework / `CredReadW`，且必须有可验证的平台） | OpenHands `credential_binding.py` |
 | **F13** | 成本可见 | 每次调用回 `{provider, model, units, unit_price_ver, cost}`，UI 实时累计展示。**用户自己出钱，必须让他知道烧了多少** | 由 D4 决定 |
 
 ### P1（v1.1）

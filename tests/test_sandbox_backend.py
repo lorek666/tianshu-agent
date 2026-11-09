@@ -18,6 +18,16 @@ from tianshu.sandbox import ENV_VAR, LocalBackend, MemBackend
 
 # ---------------------------------------------------------------- local
 
+#: Windows 的权限位不是 POSIX mode：`os.chmod` 只能切只读位，
+#: `stat.S_IMODE` 对可写文件恒返回 0o666（600/644 都变不成真正的 0600/0644）。
+#: 所以"覆盖保留 mode"与"新建文件是 0600"这两条**在该平台没有对应语义**，
+#: 只能跳过——不是把断开放宽成"随便过"，那等于把契约删了。
+_requires_posix_modes = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 没有 POSIX 权限位语义（chmod 只能切只读位，"
+           "S_IMODE 对可写文件恒为 0o666）",
+)
+
 
 def test_local_require_root_rejects_missing(tmp_path):
     with pytest.raises(WorkspaceViolation):
@@ -44,6 +54,7 @@ def test_local_missing_file_raises_filenotfound(tmp_path):
         LocalBackend().read_bytes(tmp_path / "nope")
 
 
+@_requires_posix_modes
 def test_local_overwrite_preserves_mode(tmp_path):
     """M2 的 bug：mkstemp 0600 + replace 会把 0644 的用户文件悄悄变成 0600。"""
     p = tmp_path / "f.md"
@@ -56,6 +67,7 @@ def test_local_overwrite_preserves_mode(tmp_path):
     assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
 
+@_requires_posix_modes
 def test_local_new_file_is_private(tmp_path):
     """新建文件维持 0600：不显式说明的话，下一个人会以为是 umask。"""
     p = tmp_path / "new.md"

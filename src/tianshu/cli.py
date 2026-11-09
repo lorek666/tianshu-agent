@@ -29,6 +29,7 @@ import sys
 from datetime import UTC
 from pathlib import Path
 
+from .credentials import redact
 from .dispatcher import build_request
 from .errors import TianshuError, ToolNotAllowed
 from .events import EventLog
@@ -856,8 +857,10 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 scope_ws = Workspace(scope)
             except TianshuError as exc:
                 # 目录不在/不是目录：说清楚再退出，不要伪装成"撤销中断"。
-                print(f"拒绝撤销：workspace 不可用：{scope}（{exc}）",
-                      file=sys.stderr)
+                print(
+                    f"拒绝撤销：workspace 不可用：{scope}（{redact(str(exc))}）",
+                    file=sys.stderr,
+                )
                 return 2
 
         plan = _undo_plan(selected)
@@ -898,14 +901,18 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 {
                     "run_id": run_id,
                     "control_run": control.run.run_id,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    # 事件日志是永久证据，写进去就擦不掉：先打码。
+                    "error": redact(f"{type(exc).__name__}: {exc}"),
                 },
                 actor_kind="system",
             )
             stack.dispatcher.close_control_run(
                 control, outcome="failed", effect_state="partial"
             )
-            print(f"撤销中断（可能已部分生效，请用 recover 核查）：{exc}", file=sys.stderr)
+            print(
+                f"撤销中断（可能已部分生效，请用 recover 核查）：{redact(str(exc))}",
+                file=sys.stderr,
+            )
             return 1
 
         if report.ok:
@@ -1159,9 +1166,37 @@ def _print_eval_comparison(comparison: dict) -> None:
         )
     if not summary["regressions"] and not summary["improvements"]:
         print("  逐条 case 无变化")
+def _force_utf8_streams() -> None:
+    """把 stdout/stderr 钉成 UTF-8，不跟随控制台代码页。
+
+    为什么必须有：Windows 上 stdout/stderr 被重定向（管道、文件、`python -c`
+    的子进程）时，Python 用**系统 ANSI 代码页**（简体中文机器 cp936、英文机器
+    cp1252）编码，而 CLI 的输出全是中文。一个 `print("结论   : 已撤销")` 就会抛
+    `UnicodeEncodeError: 'charmap' codec can't encode characters`——用户看到的
+    是"这个 CLI 崩了"，不是"少打几个字"。
+
+    交互式控制台不受影响：Python 3.6+ 在真控制台上走 `WriteConsoleW`，本来
+    就是 UTF-8 语义。这条修的是管道/重定向/子进程这三条路径，而那正是 CI、
+    脚本和桌面前端读 CLI 的方式。
+
+    `errors="backslashreplace"` 只是最后一道保险：UTF-8 能编码所有码点，
+    唯一编不了的是孤立代理字符（非 UTF-8 文件名在 POSIX 上可能出现），
+    这种时候宁可打出转义形式，也不要让整条命令崩掉。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:  # pythonw 之类：没有控制台，也没有输出可言
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            # 不是 TextIOWrapper（pytest 的 capsys、调用方替换过的流）：
+            # 换不了就不换，别为了改编码把 CLI 弄崩。
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 必须在解析参数之前：`--help` 本身也是中文。
+    _force_utf8_streams()
     args = _build_parser().parse_args(argv)
     try:
         if args.cmd == "run":
@@ -1180,7 +1215,9 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_replay(args)
         return _cmd_evaluate(args)
     except Exception as exc:  # CLI 边界：打印可读错误，不抛栈
-        print(f"错误：{exc}", file=sys.stderr)
+        # 脱敏：异常文案可能带着端点回显的 Authorization 或 URL 里的 userinfo。
+        # 终端输出经常被贴进 issue/聊天记录，明文 key 就是这么泄露的。
+        print(f"错误：{redact(str(exc))}", file=sys.stderr)
         return 2
 
 
