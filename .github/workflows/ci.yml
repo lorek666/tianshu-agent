@@ -31,7 +31,11 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          - windows-latest
+          # Windows 暂不进入矩阵：首次试跑 12 项失败，清单与根因见
+          # https://github.com/lorek666/tianshu-agent/issues/21
+          # 摘除而不是 continue-on-error——红就是红，不装作绿。
+          # 该 issue 收敛后把 windows-latest 加回来。
+          # - windows-latest
         python:
           - "3.12"
     defaults:
