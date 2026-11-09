@@ -440,6 +440,13 @@ class ControlPlane:
 
     def _run_view(self, run: Any) -> dict[str, Any]:
         counts = _EffectCounts.of(self._log.read_run(run.run_id, verify=False))
+        undoable = False
+        try:
+            undoable = bool(self._stack.snapshots.load(run.run_id))
+        except TianshuError:
+            # 清单损坏不该让整个首屏打不开：这一条的"能不能撤销"回答不了就
+            # 说 false，真正的错误在 `undo.plan` 时会带出来给人看。
+            undoable = False
         return {
             "run_id": run.run_id,
             "task_id": run.task_id,
@@ -456,7 +463,7 @@ class ControlPlane:
             "ended_at": None if run.ended_at is None else int(run.ended_at),
             "n_applied": counts.n_applied,
             "n_unknown": counts.n_unknown,
-            "undoable": bool(self._stack.snapshots.load(run.run_id)),
+            "undoable": undoable,
         }
 
     def _list_recent_runs(self) -> list[Any]:
