@@ -93,6 +93,34 @@ TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 RUN_OUTCOMES = TERMINAL_STATES
 EFFECT_STATES = {"none_applied", "applied", "partial", "unknown"}
 
+# 非终态也必须落库。把 PAUSED / WAITING_APPROVAL / RECONCILING 都塞进
+# "还没成功"这一句话里，用户就分不清"停下了可以继续"和"正在执行"，
+# CLI/UI 也报不出真实状态。这些名字与 PRD §4.3 的状态机一一对应。
+RUN_CREATED = "created"
+RUN_QUEUED = "queued"
+RUN_RUNNING = "running"
+RUN_WAITING_APPROVAL = "waiting_approval"
+RUN_RECONCILING = "reconciling"
+RUN_PAUSED = "paused"
+RUN_CANCELLING = "cancelling"
+RUN_FENCED = "fenced"
+
+NON_TERMINAL_STATES = {
+    RUN_CREATED,
+    RUN_QUEUED,
+    RUN_RUNNING,
+    RUN_WAITING_APPROVAL,
+    RUN_RECONCILING,
+    RUN_PAUSED,
+    RUN_CANCELLING,
+}
+RUN_STATES = NON_TERMINAL_STATES | TERMINAL_STATES | {RUN_FENCED}
+
+# 控制请求与生效状态是两件事：RUNNING 时只记请求，执行器在安全点确认。
+CONTROL_PAUSE = "pause"
+CONTROL_CANCEL = "cancel"
+CONTROL_REQUESTS = {CONTROL_PAUSE, CONTROL_CANCEL}
+
 TASK_CREATED = "task.created"
 TASK_REVISED = "task.revised"
 EXECUTION_STARTED = "execution.started"
@@ -128,6 +156,7 @@ class Run:
     state: str
     outcome: str | None = None
     effect_state: str | None = None
+    control_requested: str | None = None
     created_at: int = 0
     ended_at: int | None = None
 
@@ -872,6 +901,9 @@ class TaskStore:
             state=row["state"],
             outcome=row["outcome"] if "outcome" in keys else None,
             effect_state=row["effect_state"] if "effect_state" in keys else None,
+            control_requested=(
+                row["control_requested"] if "control_requested" in keys else None
+            ),
             created_at=row["created_at"],
             ended_at=row["ended_at"] if "ended_at" in keys else None,
         )
@@ -883,6 +915,8 @@ __all__: list[Any] = [
     "Run",
     "RunFenced",
     "TERMINAL_STATES",
+    "NON_TERMINAL_STATES",
+    "RUN_STATES",
     "RUN_OUTCOMES",
     "EFFECT_STATES",
 ]
