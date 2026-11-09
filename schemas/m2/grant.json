@@ -48,9 +48,15 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "run_id": {
+      "type": "string"
+    },
     "subject": {
       "type": "string",
       "minLength": 1
+    },
+    "task_id": {
+      "type": "string"
     }
   }
 }

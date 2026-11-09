@@ -338,6 +338,16 @@ def test_same_digest_is_not_duplicated(env):
     assert len(approvals.pending()) == 1
 
 
+def test_expired_pending_does_not_block_a_new_request(env):
+    """过期的待批项不能被当成"已有审批"复用，否则这个动作再也发不出来。"""
+    _, approvals, _, now, _ = env
+    stale = _pending(approvals)
+    now[0] += APPROVAL_TTL_MS + 1
+    fresh = _pending(approvals)
+    assert fresh.approval_id != stale.approval_id
+    assert fresh.state == "pending"
+
+
 def test_denied_request_cannot_be_filed(env):
     _, approvals, _, _, _ = env
     denied = PolicyEngine().classify("shell", ["/ws"], [WorkspaceBinding("/ws")])
@@ -394,6 +404,24 @@ def test_grant_cannot_be_used_by_other_subject(env):
         grants.consume(
             grant.grant_id, request_digest=request.digest(), subject="run_other"
         )
+
+
+def test_grant_consumed_event_is_scoped_to_run(env):
+    """grant 事件必须挂在 run 上；不能拿 subject 冒充 run_id。"""
+    log, _, grants, _, _ = env
+    request = _request(action="read", resources=("/ws/a",))
+    grant = _auto_grant(grants, request)
+    grants.consume(grant.grant_id, request_digest=request.digest(), subject="run_1")
+    event = log.read_types([GRANT_CONSUMED])[0]
+    assert event.run_id == "run_1"
+    assert event.payload["grant_id"] == grant.grant_id
+
+
+def test_grant_records_run_and_task(env):
+    _, _, grants, _, _ = env
+    grant = _auto_grant(grants)
+    assert grant.run_id == "run_1"
+    assert grant.task_id == "task_1"
 
 
 def test_grant_expires(env):

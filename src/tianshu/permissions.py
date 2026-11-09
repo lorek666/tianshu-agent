@@ -215,11 +215,15 @@ class Grant:
     remaining_uses: int
     created_at: int
     expires_at: int
+    run_id: str = ""
+    task_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "grant_id": self.grant_id,
             "subject": self.subject,
+            "run_id": self.run_id,
+            "task_id": self.task_id,
             "request_digest": self.request_digest,
             "action": self.action,
             "issuer": self.issuer,
@@ -254,6 +258,8 @@ CREATE INDEX IF NOT EXISTS idx_approvals_digest ON approvals(request_digest);
 CREATE TABLE IF NOT EXISTS grants (
     grant_id       TEXT PRIMARY KEY,
     subject        TEXT NOT NULL,
+    run_id         TEXT NOT NULL DEFAULT '',
+    task_id        TEXT NOT NULL DEFAULT '',
     request_digest TEXT NOT NULL,
     action         TEXT NOT NULL,
     issuer         TEXT NOT NULL,
@@ -575,11 +581,17 @@ class ApprovalStore:
             raise ApprovalError("审批已过期，请重新发起")
 
     def _find(self, states: tuple[str, ...], digest: str, run_id: str):
+        """找可以复用的同摘要审批。
+
+        已过期的 pending 不算——否则过了 TTL 之后同一个动作再也发不出新审批，
+        用户只能手动跑一次 expire_due 才能重试。
+        """
         marks = ",".join("?" * len(states))
         return self._conn.execute(
             f"SELECT * FROM approvals WHERE state IN ({marks})"
+            " AND (state != 'pending' OR expires_at > ?)"
             " AND request_digest=? AND run_id=? ORDER BY created_at LIMIT 1",
-            (*states, digest, run_id),
+            (*states, self._clock(), digest, run_id),
         ).fetchone()
 
     @staticmethod
@@ -644,12 +656,14 @@ class GrantStore:
         grant_id = f"grant_{uuid.uuid4().hex[:12]}"
         with self._log.transaction() as tx:
             self._conn.execute(
-                "INSERT INTO grants (grant_id, subject, request_digest, action,"
-                " issuer, remaining_uses, created_at, expires_at)"
-                " VALUES (?,?,?,?,?,1,?,?)",
+                "INSERT INTO grants (grant_id, subject, run_id, task_id,"
+                " request_digest, action, issuer, remaining_uses, created_at,"
+                " expires_at) VALUES (?,?,?,?,?,?,?,1,?,?)",
                 (
                     grant_id,
                     subject,
+                    request.run_id,
+                    request.task_id,
                     request.digest(),
                     request.action,
                     issuer,
@@ -678,9 +692,12 @@ class GrantStore:
         ).fetchone()
         if row is None:
             return None
+        keys = row.keys()
         return Grant(
             grant_id=row["grant_id"],
             subject=row["subject"],
+            run_id=row["run_id"] if "run_id" in keys else "",
+            task_id=row["task_id"] if "task_id" in keys else "",
             request_digest=row["request_digest"],
             action=row["action"],
             issuer=row["issuer"],
@@ -708,7 +725,7 @@ class GrantStore:
             if grant is None:  # pragma: no cover - 刚更新过
                 raise ApprovalError(f"执行许可不存在：{grant_id}")
             tx.append(
-                grant.subject,
+                grant.run_id or grant.subject,
                 GRANT_CONSUMED,
                 {
                     "grant_id": grant_id,
