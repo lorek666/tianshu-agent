@@ -42,7 +42,7 @@
 2. 模型自选：用户可配多个 chat provider（OpenAI / Anthropic / Gemini / Ollama / OpenAI-compatible）
 3. 长任务：可暂停、可恢复、可取消、崩溃后可重建
 4. 权限与审计：执行侧强制授权，副作用有 receipt
-5. 记忆：用户可见、可编辑、有来源、有作用域
+5. 记忆：用户可见、可编辑、有来源、有作用域（**v1.1 交付**，见 §7 的 F10）
 6. 评测：文本/工具类任务的可复现评测集
 
 ### 2.2 v1 明确不做
@@ -54,13 +54,14 @@
 | Windows Computer Use | UIA 不稳定，驱动成本高 | macOS 版真实使用 3 个月后 |
 | Plugin 市场 | Skill + Tool 已覆盖 90%，只增加供应链攻击面 | 出现真实第三方分发需求 |
 | 自研向量数据库 / 自研沙箱隔离 | 无理由；后者等于自研内核漏洞 | 永不 |
+| 记忆 / 知识库（F10） | v1 不实现语义检索，事件日志已足够支撑单会话 | v1.1 |
 
-### 2.3 为 v2 预留的缝（v1 必须定义、不实现）
+### 2.3 为 v2 预留的缝（v1 定义形状；`job.*` 已提前使用）
 
 1. `JobResult` 类型与 `JobState` 枚举（见 §4.2）——先有类型，后无迁移
 2. `Artifact` 表与内容寻址存储（见 §7.6）——v1 就用来存大工具输出与截图，v2 直接复用
 3. `ToolDefinition.exec_model ∈ {E1, E3}`，枚举里预留 `E2` 值但不允许使用
-4. 事件类型 `job.*` 预留，v1 不产生
+4. 事件类型 `job.*`：**提前使用**——本条原本只要求定义形状、v1 不产生，但 M2 起已实际产生，共五种：`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`；`job.lost` 目前只有常量定义，尚无发射点（`src/tianshu/jobs.py`）
 
 ---
 
@@ -554,6 +555,7 @@ class Limits(TypedDict, total=False):
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
 | **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘 | PRD v1 |
 | **F6** | 授权与审批 | 见 §5.4。执行侧二次校验 digest；一次性消费；风险分级自动放行 | PRD v1 + Zed |
+| **F7** | 评测与回放 | 区分 `replay`（审计，不重调模型）与 `evaluate`（换模，干净 fixture）；20 条 case 覆盖正常/工具错误/超时恢复/恶意输入/审批边界；安全门槛为硬门槛。**由 §11 的 M4 承接** | PRD §10.3 + §11 M4 |
 | **F8** | 任务与运行 | Task/Run 分离、状态机、**作业表**（`job_id, state, lease, heartbeat, timeout, cancel, output_path`）。租约需 PID 存活校验 | OpenHands `conversation_lease.py` |
 | **F9a** | 模型准入 | CapabilityProfile 登记、必需能力缺失即拒绝、schema/上下文核验、有界重试（默认 3 次 attempt） | PRD v1 |
 | **F11** | 产物存储与可回滚工作区 | 内容寻址 `{artifacts_root}/blobs/<sha256>`，状态只存 ref；**首次写入前取写前副本（preimage）**，按 Run 生成 manifest（变更路径 + 前后哈希 + 重命名/删除记录），reflink/COW 优先、不支持则复制 + 内容去重。保留策略见 §8.4 | Deep Agents `_blob_offload.py` |
@@ -565,7 +567,6 @@ class Limits(TypedDict, total=False):
 
 | ID | 功能 | 关键要求 |
 |---|---|---|
-| **F7** | 评测与回放 | 区分 `replay`（审计，不重调模型）与 `evaluate`（换模，干净 fixture）；20 条 case 覆盖正常/工具错误/超时恢复/恶意输入/审批边界；安全门槛为硬门槛 |
 | **F10** | 记忆与知识 | 四类分离：事实→SQLite、文件→内容寻址、历史→事件日志、语义→FTS+向量（可重建投影）。写入需去重/来源/作用域/过期 |
 | **F9b** | 动态路由 | 静态准入之上做成本/延迟排序、熔断、健康探测 |
 | **F14** | 可观测性 | 自有 envelope → 导出 OTel GenAI semconv；原始数据与 trace 分离。**普通用户界面只展示翻译后的人话，原始 trace 隐藏** |
@@ -851,7 +852,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 
 ## 附录 B：契约测试清单（摘要）
 
-1. 各 provider 映射角色/内容块/结束原因/错误；未知枚举存 `unknown`
+1. 各 provider 映射角色/内容块/结束原因/错误；**未知枚举必须报错，不得存 `unknown`**（结束原因、内容块类型等未映射值一律抛 `ModelError`；历史事件里若存过非法 `finish_reason`，读取时抛错而不是洗白成合法值）
 2. 只有 `tool_calls_ready` 可提交调用；`length/refusal/content_filter/cancelled/error/unknown` 一律拒绝
 3. 半截 JSON、重复 delta、断流、重复结束事件：不执行
 4. 崩溃覆盖四窗口：intent 前、intent 后派发前、派发后 result 前、result 落盘后

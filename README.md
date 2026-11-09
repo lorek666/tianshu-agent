@@ -2,7 +2,7 @@
 
 桌面 Agent OS：Windows / macOS 双端，普通用户可用，模型自选，v1 不含图片与视频生成。
 
-> 状态：架构与 PRD 已定稿，进入 M0（骨架闭环）。
+> 状态：架构与 PRD 已定稿；M0–M3 已完成并合并，下一步 M4（可评估）。
 > 本目录是唯一开发目录。文档在 `docs/`。
 
 ---
@@ -30,33 +30,33 @@
 
 **改动任何契约前先读 PRD §5、§6**（五道契约 + 十一条红线）。红线与功能需求冲突时以红线为准。
 
-## 当前阶段：M0
+## 当前阶段：M3 已完成
 
-M0 目标：单 run 闭环 + 事件日志可重放。
+M3（第二个 chat provider + 第二个沙箱后端）的判据与证据见 [docs/M3-verification.md](docs/M3-verification.md)。下一个里程碑是 PRD §11 的 M4（可评估），尚未开始。
 
-第一张工单范围（来自评审）：
-
-> 实现「指定目录阅读与摘要」的命令行原型：任务边界与验收样例先行，接一家真实模型，三个受限文件工具（`list_files` / `read_text` / `create_report`），SQLite 执行记录，轮数/预算控制。交付可运行示例 + 实际生成的报告 + 逐项验收结果。
-
-**验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
-
-### 已实现
+### 已实现（M0–M3 累积）
 
 ```
 src/tianshu/
 ├── events.py      SQLite WAL append-only 事件日志（触发器禁止 UPDATE/DELETE）+ 可组合事务
 ├── canonical.py   RFC 8785 (JCS) 规范化 + 独立标准向量
+├── errors.py      错误类型：区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
 ├── workspace.py   路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
+├── pathkeys.py    路径键：大小写 / Unicode 规范化与祖先判断（sandbox 不反向依赖 workspace）
+├── fsutil.py      原子文件写入（临时文件 → fsync → os.replace → fsync 目录），覆盖时保留原 mode
 ├── guard.py       工作区阻断检查（未知副作用不得继续写）
 ├── tasks.py       Task / Run / RunCursor 状态机，fencing，控制请求，执行守卫入口
 ├── leases.py      跨进程资源租约 + 本机执行守卫（POSIX/Windows）
 ├── jobs.py        作业认领与 claim_epoch（旧 worker 不得覆盖新 owner）
 ├── permissions.py C4 动作分类 / 审批 / 一次性 grant
 ├── dispatcher.py  唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
+├── sandbox.py     可替换存储后端接缝：LocalBackend（真实盘）/ MemBackend（进程内，不是沙箱）
 ├── tools.py       受限工具 + FileExecutor（自己回库核验票据，不信调用方）
 ├── snapshot.py    写前快照与冲突安全撤销
 ├── receipt.py     操作凭据（凭据能独立核对）
+├── crashpoint.py  故障注入点（os._exit 硬退，仅 TIANSHU_FAILPOINT 生效）
 ├── recovery.py    中断核查：applied / none_applied / unknown 三者不合并
+├── model.py       模型接缝（C1）：四个 adapter 只做双向翻译，不改写内部形状
 ├── loop.py        E1 主循环（持久游标、暂停/取消、恢复）+ 栈装配
 ├── worker.py      作业循环：认领排队中的 Run、阻塞期间后台续心跳
 ├── replay.py      回放校验：seq / messages_hash / 产物哈希三方核对
@@ -67,7 +67,7 @@ src/tianshu/
 
 ```bash
 uv sync --python 3.12
-uv run pytest                       # M0/M1/M2 全量（数量随工单增长，见提交记录）
+uv run pytest                       # M0–M3 全量（数量随工单增长，见提交记录）
 uv run ruff check .
 
 # 离线演示（scripted 模型，不调真实模型）
@@ -134,6 +134,16 @@ uv run python -m tianshu run --workspace /tmp/ws --task "..." \
 
 `--provider` 不写时读 `TIANSHU_PROVIDER`，再默认 `openai`。
 `--model-name` 对 anthropic **必须显式给**——不替用户猜模型 id，猜错的表现是 404。
+
+## M0 的工单历史（已完成，仅作记录）
+
+M0 目标：单 run 闭环 + 事件日志可重放。
+
+第一张工单范围（来自评审）：
+
+> 实现「指定目录阅读与摘要」的命令行原型：任务边界与验收样例先行，接一家真实模型，三个受限文件工具（`list_files` / `read_text` / `create_report`），SQLite 执行记录，轮数/预算控制。交付可运行示例 + 实际生成的报告 + 逐项验收结果。
+
+**验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
 
 ## 开发约定
 
