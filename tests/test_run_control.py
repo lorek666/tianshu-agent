@@ -39,6 +39,10 @@ from tianshu.tasks import (
 ORIGINAL = "原始内容\n"
 
 
+def _types_of(log: EventLog, run_id: str) -> list[str]:
+    return [e.type for e in log.read_run(run_id)]
+
+
 # ---------------------------------------------------------------- 夹具
 
 
@@ -843,20 +847,22 @@ sys.exit(main(["run", "--workspace", {str(ws)!r}, "--task", "写报告",
         first = engine.resume_run(run_id)
         assert first.state == "reconciling"
         assert "recover" in (first.error or "")
-        assert env_types(log, run_id).count("tool.intent") == 1, "不许重派"
+        assert _types_of(log, run_id).count("tool.intent") == 1, "不许重派"
 
         report = recover_run(log, run_id, ws, stack.snapshots)
         assert report.none_applied == ["c2"], "写前就崩了，应当判为未执行"
 
         second = engine.resume_run(run_id)
         assert second.state in ("succeeded", "failed"), second.error
-        assert env_types(log, run_id).count("tool.intent") <= 2
+        # 今天的选择是"核查为未执行 = 该调用已经有结果"，于是不自动重试，
+        # 由模型看到失败结果后自己决定要不要换一个 call_id 再来一次。
+        # 所以 intent 仍然只有一条；真要重试会带新的 call_id。
+        assert _types_of(log, run_id).count("tool.intent") == 1
     finally:
         log.close()
 
 
-def env_types(log: EventLog, run_id: str) -> list[str]:
-    return [e.type for e in log.read_run(run_id)]
+
 
 
 def test_read_result_survives_cursor_lag_without_duplicate_message(env):
