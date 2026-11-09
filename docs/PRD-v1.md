@@ -20,7 +20,7 @@
 | 角色 | 拥有什么 | 不拥有什么 |
 |---|---|---|
 | **Rust Desktop Host** | 操作系统权限（窗口、TCC、Keychain、系统 API） | 不拥有任务状态，不做模型调用 |
-| **Python Agent Daemon** | 任务执行的拥有者（循环、上下文、工具、记忆、恢复） | 不拥有 OS 权限，不直接弹授权框 |
+| **Python Agent Daemon** | 任务执行的拥有者（循环、上下文、工具、恢复；记忆属 **v1.1**，见 §7 的 F10） | 不拥有 OS 权限，不直接弹授权框 |
 | **React UI** | 用户交互 | 不拥有任务执行，不是唯一事实源 |
 
 推论：**关掉 UI ≠ Agent 停止；Agent 停止 ≠ 任务数据丢失。** 这条写在最前面，因为它是桌面 agent 与 Web agent 最根本的差别。
@@ -137,7 +137,7 @@
 | `Approval` | 审批 | `id, execution_id, digest, state, decided_by` |
 | `Receipt` | 副作用凭据 | `id, execution_id, before_ref, after_ref, evidence[]` |
 | `Artifact` | 产物 | `id, sha256, mime, bytes, kind, run_id` |
-| `Memory` | 长期记忆 | `id, scope, owner_id, content, source, confidence` |
+| `Memory` | 长期记忆（**v1.1**，见 §7 的 F10） | `id, scope, owner_id, content, source, confidence` |
 | `Event` | 事件日志 | `seq, run_id, type, actor, payload_ref, payload_hash, parent_seq` |
 | `Checkpoint` | 恢复指针 | `id, run_id, seq, state_digest, pending_intents[]` |
 
