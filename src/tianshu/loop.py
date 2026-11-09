@@ -546,7 +546,9 @@ class AgentLoop:
             # 取消是终态：Run 已经收尾、作业也被有意收掉了，再写游标只会
             # 撞上一个已经失效的 claim（JobLost），把一次成功的取消报成
             # "收尾被拒绝"。终态不需要游标。
-        return action
+            return action
+        # 没有控制请求：续心跳再继续。这一步不能少——一个多轮任务里每次
+        # 安全点都可能是几十秒之后，不续就会让**还活着**的 owner 被接管。
         self.heartbeat_once(claim)
         return None
 

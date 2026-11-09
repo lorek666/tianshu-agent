@@ -1305,3 +1305,29 @@ def test_repeated_pause_is_idempotent_not_a_downgrade(env):
     ]
     assert [c["request_effective"] for c in controls] == [True, True]
     assert all(c["stronger_request"] is None for c in controls)
+
+
+def test_safe_point_renews_the_claim(env):
+    """每个安全点都要续心跳。
+
+    少了这一步，一个"没人暂停、没人取消"的正常多轮任务会在若干轮之后
+    被别的 worker 接管——owner 还活着，只是没人给它续过期限。
+    """
+    calls: list = []
+    original = env.stack.claims.heartbeat
+
+    def counting(claim, **kwargs):
+        calls.append(claim.claim_epoch)
+        return original(claim, **kwargs)
+
+    env.stack.claims.heartbeat = counting
+    engine = env.engine([
+        _write_turn([_create("a.md", "甲", "c1")]),
+        _write_turn([_create("b.md", "乙", "c2")]),
+        _end(),
+    ])
+    task = env.task()
+    result = engine.start(task.task_id)
+    assert result.state == "succeeded", result.error
+    # 两个待办 + 收尾前各过一次安全点
+    assert len(calls) >= 2, f"安全点没续心跳（只续了 {len(calls)} 次）"
