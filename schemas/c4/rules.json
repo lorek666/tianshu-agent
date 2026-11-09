@@ -11,6 +11,7 @@
       "enum": [
         "c4.approval_expired",
         "c4.approval_mismatch",
+        "c4.approval_rejected",
         "c4.approval_run_mismatch",
         "c4.approval_state",
         "c4.auto",
@@ -61,6 +62,7 @@
   "x-rule-descriptions": {
     "c4.approval_expired": "批准已过期。",
     "c4.approval_mismatch": "批准的动作摘要与本次请求不一致（参数/目标被改过）。",
+    "c4.approval_rejected": "同一 Run 内这个动作已经被人否决：不再发起新审批，直接拒绝并写 tool.result；要做就改参数或改目标后重新发起。",
     "c4.approval_run_mismatch": "批准属于另一个 Run。",
     "c4.approval_state": "批准不在可用状态（proposed/pending/rejected 等）。",
     "c4.auto": "判定结果：目录内读/新建，自动放行。",
@@ -116,6 +118,7 @@
     "审批不可用": [
       "c4.approval_expired",
       "c4.approval_mismatch",
+      "c4.approval_rejected",
       "c4.approval_run_mismatch",
       "c4.approval_state",
       "c4.multi_resource",
