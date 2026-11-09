@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（332 passed / `ruff check .` 通过），合并提交见 PR
+- 本阶段最终：PR C 分支（336 passed / `ruff check .` 通过），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 332 passed
+  uv run pytest -q          # 336 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -179,6 +179,15 @@ $ tianshu run resume --run-id R          # 另一个进程 → 新的 claim_epoc
 8. **"目录内修改自动放行"没有兑现**：唯一的修改工具 `modify_text` 是整文件替换，
    按删除类走审批。PRD §8.3 的工具级落表已写明这一点；在 diff 级写入工具出现之前，
    UI 不得宣称"改这个文件夹里的东西无需确认"。
+9. `JobStore.claim(..., take_over_live=True)` 是**逃生门**：公开 API、没有生产
+   调用者，只为测试"旧 owner 还活着但认领被抢走"这一场景存在。任何接线把它当
+   常规路径，都等于取消 fencing 的第一道闸。
+10. **心跳在争用下会被推迟**：心跳要用 `BEGIN IMMEDIATE` 写库，主线程正在提交
+    大事务时它只能等到 `busy_timeout`（5s）。短事务下无影响；若将来出现秒级的
+    单次提交，要么缩短提交，要么把 TTL 调长。
+11. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
+    再建新的唯一索引。若历史库里已经存在同一 Run 的两个未完成作业，构造
+    `JobStore` 会直接抛 `IntegrityError`（新库与测试库均正常）。
 
 ## 6. 端到端演示（临时夹具，CLI 实录）
 

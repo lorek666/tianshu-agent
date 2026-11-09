@@ -101,8 +101,10 @@ uv run python -m tianshu approvals approve appr_xxxx
 # 但执行仍要求当前 claim 与租约在手，且改目标/改参数会让批准作废。
 
 # 作业循环：认领排队中的 Run（进程崩溃、重启后接手；死掉的 owner 立刻可接管）
+# 注意：这是一次性 drain，不是常驻守护进程——跑完队列（或第一次撞上
+# "工作区被别的 Run 占着"）就退出，由调用方决定隔多久再来一次。
 uv run python -m tianshu worker --once    # 只跑一个作业
-uv run python -m tianshu worker           # 跑到队里没有可跑的作业为止
+uv run python -m tianshu worker           # 跑到队空 / 第一次 contended 为止
 
 # 改目标：旧 Run 立刻失效，待批请求作废，历史保留
 uv run python -m tianshu task revise --task-id task_xxxx --goal "换个目标"

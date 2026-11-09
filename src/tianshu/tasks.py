@@ -146,7 +146,11 @@ RUN_CURSOR_SAVED = "run.cursor"
 RUN_MODEL_TURN = "run.model_turn"
 RUN_START = "run.start"
 RUN_FINISH = "run.finish"
-RUN_FENCED = "run.fenced"
+# 事件类型必须与状态常量分开命名：`RUN_FENCED` 是状态 `fenced`，
+# 这个模块里原先又写了一个同名常量 `RUN_FENCED = "run.fenced"`，
+# 后者把前者覆盖掉，于是**所有** `run.state == RUN_FENCED` 判断恒为 False
+# （暂停/取消/fence 收尾全部走错分支，作业还可能被永久挂起）。
+RUN_FENCED_EVENT = "run.fenced"
 RUN_STATE = "run.state"
 RUN_END = "run.end"
 RUN_CONTROL = "run.control"
@@ -491,7 +495,7 @@ class TaskStore:
         run = self.get_run(run_id)
         tx.append(
             run_id,
-            RUN_FENCED,
+            RUN_FENCED_EVENT,
             {
                 "run_id": run_id,
                 "task_id": run.task_id if run else None,
@@ -1367,7 +1371,7 @@ class TaskStore:
                 TASK_REVISED,
                 RUN_START,
                 RUN_FINISH,
-                RUN_FENCED,
+                RUN_FENCED_EVENT,
                 RUN_STATE,
                 RUN_CONTROL,
                 RUN_EFFECT,
@@ -1450,7 +1454,7 @@ class TaskStore:
                 if t is not None and t["active_run_id"] == p["run_id"]:
                     t["active_run_id"] = None
                     t["updated_at"] = ev.ts
-            elif ev.type == RUN_FENCED:
+            elif ev.type == RUN_FENCED_EVENT:
                 r = runs.get(p["run_id"])
                 if r is None:
                     continue

@@ -182,8 +182,12 @@ def renew_claim(
     反过来（先查再续）会多一次读，而且中间仍会变。
     """
     job = claims.get(claim.job_id)
-    if job is None or job.state != JOB_CLAIMED:
+    if job is None:
         return False
+    # **先判身份，后判状态**：接管之后新 owner 可能立刻把作业交还(`pending`)
+    # 或挂起(`waiting`)，这两种也必须报 `JobLost`——否则"我被接管了"这件事
+    # 会被静默成"正常结束"。只有 epoch/owner 没变（本实例自己收尾/暂停/被取消）
+    # 才是静默。
     if job.claim_epoch != claim.claim_epoch or (
         job.owner_instance_id != claim.owner_instance_id
     ):
@@ -191,6 +195,19 @@ def renew_claim(
             f"claim 已被接管：job={claim.job_id} epoch={claim.claim_epoch}"
             f"（当前 {job.claim_epoch}/{job.owner_instance_id}）"
         )
+    if job.state != JOB_CLAIMED:
+        return False
+
+    # **先核 claim 再续租约**：两条独立的事务，顺序反了就会出现"我已经不是
+    # owner，却把工作区租约又续了 30 秒"——新 owner 之后来 acquire 会撞
+    # LeaseConflict，而被续的那行租约要等 TTL 才失效。claim 的核验是权威判据，
+    # 所以它必须先成功。
+    try:
+        claims.heartbeat(claim, ttl_ms=ttl_ms)
+    except TianshuError:
+        if not _claim_owned(claims, claim):
+            return False
+        raise
 
     paths = leases.live_paths(claim.run_id)
     if paths:
@@ -204,12 +221,9 @@ def renew_claim(
                 return False
             if leases.live_paths(claim.run_id):
                 raise
-    try:
-        claims.heartbeat(claim, ttl_ms=ttl_ms)
-    except TianshuError:
-        if not _claim_owned(claims, claim):
-            return False
-        raise
+            # 剩下一种情况无法与"本实例刚好暂停/收尾释放了租约"区分：租约在
+            # `live_paths` 与 `renew` 之间被别人拿走。这里不猜，交给执行前的
+            # `assert_covers` 兜底——它才是"这条路径归不归我写"的判据。
     return True
 
 
@@ -314,9 +328,13 @@ class JobStore:
             # 去认领时却从 A 刚提交的 epoch 1 上接着 +1，于是两个进程同时持
             # 同一个 Run 的 claim，各自以为自己是 owner。
             with self._log.transaction():
+                # 排序按"能不能跑"优先，而不是只按创建时间：否则队列前面
+                # 堆着 32 个"活着但卡住"的 claimed 作业时，后建的 pending
+                # 永远扫不到（`LIMIT` 把它们挡在外面），表现为"队列卡死"。
                 rows = self._conn.execute(
                     "SELECT * FROM jobs WHERE state IN ('pending','claimed')"
-                    " ORDER BY created_at LIMIT ?",
+                    " ORDER BY CASE WHEN state='pending' THEN 0 ELSE 1 END,"
+                    "          created_at LIMIT ?",
                     (max_attempts * 2,),
                 ).fetchall()
                 for row in rows:

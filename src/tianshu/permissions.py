@@ -292,7 +292,6 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_approvals_digest ON approvals(request_digest);
-CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals(run_id, action_digest);
 
 CREATE TABLE IF NOT EXISTS grants (
     grant_id       TEXT PRIMARY KEY,
@@ -318,6 +317,14 @@ def _ensure_column(
     have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if name not in have:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
+#: 依赖"后来才加的列"的索引。**必须**在 `_ensure_column` 之后建：
+#: 旧库的表里没有 `action_digest`，先建索引会直接
+#: `no such column: action_digest`，整个 stack 起不来（所有命令都不可用）。
+INDEXES_AFTER_MIGRATION = """
+CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals(run_id, action_digest);
+"""
 
 
 class PolicyEngine:
@@ -409,6 +416,7 @@ class ApprovalStore:
         _ensure_column(
             self._conn, "approvals", "action_digest", "TEXT NOT NULL DEFAULT ''"
         )
+        self._conn.executescript(INDEXES_AFTER_MIGRATION)
 
     @property
     def transaction(self):

@@ -127,6 +127,47 @@ def env(tmp_path):
     log.close()
 
 
+def test_legacy_database_without_action_digest_still_opens(tmp_path):
+    """af0da35 之前建的库必须还能打开：迁移顺序错了就是"所有命令都不可用"。
+
+    旧 `approvals` 表没有 `action_digest` 列，而新 SCHEMA 里有一个依赖该列的
+    索引。只要索引先于加列执行，任何旧库在构造 stack 时就
+    `OperationalError: no such column: action_digest`——连 `run status` 都跑不了。
+    """
+    import sqlite3
+
+    from tianshu.permissions import ApprovalStore
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE approvals (approval_id TEXT PRIMARY KEY,"
+        " request_id TEXT NOT NULL, request_digest TEXT NOT NULL,"
+        " task_id TEXT NOT NULL, run_id TEXT NOT NULL,"
+        " goal_revision INTEGER NOT NULL, lease_epoch INTEGER NOT NULL,"
+        " action TEXT NOT NULL, resources TEXT NOT NULL, state TEXT NOT NULL,"
+        " reason TEXT NOT NULL DEFAULT '', decided_by TEXT,"
+        " created_at INTEGER NOT NULL, decided_at INTEGER,"
+        " expires_at INTEGER NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        ApprovalStore(log)  # 构造即迁移
+        columns = {
+            row[1] for row in log.conn.execute("PRAGMA table_info(approvals)")
+        }
+        assert "action_digest" in columns, "迁移必须补上这一列"
+        indexes = {
+            row[1] for row in log.conn.execute("PRAGMA index_list(approvals)")
+        }
+        assert "idx_approvals_action" in indexes
+    finally:
+        log.close()
+
+
 def _end(text: str = "完成") -> ModelResponse:
     return ModelResponse("end_turn", content=text)
 
@@ -438,6 +479,23 @@ def test_job_restart_preserves_pending_approval(env):
     assert env.count(run_id, "tool.intent") == 1
 
 
+def test_claim_next_finds_a_pending_job_behind_stuck_claims(env):
+    """队列前面堆满"活着但卡住"的 claimed 作业时，后建的 pending 仍要被看到。
+
+    只按 created_at 取前 N 行会让 pending 永远扫不到——表现出来是"队列卡死"，
+    而实际上它只是排在一堆卡住的作业后面。
+    """
+    stuck = []
+    for _ in range(40):
+        run_id, _, job_id = env.enqueue(root=env.ws)
+        claim = env.stack.claims.claim(job_id, ttl_ms=3_600_000)
+        stuck.append((run_id, claim))
+    fresh_id, _, fresh_job = env.enqueue(root=env.ws)
+
+    taken = env.stack.claims.claim_next()
+    assert taken is not None and taken.job_id == fresh_job, "pending 被挡住了"
+
+
 def test_worker_parks_waiting_run_instead_of_respinning(env):
     """worker 把"等人"的作业挂起，而不是立刻放回 pending 反复重跑。
 
@@ -555,15 +613,24 @@ def _steal_attempt(env: Env) -> bool:
 
 
 class _ProbeModel(_SlowModel):
-    """阻塞期间探一次"别人现在能不能抢走这个作业"。"""
+    """阻塞期间探一次"别人现在能不能抢走这个作业"，并记下当时的 deadline。"""
 
     def __init__(self, seconds: float, env: Env) -> None:
         super().__init__(seconds)
         self._env = env
         self.probes: list[bool] = []
+        self.deadline_slack: list[int] = []
 
     def complete(self, messages, tools):  # noqa: ARG002
         result = super().complete(messages, tools)  # 先阻塞一段，再探
+        log = EventLog(self._env.db, blob_dir=self._env.root / "blobs")
+        try:
+            jobs = JobStore(log, identity=ProcessIdentity.mint()).list_jobs()
+            now = int(time.time() * 1000)
+            if jobs and jobs[-1].deadline_at is not None:
+                self.deadline_slack.append(jobs[-1].deadline_at - now)
+        finally:
+            log.close()
         self.probes.append(_steal_attempt(self._env))
         return result
 
@@ -585,6 +652,11 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     assert worker.run_once() is True
     assert probe.probes == [False], "有心跳时别人不该抢得走"
     assert worker.beats >= 2, f"心跳次数太少：{worker.beats}"
+    # 心跳必须用**认领时那个 ttl**：把 deadline 续成 30s 的话，"抢不走"是因为
+    # 30 秒太长，而不是因为心跳在工作——那样的断言什么也没测到。
+    assert probe.deadline_slack and probe.deadline_slack[0] <= ttl * 2, (
+        f"心跳没有沿用 ttl={ttl}：deadline 还剩 {probe.deadline_slack}ms"
+    )
     assert env.stack.tasks.get_run(run_id).state == "succeeded"
     assert env.stack.claims.get(job_id).state == "done"
 
@@ -712,6 +784,39 @@ def test_same_call_id_with_new_args_is_a_controlled_rejection(env):
     assert not (env.ws / "b.md").exists()
 
 
+def test_missing_manifest_with_an_intent_is_not_rebuilt(env):
+    """已经有写 intent 之后清单丢了：resume 不许补一张空清单。
+
+    补空清单会把"未知"洗成"确定没写"——正是 M2 总验收禁止的
+    "unknown 不能因重启或重建投影而消失"。
+    """
+    run_id, _, _ = env.enqueue(root=env.ws, out="m.md")
+    env.log.close()
+    proc = _child(
+        ["worker", "--once", *_cli_args(env), "--json"],
+        model=[_create("m.md", "内容\n", "c1").to_payload()],
+        env_extra={"TIANSHU_FAILPOINT": "after_write"},
+    )
+    assert proc.returncode == 77
+    env.reopen()
+    manifest = env.data / "artifacts" / "snapshots" / f"{run_id}.json"
+    assert manifest.exists()
+    manifest.unlink()
+
+    # 再驱动一次：不许把清单补成空的
+    proc = _child(["worker", "--once", *_cli_args(env), "--json"])
+    assert proc.returncode == 0, proc.stderr
+    env.reopen()
+    assert not manifest.exists(), "已有写 intent 时补空清单会把 unknown 洗成 none_applied"
+    from tianshu.recovery import recover_run
+
+    report = recover_run(
+        env.log, run_id, env.ws, env.stack.snapshots, leases=env.stack.leases
+    )
+    assert report.unresolved == ["c1"], report
+    assert (env.ws / "m.md").read_text(encoding="utf-8") == "内容\n"
+
+
 def test_worker_holds_no_guard_and_no_transaction_while_model_runs(env):
     """模型调用期间不许持执行守卫，也不许开着数据库事务。
 
@@ -749,9 +854,22 @@ def test_worker_does_not_resume_a_fenced_run(env):
     worker = Worker(env.stack, model=ScriptedModel([_end()]))
     assert worker.run_once() is True  # 认领了，但必须立刻收掉
     job = env.stack.claims.get(job_id)
-    assert job.state in ("done", "cancelled", JOB_WAITING)
+    # 被 fence 的 Run 已经没有"等人决定"这回事了：作业必须**收掉**。
+    # 留一个 waiting 作业意味着它永远不会结束（`claim_next` 不认领 waiting，
+    # `_finish_locked` 也只收 cancelled 的作业）。
+    assert job.state == "done", job
+    assert job.outcome == "failed"
     assert env.count(run_id, "model.result") == 0, "fence 之后不许再问模型"
     assert env.count(run_id, "job.claimed") == before + 1
+
+    # 对已 fence 的 Run 请求暂停/取消：必须明确拒绝，不能留下永不生效的请求
+    proc = _child(["run", "pause", "--run-id", run_id, *_cli_args(env)])
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "fence" in (proc.stdout + proc.stderr)
+    proc = _child(["run", "cancel", "--run-id", run_id, *_cli_args(env), "--json"])
+    assert proc.returncode == 1
+    assert json.loads(proc.stdout)["refused"] == "取消"
+    assert env.stack.tasks.get_run(run_id).control_requested is None
 
 
 def test_run_worker_once_matches_the_documented_interface(env):
@@ -853,6 +971,21 @@ def test_concurrent_workers_serialize_on_one_directory(env):
     # 抢不到租约的 worker 会交还作业并如实说"被占用"，而不是报错
     assert any(p["contended"] for p in payloads), payloads
     assert all(not p["errors"] for p in payloads), payloads
+
+
+def test_cli_worker_reports_not_idle_when_it_hit_the_job_limit(env):
+    """跑满 `--max-jobs` 还说 `idle: true` 是撒谎：队里还有活。"""
+    for i in range(3):
+        env.enqueue(root=env.ws, out=f"lim{i}.md")
+    proc = _child(["worker", "--max-jobs", "1", *_cli_args(env), "--json"])
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert len(payload["run_ids"]) == 1
+    assert payload["idle"] is False, payload
+
+    proc = _child(["worker", *_cli_args(env), "--json"])
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["idle"] is True, "跑空才算 idle"
 
 
 def test_cli_worker_drains_enqueued_jobs(env):

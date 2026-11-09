@@ -54,7 +54,12 @@ from .leases import (
 )
 from .loop import AgentLoop, Limits, RunResult, Stack
 from .model import Model
-from .tasks import RUN_FENCED, RUN_PAUSED, TERMINAL_STATES
+from .tasks import (
+    RUN_FENCED,
+    RUN_PAUSED,
+    RUN_WAITING_APPROVAL,
+    TERMINAL_STATES,
+)
 
 #: 一次 `drain` 最多跑多少个作业。防的是"队列里有一万个作业，进程再也不回来"。
 MAX_JOBS_PER_DRAIN = 64
@@ -182,8 +187,8 @@ class _SideChannel:
         self._leases = LeaseStore(self._log, identity=identity, **kwargs)
         self._claims = JobStore(self._log, identity=identity, **kwargs)
 
-    def beat(self, claim: JobClaim) -> bool:
-        return renew_claim(self._leases, self._claims, claim)
+    def beat(self, claim: JobClaim, *, ttl_ms: int = DEFAULT_TTL_MS) -> bool:
+        return renew_claim(self._leases, self._claims, claim, ttl_ms=ttl_ms)
 
     def close(self) -> None:
         self._log.close()
@@ -207,6 +212,8 @@ class Worker:
     #: 上一次认领是否因为"工作区被别的 Run 占着"而没能跑（暂时性，不是故障）。
     contended: bool = False
     _side_stuck: bool = False
+    #: 上一趟 drain 是否因为"没活干"结束（而不是撞上上限或被占用打断）
+    exhausted: bool = False
 
     def __post_init__(self) -> None:
         self._claims = self.claims or self.stack.claims
@@ -243,10 +250,16 @@ class Worker:
         return True
 
     def drain(self, *, max_jobs: int = MAX_JOBS_PER_DRAIN) -> list[str]:
-        """把当前能跑的作业跑完一轮。返回真正驱动过的 Run。"""
+        """把当前能跑的作业跑完一轮。返回真正驱动过的 Run。
+
+        `exhausted` 记录"这一趟是不是因为没活干了才停"：只有它成立才敢对外
+        说 `idle`——否则 `--max-jobs 1` 跑满上限时也会自称空闲，而队里还有活。
+        """
         done: list[str] = []
+        self.exhausted = False
         for _ in range(max(1, max_jobs)):
             if not self.run_once():
+                self.exhausted = True
                 break
             done.append(self.run_ids[-1])
             if self.contended:
@@ -303,6 +316,11 @@ class Worker:
         if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
             # 已经结束（或被 fence）的 Run 不该再有作业；收掉它，绝不"恢复"
             return None
+        if run.state == RUN_WAITING_APPROVAL:
+            # 等审批的 Run 由**人**决定要不要继续（`run resume`）。worker 若替人
+            # 继续，"批准 ≠ 执行"就变成了"批准后某次轮询执行"，行为还会随
+            # "作业有没有被哪个 worker 先碰过"变化——同一件事有两种答案。
+            return None
         if run.state == RUN_PAUSED:
             # 用户按过暂停：worker 是**自动**认领者，它替用户取消暂停等于
             # 让"暂停"这个动作无效。要继续只能由 `run resume` 明确说一次。
@@ -314,7 +332,10 @@ class Worker:
 
         channel = self._side_channel()
         with HeartbeatLoop(
-            lambda: channel.beat(claim), interval_ms=interval
+            # 心跳必须用**认领时那个 ttl**：认领说 200ms 过期、心跳却按 30s 续命，
+            # 谁都不知道到底多久算活着，测试里"抢不走"也就成了必然成立的空断言。
+            lambda: channel.beat(claim, ttl_ms=self.ttl_ms),
+            interval_ms=interval,
         ) as loop:
             result = self._engine(claim).resume_run(claim.run_id)
         self.beats += loop.beats

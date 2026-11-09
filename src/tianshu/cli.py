@@ -34,7 +34,12 @@ from .model import Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
 from .recovery import recover_run
 from .replay import replay
-from .tasks import RUN_RECONCILING, RUN_WAITING_APPROVAL, TERMINAL_STATES
+from .tasks import (
+    RUN_FENCED,
+    RUN_RECONCILING,
+    RUN_WAITING_APPROVAL,
+    TERMINAL_STATES,
+)
 from .workspace import Workspace, WorkspaceBinding
 
 DEFAULT_DB = Path(".tianshu/events.db")
@@ -84,7 +89,9 @@ def _build_parser() -> argparse.ArgumentParser:
     t.add_argument("--json", action="store_true")
 
     w = sub.add_parser(
-        "worker", help="作业循环：认领排队中的 Run 并推进到它停下为止"
+        "worker",
+        help="作业循环（一次性 drain）：认领排队中的 Run 并推进到它停下为止；"
+        "队空或撞上被占用的工作区就退出，不是常驻守护进程",
     )
     w.add_argument("--once", action="store_true", help="只跑一个作业就退出")
     w.add_argument("--max-jobs", type=int, default=64, help="一次最多跑几个作业")
@@ -101,6 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rc = sub.add_parser("recover", help="核对并补全一次被打断的 run")
     rc.add_argument("--run-id", required=True)
     rc.add_argument("--workspace", required=True, type=Path)
+    rc.add_argument("--data-root", type=Path, default=None,
+                    help="authority 数据根（快照清单在这里；默认与 --db 同目录）")
     rc.add_argument("--db", type=Path, default=DEFAULT_DB)
     rc.add_argument("--json", action="store_true")
 
@@ -350,7 +359,37 @@ def _status_exit_code(run) -> int:
     return 0
 
 
+def _refuse_closed_run(
+    stack, run_id: str, *, action: str, as_json: bool = False
+) -> int | None:
+    """对已经结束/被 fence 的 Run 说清楚"不做了"，别留下一个永远不生效的请求。
+
+    返回 None 表示可以继续（Run 还活着）。
+    """
+    import json as _json
+
+    run = stack.tasks.get_run(run_id)
+    if run is None:
+        print(f"错误：没有这个 run：{run_id}", file=sys.stderr)
+        return 2
+    if run.state not in TERMINAL_STATES and run.state != RUN_FENCED:
+        return None
+    reason = "已被 fence（目标或绑定改过）" if run.state == RUN_FENCED else "已经结束"
+    if as_json:
+        print(_json.dumps(
+            {"run_id": run.run_id, "state": run.state, "refused": action,
+             "reason": reason}, ensure_ascii=False, indent=2))
+    else:
+        print(f"没有{action}：这个 Run {reason}（state={run.state}）", file=sys.stderr)
+    return 1
+
+
 def _run_pause(stack, args: argparse.Namespace) -> int:
+    refused = _refuse_closed_run(
+        stack, args.run_id or "", action="暂停", as_json=args.json
+    )
+    if refused is not None:
+        return refused
     record = stack.tasks.request_pause(args.run_id or "")
     if args.json:
         print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
@@ -364,6 +403,11 @@ def _run_pause(stack, args: argparse.Namespace) -> int:
 
 
 def _run_cancel(stack, args: argparse.Namespace) -> int:
+    refused = _refuse_closed_run(
+        stack, args.run_id or "", action="取消", as_json=args.json
+    )
+    if refused is not None:
+        return refused
     before = stack.tasks.get_run(args.run_id or "")
     record = stack.tasks.request_cancel(args.run_id or "")
     already_over = before is not None and before.state in TERMINAL_STATES | {"fenced"}
@@ -496,7 +540,9 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 idle = not ran
             else:
                 ran = worker.drain(max_jobs=args.max_jobs)
-                idle = True
+                # 只有"跑空"才算 idle：跑满 --max-jobs 或撞上被占用的工作区
+                # 都说明队里可能还有活，报 idle 是骗人。
+                idle = worker.exhausted
         finally:
             worker.close()
         payload = {
@@ -527,7 +573,11 @@ def _cmd_worker(args: argparse.Namespace) -> int:
 
 def _cmd_recover(args: argparse.Namespace) -> int:
     log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
-    stack = build_stack(log, data_root=args.db.parent)
+    # 数据根不一定是 `--db` 的父目录：`run/worker` 允许 `--data-root`，
+    # 快照清单跟着数据根走。这里写死 db.parent 会让 recover 找不到清单，
+    # 把"其实没写"的调用判成 unresolved 并顺手阻断整个目录。
+    data_root = args.data_root if args.data_root is not None else args.db.parent
+    stack = build_stack(log, data_root=data_root)
     snapshots, leases = stack.snapshots, stack.leases
     try:
         report = recover_run(log, args.run_id, args.workspace, snapshots, leases=leases)

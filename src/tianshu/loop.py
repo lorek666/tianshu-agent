@@ -430,12 +430,17 @@ class AgentLoop:
     # ---------------------------------------------------------------- 驱动
 
     def _drive(self, run_id: str, claim: JobClaim, progress: _Progress) -> RunResult:
-        if self._snapshots is not None:
-            # 写前清单是"清单缺失 = 异常"这条判据的前提。它必须由**驱动方**
-            # 建，而不是由 `start()` 建：worker / resume 启动的 Run 一样会有
-            # 副作用，没有清单的话崩溃后 recover 只能报 unresolved 并阻断整个
-            # 目录——一次崩溃就把目录永久锁死。`init_run` 幂等，重复调用安全。
-            self._snapshots.init_run(run_id)
+        if self._snapshots is not None and not self._snapshots.has_manifest(run_id):
+            # 写前清单是"清单缺失 = 异常"这条判据的前提。它必须由**驱动方**建，
+            # 而不是由 `start()` 建：worker / resume 启动的 Run 一样会有副作用。
+            #
+            # 但补建只能发生在"还没有任何写 intent"的时候：一旦已经派发过写操作，
+            # 清单缺失就是**证据丢了**，此时补一张空清单会把 unknown 洗成
+            # "确定没写"——正是 M2 总验收禁止的"unknown 因重启或重建投影消失"。
+            # 唯一安全的窗口与 `recovery.py` 的最早窗口一致：只有 run.start。
+            events = self._log.read_run(run_id)
+            if not any(e.type == "tool.intent" for e in events):
+                self._snapshots.init_run(run_id)
         self._index_events(run_id, progress)
         run = self._tasks.get_run(run_id)
         task = self._task(run.task_id)
