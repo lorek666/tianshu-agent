@@ -397,7 +397,14 @@ class Dispatcher:
                 request.action, target.path, request.preconditions or {}
             )
             if not ok:
-                raise DispatchDenied(reason, "dispatch.stale_precondition")
+                # "新建但目标已存在"不是"状态过期"，是"这个工具不做这件事"：
+                # 两者对用户的下一步动作含义完全不同（前者重试/重批，后者换工具）。
+                rule = (
+                    "dispatch.create_over_existing"
+                    if request.action == ACTION_CREATE and target.path.exists()
+                    else "dispatch.stale_precondition"
+                )
+                raise DispatchDenied(reason, rule)
         except DispatchDenied as exc:
             return self._reject(request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED)
 

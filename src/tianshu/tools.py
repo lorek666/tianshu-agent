@@ -780,7 +780,10 @@ def check_request_preconditions(
                 f"目标是否已存在与请求声明不符（声明 {declared}，实际 {actual}）"
             )
         if actual:
-            return False, "目标已存在，新建动作不再成立（按覆盖处理需重新审批）"
+            return False, (
+                "目标已存在：create_report 不覆盖已有文件；"
+                "要覆盖请改用 modify_text（删除类，需审批）"
+            )
         return True, ""
 
     if action in (ACTION_OVERWRITE, ACTION_DELETE):

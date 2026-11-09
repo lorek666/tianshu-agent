@@ -617,10 +617,13 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 |---|---|---|
 | `list_files` / `read_file` | `read` | 自动（只读工具不产生副作用，崩溃也只记 `none_applied`） |
 | `create_report`，目标**不存在** | `create` | 自动 |
-| `create_report`，目标**已存在** | `overwrite`（策略改判，`c4.create_over_existing`） | 需审批 |
+| `create_report`，目标**已存在** | —（**拒绝**，`c4.create_over_existing`；工具本身不覆盖，批准了也执行不了） | 拒绝，并提示改用 `modify_text` |
 | `modify_text`（整文件替换） | `overwrite` | 需审批 |
 | `delete_file` | `delete` | 需审批 + preimage |
 
+> 一句话：**"新建"和"覆盖"是两个工具，不是一个工具加一张批准。** 让
+> `create_report` 在批准之后去覆盖，会让用户批一张永远执行不了的批准。
+>
 > **M2 的诚实缺口**：目前唯一的"修改"工具是整文件替换，按删除类处理，所以
 > 「改这个文件夹里的东西 = 自动放行」这句话在 M2 **没有兑现**——每次修改都要批。
 > 局部编辑工具（diff 级写入）出现之后才能按 §8.3 的原意自动放行；在那之前不许

@@ -102,17 +102,22 @@ def test_overwrite_and_delete_need_approval(tmp_path):
         assert not decision.is_auto
 
 
-def test_create_over_existing_is_treated_as_overwrite(tmp_path):
-    """调用方说"新建"但目标已存在：按覆盖处理，不能靠改个动作名绕过审批。"""
+def test_create_over_existing_is_denied_with_a_pointer_to_overwrite(tmp_path):
+    """调用方说"新建"但目标已存在：不是"批准一下就能覆盖"。
+
+    `create_report` 明确拒绝覆盖（M1 的 `OverwriteRefused`）。这里若返回
+    "需审批"，用户会批一张**永远执行不了**的批准；正确结论是拒绝，并指出
+    该改用 `modify_text`（那才是删除类、走审批的那条路）。
+    """
     ws = tmp_path / "ws"
     ws.mkdir()
     bindings = [WorkspaceBinding(str(ws))]
-    policy = PolicyEngine()
-    decision = policy.classify(
+    decision = PolicyEngine().classify(
         "create", [str(ws / "a.txt")], bindings, {"target_exists": True}
     )
-    assert decision.needs_approval
+    assert decision.is_denied
     assert decision.rule_id == "c4.create_over_existing"
+    assert "modify_text" in decision.reason, "拒绝理由要给出下一步该怎么做"
 
 
 def test_outside_workspace_needs_approval_not_silent_deny(tmp_path):

@@ -378,12 +378,15 @@ class PolicyEngine:
         preconditions = preconditions or {}
 
         if action in AUTO_ACTIONS:
-            # "新建"只有在目标确实不存在时才是新建。目标已存在而调用方仍称新建，
-            # 那就是覆盖——按删除类处理。执行侧还会再核一次 before_state。
+            # "新建"只有在目标确实不存在时才是新建。目标已存在时**不能**靠
+            # "批准一下"就放行：`create_report` 本身拒绝覆盖（M1 的
+            # `OverwriteRefused`），批准了也执行不了，只会留下一张用不掉的批准。
+            # 要覆盖就用 `modify_text`——它是删除类动作，走审批。
             if action == ACTION_CREATE and preconditions.get("target_exists") is True:
                 return PolicyDecision(
-                    DECISION_APPROVE,
-                    "目标已存在，按覆盖处理",
+                    DECISION_DENY,
+                    "create_report 不覆盖已有文件；要覆盖请改用 modify_text"
+                    "（删除类，需审批）",
                     "c4.create_over_existing",
                 )
             return PolicyDecision(DECISION_AUTO, "目录内读/新建", "c4.auto")

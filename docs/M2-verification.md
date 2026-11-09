@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（341 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
+- 本阶段最终：PR C 分支（342 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 341 passed
+  uv run pytest -q          # 342 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -176,31 +176,35 @@ $ tianshu run resume --run-id R          # 另一个进程 → 新的 claim_epoc
    **没有**在接管前做一次 recover 语义的副作用核对。
 7. `worker` 不自动继续"等人"的作业：批准之后必须由人 `run resume`（计划 §2.4 要求
    "收到 approve 不直接开始文件操作"）。
-8. **"目录内修改自动放行"没有兑现**：唯一的修改工具 `modify_text` 是整文件替换，
+8. **`create_report` 撞上已存在文件是"拒绝"，不是"审批"**：策略层与派发层
+   原先各说一套（策略说按覆盖处理需审批，派发层的执行前检查直接拒绝），
+   已统一成拒绝 + 提示改用 `modify_text`。这不是缺口，是刻意的：`create_report`
+   不带覆盖语义，批准它只会换来一张执行不了的批准。
+9. **"目录内修改自动放行"没有兑现**：唯一的修改工具 `modify_text` 是整文件替换，
    按删除类走审批。PRD §8.3 的工具级落表已写明这一点；在 diff 级写入工具出现之前，
    UI 不得宣称"改这个文件夹里的东西无需确认"。
-9. `JobStore.claim(..., take_over_live=True)` 是**逃生门**：公开 API、没有生产
+10. `JobStore.claim(..., take_over_live=True)` 是**逃生门**：公开 API、没有生产
    调用者，只为测试"旧 owner 还活着但认领被抢走"这一场景存在。任何接线把它当
    常规路径，都等于取消 fencing 的第一道闸。
-10. **心跳在争用下会被推迟**：心跳要用 `BEGIN IMMEDIATE` 写库，主线程正在提交
+11. **心跳在争用下会被推迟**：心跳要用 `BEGIN IMMEDIATE` 写库，主线程正在提交
     大事务时它只能等到 `busy_timeout`（5s）。短事务下无影响；若将来出现秒级的
     单次提交，要么缩短提交，要么把 TTL 调长。
-11. **等待审批不保留租约（与计划 §2.4 的差异）**：M2 没有常驻 owner——命令逐次
+12. **等待审批不保留租约（与计划 §2.4 的差异）**：M2 没有常驻 owner——命令逐次
     启动，`run start` 返回后进程就退出。所以等审批的 Run 在租约 TTL（30s）后就
     放开工作区，另一个 Run 可以拿到同一目录；计划 §2.4 说的"等审批仍由存活 owner
     保留租约、占用最长受审批 TTL 约束"要等桌面 Host 常驻进程才算实现。
-12. **`prompt_version` 未进请求摘要**：计划 §2.3 列了它、PRD §5.4 正文说
+13. **`prompt_version` 未进请求摘要**：计划 §2.3 列了它、PRD §5.4 正文说
     "policy/prompt 变化 → superseded"，但 M2 没有 prompt 版本化，字段也没落地。
     契约文本已收紧为"policy_version"，prompt 版本化留到 v2。
-13. **"approved→consumed 由数据库唯一约束保证"实际是条件 UPDATE**：SQLite 单写者
+14. **"approved→consumed 由数据库唯一约束保证"实际是条件 UPDATE**：SQLite 单写者
     下 `rowcount` 就是唯一裁决，效果等价，但措辞与实现不同（PRD 已按实测改写）。
-14. **park 之后 resume 必然 +1 epoch**：计划 §2.4 写"批准后 resume 使用仍有效的
+15. **park 之后 resume 必然 +1 epoch**：计划 §2.4 写"批准后 resume 使用仍有效的
     同一 epoch"，只有"同一个存活 owner"才成立；进程重启/交接后必然换 epoch，
     这正是审批必须绑动作摘要的原因（见 §4）。
-15. **`JobStore.is_live` 不查 pid 复用**：只看 deadline + `pid_alive`；租约那一侧
+16. **`JobStore.is_live` 不查 pid 复用**：只看 deadline + `pid_alive`；租约那一侧
     用 `pid_started_at`。死 owner 的 pid 被系统复用时最长 30s 不接管（保守，不会
     造成双写），与租约口径不一致。
-16. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
+17. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
     再建新的唯一索引。若历史库里已经存在同一 Run 的两个未完成作业，构造
     `JobStore` 会直接抛 `IntegrityError`（新库与测试库均正常）。
 

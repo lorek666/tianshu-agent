@@ -903,6 +903,33 @@ def test_fencing_a_waiting_approval_run_closes_its_job(env):
     assert Worker(env.stack, model=ScriptedModel([])).run_once() is False
 
 
+def test_create_over_an_existing_file_is_refused_not_approved(env):
+    """`create_report` 撞上已存在的文件：**拒绝**，并指出去用 `modify_text`。
+
+    这里曾经两层说法不一致：策略层说"按覆盖处理，需审批"，而派发层的执行前
+    检查直接拒绝。用户看到的是一张能批、但批了也执行不了的批准（工具本身
+    拒绝覆盖）。现在两层统一成拒绝，理由里给出下一步动作。
+    """
+    run_id, _, _ = env.enqueue(root=env.ws)
+    worker = Worker(
+        env.stack,
+        model=ScriptedModel([
+            _create("note.md", "想覆盖\n", "c1"),
+            _end(),
+        ]),
+    )
+    assert worker.run_once() is True
+
+    assert (env.ws / "note.md").read_text(encoding="utf-8") == ORIGINAL
+    rejected = [
+        p for p in env.payloads(run_id, "tool.result") if p.get("status") == "rejected"
+    ]
+    assert rejected, "必须留下一条受控拒绝"
+    assert rejected[0]["output"]["rule_id"] == "dispatch.create_over_existing"
+    assert "modify_text" in rejected[0]["output"]["error"], rejected[0]
+    assert env.stack.approvals.pending(run_id=run_id) == [], "不许留一张用不掉的批准"
+
+
 def test_run_worker_once_matches_the_documented_interface(env):
     """按计划写明的签名能用：`run_worker_once(store, owner) -> bool`。"""
     run_id, _, _ = env.enqueue(root=env.ws, out="one.md")
