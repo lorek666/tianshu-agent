@@ -104,7 +104,12 @@ EVENT_TYPES: frozenset[str] = frozenset(
 #:
 #: 接上发射点时**必须**把它移进 `EVENT_TYPES`（同时改 `schemas/c3/event.json`
 #: 与 PRD §5.3）。校验会先拒绝它，这不是障碍，而是刻意的：注册表不能悄悄变长。
-DECLARED_UNEMITTED_EVENT_TYPES: frozenset[str] = frozenset({"job.lost"})
+#:
+#: **当前为空。** 曾经唯一的成员 `job.lost` 已删除：`jobs.JOB_LOST` 常量存在过
+#: 但全库零发射点，而"作业丢失"这件事已经由租约过期 + `job.parked` /
+#: `job.requeued` 表达。留一个没人写的常量只会让人以为存在这种状态转移。
+#: 机制保留给将来"先定义形状、后接发射点"的类型。
+DECLARED_UNEMITTED_EVENT_TYPES: frozenset[str] = frozenset()
 
 #: PRD §5.3 曾经声明过、但代码里**从未实现**的抽象族。
 #:

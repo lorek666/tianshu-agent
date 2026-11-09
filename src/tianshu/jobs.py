@@ -91,7 +91,6 @@ JOB_CLAIMED_EVENT = "job.claimed"
 JOB_REQUEUED = "job.requeued"
 JOB_PARKED = "job.parked"
 JOB_FINISHED = "job.finished"
-JOB_LOST = "job.lost"
 
 
 class JobLost(TianshuError):

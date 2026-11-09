@@ -98,16 +98,34 @@ def test_unknown_type_rolls_back_the_whole_transaction(tmp_path):
         log.close()
 
 
-def test_declared_but_unemitted_type_is_rejected_with_a_hint(tmp_path):
-    """`job.lost` 有常量、没有发射点：它不在封闭集合里，硬写会被拒并给出原因。"""
+def test_declared_but_unemitted_type_is_rejected_with_a_hint(tmp_path, monkeypatch):
+    """"已定义但无发射点"的类型硬写会被拒，并给出可操作的提示。
+
+    这一条**不能只遍历真实的集合**：`DECLARED_UNEMITTED_EVENT_TYPES` 现在是空的
+    （`job.lost` 已删除），空循环会让测试永远绿而机制坏掉也没人知道。所以这里临时
+    注入一个成员，专门验机制本身；真实集合为空这件事由下一条测试正面断言。
+    """
+    from tianshu import events as events_mod
+
+    monkeypatch.setattr(
+        events_mod, "DECLARED_UNEMITTED_EVENT_TYPES", frozenset({"probe.unemitted"})
+    )
     log = _log(tmp_path)
     try:
-        for event_type in sorted(DECLARED_UNEMITTED_EVENT_TYPES):
-            with pytest.raises(TianshuError) as excinfo:
-                log.append("run_x", event_type, {})
-            assert "没有发射点" in str(excinfo.value)
+        with pytest.raises(TianshuError) as excinfo:
+            log.append("run_x", "probe.unemitted", {})
+        assert "没有发射点" in str(excinfo.value)
     finally:
         log.close()
+
+
+def test_no_declared_unemitted_types_remain():
+    """当前没有"声明了却没发射点"的事件类型。
+
+    真有新成员时这条会红——这是刻意的：要么把发射点接上并移进 `EVENT_TYPES`，
+    要么把这条改成带原因的清单。两种都比"悄悄多一个没人写的类型"好。
+    """
+    assert DECLARED_UNEMITTED_EVENT_TYPES == frozenset()
 
 
 @pytest.mark.parametrize("event_type", sorted(EVENT_TYPES))
@@ -150,6 +168,8 @@ def test_schema_does_not_advertise_unemitted_types():
     description = _schema()["properties"]["type"]["description"]
     for name in DECLARED_UNEMITTED_EVENT_TYPES:
         assert name in description, "无发射点的类型必须被显式标注，不能只从 enum 里消失"
+    # 机制本身要能在有成员时工作：用注入的假成员验一遍，避免"集合空了就永远绿"
+    assert "没有发射点" in description or DECLARED_UNEMITTED_EVENT_TYPES == frozenset()
 
 
 # ---------------------------------------------------------------- 族
