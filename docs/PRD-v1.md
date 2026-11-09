@@ -3,7 +3,7 @@
 > 本文合并自：`convergence-v1.md`（架构收敛）、`general-agent-v2.md`（通用 agent 与执行模型）、`review-8-projects.md`（8 项目核对）、`agent-core-v1-prd.md`（首版 PRD）。
 > 本文取代以上四份，作为唯一有效版本。
 > 范围变更：**v1 不做图片与视频生成**，但 E2 作业模型的协议与接口预留在 v1 定义、不实现。
-> 决策状态：D1–D5、D7、T1 已定，仅 D6 待定。见 §13。
+> 决策状态：D1–D7、T1 全部已定（D6 于 §4.5 定稿）。见 §13。
 
 ---
 
@@ -242,6 +242,41 @@ JobResult    { job_id, state: JobState, queue_pos?, artifact_refs[],
 任务卡片上显示：`作用范围：~/Documents/Invoices`｜`已停止，部分修改已生效`｜`可撤销`。
 
 **对现有设计的影响**：`Task` 增加 `workspaces[]`；没有 workspace 的 Task 是合法的（纯对话/研究类）；`goal_revision` 变更时 workspace 集合也可变，同样走 fencing。
+
+### 4.5.1 D6 落地后的精确形态（M2 实现契约）
+
+D6 只定了概念，下面这些是实现方必须一致的具体形状，改它们要走 `docs(contract):`。
+
+```python
+WorkspaceBinding { root_path: str, mode: "readonly"|"writable", snapshot_policy: "none"|"on_write" }
+
+Task  { task_id, goal, goal_revision, lease_epoch, active_run_id, status,
+        workspaces: WorkspaceBinding[] }        # [] 合法，且不产生任何快照
+Run   { run_id, task_id, goal_revision, lease_epoch, state, outcome?, effect_state? }
+```
+
+**Task/Run 的状态是事件投影，不是事实源。** 每条状态变更与对应事件在同一次 SQLite 提交：
+
+| 事件 | 何时 | 关键负载 |
+|---|---|---|
+| `task.created` | 新建任务 | `goal, goal_revision, lease_epoch, workspaces` |
+| `task.revised` | 用户改目标 | 新的 `goal, goal_revision, lease_epoch` |
+| `run.start` | 开一次执行 | 绑定的 `goal_revision, lease_epoch` |
+| `run.finish` | 收尾 | `outcome, effect_state` |
+| `run.fenced` | 因改目标/租约变更而失效 | `reason` |
+
+投影表可以随时删掉重建（`rebuild_from_events()`）；回放必须能解释"这个 Run 为什么被 fence"，
+而不是只能看到一个覆盖过的最新目标。Task 级事件不属于某个 Run，`run_id` 为空串，靠 `task_id` 归属。
+
+**资源租约的身份口径（M2 起）**：
+
+- 互斥对象是**目录树**，不是目录：`(st_dev, st_ino)` 判断"是不是同一个目录"，
+  规范路径前缀判断"是不是同一棵子树"。父子目录、符号链接别名一律视为同一资源。
+- 持有者身份是**进程实例**（`instance_id` + `pid` + 启动时间），不是裸 pid。
+  pid 会被复用；同一个 `run_id` 也不代表同一个执行者。
+- 默认 TTL 30s、心跳 5s。收尾与被 fence 时必须立即释放，否则下一个 Run 会被自己的残留租约挡住。
+- TTL 到期**不证明**旧 worker 已停止。接管必须先取得本机执行守卫（`execution_guard`，
+  POSIX `flock` / Windows `msvcrt.locking`）、核实 owner，并核对未决副作用。
 
 ---
 
@@ -722,7 +757,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 | ID | 问题 | 状态 |
 |---|---|---|
 | **D5** | 快照保留策略 | ✅ 已定稿（§8.4） |
-| **D6** | 普通用户视角的最小单位是「文件夹」还是「任务」 | 待定，决定主界面形态。**唯一还不阻塞开工的问题** |
+| **D6** | 普通用户视角的最小单位是「文件夹」还是「任务」 | ✅ 已定：**Task 是用户可见单位，Workspace 是它的属性（0..n）**；`Task.workspaces = []` 合法（§4.5） |
 | **D7** | 诊断包是否上传 | ✅ 已定：**仅本地导出，永不上传**，但默认脱敏（见 §13.3 第 4 条） |
 | **T1** | 是否接受签名成本 | ✅ 已定：**不接受**。macOS 走安装脚本分发，Windows 容忍 SmartScreen（见 TECH-ARCH §8.2） |
 
