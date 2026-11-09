@@ -6,7 +6,7 @@
 > 本文只记录**实际执行过**的东西。没跑的（真实换模、Windows、memfs 评测）
 > 一律列在 §7，不写成"通过"。测试数量不等于验收项数量。
 
-- 验收基线：`origin/main@72f9c6c`（PR #35–#43 合并后）；本分支从
+- 验收基线：`origin/main@b6005a1`（PR #35–#44 合并后）；本分支从
   `81a4394` 切出，已合并上述 main 后复跑全部证据
 - 本分支：`feat/m4-evaluate`，交付 `src/tianshu/eval/`、`evaluate` 子命令、
   57 条评测测试、`docs/M4-verification.md`
@@ -14,7 +14,7 @@
 - 复验命令：
 
   ```bash
-  uv run pytest -o addopts="" -q     # 925 passed, 3 skipped
+  uv run pytest -o addopts="" -q     # 941 passed, 3 skipped
   uv run ruff check .                # All checks passed
 
   # 离线基线（scripted 模型，不花钱）
@@ -40,7 +40,7 @@
 | 无可比性守卫时不许比较 | suite_version / repeat / case 集合 / `fixture_digest` 任一不同 → `comparable=false` + 原因 | 通过（`test_eval_report.py` 26 条里 9 条） |
 | 失败归因 | 按事件证据与判据域归到 harness/model/tool/policy/approval/recovery/limit/artifact | 通过（3 条 attribution 测试 + 1 条回归归因） |
 | 离线基线全绿 | `--repeat 3`：60/60 次运行、20/20 case 全绿、安全门槛通过 | 通过（约 4.6 秒，含 9 次真实子进程硬退） |
-| 工程门禁 | `uv run pytest` 925 passed / 3 skipped；`ruff check` 通过 | 通过 |
+| 工程门禁 | `uv run pytest` 941 passed / 3 skipped；`ruff check` 通过 | 通过 |
 | 跨平台 | CI 矩阵 `macos-latest / ubuntu-latest / windows-latest` 全绿（含本 PR 新增的 57 条评测测试） | 通过（Windows 由 CI 覆盖，非本机人工复验） |
 
 ## 2. case 集
