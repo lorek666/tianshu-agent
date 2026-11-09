@@ -1000,35 +1000,127 @@ def test_concurrent_workers_serialize_on_one_directory(env):
     作业、等持有者跑完——它不能把作业挂起（挂起 = 等人决定，而这里只是排队），
     也不能报错退出（那说明有东西坏了）。这条用真子进程测，因为它考的是
     多进程之间"谁先拿到租约"。
+
+    **为什么按轮次重来。** `Worker.drain()` 不保证"一次调用就把队列清空"：
+    撞上别人的工作区租约时它交还作业、带着 `idle=false` 返回（"我还有活没干完，
+    隔一会儿再来"，见 `worker.py` 的 `drain` 文档）。所以这里像真实调用方那样
+    **有界地重复调用**，直到所有 worker 都报 `idle=true`（队列被跑空的信号）
+    或超时。只调一次就断言 5 个文件都在，是在断言一个 drain 从来没提供过的
+    性质——issue #31 就是从这个假设上红起来的。
     """
     ids = [env.enqueue(root=env.ws, goal=f"写第 {i} 份")[0] for i in range(5)]
     child_env = dict(os.environ)
     child_env["TIANSHU_TEST_MODEL"] = json.dumps({"mode": "by_goal"})
-    procs = [
-        subprocess.Popen(
-            [sys.executable, "-c", _child_src(), "worker", *_cli_args(env), "--json"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env,
-        )
-        for _ in range(4)
-    ]
+
     payloads = []
-    for proc in procs:
-        stdout, stderr = proc.communicate(timeout=180)
-        assert proc.returncode == 0, stderr or stdout
-        payloads.append(json.loads(stdout))
+    rounds = 0
+    deadline = time.monotonic() + 90
+    while True:
+        rounds += 1
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", _child_src(), "worker", *_cli_args(env), "--json"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env,
+            )
+            for _ in range(4)
+        ]
+        this_round = []
+        for proc in procs:
+            stdout, stderr = proc.communicate(timeout=180)
+            assert proc.returncode == 0, stderr or stdout
+            this_round.append(json.loads(stdout))
+        payloads.extend(this_round)
+        # 4 个 worker 全报 idle：这一轮它们都看见了空队列。
+        if all(p["idle"] for p in this_round):
+            break
+        assert time.monotonic() < deadline, f"跑了 {rounds} 轮还没排空：{this_round}"
+        # 队里还有活：按 drain 的契约隔一会儿再来（不忙等）
+        time.sleep(0.05)
 
     print("PAYLOADS", json.dumps(payloads, ensure_ascii=False))
     print("WS", sorted(p.name for p in env.ws.iterdir()))
+    print("ROUNDS", rounds)
     for i, run_id in enumerate(ids):
         r = env.stack.tasks.get_run(run_id)
         print("RUN", i, run_id, r.state, r.outcome, [e.type for e in env.log.read_run(run_id)])
-        assert (env.ws / f"r{i}.md").exists(), f"第 {i} 份没写出来"
+        assert (env.ws / f"r{i}.md").exists(), f"第 {i} 份没写出来（跑了 {rounds} 轮）"
         assert env.count(run_id, "tool.intent") == 1, f"第 {i} 份被写了不止一次"
         assert env.stack.tasks.get_run(run_id).state == "succeeded"
 
-    # 抢不到租约的 worker 会交还作业并如实说"被占用"，而不是报错
-    assert any(p["contended"] for p in payloads), payloads
+    # 抢不到租约的走交还（排队），不是报错退出
     assert all(not p["errors"] for p in payloads), payloads
+
+
+def test_late_requeue_does_not_strand_a_job(env):
+    """issue #31 的现场：作业被交还的时刻落在持有者最后一次扫描**之后**。
+
+    这种顺序下持有者会判"队空"退出，交还回来的作业则留在 `pending`——没有
+    活着的 worker 会去看它。这里把那个交错**确定地**摆出来（不靠时序碰运气），
+    钉住两件事：
+
+    1. 交还**不会丢作业**：它回到 `pending`，谁都能捡，不会被判失败或过期；
+    2. 因此调用方必须按 `drain()` 的契约再来一次——`exhausted=False`
+       （CLI 里的 `idle=false`）就是这个意思。
+    """
+    queued = [env.enqueue(root=env.ws, goal=f"写第 {i} 份") for i in range(2)]
+    ids = [run_id for run_id, _, _ in queued]
+    jobs = [job_id for _, _, job_id in queued]
+
+    # 另一个**活着的**进程把两个作业都认领走（心跳在，owner 不算死）
+    other = JobStore(env.log)
+    foreign = [other.claim(job_id, ttl_ms=60_000) for job_id in jobs]
+
+    # 持有者跑一趟：两个作业都被活人占着 → 它认为没活了，退出
+    holder = Worker(env.stack, model=ScriptedModel([]))
+    assert holder.drain() == []
+    holder.close()
+    assert holder.exhausted is True, "看到'被活人占着'时会误判为队空"
+
+    # 交还发生在持有者最后一次扫描**之后**
+    other.requeue(foreign[1])
+    assert other.get(jobs[1]).state == "pending", "交还后必须回到可认领状态"
+
+    # 不丢：后来的 worker 能把它捡起来跑完（不是"躺到超时"——pending 不会过期）
+    later = Worker(
+        env.stack,
+        model=ScriptedModel([
+            _create("r1.md", "第 r1.md 份", "c1"),
+            ModelResponse("end_turn", content="完成"),
+        ]),
+    )
+    assert later.drain() == [ids[1]]
+    later.close()
+    assert later.exhausted is True
+    assert env.stack.tasks.get_run(ids[1]).state == "succeeded"
+
+
+def test_contended_drain_requeues_and_does_not_claim_idle(env):
+    """抢不到工作区租约：交还作业（排队），并如实说自己**没跑空**。
+
+    这是 `drain()` 弱契约那一半的正面证据——它做不到"一次清空队列"时必须
+    让调用方看得出来（`exhausted=False` / CLI 的 `idle=false`），而不能
+    假装空闲、也不能把"排队"记成"故障"或"挂起"。
+    """
+    run_id, _, job_id = env.enqueue(root=env.ws, out="c.md")
+
+    # 另一个 Run 正占着这棵工作区
+    occupant = env.stack.tasks.create_task("占着工作区", [str(env.ws)])
+    occupant_run = env.stack.tasks.start_run(occupant.task_id, payload={})
+    env.stack.leases.acquire([env.ws], occupant_run.run_id)
+
+    worker = Worker(env.stack, model=ScriptedModel([]))
+    worker.drain()
+    worker.close()
+
+    assert worker.contended is True
+    assert worker.exhausted is False, "被占用打断时不许自称空闲——队里还有活"
+    assert worker.errors == [], "被占用是排队，不是故障"
+    assert env.count(run_id, "job.requeued") >= 1, "必须走交还，而不是挂起或报错"
+    state = env.stack.claims.get(job_id).state
+    assert state == "pending", f"交还后应回到 pending，实际 {state}"
+    assert state != JOB_WAITING, "被占用是排队，不是等人决定"
+
+    env.stack.leases.release_run(occupant_run.run_id)
 
 
 def test_cli_worker_reports_not_idle_when_it_hit_the_job_limit(env):
