@@ -1,0 +1,10 @@
+# pnpm 11 的构建脚本白名单。esbuild 的 postinstall 只负责准备本地可执行文件，
+# 是 Vite 构建的必需步骤；除它之外不授权任何依赖执行构建脚本。
+# 这个文件必须提交，否则 `--frozen-lockfile` 之外的干净机器会因 esbuild 未安装二进制而构建失败。
+allowBuilds:
+  esbuild: true
+
+# pnpm 的“最小发布年龄”策略把 vite 固定在这个补丁版本时做了例外记录；
+# 提交它可以让 CI 用 --frozen-lockfile 复现同一套依赖。
+minimumReleaseAgeExclude:
+  - vite@7.3.8

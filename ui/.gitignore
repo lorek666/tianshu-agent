@@ -1,0 +1,12 @@
+# 依赖装在这里，不提交
+node_modules/
+
+# Vite / TS 本地缓存
+.vite/
+*.tsbuildinfo
+*.log
+
+# 构建产物 ui/dist 必须提交（Host 直接加载它，运行时不需要 Node）。
+# 仓库根 .gitignore 的 `dist/` 规则会被下面的反向规则覆盖；改动前先读 ui/README.md。
+!dist/
+!dist/**
