@@ -355,3 +355,54 @@ errors: LeaseConflict: 资源已被占用…
 `sqlite3.OperationalError: database is locked` 说的是"主线程正在提交大事务"，
 不是"你已经不是 owner 了"。原来任何异常都让心跳线程停止 → owner 被误判不活 →
 被接管。改成只对 locked/busy 重试（≤3 次），其它异常仍立刻停止并留痕。
+
+## 4.6.9 独立复审第二轮（对象 `604ccc0`）：两个阻断项
+
+### (1) 旧库打开即崩（阻断）
+
+`ApprovalStore.__init__` 先 `executescript(SCHEMA)`，而 SCHEMA 里新增的
+`idx_approvals_action` 依赖 `action_digest` 列；加列的 `_ensure_column` 在它之后。
+af0da35 之前建的库，除 `replay` 外**所有命令**都 `no such column: action_digest`。
+
+```
+$ tianshu run status --run-id R --db /tmp/legacy/events.db
+rc=2  错误：no such column: action_digest
+$ tianshu replay --run-id R --db /tmp/legacy/events.db
+结论：通过                       ← 只有 replay 还能用
+```
+
+修法：依赖新列的索引从 SCHEMA 拆出来，在 `_ensure_column` 之后建。
+为什么 336 个用例没抓到：租约有"旧 schema 迁移"用例，审批没有——而且这是
+**顺序**问题，不是逻辑问题，只能靠"用旧库跑一次"发现。
+
+### (2) fenced 的 Run 留下永不结束的作业 + pause/cancel 假成功（阻断）
+
+`tasks.py` 里两行同名常量：
+
+```python
+RUN_FENCED = "fenced"       # 状态（第 116 行）
+...
+RUN_FENCED = "run.fenced"   # 事件类型（第 149 行，覆盖了前一个）
+```
+
+于是 `run.state == RUN_FENCED` **恒为 False**：`request_pause/request_cancel/
+confirm_control` 的 fenced 守卫失效，`Worker._settle` 的 fenced 分支是死代码，
+作业被 park 成 `waiting`——而 `claim_next` 不认领 waiting、`_finish_locked`
+只收 cancelled 的作业，这条作业永远结束不了。同时 `run pause/cancel` 返回
+0「已记录请求」，那个请求永远不会生效（`--json` 路径却返回 1，两条路还互相矛盾）。
+
+修法：事件常量改名 `RUN_FENCED_EVENT`；CLI 对已结束/被 fence 的 Run 明确拒绝
+（人类与 JSON 同一退出码）；`_settle` 对 fenced 走 `finish(failed)`；
+把 `test_worker_does_not_resume_a_fenced_run` 的断言从"允许 waiting"收紧成
+`job.state == "done"`——原断言把缺陷写成了合法结果。
+
+## 4.6.10 对流程的意见（第二轮）
+
+- 复审者指出"你 PR 里说 6 条真子进程，实际 9 条"——这说明**自述的验证清单本身
+  也需要被核对**，否则它和代码一样会漂。
+- 两个阻断项都不是"新写的代码坏了"，而是"新代码把一个旧问题踩响了"：
+  同名常量覆盖是 PR A 就写下的，迁移顺序是这次新加的索引造成的。**加列/加索引
+  这种"看起来只是 DDL"的改动，必须用旧库实测一次。**
+- 复审者还确认了 `_claim_owned` 的归类不会掩盖真丢 claim（8 个场景逐条跑过），
+  但建议把 epoch/owner 判定提到 state 之前——已采纳：这样"接管后新 owner
+  立刻交还/挂起"也会报 `JobLost`，只有"本实例自己收尾/暂停/被取消"才静默。

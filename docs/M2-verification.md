@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（336 passed / `ruff check .` 通过），合并提交见 PR
+- 本阶段最终：PR C 分支（340 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 336 passed
+  uv run pytest -q          # 340 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -185,7 +185,22 @@ $ tianshu run resume --run-id R          # 另一个进程 → 新的 claim_epoc
 10. **心跳在争用下会被推迟**：心跳要用 `BEGIN IMMEDIATE` 写库，主线程正在提交
     大事务时它只能等到 `busy_timeout`（5s）。短事务下无影响；若将来出现秒级的
     单次提交，要么缩短提交，要么把 TTL 调长。
-11. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
+11. **等待审批不保留租约（与计划 §2.4 的差异）**：M2 没有常驻 owner——命令逐次
+    启动，`run start` 返回后进程就退出。所以等审批的 Run 在租约 TTL（30s）后就
+    放开工作区，另一个 Run 可以拿到同一目录；计划 §2.4 说的"等审批仍由存活 owner
+    保留租约、占用最长受审批 TTL 约束"要等桌面 Host 常驻进程才算实现。
+12. **`prompt_version` 未进请求摘要**：计划 §2.3 列了它、PRD §5.4 正文说
+    "policy/prompt 变化 → superseded"，但 M2 没有 prompt 版本化，字段也没落地。
+    契约文本已收紧为"policy_version"，prompt 版本化留到 v2。
+13. **"approved→consumed 由数据库唯一约束保证"实际是条件 UPDATE**：SQLite 单写者
+    下 `rowcount` 就是唯一裁决，效果等价，但措辞与实现不同（PRD 已按实测改写）。
+14. **park 之后 resume 必然 +1 epoch**：计划 §2.4 写"批准后 resume 使用仍有效的
+    同一 epoch"，只有"同一个存活 owner"才成立；进程重启/交接后必然换 epoch，
+    这正是审批必须绑动作摘要的原因（见 §4）。
+15. **`JobStore.is_live` 不查 pid 复用**：只看 deadline + `pid_alive`；租约那一侧
+    用 `pid_started_at`。死 owner 的 pid 被系统复用时最长 30s 不接管（保守，不会
+    造成双写），与租约口径不一致。
+16. **旧库迁移未验证**：`jobs.py` 的 SCHEMA 会 `DROP INDEX idx_jobs_one_open_per_run`
     再建新的唯一索引。若历史库里已经存在同一 Run 的两个未完成作业，构造
     `JobStore` 会直接抛 `IntegrityError`（新库与测试库均正常）。
 
@@ -280,6 +295,24 @@ outcome: failed  (workspace 已被阻断，拒绝写入：workspace 存在未核
 other.md 存在: no
 ```
 
+## 6.9 独立复审与两轮修复
+
+| 轮次 | 结果 | 处置 |
+|---|---|---|
+| 第一轮（`reviewer-m2`） | **不能合**：4 项优先验证里 2 项通过、2 项阻断（正常收尾误报心跳失败、`stop()` 不等线程就关连接） | 修复于 `604ccc0`；复审复跑 B1 由 5/6 降到 0/6，B2 两条路径均通过，`_claim_owned` 不掩盖真丢 claim |
+| 第二轮（同一复审者，对象 `604ccc0`） | **不能合**：旧库 `no such column: action_digest`；fenced 的 Run 留下永不结束的作业、pause/cancel 假成功 | 修复于 `f373ee7`；新增 8 例回归 |
+
+第二轮同时指出 6 个非阻断项（心跳 TTL 未传、丢失 claim 仍能续租约、`init_run`
+洗白 unknown、`claim_next` 饿死 pending、`--max-jobs` 假 idle、`recover` 忽略
+`--data-root`、审批 schema 未编码新契约），全部已修，见提交说明。
+
+> 复审者对 `docs/PRD-v1.md` §5.4 的判断：逐字段核对后"方向一致、没有被放宽过头"，
+> 六类动作变体（改内容/改目标/改 call_id/改 attempt/改 goal_revision/改绑定）
+> 全部无法复用旧批准。它还指出三处文本要收口：`prompt_version` 未实现（PRD 正文
+> 提到 prompt 变化但字段表里没有）、"consumed 由数据库唯一约束保证"实际是条件
+> UPDATE、"批准后 resume 使用同一 epoch"在 park 后必然 +1——这三条已写进 §5 的
+> 已知限制，不再当契约实际内容。
+
 ## 7. 本轮发现并修复的缺陷
 
 这三条都是"没人走过这条路"才留下的，全部由端到端用例暴露：
@@ -294,6 +327,8 @@ other.md 存在: no
 | 只读绑定被拒时报"租约不覆盖" | 拒绝理由说的是技术细节，不是真实原因 | 报 `c4.readonly_binding` |
 | 心跳把 `database is locked` 当成丢 claim | 一次正常的慢写入会让 owner 被误判不活并遭接管 | 只对 locked/busy 重试（≤3 次） |
 | 抢不到租约就 `park` | 队列里的正常工作被记成"等人决定"，一队全停 | 交还成 `pending` + `drain` 停下 |
+| 状态常量与事件常量同名 `RUN_FENCED` | `run.state == "fenced"` 恒 False：fenced 的作业永不结束、pause/cancel 假成功 | 事件常量改名 `RUN_FENCED_EVENT` |
+| 依赖新列的索引先于加列执行 | 旧库打开即 `no such column: action_digest`，除 replay 外全不可用 | 索引拆到 `_ensure_column` 之后 |
 
 细节与复现命令见 `docs/REVIEW-PRA.md` §4.6。
 

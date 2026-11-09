@@ -235,6 +235,14 @@ Approval 绑定该请求的**动作摘要**及 `approval_id, state, decided_by, 
 >
 > 未验证项（不得当成通过）：Windows x64/arm64 原生、macOS x64、真实断电、
 > 完整 takeover（持守卫核对未决副作用）、`authority` 数据根逃逸防护。
+>
+> 复审复核（2026-11-09，第二轮）：复审者在 `604ccc0` 上报两个阻断项——旧库
+> 打开即 `no such column: action_digest`（加列的迁移顺序）、fenced 的 Run 留下
+> 永不结束的作业且 pause/cancel 假成功（状态常量与事件常量同名覆盖）。两项已修，
+> 并补 8 例回归；评审结论从"不能合"变为"能合"（见 `docs/REVIEW-PRA.md` §4.6.9）。
+> 同时按复审意见修掉 6 个非阻断项（心跳 TTL 未传、丢 claim 仍能续租约、
+> `init_run` 洗白 unknown、`claim_next` 饿死 pending、`--max-jobs` 假 idle、
+> `recover` 忽略 `--data-root`）。
 
 ## 4. M2 总验收与最终交接
 
