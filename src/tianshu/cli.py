@@ -1003,6 +1003,13 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             f"评测工作根必须不存在或为空（干净 fixture 是结果可信的前提）：{workdir}"
         )
 
+    if args.model != "scripted" and not any(case.scope == "model" for case in cases):
+        # 崩溃 case 恒用离线脚本跑（崩溃点必须确定），拿它给真实模型记分是假证据。
+        raise TianshuError(
+            "所选 case 全部是 scope=harness（崩溃恢复类），它们始终用离线脚本跑，"
+            "不构成对真实模型的评测；请至少选择一条 scope=model 的 case。"
+        )
+
     real_model = _model_from(args) if args.model != "scripted" else None
 
     def model_for(case):

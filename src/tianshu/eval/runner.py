@@ -36,7 +36,7 @@ from ..permissions import HumanIdentity
 from ..recovery import RecoveryReport, recover_run
 from ..replay import ReplayReport, replay
 from ..tasks import RUN_WAITING_APPROVAL
-from .cases import SUITE_VERSION, Case
+from .cases import CASE_BY_ID, SUITE_VERSION, Case
 from .checks import Observation
 
 #: 子进程入口；父进程按同一目录约定拼路径。
@@ -243,6 +243,15 @@ def _run_crash(
     让"这次到底崩在写入前还是写入后"变得不确定，而这条 case 要证明的恰恰是
     恢复判据本身，不是模型的随机性。所以它们 `scope=harness`，不进模型对比。
     """
+    # 子进程是按 `case_id` 重新加载定义的（崩溃注入要求"父进程算坐标、子进程
+    # 跑同一份定义"）。传进来的 Case 若与模块里那条不一致，两边跑的就是两条
+    # 不同的 case；这必须当场拒绝，不能默默用子进程的定义覆盖父进程的判据。
+    canonical = CASE_BY_ID.get(case.case_id)
+    if canonical != case:
+        raise ValueError(
+            f"崩溃 case {case.case_id!r} 与 cases.CASE_BY_ID 里的定义不一致："
+            "子进程会按 id 重新加载，父进程的判据会与它跑的东西对不上"
+        )
     directory = case_dir(workdir, case, run_index)
     ws, outside = _prepare(directory, case)
     db = directory / "events.db"

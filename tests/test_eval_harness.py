@@ -7,6 +7,7 @@ case，见 `docs/M4-verification.md`。
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -96,15 +97,15 @@ def test_fixture_digest_is_stable_and_case_specific():
 
 
 def test_scripted_baseline_is_all_green(tmp_path):
-    suite = _scripted_suite(tmp_path / "eval")
+    suite = _scripted_suite(tmp_path / "eval", repeat=3)
     report = build_report(suite, CASES)
 
     assert report["schema"] == "tianshu.eval.v1"
     assert report["suite_version"] == SUITE_VERSION
     assert report["overall"] == {
         "cases": 20,
-        "runs": 20,
-        "run_passes": 20,
+        "runs": 60,
+        "run_passes": 60,
         "run_pass_rate": 1.0,
         "case_pass_rate": 1.0,
         "cases_all_green": 20,
@@ -113,11 +114,15 @@ def test_scripted_baseline_is_all_green(tmp_path):
     assert report["safety_gate"]["passed"] is True
     # 逐次结果必须都在（PRD §10.3），不能只剩平均值
     for case in report["cases"]:
-        assert len(case["run_details"]) == 1
-        replay = next(
-            c for c in case["run_details"][0]["checks"] if c["check_id"] == "replay.ok"
-        )
-        assert replay["passed"], (case["case_id"], replay["detail"])
+        assert len(case["run_details"]) == 3
+        for run in case["run_details"]:
+            replay = next(
+                c for c in run["checks"] if c["check_id"] == "replay.ok"
+            )
+            assert replay["passed"], (case["case_id"], replay["detail"])
+            # 评测器自己的异常也要显式断言：它是公共判据，不能只靠下游判据兜底
+            errors = [c for c in run["checks"] if c["check_id"] == "harness.no_error"]
+            assert errors and errors[0]["passed"], (case["case_id"], errors[0]["detail"])
 
 
 def test_clean_fixture_per_repeat(tmp_path):
@@ -191,3 +196,35 @@ def test_harness_error_fails_the_case():
     passed, detail = harness_error_free().fn(obs)
     assert passed is False
     assert "boom" in detail
+
+
+def test_every_case_carries_the_harness_guards():
+    """判据是挂在 case 上的，不是挂在测试里的：删掉就静默回退。"""
+    for case in CASES:
+        ids = {check.check_id for check in case.checks}
+        assert "harness.no_error" in ids, case.case_id
+        if case.crash:
+            assert "harness.crash_injected" in ids, case.case_id
+        else:
+            assert "harness.crash_injected" not in ids, case.case_id
+
+
+def test_bogus_failpoint_makes_crash_case_red(tmp_path, monkeypatch):
+    """故障点没触发（子进程正常退出）时，崩溃 case 必须红——不能空转通过。"""
+    from tianshu.eval import runner as runner_mod
+
+    bad = dataclasses.replace(CASE_BY_ID["R2"], crash="no_such_failpoint")
+    # 父进程按 CASE_BY_ID 校验"子进程会跑同一份定义"；测试里同步改掉它，
+    # 让拦截点落在"故障点没触发"，而不是先被身份校验挡下。
+    monkeypatch.setitem(runner_mod.CASE_BY_ID, "R2", bad)
+    suite = run_suite(
+        (bad,),
+        model_for=lambda case: ScriptedModel(list(case.script)),
+        repeat=3,
+        workdir=tmp_path / "eval",
+    )
+    report = build_report(suite, (bad,))
+    assert report["verdict"] != "pass"
+    failures = report["cases"][0]["failures"]
+    assert "harness.crash_injected" in failures
+    assert "harness.no_error" in failures

@@ -12,6 +12,7 @@ PRD §6 红线 10 的原话是"评测的 replay 与 evaluate 不得混称"。这
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from tianshu.cli import main
 from tianshu.events import EventLog
@@ -173,3 +174,105 @@ def test_cli_refuses_unknown_case(tmp_path, capsys):
     )
     assert code == 2
     assert "未知的 case id" in capsys.readouterr().err
+
+def test_cli_refuses_real_model_on_harness_only_selection(tmp_path, capsys):
+    """崩溃 case 恒用离线脚本：拿它们给真实模型记分是假证据，必须在开跑前拒绝。"""
+    code = main(
+        [
+            "evaluate",
+            "--case",
+            "R1",
+            "--repeat",
+            "3",
+            "--model",
+            "openai-compatible",
+            "--model-name",
+            "some-model",
+            "--workdir",
+            str(tmp_path / "eval"),
+        ]
+    )
+    assert code == 2
+    assert "harness" in capsys.readouterr().err
+
+
+def test_cli_maps_unsafe_verdict_to_exit_code_four(tmp_path, capsys, monkeypatch):
+    """安全门槛失败必须是独立的退出码（4），不能被读成普通失败（1）。"""
+    from tianshu.eval import SUITE_VERSION
+    from tianshu.eval.runner import SuiteRun
+
+    fake_report = {
+        "schema": "tianshu.eval.v1",
+        "suite_version": SUITE_VERSION,
+        "generated_at": "2026-11-09T00:00:00Z",
+        "model": {"adapter": "scripted", "vendor": None, "model": ""},
+        "repeat": 3,
+        "elapsed_ms": 0,
+        "workspace_retained": False,
+        "safety_gate": {
+            "passed": False,
+            "rule": "x",
+            "violations": [
+                {
+                    "case_id": "N1",
+                    "run_index": 0,
+                    "check_id": "policy.no_secret_in_trace",
+                    "detail": "泄漏",
+                }
+            ],
+        },
+        "overall": {
+            "cases": 1,
+            "runs": 3,
+            "run_passes": 3,
+            "run_pass_rate": 1.0,
+            "case_pass_rate": 1.0,
+            "cases_all_green": 1,
+        },
+        "scope": {
+            "model": {"cases": 1, "case_pass_rate": 1.0, "cases_all_green": 1},
+            "harness": {"cases": 0, "case_pass_rate": 0.0, "cases_all_green": 0},
+        },
+        "categories": {
+            "normal": {
+                "cases": 1,
+                "runs": 3,
+                "passes": 3,
+                "pass_rate": 1.0,
+                "run_pass_rate": 1.0,
+            }
+        },
+        "attribution": {},
+        "verdict": "unsafe",
+        "cases": [
+            {
+                "case_id": "N1",
+                "category": "normal",
+                "pass_rate": 1.0,
+                "run_details": [{"run_index": 0, "passed": True, "failed_checks": []}],
+            }
+        ],
+    }
+    empty_suite = SuiteRun(
+        observations=[],
+        workdir=Path("."),
+        elapsed_ms=0,
+        identity={"adapter": "scripted", "vendor": None, "model": ""},
+        suite_version=SUITE_VERSION,
+        repeat=3,
+    )
+    monkeypatch.setattr("tianshu.eval.run_suite", lambda *a, **k: empty_suite)
+    monkeypatch.setattr("tianshu.eval.build_report", lambda *a, **k: fake_report)
+
+    code = main(
+        [
+            "evaluate",
+            "--case",
+            "N1",
+            "--repeat",
+            "3",
+            "--workdir",
+            str(tmp_path / "eval"),
+        ]
+    )
+    assert code == 4

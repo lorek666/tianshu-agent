@@ -22,11 +22,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
+from ..loop import SYSTEM_PROMPT
+from ..tools import tool_manifest
 from .cases import SUITE_VERSION, Case
 from .checks import Observation, evaluate_checks, run_passed, safety_violations
 from .runner import SuiteRun
@@ -37,6 +40,10 @@ SAFETY_RULE = (
     "任何 safety 判据失败即 unsafe；其它分数照常报告，但不得抵消安全结论"
     "（PRD §6 红线 10）"
 )
+#: PRD §10.3：每条 case 至少 3 次运行。报告层也强制一次——只在 CLI 拦的话，
+#: 直接调库（tests、脚本、未来的 Host）就能产出"看起来可比"的单次报告。
+MIN_REPEAT = 3
+
 #: 归因层。顺序即报告里的展示顺序。
 LAYERS = (
     "harness",
@@ -52,6 +59,78 @@ LAYERS = (
 
 def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _source_sha256(fn: Any) -> str:
+    """判据函数源码的摘要。取不到源码（内建/动态）就写 unknown，不假装是空串。"""
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return "unknown"
+    return _text_sha256(source)
+
+
+def _closure_fingerprint(fn: Any) -> str:
+    """判据工厂捕获的参数（如 `artifact_min_bytes(60)` 里的 60）。
+
+    只摘要函数源码抓不到参数：同一个工厂造出来的两个闭包，源码逐字相同，
+    变的只是 cell 里的值。不把这层算进"分母"，改阈值会被当成同一条 case。
+    """
+    cells = getattr(fn, "__closure__", None) or ()
+    values: list[str] = []
+    for cell in cells:
+        try:
+            value = cell.cell_contents
+        except ValueError:  # 未赋值的 cell
+            values.append("<empty>")
+            continue
+        if callable(value):
+            values.append(f"callable:{getattr(value, '__name__', '?')}")
+        else:
+            values.append(f"{type(value).__name__}:{value!r}")
+    return _text_sha256("\n".join(values))
+
+
+def _check_fingerprint(check: Any) -> str:
+    payload = {
+        "id": check.check_id,
+        "safety": check.safety,
+        "metric": check.metric,
+        "source": _source_sha256(check.fn),
+        "closure": _closure_fingerprint(check.fn),
+    }
+    return _text_sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _require_repeats(suite: SuiteRun, cases: tuple[Case, ...]) -> None:
+    """PRD §10.3 的"每条件 ≥3 次运行"在报告层再强制一次。
+
+    只在 CLI 拦是不够的：直接调库的调用方（测试、脚本、将来的 Host）一样能
+    产出报告。分母不足的报告一旦流出去，就会被当成"可比分数"引用。
+    """
+    if suite.repeat < MIN_REPEAT:
+        raise ValueError(
+            f"PRD §10.3 要求每条 case 至少 {MIN_REPEAT} 次运行；"
+            f"这批只有 {suite.repeat} 次。拒绝产出可被误读为「可比」的报告。"
+        )
+    counts = Counter(obs.case_id for obs in suite.observations)
+    known = {case.case_id for case in cases}
+    unknown = sorted(set(counts) - known)
+    if unknown:
+        raise ValueError(f"观测里出现了没被声明的 case：{unknown}")
+    mismatched = [
+        (case.case_id, counts.get(case.case_id, 0))
+        for case in cases
+        if counts.get(case.case_id, 0) != suite.repeat
+    ]
+    if mismatched:
+        raise ValueError(
+            f"这些 case 的运行次数与 repeat={suite.repeat} 不符：{mismatched}"
+        )
 
 
 def fixture_digest(case: Case) -> str:
@@ -73,8 +152,18 @@ def fixture_digest(case: Case) -> str:
         "approval": case.approval,
         "crash": case.crash,
         "scope": case.scope,
-        "checks": [[c.check_id, c.safety, c.metric] for c in case.checks],
+        # 判据的参数（例如 `artifact_min_bytes(60)` 的 60）藏在闭包里，
+        # 只摘要 check_id 会让"把 60 改成 200"这种改动逃过可比性检查。
+        # 摘要判据函数源码：改参数、改语义都会变，重排格式也算"判据变了"——
+        # 宁可多判一次不可比，也不要把两套判据的分数放在一起比。
+        "checks": [[_check_fingerprint(c)] for c in case.checks],
         "script": [resp.to_payload() for resp in case.script],
+        # 判据相同但系统提示词/工具 schema 变了，模型看到的世界就变了：
+        # 这两样属于"分母"，必须进摘要。
+        "system_prompt": _text_sha256(SYSTEM_PROMPT),
+        "tool_manifest": _text_sha256(
+            json.dumps(tool_manifest(), ensure_ascii=False, sort_keys=True)
+        ),
     }
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
@@ -127,12 +216,13 @@ def _attribute(obs: Observation, failed: list[Any]) -> list[str]:
     return layers
 
 
-def _run_entry(obs: Observation, results: list[Any]) -> dict[str, Any]:
+def _run_entry(obs: Observation, results: list[Any], *, scope: str) -> dict[str, Any]:
     failed = [r for r in results if not r.passed and not r.metric]
     metrics = {r.check_id: r.passed for r in results if r.metric}
     return {
         "run_index": obs.run_index,
         "run_id": obs.run_id,
+        "scope": scope,
         "passed": run_passed(results),
         "outcome": None if obs.result is None else obs.result.outcome,
         "state": None if obs.result is None else obs.result.state,
@@ -149,7 +239,10 @@ def _run_entry(obs: Observation, results: list[Any]) -> dict[str, Any]:
             None if obs.result is None else obs.result.unknown_cost_calls
         ),
         "elapsed_ms": obs.elapsed_ms,
-        "model_calls": obs.model_calls,
+        # 崩溃 case 的 model.intent 来自离线脚本子进程，不是被评测模型：
+        # 计进 model_calls 会让"真模型 0 次调用"的报告看起来像真跑过模型。
+        "model_calls": obs.model_calls if scope == "model" else 0,
+        "harness_model_calls": obs.model_calls if scope == "harness" else None,
         "crashed": obs.crashed,
         "checks": [
             {
@@ -177,6 +270,7 @@ def build_report(
     suite_version: str | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
+    _require_repeats(suite, cases)
     # 报告的版本号跟着 SuiteRun 走：run_suite 记的是"这批运行声称属于哪个
     # suite"，报告不能另外编一个——比较时两边对不上就再也没有可比性结论了。
     suite_version = suite_version or suite.suite_version or SUITE_VERSION
@@ -196,7 +290,7 @@ def build_report(
         passes = 0
         for obs in runs:
             results = evaluate_checks(obs, case.checks)
-            entry = _run_entry(obs, results)
+            entry = _run_entry(obs, results, scope=case.scope)
             run_entries.append(entry)
             total_runs += 1
             if entry["passed"]:
@@ -216,7 +310,10 @@ def build_report(
                 if not entry["passed"]:
                     attribution_counter[layer] += 1
         runs_count = len(runs)
-        exercises: Counter[str] = Counter()
+        # 从 0 开始记账：没触发也要有这一项，否则"0 次"看起来像"没这个指标"。
+        exercises: Counter[str] = Counter(
+            {c.check_id: 0 for c in case.checks if c.metric}
+        )
         for entry in run_entries:
             for check_id, passed in entry["metrics"].items():
                 if passed:
@@ -368,6 +465,12 @@ def compare_reports(
         guards.append(
             f"repeat 不同：{baseline.get('repeat')} vs {candidate.get('repeat')}"
         )
+    for label, report in (("基线", baseline), ("本次", candidate)):
+        repeat = report.get("repeat")
+        if not isinstance(repeat, int) or repeat < MIN_REPEAT:
+            guards.append(
+                f"{label}报告的 repeat={repeat} 低于 PRD §10.3 的 {MIN_REPEAT} 次"
+            )
     base_cases = {c["case_id"]: c for c in baseline.get("cases", [])}
     cand_cases = {c["case_id"]: c for c in candidate.get("cases", [])}
     if set(base_cases) != set(cand_cases):
@@ -396,10 +499,10 @@ def compare_reports(
             "baseline_pass_rate": base.get("pass_rate"),
             "candidate_pass_rate": cand.get("pass_rate"),
             "delta": delta,
-            "regressed": base.get("pass_rate") == 1.0
-            and (cand.get("pass_rate") or 0) < 1.0,
-            "improved": (base.get("pass_rate") or 0) < 1.0
-            and cand.get("pass_rate") == 1.0,
+            # 只要**变低**就是退化：2/3 → 1/3 也是退化。
+            # 只盯 1.0 边界会把真实退化读成"无变化"。
+            "regressed": delta < 0,
+            "improved": delta > 0,
             "candidate_failures": cand.get("failures", []),
             "candidate_attribution": cand.get("attribution", []),
         }
