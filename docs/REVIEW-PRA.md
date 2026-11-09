@@ -406,3 +406,32 @@ confirm_control` 的 fenced 守卫失效，`Worker._settle` 的 fenced 分支是
 - 复审者还确认了 `_claim_owned` 的归类不会掩盖真丢 claim（8 个场景逐条跑过），
   但建议把 epoch/owner 判定提到 state 之前——已采纳：这样"接管后新 owner
   立刻交还/挂起"也会报 `JobLost`，只有"本实例自己收尾/暂停/被取消"才静默。
+
+## 4.6.11 第三个 pass（对象 `f373ee7`+`3baf049`）：fenced 的等审批 Run 仍漏
+
+上一轮修了"fenced 的 Run 不能留 pending 作业"，但只覆盖了 `pending`。复审者
+`reviewer-m2` 补了一条更苛刻的路径：
+
+```
+waiting_approval（job=waiting） → task revise（fence）
+→ run.state=fenced, job.state=waiting, epoch=1
+→ worker --once rc=0 run_ids=[]      # claim_next 按设计不认领 waiting
+→ run resume rc=2（fenced 拒绝）/ run cancel rc=1（拒绝）
+→ 最终 job.state=waiting，outcome=None   ← 僵尸作业
+```
+
+根因：`_fence_run` 只做 fence / 作废旧审批 / 释放租约，**从不碰 jobs**；
+`claim_next` 不认领 `waiting`；`_finish_locked` 只在 `outcome=="cancelled"`
+时收作业。三条规则各自都对，合起来就漏了这条路径。
+
+修法：`_fence_run` 末尾把 `pending/claimed/waiting` 的作业一起 `cancel`
+（理由 `run_fenced:<reason>`）。回归：`test_fencing_a_waiting_approval_run_closes_its_job`
+（等审批 → fence → job 必须 cancelled，且之后 worker 认领不到任何作业）。
+
+同一条 review 还指出本文档（`docs/M2-verification.md` §6.9）把复审结论写错了：
+把两位复审者、三个 pass 的结论混成一句，还把 A 的发现记到 B 名下。已按实际发生
+的事重写，并单列"实现方自查修掉的非阻断项"，不把自查写成复审结论。
+
+**这条对流程的意义**：同一个缺陷（fenced 留下僵尸作业）出现了两次，第二次是
+"修了一处、漏了同类另一处"。修这类问题时应当先枚举**所有**进入该状态的前置状态
+（pending / claimed / waiting / 以及将来的新状态），而不是只修复现里那一种。

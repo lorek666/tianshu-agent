@@ -846,21 +846,29 @@ def test_worker_holds_no_guard_and_no_transaction_while_model_runs(env):
 
 
 def test_worker_does_not_resume_a_fenced_run(env):
-    """被 fence 的 Run 不能被 worker "接着跑"：目标已经换了。"""
+    """被 fence 的 Run 不能被 worker "接着跑"：目标已经换了。
+
+    fence 自己会把作业收掉（`_fence_run` → `claims.cancel`），所以正常情况下
+    worker 连认领的机会都没有。这里额外造一条"fence 之后仍存在的作业"来验证
+    worker 侧的防线：即便有人把作业重新塞回队列，它也不会驱动一个已 fence 的 Run。
+    """
     run_id, task_id, job_id = env.enqueue()
     env.stack.tasks.revise_task(task_id, goal="换个目标", bindings=[str(env.ws)])
-    before = env.count(run_id, "job.claimed")
+    assert env.stack.claims.get(job_id).state == "cancelled"
+
+    # 人为把这个作业放回队列（模拟老库遗留 / 外部脚本误操作）
+    env.log.conn.execute(
+        "UPDATE jobs SET state='pending', outcome=NULL, ended_at=NULL WHERE job_id=?",
+        (job_id,),
+    )
+    before = env.count(run_id, "model.result")
 
     worker = Worker(env.stack, model=ScriptedModel([_end()]))
     assert worker.run_once() is True  # 认领了，但必须立刻收掉
     job = env.stack.claims.get(job_id)
-    # 被 fence 的 Run 已经没有"等人决定"这回事了：作业必须**收掉**。
-    # 留一个 waiting 作业意味着它永远不会结束（`claim_next` 不认领 waiting，
-    # `_finish_locked` 也只收 cancelled 的作业）。
     assert job.state == "done", job
     assert job.outcome == "failed"
-    assert env.count(run_id, "model.result") == 0, "fence 之后不许再问模型"
-    assert env.count(run_id, "job.claimed") == before + 1
+    assert env.count(run_id, "model.result") == before, "fence 之后不许再问模型"
 
     # 对已 fence 的 Run 请求暂停/取消：必须明确拒绝，不能留下永不生效的请求
     proc = _child(["run", "pause", "--run-id", run_id, *_cli_args(env)])
@@ -870,6 +878,29 @@ def test_worker_does_not_resume_a_fenced_run(env):
     assert proc.returncode == 1
     assert json.loads(proc.stdout)["refused"] == "取消"
     assert env.stack.tasks.get_run(run_id).control_requested is None
+
+
+def test_fencing_a_waiting_approval_run_closes_its_job(env):
+    """等审批的 Run 被 fence：作业也必须收掉，否则它永远结束不了。
+
+    这条路径和"pending 作业被 fence"不同：`worker` 已经把作业挂成 `waiting`，
+    而 `claim_next` **按设计**不认领 `waiting`（不然每轮涨一次 epoch 会把刚批的
+    审批作废）。于是除了 fence 自己，没有任何人有资格收掉它。
+    """
+    from tianshu.tasks import RUN_WAITING_APPROVAL
+
+    run_id, task_id, job_id = env.enqueue(root=env.ws)
+    worker = Worker(env.stack, model=ScriptedModel([_overwrite("note.md", "x")]))
+    assert worker.run_once() is True
+    assert env.stack.tasks.get_run(run_id).state == RUN_WAITING_APPROVAL
+    assert env.stack.claims.get(job_id).state == JOB_WAITING
+
+    env.stack.tasks.revise_task(task_id, goal="换个目标", bindings=[str(env.ws)])
+
+    assert env.stack.tasks.get_run(run_id).state == "fenced"
+    assert env.stack.claims.get(job_id).state == "cancelled", "不许留下僵尸作业"
+    # worker 之后也不该再认领到任何作业
+    assert Worker(env.stack, model=ScriptedModel([])).run_once() is False
 
 
 def test_run_worker_once_matches_the_documented_interface(env):

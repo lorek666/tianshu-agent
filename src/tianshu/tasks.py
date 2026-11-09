@@ -511,6 +511,14 @@ class TaskStore:
         # 否则同一 Task 的新 Run 会被上一个 Run 的残留租约挡住，直到 TTL 到期。
         if self._leases is not None:
             self._leases.release_run(run_id)
+        # 作业也必须一起收掉。被 fence 的 Run 已经没有结论，不会有任何执行器
+        # 再去推进它：`worker` 认领后立刻早退、`claim_next` 不认领 `waiting`、
+        # `_finish_locked` 只在 outcome=cancelled 时收作业。留着这条作业的后果
+        # 是它永远 `pending`/`waiting`——队列里一条永远轮不到的僵尸。
+        if self._claims is not None:
+            job = self._claims.job_for_run(run_id)
+            if job is not None and job.state in ("pending", "claimed", "waiting"):
+                self._claims.cancel(job.job_id, reason=f"run_fenced:{reason}")
 
     # ---- Run ----
 

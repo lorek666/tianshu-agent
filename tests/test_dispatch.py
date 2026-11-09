@@ -709,7 +709,15 @@ def test_stale_revision_request_is_rejected(env):
 
     result = env.dispatcher.dispatch(request.request_id, claim)
     assert result.status == "rejected"
-    assert "fence" in result.output["error"] or "revision/epoch" in result.output["error"]
+    # fence 现在会**同时**收掉这条 Run 的作业（否则等审批的 Run 会留下一条
+    # 永远结束不了的作业），所以派发时先撞上的是"claim 已失效"；如果作业还
+    # 活着，后面的 revision/epoch 检查同样会拒绝。两条都算"拒绝"，但拒绝理由
+    # 必须说得出是哪种，不能是含糊的失败。
+    error = result.output["error"]
+    assert (
+        "fence" in error or "revision/epoch" in error or "claim 已失效" in error
+    ), error
+    assert result.effect_state == "none_applied"
     assert (env.ws / "note.md").read_text(encoding="utf-8") == ORIGINAL
 
 

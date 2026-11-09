@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（340 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
+- 本阶段最终：PR C 分支（341 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 340 passed
+  uv run pytest -q          # 341 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -295,23 +295,41 @@ outcome: failed  (workspace 已被阻断，拒绝写入：workspace 存在未核
 other.md 存在: no
 ```
 
-## 6.9 独立复审与两轮修复
+## 6.9 独立复审记录（三个 pass，两位复审者）
 
-| 轮次 | 结果 | 处置 |
+本轮一共做了三次独立复审。如实记录**每一方各自说了什么**，不合并成一句"复审通过"。
+
+| Pass | 复审者 / 对象 | 结论 | 发现的阻断项 | 处置 |
+|---|---|---|---|---|
+| A | 子代理 `b24f6e67` / `af0da35`+`bb95f39` | **不能合并** | ① 旧库打开即 `no such column: action_digest`（加列与依赖该列的索引顺序颠倒）；② 被 fence 的 Run 留下永久 `waiting` 作业、且 `run pause/cancel` 对它返回 0「已记录请求」（根因：状态常量 `RUN_FENCED` 被同名事件常量覆盖，所有 `run.state == RUN_FENCED` 恒 False） | `f373ee7` |
+| B-1 | 队友 `reviewer-m2` / `af0da35`+`bb95f39` | **有条件合并**（四个优先项——审批范围、并发认领、作业语义、心跳——前三项通过） | ③ 正常收尾时心跳误报"续租失败"，成功也返回退出码 1；④ `stop()` 2s 超时就放弃，随后关掉线程正在用的连接（后台线程抛 `ProgrammingError` 无人可见） | `604ccc0`；复审 B 复跑：③ 由 5/6 降到 0/6，④ 两条路径均通过，`_claim_owned` 归类 8 个场景逐条验证不掩盖真丢 claim → **能合** |
+| B-2 | 队友 `reviewer-m2` / `f373ee7`+`3baf049` | **不能合并** | ⑤ `_fence_run` 不收作业：`pending` 路径已修，但**等审批**的 Run 被 fence 后作业仍是 `waiting`，而 `claim_next` 按设计不认领 `waiting`、`_finish_locked` 只收 `cancelled` 的作业 → 僵尸作业；⑥ 本文 §6.9 把 A、B-1 的结论写错（如实本例所示已重写） | 本提交（`_fence_run` 收掉 open job + 回归用例） |
+
+复审 B 对 `docs/PRD-v1.md` §5.4 的逐字段核对结论：**方向一致、没有放宽过头**——
+`action_fields()` 去掉 `request_id/job_id/claim_epoch/owner_instance_id` 后的 15 个
+字段与 §5.4 表格完全一致；改内容 / 改目标 / 改 call_id / 改 attempt_id /
+改 goal_revision / 改绑定六类变体全部无法复用旧批准，同一请求二次 dispatch 被拒。
+它同时指出三处文本要收口（`prompt_version` 未实现、"consumed 由数据库唯一约束保证"
+实际是条件 UPDATE、"批准后 resume 使用同一 epoch"在 park 后必然 +1），已写进 §5
+的已知限制，不再当作契约的实际内容。
+
+## 6.10 实现方自查修掉的非阻断项
+
+下面这些**不是**复审者的结论，是实现方在跑端到端/压测时自己撞到、或按复审建议
+自查后修的，单独列出来便于追溯：
+
+| 项 | 后果 | 修法 |
 |---|---|---|
-| 第一轮（`reviewer-m2`） | **不能合**：4 项优先验证里 2 项通过、2 项阻断（正常收尾误报心跳失败、`stop()` 不等线程就关连接） | 修复于 `604ccc0`；复审复跑 B1 由 5/6 降到 0/6，B2 两条路径均通过，`_claim_owned` 不掩盖真丢 claim |
-| 第二轮（同一复审者，对象 `604ccc0`） | **不能合**：旧库 `no such column: action_digest`；fenced 的 Run 留下永不结束的作业、pause/cancel 假成功 | 修复于 `f373ee7`；新增 8 例回归 |
-
-第二轮同时指出 6 个非阻断项（心跳 TTL 未传、丢失 claim 仍能续租约、`init_run`
-洗白 unknown、`claim_next` 饿死 pending、`--max-jobs` 假 idle、`recover` 忽略
-`--data-root`、审批 schema 未编码新契约），全部已修，见提交说明。
-
-> 复审者对 `docs/PRD-v1.md` §5.4 的判断：逐字段核对后"方向一致、没有被放宽过头"，
-> 六类动作变体（改内容/改目标/改 call_id/改 attempt/改 goal_revision/改绑定）
-> 全部无法复用旧批准。它还指出三处文本要收口：`prompt_version` 未实现（PRD 正文
-> 提到 prompt 变化但字段表里没有）、"consumed 由数据库唯一约束保证"实际是条件
-> UPDATE、"批准后 resume 使用同一 epoch"在 park 后必然 +1——这三条已写进 §5 的
-> 已知限制，不再当契约实际内容。
+| 抢不到工作区租约时 `park` | 队列里的正常工作被记成"等人决定"，一队全停、退出码 1 | 交还成 `pending` + `drain` 停下 + `contended` 如实上报 |
+| 心跳把 `database is locked` 当丢 claim | 一次正常的慢写入会让 owner 被误判不活并遭接管 | 只对 locked/busy 重试（≤3 次） |
+| 心跳没沿用认领时的 `ttl_ms` | "有心跳就抢不走"的断言必然成立（空断言） | 心跳传 `ttl_ms`，断言 deadline 余量 ≤ 2×ttl |
+| `_drive` 无条件补建写前清单 | 一次 resume 就能把 `unknown` 洗成"确定没写" | 只在还没有任何 `tool.intent` 时补建 |
+| `claim_next` 只按创建时间取前 32 行 | 队列前面堆满"活着但卡住"的 claimed 时，后建的 pending 永远扫不到 | 排序改成 pending 优先 |
+| `--max-jobs` 跑满仍报 `idle: true` | 队里还有活却自称空闲 | 只有"跑空"才算 idle |
+| 同一 `call_id` 换参数 | 裸 `IntegrityError` 冒到主循环，只能记成"异常 → run failed" | 受控拒绝 `dispatch.call_id_reused` |
+| 审批属于另一个 Run / 已批准但过期 | 走 `ApprovalError` 前缀的日志，原因不清晰 | 显式 `c4.approval_run_mismatch` / `c4.approval_expired` |
+| `recover` 忽略 `--data-root` | worker 崩溃后的恢复找不到清单，误判 unresolved 且顺手阻断目录 | `recover --data-root` |
+| 心跳线程 TTL 与认领 TTL 不一致、`_settle` 死代码、`find_for` 返回过期批准 | 见各提交说明 | 同左 |
 
 ## 7. 本轮发现并修复的缺陷
 
@@ -327,7 +345,7 @@ other.md 存在: no
 | 只读绑定被拒时报"租约不覆盖" | 拒绝理由说的是技术细节，不是真实原因 | 报 `c4.readonly_binding` |
 | 心跳把 `database is locked` 当成丢 claim | 一次正常的慢写入会让 owner 被误判不活并遭接管 | 只对 locked/busy 重试（≤3 次） |
 | 抢不到租约就 `park` | 队列里的正常工作被记成"等人决定"，一队全停 | 交还成 `pending` + `drain` 停下 |
-| 状态常量与事件常量同名 `RUN_FENCED` | `run.state == "fenced"` 恒 False：fenced 的作业永不结束、pause/cancel 假成功 | 事件常量改名 `RUN_FENCED_EVENT` |
+| 状态常量与事件常量同名 `RUN_FENCED` | `run.state == "fenced"` 恒 False：fenced 的作业永不结束、pause/cancel 假成功 | 事件常量改名 `RUN_FENCED_EVENT`；`_fence_run` 收掉 open job（pending/claimed/waiting 全部 cancel） |
 | 依赖新列的索引先于加列执行 | 旧库打开即 `no such column: action_digest`，除 replay 外全不可用 | 索引拆到 `_ensure_column` 之后 |
 
 细节与复现命令见 `docs/REVIEW-PRA.md` §4.6。
