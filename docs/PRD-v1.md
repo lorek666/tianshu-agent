@@ -636,7 +636,7 @@ class Limits(TypedDict, total=False):
 | ID | 功能 | 关键要求 | 来源依据 |
 |---|---|---|---|
 | **F1** | 执行原语 | `spawn(argv, cwd, env, policy) → handle`，含 PTY、stdio 流、信号、退出码。argv 数组，禁 shell 拼接；env 白名单 | PRD v1 |
-| **F2** | 沙箱与 policy | 后端可插拔（macOS Seatbelt / Linux Landlock / 容器）。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽 | PRD v1 |
+| **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽 | PRD v1 |
 | **F3** | 事件日志与恢复 | 见 §5.3。恢复扫描"有 intent 无 result"的调用，按 `side_effect_level` 处置 | OpenHands EventLog |
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
 | **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘 | PRD v1 |
