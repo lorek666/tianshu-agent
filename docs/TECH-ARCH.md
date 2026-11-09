@@ -424,3 +424,42 @@ AgentOS/
 装机量小是事实，但它影响的是**优先级**，不是**要不要支持**。
 
 
+
+## 12. 模型接缝：接上第二个线上协议之后的结论（M3）
+
+M0–M2 只有一家 OpenAI-compatible 端点，所以"换模型 = 换 adapter"这句话一直
+没被真正顶过。M3 接上 Anthropic Messages API 之后，有三条结论值得写在这里。
+
+**12.1 内部消息形状是契约，不是实现细节**
+
+主循环、游标、`messages_hash`、`replay` 共用同一份**规范化消息形状**
+（`system` / `user` / `assistant`+`tool_calls` / `tool`）。它必须中立：
+两个协议的差异（`system` 在顶层、工具结果要包 `tool_result`、`tools` 要不要
+再包一层 `{"type":"function"}`、`max_tokens` 必填）全部由 adapter 消化。
+adapter 一旦反向改写内部形状，replay 重建的消息序列与当时发出去的就不再一致，
+`messages_hash` 会立刻对不上——这不是风格问题，是证据链断裂。
+
+**12.2 错误是对象，不是结束原因**
+
+`finish_reason` 回答"模型这一轮怎么结束的"，13 值封闭集。401/429/连接被掐断
+压根不是模型的选择，压成 `finish_reason="error"` 的代价是：策略层想知道
+"该重试还是该换 key"时无从判断，而且事件日志里多了一个契约不允许的值。
+M3 起一律抛 `ModelError(kind, status_code, retryable)`；主循环原有的
+`except Exception` 分支记 `model.error` 事件后终止——**这一处 0 改动**。
+`retryable` 目前**没有调用方**：它的存在是为了让上层的重试策略将来能判断，
+而不是现在就自动重试（自动重试会掩盖 429 与持续 5xx，还会把预算悄悄花掉）。
+
+**12.3 判据是"同一套契约测试跑两个实现"，不是"我加了个 adapter"**
+
+`tests/test_model_contract.py` 用注入的 `Transport` 对两个 adapter 各跑一遍
+同一组断言（结尾、工具调用、半截 JSON、401/403/429/500、非 JSON 响应体、
+未知 `stop_reason`、缺 usage、缓存 token）。任一 adapter 满足不了，
+说明它不合格，不说明测试要放宽。
+
+**12.4 还没做的部分（不要在别处说成已经做了）**
+
+- 沙箱后端接缝（M3 另一半）见 `docs/superpowers/notes/m3-backend-seam-proposal.md`
+- 流式（`StreamEvent`）留着契约，v1 不用
+- `ContinuationRef` 的签名/thinking 原样往返：两个 provider 都没有 v1 必须
+  往返的 opaque 字段，Anthropic 的 `thinking` 块当前**跳过**，不做往返
+- 这不是 OS 级隔离：`Workspace` 是路径边界，不是安全边界

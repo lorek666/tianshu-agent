@@ -30,6 +30,7 @@ target/
 .LSOverride
 
 # 本地数据与日志
+.tianshu/
 *.log
 crash-*.txt
 data/

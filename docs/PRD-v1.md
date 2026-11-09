@@ -307,6 +307,42 @@ Run   { run_id, task_id, goal_revision, lease_epoch, state, outcome?, effect_sta
 - **`finish_reason`（模型侧）与 `run_stop_reason`（运行侧）是两个字段，禁止混用**——见 §5.5
 - **派发工具的条件是三元组，不是单个枚举值**：`finish_reason == tool_use` **且** 整组参数完整 **且** 通过固定版本 C2 schema 校验 **且** assistant turn 已持久化。任一项不满足即不派发（含"参数是合法 JSON 但被截断"的情况）
 
+**M3 补充：C1 吃的是一种"内部规范化消息形状"**
+
+M3 加第二个 provider（Anthropic Messages API）时才被迫写清这件事。此前
+`Model.complete(messages, tools)` 收的是 OpenAI 形状的 dict，没人写过它算不算
+契约的一部分——而它其实是：这份 dict 会被 `save_cursor` **持久化进游标**、
+被 `messages_hash` 盖进事件、被 `replay` 用来重建消息序列。换句话说，
+"换模型不用改主循环"的真正前提是：**主循环只说一种中立形状，adapter 负责翻译**。
+
+| role | 字段 | 说明 |
+|---|---|---|
+| `system` | `content` | 提示词（Anthropic 要求提到顶层，由 adapter 提出去） |
+| `user` | `content` | 用户输入 |
+| `assistant` | `content`, `tool_calls[{id, type, function{name, arguments}}]` | `arguments` 是 **JSON 字符串** |
+| `tool` | `tool_call_id`, `name`, `content` | 工具结果回灌（Anthropic 要求包成 `tool_result` 并合并进同一条 user 消息） |
+
+三条规则：
+
+1. adapter 做 **内部形状 ↔ 各家线上协议** 的双向翻译；**不得反向改写内部形状**
+   （改了，replay 重建出来的序列就和当时发出去的不一致，`messages_hash` 立刻对不上）
+2. 事件里的 `tool_calls[].arguments` 是解析后的对象；解析失败时保留原始字符串，
+   执行侧据此拒绝派发——adapter 不许"修好"半截 JSON
+3. 新 provider 若需要"三张表之外"的语义进内部形状，那是 C1 契约变更，
+   必须走单独的 `docs(contract):` 提交
+
+**`ModelError` 的落地口径（M3）**
+
+- 传输、超时、HTTP 状态、响应体不合协议，一律**抛 `ModelError`**，
+  **禁止**编码成 `finish_reason`
+- 字段：`kind ∈ {transport, timeout, http_status, auth, rate_limit, protocol}`、
+  `status_code`、`retryable`（**建议**，不是保证——429 的重试仍可能连续失败）
+- `finish_reason` 的 13 值封闭集由 `ModelResponse` 构造时强制校验；
+  线上语料里不认识的结束原因（含缺失）抛 `ModelError(kind=protocol)`，
+  **绝不兜底成 `end_turn`**——那会把一次异常收尾记成成功
+- `usage`：缺字段是 `null`；`cache_read_input_tokens` / `cache_creation_input_tokens`
+  只在 provider 上报时出现，且**不并入** `input_tokens`（否则同一批 token 计两次费）
+
 
 ### 5.2 C2 Tool
 

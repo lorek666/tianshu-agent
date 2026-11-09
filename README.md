@@ -115,14 +115,25 @@ uv run python -m tianshu task revise --task-id task_xxxx --goal "换个目标"
 （等审批 / 已暂停 / 待核查）。
 `undo` 不带 `--approve` 时只预演并返回 `3`。
 
-接真实模型（OpenAI-compatible）：
+接真实模型。两个线上协议，主循环一行都不用改（契约测试见
+`tests/test_model_contract.py`）：
 
 ```bash
+# 1) OpenAI-compatible：OpenAI / DeepSeek / Moonshot / vLLM / Ollama 都走这条
 export TIANSHU_API_KEY=sk-...
 export TIANSHU_BASE_URL=https://api.openai.com/v1   # 可选，支持任意兼容端点
 uv run python -m tianshu run --workspace /tmp/ws --task "..." \
   --out summary.md --model openai-compatible --model-name gpt-4o-mini
+
+# 2) Anthropic Messages API：协议不同（system 顶层 / tool_use 内容块），所以是另一个 adapter
+export ANTHROPIC_API_KEY=sk-ant-...
+uv run python -m tianshu run --workspace /tmp/ws --task "..." \
+  --out summary.md --model openai-compatible --provider anthropic \
+  --model-name claude-sonnet-4-5
 ```
+
+`--provider` 不写时读 `TIANSHU_PROVIDER`，再默认 `openai`。
+`--model-name` 对 anthropic **必须显式给**——不替用户猜模型 id，猜错的表现是 404。
 
 ## 开发约定
 
