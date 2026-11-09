@@ -485,3 +485,42 @@ def test_cli_host_status_reports_running_host(root: Path) -> None:
         assert cli.main(["host", "status", "--data-root", str(root)]) == 0
     finally:
         host.clear_host_info(root, pid=os.getpid())
+
+
+def test_empty_token_meta_is_replaced_not_duplicated(root: Path, fake_daemon) -> None:
+    """`ui/index.html` 的形态：一个 content 为空的 meta。必须原地替换。
+
+    回归点：若 Host 另插一个新的 meta，`querySelector` 拿到的是**第一个**（空值），
+    前端就永远认为"没被 Host 加载"，表现为白屏 + 无法连接——这条是真实联调时
+    会踩到的，不是假想。
+    """
+    ui = _ui_dir(
+        root,
+        index_html=(
+            '<!doctype html><html><head><meta charset="utf-8" />'
+            '<meta name="tianshu-token" content="" /></head><body>app</body></html>'
+        ),
+    )
+    config = host.BridgeConfig(data_root=root, ui_dir=ui, token="real-token", port=0)
+    bridge = host.UiBridge(config)
+    bridge.serve_background()
+    try:
+        status, body = _http(bridge.port, "GET", "/", token="real-token")
+    finally:
+        bridge.stop()
+    text = body.decode("utf-8")
+    assert status == 200
+    assert text.count('name="tianshu-token"') == 1, text
+    assert 'content="real-token"' in text
+
+
+def test_token_injection_handles_placeholder_meta_and_missing_head() -> None:
+    token = "t0k"
+    placeholder = b'<html><head><meta name="tianshu-token" content="__TIANSHU_TOKEN__"></head>'
+    assert b'content="t0k"' in host._inject_token(placeholder, token)
+    empty = b'<html><head><meta name="tianshu-token" content=""></head>'
+    replaced = host._inject_token(empty, token)
+    assert replaced.count(b'name="tianshu-token"') == 1
+    bare = b"<body>app</body>"
+    injected = host._inject_token(bare, token)
+    assert b'name="tianshu-token"' in injected

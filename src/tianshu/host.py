@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -663,19 +664,36 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(html)
 
 
-def _inject_token(html: bytes, token: str) -> bytes:
-    """把 token 给页面。
+TOKEN_META_RE = re.compile(
+    r'<meta\s+name="tianshu-token"\s+content="[^"]*"\s*/?>', re.IGNORECASE
+)
 
-    UI 里放占位符 `__TIANSHU_TOKEN__` 时替换它；没有占位符就往 `<head>` 里插。
-    两条路都留着：前端是别人并行写的，不能因为少一个占位符就白屏。
+
+def _inject_token(html: bytes, token: str) -> bytes:
+    """把 token 给页面。三种页面形态都要能处理，缺一种就是白屏：
+
+    1. 带 `__TIANSHU_TOKEN__` 占位符；
+    2. **带一个 content 为空的 `tianshu-token` meta**（`ui/index.html` 就是这种：
+       前端约定"从 meta 读，读不到就是没被 Host 加载"）。必须**替换**那一个，
+       不能再插一个新的——`querySelector` 拿第一个，拿到空值就等于没 token，
+       页面会一直显示"无法连接守护进程"。
+    3. 什么标记都没有：往 `<head>` 里插一个。
+
+    `re` 而不是字符串切分：meta 的属主顺序、自闭合写法、多余空格都可能变，
+    按固定字符串替换会在前端改一行格式时静默失效。
     """
     text = html.decode("utf-8", errors="replace")
     if "__TIANSHU_TOKEN__" in text:
         return text.replace("__TIANSHU_TOKEN__", token).encode("utf-8")
+    replaced = TOKEN_META_RE.sub(
+        f'<meta name="tianshu-token" content="{token}" />', text, count=1
+    )
+    if replaced != text:
+        return replaced.encode("utf-8")
     meta = f'<meta name="tianshu-token" content="{token}">'
-    if "<head>" in text:
-        return text.replace("<head>", f"<head>{meta}", 1).encode("utf-8")
-    return (meta + text).encode("utf-8")
+    if "<head>" in replaced:
+        return replaced.replace("<head>", f"<head>{meta}", 1).encode("utf-8")
+    return (meta + replaced).encode("utf-8")
 
 
 class UiBridge(ThreadingHTTPServer):
