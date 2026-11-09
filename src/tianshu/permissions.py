@@ -34,6 +34,7 @@ GRANT_TTL_MS = 30_000
 
 APPROVAL_REQUESTED = "approval.requested"
 APPROVAL_DECIDED = "approval.decided"
+APPROVAL_CONSUMED = "approval.consumed"
 APPROVAL_REVOKED = "approval.revoked"
 APPROVAL_EXPIRED = "approval.expired"
 APPROVAL_SUPERSEDED = "approval.superseded"
@@ -44,6 +45,7 @@ POLICY_DENIED = "policy.denied"
 APPROVAL_STATES = {
     "pending",
     "approved",
+    "consumed",
     "rejected",
     "expired",
     "revoked",
@@ -147,6 +149,13 @@ class ActionRequest:
     def digest(self) -> str:
         return jcs_sha256(self.to_canonical_dict())
 
+    @classmethod
+    def of(cls, raw: dict[str, Any]) -> ActionRequest:
+        """从库里存的规范字典还原（派发时重算摘要必须逐字节一致）。"""
+        known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+        known["resources"] = tuple(known.get("resources") or ())
+        return cls(**known)
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -183,6 +192,7 @@ class Approval:
     decided_by: str | None = None
     created_at: int = 0
     decided_at: int | None = None
+    consumed_at: int | None = None
     expires_at: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -201,6 +211,7 @@ class Approval:
             "decided_by": self.decided_by,
             "created_at": self.created_at,
             "decided_at": self.decided_at,
+            "consumed_at": self.consumed_at,
             "expires_at": self.expires_at,
         }
 
@@ -249,6 +260,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_by      TEXT,
     created_at      INTEGER NOT NULL,
     decided_at      INTEGER,
+    consumed_at     INTEGER,
     expires_at      INTEGER NOT NULL
 );
 
@@ -270,6 +282,15 @@ CREATE TABLE IF NOT EXISTS grants (
 
 CREATE INDEX IF NOT EXISTS idx_grants_digest ON grants(request_digest);
 """
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, name: str, ddl: str
+) -> None:
+    """给早期版本的库补列（旧库没有 consumed_at）。"""
+    have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if name not in have:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 class PolicyEngine:
@@ -357,12 +378,11 @@ class ApprovalStore:
         self._conn.row_factory = sqlite3.Row
         self._clock = clock
         self._conn.executescript(SCHEMA)
+        _ensure_column(self._conn, "approvals", "consumed_at", "INTEGER")
 
     @property
     def transaction(self):
         return self._log.transaction()
-
-    # ---- 请求 ----
 
     def request(
         self, request: ActionRequest, decision: PolicyDecision, *,
@@ -519,6 +539,88 @@ class ApprovalStore:
         """目标/epoch 变了：这个 Run 的旧审批立刻作废，不能"暗中重新绑定"。"""
         return self._bulk_close(run_id, "superseded", APPROVAL_SUPERSEDED, reason)
 
+    # ---- 兑现 ----
+
+    def consume(self, approval_id: str, *, request_digest: str) -> Approval:
+        """把一次批准兑现成"已消费"。**必须在派发事务里调用**。
+
+        条件 UPDATE 是"一次批准只能执行一次"的唯一保证：两个并发派发里只有
+        一个能把 approved → consumed 改成功，另一个 rowcount=0 直接报错。
+        先查后改（check-then-act）不行——两者之间足够另一个进程插进来。
+        """
+        now = self._clock()
+        with self._log.transaction() as tx:
+            cur = self._conn.execute(
+                "UPDATE approvals SET state='consumed', consumed_at=?"
+                " WHERE approval_id=? AND request_digest=?"
+                "   AND state='approved' AND expires_at > ?",
+                (now, approval_id, request_digest, now),
+            )
+            if cur.rowcount == 0:
+                raise ApprovalError(
+                    f"审批不可消费：{approval_id}（未批准、已消费、已撤销或已过期）"
+                )
+            current = self.get(approval_id)
+            if current is None:  # pragma: no cover - 刚更新过
+                raise ApprovalError(f"审批不存在：{approval_id}")
+            tx.append(
+                current.run_id,
+                APPROVAL_CONSUMED,
+                {
+                    "approval_id": approval_id,
+                    "request_digest": request_digest,
+                    "decided_by": current.decided_by,
+                },
+                task_id=current.task_id,
+                actor_kind="core",
+            )
+        return current
+
+    def revoke_consumed(
+        self, approval_id: str, *, actor: HumanIdentity, reason: str
+    ) -> Approval:
+        """撤销一次"已消费但尚未开始执行"的批准。
+
+        这是"撤销先拿到执行守卫，就拒绝旧操作"的落点。执行一旦越过
+        `execution.started`，这次调用就是 in-flight，撤销不再承诺回滚。
+        """
+        if not isinstance(actor, HumanIdentity):
+            raise ApprovalError("撤销人必须是 HumanIdentity")
+        with self._log.transaction() as tx:
+            cur = self._conn.execute(
+                "UPDATE approvals SET state='revoked'"
+                " WHERE approval_id=? AND state='consumed'",
+                (approval_id,),
+            )
+            if cur.rowcount == 0:
+                raise ApprovalError(
+                    f"审批不在'已消费未执行'状态，不能按此路径撤销：{approval_id}"
+                )
+            current = self.get(approval_id)
+            if current is None:  # pragma: no cover
+                raise ApprovalError(f"审批不存在：{approval_id}")
+            tx.append(
+                current.run_id,
+                APPROVAL_REVOKED,
+                {
+                    "approval_id": approval_id,
+                    "decided_by": actor.to_dict(),
+                    "reason": reason,
+                    "stage": "consumed",
+                },
+                task_id=current.task_id,
+                actor_kind="human",
+                actor_id=actor.actor,
+            )
+        return current
+
+    # ---- 查询 ----
+
+    def find(self, request_digest: str, *, run_id: str) -> Approval | None:
+        """同一摘要上还能用的那张审批（pending 或 approved）。"""
+        row = self._find(("pending", "approved"), request_digest, run_id)
+        return self._row(row) if row is not None else None
+
     def expire_due(self) -> int:
         """把过期未处理的审批标成 expired。"""
         now = self._clock()
@@ -533,6 +635,36 @@ class ApprovalStore:
                 [row["approval_id"]], "expired", APPROVAL_EXPIRED, "ttl"
             )
         return n
+
+    def expire(self, approval_id: str) -> bool:
+        """把某一张已过期的 pending/approved 标成 expired。
+
+        `expire_due` 只扫 pending；但"已批准、还没派发时审批自己过期了"也是常态
+        （TTL 10 分钟，人去喝杯咖啡就过了）。这种必须能单独作废，否则用户会对着
+        一个永远不能用的批准反复重试。
+        """
+        now = self._clock()
+        with self._log.transaction() as tx:
+            current = self.get(approval_id)
+            if current is None:
+                return False
+            if current.state not in ("pending", "approved") or current.expires_at > now:
+                return False
+            cur = self._conn.execute(
+                "UPDATE approvals SET state='expired' WHERE approval_id=?"
+                " AND state IN ('pending','approved')",
+                (approval_id,),
+            )
+            if cur.rowcount == 0:  # pragma: no cover - 事务内不会变
+                return False
+            tx.append(
+                current.run_id,
+                APPROVAL_EXPIRED,
+                {"approval_id": approval_id, "reason": "ttl"},
+                task_id=current.task_id,
+                actor_kind="core",
+            )
+        return True
 
     def _bulk_close(self, run_id: str, state: str, event: str, reason: str) -> int:
         rows = self._conn.execute(
@@ -611,6 +743,11 @@ class ApprovalStore:
             decided_by=row["decided_by"],
             created_at=row["created_at"],
             decided_at=row["decided_at"],
+            consumed_at=(
+                row["consumed_at"]
+                if "consumed_at" in row.keys()
+                else None
+            ),
             expires_at=row["expires_at"],
         )
 
@@ -742,6 +879,7 @@ __all__ = [
     "ACTION_OVERWRITE",
     "ACTION_READ",
     "APPROVAL_ACTIONS",
+    "APPROVAL_CONSUMED",
     "APPROVAL_STATES",
     "APPROVAL_TTL_MS",
     "AUTO_ACTIONS",

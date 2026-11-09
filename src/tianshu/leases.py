@@ -522,6 +522,50 @@ class LeaseStore:
                     f"租约已失效或被接管：{_describe(resource)}（run={run_id}）"
                 )
 
+    def live_paths(self, run_id: str) -> list[str]:
+        """本实例当前真正有效的租约路径（已排除过期/进程已死/pid 被复用）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM leases WHERE run_id = ?", (run_id,)
+        ).fetchall()
+        return [
+            r["canonical_path"]
+            for r in rows
+            if r["canonical_path"]
+            and self._is_owner(r, run_id)
+            and not self._is_stale(r)
+        ]
+
+    def held_paths(self, run_id: str) -> list[str]:
+        return self.live_paths(run_id)
+
+    def assert_covers(
+        self, resources: list[ResourceIdentity | Path | str], run_id: str
+    ) -> None:
+        """文件级目标是否被本实例持有的**目录租约**覆盖。
+
+        为什么需要这个而不是 `assert_held`：租约是按"资源"（通常是工作区目录）
+        取得的，而真正要写的是一条路径。目录租约授权的是"这棵子树"，所以这里
+        只认**祖先方向**的覆盖——持有 `/ws/sub` 不授权写 `/ws/other`，
+        持有 `/ws` 才授权写 `/ws/a.md`。
+
+        过期、进程已死、pid 被复用的租约统统不算覆盖：`_is_stale` 已经把它们
+        判成失效，这里不再重复一套判断。
+        """
+        paths = self.live_paths(run_id)
+        held = [ResourceIdentity.of(Path(p)) for p in paths]
+        for resource in resources:
+            ident = _normalize(resource)
+            covered = any(
+                lease.key == ident.key
+                or is_ancestor_or_self(lease.path_key, ident.path_key)
+                for lease in held
+            )
+            if not covered:
+                raise LeaseLost(
+                    f"目标不在任何已持有的租约子树内：{_describe(resource)}"
+                    f"（run={run_id}；持有 {paths}）"
+                )
+
     # ---- 续租 / 释放 ----
 
     def renew(
@@ -603,6 +647,20 @@ class LeaseStore:
             (_normalize(resource).key,),
         ).fetchone()
         return self._row_to_lease(row) if row else None
+
+    def live_holder(self, resource: ResourceIdentity | Path | str) -> Lease | None:
+        """仍然有效的持有者。用于"别人是不是正在写这条路径"这类判断。
+
+        过期的、进程已死的、pid 被复用的租约都不算——把它们当成"有人正在写"
+        会让恢复永久卡在无法核实的状态上。
+        """
+        row = self._conn.execute(
+            "SELECT * FROM leases WHERE resource_key = ?",
+            (_normalize(resource).key,),
+        ).fetchone()
+        if row is None or self._is_stale(row):
+            return None
+        return self._row_to_lease(row)
 
     def list_for_run(self, run_id: str) -> list[Lease]:
         rows = self._conn.execute(

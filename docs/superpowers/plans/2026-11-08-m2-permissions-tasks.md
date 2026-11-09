@@ -142,12 +142,21 @@ Approval 绑定该请求摘要及 `approval_id, state, decided_by, expires_at`�
 
 **Interfaces:** `Dispatcher(log, tasks, leases, policy, approvals, executor)`；`prepare(request: ActionRequest, claim: JobClaim) -> DispatchDecision`（waiting/rejected/admitted）；`dispatch(request_id: str, claim: JobClaim) -> ToolResult`；`FileExecutor.execute(admitted: AdmittedCall) -> ToolResult`。`AdmittedCall` 携带已绑定的 JobClaim，`FileExecutor` 定义在 `tools.py`，独立从 authority 核验其当前有效性，不能仅信任传入对象的 `approved=True`。undo/recover 的修复写建立自己的控制 Run/JobClaim，并单独记录所操作的历史 Run，不能借用旧 Run 的已失效身份。
 
-- [ ] 先写 `test_consume_and_intent_are_atomic`、`test_concurrent_approval_consumes_once`、`test_revoke_between_intent_and_open`、`test_direct_execute_requires_admission`、`test_undo_and_recovery_obey_resource_block`；检查拒绝时文件字节不变且留拒绝事件。
-- [ ] 运行 `uv run pytest tests/test_dispatch.py`，确认红灯。
-- [ ] 在一个 SQLite 写事务中完成当前状态、JobClaim、resource epoch核验、审批唯一消费、grant 和 tool.intent 提交。`call_id` 是内部逻辑身份，provider ID 另列，attempt 每次派发更新；消费表唯一约束不能跨 run 误碰 provider 的短 ID。
-- [ ] 在 execution_guard 内、实际打开文件前，再核验 authority、JobClaim、grant来源/绑定/TTL/消费次数、revision/epoch、目录和 preconditions，记 execution.started。撤销/变更先获得守卫则拒绝旧操作；执行先开始则完整记为 in-flight，不承诺取消回滚。拒绝和未知都保留可核查状态。补旧 claim 在接管后直接调用 dispatch/executor 被拒绝的测试。
-- [ ] 接入四个既有工具及 `delete_file`，并把 undo/recover 的写路径收口；工具只能使用已解析且核验的目标。结果/receipt 提交沿用 B1 的修复协议，不能新造第二份日志。
-- [ ] 测试“批准后改文件”“undo 同时另一 Task 写”“两个相同调用并发”“epoch 改变前后屏障”“删除后可恢复”；运行全部回归/lint，通过后提交 `feat(m2): enforce permission at every file dispatch`。
+- [x] 先写 `test_consume_and_intent_are_atomic`、`test_concurrent_approval_consumes_once`、`test_revoke_between_intent_and_open`、`test_direct_execute_requires_admission`、`test_undo_and_recovery_obey_resource_block`；检查拒绝时文件字节不变且留拒绝事件。
+- [x] 运行 `uv run pytest tests/test_dispatch.py`，确认红灯。
+- [x] 在一个 SQLite 写事务中完成当前状态、JobClaim、resource epoch核验、审批唯一消费、grant 和 tool.intent 提交。`call_id` 是内部逻辑身份，provider ID 另列，attempt 每次派发更新；消费表唯一约束不能跨 run 误碰 provider 的短 ID。
+- [x] 在 execution_guard 内、实际打开文件前，再核验 authority、JobClaim、grant来源/绑定/TTL/消费次数、revision/epoch、目录和 preconditions，记 execution.started。撤销/变更先获得守卫则拒绝旧操作；执行先开始则完整记为 in-flight，不承诺取消回滚。拒绝和未知都保留可核查状态。补旧 claim 在接管后直接调用 dispatch/executor 被拒绝的测试。
+- [x] 接入四个既有工具及 `delete_file`，并把 undo/recover 的写路径收口；工具只能使用已解析且核验的目标。结果/receipt 提交沿用 B1 的修复协议，不能新造第二份日志。
+- [x] 测试“批准后改文件”“undo 同时另一 Task 写”“两个相同调用并发”“epoch 改变前后屏障”“删除后可恢复”；运行全部回归/lint，通过后提交 `feat(m2): enforce permission at every file dispatch`。
+
+> 执行记录（2026-11-09）：`src/tianshu/dispatcher.py` + `tests/test_dispatch.py`（27 例）
+> 已落地，全量 273 passed / `ruff check .` 通过。**未完成项详见 `docs/REVIEW-PRA.md` §4**：
+> (1) `loop.run()` 仍是 M0 遗留同步循环，写入靠唯一一处显式开关
+> `allow_legacy_unauthenticated_write` 放行，Task 5 接上 Task/Run/Job 后删除；
+> (2) 目录外写入（策略层给 `approve`）在执行侧明确拒绝为
+> `c4.outside_workspace_unsupported`，M2 不支持；(3) CLI 的 `undo --approve`
+> 把"人在这条命令上敲 --approve"当作批准，因为审批摘要绑定 claim_epoch，
+> 跨进程两次调用会天然换 epoch；(4) 本 PR 仍无 Windows 原生证据。
 
 ### PR C — 暂停恢复、用户改目标与作业生命周期（Task 5–6，依赖 PR B）
 

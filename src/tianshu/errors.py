@@ -31,3 +31,11 @@ class WorkspaceBlocked(TianshuError):
 
 class BudgetExceeded(TianshuError):
     """轮数或 token 预算耗尽（对应验收 A5）。"""
+
+
+class RunFenced(TianshuError):
+    """Run 已被目标变更或租约变更 fence，不得继续写入。
+
+    定义在 errors 而不是 tasks：执行侧（tools/dispatcher）也要抛这个语义，
+    不能让执行层为了一个异常类型去 import 状态层。
+    """

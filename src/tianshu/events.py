@@ -135,6 +135,9 @@ class EventLog:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
+        # 有界的锁等待：两个进程同时 BEGIN IMMEDIATE 时，后来的那个等一小会
+        # 儿再报 Busy，而不是把"别人正在写"当成"数据库坏了"。
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._tx_depth = 0
 

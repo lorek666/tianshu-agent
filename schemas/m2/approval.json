@@ -82,6 +82,7 @@
       "enum": [
         "pending",
         "approved",
+        "consumed",
         "rejected",
         "expired",
         "revoked",
@@ -90,6 +91,12 @@
     },
     "task_id": {
       "type": "string"
+    },
+    "consumed_at": {
+      "type": [
+        "integer",
+        "null"
+      ]
     }
   }
 }

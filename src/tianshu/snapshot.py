@@ -144,16 +144,26 @@ class SnapshotStore:
         ws: Workspace,
         *,
         guard: Callable[[], None] | None = None,
+        apply: Callable[[Change, bytes | None], None] | None = None,
+        allow_direct_write: bool = False,
     ) -> UndoReport:
         """把该 run 的变更撤回。
 
-        三条规矩：
+        四条规矩：
         1. 撤销也是写操作，必须先过 guard（阻断检查）。
         2. 同一个文件被写过多次时，按**调用逆序**处理——正序检查会自相冲突。
         3. 预检阶段用内存模拟最终状态，全部通过才动手。
+        4. **真正写文件必须经 `apply` 回调**（M2：派发 / 审批 / 租约）。
+           不传 apply 就只能显式 `allow_direct_write=True`；那是 M1 语义，
+           供旧测试与恢复工具使用，M2 的 CLI 不会走这条路。
         """
         if guard is None:
             raise ToolNotAllowed("undo 必须提供执行侧 guard，不能绕过阻断检查")
+        if apply is None and not allow_direct_write:
+            raise ToolNotAllowed(
+                "undo 必须通过授权派发路径（传 apply 回调）；"
+                "直写需显式 allow_direct_write=True"
+            )
         guard()
 
         changes = self.load(run_id)
@@ -196,11 +206,16 @@ class SnapshotStore:
         # ---- 执行：逆序恢复调用链。跨多文件的崩溃仍须如实记 partial ----
         for c in reversed(changes):
             target = ws.resolve(c.path)
-            if c.before_state == ABSENT:
+            preimage = None if c.before_state == ABSENT else preimages[c.call_id]
+            if apply is not None:
+                apply(c, preimage)
+            elif preimage is None:
                 target.unlink(missing_ok=True)
+            else:
+                atomic_write_bytes(target, preimage)
+            if preimage is None:
                 report.deleted.append(c.path)
             else:
-                atomic_write_bytes(target, preimages[c.call_id])
                 report.restored.append(c.path)
 
         report.ok = True

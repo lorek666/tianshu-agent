@@ -83,7 +83,7 @@ uv run ruff check .  # All checks passed!
 ## 4. 未修复 / 未验证（不得当作已解决）
 
 PR #7 计划覆盖的 Task 1–2 交付物当时缺以下部分。**其中 1、2、3、7 已在 PR #9 补齐**
-（见 §4.1），其余仍未做：
+（见 §4.1），Task 3 见 §4.2，Task 4 见 §4.3。下列 4、6、8 仍未做：
 
 4. `authority` 数据根与 `--db` 逃逸防护（计划 `test_changed_db_cannot_escape_authority`）。
 5. ~~`schemas/m2/task.json`、`run.json`、`job.json`~~ — 已在 PR #10 连同 approval/grant 一起补上。
@@ -116,8 +116,41 @@ PR B 的第一步：**判断与记录**，还不碰文件。
 | `GrantStore` | 一次性票据，默认 30 秒且不得超过租约剩余期限；消费按 `(digest, subject, 剩余次数, TTL)` 条件更新 |
 | `schemas/m2/*.json` | Task/Run/JobClaim/Approval/Grant 五份；配一个"schema required 必须等于 dataclass 必填字段"的对照测试，改了代码忘改契约会红 |
 
-仍未做：**Task 4 的 Dispatcher**（消费审批 + 登记 intent + 实际文件操作必须在一次提交里），
-以及 §4 第 4、6、8 条。
+### 4.3 PR #11（PR B · Task 4）补的部分
+
+派发层是"权限与审批闭环"真正合上的那一步：判断层（Task 3）只回答"该不该批"，
+派发层回答"现在能不能真的动文件，凭什么"。
+
+| 内容 | 说明 |
+|---|---|
+| `dispatcher.py` 阶段一 | **一个 SQLite 提交**里做完：当前状态复核（Run 未被 fence / revision / epoch / 租约 / claim）→ 审批条件 UPDATE 消费（`state='approved' AND expires_at > now`，rowcount=0 即失败）→ 签发票据（`issuer` 为 `approval:<decided_by>` 或 `policy:auto`，且不得超过租约剩余期限）→ 消费票据 → `tool.intent` → 派发记录。四件事同生同死 |
+| `dispatcher.py` 阶段二 | `begin_execution` 拿守卫后再核一遍（claim / grant 来源与摘要 / 剩余次数 / TTL / revision-epoch / 目标身份 / 写前状态），记 `execution.started`，然后才打开文件。撤销与执行抢同一把守卫：撤销先到 → `approval.revoked` + 派发记录 `revoked` + 字节不变；执行先到 → 撤销明确报错并发"请用 recover 核查"，不假装成功 |
+| `FileExecutor` | **不接受** `approved=True` 这类自述字段。票据只是身份，执行器自己回库核对 8 项：claim 当前 owner、Run 未 fence、目录租约覆盖目标、派发记录必须是 `intent` 且摘要/grant/epoch/owner 都对、grant 已消费且未过期、覆盖/删除必须有已消费的审批、目标 `(st_dev,st_ino)` 未被换掉且在可写绑定内、写前状态未变 |
+| `delete_file` / `restore_file` | `delete_file` 对模型暴露（审批 + preimage + 不支持递归）；`restore_file` **不暴露**，只给 undo 用。删除的 `after_state` 是显式的 `absent`，凭据链路（`build_receipt` / `verify_receipts`）已同步 |
+| 所有写入口收口 | `tools.execute()` 对有副作用的工具一律要求已核验票据；**全库唯一一处**放行是 `loop.run()` 的 `allow_legacy_unauthenticated_write`（M0 遗留同步循环，Task 5 删除）。`SnapshotStore.undo` 的直写分支同样改为必须显式 `allow_direct_write`，M2 的 CLI 走 `apply` 回调 |
+| `recovery` 服从资源占用 | 待核对路径（或它所在工作区）若被**另一个活着的 Run** 持租约，记 `unresolved` 并阻断，不做实时观测的猜测 |
+| 执行中途崩溃 | 结论只能是 `unknown`，并且立刻写 `recovery.blocked` 挡住该工作区后续写入——"确定没写"和"不知道写没写"是两件事 |
+| CLI | `undo` 两步：不带 `--approve` 只预演（退出码 3、不写、不登记审批）；带 `--approve` 才创建控制 Run/JobClaim、逐动作走派发。`approvals list/approve/reject/revoke` 补上人工侧。撤销中途失败记 `undo.failed` + 控制 Run `partial` |
+
+测试：`tests/test_dispatch.py` 27 例，全量 **273 passed**，`ruff check .` 通过。
+
+仍未做（**不得当作已解决**）：
+
+- **`loop.run()` 仍未接 Task/Run/Job 生命周期**，写入靠上面那一处显式开关放行。
+  也就是说"未经派发的写入"在这条遗留路径上仍然存在，只是必须由调用方显式打开。
+  Task 5 会把这个开关删掉。
+- **目录外写入**：策略层按契约给 `approve`，但执行侧明确拒绝
+  （`c4.outside_workspace_unsupported`）——M2 的证据边界按 workspace 根存
+  manifest，没有"目录外单文件"的 preimage 归属。批准了也不会执行，这一点必须
+  让用户看得见，不能假装支持。
+- **`undo --approve` 把"人敲 --approve"当批准**：审批摘要绑定 `claim_epoch`，
+  跨进程两次调用必然换 epoch，所以"先另开终端批、再回来跑 undo"这条路走不通；
+  本 PR 选的是"同一条命令里先预演、再带 --approve 执行"。这是 UX 取舍，不是安全
+  边界（`HumanIdentity.local_cli()` 本来就只声称"模型构造不出来"）。
+- **等待人工批准时的租约心跳循环**仍未实现（Task 6 的 worker）。当前
+  WAITING_APPROVAL 期间谁在续租，还没有真实代码承担。
+- §4 第 4、6、8 条（authority `--db` 逃逸、完整 takeover 持守卫、Windows/断电证据）仍未做；
+  本 PR 只额外补了 SQLite 有界 `busy_timeout` 与跨连接并发派发的一次性消费证据。
 
 ## 5. 对流程的意见
 
