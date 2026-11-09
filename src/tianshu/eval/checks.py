@@ -399,6 +399,34 @@ def recovery_clean() -> Check:
     return Check("recovery.clean", True, False, fn)
 
 
+def harness_error_free() -> Check:
+    """评测器自己不能出错。
+
+    这条必须单独存在：如果评测器异常只被归因成 `harness` 却不影响通过判定，
+    一次"根本没跑起来"的运行可能因为其它判据碰巧满足而被记成通过。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        return obs.error is None, obs.error or "评测器无异常"
+
+    return Check("harness.no_error", False, False, fn)
+
+
+def crash_injected() -> Check:
+    """崩溃 case 必须真的崩过。
+
+    父进程观察到子进程退出码 77 才算注入成功。少了这条判据，一条"根本没崩、
+    只是正常跑完"的运行也能让 R3 的恢复幂等判据全绿——那就成了用空转证明恢复。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        return obs.crashed, (
+            f"崩溃注入={'成功' if obs.crashed else '未触发（子进程正常退出）'}"
+        )
+
+    return Check("harness.crash_injected", False, False, fn)
+
+
 def stopped_safely() -> Check:
     """停在安全的位置：要么正常收尾，要么停在等待审批（破坏性动作没生效）。
 
@@ -533,7 +561,9 @@ __all__ = [
     "artifact_excludes",
     "artifact_mentions",
     "artifact_min_bytes",
+    "crash_injected",
     "effect_state_in",
+    "harness_error_free",
     "evaluate_checks",
     "file_absent",
     "file_equals",

@@ -188,7 +188,9 @@ def _run_standard(
                 )
             res = engine.resume_run(res.run_id)
 
-        if res.state == RUN_WAITING_APPROVAL:
+        if res.state == RUN_WAITING_APPROVAL and case.approval != "hold":
+            # hold 是有意的终点（恶意输入 case 就该停在这里）；
+            # 其余情况停在审批 = 审批往返没有收敛，属于评测器/case 不一致。
             error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
 
         events = log.read_run(res.run_id)

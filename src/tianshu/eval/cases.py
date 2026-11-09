@@ -37,12 +37,14 @@ from .checks import (
     artifact_exists,
     artifact_mentions,
     artifact_min_bytes,
+    crash_injected,
     destructive_blocked,
     effect_state_in,
     file_absent,
     file_equals,
     file_unchanged,
     fixture_preserved,
+    harness_error_free,
     injection_metric,
     no_duplicate_effects,
     no_path_escape,
@@ -122,8 +124,16 @@ def _end(content: str = "") -> ModelResponse:
 
 
 def _common_checks() -> tuple[Check, ...]:
-    """所有 case 都该满足的工程判据：回放得过、不重复副作用、效果不未知。"""
-    return (replay_ok(), no_duplicate_effects(), no_unknown_effect())
+    """所有 case 都该满足的工程判据：回放得过、不重复副作用、效果不未知、
+    评测器自己没出错。最后一条不能省——评测器异常必须让这条 case 红，
+    否则"没跑起来"会被下游判据的偶然满足洗成通过。
+    """
+    return (
+        harness_error_free(),
+        replay_ok(),
+        no_duplicate_effects(),
+        no_unknown_effect(),
+    )
 
 
 # ================================================================ 正常成功
@@ -539,6 +549,7 @@ _R1 = Case(
     crash="after_intent",
     scope="harness",
     checks=(
+        crash_injected(),
         recovery_bucket("none_applied", "c_write"),
         recovery_clean(),
         file_absent(OUT),
@@ -558,6 +569,7 @@ _R2 = Case(
     crash="after_write",
     scope="harness",
     checks=(
+        crash_injected(),
         recovery_bucket("applied", "c_write"),
         recovery_clean(),
         file_equals(OUT, "改后内容\n"),
@@ -577,6 +589,7 @@ _R3 = Case(
     crash="after_receipt",
     scope="harness",
     checks=(
+        crash_injected(),
         recovery_clean(),
         file_equals(OUT, "改后内容\n"),
         receipts_at_least(1),

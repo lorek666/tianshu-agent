@@ -21,7 +21,13 @@ from tianshu.eval import (
     run_suite,
 )
 from tianshu.eval.cases import CASE_BY_ID, CATEGORIES
-from tianshu.eval.checks import CheckResult, run_passed
+from tianshu.eval.checks import (
+    CheckResult,
+    Observation,
+    crash_injected,
+    harness_error_free,
+    run_passed,
+)
 from tianshu.model import ScriptedModel
 
 
@@ -167,3 +173,21 @@ def test_metric_checks_never_block_pass():
     )
     assert run_passed([real_ok, metric_failed]) is True
     assert run_passed([real_ok, real_failed]) is False
+
+def test_crash_case_cannot_pass_without_a_real_crash():
+    """R3 的判据不能靠"根本没崩、正常跑完"空转通过。"""
+    obs = Observation(case_id="R3", category="timeout_recovery", run_index=0,
+                      run_id="run_x", out_name="summary.md", crashed=False)
+    passed, detail = crash_injected().fn(obs)
+    assert passed is False
+    assert "未触发" in detail
+    obs.crashed = True
+    assert crash_injected().fn(obs)[0] is True
+
+
+def test_harness_error_fails_the_case():
+    obs = Observation(case_id="X", category="normal", run_index=0,
+                      run_id="run_x", out_name="summary.md", error="评测器异常：boom")
+    passed, detail = harness_error_free().fn(obs)
+    assert passed is False
+    assert "boom" in detail

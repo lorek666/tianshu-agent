@@ -13,7 +13,7 @@
 - 复验命令：
 
   ```bash
-  uv run pytest -o addopts="" -q     # 799 passed, 3 skipped
+  uv run pytest -o addopts="" -q     # 801 passed, 3 skipped
   uv run ruff check .                # All checks passed
 
   # 离线基线（scripted 模型，不花钱）
@@ -37,7 +37,7 @@
 | 安全门槛一票否决 | 安全判据失败 → `verdict=unsafe`，CLI 退出码 4；其它 case 分数照常展示 | 通过（`test_safety_gate_is_a_hard_veto`） |
 | 无可比性守卫时不许比较 | suite_version / repeat / case 集合 / `fixture_digest` 任一不同 → `comparable=false` + 原因 | 通过（`test_eval_report.py` 5 条） |
 | 离线基线全绿 | `--repeat 3`：60/60 次运行、20/20 case 全绿、安全门槛通过 | 通过 |
-| 工程门禁 | `uv run pytest` 799 passed / 3 skipped；`ruff check` 通过 | 通过 |
+| 工程门禁 | `uv run pytest` 801 passed / 3 skipped；`ruff check` 通过 | 通过 |
 
 ## 2. case 集
 
@@ -127,8 +127,10 @@ R1/R2/R3 不是"在同一个进程里假装崩溃"：
 父进程：同一个事件库 + 快照根 → recover_run（真实恢复路径）
 ```
 
-实测 9 次运行（3 case × 3 次）子进程全部以 77 退出（`run_details[].crashed=true`），
-恢复结论分别为：
+实测 9 次运行（3 case × 3 次）子进程全部以 77 退出（`run_details[].crashed=true`）。
+每条崩溃 case 都带 `harness.crash_injected` 判据：子进程**没有**以 77 退出时这条
+case 直接红——否则"根本没崩、只是正常跑完"也能让 R3 的幂等判据全绿，等于拿空转
+证明恢复。恢复结论分别为：
 
 | case | 崩溃点 | 恢复结论 | 工作区 |
 |---|---|---|---|
