@@ -784,7 +784,11 @@ def run_host(
         bridge.serve_background()
         print(f"天枢 Agent 已启动：{bridge.url}", flush=True)
         if open_browser:
-            webbrowser.open(bridge.url)
+            # 用 open_new_tab 而不是 open：后者是 `.open(...)` 形态，会被
+            # tests/test_windows_compat.py 的"禁止文本模式文件 IO"AST 门禁
+            # 误判成 Path.open(mode=None)。那条门禁值得保留（它抓的是 CRLF
+            # 哈希漂移），没必要为了一个浏览器调用去放宽它。
+            webbrowser.open_new_tab(bridge.url)
         try:
             while not stop_event.is_set():
                 stop_event.wait(0.5)
