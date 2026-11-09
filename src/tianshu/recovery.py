@@ -24,6 +24,7 @@ from .events import EventLog
 from .guard import blocked_workspaces, ensure_not_blocked
 from .leases import Lease, LeaseStore
 from .receipt import build_receipt
+from .sandbox import current_backend
 from .snapshot import ABSENT, SnapshotStore
 from .tools import SPECS, ToolResult
 from .workspace import Workspace
@@ -54,10 +55,12 @@ def _sha(data: bytes) -> str:
 
 
 def _observe(ws: Workspace, rel: str) -> str:
+    """工作区当前的写后状态。经后端读——恢复与写入必须看同一个世界。"""
     target = ws.resolve(rel)
-    if not target.exists():
+    io = current_backend()
+    if not io.exists(target):
         return ABSENT
-    return _sha(target.read_bytes())
+    return _sha(io.read_bytes(target)[0])
 
 
 def _foreign_lease(
@@ -199,7 +202,7 @@ def recover_run(
                     ToolResult(
                         "succeeded", "applied",
                         {"path": change.path,
-                         "bytes": (ws.resolve(change.path)).stat().st_size,
+                         "bytes": current_backend().size(ws.resolve(change.path)),
                          "sha256": change.expected_after,
                          "after_state": change.expected_after,
                          "before_state": change.before_state,
@@ -265,6 +268,7 @@ def _settle(
             tool_id=tool_id,
             args_hash=intent_payload.get("args_hash", ""),
             result=result,
+            backend=current_backend().name,
         )
         if receipt is not None:
             batch.append({

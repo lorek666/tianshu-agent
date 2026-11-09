@@ -12,6 +12,10 @@ M0 白名单只有三个（docs/M0-scope.md §4）。M2 增加 `delete_file`，�
 `FileExecutor` 是"实际打开文件"的唯一入口。它刻意**不接受**任何形式的
 "调用方说已经批准了"——它只接受派发票据里的身份，然后自己回权威库核对一遍。
 票据能被伪造（dataclass 都能构造），但伪造的票据核不过库。
+
+M3 起，"字节怎么进出"下沉到 `sandbox.FileBackend`（见该模块开头的三条诚实
+声明）。这个模块仍然是**契约的唯一实现**：截断、UTF-8 回退、拒绝覆盖、写前
+证据顺序、output 形状、异常映射都在这里，后端只回答"有没有东西、读到了什么"。
 """
 
 from __future__ import annotations
@@ -25,7 +29,6 @@ from typing import TYPE_CHECKING, Any
 
 from .crashpoint import failpoint
 from .errors import OverwriteRefused, RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
-from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked
 from .jobs import JobClaim
 from .permissions import (
@@ -36,6 +39,7 @@ from .permissions import (
     APPROVAL_ACTIONS,
     ActionRequest,
 )
+from .sandbox import FileBackend, current_backend
 from .snapshot import ABSENT, SnapshotStore
 from .tasks import ExecutionPermit
 from .workspace import ResourceIdentity, Workspace, normalize_name
@@ -52,15 +56,26 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def observe_state(target: Path) -> str:
-    """目标当前的写前状态：不存在返回 ABSENT，否则返回 sha256。
+def observe_state(target: Path, *, backend: FileBackend | None = None) -> str:
+    """目标当前的写前状态：不是普通文件返回 ABSENT，否则返回 sha256。
 
     审批绑定的是"执行前状态"，所以这个函数既用于申请审批时取值，也用于
     真正写文件前复核——两次取值必须相同，否则说明目标被人换过了。
+
+    读盘一律经当前后端：审批看到的世界与写入进入的世界必须是同一个，
+    否则会出现"批的是真盘、写的是虚拟盘"这种半真半假的状态。
+
+    **目录按 ABSENT 处理**（目录没有"文件写前状态"）：读目录会抛
+    `IsADirectoryError`，而这个函数在 `build_request` 生成 preconditions
+    时就被调用，异常会一路冒到主循环、把整轮 run 判成失败。拒绝目录是
+    `check_request_preconditions` 的职责（它给出"目标是目录"的明确结论），
+    不是这里抛异常。
     """
-    if not target.exists():
+    io = backend if backend is not None else current_backend()
+    if not io.exists(target) or io.is_dir(target):
         return ABSENT
-    return _sha(target.read_bytes())
+    data, _ = io.read_bytes(target)
+    return _sha(data)
 
 
 @dataclass(frozen=True)
@@ -129,6 +144,10 @@ class ToolContext:
 
     `log` 不是可选的：有副作用的工具必须能检查阻断，否则阻断可以被绕过。
     `admitted` 非空时，工具只能写票据里那个已核验的目标。
+
+    `backend` 为空时回落到进程当前后端（`sandbox.current_backend()`）。
+    之所以允许为空：只读路径由主循环构造 `ToolContext`（loop.py 的 `_exec_read`），
+    而 M3 的判据要求那个文件一行都不改——进程级后端选择就是为了这个。
     """
 
     snapshots: SnapshotStore | None = None
@@ -136,6 +155,11 @@ class ToolContext:
     run_id: str = ""
     call_id: str = ""
     admitted: AdmittedCall | None = None
+    backend: FileBackend | None = None
+
+    @property
+    def io(self) -> FileBackend:
+        return self.backend if self.backend is not None else current_backend()
 
     def prewrite(self, rel_path: str, before: bytes | None, expected_after: str) -> None:
         """写入前的证据落盘。必须在真正写文件之前调用。"""
@@ -232,35 +256,38 @@ def _write_target(ws: Workspace, ctx: ToolContext, raw: Any) -> tuple[Path, str]
 
 
 def _list_files(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    io = ctx.io
     sub = args.get("path", ".")
     target = ws.resolve(sub)
-    if not target.is_dir():
+    if not io.is_dir(target):
         return ToolResult("failed", "none_applied", {"error": f"不是目录：{sub}"})
 
-    entries = []
-    for p in sorted(target.iterdir(), key=lambda x: x.name):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        entries.append(
-            {
-                "name": normalize_name(p.name),
-                "is_dir": p.is_dir(),
-                "size": st.st_size,
-            }
-        )
+    try:
+        raw_entries = io.list_dir(target)
+    except OSError as exc:
+        return ToolResult("failed", "none_applied", {"error": f"无法列目录：{exc}"})
+
+    entries = [
+        {"name": normalize_name(name), "is_dir": is_dir, "size": size}
+        for name, is_dir, size in raw_entries
+    ]
+    # 排序键用**输出里看到的**名字（NFC），否则 macOS 的 NFD 文件名会出现
+    # "显示顺序与排序顺序不一致"，模型每轮看到的东西都在抖。
+    entries.sort(key=lambda e: e["name"])
     return ToolResult("succeeded", "none_applied", {"entries": entries})
 
 
 def _read_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    io = ctx.io
     target = ws.resolve(args["path"])
-    if not target.is_file():
+    if not io.is_file(target):
         return ToolResult("failed", "none_applied", {"error": "不是文件"})
 
-    total = target.stat().st_size
-    with target.open("rb") as fh:
-        raw = fh.read(READ_TEXT_LIMIT)
+    try:
+        # 后端一次打开就返回 (前缀, 总大小)：不再有 stat 与 read 之间的窗口。
+        raw, total = io.read_bytes(target, READ_TEXT_LIMIT)
+    except OSError as exc:
+        return ToolResult("failed", "none_applied", {"error": f"读取失败：{exc}"})
     truncated = total > len(raw)
 
     # 按字节截断可能切断多字节字符：回退最多 3 字节以落在码点边界上
@@ -289,10 +316,11 @@ def _read_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolRes
 
 
 def _create_report(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    io = ctx.io
     target, rel = _write_target(ws, ctx, args["name"])
 
     # 验收 A6：已存在必须拒绝，不留覆盖的可能
-    if target.exists():
+    if io.exists(target):
         raise OverwriteRefused(f"目标已存在，拒绝覆盖：{args['name']}")
 
     data = args["content"].encode("utf-8")
@@ -300,7 +328,7 @@ def _create_report(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> Too
 
     # 先落证据，再写文件。顺序反了就等于没证据——崩溃窗口里无从核实。
     ctx.prewrite(rel, None, after)
-    atomic_write_bytes(target, data)
+    io.write_bytes_atomic(target, data)
 
     return ToolResult(
         "succeeded",
@@ -317,21 +345,25 @@ def _create_report(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> Too
 
 def _modify_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     """修改已有文本文件。新建请用 create_report。"""
+    io = ctx.io
     target, rel = _write_target(ws, ctx, args["path"])
-    if not target.exists():
+    if not io.exists(target):
         return ToolResult(
             "failed", "none_applied",
             {"error": "文件不存在；新建请用 create_report"},
         )
-    if not target.is_file():
+    if not io.is_file(target):
         return ToolResult("failed", "none_applied", {"error": "不是文件"})
 
-    before = target.read_bytes()
+    try:
+        before, _ = io.read_bytes(target)
+    except OSError as exc:
+        return ToolResult("failed", "none_applied", {"error": f"读取失败：{exc}"})
     data = args["content"].encode("utf-8")
     after = _sha(data)
 
     ctx.prewrite(rel, before, after)
-    atomic_write_bytes(target, data)
+    io.write_bytes_atomic(target, data)
 
     return ToolResult(
         "succeeded",
@@ -352,20 +384,24 @@ def _delete_file(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     刻意不支持递归删除目录：一次误批可能带走整棵树，而"删目录"没有可回滚的
     单一 preimage 边界（快照按文件存）。目录请让用户自己处理。
     """
+    io = ctx.io
     target, rel = _write_target(ws, ctx, args["path"])
-    if not target.exists():
+    if not io.exists(target):
         return ToolResult("failed", "none_applied", {"error": "文件不存在"})
-    if not target.is_file():
+    if not io.is_file(target):
         return ToolResult(
             "failed", "none_applied",
             {"error": "不是普通文件；不支持删除目录/符号链接以外的对象"},
         )
 
-    before = target.read_bytes()
+    try:
+        before, _ = io.read_bytes(target)
+    except OSError as exc:
+        return ToolResult("failed", "none_applied", {"error": f"读取失败：{exc}"})
     before_state = _sha(before)
     # 删除的写后状态就是"不存在"——恢复协议用同一个 ABSENT 语义
     ctx.prewrite(rel, before, ABSENT)
-    target.unlink()
+    io.unlink(target)
 
     return ToolResult(
         "succeeded",
@@ -394,9 +430,10 @@ def _restore_file(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> Tool
             f"还原内容哈希不符：声明 {expect[:12]}…，实际 {after[:12]}…"
         )
 
-    before = target.read_bytes() if target.exists() else None
+    io = ctx.io
+    before = io.read_bytes(target)[0] if io.exists(target) else None
     ctx.prewrite(rel, before, after)
-    atomic_write_bytes(target, data)
+    io.write_bytes_atomic(target, data)
 
     return ToolResult(
         "succeeded",
@@ -590,6 +627,7 @@ class FileExecutor:
         clock: Callable[[], int],
         log: object | None = None,
         snapshots: SnapshotStore | None = None,
+        backend: FileBackend | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -601,6 +639,20 @@ class FileExecutor:
         self._clock = clock
         self._log = log
         self._snapshots = snapshots
+        self._backend = backend if backend is not None else current_backend()
+        if self._backend is not current_backend():
+            # "executor 用 memfs、precondition 读 local" 这种半真半假状态
+            # 比直接崩更难查：审批看到的世界和写入进入的世界必须同一个。
+            raise TianshuError(
+                "执行器后端与进程当前后端不一致："
+                f"{self._backend.name} vs {current_backend().name}"
+                "（后端是进程级选择，请先 configure_backend）"
+            )
+
+    @property
+    def backend_name(self) -> str:
+        """这条执行路径实际使用的后端名字（进凭据）。"""
+        return self._backend.name
 
     # ---- 独立核验 ----
 
@@ -736,6 +788,12 @@ class FileExecutor:
     def execute(
         self, admitted: AdmittedCall, permit: ExecutionPermit | None
     ) -> ToolResult:
+        if self._backend is not current_backend():
+            # 运行期被换掉：拒绝而不是混用。ToolNotAllowed 会走"守卫内拒绝"
+            # 那条路（一个字节没动 → rejected/none_applied），不会被记成 unknown。
+            raise ToolNotAllowed(
+                "进程的后端在运行期被换掉了，拒绝在一个进程里混用两个后端"
+            )
         self._verify(admitted, permit)
 
         spec = SPECS[admitted.tool_id]
@@ -748,6 +806,7 @@ class FileExecutor:
             run_id=admitted.request.run_id,
             call_id=admitted.request.call_id,
             admitted=admitted,
+            backend=self._backend,
         )
 
         # 已在执行：从这一刻起，这次调用算 in-flight。取消不承诺回滚。
@@ -763,7 +822,11 @@ class FileExecutor:
 
 
 def check_request_preconditions(
-    action: str, target: Path, pre: dict[str, Any]
+    action: str,
+    target: Path,
+    pre: dict[str, Any],
+    *,
+    backend: FileBackend | None = None,
 ) -> tuple[bool, str]:
     """声明过的执行前状态现在还成立吗。
 
@@ -771,15 +834,18 @@ def check_request_preconditions(
     旧审批就不再对应这次写入了——必须重新审批，不能"反正路径一样就写"。
     """
     target = Path(target)
+    io = backend if backend is not None else current_backend()
 
     if action == ACTION_CREATE:
         declared = pre.get("target_exists")
-        actual = target.exists()
+        actual = io.exists(target)
         if declared is not None and bool(declared) != actual:
             return False, (
                 f"目标是否已存在与请求声明不符（声明 {declared}，实际 {actual}）"
             )
         if actual:
+            if io.is_dir(target):
+                return False, "目标已存在且是目录：create_report 只能新建普通文件"
             return False, (
                 "目标已存在：create_report 不覆盖已有文件；"
                 "要覆盖请改用 modify_text（删除类，需审批）"
@@ -790,13 +856,18 @@ def check_request_preconditions(
         declared = pre.get("before_state")
         if declared is None:
             return False, "覆盖/删除动作必须声明写前状态 before_state"
-        actual = observe_state(target)
+        if io.is_dir(target):
+            return False, (
+                "目标是目录：覆盖/删除只支持普通文件"
+                "（目录没有单一 preimage 边界，也没有可回滚的文件状态）"
+            )
+        actual = observe_state(target, backend=io)
         if actual != declared:
             return False, (
                 f"写前状态已改变：声明 {str(declared)[:12]}…，"
                 f"实际 {str(actual)[:12]}…（目标在被批准后被改过）"
             )
-        if action == ACTION_DELETE and not target.is_file():
+        if action == ACTION_DELETE and not io.is_file(target):
             return False, "删除目标不是普通文件"
         return True, ""
 

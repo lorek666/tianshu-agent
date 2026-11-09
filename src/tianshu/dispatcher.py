@@ -74,6 +74,7 @@ from .permissions import (
     PolicyEngine,
 )
 from .receipt import build_receipt
+from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
 from .tasks import RUN_RUNNING, Run, Task, TaskStore
 from .tools import (
@@ -260,6 +261,27 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
+def precondition_rule_id(
+    action: str, target: Path, *, io: FileBackend | None = None
+) -> str:
+    """把"前置条件不成立"翻译成稳定的 rule id。
+
+    用户看到这个 id 要知道下一步该干什么，所以不能一律写
+    `dispatch.stale_precondition`：
+
+    - `dispatch.target_is_directory`：换成一个文件目标（覆盖/删除不作用于目录）；
+    - `dispatch.create_over_existing`：换工具（要覆盖请用 modify_text）；
+    - `dispatch.stale_precondition`：目标在被批准后被改过，需要重新发起。
+    """
+    impl = io if io is not None else current_backend()
+    if impl.is_dir(target):
+        # 覆盖/删除作用于目录没有 preimage 边界；新建也不能建在目录上。
+        return "dispatch.target_is_directory"
+    if action == ACTION_CREATE and impl.exists(target):
+        return "dispatch.create_over_existing"
+    return "dispatch.stale_precondition"
+
+
 class Dispatcher:
     """唯一判定"能不能执行"，并登记执行的地方。"""
 
@@ -397,14 +419,9 @@ class Dispatcher:
                 request.action, target.path, request.preconditions or {}
             )
             if not ok:
-                # "新建但目标已存在"不是"状态过期"，是"这个工具不做这件事"：
-                # 两者对用户的下一步动作含义完全不同（前者重试/重批，后者换工具）。
-                rule = (
-                    "dispatch.create_over_existing"
-                    if request.action == ACTION_CREATE and target.path.exists()
-                    else "dispatch.stale_precondition"
+                raise DispatchDenied(
+                    reason, precondition_rule_id(request.action, target.path)
                 )
-                raise DispatchDenied(reason, rule)
         except DispatchDenied as exc:
             return self._reject(request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED)
 
@@ -551,6 +568,9 @@ class Dispatcher:
                     request.action, target.path, request.preconditions or {}
                 )
                 if not ok:
+                    # 派发阶段（已批准、还没打开文件）的拒绝统一记 stale：
+                    # 对这张已消费的批准而言，结论是"状态被改过了，需要重新
+                    # 发起"，而不是"该换工具"（那是 prepare 阶段的判定）。
                     raise DispatchDenied(reason, "dispatch.stale_precondition")
 
                 approval_id, grant_id = self._consume_authority(request, auth, stored)
@@ -894,7 +914,9 @@ class Dispatcher:
         binding = max(candidates, key=lambda b: len(overlap_key(b.root_path)))
         ws = Workspace(Path(binding.root_path))
         rel = ws.relative(target)
-        if request.action == ACTION_CREATE and not target.parent.is_dir():
+        if request.action == ACTION_CREATE and not current_backend().is_dir(
+            target.parent
+        ):
             raise DispatchDenied(
                 f"目标父目录不存在：{target.parent}", "dispatch.no_parent"
             )
@@ -1297,6 +1319,7 @@ class Dispatcher:
             tool_id=request.tool_id,
             args_hash=request.args_hash,
             result=result,
+            backend=self._executor.backend_name,
         )
         if receipt is not None:
             batch.append(
@@ -1350,10 +1373,11 @@ def build_request(
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
     target = Path(target).resolve()
+    io = current_backend()
     if spec.action == ACTION_CREATE:
-        preconditions: dict[str, Any] = {"target_exists": target.exists()}
+        preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
     elif spec.action in (ACTION_OVERWRITE, ACTION_DELETE):
-        preconditions = {"before_state": observe_state(target)}
+        preconditions = {"before_state": observe_state(target, backend=io)}
     else:  # pragma: no cover - 只读动作不走派发
         preconditions = {}
 

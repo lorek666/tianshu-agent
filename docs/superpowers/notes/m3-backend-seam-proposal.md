@@ -464,3 +464,114 @@ git diff --stat main -- src/tianshu/loop.py     # 必须无输出
 ---
 
 附录：文中行号基于当前工作树（2026-11-09）。实现时若行号漂移，以函数名为准。
+
+---
+
+## 附录 B：落地记录（PR F，2026-11-09）
+
+评审拍板：memfs 够用；接受进程级后端选择；`receipt.resource` 带 workspace 根
+推迟到 PR G（本 PR 只让 `backend` 成为事实）。
+
+**已落地（对应提案 §9 的 F1–F4）**
+
+| 内容 | 位置 |
+|---|---|
+| `FileBackend` 协议 + `LocalBackend` + `MemBackend` + 进程级选择器 | `src/tianshu/sandbox.py` |
+| 路径键（`normalize_name` / `overlap_key` / 祖先判断）从 workspace 拆出，供后端复用 | `src/tianshu/pathkeys.py` |
+| 看盘收敛：tools / dispatcher / snapshot / recovery 统一走 probe | 同名模块 |
+| `Workspace` 拆成"词法边界"+"后端负责根可用性" | `src/tianshu/workspace.py` |
+| `ResourceIdentity.of(backend=...)`；跨后端只承诺路径前缀 | 同上 |
+| 覆盖已有文件保留原 mode（mkstemp 0600 的 bug） | `src/tianshu/fsutil.py` |
+| 证据路径统一 `/`（`as_posix`） | `workspace.relative` |
+| `receipt.backend` 记录实际后端 | `receipt.build_receipt(backend=...)` |
+| 两个后端跑同一套工具契约 + C0 违约后端元测试 | `tests/test_backend_contract.py` |
+| 后端原语（mode / 原子替换 / 虚拟命名空间 / 不碰宿主盘 / 选择器） | `tests/test_sandbox_backend.py` |
+
+**与提案的差异（都要如实写在 PR 里）**
+
+1. **CLI 的 `--backend` 没做。** `src/tianshu/cli.py` 在 PR #15（Task 1）的
+   改动范围内，本 PR 不碰它；选择走 `TIANSHU_SANDBOX_BACKEND` 或显式
+   `configure_backend()`。CLI 开关留给 PR G。
+2. **`MemBackend` 的命名空间可注入**（默认 `/__tianshu_memfs__`）。测试需要
+   一个不与其它用例共享的命名空间，否则 memfs 的进程内状态会串。默认值
+   仍然对宿主同名路径 fail closed。
+3. **`list_files` 的排序键改成了 NFC 规范化后的名字**（提案 §5 第 11 条）。
+   这是对两个后端都生效的行为变化：macOS 上 NFD 文件名不再出现"显示顺序
+   与排序顺序不一致"。
+4. **`read_text` 改为后端一次打开返回 `(前缀, 总大小)`**：不再有 stat 与
+   read 之间的窗口（提案 §5 第 10 条只要求记账，这里顺手消掉了竞态面）。
+
+**本 PR 明确没修、已记账的（不要以为接缝把它们解决了）**
+
+1. **快照证据键仍只有 workspace 相对路径**（提案 §5 第 4 条）→ PR G。
+2. **凭据仍不可"独立核对"**（`action` 是 tool_id、`evidence` 是合成串、
+   不引用事件 seq / blob）→ PR G。
+3. **存在性与删除的竞态**（`create_report` 的 exists 与写入、`delete_file`
+   的读与 unlink）→ 原样保留。
+4. **（已在复审补丁里修掉，见附录 C）目录目标会让 `build_request` 抛
+   `IsADirectoryError`/`FileNotFoundError`**：`delete_file`/`modify_text`/
+   `restore_file` 指向目录时，`observe_state` 在生成 preconditions 阶段
+   直接读目录失败，异常逃出 `prepare`，被主循环兜底成 `run.failed`。
+5. **`effect_state=partial` / `status=cancelled` 仍是死枚举**：契约测试断言
+   "不会出现 partial"，而不是假装它存在。
+
+**覆盖矩阵（验收文档要照抄，别笼统写"契约测试全绿"）**
+
+| 断言组 | local_fs | memfs |
+|---|---|---|
+| 工具可见行为（读/写/删/恢复/参数/证据顺序/凭据/租约） | ✅ | ✅ |
+| 快照落在 data_root、工作区内无 artifacts | ✅ | ✅ |
+| 越界：`../`、绝对路径 | ✅ | ✅ |
+| 越界：符号链接 | ✅ | 不承诺（无 symlink） |
+| 覆盖写入保留 mode、新建 0600 | ✅ | 不适用（无 mode） |
+| kill -9 / failpoint / 权限拒绝 / ENOSPC | ✅（M1 证据） | ❌ 状态随进程消失 |
+
+---
+
+## 附录 C：复审补丁（同一 PR）
+
+独立复审给了四条具体缺口，都在这一个补丁里改掉，另加一条新发现记账。
+
+1. **测试默认后端钉死 `local_fs`。** 之前 `conftest` 只做 `reset_backend()`
+   （回到按 env 解析），CI/本地带着 `TIANSHU_SANDBOX_BACKEND=memfs` 跑全套会
+   集体撞 `WorkspaceViolation`，看起来像 M1/M2 大回归。现在 fixture 显式
+   `configure_backend(local_fs)` **并**把 env 钉成 `local_fs`（部分用例会
+   spawn 子进程，子进程继承 environ）；要测 env 通道的用例自己 `setenv`。
+   实测 `TIANSHU_SANDBOX_BACKEND=memfs uv run pytest` 与不带 env 的结果一致。
+2. **`reset_backend()` 连 memfs 的虚拟状态一起清。** memfs 是进程级单例，
+   只置 `_current=None` 会让 `_files`/`_dirs` 跨用例残留（症状：
+   `OverwriteRefused: 目标已存在`，或 `list_files` 多出条目）。现在
+   `reset_backend()` 调 `MemBackend.clear()`。
+3. **契约补上"文件 vs 目录"的洞。** 之前 `is_file` 恒真、`exists` 看不见
+   目录、目录 size 任意，违约后端都能全绿。新增三条断言：
+   `exists(dir) is True`；`is_file` / `is_dir` 互斥（文件与目录各测一遍）；
+   目录项的 size 恒为 0、`size(dir)` 抛 `IsADirectoryError`。并配套四个
+   C0 元测试（`is_file` 恒真 / `exists` 无视目录 / 目录 size 乱填 /
+   `size` 不拒目录），每个都必须让金丝雀断言变红。
+4. **目录目标不再炸穿主循环。** 根因是 `observe_state` 读目录抛异常，而它
+   在 `build_request` 生成 preconditions 时就被调用。修法：`observe_state`
+   把目录当作 `ABSENT`（目录没有"文件写前状态"），拒绝交给
+   `check_request_preconditions`；后者对覆盖/删除给出"目标是目录"的明确
+   结论，`prepare` 用独立 rule id `dispatch.target_is_directory` 说明下一步
+   该换目标。派发阶段（已批准后的复核）仍统一记 `dispatch.stale_precondition`
+   ——对一张已消费的批准而言，结论是"状态被改过、需重新发起"。
+   四个工具（`delete_file` / `modify_text` / `restore_file`，以及把
+   `create_report` 建在目录上）都有 dispatcher 级断言，另有一条 loop 级
+   回归证明 run 的结论是 `succeeded`/`noop` 而不是 `failed`。
+
+**新发现、只记账不改**：`_dispatchable` 只校验"工具在 `SPECS` 里"，不校验
+`exposed`——模型可以提案内部工具 `restore_file`（它出现在给模型的清单之外，
+但会被派发，仍然要审批）。M2 起如此，与本 PR 无关，建议单独开票。
+
+**实测（补丁后）**
+
+```
+$ uv run pytest -o addopts="" -q
+514 passed, 1 skipped
+
+$ TIANSHU_SANDBOX_BACKEND=memfs uv run pytest -o addopts="" -q
+514 passed, 1 skipped
+
+$ uv run ruff check .
+All checks passed!
+```
