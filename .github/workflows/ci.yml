@@ -1,8 +1,9 @@
 name: CI
 
-# 本仓库唯一的门禁。CONTRIBUTING.md §5「提交前检查」要求的两条命令，
-# 和这里跑的是逐字相同的两条——本地绿而 CI 红，只可能是环境差异，
-# 不是命令差异。
+# 本仓库唯一的门禁。跑的是 CONTRIBUTING.md §5「提交前检查」列的那两条命令，
+# 逐字相同——本地绿而 CI 红，只可能是环境差异，不是命令差异。
+# 在此之上多一条锁文件漂移门禁（`uv lock --check`）：§5 没写，但锁文件
+# 一旦漂移，本地跑同样的两条命令照样是绿的，这条只能放在 CI。
 #
 # 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
 # 3.13 不在支持范围内，矩阵里加它等于给自己造一个必然红的目标。
@@ -45,8 +46,9 @@ jobs:
           - "3.12"
     defaults:
       run:
-        # 三个平台统一用 bash（Windows runner 自带 Git Bash）。
-        # 这样这条门禁测的是测试套件本身，而不是 PowerShell 和 bash 的引号差异。
+        # 显式写 bash：这两个平台的默认 shell 本来就是 bash，写出来是为了
+        # 将来把 Windows 加回矩阵时语义不变（Windows 默认是 PowerShell，
+        # 那边的引号规则会让 addopts="" 这类参数长得不一样）。
         shell: bash
     steps:
       - uses: actions/checkout@v4
