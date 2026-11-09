@@ -45,7 +45,13 @@ from .jobs import (
     JobUnavailable,
     renew_claim,
 )
-from .leases import DEFAULT_TTL_MS, HEARTBEAT_MS, LeaseStore, ProcessIdentity
+from .leases import (
+    DEFAULT_TTL_MS,
+    HEARTBEAT_MS,
+    LeaseConflict,
+    LeaseStore,
+    ProcessIdentity,
+)
 from .loop import AgentLoop, Limits, RunResult, Stack
 from .model import Model
 from .tasks import RUN_FENCED, RUN_PAUSED, TERMINAL_STATES
@@ -186,7 +192,10 @@ class Worker:
     engine_factory: Callable[[JobClaim], AgentLoop] | None = None
     beats: int = 0
     errors: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     run_ids: list[str] = field(default_factory=list)
+    #: 上一次认领是否因为"工作区被别的 Run 占着"而没能跑（暂时性，不是故障）。
+    contended: bool = False
 
     def __post_init__(self) -> None:
         self._claims = self.claims or self.stack.claims
@@ -201,15 +210,25 @@ class Worker:
         if claim is None:
             return False
         self.run_ids.append(claim.run_id)
+        self.contended = False
+        requeue = False
         try:
             self._drive(claim)
+        except LeaseConflict as exc:
+            # 工作区被别的 Run 占着。这是**暂时**跑不了，不是"等人决定"：
+            # 挂起会让这条作业永远等人来 resume；而它其实只是排在别人后面。
+            # M2 的设计就是「同一棵树同一时刻只有一个写者」，所以正确做法是
+            # 交还作业，让持有者跑完再轮到自己。
+            requeue = True
+            self.contended = True
+            self.notes.append(f"工作区被占用，已交还作业：{exc}")
         except (JobLost, JobUnavailable):
             # 被接管：本实例已经不是 owner，交出去即可，不写任何状态
             self.errors.append("作业已被接管，本实例停止提交")
         except Exception as exc:  # noqa: BLE001 - 单个作业失败不该带走整个循环
             self.errors.append(f"{type(exc).__name__}: {exc}")
         finally:
-            self._settle(claim)
+            self._settle(claim, requeue=requeue)
         return True
 
     def drain(self, *, max_jobs: int = MAX_JOBS_PER_DRAIN) -> list[str]:
@@ -219,6 +238,10 @@ class Worker:
             if not self.run_once():
                 break
             done.append(self.run_ids[-1])
+            if self.contended:
+                # 这一趟再认领下去只会把整队作业一个个交还：先停下来，
+                # 让持有工作区的那个 Run 跑完。调用方隔一会儿再来。
+                break
         return done
 
     def close(self) -> None:
@@ -286,7 +309,7 @@ class Worker:
             self.errors.append(f"心跳失效：{loop.error}")
         return result
 
-    def _settle(self, claim: JobClaim) -> None:
+    def _settle(self, claim: JobClaim, *, requeue: bool = False) -> None:
         """把作业状态与 Run 状态对齐。**只在还持有 claim 时才动。**"""
         job = self._claims.get(claim.job_id)
         if job is None or job.state != JOB_CLAIMED:
@@ -302,6 +325,8 @@ class Worker:
                 )
             elif state == RUN_FENCED:
                 self._claims.finish(claim, outcome="failed")
+            elif requeue:
+                self._claims.requeue(claim)
             else:
                 self._claims.park(claim, reason=state)
         except TianshuError as exc:

@@ -160,28 +160,57 @@ def _approve_all(stack, run_id: str) -> list[str]:
 
 CHILD = """
 import json, os, sys
-sys.path.insert(0, {src!r})
+sys.path.insert(0, __SRC__)
 import tianshu.cli as cli
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 
 spec = os.environ.get("TIANSHU_TEST_MODEL")
 if spec:
-    responses = []
-    for item in json.loads(spec)["responses"]:
-        responses.append(ModelResponse(
-            item["finish_reason"],
-            content=item.get("content", ""),
-            tool_calls=[ToolCall(c["call_id"], c["name"], c["arguments"])
-                        for c in item.get("tool_calls", [])],
-        ))
-    cli._scripted_model = lambda out_name: ScriptedModel(list(responses))
+    data = json.loads(spec)
+    if data.get("mode") == "by_goal":
+        import re
+
+        class ByGoal:
+            # 无状态：还没写过就按目标里的编号写 r<i>.md，写过就结束。
+            # 真实模型不跨 Run 记调用次数；替身一旦有状态，后面的 Run 会空转。
+
+            def complete(self, messages, tools):
+                if any(m.get("role") == "tool" for m in messages):
+                    return ModelResponse("end_turn", content="完成")
+                text = json.dumps(messages, ensure_ascii=False)
+                found = re.search(r"写第 (\\d+) 份", text)
+                name = "r%s.md" % (found.group(1) if found else "x")
+                return ModelResponse("tool_use", tool_calls=[
+                    ToolCall("c1", "create_report",
+                             {"name": name, "content": "第 " + name + " 份"})])
+
+        cli._scripted_model = lambda out_name: ByGoal()
+    else:
+        responses = []
+        for item in data["responses"]:
+            responses.append(ModelResponse(
+                item["finish_reason"],
+                content=item.get("content", ""),
+                tool_calls=[ToolCall(c["call_id"], c["name"], c["arguments"])
+                            for c in item.get("tool_calls", [])],
+            ))
+        cli._scripted_model = lambda out_name: ScriptedModel(list(responses))
 
 sys.exit(cli.main(sys.argv[1:]))
 """
 
 
+def _child_src() -> str:
+    """CHILD 模板的最终源码。
+
+    用 `__SRC__` 占位符而不是 `str.format`：模板里本来就有 `{}` 字面量
+    （模型响应的 payload），`format` 会把它们当占位符炸掉。
+    """
+    return CHILD.replace("__SRC__", repr(SRC))
+
+
 def _child(argv, *, model=None, env_extra=None, timeout=180) -> subprocess.CompletedProcess:
-    child = CHILD.format(src=SRC)
+    child = _child_src()
     environment = dict(os.environ)
     environment.pop("TIANSHU_TEST_MODEL", None)
     if model is not None:
@@ -243,7 +272,7 @@ def test_two_workers_claim_once(env):
     )
     procs = [
         subprocess.Popen(
-            [sys.executable, "-c", CHILD.format(src=SRC), "worker", "--once",
+            [sys.executable, "-c", _child_src(), "worker", "--once",
              *_cli_args(env), "--json"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -674,6 +703,44 @@ def test_heartbeat_retries_a_busy_database_instead_of_giving_up(env):
 
 def beats_should_be_counted(loop) -> str:
     return f"成功心跳数={loop.beats}"
+
+
+def test_concurrent_workers_serialize_on_one_directory(env):
+    """4 个 worker 面对"共用一棵目录"的 5 个排队作业：必须串行、各写一次。
+
+    租约保证同一棵树同一时刻只有一个写者，所以抢不到租约的 worker 只能**交还**
+    作业、等持有者跑完——它不能把作业挂起（挂起 = 等人决定，而这里只是排队），
+    也不能报错退出（那说明有东西坏了）。这条用真子进程测，因为它考的是
+    多进程之间"谁先拿到租约"。
+    """
+    ids = [env.enqueue(root=env.ws, goal=f"写第 {i} 份")[0] for i in range(5)]
+    child_env = dict(os.environ)
+    child_env["TIANSHU_TEST_MODEL"] = json.dumps({"mode": "by_goal"})
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _child_src(), "worker", *_cli_args(env), "--json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env,
+        )
+        for _ in range(4)
+    ]
+    payloads = []
+    for proc in procs:
+        stdout, stderr = proc.communicate(timeout=180)
+        assert proc.returncode == 0, stderr or stdout
+        payloads.append(json.loads(stdout))
+
+    print("PAYLOADS", json.dumps(payloads, ensure_ascii=False))
+    print("WS", sorted(p.name for p in env.ws.iterdir()))
+    for i, run_id in enumerate(ids):
+        r = env.stack.tasks.get_run(run_id)
+        print("RUN", i, run_id, r.state, r.outcome, [e.type for e in env.log.read_run(run_id)])
+        assert (env.ws / f"r{i}.md").exists(), f"第 {i} 份没写出来"
+        assert env.count(run_id, "tool.intent") == 1, f"第 {i} 份被写了不止一次"
+        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+
+    # 抢不到租约的 worker 会交还作业并如实说"被占用"，而不是报错
+    assert any(p["contended"] for p in payloads), payloads
+    assert all(not p["errors"] for p in payloads), payloads
 
 
 def test_cli_worker_drains_enqueued_jobs(env):

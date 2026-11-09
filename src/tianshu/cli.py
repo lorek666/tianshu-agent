@@ -504,6 +504,8 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             "idle": idle,
             "beats": worker.beats,
             "errors": worker.errors,
+            "notes": worker.notes,
+            "contended": worker.contended,
         }
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -514,6 +516,8 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 run = stack.tasks.get_run(run_id)
                 print(f"{run_id}  {run.state if run else '?'}"
                       f"  outcome={run.outcome if run else '?'}")
+            for message in worker.notes:
+                print(f"  · {message}")
             for message in worker.errors:
                 print(f"  ! {message}", file=sys.stderr)
         return 1 if worker.errors else 0
