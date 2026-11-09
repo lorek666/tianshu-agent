@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .dispatcher import (
+    DISPATCH_ERROR,
     DISPATCH_EXECUTING,
     DISPATCH_FINISHED,
     DISPATCH_INTENT,
@@ -823,7 +824,16 @@ class AgentLoop:
             return "done"
 
         result = self._dispatcher.dispatch(decision.request_id, claim)
-        self._record_result(run_id, proposal, result, append=False)
+        # 派发层只在自己真的写进 `tool.result` 的状态下才算"记过了"：
+        # `done`（结果+凭据同事务）与 `error`（unknown 结论）。
+        # 其余（拒绝 / 撤销 / 守卫内复核失败）都没有事件，必须由主循环补写——
+        # 只补消息不写事件会让下一轮 `messages_hash` 与 replay 重建的序列对不上。
+        record = self._dispatcher.dispatch_record(run_id, call_id)
+        recorded = record is not None and record.state in (
+            DISPATCH_FINISHED,
+            DISPATCH_ERROR,
+        )
+        self._record_result(run_id, proposal, result, append=not recorded)
         self._absorb(progress, call_id, self._results[call_id])
         # 中途中断（unknown）时派发层已经阻断工作区；这里只把"到目前为止
         # 到底改了什么"落库，让停下来之后还能回答这个问题。

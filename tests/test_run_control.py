@@ -941,3 +941,41 @@ def test_read_result_survives_cursor_lag_without_duplicate_message(env):
     report = replay_run(env.log, result.run_id)
     assert report.ok, report.problems
     assert (env.ws / "a.md").read_text(encoding="utf-8") == "甲"
+
+
+def test_dispatch_time_rejection_still_gets_a_result_event(env):
+    """派发阶段被拒（写前状态变了）也必须留下 tool.result 事件。
+
+    派发层只在真的写进 `tool.result` 的状态下才算"记过了"；拒绝/撤销/守卫内
+    复核失败都没有事件。主循环如果只补消息、不补事件，下一轮的
+    `messages_hash` 就和 replay 重建的序列对不上——日志看起来完整，其实缺一条。
+    """
+    engine = env.engine([_write_turn([_create("a.md", "甲", "c1")]), _end()])
+    task = env.task()
+
+    def hook(run_id: str, call_id: str) -> None:
+        # 在"已获准、还没打开文件"的窗口里，别人抢先建了同名文件
+        (env.ws / "a.md").write_text("别人写的\n", encoding="utf-8")
+
+    env.dispatcher.hook = hook
+    result = engine.start(task.task_id)
+    env.dispatcher.hook = None
+
+    assert result.effect_state == "none_applied"
+    assert (env.ws / "a.md").read_text(encoding="utf-8") == "别人写的\n", "不能覆盖"
+    results = [
+        e.payload
+        for e in env.log.read_run(result.run_id)
+        if e.type == "tool.result"
+    ]
+    assert [r["call_id"] for r in results] == ["c1"]
+    assert results[0]["status"] == "rejected"
+    assert results[0]["output"]["rule_id"] in (
+        "dispatch.stale_precondition",
+        "dispatch.refused",
+    )
+
+    from tianshu.replay import replay as replay_run
+
+    report = replay_run(env.log, result.run_id)
+    assert report.ok, report.problems
