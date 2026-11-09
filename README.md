@@ -34,17 +34,7 @@
 
 M3（第二个 chat provider + 第二个沙箱后端）的判据与证据见 [docs/M3-verification.md](docs/M3-verification.md)。下一个里程碑是 PRD §11 的 M4（可评估），尚未开始。
 
-下面的 M0 段落保留为首张工单的历史记录。
-
-M0 目标：单 run 闭环 + 事件日志可重放。
-
-第一张工单范围（来自评审）：
-
-> 实现「指定目录阅读与摘要」的命令行原型：任务边界与验收样例先行，接一家真实模型，三个受限文件工具（`list_files` / `read_text` / `create_report`），SQLite 执行记录，轮数/预算控制。交付可运行示例 + 实际生成的报告 + 逐项验收结果。
-
-**验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
-
-### 已实现
+### 已实现（M0–M3 累积）
 
 ```
 src/tianshu/
@@ -144,6 +134,16 @@ uv run python -m tianshu run --workspace /tmp/ws --task "..." \
 
 `--provider` 不写时读 `TIANSHU_PROVIDER`，再默认 `openai`。
 `--model-name` 对 anthropic **必须显式给**——不替用户猜模型 id，猜错的表现是 404。
+
+## M0 的工单历史（已完成，仅作记录）
+
+M0 目标：单 run 闭环 + 事件日志可重放。
+
+第一张工单范围（来自评审）：
+
+> 实现「指定目录阅读与摘要」的命令行原型：任务边界与验收样例先行，接一家真实模型，三个受限文件工具（`list_files` / `read_text` / `create_report`），SQLite 执行记录，轮数/预算控制。交付可运行示例 + 实际生成的报告 + 逐项验收结果。
+
+**验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
 
 ## 开发约定
 

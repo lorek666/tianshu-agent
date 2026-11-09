@@ -54,13 +54,14 @@
 | Windows Computer Use | UIA 不稳定，驱动成本高 | macOS 版真实使用 3 个月后 |
 | Plugin 市场 | Skill + Tool 已覆盖 90%，只增加供应链攻击面 | 出现真实第三方分发需求 |
 | 自研向量数据库 / 自研沙箱隔离 | 无理由；后者等于自研内核漏洞 | 永不 |
+| 记忆 / 知识库（F10） | v1 不实现语义检索，事件日志已足够支撑单会话 | v1.1 |
 
-### 2.3 为 v2 预留的缝（v1 必须定义、不实现）
+### 2.3 为 v2 预留的缝（v1 定义形状；`job.*` 已提前使用）
 
 1. `JobResult` 类型与 `JobState` 枚举（见 §4.2）——先有类型，后无迁移
 2. `Artifact` 表与内容寻址存储（见 §7.6）——v1 就用来存大工具输出与截图，v2 直接复用
 3. `ToolDefinition.exec_model ∈ {E1, E3}`，枚举里预留 `E2` 值但不允许使用
-4. 事件类型 `job.*`：**M2 起已实际产生**，共五种——`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`；`job.lost` 目前只有常量定义，尚无发射点（`src/tianshu/jobs.py`）
+4. 事件类型 `job.*`：**提前使用**——本条原本只要求定义形状、v1 不产生，但 M2 起已实际产生，共五种：`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`；`job.lost` 目前只有常量定义，尚无发射点（`src/tianshu/jobs.py`）
 
 ---
 
