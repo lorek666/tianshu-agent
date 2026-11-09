@@ -314,3 +314,42 @@ def test_dict_binding_is_canonicalized_like_a_string_path(tmp_path):
     assert from_dict.root_path == resolved
     assert rebuilt.root_path == resolved
     assert from_dict.mode == "readonly"
+
+
+def test_rebuild_run_projection_matches_pre_rebuild_state(tmp_path):
+    """清空投影后按事件重建，非终态、控制请求与效果都要一致。
+
+    `Run` 的投影现在有 state / control_requested / effect_state 三块会随时间
+    变化的东西，只要有一块没进重建逻辑，投影就会和"事件说了什么"不一致——
+    而这种不一致只会在某次崩溃后的重建里暴露，最难查。
+    """
+    from tianshu.events import EventLog
+    from tianshu.loop import build_stack
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    log = EventLog(tmp_path / "e.db")
+    try:
+        stack = build_stack(log, data_root=tmp_path / "data")
+        task = stack.tasks.create_task("整理", [str(ws)])
+        run = stack.tasks.start_run(task.task_id)
+        stack.tasks.transition(run.run_id, "queued", reason="enqueued")
+        stack.tasks.note_effect(run.run_id, effect_state="applied", n_applied=1)
+        stack.tasks.request_pause(run.run_id)
+
+        before = stack.tasks.get_run(run.run_id)
+        assert before.state == "paused"
+        assert before.control_requested is None, "就地生效的暂停不留请求"
+        assert before.effect_state == "applied"
+
+        stack.tasks.rebuild_from_events()
+        after = stack.tasks.get_run(run.run_id)
+        assert (after.state, after.control_requested, after.effect_state) == (
+            before.state,
+            before.control_requested,
+            before.effect_state,
+        )
+        assert after.goal_revision == before.goal_revision
+        assert after.lease_epoch == before.lease_epoch
+    finally:
+        log.close()

@@ -1298,6 +1298,10 @@ class TaskStore:
                     state=p["outcome"],
                     outcome=p["outcome"],
                     effect_state=p["effect_state"],
+                    # 终态没有"排队的控制请求"这回事：请求要么已被确认，
+                    # 要么随着 Run 结束作废。重建时也得清掉，否则投影里会
+                    # 留一个永不生效的 pause。
+                    control_requested=None,
                     ended_at=ev.ts,
                 )
                 t = tasks.get(p["task_id"])

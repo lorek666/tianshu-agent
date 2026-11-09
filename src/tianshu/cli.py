@@ -1,10 +1,20 @@
 """命令行入口。
 
-    python -m tianshu run    --workspace DIR --task TEXT --out FILE
+    python -m tianshu run    --workspace DIR --task TEXT --out FILE   # 兼容入口
+    python -m tianshu task   create --goal TEXT --workspace DIR
+    python -m tianshu run    start --task-id ID --out FILE
+    python -m tianshu run    status|pause|resume|cancel --run-id ID
+    python -m tianshu approvals list|approve|reject|revoke
+    python -m tianshu undo   --run-id ID --workspace DIR [--approve]
+    python -m tianshu recover --run-id ID --workspace DIR
     python -m tianshu replay --run-id ID
 
 设计原则：CLI 只做参数解析与输出格式化，逻辑全在库函数里——这样测试可以直接调库，
-不必 spawn 子进程。
+不必 spawn 子进程。**不要在解析层做任何权限判断**：判断只有一处（Dispatcher），
+多一处在 CLI 就多一条"绕过 CLI 就绕过判断"的路。
+
+退出码：0 有结论且成功 / 1 失败或取消 / 2 前置条件错误 / 3 需要人决定
+（等审批、已暂停、待核查）。脚本可以据此区分"没事了"和"等你"。
 """
 
 from __future__ import annotations
@@ -31,7 +41,7 @@ DEFAULT_DB = Path(".tianshu/events.db")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="tianshu", description="天枢 Agent (M0)")
+    p = argparse.ArgumentParser(prog="tianshu", description="天枢 Agent")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser(
