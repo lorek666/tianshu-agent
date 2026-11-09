@@ -27,11 +27,11 @@ import sys
 from pathlib import Path
 
 from .dispatcher import build_request
-from .errors import ToolNotAllowed
+from .errors import TianshuError, ToolNotAllowed
 from .events import EventLog
 from .guard import ensure_not_blocked
 from .loop import AgentLoop, Limits, build_stack
-from .model import AnthropicMessagesModel, Model, ModelError, OpenAICompatibleModel, ScriptedModel
+from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
 from .recovery import recover_run
 from .replay import replay
@@ -195,11 +195,11 @@ def _model_from(args: argparse.Namespace) -> Model:
     name = args.model_name
     if provider == "anthropic":
         if not name:
-            # 不替用户猜模型 id：猜错的表现是 404，比"必须显式给"难查得多
-            raise ModelError(
-                "anthropic provider 需要显式 --model-name（例如 claude-sonnet-4-5）",
-                kind="auth",
-                retryable=False,
+            # 不替用户猜模型 id：猜错的表现是 404，比"必须显式给"难查得多。
+            # 用 TianshuError 而不是 ModelError(kind="auth")：这是"命令行少给了
+            # 参数"，不是"凭据不对"，塞进 auth 会让日志里两类问题分不开。
+            raise TianshuError(
+                "anthropic provider 需要显式 --model-name（例如 claude-sonnet-4-5）"
             )
         return AnthropicMessagesModel(name, base_url=args.base_url)
     return OpenAICompatibleModel(name or "gpt-4o-mini", base_url=args.base_url)
