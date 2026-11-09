@@ -48,6 +48,7 @@ from tianshu.context import (
 )
 from tianshu.events import Event, EventLog, canonical_bytes
 from tianshu.loop import (
+    AgentLoop,
     Limits,
     _Progress,
     build_stack,
@@ -622,6 +623,44 @@ def test_progress_drops_misaligned_seqs_instead_of_guessing():
         message_seqs=[RUN_START_SEQ],  # 长度对不上：宁可留空，交给事件重建
     )
     assert _Progress.of(cursor).message_seqs == []
+
+
+def test_message_source_seqs_falls_back_to_events_for_old_cursor(tmp_path):
+    """游标里没有 seq 归因（F5 之前写的）时，从事件重建，长度与消息对齐。"""
+    ws = _workspace(tmp_path, {"note.md": "原始内容\n"})
+    _, result, log, store = _go(
+        tmp_path,
+        ws,
+        [
+            ModelResponse(
+                "tool_use", tool_calls=[ToolCall("c1", "read_text", {"path": "note.md"})]
+            ),
+            ModelResponse("end_turn", content="完成"),
+        ],
+    )
+    stack = build_stack(log, data_root=tmp_path / "authority", snapshots=store)
+    engine = AgentLoop(
+        tasks=stack.tasks,
+        leases=stack.leases,
+        claims=stack.claims,
+        dispatcher=stack.dispatcher,
+        approvals=stack.approvals,
+        snapshots=store,
+    )
+    stored = stack.tasks.load_cursor(result.run_id)
+    assert stored is not None
+    progress = _Progress.of(stored[0])
+    assert len(progress.message_seqs) == len(progress.messages), (
+        "新代码写的游标必须自带对齐的 seq 归因"
+    )
+
+    progress.message_seqs = []  # 模拟旧游标
+    derived = engine._message_source_seqs(result.run_id, progress)
+    assert len(derived) == len(progress.messages)
+    assert derived == message_source_seqs(log.read_run(result.run_id))[
+        : len(progress.messages)
+    ]
+    log.close()
 
 
 def test_message_source_seqs_matches_replay_rebuild():
