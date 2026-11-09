@@ -49,7 +49,7 @@
 
 这份清单是刻意写在前面而不是埋在文末的——本仓库的规矩是**文档不许说假话**（见 [CONTRIBUTING.md](CONTRIBUTING.md)「文档改动怎么提交」）：
 
-- **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
+- **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend().capabilities.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
 - **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑并且是绿的，但跑在 `windows-latest`（Server 2022）上，且有 **8 项**跳过：`memfs` 无符号链接（POSIX 也跳过）+ 7 项 Windows 缺能力——标准库无 PTY ×2、无进程组 / Unix 信号 ×2、PID 存活探测仅 POSIX ×1、无 POSIX 权限位语义 ×2。
 - **M5 未开始。** 没有 GUI，没有常驻守护进程（`worker` 是一次性 drain）。

@@ -47,7 +47,7 @@
 - **路径先 canonicalize**（解析符号链接 / `..`）再与 workspace 比较，不直接比原始路径。
 - **批准绑定具体动作 + 参数**，改目标 / 改参数即作废；一次性消费，执行侧二次核验 digest。
 - **区分「模型想错了」与「执行侧跳过了校验」**：后者是 bug，必须修，不能兜底吞掉。
-- **不要把路径边界说成安全边界**：`Workspace` 只回答"能不能碰这个路径"，不隔离进程；`LocalExecBackend.isolation == "none"`，v1 没有交付过物理沙箱。
+- **不要把路径边界说成安全边界**：`Workspace` 只回答"能不能碰这个路径"，不隔离进程；`LocalExecBackend().capabilities.isolation == "none"`，v1 没有交付过物理沙箱。
 
 ## 七、契约与类型纪律
 

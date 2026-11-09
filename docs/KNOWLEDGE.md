@@ -120,7 +120,7 @@
 **边界与隔离**
 
 - **`Workspace` 是路径边界，不是安全边界**：它回答"能不能碰这个路径"，不隔离进程、不防绕过。
-- **`LocalExecBackend.isolation == "none"`**：v1 从未交付物理沙箱。`MemBackend` 更弱——它连权限位、owner、符号链接都没有，**不是沙箱**。
+- **`LocalExecBackend().capabilities.isolation == "none"`**：v1 从未交付物理沙箱。`MemBackend` 更弱——它连权限位、owner、符号链接都没有，**不是沙箱**。
 - **D 系列约束**：安全不能靠用户配置；默认可写就必须默认可撤销；单用户假设显式声明。
 
 **F12 凭据**
