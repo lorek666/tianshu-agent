@@ -28,7 +28,7 @@ from tianshu.permissions import (
     Approval,
     Grant,
 )
-from tianshu.tasks import EFFECT_STATES, Run, Task
+from tianshu.tasks import EFFECT_STATES, RUN_STATES, Run, Task
 
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas" / "m2"
 
@@ -104,6 +104,21 @@ def test_run_outcome_enum_matches_job_outcomes():
     schema = _schema("run.json")
     enum = set(schema["properties"]["outcome"]["enum"]) - {None}
     assert enum == JOB_OUTCOMES
+
+
+def test_run_state_enum_matches_prd_state_machine():
+    """PRD §4.3 的状态机有 11 个状态，schema 少一个就等于"这份契约写不出来"。"""
+    schema = _schema("run.json")
+    assert set(schema["properties"]["state"]["enum"]) == RUN_STATES
+
+
+def test_run_control_request_enum_is_closed():
+    """控制请求只有暂停和取消两种；别留一个 schema 认、代码不认的值。"""
+    from tianshu.tasks import CONTROL_REQUESTS
+
+    schema = _schema("run.json")
+    enum = set(schema["properties"]["control_requested"]["enum"]) - {None}
+    assert enum == CONTROL_REQUESTS
 
 
 def test_task_workspace_mode_enum_matches_binding():

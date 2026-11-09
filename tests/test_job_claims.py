@@ -35,6 +35,7 @@ from tianshu.tasks import (
     EXECUTION_STARTED,
     RUN_CURSOR_SAVED,
     RUN_MODEL_TURN,
+    RUN_RUNNING,
     ExecutionPermit,
     RunCursor,
     RunFenced,
@@ -66,6 +67,16 @@ def _run_with_lease(tasks, leases, ws, goal="整理"):
     run = tasks.start_run(task.task_id)
     leases.acquire([ws], run.run_id)
     return task, run
+
+
+def _running(tasks, leases, ws, goal="整理"):
+    """租约在手、状态 RUNNING 的 Run。
+
+    `begin_execution` 只认 RUNNING：`created` 是"还没开始"，能写文件就说明
+    状态判断没接上。执行侧的真实顺序是 created → queued → running。
+    """
+    task, run = _run_with_lease(tasks, leases, ws, goal)
+    return task, tasks.transition(run.run_id, RUN_RUNNING)
 
 
 # ---------------------------------------------------------------- 认领
@@ -229,7 +240,7 @@ def test_revise_goal_is_blocked_while_execution_in_progress(env):
     from tianshu.leases import GuardTimeout
 
     _, tasks, leases, jobs, ws, data_root = env
-    task, run = _run_with_lease(tasks, leases, ws)
+    task, run = _running(tasks, leases, ws)
 
     with tasks.begin_execution(data_root, run.run_id, [ws]):
         with pytest.raises(GuardTimeout):
@@ -253,7 +264,7 @@ def test_revise_goal_requires_data_root(env):
 def test_begin_execution_renews_lease(env):
     """复核通过后租约马上到期也不怕：begin_execution 在守卫内续租。"""
     _, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
     log = env[0]
     log.conn.execute("UPDATE leases SET expires_at = ?", (_now_ms() + 500,))
     before = leases.holder(ws).expires_at
@@ -405,7 +416,7 @@ def test_cursor_save_is_recorded_as_event(env):
 
 def test_begin_execution_emits_started_event(env):
     log, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
 
     with tasks.begin_execution(data_root, run.run_id, [ws]) as permit:
         assert isinstance(permit, ExecutionPermit)
@@ -431,7 +442,7 @@ def test_begin_execution_rejects_fenced_run(env):
 
 def test_begin_execution_rejects_lost_lease(env):
     _, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
     leases.release([ws], run.run_id)
 
     with pytest.raises(LeaseLost):
@@ -481,7 +492,7 @@ def test_begin_execution_holds_guard_during_body(env):
     from tianshu.leases import GuardTimeout, execution_guard
 
     _, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
 
     with tasks.begin_execution(data_root, run.run_id, [ws]):
         with pytest.raises(GuardTimeout):
@@ -491,7 +502,7 @@ def test_begin_execution_holds_guard_during_body(env):
 
 def test_guard_is_released_after_body(env):
     _, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
     with tasks.begin_execution(data_root, run.run_id, [ws]):
         pass
 
@@ -504,7 +515,7 @@ def test_body_exception_still_releases_guard(env):
     from tianshu.leases import execution_guard
 
     _, tasks, leases, _, ws, data_root = env
-    _, run = _run_with_lease(tasks, leases, ws)
+    _, run = _running(tasks, leases, ws)
     with pytest.raises(RuntimeError):
         with tasks.begin_execution(data_root, run.run_id, [ws]):
             raise RuntimeError("写文件时崩了")
@@ -655,6 +666,7 @@ def test_end_to_end_single_run_order(env):
     leases.acquire([ws], run.run_id)
     job = jobs.enqueue(run.run_id)
     claim = jobs.claim(job.job_id)
+    tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
 
     tasks.commit_model_turn(
         run.run_id, {"turn_id": "t1", "finish_reason": "tool_calls"}, claim

@@ -37,7 +37,7 @@ from typing import Any
 
 from .errors import TianshuError
 from .events import EventLog
-from .leases import DEFAULT_TTL_MS, ProcessIdentity, current_process
+from .leases import DEFAULT_TTL_MS, ProcessIdentity, current_process, pid_alive
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -413,6 +413,63 @@ class JobStore:
                 "UPDATE jobs SET cancel_requested=1 WHERE job_id=?", (job_id,)
             )
         return self.get(job_id)  # type: ignore[return-value]
+
+    def is_live(self, job: Job) -> bool:
+        """这个作业现在是否由**一个活着的 owner** 持有。
+
+        三件事都要成立：还在 claimed 状态、deadline 没过、owner 进程还在。
+        只看前两条会把"进程已经崩了但 deadline 还没到"判成"别人正在跑"，
+        于是崩溃后的 Run 永远 resume 不了——它停在 RUNNING，既没 owner 在跑，
+        也没有人允许接管。
+        """
+        if job.state != JOB_CLAIMED:
+            return False
+        if job.deadline_at is not None and job.deadline_at <= self._clock():
+            return False
+        if not job.owner_pid:
+            return False
+        return pid_alive(job.owner_pid)
+
+    def cancel(self, job_id: str, *, reason: str = "cancelled") -> Job | None:
+        """由控制端直接终结作业（不经 claim）。
+
+        为什么允许不传 claim：取消是**人对 Run 的决定**，不是 owner 的自我收尾。
+        人可能在一个 owner 正在跑的 Run 上按取消，此时人手里本来就没有 claim。
+        这里不做"看心跳猜死活"，只做一条条件 UPDATE：谁来都行，但只有第一个
+        把 pending/claimed 改成 cancelled 的生效；之后旧 owner 的心跳/收尾
+        会因为 `state != 'claimed'` 一致地失败（`assert_claim` / `heartbeat` /
+        `finish` 都要求 claimed），不会出现"取消之后 owner 又把它写回成功"。
+        """
+        with self._log.transaction() as tx:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            now = self._clock()
+            cur = self._conn.execute(
+                "UPDATE jobs SET state='cancelled', outcome='cancelled',"
+                " cancel_requested=1, ended_at=?"
+                " WHERE job_id=? AND state IN ('pending','claimed')",
+                (now, job_id),
+            )
+            if cur.rowcount == 0:
+                return self.get(job_id)
+            tx.append(
+                row["run_id"],
+                JOB_FINISHED,
+                {
+                    "job_id": job_id,
+                    "run_id": row["run_id"],
+                    "claim_epoch": row["claim_epoch"],
+                    "owner_instance_id": row["owner_instance_id"],
+                    "owner_pid": row["owner_pid"],
+                    "outcome": "cancelled",
+                    "reason": reason,
+                    "by": "control",
+                },
+            )
+        return self.get(job_id)
 
     # ---- 行映射 ----
 

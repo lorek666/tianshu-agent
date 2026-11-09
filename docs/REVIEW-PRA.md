@@ -127,7 +127,7 @@ PR B 的第一步：**判断与记录**，还不碰文件。
 | `dispatcher.py` 阶段二 | `begin_execution` 拿守卫后再核一遍（claim / grant 来源与摘要 / 剩余次数 / TTL / revision-epoch / 目标身份 / 写前状态），记 `execution.started`，然后才打开文件。撤销与执行抢同一把守卫：撤销先到 → `approval.revoked` + 派发记录 `revoked` + 字节不变；执行先到 → 撤销明确报错并发"请用 recover 核查"，不假装成功 |
 | `FileExecutor` | **不接受** `approved=True` 这类自述字段。票据只是身份，执行器自己回库核对 8 项：claim 当前 owner、Run 未 fence、目录租约覆盖目标、派发记录必须是 `intent` 且摘要/grant/epoch/owner 都对、grant 已消费且未过期、覆盖/删除必须有已消费的审批、目标 `(st_dev,st_ino)` 未被换掉且在可写绑定内、写前状态未变 |
 | `delete_file` / `restore_file` | `delete_file` 对模型暴露（审批 + preimage + 不支持递归）；`restore_file` **不暴露**，只给 undo 用。删除的 `after_state` 是显式的 `absent`，凭据链路（`build_receipt` / `verify_receipts`）已同步 |
-| 所有写入口收口 | `tools.execute()` 对有副作用的工具一律要求已核验票据；**全库唯一一处**放行是 `loop.run()` 的 `allow_legacy_unauthenticated_write`（M0 遗留同步循环，Task 5 删除）。`SnapshotStore.undo` 的直写分支同样改为必须显式 `allow_direct_write`，M2 的 CLI 走 `apply` 回调 |
+| 所有写入口收口 | `tools.execute()` 对有副作用的工具一律要求已核验票据；**全库唯一一处**放行是 `loop.run()` 的 `allow_legacy_unauthenticated_write`（M0 遗留同步循环；**已在 §4.4 删除**）。`SnapshotStore.undo` 的直写分支同样改为必须显式 `allow_direct_write`，M2 的 CLI 走 `apply` 回调 |
 | `recovery` 服从资源占用 | 待核对路径（或它所在工作区）若被**另一个活着的 Run** 持租约，记 `unresolved` 并阻断，不做实时观测的猜测 |
 | 执行中途崩溃 | 结论只能是 `unknown`，并且立刻写 `recovery.blocked` 挡住该工作区后续写入——"确定没写"和"不知道写没写"是两件事 |
 | CLI | `undo` 两步：不带 `--approve` 只预演（退出码 3、不写、不登记审批）；带 `--approve` 才创建控制 Run/JobClaim、逐动作走派发。`approvals list/approve/reject/revoke` 补上人工侧。撤销中途失败记 `undo.failed` + 控制 Run `partial` |
@@ -138,7 +138,7 @@ PR B 的第一步：**判断与记录**，还不碰文件。
 
 - **`loop.run()` 仍未接 Task/Run/Job 生命周期**，写入靠上面那一处显式开关放行。
   也就是说"未经派发的写入"在这条遗留路径上仍然存在，只是必须由调用方显式打开。
-  Task 5 会把这个开关删掉。
+  **已在 §4.4（PR #12）解决**：开关删除，`loop.run()` 改走完整生命周期。
 - **目录外写入**：策略层按契约给 `approve`，但执行侧明确拒绝
   （`c4.outside_workspace_unsupported`）——M2 的证据边界按 workspace 根存
   manifest，没有"目录外单文件"的 preimage 归属。批准了也不会执行，这一点必须
@@ -151,6 +151,41 @@ PR B 的第一步：**判断与记录**，还不碰文件。
   WAITING_APPROVAL 期间谁在续租，还没有真实代码承担。
 - §4 第 4、6、8 条（authority `--db` 逃逸、完整 takeover 持守卫、Windows/断电证据）仍未做；
   本 PR 只额外补了 SQLite 有界 `busy_timeout` 与跨连接并发派发的一次性消费证据。
+
+### 4.4 PR #12（PR C · Task 5）补的部分
+
+Task 4 只让"写入必须派发"，但派发的调用方还是 M0 那个一次跑完的同步循环：
+它没有 cursor，停下就是结束，重启只能从头再问模型。Task 5 把这条路径换掉了。
+
+| 内容 | 说明 |
+|---|---|
+| 控制请求与生效状态分离 | Run 投影里多了 `control_requested ∈ {pause, cancel}`，与 `state` 两回事。执行中的 Run 只记录请求，执行器在**安全点**确认；确认请求与清空请求是同一次提交，所以恢复之后不会把同一条暂停请求再执行一遍（否则"点了继续"会立刻又停） |
+| 安全点的含义 | 暂停落在一次文件写入中间时，那一次照常完成并如实计入 `effect_state`，之后不再开始新的。`RUNNING` 之外的 Run（`PAUSED` / `WAITING_APPROVAL`）留着有效租约和 claim 也不行——`begin_execution` 与 `_authority` 都只认 `RUNNING`，绕过主循环直接派发同样被拒（`dispatch.not_running`） |
+| 持久游标 | `run_cursors` 保存已提交消息、待执行提案、已完成调用、审批引用与预算账本；`model.result` + `run_turns` + cursor 在**同一个事务**里提交。重启只从游标继续，不重问模型——重问既重复计费又可能得到不同答案。`run.end` 里新增 `unbilled_model_intents`：有 intent 没 result 的模型调用次数，"可能花了但没记账"必须留痕，不能按 0 结算 |
+| 恢复同一次执行 | `resume_run` 属同一个 Run：预算不清空、已完成的调用不重派、失败重试要开新 Run。三种情况分开处理：自己仍是 owner → 复用同一 claim（epoch 不变，批准继续有效）；别人还活着 → 拒绝抢占；无人认领（暂停/进程死亡/租约过期）→ 重新认领，epoch +1 使旧批准作废 |
+| 崩溃窗口 | 工具结果由派发层提交、游标由主循环提交，中间有真实窗口。恢复时**以事件为准**：`dispatch_record` 已完成 → 从 `tool.result` 补回消息，不再派发；仍是 `intent`/`executing` → 转 `RECONCILING` 并要求先 `recover`。拿游标当唯一事实就会重复执行一次写入 |
+| 改目标 | `revise_task(goal?, bindings?)` 在同一把守卫里推进 `goal_revision` 与 `lease_epoch`，fence 旧 Run，一并作废它的待批审批。绑定变更只对之后的新 Run 生效，不扩张旧授权。旧 Run 的历史不改写 |
+| 写入口 | `tools.execute()` 的 `allow_legacy_unauthenticated_write` **已删除**：会改文件的工具在那条路上只会收到 `ToolNotAllowed`。`loop.run()` 保留为兼容入口，但不再是捷径——它建 Task、开 Run、拿租约、认领作业、走派发 |
+| 装配 | 新增 `AgentLoop` 与 `build_stack`：CLI、测试、`run()` 共用同一套 store 装配，避免"CLI 能用、库函数不能"的绕过点。`build_stack` 的 `clock`/`identity`/`dispatcher_cls` 注入点只为测试 TTL 与接管 |
+
+测试：`tests/test_run_control.py` 20 例；全量 **296 passed**，`ruff check .` 通过。
+
+仍未做（**不得当作已解决**）：
+
+- **等待审批/暂停期间的心跳循环**没有自动代码承担：`heartbeat_once` 提供能力并由
+  测试显式调用，周期循环属于 Task 6 的 worker。也就是说当前"一直挂着等人批"
+  需要外部反复调用，否则 30 秒后租约过期、接管者拿到新 epoch、要重新批一次。
+- **多目录任务的相对路径解析规则**：本阶段把相对路径解析到"第一个可写绑定"，
+  绝对路径按绑定覆盖关系判。真正按工具参数选目录（每个工具声明目标 workspace）
+  是后续工作；现在这一点写在 `AgentLoop._target_for` 的注释里。
+- **取消不撤回已发生的修改**：`effect_state` 如实记录，`run.end` 里 `error`
+  说明"已停止派发新的副作用"。没有"回滚到最后一致状态"的自动行为，回滚仍靠
+  `undo`（本身是受审批的写操作）。
+- **`run.end` 的 `unbilled_model_intents` 目前只记录不结算**：预算账本没有把
+  "可能发生的调用"折算成上界，所以"预算未超"这句话在有中断时是近似值。
+- **Windows 原生、真实断电、`authority --db` 逃逸防护、完整 takeover 持守卫**
+  仍未做（见 §4 第 4、6、8 条），本 PR 未新增这些平台的证据。
+- **E2 生成作业**仍未实现，`queued/running` 两个状态目前只服务 E1/E3。
 
 ## 5. 对流程的意见
 

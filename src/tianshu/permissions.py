@@ -539,6 +539,18 @@ class ApprovalStore:
         """目标/epoch 变了：这个 Run 的旧审批立刻作废，不能"暗中重新绑定"。"""
         return self._bulk_close(run_id, "superseded", APPROVAL_SUPERSEDED, reason)
 
+    def supersede(self, approval_id: str, *, reason: str) -> int:
+        """作废**单张**审批。
+
+        恢复同一个 Run 时会出现这种情况：绝大多数待批请求还是对的，只有一张
+        因为目标文件变了、目标 revision 变了或 claim 被接管而绑定了旧摘要。
+        按 Run 批量作废会把仍然有效的那些一起打死，用户得重新批一堆本来没问题
+        的动作。
+        """
+        return self._bulk_close_ids(
+            [approval_id], "superseded", APPROVAL_SUPERSEDED, reason
+        )
+
     # ---- 兑现 ----
 
     def consume(self, approval_id: str, *, request_digest: str) -> Approval:

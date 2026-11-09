@@ -187,6 +187,8 @@ fencing 触发时：旧 Run 的审批、grant、排队中的 intent **立即失�
 
 **暂停 = 安全点暂停**：先阻止新 intent，当前工具执行完才进入 `PAUSED`。不假装模型流和工具调用能瞬时冻结。
 
+**控制请求必须与生效状态分开持久化。** 用户按下暂停的那一刻，Run 可能正处在一次文件写入中间；把 `control_requested` 直接写成 `state=PAUSED`，等于对外宣称"已经停稳了"，而实际上还有一个副作用在飞。所以 Run 的投影里有两个字段：`control_requested ∈ {pause, cancel}` 记录"人想干什么"，`state` 记录"现在到底在哪"。执行器只在安全点读取请求并确认成状态，且确认与清除请求是同一次提交——否则恢复后会把同一条请求再执行一遍，刚 resume 又立刻停下。
+
 **`PAUSED` 不属于 E2。** v2 的生成作业只有 `QUEUED / RUNNING / SUCCEEDED / FAILED / CANCELLED`——暂停一个 5 分钟的生成任务没有意义，GPU 仍在计费。
 
 **UI 必须显示**「已停止，但部分修改已生效」，不能只显示"已取消"。

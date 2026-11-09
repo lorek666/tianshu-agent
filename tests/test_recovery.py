@@ -81,11 +81,27 @@ def test_recover_after_each_failpoint(tmp_path, fp):
     store = SnapshotStore(tmp_path / "artifacts")
     report = recover_run(log, run_id, ws, store)
 
-    # 恢复后不能留悬空：所有 intent 都必须有配对 result
+    # 恢复后不能留悬空：每条**写入** intent 都必须有配对 result。
+    #
+    # M2 起 `tool.intent` 只对会改文件的工具记（它是写前证据）；`list_files`
+    # 这类只读调用没有 intent，但有 result。所以这里的不变量是
+    # "intent ⊆ result"，反过来不成立——反过来说明有人给读操作也记了 intent。
     events = log.read_run(run_id)
     intents = [e.payload["call_id"] for e in events if e.type == "tool.intent"]
     results = [e.payload["call_id"] for e in events if e.type == "tool.result"]
-    assert sorted(intents) == sorted(results), f"{fp}：intent/result 必须配对"
+    assert intents, f"{fp}：这个场景里必须有写入，应当留下 intent"
+    assert set(intents) <= set(results), f"{fp}：写入 intent 没有配对 result"
+    # 反过来：有 result 却没 intent 的，只允许是只读工具。
+    # 少了这一句，"写入结果没有写前证据"这种绕过会被当成正常差异放过去。
+    read_only = {
+        e.payload["call_id"]
+        for e in events
+        if e.type == "tool.result"
+        and e.payload.get("tool_id") in ("list_files", "read_text")
+    }
+    assert set(results) - set(intents) <= read_only, (
+        f"{fp}：有写入结果却没有写前 intent"
+    )
     assert not report.unresolved, f"{fp}：本场景应当可核实，不该有 unknown"
 
     created = ws / "report.md"
@@ -191,12 +207,22 @@ def test_100_random_fault_injections(tmp_path):
         text = (ws / "note.md").read_text(encoding="utf-8")
         contents.add(text[:20])
 
-        # B：每个 intent 恰好一条 result
+        # B：每个写入 intent 恰好一条 result（只读调用没有 intent）
         events = log.read_run(run_id)
         intents = [e.payload["call_id"] for e in events if e.type == "tool.intent"]
         results = [e.payload["call_id"] for e in events if e.type == "tool.result"]
-        assert sorted(intents) == sorted(results), \
-            f"第 {i} 次：intent 与 result 不配对（{intents} vs {results}）"
+        assert len(intents) == len(set(intents)), \
+            f"第 {i} 次：同一 intent 被记了两次（{intents}）"
+        assert set(intents) <= set(results), \
+            f"第 {i} 次：写入 intent 没有配对 result（{intents} vs {results}）"
+        read_only = {
+            e.payload["call_id"]
+            for e in events
+            if e.type == "tool.result"
+            and e.payload.get("tool_id") in ("list_files", "read_text")
+        }
+        assert set(results) - set(intents) <= read_only, \
+            f"第 {i} 次：有写入结果却没有写前 intent（{set(results) - set(intents)}）"
         results_seen += len(results)
 
         # C：applied 必须对应真实内容

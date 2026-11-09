@@ -42,7 +42,7 @@ from tianshu.permissions import (
 )
 from tianshu.recovery import recover_run
 from tianshu.snapshot import SnapshotStore
-from tianshu.tasks import TaskStore
+from tianshu.tasks import RUN_RUNNING, TaskStore
 from tianshu.tools import (
     SPECS,
     AdmittedCall,
@@ -87,6 +87,7 @@ class Env:
         self.leases.acquire([root], run.run_id)
         job = self.claims.enqueue(run.run_id)
         claim = self.claims.claim(job.job_id)
+        self.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
         self.snapshots.init_run(run.run_id)
         return task, run, claim
 
@@ -535,6 +536,7 @@ def test_policy_deny_leaves_no_intent_and_no_bytes(env):
     env.leases.acquire([env.ws], run.run_id)
     job = env.claims.enqueue(run.run_id)
     claim = env.claims.claim(job.job_id)
+    env.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
 
     request, args = _overwrite_request(env, readonly, run, claim)
     decision = env.dispatcher.prepare(request, claim, args=args)

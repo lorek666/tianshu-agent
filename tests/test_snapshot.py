@@ -33,16 +33,30 @@ def setup(tmp_path, files: dict[str, str]):
 
 
 def run_with(tmp_path, ws_dir, store, responses):
+    """跑到结束；中途出现的覆盖类审批用本地人工身份批准后 resume。
+
+    M2 起 `modify_text`（整文件覆盖）按"删除类"处理，必须有批准才执行。
+    这里把"人批准"这一步做掉，之后的快照/撤销语义与 M1 完全一致。
+    """
+    from support import approve_pending, engine_for, stack_for
+
     log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    model = ScriptedModel(responses)
+    limits = Limits(8, 20_000)
     result = run(
         task="改文件",
         workspace_dir=ws_dir,
         out_name="summary.md",
-        model=ScriptedModel(responses),
+        model=model,
         log=log,
-        limits=Limits(8, 20_000),
+        limits=limits,
         snapshots=store,
     )
+    while result.state == "waiting_approval":
+        stack = stack_for(log, snapshots=store)
+        approved = approve_pending(stack, result.run_id)
+        assert approved, "等待审批却找不到待批请求"
+        result = engine_for(stack, model, limits=limits).resume_run(result.run_id)
     return result, log
 
 

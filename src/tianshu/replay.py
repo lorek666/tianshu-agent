@@ -38,23 +38,41 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
     problems: list[str] = []
 
-    # ---- 1. seq 连续 ----
+    # ---- 1. seq 单调且日志无缺口 ----
+    #
+    # M0 时一个库只有一条 Run，所以"该 Run 的 seq 连续"等价于"日志连续"。
+    # M2 之后 task.* / 控制 Run 的事件会和同一个 Run 的事件交织，按 run 过滤
+    # 出来的 seq 必然有洞——那不是损坏。真正的不变量是两条：本 Run 的 seq 严格
+    # 递增（没有重放/回退），以及全局日志在 [首, 尾] 区间内没有缺号（没有丢事件）。
     seqs = [e.seq for e in events]
-    expected = list(range(seqs[0], seqs[0] + len(seqs)))
-    if seqs != expected:
-        gaps = sorted(set(range(seqs[0], seqs[-1] + 1)) - set(seqs))
-        problems.append(f"seq 不连续，缺口：{gaps[:10]}")
+    if seqs != sorted(set(seqs)):
+        problems.append("seq 不单调：存在重复或倒序的事件")
+    present = {
+        row[0]
+        for row in log._conn.execute(
+            "SELECT seq FROM events WHERE seq BETWEEN ? AND ?",
+            (seqs[0], seqs[-1]),
+        ).fetchall()
+    }
+    gaps = sorted(set(range(seqs[0], seqs[-1] + 1)) - present)
+    if gaps:
+        problems.append(f"全局事件日志存在缺号，缺口：{gaps[:10]}")
 
     # ---- 2. 重建消息序列 ----
     start = events[0]
     if start.type != "run.start":
         problems.append(f"首条事件不是 run.start，而是 {start.type}")
 
-    task = start.payload.get("task", "")
+    start_text = start.payload.get("task", "")
     out_name = start.payload.get("out", "")
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{task}\n\n输出文件：{out_name}"},
+        {
+            "role": "user",
+            "content": f"{start_text}\n\n输出文件：{out_name}"
+            if out_name
+            else start_text,
+        },
     ]
 
     verified = 0
@@ -131,18 +149,29 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                 artifact_sha = reported
 
     # ---- 3. 用 tool.intent 的参数重算产物哈希 ----
+    #
+    # 逐调用核对，不是逐 Run：一次执行可以新建多个文件（M2 的一轮里可以有多个
+    # create_report），拿"整个 Run 最后一个产物"去核每一个 intent，会让第二个
+    # 文件必然对不上——那种红是假红，会掩盖真正的篡改。
+    outputs = {
+        ev.payload.get("call_id"): (ev.payload.get("output") or {})
+        for ev in events
+        if ev.type == "tool.result"
+    }
     for ev in events:
-        if ev.type == "tool.intent" and ev.payload.get("tool_id") == "create_report":
-            content = (ev.payload.get("args") or {}).get("content")
-            if not isinstance(content, str):
-                problems.append(f"seq={ev.seq} create_report 的参数不可重建")
-                continue
-            recomputed = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            if artifact_sha and recomputed != artifact_sha:
-                problems.append(
-                    f"用事件参数重算的产物哈希 {recomputed[:12]}… 与记录的 "
-                    f"{artifact_sha[:12]}… 不一致"
-                )
+        if ev.type != "tool.intent" or ev.payload.get("tool_id") != "create_report":
+            continue
+        content = (ev.payload.get("args") or {}).get("content")
+        if not isinstance(content, str):
+            problems.append(f"seq={ev.seq} create_report 的参数不可重建")
+            continue
+        recomputed = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        recorded = outputs.get(ev.payload.get("call_id"), {}).get("sha256")
+        if recorded and recomputed != recorded:
+            problems.append(
+                f"seq={ev.seq} 用事件参数重算的产物哈希 {recomputed[:12]}… 与 "
+                f"tool.result 记录的 {recorded[:12]}… 不一致"
+            )
 
     return ReplayReport(
         run_id=run_id,

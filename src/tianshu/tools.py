@@ -6,9 +6,8 @@ M0 白名单只有三个（docs/M0-scope.md §4）。M2 增加 `delete_file`，�
 两条硬规则：
 
 1. 参数校验在执行侧做，不信任模型给出的参数。
-2. **有副作用的工具必须有已核验的派发票据（`AdmittedCall`）才能写。** 直接调
-   `execute()` 只有显式的遗留开关才能走通，那唯一一处开关在 `loop.run()`，
-   是 M0 路径，Task 5 会删掉。
+2. **有副作用的工具必须有已核验的派发票据（`AdmittedCall`）才能写。**
+   `execute()` 那条路已经彻底关掉了写入：谁调用它都写不了文件。
 
 `FileExecutor` 是"实际打开文件"的唯一入口。它刻意**不接受**任何形式的
 "调用方说已经批准了"——它只接受派发票据里的身份，然后自己回权威库核对一遍。
@@ -24,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .crashpoint import failpoint
 from .errors import OverwriteRefused, RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
 from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked
@@ -73,6 +73,7 @@ class ToolSpec:
     exec_model: str = "E1"  # E1 | E3
     action: str = ACTION_READ  # C4 动作分类
     exposed: bool = True  # 是否出现在给模型看的工具清单里
+    path_arg: str = ""  # 参数里表示"要改哪个文件"的键名
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,6 @@ class ToolContext:
     run_id: str = ""
     call_id: str = ""
     admitted: AdmittedCall | None = None
-    allow_legacy_unauthenticated_write: bool = False
 
     def prewrite(self, rel_path: str, before: bytes | None, expected_after: str) -> None:
         """写入前的证据落盘。必须在真正写文件之前调用。"""
@@ -465,6 +465,7 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_CREATE,
+        path_arg="name",
     ),
     "modify_text": ToolSpec(
         tool_id="modify_text",
@@ -485,6 +486,7 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_OVERWRITE,
+        path_arg="path",
     ),
     "delete_file": ToolSpec(
         tool_id="delete_file",
@@ -499,6 +501,7 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_DELETE,
+        path_arg="path",
     ),
     # undo 的内部还原动作：不允许模型看见，也不允许模型发起
     "restore_file": ToolSpec(
@@ -518,6 +521,7 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_OVERWRITE,
+        path_arg="path",
         exposed=False,
     ),
 }
@@ -541,6 +545,16 @@ def action_for(tool_id: str) -> str:
     if spec is None:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
     return spec.action
+
+
+def target_arg(tool_id: str) -> str:
+    """这个工具的参数里哪个键是"要改的文件"。"""
+    spec = SPECS.get(tool_id)
+    if spec is None:
+        raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
+    if not spec.path_arg:
+        raise ToolNotAllowed(f"工具没有文件目标参数：{tool_id}")
+    return spec.path_arg
 
 
 def is_write_tool(tool_id: str) -> bool:
@@ -732,9 +746,13 @@ class FileExecutor:
         # 已在执行：从这一刻起，这次调用算 in-flight。取消不承诺回滚。
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
         try:
-            return _HANDLERS[admitted.tool_id](ws, admitted.args, ctx)
+            result = _HANDLERS[admitted.tool_id](ws, admitted.args, ctx)
         except (TianshuError, OSError):
             raise
+        # 文件已经改了、结果还没提交。恢复流程必须能从 preimage/intent 判断
+        # "到底改了没有"——这个故障点就是用来验证那句话的。
+        failpoint("after_write")
+        return result
 
 
 def check_request_preconditions(
@@ -790,11 +808,11 @@ def execute(
     args: dict[str, Any],
     ctx: ToolContext | None = None,
 ) -> ToolResult:
-    """M0 的同步执行入口。
+    """不经派发的执行入口：只给**没有副作用**的工具用。
 
-    M2 之后**有副作用的工具必须经 Dispatcher 派发**，这里只剩读取工具与
-    一个显式遗留开关（`allow_legacy_unauthenticated_write`）。整个代码库里
-    只有 `loop.run()` 打开它，且 Task 5 会用 Task/Run/Job 生命周期把它删掉。
+    M2 之后有副作用的工具必须经 Dispatcher 派发（消费审批、登记 intent、
+    在守卫内核验）。这里不再留任何"遗留开关"：只要工具会改文件就直接拒绝。
+    留一个开关等于留一条"谁能打开它"的问题，而答案永远是"下一个想走捷径的人"。
     """
     if tool_id not in _HANDLERS:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
@@ -808,11 +826,9 @@ def execute(
         if ctx.log is None:
             raise ToolNotAllowed("有副作用的工具必须提供 ToolContext.log 才能执行")
         ensure_not_blocked(ctx.log, ws.root)
-        if not ctx.allow_legacy_unauthenticated_write:
-            raise ToolNotAllowed(
-                "有副作用的工具必须经 Dispatcher 派发（缺少已核验的 AdmittedCall）；"
-                "只有 M0 遗留同步循环可用显式开关绕过"
-            )
+        raise ToolNotAllowed(
+            "有副作用的工具必须经 Dispatcher 派发（缺少已核验的 AdmittedCall）"
+        )
 
     validate_args(args, spec.input_schema)
     return _HANDLERS[tool_id](ws, args, ctx)
@@ -833,6 +849,7 @@ __all__ = [
     "execute",
     "is_write_tool",
     "observe_state",
+    "target_arg",
     "tool_manifest",
     "validate_args",
 ]
