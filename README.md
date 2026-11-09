@@ -2,7 +2,7 @@
 
 桌面 Agent OS：Windows / macOS 双端，普通用户可用，模型自选，v1 不含图片与视频生成。
 
-> 状态：架构与 PRD 已定稿；M0–M3 已完成并合并，下一步 M4（可评估）。
+> 状态：架构与 PRD 已定稿；M0–M4 已完成并合并，下一步 M5（桌面闭环）。
 > 本目录是唯一开发目录。文档在 `docs/`。
 
 ---
@@ -24,17 +24,22 @@
 |---|---|
 | [docs/PRD-v1.md](docs/PRD-v1.md) | **产品需求与架构：范围、契约、红线、里程碑** |
 | [docs/TECH-ARCH.md](docs/TECH-ARCH.md) | **技术架构：选型、进程模型、打包、平台差异** |
+| [docs/M4-verification.md](docs/M4-verification.md) | **M4 可评估：20 条 case、replay/evaluate 分离、可比分数与失败归因** |
 | [docs/REFS.md](docs/REFS.md) | 参考仓库与固定 commit |
 | [docs/archive/](docs/archive/) | 历史研究记录，**已被 PRD-v1 取代，勿作为实现依据** |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、什么该推什么不该推 |
 
 **改动任何契约前先读 PRD §5、§6**（五道契约 + 十一条红线）。红线与功能需求冲突时以红线为准。
 
-## 当前阶段：M3 已完成
+## 当前阶段：M4 已完成
 
-M3（第二个 chat provider + 第二个沙箱后端）的判据与证据见 [docs/M3-verification.md](docs/M3-verification.md)。下一个里程碑是 PRD §11 的 M4（可评估），尚未开始。
+M4（可评估）的判据与证据见 [docs/M4-verification.md](docs/M4-verification.md)：20 条 case
+（正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2）、`replay` 与
+`evaluate` 分离、安全门槛一票否决、换模型可比与失败归因。
+真实换模（两个真实 provider 的分数对比）仍待用自己的 key 复跑——旧的中转 key
+已在聊天记录里暴露，**应先作废再重配**。下一个里程碑是 PRD §11 的 M5（桌面闭环）。
 
-### 已实现（M0–M3 累积）
+### 已实现（M0–M4 累积）
 
 ```
 src/tianshu/
@@ -59,7 +64,8 @@ src/tianshu/
 ├── model.py       模型接缝（C1）：四个 adapter 只做双向翻译，不改写内部形状
 ├── loop.py        E1 主循环（持久游标、暂停/取消、恢复）+ 栈装配
 ├── worker.py      作业循环：认领排队中的 Run、阻塞期间后台续心跳
-├── replay.py      回放校验：seq / messages_hash / 产物哈希三方核对
+├── replay.py      回放校验：seq / messages_hash / 产物哈希三方核对（审计，不调模型）
+├── eval/          M4 评测：20 条 case、干净 fixture、崩溃恢复、可比分数与归因
 └── cli.py         命令行入口
 ```
 
@@ -67,16 +73,23 @@ src/tianshu/
 
 ```bash
 uv sync --python 3.12
-uv run pytest                       # M0–M3 全量（数量随工单增长，见提交记录）
+uv run pytest                       # M0–M4 全量（数量随工单增长，见提交记录）
 uv run ruff check .
 
 # 离线演示（scripted 模型，不调真实模型）
 uv run python -m tianshu run \
   --workspace /tmp/ws --task "阅读并生成摘要" --out summary.md
 
-# 回放校验
+# 回放校验（审计：不调模型）
 uv run python -m tianshu replay --run-id run_xxxx
+
+# 评测（换模型：干净 fixture、每类 ≥3 次、可比分数 + 失败归因）
+uv run python -m tianshu evaluate --repeat 3 \
+  --workdir /tmp/m4-eval --out /tmp/m4-baseline.json
 ```
+
+`replay` 与 `evaluate` 不是同一个东西：前者只读历史日志做审计，后者换模型重跑。
+PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被其它分数抵消。
 
 任务与执行的生命周期是分开的（M2）：**Task 是用户看到的那件事，Run 是一次执行**。
 覆盖/删除类写入需要人工批准，暂停只在安全点生效，恢复不重跑已完成的调用。
