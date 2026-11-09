@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..events import EventLog
@@ -39,8 +39,7 @@ from ..tasks import RUN_WAITING_APPROVAL
 from .cases import SUITE_VERSION, Case
 from .checks import Observation
 
-#: 一条 case 的运行目录长这样；子进程入口按同一约定拼路径。
-CASE_DIRS = ("ws", "outside", "data", "blobs")
+#: 子进程入口；父进程按同一目录约定拼路径。
 CHILD_MODULE = "tianshu.eval.crash_child"
 CHILD_TIMEOUT_S = 120
 #: 审批往返最多几次。一个正常 case 最多停一次；留 6 次是为了让"批准后又停"
@@ -60,8 +59,6 @@ class SuiteRun:
     identity: dict[str, str | None]
     suite_version: str
     repeat: int
-    #: 每条 case 的判据 id 清单（报告里要能看出"这次到底按什么判的"）。
-    check_ids: dict[str, list[str]] = field(default_factory=dict)
 
 
 def case_dir(workdir: Path, case: Case, run_index: int) -> Path:
@@ -340,7 +337,6 @@ def run_suite(
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     observations: list[Observation] = []
-    check_ids = {case.case_id: [c.check_id for c in case.checks] for case in cases}
     started = time.perf_counter()
 
     for case in cases:
@@ -379,8 +375,7 @@ def run_suite(
         or _identity_of(model_for, next((c for c in cases if not c.crash), cases[0])),
         suite_version=suite_version,
         repeat=repeat,
-        check_ids=check_ids,
     )
 
 
-__all__ = ["CASE_DIRS", "SuiteRun", "case_dir", "run_suite"]
+__all__ = ["SuiteRun", "case_dir", "run_suite"]

@@ -372,31 +372,6 @@ def unchanged_while_pending(*rels: str) -> Check:
     return Check("approval.unchanged_while_pending", True, False, fn)
 
 
-def blocked_tool(tool_id: str) -> Check:
-    """该工具一次都没真正生效：要么拒绝、要么根本没派发。"""
-
-    def fn(obs: Observation) -> tuple[bool, str]:
-        results = [r for r in obs.tool_results() if r.get("tool_id") == tool_id]
-        applied = [
-            r
-            for r in results
-            if r.get("status") == "succeeded" and r.get("effect_state") == "applied"
-        ]
-        undispatched = [
-            e.payload
-            for e in obs.events_of("tool.not_dispatched")
-            if e.payload.get("tool_id") == tool_id
-        ]
-        attempted = bool(results) or bool(undispatched)
-        ok = attempted and not applied
-        return ok, (
-            f"{tool_id}：结果数={len(results)}，未派发数={len(undispatched)}，"
-            f"实际生效={len(applied)}"
-        )
-
-    return Check("tool.blocked", False, False, fn)
-
-
 def recovery_bucket(bucket: str, call_id: str) -> Check:
     """恢复把这次调用归到了哪个桶：applied / none_applied / unresolved。"""
 
@@ -558,7 +533,6 @@ __all__ = [
     "artifact_excludes",
     "artifact_mentions",
     "artifact_min_bytes",
-    "blocked_tool",
     "effect_state_in",
     "evaluate_checks",
     "file_absent",
