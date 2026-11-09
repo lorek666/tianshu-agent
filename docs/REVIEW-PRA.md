@@ -86,7 +86,7 @@ PR #7 计划覆盖的 Task 1–2 交付物当时缺以下部分。**其中 1、2
 （见 §4.1），其余仍未做：
 
 4. `authority` 数据根与 `--db` 逃逸防护（计划 `test_changed_db_cannot_escape_authority`）。
-5. `schemas/m2/task.json`、`run.json`、`job.json`。
+5. ~~`schemas/m2/task.json`、`run.json`、`job.json`~~ — 已在 PR #10 连同 approval/grant 一起补上。
 6. 计划 §2.2 的完整 takeover 协议：TTL 到期不等于旧 worker 已停；接管必须先拿 guard、
    核实 owner、核对未决副作用。目前只做到"过期 / 进程消失 / pid 被复用即可接管"，
    且**接管本身仍不持守卫**（`LeaseStore.acquire` 不知道 data_root）。
@@ -102,6 +102,22 @@ PR #7 计划覆盖的 Task 1–2 交付物当时缺以下部分。**其中 1、2
 | 2. `RunCursor` / `save_cursor` / `commit_model_turn` | `tasks.py`：游标与模型结果都必须带 `JobClaim`，写入时同事务核验 claim + run 未被 fence；`commit_model_turn` 对同 `turn_id` 幂等（重启不重复计费），同 id 不同内容直接报错 |
 | 3. `execution_guard` 强制使用 | `begin_execution()`：守卫内复核 run/epoch/租约 → 续租 → 写 `execution.started` → yield，with 块即"已获准执行"的窗口；`revise_goal()` 拿**同一把**守卫改 revision/epoch。两边都拿锁才有意义，只让一方拿等于没锁 |
 | 7. PID 复用检测 | `pid_started_at()`（Linux `/proc`、macOS `ps etime`、Windows `GetProcessTimes`），判定单向：只有"进程启动晚于租约获取"才算复用，宁可晚接管也不误接管（误接管=双写）。Windows 存活探测也从"恒为 True"改成 `OpenProcess`+`WaitForSingleObject` |
+
+### 4.2 PR #10（PR B · Task 3）补的部分
+
+PR B 的第一步：**判断与记录**，还不碰文件。
+
+| 内容 | 说明 |
+|---|---|
+| `canonical.py` | RFC 8785（JCS）规范化：键按 **UTF-16 码元**排序（`sort_keys=True` 按码点，星平面字符会排错）、控制字符转义、非 ASCII 原样保留；**浮点与超过 2^53-1 的整数直接拒绝**——手写 ECMAScript 数字序列化出错比不做更危险，摘要会悄悄算错 |
+| `permissions.py` | `PolicyEngine.classify`：目录内读/新建自动、覆盖/删除/目录外需审批、只读绑定拒绝、0 目录拒绝、未支持动作拒绝（不是给一个无法履行的"需要提权"） |
+| `ActionRequest.digest()` | 绑定 19 个授权字段（含 claim_epoch / owner_instance_id / preconditions），改任何一个摘要必变 |
+| `ApprovalStore` | pending→approved/rejected/expired/revoked/superseded；`HumanIdentity` 只能由 `local_cli()` 构造，模型参数里的同名结构被拒；批准一次只能消费一次 |
+| `GrantStore` | 一次性票据，默认 30 秒且不得超过租约剩余期限；消费按 `(digest, subject, 剩余次数, TTL)` 条件更新 |
+| `schemas/m2/*.json` | Task/Run/JobClaim/Approval/Grant 五份；配一个"schema required 必须等于 dataclass 必填字段"的对照测试，改了代码忘改契约会红 |
+
+仍未做：**Task 4 的 Dispatcher**（消费审批 + 登记 intent + 实际文件操作必须在一次提交里），
+以及 §4 第 4、6、8 条。
 
 ## 5. 对流程的意见
 
