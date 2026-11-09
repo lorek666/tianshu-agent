@@ -74,6 +74,7 @@ from .permissions import (
     PolicyEngine,
 )
 from .receipt import build_receipt
+from .sandbox import current_backend
 from .snapshot import SnapshotStore
 from .tasks import RUN_RUNNING, Run, Task, TaskStore
 from .tools import (
@@ -401,7 +402,8 @@ class Dispatcher:
                 # 两者对用户的下一步动作含义完全不同（前者重试/重批，后者换工具）。
                 rule = (
                     "dispatch.create_over_existing"
-                    if request.action == ACTION_CREATE and target.path.exists()
+                    if request.action == ACTION_CREATE
+                    and current_backend().exists(target.path)
                     else "dispatch.stale_precondition"
                 )
                 raise DispatchDenied(reason, rule)
@@ -894,7 +896,9 @@ class Dispatcher:
         binding = max(candidates, key=lambda b: len(overlap_key(b.root_path)))
         ws = Workspace(Path(binding.root_path))
         rel = ws.relative(target)
-        if request.action == ACTION_CREATE and not target.parent.is_dir():
+        if request.action == ACTION_CREATE and not current_backend().is_dir(
+            target.parent
+        ):
             raise DispatchDenied(
                 f"目标父目录不存在：{target.parent}", "dispatch.no_parent"
             )
@@ -1297,6 +1301,7 @@ class Dispatcher:
             tool_id=request.tool_id,
             args_hash=request.args_hash,
             result=result,
+            backend=self._executor.backend_name,
         )
         if receipt is not None:
             batch.append(
@@ -1350,10 +1355,11 @@ def build_request(
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
     target = Path(target).resolve()
+    io = current_backend()
     if spec.action == ACTION_CREATE:
-        preconditions: dict[str, Any] = {"target_exists": target.exists()}
+        preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
     elif spec.action in (ACTION_OVERWRITE, ACTION_DELETE):
-        preconditions = {"before_state": observe_state(target)}
+        preconditions = {"before_state": observe_state(target, backend=io)}
     else:  # pragma: no cover - 只读动作不走派发
         preconditions = {}
 

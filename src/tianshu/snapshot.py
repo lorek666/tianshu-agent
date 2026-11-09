@@ -22,6 +22,7 @@ from typing import Any
 
 from .errors import ToolNotAllowed
 from .fsutil import atomic_write_bytes
+from .sandbox import current_backend
 from .workspace import Workspace
 
 ABSENT = "absent"
@@ -175,11 +176,14 @@ class SnapshotStore:
         # ---- 预检：校验当前磁盘等于最后一次 after，再按逆序模拟 ----
         disk_state: dict[str, str] = {}
         preimages: dict[str, bytes] = {}
+        io = current_backend()
         for c in changes:
             target = ws.resolve(c.path)
+            # 工作区的当前状态问后端；证据（blob / manifest）始终在宿主盘上，
+            # 因为它是审计材料，不能跟着工作区的后端一起被虚拟化。
             disk_state[c.path] = (
-                ABSENT if not target.exists()
-                else hashlib.sha256(target.read_bytes()).hexdigest()
+                ABSENT if not io.exists(target)
+                else hashlib.sha256(io.read_bytes(target)[0]).hexdigest()
             )
 
         simulated = dict(disk_state)
@@ -210,9 +214,12 @@ class SnapshotStore:
             if apply is not None:
                 apply(c, preimage)
             elif preimage is None:
-                target.unlink(missing_ok=True)
+                try:
+                    io.unlink(target)
+                except FileNotFoundError:
+                    pass  # 本来就不存在：撤销"新建"时的幂等语义
             else:
-                atomic_write_bytes(target, preimage)
+                io.write_bytes_atomic(target, preimage)
             if preimage is None:
                 report.deleted.append(c.path)
             else:

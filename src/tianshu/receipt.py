@@ -23,6 +23,8 @@ from typing import Any
 from .tools import ToolResult
 
 ISSUER = "tianshu/0.1"
+#: 历史默认值。M3 起凭据记录**实际**后端（`build_receipt(backend=...)`），
+#: 这个常量只留给"没传 backend"的旧调用点，保证旧事件语义不变。
 BACKEND = "local_fs"
 
 
@@ -69,6 +71,7 @@ def build_receipt(
     tool_id: str,
     args_hash: str,
     result: ToolResult,
+    backend: str = BACKEND,
 ) -> Receipt | None:
     """副作用已发生时产出一条凭据；否则返回 None。
 
@@ -99,7 +102,7 @@ def build_receipt(
         effect_state=result.effect_state,
         before_state=str(out.get("before_state") or "absent"),
         after_state=str(after),
-        backend=BACKEND,
+        backend=backend,
         evidence=[f"tool.result:{result.status}"],
         issued_at=int(time.time() * 1000),
     )
