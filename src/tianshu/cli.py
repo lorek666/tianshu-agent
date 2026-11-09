@@ -947,7 +947,37 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _force_utf8_streams() -> None:
+    """把 stdout/stderr 钉成 UTF-8，不跟随控制台代码页。
+
+    为什么必须有：Windows 上 stdout/stderr 被重定向（管道、文件、`python -c`
+    的子进程）时，Python 用**系统 ANSI 代码页**（简体中文机器 cp936、英文机器
+    cp1252）编码，而 CLI 的输出全是中文。一个 `print("结论   : 已撤销")` 就会抛
+    `UnicodeEncodeError: 'charmap' codec can't encode characters`——用户看到的
+    是"这个 CLI 崩了"，不是"少打几个字"。
+
+    交互式控制台不受影响：Python 3.6+ 在真控制台上走 `WriteConsoleW`，本来
+    就是 UTF-8 语义。这条修的是管道/重定向/子进程这三条路径，而那正是 CI、
+    脚本和桌面前端读 CLI 的方式。
+
+    `errors="backslashreplace"` 只是最后一道保险：UTF-8 能编码所有码点，
+    唯一编不了的是孤立代理字符（非 UTF-8 文件名在 POSIX 上可能出现），
+    这种时候宁可打出转义形式，也不要让整条命令崩掉。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:  # pythonw 之类：没有控制台，也没有输出可言
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            # 不是 TextIOWrapper（pytest 的 capsys、调用方替换过的流）：
+            # 换不了就不换，别为了改编码把 CLI 弄崩。
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
+    # 必须在解析参数之前：`--help` 本身也是中文。
+    _force_utf8_streams()
     args = _build_parser().parse_args(argv)
     try:
         if args.cmd == "run":

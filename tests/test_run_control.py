@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from support import CHILD_TEXT
 
 from tianshu.dispatcher import Dispatcher
 from tianshu.errors import RunFenced, TianshuError
@@ -817,7 +818,7 @@ sys.exit(main(["run", "--workspace", {str(ws)!r}, "--task", "写报告",
     env = dict(os.environ)
     env["TIANSHU_FAILPOINT"] = "after_intent"
     proc = subprocess.run(
-        [sys.executable, "-c", child], env=env, capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", child], env=env, capture_output=True, **CHILD_TEXT, timeout=120
     )
     assert proc.returncode == 77, f"应当在 after_intent 硬退，实际 {proc.returncode}"
 

@@ -27,7 +27,8 @@ def setup(tmp_path, files: dict[str, str]):
     for name, content in files.items():
         p = ws_dir / name
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        # 按字节写：证据算的是 sha256(原始字节)，文本模式在 Windows 上会翻 CRLF。
+        p.write_bytes(content.encode("utf-8"))
     store = SnapshotStore(tmp_path / "artifacts")
     return ws_dir, store
 
@@ -142,7 +143,7 @@ def test_undo_refuses_when_user_modified_after(tmp_path):
 
     # 用户手动又改了一次
     user_text = "用户后来手写的\n"
-    (ws_dir / "note.md").write_text(user_text, encoding="utf-8")
+    (ws_dir / "note.md").write_bytes(user_text.encode("utf-8"))
 
     undo = undo_with(log, result.run_id, ws_dir)
     assert not undo.ok
@@ -167,7 +168,7 @@ def test_undo_is_atomic_across_multiple_files(tmp_path):
         ],
     )
 
-    (ws_dir / "b.md").write_text("乙又被用户改了", encoding="utf-8")
+    (ws_dir / "b.md").write_bytes("乙又被用户改了".encode())
 
     undo = undo_with(log, result.run_id, ws_dir)
     assert not undo.ok

@@ -37,11 +37,11 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          # Windows 暂不进入矩阵：首次试跑 12 项失败，清单与根因见
-          # https://github.com/lorek666/tianshu-agent/issues/21
-          # 摘除而不是 continue-on-error——红就是红，不装作绿。
-          # 该 issue 收敛后把 windows-latest 加回来。
-          # - windows-latest
+          # Windows 是**主打平台**。issue #21 记的那 12 项已经逐条定位并修掉
+          # （CRLF 哈希、控制台编码、权限位语义、Windows 的 pid/心跳探测），
+          # 这个平台必须一直在矩阵里——它掉出过一次，代价是 5 个里程碑都没在
+          # 主平台上验证过。
+          - windows-latest
         python:
           - "3.12"
     defaults:
@@ -83,4 +83,7 @@ jobs:
         # pyproject 的 addopts 里已经有 -q，直接 `uv run pytest` 会叠加成 -qq，
         # 把 "514 passed" 那行汇总吞掉——CI 日志里就看不见到底跑过多少。
         # 所以显式清空 addopts，再给一个 -q。
-        run: uv run --frozen pytest -o addopts="" -q
+        # `-rs` 把跳过原因打进日志：允许 skip 的前提是"每条都能解释清楚"，
+        # 看不见原因就等于默许。目前只有三类：memfs 符号链接、POSIX 专属的
+        # pid 存活探测、Windows 没有 POSIX 权限位语义。
+        run: uv run --frozen pytest -o addopts="" -q -rs

@@ -20,6 +20,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from support import CHILD_TEXT
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -633,7 +634,7 @@ def test_live_worker_loses_claim_to_another_process(tmp_path):
     child = subprocess.Popen(
         [sys.executable, "-c", _TAKEOVER_CHILD.format(src=SRC),
          str(tmp_path / "db.sqlite")],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, **CHILD_TEXT,
     )
     try:
         assert child.stdout.readline().strip() == "claimed 1"

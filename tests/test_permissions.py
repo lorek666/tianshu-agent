@@ -360,11 +360,26 @@ def test_denied_request_cannot_be_filed(env):
         approvals.request(_request(), denied)
 
 
-def test_auto_decision_does_not_create_approval(env):
+def test_auto_decision_does_not_create_approval(env, tmp_path):
+    """自动决策不许造出审批：自动档意味着"不需要人决定"。
+
+    路径必须用**真实目录**：写死 `/ws` 在 Windows 上会被解析成 `C:/ws`，而资源串 `/ws/a` 仍是
+    驱动器相对路径，两者不再构成"绑定覆盖资源"——分类结果就不是 auto 了，
+    后半句"不该有审批"自然也就测不到（2026-11 的 Windows CI 就是这么红的）。
+    """
     _, approvals, _, _, _ = env
-    auto = PolicyEngine().classify("read", ["/ws/a"], [WorkspaceBinding("/ws")])
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    inside = str(ws / "a.txt")
+    auto = PolicyEngine().classify("read", [inside], [WorkspaceBinding(str(ws))])
+    assert auto.is_auto, (
+        f"前提不成立：read 在绑定目录内应当是自动决策，实际 kind={auto.kind}"
+        f" rule_id={auto.rule_id} reason={auto.reason}"
+    )
     with pytest.raises(ApprovalError):
-        approvals.request(_request(), auto)
+        approvals.request(
+            _request(action="read", resources=(inside,)), auto
+        )
 
 
 # ---------------------------------------------------------------- grant

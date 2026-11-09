@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from support import tool_capable_profile
+from support import CHILD_TEXT, tool_capable_profile
 
 from tianshu.context import (
     BUDGET_VERSION,
@@ -259,7 +259,7 @@ def test_same_input_same_output_across_processes():
             [sys.executable, "-c", code],
             input=spec,
             capture_output=True,
-            text=True,
+            **CHILD_TEXT,
             env=env,
             check=True,
         )
