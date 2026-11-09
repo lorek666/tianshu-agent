@@ -24,16 +24,24 @@ M2 之后这个循环不再是"一次同步跑完"：
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .capability import (
+    CapabilityMissing,
+    CapabilityProfile,
+    admit_model,
+    retry_delay_ms,
+)
 from .context import (
     DEFAULT_MAX_BYTES,
     RUN_START_SEQ,
     ContextBudget,
     ContextOverflow,
+    ContextView,
     compile_context,
     context_payload,
 )
@@ -66,7 +74,7 @@ from .jobs import (
     renew_claim,
 )
 from .leases import DEFAULT_TTL_MS, LeaseStore, ProcessIdentity
-from .model import Model, ModelResponse, ToolCall, identity_of
+from .model import Model, ModelError, ModelResponse, ToolCall, identity_of
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
 from .pricing import cost_record
 from .snapshot import SnapshotStore
@@ -119,6 +127,11 @@ class Limits:
     #: 发出去的 messages 与 F5 之前逐字节一致（历史 messages_hash 含义不变）。
     #: 只有长 run 或显式调小它才会触发压缩/落盘。
     context_budget_bytes: int = DEFAULT_MAX_BYTES
+    #: 单次模型调用最多尝试几次（含第一次）。PRD §7 F9a 的默认值就是 3。
+    #: 这是**上限**，不是目标：不可重试的错误一次就停。
+    max_model_attempts: int = 3
+    #: 重试退避基数（毫秒）。指数退避：基数、2×、4×…；0 表示不退避。
+    retry_backoff_ms: int = 500
 
 
 @dataclass
@@ -350,6 +363,7 @@ class AgentLoop:
         model: Model | None = None,
         limits: Limits | None = None,
         ttl_ms: int = DEFAULT_TTL_MS,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -362,6 +376,14 @@ class AgentLoop:
         # 心跳的 TTL 必须与认领时用的一致：认领说 150ms 过期、心跳却说 30s，
         # 那"我还在跑"这句话就没人核对了。测试用短 TTL 推进真实时间。
         self._ttl_ms = ttl_ms
+        # 重试退避的等待函数。生产是 `time.sleep`；测试注入一个不睡觉的记录器，
+        # 否则"退避序列是不是 500/1000/2000"就只能靠真实等待来验证。
+        self._sleep = sleep or time.sleep
+        # F9a 准入结果按 Run 缓存：一次判定，不是每轮重复判定。
+        self._admission: dict[str, CapabilityProfile] = {}
+        # 每个 Run 上一次**成功**调用的 token 用量。重试前用它投影"再试一次大概
+        # 要花多少"，这是唯一能提前发现"再试就超预算"的信号（失败调用不产生用量）。
+        self._last_usage: dict[str, int] = {}
         self._log = tasks.log
         # 每次驱动开始时从事件里重建的只读索引（崩溃后补记、计数、产物）
         self._results: dict[str, dict[str, Any]] = {}
@@ -698,6 +720,142 @@ class AgentLoop:
             if not blob.exists():
                 atomic_write_bytes(blob, data)
 
+    # ---------------------------------------------------------------- 准入与重试
+
+    def _ensure_admitted(self, run_id: str, request_id: str) -> str | None:
+        """F9a 准入：这个模型能不能跑本次 run。**每个 Run 只判定一次。**
+
+        返回 `None` 表示放行（或本 Run 已经放行过），否则返回停止原因。
+
+        为什么缓存而不是每轮重判：判定结果是"这个模型是什么"，不会在 run 中途变。
+        每轮重判除了白花时间，还会让错误信息重复出现在日志里。
+        """
+        if run_id in self._admission:
+            return None
+        try:
+            profile = admit_model(
+                self._model,
+                required_context_bytes=self._limits.context_budget_bytes,
+            )
+        except CapabilityMissing as exc:
+            reason = f"模型准入被拒绝：{exc}"
+            # attempt=0：还没有发出任何一次尝试。写一条 model.error 是为了让
+            # "为什么这个 Run 一分钱没花就失败了"在事件日志里能直接读到。
+            self._log.append(
+                run_id,
+                "model.error",
+                {"request_id": request_id, "attempt": 0, "error": reason},
+                actor_kind="core",
+            )
+            return reason
+        self._admission[run_id] = profile
+        return None
+
+    def _complete_with_retry(
+        self,
+        run_id: str,
+        progress: _Progress,
+        request_id: str,
+        view: ContextView,
+        budget: ContextBudget,
+    ) -> tuple[ModelResponse | None, str]:
+        """有界重试（PRD §7 F9a：默认 3 次 attempt）。
+
+        - **每次 attempt 都写一条 `model.intent`**，`attempt` 是真实序号。
+          三次尝试全写成 1 的日志等于没有审计：事后看不出"同一件事试了三遍"。
+        - 只有 `ModelError.retryable` 为真才重试；不可重试的错误一次就停。
+        - 每次重试前重新核对 token 预算：重试不能成为绕过 `max_total_tokens`
+          的后门。
+        - 重试**只包住 `complete()`**：模型调用没有副作用；派发与工具执行另有
+          幂等键与恢复流程，套用这里的重试会让一次副作用执行两遍。
+        """
+        attempts = max(1, int(self._limits.max_model_attempts))
+        last: ModelError | None = None
+
+        for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                # 预算守卫：重试不能成为绕过 `max_total_tokens` 的后门。
+                #
+                # 只看账本是不够的：**失败的调用不产生用量**，所以"再试一次会不会
+                # 超"在账本上永远看不出来。这里用上一次成功调用的用量做投影——
+                # 同一轮请求的规模不会差太多，宁可少试一次，也不让重试把预算
+                # 悄悄花超。投影是估计，但方向是保守的（见 PR 说明）。
+                projected = progress.tokens + self._last_usage.get(run_id, 0)
+                if projected > self._limits.max_total_tokens:
+                    reason = (
+                        f"token 预算不足，不再重试：已用 {progress.tokens}，"
+                        f"预计再试一次约 +{self._last_usage.get(run_id, 0)}，"
+                        f"上限 {self._limits.max_total_tokens}；"
+                        f"已尝试 {attempt - 1} 次，最后一次失败原因：{last!r}"
+                    )
+                    self._log.append(
+                        run_id,
+                        "model.error",
+                        {
+                            "request_id": request_id,
+                            "attempt": attempt - 1,
+                            "retryable": True,
+                            "error": reason,
+                        },
+                        actor_kind="core",
+                    )
+                    return None, reason
+                delay_ms = retry_delay_ms(attempt - 1, self._limits.retry_backoff_ms)
+                if delay_ms > 0:
+                    self._sleep(delay_ms / 1000.0)
+
+            self._log.append(
+                run_id,
+                "model.intent",
+                {
+                    "request_id": request_id,
+                    "attempt": attempt,
+                    # messages_hash 记的是**发出去的那份**的摘要（F5 起 = 编译后的
+                    # digest）。预算内恒等时它与"全量历史的摘要"完全相同。
+                    "messages_hash": view.digest,
+                    "context": context_payload(budget, view),
+                },
+                actor_kind="core",
+                # idem 键带上 attempt：每次尝试的 payload 不同，同键异参在这里
+                # 不成立（PRD 附录 B 第 5 条）。
+                idem_key=f"{request_id}#{attempt}",
+            )
+
+            try:
+                return self._model.complete(view.messages, tool_manifest()), ""
+            except ModelError as exc:
+                last = exc
+                self._log.append(
+                    run_id,
+                    "model.error",
+                    {
+                        "request_id": request_id,
+                        "attempt": attempt,
+                        "retryable": exc.retryable,
+                        "error": repr(exc),
+                    },
+                    actor_kind="core",
+                )
+                if not exc.retryable:
+                    return None, (
+                        f"模型调用异常（attempt {attempt}/{attempts}，不可重试）：{exc}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 非 ModelError 不重试
+                self._log.append(
+                    run_id,
+                    "model.error",
+                    {
+                        "request_id": request_id,
+                        "attempt": attempt,
+                        "error": repr(exc),
+                    },
+                    actor_kind="core",
+                )
+                return None, f"模型调用异常（attempt {attempt}/{attempts}）：{exc}"
+
+        detail = repr(last) if last is not None else "（没有可用的错误信息）"
+        return None, f"模型调用 {attempts} 次都失败：{detail}"
+
     # ---------------------------------------------------------------- 模型
 
     def _model_step(
@@ -720,6 +878,12 @@ class AgentLoop:
 
         hop = progress.turns + 1
         request_id = f"req_{run_id}_{hop}"
+
+        # F9a：准入在**一切之前**——编译、落盘、intent 都还没发生。缺能力的运行
+        # 连一分钱都不该花，也不该在日志里留下"像是调用过"的痕迹。
+        refused = self._ensure_admitted(run_id, request_id)
+        if refused is not None:
+            return "stop", refused
 
         # 编译这一步在 intent 之前：intent 声称的是"我要发的到底是什么"，
         # 编译失败（放不下）就不该留下一条指向模型的 intent。
@@ -745,31 +909,11 @@ class AgentLoop:
         # "完整内容已落盘"这句话。反过来的顺序等于先撒谎再补救。
         self._persist_spills(view.spills)
 
-        self._log.append(
-            run_id,
-            "model.intent",
-            {
-                "request_id": request_id,
-                "attempt": 1,
-                # messages_hash 记的是**发出去的那份**的摘要（F5 起 = 编译后的
-                # digest）。预算内恒等时它与"全量历史的摘要"完全相同，历史语义不变。
-                "messages_hash": view.digest,
-                "context": context_payload(budget, view),
-            },
-            actor_kind="core",
-            idem_key=request_id,
+        resp, stop_reason = self._complete_with_retry(
+            run_id, progress, request_id, view, budget
         )
-
-        try:
-            resp = self._model.complete(view.messages, tool_manifest())
-        except Exception as exc:  # 模型层异常不能吞：记事件后终止
-            self._log.append(
-                run_id,
-                "model.error",
-                {"request_id": request_id, "error": repr(exc)},
-                actor_kind="core",
-            )
-            return "stop", f"模型调用异常：{exc}"
+        if resp is None:
+            return "stop", stop_reason
 
         inp = resp.usage.get("input_tokens")
         outp = resp.usage.get("output_tokens")
@@ -778,6 +922,8 @@ class AgentLoop:
             progress.unknown_usage_calls += 1
         else:
             progress.tokens += (inp or 0) + (outp or 0)
+            # 给下一次重试的预算投影留个依据（只在真有 usage 时更新）。
+            self._last_usage[run_id] = (inp or 0) + (outp or 0)
         progress.turns = hop
 
         # F13：把这一轮换算成钱。**查不到价格就记"未知的调用次数"**，
@@ -1551,6 +1697,7 @@ def run(
     run_id: str | None = None,
     snapshots: SnapshotStore | None = None,
     data_root: Path | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> RunResult:
     """一次跑完（M0 时代的入口，现在等价于"建 Task → start Run → 驱动"）。
 
@@ -1567,6 +1714,7 @@ def run(
         snapshots=stack.snapshots,
         model=model,
         limits=limits,
+        sleep=sleep,
     )
     created = stack.tasks.create_task(task, [str(workspace_dir)])
     return engine.start(created.task_id, out_name=out_name, run_id=run_id)
