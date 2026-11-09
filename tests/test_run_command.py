@@ -208,7 +208,9 @@ def test_configured_policy_runs_and_reports_all_fields(env):
     assert out["exit_code"] == 0
     assert out["signal"] is None
     assert out["timed_out"] is False
-    assert out["stdout"] == "1\n"
+    # Windows 的 Python 文本模式会把 \n 写成 \r\n；这是子进程的行为，
+    # 不是我们的管道做了转换。按行归一化后比较内容。
+    assert out["stdout"].replace("\r\n", "\n") == "1\n"
     assert out["stderr_merged"] is False
     assert out["path"] == "."
 
