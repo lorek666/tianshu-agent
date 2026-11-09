@@ -62,6 +62,7 @@ from .errors import (
     WorkspaceViolation,
 )
 from .events import Event, EventLog, canonical_bytes, sha256_hex
+from .execpolicy import ExecPolicy
 from .fsutil import atomic_write_bytes
 from .jobs import (
     JOB_CLAIMED,
@@ -1283,6 +1284,11 @@ class AgentLoop:
         """
         key = target_arg(tool_id)
         raw = args.get(key)
+        spec = SPECS.get(tool_id)
+        if not isinstance(raw, str) or not raw:
+            # run_command 的 cwd 是可选参数：缺省时在 workspace 根执行。
+            # 其他工具没有这个默认值——文件目标必须由模型显式给出。
+            raw = spec.path_default if spec is not None else ""
         if not isinstance(raw, str) or not raw:
             raise ToolArgumentError(f"目标路径必须是非空字符串：{key}")
         root = self._primary_root(task)
@@ -1703,6 +1709,7 @@ def run(
     snapshots: SnapshotStore | None = None,
     data_root: Path | None = None,
     sleep: Callable[[float], None] | None = None,
+    exec_policy: ExecPolicy | None = None,
 ) -> RunResult:
     """一次跑完（M0 时代的入口，现在等价于"建 Task → start Run → 驱动"）。
 
@@ -1721,7 +1728,9 @@ def run(
         limits=limits,
         sleep=sleep,
     )
-    created = stack.tasks.create_task(task, [str(workspace_dir)])
+    created = stack.tasks.create_task(
+        task, [str(workspace_dir)], exec_policy=exec_policy
+    )
     return engine.start(created.task_id, out_name=out_name, run_id=run_id)
 
 

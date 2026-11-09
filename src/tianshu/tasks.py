@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from .errors import RunFenced, TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
+from .execpolicy import ExecPolicy
 from .jobs import JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     active_run_id TEXT,
     status        TEXT NOT NULL DEFAULT 'open',
     workspaces    TEXT NOT NULL DEFAULT '[]',
+    exec_policy   TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -182,6 +184,9 @@ class Task:
     active_run_id: str | None
     status: str
     workspaces: list[WorkspaceBinding] = field(default_factory=list)
+    #: 任务级执行策略（F2）。None = 未配置 = run_command 默认全拒。
+    #: 开启 exec 是显式动作：`task create --allow-exec-cmd`。
+    exec_policy: ExecPolicy | None = None
     created_at: int = 0
     updated_at: int = 0
 
@@ -297,6 +302,7 @@ class TaskStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
         _ensure_column(self._conn, "runs", "control_requested", "TEXT")
+        _ensure_column(self._conn, "tasks", "exec_policy", "TEXT NOT NULL DEFAULT ''")
         self._leases = leases
         self._claims = claims
         # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
@@ -357,6 +363,8 @@ class TaskStore:
         self,
         goal: str,
         bindings: list[WorkspaceBinding | str | dict[str, Any]] | None = None,
+        *,
+        exec_policy: ExecPolicy | None = None,
     ) -> Task:
         goal = (goal or "").strip()
         if not goal:
@@ -370,12 +378,16 @@ class TaskStore:
         with self._log.transaction() as tx:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-                " active_run_id, status, workspaces, created_at, updated_at)"
-                " VALUES (?,?,1,1,NULL,'open',?,?,?)",
+                " active_run_id, status, workspaces, exec_policy,"
+                " created_at, updated_at)"
+                " VALUES (?,?,1,1,NULL,'open',?,?,?,?)",
                 (
                     task_id,
                     goal,
                     json.dumps([b.to_dict() for b in parsed], ensure_ascii=False),
+                    json.dumps(exec_policy.to_dict(), ensure_ascii=False)
+                    if exec_policy is not None
+                    else "",
                     now,
                     now,
                 ),
@@ -389,6 +401,7 @@ class TaskStore:
                     "goal_revision": 1,
                     "lease_epoch": 1,
                     "workspaces": [b.to_dict() for b in parsed],
+                    "exec_policy": exec_policy.to_dict() if exec_policy else None,
                 },
                 task_id=task_id,
                 actor_kind="human",
@@ -1535,6 +1548,9 @@ class TaskStore:
             active_run_id=row["active_run_id"],
             status=row["status"],
             workspaces=parse_bindings(json.loads(row["workspaces"])),
+            exec_policy=ExecPolicy.from_dict(
+                json.loads(row["exec_policy"]) if row["exec_policy"] else None
+            ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

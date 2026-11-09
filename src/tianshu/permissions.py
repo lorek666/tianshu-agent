@@ -60,13 +60,22 @@ ACTION_READ = "read"
 ACTION_CREATE = "create"
 ACTION_OVERWRITE = "overwrite"
 ACTION_DELETE = "delete"
+#: 执行命令（F1 的 spawn）。它是**全系统最高危的动作**：不经文件动作授权，
+#: 但能读写任意文件、联网、启动子进程。独立成一个动作，不许映射成 read。
+ACTION_EXEC = "exec"
 
-SUPPORTED_ACTIONS = {ACTION_READ, ACTION_CREATE, ACTION_OVERWRITE, ACTION_DELETE}
+SUPPORTED_ACTIONS = {
+    ACTION_READ,
+    ACTION_CREATE,
+    ACTION_OVERWRITE,
+    ACTION_DELETE,
+    ACTION_EXEC,
+}
 
 # 不需要人批的动作
 AUTO_ACTIONS = {ACTION_READ, ACTION_CREATE}
 # 必须人批的动作
-APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE}
+APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC}
 
 DECISION_AUTO = "auto"
 DECISION_APPROVE = "approve"
@@ -391,6 +400,21 @@ class PolicyEngine:
                 )
             return PolicyDecision(DECISION_AUTO, "目录内读/新建", "c4.auto")
 
+        if action == ACTION_EXEC:
+            # 执行命令是全系统最高危的动作：永远要审批，且必须先显式开启 exec
+            # 策略。没有策略不是"默认白名单"——那等于默认放行任意代码。
+            if not preconditions.get("exec_configured"):
+                return PolicyDecision(
+                    DECISION_DENY,
+                    "未配置执行策略：run_command 默认全拒。"
+                    "开启 exec 是显式动作（task create --allow-exec-cmd）",
+                    "c4.exec_not_configured",
+                )
+            return PolicyDecision(
+                DECISION_APPROVE,
+                "执行命令是全系统最高危的动作：可读写任意文件、联网、起子进程",
+                "c4.exec",
+            )
         if action == ACTION_OVERWRITE:
             return PolicyDecision(
                 DECISION_APPROVE, "覆盖已有内容是删除类操作", "c4.overwrite"
@@ -972,6 +996,7 @@ class GrantStore:
 __all__ = [
     "ACTION_CREATE",
     "ACTION_DELETE",
+    "ACTION_EXEC",
     "ACTION_OVERWRITE",
     "ACTION_READ",
     "APPROVAL_ACTIONS",

@@ -21,10 +21,11 @@
     "action": {
       "type": "string",
       "enum": [
-        "read",
         "create",
+        "delete",
+        "exec",
         "overwrite",
-        "delete"
+        "read"
       ]
     },
     "action_digest": {

@@ -22,18 +22,34 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .crashpoint import failpoint
-from .errors import OverwriteRefused, RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
+from .errors import (
+    OverwriteRefused,
+    RunFenced,
+    TianshuError,
+    ToolArgumentError,
+    ToolNotAllowed,
+)
+from .exec import LOCAL_EXEC_CAPABILITIES, spawn
+from .execpolicy import (
+    ExecBackendCapabilities,
+    ExecPolicy,
+    PolicyDenied,
+    PolicyUnsupported,
+    filtered_env,
+)
 from .guard import ensure_not_blocked
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
+    ACTION_EXEC,
     ACTION_OVERWRITE,
     ACTION_READ,
     APPROVAL_ACTIONS,
@@ -89,6 +105,7 @@ class ToolSpec:
     action: str = ACTION_READ  # C4 动作分类
     exposed: bool = True  # 是否出现在给模型看的工具清单里
     path_arg: str = ""  # 参数里表示"要改哪个文件"的键名
+    path_default: str = ""  # path_arg 缺失时的默认值（run_command 的 cwd 用）
 
 
 @dataclass(frozen=True)
@@ -156,6 +173,11 @@ class ToolContext:
     call_id: str = ""
     admitted: AdmittedCall | None = None
     backend: FileBackend | None = None
+    #: 任务级执行策略（None = 未配置 = run_command 默认全拒）。
+    exec_policy: ExecPolicy | None = None
+    exec_capabilities: ExecBackendCapabilities | None = None
+    #: 截断输出的内容寻址目录（快照 blob 目录）；None 时只报 truncated。
+    blob_dir: Path | None = None
 
     @property
     def io(self) -> FileBackend:
@@ -466,6 +488,103 @@ def _restore_file(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> Tool
     )
 
 
+def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """在 workspace 内执行一条命令（argv 数组，不经 shell）。
+
+    **默认全拒**：`ctx.exec_policy is None` 时这里也拒绝（真正的第一道门在
+    PolicyEngine：未配置 exec 的任务连审批都不会发起）。策略判定、能力判定与
+    真正的执行都在 `exec.spawn()` 里，这里只把结果翻译成 C2 的 output 形状。
+    """
+    policy = ctx.exec_policy
+    if policy is None:
+        raise ToolNotAllowed(
+            "未配置执行策略：run_command 默认全拒。"
+            "开启 exec 是显式动作（task create --allow-exec-cmd）"
+        )
+
+    # 票据已核验过目标；参数里的 cwd 必须解析到同一个目录。
+    target, rel = _write_target(ws, ctx, args.get("cwd", "."))
+    capabilities = ctx.exec_capabilities or LOCAL_EXEC_CAPABILITIES
+    argv = args["argv"]
+    pty = bool(args.get("pty", False))
+    # 凭据/密钥不进入子进程：只传策略白名单里的变量（spawn 内部还会再过滤一次）。
+    child_env = filtered_env(policy, dict(os.environ))
+
+    try:
+        result = spawn(
+            argv,
+            cwd=target,
+            env=child_env,
+            policy=policy,
+            capabilities=capabilities,
+            blob_dir=ctx.blob_dir,
+            pty=pty,
+        )
+    except PolicyDenied as exc:
+        return ToolResult(
+            "rejected",
+            "none_applied",
+            {
+                "error": str(exc),
+                "rule_id": exc.rule_id,
+                "policy": {"decision": "denied", "rule_id": exc.rule_id},
+            },
+        )
+    except PolicyUnsupported as exc:
+        return ToolResult(
+            "rejected",
+            "none_applied",
+            {
+                "error": str(exc),
+                "rule_id": "c4.exec_unsupported",
+                "policy": {
+                    "decision": "unsupported",
+                    "backend": exc.backend,
+                    "feature": exc.feature,
+                },
+            },
+        )
+
+    status = "succeeded" if result.exit_code == 0 and not result.timed_out else "failed"
+    digest = _sha(
+        "\x00".join(
+            [
+                str(list(argv)),
+                str(result.exit_code),
+                str(result.signal),
+                str(result.timed_out),
+                result.stdout,
+                result.stderr,
+            ]
+        ).encode("utf-8")
+    )
+    return ToolResult(
+        status,
+        "applied",
+        {
+            "path": rel,
+            "cwd": rel,
+            "argv": list(argv),
+            "exit_code": result.exit_code,
+            "signal": result.signal,
+            "timed_out": result.timed_out,
+            "duration_ms": result.duration_ms,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "stderr_merged": result.stderr_merged,
+            "truncated": result.truncated,
+            "stdout_ref": result.stdout_ref,
+            "stderr_ref": result.stderr_ref,
+            "after_state": f"exec:{digest}",
+            "policy": {
+                "decision": "allowed",
+                "argv0": str(argv[0]) if argv else "",
+                "pty": pty,
+            },
+        },
+    )
+
+
 # ---------------------------------------------------------------- 注册表
 
 _HANDLERS: dict[str, Callable[[Workspace, dict[str, Any], ToolContext], ToolResult]] = {
@@ -475,6 +594,7 @@ _HANDLERS: dict[str, Callable[[Workspace, dict[str, Any], ToolContext], ToolResu
     "modify_text": _modify_text,
     "delete_file": _delete_file,
     "restore_file": _restore_file,
+    "run_command": _run_command,
 }
 
 SPECS: dict[str, ToolSpec] = {
@@ -578,6 +698,34 @@ SPECS: dict[str, ToolSpec] = {
         path_arg="path",
         exposed=False,
     ),
+    "run_command": ToolSpec(
+        tool_id="run_command",
+        version="1.0",
+        description=(
+            "在 workspace 内执行一条命令。argv 必须是数组（不经 shell）；"
+            "需要任务显式开启 exec 策略，且每次都要人工审批。"
+            "PTY 只在 POSIX 可用，Windows 上会返回 unsupported。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "cwd": {"type": "string"},
+                "pty": {"type": "boolean"},
+            },
+            "required": ["argv"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_EXEC,
+        path_arg="cwd",
+        path_default=".",
+    ),
 }
 
 
@@ -645,6 +793,7 @@ class FileExecutor:
         log: object | None = None,
         snapshots: SnapshotStore | None = None,
         backend: FileBackend | None = None,
+        exec_capabilities: ExecBackendCapabilities | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -656,6 +805,7 @@ class FileExecutor:
         self._clock = clock
         self._log = log
         self._snapshots = snapshots
+        self._exec_capabilities = exec_capabilities or LOCAL_EXEC_CAPABILITIES
         self._backend = backend if backend is not None else current_backend()
         if self._backend is not current_backend():
             # "executor 用 memfs、precondition 读 local" 这种半真半假状态
@@ -817,6 +967,8 @@ class FileExecutor:
         validate_args(admitted.args, spec.input_schema)
 
         ws = Workspace(Path(admitted.workspace_root))
+        # 任务级 exec 策略在这里读：它是执行期的唯一来源，不在线程/全局里缓存。
+        task = self._tasks.get_task(admitted.request.task_id)
         ctx = ToolContext(
             snapshots=self._snapshots,
             log=self._log,
@@ -824,6 +976,9 @@ class FileExecutor:
             call_id=admitted.request.call_id,
             admitted=admitted,
             backend=self._backend,
+            exec_policy=task.exec_policy if task is not None else None,
+            exec_capabilities=self._exec_capabilities,
+            blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
         )
 
         # 已在执行：从这一刻起，这次调用算 in-flight。取消不承诺回滚。

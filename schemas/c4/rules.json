@@ -16,6 +16,10 @@
         "c4.auto",
         "c4.create_over_existing",
         "c4.delete",
+        "c4.exec",
+        "c4.exec_not_configured",
+        "c4.exec_policy_denied",
+        "c4.exec_unsupported",
         "c4.multi_resource",
         "c4.no_approval",
         "c4.no_binding",
@@ -92,7 +96,11 @@
     "dispatch.stale_revision": "goal_revision 已过期，请求基于旧目标。",
     "dispatch.target_is_directory": "目标是目录，而该动作只作用于文件。",
     "dispatch.task_mismatch": "请求的 task_id 与该 Run 实际所属的 Task 不符。",
-    "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。"
+    "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。",
+    "c4.exec": "执行命令（run_command）：最高危动作，需要人工审批；策略已显式开启。用户该怎么做：确认命令与参数无误后批准；不确定就拒绝。",
+    "c4.exec_not_configured": "任务没有配置执行策略：run_command 默认全拒。用户该怎么做：如果确实需要执行命令，用 task create --allow-exec-cmd 显式开启并重新发起。",
+    "c4.exec_policy_denied": "exec 策略拒绝了这次调用（argv 不在白名单、cwd 越界、pty 未许可等）。用户该怎么做：按提示调整命令，或在任务策略里显式放开对应项。",
+    "c4.exec_unsupported": "后端在本平台做不到请求的执行方式（例如 Windows 上请求 PTY）。用户该怎么做：不要改策略重试，改用其他方式或换平台。"
   },
   "x-rule-groups": {
     "身份失配": [
@@ -152,6 +160,11 @@
     "保留未使用": [
       "c4.unhandled",
       "dispatch.denied"
+    ],
+    "执行（exec）": [
+      "c4.exec_not_configured",
+      "c4.exec_policy_denied",
+      "c4.exec_unsupported"
     ]
   },
   "x-declared-unused": [
@@ -161,6 +174,7 @@
   "x-decision-rule-ids": [
     "c4.auto",
     "c4.delete",
+    "c4.exec",
     "c4.outside_workspace",
     "c4.overwrite"
   ]

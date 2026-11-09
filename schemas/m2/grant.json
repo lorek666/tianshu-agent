@@ -19,10 +19,11 @@
     "action": {
       "type": "string",
       "enum": [
-        "read",
         "create",
+        "delete",
+        "exec",
         "overwrite",
-        "delete"
+        "read"
       ]
     },
     "created_at": {

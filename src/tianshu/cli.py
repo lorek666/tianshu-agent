@@ -33,6 +33,7 @@ from .credentials import redact
 from .dispatcher import build_request
 from .errors import TianshuError, ToolNotAllowed
 from .events import EventLog
+from .execpolicy import ExecPolicy
 from .guard import ensure_not_blocked
 from .loop import AgentLoop, Limits, build_stack
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
@@ -76,6 +77,14 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="只读绑定目录（不能写入）")
     r.add_argument("--task", default=None, help="兼容入口的目标文本")
     r.add_argument("--out", default=None, help="兼容入口的输出文件名")
+    r.add_argument(
+        "--allow-exec-cmd",
+        action="append",
+        default=None,
+        metavar="ABS_PATH",
+        help="显式开启 run_command：允许的可执行文件绝对路径（可重复）。"
+        "不传 = exec 默认全拒；这是显式动作，不是默认白名单",
+    )
     r.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
     r.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS),
@@ -99,6 +108,14 @@ def _build_parser() -> argparse.ArgumentParser:
     t.add_argument("--data-root", type=Path, default=None)
     t.add_argument("--db", type=Path, default=DEFAULT_DB)
     t.add_argument("--json", action="store_true")
+    t.add_argument(
+        "--allow-exec-cmd",
+        action="append",
+        default=None,
+        metavar="ABS_PATH",
+        help="显式开启 run_command：允许的可执行文件绝对路径（可重复）。"
+        "不传 = exec 默认全拒；这是显式动作，不是默认白名单",
+    )
 
     w = sub.add_parser(
         "worker",
@@ -319,7 +336,12 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
               "或改用 run start --task-id", file=sys.stderr)
         return 2
     bindings = _bindings(args)
-    task = stack.tasks.create_task(args.task, bindings)
+    try:
+        exec_policy = _exec_policy(args)
+    except ValueError as exc:
+        print(f"错误：exec 策略不合法：{exc}", file=sys.stderr)
+        return 2
+    task = stack.tasks.create_task(args.task, bindings, exec_policy=exec_policy)
     result = _engine(stack, args).start(task.task_id, out_name=args.out)
     return _report(stack, result, args)
 
@@ -513,6 +535,29 @@ def _bindings(args: argparse.Namespace) -> list[dict]:
     return bindings
 
 
+EXEC_DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
+EXEC_DEFAULT_TIMEOUT_MS = 30_000
+
+
+def _exec_policy(args: argparse.Namespace):
+    """从 CLI 参数构造任务级 ExecPolicy；没给就是 None（= 全拒）。
+
+    显式开启只需要给可执行文件绝对路径；cwd 限制自动取本任务的**可写**绑定，
+    env 只放行 PATH（凭据不进子进程），并给一个明确的上限/超时。
+    """
+    cmds = getattr(args, "allow_exec_cmd", None)
+    if not cmds:
+        return None
+    roots = [b["root_path"] for b in _bindings(args) if b["mode"] == "writable"]
+    return ExecPolicy(
+        argv_allowlist=tuple(cmds),
+        cwd_roots=tuple(roots),
+        env_allowlist=("PATH",),
+        max_output_bytes=EXEC_DEFAULT_MAX_OUTPUT_BYTES,
+        timeout_ms=EXEC_DEFAULT_TIMEOUT_MS,
+    )
+
+
 def _cmd_task(args: argparse.Namespace) -> int:
     stack = _authority_stack(args.db, args.data_root)
     try:
@@ -520,7 +565,14 @@ def _cmd_task(args: argparse.Namespace) -> int:
             if not args.goal:
                 print("错误：task create 需要 --goal", file=sys.stderr)
                 return 2
-            task = stack.tasks.create_task(args.goal, _bindings(args))
+            try:
+                exec_policy = _exec_policy(args)
+            except ValueError as exc:
+                print(f"错误：exec 策略不合法：{exc}", file=sys.stderr)
+                return 2
+            task = stack.tasks.create_task(
+                args.goal, _bindings(args), exec_policy=exec_policy
+            )
             return _print_task(task, args)
         if args.action == "show":
             task = stack.tasks.get_task(args.task_id or "")
@@ -554,6 +606,7 @@ def _task_json(task) -> dict:
         "goal_revision": task.goal_revision,
         "lease_epoch": task.lease_epoch,
         "active_run_id": task.active_run_id,
+        "exec_policy": task.exec_policy.to_dict() if task.exec_policy else None,
         "status": task.status,
         "workspaces": [b.to_dict() for b in task.workspaces],
         "created_at": task.created_at,
