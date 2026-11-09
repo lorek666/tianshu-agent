@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tianshu import host, ipc
+from tianshu import cli, host, ipc
 
 # --------------------------------------------------------------------------- 夹具
 
@@ -461,3 +461,27 @@ def test_supervisor_reports_failed_spawn(root: Path) -> None:
         supervisor.ensure()
 
 
+
+
+# --------------------------------------------------------------------------- CLI 接线
+
+
+def test_cli_host_status_reports_not_running(root: Path, capsys) -> None:
+    assert cli.main(["host", "status", "--data-root", str(root)]) == 1
+    assert "没有在运行" in capsys.readouterr().out
+
+
+def test_cli_host_stop_is_noop_when_not_running(root: Path, capsys) -> None:
+    assert cli.main(["host", "stop", "--data-root", str(root)]) == 0
+    assert "Host" in capsys.readouterr().out
+
+
+def test_cli_host_status_reports_running_host(root: Path) -> None:
+    _, port = _start_bridge(root)
+    host.write_host_info(
+        root, host.HostInfo(pid=os.getpid(), port=port, token="tok", started_at=1)
+    )
+    try:
+        assert cli.main(["host", "status", "--data-root", str(root)]) == 0
+    finally:
+        host.clear_host_info(root, pid=os.getpid())

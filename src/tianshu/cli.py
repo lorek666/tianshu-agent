@@ -171,6 +171,43 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument("--db", type=Path, default=DEFAULT_DB)
     v.add_argument("--json", action="store_true")
 
+    d = sub.add_parser(
+        "daemon",
+        help="常驻守护进程：长驻、驱动任务、崩溃恢复，并通过本地 IPC 对外提供控制面；"
+        "不是一次性 drain（那是 worker）",
+    )
+    d.add_argument("--data-root", type=Path, default=None,
+                   help="运行数据根（默认平台标准目录，可用 TIANSHU_DATA_ROOT 覆盖）")
+    d.add_argument("--model", default="scripted",
+                   choices=["scripted", "openai-compatible"])
+    d.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS))
+    d.add_argument("--model-name", default=None)
+    d.add_argument("--base-url", default=None)
+    d.add_argument("--max-turns", type=int, default=8)
+    d.add_argument("--max-total-tokens", type=int, default=20_000)
+
+    h = sub.add_parser(
+        "host",
+        help="桌面外壳：单实例 + 监护 daemon + 把 UI 的 HTTP/SSE 桥到本地 IPC",
+    )
+    h.add_argument("action", nargs="?", default="run", choices=["run", "stop", "status"])
+    h.add_argument("--data-root", type=Path, default=None,
+                   help="运行数据根（默认平台标准目录，可用 TIANSHU_DATA_ROOT 覆盖）")
+    h.add_argument("--port", type=int, default=0, help="UI 端口；0 = 随机（推荐）")
+    h.add_argument("--ui-dir", type=Path, default=None,
+                   help="静态资源目录；默认仓库内 ui/dist")
+    h.add_argument("--open", action="store_true", help="启动后打开系统浏览器")
+    h.add_argument("--no-supervise", action="store_true",
+                   help="不监护 daemon 崩溃重启（调试用）")
+    h.add_argument("--model", default="scripted",
+                   choices=["scripted", "openai-compatible"])
+    h.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS))
+    h.add_argument("--model-name", default=None)
+    h.add_argument("--base-url", default=None)
+    h.add_argument("--max-turns", type=int, default=8)
+    h.add_argument("--max-total-tokens", type=int, default=20_000)
+    h.add_argument("--json", action="store_true")
+
     ev = sub.add_parser(
         "evaluate",
         help="评测：干净 fixture 上换模型跑固定 case，产出可比分数与失败归因；"
@@ -845,6 +882,74 @@ def _cmd_undo(args: argparse.Namespace) -> int:
             stack.log.close()
 
 
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    """常驻入口。**只做参数装配**：驱动、恢复、IPC 全在 daemon 模块里。
+
+    进程内不提前装配 Stack：daemon 自己要在 bind 之前完成恢复，两处装配会变成
+    "到底哪一份是权威"的问题。
+    """
+    from .daemon import serve
+    from .ipc import default_data_root
+
+    data_root = Path(args.data_root or default_data_root())
+    serve(
+        data_root,
+        model=_model_from(args),
+        limits=Limits(args.max_turns, args.max_total_tokens),
+    )
+    return 0
+
+
+def _cmd_host(args: argparse.Namespace) -> int:
+    from .host import read_host_info, run_host, stop_host
+    from .ipc import default_data_root
+
+    data_root = Path(args.data_root or default_data_root())
+    if args.action == "stop":
+        return stop_host(data_root)
+    if args.action == "status":
+        info = read_host_info(data_root)
+        if args.json:
+            payload = None if info is None else {
+                "running": True,
+                "pid": info.pid,
+                "port": info.port,
+                "url": f"http://127.0.0.1:{info.port}/",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        elif info is None:
+            print("Host 没有在运行")
+        else:
+            print(f"Host 在跑：http://127.0.0.1:{info.port}/  (pid={info.pid})")
+        return 0 if info is not None else 1
+
+    ui_dir = args.ui_dir
+    if ui_dir is None:
+        ui_dir = Path(__file__).resolve().parents[2] / "ui" / "dist"
+    command = [
+        sys.executable, "-m", "tianshu", "daemon",
+        "--data-root", str(data_root),
+        "--model", args.model,
+        "--max-turns", str(args.max_turns),
+        "--max-total-tokens", str(args.max_total_tokens),
+    ]
+    for flag, value in (
+        ("--provider", args.provider),
+        ("--model-name", args.model_name),
+        ("--base-url", args.base_url),
+    ):
+        if value:
+            command += [flag, value]
+    return run_host(
+        data_root,
+        ui_dir=ui_dir,
+        daemon_command=command,
+        port=args.port,
+        open_browser=args.open,
+        supervise=not args.no_supervise,
+    )
+
+
 def _cmd_replay(args: argparse.Namespace) -> int:
     log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
     try:
@@ -1103,6 +1208,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_task(args)
         if args.cmd == "worker":
             return _cmd_worker(args)
+        if args.cmd == "daemon":
+            return _cmd_daemon(args)
+        if args.cmd == "host":
+            return _cmd_host(args)
         if args.cmd == "recover":
             return _cmd_recover(args)
         if args.cmd == "undo":
