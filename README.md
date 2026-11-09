@@ -66,7 +66,7 @@ src/tianshu/
 
 ```bash
 uv sync --python 3.12
-uv run pytest                       # 296 个测试（M0/M1/M2 全量）
+uv run pytest                       # M0/M1/M2 全量（数量随工单增长，见提交记录）
 uv run ruff check .
 
 # 离线演示（scripted 模型，不调真实模型）
