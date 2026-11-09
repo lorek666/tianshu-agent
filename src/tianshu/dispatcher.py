@@ -74,6 +74,7 @@ from .permissions import (
     PolicyEngine,
 )
 from .receipt import build_receipt
+from .rules import check_rule_id
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
 from .tasks import RUN_RUNNING, Run, Task, TaskStore
@@ -431,6 +432,9 @@ class Dispatcher:
             auth.bindings,
             request.preconditions or {},
         )
+        # 放行/需审批的判定结果也会写进 payload.rule_id（dispatch.requested），
+        # 所以和拒绝路径一样要过同一张表；否则"为什么放行"仍然没有契约。
+        check_rule_id(decision.rule_id, where="prepare:classify")
 
         if decision.is_denied:
             return self._reject(
@@ -1148,6 +1152,8 @@ class Dispatcher:
         *,
         event: str,
     ) -> DispatchDecision:
+        # 校验在**任何写入之前**：未登记的编号是代码 bug，不能先落一条日志再让人猜。
+        rule_id = check_rule_id(rule_id, where=f"_reject:{event}")
         self._store_request(request, args, STATE_REJECTED, reason, rule_id)
         self._append(
             request,
@@ -1169,6 +1175,7 @@ class Dispatcher:
     def _reject_runtime(
         self, request: ActionRequest, exc: BaseException, rule_id: str
     ) -> ToolResult:
+        rule_id = check_rule_id(rule_id, where="_reject_runtime")
         reason = f"{type(exc).__name__}: {exc}"
         self._set_request_state(request.request_id, STATE_REJECTED)
         self._append(
@@ -1200,6 +1207,7 @@ class Dispatcher:
             JobLost: "dispatch.claim_lost",
             LeaseLost: "dispatch.lease_lost",
         }.get(type(exc), "dispatch.refused")
+        rule_id = check_rule_id(rule_id, where="_abort_dispatch")
 
         with self._log.transaction():
             # 只在"还没人把它作废"时推进：撤销已经把它标成 revoked 的，
