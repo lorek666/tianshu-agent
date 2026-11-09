@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from .errors import TianshuError
 
@@ -224,6 +225,41 @@ class Model(Protocol):
     ) -> ModelResponse: ...
 
 
+@dataclass(frozen=True)
+class ModelIdentity:
+    """一次模型调用"用谁、花了什么"的身份，给 F13 成本核算用。
+
+    三个字段各有各的问题，不能互相顶替：
+
+    - `adapter`：实际用的协议适配器（`openai-compatible` / `anthropic` / ...）。
+      它总是确定的，也是排查"为什么这条价格查不到"的第一条线索。
+    - `vendor`：**价目表认的厂商**。协议 ≠ 厂商：`openai-compatible` 可以指向
+      代理站、自建 vLLM、Bedrock 转发，那里的价格由对方定。所以只有端点确实是
+      官方主机时这里才有值，否则 `None`（= 价格未知，不是免费）。
+    - `model`：请求里真正发出去的模型 id（不做归一化）。
+    """
+
+    adapter: str
+    vendor: str | None
+    model: str
+
+
+def identity_of(model: object) -> ModelIdentity | None:
+    """取模型的可选计价身份。没有这条能力就返回 `None`（未知），不靠猜。
+
+    用可选能力而不是往 `Model` 协议里加必需方法：协议是"能补全"的最小契约，
+    测试替身、录制回放替身都没有真实厂商身份，逼它们实现只是在鼓励伪造。
+    """
+    getter = getattr(model, "price_identity", None)
+    if not callable(getter):
+        return None
+    try:
+        identity = getter()
+    except Exception:  # noqa: BLE001 - 身份取不到只影响费用展示，不该拖垮调用
+        return None
+    return identity if isinstance(identity, ModelIdentity) else None
+
+
 # ---------------------------------------------------------------- 传输层
 
 
@@ -286,6 +322,14 @@ class ScriptedModel:
         self._responses = list(responses)
         self.calls = 0
 
+    def price_identity(self) -> ModelIdentity:
+        """脚本模型没有真实厂商：适配器名照实给，厂商与价格留未知。
+
+        这一点很关键——它让"没有价格"的路径在本地就能跑到：CLI 的
+        `--model scripted` 走的就是这条，输出里看到的是"费用未知"而不是 `0`。
+        """
+        return ModelIdentity(adapter="scripted", vendor=None, model="")
+
     def complete(self, messages, tools) -> ModelResponse:  # noqa: ARG002
         self.calls += 1
         if not self._responses:
@@ -314,6 +358,13 @@ class RecordedModel:
 
 class _HttpModel:
     """两个线上 adapter 的公共骨架：装配请求 / 解析响应 / 错误分类。"""
+
+    #: 协议适配器名（写进事件，永远确定）。
+    ADAPTER = ""
+    #: 价目表厂商名；只有端点是官方主机时才认。
+    VENDOR = ""
+    #: 官方端点主机名。价格是厂商定的，换主机就换个价目表——我们只认官方的。
+    OFFICIAL_HOST = ""
 
     def __init__(
         self,
@@ -346,6 +397,15 @@ class _HttpModel:
         )
         return self._parse(data)
 
+    def price_identity(self) -> ModelIdentity:
+        """见 `ModelIdentity`：端点不是官方主机时厂商记为未知。"""
+        official = _is_official_endpoint(self.base_url, self.OFFICIAL_HOST)
+        return ModelIdentity(
+            adapter=self.ADAPTER or type(self).__name__,
+            vendor=self.VENDOR if official else None,
+            model=self.model,
+        )
+
     def _request(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> tuple[str, dict[str, Any], dict[str, str]]:  # pragma: no cover - 抽象
@@ -359,7 +419,14 @@ class OpenAICompatibleModel(_HttpModel):
     """第一个线上协议：OpenAI-compatible 的 /chat/completions。
 
     覆盖 OpenAI / DeepSeek / Moonshot / 本地 vLLM / Ollama 的 /v1 接口。
+
+    这也是"协议 ≠ 厂商"最典型的地方：同一个 adapter 指向代理站或自建服务时，
+    价格不由 OpenAI 定。所以只有 `api.openai.com` 才认 OpenAI 的价目表。
     """
+
+    ADAPTER = "openai-compatible"
+    VENDOR = "openai"
+    OFFICIAL_HOST = "api.openai.com"
 
     def __init__(
         self,
@@ -453,6 +520,10 @@ class AnthropicMessagesModel(_HttpModel):
       线上还可能给 `pause_turn`（服务端把长轮次挂起），v1 没有续接它的能力，
       所以**不映射**、直接报错，而不是猜成 `end_turn`
     """
+
+    ADAPTER = "anthropic"
+    VENDOR = "anthropic"
+    OFFICIAL_HOST = "api.anthropic.com"
 
     API_VERSION = "2023-06-01"
 
@@ -703,11 +774,28 @@ def to_anthropic_messages(
     return "\n\n".join(system_parts), out
 
 
+def _is_official_endpoint(base_url: str, host: str) -> bool:
+    """端点是不是厂商官方主机。
+
+    只认 https + 精确主机名。`http://api.openai.com`（明文）与
+    `api.openai.com.evil.example`（后缀陷阱）都不算——价格表绑的是"你确实在跟
+    这家厂商结算"，认错一次就会给出一个错的金额。
+    """
+    if not host:
+        return False
+    try:
+        parsed = urlsplit(base_url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() == host.lower()
+
+
 __all__ = [
     "FINISH_REASONS",
     "AnthropicMessagesModel",
     "Model",
     "ModelError",
+    "ModelIdentity",
     "ModelResponse",
     "OpenAICompatibleModel",
     "RecordedModel",
@@ -715,6 +803,7 @@ __all__ = [
     "ToolCall",
     "Transport",
     "UrllibTransport",
+    "identity_of",
     "normalize_usage",
     "to_anthropic_messages",
 ]

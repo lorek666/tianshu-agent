@@ -66,8 +66,9 @@ from .jobs import (
     renew_claim,
 )
 from .leases import DEFAULT_TTL_MS, LeaseStore, ProcessIdentity
-from .model import Model, ModelResponse, ToolCall
+from .model import Model, ModelResponse, ToolCall, identity_of
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
+from .pricing import cost_record
 from .snapshot import SnapshotStore
 from .tasks import (
     CANCEL_REASON,
@@ -130,6 +131,13 @@ class RunResult:
     turns: int = 0
     tokens: int = 0
     unknown_usage_calls: int = 0
+    # ---- F13 成本可见 ----
+    #: 已知费用之和，单位**微美元**（1e-6 USD）。名字里带单位：金额与"多少 token"
+    #: 是两种量，混在一个裸整数里迟早被读错。
+    cost_total_micros: int = 0
+    #: 费用**未知**的调用次数。与 `cost_total_micros` 分开报是硬要求：
+    #: "花了 0 元"和"不知道花了多少"是两件事，合成一个数字一定有人读错。
+    unknown_cost_calls: int = 0
     receipts: list[str] = field(default_factory=list)
     n_applied: int = 0
     n_unknown: int = 0
@@ -150,6 +158,17 @@ class RunResult:
         return self.state in (RUN_PAUSED, RUN_WAITING_APPROVAL, RUN_RECONCILING)
 
 
+#: 预算账本里由 `_Progress` 显式读写的键。剩下的键（未来新增的账目）由
+#: `_Progress.budget` 原样透传，不会被重复计算或丢掉。
+_LEDGER_OWNED_KEYS = frozenset({
+    "turns",
+    "tokens",
+    "unknown_usage_calls",
+    "cost_total_micros",
+    "unknown_cost_calls",
+})
+
+
 @dataclass
 class _Progress:
     """一份可持久化的执行进度（= RunCursor 的运行时视图）。"""
@@ -166,6 +185,9 @@ class _Progress:
     turns: int = 0
     tokens: int = 0
     unknown_usage_calls: int = 0
+    #: 已知费用累计（微美元）与费用未知的调用数。跟着游标走，resume 之后不丢账。
+    cost_total_micros: int = 0
+    unknown_cost_calls: int = 0
     n_applied: int = 0
     n_unknown: int = 0
     budget: dict[str, Any] = field(default_factory=dict)
@@ -192,6 +214,8 @@ class _Progress:
                 "turns": self.turns,
                 "tokens": self.tokens,
                 "unknown_usage_calls": self.unknown_usage_calls,
+                "cost_total_micros": self.cost_total_micros,
+                "unknown_cost_calls": self.unknown_cost_calls,
                 **self.budget,
             },
         )
@@ -216,8 +240,10 @@ class _Progress:
             turns=int(ledger.get("turns", 0) or 0),
             tokens=int(ledger.get("tokens", 0) or 0),
             unknown_usage_calls=int(ledger.get("unknown_usage_calls", 0) or 0),
+            cost_total_micros=int(ledger.get("cost_total_micros", 0) or 0),
+            unknown_cost_calls=int(ledger.get("unknown_cost_calls", 0) or 0),
             budget={k: v for k, v in ledger.items()
-                    if k not in ("turns", "tokens", "unknown_usage_calls")},
+                    if k not in _LEDGER_OWNED_KEYS},
         )
 
 
@@ -754,6 +780,20 @@ class AgentLoop:
             progress.tokens += (inp or 0) + (outp or 0)
         progress.turns = hop
 
+        # F13：把这一轮换算成钱。**查不到价格就记"未知的调用次数"**，
+        # 不把 None 加进总额——否则"花了 0 元"和"不知道花了多少"会被抹成同一件事。
+        identity = identity_of(self._model)
+        cost = cost_record(
+            provider=identity.vendor if identity is not None else None,
+            model=identity.model if identity is not None else None,
+            usage=resp.usage,
+            adapter=identity.adapter if identity is not None else "",
+        )
+        if cost.cost is None:
+            progress.unknown_cost_calls += 1
+        else:
+            progress.cost_total_micros += cost.cost
+
         assistant = _assistant_message(resp)
         progress.messages.append(assistant)
 
@@ -850,7 +890,13 @@ class AgentLoop:
                 tx.append(
                     run_id,
                     "model.result",
-                    {"request_id": request_id, **resp.to_payload()},
+                    {
+                        "request_id": request_id,
+                        **resp.to_payload(),
+                        # F13：这一次调用的身份与费用。只记身份 + 结果，
+                        # 不把整张价格表塞进每一轮的事件里。
+                        "cost": cost.to_payload(),
+                    },
                     actor_kind="core",
                     idem_key=request_id,
                 )
@@ -1443,6 +1489,8 @@ class AgentLoop:
             turns=progress.turns,
             tokens=progress.tokens,
             unknown_usage_calls=progress.unknown_usage_calls,
+            cost_total_micros=progress.cost_total_micros,
+            unknown_cost_calls=progress.unknown_cost_calls,
             receipts=self._receipt_ids(run_id),
             n_applied=progress.n_applied,
             n_unknown=progress.n_unknown,
