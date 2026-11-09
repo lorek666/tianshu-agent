@@ -108,7 +108,7 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     """进程是否还活着。
 
     POSIX 用 signal 0；Windows 用 OpenProcess + WaitForSingleObject，
@@ -484,7 +484,7 @@ class LeaseStore:
         now = self._clock() if now is None else now
         if row["expires_at"] <= now:
             return True
-        if not _pid_alive(row["owner_pid"]):
+        if not pid_alive(row["owner_pid"]):
             return True
         acquired_wall = row["wall_acquired_at"] if "wall_acquired_at" in row.keys() else 0
         started = self._pid_started(row["owner_pid"])
@@ -770,6 +770,7 @@ def _unlock(fd: int) -> None:
 
 
 __all__ = [
+    "pid_alive",
     "DEFAULT_TTL_MS",
     "HEARTBEAT_MS",
     "GUARD_TIMEOUT_MS",

@@ -705,14 +705,22 @@ class AgentLoop:
         tool_id = proposal["tool_id"]
         args = proposal["args"]
 
-        if proposal.get("kind") == "read":
-            self._record_result(
-                run_id, proposal, self._exec_read(run_id, task, call_id, tool_id, args)
-            )
-            self._absorb(progress, call_id, self._results[call_id])
+        # 0) 这条调用是不是已经有过结果（崩溃、接管或 recover 之后）？
+        #
+        # **事件优先于派发记录，也优先于"再跑一次"**：`recover` 核查完会补一条
+        # `tool.result`，而派发记录可能永远停在 `intent`（恢复流程不改派发记录）。
+        # 先看派发记录的话，一个已经被核查清楚的调用会让 Run 永远停在
+        # RECONCILING；而读操作不看这里的话，"结果已写、游标没写"的窗口会在
+        # 恢复后补出第二条一模一样的工具消息，replay 立刻对不上。
+        recorded = self._results.get(call_id)
+        if recorded is None and proposal.get("kind") == "read":
+            recorded = self._record_read(run_id, task, proposal)
+            self._record_result(run_id, proposal, recorded)
+            recorded = self._results[call_id]
+        if recorded is not None:
+            self._absorb(progress, call_id, recorded)
             return "done"
 
-        # 1) 这条调用是不是已经派发过（崩溃或上一轮 resume 留下的记录）？
         record = self._dispatcher.dispatch_record(run_id, call_id)
         if record is not None:
             if record.state in (DISPATCH_INTENT, DISPATCH_EXECUTING):
@@ -722,10 +730,6 @@ class AgentLoop:
                     run_id, RUN_RECONCILING, claim=claim, reason="inflight_dispatch"
                 )
                 return "reconciling"
-            recorded = self._results.get(call_id)
-            if recorded is not None:
-                self._absorb(progress, call_id, recorded)
-                return "done"
             if record.state == DISPATCH_FINISHED:  # pragma: no cover - 事件缺失
                 raise TianshuError(
                     f"派发记录说已完成，但找不到 tool.result：{call_id}"
@@ -832,6 +836,11 @@ class AgentLoop:
         )
         return "done"
 
+    def _record_read(self, run_id: str, task: Task, proposal) -> ToolResult:
+        return self._exec_read(
+            run_id, task, proposal["call_id"], proposal["tool_id"], proposal["args"]
+        )
+
     def _exec_read(
         self,
         run_id: str,
@@ -920,6 +929,14 @@ class AgentLoop:
 
         progress.n_applied = n_applied
         progress.n_unknown = n_unknown
+
+        # 这里刻意**不**从事件补齐游标里的消息。
+        #
+        # 消息、已完成调用、待执行提案是同一个事务写的，所以游标只可能整体落后
+        # 一步，落后的那一步对应的调用必然还在 `pending` 里，由 `_advance` 按序
+        # 补记。反过来"按事件把缺的消息补到末尾"看起来更周到，实际会在中间缺
+        # 一条时把顺序排错——而消息顺序错了，`messages_hash` 立刻对不上，
+        # replay 报的红比它想修的问题更严重。
 
     def _record_result(
         self,
@@ -1192,9 +1209,13 @@ class AgentLoop:
             mine = self.current_claim(run.run_id)
             if mine is not None:
                 return mine
-            # 别人的 claim：可能还活着，也可能只是没到期。交给调用方判断
-            # （RUNNING 状态 = 还活着 → 拒绝）。
-            return None if run.state == RUN_RUNNING else self._claims.claim(job.job_id)
+            if self._claims.is_live(job):
+                # 别人正在跑：不抢。
+                return None
+            # 死掉的/过期的 owner：接管。这里必须真的判断"还活着吗"，
+            # 不能只看 Run 的状态——崩溃的 Run 会永远停在 RUNNING，
+            # 只按状态判断就等于"崩一次就再也不能接手"。
+            return self._claims.claim(job.job_id)
         if job.state == JOB_PENDING:
             return self._claims.claim(job.job_id)
         # 作业已经收尾（done/cancelled），但 Run 还没结束：新开一个作业

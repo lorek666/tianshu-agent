@@ -768,3 +768,170 @@ def test_chat_only_task_cannot_touch_files(env):
     assert result.effect_state == "none_applied"
     assert not (env.ws / "a.md").exists()
     assert env.intents(result.run_id) == []
+
+
+# ---------------------------------------------------------------- 真崩溃 + 接管
+
+
+def test_crashed_dispatch_becomes_reconciling_then_resume_after_recover(tmp_path):
+    """进程在 intent 之后、写入之前被硬杀：接管方既不能重派，也不能当成功。
+
+    这是"重启不丢已完成工具、不重复副作用"的核心场景，必须用**真子进程**
+    硬退来造：进程内构造的状态无法证明"崩溃后留下的持久状态到底是什么样"。
+    """
+    import os
+    import subprocess
+    import sys
+
+    from tianshu.events import EventLog
+    from tianshu.leases import ProcessIdentity
+    from tianshu.recovery import recover_run
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.md").write_text("内容\n", encoding="utf-8")
+    db = tmp_path / "crash.db"
+
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    child = f"""
+import sys
+sys.path.insert(0, {src!r})
+from tianshu.cli import main
+sys.exit(main(["run", "--workspace", {str(ws)!r}, "--task", "写报告",
+               "--out", "r.md", "--model", "scripted",
+               "--db", {str(db)!r}]))
+"""
+    env = dict(os.environ)
+    env["TIANSHU_FAILPOINT"] = "after_intent"
+    proc = subprocess.run(
+        [sys.executable, "-c", child], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 77, f"应当在 after_intent 硬退，实际 {proc.returncode}"
+
+    log = EventLog(db, blob_dir=db.parent / "blobs")
+    try:
+        row = log.conn.execute(
+            "SELECT run_id FROM events WHERE type='run.start' ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        run_id = row["run_id"]
+        events = [e.type for e in log.read_run(run_id)]
+        assert events.count("tool.intent") == 1, "写入的 intent 已提交"
+        writes = [
+            e for e in log.read_run(run_id)
+            if e.type == "tool.result" and e.payload.get("tool_id") == "create_report"
+        ]
+        assert writes == [], "崩溃点在写入之前：不该有写入的结果"
+        assert not (ws / "r.md").exists()
+
+        stack = build_stack(
+            log,
+            data_root=db.parent,
+            identity=ProcessIdentity.mint(),
+        )
+        engine = AgentLoop(
+            tasks=stack.tasks,
+            leases=stack.leases,
+            claims=stack.claims,
+            dispatcher=stack.dispatcher,
+            approvals=stack.approvals,
+            snapshots=stack.snapshots,
+            model=ScriptedModel([_end()]),
+            limits=Limits(8, 20_000),
+        )
+        # 死掉的 owner 必须能被接手：只按 Run 状态判断的话，崩溃的 Run 停在
+        # RUNNING 就永远没人能接。
+        first = engine.resume_run(run_id)
+        assert first.state == "reconciling"
+        assert "recover" in (first.error or "")
+        assert env_types(log, run_id).count("tool.intent") == 1, "不许重派"
+
+        report = recover_run(log, run_id, ws, stack.snapshots)
+        assert report.none_applied == ["c2"], "写前就崩了，应当判为未执行"
+
+        second = engine.resume_run(run_id)
+        assert second.state in ("succeeded", "failed"), second.error
+        assert env_types(log, run_id).count("tool.intent") <= 2
+    finally:
+        log.close()
+
+
+def env_types(log: EventLog, run_id: str) -> list[str]:
+    return [e.type for e in log.read_run(run_id)]
+
+
+def test_read_result_survives_cursor_lag_without_duplicate_message(env):
+    """读操作的结果已落库、游标还没更新：恢复后不能补出第二条工具消息。
+
+    补出两条的话，下一轮 `messages_hash` 就和 replay 重建的序列对不上——
+    "能重放"这句话立刻变成假的。读操作不会有副作用，可以直接复用旧结果。
+    """
+    engine = env.engine([
+        _write_turn([
+            ToolCall("r1", "read_text", {"path": "note.md"}),
+            _create("a.md", "甲", "c1"),
+        ]),
+        _end(),
+    ])
+    task = env.task()
+
+    def hook(run_id: str, call_id: str) -> None:
+        if call_id == "c1":
+            env.stack.tasks.request_pause(run_id)
+
+    env.dispatcher.hook = hook
+    result = engine.start(task.task_id)
+    env.dispatcher.hook = None
+    assert result.state == RUN_PAUSED
+
+    # 把游标退回到"刚提交完模型结果、两个调用都还没做"的样子：
+    # 这正是"读操作的结果已落库、游标没跟上"的崩溃窗口。
+    #
+    # 只可能是这个形状：消息、已完成调用、待执行提案同一次提交，所以游标落后
+    # 的那一步一定还在 pending 里，不会出现"结果没有、提案也没了"的中间态。
+    stored = env.stack.tasks.load_cursor(result.run_id)
+    stale = stored[0]
+    assert [m.get("role") for m in stale.messages][:3] == [
+        "system", "user", "assistant"
+    ]
+    stale.messages = stale.messages[:3]
+    stale.completed_call_ids = []
+    stale.pending_proposals = [
+        {
+            "call_id": "r1",
+            "tool_id": "read_text",
+            "args": {"path": "note.md"},
+            "kind": "read",
+            "request_id": None,
+            "approval_id": None,
+            "attempt_id": 1,
+        },
+        {
+            "call_id": "c1",
+            "tool_id": "create_report",
+            "args": {"name": "a.md", "content": "甲"},
+            "kind": "write",
+            "request_id": None,
+            "approval_id": None,
+            "attempt_id": 1,
+        },
+    ]
+    env.log.conn.execute(
+        "UPDATE run_cursors SET payload=? WHERE run_id=?",
+        (canonical_bytes(stale.to_dict()).decode("utf-8"), result.run_id),
+    )
+
+    resumed = env.engine([_end()]).resume_run(result.run_id)
+    assert resumed.state == "succeeded", resumed.error
+
+    results = [
+        e.payload["call_id"]
+        for e in env.log.read_run(result.run_id)
+        if e.type == "tool.result"
+    ]
+    assert results.count("r1") == 1, "读操作不得被记两次结果"
+
+    from tianshu.replay import replay as replay_run
+
+    report = replay_run(env.log, result.run_id)
+    assert report.ok, report.problems
+    assert (env.ws / "a.md").read_text(encoding="utf-8") == "甲"

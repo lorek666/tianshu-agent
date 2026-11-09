@@ -37,7 +37,7 @@ from typing import Any
 
 from .errors import TianshuError
 from .events import EventLog
-from .leases import DEFAULT_TTL_MS, ProcessIdentity, current_process
+from .leases import DEFAULT_TTL_MS, ProcessIdentity, current_process, pid_alive
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -413,6 +413,22 @@ class JobStore:
                 "UPDATE jobs SET cancel_requested=1 WHERE job_id=?", (job_id,)
             )
         return self.get(job_id)  # type: ignore[return-value]
+
+    def is_live(self, job: Job) -> bool:
+        """这个作业现在是否由**一个活着的 owner** 持有。
+
+        三件事都要成立：还在 claimed 状态、deadline 没过、owner 进程还在。
+        只看前两条会把"进程已经崩了但 deadline 还没到"判成"别人正在跑"，
+        于是崩溃后的 Run 永远 resume 不了——它停在 RUNNING，既没 owner 在跑，
+        也没有人允许接管。
+        """
+        if job.state != JOB_CLAIMED:
+            return False
+        if job.deadline_at is not None and job.deadline_at <= self._clock():
+            return False
+        if not job.owner_pid:
+            return False
+        return pid_alive(job.owner_pid)
 
     def cancel(self, job_id: str, *, reason: str = "cancelled") -> Job | None:
         """由控制端直接终结作业（不经 claim）。
