@@ -1,0 +1,79 @@
+name: CI
+
+# 本仓库唯一的门禁。CONTRIBUTING.md §5「提交前检查」要求的两条命令，
+# 和这里跑的是逐字相同的两条——本地绿而 CI 红，只可能是环境差异，
+# 不是命令差异。
+#
+# 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
+# 3.13 不在支持范围内，矩阵里加它等于给自己造一个必然红的目标。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支连续推送时取消上一轮，省 runner 的时间也省队列
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}) · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台红了不要取消其他平台：否则看不到全貌，
+      # 报告只能写"矩阵失败"，没法说清是谁、为什么。
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          # Windows 暂不进入矩阵：首次试跑 12 项失败，清单与根因见
+          # https://github.com/lorek666/tianshu-agent/issues/21
+          # 摘除而不是 continue-on-error——红就是红，不装作绿。
+          # 该 issue 收敛后把 windows-latest 加回来。
+          # - windows-latest
+        python:
+          - "3.12"
+    defaults:
+      run:
+        # 三个平台统一用 bash（Windows runner 自带 Git Bash）。
+        # 这样这条门禁测的是测试套件本身，而不是 PowerShell 和 bash 的引号差异。
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # 缓存 uv 的缓存目录：下载过的 Python 解释器、wheel 都复用
+          enable-cache: true
+          # 只有锁文件变了才换缓存键——依赖没动就命中同一份
+          cache-dependency-glob: uv.lock
+
+      - name: 安装 Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: 锁文件漂移门禁
+        # 这条是整个 workflow 里最重要的一条，也是最容易写错的一条。
+        # 实测（uv 0.11.7）：`uv sync --frozen` 在 pyproject 改过、锁文件过期时
+        # 仍然 exit 0——"使用锁文件"不等于"校验锁文件"。只有 `uv lock --check`
+        # 会让漂移变红。没有这条，锁文件可以悄悄烂掉而 CI 一直绿。
+        run: uv lock --check
+
+      - name: 同步依赖（只读锁文件）
+        run: uv sync --frozen
+
+      - name: Ruff
+        # --frozen 让 uv run 不去动锁文件；否则 pyproject 一有风吹草动，
+        # uv run 会顺手把锁文件改掉，上面那条漂移门禁就白设了。
+        run: uv run --frozen ruff check .
+
+      - name: Pytest
+        # pyproject 的 addopts 里已经有 -q，直接 `uv run pytest` 会叠加成 -qq，
+        # 把 "514 passed" 那行汇总吞掉——CI 日志里就看不见到底跑过多少。
+        # 所以显式清空 addopts，再给一个 -q。
+        run: uv run --frozen pytest -o addopts="" -q
