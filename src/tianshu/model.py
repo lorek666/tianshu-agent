@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from .capability import CapabilityProfile
 from .errors import TianshuError
 
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
@@ -330,6 +331,21 @@ class ScriptedModel:
         """
         return ModelIdentity(adapter="scripted", vendor=None, model="")
 
+    def capability_profile(self) -> CapabilityProfile:
+        """脚本模型能做什么是**它自己实现出来的**，所以可以如实声明。
+
+        它按脚本逐条吐 `ModelResponse`，因此"能返回工具调用"和"一轮多个调用"
+        都是真的；窗口与 thinking 没有概念，留未声明（不是 false）。
+        """
+        return CapabilityProfile(
+            provider="scripted",
+            model="scripted",
+            supports_tool_calling=True,
+            supports_parallel_tool_calls=True,
+            supports_streaming=False,
+            declared_by="ScriptedModel（脚本替身）",
+        )
+
     def complete(self, messages, tools) -> ModelResponse:  # noqa: ARG002
         self.calls += 1
         if not self._responses:
@@ -346,6 +362,16 @@ class RecordedModel:
 
     def __init__(self, responses: list[ModelResponse]) -> None:
         self._responses = list(responses)
+
+    def capability_profile(self) -> CapabilityProfile:
+        """录制的响应可能含工具调用（它只是把当时的内容再吐一遍），所以声明
+        `tool_calling`；流式/thinking/窗口都不声明——它压根没有这些概念。"""
+        return CapabilityProfile(
+            provider="recorded",
+            model="recorded",
+            supports_tool_calling=True,
+            declared_by="RecordedModel（录制回放替身）",
+        )
 
     def complete(self, messages, tools) -> ModelResponse:  # noqa: ARG002
         if not self._responses:
@@ -365,6 +391,34 @@ class _HttpModel:
     VENDOR = ""
     #: 官方端点主机名。价格是厂商定的，换主机就换个价目表——我们只认官方的。
     OFFICIAL_HOST = ""
+
+    # ---- 能力声明（F9a）----
+    #: 两个协议都支持 tools，而且这两个 adapter 确实在发 tools。
+    SUPPORTS_TOOL_CALLING = True
+    #: 一轮里返回多个工具调用：两边协议都允许，主循环也会逐个派发。
+    SUPPORTS_PARALLEL_TOOL_CALLS = True
+    #: 这两个 adapter 只实现了非流式 `complete()`，流式没人消费。
+    SUPPORTS_STREAMING = False
+    #: `thinking` / 扩展思考：不同 provider、不同模型差异太大，一律不声明。
+    SUPPORTS_THINKING: bool | None = None
+    #: 上下文窗口：窗口在供应商文档里是 token，没有 tokenizer 不换算成字节。
+    CONTEXT_WINDOW_BYTES: int | None = None
+
+    def capability_profile(self) -> CapabilityProfile:
+        """这条 adapter + 这个模型的实际能力（F9a 准入用）。
+
+        声明的是**适配器与模型合起来**的能力：运行时能用的就是两者的交集。
+        """
+        return CapabilityProfile(
+            provider=self.ADAPTER or type(self).__name__,
+            model=self.model,
+            supports_tool_calling=self.SUPPORTS_TOOL_CALLING,
+            supports_parallel_tool_calls=self.SUPPORTS_PARALLEL_TOOL_CALLS,
+            supports_streaming=self.SUPPORTS_STREAMING,
+            supports_thinking=self.SUPPORTS_THINKING,
+            context_window_bytes=self.CONTEXT_WINDOW_BYTES,
+            declared_by=f"{type(self).__name__}（adapter 声明）",
+        )
 
     def __init__(
         self,
