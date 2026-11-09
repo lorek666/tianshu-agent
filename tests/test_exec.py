@@ -106,7 +106,11 @@ def _run(
 
 def test_runs_and_reports_stdout_and_exit_code(tmp_path):
     cwd = _cwd(tmp_path)
-    result = _run([PY, "-c", "print('hello')"], cwd)
+    # 用 **binary** 流写：Windows 上 `print()` 走文本模式，会把 "\n" 写成 "\r\n"，
+    # 那是子进程的换行策略，不是我们的捕获行为。这里要钉的是"逐字节捕获"。
+    result = _run(
+        [PY, "-c", "import sys; sys.stdout.buffer.write(b'hello\\n')"], cwd
+    )
 
     assert result.exit_code == 0
     assert result.signal is None
@@ -141,11 +145,31 @@ def test_stderr_is_captured_separately(tmp_path):
 def test_local_backend_wrapper_matches_module_spawn(tmp_path):
     cwd = _cwd(tmp_path)
     backend = LocalExecBackend()
-    result = backend.spawn([PY, "-c", "print(1)"], cwd=cwd, env=ENV, policy=_policy(cwd))
+    result = backend.spawn(
+        [PY, "-c", "import sys; sys.stdout.buffer.write(b'1\\n')"],
+        cwd=cwd,
+        env=ENV,
+        policy=_policy(cwd),
+    )
 
     assert result.exit_code == 0
     assert result.stdout == "1\n"
     assert backend.capabilities == LOCAL_EXEC_CAPABILITIES
+
+
+def test_stdout_is_captured_verbatim_without_newline_translation(tmp_path):
+    """捕获的 stdout 必须逐字节原样，不能顺手把 CRLF 归一成 LF。
+
+    Windows 上 `print()` 写的是 "\r\n"。归一化看起来"更友好"，但会让
+    "子进程到底输出了什么字节"这个事实消失——这里是执行原语，不是文本终端。
+    """
+    cwd = _cwd(tmp_path)
+    result = _run(
+        [PY, "-c", "import sys; sys.stdout.buffer.write(b'a\\r\\nb\\n')"], cwd
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "a\r\nb\n"
 
 
 # ---------------------------------------------------------------- 超时
@@ -367,8 +391,14 @@ def test_pty_is_a_per_call_request_not_a_policy_mode(tmp_path):
     拿到 `'hello 中文\r\n'`，并让 isatty() 变真——所有命令行为悄悄偏离终端。
     """
     cwd = _cwd(tmp_path)
+    # 子进程用 binary 流写：Windows 上裸 print 会把 "\n" 写成 "\r\n"（文本模式），
+    # 于是"没有 CRLF"这条断言测到的是子进程的换行策略，不是我们选的是不是管道。
     result = _run(
-        [PY, "-c", "print('hello 中文')"],
+        [
+            PY,
+            "-c",
+            "import sys; sys.stdout.buffer.write('hello 中文\\n'.encode('utf-8'))",
+        ],
         cwd,
         policy=_policy(cwd, allow_pty=True),  # 只是"允许"，不是"这次要用"
     )
@@ -416,7 +446,7 @@ def test_pty_permission_without_request_uses_pipes_even_if_backend_lacks_pty(tmp
     """策略允许、但本次没请求 PTY：不能因为后端没 PTY 就拒绝走管道。"""
     cwd = _cwd(tmp_path)
     result = _run(
-        [PY, "-c", "print('pipes')"],
+        [PY, "-c", "import sys; sys.stdout.buffer.write(b'pipes\\n')"],
         cwd,
         policy=_policy(cwd, allow_pty=True),
         capabilities=_caps(supports_pty=False),
