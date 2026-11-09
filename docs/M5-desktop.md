@@ -119,21 +119,21 @@ M5 不重新发明一套。
 | 方法 | 参数 | 结果 | 说明 |
 |---|---|---|---|
 | `hello` | 见上 | `welcome` | 必调，且必须是第一条 |
-| `state` | — | `{tasks, runs, approvals, event_seq_head, daemon}` | 首屏；`runs` 只含非终态 + 最近 20 个终态 |
+| `state` | — | `{tasks, runs, approvals, event_seq_head, daemon}` | 首屏；`runs` = 全部非终态 + 最近 20 个终态/fence。`daemon = {daemon_version, instance_id, pid, data_root, started_at}` |
 | `task.list` | `{limit?}` | `{tasks}` | 按更新时间倒序 |
 | `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?}` | `{task}` | 建任务不建 Run |
 | `task.revise` | `{task_id, goal}` | `{task}` | 改目标 → `goal_revision+1`，旧 Run 被 fence |
 | `run.start` | `{task_id, out_name?}` | `{run}` | **只入队**，立即返回；执行由 Daemon 驱动 |
 | `run.list` | `{task_id}` | `{runs}` | 失败不覆盖，历史全在 |
 | `run.status` | `{run_id}` | `{run}` | |
-| `run.pause` / `run.resume` / `run.cancel` | `{run_id}` | `{run}` | 控制请求与生效状态分开（PRD §4.3） |
+| `run.pause` / `run.resume` / `run.cancel` | `{run_id}` | `{run}` | 控制请求与生效状态分开（PRD §4.3）。`run.resume` 只对 `paused` / `waiting_approval` / `reconciling` 入队；`created`/`queued`/`running`/`cancelling` 是 no-op（已经在跑或在队里，再塞会和 owner 抢 claim） |
 | `approvals.list` | `{run_id?}` | `{approvals}` | 过期的先清再列（批了也不会执行的不该留在队列里） |
-| `approvals.decide` | `{approval_id, decision:"approve"\|"reject", reason?}` | `{approval, resumed}` | `resumed=true` 表示决定后 Daemon 已经把 Run 续上 |
+| `approvals.decide` | `{approval_id, decision:"approve"\|"reject", reason?}` | `{approval, resumed}` | `resumed=true` 只表示"已交给驱动线程"，**不表示已经跑起来**（续跑可能失败并被丢弃）。`reason` 目前不进库：审批记录没有自由文本字段，改了就要动 `schemas/m2/approval.json`；它只用于 UI 展示 |
 | `events.run` | `{run_id, after_seq?, limit?}` | `{events, seq_head, has_more}` | 事件日志是唯一事实源 |
 | `subscribe` | `{since_seq}` | `{subscribed:true, from_seq}` | 之后服务端先补历史再推增量 |
 | `undo.plan` | `{run_id}` | `{changes:[{path, kind, reason?}]}` | 只读 |
-| `undo.apply` | `{run_id}` | `{applied, refused?}` | 走既有"还原也经审批"的派发路径 |
-| `shutdown` | `{reason}` | `{ok}` | Host 显式退出时调；`reason` 落事件 |
+| `undo.apply` | `{run_id}` | `{applied: bool, refused?: [str]}` | 走既有"还原也经审批"的派发路径；前置拒绝抛 `refused`（含原因列表），执行期异常抛 `undo_failed`，不吞 |
+| `shutdown` | `{reason}` | `{ok}` | Host 显式退出时调。`reason` **进 Daemon 日志（stderr），不进事件日志**：事件日志是 run 作用域的（每条事件挂 `run_id`），而 C3 是封闭集合，为一个进程生命周期事件新增类型会同时改 schema 与回放口径，代价大于收益（见 §10 第 1 条） |
 
 **视图**（字段是契约，UI 直接消费）：
 
@@ -151,6 +151,10 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 `action` / `rule_id` / `state` / `effect_state` 是**机器枚举**。UI 必须做人话映射，
 不许把枚举直接甩给用户（PRD §14 F14：普通用户只看人话）。`digest` 不进视图：
 审批卡不展示摘要，人和模型之间不该靠一串哈希沟通；需要排障时走 CLI。
+
+`RunView.started_at` 是 `run.start` 落库时间（`runs.created_at`），回答的是"这个 Run
+什么时候被要求开始"，**不声称**"第一轮模型调用发生在那一刻"——投影里没有后者这个
+字段，编一个出来只会让排障时对不上时间线。
 
 ### 3.5 推送与游标
 
@@ -185,6 +189,9 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
   任务应当继续，而不是要人再点一次"继续"。
 - **UI 断开**：只减少订阅者。Host 的 SSE 端点断开后，该连接从推送集合移除；
   Daemon 不因此停止任何 Run。
+- **驱动线程保底**：连续 10 次异常且期间没有任何一次成功驱动时，Daemon 判定
+  "驱动已经坏死"——打一条日志并停止（交给 Host 按 §4.3 重启）。不这么做的话，
+  数据库锁冲突、线程归属错这类错误的表现是"任务不动"，比崩溃还难查。
 
 ### 4.3 退出
 
@@ -279,3 +286,30 @@ M5 只做"按顺序调用"，不新增判定。
 - 多窗口 / 多用户
 - 记忆与知识（F10，P1）
 - 评测器的真实换模分数（M4 §7 的未验证项，与 M5 无关但同样没做）
+
+---
+
+## 10. 已知限制与取舍（M5 实测中确认，不是设想）
+
+1. **Daemon 生命周期不写事件日志。** C3 的事件类型是封闭集合、且每条事件都挂
+   `run_id`；`shutdown(reason)` 是进程级事实，硬塞进 run 作用域的日志会同时污染
+   "按 run 回放"与事件注册表。取舍：`reason` 只进日志文件（`logs/daemon.log`），
+   排障时看文件。要进事件日志就得新增 `daemon.*` 族并走 `docs(contract)`，留给后续工单。
+2. **陈旧锁判定有 2 秒宽限窗。** 锁"新鲜"用 `started_at` 距今 <2s 判断；若第一个
+   Daemon 在"拿到锁 → bind"之间耗时超过 2s（超大库的恢复扫描），第二个实例理论上
+   可能误判陈旧并接管。TECH-ARCH §2.2 要求"PID + 启动时间匹配"更稳，但跨平台读取
+   进程启动时间没有 stdlib 方案（Windows 需 WMI/PowerShell），属单独工单。
+3. **推送在主循环里同步发送。** 一个不读数据的订阅者理论上能拖慢 RPC 响应。彻底
+   解法是独立发送线程 + 非阻塞写；M5 用"本地 socket + 每批 256 条"把风险压在可
+   接受范围，没有做这一层。
+4. **驱动线程卡死 >5 秒时，连接刻意不跨线程关闭。** 关闭一条正在被别的线程使用
+   的 SQLite 连接只会得到没人看得到的 `ProgrammingError`，还可能截断一次写入。
+   取舍：保留连接，交给进程退出回收；测试钉住"shutdown 仍返回、锁已释放、没有
+   ProgrammingError"。
+5. **Windows 命名管道只做了 CI 覆盖，没有实机验证。** 传输层按 `ipc.py` 的抽象写，
+   `windows-latest` 会跑同一套测试；但"实机"与"runner"的差异（杀软、ACL、长路径）
+   不在本里程碑的验证范围内。
+6. **同一毫秒的并发审批未压测。** 控制面是单线程串行处理，语义上天然不会并发；
+   但"两条连接同一瞬间分别 approve/reject 同一张卡"只验证了先后顺序，没有做压力测试。
+7. **`approvals.decide` 的 `reason` 被忽略。** 见 §3.4 表：审批记录没有自由文本字段，
+   要存就得改 `schemas/m2/approval.json`（契约变更）。当前它只用于 UI 展示。
