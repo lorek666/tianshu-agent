@@ -290,3 +290,34 @@ def test_a7b_empty_or_wrong_shape_args_not_dispatched(tmp_path, bad_args):
     nd = [e for e in events if e.type == "tool.not_dispatched"]
     assert nd, "必须留下未派发记录"
     assert report.ok
+
+
+def test_a7c_internal_tool_not_dispatched(tmp_path):
+    """内部工具（exposed=False）模型提案也不派发。
+
+    `restore_file` 只给 undo 用，不出现在 `tool_manifest()` 里。模型看不见它，
+    却仍可能在响应里把它拼出来——清单必须同时是**能力边界**，否则"模型看不到"
+    只是提示，不是约束。
+
+    与 A7 同一种处置：不派发、留痕、给模型一条 tool 消息让它继续，不硬失败。
+    """
+    ws = make_ws(tmp_path, {"a.md": "原始内容"})
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                "tool_use",
+                tool_calls=[
+                    ToolCall("c1", "restore_file", {"path": "a.md", "content_b64": "aGk="})
+                ],
+            ),
+            ModelResponse("end_turn", content="内部工具不可用，换个做法。"),
+        ]
+    )
+    result, report, log = run_once(tmp_path, ws, model)
+
+    events = log.read_run(result.run_id)
+    assert not [e for e in events if e.type == "tool.intent"], "不得产生执行意图"
+    nd = [e for e in events if e.type == "tool.not_dispatched"]
+    assert nd and "内部工具" in nd[0].payload["reason"]
+    assert (ws / "a.md").read_text(encoding="utf-8") == "原始内容", "文件不能被动"
+    assert report.ok, "不派发不等于整轮失败"
