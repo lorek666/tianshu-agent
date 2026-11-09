@@ -29,6 +29,7 @@ import pytest
 
 from tianshu.exec import (
     LOCAL_EXEC_CAPABILITIES,
+    RULE_PTY_NOT_ALLOWED,
     LocalExecBackend,
     local_capabilities,
     spawn,
@@ -87,6 +88,7 @@ def _run(
     capabilities: ExecBackendCapabilities | None = None,
     env: dict[str, str] | None = None,
     blob_dir: Path | None = None,
+    pty: bool = False,
 ):
     return spawn(
         argv,
@@ -95,6 +97,7 @@ def _run(
         policy=_policy(cwd) if policy is None else policy,
         capabilities=_caps() if capabilities is None else capabilities,
         blob_dir=blob_dir,
+        pty=pty,
     )
 
 
@@ -110,6 +113,7 @@ def test_runs_and_reports_stdout_and_exit_code(tmp_path):
     assert result.timed_out is False
     assert result.stdout == "hello\n"
     assert result.stderr == ""
+    assert result.stderr_merged is False
     assert result.truncated is False
     assert result.stdout_ref is None and result.stderr_ref is None
     assert result.duration_ms >= 0
@@ -130,6 +134,7 @@ def test_stderr_is_captured_separately(tmp_path):
 
     assert result.stdout == ""
     assert result.stderr == "bad"
+    assert result.stderr_merged is False, "管道模式 stderr 必须可分离"
     assert result.exit_code == 0
 
 
@@ -320,7 +325,14 @@ def test_pty_request_without_capability_is_unsupported_not_degraded(tmp_path):
     caps = _caps(supports_pty=False)
 
     with pytest.raises(PolicyUnsupported) as excinfo:
-        spawn([PY, "-c", "pass"], cwd=cwd, env={}, policy=policy, capabilities=caps)
+        spawn(
+            [PY, "-c", "pass"],
+            cwd=cwd,
+            env={},
+            policy=policy,
+            capabilities=caps,
+            pty=True,
+        )
 
     assert excinfo.value.feature == "pty"
     assert not isinstance(excinfo.value, PolicyDenied)
@@ -345,6 +357,77 @@ def test_local_exec_capabilities_constant_matches_factory():
     assert LocalExecBackend().capabilities == LOCAL_EXEC_CAPABILITIES
 
 
+# ---------------------------------------------------------------- PTY 是请求，不是模式
+
+
+def test_pty_is_a_per_call_request_not_a_policy_mode(tmp_path):
+    """策略允许 PTY ≠ 本次调用就用 PTY：默认必须走管道、行尾是 \n。
+
+    反例（修复前）：allow_pty=True 让每次 spawn 都走 PTY，`print('hello 中文')`
+    拿到 `'hello 中文\r\n'`，并让 isatty() 变真——所有命令行为悄悄偏离终端。
+    """
+    cwd = _cwd(tmp_path)
+    result = _run(
+        [PY, "-c", "print('hello 中文')"],
+        cwd,
+        policy=_policy(cwd, allow_pty=True),  # 只是"允许"，不是"这次要用"
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr_merged is False
+    assert result.stdout == "hello 中文\n", "pty=False 时不能出现 CRLF"
+    assert "\r" not in result.stdout
+
+
+def test_requesting_pty_without_policy_permission_is_denied(tmp_path):
+    cwd = _cwd(tmp_path)
+    marker = cwd / "should-not-exist.txt"
+    argv = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
+
+    with pytest.raises(PolicyDenied) as excinfo:
+        spawn(
+            argv,
+            cwd=cwd,
+            env={},
+            policy=_policy(cwd),  # allow_pty 默认 False
+            capabilities=_caps(),
+            pty=True,
+        )
+
+    assert excinfo.value.rule_id == RULE_PTY_NOT_ALLOWED
+    assert not marker.exists(), "策略拒绝必须在创建进程之前发生"
+
+
+def test_requesting_pty_denied_wins_over_unsupported_backend(tmp_path):
+    """策略不许 + 后端也不支持：结论是 deny（改策略能解决），不是 unsupported。"""
+    cwd = _cwd(tmp_path)
+    with pytest.raises(PolicyDenied):
+        spawn(
+            [PY, "-c", "pass"],
+            cwd=cwd,
+            env={},
+            policy=_policy(cwd),
+            capabilities=_caps(supports_pty=False),
+            pty=True,
+        )
+
+
+def test_pty_permission_without_request_uses_pipes_even_if_backend_lacks_pty(tmp_path):
+    """策略允许、但本次没请求 PTY：不能因为后端没 PTY 就拒绝走管道。"""
+    cwd = _cwd(tmp_path)
+    result = _run(
+        [PY, "-c", "print('pipes')"],
+        cwd,
+        policy=_policy(cwd, allow_pty=True),
+        capabilities=_caps(supports_pty=False),
+        pty=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "pipes\n"
+    assert result.stderr_merged is False
+
+
 # ---------------------------------------------------------------- POSIX 专属
 
 
@@ -355,12 +438,32 @@ def test_posix_pty_merges_streams(tmp_path):
         [PY, "-c", "print('pty-hello')"],
         cwd,
         policy=_policy(cwd, allow_pty=True),
+        pty=True,
     )
 
     assert result.exit_code == 0
     assert result.timed_out is False
     assert "pty-hello" in result.stdout
-    assert result.stderr == "", "PTY 下 stderr 合并进 stdout"
+    assert result.stderr == ""
+    assert result.stderr_merged is True, "PTY 下 stderr 已被合并，必须可见"
+
+
+@pytest.mark.skipif(not POSIX, reason="Windows 标准库没有 PTY")
+def test_posix_pty_merged_stderr_is_visible_in_stdout(tmp_path):
+    """PTY 下 stderr 与 stdout 是同一条流：内容进 stdout，字段要说清楚。"""
+    cwd = _cwd(tmp_path)
+    result = _run(
+        [PY, "-c", "import sys; print('out'); sys.stderr.write('err')"],
+        cwd,
+        policy=_policy(cwd, allow_pty=True),
+        pty=True,
+    )
+
+    assert result.exit_code == 0
+    assert "out" in result.stdout
+    assert "err" in result.stdout, "PTY 下 stderr 合并进 stdout"
+    assert result.stderr == ""
+    assert result.stderr_merged is True
 
 
 @pytest.mark.skipif(not POSIX, reason="Windows 没有 Unix 信号")
@@ -414,6 +517,7 @@ def test_windows_pty_request_is_unsupported(tmp_path):
             env={},
             policy=_policy(cwd, allow_pty=True),
             capabilities=caps,
+            pty=True,
         )
 
 
