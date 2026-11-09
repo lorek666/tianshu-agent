@@ -87,3 +87,49 @@ jobs:
         # 看不见原因就等于默许。目前只有三类：memfs 符号链接、POSIX 专属的
         # pid 存活探测、Windows 没有 POSIX 权限位语义。
         run: uv run --frozen pytest -o addopts="" -q -rs
+
+  # UI 是 M5 才进仓库的：React + TS，构建产物（ui/dist）提交进仓库，因为
+  # Host 运行时直接加载它——用户机器上不需要 Node。既然产物是"源码的一部分"，
+  # 就必须有一条门禁保证它**没有和源码漂移**，否则会出现"改了前端没重新构建，
+  # 界面还是旧版"这种只有用户能发现的问题。
+  #
+  # 只在 ubuntu 跑：前端不涉及平台差异（没有原生模块），三平台各跑一遍纯属浪费
+  # runner；跨平台语义由 Python 的 test_host.py（三平台矩阵）覆盖。
+  ui:
+    name: ui · typecheck / test / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # 与本地构建产物所用的版本对齐：vite 的产物哈希由源码决定，但
+          # lockfile 解释器/打包器版本变化会改变产物，dist 漂移门禁就会误报。
+          version: 11.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: 安装前端依赖（只读锁文件）
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm --dir ui run typecheck
+
+      - name: 前端单测
+        run: pnpm --dir ui run test
+
+      - name: 构建
+        run: pnpm --dir ui run build
+
+      - name: 提交的 dist 必须与源码构建一致
+        # `git diff --exit-code`：重建后若有任何字节不同，说明有人改了源码却没
+        # 提交新产物。不要用 `git status --porcelain | grep` 之类的近似判断——
+        # 空输出才是唯一干净的证据。
+        run: git diff --exit-code -- ui/dist

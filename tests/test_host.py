@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -524,3 +525,34 @@ def test_token_injection_handles_placeholder_meta_and_missing_head() -> None:
     bare = b"<body>app</body>"
     injected = host._inject_token(bare, token)
     assert b'name="tianshu-token"' in injected
+
+
+REPO_UI_DIST = Path(__file__).resolve().parents[1] / "ui" / "dist"
+
+
+@pytest.mark.skipif(
+    not (REPO_UI_DIST / "index.html").is_file(),
+    reason="仓库里没有 ui/dist（先 `pnpm --dir ui run build`）",
+)
+def test_real_ui_dist_is_served_and_get_token(root: Path, fake_daemon) -> None:
+    """用**真的**构建产物验证 Host：注入 token 后页面能自己找到它。
+
+    这条测试的价值在于"真 UI 的 index.html 形态"——单测里手写 HTML 永远正确，
+    联调时才暴露空 meta 的问题。
+    """
+    config = host.BridgeConfig(data_root=root, ui_dir=REPO_UI_DIST, token="tok-real", port=0)
+    bridge = host.UiBridge(config)
+    bridge.serve_background()
+    try:
+        status, body = _http(bridge.port, "GET", "/", token="tok-real")
+        text = body.decode("utf-8")
+        assert status == 200
+        assert text.count('name="tianshu-token"') == 1, text
+        assert 'content="tok-real"' in text
+        match = re.search(r'src="\./(assets/[^"]+)"', text)
+        assert match is not None, text
+        asset_status, asset = _http(bridge.port, "GET", "/" + match.group(1))
+        assert asset_status == 200
+        assert len(asset) > 1000
+    finally:
+        bridge.stop()
