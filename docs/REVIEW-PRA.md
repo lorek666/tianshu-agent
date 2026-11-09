@@ -4,8 +4,9 @@
 - 复审基线：`7f77597`（合并提交，88 tests passed）
 - 复审方式：不读作者自查结论，按计划 `docs/superpowers/plans/2026-11-08-m2-permissions-tasks.md`
   §2.1/§2.2/§3 的 Task 1–2 验收项逐条对照，并写探针脚本与真子进程复现
-- 复审结论：**PR #7 不能作为 PR A 的验收**。找到 6 类真实缺陷（3 类安全相关），
-  本分支修复其中 5 类；另有 2 类能力缺失与 4 项未验证边界，见 §4。
+- 复审结论：**PR #7 不能作为 PR A 的验收**。找到 13 项缺陷（其中 5 项高危、
+  3 项直接指向"会写坏文件"），本分支修掉 12 项，第 9 项只交付了锁本身；
+  另有 8 项能力缺失与未验证边界，见 §4。
 - 修复分支：`fix/m2-pr-a-review`；修复后 `117 passed`，`ruff check .` 全绿
 
 ## 0. 为什么这次要独立复审
@@ -46,14 +47,14 @@ P10/P11 的严重性容易被低估：它们让"用户改主意 → 新 Run 接�
 | # | 严重度 | 缺陷 | 处置 |
 |---|---|---|---|
 | F1 | **高** | 父子目录互斥失效：`(st_dev, st_ino)` 只能回答"是不是同一个目录"，`/ws` 与 `/ws/sub` 是两个 inode 却是同一棵树 → 两个 Task 可同时写同一棵子树；计划 Review Focus #1 明确要求挡住 | 已修：`ResourceIdentity.overlaps()` + 租约行存规范路径，ancestor/descendant 一律冲突；`test_parent_child_directories_conflict` 等 3 个用例 |
-| F2 | **高（阻塞 PR B）** | 事务不可组合：`EventLog.append_many`、`TaskStore._tx`、`LeaseStore.*` 各自 `BEGIN IMMEDIATE`，组合即嵌套报错。PR B 必须"审批消费 + grant + 租约 + intent + 事件"一次提交，这个形状根本拼不出来 | 已修：`EventLog.transaction()`（已在事务中则复用，不重复 BEGIN）+ 各 store 走同一入口；`tests/test_transactions.py` 5 个用例 |
+| F2 | **高（阻塞 PR B）** | 事务不可组合：`EventLog.append_many`、`TaskStore._tx`、`LeaseStore.*` 各自 `BEGIN IMMEDIATE`，组合即嵌套报错。PR B 必须"审批消费 + grant + 租约 + intent + 事件"一次提交，这个形状根本拼不出来 | 已修：`EventLog.transaction()`（已在事务中则复用，不重复 BEGIN）+ 各 store 走同一入口；`tests/test_transactions.py` 7 个用例 |
 | F3 | **高** | 写守卫只比 `run_id`：任何进程拿着同一 `run_id` 就能通过 `assert_held`，`release` 能删掉别人的租约（P9）。pid 会被复用，"同 pid"也不等于"同进程" | 已修：`ProcessIdentity{instance_id, pid, started_at}`，租约行记 `owner_instance_id`；`assert_held`/`renew`/`release` 都要求实例匹配；`test_foreign_instance_cannot_pass_guard` |
 | F4 | **高** | fence/收尾不释放租约：Run 结束或被 fence 后租约行留到 TTL 到期，同一 Task 的新 Run 被自己上一个 Run 挡住（P10/P11） | 已修：`LeaseStore.release_run()`，`finish_run`/`_fence_run` 在同一事务内释放；`test_revise_goal_fences_running_run_and_frees_workspace` |
 | F5 | **高（契约）** | Task/Run 根本不是事件的投影：状态直接写表，一条事件都没有（P4/P8）。计划 §Architecture 写的是"事件仍是事实源，Task/Run/Approval/Grant/Lease 为同库事务更新的可重建投影"，回放因此无法解释某 Run 为什么被 fence | 已修：`task.created` / `task.revised` / `run.start` / `run.finish` / `run.fenced` 五类事件与投影同事务提交；`rebuild_from_events()` + 重建测试 |
 | F6 | 中 | `finish_run` 接受任意 `outcome`/`effect_state` 并把 `state` 写成任意值（P3），Run 永远不是终态，同一 Task 又能开新 Run | 已修：白名单校验；`test_unknown_outcome_or_effect_state_is_rejected` |
 | F7 | 中 | store 依赖外部连接已设 `row_factory`（P5），换一个调用方就 `TypeError` | 已修：store 自行设置 |
 | F8 | 中 | 测试证据不成立：所谓"两个进程"是同一进程两条连接，过期/接管靠 `sleep(0.05)` 猜时序；计划明确要求 subprocess + barrier，不用 sleep | 已修：`test_two_processes_one_resource`、`test_live_process_blocks_another_process` 用真子进程 + stdout 屏障；TTL 用注入时钟推进 |
-| F9 | 中（新增能力） | 缺 `execution_guard`（计划 Task 2 明确要求）。没有它，`assert_held` 是"读一下"，读完到真正写之间可被接管，文档里"保证过期后不会再写"是过度承诺 | 已加：`execution_guard()`（POSIX flock / Windows `msvcrt.locking`）+ 跨进程互斥、超时、**硬退后 OS 释放**三个用例。**未强制**"所有 epoch 变更必须在 guard 内"，见 §4 |
+| F9 | 中（新增能力） | 缺 `execution_guard`（计划 Task 2 明确要求）。没有它，`assert_held` 是"读一下"，读完到真正写之间可被接管，文档里"保证过期后不会再写"是过度承诺 | **部分修复**：`execution_guard()`（POSIX flock / Windows `msvcrt.locking`）+ 跨进程互斥、超时、硬退后 OS 释放三个用例已就位；**未强制**"所有 epoch 变更必须在 guard 内"，见 §4 第 3 条 |
 | F10 | 低 | 默认 TTL 60000ms 与计划 30000ms 不一致；`renew` 失败静默返回 0，心跳失败不会被发现 | 已修：`DEFAULT_TTL_MS=30_000`、`HEARTBEAT_MS=5_000`；`renew` 续不满即抛 `LeaseLost` |
 | F11 | 低 | `create_task` 的目录只有路径字符串，没有 D6 决定的 `mode`/`snapshot_policy`；空目录任务与"读 A 写 B"无法表达 | 已修（数据模型）：`WorkspaceBinding{root_path, mode, snapshot_policy}`，旧字符串自动升级；策略判定本身属 PR B |
 | F12 | 低 | `revise_goal` 不检查 Task 状态、空 goal 可写入 | 已修 |
