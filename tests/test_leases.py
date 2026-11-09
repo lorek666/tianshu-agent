@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -245,6 +246,51 @@ def test_dead_owner_lease_can_be_stolen(env, tmp_path):
     )
     s.acquire([d], "run_new", steal_stale=True)
     assert s.holder(d).run_id == "run_new"
+
+
+# ---------------------------------------------------------------- 旧库升级
+
+
+def test_legacy_lease_table_is_migrated(tmp_path):
+    """PR #7 建的库没有 instance/path 列：启动时补列，旧行按"身份未知"处理。
+
+    旧行不能被当成持有者（空 instance_id 不等于"我的"），也不能被静默当成新租约。
+    """
+    db = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute(
+        "CREATE TABLE leases ("
+        " resource_key TEXT PRIMARY KEY, run_id TEXT NOT NULL,"
+        " owner_pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL,"
+        " expires_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO leases VALUES ('legacy_key','run_old',?,1000,?)",
+        (os.getpid(), 10**13),
+    )
+    conn.close()
+
+    log = EventLog(db)
+    try:
+        s = LeaseStore(log)
+        cols = {r["name"] for r in log.conn.execute("PRAGMA table_info(leases)")}
+        assert {"owner_instance_id", "canonical_path", "path_key"} <= cols
+
+        legacy = s.list_all()[0]
+        assert legacy.run_id == "run_old"
+        assert legacy.owner_instance_id == ""
+
+        with pytest.raises(LeaseLost):
+            s.assert_held([ResourceIdentity(key="legacy_key", path=str(tmp_path))], "run_old")
+
+        with pytest.raises(LeaseConflict):
+            s.acquire(
+                [ResourceIdentity(key="legacy_key", path=str(tmp_path))],
+                "run_new",
+                steal_stale=False,
+            )
+    finally:
+        log.close()
 
 
 # ---------------------------------------------------------------- 真·跨进程

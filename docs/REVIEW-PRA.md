@@ -6,7 +6,7 @@
   §2.1/§2.2/§3 的 Task 1–2 验收项逐条对照，并写探针脚本与真子进程复现
 - 复审结论：**PR #7 不能作为 PR A 的验收**。找到 6 类真实缺陷（3 类安全相关），
   本分支修复其中 5 类；另有 2 类能力缺失与 4 项未验证边界，见 §4。
-- 修复分支：`fix/m2-pr-a-review`；修复后 `115 passed`，`ruff check .` 全绿
+- 修复分支：`fix/m2-pr-a-review`；修复后 `116 passed`，`ruff check .` 全绿
 
 ## 0. 为什么这次要独立复审
 
@@ -63,7 +63,7 @@ P10/P11 的严重性容易被低估：它们让"用户改主意 → 新 Run 接�
 ```bash
 cd /Volumes/Date/天枢Agent
 uv sync --python 3.12
-uv run pytest        # 115 passed（修复前 88）
+uv run pytest        # 116 passed（修复前 88）
 uv run ruff check .  # All checks passed!
 ```
 
@@ -73,9 +73,9 @@ uv run ruff check .  # All checks passed!
   内层失败回滚外层、另一连接无法插进已开始的事务
 - `tests/test_tasks.py`（重写，21 项）：0 目录合法、binding 持久化、未知 outcome 拒绝、
   `assert_current`/`assert_write_allowed`、5 类事件序列、**清空投影后按事件重建逐字段相等**
-- `tests/test_leases.py`（重写，25 项）：父子目录双向冲突、符号链接别名冲突、
+- `tests/test_leases.py`（重写，26 项）：父子目录双向冲突、符号链接别名冲突、
   注入时钟推进 TTL、外来实例不能过守卫/续租/释放、真子进程互斥、
-  执行守卫跨进程互斥 + `os._exit` 后释放
+  执行守卫跨进程互斥 + `os._exit` 后释放、旧库缺列自动迁移
 
 ## 4. 未修复 / 未验证（不得当作已解决）
 
