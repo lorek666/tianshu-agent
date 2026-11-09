@@ -26,6 +26,7 @@ import os
 import sys
 from pathlib import Path
 
+from .credentials import redact
 from .dispatcher import build_request
 from .errors import TianshuError, ToolNotAllowed
 from .events import EventLog
@@ -828,8 +829,10 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 scope_ws = Workspace(scope)
             except TianshuError as exc:
                 # 目录不在/不是目录：说清楚再退出，不要伪装成"撤销中断"。
-                print(f"拒绝撤销：workspace 不可用：{scope}（{exc}）",
-                      file=sys.stderr)
+                print(
+                    f"拒绝撤销：workspace 不可用：{scope}（{redact(str(exc))}）",
+                    file=sys.stderr,
+                )
                 return 2
 
         plan = _undo_plan(selected)
@@ -870,14 +873,18 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 {
                     "run_id": run_id,
                     "control_run": control.run.run_id,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    # 事件日志是永久证据，写进去就擦不掉：先打码。
+                    "error": redact(f"{type(exc).__name__}: {exc}"),
                 },
                 actor_kind="system",
             )
             stack.dispatcher.close_control_run(
                 control, outcome="failed", effect_state="partial"
             )
-            print(f"撤销中断（可能已部分生效，请用 recover 核查）：{exc}", file=sys.stderr)
+            print(
+                f"撤销中断（可能已部分生效，请用 recover 核查）：{redact(str(exc))}",
+                file=sys.stderr,
+            )
             return 1
 
         if report.ok:
@@ -994,7 +1001,9 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_approvals(args)
         return _cmd_replay(args)
     except Exception as exc:  # CLI 边界：打印可读错误，不抛栈
-        print(f"错误：{exc}", file=sys.stderr)
+        # 脱敏：异常文案可能带着端点回显的 Authorization 或 URL 里的 userinfo。
+        # 终端输出经常被贴进 issue/聊天记录，明文 key 就是这么泄露的。
+        print(f"错误：{redact(str(exc))}", file=sys.stderr)
         return 2
 
 

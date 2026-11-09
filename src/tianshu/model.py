@@ -36,6 +36,14 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from .capability import CapabilityProfile
+from .credentials import (
+    MASK,
+    CredentialRef,
+    Secret,
+    default_store,
+    redact,
+    register_secret,
+)
 from .errors import TianshuError
 
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
@@ -84,7 +92,11 @@ class ModelError(TianshuError):
         status_code: int | None = None,
         retryable: bool | None = None,
     ) -> None:
-        super().__init__(message)
+        # **所有** ModelError 的文案在这里过一遍脱敏。理由：主循环把
+        # `repr(exc)` 写进 `model.error` 事件，而 detail 来自 HTTP 响应体
+        # （代理站可能把 Authorization 回显出来）。事件日志是永久证据，
+        # 一旦写进去就擦不掉了——所以在构造点打码，而不是指望每个写入点记得打。
+        super().__init__(redact(message))
         if kind not in self.KINDS:
             raise ValueError(f"未知 ModelError.kind：{kind}（可选 {self.KINDS}）")
         self.kind = kind
@@ -382,6 +394,21 @@ class RecordedModel:
 # ---------------------------------------------------------------- 线上实现
 
 
+def _credential_for(provider: str, capability_class: str = "llm") -> str:
+    """经凭据接缝取密钥；未配置返回空串（由 `_HttpModel` 统一报「缺少 API key」）。
+
+    为什么不让各 adapter 自己 `os.environ.get`：接缝后面将来是 OS Keychain，
+    散落的 `os.environ.get` 会让"换后端"变成一次全局搜索，而且**每个漏改的
+    点都会静默退回环境变量**——那就等于假装 Keychain 生效了。
+
+    未配置（`get() -> None`）与做不到（`CredentialUnsupported`）在这里分开：
+    前者变成空串、走既有的 auth 错误提示（告诉用户设哪个变量）；
+    后者**直接抛出去**，绝不退回环境变量。
+    """
+    found = default_store().get(CredentialRef(provider, capability_class))
+    return "" if found is None else str(found)
+
+
 class _HttpModel:
     """两个线上 adapter 的公共骨架：装配请求 / 解析响应 / 错误分类。"""
 
@@ -432,7 +459,11 @@ class _HttpModel:
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        # 存成 `Secret`：`f"Bearer {self.api_key}"` 照常工作（继承 str），
+        # 但 repr / 日志里是掩码。同时登记进脱敏表，让事后任何 `redact()`
+        # 都能抹掉它——包括我们没预料到的日志点。
+        self.api_key = Secret(api_key)
+        register_secret(api_key)
         self.timeout = timeout
         self._transport = transport or UrllibTransport()
         if not self.api_key:
@@ -443,6 +474,19 @@ class _HttpModel:
                 kind="auth",
                 retryable=False,
             )
+
+    def __repr__(self) -> str:
+        """配置对象的 repr：密钥永远打码。
+
+        默认的对象 repr 只给地址，看着安全，但只要有人 `vars(model)`、
+        把属性拼进日志、或者把它塞进更外层 dataclass 的 repr，明文就出去了。
+        这里把"给人看"的那条路径直接钉成掩码。
+        """
+        key = MASK if self.api_key else None
+        return (
+            f"{type(self).__name__}(model={self.model!r}, "
+            f"base_url={self.base_url!r}, api_key={key!r})"
+        )
 
     def complete(self, messages, tools) -> ModelResponse:
         url, body, headers = self._request(messages, tools)
@@ -495,7 +539,7 @@ class OpenAICompatibleModel(_HttpModel):
             model,
             base_url=base_url or os.environ.get("TIANSHU_BASE_URL")
             or "https://api.openai.com/v1",
-            api_key=api_key if api_key is not None else os.environ.get("TIANSHU_API_KEY", ""),
+            api_key=api_key if api_key is not None else _credential_for("openai"),
             env_key="TIANSHU_API_KEY",
             timeout=timeout,
             transport=transport,
@@ -601,7 +645,7 @@ class AnthropicMessagesModel(_HttpModel):
             or "https://api.anthropic.com/v1",
             api_key=api_key
             if api_key is not None
-            else os.environ.get("ANTHROPIC_API_KEY", ""),
+            else _credential_for("anthropic"),
             env_key="ANTHROPIC_API_KEY",
             timeout=timeout,
             transport=transport,
