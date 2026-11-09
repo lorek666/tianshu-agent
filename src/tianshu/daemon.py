@@ -69,6 +69,7 @@ from .loop import AgentLoop, Limits, Stack, build_stack
 from .model import Model
 from .recovery import recover_run
 from .tasks import (
+    RUN_CANCELLING,
     RUN_FENCED,
     RUN_RECONCILING,
     RUN_WAITING_APPROVAL,
@@ -107,7 +108,9 @@ HISTORY_BATCHES_PER_REQUEST = 20
 #: 关闭时各线程 join 的上限。契约 §4.3：5 秒内退出。
 JOIN_TIMEOUT_S = 5.0
 
-#: `Worker` 自己已经按 `driver_interval_s` 的语义轮询；请求队列的延迟由主循环负责。
+#: 驱动线程连续失败多少次就判定"循环已经废了"并停止 daemon。
+#: 比无限刷日志好：UI 至少能看到守护进程退出（Host 会按 §4.3 重启）。
+DRIVER_MAX_CONSECUTIVE_FAILURES = 10
 
 
 def _log(message: str) -> None:
@@ -389,8 +392,13 @@ class _Daemon:
             self.root / "events.db", blob_dir=self.root / "artifacts" / "blobs"
         )
         self.control_stack = build_stack(self.control_log, data_root=self.root)
+        # 这一条**必须** cross_thread=True：连接在 serve 线程建、由驱动线程
+        # 独占使用（`EventLog` 的开关注释说的正是这个场景）。控制面那条不加：
+        # 它建在主线程、用也在主线程，关掉保护等于把真实错误藏起来。
         self.driver_log = EventLog(
-            self.root / "events.db", blob_dir=self.root / "artifacts" / "blobs"
+            self.root / "events.db",
+            blob_dir=self.root / "artifacts" / "blobs",
+            cross_thread=True,
         )
         self.driver_stack = build_stack(self.driver_log, data_root=self.root)
 
@@ -450,7 +458,13 @@ class _Daemon:
                 _log(f"恢复到 waiting_approval 的 Run 保持等待审批：{run.run_id}")
                 continue
             unpaired = _unpaired_intents(self.control_log, run.run_id)
-            needs_recovery = run.state == RUN_RECONCILING or bool(unpaired)
+            # `cancelling` 也要走一遍：它可能是"取消正在确认时进程死了"留下的
+            # 半截状态（正常情况下 request_cancel 与 finish 同一个事务提交，
+            # 不该被持久观察到）。既有 intent 就核对；核对完也不留在
+            # cancelling（那是没人会再推进的状态），而是交给人。
+            needs_recovery = (
+                run.state in (RUN_RECONCILING, RUN_CANCELLING) or bool(unpaired)
+            )
             if not needs_recovery:
                 continue
             self._recover_run(run.run_id, unpaired)
@@ -493,10 +507,11 @@ class _Daemon:
                 f"恢复完成：Run {run_id}（applied={len(report.applied)},"
                 f" none_applied={len(report.none_applied)}）"
             )
-            # `reconciling` 的 Run 即使核对清楚了也不自动续跑：它是**主动停下**
-            # 等人核查的，继续与否由人按 resume 决定（CLI 的提示也是这么写的）。
-            if run.state == RUN_RECONCILING:
-                self._park_dead_job(run_id, reason=RUN_RECONCILING)
+            # `reconciling` / `cancelling` 的 Run 即使核对清楚了也不自动续跑：
+            # 前者是**主动停下**等人核查的，后者是取消没确认完；继续与否由人
+            # 按 resume/cancel 决定（CLI 的提示也是这么写的）。
+            if run.state in (RUN_RECONCILING, RUN_CANCELLING):
+                self._hold_for_human(run_id, reason="recovered_but_held")
             return
 
         _log(
@@ -622,7 +637,9 @@ class _Daemon:
         if not isinstance(method, str) or not method:
             conn.send(ipc.fail(request_id, "bad_params", "缺少 method"))
             return
-        params = message.get("params") or {}
+        params = message.get("params")
+        if params is None:
+            params = {}
         if not isinstance(params, dict):
             conn.send(ipc.fail(request_id, "bad_params", "params 必须是对象"))
             return
@@ -769,6 +786,7 @@ class _Daemon:
             model=self.model,
             limits=self.limits,
         )
+        consecutive_failures = 0
         try:
             while not self.stop.is_set():
                 worked = False
@@ -783,8 +801,21 @@ class _Daemon:
                     worked = True
                 try:
                     worked = worker.run_once() or worked
+                    consecutive_failures = 0
                 except Exception as exc:  # noqa: BLE001 - 循环不能因为单个作业退出
+                    consecutive_failures += 1
                     _log(f"驱动循环异常：{type(exc).__name__}: {exc}")
+                    # 只打日志的话 UI 只会看到"任务不动"，比崩溃更难查。
+                    # 连续失败且期间没有任何成功驱动，说明循环已经废了：
+                    # 明确停下，让 Host 的监护去重启（§4.3 的指数退避路径）。
+                    if consecutive_failures >= DRIVER_MAX_CONSECUTIVE_FAILURES:
+                        _log(
+                            "驱动线程连续失败"
+                            f" {consecutive_failures} 次且没有成功驱动过任何作业，"
+                            "daemon 停止"
+                        )
+                        self.stop.set()
+                        break
                 if not worked:
                     self.stop.wait(self.driver_interval_s)
         finally:
