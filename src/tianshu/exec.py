@@ -7,9 +7,12 @@ argv 白名单、cwd 限制、env 白名单都是**策略约束**，不是隔离
 
 四条实现约定：
 
-1. **判定先于创建。** 所有调用先走 F2 的 `check_exec()`；策略不允许
-   （`PolicyDenied`）或后端做不到（`PolicyUnsupported`）都在 `Popen` 之前抛出，
-   绝不"降级后照跑"。
+1. **判定先于创建。** 所有调用先走 F2 的 `check_spawn()`；`pty=True` 还要
+   单独过"策略许可 + 后端能力"两道门。策略不允许（`PolicyDenied`）或后端
+   做不到（`PolicyUnsupported`）都在 `Popen` 之前抛出，绝不"降级后照跑"。
+   **PTY 是每次调用的请求，不是策略里的模式开关**：`policy.allow_pty` 只
+   回答"允不允许"，不回答"这次要不要用"——否则所有子进程都会以 tty 语义
+   运行（`isatty()` 变真、行尾 CRLF、stdin 不再是 DEVNULL），差异极难事后归因。
 2. **stdio 并发读、有界。** 两条流各一个线程；超过 `max_output_bytes` 后
    **继续排空但不保留**——停止读取会让子进程写满管道而永久阻塞，超时逻辑就
    永远等不到。截断的完整原文按内容寻址落盘（`stdout_ref` / `stderr_ref`），
@@ -24,6 +27,9 @@ argv 白名单、cwd 限制、env 白名单都是**策略约束**，不是隔离
 
 `spawn()` 是同步的：等进程结束（或被超时杀掉）后返回 `ExecResult`。异步句柄、
 取消 API、PTY 交互写入是后续工单的事，本模块不做模型可见的工具。
+
+`ExecResult.stderr_merged` 说明 stderr 是否被迫合并进 stdout：PTY 模式下
+终端只有一条流，stderr 不可分离；管道模式恒为 False。
 """
 
 from __future__ import annotations
@@ -44,8 +50,10 @@ from .execpolicy import (
     FEATURE_PTY,
     ExecBackendCapabilities,
     ExecPolicy,
+    PolicyDenied,
     PolicyUnsupported,
-    check_exec,
+    check_capabilities,
+    check_spawn,
     filtered_env,
 )
 
@@ -54,6 +62,13 @@ READ_CHUNK = 64 * 1024
 
 _JOIN_TIMEOUT_S = 5.0
 """杀进程后等读线程收尾的上限。超过就关读端，宁可少收尾也不永久挂住。"""
+
+RULE_PTY_NOT_ALLOWED = "f2.pty_not_allowed"
+"""本次调用请求了 PTY，但策略没允许（`ExecPolicy.allow_pty=False`）。
+
+规则 id 沿用 `f2.` 前缀：它是一条**策略**拒绝（改策略能解决），不是后端
+能力问题（换后端才能解决），UI 要能把两者分开。
+"""
 
 
 def local_capabilities() -> ExecBackendCapabilities:
@@ -94,6 +109,10 @@ class ExecResult:
     UTF-8 用替换字符）。`*_ref` 是完整原文的 sha256；只有截断且给了
     `blob_dir` 时才有值（blob 在 `<blob_dir>/<sha256>`）。
 
+    `stderr_merged`：PTY 模式下 stderr 与 stdout 是同一条终端流，stderr
+    不可分离——此时 `stderr` 恒空、内容都在 `stdout` 里，本字段为 True；
+    管道模式恒为 False，`stderr` 可独立读取。
+
     `descendants_may_survive`：本次执行是否**无法确认**子树已经终止。只在
     超时/终止时有意义——Windows 只 kill 直接子进程时必为 True；POSIX 用
     进程组杀掉时为 False。正常退出时不对子树做任何声明，恒为 False。
@@ -108,6 +127,7 @@ class ExecResult:
     stdout_ref: str | None
     stderr_ref: str | None
     duration_ms: int
+    stderr_merged: bool = False
     descendants_may_survive: bool = False
 
 
@@ -125,6 +145,7 @@ class LocalExecBackend:
         env: dict[str, str],
         policy: ExecPolicy,
         blob_dir: Path | None = None,
+        pty: bool = False,
     ) -> ExecResult:
         return spawn(
             argv,
@@ -133,6 +154,7 @@ class LocalExecBackend:
             policy=policy,
             capabilities=self.capabilities,
             blob_dir=blob_dir,
+            pty=pty,
         )
 
 
@@ -147,11 +169,19 @@ def spawn(
     policy: ExecPolicy,
     capabilities: ExecBackendCapabilities,
     blob_dir: Path | None = None,
+    pty: bool = False,
 ) -> ExecResult:
     """按策略创建并等待一个进程。不通过就抛，不降级。
 
+    `pty` 是**本次调用**的请求（默认 False，走管道）：
+
+    - `pty=True` 且 `policy.allow_pty=False` → `PolicyDenied`（策略不允许）；
+    - `pty=True`、策略允许、但后端 `supports_pty=False` → `PolicyUnsupported`；
+    - `pty=False` → 走管道。`policy.allow_pty=True` 只是"允许"，不会自动把
+      调用变成 PTY（否则 `isatty()`/CRLF/stdin 全都会悄悄变掉）。
+
     `env` 可以是原始环境：这里会先 `filtered_env()` 过滤，再用过滤后的环境
-    过 `check_exec()` 并交给子进程（未列出的变量不会出现在子进程里）。
+    过 `check_spawn()` 并交给子进程（未列出的变量不会出现在子进程里）。
     """
     if not isinstance(policy, ExecPolicy):
         raise TypeError(f"spawn 需要 ExecPolicy，收到：{type(policy).__name__}")
@@ -162,9 +192,18 @@ def spawn(
         )
 
     child_env = filtered_env(policy, env)
-    check_exec(policy, capabilities, argv, cwd, child_env)
+    check_spawn(policy, argv, cwd, child_env)
 
-    if policy.allow_pty:
+    if pty:
+        # 第一道门：策略许可（"允不允许用 PTY"，不是"这次要不要用"）。
+        if not policy.allow_pty:
+            raise PolicyDenied(
+                "本次调用请求了 PTY，但策略没有允许"
+                "（ExecPolicy.allow_pty=False）：改策略，或本次改用管道",
+                rule_id=RULE_PTY_NOT_ALLOWED,
+            )
+        # 第二道门：后端能力。策略允许 ≠ 这台机器做得到。
+        check_capabilities(policy, capabilities)
         if os.name != "posix":
             # 能力声明已经先拦过一次；这里再拦是因为调用方可能自己伪造 caps。
             raise PolicyUnsupported(
@@ -423,6 +462,7 @@ def _build_result(
         stdout_ref=stdout_ref,
         stderr_ref=stderr_ref,
         duration_ms=duration_ms,
+        stderr_merged=stderr_merged,
         descendants_may_survive=timed_out and not tree_killed,
     )
 
@@ -552,6 +592,7 @@ def _fsync_dir(path: Path) -> None:
 
 __all__ = [
     "LOCAL_EXEC_BACKEND",
+    "RULE_PTY_NOT_ALLOWED",
     "LOCAL_EXEC_CAPABILITIES",
     "ExecResult",
     "LocalExecBackend",
