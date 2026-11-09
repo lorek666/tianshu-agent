@@ -160,7 +160,7 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
     store.record_preimage(
         run_id, "c1", "note.md",
         before="原始内容\n".encode(),
-        expected_after=hashlib.sha256("agent 想写的内容\n".encode()).hexdigest(),
+        expected_after=hashlib.sha256("agent 想写的内容\n".encode()).hexdigest(), root=ws,
     )
     # 但磁盘上是第三种内容 —— 既非写前也非写后
     (ws / "note.md").write_text("完全不相干的内容\n", encoding="utf-8")

@@ -162,11 +162,28 @@ class ToolContext:
         return self.backend if self.backend is not None else current_backend()
 
     def prewrite(self, rel_path: str, before: bytes | None, expected_after: str) -> None:
-        """写入前的证据落盘。必须在真正写文件之前调用。"""
-        if self.snapshots is not None:
-            self.snapshots.record_preimage(
-                self.run_id, self.call_id, rel_path, before, expected_after
+        """写入前的证据落盘。必须在真正写文件之前调用。
+
+        证据键是 `(workspace 根, 相对路径)`。根**只能**来自已核验的派发票据：
+        `ToolContext` 自己不知道目录（它只拿到一个相对的 `rel_path`），多目录
+        任务里任何"猜一个根"的实现都会把证据写到错误的 workspace 名下。
+        所以没有票据时直接拒绝，而不是退回到某个默认目录。
+        """
+        if self.snapshots is None:
+            return
+        if self.admitted is None:
+            raise ToolNotAllowed(
+                "写前证据必须绑定 workspace 根：只接受已核验的派发票据"
+                "（AdmittedCall），不接受调用方自行指定的目录"
             )
+        self.snapshots.record_preimage(
+            self.run_id,
+            self.call_id,
+            rel_path,
+            before,
+            expected_after,
+            root=self.admitted.workspace_root,
+        )
 
 
 @dataclass

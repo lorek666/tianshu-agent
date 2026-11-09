@@ -110,9 +110,15 @@ OpenAI 协议要的是 `parameters`。于是**参数 schema 从来没到达模�
    目录字节数本来没意义，两个后端不一致会让模型看到的东西随后端跳变。
 6. **读失败/列目录失败从 `unknown` 变成 `failed/none_applied`**：新行为更对
    （读失败什么都没改），但对 local 是静默的语义变化，已记录。
-7. **快照证据键只有相对路径**：多 workspace 会撞键，`undo` 可能写到错误目录（issue #17）。
-8. **凭据不可"独立核对"**：`action` 是 tool_id、`resource` 只有相对路径、`evidence`
-   是合成字符串、`verify_receipts` 不核对磁盘。M3 只让 `backend` 成为事实。
+7. **（M3 之后已修，issue #17）快照证据键只有相对路径**：多 workspace 会撞键，
+   `undo` 可能写到错误目录。现在证据键是 `(workspace 根, 相对路径)`，撤销按每条
+   记录自己的根落盘；旧格式（v2 清单）记录被**拒绝**撤销，没有自动迁移。取舍见
+   `docs/superpowers/notes/pr-g-evidence-keys.md`。
+8. **（M3 之后已修，issue #17）凭据不可"独立核对"**：`action` 曾是 tool_id、
+   `resource` 只有相对路径、`evidence` 是合成字符串、`verify_receipts` 不核对磁盘。
+   现在 `action` 是真实动作、`resource` 是绝对路径并带 `root`/`intent_seq`/`blob_ref`，
+   `evidence` 是逐条可解析的结构化引用，`verify_receipts` 会核对事件、快照 blob
+   与磁盘现状；旧格式凭据被报成"无法独立核对"而不是默认通过。
 9. **内部工具 `restore_file` 能被模型提案派发**：`_dispatchable` 不校验 `exposed`（issue #19）。
 10. **打开前没有 realpath 复核**：`Workspace.resolve` 在解析时消解符号链接，但
     resolve 与 open 之间仍有 TOCTOU 窗口（与 M2 同，未变好也未变坏）。
@@ -134,7 +140,7 @@ OpenAI 协议要的是 `parameters`。于是**参数 schema 从来没到达模�
 ## 7. 留下的票据
 
 - #16 工具参数命名（**已关闭**：归因错误，真因是 adapter 漏翻 schema）
-- #17 快照/凭据证据键只有相对路径，多 workspace 撞键
+- #17 快照/凭据证据键只有相对路径，多 workspace 撞键（**已修**：见 §5 第 7、8 条）
 - #19 内部工具 `restore_file` 能被模型派发
 
 下一步（M4 可评估）需要 20 条 case + replay/evaluate 分离；`MemBackend` 正好是

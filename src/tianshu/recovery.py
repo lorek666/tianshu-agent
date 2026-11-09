@@ -19,14 +19,14 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .errors import WorkspaceViolation
+from .errors import TianshuError, WorkspaceViolation
 from .events import EventLog
 from .guard import blocked_workspaces, ensure_not_blocked
 from .leases import Lease, LeaseStore
 from .receipt import build_receipt
 from .sandbox import current_backend
-from .snapshot import ABSENT, SnapshotStore
-from .tools import SPECS, ToolResult
+from .snapshot import ABSENT, Change, SnapshotStore
+from .tools import SPECS, ToolResult, action_for
 from .workspace import Workspace
 
 __all__ = [
@@ -44,6 +44,8 @@ class RecoveryReport:
     none_applied: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    #: 本次被阻断的 workspace 根。多目录任务里要能看出到底挡的是哪一个。
+    blocked_workspaces: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -61,6 +63,19 @@ def _observe(ws: Workspace, rel: str) -> str:
     if not io.exists(target):
         return ABSENT
     return _sha(io.read_bytes(target)[0])
+
+
+def _evidence_workspace(change: Change, fallback: Workspace) -> Workspace:
+    """这条证据该在哪个目录里核实。
+
+    证据自带 workspace 根时**只信证据**：多 workspace 的 Run 里，另一个目录
+    下的同名文件与本条无关，拿调用方的 workspace 去读就是在看错地方。
+    旧格式（v2 清单没有 root）只能退回显式传入的 workspace——恢复必须显式给
+    目录，这个退回是"用户说了在哪看"，不是猜；真正不能猜的是 undo（写操作）。
+    """
+    if not change.root:
+        return fallback
+    return Workspace(Path(change.root))
 
 
 def _foreign_lease(
@@ -133,19 +148,6 @@ def recover_run(
                     bucket=report.none_applied)
             continue
 
-        # 有别的活 Run 正在这条路径上写：现在读到的字节不可信，不下结论
-        holder = _foreign_lease(leases, ws, run_id, payload)
-        if holder is not None:
-            _settle(log, report, run_id, call_id, tool_id, payload,
-                    ToolResult("unknown", "unknown",
-                               {"error": "recovered: 该路径正被另一个 Run 占用"
-                                         "（租约有效），不做实时判断",
-                                "recovered": True,
-                                "held_by_run": holder.run_id,
-                                "held_by_instance": holder.owner_instance_id}),
-                    bucket=report.unresolved)
-            continue
-
         # 写工具：唯一判据是写前证据
         if snapshots is None:
             _settle(log, report, run_id, call_id, tool_id, payload,
@@ -176,7 +178,35 @@ def recover_run(
                     bucket=report.none_applied)
             continue
 
-        current = _observe(ws, change.path)
+        try:
+            obs_ws = _evidence_workspace(change, ws)
+        except TianshuError as exc:
+            # 证据里的根不可用（目录被删/搬走）：此时读到的任何东西都不能
+            # 算作"这个工作区现在是什么"，只能记 unresolved。
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 证据里的 workspace 根不可用"
+                                         f"（{exc}），无法核实",
+                                "recovered": True,
+                                "root": change.root}),
+                    bucket=report.unresolved)
+            continue
+
+        # 有别的活 Run 正在这条路径上写：现在读到的字节不可信，不下结论。
+        # 检查的是**证据指向的那个目录**里的那条路径，不是调用方传进来的目录。
+        holder = _foreign_lease(leases, obs_ws, run_id, payload)
+        if holder is not None:
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 该路径正被另一个 Run 占用"
+                                         "（租约有效），不做实时判断",
+                                "recovered": True,
+                                "held_by_run": holder.run_id,
+                                "held_by_instance": holder.owner_instance_id}),
+                    bucket=report.unresolved)
+            continue
+
+        current = _observe(obs_ws, change.path)
 
         if change.before_state == change.expected_after:
             # 写前写后内容一致：没有任何可观测副作用。不声称成功、也不阻断。
@@ -202,12 +232,19 @@ def recover_run(
                     ToolResult(
                         "succeeded", "applied",
                         {"path": change.path,
-                         "bytes": current_backend().size(ws.resolve(change.path)),
+                         "bytes": current_backend().size(obs_ws.resolve(change.path)),
                          "sha256": change.expected_after,
                          "after_state": change.expected_after,
                          "before_state": change.before_state,
                          "recovered": True}),
-                    bucket=report.applied, with_receipt=True)
+                    bucket=report.applied, with_receipt=True,
+                    # 凭据要能独立核对：根、意图事件 seq、快照 blob 都写进去。
+                    # 旧格式记录没有 root 时，用**显式** --workspace 作根；
+                    # 这是唯一一处允许"外部给的目录"进证据的地方，而且它只
+                    # 描述"在这个目录里看到了什么"，不用于 undo 的落盘决策。
+                    receipt_root=str(obs_ws.root),
+                    receipt_change=change,
+                    intent_seq=ev.seq)
             continue
 
         # 既不是写前也不是写后：被第三方改过，或写到一半
@@ -221,18 +258,44 @@ def recover_run(
                 bucket=report.unresolved)
 
     if report.unresolved:
-        log.append(
-            run_id,
-            "recovery.blocked",
-            {
-                "workspace": str(ws.root),
-                "call_ids": report.unresolved,
-                "reason": "存在无法核实的副作用，阻断后续写入",
-            },
-            actor_kind="system",
-        )
+        # 阻断要落在**无法核实的那个目录**上：多 workspace 的 Run 里，
+        # 拿调用方传进来的 ws 一概阻断会挡错目录，而真正状态不明的目录却
+        # 还开着——那是比不阻断更糟的结果。
+        for root, call_ids in _unresolved_by_root(
+            snapshots, run_id, report.unresolved, ws
+        ).items():
+            report.blocked_workspaces.append(root)
+            log.append(
+                run_id,
+                "recovery.blocked",
+                {
+                    "workspace": root,
+                    "call_ids": call_ids,
+                    "reason": "存在无法核实的副作用，阻断后续写入",
+                },
+                actor_kind="system",
+            )
 
     return report
+
+
+def _unresolved_by_root(
+    snapshots: SnapshotStore | None,
+    run_id: str,
+    unresolved: list[str],
+    fallback: Workspace,
+) -> dict[str, list[str]]:
+    """无法核实的调用分别属于哪个目录（根 → call_id 列表，按根排序）。
+
+    旧格式记录（没有 root）只能算调用方显式给的目录；除此之外一切都按证据
+    自己的根分组——每个目录的阻断事件只列属于它自己的那些调用。
+    """
+    grouped: dict[str, list[str]] = {}
+    for call_id in unresolved:
+        change = snapshots.find(run_id, call_id) if snapshots is not None else None
+        root = change.root if change is not None and change.root else str(fallback.root)
+        grouped.setdefault(root, []).append(call_id)
+    return dict(sorted(grouped.items()))
 
 
 def _settle(
@@ -246,6 +309,9 @@ def _settle(
     *,
     bucket: list[str],
     with_receipt: bool = False,
+    receipt_root: str | None = None,
+    receipt_change: Change | None = None,
+    intent_seq: int | None = None,
 ) -> None:
     batch = [{
         "run_id": run_id,
@@ -262,6 +328,13 @@ def _settle(
     }]
 
     if with_receipt:
+        if receipt_root is None or receipt_change is None or intent_seq is None:
+            # 内部装配错误：凭据缺任何一条引用都不可独立核对。宁可炸在这里，
+            # 也不要往日志里塞一张"看起来完整"的凭据。
+            raise TianshuError(
+                "恢复补凭据缺少必要引用（root / 快照条目 / intent seq）"
+            )
+        change = receipt_change
         receipt = build_receipt(
             run_id=run_id,
             call_id=call_id,
@@ -269,6 +342,11 @@ def _settle(
             args_hash=intent_payload.get("args_hash", ""),
             result=result,
             backend=current_backend().name,
+            root=receipt_root,
+            resource=str(Workspace(Path(receipt_root)).resolve(change.path)),
+            action=action_for(tool_id),
+            intent_seq=intent_seq,
+            blob_ref=change.blob_ref,
         )
         if receipt is not None:
             batch.append({
