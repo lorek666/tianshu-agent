@@ -389,8 +389,13 @@ class _Daemon:
             self.root / "events.db", blob_dir=self.root / "artifacts" / "blobs"
         )
         self.control_stack = build_stack(self.control_log, data_root=self.root)
+        # 驱动连接在**本线程**建、只由驱动线程用。sqlite3 默认禁止跨线程，
+        # 所以必须显式声明这是"固定线程独占"的通道（EventLog 的既有约定）；
+        # 不加的话第一条作业就会 ProgrammingError，表现是"任务永远 created"。
         self.driver_log = EventLog(
-            self.root / "events.db", blob_dir=self.root / "artifacts" / "blobs"
+            self.root / "events.db",
+            blob_dir=self.root / "artifacts" / "blobs",
+            cross_thread=True,
         )
         self.driver_stack = build_stack(self.driver_log, data_root=self.root)
 
