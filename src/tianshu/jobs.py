@@ -19,6 +19,12 @@ Task/Run 解决的是"要做的事"和"这次执行"，但它不回答"谁在跑
 没有 `claim_epoch` 时，B 接管后 A 的 `finish` 依然能匹配到 `job_id` 那行并写成功；
 也就是说"旧 worker 不得改新 owner 的状态"这句计划里的要求，只靠 pid/心跳时间
 是做不到的——pid 会被复用，时间也是可以被后来者超越的。
+
+**默认 deadline 是 30 秒，所以跑循环的一方必须定期 `heartbeat`。**
+心跳循环属于 Task 6 的 worker；在那之前，任何超过 30 秒的模型调用都会让作业
+变成"可接管"，接管者拿到更高的 `claim_epoch`，旧 worker 的下一次提交就会
+`JobLost`。这不是 bug，是刻意的取舍：宁可让慢 worker 失败并交还工作，也不能
+让它无声占着资源。跑真实模型时要把 heartbeat 接上再压测。
 """
 
 from __future__ import annotations
