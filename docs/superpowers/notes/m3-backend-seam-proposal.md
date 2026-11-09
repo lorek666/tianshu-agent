@@ -464,3 +464,66 @@ git diff --stat main -- src/tianshu/loop.py     # 必须无输出
 ---
 
 附录：文中行号基于当前工作树（2026-11-09）。实现时若行号漂移，以函数名为准。
+
+---
+
+## 附录 B：落地记录（PR F，2026-11-09）
+
+评审拍板：memfs 够用；接受进程级后端选择；`receipt.resource` 带 workspace 根
+推迟到 PR G（本 PR 只让 `backend` 成为事实）。
+
+**已落地（对应提案 §9 的 F1–F4）**
+
+| 内容 | 位置 |
+|---|---|
+| `FileBackend` 协议 + `LocalBackend` + `MemBackend` + 进程级选择器 | `src/tianshu/sandbox.py` |
+| 路径键（`normalize_name` / `overlap_key` / 祖先判断）从 workspace 拆出，供后端复用 | `src/tianshu/pathkeys.py` |
+| 看盘收敛：tools / dispatcher / snapshot / recovery 统一走 probe | 同名模块 |
+| `Workspace` 拆成"词法边界"+"后端负责根可用性" | `src/tianshu/workspace.py` |
+| `ResourceIdentity.of(backend=...)`；跨后端只承诺路径前缀 | 同上 |
+| 覆盖已有文件保留原 mode（mkstemp 0600 的 bug） | `src/tianshu/fsutil.py` |
+| 证据路径统一 `/`（`as_posix`） | `workspace.relative` |
+| `receipt.backend` 记录实际后端 | `receipt.build_receipt(backend=...)` |
+| 两个后端跑同一套工具契约 + C0 违约后端元测试 | `tests/test_backend_contract.py` |
+| 后端原语（mode / 原子替换 / 虚拟命名空间 / 不碰宿主盘 / 选择器） | `tests/test_sandbox_backend.py` |
+
+**与提案的差异（都要如实写在 PR 里）**
+
+1. **CLI 的 `--backend` 没做。** `src/tianshu/cli.py` 在 PR #15（Task 1）的
+   改动范围内，本 PR 不碰它；选择走 `TIANSHU_SANDBOX_BACKEND` 或显式
+   `configure_backend()`。CLI 开关留给 PR G。
+2. **`MemBackend` 的命名空间可注入**（默认 `/__tianshu_memfs__`）。测试需要
+   一个不与其它用例共享的命名空间，否则 memfs 的进程内状态会串。默认值
+   仍然对宿主同名路径 fail closed。
+3. **`list_files` 的排序键改成了 NFC 规范化后的名字**（提案 §5 第 11 条）。
+   这是对两个后端都生效的行为变化：macOS 上 NFD 文件名不再出现"显示顺序
+   与排序顺序不一致"。
+4. **`read_text` 改为后端一次打开返回 `(前缀, 总大小)`**：不再有 stat 与
+   read 之间的窗口（提案 §5 第 10 条只要求记账，这里顺手消掉了竞态面）。
+
+**本 PR 明确没修、已记账的（不要以为接缝把它们解决了）**
+
+1. **快照证据键仍只有 workspace 相对路径**（提案 §5 第 4 条）→ PR G。
+2. **凭据仍不可"独立核对"**（`action` 是 tool_id、`evidence` 是合成串、
+   不引用事件 seq / blob）→ PR G。
+3. **存在性与删除的竞态**（`create_report` 的 exists 与写入、`delete_file`
+   的读与 unlink）→ 原样保留。
+4. **目录目标会让 `build_request` 抛 `IsADirectoryError`/`FileNotFoundError`**
+   （新发现）：`delete_file`/`modify_text` 指向目录时，`observe_state` 在
+   生成 preconditions 阶段直接读目录失败，异常逃出 `prepare`，既不是
+   `rejected` 也不是 `failed`。M2 起就是这样，接缝只是让它更明显。
+   修复方式应该是让 `observe_state` 对目录返回一个可判定的状态（或让
+   `build_request` 先做 `is_file` 判定并抛 `DispatchDenied`），单独开票。
+5. **`effect_state=partial` / `status=cancelled` 仍是死枚举**：契约测试断言
+   "不会出现 partial"，而不是假装它存在。
+
+**覆盖矩阵（验收文档要照抄，别笼统写"契约测试全绿"）**
+
+| 断言组 | local_fs | memfs |
+|---|---|---|
+| 工具可见行为（读/写/删/恢复/参数/证据顺序/凭据/租约） | ✅ | ✅ |
+| 快照落在 data_root、工作区内无 artifacts | ✅ | ✅ |
+| 越界：`../`、绝对路径 | ✅ | ✅ |
+| 越界：符号链接 | ✅ | 不承诺（无 symlink） |
+| 覆盖写入保留 mode、新建 0600 | ✅ | 不适用（无 mode） |
+| kill -9 / failpoint / 权限拒绝 / ENOSPC | ✅（M1 证据） | ❌ 状态随进程消失 |
