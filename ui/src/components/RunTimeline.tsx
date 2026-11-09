@@ -46,7 +46,7 @@ export function RunTimeline({ entries, hasMore, live }: RunTimelineProps) {
       <div className="section-title timeline-title">
         事件时间线
         <span className="section-hint">
-          {live ? "实时接收事件（断线会自动重连）" : "每 3 秒自动刷新"}
+          {live ? "实时接收事件（断线自动重连，失败可手动重试）" : "每 3 秒自动刷新"}
         </span>
       </div>
       {hasMore ? (

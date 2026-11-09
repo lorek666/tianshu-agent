@@ -146,7 +146,9 @@ export function RunDetail({
                   ? "费用未知"
                   : formatUsd(cost.totalMicros)}
             </span>
-            {cost.knownCalls > 0 ? <span className="cost-exact num">{formatUsdExact(cost.totalMicros)}</span> : null}
+            {cost.knownCalls > 0 ? (
+              <span className="cost-exact num">精确 {formatUsdExact(cost.totalMicros)}</span>
+            ) : null}
           </div>
           <div className="cost-sub">
             {cost.calls === 0

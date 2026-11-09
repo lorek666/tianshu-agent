@@ -69,8 +69,8 @@ export function TaskList({
                       <span className="task-goal">{taskGoalSummary(task, 58)}</span>
                       <span className="task-item-meta">
                         <StatusPill tone={runStateTone(task.status)}>{taskStatusLabel(task.status)}</StatusPill>
-                        {activeRun !== null ? (
-                          <span className="task-run-hint">运行中</span>
+                        {activeRun !== null && task.status !== "running" ? (
+                          <span className="task-run-hint">运行进行中</span>
                         ) : null}
                         {pending > 0 ? (
                           <span className="task-approval-hint">{pending} 项待批准</span>

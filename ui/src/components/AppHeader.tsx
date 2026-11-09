@@ -23,6 +23,8 @@ export function streamStatusText(status: StreamStatus, detail: string | null): s
       return detail ?? "事件流断开，正在重连…";
     case "polling":
       return "事件流不可用，仅轮询兜底";
+    case "disconnected":
+      return "与守护进程的连接已断开，正在重试…";
     case "stopped":
       return "事件流已停止";
     default:
@@ -41,8 +43,15 @@ export function AppHeader({
 }: AppHeaderProps) {
   const versionText = daemon.version !== null ? `v${daemon.version}` : "版本未知";
   const startedText =
-    daemon.started_at !== null ? `已运行 ${formatRelative(daemon.started_at, now).replace("前", "")}` : null;
-  const live = !connectionLost && (streamStatus === "live" || streamStatus === "connecting" || streamStatus === "reconnecting");
+    daemon.started_at !== null
+      ? `启动于 ${formatRelative(daemon.started_at, now).replace("前", "")}`
+      : null;
+  const live =
+    !connectionLost &&
+    (streamStatus === "live" ||
+      streamStatus === "connecting" ||
+      streamStatus === "reconnecting" ||
+      streamStatus === "polling");
 
   return (
     <header className="app-header">

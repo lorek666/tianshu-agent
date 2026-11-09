@@ -19,7 +19,6 @@ import type { HostClient } from "./api/host";
 import { createDemoHostClient } from "./demo/host";
 import { isDemoRequested, readHostToken } from "./api/token";
 import {
-  normalizeApproval,
   normalizeEvents,
   normalizeRun,
   normalizeTask,
@@ -120,6 +119,8 @@ export function App() {
   const [timelineHasMore, setTimelineHasMore] = useState(false);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [streamDetail, setStreamDetail] = useState<string | null>(null);
+  /** 手动重试事件流：自增后 effect 重建 stream（自动重连已在上限处停止）。 */
+  const [streamEpoch, setStreamEpoch] = useState(0);
   const [connectionLost, setConnectionLost] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -426,7 +427,7 @@ export function App() {
     return () => {
       handle.stop();
     };
-  }, [phase, receiveEvent, refreshSnapshot, refreshSelectedRun]);
+  }, [phase, streamEpoch, receiveEvent, refreshSnapshot, refreshSelectedRun]);
 
   useEffect(() => {
     if (phase !== "ready" || selectedRunId === null) return;
@@ -681,22 +682,9 @@ export function App() {
           };
           if (reason !== undefined && reason !== "") params.reason = reason;
           const result = await host.rpc<ApprovalDecisionResult>(RPC.approvalsDecide, params);
-          const decided = normalizeApproval(result.approval);
-          setState((previous) =>
-            previous === null
-              ? previous
-              : {
-                  ...previous,
-                  approvals: previous.approvals.map((item) =>
-                    item.approval_id === approval.approval_id
-                      ? decided ?? {
-                          ...item,
-                          state: decision === "approve" ? "approved" : "rejected",
-                        }
-                      : item,
-                  ),
-                },
-          );
+          // 不做乐观更新：审批可能被并发处理（你点允许时别的窗口已经拒绝）。
+          // 卡片等下一帧 /state 或服务端推送的 approval 事件再更新；这里只负责
+          // 把“已处理”的结果告诉用户并立刻拉一次权威状态。
           showToast(
             decision === "approve"
               ? result.resumed
@@ -709,6 +697,9 @@ export function App() {
           if (selectedRunRef.current === approval.run_id) await refreshRun(host, approval.run_id);
         } catch (error) {
           setErrorBanner(humanizeHostError(error));
+          // 并发拒绝/过期时服务端状态已经变了：立刻同步一次，别让旧卡片继续挂着。
+          await refreshSnapshot(host);
+          if (selectedRunRef.current === approval.run_id) await refreshRun(host, approval.run_id);
         } finally {
           setBusy(null);
         }
@@ -766,6 +757,15 @@ export function App() {
     })();
   }, [refreshRun, refreshSnapshot, showToast, undoPlan]);
 
+  const handleRetryConnection = useCallback((): void => {
+    setStreamEpoch((value) => value + 1);
+    const host = hostRef.current;
+    if (host !== null) {
+      void refreshSnapshot(host);
+      refreshSelectedRun(host);
+    }
+  }, [refreshSelectedRun, refreshSnapshot]);
+
   const tasks = state?.tasks ?? [];
   const approvals = state?.approvals ?? [];
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? null;
@@ -816,12 +816,16 @@ export function App() {
         </div>
       ) : null}
 
-      {connectionLost ? (
+      {connectionLost || streamStatus === "disconnected" ? (
         <div className="banner banner-warn" role="status">
           <IconAlert size={15} />
-          <span>与守护进程的连接中断，界面正在每 3 秒重试。任务应该仍在后台运行。</span>
-          <button type="button" className="link-btn" onClick={handleRefresh}>
-            立即重试
+          <span>
+            {streamStatus === "disconnected"
+              ? "与守护进程的连接已断开，正在重试…"
+              : "与守护进程的连接已断开，正在重试…（每 3 秒轮询兜底，任务应该仍在后台运行）"}
+          </span>
+          <button type="button" className="link-btn" onClick={handleRetryConnection}>
+            重试
           </button>
         </div>
       ) : null}
@@ -915,8 +919,18 @@ export function App() {
       </div>
 
       <footer className="status-bar">
-        <span className={`status-dot tone-${connectionLost ? "danger" : streamStatus === "live" ? "success" : "warn"}`} />
-        <span>{connectionLost ? "与守护进程的连接中断" : streamStatusText(streamStatus, streamDetail)}</span>
+        <span
+          className={`status-dot tone-${
+            connectionLost || streamStatus === "disconnected"
+              ? "danger"
+              : streamStatus === "live"
+                ? "success"
+                : "warn"
+          }`}
+        />
+        <span>
+          {connectionLost ? "与守护进程的连接已断开，正在重试…" : streamStatusText(streamStatus, streamDetail)}
+        </span>
         <span className="status-sep">·</span>
         <span>
           事件已同步至 <span className="num">#{state?.event_seq_head ?? 0}</span>
@@ -934,12 +948,14 @@ export function App() {
         </button>
       </footer>
 
-      <NewTaskDialog
-        open={newTaskOpen}
-        busy={busy === "create-task"}
-        onClose={() => setNewTaskOpen(false)}
-        onSubmit={handleCreateTask}
-      />
+      {newTaskOpen ? (
+        <NewTaskDialog
+          open
+          busy={busy === "create-task"}
+          onClose={() => setNewTaskOpen(false)}
+          onSubmit={handleCreateTask}
+        />
+      ) : null}
 
       {confirm !== null ? (
         <Modal

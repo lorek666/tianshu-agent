@@ -332,7 +332,8 @@ pre,
 
 .detail-pane {
   flex: 0 0 auto;
-  max-height: 43vh;
+  /* 详情占屏约三分之一：给运行详情的时间线留出可读高度（审批仍在右栏）。 */
+  max-height: 36vh;
 }
 
 .center-empty {
@@ -1582,26 +1583,41 @@ pre,
   font-size: 10.5px;
 }
 
-/* tone 色板：点 / 小圆点共用 */
-.tone-neutral {
+/* tone 色板只给小圆点用；绝不能给容器元素上背景（否则整条时间线会被染色）。
+   这里的类名同时出现在任务状态点、效果点、底部连接点和时间线点上。 */
+.task-state-dot.tone-neutral,
+.effect-dot.tone-neutral,
+.status-dot.tone-neutral {
   background: var(--text-muted);
 }
-.tone-info {
+.task-state-dot.tone-info,
+.effect-dot.tone-info,
+.status-dot.tone-info {
   background: #3b82f6;
 }
-.tone-action {
+.task-state-dot.tone-action,
+.effect-dot.tone-action,
+.status-dot.tone-action {
   background: var(--accent);
 }
-.tone-success {
+.task-state-dot.tone-success,
+.effect-dot.tone-success,
+.status-dot.tone-success {
   background: var(--success);
 }
-.tone-warn {
+.task-state-dot.tone-warn,
+.effect-dot.tone-warn,
+.status-dot.tone-warn {
   background: #d97706;
 }
-.tone-danger {
+.task-state-dot.tone-danger,
+.effect-dot.tone-danger,
+.status-dot.tone-danger {
   background: var(--danger);
 }
-.tone-approval {
+.task-state-dot.tone-approval,
+.effect-dot.tone-approval,
+.status-dot.tone-approval {
   background: var(--approval);
 }
 
@@ -1948,7 +1964,7 @@ pre,
   }
 
   .detail-pane {
-    max-height: 38vh;
+    max-height: 34vh;
   }
 
   .daemon-meta {

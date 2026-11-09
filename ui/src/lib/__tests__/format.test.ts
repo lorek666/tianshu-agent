@@ -30,7 +30,8 @@ describe("金额格式化", () => {
   it("不足一美分单独判定，避免把“花了钱”显示成没花钱", () => {
     expect(isSubCent(4_999)).toBe(true);
     expect(isSubCent(0)).toBe(false);
-    expect(isSubCent(10_000)).toBe(false);
+    expect(isSubCent(5_000)).toBe(false);
+    expect(isSubCent(9_300)).toBe(false);
   });
 
   it("成本摘要区分“未知”与“0 元”", () => {

@@ -22,9 +22,12 @@ export function formatUsdExact(micros: number): string {
   return `${sign}$${whole}.${String(fraction).padStart(6, "0")}`;
 }
 
-/** 有成本但不足一美分：主数字仍显示 $0.00，旁边应提示“不足 $0.01”。 */
+/**
+ * 有成本但不足半美分：四舍五入到两位小数会显示 $0.00，旁边应提示“不足一美分”。
+ * 半美分（5000 微美元）及以上会显示 $0.01，不再加这个提示，免得自相矛盾。
+ */
 export function isSubCent(micros: number): boolean {
-  return micros > 0 && micros < 10_000;
+  return micros > 0 && micros < 5_000;
 }
 
 export interface CostLike {
