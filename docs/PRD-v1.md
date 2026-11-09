@@ -566,6 +566,9 @@ Approval { approval_id, request, digest,
 | `dispatch.create_over_existing` | 目标不合法 | 新建动作的目标已存在（新建不允许覆盖）。 | 目标已存在；要覆盖请改用 `modify_text`（删除类，需审批）。 |
 | `dispatch.target_is_directory` | 目标不合法 | 目标是目录，而该动作只作用于文件。 | 换成文件路径；目录不能作为写入/删除目标。 |
 | `c4.no_binding` | 工作区阻断 | 任务没有绑定任何工作区（0 目录任务不能隐式获得 cwd 权限）。 | 给任务绑定目录：`task create --workspace`。 |
+| `c4.exec_not_configured` | 执行（exec） | 任务没有配置执行策略：`run_command` 默认全拒（不是默认白名单）。 | 确实需要执行命令时，用 `task create --allow-exec-cmd` 显式开启后重新发起；不要给"看起来能用"的默认白名单。 |
+| `c4.exec_policy_denied` | 执行（exec） | exec 策略拒绝了这次调用：argv 不在白名单、cwd 越界、或 pty 未被许可。 | 按提示缩小命令或目录；确实需要就在任务策略里显式放开对应项，并重新审批。 |
+| `c4.exec_unsupported` | 执行（exec） | 后端在本平台做不到请求的执行方式（例如 Windows 上请求 PTY）。 | 改策略不会通过：换一种执行方式，或换平台。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
 | `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
@@ -573,6 +576,7 @@ Approval { approval_id, request, digest,
 | `c4.auto` | 判定结果（非拒绝） | 判定结果：目录内读/新建，自动放行。 | 无需操作：已自动放行。 |
 | `c4.delete` | 判定结果（非拒绝） | 判定结果：删除，需审批。 | 需要人工确认：批准删除。 |
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
+| `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
 | `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |
@@ -698,7 +702,7 @@ class Limits(TypedDict, total=False):
 
 | ID | 功能 | 关键要求 | 来源依据 |
 |---|---|---|---|
-| **F1** | 执行原语 | `spawn(argv, cwd, env, policy) → handle`，含 PTY、stdio 流、信号、退出码。argv 数组，禁 shell 拼接；env 白名单 | PRD v1 |
+| **F1** | 执行原语 | `spawn(argv, cwd, env, policy) → handle`，含 PTY、stdio 流、信号、退出码。argv 数组，禁 shell 拼接；env 白名单。PTY 仅 POSIX：Windows 上 `run_command` 的 pty 请求返回 `unsupported`（无 ConPTY），不得用管道假装 | PRD v1 |
 | **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽 | PRD v1 |
 | **F3** | 事件日志与恢复 | 见 §5.3。恢复扫描"有 intent 无 result"的调用，按 `side_effect_level` 处置 | OpenHands EventLog |
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
@@ -806,6 +810,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 | `create_report`，目标**已存在** | —（**拒绝**，`c4.create_over_existing`；工具本身不覆盖，批准了也执行不了） | 拒绝，并提示改用 `modify_text` |
 | `modify_text`（整文件替换） | `overwrite` | 需审批 |
 | `delete_file` | `delete` | 需审批 + preimage |
+| `run_command` | `exec` | **需审批**（全系统最高危：可读写任意文件、联网、起子进程）；且任务必须先显式开启 exec 策略，否则默认全拒 |
 
 > 一句话：**"新建"和"覆盖"是两个工具，不是一个工具加一张批准。** 让
 > `create_report` 在批准之后去覆盖，会让用户批一张永远执行不了的批准。
