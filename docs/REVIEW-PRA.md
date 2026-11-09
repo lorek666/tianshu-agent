@@ -168,7 +168,16 @@ Task 4 只让"写入必须派发"，但派发的调用方还是 M0 那个一次�
 | 写入口 | `tools.execute()` 的 `allow_legacy_unauthenticated_write` **已删除**：会改文件的工具在那条路上只会收到 `ToolNotAllowed`。`loop.run()` 保留为兼容入口，但不再是捷径——它建 Task、开 Run、拿租约、认领作业、走派发 |
 | 装配 | 新增 `AgentLoop` 与 `build_stack`：CLI、测试、`run()` 共用同一套 store 装配，避免"CLI 能用、库函数不能"的绕过点。`build_stack` 的 `clock`/`identity`/`dispatcher_cls` 注入点只为测试 TTL 与接管 |
 
-测试：`tests/test_run_control.py` 20 例；全量 **296 passed**，`ruff check .` 通过。
+测试：`tests/test_run_control.py` 21 例；全量 **300 passed**，`ruff check .` 通过。
+
+**这一轮没有完成作者之外的人复审。** 曾尝试让独立的复审 agent 通读
+`main...HEAD` 的完整 diff，但它没有在合并前返回报告；因此本 PR 是作者自查后
+合并的。按 §5 的建议，这属于流程缺口，而不是"已经复核过"。自查中修掉的 5 个
+问题写在提交记录里（`fix(m2): 崩溃后的 Run 必须能被接管`、
+`fix(m2): 派发阶段被拒时主循环必须补写 tool.result`、
+`fix(m2): 重建投影时清掉 Run 上的控制请求`、
+`fix(m2): 读操作在游标落后时被重复记录`、
+`test(m2): 把 intent ⊆ result 补完`），但"自查通过"不等于"独立复核通过"。
 
 仍未做（**不得当作已解决**）：
 
