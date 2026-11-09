@@ -332,3 +332,26 @@ UPDATE；而 `claim()` 是从**当前**行 `claim_epoch + 1`。A 刚提交 `epoc
   一条"从 CLI 进去、从文件出来"的用例。
 - 契约修订单独一个 `docs(contract):` 提交，并在计划 §2.3 里写明"执行期修订"的缘由，
   避免下一个读计划的人以为实现偏离了计划。
+
+## 4.6.7 抢不到工作区租约时把作业"挂起"（中等）
+
+**现象**（压测：10 个排队作业 / 同一棵目录 / 6 个 worker）：
+
+```text
+worker 退出码: [1, 1, 0, 1, 0, 1]
+errors: LeaseConflict: 资源已被占用…
+!! run_xxx: claimed=1 intents=0 ends=0     ← 8 个正常作业被挂起成"等人决定"
+```
+
+**根因**：`LeaseConflict` 与"等审批"走了同一条 `park` 路径。M2 的设计就是
+"同一棵树同一时刻只有一个写者"，所以抢不到租约只是**排队**，不是需要人决定的事。
+
+**处置**：`LeaseConflict` → `requeue` + `contended`，`drain` 就此停下（继续认领只会
+把整队作业一个个交还）。修后同一压测：退出码全 0、10 个 Run 全部 succeeded、
+各写一次。回归测试：`test_concurrent_workers_serialize_on_one_directory`。
+
+## 4.6.8 心跳把 database is locked 当成丢 claim（中等）
+
+`sqlite3.OperationalError: database is locked` 说的是"主线程正在提交大事务"，
+不是"你已经不是 owner 了"。原来任何异常都让心跳线程停止 → owner 被误判不活 →
+被接管。改成只对 locked/busy 重试（≤3 次），其它异常仍立刻停止并留痕。

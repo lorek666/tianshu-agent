@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（331 passed / `ruff check .` 通过），合并提交见 PR
+- 本阶段最终：PR C 分支（332 passed / `ruff check .` 通过），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 331 passed
+  uv run pytest -q          # 332 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -43,6 +43,22 @@
 | 9 | unknown 阻断所有受控写入口 | 成立 | `test_recovery.py` 四故障点 + `test_m2_acceptance.py` 实测：`recover` 报 `无法核实 ['c1']` 之后下一次写入 `state=failed`，文件未生成（§6.7） |
 | 10 | 旧日志仍可回放 | 成立 | `test_acceptance.py` 的 replay 校验、`test_debug_regressions.py`；CLI 每次 `run` 都附带 `replay: 通过` |
 | 11 | 四目标证据状态透明 | **部分** | macOS arm64 实测通过；Windows（x64/arm64）、macOS x64 **未运行**，见 §8 |
+
+### 2.4 多个 worker + 一棵目录：串行而不是瘫痪（压测）
+
+压测脚本（`/tmp/stress_workers2.py`，不属于仓库）造 10 个排队作业，全部指向**同一棵**
+工作区目录，同时起 6 个 `worker`：
+
+```text
+worker 退出码: [0, 0, 0, 0, 0, 0]
+带 contended 的 worker: 5
+全部 10 个 Run：各 1 次写入、都 succeeded、文件都在: True
+```
+
+第一版（未修）的实测是：抢不到租约的 worker 把这些作业**挂起**成"等人决定"，
+队列里 8 条正常工作变成 8 条 `waiting`，退出码还是 1——把"排队"误报成"故障"。
+修法见 `docs/REVIEW-PRA.md` §4.6.7。回归测试：
+`test_concurrent_workers_serialize_on_one_directory`。
 
 ### 2.5 审批复用的边界（探针实测）
 
@@ -267,6 +283,8 @@ other.md 存在: no
 | `claim_next` 先读后写（判定与认领不在同一事务） | 两个 worker 同时持有同一 Run 的 claim | `BEGIN IMMEDIATE` 包住判定+认领 |
 | `_finish_locked` 只收 `pending/claimed` 作业 | 取消一个"等审批"的 Run 会留下永不结束的作业 | 把 `waiting` 一起收 |
 | 只读绑定被拒时报"租约不覆盖" | 拒绝理由说的是技术细节，不是真实原因 | 报 `c4.readonly_binding` |
+| 心跳把 `database is locked` 当成丢 claim | 一次正常的慢写入会让 owner 被误判不活并遭接管 | 只对 locked/busy 重试（≤3 次） |
+| 抢不到租约就 `park` | 队列里的正常工作被记成"等人决定"，一队全停 | 交还成 `pending` + `drain` 停下 |
 
 细节与复现命令见 `docs/REVIEW-PRA.md` §4.6。
 
