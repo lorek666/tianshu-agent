@@ -86,6 +86,42 @@ class SlowModel:
         return self._inner.price_identity()
 
 
+class RouteModel:
+    """按任务目标分发脚本（每个目标一份响应队列），用来让两条 Run 交替推进。
+
+    单线程驱动意味着模型调用是串行的，但**控制面不该等它**：这里给"长任务"
+    设一个明显的模型延迟，再在延迟窗口里从另一条连接审批/查询，用延迟上界
+    证明主循环没有被驱动线程拖住。
+    """
+
+    def __init__(self, routes: dict[str, list[tuple[float, ModelResponse]]]) -> None:
+        self._routes = {key: list(items) for key, items in routes.items()}
+        self.calls = 0
+
+    def complete(self, messages, tools):  # noqa: ANN001, ANN201
+        self.calls += 1
+        goal = ""
+        for message in messages:
+            if message.get("role") == "user":
+                goal = str(message.get("content") or "")
+                break
+        for key, items in self._routes.items():
+            if key in goal:
+                if not items:
+                    return ModelResponse(finish_reason="end_turn", content="")
+                delay, response = items.pop(0)
+                if delay:
+                    time.sleep(delay)
+                return response
+        return ModelResponse(finish_reason="end_turn", content="")
+
+    def capability_profile(self):  # noqa: ANN201
+        return ScriptedModel([]).capability_profile()
+
+    def price_identity(self):  # noqa: ANN201
+        return ScriptedModel([]).price_identity()
+
+
 class BlockingModel:
     """第一次 `complete()` 就阻塞，直到测试放行。
 
@@ -468,6 +504,91 @@ def test_approve_resumes_run_to_terminal_without_second_resume(
         ] == []
     finally:
         second.close()
+
+
+def test_control_plane_stays_responsive_while_driver_runs_long_task(
+    root, start_daemon
+) -> None:
+    """一个 Run 在跑长任务时，另一条连接仍能查询与审批（PRD §4.2 的并发口径）。
+
+    驱动线程是单线程，但**控制面不排在它后面**：两者各持一条 SQLite 连接，
+    只靠事务串行化。这里用"长任务 1 秒模型延迟 + 控制面响应 <0.5s"把这件事
+    钉死——如果哪天有人在主循环里等驱动，延迟断言会立刻红。
+    """
+    workspace = root / "ws"
+    workspace.mkdir()
+    note = workspace / "note.md"
+    write_exact(note, "旧内容\n")
+    model = RouteModel(
+        {
+            "要审批": [
+                (
+                    0.0,
+                    ModelResponse(
+                        finish_reason="tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c1",
+                                "modify_text",
+                                {"path": "note.md", "content": "新内容\n"},
+                            )
+                        ],
+                    ),
+                ),
+                (0.0, ModelResponse(finish_reason="end_turn", content="改好了")),
+            ],
+            "长任务": [
+                (1.0, ModelResponse(finish_reason="end_turn", content="慢但完成了"))
+            ],
+        }
+    )
+    start_daemon(model)
+    client = _connect(root)
+    try:
+        short = client.call(
+            "task.create",
+            {
+                "goal": "要审批",
+                "workspaces": [{"root_path": str(workspace), "mode": "writable"}],
+            },
+        )["task"]
+        short_run = client.call("run.start", {"task_id": short["task_id"]})["run"]
+        _wait_run_state(client, short_run["run_id"], {"waiting_approval"})
+        approval_id = client.call(
+            "approvals.list", {"run_id": short_run["run_id"]}
+        )["approvals"][0]["approval_id"]
+
+        # 长任务用另一个目录：两个 Run 抢同一个 workspace 会先撞租约，
+        # 那样测到的是"排队重试"，不是"驱动线程阻塞在模型调用里"。
+        long_workspace = root / "ws-long"
+        long_workspace.mkdir()
+        long = client.call(
+            "task.create",
+            {
+                "goal": "长任务",
+                "workspaces": [{"root_path": str(long_workspace), "mode": "writable"}],
+            },
+        )["task"]
+        long_run = client.call("run.start", {"task_id": long["task_id"]})["run"]
+
+        # 驱动线程此刻正阻塞在 1s 的模型调用里；控制面必须照常作答。
+        started = time.monotonic()
+        state = client.call("state", {})
+        decided = client.call(
+            "approvals.decide", {"approval_id": approval_id, "decision": "approve"}
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5, f"控制面被驱动线程拖住了（{elapsed:.2f}s）"
+        assert decided["resumed"] is True
+        run_ids = {run["run_id"] for run in state["runs"]}
+        assert {short_run["run_id"], long_run["run_id"]} <= run_ids
+
+        # 两条 Run 都要跑到终态：审批不会被"另一条长任务"饿死。
+        assert _wait_terminal(client, long_run["run_id"])["state"] == "succeeded"
+        assert _wait_terminal(client, short_run["run_id"])["state"] == "succeeded"
+        assert note.read_bytes() == "新内容\n".encode()
+    finally:
+        client.close()
 
 
 # --------------------------------------------------------------------------- 订阅与游标
