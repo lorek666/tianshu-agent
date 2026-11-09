@@ -33,6 +33,7 @@ from tianshu.model import (
     OpenAICompatibleModel,
     to_anthropic_messages,
 )
+from tianshu.tools import tool_manifest
 
 VENDORS = ["openai", "anthropic"]
 
@@ -116,17 +117,11 @@ def _payload(
     }
 
 
-TOOLS = [
-    {
-        "name": "create_report",
-        "description": "写一份报告",
-        "input_schema": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
-            "required": ["name", "content"],
-        },
-    }
-]
+# 用**真实的** C2 投影，不用手写替身。
+# 上一版这里手写了一个 {name, description, input_schema}，于是"OpenAI 侧漏翻
+# input_schema→parameters"这个 bug 在测试里根本不可能暴露：手写形状和投影一样，
+# 而断言只看了工具名。契约测试一旦用自己的替身，就只证明了替身和它对得上。
+TOOLS = tool_manifest()
 
 MESSAGES = [
     {"role": "system", "content": "你是天枢。"},
@@ -176,7 +171,9 @@ def test_request_carries_model_and_tools(vendor):
         (tool["function"]["name"] if "function" in tool else tool["name"])
         for tool in tools
     ]
-    assert names == ["create_report"]
+    # 投影里有几个工具就发几个，名字一个都不能丢
+    assert names and all(names)
+    assert "create_report" in names
 
 
 def test_openai_url_and_auth_header():
@@ -186,6 +183,31 @@ def test_openai_url_and_auth_header():
     assert t.calls[0]["headers"]["Authorization"] == "Bearer k"
     # OpenAI 的 tools 要包一层 {"type":"function"}
     assert t.calls[0]["body"]["tools"][0]["type"] == "function"
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+def test_tools_carry_the_parameter_schema(vendor):
+    """参数 schema 必须真的上线，否则模型只看得见工具名和描述——参数全靠猜。
+
+    这条对应 PR #15 复审的阻断项：上一版只断言了工具名，漏掉了 schema 字段名
+    在 OpenAI 协议里叫 `parameters`（而 C2 投影叫 `input_schema`）。
+    """
+    t = FakeTransport(_payload(vendor))
+    _model(vendor, t).complete(list(MESSAGES), list(TOOLS))
+    sent = t.calls[0]["body"]["tools"]
+    by_name = {
+        (tool["function"]["name"] if "function" in tool else tool["name"]): tool
+        for tool in sent
+    }
+    create = by_name["create_report"]
+    if vendor == "openai":
+        schema = create["function"].get("parameters")
+        assert schema is not None, "OpenAI 侧漏翻了 input_schema → parameters"
+    else:
+        schema = create.get("input_schema")
+        assert schema is not None
+    assert schema["type"] == "object"
+    assert "name" in schema["properties"]
 
 
 def test_anthropic_url_and_headers():
@@ -361,8 +383,7 @@ def test_malformed_envelope_is_protocol(vendor):
 
 
 @pytest.mark.parametrize("vendor", VENDORS)
-@pytest.mark.parametrize("var", ["TIANSHU_API_KEY", "ANTHROPIC_API_KEY"])
-def test_missing_key_says_which_env_var(vendor, var, monkeypatch):
+def test_missing_key_says_which_env_var(vendor, monkeypatch):
     monkeypatch.delenv("TIANSHU_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("TIANSHU_BASE_URL", raising=False)
@@ -428,7 +449,12 @@ def test_to_anthropic_messages_extracts_system_and_converts_tool_calls():
                     "id": "c1",
                     "type": "function",
                     "function": {"name": "list_files", "arguments": '{"path": "."}'},
-                }
+                },
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "list_files", "arguments": '{"path": ".."}'},
+                },
             ],
         },
         {"role": "tool", "tool_call_id": "c1", "name": "list_files",
@@ -440,9 +466,7 @@ def test_to_anthropic_messages_extracts_system_and_converts_tool_calls():
     assert system == "系统一\n\n系统二"
     # 角色必须交替：assistant 之后两条 tool 结果合并进同一条 user
     assert [m["role"] for m in converted] == ["user", "assistant", "user"]
-    assert converted[1]["content"] == [
-        {"type": "tool_use", "id": "c1", "name": "list_files", "input": {"path": "."}}
-    ]
+    assert [b["id"] for b in converted[1]["content"]] == ["c1", "c2"]
     assert [b["type"] for b in converted[2]["content"]] == ["tool_result", "tool_result"]
     assert converted[2]["content"][0]["tool_use_id"] == "c1"
 
@@ -519,10 +543,113 @@ def test_cli_defaults_to_openai_and_keeps_old_model_name(monkeypatch):
 
 def test_cli_refuses_to_guess_anthropic_model_name(monkeypatch):
     from tianshu import cli as cli_mod
+    from tianshu.errors import TianshuError
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    with pytest.raises(ModelError) as ei:
+    with pytest.raises(TianshuError) as ei:
         cli_mod._model_from(
             _run_args("--model", "openai-compatible", "--provider", "anthropic")
         )
     assert "--model-name" in str(ei.value)
+    # "少给参数"不是"凭据不对"：别混进 auth 类别
+    assert not isinstance(ei.value, ModelError)
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+def test_unmapped_finish_reason_keeps_model_excerpt(vendor):
+    """结束原因看不懂时，模型那一轮说了什么必须留在错误里，否则没法排查。"""
+    payload = _payload(vendor, text="我要说的这句话不能被吞掉", stop="weird")
+    with pytest.raises(ModelError) as ei:
+        _model(vendor, FakeTransport(payload)).complete(list(MESSAGES), list(TOOLS))
+    assert "我要说的这句话不能被吞掉" in str(ei.value)
+
+
+def test_anthropic_never_borrows_the_openai_key(monkeypatch):
+    """把一家的 key 发给另一家是泄密，不是便利。"""
+    monkeypatch.setenv("TIANSHU_API_KEY", "sk-openai-secret")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ModelError) as ei:
+        AnthropicMessagesModel("m")
+    assert "ANTHROPIC_API_KEY" in str(ei.value)
+    assert "sk-openai-secret" not in str(ei.value)
+
+
+def test_anthropic_base_url_does_not_reuse_openai_endpoint(monkeypatch):
+    """只配了 OpenAI 端点的人切到 anthropic，不该把请求发到 openai 的 /messages。"""
+    monkeypatch.setenv("TIANSHU_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    model = AnthropicMessagesModel("m", api_key="k", transport=FakeTransport({}))
+    assert model.base_url == "https://api.anthropic.com/v1"
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gw.example/v1")
+    model2 = AnthropicMessagesModel("m", api_key="k", transport=FakeTransport({}))
+    assert model2.base_url == "https://gw.example/v1"
+
+
+def test_legacy_finish_reason_in_old_events_is_not_laundered():
+    """M3 之前的事件里可能是 `"error"`：读它必须报清楚，不许洗成合法值。"""
+    with pytest.raises(ValueError) as ei:
+        ModelResponse.from_payload({"finish_reason": "error"})
+    assert "finish_reason 越界" in str(ei.value)
+
+
+# ---------------------------------------------------------------- Anthropic 历史约束
+
+
+def _tc(call_id: str, name: str = "list_files", args_json: str = '{"path": "."}') -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": args_json},
+    }
+
+
+def test_to_anthropic_messages_drops_duplicate_tool_use_ids():
+    """provider 复用 call_id 时主循环会拒第二条；历史里也不能发两个同 id 的 tool_use。"""
+    messages = [
+        {"role": "user", "content": "干活"},
+        {"role": "assistant", "content": "", "tool_calls": [_tc("c1"), _tc("c1")]},
+        {"role": "tool", "tool_call_id": "c1", "name": "list_files", "content": "ok"},
+        {"role": "tool", "tool_call_id": "c1", "name": "list_files", "content": "dup"},
+    ]
+    _, converted = to_anthropic_messages(messages)
+    ids = [b["id"] for b in converted[1]["content"] if b["type"] == "tool_use"]
+    assert ids == ["c1"]
+    # 第二条（重复 id）没有配对的 tool_use，降级成文字而不是非法的 tool_result
+    kinds = [b["type"] for m in converted[2:] for b in m["content"]]
+    assert kinds.count("tool_result") == 1
+    assert "text" in kinds
+
+
+def test_to_anthropic_messages_skips_empty_assistant_turns():
+    messages = [
+        {"role": "user", "content": "嗨"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "再来"},
+    ]
+    _, converted = to_anthropic_messages(messages)
+    # 空轮次被跳过；两条 user 合并（角色必须交替）
+    assert [m["role"] for m in converted] == ["user"]
+    assert [b["text"] for b in converted[0]["content"]] == ["嗨", "再来"]
+
+
+def test_to_anthropic_messages_rejects_assistant_first():
+    with pytest.raises(ModelError) as ei:
+        to_anthropic_messages([{"role": "assistant", "content": "我先说"}])
+    assert ei.value.kind == "protocol"
+
+
+def test_to_anthropic_messages_rejects_system_only():
+    with pytest.raises(ModelError) as ei:
+        to_anthropic_messages([{"role": "system", "content": "只有系统提示"}])
+    assert ei.value.kind == "protocol"
+
+
+def test_anthropic_call_with_system_only_fails_visibly():
+    """只有 system 的对话发给 Anthropic 必 400；必须在本地就明确失败。"""
+    t = FakeTransport(_payload("anthropic"))
+    with pytest.raises(ModelError):
+        _model("anthropic", t).complete(
+            [{"role": "system", "content": "只有系统提示"}], list(TOOLS)
+        )
+    assert t.calls == []  # 没有发出去

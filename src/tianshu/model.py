@@ -39,6 +39,9 @@ from .errors import TianshuError
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
 FinishReason = str
 
+# 注意 `max_tokens` 与 `limit_output_tokens` 在 PRD 里是同义并存的两个值：
+# 前者是各家 SDK 的历史写法，后者是本项目的规范名。两个都接受，但我们
+# 自己**只产出** `limit_output_tokens`（谁产出的值决定语义，别两边都产）。
 FINISH_REASONS = frozenset(
     {
         "cancelled",
@@ -155,6 +158,14 @@ class ModelResponse:
 
     @classmethod
     def from_payload(cls, p: dict[str, Any]) -> ModelResponse:
+        """事件 payload → 响应对象。
+
+        M3 之前 adapter 会在失败时写 `finish_reason="error"` / `"unknown"`，
+        这两个值不在封闭集里，所以读**那种**历史事件会在这里抛 ValueError。
+        这是有意的：我们不把非法值悄悄洗白成一个合法值（那会让"当时到底怎么
+        结束的"永远查不清）。当前主循环与 replay 都不走这条路径，它只服务于
+        手工排查与测试替身。
+        """
         return cls(
             finish_reason=p["finish_reason"],
             content=p.get("content", ""),
@@ -283,7 +294,11 @@ class ScriptedModel:
 
 
 class RecordedModel:
-    """回放用：按 request_id 顺序吐出事件里记录的响应。"""
+    """把一串记下来的响应按顺序吐出来（手工排查 / 测试替身用）。
+
+    注意：`replay` **不用**它——回放是从事件重建消息序列并比对 `messages_hash`，
+    不重新构造模型响应。别把这个类当成"回放能力"本身。
+    """
 
     def __init__(self, responses: list[ModelResponse]) -> None:
         self._responses = list(responses)
@@ -372,7 +387,12 @@ class OpenAICompatibleModel(_HttpModel):
             "temperature": 0,
         }
         if tools:
-            body["tools"] = [{"type": "function", "function": t} for t in tools]
+            # C2 投影的键是 `input_schema`，OpenAI 要的是 `parameters`。
+            # 只套一层 {"type": "function"} 是不够的：严格的端点直接 400
+            # （Unrecognized request argument），宽松的网关会把整个参数 schema
+            # 静默丢掉——模型于是只看得见工具名和描述，参数全靠猜。
+            # 这条漏翻从 M0 就在，直到接第二个协议做对照才被发现。
+            body["tools"] = [_openai_tool(t) for t in tools]
         return (
             f"{self.base_url}/chat/completions",
             body,
@@ -387,7 +407,10 @@ class OpenAICompatibleModel(_HttpModel):
         msg = choice.get("message") or {}
         if not isinstance(msg, dict):
             raise ModelError("响应里 message 不是对象", kind="protocol")
-        finish = _map_finish(choice.get("finish_reason"), vendor="openai")
+        content = msg.get("content") or ""
+        finish = _map_finish(
+            choice.get("finish_reason"), vendor="openai", excerpt=content
+        )
 
         calls: list[ToolCall] = []
         for i, tc in enumerate(msg.get("tool_calls") or []):
@@ -409,7 +432,7 @@ class OpenAICompatibleModel(_HttpModel):
 
         return ModelResponse(
             finish_reason=finish,
-            content=msg.get("content") or "",
+            content=content,
             tool_calls=calls,
             usage=normalize_usage(data.get("usage")),
         )
@@ -426,7 +449,9 @@ class AnthropicMessagesModel(_HttpModel):
     - 工具定义是 `{name, description, input_schema}`——恰好等于本项目的
       `tool_manifest()` 形状，不需要再包一层 `function`
     - `stop_reason` 的语料与 OpenAI 不同（`end_turn` / `max_tokens` /
-      `stop_sequence` / `tool_use` / `refusal` / `pause_turn`）
+      `stop_sequence` / `tool_use` / `refusal` / `model_context_window_exceeded`）；
+      线上还可能给 `pause_turn`（服务端把长轮次挂起），v1 没有续接它的能力，
+      所以**不映射**、直接报错，而不是猜成 `end_turn`
     """
 
     API_VERSION = "2023-06-01"
@@ -443,13 +468,15 @@ class AnthropicMessagesModel(_HttpModel):
     ) -> None:
         super().__init__(
             model,
-            base_url=base_url or os.environ.get("TIANSHU_BASE_URL")
+            # 只认 ANTHROPIC_*：`TIANSHU_BASE_URL` 通常是给 OpenAI 兼容端点配的，
+            # 拿它去拼 /messages 会把请求打到 `.../v1/messages` 上然后 404，
+            # 而 `TIANSHU_API_KEY` 更糟——那是把一家的 key 发给另一家。
+            base_url=base_url
+            or os.environ.get("ANTHROPIC_BASE_URL")
             or "https://api.anthropic.com/v1",
-            api_key=(
-                api_key
-                if api_key is not None
-                else (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("TIANSHU_API_KEY", ""))
-            ),
+            api_key=api_key
+            if api_key is not None
+            else os.environ.get("ANTHROPIC_API_KEY", ""),
             env_key="ANTHROPIC_API_KEY",
             timeout=timeout,
             transport=transport,
@@ -504,15 +531,34 @@ class AnthropicMessagesModel(_HttpModel):
             else:
                 raise ModelError(f"未知内容块类型：{kind!r}", kind="protocol")
 
+        content = "".join(text_parts)
         return ModelResponse(
-            finish_reason=_map_finish(data.get("stop_reason"), vendor="anthropic"),
-            content="".join(text_parts),
+            finish_reason=_map_finish(
+                data.get("stop_reason"), vendor="anthropic", excerpt=content
+            ),
+            content=content,
             tool_calls=calls,
             usage=normalize_usage(data.get("usage")),
         )
 
 
-def _map_finish(raw: Any, *, vendor: str) -> FinishReason:
+def _openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """C2 投影 → OpenAI 的 function 定义。
+
+    `input_schema` → `parameters` 是这里唯一的实质翻译。漏了它，请求体里
+    就没有参数 schema：严格端点 400，宽松网关静默丢弃，模型只能靠描述猜参数名。
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
+        },
+    }
+
+
+def _map_finish(raw: Any, *, vendor: str, excerpt: str = "") -> FinishReason:
     """线上语料 → 13 值。**不认识的必须报错，不许兜底成成功。**
 
     上一版的兜底 `"unknown"` 有两个问题：它不在封闭集里（契约破了），而且
@@ -538,9 +584,16 @@ def _map_finish(raw: Any, *, vendor: str) -> FinishReason:
     }[vendor]
     if isinstance(raw, str) and raw in table:
         return table[raw]
+    # `pause_turn`（Anthropic 服务端把长轮次挂起）故意不映射：v1 没有续接服务端
+    # 轮次的能力，猜成 end_turn 等于把"没跑完"记成"跑完了"。
+    note = ""
+    if excerpt:
+        # 这一轮的模型原文与 usage 会随异常一起进 `model.error` 事件。
+        # 不带摘要的话，事后只知道"结束原因看不懂"，不知道模型当时说了什么。
+        note = f"；该轮模型原文前 200 字：{excerpt[:200]!r}"
     raise ModelError(
         f"未映射的结束原因（{vendor}）：{raw!r}——拒绝猜成 end_turn，"
-        "因为那会把一次异常收尾记成成功",
+        f"因为那会把一次异常收尾记成成功{note}",
         kind="protocol",
     )
 
@@ -566,6 +619,10 @@ def to_anthropic_messages(
         else:
             out.append({"role": role, "content": list(blocks)})
 
+    # 上一条 assistant 里发出去的 tool_use id。工具结果只有落在这一组里才能
+    # 用 `tool_result` 表达；否则 Anthropic 会因为"找不到对应的 tool_use"拒整轮。
+    pending_ids: set[str] = set()
+
     for m in messages:
         role = m.get("role")
         if role == "system":
@@ -576,10 +633,21 @@ def to_anthropic_messages(
 
         if role == "assistant":
             blocks: list[dict[str, Any]] = []
+            emitted: set[str] = set()
+            pending_ids = set()
             text = m.get("content")
             if text:
                 blocks.append({"type": "text", "text": text})
             for tc in m.get("tool_calls") or []:
+                call_id = tc.get("id") or ""
+                if not call_id or call_id in emitted:
+                    # 同一个 id 在一次 assistant 里出现两次：主循环那边这条调用
+                    # 一定被判成"未派发"并留了一条说明性的 tool 消息。这里绝不能
+                    # 发两个同 id 的 tool_use（Anthropic 会 400），只发第一个；
+                    # 第二条的结果在下面按"无配对的工具结果"降级成文字。
+                    continue
+                emitted.add(call_id)
+                pending_ids.add(call_id)
                 fn = tc.get("function") or {}
                 raw = fn.get("arguments")
                 try:
@@ -593,28 +661,44 @@ def to_anthropic_messages(
                 blocks.append(
                     {
                         "type": "tool_use",
-                        "id": tc.get("id") or "",
+                        "id": call_id,
                         "name": fn.get("name", ""),
                         "input": args,
                     }
                 )
-            push("assistant", blocks or [{"type": "text", "text": ""}])
+            if not blocks:
+                # 既没文字也没工具调用的轮次不携带信息。发空 text 块会被拒。
+                continue
+            push("assistant", blocks)
             continue
 
         if role == "tool":
-            push(
-                "user",
-                [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": m.get("tool_call_id") or "",
-                        "content": m.get("content") or "",
-                    }
-                ],
-            )
+            call_id = m.get("tool_call_id") or ""
+            content = m.get("content") or ""
+            if call_id in pending_ids:
+                pending_ids.discard(call_id)
+                push(
+                    "user",
+                    [{"type": "tool_result", "tool_use_id": call_id, "content": content}],
+                )
+            else:
+                # 没有配对的 tool_use（重复 id 的第二条、历史被裁剪过、或旧数据）。
+                # 硬发 tool_result 会让整轮 400，降级成一条文字把信息留住。
+                push("user", [{"type": "text", "text": f"（工具结果 {call_id}：{content}）"}])
             continue
 
         push("user", [{"type": "text", "text": str(m.get("content") or "")}])
+
+    if not out:
+        raise ModelError(
+            "对话里没有可发送的消息（只有 system？）——Messages API 至少要一条 user",
+            kind="protocol",
+        )
+    if out[0]["role"] != "user":
+        raise ModelError(
+            "对话以 assistant 开头；Messages API 要求首条消息是 user",
+            kind="protocol",
+        )
 
     return "\n\n".join(system_parts), out
 
