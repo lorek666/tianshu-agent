@@ -650,6 +650,32 @@ def test_heartbeat_loop_reports_a_lost_claim(env):
     assert loop.beats == 1, "只有成功的那次计数"
 
 
+def test_heartbeat_retries_a_busy_database_instead_of_giving_up(env):
+    """`database is locked` 不等于丢了 claim：那是主线程在提交大事务。
+
+    把它当成心跳失败，会让一次正常的慢写入变成一次误判的接管——两个 owner
+    交替写同一份游标，正是 fencing 要防的事。
+    """
+    import sqlite3
+
+    calls = []
+
+    def beat():
+        calls.append(1)
+        if len(calls) <= 2:
+            raise sqlite3.OperationalError("database is locked")
+
+    loop = HeartbeatLoop(beat, interval_ms=5)
+    with loop:
+        time.sleep(0.1)
+    assert loop.error is None, loop.error
+    assert loop.beats >= 1, beats_should_be_counted(loop)
+
+
+def beats_should_be_counted(loop) -> str:
+    return f"成功心跳数={loop.beats}"
+
+
 def test_cli_worker_drains_enqueued_jobs(env):
     """`worker` 命令把排队作业跑完并如实报数；只读目录不能被它写穿。"""
     ids = [env.enqueue(root=env.ws, out=f"r{i}.md")[0] for i in range(3)]

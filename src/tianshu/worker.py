@@ -29,6 +29,7 @@ SQLite 连接不能跨线程共享，因此心跳线程用自己的一条连接�
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -110,14 +111,32 @@ class HeartbeatLoop:
     # ---- 线程主体 ----
 
     def _run(self) -> None:
+        busy_retries = 0
         # 先打一次再等：宿主线程紧接着就要进阻塞调用，不能先等一个 interval。
         while not self._stop.is_set():
             try:
                 self._beat()
+            except sqlite3.OperationalError as exc:
+                # "database is locked/busy" 不是"我丢了 claim"，只是主线程正在
+                # 提交一个大事务。把它当成心跳失败会让一次正常的慢写入变成
+                # 一次误判的接管；重试几次（每次最多 busy_timeout）再放弃。
+                if "lock" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    if self.error is None:
+                        self.error = exc
+                    return
+                busy_retries += 1
+                if busy_retries > 3:
+                    if self.error is None:
+                        self.error = exc
+                    return
+                if self._stop.wait(self._interval_s):
+                    return
+                continue
             except BaseException as exc:  # noqa: BLE001 - 心跳失败必须留痕，不能吞
                 if self.error is None:
                     self.error = exc
                 return
+            busy_retries = 0
             with self._count_lock:
                 self.beats += 1
             if self._stop.wait(self._interval_s):
