@@ -50,8 +50,13 @@ def undo_with(log, run_id, ws_dir):
     """所有调用方都必须显式通过同一执行侧阻断检查。"""
     from tianshu.guard import ensure_not_blocked
 
+    # 这些是 M1 语义的库级用例：直写分支需要显式开关。
+    # 走授权派发的路径由 tests/test_dispatch.py 覆盖。
     return SnapshotStore(log._db_path.parent / "artifacts").undo(
-        run_id, Workspace(ws_dir), guard=lambda: ensure_not_blocked(log, ws_dir)
+        run_id,
+        Workspace(ws_dir),
+        guard=lambda: ensure_not_blocked(log, ws_dir),
+        allow_direct_write=True,
     )
 
 

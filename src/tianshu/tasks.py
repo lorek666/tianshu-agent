@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .errors import TianshuError
+from .errors import RunFenced, TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
 from .jobs import JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
@@ -104,10 +104,6 @@ RUN_FENCED = "run.fenced"
 
 # Task 级事件不属于某个 Run；用空 run_id 把它们与 run 作用域事件分开。
 TASK_SCOPE = ""
-
-
-class RunFenced(TianshuError):
-    """Run 已被目标变更或租约变更 fence，不得继续。"""
 
 
 @dataclass
@@ -240,6 +236,15 @@ class TaskStore:
     @property
     def claims(self) -> JobStore | None:
         return self._claims
+
+    @property
+    def data_root(self) -> Path | None:
+        """authority 数据根：执行守卫文件放在这里，与工作区无关。"""
+        return self._data_root
+
+    @property
+    def log(self) -> EventLog:
+        return self._log
 
     def transaction(self):
         """与事件日志共用的可组合事务；已在事务中时复用外层事务。"""

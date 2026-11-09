@@ -80,11 +80,12 @@ def build_receipt(
 
     out = result.output
     resource = str(out.get("path", ""))
-    after = out.get("sha256")
+    # 写后状态：写入是内容哈希，删除是显式的 "absent"（不是空、不是 None）
+    after = out.get("sha256") or out.get("after_state")
     if not resource or not after:
-        # applied 但缺路径或哈希：这是执行侧的 bug，宁可炸也不能产出半张凭据
+        # applied 但缺路径或写后状态：这是执行侧的 bug，宁可炸也不能产出半张凭据
         raise ValueError(
-            f"effect_state=applied 但缺少 path/sha256，无法产出凭据：{out!r}"
+            f"effect_state=applied 但缺少 path/写后状态，无法产出凭据：{out!r}"
         )
 
     return Receipt(
@@ -132,7 +133,8 @@ def verify_receipts(log, run_id: str) -> list[str]:
                 f"凭据 {p['receipt_id']} 声称 applied，但工具结果是 "
                 f"{res.get('effect_state')}"
             )
-        actual_after = (res.get("output") or {}).get("sha256")
+        out = res.get("output") or {}
+        actual_after = out.get("sha256") or out.get("after_state")
         if actual_after != p.get("after_state"):
             problems.append(
                 f"凭据 {p['receipt_id']} 的 after_state 与工具结果哈希不一致"

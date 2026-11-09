@@ -19,8 +19,10 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .errors import WorkspaceViolation
 from .events import EventLog
 from .guard import blocked_workspaces, ensure_not_blocked
+from .leases import Lease, LeaseStore
 from .receipt import build_receipt
 from .snapshot import ABSENT, SnapshotStore
 from .tools import SPECS, ToolResult
@@ -58,13 +60,48 @@ def _observe(ws: Workspace, rel: str) -> str:
     return _sha(target.read_bytes())
 
 
+def _foreign_lease(
+    leases: LeaseStore | None, ws: Workspace, run_id: str, payload: dict
+) -> Lease | None:
+    """这条路径（或它所在的工作区）此刻是不是被**另一个活着的 Run**占着。
+
+    为什么恢复要在意这个：恢复的判据是"磁盘现在是什么"。如果别人正在写这条
+    路径，读到的可能是半截内容，据此判成 applied/unknown 都是在编造结论。
+    宁可报 unresolved 并继续阻断，也不要在一个正在变的文件上做判断。
+
+    租约过期、持有进程已死、pid 被复用的都不算占用——否则一次崩溃就会让恢复
+    永久卡在无法核实的状态。
+    """
+    if leases is None:
+        return None
+    candidates: list[Path] = [ws.root]
+    args = payload.get("args") or {}
+    raw = args.get("path") or args.get("name")
+    if isinstance(raw, str) and raw:
+        try:
+            candidates.append(ws.resolve(raw))
+        except WorkspaceViolation:
+            pass
+    for path in candidates:
+        lease = leases.live_holder(path)
+        if lease is not None and lease.run_id != run_id:
+            return lease
+    return None
+
+
 def recover_run(
     log: EventLog,
     run_id: str,
     workspace_dir: Path,
     snapshots: SnapshotStore | None = None,
+    *,
+    leases: LeaseStore | None = None,
 ) -> RecoveryReport:
-    """核对并补全一次被打断的 run。幂等。"""
+    """核对并补全一次被打断的 run。幂等。
+
+    `leases` 非空时，恢复会先看"这条路径现在是不是别人在写"。正在被别的活
+    Run 占用的路径一律记 unresolved 并阻断后续写入——恢复不做实时观测的猜测。
+    """
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
 
@@ -91,6 +128,19 @@ def recover_run(
                                {"error": "recovered: 只读工具无副作用",
                                 "recovered": True}),
                     bucket=report.none_applied)
+            continue
+
+        # 有别的活 Run 正在这条路径上写：现在读到的字节不可信，不下结论
+        holder = _foreign_lease(leases, ws, run_id, payload)
+        if holder is not None:
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 该路径正被另一个 Run 占用"
+                                         "（租约有效），不做实时判断",
+                                "recovered": True,
+                                "held_by_run": holder.run_id,
+                                "held_by_instance": holder.owner_instance_id}),
+                    bucket=report.unresolved)
             continue
 
         # 写工具：唯一判据是写前证据

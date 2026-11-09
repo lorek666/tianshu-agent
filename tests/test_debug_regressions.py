@@ -231,7 +231,8 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
         if c.path == "b.md" and c.blob_ref:
             Path(c.blob_ref).unlink()
 
-    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws),
+               allow_direct_write=True)
     assert not report.ok
     assert report.missing_blobs
     assert (ws / "a.md").read_text(encoding="utf-8") == "A改", \
@@ -313,7 +314,8 @@ def test_r2_undo_refused_on_blocked_workspace(tmp_path):
 
     with pytest.raises(WorkspaceBlocked):
         store.undo("r1", Workspace(ws),
-                   guard=lambda: ensure_not_blocked(log, ws))
+                   guard=lambda: ensure_not_blocked(log, ws),
+                   allow_direct_write=True)
     assert (ws / "a.md").read_text(encoding="utf-8") == "新", "被拒时不得修改"
     log.close()
 
@@ -332,13 +334,18 @@ def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
     store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"))
     (ws / "a.md").write_text("v2", encoding="utf-8")
 
-    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws),
+               allow_direct_write=True)
     assert report.ok, report.problems
     assert not (ws / "a.md").exists(), "回到最初状态：文件不存在"
 
 
 def test_r3_undo_appends_audit_event(tmp_path):
-    """撤销必须留痕，否则旧 applied 记录永远看起来成立。"""
+    """撤销必须留痕，否则旧 applied 记录永远看起来成立。
+
+    M2 之后撤销要人工批准：不加 --approve 时只预演（退出码 3，什么都不改），
+    加了才真正删除并留下 undo.completed。
+    """
     ws = _ws(tmp_path, {})
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "artifacts")
@@ -348,8 +355,14 @@ def test_r3_undo_appends_audit_event(tmp_path):
 
     from tianshu.cli import main
 
+    db = str(tmp_path / "e.db")
     assert main(["undo", "--run-id", "r1", "--workspace", str(ws),
-                 "--db", str(tmp_path / "e.db")]) == 0
+                 "--db", db]) == 3
+    assert (ws / "a.md").exists(), "未批准时一个字节都不能动"
+
+    assert main(["undo", "--run-id", "r1", "--workspace", str(ws),
+                 "--db", db, "--approve"]) == 0
+    assert not (ws / "a.md").exists()
 
     types = [e.type for e in log.read_run("r1")]
     assert "undo.completed" in types
@@ -444,7 +457,10 @@ def test_three_writes_undo_to_original_and_middle_conflict_is_atomic(tmp_path):
             manifest.write_text(json.dumps(payload))
 
         report = store.undo(
-            "r1", Workspace(ws), guard=lambda log=log, ws=ws: ensure_not_blocked(log, ws)
+            "r1",
+            Workspace(ws),
+            guard=lambda log=log, ws=ws: ensure_not_blocked(log, ws),
+            allow_direct_write=True,
         )
         if corrupt_call is None:
             assert report.ok
@@ -468,7 +484,8 @@ def test_undo_rejects_corrupt_preimage_before_touching_any_file(tmp_path):
         if change.path == "b.md":
             Path(change.blob_ref).write_bytes(b"corrupt")
 
-    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws))
+    report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws),
+               allow_direct_write=True)
     assert not report.ok
     assert report.restored == [] and report.deleted == []
     assert (ws / "a.md").read_text() == "A-after"

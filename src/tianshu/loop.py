@@ -135,7 +135,15 @@ def run(
     limits = limits or Limits()
     run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
     ws = Workspace(workspace_dir)
-    ctx = ToolContext(snapshots=snapshots, log=log, run_id=run_id)
+    # 遗留开关：M0 的同步单跑循环还没有 Task/Run/Job 生命周期，所以它走的仍是
+    # "未经派发直接写"的老路。整个代码库里只有这一处打开它，Task 5 会给 loop
+    # 接上 Task/Run/Job 之后删掉这个参数——在那之前，绕过点必须显式且唯一。
+    ctx = ToolContext(
+        snapshots=snapshots,
+        log=log,
+        run_id=run_id,
+        allow_legacy_unauthenticated_write=True,
+    )
 
     log.append(
         run_id,
