@@ -1,26 +1,32 @@
-"""Task 与 Run（M2 · PR A 的 Task 1）。
+"""Task / Run / 游标（M2 · PR A Task 1 + PR C Task 5）。
 
 一件用户的事 = 一个 Task；一次执行 = 一个 Run。一个 Task 可以有多个 Run，
 失败重试就是新开一个 Run，历史不覆盖。
 
-核心是 **fencing**：用户中途改主意时，旧 Run 必须立刻失效，
-不能拿着旧目标继续改文件。
+核心是 **fencing**：用户中途改主意时，旧 Run 必须立刻失效，不能拿着旧目标
+继续改文件。
 - `goal_revision`：目标改一次加一
-- `lease_epoch`：工作区所有权变更加一
+- `lease_epoch`：目标或工作区绑定变更加一
 
 Run 绑定创建时的这两个值；任一与 Task 当前值不符，即为被 fence。
 
-**事实源是事件日志，不是这两张表。** tasks/runs 只是投影：每次状态变更都和
-对应事件（`task.created` / `task.revised` / `run.start` / `run.finish` /
-`run.fenced`）在同一个 SQLite 事务里提交，投影被删掉也能按事件重建。
-否则"用户改过目标"这件事只存在于一张可被覆写的表里，回放无法解释
-某个 Run 为什么被 fence。
+Run 还有第二个维度：**状态**。非终态（`queued` / `running` /
+`waiting_approval` / `reconciling` / `paused` / `cancelling`）都要落库，
+否则"停下来了可以继续"和"正在执行"在数据里长得一样，UI 与 CLI 只能瞎猜。
+用户的暂停/取消请求单独存在 `control_requested`：执行中的 Run 只记录请求，
+执行器在**安全点**确认成状态，确认与清空请求是同一次提交。
+
+**事实源是事件日志，不是这几张表。** tasks/runs 只是投影：每次状态变更都和
+对应事件（`task.created` / `task.revised` / `run.start` / `run.state` /
+`run.control` / `run.effect` / `run.cursor` / `run.finish` / `run.fenced`）
+在同一个 SQLite 事务里提交，投影被删掉也能按事件重建。否则"用户改过目标"
+这件事只存在于一张可被覆写的表里，回放无法解释某个 Run 为什么被 fence。
 
 **锁序（全局唯一顺序）：执行守卫 → SQLite 事务。**
 
 守卫是跨进程文件锁，SQLite 事务是跨进程写锁，两者都只有一把。如果某条路径
 先拿事务再等守卫，就会和"先拿守卫再等事务"的另一条路径互相卡死。
-所以凡是需要守卫的方法（`begin_execution` / `revise_goal`）都显式拒绝在
+所以凡是需要守卫的方法（`begin_execution` / `revise_task`）都显式拒绝在
 已打开的事务里被调用，而不是靠调用方自觉。
 """
 
