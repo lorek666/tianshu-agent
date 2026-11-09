@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/m2/job.json",
+  "title": "JobClaim",
+  "description": "作业认领身份。所有后续提交必须带它；claim_epoch 每次认领/接管递增，旧 claim 不得再写。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "run_id", "owner_instance_id", "owner_pid", "claim_epoch"],
+  "properties": {
+    "job_id": { "type": "string", "pattern": "^job_[0-9a-f]{12}$" },
+    "run_id": { "type": "string" },
+    "owner_instance_id": { "type": "string", "minLength": 1 },
+    "owner_pid": { "type": "integer", "minimum": 1 },
+    "claim_epoch": { "type": "integer", "minimum": 1 }
+  }
+}

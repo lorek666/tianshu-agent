@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/m2/run.json",
+  "title": "Run",
+  "description": "一次执行。绑定不可变的 goal_revision + lease_epoch，任一与 Task 当前值不符即为被 fence。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "task_id",
+    "goal_revision",
+    "lease_epoch",
+    "state"
+  ],
+  "properties": {
+    "created_at": {
+      "type": "integer"
+    },
+    "effect_state": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "none_applied",
+        "applied",
+        "partial",
+        "unknown",
+        null
+      ]
+    },
+    "ended_at": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "goal_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "lease_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "outcome": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        null
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[0-9a-f]{12}$"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "created",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "fenced"
+      ]
+    },
+    "task_id": {
+      "type": "string"
+    }
+  }
+}
