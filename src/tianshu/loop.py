@@ -275,6 +275,11 @@ def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
     spec = SPECS.get(call.name)
     if spec is None:
         return False, f"工具不在白名单：{call.name}"
+    if not spec.exposed:
+        # 清单即能力边界：`tool_manifest()` 只投影 exposed=True 的工具，模型看不见
+        # `restore_file`，却仍可能在响应里把它拼出来。不派发，但按 A7 留痕——模型
+        # 需要收到一条 tool 消息才能继续，硬失败会把一次可恢复的乱猜变成整轮失败。
+        return False, f"内部工具不对模型开放（exposed=False）：{call.name}"
     missing = [k for k in spec.input_schema.get("required", []) if k not in call.arguments]
     if missing:
         return False, f"缺少必填参数：{missing}"
