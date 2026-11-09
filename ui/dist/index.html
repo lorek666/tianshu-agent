@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <!--
+      访问令牌由本机 Host 在返回 index.html 时注入 content。
+      UI 只从 meta 读取它，绝不写进 localStorage / sessionStorage / URL / 日志。
+      content 为空 = 页面不是被 Host 加载的（直接打开文件或静态预览），
+      此时界面展示「无法连接守护进程」。
+    -->
+    <meta name="tianshu-token" content="" />
+    <title>天枢 · 桌面 Agent</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #f5f6f8;
+      }
+    </style>
+    <script type="module" crossorigin src="./assets/index-CU2-q3dX.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DwNiXyKB.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
