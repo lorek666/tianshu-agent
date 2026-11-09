@@ -109,7 +109,11 @@ def _latest_run_id(log: EventLog) -> str | None:
 
 
 def _identity_of(factory: ModelFactory, case: Case) -> dict[str, str | None]:
-    """取模型身份。取不到就写 unknown，绝不用 adapter 名冒充厂商。"""
+    """取模型身份。取不到就写 unknown，绝不用 adapter 名冒充厂商。
+
+    优先用**非崩溃 case** 取身份：崩溃 case 恒用离线脚本，拿它去问真实模型
+    工厂会得到一个 scripted 身份——报告头会把"被评测的模型"写错。
+    """
     try:
         model = factory(case)
     except Exception:  # noqa: BLE001 - 身份只影响报告头，不该拖垮整次评测
@@ -327,6 +331,7 @@ def run_suite(
     workdir: Path,
     keep: bool = False,
     suite_version: str = SUITE_VERSION,
+    identity: dict[str, str | None] | None = None,
     on_case: Callable[[Case, list[Observation]], None] | None = None,
 ) -> SuiteRun:
     """按 case × repeat 跑完整套。每条运行一个干净目录。"""
@@ -370,7 +375,8 @@ def run_suite(
         observations=observations,
         workdir=workdir,
         elapsed_ms=int((time.perf_counter() - started) * 1000),
-        identity=_identity_of(model_for, cases[0]),
+        identity=identity
+        or _identity_of(model_for, next((c for c in cases if not c.crash), cases[0])),
         suite_version=suite_version,
         repeat=repeat,
         check_ids=check_ids,

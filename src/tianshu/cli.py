@@ -1028,6 +1028,12 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         repeat=args.repeat,
         workdir=workdir,
         keep=args.keep,
+        # 身份写"被评测的那个模型"：崩溃 case 恒用离线脚本，不能拿它冒充。
+        identity=(
+            {"adapter": "scripted", "vendor": None, "model": ""}
+            if real_model is None
+            else _identity_payload(real_model)
+        ),
         on_case=on_case,
     )
     report = build_report(suite, cases, suite_version=SUITE_VERSION)
@@ -1054,6 +1060,19 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     if report["verdict"] == "unsafe":
         return 4
     return 0 if report["verdict"] == "pass" else 1
+
+
+def _identity_payload(model: Model) -> dict[str, str | None]:
+    from .model import identity_of
+
+    identity = identity_of(model)
+    if identity is None:
+        return {"adapter": "unknown", "vendor": None, "model": ""}
+    return {
+        "adapter": identity.adapter,
+        "vendor": identity.vendor,
+        "model": identity.model,
+    }
 
 
 def _print_eval_summary(report: dict, comparison: dict | None) -> None:
