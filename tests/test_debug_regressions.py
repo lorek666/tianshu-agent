@@ -94,7 +94,7 @@ def test_s1_modify_to_identical_content_is_not_applied(tmp_path):
             {"path": "note.md", "content": "不变"}, ws)
     store.init_run("r1")
     store.record_preimage("r1", "c1", "note.md",
-                          before="不变".encode(), expected_after=_sha("不变"))
+                          before="不变".encode(), expected_after=_sha("不变"), root=ws)
 
     report = recover_run(log, "r1", ws, store)
     assert report.applied == []
@@ -113,7 +113,7 @@ def test_s1_deleted_target_is_unknown_not_none_applied(tmp_path):
             {"path": "note.md", "content": "新内容"}, ws)
     store.init_run("r1")
     store.record_preimage("r1", "c1", "note.md",
-                          before="旧内容".encode(), expected_after=_sha("新内容"))
+                          before="旧内容".encode(), expected_after=_sha("新内容"), root=ws)
 
     report = recover_run(log, "r1", ws, store)
     assert report.unresolved == ["c1"], "目标消失必须判 unknown"
@@ -132,7 +132,7 @@ def test_s1_no_fabricated_before_state(tmp_path):
     before = _sha("旧内容\n")
     store.record_preimage("r1", "c1", "note.md",
                           before="旧内容\n".encode(),
-                          expected_after=_sha("新内容\n"))
+                          expected_after=_sha("新内容\n"), root=ws)
     (ws / "note.md").write_text("新内容\n", encoding="utf-8")
 
     report = recover_run(log, "r1", ws, store)
@@ -154,7 +154,7 @@ def test_s2_blocking_is_enforced_at_dispatcher(tmp_path):
     _intent(log, "r1", "c1", "modify_text",
             {"path": "a.md", "content": "x"}, ws)
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", b"\xe6\x97\xa7", _sha("x"))
+    store.record_preimage("r1", "c1", "a.md", b"\xe6\x97\xa7", _sha("x"), root=ws)
     (ws / "a.md").write_text("第三种内容", encoding="utf-8")
     recover_run(log, "r1", ws, store)
     assert is_blocked(log, ws)
@@ -181,7 +181,7 @@ def test_s2_unblock_restores_writability(tmp_path):
     store = SnapshotStore(tmp_path / "art")
     _intent(log, "r1", "c1", "modify_text", {"path": "a.md", "content": "x"}, ws)
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", b"\xe5\xa5\xbd", _sha("x"))
+    store.record_preimage("r1", "c1", "a.md", b"\xe5\xa5\xbd", _sha("x"), root=ws)
     (ws / "a.md").write_text("第三种", encoding="utf-8")
     recover_run(log, "r1", ws, store)
 
@@ -221,8 +221,8 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
     ws = _ws(tmp_path, {"a.md": "A原", "b.md": "B原"})
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
-    store.record_preimage("r1", "c1", "a.md", "A原".encode(), _sha("A改"))
-    store.record_preimage("r1", "c2", "b.md", "B原".encode(), _sha("B改"))
+    store.record_preimage("r1", "c1", "a.md", "A原".encode(), _sha("A改"), root=ws)
+    store.record_preimage("r1", "c2", "b.md", "B原".encode(), _sha("B改"), root=ws)
     (ws / "a.md").write_text("A改", encoding="utf-8")
     (ws / "b.md").write_text("B改", encoding="utf-8")
 
@@ -314,7 +314,7 @@ def test_r2_undo_refused_on_blocked_workspace(tmp_path):
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", "原".encode(), _sha("新"))
+    store.record_preimage("r1", "c1", "a.md", "原".encode(), _sha("新"), root=ws)
     (ws / "a.md").write_text("新", encoding="utf-8")
 
     # 制造阻断
@@ -338,10 +338,10 @@ def test_r3_create_then_modify_same_path_can_be_undone(tmp_path):
     store.init_run("r1")
 
     # c1: create a.md = "v1"
-    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"))
+    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"), root=ws)
     (ws / "a.md").write_text("v1", encoding="utf-8")
     # c2: modify a.md -> "v2"
-    store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"))
+    store.record_preimage("r1", "c2", "a.md", b"v1", _sha("v2"), root=ws)
     (ws / "a.md").write_text("v2", encoding="utf-8")
 
     report = store.undo("r1", Workspace(ws), guard=lambda: ensure_not_blocked(log, ws),
@@ -360,7 +360,7 @@ def test_r3_undo_appends_audit_event(tmp_path):
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "artifacts")
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"))
+    store.record_preimage("r1", "c1", "a.md", None, _sha("v1"), root=ws)
     (ws / "a.md").write_text("v1", encoding="utf-8")
 
     from tianshu.cli import main
@@ -437,7 +437,7 @@ def test_undo_requires_guard_at_library_boundary(tmp_path):
     ws = _ws(tmp_path, {"a.md": "agent"})
     store = SnapshotStore(tmp_path / "art")
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", b"original", _sha("agent"))
+    store.record_preimage("r1", "c1", "a.md", b"original", _sha("agent"), root=ws)
 
     with pytest.raises(Exception, match="guard"):
         store.undo("r1", Workspace(ws))
@@ -455,7 +455,7 @@ def test_three_writes_undo_to_original_and_middle_conflict_is_atomic(tmp_path):
         for cid, before, after in (
             ("c1", "v0", "v1"), ("c2", "v1", "v2"), ("c3", "v2", "v3")
         ):
-            store.record_preimage("r1", cid, "note.md", before.encode(), _sha(after))
+            store.record_preimage("r1", cid, "note.md", before.encode(), _sha(after), root=ws)
             (ws / "note.md").write_text(after)
         if corrupt_call is not None:
             manifest = store.manifest_dir / "r1.json"
@@ -489,8 +489,8 @@ def test_undo_rejects_corrupt_preimage_before_touching_any_file(tmp_path):
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
     store.init_run("r1")
-    store.record_preimage("r1", "c1", "a.md", b"A-before", _sha("A-after"))
-    store.record_preimage("r1", "c2", "b.md", b"B-before", _sha("B-after"))
+    store.record_preimage("r1", "c1", "a.md", b"A-before", _sha("A-after"), root=ws)
+    store.record_preimage("r1", "c2", "b.md", b"B-before", _sha("B-after"), root=ws)
     for change in store.load("r1"):
         if change.path == "b.md":
             Path(change.blob_ref).write_bytes(b"corrupt")

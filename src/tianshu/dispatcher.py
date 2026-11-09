@@ -662,7 +662,7 @@ class Dispatcher:
             # 写入——否则下一个人会在一个状态不明的目录上继续改。
             return self._fail_unknown(request, dispatch_id, target, exc)
 
-        self._commit_result(request, dispatch_id, result)
+        self._commit_result(request, dispatch_id, result, target, seq)
         # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
         # M2 把两件事合成一次提交，所以这两个点落在同一处：能证明的仍然是
         # "重放不会补出第二条效果"。
@@ -1294,7 +1294,12 @@ class Dispatcher:
         return result
 
     def _commit_result(
-        self, request: ActionRequest, dispatch_id: str, result: ToolResult
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        result: ToolResult,
+        target: _Target,
+        intent_seq: int,
     ) -> None:
         """结果与凭据同事务落库，然后把派发记录推进到 done。"""
         batch = [
@@ -1320,6 +1325,14 @@ class Dispatcher:
             args_hash=request.args_hash,
             result=result,
             backend=self._executor.backend_name,
+            # 证据键是 (workspace 根, 相对路径)：根从**这次派发**解析出来的
+            # 目标里取，而不是从某个默认目录取。多 workspace 任务里只有这里
+            # 知道文件真正落在哪个目录。
+            root=target.workspace_root,
+            resource=str(target.path),
+            action=request.action,
+            intent_seq=intent_seq,
+            blob_ref=self._snapshot_blob(request.run_id, request.call_id),
         )
         if receipt is not None:
             batch.append(
@@ -1339,6 +1352,17 @@ class Dispatcher:
                 (DISPATCH_FINISHED, self._clock(), dispatch_id),
             )
             self._set_request_state(request.request_id, STATE_DONE)
+
+    def _snapshot_blob(self, run_id: str, call_id: str) -> str | None:
+        """这次调用的写前快照 blob。
+
+        凭据必须指向**同一条**证据：快照记录写前内容在哪里，凭据不能只有
+        "我之前是什么"却指不回任何东西。
+        """
+        if self._snapshots is None:
+            return None
+        change = self._snapshots.find(run_id, call_id)
+        return change.blob_ref if change is not None else None
 
     def _require_data_root(self) -> Path:
         if self._data_root is None:

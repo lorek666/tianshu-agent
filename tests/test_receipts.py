@@ -64,8 +64,14 @@ def test_receipt_written_for_successful_create(tmp_path):
     r = rs[0]
     assert r["effect_state"] == "applied"
     assert r["before_state"] == "absent", "新建文件的执行前状态必须是 absent"
-    assert r["resource"] == REPORT
+    # resource 是**绝对路径**、root 是 workspace 根：只记相对路径时，
+    # 两个 workspace 下的同名文件会是同一张凭据（issue #17）。
+    assert r["root"] == str(ws.resolve())
+    assert r["resource"] == str(ws.resolve() / REPORT)
+    assert r["action"] == "create", "action 必须是动作，不能是 tool_id"
     assert r["tool_id"] == "create_report"
+    assert r["intent_seq"], "凭据必须引用产生这次写的 tool.intent 事件"
+    assert {ref["kind"] for ref in r["evidence"]} == {"result", "intent", "blob"}
     assert r["issuer"].startswith("tianshu/")
 
     # 凭据里的 after_state 必须等于磁盘真实内容

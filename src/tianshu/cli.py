@@ -5,7 +5,7 @@
     python -m tianshu run    start --task-id ID --out FILE
     python -m tianshu run    status|pause|resume|cancel --run-id ID
     python -m tianshu approvals list|approve|reject|revoke
-    python -m tianshu undo   --run-id ID --workspace DIR [--approve]
+    python -m tianshu undo   --run-id ID [--workspace DIR] [--approve]
     python -m tianshu recover --run-id ID --workspace DIR
     python -m tianshu replay --run-id ID
 
@@ -125,7 +125,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     u = sub.add_parser("undo", help="撤销某次 run 的文件变更（需 human 批准）")
     u.add_argument("--run-id", required=True)
-    u.add_argument("--workspace", required=True, type=Path)
+    u.add_argument(
+        "--workspace", type=Path, default=None,
+        help="可选：只撤销这个目录下的变更（落盘目录由快照证据自己的 root 决定；"
+             "旧格式记录没有 root，会被拒绝而不是猜一个目录）",
+    )
     u.add_argument("--db", type=Path, default=DEFAULT_DB)
     u.add_argument("--data-root", type=Path, default=None,
                    help="authority 数据根（默认与 --db 同目录）")
@@ -679,11 +683,17 @@ def _cmd_approvals(args: argparse.Namespace) -> int:
         stack.log.close()
 
 
-def _undo_apply(stack, control, ws: Workspace):
-    """把每个"还原/删除"都变成一次经审批的派发。"""
+def _undo_apply(stack, control):
+    """把每个"还原/删除"都变成一次经审批的派发。
+
+    落盘目录由**证据自己的 root** 决定，不是命令行传进来的那个目录：撤销
+    wsA 的变更时，wsB 下的同名文件必须一个字节都不动。
+    """
 
     def apply(change, preimage: bytes | None) -> None:
-        target = ws.resolve(change.path)
+        if not change.root:  # 预检已经拒绝过旧格式，这里是第二道防线
+            raise ToolNotAllowed("撤销证据缺少 workspace 根，拒绝写盘")
+        target = Workspace(Path(change.root)).resolve(change.path)
         if preimage is None:
             tool_id = "delete_file"
             call_id = f"undo_del_{change.call_id}"
@@ -725,38 +735,88 @@ def _undo_apply(stack, control, ws: Workspace):
     return apply
 
 
-def _undo_plan(stack, run_id: str, ws: Workspace) -> list[tuple[str, str]]:
+def _undo_plan(changes) -> list[tuple[str, str]]:
     """只读预演：不写文件、不登记审批。
 
     用户先看清要动什么，再决定加不加 --approve。撤销方向是**调用逆序**，
     同一路径被写过多次时正序会自相冲突，所以这里也按逆序排。
+    显示的是**绝对路径**：多 workspace 任务里只写相对路径，人看不出会动哪个目录。
     """
     plan: list[tuple[str, str]] = []
-    for change in reversed(stack.snapshots.load(run_id)):
+    for change in reversed(changes):
+        target = Path(str(change.root)) / change.path
         if change.before_state == "absent":
-            plan.append(("delete ", f"{change.path}（原本不存在，撤销=删掉）"))
+            plan.append(("delete ", f"{target}（原本不存在，撤销=删掉）"))
         else:
             plan.append(
                 (
                     "restore",
-                    f"{change.path}（还原到 {change.before_state[:12]}…）",
+                    f"{target}（还原到 {change.before_state[:12]}…）",
                 )
             )
     return plan
+
+
+def _undo_targets(changes):
+    """把清单拆成（已记录的 workspace 根, 旧格式记录）。
+
+    旧格式记录没有根，撤销它们只能靠猜——这两个列表分开就是为了能让
+    `_cmd_undo` 在**动手之前**拒绝，而不是猜一个目录写进去。
+    """
+    roots = sorted({str(c.root) for c in changes if c.root})
+    legacy = [c for c in changes if not c.root]
+    return roots, legacy
 
 
 def _cmd_undo(args: argparse.Namespace) -> int:
     stack = None
     try:
         stack = _authority_stack(args.db, args.data_root)
-        ws = Workspace(args.workspace)
         run_id = args.run_id
         changes = stack.snapshots.load(run_id)
         if not changes:
             print(f"run {run_id} 没有可撤销的变更")
             return 1
 
-        plan = _undo_plan(stack, run_id, ws)
+        roots, legacy = _undo_targets(changes)
+        if legacy:
+            # 没有 root 就不知道这些写入落在哪个目录。用 --workspace 顶上就是
+            # 猜：猜错 = 把另一个目录下的同名文件改掉，这是数据破坏。
+            print("拒绝撤销：该 run 的快照是旧格式（v2，没有 workspace 根）",
+                  file=sys.stderr)
+            for c in legacy:
+                print(f"  - {c.path}（call_id={c.call_id}）", file=sys.stderr)
+            print("没有根就无法确定这些写入落在哪个目录。撤销写错目录比撤销失败"
+                  "严重得多，所以这里不猜。", file=sys.stderr)
+            if args.workspace is not None:
+                print(f"已忽略 --workspace {args.workspace}：旧记录没有根，"
+                      "拿它顶上就是猜。", file=sys.stderr)
+            print("处置建议：用 `tianshu recover --run-id <ID> --workspace <目录>` "
+                  "逐目录核对，或按 artifacts/snapshots/<ID>.json 手工还原。",
+                  file=sys.stderr)
+            return 2
+
+        # --workspace 从"解析落盘目录"降级为"范围筛选"：只撤这个目录下的变更。
+        scope = Path(args.workspace).resolve() if args.workspace is not None else None
+        selected = changes if scope is None else [
+            c for c in changes if c.root == str(scope)
+        ]
+        if not selected:
+            print(f"拒绝撤销：该 run 在 {scope} 下没有可撤销的变更", file=sys.stderr)
+            print(f"已记录的 workspace：{'、'.join(roots)}", file=sys.stderr)
+            return 2
+
+        scope_ws = None
+        if scope is not None:
+            try:
+                scope_ws = Workspace(scope)
+            except TianshuError as exc:
+                # 目录不在/不是目录：说清楚再退出，不要伪装成"撤销中断"。
+                print(f"拒绝撤销：workspace 不可用：{scope}（{exc}）",
+                      file=sys.stderr)
+                return 2
+
+        plan = _undo_plan(selected)
         if not args.approve:
             print("撤销会做这些事（尚未执行）：")
             for action, desc in plan:
@@ -766,16 +826,24 @@ def _cmd_undo(args: argparse.Namespace) -> int:
             print("确认无误后加 --approve 重跑同一条命令。")
             return 3
 
+        involved = sorted({str(c.root) for c in selected})
+
+        def guard() -> None:
+            # 每个会被写到的目录都要过阻断检查，不是只看其中一个。
+            for root in involved:
+                ensure_not_blocked(stack.log, root)
+
         control = stack.dispatcher.open_control_run(
-            goal=f"undo:{run_id}", workspaces=[WorkspaceBinding(str(ws.root))]
+            goal=f"undo:{run_id}",
+            workspaces=[WorkspaceBinding(root) for root in involved],
         )
         stack.snapshots.init_run(control.run.run_id)
         try:
             report = stack.snapshots.undo(
                 run_id,
-                ws,
-                guard=lambda: ensure_not_blocked(stack.log, ws.root),
-                apply=_undo_apply(stack, control, ws),
+                scope_ws,
+                guard=guard,
+                apply=_undo_apply(stack, control),
             )
         except Exception as exc:
             # 撤销是多文件操作：中途失败必须如实记成 partial，不能悄悄停在
@@ -804,14 +872,24 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                     "run_id": run_id,
                     "restored": report.restored,
                     "deleted": report.deleted,
+                    # 带根的逐条记录：verify_receipts 用它认出"这次改动已被
+                    # 撤销"，否则撤销过的文件会一直显示"与凭据不一致"。
+                    "entries": report.entries,
                     "control_run": control.run.run_id,
                 },
                 actor_kind="human",
             )
+        # 一个字节都没动的时候就记 none_applied，别用 partial 冒充"改了一半"。
+        if report.ok:
+            effect = "applied"
+        elif report.restored or report.deleted:
+            effect = "partial"
+        else:
+            effect = "none_applied"
         stack.dispatcher.close_control_run(
             control,
             outcome="succeeded" if report.ok else "failed",
-            effect_state="applied" if report.ok else "partial",
+            effect_state=effect,
         )
 
         if args.json:
