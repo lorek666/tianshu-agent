@@ -516,6 +516,69 @@ Approval { approval_id, request, digest,
 审批一次性消费。**改目标、改参数、改绑定**都会让 `goal_revision` 或
 `lease_epoch` 进入动作摘要而变化 → 旧审批 `superseded`，与上面那条一致。
 
+#### 5.4.1 拒绝规则编号（`payload.rule_id`）
+
+`dispatch.requested` / `dispatch.rejected` / `policy.denied` 的 payload 里都有一个
+**用户可见**的 `rule_id`，它回答"为什么被拒"（或"为什么放行"）。在此之前它是
+隐式契约：字符串散落在 `dispatcher.py` 与 `permissions.py` 里，没有集合、没有
+校验、没有文档——用户看到一个编号，却没有地方能查它是什么意思、该做什么。
+
+现在它与 C3 的事件类型同级：
+
+- **封闭集合** `src/tianshu/rules.py` 的 `RULE_IDS`，写入前校验。未登记的编号抛
+  `RuleIdError`，并明确写成**代码 bug**（不是用户用错）。
+- **机器可校验副本**：`schemas/c4/rules.json` 的 `rule_id.enum`；
+  `tests/test_rule_ids.py` 把两边绑在一起，改一处忘另一处会红——包括"这个编号
+  有没有真实产生路径"。
+- **保留未使用**：`dispatch.denied`（`DispatchDenied` 的默认编号，现无调用方使用）
+  与 `c4.unhandled`（策略分类的末尾兜底，当前动作集合已全覆盖）。它们保留在集合里，
+  因为都是防御性兜底：真被触发时仍要能记下一条拒绝，而不是让拒绝路径自己崩掉。
+  这两条在表里明确标注，不参与"有产生路径"的归类。
+
+**这些是规则编号，不是事件类型。** 不要登记进 `events.EVENT_TYPES`——事件类型
+注册表只回答"代码会写哪些事件"，混进规则编号等于让它替不存在的类型作证。
+
+| rule_id | 分组 | 含义 | 用户该怎么做 |
+|---|---|---|---|
+| `dispatch.claim_mismatch` | 身份失配 | 请求携带的 job claim 与库里记录的不一致（别人的或已过期）。 | 重新 `run resume`（或让 worker 重新认领）；不要手改库里的 claim。 |
+| `dispatch.foreign_instance` | 身份失配 | claim 属于另一个实例，本实例无权执行。 | 在持有该 Run 的实例上继续；本机无权执行，重启进程让它重新认领。 |
+| `dispatch.no_parent` | 身份失配 | 请求缺少可追溯的父身份（run/task 未绑定）。 | 用 `run start` 建一个带完整身份的 Run，不要在裸 run 上派发。 |
+| `dispatch.no_task` | 身份失配 | 请求引用的 Task 不存在。 | 确认 task_id；任务被删过就重新 `task create`。 |
+| `dispatch.not_running` | 身份失配 | Run 当前不在 running 状态（暂停/等待/已结束）。 | 先 `run resume` 把 Run 拉回 running，再让模型重试这一步。 |
+| `dispatch.run_fenced` | 身份失配 | Run 已被更新的目标/租约版本接管（fencing 生效）。 | 旧 Run 已失效，用 `run start` 重开一次执行；历史保留、不覆盖。 |
+| `dispatch.stale_revision` | 身份失配 | goal_revision 已过期，请求基于旧目标。 | 目标已被改过；重新发起这次动作并重新审批。 |
+| `dispatch.task_mismatch` | 身份失配 | 请求的 task_id 与该 Run 实际所属的 Task 不符。 | `run status` 核对 run_id 与 task_id 的对应关系，确认没拿错任务。 |
+| `c4.approval_expired` | 审批不可用 | 批准已过期。 | 重新发起审批。 |
+| `c4.approval_mismatch` | 审批不可用 | 批准的动作摘要与本次请求不一致（参数/目标被改过）。 | 参数或目标变了，旧批准已作废；确认内容后重新批准。 |
+| `c4.approval_run_mismatch` | 审批不可用 | 批准属于另一个 Run。 | 这张批准属于别的 Run；到目标 Run 上重新发起。 |
+| `c4.approval_state` | 审批不可用 | 批准不在可用状态（proposed/pending/rejected 等）。 | 等审批走完（pending）再 resume；已拒绝就重新发起。 |
+| `c4.multi_resource` | 审批不可用 | 一次请求声明了多个资源，审批无法覆盖。 | 一次只改一个文件，把动作拆开。 |
+| `c4.no_approval` | 审批不可用 | 该动作需要审批，但没有找到可用批准。 | 发起审批：`approvals list` 看有没有待批请求，批准后 `run resume`。 |
+| `dispatch.approval_revoked` | 审批不可用 | 审批在派发瞬间已被撤销。 | 重新发起并重新批准。 |
+| `dispatch.approval_unusable` | 审批不可用 | 审批对象存在但无法用于这次动作（已消费/已作废/不匹配）。 | 重新发起审批；一张批准只能用一次。 |
+| `dispatch.call_id_reused` | 租约与作业 | 同一 Run 内复用了已被其它参数占用的 call_id。 | 模型侧复用了调用 id；重新生成这次调用（换 call_id）。 |
+| `dispatch.claim_lost` | 租约与作业 | 派发过程中 claim 失效（作业被接管或已终结）。 | 作业已被接管；`run status` 看是谁在跑，等它结束或重新排队。 |
+| `dispatch.guard_timeout` | 租约与作业 | 执行守卫在限定时间内没有完成复核。 | 重试一次；反复超时说明别的进程占着工作区，查 `run status`。 |
+| `dispatch.lease_lost` | 租约与作业 | 派发过程中工作区租约丢失。 | 等占用该目录的 Run 结束，再重试。 |
+| `dispatch.not_admitted` | 准入 | 工具未通过准入白名单。 | 这个工具不在白名单，换一个允许的工具。 |
+| `dispatch.stale_precondition` | 前置条件 | 目标在被批准之后被改动（前置条件失效）。 | 目标在批准后被改过；重新发起并重新审批。 |
+| `c4.create_over_existing` | 目标不合法 | 策略判定：新建动作的目标已存在，应改用覆盖类工具。 | 同上（策略层判定）：改用 `modify_text` 并走审批。 |
+| `dispatch.create_over_existing` | 目标不合法 | 新建动作的目标已存在（新建不允许覆盖）。 | 目标已存在；要覆盖请改用 `modify_text`（删除类，需审批）。 |
+| `dispatch.target_is_directory` | 目标不合法 | 目标是目录，而该动作只作用于文件。 | 换成文件路径；目录不能作为写入/删除目标。 |
+| `c4.no_binding` | 工作区阻断 | 任务没有绑定任何工作区（0 目录任务不能隐式获得 cwd 权限）。 | 给任务绑定目录：`task create --workspace`。 |
+| `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
+| `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
+| `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
+| `dispatch.workspace_blocked` | 工作区阻断 | 工作区被阻断检查拦下（未知副作用未澄清）。 | 先处理阻断原因（`recover` 核实未定的副作用），再重试。 |
+| `c4.auto` | 判定结果（非拒绝） | 判定结果：目录内读/新建，自动放行。 | 无需操作：已自动放行。 |
+| `c4.delete` | 判定结果（非拒绝） | 判定结果：删除，需审批。 | 需要人工确认：批准删除。 |
+| `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
+| `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
+| `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
+| `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |
+| `c4.unhandled` | 保留未使用 | 保留未使用：策略分类的兜底分支，当前 SUPPORTED_ACTIONS 已全覆盖。 | 保留未使用；真看到它说明策略分类漏了分支，报 bug。 |
+| `dispatch.denied` | 保留未使用 | 保留未使用：DispatchDenied 的默认编号，当前无调用方使用。 | 保留未使用；真看到它说明有调用方漏传编号，报 bug。 |
+
 ### 5.5 两个"停止原因"必须分开
 
 上一版把 Strands 的 13 值枚举直接当作 C1 的停止语义，同时又写"仅 `tool_calls_ready` 可派发"——而该枚举里根本没有 `tool_calls_ready`（只有 `tool_use`）。这是一个真 bug，本版拆成两个字段。
