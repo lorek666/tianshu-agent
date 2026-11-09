@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from .errors import ToolNotAllowed
 from .events import EventLog
 from .guard import ensure_not_blocked
 from .loop import AgentLoop, Limits, build_stack
-from .model import Model, OpenAICompatibleModel, ScriptedModel
+from .model import AnthropicMessagesModel, Model, ModelError, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
 from .recovery import recover_run
 from .replay import replay
@@ -43,6 +44,9 @@ from .tasks import (
 from .workspace import Workspace, WorkspaceBinding
 
 DEFAULT_DB = Path(".tianshu/events.db")
+
+# 线上协议名。加第三个协议时只改这里 + `_model_from`，不动主循环。
+MODEL_PROVIDERS = ("openai", "anthropic")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -69,7 +73,10 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", default=None, help="兼容入口的输出文件名")
     r.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
-    r.add_argument("--model-name", default="gpt-4o-mini")
+    r.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS),
+                   help="真实模型走哪个线上协议（默认取 TIANSHU_PROVIDER，再默认 openai）")
+    r.add_argument("--model-name", default=None,
+                   help="模型 id；openai 默认 gpt-4o-mini，anthropic 必须显式给")
     r.add_argument("--base-url", default=None)
     r.add_argument("--max-turns", type=int, default=8)
     r.add_argument("--max-total-tokens", type=int, default=20_000)
@@ -97,7 +104,10 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--max-jobs", type=int, default=64, help="一次最多跑几个作业")
     w.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
-    w.add_argument("--model-name", default="gpt-4o-mini")
+    w.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS),
+                   help="真实模型走哪个线上协议（默认取 TIANSHU_PROVIDER，再默认 openai）")
+    w.add_argument("--model-name", default=None,
+                   help="模型 id；openai 默认 gpt-4o-mini，anthropic 必须显式给")
     w.add_argument("--base-url", default=None)
     w.add_argument("--max-turns", type=int, default=8)
     w.add_argument("--max-total-tokens", type=int, default=20_000)
@@ -172,11 +182,27 @@ def _scripted_model(out_name: str) -> ScriptedModel:
     )
 
 
+def _provider_of(args: argparse.Namespace) -> str:
+    """命令行 > 环境变量 > openai。只此一处决定，别在装配里再判一次。"""
+    return getattr(args, "provider", None) or os.environ.get("TIANSHU_PROVIDER") or "openai"
+
+
 def _model_from(args: argparse.Namespace) -> Model:
     if args.model == "scripted":
         # worker 没有 --out（它不建 Run），用默认产物名做兜底脚本
         return _scripted_model(getattr(args, "out", None) or "summary.md")
-    return OpenAICompatibleModel(args.model_name, base_url=args.base_url)
+    provider = _provider_of(args)
+    name = args.model_name
+    if provider == "anthropic":
+        if not name:
+            # 不替用户猜模型 id：猜错的表现是 404，比"必须显式给"难查得多
+            raise ModelError(
+                "anthropic provider 需要显式 --model-name（例如 claude-sonnet-4-5）",
+                kind="auth",
+                retryable=False,
+            )
+        return AnthropicMessagesModel(name, base_url=args.base_url)
+    return OpenAICompatibleModel(name or "gpt-4o-mini", base_url=args.base_url)
 
 
 def _engine(stack, args: argparse.Namespace) -> AgentLoop:

@@ -19,7 +19,7 @@ from tianshu.guard import (
     unblock,
 )
 from tianshu.loop import Limits, run
-from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.model import ModelError, ModelResponse, ScriptedModel, ToolCall
 from tianshu.recovery import recover_run
 from tianshu.snapshot import SnapshotStore
 from tianshu.tools import execute
@@ -242,17 +242,27 @@ def test_s4_undo_aborts_when_blob_missing(tmp_path):
 # ---------------------------------------------------------------- M3
 
 
+class _FailingModel:
+    """传输层失败的替身：抛 ModelError，而不是伪造一个 finish_reason。"""
+
+    def complete(self, messages, tools):  # noqa: ANN001, ARG002
+        raise ModelError.from_http(500, "upstream exploded")
+
+
 def test_m3_provider_error_is_failure_not_noop(tmp_path):
     """provider 报错不能被当成"没事发生"的成功。"""
     ws = _ws(tmp_path, {"a.md": "内容"})
     log = EventLog(tmp_path / "e.db")
     result = run(
         task="t", workspace_dir=ws, out_name="r.md",
-        model=ScriptedModel([ModelResponse("error", content="HTTP 500")]),
-        log=log, limits=Limits(4, 1000),
+        model=_FailingModel(), log=log, limits=Limits(4, 1000),
     )
     assert result.outcome == "failed"
     assert "HTTP 500" in (result.error or "")
+    # 错误类别要落到事件里：事后才能判断该重试还是该换 key
+    errors = [e for e in log.read_run(result.run_id) if e.type == "model.error"]
+    assert len(errors) == 1
+    assert "kind=http_status" in errors[0].payload["error"]
     log.close()
 
 
@@ -411,12 +421,13 @@ def test_m1_large_payload_is_durable_before_reference_commit(tmp_path):
     log.close()
 
 
-def test_m3_unknown_finish_reason_is_failure(tmp_path):
+def test_m3_truncated_finish_reason_is_failure(tmp_path):
     ws = _ws(tmp_path, {})
     log = EventLog(tmp_path / "e.db")
     result = run(
         task="t", workspace_dir=ws, out_name="x",
-        model=ScriptedModel([ModelResponse("length", content="truncated")]), log=log,
+        model=ScriptedModel([ModelResponse("limit_output_tokens", content="truncated")]),
+        log=log,
     )
     assert result.outcome == "failed"
     log.close()
