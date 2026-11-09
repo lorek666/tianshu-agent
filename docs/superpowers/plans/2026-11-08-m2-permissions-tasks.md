@@ -76,7 +76,16 @@ M2 初版采用一个跨进程 `execution_guard` 串行化**受控文件操作�
 ### 2.3 C4 与工具动作
 
 请求字段至少为 `request_id, task_id, run_id, job_claim, goal_revision, resource_epochs, call_id, attempt_id, tool_id, tool_version, schema_hash, action, canonical_resources[], args_hash, preconditions, policy_version, prompt_version, contract_version`。`job_claim` 绑定当前 owner 与 claim_epoch，派发及执行前均重新核验；旧 claim 不能仅凭尚未过期的 grant 发起新效果。
-Approval 绑定该请求摘要及 `approval_id, state, decided_by, expires_at`；Grant 增加 `grant_id, subject, request_digest, remaining_uses, expires_at, issuer`。模型不能指定 `decided_by` 或 issuer。批准来源只能是明确的本地 human CLI 控制路径；不声称防同 OS 用户篡改。
+Approval 绑定该请求的**动作摘要**及 `approval_id, state, decided_by, expires_at`；Grant 增加 `grant_id, subject, request_digest, remaining_uses, expires_at, issuer`。模型不能指定 `decided_by` 或 issuer。批准来源只能是明确的本地 human CLI 控制路径；不声称防同 OS 用户篡改。
+
+> **执行期修订（2026-11-09，M2 PR C Task 6）**：原写法"Approval 绑定该请求摘要"
+> 与本节末"不会形成每次拿新的 epoch、每次审批立即作废的循环"互相矛盾——进程
+> 逐命令启动时每个 `resume` 都是新 claim_epoch，请求摘要必变，审批必然重来
+> （已实测复现，见 `docs/REVIEW-PRA.md` §4.6）。改为**两个摘要**：
+> `request.digest` 含 owner/claim_epoch，用于执行前核验；`Approval.digest` 只含
+> 动作字段（见 `docs/PRD-v1.md` §5.4）。审批仍一次性消费、执行仍要求当前
+> claim 有效，改目标/改参数/改绑定照样 superseded。影响 `permissions.py`、
+> `dispatcher.py`、`loop.py` 与审批相关用例。
 
 摘要采用 RFC 8785 + SHA-256 的版本化函数。现有 `canonical_bytes()` 继续服务旧日志哈希，不直接改写导致历史 replay 失效。新 `action_digest()` 使用独立经过标准向量验证的实现；实现者优先选纯 Python 依赖并固定版本，通过四目标依赖门禁，再用 RFC 向量验收，禁止仅把 `sort_keys=True` 标称为完整 RFC 8785。
 

@@ -376,6 +376,23 @@ Approval { approval_id, request, digest,
 - 参数/资源/工具版本/policy/prompt 任一变化 → `superseded`
 - **凭据不混进来**：`CredentialBinding{cred_id, subject, scope, expires_at, activation}` 独立对象，有自己的激活时机
 
+**两个摘要，不是一个。** 请求与审批必须分开算摘要，否则审批会随进程重启
+无限作废：
+
+| 摘要 | 覆盖字段 | 回答什么问题 |
+|---|---|---|
+| `request.digest` | 全部授权字段，**含** `job_id / owner_instance_id / claim_epoch` | "这次动作由谁在什么身份下执行"——派发与执行前核验 |
+| `Approval.digest` | `task_id, run_id, goal_revision, lease_epoch, call_id, attempt_id, tool_id, tool_version, schema_hash, action, resources, args_hash, preconditions, policy_version, contract_version` | "人批准的是哪一次动作"——人对内容的审查 |
+
+人批准的是"把这个文件改成什么"，不是"哪个进程去改"。若审批绑 owner，
+进程重启（`claim_epoch` +1）就让刚批的动作作废，于是 `approvals approve`
+之后 `run resume` 永远还要再批一次——审批永远无法完成，这不是安全，是流程死锁。
+
+执行时仍然要同时满足：当前 claim 有效且属于本实例、租约在手、Run 处于
+`RUNNING`、`goal_revision/lease_epoch` 未变、`action_digest` 与审批一致、
+审批一次性消费。**改目标、改参数、改绑定**都会让 `goal_revision` 或
+`lease_epoch` 进入动作摘要而变化 → 旧审批 `superseded`，与上面那条一致。
+
 ### 5.5 两个"停止原因"必须分开
 
 上一版把 Strands 的 13 值枚举直接当作 C1 的停止语义，同时又写"仅 `tool_calls_ready` 可派发"——而该枚举里根本没有 `tool_calls_ready`（只有 `tool_use`）。这是一个真 bug，本版拆成两个字段。
