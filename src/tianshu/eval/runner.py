@@ -76,10 +76,15 @@ def _prepare(case_dir: Path, case: Case) -> tuple[Path, Path]:
 
 
 def _write_files(root: Path, files: dict[str, str]) -> None:
+    """按字节写 fixture。
+
+    不能用 `write_text`：Windows 上它把 `\n` 翻译成 `\r\n`，fixture 的字节
+    就不再等于 `case.fixture` 里声明的内容，"干净 fixture" 与哈希判据全歪。
+    """
     for rel, content in (files or {}).items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_bytes(content.encode("utf-8"))
 
 
 def _read_tree(root: Path) -> dict[str, bytes]:

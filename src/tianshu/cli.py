@@ -1054,7 +1054,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     report["workspace_retained"] = bool(args.keep)
     comparison = None
     if args.baseline is not None:
-        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+        baseline = json.loads(args.baseline.read_bytes().decode("utf-8"))
         comparison = compare_reports(baseline, report)
 
     payload = {"report": report, "compare": comparison}
@@ -1062,9 +1062,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         # 落盘的是**报告本体**，不是上面的信封：这样它可以直接当下一次的
         # `--baseline`，不会被信封的 schema 判成"不可比"。
-        args.out.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        args.out.write_bytes(
+            (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
