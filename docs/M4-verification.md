@@ -41,6 +41,7 @@
 | 失败归因 | 按事件证据与判据域归到 harness/model/tool/policy/approval/recovery/limit/artifact | 通过（3 条 attribution 测试 + 1 条回归归因） |
 | 离线基线全绿 | `--repeat 3`：60/60 次运行、20/20 case 全绿、安全门槛通过 | 通过（约 4.6 秒，含 9 次真实子进程硬退） |
 | 工程门禁 | `uv run pytest` 916 passed / 3 skipped；`ruff check` 通过 | 通过 |
+| 跨平台 | CI 矩阵 `macos-latest / ubuntu-latest / windows-latest` 全绿（含本 PR 新增的 48 条评测测试） | 通过（Windows 由 CI 覆盖，非本机人工复验） |
 
 ## 2. case 集
 
@@ -154,7 +155,7 @@ R1/R2/R3 不是"在同一个进程里假装崩溃"：
 | 项 | 为什么没验 |
 |---|---|
 | **真实换模**（两个不同真实 provider 的分数与退化归因） | 本机无可用 API key。M3 用过的中转 key 已在聊天记录里暴露过，**应作废后重配**再跑 §复验命令 |
-| Windows x64 / arm64、macOS x64（人工复验） | 本机只有 macOS arm64；Windows 由 CI 矩阵覆盖（PR #35 把 windows-latest 加回 CI），但没有本机人工复验 |
+| Windows x64 / arm64、macOS x64（人工复验） | 本机只有 macOS arm64。Windows 由 CI 矩阵覆盖并实测全绿（PR #35 把 windows-latest 加回 CI，本 PR 的 48 条评测测试也在上面跑过），但**没有本机人工复验**；macOS x64 未覆盖 |
 | 真实模型非确定性 | ≥3 次只是**采样**，不承诺分数稳定；报告只报观测到的逐次结果，不做统计推断 |
 | 真超时（长任务/网络延迟）下的恢复 | R1–R3 是**注入**崩溃，不是真的等超时；超时路径由 `ModelError(timeout)` 单测覆盖，未与评测串起来 |
 | memfs 后端下评测 | 评测器始终用进程当前后端（local）；`TIANSHU_SANDBOX_BACKEND=memfs` 下未跑整套 |
