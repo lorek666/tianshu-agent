@@ -21,6 +21,30 @@ from tianshu.model import Model
 from tianshu.permissions import HumanIdentity
 from tianshu.snapshot import SnapshotStore
 
+#: 所有测试子进程的 stdout/stderr 解码参数。
+#:
+#: 产品侧 CLI 已经把输出钉成 UTF-8（`cli._force_utf8_streams`），父进程若按
+#: locale 编码解就会得到 mojibake，甚至在 cp1252 的未定义字节上抛
+#: `UnicodeDecodeError`。`errors="replace"` 是给"子进程在 import 阶段就崩"
+#: 这种情形留的后路：那时 traceback 用的是 locale 编码，替换字符也总比看不到
+#: 真实失败信息好。
+CHILD_TEXT: dict[str, object] = {
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+}
+
+
+def write_exact(path: Path, text: str) -> None:
+    """按 UTF-8 **字节**落盘，不经过换行翻译。
+
+    证据链（`observe_state` / 快照 preimage / 凭据 before|after_state）算的是
+    `sha256(文件原始字节)`。测试夹具若用 `Path.write_text()`，Windows 会在文本
+    模式里把 `\n` 翻成 `\r\n`，于是"期望哈希"和磁盘上的字节对不上——那是
+    夹具在骗自己，不是产品坏了。所有参与哈希的夹具一律走这里。
+    """
+    path.write_bytes(text.encode("utf-8"))
+
 
 def stack_for(
     log: EventLog,
@@ -74,9 +98,11 @@ def approve_pending(stack: Stack, run_id: str) -> list[str]:
 
 
 __all__ = [
+    "CHILD_TEXT",
     "approve_pending",
     "engine_for",
     "pending_approvals",
     "stack_for",
     "tool_capable_profile",
+    "write_exact",
 ]

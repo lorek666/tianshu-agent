@@ -20,6 +20,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from support import CHILD_TEXT
 
 from tianshu.events import EventLog
 from tianshu.leases import (
@@ -330,7 +331,7 @@ def test_two_processes_one_resource(tmp_path):
         subprocess.Popen(
             [sys.executable, "-c", _RACE_CHILD.format(src=SRC),
              str(tmp_path / "db.sqlite"), str(ws), f"run_{i}", str(go)],
-            stdout=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, **CHILD_TEXT,
         )
         for i in range(2)
     ]
@@ -372,7 +373,7 @@ def test_live_process_blocks_another_process(env, tmp_path):
     child = subprocess.Popen(
         [sys.executable, "-c", _HOLDER_CHILD.format(src=SRC),
          str(tmp_path / "db.sqlite"), str(ws), "run_live"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, **CHILD_TEXT,
     )
     try:
         assert child.stdout.readline().strip() == "held"
@@ -410,7 +411,7 @@ def test_execution_guard_excludes_across_processes(tmp_path):
         assert isinstance(guard, ExecutionGuard)
         out = subprocess.run(
             [sys.executable, "-c", child_src.format(src=SRC), str(root)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, **CHILD_TEXT, timeout=30,
         )
     assert out.stdout.strip() == "timeout", out.stderr
 
@@ -435,7 +436,7 @@ def test_execution_guard_released_on_hard_exit(tmp_path):
     )
     child = subprocess.Popen(
         [sys.executable, "-c", child_src.format(src=SRC), str(root)],
-        stdout=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, **CHILD_TEXT,
     )
     assert child.stdout.readline().strip() == "locked"
     child.wait(timeout=30)

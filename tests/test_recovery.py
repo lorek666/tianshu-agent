@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from support import CHILD_TEXT
 
 from tianshu.events import EventLog
 from tianshu.recovery import blocked_workspaces, recover_run
@@ -47,7 +48,7 @@ def _spawn(tmp_path: Path, ws: Path, db: Path, failpoint: str | None):
     src = str(Path(__file__).resolve().parents[1] / "src")
     code = _CHILD.format(src=src, ws=str(ws), db=str(db))
     return subprocess.run([sys.executable, "-c", code], env=env,
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, **CHILD_TEXT, timeout=120)
 
 
 def _latest_run_id(db: Path) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -402,10 +403,13 @@ def test_error_messages_name_the_rule_or_backend(tmp_path):
 )
 def test_invalid_policy_declarations_raise_value_error(policy_kwargs):
     if policy_kwargs == {"argv_denylist": ("/bin/sh", "/usr/bin/id")}:
-        # 这一项是合法的：确保校验不会误伤正常声明
+        # 这一项是合法的：确保校验不会误伤正常声明。
+        # 策略里存的是**本平台规范化后的绝对路径**（Windows 上 "/bin/sh" 是
+        # 当前盘符下的根路径，规范化会变成 "\bin\sh"），所以期望值也要按
+        # 同一个规则算，不能写死 POSIX 拼法。
         assert ExecPolicy(**policy_kwargs).argv_denylist == (
-            "/bin/sh",
-            "/usr/bin/id",
+            os.path.normpath("/bin/sh"),
+            os.path.normpath("/usr/bin/id"),
         )
         return
     with pytest.raises(ValueError):
@@ -418,7 +422,7 @@ def test_policy_normalizes_declared_paths(tmp_path):
     messy_root = str(ws / "sub" / "..")
     policy = _policy(ws, argv_allowlist=(messy_exe,), cwd_roots=(messy_root,))
 
-    assert policy.argv_allowlist == (EXE,)
+    assert policy.argv_allowlist == (os.path.normpath(EXE),)
     assert policy.cwd_roots == (ws,)
     assert check_spawn(policy, _argv(), ws, ENV_OK) is None
 
