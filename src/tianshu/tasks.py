@@ -131,6 +131,14 @@ CONTROL_PAUSE = "pause"
 CONTROL_CANCEL = "cancel"
 CONTROL_REQUESTS = {CONTROL_PAUSE, CONTROL_CANCEL}
 
+# 取消的统一说明。**只保证不再派发新的副作用**，不撤回已经发生的修改；
+# 这句同时写进 run.end 的 error 与 CLI 输出，两边不能各说一套。
+CANCEL_REASON = "取消：已停止派发新的副作用（已发生的修改不撤回）"
+
+# 这些状态里 Run 已经停下或正在停，不能直接当"执行完了"来收尾。
+# `created` / `queued` 例外：从没跑过的 Run 被判定为"无事可做"是合法的。
+STOPPED_STATES = {RUN_PAUSED, RUN_WAITING_APPROVAL, RUN_RECONCILING, RUN_CANCELLING}
+
 TASK_CREATED = "task.created"
 TASK_REVISED = "task.revised"
 EXECUTION_STARTED = "execution.started"
@@ -140,6 +148,7 @@ RUN_START = "run.start"
 RUN_FINISH = "run.finish"
 RUN_FENCED = "run.fenced"
 RUN_STATE = "run.state"
+RUN_END = "run.end"
 RUN_CONTROL = "run.control"
 RUN_EFFECT = "run.effect"
 
@@ -779,12 +788,17 @@ class TaskStore:
     # - created / queued：还没开始执行
     # - waiting_approval：正等人批准，派发还没发生
     # - paused：安全点已经过去，影响它的那次执行已经收尾
-    # 因此请求可以就地生效。RUNNING / CANCELLING / RECONCILING 里可能有有限
-    # 副作用在执行，只记录请求，由执行器在下一个安全点确认。
+    # - reconciling：执行器已经退出、等人工核查，**没有驱动者在跑**
+    # 因此请求可以就地生效。RUNNING / CANCELLING 里可能有有限副作用在执行，
+    # 只记录请求，由执行器在下一个安全点确认。
+    #
+    # RECONCILING 必须在这里：它是主循环主动返回、然后就不再看这个 Run 的状态。
+    # 不就地生效的话，用户按取消之后会一直等一个永远不会来的安全点。
     SAFE_CONTROL_STATES = (
         RUN_CREATED,
         RUN_QUEUED,
         RUN_WAITING_APPROVAL,
+        RUN_RECONCILING,
         RUN_PAUSED,
     )
 
@@ -804,6 +818,24 @@ class TaskStore:
                 raise RunFenced(
                     f"run 已终结，不能暂停：{run_id}（state={run.state}）"
                 )
+            cur = self._conn.execute(
+                f"UPDATE runs SET state=?, control_requested=NULL"
+                f" WHERE run_id=? AND state IN ({marks})",
+                (RUN_PAUSED, run_id, *safe),
+            )
+            immediate = bool(cur.rowcount)
+            queued = False
+            if not immediate:
+                # 排队中的取消不会被后来的暂停顶掉：取消是更强的决定。
+                # 无条件写 'pause' 会让"取消"凭空消失——用户按了取消，
+                # 看到的却是"已暂停"，然后 Run 永远停在那里。
+                queued = bool(
+                    self._conn.execute(
+                        "UPDATE runs SET control_requested=?"
+                        " WHERE run_id=? AND control_requested IS NULL",
+                        (CONTROL_PAUSE, run_id),
+                    ).rowcount
+                )
             tx.append(
                 run_id,
                 RUN_CONTROL,
@@ -811,17 +843,18 @@ class TaskStore:
                     "run_id": run_id,
                     "task_id": run.task_id,
                     "action": CONTROL_PAUSE,
-                    "applied_immediately": run.state in safe,
+                    "applied_immediately": immediate,
+                    # 已经有更强的请求在排队时，这次暂停不生效——
+                    # 必须记下来，否则日志里会出现"用户暂停了但没停"且无法解释。
+                    "request_effective": immediate or queued,
+                    "stronger_request": None
+                    if immediate or queued
+                    else self._control_now(run_id),
                 },
                 task_id=run.task_id,
                 actor_kind="human",
             )
-            cur = self._conn.execute(
-                f"UPDATE runs SET state=?, control_requested=NULL"
-                f" WHERE run_id=? AND state IN ({marks})",
-                (RUN_PAUSED, run_id, *safe),
-            )
-            if cur.rowcount:
+            if immediate:
                 tx.append(
                     run_id,
                     RUN_STATE,
@@ -831,6 +864,7 @@ class TaskStore:
                         "from": run.state,
                         "to": RUN_PAUSED,
                         "reason": "pause_requested",
+                        "control_cleared": True,
                     },
                     task_id=run.task_id,
                 )
@@ -838,13 +872,13 @@ class TaskStore:
                 # resume 必须重新获取租约（拿不到就说明目录被别人用了）。
                 if self._leases is not None:
                     self._leases.release_run(run_id)
-            else:
-                self._conn.execute(
-                    "UPDATE runs SET control_requested=?"
-                    " WHERE run_id=?",
-                    (CONTROL_PAUSE, run_id),
-                )
         return self.get_run(run_id)  # type: ignore[return-value]
+
+    def _control_now(self, run_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT control_requested FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return row["control_requested"] if row is not None else None
 
     def request_cancel(self, run_id: str) -> Run:
         """请求取消。安全状态下就地终结，否则留给执行器在安全点确认。
@@ -902,6 +936,7 @@ class TaskStore:
                 run_id,
                 outcome="cancelled",
                 effect_state=run.effect_state or "none_applied",
+                reason=CANCEL_REASON,
             )
         return self.get_run(run_id)  # type: ignore[return-value]
 
@@ -946,6 +981,7 @@ class TaskStore:
                         "to": RUN_PAUSED,
                         "reason": "pause_confirmed",
                         "claim_epoch": claim.claim_epoch,
+                    "control_cleared": True,
                     },
                     task_id=run.task_id,
                 )
@@ -967,6 +1003,7 @@ class TaskStore:
                     "to": RUN_CANCELLING,
                     "reason": "cancel_confirmed",
                     "claim_epoch": claim.claim_epoch,
+                    "control_cleared": True,
                 },
                 task_id=run.task_id,
             )
@@ -975,6 +1012,7 @@ class TaskStore:
                 run_id,
                 outcome="cancelled",
                 effect_state=run.effect_state or "none_applied",
+                reason=CANCEL_REASON,
             )
             return CONTROL_CANCEL
 
@@ -1130,15 +1168,26 @@ class TaskStore:
         outcome: str,
         effect_state: str,
         reason: str | None = None,
+        report_outcome: str | None = None,
     ) -> Run:
         """收尾。被 fence 的 Run 不许报成功——否则旧目标会"复活"。
 
         校验与写入放在同一条条件 UPDATE 里，避免「检查完到写入之间被改目标」
         的竞态。
+
+        已经停下（暂停/等审批/待核查/正在取消）的 Run 不能直接收尾：那些状态
+        要经过 resume 或 cancel 才能变成终态。否则"暂停"可以被一句
+        `finish_run(succeeded)` 悄悄改写成成功，PRD §4.3 的状态机就白写了。
         """
         with self._log.transaction() as tx:
             return self._finish_locked(
-                tx, run_id, outcome=outcome, effect_state=effect_state, reason=reason
+                tx,
+                run_id,
+                outcome=outcome,
+                effect_state=effect_state,
+                reason=reason,
+                report_outcome=report_outcome,
+                require_running=True,
             )
 
     def _finish_locked(
@@ -1149,6 +1198,8 @@ class TaskStore:
         outcome: str,
         effect_state: str,
         reason: str | None = None,
+        report_outcome: str | None = None,
+        require_running: bool = False,
     ) -> Run:
         if outcome not in RUN_OUTCOMES:
             raise TianshuError(
@@ -1162,6 +1213,11 @@ class TaskStore:
         run = self.get_run(run_id)
         if run is None:
             raise TianshuError(f"run 不存在：{run_id}")
+        if require_running and run.state in STOPPED_STATES:
+            raise RunFenced(
+                f"run 停在这些状态里不能直接收尾：{run_id}（state={run.state}）；"
+                "请先 resume 或 cancel"
+            )
 
         cur = self._conn.execute(
             "UPDATE runs SET state=?, outcome=?, effect_state=?,"
@@ -1181,6 +1237,22 @@ class TaskStore:
             "UPDATE tasks SET active_run_id=NULL, updated_at=?"
             " WHERE task_id=? AND active_run_id=?",
             (now, run.task_id, run_id),
+        )
+        # `run.end` 是"这次执行有结论了"的唯一事件。以前它由主循环单独写，
+        # 于是 CLI 直接取消的 Run 只有 run.finish 没有 run.end——M0 的
+        # S3「run.start → … → run.end」在取消路径上根本不成立，而取消恰恰是
+        # 最需要让用户看见"到底改了什么"的路径。现在所有终态都从这一处写。
+        tx.append(
+            run_id,
+            RUN_END,
+            self._run_end_payload(
+                run_id,
+                outcome=report_outcome or outcome,
+                effect_state=effect_state,
+                reason=reason,
+            ),
+            task_id=run.task_id,
+            actor_kind="core",
         )
         tx.append(
             run_id,
@@ -1210,6 +1282,59 @@ class TaskStore:
             if job is not None and job.state in ("pending", "claimed"):
                 self._claims.cancel(job.job_id, reason="run_cancelled")
         return self.get_run(run_id)  # type: ignore[return-value]
+
+    def _run_end_payload(
+        self,
+        run_id: str,
+        *,
+        outcome: str,
+        effect_state: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        """终态结算：全部从事件与游标里读，不接受调用方"报个数"。
+
+        为什么不让主循环传入自己的计数器：CLI 直接取消时没有主循环在场，
+        那条路径就永远写不出结算；两套写法还会让"改了几个文件"的账在两种
+        收尾方式下不一致。统一从事实源汇总，两条路径自动一样。
+        """
+        events = self._log.read_run(run_id)
+        receipts = [
+            e.payload["receipt_id"]
+            for e in events
+            if e.type == "receipt" and e.payload.get("receipt_id")
+        ]
+        artifact: dict[str, Any] | None = None
+        for ev in events:
+            if ev.type != "tool.result":
+                continue
+            if ev.payload.get("tool_id") != "create_report":
+                continue
+            if ev.payload.get("status") != "succeeded":
+                continue
+            out = ev.payload.get("output") or {}
+            if out.get("sha256"):
+                artifact = out
+        intent_count = sum(1 for e in events if e.type == "model.intent")
+        result_count = sum(1 for e in events if e.type == "model.result")
+        # 按**事件条数**算，不按 request_id 去重：崩溃后重发的那一轮用的是
+        # 同一个 request_id，去重会把"已经付过一次钱、没记进账"抹成 0。
+        unbilled = max(0, intent_count - result_count)
+        stored = self.load_cursor(run_id)
+        ledger = (stored[0].budget_ledger if stored is not None else {}) or {}
+        unknown_usage = int(ledger.get("unknown_usage_calls", 0) or 0)
+        return {
+            "outcome": outcome,
+            "effect_state": effect_state,
+            "artifact": artifact,
+            "turns": int(ledger.get("turns", 0) or 0),
+            "tokens": int(ledger.get("tokens", 0) or 0),
+            "tokens_unknown_calls": unknown_usage,
+            "receipt_ids": receipts,
+            # 预算可信 = 没有任何"可能花了但没记账"的调用
+            "budget_enforced": unknown_usage == 0 and unbilled == 0,
+            "unbilled_model_intents": unbilled,
+            "error": reason,
+        }
 
     def list_runs(self, task_id: str) -> list[Run]:
         rows = self._conn.execute(
@@ -1327,8 +1452,14 @@ class TaskStore:
                 r = runs.get(p["run_id"])
                 if r is None:
                     continue
-                # 确认控制请求与改状态是同一次提交，所以这里一并清空请求
-                r.update(state=p["to"], control_requested=None, updated_at=ev.ts)
+                # 只有**显式标了** control_cleared 的状态迁移才清请求。
+                # 无条件清会把"请求已排队、还没到安全点"这件事抹掉：一个
+                # 运行中的 Run 先被暂停请求、随后因为别的原因过一次状态迁移
+                # （比如转 waiting_approval），重建之后请求就凭空消失了。
+                cleared = p.get("control_cleared") is True
+                r.update(state=p["to"], updated_at=ev.ts)
+                if cleared:
+                    r["control_requested"] = None
             elif ev.type == RUN_CONTROL:
                 r = runs.get(p["run_id"])
                 if r is None:

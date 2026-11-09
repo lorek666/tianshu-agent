@@ -181,6 +181,11 @@ Approval 绑定该请求摘要及 `approval_id, state, decided_by, expires_at`�
 > `build_stack`，CLI 与测试共用同一装配路径；(4) 等待审批期间的**心跳循环**
 > 仍是 Task 6 的 worker，本任务只提供 `heartbeat_once` 并被测试显式调用；
 > (5) 多目录任务里相对路径解析到"第一个可写绑定"是 M2 的已知限制。
+>
+> 补记（2026-11-09，独立复审后）：PR #12 合并后复审发现 5 个阻断项（取消在安全点
+> 炸 JobLost 且无 `run.end`、外来 live owner 没被拦住、暂停顶掉取消、效果计数重复
+> 累加、复用 call_id 被静默吞掉），全部已在 PR #13 修复并加回归测试；详见
+> `docs/REVIEW-PRA.md` §4.5。
 
 #### Task 6：作业表与端到端验收
 

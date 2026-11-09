@@ -340,10 +340,14 @@ class AgentLoop:
             )
         task = self._task(run.task_id)
         claim = self._claim_for_resume(run)
-        if run.state == RUN_RUNNING and claim is None:
+        if claim is None:
+            # `_claim_for_resume` 返回 None 只有一种含义：另一个**活着**的实例
+            # 持有这个 Run 的作业。这和 Run 当前是 running 还是 paused 无关——
+            # 只看状态会让暂停中的 Run 被外来实例改成 RUNNING（没有 claim 还
+            # 继续往下走），然后卡在一个谁都不认的状态上。
             raise TianshuError(
-                f"run {run_id} 正在由另一个实例执行，不能抢占；"
-                "请等它结束或由它自己暂停"
+                f"run {run_id} 正由另一个实例持有（可能仍在跑），不能抢占；"
+                "请等它结束、暂停或释放"
             )
 
         writable = [b.identity() for b in task.workspaces if b.can_write]
@@ -377,6 +381,10 @@ class AgentLoop:
         worker）。审批 TTL 是 10 分钟、租约 TTL 是 30 秒，所以**不续租就等于
         每 30 秒作废一次审批**——这不是审批设计得勤快，是 owner 没在看。
         """
+        if not isinstance(claim, JobClaim):
+            # 没有 claim 就没有身份：宁可明确报错，也不要靠 AttributeError
+            # 在半路炸出一个看不出因果的错误。
+            raise TianshuError("heartbeat_once 需要有效的 JobClaim")
         paths = self._leases.live_paths(claim.run_id)
         if paths:
             self._leases.renew([Path(p) for p in paths], claim.run_id)
@@ -534,9 +542,13 @@ class AgentLoop:
         if action is not None:
             if action == CONTROL_PAUSE:
                 # 安全点到了：这次执行已经收尾，工作区交还出去。
+                # 暂停还要留游标——下次 resume 靠它接着跑。
                 self._leases.release_run(run_id)
-            self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
-            return action
+                self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
+            # 取消是终态：Run 已经收尾、作业也被有意收掉了，再写游标只会
+            # 撞上一个已经失效的 claim（JobLost），把一次成功的取消报成
+            # "收尾被拒绝"。终态不需要游标。
+        return action
         self.heartbeat_once(claim)
         return None
 
@@ -627,6 +639,31 @@ class AgentLoop:
                 continue
             props = call.arguments
             assert isinstance(props, dict)
+            if (
+                call.call_id in self._results
+                or call.call_id in progress.completed
+                or any(p.get("call_id") == call.call_id for p in proposals)
+            ):
+                # provider 每轮从 call_0 重新编号是常见的（本地模型、代理端点）。
+                # 静默丢掉会留下一个**没有 tool 消息的 assistant tool_call**，
+                # 多数 provider 下一轮直接 400；而 Run 还会记成 succeeded。
+                reason = "call_id 在本 Run 内重复（provider 复用了编号）"
+                undispatched.append(
+                    {"call_id": call.call_id, "tool_id": call.name, "reason": reason}
+                )
+                progress.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.call_id,
+                        "name": call.name,
+                        "content": json.dumps(
+                            {"error": f"未派发：{reason}"},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    }
+                )
+                continue
             proposals.append(
                 {
                     "call_id": call.call_id,
@@ -918,12 +955,15 @@ class AgentLoop:
         "下一步该做什么"。
         """
         self._results = {}
+        self._counted: set[str] = set()
         self._artifact = None
         n_applied = n_unknown = 0
         for ev in self._log.read_run(run_id):
             if ev.type == "tool.result":
                 payload = ev.payload
-                self._results[payload.get("call_id", "")] = payload
+                call_id = payload.get("call_id", "")
+                self._results[call_id] = payload
+                self._counted.add(call_id)
                 state = payload.get("effect_state")
                 if state == "applied":
                     n_applied += 1
@@ -1023,10 +1063,15 @@ class AgentLoop:
         progress.messages.append(
             _tool_message(call_id, recorded.get("tool_id", ""), result)
         )
-        if result.effect_state == "applied":
-            progress.n_applied += 1
-        elif result.effect_state in ("partial", "unknown"):
-            progress.n_unknown += 1
+        # 计数按**调用**去重，不按"这次驱动里有没有处理过它"：`_index_events`
+        # 已经按事件把它数过一遍了，游标落后时这里会把同一个调用再数一次，
+        # 于是"改了几个文件"变成虚高的数字（effect_state 本身看不出来）。
+        if call_id not in self._counted:
+            self._counted.add(call_id)
+            if result.effect_state == "applied":
+                progress.n_applied += 1
+            elif result.effect_state in ("partial", "unknown"):
+                progress.n_unknown += 1
         if (
             recorded.get("tool_id") == "create_report"
             and result.ok
@@ -1036,18 +1081,38 @@ class AgentLoop:
         progress.completed.append(call_id)
 
     def _reusable_request_id(self, proposal, probe) -> str | None:
-        """上一轮的请求号还能不能再用（决定旧批准是"继续有效"还是"作废"）。"""
-        candidate = proposal.get("request_id")
-        if not candidate:
-            return None
-        stored = self._dispatcher.get_request(candidate)
-        if stored is None:
-            return None
-        left = stored.request.to_canonical_dict()
-        right = probe.to_canonical_dict()
+        """同一个动作该用哪个请求号（决定旧批准是"继续有效"还是"作废"）。
+
+        两个来源，优先级从高到低：
+        1. 游标里记着的上一轮请求号；
+        2. 本 Run 里**仍然待批/已批**的请求，其授权字段与这一次完全一致。
+
+        第 2 条是必需的：崩在 `prepare` 与 `save_cursor` 之间时，游标里没有
+        请求号，但库里已经有一张待批审批。只看游标就会给同一个动作再发一张，
+        用户看到两条一模一样的待批项，批了其中一条另一条变废单。
+        """
+        left = probe.to_canonical_dict()
         left.pop("request_id", None)
-        right.pop("request_id", None)
-        return candidate if left == right else None
+
+        candidate = proposal.get("request_id")
+        ids: list[str] = [candidate] if candidate else []
+        ids.extend(self._dispatcher.request_ids_for_run(probe.run_id))
+        for request_id in ids:
+            stored = self._dispatcher.get_request(request_id)
+            if stored is None:
+                continue
+            right = stored.request.to_canonical_dict()
+            right.pop("request_id", None)
+            if right != left:
+                continue
+            if request_id != candidate:
+                approval_id = stored.approval_id
+                if approval_id:
+                    approval = self._approvals.get(approval_id)
+                    if approval is None or approval.state not in ("pending", "approved"):
+                        continue
+            return request_id
+        return None
 
     def _rebind_approval(
         self, proposal: dict[str, Any], request: Any
@@ -1101,30 +1166,17 @@ class AgentLoop:
             )
 
         effect = progress.effect_state
-        receipts = self._receipt_ids(run_id)
-        payload = {
-            "outcome": outcome,
-            "effect_state": effect,
-            "artifact": self._artifact,
-            "turns": progress.turns,
-            "tokens": progress.tokens,
-            "tokens_unknown_calls": progress.unknown_usage_calls,
-            "receipt_ids": receipts,
-            "budget_enforced": progress.unknown_usage_calls == 0,
-            # 有 model.intent 却查不到 model.result：那次调用的费用无法核实。
-            # 静默按 0 处理就是在预算账上撒谎。
-            "unbilled_model_intents": self._unbilled_intents(run_id),
-            "error": error,
-        }
         try:
             with self._log.transaction() as tx:
-                tx.append(run_id, "run.end", payload, actor_kind="core")
+                # `run.end` 由这里写（终态事件只有这一个写者，CLI 直接取消
+                # 也走同一条路），结算字段全部从事件与游标派生。
                 self._tasks._finish_locked(  # noqa: SLF001 - 同包内部提交
                     tx,
                     run_id,
                     outcome=run_outcome,
                     effect_state=effect,
                     reason=error,
+                    report_outcome=outcome,
                 )
         except RunFenced as exc:
             return self._result(

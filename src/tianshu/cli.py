@@ -189,7 +189,8 @@ def _print_result(result, *, as_json: bool) -> None:
     print(f"turns  : {result.turns}   tokens: {result.tokens}")
     if result.artifact:
         print(f"report : {result.artifact['path']}  ({result.artifact['bytes']}B)")
-    if result.approval_ids:
+    if result.approval_ids and not result.terminal:
+        # 终态 Run 的审批在收尾时已被 supersede，再提示"去批"就是让人批废单
         print("待批请求：")
         for approval_id in result.approval_ids:
             print(f"  - {approval_id}   （tianshu approvals approve {approval_id}）")
@@ -280,7 +281,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "approvals": [a.to_dict() for a in pending],
             },
             ensure_ascii=False, indent=2, default=str))
-        return 0
+        return _status_exit_code(record)
     print(f"run_id    : {record.run_id}")
     print(f"task      : {record.task_id}")
     print(f"state     : {record.state}"
@@ -296,6 +297,19 @@ def _run_status(stack, args: argparse.Namespace) -> int:
         for approval in pending:
             print(f"  - {approval.approval_id}  {approval.action}  "
                   f"{','.join(approval.resources)}")
+    return _status_exit_code(record)
+
+
+def _status_exit_code(run) -> int:
+    """`status` 也遵守 README 的退出码契约。
+
+    只返回 0 会让脚本把"暂停等人"和"已经跑完"当成同一件事——尤其
+    `while status != 0; do sleep` 这种写法，会在一个永远等不到头的状态上转圈。
+    """
+    if run.state in (RUN_WAITING_APPROVAL, RUN_RECONCILING, "paused"):
+        return 3
+    if run.state in TERMINAL_STATES and run.outcome not in ("succeeded",):
+        return 1
     return 0
 
 
@@ -303,7 +317,7 @@ def _run_pause(stack, args: argparse.Namespace) -> int:
     record = stack.tasks.request_pause(args.run_id or "")
     if args.json:
         print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return _status_exit_code(record) if record.state != "paused" else 0
     if record.control_requested:
         print(f"已记录暂停请求（当前 state={record.state}）：执行器会在下一个安全点停下")
         print("这一点之后再开始的副作用不会发生；已经在执行的那一次会照常完成")
@@ -313,14 +327,22 @@ def _run_pause(stack, args: argparse.Namespace) -> int:
 
 
 def _run_cancel(stack, args: argparse.Namespace) -> int:
+    before = stack.tasks.get_run(args.run_id or "")
     record = stack.tasks.request_cancel(args.run_id or "")
+    already_over = before is not None and before.state in TERMINAL_STATES | {"fenced"}
     if args.json:
         print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return 1 if already_over and record.state != "cancelled" else 0
     if record.control_requested:
         print(f"已记录取消请求（当前 state={record.state}）：执行器会在安全点停下")
         print("已经发生的修改不会被撤回；请用 recover 核查实际效果")
         return 0
+    if record.state != "cancelled":
+        # 已经结束（或被 fence）的 Run 不是"取消成功"。说"已取消"是撒谎：
+        # 它可能是成功结束的，用户会以为自己的取消挡下了什么。
+        print(f"没有取消：这个 Run 已经结束（state={record.state}）",
+              file=sys.stderr)
+        return 1
     print(f"已取消：{record.run_id}（effect_state={record.effect_state or 'none_applied'}）")
     print("已经发生的修改不会被撤回；请用 recover 核查实际效果")
     return 0
@@ -451,6 +473,9 @@ def _cmd_approvals(args: argparse.Namespace) -> int:
     stack = _authority_stack(args.db, args.data_root)
     try:
         if args.action == "list":
+            # 过期的待批项留在队列里只能骗人：批了也不会执行。
+            # 清一次再列，队列里剩下的才是真的可以操作的。
+            stack.approvals.expire_due()
             rows = stack.approvals.pending(run_id=args.run_id)
             if args.json:
                 print(json.dumps([a.to_dict() for a in rows],
@@ -557,10 +582,11 @@ def _undo_plan(stack, run_id: str, ws: Workspace) -> list[tuple[str, str]]:
 
 
 def _cmd_undo(args: argparse.Namespace) -> int:
-    stack = _authority_stack(args.db, args.data_root)
-    ws = Workspace(args.workspace)
-    run_id = args.run_id
+    stack = None
     try:
+        stack = _authority_stack(args.db, args.data_root)
+        ws = Workspace(args.workspace)
+        run_id = args.run_id
         changes = stack.snapshots.load(run_id)
         if not changes:
             print(f"run {run_id} 没有可撤销的变更")
@@ -638,7 +664,8 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 print(f"  ! {p}")
         return 0 if report.ok else 1
     finally:
-        stack.log.close()
+        if stack is not None:
+            stack.log.close()
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
