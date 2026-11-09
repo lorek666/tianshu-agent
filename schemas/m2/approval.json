@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/m2/approval.json",
+  "title": "Approval",
+  "description": "审批。绑定请求摘要（RFC 8785 + SHA-256），批准一次只能被派发消费一次。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approval_id",
+    "request_id",
+    "request_digest",
+    "task_id",
+    "run_id",
+    "goal_revision",
+    "lease_epoch",
+    "action",
+    "resources",
+    "state"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "read",
+        "create",
+        "overwrite",
+        "delete"
+      ]
+    },
+    "approval_id": {
+      "type": "string",
+      "pattern": "^appr_[0-9a-f]{12}$"
+    },
+    "created_at": {
+      "type": "integer"
+    },
+    "decided_at": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "decided_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "expires_at": {
+      "type": "integer"
+    },
+    "goal_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "lease_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string"
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "expired",
+        "revoked",
+        "superseded"
+      ]
+    },
+    "task_id": {
+      "type": "string"
+    }
+  }
+}

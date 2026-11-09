@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/m2/grant.json",
+  "title": "Grant",
+  "description": "一次性执行许可。短命（默认 30 秒）且不得比资源租约活得更久。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant_id",
+    "subject",
+    "request_digest",
+    "action",
+    "issuer",
+    "remaining_uses",
+    "created_at",
+    "expires_at"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "read",
+        "create",
+        "overwrite",
+        "delete"
+      ]
+    },
+    "created_at": {
+      "type": "integer"
+    },
+    "expires_at": {
+      "type": "integer"
+    },
+    "grant_id": {
+      "type": "string",
+      "pattern": "^grant_[0-9a-f]{12}$"
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "remaining_uses": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string"
+    }
+  }
+}

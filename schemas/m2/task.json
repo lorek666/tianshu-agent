@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/m2/task.json",
+  "title": "Task",
+  "description": "用户可见的最小单位。workspaces 允许为空（纯对话任务）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "goal",
+    "goal_revision",
+    "lease_epoch",
+    "active_run_id",
+    "status"
+  ],
+  "properties": {
+    "active_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "integer"
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "lease_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed"
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task_[0-9a-f]{12}$"
+    },
+    "updated_at": {
+      "type": "integer"
+    },
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "root_path",
+          "mode",
+          "snapshot_policy"
+        ],
+        "properties": {
+          "root_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "readonly",
+              "writable"
+            ]
+          },
+          "snapshot_policy": {
+            "type": "string",
+            "enum": [
+              "none",
+              "on_write"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
