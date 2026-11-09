@@ -33,6 +33,7 @@ from .guard import ensure_not_blocked
 from .loop import AgentLoop, Limits, build_stack
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
+from .pricing import format_cost
 from .recovery import recover_run
 from .replay import replay
 from .tasks import (
@@ -242,6 +243,12 @@ def _print_result(result, *, as_json: bool) -> None:
     print(f"效果   : {result.effect_state}"
           f"（applied={result.n_applied} unknown={result.n_unknown}）")
     print(f"turns  : {result.turns}   tokens: {result.tokens}")
+    # F13：费用与"费用未知的次数"分开显示。查不到价格时这里印"未知（N 次调用）"，
+    # 绝不再印一个 0 —— 0 会被读成"这次是免费的"。
+    cost_note = format_cost(
+        result.cost_total_micros, result.unknown_cost_calls, result.turns
+    )
+    print(f"费用   : {cost_note}")
     if result.artifact:
         print(f"report : {result.artifact['path']}  ({result.artifact['bytes']}B)")
     if result.approval_ids and not result.terminal:
@@ -323,6 +330,12 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     cursor = stack.tasks.load_cursor(run_id)
     pending = stack.approvals.pending(run_id=run_id)
     job = stack.claims.job_for_run(run_id)
+    # F13：暂停中/运行中的 Run 也要能看已经烧了多少。账在游标的预算账本里，
+    # 与收尾时的 RunResult 同源，不另算一套。缺键的旧游标按"没有记录"处理。
+    ledger = dict(cursor[0].budget_ledger or {}) if cursor else {}
+    cost_total_micros = int(ledger.get("cost_total_micros", 0) or 0)
+    unknown_cost_calls = int(ledger.get("unknown_cost_calls", 0) or 0)
+    model_calls = int(ledger.get("turns", 0) or 0)
     if args.json:
         print(json.dumps(
             {
@@ -334,6 +347,8 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "control_requested": record.control_requested,
                 "pending_proposals": len(cursor[0].pending_proposals) if cursor else 0,
                 "completed_calls": len(cursor[0].completed_call_ids) if cursor else 0,
+                "cost_total_micros": cost_total_micros,
+                "unknown_cost_calls": unknown_cost_calls,
                 "approvals": [a.to_dict() for a in pending],
                 "job": (
                     {
@@ -365,6 +380,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     if cursor:
         print(f"进度      : 待做 {len(cursor[0].pending_proposals)} 个调用 / "
               f"已完成 {len(cursor[0].completed_call_ids)} 个")
+        print(f"费用      : {format_cost(cost_total_micros, unknown_cost_calls, model_calls)}")
     if pending:
         print(f"待批      : {len(pending)} 条")
         for approval in pending:
