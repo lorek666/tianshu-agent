@@ -100,6 +100,18 @@ def test_failed_nested_store_rolls_back_outer(env):
     assert leases.list_all() == []
 
 
+def test_store_cannot_be_built_inside_open_transaction(env):
+    """executescript 会隐式 COMMIT：在事务里构造 store 等于把半份状态提交出去。"""
+    log, _, _, _ = env
+    from tianshu.leases import LeaseStore
+
+    with log.transaction():
+        with pytest.raises(TianshuError):
+            TaskStore(log)
+        with pytest.raises(TianshuError):
+            LeaseStore(log)
+
+
 def test_transaction_rejects_second_writer_without_guard(env, tmp_path):
     """事务是独占的：BEGIN IMMEDIATE 会在另一个连接上阻塞/失败，而不是静默并发。"""
     log, _, _, _ = env

@@ -109,6 +109,10 @@ def _now() -> int:
 
 class TaskStore:
     def __init__(self, log: EventLog, *, leases: LeaseStore | None = None) -> None:
+        if log.in_transaction:
+            # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
+            # 状态提交出去。只能在事务外构造。
+            raise TianshuError("TaskStore 不能在已打开的事务中构造")
         self._log = log
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
@@ -395,7 +399,11 @@ class TaskStore:
     # ---- 投影重建 ----
 
     def rebuild_from_events(self) -> None:
-        """按事件重建 tasks/runs 投影。事件是事实源，投影是可丢的缓存。"""
+        """按事件重建 tasks/runs 投影。事件是事实源，投影是可丢的缓存。
+
+        只对"状态变更都记了事件"的库成立。PR #7 之前建的库只有投影表、
+        没有对应事件，重建会把它们清空——那种库只能当只读历史，不能重建。
+        """
         events = self._log.read_types(
             [TASK_CREATED, TASK_REVISED, RUN_START, RUN_FINISH, RUN_FENCED]
         )

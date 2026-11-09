@@ -6,7 +6,7 @@
   §2.1/§2.2/§3 的 Task 1–2 验收项逐条对照，并写探针脚本与真子进程复现
 - 复审结论：**PR #7 不能作为 PR A 的验收**。找到 6 类真实缺陷（3 类安全相关），
   本分支修复其中 5 类；另有 2 类能力缺失与 4 项未验证边界，见 §4。
-- 修复分支：`fix/m2-pr-a-review`；修复后 `116 passed`，`ruff check .` 全绿
+- 修复分支：`fix/m2-pr-a-review`；修复后 `117 passed`，`ruff check .` 全绿
 
 ## 0. 为什么这次要独立复审
 
@@ -57,19 +57,20 @@ P10/P11 的严重性容易被低估：它们让"用户改主意 → 新 Run 接�
 | F10 | 低 | 默认 TTL 60000ms 与计划 30000ms 不一致；`renew` 失败静默返回 0，心跳失败不会被发现 | 已修：`DEFAULT_TTL_MS=30_000`、`HEARTBEAT_MS=5_000`；`renew` 续不满即抛 `LeaseLost` |
 | F11 | 低 | `create_task` 的目录只有路径字符串，没有 D6 决定的 `mode`/`snapshot_policy`；空目录任务与"读 A 写 B"无法表达 | 已修（数据模型）：`WorkspaceBinding{root_path, mode, snapshot_policy}`，旧字符串自动升级；策略判定本身属 PR B |
 | F12 | 低 | `revise_goal` 不检查 Task 状态、空 goal 可写入 | 已修 |
+| F13 | 中 | store 在已打开的事务中构造时，`executescript` 会隐式 COMMIT 掉外层事务，等于静默提交半份状态 | 已修：构造时显式拒绝 |
 
 ## 3. 修复后验证
 
 ```bash
 cd /Volumes/Date/天枢Agent
 uv sync --python 3.12
-uv run pytest        # 116 passed（修复前 88）
+uv run pytest        # 117 passed（修复前 88）
 uv run ruff check .  # All checks passed!
 ```
 
 新增/重写用例：
 
-- `tests/test_transactions.py`（新，6 项）：投影+事件一起回滚、跨 store 组合提交、三层嵌套复用外层事务、
+- `tests/test_transactions.py`（新，7 项）：投影+事件一起回滚、跨 store 组合提交、三层嵌套复用外层事务、
   内层失败回滚外层、另一连接无法插进已开始的事务
 - `tests/test_tasks.py`（重写，21 项）：0 目录合法、binding 持久化、未知 outcome 拒绝、
   `assert_current`/`assert_write_allowed`、5 类事件序列、**清空投影后按事件重建逐字段相等**

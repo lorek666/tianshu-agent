@@ -183,6 +183,10 @@ class LeaseStore:
         identity: ProcessIdentity | None = None,
         clock: Callable[[], int] = _now,
     ) -> None:
+        if log.in_transaction:
+            # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
+            # 状态提交出去。只能在事务外构造。
+            raise TianshuError("LeaseStore 不能在已打开的事务中构造")
         self._log = log
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
