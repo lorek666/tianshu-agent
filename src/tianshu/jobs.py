@@ -33,6 +33,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .errors import TianshuError
@@ -63,12 +64,16 @@ CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
 -- 一个 Run 最多一个未完成作业。没有这条约束，同一个 Run 可以有两个作业，
 -- 两个 worker 各自 claim 到不同的 job_id、epoch 都是 1，都能通过 claim 核验，
 -- 于是同一份 cursor 被两个 owner 交替写——fencing 形同虚设。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_open_per_run
-    ON jobs(run_id) WHERE state IN ('pending','claimed');
+-- `waiting` 也算未完成：它只是"没人该自动跑它"，不是结束。
+DROP INDEX IF EXISTS idx_jobs_one_open_per_run;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_open_v2
+    ON jobs(run_id) WHERE state IN ('pending','claimed','waiting');
 """
 
 JOB_PENDING = "pending"
 JOB_CLAIMED = "claimed"
+JOB_WAITING = "waiting"
 JOB_DONE = "done"
 JOB_CANCELLED = "cancelled"
 
@@ -78,6 +83,7 @@ JOB_OUTCOMES = {"succeeded", "failed", "cancelled"}
 JOB_ENQUEUED = "job.enqueued"
 JOB_CLAIMED_EVENT = "job.claimed"
 JOB_REQUEUED = "job.requeued"
+JOB_PARKED = "job.parked"
 JOB_FINISHED = "job.finished"
 JOB_LOST = "job.lost"
 
@@ -132,6 +138,20 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
+def renew_claim(leases, claims, claim: JobClaim, *, ttl_ms: int = DEFAULT_TTL_MS) -> None:
+    """续一次 claim：租约 + 作业 deadline。
+
+    为什么值得单独抽出来：worker 的后台心跳线程用**另一条 SQLite 连接**
+    （连接不能跨线程共享），但它续的东西必须和主循环 `heartbeat_once` 完全
+    一致——两套实现迟早会有一套忘了续租约，而"作业还活着、目录却是别人的"
+    正是最危险的半死状态。
+    """
+    paths = leases.live_paths(claim.run_id)
+    if paths:
+        leases.renew([Path(p) for p in paths], claim.run_id, ttl_ms=ttl_ms)
+    claims.heartbeat(claim, ttl_ms=ttl_ms)
+
+
 class JobStore:
     def __init__(
         self,
@@ -165,7 +185,7 @@ class JobStore:
         with self._log.transaction() as tx:
             existing = self._conn.execute(
                 "SELECT job_id FROM jobs WHERE run_id=?"
-                " AND state IN ('pending','claimed')",
+                " AND state IN ('pending','claimed','waiting')",
                 (run_id,),
             ).fetchone()
             if existing is not None:
@@ -215,29 +235,56 @@ class JobStore:
     ) -> JobClaim | None:
         """认领一个可跑的作业。
 
-        可认领 = `pending`，或 `claimed` 但已过 deadline（持有者可能死了，
-        也可能只是卡住——两种情况都由 claim_epoch 兜住：接管后旧 claim 失效）。
+        可认领 = `pending`，或 `claimed` 但**持有者已经不在了**：
+        - deadline 过了（卡住 / 进程被挂起）；
+        - 或者进程已经死了。
+
+        第二条不能省。只看 deadline 的话，一个被 kill 的 owner 要等 30 秒 TTL
+        才允许接管，用户看到的是"resume 没反应"；而 `is_live` 已经把
+        "进程不在了"判成不活，认领没有理由比它保守。
+
+        `waiting` 永远不在这里：它是"等外面的事件"（人批准 / recover / resume），
+        轮询认领它只会每轮涨一次 claim_epoch，把用户刚批的审批作废。
         """
         for _ in range(max_attempts):
-            now = self._clock()
-            row = self._conn.execute(
-                "SELECT * FROM jobs"
-                " WHERE state='pending'"
-                "    OR (state='claimed' AND (deadline_at IS NULL OR deadline_at <= ?))"
-                " ORDER BY created_at LIMIT 1",
-                (now,),
-            ).fetchone()
-            if row is None:
+            # 判定与认领必须在**同一个写事务**里：`BEGIN IMMEDIATE` 一拿到写锁，
+            # 别的进程就没法在"我看见它是 pending"和"我把它改成 claimed"之间
+            # 插进来。分开做的话会出一个很难复现的洞——B 在旧快照上看到 pending，
+            # 去认领时却从 A 刚提交的 epoch 1 上接着 +1，于是两个进程同时持
+            # 同一个 Run 的 claim，各自以为自己是 owner。
+            with self._log.transaction():
+                rows = self._conn.execute(
+                    "SELECT * FROM jobs WHERE state IN ('pending','claimed')"
+                    " ORDER BY created_at LIMIT ?",
+                    (max_attempts * 2,),
+                ).fetchall()
+                for row in rows:
+                    job = self._row_to_job(row)
+                    if job.state == JOB_PENDING or not self.is_live(job):
+                        try:
+                            return self.claim(job.job_id, ttl_ms=ttl_ms)
+                        except (JobLost, JobUnavailable):
+                            # 同一把锁里几乎不可能被抢；防御性保留：
+                            # 换下一个候选，而不是把失败当成"没有作业"。
+                            continue
                 return None
-            try:
-                return self.claim(row["job_id"], ttl_ms=ttl_ms)
-            except JobLost:
-                # 竞态：别人先认领了。继续找下一个，而不是直接把失败当成"没有作业"。
-                continue
         return None
 
-    def claim(self, job_id: str, *, ttl_ms: int = DEFAULT_TTL_MS) -> JobClaim:
-        """认领指定作业。条件 UPDATE 保证只有一个认领者赢。"""
+    def claim(
+        self,
+        job_id: str,
+        *,
+        ttl_ms: int = DEFAULT_TTL_MS,
+        take_over_live: bool = False,
+    ) -> JobClaim:
+        """认领指定作业。条件 UPDATE 保证只有一个认领者赢。
+
+        `take_over_live=False`（默认）时**拒绝**从"仍然活着的 owner"手里接管：
+        `claim_epoch` 保护的是"接管之后旧 owner 写不进状态"，但它保护不了
+        "另一个 owner 正在写的时候状态被接管"——那种情况下两边都会往同一份
+        游标上写。所以"能不能接管"必须在**持有写锁的事务里**重新判一次，
+        而不是由调用方在事务外先看一眼。
+        """
         now = self._clock()
         deadline = now + ttl_ms
         with self._log.transaction() as tx:
@@ -248,6 +295,15 @@ class JobStore:
                 raise JobUnavailable(f"job 不存在：{job_id}")
             if row["state"] in TERMINAL_JOB_STATES:
                 raise JobUnavailable(f"job 已终结：{job_id}（state={row['state']}）")
+            if (
+                not take_over_live
+                and row["state"] == JOB_CLAIMED
+                and self.is_live(self._row_to_job(row))
+            ):
+                raise JobLost(
+                    f"job 仍由活着的 owner 持有，拒绝接管：{job_id}"
+                    f"（owner_pid={row['owner_pid']} epoch={row['claim_epoch']}）"
+                )
 
             epoch = row["claim_epoch"] + 1
             cur = self._conn.execute(
@@ -406,6 +462,40 @@ class JobStore:
             tx.append(claim.run_id, JOB_REQUEUED, claim.to_dict())
         return self.get(claim.job_id)  # type: ignore[return-value]
 
+    def park(self, claim: JobClaim, *, reason: str) -> Job:
+        """把作业挂起：还开着，但不该被自动跑，等外面的事件叫醒它。
+
+        `reason` 是 `waiting_approval` / `paused` / `reconciling` 这类"Run 停下
+        来了、但没结束"的状态。放回 `pending` 是错的：一个轮询 worker 会立刻
+        再认领、再停在同一个地方，每一轮涨一次 `claim_epoch`——用户刚批下来的
+        审批会被下一轮作废，于是"批准之后永远执行不了"。留在 `claimed` 也是
+        错的：进程已经要把控制权交出来了，`claimed` 对外说的是"有人正在跑"。
+        """
+        now = self._clock()
+        with self._log.transaction() as tx:
+            cur = self._conn.execute(
+                "UPDATE jobs SET state='waiting', owner_instance_id=NULL,"
+                " owner_pid=NULL, heartbeat_at=NULL, deadline_at=NULL,"
+                " claimed_at=NULL, ended_at=?"
+                " WHERE job_id=? AND owner_instance_id=? AND claim_epoch=?"
+                "   AND owner_pid=? AND state='claimed'",
+                (
+                    now,
+                    claim.job_id,
+                    claim.owner_instance_id,
+                    claim.claim_epoch,
+                    claim.owner_pid,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise JobLost(f"挂起被拒绝：claim 已失效（job={claim.job_id}）")
+            tx.append(
+                claim.run_id,
+                JOB_PARKED,
+                {**claim.to_dict(), "reason": reason},
+            )
+        return self.get(claim.job_id)  # type: ignore[return-value]
+
     def request_cancel(self, job_id: str) -> Job:
         """记下取消请求。执行侧在安全点自己确认，不能假装瞬时停止。"""
         with self._log.transaction():
@@ -450,7 +540,7 @@ class JobStore:
             cur = self._conn.execute(
                 "UPDATE jobs SET state='cancelled', outcome='cancelled',"
                 " cancel_requested=1, ended_at=?"
-                " WHERE job_id=? AND state IN ('pending','claimed')",
+                " WHERE job_id=? AND state IN ('pending','claimed','waiting')",
                 (now, job_id),
             )
             if cur.rowcount == 0:
@@ -495,6 +585,8 @@ class JobStore:
 
 __all__ = [
     "JOB_CANCELLED",
+    "JOB_WAITING",
+    "renew_claim",
     "JOB_OUTCOMES",
     "JOB_CLAIMED",
     "JOB_DONE",

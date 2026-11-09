@@ -27,9 +27,19 @@
         "delete"
       ]
     },
+    "action_digest": {
+      "type": "string",
+      "description": "动作摘要：人批准的那件事（不含 owner / claim_epoch）"
+    },
     "approval_id": {
       "type": "string",
       "pattern": "^appr_[0-9a-f]{12}$"
+    },
+    "consumed_at": {
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "created_at": {
       "type": "integer"
@@ -91,12 +101,6 @@
     },
     "task_id": {
       "type": "string"
-    },
-    "consumed_at": {
-      "type": [
-        "integer",
-        "null"
-      ]
     }
   }
 }

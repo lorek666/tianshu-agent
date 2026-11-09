@@ -47,8 +47,17 @@ from .errors import (
     WorkspaceViolation,
 )
 from .events import EventLog, canonical_bytes, sha256_hex
-from .jobs import JOB_CLAIMED, JOB_PENDING, JobClaim, JobLost, JobStore, JobUnavailable
-from .leases import LeaseStore, ProcessIdentity
+from .jobs import (
+    JOB_CLAIMED,
+    JOB_PENDING,
+    JOB_WAITING,
+    JobClaim,
+    JobLost,
+    JobStore,
+    JobUnavailable,
+    renew_claim,
+)
+from .leases import DEFAULT_TTL_MS, LeaseStore, ProcessIdentity
 from .model import Model, ModelResponse, ToolCall
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
 from .snapshot import SnapshotStore
@@ -262,6 +271,7 @@ class AgentLoop:
         snapshots: SnapshotStore | None = None,
         model: Model | None = None,
         limits: Limits | None = None,
+        ttl_ms: int = DEFAULT_TTL_MS,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -271,6 +281,9 @@ class AgentLoop:
         self._snapshots = snapshots
         self._model = model
         self._limits = limits or Limits()
+        # 心跳的 TTL 必须与认领时用的一致：认领说 150ms 过期、心跳却说 30s，
+        # 那"我还在跑"这句话就没人核对了。测试用短 TTL 推进真实时间。
+        self._ttl_ms = ttl_ms
         self._log = tasks.log
         # 每次驱动开始时从事件里重建的只读索引（崩溃后补记、计数、产物）
         self._results: dict[str, dict[str, Any]] = {}
@@ -300,8 +313,6 @@ class AgentLoop:
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if writable:
             self._leases.acquire(writable, run.run_id)
-        if self._snapshots is not None:
-            self._snapshots.init_run(run.run_id)
         job = self._claims.enqueue(run.run_id)
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
@@ -386,10 +397,7 @@ class AgentLoop:
             # 没有 claim 就没有身份：宁可明确报错，也不要靠 AttributeError
             # 在半路炸出一个看不出因果的错误。
             raise TianshuError("heartbeat_once 需要有效的 JobClaim")
-        paths = self._leases.live_paths(claim.run_id)
-        if paths:
-            self._leases.renew([Path(p) for p in paths], claim.run_id)
-        self._claims.heartbeat(claim)
+        renew_claim(self._leases, self._claims, claim, ttl_ms=self._ttl_ms)
 
     def current_claim(self, run_id: str) -> JobClaim | None:
         """本实例现在是否还持有这个 Run 的作业凭证。
@@ -422,6 +430,12 @@ class AgentLoop:
     # ---------------------------------------------------------------- 驱动
 
     def _drive(self, run_id: str, claim: JobClaim, progress: _Progress) -> RunResult:
+        if self._snapshots is not None:
+            # 写前清单是"清单缺失 = 异常"这条判据的前提。它必须由**驱动方**
+            # 建，而不是由 `start()` 建：worker / resume 启动的 Run 一样会有
+            # 副作用，没有清单的话崩溃后 recover 只能报 unresolved 并阻断整个
+            # 目录——一次崩溃就把目录永久锁死。`init_run` 幂等，重复调用安全。
+            self._snapshots.init_run(run_id)
         self._index_events(run_id, progress)
         run = self._tasks.get_run(run_id)
         task = self._task(run.task_id)
@@ -1128,9 +1142,16 @@ class AgentLoop:
         current = self._approvals.get(approval_id)
         if current is None:
             return
-        if current.state in ("pending", "approved") and (
-            current.request_digest != request.digest()
-        ):
+        # 比的是**动作摘要**，不是完整请求摘要：进程重启换了 claim_epoch，
+        # 请求摘要必变，但人批准的那件事一个字都没变，审批必须继续有效
+        # （否则 `approvals approve` 之后 `run resume` 永远要重批一次）。
+        # 参数、目标、revision、绑定变了，动作摘要才变——那才是该作废的时候。
+        action = request.action_digest()
+        same_action = (
+            current.action_digest == action if current.action_digest
+            else current.request_digest == request.digest()
+        )
+        if current.state in ("pending", "approved") and not same_action:
             self._approvals.supersede(approval_id, reason="request_rebound")
             proposal["approval_id"] = None
 
@@ -1170,13 +1191,20 @@ class AgentLoop:
             with self._log.transaction() as tx:
                 # `run.end` 由这里写（终态事件只有这一个写者，CLI 直接取消
                 # 也走同一条路），结算字段全部从事件与游标派生。
+                #
+                # `report_outcome` 只在"什么都没改"时才是 noop：改过文件却
+                # 报 noop，会让 run.end 与 run.finish 各说一套（前者 noop、
+                # 后者 succeeded），而 effect_state 又写着 applied。判断口径
+                # 与 `_result()` 保持一致，只在这里落地一次。
                 self._tasks._finish_locked(  # noqa: SLF001 - 同包内部提交
                     tx,
                     run_id,
                     outcome=run_outcome,
                     effect_state=effect,
                     reason=error,
-                    report_outcome=outcome,
+                    report_outcome=(
+                        "noop" if outcome == "noop" and effect == "none_applied" else None
+                    ),
                 )
         except RunFenced as exc:
             return self._result(
@@ -1278,7 +1306,10 @@ class AgentLoop:
             # 不能只看 Run 的状态——崩溃的 Run 会永远停在 RUNNING，
             # 只按状态判断就等于"崩一次就再也不能接手"。
             return self._claims.claim(job.job_id)
-        if job.state == JOB_PENDING:
+        if job.state in (JOB_PENDING, JOB_WAITING):
+            # `waiting` = 上一轮驱动已经停下来等人（批准 / recover / resume）。
+            # 显式 resume 就是那个"人已经决定继续"的事件，所以这里直接认领，
+            # 不经过 `claim_next`——轮询认领 waiting 作业会让审批被反复作废。
             return self._claims.claim(job.job_id)
         # 作业已经收尾（done/cancelled），但 Run 还没结束：新开一个作业
         return self._claims.claim(self._claims.enqueue(run.run_id).job_id)

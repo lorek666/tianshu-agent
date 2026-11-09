@@ -9,8 +9,10 @@
 
 三条硬约束：
 
-1. **审批绑定的是完整动作摘要**，不是"允许写这个目录"。参数、目标路径、
-   执行前状态、revision、epoch、工具版本，任一变化摘要就变，旧审批无法复用。
+1. **审批绑定的是动作摘要**，不是"允许写这个目录"，也**不是**"哪个进程去改"。
+   参数、目标路径、执行前状态、goal_revision、lease_epoch、工具版本，任一
+   变化动作摘要就变，旧审批无法复用；而 owner / claim_epoch 变化**不影响**
+   审批——它们只影响执行资格（见 `ActionRequest.action_digest` 的注释）。
 2. **批准一次 = 消费一次**。`remaining_uses` 默认 1，且不能由模型指定。
 3. **批准人只能来自本地 CLI 控制端**。`HumanIdentity` 只能由 CLI 构造，
    模型的工具参数里出现同名结构一律视为伪造。
@@ -146,8 +148,28 @@ class ActionRequest:
             "tool_version": self.tool_version,
         }
 
+    #: 这四个字段回答的是"**谁**在什么身份下执行"，不是"执行**什么**"。
+    #:
+    #: 它们必须留在 `digest()` 里：派发前拿当前 claim 逐项核验，旧 claim 拿
+    #: 着未过期的许可也发不出新效果。但它们不能进 `action_digest()`：人批准的
+    #: 是"把这个文件改成什么"，一旦把 owner 也绑进审批，进程重启一次
+    #: （claim_epoch +1）就作废一次人工决定——`approvals approve` 之后再
+    #: `run resume` 永远还要再批一次，主流程根本走不完。实测见
+    #: `docs/REVIEW-PRA.md` §4.6。
+    OWNER_FIELDS = ("request_id", "job_id", "claim_epoch", "owner_instance_id")
+
+    def action_fields(self) -> dict[str, Any]:
+        """人审批时真正看过的那部分。"""
+        raw = self.to_canonical_dict()
+        for key in self.OWNER_FIELDS:
+            raw.pop(key, None)
+        return raw
+
     def digest(self) -> str:
         return jcs_sha256(self.to_canonical_dict())
+
+    def action_digest(self) -> str:
+        return jcs_sha256(self.action_fields())
 
     @classmethod
     def of(cls, raw: dict[str, Any]) -> ActionRequest:
@@ -194,12 +216,15 @@ class Approval:
     decided_at: int | None = None
     consumed_at: int | None = None
     expires_at: int = 0
+    #: 动作摘要：人批准的是"做什么"，不含 owner / claim_epoch。
+    action_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "approval_id": self.approval_id,
             "request_id": self.request_id,
             "request_digest": self.request_digest,
+            "action_digest": self.action_digest,
             "task_id": self.task_id,
             "run_id": self.run_id,
             "goal_revision": self.goal_revision,
@@ -249,6 +274,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     approval_id     TEXT PRIMARY KEY,
     request_id      TEXT NOT NULL,
     request_digest  TEXT NOT NULL,
+    action_digest   TEXT NOT NULL DEFAULT '',
     task_id         TEXT NOT NULL,
     run_id          TEXT NOT NULL,
     goal_revision   INTEGER NOT NULL,
@@ -266,6 +292,7 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_approvals_state ON approvals(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_approvals_digest ON approvals(request_digest);
+CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals(run_id, action_digest);
 
 CREATE TABLE IF NOT EXISTS grants (
     grant_id       TEXT PRIMARY KEY,
@@ -379,6 +406,9 @@ class ApprovalStore:
         self._clock = clock
         self._conn.executescript(SCHEMA)
         _ensure_column(self._conn, "approvals", "consumed_at", "INTEGER")
+        _ensure_column(
+            self._conn, "approvals", "action_digest", "TEXT NOT NULL DEFAULT ''"
+        )
 
     @property
     def transaction(self):
@@ -395,22 +425,26 @@ class ApprovalStore:
             raise ApprovalError(f"该动作不需要审批：{decision.rule_id}")
 
         digest = request.digest()
+        action = request.action_digest()
         now = self._clock()
         with self._log.transaction() as tx:
-            existing = self._find(("pending", "approved"), digest, request.run_id)
+            existing = self._find(
+                ("pending", "approved"), action, request.run_id, by="action_digest"
+            )
             if existing is not None:
                 return self._row(existing)
 
             approval_id = f"appr_{uuid.uuid4().hex[:12]}"
             self._conn.execute(
                 "INSERT INTO approvals (approval_id, request_id, request_digest,"
-                " task_id, run_id, goal_revision, lease_epoch, action, resources,"
-                " state, reason, created_at, expires_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
+                " action_digest, task_id, run_id, goal_revision, lease_epoch,"
+                " action, resources, state, reason, created_at, expires_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
                 (
                     approval_id,
                     request.request_id,
                     digest,
+                    action,
                     request.task_id,
                     request.run_id,
                     request.goal_revision,
@@ -429,6 +463,7 @@ class ApprovalStore:
                     "approval_id": approval_id,
                     "request_id": request.request_id,
                     "request_digest": digest,
+                    "action_digest": action,
                     "action": request.action,
                     "resources": sorted(request.resources),
                     "rule_id": decision.rule_id,
@@ -553,7 +588,9 @@ class ApprovalStore:
 
     # ---- 兑现 ----
 
-    def consume(self, approval_id: str, *, request_digest: str) -> Approval:
+    def consume(
+        self, approval_id: str, *, action_digest: str, request_digest: str
+    ) -> Approval:
         """把一次批准兑现成"已消费"。**必须在派发事务里调用**。
 
         条件 UPDATE 是"一次批准只能执行一次"的唯一保证：两个并发派发里只有
@@ -564,9 +601,9 @@ class ApprovalStore:
         with self._log.transaction() as tx:
             cur = self._conn.execute(
                 "UPDATE approvals SET state='consumed', consumed_at=?"
-                " WHERE approval_id=? AND request_digest=?"
-                "   AND state='approved' AND expires_at > ?",
-                (now, approval_id, request_digest, now),
+                " WHERE approval_id=? AND state='approved' AND expires_at > ?"
+                "   AND (action_digest=? OR (action_digest='' AND request_digest=?))",
+                (now, approval_id, now, action_digest, request_digest),
             )
             if cur.rowcount == 0:
                 raise ApprovalError(
@@ -580,6 +617,7 @@ class ApprovalStore:
                 APPROVAL_CONSUMED,
                 {
                     "approval_id": approval_id,
+                    "action_digest": action_digest,
                     "request_digest": request_digest,
                     "decided_by": current.decided_by,
                 },
@@ -629,9 +667,31 @@ class ApprovalStore:
     # ---- 查询 ----
 
     def find(self, request_digest: str, *, run_id: str) -> Approval | None:
-        """同一摘要上还能用的那张审批（pending 或 approved）。"""
+        """同一**完整请求摘要**上还能用的那张审批（pending 或 approved）。
+
+        只在"请求本身一字未变"时命中；进程重启换了 claim_epoch 的请求用
+        `find_for`。
+        """
         row = self._find(("pending", "approved"), request_digest, run_id)
         return self._row(row) if row is not None else None
+
+    def find_for(self, request: ActionRequest) -> Approval | None:
+        """这张动作还能用的审批（pending 或 approved），**与 owner/epoch 无关**。
+
+        回退一次完整摘要：旧库里早先写下的审批只有 `request_digest`
+        （`action_digest` 为空），只有请求一字未变（同一 owner、同一 epoch）
+        才认它——不能让旧记录变成"随便哪个新 epoch 都能用"。
+        """
+        action = request.action_digest()
+        row = self._find(("pending", "approved"), action, request.run_id,
+                         by="action_digest")
+        if row is not None:
+            return self._row(row)
+        row = self._find(("pending", "approved"), request.digest(), request.run_id)
+        if row is None:
+            return None
+        found = self._row(row)
+        return found if found.action_digest in ("", action) else None
 
     def expire_due(self) -> int:
         """把过期未处理的审批标成 expired。"""
@@ -724,7 +784,9 @@ class ApprovalStore:
         if approval.expires_at <= now:
             raise ApprovalError("审批已过期，请重新发起")
 
-    def _find(self, states: tuple[str, ...], digest: str, run_id: str):
+    def _find(
+        self, states: tuple[str, ...], digest: str, run_id: str, *, by: str = "request_digest"
+    ):
         """找可以复用的同摘要审批。
 
         已过期的 pending 不算——否则过了 TTL 之后同一个动作再也发不出新审批，
@@ -734,7 +796,7 @@ class ApprovalStore:
         return self._conn.execute(
             f"SELECT * FROM approvals WHERE state IN ({marks})"
             " AND (state != 'pending' OR expires_at > ?)"
-            " AND request_digest=? AND run_id=? ORDER BY created_at LIMIT 1",
+            f" AND {by}=? AND run_id=? ORDER BY created_at LIMIT 1",
             (*states, self._clock(), digest, run_id),
         ).fetchone()
 
@@ -744,6 +806,9 @@ class ApprovalStore:
             approval_id=row["approval_id"],
             request_id=row["request_id"],
             request_digest=row["request_digest"],
+            action_digest=(
+                row["action_digest"] if "action_digest" in row.keys() else ""
+            ),
             task_id=row["task_id"],
             run_id=row["run_id"],
             goal_revision=row["goal_revision"],

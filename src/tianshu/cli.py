@@ -83,6 +83,21 @@ def _build_parser() -> argparse.ArgumentParser:
     t.add_argument("--db", type=Path, default=DEFAULT_DB)
     t.add_argument("--json", action="store_true")
 
+    w = sub.add_parser(
+        "worker", help="作业循环：认领排队中的 Run 并推进到它停下为止"
+    )
+    w.add_argument("--once", action="store_true", help="只跑一个作业就退出")
+    w.add_argument("--max-jobs", type=int, default=64, help="一次最多跑几个作业")
+    w.add_argument("--model", default="scripted",
+                   choices=["scripted", "openai-compatible"])
+    w.add_argument("--model-name", default="gpt-4o-mini")
+    w.add_argument("--base-url", default=None)
+    w.add_argument("--max-turns", type=int, default=8)
+    w.add_argument("--max-total-tokens", type=int, default=20_000)
+    w.add_argument("--data-root", type=Path, default=None)
+    w.add_argument("--db", type=Path, default=DEFAULT_DB)
+    w.add_argument("--json", action="store_true")
+
     rc = sub.add_parser("recover", help="核对并补全一次被打断的 run")
     rc.add_argument("--run-id", required=True)
     rc.add_argument("--workspace", required=True, type=Path)
@@ -150,7 +165,8 @@ def _scripted_model(out_name: str) -> ScriptedModel:
 
 def _model_from(args: argparse.Namespace) -> Model:
     if args.model == "scripted":
-        return _scripted_model(args.out or "summary.md")
+        # worker 没有 --out（它不建 Run），用默认产物名做兜底脚本
+        return _scripted_model(getattr(args, "out", None) or "summary.md")
     return OpenAICompatibleModel(args.model_name, base_url=args.base_url)
 
 
@@ -267,6 +283,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
         return 2
     cursor = stack.tasks.load_cursor(run_id)
     pending = stack.approvals.pending(run_id=run_id)
+    job = stack.claims.job_for_run(run_id)
     if args.json:
         print(json.dumps(
             {
@@ -279,6 +296,17 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "pending_proposals": len(cursor[0].pending_proposals) if cursor else 0,
                 "completed_calls": len(cursor[0].completed_call_ids) if cursor else 0,
                 "approvals": [a.to_dict() for a in pending],
+                "job": (
+                    {
+                        "job_id": job.job_id,
+                        "state": job.state,
+                        "claim_epoch": job.claim_epoch,
+                        "owner_pid": job.owner_pid,
+                        "cancel_requested": job.cancel_requested,
+                    }
+                    if job is not None
+                    else None
+                ),
             },
             ensure_ascii=False, indent=2, default=str))
         return _status_exit_code(record)
@@ -289,6 +317,12 @@ def _run_status(stack, args: argparse.Namespace) -> int:
              if record.control_requested else ""))
     print(f"outcome   : {record.outcome or '（未结束）'}")
     print(f"效果      : {record.effect_state or '（尚无记录）'}")
+    if job is not None:
+        # 作业状态回答的是"谁在跑 / 在等什么"，Run 状态回答的是"走到哪了"。
+        # 只看 Run 状态的话，一个 dead owner 留下的 claimed 作业和"正在跑"
+        # 长得一模一样。
+        print(f"作业      : {job.state}  epoch={job.claim_epoch}"
+              + (f"  pid={job.owner_pid}" if job.owner_pid else ""))
     if cursor:
         print(f"进度      : 待做 {len(cursor[0].pending_proposals)} 个调用 / "
               f"已完成 {len(cursor[0].completed_call_ids)} 个")
@@ -438,6 +472,53 @@ def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
             print(f"  run {run.run_id}  {run.state}"
                   f"  {run.outcome or ''}  {run.effect_state or ''}")
     return 0
+
+
+def _cmd_worker(args: argparse.Namespace) -> int:
+    """作业循环入口。
+
+    与 `run start/resume` 走**同一条**执行路径（`Worker` → `AgentLoop.resume_run`），
+    区别只在于"谁来认领"：前台是命令行自己建 Run 再跑，worker 是从队里领活。
+    它不会自己写文件，也不重新判定策略——那些都在派发层。
+    """
+    from .worker import Worker
+
+    stack = _authority_stack(args.db, args.data_root)
+    try:
+        worker = Worker(
+            stack,
+            model=_model_from(args),
+            limits=Limits(args.max_turns, args.max_total_tokens),
+        )
+        try:
+            if args.once:
+                ran = [worker.run_ids[-1]] if worker.run_once() else []
+                idle = not ran
+            else:
+                ran = worker.drain(max_jobs=args.max_jobs)
+                idle = True
+        finally:
+            worker.close()
+        payload = {
+            "run_ids": ran,
+            "idle": idle,
+            "beats": worker.beats,
+            "errors": worker.errors,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            if not ran:
+                print("没有可认领的作业")
+            for run_id in ran:
+                run = stack.tasks.get_run(run_id)
+                print(f"{run_id}  {run.state if run else '?'}"
+                      f"  outcome={run.outcome if run else '?'}")
+            for message in worker.errors:
+                print(f"  ! {message}", file=sys.stderr)
+        return 1 if worker.errors else 0
+    finally:
+        stack.log.close()
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
@@ -699,6 +780,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_run(args)
         if args.cmd == "task":
             return _cmd_task(args)
+        if args.cmd == "worker":
+            return _cmd_worker(args)
         if args.cmd == "recover":
             return _cmd_recover(args)
         if args.cmd == "undo":

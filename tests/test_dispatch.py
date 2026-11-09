@@ -567,7 +567,9 @@ def test_old_claim_after_takeover_cannot_dispatch(env):
     task, run, claim, request, args, decision = _admit_overwrite(env)
 
     intruder = JobStore(env.log, identity=ProcessIdentity.mint())
-    new_claim = intruder.claim(claim.job_id)
+    # `take_over_live=True`：这里要造的正是"旧 owner 还活着但认领被抢走"。
+    # 默认 claim 会拒绝这种接管（那是另一条保护），所以必须显式声明。
+    new_claim = intruder.claim(claim.job_id, take_over_live=True)
     assert new_claim.claim_epoch == claim.claim_epoch + 1
 
     result = env.dispatcher.dispatch(request.request_id, claim)

@@ -691,7 +691,14 @@ class FileExecutor:
             appr = self._approvals.get(admitted.approval_id)
             if appr is None:
                 raise ToolNotAllowed("审批记录不存在")
-            if appr.request_digest != admitted.request_digest:
+            # 审批绑的是**动作摘要**（做了什么），派发记录绑的是**请求摘要**
+            # （谁在什么 epoch 下做）。进程重启后 claim_epoch 变了，动作没变，
+            # 审批必须继续有效——详见 docs/PRD-v1.md §5.4。旧库里的审批没有
+            # 动作摘要，只能按请求摘要比，因为那时它只可能是同一个 epoch。
+            if appr.action_digest:
+                if appr.action_digest != req.action_digest():
+                    raise ToolNotAllowed("审批绑定的动作与本次请求不符")
+            elif appr.request_digest != admitted.request_digest:
                 raise ToolNotAllowed("审批绑定的是另一个请求摘要")
             if appr.state != "consumed":
                 raise ToolNotAllowed(f"审批未消费或已被撤销：{appr.state}")

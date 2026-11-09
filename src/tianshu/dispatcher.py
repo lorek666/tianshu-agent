@@ -418,6 +418,7 @@ class Dispatcher:
                 {
                     "request_id": request.request_id,
                     "request_digest": request.digest(),
+                    "action_digest": request.action_digest(),
                     "action": request.action,
                     "resources": list(request.resources),
                     "decision": "auto",
@@ -432,7 +433,7 @@ class Dispatcher:
                 rule_id=decision.rule_id,
             )
 
-        approval = self._approvals.find(request.digest(), run_id=request.run_id)
+        approval = self._approvals.find_for(request)
         if (
             approval is not None
             and approval.state == "approved"
@@ -811,6 +812,21 @@ class Dispatcher:
         try:
             self._leases.assert_covers(resources, request.run_id)
         except LeaseLost as exc:
+            # 只读绑定永远不会有写租约，所以"租约不覆盖"在这里几乎是必然的。
+            # 但那句话对用户没有意义——真实原因是"这个目录你只让我读"。
+            # 判定用的仍是同一个 `_covers`，不是另写一套路径规则。
+            readonly = [
+                r
+                for r in request.resources
+                if any(PolicyEngine._covers(b, r) and not b.can_write for b in bindings)
+                and not any(
+                    PolicyEngine._covers(b, r) and b.can_write for b in bindings
+                )
+            ]
+            if readonly:
+                raise DispatchDenied(
+                    f"目标目录是只读绑定：{readonly[0]}", "c4.readonly_binding"
+                ) from exc
             raise DispatchDenied(
                 f"资源租约不覆盖目标：{exc}", "dispatch.lease_lost"
             ) from exc
@@ -870,6 +886,7 @@ class Dispatcher:
     ) -> tuple[str | None, str]:
         """消费审批（如果有）并签发+消费一次性 grant。必须在派发事务内调用。"""
         digest = request.digest()
+        action = request.action_digest()
         approval_id: str | None = None
         issuer = "policy:auto"
 
@@ -877,17 +894,26 @@ class Dispatcher:
             approval = (
                 self._approvals.get(stored.approval_id)
                 if stored.approval_id
-                else self._approvals.find(digest, run_id=request.run_id)
+                else self._approvals.find_for(request)
             )
             if approval is None:
                 raise DispatchDenied(
                     "没有可用的批准（请先 approvals approve）", "c4.no_approval"
                 )
+            if approval.action_digest and approval.action_digest != action:
+                # 审批对的是另一个动作（换了参数/目标/revision/绑定）。这里必须
+                # 自己比一次，而不能只信"按动作摘要查找到的那一张"——旧库里的
+                # 审批没有动作摘要，回退路径靠的仍是完整请求摘要。
+                raise DispatchDenied(
+                    "审批绑定的动作与本次请求不符", "c4.approval_mismatch"
+                )
             if approval.state != "approved":
                 raise DispatchDenied(
                     f"审批状态不是已批准：{approval.state}", "c4.approval_state"
                 )
-            self._approvals.consume(approval.approval_id, request_digest=digest)
+            self._approvals.consume(
+                approval.approval_id, action_digest=action, request_digest=digest
+            )
             approval_id = approval.approval_id
             issuer = f"approval:{approval.decided_by or 'unknown'}"
 

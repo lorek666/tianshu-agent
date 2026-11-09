@@ -1288,7 +1288,9 @@ class TaskStore:
             self._approvals.supersede_for_run(run_id, reason="run_cancelled")
         if outcome == "cancelled" and self._claims is not None:
             job = self._claims.job_for_run(run_id)
-            if job is not None and job.state in ("pending", "claimed"):
+            # `waiting` 也要收：它是"等外面的事件"，而 Run 已经终结，那个事件
+            # 永远不会再让它跑起来——留着就是一条永远不结束的作业。
+            if job is not None and job.state in ("pending", "claimed", "waiting"):
                 self._claims.cancel(job.job_id, reason="run_cancelled")
         return self.get_run(run_id)  # type: ignore[return-value]
 
