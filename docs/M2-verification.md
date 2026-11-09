@@ -7,7 +7,8 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：PR C 分支（342 passed / `ruff check .` 通过，连跑 3 次稳定），合并提交见 PR
+- 本阶段合并：`main@dab74cc`（PR #14，确认后 `main` 全绿 342 passed）
+- 本阶段最终：`main@dab74cc`（342 passed / `ruff check .` 通过，连跑 3 次稳定）
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
