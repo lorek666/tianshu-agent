@@ -832,8 +832,9 @@ class TaskStore:
                 queued = bool(
                     self._conn.execute(
                         "UPDATE runs SET control_requested=?"
-                        " WHERE run_id=? AND control_requested IS NULL",
-                        (CONTROL_PAUSE, run_id),
+                        " WHERE run_id=?"
+                        "   AND (control_requested IS NULL OR control_requested=?)",
+                        (CONTROL_PAUSE, run_id, CONTROL_PAUSE),
                     ).rowcount
                 )
             tx.append(

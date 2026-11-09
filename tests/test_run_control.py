@@ -1289,3 +1289,19 @@ def test_status_exit_code_follows_the_documented_contract(env):
     other = env.stack.tasks.start_run(env.task("子任务").task_id)
     env.stack.tasks.finish_run(other.run_id, outcome="succeeded", effect_state="applied")
     assert _status_exit_code(env.stack.tasks.get_run(other.run_id)) == 0, "成功"
+
+
+def test_repeated_pause_is_idempotent_not_a_downgrade(env):
+    """同一个暂停请求重复一次仍然算生效，不能被记成"被更强的请求压住"。"""
+    task = env.task()
+    run = env.stack.tasks.start_run(task.task_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING)
+
+    assert env.stack.tasks.request_pause(run.run_id).control_requested == "pause"
+    again = env.stack.tasks.request_pause(run.run_id)
+    assert again.control_requested == "pause", "重复暂停不能把它自己撤掉"
+    controls = [
+        e.payload for e in env.log.read_run(run.run_id) if e.type == "run.control"
+    ]
+    assert [c["request_effective"] for c in controls] == [True, True]
+    assert all(c["stronger_request"] is None for c in controls)
