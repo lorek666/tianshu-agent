@@ -40,24 +40,34 @@ M0 目标：单 run 闭环 + 事件日志可重放。
 
 **验收（M0 退出条件）**：一条 run 的事件日志能从零重放出相同结果。
 
-### 已实现（M0 骨架）
+### 已实现
 
 ```
 src/tianshu/
-├── events.py     SQLite WAL append-only 事件日志（触发器禁止 UPDATE/DELETE）
-├── workspace.py  路径规范化 + 边界校验（唯一跨平台一致的那层）
-├── tools.py      三个受限工具 + schema 校验
-├── model.py      Model 协议 + Scripted / Recorded / OpenAI-compatible 三个实现
-├── loop.py       E1 主循环，派发三元组判定
-├── replay.py     回放校验：seq 连续 / messages_hash / 产物哈希三方核对
-└── cli.py        命令行入口
+├── events.py      SQLite WAL append-only 事件日志（触发器禁止 UPDATE/DELETE）+ 可组合事务
+├── canonical.py   RFC 8785 (JCS) 规范化 + 独立标准向量
+├── workspace.py   路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
+├── guard.py       工作区阻断检查（未知副作用不得继续写）
+├── tasks.py       Task / Run / RunCursor 状态机，fencing，控制请求，执行守卫入口
+├── leases.py      跨进程资源租约 + 本机执行守卫（POSIX/Windows）
+├── jobs.py        作业认领与 claim_epoch（旧 worker 不得覆盖新 owner）
+├── permissions.py C4 动作分类 / 审批 / 一次性 grant
+├── dispatcher.py  唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
+├── tools.py       受限工具 + FileExecutor（自己回库核验票据，不信调用方）
+├── snapshot.py    写前快照与冲突安全撤销
+├── receipt.py     操作凭据（凭据能独立核对）
+├── recovery.py    中断核查：applied / none_applied / unknown 三者不合并
+├── loop.py        E1 主循环（持久游标、暂停/取消、恢复）+ 栈装配
+├── replay.py      回放校验：seq / messages_hash / 产物哈希三方核对
+└── cli.py         命令行入口
 ```
 
 ### 跑起来
 
 ```bash
 uv sync --python 3.12
-uv run pytest                       # 10 个测试（A1–A8 + 2 个附加）
+uv run pytest                       # 296 个测试（M0/M1/M2 全量）
+uv run ruff check .
 
 # 离线演示（scripted 模型，不调真实模型）
 uv run python -m tianshu run \
@@ -66,6 +76,34 @@ uv run python -m tianshu run \
 # 回放校验
 uv run python -m tianshu replay --run-id run_xxxx
 ```
+
+任务与执行的生命周期是分开的（M2）：**Task 是用户看到的那件事，Run 是一次执行**。
+覆盖/删除类写入需要人工批准，暂停只在安全点生效，恢复不重跑已完成的调用。
+
+```bash
+# 建任务（目录可重复；--readonly 指定只读目录；不传目录 = 纯对话任务）
+uv run python -m tianshu task create --goal "整理季度笔记" --workspace /tmp/ws
+
+# 开一次执行
+uv run python -m tianshu run start --task-id task_xxxx --out summary.md
+
+# 看状态 / 暂停 / 恢复 / 取消
+uv run python -m tianshu run status --run-id run_xxxx
+uv run python -m tianshu run pause  --run-id run_xxxx
+uv run python -m tianshu run resume --run-id run_xxxx
+uv run python -m tianshu run cancel --run-id run_xxxx
+
+# 人工审批（覆盖、删除类操作不会被自动执行）
+uv run python -m tianshu approvals list
+uv run python -m tianshu approvals approve appr_xxxx
+
+# 改目标：旧 Run 立刻失效，待批请求作废，历史保留
+uv run python -m tianshu task revise --task-id task_xxxx --goal "换个目标"
+```
+
+退出码：`0` 有结论且成功，`1` 失败/取消，`2` 用法或前置条件错误（含
+`recover` 发现未核实效果），`3` 需要人决定（等审批 / 已暂停 / 待核查）。
+`undo` 不带 `--approve` 时只预演并返回 `3`。
 
 接真实模型（OpenAI-compatible）：
 

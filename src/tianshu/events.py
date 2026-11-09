@@ -142,6 +142,11 @@ class EventLog:
         self._tx_depth = 0
 
     @property
+    def db_path(self) -> Path:
+        """数据库文件路径。authority 根目录默认取它的父目录。"""
+        return self._db_path
+
+    @property
     def conn(self) -> sqlite3.Connection:
         """给同库的其他存储（tasks/leases）复用同一连接。
 

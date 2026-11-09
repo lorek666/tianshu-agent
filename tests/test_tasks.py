@@ -288,3 +288,29 @@ def test_rebuild_keeps_fenced_state(env):
     log.conn.execute("DELETE FROM runs")
     store.rebuild_from_events()
     assert store.get_run(r.run_id).state == "fenced"
+
+def test_dict_binding_is_canonicalized_like_a_string_path(tmp_path):
+    """同一目录的两种写法必须得到同一个绑定，否则授权会前后矛盾。
+
+    dict 输入（事件重建、CLI、手写测试）如果原样保留 `/tmp/x` 别名，而执行侧
+    解析出 `/private/tmp/x`，`_covers` 就会把"目录内写入"判成"目录外"；
+    反方向更糟：别名写法能绕过本应命中的绑定。
+    """
+    from tianshu.workspace import WorkspaceBinding, parse_bindings
+
+    target = tmp_path / "ws"
+    target.mkdir()
+    alias = str(target)
+    resolved = str(target.resolve())
+
+    from_str = WorkspaceBinding.of(alias)
+    from_dict = WorkspaceBinding.of({"root_path": alias, "mode": "readonly"})
+    rebuilt = parse_bindings(
+        [{"root_path": str(target.parent / "." / target.name),
+          "mode": "readonly", "snapshot_policy": "on_write"}]
+    )[0]
+
+    assert from_str.root_path == resolved
+    assert from_dict.root_path == resolved
+    assert rebuilt.root_path == resolved
+    assert from_dict.mode == "readonly"

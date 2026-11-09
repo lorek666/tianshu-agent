@@ -99,6 +99,13 @@ class WorkspaceBinding:
     SNAPSHOT_POLICIES = ("none", "on_write")
 
     def __post_init__(self) -> None:
+        # 绑定在构造时就必须规范化，且**对所有输入形式一致**。
+        # 只给 `str` 输入做 resolve 是不够的：JSON/dict 输入（事件重建、
+        # CLI、手写测试）会原样留下 `/tmp/x` 这种别名，而执行侧解析出来的
+        # 目标是 `/private/tmp/x`，于是 `_covers` 判成"目录外"——同一个目录
+        # 两种写法，授权判断就出现了两个答案。反方向更危险：别名写法能绕过
+        # 本应命中的绑定。
+        object.__setattr__(self, "root_path", str(Path(self.root_path).resolve()))
         if self.mode not in self.MODES:
             raise WorkspaceViolation(f"未知 mode：{self.mode}（可选 {self.MODES}）")
         if self.snapshot_policy not in self.SNAPSHOT_POLICIES:

@@ -34,13 +34,16 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .errors import RunFenced, TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
 from .jobs import JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
+    from .permissions import ApprovalStore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -63,6 +66,7 @@ CREATE TABLE IF NOT EXISTS runs (
     state         TEXT NOT NULL DEFAULT 'created',
     outcome       TEXT,
     effect_state  TEXT,
+    control_requested TEXT,
     created_at    INTEGER NOT NULL,
     ended_at      INTEGER
 );
@@ -129,9 +133,25 @@ RUN_MODEL_TURN = "run.model_turn"
 RUN_START = "run.start"
 RUN_FINISH = "run.finish"
 RUN_FENCED = "run.fenced"
+RUN_STATE = "run.state"
+RUN_CONTROL = "run.control"
+RUN_EFFECT = "run.effect"
 
 # Task 级事件不属于某个 Run；用空 run_id 把它们与 run 作用域事件分开。
 TASK_SCOPE = ""
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, name: str, ddl: str
+) -> None:
+    """给早期版本的库补列。
+
+    投影表是 `CREATE TABLE IF NOT EXISTS` 建的，已存在的库不会被改写，
+    所以新列必须显式补齐，否则老库读 `control_requested` 直接报错。
+    """
+    have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if name not in have:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 @dataclass
@@ -238,6 +258,7 @@ class TaskStore:
         *,
         leases: LeaseStore | None = None,
         claims: JobStore | None = None,
+        approvals: ApprovalStore | None = None,
         data_root: Path | None = None,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -249,8 +270,13 @@ class TaskStore:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        _ensure_column(self._conn, "runs", "control_requested", "TEXT")
         self._leases = leases
         self._claims = claims
+        # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
+        # 整个权限层。传进来就作废，没传就只做 fencing（授权那边仍然会自动
+        # 失败——旧 epoch 的请求过不了 _authority）。
+        self._approvals = approvals
         self._data_root = data_root
         self._guard_timeout_ms = guard_timeout_ms
 
@@ -351,9 +377,40 @@ class TaskStore:
 
     def revise_goal(self, task_id: str, new_goal: str) -> Task:
         """用户改主意。旧目标下的 Run 立即失效，历史保留。"""
-        new_goal = (new_goal or "").strip()
-        if not new_goal:
-            raise TianshuError("goal 不能为空")
+        return self.revise_task(task_id, goal=new_goal)
+
+    def revise_task(
+        self,
+        task_id: str,
+        *,
+        goal: str | None = None,
+        bindings: list[WorkspaceBinding | str | dict[str, Any]] | None = None,
+    ) -> Task:
+        """改目标，或改工作区绑定，或两者一起。
+
+        两件事都在**同一把执行守卫**里做，因为它们在同一个意义上改变"谁能写
+        什么"：改目标让旧 Run 的 revision 过期，改绑定让旧 Run 的授权目录过期，
+        任一先落地而另一件还在路上，就会出现"用旧绑定执行新目标"。
+        绑定变更是**收窄/替换**，不是扩张：新绑定只对之后的新 Run 生效，
+        旧 Run 已经失败在 fence 上，不存在"改个目录顺便续命"的通道。
+
+        `keep_epoch` 之类的余地故意不留：改任何一项都让 `lease_epoch` +1，
+        否则旧 Run 的租约和审批还能在同一个 epoch 下继续用。
+        """
+        if goal is None and bindings is None:
+            raise TianshuError("revise_task 至少要改目标或改绑定之一")
+        if goal is not None:
+            goal = goal.strip()
+            if not goal:
+                raise TianshuError("goal 不能为空")
+        parsed = None
+        if bindings is not None:
+            parsed = parse_bindings(
+                [
+                    b.to_dict() if isinstance(b, WorkspaceBinding) else b
+                    for b in bindings
+                ]
+            )
         # 与 begin_execution 抢同一把守卫：要么改目标先完成（旧 Run 立刻 fence），
         # 要么执行已经开始（改目标排队到这次执行结束），不会出现"复核通过后目标被改"。
         with self._guard():
@@ -363,27 +420,43 @@ class TaskStore:
                     raise TianshuError(f"task 不存在：{task_id}")
                 if task.status != "open":
                     raise TianshuError(f"task 已关闭，不能改目标：{task.status}")
-                self._revise_locked(tx, task, new_goal)
+                self._revise_locked(tx, task, goal, parsed)
         return self.get_task(task_id)  # type: ignore[return-value]
 
-    def _revise_locked(self, tx, task: Task, new_goal: str) -> None:
+    def _revise_locked(
+        self,
+        tx,
+        task: Task,
+        new_goal: str | None,
+        bindings: list[WorkspaceBinding] | None = None,
+    ) -> None:
         now = _now()
         revision = task.goal_revision + 1
         epoch = task.lease_epoch + 1
+        goal = new_goal if new_goal is not None else task.goal
+        workspaces = bindings if bindings is not None else task.workspaces
         self._conn.execute(
             "UPDATE tasks SET goal=?, goal_revision=?,"
-            " lease_epoch=?, active_run_id=NULL, updated_at=?"
+            " lease_epoch=?, active_run_id=NULL, workspaces=?, updated_at=?"
             " WHERE task_id=?",
-            (new_goal, revision, epoch, now, task.task_id),
+            (
+                goal,
+                revision,
+                epoch,
+                json.dumps([b.to_dict() for b in workspaces], ensure_ascii=False),
+                now,
+                task.task_id,
+            ),
         )
         tx.append(
             TASK_SCOPE,
             TASK_REVISED,
             {
                 "task_id": task.task_id,
-                "goal": new_goal,
+                "goal": goal,
                 "goal_revision": revision,
                 "lease_epoch": epoch,
+                "workspaces": [b.to_dict() for b in workspaces],
             },
             task_id=task.task_id,
             actor_kind="human",
@@ -394,7 +467,7 @@ class TaskStore:
 
     def _fence_run(self, tx, run_id: str, now: int, *, reason: str) -> None:
         cur = self._conn.execute(
-            "UPDATE runs SET state='fenced', ended_at=?"
+            "UPDATE runs SET state='fenced', control_requested=NULL, ended_at=?"
             " WHERE run_id=? AND state NOT IN ('succeeded','failed','cancelled','fenced')",
             (now, run_id),
         )
@@ -411,6 +484,10 @@ class TaskStore:
             },
             task_id=run.task_id if run else None,
         )
+        # fence 触发时旧 Run 的审批立即作废：不能让一张旧 epoch 的批准在
+        # 新目标下"暗中重新绑定"——人批的是旧目标的动作，不是新目标的。
+        if self._approvals is not None:
+            self._approvals.supersede_for_run(run_id, reason=f"run_fenced:{reason}")
         # fence 之后旧 Run 不再拥有工作区，租约必须交出来；
         # 否则同一 Task 的新 Run 会被上一个 Run 的残留租约挡住，直到 TTL 到期。
         if self._leases is not None:
@@ -418,8 +495,20 @@ class TaskStore:
 
     # ---- Run ----
 
-    def start_run(self, task_id: str) -> Run:
-        run_id = f"run_{uuid.uuid4().hex[:12]}"
+    def start_run(
+        self,
+        task_id: str,
+        *,
+        run_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Run:
+        """开一次执行。
+
+        `payload` 是 `run.start` 事件的附加字段（目标文本、输出文件名、预算）。
+        它必须进事件而不是只留在内存里：`replay` 要能仅凭日志重建当时的
+        提示消息序列，否则"消息哈希对得上"这条验证就没有意义。
+        """
+        run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
         with self._log.transaction() as tx:
             task = self.get_task(task_id)
             if task is None:
@@ -450,6 +539,7 @@ class TaskStore:
                 run_id,
                 RUN_START,
                 {
+                    **(payload or {}),
                     "run_id": run_id,
                     "task_id": task_id,
                     "goal_revision": task.goal_revision,
@@ -458,6 +548,14 @@ class TaskStore:
                 task_id=task_id,
             )
         return self.get_run(run_id)  # type: ignore[return-value]
+
+    def run_payload(self, run_id: str) -> dict[str, Any]:
+        """`run.start` 的原始字段（目标、输出文件名、预算）。"""
+        row = self._conn.execute(
+            "SELECT payload FROM events WHERE run_id=? AND type=? ORDER BY seq LIMIT 1",
+            (run_id, RUN_START),
+        ).fetchone()
+        return json.loads(row["payload"]) if row is not None else {}
 
     def get_run(self, run_id: str) -> Run | None:
         row = self._conn.execute(
@@ -522,8 +620,12 @@ class TaskStore:
         with 块内的代码才是在"已获准执行"状态下跑的；块一结束守卫就释放，
         所以不要把模型调用、人工等待塞进来（那会让所有实例跟着等）。
 
-        尚未包含审批/grant 核验——那是 PR B 的派发层。这里覆盖的是
-        revision/epoch/租约三件事，缺一项就拒绝。
+        只接受 `RUNNING`：`PAUSED` / `WAITING_APPROVAL` 的 Run 手里可能还拿着
+        有效的租约和 claim（等待审批期间必须续租，否则每轮 TTL 都要重新审批），
+        但它们**不该执行**。把这条判断放在执行入口，而不是指望调用方自觉。
+
+        尚未包含审批/grant 核验——那是 PR-B 的派发层。这里覆盖的是
+        revision/epoch/租约/状态四件事，缺一项就拒绝。
         """
         resources = list(resources or [])
         if not resources:
@@ -534,6 +636,10 @@ class TaskStore:
             raise TianshuError("未配置 LeaseStore：begin_execution 需要校验租约")
         with self._guard(data_root):
             run = self.assert_current(run_id)
+            if run.state != RUN_RUNNING:
+                raise RunFenced(
+                    f"run 不在执行状态，拒绝开始写入：{run_id}（state={run.state}）"
+                )
             self._leases.assert_held(resources, run_id)
             if resources:
                 # 守卫内续一次租：接下来的写入不该因为"复核花了几秒"而掉出 TTL
@@ -561,6 +667,310 @@ class TaskStore:
                 seq=seq,
                 started_at=started_at,
             )
+
+    # ---- 状态机与非终态落库（M2 · Task 5） ----
+
+    def transition(
+        self,
+        run_id: str,
+        to_state: str,
+        *,
+        claim: JobClaim | None = None,
+        reason: str = "",
+    ) -> Run:
+        """把一个还没结束的 Run 推进到另一个**非终态**。
+
+        终态必须走 `finish_run`：那里还要写 outcome/effect_state 两个维度，
+        而且拒绝在被 fence 的 Run 上报成功。这里只挪状态，不许冒充结论。
+
+        `claim` 传了就顺带核验写的人是不是当前 owner；状态机是 Run 的事实，
+        旧 worker 醒过来改状态同样是事故。
+        """
+        if to_state not in NON_TERMINAL_STATES:
+            raise TianshuError(
+                f"transition 只接受非终态：{to_state}"
+                f"（终态请用 finish_run；可选 {sorted(NON_TERMINAL_STATES)}）"
+            )
+        with self._log.transaction() as tx:
+            if claim is not None:
+                self._assert_writer(run_id, claim)
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                raise RunFenced(
+                    f"run 已终结，不能改状态：{run_id}（state={run.state}）"
+                )
+            if run.state == to_state:
+                return run
+            cur = self._conn.execute(
+                "UPDATE runs SET state=?"
+                " WHERE run_id=? AND state=?"
+                "   AND state NOT IN ('succeeded','failed','cancelled','fenced')",
+                (to_state, run_id, run.state),
+            )
+            if cur.rowcount == 0:
+                raise RunFenced(f"run 状态已被别的进程改掉：{run_id}")
+            tx.append(
+                run_id,
+                RUN_STATE,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "from": run.state,
+                    "to": to_state,
+                    "reason": reason,
+                    **({"claim_epoch": claim.claim_epoch} if claim else {}),
+                },
+                task_id=run.task_id,
+            )
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def note_effect(
+        self,
+        run_id: str,
+        *,
+        effect_state: str,
+        n_applied: int = 0,
+        n_unknown: int = 0,
+        claim: JobClaim | None = None,
+    ) -> Run:
+        """把"到目前为止到底改了没有"落库，中途也能查。
+
+        没有这一步，一个停下来的 Run 只能回答"还没结束"，回答不了"改了什么"，
+        而 PRD 要求 UI 必须能显示"已停止，但部分修改已生效"。
+        这只是投影：真正的证据仍是每条 tool.result / receipt。
+        """
+        if effect_state not in EFFECT_STATES:
+            raise TianshuError(f"未知 effect_state：{effect_state}")
+        with self._log.transaction() as tx:
+            if claim is not None:
+                self._assert_writer(run_id, claim)
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            self._conn.execute(
+                "UPDATE runs SET effect_state=? WHERE run_id=?",
+                (effect_state, run_id),
+            )
+            tx.append(
+                run_id,
+                RUN_EFFECT,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "effect_state": effect_state,
+                    "n_applied": n_applied,
+                    "n_unknown": n_unknown,
+                },
+                task_id=run.task_id,
+            )
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    # ---- 用户控制：暂停 / 取消 ----
+
+    # 这些状态里"没有副作用在飞"是结构性事实，不是猜测：
+    # - created / queued：还没开始执行
+    # - waiting_approval：正等人批准，派发还没发生
+    # - paused：安全点已经过去，影响它的那次执行已经收尾
+    # 因此请求可以就地生效。RUNNING / CANCELLING / RECONCILING 里可能有有限
+    # 副作用在执行，只记录请求，由执行器在下一个安全点确认。
+    SAFE_CONTROL_STATES = (
+        RUN_CREATED,
+        RUN_QUEUED,
+        RUN_WAITING_APPROVAL,
+        RUN_PAUSED,
+    )
+
+    def request_pause(self, run_id: str) -> Run:
+        """请求暂停。返回的是"现在"的 Run，不承诺已经停下。
+
+        调用方要读 `control_requested` 才知道请求是否还在排队：
+        它是非空就说明执行器还没走到安全点。
+        """
+        safe = tuple(self.SAFE_CONTROL_STATES)
+        marks = ",".join("?" * len(safe))
+        with self._log.transaction() as tx:
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                raise RunFenced(
+                    f"run 已终结，不能暂停：{run_id}（state={run.state}）"
+                )
+            tx.append(
+                run_id,
+                RUN_CONTROL,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "action": CONTROL_PAUSE,
+                    "applied_immediately": run.state in safe,
+                },
+                task_id=run.task_id,
+                actor_kind="human",
+            )
+            cur = self._conn.execute(
+                f"UPDATE runs SET state=?, control_requested=NULL"
+                f" WHERE run_id=? AND state IN ({marks})",
+                (RUN_PAUSED, run_id, *safe),
+            )
+            if cur.rowcount:
+                tx.append(
+                    run_id,
+                    RUN_STATE,
+                    {
+                        "run_id": run_id,
+                        "task_id": run.task_id,
+                        "from": run.state,
+                        "to": RUN_PAUSED,
+                        "reason": "pause_requested",
+                    },
+                    task_id=run.task_id,
+                )
+                # 暂停就交还工作区：不然别人会以为这个目录还被占着。
+                # resume 必须重新获取租约（拿不到就说明目录被别人用了）。
+                if self._leases is not None:
+                    self._leases.release_run(run_id)
+            else:
+                self._conn.execute(
+                    "UPDATE runs SET control_requested=?"
+                    " WHERE run_id=?",
+                    (CONTROL_PAUSE, run_id),
+                )
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def request_cancel(self, run_id: str) -> Run:
+        """请求取消。安全状态下就地终结，否则留给执行器在安全点确认。
+
+        "取消"只保证不再派发新的副作用，不撤销已经发生的那一次：
+        已经 applied 的 effect_state 会如实留在 Run 上。
+        """
+        safe = tuple(self.SAFE_CONTROL_STATES)
+        marks = ",".join("?" * len(safe))
+        with self._log.transaction() as tx:
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                return run
+            tx.append(
+                run_id,
+                RUN_CONTROL,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "action": CONTROL_CANCEL,
+                    "applied_immediately": run.state in safe,
+                    "effect_state": run.effect_state,
+                },
+                task_id=run.task_id,
+                actor_kind="human",
+            )
+            cur = self._conn.execute(
+                f"UPDATE runs SET state=?, control_requested=NULL"
+                f" WHERE run_id=? AND state IN ({marks})",
+                (RUN_CANCELLING, run_id, *safe),
+            )
+            if cur.rowcount == 0:
+                self._conn.execute(
+                    "UPDATE runs SET control_requested=?"
+                    " WHERE run_id=?",
+                    (CONTROL_CANCEL, run_id),
+                )
+                return self.get_run(run_id)  # type: ignore[return-value]
+            tx.append(
+                run_id,
+                RUN_STATE,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "from": run.state,
+                    "to": RUN_CANCELLING,
+                    "reason": "cancel_requested",
+                },
+                task_id=run.task_id,
+            )
+            self._finish_locked(
+                tx,
+                run_id,
+                outcome="cancelled",
+                effect_state=run.effect_state or "none_applied",
+            )
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def confirm_control(self, run_id: str, *, claim: JobClaim) -> str | None:
+        """安全点：把排队中的控制请求变成状态并清掉请求。
+
+        确认与清除必须是同一次提交。分两步的话，进程在中间被杀，恢复后会把
+        同一条暂停请求再执行一遍——刚 resume 又立刻停下，用户看到的是
+        "点了继续没反应"。
+
+        返回 `pause` / `cancel` / `None`。`cancel` 已经就地收尾。
+        """
+        with self._log.transaction() as tx:
+            self._assert_writer(run_id, claim)
+            run = self.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            action = run.control_requested
+            if action is None or action not in CONTROL_REQUESTS:
+                return None
+            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                # 请求还没确认，Run 就已经被别处结束了。清掉请求，别再执行它。
+                self._conn.execute(
+                    "UPDATE runs SET control_requested=NULL WHERE run_id=?", (run_id,)
+                )
+                return None
+            if action == CONTROL_PAUSE:
+                cur = self._conn.execute(
+                    "UPDATE runs SET state=?, control_requested=NULL"
+                    " WHERE run_id=? AND state=? AND control_requested=?",
+                    (RUN_PAUSED, run_id, run.state, CONTROL_PAUSE),
+                )
+                if cur.rowcount == 0:
+                    return None
+                tx.append(
+                    run_id,
+                    RUN_STATE,
+                    {
+                        "run_id": run_id,
+                        "task_id": run.task_id,
+                        "from": run.state,
+                        "to": RUN_PAUSED,
+                        "reason": "pause_confirmed",
+                        "claim_epoch": claim.claim_epoch,
+                    },
+                    task_id=run.task_id,
+                )
+                return CONTROL_PAUSE
+            cur = self._conn.execute(
+                "UPDATE runs SET state=?, control_requested=NULL"
+                " WHERE run_id=? AND state=? AND control_requested=?",
+                (RUN_CANCELLING, run_id, run.state, CONTROL_CANCEL),
+            )
+            if cur.rowcount == 0:
+                return None
+            tx.append(
+                run_id,
+                RUN_STATE,
+                {
+                    "run_id": run_id,
+                    "task_id": run.task_id,
+                    "from": run.state,
+                    "to": RUN_CANCELLING,
+                    "reason": "cancel_confirmed",
+                    "claim_epoch": claim.claim_epoch,
+                },
+                task_id=run.task_id,
+            )
+            self._finish_locked(
+                tx,
+                run_id,
+                outcome="cancelled",
+                effect_state=run.effect_state or "none_applied",
+            )
+            return CONTROL_CANCEL
 
     # ---- 游标与模型结果（M2 · Task 5 的存储层） ----
 
@@ -708,13 +1118,32 @@ class TaskStore:
         ]
 
     def finish_run(
-        self, run_id: str, *, outcome: str, effect_state: str
+        self,
+        run_id: str,
+        *,
+        outcome: str,
+        effect_state: str,
+        reason: str | None = None,
     ) -> Run:
         """收尾。被 fence 的 Run 不许报成功——否则旧目标会"复活"。
 
         校验与写入放在同一条条件 UPDATE 里，避免「检查完到写入之间被改目标」
         的竞态。
         """
+        with self._log.transaction() as tx:
+            return self._finish_locked(
+                tx, run_id, outcome=outcome, effect_state=effect_state, reason=reason
+            )
+
+    def _finish_locked(
+        self,
+        tx,
+        run_id: str,
+        *,
+        outcome: str,
+        effect_state: str,
+        reason: str | None = None,
+    ) -> Run:
         if outcome not in RUN_OUTCOMES:
             raise TianshuError(
                 f"未知 outcome：{outcome}（可选 {sorted(RUN_OUTCOMES)}）"
@@ -724,43 +1153,56 @@ class TaskStore:
                 f"未知 effect_state：{effect_state}（可选 {sorted(EFFECT_STATES)}）"
             )
         now = _now()
-        with self._log.transaction() as tx:
-            run = self.get_run(run_id)
-            if run is None:
-                raise TianshuError(f"run 不存在：{run_id}")
+        run = self.get_run(run_id)
+        if run is None:
+            raise TianshuError(f"run 不存在：{run_id}")
 
-            cur = self._conn.execute(
-                "UPDATE runs SET state=?, outcome=?, effect_state=?, ended_at=?"
-                " WHERE run_id=?"
-                "   AND state NOT IN ('succeeded','failed','cancelled','fenced')"
-                "   AND goal_revision = (SELECT goal_revision FROM tasks"
-                "                        WHERE task_id = runs.task_id)"
-                "   AND lease_epoch = (SELECT lease_epoch FROM tasks"
-                "                      WHERE task_id = runs.task_id)",
-                (outcome, outcome, effect_state, now, run_id),
-            )
-            if cur.rowcount == 0:
-                raise RunFenced(f"run {run_id} 已被 fence 或已终结，不得提交结果")
+        cur = self._conn.execute(
+            "UPDATE runs SET state=?, outcome=?, effect_state=?,"
+            " control_requested=NULL, ended_at=?"
+            " WHERE run_id=?"
+            "   AND state NOT IN ('succeeded','failed','cancelled','fenced')"
+            "   AND goal_revision = (SELECT goal_revision FROM tasks"
+            "                        WHERE task_id = runs.task_id)"
+            "   AND lease_epoch = (SELECT lease_epoch FROM tasks"
+            "                      WHERE task_id = runs.task_id)",
+            (outcome, outcome, effect_state, now, run_id),
+        )
+        if cur.rowcount == 0:
+            raise RunFenced(f"run {run_id} 已被 fence 或已终结，不得提交结果")
 
-            self._conn.execute(
-                "UPDATE tasks SET active_run_id=NULL, updated_at=?"
-                " WHERE task_id=? AND active_run_id=?",
-                (now, run.task_id, run_id),
-            )
-            tx.append(
-                run_id,
-                RUN_FINISH,
-                {
-                    "run_id": run_id,
-                    "task_id": run.task_id,
-                    "outcome": outcome,
-                    "effect_state": effect_state,
-                },
-                task_id=run.task_id,
-            )
-            # Run 结束即交还工作区，下一个 Run 才拿得到租约
-            if self._leases is not None:
-                self._leases.release_run(run_id)
+        self._conn.execute(
+            "UPDATE tasks SET active_run_id=NULL, updated_at=?"
+            " WHERE task_id=? AND active_run_id=?",
+            (now, run.task_id, run_id),
+        )
+        tx.append(
+            run_id,
+            RUN_FINISH,
+            {
+                "run_id": run_id,
+                "task_id": run.task_id,
+                "outcome": outcome,
+                "effect_state": effect_state,
+                **({"reason": reason} if reason else {}),
+            },
+            task_id=run.task_id,
+        )
+        # Run 结束即交还工作区，下一个 Run 才拿得到租约
+        if self._leases is not None:
+            self._leases.release_run(run_id)
+        # 取消时作业必须一起收掉：留着 claimed 的作业会让下一个 worker 认领到
+        # 一个已经结束的 Run，然后在一个终态上报"成功"。
+        # 正常收尾则相反——作业要由 owner 用**自己的 claim** 来收，那才是
+        # "我还活着且我还是 owner"的证据；这里替它收等于把这条证据抹掉。
+        if outcome == "cancelled" and self._approvals is not None:
+            # 取消之后旧批准不能再挂在待批队列里：它们属于一个已经结束的 Run，
+            # 批了也不会执行，只会让人以为"还有事情没做完"。
+            self._approvals.supersede_for_run(run_id, reason="run_cancelled")
+        if outcome == "cancelled" and self._claims is not None:
+            job = self._claims.job_for_run(run_id)
+            if job is not None and job.state in ("pending", "claimed"):
+                self._claims.cancel(job.job_id, reason="run_cancelled")
         return self.get_run(run_id)  # type: ignore[return-value]
 
     def list_runs(self, task_id: str) -> list[Run]:
@@ -778,7 +1220,16 @@ class TaskStore:
         没有对应事件，重建会把它们清空——那种库只能当只读历史，不能重建。
         """
         events = self._log.read_types(
-            [TASK_CREATED, TASK_REVISED, RUN_START, RUN_FINISH, RUN_FENCED]
+            [
+                TASK_CREATED,
+                TASK_REVISED,
+                RUN_START,
+                RUN_FINISH,
+                RUN_FENCED,
+                RUN_STATE,
+                RUN_CONTROL,
+                RUN_EFFECT,
+            ]
         )
         tasks: dict[str, dict[str, Any]] = {}
         runs: dict[str, dict[str, Any]] = {}
@@ -814,6 +1265,14 @@ class TaskStore:
                     active_run_id=None,
                     updated_at=ev.ts,
                 )
+                if "workspaces" in p:
+                    t["workspaces"] = json.dumps(
+                        [
+                            b.to_dict()
+                            for b in parse_bindings(p.get("workspaces") or [])
+                        ],
+                        ensure_ascii=False,
+                    )
             elif ev.type == RUN_START:
                 runs[p["run_id"]] = {
                     "run_id": p["run_id"],
@@ -823,6 +1282,7 @@ class TaskStore:
                     "state": "created",
                     "outcome": None,
                     "effect_state": None,
+                    "control_requested": None,
                     "created_at": ev.ts,
                     "ended_at": None,
                 }
@@ -848,11 +1308,27 @@ class TaskStore:
                 r = runs.get(p["run_id"])
                 if r is None:
                     continue
-                r.update(state="fenced", ended_at=ev.ts)
+                r.update(state="fenced", control_requested=None, ended_at=ev.ts)
                 t = tasks.get(r["task_id"])
                 if t is not None and t["active_run_id"] == p["run_id"]:
                     t["active_run_id"] = None
                     t["updated_at"] = ev.ts
+            elif ev.type == RUN_STATE:
+                r = runs.get(p["run_id"])
+                if r is None:
+                    continue
+                # 确认控制请求与改状态是同一次提交，所以这里一并清空请求
+                r.update(state=p["to"], control_requested=None, updated_at=ev.ts)
+            elif ev.type == RUN_CONTROL:
+                r = runs.get(p["run_id"])
+                if r is None:
+                    continue
+                r.update(control_requested=p["action"], updated_at=ev.ts)
+            elif ev.type == RUN_EFFECT:
+                r = runs.get(p["run_id"])
+                if r is None:
+                    continue
+                r.update(effect_state=p["effect_state"], updated_at=ev.ts)
 
         with self._log.transaction():
             self._conn.execute("DELETE FROM tasks")
@@ -868,9 +1344,11 @@ class TaskStore:
             for r in runs.values():
                 self._conn.execute(
                     "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
-                    " state, outcome, effect_state, created_at, ended_at)"
+                    " state, outcome, effect_state, control_requested,"
+                    " created_at, ended_at)"
                     " VALUES (:run_id,:task_id,:goal_revision,:lease_epoch,"
-                    " :state,:outcome,:effect_state,:created_at,:ended_at)",
+                    " :state,:outcome,:effect_state,:control_requested,"
+                    " :created_at,:ended_at)",
                     r,
                 )
 

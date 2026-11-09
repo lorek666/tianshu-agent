@@ -166,12 +166,21 @@ Approval 绑定该请求摘要及 `approval_id, state, decided_by, expires_at`�
 
 **Interfaces:** `request_pause(run_id: str) -> Run`；`request_cancel(run_id: str) -> Run`；`revise_task(task_id: str, goal: str, bindings: list[WorkspaceBinding]) -> Task`；`resume_run(run_id: str) -> RunResult`；复用 Task 2 已定义的 `RunCursor` 存储接口。控制路径先写请求事件，执行器在安全点确认状态。
 
-- [ ] 先写 `test_pause_waits_for_current_effect`、`test_approved_while_paused_does_not_execute`、`test_resume_never_repeats_completed_calls`、`test_goal_change_fences_pending_and_prepared_calls`、`test_live_approval_resume_keeps_epoch`、`test_reclaimed_approval_can_complete_after_one_reapproval`；以固定 ScriptedModel 响应加阻塞屏障验证派发次数和文件结果。后两条用注入时钟推进超过 30 秒且小于 10 分钟，模拟 owner 续租或一次接管，断言批准后显式 resume 恰好执行一次，而非反复重审。
-- [ ] 运行 `uv run pytest tests/test_run_control.py`，确认红灯。
-- [ ] 在模型请求前后、工具实际派发前后检查控制状态；模型流中取消丢弃未提交工具提议，但已经发生的模型费用仍入账。checkpoint 保存已提交 turn、工具队列、预算与审批引用；PAUSED/WAITING 状态不能记成 run.end 成功。
-- [ ] CLI 提供 `task create/show/revise`、`run start/status/pause/resume/cancel`、`approval list/approve/reject/revoke`；旧 `run --task --workspace` 是创建 Task 后 start 的兼容入口，不绕服务层。
-- [ ] 覆盖等待审批时改目标、intent 后改目标、执行中改目标；已发生/未知效果沿用 M1核查，新 Run 在相关资源解阻前不得写。目标更改保留旧 Run 历史；资源绑定改变不扩张旧授权。
-- [ ] 定向测试及旧用例全部通过，提交 `feat(m2): persist resumable run control`。
+- [x] 先写 `test_pause_waits_for_current_effect`、`test_approved_while_paused_does_not_execute`、`test_resume_never_repeats_completed_calls`、`test_goal_change_fences_pending_and_prepared_calls`、`test_live_approval_resume_keeps_epoch`、`test_reclaimed_approval_can_complete_after_one_reapproval`；以固定 ScriptedModel 响应加阻塞屏障验证派发次数和文件结果。后两条用注入时钟推进超过 30 秒且小于 10 分钟，模拟 owner 续租或一次接管，断言批准后显式 resume 恰好执行一次，而非反复重审。
+- [x] 运行 `uv run pytest tests/test_run_control.py`，确认红灯。
+- [x] 在模型请求前后、工具实际派发前后检查控制状态；模型流中取消丢弃未提交工具提议，但已经发生的模型费用仍入账。checkpoint 保存已提交 turn、工具队列、预算与审批引用；PAUSED/WAITING 状态不能记成 run.end 成功。
+- [x] CLI 提供 `task create/show/revise`、`run start/status/pause/resume/cancel`、`approval list/approve/reject/revoke`；旧 `run --task --workspace` 是创建 Task 后 start 的兼容入口，不绕服务层。
+- [x] 覆盖等待审批时改目标、intent 后改目标、执行中改目标；已发生/未知效果沿用 M1核查，新 Run 在相关资源解阻前不得写。目标更改保留旧 Run 历史；资源绑定改变不扩张旧授权。
+- [x] 定向测试及旧用例全部通过，提交 `feat(m2): persist resumable run control`。
+
+> 执行记录（2026-11-09）：`tests/test_run_control.py`（20 例）+ 全量 **296 passed** /
+> `ruff check .` 通过。关键取舍与未完成项写在 `docs/REVIEW-PRA.md` §4.4：
+> (1) 控制请求与生效状态分成两个字段（`control_requested` / `state`），确认请求
+> 与清空请求是同一次提交；(2) `loop.run()` 已改接 Task/Run/Job 与派发，
+> `tools.execute()` 的遗留写入开关**已删除**；(3) 新增 `AgentLoop` 与
+> `build_stack`，CLI 与测试共用同一装配路径；(4) 等待审批期间的**心跳循环**
+> 仍是 Task 6 的 worker，本任务只提供 `heartbeat_once` 并被测试显式调用；
+> (5) 多目录任务里相对路径解析到"第一个可写绑定"是 M2 的已知限制。
 
 #### Task 6：作业表与端到端验收
 

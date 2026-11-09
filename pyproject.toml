@@ -21,7 +21,8 @@ packages = ["src/tianshu"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-pythonpath = ["src"]
+# tests/support.py 是"本地人审"替身，测试之间共用，所以 tests/ 也进路径
+pythonpath = ["src", "tests"]
 
 [tool.ruff]
 line-length = 100

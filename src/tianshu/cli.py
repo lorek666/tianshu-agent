@@ -15,24 +15,16 @@ import json
 import sys
 from pathlib import Path
 
-from .dispatcher import Dispatcher, build_request
+from .dispatcher import build_request
 from .errors import ToolNotAllowed
 from .events import EventLog
 from .guard import ensure_not_blocked
-from .jobs import JobStore
-from .leases import LeaseStore
-from .loop import Limits, run
-from .model import OpenAICompatibleModel, ScriptedModel
-from .permissions import (
-    ApprovalStore,
-    GrantStore,
-    HumanIdentity,
-    PolicyEngine,
-)
+from .loop import AgentLoop, Limits, build_stack
+from .model import Model, OpenAICompatibleModel, ScriptedModel
+from .permissions import HumanIdentity
 from .recovery import recover_run
 from .replay import replay
-from .snapshot import SnapshotStore
-from .tasks import TaskStore
+from .tasks import RUN_RECONCILING, RUN_WAITING_APPROVAL, TERMINAL_STATES
 from .workspace import Workspace, WorkspaceBinding
 
 DEFAULT_DB = Path(".tianshu/events.db")
@@ -42,18 +34,44 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tianshu", description="天枢 Agent (M0)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="执行一次任务")
-    r.add_argument("--workspace", required=True, type=Path)
-    r.add_argument("--task", required=True)
-    r.add_argument("--out", required=True)
+    r = sub.add_parser(
+        "run",
+        help="跑一次任务；或用子命令控制已有 Run（start/status/pause/resume/cancel）",
+    )
+    r.add_argument(
+        "action", nargs="?", default=None,
+        choices=["start", "status", "pause", "resume", "cancel"],
+        help="省略时按兼容入口处理：--task/--workspace 建 Task 后立刻 start",
+    )
+    r.add_argument("--task-id", default=None,
+                   help="对已存在的 Task 开一次执行（start）")
+    r.add_argument("--run-id", default=None, help="status/pause/resume/cancel 的目标")
+    r.add_argument("--workspace", type=Path, default=None, action="append",
+                   help="可重复；兼容入口与 task create 用")
+    r.add_argument("--readonly", type=Path, default=None, action="append",
+                   help="只读绑定目录（不能写入）")
+    r.add_argument("--task", default=None, help="兼容入口的目标文本")
+    r.add_argument("--out", default=None, help="兼容入口的输出文件名")
     r.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
     r.add_argument("--model-name", default="gpt-4o-mini")
     r.add_argument("--base-url", default=None)
     r.add_argument("--max-turns", type=int, default=8)
     r.add_argument("--max-total-tokens", type=int, default=20_000)
+    r.add_argument("--data-root", type=Path, default=None,
+                   help="authority 数据根（默认与 --db 同目录）")
     r.add_argument("--db", type=Path, default=DEFAULT_DB)
     r.add_argument("--json", action="store_true", help="输出 JSON 而不是人话")
+
+    t = sub.add_parser("task", help="任务：创建 / 查看 / 改目标或绑定")
+    t.add_argument("action", choices=["create", "show", "revise"])
+    t.add_argument("--task-id", default=None)
+    t.add_argument("--goal", default=None)
+    t.add_argument("--workspace", type=Path, default=None, action="append")
+    t.add_argument("--readonly", type=Path, default=None, action="append")
+    t.add_argument("--data-root", type=Path, default=None)
+    t.add_argument("--db", type=Path, default=DEFAULT_DB)
+    t.add_argument("--json", action="store_true")
 
     rc = sub.add_parser("recover", help="核对并补全一次被打断的 run")
     rc.add_argument("--run-id", required=True)
@@ -71,9 +89,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="以本地人工身份批准本次撤销的具体动作并执行")
     u.add_argument("--json", action="store_true")
 
-    ap = sub.add_parser("approvals", help="审批队列：列出/批准/否决/撤销")
+    ap = sub.add_parser(
+        "approvals", aliases=["approval"], help="审批队列：列出/批准/否决/撤销"
+    )
     ap.add_argument("action", choices=["list", "approve", "reject", "revoke"])
     ap.add_argument("approval_id", nargs="?")
+    ap.add_argument("--run-id", default=None, help="只看某个 Run 的待批请求")
+    ap.add_argument("--data-root", type=Path, default=None)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
     ap.add_argument("--json", action="store_true")
 
@@ -85,77 +107,308 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _cmd_run(args: argparse.Namespace) -> int:
-    log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
+def _scripted_model(out_name: str) -> ScriptedModel:
+    """无 key 时的兜底：脚本化模型只做一次 list_files 加一次写报告。
 
-    if args.model == "scripted":
-        # 无 key 时的兜底：脚本化模型只做一次 list_files 加一次写报告，
-        # 用来验证链路是否通，不代表模型能力。
-        from .model import ModelResponse, ToolCall
+    它用来验证链路是否通，**不代表模型能力**，也不用于任何真实任务。
+    """
+    from .model import ModelResponse, ToolCall
 
-        model = ScriptedModel(
-            [
-                ModelResponse(
-                    finish_reason="tool_use",
-                    tool_calls=[ToolCall("c1", "list_files", {"path": "."})],
-                ),
-                ModelResponse(
-                    finish_reason="tool_use",
-                    tool_calls=[
-                        ToolCall(
-                            "c2",
-                            "create_report",
-                            {
-                                "name": args.out,
-                                "content": "# 摘要\n\n（scripted 模式占位，未调用真实模型）\n",
-                            },
-                        )
-                    ],
-                ),
-                ModelResponse(finish_reason="end_turn", content="完成"),
-            ]
-        )
-    else:
-        model = OpenAICompatibleModel(args.model_name, base_url=args.base_url)
-
-    snapshots = SnapshotStore(args.db.parent / "artifacts")
-
-    result = run(
-        task=args.task,
-        workspace_dir=args.workspace,
-        out_name=args.out,
-        model=model,
-        log=log,
-        limits=Limits(args.max_turns, args.max_total_tokens),
-        snapshots=snapshots,
+    return ScriptedModel(
+        [
+            ModelResponse(
+                finish_reason="tool_use",
+                tool_calls=[ToolCall("c1", "list_files", {"path": "."})],
+            ),
+            ModelResponse(
+                finish_reason="tool_use",
+                tool_calls=[
+                    ToolCall(
+                        "c2",
+                        "create_report",
+                        {
+                            "name": out_name,
+                            "content": "# 摘要\n\n（scripted 模式占位，未调用真实模型）\n",
+                        },
+                    )
+                ],
+            ),
+            ModelResponse(finish_reason="end_turn", content="完成"),
+        ]
     )
 
-    report = replay(log, result.run_id)
 
+def _model_from(args: argparse.Namespace) -> Model:
+    if args.model == "scripted":
+        return _scripted_model(args.out or "summary.md")
+    return OpenAICompatibleModel(args.model_name, base_url=args.base_url)
+
+
+def _engine(stack, args: argparse.Namespace) -> AgentLoop:
+    return AgentLoop(
+        tasks=stack.tasks,
+        leases=stack.leases,
+        claims=stack.claims,
+        dispatcher=stack.dispatcher,
+        approvals=stack.approvals,
+        snapshots=stack.snapshots,
+        model=_model_from(args),
+        limits=Limits(args.max_turns, args.max_total_tokens),
+    )
+
+
+def _exit_code(result) -> int:
+    """0 = 有结论且成功；1 = 失败/取消；3 = 需要人决定（还没结束）。"""
+    if result.state in (RUN_WAITING_APPROVAL, RUN_RECONCILING, "paused"):
+        return 3
+    return 0 if result.outcome in ("succeeded", "noop") else 1
+
+
+def _print_result(result, *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(result.__dict__, ensure_ascii=False, indent=2, default=str))
+        return
+    print(f"run_id : {result.run_id}")
+    print(f"state  : {result.state}")
+    if result.state in TERMINAL_STATES:
+        print(f"outcome: {result.outcome}  ({result.error or 'ok'})")
+    else:
+        print(f"说明   : {result.error or '已停下，可用 run resume 继续'}")
+    print(f"效果   : {result.effect_state}"
+          f"（applied={result.n_applied} unknown={result.n_unknown}）")
+    print(f"turns  : {result.turns}   tokens: {result.tokens}")
+    if result.artifact:
+        print(f"report : {result.artifact['path']}  ({result.artifact['bytes']}B)")
+    if result.approval_ids:
+        print("待批请求：")
+        for approval_id in result.approval_ids:
+            print(f"  - {approval_id}   （tianshu approvals approve {approval_id}）")
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    stack = _authority_stack(args.db, args.data_root)
+    try:
+        action = args.action
+        if action is None:
+            return _run_compat(stack, args)
+        if action == "status":
+            return _run_status(stack, args)
+        if action == "pause":
+            return _run_pause(stack, args)
+        if action == "cancel":
+            return _run_cancel(stack, args)
+        if action == "start":
+            result = _engine(stack, args).start(args.task_id or "", out_name=args.out)
+            return _report(stack, result, args)
+        # resume
+        result = _engine(stack, args).resume_run(args.run_id or "")
+        return _report(stack, result, args)
+    finally:
+        stack.log.close()
+
+
+def _run_compat(stack, args: argparse.Namespace) -> int:
+    """`run --task --workspace` 保留：它等价于 task create 之后立刻 start。
+
+    不绕过任何服务层——同一个 create_task / start 路径，只是把两步合成一条命令。
+    """
+    if not args.task or not args.workspace:
+        print("错误：兼容入口需要 --task 与 --workspace；"
+              "或改用 run start --task-id", file=sys.stderr)
+        return 2
+    bindings = _bindings(args)
+    task = stack.tasks.create_task(args.task, bindings)
+    result = _engine(stack, args).start(task.task_id, out_name=args.out)
+    return _report(stack, result, args)
+
+
+def _report(stack, result, args: argparse.Namespace) -> int:
     if args.json:
+        report = replay(stack.log, result.run_id)
         print(json.dumps(
             {"run": result.__dict__, "replay": report.__dict__},
             ensure_ascii=False, indent=2, default=str))
-    else:
-        print(f"run_id : {result.run_id}")
-        print(f"outcome: {result.outcome}  ({result.error or 'ok'})")
-        print(f"turns  : {result.turns}   tokens: {result.tokens}")
-        if result.artifact:
-            print(f"report : {result.artifact['path']}  "
-                  f"({result.artifact['bytes']}B)")
-        print(f"replay : {'通过' if report.ok else '失败'}"
-              f"  ({report.events} 事件 / {report.messages_verified} 次消息校验)")
-        for p in report.problems:
-            print(f"  ! {p}")
+        return _exit_code(result) if report.ok else 1
+    _print_result(result, as_json=False)
+    report = replay(stack.log, result.run_id)
+    print(f"replay : {'通过' if report.ok else '失败'}"
+          f"  ({report.events} 事件 / {report.messages_verified} 次消息校验)")
+    for problem in report.problems:
+        print(f"  ! {problem}")
+    if result.state in (RUN_WAITING_APPROVAL, RUN_RECONCILING, "paused"):
+        print("")
+        print("这个 Run 还没结束。下一步：")
+        if result.state == "waiting_approval":
+            print("  tianshu approvals approve <approval_id> && "
+                  "tianshu run resume --run-id " + result.run_id)
+        elif result.state == "paused":
+            print("  tianshu run resume --run-id " + result.run_id)
+        else:
+            print(f"  tianshu recover --run-id {result.run_id} --workspace <DIR>")
+    return _exit_code(result) if report.ok else 1
 
-    log.close()
-    return 0 if result.outcome in {"succeeded", "noop"} and report.ok else 1
+
+def _run_status(stack, args: argparse.Namespace) -> int:
+    run_id = args.run_id or ""
+    record = stack.tasks.get_run(run_id)
+    if record is None:
+        print(f"错误：没有这个 run：{run_id}", file=sys.stderr)
+        return 2
+    cursor = stack.tasks.load_cursor(run_id)
+    pending = stack.approvals.pending(run_id=run_id)
+    if args.json:
+        print(json.dumps(
+            {
+                "run_id": record.run_id,
+                "task_id": record.task_id,
+                "state": record.state,
+                "outcome": record.outcome,
+                "effect_state": record.effect_state,
+                "control_requested": record.control_requested,
+                "pending_proposals": len(cursor[0].pending_proposals) if cursor else 0,
+                "completed_calls": len(cursor[0].completed_call_ids) if cursor else 0,
+                "approvals": [a.to_dict() for a in pending],
+            },
+            ensure_ascii=False, indent=2, default=str))
+        return 0
+    print(f"run_id    : {record.run_id}")
+    print(f"task      : {record.task_id}")
+    print(f"state     : {record.state}"
+          + (f"（已请求 {record.control_requested}，等执行器确认）"
+             if record.control_requested else ""))
+    print(f"outcome   : {record.outcome or '（未结束）'}")
+    print(f"效果      : {record.effect_state or '（尚无记录）'}")
+    if cursor:
+        print(f"进度      : 待做 {len(cursor[0].pending_proposals)} 个调用 / "
+              f"已完成 {len(cursor[0].completed_call_ids)} 个")
+    if pending:
+        print(f"待批      : {len(pending)} 条")
+        for approval in pending:
+            print(f"  - {approval.approval_id}  {approval.action}  "
+                  f"{','.join(approval.resources)}")
+    return 0
+
+
+def _run_pause(stack, args: argparse.Namespace) -> int:
+    record = stack.tasks.request_pause(args.run_id or "")
+    if args.json:
+        print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if record.control_requested:
+        print(f"已记录暂停请求（当前 state={record.state}）：执行器会在下一个安全点停下")
+        print("这一点之后再开始的副作用不会发生；已经在执行的那一次会照常完成")
+        return 0
+    print(f"已暂停：{record.run_id}（交还了工作区租约，resume 会重新获取）")
+    return 0
+
+
+def _run_cancel(stack, args: argparse.Namespace) -> int:
+    record = stack.tasks.request_cancel(args.run_id or "")
+    if args.json:
+        print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
+        return 0
+    if record.control_requested:
+        print(f"已记录取消请求（当前 state={record.state}）：执行器会在安全点停下")
+        print("已经发生的修改不会被撤回；请用 recover 核查实际效果")
+        return 0
+    print(f"已取消：{record.run_id}（effect_state={record.effect_state or 'none_applied'}）")
+    print("已经发生的修改不会被撤回；请用 recover 核查实际效果")
+    return 0
+
+
+def _bindings(args: argparse.Namespace) -> list[dict]:
+    bindings: list[dict] = []
+    for path in args.workspace or []:
+        bindings.append({"root_path": str(path), "mode": "writable"})
+    for path in args.readonly or []:
+        bindings.append({"root_path": str(path), "mode": "readonly"})
+    return bindings
+
+
+def _cmd_task(args: argparse.Namespace) -> int:
+    stack = _authority_stack(args.db, args.data_root)
+    try:
+        if args.action == "create":
+            if not args.goal:
+                print("错误：task create 需要 --goal", file=sys.stderr)
+                return 2
+            task = stack.tasks.create_task(args.goal, _bindings(args))
+            return _print_task(task, args)
+        if args.action == "show":
+            task = stack.tasks.get_task(args.task_id or "")
+            if task is None:
+                print(f"错误：没有这个 task：{args.task_id}", file=sys.stderr)
+                return 2
+            return _print_task(task, args, stack=stack)
+        if not args.task_id or (args.goal is None and args.workspace is None
+                                and args.readonly is None):
+            print("错误：task revise 需要 --task-id 以及 --goal 或新绑定",
+                  file=sys.stderr)
+            return 2
+        task = stack.tasks.revise_task(
+            args.task_id,
+            goal=args.goal,
+            bindings=_bindings(args) if (args.workspace or args.readonly) else None,
+        )
+        if not args.json:
+            print(f"{task.task_id} 已改：goal_revision={task.goal_revision} "
+                  f"lease_epoch={task.lease_epoch}")
+            print("旧目标的 Run 已被 fence：它的待批请求已作废，不能继续执行")
+        return _print_task(task, args)
+    finally:
+        stack.log.close()
+
+
+def _task_json(task) -> dict:
+    return {
+        "task_id": task.task_id,
+        "goal": task.goal,
+        "goal_revision": task.goal_revision,
+        "lease_epoch": task.lease_epoch,
+        "active_run_id": task.active_run_id,
+        "status": task.status,
+        "workspaces": [b.to_dict() for b in task.workspaces],
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+
+
+def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
+    if args.json:
+        payload: dict = {"task": _task_json(task)}
+        if stack is not None:
+            payload["runs"] = [
+                {
+                    "run_id": r.run_id,
+                    "state": r.state,
+                    "outcome": r.outcome,
+                    "effect_state": r.effect_state,
+                }
+                for r in stack.tasks.list_runs(task.task_id)
+            ]
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(f"task_id  : {task.task_id}")
+    print(f"goal     : {task.goal}")
+    print(f"revision : {task.goal_revision}   epoch: {task.lease_epoch}")
+    print(f"active   : {task.active_run_id or '（无）'}")
+    if task.workspaces:
+        for binding in task.workspaces:
+            print(f"  {binding.mode:8s} {binding.root_path}")
+    else:
+        print("  （没有绑定目录：只能对话，不能读写文件）")
+    if stack is not None:
+        runs = stack.tasks.list_runs(task.task_id)
+        for run in runs:
+            print(f"  run {run.run_id}  {run.state}"
+                  f"  {run.outcome or ''}  {run.effect_state or ''}")
+    return 0
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
     log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
-    snapshots = SnapshotStore(args.db.parent / "artifacts")
-    leases = LeaseStore(log)
+    stack = build_stack(log, data_root=args.db.parent)
+    snapshots, leases = stack.snapshots, stack.leases
     try:
         report = recover_run(log, args.run_id, args.workspace, snapshots, leases=leases)
     finally:
@@ -174,49 +427,21 @@ def _cmd_recover(args: argparse.Namespace) -> int:
 
 
 def _authority_stack(db: Path, data_root: Path | None = None):
-    """把 M2 的权威存储装配起来。CLI 只做装配与格式化，判定全在库里。"""
-    from dataclasses import dataclass
+    """把 M2 的权威存储装配起来。
 
+    CLI 只做装配与格式化，判定全在库里——也包括"用了哪些 store"这件事：
+    测试和 CLI 走同一个 `build_stack`，否则"CLI 能用但库函数不行"这类
+    绕过点会一直存在。
+    """
     log = EventLog(db, blob_dir=db.parent / "blobs")
-    root = Path(data_root) if data_root is not None else db.parent
-    leases = LeaseStore(log)
-    claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=root)
-    approvals = ApprovalStore(log)
-    grants = GrantStore(log)
-    snapshots = SnapshotStore(root / "artifacts")
-    dispatcher = Dispatcher(
-        log,
-        tasks,
-        leases,
-        PolicyEngine(),
-        approvals,
-        grants=grants,
-        claims=claims,
-        snapshots=snapshots,
-        data_root=root,
-    )
-
-    @dataclass
-    class Stack:
-        log: EventLog
-        leases: LeaseStore
-        claims: JobStore
-        tasks: TaskStore
-        approvals: ApprovalStore
-        dispatcher: Dispatcher
-        snapshots: SnapshotStore
-
-    return Stack(log, leases, claims, tasks, approvals, dispatcher, snapshots)
+    return build_stack(log, data_root=data_root if data_root is not None else db.parent)
 
 
 def _cmd_approvals(args: argparse.Namespace) -> int:
-    stack = _authority_stack(args.db)
+    stack = _authority_stack(args.db, args.data_root)
     try:
         if args.action == "list":
-            rows = [
-                a for a in stack.approvals.pending()
-            ]
+            rows = stack.approvals.pending(run_id=args.run_id)
             if args.json:
                 print(json.dumps([a.to_dict() for a in rows],
                                  ensure_ascii=False, indent=2))
@@ -432,11 +657,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "run":
             return _cmd_run(args)
+        if args.cmd == "task":
+            return _cmd_task(args)
         if args.cmd == "recover":
             return _cmd_recover(args)
         if args.cmd == "undo":
             return _cmd_undo(args)
-        if args.cmd == "approvals":
+        if args.cmd in ("approvals", "approval"):
             return _cmd_approvals(args)
         return _cmd_replay(args)
     except Exception as exc:  # CLI 边界：打印可读错误，不抛栈

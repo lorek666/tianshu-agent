@@ -414,6 +414,47 @@ class JobStore:
             )
         return self.get(job_id)  # type: ignore[return-value]
 
+    def cancel(self, job_id: str, *, reason: str = "cancelled") -> Job | None:
+        """由控制端直接终结作业（不经 claim）。
+
+        为什么允许不传 claim：取消是**人对 Run 的决定**，不是 owner 的自我收尾。
+        人可能在一个 owner 正在跑的 Run 上按取消，此时人手里本来就没有 claim。
+        这里不做"看心跳猜死活"，只做一条条件 UPDATE：谁来都行，但只有第一个
+        把 pending/claimed 改成 cancelled 的生效；之后旧 owner 的心跳/收尾
+        会因为 `state != 'claimed'` 一致地失败（`assert_claim` / `heartbeat` /
+        `finish` 都要求 claimed），不会出现"取消之后 owner 又把它写回成功"。
+        """
+        with self._log.transaction() as tx:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            now = self._clock()
+            cur = self._conn.execute(
+                "UPDATE jobs SET state='cancelled', outcome='cancelled',"
+                " cancel_requested=1, ended_at=?"
+                " WHERE job_id=? AND state IN ('pending','claimed')",
+                (now, job_id),
+            )
+            if cur.rowcount == 0:
+                return self.get(job_id)
+            tx.append(
+                row["run_id"],
+                JOB_FINISHED,
+                {
+                    "job_id": job_id,
+                    "run_id": row["run_id"],
+                    "claim_epoch": row["claim_epoch"],
+                    "owner_instance_id": row["owner_instance_id"],
+                    "owner_pid": row["owner_pid"],
+                    "outcome": "cancelled",
+                    "reason": reason,
+                    "by": "control",
+                },
+            )
+        return self.get(job_id)
+
     # ---- 行映射 ----
 
     @staticmethod

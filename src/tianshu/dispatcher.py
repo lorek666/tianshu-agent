@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .crashpoint import failpoint
 from .errors import (
     OverwriteRefused,
     RunFenced,
@@ -74,7 +75,7 @@ from .permissions import (
 )
 from .receipt import build_receipt
 from .snapshot import SnapshotStore
-from .tasks import Run, Task, TaskStore
+from .tasks import RUN_RUNNING, Run, Task, TaskStore
 from .tools import (
     SPECS,
     AdmittedCall,
@@ -577,6 +578,8 @@ class Dispatcher:
         except WorkspaceBlocked as exc:
             return self._reject_runtime(request, exc, "dispatch.workspace_blocked")
 
+        # intent / 审批消费 / grant 都已提交，文件一个字节都没动。
+        failpoint("after_intent")
         admitted = self._admitted(request, claim, target, seq, approval_id, grant_id)
         dispatch_id = admitted.dispatch_id
 
@@ -608,6 +611,11 @@ class Dispatcher:
             return self._fail_unknown(request, dispatch_id, target, exc)
 
         self._commit_result(request, dispatch_id, result)
+        # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
+        # M2 把两件事合成一次提交，所以这两个点落在同一处：能证明的仍然是
+        # "重放不会补出第二条效果"。
+        failpoint("after_result")
+        failpoint("after_receipt")
         return result
 
     # ---- 撤销 ----
@@ -687,6 +695,8 @@ class Dispatcher:
         self._leases.acquire(writable, run.run_id)
         job = self._claims.enqueue(run.run_id)
         claim = self._claims.claim(job.job_id)
+        run = self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim,
+                                     reason="control_run")
         return ControlRun(
             task=task,
             run=run,
@@ -757,6 +767,14 @@ class Dispatcher:
             raise DispatchDenied(
                 f"Run 不属于这个 Task：{run.task_id} ≠ {request.task_id}",
                 "dispatch.task_mismatch",
+            )
+        if run.state != RUN_RUNNING:
+            # PAUSED / WAITING_APPROVAL 的 Run 手里可能还拿着有效租约和 claim
+            # （等待审批期间必须续租，否则每轮 TTL 都要重新审批），但它们
+            # 不该执行。这条判断如果只放在主循环里，绕过主循环直接派发就能写。
+            raise DispatchDenied(
+                f"run 不在执行状态，拒绝派发：{request.run_id}（state={run.state}）",
+                "dispatch.not_running",
             )
         if (run.goal_revision, run.lease_epoch) != (
             request.goal_revision,
