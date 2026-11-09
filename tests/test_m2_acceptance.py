@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +38,7 @@ from tianshu.leases import (
 from tianshu.loop import AgentLoop, Limits, build_stack
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import HumanIdentity
-from tianshu.tasks import RUN_QUEUED, RUN_WAITING_APPROVAL
+from tianshu.tasks import RUN_QUEUED, RUN_RUNNING, RUN_WAITING_APPROVAL
 from tianshu.worker import HeartbeatLoop, Worker, run_worker_once
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -598,6 +599,117 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     assert worker2.beats == 0
     assert env.stack.tasks.get_run(run_id2).state not in ("succeeded",)
     assert worker2.errors, "被抢走之后必须留下痕迹，不能静默成功"
+
+
+def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
+    """正常收尾/暂停时心跳线程晚一步看到"作业已结束""租约已释放"，不算失败。
+
+    收尾顺序是"先 `claims.finish`，再释放租约"。心跳线程可能刚好在这两步之间
+    醒来：它看到的是"作业已结束"，也可能是"租约不在了"。这两种都是**正常
+    结束**，记成 `心跳失效` 会让一次成功的执行以退出码 1 收场。
+    """
+    for i in range(6):
+        run_id, _, _ = env.enqueue(root=env.ws, out=f"f{i}.md")
+        worker = Worker(
+            env.stack,
+            model=ScriptedModel([_create(f"f{i}.md", "x", "c1"), _end()]),
+            heartbeat_interval_ms=1,  # 故意把窗口放大：正常配置下是 5s
+        )
+        assert worker.run_once() is True
+        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+        assert worker.errors == [], worker.errors
+
+    # 暂停路径也一样：安全点先释放租约，作业随后被挂起
+    paused_id, _, _ = env.enqueue(root=env.ws, out="pz.md")
+    env.stack.tasks.request_pause(paused_id)
+    worker = Worker(
+        env.stack,
+        model=ScriptedModel([_create("pz.md", "x", "c1")]),
+        heartbeat_interval_ms=1,
+    )
+    assert worker.run_once() is True
+    assert env.stack.tasks.get_run(paused_id).state == "paused"
+    assert worker.errors == [], worker.errors
+
+
+def test_heartbeat_stop_waits_for_the_blocked_beat(env):
+    """`stop()` 必须等到线程真退出：调用方下一步要关它用的连接。
+
+    线程还在跑时关连接，线程里会抛 `Cannot operate on a closed database`——
+    那个异常在后台线程里没人看得到，只会表现成"心跳偶尔没生效"。
+    """
+    stopped = threading.Event()
+
+    def beat():
+        time.sleep(0.2)
+        stopped.set()
+        return True
+
+    loop = HeartbeatLoop(beat, interval_ms=1, join_timeout_ms=5_000)
+    loop.start()
+    loop.stop()
+    assert loop.stopped_promptly is True
+    assert stopped.is_set(), "stop 返回时必须已经有一次 beat 跑完"
+
+
+def test_renew_claim_stops_quietly_after_the_job_finishes(env):
+    """作业收尾之后续期返回 False（静默停），而不是伪装成"丢了 claim"。"""
+    from tianshu.jobs import renew_claim
+
+    run_id, _, job_id = env.enqueue(root=env.ws)
+    claim = env.stack.claims.claim(job_id)
+    assert renew_claim(env.stack.leases, env.stack.claims, claim) is True
+    env.stack.claims.finish(claim, outcome="succeeded")
+    assert renew_claim(env.stack.leases, env.stack.claims, claim) is False
+
+
+def test_same_call_id_with_new_args_is_a_controlled_rejection(env):
+    """同一 call_id 换参数：受控拒绝（`dispatch.call_id_reused`），不是裸
+    `IntegrityError`。
+
+    唯一索引确实能挡住双写，但异常从 INSERT 里炸出来时，主循环只能把它记成
+    "主循环异常 → run failed"，用户看不到真正原因（call_id 被复用）。
+    """
+    from tianshu.dispatcher import build_request
+
+    task = env.stack.tasks.create_task("写报告", [str(env.ws)])
+    run = env.stack.tasks.start_run(task.task_id, payload={"task": "写报告", "out": ""})
+    job = env.stack.claims.enqueue(run.run_id)
+    env.stack.tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
+    claim = env.stack.claims.claim(job.job_id)
+    env.stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
+    env.stack.leases.acquire([str(env.ws)], run.run_id)
+
+    first = build_request(
+        task=env.stack.tasks.get_task(task.task_id),
+        run=env.stack.tasks.get_run(run.run_id),
+        claim=claim,
+        call_id="c1",
+        tool_id="create_report",
+        target=env.ws / "a.md",
+        args={"name": "a.md", "content": "甲\n"},
+    )
+    decision = env.stack.dispatcher.prepare(
+        first, claim, args={"name": "a.md", "content": "甲\n"}
+    )
+    assert env.stack.dispatcher.dispatch(decision.request_id, claim).ok
+
+    second = build_request(
+        task=env.stack.tasks.get_task(task.task_id),
+        run=env.stack.tasks.get_run(run.run_id),
+        claim=claim,
+        call_id="c1",
+        tool_id="create_report",
+        target=env.ws / "b.md",
+        args={"name": "b.md", "content": "乙\n"},
+    )
+    decision2 = env.stack.dispatcher.prepare(
+        second, claim, args={"name": "b.md", "content": "乙\n"}
+    )
+    result = env.stack.dispatcher.dispatch(decision2.request_id, claim)
+    assert result.status == "rejected", result
+    assert "call_id" in result.output["error"]
+    assert not (env.ws / "b.md").exists()
 
 
 def test_worker_holds_no_guard_and_no_transaction_while_model_runs(env):

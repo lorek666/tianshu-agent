@@ -70,11 +70,11 @@ class HeartbeatLoop:
 
     def __init__(
         self,
-        beat: Callable[[], None],
+        beat: Callable[[], bool | None],
         *,
         interval_ms: int = HEARTBEAT_MS,
         name: str = "tianshu-heartbeat",
-        join_timeout_ms: int = 2_000,
+        join_timeout_ms: int = 12_000,
     ) -> None:
         if interval_ms is not None and interval_ms <= 0:
             raise TianshuError("心跳间隔必须为正数")
@@ -101,6 +101,13 @@ class HeartbeatLoop:
         return self
 
     def stop(self) -> None:
+        """请求停止并**等到线程真的退出**。
+
+        为什么必须等：调用方下一步往往会关掉这条连接。线程还活着时关连接，
+        线程里会抛 `ProgrammingError: Cannot operate on a closed database`，
+        而那个异常出现在后台线程里，没人会看到它——只会表现成"心跳偶尔没生效"。
+        单次 beat 最长会被 `busy_timeout`（5s）挡住，所以默认给 12s。
+        """
         self._stop.set()
         thread, self._thread = self._thread, None
         if thread is None:
@@ -121,7 +128,7 @@ class HeartbeatLoop:
         # 先打一次再等：宿主线程紧接着就要进阻塞调用，不能先等一个 interval。
         while not self._stop.is_set():
             try:
-                self._beat()
+                keep_going = self._beat()
             except sqlite3.OperationalError as exc:
                 # "database is locked/busy" 不是"我丢了 claim"，只是主线程正在
                 # 提交一个大事务。把它当成心跳失败会让一次正常的慢写入变成
@@ -141,6 +148,9 @@ class HeartbeatLoop:
             except BaseException as exc:  # noqa: BLE001 - 心跳失败必须留痕，不能吞
                 if self.error is None:
                     self.error = exc
+                return
+            if keep_going is False:
+                # 作业已经收尾：心跳没有意义，静默退出（不是失败）
                 return
             busy_retries = 0
             with self._count_lock:
@@ -172,8 +182,8 @@ class _SideChannel:
         self._leases = LeaseStore(self._log, identity=identity, **kwargs)
         self._claims = JobStore(self._log, identity=identity, **kwargs)
 
-    def beat(self, claim: JobClaim) -> None:
-        renew_claim(self._leases, self._claims, claim)
+    def beat(self, claim: JobClaim) -> bool:
+        return renew_claim(self._leases, self._claims, claim)
 
     def close(self) -> None:
         self._log.close()
@@ -196,6 +206,7 @@ class Worker:
     run_ids: list[str] = field(default_factory=list)
     #: 上一次认领是否因为"工作区被别的 Run 占着"而没能跑（暂时性，不是故障）。
     contended: bool = False
+    _side_stuck: bool = False
 
     def __post_init__(self) -> None:
         self._claims = self.claims or self.stack.claims
@@ -245,6 +256,10 @@ class Worker:
         return done
 
     def close(self) -> None:
+        if self._side is not None and self._side_stuck:
+            # 有线程可能还在用它：留着，让进程退出时由解释器回收
+            self._side = None
+            return
         if self._side is not None:
             self._side.close()
             self._side = None
@@ -303,6 +318,13 @@ class Worker:
         ) as loop:
             result = self._engine(claim).resume_run(claim.run_id)
         self.beats += loop.beats
+        if not loop.stopped_promptly:
+            # 线程没能在超时内退出：说明它卡在某次数据库写入里。此时**不能**
+            # 关掉它用的那条连接（关掉会让线程里抛 ProgrammingError，而那个
+            # 异常在后台线程里没人看得到）。宁可泄漏一条连接，也不制造一个
+            # 看不见的写失败。
+            self._side_stuck = True
+            self.errors.append("心跳线程未如期退出，保留连接以免写入被截断")
         if loop.error is not None:
             # 心跳线说自己已经不是 owner 了：这次驱动的结论不可信，
             # 但也不要抛——主循环写状态时一样会被 claim 核验拦住。

@@ -144,24 +144,73 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
+def _claim_owned(claims: JobStore, claim: JobClaim) -> bool:
+    """这个 claim 现在还归本实例吗（只读判断，给"失败后归类"用）。"""
+    job = claims.get(claim.job_id)
+    return (
+        job is not None
+        and job.state == JOB_CLAIMED
+        and job.claim_epoch == claim.claim_epoch
+        and job.owner_instance_id == claim.owner_instance_id
+        and job.owner_pid == claim.owner_pid
+    )
+
+
 def renew_claim(
     leases: LeaseStore,
     claims: JobStore,
     claim: JobClaim,
     *,
     ttl_ms: int = DEFAULT_TTL_MS,
-) -> None:
+) -> bool:
     """续一次 claim：租约 + 作业 deadline。
 
     为什么值得单独抽出来：worker 的后台心跳线程用**另一条 SQLite 连接**
     （连接不能跨线程共享），但它续的东西必须和主循环 `heartbeat_once` 完全
     一致——两套实现迟早会有一套忘了续租约，而"作业还活着、目录却是别人的"
     正是最危险的半死状态。
+
+    返回值是"还该继续心跳吗"：
+    - `True`：续上了，接着跑；
+    - `False`：作业已经收尾（`done` / `cancelled`）或租约已被本实例按正常流程
+      释放，心跳没有意义，该静默停下。收尾顺序是"先 `claims.finish`，再释放
+      租约"，所以晚到一步的心跳看到的正是这个状态——那是**正常结束**，不是
+      "我丢了 claim"。把它记成失败会让一次成功的执行以退出码 1 收场。
+    - 抛 `JobLost`：真的被接管了（epoch/owner 变了、作业消失）。
+
+    归类只在**失败之后**做一次：先乐观地续，撞了再问"这还是我的活吗"。
+    反过来（先查再续）会多一次读，而且中间仍会变。
     """
+    job = claims.get(claim.job_id)
+    if job is None or job.state != JOB_CLAIMED:
+        return False
+    if job.claim_epoch != claim.claim_epoch or (
+        job.owner_instance_id != claim.owner_instance_id
+    ):
+        raise JobLost(
+            f"claim 已被接管：job={claim.job_id} epoch={claim.claim_epoch}"
+            f"（当前 {job.claim_epoch}/{job.owner_instance_id}）"
+        )
+
     paths = leases.live_paths(claim.run_id)
     if paths:
-        leases.renew([Path(p) for p in paths], claim.run_id, ttl_ms=ttl_ms)
-    claims.heartbeat(claim, ttl_ms=ttl_ms)
+        try:
+            leases.renew([Path(p) for p in paths], claim.run_id, ttl_ms=ttl_ms)
+        except TianshuError:
+            # 从"读到有租约"到"去续"之间，本实例可能刚好在收尾/暂停里把租约
+            # 释放了（两个线程看不到彼此的中间状态）。没有租约可续不等于租约
+            # 丢了：真正的判据是执行前的 `assert_covers`。
+            if not _claim_owned(claims, claim):
+                return False
+            if leases.live_paths(claim.run_id):
+                raise
+    try:
+        claims.heartbeat(claim, ttl_ms=ttl_ms)
+    except TianshuError:
+        if not _claim_owned(claims, claim):
+            return False
+        raise
+    return True
 
 
 class JobStore:

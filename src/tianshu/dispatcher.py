@@ -93,6 +93,9 @@ from .workspace import (
     overlap_key,
 )
 
+# call_id 被另一个请求占用（同一 run 里换个参数复用同一个 id）
+D_DISPATCH_CALL_ID_REUSED = "dispatch.call_id_reused"
+
 DISPATCH_REQUESTED = "dispatch.requested"
 DISPATCH_REJECTED = "dispatch.rejected"
 DISPATCH_ADMITTED = "dispatch.admitted"
@@ -522,7 +525,16 @@ class Dispatcher:
                 target = self._resolve_target(request, auth)
 
                 existing = self.dispatch_record(request.run_id, request.call_id)
-                if existing is not None and existing.request_digest == request.digest():
+                if existing is not None:
+                    # 同一个 call_id 换个参数再来一次：唯一索引会挡住双写，
+                    # 但那是 `IntegrityError` 从 INSERT 里炸出来，调用方只能
+                    # 看到"主循环异常"。这里显式区分两种拒绝原因。
+                    if existing.request_digest != request.digest():
+                        raise DispatchDenied(
+                            f"call_id 已被另一次请求占用：{request.call_id}"
+                            f"（已有 state={existing.state}）",
+                            D_DISPATCH_CALL_ID_REUSED,
+                        )
                     raise DispatchError(
                         f"这次调用已经派发过：call_id={request.call_id}"
                         f"（state={existing.state}）"
@@ -900,6 +912,10 @@ class Dispatcher:
                 raise DispatchDenied(
                     "没有可用的批准（请先 approvals approve）", "c4.no_approval"
                 )
+            if approval.run_id != request.run_id:
+                raise DispatchDenied(
+                    "审批属于另一个 Run", "c4.approval_run_mismatch"
+                )
             if approval.action_digest and approval.action_digest != action:
                 # 审批对的是另一个动作（换了参数/目标/revision/绑定）。这里必须
                 # 自己比一次，而不能只信"按动作摘要查找到的那一张"——旧库里的
@@ -910,6 +926,11 @@ class Dispatcher:
             if approval.state != "approved":
                 raise DispatchDenied(
                     f"审批状态不是已批准：{approval.state}", "c4.approval_state"
+                )
+            if approval.expires_at <= self._clock():
+                # 已批准但自己过期了：与"没批准"不同，要说清楚是过期。
+                raise DispatchDenied(
+                    "审批已过期（请重新发起）", "c4.approval_expired"
                 )
             self._approvals.consume(
                 approval.approval_id, action_digest=action, request_digest=digest
