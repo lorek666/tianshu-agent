@@ -55,9 +55,11 @@ provider 时谁也不知道要不要接着支持这两个值。
       内容块；连续多条 `tool` 消息合并进同一条 `user`（Anthropic 要求交替）；
       工具定义直接吃 C2 投影（不需要 `{"type":"function"}` 包装）；`max_tokens`
       必填；`stop_reason` 映射 6 个已知值，`pause_turn` 等未映射值**报错**而不是猜。
-- [x] **1.5 契约测试 `tests/test_model_contract.py`（59 个用例）。**
+- [x] **1.5 契约测试 `tests/test_model_contract.py`（69 个用例）。**
       两个 adapter 参数化跑同一组断言，全部走注入的 `Transport`（零网络）；
       HTTP 分类那几条**替换 `urlopen` 跑真的 `UrllibTransport`**，不造假。
+      工具断言用**真实的 `tool_manifest()`**，不用手写替身——上一版正是因为
+      用了手写形状，才把 B1 这个洞盖住（见下）。
 - [x] **1.6 CLI `--provider {openai,anthropic}`**、`TIANSHU_PROVIDER`、
       `ANTHROPIC_API_KEY`（回落到 `TIANSHU_API_KEY`）。anthropic 缺 `--model-name`
       直接报错，不替用户猜模型 id。
@@ -75,17 +77,37 @@ provider 时谁也不知道要不要接着支持这两个值。
 两次都真的写出了 `summary.md` 并留下了 `applied` 凭据。这条证据的意义是：
 **同一份主循环、同一套工具、同一个事件日志，跑在两个线上协议上。**
 
-**真实模型暴露的缺陷（不在本 PR 修，已记录）**
+**真实模型暴露的缺陷（本 PR 内已修，归因曾被写错）**
 
 第一次跑（`--max-turns 4`）连续两轮被 `tool.not_dispatched` 拦下：模型给
 `read_text` 漏了 `path`、给 `create_report` 用了 `path` 而不是 `name`。
-两个事实：
-1. 拦得对、反馈得对——下一轮模型自己改对了（说明 A7 那条"未派发也要留痕"的
-   设计在真实模型上有效，不是只对 ScriptedModel 有效）；
-2. 但**工具参数命名不一致**（`list_files`/`read_text` 用 `path`，
-   `create_report` 用 `name`）会稳定地浪费真实模型的轮数。这是产品缺陷，
-   不是模型笨。改法涉及 C2 schema 与 `args_hash`/动作摘要，必须单独一张票，
-   不能顺手改。
+我当时的归因是"**工具参数命名不一致**（`list_files`/`read_text` 用 `path`，
+`create_report` 用 `name`），是产品缺陷，另开票"（还真的开了 issue #16）。
+
+**这个归因是错的。** 复审（`docs/superpowers/notes/review-pr15.md` 阻断项 B1）
+指出：`OpenAICompatibleModel` 把 C2 投影当成"换个 base_url 就行"，
+`body["tools"] = [{"type": "function", "function": t}]` 里的 `t` 带着键
+`input_schema`——而 OpenAI 协议要的是 `parameters`。于是**参数 schema 从来没
+发出去过**，模型只看得见工具名和描述，参数只能靠猜。这条漏翻从 M0 就在。
+
+修法一行，修完立刻做了对照实验（同一个任务、同一个模型）：
+
+| | `list_files` | `read_text` | `create_report` |
+|---|---|---|---|
+| 修前（`run_52e0076b11e3`） | `{}` | `{}` → 未派发 | `{content, path}` → 未派发 |
+| 修后（`run_c116133ffc57`） | `{path: "."}` | `{path: "notes.md"}` | `{content, name}` |
+
+修后一次成对，4 轮结束、`applied=1`、replay 通过。**教训**：我把"模型的
+行为症状"当成了"产品设计缺陷"，而根因在 adapter 的翻译层——症状归因必须回到
+"模型到底收到了什么"，不能停在"模型做错了什么"。
+
+顺带修的复审建议：Anthropic 不再借用 `TIANSHU_API_KEY`/`TIANSHU_BASE_URL`
+（把一家的 key 发给另一家是泄密，不是便利）；未映射结束原因的报错带模型原文
+摘要；`to_anthropic_messages` 消化四类会 400 的历史形状（重复 `tool_use` id、
+幽灵 `tool_result`、空 assistant 轮次、assistant 开头）；`from_payload` 明确
+拒绝把 M3 之前的 `"error"` 洗白；CLI 缺参用 `TianshuError` 而不是 `kind="auth"`。
+
+issue #16 已按事实更正并关闭——那条缺陷不存在，存在的是 adapter 漏翻 schema。
 
 ## 3. Task 2 · 沙箱后端接缝（PR F）
 
