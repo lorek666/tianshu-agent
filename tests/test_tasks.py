@@ -20,7 +20,8 @@ from tianshu.workspace import ResourceIdentity, WorkspaceBinding
 def env(tmp_path):
     log = EventLog(tmp_path / "db.sqlite")
     leases = LeaseStore(log)
-    store = TaskStore(log, leases=leases)
+    # data_root 必填：目标变更与"开始执行"必须抢同一把本机守卫
+    store = TaskStore(log, leases=leases, data_root=tmp_path / "data")
     ws = tmp_path / "ws"
     ws.mkdir()
     yield log, store, leases, ws

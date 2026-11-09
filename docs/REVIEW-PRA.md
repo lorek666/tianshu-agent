@@ -7,7 +7,8 @@
 - 复审结论：**PR #7 不能作为 PR A 的验收**。找到 13 项缺陷（其中 5 项高危、
   3 项直接指向"会写坏文件"），本分支修掉 12 项，第 9 项只交付了锁本身；
   另有 8 项能力缺失与未验证边界，见 §4。
-- 修复分支：`fix/m2-pr-a-review`；修复后 `117 passed`，`ruff check .` 全绿
+- 修复分支：`fix/m2-pr-a-review`（PR #8）；补完计划 Task 2 剩余部分：`feat/m2-job-claims`（PR #9）
+  最终 `154 passed`，`ruff check .` 全绿
 
 ## 0. 为什么这次要独立复审
 
@@ -81,23 +82,26 @@ uv run ruff check .  # All checks passed!
 
 ## 4. 未修复 / 未验证（不得当作已解决）
 
-PR #7 计划覆盖的 Task 1–2 交付物仍缺以下部分，均属 PR B 前置，本分支没有补：
+PR #7 计划覆盖的 Task 1–2 交付物当时缺以下部分。**其中 1、2、3、7 已在 PR #9 补齐**
+（见 §4.1），其余仍未做：
 
-1. `jobs.py` / `JobClaim{owner_instance_id, claim_epoch}`、`claim_next`/`heartbeat`/`finish`。
-   没有 claim_epoch，"活着但已过期"的旧 worker 仍可能改新 owner 的状态。
-2. `RunCursor` / `save_cursor` / `commit_model_turn(claim)`、`start_run(task_id, budget)`。
-3. `execution_guard` 的**强制使用**：目前只是提供了锁，没有任何调用点保证
-   "租约/epoch 切换与 `execution.started` 在同一把锁内"。在 PR B 接线之前，
-   F9 的 TOCTOU 窗口仍然存在，`assert_held` 的措辞仍只是"执行侧双检之一"。
 4. `authority` 数据根与 `--db` 逃逸防护（计划 `test_changed_db_cannot_escape_authority`）。
-5. `schemas/m2/task.json`、`run.json`。
-6. 计划 §2.2 的 takeover 协议：TTL 到期不等于旧 worker 已停；接管必须先拿 guard、核实 owner、
-   核对未决副作用。当前实现只做到"过期/进程消失即可接管"。
-7. PID 复用检测：`instance_id` 解决"不是同一实例"，但 `_pid_alive()` 对**被复用的 pid**
-   仍会答"活着"，后果是死租约要等 TTL 才可接管（可用性，不是安全性）。Windows 上
-   `_pid_alive` 恒为 True，只能靠 TTL。
-8. 未验证平台与边界：Windows 原生进程（`msvcrt.locking` 分支未跑过）、真实断电/fsync、
-   租约与真实文件写入的交叉（dispatch 尚未存在）、跨用户/跨会话的 `%TEMP%` 差异。
+5. `schemas/m2/task.json`、`run.json`、`job.json`。
+6. 计划 §2.2 的完整 takeover 协议：TTL 到期不等于旧 worker 已停；接管必须先拿 guard、
+   核实 owner、核对未决副作用。目前只做到"过期 / 进程消失 / pid 被复用即可接管"，
+   且**接管本身仍不持守卫**（`LeaseStore.acquire` 不知道 data_root）。
+8. 未验证平台与边界：Windows 原生进程（`msvcrt.locking`、`OpenProcess` 分支一条都没跑过）、
+   真实断电/fsync、租约与真实文件写入的交叉（dispatch 尚未存在）、跨用户/跨会话的
+   `%TEMP%` 差异、长任务里 TTL 与心跳的实际配合（心跳循环在 Task 6）。
+
+### 4.1 PR #9 补的部分
+
+| 原缺口 | 现状 |
+|---|---|
+| 1. `jobs.py` / `JobClaim` / claim_epoch | `jobs.py`：`enqueue`/`claim_next`/`heartbeat`/`finish`/`requeue`，全部按 `(owner_instance_id, claim_epoch)` 条件更新；一个 Run 只允许一个未完成作业（唯一索引兜底）。缺 claim_epoch 时"活着但已过期"的旧 worker 拦不住，这是唯一能拦住它的机制 |
+| 2. `RunCursor` / `save_cursor` / `commit_model_turn` | `tasks.py`：游标与模型结果都必须带 `JobClaim`，写入时同事务核验 claim + run 未被 fence；`commit_model_turn` 对同 `turn_id` 幂等（重启不重复计费），同 id 不同内容直接报错 |
+| 3. `execution_guard` 强制使用 | `begin_execution()`：守卫内复核 run/epoch/租约 → 续租 → 写 `execution.started` → yield，with 块即"已获准执行"的窗口；`revise_goal()` 拿**同一把**守卫改 revision/epoch。两边都拿锁才有意义，只让一方拿等于没锁 |
+| 7. PID 复用检测 | `pid_started_at()`（Linux `/proc`、macOS `ps etime`、Windows `GetProcessTimes`），判定单向：只有"进程启动晚于租约获取"才算复用，宁可晚接管也不误接管（误接管=双写）。Windows 存活探测也从"恒为 True"改成 `OpenProcess`+`WaitForSingleObject` |
 
 ## 5. 对流程的意见
 

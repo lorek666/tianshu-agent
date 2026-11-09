@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import subprocess
 import time
 import uuid
 from collections.abc import Callable
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS leases (
     canonical_path    TEXT NOT NULL DEFAULT '',
     path_key          TEXT NOT NULL DEFAULT '',
     acquired_at       INTEGER NOT NULL,
-    expires_at        INTEGER NOT NULL
+    expires_at        INTEGER NOT NULL,
+    wall_acquired_at  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_leases_run ON leases(run_id);
@@ -53,6 +55,13 @@ CREATE INDEX IF NOT EXISTS idx_leases_run ON leases(run_id);
 DEFAULT_TTL_MS = 30_000
 HEARTBEAT_MS = 5_000
 GUARD_TIMEOUT_MS = 5_000
+
+# 判定"pid 被复用"的容差。macOS 的 `ps -o etime=` 只有秒级精度，
+# 加上取整会把启动时间算早/晚最多 1 秒，所以要留余量。
+# 方向很重要：只有"进程启动时间晚于租约获取时间"才算复用，
+# 因为合法持有者不可能比自己的租约晚启动。留余量只会让检测偏保守（少接管），
+# 不会让两个写者同时上场。
+PID_REUSE_MARGIN_MS = 2_000
 
 
 class LeaseConflict(TianshuError):
@@ -100,16 +109,132 @@ def _now() -> int:
 
 
 def _pid_alive(pid: int) -> bool:
-    """POSIX 下用 signal 0 探测；Windows 上只靠 TTL（不虚报能力）。"""
-    if os.name != "posix":
-        return True
+    """进程是否还活着。
+
+    POSIX 用 signal 0；Windows 用 OpenProcess + WaitForSingleObject，
+    不必等句柄对象——目标进程退出后句柄会变成有信号状态。
+    """
+    if os.name == "nt":
+        return _win_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        # 存在但不属于我：活着
         return True
     return True
+
+
+def _win_pid_alive(pid: int) -> bool:  # pragma: no cover - 仅 Windows 可测
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        # 5 = ERROR_ACCESS_DENIED：进程在，但没权限。其余视为已退出。
+        return ctypes.get_last_error() == 5 or kernel32.GetLastError() == 5
+    try:
+        # WAIT_OBJECT_0(0) = 已退出；WAIT_TIMEOUT(258) = 仍在跑
+        return kernel32.WaitForSingleObject(handle, 0) == 0x102
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def pid_started_at(pid: int) -> int | None:
+    """进程启动时间（epoch ms）。拿不到就返回 None。
+
+    用途是识别 **pid 复用**：租约里记的 pid 现在可能属于另一个进程，
+    此时 `os.kill(pid, 0)` 会说"活着"，但那个"活着"跟租约毫无关系。
+    """
+    try:
+        if os.name == "nt":
+            return _win_pid_started_at(pid)
+        if os.path.exists("/proc/stat"):
+            return _linux_pid_started_at(pid)
+        return _bsd_pid_started_at(pid)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def _linux_pid_started_at(pid: int) -> int | None:  # pragma: no cover - 仅 Linux
+    with open(f"/proc/{pid}/stat", "rb") as fh:
+        stat = fh.read().decode("utf-8", "replace")
+    # comm 里可能有空格和括号，从最后一个 ')' 之后数才不会错位
+    fields = stat.rsplit(")", 1)[1].split()
+    starttime_ticks = int(fields[19])  # 第 22 字段 starttime（从 state 起算第 19 个）
+    btime = None
+    with open("/proc/stat", "rb") as fh:
+        for line in fh.read().decode("utf-8", "replace").splitlines():
+            if line.startswith("btime "):
+                btime = int(line.split()[1])
+                break
+    if btime is None:
+        return None
+    hz = os.sysconf("SC_CLK_TCK")
+    return int(btime * 1000 + starttime_ticks * 1000 / hz)
+
+
+def _bsd_pid_started_at(pid: int) -> int | None:  # pragma: no cover - 仅 macOS/BSD
+    out = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "etime="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    text = out.stdout.strip()
+    if not text:
+        return None
+    elapsed_ms = _parse_etime_ms(text)
+    if elapsed_ms is None:
+        return None
+    return int(time.time() * 1000) - elapsed_ms
+
+
+def _parse_etime_ms(text: str) -> int | None:
+    """解析 ps 的 etime 格式：[[dd-]hh:]mm:ss。"""
+    days = 0
+    if "-" in text:
+        day_part, text = text.split("-", 1)
+        days = int(day_part)
+    parts = [int(p) for p in text.split(":")]
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+    elif len(parts) == 2:
+        hours, (minutes, seconds) = 0, parts
+    else:
+        return None
+    total = days * 86_400 + hours * 3_600 + minutes * 60 + seconds
+    return total * 1000
+
+
+def _win_pid_started_at(pid: int) -> int | None:  # pragma: no cover - 仅 Windows
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        ticks_1601 = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        # FILETIME 是 1601 起的 100ns 计数
+        return int(ticks_1601 // 10_000 - 11_644_473_600_000)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @dataclass(frozen=True)
@@ -182,6 +307,7 @@ class LeaseStore:
         *,
         identity: ProcessIdentity | None = None,
         clock: Callable[[], int] = _now,
+        pid_started: Callable[[int], int | None] = pid_started_at,
     ) -> None:
         if log.in_transaction:
             # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
@@ -192,6 +318,7 @@ class LeaseStore:
         self._conn.row_factory = sqlite3.Row
         self._identity = identity or current_process()
         self._clock = clock
+        self._pid_started = pid_started
         self._conn.executescript(SCHEMA)
         _ensure_columns(
             self._conn,
@@ -200,6 +327,7 @@ class LeaseStore:
                 "owner_instance_id": "TEXT NOT NULL DEFAULT ''",
                 "canonical_path": "TEXT NOT NULL DEFAULT ''",
                 "path_key": "TEXT NOT NULL DEFAULT ''",
+                "wall_acquired_at": "INTEGER NOT NULL DEFAULT 0",
             },
         )
 
@@ -298,13 +426,14 @@ class LeaseStore:
             self._conn.execute(
                 "INSERT INTO leases (resource_key, run_id, owner_pid,"
                 " owner_instance_id, canonical_path, path_key, acquired_at,"
-                " expires_at) VALUES (?,?,?,?,?,?,?,?)"
+                " expires_at, wall_acquired_at) VALUES (?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(resource_key) DO UPDATE SET"
                 " run_id=excluded.run_id, owner_pid=excluded.owner_pid,"
                 " owner_instance_id=excluded.owner_instance_id,"
                 " canonical_path=excluded.canonical_path,"
                 " path_key=excluded.path_key,"
-                " acquired_at=excluded.acquired_at, expires_at=excluded.expires_at",
+                " acquired_at=excluded.acquired_at, expires_at=excluded.expires_at,"
+                " wall_acquired_at=excluded.wall_acquired_at",
                 (
                     want.key,
                     run_id,
@@ -314,6 +443,7 @@ class LeaseStore:
                     want.path_key,
                     now,
                     expires,
+                    _now(),  # 真实墙钟：pid 复用判定必须用它，不能用可注入的逻辑时钟
                 ),
             )
             acquired.append(
@@ -337,10 +467,31 @@ class LeaseStore:
         )
 
     def _is_stale(self, row: sqlite3.Row, now: int | None = None) -> bool:
+        """这条租约还能不能算"持有中"。
+
+        三个条件任一成立即失效：
+        1. 过期（TTL）；
+        2. 进程已经不在；
+        3. **pid 被复用了**——现在跑在那个 pid 上的进程比租约还晚启动。
+           只看 1、2 会留一个洞：崩溃后 pid 很快被系统分给别的进程，
+           `os.kill(pid, 0)` 会说"活着"，死租约就被当成活的，直到 TTL 到期。
+
+        第 3 条刻意做成单向判断：只有"启动时间晚于租约获取时间"才算复用。
+        合法持有者不可能比自己的租约晚启动，所以这条不会被时钟抖动误伤，
+        代价只是检测偏保守（复用间隔小于容差时不接管，等 TTL）。
+        宁可晚接管，也不能误接管——误接管就等于两个写者。
+        """
         now = self._clock() if now is None else now
         if row["expires_at"] <= now:
             return True
-        return not _pid_alive(row["owner_pid"])
+        if not _pid_alive(row["owner_pid"]):
+            return True
+        acquired_wall = row["wall_acquired_at"] if "wall_acquired_at" in row.keys() else 0
+        started = self._pid_started(row["owner_pid"])
+        if started is not None and acquired_wall:
+            if started > acquired_wall + PID_REUSE_MARGIN_MS:
+                return True
+        return False
 
     # ---- 校验 ----
 
@@ -571,8 +722,10 @@ __all__ = [
     "LeaseLost",
     "LeaseSet",
     "LeaseStore",
+    "PID_REUSE_MARGIN_MS",
     "ProcessIdentity",
     "current_process",
     "execution_guard",
     "overlap_key",
+    "pid_started_at",
 ]

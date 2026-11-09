@@ -15,20 +15,31 @@ Run 绑定创建时的这两个值；任一与 Task 当前值不符，即为被 
 `run.fenced`）在同一个 SQLite 事务里提交，投影被删掉也能按事件重建。
 否则"用户改过目标"这件事只存在于一张可被覆写的表里，回放无法解释
 某个 Run 为什么被 fence。
+
+**锁序（全局唯一顺序）：执行守卫 → SQLite 事务。**
+
+守卫是跨进程文件锁，SQLite 事务是跨进程写锁，两者都只有一把。如果某条路径
+先拿事务再等守卫，就会和"先拿守卫再等事务"的另一条路径互相卡死。
+所以凡是需要守卫的方法（`begin_execution` / `revise_goal`）都显式拒绝在
+已打开的事务里被调用，而不是靠调用方自觉。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .errors import TianshuError
-from .events import EventLog
-from .leases import LeaseStore
+from .events import EventLog, canonical_bytes, sha256_hex
+from .jobs import JobClaim, JobStore
+from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
 
 SCHEMA = """
@@ -57,6 +68,25 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS run_cursors (
+    run_id        TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    goal_revision INTEGER NOT NULL,
+    lease_epoch   INTEGER NOT NULL,
+    claim_epoch   INTEGER NOT NULL,
+    payload       TEXT NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_turns (
+    run_id     TEXT NOT NULL,
+    turn_id    TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, turn_id)
+);
 """
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
@@ -65,6 +95,9 @@ EFFECT_STATES = {"none_applied", "applied", "partial", "unknown"}
 
 TASK_CREATED = "task.created"
 TASK_REVISED = "task.revised"
+EXECUTION_STARTED = "execution.started"
+RUN_CURSOR_SAVED = "run.cursor"
+RUN_MODEL_TURN = "run.model_turn"
 RUN_START = "run.start"
 RUN_FINISH = "run.finish"
 RUN_FENCED = "run.fenced"
@@ -103,12 +136,86 @@ class Run:
     ended_at: int | None = None
 
 
+@dataclass
+class RunCursor:
+    """Run 的持久游标：重启后从这里继续，而不是重新问模型"刚才做到哪"。
+
+    字段对应计划 §2.4：已提交的消息、尚未执行完的工具提案、已完成的调用、
+    预算账本、绑定过的审批，以及这份游标签发时的 revision/epoch。
+    最后两项不是装饰：resume 时必须能判断"这份游标还是不是当前目标的"。
+    """
+
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    pending_proposals: list[dict[str, Any]] = field(default_factory=list)
+    completed_call_ids: list[str] = field(default_factory=list)
+    approval_ids: list[str] = field(default_factory=list)
+    model_turn: dict[str, Any] | None = None
+    budget_ledger: dict[str, Any] = field(default_factory=dict)
+    resource_epochs: dict[str, int] = field(default_factory=dict)
+    output_ref: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "messages": self.messages,
+            "pending_proposals": self.pending_proposals,
+            "completed_call_ids": self.completed_call_ids,
+            "approval_ids": self.approval_ids,
+            "model_turn": self.model_turn,
+            "budget_ledger": self.budget_ledger,
+            "resource_epochs": self.resource_epochs,
+            "output_ref": self.output_ref,
+        }
+
+    @classmethod
+    def of(cls, raw: dict[str, Any] | None) -> RunCursor:
+        raw = raw or {}
+        known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+        return cls(**known)
+
+
+@dataclass(frozen=True)
+class ExecutionPermit:
+    """"马上就改文件"的线性化证据。
+
+    只在 `begin_execution` 的 with 块内有效，块结束即失效。拿到它就意味着：
+    在**同一把执行守卫**的保护下，Run 没被 fence、租约还在本实例手上，
+    并且 `execution.started` 已经落库。
+    """
+
+    run_id: str
+    task_id: str
+    goal_revision: int
+    lease_epoch: int
+    resources: tuple[str, ...]
+    seq: int
+    started_at: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "goal_revision": self.goal_revision,
+            "lease_epoch": self.lease_epoch,
+            "resources": list(self.resources),
+            "seq": self.seq,
+            "started_at": self.started_at,
+        }
+
+
 def _now() -> int:
     return int(time.time() * 1000)
 
 
 class TaskStore:
-    def __init__(self, log: EventLog, *, leases: LeaseStore | None = None) -> None:
+    def __init__(
+        self,
+        log: EventLog,
+        *,
+        leases: LeaseStore | None = None,
+        claims: JobStore | None = None,
+        data_root: Path | None = None,
+        guard_timeout_ms: int = GUARD_TIMEOUT_MS,
+    ) -> None:
         if log.in_transaction:
             # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
             # 状态提交出去。只能在事务外构造。
@@ -118,6 +225,9 @@ class TaskStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
         self._leases = leases
+        self._claims = claims
+        self._data_root = data_root
+        self._guard_timeout_ms = guard_timeout_ms
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -127,9 +237,33 @@ class TaskStore:
     def leases(self) -> LeaseStore | None:
         return self._leases
 
+    @property
+    def claims(self) -> JobStore | None:
+        return self._claims
+
     def transaction(self):
         """与事件日志共用的可组合事务；已在事务中时复用外层事务。"""
         return self._log.transaction()
+
+    def _guard(self, data_root: Path | None = None):
+        """本机执行守卫。所有"会改变执行资格"的写操作都要走这里。
+
+        必须成对：`begin_execution` 拿守卫确认"可以开始写"，`revise_goal` 拿
+        同一把守卫改 revision/epoch。只让其中一方拿锁，就等于没锁——复核通过的
+        下一刻目标被人改掉，写出去的仍然是旧目标的成果。
+        """
+        root = data_root or self._data_root
+        if root is None:
+            raise TianshuError(
+                "未配置 data_root：无法串行化目标变更与执行开始（会留下 TOCTOU 窗口）"
+            )
+        if self._log.in_transaction:
+            # 锁序必须是"守卫 → 事务"。已经在事务里再去等守卫，会和
+            # "持有守卫、等事务"的另一条路径形成循环等待。
+            raise TianshuError(
+                "不能在已打开的事务中获取执行守卫（锁序必须是：守卫 → 事务）"
+            )
+        return execution_guard(root, timeout_ms=self._guard_timeout_ms)
 
     # ---- Task ----
 
@@ -186,13 +320,16 @@ class TaskStore:
         new_goal = (new_goal or "").strip()
         if not new_goal:
             raise TianshuError("goal 不能为空")
-        with self._log.transaction() as tx:
-            task = self.get_task(task_id)
-            if task is None:
-                raise TianshuError(f"task 不存在：{task_id}")
-            if task.status != "open":
-                raise TianshuError(f"task 已关闭，不能改目标：{task.status}")
-            self._revise_locked(tx, task, new_goal)
+        # 与 begin_execution 抢同一把守卫：要么改目标先完成（旧 Run 立刻 fence），
+        # 要么执行已经开始（改目标排队到这次执行结束），不会出现"复核通过后目标被改"。
+        with self._guard():
+            with self._log.transaction() as tx:
+                task = self.get_task(task_id)
+                if task is None:
+                    raise TianshuError(f"task 不存在：{task_id}")
+                if task.status != "open":
+                    raise TianshuError(f"task 已关闭，不能改目标：{task.status}")
+                self._revise_locked(tx, task, new_goal)
         return self.get_task(task_id)  # type: ignore[return-value]
 
     def _revise_locked(self, tx, task: Task, new_goal: str) -> None:
@@ -307,10 +444,11 @@ class TaskStore:
         )
 
     def assert_current(self, run_id: str) -> Run:
-        """执行前核验：这个 Run 现在还有资格写入吗。
+        """这个 Run 现在还有资格写入吗（只读判断，不留证据）。
 
-        与 `LeaseStore.assert_held` 一起构成执行侧双检；两者都通过仍不是
-        线性化保证（需要 execution_guard 把核验与开始执行放进同一把锁）。
+        单用不够：读完到真正写之间目标可能被改。真正要写文件时必须改用
+        `begin_execution`——它把同样的核验放进执行守卫，并留下
+        `execution.started` 作为"已在执行"的线性化证据。
         """
         run = self.get_run(run_id)
         if run is None:
@@ -333,6 +471,207 @@ class TaskStore:
                 )
             self._leases.assert_held(resources, run_id)
         return run
+
+    @contextlib.contextmanager
+    def begin_execution(
+        self,
+        data_root: Path | None,
+        run_id: str,
+        resources: list[ResourceIdentity | Path | str] | None = None,
+    ) -> Iterator[ExecutionPermit]:
+        """进入实际文件操作前必须经过这里。
+
+        为什么不能只用 `assert_write_allowed`：那是"读一下再返回"，读完到真正
+        打开文件之间，另一个进程可以改目标（fence 这个 Run）或接管租约。
+        把"复核 + 登记 execution.started"放进**同一把执行守卫**，这个窗口才关得上。
+
+        with 块内的代码才是在"已获准执行"状态下跑的；块一结束守卫就释放，
+        所以不要把模型调用、人工等待塞进来（那会让所有实例跟着等）。
+
+        尚未包含审批/grant 核验——那是 PR B 的派发层。这里覆盖的是
+        revision/epoch/租约三件事，缺一项就拒绝。
+        """
+        resources = list(resources or [])
+        if not resources:
+            # 有副作用的执行必须绑定到具体资源上，否则"没传资源"就等于
+            # 绕过租约校验。纯对话任务不会走到这里。
+            raise TianshuError("begin_execution 必须声明要写的资源（不能为空）")
+        if self._leases is None:
+            raise TianshuError("未配置 LeaseStore：begin_execution 需要校验租约")
+        with self._guard(data_root):
+            run = self.assert_current(run_id)
+            self._leases.assert_held(resources, run_id)
+            if resources:
+                # 守卫内续一次租：接下来的写入不该因为"复核花了几秒"而掉出 TTL
+                self._leases.renew(resources, run_id)
+            started_at = _now()
+            with self._log.transaction() as tx:
+                seq = tx.append(
+                    run_id,
+                    EXECUTION_STARTED,
+                    {
+                        "run_id": run_id,
+                        "task_id": run.task_id,
+                        "goal_revision": run.goal_revision,
+                        "lease_epoch": run.lease_epoch,
+                        "resources": [str(r) for r in resources],
+                    },
+                    task_id=run.task_id,
+                )
+            yield ExecutionPermit(
+                run_id=run_id,
+                task_id=run.task_id,
+                goal_revision=run.goal_revision,
+                lease_epoch=run.lease_epoch,
+                resources=tuple(str(r) for r in resources),
+                seq=seq,
+                started_at=started_at,
+            )
+
+    # ---- 游标与模型结果（M2 · Task 5 的存储层） ----
+
+    def _require_claims(self) -> JobStore:
+        if self._claims is None:
+            raise TianshuError(
+                "未配置 JobStore：cursor/模型结果必须绑定有效 claim，"
+                "不能用裸 run_id 写入"
+            )
+        return self._claims
+
+    def _assert_writer(self, run_id: str, claim: JobClaim) -> Run:
+        """写这个 Run 状态的人，必须同时是：还没被 fence 的 Run 的当前 owner。"""
+        if not isinstance(claim, JobClaim):
+            raise TianshuError("必须传 JobClaim；不能用裸 run_id 写 Run 的状态")
+        if claim.run_id != run_id:
+            raise TianshuError(
+                f"claim 与 run 不匹配：claim.run_id={claim.run_id} run_id={run_id}"
+            )
+        self._require_claims().assert_claim(claim)
+        return self.assert_current(run_id)
+
+    def save_cursor(self, run_id: str, cursor: RunCursor, claim: JobClaim) -> RunCursor:
+        """保存游标。写入前核验 claim，写入与事件同一事务。
+
+        投影和事件都带 claim_epoch：事后能看出"这份游标是谁在第几次认领时写的"，
+        重启接管争议才有据可查。
+        """
+        if not isinstance(cursor, RunCursor):
+            raise TianshuError("cursor 必须是 RunCursor")
+        payload = canonical_bytes(cursor.to_dict()).decode("utf-8")
+        now = _now()
+        with self._log.transaction() as tx:
+            run = self._assert_writer(run_id, claim)
+            self._conn.execute(
+                "INSERT INTO run_cursors (run_id, task_id, goal_revision,"
+                " lease_epoch, claim_epoch, payload, updated_at)"
+                " VALUES (?,?,?,?,?,?,?)"
+                " ON CONFLICT(run_id) DO UPDATE SET"
+                " task_id=excluded.task_id, goal_revision=excluded.goal_revision,"
+                " lease_epoch=excluded.lease_epoch, claim_epoch=excluded.claim_epoch,"
+                " payload=excluded.payload, updated_at=excluded.updated_at",
+                (
+                    run_id,
+                    run.task_id,
+                    run.goal_revision,
+                    run.lease_epoch,
+                    claim.claim_epoch,
+                    payload,
+                    now,
+                ),
+            )
+            tx.append(
+                run_id,
+                RUN_CURSOR_SAVED,
+                {
+                    "run_id": run_id,
+                    "claim_epoch": claim.claim_epoch,
+                    "goal_revision": run.goal_revision,
+                    "lease_epoch": run.lease_epoch,
+                    "payload_hash": sha256_hex(canonical_bytes(cursor.to_dict())),
+                    "pending_proposals": len(cursor.pending_proposals),
+                    "completed_call_ids": len(cursor.completed_call_ids),
+                },
+                task_id=run.task_id,
+            )
+        return cursor
+
+    def load_cursor(self, run_id: str) -> tuple[RunCursor, dict[str, Any]] | None:
+        row = self._conn.execute(
+            "SELECT * FROM run_cursors WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        meta = {
+            "task_id": row["task_id"],
+            "goal_revision": row["goal_revision"],
+            "lease_epoch": row["lease_epoch"],
+            "claim_epoch": row["claim_epoch"],
+            "updated_at": row["updated_at"],
+        }
+        return RunCursor.of(json.loads(row["payload"])), meta
+
+    def commit_model_turn(
+        self, run_id: str, turn: dict[str, Any], claim: JobClaim
+    ) -> int:
+        """提交一次模型结果，返回该 Run 内递增的序号。
+
+        重复提交同一个 `turn_id`：payload 相同就直接返回原序号（重启重放安全），
+        不同则报错——同一个 turn_id 出现两种内容，说明状态已经不一致，
+        静默覆盖会把"到底花了多少钱"这条账改掉。
+        """
+        turn_id = turn.get("turn_id")
+        if not turn_id:
+            raise TianshuError("turn 缺少 turn_id")
+        payload = canonical_bytes(turn).decode("utf-8")
+        now = _now()
+        with self._log.transaction() as tx:
+            run = self._assert_writer(run_id, claim)
+            existing = self._conn.execute(
+                "SELECT seq, payload FROM run_turns WHERE run_id=? AND turn_id=?",
+                (run_id, turn_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["payload"] == payload:
+                    return int(existing["seq"])
+                raise TianshuError(
+                    f"turn_id 重复但内容不同：run={run_id} turn={turn_id}"
+                )
+            seq = int(
+                self._conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_turns WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()[0]
+            )
+            self._conn.execute(
+                "INSERT INTO run_turns (run_id, turn_id, seq, payload, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (run_id, turn_id, seq, payload, now),
+            )
+            tx.append(
+                run_id,
+                RUN_MODEL_TURN,
+                {
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "seq": seq,
+                    "claim_epoch": claim.claim_epoch,
+                    "finish_reason": turn.get("finish_reason"),
+                    "usage": turn.get("usage"),
+                    "payload_hash": sha256_hex(canonical_bytes(turn)),
+                },
+                task_id=run.task_id,
+            )
+        return seq
+
+    def list_model_turns(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT turn_id, seq, payload FROM run_turns WHERE run_id=? ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+        return [
+            {"turn_id": r["turn_id"], "seq": r["seq"], **json.loads(r["payload"])}
+            for r in rows
+        ]
 
     def finish_run(
         self, run_id: str, *, outcome: str, effect_state: str
