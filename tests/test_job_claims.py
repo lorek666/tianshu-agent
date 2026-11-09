@@ -391,9 +391,12 @@ def test_cursor_round_trips_and_is_deterministic(env):
     row = log.conn.execute(
         "SELECT payload FROM run_cursors WHERE run_id=?", (run.run_id,)
     ).fetchone()
+    # F5 起游标多一个 `message_seqs`（上下文编译的 seq 归因），序列化形状随之改变。
+    # 这条断言钉的是"同一份游标序列化结果永远一样"，不是"字段集合永远不变"。
     assert row["payload"] == (
         '{"approval_ids":["ap1"],"budget_ledger":{"tokens":1200},'
-        '"completed_call_ids":["c0"],"messages":[{"content":"整理一下",'
+        '"completed_call_ids":["c0"],"message_seqs":[],'
+        '"messages":[{"content":"整理一下",'
         '"role":"user"}],"model_turn":null,"output_ref":null,'
         '"pending_proposals":[{"call_id":"c1","tool":"read_text"}],'
         '"resource_epochs":{"ws":1}}'

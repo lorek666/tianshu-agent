@@ -6,6 +6,12 @@
   3. 用 tool.intent 里记录的参数重算产物哈希，与 tool.result / run.end 三方核对
 
 能把这三件事对上，才叫「事件日志足以重建终态」。
+
+F5（上下文编译）之后第 2 件事多了一层：`model.intent.payload.context` 记下了那次
+编译的入参与产物身份（预算、source_seqs、dropped_seqs），回放就**重算一遍编译**
+再比 digest。这样"发出去的到底是什么"不靠信任首次执行，而是可以复现的判定。
+没有 `context` 的旧日志（包括 M0–M3 的全部 fixture）走原来的比对路径：它们的
+`messages_hash` 本来就是全量历史的摘要，两者在预算内恒等时数值完全相同。
 """
 
 from __future__ import annotations
@@ -15,9 +21,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .context import (
+    ContextCompileError,
+    ContextOverflow,
+    budget_from_payload,
+    compile_context,
+)
 from .errors import TianshuError
-from .events import EventLog, canonical_bytes
-from .loop import SYSTEM_PROMPT
+from .events import Event, EventLog, canonical_bytes
+from .loop import SYSTEM_PROMPT, message_source_seqs
 
 
 @dataclass
@@ -72,16 +84,17 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     verified = 0
     turns = 0
     artifact_sha: str | None = None
+    # 整条 run 的消息 seq 归因，与主循环**共用同一份实现**
+    # （`loop.message_source_seqs`）：头两条来自 run.start，之后每条消息事件一条。
+    # 回放不需要自己维护一份平行列表——它要的是"此刻这个前缀"，
+    # 而 `all_seqs[:len(messages)]` 就是那个前缀。
+    all_seqs = message_source_seqs(events)
 
     for ev in events:
         if ev.type == "model.intent":
-            recorded = ev.payload.get("messages_hash")
-            actual = hashlib.sha256(canonical_bytes(messages)).hexdigest()
-            if recorded != actual:
-                problems.append(
-                    f"seq={ev.seq} messages_hash 不符：重建的消息序列与首次执行不同"
-                )
-            else:
+            if _verify_model_intent(
+                ev, messages, all_seqs[: len(messages)], problems
+            ):
                 verified += 1
             turns += 1
 
@@ -176,3 +189,90 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
         artifact_sha256=artifact_sha,
         problems=problems,
     )
+
+
+def _verify_model_intent(
+    ev: Event, messages: list[dict[str, Any]], seqs: list[int], problems: list[str]
+) -> bool:
+    """核对一条 `model.intent`：它声称发出去的那份，能不能从事件重建出来。
+
+    两条路径：
+
+    - 有 `context`（F5 起）：用记录里的预算参数重算一遍 `compile_context`，
+      比对 digest 与 `source_seqs` / `dropped_seqs`。任何一项对不上都说明
+      "发出去的不是记录里的那一份"。
+    - 没有 `context`（M0–M3 的旧日志）：`messages_hash` 就是全量历史的摘要，
+      直接比。预算内恒等时两条路径的数值完全相同，所以老日志不需要迁移，
+      现有 fixture 也不会因为这次改动变红。
+    """
+    payload = ev.payload
+    recorded = payload.get("messages_hash")
+    context = payload.get("context")
+
+    if context is None:
+        actual = hashlib.sha256(canonical_bytes(messages)).hexdigest()
+        if recorded != actual:
+            problems.append(
+                f"seq={ev.seq} messages_hash 不符：重建的消息序列与首次执行不同"
+            )
+            return False
+        return True
+
+    if not isinstance(context, dict):
+        problems.append(f"seq={ev.seq} context 不是对象，无法核对编译结果")
+        return False
+
+    try:
+        budget = budget_from_payload(context)
+        view = compile_context(messages, seqs, budget)
+    except (ContextCompileError, ContextOverflow) as exc:
+        problems.append(f"seq={ev.seq} 重算上下文编译失败：{exc}")
+        return False
+
+    if recorded != view.digest:
+        problems.append(
+            f"seq={ev.seq} messages_hash={_short(recorded)} 与重算的编译摘要 "
+            f"{_short(view.digest)} 不符：发出去的不是记录里的那一份"
+        )
+        return False
+
+    for name, claimed_raw, actual in (
+        ("source_seqs", context.get("source_seqs"), view.source_seqs),
+        ("dropped_seqs", context.get("dropped_seqs"), view.dropped_seqs),
+    ):
+        claimed = _int_list(claimed_raw)
+        if claimed is None:
+            problems.append(
+                f"seq={ev.seq} context.{name} 不是整数列表，无法核对"
+            )
+            return False
+        if claimed != list(actual):
+            problems.append(
+                f"seq={ev.seq} context.{name} 不符：记录 {_summarize(claimed)}，"
+                f"重算 {_summarize(actual)}"
+            )
+            return False
+
+    return True
+
+
+def _int_list(value: Any) -> list[int] | None:
+    """严格的整数列表。bool 不算 int——`True` 混进 seq 列表是数据坏了，不是巧合。"""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return None
+        out.append(int(item))
+    return out
+
+
+def _summarize(values: list[int]) -> str:
+    head = ",".join(str(v) for v in values[:8])
+    return f"{len(values)} 项[{head}{'…' if len(values) > 8 else ''}]"
+
+
+def _short(value: Any) -> str:
+    text = str(value)
+    return text[:12] + "…" if len(text) > 12 else text

@@ -210,6 +210,12 @@ class RunCursor:
     """
 
     messages: list[dict[str, Any]] = field(default_factory=list)
+    #: 与 `messages` 平行的 seq 归因（F5 上下文编译的溯源材料）。
+    #:
+    #: 带默认值不是风格问题：F5 之前写下的游标没有这个键，`RunCursor.of` 用
+    #: `known = {... if k in cls.__dataclass_fields__}` 过滤，缺键即空列表——
+    #: 旧游标必须能原样反序列化，否则一次升级就让所有暂停中的 Run 打不开。
+    message_seqs: list[int] = field(default_factory=list)
     pending_proposals: list[dict[str, Any]] = field(default_factory=list)
     completed_call_ids: list[str] = field(default_factory=list)
     approval_ids: list[str] = field(default_factory=list)
@@ -221,6 +227,7 @@ class RunCursor:
     def to_dict(self) -> dict[str, Any]:
         return {
             "messages": self.messages,
+            "message_seqs": self.message_seqs,
             "pending_proposals": self.pending_proposals,
             "completed_call_ids": self.completed_call_ids,
             "approval_ids": self.approval_ids,
