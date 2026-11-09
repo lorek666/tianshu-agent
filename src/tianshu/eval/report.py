@@ -28,11 +28,11 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
-from ..loop import SYSTEM_PROMPT
-from ..tools import tool_manifest
+from .. import loop as loop_mod
+from .. import tools as tools_mod
 from .cases import SUITE_VERSION, Case
 from .checks import Observation, evaluate_checks, run_passed, safety_violations
-from .runner import SuiteRun
+from .runner import CHILD_TIMEOUT_S, MAX_APPROVAL_ROUNDS, SuiteRun
 
 SCHEMA = "tianshu.eval.v1"
 COMPARE_SCHEMA = "tianshu.eval.compare.v1"
@@ -133,6 +133,29 @@ def _require_repeats(suite: SuiteRun, cases: tuple[Case, ...]) -> None:
         )
 
 
+def _runtime_fingerprint() -> str:
+    """影响行为、但不属于某一条 case 的常量。
+
+    典型反例：`READ_TEXT_LIMIT` 从 64K 改成 128K，N4 的 big.txt 不再截断，
+    可 case 文本与判据都没变——不把它算进分母，两份报告就会被当成可比。
+    """
+    payload = {
+        "read_text_limit": tools_mod.READ_TEXT_LIMIT,
+        "tool_specs": {
+            name: [spec.version, spec.side_effect_level, spec.action, spec.exposed]
+            for name, spec in sorted(tools_mod.SPECS.items())
+        },
+        "limits": [
+            loop_mod.Limits().max_turns,
+            loop_mod.Limits().max_total_tokens,
+            loop_mod.Limits().context_budget_bytes,
+        ],
+        "max_approval_rounds": MAX_APPROVAL_ROUNDS,
+        "child_timeout_s": CHILD_TIMEOUT_S,
+    }
+    return _text_sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
 def fixture_digest(case: Case) -> str:
     """一条 case 的"分母身份"。
 
@@ -158,12 +181,14 @@ def fixture_digest(case: Case) -> str:
         # 宁可多判一次不可比，也不要把两套判据的分数放在一起比。
         "checks": [[_check_fingerprint(c)] for c in case.checks],
         "script": [resp.to_payload() for resp in case.script],
-        # 判据相同但系统提示词/工具 schema 变了，模型看到的世界就变了：
-        # 这两样属于"分母"，必须进摘要。
-        "system_prompt": _text_sha256(SYSTEM_PROMPT),
+        # 判据相同但系统提示词/工具 schema/运行时常量变了，模型看到的世界
+        # 就变了：这些都属于"分母"。**动态从执行模块读**——import 时把常量
+        # 拷贝进来，运行时改了 prompt 而 digest 不动，测试也会变成自证。
+        "system_prompt": _text_sha256(loop_mod.SYSTEM_PROMPT),
         "tool_manifest": _text_sha256(
-            json.dumps(tool_manifest(), ensure_ascii=False, sort_keys=True)
+            json.dumps(tools_mod.tool_manifest(), ensure_ascii=False, sort_keys=True)
         ),
+        "runtime": _runtime_fingerprint(),
     }
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
@@ -244,6 +269,9 @@ def _run_entry(obs: Observation, results: list[Any], *, scope: str) -> dict[str,
         "model_calls": obs.model_calls if scope == "model" else 0,
         "harness_model_calls": obs.model_calls if scope == "harness" else None,
         "crashed": obs.crashed,
+        "n_applied": None if obs.result is None else obs.result.n_applied,
+        "n_unknown": None if obs.result is None else obs.result.n_unknown,
+        "error": obs.error,
         "checks": [
             {
                 "check_id": r.check_id,
@@ -268,6 +296,7 @@ def build_report(
     cases: tuple[Case, ...],
     *,
     suite_version: str | None = None,
+    selection: dict[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     _require_repeats(suite, cases)
@@ -411,6 +440,9 @@ def build_report(
     return {
         "schema": SCHEMA,
         "suite_version": suite_version,
+        # 子集评测只用于冒烟：`complete=false` 的报告不得作为正式可比证据。
+        "selection": selection
+        or {"complete": True, "requested": None, "case_count": len(case_entries)},
         "generated_at": generated_at or _now_iso(),
         "model": suite.identity,
         "repeat": suite.repeat,
@@ -471,6 +503,24 @@ def compare_reports(
             guards.append(
                 f"{label}报告的 repeat={repeat} 低于 PRD §10.3 的 {MIN_REPEAT} 次"
             )
+        selection = report.get("selection") or {}
+        if selection.get("complete") is False:
+            guards.append(f"{label}报告是 case 子集（selection.complete=false），不是完整 20 条")
+        cases = report.get("cases") or []
+        overall = report.get("overall") or {}
+        if (
+            isinstance(repeat, int)
+            and overall.get("runs") != repeat * len(cases)
+        ):
+            guards.append(
+                f"{label}报告的 overall.runs={overall.get('runs')} 与 "
+                f"repeat×cases={repeat}×{len(cases)} 不一致"
+            )
+        bad_counts = [
+            c.get("case_id") for c in cases if c.get("runs_count") != repeat
+        ]
+        if bad_counts:
+            guards.append(f"{label}报告里这些 case 的 runs_count≠repeat：{bad_counts}")
     base_cases = {c["case_id"]: c for c in baseline.get("cases", [])}
     cand_cases = {c["case_id"]: c for c in candidate.get("cases", [])}
     if set(base_cases) != set(cand_cases):
@@ -513,6 +563,11 @@ def compare_reports(
             improvements.append(entry)
 
     comparable = not guards
+    candidate_unsafe = not bool(candidate.get("safety_gate", {}).get("passed"))
+    if candidate_unsafe:
+        # 候选踩了安全门槛：退化可以照实报，但"改进"叙事必须压住——
+        # 一个不安全的版本不能靠"分数变高了"被推销出去。
+        improvements = []
     base_overall = baseline.get("overall") or {}
     cand_overall = candidate.get("overall") or {}
     return {
@@ -529,9 +584,8 @@ def compare_reports(
             "baseline_safety_gate_passed": bool(
                 baseline.get("safety_gate", {}).get("passed")
             ),
-            "candidate_safety_gate_passed": bool(
-                candidate.get("safety_gate", {}).get("passed")
-            ),
+            "candidate_safety_gate_passed": not candidate_unsafe,
+            "candidate_security_failure": candidate_unsafe,
             "regressions": regressions,
             "improvements": improvements,
         },

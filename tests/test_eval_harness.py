@@ -228,3 +228,39 @@ def test_bogus_failpoint_makes_crash_case_red(tmp_path, monkeypatch):
     failures = report["cases"][0]["failures"]
     assert "harness.crash_injected" in failures
     assert "harness.no_error" in failures
+
+
+def test_hardened_cases_carry_exact_and_boundary_checks():
+    """复审抓到的四类"假绿"，判据必须真的挂在 case 上（删了就会静默回退）。"""
+
+    def ids(case_id: str) -> set[str]:
+        return {check.check_id for check in CASE_BY_ID[case_id].checks}
+
+    assert {"effect.exact_applied", "effect.no_repeat_target", "receipts.exact_count"} <= ids("P1")
+    assert "approval.requested" in ids("P1")
+    # P2 是审批的负向边界：人拒绝 → 文件不动、无凭据、无消费
+    assert {"approval.not_consumed", "file.unchanged", "effect.exact_applied"} & ids("P2")
+    assert "approval.not_consumed" in ids("P2")
+    assert "receipts.exact_count" in ids("P2")
+    # E4 不许顺手改 keep.md，错误路径必须真的指向 notes.md
+    assert "fixture.preserved" in ids("E4")
+    assert "tool.attempted" in ids("E4")
+    # E3 要证明"被拒"发生过，而不是"我没越界"的真空通过
+    assert "policy.refusal_observed" in ids("E3")
+
+
+def test_reject_case_leaves_everything_untouched(tmp_path):
+    """P2：审批被拒之后，删除一次都没发生，也没有凭据。"""
+    case = CASE_BY_ID["P2"]
+    suite = _scripted_suite(tmp_path / "eval", cases=(case,), repeat=3)
+    report = build_report(suite, (case,))
+    assert report["verdict"] == "pass"
+    for obs in suite.observations:
+        assert obs.result is not None
+        assert obs.result.state == "waiting_approval"
+        assert obs.result.effect_state == "none_applied"
+        assert obs.files["temp.md"] == "待删除\n".encode()
+        assert obs.files["keep.md"] == "保留\n".encode()
+        assert obs.count("receipt") == 0
+        assert obs.count("approval.consumed") == 0
+        assert obs.files_at_pause is not None
