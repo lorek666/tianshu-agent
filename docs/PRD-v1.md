@@ -58,8 +58,8 @@
 
 ### 2.3 为 v2 预留的缝（v1 定义形状；`job.*` 已提前使用）
 
-1. `JobResult` 类型与 `JobState` 枚举（见 §4.2）——先有类型，后无迁移
-2. `Artifact` 表与内容寻址存储（见 §7.6）——v1 就用来存大工具输出与截图，v2 直接复用
+1. `JobResult` 类型与 `JobState` 枚举（见 §4.4）——先有类型，后无迁移
+2. `Artifact` 表与内容寻址存储（表见 §4.1，v1 要求见 §7 F11）——**独立的产物表与截图存储尚未实现**；大工具输出的 8 KiB 落盘是 §7 F5 的要求，也尚未实现（工具输出现在只做截断并打 `truncated` 标记）。v1 已有的内容寻址只有两处：事件 payload 超过 256 KiB 落盘（`EventLog.blob_dir`）、写前副本（`SnapshotStore.blob_dir`）
 3. `ToolDefinition.exec_model ∈ {E1, E3}`，枚举里预留 `E2` 值但不允许使用
 4. 事件类型 `job.*`：**提前使用**——本条原本只要求定义形状、v1 不产生，但 M2 起已实际产生，共五种：`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`；`job.lost` 目前只有常量定义，尚无发射点（`src/tianshu/jobs.py`）
 
@@ -125,9 +125,9 @@
 
 | 实体 | 用途 | 关键字段 |
 |---|---|---|
-| `Agent` | Agent 定义 | `id, name, profile, config_ver` |
-| `AgentSession` | 会话 | `id, agent_id, status, workspace` |
-| `Conversation` | 对话 | `id, session_id, title` |
+| `Agent` | Agent 定义（**v1 不建表**，见下方说明） | `id, name, profile, config_ver` |
+| `AgentSession` | 会话（**v1 不建表**，见下方说明） | `id, agent_id, status, workspace` |
+| `Conversation` | 对话（**v1 不建表**，见下方说明） | `id, session_id, title` |
 | `Message` | 消息 | `id, role, content[], meta` |
 | `Task` | 用户想完成的事 | `id, goal, status, priority, acceptance, workspaces[]` |
 | `Workspace` | 任务的授权目录（0..n） | `id, root_path, mode: readonly\|writable, snapshot_policy` |
@@ -136,10 +136,14 @@
 | `ToolExecution` | 工具调用 | `id, run_id, tool_id, args_hash, status, effect_state` |
 | `Approval` | 审批 | `id, execution_id, digest, state, decided_by` |
 | `Receipt` | 副作用凭据 | `id, execution_id, before_ref, after_ref, evidence[]` |
-| `Artifact` | 产物 | `id, sha256, mime, bytes, kind, run_id` |
+| `Artifact` | 产物（**v2 独立表**，见下方说明） | `id, sha256, mime, bytes, kind, run_id` |
 | `Memory` | 长期记忆（**v1.1**，见 §7 的 F10） | `id, scope, owner_id, content, source, confidence` |
 | `Event` | 事件日志 | `seq, run_id, type, actor, payload_ref, payload_hash, parent_seq` |
-| `Checkpoint` | 恢复指针 | `id, run_id, seq, state_digest, pending_intents[]` |
+| `Checkpoint` | 恢复指针（**v2**，见下方说明） | `id, run_id, seq, state_digest, pending_intents[]` |
+
+**三行 `v1 不建表` 怎么读**：`Agent` / `AgentSession` / `Conversation` 记录的是概念模型，不是待建的表——`Agent` 的职责由 `Task` 承担（Task 才是用户可见单位），`AgentSession` / `Conversation` 的职责由 `Run` + 运行游标（`RunCursor`）承担。
+
+**`Artifact` 与 `Checkpoint` 属 v2**：v1 的内容寻址只有两处——事件 payload 超过 256 KiB 落盘（`EventLog.blob_dir`）、写前副本（`SnapshotStore.blob_dir`）；**没有**独立产物表、没有截图存储，工具输出现在是截断并打 `truncated` 标记，超 8 KiB 落盘仍是 §7 F5 的要求、尚未实现。`Checkpoint` 在 v1 的等价物是「事件日志 + 游标」（`run.cursor` 事件 + `RunCursor`），所以 v1 不需要独立的 checkpoint 表。
 
 ### 4.2 Task 与 Run 必须分离
 
