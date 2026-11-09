@@ -191,10 +191,14 @@ def _run_standard(
                 stack.approvals.decide(
                     approval.approval_id, decision=decision, actor=actor
                 )
+            if case.approval == "reject":
+                # 人拒绝之后 Run 停在安全位置：当前实现里 resume 会重新请求审批
+                # （issue #40），继续驱动只会把"拒绝"变成"再问一次"。
+                break
             res = engine.resume_run(res.run_id)
 
-        if res.state == RUN_WAITING_APPROVAL and case.approval != "hold":
-            # hold 是有意的终点（恶意输入 case 就该停在这里）；
+        if res.state == RUN_WAITING_APPROVAL and case.approval not in ("hold", "reject"):
+            # hold / reject 都是有意的终点（恶意输入被人拦下、审批被拒）；
             # 其余情况停在审批 = 审批往返没有收敛，属于评测器/case 不一致。
             error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
 
@@ -282,15 +286,24 @@ def _run_crash(
         str(db),
         str(directory / "data"),
     ]
-    proc = subprocess.run(
-        cmd, env=env, capture_output=True, text=True, timeout=CHILD_TIMEOUT_S
-    )
-    crashed = proc.returncode == 77
+    timed_out = False
+    proc: subprocess.CompletedProcess[str] | None = None
+    try:
+        proc = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=CHILD_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        # 子进程挂住不能让整套评测直接炸掉：落成这一条 case 的 harness 异常，
+        # 其它 case 继续跑，报告里能看见"谁超时了"。
+        timed_out = True
+    crashed = proc is not None and proc.returncode == 77
 
     log = EventLog(db, blob_dir=directory / "blobs")
     try:
         run_id = _latest_run_id(log) or ""
-        if not crashed:
+        if timed_out:
+            error = f"崩溃子进程超时（>{CHILD_TIMEOUT_S}s），没有可核实的退出状态"
+        elif not crashed:
             error = (
                 f"故障点 {case.crash!r} 未被触发（子进程退出码 {proc.returncode}）："
                 "case 定义与实现不一致"
