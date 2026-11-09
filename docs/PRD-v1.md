@@ -61,7 +61,7 @@
 1. `JobResult` 类型与 `JobState` 枚举（见 §4.4）——先有类型，后无迁移
 2. `Artifact` 表与内容寻址存储（表见 §4.1，v1 要求见 §7 F11）——**独立的产物表与截图存储尚未实现**；大工具输出的 8 KiB 落盘是 §7 F5 的要求，也尚未实现（工具输出现在只做截断并打 `truncated` 标记）。v1 已有的内容寻址只有两处：事件 payload 超过 256 KiB 落盘（`EventLog.blob_dir`）、写前副本（`SnapshotStore.blob_dir`）
 3. `ToolDefinition.exec_model ∈ {E1, E3}`，枚举里预留 `E2` 值但不允许使用
-4. 事件类型 `job.*`：**提前使用**——本条原本只要求定义形状、v1 不产生，但 M2 起已实际产生，共五种：`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`；`job.lost` 目前只有常量定义，尚无发射点（`src/tianshu/jobs.py`）
+4. 事件类型 `job.*`：**提前使用**——本条原本只要求定义形状、v1 不产生，但 M2 起已实际产生，共五种：`job.enqueued` / `job.claimed` / `job.finished` / `job.requeued` / `job.parked`。早期的 `job.lost` 常量没有任何发射点，已删除："作业丢失"由租约过期 + `job.parked` / `job.requeued` 表达，多一个没人写的类型只会让人以为存在这种状态转移。
 
 ---
 
@@ -418,7 +418,7 @@ Event {
 | `model_call` | 族 `model`：`model.intent` / `model.result` / `model.error` |
 | `approval` | 族 `approval`（6 种） |
 | `receipt` | 裸类型 `receipt`（历史名字，不改名——改名会让既有事件日志失去可比性） |
-| `job` | 族 `job`（5 种；`job.lost` 无发射点，见下） |
+| `job` | 族 `job`（5 种） |
 | `compaction` / `checkpoint` / `audit` | **未实现**，登记在 `UNIMPLEMENTED_EVENT_FAMILIES` |
 
 #### 5.3.2 注册表：13 个族 / 41 个具体类型
@@ -449,7 +449,7 @@ Event {
 | `checkpoint` | 恢复指针 | 未实现：恢复靠快照 manifest + intent/result 配对，不靠事件检查点 |
 | `audit` | 审计事件 | 未实现：审计目前由凭据（`receipt`）与 append-only 本表承担 |
 
-**已定义但无发射点**：`job.lost`（`src/tianshu/jobs.py` 有常量，全库零写入）。它**不在**注册表里，硬写会被校验拒绝并提示原因。接上发射点时必须同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
+**已定义但无发射点**：**当前为空**。曾经唯一的成员 `job.lost` 已连同常量一起删除（理由见 §2.3 第 4 条）。机制保留在 `events.DECLARED_UNEMITTED_EVENT_TYPES`：将来若有"先定义形状、后接发射点"的类型，登记在那里，硬写会被校验拒绝并提示原因；接上发射点时必须在同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
 
 #### 5.3.3 `parent_seq`：降级为保留字段
 
