@@ -2,43 +2,35 @@
 
 这是 PRD §8.1 的 L1 层——跨平台唯一真正一致的那层。
 不做字符串前缀比较（会被 `..`、符号链接、大小写绕过），只做 resolve 后比较。
+
+**边界与存在性是两件事**（M3 拆开）：
+
+- 词法边界（"这个候选路径解析后还在 root 里吗"）是纯路径运算，所有后端
+  共用，必须是唯一实现——多一套实现就多一个绕过点。
+- "root 现在存不存在、是不是目录"是后端的事实。local 后端在 `require_root`
+  里快速失败；符号链接由本类的 `resolve()` 跟随 realpath 来消解（memfs
+  没有符号链接，那条路径对它没有意义），后端只检查"根落不落在自己的
+  命名空间里"。
+
+所以 `Workspace.__init__` 不再自己 `is_dir()`，而是问当前后端
+`require_root()`。对 local 后端行为与 M2 完全一致（不存在就抛
+WorkspaceViolation），对 memfs 才允许逻辑根。
 """
 
 from __future__ import annotations
 
-import os
-import sys
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .errors import WorkspaceViolation
-
-# 大小写不敏感的文件系统（Windows 默认、macOS 默认 APFS）上，
-# 同一目录可能有多种写法；重叠判断必须折叠大小写，否则 /A 与 /a/b 会被当成两棵树。
-CASE_INSENSITIVE_FS = os.name == "nt" or sys.platform == "darwin"
-
-
-def normalize_name(name: str) -> str:
-    """macOS 的 APFS 存 NFD，Python 原样返回。比较前统一成 NFC。
-
-    不处理会导致带中文/重音的文件名比对失败、UI 出现重复项。
-    """
-    return unicodedata.normalize("NFC", name)
-
-
-def overlap_key(path: Path | str) -> str:
-    """用于判断"同一棵子树"的路径键（不是资源身份键）。"""
-    key = os.path.normpath(normalize_name(str(path)))
-    return key.casefold() if CASE_INSENSITIVE_FS else key
-
-
-def is_ancestor_or_self(parent: str, child: str) -> bool:
-    """parent 是 child 的祖先或本身（两者都已过 overlap_key）。"""
-    if child == parent:
-        return True
-    return child.startswith(parent.rstrip(os.sep) + os.sep)
+from .pathkeys import (
+    CASE_INSENSITIVE_FS,
+    is_ancestor_or_self,
+    normalize_name,
+    overlap_key,
+)
+from .sandbox import FileBackend, current_backend
 
 
 @dataclass(frozen=True)
@@ -57,19 +49,19 @@ class ResourceIdentity:
     path: str
 
     @classmethod
-    def of(cls, path: Path) -> ResourceIdentity:
+    def of(
+        cls, path: Path, *, backend: FileBackend | None = None
+    ) -> ResourceIdentity:
+        """身份键由当前后端给出。
+
+        **跨后端只承诺 `path_key`（路径前缀覆盖）。** local 的键是
+        `dev:ino`，memfs 是规范化路径；两者不可比，也不该比。租约的
+        `assert_covers` 同时看 key 与 path_key：同后端时 key 更准，
+        跨后端时只剩路径前缀这一层承诺——这正是 M3 之后仍然安全的边界。
+        """
         resolved = path.resolve()
-        try:
-            st = os.stat(resolved)
-            if st.st_ino:
-                return cls(key=f"{st.st_dev}:{st.st_ino}", path=str(resolved))
-        except OSError:
-            pass
-        # 退化：Windows 或用不了 inode 的文件系统
-        return cls(
-            key="path:" + overlap_key(resolved),
-            path=str(resolved),
-        )
+        impl = backend if backend is not None else current_backend()
+        return cls(key=impl.identity_key(resolved), path=str(resolved))
 
     @property
     def path_key(self) -> str:
@@ -157,8 +149,8 @@ class Workspace:
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
-        if not self.root.is_dir():
-            raise WorkspaceViolation(f"workspace 不存在或不是目录：{root}")
+        # 边界由本类负责；"这个根现在能不能用"由后端负责。
+        current_backend().require_root(self.root)
 
     def resolve(self, candidate: str | Path) -> Path:
         """把候选路径规范化为绝对路径，并保证它仍在 root 内。"""
@@ -178,7 +170,13 @@ class Workspace:
         return ResourceIdentity.of(self.root)
 
     def relative(self, resolved: Path) -> str:
-        return str(resolved.relative_to(self.root))
+        """相对根路径，**一律 `/` 分隔**。
+
+        `str(Path.relative_to())` 在 Windows 上给的是反斜杠，而这个字符串会
+        进 output、快照证据、凭据与事件 payload——证据的形状必须跨平台一致，
+        否则同一份记录在两个平台上哈希不同。`as_posix()` 是唯一的换算点。
+        """
+        return resolved.relative_to(self.root).as_posix()
 
 
 __all__ = [
