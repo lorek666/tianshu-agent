@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from support import tool_capable_profile
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -204,6 +205,7 @@ CHILD = """
 import json, os, sys
 sys.path.insert(0, __SRC__)
 import tianshu.cli as cli
+from tianshu.capability import CapabilityProfile
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 
 spec = os.environ.get("TIANSHU_TEST_MODEL")
@@ -215,6 +217,14 @@ if spec:
         class ByGoal:
             # 无状态：还没写过就按目标里的编号写 r<i>.md，写过就结束。
             # 真实模型不跨 Run 记调用次数；替身一旦有状态，后面的 Run 会空转。
+
+            def capability_profile(self):
+                # F9a：子进程里的替身同样要声明能力，否则准入直接拒绝。
+                return CapabilityProfile(
+                    provider="test-double", model="ByGoal",
+                    supports_tool_calling=True,
+                    declared_by="tests/test_m2_acceptance.py CHILD",
+                )
 
             def complete(self, messages, tools):
                 if any(m.get("role") == "tool" for m in messages):
@@ -277,6 +287,10 @@ class _SlowModel:
     def __init__(self, seconds: float) -> None:
         self._seconds = seconds
         self.calls = 0
+
+    def capability_profile(self):
+        # F9a 准入要求每个模型如实声明能力（未声明 = 不支持，会被拒绝）。
+        return tool_capable_profile("test-double", type(self).__name__)
 
     def complete(self, _messages, _tools) -> ModelResponse:
         self.calls += 1
@@ -836,7 +850,15 @@ def test_worker_holds_no_guard_and_no_transaction_while_model_runs(env):
         seen.append((in_txn, guard_free))
         return _end("好了")
 
-    worker = Worker(env.stack, model=type("M", (), {"complete": staticmethod(complete)})())
+    worker = Worker(env.stack, model=type(
+        "M", (),
+        {
+            "complete": staticmethod(complete),
+            "capability_profile": staticmethod(
+                lambda: tool_capable_profile("test-double", "M")
+            ),
+        },
+    )())
     assert worker.run_once() is True
     assert seen == [(False, True)], f"模型调用期间持锁/开事务：{seen}"
     assert env.stack.tasks.get_run(run_id).state == "succeeded"

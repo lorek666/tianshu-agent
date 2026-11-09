@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from support import tool_capable_profile
 
 from tianshu.context import (
     BUDGET_VERSION,
@@ -706,6 +707,10 @@ class RecordingModel:
     def __init__(self, responses: list[ModelResponse]) -> None:
         self._responses = list(responses)
         self.seen: list[list[dict[str, Any]]] = []
+
+    def capability_profile(self):
+        # F9a：准入要求每个模型如实声明能力；没声明会被拒绝，不是"先试试看"。
+        return tool_capable_profile("test-double", "RecordingModel")
 
     def complete(self, messages, tools) -> ModelResponse:  # noqa: ARG002
         self.seen.append(copy.deepcopy(messages))
