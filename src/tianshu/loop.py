@@ -23,13 +23,20 @@ M2 之后这个循环不再是"一次同步跑完"：
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .context import (
+    DEFAULT_MAX_BYTES,
+    RUN_START_SEQ,
+    ContextBudget,
+    ContextOverflow,
+    compile_context,
+    context_payload,
+)
 from .dispatcher import (
     DISPATCH_ERROR,
     DISPATCH_EXECUTING,
@@ -46,7 +53,8 @@ from .errors import (
     WorkspaceBlocked,
     WorkspaceViolation,
 )
-from .events import EventLog, canonical_bytes, sha256_hex
+from .events import Event, EventLog, canonical_bytes, sha256_hex
+from .fsutil import atomic_write_bytes
 from .jobs import (
     JOB_CLAIMED,
     JOB_PENDING,
@@ -104,6 +112,12 @@ SYSTEM_PROMPT = """你是天枢 Agent，一个在用户指定目录内工作的�
 class Limits:
     max_turns: int = 8
     max_total_tokens: int = 20_000
+    #: 一轮发给模型的上下文上限（字节，不是 token）。
+    #:
+    #: 默认 1 MiB 是刻意宽松的：日常 run 远到不了，编译走**恒等路径**，
+    #: 发出去的 messages 与 F5 之前逐字节一致（历史 messages_hash 含义不变）。
+    #: 只有长 run 或显式调小它才会触发压缩/落盘。
+    context_budget_bytes: int = DEFAULT_MAX_BYTES
 
 
 @dataclass
@@ -141,6 +155,10 @@ class _Progress:
     """一份可持久化的执行进度（= RunCursor 的运行时视图）。"""
 
     messages: list[dict[str, Any]] = field(default_factory=list)
+    #: 与 `messages` 平行的 seq 归因：第 i 条消息是哪个事件写进来的。
+    #: 头两条（system + 任务陈述）记 `RUN_START_SEQ`——它们由 run.start 派生，
+    #: 没有属于自己的消息事件。这份列表只给上下文编译溯源用，不参与消息重建。
+    message_seqs: list[int] = field(default_factory=list)
     pending: list[dict[str, Any]] = field(default_factory=list)
     completed: list[str] = field(default_factory=list)
     approvals: list[str] = field(default_factory=list)
@@ -165,6 +183,7 @@ class _Progress:
     def to_cursor(self) -> RunCursor:
         return RunCursor(
             messages=self.messages,
+            message_seqs=self.message_seqs,
             pending_proposals=self.pending,
             completed_call_ids=self.completed,
             approval_ids=self.approvals,
@@ -180,8 +199,16 @@ class _Progress:
     @classmethod
     def of(cls, cursor: RunCursor) -> _Progress:
         ledger = dict(cursor.budget_ledger or {})
+        messages = list(cursor.messages)
+        seqs = list(cursor.message_seqs)
+        if len(seqs) != len(messages):
+            # 旧游标（F5 之前写的）没有 seq 列表，或者游标在"结果已落库、游标还没
+            # 跟上"的窗口里被读到。留空即可：`_message_source_seqs` 会从事件重建，
+            # 重建不出来也不影响消息本身——溯源是记账材料，不是发送内容。
+            seqs = []
         return cls(
-            messages=list(cursor.messages),
+            messages=messages,
+            message_seqs=seqs,
             pending=[dict(p) for p in cursor.pending_proposals],
             completed=list(cursor.completed_call_ids),
             approvals=list(cursor.approval_ids),
@@ -252,6 +279,31 @@ def initial_messages(task: str, out_name: str | None) -> list[dict[str, Any]]:
     ]
 
 
+def _fresh_progress(task: str, out_name: str | None) -> _Progress:
+    """新 Run 的初始进度：首轮提示 + 与它平行的 seq 归因。"""
+    messages = initial_messages(task, out_name)
+    return _Progress(
+        messages=messages, message_seqs=[RUN_START_SEQ] * len(messages)
+    )
+
+
+def message_source_seqs(events: list[Event]) -> list[int]:
+    """按事件顺序给出「每条消息来自哪个事件」的 seq 列表。
+
+    这份列表与 `replay` 重建消息序列的顺序是**同一套规则**（`replay.py` 直接用
+    它来核对）：头两条来自 run.start，之后每条 `model.result` / `tool.result` /
+    `tool.not_dispatched` 各产出一条消息。
+
+    把它放在这里而不是各自实现两遍，是因为"循环写的归因"和"回放算的归因"一旦
+    分叉，replay 报的红就是假的——那种红比不校验更糟。
+    """
+    seqs = [RUN_START_SEQ, RUN_START_SEQ]
+    for event in events:
+        if event.type in ("model.result", "tool.result", "tool.not_dispatched"):
+            seqs.append(event.seq)
+    return seqs
+
+
 class AgentLoop:
     """E1 的持久化主循环。
 
@@ -287,6 +339,9 @@ class AgentLoop:
         self._log = tasks.log
         # 每次驱动开始时从事件里重建的只读索引（崩溃后补记、计数、产物）
         self._results: dict[str, dict[str, Any]] = {}
+        # call_id → 写下该 tool.result 的事件 seq。只给上下文溯源用；
+        # 由 `_index_events` 与 `_record_result` 填充，缺了再回事件里查一次。
+        self._result_seqs: dict[str, int] = {}
         self._artifact: dict[str, Any] | None = None
 
     # ---------------------------------------------------------------- 启动
@@ -317,7 +372,7 @@ class AgentLoop:
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
         self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
-        progress = _Progress(messages=initial_messages(task.goal, out_name))
+        progress = _fresh_progress(task.goal, out_name)
         self._tasks.save_cursor(run.run_id, progress.to_cursor(), claim)
         return self._drive(run.run_id, claim, progress)
 
@@ -377,7 +432,7 @@ class AgentLoop:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
             out_name = self._tasks.run_payload(run_id).get("out") or None
-            progress = _Progress(messages=initial_messages(task.goal, out_name))
+            progress = _fresh_progress(task.goal, out_name)
         else:
             progress = _Progress.of(stored[0])
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
@@ -571,6 +626,52 @@ class AgentLoop:
         self.heartbeat_once(claim)
         return None
 
+    # ---------------------------------------------------------------- 上下文
+
+    def _message_source_seqs(
+        self, run_id: str, progress: _Progress
+    ) -> list[int]:
+        """与 `progress.messages` 平行的 seq 归因（给 `compile_context` 用）。
+
+        优先用游标里存的那份（它是和消息同一个事务写的）。只有两种情况下它不可用：
+        旧游标（F5 之前没有这个字段）和"结果已落库、游标还没跟上"的窗口。这时按
+        事件重建——重建规则与 `replay` 完全同一份实现（`message_source_seqs`），
+        所以循环记的归因与回放算的归因不会分叉。
+        """
+        if len(progress.message_seqs) == len(progress.messages):
+            return list(progress.message_seqs)
+        derived = message_source_seqs(self._log.read_run(run_id, verify=False))
+        count = len(progress.messages)
+        if len(derived) >= count:
+            return derived[:count]
+        # 事件比消息少（说明有消息没有对应事件）：能对上的部分照实给，
+        # 剩下的标"来源不明"(RUN_START_SEQ)，不编 seq。
+        return derived + [RUN_START_SEQ] * (count - len(derived))
+
+    def _persist_spills(self, spills: list[tuple[str, bytes]]) -> None:
+        """把待落盘的工具输出原文写进内容寻址 blob 目录。
+
+        复用已有的 `artifacts/blobs/<sha256>`：`SnapshotStore` 的写前副本与事件
+        payload 落盘用的是同一套目录与同一个原子写。同内容只存一份，重复 spill
+        不会产生第二份文件。
+        """
+        if not spills:
+            return
+        blob_dir = self._snapshots.blob_dir if self._snapshots is not None else None
+        if blob_dir is None:
+            blob_dir = self._log.blob_dir
+        if blob_dir is None:
+            # 没有 blob 目录就没法兑现占位里"完整内容已落盘"那句话。
+            # 与其发一条撒谎的上下文，不如明确失败。
+            raise TianshuError(
+                "工具输出需要落盘，但当前 Run 没有可用的 blob 目录"
+                "（SnapshotStore 与 EventLog 都没配置 blob_dir）"
+            )
+        for digest, data in spills:
+            blob = blob_dir / digest
+            if not blob.exists():
+                atomic_write_bytes(blob, data)
+
     # ---------------------------------------------------------------- 模型
 
     def _model_step(
@@ -593,22 +694,48 @@ class AgentLoop:
 
         hop = progress.turns + 1
         request_id = f"req_{run_id}_{hop}"
+
+        # 编译这一步在 intent 之前：intent 声称的是"我要发的到底是什么"，
+        # 编译失败（放不下）就不该留下一条指向模型的 intent。
+        budget = ContextBudget(max_bytes=self._limits.context_budget_bytes)
+        try:
+            view = compile_context(
+                progress.messages,
+                self._message_source_seqs(run_id, progress),
+                budget,
+            )
+        except ContextOverflow as exc:
+            # 预算不足不是"模型想错了"，是执行侧放不下：如实记一条 model.error，
+            # 然后按失败终结。绝不截断任务陈述去凑预算。
+            self._log.append(
+                run_id,
+                "model.error",
+                {"request_id": request_id, "error": f"上下文预算不足：{exc}"},
+                actor_kind="core",
+            )
+            return "stop", f"上下文预算不足：{exc}"
+
+        # 落盘必须在发请求**之前**：先让占位指向的 blob 真的存在，再让模型看到
+        # "完整内容已落盘"这句话。反过来的顺序等于先撒谎再补救。
+        self._persist_spills(view.spills)
+
         self._log.append(
             run_id,
             "model.intent",
             {
                 "request_id": request_id,
                 "attempt": 1,
-                "messages_hash": hashlib.sha256(
-                    canonical_bytes(progress.messages)
-                ).hexdigest(),
+                # messages_hash 记的是**发出去的那份**的摘要（F5 起 = 编译后的
+                # digest）。预算内恒等时它与"全量历史的摘要"完全相同，历史语义不变。
+                "messages_hash": view.digest,
+                "context": context_payload(budget, view),
             },
             actor_kind="core",
             idem_key=request_id,
         )
 
         try:
-            resp = self._model.complete(progress.messages, tool_manifest())
+            resp = self._model.complete(view.messages, tool_manifest())
         except Exception as exc:  # 模型层异常不能吞：记事件后终止
             self._log.append(
                 run_id,
@@ -714,18 +841,27 @@ class AgentLoop:
 
         # 一次提交：model.result 事件 + run_turns 投影 + 游标。
         # 三者同生同死，才不会出现"记了钱但不知道做到哪"。
+        #
+        # 消息的 seq 归因也在这个事务里补齐：顺序与 `progress.messages` 的追加顺序
+        # 严格一致（assistant 一条，随后每条未派发各一条），这样游标里存的
+        # `message_seqs` 与 `messages` 永远等长——不必等下一次驱动再从事件重建。
         with self._log.transaction() as tx:
-            tx.append(
-                run_id,
-                "model.result",
-                {"request_id": request_id, **resp.to_payload()},
-                actor_kind="core",
-                idem_key=request_id,
-            )
-            for skipped in undispatched:
+            seqs: list[int] = [
                 tx.append(
-                    run_id, "tool.not_dispatched", skipped, actor_kind="core"
+                    run_id,
+                    "model.result",
+                    {"request_id": request_id, **resp.to_payload()},
+                    actor_kind="core",
+                    idem_key=request_id,
                 )
+            ]
+            for skipped in undispatched:
+                seqs.append(
+                    tx.append(
+                        run_id, "tool.not_dispatched", skipped, actor_kind="core"
+                    )
+                )
+            progress.message_seqs.extend(seqs)
             self._tasks.commit_model_turn(run_id, turn, claim)
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
 
@@ -775,7 +911,7 @@ class AgentLoop:
             self._record_result(run_id, proposal, recorded)
             recorded = self._results[call_id]
         if recorded is not None:
-            self._absorb(progress, call_id, recorded)
+            self._absorb(progress, call_id, recorded, run_id=run_id)
             return "done"
 
         record = self._dispatcher.dispatch_record(run_id, call_id)
@@ -800,6 +936,7 @@ class AgentLoop:
                     "effect_state": "none_applied",
                     "output": {"error": "这次派发未执行", "dispatch_state": record.state},
                 },
+                run_id=run_id,
             )
             return "done"
 
@@ -813,7 +950,7 @@ class AgentLoop:
                 ToolResult("rejected", "none_applied",
                            {"error": f"{type(exc).__name__}: {exc}"}),
             )
-            self._absorb(progress, call_id, self._results[call_id])
+            self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
             return "done"
 
         # 先按"全新请求"构造一份，再决定能不能沿用上一轮的请求号。
@@ -873,7 +1010,7 @@ class AgentLoop:
                 },
             )
             self._record_result(run_id, proposal, result)
-            self._absorb(progress, call_id, self._results[call_id])
+            self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
             if decision.rule_id == "dispatch.workspace_blocked":
                 # 阻断不是普通工具失败：任务必须明确失败，不能悄悄变成 noop
                 raise WorkspaceBlocked(decision.reason)
@@ -890,7 +1027,7 @@ class AgentLoop:
             DISPATCH_ERROR,
         )
         self._record_result(run_id, proposal, result, append=not recorded)
-        self._absorb(progress, call_id, self._results[call_id])
+        self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
         # 中途中断（unknown）时派发层已经阻断工作区；这里只把"到目前为止
         # 到底改了什么"落库，让停下来之后还能回答这个问题。
         self._tasks.note_effect(
@@ -974,6 +1111,7 @@ class AgentLoop:
         "下一步该做什么"。
         """
         self._results = {}
+        self._result_seqs = {}
         self._counted: set[str] = set()
         self._artifact = None
         n_applied = n_unknown = 0
@@ -982,6 +1120,7 @@ class AgentLoop:
                 payload = ev.payload
                 call_id = payload.get("call_id", "")
                 self._results[call_id] = payload
+                self._result_seqs[call_id] = ev.seq
                 self._counted.add(call_id)
                 state = payload.get("effect_state")
                 if state == "applied":
@@ -1059,7 +1198,9 @@ class AgentLoop:
                         "idem_key": receipt.receipt_id,
                     }
                 )
-            self._log.append_many(batch)
+            seqs = self._log.append_many(batch)
+            # 批里第一条永远是 tool.result（凭据跟在后面），seq 归因取它。
+            self._result_seqs[call_id] = seqs[0]
         self._results[call_id] = {
             "call_id": call_id,
             "tool_id": proposal["tool_id"],
@@ -1068,10 +1209,35 @@ class AgentLoop:
             "output": result.output,
         }
 
+    def _tool_result_seq(self, run_id: str, call_id: str) -> int:
+        """这条调用的 `tool.result` 事件 seq。
+
+        缓存来自两处：`_index_events`（本次驱动开始时扫一遍）与 `_record_result`
+        （本循环自己写的）。剩下一种情形要现查：**派发层**在它自己的事务里写了
+        `tool.result`，主循环手里只有结果、没有 seq。查不到就返回 RUN_START_SEQ
+        （"来源不明"），不猜。
+        """
+        cached = self._result_seqs.get(call_id)
+        if cached is not None:
+            return cached
+        seq = RUN_START_SEQ
+        if run_id:
+            for ev in self._log.read_run(run_id, verify=False):
+                if ev.type == "tool.result" and ev.payload.get("call_id") == call_id:
+                    seq = ev.seq
+                    break
+        self._result_seqs[call_id] = seq
+        return seq
+
     def _absorb(
-        self, progress: _Progress, call_id: str, recorded: dict[str, Any]
+        self,
+        progress: _Progress,
+        call_id: str,
+        recorded: dict[str, Any],
+        *,
+        run_id: str = "",
     ) -> None:
-        """把一条已落库的结果并进进度：消息、计数、产物。"""
+        """把一条已落库的结果并进进度：消息、计数、产物、seq 归因。"""
         if call_id in progress.completed:
             return
         result = ToolResult(
@@ -1082,6 +1248,9 @@ class AgentLoop:
         progress.messages.append(
             _tool_message(call_id, recorded.get("tool_id", ""), result)
         )
+        # 与消息平行地补一条归因。查不到（例如结果没有对应事件）就记 0：
+        # 溯源是记账材料，宁可标"来源不明"也不在这里编一个 seq。
+        progress.message_seqs.append(self._tool_result_seq(run_id, call_id))
         # 计数按**调用**去重，不按"这次驱动里有没有处理过它"：`_index_events`
         # 已经按事件把它数过一遍了，游标落后时这里会把同一个调用再数一次，
         # 于是"改了几个文件"变成虚高的数字（effect_state 本身看不出来）。
@@ -1428,5 +1597,6 @@ __all__ = [
     "SYSTEM_PROMPT",
     "build_stack",
     "initial_messages",
+    "message_source_seqs",
     "run",
 ]
