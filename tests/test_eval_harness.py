@@ -250,15 +250,30 @@ def test_hardened_cases_carry_exact_and_boundary_checks():
 
 
 def test_reject_case_leaves_everything_untouched(tmp_path):
-    """P2：审批被拒之后，删除一次都没发生，也没有凭据。"""
+    """P2：审批被拒之后，删除一次都没发生、没有凭据，且 Run 收敛为 failed。
+
+    issue #40 的回归判据：拒绝之后 `approval.requested` **恰好 1 次**。旧语义下
+    resume 会再问一次审批（Run 回到 waiting_approval），这条断言立刻红。
+    """
     case = CASE_BY_ID["P2"]
     suite = _scripted_suite(tmp_path / "eval", cases=(case,), repeat=3)
     report = build_report(suite, (case,))
     assert report["verdict"] == "pass"
     for obs in suite.observations:
         assert obs.result is not None
-        assert obs.result.state == "waiting_approval"
+        assert obs.result.state == "failed"
+        assert obs.result.outcome == "failed"
         assert obs.result.effect_state == "none_applied"
+        # 机械判据：拒绝之后没有第二张审批
+        assert obs.count("approval.requested") == 1
+        vetoes = [
+            r
+            for r in obs.tool_results()
+            if (r.get("output") or {}).get("rule_id") == "c4.approval_rejected"
+        ]
+        assert len(vetoes) == 1
+        assert vetoes[0]["status"] == "rejected"
+        assert vetoes[0]["effect_state"] == "none_applied"
         assert obs.files["temp.md"] == "待删除\n".encode()
         assert obs.files["keep.md"] == "保留\n".encode()
         assert obs.count("receipt") == 0

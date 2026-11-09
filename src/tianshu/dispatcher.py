@@ -108,6 +108,15 @@ from .workspace import (
 # call_id 被另一个请求占用（同一 run 里换个参数复用同一个 id）
 D_DISPATCH_CALL_ID_REUSED = "dispatch.call_id_reused"
 
+#: 同一 Run 内、同一动作内容上人已经否决过：直接拒绝，**不再发起新审批**。
+#: 这是 issue #40 的落点——否决是终局，不是"再问一次"。
+APPROVAL_REJECTED = "c4.approval_rejected"
+#: 给模型看的话必须同时给出下一步："要做就改参数或改目标，然后重新发起"，
+#: 否则模型只会原样重试同一个动作。
+APPROVAL_REJECTED_REASON = (
+    "你之前拒绝了这个操作；要做就改参数或改目标，然后重新发起"
+)
+
 DISPATCH_REQUESTED = "dispatch.requested"
 DISPATCH_REJECTED = "dispatch.rejected"
 DISPATCH_ADMITTED = "dispatch.admitted"
@@ -474,6 +483,22 @@ class Dispatcher:
                 request.digest(),
                 reason=decision.reason,
                 rule_id=decision.rule_id,
+            )
+
+        # 人已经否决过这个动作？否决是终局——**在发起审批之前**就拒绝。
+        #
+        # 这里是 issue #40 的修复点：以前 `find_for()` 只找 pending/approved，
+        # 被拒的审批等于不存在，于是 resume 会再建一张新审批，Run 又回到
+        # waiting_approval，用户被迫反复点拒绝而 Run 永远收不了尾。
+        # `rejected_for()` 认的是动作内容（不含 call_id / owner / claim_epoch）：
+        # 换参数/换目标就查不到（允许重新发起），换调用编号仍然命中。
+        if self._approvals.rejected_for(request) is not None:
+            return self._reject(
+                request,
+                args,
+                APPROVAL_REJECTED_REASON,
+                APPROVAL_REJECTED,
+                event=DISPATCH_REJECTED,
             )
 
         approval = self._approvals.find_for(request)
@@ -1530,6 +1555,8 @@ def _row_to_dispatch(row: sqlite3.Row) -> DispatchRecord:
 
 
 __all__ = [
+    "APPROVAL_REJECTED",
+    "APPROVAL_REJECTED_REASON",
     "ControlRun",
     "DISPATCH_ADMITTED",
     "DISPATCH_INTENT",

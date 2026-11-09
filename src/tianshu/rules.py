@@ -72,6 +72,8 @@ RULE_IDS: frozenset[str] = frozenset(
         "c4.approval_mismatch",
         "c4.approval_state",
         "c4.approval_expired",
+        # ---- 人已经否决过这个动作：否决是终局，不再发起新审批（issue #40） ----
+        "c4.approval_rejected",
         "c4.multi_resource",
         # ---- 租约与作业：身份没问题，是"现在不归你" ----
         "dispatch.claim_lost",
@@ -161,6 +163,7 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "c4.approval_mismatch",
             "c4.approval_state",
             "c4.approval_expired",
+            "c4.approval_rejected",
             "c4.multi_resource",
         }
     ),

@@ -46,6 +46,7 @@ from .context import (
     context_payload,
 )
 from .dispatcher import (
+    APPROVAL_REJECTED,
     DISPATCH_ERROR,
     DISPATCH_EXECUTING,
     DISPATCH_FINISHED,
@@ -397,6 +398,13 @@ class AgentLoop:
         # 由 `_index_events` 与 `_record_result` 填充，缺了再回事件里查一次。
         self._result_seqs: dict[str, int] = {}
         self._artifact: dict[str, Any] | None = None
+        # 否决（issue #40）的运行时索引，`_index_events` 每次驱动开始时重建：
+        # - `_vetoed_subjects`：已经告知过模型的否决（动作内容摘要）→ 模型原样
+        #   重发时可以直接判"没有替代动作"，而不是让它无限重问；
+        # - `_veto_open`：最近一次否决之后**没有任何效果落地** → 模型说"完了"
+        #   时这次 Run 不能记成 succeeded/noop，只能如实记 failed。
+        self._vetoed_subjects: set[str] = set()
+        self._veto_open = False
 
     # ---------------------------------------------------------------- 启动
 
@@ -590,8 +598,9 @@ class AgentLoop:
                                 if action == CONTROL_PAUSE
                                 else CANCEL_REASON,
                             )
+                        outcome, stop_error = self._end_outcome(message)
                         return self._finish(
-                            run_id, claim, progress, outcome=message, error=None
+                            run_id, claim, progress, outcome=outcome, error=stop_error
                         )
 
                 while progress.pending:
@@ -1209,6 +1218,25 @@ class AgentLoop:
             )
             self._record_result(run_id, proposal, result)
             self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
+            if decision.rule_id == APPROVAL_REJECTED:
+                # 否决是终局（issue #40）。第一次命中：把"这件事被否决、且模型
+                # 已经被告知"记下来，然后让模型自己决定下一步——它可能改参数或
+                # 改目标后重新发起（那会生成新的动作摘要，是允许的）。
+                subject = request.subject_digest()
+                if subject in self._vetoed_subjects:
+                    # 已经告知过一次，模型又原样重发了同一件事：它拿不出替代
+                    # 动作。继续让它重试只会变成"再问一次"的循环——Run 必须
+                    # 收尾成 failed，而不是停在 waiting_approval 等一个不会来的
+                    # 批准。`c4.approval_rejected` 写进 run.end 的 reason 里，
+                    # 事后能一眼看出"因为审批被拒绝"。
+                    raise TianshuError(
+                        f"审批被拒绝（{APPROVAL_REJECTED}）：动作 {tool_id}"
+                        f"（{request.action}）在本 Run 内已被否决，模型又原样"
+                        "重发了它；没有可执行的替代动作，Run 以 failed 收束"
+                    )
+                self._vetoed_subjects.add(subject)
+                self._veto_open = True
+                return "done"
             if decision.rule_id == "dispatch.workspace_blocked":
                 # 阻断不是普通工具失败：任务必须明确失败，不能悄悄变成 noop
                 raise WorkspaceBlocked(decision.reason)
@@ -1226,6 +1254,10 @@ class AgentLoop:
         )
         self._record_result(run_id, proposal, result, append=not recorded)
         self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
+        if result.effect_state == "applied":
+            # 否决之后找到了可执行的替代动作并真的落地：这次 Run 不再算
+            # "被否决卡住"。模型说"完了"时可以正常收尾成 succeeded。
+            self._veto_open = False
         # 中途中断（unknown）时派发层已经阻断工作区；这里只把"到目前为止
         # 到底改了什么"落库，让停下来之后还能回答这个问题。
         self._tasks.note_effect(
@@ -1317,6 +1349,13 @@ class AgentLoop:
         self._result_seqs = {}
         self._counted: set[str] = set()
         self._artifact = None
+        # 否决索引每次驱动重建（见 `__init__`）：不只是"这次有没有否决"，而是
+        # "否决之后有没有替代动作真的生效"。后者决定模型说"完了"时能不能记成
+        # succeeded。
+        self._vetoed_subjects = set()
+        self._veto_open = False
+        veto_seq: int | None = None
+        applied_seq: int | None = None
         n_applied = n_unknown = 0
         for ev in self._log.read_run(run_id):
             if ev.type == "tool.result":
@@ -1328,6 +1367,7 @@ class AgentLoop:
                 state = payload.get("effect_state")
                 if state == "applied":
                     n_applied += 1
+                    applied_seq = ev.seq
                 elif state in ("partial", "unknown"):
                     n_unknown += 1
                 out = payload.get("output") or {}
@@ -1337,6 +1377,26 @@ class AgentLoop:
                     and out.get("sha256")
                 ):
                     self._artifact = out
+                if out.get("rule_id") == APPROVAL_REJECTED:
+                    veto_seq = ev.seq
+                    # 记下"这件事已经被否决过、且模型被告知过"。同一条拒绝结果
+                    # 只能来自一份被否决的动作；请求记录里有它的完整内容摘要，
+                    # 于是模型换个 call_id 重发时也能认出来是同一件事。
+                    stored = (
+                        self._dispatcher.get_request(out["request_id"])
+                        if out.get("request_id")
+                        else None
+                    )
+                    if stored is not None:
+                        self._vetoed_subjects.add(
+                            stored.request.subject_digest()
+                        )
+
+        # "否决还没被替代"= 最近一次否决之后没有任何效果落地。模型只要找到别的
+        # 路（换参数/换目标并被人批准执行），这就是一次正常的成功收尾。
+        self._veto_open = veto_seq is not None and (
+            applied_seq is None or applied_seq < veto_seq
+        )
 
         progress.n_applied = n_applied
         progress.n_unknown = n_unknown
@@ -1533,6 +1593,21 @@ class AgentLoop:
             proposal["approval_id"] = None
 
     # ---------------------------------------------------------------- 收尾
+
+    def _end_outcome(self, message: str) -> tuple[str, str | None]:
+        """模型说"完了"时的结论：先看这次 Run 有没有**未翻案的否决**。
+
+        人否决了一个动作、模型又拿不出替代动作 → 这个 Run 没有完成它的目标，
+        只能记 `failed`（`effect_state` 由游标如实给出，通常是 `none_applied`）。
+        记成 succeeded/noop 等于替人的否决签字同意，也会让 issue #40 从
+        "停在 waiting_approval" 变成"悄悄成功"——两种都是撒谎。
+        """
+        if not self._veto_open:
+            return message, None
+        return "failed", (
+            f"审批被拒绝（{APPROVAL_REJECTED}）：本 Run 有被否决的动作，"
+            "模型没有提出可执行的替代动作"
+        )
 
     def _state_of(self, run_id: str) -> str:
         run = self._tasks.get_run(run_id)
