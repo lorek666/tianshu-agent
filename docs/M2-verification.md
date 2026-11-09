@@ -7,11 +7,11 @@
 > 一律列在 §8，不写成"通过"。测试数量不等于验收项数量。
 
 - 验收基线：`main@6cc985e`（PR #13 合并后，314 passed）
-- 本阶段最终：`main@<PR C 合并提交>`（330 passed / `ruff check .` 通过）
+- 本阶段最终：PR C 分支（331 passed / `ruff check .` 通过），合并提交见 PR
 - 平台：macOS 26.2 arm64（aarch64），Python 3.12.13，`uv run pytest`
 - 复验命令：
   ```bash
-  uv run pytest -q          # 330 passed
+  uv run pytest -q          # 331 passed
   uv run ruff check .       # All checks passed!
   ```
 
@@ -43,6 +43,22 @@
 | 9 | unknown 阻断所有受控写入口 | 成立 | `test_recovery.py` 四故障点 + `test_m2_acceptance.py` 实测：`recover` 报 `无法核实 ['c1']` 之后下一次写入 `state=failed`，文件未生成（§6.7） |
 | 10 | 旧日志仍可回放 | 成立 | `test_acceptance.py` 的 replay 校验、`test_debug_regressions.py`；CLI 每次 `run` 都附带 `replay: 通过` |
 | 11 | 四目标证据状态透明 | **部分** | macOS arm64 实测通过；Windows（x64/arm64）、macOS x64 **未运行**，见 §8 |
+
+### 2.5 审批复用的边界（探针实测）
+
+一张批准到底能覆盖多少东西？用 `/tmp` 探针在同一个 Run 上造四种"看起来很像"的变体，
+看它们能不能蹭到已批准的那张：
+
+| 变体 | 结果 |
+|---|---|
+| 改写入内容（同名文件、同 `call_id`） | 新开一张待批，**不复用** |
+| 换 `call_id` | 新开一张待批 |
+| 换 `attempt_id` | 新开一张待批 |
+| 换目标文件 | 新开一张待批 |
+| 原动作执行第二次 | `DispatchError: 这次调用已经派发过：call_id=c1（state=done）` |
+
+也就是说：批准覆盖的是"这一次调用、这一份参数、这个目标、这个 revision/绑定"，
+**只**去掉了 owner/epoch 这一个维度。改目标、改参数仍然要重新批（验收项 6）。
 
 ## 3. Task 6 专项：作业循环
 
