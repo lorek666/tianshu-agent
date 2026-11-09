@@ -58,6 +58,7 @@ src/tianshu/
 ├── receipt.py     操作凭据（凭据能独立核对）
 ├── recovery.py    中断核查：applied / none_applied / unknown 三者不合并
 ├── loop.py        E1 主循环（持久游标、暂停/取消、恢复）+ 栈装配
+├── worker.py      作业循环：认领排队中的 Run、阻塞期间后台续心跳
 ├── replay.py      回放校验：seq / messages_hash / 产物哈希三方核对
 └── cli.py         命令行入口
 ```
@@ -96,13 +97,22 @@ uv run python -m tianshu run cancel --run-id run_xxxx
 # 人工审批（覆盖、删除类操作不会被自动执行）
 uv run python -m tianshu approvals list
 uv run python -m tianshu approvals approve appr_xxxx
+# 批准的是"那个动作"，不是"那个进程"：换一个进程 run resume 依然有效，
+# 但执行仍要求当前 claim 与租约在手，且改目标/改参数会让批准作废。
+
+# 作业循环：认领排队中的 Run（进程崩溃、重启后接手；死掉的 owner 立刻可接管）
+# 注意：这是一次性 drain，不是常驻守护进程——跑完队列（或第一次撞上
+# "工作区被别的 Run 占着"）就退出，由调用方决定隔多久再来一次。
+uv run python -m tianshu worker --once    # 只跑一个作业
+uv run python -m tianshu worker           # 跑到队空 / 第一次 contended 为止
 
 # 改目标：旧 Run 立刻失效，待批请求作废，历史保留
 uv run python -m tianshu task revise --task-id task_xxxx --goal "换个目标"
 ```
 
-退出码：`0` 有结论且成功，`1` 失败/取消，`2` 用法或前置条件错误（含
-`recover` 发现未核实效果），`3` 需要人决定（等审批 / 已暂停 / 待核查）。
+退出码：`0` 有结论且成功，`1` 失败/取消（`worker` 有被接管/结算失败时也是 1），
+`2` 用法或前置条件错误（含 `recover` 发现未核实效果），`3` 需要人决定
+（等审批 / 已暂停 / 待核查）。
 `undo` 不带 `--approve` 时只预演并返回 `3`。
 
 接真实模型（OpenAI-compatible）：

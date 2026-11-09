@@ -27,9 +27,20 @@
         "delete"
       ]
     },
+    "action_digest": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64})?$",
+      "description": "动作摘要（RFC 8785 + SHA-256）。绑定 task/run/goal_revision/lease_epoch/call_id/attempt_id/tool_id/tool_version/schema_hash/action/resources/args_hash/preconditions/policy_version/contract_version，**不含** owner 与 claim_epoch；空串 = 旧库升级前写入的历史行（只能同请求摘要复用）"
+    },
     "approval_id": {
       "type": "string",
       "pattern": "^appr_[0-9a-f]{12}$"
+    },
+    "consumed_at": {
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "created_at": {
       "type": "integer"
@@ -91,12 +102,6 @@
     },
     "task_id": {
       "type": "string"
-    },
-    "consumed_at": {
-      "type": [
-        "integer",
-        "null"
-      ]
     }
   }
 }

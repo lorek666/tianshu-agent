@@ -376,6 +376,23 @@ Approval { approval_id, request, digest,
 - 参数/资源/工具版本/policy/prompt 任一变化 → `superseded`
 - **凭据不混进来**：`CredentialBinding{cred_id, subject, scope, expires_at, activation}` 独立对象，有自己的激活时机
 
+**两个摘要，不是一个。** 请求与审批必须分开算摘要，否则审批会随进程重启
+无限作废：
+
+| 摘要 | 覆盖字段 | 回答什么问题 |
+|---|---|---|
+| `request.digest` | 全部授权字段，**含** `job_id / owner_instance_id / claim_epoch` | "这次动作由谁在什么身份下执行"——派发与执行前核验 |
+| `Approval.digest` | `task_id, run_id, goal_revision, lease_epoch, call_id, attempt_id, tool_id, tool_version, schema_hash, action, resources, args_hash, preconditions, policy_version, contract_version` | "人批准的是哪一次动作"——人对内容的审查 |
+
+人批准的是"把这个文件改成什么"，不是"哪个进程去改"。若审批绑 owner，
+进程重启（`claim_epoch` +1）就让刚批的动作作废，于是 `approvals approve`
+之后 `run resume` 永远还要再批一次——审批永远无法完成，这不是安全，是流程死锁。
+
+执行时仍然要同时满足：当前 claim 有效且属于本实例、租约在手、Run 处于
+`RUNNING`、`goal_revision/lease_epoch` 未变、`action_digest` 与审批一致、
+审批一次性消费。**改目标、改参数、改绑定**都会让 `goal_revision` 或
+`lease_epoch` 进入动作摘要而变化 → 旧审批 `superseded`，与上面那条一致。
+
 ### 5.5 两个"停止原因"必须分开
 
 上一版把 Strands 的 13 值枚举直接当作 C1 的停止语义，同时又写"仅 `tool_calls_ready` 可派发"——而该枚举里根本没有 `tool_calls_ready`（只有 `tool_use`）。这是一个真 bug，本版拆成两个字段。
@@ -592,6 +609,25 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 1. **「可写」绑定目录，不绑定全局。** 只有用户在任务开始时显式选定的目录可写；其余位置一律按目录外处理。否则 agent 会改到用户不认识的地方——这是普通用户最不能容忍的失败。
 2. **写入与删除必须分级。** 可写 ≠ 可删。`rm`、覆盖同名文件、`git reset --hard` 都算删除类，走审批。
 3. **删除必须可在 UI 内撤销**（见 F11）。普通用户不会 `git checkout`，回滚能力是产品功能而非开发者工具。
+
+**上面这张表必须落到工具级**，否则"目录内自动放行"与"覆盖同名文件要审批"会互相矛盾
+（计划 §4「执行前文档协调」）。M2 的实际分级：
+
+| 工具 | 动作 | 默认 |
+|---|---|---|
+| `list_files` / `read_file` | `read` | 自动（只读工具不产生副作用，崩溃也只记 `none_applied`） |
+| `create_report`，目标**不存在** | `create` | 自动 |
+| `create_report`，目标**已存在** | —（**拒绝**，`c4.create_over_existing`；工具本身不覆盖，批准了也执行不了） | 拒绝，并提示改用 `modify_text` |
+| `modify_text`（整文件替换） | `overwrite` | 需审批 |
+| `delete_file` | `delete` | 需审批 + preimage |
+
+> 一句话：**"新建"和"覆盖"是两个工具，不是一个工具加一张批准。** 让
+> `create_report` 在批准之后去覆盖，会让用户批一张永远执行不了的批准。
+>
+> **M2 的诚实缺口**：目前唯一的"修改"工具是整文件替换，按删除类处理，所以
+> 「改这个文件夹里的东西 = 自动放行」这句话在 M2 **没有兑现**——每次修改都要批。
+> 局部编辑工具（diff 级写入）出现之后才能按 §8.3 的原意自动放行；在那之前不许
+> 在 UI 上宣称"目录内修改无需确认"。
 
 ---
 

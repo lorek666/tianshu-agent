@@ -125,13 +125,29 @@ class EventTransaction:
 class EventLog:
     """单 writer 的 append-only 事件日志。"""
 
-    def __init__(self, db_path: Path, blob_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        blob_dir: Path | None = None,
+        *,
+        cross_thread: bool = False,
+    ) -> None:
+        """`cross_thread=True` 只给"连接建在一个线程、用在同一线程"的通道用。
+
+        sqlite3 默认禁止跨线程用同一个连接，因为并发读写连接内部状态会错乱。
+        心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
+        那条），所以关掉这个检查是安全的。除此之外不要传它。
+        """
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._blob_dir = blob_dir
         if blob_dir is not None:
             blob_dir.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path), isolation_level=None)
+        self._conn = sqlite3.connect(
+            str(db_path),
+            isolation_level=None,
+            check_same_thread=not cross_thread,
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
@@ -145,6 +161,11 @@ class EventLog:
     def db_path(self) -> Path:
         """数据库文件路径。authority 根目录默认取它的父目录。"""
         return self._db_path
+
+    @property
+    def blob_dir(self) -> Path | None:
+        """payload 超长时的落盘目录。心跳线程重开连接要沿用同一个。"""
+        return self._blob_dir
 
     @property
     def conn(self) -> sqlite3.Connection:

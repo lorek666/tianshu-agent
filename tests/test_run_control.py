@@ -490,8 +490,16 @@ def test_live_approval_resume_keeps_epoch(env):
     assert env.intents(result.run_id) == ["c1"]
 
 
-def test_reclaimed_approval_can_complete_after_one_reapproval(env):
-    """进程死掉被别人接管：旧批准作废，重新批一次即可跑完，且只跑一次。"""
+def test_approval_survives_takeover_without_reapproval(env):
+    """进程死掉被别人接管：动作没变，批准继续有效，不需要再批一次。
+
+    分界线是"人批准的是哪一件事"，不是"谁去执行"：
+    - `goal_revision / lease_epoch / 参数 / 目标` 变了 → 动作摘要变 → 旧批准作废；
+    - `claim_epoch / owner` 变了（接管、重启）→ 动作没变 → 批准继续有效。
+
+    把 owner 也绑进审批的话，`approvals approve` 之后 `run resume` 永远还要
+    再批一次——审批永远走不完，这不是安全，是流程死锁。
+    """
     engine = env.engine([_write_turn([_overwrite("note.md", "接管后写入", "c1")]), _end()])
     task = env.task()
     result = engine.start(task.task_id)
@@ -521,19 +529,15 @@ def test_reclaimed_approval_can_complete_after_one_reapproval(env):
         limits=Limits(8, 20_000),
     )
 
-    parked = taker.resume_run(result.run_id)
-    assert parked.state == RUN_WAITING_APPROVAL
+    done = taker.resume_run(result.run_id)
+    assert done.state == "succeeded", done.error
     assert takers.claims.job_for_run(result.run_id).claim_epoch > old_epoch, (
         "接管必须推进 claim_epoch"
     )
-    # 旧批准被显式作废（不能静默换成"新 epoch 也能用"）
-    assert env.stack.approvals.get(old_approval).state == "superseded"
-    fresh = takers.approvals.pending(run_id=result.run_id)
-    assert len(fresh) == 1, "一次接管只应留下一条重新审批"
-
-    takers.approvals.decide(fresh[0].approval_id, decision="approved", actor=_actor())
-    done = taker.resume_run(result.run_id)
-    assert done.state == "succeeded", done.error
+    assert env.stack.approvals.get(old_approval).state == "consumed", (
+        "批准被用掉了——不是被作废，也不是还能再用一次"
+    )
+    assert takers.approvals.pending(run_id=result.run_id) == [], "不该重新开审批"
     assert (env.ws / "note.md").read_text(encoding="utf-8") == "接管后写入"
     assert env.intents(result.run_id) == ["c1"], "接管不得导致重复执行"
 
