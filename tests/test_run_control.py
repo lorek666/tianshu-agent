@@ -1290,6 +1290,12 @@ def test_status_exit_code_follows_the_documented_contract(env):
     env.stack.tasks.finish_run(other.run_id, outcome="succeeded", effect_state="applied")
     assert _status_exit_code(env.stack.tasks.get_run(other.run_id)) == 0, "成功"
 
+    fenced_task = env.task("会被改目标的")
+    fenced = env.stack.tasks.start_run(fenced_task.task_id)
+    env.stack.tasks.transition(fenced.run_id, RUN_RUNNING)
+    env.stack.tasks.revise_task(fenced_task.task_id, goal="新目标")
+    assert _status_exit_code(env.stack.tasks.get_run(fenced.run_id)) == 1, "fenced 也是失败"
+
 
 def test_repeated_pause_is_idempotent_not_a_downgrade(env):
     """同一个暂停请求重复一次仍然算生效，不能被记成"被更强的请求压住"。"""

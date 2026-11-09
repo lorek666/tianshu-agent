@@ -308,7 +308,10 @@ def _status_exit_code(run) -> int:
     """
     if run.state in (RUN_WAITING_APPROVAL, RUN_RECONCILING, "paused"):
         return 3
-    if run.state in TERMINAL_STATES and run.outcome not in ("succeeded",):
+    if run.state == "fenced":
+        # 被 fence 的 Run 永远不会有结论，脚本不能把它当成"还没完"一直等
+        return 1
+    if run.state in TERMINAL_STATES and run.outcome != "succeeded":
         return 1
     return 0
 
@@ -317,7 +320,7 @@ def _run_pause(stack, args: argparse.Namespace) -> int:
     record = stack.tasks.request_pause(args.run_id or "")
     if args.json:
         print(json.dumps(record.__dict__, ensure_ascii=False, indent=2, default=str))
-        return _status_exit_code(record) if record.state != "paused" else 0
+        return 0
     if record.control_requested:
         print(f"已记录暂停请求（当前 state={record.state}）：执行器会在下一个安全点停下")
         print("这一点之后再开始的副作用不会发生；已经在执行的那一次会照常完成")
