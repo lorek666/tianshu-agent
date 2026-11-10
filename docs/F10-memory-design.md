@@ -277,27 +277,30 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 13 | F5：选中的记忆身份落进 `model.intent.payload.context` | ✅ 已落地 | `context.context_payload(memories=...)` |
 | 14 | CLI 控制面：`tianshu memory list\|search\|get\|confirm\|forget` | ✅ 已落地 | `cli._cmd_memory` / `_cli_memory_scopes` / `_dispatch_memory_decision`（人敲命令 = 批准，审批仍落库、一次性消费、执行侧二次核验） |
 | 15 | 测试：资源种类 | ✅ 已覆盖 | `tests/test_resources.py`：22 个 `def test_`，参数化后 42 条 |
-| 16 | 测试：投影 / 检索 / 闸门 / 去重 | ✅ 已覆盖 | `tests/test_memory_store.py`：50 个 `def test_`，参数化后 63 条 |
-| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖 | `tests/test_memory_dispatch.py`（16 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用）与 `tests/test_memory_loop.py`（11 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域） |
+| 16 | 测试：投影 / 检索 / 闸门 / 去重 | ✅ 已覆盖 | `tests/test_memory_store.py`：51 个 `def test_`，参数化后 64 条 |
+| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖 | `tests/test_memory_dispatch.py`（18 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、未知 kind、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用、零绑定控制 Run 不能写文件）与 `tests/test_memory_loop.py`（11 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域） |
 | 18 | `origin=user_explicit` 的确认免审批路径 | 策略已测 / **生产无入口** | 策略分支有测试：`test_user_explicit_confirm_needs_no_approval`（**测试播种**一条 `memory_origin="user_explicit"` 的事件，走真实 prepare/dispatch）。但生产侧 `memory_exec.MemoryExecutor._propose` 固定写 `origin="inferred"`（防模型自称"用户明示"绕过审批），所以**线上没有任何记忆能走到免审批确认**；"用户明说记住"这条入口尚未提供 |
 | 19 | L2/L3 蒸馏（增量 delta、保留上一版 + 证据） | ❌ 未实现 | `grep -rin "distill" src/tianshu/` 无结果；`memory.py` 只做 L1 级显式记忆，`consolidated_at` 目前只在 `memory.confirm` 时写一次 |
 | 20 | 向量召回 | ❌ 未实现（按设计） | 首版只有 FTS5 + CJK 双字切分（§12），无 embedding 依赖 |
+| 21 | 崩溃恢复（`recover_run`）的记忆分支 | ❌ 未落地（已知限制） | `recovery.recover_run` 没有记忆专门分支：`tool.intent` 已提交但 `tool.result` 未落库时，恢复按**既有文件写工具的推断**走（多数情况记 `none_applied`，快照缺失时 `unknown` 并可能阻断目录），不是精确的记忆恢复。**投影侧不受影响**——`apply_event` 只在 `_commit_result` 的事务里被调用，没有 result 就不会有半条投影（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住这条）；但"这次记忆写入到底生效了没有"的结论仍依赖既有推断，而不是记忆专用证据。要精确回答需给 `recovery.py` 加记忆分支，单独工单 |
+| 22 | `origin` 的 `user_confirmed` 迁移 | ❌ 未实现（产生侧缺口） | `memory.confirm` 只推进 `status` 与 `revision`，**不改写 `origin`**；`MemoryProjection` 拒绝自行发明 `inferred → user_confirmed`（`memory._apply_confirm` 的 output 里没有 origin 字段）。后果：§5 的三档 origin 里 **`user_explicit` 与 `user_confirmed` 都没有生产入口**，线上所有记忆恒为 `inferred`；§8 的"优先 `user_explicit` > `user_confirmed` > `inferred`"排序**代码是对的，但实际退化成 `created_at` 降序**。要补需在 confirm 的 output 契约里加 origin 字段（由执行器按"人批准过"判定，**不能由模型参数决定**），并同步 `apply_event` 与重建断言 |
+| 23 | §8 的作用域优先级（优先当前任务 / 工作区证据） | ❌ 未实现 | 排序口径目前被钉为 `origin` → `created_at` 降序（`MemoryProjection.search`），作用域只用于**过滤**（loadout + `allowed`），不参与打分。后果：同一用户同时有 user 与 workspace 两条相关记忆时，不会优先给贴近当前任务的证据。这是 F10 §8 原述的一部分，未做就如实标注，别当成"已经按 F10 做了" |
 
 **数据落点（别写成系统标准目录）**：投影表（`memories` / `memory_fts` / `memory_meta`）建在**事件日志同一个 sqlite 库**里——构造时强制 `conn is log.conn`（`MemoryProjection.__init__`），所以事件与投影同事务。正文 blob 默认落在 **DB 旁的 `memory_blobs/`**（`MemoryProjection.blob_dir`），**刻意不放进 `log.blob_dir`**：事件 payload 必须留存供 replay / 审计，记忆正文将来要能按策略物理擦除；两者同处一个内容寻址目录时，同一段字节会变成同一个文件——按策略删记忆正文会误删必须留存的日志材料（理由写在 `MemoryProjection.__init__` 的注释里）。纯内存库（`:memory:`）没有"DB 旁边"，此时 `blob_dir` 为 `None`、正文如实标成不可用，不编一个当前目录下的路径。内核子命令默认 `--db .tianshu/events.db`（`cli.DEFAULT_DB`），daemon 用 `--data-root` 时事件库在 `<data root>/events.db`（`daemon.py`）；记忆投影跟着这个库走。测试钉住这条分离：`test_default_blob_dir_is_separate_from_event_payload_store`（`EventLog` 就算配了 `blob_dir`，记忆正文也不跟过去）。`~/Library/Application Support/AgentOS` 那套只存在于 TECH-ARCH 的设计里，别当成现状。
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-10 23:46（`feat/memory` 工作区实测，`1207 passed / 3 skipped`、1211 条 collected；队友仍在并行加测试，以提交后 CI 为准）。
+> **状态时点**：2026-11-11 00:01（`feat/memory` 工作区实测，`1212 passed / 3 skipped`、1215 条 collected；队友仍在并行加测试，以提交后 CI 为准）。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
 > 真的没有测试，别把它当已验收。函数名来自四个文件：`tests/test_memory_store.py`
-> （50 个 `def test_` / 63 条：投影 / 检索 / 闸门 / 去重）、`tests/test_memory_dispatch.py`
-> （16 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / task 作用域越权）、`tests/test_memory_loop.py`（11 个：主循环 / 预算 /
+> （51 个 `def test_` / 64 条：投影 / 检索 / 闸门 / 去重）、`tests/test_memory_dispatch.py`
+> （18 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run）、`tests/test_memory_loop.py`（11 个：主循环 / 预算 /
 > replay / CLI / 工具封闭集）、`tests/test_resources.py`（22 个 / 42 条：资源种类）。
 
 | 判据 | 状态 | 证据 / 缺口 |
 |---|---|---|
-| 记住「报告用中文、先列结论」后，新任务能检索到 | 部分覆盖 | 存储层 `test_propose_confirm_get_search_round_trip`；主循环 `test_zero_directory_task_can_recall_memory`（零目录任务检索到、`allowed` 装备正确、`context.memories` 落身份）。**跨 Task 的新任务仍召回**没有专门用例 |
+| 记住「报告用中文、先列结论」后，新任务能检索到 | ✅ 已覆盖 | 存储层 `test_propose_confirm_get_search_round_trip`；**新任务**（后来的 task 装备）`test_user_memory_is_recalled_by_a_later_task`（user 作用域被新任务检索到，且别的工作区私有记忆混不进来）；主循环 `test_zero_directory_task_can_recall_memory`（零目录任务检索到、`allowed` 装备正确、`context.memories` 落身份） |
 | 不同 workspace 不串记忆；模型读不到另一个 workspace 的私有记忆 | ✅ 已覆盖 | `test_cross_scope_isolation_and_loadout`、`test_observe_is_scope_filtered`、`test_workspace_uri_scope_mismatch_is_rejected`、`test_workspace_scope_is_denied_cross_task_and_rule_is_registered`、`test_workspace_scope_can_be_used_by_its_own_task`、`test_task_scope_is_only_for_its_own_task`、`test_loadout_equips_only_authorized_scopes` |
 | 中文无空格文本与中英混合标识符的词面召回用固定样例量化 | ✅ 已覆盖 | `test_cjk_bigram_recall_is_quantified`、`test_mixed_cjk_and_identifier_recall` |
 | 候选未经确认不激活；摘要 / 网页不能自动成为长期用户事实 | 部分覆盖 | 候选不召回：`test_propose_confirm_get_search_round_trip`、`test_propose_really_goes_through_dispatcher_and_orders_intent_before_result`。`origin` 固定写 `inferred` 只有代码（`memory_exec.MemoryExecutor._propose`），**没有断言 origin 的测试**；"网页/摘要不能自动变事实"的入口级判据缺 |
@@ -312,7 +315,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 写入前去重：重复事实不重复进索引（进索引前条数已下降） | ✅ 已覆盖 | `test_find_duplicate_and_deduped_event_do_not_grow_the_index`、`test_duplicate_propose_without_deduped_is_rejected_atomically`、`test_deduped_event_cannot_point_at_a_forgotten_row`、`test_duplicate_propose_is_policy_denied_before_approval` |
 | 资源种类封闭：历史裸绝对路径仍是 `file` 且回写逐字节不变；未知 scheme / 相对路径 fail-closed | ✅ 已覆盖 | `test_absolute_path_is_file_and_byte_identical`（参数化）、`test_absolute_path_with_double_colon_slash_is_still_file`、`test_unknown_scheme_rejected`、`test_relative_or_empty_rejected`、`test_memory_uri_never_becomes_a_file_path`、`test_resource_kinds_are_closed` |
 | 作用域编码可指回来源：`memory://workspace/<percent-encoded 绝对路径>` 解析回同一路径 | ✅ 已覆盖 | `test_workspace_uri_percent_encodes_and_round_trips`、`test_workspace_scope_is_canonicalized`、`test_user_scope_uri`、`test_task_scope_uri`、`test_memory_scopes_are_closed` |
-| 工具与资源种类不得互换：文件工具收到 `memory://`、记忆工具收到绝对路径都要拒 | ✅ 已覆盖（kind 一条除外） | `test_tool_and_resource_kind_must_match`（两个方向都拒，断言 `dispatch.memory_resource_mismatch`）、`test_file_dispatch_still_uses_bare_absolute_path_and_receipt`、`test_absolute_file_path_with_double_colon_slash_stays_a_file`（文件路径仍走原路）。**缺口**：`c4.memory_kind_unsupported`（未知 kind）仍然没有测试 |
+| 工具与资源种类不得互换：文件工具收到 `memory://`、记忆工具收到绝对路径都要拒 | ✅ 已覆盖 | `test_tool_and_resource_kind_must_match`（两个方向都拒，断言 `dispatch.memory_resource_mismatch`）、`test_unknown_memory_kind_is_policy_denied`（未知 kind → `c4.memory_kind_unsupported`）、`test_file_dispatch_still_uses_bare_absolute_path_and_receipt`、`test_absolute_file_path_with_double_colon_slash_stays_a_file`（文件路径仍走原路）、`test_zero_binding_control_run_cannot_write_files`（零绑定控制 Run 不能写文件） |
 | `memory.*` 五个工具真的出现在 `tool_manifest()` 里，schema 就是 `SPECS` 里那份 | ✅ 已覆盖 | `test_memory_tools_are_real_specs_without_path_args`（真实 `tool_manifest()` + 真实 `SPECS`：`version==1.0`、`path_arg==""`、`action` 映射、`additionalProperties=False`）；`test_memory_tool_sets_match_the_registry`（主循环里的读 / 写工具封闭集与注册表一致） |
 | 零目录任务也能用记忆（读与写都不该被"没有目录"挡住） | ✅ 已覆盖 | `test_propose_works_for_zero_directory_task`、`test_zero_directory_task_can_recall_memory` |
 | 检索文本走 F5 字节预算：超预算时是明确预览 / 丢弃，不是静默塞入 | ✅ 已覆盖 | `test_recall_is_capped_at_five_items_and_4kib`、`test_recall_text_goes_through_compile_context_budget`、`test_default_budget_keeps_recall_verbatim_and_pure`（同输入同 digest，纯函数） |
