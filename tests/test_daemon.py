@@ -990,6 +990,132 @@ def test_sigterm_exits_zero_and_releases_lock(root) -> None:
     assert not daemon.lock_path(root).exists(), "SIGTERM 路径也必须释放锁"
 
 
+# --------------------------------------------------------------------------- 就绪顺序（#63）
+
+
+def test_on_ready_waits_for_self_connect_proof(root, monkeypatch) -> None:
+    """就绪标记必须晚于"自连探测通过"——issue #63 的顺序回归。
+
+    注入：把 `ipc.self_connect` 换成一个"进来就卡住、等人放行"的探针。修复后
+    daemon 必须停在就绪屏障里，`on_ready` 不许落盘；放行后才宣告就绪。
+    负控：把 `_await_endpoint_ready()` 的回退顺序去掉（旧实现），`on_ready`
+    会在自连探测之前就置位 → 本用例红。
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    real_self_connect = ipc.self_connect
+
+    def gated(data_root, *, timeout: float = 1.0) -> bool:
+        entered.set()
+        assert release.wait(20.0)
+        return real_self_connect(data_root, timeout=timeout)
+
+    monkeypatch.setattr(ipc, "self_connect", gated)
+    harness = Harness(root, ScriptedModel([]))
+    try:
+        harness.thread.start()
+        deadline = time.monotonic() + 10.0
+        while (
+            time.monotonic() < deadline
+            and not entered.is_set()
+            and not harness.ready.is_set()
+        ):
+            time.sleep(0.01)
+        # 先断言"标记没有提前"，再断言"确实走到了自连探测"：负控（旧顺序）
+        # 会停在第一条上，红的样子就是 issue #63 的根因——就绪标记比连接能力早。
+        assert not harness.ready.is_set(), (
+            "自连探测还没通过，on_ready 就已经落盘——就绪标记在撒谎"
+        )
+        assert entered.is_set(), "daemon 没有走到自连探测"
+        release.set()
+        assert harness.ready.wait(10.0), "放行自连探测后 daemon 没有就绪"
+        assert harness.errors == []
+        client = _connect(root)
+        try:
+            assert client.call("state", {})["event_seq_head"] >= 0
+        finally:
+            client.close()
+    finally:
+        release.set()
+        harness.stop_and_wait(timeout=5.0)
+
+
+def test_on_ready_is_not_called_when_endpoint_never_proves_connectable(
+    root, monkeypatch
+) -> None:
+    """端点始终证明不了可用：宁可启动失败 + 清锁，也不许宣告就绪。"""
+    monkeypatch.setattr(ipc, "self_connect", lambda *a, **k: False)
+    monkeypatch.setattr(daemon, "SELF_CONNECT_BUDGET_S", 0.3)
+    monkeypatch.setattr(daemon, "SELF_CONNECT_TIMEOUT_S", 0.1)
+    ready = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            daemon.serve(root, model=ScriptedModel([]), on_ready=ready.set)
+        except BaseException as exc:  # noqa: BLE001 - 把启动失败带回断言
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(15.0)
+    assert not thread.is_alive()
+    assert not ready.is_set(), "端点没证明可用，on_ready 不能被调用"
+    assert errors, "启动失败必须抛出来，不许当成正常退出"
+    assert isinstance(errors[0], ipc.IpcError)
+    assert "自连探测失败" in str(errors[0])
+    assert not daemon.lock_path(root).exists(), "失败退出也要释放单实例锁"
+
+
+def test_accept_thread_fatal_error_stops_daemon_and_reports_reason(
+    root, start_daemon, monkeypatch
+) -> None:
+    """accept 线程异常退出必须**带着原因让 daemon 退出**，不许静默变僵尸。"""
+    real_accept = ipc.Server.accept
+    broken = threading.Event()
+
+    def flaky(self):
+        if broken.is_set():
+            raise RuntimeError("listener fd 坏了")
+        return real_accept(self)
+
+    monkeypatch.setattr(ipc.Server, "accept", flaky)
+    harness = start_daemon(ScriptedModel([]))
+    # 先让 daemon 完整就绪（上面的探活/自连都走真实 accept），再打破监听。
+    broken.set()
+    assert ipc.probe(root) is True, "这一步只负责把阻塞中的 accept 叫醒"
+    assert harness.thread.join(15.0) is None, "accept 线程坏了，daemon 还在跑"
+    assert harness.errors, "accept 线程异常退出必须把原因交给调用方"
+    message = str(harness.errors[0])
+    assert "accept 线程不可用" in message
+    assert "listener fd 坏了" in message
+    assert not daemon.lock_path(root).exists(), "致命退出也要释放锁"
+    assert not ipc.probe(root, timeout=0.2), "退出后端点不能还活着"
+
+
+def test_handshake_failures_on_accept_are_retryable(
+    root, start_daemon, monkeypatch
+) -> None:
+    """握手阶段失败（探活连接就是这样）是可重试的，不许升级成致命退出。"""
+    real_accept = ipc.Server.accept
+    calls = {"n": 0}
+
+    def flaky(self):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise ipc.ProtocolError("模拟握手失败（可重试）")
+        return real_accept(self)
+
+    monkeypatch.setattr(ipc.Server, "accept", flaky)
+    start_daemon(ScriptedModel([]))
+    client = _connect(root)
+    try:
+        assert client.call("state", {})["event_seq_head"] >= 0
+    finally:
+        client.close()
+    assert calls["n"] >= 2, "应当先失败两次再恢复正常"
+
+
 def test_stop_event_shuts_down_without_rpc(root) -> None:
     """`stop_event` 是第三条入口（Host/测试用），必须和信号/RPC 统一到同一路径。"""
     harness = Harness(root, ScriptedModel([]))
