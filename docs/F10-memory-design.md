@@ -344,6 +344,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 [NEXT-CAPABILITIES-PLAN.md](NEXT-CAPABILITIES-PLAN.md) §5 是实施拆解（PR08 `docs(contract)` / PR09 `feat(memory)`）；本文是该 PR 的设计输入。两者冲突时**以本文为准（设计）**，但任何契约变更仍需走 `docs(contract):` 独立 PR。
 
+§13 里仍为"未实现 / 无入口 / 部分落地"的十条（#18–#27）的**逐条施工规格**在 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)：工作流划分、文件所有权、契约增量清单、每条判据与负控口径。该规格**不改变**本文的设计结论；与本文冲突时以本文为准。
+
 ## 16. 参考
 
 - [TencentDB Agent Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory) — 分层蒸馏（L0–L3）、记忆资产化、装备（loadout）、默认私有、可编辑记忆、冷启动 save file。
