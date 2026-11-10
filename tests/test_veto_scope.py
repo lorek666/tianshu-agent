@@ -205,7 +205,10 @@ def test_model_tool_surface_has_no_run_start():
         assert spec.action in MODEL_ACTION_SET, (
             f"工具 {spec.tool_id} 的动作 {spec.action!r} 不在模型动作封闭集合里"
         )
-    # 只读/写文件/执行命令——没有任何一个的动作语义是"新建 Run"
+    # 只读 / 写文件 / 执行命令 / 记忆读写——**没有任何一个**的动作语义是"新建 Run"。
+    # 这份字面清单是**故意**的绊线：模型工具面每增加一个工具，都必须在这里显式
+    # 过一次（F10 的记忆工具是 11 个里的 5 个）；不然"模型不能建 Run"这条前提
+    # 就可能在无人察觉时被稀释。
     assert ids == {
         "list_files",
         "read_text",
@@ -213,6 +216,11 @@ def test_model_tool_surface_has_no_run_start():
         "modify_text",
         "delete_file",
         "run_command",
+        "memory.search",
+        "memory.get",
+        "memory.propose",
+        "memory.confirm",
+        "memory.forget",
     }
 
 

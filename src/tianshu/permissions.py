@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 import uuid
@@ -29,6 +30,12 @@ from typing import Any
 from .canonical import jcs_sha256
 from .errors import TianshuError
 from .events import EventLog
+from .resources import (
+    KIND_MEMORY,
+    MEMORY_SCOPES,
+    ResourceError,
+    parse_resource,
+)
 from .workspace import WorkspaceBinding, is_ancestor_or_self, overlap_key
 
 APPROVAL_TTL_MS = 10 * 60_000
@@ -80,6 +87,31 @@ APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC}
 DECISION_AUTO = "auto"
 DECISION_APPROVE = "approve"
 DECISION_DENY = "deny"
+
+#: 记忆种类的**兼容回退集**。
+#:
+#: 权威定义在 `memory.py` 的 `MEMORY_KINDS`（队友实现，锚定签名）。这里只在
+#: 它还没加载/不存在时保持 fail-closed 校验可用；真正的模块一出现，下面的
+#: `supported_memory_kinds()` 就会用模块里的集合覆盖它。两份集合不一致属于
+#: 契约漂移，`tests/test_memory_dispatch.py` 会在 `memory.py` 存在时直接比对。
+_MEMORY_KINDS_FALLBACK: frozenset[str] = frozenset(
+    {"preference", "fact", "decision", "procedure"}
+)
+
+
+def supported_memory_kinds() -> frozenset[str]:
+    """返回当前进程里权威的 `MEMORY_KINDS`。
+
+    **延迟导入**：`permissions` 是授权层，不能因为记忆模块尚未加载就把整个
+    权限系统拖挂；也不能在这里复制一份"看起来一样"的集合当作事实。导入失败
+    时回退到 F10 §5 的封闭集，并保持 fail-closed（未知 kind 仍然拒绝）。
+    """
+    try:
+        from .memory import MEMORY_KINDS as kinds
+
+        return frozenset(kinds)
+    except ImportError:  # pragma: no cover - 集成阶段由真实模块覆盖
+        return _MEMORY_KINDS_FALLBACK
 
 
 class ApprovalError(TianshuError):
@@ -392,6 +424,8 @@ class PolicyEngine:
         resources: list[str],
         bindings: list[WorkspaceBinding],
         preconditions: dict[str, Any] | None = None,
+        *,
+        task_id: str | None = None,
     ) -> PolicyDecision:
         if action not in SUPPORTED_ACTIONS:
             return PolicyDecision(
@@ -399,6 +433,21 @@ class PolicyEngine:
             )
         if not resources:
             return PolicyDecision(DECISION_DENY, "动作没有声明资源", "c4.no_resource")
+
+        # 资源种类由字符串自己的 scheme 决定（见 resources.py）。只有真的带
+        # `://` 的资源才进记忆分支；裸绝对路径继续走原来的文件判定，逐字节
+        # 不变——历史审批与派发摘要不因记忆能力上线而失效。
+        if any(
+            isinstance(r, str) and not os.path.isabs(r) and "://" in r
+            for r in resources
+        ):
+            return self._classify_memory(
+                action,
+                resources,
+                bindings,
+                preconditions or {},
+                task_id=task_id,
+            )
 
         bindings = [WorkspaceBinding.of(b) for b in bindings]
         if not bindings:
@@ -462,6 +511,127 @@ class PolicyEngine:
         if action == ACTION_DELETE:
             return PolicyDecision(DECISION_APPROVE, "删除需要审批", "c4.delete")
         return PolicyDecision(DECISION_DENY, f"未覆盖的动作：{action}", "c4.unhandled")
+
+    def _classify_memory(
+        self,
+        action: str,
+        resources: list[str],
+        bindings: list[WorkspaceBinding],
+        preconditions: dict[str, Any],
+        *,
+        task_id: str | None,
+    ) -> PolicyDecision:
+        """记忆资源的策略判定。
+
+        记忆不落在目录里，所以不能复用 `_covers` 判定"能不能碰"。但**授权
+        不能因此跳过**：作用域必须能被本任务的绑定/身份解释清楚，否则就是
+        fail-closed 拒绝。规则：
+        - `user`：D2 单用户，恒可访问（读与写都归本地用户）；
+        - `workspace`：scope_id 必须是本任务某个绑定的 **canonical 根**，
+          不是"在某个子树里"，也不是字符串前缀；
+        - `task`：scope_id 必须等于本任务 id；
+        - 其它/未知 scope：拒绝。
+        """
+        if len(resources) != 1:
+            return PolicyDecision(
+                DECISION_DENY,
+                "记忆动作一次只能作用于一个作用域",
+                "c4.multi_resource",
+            )
+
+        try:
+            ref = parse_resource(resources[0])
+        except ResourceError as exc:
+            # 未登记的 scheme / 畸形记忆 URI：这是资源契约问题，不是"当成
+            # 文件继续试"。fail-closed。
+            return PolicyDecision(DECISION_DENY, str(exc), "c4.unsupported")
+        if ref.kind != KIND_MEMORY:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"记忆工具收到非记忆资源：{resources[0]!r}",
+                "dispatch.memory_resource_mismatch",
+            )
+
+        scope = ref.memory_scope
+        if scope.scope not in MEMORY_SCOPES:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"未知记忆作用域：{scope.scope!r}",
+                "c4.memory_scope_denied",
+            )
+
+        if scope.scope == "user":
+            allowed = True
+        elif scope.scope == "workspace":
+            # 绑定的根已是 canonical 路径；`overlap_key` 再折叠大小写/Unicode
+            # 规范化（Windows、macOS 默认文件系统），但**不做祖先判断**：
+            # 作用域必须精确等于某个绑定的根，不能是它的子目录。
+            roots = {overlap_key(str(WorkspaceBinding.of(b).root_path)) for b in bindings}
+            allowed = overlap_key(scope.scope_id) in roots
+        elif scope.scope == "task":
+            allowed = task_id is not None and scope.scope_id == task_id
+        else:  # pragma: no cover - MEMORY_SCOPES 已经封死
+            allowed = False
+
+        if not allowed:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"记忆作用域不在本任务授权范围内：{scope.to_uri()}",
+                "c4.memory_scope_denied",
+            )
+
+        if action == ACTION_CREATE:
+            kind = preconditions.get("memory_kind")
+            if not isinstance(kind, str) or kind not in supported_memory_kinds():
+                return PolicyDecision(
+                    DECISION_DENY,
+                    f"不支持的记忆种类：{kind!r}",
+                    "c4.memory_kind_unsupported",
+                )
+            if preconditions.get("memory_exists") is True:
+                # 复用既有编号的语义：新建遇到已存在目标时不能"批一下"就
+                # 放行，要改用覆盖类动作。
+                return PolicyDecision(
+                    DECISION_DENY,
+                    "目标记忆已存在；要更新请先忘记/确认，不能重复新建候选",
+                    "c4.create_over_existing",
+                )
+            return PolicyDecision(
+                DECISION_AUTO,
+                "记忆作用域内新建候选，自动放行",
+                "c4.memory_scope",
+            )
+
+        if action == ACTION_READ:
+            return PolicyDecision(
+                DECISION_AUTO, "记忆作用域内读取", "c4.memory_scope"
+            )
+
+        if action == ACTION_OVERWRITE:
+            if preconditions.get("memory_origin") == "user_explicit":
+                return PolicyDecision(
+                    DECISION_AUTO,
+                    "用户本人明示的来源，确认无需再次审批",
+                    "c4.memory_scope",
+                )
+            return PolicyDecision(
+                DECISION_APPROVE,
+                "激活记忆会改变长期召回行为，属覆盖类操作",
+                "c4.overwrite",
+            )
+
+        if action == ACTION_DELETE:
+            return PolicyDecision(
+                DECISION_APPROVE,
+                "忘记记忆等同删除，需要审批",
+                "c4.delete",
+            )
+
+        return PolicyDecision(
+            DECISION_DENY,
+            f"记忆工具不支持的动作：{action}",
+            "c4.unsupported",
+        )
 
     @staticmethod
     def _covers(binding: WorkspaceBinding, resource: str) -> bool:
@@ -1124,4 +1294,5 @@ __all__ = [
     "PolicyDecision",
     "PolicyEngine",
     "SUPPORTED_ACTIONS",
+    "supported_memory_kinds",
 ]
