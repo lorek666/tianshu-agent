@@ -21,6 +21,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,63 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def test_shutdown_endpoint_is_post_only_and_requires_token(root: Path) -> None:
+    """关 Host 必须 POST + token。
+
+    回归：这个端点曾经挂在 `do_GET` 上，而 `tianshu host stop` 发的是 POST——
+    于是 stop 永远拿到 404，用户看到的是"Host 未在超时内退出"（实测过）。
+    读请求不能有副作用：浏览器预取、链接预览、同机任意页面都不该关掉 Host。
+    """
+    bridge, port = _start_bridge(root)
+    calls: list[str] = []
+
+    def stop_all() -> None:
+        calls.append("stop")
+
+    bridge.install_stop_callback(stop_all)
+    try:
+        status, _ = _http(port, "GET", "/shutdown", token="tok")
+        assert status == 405, "GET /shutdown 必须是 405（读请求不能关 Host）"
+        status, _ = _http(port, "POST", "/shutdown")
+        assert status == 401, "没有 token 也能关 Host？"
+        status, payload = _http(port, "POST", "/shutdown", token="tok")
+        assert status == 200, payload
+        assert json.loads(payload)["shutting_down"] is True
+        deadline = time.monotonic() + 2
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert calls == ["stop"], "POST /shutdown 没有触发 Host 退出回调"
+    finally:
+        bridge.stop()
+
+
+def test_stop_host_stops_a_running_host_and_clears_info(root: Path) -> None:
+    """`tianshu host stop` 端到端：真发 HTTP、Host 真退出、锁与端口都清掉。"""
+    info = host.acquire_host_info(root, ui_dir=_ui_dir(root))
+    bridge = host.UiBridge(
+        host.BridgeConfig(data_root=root, ui_dir=Path(info.ui_dir), token=info.token, port=0)
+    )
+    info.port = bridge.port
+    host.write_host_info(root, info)
+    stopped = threading.Event()
+
+    def stop_all() -> None:
+        try:
+            bridge.stop()
+        finally:
+            stopped.set()
+
+    bridge.install_stop_callback(stop_all)
+    bridge.serve_background()
+    try:
+        assert host.stop_host(root, timeout=5.0) == 0, "stop_host 没能让 Host 退出"
+        assert stopped.is_set(), "Host 的退出回调没有被调用"
+        assert host.read_host_info(root) is None, "退出后 host.lock 没清掉"
+        assert not host._http_alive(info), "Host 的端口还在响应"
+    finally:
+        bridge.stop()
 
 
 def test_stop_host_when_not_running_is_noop(root: Path) -> None:

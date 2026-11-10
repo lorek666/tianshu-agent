@@ -651,3 +651,76 @@ def test_event_stream_ends_when_daemon_goes_away(root: Path) -> None:
                 sock.close()
             bridge.stop()
 
+
+@pytest.mark.skipif(
+    not (REAL_UI_DIST / "index.html").is_file(),
+    reason="仓库里没有 ui/dist（先 `pnpm --dir ui run build`）",
+)
+def test_host_stop_stops_daemon_too(root: Path) -> None:
+    """`tianshu host stop` 必须连 Daemon 一起收掉，不能留孤儿进程。
+
+    回归（实测）：`run_host` 的退出回调先置 `stop_event`，主线程立刻结束进程，
+    把"正在关 Daemon"的清理线程一起带走——`stop` 报"Host 已退出"，Daemon 却
+    继续占着 socket、继续能接活。必须用**真子进程**才测得出来：在 pytest 进程里
+    跑 run_host，主线程退出后进程还活着，清理线程不会死，Bug 就躲过去了。
+    """
+    ws = root / "ws"
+    ws.mkdir()
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+        "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    }
+    proc = subprocess.Popen(  # noqa: S603 - 测试自己拼的命令，没有外部输入
+        [
+            sys.executable,
+            "-m",
+            "tianshu",
+            "host",
+            "run",
+            "--data-root",
+            str(root),
+            "--port",
+            "0",
+            "--ui-dir",
+            str(REAL_UI_DIST),
+            "--model",
+            "scripted",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 25
+        info = None
+        while time.monotonic() < deadline:
+            info = host.read_host_info(root)
+            if info is not None and host._http_alive(info):
+                break
+            time.sleep(0.05)
+        assert info is not None and host._http_alive(info), "Host 没能在 25s 内起来"
+        assert ipc.probe(root, timeout=1.0), "Host 起来了但 Daemon 没起来"
+
+        assert host.stop_host(root, timeout=20) == 0, "stop_host 没能让 Host 退出"
+        assert proc.wait(timeout=20) == 0, "Host 进程退出码不是 0"
+        # 不留宽限：Host 退出这一步本身就必须发生在 Daemon 收掉之后，
+        # "退出后再等 Daemon 慢慢死"是错的语义（孤儿窗口里它还能接活）。
+        assert not ipc.probe(root, timeout=0.5), "Host 退出后 Daemon 还活着（孤儿进程）"
+        assert host.read_host_info(root) is None, "Host 退出后 host.lock 没清掉"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+        try:
+            daemon.request_shutdown(root, reason="test", timeout=5)
+        except (ipc.IpcError, OSError):
+            pass
+        host.clear_host_info(root)

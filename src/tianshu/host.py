@@ -393,9 +393,10 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # 注入点：Bridge 实例把自己的配置挂在这里（BaseHTTPRequestHandler 每条
-    # 连接都会新建实例，不能把状态放实例上）。
+    # 连接都会新建实例，不能把状态放实例上）。配置是数据，放类上没问题；
+    # 回调不能放类上——普通函数变成类属性会被描述符协议"绑定"，调用时多塞
+    # 一个 handler 实例作 self，回调签名对不上就 TypeError（M5 实测踩过）。
     config: BridgeConfig
-    stop_callback: Any = None
 
     # -- 基础 --
 
@@ -420,18 +421,33 @@ class _Handler(BaseHTTPRequestHandler):
                 once = query.get("once", ["0"])[0] == "1"
                 return self._stream_events(int(since), once=once)
             if path == "/shutdown":
-                if not self._authorized():
-                    return
-                self._json(HTTPStatus.OK, {"ok": True, "shutting_down": True})
-                if callable(self.stop_callback):
-                    threading.Thread(target=self.stop_callback, daemon=True).start()
-                return
+                # 读请求不能关 Host；也**不能**落到 SPA 兜底（那会回 200 + index.html，
+                # 让人以为"通知成功了"）。
+                return self._json(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {
+                        "ok": False,
+                        "error": {"code": "bad_method", "message": "关 Host 只接受 POST"},
+                    },
+                )
             return self._static(path)
         except (BrokenPipeError, ConnectionResetError):
             return
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/shutdown":
+            # 关 Host 是有副作用的写操作，必须 POST + token：GET 会让浏览器
+            # 预取、链接预览、同机任意页面都能把用户的 Host 关掉。
+            # 回归：这个分支曾经挂在 do_GET 上，而 `tianshu host stop` 发的是
+            # POST，于是 stop 永远 404 → "Host 未在超时内退出"。
+            if not self._authorized():
+                return
+            self._json(HTTPStatus.OK, {"ok": True, "shutting_down": True})
+            callback = getattr(self.server, "stop_callback", None)
+            if callable(callback):
+                threading.Thread(target=callback, daemon=True).start()
+            return
         if path != "/rpc":
             return self._json(
                 HTTPStatus.NOT_FOUND,
@@ -707,10 +723,12 @@ class UiBridge(ThreadingHTTPServer):
         super().__init__((config.host, config.port), _Handler)
         self._thread: threading.Thread | None = None
         self.on_shutdown: Any = None
+        # 回调挂 server 实例上：handler 通过 `self.server` 拿，避免类属性绑定。
+        self.stop_callback: Any = None
 
     def install_stop_callback(self, callback: Any) -> None:
         """`/shutdown` 被调用时要做什么（Host 退出）。"""
-        _Handler.stop_callback = callback
+        self.stop_callback = callback
 
     @property
     def port(self) -> int:
@@ -774,16 +792,23 @@ def run_host(
         info.port = bridge.port
         write_host_info(data_root, info)
 
-        stop_event = threading.Event()
+        stop_event = threading.Event()  # 主循环等这个：**清理完成**才放行
+        stop_requested = threading.Event()  # 回调去重（重复点 /shutdown 不重复清理）
 
         def stop_all() -> None:
-            if stop_event.is_set():
+            if stop_requested.is_set():
                 return
-            stop_event.set()
+            stop_requested.set()
             try:
                 supervisor.stop()
             finally:
-                bridge.stop()
+                try:
+                    bridge.stop()
+                finally:
+                    # 最后一步才让主线程退出。先 set 的话主线程会立刻结束进程，
+                    # 把还在关 Daemon 的这条线程一起带走——"tianshu host stop"
+                    # 于是报"Host 已退出"，但 Daemon 被留成孤儿继续跑。
+                    stop_event.set()
 
         bridge.install_stop_callback(stop_all)
         bridge.serve_background()

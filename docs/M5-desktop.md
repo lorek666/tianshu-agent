@@ -201,7 +201,9 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 3. Daemon 启动顺序：Daemon 锁 → **恢复扫描** → `ipc.Server.start()` → accept 循环
    → 驱动线程。顺序不能换：先 bind 会让人以为"能连上就是能干活"，而恢复还没做完。
 4. Host 建 HTTP 服务：绑定 `127.0.0.1:0`（随机端口），把
-   `http://127.0.0.1:<port>/?token=<随机>` 打到终端；`--open` 时调系统浏览器。
+   `http://127.0.0.1:<port>/` 打到终端——**URL 不带 token**（token 由页面从
+   `<meta name="tianshu-token">` 读；URL 会进浏览器历史、shell 历史、聊天记录和
+   截图，把访问权限放进去等于顺手分享钥匙）。`--open` 时调系统浏览器。
 5. Host 把 token 注入 `index.html`（`<meta name="tianshu-token">`），其余静态资源
    原样返回。
 
@@ -223,10 +225,19 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 | 场景 | 行为 |
 |---|---|
 | 关浏览器 / 刷新 | 无影响 |
-| `tianshu host stop` | Host 调 `shutdown{reason:"user"}` → Daemon：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出；Host 等 5s，超时杀进程树 |
+| `tianshu host stop` | CLI `POST /shutdown`（**只接受 POST + token**，GET 回 405）→ Host 先让 Daemon 走 `shutdown{reason:"user"}`：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出（等 5s，超时杀进程树）；**Daemon 收掉之后**才关 UI 桥、清 `host.lock`、放主线程退出 |
 | Host 被杀 | Daemon 是独立进程，继续跑到下一次显式 shutdown（这正是"关 UI 任务继续"） |
 | Daemon 崩溃 | Host 监护：指数退避重启（1s/2s/4s/8s，上限 30s），重启时走 §4.1 的恢复扫描 |
 | 机器重启 | 下次启动时锁文件是陈旧的（连不上端点），Daemon 接管并恢复 |
+
+**顺序即契约**（两条都由真子进程测试钉住）：
+
+- `/shutdown` 只接受 POST：`tianshu host stop` 发的就是 POST，端点若挂在 GET 上，
+  stop 永远 404，用户看到的是"Host 未在超时内退出"；
+- 清理回调挂在 **server 实例**上而不是 handler 类属性上：普通函数成为类属性会被
+  描述符协议绑定，调用时多塞一个 handler 实例，`TypeError` 让清理静默不执行；
+- 主线程必须等"Daemon 已收掉"才退出：先放主线程，进程结束会把清理线程一起带走，
+  `stop` 报"Host 已退出"，Daemon 却留成孤儿继续接活。
 
 ### 4.4 单实例
 
