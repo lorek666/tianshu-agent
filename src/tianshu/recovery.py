@@ -24,7 +24,12 @@ from . import authority
 from .authority import AuthorityUnavailable, AuthorityWriteFailed
 from .errors import EventLogCorrupt, SnapshotCorrupt, TianshuError, WorkspaceViolation
 from .events import EventLog
-from .guard import blocked_workspaces, ensure_not_blocked, mirror_blocks_to_authority
+from .guard import (
+    blocked_workspaces,
+    ensure_not_blocked,
+    mirror_blocks_to_authority,
+    scan_blocked,
+)
 from .leases import Lease, LeaseStore, execution_guard
 from .receipt import build_receipt
 from .sandbox import current_backend
@@ -303,6 +308,67 @@ def assess_run(
     )
 
 
+def _block_unfinished_undo(
+    log: EventLog, data_root: Path, workspace_dir: Path
+) -> list[str]:
+    """未完成的撤销必须挡住对应工作区（undo journal 的恢复侧接线）。
+
+    journal 记录"撤销做到哪一步"。它 `in_progress`（崩溃在动作之间）或读不懂时，
+    那些目录的写前状态还没结算完——在此之上继续写，等于在"改了一半"的地板上施工。
+    这里只做**报告 + 阻断**：不续做、不动文件、不猜；续做由 `tianshu undo --run-id`
+    （幂等）完成，解除阻断由人在核对后显式 `unblock`。
+
+    `completed` 的 journal 不挡：文件已全部还原，只差一条完成事件（幂等补写），
+    没有"改了一半"的风险。
+    """
+    # 延迟 import：undo_journal ↔ snapshot/undo 有依赖，模块级 import 容易成环。
+    from . import undo_journal
+
+    try:
+        pending = undo_journal.outstanding(data_root, log=log)
+    except Exception as exc:  # noqa: BLE001 - 扫描器自己崩了不能当成"没有未完成撤销"
+        return [
+            f"撤销意图日志扫描失败（{type(exc).__name__}: {exc}）；"
+            "无法确认是否存在未完成的撤销——按最坏情况处理"
+        ]
+
+    problems: list[str] = []
+    active = set(scan_blocked(log).blocked)
+    fallback = str(Path(workspace_dir).resolve())
+    for item in pending:
+        if item.corrupt:
+            roots = tuple(item.roots) or (fallback,)
+            detail = "撤销意图日志损坏，无法判断撤销做到哪一步"
+        elif item.status == undo_journal.STATUS_IN_PROGRESS:
+            roots = tuple(item.roots) or (fallback,)
+            detail = (
+                f"撤销未完成（{item.done_count}/{item.total} 个动作已完成）"
+            )
+        else:
+            continue
+        reason = f"{detail}：阻断后续写入，先续做或人工核对撤销"
+        problems.append(
+            f"{detail}：{item.journal_path}（run={item.run_id}）；"
+            f"相关目录已阻断，请先 `tianshu undo --run-id {item.run_id}` 续做"
+            "（或人工核对后 unblock）"
+        )
+        for root in roots:
+            if root in active:
+                continue
+            active.add(root)
+            log.append(
+                item.run_id,
+                "recovery.blocked",
+                {"workspace": root, "call_ids": [], "reason": reason},
+                actor_kind="system",
+            )
+            try:
+                authority.register_blocked(root, run_id=item.run_id, reason=reason)
+            except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
+                problems.append(f"跨数据根阻断未生效：{root}（{exc}）")
+    return problems
+
+
 def recover_run(
     log: EventLog,
     run_id: str,
@@ -327,13 +393,19 @@ def recover_run(
     补登记失败只在报告里写「跨数据根阻断未生效」，不炸恢复流程。
     """
     migration_problems = mirror_blocks_to_authority(log)
+    undo_problems: list[str] = []
     if data_root is None:
         report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
     else:
         with execution_guard(Path(data_root)):
             report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
-    if migration_problems:
-        report.problems.extend(migration_problems)
+            # 未完成的撤销也在这个全序里判：它和"恢复判 unknown"是同一类事实
+            # （磁盘上有一批文件的最终状态还没结算），写入侧必须同时看到。
+            undo_problems = _block_unfinished_undo(
+                log, Path(data_root), Path(workspace_dir)
+            )
+    report.problems.extend(migration_problems)
+    report.problems.extend(undo_problems)
     return report
 
 
