@@ -58,7 +58,7 @@
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
 - **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑，但**不稳定**：命名管道上偶发握手失败（issue [#50](https://github.com/lorek666/tianshu-agent/issues/50)，根因未定位，有些不稳定的轮次会让作业撞上超时被取消）；跑在 `windows-latest`（Server 2022）上，并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
 - **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
-- **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。
+- **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。CLI 与评测已跑过真实模型（2026-11-10，两家模型完整 20 条 × 3 次，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1），但**还没有真实模型驱动过 UI**。
 - 已知缺口：issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**（PR #48）——否决即终局，`SUITE_VERSION` 升 `m4.4`，工单仍开着等确认；issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）已收敛关闭。
 
 ## 快速开始
@@ -319,13 +319,13 @@ UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直�
 | **M4** 可评估 | 20 条 case + `replay`/`evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
 
-**M5 实测**：全量 **1060 passed, 3 skipped**（macOS 本机，`feat/m5-desktop@f5da9ef`）；三进程真进程链路跑通——
+**M5 实测**：全量 **1077 passed, 3 skipped**（macOS 本机，2026-11-10 真实模型轮）；三进程真进程链路跑通——
 `tianshu host run` → `tianshu host stop` 后 Host 与 Daemon 都退出（`ipc.probe == False`，不留孤儿），
 `scripts/demo_m5.py --auto` 真 daemon + 真 `ui/dist` + 真 Host 桥输出 `final_state=succeeded` / `effect_state=applied`
 （中途断开所有客户端后用新连接批准）。完整判据、未验证项与真进程截图见 [docs/M5-verification.md](docs/M5-verification.md)。
 
 **M5 明确未验证的**（写成「通过」就是假话）：**Windows 实机**（只有 CI `windows-latest`，命名管道的杀软/ACL/长路径差异未覆盖）·
-**真实模型**（无 API key，演示与验收用 scripted 模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
+**真实模型驱动 UI**（CLI / `evaluate` 已用真实模型跑过：deepseek-v4.1-flash 18/20、glm-5.2 15/20，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1；UI 仍未接过真实模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
 完整清单见 [docs/M5-verification.md](docs/M5-verification.md)。
 
 **M4 实测**：`SUITE_VERSION = m4.4`，20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
