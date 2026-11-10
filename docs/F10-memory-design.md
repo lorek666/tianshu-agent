@@ -289,9 +289,9 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 12 | 记忆投影（表 + FTS + 正文内容寻址） | ✅ 已落地 | `memory.MemoryProjection`：`apply_event` / `rebuild` / `projection_hash` / `loadout` / `search` / `get` / `observe` / `list_memories` / `redact_or_block` / `put_content` / `find_duplicate` |
 | 13 | F5：选中的记忆身份落进 `model.intent.payload.context` | ✅ 已落地 | `context.context_payload(memories=...)` |
 | 14 | CLI 控制面：`tianshu memory list\|search\|get\|confirm\|forget` | ✅ 已落地 | `cli._cmd_memory` / `_cli_memory_scopes` / `_dispatch_memory_decision`（人敲命令 = 批准，审批仍落库、一次性消费、执行侧二次核验） |
-| 15 | 测试：资源种类 | ✅ 已覆盖 | `tests/test_resources.py`：22 个 `def test_`，参数化后 42 条 |
+| 15 | 测试：资源种类 | ✅ 已覆盖 | `tests/test_resources.py`：23 个 `def test_`，参数化后 44 条 |
 | 16 | 测试：投影 / 检索 / 闸门 / 去重 | ✅ 已覆盖 | `tests/test_memory_store.py`：51 个 `def test_`，参数化后 64 条 |
-| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖 | `tests/test_memory_dispatch.py`（18 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、未知 kind、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用、零绑定控制 Run 不能写文件）与 `tests/test_memory_loop.py`（11 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域） |
+| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖 | `tests/test_memory_dispatch.py`（20 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、未知 kind、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用、零绑定控制 Run 不能写文件、**错装配投影被拒**、**拒绝行不含正文原文**）与 `tests/test_memory_loop.py`（12 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域、**`limit` 在 schema 上存在**、**遗忘后不可按 id 复活**、**`origin` 断言**） |
 | 18 | `origin=user_explicit` 的确认免审批路径 | 策略已测 / **生产无入口** | 策略分支有测试：`test_user_explicit_confirm_needs_no_approval`（**测试播种**一条 `memory_origin="user_explicit"` 的事件，走真实 prepare/dispatch）。但生产侧 `memory_exec.MemoryExecutor._propose` 固定写 `origin="inferred"`（防模型自称"用户明示"绕过审批），所以**线上没有任何记忆能走到免审批确认**；"用户明说记住"这条入口尚未提供 |
 | 19 | L2/L3 蒸馏（增量 delta、保留上一版 + 证据） | ❌ 未实现 | `grep -rin "distill" src/tianshu/` 无结果；`memory.py` 只做 L1 级显式记忆，`consolidated_at` 目前只在 `memory.confirm` 时写一次 |
 | 20 | 向量召回 | ❌ 未实现（按设计） | 首版只有 FTS5 + CJK 双字切分（§12），无 embedding 依赖 |
@@ -307,7 +307,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 01:12（`feat/memory` 工作区实测，`1219 passed / 3 skipped`、1222 条 collected——已合入 `main@540c543`；以 CI 为准）。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 01:27（`feat/memory` 工作区实测，`1220 passed / 3 skipped`、1223 条 collected——已合入 `main@540c543`；以 CI 为准）。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
