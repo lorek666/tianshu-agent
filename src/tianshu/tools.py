@@ -44,7 +44,7 @@ from .execpolicy import (
     PolicyUnsupported,
     filtered_env,
 )
-from .guard import ensure_not_blocked
+from .guard import assert_paths_not_blocked, ensure_not_blocked
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
@@ -400,6 +400,24 @@ def _modify_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
         return ToolResult("failed", "none_applied", {"error": f"读取失败：{exc}"})
     data = args["content"].encode("utf-8")
     after = _sha(data)
+
+    if before == data:
+        # 复审 轻-1：写前写后内容一致 = 没有可观测副作用。恢复流程对同一状态
+        # 判 `none_applied`（见 recovery 里 before==expected_after 那条），活体
+        # 路径必须给同一个口径——否则会为一次什么都没改的调用产出一条 applied
+        # 凭据，"副作用已发生"这句话就成了假的。
+        return ToolResult(
+            "succeeded",
+            "none_applied",
+            {
+                "path": rel,
+                "bytes": len(data),
+                "sha256": after,
+                "after_state": after,
+                "before_state": after,
+                "unchanged": True,
+            },
+        )
 
     ctx.prewrite(rel, before, after)
     io.write_bytes_atomic(target, data)
@@ -980,6 +998,11 @@ class FileExecutor:
             exec_capabilities=self._exec_capabilities,
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
         )
+
+        # 复审 中-1：贴着落盘的最后一次阻断核验。派发 phase-1 查过一遍，但查完
+        # 到这里之间可能有新的 `recovery.blocked` 落库；这里按**真正要写的那个
+        # 路径**再判一次，判完下一句就是改文件，中间不再交给任何回调。
+        assert_paths_not_blocked(self._log, [admitted.target])
 
         # 已在执行：从这一刻起，这次调用算 in-flight。取消不承诺回滚。
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")

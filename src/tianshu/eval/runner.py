@@ -319,7 +319,8 @@ def _run_crash(
         else:
             stack = build_stack(log, data_root=directory / "data")
             recovery_report = recover_run(
-                log, run_id, ws, stack.snapshots, leases=stack.leases
+                log, run_id, ws, stack.snapshots,
+                leases=stack.leases, data_root=directory / "data",
             )
             events = log.read_run(run_id)
             replay_report = replay(log, run_id)
