@@ -99,8 +99,10 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 **投影与审计**
 
 10. 投影 `_SCHEMA_VERSION` 1 → 2（`memories` 加 `layer` / `erased_at` 列，新建
-    `memory_vectors`，N3 再动）。版本不符时**按投影语义重建**（投影可重建，允许），
-    并把"重建耗时 / 条数"写进日志。
+    `memory_vectors`，N3 再动）。**版本比对是新增机制**：当前 `_SCHEMA_VERSION` 只进
+    `projection_hash()`，`memory_meta` 只存 `tokenizer_version`，没有"已存版本号"可
+    比对。本次要把版本号写进 `memory_meta`，不符时**按投影语义重建**（投影可重建，
+    允许），并把"重建耗时 / 条数"写进日志。
 11. 派发审计表：请求进入**终态**（done / rejected / failed）后，`args_payload` 里的
     记忆正文替换为 `content_sha256` + `content_bytes`；请求表加 `args_redacted` 标志。
     理由与边界见 N5 §5.2。
@@ -113,16 +115,19 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 - `memory_exec.MemoryExecutor._propose` 固定写 `origin="inferred"`、"status=candidate"，
   写进 output 的字面量在 `_propose` 的返回字典里；注释写明"模型不能自称 user_explicit"。
-- `memory._apply_confirm` 只 `UPDATE revision / status / consolidated_at / last_seq`，
-  **不改 origin**；`_parse_transition` 也不接受 output 里的 origin。
+- `memory._apply_confirm` 的主体 `UPDATE` 是 `revision / status / consolidated_at /
+  last_seq`，**不改 origin**；另在"正文不可用→恢复"分支补写 `content_state` /
+  `fts_rowid`（与 origin 无关）。`_parse_transition` 不接受 output 里的 origin。
 - `tools.SPECS["memory.propose"].input_schema` 是 `additionalProperties: false` 且**没有**
   `scope` / `scope_id` / `target`；`loop.AgentLoop._memory_scope_from_args` 其实已经能解析
   `target` 与 `scope`，只是 schema 把模型的参数挡在门外 → 生产上 propose 恒为 `user/local`。
 - `supersedes` 只出现在 `memory.py`（`Memory.supersedes` / `_apply_propose` / `_supersede`）
   与 `cli.py` 的只读打印；`grep -rn supersedes src/tianshu` 无工具/执行器写入它。
 - `cli._dispatch_memory_decision` 遇到 `scope == "task"` 直接抛错（"必须在所属任务的 Run
-  内完成"）。后果不是小瑕疵：任务结束后，**在该 task 作用域里被激活的记忆没有任何人
-  能忘记**（CLI 拒签、那个 Run 已结束）——这是隐私缺口，不是体验问题。
+  内完成"）。**别把它写成"没人能忘记"**——第二读者核对后纠正过我这一处：`tasks.py` 里
+  没有"任务结束"这个状态（`task.status` 恒为 `open`），同一条 task 上可以再开一个 Run，
+  由模型发 `memory.forget` + 人 `approvals approve` 走完。所以事实是**人能忘，但只能
+  绕道模型 Run**；控制面没有直接入口。这是控制面缺口，不是隐私死锁。
 - `host.py` 里 `grep -rin memory` 零命中：UI 没有记忆入口（F10 §9 的"能打开直接编辑"
   目前只有 CLI）。
 
@@ -151,7 +156,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 5. **CLI**：`tianshu memory remember <content> --kind ...`（`memory.remember`）、
    `tianshu memory edit <id> --revision N`（走审批 + `memory.edit`）、
    `tianshu memory confirm|forget --task-id <id>`（控制 Run 带 `memory_scopes=[task]`，
-   只授予该作用域，不授予 workspace 权限）。
+   只授予该作用域，不授予 workspace 权限）。目的是让人**不必先起一个模型 Run** 才能决定
+   自己记忆的去留；**不是**"否则做不到"（同一 task 再开 Run 也能走，只是绕）。
 6. **`memory.edit` 的正文回显**：审批界面/CLI 打印新正文时截断到 500 字节并标注
    "已截断"，全文只落 blob（审批记录不存第二份正文）。
 
@@ -181,8 +187,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 - `MemoryProjection.search` 的排序键是 `(_ORIGIN_WEIGHTS[origin], -created_at, memory_id)`；
   **作用域只用于过滤**（`allowed` + loadout），不参与打分 → #23 未实现。
-- `grep -rin 'embedding\|vector' src/tianshu` 只命中 `memory.py` 头部注释里的"不做向量
-  召回，不引入 embedding 依赖"；没有向量表、没有接缝 → #20 未实现。
+- `grep -rin --include=*.py 'embedding\|vector' src/tianshu` 只命中 `memory.py:74` 的注释
+  "不做向量召回，不引入 embedding 依赖"（按字面带 `-r` 会连 `.pyc` 一起命中二进制，
+  那不叫代码）；没有向量表、没有接缝 → #20 未实现。
 - 检索信号只有 FTS5 + CJK 双字切分（`_tokenize`），无几何信号。
 
 ### 3.2 设计
@@ -268,7 +275,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ### 5.1 现状
 
-- `memory._apply_forget` 只 `UPDATE ... status='forgotten'` 并 `_drop_fts`；**正文 blob 不删**。
+- `memory._apply_forget` 做的是 `_drop_fts` + `UPDATE revision / status / fts_rowid=NULL /
+  last_seq`；**正文 blob 不删**（`memory.py` 里没有任何 `unlink` / `os.remove` / `rmtree`）。
 - 事件日志里的**读**事件保留正文快照（F10 §3.1 的实测结论），append-only 不可删。
 - UI/CLI 上的"忘记"与"擦除"目前没有区分。
 
@@ -303,8 +311,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 - `recovery.recover_run` 没有记忆分支（`grep -rin memory src/tianshu/recovery.py` 零命中），
   恢复按文件写工具的推断走（多数 `none_applied`，快照缺失时 `unknown` 并可能阻断目录）。
-- 投影侧本身安全：`apply_event` 只在 `_commit_result` 的事务里调用（已有测试
-  `test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住）。
+- 投影侧本身安全：**实时写路径**上 `apply_event` 只在 `_commit_result` 的事务里被调用
+  （`rebuild()` 是重建路径，走同一入口但用途不同，不能混为一谈）；已有测试
+  `test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住前者。
 - `Dispatcher._audit_args` 只在 `_reject` 里用；**被采纳后**又被闸门挡掉的请求仍把正文
   留在 `dispatch_requests.args_payload`（F10 §13 #26 的"未修的一半"）。
 
