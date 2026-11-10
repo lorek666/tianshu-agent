@@ -127,7 +127,15 @@ class MemoryScope:
         它们算三个作用域，用户会在三个"不同"的 workspace 记忆里找不到自己
         十分钟前存的东西——而这三个其实是一个地方。
         """
-        return cls(SCOPE_WORKSPACE, os.path.realpath(str(root)))
+        text = str(root)
+        # 与 `parse_memory_uri` 同一个理由：`realpath` 会把相对路径按当前工作
+        # 目录补成绝对路径，于是"相对路径"变成合法作用域，同一个值在不同
+        # 目录下指向不同记忆。必须先拒绝，再归一。
+        if not os.path.isabs(text):
+            raise ResourceError(
+                f"workspace 作用域的根必须是绝对路径（不接受相对路径）：{text!r}"
+            )
+        return cls(SCOPE_WORKSPACE, os.path.realpath(text))
 
     @classmethod
     def task(cls, task_id: str) -> MemoryScope:
@@ -191,8 +199,18 @@ def parse_memory_uri(raw: str) -> MemoryScope:
 
     scope_id = unquote(encoded)
     if scope == SCOPE_WORKSPACE:
-        # 声明是 workspace 作用域，就必须真的是一个绝对路径；编码里塞进
-        # `..` 也不会改变这一点，因为下面会 canonicalize。
+        # 声明是 workspace 作用域，就必须真的是一个绝对路径。**必须先判
+        # 再 realpath**：`os.path.realpath("relative")` 不报错，它会按**当前
+        # 工作目录**把相对路径补成绝对路径。先 realpath 就等于让一句相对引用
+        # 变成合法作用域，判据从"必须是绝对路径"悄悄退化成"取决于进程的 CWD
+        # 在哪"——同一个 URI 在不同目录下指向不同记忆，fail-closed 就没了。
+        if not os.path.isabs(scope_id):
+            raise ResourceError(
+                "workspace 作用域的 scope_id 必须是绝对路径"
+                f"（不接受相对路径）：{scope_id!r}"
+            )
+        # 绝对路径仍要 canonicalize：`/a/./b`、`/a/../a/b` 是同一个目录，
+        # 不归一就会变成三个互不可见的作用域。
         scope_id = os.path.realpath(scope_id)
     return MemoryScope(scope, scope_id)
 

@@ -675,3 +675,52 @@ def test_replay_uses_the_snapshot_not_the_latest_memory(env: Env):
     assert output["content_available"] is False
     assert "历史证据不可用" in output["error"]
     assert "版本二" not in json.dumps(output, ensure_ascii=False)
+
+
+def test_memory_search_schema_exposes_limit_capped_at_five() -> None:
+    """F10 §8「模型可以要求更少、不能要求更多」必须在 schema 上真的存在。
+
+    执行侧 `_memory_search_output` 早就会读并夹取 `limit`，但 schema 不暴露它，
+    模型就**永远拿满 5 条**——契约写着的能力在工具面上不存在，等于没有。
+    """
+    from tianshu.memory import MAX_RECALL_ITEMS
+    from tianshu.tools import SPECS
+
+    limit = SPECS["memory.search"].input_schema["properties"]["limit"]
+    assert limit["type"] == "integer"
+    assert limit["minimum"] == 1
+    assert limit["maximum"] == MAX_RECALL_ITEMS
+
+
+def test_forgotten_memory_cannot_be_revived_by_id(env) -> None:
+    """忘记之后，按 id 也读不到正文。
+
+    `forget` 只改状态、不删正文 blob（物理擦除是 F10 §10 单开的工单），正文
+    其实还在盘上。若 `memory.get` 照旧把它读出来，`get` 就是绕开 `forget`
+    的旁路——"忘记"只对 search 生效。存在性仍如实报告（found=True），正文
+    明确不可用，且不回落到最新版本。
+    """
+    memory_id = env.seed("忘记后不该还能按 id 读到正文")
+    forget = {
+        "tool_id": "memory.forget",
+        "status": "succeeded",
+        "output": {
+            "memory_id": memory_id,
+            # seed 之后这条记忆已经是 revision 2（propose=1 → confirm=2）。
+            "revision": 3,
+            "before_status": "active",
+            "status": "forgotten",
+            "memory_uri": MemoryScope.user().to_uri(),
+        },
+    }
+    with env.log.transaction() as tx:
+        seq = tx.append(env.seed_run, "tool.result", forget)
+        env.stack.memory.apply_event("tool.result", forget, seq=seq)
+
+    task = env.stack.tasks.create_task("忘记后读取", [])
+    run, _, _ = env.run_to_end(task.task_id, [_get(memory_id), _end()])
+    output = _tool_output(env, run.run_id, "memory.get")
+    assert output["found"] is True
+    assert output["content_available"] is False
+    assert "已遗忘" in output["error"]
+    assert "忘记后不该还能按 id 读到正文" not in json.dumps(output, ensure_ascii=False)

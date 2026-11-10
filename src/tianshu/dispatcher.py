@@ -96,6 +96,7 @@ from .resources import (
     KIND_MEMORY,
     MemoryScope,
     ResourceError,
+    is_memory_resource,
     parse_memory_uri,
     parse_resource,
 )
@@ -333,6 +334,36 @@ def precondition_rule_id(
     return "dispatch.stale_precondition"
 
 
+def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
+    """写 `dispatch_requests.args_payload` 前的脱敏：记忆正文只留摘要。
+
+    这不是"少记一点省事"，是保留策略问题。`dispatch_requests` 没有擦除路径，
+    `memory.forget` 也不碰它；而记忆写工具的 `content` 是**正文原文**，且
+    写入闸门（PII / 密钥扫描）要到 executor 才跑。原文直接落库有两个后果：
+
+    1. 被闸门**阻断**的候选也会先把密钥留在审计表里——"写入前阻断"在那张表
+       上不成立；
+    2. PII 候选在 blob 里已红act，审计表里仍是原文——"全链路脱敏"有个后门。
+
+    换成 `content_sha256 + content_bytes` 后：审计仍能核对"写的是不是同一段
+    正文"（哈希可比、长度可比），原文不再有第二份落地副本。`content` 之外
+    的字段（kind / scope / 记忆 id / 写前 revision）照常留，审批与恢复需要的
+    那些参数一个不少。
+    """
+    if "content" not in args:
+        return args
+    if not any(is_memory_resource(resource) for resource in request.resources):
+        return args
+    content = args.get("content")
+    text = content if isinstance(content, str) else ""
+    raw = text.encode("utf-8")
+    redacted = {key: value for key, value in args.items() if key != "content"}
+    redacted["content_sha256"] = sha256_hex(raw)
+    redacted["content_bytes"] = len(raw)
+    redacted["content_redacted"] = True
+    return redacted
+
+
 class Dispatcher:
     """唯一判定"能不能执行"，并登记执行的地方。"""
 
@@ -377,6 +408,16 @@ class Dispatcher:
         # 记忆投影必须与事件日志共用同一个 SQLite 连接：投影更新要放进
         # `_commit_result()` 的同一个事务，另开连接就等于另开事实源。
         self._memory = memory
+        # `MemoryProjection` 构造处的检查只保证"它自己和一个日志同连接"，
+        # 管不了派发方传进来的是**哪个**日志的投影。那样 `_commit_result()`
+        # 会在 log 的事务里写事件、却在另一条连接上独立提交投影——一边回滚
+        # 一边留下，两份事实源静默分叉，而且没有任何裁决者能判定哪份对。
+        # 约束必须在边界上强制，不能靠"装配代码记得传对"。
+        if memory is not None and getattr(memory, "conn", None) is not self._conn:
+            raise TianshuError(
+                "Dispatcher 收到的记忆投影不属于同一个 SQLite 连接："
+                "投影必须和事件在同一个事务里落库，否则事件与投影会分叉"
+            )
         self._memory_executor: MemoryExecutor | None = None
         self._executor = executor or FileExecutor(
             tasks=tasks,
@@ -1655,7 +1696,11 @@ class Dispatcher:
     ) -> DispatchDecision:
         # 校验在**任何写入之前**：未登记的编号是代码 bug，不能先落一条日志再让人猜。
         rule_id = check_rule_id(rule_id, where=f"_reject:{event}")
-        self._store_request(request, args, STATE_REJECTED, reason, rule_id)
+        # 拒绝的行**永远不会执行**，所以这里可以脱敏而不破坏任何
+        # 派发/审批绑定：被拒的尝试不该把记忆正文原文永久留在审计表里。
+        self._store_request(
+            request, _audit_args(request, args), STATE_REJECTED, reason, rule_id
+        )
         self._append(
             request,
             event,

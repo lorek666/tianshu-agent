@@ -177,7 +177,7 @@ def test_malformed_memory_uri_rejected(raw: str):
 
 def test_non_memory_uri_rejected_by_memory_parser():
     with pytest.raises(ResourceError):
-        parse_memory_uri("/tmp/x")
+        parse_memory_uri("/tmp/x")  # 不是记忆引用
     with pytest.raises(ResourceError):
         parse_memory_uri("memory:/user/local")  # 单斜杠
 
@@ -218,3 +218,16 @@ def test_resource_ref_normalizes_memory_uri():
     a = ResourceRef.memory(MemoryScope.workspace("/Volumes/Date/proj"))
     b = parse_resource("memory://workspace/%2FVolumes%2FDate%2Fproj%2F.")
     assert a == b
+
+
+def test_relative_workspace_scope_is_rejected_before_realpath():
+    """相对路径必须**拒绝**，不能被 `realpath` 按当前工作目录补成绝对路径。
+
+    判据是"workspace 作用域必须是绝对路径"。先 realpath 就把这条判据换成了
+    "取决于进程在哪启动"：同一个 URI 在 A 目录下指向 `A/notes`、在 B 目录下
+    指向 `B/notes`——一条相对引用静默变成合法作用域，fail-closed 就没了。
+    """
+    with pytest.raises(ResourceError):
+        parse_memory_uri("memory://workspace/notes")
+    with pytest.raises(ResourceError):
+        MemoryScope.workspace("notes")

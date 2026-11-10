@@ -620,6 +620,24 @@ class MemoryProjection:
         else:
             self._blob_dir = log.db_path.parent / "memory_blobs"
         self._clock = clock
+        # schema 建过一次就不再动。读路径（search / get / list / loadout）
+        # 原本每次都走 `ensure_schema()`，而它开的是 `BEGIN IMMEDIATE`——
+        # 一次纯读也要抢写锁，跟正在写的进程撞上就是 "database is locked"。
+        self._schema_ready = False
+
+    @property
+    def log(self) -> Any:
+        """这条投影认的事件日志（只读）。装配方用它核对"同一个事实源"。"""
+        return self._log
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """投影与事务共用的连接（只读）。
+
+        暴露出来是为了让 `Dispatcher` 能在边界上核对：传进来的投影是不是
+        同一个连接。靠调用方"记得传对"是不够的。
+        """
+        return self._conn
 
     # ---- schema ----
 
@@ -629,9 +647,20 @@ class MemoryProjection:
         **不用 `executescript`**：它在 Python 里会先隐式 COMMIT 已打开的事务，
         那样 dispatcher 的"事件 + 投影同事务"会在这里被悄悄拆开。
         """
+        if self._schema_ready:
+            # 已就绪时只做一次**只读**版本核对：分词器版本写错/写旧要在
+            # 第一次检索前报出来，但正常路径不该为了"再确认一次"去抢写锁。
+            self._verify_tokenizer_version()
+            return
+        outer = self._log.in_transaction
         with self._log.transaction():
             self._ensure_schema()
             self._require_tokenizer_version()
+        # 只在外层没有事务时缓存：若这次建表是在别人的事务里做的，那个事务
+        # 回滚会把表一起回滚，缓存"已就绪"就会让后续调用在空库上直接失败。
+        # 顶层调用（读路径）是自提交的，缓存安全。
+        if not outer:
+            self._schema_ready = True
 
     def _ensure_schema(self) -> None:
         for statement in _SCHEMA_STATEMENTS:
@@ -646,6 +675,22 @@ class MemoryProjection:
                 "INSERT INTO memory_meta(key, value) VALUES ('tokenizer_version', ?)",
                 (TOKENIZER_VERSION,),
             )
+            return
+        if row[0] != TOKENIZER_VERSION:
+            raise MemoryStoreError(
+                f"记忆索引的分词器版本是 {row[0]!r}，本程序是 {TOKENIZER_VERSION!r}；"
+                "不同分词器产出的索引不可混用，请先调用 rebuild()"
+            )
+
+    def _verify_tokenizer_version(self) -> None:
+        """只读核对分词器版本：不建表、不写 meta、不抢写锁。"""
+        row = self._conn.execute(
+            "SELECT value FROM memory_meta WHERE key = 'tokenizer_version'"
+        ).fetchone()
+        if row is None:
+            # meta 被清掉/事务回滚过：退回完整建表路径，不能在空库上假装就绪。
+            self._schema_ready = False
+            self.ensure_schema()
             return
         if row[0] != TOKENIZER_VERSION:
             raise MemoryStoreError(

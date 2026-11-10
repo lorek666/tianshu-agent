@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from tianshu.dispatcher import Dispatcher, build_request
-from tianshu.errors import ToolNotAllowed
+from tianshu.errors import TianshuError, ToolNotAllowed
 from tianshu.events import EventLog, canonical_bytes, sha256_hex
 from tianshu.jobs import JobStore
 from tianshu.leases import LeaseStore
@@ -849,3 +849,63 @@ def test_zero_binding_control_run_cannot_write_files(env):
         env.dispatcher.close_control_run(
             control, outcome="failed", effect_state="none_applied"
         )
+
+
+def test_dispatcher_refuses_a_projection_from_another_event_log(env) -> None:
+    """错装配的投影必须在装配处就炸，不许"先跑通再说"。
+
+    投影更新必须和事件在同一个事务里。传进一个**别的日志**的投影时，
+    `_commit_result()` 会在 log1 的事务里写事件、却在 log2 的连接上独立提交
+    投影：log1 回滚、投影留下——两份事实源静默分叉，而且没有裁决者能判定
+    哪一份对。这条约束不能靠"装配代码记得传对"。
+    """
+    other_log = EventLog(env.root / "other.db", blob_dir=env.root / "other_blobs")
+    foreign = MemoryProjection(other_log.conn, log=other_log, clock=lambda: NOW)
+    foreign.ensure_schema()
+    with pytest.raises(TianshuError):
+        Dispatcher(
+            env.log,
+            env.tasks,
+            env.leases,
+            PolicyEngine(),
+            env.approvals,
+            grants=env.grants,
+            claims=env.claims,
+            snapshots=env.snapshots,
+            memory=foreign,
+            clock=lambda: NOW,
+        )
+
+
+def test_rejected_memory_write_keeps_no_raw_content_in_the_request_table(env) -> None:
+    """被拒绝的记忆写操作，审计表里也不留正文原文。
+
+    拒绝的请求**永远不会执行**，所以在这里脱敏不会破坏任何派发/审批绑定
+    （执行器的参数也从这张表取，所以"被采纳"的行绝不能脱敏）。而
+    `dispatch_requests` 没有擦除路径、`memory.forget` 也不碰它——原文落进去
+    就是一份永久副本。
+    """
+    body = "重复的候选 SECRET-1234"
+    task, run, claim, _first = _proposed(env, content=body)
+    args = {"kind": "preference", "content": body}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=MemoryScope.user().to_uri(),
+        args=args,
+        call_id="dup-raw",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+
+    rows = env.log.conn.execute(
+        "SELECT args_payload FROM dispatch_requests WHERE request_id = ?",
+        (request.request_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    stored = rows[0][0] or ""
+    assert "SECRET-1234" not in stored
+    # 审计仍然可核对"要写的是哪一段正文"：哈希与长度都在。
+    assert sha256_hex(body.encode()) in stored
