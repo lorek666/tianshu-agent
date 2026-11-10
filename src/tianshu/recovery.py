@@ -306,15 +306,31 @@ def _recover_run(
 
         if current == change.expected_after:
             # 有证据 + 磁盘与证据一致 → 可以确认执行过，且写前状态来自证据本身
+            #
+            # 删除类动作（`delete_file`）的写后状态是 ABSENT：文件已经被删掉，
+            # 再去 `size()` 它只会抛 FileNotFoundError，裸异常穿出恢复入口。
+            # 恢复对 delete 的判据只能是「写前内容仍在」或「已删除」——这里
+            # 走的是后者，output 与活体 `_delete_file` 保持同形状（after_state
+            # 显式是 absent，不是空串也不是 0 字节文件）。
+            if change.expected_after == ABSENT:
+                output = {
+                    "path": change.path,
+                    "deleted": True,
+                    "after_state": ABSENT,
+                    "before_state": change.before_state,
+                    "recovered": True,
+                }
+            else:
+                output = {
+                    "path": change.path,
+                    "bytes": current_backend().size(obs_ws.resolve(change.path)),
+                    "sha256": change.expected_after,
+                    "after_state": change.expected_after,
+                    "before_state": change.before_state,
+                    "recovered": True,
+                }
             _settle(log, report, run_id, call_id, tool_id, payload,
-                    ToolResult(
-                        "succeeded", "applied",
-                        {"path": change.path,
-                         "bytes": current_backend().size(obs_ws.resolve(change.path)),
-                         "sha256": change.expected_after,
-                         "after_state": change.expected_after,
-                         "before_state": change.before_state,
-                         "recovered": True}),
+                    ToolResult("succeeded", "applied", output),
                     bucket=report.applied, with_receipt=True,
                     # 凭据要能独立核对：根、意图事件 seq、快照 blob 都写进去。
                     # 旧格式记录没有 root 时，用**显式** --workspace 作根；
