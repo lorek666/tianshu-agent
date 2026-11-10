@@ -40,8 +40,9 @@
 | **N5 恢复 + 审计** | #21 #26 | `fix/memory-recovery-audit` | 契约 PR 合入后（与 N1 并行） |
 | **N6 控制面 UI** | §9 | `feat/memory-host-ui` | N1 合入后（复用 N1 的工具与 CLI 路径） |
 
-N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N5 / N6 动不相交文件，
-可并行。文件所有权冲突时以 N1 为先，后续工作流 rebase 后重跑自己的判据。
+N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不相交文件，可与 N1
+并行；**N5 也动 `dispatcher.py`**（`_reject` / 终态脱敏），与 N1 的 `open_control_run`
+同文件，排在 N1 之后。文件所有权冲突时以 N1 为先，后续工作流 rebase 后重跑自己的判据。
 
 ---
 
@@ -79,6 +80,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N5 / N6 �
    `c4.memory_control_scope_binding`（控制面声明的记忆作用域只能由控制面设置）、
    `c4.memory_edit_requires_prior_revision`（编辑必须声明人当时看到的那一版）、
    `c4.memory_erasure_requires_receipt`（擦除必须带可独立核对的回执）。
+   每条新编号都必须有**产生路径**（`tests/test_rule_ids.py` 会查"登记了却没产生"），
+   否则加规则这一动作本身就是红的。
 7. `Dispatcher.open_control_run` 增可选 `memory_scopes`，并**只允许控制面调用方**
    （CLI / UI）设置；登记进 `task.created` payload（payload 形状未冻结，**加键不加
    事件类型**）。用途：让 CLI 能给"任务已结束"的 task 作用域记忆做确认/遗忘（#27），
@@ -364,8 +367,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N5 / N6 �
 ## 8. 合并顺序与总验收（lead 负责）
 
 1. **契约 PR**（§1 全部）→ 合入 `main`。不合则后续 PR 一律不开工。
-2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。N4/N5 可与 N1 并行，但 N2/N3 必须等
-   N1（同改 `memory.py`）。
+2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。N4 可与 N1 并行；**N5 与 N1 同改
+   `dispatcher.py`，必须排在 N1 之后**；N2 / N3 也要等 N1（同改 `memory.py`）。
 3. 每个 PR 合入前：lead 在最新 `main` 上跑全量 + `ruff` + `uv lock --check`；冲突一律
    lead 解。工具面绊线（`test_veto_scope.py`）随工具变化同步登记。
 4. 全部合入后 lead 收尾：
