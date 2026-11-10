@@ -164,6 +164,31 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 - 事件日志是唯一事实源：UI 刷新/重启后，用 `state` + `events.run` 重建，
   不依赖任何内存态。
 
+### 3.6 断线与超时的可判别语义
+
+"这一刻没有消息"和"连接已经断了"必须能分开。读循环如果只判 `None`，对端一断开
+`poll()` 就会立刻报可读、`recv_bytes()` 立刻 EOF，循环于是变成 100% CPU 的空转
+——M5 实测踩过：演示里把浏览器关掉，daemon 就持续吃满一个核，直到进程被杀。
+所以两条读路径的语义在这里钉死：
+
+| 调用 | 超时 | 对端断开 |
+|---|---|---|
+| `ServerConnection.recv(timeout=...)` | 返回 `None`，`eof` 仍为 `False` | 返回 `None`，且 `eof` 置 `True`（此后再调用立刻返回） |
+| `Client.next_event(timeout=...)` | 返回 `None` | 抛 `ConnectionClosed` |
+
+由此推出两条写法的约束：
+
+- **服务端读线程**：`recv()` 返回 `None` 时必须再看 `conn.eof`，为真就结束这条
+  连接（`daemon._read_loop` 就是这么写的），不能无条件 `continue`；
+- **订阅方**（Host 的 `/events`）：`ConnectionClosed` 是终态，要结束 SSE 响应，
+  让浏览器按 UI 的重连策略（连续 3 次失败后给手动重试）重来；把它当"这一刻没
+  事件"就会一边空转发心跳帧一边烧核，而且浏览器永远等不到流结束。
+
+回归测试钉住这条语义：`tests/test_ipc.py::test_peer_close_is_distinguishable_from_timeout`、
+`tests/test_ipc.py::test_subscription_drop_raises_instead_of_returning_none`、
+`tests/test_daemon.py::test_client_disconnect_does_not_spin_a_cpu_core`、
+`tests/test_integration_m5.py::test_event_stream_ends_when_daemon_goes_away`。
+
 ---
 
 ## 4. 生命周期
