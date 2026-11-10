@@ -180,3 +180,24 @@ FAILED tests/test_undo_journal.py::test_crash_between_actions_resumes_from_break
   `plan_undo` 预演为空列表——这是可接受的边角语义，已在代码注释里写明。
 - **尚未做真实掉电**：本用例用 `os._exit`，不验证「journal 与文件写入谁先持久化」
   的存储层语义；那是 T1（powercut）的工作。
+
+## 7. 恢复侧接线（合并后由 lead 补）
+
+本工作流（T3）只提供库契约，`recovery.py` 属另一工作流，**没有**在原分支里接线。
+合并后的接线很短（`recovery.recover_run` 内、与恢复同一次执行守卫）：
+
+- 有 `data_root` 时调 `undo_journal.outstanding(data_root, log=log)`；
+- `in_progress` → 把 journal 里记录的每个 root 阻断（`recovery.blocked` + 用户级权威根），
+  并在报告 `problems` 里点名 journal 路径与 `tianshu undo --run-id <ID>` 续做建议；
+- `corrupt` → 同样阻断（roots 读不出来时退到调用方显式给的 `--workspace`），
+  明确要求人工核对，绝不当成"没有撤销"；
+- `completed`（只差补事件）→ **不**阻断：文件已经全部还原，没有"改了一半"的风险；
+- 扫描器自己抛异常 → 报告写明"无法确认是否存在未完成的撤销"，按最坏情况处理。
+
+阻断是 journal 的**投影**，不是事实源：`guard.unblock` 可以解除，但只要 journal 还在
+`in_progress`，下一次恢复会重新挡住——这条由 `tests/test_undo_recovery.py` 钉住
+（5 条：阻断、损坏、completed 不阻断、解除后再恢复仍挡、状态翻转后阻断消失）。
+
+负控（把接线去掉、其它不动）：4 failed / 1 passed，红在
+`test_unfinished_undo_blocks_workspace`、`test_corrupt_journal_blocks_and_asks_for_human`、
+`test_block_is_a_projection_of_the_journal`、`test_in_progress_status_is_what_blocks`。
