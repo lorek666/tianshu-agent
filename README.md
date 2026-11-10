@@ -58,7 +58,7 @@
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
 - **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑，但**不稳定**：命名管道上偶发握手失败（issue [#50](https://github.com/lorek666/tianshu-agent/issues/50)，根因未定位，有些不稳定的轮次会让作业撞上超时被取消）；跑在 `windows-latest`（Server 2022）上，并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
 - **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
-- **F10 记忆只交付了 L1 显式记忆。** 已落地的是：事件日志上的可重建投影（`memory.py`）、五个 `memory.*` 工具、`memory://` 资源种类、C4 审批与 Receipt、CLI 控制面；测试覆盖投影 / 检索 / 写入闸门 / 去重 / 派发 / 审批 / 事务 / 主循环 / replay / CLI（`tests/test_memory_store.py`、`test_memory_dispatch.py`、`test_memory_loop.py`、`test_resources.py`）。**未实现**：L2/L3 蒸馏（增量 delta、证据链）、向量召回、§8 的作用域优先级排序、`recovery.recover_run` 的记忆崩溃恢复分支。**产生侧缺口**：`confirm` 不改写 `origin`，所以 `user_explicit` / `user_confirmed` 两档都没有生产入口，线上记忆恒为 `inferred`、§8 的 origin 排序实际退化成 `created_at` 降序。逐条状态见 [docs/F10-memory-design.md](docs/F10-memory-design.md) §13/§14，别把它读成"记忆功能已交付"。
+- **F10 记忆只交付了 L1 显式记忆。** 已落地的是：事件日志上的可重建投影（`memory.py`）、五个 `memory.*` 工具、`memory://` 资源种类、C4 审批与 Receipt、CLI 控制面；测试覆盖投影 / 检索 / 写入闸门 / 去重 / 派发 / 审批 / 事务 / 主循环 / replay / CLI（`tests/test_memory_store.py`、`test_memory_dispatch.py`、`test_memory_loop.py`、`test_resources.py`）。**未实现**：L2/L3 蒸馏（增量 delta、证据链）、向量召回、§8 的作用域优先级排序、`recovery.recover_run` 的记忆崩溃恢复分支。**产生侧缺口**：`confirm` 不改写 `origin`，所以 `user_explicit` / `user_confirmed` 两档都没有生产入口，线上记忆恒为 `inferred`、§8 的 origin 排序实际退化成 `created_at` 降序。逐条状态见 [docs/F10-memory-design.md](docs/F10-memory-design.md) §13/§14，别把它读成"记忆功能已交付"。剩余十条的施工规格（工作流、判据、负控口径、明确不做）见 [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md)——那是**待实施**方案，不是已完成。
 - **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。CLI 与评测已跑过真实模型（2026-11-10，两家模型完整 20 条 × 3 次，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1），但**还没有真实模型驱动过 UI**。
 - 已知缺口：issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**（PR #48）——否决即终局，`SUITE_VERSION` 升 `m4.4`，工单仍开着等确认；issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）已收敛关闭。
 
@@ -382,6 +382,7 @@ uv run ruff check .              # lint
 | [docs/M5-desktop.md](docs/M5-desktop.md) | **M5 桌面闭环**：三进程拓扑、IPC 契约、恢复语义、偏差登记（§2）、已知限制（§10） |
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
 | [docs/F10-memory-design.md](docs/F10-memory-design.md) | **F10 记忆设计（v1.1）**：记忆作为事件日志的可重建投影、L0–L3 分层、作用域与装备、写入分级审批；**§6.1 资源种类（`memory://`）**、**§13 契约增量的实际状态**、**§14 判据↔真实测试** |
+| [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md) | **剩余记忆工作量施工规格**：§13 #18–#27 逐条现状（代码事实）、六个工作流、契约增量清单、判据与负控口径、明确不做 |
 | [AGENTS.md](AGENTS.md) | AI 编码助手的强制指令（读什么、更什么、哪些不许做） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、独立复审、什么该推什么不该推 |
 | [docs/REVIEW-PRA.md](docs/REVIEW-PRA.md) | PR #7 独立复审报告（「自审盲区」教训的来源） |
