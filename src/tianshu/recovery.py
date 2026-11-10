@@ -18,10 +18,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from .errors import SnapshotCorrupt, TianshuError, WorkspaceViolation
+from . import authority
+from .authority import AuthorityUnavailable, AuthorityWriteFailed
+from .errors import EventLogCorrupt, SnapshotCorrupt, TianshuError, WorkspaceViolation
 from .events import EventLog
-from .guard import blocked_workspaces, ensure_not_blocked
+from .guard import blocked_workspaces, ensure_not_blocked, mirror_blocks_to_authority
 from .leases import Lease, LeaseStore, execution_guard
 from .receipt import build_receipt
 from .sandbox import current_backend
@@ -31,6 +34,8 @@ from .workspace import Workspace
 
 __all__ = [
     "RecoveryReport",
+    "RunAssessment",
+    "assess_run",
     "recover_run",
     "blocked_workspaces",
     "ensure_not_blocked",
@@ -107,6 +112,197 @@ def _foreign_lease(
     return None
 
 
+@dataclass(frozen=True)
+class RunAssessment:
+    """接管前对账的只读结论（issue #61.2）。
+
+    它是 `recover_run` 的**只读前身**：只回答"这条被打断的 run 现在能不能被
+    别人安全接手"，不补事件、不写凭据、不阻断、不落盘。阻断由调用方在拒绝
+    接管时显式登记（否则"只读对账"就变成了"顺手改状态"）。
+
+    六个状态对应规格要求：
+    - `applied` / `none_applied`：能确定的效果；
+    - `unknown`：磁盘既不是写前也不是写后（写了一半 / 被第三方改过）；
+    - `unresolved`：无法完成对账（未知工具、证据根不可用、清单读不出……）；
+    - `corrupt`：快照清单存在但坏了（证据不可信）；
+    - `missing_manifest`：有写入 intent 却没有清单（"写了却没清单"）。
+    """
+
+    run_id: str
+    applied: tuple[str, ...] = ()
+    none_applied: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+    unknown: tuple[str, ...] = ()
+    corrupt: bool = False
+    missing_manifest: bool = False
+    #: 本次对账覆盖的待决写调用数（含只读之外的写工具）。
+    pending_writes: int = 0
+    problems: tuple[str, ...] = ()
+
+    @property
+    def blocks_takeover(self) -> bool:
+        """能不能接手：有未核实副作用 / 坏清单 / 写了却没清单 → 不允许。"""
+        return (
+            bool(self.unresolved)
+            or bool(self.unknown)
+            or self.corrupt
+            or (self.missing_manifest and self.pending_writes > 0)
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        """写进审计事件的形状（`run.control` 的 `checked` 字段）。"""
+        return {
+            "applied": list(self.applied),
+            "none_applied": list(self.none_applied),
+            "unresolved": list(self.unresolved),
+            "unknown": list(self.unknown),
+            "corrupt": self.corrupt,
+            "missing_manifest": self.missing_manifest,
+            "pending_writes": self.pending_writes,
+        }
+
+
+def _read_only_snapshot_store(data_root: Path) -> SnapshotStore:
+    """只读快照视图：复用 `SnapshotStore` 的解析/校验，但**不走构造函数**。
+
+    `SnapshotStore.__init__` 会 `mkdir` 两个目录——对账必须只读，不能在别人的
+    数据根上顺手建目录。这里用 `__new__` 挂上同样的三个属性，`load/has_manifest`
+    只用 `manifest_dir`，既拿到同一套 `SnapshotCorrupt` 校验，又不落盘。
+    """
+    artifacts = Path(data_root) / "artifacts"
+    store = SnapshotStore.__new__(SnapshotStore)
+    store.root = artifacts
+    store.blob_dir = artifacts / "blobs"
+    store.manifest_dir = artifacts / "snapshots"
+    return store
+
+
+def assess_run(
+    data_root: Path | str, run_id: str, *, log: EventLog | None = None
+) -> RunAssessment:
+    """接管前的**只读**对账（不写事件、不落盘、不阻断）。
+
+    和 `recover_run` 的关键区别：这里不下结论、不补 `tool.result`、不写
+    `recovery.blocked`。它只回答"前任留下的状态能不能被安全接手"，供租约接管
+    的 `reconcile` 回调使用；拒绝时由调用方登记权威根阻断。
+
+    清单损坏/缺失必须**返回状态而不是抛异常**（接管方要据此拒绝，不是崩溃）。
+    事件日志本身读不出来时返回 `corrupt=True`——校验器自己崩了不算"干净"。
+    """
+    root = Path(data_root)
+    own_log = None
+    if log is None:
+        db = root / "events.db"
+        if not db.exists():
+            raise TianshuError(
+                f"无法对账：数据根里没有事件库（{root}）；"
+                "调用方应传入自己的 EventLog，避免只读对账创建/迁移库文件"
+            )
+        log = EventLog(db, blob_dir=root / "blobs")
+        own_log = log
+    try:
+        events = log.read_run(run_id)
+    except EventLogCorrupt as exc:
+        return RunAssessment(
+            run_id=run_id,
+            corrupt=True,
+            problems=(f"事件日志读不出来，无法对账：{exc}",),
+        )
+    finally:
+        if own_log is not None:
+            own_log.close()
+
+    intents = {e.payload["call_id"]: e for e in events if e.type == "tool.intent"}
+    results = {e.payload["call_id"] for e in events if e.type == "tool.result"}
+    pending = {cid: ev for cid, ev in intents.items() if cid not in results}
+
+    applied: list[str] = []
+    none_applied: list[str] = []
+    unresolved: list[str] = []
+    unknown: list[str] = []
+    problems: list[str] = []
+    corrupt = False
+    missing_manifest = False
+    pending_writes = 0
+    store = _read_only_snapshot_store(root)
+    manifest_checked = False
+    manifest_state = "unknown"  # unknown / ok / missing / corrupt
+    changes: list[Change] | None = None
+
+    for call_id, ev in pending.items():
+        payload = ev.payload
+        tool_id = payload["tool_id"]
+        spec = SPECS.get(tool_id)
+        if spec is None:
+            # 语义未知的工具：不能替它假设"没写"（与 recover 同一口径）。
+            unresolved.append(call_id)
+            continue
+        if spec.side_effect_level == "pure":
+            none_applied.append(call_id)
+            continue
+
+        pending_writes += 1
+        if not manifest_checked:
+            manifest_checked = True
+            if store.has_manifest(run_id):
+                try:
+                    changes = store.load(run_id)
+                    manifest_state = "ok"
+                except SnapshotCorrupt as exc:
+                    corrupt = True
+                    manifest_state = "corrupt"
+                    problems.append(f"快照清单损坏，无法核实任何副作用（{exc}）")
+            else:
+                manifest_state = "missing"
+        if manifest_state == "missing":
+            missing_manifest = True
+            unresolved.append(call_id)
+            continue
+        if manifest_state == "corrupt":
+            unresolved.append(call_id)
+            continue
+        assert changes is not None  # manifest_state == "ok" 时必然已加载
+
+        change = next((c for c in changes if c.call_id == call_id), None)
+        if change is None:
+            # 清单存在但没有本次条目 → 没进入写前证据阶段 → 确定未写。
+            none_applied.append(call_id)
+            continue
+        if change.before_state == change.expected_after:
+            none_applied.append(call_id)
+            continue
+        if not change.root:
+            # 旧格式证据没有 workspace 根：无法定位是哪个目录，不猜。
+            unresolved.append(call_id)
+            continue
+        try:
+            ws = Workspace(Path(change.root))
+            current = _observe(ws, change.path)
+        except (TianshuError, OSError) as exc:
+            unresolved.append(call_id)
+            problems.append(f"{call_id}：证据所在目录不可用（{exc}）")
+            continue
+        if current == change.before_state:
+            none_applied.append(call_id)
+        elif current == change.expected_after:
+            applied.append(call_id)
+        else:
+            # 既非写前也非写后：被 kill 在写一半、或被第三方改过 → 不可接手。
+            unknown.append(call_id)
+
+    return RunAssessment(
+        run_id=run_id,
+        applied=tuple(applied),
+        none_applied=tuple(none_applied),
+        unresolved=tuple(unresolved),
+        unknown=tuple(unknown),
+        corrupt=corrupt,
+        missing_manifest=missing_manifest,
+        pending_writes=pending_writes,
+        problems=tuple(problems),
+    )
+
+
 def recover_run(
     log: EventLog,
     run_id: str,
@@ -125,11 +321,20 @@ def recover_run(
     `recovery.blocked` 与派发真正落盘必须排进同一个全序，否则"查过阻断 → 写入"
     之间还能被插进一条阻断事件，而写入侧看不到它。不给（库调用方保持原样）时
     判定口径不变，只是少了这层跨进程线性化。
+
+    每次恢复都先做一次**权威根补登记**（issue #61.1）：本数据根日志里当前有效
+    的阻断，如果用户级权威根里还没有（旧版本的库、或换过数据根），先补进去。
+    补登记失败只在报告里写「跨数据根阻断未生效」，不炸恢复流程。
     """
+    migration_problems = mirror_blocks_to_authority(log)
     if data_root is None:
-        return _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
-    with execution_guard(Path(data_root)):
-        return _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+        report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+    else:
+        with execution_guard(Path(data_root)):
+            report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+    if migration_problems:
+        report.problems.extend(migration_problems)
+    return report
 
 
 def _recover_run(
@@ -358,18 +563,27 @@ def _block_workspace(
 
     阻断事件是 append-only 的：它不会被后面的"已解除"覆盖，解除由
     `guard.unblock` 再追加一条，两者一起才算出当前状态。
+
+    同时登记**用户级权威根**（issue #61.1）：只写本数据根日志的话，换个
+    `--db` 就看不见这条阻断。权威根写失败不能假装成功——在报告里如实写
+    「跨数据根阻断未生效」，本数据根这一侧仍然是阻断的（日志已经写了）。
     """
     report.blocked_workspaces.append(root)
+    reason = "存在无法核实的副作用，阻断后续写入"
     log.append(
         run_id,
         "recovery.blocked",
         {
             "workspace": root,
             "call_ids": call_ids,
-            "reason": "存在无法核实的副作用，阻断后续写入",
+            "reason": reason,
         },
         actor_kind="system",
     )
+    try:
+        authority.register_blocked(root, run_id=run_id, reason=reason)
+    except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
+        report.problems.append(f"跨数据根阻断未生效：{root}（{exc}）")
 
 
 def _unresolved_by_root(
