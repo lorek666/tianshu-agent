@@ -137,7 +137,7 @@
 | `Approval` | 审批 | `id, execution_id, digest, state, decided_by` |
 | `Receipt` | 副作用凭据 | `id, execution_id, before_ref, after_ref, evidence[]` |
 | `Artifact` | 产物（**v2 独立表**，见下方说明） | `id, sha256, mime, bytes, kind, run_id` |
-| `Memory` | 长期记忆（**v1.1**，见 §7 的 F10） | `id, scope, owner_id, content, source, confidence` |
+| `Memory` | 长期记忆（**v1.1**，见 §7 的 F10；字段细化见 [F10-memory-design.md](F10-memory-design.md) §5） | `memory_id, revision, scope, scope_id, kind, content_ref, source_refs[], origin, status, created_at, expires_at?, supersedes?` |
 | `Event` | 事件日志 | `seq, run_id, type, actor, payload_ref, payload_hash, parent_seq` |
 | `Checkpoint` | 恢复指针（**v2**，见下方说明） | `id, run_id, seq, state_digest, pending_intents[]` |
 
@@ -754,7 +754,7 @@ class Limits(TypedDict, total=False):
 
 | ID | 功能 | 关键要求 |
 |---|---|---|
-| **F10** | 记忆与知识 | 四类分离：事实→SQLite、文件→内容寻址、历史→事件日志、语义→FTS+向量（可重建投影）。写入需去重/来源/作用域/过期 |
+| **F10** | 记忆与知识 | 四类分离：事实→SQLite、文件→内容寻址、历史→事件日志、语义→FTS+向量（可重建投影）。写入需去重/来源/作用域/过期。**分层细化、作用域与装备、写入即副作用、默认私有的设计见 [F10-memory-design.md](F10-memory-design.md)** |
 | **F9b** | 动态路由 | 静态准入之上做成本/延迟排序、熔断、健康探测 |
 | **F14** | 可观测性 | 自有 envelope → 导出 OTel GenAI semconv；原始数据与 trace 分离。**普通用户界面只展示翻译后的人话，原始 trace 隐藏** |
 | **F15** | 开源合规 | 许可证固定（Apache-2.0）、依赖许可证扫描进 CI、SBOM 生成、无闭源运行时依赖 |

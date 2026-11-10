@@ -380,6 +380,7 @@ uv run ruff check .              # lint
 | [docs/TECH-ARCH.md](docs/TECH-ARCH.md) | **技术架构**：选型、进程模型、打包、平台差异 |
 | [docs/M5-desktop.md](docs/M5-desktop.md) | **M5 桌面闭环**：三进程拓扑、IPC 契约、恢复语义、偏差登记（§2）、已知限制（§10） |
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
+| [docs/F10-memory-design.md](docs/F10-memory-design.md) | **F10 记忆设计（v1.1，提案）**：记忆作为事件日志的可重建投影、L0–L3 分层、作用域与装备、写入分级审批 |
 | [AGENTS.md](AGENTS.md) | AI 编码助手的强制指令（读什么、更什么、哪些不许做） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、独立复审、什么该推什么不该推 |
 | [docs/REVIEW-PRA.md](docs/REVIEW-PRA.md) | PR #7 独立复审报告（「自审盲区」教训的来源） |
