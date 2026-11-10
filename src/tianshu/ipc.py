@@ -64,6 +64,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 import uuid
 from multiprocessing.connection import AuthenticationError, Listener
@@ -427,20 +428,30 @@ class Server:
 
         这条唤醒连接只用于打断，客户端会立刻关闭，服务端握手失败按"可重试"处理。
         """
-        try:
-            if os.name == "nt":
-                handle = os.open(self.endpoint, os.O_RDWR)
-                os.close(handle)
-            else:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                try:
-                    sock.settimeout(0.5)
-                    sock.connect(self.endpoint)
-                finally:
-                    sock.close()
-        except OSError:
-            # 端点已经不存在（还没 bind / 已被别人清掉）：没有要唤醒的线程。
-            pass
+
+        def knock() -> None:
+            try:
+                if os.name == "nt":
+                    handle = os.open(self.endpoint, os.O_RDWR)
+                    os.close(handle)
+                else:
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    try:
+                        sock.settimeout(0.5)
+                        sock.connect(self.endpoint)
+                    finally:
+                        sock.close()
+            except OSError:
+                # 端点已经不存在（还没 bind / 已被别人清掉）：没有要唤醒的线程。
+                pass
+
+        # 唤醒动作本身**不能**阻塞 `close()`：Windows 上 `CreateFile` 在管道实例
+        # 全忙时可能长时间不返回，那会把"关服务端"变成一个新的卡点（实测：CI 的
+        # windows job 卡在 Pytest 里 20 分钟没结束）。放进短线程里，等不到就放弃——
+        # 唤醒失败最坏是 accept 线程多活一会儿（它是 daemon 线程），不该拖住退出。
+        worker = threading.Thread(target=knock, name="ipc-wake-accept", daemon=True)
+        worker.start()
+        worker.join(1.0)
 
     def close(self) -> None:
         # 先关已接受的连接：只关 listener 不会唤醒阻塞在 recv 上的连接线程，
