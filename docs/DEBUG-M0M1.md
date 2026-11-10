@@ -304,9 +304,9 @@ M5 复审逐条落地。下表把每条发现对应到**落实位置**与**钉�
 | M2 | 已修 | `SPECS.get(tool_id) is None` → `unknown` + 阻断，不再套用「没证据=没写」 | `test_failclosed.py::test_unknown_tool_recovery_is_unknown_and_blocks` | 按 `(tool_id, version)` 的 per-version 恢复器仍未落地（当前整表 fail closed） |
 | M3 | 已修 | 传输层失败抛 `ModelError`（不再伪造 `error`/`unknown` 结束原因）；`finish_reason` 是 13 值封闭集，越界即报错；未知/截断结束原因失败，不是 `noop`；usage 缺失记 `unknown_usage_calls`，不记 0 | `test_m3_provider_error_is_failure_not_noop`、`test_m3_truncated_finish_reason_is_failure`、`tests/test_model_contract.py`、`tests/test_usage.py` | 未知 usage 时预算「无法核实」是如实记录 + 限额，不是精确计量 |
 | M4 | 大部分已修 | `ResourceIdentity`（设备+inode，符号链接同身份）+ `pathkeys`（NFC/大小写）+ 租约（过期、死主接管、跨进程守卫）+ 派发唯一索引 | `tests/test_leases.py`（含真子进程 `test_two_processes_one_resource`、`test_execution_guard_excludes_across_processes`）、`tests/test_evidence_keys.py` | **换 `--db` 绕过目录阻断（authority 数据根逃逸）未实现**；完整 takeover 未实现（issue #61） |
-| L1 | 已修 | 注入矩阵扩到 create + 覆盖写；不变量核对**真正要写的那个文件**（不再对诱饵 `note.md` 自说自话）；坏清单/坏 blob 纳入用例 | `tests/test_recovery.py`（11 条：failpoint × 2 条写路径、100 次随机注入、四条不变量）、`test_failclosed.py` 注入矩阵、本轮新增坏清单 2 条 | — |
+| L1 | 已修 | 注入矩阵扩到 create + 覆盖写；不变量核对**真正要写的那个文件**（不再对诱饵 `note.md` 自说自话）；坏清单/坏 blob 纳入用例 | `tests/test_recovery.py`（11 条：failpoint × 2 条写路径、100 次随机注入、四条不变量）、`test_failclosed.py` 注入矩阵、本轮新增坏清单 3 条 | — |
 | L2 | 已修 | 证据按 `call_id` 保存（同一路径多次写各留一条）；撤销按调用逆序、同路径取最早 preimage；撤销写 `undo.completed` 事件留痕 | `test_r3_create_then_modify_same_path_can_be_undone`、`test_r3_undo_appends_audit_event`、`test_three_writes_undo_to_original_and_middle_conflict_is_atomic` | — |
-| R1 | 已修 | 缺清单→`unknown`+阻断；**坏清单（本轮补）**→`unknown`+阻断，不再漏出裸解析异常 | `test_r1_missing_manifest_is_unknown_not_none_applied`、`test_r1_corrupt_manifest_is_unknown_and_blocks` | — |
+| R1 | 已修 | 缺清单→`unknown`+阻断；**坏清单（本轮补）**→写工具 `unknown`+阻断、只读工具不受影响，不再漏出裸解析异常 | `test_r1_missing_manifest_is_unknown_not_none_applied`、`test_r1_corrupt_manifest_is_unknown_and_blocks`、`test_r1_corrupt_manifest_does_not_block_read_only_calls` | — |
 | R2 | 已修 | 撤销强制 guard + 完整派发链；没有日志/租约/审批就拒绝 | `test_r2_undo_refused_on_blocked_workspace`、`test_undo_requires_guard_at_library_boundary` | — |
 | R3 | 已修 | 同一路径按调用逆序撤销，冲突以最终 after 为基准；撤销写事件 | `test_r3_*`、`test_three_writes_undo_to_original_and_middle_conflict_is_atomic` | — |
 | R4 | 已修 | 阻断不是普通工具失败：任务显式 `failed`，不进 `noop` | `test_r4_blocked_tool_makes_run_fail_not_noop` | — |
@@ -322,8 +322,9 @@ CLI 只打印 `错误：Expecting property name...`，既没说清哪份文件�
 
 - 新增域错误 `SnapshotCorrupt`（与 `EventLogCorrupt` 同一条道理，只是介质不同：一个在
   SQLite，一个在 `artifacts/snapshots/<run>.json`）。
-- 恢复侧在动手前整份核对一次：读不懂就把所有 pending 判 `unknown` + 阻断，**不**退回
-  「没证据=没写」；逐条取证时清单才坏的窄窗口按同一口径处理。
+- 恢复侧在动手前整份核对一次：读不懂就把所有**写工具/未知工具**的 pending 判 `unknown`
+  + 阻断，**不**退回「没证据=没写」；只读工具不读这份证据（本来无副作用），照旧判
+  `none_applied`——过度阻断也是误报。逐条取证时清单才坏的窄窗口按同一口径处理。
 - 撤销侧（`undo.plan`）明确拒绝并给出补救路径（先 `recover` 核对或手工还原、先备份），
   库入口 `SnapshotStore.undo()` 抛类型化错误；两种路径都一个字节都不动。
 
@@ -334,6 +335,9 @@ FAILED tests/test_debug_regressions.py::test_r1_corrupt_manifest_is_unknown_and_
 FAILED tests/test_debug_regressions.py::test_undo_refuses_corrupt_manifest
 json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
 ```
+
+（第三条 `test_r1_corrupt_manifest_does_not_block_read_only_calls` 钉住的是相反方向：
+不能因为清单坏了就把只读工具也挡上——过度阻断同样是误报。）
 
 修复后同一组用例全绿；全量 `1079 passed / 3 skipped`，`ruff check .` 干净。
 

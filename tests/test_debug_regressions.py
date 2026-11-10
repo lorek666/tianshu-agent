@@ -118,6 +118,28 @@ def test_r1_corrupt_manifest_is_unknown_and_blocks(tmp_path):
     log.close()
 
 
+def test_r1_corrupt_manifest_does_not_block_read_only_calls(tmp_path):
+    """清单坏了不该连只读工具一起挡：它本来就没有副作用，也不读这份证据。
+
+    过度阻断也是误报：把一个其实没事的目录挡上，用户看到的是"天枢把自己的
+    目录封了"，而原因只是某个 JSON 文件坏了。
+    """
+    ws = _ws(tmp_path, {"note.md": "旧"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+
+    _intent(log, "r1", "c1", "read_text", {"path": "note.md"}, ws)
+    store.manifest_path("r1").write_bytes(b"{broken")
+
+    report = recover_run(log, "r1", ws, store)
+
+    assert report.unresolved == [], "只读工具不需要写前证据"
+    assert report.none_applied == ["c1"]
+    assert report.blocked_workspaces == []
+    assert str(ws.resolve()) not in blocked_workspaces(log)
+    log.close()
+
+
 def test_undo_refuses_corrupt_manifest(tmp_path):
     """撤销读不懂证据时明确拒绝，并且一个字节都不写。"""
     from support import stack_for

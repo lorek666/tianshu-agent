@@ -156,20 +156,34 @@ def _recover_run(
 
     # 清单存在但读不出内容：证据**曾经存在过**，只是现在不可信。这比"清单整个
     # 缺失"更糟——不能像"没有证据=没写"那样替任何一条未完成的调用下结论。
-    # 一个字节都不猜：全部判 unknown，并阻断到调用方显式给的那个目录。
+    # 一个字节都不猜：写工具与语义未知的工具全部判 unknown 并阻断到调用方显式
+    # 给的那个目录。只读工具不读这份证据（它本来就没有副作用），结论不受影响，
+    # 否则会把一个只是"清单文件坏了"的目录额外挡上——过度阻断也是误报。
     if pending and snapshots is not None:
         try:
             snapshots.load(run_id)
         except SnapshotCorrupt as exc:
+            unverified: list[str] = []
             for call_id, ev in pending.items():
                 payload = ev.payload
-                _settle(log, report, run_id, call_id, payload["tool_id"], payload,
+                tool_id = payload["tool_id"]
+                spec = SPECS.get(tool_id)
+                if spec is not None and spec.side_effect_level == "pure":
+                    _settle(log, report, run_id, call_id, tool_id, payload,
+                            ToolResult("failed", "none_applied",
+                                       {"error": "recovered: 只读工具无副作用",
+                                        "recovered": True}),
+                            bucket=report.none_applied)
+                    continue
+                unverified.append(call_id)
+                _settle(log, report, run_id, call_id, tool_id, payload,
                         ToolResult("unknown", "unknown",
                                    {"error": "recovered: 快照清单损坏，无法核实任何"
                                              f"副作用（{exc}）",
                                     "recovered": True}),
                         bucket=report.unresolved)
-            _block_workspace(log, report, run_id, str(ws.root), list(pending))
+            if unverified:
+                _block_workspace(log, report, run_id, str(ws.root), unverified)
             return report
 
     for call_id, ev in pending.items():
