@@ -156,6 +156,16 @@ class RunResult:
     content: str = ""
     artifact: dict[str, Any] | None = None
     turns: int = 0
+    #: **模型尝试次数**：每真正发出一次 `complete()` 请求就 +1，**含**超时/传输
+    #: 失败/重试。它和 `turns` 回答两个问题：`turns` 是"完成了几个轮次"，
+    #: `model_attempts` 是"到底打出去几次"。全部尝试都失败时两者是 0 和 N——
+    #: 费用行必须按尝试次数说话，否则"打了 3 次都没回"会被读成"没有模型调用"
+    #: （issue #58）。
+    model_attempts: int = 0
+    #: `model_attempts` 是否**完整可信**。`False` 只有一种来源：升级前写下的
+    #: 旧游标没有这个账本键（见 `_Progress.of`）。那时尝试次数只能以完成轮次为
+    #: 下限，**不能**当成精确值展示——"不知道"和"零次/三次"必须分开。
+    model_attempts_known: bool = True
     tokens: int = 0
     unknown_usage_calls: int = 0
     # ---- F13 成本可见 ----
@@ -189,6 +199,8 @@ class RunResult:
 #: `_Progress.budget` 原样透传，不会被重复计算或丢掉。
 _LEDGER_OWNED_KEYS = frozenset({
     "turns",
+    "model_attempts",
+    "model_attempts_known",
     "tokens",
     "unknown_usage_calls",
     "cost_total_micros",
@@ -210,6 +222,12 @@ class _Progress:
     approvals: list[str] = field(default_factory=list)
     model_turn: dict[str, Any] | None = None
     turns: int = 0
+    #: 模型尝试次数（含失败/重试）。它进预算账本，resume 之后不丢：费用行按它
+    #: 说"打出去几次"，而不是按完成轮次说（issue #58）。
+    model_attempts: int = 0
+    #: 上面这个数是否完整。旧游标（账本里没有该键）只能以完成轮次为下限，
+    #: 此时 `False` —— 展示层必须说"不知道"，不能说一个精确的 0/N。
+    model_attempts_known: bool = True
     tokens: int = 0
     unknown_usage_calls: int = 0
     #: 已知费用累计（微美元）与费用未知的调用数。跟着游标走，resume 之后不丢账。
@@ -239,6 +257,8 @@ class _Progress:
             model_turn=self.model_turn,
             budget_ledger={
                 "turns": self.turns,
+                "model_attempts": self.model_attempts,
+                "model_attempts_known": self.model_attempts_known,
                 "tokens": self.tokens,
                 "unknown_usage_calls": self.unknown_usage_calls,
                 "cost_total_micros": self.cost_total_micros,
@@ -265,6 +285,13 @@ class _Progress:
             approvals=list(cursor.approval_ids),
             model_turn=cursor.model_turn,
             turns=int(ledger.get("turns", 0) or 0),
+            # 旧游标没有尝试次数键：以完成轮次为**下限**（每次成功至少一次
+            # 尝试），并标记 `model_attempts_known=False`——展示层据此说"不知道"，
+            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加。
+            model_attempts=int(
+                ledger.get("model_attempts", ledger.get("turns", 0)) or 0
+            ),
+            model_attempts_known="model_attempts" in ledger,
             tokens=int(ledger.get("tokens", 0) or 0),
             unknown_usage_calls=int(ledger.get("unknown_usage_calls", 0) or 0),
             cost_total_micros=int(ledger.get("cost_total_micros", 0) or 0),
@@ -899,6 +926,10 @@ class AgentLoop:
                 idem_key=f"{request_id}#{attempt}",
             )
 
+            # 尝试次数在**真正发请求的这一刻**加：预算守卫提前返回、准入拒绝、
+            # 上下文编译失败都不算"打过一次"。加在这里，超时/传输失败/重试
+            # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
+            progress.model_attempts += 1
             try:
                 return self._model.complete(view.messages, tool_manifest()), ""
             except ModelError as exc:
@@ -2089,6 +2120,8 @@ class AgentLoop:
             content=content,
             artifact=self._artifact,
             turns=progress.turns,
+            model_attempts=progress.model_attempts,
+            model_attempts_known=progress.model_attempts_known,
             tokens=progress.tokens,
             unknown_usage_calls=progress.unknown_usage_calls,
             cost_total_micros=progress.cost_total_micros,
