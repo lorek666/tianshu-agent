@@ -18,11 +18,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import undo_journal
+from .crashpoint import failpoint
 from .credentials import redact
-from .dispatcher import build_request
+from .dispatcher import ControlRun, build_request
 from .errors import SnapshotCorrupt, TianshuError, ToolNotAllowed
 from .guard import ensure_not_blocked
+from .jobs import JOB_CLAIMED, TERMINAL_JOB_STATES, JobClaim, JobLost, JobUnavailable
 from .permissions import HumanIdentity
+from .tasks import TERMINAL_STATES
 from .workspace import Workspace, WorkspaceBinding
 
 
@@ -105,11 +109,261 @@ def _load_items(stack, run_id: str) -> list[UndoItem]:
     ]
 
 
+def _load_journal(store, run_id: str) -> undo_journal.UndoJournal | None:
+    """读意图日志；读不懂就拒绝，绝不当成"没有 journal"从头再来。"""
+    try:
+        return store.journal.load(run_id)
+    except undo_journal.UndoJournalCorrupt as exc:
+        raise UndoRefused(
+            "撤销日志损坏",
+            code=2,
+            lines=[
+                "拒绝撤销：这个 run 的撤销意图日志（artifacts/undo/<run_id>.json）"
+                "读不出来",
+                f"  - {exc}",
+                "日志损坏时无法确认撤销做到哪一步。当成空日志从头再来会重复"
+                "删除/还原；按猜的日志续做会覆盖用户后来的修改。所以一个字节都不动。",
+                "处置建议：先备份 artifacts/undo/ 与 artifacts/snapshots/ 下的文件，"
+                "再用 `tianshu recover` 核对后人工处理。",
+            ],
+        ) from exc
+
+
+def _check_event_consistency(log, journal: undo_journal.UndoJournal) -> None:
+    """完成事件与 journal 状态必须一致：两者矛盾时谁都不许继续。
+
+    - journal 未完成却有 `undo.completed`：不可能。要么事件被伪造，要么
+      journal 被改过；补写/续做都会把矛盾盖住。
+    - journal 已完成而事件缺失：合法（崩溃窗口），由 `_emit_completed_once`
+      幂等补写。
+    """
+    events = [
+        event
+        for event in log.read_run(journal.run_id)
+        if event.type == "undo.completed"
+    ]
+    if journal.status != undo_journal.STATUS_IN_PROGRESS or not events:
+        return
+    raise UndoRefused(
+        "撤销日志与完成事件矛盾",
+        code=2,
+        lines=[
+            "拒绝继续：事件日志里已有 undo.completed，但撤销意图日志仍是"
+            " in_progress",
+            f"  - journal：artifacts/undo/{journal.run_id}.json"
+            f"（status=in_progress，done={len(journal.done)}/{len(journal.items)}）",
+            "两者至少有一个不是真的。补写事件或重新撤销都会掩盖真实状态，"
+            "所以一个字节都不动。",
+            "处置建议：先备份 artifacts/undo/ 与事件库，人工核对后再处理。",
+        ],
+    )
+
+
+def _journal_items(journal: undo_journal.UndoJournal) -> list[UndoItem]:
+    return [
+        UndoItem(
+            path=item.path,
+            root=item.root,
+            call_id=item.call_id,
+            before_state=item.before_state,
+        )
+        for item in journal.remaining
+    ]
+
+
+def _plan_journal_undo(
+    store, journal: undo_journal.UndoJournal, scope: Path | None
+) -> UndoPlan:
+    """未完成/已完成 journal 的只读预演：先核对磁盘，再说明还要做什么。"""
+    roots = sorted({item.root for item in journal.items})
+    resolved = scope.resolve() if scope is not None else None
+    if resolved is not None and roots != [str(resolved)]:
+        raise UndoRefused(
+            "撤销日志的范围与 --workspace 不一致",
+            code=2,
+            lines=[
+                "拒绝续做：该 run 的撤销意图日志记录了这些 workspace："
+                f"{'、'.join(roots)}",
+                f"本次只给了 --workspace {resolved}。只续做一部分会让 journal 的"
+                "全局进度与磁盘对不上，所以要么不传 --workspace，要么传原来的范围。",
+            ],
+        )
+    scope_workspace: Workspace | None = None
+    if resolved is not None:
+        try:
+            scope_workspace = Workspace(resolved)
+        except TianshuError as exc:
+            raise UndoRefused(
+                "workspace 不可用",
+                code=2,
+                lines=[f"拒绝撤销：workspace 不可用：{resolved}（{redact(str(exc))}）"],
+            ) from exc
+    try:
+        store.check_undo_journal(journal, scope_workspace)
+    except undo_journal.UndoJournalConflict as exc:
+        raise UndoRefused(
+            "撤销日志与磁盘状态冲突",
+            code=2,
+            lines=[
+                "拒绝续做：撤销意图日志与当前磁盘对不上，不能猜着继续",
+                f"  - {exc}",
+                "继续写会覆盖用户后来的修改，或者重复已经生效的动作。",
+                "处置建议：先备份现场，再用 `tianshu recover` 核对；确认后人工"
+                "处理（或删除 artifacts/undo/<run_id>.json 后重新评估）。",
+            ],
+        ) from exc
+    return UndoPlan(
+        run_id=journal.run_id,
+        # 已完成的 journal 没有"还要做"的动作；CLI 预览会显示为空。
+        items=[] if journal.completed else _journal_items(journal),
+        roots=roots,
+        scope=resolved,
+        scope_workspace=scope_workspace,
+    )
+
+
+def _journal_payload(
+    journal: undo_journal.UndoJournal,
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
+    restored: list[str] = []
+    deleted: list[str] = []
+    entries: list[dict[str, str]] = []
+    for done in journal.done:
+        item = done.item
+        if item.action == undo_journal.ACTION_DELETE:
+            deleted.append(item.path)
+            result = "deleted"
+        else:
+            restored.append(item.path)
+            result = "restored"
+        entries.append({"root": item.root, "path": item.path, "result": result})
+    return restored, deleted, entries
+
+
+def _outcome_from_journal(journal: undo_journal.UndoJournal) -> UndoOutcome:
+    restored, deleted, entries = _journal_payload(journal)
+    return UndoOutcome(
+        ok=True,
+        restored=restored,
+        deleted=deleted,
+        entries=entries,
+        effect="applied",
+        control_run=journal.control_run,
+    )
+
+
+def _emit_completed_once(stack, journal: undo_journal.UndoJournal | None) -> None:
+    """完成事件只能有一条：journal 已完成但事件缺失时补写，已存在则不重复。"""
+    if journal is None:  # pragma: no cover - 撤销成功必有 journal
+        raise TianshuError("撤销完成却没有意图日志终态：拒绝写假事件")
+    if any(
+        event.type == "undo.completed" for event in stack.log.read_run(journal.run_id)
+    ):
+        return
+    restored, deleted, entries = _journal_payload(journal)
+    stack.log.append(
+        journal.run_id,
+        "undo.completed",
+        {
+            "run_id": journal.run_id,
+            "restored": restored,
+            "deleted": deleted,
+            "entries": entries,
+            "control_run": journal.control_run,
+        },
+        actor_kind="human",
+        idem_key=f"undo.completed:{journal.run_id}",
+    )
+
+
+def _close_orphan_control(stack, control_run_id: str) -> None:
+    """尽力收掉崩溃/失败遗留的控制 Run；收不掉也不把它当成功。"""
+    if not control_run_id:
+        return
+    run = stack.tasks.get_run(control_run_id)
+    job = stack.claims.job_for_run(control_run_id)
+    if run is None or job is None or run.state in TERMINAL_STATES:
+        return
+    task = stack.tasks.get_task(run.task_id)
+    claim = JobClaim(
+        job_id=job.job_id,
+        run_id=control_run_id,
+        owner_instance_id=job.owner_instance_id or "",
+        owner_pid=job.owner_pid or 0,
+        claim_epoch=job.claim_epoch,
+    )
+    try:
+        stack.dispatcher.close_control_run(
+            ControlRun(task=task, run=run, claim=claim, lease_paths=()),
+            outcome="failed",
+            effect_state="partial",
+        )
+    except TianshuError:
+        # 收尾失败不阻断续做：续做会用新的控制 Run，并把它写回 journal。
+        pass
+
+
+def _control_for_resume(stack, journal: undo_journal.UndoJournal) -> ControlRun:
+    """接管上次没来得及收尾的控制 Run；不可复用则另开一个并改写 journal。
+
+    崩溃后控制 Run 还是 `running`、作业仍被已死的实例 claimed。复用同一个
+    Run 保留审计链（完成事件里的 control_run 不变）；只有当它已收尾/无法认领
+    时才另开。**并发的活实例**持有作业时拒绝，不抢。
+    """
+    control_run_id = journal.control_run
+    run = stack.tasks.get_run(control_run_id) if control_run_id else None
+    job = stack.claims.job_for_run(control_run_id) if run is not None else None
+    if run is not None and job is not None and run.state not in TERMINAL_STATES:
+        if job.state == JOB_CLAIMED and stack.claims.is_live(job):
+            raise UndoRefused(
+                "撤销正由另一个活着的实例执行",
+                code=2,
+                lines=[
+                    "拒绝续做：这个未完成的撤销正被另一个活着的实例持有"
+                    "（作业状态仍是 claimed）。",
+                    "并发续做会让两个进程同时写同一批文件；请等它结束或确认它已退出。",
+                ],
+            )
+        if job.state not in TERMINAL_JOB_STATES:
+            try:
+                claim = stack.claims.claim(job.job_id)
+            except (JobLost, JobUnavailable):
+                claim = None
+            if claim is not None:
+                task = stack.tasks.get_task(run.task_id)
+                if task is not None:
+                    writable = [b.identity() for b in task.workspaces if b.can_write]
+                    stack.leases.acquire(writable, run.run_id)
+                    return ControlRun(
+                        task=task,
+                        run=run,
+                        claim=claim,
+                        lease_paths=tuple(
+                            str(b.root_path) for b in task.workspaces if b.can_write
+                        ),
+                    )
+    # 旧控制 Run 不可复用：先尽力收尾，再为续做另开一个控制 Run。
+    _close_orphan_control(stack, control_run_id)
+    roots = sorted({item.root for item in journal.items})
+    control = stack.dispatcher.open_control_run(
+        goal=f"undo:{journal.run_id}",
+        workspaces=[WorkspaceBinding(root) for root in roots],
+    )
+    stack.snapshots.init_run(control.run.run_id)
+    stack.snapshots.journal.set_control_run(journal, control.run.run_id)
+    return control
+
+
 def plan_undo(stack, run_id: str, *, scope: Path | None = None) -> UndoPlan:
     """只读预演：不写文件、不登记审批、不改事件日志。
 
     拒绝条件都发生在**动手之前**——撤销写错目录比撤销失败严重得多。
+    已有未完成 journal 时，这里只核对「能不能续做、还要做哪些」，不重排计划。
     """
+    journal = _load_journal(stack.snapshots, run_id)
+    if journal is not None:
+        _check_event_consistency(stack.log, journal)
+        return _plan_journal_undo(stack.snapshots, journal, scope)
     try:
         items = _load_items(stack, run_id)
     except SnapshotCorrupt as exc:
@@ -246,7 +500,41 @@ def apply_undo(
     *,
     scope: Path | None = None,
 ) -> UndoOutcome:
-    """执行撤销。前置拒绝抛 `UndoRefused`；执行中的失败返回 `ok=False` + partial。"""
+    """执行撤销（或续做未完成的撤销）。
+
+    前置拒绝抛 `UndoRefused`；执行中的失败返回 `ok=False` + partial。
+
+    journal 语义：
+    - 没有 journal：预检 → 落盘完整计划 → 逐动作执行并记录 → completed；
+    - 有 in_progress：先核对磁盘（done 与剩余项），从断点继续，绝不从头再来；
+    - 有 completed 但缺 `undo.completed` 事件：只核对 + 幂等补写事件，不动文件。
+    """
+    store = stack.snapshots
+    journal = _load_journal(store, run_id)
+    if journal is not None:
+        _check_event_consistency(stack.log, journal)
+
+    if journal is not None and journal.completed:
+        # 全是已完成的动作：不再动文件；只核对"记录与磁盘一致"后补事件。
+        try:
+            store.check_undo_journal(journal)
+        except undo_journal.UndoJournalConflict as exc:
+            raise UndoRefused(
+                "撤销已完成，但磁盘状态与日志不一致",
+                code=2,
+                lines=[
+                    "拒绝补写完成事件：撤销日志说这个 run 已经撤完，磁盘却对不上",
+                    f"  - {exc}",
+                    "补写一条「已完成」事件会把不一致盖住；所以事件也不写，"
+                    "一个字节都不动。",
+                    "处置建议：先备份现场，再人工核对 artifacts/undo/ 与工作区。",
+                ],
+            ) from exc
+        # 崩溃可能留下未收尾的控制 Run：补写事件前顺手收掉（幂等，失败不阻断）。
+        _close_orphan_control(stack, journal.control_run)
+        _emit_completed_once(stack, journal)
+        return _outcome_from_journal(journal)
+
     plan = plan_undo(stack, run_id, scope=scope)
 
     def guard() -> None:
@@ -254,17 +542,24 @@ def apply_undo(
         for root in plan.roots:
             ensure_not_blocked(stack.log, root)
 
-    control = stack.dispatcher.open_control_run(
-        goal=f"undo:{run_id}",
-        workspaces=[WorkspaceBinding(root) for root in plan.roots],
-    )
-    stack.snapshots.init_run(control.run.run_id)
+    # 重新读一次：plan_undo 只读，但两次读之间若有人写了 journal（并发），
+    # 以磁盘上的最新状态为准；绝不用第一份内存快照覆盖第二份证据。
+    journal = _load_journal(store, run_id)
+    if journal is not None:
+        control = _control_for_resume(stack, journal)
+    else:
+        control = stack.dispatcher.open_control_run(
+            goal=f"undo:{run_id}",
+            workspaces=[WorkspaceBinding(root) for root in plan.roots],
+        )
+        stack.snapshots.init_run(control.run.run_id)
     try:
         report = stack.snapshots.undo(
             run_id,
             plan.scope_workspace,
             guard=guard,
             apply=_dispatch_apply(stack, control),
+            journal_control_run=control.run.run_id,
         )
     except Exception as exc:
         # 撤销是多文件操作：中途失败必须如实记成 partial，不能悄悄停在
@@ -286,20 +581,10 @@ def apply_undo(
         raise
 
     if report.ok:
-        stack.log.append(
-            run_id,
-            "undo.completed",
-            {
-                "run_id": run_id,
-                "restored": report.restored,
-                "deleted": report.deleted,
-                # 带根的逐条记录：verify_receipts 用它认出"这次改动已被撤销"，
-                # 否则撤销过的文件会一直显示"与凭据不一致"。
-                "entries": report.entries,
-                "control_run": control.run.run_id,
-            },
-            actor_kind="human",
-        )
+        # journal 已经 completed；先落这个故障点是为了证明"完成事件缺失"
+        # 也能被幂等补写，而不是靠顺序假设。
+        failpoint("after_undo_journal_complete")
+        _emit_completed_once(stack, report.journal)
     # 一个字节都没动的时候就记 none_applied，别用 partial 冒充"改了一半"。
     if report.ok:
         effect = "applied"

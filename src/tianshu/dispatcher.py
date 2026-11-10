@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -69,6 +70,12 @@ from .leases import (
     ReconcileFn,
     execution_guard,
 )
+from .memory_exec import (
+    MEMORY_ALL_TOOL_IDS,
+    MEMORY_TOOL_IDS,
+    MemoryExecutor,
+    memory_scope_allowed,
+)
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
@@ -84,12 +91,21 @@ from .permissions import (
     HumanIdentity,
     PolicyDecision,
     PolicyEngine,
+    supported_memory_kinds,
 )
-from .receipt import build_exec_receipt, build_receipt
+from .receipt import build_exec_receipt, build_memory_receipt, build_receipt
+from .resources import (
+    KIND_MEMORY,
+    MemoryScope,
+    ResourceError,
+    is_memory_resource,
+    parse_memory_uri,
+    parse_resource,
+)
 from .rules import check_rule_id
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
-from .tasks import RUN_RUNNING, Run, Task, TaskStore
+from .tasks import RUN_RUNNING, ExecutionPermit, Run, Task, TaskStore
 from .tools import (
     SPECS,
     AdmittedCall,
@@ -272,11 +288,27 @@ class _Authority:
 
 
 @dataclass(frozen=True)
-class _Target:
+class _FileTarget:
     path: Path
     rel_path: str
     workspace_root: str
     identity: ResourceIdentity
+
+
+@dataclass(frozen=True)
+class _MemoryTarget:
+    """记忆目标：只有作用域，没有文件路径。
+
+    `rel_path` / `workspace_root` 在派发表里是历史列，记忆行填 scope_id 与空
+    相对路径；任何文件执行器都不会拿到这个对象。
+    """
+
+    scope: MemoryScope
+    uri: str
+    kind: str = KIND_MEMORY
+
+
+_Target = _FileTarget | _MemoryTarget
 
 
 def _now() -> int:
@@ -304,6 +336,38 @@ def precondition_rule_id(
     return "dispatch.stale_precondition"
 
 
+def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
+    """给**被拒绝**的派发请求脱敏：记忆正文只留摘要。
+
+    能脱敏的只有**永远不会执行**的行。被采纳的行**不能**脱敏——`args_payload`
+    会被读回来做 `args_hash` 绑定校验，执行器也从这张表取参数（详见
+    `_intent_args` 的注释）；落库前统一脱敏会直接把派发打红。所以本函数只挂在
+    `_reject()` 上。
+
+    为什么拒绝的行也要处理：`dispatch_requests` 没有擦除路径，`memory.forget`
+    也不碰它，留一份记忆正文原文就是永久副本。换成 `content_sha256 +
+    content_bytes` 后，审计仍能核对"要写的是同一段正文"（哈希可比、长度可比），
+    原文不再落地；`content` 之外的字段（kind / scope / 记忆 id / 写前 revision）
+    照常留。
+
+    **不覆盖**：被采纳后又被内容闸门（PII / 密钥）挡掉的请求——闸门在
+    `MemoryExecutor` 里跑，而请求行在 `prepare()` 就落库了。那一半见 F10
+    §13 #26，要彻底修得把内容扫描挪到落库之前。
+    """
+    if "content" not in args:
+        return args
+    if not any(is_memory_resource(resource) for resource in request.resources):
+        return args
+    content = args.get("content")
+    text = content if isinstance(content, str) else ""
+    raw = text.encode("utf-8")
+    redacted = {key: value for key, value in args.items() if key != "content"}
+    redacted["content_sha256"] = sha256_hex(raw)
+    redacted["content_bytes"] = len(raw)
+    redacted["content_redacted"] = True
+    return redacted
+
+
 class Dispatcher:
     """唯一判定"能不能执行"，并登记执行的地方。"""
 
@@ -320,6 +384,7 @@ class Dispatcher:
         claims: JobStore | None = None,
         snapshots: SnapshotStore | None = None,
         data_root: Path | None = None,
+        memory: object | None = None,
         clock=_now,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -344,6 +409,20 @@ class Dispatcher:
         self._data_root = Path(data_root) if data_root is not None else tasks.data_root
         self._clock = clock
         self._guard_timeout_ms = guard_timeout_ms
+        # 记忆投影必须与事件日志共用同一个 SQLite 连接：投影更新要放进
+        # `_commit_result()` 的同一个事务，另开连接就等于另开事实源。
+        self._memory = memory
+        # `MemoryProjection` 构造处的检查只保证"它自己和一个日志同连接"，
+        # 管不了派发方传进来的是**哪个**日志的投影。那样 `_commit_result()`
+        # 会在 log 的事务里写事件、却在另一条连接上独立提交投影——一边回滚
+        # 一边留下，两份事实源静默分叉，而且没有任何裁决者能判定哪份对。
+        # 约束必须在边界上强制，不能靠"装配代码记得传对"。
+        if memory is not None and getattr(memory, "conn", None) is not self._conn:
+            raise TianshuError(
+                "Dispatcher 收到的记忆投影不属于同一个 SQLite 连接："
+                "投影必须和事件在同一个事务里落库，否则事件与投影会分叉"
+            )
+        self._memory_executor: MemoryExecutor | None = None
         self._executor = executor or FileExecutor(
             tasks=tasks,
             leases=leases,
@@ -366,6 +445,52 @@ class Dispatcher:
     @property
     def claims(self) -> JobStore:
         return self._claims
+
+    def _memory_projection(self) -> object:
+        """拿到与事件日志同库的记忆投影。
+
+        延迟构造：没有记忆请求的运行不需要加载记忆模块，也不改变既有启动路径。
+        `memory.py` 由队友实现；这里只调用锚定签名，不复制一份实现。
+        """
+        if self._memory is None:
+            try:
+                from .memory import MemoryProjection
+            except ImportError as exc:  # pragma: no cover - 集成期缺模块
+                raise TianshuError(
+                    "收到 memory 资源，但记忆投影不可用（缺少 tianshu.memory）"
+                ) from exc
+            # **不**显式传 blob_dir：正文目录由 `MemoryProjection` 自己的规则
+            # 决定（DB 旁的 `memory_blobs/`）。正文与事件 payload 的保留策略
+            # 不同（前者将来要能按 F10 §10 物理擦除，后者必须留存供 replay），
+            # 共用 `log.blob_dir` 会让按策略清理误伤日志材料。所有装配点都
+            # 不传，正文目录才有唯一来源。
+            self._memory = MemoryProjection(
+                self._conn,
+                log=self._log,
+                clock=self._clock,
+            )
+            self._memory.ensure_schema()
+        elif not getattr(self, "_memory_ready", False):
+            self._memory.ensure_schema()
+        self._memory_ready = True
+        if self._memory_executor is None:
+            self._memory_executor = MemoryExecutor(
+                tasks=self._tasks,
+                approvals=self._approvals,
+                grants=self._grants,
+                claims=self._claims,
+                projection=self._memory,
+                dispatch_lookup=self.dispatch_record,
+                dispatch_mark=self.mark_dispatch,
+                clock=self._clock,
+                log=self._log,
+            )
+        return self._memory
+
+    def _memory_executor_for(self) -> MemoryExecutor:
+        self._memory_projection()
+        assert self._memory_executor is not None
+        return self._memory_executor
 
     def dispatch_record(self, run_id: str, call_id: str) -> DispatchRecord | None:
         row = self._conn.execute(
@@ -437,23 +562,30 @@ class Dispatcher:
         try:
             auth = self._authority(request, claim)
             target = self._resolve_target(request, auth)
-            if request.action == ACTION_EXEC:
-                self._precheck_exec(request, args, target.path)
-            ok, reason = check_request_preconditions(
-                request.action, target.path, request.preconditions or {}
-            )
-            if not ok:
-                raise DispatchDenied(
-                    reason, precondition_rule_id(request.action, target.path)
+            if isinstance(target, _MemoryTarget):
+                # 记忆前置条件是 status/revision；文件分支保持原样，连调用
+                # 顺序都不改（file 的 digest/approval 行为不能因记忆上线变化）。
+                self._check_memory_preconditions(request, target, args)
+            else:
+                if request.action == ACTION_EXEC:
+                    self._precheck_exec(request, args, target.path)
+                ok, reason = check_request_preconditions(
+                    request.action, target.path, request.preconditions or {}
                 )
+                if not ok:
+                    raise DispatchDenied(
+                        reason, precondition_rule_id(request.action, target.path)
+                    )
         except DispatchDenied as exc:
             return self._reject(request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED)
 
+        policy_preconditions = self._policy_preconditions(request, target, args)
         decision = self._policy.classify(
             request.action,
             list(request.resources),
             auth.bindings,
-            request.preconditions or {},
+            policy_preconditions,
+            task_id=request.task_id,
         )
         # 放行/需审批的判定结果也会写进 payload.rule_id（dispatch.requested），
         # 所以和拒绝路径一样要过同一张表；否则"为什么放行"仍然没有契约。
@@ -590,7 +722,7 @@ class Dispatcher:
             with self._log.transaction() as tx:
                 auth = self._authority(request, claim)
                 target = self._resolve_target(request, auth)
-                if request.action == ACTION_EXEC:
+                if not isinstance(target, _MemoryTarget) and request.action == ACTION_EXEC:
                     self._precheck_exec(request, args, target.path)
 
                 existing = self.dispatch_record(request.run_id, request.call_id)
@@ -609,16 +741,21 @@ class Dispatcher:
                         f"（state={existing.state}）"
                     )
 
-                ok, reason = check_request_preconditions(
-                    request.action, target.path, request.preconditions or {}
-                )
-                if not ok:
-                    # 派发阶段（已批准、还没打开文件）的拒绝统一记 stale：
-                    # 对这张已消费的批准而言，结论是"状态被改过了，需要重新
-                    # 发起"，而不是"该换工具"（那是 prepare 阶段的判定）。
-                    raise DispatchDenied(reason, "dispatch.stale_precondition")
+                if isinstance(target, _MemoryTarget):
+                    self._check_memory_preconditions(request, target, args)
+                else:
+                    ok, reason = check_request_preconditions(
+                        request.action, target.path, request.preconditions or {}
+                    )
+                    if not ok:
+                        # 派发阶段（已批准、还没打开文件）的拒绝统一记 stale：
+                        # 对这张已消费的批准而言，结论是"状态被改过了，需要重新
+                        # 发起"，而不是"该换工具"（那是 prepare 阶段的判定）。
+                        raise DispatchDenied(reason, "dispatch.stale_precondition")
 
-                approval_id, grant_id = self._consume_authority(request, auth, stored)
+                approval_id, grant_id = self._consume_authority(
+                    request, auth, stored, target=target, args=args
+                )
                 dispatch_id = self._dispatch_id(request)
 
                 seq = tx.append(
@@ -627,7 +764,7 @@ class Dispatcher:
                     {
                         "call_id": request.call_id,
                         "tool_id": request.tool_id,
-                        "args": args,
+                        "args": self._intent_args(request, args),
                         "args_hash": request.args_hash,
                         "request_id": request.request_id,
                         "request_digest": request.digest(),
@@ -682,10 +819,17 @@ class Dispatcher:
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
         try:
-            with self._tasks.begin_execution(
-                self._data_root, request.run_id, auth.lease_paths
-            ) as permit:
-                result = self._executor.execute(admitted, permit)
+            if isinstance(target, _MemoryTarget):
+                # 记忆没有目录租约：不能走 `begin_execution`（它强制要求资源
+                # 落在租约上）。但仍然要拿同一把执行守卫、写 execution.started，
+                # 否则撤销与执行的先后就没有全序。
+                with self._begin_memory_execution(request, claim) as permit:
+                    result = self._memory_executor_for().execute(admitted, permit)
+            else:
+                with self._tasks.begin_execution(
+                    self._data_root, request.run_id, auth.lease_paths
+                ) as permit:
+                    result = self._executor.execute(admitted, permit)
         except (
             DispatchDenied,
             ToolNotAllowed,
@@ -707,7 +851,16 @@ class Dispatcher:
             # 写入——否则下一个人会在一个状态不明的目录上继续改。
             return self._fail_unknown(request, dispatch_id, target, exc)
 
-        self._commit_result(request, dispatch_id, result, target, seq)
+        if isinstance(target, _MemoryTarget):
+            try:
+                self._commit_result(request, dispatch_id, result, target, seq)
+            except Exception as exc:  # noqa: BLE001 - 投影事务失败：效果未知
+                # `_commit_result` 的事务已回滚（事件、凭据、投影一起消失）。
+                # 但执行器可能已经写了内容 blob，结论仍只能是 unknown；这里
+                # 补一条 tool.result(unknown)，且**不**再调用 apply_event。
+                return self._fail_unknown(request, dispatch_id, target, exc)
+        else:
+            self._commit_result(request, dispatch_id, result, target, seq)
         # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
         # M2 把两件事合成一次提交，所以这两个点落在同一处：能证明的仍然是
         # "重放不会补出第二条效果"。
@@ -923,25 +1076,40 @@ class Dispatcher:
         task = self._tasks.create_task(goal, workspaces)
         run = self._tasks.start_run(task.task_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
-        if not writable:
-            raise DispatchError("控制 Run 需要至少一个可写绑定目录")
+        # **零绑定控制 Run 是合法的**：人直接发起的记忆操作（CLI 的
+        # `memory confirm` / `memory forget`，scope=user 时没有任何目录可绑）
+        # 走的就是这条路。以前这里强制要求至少一个可写绑定，等于让"人的记忆
+        # 决定"无法被记录成一个带 intent/result + 审批事件的副作用。
+        #
+        # 这不是在放宽文件写入权限：没有可写绑定就没有租约，而文件动作在派发
+        # 层还必须过两道**独立**判定——
+        #   1. `_authority()`：`_leases.held_paths()` 为空 →
+        #      `dispatch.lease_lost`（"本实例没有持有任何租约"）；
+        #   2. `_resolve_target()`：目标不被任何绑定覆盖 →
+        #      `c4.outside_workspace_unsupported`。
+        # 记忆动作则由 `memory_scope_allowed()` 单独核验作用域，它本来就不
+        # 依赖目录租约（记忆没有目录）。
+        #
+        # 有绑定时仍然**先对账再接管**（issue #61.2）：主循环与撤销/恢复共用
+        # 同一条对账实现，不因为"控制 Run 可以不绑目录"就跳过。
         refusals: list[dict[str, Any]] = []
-        try:
-            self._leases.acquire(
-                writable,
-                run.run_id,
-                reconcile=self._make_takeover_reconciler(
-                    run_id=run.run_id, task_id=task.task_id, refusals=refusals
-                ),
-            )
-        except LeaseConflict as exc:
+        if writable:
             try:
-                self.record_takeover_refusals(refusals)
-            except TianshuError as record_exc:
-                raise LeaseConflict(
-                    f"{exc}；且拒绝接管的阻断证据登记不完整：{record_exc}"
-                ) from exc
-            raise
+                self._leases.acquire(
+                    writable,
+                    run.run_id,
+                    reconcile=self.takeover_reconcile(
+                        run_id=run.run_id, task_id=task.task_id, refusals=refusals
+                    ),
+                )
+            except LeaseConflict as exc:
+                try:
+                    self.record_takeover_refusals(refusals)
+                except TianshuError as record_exc:
+                    raise LeaseConflict(
+                        f"{exc}；且拒绝接管的阻断证据登记不完整：{record_exc}"
+                    ) from exc
+                raise
         job = self._claims.enqueue(run.run_id)
         claim = self._claims.claim(job.job_id)
         run = self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim,
@@ -1009,6 +1177,152 @@ class Dispatcher:
             raise DispatchDenied(
                 f"exec 后端不支持：{exc}", "c4.exec_unsupported"
             ) from exc
+
+    @contextlib.contextmanager
+    def _begin_memory_execution(self, request: ActionRequest, claim: JobClaim):
+        """记忆写入的执行守卫。
+
+        与 `TaskStore.begin_execution()` 做同样三件事——拿执行守卫、核 Run 状态、
+        写 `execution.started`——但**不核目录租约**：记忆作用域不是目录。租约
+        被跳过的那部分授权，由 `_authority()` 与 `MemoryExecutor._verify()` 的
+        作用域核验补上。
+        """
+        root = self._require_data_root()
+        with execution_guard(root, timeout_ms=self._guard_timeout_ms):
+            self._claims.assert_claim(claim)
+            run = self._tasks.assert_current(request.run_id)
+            if run.state != RUN_RUNNING:
+                raise RunFenced(
+                    f"run 不在执行状态，拒绝开始写入：{request.run_id}"
+                    f"（state={run.state}）"
+                )
+            started_at = self._clock()
+            with self._log.transaction() as tx:
+                seq = tx.append(
+                    request.run_id,
+                    "execution.started",
+                    {
+                        "run_id": request.run_id,
+                        "task_id": request.task_id,
+                        "goal_revision": run.goal_revision,
+                        "lease_epoch": run.lease_epoch,
+                        "resources": list(request.resources),
+                    },
+                    task_id=request.task_id,
+                )
+            yield ExecutionPermit(
+                run_id=run.run_id,
+                task_id=run.task_id,
+                goal_revision=run.goal_revision,
+                lease_epoch=run.lease_epoch,
+                resources=tuple(request.resources),
+                seq=seq,
+                started_at=started_at,
+            )
+
+    def _policy_preconditions(
+        self, request: ActionRequest, target: _Target, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """策略层需要的"执行前状态"。
+
+        文件动作直接用请求里绑定的 preconditions，**一个字都不补**——那些值
+        是 `build_request()` 当场从磁盘读出来、进过 action_digest 的。记忆动作
+        则必须由派发层从权威投影补两项：种类是否存在、目标记忆是否已存在/
+        它的 origin 是什么。它们只用于策略判定，不进 action_digest（记忆的
+        审批绑定仍靠 memory_id/revision/args_hash）。
+        """
+        pre = dict(request.preconditions or {})
+        if not isinstance(target, _MemoryTarget):
+            return pre
+
+        projection = self._memory_projection()
+        scope = target.scope
+        if request.action == ACTION_CREATE:
+            kind = args.get("kind")
+            pre["memory_kind"] = kind if isinstance(kind, str) else ""
+            pre["memory_exists"] = False
+            content = args.get("content")
+            if (
+                isinstance(kind, str)
+                and kind in supported_memory_kinds()
+                and isinstance(content, str)
+            ):
+                try:
+                    redacted, blocked = projection.redact_or_block(content)
+                except (AttributeError, TianshuError):
+                    redacted, blocked = content, False
+                if not blocked:
+                    try:
+                        pre["memory_exists"] = (
+                            projection.find_duplicate(
+                                scope=scope, kind=kind, content=redacted
+                            )
+                            is not None
+                        )
+                    except TianshuError:
+                        # 投影读失败不是"目标不存在"的证明；保持 False 让
+                        # 策略先放行候选，执行侧会用同一投影再判一次并拒绝。
+                        pre["memory_exists"] = False
+            return pre
+
+        memory_id = args.get("memory_id")
+        if isinstance(memory_id, str) and memory_id:
+            try:
+                memory = projection.get(memory_id, allowed=(scope,))
+            except TianshuError:
+                # 读不到 origin 时**不能**推断 user_explicit：宁可要求审批。
+                memory = None
+            pre["memory_exists"] = memory is not None
+            pre["memory_origin"] = (
+                str(getattr(memory, "origin", "")) if memory is not None else ""
+            )
+        else:
+            pre["memory_exists"] = False
+            pre["memory_origin"] = ""
+        return pre
+
+    def _check_memory_preconditions(
+        self,
+        request: ActionRequest,
+        target: _MemoryTarget,
+        args: dict[str, Any],
+    ) -> None:
+        """记忆的 status/revision 从权威投影读；不成立就抛确定的拒绝。"""
+        if request.action == ACTION_CREATE:
+            return
+
+        memory_id = args.get("memory_id")
+        if not isinstance(memory_id, str) or not memory_id:
+            raise DispatchDenied(
+                "memory_id 必须是非空字符串", "dispatch.memory_not_found"
+            )
+        declared = (request.preconditions or {}).get("memory_id")
+        if declared is not None and declared != memory_id:
+            raise DispatchDenied(
+                f"请求声明的 memory_id 与参数不一致：{declared!r} ≠ {memory_id!r}",
+                "dispatch.memory_resource_mismatch",
+            )
+        try:
+            observed = self._memory_projection().observe(
+                memory_id, allowed=(target.scope,)
+            )
+        except TianshuError as exc:
+            raise DispatchDenied(
+                f"记忆观察失败：{exc}", "dispatch.memory_not_found"
+            ) from exc
+        if observed is None:
+            raise DispatchDenied(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        ok, reason = check_request_preconditions(
+            request.action,
+            target.uri,
+            request.preconditions or {},
+            memory_observed=observed,
+        )
+        if not ok:
+            raise DispatchDenied(reason, "dispatch.memory_stale_revision")
 
     def _typecheck(
         self, request: ActionRequest, claim: JobClaim, args: dict[str, Any]
@@ -1086,6 +1400,50 @@ class Dispatcher:
             raise DispatchDenied("动作没有声明资源", "c4.no_resource")
 
         bindings = list(task.workspaces or [])
+        # POSIX 上 `/a/b://c` 是合法绝对路径；判序必须与 resources.py 一致：
+        # 绝对路径优先判为 file，只有非绝对路径才按 scheme 分流。
+        scheme_resources = [
+            r
+            for r in request.resources
+            if isinstance(r, str) and not os.path.isabs(r) and "://" in r
+        ]
+        if scheme_resources:
+            try:
+                parsed = [parse_resource(r) for r in request.resources]
+            except ResourceError as exc:
+                raise DispatchDenied(
+                    f"资源引用不合法：{exc}", "c4.unsupported"
+                ) from exc
+            if len(parsed) != 1 or parsed[0].kind != KIND_MEMORY:
+                if request.tool_id in MEMORY_TOOL_IDS:
+                    raise DispatchDenied(
+                        "记忆工具的资源必须是单个 memory:// 作用域",
+                        "dispatch.memory_resource_mismatch",
+                    )
+                raise DispatchDenied(
+                    "带 scheme 的资源只支持单个 memory:// 作用域",
+                    "c4.multi_resource",
+                )
+            if request.tool_id not in MEMORY_TOOL_IDS:
+                raise DispatchDenied(
+                    f"文件工具收到记忆资源：{request.resources[0]!r}",
+                    "dispatch.memory_resource_mismatch",
+                )
+            scope = parsed[0].memory_scope
+            allowed, reason = memory_scope_allowed(
+                scope, task_id=request.task_id, bindings=bindings
+            )
+            if not allowed:
+                # 租约是给目录的；记忆跳过租约，但**不跳过**作用域授权。
+                raise DispatchDenied(reason, "c4.memory_scope_denied")
+            return _Authority(run, task, bindings, [], [])
+
+        if request.tool_id in MEMORY_TOOL_IDS:
+            raise DispatchDenied(
+                f"记忆工具必须使用 memory:// 资源：{request.resources[0]!r}",
+                "dispatch.memory_resource_mismatch",
+            )
+
         resources = [ResourceIdentity.of(Path(r)) for r in request.resources]
 
         try:
@@ -1129,11 +1487,39 @@ class Dispatcher:
 
     def _resolve_target(self, request: ActionRequest, auth: _Authority) -> _Target:
         if len(request.resources) != 1:
+            # 文件分支的历史文案与编号保持不变（旧日志/测试逐字依赖它）。
             raise DispatchDenied(
                 "文件动作只支持单个资源（多资源一次写入无法给出单一 preimage 边界）",
                 "c4.multi_resource",
             )
-        target = Path(request.resources[0]).resolve()
+
+        raw = request.resources[0]
+        if isinstance(raw, str) and raw.startswith("memory://"):
+            if request.tool_id not in MEMORY_TOOL_IDS:
+                raise DispatchDenied(
+                    f"文件工具收到记忆资源：{raw}", "dispatch.memory_resource_mismatch"
+                )
+            try:
+                scope = parse_memory_uri(raw)
+            except ResourceError as exc:
+                raise DispatchDenied(
+                    f"记忆资源引用不合法：{exc}", "dispatch.memory_resource_mismatch"
+                ) from exc
+            # 记忆不 Path.resolve，也不要求目录租约：作用域授权已在
+            # `_authority()` 里独立核验。
+            return _MemoryTarget(scope=scope, uri=scope.to_uri())
+
+        if isinstance(raw, str) and not os.path.isabs(raw) and "://" in raw:
+            raise DispatchDenied(
+                f"不支持的资源 scheme：{raw}", "c4.unsupported"
+            )
+        if request.tool_id in MEMORY_TOOL_IDS:
+            raise DispatchDenied(
+                f"记忆工具必须使用 memory:// 资源：{raw}",
+                "dispatch.memory_resource_mismatch",
+            )
+
+        target = Path(raw).resolve()
 
         covering = [
             b for b in auth.bindings if PolicyEngine._covers(b, str(target))
@@ -1160,10 +1546,45 @@ class Dispatcher:
             raise DispatchDenied(
                 f"目标父目录不存在：{target.parent}", "dispatch.no_parent"
             )
-        return _Target(target, rel, str(ws.root), ResourceIdentity.of(target))
+        return _FileTarget(target, rel, str(ws.root), ResourceIdentity.of(target))
+
+    def _requires_approval(
+        self, request: ActionRequest, target: _Target, args: dict[str, Any]
+    ) -> bool:
+        """这次动作是否必须有一张已批准的审批。
+
+        文件动作完全沿用原判定（动作集合）。记忆的 `confirm` 是覆盖类动作，
+        唯一例外是记忆本身的 `origin=user_explicit`：用户本人刚说的话就是
+        授权。这里从**权威投影**读 origin，不接受模型参数或调用方声明。
+        """
+        if request.action not in APPROVAL_ACTIONS:
+            return False
+        if (
+            isinstance(target, _MemoryTarget)
+            and request.action == ACTION_OVERWRITE
+        ):
+            memory_id = args.get("memory_id")
+            if isinstance(memory_id, str) and memory_id:
+                try:
+                    memory = self._memory_projection().get(
+                        memory_id, allowed=(target.scope,)
+                    )
+                except TianshuError:
+                    # 读不到来源时**不能**推断"用户明示"：那等于凭空免掉审批。
+                    # 后续执行侧会以确定拒绝收尾，而不是 unknown。
+                    return True
+                if memory is not None and getattr(memory, "origin", "") == "user_explicit":
+                    return False
+        return True
 
     def _consume_authority(
-        self, request: ActionRequest, auth: _Authority, stored: StoredRequest
+        self,
+        request: ActionRequest,
+        auth: _Authority,
+        stored: StoredRequest,
+        *,
+        target: _Target,
+        args: dict[str, Any],
     ) -> tuple[str | None, str]:
         """消费审批（如果有）并签发+消费一次性 grant。必须在派发事务内调用。"""
         digest = request.digest()
@@ -1171,7 +1592,7 @@ class Dispatcher:
         approval_id: str | None = None
         issuer = "policy:auto"
 
-        if request.action in APPROVAL_ACTIONS:
+        if self._requires_approval(request, target, args):
             approval = (
                 self._approvals.get(stored.approval_id)
                 if stored.approval_id
@@ -1240,6 +1661,18 @@ class Dispatcher:
         grant_id: str,
     ) -> None:
         now = self._clock()
+        if isinstance(target, _MemoryTarget):
+            # 记忆没有目录。`target` 记 scope URI，`workspace_root` 记 scope_id
+            # （人类可读），`resource_key` 用稳定前缀避免与文件路径混淆。
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = target.scope.scope_id
+            resource_key = f"memory:{target.scope.scope}:{target.scope.scope_id}"
+        else:
+            target_value = str(target.path)
+            rel_path = target.rel_path
+            workspace_root = target.workspace_root
+            resource_key = target.identity.key
         self._conn.execute(
             "INSERT INTO dispatches (dispatch_id, run_id, task_id, call_id,"
             " request_id, request_digest, tool_id, action, resources, target,"
@@ -1257,10 +1690,10 @@ class Dispatcher:
                 request.tool_id,
                 request.action,
                 json.dumps(list(request.resources), ensure_ascii=False),
-                str(target.path),
-                target.rel_path,
-                target.workspace_root,
-                target.identity.key,
+                target_value,
+                rel_path,
+                workspace_root,
+                resource_key,
                 approval_id,
                 grant_id,
                 request.claim_epoch,
@@ -1302,6 +1735,16 @@ class Dispatcher:
         grant_id: str,
     ) -> AdmittedCall:
         stored = self.get_request(request.request_id)
+        if isinstance(target, _MemoryTarget):
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = target.scope.scope_id
+            resource_key = f"memory:{target.scope.scope}:{target.scope.scope_id}"
+        else:
+            target_value = str(target.path)
+            rel_path = target.rel_path
+            workspace_root = target.workspace_root
+            resource_key = target.identity.key
         return AdmittedCall(
             dispatch_id=self._dispatch_id(request),
             request=request,
@@ -1310,10 +1753,10 @@ class Dispatcher:
             tool_id=request.tool_id,
             action=request.action,
             args=stored.args if stored is not None else {},
-            target=str(target.path),
-            rel_path=target.rel_path,
-            workspace_root=target.workspace_root,
-            resource_key=target.identity.key,
+            target=target_value,
+            rel_path=rel_path,
+            workspace_root=workspace_root,
+            resource_key=resource_key,
             resources=tuple(request.resources),
             intent_seq=seq,
             attempt_id=request.attempt_id,
@@ -1370,6 +1813,28 @@ class Dispatcher:
                 (state, approval_id, self._clock(), request_id),
             )
 
+    @staticmethod
+    def _intent_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
+        """写进 `tool.intent` 的参数（事件日志**不存记忆正文**）。
+
+        F10 §3.1 要求事件日志"只存引用与审计元数据，不重复写记忆正文"。
+        `memory.confirm` / `memory.forget` 的参数只有 memory_id / revision /
+        status，本身不是正文；`memory.propose` 的 `content` 是正文，必须在
+        写事件前拿掉，只留下可核对的长度与哈希。完整参数仍在派发请求表里
+        （受一次审批/派发绑定的操作记录），执行器也从那里取，不依赖事件里的
+        副本。`args_hash` 仍然绑完整参数，不能被这段脱敏改写。
+        """
+        if request.tool_id != "memory.propose":
+            return args
+        safe = dict(args)
+        content = safe.pop("content", None)
+        if isinstance(content, str):
+            raw = content.encode("utf-8")
+            safe["content_omitted"] = True
+            safe["content_bytes"] = len(raw)
+            safe["content_sha256"] = sha256_hex(raw)
+        return safe
+
     def _append(self, request: ActionRequest, event: str, payload: dict[str, Any]) -> int:
         return self._log.append(
             request.run_id,
@@ -1390,7 +1855,11 @@ class Dispatcher:
     ) -> DispatchDecision:
         # 校验在**任何写入之前**：未登记的编号是代码 bug，不能先落一条日志再让人猜。
         rule_id = check_rule_id(rule_id, where=f"_reject:{event}")
-        self._store_request(request, args, STATE_REJECTED, reason, rule_id)
+        # 拒绝的行**永远不会执行**，所以这里可以脱敏而不破坏任何
+        # 派发/审批绑定：被拒的尝试不该把记忆正文原文永久留在审计表里。
+        self._store_request(
+            request, _audit_args(request, args), STATE_REJECTED, reason, rule_id
+        )
         self._append(
             request,
             event,
@@ -1435,7 +1904,7 @@ class Dispatcher:
     ) -> ToolResult:
         """守卫内复核没过：一个字节都没写，明确记成 rejected。"""
         reason = f"{type(exc).__name__}: {exc}"
-        rule_id = {
+        rule_id = getattr(exc, "rule_id", None) or {
             ApprovalError: "dispatch.approval_revoked",
             RunFenced: "dispatch.run_fenced",
             ToolNotAllowed: "dispatch.not_admitted",
@@ -1503,21 +1972,36 @@ class Dispatcher:
             "unknown",
             {"error": reason, "request_id": request.request_id},
         )
-        batch = [
-            {
-                "run_id": request.run_id,
-                "type": "tool.result",
-                "payload": {
-                    "call_id": request.call_id,
-                    "tool_id": request.tool_id,
-                    "status": result.status,
-                    "effect_state": result.effect_state,
-                    "output": result.output,
-                },
-                "task_id": request.task_id,
-                "actor_kind": "tool",
-                "idem_key": request.call_id,
+        result_event = {
+            "run_id": request.run_id,
+            "type": "tool.result",
+            "payload": {
+                "call_id": request.call_id,
+                "tool_id": request.tool_id,
+                "status": result.status,
+                "effect_state": result.effect_state,
+                "output": result.output,
             },
+            "task_id": request.task_id,
+            "actor_kind": "tool",
+            "idem_key": request.call_id,
+        }
+        if isinstance(target, _MemoryTarget):
+            # 记忆没有可阻断的目录；而且**绝不**在这里调用 apply_event：
+            # 结果未知就是"投影是否更新不知道"，补写一条投影会让未知变成
+            # 一个编出来的确定结论。事件与派发状态仍同事务落库。
+            with self._log.transaction():
+                self._log.append(**result_event)
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+                    " WHERE dispatch_id=?",
+                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_REJECTED)
+            return result
+
+        batch = [
+            result_event,
             {
                 "run_id": request.run_id,
                 "type": "recovery.blocked",
@@ -1548,24 +2032,51 @@ class Dispatcher:
         target: _Target,
         intent_seq: int,
     ) -> None:
-        """结果与凭据同事务落库，然后把派发记录推进到 done。"""
-        batch = [
-            {
-                "run_id": request.run_id,
-                "type": "tool.result",
-                "payload": {
-                    "call_id": request.call_id,
-                    "tool_id": request.tool_id,
-                    "status": result.status,
-                    "effect_state": result.effect_state,
-                    "output": result.output,
-                },
-                "task_id": request.task_id,
-                "actor_kind": "tool",
-                "idem_key": request.call_id,
-            }
-        ]
-        if request.action == ACTION_EXEC:
+        """结果与凭据同事务落库，然后把派发记录推进到 done。
+
+        记忆分支多一件事：`MemoryProjection.apply_event("tool.result", ...)`
+        必须和 `tool.result`、凭据、派发状态在**同一个 SQLite 事务**里。投影
+        更新放在事务外（或另开事务）会出现两种无法裁决的状态："事件在、投影
+        不在"或"投影在、事件不在"。这里用同一个连接、同一个 `transaction()`，
+        谁失败就一起回滚。
+        """
+        is_memory = isinstance(target, _MemoryTarget)
+        projection = self._memory_projection() if is_memory else None
+
+        result_event = {
+            "run_id": request.run_id,
+            "type": "tool.result",
+            "payload": {
+                "call_id": request.call_id,
+                "tool_id": request.tool_id,
+                "status": result.status,
+                "effect_state": result.effect_state,
+                "output": result.output,
+            },
+            "task_id": request.task_id,
+            "actor_kind": "tool",
+            "idem_key": request.call_id,
+        }
+        batch: list[dict[str, Any]] = [result_event]
+
+        if is_memory:
+            if request.tool_id in ("memory.confirm", "memory.forget"):
+                receipt = build_memory_receipt(
+                    run_id=request.run_id,
+                    call_id=request.call_id,
+                    tool_id=request.tool_id,
+                    args_hash=request.args_hash,
+                    result=result,
+                    root=target.uri,
+                    resource=str(result.output.get("memory_id") or ""),
+                    action=request.action,
+                    intent_seq=intent_seq,
+                    backend="memory",
+                )
+            else:
+                # propose 是候选草稿，不产凭据（F10 §7）。
+                receipt = None
+        elif request.action == ACTION_EXEC:
             # 命令的"写后状态"不是文件哈希：凭据记的是执行摘要，磁盘核对
             # 由 verify_receipts 明确跳过（见 receipt.build_exec_receipt）。
             receipt = build_exec_receipt(
@@ -1597,6 +2108,7 @@ class Dispatcher:
                 intent_seq=intent_seq,
                 blob_ref=self._snapshot_blob(request.run_id, request.call_id),
             )
+
         if receipt is not None:
             batch.append(
                 {
@@ -1608,6 +2120,25 @@ class Dispatcher:
                     "idem_key": receipt.receipt_id,
                 }
             )
+
+        if is_memory:
+            assert projection is not None
+            with self._log.transaction():
+                self._log.append_many(batch)
+                if result.status == "succeeded" and result.effect_state == "applied":
+                    # seq 用 intent_seq：契约要求投影能指回这次写入的意图；
+                    # 传 None 或另取一个号都会制造第二份因果。
+                    projection.apply_event(
+                        "tool.result", result_event["payload"], seq=intent_seq
+                    )
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, updated_at=? WHERE dispatch_id=?",
+                    (DISPATCH_FINISHED, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_DONE)
+            return
+
+        # 文件路径保持原有事务边界：结果+凭据一次提交，派发状态随后推进。
         self._log.append_many(batch)
         with self._log.transaction():
             self._conn.execute(
@@ -1645,31 +2176,89 @@ def build_request(
     claim: JobClaim,
     call_id: str,
     tool_id: str,
-    target: Path,
+    target: Path | str,
     args: dict[str, Any],
     request_id: str | None = None,
     attempt_id: int = 1,
+    preconditions: dict[str, Any] | None = None,
 ) -> ActionRequest:
     """从"我要做什么"生成一份可派发的请求。
 
     `preconditions` 在这里**当场从磁盘读**，不是调用方说了算：
     审批绑定的必须是真实写前状态，否则"批准时改成 false"就能绕过覆盖审批。
+
+    记忆目标不是路径：`target` 可以是 `memory://<scope>/<scope_id>`。这条分支
+    不做 `Path.resolve()`，也不读文件哈希；写前状态是 memory_id + revision，
+    由参数带进 `preconditions`（执行侧会从权威投影再读一次核对）。显式传入
+    `preconditions` 只对记忆分支生效——文件分支的写前状态仍然由这里读盘决定。
     """
     spec = SPECS.get(tool_id)
     if spec is None:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
+    raw_target = str(target)
+    if raw_target.startswith("memory://"):
+        if tool_id not in MEMORY_ALL_TOOL_IDS:
+            raise ToolNotAllowed(f"文件工具不能使用记忆资源：{tool_id} → {raw_target}")
+        try:
+            scope = parse_memory_uri(raw_target)
+        except ResourceError as exc:
+            raise ToolArgumentError(f"记忆资源引用不合法：{exc}") from exc
+        if spec.action == ACTION_CREATE:
+            memory_pre: dict[str, Any] = {
+                "memory_kind": args.get("kind"),
+                "memory_exists": False,
+            }
+        elif spec.action == ACTION_OVERWRITE:
+            memory_pre = {
+                "memory_id": args.get("memory_id"),
+                "before_status": "candidate",
+                "before_revision": args.get("revision"),
+            }
+        elif spec.action == ACTION_DELETE:
+            memory_pre = {
+                "memory_id": args.get("memory_id"),
+                "before_status": args.get("status", "active"),
+                "before_revision": args.get("revision"),
+            }
+        else:  # pragma: no cover - 记忆读工具不走派发
+            memory_pre = {}
+        if preconditions is not None:
+            memory_pre = dict(preconditions)
+        return ActionRequest(
+            request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
+            task_id=task.task_id,
+            run_id=run.run_id,
+            job_id=claim.job_id,
+            claim_epoch=claim.claim_epoch,
+            owner_instance_id=claim.owner_instance_id,
+            goal_revision=run.goal_revision,
+            lease_epoch=run.lease_epoch,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            tool_id=tool_id,
+            tool_version=spec.version,
+            schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
+            action=spec.action,
+            resources=(scope.to_uri(),),
+            args_hash=sha256_hex(canonical_bytes(args)),
+            preconditions=memory_pre,
+        )
+
+    if tool_id in MEMORY_ALL_TOOL_IDS:
+        raise ToolNotAllowed(f"记忆工具必须使用 memory:// 资源：{raw_target}")
+
     target = Path(target).resolve()
     io = current_backend()
     if spec.action == ACTION_CREATE:
-        preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
+        file_preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
     elif spec.action in (ACTION_OVERWRITE, ACTION_DELETE):
-        preconditions = {"before_state": observe_state(target, backend=io)}
+        file_preconditions = {"before_state": observe_state(target, backend=io)}
     elif spec.action == ACTION_EXEC:
         # 这个标记进 actions 摘要：任务有没有开启 exec 策略，必须由审批绑住。
-        preconditions = {"exec_configured": task.exec_policy is not None}
+        file_preconditions = {"exec_configured": task.exec_policy is not None}
     else:  # pragma: no cover - 只读动作不走派发
-        preconditions = {}
+        file_preconditions = {}
 
     return ActionRequest(
         request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
@@ -1688,7 +2277,7 @@ def build_request(
         action=spec.action,
         resources=(str(target),),
         args_hash=sha256_hex(canonical_bytes(args)),
-        preconditions=preconditions,
+        preconditions=file_preconditions,
     )
 
 
