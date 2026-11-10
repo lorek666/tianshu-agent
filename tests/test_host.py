@@ -312,6 +312,12 @@ def test_stop_host_stops_a_running_host_and_clears_info(root: Path) -> None:
     bridge.serve_background()
     try:
         assert host.stop_host(root, timeout=5.0) == 0, "stop_host 没能让 Host 退出"
+        # `/shutdown` 的响应先发、退出回调随后在服务器线程里跑；断言"回调会被调用"，
+        # 不是"回调已经在我读到 200 的那一微秒跑完了"。CI 上这条曾偶发红
+        # （`Host 的退出回调没有被调用`，docs-only PR 也红），加有界等待。
+        deadline = time.monotonic() + 2
+        while not stopped.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert stopped.is_set(), "Host 的退出回调没有被调用"
         assert host.read_host_info(root) is None, "退出后 host.lock 没清掉"
         assert not host._http_alive(info), "Host 的端口还在响应"
