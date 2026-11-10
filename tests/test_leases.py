@@ -249,6 +249,88 @@ def test_dead_owner_lease_can_be_stolen(env, tmp_path):
     assert s.holder(d).run_id == "run_new"
 
 
+# ---------------------------------------------------------------- 接管对账（#61.2）
+
+
+def _stale_store(tmp_path, now: list[int]):
+    log = EventLog(tmp_path / "stale.sqlite")
+    return log, LeaseStore(log, clock=lambda: now[0])
+
+
+def test_stale_lease_takeover_consults_reconcile(tmp_path):
+    """抢占 stale lease 之前必须把前任 run 交给对账回调（默认 None 保持旧行为）。"""
+    now = [1_000_000]
+    log, s = _stale_store(tmp_path, now)
+    try:
+        d = _dir(tmp_path, "ws")
+        s.acquire([d], "run_old", ttl_ms=10)
+        now[0] += 100
+        calls: list[tuple[str, str]] = []
+        s.acquire([d], "run_new",
+                  reconcile=lambda run_id, path: calls.append((run_id, path)))
+        assert calls == [("run_old", str(d.resolve()))], "对账必须看到前任 run 与资源路径"
+        assert s.holder(d).run_id == "run_new"
+    finally:
+        log.close()
+
+
+def test_reconcile_veto_keeps_previous_lease_and_writes_nothing(tmp_path):
+    """对账拒绝（LeaseConflict）时整批不占：前任 stale 租约保留，新租约一条不写。"""
+    now = [1_000_000]
+    log, s = _stale_store(tmp_path, now)
+    try:
+        a, b = _dir(tmp_path, "a"), _dir(tmp_path, "b")
+        s.acquire([a, b], "run_old", ttl_ms=10)
+        now[0] += 100
+
+        def veto(run_id: str, path: str) -> None:
+            raise LeaseConflict(f"前任 {run_id} 有未核实副作用")
+
+        with pytest.raises(LeaseConflict, match="未核实副作用"):
+            s.acquire([a, b], "run_new", reconcile=veto)
+        # 同 run_id 但不同 run：行必须还在旧 run 名下（回滚生效）
+        assert s.holder(a).run_id == "run_old"
+        assert s.holder(b).run_id == "run_old"
+        assert s.list_for_run("run_new") == []
+    finally:
+        log.close()
+
+
+def test_reconcile_called_once_per_previous_run(tmp_path):
+    """一个前任 run 持有多棵目录时只对账一次（否则会重复写审计/重复评估）。"""
+    now = [1_000_000]
+    log, s = _stale_store(tmp_path, now)
+    try:
+        a, b = _dir(tmp_path, "a"), _dir(tmp_path, "b")
+        s.acquire([a, b], "run_old", ttl_ms=10)
+        now[0] += 100
+        calls: list[str] = []
+        s.acquire([a, b], "run_new", reconcile=lambda run_id, path: calls.append(run_id))
+        assert calls == ["run_old"]
+    finally:
+        log.close()
+
+
+def test_overlapping_stale_lease_takeover_also_consults_reconcile(tmp_path):
+    """父子目录重叠的 stale 租约同样要先对账，不能因为是"顺手清理"就跳过。"""
+    now = [1_000_000]
+    log, s = _stale_store(tmp_path, now)
+    try:
+        parent = _dir(tmp_path, "ws")
+        child = parent / "sub"
+        child.mkdir()
+        s.acquire([parent], "run_old", ttl_ms=10)
+        now[0] += 100
+        calls: list[str] = []
+        s.acquire([child], "run_new",
+                  reconcile=lambda run_id, path: calls.append(run_id))
+        assert calls == ["run_old"]
+        assert s.holder(child).run_id == "run_new"
+        assert s.holder(parent) is None, "stale 的重叠租约在允许接管的路径上被清掉"
+    finally:
+        log.close()
+
+
 # ---------------------------------------------------------------- 旧库升级
 
 
