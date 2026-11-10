@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from support import tool_capable_profile
 
-from tianshu.errors import EventLogCorrupt, WorkspaceBlocked
+from tianshu.errors import EventLogCorrupt, SnapshotCorrupt, WorkspaceBlocked
 from tianshu.events import EventLog
 from tianshu.guard import (
     blocked_workspaces,
@@ -88,6 +88,61 @@ def test_r1_missing_manifest_is_unknown_not_none_applied(tmp_path):
 
     assert report.unresolved == ["c1"], "清单缺失必须判 unknown"
     assert str(ws.resolve()) in blocked_workspaces(log), "并且要阻断"
+    log.close()
+
+
+def test_r1_corrupt_manifest_is_unknown_and_blocks(tmp_path):
+    """清单存在但读不出来：这是"证据被破坏"，不是"没有证据"。
+
+    以前这里漏出裸的 `JSONDecodeError`——校验器自己先崩了，就没人替它回答
+    "到底写没写"。口径同缺清单：全部 pending 判 unknown + 阻断，绝不退回
+    "没证据 = 没写"。
+    """
+    ws = _ws(tmp_path, {"note.md": "旧"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+
+    _intent(log, "r1", "c1", "modify_text",
+            {"path": "note.md", "content": "新"}, ws)
+    # 半截 JSON：写到一半断电/被截断的样子
+    store.manifest_path("r1").write_bytes(b'{"version": 3, "changes": [')
+
+    report = recover_run(log, "r1", ws, store)
+
+    assert report.unresolved == ["c1"], "读不懂的证据只能判 unknown"
+    assert report.none_applied == [], "清单损坏不能被当成「从未写入」"
+    assert report.applied == []
+    assert str(ws.resolve()) in report.blocked_workspaces
+    assert str(ws.resolve()) in blocked_workspaces(log), "必须真的落一条阻断事件"
+    assert (ws / "note.md").read_text(encoding="utf-8") == "旧"
+    log.close()
+
+
+def test_undo_refuses_corrupt_manifest(tmp_path):
+    """撤销读不懂证据时明确拒绝，并且一个字节都不写。"""
+    from support import stack_for
+
+    from tianshu.undo import UndoRefused, plan_undo
+
+    ws = _ws(tmp_path, {"note.md": "旧"})
+    log = EventLog(tmp_path / "e.db")
+    store = SnapshotStore(tmp_path / "art")
+    store.record_preimage("r1", "c1", "note.md", "旧".encode(), _sha("新"), root=ws)
+    write_exact(ws / "note.md", "新")
+    store.manifest_path("r1").write_bytes(b"\x00\x01 not json")
+
+    stack = stack_for(log, snapshots=store)
+    with pytest.raises(UndoRefused) as ei:
+        plan_undo(stack, "r1")
+    assert ei.value.code == 2
+    assert any("快照清单" in line for line in ei.value.lines), \
+        "拒绝理由要点名是哪份证据坏了"
+
+    # 库入口同样 fail closed：类型化错误，先读后写，所以文件不动。
+    with pytest.raises(SnapshotCorrupt):
+        store.undo("r1", Workspace(ws), guard=lambda: None,
+                   allow_direct_write=True)
+    assert (ws / "note.md").read_text(encoding="utf-8") == "新"
     log.close()
 
 

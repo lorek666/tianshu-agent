@@ -19,7 +19,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .errors import TianshuError, WorkspaceViolation
+from .errors import SnapshotCorrupt, TianshuError, WorkspaceViolation
 from .events import EventLog
 from .guard import blocked_workspaces, ensure_not_blocked
 from .leases import Lease, LeaseStore, execution_guard
@@ -154,6 +154,24 @@ def _recover_run(
 
     report = RecoveryReport(run_id=run_id)
 
+    # 清单存在但读不出内容：证据**曾经存在过**，只是现在不可信。这比"清单整个
+    # 缺失"更糟——不能像"没有证据=没写"那样替任何一条未完成的调用下结论。
+    # 一个字节都不猜：全部判 unknown，并阻断到调用方显式给的那个目录。
+    if pending and snapshots is not None:
+        try:
+            snapshots.load(run_id)
+        except SnapshotCorrupt as exc:
+            for call_id, ev in pending.items():
+                payload = ev.payload
+                _settle(log, report, run_id, call_id, payload["tool_id"], payload,
+                        ToolResult("unknown", "unknown",
+                                   {"error": "recovered: 快照清单损坏，无法核实任何"
+                                             f"副作用（{exc}）",
+                                    "recovered": True}),
+                        bucket=report.unresolved)
+            _block_workspace(log, report, run_id, str(ws.root), list(pending))
+            return report
+
     for call_id, ev in pending.items():
         payload = ev.payload
         tool_id = payload["tool_id"]
@@ -202,7 +220,18 @@ def _recover_run(
                     bucket=report.unresolved)
             continue
 
-        change = snapshots.find(run_id, call_id)
+        try:
+            change = snapshots.find(run_id, call_id)
+        except SnapshotCorrupt as exc:
+            # 整份清单在开跑前已核对过一次；这里是"核对之后、逐条取证之前"才
+            # 坏掉的窄窗口。同一口径：读不懂就 unknown，不退回"没证据=没写"。
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 快照清单损坏，无法核实"
+                                         f"（{exc}）",
+                                "recovered": True}),
+                    bucket=report.unresolved)
+            continue
 
         if change is None:
             # 清单存在但没有本次调用的条目 → 没进到写前证据那一步 → 确定未写
@@ -299,19 +328,34 @@ def _recover_run(
         for root, call_ids in _unresolved_by_root(
             snapshots, run_id, report.unresolved, ws
         ).items():
-            report.blocked_workspaces.append(root)
-            log.append(
-                run_id,
-                "recovery.blocked",
-                {
-                    "workspace": root,
-                    "call_ids": call_ids,
-                    "reason": "存在无法核实的副作用，阻断后续写入",
-                },
-                actor_kind="system",
-            )
+            _block_workspace(log, report, run_id, root, call_ids)
 
     return report
+
+
+def _block_workspace(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    root: str,
+    call_ids: list[str],
+) -> None:
+    """把"这个目录里有核实不了的副作用"落成事件并记进报告。
+
+    阻断事件是 append-only 的：它不会被后面的"已解除"覆盖，解除由
+    `guard.unblock` 再追加一条，两者一起才算出当前状态。
+    """
+    report.blocked_workspaces.append(root)
+    log.append(
+        run_id,
+        "recovery.blocked",
+        {
+            "workspace": root,
+            "call_ids": call_ids,
+            "reason": "存在无法核实的副作用，阻断后续写入",
+        },
+        actor_kind="system",
+    )
 
 
 def _unresolved_by_root(
@@ -327,7 +371,12 @@ def _unresolved_by_root(
     """
     grouped: dict[str, list[str]] = {}
     for call_id in unresolved:
-        change = snapshots.find(run_id, call_id) if snapshots is not None else None
+        try:
+            change = snapshots.find(run_id, call_id) if snapshots is not None else None
+        except SnapshotCorrupt:
+            # 清单在这条路径上坏掉时，唯一还能说的根是调用方显式给的那个：
+            # 宁可阻断这个目录（可能偏保守），也不能因为读不懂就什么都不挡。
+            change = None
         root = change.root if change is not None and change.root else str(fallback.root)
         grouped.setdefault(root, []).append(call_id)
     return dict(sorted(grouped.items()))
