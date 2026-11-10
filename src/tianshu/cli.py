@@ -29,6 +29,7 @@ from datetime import UTC
 from pathlib import Path
 
 from .credentials import redact
+from .dispatcher import build_request
 from .errors import TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
@@ -38,6 +39,7 @@ from .permissions import HumanIdentity
 from .pricing import format_cost
 from .recovery import recover_run
 from .replay import replay
+from .resources import MEMORY_SCOPES, MemoryScope
 from .tasks import (
     RUN_FENCED,
     RUN_RECONCILING,
@@ -45,6 +47,7 @@ from .tasks import (
     TERMINAL_STATES,
 )
 from .undo import UndoRefused, apply_undo, plan_undo
+from .workspace import WorkspaceBinding
 
 DEFAULT_DB = Path(".tianshu/events.db")
 
@@ -165,6 +168,40 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--data-root", type=Path, default=None)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
     ap.add_argument("--json", action="store_true")
+
+    mem = sub.add_parser(
+        "memory",
+        aliases=["memories"],
+        help="记忆控制面：Agent 记住了什么、依据是什么；确认候选 / 忘记一条",
+    )
+    mem.add_argument(
+        "action", choices=["list", "search", "get", "confirm", "forget"]
+    )
+    mem.add_argument(
+        "value", nargs="?",
+        help="search 的查询词；get/confirm/forget 的 memory_id",
+    )
+    mem.add_argument(
+        "--scope", default=None, choices=sorted(MEMORY_SCOPES),
+        help="把某个作用域加入可见集合（默认只装备 user 作用域）",
+    )
+    mem.add_argument(
+        "--scope-id", default=None,
+        help="与 --scope 一起使用；workspace 作用域必须给绝对路径",
+    )
+    mem.add_argument(
+        "--workspace", type=Path, default=None, action="append",
+        help="把该目录的 workspace 作用域加入可见集合（可重复）",
+    )
+    mem.add_argument(
+        "--task-id", default=None, help="把该 task 作用域加入可见集合"
+    )
+    mem.add_argument("--status", default=None,
+                     choices=["candidate", "active", "superseded", "forgotten"])
+    mem.add_argument("--limit", type=int, default=50)
+    mem.add_argument("--data-root", type=Path, default=None)
+    mem.add_argument("--db", type=Path, default=DEFAULT_DB)
+    mem.add_argument("--json", action="store_true")
 
     v = sub.add_parser("replay", help="从事件日志回放并校验")
     v.add_argument("--run-id", required=True)
@@ -300,6 +337,8 @@ def _engine(stack, args: argparse.Namespace) -> AgentLoop:
         snapshots=stack.snapshots,
         model=_model_from(args),
         limits=Limits(args.max_turns, args.max_total_tokens),
+        # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。
+        memory=stack.memory,
     )
 
 
@@ -308,6 +347,46 @@ def _exit_code(result) -> int:
     if result.state in (RUN_WAITING_APPROVAL, RUN_RECONCILING, "paused"):
         return 3
     return 0 if result.outcome in ("succeeded", "noop") else 1
+
+
+def _cost_note(
+    cost_total_micros: int,
+    unknown_cost_calls: int,
+    *,
+    turns: int,
+    attempts: int | None,
+) -> str:
+    """费用行的唯一口径：**说"打出去几次"，不是"完成了几轮"**（issue #58）。
+
+    `format_cost` 的第三个参数是"有多少次调用的账已经落库"，那是**完成轮次**
+    （`turns`），不是尝试次数。全部尝试都失败时 `turns == 0`，照旧口径就会
+    印出「无（没有模型调用）」——那句话把"打了 3 次都没回"读成了"什么都没发生"。
+
+    这里按尝试次数分四种情况，每一种都只说自己知道的事：
+
+    - `attempts == 0`：真的没发出过请求，才允许说「无（没有模型调用）」；
+    - `attempts is None`（旧游标没有这个键）：不知道尝试次数。`turns == 0` 的
+      旧游标只可能写于第一次模型调用之前（失败尝试不落游标），所以那是真的
+      0 次；`turns > 0` 时按完成轮次报账，不补"尝试"两个字——不编数；
+    - `turns == 0` 且 `attempts > 0`：一次都没完成，但确实打出去过 N 次；
+    - `turns > 0`：已完成轮次的账照旧报，另有未完成的尝试单独注明（失败尝试
+      可能已被对方计费，但本表只报能核对的钱，所以标"费用未知"）。
+    """
+    if attempts is None:
+        if turns <= 0:
+            return format_cost(cost_total_micros, unknown_cost_calls, 0)
+        return format_cost(cost_total_micros, unknown_cost_calls, turns)
+    if attempts <= 0:
+        return format_cost(cost_total_micros, unknown_cost_calls, 0)
+    if turns <= 0:
+        return f"0 个完成轮次 / {attempts} 次尝试（费用未知）"
+    note = format_cost(cost_total_micros, unknown_cost_calls, turns)
+    unfinished = attempts - turns
+    if unfinished <= 0:
+        return note
+    # 与 `format_cost` 里"已计价 + 未知"的写法保持一致：能核对的钱照旧报，
+    # 没完成的尝试单独标"未知"——它们可能已经被对方计费，但本表不认没拿到的价。
+    return f"{note} + 未知（{unfinished} 次尝试未完成，共 {attempts} 次尝试）"
 
 
 def _print_result(result, *, as_json: bool) -> None:
@@ -324,9 +403,16 @@ def _print_result(result, *, as_json: bool) -> None:
           f"（applied={result.n_applied} unknown={result.n_unknown}）")
     print(f"turns  : {result.turns}   tokens: {result.tokens}")
     # F13：费用与"费用未知的次数"分开显示。查不到价格时这里印"未知（N 次调用）"，
-    # 绝不再印一个 0 —— 0 会被读成"这次是免费的"。
-    cost_note = format_cost(
-        result.cost_total_micros, result.unknown_cost_calls, result.turns
+    # 绝不再印一个 0 —— 0 会被读成"这次是免费的"。尝试次数与完成轮次必须分开：
+    # 前者回答"到底打出去几次"，后者回答"回来了几轮"（issue #58）。
+    cost_note = _cost_note(
+        result.cost_total_micros,
+        result.unknown_cost_calls,
+        turns=result.turns,
+        # 旧游标里的尝试次数只是下限：按"不知道"处理，不把下限当精确值。
+        attempts=(
+            result.model_attempts if result.model_attempts_known else None
+        ),
     )
     print(f"费用   : {cost_note}")
     if result.artifact:
@@ -420,7 +506,12 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     ledger = dict(cursor[0].budget_ledger or {}) if cursor else {}
     cost_total_micros = int(ledger.get("cost_total_micros", 0) or 0)
     unknown_cost_calls = int(ledger.get("unknown_cost_calls", 0) or 0)
-    model_calls = int(ledger.get("turns", 0) or 0)
+    model_turns = int(ledger.get("turns", 0) or 0)
+    # 尝试次数是 #58 才进账本的键。旧游标没有它（或明示为"不完整"）→ `None`
+    # （不知道），不是 0（"不知道"和"零次"必须分开，否则又变回一句假话）。
+    model_attempts = None
+    if "model_attempts" in ledger and ledger.get("model_attempts_known") is not False:
+        model_attempts = int(ledger["model_attempts"])
     if args.json:
         print(json.dumps(
             {
@@ -434,6 +525,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "completed_calls": len(cursor[0].completed_call_ids) if cursor else 0,
                 "cost_total_micros": cost_total_micros,
                 "unknown_cost_calls": unknown_cost_calls,
+                "model_attempts": model_attempts,
                 "approvals": [a.to_dict() for a in pending],
                 "job": (
                     {
@@ -465,7 +557,13 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     if cursor:
         print(f"进度      : 待做 {len(cursor[0].pending_proposals)} 个调用 / "
               f"已完成 {len(cursor[0].completed_call_ids)} 个")
-        print(f"费用      : {format_cost(cost_total_micros, unknown_cost_calls, model_calls)}")
+        print("费用      : "
+              + _cost_note(
+                  cost_total_micros,
+                  unknown_cost_calls,
+                  turns=model_turns,
+                  attempts=model_attempts,
+              ))
     if pending:
         print(f"待批      : {len(pending)} 条")
         for approval in pending:
@@ -954,6 +1052,263 @@ def _cmd_host(args: argparse.Namespace) -> int:
     )
 
 
+# ---------------------------------------------------------------- 记忆控制面
+
+
+def _cli_memory_scopes(args: argparse.Namespace) -> tuple[MemoryScope, ...]:
+    """命令行能看到的作用域。**
+
+    默认只有 `user`：单用户产品的本地人当然是 owner，但"默认全库"会让一条
+    命令的输出取决于库里恰好有什么。要看 workspace / task 记忆就把作用域
+    显式加进来——这与 F10 §6「一个 Run 只装备它有权访问的作用域」是同一套
+    口径，只是这里的主体是人，不是模型。
+    """
+    scopes: list[MemoryScope] = [MemoryScope.user()]
+    for path in args.workspace or []:
+        scopes.append(MemoryScope.workspace(path))
+    if args.task_id:
+        scopes.append(MemoryScope.task(args.task_id))
+    if args.scope:
+        scope_id = args.scope_id
+        if scope_id is None:
+            if args.scope == "user":
+                scope_id = "local"
+            elif args.scope == "task":
+                if not args.task_id:
+                    raise TianshuError("--scope task 需要 --task-id（或 --scope-id）")
+                scope_id = args.task_id
+            else:
+                raise TianshuError("--scope workspace 需要 --scope-id（绝对路径）")
+        scopes.append(MemoryScope(args.scope, scope_id))
+
+    seen: set[MemoryScope] = set()
+    deduped: list[MemoryScope] = []
+    for scope in scopes:
+        if scope not in seen:
+            seen.add(scope)
+            deduped.append(scope)
+    return tuple(deduped)
+
+
+def _memory_public(memory, content: str | None = None, *, score=None) -> dict:
+    """一条记忆对人和 JSON 的统一投影。
+
+    `scope` / `source_refs` / `revision` / `status` 是必须显示的四项：缺一项，
+    人就无法判断"这条记忆是谁的、依据是什么、改过没有、还算不算数"。
+    """
+    payload = memory.to_dict()
+    payload["content_ref"] = memory.content_ref
+    payload["content"] = content
+    if score is not None:
+        payload["score"] = score
+    return payload
+
+
+def _print_memory(memory, content: str | None = None, *, score=None) -> None:
+    payload = _memory_public(memory, content, score=score)
+    print(f"memory_id : {payload['memory_id']}")
+    print(f"revision  : {payload['revision']}")
+    print(f"scope     : {payload['scope']}  {payload['scope_id']}")
+    print(f"status    : {payload['status']}")
+    print(f"kind      : {payload['kind']}   origin: {payload['origin']}")
+    print(f"source_refs: {', '.join(payload.get('source_refs') or []) or '（无）'}")
+    print(f"证据      : proof_count={payload.get('proof_count', 0)}")
+    print(f"内容引用  : {payload.get('content_ref') or '（无）'}")
+    if payload.get("created_at"):
+        print(f"创建/过期 : {payload['created_at']} / {payload.get('expires_at') or '（无）'}")
+    if payload.get("supersedes"):
+        print(f"取代      : {payload['supersedes']}")
+    if content is not None:
+        print("内容      :")
+        for line in content.splitlines() or [""]:
+            print(f"  {line}")
+
+
+def _cmd_memory(args: argparse.Namespace) -> int:
+    stack = _authority_stack(args.db, args.data_root)
+    try:
+        projection = stack.memory
+        allowed = _cli_memory_scopes(args)
+
+        if args.action == "list":
+            rows = projection.list_memories(
+                allowed=allowed, status=args.status, limit=args.limit
+            )
+            if args.json:
+                print(json.dumps(
+                    [_memory_public(m) for m in rows],
+                    ensure_ascii=False, indent=2, default=str))
+                return 0
+            if not rows:
+                print("没有符合条件的记忆")
+                return 0
+            for index, memory in enumerate(rows):
+                if index:
+                    print("")
+                _print_memory(memory)
+            return 0
+
+        if not args.value:
+            print(f"错误：memory {args.action} 需要查询词 / memory_id",
+                  file=sys.stderr)
+            return 2
+
+        if args.action == "search":
+            from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
+
+            recalled = projection.search(
+                args.value,
+                allowed=allowed,
+                limit=min(max(args.limit, 1), MAX_RECALL_ITEMS),
+                max_bytes=MAX_RECALL_BYTES,
+            )
+            if args.json:
+                # 检索结果就是模型会看到的那份（F10 §8：带出处，不是全库）。
+                print(json.dumps(
+                    [_memory_public(r.memory, r.content, score=r.score)
+                     for r in recalled],
+                    ensure_ascii=False, indent=2, default=str))
+                return 0
+            if not recalled:
+                print("没有检索到记忆")
+                return 0
+            print(f"检索到 {len(recalled)} 条（最多 {MAX_RECALL_ITEMS} 条 / "
+                  f"{MAX_RECALL_BYTES}B）：")
+            for index, item in enumerate(recalled):
+                if index:
+                    print("")
+                _print_memory(item.memory, item.content, score=item.score)
+            return 0
+
+        memory = projection.get(args.value, allowed=allowed)
+        if memory is None:
+            print(
+                f"错误：记忆不存在或不在当前作用域集合内：{args.value}\n"
+                "（非 user 作用域请用 --workspace / --task-id / --scope 加上）",
+                file=sys.stderr,
+            )
+            return 1
+
+        if args.action == "get":
+            content = projection.read_content(memory)
+            if args.json:
+                print(json.dumps(
+                    _memory_public(memory, content),
+                    ensure_ascii=False, indent=2, default=str))
+            else:
+                _print_memory(memory, content)
+                if content is None:
+                    print("警告：历史证据不可用：内容快照缺失"
+                          "（不回落到当前记忆库）", file=sys.stderr)
+            return 0 if content is not None else 1
+
+        # confirm / forget 是**人**发起的记忆生命周期操作：人就是批准者本身，
+        # 所以这里用本地人身份把那张审批当场签掉。它仍然走完整派发路径——
+        # intent/result + Receipt + 一次性消费——不是控制面偷写存储。
+        result = _dispatch_memory_decision(
+            stack, memory, confirm=args.action == "confirm"
+        )
+        updated = projection.get(
+            memory.memory_id,
+            allowed=(MemoryScope(memory.scope, memory.scope_id),),
+        )
+        if args.json:
+            print(json.dumps(
+                {
+                    "memory_id": memory.memory_id,
+                    "action": args.action,
+                    "status": result.status,
+                    "effect_state": result.effect_state,
+                    "output": result.output,
+                    "memory": _memory_public(updated) if updated is not None else None,
+                },
+                ensure_ascii=False, indent=2, default=str))
+        else:
+            print(f"{memory.memory_id}: {args.action} -> {result.status}")
+            if updated is not None:
+                # 人做完决定后要看得到"现在是什么状态、依据还在不在"。
+                print(f"  scope: {updated.scope} {updated.scope_id}")
+                print(f"  revision: {updated.revision}")
+                print(f"  status: {updated.status}")
+                print(f"  source_refs: {', '.join(updated.source_refs) or '（无）'}")
+            if not result.ok:
+                print(f"  ! {result.output.get('error')}", file=sys.stderr)
+        return 0 if result.ok else 1
+    finally:
+        stack.log.close()
+
+
+def _dispatch_memory_decision(stack, memory, *, confirm: bool):
+    """把「确认 / 忘记」变成一次经人签字的派发。
+
+    与 `undo` 的 `--approve` 同一形状：用户明确敲了这条命令，就是批准；审批
+    仍然落库、仍然一次性消费、执行侧仍然二次核验 digest。**不**给模型开一条
+    "人已经批过了"的后门——这里根本没有模型参与。
+    """
+    tool_id = "memory.confirm" if confirm else "memory.forget"
+    # 写前 revision 是审批绑定的一部分（不是"看起来对就行"）：确认 / 忘记
+    # 必须声明人当时看到的那一版，执行侧会从权威投影再读一次核对。
+    tool_args: dict[str, object] = {
+        "memory_id": memory.memory_id,
+        "revision": memory.revision,
+    }
+    if not confirm:
+        # forget 的前置状态是"当前这条记忆是什么状态"，不是固定 active；
+        # 候选与活动记忆都允许被忘记（tombstone 对两者都成立）。
+        tool_args["status"] = memory.status
+    scope = MemoryScope(memory.scope, memory.scope_id)
+    target = scope.to_uri()
+
+    # workspace 作用域的授权核验要求 scope_id 精确等于控制 Run 的某个绑定根。
+    # 绑它自己的根不是"造一个假目录"：那就是这条记忆真正所属的目录。零绑定
+    # 合法（user 作用域没有目录）；task 作用域暂时没有控制面入口——它属于
+    # 那个任务的 Run，应该由任务自己确认/忘记，不能由另一个任务代签。
+    if scope.scope == "workspace":
+        workspaces = [WorkspaceBinding(scope.scope_id)]
+    elif scope.scope == "task":
+        raise TianshuError(
+            "task 作用域的记忆确认/忘记必须在所属任务的 Run 内完成；"
+            "CLI 控制面只支持 user / workspace 作用域"
+        )
+    else:
+        workspaces = []
+
+    control = stack.dispatcher.open_control_run(
+        goal=f"{tool_id}:{memory.memory_id}", workspaces=workspaces
+    )
+    outcome = "failed"
+    effect = "unknown"
+    try:
+        request = build_request(
+            task=control.task,
+            run=control.run,
+            claim=control.claim,
+            call_id=f"{tool_id.replace('.', '_')}_{memory.memory_id}",
+            tool_id=tool_id,
+            target=target,
+            args=tool_args,
+        )
+        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
+        if decision.is_rejected:
+            raise TianshuError(
+                f"记忆操作被拒绝：{decision.reason}（{decision.rule_id}）"
+            )
+        if decision.is_waiting:
+            stack.approvals.decide(
+                decision.approval_id,
+                decision="approved",
+                actor=HumanIdentity.local_cli(),
+            )
+        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
+        outcome = "succeeded" if result.ok else "failed"
+        effect = result.effect_state
+        return result
+    finally:
+        stack.dispatcher.close_control_run(
+            control, outcome=outcome, effect_state=effect
+        )
+
+
 def _cmd_replay(args: argparse.Namespace) -> int:
     log = EventLog(args.db, blob_dir=args.db.parent / "blobs")
     try:
@@ -1222,6 +1577,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_undo(args)
         if args.cmd in ("approvals", "approval"):
             return _cmd_approvals(args)
+        if args.cmd in ("memory", "memories"):
+            return _cmd_memory(args)
         if args.cmd == "replay":
             return _cmd_replay(args)
         return _cmd_evaluate(args)

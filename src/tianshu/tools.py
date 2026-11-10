@@ -744,6 +744,111 @@ SPECS: dict[str, ToolSpec] = {
         path_arg="cwd",
         path_default=".",
     ),
+    # ---- 记忆（F10） ---------------------------------------------------------
+    #
+    # 记忆目标不是文件路径：`resources` 里用 `memory://<scope>/<scope_id>`
+    # 表达（见 resources.py）。所以这五个 ToolSpec **都没有 `path_arg`**：
+    # 主循环不能拿它去 `Workspace.resolve()` 一个 URI；作用域由派发请求的
+    # resource 决定，memory_id 是参数，不是路径。
+    "memory.search": ToolSpec(
+        tool_id="memory.search",
+        version="1.0",
+        description=(
+            "在当前任务允许的记忆作用域内检索已激活的记忆。"
+            "候选（未确认）不会被检索到；最多返回 5 条 / 4 KiB。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                # F10 §8：模型可以要求**更少**，不能要求更多。执行侧还会把
+                # 它夹到 MAX_RECALL_ITEMS 之内，schema 只是把这条能力显式
+                # 暴露出来——不写进 schema 就等于模型永远拿满 5 条。
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        side_effect_level="pure",
+        action=ACTION_READ,
+    ),
+    "memory.get": ToolSpec(
+        tool_id="memory.get",
+        version="1.0",
+        description="按 memory_id 读取一条仍可见的记忆及其正文。",
+        input_schema={
+            "type": "object",
+            "properties": {"memory_id": {"type": "string"}},
+            "required": ["memory_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="pure",
+        action=ACTION_READ,
+    ),
+    "memory.propose": ToolSpec(
+        tool_id="memory.propose",
+        version="1.0",
+        description=(
+            "写一条未激活的记忆候选。候选不进检索、不需要审批；"
+            "确认（memory.confirm）才会进入长期召回。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "content": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "evidence": {"type": "array", "items": {"type": "object"}},
+                "expires_at": {"type": "integer"},
+            },
+            "required": ["kind", "content"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_CREATE,
+    ),
+    "memory.confirm": ToolSpec(
+        tool_id="memory.confirm",
+        version="1.0",
+        description=(
+            "把一条候选记忆激活为长期召回。需要人工审批；"
+            "用户本人明示来源（origin=user_explicit）的确认除外。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "revision": {"type": "integer"},
+            },
+            "required": ["memory_id", "revision"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_OVERWRITE,
+    ),
+    "memory.forget": ToolSpec(
+        tool_id="memory.forget",
+        version="1.0",
+        description=(
+            "忘记一条记忆（写 tombstone，同事务从活动投影移除）。"
+            "等同删除，需要人工审批；忘记后重建索引也不能复活它。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "revision": {"type": "integer"},
+                "status": {"type": "string"},
+            },
+            "required": ["memory_id", "revision"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_DELETE,
+    ),
 }
 
 
@@ -1016,18 +1121,66 @@ class FileExecutor:
         return result
 
 
+def check_memory_preconditions(
+    action: str,
+    pre: dict[str, Any],
+    observed: tuple[str, int] | None,
+) -> tuple[bool, str]:
+    """记忆的前置条件：status / revision，而不是文件哈希。
+
+    `observed` 必须来自**执行侧自己**的推导（`MemoryProjection.observe()`），
+    不能接受调用方传一个"我看到的是 active/1"。没有观测结果就是"不存在"，
+    不能退化成"没有前置条件所以放行"。
+    """
+    if action == ACTION_CREATE:
+        # 新建候选没有"旧记忆"可比较；去重由 MemoryExecutor 在写入前做。
+        return True, ""
+    if action not in (ACTION_OVERWRITE, ACTION_DELETE):
+        return True, ""
+
+    expected_revision = pre.get("before_revision")
+    if expected_revision is None:
+        return False, "记忆写入必须声明写前 revision（before_revision）"
+    if not isinstance(expected_revision, int) or isinstance(expected_revision, bool):
+        return False, f"before_revision 必须是整数：{expected_revision!r}"
+    if observed is None:
+        return False, "记忆不存在（可能已被删除或不属于当前作用域）"
+
+    status, revision = observed
+    expected_status = pre.get("before_status")
+    if expected_status is not None and status != expected_status:
+        return False, (
+            f"记忆状态已改变：声明 {expected_status!r}，实际 {status!r}"
+            "（目标在被批准后被改过）"
+        )
+    if revision != expected_revision:
+        return False, (
+            f"记忆 revision 已改变：声明 {expected_revision}，实际 {revision}"
+            "（目标在被批准后被改过）"
+        )
+    return True, ""
+
+
 def check_request_preconditions(
     action: str,
-    target: Path,
+    target: Path | str,
     pre: dict[str, Any],
     *,
     backend: FileBackend | None = None,
+    memory_observed: tuple[str, int] | None = None,
 ) -> tuple[bool, str]:
     """声明过的执行前状态现在还成立吗。
 
     审批绑定的是"这一次、这个内容、这个写前状态"。批准之后目标被人改过，
     旧审批就不再对应这次写入了——必须重新审批，不能"反正路径一样就写"。
+
+    记忆目标不是文件：它的"写前状态"是 **(status, revision)**，由执行侧从
+    权威投影里重新读出来（`memory_observed`）。文件分支保持原样：仍然比较
+    路径是否存在 / 文件哈希，绝不用记忆的前置条件去解释一个文件路径。
     """
+    if isinstance(target, str) and target.startswith("memory://"):
+        return check_memory_preconditions(action, pre, memory_observed)
+
     target = Path(target)
     io = backend if backend is not None else current_backend()
 
@@ -1120,6 +1273,7 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "action_for",
+    "check_memory_preconditions",
     "check_preconditions",
     "check_request_preconditions",
     "execute",

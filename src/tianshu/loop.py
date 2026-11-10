@@ -24,6 +24,7 @@ M2 之后这个循环不再是"一次同步跑完"：
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -79,6 +80,16 @@ from .leases import DEFAULT_TTL_MS, LeaseStore, ProcessIdentity
 from .model import Model, ModelError, ModelResponse, ToolCall, identity_of
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
 from .pricing import cost_record
+from .resources import (
+    KIND_MEMORY,
+    SCOPE_TASK,
+    SCOPE_USER,
+    SCOPE_WORKSPACE,
+    USER_SCOPE_ID,
+    MemoryScope,
+    ResourceError,
+    parse_resource,
+)
 from .snapshot import SnapshotStore
 from .tasks import (
     CANCEL_REASON,
@@ -103,6 +114,7 @@ from .tools import (
     execute,
     target_arg,
     tool_manifest,
+    validate_args,
 )
 from .workspace import Workspace
 
@@ -144,6 +156,16 @@ class RunResult:
     content: str = ""
     artifact: dict[str, Any] | None = None
     turns: int = 0
+    #: **模型尝试次数**：每真正发出一次 `complete()` 请求就 +1，**含**超时/传输
+    #: 失败/重试。它和 `turns` 回答两个问题：`turns` 是"完成了几个轮次"，
+    #: `model_attempts` 是"到底打出去几次"。全部尝试都失败时两者是 0 和 N——
+    #: 费用行必须按尝试次数说话，否则"打了 3 次都没回"会被读成"没有模型调用"
+    #: （issue #58）。
+    model_attempts: int = 0
+    #: `model_attempts` 是否**完整可信**。`False` 只有一种来源：升级前写下的
+    #: 旧游标没有这个账本键（见 `_Progress.of`）。那时尝试次数只能以完成轮次为
+    #: 下限，**不能**当成精确值展示——"不知道"和"零次/三次"必须分开。
+    model_attempts_known: bool = True
     tokens: int = 0
     unknown_usage_calls: int = 0
     # ---- F13 成本可见 ----
@@ -177,6 +199,8 @@ class RunResult:
 #: `_Progress.budget` 原样透传，不会被重复计算或丢掉。
 _LEDGER_OWNED_KEYS = frozenset({
     "turns",
+    "model_attempts",
+    "model_attempts_known",
     "tokens",
     "unknown_usage_calls",
     "cost_total_micros",
@@ -198,6 +222,12 @@ class _Progress:
     approvals: list[str] = field(default_factory=list)
     model_turn: dict[str, Any] | None = None
     turns: int = 0
+    #: 模型尝试次数（含失败/重试）。它进预算账本，resume 之后不丢：费用行按它
+    #: 说"打出去几次"，而不是按完成轮次说（issue #58）。
+    model_attempts: int = 0
+    #: 上面这个数是否完整。旧游标（账本里没有该键）只能以完成轮次为下限，
+    #: 此时 `False` —— 展示层必须说"不知道"，不能说一个精确的 0/N。
+    model_attempts_known: bool = True
     tokens: int = 0
     unknown_usage_calls: int = 0
     #: 已知费用累计（微美元）与费用未知的调用数。跟着游标走，resume 之后不丢账。
@@ -227,6 +257,8 @@ class _Progress:
             model_turn=self.model_turn,
             budget_ledger={
                 "turns": self.turns,
+                "model_attempts": self.model_attempts,
+                "model_attempts_known": self.model_attempts_known,
                 "tokens": self.tokens,
                 "unknown_usage_calls": self.unknown_usage_calls,
                 "cost_total_micros": self.cost_total_micros,
@@ -253,6 +285,13 @@ class _Progress:
             approvals=list(cursor.approval_ids),
             model_turn=cursor.model_turn,
             turns=int(ledger.get("turns", 0) or 0),
+            # 旧游标没有尝试次数键：以完成轮次为**下限**（每次成功至少一次
+            # 尝试），并标记 `model_attempts_known=False`——展示层据此说"不知道"，
+            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加。
+            model_attempts=int(
+                ledger.get("model_attempts", ledger.get("turns", 0)) or 0
+            ),
+            model_attempts_known="model_attempts" in ledger,
             tokens=int(ledger.get("tokens", 0) or 0),
             unknown_usage_calls=int(ledger.get("unknown_usage_calls", 0) or 0),
             cost_total_micros=int(ledger.get("cost_total_micros", 0) or 0),
@@ -333,6 +372,50 @@ def _fresh_progress(task: str, out_name: str | None) -> _Progress:
     )
 
 
+#: 记忆工具（F10 §3.2）是 C2 工具，但不是文件工具。封闭集放在这里而不是
+#: 前缀判断：`memory.*` 里出现一个没实现的工具时，应该走"未知工具不派发"，
+#: 而不是猜它属于哪条路径。
+MEMORY_READ_TOOLS: frozenset[str] = frozenset({"memory.search", "memory.get"})
+MEMORY_WRITE_TOOLS: frozenset[str] = frozenset(
+    {"memory.propose", "memory.confirm", "memory.forget"}
+)
+
+
+def open_memory(
+    log: EventLog,
+    *,
+    blob_dir: Path | None = None,
+    clock: Callable[[], int] | None = None,
+):
+    """打开记忆投影（事件日志的另一个可重建投影，F10 §3.1）。
+
+    投影和事件日志**共用同一个连接**：记忆状态与它对应的 `tool.intent` /
+    `tool.result` 必须在同一个事务里落库，否则"事件说改了、投影没改"会变成
+    一个要人工裁决的分叉。`log` 也一起传进去，投影要按事件重放（`rebuild`）。
+    """
+    from .memory import MemoryProjection
+
+    # 不传 blob_dir：正文目录由 MemoryProjection 自己的规则决定（DB 旁的
+    # `memory_blobs/`，**不**跟随事件日志的 `log.blob_dir`——正文将来要能按
+    # F10 §10 物理擦除，事件 payload 必须留存，两者保留策略不同）。**所有**
+    # 装配点都不传同一个显式目录，正文目录才有唯一来源；各自传一个不同目录
+    # 时，写入的正文另一方读不到，看起来像"记忆随机丢失"。
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["clock"] = clock
+    return MemoryProjection(log.conn, log=log, blob_dir=blob_dir, **kwargs)
+
+
+def _canonical_root(binding: object) -> str:
+    """workspace 绑定的规范化根。
+
+    作用域按 canonical 路径算（`resources.MemoryScope.workspace` 也会再
+    `realpath` 一次）：`/a/b`、`/a/./b` 必须是同一个作用域，否则用户会在
+    三个"不同"的 workspace 记忆里找不到十分钟前存的东西。
+    """
+    return os.path.realpath(str(getattr(binding, "root_path", binding)))
+
+
 def message_source_seqs(events: list[Event]) -> list[int]:
     """按事件顺序给出「每条消息来自哪个事件」的 seq 列表。
 
@@ -371,6 +454,7 @@ class AgentLoop:
         limits: Limits | None = None,
         ttl_ms: int = DEFAULT_TTL_MS,
         sleep: Callable[[float], None] | None = None,
+        memory: object | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -379,6 +463,10 @@ class AgentLoop:
         self._approvals = approvals
         self._snapshots = snapshots
         self._model = model
+        #: 记忆投影（F10）。传 None 时在**第一次真的用到记忆**时才打开：
+        #: 不碰记忆的 Run 不该为它建表、也不该因为投影模块有问题而跑不起来。
+        #: 一旦记忆工具被调用，缺投影就是明确失败，不会静默当成"没有记忆"。
+        self._memory = memory
         self._limits = limits or Limits()
         # 心跳的 TTL 必须与认领时用的一致：认领说 150ms 过期、心跳却说 30s，
         # 那"我还在跑"这句话就没人核对了。测试用短 TTL 推进真实时间。
@@ -828,7 +916,9 @@ class AgentLoop:
                     # messages_hash 记的是**发出去的那份**的摘要（F5 起 = 编译后的
                     # digest）。预算内恒等时它与"全量历史的摘要"完全相同。
                     "messages_hash": view.digest,
-                    "context": context_payload(budget, view),
+                    "context": context_payload(
+                        budget, view, memories=self._memory_selections(view)
+                    ),
                 },
                 actor_kind="core",
                 # idem 键带上 attempt：每次尝试的 payload 不同，同键异参在这里
@@ -836,6 +926,10 @@ class AgentLoop:
                 idem_key=f"{request_id}#{attempt}",
             )
 
+            # 尝试次数在**真正发请求的这一刻**加：预算守卫提前返回、准入拒绝、
+            # 上下文编译失败都不算"打过一次"。加在这里，超时/传输失败/重试
+            # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
+            progress.model_attempts += 1
             try:
                 return self._model.complete(view.messages, tool_manifest()), ""
             except ModelError as exc:
@@ -1274,6 +1368,214 @@ class AgentLoop:
             run_id, task, proposal["call_id"], proposal["tool_id"], proposal["args"]
         )
 
+    # ---------------------------------------------------------------- 记忆
+
+    def _memory_projection(self):
+        """本 Loop 的记忆投影。第一次使用时才打开。
+
+        "懒"不是省事：不碰记忆的 Run 不需要记忆表，也不该因为投影打不开就
+        整体跑不了。但**记忆工具一旦被调用**，缺投影就是明确失败（见
+        `_exec_memory_read`），不会静默当成"这个任务没有记忆"。
+        """
+        if self._memory is None:
+            self._memory = open_memory(self._log)
+        return self._memory
+
+    def _memory_allowed(self, task: Task) -> tuple[MemoryScope, ...]:
+        """本 Run 的装备（F10 §6）：只装它有权访问的作用域。
+
+        `loadout()` 是唯一的装备判定点：user + 本任务每个绑定目录的
+        canonical 根 + 本任务自身。**不注入全库**。模型不能自己传 allowed——
+        那等于让它给自己发权限。
+        """
+        roots = [_canonical_root(b) for b in task.workspaces]
+        loaded = self._memory_projection().loadout(
+            task_id=task.task_id, workspace_roots=roots
+        )
+        return tuple(loaded)
+
+    def _exec_memory_read(
+        self,
+        run_id: str,
+        task: Task,
+        call_id: str,
+        tool_id: str,
+        args: dict[str, Any],
+    ) -> ToolResult:
+        """记忆只读工具：不需要 workspace 绑定，但仍要留痕。
+
+        `memory.search` / `memory.get` 是**读**：不改变任何用户可见状态，所以
+        结果一律记 `none_applied`（与 `_exec_read` 同一口径）。零目录任务也能
+        用——记忆不是文件，硬要它先绑一个目录，等于把"没有目录"误判成"没有
+        记忆"，这正是 F10 明确拒绝的形状。
+        """
+        try:
+            projection = self._memory_projection()
+            spec = SPECS.get(tool_id)
+            if spec is None:
+                return ToolResult(
+                    "rejected", "none_applied", {"error": f"工具不在白名单：{tool_id}"}
+                )
+            args = validate_args(args, spec.input_schema)
+            allowed = self._memory_allowed(task)
+            if tool_id == "memory.search":
+                output = self._memory_search_output(projection, args, allowed)
+            else:
+                output = self._memory_get_output(projection, args, allowed)
+            return ToolResult("succeeded", "none_applied", output)
+        except (ToolArgumentError, ResourceError) as exc:
+            return ToolResult(
+                "rejected", "none_applied", {"error": f"{type(exc).__name__}: {exc}"}
+            )
+        except Exception as exc:  # noqa: BLE001 - 记忆投影自身炸了：如实失败
+            return ToolResult("failed", "none_applied", {"error": repr(exc)})
+
+    @staticmethod
+    def _memory_search_output(projection, args, allowed) -> dict[str, Any]:
+        from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
+
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise ToolArgumentError("记忆检索的 query 必须是非空字符串")
+        limit = args.get("limit", MAX_RECALL_ITEMS)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ToolArgumentError(f"记忆检索的 limit 必须是正整数：{limit!r}")
+        # 首版硬上限（F10 §8）：模型可以要求更少，不能要求更多；
+        # 字节上限不由模型控制——预算是执行侧的事。
+        limit = min(limit, MAX_RECALL_ITEMS)
+        recalled = projection.search(
+            query, allowed=allowed, limit=limit, max_bytes=MAX_RECALL_BYTES
+        )
+        items = [
+            AgentLoop._memory_item(item.memory, item.content, score=item.score)
+            for item in recalled
+        ]
+        return {
+            "query": query,
+            "items": items,
+            "count": len(items),
+            "limit": limit,
+            "max_bytes": MAX_RECALL_BYTES,
+            "allowed": [scope.to_dict() for scope in allowed],
+        }
+
+    @staticmethod
+    def _memory_get_output(projection, args, allowed) -> dict[str, Any]:
+        memory_id = args.get("memory_id") or args.get("id")
+        if not isinstance(memory_id, str) or not memory_id:
+            raise ToolArgumentError("memory.get 需要 memory_id")
+        memory = projection.get(memory_id, allowed=allowed)
+        if memory is None:
+            # 不在装备内与不存在给同一个回答：区分它们等于让模型用"存在性"
+            # 探测另一个 workspace 的私有记忆。
+            return {
+                "found": False,
+                "memory_id": memory_id,
+                "error": "记忆不存在或不在本次 Run 的装备内",
+            }
+        # 已遗忘的记忆**不读正文**。`forget` 只改状态、不动正文 blob（物理
+        # 擦除是 §10 单开的工单），所以正文其实还在盘上；照旧读出来就等于
+        # `memory.get` 成了绕开 `forget` 的旁路——检索忘了，按 id 仍能捞回
+        # 原话，"忘记"就只是对 search 生效的假动作。
+        content = None if memory.status == "forgotten" else projection.read_content(memory)
+        if content is None:
+            # F10 §10：历史内容快照缺失时明确报"不可用"，**不回落**取当前
+            # 记忆库的最新版本。回落会把"当时看到了什么"换成"现在是什么"，
+            # 回放立刻变成假证据。
+            return {
+                "found": True,
+                "memory_id": memory.memory_id,
+                "revision": memory.revision,
+                "content_available": False,
+                "error": (
+                    "历史证据不可用："
+                    + (
+                        "记忆已遗忘，正文不再提供"
+                        if memory.status == "forgotten"
+                        else "内容快照缺失"
+                    )
+                    + "（不回落到当前记忆库的正文）"
+                ),
+                "memory": memory.to_dict(),
+            }
+        return {
+            "found": True,
+            "content_available": True,
+            "content": content,
+            "memory": AgentLoop._memory_item(memory, content),
+        }
+
+    @staticmethod
+    def _memory_selections(view: ContextView) -> list[dict[str, Any]]:
+        """这一轮**真正进入视图**的记忆身份（F10 §8）：id + revision + 快照引用。
+
+        只从编译后的 `view.messages` 里取，不从完整历史取：被预算压掉、或被
+        落盘占位替换掉的记忆没有进入模型看到的那份上下文，就不该记成"选中"。
+        这不是第二份事实：记忆正文与出处已经在 `tool.result` 事件里，这里记的
+        是"这一轮发给模型的视图里还活着哪几条"，供回放核对。
+        """
+        selections: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for message in view.messages:
+            if message.get("role") != "tool":
+                continue
+            if message.get("name") not in MEMORY_READ_TOOLS:
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                # 内容已被预算替换成占位（落盘/预览）：原文不在这一轮视图里，
+                # 也就不能算"进入上下文的记忆"。
+                continue
+            if not isinstance(payload, dict):
+                continue
+            candidates: list[dict[str, Any]] = []
+            single = payload.get("memory")
+            if isinstance(single, dict):
+                candidates.append(single)
+            items = payload.get("items")
+            if isinstance(items, list):
+                candidates.extend(item for item in items if isinstance(item, dict))
+            for item in candidates:
+                memory_id = item.get("memory_id")
+                revision = item.get("revision")
+                if not isinstance(memory_id, str) or not memory_id:
+                    continue
+                if isinstance(revision, bool) or not isinstance(revision, int):
+                    continue
+                key = (memory_id, revision)
+                if key in seen:
+                    continue
+                seen.add(key)
+                selections.append(
+                    {
+                        "memory_id": memory_id,
+                        "revision": revision,
+                        "content_ref": item.get("content_ref"),
+                        "scope": item.get("scope"),
+                        "scope_id": item.get("scope_id"),
+                        "tool_call_id": message.get("tool_call_id"),
+                    }
+                )
+        return selections
+
+    @staticmethod
+    def _memory_item(memory, content: str | None, *, score: float | None = None):
+        """一条记忆的出处的投影：正文 + 身份 + 来源引用。
+
+        `source_refs` / `scope` / `revision` 必须一起给模型看：没有出处的
+        "记忆"只是一段无法核对的断言，F10 要求每条记忆能指回来源。
+        """
+        item = memory.to_dict()
+        item["content_ref"] = memory.content_ref
+        item["content"] = content
+        if score is not None:
+            item["score"] = score
+        return item
+
     def _exec_read(
         self,
         run_id: str,
@@ -1286,7 +1588,12 @@ class AgentLoop:
 
         纯读取不可能改变磁盘，所以失败一律记 `none_applied`——把它记成
         "unknown 效果"会让一个只是读越界了的 Run 挡住整个目录的写入。
+
+        记忆只读工具在**任何目录解析之前**分流：它们没有文件目标，零目录任务
+        也必须能检索。这不是"给记忆编一个假路径"，而是承认它是另一种资源。
         """
+        if tool_id in MEMORY_READ_TOOLS:
+            return self._exec_memory_read(run_id, task, call_id, tool_id, args)
         root = self._primary_root(task)
         if root is None:
             return ToolResult(
@@ -1307,13 +1614,21 @@ class AgentLoop:
             return ToolResult("failed", "none_applied", {"error": repr(exc)})
         return ToolResult(result.status, "none_applied", result.output)
 
-    def _target_for(self, task: Task, tool_id: str, args: dict[str, Any]) -> Path:
-        """把工具的路径参数解析成绝对目标。
+    def _target_for(
+        self, task: Task, tool_id: str, args: dict[str, Any]
+    ) -> Path | str:
+        """把工具的目标解析成绝对路径，或记忆作用域 URI。
 
         多目录任务里"相对路径解析到哪个目录"是 M2 未解决的选择问题：这里用
         **第一个可写绑定**（没有可写绑定时用第一个绑定），并在策略层再判一次
         目标是否被某个绑定覆盖。绝对路径则直接按绑定覆盖关系判。
+
+        **记忆不是文件**：它没有路径参数（`path_arg`），也不许被编一个假路径
+        去骗过路径解析——那会让"删掉投影"变成"删掉用户文件"。所以按工具种类
+        分流，目标是 `memory://<scope>/<scope_id>`，由 `resources` 原样携带。
         """
+        if tool_id in MEMORY_WRITE_TOOLS:
+            return self._memory_target(task, tool_id, args)
         key = target_arg(tool_id)
         raw = args.get(key)
         spec = SPECS.get(tool_id)
@@ -1327,6 +1642,92 @@ class AgentLoop:
         if root is None:
             raise ToolArgumentError("任务没有绑定任何目录，无法解析写入目标")
         return Workspace(root).resolve(raw)
+
+    def _memory_target(self, task: Task, tool_id: str, args: dict[str, Any]) -> str:
+        """写记忆工具的目标：一个**已装备作用域**的 `memory://` URI。
+
+        目标不是文件路径，也从磁盘读不到任何东西。`confirm` / `forget` 的
+        目标由要操作的那条记忆自己决定（先按装备过滤查出来）；`propose`
+        首版只有一个作用域：F10 §3.3 的默认私有 user/local（共享是另一个
+        显式动作，本单不做）。任何解析结果都必须落在本 Run 的装备内——
+        模型不能凭参数越作用域写入。
+        """
+        projection = self._memory_projection()
+        allowed = self._memory_allowed(task)
+
+        # confirm / forget 操作的是某条已存在的记忆：它属于哪个作用域由记忆
+        # 自己说了算，不是模型说了算。查不到就是"不在装备内"，fail-closed。
+        memory_id = args.get("memory_id") or args.get("id")
+        if tool_id in ("memory.confirm", "memory.forget") and memory_id:
+            if not isinstance(memory_id, str):
+                raise ToolArgumentError(f"memory_id 必须是字符串：{memory_id!r}")
+            memory = projection.get(memory_id, allowed=allowed)
+            if memory is None:
+                raise ToolArgumentError(
+                    f"记忆不存在或不在本次 Run 的装备内：{memory_id}"
+                )
+            scope = MemoryScope(memory.scope, memory.scope_id)
+            self._assert_scope_allowed(scope, allowed)
+            return scope.to_uri()
+
+        scope = self._memory_scope_from_args(task, args)
+        self._assert_scope_allowed(scope, allowed)
+        return scope.to_uri()
+
+    def _memory_scope_from_args(
+        self, task: Task, args: dict[str, Any]
+    ) -> MemoryScope:
+        """从工具参数解出作用域。显式 `memory://` URI 优先，其次 scope 参数。"""
+        raw_target = args.get("target")
+        if isinstance(raw_target, str) and raw_target:
+            ref = parse_resource(raw_target)
+            if ref.kind != KIND_MEMORY:
+                raise ToolArgumentError(
+                    f"记忆工具的目标必须是 memory:// 引用：{raw_target!r}"
+                )
+            return ref.memory_scope
+
+        raw_scope = args.get("scope")
+        if raw_scope is None:
+            # F10 §3.3：新记忆默认私有（user/local），共享是显式动作。
+            return MemoryScope.user()
+        if not isinstance(raw_scope, str):
+            raise ToolArgumentError(f"scope 必须是字符串：{raw_scope!r}")
+
+        raw_scope_id = args.get("scope_id")
+        if raw_scope_id is not None and not isinstance(raw_scope_id, str):
+            raise ToolArgumentError(f"scope_id 必须是字符串：{raw_scope_id!r}")
+
+        if raw_scope == SCOPE_USER:
+            return MemoryScope(SCOPE_USER, raw_scope_id or USER_SCOPE_ID)
+        if raw_scope == SCOPE_TASK:
+            return MemoryScope.task(raw_scope_id or task.task_id)
+        if raw_scope == SCOPE_WORKSPACE:
+            root = raw_scope_id
+            if root is None:
+                primary = self._primary_root(task)
+                if primary is None:
+                    raise ToolArgumentError(
+                        "workspace 作用域需要显式 scope_id：本任务没有绑定目录"
+                    )
+                root = str(primary)
+            return MemoryScope.workspace(root)
+        # `MemoryScope` 的构造会拒绝未知作用域；走到这里说明上面漏了一种，
+        # 也按 fail-closed 处理，不猜。
+        raise ToolArgumentError(
+            f"未知记忆作用域：{raw_scope!r}（合法值：user / workspace / task）"
+        )
+
+    @staticmethod
+    def _assert_scope_allowed(
+        scope: MemoryScope, allowed: tuple[MemoryScope, ...]
+    ) -> None:
+        if scope not in allowed:
+            raise ToolArgumentError(
+                "作用域不在本次 Run 的装备内："
+                f"{scope.scope}/{scope.scope_id}（已装备："
+                f"{[s.to_dict() for s in allowed]}）"
+            )
 
     @staticmethod
     def _primary_root(task: Task) -> Path | None:
@@ -1719,6 +2120,8 @@ class AgentLoop:
             content=content,
             artifact=self._artifact,
             turns=progress.turns,
+            model_attempts=progress.model_attempts,
+            model_attempts_known=progress.model_attempts_known,
             tokens=progress.tokens,
             unknown_usage_calls=progress.unknown_usage_calls,
             cost_total_micros=progress.cost_total_micros,
@@ -1802,6 +2205,7 @@ def run(
         model=model,
         limits=limits,
         sleep=sleep,
+        memory=stack.memory,
     )
     created = stack.tasks.create_task(
         task, [str(workspace_dir)], exec_policy=exec_policy
@@ -1820,6 +2224,21 @@ class Stack:
     snapshots: SnapshotStore
     dispatcher: Dispatcher
     data_root: Path
+    #: 记忆投影（F10）。`build_stack` 会与 Dispatcher 共用同一个实例；
+    #: 构造不建表，第一次真正读写时才 `ensure_schema()`。
+    _memory: Any = field(default=None, repr=False)
+
+    @property
+    def memory(self):
+        """记忆投影（唯一的打开入口）。
+
+        正常情况下由 `build_stack` 装配并与 Dispatcher 共用；这里只为手工
+        构造 `Stack` 的调用方兜底。**所有入口都走同一套 blob 目录**，避免
+        "CLI 用一个投影、主循环用另一个"这种两份状态。
+        """
+        if self._memory is None:
+            self._memory = open_memory(self.log)
+        return self._memory
 
 
 def build_stack(
@@ -1830,6 +2249,7 @@ def build_stack(
     clock: Callable[[], int] | None = None,
     identity: ProcessIdentity | None = None,
     dispatcher_cls: type[Dispatcher] | None = None,
+    memory: Any | None = None,
 ) -> Stack:
     """装配一套权威存储。CLI、测试和 `run()` 共用同一条装配路径。
 
@@ -1838,6 +2258,12 @@ def build_stack(
     注入必须**贯穿所有 store**，只换一个就等于一半组件用假时钟、一半用真时钟。
     """
     root = Path(data_root) if data_root is not None else log.db_path.parent
+    # 记忆投影必须与 Dispatcher **共用同一个实例**：两处各自 new 一个，正文
+    # blob 目录就可能一个用 DB 旁、一个用事件 blob 目录——写入的正文另一方
+    # 读不到，看起来像"记忆随机丢失"。构造本身不建表（省掉无关命令的开销），
+    # 第一次真正读写时才 `ensure_schema()`。
+    if memory is None:
+        memory = open_memory(log, clock=clock)
     kwargs: dict[str, Any] = {} if clock is None else {"clock": clock}
     ident: dict[str, Any] = {} if identity is None else {"identity": identity}
     leases = LeaseStore(log, **ident, **kwargs)
@@ -1859,6 +2285,7 @@ def build_stack(
         claims=claims,
         snapshots=shots,
         data_root=root,
+        memory=memory,
         **kwargs,
     )
     return Stack(
@@ -1871,6 +2298,7 @@ def build_stack(
         snapshots=shots,
         dispatcher=dispatcher,
         data_root=root,
+        _memory=memory,
     )
 
 

@@ -98,6 +98,13 @@ RULE_IDS: frozenset[str] = frozenset(
         "c4.exec_not_configured",
         "c4.exec_policy_denied",
         "c4.exec_unsupported",
+        # ---- 记忆（F10）：作用域、种类与记忆目标 ----
+        "c4.memory_scope",
+        "c4.memory_scope_denied",
+        "c4.memory_kind_unsupported",
+        "dispatch.memory_not_found",
+        "dispatch.memory_stale_revision",
+        "dispatch.memory_resource_mismatch",
         # ---- 判定结果（不是拒绝）：自动放行 / 需审批 ----
         "c4.auto",
         "c4.overwrite",
@@ -132,7 +139,14 @@ DECLARED_UNUSED_RULE_IDS: frozenset[str] = frozenset(
 
 #: 判定结果（放行 / 需审批），不是拒绝。同样会写进 `payload.rule_id`。
 DECISION_RULE_IDS: frozenset[str] = frozenset(
-    {"c4.auto", "c4.overwrite", "c4.delete", "c4.exec", "c4.outside_workspace"}
+    {
+        "c4.auto",
+        "c4.overwrite",
+        "c4.delete",
+        "c4.exec",
+        "c4.memory_scope",
+        "c4.outside_workspace",
+    }
 )
 
 #: 真正表示"被拒"的编号 = 全集 − 判定结果 − 保留未使用。
@@ -198,6 +212,15 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "c4.exec_not_configured",
             "c4.exec_policy_denied",
             "c4.exec_unsupported",
+        }
+    ),
+    "记忆": frozenset(
+        {
+            "c4.memory_scope_denied",
+            "c4.memory_kind_unsupported",
+            "dispatch.memory_not_found",
+            "dispatch.memory_stale_revision",
+            "dispatch.memory_resource_mismatch",
         }
     ),
     "判定结果（非拒绝）": DECISION_RULE_IDS,
