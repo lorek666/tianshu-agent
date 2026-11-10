@@ -414,24 +414,43 @@ class Server:
         self._accepted.append(wrapped)
         return wrapped
 
+    def _wake_accept(self) -> None:
+        """"敲一下"端点，把阻塞在 `accept()` 的线程叫醒。
+
+        不能只靠关 listener：
+
+        - Windows：accept 阻塞在 `ConnectNamedPipe` 的 overlapped I/O 上，从别的
+          线程关句柄**不会取消**挂起的 I/O——accept 线程永远卡住，命名管道对象
+          也一直存在（表现：daemon 已退出，`probe()` 却仍为真，下一个实例被拒）；
+        - Linux：关掉正在被 `accept()` 使用的 fd 也不会可靠唤醒阻塞中的 syscall，
+          线程会一直等到下一次连接到来（实测：CI 上这条测试红）。
+
+        这条唤醒连接只用于打断，客户端会立刻关闭，服务端握手失败按"可重试"处理。
+        """
+        try:
+            if os.name == "nt":
+                handle = os.open(self.endpoint, os.O_RDWR)
+                os.close(handle)
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    sock.settimeout(0.5)
+                    sock.connect(self.endpoint)
+                finally:
+                    sock.close()
+        except OSError:
+            # 端点已经不存在（还没 bind / 已被别人清掉）：没有要唤醒的线程。
+            pass
+
     def close(self) -> None:
         # 先关已接受的连接：只关 listener 不会唤醒阻塞在 recv 上的连接线程，
         # 那会让 shutdown 卡到超时（daemon 的退出路径上最不该卡的地方）。
         for conn in self._accepted:
             conn.close()
         self._accepted.clear()
-        if os.name == "nt" and self._listener is not None:
-            # Windows 的 accept 阻塞在 `ConnectNamedPipe` 的 overlapped I/O 上；
-            # 从别的线程关句柄**不会取消**挂起的 I/O，accept 线程会永远卡住，
-            # 并且让管道名一直存在——表现就是"daemon 已退出，probe 仍然为真"，
-            # 下一个实例于是被拒（实测：Windows 上重启/接管类测试全挂）。
-            # 先连一下把挂起的 accept 叫醒，再关 listener。
-            try:
-                wake = os.open(self.endpoint, os.O_RDWR)
-            except OSError:
-                pass
-            else:
-                os.close(wake)
+        if self._listener is not None:
+            # 关 listener 之前先叫醒可能正阻塞在 accept() 的线程（见 _wake_accept）。
+            self._wake_accept()
         if self._listener is not None:
             try:
                 self._listener.close()
