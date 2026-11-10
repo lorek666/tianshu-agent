@@ -417,6 +417,34 @@ class EventLog:
         ).fetchall()
         return [self._row_to_event(r, verify=verify) for r in rows]
 
+    def seq_head(self) -> int:
+        """全库最大 seq（空库为 0）。推送游标与 `event_seq_head` 用。
+
+        只读、不解释语义：它回答"最后一条事件是几号"，不回答"有没有缺口"。
+        缺口校验是 `seqs_in_range` 的事。
+        """
+        row = self._conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()
+        return int(row[0])
+
+    def read_after(self, seq: int, *, limit: int | None = None) -> list[Event]:
+        """取 `seq > after` 的全局事件（跨 run），按 seq 升序。
+
+        为什么需要它：推送补洞的游标是**全库**序号，而 `read_run` 只按 run 过滤。
+        让 daemon 自己去 `_conn` 上拼 SQL 就等于把表结构变成第二个公开 API。
+
+        `limit` 为 None 时一次读完（调用方自己保证有界）；给了就必须为正。
+        """
+        if limit is None:
+            rows = self._conn.execute(
+                "SELECT * FROM events WHERE seq > ? ORDER BY seq", (int(seq),)
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
+                (int(seq), max(1, int(limit))),
+            ).fetchall()
+        return [self._row_to_event(r, verify=True) for r in rows]
+
     def read_types(self, types: Iterable[str]) -> list[Event]:
         """按类型读事件（跨 run）。投影重建用。"""
         wanted = list(types)

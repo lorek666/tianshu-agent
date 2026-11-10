@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import sys
@@ -30,11 +29,9 @@ from datetime import UTC
 from pathlib import Path
 
 from .credentials import redact
-from .dispatcher import build_request
-from .errors import TianshuError, ToolNotAllowed
+from .errors import TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
-from .guard import ensure_not_blocked
 from .loop import AgentLoop, Limits, build_stack
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
@@ -47,7 +44,7 @@ from .tasks import (
     RUN_WAITING_APPROVAL,
     TERMINAL_STATES,
 )
-from .workspace import Workspace, WorkspaceBinding
+from .undo import UndoRefused, apply_undo, plan_undo
 
 DEFAULT_DB = Path(".tianshu/events.db")
 
@@ -173,6 +170,43 @@ def _build_parser() -> argparse.ArgumentParser:
     v.add_argument("--run-id", required=True)
     v.add_argument("--db", type=Path, default=DEFAULT_DB)
     v.add_argument("--json", action="store_true")
+
+    d = sub.add_parser(
+        "daemon",
+        help="常驻守护进程：长驻、驱动任务、崩溃恢复，并通过本地 IPC 对外提供控制面；"
+        "不是一次性 drain（那是 worker）",
+    )
+    d.add_argument("--data-root", type=Path, default=None,
+                   help="运行数据根（默认平台标准目录，可用 TIANSHU_DATA_ROOT 覆盖）")
+    d.add_argument("--model", default="scripted",
+                   choices=["scripted", "openai-compatible"])
+    d.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS))
+    d.add_argument("--model-name", default=None)
+    d.add_argument("--base-url", default=None)
+    d.add_argument("--max-turns", type=int, default=8)
+    d.add_argument("--max-total-tokens", type=int, default=20_000)
+
+    h = sub.add_parser(
+        "host",
+        help="桌面外壳：单实例 + 监护 daemon + 把 UI 的 HTTP/SSE 桥到本地 IPC",
+    )
+    h.add_argument("action", nargs="?", default="run", choices=["run", "stop", "status"])
+    h.add_argument("--data-root", type=Path, default=None,
+                   help="运行数据根（默认平台标准目录，可用 TIANSHU_DATA_ROOT 覆盖）")
+    h.add_argument("--port", type=int, default=0, help="UI 端口；0 = 随机（推荐）")
+    h.add_argument("--ui-dir", type=Path, default=None,
+                   help="静态资源目录；默认仓库内 ui/dist")
+    h.add_argument("--open", action="store_true", help="启动后打开系统浏览器")
+    h.add_argument("--no-supervise", action="store_true",
+                   help="不监护 daemon 崩溃重启（调试用）")
+    h.add_argument("--model", default="scripted",
+                   choices=["scripted", "openai-compatible"])
+    h.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS))
+    h.add_argument("--model-name", default=None)
+    h.add_argument("--base-url", default=None)
+    h.add_argument("--max-turns", type=int, default=8)
+    h.add_argument("--max-total-tokens", type=int, default=20_000)
+    h.add_argument("--json", action="store_true")
 
     ev = sub.add_parser(
         "evaluate",
@@ -781,237 +815,139 @@ def _cmd_approvals(args: argparse.Namespace) -> int:
         stack.log.close()
 
 
-def _undo_apply(stack, control):
-    """把每个"还原/删除"都变成一次经审批的派发。
-
-    落盘目录由**证据自己的 root** 决定，不是命令行传进来的那个目录：撤销
-    wsA 的变更时，wsB 下的同名文件必须一个字节都不动。
-    """
-
-    def apply(change, preimage: bytes | None) -> None:
-        if not change.root:  # 预检已经拒绝过旧格式，这里是第二道防线
-            raise ToolNotAllowed("撤销证据缺少 workspace 根，拒绝写盘")
-        target = Workspace(Path(change.root)).resolve(change.path)
-        if preimage is None:
-            tool_id = "delete_file"
-            call_id = f"undo_del_{change.call_id}"
-            tool_args = {"path": change.path}
-        else:
-            tool_id = "restore_file"
-            call_id = f"undo_res_{change.call_id}"
-            tool_args = {
-                "path": change.path,
-                "content_b64": base64.b64encode(preimage).decode("ascii"),
-                "sha256": change.before_state,
-            }
-
-        request = build_request(
-            task=control.task,
-            run=control.run,
-            claim=control.claim,
-            call_id=call_id,
-            tool_id=tool_id,
-            target=target,
-            args=tool_args,
-        )
-        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
-        if decision.is_rejected:
-            raise ToolNotAllowed(f"撤销动作被拒绝：{decision.reason}（{decision.rule_id}）")
-        if decision.is_waiting:
-            # 本地人工在这条命令上加 --approve 就是批准：显式、可审计、
-            # 且仍然走完整的"批准一次只能执行一次"记录。
-            stack.approvals.decide(
-                decision.approval_id, decision="approved",
-                actor=HumanIdentity.local_cli(),
-            )
-        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
-        if not result.ok:
-            raise ToolNotAllowed(
-                f"撤销动作未执行：{result.output.get('error')}"
-            )
-
-    return apply
-
-
-def _undo_plan(changes) -> list[tuple[str, str]]:
-    """只读预演：不写文件、不登记审批。
-
-    用户先看清要动什么，再决定加不加 --approve。撤销方向是**调用逆序**，
-    同一路径被写过多次时正序会自相冲突，所以这里也按逆序排。
-    显示的是**绝对路径**：多 workspace 任务里只写相对路径，人看不出会动哪个目录。
-    """
-    plan: list[tuple[str, str]] = []
-    for change in reversed(changes):
-        target = Path(str(change.root)) / change.path
-        if change.before_state == "absent":
-            plan.append(("delete ", f"{target}（原本不存在，撤销=删掉）"))
-        else:
-            plan.append(
-                (
-                    "restore",
-                    f"{target}（还原到 {change.before_state[:12]}…）",
-                )
-            )
-    return plan
-
-
-def _undo_targets(changes):
-    """把清单拆成（已记录的 workspace 根, 旧格式记录）。
-
-    旧格式记录没有根，撤销它们只能靠猜——这两个列表分开就是为了能让
-    `_cmd_undo` 在**动手之前**拒绝，而不是猜一个目录写进去。
-    """
-    roots = sorted({str(c.root) for c in changes if c.root})
-    legacy = [c for c in changes if not c.root]
-    return roots, legacy
-
-
 def _cmd_undo(args: argparse.Namespace) -> int:
     stack = None
     try:
         stack = _authority_stack(args.db, args.data_root)
         run_id = args.run_id
-        changes = stack.snapshots.load(run_id)
-        if not changes:
-            print(f"run {run_id} 没有可撤销的变更")
-            return 1
+        try:
+            plan = plan_undo(stack, run_id, scope=args.workspace)
+        except UndoRefused as refused:
+            # 拒绝的文案与退出码都由 undo 模块给出：UI 也走同一条判定，
+            # 不能出现"CLI 说没可撤销、UI 说撤销失败"这种两种说法。
+            stream = sys.stdout if refused.code == 1 else sys.stderr
+            for line in refused.lines or [str(refused)]:
+                print(line, file=stream)
+            return refused.code
 
-        roots, legacy = _undo_targets(changes)
-        if legacy:
-            # 没有 root 就不知道这些写入落在哪个目录。用 --workspace 顶上就是
-            # 猜：猜错 = 把另一个目录下的同名文件改掉，这是数据破坏。
-            print("拒绝撤销：该 run 的快照是旧格式（v2，没有 workspace 根）",
-                  file=sys.stderr)
-            for c in legacy:
-                print(f"  - {c.path}（call_id={c.call_id}）", file=sys.stderr)
-            print("没有根就无法确定这些写入落在哪个目录。撤销写错目录比撤销失败"
-                  "严重得多，所以这里不猜。", file=sys.stderr)
-            if args.workspace is not None:
-                print(f"已忽略 --workspace {args.workspace}：旧记录没有根，"
-                      "拿它顶上就是猜。", file=sys.stderr)
-            print("处置建议：用 `tianshu recover --run-id <ID> --workspace <目录>` "
-                  "逐目录核对，或按 artifacts/snapshots/<ID>.json 手工还原。",
-                  file=sys.stderr)
-            return 2
-
-        # --workspace 从"解析落盘目录"降级为"范围筛选"：只撤这个目录下的变更。
-        scope = Path(args.workspace).resolve() if args.workspace is not None else None
-        selected = changes if scope is None else [
-            c for c in changes if c.root == str(scope)
-        ]
-        if not selected:
-            print(f"拒绝撤销：该 run 在 {scope} 下没有可撤销的变更", file=sys.stderr)
-            print(f"已记录的 workspace：{'、'.join(roots)}", file=sys.stderr)
-            return 2
-
-        scope_ws = None
-        if scope is not None:
-            try:
-                scope_ws = Workspace(scope)
-            except TianshuError as exc:
-                # 目录不在/不是目录：说清楚再退出，不要伪装成"撤销中断"。
-                print(
-                    f"拒绝撤销：workspace 不可用：{scope}（{redact(str(exc))}）",
-                    file=sys.stderr,
-                )
-                return 2
-
-        plan = _undo_plan(selected)
         if not args.approve:
             print("撤销会做这些事（尚未执行）：")
-            for action, desc in plan:
+            for action, desc in plan.describe():
                 print(f"  - {action}: {desc}")
             print("")
             print("这些都属于覆盖/删除类操作，需要人工批准。")
             print("确认无误后加 --approve 重跑同一条命令。")
             return 3
 
-        involved = sorted({str(c.root) for c in selected})
-
-        def guard() -> None:
-            # 每个会被写到的目录都要过阻断检查，不是只看其中一个。
-            for root in involved:
-                ensure_not_blocked(stack.log, root)
-
-        control = stack.dispatcher.open_control_run(
-            goal=f"undo:{run_id}",
-            workspaces=[WorkspaceBinding(root) for root in involved],
-        )
-        stack.snapshots.init_run(control.run.run_id)
         try:
-            report = stack.snapshots.undo(
-                run_id,
-                scope_ws,
-                guard=guard,
-                apply=_undo_apply(stack, control),
-            )
-        except Exception as exc:
-            # 撤销是多文件操作：中途失败必须如实记成 partial，不能悄悄停在
-            # 一半还让日志看起来完好。已经完成的那些文件是真的改了。
-            stack.log.append(
-                run_id,
-                "undo.failed",
-                {
-                    "run_id": run_id,
-                    "control_run": control.run.run_id,
-                    # 事件日志是永久证据，写进去就擦不掉：先打码。
-                    "error": redact(f"{type(exc).__name__}: {exc}"),
-                },
-                actor_kind="system",
-            )
-            stack.dispatcher.close_control_run(
-                control, outcome="failed", effect_state="partial"
-            )
+            outcome = apply_undo(stack, run_id, scope=args.workspace)
+        except Exception as exc:  # noqa: BLE001 - 撤销中断必须如实报告，不能吞
             print(
                 f"撤销中断（可能已部分生效，请用 recover 核查）：{redact(str(exc))}",
                 file=sys.stderr,
             )
             return 1
 
-        if report.ok:
-            stack.log.append(
-                run_id,
-                "undo.completed",
-                {
-                    "run_id": run_id,
-                    "restored": report.restored,
-                    "deleted": report.deleted,
-                    # 带根的逐条记录：verify_receipts 用它认出"这次改动已被
-                    # 撤销"，否则撤销过的文件会一直显示"与凭据不一致"。
-                    "entries": report.entries,
-                    "control_run": control.run.run_id,
-                },
-                actor_kind="human",
-            )
-        # 一个字节都没动的时候就记 none_applied，别用 partial 冒充"改了一半"。
-        if report.ok:
-            effect = "applied"
-        elif report.restored or report.deleted:
-            effect = "partial"
-        else:
-            effect = "none_applied"
-        stack.dispatcher.close_control_run(
-            control,
-            outcome="succeeded" if report.ok else "failed",
-            effect_state=effect,
-        )
-
         if args.json:
-            print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "ok": outcome.ok,
+                        "restored": outcome.restored,
+                        "deleted": outcome.deleted,
+                        "conflicts": outcome.conflicts,
+                        "problems": outcome.problems,
+                        "entries": outcome.entries,
+                        "effect": outcome.effect,
+                        "control_run": outcome.control_run,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
         else:
-            print(f"结论   : {'已撤销' if report.ok else '未撤销'}")
-            for p in report.restored:
+            print(f"结论   : {'已撤销' if outcome.ok else '未撤销'}")
+            for p in outcome.restored:
                 print(f"  还原 : {p}")
-            for p in report.deleted:
+            for p in outcome.deleted:
                 print(f"  删除 : {p}")
-            for c in report.conflicts:
+            for c in outcome.conflicts:
                 print(f"  冲突 : {c}")
-            for p in report.problems:
-                print(f"  ! {p}")
-        return 0 if report.ok else 1
+            for problem in outcome.problems:
+                print(f"  ! {problem}")
+        return 0 if outcome.ok else 1
     finally:
         if stack is not None:
             stack.log.close()
+
+
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    """常驻入口。**只做参数装配**：驱动、恢复、IPC 全在 daemon 模块里。
+
+    进程内不提前装配 Stack：daemon 自己要在 bind 之前完成恢复，两处装配会变成
+    "到底哪一份是权威"的问题。
+    """
+    from .daemon import serve
+    from .ipc import default_data_root
+
+    data_root = Path(args.data_root or default_data_root())
+    serve(
+        data_root,
+        model=_model_from(args),
+        limits=Limits(args.max_turns, args.max_total_tokens),
+    )
+    return 0
+
+
+def _cmd_host(args: argparse.Namespace) -> int:
+    from .host import read_host_info, run_host, stop_host
+    from .ipc import default_data_root
+
+    data_root = Path(args.data_root or default_data_root())
+    if args.action == "stop":
+        return stop_host(data_root)
+    if args.action == "status":
+        info = read_host_info(data_root)
+        if args.json:
+            payload = None if info is None else {
+                "running": True,
+                "pid": info.pid,
+                "port": info.port,
+                "url": f"http://127.0.0.1:{info.port}/",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        elif info is None:
+            print("Host 没有在运行")
+        else:
+            print(f"Host 在跑：http://127.0.0.1:{info.port}/  (pid={info.pid})")
+        return 0 if info is not None else 1
+
+    ui_dir = args.ui_dir
+    if ui_dir is None:
+        ui_dir = Path(__file__).resolve().parents[2] / "ui" / "dist"
+    command = [
+        sys.executable, "-m", "tianshu", "daemon",
+        "--data-root", str(data_root),
+        "--model", args.model,
+        "--max-turns", str(args.max_turns),
+        "--max-total-tokens", str(args.max_total_tokens),
+    ]
+    for flag, value in (
+        ("--provider", args.provider),
+        ("--model-name", args.model_name),
+        ("--base-url", args.base_url),
+    ):
+        if value:
+            command += [flag, value]
+    return run_host(
+        data_root,
+        ui_dir=ui_dir,
+        daemon_command=command,
+        port=args.port,
+        open_browser=args.open,
+        supervise=not args.no_supervise,
+    )
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
@@ -1272,6 +1208,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_task(args)
         if args.cmd == "worker":
             return _cmd_worker(args)
+        if args.cmd == "daemon":
+            return _cmd_daemon(args)
+        if args.cmd == "host":
+            return _cmd_host(args)
         if args.cmd == "recover":
             return _cmd_recover(args)
         if args.cmd == "undo":
