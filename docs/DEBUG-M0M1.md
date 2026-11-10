@@ -339,7 +339,7 @@ json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
 （第三条 `test_r1_corrupt_manifest_does_not_block_read_only_calls` 钉住的是相反方向：
 不能因为清单坏了就把只读工具也挡上——过度阻断同样是误报。）
 
-修复后同一组用例全绿；全量 `1079 passed / 3 skipped`，`ruff check .` 干净。
+修复后同一组用例全绿；全量 `1080 passed / 3 skipped`，`ruff check .` 干净。
 
 ### 仍然不成立的宣称（不要读成「已解决」）
 
