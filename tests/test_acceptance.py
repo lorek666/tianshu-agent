@@ -10,6 +10,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from support import approve_pending, engine_for, stack_for
 
 from tianshu.events import EventLog, canonical_bytes
 from tianshu.loop import Limits, run
@@ -321,3 +322,58 @@ def test_a7c_internal_tool_not_dispatched(tmp_path):
     assert nd and "内部工具" in nd[0].payload["reason"]
     assert (ws / "a.md").read_text(encoding="utf-8") == "原始内容", "文件不能被动"
     assert report.ok, "不派发不等于整轮失败"
+
+
+def test_replay_checks_artifact_hash_of_the_reported_path(tmp_path):
+    """run.end 的产物哈希必须跟**那个路径**的写入核，不是"最后一次带 sha 的写入"。
+
+    真实换模实测（2026-11-10，deepseek-v4.1-flash）暴露的假红：模型先写报告
+    `summary.md`，再按任务覆盖 `notes.md`；最后一条带 `sha256` 的 `tool.result`
+    属于 notes.md，旧实现拿它去比 run.end 里 summary.md 的哈希，把一份完好的
+    日志判成"不一致"。审计工具误报比不报更糟——它教人忽略 replay 的红。
+    """
+    ws = make_ws(tmp_path, {"notes.md": "旧内容\n"})
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        stack = stack_for(log)
+        engine = engine_for(
+            stack,
+            ScriptedModel(
+                [
+                    ModelResponse(
+                        finish_reason="tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c_report",
+                                "create_report",
+                                {"name": REPORT, "content": "报告\n"},
+                            )
+                        ],
+                    ),
+                    ModelResponse(
+                        finish_reason="tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c_overwrite",
+                                "modify_text",
+                                {"path": "notes.md", "content": "新内容\n"},
+                            )
+                        ],
+                    ),
+                    ModelResponse(finish_reason="end_turn", content="已改完"),
+                ]
+            ),
+        )
+        task = stack.tasks.create_task("先出报告，再覆盖 notes.md", [str(ws)])
+        result = engine.start(task.task_id, out_name=REPORT)
+        assert result.state == "waiting_approval", result
+        approve_pending(stack, result.run_id)
+        result = engine.resume_run(result.run_id)
+        assert result.outcome == "succeeded", result
+        assert result.artifact["path"] == REPORT
+
+        report = replay(log, result.run_id)
+        assert report.ok, report.problems
+        assert report.artifact_sha256 == result.artifact["sha256"]
+    finally:
+        log.close()

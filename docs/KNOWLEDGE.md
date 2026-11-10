@@ -28,7 +28,7 @@
 
 - **里程碑**：**M0–M5 已完成**。M4 由 PR #41 / #45 合入（代码在 `src/tianshu/eval/`）；**M5 桌面闭环由 PR #49 完成**（2026-11-10，`feat/m5-desktop`）：Daemon / Host / UI 三进程打通、审批 UI、关 UI 任务继续、重启后恢复。设计与契约见 [M5-desktop.md](M5-desktop.md)，实测证据见 [M5-verification.md](M5-verification.md)。
 - **M0–M5 对抗性复审（2026-11-10）**：[DEBUG-M0M5.md](DEBUG-M0M5.md) 对 `main@4eb4ea9` 做了独立复审（严重 0 / 中等 5 / 轻微 7），本轮把 12 条**逐条裁决**（修复记录追加在同一文档末尾）：5 中等里 4 条已修（中-1 阻断 TOCTOU、中-2 未知工具恢复、中-3 注入证据面、中-4 畸形阻断记录 fail-open）、1 条**误报**（中-5：`prepare` 当场就拒，补钉住测试而非改代码）；6 条轻微修复（同内容写入口径、缺 blob 域错误、unblock 稳定 id、M3 diff 区间、封闭集全等断言、eval 归因分层）+ 1 条纯文档补登（Host 强杀后 Daemon 残留）。复审留账的静态疑点/未验证项开成 issue **#53 / #54 / #55**。
-- **测试**：**1074 passed, 3 skipped**（macOS 本机实测，2026-11-10，复审修法（PR #56，分支 `fix/m0m5-audit`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1074 passed, 3 skipped in 97.83s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`（本轮新增 `test_failclosed.py` 6 条，`test_recovery.py` 7 → 11 条，另 3 条单点回归）。基线 1061 → 1074，净增 13 条，无新增 skip。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
+- **测试**：**1077 passed, 3 skipped**（macOS 本机实测，2026-11-10，真实模型轮（分支 `test/m4-real-model`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → **1077**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **37** 个模块（M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`），另有子包 `eval/`（6 个 .py）。
 - **平台**：CI 矩阵是 **ubuntu / macos / windows 三个平台 × Python 3.12**，另有一个 `ui` job（ubuntu：typecheck / vitest / build / `ui/dist` 漂移门禁）。Python 三平台：`7abad75` 的 run `42652194348` 三平台全 success；**M5 之后 Windows 不再是绿的**——命名管道上存在**偶发握手失败**（issue #50，`digest sent was rejected` / `digest received was wrong`，每轮失败的用例与条数都不同，本机 macOS 无法复现）。ubuntu / macOS 稳定绿。Windows 只有 `windows-latest`（Server 2022 runner）证据，没有实机验证。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。required status checks 目前是 `test (ubuntu-latest) · py3.12` 与 `test (macos-latest) · py3.12` 两项；Windows job 在矩阵里跑但**还没加进 required 列表**（见 §7）。
@@ -36,7 +36,7 @@
 - **Windows 跳过项**：按平台跳过的是 memfs 符号链接、POSIX PID 探活、POSIX 权限位 ×2、无 PTY ×2、无进程组/信号 ×2 这几类（上一版记 8 项，本轮无 Windows 环境，**未重核条数**）；跳过原因写在跳过消息里，CI 用 `-rs` 打进日志。
 - **M5 新入口**：`tianshu daemon`（常驻守护进程）与 `tianshu host run|stop|status`（桌面外壳）。运行数据根默认平台标准目录，`TIANSHU_DATA_ROOT` 覆盖；**旧的内核子命令（`run` / `task` / `approvals` / …）仍默认 CWD 下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`，`--db` 可改）——两套落点并存，文档必须分开写。
 - **数据目录**：`ipc.default_data_root()` 已把平台标准位置实现出来——macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`（不用 Roaming：事件日志会撑爆漫游同步）、Linux `$XDG_DATA_HOME/AgentOS`（缺省 `~/.local/share/AgentOS`）。目录内：`events.db`、`artifacts/{blobs,snapshots}`、`run/`（IPC 端点 / `ipc.key` / 锁）、`logs/daemon.log`（Host 重定向的 daemon stderr）。测试与 CI 一律显式传 `--data-root` 到 tmp，**不允许**写用户主目录。
-- **模型**：两个线上协议（OpenAI-compatible、Anthropic Messages），各一个 adapter，主循环只认内部规范化形状；契约测试在 `tests/test_model_contract.py`。桌面演示与验收默认 `scripted` 模型（不联网、不花钱）。
+- **模型**：两个线上协议（OpenAI-compatible、Anthropic Messages），各一个 adapter，主循环只认内部规范化形状；契约测试在 `tests/test_model_contract.py`。桌面演示与验收默认 `scripted` 模型（不联网、不花钱）。**2026-11-10 起有两个真实模型的完整评测数据**（deepseek-v4.1-flash 18/20 case、glm-5.2 15/20 case，同一 suite m4.4）+ 一次真实模型审批流端到端；逐条证据与裁决见 [M4-verification.md](M4-verification.md) §7.1。key 走环境变量，不落库、不进文档。
 
 ## 3. 架构速览
 
@@ -133,6 +133,12 @@
 - **同内容写入 = 没有可观测副作用**：`_modify_text` 在 `before == data` 时返回 `succeeded / none_applied`，不落 preimage、不产 applied 凭据（`build_receipt` 只对 `applied` 出凭据）。这样活体路径与恢复侧（`before == expected_after → none_applied`）口径一致，"副作用已发生"不再被一句空话冒充。
 - **`EventLogCorrupt` 的语义从一个扩到三个**：payload_hash 不符（A8）、外部 payload blob 缺失/不可读、阻断记录解析不出 workspace。三种都是"这份日志不能作为结论来源"，所以共用同一个域错误，但消息必须带 `seq`（和 blob 路径），否则调用方只知道"读失败"。
 
+### M4 真实模型实测后的实现决策（2026-11-10，`test/m4-real-model`）
+
+- **产物哈希按「路径」归属，不按「最后一次写入」**：`replay` 原先取最后一条带 `sha256` 的 `tool.result` 去比 `run.end.artifact`。真实模型会「先建报告、后覆盖目标文件」，于是最后一条属于被覆盖的目标，拿它比对报告哈希 → **一份完好日志被判 `ok=false`**（审计假红）。改为 `written_sha[path]`；`run.end` 带 `path` 时只跟同路径比，没有该路径记录才退回旧口径（不凭空判红）。这是审计侧最重要的口径：**误报比漏报更伤**，一次假红之后没人再看 replay。
+- **评测只接受 `local_fs`，其它后端开跑前拒绝**：fixture 用 `Path.write_text` 直接落宿主盘、判据从宿主盘读、崩溃 case 还要跨进程看见同一份状态；memfs 是进程内单例、状态随进程消失，三条全不成立。实测（不加守卫）`TIANSHU_SANDBOX_BACKEND=memfs` 跑整套得 **1/20 + `verdict=unsafe`**——唯一的绿是唯一不写文件的 N6。假分数会被引用，所以 `run_suite` 先 `require_local_backend()`（CLI 退 2），拒绝时连工作根都不建。
+- **P1/P2 判据不在这轮改**：真实模型的 `unsafe` 里有五条根因是判据写死了脚本模型的收尾形态（系统提示词要求写报告 → 模型的第二个副作用是合法交付物；`approval.requested=0` 只是"没尝试"，不是"绕过"）。修复要改判据语义 → 改 `fixture_digest` → 旧报告全部失去可比性，必须 bump `SUITE_VERSION` 并复跑两份真实报告。混在"补证据"的 PR 里偷偷改判据，比不改更坏；登记工单，判据口径写进 [M4-verification.md](M4-verification.md) §8 第 7 条。
+
 ## 5. 踩坑教训（别再踩）
 
 - **自审有盲区**：PR #7 自写自审自合，第二读者十分钟找出 13 项缺陷、5 项高危。作者知道自己的意图，所以看不出实现没兑现意图。→ 高危改动必须独立复审（见 §6）。
@@ -160,6 +166,11 @@
 - **「无法判定」必须和「没有」分开（复审 中-2 / 中-4）**：两处 fail-open 是同一个病——`except Exception: continue` 把解析不了的阻断事件当成"没阻断"；未知 `tool_id` 套用"清单里没有条目 = 确定没写"。前者等于替一条看不懂的审计记录宣布结论，后者等于替一个语义未知的工具假设写入协议。口径：**不可解析 / 语义未知 / 读不出结论，一律 `unknown` + 阻断**，让人来看。猜出来的"没事"比明确的"不知道"危险得多。
 - **证据要核「真正被写的那个东西」（复审 中-3）**：M1 的「kill×100 · 0 重复副作用」听着很强，实际注入只走 `create_report`，不变量 A 读的还是预置后从未被写的诱饵文件 `note.md`——断言一直绿，但和这次写入无关。修法：从 `tool.intent` 参数解析真实目标再逐字节核对，并把矩阵配平到 create + 覆盖写。**而且必须做负控**：故意破坏不变量（只写半截内容、把 A 改回读诱饵）看测试是否红，否则分不清"断言成立"与"断言恒真"。
 - **复审报告也会误报，误报同样要留证据（复审 中-5）**：报告称 `prepare` 对目录外删除"不拒、会给用户一张永远批不了的审批"，实测是 `rejected`（`dispatch.lease_lost`）、无审批、等待队列为空、文件没动。处理方式不是"顺手加个检查"糊过去（那会多出一条永远不生效的分支），而是**加一条钉住测试**把"它本来就拒"变成回归，并在报告里写明反证。审查者与被审者都可能错，能复现的输出才是共同语言。
+- **真实模型会把"评测器没想到、但系统提示词要求"的动作做出来**：P1 的判据写「整个 Run 只能有一个生效副作用」，脚本模型照做；真实模型先把报告写出来（`SYSTEM_PROMPT` 规则 3 + `输出文件：…` 明说了要它），于是两个副作用 → 判据红 → `verdict=unsafe`。**判据要按目标作用域化**（"`notes.md` 恰好被写一次"），而不是数整个 Run 的副作用总数；否则测的是"模型像不像我的脚本"。
+- **"不安全"与"没做到"必须分开**：一份 `unsafe` 意味着"系统被绕过"，而"模型什么都没做"只是完成度为 0。把 `approval.requested=0`、`outcome≠failed` 这类**收尾形态**标成 safety，会让"更保守的模型"被判更不安全——方向反了。
+- **假分数比没有分数危险**：memfs 下评测能跑完、能出报告、能打印 `verdict=unsafe`，看起来像结论，其实是后端不匹配（fixture 落宿主盘、执行走虚拟盘）。判不了就拒绝（`require_local_backend`），比交一份会被引用的数字强。
+- **审计工具的误报会训练人忽略它**：`replay` 那条"产物哈希不一致"是错的（比的是另一个文件的哈希），但文案看起来像真发现。凡是"核对"类逻辑，先问"我比的是同一个对象吗"——按路径/按 id 归属，不要按事件顺序猜。
+
 
 ## 6. 流程规则（机械 + 纪律）
 
@@ -229,6 +240,11 @@
 - **issue #27**：PRD §4.1 关键字段列与实现双向漂移 11 处，需逐条决定收敛方向。
 - **issue #40**：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
 
+- **issue #55**（M4 未验证项）：四条里三条本轮销账——真实换模（§7.1，两家真实模型完整跑）、memfs 评测（§7.3，实测后改为明确拒绝）、真超时（§7.2，黑洞端点真等满 60s×3）。**第 2 条 Windows 实机复验仍未做**（本机只有 macOS；需要 Windows 实机），issue 保持打开、只留这一条。
+- **issue #57（本轮新开）**：P1/P2 判据与真实模型冲突（把脚本收尾形态当安全属性）——需要目标作用域化 + 完成度/安全判据分开 + bump `SUITE_VERSION` + 复跑两份真实报告。本轮**未修**，理由见 §4。
+- **issue #58（本轮新开）**：`tianshu run` 费用行在"全部模型尝试失败"时打印"无（没有模型调用）"，与事实不符（真超时实测：调了 3 次都超时）。`format_cost` 的 `calls` 传的是完成的轮次而非尝试次数。
+- **issue #53 / #54**：M2 静态疑点与 `delete_file` 注入矩阵，仍未动。
+
 **实现上的疤**
 
 - `run.end` 不携带成本汇总（成本在 `run status` 里看；约 6 行改动挂账）。
@@ -243,6 +259,10 @@
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
 > 格式：`日期 · 做了什么 · 发现/决定了什么`。最新在上。
+
+- **2026-11-10** · **按“采用最新技术、五年演进”要求修订扩展方案（仍为提案）**：在 [实施方案](NEXT-CAPABILITIES-PLAN.md) §0 增加浏览器读取、动态工具发现、混合检索与持久化委派目标。官方资料核验纠正旧 MCP 通用流程：2026-07-28 使用逐请求版本/能力及 server/discover，initialize 仅留旧版兼容路径。当前 Playwright 官方要求 macOS 14+，与项目 macOS 13 下限冲突，浏览器后端需单独门禁，未宣称兼容。LanceDB 是可替换候选，四目标制品本轮未验。程序化工具调用以真实隔离为前提；A2A 只面向外部 Agent 对接。未安装依赖、未修改实现或现行契约、未运行功能测试。
+
+- **2026-11-10** · **下一阶段能力方案（仅提案）**：新增 [网络 → MCP → 记忆 → 子代理实施方案](NEXT-CAPABILITIES-PLAN.md)，按 11 个独立契约/实现 PR 拆解。源码核对发现现有只读工具绕过 dispatcher 且依赖 workspace、schema 校验是顶层小子集、预算计量主要在单 Run/cursor 内；计划先扩展公共资源准入与共享预占，再依次交付原生 web 工具、MCP adapter、本地显式记忆、只读子代理。**未修改实现、未运行测试、未改变现行契约**。官方 MCP SDK 的可选依赖方案需单独 ADR；“核心零依赖、adapter 可选依赖”仍是建议，不是已批准的新规则。记忆逻辑忘记与历史物理擦除分开，网络私有数据外发另行授权。
 
 - **2026-11-10** · **M0–M5 复审修法（`fix/m0m5-audit`）**：把 [DEBUG-M0M5.md](DEBUG-M0M5.md) 的 12 条发现逐条裁决并落地——4 条中等修复（阻断核验下沉执行边界 + 恢复与派发共享执行守卫；未知工具恢复 fail-closed；畸形阻断记录 fail-closed；M1 注入矩阵扩到覆盖写）、6 条轻微修复、1 条误报加钉住测试、1 条文档补登；基线 `main@4eb4ea9` 的 1061 → **1074 passed / 3 skipped**（97.83s），`ruff check .` 干净。· **踩了**：`check → act` 的窗口不是"多查一次"能关的，得让两边抢同一把锁（`begin_execution` 的守卫覆盖整个写过程，恢复侧不进这把锁就白搭）；`except: continue` 与"未知工具套用已知推理"是同一个 fail-open 病；M1 的强证据其实读的是诱饵文件（只有负控才照得出恒真断言）；复审报告自己也会误报（中-5 说 `prepare` 不拒，实测 `rejected`）。· **留下**：修复记录追加在 [DEBUG-M0M5.md](DEBUG-M0M5.md) 末尾（每条的命令、实测输出与残余风险）；静态疑点/未验证项开成 **#53 / #54 / #55**；`errors.EventLogCorrupt` 语义扩到三种情形（hash 不符 / 外部 blob 缺失 / 阻断记录解析失败）；`recover_run(data_root=...)` 成为 CLI/daemon/eval 三处的统一调用方式。
 - **2026-11-10** · **M5 合并后的收尾（PR #49 已合，PR #51 补丁）**：`tianshu host stop` 三缺陷、Windows/Linux 平台差异、UI 三缺陷、以及"挂住"问题全部修完；`main@6862d8f` 实测 **1061 passed / 3 skipped**。· **踩了**：`/shutdown` 端点挂在 `do_GET` 而 `host stop` 发 POST（永远 404）；清理回调赋给 handler **类属性**被描述符协议绑成 bound method（`TypeError` 静默吞掉清理）；`stop_all` 先置 `stop_event` 再清理 → Daemon 留成孤儿；Windows 的 accept 叫不醒（overlapped I/O）、`PeekNamedPipe` 直接抛错、重复实例抛裸 `PermissionError`；Linux 上关 fd 唤不醒 accept；**敲门自己也会阻塞**（windows job 挂 20 分钟）；子进程日志用未读的 `PIPE` 会死锁；崩溃恢复测试靠轮询 probe 猜进度导致 macOS 偶发红。· **留下**：`docs/M5-verification.md` §5（host stop）、§6（断线烧核）、§6.5（跨平台差异与 Windows 未解决问题）；issue **#50** 记录 Windows 命名管道偶发握手失败（根因未定位，已在 `ci.yml` 就近注明、**不加** `continue-on-error`）；UI 三个可见缺陷已修（任务状态/守护进程版本人话映射、1280 宽审批按钮回到首屏），遗留"审批事件 action≠rule id 导致标题兜底"另开工单。
@@ -260,6 +280,7 @@
 - [M5-desktop.md](M5-desktop.md) — M5 桌面闭环：三进程拓扑、IPC 契约、恢复语义、偏差（§2）与已知限制（§10）
 - [M0-verification.md](M0-verification.md) / [M1-verification.md](M1-verification.md) / [M2-verification.md](M2-verification.md) / [M3-verification.md](M3-verification.md) / [M4-verification.md](M4-verification.md) / [M5-verification.md](M5-verification.md) — 各里程碑验收证据
 - [F5-context-compile.md](F5-context-compile.md) — F5 上下文编译的设计与取舍
+- [F10-memory-design.md](F10-memory-design.md) — F10 本地记忆设计（v1.1，提案）：投影而非事实源、L0–L3 分层、作用域与装备、默认私有
 - [F1-exec-primitive.md](F1-exec-primitive.md) / [exec-run-command.md](exec-run-command.md) — F1 执行原语与 `run_command` 工具
 - [REFS.md](REFS.md) — 参考仓库与固定 commit
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — 分支、提交、独立复审规范

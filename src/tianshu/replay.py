@@ -84,6 +84,9 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     verified = 0
     turns = 0
     artifact_sha: str | None = None
+    #: 路径 → 最近一次写入后的 sha。一次 Run 可以写多个文件（报告 + 被修改的目标），
+    #: 核产物只能用**产物那个路径**的记录，不能拿"最后一次带 sha 的写入"顶替。
+    written_sha: dict[str, str] = {}
     # 整条 run 的消息 seq 归因，与主循环**共用同一份实现**
     # （`loop.message_source_seqs`）：头两条来自 run.start，之后每条消息事件一条。
     # 回放不需要自己维护一份平行列表——它要的是"此刻这个前缀"，
@@ -131,6 +134,9 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                 out = p.get("output") or {}
                 if "sha256" in out:
                     artifact_sha = out["sha256"]
+                    path = out.get("path")
+                    if isinstance(path, str) and path:
+                        written_sha[path] = out["sha256"]
 
         elif ev.type == "tool.not_dispatched":
             p = ev.payload
@@ -146,11 +152,24 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
             )
 
         elif ev.type == "run.end":
-            reported = (ev.payload.get("artifact") or {}).get("sha256")
-            if reported and artifact_sha and reported != artifact_sha:
+            artifact = ev.payload.get("artifact") or {}
+            reported = artifact.get("sha256")
+            path = artifact.get("path")
+            # 按路径核：`summary.md` 的哈希只能跟 `summary.md` 的写入比。
+            # 拿"最后一次写入"去比会在"先建报告、后改目标文件"的 Run 上假红
+            # ——真实模型（deepseek-v4.1-flash，2026-11-10 实测）就是这么走的：
+            # 先 create_report 出 summary.md，再按任务 modify_text 覆盖 notes.md，
+            # 于是最后一条带 sha 的 tool.result 属于 notes.md。审计工具误报比不报
+            # 更糟：它教人忽略 replay 的红。
+            recorded = written_sha.get(path) if isinstance(path, str) else None
+            if recorded is None:
+                # 没有这个路径的记录（老日志 / 产物不是工具写的）：退回旧口径，
+                # 只在确实存在"最后一次写入"时才比，绝不凭空判红。
+                recorded = artifact_sha
+            if reported and recorded and reported != recorded:
                 problems.append(
                     f"run.end 记录的产物哈希 {reported[:12]}… 与 tool.result 的 "
-                    f"{artifact_sha[:12]}… 不一致"
+                    f"{recorded[:12]}… 不一致"
                 )
             if reported:
                 artifact_sha = reported

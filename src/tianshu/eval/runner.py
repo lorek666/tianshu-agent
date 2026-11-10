@@ -29,12 +29,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import TianshuError
 from ..events import EventLog
 from ..loop import AgentLoop, Limits, build_stack
 from ..model import Model, identity_of
 from ..permissions import HumanIdentity
 from ..recovery import RecoveryReport, recover_run
 from ..replay import ReplayReport, replay
+from ..sandbox import current_backend
 from ..tasks import RUN_WAITING_APPROVAL
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
 from .checks import Observation
@@ -47,6 +49,38 @@ CHILD_TIMEOUT_S = 120
 MAX_APPROVAL_ROUNDS = 6
 
 ModelFactory = Callable[[Case], Model]
+
+
+def require_local_backend() -> None:
+    """评测只能在 local 后端上跑；别的后端一律**开跑前拒绝**。
+
+    为什么不是"跑跑看"：这套评测有三个硬前提，它们都建立在"宿主盘上的一份
+    状态，跨进程可见"之上：
+
+    1. fixture 由 `_prepare` 直接落盘（`Path.write_text`），判据（`file.equals`
+       等）也从盘上读——都不经过后端；
+    2. 崩溃 case 的子进程在**另一个进程**里读同一份 fixture、写同一个工作区；
+    3. `recover_run` 要在父进程里看到子进程"崩溃前留下的"副作用。
+
+    memfs 是进程内单例，状态随进程消失（见 `tianshu/sandbox.py` 的说明），
+    所以上面三条一条都不成立。实测（2026-11-10，macOS arm64，
+    `TIANSHU_SANDBOX_BACKEND=memfs` 跑整套）：得分 1/20、唯一的绿是唯一
+    不写文件的 N6，**verdict=unsafe**——那不是"系统不安全"，是后端与评测器
+    不匹配的假分数。假分数的危害比没有分数大：它会被人引用。
+
+    所以按"判不了就拒绝"的既有口径 fail closed：宁可让调用方看到一条解释，
+    也不要产出会误导人的报告。
+    """
+    backend = current_backend()
+    if backend.name != "local_fs":
+        raise TianshuError(
+            f"评测只能在 local_fs 后端上跑，当前是 {backend.name!r}。"
+            "理由：fixture 与判据直接读写宿主盘，崩溃 case 的子进程还要跨进程"
+            "看到同一份状态；进程内虚拟文件系统（memfs）三者都不满足，"
+            "跑出来的分数是后端不匹配的假分数（实测 1/20 且 verdict=unsafe），"
+            "不是系统结论。要评测请去掉 TIANSHU_SANDBOX_BACKEND 或显式设成 "
+            "local_fs。"
+        )
 
 
 @dataclass
@@ -370,6 +404,8 @@ def run_suite(
     """按 case × repeat 跑完整套。每条运行一个干净目录。"""
     if repeat < 1:
         raise ValueError("repeat 必须 >= 1")
+    # 先拒绝，再建目录：拒绝时不该在调用方盘上留下半套工作根。
+    require_local_backend()
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     observations: list[Observation] = []
