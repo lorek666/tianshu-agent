@@ -32,7 +32,8 @@
 - **F10 记忆实现轮（2026-11-10，分支 `feat/memory` → PR #64，已提交）**：记忆从设计进入**落地**。新增 `src/tianshu/memory.py`（`MemoryProjection`：投影表 + FTS5 + 正文内容寻址 + 重建）、`memory_exec.py`（`MemoryExecutor`：执行侧二次核验、`memory://` 作用域判定）、`resources.py`（资源种类：裸绝对路径 = `file`，`memory://<scope>/<scope_id>` = `memory`，其他 scheme fail-closed）。接线：`dispatcher`（`_authority` / `_resolve_target` / `_policy_preconditions` / `_check_memory_preconditions`）、`permissions`（`PolicyEngine._classify_memory`）、`tools`（5 个 `memory.*` ToolSpec，均无 `path_arg`）、`loop`（只读分支 `_exec_memory_read`、写目标 `_memory_target`）、`context`（`context_payload(memories=...)`）、`cli`（`tianshu memory list|search|get|confirm|forget`）、`receipt`（`build_memory_receipt`）。契约增量：C2 五个工具（`version=1.0`）；C4 资源种类 + **6 条新规则编号**（`RULE_IDS` 43 → 49）；C3 **不新增事件族**（记忆生命周期由 `tool.intent`/`tool.result` + 审批事件承载）。· **测试**：四个记忆测试文件已覆盖——`test_memory_store.py`（51 个 `def test_` / 64 条）、`test_memory_dispatch.py`（20 条，真派发/审批/事务/资源种类/作用域/错装配投影/拒绝行脱敏）、`test_memory_loop.py`（12 条，主循环/预算/replay/CLI/遗忘后不可按 id 复活）、`test_resources.py`（23 个 / 44 条）。· **未落地 / 未覆盖（别当已完成）**：L2/L3 蒸馏与向量召回未实现；`confirm` **不改写 `origin`**，因此 `user_explicit` 与 `user_confirmed` 两档都**没有生产入口**、线上记忆恒为 `inferred`，§8 的 origin 排序实际退化成 `created_at` 降序；§8 的**作用域优先级**（优先当前任务/工作区证据）未实现（作用域只用于过滤）；`recovery.recover_run` **没有记忆分支**（intent 已提交而 result 未落库时按文件工具的推断走，投影侧安全但结论不精确）；`origin=user_explicit` 的免审批确认**生产侧没有产生入口**（`memory_exec._propose` 固定写 `inferred`，测试靠播种事件才走到那条分支）。逐条状态见 [F10-memory-design.md](F10-memory-design.md) §13，判据↔测试映射见 §14。
 - **M0–M5 对抗性复审（2026-11-10）**：[DEBUG-M0M5.md](DEBUG-M0M5.md) 对 `main@4eb4ea9` 做了独立复审（严重 0 / 中等 5 / 轻微 7），本轮把 12 条**逐条裁决**（修复记录追加在同一文档末尾）：5 中等里 4 条已修（中-1 阻断 TOCTOU、中-2 未知工具恢复、中-3 注入证据面、中-4 畸形阻断记录 fail-open）、1 条**误报**（中-5：`prepare` 当场就拒，补钉住测试而非改代码）；6 条轻微修复（同内容写入口径、缺 blob 域错误、unblock 稳定 id、M3 diff 区间、封闭集全等断言、eval 归因分层）+ 1 条纯文档补登（Host 强杀后 Daemon 残留）。复审留账的静态疑点/未验证项开成 issue **#53 / #54 / #55**。
 - **M0–M1 报告修复对账（2026-11-10 复核）**：[DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾补了「修复状态总表」——S1–S4 / M1–M4 / L1–L2 / R1–R5 逐条对应代码位置与钉住它的测试，含负控口径。复核中发现并修掉一条残留：**快照清单损坏时恢复/撤销漏出裸 `JSONDecodeError`**（现为 `SnapshotCorrupt` → unknown+阻断 / 拒绝撤销）。仍然不成立的四项如实写在总表末尾：真实断电、Windows 实机、authority 数据根逃逸 + 完整 takeover（issue #61）、跨多文件撤销的事务性。
-- **测试**：**1080 passed, 3 skipped**（`main` 提交态基线，macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
+- **2026-11-11 收尾轮：DEBUG-M0M1 除 Windows 实机外全部落地（PR #66–#72）**：① 真实断电 → 持久化边界注入 × 撕裂写 × 真实 HFS+ 强制摘卷（[powercut-evidence.md](powercut-evidence.md)），并**新发现两个真 bug**：删除类动作的恢复去读已被删除的文件（`FileNotFoundError` 穿出 `recover_run`）、撕裂 WAL 被静默洗成空库（fail-open，历史全丢）；② authority 数据根逃逸 → 固定用户级权威根（`authority.py`，与 `--db`/cwd 无关），守卫双读；③ 完整 takeover → `recovery.assess_run` 只读对账 + 三个接管入口；④ 跨多文件撤销 → 写前意图日志 + 崩溃后幂等续做 + 恢复侧阻断；⑤ #63 就绪竞态根因是 **`Listener` 默认 backlog=1，`probe` 的未认证连接自己占掉唯一队列位**；⑥ #58 费用行按**尝试次数**说话；⑦ #57 评测判据按目标作用域化（`SUITE_VERSION` m4.5，完成度/安全分栏）；⑧ #53/#54/#40 销账。规格与并发施工纪律见 [SPEC-RESIDUALS-M0M1.md](SPEC-RESIDUALS-M0M1.md)，判据↔测试映射见 [DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾新表。· **仍未成立**：块设备断电语义、Windows 实机、真实模型 m4.5 复跑（中转站 503 全模型不可用）、撤销不是两阶段提交。
+- **测试**：**1316 passed, 6 skipped**（`main` 提交态基线，macOS 本机实测，2026-11-11 收尾轮 `43d04ef`，115.97s；上一轮 DEBUG-M0M1 复核轮为 1080 passed / 3 skipped；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **37** 个模块（M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`），另有子包 `eval/`（6 个 .py）。
 - **平台**：CI 矩阵是 **ubuntu / macos / windows 三个平台 × Python 3.12**，另有一个 `ui` job（ubuntu：typecheck / vitest / build / `ui/dist` 漂移门禁）。Python 三平台：`7abad75` 的 run `42652194348` 三平台全 success；**M5 之后 Windows 不再是绿的**——命名管道上存在**偶发握手失败**（issue #50，`digest sent was rejected` / `digest received was wrong`，每轮失败的用例与条数都不同，本机 macOS 无法复现）。ubuntu / macOS 稳定绿。Windows 只有 `windows-latest`（Server 2022 runner）证据，没有实机验证。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。required status checks 目前是 `test (ubuntu-latest) · py3.12` 与 `test (macos-latest) · py3.12` 两项；Windows job 在矩阵里跑但**还没加进 required 列表**（见 §7）。
@@ -101,6 +102,15 @@
 | D7 | 诊断包仅本地导出、永不上传 | 但默认脱敏（最终用途是贴公开 issue） |
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
+
+### 收尾轮实现决策（2026-11-11，PR #66–#72）
+
+- **阻断状态属于"这台机器这个用户"，不属于某个 `--db`**：`authority.py` 把它固定到 `TIANSHU_AUTHORITY_ROOT`（否则 `~/.tianshu/authority`），与 `--db`/`--data-root`/cwd 无关；键用 `pathkeys.overlap_key(resolve(path))`（与租约同口径）。失败语义朝安全方向：**库不存在=空集**（不是损坏，否则新用户第一次用就被自己挡住）、**读不出=已阻断**、**写失败=如实报「跨数据根阻断未生效」**。代价：权威根只保护"阻断"，跨数据根没有租约互斥。
+- **接管前对账只读**：`recovery.assess_run` 不写事件、不落盘、不阻断（用 `SnapshotStore.__new__` 挂属性绕过会 `mkdir` 的构造函数）；拒绝接管后的双重证据（日志 + 权威根）由调用方在租约事务回滚**之后**落。三个入口（`AgentLoop.start`/`resume_run`、控制 Run）共用同一条实现——只保护控制 Run 等于没保护。
+- **撤销用"写前意图日志 + 幂等续做"，不是两阶段提交**：`artifacts/undo/<run_id>.json` 记录完整计划与每步 `post_state`；崩溃后先核对 done/剩余项与磁盘一致再从断点继续，**绝不从头再来**；`completed` 只差补事件不阻断。恢复侧把未完成撤销变成阻断（`recovery.blocked` + 权威根），阻断是 journal 的投影、不是事实源：`unblock` 可解除，但只要 journal 仍 `in_progress`，下次恢复会重新挡住。
+- **就绪标记必须晚于"端点真的可服务"**：`on_ready` 在 accept 线程进入 accept + 自连认证握手成功后才落；`LISTEN_BACKLOG=64`。根因不是"listen 没完成"，而是 backlog=1 时探活自己占满队列（详见 §5）。
+- **评测判据按目标作用域 + 分类**：`Check.kind`（completion/safety）只有 safety 进 `safety_gate`；完成度判据红不影响安全结论；`SUITE_VERSION` m4.5 使旧报告不可比（两道守卫）。
+- **`EventLog` 对"有内容却读不出 events 表"的库 fail closed**：0 字节按新库（首次启动窗口无历史可丢），只有"文件存在且有内容、读不出 schema"才 `EventLogCorrupt`。检查必须在 `executescript(_SCHEMA)` 之前、`PRAGMA journal_mode=WAL` 之前——顺序即是"先读、再写"的保证。
 
 ### M5 与 PRD / TECH-ARCH 的偏差（即 M5 文档里的 D1–D5，别与上表 D1–D7 混）
 
@@ -177,6 +187,13 @@
 - **校验器自己崩掉，等于没人替你回答「到底写没写」**：快照清单被截断时 `SnapshotStore.load()` 直接漏出 `json.JSONDecodeError`——恢复还没开始推理就先抛栈，CLI 只打印 "Expecting property name"，既没说清哪份证据坏了，也没有阻断。读审计材料的代码，解析失败必须转域错误（`SnapshotCorrupt`，与 `EventLogCorrupt` 同一档），并让调用侧落成 `unknown`+阻断或明确拒绝；不能当成空清单继续，也不能让裸异常穿过库边界。负控照旧：把修复回退后新用例必须红，红的样子就是那条 `JSONDecodeError`。
 
 
+- **"读不出来"必须 fail closed，而不是洗成"什么都没有"（2026-11-11 实测）**：`events.db` 的 WAL 被撕到 schema 首帧时，旧 `EventLog.__init__` 照常 `executescript(_SCHEMA)` 建表——打开成功、`events` 表 0 行、原 WAL 被丢弃，历史静默蒸发，`recover_run` 据此报告"没有任何未决调用"。修法：先记下"库存在且有内容"，connect 后、建 schema **之前**读 `sqlite_master`（这一步触发 WAL 回放，是"有没有历史"的唯一事实来源），读不出就抛域错误；`PRAGMA journal_mode=WAL` 必须后移（否则可能先毁 WAL 再检查）。推论：**任何"打开即建表"的初始化都自带一条 "坏库→空库" 的洗白路径**，隔离门禁要放在建表之前。
+- **探活/心跳自己也会占资源，backlog=1 会被自己堵死（#63 根因）**：`multiprocessing.connection.Listener` 默认 backlog 是 1，而 `probe()` 是"连一下就关"的**未认证**连接——服务端必须先失败一次握手才能腾出队列位；队列满时 macOS 对 AF_UNIX 的 `connect` **立即 ECONNREFUSED**。表现是"端点文件存在、进程活着、probe 连不上"，连续两轮都被误判成"就绪早于 listen"。修法：backlog 调到 64 + 就绪前自连一次完整握手 + `probe_result` 带 errno/重试。教训：**探活链路上的每个"轻量动作"都要算它占用的队列/锁/句柄**；"本机偶发"先看容量，别先怀疑逻辑。
+- **"恢复判据"要覆盖"目标本来就不存在"这件事**：`delete_file` 的 applied 状态是"文件已删除"，而恢复的 applied 分支无条件 `size()` 目标 → `FileNotFoundError` 穿出 `recover_run`。#54 把 delete 纳入注入矩阵才暴露：**哈希一致 ≠ 目标存在**；applied 的目标可能是 `absent`，output/凭据都要按删除形状写。
+- **库契约接好 ≠ 产品接线（T3 的教训）**：撤销意图日志提供了 `outstanding()`/`resume()` 契约、也有 7 条崩溃续做测试，但 `recovery.py` 属于另一工作流，合并后**没有任何产品代码**调用它们——恢复照样报告干净、写入照样能进。补接线的 5 条测试（`tests/test_undo_recovery.py`）和负控（去掉接线 → 4 failed）证明：**"有库 API + 有单测"不等于"产品里生效"**，跨模块的收尾必须点名到"哪个调用点"。
+- **测试夹具不能模拟不存在的历史版本**：`EventLog` 改成 fail closed 后，两条迁移用例红了——它们用裸 `sqlite3` 造"只有 leases/approvals 一张表"的库。但真实旧库一定带 `events` 表（`_SCHEMA` 从第一次提交起就建它）。修法是把 fixture 改成"先建完整 schema、再把那张表降级"，而不是放宽产品判据：**别用一个不存在的历史版本给自己作证**。
+- **`detach -force` 不是断电**：真实 HFS+ 卷强制摘下后重挂，验证了"fsync 后的产物可恢复"，但手工探针显示 **20MB 完全未 fsync 的数据照样存活**——所以这个手段**不能**制造"丢页缓存"，也不能用来宣称"未 fsync 一定丢"。写文档时必须把"能证明/不能证明"分开列。
+
 ## 6. 流程规则（机械 + 纪律）
 
 - **门禁是机械的**：`main` 分支保护——走 PR、CI 绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。本地绿不算数。
@@ -209,10 +226,10 @@
 
 **M0–M1 复核留账（[DEBUG-M0M1.md](DEBUG-M0M1.md) 修复状态总表，2026-11-10）**
 
-- **authority 数据根逃逸 + 完整 takeover → issue #61**：换 `--db`（或换数据根）可绕过目录阻断；租约接管没有「先核对前任未决副作用」。两项都**未实现**，总表里写的是"仍未覆盖"。
-- **真实断电 / Windows 实机**：写入路径已有 fsync + 原子 rename，但存储故障语义与 Windows 实机都未验证（Windows 见 #50）。
-- **跨多文件撤销**：逐文件原子 + 逐文件记录，**不**宣称一次事务；中途崩溃可能留部分还原（可续做）。
-- **M5 集成测试偶发红 → issue #63**：`test_crashed_daemon_recovers_run_without_duplicate_side_effects` 首段 `on_ready` 已落盘但 `ipc.probe` 10s 连不上、子进程日志为空；**pristine `main`（`5992284`）80 次文件级运行里也复现 2 次**，与本轮改动无关，但根因未定——已登记 #63 并写明要补的诊断字段（`proc.poll()` / socket errno）。
+- ~~**authority 数据根逃逸 + 完整 takeover → issue #61**~~：**已修（2026-11-11，PR #70）**。权威根固定到用户级位置（与 `--db`/cwd 无关）；三个接管入口都先只读对账、拒绝时落双证据。残留：权威根只保护"阻断"（跨数据根没有租约互斥）、resume 对账发生在认领作业之后、网络盘上是本机视角。
+- **真实断电 / Windows 实机**：**断电语义部分验证**（进程级四个持久化边界 + 撕裂写 + 真实 HFS+ 强制摘卷，PR #71），**块设备/固件断电仍未验证**（`detach -force` 仍刷脏页，"未 fsync 一定丢"不成立）；Windows 实机仍未验证（见 #50）。
+- ~~**跨多文件撤销**~~：**已修（2026-11-11，PR #66/#72）**：写前意图日志 + 崩溃后幂等续做 + 恢复侧阻断。仍**不**宣称一次事务：崩在动作之间是"可续做"，需要人/CLI 触发续做。
+- ~~**M5 集成测试偶发红 → issue #63**~~：**已修（2026-11-11，PR #69）**。根因是 `Listener` 默认 backlog=1 + 探活的未认证连接自己占满队列（macOS 立即 ECONNREFUSED），不是"就绪早于 listen"；改 backlog=64 + 自连握手后 `on_ready` + `probe_result` 带 errno/重试，同一用例文件 100 次 0 失败。
 
 **M4 评测未验证项（2026-11-10 真实模型轮更新，不许写成"通过"）**
 
@@ -220,6 +237,7 @@
 - Windows 上的 `evaluate` **未验证**（issue #55 仅剩的一条）；
 - `memfs` 后端：**不做，改为开跑前拒绝**（实测假分数 1/20 + unsafe，见 §4）；
 - 真超时：**已覆盖**（黑洞端点真等满 60s×3，`3m01.6s` 后 failed）。
+- **m4.5 真实模型复跑：未完成（外部阻塞）**。判据已按目标作用域化（#57）并通过 scripted 基线与确定性单测；但要产出两份真实报告需要可用模型中转站，当时该 key 的所有模型一律 `503 model_not_found / auto groups is not enabled`（`/v1/models` 为空，换域名/模型 id 相同）。文档写"未完成"，没有拿 scripted 冒充，也没有为了绿放松安全判据。
 
 **M5 桌面闭环未验证 / 已知限制（详见 [M5-desktop.md](M5-desktop.md) §10 与 [M5-verification.md](M5-verification.md)）**
 
@@ -251,10 +269,11 @@
 - **issue #27**：PRD §4.1 关键字段列与实现双向漂移 11 处，需逐条决定收敛方向。
 - **issue #40**：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
 
-- **issue #55**（M4 未验证项）：四条里三条本轮销账——真实换模（§7.1，两家真实模型完整跑）、memfs 评测（§7.3，实测后改为明确拒绝）、真超时（§7.2，黑洞端点真等满 60s×3）。**第 2 条 Windows 实机复验仍未做**（本机只有 macOS；需要 Windows 实机），issue 保持打开、只留这一条。
-- **issue #57（本轮新开）**：P1/P2 判据与真实模型冲突（把脚本收尾形态当安全属性）——需要目标作用域化 + 完成度/安全判据分开 + bump `SUITE_VERSION` + 复跑两份真实报告。本轮**未修**，理由见 §4。
-- **issue #58（本轮新开）**：`tianshu run` 费用行在"全部模型尝试失败"时打印"无（没有模型调用）"，与事实不符（真超时实测：调了 3 次都超时）。`format_cost` 的 `calls` 传的是完成的轮次而非尝试次数。
-- **issue #53 / #54**：M2 静态疑点与 `delete_file` 注入矩阵，仍未动。
+- **issue #55**（M4 未验证项）：四条里三条销账（真实换模 m4.4 跑过、memfs 评测改为明确拒绝、真超时黑洞端点跑满）。**m4.5 真实模型复跑被中转站阻塞**（所有模型 `503 / auto groups is not enabled`，见 [M4-verification.md](M4-verification.md) §7.4），**Windows 实机复验仍未做**（需要 Windows 实机），issue 保持打开。
+- ~~**issue #57**~~：**已修（2026-11-11，PR #68）**：`Check.kind`（completion/safety）+ 8 条作用域化判据 + 完成度/安全分栏 + `SUITE_VERSION` m4.5。真实模型报告未复跑（同上一条阻塞）。
+- ~~**issue #58**~~：**已修（2026-11-11，PR #67）**：`RunResult.model_attempts`（真发一次请求才 +1，含超时/失败/重试）+ `cli._cost_note` 统一口径；全失败时打印「0 个完成轮次 / 3 次尝试（费用未知）」，不再说"没有模型调用"。
+- ~~**issue #53 / #54**~~：**已销账（2026-11-11）**。疑点 1 不成立（模型无法启动 Run，写成设计前提 + 三层钉子）；疑点 2 三条路径探针成立；delete 注入矩阵补齐并暴露一个真 bug（见 §5）。
+- ~~**issue #61 / #63**~~：**已修**（见上一段与 PR #69/#70）。
 
 **实现上的疤**
 
@@ -268,6 +287,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-11** · **DEBUG-M0M1 收尾轮：除 Windows 实机外全部落地（PR #66–#72）**：先写 [SPEC-RESIDUALS-M0M1.md](SPEC-RESIDUALS-M0M1.md) 再动手，六个工作流各自独立 worktree/分支（文件所有权表写进规格 §0，KNOWLEDGE/README/DEBUG 只由 lead 落），主线合并顺序 #66 → #67 → #68 → #69 → #70 → #71 → #72。基线 `main@540c543`（1080 passed / 3 skipped）→ 收尾后 **1316 passed, 6 skipped**、`ruff check .` 干净。七件事：① 真实断电 → `fsutil` 四个持久化边界故障点（`TIANSHU_FAILPOINT_PATH` 限路径）× {新建,覆盖写,删除} × 三条断言，撕裂写模拟（清单/blob/WAL），真实 HFS+ `detach -force` 摘卷实验（opt-in，本地 3 passed）；② authority 数据根逃逸 → 固定用户级权威根（`authority.py`），守卫双读，真子进程双 `--db` 探针；③ 完整 takeover → `recovery.assess_run` 只读对账 + `LeaseStore.reconcile` + 三个入口（`AgentLoop.start`/`resume_run`、控制 Run），真 `SIGKILL` 前任 + 真子进程接管；④ 跨多文件撤销 → `undo_journal` 写前意图日志 + 幂等续做 + 恢复侧阻断（阻断是 journal 的投影）；⑤ #63 → 根因 `Listener` 默认 backlog=1 被探活自己占满（macOS 立即 ECONNREFUSED），backlog=64 + 自连握手后 `on_ready`，100 次文件级运行 0 失败；⑥ #58 → `model_attempts` 口径（全失败打印「0 个完成轮次 / 3 次尝试（费用未知）」）；⑦ #57 → `Check.kind` + 作用域化判据 + m4.5 基线，真实模型复跑被中转站 503 阻塞（如实写"未完成"）。· **另外抓到并修掉两个真 bug**：删除类动作的恢复去读已被删除的文件（`FileNotFoundError` 穿出 `recover_run`）、撕裂 WAL 被静默洗成空库（fail-open，历史全丢、恢复报"干净"）。· **踩了**：`git checkout -- <file>` 会把**未提交**的队友改动一起丢掉（负控回退要用文件备份，不是 git 还原）；`detach -force` 仍刷脏页（20MB 未 fsync 存活），所以"断电压测"不能靠它；测试夹具造"半张表旧库"等于拿不存在的历史版本作证；库契约接好≠产品接线（T3 的 `outstanding()` 没人调用）；探活自己会占队列。· **留下**：`docs/powercut-evidence.md` / `docs/authority-takeover.md` / `docs/undo-journal.md`（T3）/ `docs/m5-readiness.md` / `docs/cost-and-veto.md` / `docs/eval-scoped-checks.md` / `docs/SPEC-RESIDUALS-M0M1.md`；issue #40/#53/#54/#57/#58/#61/#63 有证据可关；#55 只剩 Windows 实机 + m4.5 真实模型复跑（外部阻塞）；#50（Windows 命名管道握手）仍未定位。· **仍未验证**：块设备/固件断电、Windows 实机、真实模型 m4.5。
 
 > 格式：`日期 · 做了什么 · 发现/决定了什么`。最新在上。
 
