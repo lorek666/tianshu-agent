@@ -82,6 +82,15 @@ def _short_root(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
 
 
+def _tail(path: Path, *, max_bytes: int = 4000) -> str:
+    """读文件尾巴（诊断用）：子进程日志只留最后几千字节就够定位了。"""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "（没有日志文件）"
+    return raw[-max_bytes:].decode("utf-8", errors="replace")
+
+
 class DaemonHarness:
     """在后台线程里跑一个真 daemon，并等到端点可连。"""
 
@@ -477,17 +486,29 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
         encoding="utf-8",
     )
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    # 日志写文件，不用 `stderr=subprocess.PIPE`：管道没人读，daemon 写满 64KB
+    # 缓冲区就会阻塞在 write 上——表现是"端点永远不出现"，一个跟被测语义毫无关系
+    # 的死锁（慢 runner 上更容易踩到）。写文件既能避免死锁，失败时还能把尾巴带进
+    # 断言消息里，不用再靠猜。
+    log_path = root / "crash_daemon.log"
+    log_file = log_path.open("wb")
     proc = subprocess.Popen(
         [sys.executable, str(script), str(root)],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=log_file,
     )
+    log_file.close()
     try:
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline and not ipc.probe(root, timeout=0.2):
+            if proc.poll() is not None:
+                break
             time.sleep(0.05)
-        assert ipc.probe(root), "崩溃测试用的 daemon 没起来"
+        assert ipc.probe(root), (
+            "崩溃测试用的 daemon 没起来"
+            f"（returncode={proc.poll()}）；日志尾巴：\n{_tail(log_path)}"
+        )
         client = _client(root)
         task_id = _make_task(client, ws)
         run_id = _start(client, task_id)
@@ -687,22 +708,24 @@ def test_host_stop_stops_daemon_too(root: Path) -> None:
             "--model",
             "scripted",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=env,
     )
     try:
-        deadline = time.monotonic() + 25
+        deadline = time.monotonic() + 60
         info = None
         while time.monotonic() < deadline:
             info = host.read_host_info(root)
             if info is not None and host._http_alive(info):
                 break
+            if proc.poll() is not None:
+                break
             time.sleep(0.05)
-        assert info is not None and host._http_alive(info), "Host 没能在 25s 内起来"
+        assert info is not None and host._http_alive(info), (
+            f"Host 没能在 60s 内起来（returncode={proc.poll()}）；"
+            f"daemon 日志尾巴：\n{_tail(root / 'logs' / 'daemon.log')}"
+        )
         assert ipc.probe(root, timeout=1.0), "Host 起来了但 Daemon 没起来"
 
         assert host.stop_host(root, timeout=20) == 0, "stop_host 没能让 Host 退出"
@@ -715,10 +738,6 @@ def test_host_stop_stops_daemon_too(root: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if proc.stderr is not None:
-            proc.stderr.close()
         try:
             daemon.request_shutdown(root, reason="test", timeout=5)
         except (ipc.IpcError, OSError):
