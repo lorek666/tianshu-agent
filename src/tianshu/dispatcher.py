@@ -63,8 +63,10 @@ from .leases import (
     GUARD_TIMEOUT_MS,
     ExecutionGuard,
     GuardTimeout,
+    LeaseConflict,
     LeaseLost,
     LeaseStore,
+    ReconcileFn,
     execution_guard,
 )
 from .permissions import (
@@ -771,6 +773,139 @@ class Dispatcher:
 
     # ---- 控制 Run（undo / recover 的写入口） ----
 
+    def _takeover_refusal_reason(self, previous_run: str, assessment: Any) -> str:
+        """接管被拒时给人看的说明：要说清"前任留下了什么没核实"。"""
+        bits: list[str] = []
+        if assessment.unresolved:
+            bits.append(f"无法核实的调用 {list(assessment.unresolved)}")
+        if assessment.unknown:
+            bits.append(f"磁盘状态既非写前也非写后 {list(assessment.unknown)}")
+        if assessment.corrupt:
+            bits.append("快照清单损坏")
+        if assessment.missing_manifest and assessment.pending_writes:
+            bits.append("有写入意图却没有写前清单")
+        detail = "；".join(bits) or "对账未通过"
+        return (
+            f"拒绝接管：前任 run {previous_run} 有未核实副作用（{detail}）。"
+            "请先用 tianshu recover 核对并解除阻断，再重试；"
+            "在核实之前该工作区不允许被新 owner 继续写"
+        )
+
+    def _make_takeover_reconciler(
+        self, *, run_id: str, task_id: str, refusals: list[dict[str, Any]]
+    ):
+        """构造租约接管的对账回调（issue #61.2）。
+
+        回调本身**只读**：调 `recovery.assess_run` 取前任状态。干净才在
+        `acquire` 的事务里写 `run.control` 审计（与租约同一个提交）；不干净
+        只把拒绝信息记进 `refusals` 并抛 `LeaseConflict`。拒绝的持久证据
+        （`recovery.blocked` + 权威根）由 `open_control_run` 在事务回滚**之后**
+        落——在回调里写事件会跟着 `acquire` 的事务一起回滚，日志会少一条。
+        """
+
+        def reconcile(previous_run_id: str, resource_path: str) -> None:
+            # 局部 import：dispatcher / recovery 有共同的底层依赖，模块级互相
+            # import 没必要，也容易在别人的重构里变成环。
+            from .recovery import assess_run
+
+            assessment = assess_run(self._data_root, previous_run_id, log=self._log)
+            if assessment.blocks_takeover:
+                reason = self._takeover_refusal_reason(previous_run_id, assessment)
+                refusals.append(
+                    {
+                        "previous_run": previous_run_id,
+                        "resource": resource_path,
+                        "assessment": assessment.to_payload(),
+                        "reason": reason,
+                        "by_run": run_id,
+                    }
+                )
+                raise LeaseConflict(reason)
+            # 干净：留审计。用现有 run.control（不新增事件类型）；
+            # `checked` 记录这次对账看到的状态，事后能回答"凭什么允许接管"。
+            self._log.append(
+                run_id,
+                "run.control",
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "action": "lease_takeover",
+                    "previous_run": previous_run_id,
+                    "checked": assessment.to_payload(),
+                },
+                task_id=task_id,
+                actor_kind="system",
+            )
+
+        return reconcile
+
+    def _record_takeover_refusal(self, refusal: dict[str, Any]) -> None:
+        """把"拒绝接管"落成可审计的阻断：日志事件 + 用户级权威根。
+
+        必须在租约 acquire 的事务回滚之后调用（事件写在同一个事务里会被回滚，
+        日志就丢了这条拒绝）。两步都做：只写日志的话换个数据根还是能绕过去，
+        只写权威根的话本数据根回放不出"为什么被挡"。
+        """
+        previous_run = refusal["previous_run"]
+        resource = str(Path(refusal["resource"]).resolve())
+        checked = refusal["assessment"]
+        call_ids = [*checked.get("unresolved", ()), *checked.get("unknown", ())]
+        reason = (
+            "接管被拒：前任 run 存在未核实副作用"
+            f"（previous_run={previous_run}），阻断后续写入"
+        )
+        self._log.append(
+            previous_run,
+            "recovery.blocked",
+            {
+                "workspace": resource,
+                "call_ids": call_ids,
+                "reason": reason,
+                "takeover_refused_by": refusal["by_run"],
+            },
+            actor_kind="system",
+        )
+        from . import authority
+        from .authority import AuthorityUnavailable, AuthorityWriteFailed
+
+        try:
+            authority.register_blocked(resource, run_id=previous_run, reason=reason)
+        except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
+            raise AuthorityWriteFailed(
+                f"接管已拒绝，但跨数据根阻断未生效：{resource}（{exc}）"
+            ) from exc
+
+    def takeover_reconcile(
+        self, *, run_id: str, task_id: str, refusals: list[dict[str, Any]]
+    ) -> ReconcileFn:
+        """租约接管的对账回调。
+
+        主循环（`AgentLoop.start` / `resume_run`）与撤销/恢复的控制 Run 共用这
+        一条实现：**所有**会抢 stale 租约的路径都走同一次对账，否则"完整 takeover"
+        只保护控制 Run，真正的写入路径照样能被接管。
+        """
+        return self._make_takeover_reconciler(
+            run_id=run_id, task_id=task_id, refusals=refusals
+        )
+
+    def record_takeover_refusals(self, refusals: list[dict[str, Any]]) -> None:
+        """把被拒的接管落成阻断证据（必须在租约事务回滚**之后**调用）。
+
+        只回答"证据登记是否完整"：全部成功就返回；有一条失败就抛
+        `AuthorityWriteFailed`，调用方保留原 `LeaseConflict` 并附上这条失败——
+        拒绝已经发生，不能因为写不进阻断证据就把"拒绝"改写成"允许"。
+        """
+        from .authority import AuthorityWriteFailed
+
+        problems: list[str] = []
+        for refusal in refusals:
+            try:
+                self._record_takeover_refusal(refusal)
+            except TianshuError as exc:
+                problems.append(str(exc))
+        if problems:
+            raise AuthorityWriteFailed("；".join(problems))
+
     def open_control_run(
         self, *, goal: str, workspaces: list[WorkspaceBinding | str | dict[str, Any]]
     ) -> ControlRun:
@@ -778,6 +913,9 @@ class Dispatcher:
 
         不借用历史 Run 的身份：那个 Run 早就结束了，它的 revision/epoch/claim
         都不再有效。撤销操作用它自己的身份，并把"撤销的是谁"写进目标里。
+
+        抢 stale 租约前**必须对账**（issue #61.2）：前任 run 有未核实副作用时
+        拒绝接管、登记阻断，而不是在同一棵目录树上接着写。
         """
         goal = (goal or "").strip()
         if not goal:
@@ -787,7 +925,23 @@ class Dispatcher:
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if not writable:
             raise DispatchError("控制 Run 需要至少一个可写绑定目录")
-        self._leases.acquire(writable, run.run_id)
+        refusals: list[dict[str, Any]] = []
+        try:
+            self._leases.acquire(
+                writable,
+                run.run_id,
+                reconcile=self._make_takeover_reconciler(
+                    run_id=run.run_id, task_id=task.task_id, refusals=refusals
+                ),
+            )
+        except LeaseConflict as exc:
+            try:
+                self.record_takeover_refusals(refusals)
+            except TianshuError as record_exc:
+                raise LeaseConflict(
+                    f"{exc}；且拒绝接管的阻断证据登记不完整：{record_exc}"
+                ) from exc
+            raise
         job = self._claims.enqueue(run.run_id)
         claim = self._claims.claim(job.job_id)
         run = self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim,

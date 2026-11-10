@@ -75,7 +75,7 @@ from .jobs import (
     JobUnavailable,
     renew_claim,
 )
-from .leases import DEFAULT_TTL_MS, LeaseStore, ProcessIdentity
+from .leases import DEFAULT_TTL_MS, LeaseConflict, LeaseStore, ProcessIdentity
 from .model import Model, ModelError, ModelResponse, ToolCall, identity_of
 from .permissions import ApprovalStore, GrantStore, PolicyEngine
 from .pricing import cost_record
@@ -408,6 +408,38 @@ class AgentLoop:
 
     # ---------------------------------------------------------------- 启动
 
+    def _acquire_leases(
+        self, resources: list[Any], run_id: str, task_id: str
+    ) -> None:
+        """获取租约；抢 stale 租约之前**先对账**（issue #61.2）。
+
+        主循环是"接管"最常见的入口：一个崩溃 Run 留下的 stale 租约，会被新 Run
+        或 `resume_run` 抢走。没有这一步，接管保护只覆盖撤销/恢复的控制 Run，
+        真正的写入路径照样能在"有没有写、写到哪一步都没核实"的目录上继续写。
+
+        对账本身只读（`recovery.assess_run`）；拒绝时把凭据落成
+        `recovery.blocked` + 用户级权威根阻断，然后原样把 `LeaseConflict` 抛给
+        调用方——拒绝就是拒绝，不降级成"先写再说"。
+        """
+        refusals: list[dict[str, Any]] = []
+        try:
+            self._leases.acquire(
+                resources,
+                run_id,
+                reconcile=self._dispatcher.takeover_reconcile(
+                    run_id=run_id, task_id=task_id, refusals=refusals
+                ),
+            )
+        except LeaseConflict as exc:
+            if refusals:
+                try:
+                    self._dispatcher.record_takeover_refusals(refusals)
+                except TianshuError as record_exc:
+                    raise LeaseConflict(
+                        f"{exc}；且拒绝接管的阻断证据登记不完整：{record_exc}"
+                    ) from exc
+            raise
+
     def start(
         self,
         task_id: str,
@@ -429,7 +461,7 @@ class AgentLoop:
         run = self._tasks.start_run(task.task_id, run_id=run_id, payload=payload)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if writable:
-            self._leases.acquire(writable, run.run_id)
+            self._acquire_leases(writable, run.run_id, task.task_id)
         job = self._claims.enqueue(run.run_id)
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
@@ -484,7 +516,7 @@ class AgentLoop:
             held = set(self._leases.live_paths(run_id))
             missing = [r for r in writable if str(Path(str(r)).resolve()) not in held]
             if missing:
-                self._leases.acquire(missing, run_id)
+                self._acquire_leases(missing, run_id, task.task_id)
         self._tasks.transition(
             run_id, RUN_RUNNING, claim=claim, reason="resumed"
         )

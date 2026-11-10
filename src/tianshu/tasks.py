@@ -1518,6 +1518,13 @@ class TaskStore:
                 r = runs.get(p["run_id"])
                 if r is None:
                     continue
+                # `run.control` 不只承载"控制请求"：租约接管的审计
+                # （action=lease_takeover）也用它，但那个动作不改 Run 的控制意图。
+                # 无条件 `control_requested=action` 会把审计动作写进投影，而
+                # run.json 的 control_requested enum 只认 pause/cancel——重建一次
+                # 就写出非法状态。只认真正的控制请求。
+                if p.get("action") not in CONTROL_REQUESTS:
+                    continue
                 r.update(control_requested=p["action"], updated_at=ev.ts)
             elif ev.type == RUN_EFFECT:
                 r = runs.get(p["run_id"])
