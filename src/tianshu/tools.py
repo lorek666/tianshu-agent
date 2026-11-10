@@ -759,7 +759,13 @@ SPECS: dict[str, ToolSpec] = {
         ),
         input_schema={
             "type": "object",
-            "properties": {"query": {"type": "string"}},
+            "properties": {
+                "query": {"type": "string"},
+                # F10 §8：模型可以要求**更少**，不能要求更多。执行侧还会把
+                # 它夹到 MAX_RECALL_ITEMS 之内，schema 只是把这条能力显式
+                # 暴露出来——不写进 schema 就等于模型永远拿满 5 条。
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
             "required": ["query"],
             "additionalProperties": False,
         },

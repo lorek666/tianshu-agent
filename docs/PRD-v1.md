@@ -397,7 +397,7 @@ ToolDefinition {
 - **`input_schema` 原样**（`additionalProperties: false`）：
 
 ```text
-memory.search   { query: string }                                  required: query
+memory.search   { query: string, limit?: integer (1..5) }           required: query
 memory.get      { memory_id: string }                              required: memory_id
 memory.propose  { kind: string, content: string,
                   source_refs?: string[], evidence?: object[],
