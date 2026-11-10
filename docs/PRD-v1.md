@@ -137,13 +137,15 @@
 | `Approval` | 审批 | `id, execution_id, digest, state, decided_by` |
 | `Receipt` | 副作用凭据 | `id, execution_id, before_ref, after_ref, evidence[]` |
 | `Artifact` | 产物（**v2 独立表**，见下方说明） | `id, sha256, mime, bytes, kind, run_id` |
-| `Memory` | 长期记忆（**v1.1**，见 §7 的 F10；字段细化见 [F10-memory-design.md](F10-memory-design.md) §5） | `memory_id, revision, scope, scope_id, kind, content_ref, source_refs[], origin, status, created_at, expires_at?, supersedes?` |
+| `Memory` | 长期记忆（**v1.1**，F10；**投影，不是独立事实源**；字段细化见 [F10-memory-design.md](F10-memory-design.md) §5） | `memory_id, revision, scope, scope_id, kind, content_ref, source_refs[], evidence[], proof_count, origin, status, consolidated_at?, created_at, expires_at?, supersedes?` |
 | `Event` | 事件日志 | `seq, run_id, type, actor, payload_ref, payload_hash, parent_seq` |
 | `Checkpoint` | 恢复指针（**v2**，见下方说明） | `id, run_id, seq, state_digest, pending_intents[]` |
 
 **三行 `v1 不建表` 怎么读**：`Agent` / `AgentSession` / `Conversation` 记录的是概念模型，不是待建的表——`Agent` 的职责由 `Task` 承担（Task 才是用户可见单位），`AgentSession` / `Conversation` 的职责由 `Run` + 运行游标（`RunCursor`）承担。
 
 **`Artifact` 与 `Checkpoint` 属 v2**：v1 的内容寻址只有两处——事件 payload 超过 256 KiB 落盘（`EventLog.blob_dir`）、写前副本（`SnapshotStore.blob_dir`）；**没有**独立产物表、没有截图存储，工具输出现在是截断并打 `truncated` 标记，超 8 KiB 落盘仍是 §7 F5 的要求、尚未实现。`Checkpoint` 在 v1 的等价物是「事件日志 + 游标」（`run.cursor` 事件 + `RunCursor`），所以 v1 不需要独立的 checkpoint 表。
+
+**`Memory` 也不是第五张事实表**：它由事件日志（`tool.intent` / `tool.result` + 审批事件）**确定性投影**出来，删掉投影可重建（[F10-memory-design.md](F10-memory-design.md) §3.1）。三个字段要读对：`evidence[]` 是「支撑这条信念的源记忆 + 原文引文」，`proof_count` 是证据条数（L2 必填，机械可算、可核对），`consolidated_at` 是上次蒸馏 / 合并时间（freshness 判据：作用域内有新记忆尚未合并时，该层视为陈旧）。`source_refs[]` 是「每条记忆必须能指回来源」的锚点。字段语义见 [F10-memory-design.md](F10-memory-design.md) §5，**实现状态以该文 §13 的契约增量清单为准**——别把这张表的字段当成已经写进库的列。
 
 ### 4.2 Task 与 Run 必须分离
 
@@ -375,6 +377,42 @@ ToolDefinition {
 - `MCP` 的 `idempotentHint / readOnlyHint` 只是提示，不参与授权或幂等
 - JSON-RPC 协议错误 与 `isError=true` 执行错误分开映射
 
+#### 5.2.1 记忆工具（F10，v1.1）
+
+记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。五个工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型。
+
+| tool_id | version | `side_effect_level` | `exec_model` | C4 动作 | 审批 | 走哪条执行路径 |
+|---|---|---|---|---|---|---|
+| `memory.search` | `1.0` | `pure` | E1 | `read` | 不需要 | 主循环只读分支，**不经派发**（`loop.AgentLoop._exec_memory_read`） |
+| `memory.get` | `1.0` | `pure` | E1 | `read` | 不需要 | 同上 |
+| `memory.propose` | `1.0` | `non_idempotent` | E3 | `create` | 不需要（候选是惰性草稿） | dispatcher |
+| `memory.confirm` | `1.0` | `non_idempotent` | E3 | `overwrite` | 需要（`origin=user_explicit` 除外，见下方注） | dispatcher |
+| `memory.forget` | `1.0` | `non_idempotent` | E3 | `delete` | 需要（等同删除） | dispatcher |
+
+> **注**：`origin=user_explicit` 的免审批确认目前**生产侧没有产生入口**——`memory_exec.MemoryExecutor._propose` 固定写 `origin="inferred"`（防模型自称"用户明示"绕过审批）。策略分支本身有测试钉住：`tests/test_memory_dispatch.py::test_user_explicit_confirm_needs_no_approval`（用播种事件制造的 `user_explicit`）。别把这一行读成"用户说一句记住就自动激活"。
+
+- `side_effect_level` / `exec_model` / `action` 是 `ToolSpec` 的字段（`tools.ToolSpec`）；`version` 进 `ActionRequest.tool_version`、`input_schema` 的规范化摘要进 `schema_hash`（`dispatcher.build_request`）。两者都被审批摘要绑住（§5.4）：**schema 变化即新工具**（红线 8），不自动升级。
+- 映射到 C4 动作的口径：`propose`→`create`、`confirm`→`overwrite`、`forget`→`delete`（`SPECS` 里的 `action=`）。所以 `confirm` / `forget` 天然落到 `permissions.PolicyEngine.classify` 的 overwrite / delete 分支，与"覆盖、删除需审批"（红线 6）同一口径；`propose` 落在 `AUTO_ACTIONS`（`permissions.AUTO_ACTIONS`）。
+- **五个 `ToolSpec` 一律没有 `path_arg`**（`SPECS` 记忆段前的注释写明理由）。记忆没有文件路径，主循环不能拿它去 `Workspace.resolve()` 一个 URI；目标由派发请求的 `resources` 携带，形状是 `memory://<scope>/<scope_id>`（[F10-memory-design.md](F10-memory-design.md) §6.1）。"给记忆编一个假路径"是被明确拒绝的形状——那会让删掉投影等于删掉用户文件。
+- **`input_schema` 原样**（`additionalProperties: false`）：
+
+```text
+memory.search   { query: string, limit?: integer (1..5) }           required: query
+memory.get      { memory_id: string }                              required: memory_id
+memory.propose  { kind: string, content: string,
+                  source_refs?: string[], evidence?: object[],
+                  expires_at?: integer }                           required: kind, content
+memory.confirm  { memory_id: string, revision: integer }            required: memory_id, revision
+memory.forget   { memory_id: string, revision: integer,
+                  status?: string }                                 required: memory_id, revision
+```
+
+`kind` / `status` 的取值域在这些 schema 里是 `string`，不是 `enum`——封闭集在存储侧校验（`memory.MEMORY_KINDS` / `MEMORY_STATUSES` / `MEMORY_ORIGINS`；校验点 `memory.MemoryProjection._apply_propose`）。写错的值会让 `tool.result` 落一条失败，而不是被静默接受。
+
+- **首版不新增事件族。** 记忆生命周期由 `tool.intent` / `tool.result` + 审批事件承载，投影据此重建：`memory.MemoryProjection.apply_event()` 只认 `tool.result`、且 `tool_id ∈ {memory.propose, memory.confirm, memory.forget}`、`status == "succeeded"` 的事件；`memory.search` / `memory.get` 的 result 即便落库也被忽略（读不改变投影）。`memory.MemoryProjection.rebuild()` 清空投影后按 seq 重放同一批事件，**重放也走 `apply_event()`**，所以实时写入与重建不可能走岔。新增 `memory.*` 事件会与 `tool.intent`/`tool.result` 形成同一因果的第二份指针（§5.3.3 已为 `parent_seq` 立过这条规矩）。
+- 读路径不经 dispatcher：`memory.search` / `memory.get` 在 `_exec_read` 里于**任何目录解析之前**分流（`loop.AgentLoop._exec_read`），结果记 `none_applied`（纯读，与文件只读工具同口径），零目录任务也能检索。写路径经 dispatcher，因此自动获得 intent/result 与完整审计。
+- **逐项落地状态**（哪一条已接线、哪一条还只是契约）不在本节重复，见 [F10-memory-design.md](F10-memory-design.md) §13。
+
 ### 5.3 C3 Event
 
 ```
@@ -571,6 +609,12 @@ reject`）之后，同一 Run 内**同一动作内容**的派发请求不再发�
 **这些是规则编号，不是事件类型。** 不要登记进 `events.EVENT_TYPES`——事件类型
 注册表只回答"代码会写哪些事件"，混进规则编号等于让它替不存在的类型作证。
 
+**记忆（F10）自成一"记忆"组**：资源种类由 `resources` 里的 scheme 决定
+（裸绝对路径 = `file`，`memory://<scope>/<scope_id>` = `memory`，其他 `xxx://`
+fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.md](F10-memory-design.md)
+§6.1 与 §7。`c4.memory_scope` 是**判定结果**（放行），不是拒绝——所以它在
+"判定结果（非拒绝）"那一组，不在"记忆"组。
+
 | rule_id | 分组 | 含义 | 用户该怎么做 |
 |---|---|---|---|
 | `dispatch.claim_mismatch` | 身份失配 | 请求携带的 job claim 与库里记录的不一致（别人的或已过期）。 | 重新 `run resume`（或让 worker 重新认领）；不要手改库里的 claim。 |
@@ -603,12 +647,18 @@ reject`）之后，同一 Run 内**同一动作内容**的派发请求不再发�
 | `c4.exec_not_configured` | 执行（exec） | 任务没有配置执行策略：`run_command` 默认全拒（不是默认白名单）。 | 确实需要执行命令时，用 `task create --allow-exec-cmd` 显式开启后重新发起；不要给"看起来能用"的默认白名单。 |
 | `c4.exec_policy_denied` | 执行（exec） | exec 策略拒绝了这次调用：argv 不在白名单、cwd 越界、或 pty 未被许可。 | 按提示缩小命令或目录；确实需要就在任务策略里显式放开对应项，并重新审批。 |
 | `c4.exec_unsupported` | 执行（exec） | 后端在本平台做不到请求的执行方式（例如 Windows 上请求 PTY）。 | 改策略不会通过：换一种执行方式，或换平台。 |
+| `c4.memory_kind_unsupported` | 记忆 | 记忆种类不在封闭集内（`preference` / `fact` / `decision` / `procedure`）。 | 改用受支持的种类；仍是这个提示说明工具 schema 与存储侧口径不一致，报 bug。 |
+| `c4.memory_scope_denied` | 记忆 | 记忆作用域不在本任务授权范围内（workspace 不是本任务某个绑定的 canonical 根，或 task 不是本任务）。 | 到该作用域所属的任务里重新发起；不要试图跨 workspace / task 读私有记忆。 |
+| `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
+| `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
+| `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
 | `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
 | `dispatch.workspace_blocked` | 工作区阻断 | 工作区被阻断检查拦下（未知副作用未澄清）。 | 先处理阻断原因（`recover` 核实未定的副作用），再重试。 |
 | `c4.auto` | 判定结果（非拒绝） | 判定结果：目录内读/新建，自动放行。 | 无需操作：已自动放行。 |
 | `c4.delete` | 判定结果（非拒绝） | 判定结果：删除，需审批。 | 需要人工确认：批准删除。 |
+| `c4.memory_scope` | 判定结果（非拒绝） | 判定结果：记忆作用域在授权范围内（`user` 恒可访问；`workspace` 须是本任务绑定的 canonical 根；`task` 须等于本任务 id），读取与新建候选自动放行。 | 无需操作：读 / 写候选已放行；`memory.confirm` / `memory.forget` 仍按覆盖 / 删除审批。 |
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
 | `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |

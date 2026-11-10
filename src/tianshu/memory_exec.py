@@ -1,0 +1,573 @@
+"""受信任的记忆执行器（F10）。
+
+这个模块和 `tools.FileExecutor` 是同一层的两个执行器：
+
+- 文件执行器负责"打开文件、再核一遍租约/审批"；
+- 记忆执行器负责"把投影更新交给 Dispatcher 同事务提交、再核一遍身份"。
+
+**它不是另一条授权路径。** 拿到 `AdmittedCall` 之后，它自己回权威库逐条核验：
+claim、Run 的 revision/epoch、派发记录 state=intent、grant 已消费且未过期、审批
+`action_digest` 匹配且 state=consumed。唯一不同的是**资源和前置条件**：
+
+- 记忆不落在目录里，所以没有目录租约可核。作用域授权（user / workspace / task）
+  由 `memory_scope_allowed()` 独立核验，不能因为"不是文件"就跳过；
+- 记忆的写前状态是 `(status, revision)`，不是文件哈希。必须由执行侧自己从
+  投影里读出来，和请求/审批绑定过的 preconditions 比较。
+
+`MemoryExecutor` **不改投影**。生命周期由 `Dispatcher._commit_result()` 在写
+`tool.result` 的同一个 SQLite 事务里调用 `MemoryProjection.apply_event()`；
+执行器只返回 `ToolResult.output`（含投影需要的字段）。这样崩溃时要么事件和
+投影一起存在，要么一起不存在。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import uuid
+from typing import TYPE_CHECKING, Any
+
+from .errors import RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
+from .events import canonical_bytes, sha256_hex
+from .jobs import JobClaim
+from .permissions import (
+    ACTION_OVERWRITE,
+    APPROVAL_ACTIONS,
+    ActionRequest,
+    GrantStore,
+    supported_memory_kinds,
+)
+from .resources import (
+    MEMORY_SCOPES,
+    MemoryScope,
+    ResourceError,
+    parse_memory_uri,
+)
+from .tasks import RUN_RUNNING, ExecutionPermit, TaskStore
+from .tools import (
+    SPECS,
+    AdmittedCall,
+    ToolResult,
+    check_request_preconditions,
+    validate_args,
+)
+from .workspace import WorkspaceBinding, overlap_key
+
+if TYPE_CHECKING:  # pragma: no cover - 只要类型，不把 memory.py 拖成硬依赖
+    from .memory import MemoryProjection
+
+MEMORY_TOOL_IDS = frozenset({"memory.propose", "memory.confirm", "memory.forget"})
+MEMORY_READ_TOOL_IDS = frozenset({"memory.search", "memory.get"})
+MEMORY_ALL_TOOL_IDS = MEMORY_TOOL_IDS | MEMORY_READ_TOOL_IDS
+
+#: 写前/写后状态的稳定形状。凭据核对与测试都依赖它，不允许临时改字符串。
+MEMORY_STATE_PREFIX = "memory:"
+
+#: 从记忆对象里读取（兼容真实 Memory 与测试投影的最小接口）。
+_USER_EXPLICIT = "user_explicit"
+
+
+class MemoryDispatchRefused(ToolNotAllowed):
+    """执行守卫内的记忆拒绝，带一个已登记的 rule_id。
+
+    `FileExecutor` 的拒绝靠异常类型映射到规则编号；记忆的拒绝原因更细
+    （不存在 / revision 过期 / 资源不匹配），所以把 rule_id 放在异常上，
+    由 `Dispatcher._abort_dispatch()` 直接采用并校验。它仍然是"一个字节都
+    没改"的确定性拒绝。
+    """
+
+    def __init__(self, reason: str, rule_id: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.rule_id = rule_id
+
+
+def memory_state(memory_id: str, status: str, revision: int) -> str:
+    return f"{MEMORY_STATE_PREFIX}{memory_id}:{status}:rev{revision}"
+
+
+def memory_scope_allowed(
+    scope: MemoryScope,
+    *,
+    task_id: str,
+    bindings: list[WorkspaceBinding],
+) -> tuple[bool, str]:
+    """判断一个记忆作用域是否在本任务授权范围内。
+
+    与 `PolicyEngine._classify_memory()` 使用同一套规则，但这段代码在执行侧
+    再跑一遍：策略判定不是授权依据（红线 4），执行器不能因为"prepare 说可以"
+    就信任票据。
+
+    - user：D2 单用户，恒可访问；
+    - workspace：scope_id 必须**精确等于**某个绑定的 canonical 根；不是祖先、
+      不是字符串前缀、不是"解析后落在里面"；
+    - task：scope_id 必须等于本任务 id。
+    """
+    if not isinstance(scope, MemoryScope):
+        return False, f"作用域类型不合法：{type(scope).__name__}"
+    if scope.scope not in MEMORY_SCOPES:
+        return False, f"未知记忆作用域：{scope.scope!r}"
+    if scope.scope == "user":
+        return True, ""
+    if scope.scope == "workspace":
+        # 精确根 + 平台规范化（大小写/Unicode）；不接受"落在子树里"。
+        roots = {overlap_key(str(WorkspaceBinding.of(b).root_path)) for b in bindings}
+        if overlap_key(scope.scope_id) not in roots:
+            return False, f"workspace 作用域不是本任务绑定的 canonical 根：{scope.scope_id}"
+        return True, ""
+    if scope.scope == "task":
+        if scope.scope_id != task_id:
+            return False, (
+                f"task 作用域不属于本任务：{scope.scope_id!r} ≠ {task_id!r}"
+            )
+        return True, ""
+    return False, f"未知记忆作用域：{scope.scope!r}"  # pragma: no cover
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class MemoryExecutor:
+    """记忆写入的唯一执行器。
+
+    它**不接受**调用方说"已经批准了"：票据可以伪造，库里的记录不会。
+    """
+
+    def __init__(
+        self,
+        *,
+        tasks: TaskStore,
+        approvals: object,
+        grants: GrantStore,
+        claims: object,
+        projection: MemoryProjection,
+        dispatch_lookup,
+        dispatch_mark,
+        clock,
+        log: object | None = None,
+    ) -> None:
+        self._tasks = tasks
+        self._approvals = approvals
+        self._grants = grants
+        self._claims = claims
+        self._projection = projection
+        self._lookup = dispatch_lookup
+        self._mark = dispatch_mark
+        self._clock = clock
+        self._log = log
+
+    @property
+    def backend_name(self) -> str:
+        """进凭据的 backend。记忆没有磁盘后端，明确写 memory。"""
+        return "memory"
+
+    def _observe(self, memory_id: str, scope: MemoryScope) -> tuple[str, int] | None:
+        """从权威投影读 (status, revision)。
+
+        投影的输入校验异常（畸形 memory_id 等）是**确定拒绝**，不是"效果未知"：
+        这时还没有任何写入，记成 unknown 会让可证明的结论降级成猜测。
+        """
+        try:
+            return self._projection.observe(memory_id, allowed=(scope,))
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆观察失败：{exc}", "dispatch.memory_not_found"
+            ) from exc
+
+    # ---- 独立核验 ----
+
+    def _verify(self, admitted: AdmittedCall, permit: ExecutionPermit | None) -> None:
+        if not isinstance(admitted, AdmittedCall):
+            raise ToolNotAllowed(
+                "记忆执行器只接受 AdmittedCall；直接执行参数是被禁止的"
+            )
+        if not isinstance(permit, ExecutionPermit):
+            raise ToolNotAllowed(
+                "记忆执行器必须在 execution_guard 内调用"
+                "（缺少 ExecutionPermit）"
+            )
+
+        req = admitted.request
+        if not isinstance(req, ActionRequest) or not isinstance(
+            admitted.claim, JobClaim
+        ):
+            raise ToolNotAllowed("票据类型不合法")
+        if req.digest() != admitted.request_digest:
+            raise ToolNotAllowed("请求摘要与票据不一致（票据被改过）")
+        if admitted.tool_id != req.tool_id or admitted.action != req.action:
+            raise ToolNotAllowed("票据的工具/动作与请求不一致")
+        if tuple(admitted.resources) != tuple(req.resources):
+            raise MemoryDispatchRefused(
+                "票据资源与请求不一致", "dispatch.memory_resource_mismatch"
+            )
+        if sha256_hex(canonical_bytes(admitted.args)) != req.args_hash:
+            raise ToolNotAllowed("票据参数与请求 args_hash 不一致（参数被改过）")
+        if admitted.claim.owner_instance_id != req.owner_instance_id:
+            raise ToolNotAllowed("票据的 owner 与请求不符")
+        if permit.run_id != req.run_id or permit.task_id != req.task_id:
+            raise ToolNotAllowed("执行许可属于另一个 Run")
+        if (permit.goal_revision, permit.lease_epoch) != (
+            req.goal_revision,
+            req.lease_epoch,
+        ):
+            raise RunFenced(
+                f"执行许可的 revision/epoch 与请求不符：许可 "
+                f"{permit.goal_revision}/{permit.lease_epoch}，请求 "
+                f"{req.goal_revision}/{req.lease_epoch}"
+            )
+
+        # 1. claim 仍是本实例的、epoch 没变
+        self._claims.assert_claim(admitted.claim)  # type: ignore[attr-defined]
+        if admitted.claim.claim_epoch != req.claim_epoch:
+            raise ToolNotAllowed("票据的 claim_epoch 与请求不符")
+
+        # 2. Run 没被 fence
+        run = self._tasks.assert_current(req.run_id)
+        if (run.goal_revision, run.lease_epoch) != (
+            req.goal_revision,
+            req.lease_epoch,
+        ):
+            raise RunFenced(
+                f"Run 的 revision/epoch 已改变：当前 {run.goal_revision}/"
+                f"{run.lease_epoch}，请求 {req.goal_revision}/{req.lease_epoch}"
+            )
+        if run.state != RUN_RUNNING:
+            raise RunFenced(
+                f"run 不在执行状态，拒绝开始写入：{req.run_id}（state={run.state}）"
+            )
+
+        # 3. 这次调用真的被派发过、且还停在 intent
+        row = self._lookup(req.run_id, req.call_id)
+        if row is None:
+            raise ToolNotAllowed(f"没有派发记录，拒绝执行：call_id={req.call_id}")
+        if row.state != "intent":
+            raise ToolNotAllowed(f"派发记录状态不是 intent：{row.state}")
+        if row.request_digest != admitted.request_digest:
+            raise ToolNotAllowed("派发记录的摘要与票据不符")
+        if row.tool_id != req.tool_id or row.action != req.action:
+            raise ToolNotAllowed("派发记录的工具/动作与请求不符")
+        if row.grant_id != admitted.grant_id:
+            raise ToolNotAllowed("派发记录的 grant 与票据不符")
+        if row.claim_epoch != admitted.claim.claim_epoch:
+            raise ToolNotAllowed("派发记录的 claim_epoch 与票据不符")
+        if row.owner_instance_id != admitted.claim.owner_instance_id:
+            raise ToolNotAllowed("派发记录的 owner 与票据不符")
+
+        # 4. grant：一次性、未过期、绑定同一个请求摘要
+        grant = self._grants.get(admitted.grant_id)
+        if grant is None:
+            raise ToolNotAllowed("执行许可不存在")
+        if grant.request_digest != admitted.request_digest:
+            raise ToolNotAllowed("执行许可绑定的是另一个请求摘要")
+        if grant.remaining_uses != 0:
+            raise ToolNotAllowed("执行许可尚未被消费——派发不完整")
+        if grant.expires_at <= self._clock():
+            raise ToolNotAllowed("执行许可已过期")
+
+        # 5. 资源：必须是 memory://，且工具与资源种类匹配
+        if len(admitted.resources) != 1:
+            raise MemoryDispatchRefused(
+                "记忆动作一次只能作用于一个作用域",
+                "dispatch.memory_resource_mismatch",
+            )
+        try:
+            target_scope = parse_memory_uri(admitted.resources[0])
+        except ResourceError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆资源引用不合法：{exc}", "dispatch.memory_resource_mismatch"
+            ) from exc
+        if admitted.tool_id not in MEMORY_TOOL_IDS:
+            raise MemoryDispatchRefused(
+                f"工具不是记忆写入工具：{admitted.tool_id}",
+                "dispatch.memory_resource_mismatch",
+            )
+        spec = SPECS.get(admitted.tool_id)
+        if spec is None or req.action != spec.action:
+            # 工具与 C4 动作必须一一对应：`memory.confirm` 不能被伪装成
+            # `create` 绕过覆盖审批。这是执行侧自己的核验，不依赖 _typecheck。
+            raise MemoryDispatchRefused(
+                f"工具 {admitted.tool_id} 与动作 {req.action} 不匹配",
+                "dispatch.memory_resource_mismatch",
+            )
+        if admitted.target != target_scope.to_uri():
+            raise MemoryDispatchRefused(
+                "票据目标与记忆作用域不一致",
+                "dispatch.memory_resource_mismatch",
+            )
+
+        task = self._tasks.get_task(req.task_id)
+        if task is None:
+            raise ToolNotAllowed(f"task 不存在：{req.task_id}")
+        allowed, reason = memory_scope_allowed(
+            target_scope, task_id=req.task_id, bindings=list(task.workspaces or [])
+        )
+        if not allowed:
+            raise MemoryDispatchRefused(reason, "c4.memory_scope_denied")
+
+        # 6. 审批：覆盖/删除必须有，且必须已"被消费一次"。
+        #    `origin=user_explicit` 的 confirm 是唯一例外：用户本人刚说的话
+        #    就是授权（F10 §7）。执行侧自己从投影里读 origin，不信任模型参数。
+        exempt = (
+            req.action == ACTION_OVERWRITE
+            and self._origin_of(admitted, target_scope) == _USER_EXPLICIT
+        )
+        if req.action in APPROVAL_ACTIONS and not exempt and not admitted.approval_id:
+            raise ToolNotAllowed(f"{req.action} 缺少审批绑定")
+        if admitted.approval_id:
+            appr = self._approvals.get(admitted.approval_id)  # type: ignore[attr-defined]
+            if appr is None:
+                raise ToolNotAllowed("审批记录不存在")
+            if appr.run_id != req.run_id:
+                raise MemoryDispatchRefused(
+                    "审批属于另一个 Run", "c4.approval_run_mismatch"
+                )
+            if appr.action_digest:
+                if appr.action_digest != req.action_digest():
+                    raise ToolNotAllowed("审批绑定的动作与本次请求不符")
+            elif appr.request_digest != admitted.request_digest:
+                raise ToolNotAllowed("审批绑定的是另一个请求摘要")
+            if appr.state != "consumed":
+                raise ToolNotAllowed(f"审批未消费或已被撤销：{appr.state}")
+
+        # 7. 记忆特有：resource 与参数必须指向同一条记忆；status/revision 必须
+        #    与请求声明一致。
+        args = admitted.args
+        tool_id = admitted.tool_id
+        if tool_id in ("memory.confirm", "memory.forget"):
+            memory_id = args.get("memory_id")
+            if not isinstance(memory_id, str) or not memory_id:
+                raise ToolArgumentError("memory_id 必须是非空字符串")
+            declared_id = (req.preconditions or {}).get("memory_id")
+            if declared_id is not None and declared_id != memory_id:
+                raise MemoryDispatchRefused(
+                    "请求声明的 memory_id 与参数不一致",
+                    "dispatch.memory_resource_mismatch",
+                )
+            observed = self._observe(memory_id, target_scope)
+            if observed is None:
+                raise MemoryDispatchRefused(
+                    f"记忆不存在或不属于当前作用域：{memory_id}",
+                    "dispatch.memory_not_found",
+                )
+            ok, why = check_request_preconditions(
+                req.action,
+                target_scope.to_uri(),
+                req.preconditions or {},
+                memory_observed=observed,
+            )
+            if not ok:
+                raise MemoryDispatchRefused(
+                    why, "dispatch.memory_stale_revision"
+                )
+        elif tool_id == "memory.propose":
+            kind = args.get("kind")
+            if not isinstance(kind, str) or kind not in supported_memory_kinds():
+                # 执行侧独立复核 kind 封闭集；不依赖 prepare 的判定。
+                raise MemoryDispatchRefused(
+                    f"不支持的记忆种类：{kind!r}", "c4.memory_kind_unsupported"
+                )
+
+    def _origin_of(self, admitted: AdmittedCall, scope: MemoryScope) -> str:
+        if admitted.tool_id != "memory.confirm":
+            return ""
+        memory_id = admitted.args.get("memory_id")
+        if not isinstance(memory_id, str) or not memory_id:
+            return ""
+        try:
+            memory = self._projection.get(memory_id, allowed=(scope,))
+        except TianshuError:
+            # 观察失败时**不能**推断"用户明示"——那会凭空免掉审批。
+            return ""
+        if memory is None:
+            return ""
+        return str(getattr(memory, "origin", ""))
+
+    # ---- 执行 ----
+
+    def execute(
+        self, admitted: AdmittedCall, permit: ExecutionPermit | None
+    ) -> ToolResult:
+        self._verify(admitted, permit)
+
+        spec = SPECS[admitted.tool_id]
+        validate_args(admitted.args, spec.input_schema)
+        scope = parse_memory_uri(admitted.target)
+
+        if admitted.tool_id == "memory.propose":
+            return self._propose(admitted, scope)
+        if admitted.tool_id == "memory.confirm":
+            return self._transition(admitted, scope, to_status="active")
+        if admitted.tool_id == "memory.forget":
+            return self._transition(admitted, scope, to_status="forgotten")
+        raise MemoryDispatchRefused(
+            f"未知记忆工具：{admitted.tool_id}",
+            "dispatch.memory_resource_mismatch",
+        )
+
+    def _propose(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        args = admitted.args
+        kind = args["kind"]
+        content = args["content"]
+        source_refs = _string_list(args.get("source_refs"), "source_refs")
+        evidence = _object_list(args.get("evidence"), "evidence")
+        expires_at = args.get("expires_at")
+        if expires_at is not None and (
+            not isinstance(expires_at, int) or isinstance(expires_at, bool)
+        ):
+            raise ToolArgumentError("expires_at 必须是整数毫秒时间戳")
+
+        try:
+            redacted, blocked = self._projection.redact_or_block(content)
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆写入闸门检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if blocked:
+            # 写入闸门是 fail-closed，不把未脱敏内容送进索引，也不产生投影。
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": "记忆内容触发 PII/密钥写入闸门，候选未写入",
+                    "path": scope.to_uri(),
+                },
+            )
+
+        try:
+            existing = self._projection.find_duplicate(
+                scope=scope, kind=kind, content=redacted
+            )
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆去重检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if existing is not None:
+            raise MemoryDispatchRefused(
+                "目标记忆已存在（重复候选不应再次入索引）",
+                "c4.create_over_existing",
+            )
+
+        # 到这里为止都是"还没写"：上面任何拒绝都应让派发记录停在 intent，
+        # 由 `_abort_dispatch()` 确定地记成 rejected。真正写入前才标记执行中。
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        content_ref = self._projection.put_content(redacted)
+        if not isinstance(content_ref, str) or not content_ref:
+            raise TianshuError("记忆投影没有返回 content_ref")
+        memory_id = f"mem_{uuid.uuid4().hex[:12]}"
+        now = self._clock()
+        after = memory_state(memory_id, "candidate", 1)
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "memory_id": memory_id,
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": kind,
+                "content_ref": content_ref,
+                "source_refs": source_refs,
+                "evidence": evidence,
+                "proof_count": len(evidence),
+                # 模型不能自己声明 user_explicit（否则一句"记住"就能绕过
+                # confirm 审批）。候选来源固定 inferred；显式用户来源必须由
+                # 可信调用方在另一个入口产生，不在本工具参数里。
+                "origin": "inferred",
+                "status": "candidate",
+                "created_at": now,
+                "expires_at": expires_at,
+                "deduped": False,
+                "before_state": "absent",
+                "after_state": after,
+                "content_bytes": len(redacted.encode("utf-8")),
+                "content_sha256": _sha(redacted.encode("utf-8")),
+                "redacted": redacted != content,
+            },
+        )
+
+    def _transition(
+        self, admitted: AdmittedCall, scope: MemoryScope, *, to_status: str
+    ) -> ToolResult:
+        args = admitted.args
+        memory_id = args["memory_id"]
+        observed = self._observe(memory_id, scope)
+        if observed is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        before_status, before_revision = observed
+        ok, why = check_request_preconditions(
+            admitted.request.action,
+            scope.to_uri(),
+            admitted.request.preconditions or {},
+            memory_observed=observed,
+        )
+        if not ok:
+            raise MemoryDispatchRefused(why, "dispatch.memory_stale_revision")
+
+        if before_status not in ("candidate", "active"):
+            raise MemoryDispatchRefused(
+                f"记忆当前状态不允许迁移：{before_status!r}",
+                "dispatch.memory_stale_revision",
+            )
+        if to_status == "active" and before_status != "candidate":
+            raise MemoryDispatchRefused(
+                f"只能确认候选记忆：当前 status={before_status!r}",
+                "dispatch.memory_stale_revision",
+            )
+        if to_status == "forgotten" and before_status == "forgotten":
+            raise MemoryDispatchRefused(
+                "记忆已经是 forgotten，不能重复遗忘",
+                "dispatch.memory_stale_revision",
+            )
+
+        # 所有确定性拒绝都发生在标记 executing 之前；标记之后只构造结果，
+        # 真正的投影更新由 Dispatcher 在 tool.result 同事务里完成。
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        revision = before_revision + 1
+        now = self._clock()
+        after = memory_state(memory_id, to_status, revision)
+        before = memory_state(memory_id, before_status, before_revision)
+        out: dict[str, Any] = {
+            "path": scope.to_uri(),
+            "memory_uri": scope.to_uri(),
+            "memory_id": memory_id,
+            "revision": revision,
+            "before_status": before_status,
+            "status": to_status,
+            "before_state": before,
+            "after_state": after,
+        }
+        if to_status == "active":
+            out["consolidated_at"] = now
+        return ToolResult("succeeded", "applied", out)
+
+
+def _string_list(raw: Any, label: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ToolArgumentError(f"{label} 必须是字符串数组")
+    return list(raw)
+
+
+def _object_list(raw: Any, label: str) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ToolArgumentError(f"{label} 必须是对象数组")
+    return [dict(item) for item in raw]
+
+
+__all__ = [
+    "MEMORY_ALL_TOOL_IDS",
+    "MEMORY_READ_TOOL_IDS",
+    "MEMORY_TOOL_IDS",
+    "MemoryDispatchRefused",
+    "MemoryExecutor",
+    "memory_scope_allowed",
+    "memory_state",
+]

@@ -333,6 +333,11 @@ class Worker:
             model=self.model,
             limits=self.limits or Limits(),
             ttl_ms=self.ttl_ms,
+            # 必须复用装配里的同一个投影：不传的话 AgentLoop 会自己
+            # `open_memory()` 另开一个。默认 blob 目录碰巧一样时看不出来，
+            # 一旦装配用了自定义正文目录，Worker 写进去的记忆在别的入口
+            # 就检索不到——表现为"记忆随机丢失"。
+            memory=self.stack.memory,
         )
 
     def _side_channel(self) -> _SideChannel:
