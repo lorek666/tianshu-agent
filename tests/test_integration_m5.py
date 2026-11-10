@@ -525,10 +525,17 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
                 break
             time.sleep(0.02)
         endpoint = ipc.endpoint_path(root)
-        assert ipc.probe(root), (
-            f"on_ready 已落盘但端点连不上；returncode={proc.poll()}，"
-            f"endpoint={endpoint}，exists={Path(endpoint).exists()}；"
-            f"日志尾巴：\n{_tail(log_path)}"
+        # issue #63：ready 之后"背靠背探活必须都成功"。probe 自己会往 listen
+        # 队列里留一条未认证连接；backlog 太小 + accept 没跟上时，下一次
+        # connect 会被拒——就是本用例历史偶发红的样子。这里连续 8 次把窗口钉死。
+        probes = [ipc.probe_result(root, timeout=0.2) for _ in range(8)]
+        detail = probes[-1]
+        assert all(result.ok for result in probes), (
+            "on_ready 已落盘但端点连不上（连续探活失败）；"
+            f"returncode={proc.poll()}，endpoint={endpoint}，"
+            f"exists={Path(endpoint).exists()}，"
+            f"reason={detail.reason}，errno={detail.errno}，"
+            f"attempts={detail.attempts}；日志尾巴：\n{_tail(log_path)}"
         )
         client = _client(root)
         task_id = _make_task(client, ws)

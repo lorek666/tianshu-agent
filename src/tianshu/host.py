@@ -225,6 +225,14 @@ class DaemonSupervisor:
     def alive(self) -> bool:
         return ipc.probe(self.data_root, timeout=0.3)
 
+    def probe_detail(self) -> ipc.ProbeResult:
+        """带原因的探活（排障用；`alive()` 是它的布尔包装）。
+
+        `probe` 的 False 有四种含义（不存在 / 没人监听 / 队列满超时 / 权限），
+        启动超时只报一句"没有就绪"就把这些抹掉了，现场全靠猜。
+        """
+        return ipc.probe_result(self.data_root, timeout=0.3)
+
     # -- 生命周期 --
 
     def ensure(self) -> None:
@@ -313,7 +321,13 @@ class DaemonSupervisor:
                     f"日志：{self.log_path}"
                 )
             time.sleep(0.05)
-        raise HostError(f"Daemon 在 {self.start_timeout_s:.0f}s 内没有就绪；日志：{self.log_path}")
+        detail = self.probe_detail()
+        raise HostError(
+            f"Daemon 在 {self.start_timeout_s:.0f}s 内没有就绪"
+            f"（探活：{detail.reason}，errno={detail.errno}，"
+            f"endpoint_exists={detail.endpoint_exists}，attempts={detail.attempts}）；"
+            f"日志：{self.log_path}"
+        )
 
     def _shutdown_daemon(self, *, reason: str, timeout: float) -> None:
         try:

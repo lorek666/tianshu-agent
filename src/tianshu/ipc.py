@@ -60,6 +60,7 @@ TECH-ARCH §4.2 写的是 `[4 字节 BE 长度][JSON]`。M5 的实现在**消息
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import socket
@@ -67,6 +68,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from multiprocessing.connection import AuthenticationError, Listener
 from multiprocessing.connection import Client as _Socket
 from pathlib import Path
@@ -95,6 +97,30 @@ MAX_ENDPOINT_BYTES = 100
 AUTHKEY_NAME = "ipc.key"
 ENDPOINT_DIR = "run"
 ENDPOINT_NAME = "agent.sock"
+
+#: 监听队列长度。**不是随手给的**：默认值（`multiprocessing.connection.Listener`
+#: 的 backlog=1）意味着只要队列里躺着一条还没被 accept 的连接，接下来的 connect
+#: 在 macOS 上就会直接 `ECONNREFUSED`；而 `probe()` 恰恰是"连一下就关"的探活
+#: 连接——它自己会在队列里留下一条死连接。issue #63 的"端点存在、进程活着、
+#: connect 被拒"就是这么来的（复现与观测见 `docs/m5-readiness.md`）。
+LISTEN_BACKLOG = 64
+
+#: `probe()` 对"端点存在但 connect 失败"的重试预算。窗口来自"accept 线程还没把
+#: 上一条探活连接处理完"（微秒到毫秒级，慢机器/高负载下更宽），不是网络重试。
+PROBE_RETRY_MS = 250
+
+#: 这些 errno 表示"端点文件在、但此刻连不上"，值得在 `PROBE_RETRY_MS` 内重试；
+#: `ENOENT` 表示端点真的不存在，重试没有意义（也不该让"没有 daemon"变慢）。
+_PROBE_TRANSIENT_ERRNOS: frozenset[int] = frozenset(
+    {
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EWOULDBLOCK,
+        errno.EINTR,
+    }
+)
 
 
 class IpcError(TianshuError):
@@ -218,41 +244,155 @@ def _chmod_private(path: Path, mode: int) -> None:
         pass
 
 
-def probe(data_root: Path, *, timeout: float = 0.5) -> bool:
-    """能连上端点就说明有 daemon 活着。
+@dataclass(frozen=True)
+class ProbeResult:
+    """一次存活探活的结果，**带失败原因**。
 
-    比"PID 还活着吗"可靠：PID 会复用，而端点是 daemon 活着才存在的对象。
-    但**端点存在 ≠ 活着**：被 `kill -9` 的进程会留下 socket 文件，所以必须真的
-    连一次。
+    只返回 bool 的话，"端点不存在"（ENOENT）、"端点文件在但没人监听"
+    （ECONNREFUSED）、"连接超时"（队列满/对端不 accept）在调用方看起来一模一样，
+    而它们的处置完全不同：前者是"没有 daemon"，后者可能是"daemon 正在启动/正在
+    重启"。issue #63 查了两轮没法定根因，就是因为断言里只有一个 False。
 
-    这里刻意只做到**传输层能连上**，不做 authkey 握手：握手要等对端 accept，
-    而"对端正在 accept"不是存活的前提（daemon 可能忙、可能刚 bind 还没进循环）。
-    探活只回答"这个端点后面有没有活着的监听者"。代价是会在对端留下一条握手
-    前就断开的连接——`Server.accept()` 把这种情况翻译成可重试的 `ProtocolError`，
-    daemon 的 accept 循环据此继续，而不是当成致命错误。
+    `reason` 是给人看的短句；按 `errno` 分支，不要解析 `reason`。
     """
-    try:
-        endpoint = endpoint_path(data_root)
-    except ProtocolError:
-        return False
-    if os.name == "nt":
-        # 命名管道没有"文件存在性"可查：CreateFile 打不开就说明没有实例在听。
-        try:
-            handle = os.open(endpoint, os.O_RDWR)
-        except OSError:
-            return False
-        os.close(handle)
-        return True
+
+    ok: bool
+    endpoint: str
+    reason: str
+    errno: int | None = None
+    endpoint_exists: bool = False
+    attempts: int = 1
+
+
+def _probe_once_posix(endpoint: str, timeout: float) -> tuple[bool, int | None, str]:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
         sock.connect(endpoint)
-        return True
-    except OSError:
-        # 文件不存在（ENOENT）或没人 listen（ECONNREFUSED）都是"死了"。
-        return False
+        return True, None, "已连接"
+    except OSError as exc:
+        errno_value = exc.errno
+        if errno_value == errno.ENOENT:
+            reason = "端点不存在（没有守护进程，或进程已退出）"
+        elif errno_value == errno.ECONNREFUSED:
+            reason = "端点文件存在但无人监听（连接被拒）"
+        elif errno_value in (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK):
+            reason = "连接超时（监听队列可能已满，accept 线程还没跟上）"
+        else:
+            reason = f"{type(exc).__name__}: {exc}"
+        return False, errno_value, reason
     finally:
         sock.close()
+
+
+def _probe_once(data_root: Path, timeout: float) -> tuple[bool, int | None, str, str]:
+    try:
+        endpoint = endpoint_path(data_root)
+    except ProtocolError as exc:
+        return False, None, str(exc), repr(data_root)
+    if os.name == "nt":
+        # 命名管道没有"文件存在性"可查：CreateFile 打不开就说明没有实例在听。
+        try:
+            handle = os.open(endpoint, os.O_RDWR)
+        except OSError as exc:
+            return False, exc.errno, f"命名管道不可用：{exc}", endpoint
+        os.close(handle)
+        return True, None, "已连接", endpoint
+    ok, errno_value, reason = _probe_once_posix(endpoint, timeout)
+    return ok, errno_value, reason, endpoint
+
+
+def probe_result(
+    data_root: Path, *, timeout: float = 0.5, retry_ms: int = PROBE_RETRY_MS
+) -> ProbeResult:
+    """探活并带回失败原因（issue #63 的 API 面）。
+
+    语义分两层，不要混：
+
+    - **端点是否存在**：ENOENT 直接判死，不重试。否则"没有 daemon"会被
+      `PROBE_RETRY_MS` 拖慢，Host 的监护循环会变钝。
+    - **端点存在但此刻 connect 失败**（ECONNREFUSED 及其它短暂 errno）：在
+      `retry_ms` 预算内重试。窗口的来源是 accept 队列被上一条探活连接占着
+      （`probe` 自己"连一下就关"，服务端要先失败一次握手才能腾出位置）；
+      这不是"网络抖动"，是本地传输层的排队语义。
+
+    重试**不改变**"能连上才算活"的判据：预算用完还是连不上就返回 False，
+    调用方据此走"陈旧锁接管/重启监护"，不会被无限重试拖住。
+    """
+    budget_ms = max(0, int(retry_ms))
+    deadline = time.monotonic() + budget_ms / 1000
+    attempts = 0
+    while True:
+        attempts += 1
+        ok, errno_value, reason, endpoint = _probe_once(data_root, timeout)
+        if os.name == "nt":
+            # 命名管道：没有 errno=ENOENT/ECONNREFUSED 的分层，重试会把
+            # "#50 的偶发握手失败"与"真的没实例"混在一起；保持一次判定。
+            return ProbeResult(ok, endpoint, reason, errno_value, False, attempts)
+        try:
+            endpoint_exists = Path(endpoint).exists()
+        except OSError:
+            endpoint_exists = False
+        if ok:
+            return ProbeResult(True, endpoint, reason, None, True, attempts)
+        transient = (
+            errno_value in _PROBE_TRANSIENT_ERRNOS
+            and endpoint_exists
+            and budget_ms > 0
+        )
+        if not transient or time.monotonic() >= deadline:
+            return ProbeResult(
+                False, endpoint, reason, errno_value, endpoint_exists, attempts
+            )
+        # 短睡再试：让 accept 线程把手里的探活连接处理掉（它要失败一次握手）。
+        remaining = max(0.0, deadline - time.monotonic())
+        time.sleep(min(0.01, remaining))
+
+
+def probe(data_root: Path, *, timeout: float = 0.5) -> bool:
+    """能连上端点就说明有 daemon 活着（`probe_result` 的布尔包装）。
+
+    **端点存在 ≠ 活着**：被 `kill -9` 的进程会留下 socket 文件，所以必须真的
+    连一次。失败原因的区分（ENOENT / ECONNREFUSED / 队列满）在
+    `probe_result` 里，需要排障的调用方用那个，不要解析本函数的 False。
+    """
+    return probe_result(data_root, timeout=timeout).ok
+
+
+def self_connect(data_root: Path, *, timeout: float = 1.0) -> bool:
+    """自己连自己一次，**走完整认证握手**。
+
+    这是 daemon 就绪判据的最后一步：`probe()` 只证明"listen 了"，而
+    `Listener.accept()` 在返回连接前还要跑完 challenge/response——如果 accept
+    线程没进循环或者卡在半路，`probe` 仍可能是 True（内核帮你排了队），
+    `on_ready` 却已经在骗人了。完成一次认证握手才证明"监听到 accept 到应用层
+    这一整条路是通的"。
+
+    `timeout` 用旁路线程兜底：`multiprocessing.connection` 的客户端握手没有
+    超时参数，主路径不能因为一次握手卡住而起不来。
+    """
+    try:
+        endpoint = endpoint_path(data_root)
+        authkey = load_authkey(data_root)
+    except (ProtocolError, OSError):
+        return False
+    outcome: dict[str, bool] = {"ok": False}
+
+    def attempt() -> None:
+        try:
+            conn = _Socket(endpoint, family=_family(), authkey=authkey)
+        except (OSError, AuthenticationError, EOFError, ValueError):
+            return
+        outcome["ok"] = True
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    worker = threading.Thread(target=attempt, name="ipc-self-connect", daemon=True)
+    worker.start()
+    worker.join(max(0.0, float(timeout)))
+    return bool(outcome["ok"]) and not worker.is_alive()
 
 
 def _family() -> str:
@@ -364,8 +504,28 @@ class Server:
         self.authkey = load_authkey(self.data_root)
         self._listener: Listener | None = None
         self._accepted: list[ServerConnection] = []
+        #: accept 循环"已经真的进到 accept()"的线性化点。`start()` 只能保证
+        #: listen；accept 是调用方（daemon）的线程，所以两者要分开证明——
+        #: `on_ready` 必须晚于这两件事，否则就绪标记会骗人（issue #63）。
+        self._accepting = threading.Event()
+
+    @property
+    def accepting(self) -> bool:
+        return self._accepting.is_set()
+
+    def wait_accepting(self, timeout: float | None = None) -> bool:
+        """等 accept 线程真正进入 `accept()`。返回是否等到（超时返回 False）。"""
+        return self._accepting.wait(timeout)
 
     def start(self) -> None:
+        """建端点：**返回时一定已经 bind + listen**。
+
+        顺序不能靠"调用方紧接着会 start accept 线程"来兜底：
+        `multiprocessing.connection.Listener` 的构造函数内部同步执行
+        `bind()` + `listen()`，所以 start() 返回时内核已经在替我们排队连接；
+        但**排队 ≠ 能处理**，accept 线程是否进来由 `wait_accepting()` 证明。
+        这两件事加在一起才是"端点能用"，缺一个都会让 `on_ready` 变成假话。
+        """
         if self._listener is not None:
             raise IpcError("Server 已经 start 过了")
         if os.name == "nt":
@@ -391,7 +551,14 @@ class Server:
                 # 连不上 = 上次崩溃留下的僵尸 socket，删掉才能 bind。
                 stale.unlink(missing_ok=True)
             _chmod_private(run_dir(self.data_root), 0o700)
-        self._listener = Listener(self.endpoint, family=_family(), authkey=self.authkey)
+        self._listener = Listener(
+            self.endpoint,
+            family=_family(),
+            authkey=self.authkey,
+            # backlog 是**容量**不是调优：一条还没被 accept 的探活连接就能把
+            # 默认的 1 填满，随后所有 connect 都会在 macOS 上被拒（#63）。
+            backlog=LISTEN_BACKLOG,
+        )
         if os.name != "nt":
             _chmod_private(Path(self.endpoint), 0o600)
 
@@ -407,6 +574,9 @@ class Server:
         """
         if self._listener is None:
             raise IpcError("Server 还没 start")
+        # 先置 event 再阻塞：`on_ready` 的判据是"这条线程已经站在 accept 里了"，
+        # 不是"线程对象 start 过了"。
+        self._accepting.set()
         try:
             conn = self._listener.accept()
         except (AuthenticationError, EOFError, OSError) as exc:

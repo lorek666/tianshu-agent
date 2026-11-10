@@ -108,6 +108,18 @@ HISTORY_BATCHES_PER_REQUEST = 20
 #: 关闭时各线程 join 的上限。契约 §4.3：5 秒内退出。
 JOIN_TIMEOUT_S = 5.0
 
+#: 等 accept 线程进入 `accept()` 的上限。它只是"线程被调度起来"，
+#: 正常是微秒级；给 10s 是为了慢 runner/高负载，不是拿它当重试间隔。
+ACCEPT_READY_TIMEOUT_S = 10.0
+
+#: 自连探测的总预算：在端点已经 listen、accept 线程已就位的前提下，一次
+#: 完整认证握手正常也是毫秒级；预算只吸收调度抖动。
+SELF_CONNECT_BUDGET_S = 10.0
+
+#: 单次自连握手的线程等待上限（`multiprocessing.connection` 的客户端握手
+#: 没有超时参数，用旁路线程兜底，避免启动路径被一次卡住的握手拖死）。
+SELF_CONNECT_TIMEOUT_S = 1.0
+
 #: 驱动线程连续失败多少次就判定"循环已经废了"并停止 daemon。
 #: 比无限刷日志好：UI 至少能看到守护进程退出（Host 会按 §4.3 重启）。
 DRIVER_MAX_CONSECUTIVE_FAILURES = 10
@@ -370,6 +382,9 @@ class _Daemon:
         self._conns: list[_ClientConnection] = []
         self._conns_lock = threading.Lock()
         self._accept_thread: threading.Thread | None = None
+        #: accept 线程异常退出的原因。非空 ⇒ daemon 不可能是"健康但没接连接"，
+        #: 必须在退出路径上把原因交给 Host（不许静默变僵尸）。
+        self.accept_error: str | None = None
         self._reader_threads: list[threading.Thread] = []
         self._driver_thread: threading.Thread | None = None
 
@@ -384,6 +399,10 @@ class _Daemon:
             self._main_loop()
         finally:
             self._shutdown()
+        if self.accept_error is not None:
+            # 带着原因退出：进程退出码非 0，Host 的监护据此重启并打到日志。
+            # 以前这里只是"日志里少接几条连接"，UI 上表现为"任务不动"。
+            raise ipc.IpcError(f"accept 线程不可用：{self.accept_error}")
 
     def _setup(self) -> None:
         # 两条**各自线程专用**的连接。指向同一个 WAL 库：驱动线程写事件，
@@ -419,16 +438,59 @@ class _Daemon:
         self.plane.started_at = self.lock.started_at
 
         self.server = ipc.Server(self.root)
+        # `start()` 同步完成 bind+listen（issue #63 的根因不在这一步——
+        # 见 `_await_endpoint_ready`）；返回时内核已经在替我们排队连接。
         self.server.start()
 
         self._accept_thread = threading.Thread(
             target=self._accept_loop, name="tianshu-daemon-accept", daemon=True
         )
         self._accept_thread.start()
+        # on_ready 之前必须证明"listen + accept + 应用层握手"整条路都通。
+        # 顺序即契约：就绪标记一旦落盘，Host/测试就不该再被端点问题绊倒。
+        self._await_endpoint_ready()
         self._driver_thread = threading.Thread(
             target=self._driver_loop, name="tianshu-daemon-driver", daemon=True
         )
         self._driver_thread.start()
+
+    # ------------------------------------------------------------------ 就绪
+
+    def _await_endpoint_ready(self) -> None:
+        """证明端点真的能用，然后才允许返回给 `on_ready`。
+
+        只证明"端点文件存在"不够，两件事要分开证：
+
+        1. **accept 线程真的进到 `accept()` 了**（`Server.wait_accepting`）。
+           线程 `start()` 过不等于被调度过；高负载下这个窗口足以让探活连接
+           排队，而 `probe` 在队列满时会直接被拒。
+        2. **一次完整认证握手能走完**（`ipc.self_connect`）。`probe()` 只做
+           connect，内核可以在没人 accept 时就把连接排进队列；challenge/response
+           两侧都活，才证明 accept 循环在应用层也是通的。
+
+        任何一步失败都抛 `IpcError`：宁可启动失败（Host 看到非 0 退出 + 日志），
+        也不要留下一个"标记了 ready 但连不上"的守护进程——那正是 issue #63
+        的故障形态，排查成本比启动失败高得多。
+        """
+        assert self.server is not None
+        if not self.server.wait_accepting(ACCEPT_READY_TIMEOUT_S):
+            raise ipc.IpcError(
+                "accept 线程没有在 "
+                f"{ACCEPT_READY_TIMEOUT_S:.0f}s 内进入 accept()，拒绝宣告就绪"
+            )
+        deadline = time.monotonic() + SELF_CONNECT_BUDGET_S
+        last_reason = "（尚未尝试）"
+        while True:
+            if ipc.self_connect(self.root, timeout=SELF_CONNECT_TIMEOUT_S):
+                return
+            result = ipc.probe_result(self.root, timeout=0.2)
+            last_reason = f"{result.reason}（attempts={result.attempts}）"
+            if time.monotonic() >= deadline:
+                raise ipc.IpcError(f"自连探测失败，端点不可用：{last_reason}")
+            # accept 可能刚被调度、或上一次探活连接正被处理；短等再试。
+            self.stop.wait(0.01)
+            if self.stop.is_set():
+                raise ipc.IpcError(f"停止请求先到，端点未就绪：{last_reason}")
 
     # ------------------------------------------------------------------ 恢复
 
@@ -566,33 +628,68 @@ class _Daemon:
     # ------------------------------------------------------------------ 监听
 
     def _accept_loop(self) -> None:
+        """接受连接并交给读线程。**本线程异常退出 = daemon 必须退出**。
+
+        循环里只有两类失败：握手阶段失败（探活连接/错 authkey，正常现象，记一行
+        日志继续等）与监听端点不可用（listener 关了 / fd 失效，致命）。后者以前
+        也会被 `continue` 吞掉，于是进程活着、端点不接活、UI 上"任务不动"——
+        比崩溃更难查。现在致命路径一律 `_fail_accept`：置停止标志，退出时把
+        原因交给 Host。
+        """
         assert self.server is not None
-        while not self.stop.is_set():
-            try:
-                raw = self.server.accept()
-            except (ipc.IpcError, OSError) as exc:
-                if self.stop.is_set():
+        try:
+            while not self.stop.is_set():
+                try:
+                    raw = self.server.accept()
+                except ipc.ProtocolError as exc:
+                    if self.stop.is_set():
+                        return
+                    # 认证失败 / 握手前断开（`ipc.probe()` 的探活连接就是这样）
+                    # 都是"这条连接不算数"，不是"服务端该关"。
+                    _log(f"接受连接失败（继续监听）：{exc}")
+                    continue
+                except (ipc.IpcError, OSError) as exc:
+                    if self.stop.is_set():
+                        return
+                    self._fail_accept(f"监听端点不可用：{type(exc).__name__}: {exc}")
                     return
-                # 认证失败 / 握手前断开（`ipc.probe()` 的探活连接就是这样）都是
-                # "这条连接不算数"，不是"服务端该关"。
-                _log(f"接受连接失败（继续监听）：{exc}")
-                continue
-            if self.stop.is_set():
-                # 退出路径上 close() 会"敲一下"唤醒挂起的 accept（Windows）；
-                # 这条连接只用于唤醒，不能当正式客户端处理。
-                raw.close()
-                return
-            conn = _ClientConnection(raw)
-            with self._conns_lock:
-                self._conns.append(conn)
-            reader = threading.Thread(
-                target=self._read_loop,
-                args=(conn,),
-                name="tianshu-daemon-read",
-                daemon=True,
+                if self.stop.is_set():
+                    # 退出路径上 close() 会"敲一下"唤醒挂起的 accept（Windows）；
+                    # 这条连接只用于唤醒，不能当正式客户端处理。
+                    raw.close()
+                    return
+                conn = _ClientConnection(raw)
+                with self._conns_lock:
+                    self._conns.append(conn)
+                reader = threading.Thread(
+                    target=self._read_loop,
+                    args=(conn,),
+                    name="tianshu-daemon-read",
+                    daemon=True,
+                )
+                self._reader_threads.append(reader)
+                reader.start()
+        except BaseException as exc:  # noqa: BLE001 - 线程异常退出必须留下原因
+            self._fail_accept(
+                f"accept 线程异常退出：{type(exc).__name__}: {exc}"
             )
-            self._reader_threads.append(reader)
-            reader.start()
+        finally:
+            # 只有 stop 已置位才是正常退出（shutdown / signal）。
+            # 其它任何退出都不许静默——那是"进程活着、端点不接活"。
+            if not self.stop.is_set():
+                self._fail_accept("accept 线程退出了，但没有收到停止请求")
+
+    def _fail_accept(self, reason: str) -> None:
+        """accept 发不了连接了：记下原因并让 daemon 退出。
+
+        `_shutdown` 会照常清理；`run()` 在清理后把 `accept_error` 抛给调用方，
+        进程以非 0 退出，Host 的监护因此会重启并留下日志。只打一行日志然后
+        `continue` 的话，外部看到的是"守护进程在、但任务永远不动"。
+        """
+        if self.accept_error is None:
+            self.accept_error = reason
+            _log(f"{reason}；daemon 停止（不再假装还能接连接）")
+        self.stop.set()
 
     def _read_loop(self, conn: _ClientConnection) -> None:
         while not self.stop.is_set() and not conn.closed:
@@ -1060,8 +1157,10 @@ def serve(
 ) -> None:
     """阻塞地跑守护进程，直到 shutdown RPC / SIGTERM / SIGINT / `stop_event`。
 
-    `on_ready` 在**端点已经能连之后、主循环开始之前**调用一次：Host 用它来把
-    "daemon 就绪"这件事变成可等待的，而不是盲目重试连接。
+    `on_ready` 在**端点已经 bind+listen、accept 线程进入循环、并且自己完整
+    握手连上自己一次之后**调用一次：Host 用它来把"daemon 就绪"这件事变成
+    可等待的，而不是盲目重试连接。就绪标记必须晚于"真的能连"——提前落盘会让
+    调用方撞上还没开始 accept 的连接队列（issue #63）。
     """
     root = Path(data_root)
     stop = stop_event if stop_event is not None else threading.Event()
