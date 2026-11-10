@@ -29,7 +29,8 @@
 - **里程碑**：**M0–M5 已完成**。M4 由 PR #41 / #45 合入（代码在 `src/tianshu/eval/`）；**M5 桌面闭环由 PR #49 完成**（2026-11-10，`feat/m5-desktop`）：Daemon / Host / UI 三进程打通、审批 UI、关 UI 任务继续、重启后恢复。设计与契约见 [M5-desktop.md](M5-desktop.md)，实测证据见 [M5-verification.md](M5-verification.md)。
 - **F10 本地记忆设计（v1.1，提案，2026-11-10）**：新增 [F10-memory-design.md](F10-memory-design.md)。核心判断：**记忆是事件日志的另一个可重建投影，不是第二个事实源**——红线 1 已把独立记忆库这条路堵死。参照 [TencentDB Agent Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)（L0–L3 分层、记忆资产化、装备 loadout、默认私有、可编辑）与 [OpenViking](https://github.com/volcengine/OpenViking)（上下文即虚拟文件系统、三层读取、目录作用域检索、会话成文件 + diff、记忆带引用）的组织方式，**只取设计不取实现**。关键决定：记忆操作是 C2 工具（首版不新增事件族，避免与 `tool.intent`/`tool.result` 形成同一因果的第二份指针）；写入**分级审批**（propose 写惰性候选不挡；agent 发起的 confirm/forget 走 C4 审批 + Receipt，等同覆盖/删除）；默认 `scope=user` 私有；`origin=inferred` 永不自动激活；忘记=tombstone ≠ 物理擦除。· **第二轮（mem0 / Hindsight）补进**：L2 升级为**带证据的信念**（`evidence[]` + `proof_count` + 原文引文，refine 而非覆盖）；L3 是**预算好的可启动页面**（读取为 DB read，无检索/无 LLM）；蒸馏**只做增量 delta 刷新、禁止全量重生成**；**freshness awareness**（陈旧层先核验再用）；记忆写入过 **Memory Defense** 闸门（PII/密钥，红act 或阻断）+ **写入前去重**；实体/时序检索列为后续、须评测证明增益。· **只落文档，未写代码、未改契约。**
 - **M0–M5 对抗性复审（2026-11-10）**：[DEBUG-M0M5.md](DEBUG-M0M5.md) 对 `main@4eb4ea9` 做了独立复审（严重 0 / 中等 5 / 轻微 7），本轮把 12 条**逐条裁决**（修复记录追加在同一文档末尾）：5 中等里 4 条已修（中-1 阻断 TOCTOU、中-2 未知工具恢复、中-3 注入证据面、中-4 畸形阻断记录 fail-open）、1 条**误报**（中-5：`prepare` 当场就拒，补钉住测试而非改代码）；6 条轻微修复（同内容写入口径、缺 blob 域错误、unblock 稳定 id、M3 diff 区间、封闭集全等断言、eval 归因分层）+ 1 条纯文档补登（Host 强杀后 Daemon 残留）。复审留账的静态疑点/未验证项开成 issue **#53 / #54 / #55**。
-- **测试**：**1077 passed, 3 skipped**（macOS 本机实测，2026-11-10，真实模型轮（分支 `test/m4-real-model`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → **1077**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
+- **M0–M1 报告修复对账（2026-11-10 复核）**：[DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾补了「修复状态总表」——S1–S4 / M1–M4 / L1–L2 / R1–R5 逐条对应代码位置与钉住它的测试，含负控口径。复核中发现并修掉一条残留：**快照清单损坏时恢复/撤销漏出裸 `JSONDecodeError`**（现为 `SnapshotCorrupt` → unknown+阻断 / 拒绝撤销）。仍然不成立的四项如实写在总表末尾：真实断电、Windows 实机、authority 数据根逃逸 + 完整 takeover（issue #61）、跨多文件撤销的事务性。
+- **测试**：**1079 passed, 3 skipped**（macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1079 passed, 3 skipped in 104.24s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +2 → **1079**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 2 条：坏快照清单的恢复（unknown+阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **37** 个模块（M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`），另有子包 `eval/`（6 个 .py）。
 - **平台**：CI 矩阵是 **ubuntu / macos / windows 三个平台 × Python 3.12**，另有一个 `ui` job（ubuntu：typecheck / vitest / build / `ui/dist` 漂移门禁）。Python 三平台：`7abad75` 的 run `42652194348` 三平台全 success；**M5 之后 Windows 不再是绿的**——命名管道上存在**偶发握手失败**（issue #50，`digest sent was rejected` / `digest received was wrong`，每轮失败的用例与条数都不同，本机 macOS 无法复现）。ubuntu / macOS 稳定绿。Windows 只有 `windows-latest`（Server 2022 runner）证据，没有实机验证。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。required status checks 目前是 `test (ubuntu-latest) · py3.12` 与 `test (macos-latest) · py3.12` 两项；Windows job 在矩阵里跑但**还没加进 required 列表**（见 §7）。
@@ -171,6 +172,7 @@
 - **"不安全"与"没做到"必须分开**：一份 `unsafe` 意味着"系统被绕过"，而"模型什么都没做"只是完成度为 0。把 `approval.requested=0`、`outcome≠failed` 这类**收尾形态**标成 safety，会让"更保守的模型"被判更不安全——方向反了。
 - **假分数比没有分数危险**：memfs 下评测能跑完、能出报告、能打印 `verdict=unsafe`，看起来像结论，其实是后端不匹配（fixture 落宿主盘、执行走虚拟盘）。判不了就拒绝（`require_local_backend`），比交一份会被引用的数字强。
 - **审计工具的误报会训练人忽略它**：`replay` 那条"产物哈希不一致"是错的（比的是另一个文件的哈希），但文案看起来像真发现。凡是"核对"类逻辑，先问"我比的是同一个对象吗"——按路径/按 id 归属，不要按事件顺序猜。
+- **校验器自己崩掉，等于没人替你回答「到底写没写」**：快照清单被截断时 `SnapshotStore.load()` 直接漏出 `json.JSONDecodeError`——恢复还没开始推理就先抛栈，CLI 只打印 "Expecting property name"，既没说清哪份证据坏了，也没有阻断。读审计材料的代码，解析失败必须转域错误（`SnapshotCorrupt`，与 `EventLogCorrupt` 同一档），并让调用侧落成 `unknown`+阻断或明确拒绝；不能当成空清单继续，也不能让裸异常穿过库边界。负控照旧：把修复回退后新用例必须红，红的样子就是那条 `JSONDecodeError`。
 
 
 ## 6. 流程规则（机械 + 纪律）
@@ -199,17 +201,22 @@
 
 - **M2 静态疑点 → issue #53**：否决缓存只按 `run_id` 生效（同一 Task 新 Run 是否忘掉否决，取决于 `run start` 是否只由人/控制面触发，未逐条验证）；`revoke_consumed` 的判定依赖 dispatcher 状态核验，未逐条探针验证。**两条都未复现**，不许当成已确认漏洞，也不许当成已解决。
 - **M1 `delete_file` 注入矩阵 → issue #54**：本轮（PR 修法）把 "kill×100" 的证据面从只覆盖 create 扩到 create + 覆盖写；删除类动作的恢复判据是 `absent`、撤销按 preimage 重建，另开一组断言跟进。
-- **M4 四条未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时），下面这段仍然有效。
+- **M4 未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时）：2026-11-10 真实模型轮已销账三条，**只剩 Windows 实机一条**。
 - **按已知限制接受**：`create_report` 先 `exists` 检查再 `os.replace`，对**外部进程**仍有覆盖 TOCTOU；lease 只防受控 run，PRD 非目标本就包含"防本机用户"。登记是为了下次读到的人不至于以为没考虑过。
 - **中-5 是误报**（`prepare` 当场拒绝目录外目标），处理方式是一条钉住测试，不是产品代码改动。
 
-**M4 评测未验证项（不许写成"通过"）**
+**M0–M1 复核留账（[DEBUG-M0M1.md](DEBUG-M0M1.md) 修复状态总表，2026-11-10）**
 
-- 真实换模（两个真实 provider 的分数对比）**未跑**；
-- Windows 上的 `evaluate` **未单独验证**；
-- `memfs` 后端**未覆盖**；
-- 真超时**未覆盖**。
-- 详见 [M4-verification.md](M4-verification.md)。
+- **authority 数据根逃逸 + 完整 takeover → issue #61**：换 `--db`（或换数据根）可绕过目录阻断；租约接管没有「先核对前任未决副作用」。两项都**未实现**，总表里写的是"仍未覆盖"。
+- **真实断电 / Windows 实机**：写入路径已有 fsync + 原子 rename，但存储故障语义与 Windows 实机都未验证（Windows 见 #50）。
+- **跨多文件撤销**：逐文件原子 + 逐文件记录，**不**宣称一次事务；中途崩溃可能留部分还原（可续做）。
+
+**M4 评测未验证项（2026-11-10 真实模型轮更新，不许写成"通过"）**
+
+- 真实换模：**已跑**（deepseek-v4.1-flash 18/20、glm-5.2 15/20，同一 suite m4.4，`compare_reports` 判可比；逐条裁决见 [M4-verification.md](M4-verification.md) §7.1）——但两家都判 `unsafe`，根因是 P1/P2 判据写死了脚本模型收尾形态（issue #57），**不是**「换模通过」；
+- Windows 上的 `evaluate` **未验证**（issue #55 仅剩的一条）；
+- `memfs` 后端：**不做，改为开跑前拒绝**（实测假分数 1/20 + unsafe，见 §4）；
+- 真超时：**已覆盖**（黑洞端点真等满 60s×3，`3m01.6s` 后 failed）。
 
 **M5 桌面闭环未验证 / 已知限制（详见 [M5-desktop.md](M5-desktop.md) §10 与 [M5-verification.md](M5-verification.md)）**
 
@@ -261,6 +268,7 @@
 
 > 格式：`日期 · 做了什么 · 发现/决定了什么`。最新在上。
 
+- **2026-11-10** · **DEBUG-M0M1 修复对账（`fix/m0m1-corrupt-manifest`）**：用户问「M0–M1 报告里的问题修好了吗」，逐条复核 16 项（S1–S4 / M1–M4 / L1–L2 / R1–R5）——每项都有代码落点与钉住测试，总表补进 [DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾。复核中新发现一条**真残留**：快照清单被截断/写坏时 `SnapshotStore.load()` 漏出裸 `JSONDecodeError`，恢复还没推理就先崩、CLI 只打印 "Expecting property name"、也不阻断。修法：`errors.SnapshotCorrupt`（与 `EventLogCorrupt` 同档）；恢复侧整份核对 → `unknown` + 阻断（不退回"没证据=没写"）；`undo.plan` 拒绝并给补救路径；库入口抛类型化错误；两条回归 + 负控（回退修复即红，红的样子就是那条 `JSONDecodeError`）。1077 → **1079 passed / 3 skipped**（104.24s），`ruff check .` 干净。· **仍然不成立**：真实断电、Windows 实机（#50）、authority 数据根逃逸 + 完整 takeover（**新开 #61**）、跨多文件撤销事务性。· **顺手对账**：§7 的「M4 评测未验证项」整块按真实模型轮更新（三条销账、只剩 Windows）；M0–M5 复审里已修的项保持原记录不动。
 - **2026-11-10** · **F10 记忆设计第二轮学习（mem0 / Hindsight，仅文档）**：读 [mem0](https://github.com/mem0ai/mem0)（ADD-only 加性抽取「不静默改写」、写入前去重、实体抽取、语义+BM25+实体+时序四路检索、SQL 事实为源 + 向量/实体为投影）与 [Hindsight](https://github.com/vectorize-io/hindsight)（Observations 带证据与 proof count、refine 而非覆盖；Mental Models 是预算好的可启动页面、读取为 DB read；增量 delta 刷新防漂移；freshness awareness；Decision Models；Memory Defense）后，把 9 条增量折进 [F10-memory-design.md](F10-memory-design.md)。· **最关键的判断**：mem0 与 Hindsight **独立收敛到同一个架构**——「事实是 source of truth，向量/实体/合成层都是可重建投影」——而这正是天枢红线 1 已有的形状；天枢不需要借鉴，只需要把 L2/L3 做成**带证据、可增量、可证伪**的信念。· **三条实质改变**：L2 必须有 `evidence[]` + `proof_count`（没有证据的信念不成立）；蒸馏**只做增量 delta，禁止全量重生成**（LLM 全量重写会漂移）；**freshness awareness**（陈旧层不短路检索，先回落原始事实核验）。· **不抄**：两家都是重服务 + 外部 LLM/embedding 硬依赖（违反零依赖与离线评测）；Hindsight 的 decision model 天枢跑不了；mem0 的 update=覆盖与天枢 supersede 是不同路线。· **别信的数字**：mem0 自报 LoCoMo 92.5 / LongMemEval 94.4 但明说开源版「方向类似、数字不同」；Hindsight 说别家分数是 self-reported。
 - **2026-11-10** · **F10 记忆设计落文档（仅文档，未写代码）**：读 [TencentDB Agent Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)（L0–L3 分层蒸馏、记忆资产化、装备 loadout、默认私有、可编辑记忆、冷启动 save file）与 [OpenViking](https://github.com/volcengine/OpenViking)（上下文即虚拟文件系统、三层读取、目录作用域检索、会话成文件 + diff、记忆带引用）后，落 [F10-memory-design.md](F10-memory-design.md)。· **决定**：记忆**不是第二个事实源**，而是事件日志的可重建投影（红线 1 已堵死独立记忆库）；记忆操作做成 C2 工具，**首版不新增事件族**——新增 `memory.*` 会与 `tool.intent`/`tool.result` 形成同一因果的第二份指针，正应了 §5.3.3 给 `parent_seq` 立的规矩；写入**分级审批**（propose 写惰性候选不挡；agent 发起的 confirm/forget 走 C4 审批 + Receipt，等同覆盖/删除）；默认 `scope=user` 私有、共享是显式动作；`origin=inferred` 永不自动激活（摘要/网页不能变成长期用户事实）；忘记=tombstone ≠ 物理擦除。· **不抄**：不建独立记忆服务、不引外部 embedding/VLM 作硬依赖、不做多租户/团队 ACL（D2）、不做云托管（D7）、不照抄 AGPL 代码。· **踩了**：`NEXT-CAPABILITIES-PLAN.md` §5 已有实施拆解，本文只补**设计**输入，两者不重复也不冲突（冲突以本文为准）。· **留下**：PRD §4.1 `Memory` 实体字段与 §7 F10 加了指向本文的指针；README 与 §9 索引同步。契约增量（C2 记忆工具、C4 审批规则编号）待 PR08 `docs(contract)` 单独 PR。
 - **2026-11-10** · **按“采用最新技术、五年演进”要求修订扩展方案（仍为提案）**：在 [实施方案](NEXT-CAPABILITIES-PLAN.md) §0 增加浏览器读取、动态工具发现、混合检索与持久化委派目标。官方资料核验纠正旧 MCP 通用流程：2026-07-28 使用逐请求版本/能力及 server/discover，initialize 仅留旧版兼容路径。当前 Playwright 官方要求 macOS 14+，与项目 macOS 13 下限冲突，浏览器后端需单独门禁，未宣称兼容。LanceDB 是可替换候选，四目标制品本轮未验。程序化工具调用以真实隔离为前提；A2A 只面向外部 Agent 对接。未安装依赖、未修改实现或现行契约、未运行功能测试。
