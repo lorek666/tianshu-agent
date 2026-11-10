@@ -367,7 +367,17 @@ class Server:
     def start(self) -> None:
         if self._listener is not None:
             raise IpcError("Server 已经 start 过了")
-        if os.name != "nt":
+        if os.name == "nt":
+            # 命名管道没有"文件是否存在"可看：同名管道还在 Listening 时，
+            # 再 `CreateNamedPipe(..., FILE_FLAG_FIRST_PIPE_INSTANCE)` 会抛裸的
+            # PermissionError（WinError 5）。先探一次，把"已有实例"翻译成
+            # 可判别的 IpcError——调用方（daemon/Host/测试）只认识这个。
+            if probe(self.data_root):
+                raise IpcError(
+                    f"端点已被占用：{self.endpoint}；"
+                    "同一个 data_root 只能有一个 daemon（先 start 的那个还活着）"
+                )
+        else:
             run_dir(self.data_root).mkdir(parents=True, exist_ok=True)
             _chmod_private(run_dir(self.data_root), 0o700)
             stale = Path(self.endpoint)
@@ -410,6 +420,18 @@ class Server:
         for conn in self._accepted:
             conn.close()
         self._accepted.clear()
+        if os.name == "nt" and self._listener is not None:
+            # Windows 的 accept 阻塞在 `ConnectNamedPipe` 的 overlapped I/O 上；
+            # 从别的线程关句柄**不会取消**挂起的 I/O，accept 线程会永远卡住，
+            # 并且让管道名一直存在——表现就是"daemon 已退出，probe 仍然为真"，
+            # 下一个实例于是被拒（实测：Windows 上重启/接管类测试全挂）。
+            # 先连一下把挂起的 accept 叫醒，再关 listener。
+            try:
+                wake = os.open(self.endpoint, os.O_RDWR)
+            except OSError:
+                pass
+            else:
+                os.close(wake)
         if self._listener is not None:
             try:
                 self._listener.close()
@@ -462,14 +484,16 @@ class ServerConnection:
         """
         if self._eof:
             return None
-        if timeout is not None and not self._conn.poll(timeout):
-            return None
         try:
+            if timeout is not None and not self._conn.poll(timeout):
+                return None
             raw = self._conn.recv_bytes()
         except EOFError:
             self._eof = True
             return None
         except OSError:
+            # Windows 上"对端已关"不一定表现为 poll() 返回 True 再 recv EOF：
+            # `PeekNamedPipe` 会直接抛 BrokenPipeError / OSError。语义一样是断线。
             self._eof = True
             return None
         if len(raw) > MAX_MESSAGE_BYTES:

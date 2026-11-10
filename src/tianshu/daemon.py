@@ -573,6 +573,11 @@ class _Daemon:
                 # "这条连接不算数"，不是"服务端该关"。
                 _log(f"接受连接失败（继续监听）：{exc}")
                 continue
+            if self.stop.is_set():
+                # 退出路径上 close() 会"敲一下"唤醒挂起的 accept（Windows）；
+                # 这条连接只用于唤醒，不能当正式客户端处理。
+                raw.close()
+                return
             conn = _ClientConnection(raw)
             with self._conns_lock:
                 self._conns.append(conn)

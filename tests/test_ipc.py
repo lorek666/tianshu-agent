@@ -429,3 +429,32 @@ def test_server_close_unblocks_reader(root: Path) -> None:
     raw_client.close()
     thread.join(timeout=3)
     assert not thread.is_alive(), "关闭服务端后读取线程没有退出"
+
+
+def test_server_close_unblocks_accept_thread(root: Path) -> None:
+    """关闭服务端必须让阻塞在 accept() 的线程退出，并且端点真的消失。
+
+    回归（Windows 实测）：accept 阻塞在 `ConnectNamedPipe` 的 overlapped I/O 上，
+    从别的线程关句柄**不会取消**挂起的 I/O——线程永远卡住、管道名一直存在，
+    下一个实例于是被拒（"端点已被占用"），重启/接管类测试全挂。POSIX 上关
+    listener 就能唤醒，所以这条测试在 macOS/Linux 上一直是绿的，只有 Windows 红。
+    """
+    server = ipc.Server(root)
+    server.start()
+    exited = threading.Event()
+
+    def accept_loop() -> None:
+        try:
+            server.accept()
+        except (ipc.IpcError, OSError):
+            pass
+        finally:
+            exited.set()
+
+    thread = threading.Thread(target=accept_loop, daemon=True)
+    thread.start()
+    time.sleep(0.05)  # 让线程真的进到 accept 里再关
+    server.close()
+    assert exited.wait(5.0), "close() 之后 accept 线程没有退出"
+    assert not ipc.probe(root, timeout=0.5), "关闭后端点还能连上（下一个实例会被拒）"
+
