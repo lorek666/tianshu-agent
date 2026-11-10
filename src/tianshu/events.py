@@ -269,12 +269,52 @@ class EventLog:
         self._blob_dir = blob_dir
         if blob_dir is not None:
             blob_dir.mkdir(parents=True, exist_ok=True)
+        # 打开之前先记下"这个库本来就有内容"。0 字节文件按**新库**处理：
+        # 首次启动可能在建文件之后、建 schema 之前崩掉，那种情况下没有任何
+        # 历史可丢，判 corrupt 是误报。判据只看主库文件本身，不因为 `-wal`
+        # 存在与否就换口径。
+        pre_existing = False
+        try:
+            pre_existing = db_path.exists() and db_path.stat().st_size > 0
+        except OSError:
+            pre_existing = False
         self._conn = sqlite3.connect(
             str(db_path),
             isolation_level=None,
             check_same_thread=not cross_thread,
         )
         self._conn.row_factory = sqlite3.Row
+        # 先读 schema、再设 journal_mode。
+        #
+        # 顺序是契约：`SELECT sqlite_master` 会触发 WAL 回放——"库里到底有没有
+        # 历史"必须以回放结果为准。反过来先执行 `PRAGMA journal_mode=WAL`，
+        # 在 WAL 不可回放时可能重建/丢弃日志文件，等于在检查证据之前先把证据
+        # 毁了（实测：撕裂 WAL 被丢掉后，旧代码静默建出空 schema，历史全没）。
+        #
+        # 为什么必须在这里失败：文件存在且有内容、却读不出 `events` 表，
+        # 说明事实源丢了，**不是一个新库**。继续 `executescript(_SCHEMA)`
+        # 会把"读不出来"洗成"什么都没发生"——恢复会据此报告干净结论，而磁盘
+        # 上的副作用可能已经发生（本地实测过）。这正是 "无法判定 ≠ 没有"
+        # 那条口径：读不懂 = 域错误，交给人处理。
+        try:
+            has_schema = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
+            ).fetchone() is not None
+        except sqlite3.DatabaseError as exc:
+            self._conn.close()
+            raise EventLogCorrupt(
+                f"事件库读不出来：{db_path}（{type(exc).__name__}: {exc}）。"
+                "这份日志不能作为结论来源。**不要删除 events.db**：先备份整个"
+                "数据目录，再用 `tianshu recover` 核对，人工确认损失范围后再处理。"
+            ) from exc
+        if pre_existing and not has_schema:
+            self._conn.close()
+            raise EventLogCorrupt(
+                f"事件库文件存在但读不出 schema：{db_path}。"
+                "通常意味着 WAL 被撕裂/损坏后历史已经丢失（这不是一个新库）。"
+                "**不要删除 events.db**：先备份整个数据目录，再用 `tianshu recover`"
+                " 核对，人工确认损失范围后再处理。"
+            )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         # 有界的锁等待：两个进程同时 BEGIN IMMEDIATE 时，后来的那个等一小会
