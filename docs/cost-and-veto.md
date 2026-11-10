@@ -10,11 +10,16 @@
 | 项 | 判定 | 证据 |
 |---|---|---|
 | **#58** CLI 费用行在「全部模型尝试都失败」时说「无（没有模型调用）」 | **已修** | 代码 + `tests/test_cost_line.py`（10 条）+ 两条负控（§1.4）+ 真黑洞端点实跑（§1.5） |
+| **#53 疑点 1** 否决缓存只按 `run_id`，换 Run 会不会忘掉否决 | **不成立**（不是漏洞）；作用域前提已写明并用三层测试钉住 | `tests/test_veto_scope.py`（§2） |
+| **#53 疑点 2-A** 撤销后同一个 approval 不能再被派发消费 | **成立** | `test_revoked_approval_cannot_be_consumed_again`（§3.1） |
+| **#53 疑点 2-B** `execution.started` 之后撤销必须失败 | **成立** | `test_revoke_after_execution_started_is_refused`（§3.2） |
+| **#53 疑点 2-C** 撤销之后新审批可以重新走 | **成立** | `test_revocation_allows_a_fresh_approval_in_the_same_run`（§3.3） |
+| **#40** 审批被否决后不再重复请求 | **可关闭** | `tests/test_approval_reject.py` 9/9 通过（§4） |
 
+- 未改 `src/tianshu/dispatcher.py`（T2 独占）：疑点 2 三条探针都证明**现状成立**，
+  不需要改；唯一相邻的小口径问题记在 §3.4，交 lead 决定是否另开工单。
 - 未改 `src/tianshu/tasks.py`：尝试次数进的是游标里自由形状的 `budget_ledger`
   （与 `tokens` / 成本同源），不需要动 `RunCursor` 的字段契约。
-- #53 两条静态疑点的销账与 #40 复核见后续提交（会把对应结论补进本文件的
-  §0 表与 §2–§5）。
 
 ---
 
@@ -131,3 +136,186 @@ EXIT=1
 
 ---
 
+## 2. #53 疑点 1：否决缓存只按 `run_id` —— **不成立**，作用域前提已写明
+
+### 2.1 问题的提法
+
+否决缓存（`ApprovalStore.rejected_for`）在 SQL 里按 `run_id` 过滤：同一 Task
+起新 Run 会忘掉上一次的否决。**如果模型能触发 `run start`**，那就等于
+"用户拒绝过这个动作，换个 Run 就能再问一次"。
+
+### 2.2 事实：能启动 Run 的只有人/控制面
+
+`grep -rn "start_run(" src/tianshu` 的全部调用点：
+
+| 位置 | 谁触发 | 是模型能力吗 |
+|---|---|---|
+| `cli.py` 的 `run start` / 兼容入口 `run --task` | 人在终端执行 | 否 |
+| `control.py::ControlPlane._run_start`（IPC 方法 `run.start`） | Host/UI 经**带 token 的本地 IPC** 调用 | 否（模型没有 socket/RPC 工具） |
+| `dispatcher.py::open_control_run` | `undo` / `recover` 命令建的控制 Run | 否（CLI 子命令） |
+| `loop.py::AgentLoop.start` | 被上面三者调用（CLI 兼容入口 / daemon 驱动线程） | 否（是驱动入口，不是模型能力） |
+
+模型的全部能力是工具调用：`tool_manifest()` 只有 6 个工具
+（`list_files / read_text / create_report / modify_text / delete_file /
+run_command`），每个工具的 `action` 都在 C4 的封闭动作集
+`{read, create, overwrite, delete, exec}` 里——**没有任何一项等于"新建 Run"**。
+`tools.py` 运行时连 `TaskStore` 都拿不到（只从 `.tasks` 导入 `ExecutionPermit`
+票据；`TaskStore` 只出现在 `TYPE_CHECKING` 块里）。
+
+所以"换个 Run 再问一次"必然是人/控制面主动发起的新执行——那是人的决定，
+不是模型把否决变回了待批门票。
+
+### 2.3 写进契约的前提
+
+已写进 `src/tianshu/permissions.py::ApprovalStore.rejected_for` 的 docstring
+（并同步该实现里 `approval_subjects` 表注释）：
+
+> 作用域：Run 是边界，语义键是 `(task, subject_digest)`。SQL 按 `run_id` 过滤
+> 不构成绕过，因为能启动 Run 的只有人/控制面（CLI / `run.start` RPC / undo 的
+> 控制 Run）；模型的能力面只有 `tool_manifest()` 里的工具。前提如果变了
+> （出现模型可达的建 Run 通道），这里必须改成按 task 查询
+> （`approval_subjects` 无 `task_id` 列，需 join `approvals.task_id` 或补列）。
+
+### 2.4 三层测试钉子（`tests/test_veto_scope.py`）
+
+1. `test_model_tool_surface_has_no_run_start`：模型可见工具 == `SPECS` 的
+   `exposed` 投影；与 11 个控制面动作名（`run.start` / `start_run` /
+   `task_create` / `approvals_decide` / `undo_apply` / …）不相交；每个工具的
+   `action` 都在封闭动作集里。
+2. `test_tools_module_cannot_construct_runs`：AST 检查 `tools.py` 的**运行期**
+   import——从 `.tasks` 只拿 `ExecutionPermit`，且不依赖
+   `control` / `cli` / `daemon` / `host`。结构上建不出 Run（就算将来加了新工具）。
+3. `test_a_model_driven_run_never_starts_another_run`：活的探针——模型提议
+   `run_command`（最高危可见工具，任务未开 exec → 被拒
+   `c4.exec_not_configured`）后，`TaskStore.start_run` 只被 `engine.start`
+   调用 1 次，`runs` 表仍只有 1 行。
+
+**判定：不成立（按"已确认漏洞"口径）。**不是"没验证"，是显式的设计前提 +
+可复现测试；`docs/KNOWLEDGE.md` §7 里那条"未逐条验证"的登记可以销账。
+
+### 2.5 边界（如实写清）
+
+`run_command`（exec）是模型可见的最高危工具，**默认全拒**
+（`c4.exec_not_configured`，必须 `task create --allow-exec-cmd` 显式开启）。
+若用户显式开启 exec 且策略允许调用 `tianshu` 可执行文件，模型原则上可以自己
+起一个 CLI → 新 Run。这不是否决缓存的静默绕过，而是 **exec 本身就是"非沙箱的
+最高危能力"**（PRD §6 / AGENTS §六：`isolation == "none"`）：用户放开它，
+模型能做的事远超"重新请求一次审批"。该边界如实登记，不靠否决缓存去堵。
+
+---
+
+## 3. #53 疑点 2：`revoke_consumed` 三条路径逐条探针
+
+探针脚本与 `tests/test_veto_scope.py` 使用同一套真实栈（`TaskStore` /
+`LeaseStore` / `JobStore` / `ApprovalStore` / `GrantStore` / `Dispatcher` /
+`SnapshotStore`），不手写替身；每条路径先跑探针看真实输出，再固化成测试。
+
+### 3.1 路径 A：撤销后同一 approval 不能再被派发消费 —— **成立**
+
+探针（intent 已提交、文件还没打开时撤销，与执行抢同一把守卫）：
+
+```text
+[A1 dispatch-after-revoke] ('rejected', 'none_applied', 'dispatch.not_admitted')
+[A2 approval] revoked
+[A3 file] b'原始内容\n'
+[A4 intents] ['c1']
+[A6 direct consume raised] ApprovalError: 审批不可消费：appr_...（未批准、已消费、已撤销或已过期）
+[A7 re-dispatch] ('rejected', 'none_applied', ..., '覆盖已有内容是删除类操作')
+[A8 file after re-dispatch] b'原始内容\n'
+[A9 approval after re-dispatch] revoked
+[A10 intents after re-dispatch] 1
+```
+
+- approval 层的唯一保证是 `consume()` 的条件 UPDATE（`state='approved'`），
+  已撤销的票直接 `ApprovalError`；
+- 派发层再派发同一请求也只回 `rejected/none_applied`：**没有第二次
+  `tool.intent`**，文件一个字节没动；
+- `dispatch_rejected` 事件与 `dispatches.state=revoked` 都已落库（上一轮
+  `test_dispatch.py::test_revoke_between_intent_and_open` 已覆盖守卫内复核，
+  这里补的是"撤销之后还能不能再消费"）。
+
+测试：`test_revoked_approval_cannot_be_consumed_again`。
+
+### 3.2 路径 B：越过 `execution.started` 之后撤销必须失败 —— **成立**
+
+探针把派发记录推进到执行器真正写之前会写的 `executing`（真实的
+`begin_execution` 已经写下 `execution.started` 事件），然后撤销：
+
+```text
+[B1b execution.started] 1
+[B2 revoke raised] ApprovalError: 这次调用已经开始执行（state=executing），撤销不承诺回滚；请用 recover 核查实际效果
+[B3 approval] consumed
+[B4 file] b'改后的内容\n'
+```
+
+- `revoke()` 的判定是"dispatch 状态必须是 `intent`"：越过 `execution.started`
+  之后（executing / done）一律 `ApprovalError`，**不会**把 approval 改成
+  revoked 来假装成功；
+- 撤销与执行抢同一把跨进程执行守卫（`leases.execution_guard`），所以不存在
+  "撤销赢了一半"的窗口：要么撤销先拿到守卫把 intent 作废，要么执行先拿到守卫、
+  撤销明确失败。
+
+既有 `tests/test_dispatch.py::test_revoke_after_execution_started_is_refused`
+覆盖"执行已经跑完（state=done）"；本轮测试补"停在 execution.started 之后、
+结论还没落库"的 in-flight 窗口。测试：
+`test_revoke_after_execution_started_is_refused`。
+
+### 3.3 路径 C：撤销之后新审批可以重新走 —— **成立**
+
+```text
+[A2 approval] revoked
+[C1 new prepare] ('waiting', 'appr_...', True)      # 新票，不是被撤销那张
+[C2 new dispatch] ('succeeded', 'applied')
+[C3 file] b'重新发起的内容\n'
+[C4 consumed] consumed
+```
+
+撤销作废的是**那一张票**，不是"这件事永久不能做"：同一个 Run 里重新发起
+（新 call_id → 新请求号）会重新走审批，批准后正常执行。测试：
+`test_revocation_allows_a_fresh_approval_in_the_same_run`。
+
+### 3.4 相邻观察（不是疑点，不改 dispatcher.py）
+
+对已经 `_abort_dispatch` 过的请求再调 `Dispatcher.dispatch()`，返回的
+`tool.result.output.rule_id` 仍是**准备阶段**的判定编号（如 `c4.overwrite`
+——语义是"需要审批"，不是"被拒"），而不是拒绝类编号：`_abort_dispatch` 把
+请求标成 `rejected` 时没有更新 `dispatch_requests.rule_id`。
+
+- 影响面：只有"直接调库再派发一次"的调用方看得到；主循环不会重复派发
+  （它已经为同一 call_id 写过 `tool.result`），所以不影响用户可见语义；
+- 不属于 #53 的两条宣称；`dispatcher.py` 属 T2，本轮**不改**，在此登记，
+  由 lead 决定是否单独开工单（若要改：`_abort_dispatch` 里 `_set_request_state`
+  应带上本次的 `rule_id`）。
+
+---
+
+## 4. #40 复核：否决后不再重复请求 —— **可关闭**
+
+命令与结果：
+
+```text
+$ PYTHONPATH=<worktree>/src python -m pytest -o addopts="" -q tests/test_approval_reject.py
+.........                                                                [100%]
+9 passed in 0.48s
+```
+
+覆盖的语义（`tests/test_approval_reject.py`）：拒绝 → resume → Run 以 `failed`
+收束且 `approval.requested` 恰好 1 次；换 call_id 重发仍命中否决；改参数可重新
+审批；改目标旧否决失效；`c4.approval_rejected` 真实出现在 `dispatch.rejected`
+与 `tool.result`；文件零改动。**结论：#40 可关闭（由 lead 关，本工作流不自己关）。**
+
+---
+
+## 5. 未做 / 边界
+
+1. **Windows 实机**：按规格本轮明确不做；本工作流只在 macOS 本机跑。
+   新测试用 `tmp_path`，无 POSIX-only 假设。
+2. **`docs/M4-verification.md`**：只改 §7.2 的费用口径（T6 改其它节）；
+   若与 T6 撞车由 lead 解。
+3. **旧游标**：`model_attempts` 是新增账本键。升级前的旧游标没有它 → 以
+   `turns` 为下限、`run status --json` 报 `null`（不知道）；不编造升级前的
+   尝试次数。文档已如实写明。
+4. **`format_cost` 本身未改**：它的语义仍是"有多少次调用的账已落库"（完成
+   轮次），新增的 `_cost_note` 负责把"尝试次数"翻译给用户；`tests/test_pricing.py`
+   对 `format_cost` 的直接断言因此保持不变。
+5. **`dispatcher.py` 未改**（疑点 2 三条都成立；§3.4 的相邻口径观察交 lead）。

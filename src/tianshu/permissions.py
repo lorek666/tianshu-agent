@@ -329,6 +329,9 @@ CREATE INDEX IF NOT EXISTS idx_approvals_digest ON approvals(request_digest);
 -- `schemas/m2/approval.json` 逐字段绑定的契约（tests/test_schemas.py），
 -- 而这里存的是审批的**内部索引**，不是审批对象的一部分。表是后加的，旧库
 -- 升级后自然为空；历史行回退到 action_digest / request_digest 比较。
+--
+-- 索引含 run_id 是因为否决的执行作用域是 Run（见 rejected_for 的说明：
+-- 语义键是 (task, subject_digest)，Run 边界只由人/控制面移动）。
 CREATE TABLE IF NOT EXISTS approval_subjects (
     approval_id    TEXT PRIMARY KEY,
     run_id         TEXT NOT NULL,
@@ -791,6 +794,27 @@ class ApprovalStore:
 
         旧库升级前的审批行没有 subject 记录（表是后加的），按 `find_for` /
         `consume` 同一套回退口径退到 `action_digest`，再退到 `request_digest`。
+
+        ## 作用域：Run 是边界，语义键是 (task, subject_digest)（#53 静态疑点 1）
+
+        SQL 里按 `run_id` 过滤，意思是"否决在这个 Run 内是终局"。那么"同一 Task
+        换个新 Run 会不会忘掉否决"就是唯一要紧的问题。答案是：**不会构成绕过**，
+        因为能启动 Run 的只有人/控制面——
+
+        - CLI：`run start` / `run --task`;
+        - 控制面 RPC：`control.ControlPlane` 的 `run.start`（Host/UI 经带 token
+          的本地 IPC 调用）；
+        - `Dispatcher.open_control_run`：undo / recover 由 CLI 发起的控制 Run。
+
+        模型的能力面只有 `tool_manifest()` 里的工具（`SPECS` 的 `exposed`
+        投影），里面没有"启动 Run"这个动作，`tools.py` 连 `TaskStore` 都只在
+        `TYPE_CHECKING` 下出现（运行时拿不到）。三层钉子见
+        `tests/test_veto_scope.py`。所以"换个 Run 再问一次"必然是人主动发起的
+        新执行——那是人的决定，不是模型把否决变回了待批门票。
+
+        前提如果变了（出现模型可达的建 Run 通道），这里必须改成按 task 查询
+        （`approval_subjects` 没有 task_id 列，需要 join `approvals.task_id`
+        或补列）。这个前提不是"约定俗成"，是有测试钉住的能力面事实。
         """
         row = self._conn.execute(
             "SELECT a.* FROM approvals a"
