@@ -56,10 +56,10 @@
 
 - **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend().capabilities.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
-- **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑并且是绿的，但跑在 `windows-latest`（Server 2022）上；并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
+- **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑，但**不稳定**：命名管道上偶发握手失败（issue [#50](https://github.com/lorek666/tianshu-agent/issues/50)，根因未定位，有些不稳定的轮次会让作业撞上超时被取消）；跑在 `windows-latest`（Server 2022）上，并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
 - **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
 - **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。
-- 已知缺口：issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）仍开着；issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**——否决即终局，`SUITE_VERSION` 升 `m4.4`。
+- 已知缺口：issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**（PR #48）——否决即终局，`SUITE_VERSION` 升 `m4.4`，工单仍开着等确认；issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）已收敛关闭。
 
 ## 快速开始
 
@@ -80,7 +80,7 @@ uv sync --python 3.12
 ### 跑测试与 lint
 
 ```bash
-uv run pytest -o addopts="" -q   # macOS 本机实测：1060 passed, 3 skipped
+uv run pytest -o addopts="" -q   # macOS 本机实测：1074 passed, 3 skipped
 uv run ruff check .              # 全绿（All checks passed!）
 ```
 
@@ -356,7 +356,7 @@ GitHub Actions。Python 矩阵三个平台 × Python 3.12：`ubuntu-latest` / `m
 
 ```bash
 uv sync --python 3.12
-uv run pytest -o addopts="" -q   # 全量；macOS 本机实测 1060 passed, 3 skipped
+uv run pytest -o addopts="" -q   # 全量；macOS 本机实测 1074 passed, 3 skipped
 uv run ruff check .              # lint
 ```
 
