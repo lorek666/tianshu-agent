@@ -20,7 +20,7 @@ from typing import Any
 
 from .credentials import redact
 from .dispatcher import build_request
-from .errors import TianshuError, ToolNotAllowed
+from .errors import SnapshotCorrupt, TianshuError, ToolNotAllowed
 from .guard import ensure_not_blocked
 from .permissions import HumanIdentity
 from .workspace import Workspace, WorkspaceBinding
@@ -110,7 +110,24 @@ def plan_undo(stack, run_id: str, *, scope: Path | None = None) -> UndoPlan:
 
     拒绝条件都发生在**动手之前**——撤销写错目录比撤销失败严重得多。
     """
-    items = _load_items(stack, run_id)
+    try:
+        items = _load_items(stack, run_id)
+    except SnapshotCorrupt as exc:
+        # 清单读不懂：既不知道改过哪些文件，也不知道该还原成什么。按猜的
+        # 清单动手就是数据破坏，所以这里和"没有根"同一档——拒绝，并说清
+        # 还能怎么补救。裸的解析异常会漏到 CLI 边界，只说"Expecting value"。
+        raise UndoRefused(
+            "撤销证据损坏",
+            code=2,
+            lines=[
+                "拒绝撤销：这次 Run 的写前证据（快照清单）读不出来",
+                f"  - {exc}",
+                "清单损坏时无法确认哪些文件被改过、该还原成什么；",
+                "按猜的清单撤销就是数据破坏，所以一个字节都不动。",
+                "处置建议：先用 `tianshu recover --run-id <ID> --workspace <目录>` "
+                "核对，或按 artifacts/snapshots/<ID>.json 手工还原（先备份）。",
+            ],
+        ) from exc
     if not items:
         raise UndoRefused(
             "没有可撤销的变更",

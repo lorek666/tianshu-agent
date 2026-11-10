@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .errors import TianshuError, ToolNotAllowed
+from .errors import SnapshotCorrupt, TianshuError, ToolNotAllowed
 from .fsutil import atomic_write_bytes
 from .sandbox import current_backend
 from .workspace import Workspace
@@ -193,7 +193,25 @@ class SnapshotStore:
             return []
         # 按字节读再显式解码：文本模式在 Windows 上会做换行翻译，
         # 而快照清单是审计材料——读它就该和写它一样"字节进字节出"。
-        raw = json.loads(path.read_bytes().decode("utf-8"))
+        try:
+            return self._parse(path.read_bytes())
+        except TianshuError:
+            # 版本不认这类**明确的拒绝**原样往上抛：它比"文件坏了"更具体，
+            # 调用方据此说的话也不一样（"升级程序" vs "证据被破坏"）。
+            raise
+        except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+            # 坏 JSON / 缺字段 / 类型不对 / 读不出来，全都意味着"这份证据不可信"。
+            # 以前这里直接漏出 `JSONDecodeError`：恢复和撤销会看到一个裸的解析
+            # 异常，既不是域错误，也没有说清是哪份文件——校验器自己先崩了，
+            # 就没人替它回答"到底写没写"。转成域错误，让调用方必须处理。
+            raise SnapshotCorrupt(
+                f"快照清单无法解析：{path}（{type(exc).__name__}: {exc}）。"
+                "这份证据不能作为结论来源：恢复必须判 unknown 并阻断，"
+                "撤销必须拒绝，不能当成空清单继续。"
+            ) from exc
+
+    def _parse(self, raw_bytes: bytes) -> list[Change]:
+        raw = json.loads(raw_bytes.decode("utf-8"))
         if isinstance(raw, dict):
             version = raw.get("version")
             if isinstance(version, int) and version not in _READABLE_VERSIONS:
