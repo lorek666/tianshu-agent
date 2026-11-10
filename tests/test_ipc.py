@@ -15,8 +15,11 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import socket
+import sys
 import tempfile
 import threading
 import time
@@ -373,6 +376,226 @@ def test_probe_distinguishes_alive_from_dead(root: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="stale socket 文件是 POSIX 概念")
+def test_start_returns_with_listening_endpoint_even_without_accept_loop(
+    root: Path,
+) -> None:
+    """`start()` 返回时端点必须真的在 listen：**没有人 accept 也连得上**。
+
+    这是 issue #63 的 backlog 回归。`multiprocessing.connection.Listener` 默认
+    `backlog=1`：第一次探活连接（连上就关、不做认证握手）会占满那条队列，
+    紧接着的第二次 `connect` 在 macOS 上直接 `ECONNREFUSED`。症状就是
+    "端点文件存在、进程活着、probe 连不上"——正是 #63 的断言。
+
+    这里刻意**不起 accept 线程**：连续 8 次探活必须全部成功；队列容量必须
+    经得起"探活连接自己留下的死连接"，而不是靠 accept 线程立刻来救。
+    """
+    server = ipc.Server(root)
+    server.start()
+    try:
+        results = [ipc.probe(root, timeout=0.2) for _ in range(8)]
+        assert results == [True] * 8, f"背靠背探活出现失败（backlog 太小）：{results}"
+        detail = ipc.probe_result(root, timeout=0.2)
+        assert detail.ok is True
+        assert detail.attempts == 1
+    finally:
+        server.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="命名管道没有 ENOENT/ECONNREFUSED 分层")
+def test_probe_result_separates_missing_from_not_listening(root: Path) -> None:
+    """失败原因要能按 errno 分支：不存在 vs 存在但没人监听，处置完全不同。"""
+    missing = ipc.probe_result(root, retry_ms=0)
+    assert missing.ok is False
+    assert missing.endpoint_exists is False
+    assert missing.attempts == 1, "端点不存在时不该重试（会把没有 daemon 变慢）"
+    assert "不存在" in missing.reason
+
+    endpoint = ipc.endpoint_path(root)
+    ipc.run_dir(root).mkdir(parents=True, exist_ok=True)
+    bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    bound.bind(endpoint)  # bind 了但没 listen：connect 会 ECONNREFUSED
+    try:
+        not_listening = ipc.probe_result(root, retry_ms=0)
+        assert not_listening.ok is False
+        assert not_listening.endpoint_exists is True
+        assert not_listening.errno == errno.ECONNREFUSED
+        assert "无人监听" in not_listening.reason
+    finally:
+        bound.close()
+        Path(endpoint).unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="重试语义只在 POSIX 探活实现上成立")
+def test_probe_result_retries_transient_errors_deterministically(
+    root: Path, monkeypatch
+) -> None:
+    """重试逻辑的跨平台确定性证据：第一次 ECONNREFUSED、第二次连通。
+
+    不依赖真实 backlog 语义（那是平台相关的：macOS 满队列立即拒绝，Linux 只是
+    排队/阻塞）。直接把 `_probe_once` 换成"第一次拒绝、第二次成功"，钉住：
+    1. `retry_ms>0` 会把瞬时失败等回来，且 `attempts>=2`；
+    2. `retry_ms=0` 一次都不重试（负控锚点）；
+    3. `ENOENT`（端点真的不存在）不重试——否则"没有 daemon"会被预算拖慢。
+    """
+    runs = root / "run"
+    runs.mkdir(parents=True, exist_ok=True)
+    endpoint = ipc.endpoint_path(root)
+    Path(endpoint).write_bytes(b"")  # 让 endpoint_exists=True，与真实 socket 文件同形
+
+    calls: list[str] = []
+
+    def flaky(data_root: Path, timeout: float):
+        calls.append("probe")
+        if len(calls) == 1:
+            return (
+                False, errno.ECONNREFUSED,
+                "端点文件存在但无人监听（连接被拒）", endpoint,
+            )
+        return True, None, "已连接", endpoint
+
+    monkeypatch.setattr(ipc, "_probe_once", flaky)
+    result = ipc.probe_result(root, retry_ms=500)
+    assert result.ok is True, result
+    assert result.attempts == 2, result
+    assert len(calls) == 2
+
+    calls.clear()
+    no_retry = ipc.probe_result(root, retry_ms=0)
+    assert no_retry.ok is False and no_retry.attempts == 1, no_retry
+    assert len(calls) == 1, "retry_ms=0 不许重试"
+
+    calls.clear()
+
+    def missing(data_root: Path, timeout: float):
+        calls.append("probe")
+        return False, errno.ENOENT, "端点不存在（没有守护进程，或进程已退出）", endpoint
+
+    monkeypatch.setattr(ipc, "_probe_once", missing)
+    gone = ipc.probe_result(root, retry_ms=500)
+    assert gone.ok is False and gone.attempts == 1, gone
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket 的排队语义；Windows 走命名管道")
+def test_probe_retries_when_endpoint_exists_but_accept_is_behind(
+    root: Path, monkeypatch
+) -> None:
+    """端点存在但队列被占满：`probe` 要在短预算内重试，而不是立刻判死。
+
+    窗口来源不是网络，是本地 accept 队列：探活连接自己会占掉队首，服务端要
+    先失败一次握手才能腾出位置。`retry_ms=0` 时必须立刻报 False（负控锚点）；
+    有人在 50ms 后 accept 时，默认的短暂重试必须把它等回来。
+    """
+    if sys.platform != "darwin":
+        pytest.skip(
+            "AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，"
+            "同样连接会排队。重试逻辑见 "
+            "test_probe_result_retries_transient_errors_deterministically"
+        )
+    monkeypatch.setattr(ipc, "LISTEN_BACKLOG", 1)
+    server = ipc.Server(root)
+    server.start()
+    drained = threading.Event()
+    try:
+        endpoint = ipc.endpoint_path(root)
+        filler = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        filler.settimeout(0.5)
+        filler.connect(endpoint)  # 唯一队列位被"连了就关"的探活连接占满
+        filler.close()
+        # 负控锚点：**不重试**时必须立刻报 False（不能假装活着）。
+        # 用 retry_ms=0 而不是 probe()：后者的短暂重试会把下面的人为 accept
+        # 也等进来，测不到"第一次被拒"。
+        assert ipc.probe_result(root, timeout=0.2, retry_ms=0).ok is False, (
+            "队列满时探活必须如实失败（返回 True 才是撒谎）"
+        )
+
+        def accept_soon() -> None:
+            time.sleep(0.05)
+            try:
+                server.accept()
+            except (ipc.IpcError, OSError):
+                pass
+            drained.set()
+
+        threading.Thread(target=accept_soon, daemon=True).start()
+        result = ipc.probe_result(root, timeout=0.2, retry_ms=500)
+        assert drained.wait(2.0)
+        assert result.ok is True, f"没有等到 accept 腾出队列：{result}"
+        assert result.attempts >= 2, "第一次被队列满拒绝后应当重试过"
+    finally:
+        server.close()
+
+
+def test_self_connect_requires_a_live_accept_loop(root: Path) -> None:
+    """自连探测要**走完认证握手**：只 bind/listen 不够，accept 循环必须活着。
+
+    daemon 用它在 `on_ready` 之前证明"listen + accept + 应用层握手"整条路通；
+    这也是 `probe()`（只 connect）与"真的能服务"之间的差别。
+    """
+    server = ipc.Server(root)
+    server.start()
+    try:
+        assert ipc.self_connect(root, timeout=0.3) is False, (
+            "没有 accept 线程时不应能完成握手"
+        )
+        stop = threading.Event()
+
+        def accept_loop() -> None:
+            while not stop.is_set():
+                try:
+                    conn = server.accept()
+                except (ipc.IpcError, OSError):
+                    if stop.is_set():
+                        return
+                    continue
+                conn.close()
+
+        thread = threading.Thread(target=accept_loop, daemon=True)
+        thread.start()
+        try:
+            assert server.wait_accepting(2.0) is True
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not ipc.self_connect(
+                root, timeout=0.5
+            ):
+                time.sleep(0.01)
+            assert ipc.self_connect(root, timeout=1.0) is True
+        finally:
+            stop.set()
+            thread.join(2)
+    finally:
+        server.close()
+
+
+def test_server_exposes_accepting_state(root: Path) -> None:
+    """`on_ready` 的判据之一：accept 线程**真的站在 accept() 里**（不是 start 过）。"""
+    server = ipc.Server(root)
+    server.start()
+    try:
+        assert server.accepting is False
+        assert server.wait_accepting(0.1) is False
+        stop = threading.Event()
+
+        def accept_loop() -> None:
+            while not stop.is_set():
+                try:
+                    conn = server.accept()
+                except (ipc.IpcError, OSError):
+                    return
+                conn.close()
+
+        thread = threading.Thread(target=accept_loop, daemon=True)
+        thread.start()
+        try:
+            assert server.wait_accepting(5.0) is True
+            assert server.accepting is True
+        finally:
+            stop.set()
+            thread.join(2)
+    finally:
+        server.close()
+
+
 def test_stale_endpoint_is_replaced_on_start(root: Path) -> None:
     """上次 kill -9 留下的 socket 文件不该让下一次启动失败。"""
     endpoint = ipc.endpoint_path(root)
