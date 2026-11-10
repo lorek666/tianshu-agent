@@ -307,7 +307,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 01:27（`feat/memory` 工作区实测，`1220 passed / 3 skipped`、1223 条 collected——已合入 `main@540c543`；以 CI 为准）。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 01:40（`feat/memory` 工作区实测，`1227 passed / 3 skipped`、1230 条 collected——已合入 `main` 的 #62 / #65 / #66；其中 140 条来自本特性的四个记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
