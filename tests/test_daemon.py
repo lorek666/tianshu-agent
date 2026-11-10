@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -995,3 +996,93 @@ def test_stop_event_shuts_down_without_rpc(root) -> None:
     harness.start()
     assert harness.stop_and_wait(timeout=5.0)
     assert not daemon.lock_path(root).exists()
+
+
+def test_client_disconnect_does_not_spin_a_cpu_core(root) -> None:
+    """客户端断开后，daemon 的读线程必须退出——不能空转烧掉一个核。
+
+    这是实测到的真 Bug，不是假想：演示里 `client.close()` 之后 daemon 持续
+    吃满一个核（`poll()` 立刻报可读 → `recv_bytes()` 立刻 EOF 的循环），
+    直到进程被杀。根因是 `ipc.ServerConnection.recv()` 对"超时"和"断线"都
+    返回值 None，读循环无法区分，只能永远 continue。
+
+    这里用子进程跑真 daemon，再用它自己的 `time.process_time()` 记账：
+    空转时 1.5 秒会吃掉约 1.5 秒 CPU；正常时只有驱动线程的轻微轮询开销。
+    "读线程退出了"是修法，"CPU 没被烧"是用户能感觉到的后果，两个都验。
+    """
+    script = root / "quiet_daemon.py"
+    write_exact(
+        script,
+        "\n".join(
+            [
+                "import json, sys, threading, time",
+                "from pathlib import Path",
+                "",
+                "from tianshu import daemon, ipc",
+                "from tianshu.capability import CapabilityProfile",
+                "from tianshu.model import ModelIdentity, ModelResponse",
+                "",
+                "",
+                "class Quiet:",
+                "    def capability_profile(self):",
+                "        return CapabilityProfile(provider='test', model='quiet',",
+                "                                  supports_tool_calling=True,",
+                "                                  declared_by='cpu spin test')",
+                "    def price_identity(self):",
+                "        return ModelIdentity(adapter='test', vendor=None, model='quiet')",
+                "    def complete(self, messages, tools):",
+                "        return ModelResponse(finish_reason='end_turn', content='')",
+                "",
+                "",
+                "root = Path(sys.argv[1])",
+                "stop = threading.Event()",
+                "ready = threading.Event()",
+                "",
+                "",
+                "def run():",
+                "    try:",
+                "        daemon.serve(root, model=Quiet(), on_ready=ready.set,",
+                "                     stop_event=stop)",
+                "    except BaseException as exc:  # noqa: BLE001",
+                "        print(json.dumps({'error': f'{type(exc).__name__}: {exc}'}), flush=True)",
+                "        ready.set()",
+                "",
+                "",
+                "threading.Thread(target=run, daemon=True).start()",
+                "assert ready.wait(20), 'daemon 没在 20s 内就绪'",
+                "client = ipc.Client(root, timeout=5)",
+                "client.connect()",
+                "client.call('state')",
+                "client.close()  # 就是这一步之后读线程原本会空转",
+                "time.sleep(0.3)",
+                "t0 = time.process_time()",
+                "time.sleep(1.5)",
+                "delta = time.process_time() - t0",
+                "stop.set()",
+                "time.sleep(0.1)",
+                "print(json.dumps({'cpu_delta': delta}), flush=True)",
+                "",
+            ]
+        ),
+    )
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = {**os.environ, "PYTHONPATH": src, "TIANSHU_SANDBOX_BACKEND": "local_fs"}
+    proc = subprocess.run(  # noqa: S603 - 测试自己拼的命令，没有外部输入
+        [sys.executable, str(script), str(root)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=90,
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    assert proc.returncode == 0, f"子进程失败：{proc.stderr[-2000:]}"
+    assert lines, f"子进程没有输出：{proc.stderr[-2000:]}"
+    report = json.loads(lines[-1])
+    assert "error" not in report, report
+    delta = float(report["cpu_delta"])
+    assert delta < 0.5, (
+        f"客户端断开后 daemon 在 1.5s 内吃了 {delta:.2f}s CPU——读线程在空转"
+    )
+

@@ -176,10 +176,7 @@ def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
     existing = read_host_info(data_root)
     if existing is not None:
         if _http_alive(existing):
-            raise HostError(
-                f"Host 已在运行：http://127.0.0.1:{existing.port}/"
-                f"?token={existing.token}"
-            )
+            raise HostError(f"Host 已在运行：http://127.0.0.1:{existing.port}/")
         # 残留锁：进程已死或端口被别的东西占了。删掉重建，不沿用旧 token
         # （旧 token 可能已经出现在某个聊天窗口里了）。
         host_lock_path(data_root).unlink(missing_ok=True)
@@ -567,7 +564,9 @@ class _Handler(BaseHTTPRequestHandler):
             while True:
                 try:
                     message = client.next_event(timeout=0.5)
-                except ipc.ProtocolError:
+                except (ipc.ProtocolError, ipc.ConnectionClosed):
+                    # 断开是终态：结束这条流，浏览器 EventSource 会按 UI 的
+                    # 重连策略（最多 3 次失败）重来，而不是在这里空转心跳帧。
                     break
                 if message is None:
                     idle += 0.5
@@ -719,7 +718,13 @@ class UiBridge(ThreadingHTTPServer):
 
     @property
     def url(self) -> str:
-        return f"http://{self.config.host}:{self.port}/?token={self.config.token}"
+        """给人打开/点击的地址。
+
+        **不带 token**：token 从页面 `<meta>` 读（Host 注入），不需要进 URL。
+        URL 会进浏览器历史、shell 历史、聊天记录和截图——把访问权限放进去，
+        等于每次分享"怎么打开"都顺手分享了一把钥匙。
+        """
+        return f"http://{self.config.host}:{self.port}/"
 
     def serve_background(self) -> None:
         self._thread = threading.Thread(target=self.serve_forever, name="ui-bridge", daemon=True)

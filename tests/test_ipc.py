@@ -84,7 +84,9 @@ class EchoServer:
             except ipc.ProtocolError:
                 break
             if message is None:
-                if self._stop.is_set():
+                if self._stop.is_set() or conn.eof:
+                    # 101 次里 99 次是超时（继续等）；断线只发生一次，但只判
+                    # None、不判 eof 的写法会让这一轮循环以 100% CPU 空转。
                     break
                 continue
             request_id = str(message.get("id") or "")
@@ -243,6 +245,78 @@ def test_client_disconnect_does_not_kill_server(echo, root: Path) -> None:
     # 服务端在下一个连接上必须还能正常服务。
     with ipc.Client(root) as second:
         assert second.call("echo", {"ok": True}) == {"echo": {"ok": True}}
+
+
+def _handshaken_pair(root: Path, server: ipc.Server) -> tuple[ipc.ServerConnection, object]:
+    """做一次只有传输层握手的连接，返回 (服务端那端, 客户端 raw 连接)。"""
+    family = "AF_PIPE" if os.name == "nt" else "AF_UNIX"
+    holder: list[object] = []
+
+    def connect() -> None:
+        try:
+            holder.append(
+                RawClient(
+                    ipc.endpoint_path(root),
+                    family=family,
+                    authkey=ipc.load_authkey(root),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 断言里要看具体错误
+            holder.append(exc)
+
+    connector = threading.Thread(target=connect, daemon=True)
+    connector.start()
+    conn = server.accept()
+    connector.join(timeout=5)
+    assert holder and not isinstance(holder[0], Exception), f"握手没有完成：{holder}"
+    return conn, holder[0]
+
+
+def test_peer_close_is_distinguishable_from_timeout(root: Path) -> None:
+    """断线必须能从"超时"里区分出来，否则读循环会 100% CPU 空转。
+
+    实测过的真 Bug（不是推理）：演示里客户端 `client.close()` 之后，daemon
+    的读线程就在 `poll()` 立刻可读 → `recv_bytes()` 立刻 EOF 之间打转，把
+    一整个核烤满，直到进程被杀。根因是 `recv()` 对"超时"和"断线"都只返回
+    None；修法是断线时置 `eof`，读循环据此退出。见 `docs/M5-desktop.md §10`。
+    """
+    server = ipc.Server(root)
+    server.start()
+    try:
+        conn, raw_client = _handshaken_pair(root, server)
+        assert not conn.eof, "刚握完手就报 eof"
+        started = time.monotonic()
+        assert conn.recv(timeout=0.1) is None
+        assert not conn.eof, "超时被误判成断线——读循环会被提前打断"
+        assert time.monotonic() - started >= 0.09, "带超时的读没有真的等"
+
+        raw_client.close()
+        started = time.monotonic()
+        assert conn.recv(timeout=1.0) is None
+        assert time.monotonic() - started < 0.5, "断线后没有立刻返回（等到超时了）"
+        assert conn.eof, "对端断开后只返回了 None，没有留下可判别的 eof"
+        # 断开是终态：之后的调用必须立刻返回，不能每轮都重新 poll 一次。
+        started = time.monotonic()
+        assert conn.recv(timeout=1.0) is None
+        assert time.monotonic() - started < 0.1
+    finally:
+        server.close()
+
+
+def test_subscription_drop_raises_instead_of_returning_none(
+    echo: EchoServer, root: Path
+) -> None:
+    """订阅连接断开必须是异常，不能伪装成"这一刻没事件"。"""
+    client = ipc.Client(root)
+    client.connect()
+    try:
+        assert client.subscribe(1)["from_seq"] == 1
+        assert client.next_event(timeout=1) is not None
+        echo.stop()
+        with pytest.raises(ipc.ConnectionClosed):
+            client.next_event(timeout=1)
+    finally:
+        client.close()
 
 
 def test_connect_to_missing_daemon_fails_fast(root: Path) -> None:

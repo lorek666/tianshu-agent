@@ -439,6 +439,7 @@ class ServerConnection:
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
+        self._eof = False
         self.client: dict[str, Any] = {}
         self.subscribed = False
         self.since_seq = 0
@@ -447,23 +448,38 @@ class ServerConnection:
         self._conn.send_bytes(encode(message))
 
     def recv(self, *, timeout: float | None = None) -> dict[str, Any] | None:
-        """读一条消息；对端关闭返回 None（不是异常——正常断线）。
+        """读一条消息；超时返回 None，对端关闭也返回 None **但会置 `eof`**。
 
-        超时返回 None 是**有歧义**的设计，所以这里不给超时默认值：调用方要么
-        无限等（阻塞线程），要么自己用 `poll()` 先判可读。daemon 的连接线程
-        就是阻塞等，超时由 shutdown 时关闭连接打断。
+        「超时」和「断线」都返回 None 是有歧义的：读循环如果只判 None，
+        对端一断开 `poll()` 就立刻报告"可读"、`recv_bytes()` 立刻 EOF，
+        循环会以 100% CPU 空转（实测：演示里客户端断开后，daemon 的读线程
+        把一整个核烤满，见 `docs/M5-desktop.md §10`）。所以断线必须留下
+        可判别的 `eof`，让读循环据此退出，而不是继续下一轮。
+
+        没有超时默认值：调用方要么无限等（阻塞线程），要么自己用
+        `poll()` 先判可读。daemon 的连接线程用带超时的等，shutdown 时
+        由关闭连接打断。
         """
+        if self._eof:
+            return None
         if timeout is not None and not self._conn.poll(timeout):
             return None
         try:
             raw = self._conn.recv_bytes()
         except EOFError:
+            self._eof = True
             return None
         except OSError:
+            self._eof = True
             return None
         if len(raw) > MAX_MESSAGE_BYTES:
             raise ProtocolError(f"消息 {len(raw)} 字节，超过上限 {MAX_MESSAGE_BYTES}")
         return decode(raw)
+
+    @property
+    def eof(self) -> bool:
+        """对端已断开（或本地已关）：之后 `recv()` 永远等不到消息。"""
+        return self._eof or bool(self._conn.closed)
 
     @property
     def closed(self) -> bool:
@@ -615,10 +631,13 @@ class Client:
         return result
 
     def next_event(self, *, timeout: float | None = None) -> dict[str, Any] | None:
-        """取下一条推送。
+        """取下一条推送：**超时**返回 None，**连接断开**抛 `ConnectionClosed`。
 
         先交还 `call()` 期间攒下的推送（顺序保持原样），再从连接上读。
-        超时/断开返回 None——订阅方据此判断"该重连了"，而不是把 None 当事件。
+
+        这里不能把断开也返回 None：订阅方的循环（host 的 SSE）靠 None 判
+        "这一刻没事件"，断开后 None 会立刻再次返回，循环就变成空转。
+        断开是终态，必须是异常，订阅方才能干净地结束流、让客户端重连。
         """
         if self._pushes:
             return self._pushes.pop(0)
@@ -632,8 +651,10 @@ class Client:
                 if not self._conn.poll(remaining):
                     return None
                 raw = self._conn.recv_bytes()
-            except (EOFError, OSError, AttributeError):
-                return None
+            except (EOFError, OSError) as exc:
+                raise ConnectionClosed(f"连接已断开：{exc}") from exc
+            except AttributeError as exc:
+                raise ConnectionClosed("Client 未连接") from exc
             message = decode(raw)
             if "push" in message:
                 return message

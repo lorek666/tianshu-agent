@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -266,6 +267,67 @@ def test_approval_is_decided_through_ipc_and_run_continues(root: Path) -> None:
             assert "approval.decided" in types
             assert "approval.consumed" in types
             assert "receipt" in types
+            assert client.call("approvals.list", {})["approvals"] == []
+        finally:
+            client.close()
+
+
+def test_rejected_action_terminates_and_is_not_reasked(root: Path) -> None:
+    """人拒绝之后，同一动作不会再回来问第二遍（issue #40 的端到端形态）。
+
+    这是"审批 UI 有用"的反面：如果拒绝只是把 Run 停在 waiting_approval，
+    用户点多少次拒绝都不会结束，UI 上表现为一张永远消不掉的卡片。
+    """
+    ws = root / "ws"
+    ws.mkdir()
+    (ws / "old.txt").write_bytes("旧账单".encode())
+    with DaemonHarness(
+        root,
+        FakeModel(
+            [
+                ModelResponse(
+                    finish_reason="tool_use",
+                    tool_calls=[ToolCall("c1", "delete_file", {"path": "old.txt"})],
+                )
+            ]
+        ),
+    ):
+        client = _client(root)
+        try:
+            task_id = _make_task(client, ws, goal="删掉旧账单")
+            run_id = _start(client, task_id)
+            _wait_state(client, run_id, "waiting_approval")
+            approval_id = client.call("approvals.list", {"run_id": run_id})["approvals"][0][
+                "approval_id"
+            ]
+            client.call(
+                "approvals.decide", {"approval_id": approval_id, "decision": "reject"}
+            )
+            run = _wait_run(client, run_id, timeout=20)
+            assert run["state"] == "failed", run
+            assert run["effect_state"] == "none_applied"
+            assert (ws / "old.txt").exists(), "被拒绝的动作不许动文件"
+            events = client.call("events.run", {"run_id": run_id})["events"]
+            requested = [e for e in events if e["type"] == "approval.requested"]
+            assert len(requested) == 1, "否决后不许再发起同一动作的审批"
+            rejected = [
+                e
+                for e in events
+                if e["type"] == "tool.result" and e["payload"].get("status") == "rejected"
+            ]
+            assert rejected, events
+            # rule_id 在 tool.result 的 output 里（result envelope 的既有形状），
+            # dispatch.rejected 上也有一个同值的顶层 rule_id。
+            assert any(
+                (e["payload"].get("output") or {}).get("rule_id")
+                == "c4.approval_rejected"
+                for e in rejected
+            ), rejected
+            assert any(
+                e["payload"].get("rule_id") == "c4.approval_rejected"
+                for e in events
+                if e["type"] == "dispatch.rejected"
+            )
             assert client.call("approvals.list", {})["approvals"] == []
         finally:
             client.close()
@@ -532,3 +594,60 @@ def test_host_bridges_real_daemon_with_real_ui(root: Path) -> None:
             )
         finally:
             bridge.stop()
+
+
+@pytest.mark.skipif(
+    not (REAL_UI_DIST / "index.html").is_file(),
+    reason="仓库里没有 ui/dist（先 `pnpm --dir ui run build`）",
+)
+def test_event_stream_ends_when_daemon_goes_away(root: Path) -> None:
+    """daemon 断开订阅连接后，SSE 必须结束，不能变成"空转发心跳"的永动机。
+
+    实测过的真 Bug：`Client.next_event()` 在断线时也返回 None，SSE 循环把
+    None 当"这一刻没事件"，于是 `poll()→EOF` 的循环烧满一个核，而且浏览器
+    永远等不到流结束（UI 会一直显示"事件流已连接"，实际早就没有事件了）。
+    """
+    ws = root / "ws"
+    ws.mkdir()
+    token = "stream-token"
+    harness = DaemonHarness(root, FakeModel([]))
+    with harness:
+        config = host.BridgeConfig(data_root=root, ui_dir=REAL_UI_DIST, token=token, port=0)
+        bridge = host.UiBridge(config)
+        bridge.serve_background()
+        sock = None
+        try:
+            sock = socket.create_connection(("127.0.0.1", bridge.port), timeout=5)
+            request = (
+                f"GET /events?since_seq=0 HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{bridge.port}\r\n"
+                f"X-Tianshu-Token: {token}\r\n"
+                "Accept: text/event-stream\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            sock.sendall(request)
+            raw = b""
+            while b"\r\n\r\n" not in raw:
+                raw += sock.recv(65536)
+            assert b"200" in raw.split(b"\r\n")[0], raw[:200]
+
+            # 让 daemon 正常退出：它会先关掉所有已接受的连接，再关 listener。
+            assert daemon.request_shutdown(root, reason="test", timeout=5)
+
+            sock.settimeout(5)
+            deadline = time.monotonic() + 5
+            ended = False
+            while time.monotonic() < deadline:
+                try:
+                    chunk = sock.recv(65536)
+                except TimeoutError:  # 5s 内一直有字节过来 = 在空转发心跳
+                    break
+                if not chunk:
+                    ended = True
+                    break
+            assert ended, "daemon 断开后事件流没有结束（SSE 在空转发心跳）"
+        finally:
+            if sock is not None:
+                sock.close()
+            bridge.stop()
+

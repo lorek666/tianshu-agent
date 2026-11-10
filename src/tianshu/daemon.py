@@ -600,6 +600,12 @@ class _Daemon:
             if message is None:
                 if self.stop.is_set():
                     break
+                if conn.raw.eof:
+                    # `None` 有两种含义：这一刻没消息（超时，继续等），或者
+                    # 对端已经断开（永远等不到了）。只判 None、不判 eof 的话，
+                    # 断线后 poll 会立刻报可读、recv 立刻 EOF，读线程以 100%
+                    # CPU 空转——演示里关掉浏览器就能复现。
+                    break
                 continue
             self.requests.put((conn, message))
         conn.close()
@@ -771,6 +777,9 @@ class _Daemon:
     def _reap_connections(self) -> None:
         with self._conns_lock:
             self._conns = [conn for conn in self._conns if not conn.closed]
+        # 读线程同样要回收：否则每关一次 UI/每刷新一次页面，就多留一个
+        # Thread 对象在列表里，长驻进程里是慢性泄漏。
+        self._reader_threads = [t for t in self._reader_threads if t.is_alive()]
 
     # ------------------------------------------------------------------ 驱动
 
