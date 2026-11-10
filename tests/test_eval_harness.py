@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from tianshu.cli import main
+from tianshu.errors import TianshuError
 from tianshu.eval import (
     CASES,
     HAPPY_PATH,
@@ -279,3 +281,55 @@ def test_reject_case_leaves_everything_untouched(tmp_path):
         assert obs.count("receipt") == 0
         assert obs.count("approval.consumed") == 0
         assert obs.files_at_pause is not None
+
+
+def test_eval_refuses_memfs_backend_before_touching_disk(tmp_path):
+    """memfs 下评测必须**开跑前**拒绝，而不是交一份 1/20 + unsafe 的假分数。
+
+    实测（2026-11-10，不加守卫）：`TIANSHU_SANDBOX_BACKEND=memfs` 跑整套得到
+    1/20、唯一的绿是唯一不写文件的 N6、verdict=unsafe。那是后端与评测器不匹配，
+    不是系统结论——fixture 与判据直接读写宿主盘，崩溃 case 还要跨进程看见同一份
+    状态，而 memfs 的状态随进程消失。假分数会被引用，所以这里要求 fail closed。
+    """
+    from tianshu import sandbox
+
+    sandbox.configure_backend("memfs")
+    try:
+        with pytest.raises(TianshuError, match="local_fs"):
+            run_suite(
+                CASES[:1],
+                model_for=lambda case: ScriptedModel(list(case.script)),
+                repeat=1,
+                workdir=tmp_path / "eval",
+            )
+        # 拒绝发生在那条 `workdir.mkdir` 之前：调用方的盘上不该留半套工作根
+        assert not (tmp_path / "eval").exists()
+    finally:
+        sandbox.reset_backend()
+
+
+def test_cli_evaluate_refuses_memfs_backend(tmp_path, capsys, monkeypatch):
+    """命令行同一口径：退出码 2（前置条件错），且不产出报告文件。"""
+    from tianshu import sandbox
+
+    monkeypatch.setenv(sandbox.ENV_VAR, "memfs")
+    sandbox.configure_backend("memfs")
+    try:
+        out = tmp_path / "report.json"
+        code = main(
+            [
+                "evaluate",
+                "--repeat",
+                "3",
+                "--workdir",
+                str(tmp_path / "eval"),
+                "--out",
+                str(out),
+            ]
+        )
+    finally:
+        sandbox.reset_backend()
+    captured = capsys.readouterr()
+    assert code == 2, (code, captured.out, captured.err)
+    assert "local_fs" in captured.err
+    assert not out.exists(), "被拒绝的评测不许留下报告文件"
