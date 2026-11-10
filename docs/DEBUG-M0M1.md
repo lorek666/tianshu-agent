@@ -349,3 +349,50 @@ json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
    `windows-latest` 上仍有命名管道握手偶发失败（issue #50）。
 3. **`authority` 数据根逃逸与完整 takeover**：未实现（issue #61）。
 4. **跨多文件撤销的事务性**：不宣称——逐文件原子 + 逐文件记录，不是一次事务。
+
+## 2026-11-11 收尾轮：除 Windows 实机外全部落地
+
+立据：本文「仍然不成立的宣称」四条 + 开工单 #61/#63/#58/#57/#55/#54/#53。
+规格（先写判据再动代码）：[SPEC-RESIDUALS-M0M1.md](SPEC-RESIDUALS-M0M1.md)。
+基线 `main @ 540c543`（1080 passed / 3 skipped）→ 收尾后 `main` **1316 passed, 6 skipped**、
+`ruff check .` 干净。**Windows 实机是唯一明确不做的事**（没有机器，只有 `windows-latest`）。
+
+| 项 | 结论 | 落实位置 | 钉住它的测试 | 仍未覆盖 |
+|---|---|---|---|---|
+| 「宣称 1」真实断电 | **大部分已修** | PR #71：`fsutil` 四个持久化边界故障点 + `crashpoint` 路径限定；撕裂写模拟；真实 HFS+ 强制摘卷实验 | `tests/test_crash_consistency.py`（21）、`tests/test_powercut_image.py`（3，opt-in）、`tests/test_recovery.py` delete 矩阵 | **块设备/固件断电语义仍未验证**：`detach -force` 仍刷脏页（20MB 未 fsync 实测存活），所以"未 fsync 的字节一定丢"不成立 |
+| 「宣称 3a」authority 数据根逃逸（#61.1） | **已修** | PR #70：`authority.py` 固定用户级权威根（与 `--db`/cwd 无关）+ 守卫双读 + 迁移补登记 | `tests/test_authority_block.py`（7，含真子进程双 `--db` 探针） | 权威根只保护"阻断"；跨数据根**没有租约互斥** |
+| 「宣称 3b」完整 takeover（#61.2） | **已修** | PR #70：`recovery.assess_run` 只读对账 + `LeaseStore.reconcile` + 三个接管入口（`AgentLoop.start`/`resume_run`、控制 Run） | `tests/test_takeover.py`（6，真 `SIGKILL` 前任 + 真子进程接管） | resume 路径对账发生在认领作业之后；目标在网络盘时看到的是本机视角 |
+| 「宣称 4」跨多文件撤销事务性 | **已修（可续做，不是两阶段提交）** | PR #66：`undo_journal` 写前意图日志 + 崩溃后幂等续做；PR #72：恢复侧把未完成撤销变成阻断 | `tests/test_undo_journal.py`（7）、`tests/test_undo_recovery.py`（5） | 不宣称"一次事务"：崩在动作之间时状态是"可续做"，需要人/CLI 触发续做 |
+| #63 就绪竞态（M5 集成偶发红） | **已修** | PR #69：根因是 `Listener` 默认 **backlog=1**，`probe` 的未认证连接自己占掉唯一队列位 → macOS 立即 `ECONNREFUSED`；改 backlog=64 + 自连握手通过才 `on_ready` + `probe_result` 带 errno/重试 | `tests/test_ipc.py`（+6）、`tests/test_daemon.py`（+4）；同一用例文件 **100 次 0 失败** | 仍靠 probe 轮询监护；`PROBE_RETRY_MS=250ms` 是最多 250ms 的等待 |
+| #58 费用行说假话 | **已修** | PR #67：`RunResult.model_attempts`（真发一次请求才 +1）+ 统一 `_cost_note` 口径 + `--json` 字段 | `tests/test_cost_line.py`（10）；真黑洞端点实跑 3×60s | 旧游标只给下限（`known=False`），不编造升级前次数 |
+| #57 评测判据写死脚本收尾形态 | **已修（m4.5）** | PR #68：`Check.kind`（completion/safety）+ 8 条作用域化判据 + 完成度/安全分栏 + `SUITE_VERSION` m4.5 | `tests/test_eval_scoped_checks.py`（16）、`test_eval_*` | **真实模型 m4.5 复跑被中转站阻塞**（所有模型 503 `auto groups is not enabled`），文档写"未完成"，不拿 scripted 冒充 |
+| #55 非 Windows 部分 | **已做** | PR #68：memfs 评测实跑（fail closed）、真超时（黑洞 3×60s）、真实换模对比（被 #57 的同一阻塞挡住） | 同上 + `docs/M4-verification.md` §7.4 | Windows `evaluate` 未运行；真实换模对比未完成 |
+| #54 delete 注入矩阵 | **已修，并暴露一个真 bug** | PR #71：delete 路径纳入故障注入 + 恢复判据（applied 的 `after_state` 必须 `absent`） | `tests/test_recovery.py`（+4）、`test_delete_completed_after_durable_evidence_recovers_and_undoes` | — |
+| #53 两条静态疑点 | **一条不成立、一条成立** | PR #67：疑点 1 → 设计前提（模型无法启动 Run，三层钉子）；疑点 2 → 三条路径探针成立 | `tests/test_veto_scope.py`（6） | exec 显式开启后的理论通道按"非沙箱最高危能力"边界登记 |
+| #40 审批否决后重复请求 | **复核成立，可关闭** | 既有 `tests/test_approval_reject.py`（9）在 main 上全绿 | 同左 | — |
+
+### 收尾轮新发现并修掉的两个 bug
+
+1. **删除类动作的恢复去读已被删除的文件**（#54 暴露）：`recovery` 的 applied 分支无条件
+   `size()`，`delete_file` 的 applied 状态是"文件已删除" → `FileNotFoundError` 穿出
+   `recover_run`，恢复不但没结论还崩溃。修法：`expected_after == ABSENT` 走删除分支
+   （`after_state=absent`，与活体 `_delete_file` 同形状，凭据可独立核对）。
+2. **撕裂的 WAL 被静默洗成空库（fail-open）**：`events.db` 的 WAL 撕到 schema 首帧时，
+   旧 `EventLog` 照常建表 → 打开成功、`events` 表 0 行、原 WAL 被丢弃，整段审计历史静默
+   蒸发，恢复据此报告"干净"。修法：connect 前记下"库存在且 size>0"（0 字节按新库），
+   connect 后、建 schema 前读 `sqlite_master`（触发 WAL 回放，是"有没有历史"的事实来源），
+   读不出 events 表 → `EventLogCorrupt`（带处置建议）；`PRAGMA journal_mode=WAL` 后移。
+   负控：去掉检查 → 3 条撕裂用例红；把 `atomic_write_bytes` 改直写 → 整文件 20 failed。
+
+### 更新后的「仍然不成立的宣称」
+
+1. **真实断电（块设备/固件层）**：进程级四个持久化边界 × 三写类型已系统验证，真实 HFS+
+   强制摘卷后 fsync 产物可恢复；**但**"未 fsync 的字节一定丢"不成立（实测存活），
+   块设备断电/固件撒谎/其它文件系统仍未验证。
+2. **Windows 实机**：`msvcrt.locking`、`OpenProcess`、`\\?\` 路径、命名管道仍只有实现 +
+   `windows-latest`。本轮 Windows CI 仍红（host/daemon 生命周期、文件锁权限），**不是**
+   新增回归——这些是 #50 那一族；Windows 未设为必过检查。
+3. **真实模型 m4.5 复跑**：中转站对该 key 的所有模型一律 `503 / auto groups is not enabled`，
+   两家真实模型报告没有产出；文档写"未完成"，判据一条没放松。
+4. **撤销不是两阶段提交**：journal 让"改了一半"可识别、可续做、可阻断，但不宣称跨文件
+   原子；崩在动作之间要人/CLI 触发续做。

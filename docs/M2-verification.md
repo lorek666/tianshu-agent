@@ -367,10 +367,10 @@ other.md 存在: no
 |---|---|
 | Windows x64 / arm64 | **未运行**。`msvcrt.locking`、`OpenProcess/GetProcessTimes`、`\\?\` 前缀路径（绕过规范化）只有实现，没有跑过 |
 | macOS x64 | **未运行**（只有 arm64） |
-| 真实断电 / 掉电后的 fsync 语义 | **未验证**。`os._exit` 只证明进程中断，不证明页缓存已落盘 |
+| 真实断电 / 掉电后的 fsync 语义 | **部分验证（2026-11-11，PR #71）**：`fsutil` 四个持久化边界 × {新建,覆盖写,删除} 的进程级注入、撕裂写模拟、真实 HFS+ 强制摘卷实验都做了（`tests/test_crash_consistency.py` / `test_powercut_image.py`，证据 `docs/powercut-evidence.md`）。**仍未验证**：块设备/固件断电语义——`detach -force` 仍会刷脏页（20MB 未 fsync 实测存活），"未 fsync 的字节一定丢"不成立 |
 | 四目标原生测试矩阵 | 未建立 |
-| `authority` 数据根逃逸（换 `--db` 绕过目录阻断） | **未实现**（计划 §2.2 要求的那条防护） |
-| 完整 takeover（持守卫核对未决副作用再接管） | 未实现 |
+| `authority` 数据根逃逸（换 `--db` 绕过目录阻断） | **已实现（2026-11-11，PR #70）**：阻断固定登记到用户级权威根（`TIANSHU_AUTHORITY_ROOT`，与 `--db`/cwd 无关），守卫双读；真子进程双 `--db` 探针见 `tests/test_authority_block.py` 与 `docs/authority-takeover.md` |
+| 完整 takeover（持守卫核对未决副作用再接管） | **已实现（2026-11-11，PR #70）**：`recovery.assess_run` 只读对账 + `LeaseStore.reconcile`，三个接管入口（`AgentLoop.start`/`resume_run`、控制 Run）都先对账；真 `SIGKILL` 前任 + 真子进程接管用例见 `tests/test_takeover.py` |
 | E2 生成作业 | 不做（v2） |
 | Rust Host / 认证 IPC / OS 级隔离 | 桌面接线，未做；不能把 Python 侧的检查称作"已交付的物理沙箱" |
 | 真实模型端点压测 | 本轮全部用 scripted 模型；真实端点下的心跳行为未压测 |
