@@ -258,6 +258,12 @@ def test_legacy_lease_table_is_migrated(tmp_path):
     旧行不能被当成持有者（空 instance_id 不等于"我的"），也不能被静默当成新租约。
     """
     db = tmp_path / "db.sqlite"
+    # 真实旧库一定带 `events` 表：从第一次提交起 `_SCHEMA` 就把 events 与
+    # leases 一起建出来。以前这条用例用裸 sqlite3 造"只有 leases 表"的库，那是
+    # 在模拟一个从未存在过的历史版本；EventLog 现在对"有内容却读不出 events 表"
+    # 的库 fail closed（撕裂 WAL 会把历史洗成空库），所以先建完整 schema，
+    # 再把 leases 降级成 PR #7 的形状。
+    EventLog(db).close()
     conn = sqlite3.connect(db, isolation_level=None)
     conn.execute(
         "CREATE TABLE leases ("

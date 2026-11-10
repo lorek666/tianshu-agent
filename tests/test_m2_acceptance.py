@@ -140,6 +140,11 @@ def test_legacy_database_without_action_digest_still_opens(tmp_path):
     from tianshu.permissions import ApprovalStore
 
     db = tmp_path / "old.db"
+    # 真实旧库一定带 `events` 表（`_SCHEMA` 从第一次提交起就一起建）；用裸
+    # sqlite3 造"只有 approvals 表"的库等于模拟一个不存在的版本，而 EventLog
+    # 现在对"有内容却读不出 events 表"的库 fail closed（撕裂 WAL 会静默丢历史）。
+    # 先建完整 schema，再把 approvals 降级成 af0da35 之前的形状。
+    EventLog(db, blob_dir=tmp_path / "blobs").close()
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE approvals (approval_id TEXT PRIMARY KEY,"
