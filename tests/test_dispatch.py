@@ -538,6 +538,39 @@ def test_dispatch_rejected_when_lease_not_covering(env):
     assert outside.read_text(encoding="utf-8") == "外面\n"
 
 
+def test_zhong5_outside_workspace_delete_never_reaches_approval(env):
+    """中-5 的反证：workspace 外的删除目标在 `prepare` 就被拒，不会生成"永远批不了"的审批。
+
+    `docs/DEBUG-M0M5.md` 中-5 称 `prepare` 不拒、只会在执行侧报
+    `c4.outside_workspace_unsupported`，从而向用户展示一张注定无法执行的审批。
+    实测不是：拒绝发生在 `prepare` 的 `_authority`（租约不覆盖 → `dispatch.lease_lost`），
+    早于 `ApprovalStore.request()`，所以下面四件事同时成立。这条用例把这四件事钉住，
+    防止以后有人把"先建审批、执行侧再拒"真的改成产品行为。
+    """
+    task, run, claim = env.new_run()
+    outside = env.root / "outside.md"
+    write_exact(outside, "外面\n")
+    args = {"path": str(outside)}
+    request = build_request(
+        task=task, run=run, claim=claim, call_id="c_del_out",
+        tool_id="delete_file", target=outside, args=args,
+    )
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+
+    # ① prepare 当场拒绝（不是 waiting）
+    assert decision.is_rejected, f"目录外删除必须当场拒绝，实际 kind={decision.kind}"
+    # 拒绝规则落在执行侧边界；两条都是"没放行"，具体走哪条看租约/绑定判定顺序。
+    assert decision.rule_id in ("dispatch.lease_lost", "c4.outside_workspace_unsupported")
+    # ② 没有生成审批：库里查不到这张动作的审批，日志里也没有"请用户批"的事件
+    assert env.approvals.find_for(request) is None, "不得给用户一张批不了的审批"
+    assert "approval.requested" not in _types(env.log, run.run_id)
+    # ③ 等待队列为空
+    assert env.dispatcher.waiting() == [], "拒绝的动作不得进入等待队列"
+    # ④ 目标文件一个字节没动
+    assert outside.read_text(encoding="utf-8") == "外面\n"
+
+
 # ---------------------------------------------------------------- 6. 其余不变量
 
 
