@@ -5,6 +5,17 @@
 
 ---
 
+## 平台差异（ubuntu CI 抓到的反例）
+
+`backlog 满时 connect 立即 ECONNREFUSED` 是 **macOS 的 AF_UNIX 语义**；Linux 的
+backlog 只是提示，同样的连接会排队/阻塞而不是被拒。所以那条"队列满时必须如实
+报 False"的真实 backlog 用例在非 macOS 上 skip（不是"绿不了就不测"：重试逻辑本身
+改由 `test_probe_result_retries_transient_errors_deterministically` 用确定性桩
+覆盖——第一次 `ECONNREFUSED`、第二次连通，`attempts>=2`；`retry_ms=0` 一次都不
+重试；`ENOENT` 不重试）。
+
+这条差异是 CI 在 ubuntu 上跑出来的（`assert True is False`），不是猜的。
+
 ## 0. 一句话结论
 
 **根因不是"on_ready 早于 listen"，而是"探活方式"与"监听队列容量"的组合缺陷：**

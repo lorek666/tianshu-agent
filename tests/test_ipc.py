@@ -19,6 +19,7 @@ import errno
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -424,6 +425,57 @@ def test_probe_result_separates_missing_from_not_listening(root: Path) -> None:
         Path(endpoint).unlink(missing_ok=True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="重试语义只在 POSIX 探活实现上成立")
+def test_probe_result_retries_transient_errors_deterministically(
+    root: Path, monkeypatch
+) -> None:
+    """重试逻辑的跨平台确定性证据：第一次 ECONNREFUSED、第二次连通。
+
+    不依赖真实 backlog 语义（那是平台相关的：macOS 满队列立即拒绝，Linux 只是
+    排队/阻塞）。直接把 `_probe_once` 换成"第一次拒绝、第二次成功"，钉住：
+    1. `retry_ms>0` 会把瞬时失败等回来，且 `attempts>=2`；
+    2. `retry_ms=0` 一次都不重试（负控锚点）；
+    3. `ENOENT`（端点真的不存在）不重试——否则"没有 daemon"会被预算拖慢。
+    """
+    runs = root / "run"
+    runs.mkdir(parents=True, exist_ok=True)
+    endpoint = ipc.endpoint_path(root)
+    Path(endpoint).write_bytes(b"")  # 让 endpoint_exists=True，与真实 socket 文件同形
+
+    calls: list[str] = []
+
+    def flaky(data_root: Path, timeout: float):
+        calls.append("probe")
+        if len(calls) == 1:
+            return (
+                False, errno.ECONNREFUSED,
+                "端点文件存在但无人监听（连接被拒）", endpoint,
+            )
+        return True, None, "已连接", endpoint
+
+    monkeypatch.setattr(ipc, "_probe_once", flaky)
+    result = ipc.probe_result(root, retry_ms=500)
+    assert result.ok is True, result
+    assert result.attempts == 2, result
+    assert len(calls) == 2
+
+    calls.clear()
+    no_retry = ipc.probe_result(root, retry_ms=0)
+    assert no_retry.ok is False and no_retry.attempts == 1, no_retry
+    assert len(calls) == 1, "retry_ms=0 不许重试"
+
+    calls.clear()
+
+    def missing(data_root: Path, timeout: float):
+        calls.append("probe")
+        return False, errno.ENOENT, "端点不存在（没有守护进程，或进程已退出）", endpoint
+
+    monkeypatch.setattr(ipc, "_probe_once", missing)
+    gone = ipc.probe_result(root, retry_ms=500)
+    assert gone.ok is False and gone.attempts == 1, gone
+    assert len(calls) == 1
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Unix socket 的排队语义；Windows 走命名管道")
 def test_probe_retries_when_endpoint_exists_but_accept_is_behind(
     root: Path, monkeypatch
@@ -434,6 +486,12 @@ def test_probe_retries_when_endpoint_exists_but_accept_is_behind(
     先失败一次握手才能腾出位置。`retry_ms=0` 时必须立刻报 False（负控锚点）；
     有人在 50ms 后 accept 时，默认的短暂重试必须把它等回来。
     """
+    if sys.platform != "darwin":
+        pytest.skip(
+            "AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，"
+            "同样连接会排队。重试逻辑见 "
+            "test_probe_result_retries_transient_errors_deterministically"
+        )
     monkeypatch.setattr(ipc, "LISTEN_BACKLOG", 1)
     server = ipc.Server(root)
     server.start()
