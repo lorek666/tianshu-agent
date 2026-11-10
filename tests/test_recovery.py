@@ -5,8 +5,10 @@
 2. 判定不了的时候标 unknown，并且**阻断后续写入**
 3. 绝不重复副作用、绝不误报成功
 
-100 次注入覆盖四个故障点 × 两条写路径：`create_report`（新建）与
-`modify_text`（覆盖已存在文件）。
+100 次注入覆盖四个故障点 × 三条写路径：`create_report`（新建）、
+`modify_text`（覆盖已存在文件）、`delete_file`（删除，issue #54 补的第三格：
+恢复后目标只能是「仍存在且为写前内容」或「已删除」，applied 的 after_state
+必须是 absent，撤销按 preimage 重建回原字节）。
 
 复审报告 中-3 指出旧版的两处证据缺口，本版对应修法：
 - 注入只走 `create_report`：cli 的 scripted 模型只发 list_files + create_report。
@@ -36,15 +38,18 @@ from tianshu.snapshot import ABSENT, SnapshotStore
 
 FAILPOINTS = ["after_intent", "after_write", "after_result", "after_receipt"]
 
-#: 两条受控写路径。create_report 是新建（写前状态 = absent）；
-#: modify_text 是覆盖写（写前状态 = 已有内容）——中-3 缺的正是后者。
-KINDS = ("create", "overwrite")
-WRITE_TOOL = {"create": "create_report", "overwrite": "modify_text"}
-WRITE_KEY = {"create": "name", "overwrite": "path"}
+#: 三条受控写路径。create_report 是新建（写前状态 = absent）；
+#: modify_text 是覆盖写（写前状态 = 已有内容）——中-3 缺的是覆盖写；
+#: delete_file 是删除（写后状态 = absent，issue #54 缺的第三格）。
+KINDS = ("create", "overwrite", "delete")
+WRITE_TOOL = {
+    "create": "create_report", "overwrite": "modify_text", "delete": "delete_file",
+}
+WRITE_KEY = {"create": "name", "overwrite": "path", "delete": "path"}
 READ_ONLY_TOOLS = ("list_files", "read_text")
 
 #: 真实写入目标。三个文件里只有它会被写：note.md 是诱饵（旧版不变量 A 读的
-#: 就是它），不许被动；report.md 是 create/overwrite 的共同目标。
+#: 就是它），不许被动；report.md 是三条写路径的共同目标。
 TARGET = "report.md"
 NOTE = "原始内容\n"
 BEFORE = "写前内容\n"
@@ -54,6 +59,8 @@ BEFORE_BYTES = BEFORE.encode("utf-8")
 AFTER_BYTES = AFTER.encode("utf-8")
 BEFORE_SHA = hashlib.sha256(BEFORE_BYTES).hexdigest()
 AFTER_SHA = hashlib.sha256(AFTER_BYTES).hexdigest()
+#: 三条写路径的写后状态。删除的写后状态就是"不存在"，与快照证据的 ABSENT 同义。
+AFTER_STATE = {"create": AFTER_SHA, "overwrite": AFTER_SHA, "delete": ABSENT}
 
 
 # 子进程入口：直接用公开 API 装配一次 run，在指定故障点硬退。
@@ -75,9 +82,7 @@ from tianshu.permissions import HumanIdentity
 
 ws = pathlib.Path({ws!r})
 db = pathlib.Path({db!r})
-write_args = {{"content": {after!r}}}
-write_args[{key!r}] = {target!r}
-write = ToolCall("c2", {tool_id!r}, write_args)
+write = ToolCall("c2", {tool_id!r}, {args!r})
 model = ScriptedModel([
     ModelResponse("tool_use", tool_calls=[ToolCall("c1", "list_files", {{"path": "."}})]),
     ModelResponse("tool_use", tool_calls=[write]),
@@ -112,12 +117,16 @@ def _spawn(ws: Path, db: Path, failpoint: str | None, kind: str):
     if failpoint:
         env["TIANSHU_FAILPOINT"] = failpoint
     src = str(Path(__file__).resolve().parents[1] / "src")
+    args = {"path": TARGET, "content": AFTER} if kind != "create" else {
+        "name": TARGET, "content": AFTER}
+    if kind == "delete":
+        args = {"path": TARGET}
     code = _CHILD.format(
         src=src,
         ws=str(ws),
         db=str(db),
         tool_id=WRITE_TOOL[kind],
-        key=WRITE_KEY[kind],
+        args=args,
         target=TARGET,
         after=AFTER,
     )
@@ -140,12 +149,13 @@ def _setup(tmp_path: Path, kind: str = "create") -> tuple[Path, Path]:
 
     note.md 是**诱饵**：旧版不变量 A 读的就是它（预置后从未被写），于是
     「写前/写后」断言其实一直在讲一个与写入无关的文件。它保留下来当反证。
-    overwrite 还要预置 report.md——modify_text 只改已存在的文件。
+    overwrite / delete 还要预置 report.md——modify_text 只改已存在的文件，
+    delete_file 只删已存在的普通文件。
     """
     ws = tmp_path / "ws"
     ws.mkdir()
     write_exact(ws / "note.md", NOTE)
-    if kind == "overwrite":
+    if kind in ("overwrite", "delete"):
         write_exact(ws / TARGET, BEFORE)
     return ws, tmp_path / "events.db"
 
@@ -218,23 +228,34 @@ def _check_c(events: list, call_id: str, kind: str, ws: Path) -> str:
         return state
     out = payload["output"]
     expected_before = ABSENT if kind == "create" else BEFORE_SHA
+    expected_after = AFTER_STATE[kind]
     assert out["path"] == TARGET, f"applied 结果指向了别的文件：{out['path']}"
-    assert out["sha256"] == AFTER_SHA, "applied 的 sha256 不是意图写入的内容"
-    assert out["after_state"] == AFTER_SHA, "after_state 与 sha256 自相矛盾"
+    assert out["after_state"] == expected_after, (
+        f"{kind} 的 after_state 应当是 {expected_after}，实际 {out['after_state']}"
+    )
     assert out["before_state"] == expected_before, (
         f"before_state 不对：{out['before_state']} != {expected_before}"
     )
-    actual = hashlib.sha256((ws / out["path"]).read_bytes()).hexdigest()
-    assert actual == out["sha256"], "声称 applied 但磁盘 sha256 与结果不符"
-    assert actual == AFTER_SHA, "磁盘内容不是意图写入的内容"
+    if kind == "delete":
+        # issue #54 的核心：删除的 applied 不允许把"已删除"写成 0 字节文件，
+        # 也不允许去读一个不存在的目标。
+        assert out["deleted"] is True, "删除的 applied 结果必须显式标 deleted"
+        assert not (ws / out["path"]).exists(), "声称删除但文件还在"
+    else:
+        assert out["sha256"] == AFTER_SHA, "applied 的 sha256 不是意图写入的内容"
+        assert out["after_state"] == AFTER_SHA, "after_state 与 sha256 自相矛盾"
+        actual = hashlib.sha256((ws / out["path"]).read_bytes()).hexdigest()
+        assert actual == out["sha256"], "声称 applied 但磁盘 sha256 与结果不符"
+        assert actual == AFTER_SHA, "磁盘内容不是意图写入的内容"
     return state
 
 
 def _check_approval_path(events: list, kind: str) -> None:
     """覆盖写必须真的过审批：子进程模拟的是「人批准」，不是「绕过授权」。
 
-    create_report 是自动动作（AUTO_ACTIONS），不该出现审批事件；modify_text 是
-    `ACTION_OVERWRITE`，必须有 requested → decided → consumed 的完整痕迹：
+    create_report 是自动动作（AUTO_ACTIONS），不该出现审批事件；modify_text
+    （`ACTION_OVERWRITE`）与 delete_file（`ACTION_DELETE`）必须有
+    requested → decided → consumed 的完整痕迹：
     decided 是子进程模拟人敲的那一下，consumed 是执行侧真正消费了这张批准。
     少了任何一段，就说明测试在偷偷绕过授权。
     """
@@ -277,16 +298,17 @@ def test_recover_after_each_failpoint(tmp_path, fp, kind):
     # 诱饵没被动过：A 核对的不能是它。
     assert (ws / "note.md").read_bytes() == NOTE_BYTES, "note.md 被写了"
 
-    before_bytes = BEFORE_BYTES if kind == "overwrite" else None
+    before_bytes = None if kind == "create" else BEFORE_BYTES
+    after_bytes = None if kind == "delete" else AFTER_BYTES
     observed = (ws / rel).read_bytes() if (ws / rel).exists() else None
     if fp == "after_intent":
-        # 只写了 intent，还没执行：新建目标不存在 / 覆盖写目标仍是写前内容
+        # 只写了 intent，还没执行：目标仍是写前状态（新建=不存在 / 覆盖或删除=原文）
         assert observed == before_bytes, f"{kind}/{fp}：文件不该被改动"
         assert state == "none_applied", f"{kind}/{fp}：没执行却报了 {state}"
         assert call_id in report.none_applied, f"{kind}/{fp}：应判为未执行"
     else:
-        # 文件已经写进去了 → 恢复必须识别为 applied，不能当没发生
-        assert observed == AFTER_BYTES, f"{kind}/{fp}：文件应当已写入"
+        # 副作用已经发生 → 恢复必须识别为 applied，不能当没发生
+        assert observed == after_bytes, f"{kind}/{fp}：目标应当处于写后状态"
         assert state == "applied", f"{kind}/{fp}：已执行却判 {state}"
         assert call_id in report.applied or any(
             e.payload.get("effect_state") == "applied"
@@ -358,10 +380,10 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
 def test_100_random_fault_injections(tmp_path):
     """随机注入 100 次，验证四条不变量。
 
-    矩阵是**配平**的：48 次 create_report + 52 次 modify_text（每个
-    (写类型, 故障点) 组合 12 次，另给本轮新增的覆盖写补 4 次）；随机（种子
-    固定）只用来打乱执行顺序。纯随机抽样可能恰好漏掉「覆盖写 × after_intent」，
-    那样又回到 中-3 说的窄证据面——覆盖由矩阵保证，不由运气保证。
+    矩阵是**配平**的：12 个 (写类型, 故障点) 组合各 8 次 = 96，另给
+    delete 的每个故障点补 1 次 = 100（issue #54）；随机（种子固定）只用来
+    打乱执行顺序。纯随机抽样可能恰好漏掉某个组合，那样又回到 中-3 说的
+    窄证据面——覆盖由矩阵保证，不由运气保证。
 
     不变量：
     A. **真实写入目标**的内容必须是「写前」或「写入内容」之一（逐字节，不许
@@ -372,21 +394,22 @@ def test_100_random_fault_injections(tmp_path):
     D. applied 恰好对应一张 receipt（凭据也不能重复发）
     """
     rng = random.Random(20261108)
-    cases = [(kind, fp) for kind in KINDS for fp in FAILPOINTS for _ in range(12)]
-    cases += [("overwrite", fp) for fp in FAILPOINTS]  # 补到 100，覆盖写多一份
+    cases = [(kind, fp) for kind in KINDS for fp in FAILPOINTS for _ in range(8)]
+    cases += [("delete", fp) for fp in FAILPOINTS]  # 补到 100，删除多一份
     rng.shuffle(cases)
 
     assert len(cases) == 100, "注入总量应当保持 100 次量级"
     counts = Counter(cases)
     for kind in KINDS:
         for fp in FAILPOINTS:
-            assert counts[(kind, fp)] >= 12, f"矩阵漏了 {kind}/{fp}"
+            assert counts[(kind, fp)] >= 8, f"矩阵漏了 {kind}/{fp}"
 
     for i, (kind, fp) in enumerate(cases):
         case = tmp_path / f"case{i}"
         case.mkdir()
         ws, db = _setup(case, kind)
-        before_bytes = BEFORE_BYTES if kind == "overwrite" else None
+        before_bytes = None if kind == "create" else BEFORE_BYTES
+        after_bytes = None if kind == "delete" else AFTER_BYTES
 
         proc = _spawn(ws, db, fp, kind)
         assert proc.returncode == 77, (
@@ -409,7 +432,7 @@ def test_100_random_fault_injections(tmp_path):
         # A：真实写入目标只能是写前或写后二者之一，且诱饵文件没被动过
         target = ws / rel
         content1 = target.read_bytes() if target.exists() else None
-        assert content1 in (before_bytes, AFTER_BYTES), (
+        assert content1 in (before_bytes, after_bytes), (
             f"第 {i} 次（{kind}/{fp}）：出现第三种内容 {content1!r}"
         )
         assert (ws / "note.md").read_bytes() == NOTE_BYTES, (
@@ -439,8 +462,8 @@ def test_100_random_fault_injections(tmp_path):
             )
         else:
             assert state == "applied", f"第 {i} 次（{kind}/{fp}）：已执行却判 {state}"
-            assert content1 == AFTER_BYTES, (
-                f"第 {i} 次（{kind}/{fp}）：判 applied 但磁盘不是意图内容"
+            assert content1 == after_bytes, (
+                f"第 {i} 次（{kind}/{fp}）：判 applied 但磁盘不是写后状态"
             )
 
         # D：applied 恰好一张凭据；未执行不产凭据（凭据粉饰不确定状态是不许的）
