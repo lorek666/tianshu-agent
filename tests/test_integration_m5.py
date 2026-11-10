@@ -479,7 +479,12 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
                 "        from tianshu.model import ModelResponse",
                 "        return ModelResponse(finish_reason='end_turn', content='never')",
                 "",
-                "serve(Path(sys.argv[1]), model=M())",
+                "root = Path(sys.argv[1])",
+                "# on_ready 在端点**已经能连之后**调用（契约如此），所以落一个标记文件，",
+                "# 让父进程不必靠『轮询 probe』去猜子进程走到哪一步——轮询只能得出",
+                "# 『还没好』，出问题时不知道该怀疑 import、锁还是 bind。",
+                "serve(root, model=M(),",
+                "      on_ready=lambda: (root / 'daemon-ready').write_bytes(b'1'))",
                 "",
             ]
         ),
@@ -500,14 +505,22 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
     )
     log_file.close()
     try:
+        ready_mark = root / "daemon-ready"
         deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not ipc.probe(root, timeout=0.2):
+        while time.monotonic() < deadline and not ready_mark.exists():
             if proc.poll() is not None:
                 break
-            time.sleep(0.05)
-        assert ipc.probe(root), (
-            "崩溃测试用的 daemon 没起来"
+            time.sleep(0.02)
+        assert ready_mark.exists(), (
+            "崩溃测试用的 daemon 没走到 on_ready"
             f"（returncode={proc.poll()}）；日志尾巴：\n{_tail(log_path)}"
+        )
+        # on_ready 之后端点就已经能连了；这里留一点余量吸收调度抖动。
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not ipc.probe(root, timeout=0.2):
+            time.sleep(0.02)
+        assert ipc.probe(root), (
+            f"on_ready 已落盘但端点连不上；日志尾巴：\n{_tail(log_path)}"
         )
         client = _client(root)
         task_id = _make_task(client, ws)

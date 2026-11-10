@@ -29,6 +29,10 @@ jobs:
   test:
     name: test (${{ matrix.os }}) · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    # 每个平台的上限。默认是 360 分钟：一个挂住的测试会把 runner 占 6 小时，
+    # 而"超时"和"挂住"对排查是两件完全不同的事——超时至少会带着已经跑过的
+    # 输出结束。（实测踩过：windows job 卡在 Pytest 里 20 分钟没动静。）
+    timeout-minutes: 25
     strategy:
       # 一个平台红了不要取消其他平台：否则看不到全貌，
       # 报告只能写"矩阵失败"，没法说清是谁、为什么。
