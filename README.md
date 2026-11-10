@@ -27,8 +27,11 @@
 - **默认可撤销**：写前快照 + 可独立核对的凭据（Receipt），改坏了能撤销，撤销本身也走审批。
 - **崩溃可恢复**：中断后能判定「已生效 / 未生效 / 未知」，**未知绝不盲目重放**。
 
-> **当前形态：命令行内核。** M0–M4 已完成，桌面三进程与图形 UI 属于 M5，尚未开始。
-> 目标用户是普通用户，但现阶段请先把它当作一个**给开发者用的 CLI**——别把本文的愿景当成已实现的界面。
+> **当前形态：M5 桌面闭环已完成。** M0–M4 是命令行内核；M5 交付**三进程桌面闭环**——
+> Daemon（常驻）、Host（桌面外壳）与浏览器里的 React 界面：关掉 UI 任务继续，重启后恢复。
+> 但外壳是**系统浏览器**，不是安装包：没有 Tauri/WebView2、托盘、签名与自动更新
+> （偏差逐条登记在 [docs/M5-desktop.md](docs/M5-desktop.md) §2）。
+> 现阶段仍请把它当作**给开发者用的工具**——别把本文的愿景当成已交付的成品 App。
 
 ## 特性
 
@@ -43,7 +46,9 @@
 | 🛠️ | **执行工具** | `run_command` 走 argv 不经 shell、默认全拒、需审批、有超时与输出截断 |
 | 💰 | **成本可见** | 整数微美元记账；价格未知记 `None` 并单独计数，**不伪装成 0** |
 | 🔌 | **模型可替换** | OpenAI-compatible 与 Anthropic 两套协议，换 provider 主循环零改动 |
-| 🪶 | **零第三方运行时依赖** | 纯 Python 标准库；dev 依赖只有 pytest + ruff |
+| 🖥️ | **桌面闭环** | 关掉 UI / 刷新页面任务照跑；重启后 Daemon 恢复扫描并续跑（判据：关 UI 后任务继续、重启后恢复） |
+| 🧭 | **审批 UI** | 覆盖 / 删除 / 执行命令在界面上点「允许 / 拒绝」，决定经 IPC 落库；**否决即终局**，不再重复问同一个动作 |
+| 🪶 | **零第三方运行时依赖** | 纯 Python 标准库；dev 依赖只有 pytest + ruff；UI 构建产物已提交，运行时不需要 Node |
 
 ### 它不假装能做到的事
 
@@ -51,9 +56,10 @@
 
 - **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend().capabilities.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
-- **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑并且是绿的，但跑在 `windows-latest`（Server 2022）上，且有 **8 项**跳过：`memfs` 无符号链接（POSIX 也跳过）+ 7 项 Windows 缺能力——标准库无 PTY ×2、无进程组 / Unix 信号 ×2、PID 存活探测仅 POSIX ×1、无 POSIX 权限位语义 ×2。
-- **M5 未开始。** 没有 GUI，没有常驻守护进程（`worker` 是一次性 drain）。
-- 两个已知缺口开着：issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）、[#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）。
+- **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑并且是绿的，但跑在 `windows-latest`（Server 2022）上；并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
+- **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
+- **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。
+- 已知缺口：issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）仍开着；issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**——否决即终局，`SUITE_VERSION` 升 `m4.4`。
 
 ## 快速开始
 
@@ -61,6 +67,7 @@
 
 - Python **3.12**（`>=3.12,<3.13`，不支持 3.13+）
 - [`uv`](https://docs.astral.sh/uv/)
+- （只改前端才需要）Node + `pnpm`；**运行桌面界面不需要 Node**，`ui/dist` 已提交
 
 ### 安装
 
@@ -73,15 +80,62 @@ uv sync --python 3.12
 ### 跑测试与 lint
 
 ```bash
-uv run pytest                  # macOS/Linux: 942 passed, 3 skipped
-                              # Windows:     937 passed, 8 skipped（5 项按平台跳过）
-uv run ruff check .            # 全绿
+uv run pytest -o addopts="" -q   # macOS 本机实测：1060 passed, 3 skipped
+uv run ruff check .              # 全绿（All checks passed!）
 ```
 
-> 注意 `pyproject.toml` 里 `addopts = "-q"`，再叠一个 `-q` 会把汇总行吞掉。
-> 要拿准确计数请用 `uv run pytest -o addopts="" -q`。
+> 注意 `pyproject.toml` 里 `addopts = "-q"`，再叠一个 `-q` 会把汇总行吞掉，所以要 `-o addopts="" -q`。
+> **Windows/CI 的数字以 CI 日志为准**：本机只有 macOS 的实测数字，Windows 只在 `windows-latest` runner 上跑，
+> 没有实机验证（平台跳过项数也不要在本地猜）。
 
-### 离线演示（不调真实模型）
+### 桌面闭环离线演示（M5，不调真实模型）
+
+一条命令看完整闭环：建任务 → 停在审批 → **断开所有客户端（等价关掉 UI）** → 用新连接批准 → 任务自己跑完。
+
+```bash
+uv run python scripts/demo_m5.py --data-root /tmp/m5-demo --auto
+```
+
+它会打印界面地址、审批卡片（动作 / 目标 / 原因）与最终 JSON（`final_state`、`effect_state`、产物、事件序列），
+结束时自己关掉 Host 与 Daemon。不加 `--auto` 则是可交互版本（Ctrl-C 退出）。
+
+### 桌面三进程（M5）
+
+```bash
+# 1) 常驻守护进程：一般不用手动起——host 会自动拉起并监护它
+uv run tianshu daemon --data-root /tmp/ts-data
+
+# 2) 桌面外壳：单实例 + 监护 Daemon + 把 UI 的 HTTP/SSE 桥到本地 IPC
+uv run tianshu host run --data-root /tmp/ts-data        # 打印 http://127.0.0.1:<随机端口>/
+uv run tianshu host status --data-root /tmp/ts-data     # 在跑退出 0，没跑退出 1
+uv run tianshu host stop --data-root /tmp/ts-data       # 让 Host 自己退出（它负责关 Daemon）
+```
+
+`host run` 的顺序是**先恢复、再对外服务**：拿 Host 单例锁 → 探测/拉起 Daemon（等端点就绪，上限 15s）→
+Daemon 完成恢复扫描后才开 HTTP 服务 → 把访问 token 注入 `index.html` 的 `<meta name="tianshu-token">`。
+页面与 `/rpc`、`/state`、`/events` 同源；数据端点都要求 `X-Tianshu-Token` 请求头
+（**token 不进 URL**——URL 会进浏览器历史、shell 历史、聊天记录和截图）。`--open` 直接开浏览器，`--port 0`（默认）随机端口。
+
+关浏览器标签 / 刷新页面**只是少一个订阅者**，任务继续跑；要停才用 `tianshu host stop`。
+`stop` 是**先收掉 Daemon、再让 Host 退出**（收尾顺序本身是契约）：不会留下孤儿 Daemon 继续占着 socket、
+继续接活。带 `--no-supervise` 可以不监护 Daemon 崩溃重启（调试用）。
+
+### UI 的开发与构建（只改前端时需要）
+
+`ui/dist` 已提交，`tianshu host` 直接加载它，运行时不需要 Node。改前端才需要：
+
+```bash
+pnpm --dir ui install
+pnpm --dir ui run dev       # Vite 开发服务器（127.0.0.1:5199）
+pnpm --dir ui run build     # 重建 ui/dist —— 构建产物要和源码一起提交
+pnpm --dir ui run typecheck
+pnpm --dir ui run test      # vitest
+```
+
+CI 的 `ui` job 跑 typecheck / test / build，并用 `git diff --exit-code -- ui/dist` 卡住「改了源码没提交产物」。
+界面在没有后端时的静态预览（`?demo=1`）见 [ui/README.md](ui/README.md)。
+
+### 命令行跑一次（不调真实模型）
 
 用 scripted 模型跑通「阅读目录并生成摘要」的闭环：
 
@@ -128,6 +182,8 @@ uv run tianshu run --workspace /tmp/ws --task "..." \
 | `undo` | 撤销某次 Run 的文件变更（不带 `--approve` 只预演） |
 | `recover` | 核对并补全一次被打断的 Run |
 | `worker` | 作业循环，**一次性 drain**：队空或撞上被占用的工作区就退出 |
+| `daemon` | **常驻**守护进程：驱动任务、恢复扫描、IPC 控制面（不是 `worker`） |
+| `host` | 桌面外壳：`run`（默认）/ `stop` / `status`，把 UI 桥到本地 IPC |
 | `replay` | 从事件日志回放并校验（**审计，不调模型**） |
 | `evaluate` | 在干净 fixture 上换模型跑固定 case（**换模，与 replay 是两件事**） |
 
@@ -152,10 +208,16 @@ uv run tianshu undo --run-id run_xxxx --workspace /tmp/ws
 # 作业循环：认领排队中的 Run（崩溃、重启后接手；死掉的 owner 立刻可接管）
 uv run tianshu worker --once    # 只跑一个作业
 uv run tianshu worker           # 跑到队空 / 第一次撞上被占用的工作区为止
+
+# 桌面：常驻守护进程 + 外壳（详见上方「桌面三进程」）
+uv run tianshu daemon --data-root /tmp/ts-data
+uv run tianshu host run --data-root /tmp/ts-data
 ```
 
 批准的是「**那个动作**」，不是「那个进程」：换个进程 `run resume` 依然有效，
 但执行仍要求当前 claim 与租约在手，且**改目标 / 改参数会让批准作废**。
+**否决是终局**：同一 Run 内同一动作被拒绝后，后续派发直接以 `c4.approval_rejected` 拒绝，
+不会反复弹同一张卡；模型改了参数或目标才是一次新的审批。
 
 `replay` 与 `evaluate` 不是同一个东西：前者只读历史日志做审计，后者换模型重跑。
 PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被其它分数抵消。
@@ -170,27 +232,35 @@ PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被�
 | `3` | 需要人决定（等审批 / 已暂停 / 待核查；`undo` 未带 `--approve` 的预演） |
 | `4` | （仅 `evaluate`）安全门槛被击穿 = unsafe |
 
+`host status` 在跑返回 `0`、没跑返回 `1`（便于脚本判断）；`host stop` 成功退出或本来没在跑都返回 `0`。
+
 ### 数据目录
 
-**目前的默认值是当前工作目录下的 `.tianshu/events.db`**（已被 `.gitignore` 排除），
-可用 `--db` 或 `--data-root` 改。事件库就是全部状态，别把它丢进版本库。
+**M5 起有两套落点，别混：**
 
-> macOS 的 `~/Library/Application Support/AgentOS/`、Windows 的 `%LOCALAPPDATA%\AgentOS\`
-> 是 [docs/TECH-ARCH.md](docs/TECH-ARCH.md) 里 **M5 的设计**（含 daemon socket、缓存、日志布局），
-> **还没实现**。别以为现在的 CLI 已经把数据放在那儿了。
+| 用谁 | 默认数据根 | 覆盖方式 |
+|---|---|---|
+| `tianshu daemon` / `tianshu host` | 平台标准目录：macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`（缺省 `~/.local/share/AgentOS`） | `--data-root` 或环境变量 `TIANSHU_DATA_ROOT` |
+| 内核子命令（`run` / `task` / `approvals` / `undo` / …） | 当前工作目录下的 `.tianshu/events.db`（已被 `.gitignore` 排除） | `--db` |
+
+数据根里是：`events.db`（唯一事实源）、`artifacts/blobs`、`artifacts/snapshots`、
+`run/`（IPC 端点、`ipc.key`、Host/Daemon 锁）与 `logs/daemon.log`（Host 重定向的 Daemon 日志）。
+测试与 CI 一律显式指到临时目录，**不会写你的用户主目录**。
 
 ## 架构概览
 
 **唯一事实源是事件日志**：SQLite WAL、append-only（触发器禁止 `UPDATE` / `DELETE`），Task / Run / Approval / Grant / Lease 都是同库事务更新的**可重建投影**。状态变更必须同事务写事件，否则回放无法解释「为什么这个 Run 被 fence 了」。
 
-五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（41 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（42 个 rule id 的封闭注册表：35 条拒绝原因 + 5 条非拒绝判定 + 2 条保留未使用）、**C5** 评测。
+**M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
+
+五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（41 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（43 个 rule id 的封闭注册表：36 条拒绝原因 + 5 条非拒绝判定 + 2 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.4`）。
 
 ```
-src/tianshu/          32 个 .py + eval/ 子包（下面按职责分组，30 个实义模块，余两个是 __init__.py / __main__.py）
+src/tianshu/          37 个 .py + eval/ 子包（下面按职责分组，35 个实义模块，余两个是 __init__.py / __main__.py）
 ├─ 事实源与契约 ─────────────────────────────────────────────
 │  events.py        SQLite WAL append-only 事件日志 + 可组合事务
 │  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
-│  rules.py         C4 rule id 封闭注册表（42 个：35 拒绝 + 5 判定 + 2 保留未使用）
+│  rules.py         C4 rule id 封闭注册表（43 个：36 拒绝 + 5 判定 + 2 保留未使用）
 │  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
 ├─ 路径与磁盘 ───────────────────────────────────────────────
 │  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
@@ -207,6 +277,7 @@ src/tianshu/          32 个 .py + eval/ 子包（下面按职责分组，30 个
 ├─ 副作用可撤销 ─────────────────────────────────────────────
 │  snapshot.py      写前快照与冲突安全撤销
 │  receipt.py       操作凭据（能独立核对，不必信调用方）
+│  undo.py          撤销：把一次 Run 的写入还原或删除（本身也走审批/租约/receipt）
 │  recovery.py      中断核查：applied / none_applied / unknown 三者不合并
 │  crashpoint.py    故障注入点（os._exit 硬退，仅 TIANSHU_FAILPOINT 生效）
 ├─ 任务、租约、作业 ─────────────────────────────────────────
@@ -221,13 +292,21 @@ src/tianshu/          32 个 .py + eval/ 子包（下面按职责分组，30 个
 │  context.py       F5 上下文编译：纯函数、按字节预算、丢弃只记账不摘要
 ├─ 驱动 ─────────────────────────────────────────────────────
 │  loop.py          E1 主循环（持久游标、暂停 / 取消 / 恢复）+ 栈装配
-│  worker.py        作业循环：认领排队中的 Run
+│  worker.py        作业循环：认领排队中的 Run（一次性 drain）
 │  replay.py        回放校验：seq / messages_hash / 产物哈希三方核对
-│  cli.py           命令行入口
+│  cli.py           命令行入口（含 daemon / host 两个常驻入口）
+├─ 桌面三进程（M5）─────────────────────────────────────────
+│  ipc.py           本地 IPC：AF_UNIX / 命名管道、版本区间协商、推送游标、断线语义
+│  daemon.py        常驻守护进程：锁、恢复扫描、请求线程、驱动线程、优雅退出
+│  control.py       RPC 方法 → 既有库函数的映射（不自己写文件、不重判策略）
+│  host.py          外壳：单实例、监护 Daemon、UI 的 HTTP/SSE 桥、token 注入
 └─ eval/            M4 评测：20 条 case、干净 fixture、可比分数与失败归因
 ```
 
-完整规格见 [docs/PRD-v1.md](docs/PRD-v1.md)（§5 契约、§6 红线）与 [docs/TECH-ARCH.md](docs/TECH-ARCH.md)。
+平台标准数据目录、单实例判据、断线语义与恢复顺序的完整规格见 [docs/M5-desktop.md](docs/M5-desktop.md)；
+产品规格见 [docs/PRD-v1.md](docs/PRD-v1.md)（§5 契约、§6 红线）与 [docs/TECH-ARCH.md](docs/TECH-ARCH.md)。
+
+UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直接加载，运行时不需要 Node）。
 
 ## 项目状态与路线图
 
@@ -238,17 +317,29 @@ src/tianshu/          32 个 .py + eval/ 子包（下面按职责分组，30 个
 | **M2** 权限与任务 | C4 审批状态机（写 / 删分级）+ Task/Run + 作业表租约 | ✅ 完成 |
 | **M3** 可替换 | 第二个 chat provider + 第二个沙箱后端 | ✅ 完成 |
 | **M4** 可评估 | 20 条 case + `replay`/`evaluate` 分离 | ✅ 完成 |
-| **M5** 桌面闭环 | Host/UI/Daemon 三进程打通 + 权限审批 UI | ⏳ 下一步 |
+| **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
 
-**M4 实测**：`SUITE_VERSION = m4.3`，20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
+**M5 实测**：全量 **1060 passed, 3 skipped**（macOS 本机，`feat/m5-desktop@f5da9ef`）；三进程真进程链路跑通——
+`tianshu host run` → `tianshu host stop` 后 Host 与 Daemon 都退出（`ipc.probe == False`，不留孤儿），
+`scripts/demo_m5.py --auto` 真 daemon + 真 `ui/dist` + 真 Host 桥输出 `final_state=succeeded` / `effect_state=applied`
+（中途断开所有客户端后用新连接批准）。完整判据、未验证项与真进程截图见 [docs/M5-verification.md](docs/M5-verification.md)。
+
+**M5 明确未验证的**（写成「通过」就是假话）：**Windows 实机**（只有 CI `windows-latest`，命名管道的杀软/ACL/长路径差异未覆盖）·
+**真实模型**（无 API key，演示与验收用 scripted 模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
+完整清单见 [docs/M5-verification.md](docs/M5-verification.md)。
+
+**M4 实测**：`SUITE_VERSION = m4.4`，20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
 每类有下限守卫；安全门槛一票否决，不能被其它分数抵消。
+M5 同批修掉了 issue #40（**否决即终局**）：`approval="reject"` 的判据改为 `approval.veto_terminates`，
+并保留「无重复审批请求」的机械判据。
 
-**M4 明确未验证的**（写成「通过」就是假话，详见 [docs/M4-verification.md](docs/M4-verification.md)）：
+**M4 明确未验证的**（详见 [docs/M4-verification.md](docs/M4-verification.md)）：
 真实换模（两个真实 provider 的分数对比）未跑 · Windows 上的 `evaluate` 未单独验证 · memfs 后端未覆盖 · 真超时未覆盖。
 
 ### CI 门禁
 
-GitHub Actions，矩阵三个平台 × Python 3.12：`ubuntu-latest` / `macos-latest` / `windows-latest`，检查名形如 `test (macos-latest) · py3.12`。
+GitHub Actions。Python 矩阵三个平台 × Python 3.12：`ubuntu-latest` / `macos-latest` / `windows-latest`，检查名形如 `test (macos-latest) · py3.12`；
+另有一个前端 job `ui · typecheck / test / build`（ubuntu）：typecheck → vitest → build → `git diff --exit-code -- ui/dist`（产物漂移门禁）。
 
 步骤与本地 `CONTRIBUTING.md` §5「提交前检查」的命令逐字相同（本地绿而 CI 红只可能是环境差异），另加两条只在 CI 才可能的门禁：
 
@@ -257,7 +348,7 @@ GitHub Actions，矩阵三个平台 × Python 3.12：`ubuntu-latest` / `macos-la
 
 `main` 已开分支保护：必须走 PR、`strict`（要求分支与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推 / 禁删除。
 
-> ⚠️ **目前只有 `ubuntu-latest` 和 `macos-latest` 两个检查是「必过」。Windows 会跑、会报红，但没有设成必过状态**——
+> ⚠️ **目前只有 `ubuntu-latest` 和 `macos-latest` 两个 Python 检查是「必过」。Windows 会跑、会报红，但没有设成必过状态**——
 > 也就是说 Windows 红了不会自动挡住合并。而 `ci.yml` 里自己写着「Windows 是**主打平台**」。
 > 这是已知的门禁缺口，建议在 Windows 稳定一段时间后把它也设为 required（见 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) 已知限制）。
 
@@ -265,13 +356,14 @@ GitHub Actions，矩阵三个平台 × Python 3.12：`ubuntu-latest` / `macos-la
 
 ```bash
 uv sync --python 3.12
-uv run pytest -o addopts="" -q   # 全量（macOS/Linux 942+3；Windows 937+8）
+uv run pytest -o addopts="" -q   # 全量；macOS 本机实测 1060 passed, 3 skipped
 uv run ruff check .              # lint
 ```
 
 约定（完整版见 [CONTRIBUTING.md](CONTRIBUTING.md)）：
 
 - Python **3.12**，`uv`，**零第三方运行时依赖**；新增依赖须四目标可用（`mac-arm64` / `mac-x64` / `win-x64` / `win-arm64`，见 TECH-ARCH §8.3）。
+- UI 用 Vite + React + TS；`ui/dist` 是**要提交的产物**（Host 直接加载），改了前端必须重建并一起提交，CI 有漂移门禁。
 - 事件日志 = SQLite WAL 单提交点，事务统一走 `EventLog.transaction()`（可组合，不嵌套 `BEGIN`）。
 - 授权只在执行侧判定。
 - 契约变更单独提 `docs(contract):`，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」。
@@ -286,11 +378,12 @@ uv run ruff check .              # lint
 |---|---|
 | [docs/PRD-v1.md](docs/PRD-v1.md) | **产品需求与架构**：范围、五道契约、十一条红线、里程碑（唯一权威版本） |
 | [docs/TECH-ARCH.md](docs/TECH-ARCH.md) | **技术架构**：选型、进程模型、打包、平台差异 |
+| [docs/M5-desktop.md](docs/M5-desktop.md) | **M5 桌面闭环**：三进程拓扑、IPC 契约、恢复语义、偏差登记（§2）、已知限制（§10） |
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
 | [AGENTS.md](AGENTS.md) | AI 编码助手的强制指令（读什么、更什么、哪些不许做） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、独立复审、什么该推什么不该推 |
 | [docs/REVIEW-PRA.md](docs/REVIEW-PRA.md) | PR #7 独立复审报告（「自审盲区」教训的来源） |
-| `docs/M*-verification.md` | M0–M4 各里程碑的判据与验收证据 |
+| `docs/M*-verification.md` | M0–M5 各里程碑的判据与验收证据 |
 | [docs/REFS.md](docs/REFS.md) | 参考仓库与固定 commit |
 | [docs/archive/](docs/archive/) | 历史研究记录，**已被 PRD-v1 取代，勿作为实现依据** |
 
