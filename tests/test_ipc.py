@@ -247,6 +247,25 @@ def test_client_disconnect_does_not_kill_server(echo, root: Path) -> None:
         assert second.call("echo", {"ok": True}) == {"echo": {"ok": True}}
 
 
+def _accept_retrying(server: ipc.Server, *, attempts: int = 20) -> ipc.ServerConnection:
+    """accept 一次；握手阶段的偶发失败按"可重试"处理，最多试 `attempts` 次。
+
+    为什么测试也要重试：`ipc.Server.accept()` 的契约写的就是"握手阶段失败一律
+    可重试"（生产调用方——daemon 的 accept 循环——正是这么写的）。Windows 命名
+    管道上，accept 偶尔会先拿到一条握手失败或根本没有认证的连接（探活、半开、
+    上一实例的残留句柄都可能），此时真实客户端仍在队列里等着。测试若只 accept
+    一次，就会把一次正常的"可重试"当成产品故障——那是测试写得比调用方苛刻。
+    """
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return server.accept()
+        except ipc.ProtocolError as exc:
+            last = exc
+            time.sleep(0.05)
+    raise AssertionError(f"连续 {attempts} 次 accept 都在握手阶段失败：{last}")
+
+
 def _handshaken_pair(root: Path, server: ipc.Server) -> tuple[ipc.ServerConnection, object]:
     """做一次只有传输层握手的连接，返回 (服务端那端, 客户端 raw 连接)。"""
     family = "AF_PIPE" if os.name == "nt" else "AF_UNIX"
@@ -266,7 +285,7 @@ def _handshaken_pair(root: Path, server: ipc.Server) -> tuple[ipc.ServerConnecti
 
     connector = threading.Thread(target=connect, daemon=True)
     connector.start()
-    conn = server.accept()
+    conn = _accept_retrying(server)
     connector.join(timeout=5)
     assert holder and not isinstance(holder[0], Exception), f"握手没有完成：{holder}"
     return conn, holder[0]
@@ -405,7 +424,7 @@ def test_server_close_unblocks_reader(root: Path) -> None:
     # 所以必须先起连接线程，再 accept。
     connector = threading.Thread(target=connect, daemon=True)
     connector.start()
-    conn = server.accept()
+    conn = _accept_retrying(server)
     connector.join(timeout=5)
     assert connected and not isinstance(connected[0], Exception), (
         f"握手没有完成：{connected}"
