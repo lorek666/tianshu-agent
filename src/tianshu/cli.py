@@ -310,6 +310,46 @@ def _exit_code(result) -> int:
     return 0 if result.outcome in ("succeeded", "noop") else 1
 
 
+def _cost_note(
+    cost_total_micros: int,
+    unknown_cost_calls: int,
+    *,
+    turns: int,
+    attempts: int | None,
+) -> str:
+    """费用行的唯一口径：**说"打出去几次"，不是"完成了几轮"**（issue #58）。
+
+    `format_cost` 的第三个参数是"有多少次调用的账已经落库"，那是**完成轮次**
+    （`turns`），不是尝试次数。全部尝试都失败时 `turns == 0`，照旧口径就会
+    印出「无（没有模型调用）」——那句话把"打了 3 次都没回"读成了"什么都没发生"。
+
+    这里按尝试次数分四种情况，每一种都只说自己知道的事：
+
+    - `attempts == 0`：真的没发出过请求，才允许说「无（没有模型调用）」；
+    - `attempts is None`（旧游标没有这个键）：不知道尝试次数。`turns == 0` 的
+      旧游标只可能写于第一次模型调用之前（失败尝试不落游标），所以那是真的
+      0 次；`turns > 0` 时按完成轮次报账，不补"尝试"两个字——不编数；
+    - `turns == 0` 且 `attempts > 0`：一次都没完成，但确实打出去过 N 次；
+    - `turns > 0`：已完成轮次的账照旧报，另有未完成的尝试单独注明（失败尝试
+      可能已被对方计费，但本表只报能核对的钱，所以标"费用未知"）。
+    """
+    if attempts is None:
+        if turns <= 0:
+            return format_cost(cost_total_micros, unknown_cost_calls, 0)
+        return format_cost(cost_total_micros, unknown_cost_calls, turns)
+    if attempts <= 0:
+        return format_cost(cost_total_micros, unknown_cost_calls, 0)
+    if turns <= 0:
+        return f"0 个完成轮次 / {attempts} 次尝试（费用未知）"
+    note = format_cost(cost_total_micros, unknown_cost_calls, turns)
+    unfinished = attempts - turns
+    if unfinished <= 0:
+        return note
+    # 与 `format_cost` 里"已计价 + 未知"的写法保持一致：能核对的钱照旧报，
+    # 没完成的尝试单独标"未知"——它们可能已经被对方计费，但本表不认没拿到的价。
+    return f"{note} + 未知（{unfinished} 次尝试未完成，共 {attempts} 次尝试）"
+
+
 def _print_result(result, *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result.__dict__, ensure_ascii=False, indent=2, default=str))
@@ -324,9 +364,16 @@ def _print_result(result, *, as_json: bool) -> None:
           f"（applied={result.n_applied} unknown={result.n_unknown}）")
     print(f"turns  : {result.turns}   tokens: {result.tokens}")
     # F13：费用与"费用未知的次数"分开显示。查不到价格时这里印"未知（N 次调用）"，
-    # 绝不再印一个 0 —— 0 会被读成"这次是免费的"。
-    cost_note = format_cost(
-        result.cost_total_micros, result.unknown_cost_calls, result.turns
+    # 绝不再印一个 0 —— 0 会被读成"这次是免费的"。尝试次数与完成轮次必须分开：
+    # 前者回答"到底打出去几次"，后者回答"回来了几轮"（issue #58）。
+    cost_note = _cost_note(
+        result.cost_total_micros,
+        result.unknown_cost_calls,
+        turns=result.turns,
+        # 旧游标里的尝试次数只是下限：按"不知道"处理，不把下限当精确值。
+        attempts=(
+            result.model_attempts if result.model_attempts_known else None
+        ),
     )
     print(f"费用   : {cost_note}")
     if result.artifact:
@@ -420,7 +467,12 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     ledger = dict(cursor[0].budget_ledger or {}) if cursor else {}
     cost_total_micros = int(ledger.get("cost_total_micros", 0) or 0)
     unknown_cost_calls = int(ledger.get("unknown_cost_calls", 0) or 0)
-    model_calls = int(ledger.get("turns", 0) or 0)
+    model_turns = int(ledger.get("turns", 0) or 0)
+    # 尝试次数是 #58 才进账本的键。旧游标没有它（或明示为"不完整"）→ `None`
+    # （不知道），不是 0（"不知道"和"零次"必须分开，否则又变回一句假话）。
+    model_attempts = None
+    if "model_attempts" in ledger and ledger.get("model_attempts_known") is not False:
+        model_attempts = int(ledger["model_attempts"])
     if args.json:
         print(json.dumps(
             {
@@ -434,6 +486,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "completed_calls": len(cursor[0].completed_call_ids) if cursor else 0,
                 "cost_total_micros": cost_total_micros,
                 "unknown_cost_calls": unknown_cost_calls,
+                "model_attempts": model_attempts,
                 "approvals": [a.to_dict() for a in pending],
                 "job": (
                     {
@@ -465,7 +518,13 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     if cursor:
         print(f"进度      : 待做 {len(cursor[0].pending_proposals)} 个调用 / "
               f"已完成 {len(cursor[0].completed_call_ids)} 个")
-        print(f"费用      : {format_cost(cost_total_micros, unknown_cost_calls, model_calls)}")
+        print("费用      : "
+              + _cost_note(
+                  cost_total_micros,
+                  unknown_cost_calls,
+                  turns=model_turns,
+                  attempts=model_attempts,
+              ))
     if pending:
         print(f"待批      : {len(pending)} 条")
         for approval in pending:

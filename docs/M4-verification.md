@@ -270,9 +270,29 @@ replay : 通过  (15 事件 / 3 次消息校验)
 `effect=none_applied`（没写任何东西）→ **同一份日志 replay 仍然通过**。这才
 是"真超时下的恢复"该有的形状：不是靠注入，而是真等满了 60 秒。
 
-顺带发现一条**文案缺陷**：这次 Run 明明调了 3 次模型（都超时），CLI 却打印
-`费用 : 无（没有模型调用）`。`format_cost` 的 `calls` 参数这里传的是
-`result.turns`（完成的轮次），不是尝试次数；已单独开工单，本轮不改口径。
+顺带发现一条**文案缺陷**（当时）：这次 Run 明明调了 3 次模型（都超时），CLI 却
+打印 `费用 : 无（没有模型调用）`。`format_cost` 的 `calls` 参数这里传的是
+`result.turns`（完成的轮次），不是尝试次数（issue #58）。
+
+**已修（#58，2026-11-11）**：`RunResult` 增加 `model_attempts`——每真正发出一次
+请求就 +1（含超时/传输失败/重试），进游标预算账本、`resume` 不丢；`_print_result`
+按它说话：
+
+- `model_attempts == 0` 才允许「无（没有模型调用）」；
+- `turns == 0 && model_attempts > 0` → 「0 个完成轮次 / N 次尝试（费用未知）」。
+
+用**同一个黑洞端点**重跑（3 × 60s 超时全部走完，约 3 分钟），费用行实测为：
+
+```text
+turns  : 0   tokens: 0
+费用   : 0 个完成轮次 / 3 次尝试（费用未知）
+replay : 通过  (15 事件 / 3 次消息校验)
+```
+
+判定口径由 `tests/test_cost_line.py` 钉住；负控：把 `_print_result` 改回传
+`turns` 后该用例红，打印的正是「无（没有模型调用）」。`--json` 的 run 对象与
+`run status --json` 都带 `model_attempts`（旧游标为 `null` = 不知道）。
+完整证据见 [cost-and-veto.md](cost-and-veto.md) §1。
 
 ### 7.3 memfs 后端下评测：实测后改为**明确拒绝**
 
