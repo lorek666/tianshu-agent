@@ -7,6 +7,7 @@ import {
   normalizeTask,
   normalizeUndoChanges,
 } from "../normalize";
+import { daemonVersionOf } from "../host";
 
 describe("Host 返回值的宽容读取", () => {
   it("state 缺字段 / 类型不对时给安全空值，而不是崩", () => {
@@ -25,6 +26,16 @@ describe("Host 返回值的宽容读取", () => {
     expect(state.approvals[0]?.resources).toEqual(["/a", "b"]);
     expect(state.event_seq_head).toBe(0);
     expect(state.daemon.version).toBeNull();
+  });
+
+  it("守护进程版本优先读 daemon_version（Host 实际字段），兼容旧 version", () => {
+    expect(normalizeState({ daemon: { daemon_version: "0.1.0" } }).daemon.version).toBe("0.1.0");
+    expect(normalizeState({ daemon: { version: "9.9.9" } }).daemon.version).toBe("9.9.9");
+    expect(
+      normalizeState({ daemon: { daemon_version: "0.1.0", version: "9.9.9" } }).daemon.version,
+    ).toBe("0.1.0");
+    expect(daemonVersionOf(normalizeState({ daemon: { daemon_version: "0.1.0" } }))).toBe("0.1.0");
+    expect(daemonVersionOf(null)).toBeNull();
   });
 
   it("事件缺 seq/type 直接丢弃；payload 是 JSON 字符串时尝试解析", () => {

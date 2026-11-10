@@ -44,6 +44,11 @@ const RUN_STATE_LABELS: Record<string, string> = {
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   ...RUN_STATE_LABELS,
+  // M2 的 task.status 只有 open/closed，和 run.state 不是同一套枚举：
+  // open = 任务未关闭（可以改目标、开始新运行）；closed = 任务已关闭。
+  // 不映射这两个值的话，界面会永远显示兜底的「状态未知」。
+  open: "进行中",
+  closed: "已结束",
   idle: "空闲",
   succeeded: "已完成",
   cancelled: "已取消",

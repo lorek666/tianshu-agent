@@ -55,7 +55,9 @@ describe("枚举 → 人话", () => {
     expect(runStateLabel(undefined)).toBe("状态未知");
   });
 
-  it("任务状态有独立的人话（succeeded = 已完成），未知有兜底", () => {
+  it("任务状态有独立的人话（open/closed 是 schema 的真实枚举），未知有兜底", () => {
+    expect(taskStatusLabel("open")).toBe("进行中");
+    expect(taskStatusLabel("closed")).toBe("已结束");
     expect(taskStatusLabel("running")).toBe("运行中");
     expect(taskStatusLabel("succeeded")).toBe("已完成");
     expect(taskStatusLabel("fenced")).toBe("已被新目标取代");

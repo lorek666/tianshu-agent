@@ -137,7 +137,9 @@ export function normalizeEvents(raw: unknown): EventView[] {
 function normalizeDaemon(raw: unknown): DaemonView {
   const record = asRecord(raw);
   return {
-    version: readString(record, "version"),
+    // Host 实际字段是 daemon_version（src/tianshu/control.py 的 _daemon_view）；
+    // 兼容早期写成 version 的投影。
+    version: readString(record, "daemon_version", "version"),
     started_at: asNumber(record.started_at),
     data_root: readString(record, "data_root"),
   };

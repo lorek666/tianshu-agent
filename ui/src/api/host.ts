@@ -13,7 +13,7 @@ import type { EventView, StateView } from "./types";
 import { normalizeEvent, normalizeState } from "./normalize";
 import { errorFromEnvelope, HostRpcError } from "./errors";
 import { createSseParser } from "./sse";
-import { asNullableRecord, asRecord, asString } from "../lib/values";
+import { asNullableRecord, asRecord, readString } from "../lib/values";
 
 export type RpcParams = Record<string, unknown>;
 
@@ -267,5 +267,5 @@ export function parseEventFrameData(data: string): EventView | null {
 /** 只用于读取 daemon 版本等展示信息，避免组件直接依赖内部方法。 */
 export function daemonVersionOf(state: StateView | null): string | null {
   const record = asRecord(state?.daemon);
-  return asString(record.version);
+  return readString(record, "daemon_version", "version");
 }
