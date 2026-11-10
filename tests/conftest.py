@@ -21,6 +21,23 @@ import pytest
 
 from tianshu import sandbox
 
+#: 用户级权威根的环境变量名。测试里必须钉死到 tmp_path：默认实现是
+#: `~/.tianshu/authority`，不钉的话跑一次测试就会往开发者真实家目录写阻断
+#: 记录，用例之间还会互相串味（A 用例挡住的目录在 B 用例里仍然挡着）。
+AUTHORITY_ROOT_ENV = "TIANSHU_AUTHORITY_ROOT"
+
+
+@pytest.fixture(autouse=True)
+def _pin_authority_root(monkeypatch, tmp_path):
+    """每个用例一个独立的用户级权威根；子进程继承同一个环境变量。
+
+    `tmp_path` 由 pytest 自动清理，权威库不会残留。子进程用例（真进程接管、
+    crashpoint）通过继承环境拿到同一个根，否则"另一个进程看不见阻断"会被
+    误判成通过。
+    """
+    monkeypatch.setenv(AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    yield
+
 
 @pytest.fixture(autouse=True)
 def _pin_local_backend(monkeypatch):
