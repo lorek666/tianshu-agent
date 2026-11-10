@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from support import tool_capable_profile
 
-from tianshu.errors import WorkspaceBlocked
+from tianshu.errors import EventLogCorrupt, WorkspaceBlocked
 from tianshu.events import EventLog
 from tianshu.guard import (
     blocked_workspaces,
@@ -436,6 +436,31 @@ def test_m1_large_payload_is_durable_before_reference_commit(tmp_path):
         "SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL"
     )]
     assert len(refs) == 1 and Path(refs[0]).is_file()
+    log.close()
+
+
+def test_light2_missing_payload_blob_is_event_log_corrupt(tmp_path):
+    """轻-2：外部 blob 缺失必须抛域错误 `EventLogCorrupt`，不能漏出裸 `FileNotFoundError`。
+
+    裸 `FileNotFoundError` 会被读成"调用方把路径写错了"，而且消息里没有 seq——
+    回放/恢复只知道"读失败"，不知道坏的是哪一条事件、哪个 blob 文件。
+    """
+    from tianshu.events import MAX_INLINE_BYTES
+
+    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    seq = log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES})
+    refs = [row[0] for row in log._conn.execute(
+        "SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL"
+    )]
+    assert len(refs) == 1
+    Path(refs[0]).unlink()
+
+    with pytest.raises(EventLogCorrupt) as ei:
+        log.read_run("r1")
+
+    message = str(ei.value)
+    assert f"seq={seq}" in message, "消息要能定位到具体事件"
+    assert refs[0] in message, "消息要能定位到具体 blob 路径"
     log.close()
 
 

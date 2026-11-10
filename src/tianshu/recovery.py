@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import TianshuError, WorkspaceViolation
 from .events import EventLog
 from .guard import blocked_workspaces, ensure_not_blocked
-from .leases import Lease, LeaseStore
+from .leases import Lease, LeaseStore, execution_guard
 from .receipt import build_receipt
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
@@ -114,12 +114,32 @@ def recover_run(
     snapshots: SnapshotStore | None = None,
     *,
     leases: LeaseStore | None = None,
+    data_root: Path | None = None,
 ) -> RecoveryReport:
     """核对并补全一次被打断的 run。幂等。
 
     `leases` 非空时，恢复会先看"这条路径现在是不是别人在写"。正在被别的活
     Run 占用的路径一律记 unresolved 并阻断后续写入——恢复不做实时观测的猜测。
+
+    `data_root` 给了就**和派发共享同一把本机执行守卫**（复审 中-1）：恢复写
+    `recovery.blocked` 与派发真正落盘必须排进同一个全序，否则"查过阻断 → 写入"
+    之间还能被插进一条阻断事件，而写入侧看不到它。不给（库调用方保持原样）时
+    判定口径不变，只是少了这层跨进程线性化。
     """
+    if data_root is None:
+        return _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+    with execution_guard(Path(data_root)):
+        return _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+
+
+def _recover_run(
+    log: EventLog,
+    run_id: str,
+    workspace_dir: Path,
+    snapshots: SnapshotStore | None = None,
+    *,
+    leases: LeaseStore | None = None,
+) -> RecoveryReport:
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
 
@@ -139,8 +159,23 @@ def recover_run(
         tool_id = payload["tool_id"]
         spec = SPECS.get(tool_id)
 
+        if spec is None:
+            # 复审 中-2：tool_id 不在当前工具清单里（更早/更新版本的日志）时，
+            # 不能套用"清单里没有条目 → 确定没写"那条推理——它的前提是"我知
+            # 道这个工具的写入协议"（先落证据、再写文件）。语义未知的工具没有
+            # 这个前提，拿通用 path/content 去猜等于替它宣布"没写"。
+            # 无法判定就标 unknown 并阻断，让人去看。
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: 未知工具的副作用无法核实"
+                                         "（tool_id 不在当前工具清单）",
+                                "recovered": True,
+                                "tool_id": tool_id}),
+                    bucket=report.unresolved)
+            continue
+
         # 只读工具：没有副作用，直接被中断也不影响任何东西
-        if spec is not None and spec.side_effect_level == "pure":
+        if spec.side_effect_level == "pure":
             _settle(log, report, run_id, call_id, tool_id, payload,
                     ToolResult("failed", "none_applied",
                                {"error": "recovered: 只读工具无副作用",

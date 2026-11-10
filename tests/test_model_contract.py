@@ -400,8 +400,29 @@ def test_missing_key_says_which_env_var(vendor, monkeypatch):
 
 
 def test_finish_reason_closed_set_holds_all_13():
-    assert len(FINISH_REASONS) == 13
-    for value in FINISH_REASONS:
+    """13 值封闭集逐字冻结：换掉一个值、多一个值、少一个值都必须红。
+
+    只断言 `len == 13` 时，把 `max_tokens` 换成 `length` 这类"静默换血"仍然绿，
+    而这份集合要和 adapter 的 stop_reason 映射、PRD §5.5 对账。
+    """
+    expected = {
+        "cancelled",
+        "checkpoint",
+        "content_filtered",
+        "end_turn",
+        "guardrail_intervened",
+        "interrupt",
+        "limit_output_tokens",
+        "limit_structured_output_attempts",
+        "limit_total_tokens",
+        "limit_turns",
+        "max_tokens",
+        "stop_sequence",
+        "tool_use",
+    }
+    assert len(expected) == 13
+    assert FINISH_REASONS == expected, "集合内容被改动过：不是 PRD §5.5 的 13 个字面值"
+    for value in expected:
         assert ModelResponse(finish_reason=value).finish_reason == value
 
 

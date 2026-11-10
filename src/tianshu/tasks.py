@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from .errors import RunFenced, TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
 from .execpolicy import ExecPolicy
+from .guard import assert_paths_not_blocked
 from .jobs import JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
@@ -691,6 +692,16 @@ class TaskStore:
             if resources:
                 # 守卫内续一次租：接下来的写入不该因为"复核花了几秒"而掉出 TTL
                 self._leases.renew(resources, run_id)
+            # 复审 中-1：派发 phase-1 查过阻断，但查完到真正落盘之间还可能有人
+            # 追加 `recovery.blocked`。守卫在整个 with 块期间一直持有，所以在这里
+            # 再判一次、并让 recovery 的阻断写入也去抢同一把守卫（见
+            # `recovery.recover_run(data_root=...)`）之后，两件事的先后就有了
+            # 全序：要么阻断先落库（这次写入被拒），要么写入先完成（阻断只影响
+            # 之后的写入）。两者都不会出现"已阻断却照写"。
+            assert_paths_not_blocked(
+                self._log,
+                [r.path if isinstance(r, ResourceIdentity) else r for r in resources],
+            )
             started_at = _now()
             with self._log.transaction() as tx:
                 seq = tx.append(

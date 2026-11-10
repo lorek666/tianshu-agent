@@ -235,7 +235,9 @@ def _attribute(obs: Observation, failed: list[Any]) -> list[str]:
         elif prefix in ("policy",):
             add("policy")
         elif prefix in ("tool",):
-            add("policy")
+            # `tool.read_observed` / `tool.attempted` 是工具证据类判据：
+            # 归到 policy 会让分层计数系统性偏向"策略问题"，指错要修的那一层。
+            add("tool")
     if not layers:
         add("artifact")
     return layers

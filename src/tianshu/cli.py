@@ -742,7 +742,11 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     stack = build_stack(log, data_root=data_root)
     snapshots, leases = stack.snapshots, stack.leases
     try:
-        report = recover_run(log, args.run_id, args.workspace, snapshots, leases=leases)
+        # 传 data_root：恢复写阻断事件与派发落盘要抢同一把执行守卫（复审 中-1）。
+        report = recover_run(
+            log, args.run_id, args.workspace, snapshots,
+            leases=leases, data_root=data_root,
+        )
     finally:
         log.close()
 

@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
 
+-- 阻断回放按 type 过滤（`guard.scan_blocked`），而它在每次写入前都要跑一遍
+-- （派发 phase-1、执行守卫内、改文件前各一次；复审 中-1 之后是三次）。没有
+-- 这个索引时每次都要扫全表：事件越写越多，单次写入就越慢。索引不改变事件
+-- 类型集合（C3 封闭集），也不是契约的一部分，只是让"读阻断状态"不随日志增长。
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, seq);
+
 CREATE TRIGGER IF NOT EXISTS events_no_update
 BEFORE UPDATE ON events
 BEGIN
@@ -462,7 +468,17 @@ class EventLog:
 
     def _row_to_event(self, row: sqlite3.Row, *, verify: bool) -> Event:
         if row["payload_ref"]:
-            raw = Path(row["payload_ref"]).read_bytes()
+            ref = row["payload_ref"]
+            try:
+                raw = Path(ref).read_bytes()
+            except OSError as exc:
+                # 外部 blob 缺失/不可读是**日志损坏**，不是调用方传错了路径。
+                # 裸 FileNotFoundError 会被读成"我自己 IO 用错了"，而且不带 seq，
+                # 回放/恢复拿不到"坏的是哪一条事件"；统一收敛成域错误。
+                raise EventLogCorrupt(
+                    f"seq={row['seq']} payload blob 缺失或不可读：{ref}"
+                    f"（{type(exc).__name__}: {exc}）"
+                ) from exc
         else:
             raw = row["payload"].encode("utf-8")
 

@@ -22,7 +22,12 @@ class OverwriteRefused(TianshuError):
 
 
 class EventLogCorrupt(TianshuError):
-    """事件日志的 payload_hash 与实际内容不符（对应验收 A8）。"""
+    """事件日志不可信：内容与记录对不上，或读不出结论。
+
+    三种情形共用它：payload_hash 与实际内容不符（对应验收 A8）、外部 payload
+    blob 缺失/不可读、以及阻断记录解析不出 workspace（无法判定哪些目录被阻断）。
+    最后一种以前被静默跳过（复审 中-4），现在必须显式报出来。
+    """
 
 
 class WorkspaceBlocked(TianshuError):

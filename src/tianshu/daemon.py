@@ -492,6 +492,10 @@ class _Daemon:
                 workspace,
                 self.control_stack.snapshots,
                 leases=self.control_stack.leases,
+                # 恢复扫描发生在 bind 之前（见 `_setup`），此刻没有驱动线程、
+                # 没有客户端，守卫必然空闲——所以这里可以和派发争同一把锁，
+                # 不会自锁（复审 中-1）。
+                data_root=self.root,
             )
         except Exception as exc:  # noqa: BLE001 - 恢复失败不等于可以继续
             # 连"能不能核实"都没算出来：这是最不能当成功的一种。落 reconciling、

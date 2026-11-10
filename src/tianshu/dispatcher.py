@@ -1288,6 +1288,9 @@ class Dispatcher:
             GuardTimeout: "dispatch.guard_timeout",
             JobLost: "dispatch.claim_lost",
             LeaseLost: "dispatch.lease_lost",
+            # 守卫内二次阻断核验（复审 中-1）被拒：和 phase-1 那条用同一个
+            # rule id，用户看到的仍然只是"这个目录有未核实的副作用"。
+            WorkspaceBlocked: "dispatch.workspace_blocked",
         }.get(type(exc), "dispatch.refused")
         rule_id = check_rule_id(rule_id, where="_abort_dispatch")
 

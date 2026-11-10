@@ -27,7 +27,8 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **里程碑**：**M0–M5 已完成**。M4 由 PR #41 / #45 合入（代码在 `src/tianshu/eval/`）；**M5 桌面闭环由 PR #49 完成**（2026-11-10，`feat/m5-desktop`）：Daemon / Host / UI 三进程打通、审批 UI、关 UI 任务继续、重启后恢复。设计与契约见 [M5-desktop.md](M5-desktop.md)，实测证据见 [M5-verification.md](M5-verification.md)。
-- **测试**：**1061 passed, 3 skipped**（macOS 本机实测，2026-11-10，`main@6862d8f`：`uv run --python 3.12 pytest -o addopts="" -q` → `1061 passed, 3 skipped in 96.66s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **39** 个 `tests/test_*.py`。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
+- **M0–M5 对抗性复审（2026-11-10）**：[DEBUG-M0M5.md](DEBUG-M0M5.md) 对 `main@4eb4ea9` 做了独立复审（严重 0 / 中等 5 / 轻微 7），本轮把 12 条**逐条裁决**（修复记录追加在同一文档末尾）：5 中等里 4 条已修（中-1 阻断 TOCTOU、中-2 未知工具恢复、中-3 注入证据面、中-4 畸形阻断记录 fail-open）、1 条**误报**（中-5：`prepare` 当场就拒，补钉住测试而非改代码）；6 条轻微修复（同内容写入口径、缺 blob 域错误、unblock 稳定 id、M3 diff 区间、封闭集全等断言、eval 归因分层）+ 1 条纯文档补登（Host 强杀后 Daemon 残留）。复审留账的静态疑点/未验证项开成 issue **#53 / #54 / #55**。
+- **测试**：**1074 passed, 3 skipped**（macOS 本机实测，2026-11-10，复审修法（PR #56，分支 `fix/m0m5-audit`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1074 passed, 3 skipped in 97.83s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **40** 个 `tests/test_*.py`（本轮新增 `test_failclosed.py` 6 条，`test_recovery.py` 7 → 11 条，另 3 条单点回归）。基线 1061 → 1074，净增 13 条，无新增 skip。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮没有重核**——无 Windows 实机，只有 CI `windows-latest` 的结论，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **37** 个模块（M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`），另有子包 `eval/`（6 个 .py）。
 - **平台**：CI 矩阵是 **ubuntu / macos / windows 三个平台 × Python 3.12**，另有一个 `ui` job（ubuntu：typecheck / vitest / build / `ui/dist` 漂移门禁）。Python 三平台：`7abad75` 的 run `42652194348` 三平台全 success；**M5 之后 Windows 不再是绿的**——命名管道上存在**偶发握手失败**（issue #50，`digest sent was rejected` / `digest received was wrong`，每轮失败的用例与条数都不同，本机 macOS 无法复现）。ubuntu / macOS 稳定绿。Windows 只有 `windows-latest`（Server 2022 runner）证据，没有实机验证。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。required status checks 目前是 `test (ubuntu-latest) · py3.12` 与 `test (macos-latest) · py3.12` 两项；Windows job 在矩阵里跑但**还没加进 required 列表**（见 §7）。
@@ -125,6 +126,13 @@
 
 第 3 条**在 pytest 进程内测不出来**：主线程退出后进程还活着，清理线程不会死，Bug 会躲过去；必须用**真子进程**跑 `tianshu host run` → `stop_host()` → 进程退出后立刻 `ipc.probe` 断言为假。本轮在新 tip 实测：`host run` → `host stop` 输出 `Host 已退出`，Host 与 Daemon 进程都消失，`ipc.probe == False`，`run/` 只剩常驻的 `ipc.key`。这也是下面 §5「顺序即契约」与「真进程验收」两条教训的来源。
 
+### M0–M5 复审修法的实现决策（2026-11-10，`fix/m0m5-audit`）
+
+- **把「阻断核验」压到执行边界，同时让恢复和派发抢同一把锁**：`FileExecutor.execute()` 在改文件前最后一步按**真正要写的那个路径**再判一次；`TaskStore.begin_execution()` 在拿住执行守卫之后、写 `execution.started` 之前按资源路径再判一次；`recover_run(..., data_root=...)` 给定时，恢复全过程（含落 `recovery.blocked`）在本机执行守卫内跑，CLI `recover` / daemon 启动恢复 / eval 崩溃恢复三处都传。代价与边界：恢复要等守卫（上限 `GUARD_TIMEOUT_MS=5s`，超时抛 `GuardTimeout`）；daemon 的恢复扫描在 bind 之前（此时没有驱动线程），所以不会自锁；库调用方不传 `data_root` 时没有跨进程线性化，只剩两道就地核验（口径不变，窗口收窄）。
+- **未知/畸形一律 fail-closed，且"拒绝"要用已有的 rule id**：`guard.scan_blocked()` 把「回放出的阻断集合」和「判定不了的事件 seq」一起交出来；`blocked_workspaces()` 见到后者抛 `EventLogCorrupt`（这份日志答不了"哪些目录被阻断"），写入守卫转成 `WorkspaceBlocked`；守卫内被拒的派发在 `_abort_dispatch` 里映射回 `dispatch.workspace_blocked`，不新造 rule id（C4 是封闭集）。恢复里 `SPECS.get(tool_id) is None` 直接 unknown + 阻断，不再走"没证据=没写"的推理。
+- **同内容写入 = 没有可观测副作用**：`_modify_text` 在 `before == data` 时返回 `succeeded / none_applied`，不落 preimage、不产 applied 凭据（`build_receipt` 只对 `applied` 出凭据）。这样活体路径与恢复侧（`before == expected_after → none_applied`）口径一致，"副作用已发生"不再被一句空话冒充。
+- **`EventLogCorrupt` 的语义从一个扩到三个**：payload_hash 不符（A8）、外部 payload blob 缺失/不可读、阻断记录解析不出 workspace。三种都是"这份日志不能作为结论来源"，所以共用同一个域错误，但消息必须带 `seq`（和 blob 路径），否则调用方只知道"读失败"。
+
 ## 5. 踩坑教训（别再踩）
 
 - **自审有盲区**：PR #7 自写自审自合，第二读者十分钟找出 13 项缺陷、5 项高危。作者知道自己的意图，所以看不出实现没兑现意图。→ 高危改动必须独立复审（见 §6）。
@@ -148,6 +156,11 @@
 - **"挂住"和"失败"要分开**：CI 作业默认 360 分钟超时，一个挂住的测试会占 6 小时 runner 且不给任何信息。给 job 设 `timeout-minutes` 后，挂住至少会带着已有输出结束。同理，等子进程就绪不要靠"轮询 probe"猜进度——让它自己在 `on_ready` 落一个标记文件，断言就能区分"没走到 on_ready"和"走到了但端点连不上"。
 - **pytest 进程内测不出"进程退出"类 Bug**：主线程退出后 pytest 进程还活着，清理线程不会死，Bug 会躲过去。这类逻辑必须用**真子进程**（`subprocess` 跑真的 `tianshu host run`，再 `stop_host`，然后从外部断言进程/端点），否则测试测的是"函数返回了"，不是"进程真的退干净了"。
 
+- **「再检查一次」关不严 `check → act` 的窗口，共享一把锁才关得严（复审 中-1）**：`ensure_not_blocked` 只在派发 phase-1 查一次，查完到落盘之间仍可被插入一条 `recovery.blocked`。修法不是再多加几次检查，而是**让两件事抢同一把锁**：恢复落阻断与派发落盘都进本机执行守卫（`execution_guard`），先后就有了全序；同时把核验压到执行边界（改文件前最后一步、按真正要写的那个路径判）。教训：凡是「判定 → 副作用」跨进程成对出现的，先问"这两件事有没有共同的线性化点"；没有的话，检查次数只是把窗口缩小，不是关掉。
+- **「无法判定」必须和「没有」分开（复审 中-2 / 中-4）**：两处 fail-open 是同一个病——`except Exception: continue` 把解析不了的阻断事件当成"没阻断"；未知 `tool_id` 套用"清单里没有条目 = 确定没写"。前者等于替一条看不懂的审计记录宣布结论，后者等于替一个语义未知的工具假设写入协议。口径：**不可解析 / 语义未知 / 读不出结论，一律 `unknown` + 阻断**，让人来看。猜出来的"没事"比明确的"不知道"危险得多。
+- **证据要核「真正被写的那个东西」（复审 中-3）**：M1 的「kill×100 · 0 重复副作用」听着很强，实际注入只走 `create_report`，不变量 A 读的还是预置后从未被写的诱饵文件 `note.md`——断言一直绿，但和这次写入无关。修法：从 `tool.intent` 参数解析真实目标再逐字节核对，并把矩阵配平到 create + 覆盖写。**而且必须做负控**：故意破坏不变量（只写半截内容、把 A 改回读诱饵）看测试是否红，否则分不清"断言成立"与"断言恒真"。
+- **复审报告也会误报，误报同样要留证据（复审 中-5）**：报告称 `prepare` 对目录外删除"不拒、会给用户一张永远批不了的审批"，实测是 `rejected`（`dispatch.lease_lost`）、无审批、等待队列为空、文件没动。处理方式不是"顺手加个检查"糊过去（那会多出一条永远不生效的分支），而是**加一条钉住测试**把"它本来就拒"变成回归，并在报告里写明反证。审查者与被审者都可能错，能复现的输出才是共同语言。
+
 ## 6. 流程规则（机械 + 纪律）
 
 - **门禁是机械的**：`main` 分支保护——走 PR、CI 绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。本地绿不算数。
@@ -169,6 +182,14 @@
 
 - **Keychain 未实现**：零依赖下只能 ctypes 调 `Security.framework` / `CredReadW`，无平台可验证。v1 交付的是接缝 + 全链路脱敏 + 明确报 `unsupported`。**不得声称"密钥存在系统钥匙串里"。**
 - 真实模型 key 只从环境变量读，永不进库；用过的中转 key 应自行作废。
+
+**M0–M5 复审留账（[DEBUG-M0M5.md](DEBUG-M0M5.md)，2026-11-10；修复记录见该文档末尾）**
+
+- **M2 静态疑点 → issue #53**：否决缓存只按 `run_id` 生效（同一 Task 新 Run 是否忘掉否决，取决于 `run start` 是否只由人/控制面触发，未逐条验证）；`revoke_consumed` 的判定依赖 dispatcher 状态核验，未逐条探针验证。**两条都未复现**，不许当成已确认漏洞，也不许当成已解决。
+- **M1 `delete_file` 注入矩阵 → issue #54**：本轮（PR 修法）把 "kill×100" 的证据面从只覆盖 create 扩到 create + 覆盖写；删除类动作的恢复判据是 `absent`、撤销按 preimage 重建，另开一组断言跟进。
+- **M4 四条未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时），下面这段仍然有效。
+- **按已知限制接受**：`create_report` 先 `exists` 检查再 `os.replace`，对**外部进程**仍有覆盖 TOCTOU；lease 只防受控 run，PRD 非目标本就包含"防本机用户"。登记是为了下次读到的人不至于以为没考虑过。
+- **中-5 是误报**（`prepare` 当场拒绝目录外目标），处理方式是一条钉住测试，不是产品代码改动。
 
 **M4 评测未验证项（不许写成"通过"）**
 
@@ -223,6 +244,7 @@
 
 > 格式：`日期 · 做了什么 · 发现/决定了什么`。最新在上。
 
+- **2026-11-10** · **M0–M5 复审修法（`fix/m0m5-audit`）**：把 [DEBUG-M0M5.md](DEBUG-M0M5.md) 的 12 条发现逐条裁决并落地——4 条中等修复（阻断核验下沉执行边界 + 恢复与派发共享执行守卫；未知工具恢复 fail-closed；畸形阻断记录 fail-closed；M1 注入矩阵扩到覆盖写）、6 条轻微修复、1 条误报加钉住测试、1 条文档补登；基线 `main@4eb4ea9` 的 1061 → **1074 passed / 3 skipped**（97.83s），`ruff check .` 干净。· **踩了**：`check → act` 的窗口不是"多查一次"能关的，得让两边抢同一把锁（`begin_execution` 的守卫覆盖整个写过程，恢复侧不进这把锁就白搭）；`except: continue` 与"未知工具套用已知推理"是同一个 fail-open 病；M1 的强证据其实读的是诱饵文件（只有负控才照得出恒真断言）；复审报告自己也会误报（中-5 说 `prepare` 不拒，实测 `rejected`）。· **留下**：修复记录追加在 [DEBUG-M0M5.md](DEBUG-M0M5.md) 末尾（每条的命令、实测输出与残余风险）；静态疑点/未验证项开成 **#53 / #54 / #55**；`errors.EventLogCorrupt` 语义扩到三种情形（hash 不符 / 外部 blob 缺失 / 阻断记录解析失败）；`recover_run(data_root=...)` 成为 CLI/daemon/eval 三处的统一调用方式。
 - **2026-11-10** · **M5 合并后的收尾（PR #49 已合，PR #51 补丁）**：`tianshu host stop` 三缺陷、Windows/Linux 平台差异、UI 三缺陷、以及"挂住"问题全部修完；`main@6862d8f` 实测 **1061 passed / 3 skipped**。· **踩了**：`/shutdown` 端点挂在 `do_GET` 而 `host stop` 发 POST（永远 404）；清理回调赋给 handler **类属性**被描述符协议绑成 bound method（`TypeError` 静默吞掉清理）；`stop_all` 先置 `stop_event` 再清理 → Daemon 留成孤儿；Windows 的 accept 叫不醒（overlapped I/O）、`PeekNamedPipe` 直接抛错、重复实例抛裸 `PermissionError`；Linux 上关 fd 唤不醒 accept；**敲门自己也会阻塞**（windows job 挂 20 分钟）；子进程日志用未读的 `PIPE` 会死锁；崩溃恢复测试靠轮询 probe 猜进度导致 macOS 偶发红。· **留下**：`docs/M5-verification.md` §5（host stop）、§6（断线烧核）、§6.5（跨平台差异与 Windows 未解决问题）；issue **#50** 记录 Windows 命名管道偶发握手失败（根因未定位，已在 `ci.yml` 就近注明、**不加** `continue-on-error`）；UI 三个可见缺陷已修（任务状态/守护进程版本人话映射、1280 宽审批按钮回到首屏），遗留"审批事件 action≠rule id 导致标题兜底"另开工单。
 - **2026-11-10** · **M5 桌面闭环（PR #49）**：三进程（Daemon / Host / 浏览器 UI）打通，IPC 契约与断线语义、审批 UI、关 UI 任务继续、重启恢复、离线演示脚本全部落地；测试 942 → **1060 passed / 3 skipped**（`f5da9ef` 收尾后实测）。· **踩了**：`recv()` 对"超时"和"断线"都返 `None`，客户端一断 daemon 读线程 100% CPU 空转（实测烧一个核，靠 `eof` + `ConnectionClosed` 修掉，回归测试带真子进程 CPU 记账）；驱动线程跨线程复用 SQLite 连接直接 `ProgrammingError`，Run 永远停在 `created`（`cross_thread=True` 修）；手写 HTML 截图会盖住 token 注入 Bug（真页面是空 `<meta>` 原地替换）；`tianshu host stop` 三个缺陷叠在一条退出路径上（`/shutdown` 挂错 `do_GET`、清理回调绑成 bound method、先置 stop_event 再清理）→ stop 永远 404、清理静默死、Daemon 留成孤儿，靠 POST-only + 回调挂 server + 清理完再放主线程修掉（真子进程回归才测得出来）。· **留下**：M5 偏差 D1–D5 与"不做安装包/托盘"的口径写进 [M5-desktop.md](M5-desktop.md) §2/§9；断线语义写进 §3.6 与 4 条回归测试；`SUITE_VERSION` 升 **m4.4**（否决即终局，issue #40，PR #48）；剩余限制与未验证项见 [M5-desktop.md](M5-desktop.md) §10 与 [M5-verification.md](M5-verification.md)。
 - **2026-11-10** · 把未提交的草稿按 `7abad75` 事实重写并落库 · 发现草稿里 Windows 和测试数两处都是假话，属"文档说假话"复发；落库时又抓到第三处——README 长期声称「运行时数据放系统标准位置」，实际一直是 CWD 下的 `.tianshu/`。
@@ -234,6 +256,7 @@
 - [PRD-v1.md](PRD-v1.md) — 产品需求与架构（唯一权威）：范围、契约、红线、里程碑、决策记录
 - [TECH-ARCH.md](TECH-ARCH.md) — 技术架构：选型、进程模型、打包、平台差异
 - [REVIEW-PRA.md](REVIEW-PRA.md) — PR #7 独立复审报告（§5 教训的主要来源）
+- [DEBUG-M0M5.md](DEBUG-M0M5.md) — M0–M5 对抗性复审报告 + 本轮修复记录（裁决、命令、实测输出、残余风险）
 - [M5-desktop.md](M5-desktop.md) — M5 桌面闭环：三进程拓扑、IPC 契约、恢复语义、偏差（§2）与已知限制（§10）
 - [M0-verification.md](M0-verification.md) / [M1-verification.md](M1-verification.md) / [M2-verification.md](M2-verification.md) / [M3-verification.md](M3-verification.md) / [M4-verification.md](M4-verification.md) / [M5-verification.md](M5-verification.md) — 各里程碑验收证据
 - [F5-context-compile.md](F5-context-compile.md) — F5 上下文编译的设计与取舍

@@ -11,11 +11,17 @@ PRD §11 给 M3 的定义是 **"第二个 chat provider + 第二个沙箱后端"
 
 | 判据 | 机械证据 | 结果 |
 |---|---|---|
-| 主循环 0 改动 | `git diff dab74cc -- src/tianshu/loop.py \| wc -l`（`dab74cc` = M2 合并点） | **0** |
+| 主循环 0 改动 | `git diff dab74cc 49432a5 -- src/tianshu/loop.py \| wc -l`（`dab74cc` = M2 合并点，`49432a5` = 本里程碑合并点） | **0** |
 | 契约测试全绿 | `uv run pytest -o addopts="" -q` | **514 passed, 1 skipped** |
 | 两个线上协议跑同一套断言 | `tests/test_model_contract.py`（69 用例，参数化 vendor） | 全绿 |
 | 两个沙箱后端跑同一套断言 | `tests/test_backend_contract.py`（83 用例，参数化 backend） | 全绿，1 skip 见 §6 |
 | 环境不污染"全绿" | `TIANSHU_SANDBOX_BACKEND=memfs uv run pytest -o addopts="" -q` | **514 passed, 1 skipped**（与不带变量一致） |
+
+> 这条证据**必须用区间**（左端 M2 合并点、右端 M3 合并点），不能写成
+> `git diff dab74cc -- src/tianshu/loop.py`：那个命令比的是"M2 到今天的工作区"，
+> M4/M5 合法改过 `loop.py`，今天实测输出 **856**，看着像"主循环被改了"，其实
+> 是区间选错（复审 轻-4 的发现）。区间式的机械证据才是"这两个合并点之间
+> `loop.py` 一个字没动"。
 
 `loop.py` 一行未改，所以后端选择只能是**进程级**（`TIANSHU_SANDBOX_BACKEND` /
 `configure_backend()`）：`build_stack` 就在 `loop.py` 里，把后端塞进装配层会让

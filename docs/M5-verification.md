@@ -377,6 +377,7 @@ uv run --python 3.12 python -c "from pathlib import Path; from tianshu import da
 | 双 Daemon 同时启动的**概率** | `test_two_daemons_started_concurrently_only_one_wins` 用 `threading.Barrier` 制造竞态，跑通不等於覆盖所有调度；没有做 N 次重复的抖动统计 |
 | 长时间浸泡 | 全套测试约 95s，演示约 5s 级；没有 10 小时级运行、没有内存/句柄泄漏曲线 |
 | Daemon 崩溃 → Host 指数退避重启 | `docs/M5-desktop.md` §4.3 写了 1s/2s/4s/8s 上限 30s 的监护策略，但**本轮没有实测“连续杀死 Daemon 观察退避”**这条路径（只验了崩溃恢复本身与 Host 退出） |
+| **Host 被强杀后 Daemon 残留、`run/host.lock` 不回收（设计如此）** | `kill -9` Host 进程后，Daemon 作为独立进程继续跑，`run/host.lock` 留在磁盘上（复审实测：`probe=True`、Daemon 进程存活）。这是 `docs/M5-desktop.md` §4 的**明文设计**（"Host 被杀 → Daemon 跑到下次显式 shutdown"，也就是"关 UI 任务继续"），不是违约；但回收路径只有"下次 `tianshu host` 启动/显式 shutdown"，**Daemon 侧没有父进程看门狗**。登记在此，避免这条设计后果被当成新缺陷反复报（复审 轻-7） |
 | 陈旧锁 2 秒宽限窗 | 见 §9 第 2 条：代码存在的理论窗口没有用“超大库 + 慢恢复”去实测 |
 
 ## 9. 已知限制（照抄 `docs/M5-desktop.md` §10，不美化）
