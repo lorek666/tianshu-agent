@@ -76,6 +76,12 @@ class GuardTimeout(TianshuError):
     """执行守卫在限定时间内没拿到锁。"""
 
 
+#: 接管对账回调：(前任 run_id, 被抢的资源路径)。**只读**，不许写事件/落盘。
+#: 判定"不能接管"时抛 `LeaseConflict`（由调用方决定怎么说明原因）；
+#: 默认 None = 旧的"过期即接管"行为（库里其它调用方保持原语义）。
+ReconcileFn = Callable[[str, str], None]
+
+
 @dataclass(frozen=True)
 class ProcessIdentity:
     """进程实例身份。pid 会被 OS 复用，instance_id 不会。"""
@@ -352,10 +358,19 @@ class LeaseStore:
         *,
         ttl_ms: int = DEFAULT_TTL_MS,
         steal_stale: bool = True,
+        reconcile: ReconcileFn | None = None,
     ) -> LeaseSet:
-        """多资源一次性获取。任一冲突则整批不占——避免半绑定状态。"""
+        """多资源一次性获取。任一冲突则整批不占——避免半绑定状态。
+
+        `reconcile` 是**接管前对账**（issue #61.2）：抢占 stale lease 之前，
+        先把每个前任 run 交给回调核对"有没有未核实副作用"。回调抛
+        `LeaseConflict` 就整批拒绝（一行都不写）。None = 旧行为——租约过期/
+        进程已死就直接接管，不看前任写到哪一步（库调用方保持兼容）。
+        """
         with self._log.transaction():
-            leases = self._acquire_locked(resources, run_id, ttl_ms, steal_stale)
+            leases = self._acquire_locked(
+                resources, run_id, ttl_ms, steal_stale, reconcile
+            )
         return LeaseSet(run_id, self._identity, tuple(leases))
 
     def acquire_many(
@@ -365,9 +380,11 @@ class LeaseStore:
         *,
         ttl_ms: int = DEFAULT_TTL_MS,
         steal_stale: bool = True,
+        reconcile: ReconcileFn | None = None,
     ) -> list[Lease]:
         return list(self.acquire(
-            resources, run_id, ttl_ms=ttl_ms, steal_stale=steal_stale
+            resources, run_id, ttl_ms=ttl_ms, steal_stale=steal_stale,
+            reconcile=reconcile,
         ).leases)
 
     def _acquire_locked(
@@ -376,6 +393,7 @@ class LeaseStore:
         run_id: str,
         ttl_ms: int,
         steal_stale: bool,
+        reconcile: ReconcileFn | None = None,
     ) -> list[Lease]:
         if not resources:
             return []
@@ -386,12 +404,19 @@ class LeaseStore:
         rows = self._conn.execute("SELECT * FROM leases").fetchall()
 
         # 先判冲突，再写：全部通过才落库。
+        # 顺手把"要被抢占的 stale 记录"收集起来——对账通过之后才真正删除，
+        # 否则回调一抛异常，删掉的行得靠事务回滚，读代码的人会以为已经改了。
+        steals: list[tuple[str, str]] = []  # (前任 run_id, 资源路径)
+        stale_keys: list[str] = []
         for want in wanted:
             for row in rows:
                 if row["resource_key"] == want.key:
                     if self._is_owner(row, run_id):
                         continue
                     if steal_stale and self._is_stale(row, now):
+                        steals.append(
+                            (row["run_id"], want.path or row["canonical_path"])
+                        )
                         continue
                     raise LeaseConflict(
                         f"资源已被占用：{want.path or want.key}（run={row['run_id']} "
@@ -410,9 +435,10 @@ class LeaseStore:
                     continue
                 if steal_stale and self._is_stale(row, now):
                     # 死掉的持有者留下的覆盖租约顺手清掉，否则 TTL 内会一直挡住
-                    self._conn.execute(
-                        "DELETE FROM leases WHERE resource_key=?",
-                        (row["resource_key"],),
+                    if row["resource_key"] not in stale_keys:
+                        stale_keys.append(row["resource_key"])
+                    steals.append(
+                        (row["run_id"], want.path or row["canonical_path"])
                     )
                     continue
                 raise LeaseConflict(
@@ -420,6 +446,19 @@ class LeaseStore:
                     f"{row['canonical_path'] or row['resource_key']} 属于同一棵子树"
                     f"（持有者 run={row['run_id']}）"
                 )
+
+        # 接管对账：同一个前任 run 只问一次（一个 run 可能持有多个资源）。
+        # 在**任何写之前**调用——回调抛错时整批失败，一个租约都不占。
+        if reconcile is not None and steals:
+            seen: set[str] = set()
+            for previous_run, path in steals:
+                if previous_run in seen:
+                    continue
+                seen.add(previous_run)
+                reconcile(previous_run, path)
+
+        for key in stale_keys:
+            self._conn.execute("DELETE FROM leases WHERE resource_key=?", (key,))
 
         acquired: list[Lease] = []
         for want in wanted:
@@ -783,6 +822,7 @@ __all__ = [
     "LeaseStore",
     "PID_REUSE_MARGIN_MS",
     "ProcessIdentity",
+    "ReconcileFn",
     "current_process",
     "execution_guard",
     "overlap_key",
