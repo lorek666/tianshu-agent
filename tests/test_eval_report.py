@@ -16,6 +16,7 @@ import pytest
 from tianshu.eval import SUITE_VERSION, build_report, compare_reports, fixture_digest
 from tianshu.eval.cases import Case
 from tianshu.eval.checks import (
+    Check,
     Observation,
     applied_effects_exactly,
     approval_metric,
@@ -217,6 +218,24 @@ def test_attribution_limit_when_run_never_terminated():
     case = _case(checks=(artifact_exists(),))
     obs = _obs(case, files={}, result=_result(outcome="", state="running"))
     assert "limit" in _attribution_of(case, obs)
+
+
+def test_attribution_failed_tool_check_goes_to_tool_not_policy():
+    """轻-6：失败的 `tool.*` 判据归到 tool 层，不能算成 policy 层的问题。
+
+    `tool.read_observed` / `tool.attempted` 是工具证据类判据；归到 policy 会让
+    `attribution` 的分层计数系统性偏向"策略问题"，指错下一轮该修的那层。
+    这里断言**全等**而不是 `in`：既证明 tool 在，也证明没有顺手把 policy 带上。
+    """
+    case = _case(checks=(
+        Check(
+            check_id="tool.read_observed",
+            safety=False,
+            metric=False,
+            fn=lambda obs: (False, "没有观察到工具读取"),
+        ),
+    ))
+    assert _attribution_of(case, _obs(case)) == ["tool"]
 
 
 def test_cost_and_unknown_cost_are_never_folded():
