@@ -35,14 +35,15 @@
 
 **问题**：进程在中间被杀，重启后怎么知道改没改？
 
-**不猜，用磁盘现状核实。** 四个故障点全部注入：
+**不猜，用磁盘现状核实。** 四个故障点在**两条受控写路径**（`create_report`
+新建、`modify_text` 覆盖已存在文件）上全部注入：
 
 | 故障点 | 期望 | 实际 |
 |---|---|---|
-| `after_intent`（写了 intent 未执行） | 文件不存在 → `none_applied` | ✅ |
-| `after_write`（写完文件未写 result） | 文件存在且哈希匹配 → `applied` | ✅ |
+| `after_intent`（写了 intent 未执行） | 新建目标不存在 / 覆盖写目标仍是写前内容 → `none_applied` | ✅ |
+| `after_write`（写完文件未写 result） | 目标哈希 == 意图写后 → `applied` | ✅ |
 | `after_result`（写完 result 未写凭据） | 结果已在，无需补 | ✅ |
-| `after_receipt`（凭据已写未收尾） | 同上 | ✅ |
+| `after_receipt`（凭据已写未收尾） | 同上（M2 起 result 与凭据同事务提交，两点落在同一处） | ✅ |
 
 **核实规则**：
 
@@ -52,11 +53,47 @@
 - 写工具，目标哈希既非期望也非写前状态 → **`unknown` + 阻断该 workspace 的后续写入**
 - 参数不可重建的写工具 → `unknown` + 阻断，但**必须补一条 result**，否则 intent 永远悬空
 
-**100 次随机注入**（随机故障点 × 100 用例，4.8 秒跑完）验证三条不变量：
+**100 次故障注入**（四个故障点 × 两条写路径；本机实测本用例约 9.8 秒，
+整个 `test_recovery.py` 约 10.9 秒）验证四条不变量：
 
-- A. 恢复后文件内容必须是「写前」或「写入内容」之一，不能半截
-- B. 每个 intent 恰好一条 result，不丢不重
-- C. 没有任何一次把「未执行」误报成 `applied`
+注入矩阵（`tests/test_recovery.py::test_100_random_fault_injections`）：
+
+- 48 次 `create_report`（新建）+ 52 次 `modify_text`（覆盖写已存在文件），
+  每个（写类型, 故障点）组合 12 次，另给本轮新增的覆盖写补 4 次；随机种子固定，
+  只用来打乱执行顺序——覆盖面由配平矩阵保证，不交给随机抽样（纯随机可能恰好
+  漏掉某个组合）。
+- 覆盖写是 `ACTION_OVERWRITE`，必经审批：子进程停在 `waiting_approval` 后，
+  按 `tests/support.py::approve_pending` 的同一公开入口（`approvals.decide`
+  + `resume_run`）模拟「人在 CLI 上批准」。**授权没有被绕过**——策略判定、
+  审批落库、动作摘要绑定、执行侧消费一样没少，省掉的只是等人。
+- 子进程不走 `cli --model scripted`（那个脚本模型只发 list_files +
+  create_report，正是复审 **中-3** 指出的证据缺口），而是用公开 API 装配同一条
+  run 路径（`build_stack` + `AgentLoop` + `ScriptedModel`），命令它发
+  `modify_text`；`src/tianshu/cli.py` 未改，也没有新增 `--model` 模式。
+
+不变量（A 核对的目标从 `tool.intent` 参数解析：create 取 `name`、overwrite 取
+`path`，并断言就是 `report.md`；预置后从未被写的 `note.md` 反过来断言没动过）：
+
+- A. **真实写入目标**逐字节等于「写前」或「写入内容」之一，不许半截、不许第三种；
+  第二次恢复不再改变内容，也不再补事件。
+- B. 每个写入 intent 恰好一条 `tool.result`（不丢不重）；有写入结果必须有写前 intent。
+- C. 声称 `applied` 的，result 的 `sha256` / `after_state` / 磁盘三者一致，
+  `before_state` 必须等于写前状态（新建为 `absent`）；`after_intent` 那次必须如实
+  判 `none_applied`，不许把「未执行」误报成 `applied`。
+- D. `applied` 恰好对应一张 receipt；未执行不产凭据（凭据不许粉饰不确定状态）。
+
+这组断言做过负控（临时副本，未提交）：让子进程只写**半截内容** → 8 个用例红；
+把 100 次注入用例的不变量 A 改回读 `note.md`（中-3 的原始缺陷）→ 该用例红。
+所以「A/B/C/D 全绿」不是空转。
+
+「0 重复副作用」在覆盖写路径上的含义就是 A + B + D：目标内容只能是写前或写后
+之一、恢复不会再写一次；结果与凭据各恰好一条。
+
+**`delete_file` 为什么不在本矩阵里**：本轮补证只回应 中-3 点名的覆盖写路径。
+`delete_file` 是独立的删除类动作（`ACTION_DELETE`，同样需要审批），其恢复判据
+（写后应为 `absent`）与撤销路径（按 preimage 重建）和覆盖写不是同一组断言，
+留作另开的一组注入矩阵跟进。审批本身不是阻塞点——覆盖写同样需要审批，已按上面
+的方式在子进程里模拟。
 
 ## 4. 实机演示
 
@@ -85,7 +122,12 @@ uv run ruff check . →  All checks passed
 | `test_usage.py` | 9 | 三家 usage 字段、缺失、bool 冒充 |
 | `test_receipts.py` | 6 | 凭据生成、参数绑定、拒绝、篡改 |
 | `test_snapshot.py` | 6 | 快照、撤销、冲突、去重 |
-| `test_recovery.py` | 7 | 四故障点、幂等、阻断、100 次注入 |
+| `test_recovery.py` | 11 | 四故障点 ×（新建 + 覆盖写）、幂等、阻断、100 次注入（create 48 + overwrite 52） |
+
+（`63 passed` 是 M1 验收当时的全量快照；上表只列 M1 直接相关文件，后续里程碑
+新增的测试不在本表。`test_recovery.py` 一行已按 中-3 补证更新：四个故障点 ×
+两条写路径 = 8 个参数化用例，另加幂等、unknown 阻断、100 次注入各 1 个——该文件
+当前为 **11 passed**，全量以最新 CI 为准。）
 
 ## 6. 仍未验证
 

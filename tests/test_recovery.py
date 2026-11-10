@@ -5,7 +5,16 @@
 2. 判定不了的时候标 unknown，并且**阻断后续写入**
 3. 绝不重复副作用、绝不误报成功
 
-100 次随机注入覆盖四个故障点。
+100 次注入覆盖四个故障点 × 两条写路径：`create_report`（新建）与
+`modify_text`（覆盖已存在文件）。
+
+复审报告 中-3 指出旧版的两处证据缺口，本版对应修法：
+- 注入只走 `create_report`：cli 的 scripted 模型只发 list_files + create_report。
+  现在子进程用公开 API 直接装配一次 run（`build_stack` + `AgentLoop` +
+  `ScriptedModel`，与 `tianshu.loop.run` 同一条装配路径），命令它发
+  `modify_text`；不改 `src/tianshu/cli.py`，也不加 `--model` 模式。
+- 不变量 A 读的是 `note.md`：那是预置后从未被写的诱饵。现在从 `tool.intent`
+  的参数解析**真实写入目标**再逐字节核对；`note.md` 反过来被断言「没被动过」。
 """
 
 from __future__ import annotations
@@ -15,38 +24,103 @@ import os
 import random
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
-from support import CHILD_TEXT
+from support import CHILD_TEXT, write_exact
 
 from tianshu.events import EventLog
 from tianshu.recovery import blocked_workspaces, recover_run
-from tianshu.snapshot import SnapshotStore
+from tianshu.snapshot import ABSENT, SnapshotStore
 
 FAILPOINTS = ["after_intent", "after_write", "after_result", "after_receipt"]
 
-# 子进程入口：正常跑一次 run，在指定故障点硬退
+#: 两条受控写路径。create_report 是新建（写前状态 = absent）；
+#: modify_text 是覆盖写（写前状态 = 已有内容）——中-3 缺的正是后者。
+KINDS = ("create", "overwrite")
+WRITE_TOOL = {"create": "create_report", "overwrite": "modify_text"}
+WRITE_KEY = {"create": "name", "overwrite": "path"}
+READ_ONLY_TOOLS = ("list_files", "read_text")
+
+#: 真实写入目标。三个文件里只有它会被写：note.md 是诱饵（旧版不变量 A 读的
+#: 就是它），不许被动；report.md 是 create/overwrite 的共同目标。
+TARGET = "report.md"
+NOTE = "原始内容\n"
+BEFORE = "写前内容\n"
+AFTER = "写入内容\n"
+NOTE_BYTES = NOTE.encode("utf-8")
+BEFORE_BYTES = BEFORE.encode("utf-8")
+AFTER_BYTES = AFTER.encode("utf-8")
+BEFORE_SHA = hashlib.sha256(BEFORE_BYTES).hexdigest()
+AFTER_SHA = hashlib.sha256(AFTER_BYTES).hexdigest()
+
+
+# 子进程入口：直接用公开 API 装配一次 run，在指定故障点硬退。
+#
+# 为什么不走 `tianshu.cli main(["run", ...])`：cli 的 scripted 模型只会
+# list_files + create_report（中-3 的根因），而这里要命令它发 modify_text。
+#
+# modify_text 是覆盖类动作（ACTION_OVERWRITE ∈ APPROVAL_ACTIONS），Run 会先
+# 停在 waiting_approval。子进程按 tests/support.py::approve_pending 的同一
+# 公开入口（approvals.decide + resume_run）模拟「人在 CLI 上敲了 approve」：
+# 授权该判的、该落库的、该在执行侧消费的一样没少，省掉的只是等人。
 _CHILD = """
 import sys, pathlib
 sys.path.insert(0, {src!r})
-from tianshu.cli import main
-sys.exit(main(["run",
-    "--workspace", {ws!r},
-    "--task", "改文件",
-    "--out", "report.md",
-    "--model", "scripted",
-    "--db", {db!r}]))
+from tianshu.events import EventLog
+from tianshu.loop import AgentLoop, Limits, build_stack
+from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.permissions import HumanIdentity
+
+ws = pathlib.Path({ws!r})
+db = pathlib.Path({db!r})
+write_args = {{"content": {after!r}}}
+write_args[{key!r}] = {target!r}
+write = ToolCall("c2", {tool_id!r}, write_args)
+model = ScriptedModel([
+    ModelResponse("tool_use", tool_calls=[ToolCall("c1", "list_files", {{"path": "."}})]),
+    ModelResponse("tool_use", tool_calls=[write]),
+    ModelResponse("end_turn", content="完成"),
+])
+log = EventLog(db)
+stack = build_stack(log)
+engine = AgentLoop(
+    tasks=stack.tasks,
+    leases=stack.leases,
+    claims=stack.claims,
+    dispatcher=stack.dispatcher,
+    approvals=stack.approvals,
+    snapshots=stack.snapshots,
+    model=model,
+    limits=Limits(8, 20_000),
+)
+task = stack.tasks.create_task("改文件", [str(ws)])
+result = engine.start(task.task_id, out_name={target!r})
+if result.state == "waiting_approval":
+    actor = HumanIdentity.local_cli()
+    for approval in stack.approvals.pending(run_id=result.run_id):
+        stack.approvals.decide(approval.approval_id, decision="approved", actor=actor)
+    result = engine.resume_run(result.run_id)
+sys.exit(0 if result.terminal else 1)
 """
 
 
-def _spawn(tmp_path: Path, ws: Path, db: Path, failpoint: str | None):
+def _spawn(ws: Path, db: Path, failpoint: str | None, kind: str):
     env = dict(os.environ)
     env.pop("TIANSHU_FAILPOINT", None)
     if failpoint:
         env["TIANSHU_FAILPOINT"] = failpoint
     src = str(Path(__file__).resolve().parents[1] / "src")
-    code = _CHILD.format(src=src, ws=str(ws), db=str(db))
+    code = _CHILD.format(
+        src=src,
+        ws=str(ws),
+        db=str(db),
+        tool_id=WRITE_TOOL[kind],
+        key=WRITE_KEY[kind],
+        target=TARGET,
+        after=AFTER,
+    )
     return subprocess.run([sys.executable, "-c", code], env=env,
                           capture_output=True, **CHILD_TEXT, timeout=120)
 
@@ -61,80 +135,186 @@ def _latest_run_id(db: Path) -> str:
     return row["run_id"]
 
 
-def _setup(tmp_path: Path) -> tuple[Path, Path]:
+def _setup(tmp_path: Path, kind: str = "create") -> tuple[Path, Path]:
+    """建一个 case 工作区。
+
+    note.md 是**诱饵**：旧版不变量 A 读的就是它（预置后从未被写），于是
+    「写前/写后」断言其实一直在讲一个与写入无关的文件。它保留下来当反证。
+    overwrite 还要预置 report.md——modify_text 只改已存在的文件。
+    """
     ws = tmp_path / "ws"
     ws.mkdir()
-    (ws / "note.md").write_text("原始内容\n", encoding="utf-8")
+    write_exact(ws / "note.md", NOTE)
+    if kind == "overwrite":
+        write_exact(ws / TARGET, BEFORE)
     return ws, tmp_path / "events.db"
+
+
+def _write_call(events: list, kind: str) -> tuple[str, str]:
+    """从 tool.intent 里取出本次写入的 call_id 与相对目标路径。
+
+    目标路径从 intent 参数解析（create 用 name、overwrite 用 path），不靠
+    测试侧写死：这样不变量 A 核对的必然是这次 Run 真正想写的那个文件。
+    如果哪天注入又退回「只写 note.md」，这里会先红，而不是让 A 继续对着
+    一个诱饵文件自说自话（中-3 的原始缺陷）。
+    """
+    intents = [e for e in events if e.type == "tool.intent"]
+    assert len(intents) == 1, f"应当恰好一条写入 intent，实际 {len(intents)}"
+    payload = intents[0].payload
+    assert payload["tool_id"] == WRITE_TOOL[kind], (
+        f"注入走了错误工具：{payload['tool_id']} != {WRITE_TOOL[kind]}"
+    )
+    rel = payload["args"].get(WRITE_KEY[kind])
+    assert rel == TARGET, f"写入目标应当是 {TARGET}，实际 {rel!r}"
+    return payload["call_id"], rel
+
+
+def _write_result(events: list, call_id: str) -> dict:
+    rows = [
+        e.payload
+        for e in events
+        if e.type == "tool.result" and e.payload["call_id"] == call_id
+    ]
+    assert len(rows) == 1, f"写入调用 {call_id} 应当恰好一条 result，实际 {len(rows)}"
+    return rows[0]
+
+
+def _check_b(events: list, call_id: str) -> None:
+    """不变量 B：每个写入 intent 恰好一条 result；只读结果可以没有 intent。
+
+    M2 起 `tool.intent` 只对会改文件的工具记（它是写前证据）；`list_files`
+    这类只读调用没有 intent，但有 result。所以方向是 "intent ⊆ result"，
+    反过来只允许是只读工具——反过来说明有人给读操作也记了 intent。
+    """
+    result_calls = Counter(
+        e.payload["call_id"] for e in events if e.type == "tool.result"
+    )
+    intents = [e.payload["call_id"] for e in events if e.type == "tool.intent"]
+    assert len(intents) == len(set(intents)), f"同一 intent 被记了两次（{intents}）"
+    assert call_id in intents, "写入没有留下写前 intent"
+    assert set(intents) <= set(result_calls), "写入 intent 没有配对 result"
+    # 少了这一句，"写入结果没有写前证据"这种绕过会被当成正常差异放过去。
+    read_only = {
+        e.payload["call_id"]
+        for e in events
+        if e.type == "tool.result"
+        and e.payload.get("tool_id") in READ_ONLY_TOOLS
+    }
+    assert set(result_calls) - set(intents) <= read_only, "有写入结果却没有写前 intent"
+    assert all(n == 1 for n in result_calls.values()), (
+        f"同一个 call 的 result 重复了：{dict(result_calls)}"
+    )
+
+
+def _check_c(events: list, call_id: str, kind: str, ws: Path) -> str:
+    """不变量 C：声称 applied 的必须与磁盘/证据逐字节一致，返回 effect_state。
+
+    `before_state` 也要对得上：create 是 `absent`，overwrite 是写前内容的
+    哈希。只核对 after 一边，"拿一个旧写入冒充这次"就查不出来。
+    """
+    payload = _write_result(events, call_id)
+    state = payload["effect_state"]
+    if state != "applied":
+        return state
+    out = payload["output"]
+    expected_before = ABSENT if kind == "create" else BEFORE_SHA
+    assert out["path"] == TARGET, f"applied 结果指向了别的文件：{out['path']}"
+    assert out["sha256"] == AFTER_SHA, "applied 的 sha256 不是意图写入的内容"
+    assert out["after_state"] == AFTER_SHA, "after_state 与 sha256 自相矛盾"
+    assert out["before_state"] == expected_before, (
+        f"before_state 不对：{out['before_state']} != {expected_before}"
+    )
+    actual = hashlib.sha256((ws / out["path"]).read_bytes()).hexdigest()
+    assert actual == out["sha256"], "声称 applied 但磁盘 sha256 与结果不符"
+    assert actual == AFTER_SHA, "磁盘内容不是意图写入的内容"
+    return state
+
+
+def _check_approval_path(events: list, kind: str) -> None:
+    """覆盖写必须真的过审批：子进程模拟的是「人批准」，不是「绕过授权」。
+
+    create_report 是自动动作（AUTO_ACTIONS），不该出现审批事件；modify_text 是
+    `ACTION_OVERWRITE`，必须有 requested → decided → consumed 的完整痕迹：
+    decided 是子进程模拟人敲的那一下，consumed 是执行侧真正消费了这张批准。
+    少了任何一段，就说明测试在偷偷绕过授权。
+    """
+    types = [e.type for e in events]
+    if kind == "create":
+        assert "approval.requested" not in types, "create_report 不该触发审批"
+        return
+    for expected in ("approval.requested", "approval.decided", "approval.consumed"):
+        assert expected in types, f"覆盖写缺少审批痕迹：{expected}"
 
 
 # ---------------------------------------------------------------- 四个故障点
 
 
+@pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("fp", FAILPOINTS)
-def test_recover_after_each_failpoint(tmp_path, fp):
-    ws, db = _setup(tmp_path)
-    proc = _spawn(tmp_path, ws, db, fp)
-    assert proc.returncode == 77, f"{fp} 应当在故障点退出，实际 {proc.returncode}"
+def test_recover_after_each_failpoint(tmp_path, fp, kind):
+    ws, db = _setup(tmp_path, kind)
+    proc = _spawn(ws, db, fp, kind)
+    assert proc.returncode == 77, (
+        f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+    )
+    # 退出码 77 还不够：要确认炸的是**这次指定的**故障点，不是别的路径碰巧 77。
+    assert f"[failpoint] {fp}" in proc.stderr, (
+        f"{kind}/{fp}：stderr 里没有该故障点标记；stderr={proc.stderr}"
+    )
 
     run_id = _latest_run_id(db)
     log = EventLog(db)
     store = SnapshotStore(tmp_path / "artifacts")
     report = recover_run(log, run_id, ws, store)
 
-    # 恢复后不能留悬空：每条**写入** intent 都必须有配对 result。
-    #
-    # M2 起 `tool.intent` 只对会改文件的工具记（它是写前证据）；`list_files`
-    # 这类只读调用没有 intent，但有 result。所以这里的不变量是
-    # "intent ⊆ result"，反过来不成立——反过来说明有人给读操作也记了 intent。
     events = log.read_run(run_id)
-    intents = [e.payload["call_id"] for e in events if e.type == "tool.intent"]
-    results = [e.payload["call_id"] for e in events if e.type == "tool.result"]
-    assert intents, f"{fp}：这个场景里必须有写入，应当留下 intent"
-    assert set(intents) <= set(results), f"{fp}：写入 intent 没有配对 result"
-    # 反过来：有 result 却没 intent 的，只允许是只读工具。
-    # 少了这一句，"写入结果没有写前证据"这种绕过会被当成正常差异放过去。
-    read_only = {
-        e.payload["call_id"]
-        for e in events
-        if e.type == "tool.result"
-        and e.payload.get("tool_id") in ("list_files", "read_text")
-    }
-    assert set(results) - set(intents) <= read_only, (
-        f"{fp}：有写入结果却没有写前 intent"
-    )
-    assert not report.unresolved, f"{fp}：本场景应当可核实，不该有 unknown"
+    call_id, rel = _write_call(events, kind)
+    _check_approval_path(events, kind)
+    _check_b(events, call_id)
+    state = _check_c(events, call_id, kind, ws)
+    assert not report.unresolved, f"{kind}/{fp}：本场景应当可核实，不该有 unknown"
 
-    created = ws / "report.md"
+    # 诱饵没被动过：A 核对的不能是它。
+    assert (ws / "note.md").read_bytes() == NOTE_BYTES, "note.md 被写了"
+
+    before_bytes = BEFORE_BYTES if kind == "overwrite" else None
+    observed = (ws / rel).read_bytes() if (ws / rel).exists() else None
     if fp == "after_intent":
-        # 只写了 intent，还没执行 → 文件不存在，恢复应判 none_applied
-        assert not created.exists()
-        assert report.none_applied, "after_intent：应判为未执行"
+        # 只写了 intent，还没执行：新建目标不存在 / 覆盖写目标仍是写前内容
+        assert observed == before_bytes, f"{kind}/{fp}：文件不该被改动"
+        assert state == "none_applied", f"{kind}/{fp}：没执行却报了 {state}"
+        assert call_id in report.none_applied, f"{kind}/{fp}：应判为未执行"
     else:
         # 文件已经写进去了 → 恢复必须识别为 applied，不能当没发生
-        assert created.exists(), f"{fp}：文件应当已写入"
-        assert report.applied or any(
+        assert observed == AFTER_BYTES, f"{kind}/{fp}：文件应当已写入"
+        assert state == "applied", f"{kind}/{fp}：已执行却判 {state}"
+        assert call_id in report.applied or any(
             e.payload.get("effect_state") == "applied"
-            for e in events if e.type == "tool.result"
-        ), f"{fp}：写入必须被识别为 applied"
+            for e in events
+            if e.type == "tool.result" and e.payload["call_id"] == call_id
+        ), f"{kind}/{fp}：写入必须被识别为 applied"
 
     log.close()
 
 
 def test_recovery_is_idempotent(tmp_path):
-    """重复恢复不能再补事件。"""
-    ws, db = _setup(tmp_path)
-    _spawn(tmp_path, ws, db, "after_write")
+    """重复恢复不能再补事件，也不能再动文件（覆盖写路径）。"""
+    ws, db = _setup(tmp_path, "overwrite")
+    _spawn(ws, db, "after_write", "overwrite")
     run_id = _latest_run_id(db)
 
     log = EventLog(db)
     store = SnapshotStore(tmp_path / "artifacts")
     first = recover_run(log, run_id, ws, store)
+    content1 = (ws / TARGET).read_bytes()
     n1 = len(log.read_run(run_id))
     second = recover_run(log, run_id, ws, store)
+    content2 = (ws / TARGET).read_bytes()
     n2 = len(log.read_run(run_id))
     log.close()
 
+    assert content1 == AFTER_BYTES
+    assert content2 == content1, "第二次恢复不能再改文件"
     assert n1 == n2, "第二次恢复不该再写事件"
     assert first.applied == second.applied or second.applied == []
 
@@ -164,7 +344,7 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
         expected_after=hashlib.sha256("agent 想写的内容\n".encode()).hexdigest(), root=ws,
     )
     # 但磁盘上是第三种内容 —— 既非写前也非写后
-    (ws / "note.md").write_text("完全不相干的内容\n", encoding="utf-8")
+    write_exact(ws / "note.md", "完全不相干的内容\n")
 
     report = recover_run(log, run_id, ws, store)
     assert report.unresolved == ["c1"], "既非期望也非写前状态，必须判 unknown"
@@ -176,67 +356,99 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
 
 
 def test_100_random_fault_injections(tmp_path):
-    """随机注入 100 次，验证三条不变量。
+    """随机注入 100 次，验证四条不变量。
+
+    矩阵是**配平**的：48 次 create_report + 52 次 modify_text（每个
+    (写类型, 故障点) 组合 12 次，另给本轮新增的覆盖写补 4 次）；随机（种子
+    固定）只用来打乱执行顺序。纯随机抽样可能恰好漏掉「覆盖写 × after_intent」，
+    那样又回到 中-3 说的窄证据面——覆盖由矩阵保证，不由运气保证。
 
     不变量：
-    A. 恢复后文件内容必须是「写前」或「写入内容」之一，不能半截
-    B. 每次写入尝试最终恰好对应一条 tool.result（不能丢也不能重）
-    C. 没有任何一次把「未执行」误报成 applied
+    A. **真实写入目标**的内容必须是「写前」或「写入内容」之一（逐字节，不许
+       半截）；第二次恢复不再改变内容，也不再补事件
+    B. 每个写入 intent 恰好对应一条 tool.result（不丢不重）
+    C. 声称 applied 的，output 的 sha256/after_state 必须与磁盘一致，
+       before_state 必须是写前状态；没执行的那次不许报 applied
+    D. applied 恰好对应一张 receipt（凭据也不能重复发）
     """
     rng = random.Random(20261108)
-    contents = set()
-    results_seen = 0
+    cases = [(kind, fp) for kind in KINDS for fp in FAILPOINTS for _ in range(12)]
+    cases += [("overwrite", fp) for fp in FAILPOINTS]  # 补到 100，覆盖写多一份
+    rng.shuffle(cases)
 
-    for i in range(100):
+    assert len(cases) == 100, "注入总量应当保持 100 次量级"
+    counts = Counter(cases)
+    for kind in KINDS:
+        for fp in FAILPOINTS:
+            assert counts[(kind, fp)] >= 12, f"矩阵漏了 {kind}/{fp}"
+
+    for i, (kind, fp) in enumerate(cases):
         case = tmp_path / f"case{i}"
         case.mkdir()
-        ws = case / "ws"
-        ws.mkdir()
-        (ws / "note.md").write_text("原始内容\n", encoding="utf-8")
-        db = case / "events.db"
+        ws, db = _setup(case, kind)
+        before_bytes = BEFORE_BYTES if kind == "overwrite" else None
 
-        fp = rng.choice(FAILPOINTS)
-        proc = _spawn(case, ws, db, fp)
-        assert proc.returncode == 77, f"第 {i} 次（{fp}）未在故障点退出"
+        proc = _spawn(ws, db, fp, kind)
+        assert proc.returncode == 77, (
+            f"第 {i} 次（{kind}/{fp}）未在故障点退出：rc={proc.returncode}；"
+            f"stderr={proc.stderr}"
+        )
+        assert f"[failpoint] {fp}" in proc.stderr, (
+            f"第 {i} 次（{kind}/{fp}）：stderr 里没有该故障点标记；stderr={proc.stderr}"
+        )
 
         run_id = _latest_run_id(db)
         log = EventLog(db)
         store = SnapshotStore(case / "artifacts")
+        events_before = log.read_run(run_id)
+        call_id, rel = _write_call(events_before, kind)
+
+        report = recover_run(log, run_id, ws, store)
+        assert not report.unresolved, f"第 {i} 次（{kind}/{fp}）：不该有 unknown"
+
+        # A：真实写入目标只能是写前或写后二者之一，且诱饵文件没被动过
+        target = ws / rel
+        content1 = target.read_bytes() if target.exists() else None
+        assert content1 in (before_bytes, AFTER_BYTES), (
+            f"第 {i} 次（{kind}/{fp}）：出现第三种内容 {content1!r}"
+        )
+        assert (ws / "note.md").read_bytes() == NOTE_BYTES, (
+            f"第 {i} 次（{kind}/{fp}）：note.md 被写了"
+        )
+
+        # A（续）：第二次恢复不得再改内容，也不许再补事件——恢复不是"再写一次"
+        n1 = len(log.read_run(run_id))
         recover_run(log, run_id, ws, store)
+        content2 = target.read_bytes() if target.exists() else None
+        n2 = len(log.read_run(run_id))
+        assert content2 == content1, f"第 {i} 次（{kind}/{fp}）：第二次恢复改了内容"
+        assert n2 == n1, f"第 {i} 次（{kind}/{fp}）：第二次恢复又补了事件"
 
-        # A：内容只能是两种之一
-        text = (ws / "note.md").read_text(encoding="utf-8")
-        contents.add(text[:20])
-
-        # B：每个写入 intent 恰好一条 result（只读调用没有 intent）
         events = log.read_run(run_id)
-        intents = [e.payload["call_id"] for e in events if e.type == "tool.intent"]
-        results = [e.payload["call_id"] for e in events if e.type == "tool.result"]
-        assert len(intents) == len(set(intents)), \
-            f"第 {i} 次：同一 intent 被记了两次（{intents}）"
-        assert set(intents) <= set(results), \
-            f"第 {i} 次：写入 intent 没有配对 result（{intents} vs {results}）"
-        read_only = {
-            e.payload["call_id"]
-            for e in events
-            if e.type == "tool.result"
-            and e.payload.get("tool_id") in ("list_files", "read_text")
-        }
-        assert set(results) - set(intents) <= read_only, \
-            f"第 {i} 次：有写入结果却没有写前 intent（{set(results) - set(intents)}）"
-        results_seen += len(results)
+        _check_approval_path(events, kind)
+        _check_b(events, call_id)
 
-        # C：applied 必须对应真实内容
-        for e in events:
-            if e.type == "tool.result" and e.payload["effect_state"] == "applied":
-                rel = e.payload["output"]["path"]
-                expected = e.payload["output"]["sha256"]
-                actual = hashlib.sha256(
-                    (ws / rel).read_bytes() if (ws / rel).exists() else b""
-                ).hexdigest()
-                assert actual == expected, f"第 {i} 次：声称 applied 但磁盘不符"
+        # C：applied 必须与磁盘一致；after_intent 那次必须如实判未执行
+        state = _check_c(events, call_id, kind, ws)
+        if fp == "after_intent":
+            assert state == "none_applied", (
+                f"第 {i} 次（{kind}/{fp}）：没执行却报了 {state}"
+            )
+            assert content1 == before_bytes, (
+                f"第 {i} 次（{kind}/{fp}）：判未执行但文件被改了"
+            )
+        else:
+            assert state == "applied", f"第 {i} 次（{kind}/{fp}）：已执行却判 {state}"
+            assert content1 == AFTER_BYTES, (
+                f"第 {i} 次（{kind}/{fp}）：判 applied 但磁盘不是意图内容"
+            )
 
+        # D：applied 恰好一张凭据；未执行不产凭据（凭据粉饰不确定状态是不许的）
+        receipts = [
+            e for e in events
+            if e.type == "receipt" and e.payload.get("call_id") == call_id
+        ]
+        assert len(receipts) == (1 if state == "applied" else 0), (
+            f"第 {i} 次（{kind}/{fp}）：凭据数 {len(receipts)} 与效果 {state} 不符"
+        )
         log.close()
-
-    assert results_seen >= 100, "每次注入都应至少补出一条 result"
-    assert len(contents) <= 3, f"出现了意外的中间状态：{contents}"
