@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import undo_journal
+from .crashpoint import failpoint
 from .errors import SnapshotCorrupt, TianshuError, ToolNotAllowed
 from .fsutil import atomic_write_bytes
 from .sandbox import current_backend
@@ -117,6 +119,18 @@ class UndoReport:
     #: 每条已完成的撤销：{root, path, result}。只记相对路径会再次丢掉根，
     #: 而 `verify_receipts` 要靠 (root, path) 认出"这是一次已记录的撤销"。
     entries: list[dict[str, str]] = field(default_factory=list)
+    #: 本次撤销对应的意图日志终态（完成事件与续做都要从它取权威条目）。
+    journal: undo_journal.UndoJournal | None = None
+
+
+@dataclass
+class _ResumePlan:
+    """续做的只读核对结果：哪些动作要执行、哪些按已生效补记。"""
+
+    by_root: dict[str, Workspace]
+    preimages: dict[int, bytes] = field(default_factory=dict)
+    pending: list[int] = field(default_factory=list)
+    adopted: list[int] = field(default_factory=list)
 
 
 class SnapshotStore:
@@ -124,6 +138,7 @@ class SnapshotStore:
         self.root = root
         self.blob_dir = root / "blobs"
         self.manifest_dir = root / "snapshots"
+        self.journal = undo_journal.JournalStore(root)
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,6 +270,7 @@ class SnapshotStore:
         guard: Callable[[], None] | None = None,
         apply: Callable[[Change, bytes | None], None] | None = None,
         allow_direct_write: bool = False,
+        journal_control_run: str = "",
     ) -> UndoReport:
         """把该 run 的变更撤回。
 
@@ -268,6 +284,11 @@ class SnapshotStore:
         5. **真正写文件必须经 `apply` 回调**（M2：派发 / 审批 / 租约）。
            不传 apply 就只能显式 `allow_direct_write=True`；那是 M1 语义，
            供旧测试与恢复工具使用，M2 的 CLI 不会走这条路。
+
+        跨多文件撤销另有**写前意图日志**（`artifacts/undo/<run_id>.json`）：
+        动手前先落盘完整计划，每完成一个动作原子重写；全部完成才标
+        `completed`。若已有未完成的 journal，本次调用会先核对磁盘再**续做**，
+        绝不从头再来（见 `_resume_undo`）。
         """
         if guard is None:
             raise ToolNotAllowed("undo 必须提供执行侧 guard，不能绕过阻断检查")
@@ -277,6 +298,13 @@ class SnapshotStore:
                 "直写需显式 allow_direct_write=True"
             )
         guard()
+
+        # 已有 journal：崩溃/中断过的撤销 → 只许续做，不许从头再来。
+        journal = self.journal.load(run_id)
+        if journal is not None:
+            return self._resume_undo(
+                journal, ws, apply=apply, journal_control_run=journal_control_run
+            )
 
         changes = self.load(run_id)
         if not changes:
@@ -355,8 +383,29 @@ class SnapshotStore:
                 preimages[c.call_id] = preimage
             simulated[c.key] = c.before_state
 
-        # ---- 执行：逆序恢复调用链。跨多文件的崩溃仍须如实记 partial ----
-        for c in reversed(selected):
+        # ---- 动手前落盘完整意图日志。写不成就不动手 ----
+        ordered = list(reversed(selected))
+        items = tuple(
+            undo_journal.JournalItem(
+                root=str(c.root),
+                path=c.path,
+                call_id=c.call_id,
+                before_state=c.before_state,
+                expected_after=c.expected_after,
+                action=(
+                    undo_journal.ACTION_DELETE
+                    if c.before_state == ABSENT
+                    else undo_journal.ACTION_RESTORE
+                ),
+            )
+            for c in ordered
+        )
+        journal = self.journal.begin(
+            run_id, control_run=journal_control_run, items=items
+        )
+
+        # ---- 执行：逆序恢复调用链；每一步完成即原子记录 ----
+        for index, c in enumerate(ordered):
             target = by_root[str(c.root)].resolve(c.path)
             preimage = None if c.before_state == ABSENT else preimages[c.call_id]
             if apply is not None:
@@ -368,14 +417,257 @@ class SnapshotStore:
                     pass  # 本来就不存在：撤销"新建"时的幂等语义
             else:
                 io.write_bytes_atomic(target, preimage)
-            result = "deleted" if preimage is None else "restored"
-            (report.deleted if preimage is None else report.restored).append(c.path)
-            report.entries.append(
-                {"root": str(c.root), "path": c.path, "result": result}
-            )
+            post = self._observe(target)
+            if post != c.before_state:
+                raise undo_journal.UndoJournalConflict(
+                    f"撤销动作执行后状态与意图不符：{target}（观察到 {post}，"
+                    f"意图 {c.before_state}）；journal 停在动作前，续做前需人工核查"
+                )
+            journal = self.journal.record_done(journal, index, post)
+            report.journal = journal
+            failpoint("after_undo_action")
 
+        journal = self.journal.complete(journal)
+        report.journal = journal
+        self._fill_report_from_journal(report)
         report.ok = True
         return report
+
+    # ---- 撤销：journal 续做 ----
+
+    def _resume_undo(
+        self,
+        journal: undo_journal.UndoJournal,
+        ws: Workspace | None,
+        *,
+        apply: Callable[[Change, bytes | None], None] | None,
+        journal_control_run: str,
+    ) -> UndoReport:
+        """续做一个未完成的撤销；journal 已完成时只核对、不动文件。"""
+        report = UndoReport(ok=False)
+        roots = sorted({item.root for item in journal.items})
+        report.roots = roots
+        if ws is not None and roots != [str(ws.root)]:
+            raise undo_journal.UndoJournalConflict(
+                f"undo journal 记录的 workspace 是 {roots}，与本次范围 "
+                f"{ws.root} 不一致：拒绝只续做一部分"
+            )
+        by_root = self._workspaces_for(roots)
+        plan = self._plan_resume(journal, by_root)
+        if journal_control_run and journal_control_run != journal.control_run:
+            # 旧控制 Run 不可复用（已收尾/缺失），本次改用新的控制 Run：
+            # 先把归属写回 journal，之后完成事件里的 control_run 才是真的。
+            journal = self.journal.set_control_run(journal, journal_control_run)
+
+        io = current_backend()
+        if not journal.completed:
+            for index, item in enumerate(journal.items):
+                if index < len(journal.done):
+                    continue
+                target = by_root[item.root].resolve(item.path)
+                if index in plan.adopted:
+                    # 崩溃窗口：动作已经生效（磁盘已是写前字节）但 journal 没
+                    # 来得及记。按磁盘事实补记，不再写一次——这就是幂等续做。
+                    post = self._observe(target)
+                    if post != item.before_state:
+                        raise undo_journal.UndoJournalConflict(
+                            f"{target}：动作已生效的判定不成立（磁盘 {post}）"
+                        )
+                    journal = self.journal.record_done(journal, index, post)
+                    report.journal = journal
+                    failpoint("after_undo_action")
+                    continue
+                preimage = plan.preimages.get(index)
+                change = Change(
+                    call_id=item.call_id,
+                    root=item.root,
+                    path=item.path,
+                    before_state=item.before_state,
+                    expected_after=item.expected_after,
+                    blob_ref=None,
+                )
+                if apply is not None:
+                    apply(change, preimage)
+                elif preimage is None:
+                    try:
+                        io.unlink(target)
+                    except FileNotFoundError:
+                        pass
+                else:
+                    io.write_bytes_atomic(target, preimage)
+                post = self._observe(target)
+                if post != item.before_state:
+                    raise undo_journal.UndoJournalConflict(
+                        f"{target}：续做后的状态与意图不符（{post} ≠ "
+                        f"{item.before_state}），journal 停在动作前，需人工核查"
+                    )
+                journal = self.journal.record_done(journal, index, post)
+                report.journal = journal
+                failpoint("after_undo_action")
+            journal = self.journal.complete(journal)
+            report.journal = journal
+
+        if report.journal is None:
+            report.journal = journal
+        self._fill_report_from_journal(report)
+        report.ok = True
+        return report
+
+    def check_undo_journal(
+        self, journal: undo_journal.UndoJournal, ws: Workspace | None = None
+    ) -> UndoReport:
+        """只读核对 journal 与磁盘现状（给预演/续做前置检查用）。
+
+        冲突抛 `UndoJournalConflict`（调用方据此零修改地拒绝）；
+        返回的 report 只说明「日志完整、可以续做/已经完成」，不改任何字节。
+        """
+        report = UndoReport(ok=False)
+        roots = sorted({item.root for item in journal.items})
+        report.roots = roots
+        if ws is not None and roots != [str(ws.root)]:
+            raise undo_journal.UndoJournalConflict(
+                f"undo journal 记录的 workspace 是 {roots}，与本次范围 "
+                f"{ws.root} 不一致：拒绝只续做一部分"
+            )
+        by_root = self._workspaces_for(roots)
+        self._plan_resume(journal, by_root)
+        report.journal = journal
+        self._fill_report_from_journal(report)
+        report.ok = True
+        return report
+
+    def _workspaces_for(self, roots: list[str]) -> dict[str, Workspace]:
+        by_root: dict[str, Workspace] = {}
+        for root in roots:
+            try:
+                by_root[root] = Workspace(Path(root))
+            except TianshuError as exc:
+                raise undo_journal.UndoJournalConflict(
+                    f"undo journal 里的 workspace 根不可用：{root}（{exc}）"
+                ) from exc
+        return by_root
+
+    def _plan_resume(
+        self,
+        journal: undo_journal.UndoJournal,
+        by_root: dict[str, Workspace],
+    ) -> _ResumePlan:
+        """按执行顺序核对 done 与剩余项，返回可续做的动作清单（只读）。
+
+        关键点：磁盘是**所有已生效动作之后**的状态，所以 done 段要**倒着**核对
+        （最后一个 done 的 post_state 才等于磁盘），剩余段再正着模拟。规则：
+
+        - done 项：磁盘/链条必须与记录一致，否则拒绝（不猜）；
+        - 剩余项：应当仍等于 `expected_after`（用户改过就拒绝，不覆盖）；
+          若磁盘已经等于 `before_state`，说明上一个动作已完成但 journal 没来得及
+          记（崩溃窗口）——按**已生效**补记（幂等），不重写。
+        """
+        io = current_backend()
+        plan = _ResumePlan(by_root=by_root)
+        done_count = len(journal.done)
+        ordered = list(journal.items)
+
+        # 按 (root, path) 分组：同一路径被多次撤销时，执行顺序里相邻两项必须
+        # 首尾相接（后一项的 expected_after == 前一项的 before_state），否则
+        # journal 与快照证据的调用链已经对不上。
+        by_key: dict[tuple[str, str], list[int]] = {}
+        for index, item in enumerate(ordered):
+            by_key.setdefault(item.key, []).append(index)
+        for indexes in by_key.values():
+            for prev_index, index in zip(indexes, indexes[1:], strict=False):
+                if ordered[index].expected_after != ordered[prev_index].before_state:
+                    raise undo_journal.UndoJournalConflict(
+                        f"{Path(ordered[index].root) / ordered[index].path}："
+                        "journal 记录的撤销序列与快照证据的调用链不一致；拒绝续做"
+                    )
+
+        def observe(target: Path) -> str:
+            return (
+                ABSENT if not io.exists(target)
+                else hashlib.sha256(io.read_bytes(target)[0]).hexdigest()
+            )
+
+        for (root, rel), indexes in by_key.items():
+            target = by_root[root].resolve(rel)
+            state = observe(target)
+            # done 段倒着核对：磁盘 == 最后一个 done 的 post_state。
+            for index in reversed([i for i in indexes if i < done_count]):
+                done = journal.done[index]
+                if state != done.post_state:
+                    raise undo_journal.UndoJournalConflict(
+                        f"{target}：撤销日志记录这个动作完成后应是 "
+                        f"{done.post_state[:12]}…，磁盘却是 {state[:12]}…；"
+                        "拒绝续做"
+                    )
+                state = ordered[index].expected_after
+            # 剩余段正着模拟；只有**全局第一个**未记录的项可能是崩溃窗口里
+            # "已生效但没记上"的那个（一次崩溃最多卡在一个动作中间）。
+            for index in [i for i in indexes if i >= done_count]:
+                item = ordered[index]
+                if index == done_count and state == item.before_state:
+                    plan.adopted.append(index)
+                    state = item.before_state
+                    continue
+                if state == item.expected_after:
+                    if item.action == undo_journal.ACTION_RESTORE:
+                        plan.preimages[index] = self._preimage_for(item)
+                    plan.pending.append(index)
+                    state = item.before_state
+                    continue
+                raise undo_journal.UndoJournalConflict(
+                    f"{target}：既不是写后状态"
+                    f"（{item.expected_after[:12]}…）也不是写前状态"
+                    f"（{item.before_state[:12]}…），磁盘是 {state[:12]}…。"
+                    "用户可能改过，拒绝继续撤销"
+                )
+        return plan
+
+    def _preimage_for(self, item: undo_journal.JournalItem) -> bytes:
+        blob = self.blob_dir / item.before_state
+        if not blob.is_file():
+            raise undo_journal.UndoJournalConflict(
+                f"{Path(item.root) / item.path}：写前内容丢失（blob "
+                f"{item.before_state[:12]}…），无法还原"
+            )
+        data = blob.read_bytes()
+        if hashlib.sha256(data).hexdigest() != item.before_state:
+            raise undo_journal.UndoJournalConflict(
+                f"{Path(item.root) / item.path}：写前 blob 哈希不符，无法还原"
+            )
+        return data
+
+    @staticmethod
+    def _observe(target: Path) -> str:
+        io = current_backend()
+        if not io.exists(target):
+            return ABSENT
+        return hashlib.sha256(io.read_bytes(target)[0]).hexdigest()
+
+    @staticmethod
+    def _fill_report_from_journal(report: UndoReport) -> None:
+        journal = report.journal
+        if journal is None:  # pragma: no cover - 调用方保证
+            return
+        report.restored = [
+            done.item.path for done in journal.done
+            if done.item.action == undo_journal.ACTION_RESTORE
+        ]
+        report.deleted = [
+            done.item.path for done in journal.done
+            if done.item.action == undo_journal.ACTION_DELETE
+        ]
+        report.entries = [
+            {
+                "root": item.item.root,
+                "path": item.item.path,
+                "result": (
+                    "deleted"
+                    if item.item.action == undo_journal.ACTION_DELETE
+                    else "restored"
+                ),
+            }
+            for item in journal.done
+        ]
 
     @staticmethod
     def _refuse(report: UndoReport) -> UndoReport:
