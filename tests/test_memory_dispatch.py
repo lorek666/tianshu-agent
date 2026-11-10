@@ -1,0 +1,851 @@
+"""F10 记忆派发 / 授权 / 事务契约（**真路径，不 mock 授权**）。
+
+这一组测试盯的是最高危的那条线：记忆写操作**真的**经唯一派发入口
+（`Dispatcher.prepare()` / `dispatch()`），并因此获得：
+
+- `tool.intent` → `tool.result` 的顺序；
+- confirm / forget 的 C4 审批（一次性消费、执行侧二次核验）；
+- 与 `tool.result` **同事务**的投影更新（失败时事件/投影一起回滚）；
+- 执行侧独立的作用域核验（workspace A 读不到 workspace B 的私有记忆）。
+
+这里用真实的 `EventLog` + `MemoryProjection`。**没有 mock 掉授权**：审批、
+grant、dispatch 记录都从 sqlite 权威库读。唯一被替换的是"制造故障"的那一处
+（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 故意让
+`apply_event` 抛错），因为真实 I/O 不会按测试要求坏掉。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+import pytest
+
+from tianshu.dispatcher import Dispatcher, build_request
+from tianshu.errors import ToolNotAllowed
+from tianshu.events import EventLog, canonical_bytes, sha256_hex
+from tianshu.jobs import JobStore
+from tianshu.leases import LeaseStore
+from tianshu.memory import MEMORY_KINDS, MemoryProjection
+from tianshu.permissions import (
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_OVERWRITE,
+    ActionRequest,
+    ApprovalStore,
+    GrantStore,
+    HumanIdentity,
+    PolicyEngine,
+    supported_memory_kinds,
+)
+from tianshu.receipt import verify_receipts
+from tianshu.resources import MemoryScope
+from tianshu.rules import REJECTION_RULE_IDS, RULE_IDS
+from tianshu.snapshot import SnapshotStore
+from tianshu.tasks import RUN_RUNNING, ExecutionPermit, TaskStore
+from tianshu.tools import SPECS, AdmittedCall, tool_manifest
+
+NOW = 1_700_000_000_000
+
+
+@dataclass
+class Env:
+    root: Path
+    ws_a: Path
+    ws_b: Path
+    log: EventLog
+    leases: LeaseStore
+    claims: JobStore
+    tasks: TaskStore
+    approvals: ApprovalStore
+    grants: GrantStore
+    snapshots: SnapshotStore
+    memory: MemoryProjection
+    dispatcher: Dispatcher
+
+    def new_run(self, *, root: Path | None = None):
+        root = self.ws_a if root is None else root
+        task = self.tasks.create_task("整理笔记", [{"root_path": str(root)}])
+        run = self.tasks.start_run(task.task_id)
+        self.leases.acquire([root], run.run_id)
+        job = self.claims.enqueue(run.run_id)
+        claim = self.claims.claim(job.job_id)
+        self.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+        self.snapshots.init_run(run.run_id)
+        return task, run, claim
+
+    def new_empty_run(self):
+        """零目录任务：user 作用域的记忆仍然可用（F10 §6.1）。"""
+        task = self.tasks.create_task("只聊天", [])
+        run = self.tasks.start_run(task.task_id)
+        job = self.claims.enqueue(run.run_id)
+        claim = self.claims.claim(job.job_id)
+        self.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+        self.snapshots.init_run(run.run_id)
+        return task, run, claim
+
+    def request(self, task, run, claim, *, tool_id, target, args, call_id):
+        return build_request(
+            task=task,
+            run=run,
+            claim=claim,
+            call_id=call_id,
+            tool_id=tool_id,
+            target=target,
+            args=args,
+        )
+
+
+@pytest.fixture()
+def env(tmp_path: Path):
+    ws_a = tmp_path / "ws-a"
+    ws_b = tmp_path / "ws-b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    (ws_a / "note.md").write_bytes("原始内容\n".encode())
+    data = tmp_path / "authority"
+    data.mkdir()
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "event_blobs")
+    memory = MemoryProjection(
+        log.conn,
+        log=log,
+        blob_dir=tmp_path / "memory_blobs",
+        clock=lambda: NOW,
+    )
+    memory.ensure_schema()
+    leases = LeaseStore(log)
+    claims = JobStore(log)
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    approvals = ApprovalStore(log, clock=lambda: NOW)
+    grants = GrantStore(log, clock=lambda: NOW)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    dispatcher = Dispatcher(
+        log,
+        tasks,
+        leases,
+        PolicyEngine(),
+        approvals,
+        grants=grants,
+        claims=claims,
+        snapshots=snapshots,
+        data_root=data,
+        memory=memory,
+        clock=lambda: NOW,
+    )
+    e = Env(
+        root=tmp_path,
+        ws_a=ws_a,
+        ws_b=ws_b,
+        log=log,
+        leases=leases,
+        claims=claims,
+        tasks=tasks,
+        approvals=approvals,
+        grants=grants,
+        snapshots=snapshots,
+        memory=memory,
+        dispatcher=dispatcher,
+    )
+    try:
+        yield e
+    finally:
+        log.close()
+
+
+def _events(log: EventLog, run_id: str):
+    return log.read_run(run_id)
+
+
+def _event_types(log: EventLog, run_id: str) -> list[str]:
+    return [event.type for event in _events(log, run_id)]
+
+
+def _approve(env: Env, approval_id: str) -> None:
+    env.approvals.decide(
+        approval_id, decision="approved", actor=HumanIdentity.local_cli()
+    )
+
+
+def _propose(env: Env, task, run, claim, *, content: str, call_id="p1", scope=None):
+    scope = MemoryScope.user() if scope is None else scope
+    args = {"kind": "preference", "content": content}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=scope.to_uri(),
+        args=args,
+        call_id=call_id,
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    return request, args, decision
+
+
+def _proposed(env: Env, *, content="报告用中文，先列结论") -> tuple:
+    task, run, claim = env.new_run()
+    request, args, decision = _propose(env, task, run, claim, content=content)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok and result.effect_state == "applied", result.output
+    return task, run, claim, result.output
+
+
+def _confirm_request(
+    env: Env,
+    task,
+    run,
+    claim,
+    memory_id: str,
+    *,
+    revision: int = 1,
+    call_id="c1",
+    target: str | None = None,
+):
+    target = MemoryScope.user().to_uri() if target is None else target
+    args = {"memory_id": memory_id, "revision": revision}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.confirm",
+        target=target,
+        args=args,
+        call_id=call_id,
+    )
+    return request, args
+
+
+def _forget_request(
+    env: Env,
+    task,
+    run,
+    claim,
+    memory_id: str,
+    *,
+    revision: int = 2,
+    call_id="f1",
+):
+    target = MemoryScope.user().to_uri()
+    args = {"memory_id": memory_id, "revision": revision, "status": "active"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.forget",
+        target=target,
+        args=args,
+        call_id=call_id,
+    )
+    return request, args
+
+
+def _seed_memory(
+    env: Env,
+    run_id: str,
+    *,
+    memory_id: str,
+    content: str,
+    scope: MemoryScope | None = None,
+    origin: str = "user_explicit",
+) -> None:
+    """直接写一条历史记忆事件（模拟之前的 propose 已提交）。
+
+    这是**测试数据播种**，不是绕过派发：后续 confirm/forget 仍然走真实
+    prepare/dispatch/审批/执行侧核验。
+    """
+    scope = MemoryScope.user() if scope is None else scope
+    content_ref = env.memory.put_content(content)
+    payload = {
+        "call_id": "seed",
+        "tool_id": "memory.propose",
+        "status": "succeeded",
+        "effect_state": "applied",
+        "output": {
+            "path": scope.to_uri(),
+            "memory_uri": scope.to_uri(),
+            "memory_id": memory_id,
+            "revision": 1,
+            "scope": scope.scope,
+            "scope_id": scope.scope_id,
+            "kind": "preference",
+            "content_ref": content_ref,
+            "source_refs": ["event:seed"],
+            "evidence": [],
+            "proof_count": 0,
+            "origin": origin,
+            "status": "candidate",
+            "created_at": 1,
+            "expires_at": None,
+            "deduped": False,
+        },
+    }
+    with env.log.transaction() as tx:
+        seq = tx.append(run_id, "tool.result", payload)
+        env.memory.apply_event("tool.result", payload, seq=seq)
+
+
+# ---------------------------------------------------------------- 1. 工具契约
+
+
+def test_memory_tools_are_real_specs_without_path_args():
+    names = {item["name"] for item in tool_manifest()}
+    memory_tools = {
+        "memory.search",
+        "memory.get",
+        "memory.propose",
+        "memory.confirm",
+        "memory.forget",
+    }
+    assert memory_tools <= names
+
+    expected_actions = {
+        "memory.search": "read",
+        "memory.get": "read",
+        "memory.propose": ACTION_CREATE,
+        "memory.confirm": ACTION_OVERWRITE,
+        "memory.forget": ACTION_DELETE,
+    }
+    for tool_id, action in expected_actions.items():
+        spec = SPECS[tool_id]
+        assert spec.version == "1.0"
+        assert spec.exposed is True
+        assert spec.path_arg == ""
+        assert spec.action == action
+        # schema 是真实 schema（不是手写替身）；additionalProperties 必须关闭
+        assert spec.input_schema["type"] == "object"
+        assert spec.input_schema["additionalProperties"] is False
+
+    # 授权层不能维护第二份"看起来一样"的 kind 封闭集：memory.py 存在时必须
+    # 直接用它。回退集只在集成前缺模块时兜底。
+    assert supported_memory_kinds() == MEMORY_KINDS
+
+
+# ---------------------------------------------------------------- 2. 真走派发
+
+
+def test_propose_really_goes_through_dispatcher_and_orders_intent_before_result(env):
+    task, run, claim = env.new_run()
+    request, args, decision = _propose(env, task, run, claim, content="报告用中文")
+    assert decision.is_admitted, decision
+    assert decision.rule_id == "c4.memory_scope"
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert result.effect_state == "applied"
+
+    events = _events(env.log, run.run_id)
+    types = [event.type for event in events]
+    assert "tool.intent" in types and "tool.result" in types
+    assert types.index("tool.intent") < types.index("tool.result")
+
+    # F10 §3.1：事件日志只存引用/审计元数据，不重复写记忆正文。
+    intent = next(event for event in events if event.type == "tool.intent")
+    assert "content" not in intent.payload["args"]
+    assert intent.payload["args"]["content_omitted"] is True
+    assert intent.payload["args"]["content_bytes"] == len("报告用中文".encode())
+    assert intent.payload["args"]["content_sha256"] == sha256_hex(
+        "报告用中文".encode()
+    )
+    assert intent.payload["args_hash"] == request.args_hash
+    assert "报告用中文" not in canonical_bytes(intent.payload).decode("utf-8")
+    result_event = next(event for event in events if event.type == "tool.result")
+    assert "报告用中文" not in canonical_bytes(result_event.payload).decode("utf-8")
+
+    memory = env.memory.get(result.output["memory_id"], allowed=(MemoryScope.user(),))
+    assert memory is not None
+    assert memory.status == "candidate"
+    assert memory.revision == 1
+
+    # 候选不会进入召回
+    assert env.memory.search("报告", allowed=(MemoryScope.user(),)) == []
+
+    # 实时投影与按事件重建必须逐位一致（dispatcher 传 intent_seq；
+    # rebuild 必须用 dispatch.admitted.payload.intent_seq 还原同一个号）。
+    before_rebuild = env.memory.projection_hash()
+    assert env.memory.rebuild() == 1
+    assert env.memory.projection_hash() == before_rebuild
+    assert env.memory.get(result.output["memory_id"], allowed=(MemoryScope.user(),)) is not None
+
+    # 派发记录与 grant 都是真实消费过的
+    row = env.dispatcher.dispatch_record(run.run_id, request.call_id)
+    assert row is not None and row.state == "done"
+    grant = env.grants.get(row.grant_id)
+    assert grant is not None and grant.remaining_uses == 0
+    target = env.dispatcher._conn.execute(
+        "SELECT target FROM dispatches WHERE dispatch_id=?", (row.dispatch_id,)
+    ).fetchone()[0]
+    assert target == MemoryScope.user().to_uri()
+
+
+def test_propose_works_for_zero_directory_task(env):
+    """记忆不是文件：零目录任务也能 propose / 检索 user 作用域。"""
+    task, run, claim = env.new_empty_run()
+    _, _, decision = _propose(env, task, run, claim, content="用户偏好：中文")
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert result.output["status"] == "candidate"
+
+
+# ---------------------------------------------------------------- 3. 审批
+
+
+def test_confirm_requires_approval_and_rejection_changes_no_projection(env):
+    task, run, claim, proposed = _proposed(env)
+    memory_id = proposed["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id)
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.kind == "waiting", decision
+    assert decision.rule_id == "c4.overwrite"
+
+    # 没有批准就派发：确定被拒，投影一个字节都不变
+    refused = env.dispatcher.dispatch(decision.request_id, claim)
+    assert refused.status == "rejected"
+    assert refused.effect_state == "none_applied"
+    assert refused.output["rule_id"] in REJECTION_RULE_IDS
+    assert env.memory.observe(memory_id, allowed=(MemoryScope.user(),)) == (
+        "candidate",
+        1,
+    )
+    assert "receipt" not in _event_types(env.log, run.run_id)
+
+    # 批准之后重新判定同一张请求：审批仍然可用（同一 call_id / 同一动作），
+    # 只是上一次在'还没批准'时被派发调用拒绝过，state 需要重新落成 admitted。
+    _approve(env, decision.approval_id)
+    decision2 = env.dispatcher.prepare(request, claim, args=args)
+    assert decision2.is_admitted, decision2
+    result = env.dispatcher.dispatch(request.request_id, claim)
+    assert result.ok, result.output
+
+    memory = env.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert memory is not None and memory.status == "active" and memory.revision == 2
+    assert env.memory.search("报告", allowed=(MemoryScope.user(),))
+    assert verify_receipts(env.log, run.run_id) == []
+
+    receipts = [event.payload for event in _events(env.log, run.run_id) if event.type == "receipt"]
+    assert receipts, "confirm 必须产出凭据"
+    receipt = receipts[-1]
+    assert receipt["root"] == MemoryScope.user().to_uri()
+    assert receipt["resource"] == memory_id
+    assert receipt["action"] == ACTION_OVERWRITE
+    assert receipt["after_state"] == f"memory:{memory_id}:active:rev2"
+
+
+def test_forget_requires_approval_and_tombstones(env):
+    task, run, claim, proposed = _proposed(env)
+    memory_id = proposed["memory_id"]
+
+    # 先确认成 active
+    confirm, confirm_args = _confirm_request(env, task, run, claim, memory_id)
+    first = env.dispatcher.prepare(confirm, claim, args=confirm_args)
+    _approve(env, first.approval_id)
+    assert env.dispatcher.dispatch(first.request_id, claim).ok
+
+    forget, forget_args = _forget_request(env, task, run, claim, memory_id)
+    decision = env.dispatcher.prepare(forget, claim, args=forget_args)
+    assert decision.kind == "waiting", decision
+    assert decision.rule_id == "c4.delete"
+
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+
+    memory = env.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert memory is not None and memory.status == "forgotten"
+    assert env.memory.search("报告", allowed=(MemoryScope.user(),)) == []
+    receipts = [event.payload for event in _events(env.log, run.run_id) if event.type == "receipt"]
+    assert receipts[-1]["action"] == ACTION_DELETE
+    assert receipts[-1]["after_state"] == f"memory:{memory_id}:forgotten:rev3"
+    assert verify_receipts(env.log, run.run_id) == []
+
+
+def test_user_explicit_confirm_needs_no_approval(env):
+    """用户明示来源的确认免审批；执行侧从投影读 origin，不信模型参数。"""
+    task, run, claim = env.new_run()
+    _seed_memory(env, run.run_id, memory_id="mem_explicit", content="用户明确要求：中文")
+    request, args = _confirm_request(
+        env, task, run, claim, "mem_explicit", call_id="exp1"
+    )
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_admitted, decision
+    assert decision.rule_id == "c4.memory_scope"
+    assert decision.approval_id is None
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert env.memory.observe("mem_explicit", allowed=(MemoryScope.user(),)) == (
+        "active",
+        2,
+    )
+
+
+# ---------------------------------------------------------------- 4. 作用域越权
+
+
+def test_workspace_scope_is_denied_cross_task_and_rule_is_registered(env):
+    task_a, run_a, claim_a = env.new_run()
+    task_b, run_b, claim_b = env.new_run(root=env.ws_b)
+    scope_b = MemoryScope.workspace(env.ws_b)
+    _seed_memory(
+        env,
+        run_b.run_id,
+        memory_id="mem_b_private",
+        content="B 工作区的私有记忆",
+        scope=scope_b,
+    )
+
+    # A 的任务拿着 B 的 URI 去确认：必须在派发前被策略/权威层拒绝
+    scope_b_uri = scope_b.to_uri()
+    args = {"memory_id": "mem_b_private", "revision": 1}
+    request = env.request(
+        task_a,
+        run_a,
+        claim_a,
+        tool_id="memory.confirm",
+        target=scope_b_uri,
+        args=args,
+        call_id="cross1",
+    )
+    decision = env.dispatcher.prepare(request, claim_a, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+    assert decision.rule_id in RULE_IDS
+
+    rejected = [
+        event
+        for event in _events(env.log, run_a.run_id)
+        if event.type == "dispatch.rejected"
+    ]
+    assert rejected and rejected[-1].payload["rule_id"] == "c4.memory_scope_denied"
+
+    # 存储层也没变：B 的记忆仍是 candidate
+    assert env.memory.observe("mem_b_private", allowed=(scope_b,)) == ("candidate", 1)
+
+
+def test_workspace_scope_can_be_used_by_its_own_task(env):
+    task, run, claim = env.new_run()
+    scope = MemoryScope.workspace(env.ws_a)
+    _request, _args, decision = _propose(
+        env, task, run, claim, content="这个工作区里的约定", scope=scope
+    )
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert env.memory.observe(result.output["memory_id"], allowed=(scope,)) == (
+        "candidate",
+        1,
+    )
+
+
+# ---------------------------------------------------------------- 5. 事务性
+
+
+def test_projection_update_runs_inside_tool_result_transaction(env):
+    """apply_event 必须在 tool.result 的同一事务内被调用。
+
+    不是断言"最后两边都在"——那只能证明事后重试补上了。这里在调用瞬间读
+    `log.in_transaction`，证明它没有另开/延后事务。
+    """
+    task, run, claim, _proposed_output = _proposed(env)
+    memory_id = _proposed_output["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=1)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+
+    original = env.memory.apply_event
+    seen: list[bool] = []
+
+    def wrapped(event_type, payload, *, seq):
+        seen.append(env.log.in_transaction)
+        return original(event_type, payload, seq=seq)
+
+    env.memory.apply_event = wrapped  # type: ignore[method-assign]
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert seen == [True], f"apply_event 必须在同一事务内：{seen}"
+
+
+def test_mid_write_failure_is_unknown_and_leaves_no_half_projection(env, monkeypatch):
+    task, run, claim, proposed = _proposed(env)
+    memory_id = proposed["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=1)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+
+    def explode(event_type, payload, *, seq):
+        raise RuntimeError("投影写入中途炸了")
+
+    monkeypatch.setattr(env.memory, "apply_event", explode)
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.status == "failed"
+    assert result.effect_state == "unknown"
+
+    # 投影没有半条：还是 candidate/1，没有成功 result、没有 receipt
+    assert env.memory.observe(memory_id, allowed=(MemoryScope.user(),)) == (
+        "candidate",
+        1,
+    )
+    events = _events(env.log, run.run_id)
+    results = [event.payload for event in events if event.type == "tool.result"]
+    assert results[-1]["tool_id"] == "memory.confirm"
+    assert results[-1]["status"] == "failed"
+    assert results[-1]["effect_state"] == "unknown"
+    assert "receipt" not in [event.type for event in events]
+    assert "recovery.blocked" not in [event.type for event in events]
+    row = env.dispatcher.dispatch_record(run.run_id, request.call_id)
+    assert row is not None and row.state == "error"
+
+
+# ---------------------------------------------------------------- 6. 老 file 路径不退化
+
+
+def test_file_dispatch_still_uses_bare_absolute_path_and_receipt(env):
+    task, run, claim = env.new_run()
+    target = env.ws_a / "note.md"
+    args = {"path": "note.md", "content": "改后的内容\n"}
+    request = build_request(
+        task=task,
+        run=run,
+        claim=claim,
+        call_id="file1",
+        tool_id="modify_text",
+        target=target,
+        args=args,
+    )
+    # 历史形状：resources 是裸绝对路径，逐字节不变；没有记忆字段混进来
+    assert request.resources == (str(target),)
+    assert "memory" not in request.to_canonical_dict()
+    assert request.action == ACTION_OVERWRITE
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.kind == "waiting"
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert target.read_text(encoding="utf-8") == "改后的内容\n"
+
+    receipts = [event.payload for event in _events(env.log, run.run_id) if event.type == "receipt"]
+    assert receipts, "文件覆盖必须仍产出凭据"
+    assert receipts[-1]["root"] == str(env.ws_a)
+    assert receipts[-1]["resource"] == str(target)
+    assert receipts[-1]["action"] == ACTION_OVERWRITE
+    assert verify_receipts(env.log, run.run_id) == []
+
+def test_duplicate_propose_is_policy_denied_before_approval(env):
+    task, run, claim, first = _proposed(env, content="重复的候选")
+    args = {"kind": "preference", "content": "重复的候选"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=MemoryScope.user().to_uri(),
+        args=args,
+        call_id="dup1",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.create_over_existing"
+    assert decision.rule_id in RULE_IDS
+    # 原候选没有变化
+    assert env.memory.observe(first["memory_id"], allowed=(MemoryScope.user(),)) == (
+        "candidate",
+        1,
+    )
+
+
+def test_tool_and_resource_kind_must_match(env):
+    """文件工具拿 memory://、记忆工具拿绝对路径，都必须 fail-closed。"""
+    task, run, claim = env.new_run()
+    file_request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="modify_text",
+        target=env.ws_a / "note.md",
+        args={"path": "note.md", "content": "x"},
+        call_id="kind1",
+    )
+    forged_file = replace(
+        file_request,
+        tool_id="memory.propose",
+        tool_version=SPECS["memory.propose"].version,
+        schema_hash=sha256_hex(canonical_bytes(SPECS["memory.propose"].input_schema)),
+        action=ACTION_CREATE,
+        args_hash=sha256_hex(
+            canonical_bytes({"kind": "preference", "content": "x"})
+        ),
+    )
+    decision = env.dispatcher.prepare(
+        forged_file,
+        claim,
+        args={"kind": "preference", "content": "x"},
+    )
+    assert decision.is_rejected and decision.rule_id == "dispatch.memory_resource_mismatch"
+    assert decision.rule_id in RULE_IDS
+
+    # 反方向：文件工具拿 memory://
+    mem_args = {"path": "note.md", "content": "x"}
+    mem_request = ActionRequest(
+        request_id="req_kind2",
+        task_id=task.task_id,
+        run_id=run.run_id,
+        job_id=claim.job_id,
+        claim_epoch=claim.claim_epoch,
+        owner_instance_id=claim.owner_instance_id,
+        goal_revision=run.goal_revision,
+        lease_epoch=run.lease_epoch,
+        call_id="kind2",
+        attempt_id=1,
+        tool_id="modify_text",
+        tool_version=SPECS["modify_text"].version,
+        schema_hash=sha256_hex(canonical_bytes(SPECS["modify_text"].input_schema)),
+        action=ACTION_OVERWRITE,
+        resources=(MemoryScope.user().to_uri(),),
+        args_hash=sha256_hex(canonical_bytes(mem_args)),
+        preconditions={"before_state": "x"},
+    )
+    decision2 = env.dispatcher.prepare(mem_request, claim, args=mem_args)
+    assert decision2.is_rejected
+    assert decision2.rule_id == "dispatch.memory_resource_mismatch"
+
+
+def test_absolute_file_path_with_double_colon_slash_stays_a_file(env):
+    """`/a/b://c` 在 POSIX 是普通绝对路径，不能因为含 `://` 被当成记忆。"""
+    weird = f"{env.ws_a}/b://c"  # 合法绝对路径：目录名 `b:` + 文件名 `c`
+    decision = PolicyEngine().classify(
+        ACTION_CREATE,
+        [weird],
+        [{"root_path": str(env.ws_a)}],
+    )
+    assert decision.rule_id == "c4.auto", decision
+
+
+def test_memory_executor_refuses_a_forged_ticket_without_a_dispatch_record(env):
+    """票据可伪造，库里的派发记录不能。执行器必须自己回权威库核。"""
+    task, run, claim = env.new_run()
+    args = {"kind": "preference", "content": "伪造"}
+    req = ActionRequest(
+        request_id="req_forged_mem",
+        task_id=task.task_id,
+        run_id=run.run_id,
+        job_id=claim.job_id,
+        claim_epoch=claim.claim_epoch,
+        owner_instance_id=claim.owner_instance_id,
+        goal_revision=run.goal_revision,
+        lease_epoch=run.lease_epoch,
+        call_id="forged_mem",
+        attempt_id=1,
+        tool_id="memory.propose",
+        tool_version="1.0",
+        schema_hash=sha256_hex(canonical_bytes(SPECS["memory.propose"].input_schema)),
+        action=ACTION_CREATE,
+        resources=(MemoryScope.user().to_uri(),),
+        args_hash=sha256_hex(canonical_bytes(args)),
+        preconditions={"memory_kind": "preference", "memory_exists": False},
+    )
+    forged = AdmittedCall(
+        dispatch_id="disp_forged_mem",
+        request=req,
+        request_digest=req.digest(),
+        claim=claim,
+        tool_id="memory.propose",
+        action=ACTION_CREATE,
+        args=args,
+        target=MemoryScope.user().to_uri(),
+        rel_path="",
+        workspace_root="local",
+        resource_key="memory:user:local",
+        resources=(MemoryScope.user().to_uri(),),
+        intent_seq=0,
+    )
+    permit = ExecutionPermit(
+        run_id=run.run_id,
+        task_id=task.task_id,
+        goal_revision=run.goal_revision,
+        lease_epoch=run.lease_epoch,
+        resources=(MemoryScope.user().to_uri(),),
+        seq=1,
+        started_at=0,
+    )
+    executor = env.dispatcher._memory_executor_for()
+    with pytest.raises(ToolNotAllowed) as excinfo:
+        executor.execute(forged, permit)
+    assert "派发记录" in str(excinfo.value)
+
+
+def test_task_scope_is_only_for_its_own_task(env):
+    task, run, claim = env.new_run()
+    scope = MemoryScope.task(task.task_id)
+    _, _, decision = _propose(env, task, run, claim, content="本任务的上下文", scope=scope)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    memory_id = result.output["memory_id"]
+
+    # 本任务可以观察
+    assert env.memory.observe(memory_id, allowed=(scope,)) == ("candidate", 1)
+
+    # 另一个任务拿着同一个 URI 来确认：作用域不属于它
+    other_task, other_run, other_claim = env.new_run(root=env.ws_b)
+    args = {"memory_id": memory_id, "revision": 1}
+    request = env.request(
+        other_task,
+        other_run,
+        other_claim,
+        tool_id="memory.confirm",
+        target=scope.to_uri(),
+        args=args,
+        call_id="task_cross",
+    )
+    rejected = env.dispatcher.prepare(request, other_claim, args=args)
+    assert rejected.is_rejected
+    assert rejected.rule_id == "c4.memory_scope_denied"
+
+
+def test_unknown_memory_kind_is_policy_denied(env):
+    task, run, claim = env.new_run()
+    args = {"kind": "telepathy", "content": "没有这种种类"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=MemoryScope.user().to_uri(),
+        args=args,
+        call_id="badkind",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_kind_unsupported"
+    assert decision.rule_id in RULE_IDS
+
+
+def test_zero_binding_control_run_cannot_write_files(env):
+    """零绑定控制 Run 是给记忆 user 作用域的，不是文件写入的新后门。"""
+    control = env.dispatcher.open_control_run(goal="检查", workspaces=[])
+    try:
+        target = env.ws_a / "note.md"
+        args = {"path": "note.md", "content": "不允许"}
+        request = build_request(
+            task=control.task,
+            run=control.run,
+            claim=control.claim,
+            call_id="control_file",
+            tool_id="modify_text",
+            target=target,
+            args=args,
+        )
+        decision = env.dispatcher.prepare(request, control.claim, args=args)
+        assert decision.is_rejected, decision
+        assert decision.rule_id in RULE_IDS
+        assert target.read_text(encoding="utf-8") == "原始内容\n"
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="failed", effect_state="none_applied"
+        )

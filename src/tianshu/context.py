@@ -208,20 +208,34 @@ def compile_context(
 # ---------------------------------------------------------------- 给接线方用
 
 
-def context_payload(budget: ContextBudget, view: ContextView) -> dict[str, Any]:
+def context_payload(
+    budget: ContextBudget,
+    view: ContextView,
+    *,
+    memories: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """写进 `model.intent.payload.context` 的那份记录。
 
-    故意只有这五个键：回放要能**仅凭事件**重算出同一个 digest，所以记录的必须
-    恰好是编译的入参与产物身份。`spills` 不进来——它的原文是工具输出，已经在
-    `tool.result` 里了；这里再记一份只会让日志翻倍。
+    正常情况下只有这五个键：回放要能**仅凭事件**重算出同一个 digest，所以记录
+    的必须恰好是编译的入参与产物身份。`spills` 不进来——它的原文是工具输出，
+    已经在 `tool.result` 里了；这里再记一份只会让日志翻倍。记忆进入视图时多
+    一个 `memories` 身份清单（见下），它不参与 digest 重算。
+
+    `memories` 是 F10 §8 的"实际选中的 `memory_id`/`revision` + 内容快照引用"：
+    只在真的有记忆进入这一轮视图时才出现。它记录的是**编译后仍然活着**的那些
+    记忆（被预算压掉的不算"进入上下文"），供回放核对"这一轮到底带了什么"。
+    它不是第二份记忆正文——正文与出处本来就在 `tool.result` 里，这里只记身份。
     """
-    return {
+    payload: dict[str, Any] = {
         "budget_version": BUDGET_VERSION,
         "max_bytes": budget.max_bytes,
         "spill_threshold": budget.spill_threshold,
         "source_seqs": list(view.source_seqs),
         "dropped_seqs": list(view.dropped_seqs),
     }
+    if memories:
+        payload["memories"] = list(memories)
+    return payload
 
 
 def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
