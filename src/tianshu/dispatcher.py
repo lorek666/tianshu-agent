@@ -335,20 +335,22 @@ def precondition_rule_id(
 
 
 def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
-    """写 `dispatch_requests.args_payload` 前的脱敏：记忆正文只留摘要。
+    """给**被拒绝**的派发请求脱敏：记忆正文只留摘要。
 
-    这不是"少记一点省事"，是保留策略问题。`dispatch_requests` 没有擦除路径，
-    `memory.forget` 也不碰它；而记忆写工具的 `content` 是**正文原文**，且
-    写入闸门（PII / 密钥扫描）要到 executor 才跑。原文直接落库有两个后果：
+    能脱敏的只有**永远不会执行**的行。被采纳的行**不能**脱敏——`args_payload`
+    会被读回来做 `args_hash` 绑定校验，执行器也从这张表取参数（详见
+    `_intent_args` 的注释）；落库前统一脱敏会直接把派发打红。所以本函数只挂在
+    `_reject()` 上。
 
-    1. 被闸门**阻断**的候选也会先把密钥留在审计表里——"写入前阻断"在那张表
-       上不成立；
-    2. PII 候选在 blob 里已红act，审计表里仍是原文——"全链路脱敏"有个后门。
+    为什么拒绝的行也要处理：`dispatch_requests` 没有擦除路径，`memory.forget`
+    也不碰它，留一份记忆正文原文就是永久副本。换成 `content_sha256 +
+    content_bytes` 后，审计仍能核对"要写的是同一段正文"（哈希可比、长度可比），
+    原文不再落地；`content` 之外的字段（kind / scope / 记忆 id / 写前 revision）
+    照常留。
 
-    换成 `content_sha256 + content_bytes` 后：审计仍能核对"写的是不是同一段
-    正文"（哈希可比、长度可比），原文不再有第二份落地副本。`content` 之外
-    的字段（kind / scope / 记忆 id / 写前 revision）照常留，审批与恢复需要的
-    那些参数一个不少。
+    **不覆盖**：被采纳后又被内容闸门（PII / 密钥）挡掉的请求——闸门在
+    `MemoryExecutor` 里跑，而请求行在 `prepare()` 就落库了。那一半见 F10
+    §13 #26，要彻底修得把内容扫描挪到落库之前。
     """
     if "content" not in args:
         return args
