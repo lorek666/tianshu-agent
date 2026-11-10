@@ -1294,3 +1294,21 @@ def test_explicit_blob_dir_wins(tmp_path: Path) -> None:
     explicit = tmp_path / "custom_memory_blobs"
     assert MemoryProjection(log.conn, log=log, blob_dir=explicit).blob_dir == explicit
     log.close()
+
+
+def test_in_memory_database_marks_content_unavailable() -> None:
+    """纯内存库没有"DB 旁边"：不编路径，正文如实标成不可用。"""
+    log = EventLog(Path(":memory:"))
+    projection = MemoryProjection(log.conn, log=log, clock=lambda: NOW)
+    projection.ensure_schema()
+    try:
+        assert projection.blob_dir is None
+        _propose(projection, log, "m1", "内存库没有正文目录")
+        memory = projection.get("m1", allowed=[MemoryScope.user()])
+        assert memory is not None
+        assert projection.read_content(memory) is None
+        assert _count(log, "memory_fts") == 0
+        _confirm(projection, log, "m1")
+        assert projection.search("内存库", allowed=[MemoryScope.user()]) == []
+    finally:
+        log.close()
