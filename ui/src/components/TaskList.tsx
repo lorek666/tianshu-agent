@@ -1,6 +1,6 @@
 import type { ApprovalView, RunView, TaskView } from "../api/types";
 import { formatRelative } from "../lib/format";
-import { isOpenApproval, runStateTone, taskGoalSummary, taskStatusLabel } from "../lib/humanize";
+import { isOpenApproval, runStateLabel, runStateTone, taskGoalSummary, taskStatusLabel } from "../lib/humanize";
 import { IconPlus } from "./Icons";
 import { EmptyState, StatusPill } from "./StatusPill";
 
@@ -69,8 +69,8 @@ export function TaskList({
                       <span className="task-goal">{taskGoalSummary(task, 58)}</span>
                       <span className="task-item-meta">
                         <StatusPill tone={runStateTone(task.status)}>{taskStatusLabel(task.status)}</StatusPill>
-                        {activeRun !== null && task.status !== "running" ? (
-                          <span className="task-run-hint">运行进行中</span>
+                        {activeRun !== null ? (
+                          <span className="task-run-hint">运行：{runStateLabel(activeRun.state)}</span>
                         ) : null}
                         {pending > 0 ? (
                           <span className="task-approval-hint">{pending} 项待批准</span>

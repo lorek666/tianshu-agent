@@ -1943,14 +1943,18 @@ pre,
 
 /* ------------------------------------------------------------------ 响应式 */
 
-@media (max-width: 1280px) {
+/* 1280 宽必须保留三栏：审批卡片在 348px 侧栏里按钮直接可见。把断点从 1280
+   降到 1180，避免“恰好 1280 时审批按钮掉到首屏外”被 CSS 断点自己制造出来。 */
+@media (max-width: 1180px) {
   .app-main {
     grid-template-columns: 264px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) 258px;
+    /* 底部待审批行不再固定 258px：由卡片内容撑开（上限 42vh），按钮不会被裁掉。 */
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .approvals-pane {
     grid-column: 1 / -1;
+    max-height: 42vh;
   }
 
   .approvals-pane .approval-list {
@@ -1964,7 +1968,11 @@ pre,
   }
 
   .detail-pane {
-    max-height: 34vh;
+    max-height: 26vh;
+  }
+
+  .run-pane {
+    min-height: 200px;
   }
 
   .daemon-meta {
