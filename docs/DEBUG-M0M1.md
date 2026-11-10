@@ -282,3 +282,70 @@ undo 第一遍只校验文件 after hash，不检查 preimage blob 是否存在�
 2. R5 至少修复大 payload 的 durable publish 和缺失处理；不需要声称文件系统与 DB 单次原子提交。
 3. `modify_text` 同内容的建议口径：`status=succeeded`（若调用本身成功），`effect_state=none_applied`，不产生 applied receipt；恢复无法确认调用完成时则保持 interrupted/unknown，不用 `failed` 代替。
 4. `e30901b` 还加入了数百个 `.tmp` 下的 SQLite、报告和快照文件到提交。它们不是本次实现修改，但属于 PR 卫生问题：合入前移除并忽略测试临时产物，避免仓库膨胀和本机路径/测试数据进入源码历史。
+
+---
+
+## 修复状态总表（2026-11-10 复核补登）
+
+本报告写作时（`7fd5731`）只诊断、不改代码。之后的 M1 硬化、M2 统一执行入口与
+M5 复审逐条落地。下表把每条发现对应到**落实位置**与**钉住它的测试**；
+「仍未覆盖」一列只写真的没有证据的部分。
+
+判定口径：有回归测试、且做过负控（把修复回退后测试会红）才算修好；
+文档里写着「已修」但找不到测试的条目，一律按未修处理。
+
+| 编号 | 结论 | 落实位置 | 钉住它的测试 | 仍未覆盖 |
+|---|---|---|---|---|
+| S1 | 已修 | 恢复 v2 的唯一判据是写前证据：无证据→`none_applied`；缺清单→`unknown`+阻断；修改类目标消失→`unknown`；`before_state` 只来自证据、不再编 `absent` | `test_debug_regressions.py::test_s1_*`（4 条） | — |
+| S2 | 已修 | 阻断核验下沉到执行边界（派发/执行器在改文件前按**真正要写的路径**再判）；撤销走完整派发链（dispatcher→审批→租约→凭据）；`guard.unblock` 给出解除语义 | `test_s2_blocking_is_enforced_at_dispatcher`、`test_s2_write_tool_without_log_is_refused`、`test_s2_unblock_restores_writability`、`test_r2_undo_refused_on_blocked_workspace`、`test_failclosed.py::test_block_inserted_inside_execution_guard_still_blocks_the_write` | 库调用方不传 `data_root` 时只有就地两道核验，没有跨进程线性化（`KNOWLEDGE.md` §5 已写明） |
+| S3 | 已修 | `fsutil.atomic_write_bytes`：同目录临时文件 → `fsync` → `os.replace` → `fsync` 父目录，并保留原 mode；各后端写入统一走 `write_bytes_atomic` | `test_s3_atomic_write_leaves_no_partial_file`、`tests/test_backend_contract.py`（4 后端契约：证据先于字节、写失败→`unknown`+阻断） | 真实断电（页缓存→盘）未做存储级实验，见下 |
+| S4 | 已修 | 撤销先整体预检（每份 preimage 的 SHA-256、路径类型、after 证据）再动一个字节；缺/坏证据零修改；逐文件原子替换；中途失败记 `partial` | `test_s4_undo_aborts_when_blob_missing`、`test_undo_rejects_corrupt_preimage_before_touching_any_file`、`test_three_writes_undo_to_original_and_middle_conflict_is_atomic` | 跨多文件不是一次事务：中途崩溃可留部分还原（逐文件都有记录、可续做），不宣称「跨文件天然原子」 |
+| M1 | 已修（范围内） | `result`+`receipt` 同事务 `append_many`；大 payload 先 fsync+原子发布再提交引用；`EventTransaction` 让状态投影与事件同一次提交 | `test_m1_result_and_receipt_are_atomic`、`test_m1_large_payload_is_durable_before_reference_commit`、`tests/test_transactions.py`（7 条） | 文件系统副作用与 SQLite 不可能同一 ACID 事务：采用 durable evidence + reconciliation，不是「单事务」 |
+| M2 | 已修 | `SPECS.get(tool_id) is None` → `unknown` + 阻断，不再套用「没证据=没写」 | `test_failclosed.py::test_unknown_tool_recovery_is_unknown_and_blocks` | 按 `(tool_id, version)` 的 per-version 恢复器仍未落地（当前整表 fail closed） |
+| M3 | 已修 | 传输层失败抛 `ModelError`（不再伪造 `error`/`unknown` 结束原因）；`finish_reason` 是 13 值封闭集，越界即报错；未知/截断结束原因失败，不是 `noop`；usage 缺失记 `unknown_usage_calls`，不记 0 | `test_m3_provider_error_is_failure_not_noop`、`test_m3_truncated_finish_reason_is_failure`、`tests/test_model_contract.py`、`tests/test_usage.py` | 未知 usage 时预算「无法核实」是如实记录 + 限额，不是精确计量 |
+| M4 | 大部分已修 | `ResourceIdentity`（设备+inode，符号链接同身份）+ `pathkeys`（NFC/大小写）+ 租约（过期、死主接管、跨进程守卫）+ 派发唯一索引 | `tests/test_leases.py`（含真子进程 `test_two_processes_one_resource`、`test_execution_guard_excludes_across_processes`）、`tests/test_evidence_keys.py` | **换 `--db` 绕过目录阻断（authority 数据根逃逸）未实现**；完整 takeover 未实现（issue #61） |
+| L1 | 已修 | 注入矩阵扩到 create + 覆盖写；不变量核对**真正要写的那个文件**（不再对诱饵 `note.md` 自说自话）；坏清单/坏 blob 纳入用例 | `tests/test_recovery.py`（11 条：failpoint × 2 条写路径、100 次随机注入、四条不变量）、`test_failclosed.py` 注入矩阵、本轮新增坏清单 3 条 | — |
+| L2 | 已修 | 证据按 `call_id` 保存（同一路径多次写各留一条）；撤销按调用逆序、同路径取最早 preimage；撤销写 `undo.completed` 事件留痕 | `test_r3_create_then_modify_same_path_can_be_undone`、`test_r3_undo_appends_audit_event`、`test_three_writes_undo_to_original_and_middle_conflict_is_atomic` | — |
+| R1 | 已修 | 缺清单→`unknown`+阻断；**坏清单（本轮补）**→写工具 `unknown`+阻断、只读工具不受影响，不再漏出裸解析异常 | `test_r1_missing_manifest_is_unknown_not_none_applied`、`test_r1_corrupt_manifest_is_unknown_and_blocks`、`test_r1_corrupt_manifest_does_not_block_read_only_calls` | — |
+| R2 | 已修 | 撤销强制 guard + 完整派发链；没有日志/租约/审批就拒绝 | `test_r2_undo_refused_on_blocked_workspace`、`test_undo_requires_guard_at_library_boundary` | — |
+| R3 | 已修 | 同一路径按调用逆序撤销，冲突以最终 after 为基准；撤销写事件 | `test_r3_*`、`test_three_writes_undo_to_original_and_middle_conflict_is_atomic` | — |
+| R4 | 已修 | 阻断不是普通工具失败：任务显式 `failed`，不进 `noop` | `test_r4_blocked_tool_makes_run_fail_not_noop` | — |
+| R5 | 已修 | 大 payload 先 fsync+原子发布再提交引用；缺失 ref → `EventLogCorrupt`；`.tmp/` 已 ignore、无跟踪文件 | `test_m1_large_payload_is_durable_before_reference_commit`、`test_light2_missing_payload_blob_is_event_log_corrupt` | — |
+
+### 本轮复核新发现并修掉的残留：坏清单让校验器自己先崩了
+
+L1 当时把「未测损坏 manifest/blob」列为缺口。本轮补测发现：清单文件被截断或被写坏后，
+`SnapshotStore.load()` 直接漏出 `json.JSONDecodeError`——恢复和撤销还没开始判断就先崩了，
+CLI 只打印 `错误：Expecting property name...`，既没说清哪份文件坏了，也没有阻断。
+
+口径不变：**读不懂 ≠ 没写过**。修法：
+
+- 新增域错误 `SnapshotCorrupt`（与 `EventLogCorrupt` 同一条道理，只是介质不同：一个在
+  SQLite，一个在 `artifacts/snapshots/<run>.json`）。
+- 恢复侧在动手前整份核对一次：读不懂就把所有**写工具/未知工具**的 pending 判 `unknown`
+  + 阻断，**不**退回「没证据=没写」；只读工具不读这份证据（本来无副作用），照旧判
+  `none_applied`——过度阻断也是误报。逐条取证时清单才坏的窄窗口按同一口径处理。
+- 撤销侧（`undo.plan`）明确拒绝并给出补救路径（先 `recover` 核对或手工还原、先备份），
+  库入口 `SnapshotStore.undo()` 抛类型化错误；两种路径都一个字节都不动。
+
+负控（先回退修复再跑新用例，确认会红）：
+
+```text
+FAILED tests/test_debug_regressions.py::test_r1_corrupt_manifest_is_unknown_and_blocks
+FAILED tests/test_debug_regressions.py::test_undo_refuses_corrupt_manifest
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+（第三条 `test_r1_corrupt_manifest_does_not_block_read_only_calls` 钉住的是相反方向：
+不能因为清单坏了就把只读工具也挡上——过度阻断同样是误报。）
+
+修复后同一组用例全绿；全量 `1080 passed / 3 skipped`，`ruff check .` 干净。
+
+### 仍然不成立的宣称（不要读成「已解决」）
+
+1. **真实断电**：写入路径已有 fsync + 原子 rename，但「恢复后只可能是写前或写入内容」在
+   **存储故障语义**上仍未验证（没有块设备级掉电实验）。见 [M2-verification.md](M2-verification.md) §8。
+2. **Windows**：`msvcrt.locking`、`OpenProcess`、`\\?\` 路径只有实现、没有实机证据；
+   `windows-latest` 上仍有命名管道握手偶发失败（issue #50）。
+3. **`authority` 数据根逃逸与完整 takeover**：未实现（issue #61）。
+4. **跨多文件撤销的事务性**：不宣称——逐文件原子 + 逐文件记录，不是一次事务。

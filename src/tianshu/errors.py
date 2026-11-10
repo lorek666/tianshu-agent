@@ -30,6 +30,16 @@ class EventLogCorrupt(TianshuError):
     """
 
 
+class SnapshotCorrupt(TianshuError):
+    """写前证据（快照清单）读不出可信内容。
+
+    和 `EventLogCorrupt` 是同一条道理，只是介质不同：事件日志是 SQLite，
+    快照清单是 `artifacts/snapshots/<run>.json`。两者都是"这份材料不能作为
+    结论来源"，所以都不能被静默当成空清单——那等于替一条读不懂的审计记录
+    宣布"没写过"。调用方必须转成 unknown + 阻断，或者明确拒绝撤销。
+    """
+
+
 class WorkspaceBlocked(TianshuError):
     """workspace 上有未核实的副作用，禁止继续写入。"""
 

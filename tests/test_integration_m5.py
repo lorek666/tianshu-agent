@@ -516,11 +516,19 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
             f"（returncode={proc.poll()}）；日志尾巴：\n{_tail(log_path)}"
         )
         # on_ready 之后端点就已经能连了；这里留一点余量吸收调度抖动。
+        # 等的时候盯着子进程：它若已经退出，就别再白等 10 秒——「活着但端点不见」
+        # 与「已经死了」是两种完全不同的故障，混在一起只会让它变成一条没法查的
+        # 偶发红（issue #63）。
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not ipc.probe(root, timeout=0.2):
+            if proc.poll() is not None:
+                break
             time.sleep(0.02)
+        endpoint = ipc.endpoint_path(root)
         assert ipc.probe(root), (
-            f"on_ready 已落盘但端点连不上；日志尾巴：\n{_tail(log_path)}"
+            f"on_ready 已落盘但端点连不上；returncode={proc.poll()}，"
+            f"endpoint={endpoint}，exists={Path(endpoint).exists()}；"
+            f"日志尾巴：\n{_tail(log_path)}"
         )
         client = _client(root)
         task_id = _make_task(client, ws)

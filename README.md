@@ -319,7 +319,7 @@ UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直�
 | **M4** 可评估 | 20 条 case + `replay`/`evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
 
-**M5 实测**：全量 **1077 passed, 3 skipped**（macOS 本机，2026-11-10 真实模型轮）；三进程真进程链路跑通——
+**M5 实测**：全量 **1080 passed, 3 skipped**（macOS 本机，2026-11-10 DEBUG-M0M1 复核轮）；三进程真进程链路跑通——
 `tianshu host run` → `tianshu host stop` 后 Host 与 Daemon 都退出（`ipc.probe == False`，不留孤儿），
 `scripts/demo_m5.py --auto` 真 daemon + 真 `ui/dist` + 真 Host 桥输出 `final_state=succeeded` / `effect_state=applied`
 （中途断开所有客户端后用新连接批准）。完整判据、未验证项与真进程截图见 [docs/M5-verification.md](docs/M5-verification.md)。
