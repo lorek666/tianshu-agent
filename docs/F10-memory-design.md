@@ -24,7 +24,18 @@ M0–M5 已完成：事件日志 append-only、可重放、可审计。但 **F10
 - 原始会话 = 事件日志（L0，**已有**）。
 - L1/L2/L3 由事件日志**确定性蒸馏**得到，可重放重建；删掉投影不丢事实。
 - 记忆**激活与遗忘**是一等副作用：与覆盖 / 删除同级，走 intent/result + C4 审批 + Receipt（候选写入只是投影草稿，见 §7）。
-- 事件日志里**只存引用与审计元数据**，不重复写记忆正文——不可删除的日志不该随记忆膨胀。
+- **写入**路径只存引用与审计元数据：`Dispatcher._intent_args()` 在 `memory.propose`
+  的参数进 `tool.intent` 前拿掉 `content`，只留 `content_sha256` / `content_bytes`
+  / `content_omitted`；正文走内容寻址（`memory_blobs/`）。
+- **读取**路径必然带正文：`memory.search` / `memory.get` 的 `ToolResult.output` 就是
+  模型当时看到的那段文本，`loop._record_result()` 按事件溯源的原样写进 `tool.result`。
+  **不留它，replay 就重建不出模型当时的输入，`messages_hash` 立刻对不上。**
+- 所以准确的说法是：**日志不随「写」膨胀，随「读」增长**（每次最多 `MAX_RECALL_BYTES`
+  = 4 KiB）。这是红线 1（日志自足、可离线回放）换来的代价，不是疏忽；早先"事件日志
+  只存引用、不重复写正文"的说法**只对写入路径成立**，对读事件不成立，已按实测改正。
+- 由此 **`memory.forget` 不等于物理擦除**：它只改投影状态，不动事件日志，也**不删**
+  正文 blob（§10）。正文在盘上的副本 = 事件日志里的读快照 + 正文 blob。物理擦除是
+  §10 单开的契约工单，**不得**用"删了 FTS 行"或"删了投影"替代声明。
 
 > **外部印证（2026-11-10）**：这个「事实与索引分离、合成层可重建」的形状不是天枢自创的。mem0 把存储拆成 `SQL 事实 = source of truth` / `向量 = embedding` / `实体 = 匹配加权`；Hindsight 的 reflect 检索阶梯是 `Mental Models → Observations → Raw facts（ground truth for verification）`。两家独立收敛到同一架构，且都明确「合成层可由事实层重建」。天枢的红线 1 已经站在这条线上。
 
@@ -207,7 +218,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 2. **排序**：优先 `user_explicit` > `user_confirmed` > `inferred`；优先当前任务 / 工作区证据。
 3. **裁剪**：条数上限 + 字节上限 + 超时。
 
-- 首版默认最多 **5 条 / 合计 4 KiB**（已落地为 `memory.MAX_RECALL_ITEMS` / `MAX_RECALL_BYTES`，模型可以要求更少、不能要求更多），受总上下文预算限制。
+- 首版默认最多 **5 条 / 合计 4 KiB**（已落地为 `memory.MAX_RECALL_ITEMS` / `MAX_RECALL_BYTES`）。模型可以要求更少、不能要求更多：`memory.search` 的 schema 暴露 `limit`（`minimum=1 / maximum=5`），执行侧 `_memory_search_output` 再夹一次到 `MAX_RECALL_ITEMS`——schema 只是把已有能力显式化，上限不由模型决定。受总上下文预算限制。
 - **不把全库放进 system prompt**。检索文本是带出处的上下文资料，由 F5 的 `compile_context`（纯函数）统一预算。
 - 实际选中的 `memory_id` / `revision` + 文本快照引用要落进事件，供回放核对（已落地：`context.context_payload(memories=...)` 写进 `model.intent.payload.context`）。
 - **冲突事实并列呈现并保留来源**，不能由新抓取的网页静默覆盖用户偏好。
@@ -218,7 +229,9 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 - 用户能打开「Agent 记住了什么」，**直接编辑** L1–L3——不只是查看 / 删除。
 - 理由：记忆的价值取决于准确性；给人纠正的办法，比指望蒸馏永远正确更现实。
-- 编辑保留 `revision`，用 `supersede` 而非覆盖（旧版可查）。
+- 编辑保留 `revision`，用 `supersede` 而非覆盖（旧版可查）。**投影层已实现、生产无入口**
+  （§13 #24）：`MemoryProjection` 认 `output.supersedes` 并保留旧行，但**没有任何工具 /
+  CLI / 执行器产生 `supersedes`**，所以"用户能编辑"这条目前只是语义准备好，不是能用的动作。
 - 每条记忆显示来源（事件 seq / 来源引用）。
 - **增量 delta 刷新，禁止全量重生成**：L2/L3 的蒸馏只能**应用新证据隐含的改动**，其余物理不动。全量重生成会让模型悄悄改写未变的部分（bullet 变数字、大小写漂移、同义改写），长文档会缓慢变成「说法差不多的另一份文档」。这是硬约束，不是优化。
 - **保留上一版 + 证据**：每次变化保留上一版内容与它当时站的证据，能回答「上个月它说了什么、依据是什么」。
@@ -233,7 +246,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 | 红线 / 契约 | 关系 |
 |---|---|
-| 红线 1（append-only，唯一事实源） | 记忆是投影；事件只存引用 |
+| 红线 1（append-only，唯一事实源） | 记忆是投影；**写**事件的参数已脱敏（只留正文哈希/长度），**读**事件的 `tool.result` 保留模型当时看到的正文快照——replay 需要它才能重建输入（见 §3.1） |
 | 红线 2（副作用先 intent 后 result + Receipt） | 记忆写入是投影更新（同事务写事件）；**激活 / 遗忘**作为一等副作用走 intent/result + Receipt |
 | 红线 4（授权只在执行侧） | 记忆激活 / 遗忘的审批在 dispatcher 执行侧判定 |
 | 红线 6（覆盖 / 删除需审批） | agent 发起的 `memory.confirm` 与 `memory.forget` 等同覆盖 / 删除 |
@@ -285,35 +298,40 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 21 | 崩溃恢复（`recover_run`）的记忆分支 | ❌ 未落地（已知限制） | `recovery.recover_run` 没有记忆专门分支：`tool.intent` 已提交但 `tool.result` 未落库时，恢复按**既有文件写工具的推断**走（多数情况记 `none_applied`，快照缺失时 `unknown` 并可能阻断目录），不是精确的记忆恢复。**投影侧不受影响**——`apply_event` 只在 `_commit_result` 的事务里被调用，没有 result 就不会有半条投影（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住这条）；但"这次记忆写入到底生效了没有"的结论仍依赖既有推断，而不是记忆专用证据。要精确回答需给 `recovery.py` 加记忆分支，单独工单 |
 | 22 | `origin` 的 `user_confirmed` 迁移 | ❌ 未实现（产生侧缺口） | `memory.confirm` 只推进 `status` 与 `revision`，**不改写 `origin`**；`MemoryProjection` 拒绝自行发明 `inferred → user_confirmed`（`memory._apply_confirm` 的 output 里没有 origin 字段）。后果：§5 的三档 origin 里 **`user_explicit` 与 `user_confirmed` 都没有生产入口**，线上所有记忆恒为 `inferred`；§8 的"优先 `user_explicit` > `user_confirmed` > `inferred`"排序**代码是对的，但实际退化成 `created_at` 降序**。要补需在 confirm 的 output 契约里加 origin 字段（由执行器按"人批准过"判定，**不能由模型参数决定**），并同步 `apply_event` 与重建断言 |
 | 23 | §8 的作用域优先级（优先当前任务 / 工作区证据） | ❌ 未实现 | 排序口径目前被钉为 `origin` → `created_at` 降序（`MemoryProjection.search`），作用域只用于**过滤**（loadout + `allowed`），不参与打分。后果：同一用户同时有 user 与 workspace 两条相关记忆时，不会优先给贴近当前任务的证据。这是 F10 §8 原述的一部分，未做就如实标注，别当成"已经按 F10 做了" |
+| 24 | 编辑 / `supersede` 的**生产入口** | ❌ 未落地（入口缺口） | 投影层与 `apply_event` 能消费 `output.supersedes` 并保留旧行，但**没有工具 / CLI / 执行器产生它**：`memory.propose` 的 schema 无 `supersedes` 且 `additionalProperties:false`，`MemoryExecutor._propose` 不读它，`grep -rn supersedes src/tianshu` 只命中 `memory.py`（与 `cli.py` 的只读打印）。`test_supersede_keeps_old_row_but_removes_it_from_recall` 是**测试播种** output，不是生产路径。后果：§9"用户能直接编辑"没有兑现。补法：加 `memory.edit`（或给 `memory.confirm` 加受控 `supersedes`），走 C4 overwrite 审批 + Receipt，参数绑 `memory_id`/`revision` 与旧版 |
+| 25 | workspace / task 作用域的**创建**入口 | ❌ 未落地（入口缺口） | 读侧隔离是真的（loadout + `memory_scope_allowed` + 越权测试），但**写侧只能创建 user 记忆**：`loop._memory_target` 对 propose 固定 `user/local`（注释写明"本单不做"），`memory.propose` schema 没有 `scope`/`scope_id`，CLI 也没有 propose。workspace / task 记忆只能由测试播种或直接 `apply_event` 造。后果：§3.3 / §6"把它放进某个 workspace 是显式动作"**没有落成动作**。补法：给 propose 加受控 `scope`，执行侧按绑定 / 当前任务校验，模型不能自选任意作用域 |
+| 26 | 派发审计表的正文保留与闸门时序 | ⚠️ 部分落地 | `dispatch_requests.args_payload` 保存**完整**尝试参数，因此也保存记忆正文原文；而 PII / 密钥闸门在 `MemoryExecutor` 里、请求行在 `prepare()` 就落库——**被闸门阻断的候选仍会在审计表留下原文**。已修的一半：**被拒绝**（`_reject`）的记忆写请求脱敏成 `content_sha256` + `content_bytes`（拒绝的请求永不执行，脱敏不破坏派发/审批绑定；`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`）。未修的一半：**被采纳后**又被内容闸门挡掉的请求仍保留原文——彻底修要把内容扫描挪到落库之前，或给审计表定保留/擦除策略，单开契约工单。注意执行器**从这张表取参数**，所以被采纳的行不能脱敏 |
+| 27 | CLI 对 task 作用域记忆的限制 | ⚠️ 已知限制 | CLI 控制 Run 是**新 Task**，无法为旧 task 作用域的记忆做确认/遗忘（把旧 task 绑进控制 Run 等于交出它的 workspace 权限）。`cli._cmd_memory` 遇到 `scope == "task"` 直接报错。workspace 作用域可用：把该 canonical 根**只读**绑定给控制 Run。模型侧不受此限 |
 
 **数据落点（别写成系统标准目录）**：投影表（`memories` / `memory_fts` / `memory_meta`）建在**事件日志同一个 sqlite 库**里——构造时强制 `conn is log.conn`（`MemoryProjection.__init__`），所以事件与投影同事务。正文 blob 默认落在 **DB 旁的 `memory_blobs/`**（`MemoryProjection.blob_dir`），**刻意不放进 `log.blob_dir`**：事件 payload 必须留存供 replay / 审计，记忆正文将来要能按策略物理擦除；两者同处一个内容寻址目录时，同一段字节会变成同一个文件——按策略删记忆正文会误删必须留存的日志材料（理由写在 `MemoryProjection.__init__` 的注释里）。纯内存库（`:memory:`）没有"DB 旁边"，此时 `blob_dir` 为 `None`、正文如实标成不可用，不编一个当前目录下的路径。内核子命令默认 `--db .tianshu/events.db`（`cli.DEFAULT_DB`），daemon 用 `--data-root` 时事件库在 `<data root>/events.db`（`daemon.py`）；记忆投影跟着这个库走。测试钉住这条分离：`test_default_blob_dir_is_separate_from_event_payload_store`（`EventLog` 就算配了 `blob_dir`，记忆正文也不跟过去）。`~/Library/Application Support/AgentOS` 那套只存在于 TECH-ARCH 的设计里，别当成现状。
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 00:01（`feat/memory` 工作区实测，`1215 passed / 3 skipped`、1218 条 collected——已合入 `main@540c543`；队友已停手，以 CI 为准）。
+> **状态时点**：2026-11-11 01:12（`feat/memory` 工作区实测，`1219 passed / 3 skipped`、1222 条 collected——已合入 `main@540c543`；以 CI 为准）。独立复审的结论与逐条处置见
+> [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
 > 真的没有测试，别把它当已验收。函数名来自四个文件：`tests/test_memory_store.py`
 > （51 个 `def test_` / 64 条：投影 / 检索 / 闸门 / 去重）、`tests/test_memory_dispatch.py`
-> （18 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run）、`tests/test_memory_loop.py`（11 个：主循环 / 预算 /
-> replay / CLI / 工具封闭集）、`tests/test_resources.py`（22 个 / 42 条：资源种类）。
+> （20 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run / 错装配投影 / 拒绝行脱敏）、`tests/test_memory_loop.py`（12 个：主循环 / 预算 /
+> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_resources.py`（23 个 / 44 条：资源种类）。
 
 | 判据 | 状态 | 证据 / 缺口 |
 |---|---|---|
 | 记住「报告用中文、先列结论」后，新任务能检索到 | ✅ 已覆盖 | 存储层 `test_propose_confirm_get_search_round_trip`；**新任务**（后来的 task 装备）`test_user_memory_is_recalled_by_a_later_task`（user 作用域被新任务检索到，且别的工作区私有记忆混不进来）；主循环 `test_zero_directory_task_can_recall_memory`（零目录任务检索到、`allowed` 装备正确、`context.memories` 落身份） |
 | 不同 workspace 不串记忆；模型读不到另一个 workspace 的私有记忆 | ✅ 已覆盖 | `test_cross_scope_isolation_and_loadout`、`test_observe_is_scope_filtered`、`test_workspace_uri_scope_mismatch_is_rejected`、`test_workspace_scope_is_denied_cross_task_and_rule_is_registered`、`test_workspace_scope_can_be_used_by_its_own_task`、`test_task_scope_is_only_for_its_own_task`、`test_loadout_equips_only_authorized_scopes` |
 | 中文无空格文本与中英混合标识符的词面召回用固定样例量化 | ✅ 已覆盖 | `test_cjk_bigram_recall_is_quantified`、`test_mixed_cjk_and_identifier_recall` |
-| 候选未经确认不激活；摘要 / 网页不能自动成为长期用户事实 | 部分覆盖 | 候选不召回：`test_propose_confirm_get_search_round_trip`、`test_propose_really_goes_through_dispatcher_and_orders_intent_before_result`。`origin` 固定写 `inferred` 只有代码（`memory_exec.MemoryExecutor._propose`），**没有断言 origin 的测试**；"网页/摘要不能自动变事实"的入口级判据缺 |
-| 编辑保留 revision；忘记后新任务 / 重建索引 / 应用重启均不再召回 | ✅ 已覆盖 | `test_supersede_keeps_old_row_but_removes_it_from_recall`、`test_forget_is_not_recalled_and_rebuild_does_not_resurrect`、`test_forget_and_content_survive_process_restart`、`test_agent_forget_then_new_task_cannot_recall`、`test_candidate_can_be_forgotten` |
+| 候选未经确认不激活；摘要 / 网页不能自动成为长期用户事实 | 部分覆盖 | 候选不召回：`test_propose_confirm_get_search_round_trip`、`test_propose_really_goes_through_dispatcher_and_orders_intent_before_result`。`origin` 固定写 `inferred` **有断言**：`test_agent_propose_then_confirm_through_dispatcher` 在真实主循环里断言 `memory.origin == "inferred"`（"模型不能自称 user_explicit 绕过审批"）；"网页/摘要不能自动变事实"的入口级判据仍缺 |
+| 编辑保留 revision；忘记后新任务 / 重建索引 / 应用重启均不再召回 | 部分覆盖（**编辑侧未兑现**） | 忘记侧 ✅：`test_forget_is_not_recalled_and_rebuild_does_not_resurrect`、`test_forget_and_content_survive_process_restart`、`test_agent_forget_then_new_task_cannot_recall`、`test_candidate_can_be_forgotten`、`test_forgotten_memory_cannot_be_revived_by_id`（遗忘后按 id 也读不到正文，堵住 `memory.get` 绕过 forget 的旁路）。编辑侧 ❌：`test_supersede_keeps_old_row_but_removes_it_from_recall` 是**测试播种** output，**没有生产入口**（§13 #24） |
 | 删除整个检索索引可重建，正文与来源仍在 | ✅ 已覆盖 | `test_rebuild_reproduces_projection_hash_and_search`、`test_rebuild_reads_events_not_the_stale_projection`、`test_projection_hash_covers_the_fts_index`、`test_projection_rejects_events_that_replay_order_cannot_explain` |
 | 离线 replay 不读当前记忆库最新版本（用当时快照） | ✅ 已覆盖 | `test_replay_uses_the_snapshot_not_the_latest_memory`（忘记 + 删旧 blob 后 replay 仍通过，且 `memory.get` 明确报"历史内容不可用"、不回落新版本）；`test_missing_blob_is_content_unavailable_and_never_falls_back`、`test_missing_blob_at_propose_marks_unavailable` |
 | 记忆**激活 / 遗忘**有 intent/result + Receipt；审批被拒则不写 | ✅ 已覆盖 | `test_propose_really_goes_through_dispatcher_and_orders_intent_before_result`（intent 在 result 之前）、`test_confirm_requires_approval_and_rejection_changes_no_projection`（拒绝后投影一个字节不变、无 receipt；批准后 `verify_receipts` 无问题）、`test_forget_requires_approval_and_tombstones`、`test_agent_propose_then_confirm_through_dispatcher`（模型侧 propose→confirm 主循环路径）、`test_projection_update_runs_inside_tool_result_transaction`、`test_mid_write_failure_is_unknown_and_leaves_no_half_projection`、`test_memory_executor_refuses_a_forged_ticket_without_a_dispatch_record`（执行器不接受伪造票据） |
 | L2 每条信念能指回证据与原文引文；`proof_count` 与实际证据条数一致（机械核对） | 部分覆盖 | `proof_count` 一致性：`test_unknown_or_invalid_propose_values_raise`（`proof_count=99` 被拒）+ `MemoryProjection._apply_propose` 的机械校验。**L2 实体本身未实现**（§13 #19） |
 | 蒸馏只做增量：未变部分逐字节不变 | ❌ 未覆盖 | 蒸馏未实现（§13 #19），没有测试 |
 | 陈旧层先核验再用：作用域内有新记忆未合并时，L2/L3 不短路检索 | ❌ 未覆盖 | 只有 `MemoryProjection.observe` 这个原语（`test_observe_is_scope_filtered`）；"不短路检索"的行为没有实现也没有测试 |
-| 记忆写入过 PII / 密钥闸门：含密钥的候选被红act 或阻断，不入库 | ✅ 已覆盖 | `test_secret_patterns_are_blocked_before_storage`（参数化）、`test_pii_is_redacted_before_storage`、`test_blocked_candidate_does_not_enter_projection`、`test_pii_bypassing_put_content_is_rejected`、`test_blob_restored_after_propose_still_passes_the_gate` |
+| 记忆写入过 PII / 密钥闸门：含密钥的候选被红act 或阻断，不入库 | 部分覆盖 | **投影与正文 blob 成立**：`test_secret_patterns_are_blocked_before_storage`（参数化）、`test_pii_is_redacted_before_storage`、`test_blocked_candidate_does_not_enter_projection`、`test_pii_bypassing_put_content_is_rejected`、`test_blob_restored_after_propose_still_passes_the_gate`；被拒绝的请求行已脱敏：`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`。**派发审计表不在闸门覆盖内**（§13 #26）：被采纳的请求行保留原文——闸门在 executor 跑，行在 `prepare()` 就落库 |
 | 写入前去重：重复事实不重复进索引（进索引前条数已下降） | ✅ 已覆盖 | `test_find_duplicate_and_deduped_event_do_not_grow_the_index`、`test_duplicate_propose_without_deduped_is_rejected_atomically`、`test_deduped_event_cannot_point_at_a_forgotten_row`、`test_duplicate_propose_is_policy_denied_before_approval` |
-| 资源种类封闭：历史裸绝对路径仍是 `file` 且回写逐字节不变；未知 scheme / 相对路径 fail-closed | ✅ 已覆盖 | `test_absolute_path_is_file_and_byte_identical`（参数化）、`test_absolute_path_with_double_colon_slash_is_still_file`、`test_unknown_scheme_rejected`、`test_relative_or_empty_rejected`、`test_memory_uri_never_becomes_a_file_path`、`test_resource_kinds_are_closed` |
+| 资源种类封闭：历史裸绝对路径仍是 `file` 且回写逐字节不变；未知 scheme / 相对路径 fail-closed | ✅ 已覆盖 | `test_absolute_path_is_file_and_byte_identical`（参数化）、`test_absolute_path_with_double_colon_slash_is_still_file`、`test_unknown_scheme_rejected`、`test_relative_or_empty_rejected`、`test_relative_workspace_scope_is_rejected_before_realpath`（`memory://workspace/relative` 与 `MemoryScope.workspace("relative")` 都拒，**不再**被 realpath 按 CWD 补成绝对路径）、`test_memory_uri_never_becomes_a_file_path`、`test_resource_kinds_are_closed` |
 | 作用域编码可指回来源：`memory://workspace/<percent-encoded 绝对路径>` 解析回同一路径 | ✅ 已覆盖 | `test_workspace_uri_percent_encodes_and_round_trips`、`test_workspace_scope_is_canonicalized`、`test_user_scope_uri`、`test_task_scope_uri`、`test_memory_scopes_are_closed` |
 | 工具与资源种类不得互换：文件工具收到 `memory://`、记忆工具收到绝对路径都要拒 | ✅ 已覆盖 | `test_tool_and_resource_kind_must_match`（两个方向都拒，断言 `dispatch.memory_resource_mismatch`）、`test_unknown_memory_kind_is_policy_denied`（未知 kind → `c4.memory_kind_unsupported`）、`test_file_dispatch_still_uses_bare_absolute_path_and_receipt`、`test_absolute_file_path_with_double_colon_slash_stays_a_file`（文件路径仍走原路）、`test_zero_binding_control_run_cannot_write_files`（零绑定控制 Run 不能写文件） |
 | `memory.*` 五个工具真的出现在 `tool_manifest()` 里，schema 就是 `SPECS` 里那份 | ✅ 已覆盖 | `test_memory_tools_are_real_specs_without_path_args`（真实 `tool_manifest()` + 真实 `SPECS`：`version==1.0`、`path_arg==""`、`action` 映射、`additionalProperties=False`）；`test_memory_tool_sets_match_the_registry`（主循环里的读 / 写工具封闭集与注册表一致） |
