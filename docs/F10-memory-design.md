@@ -94,7 +94,10 @@ Memory {
 - **origin**：`user_explicit`（用户明说「记住」）/ `user_confirmed`（用户确认过候选）/ `inferred`（模型推断）。**只有前两者自动激活**；`inferred` 永远是 `candidate`。
   **迁移规则（v1.2 契约，代码未落地）**：`memory.confirm` 被人批准后必须把 `inferred`
   **升级**为 `user_confirmed`（只升级、不降级）；出处是审批记录，不是模型参数。
-  `user_explicit` 只能由控制面 `memory.remember` 创建产生。
+  `user_explicit` 只能由控制面 `memory.remember` 创建产生。**origin 描述的是
+  "这一版正文"的来源，不是记忆的终身属性**：控制面 `memory.edit`（人自己写的新正文）
+  → `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬同一段正文，
+  来源**随行**（不降档）。旧版 origin 留在旧行。
 - **status**：`candidate → active → superseded | forgotten`。
 - **layer**（v1.2 契约，代码未落地）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3`
   偏好页面；L2/L3 是可重建的合成层（§4）。`layer` 与 `kind` 正交：`kind` 说"是什么"，
@@ -211,7 +214,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | `memory.confirm` | **激活**（进入长期召回） | 需要；`origin=user_explicit` 除外——用户本人刚说的话就是授权 |
 | `memory.forget` | 写 tombstone | 需要（等同删除） |
 | `memory.edit`（N1 已落地） | 改一条记忆：旧版保留可查、新版生效 | **需要**（覆盖类） |
-| `memory.promote`（N1 已落地） | 把 `user` 记忆**共享**进 workspace / task | **需要**（共享是显式动作） |
+| `memory.promote`（N1 已落地） | 把一条记忆**移动**到另一个已声明作用域（按需共享进 workspace / task，也可收回到 user）；原行退役、目标行是候选 | **需要**（换作用域是显式动作） |
 | `memory.remember`（N1 已落地） | 人直接记住（`origin=user_explicit`） | 不需要——人本人就是签发者；模型清单里没有这个工具 |
 | `memory.consolidate`（v1.2 契约） | 合成 L2/L3（只写可重建投影） | 不需要；结果 `candidate`，召回仍需 `confirm` |
 | `memory.erase`（v1.2 契约） | 删正文副本与检索索引 | **需要**（等同删除 + Receipt） |
@@ -273,7 +276,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 **这条边界必须写在界面上**：事件日志是 append-only，里面的**读快照删不掉**（§3.1 的实测结论：`memory.search` / `memory.get` 的 `tool.result` 保留模型当时看到的正文）。所以"擦除"= 删副本与索引，**不等于**"历史日志里没有这段文字了"。彻底清日志需要日志压缩 / 重写，与红线 1 冲突，单开契约工单，本轮不做；UI 也不许写"已彻底删除"。
 
-**引用计数是必须的，不是优化**：正文是 `sha256` 内容寻址，不同记忆（不同作用域 / kind）可能共享同一个 blob。擦除只能删**没有任何其它投影行引用**的 `content_ref`；仍被引用的保留文件、只把本行标 `erased_at` + `content_state=unavailable`。否则"擦一条"会让另一条记忆的正文凭空消失——那不是擦除，是数据损坏。回执里要列出"删了哪些 / 哪些被谁引用而未删"。
+**引用计数是必须的，不是优化**：正文是 `sha256` 内容寻址，不同记忆（不同作用域 / kind）可能共享同一个 blob。擦除只能删**没有任何其它投影行引用**的 `content_ref`；仍被引用的保留文件、只把本行标 `erased_at` + `content_state=unavailable`。否则"擦一条"会让另一条记忆的正文凭空消失——那不是擦除，是数据损坏。回执里要列出"删了哪些 / 哪些被谁引用而未删"。**`memory.promote` 会与它退役的旧行共享同一个
+`content_ref`**（搬的是同一段正文，不复制字节）——N4 的引用计数必须把退役行也算进去。
 
 ## 11. 与现行契约 / 红线的关系
 
@@ -336,8 +340,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 21 | 崩溃恢复（`recover_run`）的记忆分支 | ❌ 未落地（已知限制） | `recovery.recover_run` 没有记忆专门分支：`tool.intent` 已提交但 `tool.result` 未落库时，恢复按**既有文件写工具的推断**走（多数情况记 `none_applied`，快照缺失时 `unknown` 并可能阻断目录），不是精确的记忆恢复。**投影侧不受影响**——`apply_event` 只在 `_commit_result` 的事务里被调用，没有 result 就不会有半条投影（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住这条）；但"这次记忆写入到底生效了没有"的结论仍依赖既有推断，而不是记忆专用证据。要精确回答需给 `recovery.py` 加记忆分支，单独工单 |
 | 22 | `origin` 的 `user_confirmed` 迁移 | ✅ 已落地（N1） | `memory_exec.MemoryExecutor._transition` 在 confirm 有审批且审批人是人（`Approval.decided_by` 非空）时给 output 加 `origin="user_confirmed"`；`memory._apply_confirm` 只允许 `inferred → user_confirmed`（只升级不降级，别的值直接拒绝）。`user_explicit` 由 `memory.remember` 产生。测试：`test_human_approval_upgrades_origin_to_user_confirmed` / `test_remember_is_control_plane_only` |
 | 23 | §8 的作用域优先级（优先当前任务 / 工作区证据） | ❌ 未实现 | 排序口径目前被钉为 `origin` → `created_at` 降序（`MemoryProjection.search`），作用域只用于**过滤**（loadout + `allowed`），不参与打分。后果：同一用户同时有 user 与 workspace 两条相关记忆时，不会优先给贴近当前任务的证据。这是 F10 §8 原述的一部分，未做就如实标注，别当成"已经按 F10 做了" |
-| 24 | 编辑 / `supersede` 的**生产入口** | ✅ 已落地（N1） | `memory.edit`（`1.0`，overwrite，需审批）：一次审批 = 旧行 `superseded`（`revision` 不变、仍可按 id 查到）+ 新行 `active`（新 `memory_id`、`revision=1`、`supersedes=旧 id`、`origin` 由审批出处升为 `user_confirmed`）；`check_request_preconditions` 绑定 `before_revision`，不一致 → `dispatch.memory_stale_revision`；不允许改 `kind`。测试：`test_edit_with_approval_keeps_old_row_and_activates_new` / `test_edit_requires_the_revision_the_human_saw` / `test_cli_edit_keeps_old_row_and_activates_new` |
-| 25 | workspace / task 作用域的**创建**入口 | ✅ 已落地（N1） | ① 模型可 `memory.propose` 到**本任务**的 task 作用域；② **workspace 共享**由人经 `memory.promote`（`exposed=False`，需审批）进入：原行立即 `superseded`（原作用域不再召回）、目标作用域新行 `candidate`（再 `confirm` 才召回），`source_refs` 必含原 `memory_id`，Receipt 针对**原行**（`receipt_memory_id`）；③ propose→workspace **无条件拒**（含控制 Task 被复用为模型 Run）。测试：`test_model_can_only_propose_into_its_own_task_scope` / `test_workspace_propose_is_refused_even_on_a_control_task` / `test_promote_is_control_only_and_moves_memory` / `test_cli_promote_moves_memory_into_task_scope` |
+| 24 | 编辑 / `supersede` 的**生产入口** | ✅ 已落地（N1） | `memory.edit`（`1.0`，overwrite，需审批）：一次审批 = 旧行 `superseded`（`revision` 不变、仍可按 id 查到）+ 新行 `active`（新 `memory_id`、`revision=1`、`supersedes=旧 id`、`origin` 按"这一版正文的来源"：控制面 edit → `user_explicit`，模型写经人批准 → `user_confirmed`）；`check_request_preconditions` 绑定 `before_revision`，不一致 → `dispatch.memory_stale_revision`；不允许改 `kind`。测试：`test_edit_with_approval_keeps_old_row_and_activates_new` / `test_edit_requires_the_revision_the_human_saw` / `test_cli_edit_keeps_old_row_and_activates_new` |
+| 25 | workspace / task 作用域的**创建**入口 | ✅ 已落地（N1） | ① 模型可 `memory.propose` 到**本任务**的 task 作用域；② **workspace 共享**由人经 `memory.promote`（`exposed=False`，需审批）进入：原行立即 `superseded`（原作用域不再召回）、目标作用域新行 `candidate`（再 `confirm` 才召回），`source_refs` 必含原 `memory_id`，Receipt 针对**原行**（`receipt_memory_id`）；③ propose→workspace **无条件拒**（含控制 Task 被复用为模型 Run）。测试：`test_model_can_only_propose_into_its_own_task_scope` / `test_workspace_propose_is_refused_even_on_a_control_task` / `test_promote_is_control_only_and_moves_memory` / `test_promote_to_workspace_canonicalizes_the_target_scope` / `test_cli_promote_moves_memory_into_task_scope` |
 | 26 | 派发审计表的正文保留与闸门时序 | ⚠️ 部分落地 | `dispatch_requests.args_payload` 保存**完整**尝试参数，因此也保存记忆正文原文；而 PII / 密钥闸门在 `MemoryExecutor` 里、请求行在 `prepare()` 就落库——**被闸门阻断的候选仍会在审计表留下原文**。已修的一半：**被拒绝**（`_reject`）的记忆写请求脱敏成 `content_sha256` + `content_bytes`（拒绝的请求永不执行，脱敏不破坏派发/审批绑定；`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`）。未修的一半：**被采纳后**又被内容闸门挡掉的请求仍保留原文——彻底修要把内容扫描挪到落库之前，或给审计表定保留/擦除策略，单开契约工单。注意执行器**从这张表取参数**，所以被采纳的行不能脱敏 |
 | 27 | CLI 对 task 作用域记忆的限制 | ✅ 已解除（N1） | `Dispatcher.open_control_run(memory_scopes=...)` 把声明写进 `task.created` payload 与 `Task.is_control`；CLI `memory confirm\|forget --task-id` 用它在**不绑旧 task 目录**的前提下签字。测试：`test_control_run_can_forget_an_old_task_scope_memory` / `test_cli_can_forget_task_scope_memory_with_task_id` |
 | 28 | 控制面标记与作用域声明（N1） | ✅ 已落地 | `Task.is_control` / `Task.memory_scopes` 从 `task.created` payload 读回；`Dispatcher.open_control_run` 写 `control: true` + `memory_scopes`；`task.created` 只加键、**不新增事件类型**；rebuild 后仍在（`test_control_marker_and_scope_declaration_survive_rebuild`）。越权 → `c4.memory_control_scope_binding` |
@@ -386,8 +390,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 模型只能写本任务的 task 作用域；workspace **无条件**只能由人 `promote` | ✅ 已覆盖 | `test_model_can_only_propose_into_its_own_task_scope`、`test_model_cannot_propose_into_workspace_scope`（派发层即拒、投影无行）、`test_workspace_propose_is_refused_even_on_a_control_task`（**控制任务被复用为模型 Run** 也拒——复审探针复现过的洞） |
 | CLI `memory remember` 直接创建 `active` + `user_explicit` 记忆 | ✅ 已覆盖 | `test_cli_remember_creates_active_user_explicit_memory`（黑盒 CLI + 投影复核） |
 
-| 编辑一次审批两行：旧版 `superseded` 可查、新版 `active`、不许改 kind | ✅ 已覆盖 | `test_edit_with_approval_keeps_old_row_and_activates_new`（旧行 revision 不变 + 新行 origin=user_confirmed + 凭据可核对）、`test_edit_requires_the_revision_the_human_saw`（过期 revision 拒）、`test_cli_edit_keeps_old_row_and_activates_new` |
-| 提升是移动：原行退役、目标作用域候选、Receipt 指原行、只控制面能做 | ✅ 已覆盖 | `test_promote_is_control_only_and_moves_memory`（模型路径 `c4.memory_control_scope_binding`；控制 Run 成功后原作用域不再召回、`source_refs` 含原 id、`verify_receipts` 通过）、`test_cli_promote_moves_memory_into_task_scope` |
+| 编辑一次审批两行：旧版 `superseded` 可查、新版 `active`、不许改 kind | ✅ 已覆盖 | `test_edit_with_approval_keeps_old_row_and_activates_new`（旧行 revision 不变 + 新行 origin=user_confirmed + 凭据可核对）、`test_edit_requires_the_revision_the_human_saw`（过期 revision 拒）、`test_cli_edit_keeps_old_row_and_activates_new`（控制面 edit → 新行 origin=user_explicit） |
+| 提升是移动：原行退役、目标作用域候选、Receipt 指原行、只控制面能做 | ✅ 已覆盖 | `test_promote_is_control_only_and_moves_memory`（模型路径 `c4.memory_control_scope_binding`；原作用域不再召回；`source_refs` 含原 id；**断言 `receipt.payload.resource == 原 id`、`root == 原作用域`**；`verify_receipts` 通过）、`test_promote_to_workspace_canonicalizes_the_target_scope`（原始路径参数归一成 canonical 根）、`test_cli_promote_moves_memory_into_task_scope`（控制面 CLI；来源随行 `user_explicit`） |
 | 编辑 / 提升**永远**要人工审批（`user_explicit` 的免审批只管 confirm） | ✅ 已覆盖 | 策略与 `_requires_approval` 都按 `memory_tool == "memory.confirm"` 收口；负控：去掉该限制 → `test_cli_edit_keeps_old_row_and_activates_new` 红（`overwrite 缺少审批绑定`） |
 
 ## 15. 与实施计划的关系
