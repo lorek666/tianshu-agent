@@ -247,7 +247,7 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   关键决定：优先级是**上下文**的函数，不是 `allowed` 的函数——这正是旧设计里
   "压序会依赖调用方传了哪些 scope"的解法（`allowed` 只决定可见性）。主循环
   `loop._memory_priority(task)` 从 Task 的绑定目录算，CLI 从 `--task-id/--workspace` 算。
-  测试 `tests/test_memory_rank.py`（6 条）；负控：去掉优先级 → 顺序用例红。
+  测试 `tests/test_memory_rank.py`（7 条）；负控：去掉优先级 → 顺序用例红。
 - **向量（#20）**：新模块 `src/tianshu/memory_index.py`：
   - `EmbeddingProvider` 协议（`model_id` / `dim` / `embed`）；
   - `HashEmbeddingProvider`：确定性哈希基线，**无语义能力**（模块 docstring 写死"不许
@@ -274,7 +274,7 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   - **能力边界**：未配置 provider → FTS-only + `degraded` 原因；换 provider 未重建 →
     旧向量不参与且仍报降级。`memory_vector_meta` 只在**成功 `rebuild()`** 时写 built/provider（建表不写），
     后接的 provider 不能改写历史（否则 availability 会误报 True）；只有成功 `rebuild()` 才写 built/provider。
-- **测试**：`tests/test_memory_vectors.py`（19 条）+ `tests/test_memory_rank.py`（7 条）
+- **测试**：`tests/test_memory_vectors.py`（26 条）+ `tests/test_memory_rank.py`（7 条）
   + `tests/test_memory_loop.py` 的 3 条输出/接线用例。负控 5 条都真跑过：去掉优先级 /
   availability 永不降级 / 去掉确认后的索引钩子 / 语义路只采纳 FTS 候选 / 去掉索引建表
   的事务判断。
