@@ -141,6 +141,9 @@ DISPATCH_REJECTED = "dispatch.rejected"
 DISPATCH_ADMITTED = "dispatch.admitted"
 DISPATCH_REVOKED = "dispatch.revoked"
 
+#: 审计表一次性迁移的持久标记（见 `_migrate_redacted_args`）。
+_BACKFILL_MARKER = "args_redacted_backfilled"
+
 STATE_WAITING = "waiting"
 STATE_ADMITTED = "admitted"
 STATE_REJECTED = "rejected"
@@ -210,6 +213,14 @@ CREATE TABLE IF NOT EXISTS dispatches (
 -- provider 给的短 ID 在不同 run 之间会重名，跨 run 唯一会误伤别的运行。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatches_call
     ON dispatches(run_id, call_id);
+
+-- 一次性数据迁移的**持久标记**：只有迁移事务成功提交后才置位。
+-- 用标记而不是"看列在不在"：`ALTER TABLE` 会先落盘，补扫中途被 kill 时
+-- 列已存在，靠列存在性判断会让隐私补扫永远不再重试。
+CREATE TABLE IF NOT EXISTS dispatch_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -419,12 +430,13 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
-        if _ensure_column(
+        _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
             "INTEGER NOT NULL DEFAULT 0",
-        ):
-            # 只在**刚加上这一列**时补扫一次：老库里的终态行不会自己回到终态。
-            self._backfill_redacted_args()
+        )
+        # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
+        # 下次打开会重试（否则列已存在，靠列存在性判断就永远不补了）。
+        self._migrate_redacted_args()
         self._tasks = tasks
         self._leases = leases
         self._policy = policy
@@ -1951,8 +1963,28 @@ class Dispatcher:
                 # 终态之后不会再有人从这张表取参数去执行，正文可以脱敏了。
                 self._redact_terminal_args(request_id)
 
+    def _migrate_redacted_args(self) -> None:
+        """一次性迁移：给升级前的终态行补脱敏，成功后才落持久标记。
+
+        标记在**同一个事务**里写入，所以中途失败/被 kill 时标记不会留下，
+        下次打开会重试；只有标记存在才算"这件事真的做过"。
+        """
+        row = self._conn.execute(
+            "SELECT value FROM dispatch_meta WHERE key = ?",
+            (_BACKFILL_MARKER,),
+        ).fetchone()
+        if row is not None:
+            return
+        with self._log.transaction():
+            self._backfill_redacted_args()
+            self._conn.execute(
+                "INSERT INTO dispatch_meta(key, value) VALUES (?, '1')"
+                " ON CONFLICT(key) DO NOTHING",
+                (_BACKFILL_MARKER,),
+            )
+
     def _backfill_redacted_args(self) -> None:
-        """升级前就已处于终态的行：一次性补做脱敏（幂等）。
+        """升级前就已处于终态的行：补做脱敏。**必须在调用方的事务里**。
 
         `args_redacted` 列是 N5 才加的，老库里那些 `done` / `rejected` 行不会
         自己回到终态，所以迁移时必须主动扫一遍。只处理 `args_redacted = 0` 的
@@ -1979,16 +2011,13 @@ class Dispatcher:
             updates.append(
                 (canonical_bytes(redacted).decode("utf-8"), row["request_id"])
             )
-        if not updates:
-            return
-        with self._log.transaction():
-            for payload, request_id in updates:
-                self._conn.execute(
-                    "UPDATE dispatch_requests SET args_payload = ?,"
-                    " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0"
-                    " AND state IN (?, ?)",
-                    (payload, request_id, STATE_DONE, STATE_REJECTED),
-                )
+        for payload, request_id in updates:
+            self._conn.execute(
+                "UPDATE dispatch_requests SET args_payload = ?,"
+                " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0"
+                " AND state IN (?, ?)",
+                (payload, request_id, STATE_DONE, STATE_REJECTED),
+            )
 
     def _redact_terminal_args(self, request_id: str) -> None:
         """请求进终态后，把 `args_payload` 里的记忆正文换成摘要。

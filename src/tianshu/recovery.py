@@ -408,6 +408,7 @@ def recover_run(
     leases: LeaseStore | None = None,
     data_root: Path | None = None,
     memory: object | None = None,
+    blob_dir: Path | None = None,
 ) -> RecoveryReport:
     """核对并补全一次被打断的 run。幂等。
 
@@ -427,12 +428,14 @@ def recover_run(
     undo_problems: list[str] = []
     if data_root is None:
         report = _recover_run(
-            log, run_id, workspace_dir, snapshots, leases=leases, memory=memory
+            log, run_id, workspace_dir, snapshots, leases=leases,
+            memory=memory, blob_dir=blob_dir,
         )
     else:
         with execution_guard(Path(data_root)):
             report = _recover_run(
-                log, run_id, workspace_dir, snapshots, leases=leases, memory=memory
+                log, run_id, workspace_dir, snapshots, leases=leases,
+                memory=memory, blob_dir=blob_dir,
             )
             # 未完成的撤销也在这个全序里判：它和"恢复判 unknown"是同一类事实
             # （磁盘上有一批文件的最终状态还没结算），写入侧必须同时看到。
@@ -452,6 +455,7 @@ def _recover_run(
     *,
     leases: LeaseStore | None = None,
     memory: object | None = None,
+    blob_dir: Path | None = None,
 ) -> RecoveryReport:
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
@@ -486,7 +490,7 @@ def _recover_run(
                     # 清单坏了也不该把它们推成 unknown 并挡住目录。
                     _settle_memory_write(
                         log, report, run_id, call_id, tool_id, payload, ev.ts,
-                        memory=memory,
+                        memory=memory, blob_dir=blob_dir,
                     )
                     continue
                 if spec is not None and spec.side_effect_level == "pure":
@@ -530,7 +534,8 @@ def _recover_run(
         # 记忆写：见 `_settle_memory_write`（含 erase 的不可逆窗口、孤儿 blob）
         if tool_id in MEMORY_TOOL_IDS:
             _settle_memory_write(
-                log, report, run_id, call_id, tool_id, payload, ev.ts, memory=memory
+                log, report, run_id, call_id, tool_id, payload, ev.ts,
+                memory=memory, blob_dir=blob_dir,
             )
             continue
 
@@ -805,7 +810,11 @@ def _clean_orphan_blob(projection: Any, content_ref: str) -> bool:
 
 
 def _memory_effect(
-    log: EventLog, intent_payload: dict, *, memory: object | None = None
+    log: EventLog,
+    intent_payload: dict,
+    *,
+    memory: object | None = None,
+    blob_dir: Path | None = None,
 ) -> tuple[str, dict[str, Any], str | None]:
     """一条"有 intent 无 result"的记忆写，到底能下什么结论。
 
@@ -820,8 +829,11 @@ def _memory_effect(
     """
     raw_args = intent_payload.get("args")
     args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-    blob_dir = getattr(memory, "blob_dir", None) if memory is not None else None
-    projection = memory if memory is not None else _open_memory_projection(log, blob_dir)
+    projection = (
+        memory
+        if memory is not None
+        else _open_memory_projection(log, blob_dir)
+    )
     tool_id = intent_payload.get("tool_id")
     if projection is None:
         # **非 erase** 的结论不依赖投影（投影/事件同事务，没有 result 就是没写），
@@ -910,6 +922,7 @@ def _settle_memory_write(
     ts: int,
     *,
     memory: object | None = None,
+    blob_dir: Path | None = None,
 ) -> None:
     """结算一条被打断的记忆写（含 `dispatches` 表状态推进）。
 
@@ -918,7 +931,7 @@ def _settle_memory_write(
     未生效"两种说法。
     """
     bucket_name, extras, problem = _memory_effect(
-        log, intent_payload, memory=memory
+        log, intent_payload, memory=memory, blob_dir=blob_dir
     )
     if bucket_name == "none_applied":
         bucket = report.none_applied

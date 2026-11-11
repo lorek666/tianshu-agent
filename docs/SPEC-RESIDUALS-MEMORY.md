@@ -436,8 +436,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   7. 自定义 `blob_dir` 已支持（`recover_run(memory=...)`，CLI/daemon 都传）；只读库调用方若不给
      `memory` 也不给 `blob_dir`，恢复仍按 DB 旁默认目录找 blob——这是 `_open_memory_projection`
      注释里写明的契约限制。
-  8. 补扫只在**刚加 `args_redacted` 列**时跑一次（避免每次启动全表解析 + 与“重新发起”竞态）；
-     此后的库不再回扫，旧库里 payload 修好后不会自动补。
+  8. 补扫用 `dispatch_meta` 的**持久标记**：标记与补扫同一事务，中途失败/被 kill 时下次打开会
+     重试（`test_interrupted_backfill_is_retried_on_the_next_open`）；**成功之后**不再回扫，旧库里
+     payload 修好后不会自动补。
   9. `assess_run` 对擦除一律报 unknown / 拒接管（只读对账里无法安全判“文件删了没有”），擦除
      崩溃后要先 `recover` 再接管。
 

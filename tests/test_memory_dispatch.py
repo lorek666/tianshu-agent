@@ -48,6 +48,7 @@ from tianshu.tasks import RUN_RUNNING, ExecutionPermit, TaskStore
 from tianshu.tools import SPECS, AdmittedCall, tool_manifest
 
 NOW = 1_700_000_000_000
+RUN_NAME = "run_memory"
 
 
 @dataclass
@@ -185,8 +186,8 @@ def _propose(env: Env, task, run, claim, *, content: str, call_id="p1", scope=No
     return request, args, decision
 
 
-def _proposed(env: Env, *, content="报告用中文，先列结论") -> tuple:
-    task, run, claim = env.new_run()
+def _proposed(env: Env, *, content="报告用中文，先列结论", root=None) -> tuple:
+    task, run, claim = env.new_run(root=root)
     request, args, decision = _propose(env, task, run, claim, content=content)
     assert decision.is_admitted, decision
     result = env.dispatcher.dispatch(decision.request_id, claim)
@@ -2083,9 +2084,12 @@ def test_terminal_rows_from_an_older_library_are_redacted_when_opened(env: Env):
         env, task, run, claim, content=content, call_id="legacy-row"
     )
     assert env.dispatcher.dispatch(decision.request_id, claim).ok
-    # 老库没有 args_redacted 这一列：删掉它，再写回完整参数。
+    # 老库没有 args_redacted 这一列、也没有迁移标记：删掉它，再写回完整参数。
     with env.log.transaction():
         env.log.conn.execute("ALTER TABLE dispatch_requests DROP COLUMN args_redacted")
+        env.log.conn.execute(
+            "DELETE FROM dispatch_meta WHERE key = 'args_redacted_backfilled'"
+        )
         env.log.conn.execute(
             "UPDATE dispatch_requests SET args_payload = ? WHERE request_id = ?",
             (
@@ -2098,6 +2102,74 @@ def test_terminal_rows_from_an_older_library_are_redacted_when_opened(env: Env):
     assert json.loads(row["args_payload"])["content"] == content
 
     # 重新打开同一个库（模拟升级后第一次启动）：迁移要顺手把终态行脱敏。
+    Dispatcher(
+        env.log,
+        env.tasks,
+        env.leases,
+        PolicyEngine(),
+        env.approvals,
+        grants=env.grants,
+        claims=env.claims,
+        snapshots=env.snapshots,
+        data_root=env.root / "authority",
+        memory=env.memory,
+        clock=lambda: NOW,
+    )
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    assert "content" not in json.loads(row["args_payload"])
+
+
+def test_interrupted_backfill_is_retried_on_the_next_open(env: Env, monkeypatch):
+    """补扫中途死在事务里：标记不会置位，下次打开必须重试（否则永久漏脱敏）。"""
+    import json
+
+    content = "补扫中断也要最终脱敏"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="interrupted-row"
+    )
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    with env.log.transaction():
+        env.log.conn.execute("ALTER TABLE dispatch_requests DROP COLUMN args_redacted")
+        env.log.conn.execute(
+            "DELETE FROM dispatch_meta WHERE key = 'args_redacted_backfilled'"
+        )
+        env.log.conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ? WHERE request_id = ?",
+            (
+                json.dumps({"kind": "preference", "content": content}),
+                decision.request_id,
+            ),
+        )
+
+    def boom(self):
+        raise SystemExit("simulated power loss during migration")
+
+    monkeypatch.setattr(Dispatcher, "_backfill_redacted_args", boom)
+    try:
+        with pytest.raises(SystemExit):
+            Dispatcher(
+                env.log,
+                env.tasks,
+                env.leases,
+                PolicyEngine(),
+                env.approvals,
+                grants=env.grants,
+                claims=env.claims,
+                snapshots=env.snapshots,
+                data_root=env.root / "authority",
+                memory=env.memory,
+                clock=lambda: NOW,
+            )
+    finally:
+        monkeypatch.undo()
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 0, "中断时不该留下「已脱敏」的假象"
+
+    # 重开：标记不存在 ⇒ 重试补扫 ⇒ 这一次真的脱敏。
     Dispatcher(
         env.log,
         env.tasks,
@@ -2230,3 +2302,247 @@ def test_recovery_uses_the_supplied_memory_projection_for_blob_checks(env):
     # 对照：按默认目录找会误判成"文件已没"（不可逆部分生效 → unknown）。
     bucket_default, _extras, _problem = _memory_effect(env.log, payload)
     assert bucket_default == "unknown"
+
+
+# ---------------------------------------------------------------- 12. 复审第三轮：判据分支与接线
+
+
+def _inject_pending_erase(env, run, memory_id: str, call_id: str = "inject-erase") -> None:
+    """直接落一条"有 intent 无 result"的擦除意图（复现崩溃窗口的产物状态）。"""
+    args = {"memory_id": memory_id, "revision": 1}
+    env.log.append(
+        run.run_id,
+        "tool.intent",
+        {
+            "call_id": call_id,
+            "tool_id": "memory.erase",
+            "args": args,
+            "args_hash": sha256_hex(canonical_bytes(args)),
+            "request_id": f"req_{call_id}",
+            "request_digest": sha256_hex(canonical_bytes({"call_id": call_id})),
+            "dispatch_id": f"disp_{call_id}",
+            "attempt_id": 1,
+            "approval_id": None,
+            "grant_id": "",
+            "claim_epoch": 0,
+        },
+        task_id=run.task_id,
+        actor_kind="core",
+        idem_key=call_id,
+    )
+
+
+def test_recover_run_honors_blob_dir_for_a_pending_erasure(env):
+    """`recover_run(blob_dir=...)` 真的接线：自定义正文目录下不能按默认目录判。"""
+    user = MemoryScope.user()
+    content = "自定义目录里的待擦正文"
+    task, run, claim, output = _proposed(env, content=content)
+    memory_id = output["memory_id"]
+    ref = output["content_ref"]
+    custom = env.root / "custom_blobs"
+    custom.mkdir()
+    (custom / ref).write_text(content, encoding="utf-8")
+    default_blob = env.memory.blob_path(ref)
+    assert default_blob is not None
+    default_blob.unlink()  # 默认目录里"看不到"，自定义目录里有
+    _inject_pending_erase(env, run, memory_id)
+
+    report = recover_run(
+        env.log,
+        run.run_id,
+        env.ws_a,
+        env.snapshots,
+        leases=env.leases,
+        data_root=env.root / "authority",
+        blob_dir=custom,
+    )
+    assert "inject-erase" in report.memory_not_applied
+    assert "inject-erase" not in report.memory_unresolved
+    # 对照：不给 blob_dir 时按默认目录判成"文件已没"（unknown）。
+    # 换一个 workspace 起新 run：同一目录的租约还在第一个 run 手里。
+    task2, run2, claim2, output2 = _proposed(
+        env, content="另一条待擦正文", root=env.ws_b
+    )
+    blob2 = env.memory.blob_path(output2["content_ref"])
+    assert blob2 is not None
+    blob2.unlink()  # 默认目录里看不到，恢复又没拿到自定义目录 ⇒ 只能 unknown
+    _inject_pending_erase(env, run2, output2["memory_id"], call_id="inject-erase-default")
+    report2 = recover_run(
+        env.log,
+        run2.run_id,
+        env.ws_a,
+        env.snapshots,
+        leases=env.leases,
+        data_root=env.root / "authority",
+    )
+    assert "inject-erase-default" in report2.memory_unresolved
+    assert user  # 作用域在夹具里被用上
+
+
+def test_recover_run_honors_a_supplied_memory_projection(env):
+    """`recover_run(memory=...)` 也走同一条判定（装配方给的投影赢）。"""
+    content = "传给 recover 的正文"
+    task, run, claim, output = _proposed(env, content=content)
+    memory_id = output["memory_id"]
+    ref = output["content_ref"]
+    custom = env.root / "custom_blobs"
+    custom.mkdir()
+    (custom / ref).write_text(content, encoding="utf-8")
+    default_blob = env.memory.blob_path(ref)
+    assert default_blob is not None
+    default_blob.unlink()
+    _inject_pending_erase(env, run, memory_id, call_id="inject-erase-memory")
+    custom_projection = MemoryProjection(env.log.conn, log=env.log, blob_dir=custom)
+
+    report = recover_run(
+        env.log,
+        run.run_id,
+        env.ws_a,
+        env.snapshots,
+        leases=env.leases,
+        data_root=env.root / "authority",
+        memory=custom_projection,
+    )
+    assert "inject-erase-memory" in report.memory_not_applied
+    assert "inject-erase-memory" not in report.memory_unresolved
+
+
+def test_erased_and_missing_rows_have_distinct_recovery_conclusions(env):
+    """分支：行已被更早擦除 → none_applied；行不存在 → unknown（不冒充没删）。"""
+    from tianshu.recovery import _memory_effect
+
+    user = MemoryScope.user()
+    task, run, claim, output = _proposed(env, content="先擦掉再判")
+    memory_id = output["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=1)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{memory_id}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": memory_id, "revision": 2}
+    erase_request = env.request(
+        control.task, control.run, control.claim,
+        tool_id="memory.erase", target=user.to_uri(), args=erase_args,
+        call_id="done-erase",
+    )
+    erase_decision = env.dispatcher.prepare(erase_request, control.claim, args=erase_args)
+    _approve(env, erase_decision.approval_id)
+    erase_result = env.dispatcher.dispatch(erase_decision.request_id, control.claim)
+    try:
+        assert erase_result.ok, erase_result.output
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=erase_result.effect_state
+        )
+
+    bucket, _extras, problem = _memory_effect(
+        env.log, {"tool_id": "memory.erase", "args": {"memory_id": memory_id}}
+    )
+    assert bucket == "none_applied", "已被更早擦除标记 ⇒ 本次没有新副作用"
+    assert problem is None
+
+    bucket, extras, problem = _memory_effect(
+        env.log, {"tool_id": "memory.erase", "args": {"memory_id": "mem_never_existed"}}
+    )
+    assert bucket == "unknown", "证明不了没删，就不许宣布没生效"
+    assert extras["recovered"] is True
+    assert problem is not None
+
+
+def test_erase_without_a_body_directory_has_no_file_side_effect():
+    """分支：纯内存库没有正文目录 ⇒ 擦除不落文件副作用 ⇒ none_applied。"""
+    from pathlib import Path as _Path
+
+    from tianshu.memory import MemoryProjection as _Projection
+    from tianshu.recovery import _memory_effect
+
+    scope = MemoryScope.user()
+    log = EventLog(_Path(":memory:"))
+    projection = _Projection(log.conn, log=log, clock=lambda: NOW)
+    projection.ensure_schema()
+    ref = projection.put_content("内存库里的正文")
+    payload = {
+        "tool_id": "memory.propose",
+        "status": "succeeded",
+        "output": {
+            "memory_id": "mem_mem",
+            "revision": 1,
+            "scope": scope.scope,
+            "scope_id": scope.scope_id,
+            "kind": "preference",
+            "content_ref": ref,
+            "source_refs": ["event:1"],
+            "evidence": [{"source_memory_id": "s", "quote": "q"}],
+            "proof_count": 1,
+            "origin": "user_explicit",
+            "status": "candidate",
+            "created_at": 1,
+            "expires_at": None,
+            "deduped": False,
+        },
+    }
+    try:
+        with log.transaction() as tx:
+            seq = tx.append(RUN_NAME, "tool.result", payload, legacy_write=True)
+            projection.apply_event("tool.result", payload, seq=seq)
+        bucket, _extras, _problem = _memory_effect(
+            log,
+            {"tool_id": "memory.erase", "args": {"memory_id": "mem_mem"}},
+            memory=projection,
+        )
+        assert bucket == "none_applied"
+    finally:
+        log.close()
+
+
+def test_projection_unavailable_still_settles_provable_memory_writes(env, monkeypatch):
+    """分支：投影打不开时，非擦除写仍可判"没生效"，擦除只能 unknown。"""
+    from tianshu import recovery as recovery_module
+    from tianshu.recovery import _memory_effect
+
+    monkeypatch.setattr(recovery_module, "_open_memory_projection", lambda *a, **k: None)
+    bucket, _extras, problem = _memory_effect(
+        env.log, {"tool_id": "memory.propose", "args": {"content_sha256": "0" * 64}}
+    )
+    assert bucket == "none_applied", "投影/事件层证明不依赖投影本身"
+    assert problem is not None, "孤儿清理没能核查要留 problem"
+
+    bucket, _extras, problem = _memory_effect(
+        env.log, {"tool_id": "memory.erase", "args": {"memory_id": "mem_x"}}
+    )
+    assert bucket == "unknown"
+    assert problem is not None
+
+
+def test_cli_recover_names_cleaned_orphan_blobs(env, monkeypatch, capsys):
+    """CLI 第二栏：清掉的孤儿正文也要有可读出口（否则运维只能猜）。"""
+    from argparse import Namespace
+
+    from tianshu.cli import _cmd_recover
+
+    content = "崩溃留下的孤儿正文"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="cli-orphan"
+    )
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    with pytest.raises(SystemExit):
+        env.dispatcher.dispatch(decision.request_id, claim)
+    monkeypatch.undo()
+    capsys.readouterr()
+
+    rc = _cmd_recover(
+        Namespace(
+            db=env.root / "events.db",
+            data_root=env.root / "authority",
+            run_id=run.run_id,
+            workspace=env.ws_a,
+            json=False,
+        )
+    )
+    out = capsys.readouterr().out
+    ref = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert rc == 0, "孤儿清理成功后恢复应当报成功"
+    assert "已清孤儿正文" in out and ref in out
