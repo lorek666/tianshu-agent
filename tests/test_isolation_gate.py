@@ -538,6 +538,8 @@ def _task_payload(**policy_overrides) -> dict:
         "exec_policy": policy.to_dict(),
         "control": False,
         "memory_scopes": [],
+        # G2 网络轮之后 task.created 的必填字段（与本轮无关，但契约要齐全）。
+        "outbound_allow": [],
     }
 
 
