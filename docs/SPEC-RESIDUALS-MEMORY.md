@@ -17,8 +17,11 @@
    `git` 或改文件——那是另一个会话的工作区。本规格的 worktree 是
    `/Volumes/Date/ts-wt-memory` 派生出的各分支。
 2. **契约先行**：本文 §1 列出的契约增量必须单独合入 `docs(contract):` PR，body 写
-   「原方案 → 新方案 → 为什么 → 影响哪些代码」，**不夹带代码**。契约 PR 不合，实现
-   PR 不开工。
+   「原方案 → 新方案 → 为什么 → 影响哪些代码」，**不夹带行为实现**。契约 PR 不合，实现
+   PR 不开工。注意「不夹带代码」的边界：**工具与规则编号的注册**（`tools.SPECS` /
+   `rules.RULE_IDS` / `schemas/c4/rules.json`）必须随**产生路径**在同一次改动落地——
+   `DECLARED_UNUSED_RULE_IDS` 只给防御兜底，不拿它给计划功能占位。契约 PR 只写文档：
+   PRD §4.1 / §5.2.2 / §5.4.2 与 F10 §5 / §7 / §9 / §10。
 3. **禁止改**：`docs/KNOWLEDGE.md`、`README.md`、`docs/PRD-v1.md`、`docs/F10-memory-design.md`、
    `schemas/**`、`src/tianshu/events.py`、`src/tianshu/errors.py`、`tests/conftest.py`。
    这些由 lead 在契约 PR / 收尾轮统一落；工作流需要改一行就发消息给 lead。
@@ -57,7 +60,7 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
    发起（见第 3 条），模型只能写 `user`（默认）与**当前 Run 自己的 task**。
 2. 新增 `memory.edit`（`version="1.0"`，`exposed=True`）：`memory_id` + `revision` +
    `content` + `kind?`。语义 = 一次审批完成"旧版退役 + 新版激活"，见 N1 §2.3。
-3. 新增两个 **`exposed=False`**（不进模型工具清单）的控制面工具。这不是新机制，
+3. 新增三个 **`exposed=False`**（不进模型工具清单）的控制面工具。这不是新机制，
    已有先例 `tools.SPECS["restore_file"].exposed == False`（控制面撤销用）；模型侧
    边界由"`tool_manifest()` 只投影 exposed" + "未知工具走 `tool.not_dispatched`" 两道
    共同保证，实施时必须把这两道各钉一条测试：
@@ -65,6 +68,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
      （人本人就是批准者），仍走完整 intent/result + Receipt。
    - `memory.promote`：把一条 `user` 作用域记忆提升到 `workspace` / `task` 作用域
      （共享是显式动作，F10 §3.3），人签发一次审批。
+   - `memory.erase`：删正文副本与检索索引（N4 的契约入口），`ACTION_DELETE` + 一次性
+     审批 + Receipt；"事件日志读快照保留"的边界见 §5。
 4. 新增 `memory.consolidate`（`exposed=True`，`version="1.0"`，`action=ACTION_CREATE`）：
    触发 L2/L3 合成（N3）。合成只写投影、可重建，**不挡审批**；但合成结果默认
    `candidate`，要人 `confirm` 才进召回。
@@ -74,14 +79,13 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 5. 动作映射：`memory.edit` / `memory.promote` → `ACTION_OVERWRITE`（等同覆盖，需审批）；
    `memory.remember` → `ACTION_CREATE`，免审批但只允许控制面 Run；`memory.erase`
    （N4）→ `ACTION_DELETE` + Receipt。
-6. 新增规则编号（`rules.RULE_IDS`，当前 49 条）并同步 `schemas/c4/rules.json` 的
-   `rule_id.enum` / `x-rule-descriptions` / `x-rule-groups` 与 PRD §5.4.1：
-   `c4.memory_scope_not_in_loadout`（模型自选作用域不在装备内）、
-   `c4.memory_control_scope_binding`（控制面声明的记忆作用域只能由控制面设置）、
-   `c4.memory_edit_requires_prior_revision`（编辑必须声明人当时看到的那一版）、
-   `c4.memory_erasure_requires_receipt`（擦除必须带可独立核对的回执）。
-   每条新编号都必须有**产生路径**（`tests/test_rule_ids.py` 会查"登记了却没产生"），
-   否则加规则这一动作本身就是红的。
+6. 新增规则编号（当前 `rules.RULE_IDS` 49 条）：**契约 PR 只写语义与用户可见说明**
+   （PRD §5.4.2：`c4.memory_scope_not_in_loadout` / `c4.memory_control_scope_binding` /
+   `c4.memory_edit_requires_prior_revision` / `c4.memory_erasure_requires_receipt`）；
+   **登记**（`rules.RULE_IDS` + `schemas/c4/rules.json` 的 `rule_id.enum` /
+   `x-rule-descriptions` / `x-rule-groups` + PRD §5.4.1 表格）与**产生路径**在同一次改动
+   三处同改。理由：`DECLARED_UNUSED_RULE_IDS` 是防御兜底，不是计划功能占位；`tests/test_rule_ids.py`
+   的判据是"登记了必须有产生路径"。
 7. `Dispatcher.open_control_run` 增可选 `memory_scopes`，并**只允许控制面调用方**
    （CLI / UI）设置；登记进 `task.created` payload（payload 形状未冻结，**加键不加
    事件类型**）。用途：让 CLI 能给"任务已结束"的 task 作用域记忆做确认/遗忘（#27），
@@ -375,7 +379,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ## 8. 合并顺序与总验收（lead 负责）
 
-1. **契约 PR**（§1 全部）→ 合入 `main`。不合则后续 PR 一律不开工。
+1. **契约 PR**（文档：PRD §4.1 / §5.2.2 / §5.4.2 + F10 §5 / §7 / §9 / §10）→ 合入 `main`。
+   **代码注册不在这里**：`tools.SPECS` / `rules.RULE_IDS` / `schemas/` 随各实现 PR 与产生
+   路径同落地（见 §0.2）。契约 PR 不合则后续 PR 不开工。
 2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。N4 可与 N1 并行；**N5 与 N1 同改
    `dispatcher.py`，必须排在 N1 之后**；N2 / N3 也要等 N1（同改 `memory.py`）。
 3. 每个 PR 合入前：lead 在最新 `main` 上跑全量 + `ruff` + `uv lock --check`；冲突一律

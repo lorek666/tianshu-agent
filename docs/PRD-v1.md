@@ -137,7 +137,7 @@
 | `Approval` | 审批 | `id, execution_id, digest, state, decided_by` |
 | `Receipt` | 副作用凭据 | `id, execution_id, before_ref, after_ref, evidence[]` |
 | `Artifact` | 产物（**v2 独立表**，见下方说明） | `id, sha256, mime, bytes, kind, run_id` |
-| `Memory` | 长期记忆（**v1.1**，F10；**投影，不是独立事实源**；字段细化见 [F10-memory-design.md](F10-memory-design.md) §5） | `memory_id, revision, scope, scope_id, kind, content_ref, source_refs[], evidence[], proof_count, origin, status, consolidated_at?, created_at, expires_at?, supersedes?` |
+| `Memory` | 长期记忆（**v1.2**，F10；**投影，不是独立事实源**；字段细化见 [F10-memory-design.md](F10-memory-design.md) §5） | `memory_id, revision, scope, scope_id, kind, layer, content_ref, source_refs[], evidence[], proof_count, origin, status, consolidated_at?, created_at, expires_at?, supersedes?, erased_at?` |
 | `Event` | 事件日志 | `seq, run_id, type, actor, payload_ref, payload_hash, parent_seq` |
 | `Checkpoint` | 恢复指针（**v2**，见下方说明） | `id, run_id, seq, state_digest, pending_intents[]` |
 
@@ -146,6 +146,8 @@
 **`Artifact` 与 `Checkpoint` 属 v2**：v1 的内容寻址只有两处——事件 payload 超过 256 KiB 落盘（`EventLog.blob_dir`）、写前副本（`SnapshotStore.blob_dir`）；**没有**独立产物表、没有截图存储，工具输出现在是截断并打 `truncated` 标记，超 8 KiB 落盘仍是 §7 F5 的要求、尚未实现。`Checkpoint` 在 v1 的等价物是「事件日志 + 游标」（`run.cursor` 事件 + `RunCursor`），所以 v1 不需要独立的 checkpoint 表。
 
 **`Memory` 也不是第五张事实表**：它由事件日志（`tool.intent` / `tool.result` + 审批事件）**确定性投影**出来，删掉投影可重建（[F10-memory-design.md](F10-memory-design.md) §3.1）。三个字段要读对：`evidence[]` 是「支撑这条信念的源记忆 + 原文引文」，`proof_count` 是证据条数（L2 必填，机械可算、可核对），`consolidated_at` 是上次蒸馏 / 合并时间（freshness 判据：作用域内有新记忆尚未合并时，该层视为陈旧）。`source_refs[]` 是「每条记忆必须能指回来源」的锚点。字段语义见 [F10-memory-design.md](F10-memory-design.md) §5，**实现状态以该文 §13 的契约增量清单为准**——别把这张表的字段当成已经写进库的列。
+
+**v1.2 新增两个字段（契约已定义、代码未落地）**：`layer` 是资产层（`l1` 原子事实 / `l2` 带证据的信念 / `l3` 偏好页面；L2/L3 是可重建的合成层），`erased_at?` 是**物理擦除**时间戳（与 `status=forgotten` 分开：`forgotten` = 停止召回但正文仍在本机，`erased_at` = 正文副本与检索索引已删）。语义与边界见 [F10-memory-design.md](F10-memory-design.md) §5 / §10，工具入口见 §5.2.2。
 
 ### 4.2 Task 与 Run 必须分离
 
@@ -413,6 +415,49 @@ memory.forget   { memory_id: string, revision: integer,
 - 读路径不经 dispatcher：`memory.search` / `memory.get` 在 `_exec_read` 里于**任何目录解析之前**分流（`loop.AgentLoop._exec_read`），结果记 `none_applied`（纯读，与文件只读工具同口径），零目录任务也能检索。写路径经 dispatcher，因此自动获得 intent/result 与完整审计。
 - **逐项落地状态**（哪一条已接线、哪一条还只是契约）不在本节重复，见 [F10-memory-design.md](F10-memory-design.md) §13。
 
+#### 5.2.2 记忆工具契约增量（v1.2 提案，待 N1 / N4 落地）
+
+本节是**契约定义**，不是实现状态：下面这些工具在代码落地前既不在 `SPECS` 里，也不会出现在
+`tool_manifest()` 里。落地时按红线 8 处理——schema 变化即新工具，旧审批与旧 grant 自动失效，
+不自动升级。逐条实施状态见 [F10-memory-design.md](F10-memory-design.md) §13 与
+[SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) §2 / §5。
+
+| tool_id | version | C4 动作 | 审批 | 谁能调 | 语义要点 |
+|---|---|---|---|---|---|
+| `memory.propose` | `2.0`（由 `1.0` 升级） | `create` | 不需要（仍是惰性候选） | 模型 + 控制面 | schema 增 `scope`（`user` / `task`）与 `scope_id`：`task` 的 `scope_id` 必须等于本 Run 的 `task_id`；**`workspace` 不从模型进入**——共享边界由人签发（`memory.promote`）。 |
+| `memory.edit` | `1.0` | `overwrite` | 需要（覆盖类） | 模型 + 控制面 | args `memory_id` / `revision` / `content` / `kind?`。一次审批产出两行：旧行 `superseded`（保留可查）+ 新行 `active`。请求必须带人当时看到的那一版 `revision`。 |
+| `memory.remember` | `1.0` | `create` | 不需要（人本人就是签发者） | **仅控制面**（`exposed=False`） | 创建即 `origin=user_explicit`；模型清单里没有这个工具。 |
+| `memory.promote` | `1.0` | `overwrite` | 需要（共享是显式动作） | **仅控制面**（`exposed=False`） | 把 `user` 作用域记忆提升到 `workspace` / `task`；输出 = 目标作用域新行（`candidate`）+ 原行 `superseded`；`source_refs` 必含原 `memory_id`。 |
+| `memory.consolidate` | `1.0` | `create` | 不需要（只写可重建投影） | 模型 + 控制面 | 触发 L2/L3 合成（确定性合成，见 F10 §4）。结果 `candidate`，人 `confirm` 后才进召回。 |
+| `memory.erase` | `1.0` | `delete` | 需要（等同删除，另加 Receipt） | **仅控制面**（`exposed=False`） | 删除正文副本与检索索引；投影行置 `forgotten` + `erased_at`。**事件日志里的读快照保留**——边界见 F10 §10。 |
+
+```text
+memory.propose     { kind: string, content: string, scope?: string, scope_id?: string,
+                     source_refs?: string[], evidence?: object[],
+                     expires_at?: integer }                        required: kind, content
+memory.edit        { memory_id: string, revision: integer, content: string,
+                     kind?: string }                               required: memory_id, revision, content
+memory.remember    { kind: string, content: string, source_refs?: string[],
+                     expires_at?: integer }                        required: kind, content
+memory.promote     { memory_id: string, revision: integer,
+                     scope: string, scope_id: string }             required: memory_id, revision, scope, scope_id
+memory.consolidate { scope: string, scope_id: string }             required: scope, scope_id
+memory.erase       { memory_id: string, revision: integer }        required: memory_id, revision
+```
+
+三条共用规则：
+
+- **不新增事件族**：新工具仍走 `tool.intent` / `tool.result` + 审批事件；`memory.edit` 只多
+  一种 `tool.result` 结果形状（`apply_event` 据此走 `_apply_edit` 分支），事件类型不变。
+  控制 Run 的记忆作用域声明记在 `task.created` payload 的可选键 `memory_scopes` 里——
+  payload 形状尚未冻结（§5.3），**加键不加类型**。
+- **`exposed=False` 的边界是两道，不是一道**：`tool_manifest()` 只投影 `exposed=True`；
+  模型点名清单外的工具走 `tool.not_dispatched`，不进派发。两个工具落地时各钉一条测试
+  （先例 `restore_file`）。
+- **`origin` 不由模型参数决定**：`user_confirmed` 只能来自"人批准了 `memory.confirm`"这件事
+  （执行侧读审批出处），`user_explicit` 只能由 `memory.remember` 产生。schema 里没有 `origin`
+  字段，`additionalProperties: false` 保持。
+
 ### 5.3 C3 Event
 
 ```
@@ -666,6 +711,24 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |
 | `c4.unhandled` | 保留未使用 | 保留未使用：策略分类的兜底分支，当前 SUPPORTED_ACTIONS 已全覆盖。 | 保留未使用；真看到它说明策略分类漏了分支，报 bug。 |
 | `dispatch.denied` | 保留未使用 | 保留未使用：DispatchDenied 的默认编号，当前无调用方使用。 | 保留未使用；真看到它说明有调用方漏传编号，报 bug。 |
+
+#### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
+
+四条编号已定义语义、**尚未登记**进 `rules.RULE_IDS`：登记动作与产生路径在同一次改动
+（`src/tianshu/rules.py` / `schemas/c4/rules.json` / 本表三处同改）。不提前登记的理由见本节末尾。
+
+| rule_id | 类别 | 语义 | 用户该怎么做 |
+|---|---|---|---|
+| `c4.memory_scope_not_in_loadout` | 拒绝 | 请求的作用域不在本 Run 的装备内：`user` 恒可，`task` 只能是本任务，`workspace` 只能由人经 `memory.promote` 签入。 | 改用默认 `user` 作用域，或请人把这条记忆提升到目标作用域（`tianshu memory promote`）。 |
+| `c4.memory_control_scope_binding` | 拒绝 | 只有控制面（CLI / UI）能声明 `memory_scopes`；模型或普通任务试图扩大作用域绑定。 | 这不是可操作项：属越权尝试，报 bug；签发只能走 CLI / UI。 |
+| `c4.memory_edit_requires_prior_revision` | 拒绝 | 编辑必须声明人当时看到的那一版 `revision`，且与权威投影一致。 | 重新读取记忆，按最新 `revision` 重新发起编辑审批。 |
+| `c4.memory_erasure_requires_receipt` | 拒绝 | 擦除必须带可独立核对的回执（删了哪些 `content_ref`、多少字节）。 | 没有回执就不算擦除成功：检查数据根与事件日志，报 bug。 |
+
+**为什么不在本轮登记**：`DECLARED_UNUSED_RULE_IDS` 的定义是"防御性兜底、当前没有产生
+路径"（`rules.py` 顶部注释），不是"计划功能的占位符"；`tests/test_rule_ids.py::test_every_id_has_a_producer_or_is_declared_unused`
+的判据就是"登记了必须有产生路径"。拿它占位等于让注册表替不存在的路径作证。这四条都是
+**拒绝类**，不进 `x-decision-rule-ids`；`c4.memory_scope` 的现有判定口径不变。编号**不许改名**
+（历史日志里的编号是唯一追溯线索）。
 
 ### 5.5 两个"停止原因"必须分开
 

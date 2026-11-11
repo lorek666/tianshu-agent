@@ -77,6 +77,7 @@ Memory {
   scope: user | workspace | task,
   scope_id,
   kind: preference | fact | decision | procedure,
+  layer: l1 | l2 | l3,    # 资产层（v1.2 契约；代码未落地）
   content_ref,            # 正文走内容寻址；事件里只存引用
   source_refs[],          # 引用：事件 seq / ArtifactRef / memory_id
   evidence[],             # 支撑证据：源 memory_id + 原文引文（L2 必填）
@@ -84,13 +85,20 @@ Memory {
   origin: user_explicit | user_confirmed | inferred,
   status: candidate | active | superseded | forgotten,
   consolidated_at?,       # 上次蒸馏 / 合并时间（freshness 判据）
-  created_at, expires_at?, supersedes?
+  created_at, expires_at?, supersedes?,
+  erased_at?              # 物理擦除时间（v1.2 契约；与 forgotten 分开）
 }
 ```
 
 - **kind**：`preference`（偏好）/ `fact`（事实）/ `decision`（决策）/ `procedure`（可执行流程，对应 Skill）。
 - **origin**：`user_explicit`（用户明说「记住」）/ `user_confirmed`（用户确认过候选）/ `inferred`（模型推断）。**只有前两者自动激活**；`inferred` 永远是 `candidate`。
 - **status**：`candidate → active → superseded | forgotten`。
+- **layer**（v1.2 契约，代码未落地）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3`
+  偏好页面；L2/L3 是可重建的合成层（§4）。`layer` 与 `kind` 正交：`kind` 说"是什么"，
+  `layer` 说"多粗"。
+- **erased_at**（v1.2 契约，代码未落地）：`status=forgotten` 只停召回、正文仍在本机；
+  `erased_at` 非空表示正文副本与检索索引已删。两者分开，是为了不把"不再用"谎称成
+  "已擦除"（§10）。
 - **source_refs**：**每条记忆必须能指回来源**。这是「可检查、可编辑、带来源」的锚点。
 - **evidence / proof_count**：L2 每条信念必须指回支撑它的源记忆与原文引文；`proof_count` 是条数，机械可算、可审计。**没有证据的 L2 不成立**——这是「信念」与「断言」的分界。
 - **consolidated_at**：用于 freshness awareness——作用域内已有新记忆尚未合并时，该层视为**陈旧**（见 §8）。
@@ -199,6 +207,14 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | `memory.propose` | 写**候选**（惰性草稿：未激活不召回，可遗忘 / 编辑 / 重建） | 不需要 |
 | `memory.confirm` | **激活**（进入长期召回） | 需要；`origin=user_explicit` 除外——用户本人刚说的话就是授权 |
 | `memory.forget` | 写 tombstone | 需要（等同删除） |
+| `memory.edit`（v1.2 契约） | 改一条记忆：旧版保留可查、新版生效 | **需要**（覆盖类） |
+| `memory.promote`（v1.2 契约） | 把 `user` 记忆**共享**进 workspace / task | **需要**（共享是显式动作） |
+| `memory.remember`（v1.2 契约） | 人直接记住（`origin=user_explicit`） | 不需要——人本人就是签发者；模型清单里没有这个工具 |
+| `memory.consolidate`（v1.2 契约） | 合成 L2/L3（只写可重建投影） | 不需要；结果 `candidate`，召回仍需 `confirm` |
+| `memory.erase`（v1.2 契约） | 删正文副本与检索索引 | **需要**（等同删除 + Receipt） |
+
+> 带「v1.2 契约」的行是**已定义、未落地**的形状（PRD §5.2.2 / §5.4.2）：代码里还没有这些
+> 工具，`tool_manifest()` 也不会给出它们。别把这张表读成"现在就能调"。
 
 - `propose` 只生成 `candidate`，**不自动激活**；候选是惰性草稿、可重建，所以不挡。
 - `inferred` 来源的候选**永不自动激活**——摘要或网页内容不能变成长期用户事实（防污染与注入）。
@@ -232,6 +248,9 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 - 编辑保留 `revision`，用 `supersede` 而非覆盖（旧版可查）。**投影层已实现、生产无入口**
   （§13 #24）：`MemoryProjection` 认 `output.supersedes` 并保留旧行，但**没有任何工具 /
   CLI / 执行器产生 `supersedes`**，所以"用户能编辑"这条目前只是语义准备好，不是能用的动作。
+  v1.2 契约把入口定成 `memory.edit`（一次审批产出"旧行 `superseded` + 新行 `active`"两行，
+  PRD §5.2.2），落地工作流是 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) 的 N1；
+  在它落地前，这一节的状态不变。
 - 每条记忆显示来源（事件 seq / 来源引用）。
 - **增量 delta 刷新，禁止全量重生成**：L2/L3 的蒸馏只能**应用新证据隐含的改动**，其余物理不动。全量重生成会让模型悄悄改写未变的部分（bullet 变数字、大小写漂移、同义改写），长文档会缓慢变成「说法差不多的另一份文档」。这是硬约束，不是优化。
 - **保留上一版 + 证据**：每次变化保留上一版内容与它当时站的证据，能回答「上个月它说了什么、依据是什么」。
@@ -241,6 +260,10 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 - **忘记（本阶段交付）**：追加 tombstone，同事务从活动投影移除；失效 FTS / 向量 / 缓存；**新请求与重建索引都不能复活它**。
 - **物理擦除（单开契约工单）**：需要追踪历史模型消息、来源事件、备份、共享 blob 引用与保留策略。**不能因为删了 FTS 行就声称历史内容已擦除。**
 - 历史 replay 用当时的快照；若用户将来彻底清除导致快照缺失，应明确报「历史证据不可用」，**而不是重取最新记忆**。
+
+**v1.2 把擦除的形状定下来（契约，未落地）**：`memory.erase`（控制面 only，`delete` + 一次性审批 + Receipt）删除该记忆的**正文副本**（`memory_blobs/` 下按 `content_ref`）与**检索索引**，投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；重建时不得复活。
+
+**这条边界必须写在界面上**：事件日志是 append-only，里面的**读快照删不掉**（§3.1 的实测结论：`memory.search` / `memory.get` 的 `tool.result` 保留模型当时看到的正文）。所以"擦除"= 删副本与索引，**不等于**"历史日志里没有这段文字了"。彻底清日志需要日志压缩 / 重写，与红线 1 冲突，单开契约工单，本轮不做；UI 也不许写"已彻底删除"。
 
 ## 11. 与现行契约 / 红线的关系
 
@@ -272,6 +295,11 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 > 状态是**按代码读出来的**，不是按计划写的。写"未落地 / 未覆盖"的条目就是**没有**
 > 对应实现或测试；别把它当已完成。位置给到文件 + 函数名（行号会漂，函数名不会）。
+
+> **v1.2 契约增量不在下表的"已落地"口径里**：PRD §5.2.2 / §5.4.2 与本文 §5 / §7 / §9 / §10
+> 新增的形状（`layer` / `erased_at` / `memory.edit|promote|remember|consolidate|erase` /
+> 四条规则编号）是**已定义、代码未落地**的契约。落地时由对应工作流把本节状态改成 ✅ 并补
+> 上测试函数名；在那之前，读本节得到的结论仍然是"没做"。
 
 | # | 增量 | 状态 | 位置 / 缺口 |
 |---|---|---|---|
