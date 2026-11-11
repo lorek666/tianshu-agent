@@ -444,6 +444,12 @@ class _HttpModel:
             supports_streaming=self.SUPPORTS_STREAMING,
             supports_thinking=self.SUPPORTS_THINKING,
             context_window_bytes=self.CONTEXT_WINDOW_BYTES,
+            # 输出上界只报**实际会发给 provider 的那个数**：AnthropicAdapter 把
+            # `max_tokens` 写进请求体（Messages API 还是必填），所以它是我们控制
+            # 的、可验证的值。OpenAI-compatible 的请求体里没有 `max_tokens`
+            # （输出由 provider 默认值决定）→ 这里如实是 None，硬上限模式会被拒，
+            # 不拿别处的默认值冒充上界（PRD §5.6 第 3 条 / §5.7）。
+            output_tokens=getattr(self, "max_tokens", None),
             declared_by=f"{type(self).__name__}（adapter 声明）",
         )
 

@@ -125,6 +125,16 @@ class CapabilityProfile:
     context_window_bytes: int | None = None
     #: 这份声明从哪来（adapter 名 / 人工登记 / 测试替身）。审计用，不参与判定。
     declared_by: str = ""
+    #: **一次请求最多能吐多少 token**（输出上界，PRD §5.6 第 3 条）。
+    #:
+    #: 单位是 token，而本项目没有 tokenizer（零依赖）——但这一个不需要 tokenizer：
+    #: 它是 adapter **自己发给 provider 的那个上限**（Anthropic Messages API 的
+    #: `max_tokens` 是必填参数），所以它是我们控制的、可验证的值，不是估算。
+    #:
+    #: `None` = 没声明 / adapter 不设输出上限（例如 OpenAI-compatible 的请求体里
+    #: 没有 `max_tokens`，输出由 provider 默认值决定）。此时**硬上限模式不可用**：
+    #: 拿 256 的默认预留冒充上界，就是把估算写成保证。
+    output_tokens: int | None = None
 
     def __post_init__(self) -> None:
         for attr in ("provider", "model"):
@@ -146,6 +156,15 @@ class CapabilityProfile:
                 raise ValueError(
                     f"context_window_bytes 必须为正：{self.context_window_bytes!r}"
                 )
+        if self.output_tokens is not None:
+            if isinstance(self.output_tokens, bool) or not isinstance(
+                self.output_tokens, int
+            ):
+                raise ValueError(
+                    f"output_tokens 必须是整数或 None：{self.output_tokens!r}"
+                )
+            if self.output_tokens <= 0:
+                raise ValueError(f"output_tokens 必须为正：{self.output_tokens!r}")
 
     # ---- 查询 ----
 
@@ -168,6 +187,7 @@ class CapabilityProfile:
             "model": self.model,
             "declared_by": self.declared_by,
             "context_window_bytes": self.context_window_bytes,
+            "output_tokens": self.output_tokens,
             **{
                 name: self.declaration(name)
                 for name in _FEATURE_ATTRS
@@ -245,6 +265,20 @@ def capability_profile_of(model: object) -> CapabilityProfile | None:
     return profile if isinstance(profile, CapabilityProfile) else None
 
 
+def declared_output_tokens(model: object) -> int | None:
+    """一次请求的输出上界，**只从能力声明里取**；没声明就是 `None`。
+
+    为什么不去嗅 `getattr(model, "max_tokens")`：那个属性可能被实现方当成配置
+    留着（发不发出去是另一回事），而能力声明是"这套 adapter + 这个模型合起来
+    能做什么"的唯一口径。硬上限模式要么按声明立得住，要么就不进这个模式——
+    互相矛盾的两处来源会让"可验证"这三个字失效。
+    """
+    profile = capability_profile_of(model)
+    if profile is None:
+        return None
+    return profile.output_tokens
+
+
 def admit_model(
     model: object,
     *,
@@ -308,6 +342,7 @@ __all__ = [
     "capability_profile_of",
     "check_capabilities",
     "check_context_budget",
+    "declared_output_tokens",
     "missing_capabilities",
     "retry_delay_ms",
 ]
