@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 import pytest
-from support import stack_for, write_exact
+from support import HangupPeer, stack_for, write_exact
 
 from tianshu import daemon, ipc
 from tianshu.events import EventLog, canonical_bytes, sha256_hex
@@ -906,6 +906,24 @@ def test_shutdown_finishes_quickly_and_leaves_clean_state(root, start_daemon) ->
 
 def test_request_shutdown_without_daemon_returns_false(root) -> None:
     assert daemon.request_shutdown(root, timeout=0.5) is False
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 命名管道没有'只 listen 不握手'的裸句柄（见 tests/support.HangupPeer）",
+)
+def test_request_shutdown_returns_false_when_peer_hangs_up_handshake(root) -> None:
+    """daemon 已经走了、只留下端点时，补发 shutdown 必须返回 False 而不是抛异常。
+
+    实测（CI macOS）：`test_event_stream_ends_when_daemon_goes_away` 里 daemon
+    先被用例关掉，`DaemonHarness.__exit__` 又补一次 `request_shutdown()`；对端在
+    认证握手里关连接，stdlib 抛裸 `EOFError`，把"收尾"变成一条红测试。
+
+    契约：`request_shutdown()` 返回 `False` = "请求没送到"，调用方可以据此判断
+    "本来就没在跑"，而不是收到一个它没承诺过的异常类型。
+    """
+    with HangupPeer(root):
+        assert daemon.request_shutdown(root, reason="test", timeout=1.0) is False
 
 
 def test_shutdown_returns_when_driver_thread_is_stuck(

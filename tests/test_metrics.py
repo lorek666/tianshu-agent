@@ -386,3 +386,52 @@ def test_cancel_ack_and_stop_are_measured_separately(
         model.release.set()
         client.close()
         harness.stop_and_wait(timeout=5.0)
+
+# --------------------------------------------------------------------------- 读取语义
+
+
+def test_read_metrics_ignores_half_written_tail_line(root: Path) -> None:
+    """并发追加时读到的"半行"必须被忽略，而不是把整条诊断打成异常。
+
+    实测（CI ubuntu，PR #88）：`test_slow_subscriber_does_not_block_control_plane`
+    一边让 daemon 采样、一边轮询 `read_metrics()`，读到的最后一行断在
+    `{"instance_id":"daemon_...",`（第 37 个字符）——`JSONDecodeError` 直接把
+    测试打红。JSONL 的"一次追加在读者眼里是否原子"没有保证，所以"没有 `\\n`
+    收尾的最后一段"是可能还在写的记录：跳过它，等下一次读，**不当损坏**。
+    """
+    path = metrics_mod.metrics_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'{"metric": "a"}\n{"metric": "b", "va')
+
+    assert metrics_mod.read_metrics(path) == [{"metric": "a"}]
+
+    # 下一次读时后半行到齐了：必须完整出现（跳过是"等一下"，不是"永久丢弃"）。
+    with path.open("ab") as handle:
+        handle.write(b'lue": 1}\n')
+    assert metrics_mod.read_metrics(path) == [{"metric": "a"}, {"metric": "b", "value": 1}]
+
+
+def test_read_metrics_accepts_complete_tail_without_newline(root: Path) -> None:
+    """不会补换行的写入方（手工造数据、别的工具）不该白丢最后一条。"""
+    path = metrics_mod.metrics_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'{"metric": "a"}\n{"metric": "b"}')
+    assert metrics_mod.read_metrics(path) == [{"metric": "a"}, {"metric": "b"}]
+
+
+def test_read_metrics_still_rejects_corrupt_complete_line(root: Path) -> None:
+    """负控：容忍"正在写的尾巴"不能变成容忍损坏。
+
+    - 中间行坏了（前后都完整）→ 必须带行号抛 `ValueError`；
+    - 尾巴带 `\\n` 却解析不了 → 也是损坏，照抛（只有"没换行"才享有等待语义）。
+    """
+    path = metrics_mod.metrics_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    path.write_bytes(b'{"metric": "a"}\n{"metric": bad}\n{"metric": "c"}\n')
+    with pytest.raises(ValueError, match="第 2 行"):
+        metrics_mod.read_metrics(path)
+
+    path.write_bytes(b'{"metric": "a"}\nnot-json\n')
+    with pytest.raises(ValueError, match="第 2 行"):
+        metrics_mod.read_metrics(path)

@@ -173,6 +173,17 @@ def read_metrics(path: Path, *, limit: int | None = None) -> list[dict[str, Any]
 
     - 空行跳过；坏行抛 `ValueError`（带行号）：指标文件损坏不该被当成"没有数据"；
     - `limit` 只取**最后** N 条（诊断时看最近的）。
+
+    **并发写入语义**：`MetricsRecorder` 是一行一次追加，但"一次 `os.write` 在读者
+    眼里是否原子"并没有保证（实测：CI ubuntu 上 `test_slow_subscriber_...` 一边
+    采样一边轮询，读到的最后一行断在 `{"instance_id":"daemon_...",` 第 37 个字符，
+    整条测试因为 `JSONDecodeError` 红）。所以文件末尾**没有 `\n` 收尾**的那一段
+    是"可能还在写"的记录：
+
+    - 能解析 → 照常收（有的工具写完最后一条就不补换行，别白丢数据）；
+    - 不能解析 → 跳过它（`tail -f` 语义），等下一次读，**不当损坏**。
+
+    已由 `\n` 收尾的行没有这个豁免：解析不了就是损坏，照抛（那才是有用的告警）。
     """
     target = Path(path)
     if target.is_dir():
@@ -181,9 +192,25 @@ def read_metrics(path: Path, *, limit: int | None = None) -> list[dict[str, Any]
         return []
     raw = target.read_bytes()
     records: list[dict[str, Any]] = []
-    for lineno, line in enumerate(raw.split(b"\n"), 1):
+    segments = raw.split(b"\n")
+    # 以 `\n` 收尾时 split 会多出一个空段；这里只关心"最后一段有没有收尾"。
+    tail_is_partial = bool(raw) and not raw.endswith(b"\n")
+    for index, line in enumerate(segments):
+        is_tail = index == len(segments) - 1
+        if is_tail and tail_is_partial:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue  # 正在写：下一次读它就会完整
+            if not isinstance(record, dict):
+                continue
+            records.append(record)
+            continue
         if not line.strip():
             continue
+        lineno = index + 1
         try:
             record = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

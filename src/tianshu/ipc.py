@@ -784,6 +784,18 @@ class Client:
                     authkey=load_authkey(self.data_root),
                 )
                 break
+            except EOFError as exc:
+                # 对端在认证握手里关了连接：端点还在（socket 文件/管道对象没删），
+                # 但它已经不打算再讲话了——典型是 daemon 正在退出，`__exit__` 这类
+                # "再补一次 shutdown" 的调用正好撞上。**不能重试**（重试只会把
+                # "已经走了"拖成 5 秒超时），也**不能漏出去**：`EOFError` 不是
+                # `OSError`，`request_shutdown()` 只捕 `(IpcError, OSError)`，
+                # 裸的 stdlib 异常会把调用方打崩（CI macOS 实测：整条测试红）。
+                # 服务端侧 `Server.accept()` 早就把同一种情况映射成可重试的
+                # `ProtocolError`，客户端这里对齐成"连接已关闭"。
+                raise ConnectionClosed(
+                    f"握手时守护进程已关闭（{self.data_root}）：{exc}"
+                ) from exc
             except (OSError, AuthenticationError) as exc:
                 last = exc
                 if time.monotonic() >= deadline:

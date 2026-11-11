@@ -557,7 +557,11 @@ class _Daemon:
         #: 指标采样器（PRD §10.6）。写失败不影响业务（见 metrics 模块的失败容忍）。
         self.metrics: metrics.MetricsRecorder | None = None
         #: "从 serve() 进来到端点可服务"的计时起点。
-        self._boot_monotonic = time.monotonic()
+        #: 用 `perf_counter` 而不是 `monotonic`：Windows 的 `time.monotonic()`
+        #: 走 `GetTickCount64`（约 15.6ms 分辨率），热启动常在一个 tick 内完成，
+        #: 会被记成 0.0——那不是"伪造的 0"，但没法与伪造区分；`perf_counter`
+        #: 在 Windows 走 QPC，能给出真实亚毫秒耗时。
+        self._boot_perf = time.perf_counter()
         #: `run.cancel` 之后等待终态的计时表：run_id -> 收到取消的时刻。
         self._cancel_watch: dict[str, float] = {}
         self._conn_counter = 0
@@ -666,7 +670,7 @@ class _Daemon:
         assert self.metrics is not None and self.plane is not None
         self.metrics.record_duration_ms(
             metrics.STARTUP_READY_MS,
-            (time.monotonic() - self._boot_monotonic) * 1000.0,
+            (time.perf_counter() - self._boot_perf) * 1000.0,
             cold_start=cold_start,
         )
         # 资源采样放在"端点可服务"之后：启动耗时单独记，采样只回答"跑起来之后

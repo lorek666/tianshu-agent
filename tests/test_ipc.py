@@ -27,6 +27,7 @@ from multiprocessing.connection import Client as RawClient
 from pathlib import Path
 
 import pytest
+from support import HangupPeer
 
 from tianshu import ipc
 
@@ -344,6 +345,72 @@ def test_subscription_drop_raises_instead_of_returning_none(
 def test_connect_to_missing_daemon_fails_fast(root: Path) -> None:
     with pytest.raises(ipc.ConnectionClosed):
         ipc.Client(root, timeout=0.2).connect()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 命名管道没有'只 listen 不握手'的裸句柄（见 tests/support.HangupPeer）",
+)
+def test_handshake_eof_becomes_connection_closed(root: Path) -> None:
+    """对端在认证握手里关连接 → 必须是 `ConnectionClosed`，不能漏出裸 `EOFError`。
+
+    实测（CI macOS，`test_event_stream_ends_when_daemon_goes_away`）：被测用例
+    自己关掉 daemon 之后，harness 收尾又补了一次 `request_shutdown()`；端点还在、
+    accept 已经停了，`answer_challenge` 抛 `EOFError`。`EOFError` 不是 `OSError`，
+    而 `request_shutdown()` 只捕 `(IpcError, OSError)` —— 裸的 stdlib 异常直接
+    把整条测试打崩（`1 failed, 1529 passed`）。
+
+    服务端侧 `Server.accept()` 早就把同一种情况映射成可重试的 `ProtocolError`，
+    客户端这里必须对齐。**也不许当可重试错误**：重试只会把"已经走了"拖成整个
+    timeout（这条用例用 < 0.5s 的上界把"没有白等"钉住）。
+    """
+    with HangupPeer(root):
+        client = ipc.Client(root, timeout=2.0)
+        started = time.monotonic()
+        with pytest.raises(ipc.ConnectionClosed) as caught:
+            client.connect(timeout=2.0)
+        elapsed = time.monotonic() - started
+        client.close()
+    assert isinstance(caught.value, ipc.IpcError), "必须是 ipc 自己的异常类型"
+    assert "已关闭" in str(caught.value), f"错误信息看不出是握手期关闭：{caught.value}"
+    assert elapsed < 0.5, f"握手期 EOF 被当成可重试错误，白等了 {elapsed:.2f}s"
+
+    # 负控：活的服务端必须照常连上——修法不能把"能连"也一起误杀。
+    live_root = _short_root()
+    server = EchoServer(live_root)
+    try:
+        live = ipc.Client(live_root, timeout=2.0)
+        live.connect(timeout=2.0)
+        try:
+            assert live.call("echo", {"ok": True})["echo"] == {"ok": True}
+        finally:
+            live.close()
+    finally:
+        server.stop()
+        shutil.rmtree(live_root, ignore_errors=True)
+
+
+def test_handshake_eof_is_mapped_to_connection_closed_everywhere(
+    root: Path, monkeypatch
+) -> None:
+    """跨平台把映射钉死在 `_Socket()` 这一个接缝上（Windows 也跑）。
+
+    真实触发（裸 socket 只 listen 不握手）在 Windows 命名管道上造不出来，
+    所以这里直接让传输层抛 `EOFError`——测的是"握手期 EOF 必须变成
+    `ConnectionClosed`"，不是"stdlib 会抛 EOFError"（后者由上面的真 socket
+    用例证明）。
+    """
+
+    def hangup(*_args: object, **_kwargs: object) -> None:
+        raise EOFError
+
+    monkeypatch.setattr(ipc, "_Socket", hangup)
+    client = ipc.Client(root, timeout=1.0)
+    with pytest.raises(ipc.ConnectionClosed) as caught:
+        client.connect(timeout=1.0)
+    client.close()
+    assert isinstance(caught.value, ipc.IpcError)
+    assert "已关闭" in str(caught.value), f"错误信息看不出是握手期关闭：{caught.value}"
 
 
 def test_wrong_authkey_is_rejected(echo, root: Path) -> None:

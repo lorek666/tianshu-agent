@@ -12,8 +12,12 @@ M2 之后覆盖/删除类写入必须有批准才能执行（PRD §2.3）。测�
 
 from __future__ import annotations
 
+import os
+import socket
+import threading
 from pathlib import Path
 
+from tianshu import ipc
 from tianshu.capability import CapabilityProfile
 from tianshu.events import EventLog
 from tianshu.loop import AgentLoop, Limits, Stack, build_stack
@@ -100,8 +104,82 @@ def approve_pending(stack: Stack, run_id: str) -> list[str]:
     return ids
 
 
+class HangupPeer:
+    """POSIX 假对端：只 listen、**不做认证握手**，accept 到连接就立刻关闭。
+
+    复现的是真实观测到的时序窗口（CI macOS 实测）：daemon 正在退出时，端点
+    （socket 文件）还在、内核 backlog 还接得住 connect，但已经没有进程会完成
+    `multiprocessing` 的 auth challenge。客户端 `_Socket()` 于是在
+    `answer_challenge()` 里读到 EOF —— 抛的是裸 `EOFError`。
+
+    这不是理论构造：`test_event_stream_ends_when_daemon_goes_away` 自己关掉
+    daemon 后，`DaemonHarness.__exit__` 又补一次 `request_shutdown()`，正好撞上
+    这个窗口；`EOFError` 既不是 `OSError` 也不是 `ipc.IpcError`，穿过
+    `Client.connect()` 的重试分支把整条测试打崩（`1 failed, 1529 passed`）。
+
+    Windows 命名管道没有等价的"裸句柄"（`Listener.accept()` 必然先握手），所以
+    这个替身只在 POSIX 上用；Windows 侧的映射由 `tests/test_ipc.py` 里打桩
+    `ipc._Socket` 的可移植用例覆盖，本类在 Windows 上直接拒绝构造。
+    """
+
+    def __init__(self, data_root: Path) -> None:
+        if os.name == "nt":
+            raise RuntimeError("HangupPeer 只在 POSIX 可用（Windows 用打桩用例覆盖）")
+        self.data_root = Path(data_root)
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> HangupPeer:
+        ipc.run_dir(self.data_root).mkdir(parents=True, exist_ok=True)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(ipc.endpoint_path(self.data_root))
+            sock.listen(ipc.LISTEN_BACKLOG)
+        except OSError:
+            sock.close()
+            raise
+        self._sock = sock
+        self._thread = threading.Thread(target=self._loop, name="hangup-peer", daemon=True)
+        self._thread.start()
+        return self
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            sock = self._sock
+            if sock is None:
+                return
+            try:
+                conn, _addr = sock.accept()
+            except OSError:
+                return
+            # 关键：**不**做 auth challenge，直接关。客户端会在握手读里得到 EOF。
+            conn.close()
+
+    def stop(self) -> None:
+        self._stop.set()
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            sock.close()  # 唤醒阻塞中的 accept()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+        if self._stop.is_set():
+            try:
+                Path(ipc.endpoint_path(self.data_root)).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def __enter__(self) -> HangupPeer:
+        return self.start()
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+
 __all__ = [
     "CHILD_TEXT",
+    "HangupPeer",
     "approve_pending",
     "engine_for",
     "pending_approvals",
