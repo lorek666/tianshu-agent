@@ -12,24 +12,32 @@ F5（上下文编译）之后第 2 件事多了一层：`model.intent.payload.co
 再比 digest。这样"发出去的到底是什么"不靠信任首次执行，而是可以复现的判定。
 没有 `context` 的旧日志（包括 M0–M3 的全部 fixture）走原来的比对路径：它们的
 `messages_hash` 本来就是全量历史的摘要，两者在预算内恒等时数值完全相同。
+
+**PRD §7.1（模型摘要）之后**：`context.summaries` 记的是"这一轮引用了哪几份摘要"。
+回放按 `summary_id` 从**同一个库**读回当时的正文，校验 `version` / `text_digest` /
+材料台账，再用它重算一遍编译。**读到就核对，读不到就报 problem——绝不重新生成**：
+重新生成等于把"可以核对"换成"再猜一次"，而且那是另一次模型调用。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .context import (
     ContextCompileError,
     ContextOverflow,
+    SummarySlice,
     budget_from_payload,
     compile_context,
 )
 from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
 from .loop import SYSTEM_PROMPT, message_source_seqs
+from .summaries import SummaryStore
 
 
 @dataclass
@@ -49,6 +57,8 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
         raise TianshuError(f"没有找到 run {run_id} 的事件")
 
     problems: list[str] = []
+    #: `create=False`：回放一个历史库不该顺手给它建摘要表。没有表 ⇒ 没有摘要记录。
+    summaries = SummaryStore(log, create=False)
 
     # ---- 1. seq 单调且日志无缺口 ----
     #
@@ -96,7 +106,7 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     for ev in events:
         if ev.type == "model.intent":
             if _verify_model_intent(
-                ev, messages, all_seqs[: len(messages)], problems
+                ev, messages, all_seqs[: len(messages)], problems, summaries
             ):
                 verified += 1
             turns += 1
@@ -211,7 +221,11 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
 
 def _verify_model_intent(
-    ev: Event, messages: list[dict[str, Any]], seqs: list[int], problems: list[str]
+    ev: Event,
+    messages: list[dict[str, Any]],
+    seqs: list[int],
+    problems: list[str],
+    summaries: SummaryStore,
 ) -> bool:
     """核对一条 `model.intent`：它声称发出去的那份，能不能从事件重建出来。
 
@@ -241,11 +255,23 @@ def _verify_model_intent(
         problems.append(f"seq={ev.seq} context 不是对象，无法核对编译结果")
         return False
 
+    loaded = _recorded_summaries(context, ev.seq, problems, summaries)
+    if loaded is None:
+        return False
+    slices, recorded_summaries = loaded
+
     try:
         budget = budget_from_payload(context)
-        view = compile_context(messages, seqs, budget)
+        view = compile_context(messages, seqs, budget, summaries=slices)
     except (ContextCompileError, ContextOverflow) as exc:
         problems.append(f"seq={ev.seq} 重算上下文编译失败：{exc}")
+        return False
+
+    if recorded_summaries != _summary_identity(view.summaries):
+        problems.append(
+            f"seq={ev.seq} context.summaries 与重算结果不符：记录 "
+            f"{len(recorded_summaries)} 份，重算用上 {len(view.summaries)} 份"
+        )
         return False
 
     if recorded != view.digest:
@@ -273,6 +299,117 @@ def _verify_model_intent(
             return False
 
     return True
+
+
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _summary_identity(items: tuple[SummarySlice, ...]) -> list[dict[str, Any]]:
+    """视图里的摘要 → 事件里记录的那份身份（顺序保持）。"""
+    return [
+        {
+            "summary_id": item.summary_id,
+            "version": item.version,
+            "text_digest": item.text_digest,
+            "source_seqs": list(item.source_seqs),
+        }
+        for item in items
+    ]
+
+
+def _recorded_summaries(
+    context: dict[str, Any],
+    seq: int,
+    problems: list[str],
+    store: SummaryStore,
+) -> tuple[tuple[SummarySlice, ...], list[dict[str, Any]]] | None:
+    """把 `context.summaries` 解码成编译输入，并把能核的都核了。
+
+    三道校验：**行在不在**、**版本/正文摘要对不对**、**材料台账在不在**。
+    任何一道不过都记 problem 并返回 None——没有"跳过后继续"这个选项：
+    摘要读不回来时，"发出去的到底是什么"就无法核对，硬说 ok 等于替它作证。
+    """
+    raw = context.get("summaries")
+    if raw is None:
+        return (), []
+    if not isinstance(raw, list):
+        problems.append(f"seq={seq} context.summaries 不是数组，无法核对")
+        return None
+    slices: list[SummarySlice] = []
+    recorded: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            problems.append(f"seq={seq} context.summaries[{index}] 不是对象")
+            return None
+        summary_id = item.get("summary_id")
+        version = item.get("version")
+        digest = item.get("text_digest")
+        source = _int_list(item.get("source_seqs"))
+        if not isinstance(summary_id, str) or not _DIGEST_RE.match(summary_id):
+            problems.append(f"seq={seq} context.summaries[{index}] 的 summary_id 不合法")
+            return None
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            problems.append(f"seq={seq} context.summaries[{index}] 的 version 不合法")
+            return None
+        if not isinstance(digest, str) or not _DIGEST_RE.match(digest):
+            problems.append(f"seq={seq} context.summaries[{index}] 的 text_digest 不合法")
+            return None
+        if not source or any(value <= 0 for value in source):
+            problems.append(f"seq={seq} context.summaries[{index}] 的 source_seqs 不合法")
+            return None
+        record = store.read(summary_id)
+        if record is None:
+            problems.append(
+                f"seq={seq} 摘要记录缺失（summary_id={summary_id[:12]}…）："
+                "回放不重新生成摘要，因此这一轮无法核对"
+            )
+            return None
+        if not record.ready:
+            problems.append(
+                f"seq={seq} 摘要 {summary_id[:12]}… 的状态是 {record.status}，不是 ready"
+            )
+            return None
+        if record.version != version:
+            problems.append(
+                f"seq={seq} 摘要 {summary_id[:12]}… 的版本不符："
+                f"记录 {version}，库里 {record.version}"
+            )
+            return None
+        if record.text_digest != digest:
+            problems.append(
+                f"seq={seq} 摘要 {summary_id[:12]}… 的正文摘要不符："
+                "记录与库里的不是同一份正文"
+            )
+            return None
+        if record.text is None:
+            problems.append(f"seq={seq} 摘要 {summary_id[:12]}… 是 ready 但没有正文")
+            return None
+        material = store.material(record.material_id)
+        if material is None:
+            problems.append(
+                f"seq={seq} 摘要 {summary_id[:12]}… 的材料台账缺失："
+                "没有来源就无法判断这份摘要是从什么材料来的"
+            )
+            return None
+        slices.append(
+            SummarySlice(
+                summary_id=record.summary_id,
+                version=record.version,
+                text=record.text,
+                text_digest=record.text_digest or "",
+                source_seqs=tuple(source),
+                summary_version=record.summary_version,
+            )
+        )
+        recorded.append(
+            {
+                "summary_id": summary_id,
+                "version": version,
+                "text_digest": digest,
+                "source_seqs": list(source),
+            }
+        )
+    return tuple(slices), recorded
 
 
 def _int_list(value: Any) -> list[int] | None:

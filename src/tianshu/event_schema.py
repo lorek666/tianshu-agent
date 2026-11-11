@@ -275,6 +275,16 @@ _CONTEXT_MEMORY = _obj(
     },
     required=("memory_id", "revision", "content_ref", "scope", "scope_id", "tool_call_id"),
 )
+_CONTEXT_SUMMARY = _obj(
+    {
+        # 摘要身份（PRD §7.1）：正文不进事件，进事件的是"这一轮用了哪一版"。
+        "summary_id": _SHA256,
+        "version": _i(minimum=1),
+        "text_digest": _SHA256,
+        "source_seqs": _arr(_i(minimum=1)),
+    },
+    required=("summary_id", "version", "text_digest", "source_seqs"),
+)
 _MODEL_CONTEXT = _obj(
     {
         "budget_version": _s(),
@@ -283,6 +293,8 @@ _MODEL_CONTEXT = _obj(
         "source_seqs": _arr(_i()),
         "dropped_seqs": _arr(_i()),
         "memories": _arr(_CONTEXT_MEMORY),
+        # PRD §7.1：这一轮视图里**实际用到**的模型摘要（缺省不写 = 没用摘要）。
+        "summaries": _arr(_CONTEXT_SUMMARY),
     },
     required=("budget_version", "max_bytes", "spill_threshold", "source_seqs", "dropped_seqs"),
 )
