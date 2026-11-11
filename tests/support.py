@@ -75,6 +75,10 @@ def engine_for(
         # 与生产装配一致：测试替身也复用同一个记忆投影，避免"测试里
         # 默认目录碰巧对上、自定义目录才炸"的假通过。
         memory=stack.memory,
+        # 内容引用与摘要记录同样走生产装配：测试替身少传一个，测到的就不是
+        # 产品真正装出来的那套（G1e / PRD §7.1 的教训）。
+        contents=getattr(stack, "contents", None),
+        summaries=getattr(stack, "summaries", None),
     )
 
 

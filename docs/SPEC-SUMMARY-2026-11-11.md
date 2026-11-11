@@ -308,7 +308,11 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
   这三张表（同一 SQLite 文件），恢复后回放可用。
 - **提示注入没有解决**：摘要正文是派生材料，包装声明是提示级缓解；执行侧闸门才是
   强制执行点。
-- **费用与延迟数字**只来自本机夹具，不当 SLO，不编 provider 账单。
+- **费用与延迟数字**只来自本机夹具，不当 SLO，不编 provider 账单。本夹具里摘要
+  模式**更贵**（多 3 次调用、token 324→744）：它买到的是"关键约束没丢"，不是省钱。
+- **允许"子集复用"**：调用上限到了以后，复用"覆盖的 seq 现在全都被牺牲"的旧摘要，
+  不覆盖后来新丢的段。这是为了让最先丢的硬约束别在调用停掉后再次消失；它不是
+  "永远跟上最新历史"的保证。
 - **Windows 仍不是 required check**，本轮若 Windows job 红，照实写，不当绿。
 
 ## 6 交付状态（合入后回填）
@@ -316,5 +320,5 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
 | PR | 内容 | 判据 | 负控 | 状态 |
 |---|---|---|---|---|
 | #103 | H1 记录层 + 材料身份 | `tests/test_summaries.py` 22 条 | **7/7 红** | 已合入 |
-| （本 PR） | H2 编译注入 + 事件契约 + 回放 | `test_summary_context.py` 17 + `test_summary_replay.py` 7 | **7/7 红** | 待合入 |
-| （待开） | H3 生成路径 + 长任务夹具 | （回填） | （回填） | 待交付 |
+| #103 | H2 编译注入 + 事件契约 + 回放 | `test_summary_context.py` 17 + `test_summary_replay.py` 7 | **7/7 红** | 已合入 |
+| （本 PR） | H3 生成路径 + 长任务夹具 | `tests/test_summary_loop.py` 14 | **10/10 红** | 待合入 |
