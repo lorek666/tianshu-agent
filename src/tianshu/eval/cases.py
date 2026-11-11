@@ -130,6 +130,17 @@ class Case:
     #: 场景钩子：Run 结束后再动一次产品 API 收集事实（如"撤销冲突"探针）。
     #: 它收集的是产品事实，判据只读事实、不猜。
     post_run: Callable[[Any, str, Path], dict[str, Any]] | None = None
+    #: G2 网络阶段（PRD §10.5「联网研究交付」）：本机 web 夹具的路由（路径 → 正文）。
+    #: 非空 = 这条 case 需要夹具；`{WEB_BASE}` 在运行时替换成 `127.0.0.1:<port>`。
+    #: 用本机夹具而不是公网站点：判据要的是确定性来源，且 CI 不该依赖出网。
+    web_routes: Mapping[str, str] = field(default_factory=dict)
+    #: 非 False = 来源不可达（已 bind 未 listen 的端口），用来验证「断网诚实失败」。
+    web_closed: bool = False
+    #: 任务级外发白名单（`outbound_allow`）；支持 `{WEB_BASE}` 模板。
+    outbound_allow: tuple[str, ...] = ()
+    #: 依赖夹具地址的脚本工厂：夹具起来之后才生成脚本（地址是内核分配的，事先
+    #: 不知道）。真实模型跑这条 case 时忽略它。
+    script_factory: Callable[[str], tuple[ModelResponse, ...]] | None = None
 
 
 # ---------------------------------------------------------------- 脚本拼装

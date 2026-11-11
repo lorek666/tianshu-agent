@@ -211,6 +211,14 @@ def fixture_digest(case: Case) -> str:
         "post_run": (
             None if case.post_run is None else _source_sha256(case.post_run)
         ),
+        # G2 网络阶段：外发白名单、夹具来源路由、「来源不可达」开关，以及由夹具
+        # 地址生成的脚本工厂源码——它们变了，这条 case 的输入就变了。
+        "outbound_allow": list(case.outbound_allow),
+        "web_routes": dict(sorted(case.web_routes.items())),
+        "web_closed": case.web_closed,
+        "script_factory": (
+            None if case.script_factory is None else _source_sha256(case.script_factory)
+        ),
         # 判据的参数（例如 `artifact_min_bytes(60)` 的 60）藏在闭包里，
         # 只摘要 check_id 会让"把 60 改成 200"这种改动逃过可比性检查。
         # 摘要判据函数源码：改参数、改语义都会变，重排格式也算"判据变了"——
