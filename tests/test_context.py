@@ -41,6 +41,7 @@ from tianshu.context import (
     ContextCompileError,
     ContextOverflow,
     ContextView,
+    SummarySlice,
     _compact_note,
     _preview_stub,
     budget_from_payload,
@@ -991,7 +992,12 @@ def test_replay_detects_tampered_context(tmp_path):
 
 
 def test_context_view_is_plain_data():
-    """ContextView 里只有数据：没有文件句柄、没有时钟、没有回调。"""
+    """ContextView 里只有数据：没有文件句柄、没有时钟、没有回调。
+
+    这条是**绊线**：新增字段必须在这里显式过审。PRD §7.1 加了 `summaries`
+    （已持久化摘要的切片）与 `summarized_seqs`（被摘要代表的 seq）——两者都是
+    纯值（冻结 dataclass / 整数列表），不引入读库或调模型的入口。
+    """
     view = compile_context(_histories()[0], _seqs(2), ContextBudget(1_048_576))
     assert isinstance(view, ContextView)
     assert set(vars(view)) == {
@@ -1001,4 +1007,15 @@ def test_context_view_is_plain_data():
         "dropped_seqs",
         "spills",
         "compacted",
+        "summaries",
+        "summarized_seqs",
+    }
+    # 摘要切片本身也必须只装数据。
+    assert set(vars(SummarySlice("s", 1, "t", "d"))) == {
+        "summary_id",
+        "version",
+        "text",
+        "text_digest",
+        "source_seqs",
+        "summary_version",
     }

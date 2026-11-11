@@ -4,8 +4,8 @@
 
 | 增量 | 内容 | 状态 |
 |---|---|---|
-| H1 | 摘要记录 + 材料身份（`summaries.py`） | **已交付**（本 PR） |
-| H2 | 编译注入 + `model.intent.context.summaries` 契约 + 回放读摘要 | 待交付 |
+| H1 | 摘要记录 + 材料身份（`summaries.py`） | 已交付（PR #103） |
+| H2 | 编译注入 + `model.intent.context.summaries` 契约 + 回放读摘要 | **已交付**（本 PR） |
 | H3 | 主循环生成路径（授权 / 共享预算 / 先持久化再引用 / 失败回落）+ 长任务夹具 | 待交付 |
 
 立据：[PRD-v1.md](PRD-v1.md) §7.1 五条；施工口径与判据见
@@ -93,11 +93,74 @@ PRD §5.7 的 token 上界**；token 记账仍走账本的 `estimate` / `upper` 
 同一材料同一时刻只允许一行 `pending`（`begin()` 会拒绝第二次）。崩溃遗留的
 `pending` 由调用方结案成 `failed`「中断：结果未知」，**不重试**。
 
-## 3 注入与回放（H2，待交付）
+## 3 注入与回放（H2）
 
-待本增量交付后补齐：摘要切片的激活条件、`dropped_seqs` 与 `summarized_seqs`
-的分工、预算放不下时"放弃摘要回落确定性"的规则、`model.intent.payload.context.
-summaries` 的形状与回放的三道校验。
+### 3.1 编译仍是纯函数，摘要作为**引用**进来
+
+`compile_context(messages, source_seqs, budget, summaries=())`：
+
+- **不读库、不调模型、不取时钟**。摘要正文由调用方（主循环）从记录里取出来，
+  作为 `SummarySlice(summary_id, version, text, text_digest, source_seqs)` 传进来。
+- `summaries=()` 时走的是与 H1 之前**同一段代码**，输出逐字节相同（`messages_hash`
+  含义不变，旧日志、旧夹具不用改）。
+- 入参硬校验（任何一条不成立都拒绝编译，不猜、不跳过）：摘要 id 不重复、版本为正
+  整数、正文非空、**重算 `text_digest` 必须等于记录值**、来源 seq 必须真实存在于
+  本次编译的来源里且不是 `RUN_START_SEQ`、不同摘要不许覆盖同一个 seq。
+
+### 3.2 激活条件：**整段覆盖**且**真的被牺牲了**
+
+摘要只在"它覆盖的往返**全部**被牺牲"时激活，插在不可让前缀之后、被保留往返之前
+（多条按传入顺序）。半段覆盖直接拒绝——否则"同一段话既在原文里又在摘要里"：
+字节白花，内容还被算两遍。
+
+被牺牲的 seq 因此分成两半，互斥且覆盖全部：
+
+| 归宿 | 含义 |
+|---|---|
+| 还在 `view.source_seqs` 里 | 原文还在视图里 |
+| `view.summarized_seqs` | 原文没了，但有损地留下来（摘要） |
+| `view.dropped_seqs` | 原文真的没了（只有一条确定性说明） |
+
+摘要本身也占字节，所以它可能**多**牺牲几段更旧的往返——这是诚实的取舍（保住约束
+的代价是别的内容被丢），不是 bug。
+
+### 3.3 预算不够就**放弃摘要**，不让 Run 变红
+
+带摘要装不下 ⇒ 退回确定性结果（`summaries=()`）再装一次；确定性也装不下才抛
+`ContextOverflow`（与今天一致）。摘要只是优化：把"带了摘要的视图"变成硬失败，
+等于用一个可选功能去否决一个本来能跑完的任务。
+
+### 3.4 事件里只写**身份**，不写正文
+
+`model.intent.payload.context.summaries`（可选键；没用到摘要就不写）：
+
+```json
+{"summary_id": "<64hex>", "version": 1, "text_digest": "<64hex>", "source_seqs": [4, 5]}
+```
+
+- 只写**实际进入视图**的那些（传进来但没激活的不写）——否则回放会以为这一轮引用了它。
+- 正文不进事件：事件是"这一轮用了哪一版"的证据，正文在摘要记录里，按 id 可取。
+- 契约在 `event_schema.py`（`_CONTEXT_SUMMARY`）与 `schemas/c3/event.json` 两处
+  同步，`tests/test_event_schema.py` 逐字绑定；坏形状在写入前就被拒绝。
+
+### 3.5 回放：读当时那一份，**不重新生成**
+
+`replay()` 按 `summary_id` 从**同一个库**读回当时的正文，三道校验全过才重算编译：
+
+1. **行在不在**：没有这条记录 ⇒ problem「摘要记录缺失：回放不重新生成摘要」；
+2. **版本 / 正文摘要对不对**：`version`、`text_digest` 与记录比，不符 ⇒ problem；
+3. **材料台账在不在**：没有来源就说不清"这份摘要是从什么材料来的" ⇒ problem。
+
+然后用这些正文重算一遍 `compile_context`，比对 `messages_hash` / `source_seqs` /
+`dropped_seqs` / 摘要身份。**没有"跳过校验继续"这个选项**：摘要读不回来时，
+"发出去的到底是什么"就无法核对，硬说 ok 等于替它作证。
+
+旧日志没有 `summaries` 键 ⇒ 走原来的路径（不传切片），一行夹具都不用改。
+
+### 3.6 为什么不是"把摘要正文也存进事件"
+
+那会出现两份正文（事件 + 记录），改一份忘另一份就开始互相矛盾。事件记身份、
+记录存正文、账本记费用、`RunResult` 记次数——四处各有单一职责，互不重复。
 
 ## 4 生成路径（H3，待交付）
 
@@ -105,7 +168,27 @@ summaries` 的形状与回放的三道校验。
 `model_attempts` 与 `RunResult.summary_calls`、失败/预算不足/上界缺失的回落、
 本 Run 调用上限，以及长任务夹具（正确性 / 关键信息保留 / 费用 / 延迟）的实测。
 
-## 5 诚实边界（H1 就成立的部分）
+## 5 判据与负控（H2）
+
+`tests/test_summary_context.py`（17 条）+ `tests/test_summary_replay.py`（7 条），
+另更新 `tests/test_context.py` 的 `ContextView` 绊线（新增两个**纯数据**字段需要
+显式过审）。负控 **7/7 全红**：
+
+| 负控 | 被改回的错误做法 | 结果 |
+|---|---|---|
+| NC1 | 确定性装配里多插一条合成消息 | 红（`test_dropped_groups_are_the_oldest_prefix`） |
+| NC2 | 激活条件放宽成"任一段被牺牲就激活" | 红（`test_active_summary_never_overlaps_kept_history`） |
+| NC3 | 摘要消息固定插到视图末尾（位置错） | 红（`test_summary_activates_only_for_sacrificed_round_trip`） |
+| NC4 | 跳过正文摘要校验 | 红（`test_text_digest_mismatch_is_rejected`） |
+| NC5 | 摘要放不下时直接抛错（不回落） | 红（`test_summary_is_dropped_when_it_does_not_fit`） |
+| NC6 | 回放缺摘要记录时跳过校验 | 红（`test_missing_summary_record_is_a_problem_not_a_skip`） |
+| NC7 | 事件契约只改 Python 不改 JSON | 红（`test_schema_json_mirrors_python_contract`） |
+
+一条值得记的夹具教训：负控必须**被夹具挡住**才有意义。NC2 最初三次都"绿"——
+不是测试写错，而是夹具里预算太紧，摘要激活后总会把剩下的往返也牺牲掉，于是
+"重叠"根本发生不了。把预算调到"摘要 + 保留段刚好装得下"才真正区分出两种实现。
+
+## 6 诚实边界
 
 - **只保证"记录可核对"**，不保证摘要"更好"：没有评测就不许宣称摘要优于确定性
   裁剪。关键约束是否被保留，只在该夹具上验证（H3），不外推。
@@ -117,7 +200,7 @@ summaries` 的形状与回放的三道校验。
 - **不做摘要质量评测、不做增量/分层摘要、不做自动刷新**：逐条登记在
   [SPEC-SUMMARY-2026-11-11.md](SPEC-SUMMARY-2026-11-11.md) §5。
 
-## 6 判据与负控（H1）
+## 7 判据与负控（H1）
 
 `tests/test_summaries.py`（22 条）。负控 7/7 全红（把实现改回错误做法，判据必须变红）：
 

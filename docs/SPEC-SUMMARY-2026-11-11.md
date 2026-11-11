@@ -315,4 +315,6 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
 
 | PR | 内容 | 判据 | 负控 | 状态 |
 |---|---|---|---|---|
-| （待填） | H1 / H2 / H3 | （回填测试数） | （回填红/总数） | 待交付 |
+| #103 | H1 记录层 + 材料身份 | `tests/test_summaries.py` 22 条 | **7/7 红** | 已合入 |
+| （本 PR） | H2 编译注入 + 事件契约 + 回放 | `test_summary_context.py` 17 + `test_summary_replay.py` 7 | **7/7 红** | 待合入 |
+| （待开） | H3 生成路径 + 长任务夹具 | （回填） | （回填） | 待交付 |

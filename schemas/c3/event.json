@@ -908,6 +908,40 @@
                     "tool_call_id"
                   ]
                 }
+              },
+              "summaries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "summary_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "text_digest": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "source_seqs": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "summary_id",
+                    "version",
+                    "text_digest",
+                    "source_seqs"
+                  ]
+                }
               }
             },
             "additionalProperties": false,
@@ -3038,6 +3072,40 @@
                     "scope",
                     "scope_id",
                     "tool_call_id"
+                  ]
+                }
+              },
+              "summaries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "summary_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "text_digest": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "source_seqs": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "summary_id",
+                    "version",
+                    "text_digest",
+                    "source_seqs"
                   ]
                 }
               }
