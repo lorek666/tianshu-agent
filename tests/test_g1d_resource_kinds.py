@@ -80,8 +80,10 @@ def test_resource_kinds_are_a_closed_set():
         KIND_MCP,
         KIND_SUBTASK,
     }
-    # 有执行器的只有 file / memory；这点在执行侧也会被核（防两边各说一套）
-    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY}
+    # 执行器：file / memory / **network**。网络是 G2 网络阶段补的（PR #——）；
+    # MCP 与委派仍然没有执行器，仍在派发前拒绝。这点在执行侧也会被核
+    # （防两边各说一套）。
+    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK}
     # 动作集合也扩了，但**没有**把外发放进自动放行
     assert {ACTION_FETCH, ACTION_DELEGATE} <= SUPPORTED_ACTIONS
     assert ACTION_FETCH in APPROVAL_ACTIONS
@@ -313,9 +315,14 @@ def test_approval_binds_the_normalized_network_target(tmp_path):
 
 
 def test_kinds_without_an_executor_are_refused_before_dispatch():
-    """解析得出来 ≠ 能执行。没有执行器的种类在派发前拒绝，不回退成文件路径。"""
+    """解析得出来 ≠ 能执行。没有执行器的种类在派发前拒绝，不回退成文件路径。
+
+    网络在 G2 网络阶段有了执行器（`network.fetch`），所以它不再走这条拒绝；
+    但它**不是**自动放行——任务级白名单（`outbound_allow`）与逐次人工批准
+    仍然是两道门，见 `tests/test_outbound_allow.py` 与
+    `tests/test_network_fetch.py`。
+    """
     for raw, kind in (
-        ("network://https/example.com/a", KIND_NETWORK),
         ("mcp://files/read_file", KIND_MCP),
         ("subtask://task-1", KIND_SUBTASK),
     ):
@@ -324,9 +331,11 @@ def test_kinds_without_an_executor_are_refused_before_dispatch():
         assert excinfo.value.rule_id == "dispatch.resource_kind_unsupported"
         assert kind in str(excinfo.value)
 
-    # 有执行器的种类照常返回（file 是裸绝对路径，不走这条；memory 走）
+    # 有执行器的种类照常返回（file 是裸绝对路径，不走这条；memory / network 走）
     ref = resolve_scheme_resource("memory://user/local")
     assert ref.kind == KIND_MEMORY
+    ref = resolve_scheme_resource("network://https/example.com/a")
+    assert ref.kind == KIND_NETWORK
     with pytest.raises(DispatchDenied) as excinfo:
         resolve_scheme_resource("https://example.com/a")
     assert excinfo.value.rule_id == "c4.unsupported"

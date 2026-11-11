@@ -39,8 +39,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .contents import make_ref
 from .crashpoint import failpoint
 from .errors import (
+    BudgetCancelled,
+    BudgetRefused,
     OverwriteRefused,
     RunFenced,
     TianshuError,
@@ -58,6 +61,7 @@ from .execpolicy import (
     check_spawn,
     filtered_env,
 )
+from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked
 from .jobs import JobClaim, JobLost, JobStore
 from .leases import (
@@ -76,6 +80,9 @@ from .memory_exec import (
     MemoryExecutor,
     memory_scope_allowed,
 )
+from .net import NetCancelled, NetError, NetLimits
+from .net import fetch as net_fetch
+from .net import summary_text as net_summary_text
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
@@ -97,11 +104,14 @@ from .receipt import build_exec_receipt, build_memory_receipt, build_receipt
 from .resources import (
     KIND_FILE,
     KIND_MEMORY,
+    KIND_NETWORK,
     MemoryScope,
+    NetworkTarget,
     ResourceError,
     ResourceRef,
     build_memory_scope,
     is_memory_resource,
+    network_origin_allowed,
     parse_memory_uri,
     parse_resource,
 )
@@ -110,6 +120,7 @@ from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
 from .tasks import RUN_RUNNING, ExecutionPermit, Run, Task, TaskStore
 from .tools import (
+    NETWORK_TOOL_IDS,
     SPECS,
     AdmittedCall,
     DispatchRecord,
@@ -300,9 +311,9 @@ class ControlRun:
     memory_scopes: tuple[str, ...] = ()
 
 
-#: 有**执行器**的资源种类。其余种类（network / mcp / subtask）解析得出来、
-#: 也能做许可判定，但没有执行器——它们的执行器属 G2。
-EXECUTABLE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY})
+#: 有**执行器**的资源种类。其余种类（mcp / subtask）解析得出来、也能做许可
+#: 判定，但没有执行器——MCP 与委派的执行器仍未交付（G2 的网络阶段只补了网络）。
+EXECUTABLE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY, KIND_NETWORK})
 
 
 def resolve_scheme_resource(raw: str) -> ResourceRef:
@@ -355,7 +366,20 @@ class _MemoryTarget:
     kind: str = KIND_MEMORY
 
 
-_Target = _FileTarget | _MemoryTarget
+@dataclass(frozen=True)
+class _NetworkTarget:
+    """网络目标：没有文件路径、没有目录租约、也没有本地副作用。
+
+    `rel_path` / `workspace_root` 在派发表里是历史列，网络行留空；任何文件
+    执行器都不会拿到这个对象（`dispatch()` 的网络分支独立于文件分支）。
+    """
+
+    uri: str
+    target: NetworkTarget
+    kind: str = KIND_NETWORK
+
+
+_Target = _FileTarget | _MemoryTarget | _NetworkTarget
 
 
 def _now() -> int:
@@ -448,6 +472,9 @@ class Dispatcher:
         snapshots: SnapshotStore | None = None,
         data_root: Path | None = None,
         memory: object | None = None,
+        contents: object | None = None,
+        net_limits: NetLimits | None = None,
+        budget: object | None = None,
         clock=_now,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -500,6 +527,23 @@ class Dispatcher:
         # 记忆投影必须与事件日志共用同一个 SQLite 连接：投影更新要放进
         # `_commit_result()` 的同一个事务，另开连接就等于另开事实源。
         self._memory = memory
+        # 内容引用（PRD §5.2.3）：网络结果必须有界落盘并给引用，不能把大 body
+        # 直接塞进事件。与记忆同一条理由：它必须和事件在同一个 SQLite 里，
+        # 否则"事件在、内容不在"没有裁决者。
+        self._contents = contents
+        if (
+            contents is not None
+            and getattr(contents, "_conn", None) is not None
+            and getattr(contents, "_conn", None) is not self._conn
+        ):
+            raise TianshuError(
+                "Dispatcher 收到的内容存储不属于同一个 SQLite 连接："
+                "内容引用必须和事件同生共死"
+            )
+        # 网络抓取上限（超时 / 字节 / 跳数）：默认模块常量，测试可注入。
+        self._net_limits = net_limits or NetLimits()
+        # 共享预算账本（PRD §5.6）：网络抓取按 `bytes` 维度预占/结算。
+        self._budget = budget
         # `MemoryProjection` 构造处的检查只保证"它自己和一个日志同连接"，
         # 管不了派发方传进来的是**哪个**日志的投影。那样 `_commit_result()`
         # 会在 log 的事务里写事件、却在另一条连接上独立提交投影——一边回滚
@@ -654,6 +698,10 @@ class Dispatcher:
                 # 记忆前置条件是 status/revision；文件分支保持原样，连调用
                 # 顺序都不改（file 的 digest/approval 行为不能因记忆上线变化）。
                 self._check_memory_preconditions(request, target, args)
+            elif isinstance(target, _NetworkTarget):
+                # 网络没有"写前状态"：没有本地副作用，也没有可撤销内容。
+                # 真正的门是任务白名单（`_authority`）与逐次人工批准。
+                pass
             else:
                 if request.action == ACTION_EXEC:
                     self._precheck_exec(request, args, target.path)
@@ -666,6 +714,17 @@ class Dispatcher:
                     )
         except DispatchDenied as exc:
             return self._reject(request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED)
+
+        # 网络还要多查一道：字节额度够不够**这一次**抓取。放在 prepare（弹批准
+        # 之前）而不是只在 dispatch 里预占，是为了不给人一个"批了也发不出去"的
+        # 批准——那道批准会白占一次人工决定。
+        if isinstance(target, _NetworkTarget):
+            try:
+                self._precheck_network_budget(request)
+            except DispatchDenied as exc:
+                return self._reject(
+                    request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED
+                )
 
         policy_preconditions = self._policy_preconditions(request, target, args)
         decision = self._policy.classify(
@@ -810,7 +869,10 @@ class Dispatcher:
             with self._log.transaction() as tx:
                 auth = self._authority(request, claim)
                 target = self._resolve_target(request, auth)
-                if not isinstance(target, _MemoryTarget) and request.action == ACTION_EXEC:
+                if (
+                    not isinstance(target, (_MemoryTarget, _NetworkTarget))
+                    and request.action == ACTION_EXEC
+                ):
                     self._precheck_exec(request, args, target.path)
 
                 existing = self.dispatch_record(request.run_id, request.call_id)
@@ -831,6 +893,8 @@ class Dispatcher:
 
                 if isinstance(target, _MemoryTarget):
                     self._check_memory_preconditions(request, target, args)
+                elif isinstance(target, _NetworkTarget):
+                    pass
                 else:
                     ok, reason = check_request_preconditions(
                         request.action, target.path, request.preconditions or {}
@@ -905,6 +969,12 @@ class Dispatcher:
         admitted = self._admitted(request, claim, target, seq, approval_id, grant_id)
         dispatch_id = admitted.dispatch_id
 
+        # ---- 网络分支：没有目录、没有租约、没有本地副作用 ----
+        if isinstance(target, _NetworkTarget):
+            return self._dispatch_network(
+                request, dispatch_id, target, seq
+            )
+
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
         memory_committed = False
         try:
@@ -963,6 +1033,245 @@ class Dispatcher:
         # "重放不会补出第二条效果"。
         failpoint("after_result")
         failpoint("after_receipt")
+        return result
+
+
+    # ---- 网络执行 ----
+
+    def _cancel_requested(self, run_id: str) -> bool:
+        """Run 是否已被要求停下（cancel / pause）。
+
+        暂停也按"不再派发新副作用"处理：网络请求有成本、有外发，不能因为用户
+        点了暂停还偷偷再发一个。已经发出的请求无法撤回——这条如实写在文档里。
+        """
+        from .tasks import CONTROL_REQUESTS
+
+        run = self._tasks.get_run(run_id)
+        if run is None:
+            return False
+        action = getattr(run, "control_requested", None)
+        return action in CONTROL_REQUESTS
+
+    def _precheck_network_budget(self, request: ActionRequest) -> None:
+        """不预占，只回答"这一次抓取的字节上界还放得下吗"。
+
+        账本不可用 / 账户不存在（直接调派发的单元测试）时放行：真正的预占在
+        `_dispatch_network` 里做，那里失败同样不会发包。
+        """
+        if self._budget is None:
+            return
+        account_id = f"run:{request.run_id}"
+        if getattr(self._budget, "account", lambda _a: None)(account_id) is None:
+            return
+        usage = self._budget.usage(account_id)
+        limit = (usage.get("limits") or {}).get("bytes")
+        if limit is None:
+            return
+        used = int((usage.get("reserved") or {}).get("bytes", 0)) + int(
+            (usage.get("settled") or {}).get("bytes", 0)
+        )
+        need = self._net_limits.max_bytes
+        if used + need > limit:
+            raise DispatchDenied(
+                f"预算不足：bytes 已用 {used}，本次抓取最多读 {need}，"
+                f"上限 {limit}。请求没有发出。",
+                "dispatch.budget_refused",
+            )
+
+    def _reserve_network_bytes(self, request: ActionRequest) -> object | None:
+        """抓取前按 `bytes` 维度预占。额度不足 / 已取消 / 过 deadline 一律拒发。
+
+        预占的是**本次最多读多少**（可验证上界），不是估算；所以一次抓取最多
+        读 `limits.max_bytes`，而账本上限决定能发几次。账户不存在（例如直接调
+        派发的单元测试）时不预占，也不伪造一个账户——如实登记为未记账。
+        """
+        if self._budget is None:
+            return None
+        account_id = f"run:{request.run_id}"
+        account = getattr(self._budget, "account", lambda _a: None)(account_id)
+        if account is None:
+            return None
+        return self._budget.reserve(
+            account_id,
+            attempt_id=f"net:{request.call_id}",
+            run_id=request.run_id,
+            call_id=request.call_id,
+            need={"bytes": self._net_limits.max_bytes},
+        )
+
+    def _settle_network_bytes(
+        self, reservation: object | None, actual: int | None
+    ) -> None:
+        """结算字节。`actual is None` = **不知道读了多少**：保留预占，不记零。
+
+        "不知道"与"没花钱"是两件事：把失败的抓取按 0 结算，会让账本看起来
+        比事实便宜；保留占用则交给 `reconcile()` 报告，由人核对执行证据。
+        """
+        if self._budget is None or reservation is None:
+            return
+        if actual is None:
+            self._budget.settle(
+                reservation.reservation_id,
+                usage={},
+                known_dimensions=set(),
+            )
+            return
+        self._budget.settle(
+            reservation.reservation_id,
+            usage={"bytes": actual},
+            known_dimensions={"bytes"},
+        )
+
+    def _write_content(self, request: ActionRequest, body: bytes) -> str:
+        """把抓到的字节写成内容引用。
+
+        **先落盘、后写事件**：先写 `tool.result` 再落盘的话，崩溃会让日志承诺
+        一份不存在的内容。blob 写成功但事件没写成的窗口只会留下一个孤儿文件
+        （没有事件指向它），不会让回放读到幻觉。
+        """
+        if self._contents is None:
+            raise TianshuError(
+                "没有内容存储：网络结果必须有界落盘并给引用，"
+                "不会把大 body 直接塞进事件"
+            )
+        blob_dir = getattr(self._snapshots, "blob_dir", None) or self._log.blob_dir
+        if blob_dir is None:
+            raise TianshuError(
+                "没有 blob 目录：网络结果无法落盘（SnapshotStore 与 EventLog "
+                "都没有 blob_dir）"
+            )
+        digest = sha256_hex(body)
+        blob = Path(blob_dir) / digest
+        if not blob.exists():
+            atomic_write_bytes(blob, body)
+        self._contents.record(
+            digest, body, task_id=request.task_id, run_id=request.run_id
+        )
+        return make_ref(digest)
+
+    def _dispatch_network(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _NetworkTarget,
+        intent_seq: int,
+    ) -> ToolResult:
+        """网络分支：先查取消、再预占字节、最后才发包。
+
+        顺序是刻意的：任何一步在前两步失败都不会产生一个请求——"取消或额度
+        耗尽后无新请求"是这样成立的，而不是靠执行器自觉。
+        """
+        # 1) 已取消 / 已暂停：一个包都不发。
+        if self._cancel_requested(request.run_id):
+            # 注意：`tool.result.status` 的封闭集没有 "cancelled"（契约只认
+            # succeeded/failed/rejected/unknown）。取消的语义放进
+            # `output.reason = "net.cancelled"`，状态按 failed 记——"没发出去"
+            # 是确定结论，`effect_state=none_applied`。
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {
+                    "error": "Run 已取消：没有发出网络请求",
+                    "reason": "net.cancelled",
+                    "url": target.uri,
+                },
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+
+        # 2) 字节预算预占（可验证上界 = 本次最多读多少）。
+        try:
+            reservation = self._reserve_network_bytes(request)
+        except (BudgetRefused, BudgetCancelled) as exc:
+            # 预占被拒 = 确定没发包。走既有的"复审拒绝"路径，事件/派发状态
+            # 与其它守卫内拒绝保持同一形状。
+            return self._abort_dispatch(
+                request,
+                dispatch_id,
+                DispatchDenied(str(exc), "dispatch.budget_refused"),
+            )
+
+        # 3) 发包。
+        try:
+            fetched = net_fetch(
+                target.target,
+                limits=self._net_limits,
+                cancel=lambda: self._cancel_requested(request.run_id),
+            )
+        except NetCancelled as exc:
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {
+                    "error": str(exc),
+                    "reason": "net.cancelled",
+                    "url": target.uri,
+                },
+            )
+            # 取消可能发生在读到一半之后：字节用量未知，保留预占。
+            self._settle_network_bytes(reservation, None)
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+        except NetError as exc:
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {"error": str(exc), "reason": exc.reason, "url": target.uri},
+            )
+            # 连不上 = 确定一个字节都没读；其余失败（超时 / 读到一半断了）
+            # 用量未知，保留预占。
+            known_zero = exc.reason in (
+                "net.connect",
+                "net.connect_timeout",
+                "net.tls",
+                "net.arg_not_canonical",
+                "net.arg_invalid",
+                "net.limits",
+            )
+            self._settle_network_bytes(reservation, 0 if known_zero else None)
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+        except Exception as exc:  # noqa: BLE001 - 执行器自己炸了：效果未知
+            self._settle_network_bytes(reservation, None)
+            return self._fail_unknown(request, dispatch_id, target, exc)
+
+        # 4) 先落内容引用，再写结果事件。
+        try:
+            ref = self._write_content(request, fetched.body)
+        except Exception as exc:  # noqa: BLE001 - 落盘失败：确定没有事件承诺
+            self._settle_network_bytes(reservation, len(fetched.body))
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {
+                    "error": f"网络结果无法落盘：{type(exc).__name__}: {exc}",
+                    "url": fetched.uri,
+                    "reason": "net.content_unavailable",
+                },
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+
+        summary, clipped = net_summary_text(
+            fetched, limit_bytes=self._net_limits.summary_bytes
+        )
+        output: dict[str, Any] = {
+            "url": fetched.uri,
+            "status": fetched.status,
+            "content_type": fetched.content_type,
+            "bytes": len(fetched.body),
+            "truncated": fetched.truncated or clipped,
+            "redirects": list(fetched.redirects),
+            "elapsed_ms": fetched.elapsed_ms,
+            "ref": ref,
+            "summary": summary,
+        }
+        if not fetched.is_text:
+            output["binary"] = True
+        result = ToolResult("succeeded", "none_applied", output)
+        self._settle_network_bytes(reservation, len(fetched.body))
+        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        failpoint("after_result")
         return result
 
     # ---- 撤销 ----
@@ -1592,36 +1901,41 @@ class Dispatcher:
                 raise DispatchDenied(
                     f"资源引用不合法：{exc}", "c4.unsupported"
                 ) from exc
-            if len(parsed) != 1 or parsed[0].kind != KIND_MEMORY:
-                if request.tool_id in MEMORY_TOOL_IDS:
+            if len(parsed) != 1:
+                raise DispatchDenied(
+                    "一次动作只能声明一个带 scheme 的资源", "c4.multi_resource"
+                )
+            ref = parsed[0]
+            if ref.kind == KIND_MEMORY:
+                if request.tool_id not in MEMORY_TOOL_IDS:
                     raise DispatchDenied(
-                        "记忆工具的资源必须是单个 memory:// 作用域",
+                        f"非记忆工具收到记忆资源：{request.tool_id} → "
+                        f"{request.resources[0]!r}",
                         "dispatch.memory_resource_mismatch",
                     )
-                raise DispatchDenied(
-                    "带 scheme 的资源只支持单个 memory:// 作用域",
-                    "c4.multi_resource",
+                scope = ref.memory_scope
+                is_control = bool(getattr(task, "is_control", False))
+                declared = (
+                    tuple(getattr(task, "memory_scopes", ()) or ())
+                    if is_control
+                    else ()
                 )
-            if request.tool_id not in MEMORY_TOOL_IDS:
-                raise DispatchDenied(
-                    f"文件工具收到记忆资源：{request.resources[0]!r}",
-                    "dispatch.memory_resource_mismatch",
+                allowed, reason = memory_scope_allowed(
+                    scope,
+                    task_id=request.task_id,
+                    bindings=bindings,
+                    declared=declared,
                 )
-            scope = parsed[0].memory_scope
-            is_control = bool(getattr(task, "is_control", False))
-            declared = (
-                tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
+                if not allowed:
+                    # 租约是给目录的；记忆跳过租约，但**不跳过**作用域授权。
+                    raise DispatchDenied(reason, "c4.memory_scope_denied")
+                return _Authority(run, task, bindings, [], [])
+            if ref.kind == KIND_NETWORK:
+                return self._authority_network(request, task, run, bindings, ref)
+            raise DispatchDenied(
+                f"{ref.kind} 资源的执行器尚未实现（G2），拒绝派发：{ref.uri}",
+                "dispatch.resource_kind_unsupported",
             )
-            allowed, reason = memory_scope_allowed(
-                scope,
-                task_id=request.task_id,
-                bindings=bindings,
-                declared=declared,
-            )
-            if not allowed:
-                # 租约是给目录的；记忆跳过租约，但**不跳过**作用域授权。
-                raise DispatchDenied(reason, "c4.memory_scope_denied")
-            return _Authority(run, task, bindings, [], [])
 
         if request.tool_id in MEMORY_TOOL_IDS:
             raise DispatchDenied(
@@ -1670,6 +1984,43 @@ class Dispatcher:
 
         return _Authority(run, task, bindings, resources, lease_paths)
 
+    def _authority_network(
+        self,
+        request: ActionRequest,
+        task: Task,
+        run: Run,
+        bindings: list[WorkspaceBinding],
+        ref: ResourceRef,
+    ) -> _Authority:
+        """网络资源的授权：任务级白名单 + 工具归属。
+
+        这是**第一道**门（"这个任务准不准出网、能去哪几个源"），第二道是逐次
+        人工批准（`c4.outbound`）。两道门都在 `prepare()` 里走完，所以白名单
+        不通过的任务**不会**被弹一个"批了也发不出去"的批准。
+
+        网络没有目录租约、没有 workspace 绑定：零目录的研究任务合法。
+        """
+        if request.tool_id not in NETWORK_TOOL_IDS:
+            raise DispatchDenied(
+                f"非网络工具收到网络资源：{request.tool_id} → {ref.uri}",
+                "dispatch.network_resource_mismatch",
+            )
+        target = ref.network_target
+        declared = tuple(getattr(task, "outbound_allow", ()) or ())
+        if not declared:
+            raise DispatchDenied(
+                "任务没有声明任何外发白名单（outbound_allow），拒绝出网："
+                f"{target.origin_uri}（创建任务时用 --allow-outbound 显式声明）",
+                "c4.outbound_not_allowed",
+            )
+        if not network_origin_allowed(target, declared):
+            raise DispatchDenied(
+                f"外发目标 {target.origin_uri} 不在任务的白名单里"
+                f"（允许：{list(declared)}），拒绝出网",
+                "c4.outbound_not_allowed",
+            )
+        return _Authority(run, task, bindings, [], [])
+
     def _resolve_target(self, request: ActionRequest, auth: _Authority) -> _Target:
         if len(request.resources) != 1:
             # 文件分支的历史文案与编号保持不变（旧日志/测试逐字依赖它）。
@@ -1693,6 +2044,15 @@ class Dispatcher:
             # 记忆不 Path.resolve，也不要求目录租约：作用域授权已在
             # `_authority()` 里独立核验。
             return _MemoryTarget(scope=scope, uri=scope.to_uri())
+
+        if isinstance(raw, str) and raw.startswith("network://"):
+            if request.tool_id not in NETWORK_TOOL_IDS:
+                raise DispatchDenied(
+                    f"网络资源只能配网络工具：{request.tool_id} → {raw}",
+                    "dispatch.network_resource_mismatch",
+                )
+            ref = resolve_scheme_resource(raw)
+            return _NetworkTarget(uri=ref.uri, target=ref.network_target)
 
         # 资源种类按 scheme 判定（见 resources.py）。**没有执行器**的种类在这里
         # 就拒绝：既不回退成"当成文件路径试试"，也不进审批流程给用户一个
@@ -1863,6 +2223,15 @@ class Dispatcher:
             rel_path = ""
             workspace_root = target.scope.scope_id
             resource_key = f"memory:{target.scope.scope}:{target.scope.scope_id}"
+        elif isinstance(target, _NetworkTarget):
+            # 网络既没有目录也没有作用域：目标记规范 URI，资源键用源 + 路径，
+            # 事后能直接回答"这次到底发了什么"。
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = (
+                f"network:{target.target.origin_uri}{target.target.path}"
+            )
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -1935,6 +2304,13 @@ class Dispatcher:
             rel_path = ""
             workspace_root = target.scope.scope_id
             resource_key = f"memory:{target.scope.scope}:{target.scope.scope_id}"
+        elif isinstance(target, _NetworkTarget):
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = (
+                f"network:{target.target.origin_uri}{target.target.path}"
+            )
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -2291,8 +2667,9 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
-        if isinstance(target, _MemoryTarget):
-            # 记忆没有可阻断的目录；而且**绝不**在这里调用 apply_event：
+        if isinstance(target, (_MemoryTarget, _NetworkTarget)):
+            # 记忆没有可阻断的目录；网络同样没有本地目录可阻断。
+            # 而且**绝不**在这里调用 apply_event：
             # 结果未知就是"投影是否更新不知道"，补写一条投影会让未知变成
             # 一个编出来的确定结论。事件与派发状态仍同事务落库。
             with self._log.transaction():
@@ -2346,6 +2723,7 @@ class Dispatcher:
         谁失败就一起回滚。
         """
         is_memory = isinstance(target, _MemoryTarget)
+        is_network = isinstance(target, _NetworkTarget)
         projection = self._memory_projection() if is_memory else None
 
         result_event = {
@@ -2398,6 +2776,10 @@ class Dispatcher:
             else:
                 # propose 是候选草稿，不产凭据（F10 §7）。
                 receipt = None
+        elif is_network:
+            # 网络没有本地副作用，也没有可撤销内容：不产凭据。
+            # （凭据回答"改了什么"；"发了什么"在 tool.result 的 url/ref 里。）
+            receipt = None
         elif request.action == ACTION_EXEC:
             # 命令的"写后状态"不是文件哈希：凭据记的是执行摘要，磁盘核对
             # 由 verify_receipts 明确跳过（见 receipt.build_exec_receipt）。
@@ -2572,6 +2954,41 @@ def build_request(
             resources=(scope.to_uri(),),
             args_hash=sha256_hex(canonical_bytes(args)),
             preconditions=memory_pre,
+        )
+
+    if raw_target.startswith("network://"):
+        if tool_id not in NETWORK_TOOL_IDS:
+            raise ToolNotAllowed(
+                f"非网络工具不能使用网络资源：{tool_id} → {raw_target}"
+            )
+        try:
+            net_ref = parse_resource(raw_target)
+        except ResourceError as exc:
+            raise ToolArgumentError(f"网络资源引用不合法：{exc}") from exc
+        if net_ref.kind != KIND_NETWORK:  # pragma: no cover - 前缀已判
+            raise ToolArgumentError(f"不是网络资源：{raw_target}")
+        # 网络动作的"写前状态"不是磁盘：没有本地副作用，也没有可撤销内容。
+        # 白名单在派发阶段从权威任务再读一次（见 `_authority`），这里不复制
+        # 一份声明进请求——审批摘要绑住的是**目标**，不是当时的内存快照。
+        return ActionRequest(
+            request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
+            task_id=task.task_id,
+            run_id=run.run_id,
+            job_id=claim.job_id,
+            claim_epoch=claim.claim_epoch,
+            owner_instance_id=claim.owner_instance_id,
+            goal_revision=run.goal_revision,
+            lease_epoch=run.lease_epoch,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            tool_id=tool_id,
+            tool_version=spec.version,
+            schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
+            description_hash=spec.description_digest(),
+            action=spec.action,
+            resources=(net_ref.uri,),
+            args_hash=sha256_hex(canonical_bytes(args)),
+            preconditions={},
         )
 
     if tool_id in MEMORY_ALL_TOOL_IDS:

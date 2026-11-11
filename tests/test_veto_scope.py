@@ -68,7 +68,7 @@ from tianshu.tools import SPECS, ExecutionPermit, tool_manifest
 REPO = Path(__file__).resolve().parents[1]
 ORIGINAL = "原始内容\n"
 #: 模型动作的封闭集合（PRD §5.2 / C4）。没有任何一项等于"启动 Run"。
-MODEL_ACTION_SET = {"read", "create", "overwrite", "delete", "exec"}
+MODEL_ACTION_SET = {"read", "create", "overwrite", "delete", "exec", "fetch"}
 #: 控制面/CLI 才有的动作名。模型工具里出现它们就是越界。
 CONTROL_ONLY_NAMES = {
     "run_start",
@@ -228,6 +228,10 @@ def test_model_tool_surface_has_no_run_start():
         "memory.confirm",
         "memory.forget",
         "memory.edit",
+        # G2 网络阶段：抓取是**外发**，不是新建 Run。它建不出 Run（`tools.py`
+        # 拿不到 TaskStore），所以不触及"模型不能建 Run"这条前提；放进这份
+        # 字面清单就是那次显式过审。
+        "network.fetch",
     }
 
 

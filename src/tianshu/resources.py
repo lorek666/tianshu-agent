@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -216,6 +217,18 @@ class NetworkTarget:
         if self.query:
             uri = f"{uri}?{self.query}"
         return uri
+
+    @property
+    def origin_uri(self) -> str:
+        """**源**的规范写法：`network://<transport>/<host>[:port]`（不带路径）。
+
+        任务级外发白名单存的是源，不是 URL：白名单回答"这个任务能不能跟这台
+        服务器说话"，路径级别的取舍交给逐次人工批准。这里的写法与 `to_uri()`
+        的根路径（`network://https/example.com/`）**归一后是同一个目标**，
+        但对人来说少一个尾斜杠更不像 URL，也不会诱导人把路径写进白名单。
+        """
+        authority = self.host if self.port is None else f"{self.host}:{self.port}"
+        return f"{NETWORK_SCHEME}{SCHEME_SEP}{self.transport}/{authority}"
 
     @property
     def origin(self) -> str:
@@ -505,6 +518,74 @@ def is_memory_resource(raw: object) -> bool:
     return parse_resource(raw).kind == KIND_MEMORY
 
 
+def parse_network_origin(raw: object) -> str:
+    """任务级外发白名单的一项 → 规范的**源**。
+
+    只接受 `network://<transport>/<host>[:port]`（`https://...` 不是本项目的
+    资源写法，明确拒绝而不是偷偷当别名）：一个目标一种写法，审批摘要与事件
+    payload 才不会被"同一个源的两种写法"劈成两份。
+
+    路径与查询一律拒绝：白名单是**源**级别声明；如果允许写路径，人会以为
+    "只许访问 /docs"，而实际执行侧只按 host+port 判——那是一条**假**的保证。
+    """
+    if not isinstance(raw, str) or not raw:
+        raise ResourceError(f"外发白名单项必须是非空字符串：{raw!r}")
+    if raw != raw.strip():
+        raise ResourceError(f"外发白名单项不能带首尾空白：{raw!r}")
+    try:
+        target = NetworkTarget.parse(raw)
+    except ResourceError as exc:
+        raise ResourceError(
+            f"外发白名单项必须是源（例如 network://https/example.com）：{exc}"
+        ) from exc
+    if target.path != "/" or target.query:
+        raise ResourceError(
+            "外发白名单项是源（transport + 主机 + 端口），不接受路径或查询："
+            f"{raw!r}；路径级别的取舍在逐次人工批准里做"
+        )
+    return target.origin_uri
+
+
+def normalize_network_origins(items: object) -> tuple[str, ...]:
+    """把创建入口给的白名单归一成**去重 + 排序**的规范元组。
+
+    排序不是洁癖：同一份声明必须在事件 payload 里得到同一份字节，
+    否则"同一个任务两次创建"会产生两条看起来不同的记录。
+    """
+    if items is None:
+        return ()
+    if isinstance(items, str) or not isinstance(items, (list, tuple)):
+        raise ResourceError(
+            f"outbound_allow 必须是字符串数组：{type(items).__name__}"
+        )
+    return tuple(sorted({parse_network_origin(item) for item in items}))
+
+
+def network_origin_allowed(
+    target: NetworkTarget, origins: Iterable[object]
+) -> bool:
+    """目标是否落在白名单里（按 transport + host + port **精确**比较）。
+
+    不做后缀 / 通配匹配：`a.example.com` 与 `example.com` 是两台机器，
+    拿后缀当允许等于让一个源头批准带出整个域。
+
+    落库的白名单项本应已是规范形；万一出现了坏值，这里**不放行**（continue），
+    而不是让一条损坏的声明把任务变成"什么都能发"。
+    """
+    for raw in origins:
+        try:
+            origin = NetworkTarget.parse(raw)  # type: ignore[arg-type]
+        except ResourceError:
+            continue
+        if (origin.transport, origin.host, origin.port) == (
+            target.transport,
+            target.host,
+            target.port,
+        ):
+            return True
+    return False
+
+
 def build_memory_scope(scope: object, scope_id: object) -> MemoryScope:
     """由 (scope, scope_id) 构造作用域，**统一 canonicalize**。
 
@@ -553,8 +634,11 @@ __all__ = [
     "SCOPE_WORKSPACE",
     "USER_SCOPE_ID",
     "is_memory_resource",
+    "network_origin_allowed",
+    "normalize_network_origins",
     "memory_uri",
     "parse_memory_uri",
+    "parse_network_origin",
     "parse_resource",
     "resource_uri",
 ]

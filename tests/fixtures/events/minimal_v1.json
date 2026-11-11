@@ -290,7 +290,8 @@
       "lease_epoch": 1,
       "memory_scopes": [],
       "task_id": "x",
-      "workspaces": []
+      "workspaces": [],
+      "outbound_allow": []
     },
     "task.revised": {
       "goal": "x",

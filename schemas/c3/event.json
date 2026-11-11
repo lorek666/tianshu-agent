@@ -1189,6 +1189,7 @@
               "memory.remember",
               "memory.search",
               "modify_text",
+              "network.fetch",
               "read_content",
               "read_text",
               "restore_file",
@@ -2071,6 +2072,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "outbound_allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,
@@ -2082,7 +2089,8 @@
           "workspaces",
           "exec_policy",
           "control",
-          "memory_scopes"
+          "memory_scopes",
+          "outbound_allow"
         ]
       },
       "task.revised": {
@@ -2166,6 +2174,7 @@
               "memory.remember",
               "memory.search",
               "modify_text",
+              "network.fetch",
               "read_content",
               "read_text",
               "restore_file",
@@ -2246,6 +2255,7 @@
               "memory.remember",
               "memory.search",
               "modify_text",
+              "network.fetch",
               "read_content",
               "read_text",
               "restore_file",
@@ -3341,6 +3351,7 @@
               "memory.remember",
               "memory.search",
               "modify_text",
+              "network.fetch",
               "read_content",
               "read_text",
               "restore_file",
@@ -4037,6 +4048,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "outbound_allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,
@@ -4168,6 +4185,7 @@
               "memory.remember",
               "memory.search",
               "modify_text",
+              "network.fetch",
               "read_content",
               "read_text",
               "restore_file",
