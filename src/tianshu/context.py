@@ -388,16 +388,27 @@ def _compact_note(dropped_seqs: list[int]) -> str:
 
 
 def _spill_stub(digest: str, data: bytes) -> str:
-    """落盘占位：blob 身份 + 精确字节数 + 头尾预览。"""
+    """落盘占位：可用的**内容引用** + 精确字节数 + 头尾预览。
+
+    `ref` 这一行是 PRD §5.2.3「大结果以有界摘要 + 内容引用返回」的关键：没有它，
+    模型只知道"有东西落盘了"，取不回来，等于有界但没有引用。引用形状与
+    `contents.parse_ref()` 同源（`content://sha256:<64hex>`）。
+    """
+    # 引用只在这里拼一次：两处各拼一遍就会出现"改了其中一处"的漂移，
+    # 而占位文本是模型能看见的唯一线索。
+    ref = f"content://sha256:{digest}"
     return (
         "[tool-output-spilled]\n"
         f"sha256: {digest}\n"
+        f"ref: {ref}\n"
         f"原始字节数: {len(data)}\n"
         f"头 {PREVIEW_BYTES} 字节预览:\n"
         f"{_preview(data[:PREVIEW_BYTES], PREVIEW_BYTES)}\n"
         f"尾 {PREVIEW_BYTES} 字节预览:\n"
         f"{_preview(data[-PREVIEW_BYTES:], PREVIEW_BYTES)}\n"
-        "完整内容已按内容寻址落盘；本占位由 compile_context 确定性生成，不含时间戳。"
+        "完整内容已按内容寻址落盘。需要原文时用 read_content 分页读取："
+        f'{{"ref": "{ref}"}}（可选 offset / length）。\n'
+        "本占位由 compile_context 确定性生成，不含时间戳。"
     )
 
 
