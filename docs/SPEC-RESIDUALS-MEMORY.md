@@ -240,6 +240,61 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   hybrid 各跑一次，报告落 `docs/memory-retrieval-eval.md`。**只报实测数字**；同义改写
   样例若 hybrid 没赢，就如实写没赢。
 
+### 3.4 落地记录（N2 实际，2026-11-11，分支 `feat/memory-retrieval`）
+
+- **作用域优先级（#23）**：`memory.RecallPriority(task_id, workspace_roots)` +
+  `proximity_pair()`；排序键 `(优先级, origin 权重, created_at 降序, memory_id)`。
+  关键决定：优先级是**上下文**的函数，不是 `allowed` 的函数——这正是旧设计里
+  "压序会依赖调用方传了哪些 scope"的解法（`allowed` 只决定可见性）。主循环
+  `loop._memory_priority(task)` 从 Task 的绑定目录算，CLI 从 `--task-id/--workspace` 算。
+  测试 `tests/test_memory_rank.py`（7 条）；负控：去掉优先级 → 顺序用例红。
+- **向量（#20）**：新模块 `src/tianshu/memory_index.py`：
+  - `EmbeddingProvider` 协议（`model_id` / `dim` / `embed`）；
+  - `HashEmbeddingProvider`：确定性哈希基线，**无语义能力**（模块 docstring 写死"不许
+    对外声称语义召回"，评测报告也按这个口径写）；
+  - `MemoryIndex`：表 `memory_vectors` / `memory_vector_meta`；`model_id+dim` 过滤；
+    `availability()` 返回 `(可用, 原因)`——**要求 built 标记 + provider 身份 + 覆盖校验**
+    （空表/半套向量/换 provider 未重建一律不可用）；`rebuild()` 清空重算并置 built；
+    `rf_fuse()` 纯函数（`k=60`）；建表在回滚事务后可重试（与投影同款缓存修正）；
+    `search()` 的 `now` **必填**（过期判定不接受"默认当前时间"）。
+  - `MemoryProjection` 用 duck-typed `index=` 接上（不 import `memory_index`，避免环），
+    在 `_apply_propose`（仅 active）/`_apply_confirm`/`_supersede`/`_apply_forget`/
+    `_apply_erase` 里维护向量；`rebuild()` 清空向量后按事件重放重建。
+  - `MemoryProjection.retrieve()` 返回 `RecallOutcome(items, semantic, degraded, fused)`；
+    **候选是 FTS ∪ 语义的并集**（语义路即使 FTS 为空也跑；语义独有候选按同一套过滤
+    并入），RRF 融合 bm25 与语义两路名次后再按作用域优先级分组。`search()` 保持
+    **明确的 FTS-only**（不偷偷变 hybrid），`Recalled.score_kind` 标明 `origin`/`rrf`。
+    主循环 `memory.search` 输出新增 `semantic` / `degraded` / `fused`，条目带
+    `score_kind`；CLI `--json` 同样三项（形状由数组改对象，README 标注 breaking）。
+  - **生产接线**：`build_stack(embedding_provider=...)` / `TIANSHU_EMBEDDING_PROVIDER=hash`
+    （CLI / daemon / worker 走同一装配路径）；只接受 hash 基线，外部 provider 需数据
+    外发许可、尚未接线（代码里报错而不是静默忽略）。**构建入口**是
+    `tianshu memory rebuild-vectors`：只装配 provider 不会构建向量，必须显式建一次
+    索引（否则 `availability()` 报"尚未建立"、检索永远 FTS-only）。
+  - **能力边界**：未配置 provider → FTS-only + `degraded` 原因；换 provider 未重建 →
+    旧向量不参与且仍报降级。`memory_vector_meta` 只在**成功 `rebuild()`** 时写 built/provider（建表不写），
+    后接的 provider 不能改写历史（否则 availability 会误报 True）；只有成功 `rebuild()` 才写 built/provider。
+- **测试**：`tests/test_memory_vectors.py`（26 条）+ `tests/test_memory_rank.py`（7 条）
+  + `tests/test_memory_loop.py` 的 3 条输出/接线用例。负控 5 条都真跑过：去掉优先级 /
+  availability 永不降级 / 去掉确认后的索引钩子 / 语义路只采纳 FTS 候选 / 去掉索引建表
+  的事务判断。
+- **评测**：`scripts/eval_memory_retrieval.py` + `docs/memory-retrieval-eval.md`
+  （22 query / 25 记忆；FTS MRR 0.864 → hybrid-hash 0.955（mixed 0.875）；**Recall@5 两者都
+  1.000 = 饱和**，报告里写清"不是语义能力证明"）。
+- **偏差 / 没做到**：
+  1. `_SCHEMA_VERSION` **没有**从 2 再往上加：`memory_vectors` 是**可选派生表**，随
+     provider 身份落在 `memory_vector_meta`，不进 `memories` 的形状契约；规格 §1 #10 原写
+     "新建 memory_vectors 属于 v2"，N4 已把 v2 用掉，这里按"派生表不参与版本"处理。
+  2. 没有真 embedding provider（只有哈希基线）；语义能力要等用户显式配置的 provider +
+     数据外发许可（F10 §10）。
+  3. `assess_run` 之类的恢复路径不消费向量（向量可重建，不参与副作用结算）。
+  4. reranker 只有接缝设想，未实现；评测不含重排效果。
+  5. 跨千条记忆的召回上限、RRF `k` 的敏感性、bm25 与优先级的加权变体都没评测。
+  6. **没有真 embedding provider**；生产只接受 `hash` 基线（评测结论仅"两路名次融合"，
+     不等于语义能力）。外部 provider 的配置项、数据外发许可、密钥管理都未接线。
+  7. 首轮复审抓到的**两个真洞**已修：语义路原来只是"FTS 候选的重排器"（FTS 空就不跑、
+     语义独有候选被丢），以及 `availability()` 在空索引/混合 provider 下报假 true。
+
 ---
 
 ## 4. N3 · L2/L3 蒸馏（增量、带证据、可回放）+ freshness
