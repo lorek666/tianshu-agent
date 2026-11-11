@@ -381,7 +381,7 @@ ToolDefinition {
 
 #### 5.2.1 记忆工具（F10，v1.1）
 
-记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。五个工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型。
+记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。五个**模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有一个控制面专属、`exposed=False` 的 `memory.remember`（见 §5.2.2），模型清单里没有它。
 
 | tool_id | version | `side_effect_level` | `exec_model` | C4 动作 | 审批 | 走哪条执行路径 |
 |---|---|---|---|---|---|---|
@@ -391,7 +391,7 @@ ToolDefinition {
 | `memory.confirm` | `1.0` | `non_idempotent` | E3 | `overwrite` | 需要（`origin=user_explicit` 除外，见下方注） | dispatcher |
 | `memory.forget` | `1.0` | `non_idempotent` | E3 | `delete` | 需要（等同删除） | dispatcher |
 
-> **注**：`origin=user_explicit` 的免审批确认目前**生产侧没有产生入口**——`memory_exec.MemoryExecutor._propose` 固定写 `origin="inferred"`（防模型自称"用户明示"绕过审批）。策略分支本身有测试钉住：`tests/test_memory_dispatch.py::test_user_explicit_confirm_needs_no_approval`（用播种事件制造的 `user_explicit`）。别把这一行读成"用户说一句记住就自动激活"。
+> **注（N1 之后）**：`origin` 的两档现在都有产生入口——`user_explicit` 由控制面 `memory.remember` 创建（人敲命令就是签发者），`user_confirmed` 由"人批准了 `memory.confirm`"在执行侧升级（`tests/test_memory_dispatch.py::test_human_approval_upgrades_origin_to_user_confirmed`）。模型发起的 propose 仍固定写 `inferred`（防模型自称"用户明示"绕过审批）。**免审批的 user_explicit 候选确认**这条策略分支仍没有生产入口：`memory.remember` 直接写 active，不产生候选。别把这段读成"用户说一句记住就自动激活一条已有候选"。
 
 - `side_effect_level` / `exec_model` / `action` 是 `ToolSpec` 的字段（`tools.ToolSpec`）；`version` 进 `ActionRequest.tool_version`、`input_schema` 的规范化摘要进 `schema_hash`（`dispatcher.build_request`）。两者都被审批摘要绑住（§5.4）：**schema 变化即新工具**（红线 8），不自动升级。
 - 映射到 C4 动作的口径：`propose`→`create`、`confirm`→`overwrite`、`forget`→`delete`（`SPECS` 里的 `action=`）。所以 `confirm` / `forget` 天然落到 `permissions.PolicyEngine.classify` 的 overwrite / delete 分支，与"覆盖、删除需审批"（红线 6）同一口径；`propose` 落在 `AUTO_ACTIONS`（`permissions.AUTO_ACTIONS`）。
@@ -464,6 +464,8 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   `user_confirmed` 只能由"人批准了 `memory.confirm`"这件事产生——执行侧读审批记录，并把
   `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
   `additionalProperties: false` 保持。
+
+**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`、`memory.remember` 已落地（含控制面判据与 CLI）；`memory.edit` / `memory.promote` / `memory.consolidate` / `memory.erase` 仍是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。别把这张表读成"六个工具都能调"。
 
 ### 5.3 C3 Event
 
@@ -699,6 +701,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.exec_not_configured` | 执行（exec） | 任务没有配置执行策略：`run_command` 默认全拒（不是默认白名单）。 | 确实需要执行命令时，用 `task create --allow-exec-cmd` 显式开启后重新发起；不要给"看起来能用"的默认白名单。 |
 | `c4.exec_policy_denied` | 执行（exec） | exec 策略拒绝了这次调用：argv 不在白名单、cwd 越界、或 pty 未被许可。 | 按提示缩小命令或目录；确实需要就在任务策略里显式放开对应项，并重新审批。 |
 | `c4.exec_unsupported` | 执行（exec） | 后端在本平台做不到请求的执行方式（例如 Windows 上请求 PTY）。 | 改策略不会通过：换一种执行方式，或换平台。 |
+| `c4.memory_control_scope_binding` | 记忆 | 控制面专属能力被非控制面使用：只有控制 Run（`Task.is_control`）能调用 `memory.remember` / `memory.promote` / `memory.erase` 或声明 `memory_scopes`。 | 不是可操作项：属越权尝试，报 bug；签发只能走 CLI / UI。 |
 | `c4.memory_kind_unsupported` | 记忆 | 记忆种类不在封闭集内（`preference` / `fact` / `decision` / `procedure`）。 | 改用受支持的种类；仍是这个提示说明工具 schema 与存储侧口径不一致，报 bug。 |
 | `c4.memory_scope_denied` | 记忆 | 记忆作用域不在本任务授权范围内（workspace 不是本任务某个绑定的 canonical 根，或 task 不是本任务）。 | 到该作用域所属的任务里重新发起；不要试图跨 workspace / task 读私有记忆。 |
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
@@ -722,8 +725,8 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 #### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
 
 **只新增一条编号**；另外两种拒绝复用已登记的编号，不造同义新号——`rules.py` 明写"不许
-改名"，同义编号会让"为什么被拒"出现两个答案。`c4.memory_control_scope_binding` **尚未登记**，
-登记动作与产生路径在同一次改动（`src/tianshu/rules.py` / `schemas/c4/rules.json` / 本表三处同改）。
+改名"，同义编号会让"为什么被拒"出现两个答案。`c4.memory_control_scope_binding` **已随 N1
+登记**（`rules.RULE_IDS` / `schemas/c4/rules.json` / 本节三处同改，产生路径见 §5.4.1 那一行）。
 
 | rule_id | 类别 | 语义 | 用户该怎么做 |
 |---|---|---|---|
