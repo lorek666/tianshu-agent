@@ -6,6 +6,7 @@ import {
   approvalStateTone,
   describeApproval,
   isOpenApproval,
+  isolationSentence,
   taskGoalSummary,
 } from "../lib/humanize";
 import { IconAlert, IconCheck, IconInfo } from "./Icons";
@@ -83,6 +84,9 @@ function ApprovalCard({
   const [showReason, setShowReason] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const display = describeApproval(approval);
+  // 审批前就要让用户看到真实权限范围（PRD §8.1）：这条命令是不是受信任执行、
+  // 后端自称的隔离级别有没有实测。
+  const isolation = isolationSentence(approval.isolation);
   const working = busy === `approval:${approval.approval_id}`;
   const expired = approval.expires_at !== null && approval.expires_at <= now;
   const pending = isOpenApproval(approval.state) && !expired;
@@ -127,6 +131,12 @@ function ApprovalCard({
 
       {display.ruleText !== display.actionText ? (
         <div className="approval-rule">触发规则：{display.ruleText}</div>
+      ) : null}
+
+      {isolation !== null ? (
+        <p className={`approval-isolation approval-isolation-${isolation.tone}`}>
+          {isolation.text}
+        </p>
       ) : null}
 
       {approval.reason !== null && approval.reason !== "" ? (

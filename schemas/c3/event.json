@@ -264,6 +264,92 @@
           "expires_at": {
             "type": "integer",
             "minimum": 1
+          },
+          "isolation": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "declared": {
+                "type": "string"
+              },
+              "measured": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container"
+                ]
+              },
+              "unverified": {
+                "type": "boolean"
+              },
+              "contradicted": {
+                "type": "boolean"
+              },
+              "boundaries": {
+                "type": "object",
+                "properties": {
+                  "files_authority": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "network": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "process_tree": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enforced_boundaries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "backend",
+              "declared",
+              "level",
+              "unverified",
+              "contradicted",
+              "boundaries",
+              "enforced_boundaries"
+            ]
           }
         },
         "additionalProperties": false,
@@ -501,6 +587,92 @@
               "expired",
               "superseded",
               null
+            ]
+          },
+          "isolation": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "declared": {
+                "type": "string"
+              },
+              "measured": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container"
+                ]
+              },
+              "unverified": {
+                "type": "boolean"
+              },
+              "contradicted": {
+                "type": "boolean"
+              },
+              "boundaries": {
+                "type": "object",
+                "properties": {
+                  "files_authority": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "network": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "process_tree": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enforced_boundaries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "backend",
+              "declared",
+              "level",
+              "unverified",
+              "contradicted",
+              "boundaries",
+              "enforced_boundaries"
             ]
           }
         },
@@ -2050,6 +2222,18 @@
               },
               "allow_pty": {
                 "type": "boolean"
+              },
+              "isolation_requires": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
+                }
               }
             },
             "additionalProperties": false,
@@ -2505,6 +2689,92 @@
           "expires_at": {
             "type": "integer",
             "minimum": 1
+          },
+          "isolation": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "declared": {
+                "type": "string"
+              },
+              "measured": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container"
+                ]
+              },
+              "unverified": {
+                "type": "boolean"
+              },
+              "contradicted": {
+                "type": "boolean"
+              },
+              "boundaries": {
+                "type": "object",
+                "properties": {
+                  "files_authority": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "network": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "process_tree": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enforced_boundaries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "backend",
+              "declared",
+              "level",
+              "unverified",
+              "contradicted",
+              "boundaries",
+              "enforced_boundaries"
+            ]
           }
         },
         "additionalProperties": false,
@@ -2720,6 +2990,92 @@
               "expired",
               "superseded",
               null
+            ]
+          },
+          "isolation": {
+            "type": "object",
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "declared": {
+                "type": "string"
+              },
+              "measured": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container"
+                ]
+              },
+              "unverified": {
+                "type": "boolean"
+              },
+              "contradicted": {
+                "type": "boolean"
+              },
+              "boundaries": {
+                "type": "object",
+                "properties": {
+                  "files_authority": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "network": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "process_tree": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "enforced_boundaries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "backend",
+              "declared",
+              "level",
+              "unverified",
+              "contradicted",
+              "boundaries",
+              "enforced_boundaries"
             ]
           }
         },
@@ -4016,6 +4372,18 @@
               },
               "allow_pty": {
                 "type": "boolean"
+              },
+              "isolation_requires": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
+                }
               }
             },
             "additionalProperties": false,

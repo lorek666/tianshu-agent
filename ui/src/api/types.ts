@@ -41,6 +41,17 @@ export interface RunView {
   undoable: boolean;
 }
 
+export interface IsolationView {
+  backend: string;
+  declared: string;
+  measured: string | null;
+  level: string;
+  unverified: boolean;
+  contradicted: boolean;
+  boundaries: Record<string, string>;
+  enforced_boundaries: string[];
+}
+
 export interface ApprovalView {
   approval_id: string;
   run_id: string;
@@ -49,6 +60,8 @@ export interface ApprovalView {
   resources: string[];
   reason: string | null;
   rule_id: string | null;
+  /** F2：审批前可见的隔离视图；null = 这条动作不涉及执行隔离。 */
+  isolation: IsolationView | null;
   state: string;
   created_at: number | null;
   expires_at: number | null;

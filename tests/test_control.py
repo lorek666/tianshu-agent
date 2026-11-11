@@ -61,6 +61,8 @@ APPROVAL_FIELDS = {
     "resources",
     "reason",
     "rule_id",
+    # F2：审批前可见的隔离视图（非 exec 动作为 None）。
+    "isolation",
     "state",
     "created_at",
     "expires_at",
@@ -366,8 +368,10 @@ def test_approvals_list_has_exact_shape_and_rule_id(env: Env) -> None:
     assert set(view) == APPROVAL_FIELDS
     assert view["approval_id"] == approval_id
     assert view["state"] == "pending"
-    # `Approval` 投影没有 rule_id，它必须从 approval.requested 事件补出来。
+    # `Approval` 投影没有 rule_id / isolation，它们必须从 approval.requested
+    # 事件补出来。非 exec 动作没有执行隔离语义 → isolation 显式 None。
     assert view["rule_id"] == "c4.overwrite"
+    assert view["isolation"] is None
     assert "digest" not in repr(view).lower()
 
 
