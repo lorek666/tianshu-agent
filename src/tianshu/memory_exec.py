@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from .errors import RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
@@ -55,7 +56,9 @@ from .workspace import WorkspaceBinding, overlap_key
 if TYPE_CHECKING:  # pragma: no cover - 只要类型，不把 memory.py 拖成硬依赖
     from .memory import MemoryProjection
 
-MEMORY_TOOL_IDS = frozenset({"memory.propose", "memory.confirm", "memory.forget"})
+MEMORY_TOOL_IDS = frozenset(
+    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
+)
 MEMORY_READ_TOOL_IDS = frozenset({"memory.search", "memory.get"})
 MEMORY_ALL_TOOL_IDS = MEMORY_TOOL_IDS | MEMORY_READ_TOOL_IDS
 
@@ -90,6 +93,7 @@ def memory_scope_allowed(
     *,
     task_id: str,
     bindings: list[WorkspaceBinding],
+    declared: Sequence[str] = (),
 ) -> tuple[bool, str]:
     """判断一个记忆作用域是否在本任务授权范围内。
 
@@ -100,12 +104,23 @@ def memory_scope_allowed(
     - user：D2 单用户，恒可访问；
     - workspace：scope_id 必须**精确等于**某个绑定的 canonical 根；不是祖先、
       不是字符串前缀、不是"解析后落在里面"；
-    - task：scope_id 必须等于本任务 id。
+    - task：scope_id 必须等于本任务 id；
+    - `declared`：控制 Run 在 `task.created` 里显式声明的记忆作用域 URI。它只
+      能由控制面写入，调用方**必须**确认 `Task.is_control` 后才传进来——否则
+      等于让普通任务自造作用域。
     """
     if not isinstance(scope, MemoryScope):
         return False, f"作用域类型不合法：{type(scope).__name__}"
     if scope.scope not in MEMORY_SCOPES:
         return False, f"未知记忆作用域：{scope.scope!r}"
+    if declared:
+        uri = scope.to_uri()
+        if uri in set(declared):
+            return True, ""
+        # 声明了作用域的控制 Run 也**只**能用声明过的那些：`user` 恒可，其它
+        # 作用域一律按声明集合判定，不再回落到绑定规则（旧 task 没有绑定）。
+        if scope.scope != "user":
+            return False, f"作用域不在控制 Run 的声明内：{uri}"
     if scope.scope == "user":
         return True, ""
     if scope.scope == "workspace":
@@ -298,8 +313,42 @@ class MemoryExecutor:
         task = self._tasks.get_task(req.task_id)
         if task is None:
             raise ToolNotAllowed(f"task 不存在：{req.task_id}")
+        # 契约 v1.2：控制面 Run 的标记与作用域声明都从 `task.created` 投影读，
+        # **不**信任调用方传进来的任何"我是控制面"。普通任务拿不到声明作用域。
+        is_control = bool(getattr(task, "is_control", False))
+        declared: Sequence[str] = (
+            tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
+        )
+        if not is_control:
+            if admitted.tool_id == "memory.remember":
+                raise MemoryDispatchRefused(
+                    "控制面专属工具不能在普通任务里执行",
+                    "c4.memory_control_scope_binding",
+                )
+            if (
+                admitted.tool_id == "memory.propose"
+                and target_scope.scope == "task"
+                and target_scope.scope_id != req.task_id
+            ):
+                # 模型只能写**本任务**的 task 作用域；别人的 task 作用域
+                # 只有控制面（CLI/UI）能替它操作。
+                raise MemoryDispatchRefused(
+                    f"模型只能写本任务的 task 作用域：{target_scope.to_uri()}",
+                    "c4.memory_scope_denied",
+                )
+            if target_scope.scope == "workspace":
+                # workspace 是**共享边界**：模型不能把记忆写进共享作用域，
+                # 共享只能由人经 memory.promote 签发（F10 §3.3 / 契约 v1.2）。
+                raise MemoryDispatchRefused(
+                    f"workspace 作用域只能由人经 memory.promote 进入："
+                    f"{target_scope.to_uri()}",
+                    "c4.memory_scope_denied",
+                )
         allowed, reason = memory_scope_allowed(
-            target_scope, task_id=req.task_id, bindings=list(task.workspaces or [])
+            target_scope,
+            task_id=req.task_id,
+            bindings=list(task.workspaces or []),
+            declared=declared,
         )
         if not allowed:
             raise MemoryDispatchRefused(reason, "c4.memory_scope_denied")
@@ -395,6 +444,8 @@ class MemoryExecutor:
 
         if admitted.tool_id == "memory.propose":
             return self._propose(admitted, scope)
+        if admitted.tool_id == "memory.remember":
+            return self._remember(admitted, scope)
         if admitted.tool_id == "memory.confirm":
             return self._transition(admitted, scope, to_status="active")
         if admitted.tool_id == "memory.forget":
@@ -543,7 +594,97 @@ class MemoryExecutor:
         }
         if to_status == "active":
             out["consolidated_at"] = now
+            # 契约 v1.2：人批准 confirm → 把 inferred 升为 user_confirmed。
+            # 出处是审批记录（只有 HumanIdentity 能批准），不是任何参数。
+            approval = (
+                self._approvals.get(admitted.approval_id)
+                if admitted.approval_id
+                else None
+            )
+            if approval is not None and getattr(approval, "decided_by", None):
+                out["origin"] = "user_confirmed"
         return ToolResult("succeeded", "applied", out)
+
+    def _remember(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """控制面"人直接记住"：创建即 active + origin=user_explicit。
+
+        与 `_propose` 共用写入闸门与去重；区别只有一个：不需要再走 confirm——
+        人敲的命令就是授权。`_verify` 已经核过 `Task.is_control`。
+        """
+        args = admitted.args
+        kind = args["kind"]
+        content = args["content"]
+        source_refs = _string_list(args.get("source_refs"), "source_refs")
+        expires_at = args.get("expires_at")
+        if expires_at is not None and (
+            not isinstance(expires_at, int) or isinstance(expires_at, bool)
+        ):
+            raise ToolArgumentError("expires_at 必须是整数毫秒时间戳")
+
+        try:
+            redacted, blocked = self._projection.redact_or_block(content)
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆写入闸门检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if blocked:
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": "记忆内容触发 PII/密钥写入闸门，记忆未写入",
+                    "path": scope.to_uri(),
+                },
+            )
+        try:
+            existing = self._projection.find_duplicate(
+                scope=scope, kind=kind, content=redacted
+            )
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆去重检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if existing is not None:
+            raise MemoryDispatchRefused(
+                "目标记忆已存在（同一作用域 + 种类 + 正文）",
+                "c4.create_over_existing",
+            )
+
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        content_ref = self._projection.put_content(redacted)
+        if not isinstance(content_ref, str) or not content_ref:
+            raise TianshuError("记忆投影没有返回 content_ref")
+        memory_id = f"mem_{uuid.uuid4().hex[:12]}"
+        now = self._clock()
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "memory_id": memory_id,
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": kind,
+                "content_ref": content_ref,
+                "source_refs": source_refs,
+                "evidence": [],
+                "proof_count": 0,
+                # 人本人签发的记忆：直接可召回。模型参数里没有 origin，
+                # 这个值由执行器按工具身份写死。
+                "origin": "user_explicit",
+                "status": "active",
+                "created_at": now,
+                "expires_at": expires_at,
+                "deduped": False,
+                "before_state": "absent",
+                "after_state": memory_state(memory_id, "active", 1),
+                "content_bytes": len(redacted.encode("utf-8")),
+                "content_sha256": _sha(redacted.encode("utf-8")),
+                "redacted": redacted != content,
+            },
+        )
 
 
 def _string_list(raw: Any, label: str) -> list[str]:

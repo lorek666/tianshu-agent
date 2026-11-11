@@ -787,16 +787,21 @@ SPECS: dict[str, ToolSpec] = {
     ),
     "memory.propose": ToolSpec(
         tool_id="memory.propose",
-        version="1.0",
+        version="2.0",
         description=(
             "写一条未激活的记忆候选。候选不进检索、不需要审批；"
             "确认（memory.confirm）才会进入长期召回。"
+            "可指定 scope=user（默认）或 scope=task（只能是本任务）。"
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "kind": {"type": "string"},
                 "content": {"type": "string"},
+                # 契约 v1.2：模型可以写 user（默认）与**本任务**的 task 作用域；
+                # workspace 是共享边界，只能由人经 memory.promote 进入。
+                "scope": {"type": "string"},
+                "scope_id": {"type": "string"},
                 "source_refs": {"type": "array", "items": {"type": "string"}},
                 "evidence": {"type": "array", "items": {"type": "object"}},
                 "expires_at": {"type": "integer"},
@@ -807,6 +812,29 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_CREATE,
+    ),
+    "memory.remember": ToolSpec(
+        tool_id="memory.remember",
+        version="1.0",
+        description=(
+            "人直接记住一条记忆（控制面专用）。创建即 active、"
+            "origin=user_explicit；模型清单里没有这个工具。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "content": {"type": "string"},
+                "source_refs": {"type": "array", "items": {"type": "string"}},
+                "expires_at": {"type": "integer"},
+            },
+            "required": ["kind", "content"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_CREATE,
+        exposed=False,
     ),
     "memory.confirm": ToolSpec(
         tool_id="memory.confirm",

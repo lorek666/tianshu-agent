@@ -34,6 +34,7 @@ from .errors import TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
 from .loop import AgentLoop, Limits, build_stack
+from .memory import MEMORY_KINDS
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
 from .pricing import format_cost
@@ -175,7 +176,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="记忆控制面：Agent 记住了什么、依据是什么；确认候选 / 忘记一条",
     )
     mem.add_argument(
-        "action", choices=["list", "search", "get", "confirm", "forget"]
+        "action",
+        choices=["list", "search", "get", "confirm", "forget", "remember"],
     )
     mem.add_argument(
         "value", nargs="?",
@@ -199,6 +201,15 @@ def _build_parser() -> argparse.ArgumentParser:
     mem.add_argument("--status", default=None,
                      choices=["candidate", "active", "superseded", "forgotten"])
     mem.add_argument("--limit", type=int, default=50)
+    mem.add_argument(
+        "--kind", default="preference",
+        choices=sorted(MEMORY_KINDS),
+        help="remember 的记忆种类（默认 preference）",
+    )
+    mem.add_argument(
+        "--expires-at", type=int, default=None,
+        help="remember 的过期时间（毫秒时间戳，可选）",
+    )
     mem.add_argument("--data-root", type=Path, default=None)
     mem.add_argument("--db", type=Path, default=DEFAULT_DB)
     mem.add_argument("--json", action="store_true")
@@ -1148,6 +1159,22 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 _print_memory(memory)
             return 0
 
+        if args.action == "remember":
+            if not args.value:
+                print("错误：memory remember 需要记忆内容", file=sys.stderr)
+                return 2
+            scope = MemoryScope.user()
+            if args.task_id:
+                scope = MemoryScope.task(args.task_id)
+            elif args.scope and args.scope != "user":
+                print(
+                    "错误：remember 只支持 user / task 作用域；"
+                    "共享到 workspace 由 memory promote 负责（N1 后续提交）",
+                    file=sys.stderr,
+                )
+                return 2
+            return _remember_memory(stack, scope, args)
+
         if not args.value:
             print(f"错误：memory {args.action} 需要查询词 / memory_id",
                   file=sys.stderr)
@@ -1265,16 +1292,20 @@ def _dispatch_memory_decision(stack, memory, *, confirm: bool):
     # 那个任务的 Run，应该由任务自己确认/忘记，不能由另一个任务代签。
     if scope.scope == "workspace":
         workspaces = [WorkspaceBinding(scope.scope_id)]
+        memory_scopes: list[MemoryScope] = []
     elif scope.scope == "task":
-        raise TianshuError(
-            "task 作用域的记忆确认/忘记必须在所属任务的 Run 内完成；"
-            "CLI 控制面只支持 user / workspace 作用域"
-        )
+        # 契约 v1.2：控制面可以替**旧 task** 的记忆做确认 / 遗忘。只声明这个
+        # 记忆作用域，**不**绑定它的目录——记忆授权与文件授权是两件事。
+        workspaces = []
+        memory_scopes = [scope]
     else:
         workspaces = []
+        memory_scopes = []
 
     control = stack.dispatcher.open_control_run(
-        goal=f"{tool_id}:{memory.memory_id}", workspaces=workspaces
+        goal=f"{tool_id}:{memory.memory_id}",
+        workspaces=workspaces,
+        memory_scopes=memory_scopes,
     )
     outcome = "failed"
     effect = "unknown"
@@ -1303,6 +1334,65 @@ def _dispatch_memory_decision(stack, memory, *, confirm: bool):
         outcome = "succeeded" if result.ok else "failed"
         effect = result.effect_state
         return result
+    finally:
+        stack.dispatcher.close_control_run(
+            control, outcome=outcome, effect_state=effect
+        )
+
+
+def _remember_memory(stack, scope, args) -> int:
+    """`tianshu memory remember`：人直接记住一条（控制面专属工具）。
+
+    与 `undo --approve` 同一形状：人敲了命令就是签发者，工具本身不需要审批；
+    但仍走完整 intent/result + Receipt 与执行侧二次核验。模型清单里没有
+    `memory.remember`，所以模型不可能走这条路自封"用户明示"。
+    """
+    tool_args: dict[str, object] = {"kind": args.kind, "content": args.value}
+    if args.expires_at is not None:
+        tool_args["expires_at"] = args.expires_at
+    control = stack.dispatcher.open_control_run(
+        goal=f"memory.remember:{scope.to_uri()}",
+        workspaces=[],
+        memory_scopes=[scope] if scope.scope != "user" else [],
+    )
+    outcome, effect = "failed", "unknown"
+    try:
+        request = build_request(
+            task=control.task,
+            run=control.run,
+            claim=control.claim,
+            call_id="memory_remember_1",
+            tool_id="memory.remember",
+            target=scope.to_uri(),
+            args=tool_args,
+        )
+        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
+        if decision.is_rejected:
+            raise TianshuError(
+                f"记忆写入被拒绝：{decision.reason}（{decision.rule_id}）"
+            )
+        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
+        outcome = "succeeded" if result.ok else "failed"
+        effect = result.effect_state
+        output = result.output or {}
+        if args.json:
+            print(json.dumps(
+                {
+                    "action": "remember",
+                    "status": result.status,
+                    "effect_state": result.effect_state,
+                    "output": output,
+                },
+                ensure_ascii=False, indent=2, default=str))
+        elif result.ok:
+            print(f"{output.get('memory_id')}: remember -> active")
+            print(f"  scope: {output.get('scope')} {output.get('scope_id')}")
+            print(f"  kind : {output.get('kind')}   origin: {output.get('origin')}")
+        else:
+            print(f"remember -> {result.status}", file=sys.stderr)
+            if output.get("error"):
+                print(f"  ! {output.get('error')}", file=sys.stderr)
+        return 0 if result.ok else 1
     finally:
         stack.dispatcher.close_control_run(
             control, outcome=outcome, effect_state=effect

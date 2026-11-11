@@ -140,7 +140,9 @@ _CONTENT_STATES = frozenset({_CONTENT_AVAILABLE, _CONTENT_UNAVAILABLE})
 
 #: 记忆写工具。读工具（memory.search / memory.get）的 tool.result 也落事件，
 #: 但它们不改投影，`apply_event()` 直接忽略。
-_WRITE_TOOL_IDS = frozenset({"memory.propose", "memory.confirm", "memory.forget"})
+_WRITE_TOOL_IDS = frozenset(
+    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
+)
 
 #: 投影格式版本。投影哈希覆盖它，跨版本不假装可比。
 _SCHEMA_VERSION = 1
@@ -739,14 +741,20 @@ class MemoryProjection:
             raise MemoryStoreError(f"{tool_id} 的 output 必须是对象：{output!r}")
 
         seq_value = _require_int(seq, "seq", minimum=1)
+        # `memory.remember` 是控制面直接记住：与 propose 同一套投影代码，但
+        # 结果可以是 active + user_explicit（人本人就是签发者）。
         handler = {
             "memory.propose": self._apply_propose,
+            "memory.remember": self._apply_propose,
             "memory.confirm": self._apply_confirm,
             "memory.forget": self._apply_forget,
         }[tool_id]
         with self._log.transaction():
             self.ensure_schema()
-            handler(output, seq_value)
+            if tool_id == "memory.remember":
+                self._apply_propose(output, seq_value, direct=True)
+            else:
+                handler(output, seq_value)
 
     def rebuild(self) -> int:
         """清空投影并按事件 seq 重放，返回实际重放的记忆写事件条数。
@@ -843,7 +851,9 @@ class MemoryProjection:
 
     # ---- propose ----
 
-    def _apply_propose(self, output: dict[str, Any], seq: int) -> None:
+    def _apply_propose(
+        self, output: dict[str, Any], seq: int, *, direct: bool = False
+    ) -> None:
         required = (
             "memory_id",
             "revision",
@@ -921,9 +931,28 @@ class MemoryProjection:
 
         if revision != 1:
             raise MemoryStoreError(f"新记忆 propose 的 revision 必须是 1：{revision}")
-        if status != _STATUS_CANDIDATE:
+        if direct:
+            # 控制面 `memory.remember`：人直接记住 → active + user_explicit。
+            # 这条路径**只有**控制面能走到（执行器按 Task.is_control 核验），
+            # 模型发起的 propose 结果里 origin 只有一个合法值 inferred。
+            if status != _STATUS_ACTIVE:
+                raise MemoryStoreError(
+                    f"memory.remember 只能写 active，收到 {status!r}"
+                )
+            if origin != "user_explicit":
+                raise MemoryStoreError(
+                    f"memory.remember 的 origin 必须是 user_explicit，收到 {origin!r}"
+                )
+        else:
             # propose 只生成惰性候选；激活必须走 memory.confirm（F10 §7）。
-            raise MemoryStoreError(f"memory.propose 只能写 candidate，收到 {status!r}")
+            if status != _STATUS_CANDIDATE:
+                raise MemoryStoreError(
+                    f"memory.propose 只能写 candidate，收到 {status!r}"
+                )
+            # origin 由执行器写死为 inferred（防模型自称"用户明示"绕过审批），
+            # 但**投影层不在这里限制取值**：`user_explicit` 候选是 confirm 免审批
+            # 分支的合法输入（来源由可信调用方播种），越权防线在执行器与策略层，
+            # 不在投影的字段校验里。
         if supersedes is not None and supersedes == memory_id:
             raise MemoryStoreError("记忆不能 supersede 自己")
 
@@ -1053,10 +1082,36 @@ class MemoryProjection:
                     " WHERE memory_id = ?",
                     (_CONTENT_AVAILABLE, fts_rowid, memory_id),
                 )
+        # 契约 v1.2：人批准 confirm 时把 `inferred` **升级**为 `user_confirmed`。
+        # 只升级、不降级；output 里给别的值一律拒绝（模型/执行器都不能发明来源）。
+        upgraded_origin: str | None = output.get("origin")
+        if upgraded_origin is not None:
+            upgraded_origin = _require_closed(
+                upgraded_origin, MEMORY_ORIGINS, "origin"
+            )
+            if upgraded_origin != "user_confirmed":
+                raise MemoryStoreError(
+                    f"confirm 的 origin 只能是 user_confirmed，收到 {upgraded_origin!r}"
+                )
+            if row["origin"] != "inferred":
+                raise MemoryStoreError(
+                    f"记忆 {memory_id!r} 的 origin={row['origin']!r} 不能升为"
+                    " user_confirmed（只允许 inferred → user_confirmed）"
+                )
+        else:
+            upgraded_origin = row["origin"]
+
         self._conn.execute(
             "UPDATE memories SET revision = ?, status = ?, consolidated_at = ?,"
-            " last_seq = ? WHERE memory_id = ?",
-            (revision, _STATUS_ACTIVE, consolidated_at, seq, memory_id),
+            " origin = ?, last_seq = ? WHERE memory_id = ?",
+            (
+                revision,
+                _STATUS_ACTIVE,
+                consolidated_at,
+                upgraded_origin,
+                seq,
+                memory_id,
+            ),
         )
 
     def _apply_forget(self, output: dict[str, Any], seq: int) -> None:

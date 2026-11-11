@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status        TEXT NOT NULL DEFAULT 'open',
     workspaces    TEXT NOT NULL DEFAULT '[]',
     exec_policy   TEXT NOT NULL DEFAULT '',
+    is_control    INTEGER NOT NULL DEFAULT 0,
+    memory_scopes TEXT NOT NULL DEFAULT '[]',
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -188,6 +190,10 @@ class Task:
     #: 任务级执行策略（F2）。None = 未配置 = run_command 默认全拒。
     #: 开启 exec 是显式动作：`task create --allow-exec-cmd`。
     exec_policy: ExecPolicy | None = None
+    #: 控制面 Run（CLI / UI 直接发起）：只有它能用控制面专属工具与记忆作用域。
+    is_control: bool = False
+    #: 控制面声明的记忆作用域（`memory://task/...` 等 URI）；模型不可设置。
+    memory_scopes: tuple[str, ...] = ()
     created_at: int = 0
     updated_at: int = 0
 
@@ -304,6 +310,15 @@ class TaskStore:
         self._conn.executescript(SCHEMA)
         _ensure_column(self._conn, "runs", "control_requested", "TEXT")
         _ensure_column(self._conn, "tasks", "exec_policy", "TEXT NOT NULL DEFAULT ''")
+        # `is_control` / `memory_scopes`：控制面 Run 的持久标记（契约 v1.2）。
+        # 必须落在表里与 `task.created` payload 里——只放在内存对象里，崩溃恢复后
+        # 就分不清哪个 Run 是人直接发起的了。
+        _ensure_column(
+            self._conn, "tasks", "is_control", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            self._conn, "tasks", "memory_scopes", "TEXT NOT NULL DEFAULT '[]'"
+        )
         self._leases = leases
         self._claims = claims
         # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
@@ -366,10 +381,15 @@ class TaskStore:
         bindings: list[WorkspaceBinding | str | dict[str, Any]] | None = None,
         *,
         exec_policy: ExecPolicy | None = None,
+        control: bool = False,
+        memory_scopes: list[str] | None = None,
     ) -> Task:
         goal = (goal or "").strip()
         if not goal:
             raise TianshuError("goal 不能为空")
+        scopes = list(memory_scopes or [])
+        if not all(isinstance(item, str) and item for item in scopes):
+            raise TianshuError("memory_scopes 必须是非空字符串数组（memory:// URI）")
         parsed = parse_bindings(
             [b.to_dict() if isinstance(b, WorkspaceBinding) else b
              for b in (bindings or [])]
@@ -379,9 +399,9 @@ class TaskStore:
         with self._log.transaction() as tx:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-                " active_run_id, status, workspaces, exec_policy,"
-                " created_at, updated_at)"
-                " VALUES (?,?,1,1,NULL,'open',?,?,?,?)",
+                " active_run_id, status, workspaces, exec_policy, is_control,"
+                " memory_scopes, created_at, updated_at)"
+                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?)",
                 (
                     task_id,
                     goal,
@@ -389,6 +409,8 @@ class TaskStore:
                     json.dumps(exec_policy.to_dict(), ensure_ascii=False)
                     if exec_policy is not None
                     else "",
+                    1 if control else 0,
+                    json.dumps(scopes, ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -403,6 +425,10 @@ class TaskStore:
                     "lease_epoch": 1,
                     "workspaces": [b.to_dict() for b in parsed],
                     "exec_policy": exec_policy.to_dict() if exec_policy else None,
+                    # 契约 v1.2：控制面标记与作用域声明必须落进事件，不许只存在
+                    # 进程内对象里（崩溃恢复后就分不清谁是控制面）。
+                    "control": bool(control),
+                    "memory_scopes": scopes,
                 },
                 task_id=task_id,
                 actor_kind="human",
@@ -1436,6 +1462,10 @@ class TaskStore:
                         ],
                         ensure_ascii=False,
                     ),
+                    "is_control": 1 if p.get("control") else 0,
+                    "memory_scopes": json.dumps(
+                        list(p.get("memory_scopes") or []), ensure_ascii=False
+                    ),
                     "created_at": ev.ts,
                     "updated_at": ev.ts,
                 }
@@ -1538,9 +1568,11 @@ class TaskStore:
             for t in tasks.values():
                 self._conn.execute(
                     "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-                    " active_run_id, status, workspaces, created_at, updated_at)"
+                    " active_run_id, status, workspaces, is_control, memory_scopes,"
+                    " created_at, updated_at)"
                     " VALUES (:task_id,:goal,:goal_revision,:lease_epoch,"
-                    " :active_run_id,:status,:workspaces,:created_at,:updated_at)",
+                    " :active_run_id,:status,:workspaces,:is_control,:memory_scopes,"
+                    " :created_at,:updated_at)",
                     t,
                 )
             for r in runs.values():
@@ -1569,6 +1601,8 @@ class TaskStore:
             exec_policy=ExecPolicy.from_dict(
                 json.loads(row["exec_policy"]) if row["exec_policy"] else None
             ),
+            is_control=bool(row["is_control"]),
+            memory_scopes=tuple(json.loads(row["memory_scopes"] or "[]")),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

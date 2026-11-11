@@ -573,6 +573,18 @@ class PolicyEngine:
         else:  # pragma: no cover - MEMORY_SCOPES 已经封死
             allowed = False
 
+        declared = preconditions.get("memory_declared_scopes") or []
+        if (
+            not allowed
+            and isinstance(declared, list)
+            and scope.to_uri() in declared
+            and preconditions.get("memory_is_control") is True
+        ):
+            # 控制面 Run 显式声明的作用域（`task.created` 的 `memory_scopes`）。
+            # 两个条件缺一不可：声明集合必须来自派发层（覆盖写入），且任务
+            # 必须是控制 Run——普通任务拿不到这条旁路。
+            allowed = True
+
         if not allowed:
             return PolicyDecision(
                 DECISION_DENY,
