@@ -183,6 +183,7 @@ _TOOL_ID = _enum(
     "memory.forget",
     "memory.get",
     "memory.propose",
+    "memory.remember",
     "memory.search",
     "modify_text",
     "read_text",
@@ -783,8 +784,20 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "lease_epoch": _i(minimum=1),
             "workspaces": _arr(_WORKSPACE_BINDING),
             "exec_policy": _opt(_EXEC_POLICY),
+            # 记忆契约 v1.2（PR #78）：控制面标记与作用域声明必须落进事件。
+            "control": _b(),
+            "memory_scopes": _arr(_s()),
         },
-        required=("task_id", "goal", "goal_revision", "lease_epoch", "workspaces", "exec_policy"),
+        required=(
+            "task_id",
+            "goal",
+            "goal_revision",
+            "lease_epoch",
+            "workspaces",
+            "exec_policy",
+            "control",
+            "memory_scopes",
+        ),
     ),
     "task.revised": _obj(
         {

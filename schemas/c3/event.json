@@ -1138,6 +1138,7 @@
               "memory.forget",
               "memory.get",
               "memory.propose",
+              "memory.remember",
               "memory.search",
               "modify_text",
               "read_text",
@@ -1981,6 +1982,15 @@
               "timeout_ms",
               "allow_pty"
             ]
+          },
+          "control": {
+            "type": "boolean"
+          },
+          "memory_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,
@@ -1990,7 +2000,9 @@
           "goal_revision",
           "lease_epoch",
           "workspaces",
-          "exec_policy"
+          "exec_policy",
+          "control",
+          "memory_scopes"
         ]
       },
       "task.revised": {
@@ -2067,6 +2079,7 @@
               "memory.forget",
               "memory.get",
               "memory.propose",
+              "memory.remember",
               "memory.search",
               "modify_text",
               "read_text",
@@ -2141,6 +2154,7 @@
               "memory.forget",
               "memory.get",
               "memory.propose",
+              "memory.remember",
               "memory.search",
               "modify_text",
               "read_text",
@@ -3186,6 +3200,7 @@
               "memory.forget",
               "memory.get",
               "memory.propose",
+              "memory.remember",
               "memory.search",
               "modify_text",
               "read_text",
@@ -3874,6 +3889,15 @@
               "timeout_ms",
               "allow_pty"
             ]
+          },
+          "control": {
+            "type": "boolean"
+          },
+          "memory_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,
@@ -3998,6 +4022,7 @@
               "memory.forget",
               "memory.get",
               "memory.propose",
+              "memory.remember",
               "memory.search",
               "modify_text",
               "read_text",

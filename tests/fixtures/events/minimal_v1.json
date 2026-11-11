@@ -275,6 +275,7 @@
       "to": "created"
     },
     "task.created": {
+      "control": false,
       "exec_policy": {
         "allow_pty": false,
         "argv_allowlist": [],
@@ -287,6 +288,7 @@
       "goal": "x",
       "goal_revision": 1,
       "lease_epoch": 1,
+      "memory_scopes": [],
       "task_id": "x",
       "workspaces": []
     },
