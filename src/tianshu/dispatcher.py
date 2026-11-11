@@ -53,7 +53,8 @@ from .errors import (
     WorkspaceViolation,
 )
 from .events import EventLog, canonical_bytes, sha256_hex
-from .exec import LOCAL_EXEC_CAPABILITIES
+from .exec_backends import ExecBackend
+from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
     PolicyDenied,
     PolicyUnsupported,
@@ -475,6 +476,7 @@ class Dispatcher:
         contents: object | None = None,
         net_limits: NetLimits | None = None,
         budget: object | None = None,
+        exec_backend: ExecBackend | None = None,
         clock=_now,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -555,6 +557,22 @@ class Dispatcher:
                 "投影必须和事件在同一个事务里落库，否则事件与投影会分叉"
             )
         self._memory_executor: MemoryExecutor | None = None
+        # 进程级解析一次：预检与真正的执行必须看到同一个后端（同一份能力声明），
+        # 否则会出现"预检说能做、执行说做不到"的分裂。
+        self._exec_backend = (
+            exec_backend if exec_backend is not None else resolve_exec_backend()
+        )
+        if executor is not None:
+            # 自定义 executor 也让"预检看到的后端"与"执行看到的后端"必须同一个：
+            # 只核默认构造等于给旁路留门。
+            executor_backend = getattr(executor, "exec_backend", None)
+            if executor_backend is not self._exec_backend:
+                raise TianshuError(
+                    "Dispatcher 收到的执行器与派发层使用的执行后端不是同一个："
+                    f"{getattr(executor_backend, 'capabilities', None)!r} vs "
+                    f"{self._exec_backend.capabilities!r}"
+                    "（预检与执行必须看到同一个后端）"
+                )
         self._executor = executor or FileExecutor(
             tasks=tasks,
             leases=leases,
@@ -566,6 +584,7 @@ class Dispatcher:
             clock=clock,
             log=log,
             snapshots=snapshots,
+            exec_backend=self._exec_backend,
         )
 
     # ---- 只读查询 ----
@@ -1592,7 +1611,7 @@ class Dispatcher:
                         "（ExecPolicy.allow_pty=False）",
                         rule_id="f2.pty_not_allowed",
                     )
-                check_capabilities(policy, LOCAL_EXEC_CAPABILITIES)
+                check_capabilities(policy, self._exec_backend.capabilities)
         except PolicyDenied as exc:
             raise DispatchDenied(
                 f"exec 策略拒绝：{exc}", "c4.exec_policy_denied"
