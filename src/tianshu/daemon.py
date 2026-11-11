@@ -32,12 +32,17 @@ M5 的退出条件只有一句话：**关掉界面任务继续跑，重启后恢
   捡起来，然后 `resume_run` 把 reconciling 改成 running——人还没看，AI 就继续
   写了。这条是"不许把不确定当成功"能不能落地的分界线。
 
-## 事件推送
+## 事件推送：控制面不能被一个慢订阅者拖死
 
-`subscribe {since_seq}` 先补历史（`seq >= since_seq`）再推增量。补洞游标是全库
-`seq`，由主循环每轮从**自己的** `EventLog` 连接读 (`read_after`) 并广播。
-推送和响应共用一条连接，`ServerConnection` 不保证线程安全，所以每条连接有自己的
-发送锁（`ipc.py` 的注释已经写明这一点）。
+`subscribe {since_seq}` 只登记游标；历史补读与增量推送统一由主循环每轮从全库
+`seq` 读 (`read_after`) 并逐连接入队。**主循环不写 socket**：每条连接有一个
+有界发送队列 + 独立发送线程（`_ClientConnection`），队列满 / 发送超期 ⇒ 断开
+该订阅者并记 `slow_subscriber_dropped`，其他连接与请求处理完全不受影响。
+订阅者重连带 `since_seq` 补读，审计事实仍在事件日志里，不依赖这条连接。
+
+`ipc.ServerConnection` 的 `send` 不是线程安全的；现在每条连接只有它自己的发送
+线程会调用它，不存在并发写同一帧的问题（此前靠一把锁，代价是主循环会被锁在
+一次阻塞写上）。
 
 ## 不做什么
 
@@ -59,7 +64,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import ipc
+from . import ipc, metrics
 from .control import DAEMON_VERSION, ControlError, ControlPlane, event_view
 from .errors import TianshuError
 from .events import EventLog
@@ -97,13 +102,35 @@ MAIN_POLL_S = 0.02
 #: 每轮主循环最多处理多少个请求。一个客户端狂刷请求不该把推送饿死。
 REQUESTS_PER_ROUND = 64
 
-#: 一次读多少条事件用于广播/补历史。分批是为了让 shutdown 标志有机会被看见。
+#: 一次读多少条事件用于广播/补读。分批是为了让 shutdown 标志有机会被看见。
 PUSH_BATCH = 256
-HISTORY_BATCH = 256
 
-#: `subscribe` 一次调用最多补多少批历史；剩下的交给增量推送（`last_sent_seq`
-#: 已经被推进，下一轮会接着补）。这样"历史很长"也不会卡住主循环。
-HISTORY_BATCHES_PER_REQUEST = 20
+#: 每条连接的**有界**发送队列深度。推送是广播，慢订阅者既不能把主循环堵住，
+#: 也不能让内存无界增长：队列一满就判定这条连接跟不上，断开并记指标。
+#: 订阅者重连时按 `since_seq` 游标补读，审计事实不丢。
+SEND_QUEUE_MAX = 1024
+
+#: 队列积压超过这个比例就停止向该连接入队（背压），但仍给它一个期限追上来。
+#: 直接"满了就断"会把只是短暂落后的健康客户端误杀；"永远等"则会把广播变成
+#: 无界内存。折中是：超过 watermark 后只在 `SUBSCRIBER_BACKLOG_STALL_S` 内等待。
+SUBSCRIBER_BACKLOG_WATERMARK = 0.75
+
+#: 发送线程被单帧写阻塞超过这么久 ⇒ 慢订阅者（对端不读 socket）。
+SEND_STALL_S = 5.0
+
+#: 队列一直高于 watermark 超过这么久 ⇒ 慢订阅者（入队快于发送）。
+SUBSCRIBER_BACKLOG_STALL_S = 5.0
+
+#: 取消计时的兜底：超过它还没到终态就记 `null`（unknown），不虚构数字。
+CANCEL_STOP_TIMEOUT_S = 60.0
+
+#: 关闭时给所有连接的总排空预算（把已入队的响应/推送尽量写出去）。
+CONNECTION_FLUSH_TIMEOUT_S = 1.0
+
+#: 哪些断开原因算"慢订阅者"（记 `slow_subscriber_dropped`）。
+#: 正常关 UI / 客户端 EOF / 服务端主动关闭都不该算进这个指标——否则它会变成
+#: 一个只会涨、看不出问题的计数器。
+_SLOW_DROP_REASONS = frozenset({"queue_full", "send_stall", "backlog_stall"})
 
 #: 关闭时各线程 join 的上限。契约 §4.3：5 秒内退出。
 JOIN_TIMEOUT_S = 5.0
@@ -284,40 +311,201 @@ def acquire_lock(data_root: Path) -> DaemonLock:
 
 
 class _ClientConnection:
-    """服务端视角的一条客户端连接。
+    """服务端视角的一条客户端连接：**有界发送队列 + 独立发送线程**。
 
-    `ipc.ServerConnection.send` 不是线程安全的：主循环回响应、广播推送、补历史
-    三条路径都会写同一帧。每条连接一把发送锁是 `ipc.py` 注释里点名要求的。
+    为什么不再是"主循环里同步 send"：推送是广播，而 `ServerConnection.send` 是
+    阻塞写。一个订阅之后不再读 socket 的客户端，会把主循环卡在 `send()` 上，
+    于是状态查询 / 审批 / 取消全部排队——控制面被一个 UI 拖死。现在主循环只做
+    "把帧放进有界队列"，实际写 socket 的是每条连接自己的发送线程。
+
+    队列满 / 发送超期 ⇒ `drop(reason)`：标记断开、abort 连接唤醒阻塞中的
+    发送线程、记 `slow_subscriber_dropped`（由 daemon 在回收连接时记）。
+    其他连接与请求处理不受影响；订阅者重连后按自己的 `since_seq` 游标补读。
+
+    顺序性：同一连接的所有帧都从同一个队列按入队顺序写出，所以"subscribe 的
+    响应先于历史/增量推送"仍然成立；每条连接只有一个写线程，`send_lock` 不再
+    需要（`ipc.ServerConnection.send` 不是线程安全的，所以只允许发送线程调用）。
     """
 
-    __slots__ = ("raw", "send_lock", "subscribed", "last_sent_seq", "hello", "closed")
+    __slots__ = (
+        "raw",
+        "name",
+        "subscribed",
+        "last_sent_seq",
+        "hello",
+        "closed",
+        "_outbox",
+        "_queue_max",
+        "_lock",
+        "_sending_since",
+        "_backpressure_since",
+        "_drop_reason",
+        "_recorded_drop",
+        "_sender",
+        "_sent_frames",
+    )
 
-    def __init__(self, raw: ipc.ServerConnection) -> None:
+    def __init__(
+        self,
+        raw: ipc.ServerConnection,
+        *,
+        name: str = "",
+        queue_max: int | None = None,
+    ) -> None:
         self.raw = raw
-        self.send_lock = threading.Lock()
+        self.name = name or f"conn-{id(self):x}"
         self.subscribed = False
         self.last_sent_seq = 0
         self.hello = False
         self.closed = False
+        self._queue_max = max(1, int(SEND_QUEUE_MAX if queue_max is None else queue_max))
+        self._outbox: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=self._queue_max)
+        self._lock = threading.Lock()
+        self._sending_since: float | None = None
+        self._backpressure_since: float | None = None
+        self._drop_reason: str | None = None
+        self._recorded_drop = False
+        self._sent_frames = 0
+        self._sender = threading.Thread(
+            target=self._send_loop,
+            name=f"tianshu-daemon-sender-{self.name}",
+            daemon=True,
+        )
+        self._sender.start()
+
+    # -- 入队 / 断开 --------------------------------------------------------
+
+    @property
+    def queue_max(self) -> int:
+        return self._queue_max
+
+    @property
+    def high_watermark(self) -> int:
+        """超过它就先不入队，给发送线程追赶的机会。"""
+        return max(1, int(self._queue_max * SUBSCRIBER_BACKLOG_WATERMARK))
+
+    @property
+    def drop_reason(self) -> str | None:
+        return self._drop_reason
+
+    @property
+    def sent_frames(self) -> int:
+        return self._sent_frames
+
+    @property
+    def drop_recorded(self) -> bool:
+        return self._recorded_drop
+
+    def mark_drop_recorded(self) -> None:
+        self._recorded_drop = True
+
+    def pending(self) -> int:
+        return self._outbox.qsize()
 
     def send(self, message: dict[str, Any]) -> bool:
-        with self.send_lock:
+        """把一帧放进本连接队列。**不阻塞调用方**；False = 这条连接不可用了。"""
+        with self._lock:
             if self.closed:
                 return False
-            try:
-                self.raw.send(message)
-            except (OSError, ValueError, ipc.IpcError):
-                # 客户端消失是常态（关 UI、刷新页面），不是服务端故障。
-                self.closed = True
-                return False
+        try:
+            self._outbox.put_nowait(message)
             return True
+        except queue.Full:
+            self.drop("queue_full")
+            return False
+
+    def drop(self, reason: str) -> bool:
+        """标记断开并中断阻塞中的发送。返回是否是本次断开（幂等）。"""
+        with self._lock:
+            if self.closed:
+                return False
+            self.closed = True
+            self._drop_reason = reason
+        # abort 才是关键：发送线程可能正阻塞在一帧写不出去的 send 上，只标记
+        # closed 不会让它醒；不醒就永远占着一个线程（长驻进程里是慢性泄漏）。
+        try:
+            self.raw.abort()
+        except (OSError, ValueError, ipc.IpcError):  # pragma: no cover - 已关
+            pass
+        return True
 
     def close(self) -> None:
-        with self.send_lock:
-            if self.closed:
+        self.drop("closed")
+
+    def note_backpressure(self, now: float | None = None) -> float:
+        """记"从什么时候开始积压"，返回已积压秒数。"""
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if self._backpressure_since is None:
+                self._backpressure_since = moment
+                return 0.0
+            return max(0.0, moment - self._backpressure_since)
+
+    def clear_backpressure(self) -> None:
+        with self._lock:
+            self._backpressure_since = None
+
+    def backpressured_for(self, now: float | None = None) -> float | None:
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if self._backpressure_since is None:
+                return None
+            return max(0.0, moment - self._backpressure_since)
+
+    def sending_for(self, now: float | None = None) -> float | None:
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            if self._sending_since is None:
+                return None
+            return max(0.0, moment - self._sending_since)
+
+    def wait_idle(self, timeout: float = 1.0) -> bool:
+        """等已入队的帧全部写出去（关闭前尽量送掉响应，不让客户端看到假失败）。"""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self.closed:
+                    return False
+                sending = self._sending_since
+            if sending is None and self._outbox.empty():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def join_sender(self, timeout: float = 1.0) -> bool:
+        self._sender.join(max(0.0, timeout))
+        return not self._sender.is_alive()
+
+    # -- 发送线程 -----------------------------------------------------------
+
+    def _send_loop(self) -> None:
+        while True:
+            try:
+                frame = self._outbox.get(timeout=0.1)
+            except queue.Empty:
+                with self._lock:
+                    if self.closed:
+                        return
+                continue
+            if frame is None:  # pragma: no cover - 目前不发哨兵，留给未来 flush
                 return
-            self.closed = True
-            self.raw.close()
+            with self._lock:
+                if self.closed:
+                    return
+                self._sending_since = time.monotonic()
+            try:
+                self.raw.send(frame)
+            except (OSError, ValueError, ipc.IpcError):
+                # 对端消失是常态；对慢订阅者，这里也可能是因为 abort 被叫醒。
+                self.drop("send_error")
+                return
+            finally:
+                with self._lock:
+                    self._sending_since = None
+            with self._lock:
+                if self.closed:
+                    return
+                self._sent_frames += 1
 
 
 class _DriverSideChannel:
@@ -366,11 +554,21 @@ class _Daemon:
         self.on_ready = on_ready
         self.stop_reason = ""
 
+        #: 指标采样器（PRD §10.6）。写失败不影响业务（见 metrics 模块的失败容忍）。
+        self.metrics: metrics.MetricsRecorder | None = None
+        #: "从 serve() 进来到端点可服务"的计时起点。
+        self._boot_monotonic = time.monotonic()
+        #: `run.cancel` 之后等待终态的计时表：run_id -> 收到取消的时刻。
+        self._cancel_watch: dict[str, float] = {}
+        self._conn_counter = 0
+
         self.lock: DaemonLock | None = None
         self.server: ipc.Server | None = None
         self.plane: ControlPlane | None = None
         self.control_log: EventLog | None = None
         self.driver_log: EventLog | None = None
+        #: 指标采样线程专用连接（同一条纪律：建在一处、由采样线程独占）。
+        self.metrics_log: EventLog | None = None
         self.control_stack: Stack | None = None
         self.driver_stack: Stack | None = None
         self.side: _DriverSideChannel | None = None
@@ -405,6 +603,14 @@ class _Daemon:
             raise ipc.IpcError(f"accept 线程不可用：{self.accept_error}")
 
     def _setup(self) -> None:
+        # 冷启动 = 这个数据根此前没有事件库（第一次跑，或数据根被清过）。
+        # 必须在 EventLog 建库**之前**判断——建完看就永远是"热"的。
+        cold_start = not (self.root / "events.db").exists()
+        assert self.lock is not None
+        self.metrics = metrics.MetricsRecorder(
+            self.root, instance_id=self.lock.instance_id
+        )
+
         # 两条**各自线程专用**的连接。指向同一个 WAL 库：驱动线程写事件，
         # 控制线程读事件/写审批，各写各的事务。
         self.control_log = EventLog(
@@ -424,7 +630,15 @@ class _Daemon:
 
         # §4.1/§5：恢复扫描必须在 bind 之前。此时没有客户端、没有驱动线程，
         # 只有控制线程这一条连接，是最干净的窗口。
-        self._recover_startup()
+        recover_started = time.monotonic()
+        runs_scanned = self._recover_startup()
+        assert self.metrics is not None
+        self.metrics.record_duration_ms(
+            metrics.RESTART_RECOVER_MS,
+            (time.monotonic() - recover_started) * 1000.0,
+            cold_start=cold_start,
+            runs_scanned=runs_scanned,
+        )
 
         assert self.control_stack is not None
         self.plane = ControlPlane(
@@ -449,6 +663,23 @@ class _Daemon:
         # on_ready 之前必须证明"listen + accept + 应用层握手"整条路都通。
         # 顺序即契约：就绪标记一旦落盘，Host/测试就不该再被端点问题绊倒。
         self._await_endpoint_ready()
+        assert self.metrics is not None and self.plane is not None
+        self.metrics.record_duration_ms(
+            metrics.STARTUP_READY_MS,
+            (time.monotonic() - self._boot_monotonic) * 1000.0,
+            cold_start=cold_start,
+        )
+        # 资源采样放在"端点可服务"之后：启动耗时单独记，采样只回答"跑起来之后
+        # 的占用趋势"，混在一起会让 startup_ready_ms 被采样线程的启动噪声污染。
+        # 采样线程不能借用 control_log 的 SQLite 连接（那条连接建在 serve 线程，
+        # 跨线程读会 ProgrammingError，指标只会得到一堆 unknown）。给它一条
+        # cross_thread 专用连接，与驱动线程的做法同一条纪律。
+        self.metrics_log = EventLog(
+            self.root / "events.db",
+            blob_dir=self.root / "artifacts" / "blobs",
+            cross_thread=True,
+        )
+        self.metrics.start_sampler(seq_head=self.metrics_log.seq_head)
         self._driver_thread = threading.Thread(
             target=self._driver_loop, name="tianshu-daemon-driver", daemon=True
         )
@@ -494,8 +725,11 @@ class _Daemon:
 
     # ------------------------------------------------------------------ 恢复
 
-    def _recover_startup(self) -> None:
+    def _recover_startup(self) -> int:
         """§5 的三件事里前两件：恢复扫描 + 需要时的重新排队。
+
+        返回扫描到的非终态 Run 数（指标 `restart_recover_ms.runs_scanned` 用；
+        "扫描了 0 条"和"扫描慢"是两件不同的事）。
 
         保守口径写在这里，因为它比任何一行代码都重要：
         - `waiting_approval`：**不动**。自动续跑等于绕过审批。
@@ -508,6 +742,7 @@ class _Daemon:
         """
         assert self.control_stack is not None and self.control_log is not None
         tasks = self.control_stack.tasks
+        scanned = 0
         rows = tasks.conn.execute(
             "SELECT run_id FROM runs WHERE state IN"
             " ('running','waiting_approval','reconciling','cancelling')"
@@ -517,6 +752,7 @@ class _Daemon:
             run = tasks.get_run(row["run_id"])
             if run is None or run.state in TERMINAL_STATES:
                 continue
+            scanned += 1
             if run.state == RUN_WAITING_APPROVAL:
                 _log(f"恢复到 waiting_approval 的 Run 保持等待审批：{run.run_id}")
                 continue
@@ -531,6 +767,7 @@ class _Daemon:
             if not needs_recovery:
                 continue
             self._recover_run(run.run_id, unpaired)
+        return scanned
 
     def _recover_run(self, run_id: str, unpaired: list[str]) -> None:
         assert self.control_stack is not None and self.control_log is not None
@@ -658,7 +895,8 @@ class _Daemon:
                     # 这条连接只用于唤醒，不能当正式客户端处理。
                     raw.close()
                     return
-                conn = _ClientConnection(raw)
+                self._conn_counter += 1
+                conn = _ClientConnection(raw, name=f"conn-{self._conn_counter}")
                 with self._conns_lock:
                     self._conns.append(conn)
                 reader = threading.Thread(
@@ -722,6 +960,8 @@ class _Daemon:
         while not self.stop.is_set():
             handled = self._drain_requests()
             self._push_events()
+            self._check_slow_subscribers()
+            self._check_cancel_metrics()
             self._reap_connections()
             if self.stop.is_set():
                 break
@@ -782,6 +1022,17 @@ class _Daemon:
             self.stop.set()
             return
 
+        # `run.cancel` 的两个计时点：ack（控制面确认）与 stop（Run 终态）。
+        # 取消在安全点确认，所以 ack 与 stop 可能差很远；两者分开记，
+        # 否则"取消了但没停"会被平均成一个看不出问题的数字。
+        cancel_run_id = ""
+        cancel_started: float | None = None
+        if method == "run.cancel":
+            candidate = params.get("run_id")
+            if isinstance(candidate, str) and candidate:
+                cancel_run_id = candidate
+                cancel_started = time.monotonic()
+
         assert self.plane is not None
         try:
             result = self.plane.handle(method, params)
@@ -792,7 +1043,43 @@ class _Daemon:
             _log(f"{method} 内部错误：{type(exc).__name__}: {exc}")
             conn.send(ipc.fail(request_id, "internal", f"{type(exc).__name__}: {exc}"))
             return
-        conn.send(ipc.ok(request_id, result))
+        if conn.send(ipc.ok(request_id, result)) and cancel_started is not None:
+            self._note_cancel_ack(cancel_run_id, cancel_started)
+
+    def _note_cancel_ack(self, run_id: str, started: float) -> None:
+        if self.metrics is None:
+            return
+        self.metrics.record_duration_ms(
+            metrics.CANCEL_ACK_MS, (time.monotonic() - started) * 1000.0, run_id=run_id
+        )
+        self._cancel_watch[run_id] = started
+
+    def _check_cancel_metrics(self) -> None:
+        """把"取消之后多久真的停下"补齐；超时就记 unknown，不写假数字。"""
+        if not self._cancel_watch or self.control_stack is None:
+            return
+        now = time.monotonic()
+        for run_id, started in list(self._cancel_watch.items()):
+            run = self.control_stack.tasks.get_run(run_id)
+            terminal = (
+                run is None
+                or run.state in TERMINAL_STATES
+                or run.state == RUN_FENCED
+            )
+            if terminal:
+                value: float | None = (now - started) * 1000.0
+                state = "missing" if run is None else run.state
+                self._cancel_watch.pop(run_id, None)
+            elif now - started > CANCEL_STOP_TIMEOUT_S:
+                value = None
+                state = "timeout"
+                self._cancel_watch.pop(run_id, None)
+            else:
+                continue
+            if self.metrics is not None:
+                self.metrics.record_duration_ms(
+                    metrics.CANCEL_STOP_MS, value, run_id=run_id, state=state
+                )
 
     def _handle_hello(
         self, conn: _ClientConnection, request_id: str, params: dict[str, Any]
@@ -832,35 +1119,33 @@ class _Daemon:
     def _handle_subscribe(
         self, conn: _ClientConnection, request_id: str, params: dict[str, Any]
     ) -> None:
+        """登记订阅。历史补读**不在这个请求里做**。
+
+        以前这里同步送最多 20×256 条历史，整条主循环被一次订阅卡住；而且一旦
+        入队快于发送，就会把队列打满。现在只回响应并记下游标，历史与增量都由
+        `_push_events` 从最小游标处分批追——天然有背压（队列高水位时跳过该连接，
+        下一轮继续），也天然可被慢订阅者 watchdog 处理。
+        """
         since = params.get("since_seq", 0)
         if isinstance(since, bool) or not isinstance(since, int):
             conn.send(ipc.fail(request_id, "bad_params", "since_seq 必须是整数"))
             return
         if since < 0:
             since = 0
-        # 先回响应（客户端据此知道 from_seq），再补历史：顺序反了客户端会把
-        # 响应前面的推送当成"不属于这次订阅"。
+        # 先回响应（客户端据此知道 from_seq），推送只会排在它后面（同一发送队列，
+        # 顺序由入队顺序保证），不会出现"响应前先来推送"。
         if not conn.send(ipc.ok(request_id, {"subscribed": True, "from_seq": since})):
             return
         conn.subscribed = True
         conn.last_sent_seq = since - 1
-        assert self.plane is not None
-        cursor = since - 1
-        for _ in range(HISTORY_BATCHES_PER_REQUEST):
-            events = self.plane.event_log.read_after(cursor, limit=HISTORY_BATCH)
-            if not events:
-                return
-            for event in events:
-                if not conn.send(_push_frame(event)):
-                    return
-                cursor = int(event.seq)
-                conn.last_sent_seq = cursor
-            if len(events) < HISTORY_BATCH:
-                return
-            if self.stop.is_set():
-                return
 
     def _push_events(self) -> None:
+        """把新事件分批广播给所有订阅者。
+
+        推送路径**只入队、不写 socket**：慢连接在 `conn.send()` 返回 False 或
+        达到高水位时被跳过（事件仍留在日志里，下一轮/重连补读），不会拖住
+        其他连接与请求处理。
+        """
         assert self.plane is not None
         with self._conns_lock:
             subscribers = [
@@ -868,24 +1153,83 @@ class _Daemon:
             ]
         if not subscribers:
             return
-        # 从最落后的一条游标开始读：新订阅者可能刚补完历史，老订阅者可能已经
-        # 追到 head。一次读一段，落后的那些在后续轮次继续追。
+        # 从最落后的一条游标开始读：新订阅者可能刚登记、老订阅者可能已经追平。
         floor = min(conn.last_sent_seq for conn in subscribers)
         events = self.plane.event_log.read_after(floor, limit=PUSH_BATCH)
+        if not events:
+            return
+        now = time.monotonic()
         for event in events:
+            seq = int(event.seq)
             frame = _push_frame(event)
             for conn in subscribers:
-                if int(event.seq) <= conn.last_sent_seq:
+                if seq <= conn.last_sent_seq:
+                    continue
+                if conn.closed:
+                    continue
+                if conn.pending() >= conn.high_watermark:
+                    # 背压：这条连接暂时追不上。事件不丢，游标也不前进；
+                    # 持续追不上超过 SUBSCRIBER_BACKLOG_STALL_S 会被 watchdog 断开。
+                    conn.note_backpressure(now)
                     continue
                 if conn.send(frame):
-                    conn.last_sent_seq = int(event.seq)
+                    conn.last_sent_seq = seq
+                    conn.clear_backpressure()
+
+    def _check_slow_subscribers(self) -> None:
+        """慢订阅者 watchdog：发送超期 / 积压超期 ⇒ 断开并记指标。
+
+        只在主循环里判、只做"标记断开 + abort"，真正 kill 阻塞写的是
+        `_ClientConnection.drop()`；断开后 `_reap_connections` 记
+        `slow_subscriber_dropped`。其他连接完全不受影响。
+        """
+        with self._conns_lock:
+            active = [conn for conn in self._conns if not conn.closed]
+        if not active:
+            return
+        now = time.monotonic()
+        for conn in active:
+            sending = conn.sending_for(now)
+            if sending is not None and sending > SEND_STALL_S:
+                conn.drop("send_stall")
+                continue
+            backlog = conn.backpressured_for(now)
+            if backlog is not None and backlog > SUBSCRIBER_BACKLOG_STALL_S:
+                conn.drop("backlog_stall")
 
     def _reap_connections(self) -> None:
         with self._conns_lock:
-            self._conns = [conn for conn in self._conns if not conn.closed]
+            dropped: list[_ClientConnection] = []
+            live: list[_ClientConnection] = []
+            for conn in self._conns:
+                (dropped if conn.closed else live).append(conn)
+            self._conns = live
+        for conn in dropped:
+            self._record_drop(conn)
+            # 发送线程可能还卡在一次写里（abort 已尽量叫醒它）；join 只是尽量，
+            # 不让回收路径无限等待。
+            conn.join_sender(0.2)
         # 读线程同样要回收：否则每关一次 UI/每刷新一次页面，就多留一个
         # Thread 对象在列表里，长驻进程里是慢性泄漏。
         self._reader_threads = [t for t in self._reader_threads if t.is_alive()]
+
+    def _record_drop(self, conn: _ClientConnection) -> None:
+        """给一次断开补指标（只对"慢订阅者"类断开计数；正常关 UI 不算）。"""
+        if conn.drop_recorded:
+            return
+        reason = conn.drop_reason or "unknown"
+        if reason not in _SLOW_DROP_REASONS:
+            return
+        conn.mark_drop_recorded()
+        if self.metrics is not None:
+            self.metrics.counter(
+                metrics.SLOW_SUBSCRIBER_DROPPED,
+                1,
+                reason=reason,
+                subscribed=conn.subscribed,
+                last_sent_seq=conn.last_sent_seq,
+                sent_frames=conn.sent_frames,
+            )
 
     # ------------------------------------------------------------------ 驱动
 
@@ -1043,8 +1387,20 @@ class _Daemon:
             if not driver_stopped:
                 _log("驱动线程未在 5s 内退出；保留其连接，交给进程退出回收")
 
-        # 3+4. 关连接、关 listener。`ipc.Server.close()` 内部先关已接受的连接
-        #      再关 listener，正是为了唤醒阻塞在 recv 上的读线程。
+        # 3. 关连接：先把每条连接已入队的帧排空（通知 shutdown 的响应也在里面），
+        #    再断开。发送是异步的，不排空会让客户端看到"请求被接受、响应没回来"。
+        with self._conns_lock:
+            conns = list(self._conns)
+            self._conns.clear()
+        flush_deadline = time.monotonic() + CONNECTION_FLUSH_TIMEOUT_S
+        for conn in conns:
+            remaining = max(0.0, flush_deadline - time.monotonic())
+            if remaining > 0 and not conn.closed:
+                conn.wait_idle(min(remaining, 0.3))
+            conn.close()
+            conn.join_sender(0.2)
+        # 4. 关 listener。`ipc.Server.close()` 内部会再关一次已接受的连接（幂等），
+        #    并且它才是唤醒阻塞在 accept() 的那一步。
         if self.server is not None:
             self.server.close()
             self.server = None
@@ -1053,11 +1409,6 @@ class _Daemon:
         for reader in self._reader_threads:
             reader.join(0.5)
         self._reader_threads.clear()
-        with self._conns_lock:
-            conns = list(self._conns)
-            self._conns.clear()
-        for conn in conns:
-            conn.close()
 
         # 5. 释放锁：必须在关连接之后、关库之前。留着锁会挡住下一次启动。
         if self.lock is not None:
@@ -1068,6 +1419,12 @@ class _Daemon:
         # 6. 关两条日志连接（各自线程的）。驱动线程没退时保留它的连接：
         #    从别的线程关掉正在被使用的连接只会得到一个没人看得到的
         #    ProgrammingError，还可能截断一次写入。
+        # 指标采样线程在读事件库的 seq head，必须在线程退出后再关连接。
+        if self.metrics is not None:
+            self.metrics.stop_sampler()
+        if self.metrics_log is not None:
+            self.metrics_log.close()
+            self.metrics_log = None
         if self.plane is not None:
             self.plane.close()
             self.plane = None
@@ -1078,6 +1435,9 @@ class _Daemon:
             self.driver_log.close()
         self.driver_log = None
         self.control_log = None
+        if self.metrics is not None:
+            self.metrics.close()
+            self.metrics = None
 
 
 # --------------------------------------------------------------------------- 辅助

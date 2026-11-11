@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ..errors import TianshuError
 from ..events import EventLog
@@ -176,6 +178,19 @@ def _run_standard(
 ) -> Observation:
     directory = case_dir(workdir, case, run_index)
     ws, outside = _prepare(directory, case)
+    if case.unavailable_reason is not None:
+        # PRD §10.5：本轮不提供的能力，**不许**用脚本或静态网页冒充线上完成。
+        # 这里刻意不启动引擎、不写事件库：样本只证明"报告如实写了未具备能力"。
+        return Observation(
+            case_id=case.case_id,
+            category=case.category,
+            run_index=run_index,
+            run_id="",
+            out_name=case.out_name,
+            fixture={rel: text.encode("utf-8") for rel, text in case.fixture.items()},
+            files=_read_tree(ws),
+            unavailable=case.unavailable_reason,
+        )
     log = EventLog(directory / "events.db", blob_dir=directory / "blobs")
     started = time.perf_counter()
     error: str | None = None
@@ -184,6 +199,8 @@ def _run_standard(
     replay_report: ReplayReport | None = None
     events = []
     run_id = ""
+    invalid_reason: str | None = None
+    post_run: dict[str, Any] = {}
     try:
         stack = build_stack(log, data_root=directory / "data")
         engine = AgentLoop(
@@ -245,10 +262,27 @@ def _run_standard(
             # 停在审批 = 审批往返没有收敛，属于评测器/case 与实现不一致。
             error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
 
-        events = log.read_run(res.run_id)
-        replay_report = replay(log, res.run_id)
+        # 场景钩子（如"撤销冲突"）：Run 结束后再动一下产品 API，收集事实。
+        # 它跑在取证之前，钩子里写的事件（undo.*）才会进这次样本的证据。
+        if case.post_run is not None:
+            try:
+                post_run = dict(case.post_run(stack, res.run_id, ws))
+            except Exception as exc:  # noqa: BLE001 - 场景失败也是产品事实
+                post_run = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # 取证失败 = 评测基础设施无效（PRD §10.2 判据边界）。它和"产品失败"
+        # 必须分开：取证失败时我们没有资格给这次运行下任何结论。
+        try:
+            events = log.read_run(res.run_id)
+            replay_report = replay(log, res.run_id)
+        except Exception as exc:  # noqa: BLE001
+            invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001 - 评测器本身出错也要落成证据
         error = f"评测器异常：{type(exc).__name__}: {exc}"
+        # 只有"基础设施"类故障才算无效样本（夹具/后端/磁盘）。引擎自己抛异常
+        # 是产品失败——把它剔除掉，等于把"产品坏了"洗成"这次不算"。
+        if isinstance(exc, (OSError, sqlite3.Error)):
+            invalid_reason = f"评测基础设施无效：{type(exc).__name__}: {exc}"
     finally:
         files = _read_tree(ws)
         outside_files = _read_tree(outside)
@@ -275,6 +309,8 @@ def _run_standard(
         error=error,
         elapsed_ms=int((time.perf_counter() - started) * 1000),
         model_calls=len([e for e in events if e.type == "model.intent"]),
+        invalid_reason=invalid_reason,
+        post_run=post_run,
     )
     return obs
 
@@ -313,6 +349,7 @@ def _run_crash(
     replay_report: ReplayReport | None = None
     events = []
     run_id = ""
+    invalid_reason: str | None = None
 
     env = dict(os.environ)
     env.pop("TIANSHU_FAILPOINT", None)
@@ -337,8 +374,27 @@ def _run_crash(
         )
     except subprocess.TimeoutExpired:
         # 子进程挂住不能让整套评测直接炸掉：落成这一条 case 的 harness 异常，
-        # 其它 case 继续跑，报告里能看见"谁超时了"。
+        # 其它 case 继续跑，报告里能看见"谁超时了"。按 PRD §10.2 判据边界，
+        # "子进程起不来/挂住、没有可核实退出状态" = 评测基础设施无效样本。
         timed_out = True
+        invalid_reason = f"崩溃子进程挂住（>{CHILD_TIMEOUT_S}s），没有可核实的退出状态"
+    except OSError as exc:
+        return Observation(
+            case_id=case.case_id,
+            category=case.category,
+            run_index=run_index,
+            run_id="",
+            out_name=case.out_name,
+            fixture={rel: text.encode("utf-8") for rel, text in case.fixture.items()},
+            outside_fixture={
+                rel: text.encode("utf-8") for rel, text in case.outside.items()
+            },
+            files=_read_tree(ws),
+            outside={},
+            error=f"崩溃子进程起不来：{type(exc).__name__}: {exc}",
+            invalid_reason=f"评测基础设施无效：子进程起不来（{type(exc).__name__}）",
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
     crashed = proc is not None and proc.returncode == 77
 
     log = EventLog(db, blob_dir=directory / "blobs")
@@ -363,6 +419,8 @@ def _run_crash(
             replay_report = replay(log, run_id)
     except Exception as exc:  # noqa: BLE001
         error = error or f"评测器异常：{type(exc).__name__}: {exc}"
+        if isinstance(exc, (OSError, sqlite3.Error)):
+            invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
     finally:
         files = _read_tree(ws)
         outside_files = _read_tree(outside)
@@ -387,6 +445,7 @@ def _run_crash(
         elapsed_ms=int((time.perf_counter() - started) * 1000),
         model_calls=len([e for e in events if e.type == "model.intent"]),
         crashed=crashed,
+        invalid_reason=invalid_reason,
     )
 
 
