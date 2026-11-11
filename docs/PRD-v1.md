@@ -401,7 +401,7 @@ ToolDefinition {
 
 #### 5.2.1 记忆工具（F10，v1.1）
 
-记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。五个**模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有一个控制面专属、`exposed=False` 的 `memory.remember`（见 §5.2.2），模型清单里没有它。
+记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。六个**模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有两个控制面专属、`exposed=False` 的 `memory.remember` / `memory.promote`（见 §5.2.2），模型清单里没有它们。
 
 | tool_id | version | `side_effect_level` | `exec_model` | C4 动作 | 审批 | 走哪条执行路径 |
 |---|---|---|---|---|---|---|
@@ -485,7 +485,9 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
   `additionalProperties: false` 保持。
 
-**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`、`memory.remember` 已落地（含控制面判据与 CLI）；`memory.edit` / `memory.promote` / `memory.consolidate` / `memory.erase` 仍是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。别把这张表读成"六个工具都能调"。
+**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` 已落地（含控制面判据、一次性审批、旧版可查、Receipt 与 CLI）——**已落地 8 个**（6 个模型可见 + 2 个控制面专属）；`memory.consolidate` / `memory.erase` 仍是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
+
+**`origin` 的口径（N1 细化）**：它描述的是**这一版正文**的来源，不是记忆的终身属性——控制面 `memory.edit`（人自己写的新正文）→ `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬的是同一段正文，来源**随行**（旧行 `user_explicit` → 新行仍 `user_explicit`，不降档）。旧版的 `origin` 留在旧行，不被改写。
 
 #### 5.2.3 通用工具准入（新增要求；网络 / MCP 接入前完成）
 

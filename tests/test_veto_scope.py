@@ -10,7 +10,8 @@
 "过滤条件写错了"，而是**同一 Task 换新 Run 会不会忘掉上一次的否决**。
 
 答案取决于一个前提：**Run 只能由人/控制面发起**。模型只有工具调用能力
-（`tool_manifest()` 里的 6 个工具），没有 `run.start` RPC、也没有"新建 Run"
+（`tool_manifest()` 里 12 个工具：6 个文件/命令 + 6 个记忆），
+没有 `run.start` RPC、也没有"新建 Run"
 这个工具。所以"换个 Run 再问一次"必然是人/控制面主动发起的新执行——那是
 人的决定，不是模型绕过否决。
 
@@ -207,7 +208,7 @@ def test_model_tool_surface_has_no_run_start():
         )
     # 只读 / 写文件 / 执行命令 / 记忆读写——**没有任何一个**的动作语义是"新建 Run"。
     # 这份字面清单是**故意**的绊线：模型工具面每增加一个工具，都必须在这里显式
-    # 过一次（F10 的记忆工具是 11 个里的 5 个）；不然"模型不能建 Run"这条前提
+    # 过一次（F10 的记忆工具是 12 个里的 6 个）；不然"模型不能建 Run"这条前提
     # 就可能在无人察觉时被稀释。
     assert ids == {
         "list_files",
@@ -221,6 +222,7 @@ def test_model_tool_surface_has_no_run_start():
         "memory.propose",
         "memory.confirm",
         "memory.forget",
+        "memory.edit",
     }
 
 

@@ -377,7 +377,14 @@ def _fresh_progress(task: str, out_name: str | None) -> _Progress:
 #: 而不是猜它属于哪条路径。
 MEMORY_READ_TOOLS: frozenset[str] = frozenset({"memory.search", "memory.get"})
 MEMORY_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
+    {
+        "memory.propose",
+        "memory.remember",
+        "memory.confirm",
+        "memory.forget",
+        "memory.edit",
+        "memory.promote",
+    }
 )
 
 
@@ -1690,7 +1697,10 @@ class AgentLoop:
         # confirm / forget 操作的是某条已存在的记忆：它属于哪个作用域由记忆
         # 自己说了算，不是模型说了算。查不到就是"不在装备内"，fail-closed。
         memory_id = args.get("memory_id") or args.get("id")
-        if tool_id in ("memory.confirm", "memory.forget") and memory_id:
+        if (
+            tool_id in ("memory.confirm", "memory.forget", "memory.edit", "memory.promote")
+            and memory_id
+        ):
             if not isinstance(memory_id, str):
                 raise ToolArgumentError(f"memory_id 必须是字符串：{memory_id!r}")
             memory = projection.get(memory_id, allowed=allowed)
