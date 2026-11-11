@@ -430,18 +430,30 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
-        column_added = _ensure_column(
+        # 列不存在时**先**作废持久标记、再加列：`ALTER TABLE` 是 autocommit
+        # 落盘的，若先 ALTER 再删标记，两条语句之间崩溃就会留下"列在、标记也
+        # 在"的状态，下次打开看到标记直接跳过 → 旧终态正文永久漏脱敏。
+        # 反过来先删标记：哪怕在删完之后、加列之前崩溃，下次打开列仍不存在、
+        # 标记仍缺失，两条语句会再跑一遍（幂等）。正常升级路径（标记与列同批
+        # 维护）里列本来就在，这段不执行。
+        columns = {
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info(dispatch_requests)"
+            ).fetchall()
+        }
+        if "args_redacted" not in columns:
+            # 反向边界：标记在、列却不在（迁移工具或人手把列删了）⇒ 旧终态行的
+            # 正文又回到"未脱敏"，必须作废标记强制重扫，不然永久漏。
+            self._conn.execute(
+                "DELETE FROM dispatch_meta WHERE key = ?", (_BACKFILL_MARKER,)
+            )
+        _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
             "INTEGER NOT NULL DEFAULT 0",
         )
         # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
         # 下次打开会重试（否则列已存在，靠列存在性判断就永远不补了）。
-        # 反向边界：标记在、列却不在（迁移工具或人手把列删了）⇒ 旧终态行的
-        # 正文又回到"未脱敏"，此时必须作废标记强制重扫，不然永久漏。
-        if column_added:
-            self._conn.execute(
-                "DELETE FROM dispatch_meta WHERE key = ?", (_BACKFILL_MARKER,)
-            )
         self._migrate_redacted_args()
         self._tasks = tasks
         self._leases = leases

@@ -413,15 +413,16 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   `content_sha256` / `content_bytes` / `content_omitted`"，不列工具名。
 - **测试落点（与 §6.3 的偏差，如实记）**：没有新建 `tests/test_memory_recovery.py`——判据本来
   就在 `tests/test_memory_dispatch.py`（同一套 `Env` 夹具），单开文件要复制夹具。实际新增
-  **25 条**，都在该文件：三条终态脱敏（成功 / 闸门 / 中途炸）、`waiting` 行被否决后（ON
+  **26 条**，都在该文件：三条终态脱敏（成功 / 闸门 / 中途炸）、`waiting` 行被否决后（ON
   CONFLICT）、终态后重新发起、旧库终态行补扫、被拒文件请求不标脱敏、intent 不存正文
   （remember + edit）、断电恢复、孤儿 blob、共享 blob 不误删、擦除崩溃窗口、清单损坏仍结算、
   文件写不脱敏、CLI `recover` 打印两个新栏位、恢复使用装配方给的投影/blob_dir、补扫中断重试、标记与列脱钩重扫、`memory` 与 `blob_dir` 的优先级。
-- **负控（12 条逐条真跑过、都变红）**：① 关终态脱敏；② ON CONFLICT 改回单向 CASE；③ 删
+- **负控（17 条逐条真跑过、都变红）**：① 关终态脱敏；② ON CONFLICT 改回单向 CASE；③ 删
   `_recover_run` 记忆分支；④ 删 `assess_run` 记忆分支；⑤ `_reject` 无条件标脱敏；⑥ 跳过补扫；
   ⑦ `_intent_args` 只认 propose；⑧ 把 erase 当普通记忆写；⑨ 关掉孤儿清理；⑩ 删清单损坏早退块
   里的记忆分支；⑪ CLI 不打印 `memory_unresolved`；⑫ 恢复忽略传入的投影与 `blob_dir`。
-  独立复审另复跑了 ③⑧⑨ 三条，结论一致。
+  另 5 条：标记提前置位 / 标记在但列被删强制重扫 / 加列与补扫之间崩溃重试 /`memory` 与 `blob_dir` 优先级 /
+  `recover_run` 忽略 `blob_dir`。独立复审另复跑了 ③⑧⑨ 与标记/列边界，结论一致。
 - **残留（别读成"任何时刻都不存原文 / 一定没生效"）**：
   1. 停在 `waiting` / `admitted` 的行仍是完整参数——`dispatch()` 正是从这张表取参数执行，脱敏会
      把派发打红。要收口得先定义"等待行过期 / 取消即作废"，单开工单。

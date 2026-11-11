@@ -2614,3 +2614,74 @@ def test_memory_argument_wins_over_blob_dir(env):
     # 只传 blob_dir（不传 memory）⇒ 按该目录 ⇒ none_applied
     bucket, _extras, _problem = _memory_effect(env.log, payload, blob_dir=custom)
     assert bucket == "none_applied"
+
+
+def test_crash_between_add_column_and_backfill_is_retried(env: Env, monkeypatch):
+    """注入：列刚补上、补扫还没跑就崩溃 → 下次打开必须重扫（不许永久漏）。"""
+    import json
+
+    content = "加列之后补扫之前崩溃"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="between-add-and-scan"
+    )
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    with env.log.transaction():
+        env.log.conn.execute("ALTER TABLE dispatch_requests DROP COLUMN args_redacted")
+        env.log.conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ? WHERE request_id = ?",
+            (
+                json.dumps({"kind": "preference", "content": content}),
+                decision.request_id,
+            ),
+        )
+    # 标记仍在（列是被"人工/迁移工具"删掉的）。
+
+    def boom(self):
+        raise SystemExit("simulated power loss right after ADD COLUMN")
+
+    monkeypatch.setattr(Dispatcher, "_migrate_redacted_args", boom)
+    try:
+        with pytest.raises(SystemExit):
+            Dispatcher(
+                env.log,
+                env.tasks,
+                env.leases,
+                PolicyEngine(),
+                env.approvals,
+                grants=env.grants,
+                claims=env.claims,
+                snapshots=env.snapshots,
+                data_root=env.root / "authority",
+                memory=env.memory,
+                clock=lambda: NOW,
+            )
+    finally:
+        monkeypatch.undo()
+    # 列已补上（ALTER 是 autocommit），但补扫没跑：标记必须已被作废。
+    marker = env.log.conn.execute(
+        "SELECT value FROM dispatch_meta WHERE key = 'args_redacted_backfilled'"
+    ).fetchone()
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 0
+    assert "content" in json.loads(row["args_payload"])
+    assert marker is None, "标记必须在加列之前就被作废（否则重开不重扫）"
+
+    Dispatcher(
+        env.log,
+        env.tasks,
+        env.leases,
+        PolicyEngine(),
+        env.approvals,
+        grants=env.grants,
+        claims=env.claims,
+        snapshots=env.snapshots,
+        data_root=env.root / "authority",
+        memory=env.memory,
+        clock=lambda: NOW,
+    )
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    assert "content" not in json.loads(row["args_payload"])
