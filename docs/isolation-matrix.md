@@ -179,3 +179,50 @@ $ PYTHONPATH=/Volumes/Date/ts-wt-isolation/src \
 - **本轮未接产品路径**：模型生成代码 / 不可信 MCP / 直接执行子代理这些能力本身
   在 v1 尚不存在（见 PRD 与规格 §9），门先以库 API 落地；`run_command` 仍只受
   `ExecPolicy` 约束，不经过隔离门——这是本轮的**明确边界**，不是已完成接入。
+
+## 7 F2 收口后的口径（2026-11-11）
+
+本节只补"矩阵怎么被产品用起来"，不改变 §1–§6 的任何实测结论；实现与判据见
+[F2-sandbox-policy.md](F2-sandbox-policy.md)、[SPEC-F2-2026-11-11.md](SPEC-F2-2026-11-11.md)。
+
+### 7.1 三个口径分开写
+
+| 口径 | 来源 | 本机 `local-posix` |
+|---|---|---|
+| 声明级别 `declared` | 后端 `ExecBackendCapabilities.isolation` | `none` |
+| 实测级别 `measured` | `isolation.measured_level(报告)`（累计：`app_container` 要四边界全过，`process_tree` 要 files+tree） | `none`（files 未过） |
+| 已证明的边界 `enforced_boundaries` | 报告里 `enforced` 的边界 | `["process_tree"]` |
+
+**"边界独立、等级累计"**：策略里的 `isolation_requires` 是**逐边界**要求
+（只要求 `process_tree` 就只核杀树），而 `level` 只是累计显示。所以可以出现
+"门放行 `process_tree`、`level=none`"——此时视图必须同时给出
+`enforced_boundaries`，UI 文案是「受信任执行：未隔离（已实测的边界：进程树）」，
+不是"已隔离"也不是单纯"未隔离"。
+
+### 7.2 本机四种视图组合（UI 优先级）
+
+| 场景 | `isolation_view` | UI 文案 |
+|---|---|---|
+| 无隔离要求、无报告 | `level=none`, `unverified=true`, boundaries 全 `unknown` | 受信任执行：未隔离 |
+| 要求 `process_tree` 且实测 enforced | `level=none`, `unverified=false`, `enforced_boundaries=["process_tree"]` | 受信任执行：未隔离（已实测的边界：进程树） |
+| 后端自述 `app_container`、未探测 | `declared=app_container`, `level=none`, `unverified=true` | 后端自述「应用容器」，未实测 |
+| 自述 `app_container`、实测 `none` | `contradicted=true`, `level=none` | 后端自述「应用容器」，实测「未隔离」 |
+
+优先级顺序（`contradicted` > `unverified` > 部分边界 > `none` > 其它）写在
+`ui/src/lib/humanize.ts::isolationSentence`；反过来会把更严重的状态盖掉。
+
+### 7.3 探测现场与成本
+
+- 报告绑定 `(workspace, data_root, probe_version)`；缓存条目还绑定**后端对象
+  identity**——`register_exec_backend(replace=True)` 换成同名实现必须重测。
+- 只有任务显式声明 `isolation_requires` 才会探测；默认执行路径 0 成本。
+- 一次四边界探测约 2–4 秒（`process_tree` 探针占 1.5 s 观察窗）；同一进程内
+  同一现场只跑一次。
+- 没有 `data_root` 的执行路径不探测、直接拒绝要求——不拿临时目录假装测过。
+
+### 7.4 不能由矩阵推出的结论
+
+矩阵只回答"这四个探针在这台机器上看到什么"。它不覆盖内核攻击面、DNS/出站、
+磁盘配额、CPU 上限、TCC 交互；`level` 不是"安全分"。给出 `enforced` 也不等于
+"该后端可以跑任意不可信代码"——依赖隔离的三项能力（`model_generated_code` /
+`untrusted_local_mcp` / `direct_exec_subagent`）在本机仍全部关闭。

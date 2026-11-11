@@ -83,7 +83,7 @@ uv sync --python 3.12
 ### 跑测试与 lint
 
 ```bash
-uv run pytest -o addopts="" -q   # macOS 本机实测：1869 passed, 7 skipped（G2 网络阶段 #110/#112 落地、合并 main 后；CI 三平台为准）
+uv run pytest -o addopts="" -q   # macOS 本机实测：1905 passed, 7 skipped（G2 网络阶段 #110/#112/#113 + F2 收口 #108/#111 落地后；CI 三平台为准）
 uv run ruff check .              # 全绿（All checks passed!）
 ```
 
@@ -273,7 +273,9 @@ src/tianshu/          47 个 .py + eval/ 子包（下面按职责分组，45 个
 ├─ 授权与执行 ───────────────────────────────────────────────
 │  permissions.py   C4 动作分类 / 审批 / 一次性 grant
 │  dispatcher.py    唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
-│  execpolicy.py    F2 执行侧命令策略（默认全拒）
+│  execpolicy.py    F2 执行侧命令策略（声明式、默认全拒、deny 优先）
+│  exec_backends.py F2 执行后端注册表（未实现/未知一律 unsupported，绝不回落 local）
+│  isolation.py     F2 四边界实测探针 + 隔离门 + 受信任执行视图
 │  exec.py          F1 执行原语：argv 模式（非 shell）、超时、截断、进程组
 │  tools.py         受限工具 + FileExecutor（自己回库核验票据，不信调用方）
 │  guard.py         工作区阻断检查（未知副作用不得继续写）
@@ -327,6 +329,18 @@ UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直�
 `scripts/demo_m5.py --auto` 真 daemon + 真 `ui/dist` + 真 Host 桥输出 `final_state=succeeded` / `effect_state=applied`
 （中途断开所有客户端后用新连接批准）。完整判据、未验证项与真进程截图见 [docs/M5-verification.md](docs/M5-verification.md)。
 
+**F2（沙箱与 policy）已收口（PR #108 / #111）**：交付的是「后端可插拔 + 实测门 +
+受信任执行**审批前**可见」，**不是物理沙箱**。`TIANSHU_EXEC_BACKEND` 选不到的后端
+（`app_container` / `container` / `seatbelt` / `landlock`）一律 `PolicyUnsupported`，
+不会回落本地；策略里的 `isolation_requires` 只认 `isolation.py` 的真实子进程探针
+（`unknown` 与 `not_enforced` 一样拒绝），报告绑定后端/平台/workspace/data_root/
+probe 版本/timeout；未隔离执行在审批卡片、时间线、`tool.result.output.isolation`
+里如实标「受信任执行」。**本机实测四边界只有 `process_tree` enforced**，
+所以任何非空 `isolation_requires` 都会 `unsupported`；Windows L2（Job Object）
+与 L3/L4 后端**未实现**。判据、负控与未验证项见
+[docs/F2-ACCEPTANCE-2026-11-11.md](docs/F2-ACCEPTANCE-2026-11-11.md) 与
+[docs/F2-sandbox-policy.md](docs/F2-sandbox-policy.md)。
+
 **M5 明确未验证的**（写成「通过」就是假话）：**Windows 实机**（只有 CI `windows-latest`，命名管道的杀软/ACL/长路径差异未覆盖）·
 **真实模型驱动 UI**（CLI / `evaluate` 已用真实模型跑过：deepseek-v4.1-flash 18/20、glm-5.2 15/20，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1；UI 仍未接过真实模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
 完整清单见 [docs/M5-verification.md](docs/M5-verification.md)。
@@ -359,7 +373,7 @@ GitHub Actions。Python 矩阵三个平台 × Python 3.12：`ubuntu-latest` / `m
 
 ```bash
 uv sync --python 3.12
-uv run pytest -o addopts="" -q   # macOS 本机实测：1869 passed, 7 skipped（G2 网络阶段 #110/#112 落地、合并 main 后；CI 三平台为准）
+uv run pytest -o addopts="" -q   # macOS 本机实测：1905 passed, 7 skipped（G2 网络阶段 #110/#112/#113 + F2 收口 #108/#111 落地后；CI 三平台为准）
 uv run ruff check .              # lint
 ```
 
@@ -385,6 +399,7 @@ uv run ruff check .              # lint
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
 | [docs/F10-memory-design.md](docs/F10-memory-design.md) | **F10 记忆设计（v1.1）**：记忆作为事件日志的可重建投影、L0–L3 分层、作用域与装备、写入分级审批；**§6.1 资源种类（`memory://`）**、**§13 契约增量的实际状态**、**§14 判据↔真实测试** |
 | [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md) | **剩余记忆工作量施工规格**：§13 #18–#27 逐条现状（代码事实）、N1–N6 六个工作流的判据与负控口径（N1/N2/N3/N4/N5 已落地，含 §2.3/§3.4/§4.4/§5.4/§6.4 落地记录；**只剩 N6**）、契约增量清单、明确不做 |
+| [docs/F2-ACCEPTANCE-2026-11-11.md](docs/F2-ACCEPTANCE-2026-11-11.md) | **F2 沙箱与 policy 验收报告**：判据↔测试、负控 A1–A11/B1–B13、数字对账，以及**未验证 / 不宣称**的 12 项（无物理沙箱、Windows Job Object 未实现、L3/L4 未实现、探针覆盖有限、审批视图是装配时视图、Windows CI 基线红等） |
 | [docs/MEMORY-ACCEPTANCE-2026-11-11.md](docs/MEMORY-ACCEPTANCE-2026-11-11.md) | **F10 记忆 v1.2 交付验收报告**：逐条判据↔测试、负控总表、数字对账，以及**未验证 / 不宣称**的 10 项（真 embedding provider、L2/L3 评测、LLM 蒸馏、Windows 实机与 ACL、控制面非隔离边界、React 面板、`memory.search` RPC、跨进程断电、真实模型 UI、冲突消解） |
 | [AGENTS.md](AGENTS.md) | AI 编码助手的强制指令（读什么、更什么、哪些不许做） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、独立复审、什么该推什么不该推 |

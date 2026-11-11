@@ -975,7 +975,7 @@ class Limits(TypedDict, total=False):
 | ID | 功能 | 关键要求 | 来源依据 |
 |---|---|---|---|
 | **F1** | 执行原语 | `spawn(argv, cwd, env, policy) → handle`，含 PTY、stdio 流、信号、退出码。argv 数组，禁 shell 拼接；env 白名单。PTY 仅 POSIX：Windows 上 `run_command` 的 pty 请求返回 `unsupported`（无 ConPTY），不得用管道假装 | PRD v1 |
-| **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽 | PRD v1 |
+| **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽。**落地**：注册表 `exec_backends.py`（未实现后端一律 `unsupported`）、实测门 `isolation.require_isolation_requirements`、审批前视图 `ApprovalView.isolation`；边界与证据见 `docs/F2-sandbox-policy.md` | PRD v1 |
 | **F3** | 事件日志与恢复 | 见 §5.3。恢复扫描"有 intent 无 result"的调用，按 `side_effect_level` 处置 | OpenHands EventLog |
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
 | **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘。非确定性摘要**先持久化再编译**（已交付，默认关），见 §7.1 | PRD v1 + §7.1 |
@@ -1050,6 +1050,10 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 **两条必须写在 UI 上的诚实声明：**
 
 1. **未使用有效隔离的任意代码执行**标为「受信任执行」，用户必须看到真实权限范围；不能宣称它仍受工作区路径约束。批准启动一个程序，不等于对其后续所有行为作出可撤销保证。
+   落地位置：`run_command` 输出 `output.isolation`、事件 `tool.result` /
+   `dispatch.requested` / `approval.requested`、控制面 `ApprovalView.isolation`、
+   UI 审批卡片与时间线（`ui/src/lib/humanize.ts::isolationSentence`，优先级
+   `contradicted > unverified > 部分边界 > none`）。
 2. 需要强保证的任务，只能使用经验证满足文件、网络、凭据与进程终止要求的后端；容器名称或副本工作区本身不是隔离证明。后端不满足要求时拒绝该能力，不自动回退到宿主执行。
 
 #### 8.1.1 扩大自主执行前的隔离门禁（新增要求）

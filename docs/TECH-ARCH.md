@@ -164,29 +164,40 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 
 ## 6. 沙箱：分级，不追求跨平台等价
 
-**先说清楚一件事**：做不到两端等价的强隔离。macOS 的进程级沙箱（`sandbox-exec`）早已弃用，第三方 App 真正可用的只有 App Sandbox（需 App Store / 特定 entitlements）与 TCC。Windows 的 AppContainer 能力更强但改造量大。
+**先说清楚一件事**：做不到两端等价的强隔离。macOS 的进程级沙箱（`sandbox-exec`）
+早已弃用，第三方 App 真正可用的只有 App Sandbox（需 App Store / 特定 entitlements）
+与 TCC。Windows 的 AppContainer 能力更强但改造量大。
 
-所以采用**四层防御，逐层加码**：
+采用四层防御，逐层加码——**但 v1 只交付前两层**。下表以
+[isolation-matrix.md](isolation-matrix.md) 的实测证据为准；"声明"不是证据：
 
-| 层 | 机制 | 跨平台一致 | 作用 | v1 交付状态 |
+| 层 | 机制 | 跨平台一致 | 作用 | v1 交付状态（2026-11-11 复核） |
 |---|---|---|---|---|
-| L1 | 文件代理：所有路径在 Host 内规范化后匹配 allowlist | ✅ 完全一致 | 防路径逃逸（`..`、符号链接） | ✅ 交付 |
-| L2 | 进程树 Job Object / 进程组 | ✅ | 防孤儿进程、限制 CPU/内存/时长 | ✅ 交付 |
-| L3a | Windows AppContainer / restricted token | ❌ | 防越界读 | ✅ 交付 |
-| L3b | macOS Seatbelt / TCC | ❌ | 防越界读 | ⛔ **标 `unsupported`** |
-| L4 | 容器后端（可选） | ✅ | 高风险任务 | ✅ 交付（可选启用） |
+| L1 | 文件代理：所有路径在 Host 内规范化后匹配 allowlist | ✅ | 防路径逃逸（`..`、符号链接） | ✅ 交付。**只约束内置文件工具，不约束子进程** |
+| L2 | 进程树 | ✅ | 防孤儿进程 | ✅ POSIX（进程组杀树，探针 `process_tree=enforced`）；⛔ Windows（无 Job Object，杀树不可确认） |
+| L3a | Windows AppContainer / restricted token | ❌ | 防越界读 | ⛔ **v1 未实现**（本表曾误写"✅ 交付"） |
+| L3b | macOS Seatbelt / TCC | ❌ | 防越界读 | ⛔ **未实现**，标 `unsupported` |
+| L4 | 容器后端 | ✅ | 高风险任务 | ⛔ **v1 未实现**（本表曾误写"✅ 交付（可选启用）"） |
 
-**L3b 的矛盾要明说。** 上一版把 Seatbelt 列进 v1 交付表，同时又承认 `sandbox-exec` 已弃用、第三方 App 只有 App Sandbox 与 TCC——这是自相矛盾的表述。定稿：
+**上一版的错误已修正。** 原表把 L3a、L4 写成"已交付"，与同文"macOS 只承诺
+L1+L2"以及仓库事实（不存在 `app_container` / `container` 后端）自相矛盾。
+现在的口径：
 
-- macOS v1 的隔离**只承诺 L1 + L2**，L3 标 `unsupported`
-- UI 上"隔离级别"如实显示为**「仅路径控制」**，不显示"四层防御"
-- 这正好用上 F2 那条"后端执行不了必须返回 `unsupported`，禁止静默放宽"——与其声称有 L3 再靠免责声明补救，不如让后端明确说做不到
-- 需要强隔离的任务 → 走 L4 容器（无凭据 + 副本工作区）
+- 表里只有 L1 / L2 交付；L3 / L4 是**目标分层**，不是能力。
+- `TIANSHU_EXEC_BACKEND=app_container|container|seatbelt|landlock` 在 v1
+  一律 `PolicyUnsupported`（`src/tianshu/exec_backends.py`），**不会**静默回落
+  到本地后端。
+- 未隔离的执行必须在结果 / 事件 / **审批卡片**里如实标「受信任执行」
+  （`ApprovalView.isolation` + `tool.result.output.isolation`）；macOS 上
+  `isolation="none"`，没有"已隔离"可显示。
+- macOS v1 的 L1 / L2 是**产品级**（文件工具经 Host 路径代理、POSIX 杀树），
+  不是"子进程被关在目录里"。任意 shell 执行在 macOS 上仍是受信任执行。
+- 需要强隔离的任务：v1 没有可用后端。实现 AppContainer / Seatbelt / 容器 /
+  Windows Job Object 都是独立工单，不在 v1 范围（Job Object 的选择理由见
+  [F2-sandbox-policy.md](F2-sandbox-policy.md) §7）。
 
-**诚实结论：macOS 用户看到的隔离级别确实比 Windows 低一档。** 这个差距本来就在，现在只是不再藏在措辞后面。
-
-由此推出 PRD §8.1 的那条 UI 声明：macOS 上未使用容器的任意 shell 执行，必须标为**「受信任执行」**，不得宣称仍受目录 capability 限制。
-
+由此推出 PRD §8.1 的 UI 声明：未使用有效隔离的任意代码执行必须标为
+**「受信任执行」**，不得宣称仍受目录 capability 限制。
 
 ---
 
