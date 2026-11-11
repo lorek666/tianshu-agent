@@ -1,6 +1,7 @@
 # 事件 payload 契约与历史兼容（PRD §5.3.5 第 1–2 条）
 
-- 工作流：**W5 · event-history**；分支 `feat/event-payload-contract`；基线 `main @ da84d92`。
+- 工作流：**W5 · event-history**；分支 `feat/event-payload-contract`；从 `main @ da84d92`
+  建分支，收工前已 merge `origin/main`（含 PR #78 记忆生命周期 / PR #79 isolation-gate）。
 - 范围：逐类型 payload 契约、精确版本、写入前校验、旧版映射与夹具。
 - 判定口径沿用本轮规格 §0：**有回归测试 + 负控（回退修复后测试会红）才算做完**；
   「要求写进 PRD」≠「已实现」；读不懂就报 unknown，不猜。
@@ -81,7 +82,7 @@
 | `run.model_turn` | v1 | `run_id`, `turn_id`, `seq`, `claim_epoch`, `finish_reason`, `usage`, `payload_hash` | 历史形状差异（v0 放宽） |
 | `run.start` | v1 | `run_id`, `task_id`, `goal_revision`, `lease_epoch` | 历史形状差异（v0 放宽） |
 | `run.state` | v1 | `run_id`, `task_id`, `from`, `to`, `reason` | 无已知形状差异 |
-| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy` | 无已知形状差异 |
+| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes` | 无已知形状差异 |
 | `task.revised` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces` | 无已知形状差异 |
 | `tool.intent` | v1 | `call_id`, `tool_id`, `args`, `args_hash`, `request_id`, `request_digest`, `dispatch_id`, `grant_id`, `attempt_id`, `claim_epoch` | 历史形状差异（v0 放宽） |
 | `tool.not_dispatched` | v1 | `call_id`, `tool_id`, `reason` | 无已知形状差异 |
@@ -199,11 +200,15 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   1. `tests/test_events.py::test_every_registered_type_can_be_written_and_read_back`：
      旧=`{"probe": type}` 任意 dict 可写；新=每类型用 `event_schema.minimal_payload()`
      写读往返，并额外断言 `payload_version == 1`。仍遍历全部 41 个类型。
-  2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`：
+  2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。
-- 全量（本分支，merge 最新 `main` 前）：`1391 passed, 6 skipped`，
+- 全量（**merge `origin/main` 之后**，本分支实测）：`1413 passed, 6 skipped`，
   `ruff check .` 干净。
+- merge 后**绑定测试当场抓到两处契约漂移**（正是它们存在的目的）：
+  ① `task.created` 新增 `control` / `memory_scopes`（记忆契约 v1.2，PR #78）；
+  ② 工具白名单新增 `memory.remember`（同一 PR）。两处已补进 v1 契约——不是放宽，
+  是让契约跟上 `main` 的新事实。
 
 负控（真跑过，回退后红）：
 
