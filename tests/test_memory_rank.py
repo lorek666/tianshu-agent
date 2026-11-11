@@ -227,3 +227,16 @@ def test_byte_budget_crop_still_happens_after_priority(env) -> None:
     assert sum(len(hit.content.encode("utf-8")) for hit in hits) <= MAX_RECALL_BYTES
     # 第一条被截断后不再塞第二条（避免"截一半还继续"的假队满）。
     assert len(hits) == 1
+
+def test_priority_without_a_current_task_does_not_promote_task_scope(env) -> None:
+    """`RecallPriority(task_id=None)`：缺上下文时 task 作用域不排在 user 前面。"""
+    log, projection = env
+    task_scope = MemoryScope.task("task_current")
+    user_scope = MemoryScope.user()
+    _seed(log, projection, "mem_task", "上下文样例 任务里的", scope=task_scope, created_at=2)
+    _seed(log, projection, "mem_user", "上下文样例 用户的", scope=user_scope, created_at=1)
+    priority = RecallPriority(task_id=None, workspace_roots=())
+    hits = projection.search(
+        "上下文样例", allowed=(user_scope, task_scope), priority=priority
+    )
+    assert [item.memory.memory_id for item in hits] == ["mem_user", "mem_task"]

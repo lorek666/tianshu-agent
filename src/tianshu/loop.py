@@ -1512,7 +1512,13 @@ class AgentLoop:
             priority=priority,
         )
         items = [
-            AgentLoop._memory_item(item.memory, item.content, score=item.score)
+            AgentLoop._memory_item(
+                item.memory,
+                item.content,
+                score=item.score,
+                # 同一字段两种口径，必须让模型能分辨：origin 权重 ≠ RRF 分数。
+                score_kind=item.score_kind,
+            )
             for item in outcome.items
         ]
         return {
@@ -1526,6 +1532,7 @@ class AgentLoop:
             # 原因在 `degraded` 里（未配置 provider / 索引与 provider 不匹配）。
             "semantic": outcome.semantic,
             "degraded": outcome.degraded,
+            "fused": outcome.fused,
         }
 
     @staticmethod
@@ -1640,7 +1647,13 @@ class AgentLoop:
         return selections
 
     @staticmethod
-    def _memory_item(memory, content: str | None, *, score: float | None = None):
+    def _memory_item(
+        memory,
+        content: str | None,
+        *,
+        score: float | None = None,
+        score_kind: str | None = None,
+    ):
         """一条记忆的出处的投影：正文 + 身份 + 来源引用。
 
         `source_refs` / `scope` / `revision` 必须一起给模型看：没有出处的
@@ -1651,6 +1664,8 @@ class AgentLoop:
         item["content"] = content
         if score is not None:
             item["score"] = score
+        if score_kind is not None:
+            item["score_kind"] = score_kind
         return item
 
     def _exec_read(
@@ -2327,6 +2342,26 @@ class Stack:
         return self._memory
 
 
+def _embedding_provider_from_env() -> object | None:
+    """`TIANSHU_EMBEDDING_PROVIDER` → provider 实例。
+
+    目前只接受 `hash`（**确定性哈希基线，无语义能力**，只用于验证接线与离线
+    评测）。外部 embedding provider 需要额外的**数据外发许可**与配置（F10 §10），
+    代码里还没有接；未知名字直接报错，不静默降级成"没有 provider"。
+    """
+    name = os.environ.get("TIANSHU_EMBEDDING_PROVIDER", "").strip()
+    if not name:
+        return None
+    if name != "hash":
+        raise TianshuError(
+            f"未知的向量 provider：{name!r}（当前只支持 hash 基线；"
+            "外部 provider 需要数据外发许可，尚未接线）"
+        )
+    from .memory_index import HashEmbeddingProvider
+
+    return HashEmbeddingProvider()
+
+
 def build_stack(
     log: EventLog,
     *,
@@ -2336,6 +2371,7 @@ def build_stack(
     identity: ProcessIdentity | None = None,
     dispatcher_cls: type[Dispatcher] | None = None,
     memory: Any | None = None,
+    embedding_provider: Any | None = None,
 ) -> Stack:
     """装配一套权威存储。CLI、测试和 `run()` 共用同一条装配路径。
 
@@ -2349,7 +2385,11 @@ def build_stack(
     # 读不到，看起来像"记忆随机丢失"。构造本身不建表（省掉无关命令的开销），
     # 第一次真正读写时才 `ensure_schema()`。
     if memory is None:
-        memory = open_memory(log, clock=clock)
+        if embedding_provider is None:
+            embedding_provider = _embedding_provider_from_env()
+        memory = open_memory(
+            log, clock=clock, embedding_provider=embedding_provider
+        )
     kwargs: dict[str, Any] = {} if clock is None else {"clock": clock}
     ident: dict[str, Any] = {} if identity is None else {"identity": identity}
     leases = LeaseStore(log, **ident, **kwargs)

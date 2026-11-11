@@ -85,6 +85,9 @@ _SCHEMA_STATEMENTS = (
 #: 记录"这张表是哪套 provider 建的"。schema 说明与降级原因要能指到具体值。
 _META_MODEL = "provider_model_id"
 _META_DIM = "provider_dim"
+#: 只有**成功构建过**（`rebuild()` 完整跑完）才置位。空表不算"能语义召回"：
+#: 否则旧库/新 provider 打开时会报 semantic=true，实际一条向量都没有。
+_META_BUILT = "built"
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
@@ -226,23 +229,20 @@ class MemoryIndex:
         return self._provider
 
     def ensure_schema(self) -> None:
-        """建表 + 记录 provider 身份（幂等，可在已有事务里调用）。"""
+        """建表（幂等，可在已有事务里调用）。
+
+        与 `MemoryProjection.ensure_schema()` 同一个坑：**建表本身不缓存**。
+        如果这次建表发生在调用方的事务里，那个事务回滚会把表一起回滚，缓存
+        "已就绪"就会让后续调用在空库上直接 `no such table`。只有在外层没有
+        事务（自提交）时才缓存。
+        """
         if self._schema_ready:
             return
+        outer = self._conn.in_transaction
         for statement in _SCHEMA_STATEMENTS:
             self._conn.execute(statement)
-        # 只**记录第一套** provider 的身份：后接的 provider 不能改写历史——
-        # 否则换 provider 之后 availability() 会误报 True，旧向量被当新空间用。
-        # 真正换空间的动作是 rebuild()（它会把 meta 改成新 provider）。
-        self._conn.execute(
-            "INSERT OR IGNORE INTO memory_vector_meta(key, value) VALUES (?, ?)",
-            (_META_MODEL, self._provider.model_id if self._provider else ""),
-        )
-        self._conn.execute(
-            "INSERT OR IGNORE INTO memory_vector_meta(key, value) VALUES (?, ?)",
-            (_META_DIM, str(self._provider.dim) if self._provider else "0"),
-        )
-        self._schema_ready = True
+        if not outer:
+            self._schema_ready = True
 
     def _set_meta(self, key: str, value: str) -> None:
         self._conn.execute(
@@ -271,12 +271,14 @@ class MemoryIndex:
     def availability(self) -> tuple[bool, str | None]:
         """现在能不能做语义召回：`(可用, 不可用的原因)`。
 
-        三个前提缺一不可：装配了 provider、表里的向量是**同一套** provider 建的、
-        维度一致。换过 provider 而没重建时返回 `(False, 原因)`——调用方据此报
-        `semantic=false` + `degraded`，不是假装有。
+        四个前提缺一不可：装配了 provider、**成功构建过完整索引**（`built` 标记）、
+        索引属于**当前** provider（`model_id + dim`）、向量覆盖当前全部可索引行
+        （数量对得上）。只看 provider 身份不够——空表和"半套向量"都会报成可用，
+        那是对能力撒谎；这里宁可保守报降级，也不给假 `semantic=true`。
         """
         if self._provider is None:
             return (False, "未配置向量 provider：检索降级为 FTS-only（无语义召回）")
+        self.ensure_schema()
         stored_model, stored_dim = self.stored_model()
         if stored_model is None:
             return (
@@ -291,7 +293,40 @@ class MemoryIndex:
                 f"{self._provider.model_id}/{self._provider.dim}；旧向量不参与融合，"
                 "先 rebuild_vectors()",
             )
+        if self._meta(_META_BUILT) != "1":
+            return (
+                False,
+                "向量索引未完整构建（可能被投影重建或新 provider 弄脏）；"
+                "先 rebuild_vectors()",
+            )
+        indexable = self._indexable_row_count()
+        vectors = self._vector_count(stored_model, stored_dim)
+        if vectors != indexable:
+            return (
+                False,
+                f"向量覆盖不完整：可索引行 {indexable} 条、当前空间向量 {vectors} 条"
+                "（可能有行缺向量或混入旧 provider 的向量）；先 rebuild_vectors()",
+            )
         return (True, None)
+
+    def _indexable_row_count(self) -> int:
+        """可索引行数（active / 未擦除 / 正文在）——与 `iter_indexable` 同口径。
+
+        不排除过期行：过期只是"不参与召回"，向量仍保留（重新激活/延长有效期时
+        不用重建）。召回过滤在 `search()` 里做。
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE status = 'active'"
+            " AND erased_at IS NULL AND content_state = 'available'"
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _vector_count(self, model_id: str, dim: int) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM memory_vectors WHERE model_id = ? AND dim = ?",
+            (model_id, dim),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     # ---- 写入（调用方负责事务） ----
 
@@ -345,15 +380,23 @@ class MemoryIndex:
         制造"有的能融合有的不能"的半状态。整个重建在调用方事务里，失败回滚。
         """
         self.ensure_schema()
+        # 先清空并**作废** build 标记：中途失败时不能留下"旧向量 + 新 provider"
+        # 或"半套向量"被当成可用。
         self._conn.execute("DELETE FROM memory_vectors")
-        self._set_meta(_META_MODEL, self._provider.model_id if self._provider else "")
-        self._set_meta(_META_DIM, str(self._provider.dim) if self._provider else "0")
+        self._set_meta(_META_BUILT, "0")
         if self._provider is None:
+            self._conn.execute(
+                "DELETE FROM memory_vector_meta WHERE key IN (?, ?, ?)",
+                (_META_MODEL, _META_DIM, _META_BUILT),
+            )
             return 0
         written = 0
         for memory, content, last_seq in projection.iter_indexable():
             self.upsert(memory, content, last_seq=last_seq)
             written += 1
+        self._set_meta(_META_MODEL, self._provider.model_id)
+        self._set_meta(_META_DIM, str(self._provider.dim))
+        self._set_meta(_META_BUILT, "1")
         return written
 
     # ---- 读 ----
@@ -364,6 +407,7 @@ class MemoryIndex:
         *,
         allowed: Sequence[MemoryScope],
         limit: int,
+        now: int | None = None,
     ) -> list[str]:
         """按余弦相似度返回 `memory_id`（已按作用域/状态/过期过滤）。
 
@@ -386,8 +430,9 @@ class MemoryIndex:
             " FROM memory_vectors AS v JOIN memories AS m"
             " ON m.memory_id = v.memory_id"
             " WHERE v.model_id = ? AND v.dim = ?"
-            " AND m.status = 'active' AND m.erased_at IS NULL",
-            (self._provider.model_id, self._provider.dim),
+            " AND m.status = 'active' AND m.erased_at IS NULL"
+            " AND (m.expires_at IS NULL OR m.expires_at > ?)",
+            (self._provider.model_id, self._provider.dim, now if now is not None else 0),
         ).fetchall()
         scored: list[tuple[float, str]] = []
         for row in rows:

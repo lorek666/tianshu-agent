@@ -3,10 +3,10 @@
 这个脚本**只报实测数字**，不预设结论。两种模式跑同一批 query、同一批记忆：
 
 - `fts`：只有词面召回（FTS5 + CJK 双字切分），排序 = 作用域优先级 → origin → 时间；
-- `hybrid`：词面 + 向量（RRF 融合）。向量来自 `HashEmbeddingProvider`——**确定性
-  哈希基线，没有语义能力**，所以这组数字说明的是"两路名次融合"的效果，**不是**
-  "语义召回"的效果。换真正的 embedding provider 后必须重跑，别把这里的数字当
-  语义能力证明。
+- `hybrid`：词面候选 **∪** 语义候选（两路各自名次做 RRF 融合）。向量来自
+  `HashEmbeddingProvider`——**确定性哈希基线，没有语义能力**，所以这组数字说明的是
+  "两路名次融合"的效果，**不是**"语义召回"的效果。换真正的 embedding provider 后
+  必须重跑，别把这里的数字当语义能力证明。
 
 用法：
 
@@ -176,6 +176,10 @@ def _run(hybrid: bool) -> tuple[list[list[str]], list[list[str]]]:
     )
     projection.ensure_schema()
     _seed(log, projection)
+    if hybrid:
+        # 语义能力必须**构建完成**：`availability()` 只认"完整构建过"的索引，
+        # 空表/半套向量一律报降级（评测要按产品的真实口径跑）。
+        projection.rebuild_vectors()
     scope = MemoryScope.user()
     priority = RecallPriority(task_id="task_eval", workspace_roots=())
     try:

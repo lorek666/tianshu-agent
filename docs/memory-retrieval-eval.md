@@ -22,7 +22,7 @@
 | 模式 | 候选 | 排序 |
 |---|---|---|
 | `fts` | FTS5（CJK 双字切分） | 作用域优先级 → origin 权重 → `created_at` 降序 |
-| `hybrid-hash` | FTS 候选 ∪ 向量候选 | 两路名次做 RRF（`k=60`）后按分数排；同分按 `memory_id` |
+| `hybrid-hash` | FTS 候选 **∪** 语义候选（语义命中 FTS 没召回的行也并进来） | 两路名次做 RRF（`k=60`）；融合后按 `(作用域优先级, 融合分, memory_id)` 排 |
 
 指标：
 
@@ -34,19 +34,20 @@
 | 模式 | Recall@5 | MRR | lexical MRR | mixed MRR | paraphrase MRR |
 |---|---|---|---|---|---|
 | `fts` | 1.000 | 0.864 | 0.688 | 1.000 | 0.917 |
-| `hybrid-hash` | 1.000 | **0.977** | **1.000** | 0.938 | **1.000** |
+| `hybrid-hash` | 1.000 | **0.955** | **1.000** | 0.875 | **1.000** |
 
 分组 Recall@5 两种模式都是 1.000，不作区分。
 
 **如实解读**：
 
-- 融合把整体 MRR 从 0.864 提到 0.977：收益主要来自 `lexical` 组（0.688 → 1.000）——
-  FTS 的 `bm25` 名次在被"作用域优先级 → origin 权重"覆盖后，同一档内靠 `created_at`
-  降序，词面最匹配的那条不一定排第一；RRF 把 `bm25` 名次重新纳入，正好补上这一刀。
-- `mixed` 组 MRR 反而从 1.000 掉到 0.938：融合会让语义路（在哈希基线里≈词面连续版）
-  把一条只部分重叠的记忆排上来。这是真实代价，不是噪声——写在这里而不是抹掉。
+- 融合把整体 MRR 从 0.864 提到 **0.955**：收益来自 `lexical` 组（0.688 → 1.000）——
+  `search()` 的词面名次是"作用域优先级 → origin 权重 → 时间"，`bm25` 名次在最终排序里
+  已被覆盖；`retrieve()` 把 `bm25` 名次与语义名次一起交给 RRF，正好补上这一刀。
+- `mixed` 组 MRR 从 1.000 掉到 **0.875**：并集把语义路多捞的行带进来，在哈希基线里它们
+  只部分重叠、却排到了前面。这是**真实代价**，写在这里而不是抹掉——并集扩大召回，必然
+  带进噪声，得有真 provider 才能判断值不值。
 - `paraphrase` 组两种模式都接近 1.0，**不能**当成"语义召回有效"的证据（见开头的口径
-  第 3、5 条）。
+  第 3、5 条；中文共享字让这些"改写"仍带词面线索）。
 
 ## 3. 判据（与代码一一对应）
 
@@ -59,8 +60,14 @@
 | 过期项即便优先级最高也不参与 | `tests/test_memory_rank.py::test_expired_memory_is_excluded_even_at_the_highest_priority` |
 | 裁剪仍在排序之后（4 KiB 预算） | `tests/test_memory_rank.py::test_byte_budget_crop_still_happens_after_priority` |
 | 未配置 provider → `semantic=false` + 原因 | `tests/test_memory_vectors.py::test_fts_only_reports_semantic_false_with_reason` |
+| 语义路**即使 FTS 空也要跑**，语义独有候选并入并集 | `test_semantic_route_runs_even_when_fts_finds_nothing` / `test_semantic_only_candidates_are_merged_with_fts_candidates` |
+| 空索引/半套向量不得报可用 | `test_empty_index_is_not_reported_as_available` / `test_mixed_provider_vectors_are_detected_as_incomplete` |
 | 换 provider 未重建 → 旧向量不参与 | `tests/test_memory_vectors.py::test_provider_switch_makes_old_vectors_ineligible` |
-| 重建逐字节确定 | `tests/test_memory_vectors.py::test_rebuild_vectors_is_byte_identical_across_runs` |
+| 重建逐字节确定 | `test_rebuild_vectors_is_byte_identical_across_runs` |
+| 无索引的 `rebuild()` 也清向量/作废构建标记 | `test_rebuild_without_an_index_still_clears_vector_state` |
+| 索引建表在回滚事务后能重试 | `test_index_schema_creation_in_a_rolled_back_transaction_is_retried` |
+| 公开 `search()` 真的过滤过期 | `test_direct_index_search_excludes_expired_rows` |
+| `search()` 不偷偷变 hybrid | `test_search_stays_fts_only_and_retrieve_is_hybrid` |
 | 索引跟随生命周期（候选/确认/忘记/擦除） | `test_index_follows_the_memory_lifecycle` / `test_erase_drops_the_vector` |
 | RRF 分数可手算 | `tests/test_memory_vectors.py::test_rrf_scores_are_hand_checkable` |
 | 语义路也不能越权 | `tests/test_memory_vectors.py::test_semantic_route_never_pulls_in_other_scopes` |
@@ -69,8 +76,10 @@
 **负控**（都真跑过）：
 
 1. 把排序键改回 `origin` 优先（去掉作用域优先级）→ 作用域顺序用例红；
-2. 让 `availability()` 在 provider 不匹配时也返回 True → 降级用例红；
-3. 去掉确认/忘记/擦除时的索引钩子 → 生命周期用例红。
+2. 让 `availability()` 在 provider 不匹配/未构建时也返回 True → 降级用例红；
+3. 去掉确认/忘记/擦除时的索引钩子 → 生命周期用例红；
+4. 把语义路改回"只采纳 FTS 候选中出现过的 id"→ 两条并集用例红；
+5. 去掉 `MemoryIndex.ensure_schema` 的事务判断 → 回滚重试用例红。
 
 ## 4. 能力边界（写进代码注释，也写在这里）
 

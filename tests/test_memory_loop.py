@@ -850,3 +850,80 @@ def test_cli_can_erase_forgotten_and_candidate_memories(env: Env):
         candidate_id, allowed=(MemoryScope.user(),)
     )
     assert erased_candidate is not None and erased_candidate.erased_at is not None
+
+
+# ---------------------------------------------------------------- 复审：输出口径与接线
+
+
+def test_search_tool_output_reports_capability_and_score_kind(env: Env):
+    """`memory.search` 的 output 必须带 `semantic` / `degraded` / `fused`，
+    条目带 `score_kind`：不给 `fused` 模型无法判断分数口径。"""
+    env.seed("报告用中文", scope=MemoryScope.user(), memory_id="mem_out")
+    result, _, _ = env.run_to_end(
+        env.task("输出口径", []).task_id, [_search(), _end()]
+    )
+    assert result.state == "succeeded", result.error
+    output = _tool_output(env, result.run_id, "memory.search")
+    assert output["semantic"] is False
+    assert output["degraded"] is not None
+    assert output["fused"] is False
+    assert output["items"]
+    assert {item["score_kind"] for item in output["items"]} == {"origin"}
+
+
+def test_build_stack_wires_the_embedding_provider_from_env(monkeypatch, tmp_path):
+    """生产装配入口：`TIANSHU_EMBEDDING_PROVIDER=hash` 时 stack.memory 带索引。"""
+    from tianshu.loop import build_stack
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    log = EventLog(tmp_path / "events.db")
+    try:
+        stack = build_stack(log)
+        assert getattr(stack.memory, "index", None) is not None
+        available, _reason = stack.memory.index.availability()
+        assert available is False, "空索引不得报可用"
+    finally:
+        log.close()
+
+
+def test_unknown_embedding_provider_is_rejected(monkeypatch, tmp_path):
+    """未知 provider 名字直接报错，不静默当成"没有 provider"。"""
+    from tianshu.errors import TianshuError
+    from tianshu.loop import build_stack
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "magic-embeddings")
+    log = EventLog(tmp_path / "events.db")
+    try:
+        with pytest.raises(TianshuError):
+            build_stack(log)
+    finally:
+        log.close()
+
+
+def test_cli_search_json_shape_is_documented_and_stable(env: Env, capsys, tmp_path):
+    """CLI `memory search --json` 的形状：`{items, semantic, degraded, fused}`。
+
+    旧形状是裸数组；这是**有意的 breaking**（要携带能力标注），用测试钉住新
+    形状，避免以后又偷偷变回数组。
+    """
+    import json as _json
+
+    from tianshu.cli import main
+
+    rc = main(
+        [
+            "memory",
+            "search",
+            "报告",
+            "--json",
+            "--db",
+            str(env.root / "events.db"),
+            "--data-root",
+            str(env.root / "authority"),
+        ]
+    )
+    assert rc in (0, 1)
+    payload = _json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    assert set(payload) == {"items", "semantic", "degraded", "fused"}
+    assert payload["semantic"] is False
