@@ -350,6 +350,15 @@ describe("事件 → 时间线句子", () => {
     );
     expect(contradicted.sentence).toContain("自述");
     expect(contradicted.sentence).toContain("实测");
+
+    const malformed = humanizeEvent(
+      event("tool.result", {
+        tool: "run_command",
+        output: { isolation: { declared: "none", unverified: true } },
+      }),
+    );
+    expect(malformed.sentence).toContain("隔离情况未知");
+    expect(malformed.sentence).not.toContain("受信任执行");
   });
 
   it("eventDetail 只把原始 type / rule_id / payload 交给折叠详情", () => {

@@ -1639,7 +1639,9 @@ class Dispatcher:
             # `prepare()` 抛裸 `WorkspaceViolation` 把整个 Run 收成 failed。
             try:
                 probe_workspace = Workspace(target).resolve(args.get("cwd", "."))
-            except (WorkspaceViolation, ToolArgumentError, ValueError) as exc:
+            except (
+                WorkspaceViolation, ToolArgumentError, OSError, ValueError, TypeError
+            ) as exc:
                 raise DispatchDenied(
                     f"执行目录不可用：{exc}", "c4.outside_workspace"
                 ) from exc

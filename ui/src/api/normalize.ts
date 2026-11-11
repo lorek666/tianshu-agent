@@ -80,13 +80,15 @@ function normalizeResources(raw: unknown): string[] {
 
 function normalizeIsolation(raw: unknown): IsolationView | null {
   const record = asRecord(raw);
-  const level = readString(record, "level");
-  if (level === null) return null;
+  // 没有这个字段 = 非 exec 动作 / 旧事件；**字段存在但读不懂**不能当成
+  // "没有隔离需要说明"——那是把畸形视图隐藏掉。保留下面的未知视图，让 UI
+  // 显示"隔离情况未知"。
+  if (Object.keys(record).length === 0) return null;
   return {
     backend: asString(record.backend) ?? "",
     declared: readString(record, "declared") ?? "none",
     measured: readString(record, "measured"),
-    level,
+    level: readString(record, "level") ?? "",
     // 缺字段时按更保守的方向默认：没有明确"已实测"一律当未验证。
     unverified: asBoolean(record.unverified) ?? true,
     contradicted: asBoolean(record.contradicted) ?? false,

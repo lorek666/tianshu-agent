@@ -367,7 +367,7 @@ export function isolationSentence(
 ): { text: string; tone: Tone } | null {
   const record = asRecord(value);
   if (Object.keys(record).length === 0) return null;
-  const level = readString(record, "level") ?? "none";
+  const level = readString(record, "level") ?? "";
   const declared = readString(record, "declared") ?? "none";
   const measured = readString(record, "measured") ?? level;
   const unverified = readBoolean(record, "unverified") ?? false;
@@ -387,6 +387,9 @@ export function isolationSentence(
       text: `后端自述「${isolationLevelLabel(declared)}」，未实测`,
       tone: "warn",
     };
+  }
+  if (level === "" || !(level in ISOLATION_LEVEL_LABELS)) {
+    return { text: "隔离情况未知（视图字段不完整）", tone: "warn" };
   }
   if (level === "none") {
     if (enforced.length > 0) {

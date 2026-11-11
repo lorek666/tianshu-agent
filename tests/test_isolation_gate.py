@@ -943,3 +943,28 @@ def test_dispatcher_refuses_executor_with_another_data_root(env_factory, tmp_pat
             data_root=env.data,
             executor=other_executor,
         )
+
+
+def test_cwd_with_wrong_type_is_a_rejection_not_a_crash(env_factory):
+    """直接调 prepare 的旁路传非法 cwd 类型：也必须可判拒绝（TypeError 被映射）。"""
+    env = env_factory()
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print(1)"], "cwd": 123}
+    request = _exec_request(env, run, claim, args=args, task=task)
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+
+    assert decision.is_rejected
+    assert decision.rule_id == "c4.outside_workspace"
+
+
+def test_report_with_another_timeout_is_refused(tmp_path):
+    """证据强度绑定探测预算：换更短的超时重测得到的报告不能冒用。"""
+    policy = _policy(tmp_path, isolation_requires=("files_authority",))
+    report = replace(_report(tmp_path, tmp_path), timeout_ms=1234)
+
+    with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
+        require_isolation_requirements(
+            policy, LOCAL_EXEC_BACKEND,
+            workspace=tmp_path, data_root=tmp_path, report=report,
+        )
