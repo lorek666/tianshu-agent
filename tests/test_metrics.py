@@ -301,13 +301,18 @@ def test_cold_then_warm_startup_metrics_are_real(
         metrics_mod.read_metrics(root), metrics_mod.EVENT_SEQ_HEAD
     )
     assert heads and heads[-1] >= 0
-    _wait_until(
+    rss_records = _wait_until(
         lambda: _records_with(root, metrics_mod.RSS_MIB), timeout=5.0
     )
     rss = metrics_mod.metric_values(
         metrics_mod.read_metrics(root), metrics_mod.RSS_MIB
     )
-    assert rss and rss[-1] > 0
+    if rss:
+        assert rss[-1] > 0
+    else:
+        # 平台没有 `resource`（Windows）：必须留下 unknown 记录，而不是什么都没有。
+        # "测不到"与"不存在"在这里同样是可断言的事实。
+        assert any(record["value"] is None for record in rss_records)
 
 
 def test_restart_recover_metric_records_recovery_scan(
