@@ -393,14 +393,22 @@ def test_loadout_equips_only_authorized_scopes(env: Env, monkeypatch):
     )
 
     projection = env.stack.memory
-    real_search = projection.search
+    real_retrieve = projection.retrieve
     seen: list[tuple[MemoryScope, ...]] = []
 
-    def spy(query, *, allowed, limit=5, max_bytes=4096):
+    def spy(query, *, allowed, limit=5, max_bytes=4096, priority=None):
         seen.append(tuple(allowed))
-        return real_search(query, allowed=allowed, limit=limit, max_bytes=max_bytes)
+        return real_retrieve(
+            query,
+            allowed=allowed,
+            limit=limit,
+            max_bytes=max_bytes,
+            priority=priority,
+        )
 
-    monkeypatch.setattr(projection, "search", spy)
+    # 主循环走 `retrieve()`（要拿语义/降级标注），所以绊线钉在这一层：
+    # 断言的仍是"实际传给检索的 allowed 集合"，不是"能查到"。
+    monkeypatch.setattr(projection, "retrieve", spy)
 
     task_a = env.task("A 的任务", [ws_a])
     result_a, _, _ = env.run_to_end(task_a.task_id, [_search(), _end()])
@@ -842,3 +850,219 @@ def test_cli_can_erase_forgotten_and_candidate_memories(env: Env):
         candidate_id, allowed=(MemoryScope.user(),)
     )
     assert erased_candidate is not None and erased_candidate.erased_at is not None
+
+
+# ---------------------------------------------------------------- 复审：输出口径与接线
+
+
+def test_search_tool_output_reports_capability_and_score_kind(env: Env):
+    """`memory.search` 的 output 必须带 `semantic` / `degraded` / `fused`，
+    条目带 `score_kind`：不给 `fused` 模型无法判断分数口径。"""
+    env.seed("报告用中文", scope=MemoryScope.user(), memory_id="mem_out")
+    result, _, _ = env.run_to_end(
+        env.task("输出口径", []).task_id, [_search(), _end()]
+    )
+    assert result.state == "succeeded", result.error
+    output = _tool_output(env, result.run_id, "memory.search")
+    assert output["semantic"] is False
+    assert output["degraded"] is not None
+    assert output["fused"] is False
+    assert output["items"]
+    assert {item["score_kind"] for item in output["items"]} == {"origin"}
+
+
+def test_build_stack_wires_the_embedding_provider_from_env(monkeypatch, tmp_path):
+    """生产装配入口：`TIANSHU_EMBEDDING_PROVIDER=hash` 时 stack.memory 带索引。"""
+    from tianshu.loop import build_stack
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    log = EventLog(tmp_path / "events.db")
+    try:
+        stack = build_stack(log)
+        assert getattr(stack.memory, "index", None) is not None
+        available, _reason = stack.memory.index.availability()
+        assert available is False, "空索引不得报可用"
+    finally:
+        log.close()
+
+
+def test_unknown_embedding_provider_is_rejected(monkeypatch, tmp_path):
+    """未知 provider 名字直接报错，不静默当成"没有 provider"。"""
+    from tianshu.errors import TianshuError
+    from tianshu.loop import build_stack
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "magic-embeddings")
+    log = EventLog(tmp_path / "events.db")
+    try:
+        with pytest.raises(TianshuError):
+            build_stack(log)
+    finally:
+        log.close()
+
+
+def test_cli_search_json_shape_is_documented_and_stable(env: Env, capsys, tmp_path):
+    """CLI `memory search --json` 的形状：`{items, semantic, degraded, fused}`。
+
+    旧形状是裸数组；这是**有意的 breaking**（要携带能力标注），用测试钉住新
+    形状，避免以后又偷偷变回数组。
+    """
+    import json as _json
+
+    from tianshu.cli import main
+
+    rc = main(
+        [
+            "memory",
+            "search",
+            "报告",
+            "--json",
+            "--db",
+            str(env.root / "events.db"),
+            "--data-root",
+            str(env.root / "authority"),
+        ]
+    )
+    assert rc in (0, 1)
+    payload = _json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    assert set(payload) == {"items", "semantic", "degraded", "fused"}
+    assert payload["semantic"] is False
+
+
+def test_env_provider_to_built_index_is_an_end_to_end_path(monkeypatch, tmp_path):
+    """生产路径全链路：配 provider → CLI `memory rebuild-vectors` → 语义可用。
+
+    这是首轮复审指出的缺口：只装配 provider 不会构建索引，用户配了也永远
+    FTS-only。构建入口就是 CLI 的这个动作。
+    """
+    from tianshu.cli import main
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    data_root = tmp_path / "authority"
+    data_root.mkdir()
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        stack = build_stack(log, data_root=data_root)
+        projection = stack.memory
+        scope = MemoryScope.user()
+        content_ref = projection.put_content("报告用中文，先列结论")
+        propose = {
+            "tool_id": "memory.propose",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_cli",
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": "preference",
+                "content_ref": content_ref,
+                "source_refs": ["event:1"],
+                "evidence": [{"source_memory_id": "s", "quote": "q"}],
+                "proof_count": 1,
+                "origin": "user_explicit",
+                "status": "candidate",
+                "created_at": 1,
+                "expires_at": None,
+                "deduped": False,
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", propose, legacy_write=True)
+            projection.apply_event("tool.result", propose, seq=seq)
+        confirm = {
+            "tool_id": "memory.confirm",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_cli",
+                "revision": 2,
+                "before_status": "candidate",
+                "status": "active",
+                "consolidated_at": 2,
+                "memory_uri": scope.to_uri(),
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", confirm, legacy_write=True)
+            projection.apply_event("tool.result", confirm, seq=seq)
+        assert projection.retrieve("报告", allowed=(scope,)).semantic is False
+        rc = main(["memory", "rebuild-vectors", "--db", str(db), "--data-root", str(data_root)])
+        assert rc == 0
+        available, reason = projection.index.availability()
+        assert available is True, reason
+        built = projection.retrieve("报告", allowed=(scope,))
+        assert built.semantic is True
+    finally:
+        log.close()
+
+
+def test_cli_rebuild_vectors_without_a_provider_fails_loudly(monkeypatch, capsys, tmp_path):
+    """没有 provider 时 `rebuild-vectors` 必须给可行动的失败（退出码 2 + 原因）。"""
+    from tianshu.cli import main
+
+    monkeypatch.delenv("TIANSHU_EMBEDDING_PROVIDER", raising=False)
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        log.append(
+            "run_cli",
+            "run.start",
+            {"task": "t", "workspace": str(tmp_path), "out": "x", "limits": {}, "tools": []},
+            actor_kind="core",
+            legacy_write=True,
+        )
+    finally:
+        log.close()
+    rc = main(["memory", "rebuild-vectors", "--db", str(db), "--data-root", str(tmp_path)])
+    assert rc == 2
+    assert "没有配置向量 provider" in capsys.readouterr().err
+
+
+def test_cli_rebuild_vectors_json_reports_counts_and_availability(monkeypatch, capsys, tmp_path):
+    """`--json` 的形状要稳定：rows / available / reason 三个字段。"""
+    import json as _json
+
+    from tianshu.cli import main
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    data_root = tmp_path / "authority"
+    data_root.mkdir()
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        stack = build_stack(log, data_root=data_root)
+        scope = MemoryScope.user()
+        content_ref = stack.memory.put_content("报告用中文")
+        payload = {
+            "tool_id": "memory.remember",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_json",
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": "preference",
+                "content_ref": content_ref,
+                "source_refs": ["event:1"],
+                "evidence": [{"source_memory_id": "s", "quote": "q"}],
+                "proof_count": 1,
+                "origin": "user_explicit",
+                "status": "active",
+                "created_at": 1,
+                "expires_at": None,
+                "deduped": False,
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", payload, legacy_write=True)
+            stack.memory.apply_event("tool.result", payload, seq=seq)
+    finally:
+        log.close()
+    rc = main(
+        ["memory", "rebuild-vectors", "--json", "--db", str(db), "--data-root", str(data_root)]
+    )
+    assert rc == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert set(out) == {"rows", "available", "reason"}
+    assert out["rows"] == 1
+    assert out["available"] is True

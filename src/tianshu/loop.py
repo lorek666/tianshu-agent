@@ -417,6 +417,7 @@ def open_memory(
     *,
     blob_dir: Path | None = None,
     clock: Callable[[], int] | None = None,
+    embedding_provider: object | None = None,
 ):
     """打开记忆投影（事件日志的另一个可重建投影，F10 §3.1）。
 
@@ -434,6 +435,13 @@ def open_memory(
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
+    if embedding_provider is not None:
+        # 向量索引是可选派生数据：只有装配方显式给了 provider 才接上，否则
+        # 检索如实降级为 FTS-only（不假装有语义能力）。索引与投影必须共用
+        # 同一个 SQLite 连接——向量写进的是同一个事务。
+        from .memory_index import MemoryIndex
+
+        kwargs["index"] = MemoryIndex(log.conn, provider=embedding_provider)
     return MemoryProjection(log.conn, log=log, blob_dir=blob_dir, **kwargs)
 
 
@@ -1579,6 +1587,13 @@ class AgentLoop:
         )
         return tuple(loaded)
 
+    def _memory_priority(self, task: Task):
+        """这次检索"离谁更近"：当前任务 + 本 Run 绑定的 workspace（F10 §8）。"""
+        from .memory import RecallPriority
+
+        roots = tuple(_canonical_root(b) for b in task.workspaces)
+        return RecallPriority(task_id=task.task_id, workspace_roots=roots)
+
     def _exec_memory_read(
         self,
         run_id: str,
@@ -1604,7 +1619,9 @@ class AgentLoop:
             args = validate_args(args, spec.input_schema)
             allowed = self._memory_allowed(task)
             if tool_id == "memory.search":
-                output = self._memory_search_output(projection, args, allowed)
+                output = self._memory_search_output(
+                    projection, args, allowed, self._memory_priority(task)
+                )
             else:
                 output = self._memory_get_output(projection, args, allowed)
             return ToolResult("succeeded", "none_applied", output)
@@ -1616,7 +1633,7 @@ class AgentLoop:
             return ToolResult("failed", "none_applied", {"error": repr(exc)})
 
     @staticmethod
-    def _memory_search_output(projection, args, allowed) -> dict[str, Any]:
+    def _memory_search_output(projection, args, allowed, priority=None) -> dict[str, Any]:
         from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
 
         query = args.get("query")
@@ -1628,12 +1645,22 @@ class AgentLoop:
         # 首版硬上限（F10 §8）：模型可以要求更少，不能要求更多；
         # 字节上限不由模型控制——预算是执行侧的事。
         limit = min(limit, MAX_RECALL_ITEMS)
-        recalled = projection.search(
-            query, allowed=allowed, limit=limit, max_bytes=MAX_RECALL_BYTES
+        outcome = projection.retrieve(
+            query,
+            allowed=allowed,
+            limit=limit,
+            max_bytes=MAX_RECALL_BYTES,
+            priority=priority,
         )
         items = [
-            AgentLoop._memory_item(item.memory, item.content, score=item.score)
-            for item in recalled
+            AgentLoop._memory_item(
+                item.memory,
+                item.content,
+                score=item.score,
+                # 同一字段两种口径，必须让模型能分辨：origin 权重 ≠ RRF 分数。
+                score_kind=item.score_kind,
+            )
+            for item in outcome.items
         ]
         return {
             "query": query,
@@ -1642,6 +1669,11 @@ class AgentLoop:
             "limit": limit,
             "max_bytes": MAX_RECALL_BYTES,
             "allowed": [scope.to_dict() for scope in allowed],
+            # 如实报告这一路有没有语义能力：`semantic=false` 不等于"没找到"，
+            # 原因在 `degraded` 里（未配置 provider / 索引与 provider 不匹配）。
+            "semantic": outcome.semantic,
+            "degraded": outcome.degraded,
+            "fused": outcome.fused,
         }
 
     @staticmethod
@@ -1756,7 +1788,13 @@ class AgentLoop:
         return selections
 
     @staticmethod
-    def _memory_item(memory, content: str | None, *, score: float | None = None):
+    def _memory_item(
+        memory,
+        content: str | None,
+        *,
+        score: float | None = None,
+        score_kind: str | None = None,
+    ):
         """一条记忆的出处的投影：正文 + 身份 + 来源引用。
 
         `source_refs` / `scope` / `revision` 必须一起给模型看：没有出处的
@@ -1767,6 +1805,8 @@ class AgentLoop:
         item["content"] = content
         if score is not None:
             item["score"] = score
+        if score_kind is not None:
+            item["score_kind"] = score_kind
         return item
 
     def _exec_read(
@@ -2447,6 +2487,26 @@ class Stack:
         return self._memory
 
 
+def _embedding_provider_from_env() -> object | None:
+    """`TIANSHU_EMBEDDING_PROVIDER` → provider 实例。
+
+    目前只接受 `hash`（**确定性哈希基线，无语义能力**，只用于验证接线与离线
+    评测）。外部 embedding provider 需要额外的**数据外发许可**与配置（F10 §10），
+    代码里还没有接；未知名字直接报错，不静默降级成"没有 provider"。
+    """
+    name = os.environ.get("TIANSHU_EMBEDDING_PROVIDER", "").strip()
+    if not name:
+        return None
+    if name != "hash":
+        raise TianshuError(
+            f"未知的向量 provider：{name!r}（当前只支持 hash 基线；"
+            "外部 provider 需要数据外发许可，尚未接线）"
+        )
+    from .memory_index import HashEmbeddingProvider
+
+    return HashEmbeddingProvider()
+
+
 def build_stack(
     log: EventLog,
     *,
@@ -2456,6 +2516,7 @@ def build_stack(
     identity: ProcessIdentity | None = None,
     dispatcher_cls: type[Dispatcher] | None = None,
     memory: Any | None = None,
+    embedding_provider: Any | None = None,
 ) -> Stack:
     """装配一套权威存储。CLI、测试和 `run()` 共用同一条装配路径。
 
@@ -2469,7 +2530,11 @@ def build_stack(
     # 读不到，看起来像"记忆随机丢失"。构造本身不建表（省掉无关命令的开销），
     # 第一次真正读写时才 `ensure_schema()`。
     if memory is None:
-        memory = open_memory(log, clock=clock)
+        if embedding_provider is None:
+            embedding_provider = _embedding_provider_from_env()
+        memory = open_memory(
+            log, clock=clock, embedding_provider=embedding_provider
+        )
     kwargs: dict[str, Any] = {} if clock is None else {"clock": clock}
     ident: dict[str, Any] = {} if identity is None else {"identity": identity}
     leases = LeaseStore(log, **ident, **kwargs)
