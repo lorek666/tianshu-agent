@@ -33,7 +33,15 @@ from tianshu.resources import (
 
 
 def test_resource_kinds_are_closed():
-    assert RESOURCE_KINDS == frozenset({KIND_FILE, KIND_MEMORY})
+    """封闭集：file / memory / network / mcp / subtask。
+
+    口径变更（G1d）：旧判据是 `{file, memory}` 两种。PRD §5.2.3 要求「文件、网络目标、
+    MCP 工具、记忆作用域、子任务各自规范化与校验」，所以三种新种类必须进集合；
+    "封闭"这条性质**不变**——不在集合里的种类照旧拒绝（见下一条）。
+    """
+    assert RESOURCE_KINDS == frozenset(
+        {KIND_FILE, KIND_MEMORY, "network", "mcp", "subtask"}
+    )
 
 
 def test_memory_scopes_are_closed():
@@ -41,6 +49,10 @@ def test_memory_scopes_are_closed():
 
 
 def test_unknown_kind_rejected():
+    with pytest.raises(ResourceError):
+        ResourceRef("quantum", "q://x")
+    # 已知种类但**非规范形状**同样拒绝：写进 `resources` 的值会进审批摘要，
+    # 允许两种写法等于让同一个目标有两种摘要。
     with pytest.raises(ResourceError):
         ResourceRef("network", "http://example.com")
 

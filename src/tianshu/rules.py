@@ -98,6 +98,13 @@ RULE_IDS: frozenset[str] = frozenset(
         "c4.exec_not_configured",
         "c4.exec_policy_denied",
         "c4.exec_unsupported",
+        # ---- 资源种类（G1d）：外发、MCP、委派与种类混用 ----
+        "c4.outbound",
+        "c4.mcp_call",
+        "c4.subtask_unavailable",
+        "c4.action_resource_mismatch",
+        "c4.mixed_resource_kinds",
+        "dispatch.resource_kind_unsupported",
         # ---- 记忆（F10）：作用域、种类与记忆目标 ----
         "c4.memory_scope",
         "c4.memory_scope_denied",
@@ -145,7 +152,9 @@ DECISION_RULE_IDS: frozenset[str] = frozenset(
         "c4.overwrite",
         "c4.delete",
         "c4.exec",
+        "c4.mcp_call",
         "c4.memory_scope",
+        "c4.outbound",
         "c4.outside_workspace",
     }
 )
@@ -191,6 +200,14 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
         }
     ),
     "准入": frozenset({"dispatch.not_admitted"}),
+    "资源种类": frozenset(
+        {
+            "c4.subtask_unavailable",
+            "c4.action_resource_mismatch",
+            "c4.mixed_resource_kinds",
+            "dispatch.resource_kind_unsupported",
+        }
+    ),
     "前置条件": frozenset({"dispatch.stale_precondition"}),
     "目标不合法": frozenset(
         {

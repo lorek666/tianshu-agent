@@ -193,7 +193,7 @@ _TOOL_ID = _enum(
     "restore_file",
     "run_command",
 )
-_ACTION = _enum("read", "create", "overwrite", "delete", "exec")
+_ACTION = _enum("read", "create", "overwrite", "delete", "exec", "fetch", "delegate")
 _EFFECT_STATE = _enum("applied", "none_applied", "partial", "unknown")
 _OUTCOME = _enum("succeeded", "failed", "cancelled")
 #: `run.end` 额外记 noop：没有可做的工作也是成功，但 `run.finish` 仍按

@@ -95,9 +95,11 @@ from .permissions import (
 )
 from .receipt import build_exec_receipt, build_memory_receipt, build_receipt
 from .resources import (
+    KIND_FILE,
     KIND_MEMORY,
     MemoryScope,
     ResourceError,
+    ResourceRef,
     build_memory_scope,
     is_memory_resource,
     parse_memory_uri,
@@ -296,6 +298,31 @@ class ControlRun:
     claim: JobClaim
     lease_paths: tuple[str, ...]
     memory_scopes: tuple[str, ...] = ()
+
+
+#: 有**执行器**的资源种类。其余种类（network / mcp / subtask）解析得出来、
+#: 也能做许可判定，但没有执行器——它们的执行器属 G2。
+EXECUTABLE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY})
+
+
+def resolve_scheme_resource(raw: str) -> ResourceRef:
+    """解析 `resources` 里一个**带 scheme** 的资源，并按"有没有执行器"拒绝。
+
+    为什么单独抽出来：这是"资源种类"这条契约在执行侧的唯一落点，测试要能
+    直接打它，而不是为了测一句拒绝去搭一整套 dispatcher 依赖（那样测出来的
+    其实还是"环境搭对了没有"）。`_resolve_target()` 与本函数同源，不另写一份
+    判定。
+    """
+    try:
+        ref = parse_resource(raw)
+    except ResourceError as exc:
+        raise DispatchDenied(f"资源引用不合法：{exc}", "c4.unsupported") from exc
+    if ref.kind not in EXECUTABLE_KINDS:
+        raise DispatchDenied(
+            f"{ref.kind} 资源的执行器尚未实现（G2），拒绝派发：{ref.uri}",
+            "dispatch.resource_kind_unsupported",
+        )
+    return ref
 
 
 @dataclass(frozen=True)
@@ -1661,10 +1688,16 @@ class Dispatcher:
             # `_authority()` 里独立核验。
             return _MemoryTarget(scope=scope, uri=scope.to_uri())
 
+        # 资源种类按 scheme 判定（见 resources.py）。**没有执行器**的种类在这里
+        # 就拒绝：既不回退成"当成文件路径试试"，也不进审批流程给用户一个
+        # "批了就能用"的错觉（网络 / MCP / 委派的执行器属 G2）。
         if isinstance(raw, str) and not os.path.isabs(raw) and "://" in raw:
-            raise DispatchDenied(
-                f"不支持的资源 scheme：{raw}", "c4.unsupported"
-            )
+            ref = resolve_scheme_resource(raw)
+            if ref.kind != KIND_MEMORY:  # pragma: no cover - 记忆在上面已返回
+                raise DispatchDenied(
+                    f"{ref.kind} 资源的执行器尚未实现（G2），拒绝派发：{ref.uri}",
+                    "dispatch.resource_kind_unsupported",
+                )
         if request.tool_id in MEMORY_TOOL_IDS:
             raise DispatchDenied(
                 f"记忆工具必须使用 memory:// 资源：{raw}",
