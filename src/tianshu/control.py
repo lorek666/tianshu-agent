@@ -41,10 +41,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from . import memory_control
 from .errors import RunFenced, TianshuError, ToolArgumentError, WorkspaceViolation
 from .execpolicy import ExecPolicy
 from .loop import Limits, Stack
 from .permissions import ApprovalError, HumanIdentity
+from .resources import MemoryScope, build_memory_scope
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
@@ -198,6 +200,16 @@ class ControlPlane:
             "events.run": self._events_run,
             "undo.plan": self._undo_plan,
             "undo.apply": self._undo_apply,
+            # 记忆控制面（N6 / F10 §9）：看得见、改得动。**这些方法不是模型工具**，
+            # 模型清单（`tool_manifest()`）里没有它们；模型走 `AgentLoop` →
+            # `Dispatcher` → `MemoryExecutor` 那条路，身份与这里完全不同。
+            "memory.list": self._memory_list,
+            "memory.get": self._memory_get,
+            "memory.remember": self._memory_remember,
+            "memory.confirm": self._memory_confirm,
+            "memory.edit": self._memory_edit,
+            "memory.forget": self._memory_forget,
+            "memory.promote": self._memory_promote,
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -651,6 +663,218 @@ class ControlPlane:
             str(refused),
             {"code": int(refused.code), "lines": list(refused.lines)},
         )
+
+    # ------------------------------------------------------------------ 记忆
+
+    #: 记忆控制面方法共用的身份口径（写一次，别在每个方法里重抄）：
+    #:
+    #: 这些 RPC 只对**本机人**可达——IPC 端点在 POSIX 上是 `run/` 目录 0700 +
+    #: socket 0600，Windows 是命名管道（ACL 继承创建者，未额外加固，见 M5 已知
+    #: 限制）。所以"连得上 IPC"就是"本机这个人"。写操作用
+    #: `HumanIdentity.local_cli()` 落审批——与 CLI 同一个 actor，不是给模型开后门：
+    #: 模型根本到不了 `ControlPlane`，它只有工具清单那一条路。
+    #:
+    #: **不新增身份令牌**：再造一套 token 只会多一个能被抄走的东西，而真正的
+    #: 边界是"这条 IPC 只有本机人能连"。
+
+    def _memory_scope_from(
+        self, params: dict[str, Any]
+    ) -> MemoryScope | None:
+        """从 `scope` / `scope_id` 参数构造作用域；没给就返回 None（= 只 user）。"""
+        raw_scope = params.get("scope")
+        if raw_scope is None:
+            return None
+        raw_id = params.get("scope_id")
+        try:
+            return build_memory_scope(raw_scope, raw_id)
+        except TianshuError as exc:
+            raise ControlError("bad_params", str(exc)) from exc
+
+    def _memory_allowed(self, params: dict[str, Any]) -> tuple[MemoryScope, ...]:
+        """读操作看得到的作用域。
+
+        默认只有 `user`：这是单用户产品的本地人视角，但"默认全库"会让返回结果
+        取决于库里恰好有什么，而不是你请它看什么。要看 workspace / task 就显式
+        给 `scope` + `scope_id`——与 CLI 的 `--workspace` / `--task-id` 同口径。
+        """
+        scope = self._memory_scope_from(params)
+        if scope is None:
+            return (MemoryScope.user(),)
+        return (MemoryScope.user(), scope) if scope != MemoryScope.user() else (scope,)
+
+    def _memory_target(self, params: dict[str, Any], field: str = "memory_id"):
+        """按 `memory_id` 取一条**当前可见**的记忆；没有就 not_found。"""
+        memory_id = params.get(field)
+        if not isinstance(memory_id, str) or not memory_id:
+            raise ControlError("bad_params", f"{field} 必须是非空字符串")
+        allowed = self._memory_allowed(params)
+        memory = self._stack.memory.get(memory_id, allowed=allowed)
+        if memory is None:
+            raise ControlError(
+                "not_found",
+                f"记忆不存在或不在当前作用域集合内：{memory_id}",
+                {"memory_id": memory_id, "scopes": [s.to_uri() for s in allowed]},
+            )
+        return memory
+
+    @staticmethod
+    def _expect_revision(params: dict[str, Any], memory) -> None:
+        """人看到的 revision 必须就是执行时的那一版。
+
+        检查放在这里是为了让 UI **马上**看到"这条已经被改过了"，而不是先派发
+        再等执行侧拒；真正的判据仍在执行侧（`dispatch.memory_stale_revision`），
+        这里只是把同样的判定提前一次。没给 `revision` 就按当前版本走（与 CLI
+        的 `memory forget` 一致：命令里没有版号时人看的就是幕前那一版）。
+        """
+        raw = params.get("revision")
+        if raw is None:
+            return
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ControlError("bad_params", "revision 必须是整数")
+        if raw != memory.revision:
+            raise ControlError(
+                "conflict",
+                f"记忆 {memory.memory_id} 的当前 revision 是 {memory.revision}，"
+                f"调用方看到的是 {raw}（并发改动，请刷新后重试）",
+                {"memory_id": memory.memory_id, "revision": memory.revision},
+            )
+
+    def _memory_result(self, result: Any) -> dict[str, Any]:
+        """把一次派发结果投影成 UI 能懂的三段：状态、副作用、输出。
+
+        `effect_state` 必须原样带出去：`unknown` 不是"成功也不是失败"，UI 不许
+        自己猜成成功（红线：不确定就说不确定）。
+        """
+        return {
+            "status": result.status,
+            "effect_state": result.effect_state,
+            "output": result.output,
+        }
+
+    def _memory_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.list`：按作用域列出记忆（不带正文）。"""
+        status = params.get("status")
+        if status is not None and not isinstance(status, str):
+            raise ControlError("bad_params", "status 必须是字符串")
+        limit = params.get("limit")
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        ):
+            raise ControlError("bad_params", "limit 必须是正整数")
+        allowed = self._memory_allowed(params)
+        items = memory_control.list_memories(
+            self._stack.memory, allowed=allowed, status=status, limit=limit
+        )
+        return {"items": items, "scopes": [scope.to_uri() for scope in allowed]}
+
+    def _memory_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.get`：一条记忆 + 正文（纯文本）。"""
+        memory = self._memory_target(params)
+        allowed = self._memory_allowed(params)
+        view = memory_control.read_memory(
+            self._stack.memory, memory.memory_id, allowed=allowed
+        )
+        if view is None:  # pragma: no cover - 刚取过，竞态窗口内被抹掉
+            raise ControlError("not_found", f"记忆不存在：{memory.memory_id}")
+        return {"memory": view}
+
+    def _memory_remember(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.remember`：人直接记住一条（创建即 active + user_explicit）。"""
+        kind = params.get("kind")
+        content = params.get("content")
+        if not isinstance(kind, str) or not kind:
+            raise ControlError("bad_params", "kind 必须是非空字符串")
+        if not isinstance(content, str) or not content:
+            raise ControlError("bad_params", "content 必须是非空字符串")
+        expires_at = params.get("expires_at")
+        if expires_at is not None and (
+            isinstance(expires_at, bool) or not isinstance(expires_at, int)
+        ):
+            raise ControlError("bad_params", "expires_at 必须是整数毫秒")
+        scope = self._memory_scope_from(params) or MemoryScope.user()
+        result = memory_control.remember(
+            self._stack, scope, kind=kind, content=content, expires_at=expires_at
+        )
+        payload = self._memory_result(result)
+        memory_id = result.output.get("memory_id") if result.output else None
+        payload["memory"] = self._memory_after_call(memory_id, scope)
+        return payload
+
+    def _memory_confirm(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.confirm`：人把一条**候选**激活进召回。
+
+        规格 §7.2 的方法清单漏了它，但没有它就没有"人确认才召回"的入口——UI
+        只能看着候选永远不生效。所以它和另外六个一起落地。
+        """
+        memory = self._memory_target(params)
+        self._expect_revision(params, memory)
+        result = memory_control.transition(self._stack, memory, confirm=True)
+        payload = self._memory_result(result)
+        payload["memory"] = self._memory_after_call(memory.memory_id, None)
+        return payload
+
+    def _memory_edit(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.edit`：改正文（一次审批 = 旧行退役可查 + 新行 active）。"""
+        content = params.get("content")
+        if not isinstance(content, str) or not content:
+            raise ControlError("bad_params", "content 必须是非空字符串")
+        memory = self._memory_target(params)
+        self._expect_revision(params, memory)
+        result = memory_control.edit(self._stack, memory, content=content)
+        payload = self._memory_result(result)
+        new_id = result.output.get("memory_id") if result.output else None
+        payload["memory"] = self._memory_after_call(new_id, None)
+        payload["supersedes"] = memory.memory_id
+        return payload
+
+    def _memory_forget(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.forget`：tombstone（不再召回，事件与回执仍在）。"""
+        memory = self._memory_target(params)
+        self._expect_revision(params, memory)
+        result = memory_control.transition(self._stack, memory, confirm=False)
+        payload = self._memory_result(result)
+        payload["memory"] = self._memory_after_call(memory.memory_id, None)
+        return payload
+
+    def _memory_promote(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.promote`：共享/移动到另一个作用域（原行退役、新行候选）。"""
+        memory = self._memory_target(params)
+        self._expect_revision(params, memory)
+        target = self._memory_scope_from(params)
+        if target is None:
+            raise ControlError(
+                "bad_params", "promote 必须给目标 scope 与 scope_id（提升到 user 也请显式写）"
+            )
+        result = memory_control.promote(self._stack, memory, target)
+        payload = self._memory_result(result)
+        new_id = result.output.get("memory_id") if result.output else None
+        payload["memory"] = self._memory_after_call(new_id, target)
+        payload["from_memory_id"] = memory.memory_id
+        return payload
+
+    def _memory_after_call(
+        self, memory_id: Any, scope: MemoryScope | None
+    ) -> dict[str, Any] | None:
+        """写完之后把**新状态**读回来给 UI（人做完决定要看到"现在算什么"）。
+
+        读不回来就返回 None 而不是编一个：`effect_state` 已经说明结果，视图缺失
+        只是"这一眼没拿到"，不该让 UI 以为操作失败。
+        """
+        if not isinstance(memory_id, str) or not memory_id:
+            return None
+        allowed: tuple[MemoryScope, ...]
+        if scope is None:
+            allowed = (MemoryScope.user(),)
+        elif scope.scope == "user":
+            allowed = (scope,)
+        else:
+            allowed = (MemoryScope.user(), scope)
+        try:
+            return memory_control.read_memory(
+                self._stack.memory, memory_id, allowed=allowed
+            )
+        except TianshuError:  # pragma: no cover - 读失败不改变已发生的写入
+            return None
 
     # ------------------------------------------------------------------ 错误映射
 
