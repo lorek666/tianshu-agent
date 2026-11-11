@@ -3,15 +3,17 @@
 - 立据：[PRD-v1.md](PRD-v1.md) 的 2026-11-11 工程评审合并（§1.4、§3.4、§5.2.3、§5.3.5、
   §5.6、§7.1、§8.1.1、§8.5、§10.2–§10.6、§11.1、§13.6，附录 B 第 9–14 条），施工规格见
   [SPEC-PRD-REVIEW-2026-11-11.md](SPEC-PRD-REVIEW-2026-11-11.md)。
-- 基线：`main @ c0dfa88`（PR #84 之后）→ 收尾 `main @ ec7d7ae`（PR #88 之后）。收尾态实测
-  **1536 passed / 7 skipped**（macOS arm64 本机，158.55s）；CI 同刻 macOS 1536 / 7、
-  ubuntu 1535 / 8（多 1 条 skip 是 AF_UNIX backlog 的 macOS 专属用例），
-  `ruff check .` → `All checks passed!`。required checks（ubuntu-latest / macos-latest / `ui`）
-  全绿；`windows-latest` 在收尾态实测 **5 failed / 1509 passed / 29 skipped**（939.99s），
-  失败全部是既有族（逐条见 §3），**不是** required check，也没有拿它冒充「Windows 已通过」。
-- 一句话：**本轮把 PRD 新增要求里「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows
-  实机」的部分落地并合入 main；G1 的通用准入与共享预算、§7.1 语义摘要、G2、G3 平台实机
-  仍未做，逐条登记，不冒充完成。**
+- 基线：`main @ c0dfa88`（PR #84 之后）→ 第一轮收尾 `main @ ec7d7ae`（PR #88 之后）→
+  G1 轮次 `main @ cc2240e`（PR #92 之后）。G1 轮次实测
+  **1601 passed / 7 skipped**（macOS arm64 本机，169.08s；CI 同刻 required checks 全绿），
+  `ruff check .` → `All checks passed!`。`windows-latest` 在 G1 轮次 PR #92 的一次运行里实测
+  **5 failed / 1548 passed / 29 skipped**（998.29s），resync 后那次则在 25m11s 被取消
+  （既有命名管道阻塞族）；两者都不是 required check，也没有拿它冒充「Windows 已通过」。
+- 第一轮收尾态（`main @ ec7d7ae`）：**1536 passed / 7 skipped**（158.55s；CI 同刻 macOS
+  1536 / 7、ubuntu 1535 / 8），Windows **5 failed / 1509 passed / 29 skipped**（939.99s）。
+- 一句话：**第一轮把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
+  W1–W5 落地；G1 轮次再补上 §5.2.3 通用工具准入与 §5.6 共享预算账本（账本默认关闭，
+  见 §4）。§7.1 语义摘要、G2、G3 平台实机仍未做，逐条登记，不冒充完成。**
 
 ## 1 逐条对账
 
@@ -26,8 +28,8 @@
 | §5.3.5 第 3 条：迁移中断 | **已交付（库 + 演练）** | 新 `migrate.py`：结构版本（`user_version`/旁表）、步骤注册表、每步进度持久化、迁移前要求 `verify_backup` 通过、`crashpoint` 每步注入硬退、重启续做、不 UPDATE/DELETE 历史事件 | PR #80；[backup-restore.md](backup-restore.md)；负控：去掉备份前置 / 迁移先删后建 / 去掉中断保护，各红 |
 | §5.3.5 第 1–2 条：payload 契约与旧版映射 | **已交付** | `event_schema.py`：41 个类型逐类 payload schema（严格子集、注册期 fail-closed）；`events.py`：`event_versions` 旁表与事件行同事务、`append(legacy_write=False)` 默认只收 v1、显式 legacy 才写 v0、读取按旁表给精确版本、旁表缺失/损坏 → `PayloadVersionUnavailable` 不猜；41 类型 v1/v0 夹具 + 旧版映射测试 | PR #84；[event-payload-contract.md](event-payload-contract.md)；负控 ①–④（去掉写入校验 / v0 按新版补值 / 恢复自动回退 v0 / legacy 变万能开关）各红 |
 | §1.4 / §3.4 / §13.6 文档基线 | **已交付（文档）** | 新增章节合入 `main`（§5.2.1 的冲突按「记忆工具 5.2.1 / 记忆契约增量 5.2.2 / 通用工具准入 5.2.3」编号，保留既有记忆章节） | PR #77 |
-| §5.2.3 通用工具准入 | **未做（本轮）** | 与并行记忆工作流同改 `dispatcher.py` / `tools.py` / `loop.py` / `permissions.py`，本轮不做 | [SPEC-PRD-REVIEW-2026-11-11.md](SPEC-PRD-REVIEW-2026-11-11.md) §9 |
-| §5.6 共享预算账本 | **未做（本轮）** | 同上；现实现仍只有单 Run 的 usage/cursor 与按上次成功用量的重试估算 | 同上 |
+| §5.2.3 通用工具准入 | **已交付（G1a，PR #91）** | 新 `toolschema.py`：封闭 schema 方言（对象/数组/标量三组白名单）、注册期拒绝 `oneOf` / `$ref` / `format` / `default` 等方言外关键字、执行期**嵌套**校验（`argv[0]`、`minItems`、`minimum/maximum`、`enum`、`pattern` 真正执行）；准入在派发前（非法参数不产生审批）；`ActionRequest.description_hash` 绑描述（条件字段，历史摘要逐字节不变）；`MODEL_FORBIDDEN_ARGS` 身份字段双闸；路径参数拒绝 `scheme://`（URL 不伪装成路径）；replay 仍只读事件 | PR #91；[tool-admission.md](tool-admission.md)；[SPEC-G1-ADMISSION-2026-11-11.md](SPEC-G1-ADMISSION-2026-11-11.md) §2；`tests/test_g1_admission.py`（19）；负控 9/9 实测红 |
+| §5.6 共享预算账本 | **已交付（G1b，库 + 主循环接线；默认关闭，见 §4）** | 新 `budget.py`：账户/上限/计数器/预占四张表建在事件库同一个 SQLite 文件；`reserve()` 在 `BEGIN IMMEDIATE` 内逐级检查并扣减；`settle()` 幂等 + 分维度（`partial`）；未知用量保留占用不记零；父子链、`cancel()` 沿子树传播、`reconcile()` 只报告不清零；`Limits.budget_limits` 打开后每次模型 attempt 前预占，预占失败 → 记 `model.error` 并停止，**一次模型调用都不发生**；`run.cancel` 传播到账本 | PR #92；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`（20，含两条独立 SQLite 连接的真并发）；负控 10/10 实测红 |
 | §7.1 模型语义摘要 | **未做（本轮）** | 保留现有确定性卸载/裁剪（`context.py` + `loop._persist_spills`），不实现模型摘要 | 同上 |
 | G2 网络 / MCP / 子代理 | **未做** | 没有新能力；§10.5 的联网研究任务以「未具备能力」的诚实性判据纳入，不用脚本或静态网页冒充线上完成 | [real-user-tasks.md](real-user-tasks.md) §5 |
 | G3 平台实机 | **未做** | 只有 macOS arm64 本机证据；Windows / mac-x64 / win-arm64 的安装、升级、回退、隔离证据均为 **unknown**。收尾轮把 Windows CI 从 35 failed 压到 **5 failed / 1509 passed / 29 skipped**（逐条见 §3），仍不是绿、也没有实机 | [isolation-matrix.md](isolation-matrix.md) §1、[runtime-metrics.md](runtime-metrics.md) §7、[backup-restore.md](backup-restore.md) §9 |
@@ -45,6 +47,9 @@
 | #84 | §5.3.5 逐类型 payload 契约 + 严格写入 + 精确版本 |
 | #87 | Windows 兼容：`fsync` 只读句柄降级 + 隔离测试的「未知」口径（Windows 35 → 8 failed） |
 | #88 | Windows 运行时（`perf_counter` 启动计时 / `OpenProcess` pid 判定）+ 两个 CI 暴露的并发缺陷（IPC 握手期 EOF、指标并发读半行）；Windows → **5 failed / 1509 passed / 29 skipped** |
+| #90 | 第一轮的交付对账收尾（1536/7 基线、Windows 逐条证据、两个并发缺陷的语义写入文档） |
+| #91 | G1a §5.2.3 通用工具准入：封闭 schema 方言、注册期拒绝、嵌套校验、描述绑定、身份字段双闸、URI 拒绝（+19 tests） |
+| #92 | G1b §5.6 共享预算账本：原子预占、幂等分维度结算、未知不记零、父子链、取消传播、主循环接线（+20 tests） |
 
 ## 3 测试与门禁
 
@@ -55,6 +60,10 @@
   macOS job 也是 1536 / 7，ubuntu 1535 / 8）。相对 c0dfa88 的 +17 = 并行记忆工作流 #85 的
   +10（其交付口径为 1529 基线）+ 收尾轮 +7：Windows 运行时修复回归 +1、IPC 握手期 EOF +3、
   指标并发读 +3。`ruff check .` 干净。
+- G1 轮次 `main @ cc2240e`：**1601 passed / 7 skipped**（169.08s，macOS arm64 本机），
+  `ruff check .` 干净。相对 1536 的 +65 = G1a +19（`test_g1_admission.py`）+ G1b +20
+  （`test_budget_ledger.py`）+ 并行记忆工作流 #89 的 +26（同轮先合）。本机与 CI 的
+  required checks（ubuntu / macOS / ui）一致通过；Windows 见下。
 - **Windows job 的实测（不再用「#50 家族」一句话带过，逐轮、逐条列）**：
   - 修复前（PR #87 前）：**35 failed**；
   - PR #87（`b66570d`）：**8 failed**；
@@ -73,6 +82,13 @@
     与 2cea014（6 条）相比**少了 1 条**：ipc 订阅断线的认证错误消失（握手期异常类型化后
     不再漏出）；host 那条换了落点（`test_foreign_host_header_is_rejected` →
     `test_state_requires_token`，宿主桥在命名管道失败后的连带表现，属同一族），其余 4 条不变。
+  - **G1 轮次（PR #92）**：resync 前的运行 42979331348 是
+    **5 failed / 1548 passed / 29 skipped**（998.29s），失败仍是既有族（authority 子进程
+    cp1252、命名管道相关、资源 URI `%2F`），没有新增 Windows 失败；resync 后的运行
+    42982002705 的 Windows job 在 **25m11s** 被取消（Pytest 未跑完、无失败摘要，判定为
+    既有命名管道阻塞族的偶发挂死，与 #88 那次同一现象，不是本轮新增用例：本轮新增的
+    POSIX 专属用例在 Windows 上是 skip）。required checks（ubuntu / macOS / ui）在两次
+    运行都是 pass；**仍然没有实机，不写成 Windows 已通过**。
   - **一次 Windows job 超时取消（如实记录）**：PR #88 的 run 42963301006 在 `90393c8` 上
     Pytest 跑到 51% 后停住，25 分钟上限被取消（同一棵树在 `main` 上 15:39 跑完）。日志最后
     打印位置在 `tests/test_ipc.py` 段内、无失败摘要；判定为既有 Windows 命名管道阻塞族
@@ -96,8 +112,16 @@
 
 ## 4 仍然不成立 / 未验证的宣称（不许写进「已完成」）
 
-- **G1**：§5.2.3 通用准入、§5.6 共享预算账本未实现；`run_command` 仍只受显式
-  `ExecPolicy` 约束，不经过隔离门。
+- **G1（部分）**：§5.2.3 与 §5.6 的模块与接线已交付，但下面这些仍**不成立**：
+  ① 共享预算账本**默认关闭**（`Limits.budget_limits` 为 None 时行为与之前一致）——
+  估算预占会让临界 run 提前被拒，属行为变更，需单独评审；G2 接入前必须默认打开。
+  ② 网络 / MCP / 子任务三种资源种类没有实现（`resources.RESOURCE_KINDS` 仍是 file + memory），
+  所以「私有内容未经外发许可不发包」只能是**无从违反**，不是已验证。
+  ③ 「大结果有界摘要 + 内容引用 + 分页读取并验证任务可见范围」没做（只有 `read_text`
+  截断与 `run_command` blob 目录）。
+  ④ `run_command` 仍只受显式 `ExecPolicy` 约束，不经过隔离门；本轮没有新增高自主执行能力，
+  所以没有新增 §8.1.1 门禁项。
+  ⑤ 硬上限模式的「可验证上界」没做：`estimate_tokens()` 是 4 字符≈1 token 的本地估算。
 - **§7.1**：没有模型语义摘要；只有确定性裁剪/卸载。
 - **G2**：没有网络 / MCP / 子代理能力；联网研究任务只验证「如实报告未具备」。
 - **G3**：无 Windows / mac-x64 / win-arm64 实机；安装、升级、回退、凭据存储（Keychain）、
@@ -115,9 +139,8 @@
 
 ## 5 下一轮建议（按 PRD §11.1 的门禁顺序）
 
-1. **G1**（等并行记忆工作流合入后）：§5.2.3 通用工具准入（资源种类 / 完整嵌套 schema /
-   固定版本与描述摘要 / 系统提供的执行上下文）+ §5.6 共享预算账本（原子预占、attempt
-   幂等结算、未知费用、取消传播、父子预算）。
+1. **G1 收口（下一轮）**：把共享预算账本默认打开（先定余量 / 输出预留 / 拒绝提示），
+   补网络 / MCP / 子任务资源种类与「有界摘要 + 内容引用」分页，再谈 G2。
 2. **§7.1**：摘要材料先持久化再编译；replay 读保存的摘要；断网回放测试。
 3. **G2**：网络 → MCP → 记忆 → 子代理，按「同一任务集证明收益」推进。
 4. **G3**：历史数据升级/备份恢复、凭据存储、运行 SLO、长时间测试、安装/更新/回退与
