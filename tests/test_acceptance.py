@@ -249,7 +249,7 @@ def test_a8_tampered_payload_detected(tmp_path):
 
 def test_append_only_triggers(tmp_path):
     log = make_log(tmp_path)
-    log.append("r1", "run.start", {"a": 1})
+    log.append("r1", "run.start", {"a": 1}, legacy_write=True)
     conn = sqlite3.connect(tmp_path / "events.db")
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE events SET type='x'")
@@ -261,8 +261,8 @@ def test_append_only_triggers(tmp_path):
 
 def test_seq_monotonic_and_hashed(tmp_path):
     log = make_log(tmp_path)
-    s1 = log.append("r1", "run.start", {"x": 1})
-    s2 = log.append("r1", "run.end", {"x": 2})
+    s1 = log.append("r1", "run.start", {"x": 1}, legacy_write=True)
+    s2 = log.append("r1", "run.end", {"x": 2}, legacy_write=True)
     assert s2 == s1 + 1
     ev = log.read_run("r1")
     assert ev[0].payload_hash == __import__("hashlib").sha256(

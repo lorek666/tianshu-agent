@@ -69,7 +69,7 @@ def env(tmp_path: Path):
 def _record(log: EventLog, projection: MemoryProjection, payload: dict) -> int:
     """模拟 dispatcher：事件与投影在同一事务里提交。"""
     with log.transaction() as tx:
-        seq = tx.append(RUN, "tool.result", payload)
+        seq = tx.append(RUN, "tool.result", payload, legacy_write=True)
         projection.apply_event("tool.result", payload, seq=seq)
     return seq
 
@@ -296,7 +296,7 @@ def test_event_and_projection_roll_back_together(env) -> None:
 
     with pytest.raises(MemoryStoreError):
         with log.transaction() as tx:
-            seq = tx.append(RUN, "tool.result", payload)
+            seq = tx.append(RUN, "tool.result", payload, legacy_write=True)
             projection.apply_event("tool.result", payload, seq=seq)
 
     assert _count(log, "events") == 0
@@ -338,7 +338,7 @@ def test_rebuild_reads_events_not_the_stale_projection(env) -> None:
     log, projection = env
     payload = _propose_payload(projection, "m1", "只在事件里的记忆")
     with log.transaction() as tx:
-        tx.append(RUN, "tool.result", payload)
+        tx.append(RUN, "tool.result", payload, legacy_write=True)
     assert projection.get("m1", allowed=[MemoryScope.user()]) is None
 
     assert projection.rebuild() == 1
@@ -356,17 +356,22 @@ def test_rebuild_reproduces_dispatcher_intent_seq(env) -> None:
     )
     with log.transaction() as tx:
         intent_seq = tx.append(
-            RUN, "tool.intent", {"call_id": "call_x", "tool_id": "memory.propose"}
+            RUN,
+            "tool.intent",
+            {"call_id": "call_x", "tool_id": "memory.propose"},
+            legacy_write=True,
         )
         tx.append(
             RUN,
             "dispatch.admitted",
             {"call_id": "call_x", "intent_seq": intent_seq},
+            legacy_write=True,
         )
         tx.append(
             RUN,
             "tool.result",
             {"call_id": "call_x", **payload},
+            legacy_write=True,
         )
         projection.apply_event("tool.result", payload, seq=intent_seq)
 

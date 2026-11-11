@@ -139,7 +139,7 @@ class Env:
             },
         }
         with self.log.transaction() as tx:
-            seq = tx.append(self.seed_run, "tool.result", propose)
+            seq = tx.append(self.seed_run, "tool.result", propose, legacy_write=True)
             projection.apply_event("tool.result", propose, seq=seq)
 
         if status == "active":
@@ -156,7 +156,7 @@ class Env:
                 },
             }
             with self.log.transaction() as tx:
-                seq = tx.append(self.seed_run, "tool.result", confirm)
+                seq = tx.append(self.seed_run, "tool.result", confirm, legacy_write=True)
                 projection.apply_event("tool.result", confirm, seq=seq)
         return memory_id
 
@@ -656,7 +656,7 @@ def test_replay_uses_the_snapshot_not_the_latest_memory(env: Env):
         },
     }
     with env.log.transaction() as tx:
-        seq = tx.append(env.seed_run, "tool.result", forget)
+        seq = tx.append(env.seed_run, "tool.result", forget, legacy_write=True)
         env.stack.memory.apply_event("tool.result", forget, seq=seq)
     env.seed("版本二：报告用英文", memory_id="mem_replay_new")
 
@@ -714,7 +714,7 @@ def test_forgotten_memory_cannot_be_revived_by_id(env) -> None:
         },
     }
     with env.log.transaction() as tx:
-        seq = tx.append(env.seed_run, "tool.result", forget)
+        seq = tx.append(env.seed_run, "tool.result", forget, legacy_write=True)
         env.stack.memory.apply_event("tool.result", forget, seq=seq)
 
     task = env.stack.tasks.create_task("忘记后读取", [])

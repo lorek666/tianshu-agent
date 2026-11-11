@@ -507,6 +507,7 @@ def test_undo_and_recovery_obey_resource_block(env):
             "args_hash": _sha("args"),
         },
         actor_kind="core",
+        legacy_write=True,
     )
     # 恢复的判据是"写前证据 + 磁盘现状"。没有证据时结论是确定的（写入没开始），
     # 不需要读盘，也就谈不上被别人占用；要让"路径被占"这条约束真正生效，

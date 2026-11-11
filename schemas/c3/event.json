@@ -2,7 +2,7 @@
   "$id": "https://tianshu-agent/schemas/c3/event.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "C3 事件（docs/PRD-v1.md §5.3）。这是**事件信封**的字段级契约：类型集合封闭、信封字段固定；每种类型自己的 payload 形状尚未冻结（见 PRD §5.3.4）。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（当前版本 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
   "properties": {
     "actor": {
       "additionalProperties": false,
@@ -43,7 +43,7 @@
       ]
     },
     "payload": {
-      "description": "每种类型自己的字段尚未冻结；>256KiB 落内容寻址文件，逻辑形状不变。",
+      "description": "逐类型 payload 契约：当前版本的 schema 见 `$defs.payload[<type>]`。写入侧由 event_schema.detect_version() 校验并记录 payload_version；旧版（version=0）按 `$defs.legacyPayload` 映射读取，不按新版默认补值。tool.intent.args 与 tool.result.output 由 C2 工具契约决定，C3 只冻结\"它们是对象\"这一层（未冻结项见 docs/event-payload-contract.md）。",
       "type": "object"
     },
     "payload_hash": {
@@ -71,7 +71,7 @@
       "type": "integer"
     },
     "type": {
-      "description": "封闭集合。未登记的类型在写入侧就会被 EventLog.append 拒绝。已定义但无发射点：job.lost；PRD 声明过但从未实现的族：audit, checkpoint, compaction",
+      "description": "封闭集合。未登记的类型在写入侧就会被 EventLog.append 拒绝。PRD 声明过但从未实现的族：audit, checkpoint, compaction",
       "enum": [
         "approval.consumed",
         "approval.decided",
@@ -128,5 +128,4030 @@
     "payload_hash"
   ],
   "title": "Event",
-  "type": "object"
+  "type": "object",
+  "$defs": {
+    "payload": {
+      "approval.consumed": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decided_by": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "request_digest",
+          "action_digest",
+          "decided_by"
+        ]
+      },
+      "approval.decided": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "decided_by": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "actor",
+              "source"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "request_digest",
+          "decision",
+          "decided_by"
+        ]
+      },
+      "approval.expired": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "reason"
+        ]
+      },
+      "approval.requested": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_subject": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "request_id",
+          "request_digest",
+          "action_digest",
+          "action_subject",
+          "action",
+          "resources",
+          "rule_id",
+          "reason",
+          "expires_at"
+        ]
+      },
+      "approval.revoked": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "decided_by": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "actor",
+              "source"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "consumed",
+              "revoked",
+              "expired",
+              "superseded"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "decided_by"
+        ]
+      },
+      "approval.superseded": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "reason"
+        ]
+      },
+      "dispatch.admitted": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "intent_seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "request_digest",
+          "call_id",
+          "grant_id",
+          "intent_seq"
+        ]
+      },
+      "dispatch.rejected": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "prepare",
+              "guard"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "rule_id",
+          "reason"
+        ]
+      },
+      "dispatch.requested": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "approve"
+            ]
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approval_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "consumed",
+              "revoked",
+              "expired",
+              "superseded",
+              null
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "request_digest",
+          "action",
+          "resources",
+          "decision",
+          "rule_id"
+        ]
+      },
+      "dispatch.revoked": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "approval_id",
+          "call_id",
+          "dispatch_id",
+          "reason"
+        ]
+      },
+      "execution.started": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "goal_revision",
+          "lease_epoch",
+          "resources"
+        ]
+      },
+      "grant.consumed": {
+        "type": "object",
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "remaining_uses": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "grant_id",
+          "request_digest",
+          "remaining_uses"
+        ]
+      },
+      "grant.issued": {
+        "type": "object",
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "grant_id",
+          "request_digest",
+          "subject",
+          "action",
+          "issuer",
+          "expires_at"
+        ]
+      },
+      "job.claimed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "previous_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          },
+          "deadline_at": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "job_id",
+          "claim_epoch",
+          "previous_epoch",
+          "owner_pid",
+          "owner_instance_id",
+          "deadline_at"
+        ]
+      },
+      "job.enqueued": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "job_id"
+        ]
+      },
+      "job.finished": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "job_id",
+          "claim_epoch",
+          "owner_pid",
+          "owner_instance_id",
+          "outcome"
+        ]
+      },
+      "job.parked": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "job_id",
+          "claim_epoch",
+          "owner_pid",
+          "owner_instance_id",
+          "reason"
+        ]
+      },
+      "job.requeued": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "job_id",
+          "claim_epoch",
+          "owner_pid",
+          "owner_instance_id"
+        ]
+      },
+      "model.error": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "error"
+        ]
+      },
+      "model.intent": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "messages_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "budget_version": {
+                "type": "string"
+              },
+              "max_bytes": {
+                "type": "integer"
+              },
+              "spill_threshold": {
+                "type": "integer"
+              },
+              "source_seqs": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "dropped_seqs": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "memories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "memory_id": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "content_ref": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool_call_id": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "memory_id",
+                    "revision",
+                    "content_ref",
+                    "scope",
+                    "scope_id",
+                    "tool_call_id"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "budget_version",
+              "max_bytes",
+              "spill_threshold",
+              "source_seqs",
+              "dropped_seqs"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "attempt",
+          "messages_hash",
+          "context"
+        ]
+      },
+      "model.result": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {}
+              },
+              "additionalProperties": false,
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ]
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adapter": {
+                "type": "string"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": "object",
+                "properties": {
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              },
+              "unit_price_ver": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cost": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "adapter",
+              "model",
+              "units",
+              "unit_price_ver",
+              "cost",
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "content",
+          "finish_reason",
+          "tool_calls",
+          "usage",
+          "cost"
+        ]
+      },
+      "policy.denied": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "request_digest",
+          "action",
+          "resources",
+          "rule_id",
+          "reason"
+        ]
+      },
+      "receipt": {
+        "type": "object",
+        "properties": {
+          "receipt_id": {
+            "type": "string",
+            "pattern": "^rcpt_[0-9a-f]{12}$"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "enum": [
+              "create_report",
+              "delete_file",
+              "list_files",
+              "memory.confirm",
+              "memory.edit",
+              "memory.forget",
+              "memory.get",
+              "memory.promote",
+              "memory.propose",
+              "memory.remember",
+              "memory.search",
+              "modify_text",
+              "read_text",
+              "restore_file",
+              "run_command"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "args_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "local_fs",
+              "memfs",
+              "memory"
+            ]
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "issued_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "root": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "before_state": {
+            "type": "string"
+          },
+          "after_state": {
+            "type": "string"
+          },
+          "intent_seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "blob_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "result",
+                    "intent",
+                    "blob",
+                    "memory"
+                  ]
+                },
+                "call_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "memory_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "absent": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "receipt_id",
+          "run_id",
+          "call_id",
+          "tool_id",
+          "action",
+          "args_hash",
+          "effect_state",
+          "backend",
+          "issuer",
+          "issued_at",
+          "root",
+          "resource",
+          "before_state",
+          "after_state",
+          "intent_seq",
+          "blob_ref",
+          "evidence"
+        ]
+      },
+      "recovery.blocked": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          },
+          "call_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "takeover_refused_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "workspace",
+          "call_ids",
+          "reason"
+        ]
+      },
+      "recovery.unblocked": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "workspace",
+          "reason"
+        ]
+      },
+      "run.control": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "cancel",
+              "lease_takeover"
+            ]
+          },
+          "applied_immediately": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "request_effective": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "stronger_request": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effect_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown",
+              null
+            ]
+          },
+          "previous_run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "applied": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "none_applied": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unresolved": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unknown": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "corrupt": {
+                "type": "boolean"
+              },
+              "missing_manifest": {
+                "type": "boolean"
+              },
+              "pending_writes": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "applied",
+              "none_applied",
+              "unresolved",
+              "unknown",
+              "corrupt",
+              "missing_manifest",
+              "pending_writes"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "action"
+        ]
+      },
+      "run.cursor": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "completed_call_ids": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pending_proposals": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "goal_revision",
+          "lease_epoch",
+          "claim_epoch",
+          "completed_call_ids",
+          "pending_proposals",
+          "payload_hash"
+        ]
+      },
+      "run.effect": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "n_applied": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "n_unknown": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "effect_state",
+          "n_applied",
+          "n_unknown"
+        ]
+      },
+      "run.end": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled",
+              "noop"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "artifact": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "bytes": {
+                "type": "integer"
+              },
+              "before_state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "after_state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "bytes",
+              "before_state",
+              "after_state"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipt_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tokens_unknown_calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "turns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unbilled_model_intents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budget_enforced": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "outcome",
+          "effect_state",
+          "artifact",
+          "error",
+          "receipt_ids",
+          "tokens",
+          "tokens_unknown_calls",
+          "turns",
+          "unbilled_model_intents",
+          "budget_enforced"
+        ]
+      },
+      "run.fenced": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "reason"
+        ]
+      },
+      "run.finish": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "outcome",
+          "effect_state"
+        ]
+      },
+      "run.model_turn": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use",
+              null
+            ]
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "turn_id",
+          "seq",
+          "claim_epoch",
+          "finish_reason",
+          "usage",
+          "payload_hash"
+        ]
+      },
+      "run.start": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "task": {
+            "type": "string"
+          },
+          "out": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_turns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_total_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "goal_revision",
+          "lease_epoch"
+        ]
+      },
+      "run.state": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "enum": [
+              "created",
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "reconciling",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "created",
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "reconciling",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "control_cleared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "from",
+          "to",
+          "reason"
+        ]
+      },
+      "task.created": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root_path": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "writable"
+                  ]
+                },
+                "snapshot_policy": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "on_write"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root_path",
+                "mode",
+                "snapshot_policy"
+              ]
+            }
+          },
+          "exec_policy": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "argv_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "argv_denylist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cwd_roots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "max_output_bytes": {
+                "type": "integer"
+              },
+              "timeout_ms": {
+                "type": "integer"
+              },
+              "allow_pty": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "argv_allowlist",
+              "argv_denylist",
+              "cwd_roots",
+              "env_allowlist",
+              "max_output_bytes",
+              "timeout_ms",
+              "allow_pty"
+            ]
+          },
+          "control": {
+            "type": "boolean"
+          },
+          "memory_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "goal",
+          "goal_revision",
+          "lease_epoch",
+          "workspaces",
+          "exec_policy",
+          "control",
+          "memory_scopes"
+        ]
+      },
+      "task.revised": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root_path": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "writable"
+                  ]
+                },
+                "snapshot_policy": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "on_write"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root_path",
+                "mode",
+                "snapshot_policy"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "goal",
+          "goal_revision",
+          "lease_epoch",
+          "workspaces"
+        ]
+      },
+      "tool.intent": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "enum": [
+              "create_report",
+              "delete_file",
+              "list_files",
+              "memory.confirm",
+              "memory.edit",
+              "memory.forget",
+              "memory.get",
+              "memory.promote",
+              "memory.propose",
+              "memory.remember",
+              "memory.search",
+              "modify_text",
+              "read_text",
+              "restore_file",
+              "run_command"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          },
+          "args_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "call_id",
+          "tool_id",
+          "args",
+          "args_hash",
+          "request_id",
+          "request_digest",
+          "dispatch_id",
+          "grant_id",
+          "attempt_id",
+          "claim_epoch"
+        ]
+      },
+      "tool.not_dispatched": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "enum": [
+              "create_report",
+              "delete_file",
+              "list_files",
+              "memory.confirm",
+              "memory.edit",
+              "memory.forget",
+              "memory.get",
+              "memory.promote",
+              "memory.propose",
+              "memory.remember",
+              "memory.search",
+              "modify_text",
+              "read_text",
+              "restore_file",
+              "run_command"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "call_id",
+          "tool_id",
+          "reason"
+        ]
+      },
+      "tool.result": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.]*$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "rejected",
+              "unknown"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "output": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "call_id",
+          "tool_id",
+          "status",
+          "effect_state",
+          "output"
+        ]
+      },
+      "undo.completed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "control_run": {
+            "type": "string"
+          },
+          "restored": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root",
+                "path",
+                "result"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "control_run",
+          "restored",
+          "deleted",
+          "entries"
+        ]
+      },
+      "undo.failed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "control_run": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "control_run",
+          "error"
+        ]
+      }
+    },
+    "legacyPayload": {
+      "approval.consumed": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decided_by": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "approval.decided": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "decided_by": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "actor",
+              "source"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "approval.expired": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "approval.requested": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_subject": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "approval.revoked": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "decided_by": {
+            "type": "object",
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "actor",
+              "source"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "consumed",
+              "revoked",
+              "expired",
+              "superseded"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "approval.superseded": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "dispatch.admitted": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "intent_seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "dispatch.rejected": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "prepare",
+              "guard"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "dispatch.requested": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action_digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "approve"
+            ]
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approval_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "consumed",
+              "revoked",
+              "expired",
+              "superseded",
+              null
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "dispatch.revoked": {
+        "type": "object",
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "execution.started": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "grant.consumed": {
+        "type": "object",
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "remaining_uses": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "grant.issued": {
+        "type": "object",
+        "properties": {
+          "grant_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "job.claimed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "previous_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          },
+          "deadline_at": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "job.enqueued": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "job.finished": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "job.parked": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "job.requeued": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_pid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "owner_instance_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "model.error": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "model.intent": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "messages_hash": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "budget_version": {
+                "type": "string"
+              },
+              "max_bytes": {
+                "type": "integer"
+              },
+              "spill_threshold": {
+                "type": "integer"
+              },
+              "source_seqs": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "dropped_seqs": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "memories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "memory_id": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "content_ref": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "scope_id": {
+                      "type": "string"
+                    },
+                    "tool_call_id": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "memory_id",
+                    "revision",
+                    "content_ref",
+                    "scope",
+                    "scope_id",
+                    "tool_call_id"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "budget_version",
+              "max_bytes",
+              "spill_threshold",
+              "source_seqs",
+              "dropped_seqs"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "model.result": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {}
+              },
+              "additionalProperties": false,
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ]
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adapter": {
+                "type": "string"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": "object",
+                "properties": {
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              },
+              "unit_price_ver": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cost": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "adapter",
+              "model",
+              "units",
+              "unit_price_ver",
+              "cost",
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "policy.denied": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "read",
+              "create",
+              "overwrite",
+              "delete",
+              "exec"
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rule_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_.]*$"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "receipt": {
+        "type": "object",
+        "properties": {
+          "receipt_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "enum": [
+              "create_report",
+              "delete_file",
+              "list_files",
+              "memory.confirm",
+              "memory.edit",
+              "memory.forget",
+              "memory.get",
+              "memory.promote",
+              "memory.propose",
+              "memory.remember",
+              "memory.search",
+              "modify_text",
+              "read_text",
+              "restore_file",
+              "run_command"
+            ]
+          },
+          "action": {
+            "type": "string"
+          },
+          "args_hash": {
+            "type": "string"
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "local_fs",
+              "memfs",
+              "memory"
+            ]
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "issued_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "root": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "before_state": {
+            "type": "string"
+          },
+          "after_state": {
+            "type": "string"
+          },
+          "intent_seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "blob_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "array"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "recovery.blocked": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          },
+          "call_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "takeover_refused_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "recovery.unblocked": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.control": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "cancel",
+              "lease_takeover"
+            ]
+          },
+          "applied_immediately": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "request_effective": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "stronger_request": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effect_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown",
+              null
+            ]
+          },
+          "previous_run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "applied": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "none_applied": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unresolved": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unknown": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "corrupt": {
+                "type": "boolean"
+              },
+              "missing_manifest": {
+                "type": "boolean"
+              },
+              "pending_writes": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "applied",
+              "none_applied",
+              "unresolved",
+              "unknown",
+              "corrupt",
+              "missing_manifest",
+              "pending_writes"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.cursor": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "completed_call_ids": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pending_proposals": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.effect": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "n_applied": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "n_unknown": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.end": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled",
+              "noop"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "artifact": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "bytes": {
+                "type": "integer"
+              },
+              "before_state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "after_state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "bytes",
+              "before_state",
+              "after_state"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipt_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tokens_unknown_calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "turns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unbilled_model_intents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budget_enforced": {
+            "type": "boolean"
+          },
+          "x": {
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.fenced": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.finish": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.model_turn": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.start": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "task": {
+            "type": "string"
+          },
+          "out": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "object"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workspace": {
+            "type": "string"
+          },
+          "a": {
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ]
+          },
+          "x": {
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.state": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "enum": [
+              "created",
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "reconciling",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "created",
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "reconciling",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "control_cleared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "task.created": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root_path": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "writable"
+                  ]
+                },
+                "snapshot_policy": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "on_write"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root_path",
+                "mode",
+                "snapshot_policy"
+              ]
+            }
+          },
+          "exec_policy": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "argv_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "argv_denylist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cwd_roots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "max_output_bytes": {
+                "type": "integer"
+              },
+              "timeout_ms": {
+                "type": "integer"
+              },
+              "allow_pty": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "argv_allowlist",
+              "argv_denylist",
+              "cwd_roots",
+              "env_allowlist",
+              "max_output_bytes",
+              "timeout_ms",
+              "allow_pty"
+            ]
+          },
+          "control": {
+            "type": "boolean"
+          },
+          "memory_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "task.revised": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root_path": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "writable"
+                  ]
+                },
+                "snapshot_policy": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "on_write"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root_path",
+                "mode",
+                "snapshot_policy"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "tool.intent": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string"
+          },
+          "args": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          },
+          "args_hash": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "tool.not_dispatched": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "enum": [
+              "create_report",
+              "delete_file",
+              "list_files",
+              "memory.confirm",
+              "memory.edit",
+              "memory.forget",
+              "memory.get",
+              "memory.promote",
+              "memory.propose",
+              "memory.remember",
+              "memory.search",
+              "modify_text",
+              "read_text",
+              "restore_file",
+              "run_command"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "tool.result": {
+        "type": "object",
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.]*$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "rejected",
+              "unknown"
+            ]
+          },
+          "effect_state": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "none_applied",
+              "partial",
+              "unknown"
+            ]
+          },
+          "output": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "undo.completed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "control_run": {
+            "type": "string"
+          },
+          "restored": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "root": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "root",
+                "path",
+                "result"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "undo.failed": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "control_run": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      }
+    }
+  }
 }

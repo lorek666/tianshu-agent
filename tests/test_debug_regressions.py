@@ -48,10 +48,10 @@ def _ws(tmp_path: Path, files: dict[str, str]) -> Path:
 def _intent(log, run_id, call_id, tool_id, args, workspace):
     log.append(run_id, "run.start",
                {"task": "t", "workspace": str(workspace.resolve()),
-                "out": "x", "limits": {}, "tools": []}, actor_kind="core")
+                "out": "x", "limits": {}, "tools": []}, actor_kind="core", legacy_write=True)
     log.append(run_id, "tool.intent",
                {"call_id": call_id, "tool_id": tool_id, "args": args,
-                "args_hash": _sha("args")}, actor_kind="core")
+                "args_hash": _sha("args")}, actor_kind="core", legacy_write=True)
 
 
 # ---------------------------------------------------------------- S1
@@ -391,7 +391,11 @@ def test_startup_crash_before_manifest_is_safe_to_initialize(tmp_path):
     ws = _ws(tmp_path, {})
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
-    log.append("r1", "run.start", {"task": "t", "workspace": str(ws), "out": "x"})
+    log.append(
+        "r1", "run.start",
+        {"task": "t", "workspace": str(ws), "out": "x"},
+        legacy_write=True,
+    )
 
     report = recover_run(log, "r1", ws, store)
     assert report.none_applied == []
@@ -506,7 +510,7 @@ def test_m1_large_payload_is_durable_before_reference_commit(tmp_path):
     from tianshu.events import MAX_INLINE_BYTES
 
     log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
-    log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES})
+    log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES}, legacy_write=True)
     event = log.read_run("r1")[0]
     assert event.payload["content"] == "x" * MAX_INLINE_BYTES
     refs = [row[0] for row in log._conn.execute(
@@ -525,7 +529,7 @@ def test_light2_missing_payload_blob_is_event_log_corrupt(tmp_path):
     from tianshu.events import MAX_INLINE_BYTES
 
     log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
-    seq = log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES})
+    seq = log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES}, legacy_write=True)
     refs = [row[0] for row in log._conn.execute(
         "SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL"
     )]

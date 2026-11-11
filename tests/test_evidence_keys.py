@@ -548,6 +548,7 @@ def test_verify_receipts_flags_legacy_receipts_as_unverifiable(env):
         },
         actor_kind="core",
         idem_key="rcpt_legacy",
+        legacy_write=True,
     )
 
     problems = verify_receipts(env.log, run.run_id)
@@ -600,6 +601,7 @@ def test_a_database_with_old_style_events_reopens(tmp_path):
         },
         actor_kind="core",
         idem_key="rcpt_old",
+        legacy_write=True,
     )
     log.close()
 
@@ -636,6 +638,7 @@ def _intent(env: Env, run_id: str, call_id: str, rel: str = "a.md") -> None:
             "args_hash": _sha("args"),
         },
         actor_kind="core",
+        legacy_write=True,
     )
 
 

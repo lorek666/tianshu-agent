@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tianshu import event_schema
 from tianshu.credentials import (
     ENV_VARS,
     KEYCHAIN_CAPABILITIES,
@@ -349,7 +350,10 @@ def test_event_db_actually_can_contain_text_so_the_grep_is_meaningful(tmp_path):
     db = tmp_path / "probe.db"
     log = EventLog(db, blob_dir=tmp_path / "blobs")
     sentinel = "SENTINEL-NOT-A-SECRET-abcdef"
-    log.append("run_x", "run.start", {"probe": sentinel}, actor_kind="core")
+    # payload 必须满足 run.start 的逐类型契约（C3 §5.3.5）：拿最小合法样例承载
+    # 哨兵字符串，断言（明文出现在 SQLite 字节里）保持不变。
+    payload = {**event_schema.minimal_payload("run.start"), "task": sentinel}
+    log.append("run_x", "run.start", payload, actor_kind="core")
     log.close()
     assert sentinel.encode() in db.read_bytes()
 

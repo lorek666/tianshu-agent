@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import event_schema
 from .errors import EventLogCorrupt, TianshuError
+from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
 
 MAX_INLINE_BYTES = 256 * 1024
@@ -97,6 +99,10 @@ EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: 注册表与逐类型 payload 契约必须一一对应：少一个类型 = 该类型无法写入
+#: （fail-closed）。这里是导入期校验，测试里还会再绑一次（改一处忘一处会红）。
+event_schema.ensure_registry(EVENT_TYPES)
+
 #: 已定义、但当前**没有任何发射点**的类型。
 #:
 #: 单独列出而不是混进 `EVENT_TYPES`：注册表要回答"代码实际会写什么"。把一个
@@ -159,6 +165,14 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
 -- 类型集合（C3 封闭集），也不是契约的一部分，只是让"读阻断状态"不随日志增长。
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, seq);
 
+-- payload 版本旁表：与事件行同一事务写入，不改 events 表、不 UPDATE 历史行。
+-- 旧库升级后这张表是空的，历史行读取时按 version=0（冻结前旧版）映射。
+CREATE TABLE IF NOT EXISTS event_versions (
+    seq     INTEGER PRIMARY KEY,
+    type    TEXT    NOT NULL,
+    version INTEGER NOT NULL
+);
+
 CREATE TRIGGER IF NOT EXISTS events_no_update
 BEFORE UPDATE ON events
 BEGIN
@@ -206,6 +220,9 @@ class Event:
     payload_hash: str
     parent_seq: int | None
     idem_key: str | None
+    #: payload 契约版本：0 = 冻结前旧版（历史行/旧形状），1 = 当前逐类型契约。
+    #: 由 event_versions 旁表给出；旁表无记录的历史行按 0 读取（见 event_schema）。
+    payload_version: int = 0
 
 
 class EventTransaction:
@@ -235,6 +252,7 @@ class EventTransaction:
         actor_id: str = "",
         parent_seq: int | None = None,
         idem_key: str | None = None,
+        legacy_write: bool = False,
     ) -> int:
         return self._log.append(
             run_id,
@@ -245,6 +263,7 @@ class EventTransaction:
             actor_id=actor_id,
             parent_seq=parent_seq,
             idem_key=idem_key,
+            legacy_write=legacy_write,
         )
 
 
@@ -391,10 +410,17 @@ class EventLog:
         actor_id: str = "",
         parent_seq: int | None = None,
         idem_key: str | None = None,
+        legacy_write: bool = False,
     ) -> int:
         # 第一行就校验：不能等 payload 落盘之后才发现类型是错的——
-        # 那样会留下一个没有行的孤儿 blob。
+        # 那样会留下一个没有行的孤儿 blob。类型之后立刻校验 payload 契约
+        # （PRD §5.3.5）：非法 payload 同样必须在任何副作用之前被拒。
         _check_event_type(type)
+        # 默认只接受当前契约；`legacy_write=True` 只给夹具/历史播种/迁移测试，
+        # 生产路径一个调用点都不许传（传了就等于给自己开写入免检通道）。
+        payload_version = event_schema.detect_version(
+            type, payload, allow_legacy=legacy_write
+        )
         raw = canonical_bytes(payload)
         digest = sha256_hex(raw)
 
@@ -412,28 +438,36 @@ class EventLog:
             if not Path(ref).exists():
                 atomic_write_bytes(Path(ref), raw)
 
-        cur = self._conn.execute(
-            """
-            INSERT INTO events
-              (run_id, task_id, type, ts, actor_kind, actor_id,
-               payload, payload_ref, payload_hash, parent_seq, idem_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                task_id,
-                type,
-                int(time.time() * 1000),
-                actor_kind,
-                actor_id,
-                inline,
-                ref,
-                digest,
-                parent_seq,
-                idem_key,
-            ),
-        )
-        return int(cur.lastrowid)
+        # 事件行与版本旁表必须同生同死：分开提交会留下"没有版本记录的新事件"，
+        # 读取时会被当成 version=0，等于把新版语义伪装成旧版。
+        with self.transaction():
+            cur = self._conn.execute(
+                """
+                INSERT INTO events
+                  (run_id, task_id, type, ts, actor_kind, actor_id,
+                   payload, payload_ref, payload_hash, parent_seq, idem_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    type,
+                    int(time.time() * 1000),
+                    actor_kind,
+                    actor_id,
+                    inline,
+                    ref,
+                    digest,
+                    parent_seq,
+                    idem_key,
+                ),
+            )
+            seq = int(cur.lastrowid)
+            self._conn.execute(
+                "INSERT INTO event_versions (seq, type, version) VALUES (?,?,?)",
+                (seq, type, payload_version),
+            )
+        return seq
 
     def append_many(self, items: list[dict[str, Any]]) -> list[int]:
         """同一事务内写多条事件。
@@ -457,11 +491,41 @@ class EventLog:
         ).fetchall()
         return {int(r[0]) for r in rows}
 
+    def _versions_for(self, seqs: list[int]) -> dict[int, int]:
+        """seq → payload 版本。旁表写不出来的记录按历史行（0）读取。
+
+        旁表**本身**缺失/损坏时不能把一切当成 0：那会把"读不懂精确版本"
+        洗成"是旧版"。这里抛 `PayloadVersionUnavailable`，调用方必须显式
+        处理（阻断依赖精确版本的读取），不猜。
+        """
+        if not seqs:
+            return {}
+        lo, hi = min(seqs), max(seqs)
+        try:
+            rows = self._conn.execute(
+                "SELECT seq, version FROM event_versions WHERE seq BETWEEN ? AND ?",
+                (lo, hi),
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise PayloadVersionUnavailable(
+                f"事件 payload 版本旁表读不出来（{self._db_path}）："
+                f"{type(exc).__name__}: {exc}。无法判定精确版本，"
+                "不能把所有事件都按旧版解释"
+            ) from exc
+        known = {int(r["seq"]): int(r["version"]) for r in rows}
+        return {
+            seq: known.get(seq, event_schema.LEGACY_PAYLOAD_VERSION) for seq in seqs
+        }
+
     def read_run(self, run_id: str, *, verify: bool = True) -> list[Event]:
         rows = self._conn.execute(
             "SELECT * FROM events WHERE run_id = ? ORDER BY seq", (run_id,)
         ).fetchall()
-        return [self._row_to_event(r, verify=verify) for r in rows]
+        versions = self._versions_for([int(r["seq"]) for r in rows])
+        return [
+            self._row_to_event(r, verify=verify, version=versions[int(r["seq"])])
+            for r in rows
+        ]
 
     def seq_head(self) -> int:
         """全库最大 seq（空库为 0）。推送游标与 `event_seq_head` 用。
@@ -489,7 +553,11 @@ class EventLog:
                 "SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
                 (int(seq), max(1, int(limit))),
             ).fetchall()
-        return [self._row_to_event(r, verify=True) for r in rows]
+        versions = self._versions_for([int(r["seq"]) for r in rows])
+        return [
+            self._row_to_event(r, verify=True, version=versions[int(r["seq"])])
+            for r in rows
+        ]
 
     def read_types(self, types: Iterable[str]) -> list[Event]:
         """按类型读事件（跨 run）。投影重建用。"""
@@ -500,13 +568,21 @@ class EventLog:
         rows = self._conn.execute(
             f"SELECT * FROM events WHERE type IN ({marks}) ORDER BY seq", wanted
         ).fetchall()
-        return [self._row_to_event(r, verify=True) for r in rows]
+        versions = self._versions_for([int(r["seq"]) for r in rows])
+        return [
+            self._row_to_event(r, verify=True, version=versions[int(r["seq"])])
+            for r in rows
+        ]
 
     def all_event_types(self) -> Iterable[str]:
         for r in self._conn.execute("SELECT DISTINCT type FROM events"):
             yield r["type"]
 
-    def _row_to_event(self, row: sqlite3.Row, *, verify: bool) -> Event:
+    def _row_to_event(
+        self, row: sqlite3.Row, *, verify: bool, version: int
+    ) -> Event:
+        # 不认识的版本 = 读不懂未来数据，绝不按当前 schema 猜着解释。
+        event_schema.schema_for(row["type"], version)
         if row["payload_ref"]:
             ref = row["payload_ref"]
             try:
@@ -542,6 +618,7 @@ class EventLog:
             payload_hash=row["payload_hash"],
             parent_seq=row["parent_seq"],
             idem_key=row["idem_key"],
+            payload_version=version,
         )
 
     def close(self) -> None:
