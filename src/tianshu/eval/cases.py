@@ -24,8 +24,10 @@ PRD §10.3 的原文要求：
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from ..model import ModelResponse, ToolCall
 from .checks import (
@@ -75,7 +77,7 @@ from .checks import (
 
 #: suite 版本。改任何 case 的 fixture / 任务文本 / 判据都必须 bump——
 #: 否则两次报告会被当成可比，而分母其实已经换了。
-SUITE_VERSION = "m4.5"
+SUITE_VERSION = "m4.6"
 
 CATEGORIES: tuple[str, ...] = (
     "normal",
@@ -119,6 +121,15 @@ class Case:
     crash: str | None = None
     scope: str = "model"
     note: str = ""
+    #: 版本化输入（PRD §10.5）：真实用户任务的夹具/任务文本/判据变了就换版本，
+    #: 不进 `fixture_digest` 的旧口径里"看起来还是同一条 case"。
+    version: str = ""
+    #: 非 None = 本轮**不提供**这个能力（联网研究）：样本只证明"系统如实报告
+    #: 未具备能力"，不启动引擎、不许用脚本或静态网页冒充线上完成。
+    unavailable_reason: str | None = None
+    #: 场景钩子：Run 结束后再动一次产品 API 收集事实（如"撤销冲突"探针）。
+    #: 它收集的是产品事实，判据只读事实、不猜。
+    post_run: Callable[[Any, str, Path], dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------- 脚本拼装

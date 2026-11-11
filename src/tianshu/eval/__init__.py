@@ -34,7 +34,14 @@ from .cases import (
     select_cases,
 )
 from .checks import Check, CheckResult, Observation, evaluate_checks
-from .report import build_report, compare_reports, fixture_digest
+from .report import (
+    DIMENSIONS,
+    PATH_COVERAGE_RULE,
+    VALIDITY_RULE,
+    build_report,
+    compare_reports,
+    fixture_digest,
+)
 from .runner import SuiteRun, run_suite
 
 __all__ = [
@@ -49,6 +56,9 @@ __all__ = [
     "CheckResult",
     "Observation",
     "SuiteRun",
+    "DIMENSIONS",
+    "PATH_COVERAGE_RULE",
+    "VALIDITY_RULE",
     "build_report",
     "compare_reports",
     "evaluate_checks",
