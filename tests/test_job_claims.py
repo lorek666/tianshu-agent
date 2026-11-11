@@ -344,7 +344,7 @@ def test_same_turn_twice_is_idempotent(env):
     _, run = _run_with_lease(tasks, leases, ws)
     job = jobs.enqueue(run.run_id)
     claim = jobs.claim(job.job_id)
-    turn = {"turn_id": "t1", "usage": {"input_tokens": 10}}
+    turn = {"turn_id": "t1", "usage": {"input_tokens": 10, "output_tokens": None}}
 
     assert tasks.commit_model_turn(run.run_id, turn, claim) == 1
     assert tasks.commit_model_turn(run.run_id, turn, claim) == 1
@@ -673,7 +673,7 @@ def test_end_to_end_single_run_order(env):
     tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
 
     tasks.commit_model_turn(
-        run.run_id, {"turn_id": "t1", "finish_reason": "tool_calls"}, claim
+        run.run_id, {"turn_id": "t1", "finish_reason": "tool_use"}, claim
     )
     tasks.save_cursor(
         run.run_id,

@@ -813,6 +813,7 @@ def test_unresolved_intent_becomes_reconciling_not_success(root, start_daemon) -
                 "args_hash": sha256_hex(canonical_bytes(args)),
             },
             actor_kind="core",
+            legacy_write=True,
         )
         # 崩溃留下的作业：启动恢复必须 park 它，否则驱动线程会把它捡起来继续写。
         stack.claims.enqueue(run_id)

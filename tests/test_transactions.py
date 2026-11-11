@@ -36,7 +36,7 @@ def test_events_and_projection_roll_back_together(env):
     with pytest.raises(RuntimeError):
         with log.transaction() as tx:
             tasks.create_task("会被回滚的任务")
-            tx.append("", "run.start", {"x": 1})
+            tx.append("", "run.start", {"x": 1}, legacy_write=True)
             raise RuntimeError("boom")
 
     assert log.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
@@ -63,7 +63,7 @@ def test_stores_are_composable_in_one_transaction(env):
         task = tasks.create_task("组合事务")
         run = tasks.start_run(task.task_id)
         lease_set = leases.acquire([ws], run.run_id)
-        tx.append(run.run_id, "model.intent", {"ok": True})
+        tx.append(run.run_id, "model.intent", {"ok": True}, legacy_write=True)
 
     assert lease_set.resource_keys
     assert tasks.get_task(task.task_id).active_run_id == run.run_id

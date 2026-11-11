@@ -214,6 +214,7 @@ def test_recovery_blocking_write_contends_for_the_execution_guard(tmp_path: Path
         {"task": "t", "workspace": str(ws.resolve()), "out": "note.md",
          "limits": {}, "tools": []},
         actor_kind="core",
+        legacy_write=True,
     )
     setup.append(
         "run_x",
@@ -222,6 +223,7 @@ def test_recovery_blocking_write_contends_for_the_execution_guard(tmp_path: Path
          "args": {"path": "note.md", "content": "写后内容\n"},
          "args_hash": _sha("x")},
         actor_kind="core",
+        legacy_write=True,
     )
     snapshots.record_preimage(
         "run_x", "c1", "note.md",
@@ -287,6 +289,7 @@ def test_unknown_tool_recovery_is_unknown_and_blocks(tmp_path: Path):
         {"task": "t", "workspace": str(ws.resolve()), "out": "x.md",
          "limits": {}, "tools": []},
         actor_kind="core",
+        legacy_write=True,
     )
     log.append(
         "run_legacy",
@@ -295,6 +298,7 @@ def test_unknown_tool_recovery_is_unknown_and_blocks(tmp_path: Path):
         {"call_id": "c1", "tool_id": "rename_everything",
          "args": {"path": "note.md"}, "args_hash": "deadbeef"},
         actor_kind="core",
+        legacy_write=True,
     )
 
     # 故意不给快照存储：旧实现会走 "没有清单 → 确定未写" 的分支
@@ -315,11 +319,15 @@ def test_unknown_tool_recovery_is_unknown_and_blocks(tmp_path: Path):
 
 def test_malformed_block_event_fails_closed(env: Env):
     """解析不出 workspace 的阻断事件 = "不知道哪个目录被阻断"，不是"没阻断"。"""
+    # 这是**故意构造的历史畸形事件**（真实旧日志里可能存在）：显式
+    # legacy_write=True 让写入口接受一个 v0 形状记录，用来测**读/恢复侧**
+    # 的 fail-closed（read 必须报无法判定、写路径必须拒绝），不是放行写入。
     env.log.append(
         "r_legacy",
         "recovery.blocked",
         {"call_ids": ["c9"], "reason": "payload 里没有 workspace"},
         actor_kind="system",
+        legacy_write=True,
     )
 
     with pytest.raises(EventLogCorrupt):

@@ -1,0 +1,340 @@
+{
+  "dataset": "minimal-v1",
+  "events": {
+    "approval.consumed": {
+      "action_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "approval_id": "x",
+      "decided_by": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "approval.decided": {
+      "approval_id": "x",
+      "decided_by": {
+        "actor": "x",
+        "source": "x"
+      },
+      "decision": "approved",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "approval.expired": {
+      "approval_id": "x",
+      "reason": "x"
+    },
+    "approval.requested": {
+      "action": "read",
+      "action_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "action_subject": "0000000000000000000000000000000000000000000000000000000000000000",
+      "approval_id": "x",
+      "expires_at": 1,
+      "reason": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x",
+      "resources": [],
+      "rule_id": "c4.auto"
+    },
+    "approval.revoked": {
+      "approval_id": "x",
+      "decided_by": {
+        "actor": "x",
+        "source": "x"
+      }
+    },
+    "approval.superseded": {
+      "approval_id": "x",
+      "reason": "x"
+    },
+    "dispatch.admitted": {
+      "call_id": "x",
+      "grant_id": "x",
+      "intent_seq": 1,
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x"
+    },
+    "dispatch.rejected": {
+      "reason": "x",
+      "request_id": "x",
+      "rule_id": "c4.auto"
+    },
+    "dispatch.requested": {
+      "action": "read",
+      "decision": "auto",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x",
+      "resources": [],
+      "rule_id": "c4.auto"
+    },
+    "dispatch.revoked": {
+      "approval_id": "x",
+      "call_id": "x",
+      "dispatch_id": "x",
+      "reason": "x"
+    },
+    "execution.started": {
+      "goal_revision": 1,
+      "lease_epoch": 1,
+      "resources": [],
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "grant.consumed": {
+      "grant_id": "x",
+      "remaining_uses": 0,
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "grant.issued": {
+      "action": "read",
+      "expires_at": 1,
+      "grant_id": "x",
+      "issuer": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "subject": "x"
+    },
+    "job.claimed": {
+      "claim_epoch": 0,
+      "deadline_at": 0,
+      "job_id": "x",
+      "owner_instance_id": "x",
+      "owner_pid": 0,
+      "previous_epoch": 0,
+      "run_id": "x"
+    },
+    "job.enqueued": {
+      "job_id": "x",
+      "run_id": "x"
+    },
+    "job.finished": {
+      "claim_epoch": 0,
+      "job_id": "x",
+      "outcome": "succeeded",
+      "owner_instance_id": "x",
+      "owner_pid": 0,
+      "run_id": "x"
+    },
+    "job.parked": {
+      "claim_epoch": 0,
+      "job_id": "x",
+      "owner_instance_id": "x",
+      "owner_pid": 0,
+      "reason": "x",
+      "run_id": "x"
+    },
+    "job.requeued": {
+      "claim_epoch": 0,
+      "job_id": "x",
+      "owner_instance_id": "x",
+      "owner_pid": 0,
+      "run_id": "x"
+    },
+    "model.error": {
+      "error": "x",
+      "request_id": "x"
+    },
+    "model.intent": {
+      "attempt": 0,
+      "context": {
+        "budget_version": "x",
+        "dropped_seqs": [],
+        "max_bytes": 0,
+        "source_seqs": [],
+        "spill_threshold": 0
+      },
+      "messages_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x"
+    },
+    "model.result": {
+      "content": "x",
+      "cost": {
+        "adapter": "x",
+        "cost": 0,
+        "currency": "x",
+        "model": "x",
+        "provider": "x",
+        "unit_price_ver": "x",
+        "units": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "finish_reason": "cancelled",
+      "request_id": "x",
+      "tool_calls": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    "policy.denied": {
+      "action": "read",
+      "reason": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x",
+      "resources": [],
+      "rule_id": "c4.auto"
+    },
+    "receipt": {
+      "action": "read",
+      "after_state": "x",
+      "args_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "backend": "local_fs",
+      "before_state": "x",
+      "blob_ref": "x",
+      "call_id": "x",
+      "effect_state": "applied",
+      "evidence": [],
+      "intent_seq": 1,
+      "issued_at": 0,
+      "issuer": "x",
+      "receipt_id": "rcpt_0123456789ab",
+      "resource": "x",
+      "root": "x",
+      "run_id": "x",
+      "tool_id": "create_report"
+    },
+    "recovery.blocked": {
+      "call_ids": [],
+      "reason": "x",
+      "workspace": "x"
+    },
+    "recovery.unblocked": {
+      "reason": "x",
+      "workspace": "x"
+    },
+    "run.control": {
+      "action": "pause",
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "run.cursor": {
+      "claim_epoch": 0,
+      "completed_call_ids": 0,
+      "goal_revision": 1,
+      "lease_epoch": 1,
+      "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pending_proposals": 0,
+      "run_id": "x"
+    },
+    "run.effect": {
+      "effect_state": "applied",
+      "n_applied": 0,
+      "n_unknown": 0,
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "run.end": {
+      "artifact": {
+        "after_state": "x",
+        "before_state": "x",
+        "bytes": 0,
+        "path": "x",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "budget_enforced": false,
+      "effect_state": "applied",
+      "error": "x",
+      "outcome": "succeeded",
+      "receipt_ids": [],
+      "tokens": 0,
+      "tokens_unknown_calls": 0,
+      "turns": 0,
+      "unbilled_model_intents": 0
+    },
+    "run.fenced": {
+      "reason": "x",
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "run.finish": {
+      "effect_state": "applied",
+      "outcome": "succeeded",
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "run.model_turn": {
+      "claim_epoch": 0,
+      "finish_reason": "cancelled",
+      "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "run_id": "x",
+      "seq": 1,
+      "turn_id": "x",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    },
+    "run.start": {
+      "goal_revision": 1,
+      "lease_epoch": 1,
+      "run_id": "x",
+      "task_id": "x"
+    },
+    "run.state": {
+      "from": "created",
+      "reason": "x",
+      "run_id": "x",
+      "task_id": "x",
+      "to": "created"
+    },
+    "task.created": {
+      "control": false,
+      "exec_policy": {
+        "allow_pty": false,
+        "argv_allowlist": [],
+        "argv_denylist": [],
+        "cwd_roots": [],
+        "env_allowlist": [],
+        "max_output_bytes": 0,
+        "timeout_ms": 0
+      },
+      "goal": "x",
+      "goal_revision": 1,
+      "lease_epoch": 1,
+      "memory_scopes": [],
+      "task_id": "x",
+      "workspaces": []
+    },
+    "task.revised": {
+      "goal": "x",
+      "goal_revision": 1,
+      "lease_epoch": 1,
+      "task_id": "x",
+      "workspaces": []
+    },
+    "tool.intent": {
+      "args": {},
+      "args_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "attempt_id": 1,
+      "call_id": "x",
+      "claim_epoch": 0,
+      "dispatch_id": "x",
+      "grant_id": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x",
+      "tool_id": "create_report"
+    },
+    "tool.not_dispatched": {
+      "call_id": "x",
+      "reason": "x",
+      "tool_id": "create_report"
+    },
+    "tool.result": {
+      "call_id": "x",
+      "effect_state": "applied",
+      "output": {},
+      "status": "succeeded",
+      "tool_id": "x"
+    },
+    "undo.completed": {
+      "control_run": "x",
+      "deleted": [],
+      "entries": [],
+      "restored": [],
+      "run_id": "x"
+    },
+    "undo.failed": {
+      "control_run": "x",
+      "error": "x",
+      "run_id": "x"
+    }
+  },
+  "generated_by": "event_schema.minimal_payload"
+}

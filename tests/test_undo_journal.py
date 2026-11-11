@@ -78,6 +78,7 @@ def _prepare(tmp_path: Path) -> tuple[Path, EventLog, SnapshotStore]:
             "tools": [],
         },
         actor_kind="core",
+        legacy_write=True,
     )
     store = SnapshotStore(tmp_path / "artifacts")
     for call_id, name in CALLS:

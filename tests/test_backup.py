@@ -67,11 +67,11 @@ def _make_data_root(tmp_path: Path) -> Path:
     log = EventLog(db, blob_dir=blobs)
     log.append("r1", "run.start", {
         "task": "备份夹具", "workspace": str(ws.resolve()), "out": "x.md",
-        "limits": {}, "tools": []}, actor_kind="core")
+        "limits": {}, "tools": []}, actor_kind="core", legacy_write=True)
     log.append("r1", "tool.intent", {
         "call_id": "c1", "tool_id": "modify_text",
         "args": {"path": TARGET, "content": "写后内容\n"},
-        "args_hash": "0" * 64}, actor_kind="core")
+        "args_hash": "0" * 64}, actor_kind="core", legacy_write=True)
     log.append("r1", "tool.result", {
         "call_id": "c1", "tool_id": "modify_text", "status": "succeeded",
         "effect_state": "applied",
@@ -458,7 +458,7 @@ def test_restore_reconciliation_reports_pending_work(tmp_path):
     # 未决 intent：有 intent 无 result
     log.append("r_live", "tool.intent", {
         "call_id": "c9", "tool_id": "modify_text",
-        "args": {"path": "a.txt"}, "args_hash": "0" * 64}, actor_kind="core")
+        "args": {"path": "a.txt"}, "args_hash": "0" * 64}, actor_kind="core", legacy_write=True)
     conn = log.conn
     conn.execute(
         "INSERT INTO runs(run_id, task_id, goal_revision, lease_epoch, state,"

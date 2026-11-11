@@ -921,6 +921,7 @@ def test_replay_accepts_old_log_without_context(tmp_path):
         {"request_id": "req_old", "attempt": 1, "messages_hash": _digest(messages)},
         actor_kind="core",
         idem_key="req_old",
+        legacy_write=True,
     )
     log.append(
         run_record.run_id,
@@ -928,6 +929,7 @@ def test_replay_accepts_old_log_without_context(tmp_path):
         {"request_id": "req_old", "finish_reason": "end_turn", "content": "完成"},
         actor_kind="core",
         idem_key="req_old",
+        legacy_write=True,
     )
     stack.tasks.finish_run(
         run_record.run_id, outcome="succeeded", effect_state="none_applied"
@@ -968,6 +970,7 @@ def test_replay_detects_tampered_context(tmp_path):
         },
         actor_kind="core",
         idem_key="req_x",
+        legacy_write=True,
     )
     log.append(
         run_record.run_id,
@@ -975,6 +978,7 @@ def test_replay_detects_tampered_context(tmp_path):
         {"request_id": "req_x", "finish_reason": "end_turn", "content": "完成"},
         actor_kind="core",
         idem_key="req_x",
+        legacy_write=True,
     )
     stack.tasks.finish_run(
         run_record.run_id, outcome="succeeded", effect_state="none_applied"
