@@ -252,6 +252,7 @@ def _seed_memory(
     content: str,
     scope: MemoryScope | None = None,
     origin: str = "user_explicit",
+    kind: str = "preference",
 ) -> None:
     """直接写一条历史记忆事件（模拟之前的 propose 已提交）。
 
@@ -272,7 +273,7 @@ def _seed_memory(
             "revision": 1,
             "scope": scope.scope,
             "scope_id": scope.scope_id,
-            "kind": "preference",
+            "kind": kind,
             "content_ref": content_ref,
             "source_refs": ["event:seed"],
             "evidence": [],
@@ -2428,6 +2429,8 @@ def test_erased_and_missing_rows_have_distinct_recovery_conclusions(env):
         call_id="done-erase",
     )
     erase_decision = env.dispatcher.prepare(erase_request, control.claim, args=erase_args)
+    assert not erase_decision.is_rejected, (erase_decision.reason, erase_decision.rule_id)
+    assert erase_decision.approval_id, erase_decision
     _approve(env, erase_decision.approval_id)
     erase_result = env.dispatcher.dispatch(erase_decision.request_id, control.claim)
     try:
@@ -2951,3 +2954,97 @@ def test_failed_consolidate_writes_no_orphan_blob(env: Env):
     assert "已存在" in str(failed.output.get("error"))
     after = sorted(path.name for path in blob_dir.iterdir())
     assert after == before, "失败路径不该往 blob 目录里写新正文（孤儿没人清）"
+
+
+def _activate(env: Env, task, run, claim, memory_id: str, revision: int, *, call_id: str):
+    """确认一条候选：`user_explicit` 候选按策略免审批（人本人就是签发者），
+    其余候选要落一张审批。这里两条分支都走真实 prepare/dispatch。"""
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=revision,
+                                     call_id=call_id)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert not decision.is_rejected, (decision.reason, decision.rule_id)
+    if decision.is_waiting:
+        _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    return result
+
+
+def test_multi_page_consolidate_prechecks_every_page_before_writing(env: Env):
+    """多页合成：**全部页预检通过**才开始写正文，否则一个字节都不写。
+
+    页 id 由 (作用域, 层, 正文) 决定：先擦掉 L3 页、再让 L2 正文变化，下一次合成会
+    「L2 是新页、L3 撞回已擦除的 id」。若逐页"边检边写"，L2 的正文已经落盘才在 L3
+    失败——那份正文就是没人引用的孤儿（恢复流程的孤儿清理只认
+    `tool.intent.args.content_sha256`，consolidate 的 args 只有 scope，清不到）。
+    复审指出的正是这个组合；单页用例打不到它。
+    """
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    seeds = {
+        # 数据库那几条播成 fact：它们只进 L2（L3 只收 preference）。
+        "s1": ("数据库迁移分三步：备份、演练、割接", "fact"),
+        "s2": ("数据库迁移前先做备份演练", "fact"),
+        # 报告那几条是 preference：进 L3；两条的重叠系数 0.33 < 阈值，不聚成 L2。
+        "s3": ("报告用中文写，先列结论", "preference"),
+        "s4": ("报告先列结论再给依据", "preference"),
+    }
+    for call_id, (content, kind) in seeds.items():
+        memory_id = f"mem_{call_id}"
+        _seed_memory(env, run.run_id, memory_id=memory_id, content=content, kind=kind)
+        _activate(env, task, run, claim, memory_id, 1, call_id=f"{call_id}-c")
+
+    request, args = _consolidate_request(env, task, run, claim, scope=user, call_id="c1")
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    first = env.dispatcher.dispatch(decision.request_id, claim)
+    assert first.ok, first.output
+    layers = {page["layer"]: page["memory_id"] for page in first.output["pages"]}
+    assert set(layers) == {"l2", "l3"}, layers
+    l3_page = layers["l3"]
+
+    # 擦掉 L3 页（候选可直接擦）：正文副本随之删除。
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{l3_page}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": l3_page, "revision": 1}
+    erase_request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.erase",
+        target=user.to_uri(),
+        args=erase_args,
+        call_id="erase-l3",
+    )
+    erase_decision = env.dispatcher.prepare(erase_request, control.claim, args=erase_args)
+    _approve(env, erase_decision.approval_id)
+    erased = env.dispatcher.dispatch(erase_decision.request_id, control.claim)
+    try:
+        assert erased.ok, erased.output
+        assert erased.output["erasure"]["deleted"] is True
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=erased.effect_state
+        )
+
+    # 再补一条相似的"事实"（同样走 preference 播种，L2 会把它聚进同一簇）：
+    # 下一轮的 L2 正文因此变化 → 新页；L3 的偏好没变 → 撞回已擦除的 id。
+    _seed_memory(
+        env, run.run_id, memory_id="mem_s5", content="数据库迁移要写回滚方案",
+        kind="fact",
+    )
+    _activate(env, task, run, claim, "mem_s5", 1, call_id="s5-c")
+
+    blob_dir = env.memory.blob_dir
+    assert blob_dir is not None
+    before = sorted(path.name for path in blob_dir.iterdir())
+    request2, args2 = _consolidate_request(
+        env, task, run, claim, scope=user, call_id="c2"
+    )
+    decision2 = env.dispatcher.prepare(request2, claim, args=args2)
+    failed = env.dispatcher.dispatch(decision2.request_id, claim)
+    assert not failed.ok, "撞回已擦除页 id 时必须整批失败"
+    after = sorted(path.name for path in blob_dir.iterdir())
+    assert after == before, (
+        "预检必须先于任何 put_content：失败时 blob 目录不该多出 L2 的正文副本"
+    )

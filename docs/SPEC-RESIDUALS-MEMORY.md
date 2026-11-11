@@ -370,7 +370,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   `redact_or_block` 闸门（命中就拒，坏页不入库）。**重复页幂等**（同 id + 同 layer +
   同 `content_ref` 且状态是 candidate/active 直接返回；执行侧在此之上先看现有状态：
   active/candidate → 不重复写行、`output` 如实给现有 status；已退役/已擦除 → 在
-  `put_content` **之前** fail-closed（先写再失败会留孤儿 blob，恢复流程清不到——它的
+  `put_content` **之前** fail-closed（**两阶段：先把全部页预检完，再一次统一写**；
+  否则前几页正文已落盘、后面的页才失败，照样留孤儿）（先写再失败会留孤儿 blob，恢复流程清不到——它的
   孤儿清理只认 `tool.intent.args.content_sha256`，consolidate 的 args 只有 scope））；
   **已 confirm 的 active 页不因合成
   退役**（`memory.consolidate` 是模型可见、免审批的工具，能退役人确认过的页面就等于模型
@@ -407,10 +408,11 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   active 页不被合成退役、L3 预算 / 只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出
   L2、旧页被 supersede 仍可 get（含 evidence / `source_refs` 快照）、replay 一致、
   freshness stale + 降序、**无索引路径也降权**、**无 `seq:` 时 `stale=None`**、**三档排位**、**过期 L1 不算更新证据**）；
-  `tests/test_memory_dispatch.py` **+6 条真派发 e2e**（consolidate 真在
+  `tests/test_memory_dispatch.py` **+7 条真派发 e2e**（consolidate 真在
   `tool_manifest()` 并写出候选页、workspace 拒、task 只能本任务、确认后的页进召回并在
   新 L1 之后变 stale（改走 `retrieve()` 并校验两路 stale 标记一致）、重复合成如实报
-  active、失败路径不写孤儿 blob）；
+  active、单页失败路径不写孤儿 blob、**多页失败先预检全部页**（L2 新页 + L3 已擦除页，
+  blob 目录一个文件都不多））；
   `tests/test_memory_store.py`：迁移断言改 `schema_version == 3`、更高版本 fail-closed 用
   `'4'`，并**补了真正的 v2→v3 用例**（`test_schema_v2_database_gains_the_layer_column_in_place`：
   删 `layer`、版本置 2、重开 → 旧行一律 l1、可重复执行；原 v1 用例从没删过 `layer`，
@@ -419,7 +421,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   delta）→ 逐字节用例红；② `_stale_map` 直接 `return {}` → stale 用例红；③ 派发层去掉
   consolidate 的 workspace 无条件拒 → e2e 红；④ L3 预算因子 ×100 → 预算用例红；⑤ L3
   去掉 user 限定 → 只 user 用例红；⑥ 就位校验改 `if False` → 坏页用例红；⑦ 去掉
-  `retrieve()` 无索引分支的 stale 排序键 → 无索引降权用例红（复审抓到的真洞）。**如实记**：
+  `retrieve()` 无索引分支的 stale 排序键 → 无索引降权用例红（复审抓到的真洞）；⑧ 不可
+  判定当成新鲜 → 三档排位用例红；⑨ 去掉既有页预检（先写正文再失败）→ 单页孤儿用例红；
+  ⑩ 在预检前先写第一页正文 → 多页孤儿用例红。**如实记**：
   执行侧 workspace 守护**经派发路径不可达**（派发层先拒），与 `memory.propose` 同款
   纵深防御，**没有测试能单独打红它**——不声称有覆盖。
 - **偏差 / 没做到**：

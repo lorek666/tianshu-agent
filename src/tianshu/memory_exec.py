@@ -596,28 +596,35 @@ class MemoryExecutor:
         # 合成是纯函数：没有可合成的内容就明确返回空页，不写任何行。
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
         now = self._clock()
-        out_pages: list[dict[str, Any]] = []
-        created = 0
-        existing_pages = 0
+
+        # ---- 阶段一：**先把每一页都预检完**，一行正文都还没写 ----
+        #
+        # 为什么不能"边检边写"：页 id 由 (作用域, 层, 正文) 决定，正文回退会撞回
+        # 已退役的 id。若边检边写，前几页的正文已经落盘、后面的页才失败——那些
+        # 正文就是没人引用的孤儿，而恢复流程的孤儿清理只认
+        # `tool.intent.args.content_sha256`（consolidate 的 args 只有 scope），
+        # 清不到它。所以先预检全部，全部合法再统一写。
+        planned: list[tuple[Any, str, Any]] = []
         for page in pages:
             memory_id = page_memory_id(scope.to_uri(), page)
             existing = self._projection.get(memory_id, allowed=(scope,))
+            if existing is not None and existing.status not in ("candidate", "active"):
+                raise TianshuError(
+                    f"合成页 {memory_id!r} 已存在且状态是 {existing.status!r}："
+                    "同一段正文不能再作为新的候选页写入"
+                )
+            planned.append((page, memory_id, existing))
+
+        # ---- 阶段二：预检全过，才开始写正文 ----
+        out_pages: list[dict[str, Any]] = []
+        created = 0
+        existing_pages = 0
+        for page, memory_id, existing in planned:
+            item = page.to_output()
             if existing is not None:
-                # 页 id 由 (作用域, 层, 正文) 决定，所以同一段正文会算出同一个 id。
-                # **先看现有状态、再决定要不要写正文**：
-                #  - candidate / active：这一页已经在库里，不重复写行；output 里
-                #    如实给出现有状态（不能一律写 "candidate"——已确认的页会变成
-                #    "事件说候选、投影是 active"，审计与后续 confirm 都对不上）。
-                #  - superseded / forgotten / erased：正文回退撞回已退役的 id。
-                #    **在 `put_content` 之前就拒**：正文一落盘就成了没人引用的孤儿
-                #    blob，而恢复流程的孤儿清理只认 `tool.intent.args.content_sha256`
-                #    （consolidate 的 args 只有 scope），清不到它。
-                if existing.status not in ("candidate", "active"):
-                    raise TianshuError(
-                        f"合成页 {memory_id!r} 已存在且状态是 {existing.status!r}："
-                        "同一段正文不能再作为新的候选页写入"
-                    )
-                item = page.to_output()
+                # candidate / active：这一页已经在库里，不重复写行；output 里如实给
+                # 出现有状态（不能一律写 "candidate"——已确认的页会变成"事件说候选、
+                # 投影是 active"，审计与后续 confirm 都对不上）。
                 item.update(
                     {
                         "memory_id": memory_id,
@@ -628,13 +635,12 @@ class MemoryExecutor:
                         "existing": True,
                     }
                 )
-                out_pages.append(item)
                 existing_pages += 1
+                out_pages.append(item)
                 continue
             content_ref = self._projection.put_content(page.content)
             if not isinstance(content_ref, str) or not content_ref:
                 raise TianshuError("记忆投影没有返回 content_ref")
-            item = page.to_output()
             item.update(
                 {
                     "memory_id": memory_id,

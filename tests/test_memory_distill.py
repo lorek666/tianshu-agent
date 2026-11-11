@@ -385,7 +385,12 @@ def test_freshness_marks_pages_and_demotes_them(env) -> None:
     _seed(log, projection, "m2", "数据库迁移前先做备份演练", kind="fact", origin="inferred")
     pages = consolidate(_sources(projection), scope=scope)
     ids = _apply_pages(env, pages)
-    l2_id = ids[0]
+    # 显式挑出 L2 页：不要假设"第一页就是 L2"（换夹具/多页时会静默测错东西）。
+    l2_id = next(
+        memory_id
+        for memory_id in ids
+        if projection.get(memory_id, allowed=(scope,)).layer == "l2"
+    )
     _confirm_page(log, projection, l2_id)
     fresh = projection.retrieve("数据库迁移", allowed=(scope,))
     assert fresh.semantic is False  # 没配索引，不混淆能力
