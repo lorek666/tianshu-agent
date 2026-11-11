@@ -1177,16 +1177,25 @@ def validate_payload(
         raise PayloadContractError(event_type, errors[0].split("：", 1)[0], "；".join(errors[:5]))
 
 
-def detect_version(event_type: str, payload: Any) -> int:
-    """写入口的版本判定：当前契约优先；能识别成旧版 → 0；都不是 → 类型化错误。
+def detect_version(
+    event_type: str, payload: Any, *, allow_legacy: bool = False
+) -> int:
+    """写入口的版本判定：**默认只接受当前契约（v1）**。
 
-    "能识别成旧版"不是放水：旧版 schema 也是**封闭**的（additionalProperties
-    false + 历史字段并集），字段名/类型陌生到两边都对不上，仍然拒绝。
+    - `allow_legacy=False`（默认，生产路径）：只按 v1 校验；不合法直接抛
+      `PayloadContractError`。**绝不**自动退回 v0——否则"新写入写漏字段"会被
+      静默记成一条冒充旧版的记录，等于给写入校验开免检通道。
+    - `allow_legacy=True`（仅显式请求）：v1 不合法时再按 v0（封闭的历史并集）
+      校验，通过则返回 0；两边都不合法仍拒绝。只给夹具/历史播种/迁移测试用，
+      生产调用点一律不许传。
+
     事件行会用旁表记下实际版本，读取时不会假装它是新版。
     """
     if not payload_errors(event_type, payload, CURRENT_PAYLOAD_VERSION):
         return CURRENT_PAYLOAD_VERSION
-    if not payload_errors(event_type, payload, LEGACY_PAYLOAD_VERSION):
+    if allow_legacy and not payload_errors(
+        event_type, payload, LEGACY_PAYLOAD_VERSION
+    ):
         return LEGACY_PAYLOAD_VERSION
     first = payload_errors(event_type, payload, CURRENT_PAYLOAD_VERSION)[0]
     raise PayloadContractError(

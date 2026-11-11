@@ -252,6 +252,7 @@ class EventTransaction:
         actor_id: str = "",
         parent_seq: int | None = None,
         idem_key: str | None = None,
+        legacy_write: bool = False,
     ) -> int:
         return self._log.append(
             run_id,
@@ -262,6 +263,7 @@ class EventTransaction:
             actor_id=actor_id,
             parent_seq=parent_seq,
             idem_key=idem_key,
+            legacy_write=legacy_write,
         )
 
 
@@ -408,12 +410,17 @@ class EventLog:
         actor_id: str = "",
         parent_seq: int | None = None,
         idem_key: str | None = None,
+        legacy_write: bool = False,
     ) -> int:
         # 第一行就校验：不能等 payload 落盘之后才发现类型是错的——
         # 那样会留下一个没有行的孤儿 blob。类型之后立刻校验 payload 契约
         # （PRD §5.3.5）：非法 payload 同样必须在任何副作用之前被拒。
         _check_event_type(type)
-        payload_version = event_schema.detect_version(type, payload)
+        # 默认只接受当前契约；`legacy_write=True` 只给夹具/历史播种/迁移测试，
+        # 生产路径一个调用点都不许传（传了就等于给自己开写入免检通道）。
+        payload_version = event_schema.detect_version(
+            type, payload, allow_legacy=legacy_write
+        )
         raw = canonical_bytes(payload)
         digest = sha256_hex(raw)
 

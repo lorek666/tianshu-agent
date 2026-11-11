@@ -342,8 +342,13 @@ def test_legacy_shaped_write_is_stamped_version_zero(tmp_path):
     try:
         payload = {"call_id": "c_old", "tool_id": "rename_everything",
                    "args": {}, "args_hash": "x"}
-        assert event_schema.detect_version("tool.intent", payload) == 0
-        log.append("run_x", "tool.intent", payload)
+        # 默认（生产）写入口拒绝旧形状；只有显式 legacy_write=True 才允许
+        with pytest.raises(event_schema.PayloadContractError):
+            log.append("run_x", "tool.intent", payload)
+        assert event_schema.detect_version(
+            "tool.intent", payload, allow_legacy=True
+        ) == 0
+        log.append("run_x", "tool.intent", payload, legacy_write=True)
         (event,) = log.read_run("run_x")
         assert event.payload_version == 0
         assert event.payload == payload
@@ -392,6 +397,31 @@ def test_corrupt_version_row_is_explicit_unknown(tmp_path):
         log.close()
 
 
+def test_default_append_is_strict_and_never_falls_back_to_v0(tmp_path):
+    """默认写入口只接受当前契约：v1 不合法就拒绝，绝不自动退回 v0。
+
+    反例（fail-open）：v1 失败后自动按 v0（required 清空）接受——生产代码写漏
+    字段不会红，只会多一条冒充旧版的记录。v0 写入必须显式 `legacy_write=True`。
+    """
+    legacy = {"call_id": "c_old", "tool_id": "rename_everything",
+              "args": {}, "args_hash": "x"}
+    log = _log(tmp_path)
+    try:
+        with pytest.raises(event_schema.PayloadContractError) as ei:
+            log.append("run_x", "tool.intent", legacy)  # 默认：严格
+        assert ei.value.event_type == "tool.intent"
+        assert log.read_run("run_x") == []
+        assert log.seq_head() == 0
+
+        # 显式请求才允许写 v0，并如实记录版本
+        log.append("run_x", "tool.intent", legacy, legacy_write=True)
+        (event,) = log.read_run("run_x")
+        assert event.payload_version == event_schema.LEGACY_PAYLOAD_VERSION
+        assert event.payload == legacy
+    finally:
+        log.close()
+
+
 def test_unknown_event_type_in_history_is_not_interpreted(tmp_path):
     """历史库里出现未登记类型（早于封闭集/损坏）：读取明确报错，不按任何 schema 解释。"""
     log = _log(tmp_path)
@@ -418,7 +448,7 @@ def test_read_after_and_read_types_carry_versions(tmp_path):
         first = log.append("run_x", "run.start", event_schema.minimal_payload("run.start"))
         legacy = {"call_id": "c_old", "tool_id": "rename_everything", "args": {},
                   "args_hash": "x"}
-        second = log.append("run_x", "tool.intent", legacy)
+        second = log.append("run_x", "tool.intent", legacy, legacy_write=True)
         after = log.read_after(first - 1)
         assert [e.payload_version for e in after] == [1, 0]
         types = log.read_types(["tool.intent"])
@@ -452,11 +482,15 @@ def test_legacy_fixture_covers_every_type_and_is_readable(tmp_path):
         for row in rows:
             type_name, payload = row["type"], row["payload"]
             assert event_schema.payload_errors(type_name, payload, 0) == [], type_name
-            seq = log.append(f"run_{type_name}", type_name, payload)
             if event_schema.payload_errors(type_name, payload, 1):
-                # 真有历史形状差异 → 写入口按 v0 记
-                assert event_schema.detect_version(type_name, payload) == 0
+                # 真有历史形状差异 → **只有显式请求**才允许按 v0 写入
+                with pytest.raises(event_schema.PayloadContractError):
+                    log.append(f"run_{type_name}", type_name, payload)
+                seq = log.append(
+                    f"run_{type_name}", type_name, payload, legacy_write=True
+                )
             else:
+                seq = log.append(f"run_{type_name}", type_name, payload)
                 # 形状与当前一致、但"旁表无记录"的历史行同样按 v0 读
                 log.conn.execute("DELETE FROM event_versions WHERE seq=?", (seq,))
             (event,) = log.read_run(f"run_{row['type']}")
@@ -527,6 +561,53 @@ def test_blob_payload_still_round_trips_with_version(tmp_path):
         assert event.payload["content"].startswith("x" * 16)
     finally:
         log.close()
+
+
+# ---------------------------------------------------------------- 备份/恢复衔接
+
+
+def test_backup_restore_keeps_payload_versions(tmp_path):
+    """PRD §8.5 的整库在线备份必须把版本旁表一起带上。
+
+    `backup.create_backup()` 用 `sqlite3.Connection.backup()` 复制整个事件库
+    （不是复制正在写入的 db 文件），所以 `event_versions` 天然在其中。这里用
+    备份→恢复→重读证明而不是推断：v1 行恢复后仍是 1，v0 旧行恢复后仍是 0。
+    前提：备份必须是一个**完整**的备份文件；正在写入的库直接拷文件不在此列。
+    """
+    from tianshu.backup import create_backup, restore_backup, verify_backup
+
+    root = tmp_path / "data"
+    root.mkdir()
+    log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    try:
+        current = event_schema.minimal_payload("run.start")
+        legacy = {"call_id": "c_old", "tool_id": "rename_everything",
+                  "args": {}, "args_hash": "x"}
+        log.append("run_x", "run.start", current)
+        log.append("run_x", "tool.intent", legacy, legacy_write=True)
+    finally:
+        log.close()
+
+    dest = tmp_path / "backup"
+    create_backup(root, dest)
+    assert verify_backup(dest).ok, "备份清单/引用应当完整"
+
+    moved = tmp_path / "moved"
+    root.rename(moved)
+    report = restore_backup(dest, root)
+    assert report.ok
+
+    restored = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    try:
+        events = restored.read_run("run_x")
+    finally:
+        restored.close()
+    assert [e.payload_version for e in events] == [
+        event_schema.CURRENT_PAYLOAD_VERSION,
+        event_schema.LEGACY_PAYLOAD_VERSION,
+    ]
+    assert events[0].payload == current
+    assert events[1].payload == legacy
 
 
 # ---------------------------------------------------------------- 旁表事务性

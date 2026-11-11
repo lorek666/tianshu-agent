@@ -202,8 +202,9 @@ def test_parent_seq_is_never_written_by_default(tmp_path):
     """保留字段：新写入恒为 None。接上真实因果时必须同时改契约（本测试会提醒）。"""
     log = _log(tmp_path)
     try:
-        log.append("run_x", "run.start", {})
-        log.append("run_x", "tool.intent", {})
+        # payload 必须满足逐类型契约（v1 最小合法样例）；本用例只关心 parent_seq
+        log.append("run_x", "run.start", event_schema.minimal_payload("run.start"))
+        log.append("run_x", "tool.intent", event_schema.minimal_payload("tool.intent"))
         assert [e.parent_seq for e in log.read_run("run_x")] == [None, None]
     finally:
         log.close()

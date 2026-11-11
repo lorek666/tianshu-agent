@@ -13,7 +13,7 @@
 | 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（不新增类型） |
 | payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 41 个类型各有 v1 schema：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
 | 版本 | 无 | 事件旁表 `event_versions(seq,type,version)`；当前版本 `1`，冻结前 `0` |
-| 写入校验 | 只校验类型名 | 类型名 + payload 契约；非法 payload 在**落 blob / 写库之前**被拒，错误带类型与字段路径 |
+| 写入校验 | 只校验类型名 | 类型名 + payload 契约；非法 payload 在**落 blob / 写库之前**被拒，错误带类型与字段路径。默认**只接受当前契约**，v0 写入必须显式 `legacy_write=True`（只给夹具/历史播种/迁移测试，生产路径零调用点） |
 | 旧数据读取 | 只能"按现在的代码猜" | 旁表无记录的历史行 → `payload_version=0`，按 v0 映射读取；**不按新版默认补值** |
 
 **能证明**：每个登记类型的新写入都满足一份机器可校验的字段契约；每条事件能精确
@@ -127,12 +127,21 @@
 3. 只有到这才 canonical 序列化、必要时落 blob；
 4. 同一事务写 `events` 行 + `event_versions` 行。
 
+写入入口的严格性：`EventLog.append(..., legacy_write=False)` 是默认值——v1 不合法就
+抛 `PayloadContractError`，**绝不**自动退回 v0（否则写漏字段会被静默记成冒充旧版
+的记录，等于给写入开免检通道）。只有显式 `legacy_write=True` 才允许 v0 形状并往
+旁表记 `version=0`；该参数只给夹具/历史播种/迁移测试用，生产路径一个调用点都不传。
+`EventTransaction.append` 透传同一参数。`append` 在**既有事务内复用外层事务**
+（`_tx_depth` 可重入），不会提前提交；事件行与版本行仍在同一个提交里。
+
 读取（`read_run` / `read_after` / `read_types` / 投影重建 / `replay`）对 v0 与 v1
 一视同仁：`Event.payload_version` 如实带出，payload 原样返回。`replay` 不因校验
 升级失效——`test_replay_still_passes_after_contract_upgrade` 用真实 scripted run
 跑 `replay()` 并断言 `problems == []`。
 
 ## 6 旧版（v0）映射表
+
+**v0 写入口只对显式请求开放**（`legacy_write=True`）；v0 读取路径对历史行始终开放。
 
 v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
@@ -192,8 +201,9 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**76** 条。41 个类型 ×（一正一反例）、v1/v0 夹具逐行、
-  版本旁表（缺失/损坏/未来版本/无记录）、事务性、blob 路径、`replay` 兼容、
+- `tests/test_event_schema.py`：**78** 条。41 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+  版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
+  blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
   schema JSON 镜像、枚举与代码常量三处绑定、关键字/dialect fail-closed。
 - `tests/fixtures/events/minimal_v1.json`、`legacy_v0.jsonl`。
 - 两处**授权**的既有测试最小改动（旧口径 → 新口径，断言强度不变）：
@@ -203,7 +213,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。
-- 全量（**merge `origin/main` 之后**，本分支实测）：`1413 passed, 6 skipped`，
+- 全量（**merge `origin/main` 之后**，本分支实测）：`1414 passed, 6 skipped`，
   `ruff check .` 干净。
 - merge 后**绑定测试当场抓到两处契约漂移**（正是它们存在的目的）：
   ① `task.created` 新增 `control` / `memory_scopes`（记忆契约 v1.2，PR #78）；
@@ -236,6 +246,16 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
    这正是"不许按新版默认补值后假装原始记录如此"的机器判据。
 
+3. **去掉默认严格**（`append` 忽略 `legacy_write`、恢复 v1→v0 自动回退）：
+   `test_default_append_is_strict_and_never_falls_back_to_v0` 等 3 条红：
+
+   ```
+   FAILED tests/test_event_schema.py::test_legacy_shaped_write_is_stamped_version_zero
+   FAILED tests/test_event_schema.py::test_default_append_is_strict_and_never_falls_back_to_v0
+   FAILED tests/test_event_schema.py::test_legacy_fixture_covers_every_type_and_is_readable
+   3 failed, 75 passed
+   ```
+
 复现命令：
 
 ```bash
@@ -247,9 +267,13 @@ PYTHONPATH=/Volumes/Date/ts-wt-events/src /Volumes/Date/天枢Agent/.venv/bin/py
 ## 9 剩余 unknown / 未做（如实登记）
 
 - **不把历史行补写成 v1**，也不回填版本：没有"原作者意图"可依据，猜就是造假。
-- **版本旁表不在 W4 的备份/恢复覆盖范围内**（W4 负责 `backup.py`）；本 PR 只保证
-  旁表与事件同事务。若备份只导事件表，恢复后所有行都会按 v0 读——W4 实现备份时
-  需要把 `event_versions` 纳入一致点导出（接口已在本文登记，未跨工作流改代码）。
+- **版本旁表与备份/恢复的衔接已用测试钉住**：W4 的 `backup.create_backup()` 用
+  `sqlite3.Connection.backup()` 复制**整个**事件库（不是复制正在写入的 db 文件），
+  所以 `event_versions` 天然在备份里。
+  `tests/test_event_schema.py::test_backup_restore_keeps_payload_versions` 做了
+  备份→恢复→重读：v1 行恢复后仍是 `payload_version=1`，v0 旧行仍是 0，payload
+  字节不变。前提仍是**备份文件必须完整**（在线备份的一致点），不能拿编译/写入
+  中途的直接文件拷贝冒充备份。
 - **CLI 文案未专门区分** `PayloadVersionUnavailable` / `PayloadContractError`
   （`cli.py` 不在本工作流文件所有权内）：它们都是 `TianshuError` 子类，会按现有
   错误路径报出；是否折叠成人话由后续工作流决定。
@@ -262,7 +286,9 @@ PYTHONPATH=/Volumes/Date/ts-wt-events/src /Volumes/Date/天枢Agent/.venv/bin/py
 ## 10 变更影响面
 
 - `src/tianshu/events.py`：新增导入期注册校验、`event_versions` 表、`append` 校验
-  与同事务版本行、读取版本映射、`Event.payload_version`。既有读写 API 签名不变。
+  与同事务版本行、读取版本映射、`Event.payload_version`；`append` / 
+  `EventTransaction.append` 增加关键字参数 `legacy_write=False`（默认严格，
+  只影响显式请求旧形状的测试/迁移调用点；既有位置参数与默认读写行为不变）。
 - `src/tianshu/event_schema.py`（新）：契约、校验器、版本判定、v0 映射、样例生成。
 - `schemas/c3/event.json`：`$defs.payload` / `$defs.legacyPayload`（Python 契约的镜像，
   逐字绑定）。
