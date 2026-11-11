@@ -136,8 +136,17 @@ def test_task_workspace_mode_enum_matches_binding():
 def test_action_request_digest_shape_is_documented():
     """ActionRequest 没有单独 schema：它是**输入**，摘要就是它的规范化形式。
 
-    这里只钉住一件事：请求的字段集合必须与摘要里绑住的字段一致，
-    少绑一个字段等于给旧审批留一条复用通道。
+    这里钉住两件事：
+
+    1. 请求的字段集合必须与摘要里绑住的字段一致——少绑一个字段等于给旧审批
+       留一条复用通道。
+    2. `description_hash`（PRD §5.2.3「任务绑定固定…描述摘要」）是**条件字段**：
+       只有非空时才进规范字典。空的（历史请求）逐字节不写，否则历史库里的审批、
+       grant 与派发记录的摘要会集体变化——那不是"更安全"，是把既有授权链作废。
+
+    第 2 条是本轮唯一改动的既有判据：旧口径是"字典键集合 ≡ 字段集合"，
+    新口径是"字典键集合 = 字段集合 − 空的可选绑定字段"。理由是语义真的变了，
+    不是为了让测试变绿。
     """
     request = ActionRequest(
         request_id="r",
@@ -157,6 +166,8 @@ def test_action_request_digest_shape_is_documented():
         resources=("/ws/a",),
         args_hash="a",
     )
-    assert set(request.to_canonical_dict()) == {
-        f.name for f in dataclasses.fields(ActionRequest)
-    }
+    fields = {f.name for f in dataclasses.fields(ActionRequest)}
+    assert set(request.to_canonical_dict()) == fields - {"description_hash"}
+
+    bound = dataclasses.replace(request, description_hash="d" * 64)
+    assert set(bound.to_canonical_dict()) == fields
