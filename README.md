@@ -383,6 +383,7 @@ uv run ruff check .              # lint
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
 | [docs/F10-memory-design.md](docs/F10-memory-design.md) | **F10 记忆设计（v1.1）**：记忆作为事件日志的可重建投影、L0–L3 分层、作用域与装备、写入分级审批；**§6.1 资源种类（`memory://`）**、**§13 契约增量的实际状态**、**§14 判据↔真实测试** |
 | [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md) | **剩余记忆工作量施工规格**：§13 #18–#27 逐条现状（代码事实）、N1–N6 六个工作流的判据与负控口径（N1/N2/N3/N4/N5 已落地，含 §2.3/§3.4/§4.4/§5.4/§6.4 落地记录；**只剩 N6**）、契约增量清单、明确不做 |
+| [docs/MEMORY-ACCEPTANCE-2026-11-11.md](docs/MEMORY-ACCEPTANCE-2026-11-11.md) | **F10 记忆 v1.2 交付验收报告**：逐条判据↔测试、负控总表、数字对账，以及**未验证 / 不宣称**的 10 项（真 embedding provider、L2/L3 评测、LLM 蒸馏、Windows 实机与 ACL、控制面非隔离边界、React 面板、`memory.search` RPC、跨进程断电、真实模型 UI、冲突消解） |
 | [AGENTS.md](AGENTS.md) | AI 编码助手的强制指令（读什么、更什么、哪些不许做） |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 分支、提交规范、独立复审、什么该推什么不该推 |
 | [docs/REVIEW-PRA.md](docs/REVIEW-PRA.md) | PR #7 独立复审报告（「自审盲区」教训的来源） |
