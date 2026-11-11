@@ -786,6 +786,33 @@ SPECS: dict[str, ToolSpec] = {
     # 表达（见 resources.py）。所以这五个 ToolSpec **都没有 `path_arg`**：
     # 主循环不能拿它去 `Workspace.resolve()` 一个 URI；作用域由派发请求的
     # resource 决定，memory_id 是参数，不是路径。
+    "read_content": ToolSpec(
+        tool_id="read_content",
+        version="1.0",
+        description=(
+            "分页读取一份**本任务可见**的工具输出原文（内容引用）。"
+            "引用来自工具输出被截断时的占位文本（ref: content://sha256:...）。"
+            "一次最多 64 KiB；返回 next_offset 时用同样的 ref 加上它继续读。"
+            "读不到别的任务的内容：可见范围按任务授权，读不到就明确拒绝。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                # 形状在这里就收紧（与 contents.parse_ref 同源）：非法引用在
+                # 参数校验阶段就被拒，不必等到读盘。
+                "ref": {
+                    "type": "string",
+                    "pattern": "^content://sha256:[0-9a-f]{64}$",
+                },
+                "offset": {"type": "integer", "minimum": 0},
+                "length": {"type": "integer", "minimum": 1, "maximum": 65536},
+            },
+            "required": ["ref"],
+            "additionalProperties": False,
+        },
+        side_effect_level="pure",
+        action=ACTION_READ,
+    ),
     "memory.search": ToolSpec(
         tool_id="memory.search",
         version="1.0",
@@ -843,6 +870,27 @@ SPECS: dict[str, ToolSpec] = {
                 "expires_at": {"type": "integer"},
             },
             "required": ["kind", "content"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_CREATE,
+    ),
+    "memory.consolidate": ToolSpec(
+        tool_id="memory.consolidate",
+        version="1.0",
+        description=(
+            "把一个作用域里的显式记忆合成为 L2 场景页 / L3 偏好页（确定性合成，"
+            "结果仍是候选，需要人 confirm 才进长期召回）。不生成新事实，"
+            "只做引用式拼装；workspace 的合成结果只能由人 memory.promote 进入。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string"},
+                "scope_id": {"type": "string"},
+            },
+            "required": ["scope", "scope_id"],
             "additionalProperties": False,
         },
         side_effect_level="non_idempotent",

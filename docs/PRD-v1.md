@@ -401,47 +401,53 @@ ToolDefinition {
 
 #### 5.2.1 记忆工具（F10，v1.1）
 
-记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。六个**模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有两个控制面专属、`exposed=False` 的 `memory.remember` / `memory.promote`（见 §5.2.2），模型清单里没有它们。
+记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。**七个模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有三个控制面专属、`exposed=False` 的 `memory.remember` / `memory.promote` / `memory.erase`（见 §5.2.2），模型清单里没有它们。
 
 | tool_id | version | `side_effect_level` | `exec_model` | C4 动作 | 审批 | 走哪条执行路径 |
 |---|---|---|---|---|---|---|
 | `memory.search` | `1.0` | `pure` | E1 | `read` | 不需要 | 主循环只读分支，**不经派发**（`loop.AgentLoop._exec_memory_read`） |
 | `memory.get` | `1.0` | `pure` | E1 | `read` | 不需要 | 同上 |
-| `memory.propose` | `1.0` | `non_idempotent` | E3 | `create` | 不需要（候选是惰性草稿） | dispatcher |
+| `memory.propose` | `2.0` | `non_idempotent` | E3 | `create` | 不需要（候选是惰性草稿） | dispatcher |
 | `memory.confirm` | `1.0` | `non_idempotent` | E3 | `overwrite` | 需要（`origin=user_explicit` 除外，见下方注） | dispatcher |
 | `memory.forget` | `1.0` | `non_idempotent` | E3 | `delete` | 需要（等同删除） | dispatcher |
+| `memory.edit` | `1.0` | `non_idempotent` | E3 | `overwrite` | 需要（覆盖类） | dispatcher |
+| `memory.consolidate` | `1.0` | `non_idempotent` | E3 | `create` | 不需要（只写可重建投影，结果仍是候选） | dispatcher |
 
 > **注（N1 之后）**：`origin` 的两档现在都有产生入口——`user_explicit` 由控制面 `memory.remember` 创建（人敲命令就是签发者），`user_confirmed` 由"人批准了 `memory.confirm`"在执行侧升级（`tests/test_memory_dispatch.py::test_human_approval_upgrades_origin_to_user_confirmed`）。模型发起的 propose 仍固定写 `inferred`（防模型自称"用户明示"绕过审批）。**免审批的 user_explicit 候选确认**这条策略分支仍没有生产入口：`memory.remember` 直接写 active，不产生候选。别把这段读成"用户说一句记住就自动激活一条已有候选"。
 
 - `side_effect_level` / `exec_model` / `action` 是 `ToolSpec` 的字段（`tools.ToolSpec`）；`version` 进 `ActionRequest.tool_version`、`input_schema` 的规范化摘要进 `schema_hash`（`dispatcher.build_request`）。两者都被审批摘要绑住（§5.4）：**schema 变化即新工具**（红线 8），不自动升级。
 - 映射到 C4 动作的口径：`propose`→`create`、`confirm`→`overwrite`、`forget`→`delete`（`SPECS` 里的 `action=`）。所以 `confirm` / `forget` 天然落到 `permissions.PolicyEngine.classify` 的 overwrite / delete 分支，与"覆盖、删除需审批"（红线 6）同一口径；`propose` 落在 `AUTO_ACTIONS`（`permissions.AUTO_ACTIONS`）。
-- **五个 `ToolSpec` 一律没有 `path_arg`**（`SPECS` 记忆段前的注释写明理由）。记忆没有文件路径，主循环不能拿它去 `Workspace.resolve()` 一个 URI；目标由派发请求的 `resources` 携带，形状是 `memory://<scope>/<scope_id>`（[F10-memory-design.md](F10-memory-design.md) §6.1）。"给记忆编一个假路径"是被明确拒绝的形状——那会让删掉投影等于删掉用户文件。
+- **模型可见的七个 `ToolSpec` 一律没有 `path_arg`**（`SPECS` 记忆段前的注释写明理由）。记忆没有文件路径，主循环不能拿它去 `Workspace.resolve()` 一个 URI；目标由派发请求的 `resources` 携带，形状是 `memory://<scope>/<scope_id>`（[F10-memory-design.md](F10-memory-design.md) §6.1）。"给记忆编一个假路径"是被明确拒绝的形状——那会让删掉投影等于删掉用户文件。
 - **`input_schema` 原样**（`additionalProperties: false`）：
 
 ```text
-memory.search   { query: string, limit?: integer (1..5) }           required: query
-memory.get      { memory_id: string }                              required: memory_id
-memory.propose  { kind: string, content: string,
-                  source_refs?: string[], evidence?: object[],
-                  expires_at?: integer }                           required: kind, content
-memory.confirm  { memory_id: string, revision: integer }            required: memory_id, revision
-memory.forget   { memory_id: string, revision: integer,
-                  status?: string }                                 required: memory_id, revision
+memory.search      { query: string, limit?: integer (1..5) }         required: query
+memory.get         { memory_id: string }                            required: memory_id
+memory.propose     { kind: string, content: string, scope?: string,
+                     scope_id?: string, source_refs?: string[],
+                     evidence?: object[], expires_at?: integer }    required: kind, content
+memory.confirm     { memory_id: string, revision: integer }          required: memory_id, revision
+memory.forget      { memory_id: string, revision: integer,
+                     status?: string }                              required: memory_id, revision
+memory.edit        { memory_id: string, revision: integer, content: string }
+                                              required: memory_id, revision, content
+memory.consolidate { scope: string, scope_id: string }              required: scope, scope_id
 ```
 
 `kind` / `status` 的取值域在这些 schema 里是 `string`，不是 `enum`——封闭集在存储侧校验（`memory.MEMORY_KINDS` / `MEMORY_STATUSES` / `MEMORY_ORIGINS`；校验点 `memory.MemoryProjection._apply_propose`）。写错的值会让 `tool.result` 落一条失败，而不是被静默接受。
 
-- **首版不新增事件族。** 记忆生命周期由 `tool.intent` / `tool.result` + 审批事件承载，投影据此重建：`memory.MemoryProjection.apply_event()` 只认 `tool.result`、且 `tool_id ∈ {memory.propose, memory.confirm, memory.forget}`、`status == "succeeded"` 的事件；`memory.search` / `memory.get` 的 result 即便落库也被忽略（读不改变投影）。`memory.MemoryProjection.rebuild()` 清空投影后按 seq 重放同一批事件，**重放也走 `apply_event()`**，所以实时写入与重建不可能走岔。新增 `memory.*` 事件会与 `tool.intent`/`tool.result` 形成同一因果的第二份指针（§5.3.3 已为 `parent_seq` 立过这条规矩）。
+- **首版不新增事件族。** 记忆生命周期由 `tool.intent` / `tool.result` + 审批事件承载，投影据此重建：`memory.MemoryProjection.apply_event()` 只认 `tool.result`、且 `tool_id ∈ {memory.propose, memory.remember, memory.confirm, memory.forget, memory.edit, memory.promote, memory.erase, memory.consolidate}`（`memory._WRITE_TOOL_IDS`）、`status == "succeeded"` 的事件；`memory.search` / `memory.get` 的 result 即便落库也被忽略（读不改变投影）。`memory.MemoryProjection.rebuild()` 清空投影后按 seq 重放同一批事件，**重放也走 `apply_event()`**，所以实时写入与重建不可能走岔。新增 `memory.*` 事件会与 `tool.intent`/`tool.result` 形成同一因果的第二份指针（§5.3.3 已为 `parent_seq` 立过这条规矩）。
 - 读路径不经 dispatcher：`memory.search` / `memory.get` 在 `_exec_read` 里于**任何目录解析之前**分流（`loop.AgentLoop._exec_read`），结果记 `none_applied`（纯读，与文件只读工具同口径），零目录任务也能检索。写路径经 dispatcher，因此自动获得 intent/result 与完整审计。
 - **逐项落地状态**（哪一条已接线、哪一条还只是契约）不在本节重复，见 [F10-memory-design.md](F10-memory-design.md) §13。
 
-#### 5.2.2 记忆工具契约增量（v1.2 提案，待 N1 / N4 落地）
+#### 5.2.2 记忆工具契约增量（v1.2，已由 N1 / N3 / N4 落地）
 
-本节是**契约定义**，不是实现状态：新增工具在代码落地前不在 `SPECS` 里，也不会出现在
-`tool_manifest()` 里；`memory.propose` 已经在 `SPECS`（`1.0`），这里的 `2.0` 是它的下一个
-版本——落地前代码仍是 `1.0`。落地时按红线 8 处理：schema 变化即新工具，旧审批与旧 grant
-自动失效，不自动升级。逐条实施状态见 [F10-memory-design.md](F10-memory-design.md) §13 与
-[SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) §2 / §5。
+本节是**契约定义**；其中的工具与新版本已按红线 8（schema 变化即新工具，旧审批与旧 grant
+自动失效、不自动升级）在 N1（`propose` 2.0 / `edit` / `remember` / `promote`）、N4
+（`erase`）、N3（`consolidate`）三个实现 PR 里与产生路径同落地，现全部在 `SPECS` 与
+`tool_manifest()`（模型可见的那 7 个）里。逐条实施状态见
+[F10-memory-design.md](F10-memory-design.md) §13 与
+[SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) §2.3 / §4.4 / §5.4。
 
 **"仅控制面"是可判定的**：`Dispatcher.open_control_run` 创建 task 时在 `task.created`
 payload 写 `control: true`，`Task.is_control` 从事件投影读回；只有 `is_control` 的 Run 能调
@@ -454,7 +460,7 @@ payload 写 `control: true`，`Task.is_control` 从事件投影读回；只有 `
 | `memory.edit` | `1.0` | `overwrite` | 需要（覆盖类） | 模型 + 控制面 | args `memory_id` / `revision` / `content`。**两行形状写死**：新行是**新 `memory_id`**、`revision=1`、`status=active`、`supersedes=旧 id`；旧行 `status=superseded`、`revision` 不变、仍可按 id 查到（"旧版可查"就是这条）。审批绑定 `preconditions.before_revision`，执行侧从权威投影再核一次（不一致 → `dispatch.memory_stale_revision`）。**不允许改 `kind`**：改 kind 等于换一条记忆。 |
 | `memory.remember` | `1.0` | `create` | 不需要（人本人就是签发者） | **仅控制面**（`exposed=False`） | 创建即 `status=active`、`origin=user_explicit`；模型清单里没有这个工具。 |
 | `memory.promote` | `1.0` | `overwrite` | 需要（共享是显式动作） | **仅控制面**（`exposed=False`） | **移动语义**：原行立即 `superseded`（原作用域不再召回，避免双份真相），目标作用域新行 `candidate`（人 `confirm` 后才召回）。一次审批；Receipt 针对**原行**（`root`=原 scope URI、`resource`=原 `memory_id`、写前/写后用稳定状态串）。新行 `source_refs` **必须包含原 `memory_id`**（执行侧机械校验）。 |
-| `memory.consolidate` | `1.0` | `create` | 不需要（只写可重建投影） | 模型 + 控制面 | 触发 L2/L3 合成（确定性合成，见 F10 §4）。作用域限制与 `propose` 相同：模型只能 `user` 与本 Run 的 `task`；`workspace` 的合成结果只能由人 `memory.promote`。结果 `candidate`；人 `confirm` 后进召回，**`confirm` 不改写 `consolidated_at`**（freshness 判据是"合成那一刻看到的 L1"，见 F10 §8）。 |
+| `memory.consolidate` | `1.0` | `create` | 不需要（只写可重建投影） | 模型 + 控制面 | 触发 L2/L3 合成（确定性合成，见 F10 §4）。作用域限制与 `propose` 相同：模型只能 `user` 与本 Run 的 `task`；`workspace` 的合成结果只能由人 `memory.promote`。结果 `candidate`；人 `confirm` 后进召回。**freshness 的基准不是 `consolidated_at`**：`confirm` 这条「生命周期推进」会把该列改成确认时刻（L1 也如此），拿它当基准会让页在晚确认后"永远新鲜"；判据落在 `source_refs` 里的 `seq:<basis_seq>`（合成那一刻看到的最大逻辑时钟），见 F10 §8 / §13 #19。 |
 | `memory.erase` | `1.0` | `delete` | 需要（等同删除，另加 Receipt） | **仅控制面**（`exposed=False`） | 删除正文副本与检索索引；投影行置 `forgotten` + `erased_at`。**引用计数**：`content_ref` 是 `sha256` 内容寻址，不同记忆可能共享同一 blob——只有**没有任何其它投影行引用**该 `content_ref` 时才物理删文件，否则保留文件、只把这个行标 `content_state=unavailable`。擦除必须产出可独立核对的 Receipt（删了哪些 `content_ref`、多少字节；被别的行引用而未删的也列出）。**事件日志里的读快照保留**——边界见 F10 §10。 |
 
 ```text
@@ -485,7 +491,7 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
   `additionalProperties: false` 保持。
 
-**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` / `memory.erase` 已落地（含控制面判据、一次性审批、旧版可查、擦除引用计数、Receipt 与 CLI）——**已落地 9 个**（6 个模型可见 + 3 个控制面专属）；只剩 `memory.consolidate` 是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
+**落地状态（N1 / N3 / N4，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.edit` / `memory.remember` / `memory.promote` / `memory.erase` / `memory.consolidate` 全部落地（含控制面判据、一次性审批、旧版可查、擦除引用计数、确定性 L2/L3 合成与 freshness、Receipt 与 CLI）——**已落地 10 个**（**7 个模型可见** + 3 个控制面专属）。逐条实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
 
 **`origin` 的口径（N1 细化）**：它描述的是**这一版正文**的来源，不是记忆的终身属性——控制面 `memory.edit`（人自己写的新正文）→ `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬的是同一段正文，来源**随行**（旧行 `user_explicit` → 新行仍 `user_explicit`，不降档）。旧版的 `origin` 留在旧行，不被改写。
 
@@ -512,10 +518,17 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
   MCP 与 exec 同级（`c4.mcp_call`）、委派因能力缺失恒拒（`c4.subtask_unavailable`）、
   种类混用一律拒；没有执行器的种类在派发前拒绝（`dispatch.resource_kind_unsupported`）。
-- **未实现**：「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」；
-  网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」「私有内容未经
-  外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门已就位、可拒绝，
-  但没有外发面可以验证"发了什么"。
+- **已实现并有判据**（`tests/test_content_refs.py` 12 条 + `tests/test_content_read.py`
+  5 条，负控 12/12，见 [content-refs.md](content-refs.md)）：「大结果以有界摘要 +
+  内容引用返回，分页读取引用验证任务可见范围」。占位给出可用的
+  `content://sha256:<hex>` 引用；`read_content` 分页读取（`offset` / `length` /
+  `next_offset`，单页上限 64 KiB）；可见范围按 `(digest, task_id)` 授权，跨任务读取
+  被拒（存储层与执行层各自核一次）；读取时**重算 sha256** 比对引用；分页不切半个
+  UTF-8 字符。读工具沿用既有的「只读动作不过派发」口径（`read_text` / `memory.search`
+  同路），差异见该文档 §4。
+- **未实现**：网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」
+  「私有内容未经外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门
+  已就位、可拒绝，但没有外发面可以验证"发了什么"。
 
 
 ### 5.3 C3 Event
