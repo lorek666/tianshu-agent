@@ -614,7 +614,7 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ### 7.1 现状（N6 落地前）
 
 `host.py` 零记忆端点；`cli._cmd_memory` 是唯一控制面。UI 只能看任务与审批，看不到
-"Agent 记住了什么"。（N6 之后：daemon 的 `ControlPlane` 有 7 个记忆 RPC——见 §7.4；
+"Agent 记住了什么"。（N6 之后：daemon 的 `ControlPlane` 有 8 个记忆 RPC——见 §7.4；
 React 面板仍未接。）
 
 ### 7.2 设计
@@ -673,7 +673,7 @@ React 面板仍未接。）
   `conflict`（**先拒，不派发**）；未知方法 → `unknown_method`。
 - **测试**：`tests/test_host_memory.py`（新，**14 条**，真起 daemon + 真 `ipc.Client`）：
   六项判据与纯文本正文、默认只看 `user` / 看 task 必须显式给 scope、`memory.list` 没有同名
-  模型工具、7 个方法都注册、edit 走 dispatcher（断言事件里是 **edit 的** `tool.intent` /
+  模型工具、8 个方法都注册、edit 走 dispatcher（断言事件里是 **edit 的** `tool.intent` /
   `tool.result` + 旧行 superseded + 审批已决定）、forget 变 tombstone、对已 active 的记忆
   confirm 是明确拒绝且 `none_applied`、promote 是移动、未知 id / 缺参数 / 未知方法、
   task 作用域 edit/forget 带回写后视图、workspace → user 的 promote（`source_scope`）、

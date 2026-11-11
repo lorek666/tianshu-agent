@@ -2,10 +2,13 @@
 
 这一组测试要证明的不是"函数能调用"，而是 M5 的三进程语义在记忆上成立：
 
-1. **本机人身份**：IPC 只对本机同一个用户可达（POSIX `run/` 0700 + socket 0600），
-   所以"连得上"就是"人"。模型走不到这里——`memory.list|get|remember|confirm|
-   edit|forget|promote` 不在 `tool_manifest()` 里（这条也断言，防止哪天有人把控制面
-   方法塞进工具清单）。
+1. **身份口径（按事实读，不是授权边界）**：这些 RPC 是**人机界面入口**（UI / CLI），
+   与模型工具面是两条路——`memory.list` 不是工具，其余同名工具走 `AgentLoop` →
+   `Dispatcher` → `MemoryExecutor`（按 `allowed` 过滤）。**但它们挡不住模型**：v1 没有
+   进程级沙箱，`run_command` 能以同 uid 起子进程读 `run/authkey`、连 IPC、跑
+   `tianshu memory` 并自己落审批。端点权限只在**跨本地用户**这层有意义（POSIX
+   `run/` 0700 + socket 0600；**Windows 命名管道 ACL 未加固且未验证**）。所以本文件
+   测的是"控制面能看见/能改、且写操作走 dispatcher"，**不是**"模型不可达"。
 2. **看得见**：`memory.list` / `memory.get` 必须给出六项判据（`scope` / `origin` /
    `revision` / `status` / `source_refs` / `proof_count`）——缺一项，人就无法判断
    "是谁的、凭什么、改过没有、还算不算数"。
@@ -34,7 +37,9 @@ from tianshu.loop import Limits
 from tianshu.model import ScriptedModel
 from tianshu.tools import tool_manifest
 
-# 控制面的六个读/写方法 + confirm：**不在**模型工具清单里。
+#: 控制面的 8 个记忆 RPC（`memory.list` 不是模型工具；其余同名但路径不同）。
+#: 这个集合必须与 `ControlPlane._methods` 里的记忆方法**逐一对应**：漏一个就意味着
+#: "某个能力根本没注册"，而注册表覆盖断言是唯一能发现它的地方。
 CONTROL_PLANE_METHODS = {
     "memory.list",
     "memory.get",
@@ -43,6 +48,7 @@ CONTROL_PLANE_METHODS = {
     "memory.edit",
     "memory.forget",
     "memory.promote",
+    "memory.erase",
 }
 #: F10 §9 的六项判据（`memory_id` 之外必须一个不少）。
 REQUIRED_FIELDS = {"scope", "origin", "revision", "status", "source_refs", "proof_count"}
@@ -150,8 +156,8 @@ def test_memory_list_has_no_model_tool_counterpart() -> None:
     assert "memory.list" not in names, "模型不该有列出全库记忆的工具"
 
 
-def test_all_seven_control_plane_methods_are_registered(tmp_path) -> None:
-    """7 个记忆 RPC 都注册在控制面上：少一个 UI 就有一块功能是死的。"""
+def test_all_eight_control_plane_methods_are_registered(tmp_path) -> None:
+    """8 个记忆 RPC 都注册在控制面上：少一个 UI 就有一块功能是死的。"""
     from support import stack_for
 
     from tianshu.control import ControlError, ControlPlane
