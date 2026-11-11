@@ -66,6 +66,16 @@ _DEFAULT_UNIMPLEMENTED: dict[str, str] = {
     "container": "v1 没有容器后端（TECH-ARCH §6 L4 只写作可选、未交付）",
 }
 
+#: 未实现名字 → 注册真实实现时 `capabilities.isolation` 必须落在的集合。
+#: 名字是"能力表上的承诺"：用 local 代理挂 container 的注册名，等于把
+#: "v1 未实现容器"变成一句谎话。
+_EXPECTED_ISOLATION = {
+    "app_container": {"app_container"},
+    "seatbelt": {"app_container"},
+    "landlock": {"app_container"},
+    "container": {"container"},
+}
+
 #: 可变的"未实现清单"：注册真实实现会移除对应条目。测试可用
 #: `reset_exec_backends()` 恢复。
 UNIMPLEMENTED_EXEC_BACKENDS: dict[str, str] = dict(_DEFAULT_UNIMPLEMENTED)
@@ -98,6 +108,8 @@ _BACKENDS: dict[str, ExecBackend] = {DEFAULT_EXEC_BACKEND: LOCAL_EXEC_BACKEND}
 
 _SPAWN_PARAMETERS = frozenset({"argv", "cwd", "env", "policy", "blob_dir", "pty"})
 _SPAWN_REQUIRED = ("argv", "cwd", "env", "policy")
+#: 调用方固定传的关键字参数：必须有形参（可有默认值），否则执行期 TypeError。
+_SPAWN_KEYWORDS = ("blob_dir", "pty")
 
 
 def _require_spawn_shape(backend: object) -> None:
@@ -119,12 +131,19 @@ def _require_spawn_shape(backend: object) -> None:
             raise TianshuError(
                 f"执行后端的 spawn 参数 {name} 必须是位置/关键字参数"
             )
+    for name in _SPAWN_KEYWORDS:
+        if name not in parameters:
+            raise TianshuError(
+                f"执行后端的 spawn 必须接受 {name} 关键字参数"
+                "（调用方固定会传；缺了要到第一次执行才炸成 TypeError）"
+            )
     for name, parameter in parameters.items():
         if (
             name not in _SPAWN_PARAMETERS
             and parameter.default is inspect.Parameter.empty
             and parameter.kind
             in (
+                inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY,
             )
@@ -219,6 +238,13 @@ def register_exec_backend(
                 f"执行后端 {key!r} 是已知的未实现后端：注册实现必须自报同一名字，"
                 f"收到 capabilities.name={declared!r}"
                 "（用自己的名字冒充更强的后端等于在能力表上撒谎）"
+            )
+        expected = _EXPECTED_ISOLATION.get(key, set())
+        if expected and host.capabilities.isolation not in expected:
+            raise TianshuError(
+                f"执行后端 {key!r} 声明的隔离级别是 "
+                f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
+                "（本地代理不能顶替 container/app_container 的名字）"
             )
     _BACKENDS[key] = host
     UNIMPLEMENTED_EXEC_BACKENDS.pop(key, None)

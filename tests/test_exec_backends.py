@@ -35,7 +35,11 @@ from tianshu.exec_backends import (
     register_exec_backend,
     reset_exec_backends,
 )
-from tianshu.execpolicy import ExecPolicy, PolicyUnsupported
+from tianshu.execpolicy import (
+    ExecBackendCapabilities,
+    ExecPolicy,
+    PolicyUnsupported,
+)
 from tianshu.jobs import JobStore
 from tianshu.leases import LeaseStore
 from tianshu.permissions import ApprovalStore, GrantStore, HumanIdentity, PolicyEngine
@@ -82,6 +86,24 @@ class RecordingBackend:
         if self._fail is not None:
             raise self._fail
         return self._delegate.spawn(
+            argv, cwd=cwd, env=env, policy=policy, blob_dir=blob_dir, pty=pty
+        )
+
+
+class ContainerDouble:
+    """注册接缝的测试替身：名字与隔离级别相称，但 spawn 仍委托本地后端。
+
+    **它只证明"注册接缝能接住一个自称 container 的实现"，不证明容器隔离。**
+    F2-c2 的分级是否成立由 `isolation.py` 的实测报告决定，不由这里断言。
+    """
+
+    def __init__(self):
+        self.capabilities = ExecBackendCapabilities(
+            name="container", isolation="container"
+        )
+
+    def spawn(self, argv, *, cwd, env, policy, blob_dir=None, pty=False):
+        return LOCAL_EXEC_BACKEND.spawn(
             argv, cwd=cwd, env=env, policy=policy, blob_dir=blob_dir, pty=pty
         )
 
@@ -283,7 +305,13 @@ def test_registering_a_known_unimplemented_name_requires_explicit_replace():
     with pytest.raises(TianshuError, match="自报同一名字"):
         register_exec_backend(RecordingBackend(), name="container", replace=True)
 
-    impl = RecordingBackend(name="container")
+    # 自报了名字还不够：隔离级别必须与名字相称（本地代理不能顶替 container）。
+    with pytest.raises(TianshuError, match="不相称"):
+        register_exec_backend(
+            RecordingBackend(name="container"), name="container", replace=True
+        )
+
+    impl = ContainerDouble()
     register_exec_backend(impl, name="container", replace=True)
 
     from tianshu.exec_backends import UNIMPLEMENTED_EXEC_BACKENDS
@@ -322,6 +350,38 @@ def test_registering_a_bad_backend_is_refused():
 
     with pytest.raises(TianshuError, match="cwd"):
         register_exec_backend(WrongShape(), name="wrong-shape")
+
+    class MissingOptionalKeywords:
+        capabilities = LOCAL_EXEC_BACKEND.capabilities
+
+        # 调用方固定传 blob_dir / pty；缺了会在执行期 TypeError，必须在注册期拒。
+        def spawn(self, argv, *, cwd, env, policy):
+            raise AssertionError
+
+    with pytest.raises(TianshuError, match="blob_dir"):
+        register_exec_backend(MissingOptionalKeywords(), name="missing-keywords")
+
+    class UnknownPositionalOnly:
+        capabilities = LOCAL_EXEC_BACKEND.capabilities
+
+        # 必填的 positional-only 参数：调用方不会传，执行期 TypeError；
+        # 注册期扫描必须把它也拒掉（不能只扫 POK/KEYWORD_ONLY）。
+        def spawn(
+            self,
+            unexpected,
+            /,
+            argv=None,
+            *,
+            cwd=None,
+            env=None,
+            policy=None,
+            blob_dir=None,
+            pty=None,
+        ):
+            raise AssertionError
+
+    with pytest.raises(TianshuError, match="unexpected"):
+        register_exec_backend(UnknownPositionalOnly(), name="positional-only")
 
 
 def test_duplicate_registration_is_refused_unless_replaced():
@@ -420,6 +480,38 @@ def test_pipeline_command_survives_policy_allow_pty_with_pty_less_backend(env_fa
     assert result.output["stdout"].strip() == "42"
     assert result.output["policy"]["pty"] is False
     assert len(recorded.calls) == 1
+
+
+def test_dispatcher_rejects_pty_request_before_backend_runs(env_factory):
+    """产品路径上的策略/能力检查：pty 未获许可时后端一次都不会被调用。"""
+    sloppy = SloppyBackend()
+    env = env_factory(exec_backend=sloppy)
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print(1)"], "pty": True}
+    request = build_request(
+        task=task, run=run, claim=claim, call_id="c1",
+        tool_id="run_command", target=env.ws, args=args,
+    )
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+
+    assert decision.is_rejected
+    assert decision.rule_id == "c4.exec_policy_denied"
+    assert sloppy.calls == 0
+
+
+def test_valid_request_reaches_the_backend_exactly_once(env_factory):
+    """合法的请求不会被"调用方也核一遍"重复执行或二次拦截。"""
+    sloppy = SloppyBackend()
+    env = env_factory(exec_backend=sloppy)
+
+    decision, result = _dispatch_run_command(
+        env, policy=_policy(env.ws), args={"argv": [PY, "-c", "print(1)"]}
+    )
+
+    assert result is not None, decision
+    assert result.status == "succeeded"
+    assert sloppy.calls == 1
 
 
 def test_policy_is_checked_by_caller_even_if_backend_skips_it():
