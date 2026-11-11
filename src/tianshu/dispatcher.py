@@ -1417,7 +1417,10 @@ class Dispatcher:
                     f"提升目标作用域不在控制 Run 的声明内：{new_scope.to_uri()}",
                     "c4.memory_scope_denied",
                 )
-        if request.tool_id == "memory.propose" and target.scope.scope == "workspace":
+        if (
+            request.tool_id in ("memory.propose", "memory.consolidate")
+            and target.scope.scope == "workspace"
+        ):
             # workspace 是共享边界：模型可见的 propose **无条件**拒，不因
             # Task.is_control 放行（控制面标记会被同一 Task 上后开的模型 Run
             # 继承）。执行侧还有一道同名核验，这里只是把拒绝提前到派发。

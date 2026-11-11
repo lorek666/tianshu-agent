@@ -338,6 +338,83 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   判据 → stale 用例必须红。
 - 边界如实写：确定性合成**不等于**语义摘要；不承诺"比 L1 更好用"，除非评测拿出来。
 
+### 4.4 落地记录（N3 实际，2026-11-11，分支 `feat/memory-distill`）
+
+- **数据层**：`memory.Memory` 第 17 个字段 `layer`（默认 `"l1"`），封闭集
+  `MEMORY_LAYERS = {l1, l2, l3}`。投影 `_SCHEMA_VERSION` **2 → 3**：`memories` 加
+  `layer TEXT NOT NULL DEFAULT 'l1'`，**in-place `ALTER`**（旧行一律 l1，不重建、不丢
+  正文）；更高版本仍 fail-closed。`_MEMORY_COLUMNS` / `_row_to_memory` / INSERT / FTS
+  的 SELECT 都带 `layer`——N2 之后 FTS 是召回装配主路径，漏一列就是 `IndexError`（实现
+  时真踩过）。
+- **确定性合成器 `src/tianshu/memory_distill.py`（新）**：
+  - 常量写死并进测试：`L2_SIMILARITY = 0.34`（**重叠系数** `|A∩B| / min(|A|,|B|)`，不是
+    Jaccard：中文短句 bigram 多，Jaccard 被长度差压垮）、`L2_MIN_GROUP = 2`、
+    `L3_PAGE_BYTES = 4 * 1024`、`QUOTE_LIMIT_BYTES = 200`、`BASIS_SEQ_PREFIX = "seq:"`。
+  - token 集合 = ASCII 词 + 汉字单字 + 相邻汉字双字组（与 FTS 分词**分开实现**；只收
+    双字时短句交叠被长度差压垮，只收单字则被"的/用"这类高频字主导）。
+  - L2 = 簇内引用式拼装：`- <原文压成一行> [<memory_id>@<revision>]`，块间空行；
+    `evidence` 每条 `{memory_id, revision, quote}`，`proof_count == len(evidence)`；
+    引文超 200 字节截断并标 `…[截断]`（不静默砍）。
+  - L3 = user 作用域 + `kind=preference` + `origin ∈ {user_explicit, user_confirmed}` +
+    `layer='l1'` + active，按 4 KiB 预算**整行**装入；放不下就停并追加
+    `[预算已满：…]`（不做半行截断）。**只做 user 作用域**：偏好页是"关于这个人"的页面。
+  - `source_refs = ("seq:<basis_seq>", *sorted(memory_id))`，`basis_seq = max(last_seq)`。
+    `page_memory_id = mem_<sha256(scope_uri \0 layer \0 content)[:16]>`：同作用域 + 同层 +
+    同正文 ⇒ 同 id，重复 `consolidate` 幂等。
+  - `consolidate()` 就位校验：合成层非法（`l1` / 未知名）或 `proof_count != len(evidence)`
+    一律拒——不给"生成算法漏一条证据"留进门缝。
+- **投影应用** `_apply_consolidate` / `_apply_consolidate_page`：只认**事件里的 output**
+  （正文引用 / 证据 / 时间 / 来源），**不重算**合成算法（重算会让 replay 变成"再猜
+  一次"，事件说 A、投影写 B）；重复页幂等；同作用域同层的 candidate/active 旧页
+  `_supersede(seq)` 退役（行保留，旧正文与它当时站的 evidence 仍可 `get`）；正文过
+  `redact_or_block` 闸门（命中就拒，坏页不入库）。
+- **工具面**：`memory.consolidate`（`1.0` / `ACTION_CREATE` / `exposed=True` / args 仅
+  `{scope, scope_id}`，`additionalProperties=False`）→ `memory_exec._consolidate` →
+  `consolidatable_sources(scope)`（只取 `layer='l1'`、active、未擦除、未过期、正文在盘
+  上；读不到正文的行跳过——不可用的证据不进页）。**workspace 无条件拒**（与 propose 同
+  款：派发层 `DispatchDenied` + 执行侧同名纵深防御，复用 `c4.memory_scope_denied`，
+  **不新造规则号**）；task 作用域只能给自己；create 分支在
+  `permissions._classify_memory` 里跳过 kind 检查（合成页的 kind 不是模型给的）。
+  `test_veto_scope.py` 的模型可见工具封闭集同步加一名（那条绊线只许改，不许删）。
+  结果 `candidate` + `origin=inferred`，人 `confirm` 后才进召回（免审批只管
+  `memory.confirm`，合成不白送召回权）。
+- **新鲜度与排序**：`_stale_map` 按 `(scope, scope_id)` 取
+  `MAX(last_seq) WHERE layer='l1' AND status='active' AND erased_at IS NULL`，
+  `> basis_seq` ⇒ 陈旧；`Recalled.stale` 只在这条判据能判定时出现；`_crop` 带 stale
+  标记；`search()` / `retrieve()` 都把陈旧页排到**新鲜 L1 之后**（降权，不删、不短路，
+  符合 F10 §8"陈旧层先核验再用"）。
+- **replay**：`test_consolidate_output_is_replayable` 从事件重建，页正文 / 证据 /
+  `consolidated_at` 与实时写入逐项一致。
+- **测试**：`tests/test_memory_distill.py`（新，**13 条**：阈值钉住、引用拼装、两次逐
+  字节相同、改一条只动自己那块、proof/evidence 机械一致 + 坏页被就位校验拦、L3 预算 /
+  只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出 L2、旧页被 supersede 仍可 get、
+  replay 一致、freshness stale + 降序、非法 layer 拒）；
+  `tests/test_memory_dispatch.py` **+4 条真派发 e2e**（consolidate 真在
+  `tool_manifest()` 并写出候选页、workspace 拒、task 只能本任务、确认后的页进召回并在
+  新 L1 之后变 stale）；`tests/test_memory_store.py` 迁移断言改 `schema_version == 3`、
+  更高版本 fail-closed 用 `'4'`。
+- **负控（都真跑过，逐条按"改坏什么 → 哪条红"记）**：① 每块掺入全页面字节数（破增量
+  delta）→ 逐字节用例红；② `_stale_map` 直接 `return {}` → stale 用例红；③ 派发层去掉
+  consolidate 的 workspace 无条件拒 → e2e 红；④ L3 预算因子 ×100 → 预算用例红；⑤ L3
+  去掉 user 限定 → 只 user 用例红；⑥ 就位校验改 `if False` → 坏页用例红。**如实记**：
+  执行侧 workspace 守护**经派发路径不可达**（派发层先拒），与 `memory.propose` 同款
+  纵深防御，**没有测试能单独打红它**——不声称有覆盖。
+- **偏差 / 没做到**：
+  1. `_SCHEMA_VERSION` **这次**从 2 升到 3（与 N2 的"派生表不参与版本"不同）：`layer`
+     是 `memories` 的形状契约，旧库必须能识别；迁移只加 NOT NULL DEFAULT 列。
+  2. 规格 §4.2 #5 原写"比较 `consolidated_at` 与 L1 最大 `last_seq`"，实现改成把
+     `seq:<basis_seq>` 写进 `source_refs` 再比：`consolidated_at` 是钟表时间，系统时间
+     回拨会把"陈旧"判成"新鲜"；投影里的 `last_seq` 是单调逻辑时钟。旧行没有 `seq:` 时
+     按**不可判定**处理（不标陈旧，也不假装新鲜）。
+  3. LLM 合成未做（本轮只有确定性合成）；**没有 L2/L3 vs L1 的检索质量评测**——没人
+     证明"读页比直接读 L1 更好用"，README / 评测里不许那么写。
+  4. L3 只有 user 作用域；workspace / task 的偏好页按设计不做。
+  5. 跨作用域合成、对话抽取、**冲突消解**都没做：两条矛盾的 L1 在页里并列，不裁决。
+  6. `consolidate` 不进审批表（`ACTION_CREATE`）：将来若要做"合成后自动 confirm"必须
+     另立契约，否则等于绕开"人确认才召回"。
+
+---
+
 ---
 
 ## 5. N4 · 忘记 vs 物理擦除（契约先行，边界写死）

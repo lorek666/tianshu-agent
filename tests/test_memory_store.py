@@ -1340,7 +1340,7 @@ def test_schema_v1_database_is_migrated_in_place(env) -> None:
     row = log.conn.execute(
         "SELECT value FROM memory_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert row is not None and int(row[0]) == 2
+    assert row is not None and int(row[0]) == 3
 
 
 def test_newer_schema_version_fails_closed(env) -> None:
@@ -1348,8 +1348,8 @@ def test_newer_schema_version_fails_closed(env) -> None:
     log, projection = env
     _propose(projection, log, "m_new", "新版本投影")
     log.conn.execute(
-        "INSERT INTO memory_meta(key, value) VALUES ('schema_version', '3')"
-        " ON CONFLICT(key) DO UPDATE SET value = '3'"
+        "INSERT INTO memory_meta(key, value) VALUES ('schema_version', '4')"
+        " ON CONFLICT(key) DO UPDATE SET value = '4'"
     )
     projection._schema_ready = False
     with pytest.raises(MemoryStoreError):

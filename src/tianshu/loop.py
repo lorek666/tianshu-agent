@@ -402,6 +402,7 @@ MEMORY_READ_TOOLS: frozenset[str] = frozenset({"memory.search", "memory.get"})
 MEMORY_WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "memory.propose",
+        "memory.consolidate",
         "memory.remember",
         "memory.confirm",
         "memory.forget",
@@ -1659,6 +1660,8 @@ class AgentLoop:
                 score=item.score,
                 # 同一字段两种口径，必须让模型能分辨：origin 权重 ≠ RRF 分数。
                 score_kind=item.score_kind,
+                # 合成层的新鲜度也要给模型看：陈旧页要回落 L1 证据核对。
+                stale=item.stale,
             )
             for item in outcome.items
         ]
@@ -1794,6 +1797,7 @@ class AgentLoop:
         *,
         score: float | None = None,
         score_kind: str | None = None,
+        stale: bool | None = None,
     ):
         """一条记忆的出处的投影：正文 + 身份 + 来源引用。
 
@@ -1807,6 +1811,8 @@ class AgentLoop:
             item["score"] = score
         if score_kind is not None:
             item["score_kind"] = score_kind
+        if stale is not None:
+            item["stale"] = stale
         return item
 
     def _exec_read(

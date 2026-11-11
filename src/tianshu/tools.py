@@ -849,6 +849,27 @@ SPECS: dict[str, ToolSpec] = {
         exec_model="E3",
         action=ACTION_CREATE,
     ),
+    "memory.consolidate": ToolSpec(
+        tool_id="memory.consolidate",
+        version="1.0",
+        description=(
+            "把一个作用域里的显式记忆合成为 L2 场景页 / L3 偏好页（确定性合成，"
+            "结果仍是候选，需要人 confirm 才进长期召回）。不生成新事实，"
+            "只做引用式拼装；workspace 的合成结果只能由人 memory.promote 进入。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string"},
+                "scope_id": {"type": "string"},
+            },
+            "required": ["scope", "scope_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_CREATE,
+    ),
     "memory.remember": ToolSpec(
         tool_id="memory.remember",
         version="1.0",

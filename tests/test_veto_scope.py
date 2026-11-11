@@ -220,6 +220,7 @@ def test_model_tool_surface_has_no_run_start():
         "memory.search",
         "memory.get",
         "memory.propose",
+        "memory.consolidate",
         "memory.confirm",
         "memory.forget",
         "memory.edit",

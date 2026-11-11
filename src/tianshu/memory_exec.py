@@ -60,6 +60,7 @@ if TYPE_CHECKING:  # pragma: no cover - 只要类型，不把 memory.py 拖成�
 MEMORY_TOOL_IDS = frozenset(
     {
         "memory.propose",
+        "memory.consolidate",
         "memory.remember",
         "memory.edit",
         "memory.promote",
@@ -333,7 +334,10 @@ class MemoryExecutor:
         declared: Sequence[str] = (
             tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
         )
-        if admitted.tool_id == "memory.propose" and target_scope.scope == "workspace":
+        if (
+            admitted.tool_id in ("memory.propose", "memory.consolidate")
+            and target_scope.scope == "workspace"
+        ):
             # workspace 是**共享边界**：它**无条件**拒绝模型可见的 propose，
             # 不因 Task.is_control 放行——控制面标记是 Task 级的，同一 Task 上
             # 后开的模型 Run 会继承它（独立复审的探针复现过这个洞）。
@@ -371,7 +375,7 @@ class MemoryExecutor:
             # 注：authority / policy 通常已经先拒了"写别人的 task"，这里保留
             # 同名判定作纵深防御——执行侧不因为"上游说不行"就少一道核验。
             if (
-                admitted.tool_id == "memory.propose"
+                admitted.tool_id in ("memory.propose", "memory.consolidate")
                 and target_scope.scope == "task"
                 and target_scope.scope_id != req.task_id
             ):
@@ -481,6 +485,8 @@ class MemoryExecutor:
 
         if admitted.tool_id == "memory.propose":
             return self._propose(admitted, scope)
+        if admitted.tool_id == "memory.consolidate":
+            return self._consolidate(admitted, scope)
         if admitted.tool_id == "memory.remember":
             return self._remember(admitted, scope)
         if admitted.tool_id == "memory.edit":
@@ -578,6 +584,49 @@ class MemoryExecutor:
                 "content_bytes": len(redacted.encode("utf-8")),
                 "content_sha256": _sha(redacted.encode("utf-8")),
                 "redacted": redacted != content,
+            },
+        )
+
+    def _consolidate(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """L2/L3 确定性合成：只读 L1 证据、产出**候选页**（人 confirm 才召回）。"""
+        from .memory_distill import consolidate, page_memory_id
+
+        sources = self._projection.consolidatable_sources(scope)
+        pages = consolidate(sources, scope=scope)
+        # 合成是纯函数：没有可合成的内容就明确返回空页，不写任何行。
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        now = self._clock()
+        out_pages: list[dict[str, Any]] = []
+        for page in pages:
+            content_ref = self._projection.put_content(page.content)
+            if not isinstance(content_ref, str) or not content_ref:
+                raise TianshuError("记忆投影没有返回 content_ref")
+            item = page.to_output()
+            item.update(
+                {
+                    "memory_id": page_memory_id(scope.to_uri(), page),
+                    "content_ref": content_ref,
+                    "consolidated_at": now,
+                    "status": "candidate",
+                    "origin": "inferred",
+                }
+            )
+            out_pages.append(item)
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "sources": len(sources),
+                "pages": out_pages,
+                "before_state": "absent",
+                "after_state": (
+                    f"memory:{scope.to_uri()}:l2/l3:{len(out_pages)}"
+                ),
+                "redacted": False,
             },
         )
 

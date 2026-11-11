@@ -2685,3 +2685,131 @@ def test_crash_between_add_column_and_backfill_is_retried(env: Env, monkeypatch)
     assert row is not None
     assert int(row["args_redacted"]) == 1
     assert "content" not in json.loads(row["args_payload"])
+
+
+# ---------------------------------------------------------------- 13. N3 L2/L3 合成（端到端）
+
+
+def _consolidate_request(env: Env, task, run, claim, *, scope, call_id="cns-1"):
+    args = {"scope": scope.scope, "scope_id": scope.scope_id}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.consolidate",
+        target=scope.to_uri(),
+        args=args,
+        call_id=call_id,
+    )
+    return request, args
+
+
+def _confirm_active(env: Env, task, run, claim, memory_id: str, revision: int, *, call_id: str):
+    request, args = _confirm_request(
+        env, task, run, claim, memory_id, revision=revision, call_id=call_id
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    return result
+
+
+def test_consolidate_is_a_real_model_tool_and_writes_candidate_pages(env: Env):
+    """模型可见的 `memory.consolidate` 走真实派发：产出 L2 候选页，未确认不召回。"""
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    ids = []
+    for call_id, content in (
+        ("cns-a", "报告用中文写，先列结论"),
+        ("cns-b", "报告先列结论再讲依据"),
+    ):
+        decision = _propose(env, task, run, claim, content=content, call_id=call_id)[2]
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.ok, result.output
+        ids.append(result.output["memory_id"])
+        _confirm_active(env, task, run, claim, ids[-1], 1, call_id=f"{call_id}-c")
+
+    assert "memory.consolidate" in {
+        spec["name"] for spec in tool_manifest()
+    }, "合成必须是模型可见工具"
+    request, args = _consolidate_request(env, task, run, claim, scope=user)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    pages = result.output["pages"]
+    assert [page["layer"] for page in pages] == ["l2", "l3"]
+    for page in pages:
+        assert page["status"] == "candidate"
+        assert page["origin"] == "inferred"
+        assert page["proof_count"] == len(page["evidence"])
+        assert any(ref.startswith("seq:") for ref in page["source_refs"])
+
+    rows = env.memory.list_memories(allowed=(user,))
+    l2 = [row for row in rows if row.layer == "l2"]
+    assert len(l2) == 1 and l2[0].status == "candidate"
+    recalled = env.memory.search("报告", allowed=(user,))
+    assert recalled, "L1 仍应召回"
+    assert all(item.memory.memory_id != l2[0].memory_id for item in recalled), (
+        "候选页未确认前不得召回"
+    )
+
+
+def test_consolidate_refuses_workspace_scope_at_dispatch(env: Env):
+    """workspace 是共享边界：模型可见的合成也必须拒（与 propose 同口径）。"""
+    task, run, claim = env.new_run()
+    ws_scope = MemoryScope.workspace(env.ws_a)
+    request, args = _consolidate_request(env, task, run, claim, scope=ws_scope)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+
+
+def test_consolidate_task_scope_only_for_own_task(env: Env):
+    """模型只能合成**本任务**的 task 作用域；别人的 task 作用域要拒。"""
+    task, run, claim = env.new_run()
+    other = MemoryScope.task("task_someone_else")
+    request, args = _consolidate_request(env, task, run, claim, scope=other)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+
+
+def test_confirmed_page_joins_recall_and_stale_after_new_l1(env: Env):
+    """人 confirm 后 L2 页进入召回；之后新增 L1 ⇒ 旧页标 stale 且降权。"""
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    l1_ids: list[str] = []
+    for call_id, content in (
+        ("p1", "报告用中文写，先列结论"),
+        ("p2", "报告先列结论再讲依据"),
+    ):
+        decision = _propose(env, task, run, claim, content=content, call_id=call_id)[2]
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.ok, result.output
+        l1_ids.append(result.output["memory_id"])
+        _confirm_active(env, task, run, claim, l1_ids[-1], 1, call_id=f"{call_id}-c")
+
+    request, args = _consolidate_request(env, task, run, claim, scope=user)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    page_id = result.output["pages"][0]["memory_id"]
+    _confirm_active(env, task, run, claim, page_id, 1, call_id="confirm-page")
+
+    recalled = env.memory.search("报告", allowed=(user,))
+    stale_before = {item.memory.memory_id: item.stale for item in recalled}
+    assert page_id in stale_before and stale_before[page_id] is False
+
+    fresh = _propose(env, task, run, claim, content="报告里术语保留英文", call_id="p3")[2]
+    fresh_result = env.dispatcher.dispatch(fresh.request_id, claim)
+    assert fresh_result.ok, fresh_result.output
+    fresh_id = fresh_result.output["memory_id"]
+    _confirm_active(env, task, run, claim, fresh_id, 1, call_id="p3-c")
+    after = env.memory.search("报告", allowed=(user,))
+    stale_after = {item.memory.memory_id: item.stale for item in after}
+    assert stale_after[page_id] is True, "新增 L1 后旧页应变陈旧"
+    order = [item.memory.memory_id for item in after]
+    assert order.index(page_id) > order.index(fresh_id), "陈旧页降权但不短路"

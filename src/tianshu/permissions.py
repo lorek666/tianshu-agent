@@ -604,13 +604,16 @@ class PolicyEngine:
             )
 
         if action == ACTION_CREATE:
-            kind = preconditions.get("memory_kind")
-            if not isinstance(kind, str) or kind not in supported_memory_kinds():
-                return PolicyDecision(
-                    DECISION_DENY,
-                    f"不支持的记忆种类：{kind!r}",
-                    "c4.memory_kind_unsupported",
-                )
+            # `memory.consolidate` 没有 kind 参数（合成页的 kind 由层决定，
+            # 不是模型声明）：跳过 kind 校验，其余新建判据照旧。
+            if preconditions.get("memory_tool") != "memory.consolidate":
+                kind = preconditions.get("memory_kind")
+                if not isinstance(kind, str) or kind not in supported_memory_kinds():
+                    return PolicyDecision(
+                        DECISION_DENY,
+                        f"不支持的记忆种类：{kind!r}",
+                        "c4.memory_kind_unsupported",
+                    )
             if preconditions.get("memory_exists") is True:
                 # 复用既有编号的语义：新建遇到已存在目标时不能"批一下"就
                 # 放行，要改用覆盖类动作。
