@@ -53,6 +53,7 @@ from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
     ACTION_EXEC,
+    ACTION_FETCH,
     ACTION_OVERWRITE,
     ACTION_READ,
     APPROVAL_ACTIONS,
@@ -641,6 +642,10 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 
 # ---------------------------------------------------------------- 注册表
 
+#: 有网络执行器的工具。网络不是文件、也不是记忆：它没有本地目录、没有写前
+#: 状态；派发层据此把请求分到 `Dispatcher` 的网络分支（见 `dispatcher.py`）。
+NETWORK_TOOL_IDS: frozenset[str] = frozenset({"network.fetch"})
+
 _HANDLERS: dict[str, Callable[[Workspace, dict[str, Any], ToolContext], ToolResult]] = {
     "list_files": _list_files,
     "read_text": _read_text,
@@ -1025,6 +1030,30 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_DELETE,
+    ),
+
+    "network.fetch": ToolSpec(
+        tool_id="network.fetch",
+        version="1.0",
+        description=(
+            "抓取一个网络资源（GET）。url 必须写成 network://<transport>/<host>"
+            "[:port]/<path> 形式，例如 network://https/example.com/index.html；"
+            "不是 https:// URL（一个目标只有一种写法）。"
+            "外发有成本、也有外发：任务必须先用 --allow-outbound 声明允许的源，"
+            "且每一次抓取都要人工批准。只读回读到上限为止（超限标 truncated），"
+            "结果以有界摘要 + content:// 引用返回。跨源重定向不会自动跟随。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+            },
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_FETCH,
     ),
 }
 
@@ -1450,6 +1479,7 @@ __all__ = [
     "DispatchRecord",
     "FileExecutor",
     "MODEL_FORBIDDEN_ARGS",
+    "NETWORK_TOOL_IDS",
     "READ_TEXT_LIMIT",
     "SPECS",
     "ToolContext",

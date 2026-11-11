@@ -142,6 +142,24 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
             )
             if p.get("status") == "succeeded":
                 out = p.get("output") or {}
+                # 外发结果必须有内容引用：回放不重新发请求，读到的是当时存下来的
+                # 那份；缺引用说明这条记录不完整（例如写事件时漏了落盘），
+                # 不能静默当成普通工具输出继续往下走。
+                if p.get("tool_id") == "network.fetch":
+                    ref = out.get("ref")
+                    if not isinstance(ref, str) or not ref.startswith(
+                        "content://sha256:"
+                    ):
+                        problems.append(
+                            f"seq={ev.seq} 外发结果缺内容引用（network.fetch "
+                            f"call_id={p.get('call_id')}）：回放不重新联网，"
+                            "读不到当时抓到的内容"
+                        )
+                    url = out.get("url")
+                    if isinstance(url, str) and not url.startswith("network://"):
+                        problems.append(
+                            f"seq={ev.seq} 外发结果的目标不是规范网络引用：{url!r}"
+                        )
                 if "sha256" in out:
                     artifact_sha = out["sha256"]
                     path = out.get("path")

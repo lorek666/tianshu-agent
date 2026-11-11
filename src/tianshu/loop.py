@@ -137,6 +137,7 @@ from .tasks import (
     TaskStore,
 )
 from .tools import (
+    NETWORK_TOOL_IDS,
     SPECS,
     ToolContext,
     ToolResult,
@@ -2407,6 +2408,20 @@ class AgentLoop:
         去骗过路径解析——那会让"删掉投影"变成"删掉用户文件"。所以按工具种类
         分流，目标是 `memory://<scope>/<scope_id>`，由 `resources` 原样携带。
         """
+        if tool_id in NETWORK_TOOL_IDS:
+            # 网络目标不是文件：零目录任务也必须能抓取，所以这一支必须在
+            # "任务必须绑定目录"之前。参数只接受规范写法，`https://` 会被
+            # 明确拒绝并给出改法（见 net.canonical_target）。
+            from .net import NetError, canonical_target
+
+            raw = args.get("url")
+            if not isinstance(raw, str) or not raw:
+                raise ToolArgumentError("网络工具的 url 必须是非空字符串")
+            try:
+                target = canonical_target(raw)
+            except NetError as exc:
+                raise ToolArgumentError(str(exc)) from exc
+            return target.to_uri()
         if tool_id in MEMORY_WRITE_TOOLS:
             return self._memory_target(task, tool_id, args)
         key = target_arg(tool_id)
@@ -2982,6 +2997,7 @@ def run(
     data_root: Path | None = None,
     sleep: Callable[[float], None] | None = None,
     exec_policy: ExecPolicy | None = None,
+    outbound_allow: list[str] | tuple[str, ...] | None = None,
 ) -> RunResult:
     """一次跑完（M0 时代的入口，现在等价于"建 Task → start Run → 驱动"）。
 
@@ -3005,7 +3021,10 @@ def run(
         summaries=stack.summaries,
     )
     created = stack.tasks.create_task(
-        task, [str(workspace_dir)], exec_policy=exec_policy
+        task,
+        [str(workspace_dir)],
+        exec_policy=exec_policy,
+        outbound_allow=outbound_allow,
     )
     return engine.start(created.task_id, out_name=out_name, run_id=run_id)
 
@@ -3077,6 +3096,7 @@ def build_stack(
     dispatcher_cls: type[Dispatcher] | None = None,
     memory: Any | None = None,
     embedding_provider: Any | None = None,
+    net_limits: Any | None = None,
 ) -> Stack:
     """装配一套权威存储。CLI、测试和 `run()` 共用同一条装配路径。
 
@@ -3126,6 +3146,11 @@ def build_stack(
         snapshots=shots,
         data_root=root,
         memory=memory,
+        # 内容引用与字节账本必须交给派发层：网络抓取要先落内容引用再写结果，
+        # 发送前按 `bytes` 预占、读完后按实际字节结算（PRD §5.2.3 / §5.6）。
+        contents=contents,
+        budget=budget,
+        **({} if net_limits is None else {"net_limits": net_limits}),
         **kwargs,
     )
     return Stack(
