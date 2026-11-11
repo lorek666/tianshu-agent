@@ -597,21 +597,56 @@ class MemoryExecutor:
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
         now = self._clock()
         out_pages: list[dict[str, Any]] = []
+        created = 0
+        existing_pages = 0
         for page in pages:
+            memory_id = page_memory_id(scope.to_uri(), page)
+            existing = self._projection.get(memory_id, allowed=(scope,))
+            if existing is not None:
+                # 页 id 由 (作用域, 层, 正文) 决定，所以同一段正文会算出同一个 id。
+                # **先看现有状态、再决定要不要写正文**：
+                #  - candidate / active：这一页已经在库里，不重复写行；output 里
+                #    如实给出现有状态（不能一律写 "candidate"——已确认的页会变成
+                #    "事件说候选、投影是 active"，审计与后续 confirm 都对不上）。
+                #  - superseded / forgotten / erased：正文回退撞回已退役的 id。
+                #    **在 `put_content` 之前就拒**：正文一落盘就成了没人引用的孤儿
+                #    blob，而恢复流程的孤儿清理只认 `tool.intent.args.content_sha256`
+                #    （consolidate 的 args 只有 scope），清不到它。
+                if existing.status not in ("candidate", "active"):
+                    raise TianshuError(
+                        f"合成页 {memory_id!r} 已存在且状态是 {existing.status!r}："
+                        "同一段正文不能再作为新的候选页写入"
+                    )
+                item = page.to_output()
+                item.update(
+                    {
+                        "memory_id": memory_id,
+                        "content_ref": existing.content_ref,
+                        "consolidated_at": existing.consolidated_at or now,
+                        "status": existing.status,
+                        "origin": existing.origin,
+                        "existing": True,
+                    }
+                )
+                out_pages.append(item)
+                existing_pages += 1
+                continue
             content_ref = self._projection.put_content(page.content)
             if not isinstance(content_ref, str) or not content_ref:
                 raise TianshuError("记忆投影没有返回 content_ref")
             item = page.to_output()
             item.update(
                 {
-                    "memory_id": page_memory_id(scope.to_uri(), page),
+                    "memory_id": memory_id,
                     "content_ref": content_ref,
                     "consolidated_at": now,
                     "status": "candidate",
                     "origin": "inferred",
+                    "existing": False,
                 }
             )
             out_pages.append(item)
+            created += 1
         return ToolResult(
             "succeeded",
             "applied",
@@ -622,10 +657,12 @@ class MemoryExecutor:
                 "scope_id": scope.scope_id,
                 "sources": len(sources),
                 "pages": out_pages,
+                # `created` / `existing` 分开报：重复合成不是"又写了一遍"，
+                # 读结果的人要能分清这几页是新写的还是本来就有的。
+                "created": created,
+                "existing": existing_pages,
                 "before_state": "absent",
-                "after_state": (
-                    f"memory:{scope.to_uri()}:l2/l3:{len(out_pages)}"
-                ),
+                "after_state": f"memory:{scope.to_uri()}:l2/l3:{len(out_pages)}",
                 "redacted": False,
             },
         )

@@ -372,22 +372,28 @@ def test_consolidate_output_is_replayable(env) -> None:
 
 
 def test_freshness_marks_pages_and_demotes_them(env) -> None:
-    """作用域出现更新的 L1 后：旧页 `stale=true`，且排在 L1 证据之后。"""
+    """作用域出现更新的 L1 后：旧页 `stale=true`，且排在 L1 证据之后。
+
+    页与 L1 **同为 `inferred`、同一 created_at**：不然"排后"可能只是 origin 权重
+    （`user_confirmed` 的 L1 权重 1.0 > 页的 `inferred` 0.4），排序断言就测不到
+    stale 这一档（复审指出的假绿）。
+    """
     log, projection = env
     scope = MemoryScope.user()
-    _seed(log, projection, "m1", "报告用中文写")
-    _seed(log, projection, "m2", "报告先讲结论")
+    _seed(log, projection, "m1", "数据库迁移分三步：备份、演练、割接", kind="fact",
+          origin="inferred")
+    _seed(log, projection, "m2", "数据库迁移前先做备份演练", kind="fact", origin="inferred")
     pages = consolidate(_sources(projection), scope=scope)
     ids = _apply_pages(env, pages)
     l2_id = ids[0]
     _confirm_page(log, projection, l2_id)
-    fresh = projection.retrieve("报告", allowed=(scope,))
+    fresh = projection.retrieve("数据库迁移", allowed=(scope,))
     assert fresh.semantic is False  # 没配索引，不混淆能力
     stale_flags = {item.memory.memory_id: item.stale for item in fresh.items}
     assert stale_flags.get(l2_id) is False
 
-    _seed(log, projection, "m3", "报告里术语保留英文")
-    after = projection.retrieve("报告", allowed=(scope,))
+    _seed(log, projection, "m3", "数据库迁移要写回滚方案", kind="fact", origin="inferred")
+    after = projection.retrieve("数据库迁移", allowed=(scope,))
     flags = {item.memory.memory_id: item.stale for item in after.items}
     assert flags.get(l2_id) is True, "出现了更新的 L1，旧页应标陈旧"
     order = [item.memory.memory_id for item in after.items]
@@ -600,3 +606,54 @@ def test_expired_l1_does_not_age_a_page(env) -> None:
     outcome = projection.retrieve("数据库迁移", allowed=(scope,))
     flags = {item.memory.memory_id: item.stale for item in outcome.items}
     assert flags.get(page_id) is False, "过期 L1 不该把页判陈旧"
+
+
+def test_freshness_rank_puts_unknown_between_fresh_and_stale() -> None:
+    """三档位次：`fresh < unknown < stale`（L1 恒为 fresh）。
+
+    只把 `stale` 当二态就会让"不可判定"混进"新鲜"那一档；只把它当禁用档又会
+    让它盖过已知陈旧的页。这里直接钉排序键：同一作用域优先级下，已知新鲜 →
+    不可判定 → 已知陈旧，L1 永远在第一档（原子事实没有"合成层陈旧"）。
+    """
+    from tianshu.memory import Memory, _order_by_priority
+
+    def memory(memory_id: str, *, layer: str = "l2", created_at: int = 1) -> Memory:
+        return Memory(
+            memory_id=memory_id,
+            revision=1,
+            scope="user",
+            scope_id="local",
+            kind="fact",
+            content_ref="sha256:" + "0" * 64,
+            source_refs=(),
+            evidence=(),
+            proof_count=1,
+            origin="inferred",
+            status="active",
+            consolidated_at=1,
+            created_at=created_at,
+            expires_at=None,
+            supersedes=None,
+            layer=layer,
+        )
+
+    # id 故意让"不可判定"排在"已知新鲜"**前面**（字典序）：这样一旦把 unknown 当成
+    # fresh，次序就会变；若 id 本来就在后面，BUG 与正确实现会给出同样结果（假绿）。
+    candidates = [
+        (memory("page_0_unknown"), "u"),
+        (memory("page_1_fresh"), "f"),
+        (memory("page_2_stale"), "s"),
+        (memory("l1_fact", layer="l1"), "l"),
+    ]
+    stale = {"page_2_stale": True, "page_1_fresh": False}
+    order = [
+        item[0].memory_id
+        for item in _order_by_priority(candidates, None, stale=stale)
+    ]
+    # created_at 相同、origin 相同，只有新鲜度一档能定次序。
+    assert order == [
+        "l1_fact",
+        "page_1_fresh",
+        "page_0_unknown",
+        "page_2_stale",
+    ], order

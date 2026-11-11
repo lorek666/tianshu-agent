@@ -2810,12 +2810,144 @@ def test_confirmed_page_joins_recall_and_stale_after_new_l1(env: Env):
     _confirm_active(env, task, run, claim, fresh_id, 1, call_id="p3-c")
     # 默认生产路径是 `retrieve()`（`memory.search` 工具走它），不是 FTS-only 的
     # `search()`；复审指出只测 `search()` 会把"无索引分支没有 stale 排序"的洞漏掉。
+    # 注意：这条 e2e 的 L1 是"人批准 confirm"过的，`origin` 会升成 `user_confirmed`，
+    # 页仍是 `inferred`——排序本来就会偏向 L1，所以这里**只断言 stale 标记**，
+    # 不把"排后"当归证（那是 `origin` 权重干的）。真正的排序判据在
+    # `test_retrieve_demotes_stale_pages_even_without_a_vector_index`
+    # （页与 L1 同 origin、同 created_at）。
     after = env.memory.retrieve("报告", allowed=(user,))
     stale_after = {item.memory.memory_id: item.stale for item in after.items}
     assert stale_after[page_id] is True, "新增 L1 后旧页应变陈旧"
-    order = [item.memory.memory_id for item in after.items]
-    assert order.index(page_id) > order.index(fresh_id), "陈旧页降权但不短路"
-    # 词面路（`search()`）与默认路（`retrieve()`）必须给出同一个相对顺序：
-    # 排序键唯一实现，否则"哪条路降权"取决于有没有配索引。
-    plain = [item.memory.memory_id for item in env.memory.search("报告", allowed=(user,))]
-    assert plain.index(page_id) > plain.index(fresh_id)
+    assert stale_after[fresh_id] is None, "L1 没有合成层新鲜度，不该被标"
+    # 词面路与默认路必须给出同一组 stale 标记：排序/标注唯一实现。
+    plain = {
+        item.memory.memory_id: item.stale
+        for item in env.memory.search("报告", allowed=(user,))
+    }
+    assert plain.get(page_id) is True
+
+
+def test_repeated_consolidate_reports_existing_status_not_candidate(env: Env):
+    """重复合成已 confirm 的页：output 必须如实说 active，不能一律写 candidate。
+
+    事件是审计与回放的唯一依据。若 output 写 "candidate"、投影里其实是 active，人再
+    confirm 就会撞状态，事后读事件也看不出这一页早就被确认过（复审指出的边界）。
+    """
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    for call_id, content in (("r1", "数据库迁移分三步"), ("r2", "数据库迁移前先备份")):
+        decision = _propose(env, task, run, claim, content=content, call_id=call_id)[2]
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.ok, result.output
+        l1_id = result.output["memory_id"]
+        _confirm_active(env, task, run, claim, l1_id, 1, call_id=f"{call_id}-c")
+
+    request, args = _consolidate_request(env, task, run, claim, scope=user)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    first = env.dispatcher.dispatch(decision.request_id, claim)
+    assert first.ok and first.output["created"] == len(first.output["pages"])
+    page_id = first.output["pages"][0]["memory_id"]
+    _confirm_active(env, task, run, claim, page_id, 1, call_id="confirm-page")
+
+    request2, args2 = _consolidate_request(
+        env, task, run, claim, scope=user, call_id="cns-2"
+    )
+    decision2 = env.dispatcher.prepare(request2, claim, args=args2)
+    second = env.dispatcher.dispatch(decision2.request_id, claim)
+    assert second.ok, second.output
+    assert second.output["created"] == 0, second.output
+    assert second.output["existing"] == len(second.output["pages"])
+    repeated = next(
+        page for page in second.output["pages"] if page["memory_id"] == page_id
+    )
+    assert repeated["status"] == "active", "output 不能把已确认的页说成候选"
+    assert repeated["existing"] is True
+    # 投影没有被第二次合成改动：仍 active、没有多出行。
+    still = env.memory.get(page_id, allowed=(user,))
+    assert still is not None and still.status == "active"
+
+
+def test_failed_consolidate_writes_no_orphan_blob(env: Env):
+    """正文撞回**已擦除**的页 id：在写正文**之前**就拒，不留孤儿 blob。
+
+    恢复流程的孤儿清理只认 `tool.intent.args.content_sha256`，而 consolidate 的
+    args 只有 scope/scope_id——所以失败路径必须先拒后写。用**擦除**过的页来测：
+    擦除会把正文副本删掉，若先 `put_content` 再失败，就会重新落一个没有任何投影
+    行引用的文件（superseded 页的 blob 还在，测不出这个洞）。
+    """
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    first_ids: list[str] = []
+    for call_id, content in (("o1", "数据库迁移分三步"), ("o2", "数据库迁移前先备份")):
+        decision = _propose(env, task, run, claim, content=content, call_id=call_id)[2]
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.ok, result.output
+        first_ids.append(result.output["memory_id"])
+        _confirm_active(
+            env, task, run, claim, first_ids[-1], 1, call_id=f"{call_id}-c"
+        )
+    request, args = _consolidate_request(env, task, run, claim, scope=user, call_id="c1")
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    first = env.dispatcher.dispatch(decision.request_id, claim)
+    assert first.ok, first.output
+    page_id = first.output["pages"][0]["memory_id"]
+    _confirm_active(env, task, run, claim, page_id, 1, call_id="confirm-page")
+
+    # 擦掉这一页（控制面专属 + 一次性审批）：它的正文副本会被删掉。
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{page_id}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": page_id, "revision": 2}
+    erase_request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.erase",
+        target=user.to_uri(),
+        args=erase_args,
+        call_id="erase-page",
+    )
+    erase_decision = env.dispatcher.prepare(erase_request, control.claim, args=erase_args)
+    _approve(env, erase_decision.approval_id)
+    erased = env.dispatcher.dispatch(erase_decision.request_id, control.claim)
+    try:
+        assert erased.ok, erased.output
+        assert erased.output["erasure"]["deleted"] is True
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=erased.effect_state
+        )
+
+    # 换一条源 → 新页取代（不同 id）；再把这条源 forget 掉，正文回退到第一次。
+    third = _propose(
+        env, task, run, claim, content="数据库迁移要有回滚方案", call_id="o3"
+    )[2]
+    result = env.dispatcher.dispatch(third.request_id, claim)
+    assert result.ok, result.output
+    third_l1 = result.output["memory_id"]
+    _confirm_active(env, task, run, claim, third_l1, 1, call_id="o3-c")
+    request2, args2 = _consolidate_request(
+        env, task, run, claim, scope=user, call_id="c2"
+    )
+    decision2 = env.dispatcher.prepare(request2, claim, args=args2)
+    assert env.dispatcher.dispatch(decision2.request_id, claim).ok
+
+    f_request, f_args = _forget_request(
+        env, task, run, claim, third_l1, call_id="forget-o3"
+    )
+    f_decision = env.dispatcher.prepare(f_request, claim, args=f_args)
+    _approve(env, f_decision.approval_id)
+    assert env.dispatcher.dispatch(f_decision.request_id, claim).ok
+
+    blob_dir = env.memory.blob_dir
+    assert blob_dir is not None
+    before = sorted(path.name for path in blob_dir.iterdir())
+    request3, args3 = _consolidate_request(
+        env, task, run, claim, scope=user, call_id="c3"
+    )
+    decision3 = env.dispatcher.prepare(request3, claim, args=args3)
+    failed = env.dispatcher.dispatch(decision3.request_id, claim)
+    assert not failed.ok, "已擦除页 id 被撞回时必须失败，而不是静默复活"
+    assert "已存在" in str(failed.output.get("error"))
+    after = sorted(path.name for path in blob_dir.iterdir())
+    assert after == before, "失败路径不该往 blob 目录里写新正文（孤儿没人清）"

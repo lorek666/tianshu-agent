@@ -321,25 +321,45 @@ def _proximity_of(memory: Memory, priority: RecallPriority | None) -> int:
     return priority.proximity_pair(memory.scope, memory.scope_id)
 
 
+#: 新鲜度位次：`fresh` → `unknown` → `stale`。
+#:
+#: 三档不是二档：`unknown`（旧行没有 `seq:` 基准）**既不冒充新鲜、也不冒充陈旧**，
+#: 排在"已确认新鲜"之后、"已确认陈旧"之前。`L1` 永远是 0——原子事实没有"合成层
+#: 陈旧"这回事，`_stale_map` 也不会给它放键。
+_FRESHNESS_FRESH = 0
+_FRESHNESS_UNKNOWN = 1
+_FRESHNESS_STALE = 2
+
+
+def _freshness_rank(memory: Memory, stale: dict[str, bool | None] | None) -> int:
+    if memory.layer == "l1" or stale is None:
+        return _FRESHNESS_FRESH
+    value = stale.get(memory.memory_id)
+    if value is None:
+        return _FRESHNESS_UNKNOWN
+    return _FRESHNESS_STALE if value else _FRESHNESS_FRESH
+
+
 def _order_by_priority(
     candidates: Sequence[tuple[Memory, str]],
     priority: RecallPriority | None,
     *,
     stale: dict[str, bool | None] | None = None,
 ) -> list[tuple[Memory, str]]:
-    """词面路的名次：`(作用域优先级, 陈旧, origin 权重, created_at 降序, memory_id)`。
+    """词面路的名次：`(作用域优先级, 新鲜度, origin 权重, created_at 降序, memory_id)`。
 
-    "陈旧"排在 origin 权重**之前**、作用域优先级**之后**：同一优先级分组里，
+    新鲜度排在 origin 权重**之前**、作用域优先级**之后**：同一优先级分组里，
     陈旧的合成层一律排在新鲜记忆后面——否则一条 `origin=inferred` 的旧 L2 页
     会因为权重比不上 `user_confirmed` 的 L1 而"看起来已经排对了"，等哪天来源
     权重相同（都是 `inferred`）时旧页又跑到第一（复审探针就是这样复现的）。
-    作用域优先级仍是第一分组键：当前任务的证据永远先于别的作用域。
+    三档位次见 `_FRESHNESS_*`：unknown 不冒充任何一档（旧行没有 `seq:` 时既不
+    假设它新鲜、也不假设它陈旧）。作用域优先级仍是第一分组键。
     """
     return sorted(
         candidates,
         key=lambda item: (
             _proximity_of(item[0], priority),
-            1 if stale is not None and stale.get(item[0].memory_id) is True else 0,
+            _freshness_rank(item[0], stale),
             -_ORIGIN_WEIGHTS[item[0].origin],
             -item[0].created_at,
             item[0].memory_id,
@@ -2185,9 +2205,9 @@ class MemoryProjection:
             union.items(),
             key=lambda item: (
                 _proximity_of(item[1][0], priority),
-                # 陈旧合成层降权但**不短路**：同一组里排在新鲜记忆之后，
-                # L1 证据照旧参与（F10 §8「陈旧层先核验再用」）。
-                1 if stale_map.get(item[0], False) else 0,
+                # 新鲜度三档（fresh / unknown / stale）与词面路同一实现：
+                # 陈旧合成层降权但**不短路**，L1 证据照旧参与（F10 §8）。
+                _freshness_rank(item[1][0], stale_map),
                 -fused.get(item[0], 0.0),
                 item[0],
             ),

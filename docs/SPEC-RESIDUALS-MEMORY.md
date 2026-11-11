@@ -365,10 +365,14 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
     一律拒——不给"生成算法漏一条证据"留进门缝。
 - **投影应用** `_apply_consolidate` / `_apply_consolidate_page`：只认**事件里的 output**
   （正文引用 / 证据 / 时间 / 来源），**不重算**合成算法（重算会让 replay 变成"再猜
-  一次"，事件说 A、投影写 B）；重复页幂等；同作用域同层的 candidate/active 旧页
+  一次"，事件说 A、投影写 B）；重复页幂等；同作用域同层的 **candidate** 旧页
   `_supersede(seq)` 退役（行保留，旧正文与它当时站的 evidence 仍可 `get`）；正文过
   `redact_or_block` 闸门（命中就拒，坏页不入库）。**重复页幂等**（同 id + 同 layer +
-  同 `content_ref` 且状态是 candidate/active 直接返回）；**已 confirm 的 active 页不因合成
+  同 `content_ref` 且状态是 candidate/active 直接返回；执行侧在此之上先看现有状态：
+  active/candidate → 不重复写行、`output` 如实给现有 status；已退役/已擦除 → 在
+  `put_content` **之前** fail-closed（先写再失败会留孤儿 blob，恢复流程清不到——它的
+  孤儿清理只认 `tool.intent.args.content_sha256`，consolidate 的 args 只有 scope））；
+  **已 confirm 的 active 页不因合成
   退役**（`memory.consolidate` 是模型可见、免审批的工具，能退役人确认过的页面就等于模型
   可以撤销人的召回授权；人确认的页只有人能退，新旧页并存由 freshness 决定次序——复审提出
   的设计边界）；**正文回退**撞回已退役的页 id → fail-closed 报错（不静默停在 superseded，
@@ -390,21 +394,23 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   新鲜 / `None` 不可判定（旧行没有 `seq:`；主循环输出里**省略**该字段——把"判不了"写成
   `false` 就是谎报新鲜）。排序键唯一实现在 `_order_by_priority(..., stale=)`，被
   `search()` 与 `retrieve()` 的**三条路径**（词面 / 无索引 / 索引不可用 / 融合）共用：
-  同一作用域优先级组里陈旧页排到新鲜记忆之后（降权，不删、不短路，符合 F10 §8）。
+  同一作用域优先级组里按 **`fresh`(0) → `unknown`(1) → `stale`(2)** 三档排（降权，不删、
+  不短路，符合 F10 §8）；`L1` 恒为 0（原子事实没有合成层陈旧）。
   **复审修复**：无索引分支原先只排序、不带 stale，默认生产路径上陈旧页照样排第一——
   现在三处同键；`test_retrieve_demotes_stale_pages_even_without_a_vector_index` 用
   "页与 L1 同 origin / 同 created_at"的夹具把 origin 权重的掩盖去掉。
 - **replay**：`test_consolidate_output_is_replayable` 从事件重建，页正文 / 证据 /
   `consolidated_at` 与实时写入逐项一致。
-- **测试**：`tests/test_memory_distill.py`（新，**21 条**：阈值钉住、引用拼装、两次逐
+- **测试**：`tests/test_memory_distill.py`（新，**22 条**：阈值钉住、引用拼装、两次逐
   字节相同、改一条只动自己那块、proof/evidence 机械一致 + 坏页被就位校验拦、坏页应用
   参数化（未知 layer / `l1` / 空 `source_refs`）、重复应用幂等、正文回退 fail-closed、
   active 页不被合成退役、L3 预算 / 只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出
   L2、旧页被 supersede 仍可 get（含 evidence / `source_refs` 快照）、replay 一致、
-  freshness stale + 降序、**无索引路径也降权**、**无 `seq:` 时 `stale=None`**、**过期 L1 不算更新证据**）；
-  `tests/test_memory_dispatch.py` **+4 条真派发 e2e**（consolidate 真在
+  freshness stale + 降序、**无索引路径也降权**、**无 `seq:` 时 `stale=None`**、**三档排位**、**过期 L1 不算更新证据**）；
+  `tests/test_memory_dispatch.py` **+6 条真派发 e2e**（consolidate 真在
   `tool_manifest()` 并写出候选页、workspace 拒、task 只能本任务、确认后的页进召回并在
-  新 L1 之后变 stale，改走 `retrieve()` 并同时校验 `search()` 的相对顺序）；
+  新 L1 之后变 stale（改走 `retrieve()` 并校验两路 stale 标记一致）、重复合成如实报
+  active、失败路径不写孤儿 blob）；
   `tests/test_memory_store.py`：迁移断言改 `schema_version == 3`、更高版本 fail-closed 用
   `'4'`，并**补了真正的 v2→v3 用例**（`test_schema_v2_database_gains_the_layer_column_in_place`：
   删 `layer`、版本置 2、重开 → 旧行一律 l1、可重复执行；原 v1 用例从没删过 `layer`，
