@@ -1560,3 +1560,215 @@ def test_erase_commit_runs_inside_the_execution_guard(env: Env):
     assert result.ok, result.output
     assert seen == [1], seen
     assert depth["n"] == 0
+
+
+
+# ---------------------------------------------------------------- 9. 终态审计脱敏与崩溃恢复（N5）
+
+
+def _request_row(env: Env, request_id: str):
+    return env.log.conn.execute(
+        "SELECT * FROM dispatch_requests WHERE request_id = ?", (request_id,)
+    ).fetchone()
+
+
+def test_accepted_memory_write_args_are_redacted_at_terminal_state(env: Env):
+    """被采纳的请求进终态后，审计表不再保存记忆正文原文（F10 §13 #26）。"""
+    import hashlib
+    import json
+
+    content = "以后用中文回答"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(env, task, run, claim, content=content)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    stored = json.loads(row["args_payload"])
+    assert "content" not in stored
+    assert stored["content_redacted"] is True
+    assert stored["content_sha256"] == hashlib.sha256(
+        content.encode("utf-8")
+    ).hexdigest()
+    assert stored["content_bytes"] == len(content.encode("utf-8"))
+    # 审计仍能核对"要写是哪条记忆/哪个作用域"。
+    assert stored["kind"] == "preference"
+
+
+def test_gate_blocked_memory_write_is_redacted_after_dispatch(env: Env):
+    """被采纳又被内容闸门挡掉的请求：终态后同样脱敏。"""
+    import json
+
+    secret = "-----BEGIN RSA PRIVATE KEY-----MIIEow"
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    args = {"kind": "fact", "content": secret}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=user.to_uri(),
+        args=args,
+        call_id="blocked-propose",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert not result.ok
+    assert result.effect_state == "none_applied"
+
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    stored = json.loads(row["args_payload"])
+    assert "content" not in stored
+    assert secret not in json.dumps(stored)
+    assert env.memory.list_memories(allowed=(user,)) == []
+
+
+def test_request_stored_before_approval_is_redacted_when_it_is_later_rejected(env):
+    """`prepare()` 就落库的行：之后走拒绝路径（ON CONFLICT 分支）也必须脱敏。
+
+    只修插入路径不够——需要审批的记忆写（`memory.edit` 带新正文）在 `prepare()`
+    就存了 waiting 行，人否决 / 前置条件过期都会在**同一个 `request_id`** 上再写
+    一次；那条 ON CONFLICT 分支若不覆盖 `args_payload`，正文就永久留在审计表里。
+    """
+    import json
+
+    user = MemoryScope.user()
+    content = "审批前就已经落库的新正文"
+    task, run, claim, proposed = _proposed(env, content="报告用中文，先列结论")
+    memory_id = proposed["memory_id"]
+
+    args = {"memory_id": memory_id, "revision": 1, "content": content}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=args,
+        call_id="edit-rejected",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    row = _request_row(env, decision.request_id)
+    assert row is not None and row["state"] == "waiting"
+    assert json.loads(row["args_payload"])["content"] == content
+
+    # 不批准直接派发：请求在**已存在的行**上被拒（ON CONFLICT 路径）
+    refused = env.dispatcher.dispatch(decision.request_id, claim)
+    assert refused.status == "rejected"
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert row["state"] == "rejected"
+    assert int(row["args_redacted"]) == 1
+    assert content not in row["args_payload"]
+
+
+def test_memory_write_that_crashes_mid_projection_is_still_redacted(env, monkeypatch):
+    """三种终态都要脱敏：执行中途炸掉（请求转 rejected / result unknown）也不例外。
+
+    这条走的是 `_fail_unknown` 的记忆分支——它把请求收成 `rejected`，所以
+    `_redact_terminal_args()` 照样会被调到。正文不能因为"没写成功"就永久留下。
+    """
+    import json
+
+    content = "崩溃时还没提交的正文"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(env, task, run, claim, content=content)
+
+    def explode(event_type, payload, *, seq):
+        raise RuntimeError("投影写入中途炸了")
+
+    monkeypatch.setattr(env.memory, "apply_event", explode)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.effect_state == "unknown"
+
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert row["state"] == "rejected"
+    assert int(row["args_redacted"]) == 1
+    stored = json.loads(row["args_payload"])
+    assert content not in json.dumps(stored)
+    assert stored["content_bytes"] == len(content.encode("utf-8"))
+
+
+def test_file_write_args_are_not_redacted(env: Env):
+    """脱敏只针对记忆请求：文件写请求的审计原样保留。"""
+    import json
+
+    args = {"name": "report.md", "content": "正文内容"}
+    task, run, claim = env.new_run()
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="create_report",
+        target=env.ws_a / "report.md",
+        args=args,
+        call_id="file-write",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 0
+    assert json.loads(row["args_payload"])["content"] == "正文内容"
+
+
+def test_recovery_marks_pending_memory_write_as_not_applied(env: Env):
+    """有 intent 无 result 的记忆写：恢复判"未生效"，不写 unknown、不阻断目录。"""
+    from tianshu.recovery import RecoveryReport, assess_run, recover_run
+
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content="崩溃前写了一半的候选", call_id="crash-propose"
+    )
+    assert decision.is_admitted, decision
+    # 模拟"intent 已提交、tool.result 未落库"的崩溃窗口：执行器在真正写入前
+    # 被硬退（SystemExit 是 BaseException，dispatcher 不会把它接成 unknown）。
+    executor = env.dispatcher._memory_executor_for()
+    original = executor.execute
+
+    def crash(admitted, permit):
+        raise SystemExit("simulated power loss")
+
+    executor.execute = crash  # type: ignore[method-assign]
+    try:
+        with pytest.raises(SystemExit):
+            env.dispatcher.dispatch(decision.request_id, claim)
+    finally:
+        executor.execute = original  # type: ignore[method-assign]
+
+    data_root = env.root / "authority"
+    assessment = assess_run(data_root, run.run_id, log=env.log)
+    assert "crash-propose" in assessment.none_applied
+    assert not assessment.blocks_takeover
+
+    report: RecoveryReport = recover_run(
+        env.log, run.run_id, env.ws_a, env.snapshots,
+        leases=env.leases, data_root=data_root,
+    )
+    assert "crash-propose" in report.memory_not_applied
+    assert "crash-propose" in report.none_applied
+    assert report.blocked_workspaces == []
+    assert env.memory.list_memories(allowed=(user,)) == []
+
+    # 恢复之后可以重新 propose（新 call_id），投影不受影响。
+    _request2, _args2, decision2 = _propose(
+        env, task, run, claim, content="崩溃前写了一半的候选", call_id="crash-propose-retry"
+    )
+    assert decision2.is_admitted, decision2
+    result = env.dispatcher.dispatch(decision2.request_id, claim)
+    assert result.ok, result.output
+    assert env.memory.observe(result.output["memory_id"], allowed=(user,)) == (
+        "candidate",
+        1,
+    )

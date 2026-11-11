@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS dispatch_requests (
     request_digest TEXT NOT NULL,
     payload        TEXT NOT NULL,
     args_payload   TEXT NOT NULL,
+    -- 请求进入**终态**后 args_payload 已脱敏（只留正文摘要）：审计表不该永久
+    -- 保存记忆正文原文。执行期要用完整参数，所以只能在终态之后做。
+    args_redacted  INTEGER NOT NULL DEFAULT 0,
     state          TEXT NOT NULL,
     reason         TEXT NOT NULL DEFAULT '',
     rule_id        TEXT NOT NULL DEFAULT '',
@@ -356,9 +359,9 @@ def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
     原文不再落地；`content` 之外的字段（kind / scope / 记忆 id / 写前 revision）
     照常留。
 
-    **不覆盖**：被采纳后又被内容闸门（PII / 密钥）挡掉的请求——闸门在
-    `MemoryExecutor` 里跑，而请求行在 `prepare()` 就落库了。那一半见 F10
-    §13 #26，要彻底修得把内容扫描挪到落库之前。
+    **另一半**：被采纳的请求在**进入终态之后**由 `_set_request_state()` 调
+    `_redact_terminal_args()` 补做同一套脱敏（执行期要用完整参数，所以不能更早）。
+    两个半场合起来，审计表里不再永久保存记忆正文原文（F10 §13 #26 已收口）。
     """
     if "content" not in args:
         return args
@@ -372,6 +375,15 @@ def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
     redacted["content_bytes"] = len(raw)
     redacted["content_redacted"] = True
     return redacted
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, declaration: str
+) -> None:
+    """老库补列（幂等）：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。"""
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 class Dispatcher:
@@ -400,6 +412,10 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        _ensure_column(
+            self._conn, "dispatch_requests", "args_redacted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         self._tasks = tasks
         self._leases = leases
         self._policy = policy
@@ -1874,6 +1890,7 @@ class Dispatcher:
         rule_id: str,
         *,
         approval_id: str | None = None,
+        args_redacted: bool = False,
     ) -> None:
         payload = canonical_bytes(request.to_canonical_dict()).decode("utf-8")
         args_payload = canonical_bytes(args).decode("utf-8")
@@ -1881,12 +1898,19 @@ class Dispatcher:
         with self._log.transaction():
             self._conn.execute(
                 "INSERT INTO dispatch_requests (request_id, task_id, run_id,"
-                " request_digest, payload, args_payload, state, reason, rule_id,"
-                " approval_id, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                " request_digest, payload, args_payload, args_redacted, state,"
+                " reason, rule_id, approval_id, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(request_id) DO UPDATE SET"
                 " state=excluded.state, reason=excluded.reason,"
                 " rule_id=excluded.rule_id, approval_id=excluded.approval_id,"
+                # 已在表里的行（`prepare()` 存 waiting / admitted 时是**完整**参数）
+                # 之后被拒绝时走这条分支：不覆盖 args_payload 的话，正文会永久
+                # 留在审计表里。只在本次写入本身是脱敏形态时才覆盖，别把已脱敏
+                # 的行改回原文（这也不可能：脱敏值只从 `_audit_args` 来）。
+                " args_payload=CASE WHEN excluded.args_redacted=1"
+                " THEN excluded.args_payload ELSE args_payload END,"
+                " args_redacted=MAX(args_redacted, excluded.args_redacted),"
                 " updated_at=excluded.updated_at",
                 (
                     request.request_id,
@@ -1895,6 +1919,7 @@ class Dispatcher:
                     request.digest(),
                     payload,
                     args_payload,
+                    1 if args_redacted else 0,
                     state,
                     reason,
                     rule_id,
@@ -1913,6 +1938,38 @@ class Dispatcher:
                 " approval_id), updated_at=? WHERE request_id=?",
                 (state, approval_id, self._clock(), request_id),
             )
+            if state in (STATE_DONE, STATE_REJECTED):
+                # 终态之后不会再有人从这张表取参数去执行，正文可以脱敏了。
+                self._redact_terminal_args(request_id)
+
+    def _redact_terminal_args(self, request_id: str) -> None:
+        """请求进终态后，把 `args_payload` 里的记忆正文换成摘要。
+
+        执行期的绑定校验与执行器取参数都发生在终态之前；此后这张表只剩审计
+        用途。已经脱敏过的行直接跳过（幂等）。非记忆请求不动。
+        """
+        row = self._conn.execute(
+            "SELECT payload, args_payload, args_redacted FROM dispatch_requests"
+            " WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        if row is None or int(row["args_redacted"]):
+            return
+        try:
+            request = ActionRequest.of(json.loads(row["payload"]))
+            args = json.loads(row["args_payload"])
+        except (TypeError, ValueError):  # pragma: no cover - 库被外力改坏
+            return
+        if not isinstance(args, dict):
+            return
+        redacted = _audit_args(request, args)
+        if redacted is args:
+            return
+        self._conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ?, args_redacted = 1"
+            " WHERE request_id = ?",
+            (canonical_bytes(redacted).decode("utf-8"), request_id),
+        )
 
     @staticmethod
     def _intent_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
@@ -1959,7 +2016,12 @@ class Dispatcher:
         # 拒绝的行**永远不会执行**，所以这里可以脱敏而不破坏任何
         # 派发/审批绑定：被拒的尝试不该把记忆正文原文永久留在审计表里。
         self._store_request(
-            request, _audit_args(request, args), STATE_REJECTED, reason, rule_id
+            request,
+            _audit_args(request, args),
+            STATE_REJECTED,
+            reason,
+            rule_id,
+            args_redacted=True,
         )
         self._append(
             request,

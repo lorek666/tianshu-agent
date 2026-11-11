@@ -31,6 +31,7 @@ from .guard import (
     scan_blocked,
 )
 from .leases import Lease, LeaseStore, execution_guard
+from .memory_exec import MEMORY_TOOL_IDS
 from .receipt import build_receipt
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
@@ -56,6 +57,9 @@ class RecoveryReport:
     problems: list[str] = field(default_factory=list)
     #: 本次被阻断的 workspace 根。多目录任务里要能看出到底挡的是哪一个。
     blocked_workspaces: list[str] = field(default_factory=list)
+    #: 本次确认"未生效"的记忆写入。记忆的投影更新与 `tool.result` 同事务，
+    #: 有 intent 无 result ⇔ **一定没生效**——单独列出来，不混进文件写统计。
+    memory_not_applied: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -243,6 +247,11 @@ def assess_run(
             unresolved.append(call_id)
             continue
         if spec.side_effect_level == "pure":
+            none_applied.append(call_id)
+            continue
+        if tool_id in MEMORY_TOOL_IDS:
+            # 记忆写没有文件副作用可对账：result 与投影同事务，没有 result
+            # 就是没生效。不占 pending_writes，不影响接管判定。
             none_applied.append(call_id)
             continue
 
@@ -481,6 +490,20 @@ def _recover_run(
                                 "recovered": True,
                                 "tool_id": tool_id}),
                     bucket=report.unresolved)
+            continue
+
+        # 记忆写：投影更新与 `tool.result` 在**同一个 SQLite 事务**里
+        # （`Dispatcher._commit_result`）。所以"有 intent 无 result" ⇔ 一定没生效，
+        # 不需要快照证据、不写 unknown、更不阻断目录。
+        if tool_id in MEMORY_TOOL_IDS:
+            report.memory_not_applied.append(call_id)
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("failed", "none_applied",
+                               {"error": "recovered: 记忆写入未生效"
+                                         "（结果与投影同事务，没有 result 就是没写）",
+                                "recovered": True,
+                                "memory_write": tool_id}),
+                    bucket=report.none_applied)
             continue
 
         # 只读工具：没有副作用，直接被中断也不影响任何东西

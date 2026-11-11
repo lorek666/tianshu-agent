@@ -889,6 +889,8 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         print(f"已确认执行 : {report.applied or '（无）'}")
         print(f"确认未执行 : {report.none_applied or '（无）'}")
         print(f"无法核实   : {report.unresolved or '（无）'}")
+        if report.memory_not_applied:
+            print(f"记忆未生效 : {report.memory_not_applied}")
         for p in report.problems:
             print(f"  ! {p}")
     return 0 if report.ok else 1
