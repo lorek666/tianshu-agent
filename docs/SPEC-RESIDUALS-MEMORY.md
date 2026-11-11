@@ -379,6 +379,41 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   用例必须红。
 - 两个真进程：一个进程 propose 中崩溃、另一个进程恢复 → 只出现一条"未生效"，无半条投影。
 
+### 6.4 落地记录（N5 实际，2026-11-11）
+
+- 分支 `fix/memory-recovery-audit`（起点 `main @ 42d786b` = N4 合入后），合入后 #21 / #26 在
+  F10 §13 里都改成 ✅。
+- **恢复分支**：`recovery.RecoveryReport.memory_not_applied`；`recover_run` 在"纯工具 / 文件写"
+  分流**之前**先判 `tool_id in MEMORY_TOOL_IDS`，结算
+  `ToolResult("failed", "none_applied", {error, recovered: True, memory_write})`；
+  `assess_run` 同样把记忆写归 `none_applied` 且**不** `pending_writes += 1`（否则记忆写会被当成
+  "有文件副作用待核对"，把接管判定搞成需要快照证据）。CLI `tianshu recover` 多打一行
+  `记忆未生效 : [...]`。不写 `recovery.blocked`、不阻断目录（记忆没有 preimage，红线 5/11：
+  "没写"与"不知道写没写"不合并）。
+- **审计表**：`dispatch_requests` 加 `args_redacted` 列（`_ensure_column` 老库原地补列）；
+  `_set_request_state()` 在 `done` / `rejected` 两个终态调 `_redact_terminal_args()`（幂等，
+  已脱敏的行跳过）；记忆写的终态推进与投影提交在**同一个事务**里，所以"写完未脱敏"的窗口是零。
+  `_fail_unknown` 的记忆分支本来就收成 `rejected`，因此"中途炸掉"的请求也走同一条脱敏。
+  探针确认：终态之后没有任何代码路径从 `args_payload` 重算 `args_hash`（`args_hash` 存在
+  `ActionRequest`/`tool.intent` 里，`verify_receipts` 用事件里的副本）。
+- **测试落点（与 §6.3 的偏差，如实记）**：没有新建 `tests/test_memory_recovery.py`——三分之二
+  的判据本来就在 `tests/test_memory_dispatch.py`（同一套 `Env` 夹具），单开文件要复制夹具。
+  实际新增 6 条，都在 `tests/test_memory_dispatch.py`：
+  `test_accepted_memory_write_args_are_redacted_at_terminal_state` /
+  `test_gate_blocked_memory_write_is_redacted_after_dispatch` /
+  `test_memory_write_that_crashes_mid_projection_is_still_redacted`（三种终态：成功 / 闸门拒绝 /
+  执行中途未知）、`test_file_write_args_are_not_redacted`（防过度脱敏）、`test_request_stored_before_approval_is_redacted_when_it_is_later_rejected`（`prepare()` 已存的 waiting 行、人否决后走 ON CONFLICT 分支也要脱敏）、
+  `test_recovery_marks_pending_memory_write_as_not_applied`（`SystemExit` 模拟断电 →
+  `memory_not_applied` / `blocked_workspaces == []` / 投影无行 / 恢复后可换 `call_id` 重写）。
+- **负控（都真跑过）**：① 注释掉 `_set_request_state` 里的终态脱敏调用 → 三条脱敏用例红、文件写那条仍绿；④ 只修插入路径、不改 `ON CONFLICT` 的 `args_payload` 覆盖 → "等待后被否决"那条红（这条复现过：`prepare()` 存 waiting 行时是完整参数，人否决在同一个 `request_id` 上重写，不覆盖就是永久残留）；
+  ② 删掉 `_recover_run` 的记忆分支 → 恢复用例红（`memory_not_applied` 为空）；③ 删掉
+  `assess_run` 的记忆分支 → 同一条用例红（`none_applied` 里没有它，接管判定变阻断）。
+- **残留窗口（别读成"任何时刻都不存原文"）**：停在 `waiting` / `admitted` 的行（审批一直没人批、Run 被取消）仍是完整参数——`dispatch()` 正是从这张表取参数执行，脱敏会直接把派发打红。要彻底收口得先定义"等待行过期 / 取消即作废"的策略，单开契约工单；本轮的承诺是"**进入终态**后不再永久保存原文"。
+- **仍未覆盖**：§6.3 最后一条"两个真进程"没做——本仓库现有恢复测试都是同进程内构造状态
+  （既有 `test_mid_write_failure_*` 也是），真跨进程断电不在 CI 里可复现的范围；没写成已验。
+  另外 `blob_dir` 里的正文副本不随审计表脱敏（正文本来就存 blob，审计表脱敏只收掉**重复副本**）
+  ——这条是设计（F10 §10），不是缺口。
+
 ---
 
 ## 7. N6 · 控制面 UI / Host：看得见、改得动（F10 §9）

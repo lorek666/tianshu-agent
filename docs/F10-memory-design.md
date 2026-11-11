@@ -3,7 +3,7 @@
 > PRD §7 P1 / F10。承接 [NEXT-CAPABILITIES-PLAN.md](NEXT-CAPABILITIES-PLAN.md) §5（实施拆解：PR08 契约 / PR09 实现）。
 > 本文只定**形状与契约**，不写实现代码。任何契约变更仍须走 `docs(contract):` 独立 PR。
 >
-> **落地状态（2026-11-10）**：L1 显式记忆已落地（投影、五个 `memory.*` 工具、`memory://` 资源种类、C4 审批 + Receipt、CLI 控制面）——逐条见 §13，判据↔测试见 §14。**L2/L3 蒸馏与向量召回仍是设计，未实现。**
+> **落地状态（2026-11-11）**：L1 显式记忆已落地，并在 N1（控制面标记 / `memory.remember` / `memory.edit` / `memory.promote` / `origin` 升级）、N4（物理擦除 `memory.erase` + 投影 schema v2）、N5（崩溃恢复的记忆分支 + 派发审计表终态脱敏）之后收口——逐条见 §13，判据↔测试见 §14。**L2/L3 蒸馏与向量召回仍是设计，未实现（N2 / N3 工单）。** 剩余的"未实现 / 部分覆盖"只有这几项：L2/L3（§13 #19）、向量召回（#20）、§8 作用域优先级（#23），以及 §14 表里明确写"部分覆盖 / 未覆盖"的判据。
 
 ## 1. 一句话
 
@@ -334,16 +334,16 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 14 | CLI 控制面：`tianshu memory list\|search\|get\|confirm\|forget\|remember` | ✅ 已落地 | `cli._cmd_memory` / `_cli_memory_scopes` / `_dispatch_memory_decision` / `_remember_memory`（人敲命令 = 批准，审批仍落库、一次性消费、执行侧二次核验；task 作用域走控制 Run 的 `memory_scopes` 声明） |
 | 15 | 测试：资源种类 | ✅ 已覆盖 | `tests/test_resources.py`：23 个 `def test_`，参数化后 44 条 |
 | 16 | 测试：投影 / 检索 / 闸门 / 去重 | ✅ 已覆盖 | `tests/test_memory_store.py`：51 个 `def test_`，参数化后 64 条 |
-| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖 | `tests/test_memory_dispatch.py`（20 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、未知 kind、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用、零绑定控制 Run 不能写文件、**错装配投影被拒**、**拒绝行不含正文原文**）与 `tests/test_memory_loop.py`（12 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域、**`limit` 在 schema 上存在**、**遗忘后不可按 id 复活**、**`origin` 断言**） |
+| 17 | 测试：派发 / 审批 / 主循环 / CLI | ✅ 已覆盖（N5 后 40 + 19 条） | `tests/test_memory_dispatch.py`（40 个 `def test_`：真派发、intent→result 顺序、审批消费、拒绝不改投影、事务内更新、中途失败 unknown、作用域越权、零目录、工具↔资源种类、未知 kind、`memory://` 下的重复候选、文件路径仍走原路、伪造票据被拒、task 作用域只对本任务可用、零绑定控制 Run 不能写文件、**错装配投影被拒**、**拒绝行不含正文原文**、remember/edit/promote/erase 控制面、终态脱敏、崩溃恢复）与 `tests/test_memory_loop.py`（19 个：工具封闭集与注册表一致、零目录召回、模型侧 propose→confirm 走派发、装备、5 条 / 4 KiB 上限、F5 预算、忘记后新 Run 不召回、replay 用快照、CLI 控制面与 workspace 作用域、**`limit` 在 schema 上存在**、**遗忘后不可按 id 复活**、**`origin` 断言**） |
 | 18 | `origin=user_explicit` 的**候选**确认免审批路径 | 策略已测 / **候选路径仍无生产入口** | 策略分支有测试：`test_user_explicit_confirm_needs_no_approval`（测试播种 `user_explicit` 候选走真实 prepare/dispatch）。N1 之后：`user_explicit` 有了产生入口 `memory.remember`（直接写 active，不产生候选），`user_confirmed` 由人批准 confirm 升级（#22）；**免审批确认候选**这一条仍无生产路径——人直接用 remember，模型仍只能写 inferred 候选 |
 | 19 | L2/L3 蒸馏（增量 delta、保留上一版 + 证据） | ❌ 未实现 | `grep -rin "distill" src/tianshu/` 无结果；`memory.py` 只做 L1 级显式记忆，`consolidated_at` 目前只在 `memory.confirm` 时写一次 |
 | 20 | 向量召回 | ❌ 未实现（按设计） | 首版只有 FTS5 + CJK 双字切分（§12），无 embedding 依赖 |
-| 21 | 崩溃恢复（`recover_run`）的记忆分支 | ❌ 未落地（已知限制） | `recovery.recover_run` 没有记忆专门分支：`tool.intent` 已提交但 `tool.result` 未落库时，恢复按**既有文件写工具的推断**走（多数情况记 `none_applied`，快照缺失时 `unknown` 并可能阻断目录），不是精确的记忆恢复。**投影侧不受影响**——`apply_event` 只在 `_commit_result` 的事务里被调用，没有 result 就不会有半条投影（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住这条）；但"这次记忆写入到底生效了没有"的结论仍依赖既有推断，而不是记忆专用证据。要精确回答需给 `recovery.py` 加记忆分支，单独工单 |
+| 21 | 崩溃恢复（`recover_run`）的记忆分支 | ✅ 已落地（N5） | `recovery.RecoveryReport.memory_not_applied` 单独列出"这次记忆写没生效"；`recover_run` 在文件写推断**之前**分流记忆写，`assess_run` 也不再把它算进 `pending_writes`。判据是**同事务**：投影更新与 `tool.result` 由 `Dispatcher._commit_result` 在一个 SQLite 事务里提交，所以"有 intent 无 result" ⇔ 一定没生效——不需要快照证据、不写 unknown、不阻断任何目录，与文件写"可能动了"的含糊结论分开。结算 `ToolResult(failed, none_applied, {error, recovered, memory_write})`，CLI `tianshu recover` 多打一行 `记忆未生效 : [...]`。测试：`test_recovery_marks_pending_memory_write_as_not_applied`（`SystemExit` 模拟断电，钉住 `memory_not_applied` / `none_applied` / `blocked_workspaces == []` / 投影无行 / 恢复后可重试）。负控：删掉 `_recover_run` 的记忆分支 → 红；删掉 `assess_run` 的记忆分支 → `blocks_takeover` 变真、红 |
 | 22 | `origin` 的 `user_confirmed` 迁移 | ✅ 已落地（N1） | `memory_exec.MemoryExecutor._transition` 在 confirm 有审批且审批人是人（`Approval.decided_by` 非空）时给 output 加 `origin="user_confirmed"`；`memory._apply_confirm` 只允许 `inferred → user_confirmed`（只升级不降级，别的值直接拒绝）。`user_explicit` 由 `memory.remember` 产生。测试：`test_human_approval_upgrades_origin_to_user_confirmed` / `test_remember_is_control_plane_only` |
 | 23 | §8 的作用域优先级（优先当前任务 / 工作区证据） | ❌ 未实现 | 排序口径目前被钉为 `origin` → `created_at` 降序（`MemoryProjection.search`），作用域只用于**过滤**（loadout + `allowed`），不参与打分。后果：同一用户同时有 user 与 workspace 两条相关记忆时，不会优先给贴近当前任务的证据。这是 F10 §8 原述的一部分，未做就如实标注，别当成"已经按 F10 做了" |
 | 24 | 编辑 / `supersede` 的**生产入口** | ✅ 已落地（N1） | `memory.edit`（`1.0`，overwrite，需审批）：一次审批 = 旧行 `superseded`（`revision` 不变、仍可按 id 查到）+ 新行 `active`（新 `memory_id`、`revision=1`、`supersedes=旧 id`、`origin` 按"这一版正文的来源"：控制面 edit → `user_explicit`，模型写经人批准 → `user_confirmed`）；`check_request_preconditions` 绑定 `before_revision`，不一致 → `dispatch.memory_stale_revision`；不允许改 `kind`。测试：`test_edit_with_approval_keeps_old_row_and_activates_new` / `test_edit_requires_the_revision_the_human_saw` / `test_cli_edit_keeps_old_row_and_activates_new` |
 | 25 | workspace / task 作用域的**创建**入口 | ✅ 已落地（N1） | ① 模型可 `memory.propose` 到**本任务**的 task 作用域；② **workspace 共享**由人经 `memory.promote`（`exposed=False`，需审批）进入：原行立即 `superseded`（原作用域不再召回）、目标作用域新行 `candidate`（再 `confirm` 才召回），`source_refs` 必含原 `memory_id`，Receipt 针对**原行**（`receipt_memory_id`）；③ propose→workspace **无条件拒**（含控制 Task 被复用为模型 Run）。测试：`test_model_can_only_propose_into_its_own_task_scope` / `test_workspace_propose_is_refused_even_on_a_control_task` / `test_promote_is_control_only_and_moves_memory` / `test_promote_to_workspace_canonicalizes_the_target_scope` / `test_cli_promote_moves_memory_into_task_scope` |
-| 26 | 派发审计表的正文保留与闸门时序 | ⚠️ 部分落地 | `dispatch_requests.args_payload` 保存**完整**尝试参数，因此也保存记忆正文原文；而 PII / 密钥闸门在 `MemoryExecutor` 里、请求行在 `prepare()` 就落库——**被闸门阻断的候选仍会在审计表留下原文**。已修的一半：**被拒绝**（`_reject`）的记忆写请求脱敏成 `content_sha256` + `content_bytes`（拒绝的请求永不执行，脱敏不破坏派发/审批绑定；`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`）。未修的一半：**被采纳后**又被内容闸门挡掉的请求仍保留原文——彻底修要把内容扫描挪到落库之前，或给审计表定保留/擦除策略，单开契约工单。注意执行器**从这张表取参数**，所以被采纳的行不能脱敏 |
+| 26 | 派发审计表的正文保留与闸门时序 | ✅ 已落地（N5） | `dispatch_requests.args_payload` 曾经永久保存记忆正文原文。现在两个半场合起来收口：① **从未执行**的拒绝行在 `_reject()` 落库时就是 `content_sha256` + `content_bytes`（`args_redacted=1`）；② **被采纳**的行在**进入终态**（`done` / `rejected`，含执行中途炸掉走 `_fail_unknown` 的那条）时由 `_set_request_state()` → `_redact_terminal_args()` 补做同一套脱敏。执行期必须用完整参数（`args_hash` 绑定校验、执行器取参），所以不能更早；记忆写的终态推进与投影提交在**同一个事务**里，脱敏与提交同原子，没有"写完但没脱敏"的窗口。非记忆请求一律不动（`_audit_args` 对非 `memory://` 资源直接原样返回）。测试：`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`（拒绝侧）、`test_accepted_memory_write_args_are_redacted_at_terminal_state`（被采纳侧：`args_redacted=1`、无 `content`、哈希与长度可核对、kind 仍在）、`test_gate_blocked_memory_write_is_redacted_after_dispatch`（采纳后又被内容闸门挡掉）、`test_file_write_args_are_not_redacted`（防过度脱敏）。负控：关掉终态脱敏 → 三条（被采纳 / 闸门挡 / 中途炸）全红、文件写那条仍绿；只修插入路径不改 ON CONFLICT → 等待后否决那条红。**残留窗口（如实记）**：停在 `waiting` / `admitted`（审批一直没人批、Run 被取消）的行仍是完整参数——它们没进终态，而 `dispatch()` 正是从这张表取参数执行，脱敏会直接把派发打红。要彻底收口得先定义"等待行过期 / 取消即作废"的策略（单独工单），当前口径是"**进入终态**后不再永久保存原文"，不是"任何时刻都不存"。 |
 | 27 | CLI 对 task 作用域记忆的限制 | ✅ 已解除（N1） | `Dispatcher.open_control_run(memory_scopes=...)` 把声明写进 `task.created` payload 与 `Task.is_control`；CLI `memory confirm\|forget --task-id` 用它在**不绑旧 task 目录**的前提下签字。测试：`test_control_run_can_forget_an_old_task_scope_memory` / `test_cli_can_forget_task_scope_memory_with_task_id` |
 | 28 | 控制面标记与作用域声明（N1） | ✅ 已落地 | `Task.is_control` / `Task.memory_scopes` 从 `task.created` payload 读回；`Dispatcher.open_control_run` 写 `control: true` + `memory_scopes`；`task.created` 只加键、**不新增事件类型**；rebuild 后仍在（`test_control_marker_and_scope_declaration_survive_rebuild`）。越权 → `c4.memory_control_scope_binding` |
 | 29 | 物理擦除 `memory.erase`（N4） | ✅ 已落地 | 控制面专属（`exposed=False`）、`delete` + 一次性审批 + Receipt；删唯一 blob + 置 `forgotten`/`erased_at`；引用计数为 0 才删（**已擦除行不计数**），否则回执列 `retained_by`；重建不复活、`read_content` 一律 None。**并发保护：引用计数 + 删文件 + 提交在同一把跨进程执行守卫内**（否则两条共享 blob 并发擦除会都保留文件、留孤儿）。投影 schema v1→v2 只加可空列、不重建；`schema_version` 高于程序支持时 fail-closed；CLI 可擦 forgotten / candidate / superseded（DELETE 前置不再默认 `active`）。测试：`test_erase_deletes_unique_blob_and_marks_erased`（含 `verify_receipts(...) == []`）/ `test_erase_keeps_shared_blob_and_reports_retained_by`（含文件仍在时的 rebuild）/ `test_erase_is_control_plane_only` / `test_erase_commit_runs_inside_the_execution_guard` / `test_cli_erase_deletes_content_and_marks_erased` / `test_cli_can_erase_forgotten_and_candidate_memories` / `test_schema_v1_database_is_migrated_in_place` / `test_newer_schema_version_fails_closed` |
@@ -352,14 +352,14 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 01:48（`feat/memory` 工作区实测，`1243 passed / 3 skipped`、1246 条 collected——已合入 `main` 的 #62 / #65 / #66 / #67；其中 140 条来自本特性的四个记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 12:30（`fix/memory-recovery-audit` 工作区实测，`1535 passed / 7 skipped`——N5 合入前基线 `main` 为 `1529 passed / 7 skipped`，本分支加 6 条记忆测试；其中 168 条来自本特性的四个记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
 > 真的没有测试，别把它当已验收。函数名来自四个文件：`tests/test_memory_store.py`
-> （51 个 `def test_` / 64 条：投影 / 检索 / 闸门 / 去重）、`tests/test_memory_dispatch.py`
-> （20 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run / 错装配投影 / 拒绝行脱敏）、`tests/test_memory_loop.py`（12 个：主循环 / 预算 /
-> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_resources.py`（23 个 / 44 条：资源种类）。
+> （53 个 `def test_` / 66 条：投影 / 检索 / 闸门 / 去重 / 擦除 / schema 迁移）、`tests/test_memory_dispatch.py`
+> （40 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run / 错装配投影 / 拒绝行脱敏 / 终态脱敏 / 同号重写脱敏 / 崩溃恢复）、`tests/test_memory_loop.py`（19 个：主循环 / 预算 /
+> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_resources.py`（23 个 / 43 条：资源种类）。
 
 | 判据 | 状态 | 证据 / 缺口 |
 |---|---|---|
@@ -398,12 +398,14 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 | 擦除只删唯一引用的正文；共享 blob 保住别的记忆；已擦除行不再计数 | ✅ 已覆盖 | `test_erase_deletes_unique_blob_and_marks_erased`（blob 消失、`erased_at`、重建不复活、`verify_receipts(...) == []` 且回执含 `memory_erasure` 证据）、`test_erase_keeps_shared_blob_and_reports_retained_by`（共享同一 `content_ref`：第一条 `deleted=False`/`retained_by=[另一条]`，第二条才删；**文件仍在时 rebuild 也不复活**）、`test_erase_commit_runs_inside_the_execution_guard`（计数/删文件/提交在同一把跨进程守卫内，负控：守卫外提交 → 红） |
 | 擦除只控制面能做；重复擦除是确定拒绝；旧库自动补列；高版本 fail-closed | ✅ 已覆盖 | `test_erase_is_control_plane_only`（模型路径 `c4.memory_control_scope_binding`、不在 `tool_manifest()`）、`test_erase_deletes_unique_blob_and_marks_erased`（第二次 prepare 即拒）、`test_schema_v1_database_is_migrated_in_place`（v1 库补 `erased_at` + `schema_version=2`、不重建不丢正文）、`test_newer_schema_version_fails_closed`（`schema_version=3` 拒绝打开）、`test_cli_erase_deletes_content_and_marks_erased`、`test_cli_can_erase_forgotten_and_candidate_memories`（忘记后 / 候选可擦） |
+| 崩溃未落 result 的记忆写被恢复判为"未生效"，且不阻断目录、不编造投影 | ✅ 已覆盖（N5） | `test_recovery_marks_pending_memory_write_as_not_applied`（断电模拟：`assess_run` 归 `none_applied` 且 `not blocks_takeover`；`recover_run` 报 `memory_not_applied`、`blocked_workspaces == []`、投影无行；恢复后换 `call_id` 可重写成功）。负控：删 `_recover_run` 的记忆分支 → 红；删 `assess_run` 的记忆分支 → 红（记忆写被当文件写计入待核对） |
+| 派发审计表不永久保存记忆正文原文；非记忆请求的审计不被过度脱敏 | ✅ 已覆盖（N5） | `test_accepted_memory_write_args_are_redacted_at_terminal_state`（被采纳 → 终态后只剩 `content_sha256` / `content_bytes` / `args_redacted=1`，`kind` 仍在可审计）、`test_gate_blocked_memory_write_is_redacted_after_dispatch`（采纳后被闸门挡掉也脱敏）、`test_memory_write_that_crashes_mid_projection_is_still_redacted`（执行中途炸掉 → 请求转 rejected，同样脱敏）、`test_request_stored_before_approval_is_redacted_when_it_is_later_rejected`（`prepare()` 已存的 waiting 行在人否决时走 ON CONFLICT 分支，也必须覆盖正文——不覆盖就是永久残留）、`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`（拒绝侧）、`test_file_write_args_are_not_redacted`（文件写请求 `args_redacted=0`、正文原样）。负控：关掉终态脱敏 → 三条全红、文件写那条仍绿；只修插入路径不改 ON CONFLICT → 等待后否决那条红 |
 
 ## 15. 与实施计划的关系
 
 [NEXT-CAPABILITIES-PLAN.md](NEXT-CAPABILITIES-PLAN.md) §5 是实施拆解（PR08 `docs(contract)` / PR09 `feat(memory)`）；本文是该 PR 的设计输入。两者冲突时**以本文为准（设计）**，但任何契约变更仍需走 `docs(contract):` 独立 PR。
 
-§13 里仍为"未实现 / 无入口 / 部分落地"的十条（#18–#27）的**逐条施工规格**在 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)：工作流划分、文件所有权、契约增量清单、每条判据与负控口径。该规格**不改变**本文的设计结论；与本文冲突时以本文为准。
+§13 里仍为"未实现 / 部分覆盖"的 N2（向量召回 + §8 作用域优先级，即 #20 / #23 与 §14 的量化召回判据）、N3（L2/L3 蒸馏，即 #19）的**逐条施工规格**在 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)：工作流划分、文件所有权、契约增量清单、每条判据与负控口径。已交付的 N1a / N1b / N4 / N5 也留在该规格里当施工记录（每条都写了落地位置与负控口径）。该规格**不改变**本文的设计结论；与本文冲突时以本文为准。
 
 ## 16. 参考
 
