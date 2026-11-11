@@ -52,13 +52,31 @@ from .errors import TianshuError
 
 KIND_FILE = "file"
 KIND_MEMORY = "memory"
+KIND_NETWORK = "network"
+KIND_MCP = "mcp"
+KIND_SUBTASK = "subtask"
 
 #: 封闭集：不在里面的种类一律拒绝。新增种类必须同时改这里、
 #: `parse_resource()` 的分支与 PRD §5.4.1 的资源种类说明。
-RESOURCE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY})
+RESOURCE_KINDS: frozenset[str] = frozenset(
+    {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_MCP, KIND_SUBTASK}
+)
 
 SCHEME_SEP = "://"
 MEMORY_SCHEME = "memory"
+NETWORK_SCHEME = "network"
+MCP_SCHEME = "mcp"
+SUBTASK_SCHEME = "subtask"
+
+#: 网络传输方式封闭集。**没有** `ftp://`、`file://` 之类：这一层只描述
+#: "往哪儿发"，多一种传输就多一套规范化规则，而 v1 只需要这两种。
+NETWORK_TRANSPORTS: frozenset[str] = frozenset({"http", "https"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+#: 主机标签：小写字母/数字/连字符，不以连字符开头结尾。IDN 先转 punycode 再判。
+_HOST_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_MCP_NAME = re.compile(r"^[a-z0-9_.-]{1,64}$")
+PORT_RANGE = range(1, 65536)
 
 SCOPE_USER = "user"
 SCOPE_WORKSPACE = "workspace"
@@ -143,6 +161,193 @@ class MemoryScope:
 
 
 @dataclass(frozen=True)
+class NetworkTarget:
+    """一次外发的目标：`network://<transport>/<host>[:port]/<path>[?query]`。
+
+    ## 为什么不是 `https://...` 直接当资源
+
+    `parse_resource()` 的第一条判据是"绝对路径就是 file"，而 `https://x/y` 不是
+    绝对路径、又含 `://`，所以它会被读成"认不得的 scheme"而拒绝——这正是 G1a
+    想要的效果（URL 不伪装成文件路径）。但"拒绝"不等于"没有这种资源"，于是
+    用**自己的 scheme** 明确表达，而不是放宽 http(s) 的解析。
+
+    ## 规范化到什么程度（每一项都有理由）
+
+    - host 小写 + IDNA 转 punycode：`ExAmPle.COM` 与 `example.com` 是同一台机器，
+      不归一就会出现"批准了 A、实际发到 B 却也算 A"这类凭据混淆；
+    - 默认端口省略（http 80 / https 443）：同一个目标的两种写法必须得到同一个
+      URI，否则审批摘要会因为写法不同而失效；
+    - path 折叠 `.` / `..` 且**不许逃出根**：`/a/../b` 与 `/b` 是同一路径；
+    - 百分号编码的段**先解码再判**：`%2e%2e` 解码后是 `..`，不解码就折叠不掉，
+      等于给路径穿越留了一个"看起来规范"的入口（解码后含 `/`、`\\`、NUL 一律拒）；
+    - query 原样保留（顺序有意义，不排序）；
+    - 拒绝 userinfo（`user:pass@host`）与 fragment（`#`）。
+    """
+
+    transport: str
+    host: str
+    port: int | None
+    path: str
+    query: str = ""
+
+    def __post_init__(self) -> None:
+        if self.transport not in NETWORK_TRANSPORTS:
+            raise ResourceError(
+                f"不支持的传输方式：{self.transport!r}"
+                f"（合法值：{sorted(NETWORK_TRANSPORTS)}）"
+            )
+        if not self.host:
+            raise ResourceError("网络目标缺少主机")
+        if self.port is not None and self.port not in PORT_RANGE:
+            raise ResourceError(f"端口越界：{self.port!r}")
+        if self.port == _DEFAULT_PORTS[self.transport]:
+            raise ResourceError(
+                f"默认端口必须省略（{self.transport} 默认 {_DEFAULT_PORTS[self.transport]}）："
+                f"{self.port}"
+            )
+        if not self.path.startswith("/"):
+            raise ResourceError(f"路径必须以 / 开头：{self.path!r}")
+        if "#" in self.query:
+            raise ResourceError(f"网络目标不接受 fragment：{self.query!r}")
+
+    def to_uri(self) -> str:
+        authority = self.host if self.port is None else f"{self.host}:{self.port}"
+        uri = f"{NETWORK_SCHEME}{SCHEME_SEP}{self.transport}/{authority}{self.path}"
+        if self.query:
+            uri = f"{uri}?{self.query}"
+        return uri
+
+    @property
+    def origin(self) -> str:
+        """`<transport>://<host>[:port]`：审批展示与"同一站点"判定用它。"""
+        authority = self.host if self.port is None else f"{self.host}:{self.port}"
+        return f"{self.transport}{SCHEME_SEP}{authority}"
+
+    @classmethod
+    def parse(cls, raw: str) -> NetworkTarget:
+        if not isinstance(raw, str) or not raw.startswith(
+            f"{NETWORK_SCHEME}{SCHEME_SEP}"
+        ):
+            raise ResourceError(f"不是网络资源引用：{raw!r}")
+        rest = raw[len(NETWORK_SCHEME) + len(SCHEME_SEP) :]
+        transport, _, tail = rest.partition("/")
+        if transport not in NETWORK_TRANSPORTS:
+            raise ResourceError(
+                f"不支持的传输方式：{transport!r}"
+                f"（合法值：{sorted(NETWORK_TRANSPORTS)}）"
+            )
+        if not tail:
+            raise ResourceError(f"网络引用缺少主机与路径：{raw!r}")
+        if "#" in tail:
+            raise ResourceError(f"网络引用不接受 fragment：{raw!r}")
+
+        before_query, _, query = tail.partition("?")
+        authority, _, raw_path = before_query.partition("/")
+        if "@" in authority:
+            # userinfo 在 URL 里是凭据的家，在资源引用里就是混淆：批准的是主机，
+            # 不是"看起来像主机"的一整串。
+            raise ResourceError(f"网络目标不接受 userinfo（user:pass@host）：{raw!r}")
+        if not authority:
+            raise ResourceError(f"网络引用缺少主机：{raw!r}")
+
+        segs = raw_path.split("/")
+        host_segments = authority.rsplit(":", 1)
+        if len(host_segments) == 2:
+            host_text, port_text = host_segments
+            if not port_text.isdigit():
+                raise ResourceError(f"端口不是数字：{raw!r}")
+            port: int | None = int(port_text)
+        else:
+            host_text, port = host_segments[0], None
+        if port == _DEFAULT_PORTS[transport]:
+            port = None
+
+        host = _normalize_host(host_text)
+        path = _normalize_path(segs)
+        return cls(
+            transport=transport, host=host, port=port, path=path, query=query
+        )
+
+
+def _normalize_host(text: str) -> str:
+    if not text:
+        raise ResourceError("网络目标缺少主机")
+    if "%" in text:
+        # 百分号编码的主机名是"两种写法指向一台机器"的老漏洞温床。
+        raise ResourceError(f"主机不接受百分号编码：{text!r}")
+    lowered = text.lower()
+    if not lowered.isascii():
+        try:
+            lowered = lowered.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise ResourceError(f"主机名 IDNA 归一失败：{text!r}（{exc}）") from exc
+    labels = lowered.split(".")
+    for label in labels:
+        if not _HOST_LABEL.match(label):
+            raise ResourceError(f"主机名标签不合法：{label!r}（{text!r}）")
+    return lowered
+
+
+def _normalize_path(segments: list[str]) -> str:
+    """折叠 `.`/`..`，拒绝逃出根，拒绝解码后含路径分隔符的段。"""
+    out: list[str] = []
+    for raw in segments:
+        decoded = unquote(raw)
+        if decoded in (".", ""):
+            continue
+        if decoded == "..":
+            if not out:
+                raise ResourceError("网络路径不能逃出根：../")
+            out.pop()
+            continue
+        if any(ch in decoded for ch in ("/", "\\", "\x00")):
+            # `%2F` / `%5C` / `%00` 解码后是分隔符或截断符：不还原成结构，
+            # 直接拒绝（还原就等于让我们自己的规范化变成了新的解析器）。
+            raise ResourceError(f"路径段解码后含非法字符：{raw!r}")
+        out.append(decoded)
+    return "/" + "/".join(out)
+
+
+@dataclass(frozen=True)
+class McpTarget:
+    """一个 MCP 工具：`mcp://<server>/<tool>`。
+
+    MCP 工具是**不可信外部程序**（PRD 附表：恶意工具输出 / 不可信 MCP 注解不能
+    成为授权或幂等依据），所以它按 `exec` 处理：要人工批准，且没有"读一下没关系"
+    的自动路径。名字限制在 `[a-z0-9_.-]`：这两段会被写进事件与审批摘要，放开
+    大小写/空格等于让日志里出现"看起来一样的两个工具"。
+    """
+
+    server: str
+    tool: str
+
+    def __post_init__(self) -> None:
+        for attr in ("server", "tool"):
+            value = getattr(self, attr)
+            if not _MCP_NAME.match(value or ""):
+                raise ResourceError(f"MCP {attr} 形状不合法：{value!r}")
+
+    def to_uri(self) -> str:
+        return f"{MCP_SCHEME}{SCHEME_SEP}{self.server}/{self.tool}"
+
+    @classmethod
+    def parse(cls, raw: str) -> McpTarget:
+        if not isinstance(raw, str) or not raw.startswith(f"{MCP_SCHEME}{SCHEME_SEP}"):
+            raise ResourceError(f"不是 MCP 资源引用：{raw!r}")
+        rest = raw[len(MCP_SCHEME) + len(SCHEME_SEP) :]
+        parts = rest.split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ResourceError(f"MCP 引用必须是 mcp://<server>/<tool>：{raw!r}")
+        return cls(server=parts[0], tool=parts[1])
+
+
+def _validate_subtask_id(task_id: str) -> str:
+    if not isinstance(task_id, str) or not _OPAQUE_ID.match(task_id):
+        raise ResourceError(f"子任务 id 形状不合法：{task_id!r}")
+    return task_id
+
+
+@dataclass(frozen=True)
 class ResourceRef:
     """一个解析过、种类已知、值已规范化的资源引用。"""
 
@@ -156,6 +361,19 @@ class ResourceRef:
             )
         if not self.value:
             raise ResourceError("资源值不能为空")
+        # 每种种类都必须是**已规范化**的形状：写进去的值会进审批摘要与事件，
+        # 允许"非规范的合法值"等于让同一个目标有两种摘要。
+        if self.kind == KIND_NETWORK:
+            if NetworkTarget.parse(self.value).to_uri() != self.value:
+                raise ResourceError(f"网络资源不是规范形状：{self.value!r}")
+        elif self.kind == KIND_MCP:
+            if McpTarget.parse(self.value).to_uri() != self.value:
+                raise ResourceError(f"MCP 资源不是规范形状：{self.value!r}")
+        elif self.kind == KIND_SUBTASK:
+            prefix = f"{SUBTASK_SCHEME}{SCHEME_SEP}"
+            if not self.value.startswith(prefix):
+                raise ResourceError(f"子任务资源必须以 {prefix} 开头：{self.value!r}")
+            _validate_subtask_id(self.value[len(prefix) :])
 
     @property
     def uri(self) -> str:
@@ -165,6 +383,24 @@ class ResourceRef:
         都是绝对路径，重放与摘要比对要求它逐字节不变。
         """
         return self.value
+
+    @property
+    def network_target(self) -> NetworkTarget:
+        if self.kind != KIND_NETWORK:
+            raise ResourceError(f"不是网络资源：{self.kind!r}")
+        return NetworkTarget.parse(self.value)
+
+    @property
+    def mcp_target(self) -> McpTarget:
+        if self.kind != KIND_MCP:
+            raise ResourceError(f"不是 MCP 资源：{self.kind!r}")
+        return McpTarget.parse(self.value)
+
+    @property
+    def subtask_id(self) -> str:
+        if self.kind != KIND_SUBTASK:
+            raise ResourceError(f"不是子任务资源：{self.kind!r}")
+        return self.value[len(SUBTASK_SCHEME) + len(SCHEME_SEP) :]
 
     @property
     def memory_scope(self) -> MemoryScope:
@@ -236,6 +472,16 @@ def parse_resource(raw: object) -> ResourceRef:
     # 2. 认得 scheme 的 → 按种类解析。
     if raw.startswith(f"{MEMORY_SCHEME}{SCHEME_SEP}"):
         return ResourceRef.memory(parse_memory_uri(raw))
+    if raw.startswith(f"{NETWORK_SCHEME}{SCHEME_SEP}"):
+        return ResourceRef(KIND_NETWORK, NetworkTarget.parse(raw).to_uri())
+    if raw.startswith(f"{MCP_SCHEME}{SCHEME_SEP}"):
+        return ResourceRef(KIND_MCP, McpTarget.parse(raw).to_uri())
+    if raw.startswith(f"{SUBTASK_SCHEME}{SCHEME_SEP}"):
+        rest = raw[len(SUBTASK_SCHEME) + len(SCHEME_SEP) :]
+        if "/" in rest:
+            raise ResourceError(f"子任务引用只接受一个 id：{raw!r}")
+        return ResourceRef(KIND_SUBTASK, f"{SUBTASK_SCHEME}{SCHEME_SEP}"
+                           f"{_validate_subtask_id(rest)}")
 
     # 3. 不认得的 scheme → 拒绝。`file://` 也在这里被拒：本项目不用 URL 表达
     #    到处都是绝对路径的东西，接受两种写法只多一处不一致。
@@ -285,7 +531,16 @@ def build_memory_scope(scope: object, scope_id: object) -> MemoryScope:
 
 __all__ = [
     "KIND_FILE",
+    "KIND_MCP",
     "KIND_MEMORY",
+    "KIND_NETWORK",
+    "KIND_SUBTASK",
+    "MCP_SCHEME",
+    "McpTarget",
+    "NETWORK_SCHEME",
+    "NETWORK_TRANSPORTS",
+    "NetworkTarget",
+    "SUBTASK_SCHEME",
     "MEMORY_SCOPES",
     "MEMORY_SCHEME",
     "MemoryScope",

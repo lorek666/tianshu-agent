@@ -20,7 +20,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import time
 import uuid
@@ -31,7 +30,11 @@ from .canonical import jcs_sha256
 from .errors import TianshuError
 from .events import EventLog
 from .resources import (
+    KIND_FILE,
+    KIND_MCP,
     KIND_MEMORY,
+    KIND_NETWORK,
+    KIND_SUBTASK,
     MEMORY_SCOPES,
     ResourceError,
     parse_resource,
@@ -70,6 +73,12 @@ ACTION_DELETE = "delete"
 #: 执行命令（F1 的 spawn）。它是**全系统最高危的动作**：不经文件动作授权，
 #: 但能读写任意文件、联网、启动子进程。独立成一个动作，不许映射成 read。
 ACTION_EXEC = "exec"
+#: 外发（网络请求、搜索）。**不是读**：网络 GET 有成本、有外发、有可重试性差异
+#: （PRD §5.2.3 "状态变化、数据外发、计费、可重试性分开表达"）。独立动作才谈得上
+#: "没有自动路径"——把外发塞进 read 就等于说"读一下没关系"。
+ACTION_FETCH = "fetch"
+#: 委派（派生子任务）。它会创建新执行体、花预算、可能并发，和"读"完全不同。
+ACTION_DELEGATE = "delegate"
 
 SUPPORTED_ACTIONS = {
     ACTION_READ,
@@ -77,12 +86,18 @@ SUPPORTED_ACTIONS = {
     ACTION_OVERWRITE,
     ACTION_DELETE,
     ACTION_EXEC,
+    ACTION_FETCH,
+    ACTION_DELEGATE,
 }
 
 # 不需要人批的动作
 AUTO_ACTIONS = {ACTION_READ, ACTION_CREATE}
 # 必须人批的动作
-APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC}
+#:
+#: `fetch` 在这里是刻意的：外发**永远**要人批，没有"只读所以自动放行"的例外。
+#: `delegate` 不在里面——子任务能力尚未实现，它的判定是恒拒（fail-closed），
+#: 放进审批集合会给人一个"批了就能用"的错觉。
+APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC, ACTION_FETCH}
 
 DECISION_AUTO = "auto"
 DECISION_APPROVE = "approve"
@@ -445,13 +460,19 @@ class PolicyEngine:
         if not resources:
             return PolicyDecision(DECISION_DENY, "动作没有声明资源", "c4.no_resource")
 
-        # 资源种类由字符串自己的 scheme 决定（见 resources.py）。只有真的带
-        # `://` 的资源才进记忆分支；裸绝对路径继续走原来的文件判定，逐字节
-        # 不变——历史审批与派发摘要不因记忆能力上线而失效。
-        if any(
-            isinstance(r, str) and not os.path.isabs(r) and "://" in r
-            for r in resources
-        ):
+        # 资源种类由字符串自己的 scheme 决定（见 resources.py）。裸绝对路径继续
+        # 走原来的文件判定，逐字节不变——历史审批与派发摘要不因新种类上线而失效。
+        kinds = {self._kind_of(r) for r in resources}
+        if len(kinds) > 1:
+            # 一次动作只作用于一种资源：混着来是"用一类资源的授权去做另一类的
+            # 事"的经典口子（例如把外发目标塞进 file 请求里搭便车）。
+            return PolicyDecision(
+                DECISION_DENY,
+                f"一次动作只能作用于一种资源：{sorted(kinds)}",
+                "c4.mixed_resource_kinds",
+            )
+        kind = kinds.pop()
+        if kind == KIND_MEMORY:
             return self._classify_memory(
                 action,
                 resources,
@@ -459,6 +480,12 @@ class PolicyEngine:
                 preconditions or {},
                 task_id=task_id,
             )
+        if kind == KIND_NETWORK:
+            return self._classify_network(action, resources)
+        if kind == KIND_MCP:
+            return self._classify_mcp(action, resources)
+        if kind == KIND_SUBTASK:
+            return self._classify_subtask(action, resources)
 
         bindings = [WorkspaceBinding.of(b) for b in bindings]
         if not bindings:
@@ -521,7 +548,107 @@ class PolicyEngine:
             )
         if action == ACTION_DELETE:
             return PolicyDecision(DECISION_APPROVE, "删除需要审批", "c4.delete")
+        if action in (ACTION_FETCH, ACTION_DELEGATE):
+            # 文件资源 + 外发/委派动作 = 动作与资源种类不匹配。不是"未覆盖"：
+            # 这条分支是**有意的**拒绝，导火索是把外发目标塞进文件请求里。
+            return PolicyDecision(
+                DECISION_DENY,
+                f"文件资源不支持 {action} 动作（外发/委派不是文件操作）",
+                "c4.action_resource_mismatch",
+            )
         return PolicyDecision(DECISION_DENY, f"未覆盖的动作：{action}", "c4.unhandled")
+
+    @staticmethod
+    def _kind_of(raw: object) -> str:
+        """资源字符串的种类。**解析不了的一律当 file**，交给文件分支按旧口径拒绝。
+
+        为什么不在这一层把畸形字符串判成拒绝：文件分支的历史判据（
+        `c4.outside_workspace` / `c4.no_binding` / `c4.readonly_binding`）与
+        拒绝编号是既有契约，换个编号会把"目录外"读成"种类非法"。畸形 scheme
+        由执行侧（`dispatcher._resolve_target`）明确拒绝，那里有更准确的编号。
+        """
+        try:
+            return parse_resource(raw).kind
+        except ResourceError:
+            return KIND_FILE
+
+    def _classify_network(
+        self, action: str, resources: list[str]
+    ) -> PolicyDecision:
+        """网络目标：**恒需人工批准，没有自动路径**。
+
+        PRD §5.2.3："网络 GET / 搜索不是无成本、无外发的本地纯读"。所以哪怕
+        目标是一个公开页面，也不是 `c4.auto`——"私有内容未经外发许可不发包"这条
+        验收只有在"没有任何自动放行分支"时才可能成立。
+        """
+        if len(resources) != 1:
+            return PolicyDecision(
+                DECISION_DENY, "网络动作一次只能有一个目标", "c4.multi_resource"
+            )
+        if action != ACTION_FETCH:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"网络资源只能配 fetch 动作，收到：{action}",
+                "c4.action_resource_mismatch",
+            )
+        try:
+            ref = parse_resource(resources[0])
+            target = ref.network_target
+        except ResourceError as exc:
+            return PolicyDecision(DECISION_DENY, str(exc), "c4.unsupported")
+        return PolicyDecision(
+            DECISION_APPROVE,
+            f"外发到 {target.origin}{target.path} 必须人工批准"
+            "（网络请求有成本、有外发，不是本地纯读）",
+            "c4.outbound",
+        )
+
+    def _classify_mcp(self, action: str, resources: list[str]) -> PolicyDecision:
+        """MCP 工具调用：不可信外部程序，与 `exec` 同级（恒需批准）。"""
+        if len(resources) != 1:
+            return PolicyDecision(
+                DECISION_DENY, "MCP 动作一次只能有一个工具", "c4.multi_resource"
+            )
+        if action != ACTION_EXEC:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"MCP 工具只能配 exec 动作，收到：{action}",
+                "c4.action_resource_mismatch",
+            )
+        try:
+            target = parse_resource(resources[0]).mcp_target
+        except ResourceError as exc:
+            return PolicyDecision(DECISION_DENY, str(exc), "c4.unsupported")
+        return PolicyDecision(
+            DECISION_APPROVE,
+            f"调用 MCP 工具 {target.to_uri()} 需要人工批准"
+            "（MCP 工具是不可信外部程序，与执行命令同级）",
+            "c4.mcp_call",
+        )
+
+    def _classify_subtask(self, action: str, resources: list[str]) -> PolicyDecision:
+        """子任务：能力尚未实现，恒拒。
+
+        这不是"保守"：账本已经有 `subtasks` 维度，但**没有委派执行器**。让它走到
+        审批再失败，等于给用户一个"批了就能用"的错觉；恒拒才是如实的当前状态。
+        接入委派时这里改成审批，并把本注释一起改。
+        """
+        try:
+            task_id = parse_resource(resources[0]).subtask_id if len(resources) == 1 else ""
+        except ResourceError as exc:
+            return PolicyDecision(DECISION_DENY, str(exc), "c4.unsupported")
+        if action != ACTION_DELEGATE:
+            return PolicyDecision(
+                DECISION_DENY,
+                f"子任务资源只能配 delegate 动作，收到：{action}",
+                "c4.action_resource_mismatch",
+            )
+        return PolicyDecision(
+            DECISION_DENY,
+            f"子任务能力尚未实现，拒绝委派 {task_id!r}"
+            "（没有委派执行器，不接受「批一下就好」的路径）",
+            "c4.subtask_unavailable",
+        )
 
     def _classify_memory(
         self,
@@ -1302,8 +1429,10 @@ class GrantStore:
 
 __all__ = [
     "ACTION_CREATE",
+    "ACTION_DELEGATE",
     "ACTION_DELETE",
     "ACTION_EXEC",
+    "ACTION_FETCH",
     "ACTION_OVERWRITE",
     "ACTION_READ",
     "APPROVAL_ACTIONS",

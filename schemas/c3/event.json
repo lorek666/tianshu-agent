@@ -243,7 +243,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -401,7 +403,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -455,7 +459,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -607,7 +613,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "issuer": {
@@ -1088,7 +1096,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -1157,7 +1167,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "args_hash": {
@@ -2435,7 +2447,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -2574,7 +2588,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -2625,7 +2641,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {
@@ -2759,7 +2777,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "issuer": {
@@ -3198,7 +3218,9 @@
               "create",
               "overwrite",
               "delete",
-              "exec"
+              "exec",
+              "fetch",
+              "delegate"
             ]
           },
           "resources": {

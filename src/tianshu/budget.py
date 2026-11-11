@@ -75,6 +75,12 @@ PARTIAL = "partial"
 UNKNOWN = "unknown"
 RELEASED = "released"
 
+#: 预占口径。账户建立时定死，之后不能改——否则"上界"随时可以被降级成"估算"，
+#: 那这条保证就没有意义了。
+BOUND_ESTIMATE = "estimate"
+BOUND_UPPER = "upper"
+BOUNDS: frozenset[str] = frozenset({BOUND_ESTIMATE, BOUND_UPPER})
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS budget_accounts (
     account_id  TEXT PRIMARY KEY,
@@ -83,6 +89,12 @@ CREATE TABLE IF NOT EXISTS budget_accounts (
     label       TEXT NOT NULL DEFAULT '',
     cancelled   INTEGER NOT NULL DEFAULT 0,
     deadline_ms INTEGER,
+    -- 上界模式（bound='upper'）下，结算值一旦超过该次预占，这里就置 1，
+    -- 此后该账户（及其后代，因为拒绝沿链检查）拒绝一切新预占。
+    -- 估算模式也会记这个标记（如实反映），但不据此拒发。
+    overrun     INTEGER NOT NULL DEFAULT 0,
+    -- 'estimate' 或 'upper'：账户是按哪种口径立起来的。审计与拒绝判定都用它。
+    bound       TEXT NOT NULL DEFAULT 'estimate',
     created_at  INTEGER NOT NULL
 );
 
@@ -161,6 +173,48 @@ def estimate_need(
     return need
 
 
+def upper_bound_tokens(text: str) -> int:
+    """文本的 token **上界**：UTF-8 字节数。
+
+    依据只有一个、但够硬：字节级 BPE 的每个 token 至少覆盖 1 个字节，所以
+    `tokens ≤ bytes`。反过来 `chars / 4` 在 CJK 上会**低估**（一个汉字 3 字节，
+    折算下来 0.75 token/字，而实际常常接近 1 token/字），拿它当上界必然被打穿。
+
+    边界（如实写）：这是**文本**的字节上界；协议层每消息的固定开销（几个 token）
+    不在里面。所以它只在"provider 不给每条消息加固定计费 token"时是严格上界；
+    真被打穿时账本会记 `overrun` 并（上界模式下）停机，而不是继续假装算得准。
+    """
+    if not isinstance(text, str):
+        raise TianshuError(f"上界只对文本定义：{type(text).__name__}")
+    return len(text.encode("utf-8"))
+
+
+def upper_need(
+    *,
+    input_bytes: int,
+    output_bound: int,
+    requests: int = 1,
+) -> dict[str, int]:
+    """一次 attempt 的**可验证**预占：输入上界 + 输出上界。
+
+    与 `estimate_need()` 的区别不是"更保守"，是**不同性质**：这里的两个数都必须
+    是上界，拿不到就调用方拒绝进入这个模式（`BudgetConfigError`），不做"少估一点
+    也没事"的折中。
+    """
+    if isinstance(input_bytes, bool) or not isinstance(input_bytes, int) or input_bytes < 0:
+        raise TianshuError(f"input_bytes 必须是非负整数：{input_bytes!r}")
+    if isinstance(output_bound, bool) or not isinstance(output_bound, int):
+        raise TianshuError(f"output_bound 必须是整数：{output_bound!r}")
+    if output_bound <= 0:
+        raise TianshuError(
+            f"输出上界必须为正（没有输出上界就不叫上界）：{output_bound!r}"
+        )
+    need = {"tokens": input_bytes + output_bound}
+    if requests:
+        need["requests"] = requests
+    return need
+
+
 @dataclass(frozen=True)
 class Reservation:
     reservation_id: str
@@ -180,6 +234,8 @@ class Settlement:
     known: bool = True
     #: True = 这次调用没有改动账本（重复结算 / 已释放）。幂等的证据。
     duplicate: bool = False
+    #: 结算值超过该次预占的维度（上界模式下的"上界被突破"，估算模式下如实记录）。
+    overrun: tuple[str, ...] = ()
 
 
 class BudgetLedger:
@@ -199,6 +255,8 @@ class BudgetLedger:
         for table, column, decl in (
             ("budget_accounts", "deadline_ms", "INTEGER"),
             ("budget_accounts", "label", "TEXT NOT NULL DEFAULT ''"),
+            ("budget_accounts", "overrun", "INTEGER NOT NULL DEFAULT 0"),
+            ("budget_accounts", "bound", "TEXT NOT NULL DEFAULT 'estimate'"),
         ):
             try:
                 self._conn.execute(
@@ -230,10 +288,19 @@ class BudgetLedger:
         run_id: str = "",
         label: str = "",
         deadline_ms: int | None = None,
+        bound: str = BOUND_ESTIMATE,
     ) -> None:
-        """建账户（幂等）。`limits` 只认 `DIMENSIONS` 里的维度。"""
+        """建账户（幂等）。`limits` 只认 `DIMENSIONS` 里的维度。
+
+        `bound` 决定"结算超过预占"要不要拒发：`estimate` 只如实记、不停机；
+        `upper` 视其为上界被突破，此后拒绝该账户链上的一切新预占。
+        """
         if not account_id:
             raise TianshuError("预算账户 id 不能为空")
+        if bound not in BOUNDS:
+            raise TianshuError(
+                f"未知的预占口径：{bound!r}（合法值：{sorted(BOUNDS)}）"
+            )
         unknown = sorted(set(limits or {}) - set(DIMENSIONS))
         if unknown:
             raise TianshuError(
@@ -261,9 +328,10 @@ class BudgetLedger:
                 return
             self._conn.execute(
                 "INSERT INTO budget_accounts (account_id, parent_id, run_id,"
-                " label, cancelled, deadline_ms, created_at)"
-                " VALUES (?,?,?,?,0,?,?)",
-                (account_id, parent_id, run_id, label, deadline_ms, self._clock()),
+                " label, cancelled, deadline_ms, bound, created_at)"
+                " VALUES (?,?,?,?,0,?,?,?)",
+                (account_id, parent_id, run_id, label, deadline_ms, bound,
+                 self._clock()),
             )
             for dimension, value in (limits or {}).items():
                 self._conn.execute(
@@ -285,6 +353,8 @@ class BudgetLedger:
             "label": row["label"],
             "cancelled": bool(row["cancelled"]),
             "deadline_ms": row["deadline_ms"],
+            "overrun": bool(row["overrun"]),
+            "bound": row["bound"],
         }
 
     def _chain(self, account_id: str) -> list[str]:
@@ -375,6 +445,15 @@ class BudgetLedger:
                 if account["cancelled"]:
                     raise BudgetCancelled(
                         f"预算账户已取消，拒绝新请求：{level}", account_id=level
+                    )
+                if account["overrun"] and account["bound"] == BOUND_UPPER:
+                    # 上界被突破 = 这条保证已经不成立。此时继续发请求是把
+                    # "保证"降级成"希望"，所以拒绝，并把原因报清楚。
+                    raise BudgetRefused(
+                        f"预算上界已被突破，拒绝新请求：{level}"
+                        "（上界模式：结算值超过预占即视为保证失效）",
+                        account_id=level,
+                        dimension="overrun",
                     )
                 if account["deadline_ms"] is not None and now > account["deadline_ms"]:
                     raise BudgetRefused(
@@ -517,6 +596,20 @@ class BudgetLedger:
                             " settled = settled + excluded.settled",
                             (level, dimension, value),
                         )
+            # 结算值 > 预占 = 预占口径被事实打穿。**照实记**（不是把用量夹回预占，
+            # 那等于改账），并把账户链标成 overrun：上界模式据此拒绝后续请求，
+            # 估算模式只如实展示（估算本来就会偏，拿它当上界才是错的）。
+            overrun_dims = tuple(
+                dimension
+                for dimension, value in sorted(usage.items())
+                if dimension in known_dims and value > need.get(dimension, 0)
+            )
+            if overrun_dims:
+                for level in chain:
+                    self._conn.execute(
+                        "UPDATE budget_accounts SET overrun = 1 WHERE account_id = ?",
+                        (level,),
+                    )
             # 未结清的维度占用**不释放**：之后由 `reconcile()` 报告，人工/恢复
             # 流程核对执行证据，不由进程退出猜测为零。
             if not unresolved:
@@ -542,6 +635,7 @@ class BudgetLedger:
             usage=usage,
             known=known,
             duplicate=False,
+            overrun=overrun_dims,
         )
 
     def abandon_unsent(self, reservation_id: str, *, reason: str = "") -> bool:
@@ -633,6 +727,7 @@ class BudgetLedger:
             """,
             (account_id, UNKNOWN, PARTIAL),
         ).fetchone()["n"]
+        account = self.account(account_id)
         return {
             "account_id": account_id,
             "limits": self._limits(account_id),
@@ -640,6 +735,10 @@ class BudgetLedger:
             "reserved": reserved,
             "unknown_reservations": unknown,
             "cancelled": self.is_cancelled(account_id),
+            # 上界是否被打穿、这个账户当初按哪种口径建立：两个都要能被读到，
+            # 否则"上界保证"就只活在代码注释里。
+            "overrun": bool(account and account["overrun"]),
+            "bound": (account or {}).get("bound", ""),
         }
 
     def pending(self, account_id: str | None = None) -> list[Reservation]:
@@ -692,6 +791,9 @@ class BudgetLedger:
 
 
 __all__ = [
+    "BOUNDS",
+    "BOUND_ESTIMATE",
+    "BOUND_UPPER",
     "BudgetLedger",
     "DIMENSIONS",
     "MAX_CHAIN",
@@ -704,4 +806,6 @@ __all__ = [
     "UNKNOWN",
     "estimate_need",
     "estimate_tokens",
+    "upper_bound_tokens",
+    "upper_need",
 ]

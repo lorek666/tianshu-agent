@@ -507,14 +507,21 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 验收：无目录联网任务可运行；嵌套非法参数在执行前被拒；私有内容未经外发许可不发包；工具描述变更使旧批准失效；取消或额度耗尽后无新请求；replay 只读已保存结果、不访问当前网络或工具清单。
 
-**实现状态（2026-11-11，PR #91，见 [tool-admission.md](tool-admission.md)）**：封闭 schema 方言与
-注册期拒绝、执行期嵌套校验、准入前移到派发之前、工具版本 + schema + **描述摘要**三项绑定、
-身份字段（task/run/call/attempt/预算/deadline）注册期与执行期双闸、URL 不伪装成文件路径、
-replay 只读事件——**已实现并有判据**（`tests/test_g1_admission.py`，负控 9/9）。**未实现**：
-网络 / MCP / 子任务三种资源种类与各自的外发许可（属 G2，接入前必须先补本节的准入）、
-「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」。因此「无目录联网任务
-可运行」「私有内容未经外发许可不发包」两条验收**当前只能记为 unknown**（没有外发面，
-既不能证明通过也不能证明失败）。
+**实现状态（2026-11-11；准入 PR #91、资源种类 PR #97）**：
+
+- **已实现并有判据**（`tests/test_g1_admission.py` 19 条，负控 9/9，见
+  [tool-admission.md](tool-admission.md)）：封闭 schema 方言与注册期拒绝、执行期嵌套校验、
+  准入前移到派发之前、工具版本 + schema + **描述摘要**三项绑定、身份字段（task/run/call/
+  attempt/预算/deadline）注册期与执行期双闸、URL 不伪装成文件路径、replay 只读事件。
+- **已实现并有判据**（`tests/test_g1d_resource_kinds.py` 15 条，负控 6/6，见
+  [resource-kinds.md](resource-kinds.md)）：五种资源种类（file / memory / network / mcp /
+  subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
+  MCP 与 exec 同级（`c4.mcp_call`）、委派因能力缺失恒拒（`c4.subtask_unavailable`）、
+  种类混用一律拒；没有执行器的种类在派发前拒绝（`dispatch.resource_kind_unsupported`）。
+- **未实现**：「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」；
+  网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」「私有内容未经
+  外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门已就位、可拒绝，
+  但没有外发面可以验证"发了什么"。
 
 
 ### 5.3 C3 Event
@@ -765,6 +772,10 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | 资源种类没有执行器：`network://` / `mcp://` / `subtask://` 的解析与许可已实现，但网络 / MCP / 委派的执行器属 G2，派发前拒绝。 | 当前不可用：这些能力还没接（不是参数问题）。文件操作请用文件工具。 |
+| `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
+| `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
+| `c4.subtask_unavailable` | 资源种类 | 子任务能力尚未实现，委派被拒（没有委派执行器，不接受「批一下就好」的路径）。 | 当前不可用：等委派能力上线。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
 | `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
@@ -774,6 +785,8 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.memory_scope` | 判定结果（非拒绝） | 判定结果：记忆作用域在授权范围内（`user` 恒可访问；`workspace` 须是本任务绑定的 canonical 根；`task` 须等于本任务 id），读取与新建候选自动放行。 | 无需操作：读 / 写候选已放行；`memory.confirm` / `memory.forget` 仍按覆盖 / 删除审批。 |
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
 | `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
+| `c4.outbound` | 判定结果（非拒绝） | 判定结果：外发到网络目标需人工审批（`fetch` 动作 + `network://` 资源）。网络请求有成本、有外发，不是本地纯读——**没有自动放行路径**。 | 确认目标主机与路径无误后批准；不确定就拒绝。 |
+| `c4.mcp_call` | 判定结果（非拒绝） | 判定结果：调用 MCP 工具需人工审批（`exec` 动作 + `mcp://` 资源）：MCP 工具是不可信外部程序，与执行命令同级。 | 确认服务器与工具名无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
 | `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |
@@ -861,13 +874,18 @@ class Limits(TypedDict, total=False):
 
 **当前边界**：单 Run 的 usage/cursor 记录和基于上次成功用量的重试估算，不等于上述共享原子账本；现实现不得据此承诺并发硬预算。
 
-**实现状态（2026-11-11，PR #92，见 [budget-ledger.md](budget-ledger.md)）**：共享账本已实现
-（账户 / 上限 / 计数器 / 预占四张表建在事件库同一 SQLite 文件；`BEGIN IMMEDIATE` 内原子预占；
-按 attempt 幂等结算；分维度支持 `partial`；未知用量保留占用不记零；父子链；`reconcile()`
-只报告不清零；`run.cancel` 传播），主循环已接线（预占失败 → 记 `model.error` 并停止，
-一次模型调用都不发生）。**但账本默认关闭**（`Limits.budget_limits` 为 None 时行为与之前一致）：
-估算预占会让临界 run 提前被拒，属行为变更，需要单独评审；**接入网络计费或子代理并发（G2）
-前必须默认打开**。上面的验收因此只对"显式启用账本的 run"成立，不能读成默认路径已经成立。
+**实现状态（2026-11-11，PR #92 落地、PR #96 收口，见 [budget-ledger.md](budget-ledger.md)）**：
+共享账本已实现（账户 / 上限 / 计数器 / 预占四张表建在事件库同一 SQLite 文件；`BEGIN IMMEDIATE`
+内原子预占；按 attempt 幂等结算；分维度支持 `partial`；未知用量保留占用不记零；父子链；
+`reconcile()` 只报告不清零；`run.cancel` 传播，且取消早于第一次预占时也会先建账户再取消），
+主循环已接线（预占失败 → 记 `model.error` 并停止，一次模型调用都不发生）。
+**账本默认记账**（`Limits.budget_limits` 为 None 时照样建账户、预占、结算，但任何维度都不
+设闸）：这是第 4 / 7 两条在默认路径上成立的前提。设闸需显式给上限。
+第 3 条"估算不冒充可验证上界"现在有两种口径：默认 `budget_bound="estimate"`（估算，越界
+如实记 `overrun` 但不停机）；`budget_bound="upper"` 用**可验证上界**（输入 = 请求体 UTF-8
+字节数，输出 = adapter 能力声明的 `output_tokens`），拿不到输出上界就拒绝进入该模式，
+越界后该账户链拒绝一切新预占。**仍未做**：界面分别展示已知费用与未知用量；子任务/网络
+的真实账户与计费（G2）。
 
 **验收**：真并发竞争最后一份额度只放行一次；重复结算不重复扣款；预占后崩溃可核对；未知费用不记零；父额度耗尽时子任务和摘要均拒发；取消确认后无新请求。
 
