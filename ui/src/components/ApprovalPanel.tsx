@@ -68,7 +68,7 @@ export function ApprovalPanel({ approvals, tasks, busy, now, onDecide }: Approva
   );
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   approval,
   task,
   now,

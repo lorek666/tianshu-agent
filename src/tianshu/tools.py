@@ -1218,6 +1218,11 @@ class FileExecutor:
         """这条执行路径使用的**执行**后端（装配层核"同一个世界"用）。"""
         return self._exec_backend
 
+    @property
+    def data_root(self) -> Path | None:
+        """这条执行路径使用的数据根（装配层核"同一个探测现场"用）。"""
+        return self._data_root
+
     # ---- 独立核验 ----
 
     def _verify(self, admitted: AdmittedCall, permit: ExecutionPermit | None) -> None:

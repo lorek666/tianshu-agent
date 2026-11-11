@@ -162,6 +162,7 @@ class IsolationReport:
     workspace: str = ""
     data_root: str = ""
     probe_version: str = PROBE_VERSION
+    timeout_ms: int = PROBE_TIMEOUT_MS
 
     def __post_init__(self) -> None:
         if not isinstance(self.backend, str) or not self.backend:
@@ -353,6 +354,7 @@ def require_isolation_requirements(
         or report.workspace != str(ws)
         or report.data_root != str(root)
         or report.probe_version != PROBE_VERSION
+        or report.timeout_ms != PROBE_TIMEOUT_MS
     ):
         # 报告是"某个后端在某个平台某个现场"的证据；少核任何一项，
         # 都会让另一个后端/平台/现场的 enforced 被复用（F2-c6 的反面）。
@@ -364,7 +366,8 @@ def require_isolation_requirements(
                 "隔离报告不属于本次探测现场"
                 f"（报告 backend={report.backend!r} platform={report.platform!r}"
                 f" workspace={report.workspace!r} data_root={report.data_root!r}"
-                f" probe={report.probe_version!r}；本次 {name!r}/"
+                f" probe={report.probe_version!r} timeout={report.timeout_ms!r}；"
+                f"本次 {name!r}/"
                 f"{expected_platform!r}/{str(ws)!r}/{str(root)!r}/{PROBE_VERSION!r}）"
             ),
         )
@@ -535,6 +538,7 @@ def probe_backend(
         workspace=str(ws),
         data_root=str(root),
         probe_version=PROBE_VERSION,
+        timeout_ms=timeout_ms,
     )
 
 

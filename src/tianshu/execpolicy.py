@@ -80,6 +80,7 @@ _FEATURE_ATTRS: dict[str, str] = {
 
 #: 后端如实声明的隔离级别。TECH-ARCH §6 的分层：
 #: L1 = 路径控制，L2 = 进程树治理，L3 = 越界读防护，L4 = 容器。
+ISOLATION_NONE = "none"
 ISOLATION_PATH_ONLY = "path_only"
 ISOLATION_PROCESS_TREE = "process_tree"
 ISOLATION_APP_CONTAINER = "app_container"
@@ -91,6 +92,11 @@ RECOMMENDED_ISOLATION = (
     ISOLATION_APP_CONTAINER,
     ISOLATION_CONTAINER,
 )
+
+#: 后端可声明的**封闭**隔离级别集。它必须与事件契约
+#: `_ISOLATION_VIEW.declared` 的 enum 一致：输出契约收紧了，来源不收紧，
+#: 一个 ``isolation="bogus"`` 的后端会把"成功执行"变成写事件时的 unknown。
+ISOLATION_LEVELS: tuple[str, ...] = (ISOLATION_NONE, *RECOMMENDED_ISOLATION)
 
 #: PRD §8.1.1 的四条隔离边界。它们是**被实测的对象**（`isolation.py` 用真实
 #: 子进程逐条探测），不是后端自述的等级名。策略里的"隔离要求"用的是这四个
@@ -338,6 +344,11 @@ class ExecBackendCapabilities:
             raise ValueError(f"后端 name 必须是非空字符串：{self.name!r}")
         if not isinstance(self.isolation, str) or not self.isolation:
             raise ValueError(f"isolation 必须是非空字符串：{self.isolation!r}")
+        if self.isolation not in ISOLATION_LEVELS:
+            raise ValueError(
+                f"未知隔离级别：{self.isolation!r}（可选：{list(ISOLATION_LEVELS)}）"
+                "—— 后端自述级别属于封闭集，输出契约与能力声明必须同一套枚举"
+            )
         for attr in _FEATURE_ATTRS.values():
             value = getattr(self, attr)
             if not isinstance(value, bool):
@@ -590,6 +601,8 @@ __all__ = [
     "ISOLATION_BOUNDARY_NETWORK",
     "ISOLATION_BOUNDARY_PROCESS_TREE",
     "ISOLATION_CONTAINER",
+    "ISOLATION_LEVELS",
+    "ISOLATION_NONE",
     "ISOLATION_PATH_ONLY",
     "ISOLATION_PROCESS_TREE",
     "RECOMMENDED_ISOLATION",

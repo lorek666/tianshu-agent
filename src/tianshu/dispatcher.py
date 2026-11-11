@@ -565,7 +565,23 @@ class Dispatcher:
         )
         if executor is not None:
             # 自定义 executor 也让"预检看到的后端"与"执行看到的后端"必须同一个：
-            # 只核默认构造等于给旁路留门。
+            # 只核默认构造等于给旁路留门。数据根同理——审批 probe 与执行
+            # probe 必须是同一个现场。
+            executor_data_root = getattr(executor, "data_root", None)
+            same_root = executor_data_root == self._data_root
+            if not same_root and (
+                executor_data_root is not None and self._data_root is not None
+            ):
+                same_root = (
+                    Path(executor_data_root).resolve()
+                    == Path(self._data_root).resolve()
+                )
+            if not same_root:
+                raise TianshuError(
+                    "Dispatcher 收到的执行器数据根与派发层不一致："
+                    f"{executor_data_root} vs {self._data_root}"
+                    "（隔离证据必须来自同一个探测现场）"
+                )
             executor_backend = getattr(executor, "exec_backend", None)
             if executor_backend is not self._exec_backend:
                 raise TianshuError(
@@ -1619,7 +1635,14 @@ class Dispatcher:
                 check_capabilities(policy, self._exec_backend.capabilities)
             # 预检与执行必须用**同一个探测现场**：执行时的 workspace 是
             # `args["cwd"]` 解析后的目录（`_write_target`），不是请求目标本身。
-            probe_workspace = Workspace(target).resolve(args.get("cwd", "."))
+            # 解析失败（越界/非法类型）必须变成**可解释的拒绝**，不能让
+            # `prepare()` 抛裸 `WorkspaceViolation` 把整个 Run 收成 failed。
+            try:
+                probe_workspace = Workspace(target).resolve(args.get("cwd", "."))
+            except (WorkspaceViolation, ToolArgumentError, ValueError) as exc:
+                raise DispatchDenied(
+                    f"执行目录不可用：{exc}", "c4.outside_workspace"
+                ) from exc
             report = require_isolation_requirements(
                 policy,
                 self._exec_backend,

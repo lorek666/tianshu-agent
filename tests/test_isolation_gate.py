@@ -22,9 +22,10 @@ import pytest
 
 from tianshu import isolation, tools
 from tianshu.dispatcher import Dispatcher, build_request
+from tianshu.errors import TianshuError
 from tianshu.event_schema import PayloadContractError, validate_payload
 from tianshu.events import EventLog
-from tianshu.exec import LOCAL_EXEC_BACKEND, ExecResult
+from tianshu.exec import LOCAL_EXEC_BACKEND, ExecResult, LocalExecBackend
 from tianshu.exec_backends import (
     ExecBackend,
     exec_backend,
@@ -47,7 +48,12 @@ from tianshu.isolation import (
 )
 from tianshu.jobs import JobStore
 from tianshu.leases import LeaseStore
-from tianshu.permissions import ApprovalStore, GrantStore, PolicyEngine
+from tianshu.permissions import (
+    ApprovalStore,
+    GrantStore,
+    HumanIdentity,
+    PolicyEngine,
+)
 from tianshu.snapshot import SnapshotStore
 from tianshu.tasks import RUN_RUNNING, TaskStore
 from tianshu.workspace import Workspace
@@ -797,9 +803,13 @@ def test_old_probe_version_is_refused(tmp_path):
 # ---------------------------------------------------------------- 11. 无数据根也能构造/执行
 
 
-def test_file_executor_without_data_root_constructs_and_runs(tmp_path):
-    """没有数据根是合法状态：不声明隔离要求的执行不该因为构造而崩。"""
-    from tianshu.exec import LocalExecBackend
+def test_file_executor_without_data_root_constructs_and_runs_command(tmp_path):
+    """没有数据根：构造不崩；**不声明隔离要求**的 run_command 真能跑。
+
+    `Dispatcher` 执行文件工具时另有一道 data_root 必需的门（TOCTOU 串行化），
+    与 F2 无关；这里测的是 F2 的路径（`_run_command` + FileExecutor 接线），
+    避免把两件事混成一条"通过"。
+    """
     from tianshu.tools import FileExecutor
 
     workspace = tmp_path / WS
@@ -821,15 +831,23 @@ def test_file_executor_without_data_root_constructs_and_runs(tmp_path):
             dispatch_mark=lambda run_id, call_id, state: None,
             clock=lambda: 0,
             log=log,
+            exec_backend=LocalExecBackend(),
+            data_root=None,
         )
-        assert executor.exec_backend is not None
-        assert executor._data_root is None  # noqa: SLF001 - 就是要核这个状态
+        assert executor.data_root is None
 
-        # 不要求隔离 → 探针不需要数据根，执行照常（这里只核构造与参数接线，
-        # 真正的 spawn 由其他用例覆盖）。
-        policy = _policy(workspace)
-        ctx = tools.ToolContext(exec_policy=policy, exec_backend=LocalExecBackend())
-        assert ctx.data_root is None
+        ctx = tools.ToolContext(
+            exec_policy=_policy(workspace),
+            exec_backend=LocalExecBackend(),
+            data_root=None,
+        )
+        result = tools._run_command(
+            Workspace(workspace), {"argv": [PY, "-c", "print(7)"]}, ctx
+        )
+        assert result.status == "succeeded"
+        assert result.output["stdout"].strip() == "7"
+        assert result.output["isolation"]["level"] == "none"
+        assert result.output["isolation"]["unverified"] is True
     finally:
         log.close()
 
@@ -855,7 +873,6 @@ def test_precheck_and_execution_probe_the_same_workspace(env_factory, monkeypatc
 
     decision = env.dispatcher.prepare(request, claim, args=args)
     assert decision.is_waiting, decision
-    from tianshu.permissions import HumanIdentity
 
     env.approvals.decide(
         decision.approval_id,
@@ -866,3 +883,63 @@ def test_precheck_and_execution_probe_the_same_workspace(env_factory, monkeypatc
 
     workspaces = {item[0] for item in seen}
     assert workspaces == {str(sub.resolve())}
+
+
+# ---------------------------------------------------------------- 12. 预检路径错误与能力来源
+
+
+def test_cwd_outside_workspace_is_a_rejection_not_a_run_failure(env_factory):
+    """越界 cwd 必须是可解释的拒绝（工具结果/决策），不能让 prepare 抛裸异常。"""
+    env = env_factory()
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print(1)"], "cwd": "../outside"}
+    request = _exec_request(env, run, claim, args=args, task=task)
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+
+    assert decision.is_rejected
+    assert decision.rule_id == "c4.outside_workspace"
+    assert "执行目录不可用" in decision.reason
+
+
+def test_bogus_backend_isolation_level_is_rejected_at_construction():
+    """能力声明与输出契约共用同一套级别枚举：bogus 不能进注册表。"""
+    with pytest.raises(ValueError, match="未知隔离级别"):
+        ExecBackendCapabilities(name="fake", isolation="bogus")
+    with pytest.raises(ValueError, match="未知隔离级别"):
+        ExecBackendCapabilities(name="fake", isolation="super-safe")
+
+
+def test_dispatcher_refuses_executor_with_another_data_root(env_factory, tmp_path):
+    from tianshu.tools import FileExecutor
+
+    env = env_factory()
+    other_root = tmp_path / "other-root"
+    other_root.mkdir()
+    other_executor = FileExecutor(
+        tasks=env.tasks,
+        leases=env.leases,
+        grants=env.grants,
+        approvals=env.approvals,
+        claims=env.claims,
+        dispatch_lookup=env.dispatcher.dispatch_record,
+        dispatch_mark=env.dispatcher.mark_dispatch,
+        clock=lambda: 0,
+        log=env.log,
+        snapshots=env.snapshots,
+        data_root=other_root,
+    )
+
+    with pytest.raises(TianshuError, match="数据根"):
+        Dispatcher(
+            env.log,
+            env.tasks,
+            env.leases,
+            PolicyEngine(),
+            env.approvals,
+            grants=env.grants,
+            claims=env.claims,
+            snapshots=env.snapshots,
+            data_root=env.data,
+            executor=other_executor,
+        )

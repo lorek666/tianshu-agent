@@ -55,6 +55,7 @@ from .execpolicy import (
     ISOLATION_BOUNDARY_FILES,
     ISOLATION_BOUNDARY_NETWORK,
     ISOLATION_BOUNDARY_PROCESS_TREE,
+    ISOLATION_NONE,
     ExecBackendCapabilities,
     ExecPolicy,
     PolicyDenied,
@@ -90,7 +91,7 @@ def local_capabilities() -> ExecBackendCapabilities:
     posix = os.name == "posix"
     return ExecBackendCapabilities(
         name="local-posix" if posix else "local-windows",
-        isolation="none",
+        isolation=ISOLATION_NONE,
         supports_pty=posix,
         supports_signals=posix,
         supports_process_group=posix,

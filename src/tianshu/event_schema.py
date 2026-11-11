@@ -30,7 +30,7 @@ import re
 from typing import Any
 
 from .errors import TianshuError
-from .execpolicy import ISOLATION_BOUNDARIES
+from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
 
 __all__ = [
     "CURRENT_PAYLOAD_VERSION",
@@ -252,9 +252,8 @@ _BOUNDARY_STATUS = _enum("enforced", "not_enforced", "unknown")
 #: 一次执行的隔离视图（F2）。机器可读，不许出现"人话"字段——中文映射在 UI。
 #: `level` 是**累计显示**（`measured_level`），`boundaries` 才是逐边界证据；
 #: `unverified` / `contradicted` 必须由 UI 按优先级先于 `level` 处理。
-_ISOLATION_LEVEL = _enum(
-    "none", "path_only", "process_tree", "app_container", "container"
-)
+#: 与 `execpolicy.ISOLATION_LEVELS` 同一套封闭集（能力声明与输出契约必须一致）。
+_ISOLATION_LEVEL = _enum(*ISOLATION_LEVELS)
 
 _ISOLATION_VIEW = _obj(
     {
