@@ -393,3 +393,206 @@ def test_stale_revision_is_refused_before_dispatch(live) -> None:
         )
     assert stale.value.code == "conflict"
     assert (current + 1) != current
+
+def test_task_scope_edit_and_forget_return_the_updated_view(live) -> None:
+    """task / workspace 作用域的写操作也要把**写后的视图**带回来。
+
+    `_memory_after_call` 曾固定只按 `user` 作用域读，于是非 user 记忆的 edit / forget
+    会"状态成功、`memory` 是 null"——UI 拿不到"现在算什么"（复审抓到的功能缺口）。
+    """
+    client, _root = live
+    task_id = "task_n6_view"
+    remembered = client.call(
+        "memory.remember",
+        {
+            "kind": "fact",
+            "content": "任务里的临时结论：先做备份",
+            "scope": "task",
+            "scope_id": task_id,
+        },
+    )
+    memory_id = remembered["output"]["memory_id"]
+    edited = client.call(
+        "memory.edit",
+        {
+            "memory_id": memory_id,
+            "revision": 1,
+            "content": "任务里的临时结论：先做演练",
+            "scope": "task",
+            "scope_id": task_id,
+        },
+    )
+    assert edited["status"] == "succeeded", edited
+    assert edited["memory"] is not None, "task 作用域的编辑必须带回写后视图"
+    assert edited["memory"]["scope"] == "task"
+    assert edited["memory"]["scope_id"] == task_id
+    assert edited["memory"]["content"] == "任务里的临时结论：先做演练"
+
+    forgotten = client.call(
+        "memory.forget",
+        {
+            "memory_id": edited["memory"]["memory_id"],
+            "revision": edited["memory"]["revision"],
+            "scope": "task",
+            "scope_id": task_id,
+        },
+    )
+    assert forgotten["memory"] is not None, "task 作用域的忘记必须带回写后视图"
+    assert forgotten["memory"]["status"] == "forgotten"
+
+
+def test_promote_from_workspace_to_user_uses_source_scope(live, tmp_path) -> None:
+    """`promote` 的源作用域与目标作用域是两组参数：workspace → user 必须能看见源行。
+
+    原来两者共用 `scope`/`scope_id`，于是"从 workspace 提到 user"永远 `not_found`
+    （目标 user 的可见集合里没有 workspace 行）；从 task 提同理（复审抓到的功能缺口）。
+    """
+    client, _root = live
+    workspace = tmp_path / "ws_n6_promote"
+    workspace.mkdir()
+    remembered = client.call(
+        "memory.remember",
+        {
+            "kind": "preference",
+            "content": "这个仓库的提交信息用中文",
+            "scope": "workspace",
+            "scope_id": str(workspace),
+        },
+    )
+    memory_id = remembered["output"]["memory_id"]
+    promoted = client.call(
+        "memory.promote",
+        {
+            "memory_id": memory_id,
+            "revision": 1,
+            "source_scope": "workspace",
+            "source_scope_id": str(workspace),
+            "scope": "user",
+            "scope_id": "local",
+        },
+    )
+    assert promoted["status"] == "succeeded", promoted
+    assert promoted["memory"] is not None
+    assert promoted["memory"]["scope"] == "user"
+    assert promoted["memory"]["status"] == "candidate"
+    assert memory_id in promoted["memory"]["source_refs"]
+    original = client.call(
+        "memory.get",
+        {
+            "memory_id": memory_id,
+            "scope": "workspace",
+            "scope_id": str(workspace),
+        },
+    )["memory"]
+    assert original["status"] == "superseded"
+
+
+def test_erase_rpc_removes_the_body_copy_and_reports_it(live) -> None:
+    """`memory.erase` 也在控制面：删除正文副本 + 标 erased_at，回执可核对。
+
+    界面上"删除"有两档：`forget` 是停召回（tombstone），`erase` 才删副本与索引。
+    """
+    client, _root = live
+    memory_id = client.call(
+        "memory.remember", {"kind": "fact", "content": "这条会被彻底删掉"}
+    )["output"]["memory_id"]
+    forgotten = client.call("memory.forget", {"memory_id": memory_id, "revision": 1})
+    assert forgotten["status"] == "succeeded", forgotten
+    erased = client.call(
+        "memory.erase", {"memory_id": memory_id, "revision": forgotten["memory"]["revision"]}
+    )
+    assert erased["status"] == "succeeded", erased
+    assert erased["output"]["erasure"]["deleted"] is True
+    assert erased["memory"] is not None
+    assert erased["memory"]["status"] == "forgotten"
+    assert erased["memory"]["erased_at"] is not None
+    assert erased["memory"]["content"] is None
+    assert erased["memory"]["content_state"] == "unavailable"
+    got = client.call("memory.get", {"memory_id": memory_id})["memory"]
+    assert got["content"] is None, "擦除后正文必须不可用（不回落到最新版本）"
+
+
+def test_host_rpc_proxies_memory_endpoints_with_the_ui_token(live, tmp_path) -> None:
+    """真 Host 的 `POST /rpc` 能把记忆端点代理给 daemon（带 UI token）。
+
+    前面所有用例都直连 IPC——那证明的是控制面本身；这一条补的是**UI 实际走的那层**：
+    浏览器 → Host（校验 Origin/token）→ IPC → `ControlPlane`。Host 的 token/路由/proxy
+    一旦坏掉，直连 IPC 的用例仍会全绿（复审指出的缺口）。
+    """
+    import json as _json
+    import socket as _socket
+
+    from tianshu import host
+
+    client, root = live
+    ui = tmp_path / "ui"
+    (ui / "assets").mkdir(parents=True, exist_ok=True)
+    (ui / "index.html").write_bytes(
+        b'<!doctype html><html><head><meta name="tianshu-token" '
+        b'content="__TIANSHU_TOKEN__"></head><body>x</body></html>'
+    )
+    (ui / "assets" / "app.js").write_bytes(b"console.log('hi')")
+    bridge = host.UiBridge(
+        host.BridgeConfig(data_root=root, ui_dir=ui, token="tok-n6", port=0)
+    )
+    bridge.serve_background()
+    port = bridge.port
+    try:
+        def rpc(method: str, params: dict) -> dict:
+            body = _json.dumps({"method": method, "params": params}).encode("utf-8")
+            with _socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                head = [
+                    "POST /rpc HTTP/1.1",
+                    f"Host: 127.0.0.1:{port}",
+                    "X-Tianshu-Token: tok-n6",
+                    f"Content-Length: {len(body)}",
+                    "Connection: close",
+                ]
+                sock.sendall(("\r\n".join(head) + "\r\n\r\n").encode("ascii") + body)
+                raw = b""
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+            payload = _json.loads(raw.partition(b"\r\n\r\n")[2].decode("utf-8"))
+            assert payload["ok"], payload
+            return payload["result"]
+
+        remembered = rpc("memory.remember", {"kind": "preference", "content": "UI 也要能记住"})
+        assert remembered["status"] == "succeeded", remembered
+        memory_id = remembered["output"]["memory_id"]
+        listed = rpc("memory.list", {})
+        assert memory_id in {item["memory_id"] for item in listed["items"]}
+        got = rpc("memory.get", {"memory_id": memory_id})
+        assert got["memory"]["content"] == "UI 也要能记住"
+        # 没有 token 的请求必须被 Host 拒（记忆端点不能成为未授权读取口）。
+        status, payload = _unauthed_rpc(port, "memory.list", {})
+        assert status == 401, (status, payload)
+    finally:
+        bridge.stop()
+        client.close()
+
+
+def _unauthed_rpc(port: int, method: str, params: dict) -> tuple[int, bytes]:
+    import json as _json
+    import socket as _socket
+
+    body = _json.dumps({"method": method, "params": params}).encode("utf-8")
+    with _socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        head = [
+            "POST /rpc HTTP/1.1",
+            f"Host: 127.0.0.1:{port}",
+            f"Content-Length: {len(body)}",
+            "Connection: close",
+        ]
+        sock.sendall(("\r\n".join(head) + "\r\n\r\n").encode("ascii") + body)
+        raw = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    head_bytes, _, payload = raw.partition(b"\r\n\r\n")
+    status = int(head_bytes.split(b"\r\n")[0].split(b" ")[1])
+    return status, payload

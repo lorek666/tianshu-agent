@@ -620,8 +620,11 @@ React 面板仍未接。）
 ### 7.2 设计
 
 1. IPC 新增 `memory.list` / `memory.get` / `memory.remember` / `memory.edit` /
-   `memory.forget` / `memory.promote`，全部要求**本地人身份**（与 CLI 同一条
-   `HumanIdentity.local_cli()` 路径），**不经模型**。
+   `memory.forget` / `memory.promote`（落地时补了 `memory.confirm` 与 `memory.erase`，
+   共 8 个），全部走控制面路径（与 CLI 同一条 `HumanIdentity.local_cli()` 落审批）。
+   **注意：这不是授权边界**——v1 没有进程级沙箱，`run_command` 能以同 uid 起子进程，
+   同 uid 进程本来就能读 `run/authkey` / 连 IPC / 跑 CLI。所以这一条的真实价值是"人机
+   界面与 CLI 共用一套实现、写操作都走 dispatcher"，**不是**"模型不可能调"。
 2. 每条记忆显示的六项不可省：`scope / origin / revision / status / source_refs /
    evidence.proof_count`——缺一项，人就无法判断"是谁的、凭什么、改过没有、还算不算数"。
 3. 正文以**纯文本**渲染（不执行远端 HTML，不解析 markdown 里的链接为可点击外链）。
@@ -630,9 +633,12 @@ React 面板仍未接。）
 
 ### 7.3 判据
 
-- `tests/test_host_memory.py`（新）：真 IPC 连接 + 本地人身份 → list/get 正常；无身份
-  → 拒绝；edit/forget 走 dispatcher（断言事件里有 intent/result）；越权作用域 →
-  `c4.memory_scope_denied`。
+- `tests/test_host_memory.py`（新）：真 IPC 连接 → list/get 正常；edit/forget/confirm/
+  promote/erase 走 dispatcher（断言事件里有 **该工具的** intent/result、审批一次性消费）；
+  真 Host `/rpc` + token 代理（无 token 401）。
+- **不测（如实记）**："无身份 → 拒绝"在单用户本机模型下**构造不出反例**（同机同用户），
+  只有代码/文档论证；越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（人本来
+  就是 owner），该判据由模型路径的派发测试覆盖。
 - **负控**：把 UI 端点改成直接调 `projection` 改状态（不经 dispatcher）→ 用例必须红。
 - 明确不测：真实模型驱动 UI（沿用现状"未接过真实模型"的写法，不许写成已接）。
 
@@ -649,33 +655,49 @@ React 面板仍未接。）
   `memory.promote`。规格 §7.2 的清单漏了 `memory.confirm`——没有它就没有"人确认候选才
   召回"的入口，一并落地。`host.py` 把浏览器 `POST /rpc` 原样代理给 daemon，**host 侧不用
   改**。
-- **身份口径（不新造令牌）**：IPC 端点只对**本机人**可达——POSIX `run/` 目录 0700 +
-  socket 0600（`ipc._chmod_private`）；Windows 命名管道 ACL 继承创建者、**未**额外加固
-  （M5 已知限制）。写操作用 `HumanIdentity.local_cli()` 落审批（与 CLI 同一个 actor，一次性
-  消费 + 执行侧二次核验照旧）。模型没有这条路：`memory.list` 不是工具，其余同名工具走
-  `AgentLoop` → `Dispatcher` → `MemoryExecutor`（按 `allowed` 过滤）——**同名不同路**。
+- **身份口径（按事实读，不是授权边界）**：这些端点是**人机界面入口**（UI / CLI），与
+  模型工具面是两条路：`memory.list` 不是工具，其余同名工具走 `AgentLoop` →
+  `Dispatcher` → `MemoryExecutor`（按 `allowed` 装备过滤）——**同名不同路**。
+  **但它们挡不住模型**：v1 没有进程级沙箱，`run_command` 能以同一个 uid 跑子进程，
+  同 uid 进程能读 `run/authkey`、连 IPC、跑 `tianshu memory`（并自己落审批）。所以
+  控制面的真实价值是「人与 CLI 共用一套实现、写操作都走 dispatcher、审批一次性消费、
+  执行侧二次核验」，**不是**「模型无路径」。端点权限只在**跨本地用户**这层有意义：
+  POSIX `run/` 0700 + socket 0600；Windows 命名管道 ACL 继承创建者、**未**额外加固且
+  **未验证**。写操作用 `HumanIdentity.local_cli()` 落审批；**不新造身份令牌**——令牌
+  挡不住同 uid，只会多一个能被抄走的东西。
 - **视图**：`memory_view` 统一产出六项判据 `scope` / `origin` / `revision` / `status` /
   `source_refs` / `proof_count`（+ `memory_id`）；`memory.get` 另给 `content` 与
   `content_state`（不可用要显式说，不靠 `content=None` 猜）。正文纯文本原样返回，后端不做
   HTML 转换（转义是 UI 的事）。
 - **错误面**：不存在 → `not_found`；参数不对 → `bad_params`；`revision` 不是当前版本 →
   `conflict`（**先拒，不派发**）；未知方法 → `unknown_method`。
-- **测试**：`tests/test_host_memory.py`（新，**10 条**，真起 daemon + 真 `ipc.Client`）：
+- **测试**：`tests/test_host_memory.py`（新，**14 条**，真起 daemon + 真 `ipc.Client`）：
   六项判据与纯文本正文、默认只看 `user` / 看 task 必须显式给 scope、`memory.list` 没有同名
   模型工具、7 个方法都注册、edit 走 dispatcher（断言事件里是 **edit 的** `tool.intent` /
   `tool.result` + 旧行 superseded + 审批已决定）、forget 变 tombstone、对已 active 的记忆
   confirm 是明确拒绝且 `none_applied`、promote 是移动、未知 id / 缺参数 / 未知方法、
-  revision 过期 `conflict`。
+  task 作用域 edit/forget 带回写后视图、workspace → user 的 promote（`source_scope`）、
+  `memory.erase` 删副本 + `content_state=unavailable`、**真 Host `/rpc` + token 代理
+  （无 token 401）**、revision 过期 `conflict`。
 - **负控（真跑）**：把 `memory.edit` 端点改成"返回假成功、不派发"→ edit 事件用例红。
 - **偏差 / 没做**：
-  1. **React 记忆面板未接**：端点已具备（Host 代理任意 RPC），面板属 UI 工作流；不声称
+  0. **这些端点不是授权边界**（复审抓到的核心口径错误）：`run_command` 同 uid 可经
+     CLI/IPC 调同一控制面（模型被授予 `run_command` 时等于可达）；要收口需要进程级沙箱
+     或独立 OS 用户——属 F2/exec 的边界，不是 N6 能解决的。文档与判据已按此降级。
+  1. **React 记忆面板未接**：端点已具备（Host 代理任意 RPC），但 UI 没有记忆入口；不声称
      "UI 上已经能看见"。
   2. `memory.search` 的 RPC 未暴露（`list` + `get` 之外暂不开检索面）。
   3. "无身份拒绝"这条在单用户本机模型下由 IPC 端点权限承担，**没有测试**（同机同用户无法
      构造"无身份"客户端）——只有代码/文档论证。
   4. 越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（控制面自己声明目标作用域，
      人本来就是 owner）；该判据由模型路径的派发测试覆盖。
-  5. Windows ACL 未加固（沿用 M5 的已知限制，本 PR 不改变它）。
+  5. **Windows 命名管道 ACL 未加固且未验证**：`_chmod_private` 在 Windows 直接 return
+     （只影响写位、无 ACL 语义），代码没有设置 pipe security descriptor。跨本地用户的承诺
+     在 Windows 上**没有代码或测试支撑**——如实记为未验证，不按"仅同用户可达"宣称。
+  6. 功能修复（复审抓到）：写后视图曾固定按 user 作用域读回（task/workspace 的 edit /
+     forget 会"成功但 `memory` 是 null"）；`promote` 曾用同一组 `scope` 表达源与目标
+     （导致只能提升 user 作用域的记忆）。现已按记忆自己的作用域回读、源作用域改用
+     `source_scope` / `source_scope_id`，并补 3 条用例。
 
 ---
 

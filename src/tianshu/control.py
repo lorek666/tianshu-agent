@@ -210,6 +210,10 @@ class ControlPlane:
             "memory.edit": self._memory_edit,
             "memory.forget": self._memory_forget,
             "memory.promote": self._memory_promote,
+            # 人机界面上的"彻底删掉"也走控制面：`memory.erase`（delete + 一次性
+            # 审批 + Receipt），不是"直接 unlink"。UI 的"删除"要分两档：
+            # `memory.forget` = 停召回（tombstone），`memory.erase` = 删正文副本与索引。
+            "memory.erase": self._memory_erase,
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -666,16 +670,21 @@ class ControlPlane:
 
     # ------------------------------------------------------------------ 记忆
 
-    #: 记忆控制面方法共用的身份口径（写一次，别在每个方法里重抄）：
+    #: 记忆控制面方法的**身份口径（必须按事实读，别读成授权边界）**：
     #:
-    #: 这些 RPC 只对**本机人**可达——IPC 端点在 POSIX 上是 `run/` 目录 0700 +
-    #: socket 0600，Windows 是命名管道（ACL 继承创建者，未额外加固，见 M5 已知
-    #: 限制）。所以"连得上 IPC"就是"本机这个人"。写操作用
-    #: `HumanIdentity.local_cli()` 落审批——与 CLI 同一个 actor，不是给模型开后门：
-    #: 模型根本到不了 `ControlPlane`，它只有工具清单那一条路。
-    #:
-    #: **不新增身份令牌**：再造一套 token 只会多一个能被抄走的东西，而真正的
-    #: 边界是"这条 IPC 只有本机人能连"。
+    #: - 这些 RPC 是**人机界面入口**（UI / CLI），与模型的工具面是两条路：模型清单里
+    #:   没有 `memory.list`，其余同名工具走 `AgentLoop` → `Dispatcher` →
+    #:   `MemoryExecutor`（按 `allowed` 装备过滤）。
+    #: - 但它们**不是授权边界**。v1 没有进程级沙箱，`run_command` 能以**同一个 uid**
+    #:   跑子进程；同 uid 进程本来就能读 `run/authkey`、连 IPC、跑 `tianshu memory`。
+    #:   也就是说：**模型若被授予 `run_command` 且策略允许，它的子进程可以像人一样调
+    #:   这些端点（并自己签审批）**——这是 F2/exec 侧的已知边界，不是 N6 解决的问题，
+    #:   详见 `docs/F10-memory-design.md` §13 #30 与 `docs/KNOWLEDGE.md` §7。
+    #: - 端点权限只在**跨本地用户**这一层有意义：POSIX 上 `run/` 目录 0700 + socket
+    #:   0600；Windows 命名管道 ACL 继承创建者、**未**额外加固（M5 已知限制，未验证）。
+    #: - 写操作用 `HumanIdentity.local_cli()` 落审批：与 CLI 同一个 actor，审批照样
+    #:   一次性消费、执行侧照样二次核验。**不新造身份令牌**——令牌挡不住同 uid，
+    #:   只会多一个能被抄走的东西。
 
     def _memory_scope_from(
         self, params: dict[str, Any]
@@ -702,12 +711,45 @@ class ControlPlane:
             return (MemoryScope.user(),)
         return (MemoryScope.user(), scope) if scope != MemoryScope.user() else (scope,)
 
-    def _memory_target(self, params: dict[str, Any], field: str = "memory_id"):
-        """按 `memory_id` 取一条**当前可见**的记忆；没有就 not_found。"""
+    def _memory_allowed_from(
+        self, params: dict[str, Any], prefix: str
+    ) -> tuple[MemoryScope, ...]:
+        """按 `<prefix>scope` / `<prefix>scope_id` 取可见作用域。
+
+        `promote` 的"源"与"目标"是两个作用域：源决定这条记忆看不看得见，目标决定
+        搬到哪里。用同一组参数表达会让"从 workspace 提到 user"永远看不到源行
+        （目标 `user` 又恰好是默认可见集合）——所以源作用域单独一组键。
+        """
+        raw_scope = params.get(f"{prefix}scope")
+        if raw_scope is None:
+            return (MemoryScope.user(),)
+        raw_id = params.get(f"{prefix}scope_id")
+        try:
+            scope = build_memory_scope(raw_scope, raw_id)
+        except TianshuError as exc:
+            raise ControlError("bad_params", str(exc)) from exc
+        return (MemoryScope.user(), scope) if scope != MemoryScope.user() else (scope,)
+
+    def _memory_target(
+        self,
+        params: dict[str, Any],
+        field: str = "memory_id",
+        *,
+        source: bool = False,
+    ):
+        """按 `memory_id` 取一条**当前可见**的记忆；没有就 not_found。
+
+        `source=True` 时按 `source_scope` / `source_scope_id` 取可见范围（`promote`
+        用），否则按 `scope` / `scope_id`。
+        """
         memory_id = params.get(field)
         if not isinstance(memory_id, str) or not memory_id:
             raise ControlError("bad_params", f"{field} 必须是非空字符串")
-        allowed = self._memory_allowed(params)
+        allowed = (
+            self._memory_allowed_from(params, "source_")
+            if source
+            else self._memory_allowed(params)
+        )
         memory = self._stack.memory.get(memory_id, allowed=allowed)
         if memory is None:
             raise ControlError(
@@ -810,7 +852,9 @@ class ControlPlane:
         self._expect_revision(params, memory)
         result = memory_control.transition(self._stack, memory, confirm=True)
         payload = self._memory_result(result)
-        payload["memory"] = self._memory_after_call(memory.memory_id, None)
+        payload["memory"] = self._memory_after_call(
+            memory.memory_id, MemoryScope(memory.scope, memory.scope_id)
+        )
         return payload
 
     def _memory_edit(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -820,10 +864,13 @@ class ControlPlane:
             raise ControlError("bad_params", "content 必须是非空字符串")
         memory = self._memory_target(params)
         self._expect_revision(params, memory)
+        scope = MemoryScope(memory.scope, memory.scope_id)
         result = memory_control.edit(self._stack, memory, content=content)
         payload = self._memory_result(result)
         new_id = result.output.get("memory_id") if result.output else None
-        payload["memory"] = self._memory_after_call(new_id, None)
+        # 新版仍在**同一作用域**：视图要按这个作用域读，不能默认 user（否则
+        # task/workspace 的编辑在 UI 上看起来"成功了但查不到"）。
+        payload["memory"] = self._memory_after_call(new_id, scope)
         payload["supersedes"] = memory.memory_id
         return payload
 
@@ -833,12 +880,19 @@ class ControlPlane:
         self._expect_revision(params, memory)
         result = memory_control.transition(self._stack, memory, confirm=False)
         payload = self._memory_result(result)
-        payload["memory"] = self._memory_after_call(memory.memory_id, None)
+        payload["memory"] = self._memory_after_call(
+            memory.memory_id, MemoryScope(memory.scope, memory.scope_id)
+        )
         return payload
 
     def _memory_promote(self, params: dict[str, Any]) -> dict[str, Any]:
-        """`memory.promote`：共享/移动到另一个作用域（原行退役、新行候选）。"""
-        memory = self._memory_target(params)
+        """`memory.promote`：共享/移动到另一个作用域（原行退役、新行候选）。
+
+        `source_scope` / `source_scope_id` 指定**源**记忆的可见作用域，`scope` /
+        `scope_id` 是**目标**。不给 `source_scope` 时按 user 作用域找（CLI 的常见
+        场景：把 user 记忆共享进 workspace）。
+        """
+        memory = self._memory_target(params, source=True)
         self._expect_revision(params, memory)
         target = self._memory_scope_from(params)
         if target is None:
@@ -850,6 +904,20 @@ class ControlPlane:
         new_id = result.output.get("memory_id") if result.output else None
         payload["memory"] = self._memory_after_call(new_id, target)
         payload["from_memory_id"] = memory.memory_id
+        return payload
+
+    def _memory_erase(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.erase`：物理擦除正文副本与索引（delete + 一次性审批 + Receipt）。
+
+        与 `memory.forget` 的区别要写在界面上：forget 只是不再召回（事件与回执仍在），
+        erase 才删正文副本与索引（事件日志里的历史读快照删不掉，见 F10 §10）。
+        """
+        memory = self._memory_target(params)
+        self._expect_revision(params, memory)
+        scope = MemoryScope(memory.scope, memory.scope_id)
+        result = memory_control.erase(self._stack, memory)
+        payload = self._memory_result(result)
+        payload["memory"] = self._memory_after_call(memory.memory_id, scope)
         return payload
 
     def _memory_after_call(

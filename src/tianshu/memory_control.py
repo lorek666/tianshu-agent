@@ -12,16 +12,23 @@ intent/result + 一次性审批 + 执行侧二次核验。
 作用域过滤交给 `MemoryProjection`（`allowed=`），审批交给 `PolicyEngine` /
 `Dispatcher`。本模块只负责"用本地人身份把一次控制面操作做完并投影成视图"。
 
-身份口径（N6 的判据，别写成"信任调用方"）
+身份口径（**按事实读，别读成授权边界**）
 -----------------------------------------
 - 本模块只在**控制面**里被调用：CLI 进程，或 Daemon 的 `ControlPlane`（RPC）。
-- 模型没有任何路径能到这里：模型走 `AgentLoop` → `Dispatcher` → `MemoryExecutor`，
-  那是另一套工具清单与另一套身份；控制面的 6 个 RPC 方法不在 `tool_manifest()` 里。
-- IPC 端点本身只对**本机同一个用户**可达：POSIX 上是 `run/` 目录 0700 + socket 0600
-  （`ipc._chmod_private`），Windows 是命名管道（ACL 继承创建者，**未**额外加固，
-  见 M5 文档的已知限制）。所以"能连上 IPC"就是"本机人"。
-- 审批签名用 `HumanIdentity.local_cli()`：与 CLI 同一个 actor，不是给模型开的后门。
-  如果哪天有人要给这些方法加"免签"或自造身份令牌，那道边界就不成立了。
+- 模型工具面与这条控制面是**两条路**：模型走 `AgentLoop` → `Dispatcher` →
+  `MemoryExecutor`，按 `allowed` 装备过滤；`memory.list` 不是工具，其余同名工具
+  名字相同但权限不同。
+- **但端点挡不住模型**：v1 没有进程级沙箱，`run_command` 能以**同一个 uid** 跑子
+  进程；同 uid 进程本来就能读 `run/authkey`、连 IPC、跑 `tianshu memory`，并自己
+  以 `HumanIdentity.local_cli()` 落审批。所以「本机人 = 连得上 IPC」区分不了
+  「人」和「模型触发的同 uid 子进程」——**这不是 N6 能解决的问题**，是 F2/exec 的
+  边界（见 F10 §13 #30、KNOWLEDGE §7）。控制面交付的价值是：人与 CLI 共用一套实现、
+  写操作永远走 dispatcher、审批一次性消费、执行侧二次核验。
+- 端点权限只在**跨本地用户**这层有意义：POSIX 上是 `run/` 目录 0700 + socket 0600
+  （`ipc._chmod_private`）；Windows 是命名管道（ACL 继承创建者、**未**额外加固、
+  **未验证**）。所以别把"跨用户保护"写成"模型隔离"。
+- 写操作用 `HumanIdentity.local_cli()` 落审批：与 CLI 同一个 actor。**不新造身份
+  令牌**——令牌挡不住同 uid，只会多一个能被抄走的东西。
 
 返回形状
 --------
