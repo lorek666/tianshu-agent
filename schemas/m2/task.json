@@ -87,6 +87,18 @@
         "null"
       ],
       "description": "任务级 ExecPolicy（F2）。null/缺失 = 未配置 = run_command 全拒；开启 exec 是显式动作。"
+    },
+    "is_control": {
+      "type": "boolean",
+      "description": "控制面 Run 的持久标记（契约 v1.2，`task.created` 的 control 键）：CLI/UI 直接发起的 Task。只有它能用控制面专属工具与 memory_scopes。"
+    },
+    "memory_scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^memory://"
+      },
+      "description": "控制面显式声明的记忆作用域 URI（契约 v1.2）。只对记忆动作生效，不授予任何文件权限；普通任务恒为空数组。"
     }
   }
 }

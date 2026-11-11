@@ -307,15 +307,31 @@ def test_memory_tools_are_real_specs_without_path_args():
         "memory.confirm": ACTION_OVERWRITE,
         "memory.forget": ACTION_DELETE,
     }
+    # 契约 v1.2：propose 升 2.0（加 scope/scope_id）；其余工具仍是 1.0。
+    expected_versions = {
+        "memory.search": "1.0",
+        "memory.get": "1.0",
+        "memory.propose": "2.0",
+        "memory.confirm": "1.0",
+        "memory.forget": "1.0",
+    }
     for tool_id, action in expected_actions.items():
         spec = SPECS[tool_id]
-        assert spec.version == "1.0"
+        assert spec.version == expected_versions[tool_id]
         assert spec.exposed is True
         assert spec.path_arg == ""
         assert spec.action == action
         # schema 是真实 schema（不是手写替身）；additionalProperties 必须关闭
         assert spec.input_schema["type"] == "object"
         assert spec.input_schema["additionalProperties"] is False
+
+    # 控制面专属工具：注册在 SPECS 里，但**不**出现在模型清单中（exposed=False）。
+    remember = SPECS["memory.remember"]
+    assert remember.version == "1.0"
+    assert remember.exposed is False
+    assert remember.action == ACTION_CREATE
+    assert remember.path_arg == ""
+    assert "memory.remember" not in names
 
     # 授权层不能维护第二份"看起来一样"的 kind 封闭集：memory.py 存在时必须
     # 直接用它。回退集只在集成前缺模块时兜底。
@@ -526,19 +542,21 @@ def test_workspace_scope_is_denied_cross_task_and_rule_is_registered(env):
     assert env.memory.observe("mem_b_private", allowed=(scope_b,)) == ("candidate", 1)
 
 
-def test_workspace_scope_can_be_used_by_its_own_task(env):
+def test_model_cannot_propose_into_workspace_scope(env):
+    """契约 v1.2：workspace 是共享边界，模型不能直接往里写。
+
+    写进去的路径只有一条：人经 `memory.promote`（N1 后续提交）。模型即使
+    本任务绑定了这个目录，也只能提候选到 user / 本任务 task 作用域。
+    """
     task, run, claim = env.new_run()
     scope = MemoryScope.workspace(env.ws_a)
     _request, _args, decision = _propose(
         env, task, run, claim, content="这个工作区里的约定", scope=scope
     )
-    assert decision.is_admitted, decision
-    result = env.dispatcher.dispatch(decision.request_id, claim)
-    assert result.ok, result.output
-    assert env.memory.observe(result.output["memory_id"], allowed=(scope,)) == (
-        "candidate",
-        1,
-    )
+    # 拒绝点已经提前到派发层（执行侧还有同名核验）：不再"先放行再执行失败"。
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+    assert env.memory.list_memories(allowed=(scope,)) == []
 
 
 # ---------------------------------------------------------------- 5. 事务性
@@ -909,3 +927,191 @@ def test_rejected_memory_write_keeps_no_raw_content_in_the_request_table(env) ->
     assert "SECRET-1234" not in stored
     # 审计仍然可核对"要写的是哪一段正文"：哈希与长度都在。
     assert sha256_hex(body.encode()) in stored
+
+
+# ---------------------------------------------------------------- 6. 契约 v1.2：控制面与作用域
+
+
+def test_control_run_can_forget_an_old_task_scope_memory(env: Env):
+    """控制面能替**旧 task** 的记忆做确认/遗忘，且不因此拿到目录租约。"""
+    task, run, claim = env.new_run()
+    scope = MemoryScope.task(task.task_id)
+    _request, _args, decision = _propose(
+        env, task, run, claim, content="这个任务的约定", scope=scope
+    )
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    memory_id = result.output["memory_id"]
+    assert env.memory.observe(memory_id, allowed=(scope,)) == ("candidate", 1)
+    env.tasks.finish_run(run.run_id, outcome="succeeded", effect_state="applied")
+
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.forget:{memory_id}", workspaces=[], memory_scopes=[scope]
+    )
+    assert control.task.is_control is True
+    assert control.memory_scopes == (scope.to_uri(),)
+    assert control.lease_paths == ()
+
+    args = {"memory_id": memory_id, "revision": 1, "status": "candidate"}
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.forget",
+        target=scope.to_uri(),
+        args=args,
+        call_id="ctl-forget-1",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    try:
+        assert result.ok, result.output
+        assert env.memory.observe(memory_id, allowed=(scope,)) == ("forgotten", 2)
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=result.effect_state
+        )
+
+
+def test_remember_is_control_plane_only(env: Env):
+    """普通任务不能用控制面专属工具；控制 Run 用它创建 active + user_explicit。"""
+    user = MemoryScope.user()
+    args = {"kind": "preference", "content": "以后用中文回答"}
+
+    task, run, claim = env.new_run()
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.remember",
+        target=user.to_uri(),
+        args=args,
+        call_id="remember-1",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_control_scope_binding"
+
+    control = env.dispatcher.open_control_run(goal="memory.remember", workspaces=[])
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.remember",
+        target=user.to_uri(),
+        args=args,
+        call_id="remember-2",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    try:
+        assert result.ok, result.output
+        assert result.output["status"] == "active"
+        assert result.output["origin"] == "user_explicit"
+        memory = env.memory.get(result.output["memory_id"], allowed=(user,))
+        assert memory is not None
+        assert (memory.status, memory.origin, memory.revision) == ("active", "user_explicit", 1)
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=result.effect_state
+        )
+
+
+def test_human_approval_upgrades_origin_to_user_confirmed(env: Env):
+    task, run, claim, output = _proposed(env)
+    memory_id = output["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=1)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    memory = env.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert memory is not None
+    assert memory.status == "active"
+    assert memory.origin == "user_confirmed"
+
+
+def test_control_marker_and_scope_declaration_survive_rebuild(env: Env):
+    scope = MemoryScope.task("task_old_scope")
+    control = env.dispatcher.open_control_run(
+        goal="memory.confirm:mem_x", workspaces=[], memory_scopes=[scope]
+    )
+    env.tasks.rebuild_from_events()
+    task = env.tasks.get_task(control.task.task_id)
+    assert task is not None
+    assert task.is_control is True
+    assert task.memory_scopes == (scope.to_uri(),)
+
+
+def test_model_can_only_propose_into_its_own_task_scope(env: Env):
+    task, run, claim = env.new_run()
+    own = MemoryScope.task(task.task_id)
+    _request, _args, decision = _propose(
+        env, task, run, claim, content="本任务的事实", scope=own, call_id="p-own"
+    )
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok, result.output
+    assert env.memory.observe(result.output["memory_id"], allowed=(own,)) == (
+        "candidate",
+        1,
+    )
+
+    other = MemoryScope.task("task_other")
+    args = {"kind": "fact", "content": "别人的任务"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=other.to_uri(),
+        args=args,
+        call_id="p-other",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+
+
+def test_workspace_propose_is_refused_even_on_a_control_task(env: Env):
+    """控制面标记是 **Task 级**的：同一 Task 上后开的模型 Run 也不能写 workspace。
+
+    独立复审复现过这个洞：CLI 为 workspace 作用域的确认/遗忘创建的控制任务带
+    `is_control=1` 与 workspace 绑定；人再在这个 task 上开一个模型 Run，模型
+    `memory.propose` 到 workspace 会成功（继承控制面身份）。现在 propose→workspace
+    **无条件**拒，共享写只能走 exposed=False 的 `memory.promote`。
+    """
+    scope = MemoryScope.workspace(env.ws_a)
+    control = env.dispatcher.open_control_run(
+        goal="memory.confirm:mem_x",
+        workspaces=[str(env.ws_a)],
+        memory_scopes=[scope],
+    )
+    env.dispatcher.close_control_run(
+        control, outcome="succeeded", effect_state="none_applied"
+    )
+
+    run = env.tasks.start_run(control.task.task_id)
+    env.leases.acquire([env.ws_a], run.run_id)
+    job = env.claims.enqueue(run.run_id)
+    claim = env.claims.claim(job.job_id)
+    env.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+
+    args = {"kind": "fact", "content": "共享边界试探"}
+    request = env.request(
+        control.task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=scope.to_uri(),
+        args=args,
+        call_id="ws-probe",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+    assert env.memory.list_memories(allowed=(scope,)) == []

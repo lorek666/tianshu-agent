@@ -724,3 +724,30 @@ def test_forgotten_memory_cannot_be_revived_by_id(env) -> None:
     assert output["content_available"] is False
     assert "已遗忘" in output["error"]
     assert "忘记后不该还能按 id 读到正文" not in json.dumps(output, ensure_ascii=False)
+
+def test_cli_remember_creates_active_user_explicit_memory(env: Env):
+    """`tianshu memory remember`：人直接记住 → active + user_explicit。"""
+    db = str(env.log.db_path)
+    code, out = _cli(
+        "memory", "remember", "以后用中文回答", "--kind", "preference", "--db", db
+    )
+    assert code == 0, out
+    assert "remember -> active" in out
+    assert "origin: user_explicit" in out
+    recalled = env.stack.memory.search("中文", allowed=(MemoryScope.user(),))
+    assert [item.memory.origin for item in recalled] == ["user_explicit"]
+
+
+def test_cli_can_forget_task_scope_memory_with_task_id(env: Env):
+    """契约 v1.2：控制面能替旧 task 作用域的记忆签字，且不绑它的目录。"""
+    db = str(env.log.db_path)
+    scope = MemoryScope.task("task_cli_scope")
+    memory_id = env.seed("任务内约定", scope=scope, status="active")
+    code, out = _cli(
+        "memory", "forget", memory_id,
+        "--task-id", "task_cli_scope", "--db", db,
+    )
+    assert code == 0, out
+    memory = env.stack.memory.get(memory_id, allowed=(scope,))
+    assert memory is not None
+    assert memory.status == "forgotten"
