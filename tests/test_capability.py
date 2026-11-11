@@ -28,6 +28,7 @@ from tianshu.capability import (
     capability_profile_of,
     check_capabilities,
     check_context_budget,
+    declared_output_tokens,
     missing_capabilities,
     retry_delay_ms,
 )
@@ -297,6 +298,31 @@ def test_shipped_models_declare_tool_calling():
         AnthropicMessagesModel("claude-sonnet-4-5", api_key="k"),
     ):
         assert admit_model(adapter).supports("streaming") is False
+
+
+def test_output_bound_comes_from_the_capability_declaration():
+    """硬上限模式只认能力声明里的输出上界（PRD §5.6 第 3 条 / §5.7）。
+
+    Anthropic adapter 把 `max_tokens` 写进请求体（Messages API 必填），所以它声明的
+    就是真实上界；OpenAI-compatible 的请求体里没有这个字段，输出由 provider 默认值
+    决定，于是**如实**是 None——该 adapter 不能进上界模式，不拿别处的默认值顶替。
+    """
+    anthropic = AnthropicMessagesModel("claude-sonnet-4-5", api_key="k", max_tokens=777)
+    assert declared_output_tokens(anthropic) == 777
+    assert admit_model(anthropic).output_tokens == 777
+
+    openai = OpenAICompatibleModel("gpt-4o-mini", api_key="k")
+    assert declared_output_tokens(openai) is None
+    assert ScriptedModel([]).capability_profile().output_tokens is None
+    assert RecordedModel([]).capability_profile().output_tokens is None
+    # 没有能力声明的对象也拿不到上界（不嗅 getattr(max_tokens)）
+    assert declared_output_tokens(UnprofiledModel()) is None
+
+    with pytest.raises(ValueError):
+        _profile(output_tokens=0)
+    with pytest.raises(ValueError):
+        _profile(output_tokens=True)
+    assert _profile(output_tokens=64).to_payload()["output_tokens"] == 64
 
 
 def test_check_capabilities_reports_every_missing_item():

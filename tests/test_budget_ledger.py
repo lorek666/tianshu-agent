@@ -16,12 +16,14 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from support import stack_for
 
 from tianshu.budget import (
+    BOUND_UPPER,
     PARTIAL,
     PENDING,
     RELEASED,
@@ -30,6 +32,8 @@ from tianshu.budget import (
     BudgetLedger,
     estimate_need,
     estimate_tokens,
+    upper_bound_tokens,
+    upper_need,
 )
 from tianshu.control import ControlPlane
 from tianshu.errors import BudgetCancelled, BudgetRefused, TianshuError
@@ -442,3 +446,213 @@ def test_control_plane_cancel_propagates_to_the_ledger(tmp_path):
             ledger.reserve(f"run:{run_id}", attempt_id="t1", need={"tokens": 1})
     finally:
         log.close()
+
+
+# ---------------------------------------------------------------- 10 记账默认打开
+
+
+def test_ledger_default_is_accounting_without_gates(tmp_path):
+    """默认路径：账户照建、预占照记、结算照做，但**不设闸**。
+
+    PRD §5.6 第 4 条（尝试过但全失败不得显示没有模型调用）与第 7 条（恢复先核对
+    未决预占）要成立，前提是账本在默认路径上就有记录。所以默认不再是"不启用"。
+    """
+    ws = _ws(tmp_path)
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    model = ScriptedModel([
+        ModelResponse(
+            "end_turn", content="ok", usage={"input_tokens": 40, "output_tokens": 10}
+        ),
+    ])
+    try:
+        result = run(
+            task="读一下", workspace_dir=ws, out_name="out.md",
+            model=model, log=log,
+        )  # 不传 budget_limits
+        assert result.outcome == "noop"
+        usage = BudgetLedger(log).usage(f"run:{result.run_id}")
+        assert usage["limits"] == {}, "记账模式不设任何闸"
+        assert usage["settled"]["tokens"] == 50, "默认路径必须真的记账"
+        assert usage["settled"]["requests"] == 1
+        assert all(value == 0 for value in usage["reserved"].values())
+        assert usage["bound"] == "estimate"
+        assert usage["overrun"] is False
+    finally:
+        log.close()
+
+
+def test_accounting_mode_never_refuses_even_an_absurd_need(tmp_path):
+    """没有上限就没有闸：这不是"额度过大所以放过"，是"这条路径不看额度"。"""
+    log, ledger = _ledger(tmp_path)
+    ledger.create_account("a")  # 无上限
+    reservation = ledger.reserve("a", attempt_id="x", need={"tokens": 10**9})
+    assert reservation.need == {"tokens": 10**9}
+    assert ledger.usage("a")["limits"] == {}
+
+
+def test_cancel_before_any_reservation_still_blocks_new_requests(tmp_path):
+    """取消发生在第一次预占之前：意图必须保留（否则之后新建的账户是没取消的）。"""
+    log = EventLog(tmp_path / "events.db")
+    stack = stack_for(log, data_root=tmp_path)
+    try:
+        plane = ControlPlane(stack, model=ScriptedModel([]), limits=Limits(max_turns=3))
+        ws = _ws(tmp_path)
+        task = plane.handle(
+            "task.create",
+            {"goal": "读", "workspaces": [{"root_path": str(ws), "mode": "readonly"}]},
+        )["task"]
+        run_view = plane.handle(
+            "run.start", {"task_id": task["task_id"], "out_name": "o.md"}
+        )["run"]
+        run_id = run_view["run_id"]
+        ledger = stack.budget
+        assert ledger.account(f"run:{run_id}") is None, "还没有任何预占"
+        plane.handle("run.cancel", {"run_id": run_id})
+        assert ledger.is_cancelled(f"run:{run_id}")
+        with pytest.raises(BudgetCancelled):
+            ledger.reserve(f"run:{run_id}", attempt_id="t1", need={"tokens": 1})
+    finally:
+        log.close()
+
+
+# ---------------------------------------------------------------- 11 可验证上界
+
+
+def test_upper_bound_is_utf8_bytes_not_quarter_chars():
+    """上界与估算**方向不同**：CJK 下 4 字符≈1 token 会低估，字节数不会。"""
+    text = "中" * 100
+    assert upper_bound_tokens(text) == 300, "UTF-8 下每个汉字 3 字节"
+    assert estimate_tokens(len(text)) == 25
+    assert upper_bound_tokens(text) > 4 * estimate_tokens(len(text))
+    assert upper_need(input_bytes=300, output_bound=64) == {
+        "tokens": 364,
+        "requests": 1,
+    }
+    with pytest.raises(TianshuError):
+        upper_need(input_bytes=300, output_bound=0)
+    with pytest.raises(TianshuError):
+        upper_need(input_bytes=-1, output_bound=64)
+
+
+def test_estimate_overrun_is_recorded_but_does_not_block(tmp_path):
+    """估算模式：结算超过预占**如实记账**（不夹回），但不据此拒发。"""
+    log, ledger = _ledger(tmp_path)
+    ledger.create_account("a", limits={"tokens": 100}, bound="estimate")
+    reservation = ledger.reserve("a", attempt_id="x", need={"tokens": 10})
+    settlement = ledger.settle(
+        reservation.reservation_id, usage={"tokens": 50}, known_dimensions={"tokens"}
+    )
+    assert settlement.overrun == ("tokens",), "真实用量超过预占必须被记下来"
+    usage = ledger.usage("a")
+    assert usage["settled"]["tokens"] == 50, "照实记，不夹到预占值上"
+    assert usage["overrun"] is True
+    assert usage["bound"] == "estimate"
+    # 估算口径下 overrun 不阻断：余额 100-50=50 仍然够下一次 5。
+    ledger.reserve("a", attempt_id="y", need={"tokens": 5})
+
+
+def test_upper_overrun_blocks_further_reservations(tmp_path):
+    """上界模式：越界 = 这条保证已经不成立，此后一律拒发。"""
+    log, ledger = _ledger(tmp_path)
+    ledger.create_account("a", limits={"tokens": 1000}, bound=BOUND_UPPER)
+    reservation = ledger.reserve("a", attempt_id="x", need={"tokens": 10})
+    ledger.settle(
+        reservation.reservation_id, usage={"tokens": 50}, known_dimensions={"tokens"}
+    )
+    usage = ledger.usage("a")
+    assert usage["overrun"] is True
+    assert usage["bound"] == BOUND_UPPER
+    with pytest.raises(BudgetRefused) as excinfo:
+        ledger.reserve("a", attempt_id="y", need={"tokens": 1})
+    assert excinfo.value.dimension == "overrun"
+    assert "上界" in str(excinfo.value)
+
+
+def test_unknown_bound_is_rejected(tmp_path):
+    log, ledger = _ledger(tmp_path)
+    with pytest.raises(TianshuError, match="未知的预占口径"):
+        ledger.create_account("a", bound="hard")
+
+
+class _BoundScriptedModel(ScriptedModel):
+    """脚本模型 + 一条真实的输出上界声明（`upper` 模式只认能力声明）。"""
+
+    def __init__(self, responses, *, output_tokens: int) -> None:
+        super().__init__(responses)
+        self._output_tokens = output_tokens
+
+    def capability_profile(self):
+        return replace(
+            super().capability_profile(), output_tokens=self._output_tokens
+        )
+
+
+def test_upper_mode_refuses_to_start_without_a_declared_output_bound(tmp_path):
+    """拿不到输出上界 ⇒ 不进入上界模式，而且一次模型调用都不发生。"""
+    ws = _ws(tmp_path)
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    model = ScriptedModel([ModelResponse("end_turn", content="不该被调用")])
+    try:
+        result = run(
+            task="读一下", workspace_dir=ws, out_name="out.md",
+            model=model, log=log,
+            limits=Limits(
+                4, 20_000, budget_limits={"tokens": 100_000}, budget_bound="upper"
+            ),
+        )
+        assert model.calls == 0
+        assert result.outcome == "failed"
+        assert "预算配置拒绝" in (result.error or ""), result.error
+        assert "output_tokens" in (result.error or "")
+    finally:
+        log.close()
+
+
+def test_upper_mode_bad_value_is_refused_at_construction(tmp_path):
+    ws = _ws(tmp_path)
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        with pytest.raises(TianshuError, match="未知的预占口径"):
+            run(
+                task="读一下", workspace_dir=ws, out_name="out.md",
+                model=ScriptedModel([]), log=log,
+                limits=Limits(4, 20_000, budget_bound="hard"),
+            )
+    finally:
+        log.close()
+
+
+def test_upper_mode_reserves_bytes_plus_declared_output(tmp_path):
+    """`upper` 口径下的预占 = 请求体 UTF-8 字节 + 声明的输出上界。
+
+    用"provider 不给 usage"的响应把预占留在未决状态，好把 need 读出来核对；
+    同一场景再跑一遍 `estimate` 口径作对照——两条路必须给出**不同量级**的数，
+    否则说明上界模式其实还在用估算。
+    """
+    ws = _ws(tmp_path)
+    goal = "中" * 200
+
+    def _needs(limits: Limits, name: str) -> dict[str, int]:
+        log = EventLog(tmp_path / name, blob_dir=tmp_path / f"{name}-blobs")
+        model = _BoundScriptedModel(
+            [ModelResponse("end_turn", content="ok", usage={})], output_tokens=64
+        )
+        try:
+            result = run(
+                task=goal, workspace_dir=ws, out_name="out.md",
+                model=model, log=log, limits=limits,
+            )
+            rows = BudgetLedger(log).reconcile(f"run:{result.run_id}")
+            assert len(rows) == 1, "无 usage ⇒ 一张未决预占"
+            return rows[0]["need"]
+        finally:
+            log.close()
+
+    limits = {"tokens": 100_000}
+    upper = _needs(Limits(4, 20_000, budget_limits=limits, budget_bound="upper"), "u.db")
+    estimate = _needs(Limits(4, 20_000, budget_limits=limits), "e.db")
+
+    # 200 个汉字 → ASCII 转义后每个 6 字节 ⇒ 仅任务文本就 ≥ 1200 字节上界。
+    assert upper["tokens"] >= 64 + 6 * len(goal), upper
+    assert estimate["tokens"] * 3 < upper["tokens"], (estimate, upper)
+    assert upper["requests"] == estimate["requests"] == 1
