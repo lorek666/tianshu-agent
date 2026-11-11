@@ -264,14 +264,17 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 - 用户能打开「Agent 记住了什么」，**直接编辑** L1–L3——不只是查看 / 删除。
 - 理由：记忆的价值取决于准确性；给人纠正的办法，比指望蒸馏永远正确更现实。
-- 编辑保留 `revision`，用 `supersede` 而非覆盖（旧版可查）。**投影层已实现、生产无入口**
-  （§13 #24）：`MemoryProjection` 认 `output.supersedes` 并保留旧行，但**没有任何工具 /
-  CLI / 执行器产生 `supersedes`**，所以"用户能编辑"这条目前只是语义准备好，不是能用的动作。
-  v1.2 契约把入口定成 `memory.edit`（一次审批产出"旧行 `superseded` + 新行 `active`"两行，
-  PRD §5.2.2），落地工作流是 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) 的 N1；
-  在它落地前，这一节的状态不变。新行是**新 `memory_id` + `revision=1` + `supersedes=旧 id`**，
-  旧行 `revision` 不变、仍可按 id 查到；**编辑不允许改 `kind`**。
-- 每条记忆显示来源（事件 seq / 来源引用）。
+- **能编辑（N1 已落地）**：编辑保留 `revision`，用 `supersede` 而非覆盖（旧版可查）。
+  `memory.edit`（一次审批产出"旧行 `superseded` + 新行 `active`"两行，PRD §5.2.2）——
+  新行是**新 `memory_id` + `revision=1` + `supersedes=旧 id`**，旧行 `revision` 不变、
+  仍可按 id 查到；**编辑不允许改 `kind`**。入口：模型经人批准、或人经 CLI / 控制面 RPC。
+- **看得见（N6 已落地 Host/IPC 一侧）**：`memory.list` / `memory.get` 给出六项判据
+  （`scope` / `origin` / `revision` / `status` / `source_refs` / `proof_count`）＋正文；
+  CLI 的 `list|search|get` 与 daemon 的 RPC 是同一套控制面实现（`memory_control.py`）。
+  **React 面板还没接**（端点已具备，见 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)
+  §7.4 的"未做"）——别把"UI 能调"写成"UI 上已经能看见"。
+- 每条记忆显示来源（事件 seq / 来源引用）：`source_refs` + `evidence`（`proof_count`
+  与实际证据条数一致），CLI 与控制面 RPC 都带。
 - **增量 delta 刷新，禁止全量重生成**：L2/L3 的蒸馏只能**应用新证据隐含的改动**，其余物理不动。全量重生成会让模型悄悄改写未变的部分（bullet 变数字、大小写漂移、同义改写），长文档会缓慢变成「说法差不多的另一份文档」。这是硬约束，不是优化。
 - **保留上一版 + 证据**：每次变化保留上一版内容与它当时站的证据，能回答「上个月它说了什么、依据是什么」。
 
@@ -357,20 +360,21 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 26 | 派发审计表的正文保留与闸门时序 | ✅ 已落地（N5，含复审整改） | 分三条路径收口：① **从未执行**的拒绝行在 `_reject()` 落库时就是 `content_sha256` + `content_bytes`；② **被采纳**的行在执行期保留完整参数（`args_hash` 绑定 + 执行器从这张表取参），进入终态（`done` / `rejected`，含 `_fail_unknown` 那条）后由 `_set_request_state()` → `_redact_terminal_args()` 脱敏，记忆写的终态推进与投影提交同事务；③ **升级前就在终态的行**由 `Dispatcher._migrate_redacted_args()` 补扫：用 `dispatch_meta` 里的**持久标记**判「做过没有」，标记与补扫在**同一事务**里提交——中途失败/被 kill 时标记不落，下次打开重试（只碰 `args_redacted=0` 的终态行；不要用「列在不在」判，`ALTER TABLE` 会先落盘）。代价是同一 `request_id` 会被写多次，所以 `ON CONFLICT` 取"最后一次写入"的形态：拒绝写脱敏值、重新发起写回完整参数（单向保留会让重新发起被判"参数被改过"）。`args_redacted` 是**事实字段**：非记忆请求 / 无正文的记忆请求一律 0。测试：`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`、`test_interrupted_backfill_is_retried_on_the_next_open`、`test_accepted_memory_write_args_are_redacted_at_terminal_state`、`test_gate_blocked_memory_write_is_redacted_after_dispatch`、`test_memory_write_that_crashes_mid_projection_is_still_redacted`、`test_request_stored_before_approval_is_redacted_when_it_is_later_rejected`、`test_file_write_args_are_not_redacted`、`test_rejected_file_request_is_not_marked_as_redacted`、`test_intent_events_drop_content_for_every_content_memory_write`、`test_terminal_rows_from_an_older_library_are_redacted_when_opened`、`test_marker_without_the_column_forces_a_rescan`、`test_crash_between_add_column_and_backfill_is_retried`、`test_reissued_request_after_terminal_state_keeps_full_args`。负控：关掉终态脱敏 → 三条脱敏用例红；只修插入路径不改 ON CONFLICT → 等待后否决那条红；`_reject` 无条件标脱敏 → 被拒文件请求那条红；跳过补扫 → 旧库终态行那条红；`_intent_args` 只认 propose → 事件日志正文那条红。**残留（如实记）**：停在 `waiting` / `admitted` 的行仍是完整参数（`dispatch()` 要用它执行）；升级前终态行若 payload 已不可解析则**不补扫**（保留可审计性，`args_redacted` 保持 0 —— 已知 fail-open，只能人工处理）；`blob_dir` 里的正文副本不随审计表脱敏（正文本来就存 blob） **残留（复审后补全）**：① 停在 waiting/admitted；② payload 不可解析的终态行不补扫（fail-open）；③ `blob_dir` 正文副本不随审计表脱敏（设计）；④ 模型工具调用参数里的正文仍在 `model.result` / `run_turns`（replay 必须留，物理擦除见 §10）；⑤ 补扫在 `dispatch_meta` 的持久标记缺失时重试（中断/失败下次打开继续），成功置位后不再回扫——旧库里 payload 修好后不会自动补；⑥ `_backfill_redacted_args` 的 UPDATE 已加 `state IN (done,rejected)`，避免与"重新发起"竞态 |
 | 27 | CLI 对 task 作用域记忆的限制 | ✅ 已解除（N1） | `Dispatcher.open_control_run(memory_scopes=...)` 把声明写进 `task.created` payload 与 `Task.is_control`；CLI `memory confirm\|forget --task-id` 用它在**不绑旧 task 目录**的前提下签字。测试：`test_control_run_can_forget_an_old_task_scope_memory` / `test_cli_can_forget_task_scope_memory_with_task_id` |
 | 28 | 控制面标记与作用域声明（N1） | ✅ 已落地 | `Task.is_control` / `Task.memory_scopes` 从 `task.created` payload 读回；`Dispatcher.open_control_run` 写 `control: true` + `memory_scopes`；`task.created` 只加键、**不新增事件类型**；rebuild 后仍在（`test_control_marker_and_scope_declaration_survive_rebuild`）。越权 → `c4.memory_control_scope_binding` |
+| 30 | 控制面 Host/IPC 记忆端点（N6 / §9） | ✅ 已落地（Host/IPC 一侧；**UI 面板未接**） | 新模块 `memory_control.py` 把控制面记忆操作收成**一份**（CLI 与 daemon RPC 共用；原来 CLI 里四个近似重复的派发助手已收口——写操作永远走 dispatcher 的那条纪律抄两份，早晚有一份会图省事直接改投影）。`ControlPlane._methods` 新增 7 个：`memory.list` / `memory.get` / `memory.remember` / `memory.confirm` / `memory.edit` / `memory.forget` / `memory.promote`；`host.py` 原样代理 `POST /rpc`，所以 UI 不用改就能调。**身份口径**：这些方法只对**本机人**可达（POSIX `run/` 目录 0700 + socket 0600；Windows 命名管道 ACL 继承创建者、**未**额外加固，属 M5 已知限制），写操作用 `HumanIdentity.local_cli()` 落审批，与 CLI 同一个 actor；**不新造身份令牌**——真正的边界是"这条 IPC 只有本机人能连"。模型没有这条路：`memory.list` 不是工具，其余同名工具走 `AgentLoop` → `Dispatcher` → `MemoryExecutor`（按 `allowed` 过滤），**名字相同不代表权限相同**。视图六项判据由 `memory_control.memory_view` 统一产出（`memory.get` 另给 `content` 与 `content_state`；正文纯文本原样返回，不做 HTML 转换）。错误面：不存在 → `not_found`、参数不对 → `bad_params`、revision 不是当前版本 → `conflict`（先拒，不派发）、未知方法 → `unknown_method`。测试：`tests/test_host_memory.py`（**10 条**，真起 daemon + 真 IPC）：六项判据与纯文本正文、默认只看 user（看 task 必须显式给 scope）、`memory.list` 没有同名模型工具、7 个方法都注册、edit 后旧行 superseded 且事件里有 **edit 的** `tool.intent`/`tool.result`、forget 变 tombstone、对已 active 的记忆 confirm 是明确拒绝且 `none_applied`、promote 是移动、未知 id/缺参数/未知方法、revision 过期 conflict。负控：把 edit 端点改成"返回假成功、不派发" → edit 事件用例红。**残留**：① React 记忆面板未接（端点已具备，面板属 UI 工作流）；② `memory.search` 的 RPC 未暴露（`list` + `get` 之外暂不开检索面）；③ "无身份拒绝"这条在单用户本机模型下由 IPC 端点权限承担，没有单独测试（同机同用户无法构造"无身份"客户端）；④ 越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（控制面自己声明目标作用域，人本来就是 owner），该判据由模型路径的派发测试覆盖；⑤ Windows ACL 未加固 |
 | 29 | 物理擦除 `memory.erase`（N4） | ✅ 已落地 | 控制面专属（`exposed=False`）、`delete` + 一次性审批 + Receipt；删唯一 blob + 置 `forgotten`/`erased_at`；引用计数为 0 才删（**已擦除行不计数**），否则回执列 `retained_by`；重建不复活、`read_content` 一律 None。**并发保护：引用计数 + 删文件 + 提交在同一把跨进程执行守卫内**（否则两条共享 blob 并发擦除会都保留文件、留孤儿）。投影 schema v1→v2 只加可空列、不重建；`schema_version` 高于程序支持时 fail-closed；CLI 可擦 forgotten / candidate / superseded（DELETE 前置不再默认 `active`）。测试：`test_erase_deletes_unique_blob_and_marks_erased`（含 `verify_receipts(...) == []`）/ `test_erase_keeps_shared_blob_and_reports_retained_by`（含文件仍在时的 rebuild）/ `test_erase_is_control_plane_only` / `test_erase_commit_runs_inside_the_execution_guard` / `test_cli_erase_deletes_content_and_marks_erased` / `test_cli_can_erase_forgotten_and_candidate_memories` / `test_schema_v1_database_is_migrated_in_place` / `test_newer_schema_version_fails_closed` |
 
 **数据落点（别写成系统标准目录）**：投影表（`memories` / `memory_fts` / `memory_meta`）建在**事件日志同一个 sqlite 库**里——构造时强制 `conn is log.conn`（`MemoryProjection.__init__`），所以事件与投影同事务。正文 blob 默认落在 **DB 旁的 `memory_blobs/`**（`MemoryProjection.blob_dir`），**刻意不放进 `log.blob_dir`**：事件 payload 必须留存供 replay / 审计，记忆正文将来要能按策略物理擦除；两者同处一个内容寻址目录时，同一段字节会变成同一个文件——按策略删记忆正文会误删必须留存的日志材料（理由写在 `MemoryProjection.__init__` 的注释里）。纯内存库（`:memory:`）没有"DB 旁边"，此时 `blob_dir` 为 `None`、正文如实标成不可用，不编一个当前目录下的路径。内核子命令默认 `--db .tianshu/events.db`（`cli.DEFAULT_DB`），daemon 用 `--data-root` 时事件库在 `<data root>/events.db`（`daemon.py`）；记忆投影跟着这个库走。测试钉住这条分离：`test_default_blob_dir_is_separate_from_event_payload_store`（`EventLog` 就算配了 `blob_dir`，记忆正文也不跟过去）。`~/Library/Application Support/AgentOS` 那套只存在于 TECH-ARCH 的设计里，别当成现状。
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 18:40（`feat/memory-distill` 工作区实测，`1714 passed / 7 skipped`——合并 `main @ 3d3b186`（#97/#99/#101）后实测，该基线为 `1684 passed / 7 skipped`；N3 自身加 30 条（22 条蒸馏判据 + 7 条真派发 e2e + 1 条 v2→v3 迁移），其余来自 main；其中 **258 条**来自本特性的**七个**记忆测试文件：67 + 67 + 26 + 22 + 43 + 7 + 26）；以 CI 为准。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 19:55（`feat/host-memory` 工作区实测，`1724 passed / 7 skipped`——合并 `main @ da6b4a9`（N3 已合）后实测，该基线为 `1714 passed / 7 skipped`；N6 自身加 10 条（`tests/test_host_memory.py` 真 IPC），其余来自 main；其中 **268 条**来自本特性的**八个**记忆测试文件：10 + 67 + 67 + 26 + 22 + 43 + 7 + 26）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
-> 真的没有测试，别把它当已验收。函数名来自**七个**文件：`tests/test_memory_store.py`
+> 真的没有测试，别把它当已验收。函数名来自**八个**文件：`tests/test_memory_store.py`
 > （54 个 `def test_` / 67 条：投影 / 检索 / 闸门 / 去重 / 擦除 / schema 迁移到 v3（v1→v3 与 v2→v3 各一条））、`tests/test_memory_dispatch.py`
 > （67 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run / 错装配投影 / 拒绝行脱敏 / 终态脱敏 / 同号重写 / 崩溃窗口 / 擦除不可逆 / 孤儿 blob / 旧库补扫 / 迁移中断重试 / CLI 打印两栏 / blob_dir 与投影接线 / 恢复分支 / 标记与列脱钩 / memory 优先 / 加列与补扫之间崩溃重试 / **consolidate 派发与召回 / 重复合成如实报状态 / 单页失败不写正文 / 多页失败先预检全部页（一个字节都不写）**）、`tests/test_memory_loop.py`（26 个：主循环 / 预算 /
-> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_memory_distill.py`（22 个：L2 引用拼装 / 逐字节确定 / 增量 delta / proof 一致 / 坏页就位校验与应用层参数化 / 重复应用幂等 / 正文回退 fail-closed / active 页不被合成退役 / L3 预算与作用域 / 旧页 supersede（含 evidence 快照）/ replay / freshness（三态、无索引路径、过期 L1））、`tests/test_resources.py`（23 个 / 43 条：资源种类）、`tests/test_memory_rank.py`（7 个：作用域优先级）、`tests/test_memory_vectors.py`（26 个：向量索引 / RRF / 并集 / 就绪状态 / built 标记 / 降级边界 / partial tables）。
+> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_memory_distill.py`（22 个：L2 引用拼装 / 逐字节确定 / 增量 delta / proof 一致 / 坏页就位校验与应用层参数化 / 重复应用幂等 / 正文回退 fail-closed / active 页不被合成退役 / L3 预算与作用域 / 旧页 supersede（含 evidence 快照）/ replay / freshness（三态、无索引路径、过期 L1））、`tests/test_resources.py`（23 个 / 43 条：资源种类）、`tests/test_memory_rank.py`（7 个：作用域优先级）、`tests/test_memory_vectors.py`（26 个：向量索引 / RRF / 并集 / 就绪状态 / built 标记 / 降级边界 / partial tables）、`tests/test_host_memory.py`（10 个：**真起 daemon + 真 IPC** 的控制面端点：六项判据 / 默认作用域 / 模型工具面 / 方法注册 / edit 走 dispatcher / forget tombstone / confirm 拒绝非候选 / promote 移动 / 错误面 / revision 过期）。
 
 | 判据 | 状态 | 证据 / 缺口 |
 |---|---|---|
@@ -415,11 +419,16 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 作用域优先级：当前任务 > 本 Run 的 workspace > user，且与 `allowed` 无关、逐位可复现 | ✅ 已覆盖（N2） | `tests/test_memory_rank.py` 7 条（顺序 / 无上下文退回旧序 / 可复现 / 不捞越权 / 过期不参与 / 裁剪仍在排序之后 / `task_id=None` 不抬 task）。负控：把排序键改回 origin 优先 → 顺序用例红 |
 | 向量召回：语义候选与 FTS 取**并集**（FTS 空也跑）、能力边界自报（未配置 / 未构建 / 换 provider → FTS-only + 原因）、built+覆盖校验、并集过滤、重建逐字节确定、RRF 可手算、索引跟随生命周期 | ✅ 已覆盖（N2） | `tests/test_memory_vectors.py` 26 条；评测报告 `docs/memory-retrieval-eval.md`（22 query / 25 记忆，只报实测）。负控：语义只采纳 FTS 候选 → 并集用例红；availability 永不降级 → 红；去掉确认后的索引钩子 → 红；删 built 分支 → built 用例红 |
 
+| 控制面能看见记忆：`memory.list` / `memory.get` 走真 IPC、给六项判据与纯文本正文 | ✅ 已覆盖（N6） | `test_list_and_get_return_the_six_judgement_fields`（六项判据一个不少、列表不带正文、get 正文逐字节原样——含 `<b>` 与 URL，后端不做 HTML 转换）、`test_default_scope_is_user_and_other_scopes_must_be_named`（默认只看 `user`，看 task 必须显式给 scope；缺 `scope_id` → `bad_params`）。负控：把端点改成"返回假成功、不派发" → edit 事件用例红 |
+| 控制面能改记忆，且**只能按规矩改**：edit / forget / confirm / promote 全走 dispatcher（事件里有 intent/result、审批一次性消费） | ✅ 已覆盖（N6） | `test_edit_rpc_writes_intent_and_result_events`（断言事件里是 **edit 的** `tool.intent` / `tool.result`，旧行 superseded、新行 active、审批已决定——只断言"有 intent/result"会被 remember 的旧事件掩盖）、`test_forget_moves_state_through_the_dispatcher`、`test_confirm_on_an_already_active_memory_is_rejected`（非候选 confirm 明确拒绝且 `none_applied`）、`test_promote_moves_the_memory_and_old_scope_stops_recalling`（移动语义、新行 candidate、`source_refs` 指回原行）、`test_stale_revision_is_refused_before_dispatch`（revision 过期先 `conflict`，不先派发） |
+| 控制面端点**不是模型工具**：`memory.list` 不在 `tool_manifest()`，7 个方法都在控制面注册 | ✅ 已覆盖（N6） | `test_memory_list_has_no_model_tool_counterpart`、`test_all_seven_control_plane_methods_are_registered`。`memory.get|edit|forget…` 与模型工具**同名不同路**：模型走 `AgentLoop` → `Dispatcher` → `MemoryExecutor`（按 `allowed` 过滤），**名字相同不代表权限相同**（写在 §13 #30） |
+| 控制面端点只对本机人可达 | 部分覆盖（**口径写清、无可构造的反例**） | 判据落在 IPC 端点权限：POSIX `run/` 目录 0700 + socket 0600（`ipc._chmod_private`）；Windows 命名管道 ACL 继承创建者、**未**额外加固（M5 已知限制）。单用户本机模型下**无法构造"同机另一个用户"**的客户端来写反例，所以这条只有代码/文档论证、没有测试——不声称"已验证" |
+
 ## 15. 与实施计划的关系
 
 [NEXT-CAPABILITIES-PLAN.md](NEXT-CAPABILITIES-PLAN.md) §5 是实施拆解（PR08 `docs(contract)` / PR09 `feat(memory)`）；本文是该 PR 的设计输入。两者冲突时**以本文为准（设计）**，但任何契约变更仍需走 `docs(contract):` 独立 PR。
 
-N1–N5 的**逐条施工规格**（判据与负控口径、文件所有权、契约增量清单）都在 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)，每条都有落地记录（§2.3 / §3.4 / §4.4 / §5.4 / §6.4）。**只剩 N6（控制面 UI / Host 记忆端点）未实施**。该规格**不改变**本文的设计结论；与本文冲突时以本文为准。
+N1–N6 的**逐条施工规格**（判据与负控口径、文件所有权、契约增量清单）都在 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md)，每条都有落地记录（§2.3 / §3.4 / §4.4 / §5.4 / §6.4 / §7.4）。**N6 只交付了 Host/IPC 一侧的端点，React 记忆面板还没接**——那属于 UI 工作流，别把这句读成"UI 上已经能看见"。该规格**不改变**本文的设计结论；与本文冲突时以本文为准。
 
 ## 16. 参考
 

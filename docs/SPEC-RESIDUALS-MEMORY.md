@@ -611,10 +611,11 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ## 7. N6 · 控制面 UI / Host：看得见、改得动（F10 §9）
 
-### 7.1 现状
+### 7.1 现状（N6 落地前）
 
 `host.py` 零记忆端点；`cli._cmd_memory` 是唯一控制面。UI 只能看任务与审批，看不到
-"Agent 记住了什么"。
+"Agent 记住了什么"。（N6 之后：daemon 的 `ControlPlane` 有 7 个记忆 RPC——见 §7.4；
+React 面板仍未接。）
 
 ### 7.2 设计
 
@@ -635,6 +636,49 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 - **负控**：把 UI 端点改成直接调 `projection` 改状态（不经 dispatcher）→ 用例必须红。
 - 明确不测：真实模型驱动 UI（沿用现状"未接过真实模型"的写法，不许写成已接）。
 
+### 7.4 落地记录（N6 实际，2026-11-11，分支 `feat/host-memory`）
+
+- **共享实现**：新模块 `src/tianshu/memory_control.py` = 控制面记忆操作的**唯一**实现
+  （`memory_view` / `list_memories` / `read_memory` / `remember` / `edit` / `transition` /
+  `promote` / `erase` + 内部 `_dispatch_as_human`）。CLI 与 daemon RPC 都调它。**为什么**：
+  "写记忆必须走 dispatcher"这条纪律一旦抄成两份，早晚有一份会图省事直接改投影；
+  原来 CLI 里 `_dispatch_memory_decision` / `_dispatch_memory_write` /
+  `_dispatch_memory_promote` / `_remember_memory` 四个近似重复的助手已收口，只保留打印。
+- **RPC 方法（`control.ControlPlane._methods`）**：`memory.list` / `memory.get` /
+  `memory.remember` / `memory.confirm` / `memory.edit` / `memory.forget` /
+  `memory.promote`。规格 §7.2 的清单漏了 `memory.confirm`——没有它就没有"人确认候选才
+  召回"的入口，一并落地。`host.py` 把浏览器 `POST /rpc` 原样代理给 daemon，**host 侧不用
+  改**。
+- **身份口径（不新造令牌）**：IPC 端点只对**本机人**可达——POSIX `run/` 目录 0700 +
+  socket 0600（`ipc._chmod_private`）；Windows 命名管道 ACL 继承创建者、**未**额外加固
+  （M5 已知限制）。写操作用 `HumanIdentity.local_cli()` 落审批（与 CLI 同一个 actor，一次性
+  消费 + 执行侧二次核验照旧）。模型没有这条路：`memory.list` 不是工具，其余同名工具走
+  `AgentLoop` → `Dispatcher` → `MemoryExecutor`（按 `allowed` 过滤）——**同名不同路**。
+- **视图**：`memory_view` 统一产出六项判据 `scope` / `origin` / `revision` / `status` /
+  `source_refs` / `proof_count`（+ `memory_id`）；`memory.get` 另给 `content` 与
+  `content_state`（不可用要显式说，不靠 `content=None` 猜）。正文纯文本原样返回，后端不做
+  HTML 转换（转义是 UI 的事）。
+- **错误面**：不存在 → `not_found`；参数不对 → `bad_params`；`revision` 不是当前版本 →
+  `conflict`（**先拒，不派发**）；未知方法 → `unknown_method`。
+- **测试**：`tests/test_host_memory.py`（新，**10 条**，真起 daemon + 真 `ipc.Client`）：
+  六项判据与纯文本正文、默认只看 `user` / 看 task 必须显式给 scope、`memory.list` 没有同名
+  模型工具、7 个方法都注册、edit 走 dispatcher（断言事件里是 **edit 的** `tool.intent` /
+  `tool.result` + 旧行 superseded + 审批已决定）、forget 变 tombstone、对已 active 的记忆
+  confirm 是明确拒绝且 `none_applied`、promote 是移动、未知 id / 缺参数 / 未知方法、
+  revision 过期 `conflict`。
+- **负控（真跑）**：把 `memory.edit` 端点改成"返回假成功、不派发"→ edit 事件用例红。
+- **偏差 / 没做**：
+  1. **React 记忆面板未接**：端点已具备（Host 代理任意 RPC），面板属 UI 工作流；不声称
+     "UI 上已经能看见"。
+  2. `memory.search` 的 RPC 未暴露（`list` + `get` 之外暂不开检索面）。
+  3. "无身份拒绝"这条在单用户本机模型下由 IPC 端点权限承担，**没有测试**（同机同用户无法
+     构造"无身份"客户端）——只有代码/文档论证。
+  4. 越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（控制面自己声明目标作用域，
+     人本来就是 owner）；该判据由模型路径的派发测试覆盖。
+  5. Windows ACL 未加固（沿用 M5 的已知限制，本 PR 不改变它）。
+
+---
+
 ---
 
 ## 8. 合并顺序与总验收（lead 负责）
@@ -642,8 +686,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 1. **契约 PR**（文档：PRD §4.1 / §5.2.2 / §5.4.2 + F10 §5 / §7 / §9 / §10）→ 合入 `main`。
    **代码注册不在这里**：`tools.SPECS` / `rules.RULE_IDS` / `schemas/` 随各实现 PR 与产生
    路径同落地（见 §0.2）。契约 PR 不合则后续 PR 不开工。
-2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。**已按序落地**：N1（#83/#84）、N4（#85）、
-   N5（#89）、N2（#93）、**N3（#98）**；**只剩 N6（控制面 UI / Host 记忆端点）**。
+2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。**已全部按序落地**：N1（#83/#84）、
+   N4（#85）、N5（#89）、N2（#93）、N3（#98）、**N6（#100，Host/IPC 端点；React 面板未接）**。
 3. 每个 PR 合入前：lead 在最新 `main` 上跑全量 + `ruff` + `uv lock --check`；冲突一律
    lead 解。工具面绊线（`test_veto_scope.py`）随工具变化同步登记。
 4. 全部合入后 lead 收尾：
@@ -676,8 +720,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ## 10. 本文不宣称的事
 
 - 本文**没有**变更任何现行契约：C2/C4/PRD/`schemas/` 的实际改动在 §1 的契约 PR 里。
-- §2–§7 的判据**已全部落地并由测试钉住**（N1/N2/N3/N4/N5）；逐条对账在
-  `docs/F10-memory-design.md` §14 与各工作流的"落地记录"（§2.3 / §3.4 / §4.4 / §5.4 / §6.4）。
-  **N6 仍未实施**，它的判据（§7.3）目前一条测试都没有——别把本文的设计读成已实现。
+- §2–§7 的判据**已全部落地并由测试钉住**（N1/N2/N3/N4/N5/N6）；逐条对账在
+  `docs/F10-memory-design.md` §14 与各工作流的"落地记录"（§2.3 / §3.4 / §4.4 / §5.4 /
+  §6.4 / §7.4）。**N6 的 §7.3 判据里"无身份拒绝"没有测试**（单用户本机模型下构造不出
+  反例），且 **React 面板未接**——这两条如实记在 §7.4 的"偏差 / 没做"。
 - §2–§7 的设计是**待实施**方案，不是"已完成"；实施后每条都要能指到测试函数名与负控
   输出，否则按未修处理。
