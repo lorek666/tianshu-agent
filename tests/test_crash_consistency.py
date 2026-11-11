@@ -102,7 +102,7 @@ store.init_run(run_id)
 
 log.append(run_id, "run.start", {
     "task": "掉电一致性", "workspace": str(ws), "out": "x.md",
-    "limits": {}, "tools": []}, actor_kind="core")
+    "limits": {}, "tools": []}, actor_kind="core", legacy_write=True)
 kind = cfg["kind"]
 args = ({"name": cfg["target"], "content": cfg["after"]} if kind == "create"
         else {"path": cfg["target"]})
@@ -111,7 +111,7 @@ log.append(run_id, "tool.intent", {
     "tool_id": cfg["tool"],
     "args": args,
     "args_hash": "0" * 64,
-}, actor_kind="core")
+}, actor_kind="core", legacy_write=True)
 
 def arm():
     """在真实写边界之前才武装注入：init_run / blob 落盘都不该命中。"""
@@ -591,7 +591,7 @@ def test_fresh_and_reopened_event_log_are_not_misjudged(tmp_path):
     log = EventLog(empty)
     log.append("r1", "run.start", {"task": "t", "workspace": str(tmp_path),
                                    "out": "x", "limits": {}, "tools": []},
-               actor_kind="core")
+               actor_kind="core", legacy_write=True)
     assert len(log.read_run("r1")) == 1
 
     # 同一库第二条连接（同一进程、非跨线程）不得误报

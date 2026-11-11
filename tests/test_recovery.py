@@ -354,10 +354,10 @@ def test_unknown_blocks_subsequent_writes(tmp_path):
     args = {"name": "note.md", "content": "agent 想写的内容\n"}
     log.append(run_id, "run.start",
                {"task": "t", "workspace": str(ws.resolve()), "out": "x.md",
-                "limits": {}, "tools": []}, actor_kind="core")
+                "limits": {}, "tools": []}, actor_kind="core", legacy_write=True)
     log.append(run_id, "tool.intent",
                {"call_id": "c1", "tool_id": "modify_text", "args": args,
-                "args_hash": hashlib.sha256(b"x").hexdigest()}, actor_kind="core")
+                "args_hash": hashlib.sha256(b"x").hexdigest()}, actor_kind="core", legacy_write=True)
 
     # 写前证据存在（说明确实进入了写入阶段）
     store.record_preimage(

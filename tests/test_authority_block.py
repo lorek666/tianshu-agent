@@ -73,6 +73,7 @@ def _seed_crashed_write(ws: Path, data_root: Path, run_id: str = "run_old") -> E
         {"task": "改文件", "workspace": str(ws.resolve()), "out": "x",
          "limits": {}, "tools": []},
         actor_kind="core",
+        legacy_write=True,
     )
     log.append(
         run_id,
@@ -80,6 +81,7 @@ def _seed_crashed_write(ws: Path, data_root: Path, run_id: str = "run_old") -> E
         {"call_id": "c1", "tool_id": "modify_text",
          "args": {"path": "note.md", "content": AFTER}, "args_hash": _sha("args")},
         actor_kind="core",
+        legacy_write=True,
     )
     shots.init_run(run_id)
     shots.record_preimage(

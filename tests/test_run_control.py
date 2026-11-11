@@ -1264,11 +1264,13 @@ def test_unbilled_model_intents_counts_events_not_request_ids(env):
             run.run_id, "model.intent",
             {"request_id": "req_same", "attempt": 1, "messages_hash": "x"},
             actor_kind="core", idem_key="req_same",
+            legacy_write=True,
         )
     env.log.append(
         run.run_id, "model.result",
         {"request_id": "req_same", "finish_reason": "end_turn", "content": "ok"},
         actor_kind="core", idem_key="req_same",
+        legacy_write=True,
     )
     env.stack.tasks.finish_run(run.run_id, outcome="succeeded", effect_state="none_applied")
 

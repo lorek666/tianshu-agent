@@ -85,6 +85,7 @@ log.append(
     {{"task": "覆盖写", "workspace": str(ws.resolve()), "out": "x",
       "limits": {{}}, "tools": []}},
     actor_kind="core",
+    legacy_write=True,
 )
 log.append(
     run_id,
@@ -92,6 +93,7 @@ log.append(
     {{"call_id": "c1", "tool_id": "modify_text", "args": args,
       "args_hash": hashlib.sha256(b"args").hexdigest()}},
     actor_kind="core",
+    legacy_write=True,
 )
 stack.snapshots.init_run(run_id)
 stack.snapshots.record_preimage(
@@ -283,7 +285,7 @@ def test_assess_run_reports_missing_manifest_instead_of_guessing(tmp_path):
     log.append("run_no_manifest", "tool.intent",
                {"call_id": "c1", "tool_id": "modify_text",
                 "args": {"path": "note.md", "content": AFTER}, "args_hash": "x"},
-               actor_kind="core")
+               actor_kind="core", legacy_write=True)
 
     assessment = assess_run(data_root, "run_no_manifest", log=log)
     assert assessment.missing_manifest is True
@@ -300,7 +302,7 @@ def test_assess_run_reports_corrupt_manifest_instead_of_raising(tmp_path):
     log.append("run_corrupt", "tool.intent",
                {"call_id": "c1", "tool_id": "modify_text",
                 "args": {"path": "note.md", "content": AFTER}, "args_hash": "x"},
-               actor_kind="core")
+               actor_kind="core", legacy_write=True)
     shots = SnapshotStore(data_root / "artifacts")
     shots.manifest_path("run_corrupt").write_bytes(b"{not json")
 

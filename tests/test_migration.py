@@ -58,10 +58,10 @@ def _make_root(tmp_path: Path) -> Path:
     log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
     log.append("r1", "run.start", {
         "task": "迁移夹具", "workspace": str(tmp_path), "out": "x.md",
-        "limits": {}, "tools": []}, actor_kind="core")
+        "limits": {}, "tools": []}, actor_kind="core", legacy_write=True)
     log.append("r1", "tool.intent", {
         "call_id": "c1", "tool_id": "read_text", "args": {"path": "a.txt"},
-        "args_hash": "0" * 64}, actor_kind="core")
+        "args_hash": "0" * 64}, actor_kind="core", legacy_write=True)
     log.close()
     return root
 

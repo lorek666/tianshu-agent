@@ -397,6 +397,50 @@ def test_corrupt_version_row_is_explicit_unknown(tmp_path):
         log.close()
 
 
+def test_production_code_never_requests_legacy_writes():
+    """`legacy_write=True` 只允许出现在测试/夹具里。
+
+    参数存在本身不是洞；被生产代码误用才是。这里用 AST 扫 `src/tianshu/**/*.py`
+    的**调用点**（不是注释/文档字符串），断言没有任何生产调用传该参数。
+    """
+    import ast
+
+    src = Path(__file__).resolve().parents[1] / "src" / "tianshu"
+    offenders: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "legacy_write":
+                    continue
+                if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                    offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+    assert offenders == [], (
+        "生产代码不允许请求 legacy 写入（只给夹具/历史播种/迁移测试用）："
+        f"{offenders}"
+    )
+
+
+def test_legacy_write_is_not_a_wildcard(tmp_path):
+    """显式 legacy_write 仍必须满足 v0 封闭 schema：畸形到 v0 也不合法 → 拒绝。"""
+    log = _log(tmp_path)
+    try:
+        # 字段名/类型陌生到 v0 也不认（v0 也是 additionalProperties=false）
+        with pytest.raises(event_schema.PayloadContractError):
+            log.append("run_x", "run.start", {"totally": "wrong", "nested": [1]},
+                       legacy_write=True)
+        # payload 不是对象：任何版本都不合法
+        with pytest.raises(event_schema.PayloadContractError):
+            log.append("run_x", "run.start", ["not", "an", "object"],
+                       legacy_write=True)
+        assert log.read_run("run_x") == []
+        assert log.seq_head() == 0
+    finally:
+        log.close()
+
+
 def test_default_append_is_strict_and_never_falls_back_to_v0(tmp_path):
     """默认写入口只接受当前契约：v1 不合法就拒绝，绝不自动退回 v0。
 
