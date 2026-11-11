@@ -321,9 +321,13 @@ def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
         # `restore_file`，却仍可能在响应里把它拼出来。不派发，但按 A7 留痕——模型
         # 需要收到一条 tool 消息才能继续，硬失败会把一次可恢复的乱猜变成整轮失败。
         return False, f"内部工具不对模型开放（exposed=False）：{call.name}"
-    missing = [k for k in spec.input_schema.get("required", []) if k not in call.arguments]
-    if missing:
-        return False, f"缺少必填参数：{missing}"
+    # 参数准入在**这里**做，不是在工具实现里做：嵌套对象、数组与约束都要在
+    # 派发（更别提审批）之前被拒。否则用户会被要求批准一次"argv 里放了个整数"
+    # 的调用，而执行侧到打开文件之前才发现参数不合法——那是把契约当装饰。
+    try:
+        validate_args(call.arguments, spec.input_schema)
+    except ToolArgumentError as exc:
+        return False, f"参数不满足工具契约：{exc}"
     return True, ""
 
 
