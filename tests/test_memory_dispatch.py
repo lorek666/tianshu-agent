@@ -553,10 +553,9 @@ def test_model_cannot_propose_into_workspace_scope(env):
     _request, _args, decision = _propose(
         env, task, run, claim, content="这个工作区里的约定", scope=scope
     )
-    assert decision.is_admitted, decision
-    result = env.dispatcher.dispatch(decision.request_id, claim)
-    assert not result.ok
-    assert result.effect_state == "none_applied"
+    # 拒绝点已经提前到派发层（执行侧还有同名核验）：不再"先放行再执行失败"。
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
     assert env.memory.list_memories(allowed=(scope,)) == []
 
 
@@ -1076,3 +1075,43 @@ def test_model_can_only_propose_into_its_own_task_scope(env: Env):
     decision = env.dispatcher.prepare(request, claim, args=args)
     assert decision.is_rejected, decision
     assert decision.rule_id == "c4.memory_scope_denied"
+
+
+def test_workspace_propose_is_refused_even_on_a_control_task(env: Env):
+    """控制面标记是 **Task 级**的：同一 Task 上后开的模型 Run 也不能写 workspace。
+
+    独立复审复现过这个洞：CLI 为 workspace 作用域的确认/遗忘创建的控制任务带
+    `is_control=1` 与 workspace 绑定；人再在这个 task 上开一个模型 Run，模型
+    `memory.propose` 到 workspace 会成功（继承控制面身份）。现在 propose→workspace
+    **无条件**拒，共享写只能走 exposed=False 的 `memory.promote`。
+    """
+    scope = MemoryScope.workspace(env.ws_a)
+    control = env.dispatcher.open_control_run(
+        goal="memory.confirm:mem_x",
+        workspaces=[str(env.ws_a)],
+        memory_scopes=[scope],
+    )
+    env.dispatcher.close_control_run(
+        control, outcome="succeeded", effect_state="none_applied"
+    )
+
+    run = env.tasks.start_run(control.task.task_id)
+    env.leases.acquire([env.ws_a], run.run_id)
+    job = env.claims.enqueue(run.run_id)
+    claim = env.claims.claim(job.job_id)
+    env.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+
+    args = {"kind": "fact", "content": "共享边界试探"}
+    request = env.request(
+        control.task,
+        run,
+        claim,
+        tool_id="memory.propose",
+        target=scope.to_uri(),
+        args=args,
+        call_id="ws-probe",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_scope_denied"
+    assert env.memory.list_memories(allowed=(scope,)) == []

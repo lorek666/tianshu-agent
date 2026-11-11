@@ -1325,6 +1325,15 @@ class Dispatcher:
                 "控制面专属工具不能在普通任务里执行",
                 "c4.memory_control_scope_binding",
             )
+        if request.tool_id == "memory.propose" and target.scope.scope == "workspace":
+            # workspace 是共享边界：模型可见的 propose **无条件**拒，不因
+            # Task.is_control 放行（控制面标记会被同一 Task 上后开的模型 Run
+            # 继承）。执行侧还有一道同名核验，这里只是把拒绝提前到派发。
+            raise DispatchDenied(
+                f"workspace 作用域只能由人经 memory.promote 进入："
+                f"{target.scope.to_uri()}",
+                "c4.memory_scope_denied",
+            )
         if request.action == ACTION_CREATE:
             return
 

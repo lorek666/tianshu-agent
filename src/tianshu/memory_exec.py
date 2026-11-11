@@ -319,12 +319,24 @@ class MemoryExecutor:
         declared: Sequence[str] = (
             tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
         )
+        if admitted.tool_id == "memory.propose" and target_scope.scope == "workspace":
+            # workspace 是**共享边界**：它**无条件**拒绝模型可见的 propose，
+            # 不因 Task.is_control 放行——控制面标记是 Task 级的，同一 Task 上
+            # 后开的模型 Run 会继承它（独立复审的探针复现过这个洞）。
+            # 共享写只有一条路：控制面专属的 `memory.promote`（exposed=False）。
+            raise MemoryDispatchRefused(
+                f"workspace 作用域只能由人经 memory.promote 进入："
+                f"{target_scope.to_uri()}",
+                "c4.memory_scope_denied",
+            )
         if not is_control:
             if admitted.tool_id == "memory.remember":
                 raise MemoryDispatchRefused(
                     "控制面专属工具不能在普通任务里执行",
                     "c4.memory_control_scope_binding",
                 )
+            # 注：authority / policy 通常已经先拒了"写别人的 task"，这里保留
+            # 同名判定作纵深防御——执行侧不因为"上游说不行"就少一道核验。
             if (
                 admitted.tool_id == "memory.propose"
                 and target_scope.scope == "task"
@@ -334,14 +346,6 @@ class MemoryExecutor:
                 # 只有控制面（CLI/UI）能替它操作。
                 raise MemoryDispatchRefused(
                     f"模型只能写本任务的 task 作用域：{target_scope.to_uri()}",
-                    "c4.memory_scope_denied",
-                )
-            if target_scope.scope == "workspace":
-                # workspace 是**共享边界**：模型不能把记忆写进共享作用域，
-                # 共享只能由人经 memory.promote 签发（F10 §3.3 / 契约 v1.2）。
-                raise MemoryDispatchRefused(
-                    f"workspace 作用域只能由人经 memory.promote 进入："
-                    f"{target_scope.to_uri()}",
                     "c4.memory_scope_denied",
                 )
         allowed, reason = memory_scope_allowed(

@@ -388,8 +388,20 @@ class TaskStore:
         if not goal:
             raise TianshuError("goal 不能为空")
         scopes = list(memory_scopes or [])
-        if not all(isinstance(item, str) and item for item in scopes):
-            raise TianshuError("memory_scopes 必须是非空字符串数组（memory:// URI）")
+        # 声明的作用域是安全相关输入：存进来的每个元素都必须是合法的
+        # `memory://` URI。只在 Dispatcher 里校验不够——直接调 TaskStore 的
+        # 调用方（恢复、测试、未来的 API）也走这个入口。
+        from .resources import parse_memory_uri
+
+        for item in scopes:
+            if not isinstance(item, str) or not item:
+                raise TianshuError(
+                    "memory_scopes 必须是非空字符串数组（memory:// URI）"
+                )
+            try:
+                parse_memory_uri(item)
+            except TianshuError as exc:
+                raise TianshuError(f"memory_scopes 不是合法的记忆作用域：{exc}") from exc
         parsed = parse_bindings(
             [b.to_dict() if isinstance(b, WorkspaceBinding) else b
              for b in (bindings or [])]

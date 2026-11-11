@@ -750,6 +750,8 @@ def _task_json(task) -> dict:
         "lease_epoch": task.lease_epoch,
         "active_run_id": task.active_run_id,
         "exec_policy": task.exec_policy.to_dict() if task.exec_policy else None,
+        "is_control": task.is_control,
+        "memory_scopes": list(task.memory_scopes),
         "status": task.status,
         "workspaces": [b.to_dict() for b in task.workspaces],
         "created_at": task.created_at,
