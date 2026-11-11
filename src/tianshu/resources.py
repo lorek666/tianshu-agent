@@ -259,12 +259,37 @@ def is_memory_resource(raw: object) -> bool:
     return parse_resource(raw).kind == KIND_MEMORY
 
 
+def build_memory_scope(scope: object, scope_id: object) -> MemoryScope:
+    """由 (scope, scope_id) 构造作用域，**统一 canonicalize**。
+
+    `workspace` 必须走 `MemoryScope.workspace()`（realpath），否则同一条记忆
+    会因 `/a/b` 与 `/a/./b` 被算成两个作用域；调用方（CLI / UI / API）传原始
+    路径时，声明集合是按 canonical 存的，不去归一就会"语义相同却判不在声明内"。
+    """
+    if not isinstance(scope, str) or not scope:
+        raise ResourceError(f"scope 必须是非空字符串：{scope!r}")
+    if scope not in MEMORY_SCOPES:
+        raise ResourceError(f"未知记忆作用域：{scope!r}")
+    if scope == SCOPE_WORKSPACE:
+        if not isinstance(scope_id, str) or not scope_id:
+            raise ResourceError("workspace 作用域的 scope_id 必须是非空绝对路径")
+        return MemoryScope.workspace(scope_id)
+    if scope == SCOPE_USER:
+        if scope_id is None:
+            return MemoryScope.user()
+        return MemoryScope(scope, scope_id)
+    if not isinstance(scope_id, str) or not scope_id:
+        raise ResourceError(f"{scope} 作用域的 scope_id 必须是非空字符串")
+    return MemoryScope(scope, scope_id)
+
+
 __all__ = [
     "KIND_FILE",
     "KIND_MEMORY",
     "MEMORY_SCOPES",
     "MEMORY_SCHEME",
     "MemoryScope",
+    "build_memory_scope",
     "RESOURCE_KINDS",
     "ResourceError",
     "ResourceRef",

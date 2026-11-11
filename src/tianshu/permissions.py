@@ -620,7 +620,12 @@ class PolicyEngine:
             )
 
         if action == ACTION_OVERWRITE:
-            if preconditions.get("memory_origin") == "user_explicit":
+            # 免审批只给 confirm：用户本人刚说的话可以直接确认。edit / promote
+            # 改的是长期召回的正文或作用域，**永远**要人工批准。
+            if (
+                preconditions.get("memory_tool") == "memory.confirm"
+                and preconditions.get("memory_origin") == "user_explicit"
+            ):
                 return PolicyDecision(
                     DECISION_AUTO,
                     "用户本人明示的来源，确认无需再次审批",

@@ -1068,15 +1068,19 @@ def test_supersede_keeps_old_row_but_removes_it_from_recall(env) -> None:
     scope = MemoryScope.user()
     _propose(projection, log, "old", "旧偏好 alpha token", created_at=1)
     _confirm(projection, log, "old")
+    # 生产形状是 `memory.edit`：新行直接 active + user_confirmed（一次审批），
+    # 旧行 superseded。不再借 propose 的 output 造 supersede。
     payload = _propose_payload(
         projection,
         "new",
         "新偏好 beta token",
         created_at=2,
+        origin="user_confirmed",
+        status="active",
         supersedes="old",
     )
+    payload["tool_id"] = "memory.edit"
     _record(log, projection, payload)
-    _confirm(projection, log, "new")
 
     old = projection.get("old", allowed=[scope])
     assert old is not None

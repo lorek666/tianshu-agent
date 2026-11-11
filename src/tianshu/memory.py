@@ -141,7 +141,14 @@ _CONTENT_STATES = frozenset({_CONTENT_AVAILABLE, _CONTENT_UNAVAILABLE})
 #: 记忆写工具。读工具（memory.search / memory.get）的 tool.result 也落事件，
 #: 但它们不改投影，`apply_event()` 直接忽略。
 _WRITE_TOOL_IDS = frozenset(
-    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
+    {
+        "memory.propose",
+        "memory.remember",
+        "memory.confirm",
+        "memory.forget",
+        "memory.edit",
+        "memory.promote",
+    }
 )
 
 #: 投影格式版本。投影哈希覆盖它，跨版本不假装可比。
@@ -741,20 +748,23 @@ class MemoryProjection:
             raise MemoryStoreError(f"{tool_id} 的 output 必须是对象：{output!r}")
 
         seq_value = _require_int(seq, "seq", minimum=1)
-        # `memory.remember` 是控制面直接记住：与 propose 同一套投影代码，但
-        # 结果可以是 active + user_explicit（人本人就是签发者）。
-        handler = {
-            "memory.propose": self._apply_propose,
-            "memory.remember": self._apply_propose,
-            "memory.confirm": self._apply_confirm,
-            "memory.forget": self._apply_forget,
-        }[tool_id]
+        # 写"新行"的四个工具共用同一套插入代码，差别只在期望的 status / origin /
+        # supersedes 形状（见 `_apply_propose` 的 mode）。
+        modes = {
+            "memory.propose": "propose",
+            "memory.remember": "remember",
+            "memory.edit": "edit",
+            "memory.promote": "promote",
+        }
+        mode = modes.get(tool_id)
         with self._log.transaction():
             self.ensure_schema()
-            if tool_id == "memory.remember":
-                self._apply_propose(output, seq_value, direct=True)
+            if mode is not None:
+                self._apply_propose(output, seq_value, mode=mode)
+            elif tool_id == "memory.confirm":
+                self._apply_confirm(output, seq_value)
             else:
-                handler(output, seq_value)
+                self._apply_forget(output, seq_value)
 
     def rebuild(self) -> int:
         """清空投影并按事件 seq 重放，返回实际重放的记忆写事件条数。
@@ -852,7 +862,7 @@ class MemoryProjection:
     # ---- propose ----
 
     def _apply_propose(
-        self, output: dict[str, Any], seq: int, *, direct: bool = False
+        self, output: dict[str, Any], seq: int, *, mode: str = "propose"
     ) -> None:
         required = (
             "memory_id",
@@ -930,18 +940,53 @@ class MemoryProjection:
             return
 
         if revision != 1:
-            raise MemoryStoreError(f"新记忆 propose 的 revision 必须是 1：{revision}")
-        if direct:
+            raise MemoryStoreError(f"写新行的 revision 必须是 1：{revision}")
+        if mode == "remember":
             # 控制面 `memory.remember`：人直接记住 → active + user_explicit。
-            # 这条路径**只有**控制面能走到（执行器按 Task.is_control 核验），
-            # 模型发起的 propose 结果里 origin 只有一个合法值 inferred。
+            # 这条路径**只有**控制面能走到（执行器按 Task.is_control 核验）。
             if status != _STATUS_ACTIVE:
-                raise MemoryStoreError(
-                    f"memory.remember 只能写 active，收到 {status!r}"
-                )
+                raise MemoryStoreError(f"memory.remember 只能写 active，收到 {status!r}")
             if origin != "user_explicit":
                 raise MemoryStoreError(
                     f"memory.remember 的 origin 必须是 user_explicit，收到 {origin!r}"
+                )
+            if supersedes is not None:
+                raise MemoryStoreError("memory.remember 不 supersede 旧记忆")
+        elif mode == "edit":
+            # 编辑 = 旧版退役 + 新版立即生效（一次审批）。新版 origin 由审批
+            # 出处决定：人批准过的编辑 → user_confirmed。
+            if status != _STATUS_ACTIVE:
+                raise MemoryStoreError(f"memory.edit 只能写 active，收到 {status!r}")
+            # origin 描述"这一版正文"的来源：人自己写 → user_explicit；
+            # 模型写、人批准 → user_confirmed。旧版的 origin 留在旧行。
+            if origin not in ("user_explicit", "user_confirmed"):
+                raise MemoryStoreError(
+                    f"memory.edit 的 origin 只能是 user_explicit / user_confirmed，"
+                    f"收到 {origin!r}"
+                )
+            if supersedes is None:
+                raise MemoryStoreError("memory.edit 必须带 supersedes（旧版 id）")
+        elif mode == "promote":
+            # 提升 = 原作用域里退役 + 目标作用域里新建**候选**（人再确认才召回）。
+            if status != _STATUS_CANDIDATE:
+                raise MemoryStoreError(
+                    f"memory.promote 只能写 candidate，收到 {status!r}"
+                )
+            if supersedes is None:
+                raise MemoryStoreError("memory.promote 必须带 supersedes（原记忆 id）")
+            if supersedes not in source_refs:
+                raise MemoryStoreError(
+                    f"memory.promote 的 source_refs 必须包含原记忆：{supersedes!r}"
+                )
+            old_row = self._load_row(supersedes)
+            if old_row is None:
+                raise MemoryStoreError(
+                    f"memory.promote 的 supersedes 指向不存在的记忆：{supersedes!r}"
+                )
+            if origin != old_row["origin"]:
+                raise MemoryStoreError(
+                    f"memory.promote 的 origin 必须随原行（{old_row['origin']!r}），"
+                    f"收到 {origin!r}；搬同一段正文不能降档"
                 )
         else:
             # propose 只生成惰性候选；激活必须走 memory.confirm（F10 §7）。
@@ -949,10 +994,8 @@ class MemoryProjection:
                 raise MemoryStoreError(
                     f"memory.propose 只能写 candidate，收到 {status!r}"
                 )
-            # origin 由执行器写死为 inferred（防模型自称"用户明示"绕过审批），
-            # 但**投影层不在这里限制取值**：`user_explicit` 候选是 confirm 免审批
-            # 分支的合法输入（来源由可信调用方播种），越权防线在执行器与策略层，
-            # 不在投影的字段校验里。
+            if supersedes is not None:
+                raise MemoryStoreError("memory.propose 不 supersede 旧记忆")
         if supersedes is not None and supersedes == memory_id:
             raise MemoryStoreError("记忆不能 supersede 自己")
 

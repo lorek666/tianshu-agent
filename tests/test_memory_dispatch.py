@@ -297,6 +297,7 @@ def test_memory_tools_are_real_specs_without_path_args():
         "memory.propose",
         "memory.confirm",
         "memory.forget",
+        "memory.edit",
     }
     assert memory_tools <= names
 
@@ -306,6 +307,7 @@ def test_memory_tools_are_real_specs_without_path_args():
         "memory.propose": ACTION_CREATE,
         "memory.confirm": ACTION_OVERWRITE,
         "memory.forget": ACTION_DELETE,
+        "memory.edit": ACTION_OVERWRITE,
     }
     # 契约 v1.2：propose 升 2.0（加 scope/scope_id）；其余工具仍是 1.0。
     expected_versions = {
@@ -314,6 +316,7 @@ def test_memory_tools_are_real_specs_without_path_args():
         "memory.propose": "2.0",
         "memory.confirm": "1.0",
         "memory.forget": "1.0",
+        "memory.edit": "1.0",
     }
     for tool_id, action in expected_actions.items():
         spec = SPECS[tool_id]
@@ -332,6 +335,12 @@ def test_memory_tools_are_real_specs_without_path_args():
     assert remember.action == ACTION_CREATE
     assert remember.path_arg == ""
     assert "memory.remember" not in names
+    promote = SPECS["memory.promote"]
+    assert promote.version == "1.0"
+    assert promote.exposed is False
+    assert promote.action == ACTION_OVERWRITE
+    assert promote.path_arg == ""
+    assert "memory.promote" not in names
 
     # 授权层不能维护第二份"看起来一样"的 kind 封闭集：memory.py 存在时必须
     # 直接用它。回退集只在集成前缺模块时兜底。
@@ -1115,3 +1124,186 @@ def test_workspace_propose_is_refused_even_on_a_control_task(env: Env):
     assert decision.is_rejected, decision
     assert decision.rule_id == "c4.memory_scope_denied"
     assert env.memory.list_memories(allowed=(scope,)) == []
+
+
+# ---------------------------------------------------------------- 7. 编辑与提升（N1 后半）
+
+
+def test_edit_with_approval_keeps_old_row_and_activates_new(env: Env):
+    """一次审批 = 旧版退役 + 新版立即生效；旧行 revision 不变、仍可按 id 查到。"""
+    user = MemoryScope.user()
+    task, run, claim, output = _proposed(env, content="报告用中文，先列结论")
+    memory_id = output["memory_id"]
+
+    args = {"memory_id": memory_id, "revision": 1, "content": "报告用中文，先列风险"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=args,
+        call_id="edit-1",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+    assert result.ok and result.effect_state == "applied", result.output
+
+    old = env.memory.get(memory_id, allowed=(user,))
+    assert old is not None
+    assert (old.status, old.revision) == ("superseded", 1)
+    new_id = result.output["memory_id"]
+    new = env.memory.get(new_id, allowed=(user,))
+    assert new is not None
+    assert (new.status, new.origin, new.revision) == ("active", "user_confirmed", 1)
+    assert new.supersedes == memory_id
+    assert [hit.memory.memory_id for hit in env.memory.search("风险", allowed=(user,))] == [
+        new_id
+    ]
+    assert env.memory.search("结论", allowed=(user,)) == []
+    # 凭据可独立核对（edit 也产 Receipt）。
+    verify_receipts(env.log, run_id=run.run_id)
+
+
+def test_edit_requires_the_revision_the_human_saw(env: Env):
+    user = MemoryScope.user()
+    task, run, claim, output = _proposed(env)
+    args = {
+        "memory_id": output["memory_id"],
+        "revision": 99,
+        "content": "改个版本对不上的正文",
+    }
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=args,
+        call_id="edit-stale",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "dispatch.memory_stale_revision"
+
+
+def test_promote_is_control_only_and_moves_memory(env: Env):
+    """提升是移动：原行退役（原作用域不再召回），目标作用域新行是候选。"""
+    user = MemoryScope.user()
+    target = MemoryScope.task("task_promoted")
+    task, run, claim, output = _proposed(env, content="这条以后要给项目用")
+    memory_id = output["memory_id"]
+    args = {
+        "memory_id": memory_id,
+        "revision": 1,
+        "scope": target.scope,
+        "scope_id": target.scope_id,
+    }
+
+    # 普通任务（模型路径）不能提升：exposed=False + 派发层核 is_control。
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.promote",
+        target=user.to_uri(),
+        args=args,
+        call_id="promote-model",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_rejected, decision
+    assert decision.rule_id == "c4.memory_control_scope_binding"
+
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.promote:{memory_id}", workspaces=[], memory_scopes=[target]
+    )
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.promote",
+        target=user.to_uri(),
+        args=args,
+        call_id="promote-ctl",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    try:
+        assert result.ok, result.output
+        old = env.memory.get(memory_id, allowed=(user,))
+        assert old is not None and old.status == "superseded"
+        new_id = result.output["memory_id"]
+        promoted = env.memory.get(new_id, allowed=(target,))
+        assert promoted is not None
+        assert (promoted.status, promoted.scope, promoted.revision) == (
+            "candidate",
+            "task",
+            1,
+        )
+        assert memory_id in promoted.source_refs
+        assert env.memory.search("项目用", allowed=(user,)) == []
+        verify_receipts(env.log, run_id=control.run.run_id)
+        # 凭据必须针对**原行**（移动的是它），root 是原作用域。
+        receipts = [
+            event
+            for event in env.log.read_run(control.run.run_id)
+            if event.type == "receipt"
+        ]
+        assert receipts, "promote 必须产 Receipt"
+        assert receipts[-1].payload["resource"] == memory_id
+        assert receipts[-1].payload["root"] == user.to_uri()
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=result.effect_state
+        )
+
+
+def test_promote_to_workspace_canonicalizes_the_target_scope(env: Env):
+    """提升到 workspace 时，参数里的原始路径必须归一到声明里的 canonical 根。
+
+    否则 CLI / UI / 未来的 API 传 `/a/b/.` 会被判"不在控制 Run 的声明内"，
+    而它和 `/a/b` 是同一个目录。
+    """
+    user = MemoryScope.user()
+    canonical = MemoryScope.workspace(env.ws_a)
+    raw = str(env.ws_a) + "/."
+    _task, _run, _claim, output = _proposed(env, content="工作区共享约定")
+    memory_id = output["memory_id"]
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.promote:{memory_id}",
+        workspaces=[],
+        memory_scopes=[canonical],
+    )
+    args = {
+        "memory_id": memory_id,
+        "revision": 1,
+        "scope": "workspace",
+        "scope_id": raw,
+    }
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.promote",
+        target=user.to_uri(),
+        args=args,
+        call_id="promote-ws",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    try:
+        assert result.ok, result.output
+        assert result.output["scope_id"] == canonical.scope_id
+        promoted = env.memory.get(result.output["memory_id"], allowed=(canonical,))
+        assert promoted is not None
+        assert (promoted.scope, promoted.scope_id) == ("workspace", canonical.scope_id)
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=result.effect_state
+        )
