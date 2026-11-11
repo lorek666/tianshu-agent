@@ -356,8 +356,10 @@ def test_rebuild_reproduces_dispatcher_intent_seq(env) -> None:
     )
     with log.transaction() as tx:
         intent_seq = tx.append(
-            RUN, "tool.intent", {"call_id": "call_x", "tool_id": "memory.propose"},            legacy_write=True,
-
+            RUN,
+            "tool.intent",
+            {"call_id": "call_x", "tool_id": "memory.propose"},
+            legacy_write=True,
         )
         tx.append(
             RUN,

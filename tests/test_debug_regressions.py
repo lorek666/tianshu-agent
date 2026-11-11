@@ -391,7 +391,11 @@ def test_startup_crash_before_manifest_is_safe_to_initialize(tmp_path):
     ws = _ws(tmp_path, {})
     log = EventLog(tmp_path / "e.db")
     store = SnapshotStore(tmp_path / "art")
-    log.append("r1", "run.start", {"task": "t", "workspace": str(ws), "out": "x"}, legacy_write=True)
+    log.append(
+        "r1", "run.start",
+        {"task": "t", "workspace": str(ws), "out": "x"},
+        legacy_write=True,
+    )
 
     report = recover_run(log, "r1", ws, store)
     assert report.none_applied == []
