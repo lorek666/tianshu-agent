@@ -552,3 +552,38 @@ def test_inspect_writers_is_read_only_and_records_unknown(tmp_path):
     info2 = inspect_writers(root)
     assert info2["daemon_lock"]["present"] is True
     assert "unreadable" in info2["daemon_lock"]
+
+
+def test_fsync_file_propagates_failure_on_posix(tmp_path, monkeypatch):
+    """POSIX 上 fsync 失败必须抛：没有落盘证据不能静默。"""
+    if os.name == "nt":
+        pytest.skip("POSIX 语义")
+    target = tmp_path / "f.bin"
+    target.write_bytes(b"x")
+
+    def boom(fd):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(backup.os, "fsync", boom)
+    with pytest.raises(OSError):
+        backup._fsync_file(target)
+
+
+def test_fsync_file_degrades_on_windows_readonly_handles(tmp_path, monkeypatch):
+    """Windows 分支：改用可写句柄；fsync 仍失败时只降级该边界，不让备份崩。
+
+    用 monkeypatch 把 `os.name` 伪装成 `nt` 走 Windows 分支（本机 POSIX 无法
+    真的复现 `EBADF`）。断言 `os.fsync` 真被调用过——不是一打开就跳过。
+    """
+    target = tmp_path / "f.bin"
+    target.write_bytes(b"x")
+    calls = []
+
+    def boom(fd):
+        calls.append(fd)
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(backup.os, "fsync", boom)
+    monkeypatch.setattr(backup.os, "name", "nt")
+    backup._fsync_file(target)  # 不应抛
+    assert calls, "Windows 分支也必须真的尝试 fsync"

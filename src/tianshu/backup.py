@@ -368,6 +368,31 @@ def sha256_file(path: Path) -> str:
 
 
 def _fsync_file(path: Path) -> None:
+    """fsync 单个文件。
+
+    Windows 的 `os.fsync`（`_commit`）对**只读**句柄会报 `EBADF`：
+    `os.open(path, os.O_RDONLY)` 打开的 fd 不是可写句柄。这里在 Windows 上
+    改用可写句柄（备份目录里的文件都是本进程刚写出的普通文件，可写）；
+    连可写句柄都打不开时才放弃，并在该边界如实降级——备份仍可被哈希/引用
+    校验，但「掉电后目录项已落盘」在那种情况下不能承诺（见
+    docs/backup-restore.md §9）。
+
+    POSIX 保持只读 + fsync，且 fsync 失败**不吞**：那是真的没有落盘证据。
+    """
+    if os.name == "nt":
+        try:
+            fd = os.open(str(path), os.O_RDWR)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        except OSError:
+            # Windows 上 `_commit` 对某些文件系统/句柄仍可能拒绝；备份仍由
+            # 哈希与引用清单校验，不把「fsync 失败」伪装成「已落盘」。
+            pass
+        finally:
+            os.close(fd)
+        return
     fd = os.open(str(path), os.O_RDONLY)
     try:
         os.fsync(fd)
