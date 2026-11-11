@@ -373,7 +373,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 20:35（`feat/host-memory` 工作区实测，`1728 passed / 7 skipped`——合并 `main @ da6b4a9`（N3 已合）后实测，该基线为 `1714 passed / 7 skipped`；N6 自身加 14 条（`tests/test_host_memory.py`：真 IPC + 真 Host `/rpc`），其余来自 main；其中 **272 条**来自本特性的**八个**记忆测试文件：14 + 67 + 67 + 26 + 22 + 43 + 7 + 26）；以 CI 为准。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 21:10（`main @ c4b020a` 实测，`1730 passed / 7 skipped`——N6 自身加 16 条（14 条控制面真 IPC 用例 + 2 条作业原子性判据），其余来自 main；其中 **272 条**来自本特性的**八个**记忆测试文件：14 + 67 + 67 + 26 + 22 + 43 + 7 + 26）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是

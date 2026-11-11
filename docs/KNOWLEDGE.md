@@ -437,6 +437,8 @@
 
 ## 9. 权威文档索引
 
+- **记忆交付验收**：[MEMORY-ACCEPTANCE-2026-11-11.md](MEMORY-ACCEPTANCE-2026-11-11.md)（逐条判据↔测试 + 负控总表 + 未验证 10 项；数字以 `main @ c4b020a` 实测为准）。
+
 - [PRD-v1.md](PRD-v1.md) — 产品需求与架构（唯一权威）：范围、契约、红线、里程碑、决策记录
 - [TECH-ARCH.md](TECH-ARCH.md) — 技术架构：选型、进程模型、打包、平台差异
 - [REVIEW-PRA.md](REVIEW-PRA.md) — PR #7 独立复审报告（§5 教训的主要来源）
