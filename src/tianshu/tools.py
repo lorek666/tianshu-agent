@@ -880,6 +880,27 @@ SPECS: dict[str, ToolSpec] = {
         action=ACTION_OVERWRITE,
         exposed=False,
     ),
+    "memory.erase": ToolSpec(
+        tool_id="memory.erase",
+        version="1.0",
+        description=(
+            "物理擦除一条记忆的正文副本与检索索引（控制面专用）。"
+            "投影行置 forgotten + erased_at；事件日志里的读快照**不会**被删除。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "revision": {"type": "integer"},
+            },
+            "required": ["memory_id", "revision"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_DELETE,
+        exposed=False,
+    ),
     "memory.confirm": ToolSpec(
         tool_id="memory.confirm",
         version="1.0",

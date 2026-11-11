@@ -384,6 +384,7 @@ MEMORY_WRITE_TOOLS: frozenset[str] = frozenset(
         "memory.forget",
         "memory.edit",
         "memory.promote",
+        "memory.erase",
     }
 )
 
@@ -1512,11 +1513,14 @@ class AgentLoop:
                 "memory_id": memory_id,
                 "error": "记忆不存在或不在本次 Run 的装备内",
             }
-        # 已遗忘的记忆**不读正文**。`forget` 只改状态、不动正文 blob（物理
-        # 擦除是 §10 单开的工单），所以正文其实还在盘上；照旧读出来就等于
+        # 已遗忘 / 已擦除的记忆**不读正文**。`forget` 只改状态、不动正文
+        # blob（擦除才删），所以忘记后正文其实还在盘上；照旧读出来就等于
         # `memory.get` 成了绕开 `forget` 的旁路——检索忘了，按 id 仍能捞回
         # 原话，"忘记"就只是对 search 生效的假动作。
-        content = None if memory.status == "forgotten" else projection.read_content(memory)
+        if memory.status == "forgotten" or memory.erased_at is not None:
+            content = None
+        else:
+            content = projection.read_content(memory)
         if content is None:
             # F10 §10：历史内容快照缺失时明确报"不可用"，**不回落**取当前
             # 记忆库的最新版本。回落会把"当时看到了什么"换成"现在是什么"，
@@ -1529,9 +1533,14 @@ class AgentLoop:
                 "error": (
                     "历史证据不可用："
                     + (
-                        "记忆已遗忘，正文不再提供"
-                        if memory.status == "forgotten"
-                        else "内容快照缺失"
+                        "记忆正文已擦除（正文副本与索引已删；事件日志里的"
+                        "历史读快照仍在，不在这里提供）"
+                        if memory.erased_at is not None
+                        else (
+                            "记忆已遗忘，正文不再提供"
+                            if memory.status == "forgotten"
+                            else "内容快照缺失"
+                        )
                     )
                     + "（不回落到当前记忆库的正文）"
                 ),
@@ -1698,7 +1707,13 @@ class AgentLoop:
         # 自己说了算，不是模型说了算。查不到就是"不在装备内"，fail-closed。
         memory_id = args.get("memory_id") or args.get("id")
         if (
-            tool_id in ("memory.confirm", "memory.forget", "memory.edit", "memory.promote")
+            tool_id in (
+                "memory.confirm",
+                "memory.forget",
+                "memory.edit",
+                "memory.promote",
+                "memory.erase",
+            )
             and memory_id
         ):
             if not isinstance(memory_id, str):

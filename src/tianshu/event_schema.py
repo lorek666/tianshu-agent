@@ -181,6 +181,7 @@ _TOOL_ID = _enum(
     "list_files",
     "memory.confirm",
     "memory.edit",
+    "memory.erase",
     "memory.forget",
     "memory.get",
     "memory.promote",
@@ -315,7 +316,7 @@ _TOOL_CALL = _obj(
 )
 _RECEIPT_EVIDENCE = _obj(
     {
-        "kind": _enum("result", "intent", "blob", "memory"),
+        "kind": _enum("result", "intent", "blob", "memory", "memory_erasure"),
         "call_id": _opt(_s()),
         "seq": _opt(_i()),
         "path": _opt(_s()),
@@ -323,6 +324,11 @@ _RECEIPT_EVIDENCE = _obj(
         "memory_id": _opt(_s()),
         # blob 内容不存在时凭据要如实写 absent=true，而不是删掉 evidence 看起来完好
         "absent": _opt(_b()),
+        # 擦除回执的附加证据（memory_erasure）：删了什么、删了多少、还被谁引用
+        "content_ref": _opt(_SHA256),
+        "deleted": _opt(_b()),
+        "deleted_bytes": _opt(_i()),
+        "retained_by": _opt(_arr(_s())),
     },
     required=("kind",),
 )

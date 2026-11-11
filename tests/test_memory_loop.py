@@ -798,3 +798,47 @@ def test_cli_promote_moves_memory_into_task_scope(env: Env):
     assert memory_id in promoted[0].source_refs
     # 搬的是同一段正文：来源随行，不降档
     assert promoted[0].origin == "user_explicit"
+
+
+def test_cli_erase_deletes_content_and_marks_erased(env: Env):
+    """`tianshu memory erase`：人签字 → 正文副本删掉、行标 erased_at。"""
+    db = str(env.log.db_path)
+    memory_id = env.seed("这条要被擦掉", memory_id="mem_cli_erase", status="active")
+    row = env.stack.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert row is not None
+    blob = env.stack.memory.blob_path(row.content_ref)
+    assert blob is not None and blob.is_file()
+
+    code, out = _cli("memory", "erase", memory_id, "--db", db)
+    assert code == 0, out
+    assert "正文副本" in out
+    erased = env.stack.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert erased is not None
+    assert erased.erased_at is not None
+    assert erased.status == "forgotten"
+    assert env.stack.memory.read_content(erased) is None
+    assert blob is not None and not blob.exists()
+
+
+def test_cli_can_erase_forgotten_and_candidate_memories(env: Env):
+    """擦除不要求 active：忘记后（forgotten）与候选（candidate）都能擦。"""
+    db = str(env.log.db_path)
+    forgotten_id = env.seed("先忘记再擦除", memory_id="mem_cli_forget_erase", status="active")
+    code, out = _cli("memory", "forget", forgotten_id, "--db", db)
+    assert code == 0, out
+    row = env.stack.memory.get(forgotten_id, allowed=(MemoryScope.user(),))
+    assert row is not None and row.status == "forgotten"
+    code, out = _cli("memory", "erase", forgotten_id, "--db", db)
+    assert code == 0, out
+    erased = env.stack.memory.get(forgotten_id, allowed=(MemoryScope.user(),))
+    assert erased is not None and erased.erased_at is not None
+
+    candidate_id = env.seed(
+        "还没确认的候选", memory_id="mem_cli_candidate_erase", status="candidate"
+    )
+    code, out = _cli("memory", "erase", candidate_id, "--db", db)
+    assert code == 0, out
+    erased_candidate = env.stack.memory.get(
+        candidate_id, allowed=(MemoryScope.user(),)
+    )
+    assert erased_candidate is not None and erased_candidate.erased_at is not None

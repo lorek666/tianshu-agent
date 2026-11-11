@@ -304,6 +304,7 @@ def build_memory_receipt(
     action: str = "",
     intent_seq: int = 0,
     backend: str = "memory",
+    extra_evidence: list[dict[str, Any]] | None = None,
 ) -> Receipt | None:
     """记忆激活 / 遗忘的凭据。
 
@@ -359,13 +360,18 @@ def build_memory_receipt(
         after_state=str(after),
         backend=backend,
         intent_seq=int(intent_seq),
-        evidence=_evidence_refs(
-            call_id=call_id,
-            intent_seq=int(intent_seq),
-            blob_ref=None,
-            before_state=str(before),
-            memory_id=str(resource),
-        ),
+        evidence=[
+            *_evidence_refs(
+                call_id=call_id,
+                intent_seq=int(intent_seq),
+                blob_ref=None,
+                before_state=str(before),
+                memory_id=str(resource),
+            ),
+            *(
+                [{"kind": "memory_erasure", **item} for item in (extra_evidence or [])]
+            ),
+        ],
         blob_ref=None,
         issued_at=int(time.time() * 1000),
     )
@@ -395,6 +401,7 @@ def _verify_evidence(
     by_seq: dict[int, Any],
     intents: dict[str, Any],
     required: tuple[str, ...] = ("result", "intent", "blob"),
+    output: dict[str, Any] | None = None,
 ) -> list[str]:
     """逐条解析凭据自己带的证据引用。解析不了 = 核对不了 = 问题。"""
     refs = payload.get("evidence")
@@ -447,6 +454,22 @@ def _verify_evidence(
                     f"{memory_id!r} ≠ {payload.get('resource')!r}"
                 )
             kinds.add("memory")
+        elif kind == "memory_erasure":
+            # 擦除回执的附加证据：与同一次 tool.result 的 `output.erasure`
+            # 逐字段比对（不是"有字段就算数"）。
+            actual = (output or {}).get("erasure")
+            if not isinstance(actual, dict):
+                problems.append(
+                    f"凭据 {label} 带了 memory_erasure 证据，但工具结果没有 erasure"
+                )
+            else:
+                for field in ("content_ref", "deleted", "deleted_bytes", "retained_by"):
+                    if ref.get(field) != actual.get(field):
+                        problems.append(
+                            f"凭据 {label} 的 memory_erasure.{field} 与工具结果不一致："
+                            f"{ref.get(field)!r} ≠ {actual.get(field)!r}"
+                        )
+            kinds.add("memory_erasure")
         elif kind == "blob":
             if ref.get("absent"):
                 if payload.get("before_state") != ABSENT:
@@ -586,7 +609,12 @@ def verify_receipts(log, run_id: str) -> list[str]:
                     label,
                     by_seq=by_seq,
                     intents=intents,
-                    required=("result", "intent", "memory"),
+                    required=(
+                        ("result", "intent", "memory", "memory_erasure")
+                        if p.get("tool_id") == "memory.erase"
+                        else ("result", "intent", "memory")
+                    ),
+                    output=out,
                 )
             )
             if not str(p.get("after_state") or "").startswith("memory:"):
@@ -599,10 +627,13 @@ def verify_receipts(log, run_id: str) -> list[str]:
                     f"凭据 {label} 的记忆写前状态形状不对："
                     f"{p.get('before_state')!r}"
                 )
-            if out.get("memory_id") != p.get("resource"):
+            # promote 的回执针对**原行**（`resource` 是原 memory_id，结果里的
+            # 新行 id 在 `memory_id`、原行 id 在 `receipt_memory_id`）。
+            matched_id = out.get("receipt_memory_id") or out.get("memory_id")
+            if matched_id != p.get("resource"):
                 problems.append(
                     f"凭据 {label} 的 memory_id 与工具结果不一致："
-                    f"{p.get('resource')!r} ≠ {out.get('memory_id')!r}"
+                    f"{p.get('resource')!r} ≠ {matched_id!r}"
                 )
         elif p.get("action") == ACTION_EXEC:
             # 执行命令没有文件写后哈希，磁盘核对不适用；核对的是
