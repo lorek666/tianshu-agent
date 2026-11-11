@@ -16,10 +16,17 @@
   不可取，所以**本轮没有逐条失败计数**，只报结论与耗时，不编数字。
 - 第一轮收尾态（`main @ ec7d7ae`）：**1536 passed / 7 skipped**（158.55s；CI 同刻 macOS
   1536 / 7、ubuntu 1535 / 8），Windows **5 failed / 1509 passed / 29 skipped**（939.99s）。
+- **§7.1 语义摘要轮 `main @ 66c1a25`（PR #105 之后）**：实测 **1790 passed / 7 skipped**
+  （macOS arm64 本机，180.83s），`ruff check .` → `All checks passed!`；required checks
+  （ubuntu / macOS / ui）在 #103 / #105 上全绿。相对 G1 收口的 1684 是 **+106**：本特性
+  **+60**（H1 22 / H2 24 / H3 14），其余 **+46** 来自并行的记忆 / 控制面工作流
+  （#98 / #100 / #102 / #104，同轮先合）。
 - 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
   W1–W5 落地；**G1 轮次**补上 §5.2.3 通用工具准入与 §5.6 共享预算账本；**G1 收口轮**
   （#96 / #97 / #99）补上账本默认记账 + 硬上限可验证上界、资源种类与外发许可、
-  内容引用 + 分页读取。**§7.1 语义摘要、G2、G3 平台实机仍未做，逐条登记，不冒充完成。**
+  内容引用 + 分页读取；**§7.1 语义摘要轮**（#103 / #105）把模型摘要做成**默认关的受控
+  能力**（记录、注入、回放、生成、崩溃恢复、长任务夹具）。
+  **G2、G3 平台实机仍未做，逐条登记，不冒充完成。**
 
 ## 1 逐条对账
 
@@ -36,7 +43,7 @@
 | §1.4 / §3.4 / §13.6 文档基线 | **已交付（文档）** | 新增章节合入 `main`（§5.2.1 的冲突按「记忆工具 5.2.1 / 记忆契约增量 5.2.2 / 通用工具准入 5.2.3」编号，保留既有记忆章节） | PR #77 |
 | §5.2.3 通用工具准入 | **已交付（G1a + G1d + G1e）** | 封闭 schema 方言 + 注册期拒绝 + 执行期嵌套校验 + 准入前移 + 工具版本/schema/描述三项绑定 + 身份字段双闸（G1a）；五种资源种类（file/memory/network/mcp/subtask）规范化与外发许可门（外发恒需人工批准、MCP 与 exec 同级、委派恒拒、混用拒、无执行器种类派发前拒绝）（G1d）；大结果有界摘要 + 内容引用 + 分页读取 + 任务可见范围 + sha256 复核（G1e） | PR #91 / #97 / #99；[tool-admission.md](tool-admission.md)、[resource-kinds.md](resource-kinds.md)、[content-refs.md](content-refs.md)；`test_g1_admission.py`(19) / `test_g1d_resource_kinds.py`(15) / `test_content_refs.py`(12) / `test_content_read.py`(5)；负控 9+6+12 全红 |
 | §5.6 共享预算账本 | **已交付（G1b + G1c；默认记账，设闸需显式上限）** | 四表建在事件库同一 SQLite；`BEGIN IMMEDIATE` 原子预占；按 attempt 幂等结算；分维度 `partial`；未知用量保留占用不记零；父子链；`cancel` 子树传播；`reconcile` 只报告；**默认记账**（任何维度都不设闸）；硬上限模式用**可验证上界**（请求体 UTF-8 字节 + adapter 声明的 `output_tokens`，拿不到就拒绝启动）；`overrun` 越界如实记、上界口径停机；`run.cancel` 在账户未建时先建后取消 | PR #92 / #96；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`(30，含真并发)；负控 10+6 全红 |
-| §7.1 模型语义摘要 | **未做（本轮）** | 保留现有确定性卸载/裁剪（`context.py` + `loop._persist_spills`），不实现模型摘要 | 同上 |
+| §7.1 模型语义摘要 | **已交付（H1 + H2 + H3；默认关，显式开启）** | 新 `summaries.py`：三张表建在事件库同一 SQLite；材料身份 = JCS(`材料版本, 作用域, 来源[seq + 原文 sha256]`)，三个字节上限（单条 1 KiB / 材料 8 KiB / 正文 2 KiB），`pending→ready\|failed` 一次性、正文写入后不可改（代码 + 触发器）、表禁 DELETE、usage 未知留 NULL（H1）；`compile_context(..., summaries=())` 仍纯函数、激活 = **整段覆盖 + 真的被牺牲**、`summarized_seqs`/`dropped_seqs` 互斥、装不下就**放弃摘要**回落确定性、`model.intent.payload.context.summaries` 只写实际用上的身份（正文不进事件）、回放按 id 读正文并三道校验、**缺记录 = problem 不重新生成**（H2）；`summary_mode`（默认 `off`）+ `summary_max_calls=3`、可复用优先（含**子集复用**）、`begin(pending) → 账本预占 → 模型调用 → complete(ready)`、授权四条件（显式开关 + 准入 + 边界 + 预占，不是人工审批）、失败一律回落、崩溃见 `pending` **不重试**、摘要调用计入 `model_attempts`/tokens 与 `RunResult.summary_calls`（H3） | PR #103 / #105；[context-summaries.md](context-summaries.md)、[SPEC-SUMMARY-2026-11-11.md](SPEC-SUMMARY-2026-11-11.md)；`tests/test_summaries.py`(22) / `test_summary_context.py`(17) / `test_summary_replay.py`(7) / `test_summary_loop.py`(14)；负控 **7+7+10 全红**；长任务夹具 off → 「约束缺失」、model → 「约束已保留」 |
 | G2 网络 / MCP / 子代理 | **未做** | 没有新能力；§10.5 的联网研究任务以「未具备能力」的诚实性判据纳入，不用脚本或静态网页冒充线上完成 | [real-user-tasks.md](real-user-tasks.md) §5 |
 | G3 平台实机 | **未做** | 只有 macOS arm64 本机证据；Windows / mac-x64 / win-arm64 的安装、升级、回退、隔离证据均为 **unknown**。收尾轮把 Windows CI 从 35 failed 压到 **5 failed / 1509 passed / 29 skipped**（逐条见 §3），仍不是绿、也没有实机 | [isolation-matrix.md](isolation-matrix.md) §1、[runtime-metrics.md](runtime-metrics.md) §7、[backup-restore.md](backup-restore.md) §9 |
 
@@ -59,6 +66,8 @@
 | #96 | G1c §5.6 收口：**账本默认记账**（不再整个关闭）+ 硬上限模式的**可验证上界** + `overrun` 检测与停机 + 修 `run.cancel` 在账户未建时丢失取消意图（+11 tests） |
 | #97 | G1d §5.2.3：资源种类 `network`/`mcp`/`subtask` 规范化与外发许可门 + 6 个新规则编号 + 事件 `action` 枚举 5→7（+15 tests） |
 | #99 | G1e §5.2.3：内容引用 + 分页读取 `read_content` + 任务可见范围 + sha256 复核 + 占位给出可用引用 + 主循环按任务登记授权（+17 tests） |
+| #103 | §7.1 H1+H2：摘要记录层与材料身份 + 注入编译 / `model.intent.context.summaries` 契约 / 回放读摘要（+24 tests） |
+| #105 | §7.1 H3：摘要生成路径（开关 / 授权 / 共享预算 / 先持久化再引用 / 失败回落 / 崩溃不重试）+ 长任务夹具（+14 tests） |
 
 ## 3 测试与门禁
 
@@ -79,6 +88,12 @@
   （`test_content_refs.py` 12 + `test_content_read.py` 5），其余 +40 来自并行记忆工作流
   #93（N2 检索质量；同轮先合，其交付口径见 `docs/KNOWLEDGE.md`）。required checks
   （ubuntu / macOS / ui）在 #96 / #97 / #99 上全绿。
+- §7.1 语义摘要轮 `main @ 66c1a25`：**1790 passed / 7 skipped**（180.83s，macOS arm64
+  本机），`ruff check .` 干净。相对 G1 收口的 1684 是 **+106**：本特性 **+60**
+  （`test_summaries.py` 22 + `test_summary_context.py` 17 + `test_summary_replay.py` 7 +
+  `test_summary_loop.py` 14），其余 +46 来自并行记忆 / 控制面工作流（#98 / #100 / #102 / #104，
+  同轮先合）。负控 **24/24** 实测红（H1 7 / H2 7 / H3 10）。#103 / #105 的 required checks
+  （ubuntu / macOS / ui）全绿；Windows job 仍不是 required，见下（本轮未把它当绿）。
 - **Windows job 的实测（不再用「#50 家族」一句话带过，逐轮、逐条列）**：
   - 修复前（PR #87 前）：**35 failed**；
   - PR #87（`b66570d`）：**8 failed**；
@@ -136,7 +151,14 @@
   （这是如实登记，不是"绝对不超额"的承诺）；④ 没有"任务级外发白名单"
   （`outbound_allow`，需改 `task.created` payload 契约，属 G2）；⑤ 账本的
   「已知费用 vs 未知用量」**没有 UI 展示**（只有 `usage()` 材料）。
-- **§7.1**：没有模型语义摘要；只有确定性裁剪/卸载。
+- **§7.1（只剩这几条不成立）**：① 摘要**默认关**（`summary_mode="off"`），不开启就只有
+  确定性裁剪/卸载；② 跨 Run 不复用（材料身份含事件 `seq`，同内容也是新材料）；③ 不做
+  增量/分层摘要、不做自动刷新（显式追加版本的 API 有，CLI 未接）；④ 没有摘要质量评测——
+  "摘要比确定性裁剪更好"没有评测就不许宣称；⑤ 提示注入没有解决（摘要正文的「不是指令」
+  包装只是提示级缓解，执行侧闸门才是强制执行点）；⑥ 纯事件导出**不足以回放摘要轮次**
+  （摘要表在同一数据根；缺记录时回放报 problem，不重新生成）；⑦ 本机长任务夹具里摘要模式
+  **更贵**（多 3 次调用、token 324→744、请求字符 4054→7887），换来的是关键约束没丢——不许
+  写成省钱功能；⑧ 保留期 / GC 未做（表上连 DELETE 都被触发器拦住）。
 - **G2**：没有网络 / MCP / 子代理能力；联网研究任务只验证「如实报告未具备」。
 - **G3**：无 Windows / mac-x64 / win-arm64 实机；安装、升级、回退、凭据存储（Keychain）、
   平台 SLO 均未验证。macOS 13+ 最低版本未实测。Windows 收尾态仍是 **5 failed**（既有族），
@@ -153,7 +175,7 @@
 
 ## 5 下一轮建议（按 PRD §11.1 的门禁顺序）
 
-1. **§7.1 模型语义摘要**：摘要材料先持久化再编译；replay 读保存的摘要；断网回放测试。
+1. ~~§7.1 模型语义摘要~~ **已交付**（#103 / #105，见 §1）。
 2. **G2**：网络 → MCP → 记忆 → 子代理，按「同一任务集证明收益」推进。接入顺序上先补
    §5.2.3 的执行器（网络目标已有规范化与许可门）与 `outbound_allow` 任务级声明，
    再谈子代理（账本已有 `subtasks` 维度与父子链）。

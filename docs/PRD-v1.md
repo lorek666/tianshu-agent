@@ -967,7 +967,7 @@ class Limits(TypedDict, total=False):
 | **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽 | PRD v1 |
 | **F3** | 事件日志与恢复 | 见 §5.3。恢复扫描"有 intent 无 result"的调用，按 `side_effect_level` 处置 | OpenHands EventLog |
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
-| **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘。非确定性摘要先持久化再编译，见 §7.1 | PRD v1 + §7.1 |
+| **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘。非确定性摘要**先持久化再编译**（已交付，默认关），见 §7.1 | PRD v1 + §7.1 |
 | **F6** | 授权与审批 | 见 §5.4。执行侧二次校验 digest；一次性消费；风险分级自动放行 | PRD v1 + Zed |
 | **F7** | 评测与回放 | replay / evaluate 分离；保留 20 条契约基线。后续以四维判据、真实用户任务和长期运行证据验收，不把完成度失败误判为不安全 | §10.2–§10.6；原 M4 + §11.1 G0 |
 | **F8** | 任务与运行 | Task/Run 分离、状态机、**作业表**（`job_id, state, lease, heartbeat, timeout, cancel, output_path`）。租约需 PID 存活校验 | OpenHands `conversation_lease.py` |
@@ -994,7 +994,7 @@ class Limits(TypedDict, total=False):
 
 ### 7.1 F5 的确定性与语义摘要（新增演进要求）
 
-当前 `context.py` 做确定性预览、卸载与裁剪，`loop.py` 在模型请求前持久化 spills；**未交付模型语义摘要**。后续允许模型摘要，但遵守以下边界：
+`context.py` 做确定性预览、卸载与裁剪，`loop.py` 在模型请求前持久化 spills；**模型语义摘要已交付（默认关，显式开启）**，实现与边界见 [context-summaries.md](context-summaries.md)。摘要作为**已持久化的派生材料**进入编译：默认路径逐字节不变；开启后回放读当时保存的那一份。后续演进仍遵守以下边界：
 
 1. 检索、提取、摘要在纯编译函数外执行；摘要调用经过授权与共享预算，并在被任何后续模型请求引用前持久化。
 2. 摘要记录来源事件 / 内容哈希、适用任务与作用域、模型 / adapter / prompt / 摘要版本和实际结果；作为有来源的派生材料，不替代原始事实，不提高输入内容的信任等级。
