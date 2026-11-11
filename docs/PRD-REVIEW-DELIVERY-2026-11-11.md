@@ -4,16 +4,22 @@
   §5.6、§7.1、§8.1.1、§8.5、§10.2–§10.6、§11.1、§13.6，附录 B 第 9–14 条），施工规格见
   [SPEC-PRD-REVIEW-2026-11-11.md](SPEC-PRD-REVIEW-2026-11-11.md)。
 - 基线：`main @ c0dfa88`（PR #84 之后）→ 第一轮收尾 `main @ ec7d7ae`（PR #88 之后）→
-  G1 轮次 `main @ cc2240e`（PR #92 之后）。G1 轮次实测
-  **1601 passed / 7 skipped**（macOS arm64 本机，169.08s；CI 同刻 required checks 全绿），
-  `ruff check .` → `All checks passed!`。`windows-latest` 在 G1 轮次 PR #92 的一次运行里实测
-  **5 failed / 1548 passed / 29 skipped**（998.29s），resync 后那次则在 25m11s 被取消
-  （既有命名管道阻塞族）；两者都不是 required check，也没有拿它冒充「Windows 已通过」。
+  G1 轮次 `main @ cc2240e`（PR #92 之后）→ **G1 收口 `main @ 850e046`（PR #99 之后）**。
+  G1 收口实测 **1684 passed / 7 skipped**（macOS arm64 本机，165.86s；CI 同刻 required
+  checks 全绿），`ruff check .` → `All checks passed!`。G1 轮次（`cc2240e`）实测
+  **1601 passed / 7 skipped**（169.08s）。
+  `windows-latest` **不是** required check，也没有拿它冒充「Windows 已通过」：G1 轮次
+  PR #92 的一次运行实测 **5 failed / 1548 passed / 29 skipped**（998.29s），resync 后那次
+  在 25m11s 被取消（既有命名管道阻塞族）；G1 收口的三个 PR 上分别是 **Pytest 步失败**
+  （#96，16m42s）、**25m11s 被取消**（#97）、**25m12s 被取消**（#99，同样是挂到 25 分钟
+  上限）。后两次都在命名管道族里挂死，**没有一条属于本轮新模块**。这三次运行的日志已
+  不可取，所以**本轮没有逐条失败计数**，只报结论与耗时，不编数字。
 - 第一轮收尾态（`main @ ec7d7ae`）：**1536 passed / 7 skipped**（158.55s；CI 同刻 macOS
   1536 / 7、ubuntu 1535 / 8），Windows **5 failed / 1509 passed / 29 skipped**（939.99s）。
-- 一句话：**第一轮把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
-  W1–W5 落地；G1 轮次再补上 §5.2.3 通用工具准入与 §5.6 共享预算账本（账本默认关闭，
-  见 §4）。§7.1 语义摘要、G2、G3 平台实机仍未做，逐条登记，不冒充完成。**
+- 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
+  W1–W5 落地；**G1 轮次**补上 §5.2.3 通用工具准入与 §5.6 共享预算账本；**G1 收口轮**
+  （#96 / #97 / #99）补上账本默认记账 + 硬上限可验证上界、资源种类与外发许可、
+  内容引用 + 分页读取。**§7.1 语义摘要、G2、G3 平台实机仍未做，逐条登记，不冒充完成。**
 
 ## 1 逐条对账
 
@@ -28,8 +34,8 @@
 | §5.3.5 第 3 条：迁移中断 | **已交付（库 + 演练）** | 新 `migrate.py`：结构版本（`user_version`/旁表）、步骤注册表、每步进度持久化、迁移前要求 `verify_backup` 通过、`crashpoint` 每步注入硬退、重启续做、不 UPDATE/DELETE 历史事件 | PR #80；[backup-restore.md](backup-restore.md)；负控：去掉备份前置 / 迁移先删后建 / 去掉中断保护，各红 |
 | §5.3.5 第 1–2 条：payload 契约与旧版映射 | **已交付** | `event_schema.py`：41 个类型逐类 payload schema（严格子集、注册期 fail-closed）；`events.py`：`event_versions` 旁表与事件行同事务、`append(legacy_write=False)` 默认只收 v1、显式 legacy 才写 v0、读取按旁表给精确版本、旁表缺失/损坏 → `PayloadVersionUnavailable` 不猜；41 类型 v1/v0 夹具 + 旧版映射测试 | PR #84；[event-payload-contract.md](event-payload-contract.md)；负控 ①–④（去掉写入校验 / v0 按新版补值 / 恢复自动回退 v0 / legacy 变万能开关）各红 |
 | §1.4 / §3.4 / §13.6 文档基线 | **已交付（文档）** | 新增章节合入 `main`（§5.2.1 的冲突按「记忆工具 5.2.1 / 记忆契约增量 5.2.2 / 通用工具准入 5.2.3」编号，保留既有记忆章节） | PR #77 |
-| §5.2.3 通用工具准入 | **已交付（G1a，PR #91）** | 新 `toolschema.py`：封闭 schema 方言（对象/数组/标量三组白名单）、注册期拒绝 `oneOf` / `$ref` / `format` / `default` 等方言外关键字、执行期**嵌套**校验（`argv[0]`、`minItems`、`minimum/maximum`、`enum`、`pattern` 真正执行）；准入在派发前（非法参数不产生审批）；`ActionRequest.description_hash` 绑描述（条件字段，历史摘要逐字节不变）；`MODEL_FORBIDDEN_ARGS` 身份字段双闸；路径参数拒绝 `scheme://`（URL 不伪装成路径）；replay 仍只读事件 | PR #91；[tool-admission.md](tool-admission.md)；[SPEC-G1-ADMISSION-2026-11-11.md](SPEC-G1-ADMISSION-2026-11-11.md) §2；`tests/test_g1_admission.py`（19）；负控 9/9 实测红 |
-| §5.6 共享预算账本 | **已交付（G1b，库 + 主循环接线；默认关闭，见 §4）** | 新 `budget.py`：账户/上限/计数器/预占四张表建在事件库同一个 SQLite 文件；`reserve()` 在 `BEGIN IMMEDIATE` 内逐级检查并扣减；`settle()` 幂等 + 分维度（`partial`）；未知用量保留占用不记零；父子链、`cancel()` 沿子树传播、`reconcile()` 只报告不清零；`Limits.budget_limits` 打开后每次模型 attempt 前预占，预占失败 → 记 `model.error` 并停止，**一次模型调用都不发生**；`run.cancel` 传播到账本 | PR #92；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`（20，含两条独立 SQLite 连接的真并发）；负控 10/10 实测红 |
+| §5.2.3 通用工具准入 | **已交付（G1a + G1d + G1e）** | 封闭 schema 方言 + 注册期拒绝 + 执行期嵌套校验 + 准入前移 + 工具版本/schema/描述三项绑定 + 身份字段双闸（G1a）；五种资源种类（file/memory/network/mcp/subtask）规范化与外发许可门（外发恒需人工批准、MCP 与 exec 同级、委派恒拒、混用拒、无执行器种类派发前拒绝）（G1d）；大结果有界摘要 + 内容引用 + 分页读取 + 任务可见范围 + sha256 复核（G1e） | PR #91 / #97 / #99；[tool-admission.md](tool-admission.md)、[resource-kinds.md](resource-kinds.md)、[content-refs.md](content-refs.md)；`test_g1_admission.py`(19) / `test_g1d_resource_kinds.py`(15) / `test_content_refs.py`(12) / `test_content_read.py`(5)；负控 9+6+12 全红 |
+| §5.6 共享预算账本 | **已交付（G1b + G1c；默认记账，设闸需显式上限）** | 四表建在事件库同一 SQLite；`BEGIN IMMEDIATE` 原子预占；按 attempt 幂等结算；分维度 `partial`；未知用量保留占用不记零；父子链；`cancel` 子树传播；`reconcile` 只报告；**默认记账**（任何维度都不设闸）；硬上限模式用**可验证上界**（请求体 UTF-8 字节 + adapter 声明的 `output_tokens`，拿不到就拒绝启动）；`overrun` 越界如实记、上界口径停机；`run.cancel` 在账户未建时先建后取消 | PR #92 / #96；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`(30，含真并发)；负控 10+6 全红 |
 | §7.1 模型语义摘要 | **未做（本轮）** | 保留现有确定性卸载/裁剪（`context.py` + `loop._persist_spills`），不实现模型摘要 | 同上 |
 | G2 网络 / MCP / 子代理 | **未做** | 没有新能力；§10.5 的联网研究任务以「未具备能力」的诚实性判据纳入，不用脚本或静态网页冒充线上完成 | [real-user-tasks.md](real-user-tasks.md) §5 |
 | G3 平台实机 | **未做** | 只有 macOS arm64 本机证据；Windows / mac-x64 / win-arm64 的安装、升级、回退、隔离证据均为 **unknown**。收尾轮把 Windows CI 从 35 failed 压到 **5 failed / 1509 passed / 29 skipped**（逐条见 §3），仍不是绿、也没有实机 | [isolation-matrix.md](isolation-matrix.md) §1、[runtime-metrics.md](runtime-metrics.md) §7、[backup-restore.md](backup-restore.md) §9 |
@@ -50,6 +56,9 @@
 | #90 | 第一轮的交付对账收尾（1536/7 基线、Windows 逐条证据、两个并发缺陷的语义写入文档） |
 | #91 | G1a §5.2.3 通用工具准入：封闭 schema 方言、注册期拒绝、嵌套校验、描述绑定、身份字段双闸、URI 拒绝（+19 tests） |
 | #92 | G1b §5.6 共享预算账本：原子预占、幂等分维度结算、未知不记零、父子链、取消传播、主循环接线（+20 tests） |
+| #96 | G1c §5.6 收口：**账本默认记账**（不再整个关闭）+ 硬上限模式的**可验证上界** + `overrun` 检测与停机 + 修 `run.cancel` 在账户未建时丢失取消意图（+11 tests） |
+| #97 | G1d §5.2.3：资源种类 `network`/`mcp`/`subtask` 规范化与外发许可门 + 6 个新规则编号 + 事件 `action` 枚举 5→7（+15 tests） |
+| #99 | G1e §5.2.3：内容引用 + 分页读取 `read_content` + 任务可见范围 + sha256 复核 + 占位给出可用引用 + 主循环按任务登记授权（+17 tests） |
 
 ## 3 测试与门禁
 
@@ -64,6 +73,12 @@
   `ruff check .` 干净。相对 1536 的 +65 = G1a +19（`test_g1_admission.py`）+ G1b +20
   （`test_budget_ledger.py`）+ 并行记忆工作流 #89 的 +26（同轮先合）。本机与 CI 的
   required checks（ubuntu / macOS / ui）一致通过；Windows 见下。
+- G1 收口 `main @ 850e046`：**1684 passed / 7 skipped**（165.86s，macOS arm64 本机），
+  `ruff check .` 干净。相对 G1 轮次的 1601 是 **+83**：G1c +11（`test_budget_ledger.py`
+  20→30、`test_capability.py` +1）、G1d +15（`test_g1d_resource_kinds.py`）、G1e +17
+  （`test_content_refs.py` 12 + `test_content_read.py` 5），其余 +40 来自并行记忆工作流
+  #93（N2 检索质量；同轮先合，其交付口径见 `docs/KNOWLEDGE.md`）。required checks
+  （ubuntu / macOS / ui）在 #96 / #97 / #99 上全绿。
 - **Windows job 的实测（不再用「#50 家族」一句话带过，逐轮、逐条列）**：
   - 修复前（PR #87 前）：**35 failed**；
   - PR #87（`b66570d`）：**8 failed**；
@@ -112,16 +127,15 @@
 
 ## 4 仍然不成立 / 未验证的宣称（不许写进「已完成」）
 
-- **G1（部分）**：§5.2.3 与 §5.6 的模块与接线已交付，但下面这些仍**不成立**：
-  ① 共享预算账本**默认关闭**（`Limits.budget_limits` 为 None 时行为与之前一致）——
-  估算预占会让临界 run 提前被拒，属行为变更，需单独评审；G2 接入前必须默认打开。
-  ② 网络 / MCP / 子任务三种资源种类没有实现（`resources.RESOURCE_KINDS` 仍是 file + memory），
-  所以「私有内容未经外发许可不发包」只能是**无从违反**，不是已验证。
-  ③ 「大结果有界摘要 + 内容引用 + 分页读取并验证任务可见范围」没做（只有 `read_text`
-  截断与 `run_command` blob 目录）。
-  ④ `run_command` 仍只受显式 `ExecPolicy` 约束，不经过隔离门；本轮没有新增高自主执行能力，
-  所以没有新增 §8.1.1 门禁项。
-  ⑤ 硬上限模式的「可验证上界」没做：`estimate_tokens()` 是 4 字符≈1 token 的本地估算。
+- **G1（只剩这几条不成立）**：① 网络 / MCP / 委派的**执行器**没有（G2），所以
+  「私有内容未经外发许可不发包」**仍只能记为 unknown**：外发许可闸门已就位、可拒绝
+  （`c4.outbound` 恒需人工批准、无执行器种类派发前拒绝），但没有外发面可以验证"发了什么"；
+  ② `run_command` 仍只受显式 `ExecPolicy` 约束，不经过隔离门（本轮没有新增高自主执行能力，
+  所以没有新增 §8.1.1 门禁项）；③ 硬上限模式的「每消息固定开销」不在上界内——字节上界只
+  覆盖文本，provider 若加固定计费 token 会打穿，届时账本记 `overrun` 并在上界口径停机
+  （这是如实登记，不是"绝对不超额"的承诺）；④ 没有"任务级外发白名单"
+  （`outbound_allow`，需改 `task.created` payload 契约，属 G2）；⑤ 账本的
+  「已知费用 vs 未知用量」**没有 UI 展示**（只有 `usage()` 材料）。
 - **§7.1**：没有模型语义摘要；只有确定性裁剪/卸载。
 - **G2**：没有网络 / MCP / 子代理能力；联网研究任务只验证「如实报告未具备」。
 - **G3**：无 Windows / mac-x64 / win-arm64 实机；安装、升级、回退、凭据存储（Keychain）、
@@ -139,9 +153,11 @@
 
 ## 5 下一轮建议（按 PRD §11.1 的门禁顺序）
 
-1. **G1 收口（下一轮）**：把共享预算账本默认打开（先定余量 / 输出预留 / 拒绝提示），
-   补网络 / MCP / 子任务资源种类与「有界摘要 + 内容引用」分页，再谈 G2。
-2. **§7.1**：摘要材料先持久化再编译；replay 读保存的摘要；断网回放测试。
-3. **G2**：网络 → MCP → 记忆 → 子代理，按「同一任务集证明收益」推进。
-4. **G3**：历史数据升级/备份恢复、凭据存储、运行 SLO、长时间测试、安装/更新/回退与
+1. **§7.1 模型语义摘要**：摘要材料先持久化再编译；replay 读保存的摘要；断网回放测试。
+2. **G2**：网络 → MCP → 记忆 → 子代理，按「同一任务集证明收益」推进。接入顺序上先补
+   §5.2.3 的执行器（网络目标已有规范化与许可门）与 `outbound_allow` 任务级声明，
+   再谈子代理（账本已有 `subtasks` 维度与父子链）。
+3. **G3**：历史数据升级/备份恢复、凭据存储、运行 SLO、长时间测试、安装/更新/回退与
    四目标平台矩阵；Windows IPC（issue #50）根因修复后才谈把 Windows 纳入 required。
+4. **G1 剩余三条**（不阻塞 G2 的可以后做）：`run_command` 隔离门、每消息固定开销的上界
+   收紧、账本的 UI 展示。
