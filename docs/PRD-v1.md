@@ -485,7 +485,7 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
   `additionalProperties: false` 保持。
 
-**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` 已落地（含控制面判据、一次性审批、旧版可查、Receipt 与 CLI）——**已落地 8 个**（6 个模型可见 + 2 个控制面专属）；`memory.consolidate` / `memory.erase` 仍是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
+**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` / `memory.erase` 已落地（含控制面判据、一次性审批、旧版可查、擦除引用计数、Receipt 与 CLI）——**已落地 9 个**（6 个模型可见 + 3 个控制面专属）；只剩 `memory.consolidate` 是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
 
 **`origin` 的口径（N1 细化）**：它描述的是**这一版正文**的来源，不是记忆的终身属性——控制面 `memory.edit`（人自己写的新正文）→ `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬的是同一段正文，来源**随行**（旧行 `user_explicit` → 新行仍 `user_explicit`，不降档）。旧版的 `origin` 留在旧行，不被改写。
 
