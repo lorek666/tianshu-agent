@@ -37,8 +37,10 @@ from tianshu.loop import Limits, run
 from tianshu.model import FINISH_REASONS, ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import (
     ACTION_CREATE,
+    ACTION_DELEGATE,
     ACTION_DELETE,
     ACTION_EXEC,
+    ACTION_FETCH,
     ACTION_OVERWRITE,
     ACTION_READ,
     APPROVAL_STATES,
@@ -57,12 +59,17 @@ from tianshu.workspace import WorkspaceBinding
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "schemas" / "c3" / "event.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "events"
+#: 事件契约里 `action` 的封闭集。G1d 新增 `fetch`（外发）与 `delegate`（委派）
+#: 两个动作——外发不是读、委派不是写，混进既有动作会让"状态变化/数据外发/计费/
+#: 可重试性分开表达"（PRD §5.2.3）无从谈起。旧事件仍然逐字合法（枚举只放宽）。
 ALL_ACTIONS = {
     ACTION_READ,
     ACTION_CREATE,
     ACTION_OVERWRITE,
     ACTION_DELETE,
     ACTION_EXEC,
+    ACTION_FETCH,
+    ACTION_DELEGATE,
 }
 
 
