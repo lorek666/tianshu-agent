@@ -32,7 +32,7 @@ from . import memory_control
 from .credentials import redact
 from .errors import TianshuError
 from .events import EventLog
-from .execpolicy import ExecPolicy
+from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .loop import AgentLoop, Limits, build_stack
 from .memory import MEMORY_KINDS
 from .memory_control import memory_view
@@ -94,6 +94,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式声明任务级外发白名单：允许出网的**源**（可重复），"
         "例如 network://https/example.com 或 network://http/127.0.0.1:8080。"
         "不传 = 这个任务一条包都不发；声明了源也仍然要逐次人工批准",
+    )
+    r.add_argument(
+        "--require-isolation",
+        action="append",
+        default=None,
+        choices=list(ISOLATION_BOUNDARIES),
+        metavar="BOUNDARY",
+        help="要求实测证明的隔离边界（可重复）：files_authority / network / "
+        "credentials / process_tree。未给 = 不声明隔离（执行如实标「受信任执行」）；"
+        "给了但后端没有 enforced 实测证据 → unsupported",
     )
     r.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
@@ -738,7 +748,13 @@ def _exec_policy(args: argparse.Namespace):
     env 只放行 PATH（凭据不进子进程），并给一个明确的上限/超时。
     """
     cmds = getattr(args, "allow_exec_cmd", None)
+    required = tuple(getattr(args, "require_isolation", None) or ())
     if not cmds:
+        if required:
+            raise ValueError(
+                "--require-isolation 需要同时给 --allow-exec-cmd："
+                "没有执行策略的隔离要求是空话"
+            )
         return None
     roots = [b["root_path"] for b in _bindings(args) if b["mode"] == "writable"]
     return ExecPolicy(
@@ -747,6 +763,7 @@ def _exec_policy(args: argparse.Namespace):
         env_allowlist=("PATH",),
         max_output_bytes=EXEC_DEFAULT_MAX_OUTPUT_BYTES,
         timeout_ms=EXEC_DEFAULT_TIMEOUT_MS,
+        isolation_requires=required,
     )
 
 

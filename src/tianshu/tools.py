@@ -51,6 +51,7 @@ from .execpolicy import (
     filtered_env,
 )
 from .guard import assert_paths_not_blocked, ensure_not_blocked
+from .isolation import isolation_view, require_isolation_requirements
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
@@ -188,6 +189,8 @@ class ToolContext:
     exec_policy: ExecPolicy | None = None
     #: 本次执行走的后端（F2 注册表）。None = 解析进程级配置。
     exec_backend: ExecBackend | None = None
+    #: 数据根（探针报告必须绑定现场；隔离要求存在时它是必需项）。
+    data_root: Path | None = None
     #: 截断输出的内容寻址目录（快照 blob 目录）；None 时只报 truncated。
     blob_dir: Path | None = None
 
@@ -572,11 +575,13 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     # 凭据/密钥不进入子进程：只传策略白名单里的变量（后端内部还会再过滤一次）。
     child_env = filtered_env(policy, dict(os.environ))
 
+    isolation_report = None
     try:
         # 顺序必须与 `exec.spawn()` 内部逐条一致，否则同一条非法请求会因
         # "预检走 tools、执行走 spawn" 得到不同规则 id：
         #   1. 策略（argv deny 先于 allow → cwd → 上限 → env）恒做；
-        #   2. 只有**本次请求** pty=True 时才谈 PTY 许可与后端能力。
+        #   2. 只有**本次请求** pty=True 时才谈 PTY 许可与后端能力；
+        #   3. 隔离要求（PRD §8.1.1）：只在策略声明了边界时才探测并过门。
         # 反例（复审抓到的真实回归）：无条件 `check_capabilities()` 会把
         # `allow_pty=True` 当成"本次要用 PTY"，于是"策略允许 PTY、后端没有
         # PTY、本次走管道"的正常命令也被拒；而 dispatcher 预检只在 args.pty
@@ -590,6 +595,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                     rule_id=RULE_PTY_NOT_ALLOWED,
                 )
             check_capabilities(policy, capabilities)
+        isolation_report = require_isolation_requirements(
+            policy, backend, workspace=target, data_root=ctx.data_root
+        )
         result = backend.spawn(
             argv,
             cwd=target,
@@ -606,6 +614,7 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 "error": str(exc),
                 "rule_id": exc.rule_id,
                 "policy": {"decision": "denied", "rule_id": exc.rule_id},
+                "isolation": isolation_view(backend),
             },
         )
     except PolicyUnsupported as exc:
@@ -620,6 +629,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                     "backend": exc.backend,
                     "feature": exc.feature,
                 },
+                # 拒绝也要让用户看到"当时是什么隔离级别"：IsolationRefused
+                # 说明证据不足，视图如实标 unverified。
+                "isolation": isolation_view(backend),
             },
         )
 
@@ -661,6 +673,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 "backend": capabilities.name,
                 "declared_isolation": capabilities.isolation,
             },
+            # 执行的隔离证据（F2）：有实测报告时按报告；只有声明时如实标
+            # unverified（不把"没测"说成"已隔离"，也不把"没要求"说成"已隔离"）。
+            "isolation": isolation_view(backend, isolation_report),
         },
     )
 
@@ -1153,6 +1168,7 @@ class FileExecutor:
         snapshots: SnapshotStore | None = None,
         backend: FileBackend | None = None,
         exec_backend: ExecBackend | None = None,
+        data_root: Path | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -1172,6 +1188,11 @@ class FileExecutor:
             exec_backend if exec_backend is not None else resolve_exec_backend()
         )
         self._exec_backend_pinned = exec_backend is not None
+        # 探针报告必须绑定现场：预检（dispatcher._data_root）与执行（这里）必须
+        # 指向同一个数据根，否则同一份策略会在两个现场各拿一份证据。
+        self._data_root = (
+            Path(data_root) if data_root is not None else Path(tasks.data_root)
+        )
         self._backend = backend if backend is not None else current_backend()
         if self._backend is not current_backend():
             # "executor 用 memfs、precondition 读 local" 这种半真半假状态
@@ -1360,6 +1381,7 @@ class FileExecutor:
             backend=self._backend,
             exec_policy=task.exec_policy if task is not None else None,
             exec_backend=self._exec_backend,
+            data_root=self._data_root,
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
         )
 

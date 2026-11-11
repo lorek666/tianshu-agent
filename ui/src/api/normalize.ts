@@ -4,6 +4,7 @@ import type {
   ApprovalView,
   DaemonView,
   EventView,
+  IsolationView,
   RunView,
   StateView,
   TaskView,
@@ -77,6 +78,29 @@ function normalizeResources(raw: unknown): string[] {
   return resources;
 }
 
+function normalizeIsolation(raw: unknown): IsolationView | null {
+  const record = asRecord(raw);
+  const level = readString(record, "level");
+  if (level === null) return null;
+  return {
+    backend: asString(record.backend) ?? "",
+    declared: readString(record, "declared") ?? "none",
+    measured: readString(record, "measured"),
+    level,
+    // 缺字段时按更保守的方向默认：没有明确"已实测"一律当未验证。
+    unverified: asBoolean(record.unverified) ?? true,
+    contradicted: asBoolean(record.contradicted) ?? false,
+    boundaries: Object.fromEntries(
+      Object.entries(asRecord(record.boundaries)).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+    enforced_boundaries: asArray(record.enforced_boundaries).filter(
+      (item): item is string => typeof item === "string",
+    ),
+  };
+}
+
 export function normalizeApproval(raw: unknown): ApprovalView | null {
   const record = asRecord(raw);
   const approvalId = readString(record, "approval_id", "id");
@@ -89,6 +113,7 @@ export function normalizeApproval(raw: unknown): ApprovalView | null {
     resources: normalizeResources(record.resources),
     reason: readString(record, "reason"),
     rule_id: readString(record, "rule_id"),
+    isolation: normalizeIsolation(record.isolation),
     state: asString(record.state) ?? "unknown",
     created_at: asNumber(record.created_at),
     expires_at: asNumber(record.expires_at),

@@ -1298,6 +1298,21 @@ pre,
   font-size: 10.5px;
 }
 
+.approval-isolation {
+  margin: 10px 0 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(217, 160, 46, 0.12);
+  border: 1px solid rgba(217, 160, 46, 0.35);
+  color: #9a6a12;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.approval-isolation-info {
+  background: rgba(60, 130, 200, 0.1);
+  border-color: rgba(60, 130, 200, 0.32);
+  color: #2f6c9f;
+}
 .approval-reason {
   margin-top: 6px;
   color: var(--text-soft);

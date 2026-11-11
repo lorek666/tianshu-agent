@@ -92,6 +92,20 @@ RECOMMENDED_ISOLATION = (
     ISOLATION_CONTAINER,
 )
 
+#: PRD §8.1.1 的四条隔离边界。它们是**被实测的对象**（`isolation.py` 用真实
+#: 子进程逐条探测），不是后端自述的等级名。策略里的"隔离要求"用的是这四个
+#: 边界名，不是 L1/L2/L3——等级是累计显示，边界才是证据单位。
+ISOLATION_BOUNDARY_FILES = "files_authority"
+ISOLATION_BOUNDARY_NETWORK = "network"
+ISOLATION_BOUNDARY_CREDENTIALS = "credentials"
+ISOLATION_BOUNDARY_PROCESS_TREE = "process_tree"
+ISOLATION_BOUNDARIES: tuple[str, ...] = (
+    ISOLATION_BOUNDARY_FILES,
+    ISOLATION_BOUNDARY_NETWORK,
+    ISOLATION_BOUNDARY_CREDENTIALS,
+    ISOLATION_BOUNDARY_PROCESS_TREE,
+)
+
 
 class PolicyDenied(TianshuError):
     """策略不允许这次执行。
@@ -175,6 +189,21 @@ def _normalize_env_name(item: object) -> str:
     return item
 
 
+def _normalize_boundaries(name: str, value: object) -> tuple[str, ...]:
+    """把隔离要求规范成去重的边界名元组；非法名字在构造期就拒绝。"""
+    items = _require_sequence_of_str(name, value)
+    out: list[str] = []
+    for item in items:
+        if item not in ISOLATION_BOUNDARIES:
+            raise ValueError(
+                f"{name} 含有未知隔离边界：{item!r}"
+                f"（可选：{list(ISOLATION_BOUNDARIES)}）"
+            )
+        if item not in out:
+            out.append(item)
+    return tuple(out)
+
+
 def _require_limit(name: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} 必须是整数：{value!r}")
@@ -200,6 +229,10 @@ class ExecPolicy:
     - `env_allowlist`：允许传给子进程的环境变量名（空 = 只传空 env）。
     - `max_output_bytes` / `timeout_ms`：必须显式声明且 > 0，否则拒绝。
     - `allow_pty`：是否请求 PTY；后端没有 PTY 时必须 `unsupported`。
+    - `isolation_requires`：本次执行**要求实测证明**的隔离边界（PRD §8.1.1）。
+      空 = 不声明隔离要求（执行按"受信任执行"如实标注）。非空时必须拿到
+      `isolation.probe_backend()` 的实测报告，任何 `unknown` / `not_enforced`
+      都拒绝——声明与"后端自称"都不算证据。
     """
 
     argv_allowlist: Sequence[str] = ()
@@ -209,6 +242,7 @@ class ExecPolicy:
     max_output_bytes: int = 0
     timeout_ms: int = 0
     allow_pty: bool = False
+    isolation_requires: Sequence[str] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """可持久化的声明形式（任务级策略存进 tasks 表用）。
@@ -224,6 +258,7 @@ class ExecPolicy:
             "max_output_bytes": self.max_output_bytes,
             "timeout_ms": self.timeout_ms,
             "allow_pty": self.allow_pty,
+            "isolation_requires": list(self.isolation_requires),
         }
 
     @classmethod
@@ -275,6 +310,11 @@ class ExecPolicy:
         object.__setattr__(self, "timeout_ms", _require_limit("timeout_ms", self.timeout_ms))
         if not isinstance(self.allow_pty, bool):
             raise ValueError(f"allow_pty 必须是布尔值：{self.allow_pty!r}")
+        object.__setattr__(
+            self,
+            "isolation_requires",
+            _normalize_boundaries("isolation_requires", self.isolation_requires),
+        )
 
 
 @dataclass(frozen=True)
@@ -544,6 +584,11 @@ __all__ = [
     "FEATURE_PTY",
     "FEATURE_SIGNALS",
     "ISOLATION_APP_CONTAINER",
+    "ISOLATION_BOUNDARIES",
+    "ISOLATION_BOUNDARY_CREDENTIALS",
+    "ISOLATION_BOUNDARY_FILES",
+    "ISOLATION_BOUNDARY_NETWORK",
+    "ISOLATION_BOUNDARY_PROCESS_TREE",
     "ISOLATION_CONTAINER",
     "ISOLATION_PATH_ONLY",
     "ISOLATION_PROCESS_TREE",

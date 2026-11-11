@@ -19,9 +19,11 @@ import {
   readArray,
   readBoolean,
   readNumber,
+  readRecord,
   readString,
   truncate,
 } from "./values";
+import type { AnyRecord } from "./values";
 
 export type Tone = "neutral" | "info" | "action" | "success" | "warn" | "danger" | "approval";
 
@@ -324,6 +326,94 @@ export function workspaceSummary(workspaces: WorkspaceView[]): string {
     .join("、");
 }
 
+// ---------------------------------------------------------------- 隔离（F2）
+
+/**
+ * 隔离视图 → 人话。**优先级是硬约定**（PRD §8.1）：
+ * 1. `contradicted`（自述与实测冲突）
+ * 2. `unverified` 且自述不是 none（后端自称隔离但没测）
+ * 3. `level === none` 但有部分边界已实测
+ * 4. `level === none`
+ * 5. 其它等级
+ * 顺序反了会把更严重的状态盖掉（例如把"自述 app_container 未实测"说成
+ * 受信任执行，或反过来把"没有证据"说成"已隔离"）。
+ */
+export const ISOLATION_LEVEL_LABELS: Record<string, string> = {
+  none: "未隔离",
+  path_only: "仅路径控制",
+  process_tree: "路径与进程树控制",
+  app_container: "应用容器",
+  container: "容器",
+};
+
+const ISOLATION_BOUNDARY_LABELS: Record<string, string> = {
+  files_authority: "文件与权威数据",
+  network: "网络",
+  credentials: "凭据",
+  process_tree: "进程树",
+};
+
+function isolationLevelLabel(level: string | null | undefined): string {
+  if (level === null || level === undefined || level === "") return "未知";
+  return ISOLATION_LEVEL_LABELS[level] ?? "未知";
+}
+
+function isolationBoundaryLabel(boundary: string): string {
+  return ISOLATION_BOUNDARY_LABELS[boundary] ?? boundary;
+}
+
+export function isolationSentence(
+  value: unknown,
+): { text: string; tone: Tone } | null {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return null;
+  const level = readString(record, "level") ?? "none";
+  const declared = readString(record, "declared") ?? "none";
+  const measured = readString(record, "measured") ?? level;
+  const unverified = readBoolean(record, "unverified") ?? false;
+  const contradicted = readBoolean(record, "contradicted") ?? false;
+  const enforced = (readArray(record, "enforced_boundaries") ?? []).filter(
+    (item): item is string => typeof item === "string",
+  );
+
+  if (contradicted) {
+    return {
+      text: `后端自述「${isolationLevelLabel(declared)}」，实测「${isolationLevelLabel(measured)}」`,
+      tone: "warn",
+    };
+  }
+  if (unverified && declared !== "none") {
+    return {
+      text: `后端自述「${isolationLevelLabel(declared)}」，未实测`,
+      tone: "warn",
+    };
+  }
+  if (level === "none") {
+    if (enforced.length > 0) {
+      const names = enforced.map(isolationBoundaryLabel).join("、");
+      return {
+        text: `受信任执行：未隔离（已实测的边界：${names}）`,
+        tone: "warn",
+      };
+    }
+    return { text: "受信任执行：未隔离", tone: "warn" };
+  }
+  return { text: `隔离：${isolationLevelLabel(level)}`, tone: "info" };
+}
+
+function isolationOf(payload: AnyRecord | null | undefined): unknown {
+  if (payload === null || payload === undefined) return null;
+  const direct = payload["isolation"];
+  if (direct !== null && direct !== undefined) return direct;
+  const output = readRecord(payload, "output");
+  return output === null ? null : output["isolation"];
+}
+
+export function isolationSuffix(payload: AnyRecord | null | undefined): string {
+  const view = isolationSentence(isolationOf(payload));
+  return view === null ? "" : `（${view.text}）`;
+}
+
 // ---------------------------------------------------------------- 工具动作 → 短语
 
 const TOOL_VERBS: Record<string, string> = {
@@ -560,12 +650,17 @@ export function humanizeEvent(event: EventView): TimelineEntry {
 
     case "tool.result": {
       const action = describeToolAction(payload) ?? "操作";
+      const isolation = isolationSuffix(payload);
       if (isFailureResult(payload)) {
         const reason = readString(payload, "error", "error_message", "reason", "message");
         const detail = reason !== null ? `（${truncate(reason, 80)}）` : "";
-        return toTimelineEntry(event, `未完成：${action}${detail}`, "danger");
+        return toTimelineEntry(
+          event,
+          `未完成：${action}${detail}${isolation}`,
+          "danger",
+        );
       }
-      return toTimelineEntry(event, `已完成：${action}`, "success");
+      return toTimelineEntry(event, `已完成：${action}${isolation}`, "success");
     }
 
     case "tool.not_dispatched":
@@ -576,7 +671,7 @@ export function humanizeEvent(event: EventView): TimelineEntry {
       const count = resourcesOf(payload).length;
       return toTimelineEntry(
         event,
-        `申请放行：${approvalActionPhrase(action, count)}`,
+        `申请放行：${approvalActionPhrase(action, count)}${isolationSuffix(payload)}`,
         "approval",
       );
     }
@@ -669,12 +764,13 @@ export function humanizeEvent(event: EventView): TimelineEntry {
     case "approval.requested": {
       const action = readString(payload, "action", "rule_id");
       const count = resourcesOf(payload).length;
+      const isolation = isolationSuffix(payload);
       if (action === null && count === 0) {
-        return toTimelineEntry(event, "等待你批准一次操作", "approval");
+        return toTimelineEntry(event, `等待你批准一次操作${isolation}`, "approval");
       }
       return toTimelineEntry(
         event,
-        `等待你批准：${approvalActionPhrase(action, count)}`,
+        `等待你批准：${approvalActionPhrase(action, count)}${isolation}`,
         "approval",
       );
     }

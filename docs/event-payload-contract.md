@@ -51,12 +51,12 @@
 | `approval.consumed` | v1 | `approval_id`, `request_digest`, `action_digest`, `decided_by` | 无已知形状差异 |
 | `approval.decided` | v1 | `approval_id`, `request_digest`, `decision`, `decided_by` | 无已知形状差异 |
 | `approval.expired` | v1 | `approval_id`, `reason` | 无已知形状差异 |
-| `approval.requested` | v1 | `approval_id`, `request_id`, `request_digest`, `action_digest`, `action_subject`, `action`, `resources`, `rule_id`, `reason`, `expires_at` | 无已知形状差异 |
+| `approval.requested` | v1 | `approval_id`, `request_id`, `request_digest`, `action_digest`, `action_subject`, `action`, `resources`, `rule_id`, `reason`, `expires_at` | 无已知形状差异（F2 起可选 `isolation`；旧行没有该字段仍合法） |
 | `approval.revoked` | v1 | `approval_id`, `decided_by` | 无已知形状差异 |
 | `approval.superseded` | v1 | `approval_id`, `reason` | 无已知形状差异 |
 | `dispatch.admitted` | v1 | `request_id`, `request_digest`, `call_id`, `grant_id`, `intent_seq` | 历史形状差异（v0 放宽） |
 | `dispatch.rejected` | v1 | `request_id`, `rule_id`, `reason` | 无已知形状差异 |
-| `dispatch.requested` | v1 | `request_id`, `request_digest`, `action`, `resources`, `decision`, `rule_id` | 无已知形状差异 |
+| `dispatch.requested` | v1 | `request_id`, `request_digest`, `action`, `resources`, `decision`, `rule_id` | 无已知形状差异（F2 起 exec 动作可选 `isolation`；非 exec 不带该键） |
 | `dispatch.revoked` | v1 | `approval_id`, `call_id`, `dispatch_id`, `reason` | 无已知形状差异 |
 | `execution.started` | v1 | `run_id`, `task_id`, `goal_revision`, `lease_epoch`, `resources` | 无已知形状差异 |
 | `grant.consumed` | v1 | `grant_id`, `request_digest`, `remaining_uses` | 无已知形状差异 |
@@ -82,7 +82,7 @@
 | `run.model_turn` | v1 | `run_id`, `turn_id`, `seq`, `claim_epoch`, `finish_reason`, `usage`, `payload_hash` | 历史形状差异（v0 放宽） |
 | `run.start` | v1 | `run_id`, `task_id`, `goal_revision`, `lease_epoch` | 历史形状差异（v0 放宽） |
 | `run.state` | v1 | `run_id`, `task_id`, `from`, `to`, `reason` | 无已知形状差异 |
-| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes` | 无已知形状差异 |
+| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes` | 无已知形状差异（F2 起 `exec_policy` 可选 `isolation_requires`；边界名封闭枚举，旧行缺字段仍合法） |
 | `task.revised` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces` | 无已知形状差异 |
 | `tool.intent` | v1 | `call_id`, `tool_id`, `args`, `args_hash`, `request_id`, `request_digest`, `dispatch_id`, `grant_id`, `attempt_id`, `claim_epoch` | 历史形状差异（v0 放宽） |
 | `tool.not_dispatched` | v1 | `call_id`, `tool_id`, `reason` | 无已知形状差异 |
@@ -181,6 +181,20 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 "缺 `root` → 无法核对"拒绝把它当成可信证据（本 PR 没有改变这个判定）。
 这三个用例在加契约前后都绿，且现在会经过 v0 分支——是 v0 映射在真实旧夹具上的
 正面证据，不是为通过而放宽。
+
+## 6.1 可选字段与"旧二进制读新库"（F2 起）
+
+- F2 给三个契约加了**可选字段**：`task.created.exec_policy.isolation_requires`、
+  `dispatch.requested.isolation`、`approval.requested.isolation`。
+  新字段都没进 `required`，所以**旧事件在新代码里仍然合法**（最小 payload 夹具
+  与 `test_task_created_accepts_both_policy_shapes` 覆盖两个方向）。
+- 但**旧的 v1 二进制读新库不支持**：旧 schema 是 `additionalProperties: false`，
+  见到新字段会拒绝；`event_versions` 仍记 version=1，不会触发
+  `UnknownPayloadVersion`。这是发布前约定（v1 尚未发布，不做跨二进制前向兼容）；
+  一旦 v1 发布，加字段必须 bump `CURRENT_PAYLOAD_VERSION` 并补 `LEGACY_SCHEMAS`，
+  不能沿用本轮做法。
+- `isolation_requires` 用**封闭枚举**（四边界名），非法值在写入前就被
+  `PayloadContractError` 拒绝；不是"先写进去、加载时再炸"。
 
 ## 7 仍冻结不了的字段（与原因）
 
