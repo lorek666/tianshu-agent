@@ -239,10 +239,24 @@ class MemoryIndex:
         if self._schema_ready:
             return
         outer = self._conn.in_transaction
+        if self._tables_exist():
+            # 表已经在（别的事务/更早的连接建过）：不必在每次记忆写的事务里
+            # 重复执行两条 `CREATE TABLE IF NOT EXISTS`。仍然只在顶层缓存的
+            # 原因见下：事务内看到"存在"可能是本事务刚建的，回滚就没了。
+            if not outer:
+                self._schema_ready = True
+            return
         for statement in _SCHEMA_STATEMENTS:
             self._conn.execute(statement)
         if not outer:
             self._schema_ready = True
+
+    def _tables_exist(self) -> bool:
+        rows = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name IN ('memory_vectors', 'memory_vector_meta')"
+        ).fetchall()
+        return len(rows) == 2
 
     def _set_meta(self, key: str, value: str) -> None:
         self._conn.execute(
@@ -407,9 +421,13 @@ class MemoryIndex:
         *,
         allowed: Sequence[MemoryScope],
         limit: int,
-        now: int | None = None,
+        now: int,
     ) -> list[str]:
-        """按余弦相似度返回 `memory_id`（已按作用域/状态/过期过滤）。
+        """按余弦相似度返回 `memory_id`（已按作用域/状态/**过期**过滤）。
+
+        `now` 必填：过期判定必须由调用方给一个明确的时钟。默认取"当前时间"会
+        让同一函数在测试与生产里对同一份数据给出不同答案，也会让"到底按哪个
+        时刻算过期"变得不可复现。
 
         返回**空列表**有三个正当理由：没有 provider、索引不可用、真的没有候选。
         调用方必须结合 :meth:`availability` 区分"降级"与"没有结果"，不能把前者
@@ -432,7 +450,7 @@ class MemoryIndex:
             " WHERE v.model_id = ? AND v.dim = ?"
             " AND m.status = 'active' AND m.erased_at IS NULL"
             " AND (m.expires_at IS NULL OR m.expires_at > ?)",
-            (self._provider.model_id, self._provider.dim, now if now is not None else 0),
+            (self._provider.model_id, self._provider.dim, now),
         ).fetchall()
         scored: list[tuple[float, str]] = []
         for row in rows:

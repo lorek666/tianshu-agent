@@ -187,6 +187,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "edit",
             "promote",
             "erase",
+            "rebuild-vectors",
         ],
     )
     mem.add_argument(
@@ -1135,7 +1136,9 @@ def _cli_memory_scopes(args: argparse.Namespace) -> tuple[MemoryScope, ...]:
     return tuple(deduped)
 
 
-def _memory_public(memory, content: str | None = None, *, score=None) -> dict:
+def _memory_public(
+    memory, content: str | None = None, *, score=None, score_kind=None
+) -> dict:
     """一条记忆对人和 JSON 的统一投影。
 
     `scope` / `source_refs` / `revision` / `status` 是必须显示的四项：缺一项，
@@ -1146,11 +1149,15 @@ def _memory_public(memory, content: str | None = None, *, score=None) -> dict:
     payload["content"] = content
     if score is not None:
         payload["score"] = score
+    if score_kind is not None:
+        payload["score_kind"] = score_kind
     return payload
 
 
-def _print_memory(memory, content: str | None = None, *, score=None) -> None:
-    payload = _memory_public(memory, content, score=score)
+def _print_memory(
+    memory, content: str | None = None, *, score=None, score_kind=None
+) -> None:
+    payload = _memory_public(memory, content, score=score, score_kind=score_kind)
     print(f"memory_id : {payload['memory_id']}")
     print(f"revision  : {payload['revision']}")
     print(f"scope     : {payload['scope']}  {payload['scope_id']}")
@@ -1209,6 +1216,27 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 return 2
             return _remember_memory(stack, scope, args)
 
+        if args.action == "rebuild-vectors":
+            # 语义召回的**构建入口**：只装配 provider 还不够，必须显式建一次
+            # 索引；否则 availability() 报"尚未建立"，检索永远 FTS-only。
+            if getattr(projection, "index", None) is None:
+                print(
+                    "错误：当前没有配置向量 provider（设置 "
+                    "TIANSHU_EMBEDDING_PROVIDER=hash 或由装配方传入）；"
+                    "没有索引可建",
+                    file=sys.stderr,
+                )
+                return 2
+            written = projection.rebuild_vectors()
+            available, reason = projection.index.availability()
+            if args.json:
+                print(json.dumps(
+                    {"rows": written, "available": available, "reason": reason},
+                    ensure_ascii=False, indent=2))
+                return 0
+            print(f"已重建向量索引：{written} 条；可用={available}；原因={reason or '—'}")
+            return 0
+
         if not args.value:
             print(f"错误：memory {args.action} 需要查询词 / memory_id",
                   file=sys.stderr)
@@ -1237,7 +1265,12 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 print(json.dumps(
                     {
                         "items": [
-                            _memory_public(r.memory, r.content, score=r.score)
+                            _memory_public(
+                                r.memory,
+                                r.content,
+                                score=r.score,
+                                score_kind=r.score_kind,
+                            )
                             for r in recalled
                         ],
                         # 能力边界也进机器可读输出：`semantic=false` 不是"没找到"，
@@ -1258,7 +1291,12 @@ def _cmd_memory(args: argparse.Namespace) -> int:
             for index, item in enumerate(recalled):
                 if index:
                     print("")
-                _print_memory(item.memory, item.content, score=item.score)
+                _print_memory(
+                    item.memory,
+                    item.content,
+                    score=item.score,
+                    score_kind=item.score_kind,
+                )
             return 0
 
         memory = projection.get(args.value, allowed=allowed)

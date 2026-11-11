@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 from tianshu.events import EventLog
-from tianshu.memory import Memory, MemoryProjection, MemoryStoreError
+from tianshu.memory import (
+    Memory,
+    MemoryProjection,
+    MemoryStoreError,
+    RecallPriority,
+)
 from tianshu.memory_index import HashEmbeddingProvider, MemoryIndex, rf_fuse
 from tianshu.resources import MemoryScope
 
@@ -570,3 +575,110 @@ def test_search_stays_fts_only_and_retrieve_is_hybrid(vector_env) -> None:
     assert {item.score_kind for item in hybrid.items} == {"rrf"}
 
 
+
+
+def test_built_marker_is_required_for_availability(vector_env) -> None:
+    """meta 有 provider/dim 但没 built（构建没跑完）⇒ 不可用。"""
+    log, projection, index = vector_env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文", scope=scope)
+    # 手写 meta（模拟"只记录身份、没完成构建"的中间态），不写 built。
+    with log.transaction():
+        log.conn.execute(
+            "INSERT OR REPLACE INTO memory_vector_meta(key, value) VALUES (?, ?)",
+            ("provider_model_id", index.provider.model_id),
+        )
+        log.conn.execute(
+            "INSERT OR REPLACE INTO memory_vector_meta(key, value) VALUES (?, ?)",
+            ("provider_dim", str(index.provider.dim)),
+        )
+        log.conn.execute("DELETE FROM memory_vector_meta WHERE key = 'built'")
+    available, reason = index.availability()
+    assert available is False
+    assert reason is not None and "完整构建" in reason
+    # 建一次之后才可用。
+    assert projection.rebuild_vectors() == 1
+    assert index.availability() == (True, None)
+
+
+def test_hybrid_result_keeps_scope_priority_as_first_grouping(vector_env) -> None:
+    """融合之后仍以作用域优先级分组：task 的记忆排在 user 前面。"""
+    log, projection, index = vector_env
+    task_scope = MemoryScope.task("task_current")
+    user_scope = MemoryScope.user()
+    _seed(log, projection, "mem_task", "优先级样例 报告用中文", scope=task_scope)
+    _seed(log, projection, "mem_user", "优先级样例 报告用中文", scope=user_scope)
+    projection.rebuild_vectors()
+    priority = RecallPriority(task_id="task_current", workspace_roots=())
+    outcome = projection.retrieve(
+        "优先级样例 报告",
+        allowed=(task_scope, user_scope),
+        priority=priority,
+    )
+    assert outcome.semantic is True
+    assert [item.memory.memory_id for item in outcome.items] == ["mem_task", "mem_user"]
+
+
+def test_semantic_only_candidate_respects_allowed_and_expiry(tmp_path: Path) -> None:
+    """语义独有候选同样要过 allowed / 过期两道闸。"""
+    log = EventLog(tmp_path / "events.db")
+    provider = _ScriptedProvider(
+        {
+            "alpha beta": (1.0, 0.0, 0.0, 0.0),
+            "gamma-only": (1.0, 0.0, 0.0, 0.0),
+        }
+    )
+    index = MemoryIndex(log.conn, provider=provider)
+    projection = MemoryProjection(
+        log.conn, log=log, blob_dir=tmp_path / "blobs", clock=lambda: NOW, index=index
+    )
+    projection.ensure_schema()
+    user_scope = MemoryScope.user()
+    other_scope = MemoryScope.workspace(str(tmp_path / "other"))
+    _seed_via_events(
+        log,
+        projection,
+        {"mem_other": "alpha beta"},
+        other_scope,
+    )
+    projection.rebuild_vectors()
+    try:
+        # allowed 不含 other_scope ⇒ 语义路即使命中也不许并进来。
+        outcome = projection.retrieve("gamma-only", allowed=(user_scope,))
+        assert [item.memory.memory_id for item in outcome.items] == []
+        assert outcome.semantic is True
+    finally:
+        log.close()
+
+
+def test_rebuild_with_index_reindexes_vectors(vector_env) -> None:
+    """带索引的 `rebuild()` 重放后要重建向量并恢复可用（不能半套）。"""
+    log, projection, index = vector_env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文", scope=scope)
+    _seed(log, projection, "m2", "先讲风险", scope=scope)
+    projection.rebuild_vectors()
+    assert index.availability() == (True, None)
+    assert projection.rebuild() >= 2
+    assert index.availability() == (True, None)
+    order = projection.retrieve("报告", allowed=(scope,), priority=None)
+    assert order.semantic is True
+
+
+def test_unreadable_content_drops_the_stale_vector(vector_env) -> None:
+    """正文不可读时旧向量必须下掉：没有正文的记忆不能被语义路排出来。"""
+    log, projection, index = vector_env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文", scope=scope)
+    projection.rebuild_vectors()
+    assert index.availability() == (True, None)
+    memory = projection.get("m1", allowed=(scope,))
+    assert memory is not None
+    blob = projection.blob_path(memory.content_ref)
+    assert blob is not None
+    blob.unlink()
+    # 再确认一次（正文不可读 ⇒ 钩子应 drop 向量）
+    _forget(log, projection, "m1", scope=scope)
+    assert (
+        log.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0] == 0
+    )

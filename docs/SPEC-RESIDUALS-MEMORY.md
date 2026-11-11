@@ -253,9 +253,10 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   - `HashEmbeddingProvider`：确定性哈希基线，**无语义能力**（模块 docstring 写死"不许
     对外声称语义召回"，评测报告也按这个口径写）；
   - `MemoryIndex`：表 `memory_vectors` / `memory_vector_meta`；`model_id+dim` 过滤；
-    `availability()` 返回 `(可用, 原因)`——**要求 built 标记 + 覆盖校验**（空表/半套
-    向量/换 provider 未重建一律不可用）；`rebuild()` 清空重算并置 built；`rf_fuse()`
-    纯函数（`k=60`）；建表在回滚事务后可重试（与投影同款缓存修正）。
+    `availability()` 返回 `(可用, 原因)`——**要求 built 标记 + provider 身份 + 覆盖校验**
+    （空表/半套向量/换 provider 未重建一律不可用）；`rebuild()` 清空重算并置 built；
+    `rf_fuse()` 纯函数（`k=60`）；建表在回滚事务后可重试（与投影同款缓存修正）；
+    `search()` 的 `now` **必填**（过期判定不接受"默认当前时间"）。
   - `MemoryProjection` 用 duck-typed `index=` 接上（不 import `memory_index`，避免环），
     在 `_apply_propose`（仅 active）/`_apply_confirm`/`_supersede`/`_apply_forget`/
     `_apply_erase` 里维护向量；`rebuild()` 清空向量后按事件重放重建。
@@ -267,17 +268,19 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
     `score_kind`；CLI `--json` 同样三项（形状由数组改对象，README 标注 breaking）。
   - **生产接线**：`build_stack(embedding_provider=...)` / `TIANSHU_EMBEDDING_PROVIDER=hash`
     （CLI / daemon / worker 走同一装配路径）；只接受 hash 基线，外部 provider 需数据
-    外发许可、尚未接线（代码里报错而不是静默忽略）。
+    外发许可、尚未接线（代码里报错而不是静默忽略）。**构建入口**是
+    `tianshu memory rebuild-vectors`：只装配 provider 不会构建向量，必须显式建一次
+    索引（否则 `availability()` 报"尚未建立"、检索永远 FTS-only）。
   - **能力边界**：未配置 provider → FTS-only + `degraded` 原因；换 provider 未重建 →
     旧向量不参与且仍报降级。`memory_vector_meta` 只在**第一次建表**时记录 provider，
-    后接的 provider 不能改写历史（否则 availability 会误报 True）。
+    后接的 provider 不能改写历史（否则 availability 会误报 True）；只有成功 `rebuild()` 才写 built/provider。
 - **测试**：`tests/test_memory_vectors.py`（19 条）+ `tests/test_memory_rank.py`（7 条）
   + `tests/test_memory_loop.py` 的 3 条输出/接线用例。负控 5 条都真跑过：去掉优先级 /
   availability 永不降级 / 去掉确认后的索引钩子 / 语义路只采纳 FTS 候选 / 去掉索引建表
   的事务判断。
 - **评测**：`scripts/eval_memory_retrieval.py` + `docs/memory-retrieval-eval.md`
-  （22 query / 25 记忆；FTS MRR 0.864 → hybrid-hash 0.977；**Recall@5 两者都 1.000 =
-  饱和**，报告里写清"不是语义能力证明"）。
+  （22 query / 25 记忆；FTS MRR 0.864 → hybrid-hash 0.955（mixed 0.875）；**Recall@5 两者都
+  1.000 = 饱和**，报告里写清"不是语义能力证明"）。
 - **偏差 / 没做到**：
   1. `_SCHEMA_VERSION` **没有**从 2 再往上加：`memory_vectors` 是**可选派生表**，随
      provider 身份落在 `memory_vector_meta`，不进 `memories` 的形状契约；规格 §1 #10 原写

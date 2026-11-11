@@ -927,3 +927,70 @@ def test_cli_search_json_shape_is_documented_and_stable(env: Env, capsys, tmp_pa
     assert isinstance(payload, dict)
     assert set(payload) == {"items", "semantic", "degraded", "fused"}
     assert payload["semantic"] is False
+
+
+def test_env_provider_to_built_index_is_an_end_to_end_path(monkeypatch, tmp_path):
+    """生产路径全链路：配 provider → CLI `memory rebuild-vectors` → 语义可用。
+
+    这是首轮复审指出的缺口：只装配 provider 不会构建索引，用户配了也永远
+    FTS-only。构建入口就是 CLI 的这个动作。
+    """
+    from tianshu.cli import main
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    data_root = tmp_path / "authority"
+    data_root.mkdir()
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        stack = build_stack(log, data_root=data_root)
+        projection = stack.memory
+        scope = MemoryScope.user()
+        content_ref = projection.put_content("报告用中文，先列结论")
+        propose = {
+            "tool_id": "memory.propose",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_cli",
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": "preference",
+                "content_ref": content_ref,
+                "source_refs": ["event:1"],
+                "evidence": [{"source_memory_id": "s", "quote": "q"}],
+                "proof_count": 1,
+                "origin": "user_explicit",
+                "status": "candidate",
+                "created_at": 1,
+                "expires_at": None,
+                "deduped": False,
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", propose, legacy_write=True)
+            projection.apply_event("tool.result", propose, seq=seq)
+        confirm = {
+            "tool_id": "memory.confirm",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_cli",
+                "revision": 2,
+                "before_status": "candidate",
+                "status": "active",
+                "consolidated_at": 2,
+                "memory_uri": scope.to_uri(),
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", confirm, legacy_write=True)
+            projection.apply_event("tool.result", confirm, seq=seq)
+        assert projection.retrieve("报告", allowed=(scope,)).semantic is False
+        rc = main(["memory", "rebuild-vectors", "--db", str(db), "--data-root", str(data_root)])
+        assert rc == 0
+        available, reason = projection.index.availability()
+        assert available is True, reason
+        built = projection.retrieve("报告", allowed=(scope,))
+        assert built.semantic is True
+    finally:
+        log.close()

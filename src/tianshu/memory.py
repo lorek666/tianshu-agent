@@ -1726,6 +1726,9 @@ class MemoryProjection:
             return
         content = self._read_blob(memory.content_ref)
         if content is None:
+            # 正文不可用：这条不能召回，**旧向量也必须下掉**——否则语义路还能
+            # 拿一个没有正文的行去排，与"正文缺失不召回"自相矛盾。
+            self._index.drop(memory_id)
             return
         self._index.upsert(memory, content, last_seq=int(row["last_seq"]))
 
@@ -1915,7 +1918,11 @@ class MemoryProjection:
             scores=fused,
             score_kind="rrf",
         )
-        return RecallOutcome(items=items, semantic=True, degraded=None, fused=True)
+        # `fused` 只在**语义路真的贡献了名次**时为 True：语义路跑了但一条没命中
+        # 时，分数仍然全来自 FTS 名次，说"融合过"会让调用方误读。
+        return RecallOutcome(
+            items=items, semantic=True, degraded=None, fused=bool(semantic_ids)
+        )
 
     def _recall_candidate(
         self,
