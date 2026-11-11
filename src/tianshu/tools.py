@@ -46,7 +46,8 @@ from .execpolicy import (
     ExecPolicy,
     PolicyDenied,
     PolicyUnsupported,
-    check_exec,
+    check_capabilities,
+    check_spawn,
     filtered_env,
 )
 from .guard import assert_paths_not_blocked, ensure_not_blocked
@@ -572,15 +573,23 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     child_env = filtered_env(policy, dict(os.environ))
 
     try:
-        # 两道判定都在**创建进程之前**：策略（deny 优先/白名单/上限/env）与
-        # 后端能力（PTY 等）。后端自己会再核一次——防御纵深，不是替代。
-        if pty and not policy.allow_pty:
-            raise PolicyDenied(
-                "本次调用请求了 PTY，但策略没有允许（ExecPolicy.allow_pty=False）："
-                "改策略，或本次改用管道",
-                rule_id=RULE_PTY_NOT_ALLOWED,
-            )
-        check_exec(policy, capabilities, argv, target, child_env)
+        # 顺序必须与 `exec.spawn()` 内部逐条一致，否则同一条非法请求会因
+        # "预检走 tools、执行走 spawn" 得到不同规则 id：
+        #   1. 策略（argv deny 先于 allow → cwd → 上限 → env）恒做；
+        #   2. 只有**本次请求** pty=True 时才谈 PTY 许可与后端能力。
+        # 反例（复审抓到的真实回归）：无条件 `check_capabilities()` 会把
+        # `allow_pty=True` 当成"本次要用 PTY"，于是"策略允许 PTY、后端没有
+        # PTY、本次走管道"的正常命令也被拒；而 dispatcher 预检只在 args.pty
+        # 时查能力，于是预检放行、执行拒绝。
+        check_spawn(policy, argv, target, child_env)
+        if pty:
+            if not policy.allow_pty:
+                raise PolicyDenied(
+                    "本次调用请求了 PTY，但策略没有允许（ExecPolicy.allow_pty=False）："
+                    "改策略，或本次改用管道",
+                    rule_id=RULE_PTY_NOT_ALLOWED,
+                )
+            check_capabilities(policy, capabilities)
         result = backend.spawn(
             argv,
             cwd=target,
@@ -1156,9 +1165,13 @@ class FileExecutor:
         self._log = log
         self._snapshots = snapshots
         # 与文件后端同一纪律：进程级解析一次，执行期用同一个对象。
+        # `_exec_backend_pinned` 区分"装配层明确指定的后端"与"自己解析出来的
+        # 默认后端"：只有后者需要在执行前核"进程级选择没被换掉"，前者由装配层
+        # 保证（dispatcher 预检与 FileExecutor 拿到的是同一个对象）。
         self._exec_backend = (
             exec_backend if exec_backend is not None else resolve_exec_backend()
         )
+        self._exec_backend_pinned = exec_backend is not None
         self._backend = backend if backend is not None else current_backend()
         if self._backend is not current_backend():
             # "executor 用 memfs、precondition 读 local" 这种半真半假状态
@@ -1173,6 +1186,11 @@ class FileExecutor:
     def backend_name(self) -> str:
         """这条执行路径实际使用的后端名字（进凭据）。"""
         return self._backend.name
+
+    @property
+    def exec_backend(self) -> ExecBackend:
+        """这条执行路径使用的**执行**后端（装配层核"同一个世界"用）。"""
+        return self._exec_backend
 
     # ---- 独立核验 ----
 
@@ -1308,6 +1326,17 @@ class FileExecutor:
     def execute(
         self, admitted: AdmittedCall, permit: ExecutionPermit | None
     ) -> ToolResult:
+        if not self._exec_backend_pinned:
+            current_exec = resolve_exec_backend()
+            if current_exec is not self._exec_backend:
+                # 进程级执行后端在构造后被替换（env 改了 / 注册表被 replace）：
+                # 预检看到的世界与执行看到的世界不同，宁可拒绝也不混用。
+                raise ToolNotAllowed(
+                    "执行后端在 FileExecutor 构造后被替换："
+                    f"{self._exec_backend.capabilities.name} → "
+                    f"{current_exec.capabilities.name}"
+                    "（后端是进程级选择；预检与执行必须看到同一个世界）"
+                )
         if self._backend is not current_backend():
             # 运行期被换掉：拒绝而不是混用。ToolNotAllowed 会走"守卫内拒绝"
             # 那条路（一个字节没动 → rejected/none_applied），不会被记成 unknown。

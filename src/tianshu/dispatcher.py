@@ -562,6 +562,17 @@ class Dispatcher:
         self._exec_backend = (
             exec_backend if exec_backend is not None else resolve_exec_backend()
         )
+        if executor is not None:
+            # 自定义 executor 也让"预检看到的后端"与"执行看到的后端"必须同一个：
+            # 只核默认构造等于给旁路留门。
+            executor_backend = getattr(executor, "exec_backend", None)
+            if executor_backend is not self._exec_backend:
+                raise TianshuError(
+                    "Dispatcher 收到的执行器与派发层使用的执行后端不是同一个："
+                    f"{getattr(executor_backend, 'capabilities', None)!r} vs "
+                    f"{self._exec_backend.capabilities!r}"
+                    "（预检与执行必须看到同一个后端）"
+                )
         self._executor = executor or FileExecutor(
             tasks=tasks,
             leases=leases,

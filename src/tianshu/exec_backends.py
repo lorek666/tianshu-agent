@@ -24,6 +24,7 @@ per-run 不可换。这一条写进文档，不假装支持 per-run 切换。
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -95,6 +96,45 @@ class ExecBackend(Protocol):
 _BACKENDS: dict[str, ExecBackend] = {DEFAULT_EXEC_BACKEND: LOCAL_EXEC_BACKEND}
 
 
+_SPAWN_PARAMETERS = frozenset({"argv", "cwd", "env", "policy", "blob_dir", "pty"})
+_SPAWN_REQUIRED = ("argv", "cwd", "env", "policy")
+
+
+def _require_spawn_shape(backend: object) -> None:
+    """核 spawn 的形状：坏签名注册成功后，要等到第一次执行才炸成 unknown。"""
+    spawn = getattr(backend, "spawn", None)
+    try:
+        signature = inspect.signature(spawn)
+    except (TypeError, ValueError) as exc:
+        raise TianshuError(f"无法读取执行后端的 spawn 签名：{exc}") from None
+    parameters = signature.parameters
+    for name in _SPAWN_REQUIRED:
+        parameter = parameters.get(name)
+        if parameter is None:
+            raise TianshuError(f"执行后端的 spawn 必须接受 {name} 参数")
+        if parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            raise TianshuError(
+                f"执行后端的 spawn 参数 {name} 必须是位置/关键字参数"
+            )
+    for name, parameter in parameters.items():
+        if (
+            name not in _SPAWN_PARAMETERS
+            and parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ):
+            raise TianshuError(
+                f"执行后端的 spawn 有调用方不会传的必填参数：{name}"
+                "（允许的必填参数只有 argv / cwd / env / policy）"
+            )
+
+
 def _require_backend(backend: object) -> ExecBackend:
     """核验一个对象是不是后端。核不过直接抛，不半信半疑地收下。"""
     if not isinstance(backend, ExecBackend):
@@ -110,6 +150,7 @@ def _require_backend(backend: object) -> ExecBackend:
         )
     if not callable(getattr(backend, "spawn", None)):
         raise TianshuError("执行后端的 spawn 必须可调用")
+    _require_spawn_shape(backend)
     return backend
 
 
@@ -161,6 +202,24 @@ def register_exec_backend(
             f"执行后端 {key!r} 已注册：重复注册会让“到底用哪个实现”不可判定；"
             "替换请显式 replace=True"
         )
+    if key in UNIMPLEMENTED_EXEC_BACKENDS:
+        # 把"未实现"的名字直接改成某个后端的别名，等于让
+        # `TIANSHU_EXEC_BACKEND=app_container` 静默跑成 local。两道确认：
+        # 1. 显式 replace=True（"我知道自己在用真实实现顶替这个名字"）；
+        # 2. 实现必须自报同一个名字（capabilities.name == key），否则一个
+        #    本地后端挂上 app_container 的注册名就能绕过 F2-c2 的如实分级。
+        if not replace:
+            raise TianshuError(
+                f"执行后端 {key!r} 在未实现清单里：注册真实实现请显式 replace=True"
+                "（否则配置这个名字的进程会以为自己选了实现，其实拿到的是别的后端）"
+            )
+        declared = host.capabilities.name
+        if declared != key:
+            raise TianshuError(
+                f"执行后端 {key!r} 是已知的未实现后端：注册实现必须自报同一名字，"
+                f"收到 capabilities.name={declared!r}"
+                "（用自己的名字冒充更强的后端等于在能力表上撒谎）"
+            )
     _BACKENDS[key] = host
     UNIMPLEMENTED_EXEC_BACKENDS.pop(key, None)
     return key
