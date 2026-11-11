@@ -376,7 +376,10 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
    `_pid_alive` 在 Windows 上不能用 `os.kill(pid, 0)`（那是 TerminateProcess
    语义），改用 `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject(0)`，由
    `windows-latest` 上的 `test_pid_alive_sees_current_process` 给经验证据。
-   `restore` 的原子改名、目录 fsync 与 APFS/跨机器语义仍无实机证据。
+   `restore` 的原子改名、目录 fsync 与 APFS/跨机器语义仍无实机证据。**收尾态实测**：
+   `main @ ec7d7ae` 的 `windows-latest` 上 `test_pid_alive_sees_current_process` 与全部
+   backup/migrate 用例通过（该 job 总计 5 failed / 1509 passed / 29 skipped，剩余失败都是
+   authority 子进程编码、命名管道、资源 URI 编码这些既有族，与备份无关）。
 6. **备份大小/耗时**：本轮没有大库压测（测试库都是 KB 级）；在线备份 API 对超大库的
    暂停时间未测量。
 7. **密钥材料**：`ipc.key` 明确不进备份；备份里的 `events.db` 是否含敏感 payload
