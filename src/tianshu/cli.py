@@ -28,13 +28,14 @@ import sys
 from datetime import UTC
 from pathlib import Path
 
+from . import memory_control
 from .credentials import redact
-from .dispatcher import build_request
 from .errors import TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
 from .loop import AgentLoop, Limits, build_stack
 from .memory import MEMORY_KINDS
+from .memory_control import memory_view
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
 from .permissions import HumanIdentity
 from .pricing import format_cost
@@ -48,7 +49,6 @@ from .tasks import (
     TERMINAL_STATES,
 )
 from .undo import UndoRefused, apply_undo, plan_undo
-from .workspace import WorkspaceBinding
 
 DEFAULT_DB = Path(".tianshu/events.db")
 
@@ -1139,19 +1139,13 @@ def _cli_memory_scopes(args: argparse.Namespace) -> tuple[MemoryScope, ...]:
 def _memory_public(
     memory, content: str | None = None, *, score=None, score_kind=None
 ) -> dict:
-    """一条记忆对人和 JSON 的统一投影。
+    """一条记忆对人和 JSON 的统一投影（实现在 `memory_control.memory_view`）。
 
-    `scope` / `source_refs` / `revision` / `status` 是必须显示的四项：缺一项，
-    人就无法判断"这条记忆是谁的、依据是什么、改过没有、还算不算数"。
+    六项判据（`scope` / `origin` / `revision` / `status` / `source_refs` /
+    `proof_count`）由那个函数保证，CLI 与 UI 视图不许各写一份——写两份就会
+    漂移，最后变成"命令行能看见、UI 看不见"。
     """
-    payload = memory.to_dict()
-    payload["content_ref"] = memory.content_ref
-    payload["content"] = content
-    if score is not None:
-        payload["score"] = score
-    if score_kind is not None:
-        payload["score_kind"] = score_kind
-    return payload
+    return memory_view(memory, content, score=score, score_kind=score_kind)
 
 
 def _print_memory(
@@ -1395,139 +1389,50 @@ def _dispatch_memory_decision(stack, memory, *, confirm: bool):
     与 `undo` 的 `--approve` 同一形状：用户明确敲了这条命令，就是批准；审批
     仍然落库、仍然一次性消费、执行侧仍然二次核验 digest。**不**给模型开一条
     "人已经批过了"的后门——这里根本没有模型参与。
+
+    实现在 `memory_control.transition`：CLI 与 daemon 的 RPC 共用同一份，避免
+    "写记忆要经 dispatcher"这条纪律被抄成两份（一份早晚会图省事直接改投影）。
     """
-    tool_id = "memory.confirm" if confirm else "memory.forget"
-    # 写前 revision 是审批绑定的一部分（不是"看起来对就行"）：确认 / 忘记
-    # 必须声明人当时看到的那一版，执行侧会从权威投影再读一次核对。
-    tool_args: dict[str, object] = {
-        "memory_id": memory.memory_id,
-        "revision": memory.revision,
-    }
-    if not confirm:
-        # forget 的前置状态是"当前这条记忆是什么状态"，不是固定 active；
-        # 候选与活动记忆都允许被忘记（tombstone 对两者都成立）。
-        tool_args["status"] = memory.status
-    scope = MemoryScope(memory.scope, memory.scope_id)
-    target = scope.to_uri()
-
-    # workspace 作用域的授权核验要求 scope_id 精确等于控制 Run 的某个绑定根。
-    # 绑它自己的根不是"造一个假目录"：那就是这条记忆真正所属的目录。零绑定
-    # 合法（user 作用域没有目录）；task 作用域暂时没有控制面入口——它属于
-    # 那个任务的 Run，应该由任务自己确认/忘记，不能由另一个任务代签。
-    if scope.scope == "workspace":
-        workspaces = [WorkspaceBinding(scope.scope_id)]
-        memory_scopes: list[MemoryScope] = []
-    elif scope.scope == "task":
-        # 契约 v1.2：控制面可以替**旧 task** 的记忆做确认 / 遗忘。只声明这个
-        # 记忆作用域，**不**绑定它的目录——记忆授权与文件授权是两件事。
-        workspaces = []
-        memory_scopes = [scope]
-    else:
-        workspaces = []
-        memory_scopes = []
-
-    control = stack.dispatcher.open_control_run(
-        goal=f"{tool_id}:{memory.memory_id}",
-        workspaces=workspaces,
-        memory_scopes=memory_scopes,
-    )
-    outcome = "failed"
-    effect = "unknown"
-    try:
-        request = build_request(
-            task=control.task,
-            run=control.run,
-            claim=control.claim,
-            call_id=f"{tool_id.replace('.', '_')}_{memory.memory_id}",
-            tool_id=tool_id,
-            target=target,
-            args=tool_args,
-        )
-        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
-        if decision.is_rejected:
-            raise TianshuError(
-                f"记忆操作被拒绝：{decision.reason}（{decision.rule_id}）"
-            )
-        if decision.is_waiting:
-            stack.approvals.decide(
-                decision.approval_id,
-                decision="approved",
-                actor=HumanIdentity.local_cli(),
-            )
-        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
-        outcome = "succeeded" if result.ok else "failed"
-        effect = result.effect_state
-        return result
-    finally:
-        stack.dispatcher.close_control_run(
-            control, outcome=outcome, effect_state=effect
-        )
+    return memory_control.transition(stack, memory, confirm=confirm)
 
 
 def _dispatch_memory_write(stack, memory, tool_id: str, tool_args: dict, args) -> int:
-    """把一次"人签字的记忆写"变成经控制 Run 的真实派发（人敲命令 = 批准）。"""
-    scope = MemoryScope(memory.scope, memory.scope_id)
-    workspaces = [WorkspaceBinding(scope.scope_id)] if scope.scope == "workspace" else []
-    memory_scopes = [scope] if scope.scope != "user" else []
-    control = stack.dispatcher.open_control_run(
-        goal=f"{tool_id}:{memory.memory_id}",
-        workspaces=workspaces,
-        memory_scopes=memory_scopes,
-    )
-    outcome, effect = "failed", "unknown"
-    try:
-        request = build_request(
-            task=control.task,
-            run=control.run,
-            claim=control.claim,
-            call_id=f"{tool_id.replace('.', '_')}_{memory.memory_id}",
-            tool_id=tool_id,
-            target=scope.to_uri(),
-            args=tool_args,
-        )
-        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
-        if decision.is_rejected:
-            raise TianshuError(
-                f"记忆操作被拒绝：{decision.reason}（{decision.rule_id}）"
-            )
-        if decision.is_waiting:
-            stack.approvals.decide(
-                decision.approval_id,
-                decision="approved",
-                actor=HumanIdentity.local_cli(),
-            )
-        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
-        outcome = "succeeded" if result.ok else "failed"
-        effect = result.effect_state
-        if args.json:
-            print(json.dumps(
-                {
-                    "action": tool_id,
-                    "memory_id": memory.memory_id,
-                    "status": result.status,
-                    "effect_state": result.effect_state,
-                    "output": result.output,
-                },
-                ensure_ascii=False, indent=2, default=str))
-        else:
-            print(f"{memory.memory_id}: {tool_id} -> {result.status}")
-            if result.output.get("memory_id"):
-                print(f"  new memory_id: {result.output['memory_id']}")
-            if result.output.get("supersedes"):
-                print(f"  supersedes   : {result.output['supersedes']}")
-            erasure = result.output.get("erasure")
-            if isinstance(erasure, dict):
-                state = "已删除" if erasure.get("deleted") else "被其它记忆引用，保留"
-                print(f"  正文副本     : {state}（{erasure.get('content_ref')}）")
-                if erasure.get("retained_by"):
-                    print(f"  仍被引用     : {', '.join(erasure['retained_by'])}")
-            if not result.ok and result.output.get("error"):
-                print(f"  ! {result.output.get('error')}", file=sys.stderr)
-        return 0 if result.ok else 1
-    finally:
-        stack.dispatcher.close_control_run(
-            control, outcome=outcome, effect_state=effect
-        )
+    """把一次"人签字的记忆写"变成经控制 Run 的真实派发（人敲命令 = 批准）。
+
+    `edit` / `erase` 的 args 形状不同，由 `memory_control` 各自的入口负责构造；
+    这里只剩"派发 + 打印结果"——打印是 CLI 的职责，不是控制面语义的一部分。
+    """
+    if tool_id == "memory.edit":
+        result = memory_control.edit(stack, memory, content=str(tool_args["content"]))
+    elif tool_id == "memory.erase":
+        result = memory_control.erase(stack, memory)
+    else:  # pragma: no cover - 关集：只允许这两个别的工具没有控制面入口
+        raise TianshuError(f"未知的控制面记忆写：{tool_id}")
+    if args.json:
+        print(json.dumps(
+            {
+                "action": tool_id,
+                "memory_id": memory.memory_id,
+                "status": result.status,
+                "effect_state": result.effect_state,
+                "output": result.output,
+            },
+            ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"{memory.memory_id}: {tool_id} -> {result.status}")
+        if result.output.get("memory_id"):
+            print(f"  new memory_id: {result.output['memory_id']}")
+        if result.output.get("supersedes"):
+            print(f"  supersedes   : {result.output['supersedes']}")
+        erasure = result.output.get("erasure")
+        if isinstance(erasure, dict):
+            state = "已删除" if erasure.get("deleted") else "被其它记忆引用，保留"
+            print(f"  正文副本     : {state}（{erasure.get('content_ref')}）")
+            if erasure.get("retained_by"):
+                print(f"  仍被引用     : {', '.join(erasure['retained_by'])}")
+        if not result.ok and result.output.get("error"):
+            print(f"  ! {result.output.get('error')}", file=sys.stderr)
+    return 0 if result.ok else 1
 
 
 def _dispatch_memory_promote(stack, memory, args) -> int:
@@ -1547,66 +1452,24 @@ def _dispatch_memory_promote(stack, memory, args) -> int:
     except TianshuError as exc:
         raise TianshuError(f"提升目标作用域不合法：{exc}") from exc
 
-    old_scope = MemoryScope(memory.scope, memory.scope_id)
-    tool_args = {
-        "memory_id": memory.memory_id,
-        "revision": memory.revision,
-        "scope": new_scope.scope,
-        "scope_id": new_scope.scope_id,
-    }
-    workspaces = [WorkspaceBinding(old_scope.scope_id)] if old_scope.scope == "workspace" else []
-    declared = [scope for scope in (old_scope, new_scope) if scope.scope != "user"]
-    control = stack.dispatcher.open_control_run(
-        goal=f"memory.promote:{memory.memory_id}",
-        workspaces=workspaces,
-        memory_scopes=declared,
-    )
-    outcome, effect = "failed", "unknown"
-    try:
-        request = build_request(
-            task=control.task,
-            run=control.run,
-            claim=control.claim,
-            call_id=f"memory_promote_{memory.memory_id}",
-            tool_id="memory.promote",
-            target=old_scope.to_uri(),
-            args=tool_args,
-        )
-        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
-        if decision.is_rejected:
-            raise TianshuError(
-                f"记忆提升被拒绝：{decision.reason}（{decision.rule_id}）"
-            )
-        if decision.is_waiting:
-            stack.approvals.decide(
-                decision.approval_id,
-                decision="approved",
-                actor=HumanIdentity.local_cli(),
-            )
-        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
-        outcome = "succeeded" if result.ok else "failed"
-        effect = result.effect_state
-        if args.json:
-            print(json.dumps(
-                {
-                    "action": "memory.promote",
-                    "memory_id": memory.memory_id,
-                    "status": result.status,
-                    "effect_state": result.effect_state,
-                    "output": result.output,
-                },
-                ensure_ascii=False, indent=2, default=str))
-        else:
-            print(f"{memory.memory_id}: promote -> {result.status}")
-            print(f"  新行: {result.output.get('memory_id')} "
-                  f"({result.output.get('scope')} {result.output.get('scope_id')}, "
-                  f"{result.output.get('status')})")
-            print("  原行已退役（保留可查）；新行是候选，需要再 confirm 才召回")
-        return 0 if result.ok else 1
-    finally:
-        stack.dispatcher.close_control_run(
-            control, outcome=outcome, effect_state=effect
-        )
+    result = memory_control.promote(stack, memory, new_scope)
+    if args.json:
+        print(json.dumps(
+            {
+                "action": "memory.promote",
+                "memory_id": memory.memory_id,
+                "status": result.status,
+                "effect_state": result.effect_state,
+                "output": result.output,
+            },
+            ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"{memory.memory_id}: promote -> {result.status}")
+        print(f"  新行: {result.output.get('memory_id')} "
+              f"({result.output.get('scope')} {result.output.get('scope_id')}, "
+              f"{result.output.get('status')})")
+        print("  原行已退役（保留可查）；新行是候选，需要再 confirm 才召回")
+    return 0 if result.ok else 1
 
 
 def _remember_memory(stack, scope, args) -> int:
@@ -1616,56 +1479,32 @@ def _remember_memory(stack, scope, args) -> int:
     但仍走完整 intent/result + Receipt 与执行侧二次核验。模型清单里没有
     `memory.remember`，所以模型不可能走这条路自封"用户明示"。
     """
-    tool_args: dict[str, object] = {"kind": args.kind, "content": args.value}
-    if args.expires_at is not None:
-        tool_args["expires_at"] = args.expires_at
-    control = stack.dispatcher.open_control_run(
-        goal=f"memory.remember:{scope.to_uri()}",
-        workspaces=[],
-        memory_scopes=[scope] if scope.scope != "user" else [],
+    result = memory_control.remember(
+        stack,
+        scope,
+        kind=args.kind,
+        content=args.value,
+        expires_at=args.expires_at,
     )
-    outcome, effect = "failed", "unknown"
-    try:
-        request = build_request(
-            task=control.task,
-            run=control.run,
-            claim=control.claim,
-            call_id="memory_remember_1",
-            tool_id="memory.remember",
-            target=scope.to_uri(),
-            args=tool_args,
-        )
-        decision = stack.dispatcher.prepare(request, control.claim, args=tool_args)
-        if decision.is_rejected:
-            raise TianshuError(
-                f"记忆写入被拒绝：{decision.reason}（{decision.rule_id}）"
-            )
-        result = stack.dispatcher.dispatch(decision.request_id, control.claim)
-        outcome = "succeeded" if result.ok else "failed"
-        effect = result.effect_state
-        output = result.output or {}
-        if args.json:
-            print(json.dumps(
-                {
-                    "action": "remember",
-                    "status": result.status,
-                    "effect_state": result.effect_state,
-                    "output": output,
-                },
-                ensure_ascii=False, indent=2, default=str))
-        elif result.ok:
-            print(f"{output.get('memory_id')}: remember -> active")
-            print(f"  scope: {output.get('scope')} {output.get('scope_id')}")
-            print(f"  kind : {output.get('kind')}   origin: {output.get('origin')}")
-        else:
-            print(f"remember -> {result.status}", file=sys.stderr)
-            if output.get("error"):
-                print(f"  ! {output.get('error')}", file=sys.stderr)
-        return 0 if result.ok else 1
-    finally:
-        stack.dispatcher.close_control_run(
-            control, outcome=outcome, effect_state=effect
-        )
+    output = result.output or {}
+    if args.json:
+        print(json.dumps(
+            {
+                "action": "remember",
+                "status": result.status,
+                "effect_state": result.effect_state,
+                "output": output,
+            },
+            ensure_ascii=False, indent=2, default=str))
+    elif result.ok:
+        print(f"{output.get('memory_id')}: remember -> active")
+        print(f"  scope: {output.get('scope')} {output.get('scope_id')}")
+        print(f"  kind : {output.get('kind')}   origin: {output.get('origin')}")
+    else:
+        print(f"remember -> {result.status}", file=sys.stderr)
+        if output.get("error"):
+            print(f"  ! {output.get('error')}", file=sys.stderr)
+    return 0 if result.ok else 1
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
