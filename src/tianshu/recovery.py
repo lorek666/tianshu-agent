@@ -57,13 +57,24 @@ class RecoveryReport:
     problems: list[str] = field(default_factory=list)
     #: 本次被阻断的 workspace 根。多目录任务里要能看出到底挡的是哪一个。
     blocked_workspaces: list[str] = field(default_factory=list)
-    #: 本次确认"未生效"的记忆写入。记忆的投影更新与 `tool.result` 同事务，
-    #: 有 intent 无 result ⇔ **一定没生效**——单独列出来，不混进文件写统计。
+    #: 本次确认"未生效"的记忆写入（投影/事件层可证明）。单独列出来，不混进
+    #: 文件写统计。
     memory_not_applied: list[str] = field(default_factory=list)
+    #: 记忆写里**不能**宣布"未生效"的那一类：`memory.erase` 删正文文件发生在
+    #: 提交事务之外且不可逆，崩溃窗口里可能"文件已删、行未标记"。这类只报
+    #: unknown，不报 none_applied，也不阻断目录（记忆没有目录 preimage）。
+    memory_unresolved: list[str] = field(default_factory=list)
+    #: 恢复时清掉的孤儿正文 blob 的 `content_ref`（写正文在提交之前落盘，
+    #: 崩溃会留下没有投影行引用的字节）。
+    memory_orphan_blobs: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.unresolved and not self.problems
+        return (
+            not self.unresolved
+            and not self.memory_unresolved
+            and not self.problems
+        )
 
 
 def _sha(data: bytes) -> str:
@@ -250,8 +261,18 @@ def assess_run(
             none_applied.append(call_id)
             continue
         if tool_id in MEMORY_TOOL_IDS:
-            # 记忆写没有文件副作用可对账：result 与投影同事务，没有 result
-            # 就是没生效。不占 pending_writes，不影响接管判定。
+            # 大部分记忆写没有文件副作用可对账：result 与投影同事务，没有
+            # result 就是没生效。不占 pending_writes，不影响接管判定。
+            #
+            # **例外是 `memory.erase`**：它在提交事务之外先删正文文件（F10 §10
+            # 的删除顺序），崩溃窗口里"文件已删、行未标记"是可能发生的不可逆
+            # 部分生效。只读对账拿不到投影时**必须**报 unresolved（阻断接管），
+            # 不能替它宣布没生效。
+            if tool_id == _ERASE_TOOL_ID:
+                # 擦除的删文件在提交之外且不可逆：看不到投影时只能报 unknown，
+                # 不能报"没生效"。`unknown` 同样让接管被拒（保守正确）。
+                unknown.append(call_id)
+                continue
             none_applied.append(call_id)
             continue
 
@@ -454,6 +475,13 @@ def _recover_run(
                 payload = ev.payload
                 tool_id = payload["tool_id"]
                 spec = SPECS.get(tool_id)
+                if tool_id in MEMORY_TOOL_IDS:
+                    # 记忆写的结论不依赖这份快照清单（投影/事件同事务），
+                    # 清单坏了也不该把它们推成 unknown 并挡住目录。
+                    _settle_memory_write(
+                        log, report, run_id, call_id, tool_id, payload, ev.ts
+                    )
+                    continue
                 if spec is not None and spec.side_effect_level == "pure":
                     _settle(log, report, run_id, call_id, tool_id, payload,
                             ToolResult("failed", "none_applied",
@@ -492,18 +520,9 @@ def _recover_run(
                     bucket=report.unresolved)
             continue
 
-        # 记忆写：投影更新与 `tool.result` 在**同一个 SQLite 事务**里
-        # （`Dispatcher._commit_result`）。所以"有 intent 无 result" ⇔ 一定没生效，
-        # 不需要快照证据、不写 unknown、更不阻断目录。
+        # 记忆写：见 `_settle_memory_write`（含 erase 的不可逆窗口、孤儿 blob）
         if tool_id in MEMORY_TOOL_IDS:
-            report.memory_not_applied.append(call_id)
-            _settle(log, report, run_id, call_id, tool_id, payload,
-                    ToolResult("failed", "none_applied",
-                               {"error": "recovered: 记忆写入未生效"
-                                         "（结果与投影同事务，没有 result 就是没写）",
-                                "recovered": True,
-                                "memory_write": tool_id}),
-                    bucket=report.none_applied)
+            _settle_memory_write(log, report, run_id, call_id, tool_id, payload, ev.ts)
             continue
 
         # 只读工具：没有副作用，直接被中断也不影响任何东西
@@ -721,6 +740,185 @@ def _unresolved_by_root(
     return dict(sorted(grouped.items()))
 
 
+#: 记忆写里唯一"副作用在提交事务之外且不可逆"的工具（先删正文文件、再提交）。
+_ERASE_TOOL_ID = "memory.erase"
+
+
+def _open_memory_projection(log: EventLog):
+    """恢复用的记忆投影（与事件日志共用同一连接）。打不开就返回 None。
+
+    延迟 import：`memory` → `resources` 那条链不该在纯文件恢复路径上也被拖进来。
+    """
+    try:
+        from .memory import MemoryProjection
+    except ImportError:  # pragma: no cover - 装配缺模块
+        return None
+    try:
+        projection = MemoryProjection(log.conn, log=log)
+        projection.ensure_schema()
+    except Exception:  # noqa: BLE001 - 投影坏了：结论只能是"核不了"
+        return None
+    return projection
+
+
+def _clean_orphan_blob(projection: Any, content_ref: str) -> bool:
+    """清掉"正文已落盘、但没有任何投影行引用"的孤儿 blob。
+
+    内容型记忆写（propose / remember / edit）在提交事务**之前**就把正文写进
+    `memory_blobs/`（F10 §3.1 的内容寻址）；崩溃在提交前就留下一个没有任何行
+    指向的字节副本——既不进召回，`memory.erase` 也找不到它。恢复时按引用计数
+    为 0 才删，绝不碰别的记忆共享的正文。
+
+    只在 `blob_dir` 真实存在（非纯内存库）时动手；失败一律当成"没清掉"返回
+    False，让报告如实留白，不在这里抛错打断恢复。
+    """
+    try:
+        path = projection.blob_path(content_ref)
+    except Exception:  # noqa: BLE001 - 引用形状不合法：不是我们写的 blob
+        return False
+    if path is None or not path.is_file():
+        return False
+    try:
+        others, _ = projection.count_content_ref(content_ref, exclude_memory_id="")
+    except Exception:  # noqa: BLE001 - 数不清引用就不删（宁可留字节，不可误删）
+        return False
+    if others:
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def _memory_effect(
+    log: EventLog, intent_payload: dict
+) -> tuple[str, dict[str, Any], str | None]:
+    """一条"有 intent 无 result"的记忆写，到底能下什么结论。
+
+    返回 `(bucket, output_extras, problem)`：`bucket` 是 `"none_applied"` 或
+    `"unknown"`；`problem` 非空时要写进报告。
+
+    - 投影更新与 `tool.result` 同事务 ⇒ 除 `memory.erase` 外的记忆写**可证明**
+      未生效（事件层与投影层都没有半条记录）；
+    - `memory.erase` 先删正文文件、后提交，崩溃窗口里可能部分生效：文件还在 →
+      确实没生效；文件没了 → 不可逆部分生效，只能报 unknown；
+    - 正文 blob 写在提交之前 ⇒ 恢复顺手清掉本调用留下的孤儿副本（引用计数为 0）。
+    """
+    tool_id = intent_payload.get("tool_id")
+    raw_args = intent_payload.get("args")
+    args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+    projection = _open_memory_projection(log)
+    if projection is None:
+        return (
+            "unknown",
+            {"error": "recovered: 记忆投影不可用，无法核实这次记忆写",
+             "recovered": True},
+            "记忆投影打不开，无法核实该记忆写（投影损坏或装配缺失）",
+        )
+    if tool_id == _ERASE_TOOL_ID:
+        memory_id = args.get("memory_id")
+        observed = (
+            projection.content_ref_of(memory_id)
+            if isinstance(memory_id, str) and memory_id
+            else None
+        )
+        if observed is None:
+            return (
+                "none_applied",
+                {"error": "recovered: 记忆行不存在，擦除没有可删的正文",
+                 "recovered": True, "memory_write": tool_id},
+                None,
+            )
+        content_ref, erased_at = observed
+        if erased_at is not None:
+            return (
+                "unknown",
+                {"error": "recovered: 投影已标记 erasure，但缺少 result 事件，"
+                          "回执与事件不一致",
+                 "recovered": True, "memory_write": tool_id},
+                "擦除投影已生效但事件缺失，需要人工核对",
+            )
+        path = projection.blob_path(content_ref)
+        if path is not None and path.is_file():
+            return (
+                "none_applied",
+                {"error": "recovered: 正文文件仍在，擦除未生效",
+                 "recovered": True, "memory_write": tool_id},
+                None,
+            )
+        return (
+            "unknown",
+            {"error": "recovered: 正文文件已删除（不可逆），但结果未提交、"
+                      "行未标记 erased_at；这次擦除部分生效",
+             "recovered": True, "memory_write": tool_id},
+            None,
+        )
+    # 其余记忆写：投影/事件层可证明未生效。
+    extras: dict[str, Any] = {
+        "error": "recovered: 记忆写入未生效（结果与投影同事务，没有 result 就是没写）",
+        "recovered": True,
+        "memory_write": tool_id,
+    }
+    raw_ref = args.get("content_sha256")
+    if isinstance(raw_ref, str) and _clean_orphan_blob(projection, raw_ref):
+        extras["orphan_blob_removed"] = raw_ref
+    return ("none_applied", extras, None)
+
+
+def _settle_memory_write(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    intent_payload: dict,
+    ts: int,
+) -> None:
+    """结算一条被打断的记忆写（含 `dispatches` 表状态推进）。
+
+    恢复不只在事件里说"这次没成"，也要让 `dispatch_record()` 别继续显示
+    `intent` / `executing`——否则后续 resume / 审计会看到"仍在执行"与"已确认
+    未生效"两种说法。
+    """
+    bucket_name, extras, problem = _memory_effect(log, intent_payload)
+    if bucket_name == "none_applied":
+        bucket = report.none_applied
+        report.memory_not_applied.append(call_id)
+    else:
+        # **不**放进 `report.unresolved`：那个列表在 `_recover_run` 末尾会被拿去
+        # 阻断"无法核实的目录"，而记忆写没有目录可言（硬挡一个无关目录比不挡
+        # 更糟）。单独成栏、并让 `ok` 变假，人能看到这次擦除没结算。
+        bucket = report.memory_unresolved
+    orphan = extras.pop("orphan_blob_removed", None)
+    if isinstance(orphan, str):
+        report.memory_orphan_blobs.append(orphan)
+    if problem:
+        report.problems.append(f"{call_id}：{problem}")
+    result = ToolResult(
+        "failed" if bucket_name == "none_applied" else "unknown",
+        "none_applied" if bucket_name == "none_applied" else "unknown",
+        extras,
+    )
+    _settle(
+        log, report, run_id, call_id, tool_id, intent_payload, result,
+        bucket=bucket, dispatch_ts=ts,
+    )
+
+
+def _mark_dispatch_settled(
+    log: EventLog, run_id: str, call_id: str, ts: int, reason: str
+) -> None:
+    """把 `dispatches` 行从 intent/executing 推进到 error（恢复补写结果时）。"""
+    from .dispatcher import DISPATCH_ERROR
+
+    log.conn.execute(
+        "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+        " WHERE run_id=? AND call_id=?",
+        (DISPATCH_ERROR, reason, ts, run_id, call_id),
+    )
+
+
 def _settle(
     log: EventLog,
     report: RecoveryReport,
@@ -735,6 +933,7 @@ def _settle(
     receipt_root: str | None = None,
     receipt_change: Change | None = None,
     intent_seq: int | None = None,
+    dispatch_ts: int | None = None,
 ) -> None:
     batch = [{
         "run_id": run_id,
@@ -780,5 +979,14 @@ def _settle(
                 "idem_key": receipt.receipt_id,
             })
 
-    log.append_many(batch)
+    if dispatch_ts is None:
+        log.append_many(batch)
+    else:
+        # 事件与 dispatches 状态一次提交：恢复写的结果与"这次派发已结算"
+        # 不能出现一个有一个没有。
+        with log.transaction():
+            log.append_many(batch)
+            _mark_dispatch_settled(
+                log, run_id, call_id, dispatch_ts, str(result.output.get("error", ""))
+            )
     bucket.append(call_id)

@@ -416,6 +416,7 @@ class Dispatcher:
             self._conn, "dispatch_requests", "args_redacted",
             "INTEGER NOT NULL DEFAULT 0",
         )
+        self._backfill_redacted_args()
         self._tasks = tasks
         self._leases = leases
         self._policy = policy
@@ -1904,13 +1905,13 @@ class Dispatcher:
                 " ON CONFLICT(request_id) DO UPDATE SET"
                 " state=excluded.state, reason=excluded.reason,"
                 " rule_id=excluded.rule_id, approval_id=excluded.approval_id,"
-                # 已在表里的行（`prepare()` 存 waiting / admitted 时是**完整**参数）
-                # 之后被拒绝时走这条分支：不覆盖 args_payload 的话，正文会永久
-                # 留在审计表里。只在本次写入本身是脱敏形态时才覆盖，别把已脱敏
-                # 的行改回原文（这也不可能：脱敏值只从 `_audit_args` 来）。
-                " args_payload=CASE WHEN excluded.args_redacted=1"
-                " THEN excluded.args_payload ELSE args_payload END,"
-                " args_redacted=MAX(args_redacted, excluded.args_redacted),"
+                # 同一 `request_id` 会被写多次：`prepare()` 先存完整参数，之后
+                # 被拒绝改成脱敏形态；反过来，终态之后同一请求被**重新发起**时
+                # 又要拿回完整参数（执行期要用它重算 `args_hash`）。所以这里取
+                # "最后一次写入"的形态，不做单向合并——单向保留会让重新发起
+                # 的合法请求永远判成"参数被改过"。
+                " args_payload=excluded.args_payload,"
+                " args_redacted=excluded.args_redacted,"
                 " updated_at=excluded.updated_at",
                 (
                     request.request_id,
@@ -1941,6 +1942,44 @@ class Dispatcher:
             if state in (STATE_DONE, STATE_REJECTED):
                 # 终态之后不会再有人从这张表取参数去执行，正文可以脱敏了。
                 self._redact_terminal_args(request_id)
+
+    def _backfill_redacted_args(self) -> None:
+        """升级前就已处于终态的行：一次性补做脱敏（幂等）。
+
+        `args_redacted` 列是 N5 才加的，老库里那些 `done` / `rejected` 行不会
+        自己回到终态，所以迁移时必须主动扫一遍。只处理 `args_redacted = 0` 的
+        终态行；解析失败的行**保持原样**——宁可让审计看到"这一行没脱敏"，也不
+        要把读不懂的行直接抹成不可审计。非记忆行 `_audit_args` 原样返回，不动。
+        """
+        rows = self._conn.execute(
+            "SELECT request_id, payload, args_payload FROM dispatch_requests"
+            " WHERE args_redacted = 0 AND state IN (?, ?)",
+            (STATE_DONE, STATE_REJECTED),
+        ).fetchall()
+        updates: list[tuple[str, str]] = []
+        for row in rows:
+            try:
+                request = ActionRequest.of(json.loads(row["payload"]))
+                args = json.loads(row["args_payload"])
+            except (TypeError, ValueError):  # 老库/外力改坏：跳过并保留原样
+                continue
+            if not isinstance(args, dict):
+                continue
+            redacted = _audit_args(request, args)
+            if redacted is args:
+                continue
+            updates.append(
+                (canonical_bytes(redacted).decode("utf-8"), row["request_id"])
+            )
+        if not updates:
+            return
+        with self._log.transaction():
+            for payload, request_id in updates:
+                self._conn.execute(
+                    "UPDATE dispatch_requests SET args_payload = ?,"
+                    " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0",
+                    (payload, request_id),
+                )
 
     def _redact_terminal_args(self, request_id: str) -> None:
         """请求进终态后，把 `args_payload` 里的记忆正文换成摘要。
@@ -1976,13 +2015,18 @@ class Dispatcher:
         """写进 `tool.intent` 的参数（事件日志**不存记忆正文**）。
 
         F10 §3.1 要求事件日志"只存引用与审计元数据，不重复写记忆正文"。
-        `memory.confirm` / `memory.forget` 的参数只有 memory_id / revision /
-        status，本身不是正文；`memory.propose` 的 `content` 是正文，必须在
-        写事件前拿掉，只留下可核对的长度与哈希。完整参数仍在派发请求表里
-        （受一次审批/派发绑定的操作记录），执行器也从那里取，不依赖事件里的
-        副本。`args_hash` 仍然绑完整参数，不能被这段脱敏改写。
+        `memory.confirm` / `memory.forget` / `memory.erase` 的参数只有
+        memory_id / revision / status，本身不是正文；**凡带 `content` 的记忆写**
+        （`memory.propose` / `memory.remember` / `memory.edit`）都必须在写事件前
+        拿掉正文，只留下可核对的长度与哈希。判断口径是"记忆资源 + 参数里有
+        content"，不是罗列工具名——新增一个带正文的记忆写不会因为忘了登记就把
+        正文漏进 append-only 的事件日志。完整参数仍在派发请求表里（受一次审批/
+        派发绑定的操作记录），执行器也从那里取，不依赖事件里的副本。`args_hash`
+        仍然绑完整参数，不能被这段脱敏改写。
         """
-        if request.tool_id != "memory.propose":
+        if "content" not in args:
+            return args
+        if not any(is_memory_resource(resource) for resource in request.resources):
             return args
         safe = dict(args)
         content = safe.pop("content", None)
@@ -2015,13 +2059,16 @@ class Dispatcher:
         rule_id = check_rule_id(rule_id, where=f"_reject:{event}")
         # 拒绝的行**永远不会执行**，所以这里可以脱敏而不破坏任何
         # 派发/审批绑定：被拒的尝试不该把记忆正文原文永久留在审计表里。
+        redacted_args = _audit_args(request, args)
         self._store_request(
             request,
-            _audit_args(request, args),
+            redacted_args,
             STATE_REJECTED,
             reason,
             rule_id,
-            args_redacted=True,
+            # `args_redacted` 是审计事实字段：非记忆请求（或没有正文的记忆
+            # 请求）本来就不该被标成"已脱敏"。
+            args_redacted=redacted_args is not args,
         )
         self._append(
             request,

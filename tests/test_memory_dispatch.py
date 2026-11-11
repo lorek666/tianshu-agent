@@ -16,6 +16,7 @@ grant、dispatch 记录都从 sqlite 权威库读。唯一被替换的是"制造
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from tianshu.permissions import (
     supported_memory_kinds,
 )
 from tianshu.receipt import verify_receipts
+from tianshu.recovery import assess_run, recover_run
 from tianshu.resources import MemoryScope
 from tianshu.rules import REJECTION_RULE_IDS, RULE_IDS
 from tianshu.snapshot import SnapshotStore
@@ -1772,3 +1774,381 @@ def test_recovery_marks_pending_memory_write_as_not_applied(env: Env):
         "candidate",
         1,
     )
+
+
+# ---------------------------------------------------------------- 10. 崩溃窗口：擦除 / 孤儿 blob
+
+
+def _crash_at_commit(monkeypatch, dispatcher):
+    """让 `_commit_result` 直接硬退，模拟"副作用已经发生、提交前进程没了"。
+
+    `SystemExit` 是 BaseException：`dispatch()` 的 `except Exception` 不会把它
+    接成 unknown（那条路会补一条 tool.result，等于伪造了一次"已经结算"）。
+    """
+
+    def crash(*args, **kwargs):
+        raise SystemExit("simulated power loss before commit")
+
+    monkeypatch.setattr(dispatcher, "_commit_result", crash)
+
+
+def _recover(env: Env, run_id: str):
+    return recover_run(
+        env.log,
+        run_id,
+        env.ws_a,
+        env.snapshots,
+        leases=env.leases,
+        data_root=env.root / "authority",
+    )
+
+
+def test_erase_crash_after_deletion_is_not_reported_as_none_applied(env, monkeypatch):
+    """擦除的副作用在提交事务**之外**：崩溃窗口里"文件已删、行未标记"不可逆。
+
+    恢复**不能**把它报成"一定没生效"——否则一个内容已经销毁的擦除会被宣布成
+    "什么都没发生"。正确结论是 unknown（`memory_unresolved`），不阻断目录。
+    """
+    user = MemoryScope.user()
+    _task, _run, _claim, output = _proposed(env, content="崩溃窗口里被删掉的正文")
+    memory_id = output["memory_id"]
+    blob = env.memory.blob_path(output["content_ref"])
+    assert blob is not None and blob.is_file()
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{memory_id}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": memory_id, "revision": 1}
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.erase",
+        target=user.to_uri(),
+        args=erase_args,
+        call_id="crash-erase",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=erase_args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    try:
+        with pytest.raises(SystemExit):
+            env.dispatcher.dispatch(decision.request_id, control.claim)
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="failed", effect_state="none_applied"
+        )
+
+    # 崩溃现场：正文文件已经没了，但投影行仍是 candidate、没标 erased_at。
+    assert not blob.exists()
+    assert env.memory.content_ref_of(memory_id) == (output["content_ref"], None)
+    current = env.memory.get(memory_id, allowed=(user,))
+    assert current is not None
+    assert env.memory.read_content(current) is None
+
+    assessment = assess_run(env.root / "authority", control.run.run_id, log=env.log)
+    assert "crash-erase" not in assessment.none_applied
+    assert "crash-erase" in assessment.unknown
+    assert assessment.blocks_takeover
+
+    report = _recover(env, control.run.run_id)
+    assert "crash-erase" in report.memory_unresolved
+    assert "crash-erase" not in report.memory_not_applied
+    assert "crash-erase" not in report.none_applied
+    assert report.blocked_workspaces == []
+    assert report.ok is False
+    # 派发记录不能继续显示"仍在执行"。
+    record = env.dispatcher.dispatch_record(control.run.run_id, "crash-erase")
+    assert record is not None and record.state == "error"
+
+
+def test_content_write_crash_leaves_no_orphan_blob_after_recovery(env, monkeypatch):
+    """正文在提交前就落了 blob：崩溃后恢复要清掉没有行引用的孤儿副本。"""
+    content = "崩溃前已经落盘的正文"
+    scope = MemoryScope.user()
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="crash-blob"
+    )
+    assert decision.is_admitted, decision
+    ref = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    blob = env.memory.blob_path(ref)
+    assert blob is not None
+
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    with pytest.raises(SystemExit):
+        env.dispatcher.dispatch(decision.request_id, claim)
+
+    # 崩溃现场：字节在盘上，投影里一行都没有（提交回滚）。
+    assert blob.is_file()
+    assert env.memory.list_memories(allowed=(scope,)) == []
+
+    report = _recover(env, run.run_id)
+    assert "crash-blob" in report.memory_not_applied
+    assert ref in report.memory_orphan_blobs
+    assert not blob.exists(), "孤儿正文副本必须被清掉，否则它既不进召回也擦不掉"
+
+
+def test_recovery_cleanup_never_deletes_a_blob_another_memory_shares(env, monkeypatch):
+    """孤儿清理按引用计数下手：另一条记忆共享的同一个 blob 绝不能删。"""
+    content = "两条记忆共享的正文"
+    scope = MemoryScope.user()
+    ref = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    task, run, claim = env.new_run()
+    first_request, first_args, first = _propose(
+        env, task, run, claim, content=content, call_id="share-1"
+    )
+    assert first.is_admitted
+    assert env.dispatcher.dispatch(first.request_id, claim).ok
+    blob = env.memory.blob_path(ref)
+    assert blob is not None and blob.is_file()
+
+    second_request, second_args, second = _propose(
+        env,
+        task,
+        run,
+        claim,
+        content=content,
+        call_id="share-2",
+        scope=MemoryScope.task(task.task_id),
+    )
+    assert second.is_admitted
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    with pytest.raises(SystemExit):
+        env.dispatcher.dispatch(second.request_id, claim)
+
+    report = _recover(env, run.run_id)
+    assert "share-2" in report.memory_not_applied
+    assert ref not in report.memory_orphan_blobs
+    assert blob.is_file(), "另一条记忆还引用这个 blob，删了就是把别人的正文抹掉"
+    assert len(env.memory.list_memories(allowed=(scope,))) == 1
+    assert second_args["content"] == content
+    assert first_request and second_request
+
+
+def test_memory_write_is_settled_even_when_the_snapshot_manifest_is_corrupt(
+    env, monkeypatch
+):
+    """清单损坏不该把记忆写推成 unknown 并挡住目录：它的结论不依赖那份证据。"""
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content="清单坏掉时也照样不生效", call_id="crash-corrupt"
+    )
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    with pytest.raises(SystemExit):
+        env.dispatcher.dispatch(decision.request_id, claim)
+    monkeypatch.undo()
+
+    # 制造"清单存在但读不出来"：清单文件路径由 SnapshotStore 自己给出。
+    manifest = env.snapshots.manifest_dir / f"{run.run_id}.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{ not json", encoding="utf-8")
+
+    assessment = assess_run(env.root / "authority", run.run_id, log=env.log)
+    assert "crash-corrupt" in assessment.none_applied
+    assert not assessment.blocks_takeover
+
+    report = _recover(env, run.run_id)
+    assert "crash-corrupt" in report.memory_not_applied
+    assert report.blocked_workspaces == []
+
+
+# ---------------------------------------------------------------- 11. 审计表脱敏的边角
+
+
+def test_rejected_file_request_is_not_marked_as_redacted(env: Env):
+    """`args_redacted` 是事实字段：被拒的文件请求没脱敏，就不能标成已脱敏。"""
+    import json
+
+    task, run, claim = env.new_run()
+    args = {"path": "note.md", "content": "文件正文"}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="modify_text",
+        target=env.ws_a / "note.md",
+        args=args,
+        call_id="file-rejected",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    refused = env.dispatcher.dispatch(decision.request_id, claim)
+    assert refused.status == "rejected"
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 0
+    assert json.loads(row["args_payload"])["content"] == "文件正文"
+
+
+def test_intent_events_drop_content_for_every_content_memory_write(env: Env):
+    """`tool.intent` 不存记忆正文：propose / remember / edit 都要换成摘要。
+
+    事件日志是 append-only、不可删的（#26 只收口审计表时漏了这里），所以判断
+    口径必须是"记忆资源 + 参数里有 content"，而不是罗列工具名。
+    """
+    import json
+
+    user = MemoryScope.user()
+    control = env.dispatcher.open_control_run(
+        goal="memory.remember", workspaces=[], memory_scopes=[]
+    )
+    content = "直接写进长期记忆的正文"
+    args = {"kind": "preference", "content": content}
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.remember",
+        target=user.to_uri(),
+        args=args,
+        call_id="intent-remember",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_admitted, decision
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    assert result.ok, result.output
+    memory_id = result.output["memory_id"]
+    env.dispatcher.close_control_run(
+        control, outcome="succeeded", effect_state=result.effect_state
+    )
+
+    new_content = "改过之后的正文"
+    edit_args = {"memory_id": memory_id, "revision": 1, "content": new_content}
+    control2 = env.dispatcher.open_control_run(
+        goal=f"memory.edit:{memory_id}", workspaces=[], memory_scopes=[]
+    )
+    edit_request = env.request(
+        control2.task,
+        control2.run,
+        control2.claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=edit_args,
+        call_id="intent-edit",
+    )
+    edit_decision = env.dispatcher.prepare(edit_request, control2.claim, args=edit_args)
+    assert edit_decision.is_waiting, edit_decision
+    _approve(env, edit_decision.approval_id)
+    edit_result = env.dispatcher.dispatch(edit_decision.request_id, control2.claim)
+    try:
+        assert edit_result.ok, edit_result.output
+    finally:
+        env.dispatcher.close_control_run(
+            control2, outcome="succeeded", effect_state=edit_result.effect_state
+        )
+
+    intents = [
+        event.payload
+        for event in _events(env.log, control.run.run_id)
+        if event.type == "tool.intent"
+    ]
+    remembered = next(item for item in intents if item["tool_id"] == "memory.remember")
+    assert "content" not in remembered["args"]
+    assert remembered["args"]["content_omitted"] is True
+    assert remembered["args"]["content_sha256"] == hashlib.sha256(
+        content.encode("utf-8")
+    ).hexdigest()
+    assert content not in json.dumps(remembered["args"], ensure_ascii=False)
+
+    edit_intents = [
+        event.payload
+        for event in _events(env.log, control2.run.run_id)
+        if event.type == "tool.intent"
+    ]
+    edited = next(item for item in edit_intents if item["tool_id"] == "memory.edit")
+    assert "content" not in edited["args"]
+    assert new_content not in json.dumps(edited["args"], ensure_ascii=False)
+    assert edited["args"]["content_bytes"] == len(new_content.encode("utf-8"))
+
+    # 投影照旧可重建：正文引用在 result 里，不依赖 intent 的副本。
+    env.memory.rebuild()
+    rebuilt = env.memory.get(edit_result.output["memory_id"], allowed=(user,))
+    assert rebuilt is not None
+    assert env.memory.read_content(rebuilt) == new_content
+
+
+def test_terminal_rows_from_an_older_library_are_redacted_when_opened(env: Env):
+    """升级前的终态行不会自己回到终态：打开库时要补做脱敏。"""
+    import json
+
+    content = "升级前就留在审计表里的正文"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="legacy-row"
+    )
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    with env.log.transaction():
+        env.log.conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ?, args_redacted = 0"
+            " WHERE request_id = ?",
+            (
+                json.dumps({"kind": "preference", "content": content}),
+                decision.request_id,
+            ),
+        )
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert json.loads(row["args_payload"])["content"] == content
+
+    # 重新打开同一个库（模拟升级后第一次启动）：迁移要顺手把终态行脱敏。
+    Dispatcher(
+        env.log,
+        env.tasks,
+        env.leases,
+        PolicyEngine(),
+        env.approvals,
+        grants=env.grants,
+        claims=env.claims,
+        snapshots=env.snapshots,
+        data_root=env.root / "authority",
+        memory=env.memory,
+        clock=lambda: NOW,
+    )
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    assert "content" not in json.loads(row["args_payload"])
+
+
+def test_reissued_request_after_terminal_state_keeps_full_args(env: Env):
+    """终态后再判定同一个请求：参数要能完整写回，否则执行侧判"参数被改"。"""
+    import json
+
+    user = MemoryScope.user()
+    task, run, claim, proposed = _proposed(env, content="原正文")
+    memory_id = proposed["memory_id"]
+    content = "重新发起时要保留的正文"
+    args = {"memory_id": memory_id, "revision": 1, "content": content}
+    request = env.request(
+        task,
+        run,
+        claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=args,
+        call_id="reissued-edit",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    # 还没批准就派发：确定被拒，键入终态 → 正文被脱敏。
+    refused = env.dispatcher.dispatch(decision.request_id, claim)
+    assert refused.status == "rejected"
+    row = _request_row(env, decision.request_id)
+    assert row is not None and int(row["args_redacted"]) == 1
+
+    # 批准后重新判定同一张请求（真实路径：先被拒、后补批准）。
+    _approve(env, decision.approval_id)
+    again = env.dispatcher.prepare(request, claim, args=args)
+    assert again.request_id == decision.request_id
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 0, "重新发起后要拿回完整参数才能执行"
+    assert json.loads(row["args_payload"])["content"] == content
+
+    result = env.dispatcher.dispatch(request.request_id, claim)
+    assert result.ok, result.output
+    assert env.memory.read_content(
+        env.memory.get(result.output["memory_id"], allowed=(user,))
+    ) == content
