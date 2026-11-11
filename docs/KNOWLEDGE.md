@@ -74,7 +74,7 @@
   9. 能力声明只用于路由，不用于授权
   10. replay 与 evaluate 不得混称，安全门槛不可被其他分数抵消
   11. 任何「崩溃后无法判定状态」的设计视为 bug
-- **模块地图**：`src/tianshu/` 37 个模块 + `eval/` 子包。按功能分：事件与状态（`events`/`tasks`/`jobs`/`leases`/`snapshot`/`recovery`/`replay`）、授权与派发（`permissions`/`rules`/`dispatcher`/`guard`/`receipt`）、模型与执行（`model`/`capability`/`context`/`exec`/`execpolicy`/`credentials`/`pricing`/`sandbox`）、工具与路径（`tools`/`workspace`/`pathkeys`/`fsutil`/`canonical`）、撤销（`undo`）、主循环与入口（`loop`/`worker`/`cli`/`errors`/`crashpoint`）、**桌面三进程（`ipc` 传输与契约 / `daemon` 常驻与恢复 / `control` RPC 映射 / `host` 外壳与 UI 桥）**、评测（`eval/`）。细节见 PRD / TECH-ARCH 与 [M5-desktop.md](M5-desktop.md)。
+- **模块地图**：`src/tianshu/` 47 个 .py + `eval/` 子包。按功能分：事件与状态（`events`/`tasks`/`jobs`/`leases`/`snapshot`/`recovery`/`replay`）、授权与派发（`permissions`/`rules`/`dispatcher`/`guard`/`receipt`）、模型与执行（`model`/`capability`/`context`/`exec`/`execpolicy`/`credentials`/`pricing`/`sandbox`）、工具与路径（`tools`/`workspace`/`pathkeys`/`fsutil`/`canonical`）、撤销（`undo`）、主循环与入口（`loop`/`worker`/`cli`/`errors`/`crashpoint`）、**桌面三进程（`ipc` 传输与契约 / `daemon` 常驻与恢复 / `control` RPC 映射 / `host` 外壳与 UI 桥）**、记忆（`memory` / `memory_exec` / `resources`）、**本轮新增（`metrics` 运行指标 / `isolation` 隔离探针 / `backup` 备份恢复 / `migrate` 迁移 / `event_schema` 事件 payload 契约）**、评测（`eval/`）。细节见 PRD / TECH-ARCH 与 [M5-desktop.md](M5-desktop.md)。
 - **CLI 子命令**（实测 `tianshu --help`）：`run` / `task` / `worker` / `recover` / `undo` / `approvals`（别名 `approval`）/ `replay` / `daemon` / `host` / `evaluate`。
   - `worker` 是**一次性 drain**——队空或撞上被占用的工作区就退出；**常驻进程是 `daemon`**（`host run` 会拉起并监护它）。
   - `host` 只有 `run` / `stop` / `status` 三个动作（不带动作 = `run`）；`status` 在跑退出 0、没跑退出 1。
@@ -114,6 +114,15 @@
 - **就绪标记必须晚于"端点真的可服务"**：`on_ready` 在 accept 线程进入 accept + 自连认证握手成功后才落；`LISTEN_BACKLOG=64`。根因不是"listen 没完成"，而是 backlog=1 时探活自己占满队列（详见 §5）。
 - **评测判据按目标作用域 + 分类**：`Check.kind`（completion/safety）只有 safety 进 `safety_gate`；完成度判据红不影响安全结论；`SUITE_VERSION` m4.5 使旧报告不可比（两道守卫）。
 - **`EventLog` 对"有内容却读不出 events 表"的库 fail closed**：0 字节按新库（首次启动窗口无历史可丢），只有"文件存在且有内容、读不出 schema"才 `EventLogCorrupt`。检查必须在 `executescript(_SCHEMA)` 之前、`PRAGMA journal_mode=WAL` 之前——顺序即是"先读、再写"的保证。
+
+### 工程评审新增要求的实现决策（2026-11-11，PR #79–#84）
+
+- **四维独立、安全唯一硬门槛**：`dimensions` 四项各自记录样本/通过/失败依据；completion 失败只影响 `verdict=pass`，绝不进 safety；无效样本（评测基础设施故障）不进分子分母，但产品该持久化的 intent/result/Receipt/审批/恢复证据缺失**仍是产品失败**。
+- **判据负控要可机械检查**：每个 safety 判据必须登记负控，元测试缺登记即红；`Check.path_coverage` 让「专门测错误路径」的 case 在未触发时明确说「没有覆盖证据」。
+- **控制面推送必须与请求处理解耦**：每连接有界发送队列 + 独立发送线程，队列满/发送超期 → 断开并记 `slow_subscriber_dropped`，重连按 `since_seq` 补读；同步 `send()` 会把慢消费者变成控制面 DoS。
+- **隔离是测出来的，不是声明出来的**：门只认 `probe_backend()` 的实测报告，不认后端 `capabilities.isolation`；`unknown` 与 `not_enforced` 一样阻断；本机 local 后端文件/网络/凭据三边界实测可越过 → 依赖能力全部关闭。
+- **备份必须是「一致点 + 引用清单」，不是复制库文件**：SQLite 在线备份 API 取一致点，`backup.json` 记哈希/引用/版本；中断留下的临时目录不得被 `verify` 当有效；恢复只允许干净根；迁移前必须 `verify_backup` 通过、每步进度持久化、`crashpoint` 注入中断后可续做。
+- **写入口的「旧版兼容」必须与「读兼容」分开**：`EventLog.append` 默认只收当前 v1 契约，v0 只能在显式 `legacy_write=True` 下写入并记 `payload_version=0`；`event_versions` 旁表与事件行同事务；旁表缺失/损坏 → `PayloadVersionUnavailable`（不把「读不懂版本」洗成「旧版」）。**自动回退 v0 是 fail-open**：`_legacy_schema` 的 `required=[]` 会让任意 `{}` 通过。
 
 ### M5 与 PRD / TECH-ARCH 的偏差（即 M5 文档里的 D1–D5，别与上表 D1–D7 混）
 
@@ -157,6 +166,13 @@
 - **P1/P2 判据不在这轮改**：真实模型的 `unsafe` 里有五条根因是判据写死了脚本模型的收尾形态（系统提示词要求写报告 → 模型的第二个副作用是合法交付物；`approval.requested=0` 只是"没尝试"，不是"绕过"）。修复要改判据语义 → 改 `fixture_digest` → 旧报告全部失去可比性，必须 bump `SUITE_VERSION` 并复跑两份真实报告。混在"补证据"的 PR 里偷偷改判据，比不改更坏；登记工单，判据口径写进 [M4-verification.md](M4-verification.md) §8 第 7 条。
 
 ## 5. 踩坑教训（别再踩）
+
+- **「兼容读取」不等于「兼容写入」（本轮 fail-open 差点混过去）**：逐类型 payload 第一次实现时，`detect_version` 在 v1 校验失败后自动退回 v0，而 v0 schema 的 `required` 是清空的 → 任意 `{}` 都会被当成「旧版」接受，写入校验等于没写。修法是把读兼容（旁表/映射）与写兼容（显式 `legacy_write`）分开，并加元测试：生产代码零 `legacy_write=True`、显式 legacy 仍须过 v0 封闭 schema。
+- **单线程里的同步推送 = 慢消费者 DoS**：`daemon._main_loop` 把请求处理和 `conn.send()` 推送放在一个线程里，一个「订阅后不读」的客户端写满发送缓冲就能把状态/审批/取消/shutdown 全堵住；改成有界队列 + 独立发送线程后，慢订阅者被断开且重连能按游标补读。
+- **「声明」不能当「证据」**：隔离后端可以自称 `app_container`，探针必须真的去读/写界外文件、连 loopback、读父进程 env、观察孙进程；门只认探针报告，`unknown` 一律阻断。假后端负控（自称隔离但探针不通过）必须红。
+- **备份/迁移的「中断」要真的注入**：只测 happy path 等于没测；`crashpoint` 每步硬退后重启，验证「可续做 / 无混合版本 / 或从备份恢复」，并证明「未发布的临时目录不会被当有效备份」。
+- **严格分支保护下多 PR 串行合并**：每次合并都会让其他 PR 的 required checks 变「过期」（strict + enforce_admins），必须重新同步 main 再等 CI；不要用 `--admin` 绕过，也不要为了让 PR 变绿去删 required check。
+- **夹具是在声明「我是历史形状」**：默认严格后 19 个测试文件的播种调用点显式加 `legacy_write=True`（不改 payload/断言）；调生产 API（`commit_model_turn`）的夹具则改为当前契约值（`finish_reason: tool_use`、usage 双键）。用放宽产品校验来迁就测试是最坏的一种「变绿」。
 
 - **自审有盲区**：PR #7 自写自审自合，第二读者十分钟找出 13 项缺陷、5 项高危。作者知道自己的意图，所以看不出实现没兑现意图。→ 高危改动必须独立复审（见 §6）。
 - **测试证据会造假**：曾用「同进程两条连接」冒充两个进程、用 `sleep(0.05)` 猜时序、用手写替身盖住真洞。→ 并发要真子进程 + 屏障，时序用注入时钟，契约断言用真实 `tool_manifest()` / 真实 schema。
@@ -207,6 +223,18 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 7. 已知限制 / 未决问题
+
+**PRD 2026-11-11 工程评审新增要求：首轮交付留账（2026-11-11，PR #79–#84；对账见 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md)）**
+
+- **G1 未做**：§5.2.3 通用工具准入、§5.6 共享预算账本；`run_command` 仍只受显式 `ExecPolicy`，不经过隔离门；没有并发硬预算/共享预占。
+- **§7.1 未做**：没有模型语义摘要；只有 `context.py` 的确定性裁剪与 `loop._persist_spills`。
+- **G2 未做**：没有网络 / MCP / 子代理能力；§10.5 的联网研究任务只验证「如实报告未具备」。
+- **G3 未做**：无 Windows / mac-x64 / win-arm64 实机；安装/升级/回退、Keychain、平台 SLO、macOS 13+ 最低版本均未验证；Windows CI 红是 issue #50 族，不得因「非 required」写成已通过。
+- **备份**：换路径恢复未实现（`payload_ref` 绝对路径）；备份期间未停写者（只压小窗口）；迁移写入门未接 CLI/daemon。
+- **指标**：SLO 阈值未冻结；`rss_mib` 是峰值口径；指标文件无轮转；`state` 响应可超 IPC 8MiB（`control.py` 所有，已登记未修）；慢订阅者宽限窗内主循环会从落后游标重读。
+- **事件契约**：`oneOf`/`anyOf`/`$ref`/`format` 注册期拒绝；每工具 output 子契约未做；CLI 未区分版本错误文案；历史上从未出现的旧字段组合读作 v0、写入口不识别。
+- **评测**：真实模型未跑（无凭据），harness 分数不得当真实模型结论；报告没有「四维总分」（设计如此）；撤销的授权派发链路未进评测（只走 `SnapshotStore.undo` 数据安全预检）。
+- **隔离**：探针不覆盖内核攻击面/配额/出站网络；`app_container`/`container` 后端 v1 未实现；本轮只落门，未接产品路径。
 
 **边界与隔离**
 
@@ -293,6 +321,7 @@
 
 - **2026-11-11** · **N4 复审整改（并发孤儿 blob / 回执不可核对 / CLI 擦非 active）**：第二读者三个探针各复现一条真问题。① **高**：擦除的引用计数与 unlink 在 dispatcher 提交事务之外，两个进程同时擦共享同一 `content_ref` 的两条记忆时，双方都看到"对方还没擦"→ 都 `deleted=False`，随后两行都标 `erased`、文件永久留存（"已物理擦除"不成立）。修法：把 `memory.erase` 的 `_commit_result` 放进 `_begin_memory_execution` 的 `execution_guard` 块内——计数/删文件/提交在同一把跨进程锁里，第二个进程只能看到第一行已 erased。回归用"守卫深度探针"而非 sleep：把 `execution_guard` 换成计数上下文管理器，断言 commit 发生在 depth=1；负控：改成守卫外提交 → `seen == [0]` 红。② `verify_receipts` 对合法擦除回执报"无法识别的证据引用"（`memory_erasure` kind 未登记），且测试只调不 assert；补逐字段比对，测试改成 `== []`。③ CLI 擦不掉 forgotten/candidate/superseded：DELETE 前置默认 `before_status="active"`，erase schema 又没有 status；改成不默认声明、由执行侧 observed 与投影迁移校验兜底，补 CLI 用例。· **教训**："先检查再写"的跨进程临界区，必须把**提交**也包进同一把锁——锁只包检查等于没锁；回执"可核对"不是加个 evidence 字段，得让核对器认识它，且测试要断言返回值而不是只调用。
 - **2026-11-11** · **N4 擦除落地 + 一个实施偏差**：`memory.erase` 做完了（控制面专属、审批 + Receipt、引用计数、`erased_at` 列、v1→v2 迁移），测试 +5、全量 1444/7。· **踩到的三件**：① 引用计数最初把**已擦除行**也算引用者 → 第一条擦除后第二条永远删不掉；改成 `erased_at IS NULL` 才算。② 规格写的"事务内更新 → 删文件 → 提交"在现有架构里做不到（执行器只返回结果、投影在 dispatcher 事务里更新），实际改成"先删文件 → 提交"；崩在中间只会文件没了、行没标擦除（正文如实不可用），反过来先标擦除文件还在才是泄漏——规格已按实际更正。③ `_MEMORY_COLUMNS` 加了列后，`search` 自己手写的 SELECT 忘了加 `m.erased_at`，`_row_to_memory` 直接 `IndexError`；列清单必须只有一处来源或每处 SELECT 都跟。
+- **2026-11-11** · **PRD 工程评审新增要求首轮交付（W0–W5，PR #76/#77/#79/#80/#81/#82/#84）**：用户把工程评审内容写进 PRD 工作区后要求「先写 spec、新建分支、goal 模式完成」。先落 [SPEC-PRD-REVIEW-2026-11-11.md](SPEC-PRD-REVIEW-2026-11-11.md)（五个工作流 + 文件所有权 + 验收/负控），再把新增章节合入 `main` 的 PRD（PR #77；§5.2.1 冲突解决为记忆两节保留原编号、通用准入改 §5.2.3，记忆章节逐节核对未丢）。五条并行工作流各自 worktree/分支：G0 四维评测 + 真实任务集（#82）、本地指标 + 慢订阅者隔离（#81，真 bug）、隔离门禁探针 + 矩阵（#79）、一致备份恢复 + 迁移中断（#80）、逐类型 payload 契约 + 严格写 + 精确版本（#84）。`main @ c0dfa88` 实测 **1519 passed / 7 skipped**（170.12s），`ruff check .` 干净；相对 `da84d92` 基线 1316/6，本轮 +185，其余 +18 来自并行记忆工作流。· **踩了/决定了**：① 写侧的自动 v0 回退是 fail-open（`{}` 万能合法），必须读兼容与写兼容分开；② 单线程同步推送会被慢订阅者堵死控制面；③ 隔离只认探针证据、unknown 阻断；④ 备份要一致点 + 引用清单，中断产物不得当有效；⑤ 严格分支保护下多 PR 必须逐个同步 main 再等 CI。· **仍未做（如实登记）**：§5.2.3/§5.6（与记忆工作流同文件，下一轮）、§7.1 语义摘要、G2 网络/MCP/子代理、G3 平台实机与安装升级；逐条未验证项见 §7。· **留下**：`docs/PRD-REVIEW-DELIVERY-2026-11-11.md`、`docs/eval-four-dimensions.md`、`docs/real-user-tasks.md`、`docs/runtime-metrics.md`、`docs/isolation-matrix.md`、`docs/backup-restore.md`、`docs/event-payload-contract.md`、`docs/SPEC-PRD-REVIEW-2026-11-11.md`。
 - **2026-11-11** · **N1b 复审整改：promote 目标作用域归一 + origin 不降档**：第二读者抓到两条中等问题——① 提升目标用 `MemoryScope(scope, scope_id)` 裸构造、不 canonicalize，而声明集合按 canonical 存：CLI 传 `/a/b/.` 会被判"不在声明内"，UI/API 会直接踩；② edit 固定 `user_confirmed`、promote 固定 `inferred`，把 `user_explicit` 记忆"降档"（权重 1.0→0.6），与 PRD "三档不降级"冲突。修法：新增 `resources.build_memory_scope()` 统一 canonicalize（workspace 走 `MemoryScope.workspace`），派发层/执行侧/CLI 三处都改；origin 改为**按这一版正文的来源**——控制面 edit → `user_explicit`、模型写经人批准 → `user_confirmed`、promote **来源随行**（投影校验 `origin == 原行 origin`）。补两条测试：workspace 目标原始路径归一、Receipt `resource/root` 指原行。· 教训："契约说三档不降级"要落到**每条写路径的 origin 赋值**上；scope 字符串比较前必须先归一，否则"语义相同"会在授权判定里变成"不在声明内"。
 - **2026-11-11** · **N1b 落地：memory.edit / memory.promote**：`memory.edit` 一次审批产出两行（旧行 superseded、仍在库里可查；新行 active、`supersedes` 指向旧行），审批绑定 `before_revision`，不允许改 kind；`memory.promote` 是**移动**：原行立即退役（原作用域不再召回）、目标作用域新行是候选（再 confirm 才召回），Receipt 针对原行（`receipt_memory_id`），`source_refs` 必含原 id，只控制面能调。· **踩到两个同源坑**：策略层 `_classify_memory` 的 overwrite 分支把 `memory_origin == user_explicit` 当成免审批，于是 edit 也被自动放行；但执行侧 `_requires_approval` 的豁免只认 confirm → CLI 报 `overwrite 缺少审批绑定`。修法是把"免审批"按**工具**收口（`memory_tool == memory.confirm`），两处都改，负控：去掉该限制 → `test_cli_edit_keeps_old_row_and_activates_new` 红。第二个坑：`build_request` 对 overwrite 写死 `before_status: "candidate"`，edit/promote 的目标可能是 active → 改成用 `args.get("status")`（可不声明），状态约束由投影迁移校验兜底。· 另：edit 的 Fig 旧测试（`test_supersede_keeps_old_row...`）原来借 propose 的 output 造 supersede，现按生产形状改用 `memory.edit`。
 - **2026-11-11** · **N1 复审整改：堵掉"控制任务复用为模型 Run → 模型继承控制面身份写 workspace"**：第二读者用探针复现——CLI 为 workspace 作用域 confirm/forget 创建的控制任务带 `is_control=1` + workspace 绑定，同一 task 上再开模型 Run，`memory.propose` 到 workspace 会 `succeeded applied` 并写入投影。根因：控制面标记是 **Task 级持久标记**，`exposed=False` 只挡 `memory.remember`、挡不住模型可见的 `propose`。修法：`memory.propose → workspace` 在**派发层与执行侧都无条件拒**（不因 `is_control` 放行），共享写只留 `memory.promote`；补回归 `test_workspace_propose_is_refused_even_on_a_control_task`（负控：去掉两道判定即 `admitted`）。同批按复审建议做的三件小事：`TaskStore.create_task` 对 `memory_scopes` 做 URI 校验（不再只查"非空字符串"）、`cli._task_json` 输出 `is_control`/`memory_scopes`、`_verify` 的"写别人的 task"分支加注释标明是纵深防御（authority/policy 通常先拒）。· **教训**：把"可信来源"落成 **Task 级**标记时，要问"这个 Task 还会不会跑不是那个来源的 Run"——答案是会，所以模型可见的工具必须**无条件**按模型规则限制，不能与"控制面特权"共用同一条豁免。
