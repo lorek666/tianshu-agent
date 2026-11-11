@@ -436,7 +436,14 @@ class ControlPlane:
         # 占用仍留在账本里等 `reconcile()`。
         budget = getattr(self._stack, "budget", None)
         if budget is not None:
-            budget.cancel(f"run:{run.run_id}")
+            account_id = f"run:{run.run_id}"
+            if budget.account(account_id) is None:
+                # 账户是**第一次预占时**才建的。取消发生在之前时，直接 cancel
+                # 会因为"账户不存在"炸掉；而跳过又会让取消意图丢掉——于是这个
+                # Run 之后第一次预占新建的账户是"没被取消"的，请求照发。
+                # 取消是意图，不是既有记录的函数：先建出来，再取消。
+                budget.create_account(account_id, run_id=run.run_id, label="run")
+            budget.cancel(account_id)
         return {"run": self._run_view(view)}
 
     def _require_run(self, run_id: str) -> Any:

@@ -57,8 +57,21 @@ class BudgetExceeded(TianshuError):
     """轮数或 token 预算耗尽（对应验收 A5）。"""
 
 
+class BudgetConfigError(TianshuError):
+    """预算的**配置**进不了所请求的模式。
+
+    目前只有一种来源：硬上限模式（`Limits.budget_bound = "upper"`）需要一个
+    **可验证的输出上界**，而拿到上界的唯一途径是 adapter 的能力声明。拿不到
+    就拒绝进入该模式——用默认的 256 token 输出预留冒充上界，等于把"估算"写成
+    "保证"（PRD §5.6 第 3 条 / §5.7）。
+
+    它与 `BudgetRefused` 的区别：那个是"这次请求被额度闸拒绝"，这个是"这一整套
+    配置根本立不住"，所以在发出第一个请求之前就要失败。
+    """
+
+
 class BudgetRefused(TianshuError):
-    """共享预算账本拒绝了这次预占（额度不足 / 已过 deadline）。
+    """共享预算账本拒绝了这次预占（额度不足 / 已过 deadline / 上界被突破）。
 
     与 `BudgetExceeded` 的区别：后者是单 Run 的事后计数（轮数 / token 用完了），
     前者是**发送前**的原子预占失败。两个都不能被当成"暂时失败"重试——重试
