@@ -79,11 +79,11 @@ function normalizeResources(raw: unknown): string[] {
 }
 
 function normalizeIsolation(raw: unknown): IsolationView | null {
+  // 字段不存在 = 非 exec 动作 / 旧事件。**字段存在但读不懂**（空对象、标量、
+  // 缺 level）不能当成"没有隔离需要说明"——那会把畸形视图静默隐藏；一律
+  // 返回下面的未知视图，让 UI 显示"隔离情况未知"。
+  if (raw === undefined || raw === null) return null;
   const record = asRecord(raw);
-  // 没有这个字段 = 非 exec 动作 / 旧事件；**字段存在但读不懂**不能当成
-  // "没有隔离需要说明"——那是把畸形视图隐藏掉。保留下面的未知视图，让 UI
-  // 显示"隔离情况未知"。
-  if (Object.keys(record).length === 0) return null;
   return {
     backend: asString(record.backend) ?? "",
     declared: readString(record, "declared") ?? "none",
