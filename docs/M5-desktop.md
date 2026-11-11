@@ -175,6 +175,14 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 |---|---|---|
 | `ServerConnection.recv(timeout=...)` | 返回 `None`，`eof` 仍为 `False` | 返回 `None`，且 `eof` 置 `True`（此后再调用立刻返回） |
 | `Client.next_event(timeout=...)` | 返回 `None` | 抛 `ConnectionClosed` |
+| `Client.connect(timeout=...)`（握手期） | 抛 `ConnectionClosed`（预算用尽） | 抛 `ConnectionClosed`，**不重试**；stdout/stdlib 的裸 `EOFError` 不外漏 |
+
+握手期的这一行是收尾轮补的（PR #88）：`multiprocessing` 的认证握手 `answer_challenge()`
+在"对端 accept 后立刻关连接"时抛的是 **`EOFError`**（不是 `OSError`）；`Server.accept()`
+早就把同种情况映射成可重试的 `ProtocolError`，客户端却把裸异常漏给了调用方——
+`request_shutdown()` 只捕 `(IpcError, OSError)`，于是在"daemon 已经退出、端点文件还在"
+的收尾窗口里被打崩（macOS CI 实测）。现在 `connect()` 把握手期 EOF 映射成
+`ConnectionClosed`；**不重试**是刻意的：重试只会把"已经走了"拖成整个 timeout。
 
 由此推出两条写法的约束：
 
@@ -186,7 +194,10 @@ EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 
 回归测试钉住这条语义：`tests/test_ipc.py::test_peer_close_is_distinguishable_from_timeout`、
 `tests/test_ipc.py::test_subscription_drop_raises_instead_of_returning_none`、
-`tests/test_daemon.py::test_client_disconnect_does_not_spin_a_cpu_core`、
+`tests/test_ipc.py::test_handshake_eof_becomes_connection_closed`（POSIX 真 socket：
+只 listen、不握手）、`tests/test_ipc.py::test_handshake_eof_is_mapped_to_connection_closed_everywhere`
+（打桩 `ipc._Socket`，Windows 也跑）、`tests/test_daemon.py::test_client_disconnect_does_not_spin_a_cpu_core`、
+`tests/test_daemon.py::test_request_shutdown_returns_false_when_peer_hangs_up_handshake`、
 `tests/test_integration_m5.py::test_event_stream_ends_when_daemon_goes_away`。
 
 ---

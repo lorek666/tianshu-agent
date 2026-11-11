@@ -215,8 +215,9 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。
-- 全量（**merge `origin/main` 之后**，本分支实测）：`1519 passed, 7 skipped`，
-  `ruff check .` 干净。
+- 全量（**merge `origin/main` 之后**，本分支实测；这是合入时的基线，收尾态见
+  [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md) §3）：
+  `1519 passed, 7 skipped`，`ruff check .` 干净。
 - merge 后**绑定测试当场抓到两处契约漂移**（正是它们存在的目的）：
   ① `task.created` 新增 `control` / `memory_scopes`（记忆契约 v1.2，PR #78）；
   ② 工具白名单新增 `memory.remember`（同一 PR）。两处已补进 v1 契约——不是放宽，
