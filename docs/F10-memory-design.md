@@ -361,7 +361,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 16:05（`feat/memory-retrieval` 工作区实测，已并入 main 的 #88/#89/#90/#91，`1611 passed / 7 skipped`——N2 起点基线 `main @ 8f2440a` 为 `1581 passed / 7 skipped`（含 N5），N2 加 30 条（含首轮复审整改）；其中 218 条来自本特性的**六个**记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 16:05（`feat/memory-retrieval` 工作区实测，已并入 main 的 #88/#89/#90/#91，`1631 passed / 7 skipped`——N2 起点基线 `main @ 8f2440a` 为 `1581 passed / 7 skipped`（含 N5），N2 加 30 条（含首轮复审整改），其余 +20 来自 main 的 #92；其中 218 条来自本特性的**六个**记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
