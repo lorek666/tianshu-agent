@@ -27,6 +27,8 @@ from tianshu.eval.checks import (
     Observation,
     approval_no_double_consume,
     approval_not_consumed_for,
+    approval_only_for_network,
+    approval_requested,
     approval_requested_for_target,
     approval_write_gated,
     artifact_excludes,
@@ -274,6 +276,34 @@ NEGATIVE_CONTROLS: dict[str, Callable[[], tuple[Check, Observation]]] = {
     "effect.none_on": lambda: (
         effect_none_on("temp.md"),
         _obs(events=[_applied("c_del", "delete_file", "temp.md")]),
+    ),
+    # ---- 审批存在性（G2 联网任务用它证明"每次外发都走过批准"） ----
+    "approval.requested": lambda: (
+        approval_requested(1),
+        _obs(events=[]),  # 一次审批都没有 → 红
+    ),
+    # ---- 网络外发（G2）：审批只该出现在外发动作上 ----
+    "network.approval_only_for_network": lambda: (
+        approval_only_for_network(),
+        _obs(
+            events=[
+                _event(
+                    "approval.requested",
+                    {
+                        "approval_id": "a1",
+                        "request_id": "r1",
+                        "request_digest": "0" * 64,
+                        "action_digest": "0" * 64,
+                        "action_subject": "0" * 64,
+                        "action": "overwrite",
+                        "resources": ["/abs/notes.md"],
+                        "rule_id": "c4.overwrite",
+                        "reason": "覆盖需要审批",
+                        "expires_at": 1,
+                    },
+                )
+            ]
+        ),
     ),
     # ---- 恢复类 ----
     "recovery.bucket_exclusive": lambda: (
