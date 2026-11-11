@@ -43,7 +43,7 @@ from typing import Any
 
 from . import memory_control
 from .errors import RunFenced, TianshuError, ToolArgumentError, WorkspaceViolation
-from .execpolicy import ExecPolicy
+from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .loop import Limits, Stack
 from .permissions import ApprovalError, HumanIdentity
 from .resources import MemoryScope, build_memory_scope
@@ -110,6 +110,29 @@ class ControlError(Exception):
 # 集合断言钉住它们。
 
 
+def _require_isolation_boundaries(params: dict[str, Any]) -> tuple[str, ...]:
+    """控制面的 `require_isolation` 参数 → 边界元组；非法值直接 bad_params。"""
+    raw = params.get("require_isolation")
+    if raw is None or raw is False:
+        return ()
+    if not isinstance(raw, list) or not all(
+        isinstance(item, str) and item for item in raw
+    ):
+        raise ControlError(
+            "bad_params",
+            "require_isolation 必须是隔离边界名的字符串列表，"
+            f"可选：{list(ISOLATION_BOUNDARIES)}",
+        )
+    for item in raw:
+        if item not in ISOLATION_BOUNDARIES:
+            raise ControlError(
+                "bad_params",
+                f"未知隔离边界：{item!r}（可选：{list(ISOLATION_BOUNDARIES)}）",
+            )
+    # 去重保序：与 ExecPolicy 的规范化同口径（这里先做一遍是为了错误码更早）
+    return tuple(dict.fromkeys(raw))
+
+
 def task_view(task: Any) -> dict[str, Any]:
     return {
         "task_id": task.task_id,
@@ -135,7 +158,12 @@ def event_view(event: Any) -> dict[str, Any]:
     }
 
 
-def approval_view(approval: Any, *, rule_id: str = "") -> dict[str, Any]:
+def approval_view(
+    approval: Any,
+    *,
+    rule_id: str = "",
+    isolation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "approval_id": approval.approval_id,
         "run_id": approval.run_id,
@@ -144,6 +172,8 @@ def approval_view(approval: Any, *, rule_id: str = "") -> dict[str, Any]:
         "resources": list(approval.resources),
         "reason": approval.reason,
         "rule_id": rule_id,
+        # 审批前可见的隔离视图（F2）：null = 这条动作不涉及执行隔离。
+        "isolation": isolation,
         "state": approval.state,
         "created_at": int(approval.created_at),
         "expires_at": int(approval.expires_at),
@@ -340,8 +370,15 @@ class ControlPlane:
         没有允许清单的"开启 exec"等于让模型随便执行什么，这不是一个可授权的
         请求，而是缺参数。
         """
+        required = _require_isolation_boundaries(params)
         raw = params.get("allow_exec_cmd")
         if raw is None or raw is False:
+            if required:
+                raise ControlError(
+                    "bad_params",
+                    "require_isolation 需要同时给 allow_exec_cmd："
+                    "没有执行策略的隔离要求是空话",
+                )
             return None
         if raw is True:
             raise ControlError(
@@ -365,6 +402,7 @@ class ControlPlane:
             env_allowlist=("PATH",),
             max_output_bytes=EXEC_DEFAULT_MAX_OUTPUT_BYTES,
             timeout_ms=EXEC_DEFAULT_TIMEOUT_MS,
+            isolation_requires=required,
         )
 
     def _task_revise(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -520,24 +558,35 @@ class ControlPlane:
     def _list_approvals(self, run_id: str | None) -> list[dict[str, Any]]:
         """过期的先清再列（批了也不会执行的不该留在队列里，§3.4）。"""
         self._approvals.expire_due()
-        rule_ids = self._approval_rule_ids()
-        return [
-            approval_view(approval, rule_id=rule_ids.get(approval.approval_id, ""))
-            for approval in self._approvals.pending(run_id=run_id)
-        ]
+        context = self._approval_context()
+        views = []
+        for approval in self._approvals.pending(run_id=run_id):
+            rule_id, isolation = context.get(approval.approval_id, ("", None))
+            views.append(
+                approval_view(approval, rule_id=rule_id, isolation=isolation)
+            )
+        return views
 
-    def _approval_rule_ids(self) -> dict[str, str]:
-        """`Approval` 投影没有 `rule_id`，它只存在于 `approval.requested` 事件里。
+    def _approval_context(
+        self,
+    ) -> dict[str, tuple[str, dict[str, Any] | None]]:
+        """`Approval` 投影没有 `rule_id` / `isolation`，它们只在
+        `approval.requested` 事件里。
 
-        视图要按契约给出 rule_id（UI 拿去映射人话），所以从事件读一次；
+        视图要按契约给出这两项（UI 拿去映射人话），所以从事件读一次；
         同一张审批只会被请求一次（`ApprovalStore.request` 幂等），字典不会歧义。
         """
-        mapping: dict[str, str] = {}
+        mapping: dict[str, tuple[str, dict[str, Any] | None]] = {}
         for event in self._log.read_types(["approval.requested"]):
             approval_id = event.payload.get("approval_id")
+            if not isinstance(approval_id, str) or approval_id in mapping:
+                continue
             rule_id = event.payload.get("rule_id")
-            if isinstance(approval_id, str) and isinstance(rule_id, str):
-                mapping.setdefault(approval_id, rule_id)
+            isolation = event.payload.get("isolation")
+            mapping[approval_id] = (
+                rule_id if isinstance(rule_id, str) else "",
+                isolation if isinstance(isolation, dict) else None,
+            )
         return mapping
 
     def _approvals_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -574,10 +623,12 @@ class ControlPlane:
             actor=HumanIdentity.local_cli(),
         )
         resumed = self._enqueue_resume(approval.run_id)
-        rule_ids = self._approval_rule_ids()
+        rule_id, isolation = self._approval_context().get(
+            approval.approval_id, ("", None)
+        )
         return {
             "approval": approval_view(
-                approval, rule_id=rule_ids.get(approval.approval_id, "")
+                approval, rule_id=rule_id, isolation=isolation
             ),
             "resumed": resumed,
         }

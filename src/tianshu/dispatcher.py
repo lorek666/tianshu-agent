@@ -64,6 +64,7 @@ from .execpolicy import (
 )
 from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked
+from .isolation import isolation_view, require_isolation_requirements
 from .jobs import JobClaim, JobLost, JobStore
 from .leases import (
     GUARD_TIMEOUT_MS,
@@ -564,7 +565,23 @@ class Dispatcher:
         )
         if executor is not None:
             # 自定义 executor 也让"预检看到的后端"与"执行看到的后端"必须同一个：
-            # 只核默认构造等于给旁路留门。
+            # 只核默认构造等于给旁路留门。数据根同理——审批 probe 与执行
+            # probe 必须是同一个现场。
+            executor_data_root = getattr(executor, "data_root", None)
+            same_root = executor_data_root == self._data_root
+            if not same_root and (
+                executor_data_root is not None and self._data_root is not None
+            ):
+                same_root = (
+                    Path(executor_data_root).resolve()
+                    == Path(self._data_root).resolve()
+                )
+            if not same_root:
+                raise TianshuError(
+                    "Dispatcher 收到的执行器数据根与派发层不一致："
+                    f"{executor_data_root} vs {self._data_root}"
+                    "（隔离证据必须来自同一个探测现场）"
+                )
             executor_backend = getattr(executor, "exec_backend", None)
             if executor_backend is not self._exec_backend:
                 raise TianshuError(
@@ -585,6 +602,7 @@ class Dispatcher:
             log=log,
             snapshots=snapshots,
             exec_backend=self._exec_backend,
+            data_root=self._data_root,
         )
 
     # ---- 只读查询 ----
@@ -710,6 +728,7 @@ class Dispatcher:
         if sha256_hex(canonical_bytes(args)) != request.args_hash:
             raise DispatchError("args 与 request.args_hash 不符（请求被改过）")
 
+        isolation: dict[str, Any] | None = None
         try:
             auth = self._authority(request, claim)
             target = self._resolve_target(request, auth)
@@ -723,7 +742,9 @@ class Dispatcher:
                 pass
             else:
                 if request.action == ACTION_EXEC:
-                    self._precheck_exec(request, args, target.path)
+                    isolation = self._precheck_exec(request, args, target.path)
+                else:
+                    isolation = None
                 ok, reason = check_request_preconditions(
                     request.action, target.path, request.preconditions or {}
                 )
@@ -764,19 +785,18 @@ class Dispatcher:
 
         if decision.is_auto:
             self._store_request(request, args, STATE_ADMITTED, decision.reason, decision.rule_id)
-            self._append(
-                request,
-                DISPATCH_REQUESTED,
-                {
-                    "request_id": request.request_id,
-                    "request_digest": request.digest(),
-                    "action_digest": request.action_digest(),
-                    "action": request.action,
-                    "resources": list(request.resources),
-                    "decision": "auto",
-                    "rule_id": decision.rule_id,
-                },
-            )
+            payload = {
+                "request_id": request.request_id,
+                "request_digest": request.digest(),
+                "action_digest": request.action_digest(),
+                "action": request.action,
+                "resources": list(request.resources),
+                "decision": "auto",
+                "rule_id": decision.rule_id,
+            }
+            if isolation is not None:
+                payload["isolation"] = isolation
+            self._append(request, DISPATCH_REQUESTED, payload)
             return DispatchDecision(
                 KIND_ADMITTED,
                 request.request_id,
@@ -813,7 +833,9 @@ class Dispatcher:
             approval = None
 
         if approval is None:
-            approval = self._approvals.request(request, decision)
+            approval = self._approvals.request(
+                request, decision, isolation=isolation
+            )
 
         state = STATE_WAITING if approval.state == "pending" else STATE_ADMITTED
         self._store_request(
@@ -824,20 +846,19 @@ class Dispatcher:
             decision.rule_id,
             approval_id=approval.approval_id,
         )
-        self._append(
-            request,
-            DISPATCH_REQUESTED,
-            {
-                "request_id": request.request_id,
-                "request_digest": request.digest(),
-                "action": request.action,
-                "resources": list(request.resources),
-                "decision": decision.kind,
-                "rule_id": decision.rule_id,
-                "approval_id": approval.approval_id,
-                "approval_state": approval.state,
-            },
-        )
+        approval_payload = {
+            "request_id": request.request_id,
+            "request_digest": request.digest(),
+            "action": request.action,
+            "resources": list(request.resources),
+            "decision": decision.kind,
+            "rule_id": decision.rule_id,
+            "approval_id": approval.approval_id,
+            "approval_state": approval.state,
+        }
+        if isolation is not None:
+            approval_payload["isolation"] = isolation
+        self._append(request, DISPATCH_REQUESTED, approval_payload)
         if state == STATE_WAITING:
             return DispatchDecision(
                 KIND_WAITING,
@@ -1580,7 +1601,7 @@ class Dispatcher:
 
     def _precheck_exec(
         self, request: ActionRequest, args: dict[str, Any], target: Path
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """在发起审批**之前**跑一遍 F2 的判定。
 
         两件事必须在审批前知道，否则用户会为一条注定跑不了的命令签字：
@@ -1594,7 +1615,7 @@ class Dispatcher:
         policy = task.exec_policy if task is not None else None
         if policy is None:
             # 没配置策略：交给 classify 报 c4.exec_not_configured。
-            return
+            return None
 
         argv = args.get("argv")
         try:
@@ -1612,6 +1633,24 @@ class Dispatcher:
                         rule_id="f2.pty_not_allowed",
                     )
                 check_capabilities(policy, self._exec_backend.capabilities)
+            # 预检与执行必须用**同一个探测现场**：执行时的 workspace 是
+            # `args["cwd"]` 解析后的目录（`_write_target`），不是请求目标本身。
+            # 解析失败（越界/非法类型）必须变成**可解释的拒绝**，不能让
+            # `prepare()` 抛裸 `WorkspaceViolation` 把整个 Run 收成 failed。
+            try:
+                probe_workspace = Workspace(target).resolve(args.get("cwd", "."))
+            except (
+                WorkspaceViolation, ToolArgumentError, OSError, ValueError, TypeError
+            ) as exc:
+                raise DispatchDenied(
+                    f"执行目录不可用：{exc}", "c4.outside_workspace"
+                ) from exc
+            report = require_isolation_requirements(
+                policy,
+                self._exec_backend,
+                workspace=probe_workspace,
+                data_root=self._data_root,
+            )
         except PolicyDenied as exc:
             raise DispatchDenied(
                 f"exec 策略拒绝：{exc}", "c4.exec_policy_denied"
@@ -1620,6 +1659,7 @@ class Dispatcher:
             raise DispatchDenied(
                 f"exec 后端不支持：{exc}", "c4.exec_unsupported"
             ) from exc
+        return isolation_view(self._exec_backend, report)
 
     @contextlib.contextmanager
     def _begin_memory_execution(self, request: ActionRequest, claim: JobClaim):

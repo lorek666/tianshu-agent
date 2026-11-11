@@ -116,6 +116,7 @@ describe("枚举 → 人话", () => {
       resources: ["/a.pdf", "/b.pdf", "/c.pdf"],
       reason: "删除不可逆",
       rule_id: "c4.delete",
+      isolation: null,
       state: "pending",
       created_at: 1,
       expires_at: 2,
@@ -265,6 +266,99 @@ describe("事件 → 时间线句子", () => {
     expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
     expect(entries[1]?.raw.payload).toEqual({ text: "第二步" });
     expect(entries[0]?.type).toBe("run.started");
+  });
+
+  it("隔离视图：受信任执行 / 自述未实测 / 自述与实测冲突，优先级不能反", () => {
+    const trusted = humanizeEvent(
+      event("tool.result", {
+        tool: "run_command",
+        output: {
+          isolation: {
+            backend: "local-posix",
+            declared: "none",
+            measured: null,
+            level: "none",
+            unverified: true,
+            contradicted: false,
+            boundaries: { files_authority: "unknown" },
+            enforced_boundaries: [],
+          },
+        },
+      }),
+    );
+    expect(trusted.sentence).toContain("受信任执行");
+    expect(trusted.sentence).toContain("未隔离");
+
+    const partial = humanizeEvent(
+      event("tool.result", {
+        tool: "run_command",
+        output: {
+          isolation: {
+            backend: "local-posix",
+            declared: "none",
+            measured: "none",
+            level: "none",
+            unverified: false,
+            contradicted: false,
+            boundaries: { process_tree: "enforced", files_authority: "not_enforced" },
+            enforced_boundaries: ["process_tree"],
+          },
+        },
+      }),
+    );
+    expect(partial.sentence).toContain("整体未隔离");
+    expect(partial.sentence).toContain("「进程树」边界有实测证据");
+    expect(partial.sentence).not.toContain("已隔离");
+    expect(partial.sentence).not.toContain("部分安全");
+
+    const unverified = humanizeEvent(
+      event("dispatch.requested", {
+        action: "exec",
+        isolation: {
+          backend: "fake",
+          declared: "app_container",
+          measured: null,
+          level: "none",
+          unverified: true,
+          contradicted: false,
+          boundaries: {},
+          enforced_boundaries: [],
+        },
+      }),
+    );
+    expect(unverified.sentence).toContain("未实测");
+    expect(unverified.sentence).not.toContain("已隔离");
+    // `level === none` 不能抢在 unverified 前面把"自述 app_container"说成未隔离
+    expect(unverified.sentence).not.toContain("受信任执行");
+
+    const contradicted = humanizeEvent(
+      event("tool.result", {
+        tool: "run_command",
+        output: {
+          isolation: {
+            backend: "fake",
+            declared: "app_container",
+            measured: "none",
+            level: "none",
+            unverified: false,
+            contradicted: true,
+            boundaries: {},
+            enforced_boundaries: [],
+          },
+        },
+      }),
+    );
+    expect(contradicted.sentence).toContain("自述");
+    expect(contradicted.sentence).toContain("实测");
+
+    const malformed = humanizeEvent(
+      event("tool.result", {
+        tool: "run_command",
+        output: { isolation: { declared: "none", unverified: true } },
+      }),
+    );
+    expect(malformed.sentence).toContain("隔离情况未知");
+    expect(malformed.sentence).not.toContain("受信任执行");
   });
 
   it("eventDetail 只把原始 type / rule_id / payload 交给折叠详情", () => {

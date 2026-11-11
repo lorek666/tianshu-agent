@@ -50,6 +50,12 @@ from typing import IO
 from .errors import TianshuError
 from .execpolicy import (
     FEATURE_PTY,
+    ISOLATION_BOUNDARIES,
+    ISOLATION_BOUNDARY_CREDENTIALS,
+    ISOLATION_BOUNDARY_FILES,
+    ISOLATION_BOUNDARY_NETWORK,
+    ISOLATION_BOUNDARY_PROCESS_TREE,
+    ISOLATION_NONE,
     ExecBackendCapabilities,
     ExecPolicy,
     PolicyDenied,
@@ -85,7 +91,7 @@ def local_capabilities() -> ExecBackendCapabilities:
     posix = os.name == "posix"
     return ExecBackendCapabilities(
         name="local-posix" if posix else "local-windows",
-        isolation="none",
+        isolation=ISOLATION_NONE,
         supports_pty=posix,
         supports_signals=posix,
         supports_process_group=posix,
@@ -105,16 +111,9 @@ LOCAL_EXEC_CAPABILITIES = local_capabilities()
 # 结果不一致时（例如后端自称隔离、探针却看到子进程能读写任意路径），门按
 # 探针证据拒绝——声明不能自己给自己发通行证。
 
-ISOLATION_BOUNDARY_FILES = "files_authority"
-ISOLATION_BOUNDARY_NETWORK = "network"
-ISOLATION_BOUNDARY_CREDENTIALS = "credentials"
-ISOLATION_BOUNDARY_PROCESS_TREE = "process_tree"
-ISOLATION_BOUNDARIES: tuple[str, ...] = (
-    ISOLATION_BOUNDARY_FILES,
-    ISOLATION_BOUNDARY_NETWORK,
-    ISOLATION_BOUNDARY_CREDENTIALS,
-    ISOLATION_BOUNDARY_PROCESS_TREE,
-)
+#: 边界常量定义在 `execpolicy.py`（策略要引用它们做封闭枚举），这里 re-export
+#: 是为了既有 import 路径（`isolation.py` / 测试 / 文档）不被迫改。
+
 
 #: 探针结论三态。`unknown` 与 `not_enforced` 一样阻断依赖能力——
 #: "没证明隔离"不等于"隔离成立"。

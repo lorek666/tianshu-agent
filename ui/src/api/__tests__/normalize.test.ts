@@ -71,3 +71,39 @@ describe("Host 返回值的宽容读取", () => {
     ]);
   });
 });
+
+describe("normalizeApproval 的隔离视图", () => {
+  it("字段存在但读不懂时保留为未知视图，不隐藏成 null", () => {
+    const approval = normalizeApproval({
+      approval_id: "appr_1",
+      action: "c4.exec",
+      state: "pending",
+      isolation: { declared: "none", unverified: true },
+    });
+    expect(approval).not.toBeNull();
+    expect(approval?.isolation).not.toBeNull();
+    expect(approval?.isolation?.level).toBe("");
+  });
+
+  it("空对象 / 标量也算“字段存在但读不懂”，不隐藏", () => {
+    for (const raw of [{}, "x", 42]) {
+      const approval = normalizeApproval({
+        approval_id: "appr_1",
+        action: "c4.exec",
+        state: "pending",
+        isolation: raw,
+      });
+      expect(approval?.isolation).not.toBeNull();
+      expect(approval?.isolation?.level).toBe("");
+    }
+  });
+
+  it("完全没有 isolation 字段时是 null（非 exec / 旧事件）", () => {
+    const approval = normalizeApproval({
+      approval_id: "appr_1",
+      action: "c4.delete",
+      state: "pending",
+    });
+    expect(approval?.isolation).toBeNull();
+  });
+});

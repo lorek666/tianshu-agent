@@ -144,13 +144,20 @@ RunView      {run_id, task_id, state, outcome, effect_state, control_requested,
               goal_revision, lease_epoch, started_at, ended_at,
               n_applied, n_unknown, undoable}
 ApprovalView {approval_id, run_id, task_id, action, resources, reason, rule_id,
-              state, created_at, expires_at}
+              isolation, state, created_at, expires_at}
 EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 ```
 
 `action` / `rule_id` / `state` / `effect_state` 是**机器枚举**。UI 必须做人话映射，
 不许把枚举直接甩给用户（PRD §14 F14：普通用户只看人话）。`digest` 不进视图：
 审批卡不展示摘要，人和模型之间不该靠一串哈希沟通；需要排障时走 CLI。
+
+`ApprovalView.isolation`（F2 起）是审批**之前**可见的隔离视图：exec 动作带
+`{backend, declared, measured, level, unverified, contradicted, boundaries,
+enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令"的输入，
+不是执行后的通知——执行结果里的同一份视图在 `tool.result.output.isolation`。
+映射优先级（contradicted > unverified > 部分边界 > none）见
+`ui/src/lib/humanize.ts::isolationSentence`。
 
 `RunView.started_at` 是 `run.start` 落库时间（`runs.created_at`），回答的是"这个 Run
 什么时候被要求开始"，**不声称**"第一轮模型调用发生在那一刻"——投影里没有后者这个

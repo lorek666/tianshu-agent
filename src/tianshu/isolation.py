@@ -61,6 +61,9 @@ from .execpolicy import (
     PolicyUnsupported,
 )
 
+#: 探测逻辑版本。缓存键与报告都带它：探针语义变了，旧证据不能继续给新代码用。
+PROBE_VERSION = "v1"
+
 #: 非杀树探针的子进程超时上限。真实子进程出问题时宁可 unknown，不挂住调用方。
 PROBE_TIMEOUT_MS = 5_000
 
@@ -154,6 +157,12 @@ class IsolationReport:
     backend: str
     platform: str
     findings: tuple[IsolationFinding, ...] = field(default_factory=tuple)
+    #: 探测现场：报告只对"这两个解析后的目录"有效。空串 = 手工构造/未绑定，
+    #: 门会拒绝它（报告不是这次的证据，就不是证据）。
+    workspace: str = ""
+    data_root: str = ""
+    probe_version: str = PROBE_VERSION
+    timeout_ms: int = PROBE_TIMEOUT_MS
 
     def __post_init__(self) -> None:
         if not isinstance(self.backend, str) or not self.backend:
@@ -190,6 +199,181 @@ class IsolationReport:
         return tuple(
             f.boundary for f in self.findings if f.status == BOUNDARY_UNKNOWN
         )
+
+
+# --------------------------------------------------------------- 视图、缓存与按策略的要求
+
+
+#: 等级 → 该等级要求"累计"通过的边界。只用于**显示**（`isolation_view.level`）：
+#: 门的判据是"请求了哪条边界就核哪条"，边界之间独立，不按这张表连带检查。
+ISOLATION_LEVEL_BOUNDARIES: dict[str, tuple[str, ...]] = {
+    "none": (),
+    "path_only": (ISOLATION_BOUNDARY_FILES,),
+    "process_tree": (
+        ISOLATION_BOUNDARY_FILES,
+        ISOLATION_BOUNDARY_PROCESS_TREE,
+    ),
+    "app_container": ISOLATION_BOUNDARIES,
+}
+
+_PROBE_CACHE: dict[tuple[object, ...], tuple[object, IsolationReport]] = {}
+
+
+def measured_level(report: IsolationReport | None) -> str:
+    """只按**实测**报告推累计等级；没有报告 = `none`（声明不产生等级）。
+
+    `unknown` / `not_enforced` 都不算通过。累计语义：`process_tree` 要求
+    files + tree 都 enforced，`app_container` 要求四边界全过——这与 TECH-ARCH
+    的分层一致，但**只用于显示**，不是门的判据（见 `require_isolation_requirements`）。
+    """
+    if report is None:
+        return "none"
+    for level in ("app_container", "process_tree", "path_only"):
+        if all(
+            report.finding(boundary).status == BOUNDARY_ENFORCED
+            for boundary in ISOLATION_LEVEL_BOUNDARIES[level]
+        ):
+            return level
+    return "none"
+
+
+def isolation_view(
+    backend: Any, report: IsolationReport | None = None
+) -> dict[str, Any]:
+    """一次执行的隔离视图（机器可读；中文映射在 UI）。
+
+    - `level`：有报告时按实测累计；无报告恒 `none`——**自述不产生等级**。
+    - `unverified`：没有报告。UI 必须先处理它，不能直接按 `level` 说"受信任执行"。
+    - `contradicted`：自述与实测不一致（报告胜出）。
+    - `boundaries`：逐边界状态；无报告时四边界都是 `unknown`（不知道 ≠ 已挡住）。
+    """
+    capabilities = backend.capabilities
+    declared = capabilities.isolation
+    boundaries = {
+        boundary: (
+            report.finding(boundary).status
+            if report is not None
+            else BOUNDARY_UNKNOWN
+        )
+        for boundary in ISOLATION_BOUNDARIES
+    }
+    level = measured_level(report)
+    return {
+        "backend": _backend_name(backend),
+        "declared": declared,
+        "measured": level if report is not None else None,
+        "level": level,
+        "unverified": report is None,
+        "contradicted": report is not None and level != declared,
+        "boundaries": boundaries,
+        "enforced_boundaries": (
+            sorted(report.enforced) if report is not None else []
+        ),
+    }
+
+
+def probe_backend_cached(
+    backend: Any,
+    *,
+    workspace: str | os.PathLike[str],
+    data_root: str | os.PathLike[str],
+    timeout_ms: int = PROBE_TIMEOUT_MS,
+    refresh: bool = False,
+) -> IsolationReport:
+    """带缓存的探测。缓存条目绑定**探测现场 + 后端对象身份 + 探测版本**：
+
+    - 换 `data_root`/`workspace` → 重测（`files_authority` 的证据依赖这两个路径）；
+    - `register_exec_backend(replace=True)` / `reset_exec_backends()` 之后解析到的
+      是另一个对象 → 重测（同名新实现不能继承旧实现的 `enforced`）；
+    - 探测逻辑升级（`PROBE_VERSION` 变）→ 重测。
+    """
+    ws = Path(workspace).resolve()
+    root = Path(data_root).resolve()
+    key: tuple[object, ...] = (
+        id(backend),
+        platform_label(),
+        str(ws),
+        str(root),
+        timeout_ms,
+        PROBE_VERSION,
+    )
+    cached = _PROBE_CACHE.get(key)
+    if cached is not None and cached[0] is backend and not refresh:
+        return cached[1]
+    report = probe_backend(
+        backend, workspace=ws, data_root=root, timeout_ms=timeout_ms
+    )
+    _PROBE_CACHE[key] = (backend, report)
+    return report
+
+
+def reset_probe_cache() -> None:  # pragma: no cover - 只给测试
+    """清空进程内探测缓存。"""
+    _PROBE_CACHE.clear()
+
+
+def require_isolation_requirements(
+    policy: ExecPolicy,
+    backend: Any,
+    *,
+    workspace: str | os.PathLike[str],
+    data_root: str | os.PathLike[str],
+    report: IsolationReport | None = None,
+) -> IsolationReport | None:
+    """按策略声明的边界逐条过门；任何一条没有实测证明就拒绝。
+
+    - `policy.isolation_requires` 为空 → 不探测、不拒绝（返回 None）；
+    - 非空 → 必须有**绑定本次现场**的报告：`workspace` / `data_root` 必须与
+      解析后路径一致，`probe_version` 必须是当前版本。调用方塞进来的其它现场
+      报告一律拒绝（否则"换个数据根的重测"就绕过了缓存键）；
+    - 边界之间**独立**：请求 `process_tree` 只核杀树，不隐含 files。
+    """
+    required = tuple(getattr(policy, "isolation_requires", ()))
+    if not required:
+        return None
+    ws = Path(workspace).resolve()
+    name = _backend_name(backend)
+    if data_root is None:
+        # 没有数据根就产不出绑定现场的报告；拿临时目录假装测过 =
+        # 把另一个现场的结论当成这个任务的证据。
+        raise IsolationRefused(
+            backend=name,
+            boundary=required[0],
+            status=BOUNDARY_UNKNOWN,
+            evidence="执行路径没有数据根：无法产出绑定本次现场的报告",
+        )
+    root = Path(data_root).resolve()
+    if report is None:
+        report = probe_backend_cached(
+            backend, workspace=ws, data_root=root
+        )
+    expected_platform = platform_label()
+    if (
+        report.backend != name
+        or report.platform != expected_platform
+        or report.workspace != str(ws)
+        or report.data_root != str(root)
+        or report.probe_version != PROBE_VERSION
+        or report.timeout_ms != PROBE_TIMEOUT_MS
+    ):
+        # 报告是"某个后端在某个平台某个现场"的证据；少核任何一项，
+        # 都会让另一个后端/平台/现场的 enforced 被复用（F2-c6 的反面）。
+        raise IsolationRefused(
+            backend=name,
+            boundary=required[0],
+            status=BOUNDARY_UNKNOWN,
+            evidence=(
+                "隔离报告不属于本次探测现场"
+                f"（报告 backend={report.backend!r} platform={report.platform!r}"
+                f" workspace={report.workspace!r} data_root={report.data_root!r}"
+                f" probe={report.probe_version!r} timeout={report.timeout_ms!r}；"
+                f"本次 {name!r}/"
+                f"{expected_platform!r}/{str(ws)!r}/{str(root)!r}/{PROBE_VERSION!r}）"
+            ),
+        )
+    for boundary in required:
+        require_isolation(backend, boundary, report=report)
+    return report
 
 
 # --------------------------------------------------------------- 依赖关系
@@ -351,6 +535,10 @@ def probe_backend(
         backend=_backend_name(backend),
         platform=platform_label(),
         findings=findings,
+        workspace=str(ws),
+        data_root=str(root),
+        probe_version=PROBE_VERSION,
+        timeout_ms=timeout_ms,
     )
 
 
@@ -758,9 +946,16 @@ __all__ = [
     "PROBE_GRACE_MS",
     "PROBE_KILL_WINDOW_MS",
     "PROBE_TIMEOUT_MS",
+    "PROBE_VERSION",
+    "ISOLATION_LEVEL_BOUNDARIES",
     "SpawnBackend",
     "enabled_capabilities",
+    "isolation_view",
+    "measured_level",
     "probe_backend",
+    "probe_backend_cached",
     "require_capability",
     "require_isolation",
+    "require_isolation_requirements",
+    "reset_probe_cache",
 ]

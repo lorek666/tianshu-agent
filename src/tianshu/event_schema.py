@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from .errors import TianshuError
+from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
 
 __all__ = [
     "CURRENT_PAYLOAD_VERSION",
@@ -245,6 +246,45 @@ _WORKSPACE_BINDING = _obj(
     },
     required=("root_path", "mode", "snapshot_policy"),
 )
+#: 四边界探针的结论三态。与 `exec.BOUNDARY_*` 同口径；封闭集，未知值写不进去。
+_BOUNDARY_STATUS = _enum("enforced", "not_enforced", "unknown")
+
+#: 一次执行的隔离视图（F2）。机器可读，不许出现"人话"字段——中文映射在 UI。
+#: `level` 是**累计显示**（`measured_level`），`boundaries` 才是逐边界证据；
+#: `unverified` / `contradicted` 必须由 UI 按优先级先于 `level` 处理。
+#: 与 `execpolicy.ISOLATION_LEVELS` 同一套封闭集（能力声明与输出契约必须一致）。
+_ISOLATION_LEVEL = _enum(*ISOLATION_LEVELS)
+
+_ISOLATION_VIEW = _obj(
+    {
+        "backend": _s(),
+        # 自述级别：封闭集（后端只能声明这几个；v1 实际只有 none）。
+        "declared": _ISOLATION_LEVEL,
+        # 实测级别：可 null（没有报告），但一旦有值必须是已知级别。
+        "measured": _opt(copy.deepcopy(_ISOLATION_LEVEL)),
+        "level": copy.deepcopy(_ISOLATION_LEVEL),
+        "unverified": _b(),
+        "contradicted": _b(),
+        # 四边界必须齐全：缺一条就等于"不知道的那条"被静默当成 null。
+        "boundaries": _obj(
+            {boundary: _BOUNDARY_STATUS for boundary in ISOLATION_BOUNDARIES},
+            required=tuple(ISOLATION_BOUNDARIES),
+        ),
+        # 已证明的边界也只能是四边界名（不是任意字符串）。
+        "enforced_boundaries": _arr(_enum(*ISOLATION_BOUNDARIES)),
+    },
+    required=(
+        "backend",
+        "declared",
+        "measured",
+        "level",
+        "unverified",
+        "contradicted",
+        "boundaries",
+        "enforced_boundaries",
+    ),
+)
+
 _EXEC_POLICY = _obj(
     {
         "argv_allowlist": _arr(_s()),
@@ -254,6 +294,9 @@ _EXEC_POLICY = _obj(
         "max_output_bytes": _i(),
         "timeout_ms": _i(),
         "allow_pty": _b(),
+        # 可选：老任务/老事件没有这个字段，仍必须合法；边界名用封闭枚举，
+        # 非法值在**写入前**就拒绝（不能等到任务加载才炸）。
+        "isolation_requires": _arr(_enum(*ISOLATION_BOUNDARIES)),
     },
     required=(
         "argv_allowlist",
@@ -418,6 +461,8 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "rule_id": _RULE_ID,
             "reason": _s(),
             "expires_at": _i(minimum=1),
+            # 与 dispatch.requested 同一个视图；审批卡片从事件回读它。
+            "isolation": _ISOLATION_VIEW,
         },
         required=(
             "approval_id",
@@ -480,6 +525,9 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "rule_id": _RULE_ID,
             "approval_id": _opt(_s()),
             "approval_state": _opt(_APPROVAL_STATE),
+            # 可选的隔离视图：exec 动作在**审批前**就带上，UI 审批卡片据此说
+            # 实话（"受信任执行/自述未实测/自述与实测冲突"）。
+            "isolation": _ISOLATION_VIEW,
         },
         required=("request_id", "request_digest", "action", "resources", "decision", "rule_id"),
     ),

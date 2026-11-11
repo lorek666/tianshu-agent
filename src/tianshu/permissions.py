@@ -820,6 +820,7 @@ class ApprovalStore:
     def request(
         self, request: ActionRequest, decision: PolicyDecision, *,
         ttl_ms: int = APPROVAL_TTL_MS,
+        isolation: dict[str, Any] | None = None,
     ) -> Approval:
         """登记一个待批请求。同一个摘要已有 pending/approved 时不重复创建。"""
         if decision.is_denied:
@@ -867,21 +868,25 @@ class ApprovalStore:
                 " subject_digest, created_at) VALUES (?,?,?,?)",
                 (approval_id, request.run_id, subject, now),
             )
+            payload: dict[str, Any] = {
+                "approval_id": approval_id,
+                "request_id": request.request_id,
+                "request_digest": digest,
+                "action_digest": action,
+                "action_subject": subject,
+                "action": request.action,
+                "resources": sorted(request.resources),
+                "rule_id": decision.rule_id,
+                "reason": decision.reason,
+                "expires_at": now + ttl_ms,
+            }
+            if isolation is not None:
+                # 审批卡片要能在**批准之前**说明"这条命令不受隔离"（PRD §8.1）。
+                payload["isolation"] = dict(isolation)
             tx.append(
                 request.run_id,
                 APPROVAL_REQUESTED,
-                {
-                    "approval_id": approval_id,
-                    "request_id": request.request_id,
-                    "request_digest": digest,
-                    "action_digest": action,
-                    "action_subject": subject,
-                    "action": request.action,
-                    "resources": sorted(request.resources),
-                    "rule_id": decision.rule_id,
-                    "reason": decision.reason,
-                    "expires_at": now + ttl_ms,
-                },
+                payload,
                 task_id=request.task_id,
                 actor_kind="core",
             )
