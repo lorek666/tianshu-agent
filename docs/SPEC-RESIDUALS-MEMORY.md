@@ -680,6 +680,7 @@ React 面板仍未接。）
   `memory.erase` 删副本 + `content_state=unavailable`、**真 Host `/rpc` + token 代理
   （无 token 401）**、revision 过期 `conflict`。
 - **负控（真跑）**：把 `memory.edit` 端点改成"返回假成功、不派发"→ edit 事件用例红。
+- **CI 抓到的真 bug（作业竞态）**：Daemon 驱动线程与 `ControlPlane` 共用作业队列，`open_control_run` 原先先 `enqueue` 再 `claim`，ubuntu CI（慢机器）上驱动线程先 `claim_next()` 认领了控制面的 pending 作业，`memory.remember` 报 `internal: job 仍由活着的 owner 持有`。修法：`JobStore.enqueue_and_claim()` 入队 + 认领在同一个写事务；判据 `test_enqueue_and_claim_never_exposes_a_pending_job` + `test_control_run_claims_its_job_atomically`（负控：改回两步 → 两条红）。
 - **偏差 / 没做**：
   0. **这些端点不是授权边界**（复审抓到的核心口径错误）：`run_command` 同 uid 可经
      CLI/IPC 调同一控制面（模型被授予 `run_command` 时等于可达）；要收口需要进程级沙箱

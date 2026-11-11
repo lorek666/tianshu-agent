@@ -1221,8 +1221,11 @@ class Dispatcher:
                         f"{exc}；且拒绝接管的阻断证据登记不完整：{record_exc}"
                     ) from exc
                 raise
-        job = self._claims.enqueue(run.run_id)
-        claim = self._claims.claim(job.job_id)
+        # 入队与认领**必须原子**：Daemon 的驱动线程随时在 `claim_next()` 扫
+        # pending 作业，先 enqueue 再 claim 会让它在窗口里抢走这条作业，控制面
+        # 随即吃 `JobLost`（"仍由活着的 owner 持有"）。CLI 单进程时窗口是微秒级，
+        # 但 UI/daemon 里的记忆写端点真在 CI 上撞到过（`internal` 报错）。
+        _job, claim = self._claims.enqueue_and_claim(run.run_id)
         run = self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim,
                                      reason="control_run")
         return ControlRun(

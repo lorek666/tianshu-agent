@@ -721,3 +721,50 @@ def test_job_finished_event_records_outcome(env):
     events = log.read_types([JOB_FINISHED])
     assert events[0].payload["outcome"] == "succeeded"
     assert events[0].payload["claim_epoch"] == 1
+
+def test_enqueue_and_claim_never_exposes_a_pending_job(env, monkeypatch) -> None:
+    """结构判据：入队与认领之间**不能**有可被别的连接抢走的窗口。
+
+    Daemon 的驱动线程每几十毫秒 `claim_next()` 扫一次 pending 作业。控制面
+    （UI 的记忆写 / 撤销）若先 `enqueue` 再 `claim`，两步之间的窗口就归驱动线程
+    所有：CI（慢机器）上真复现过 `memory.remember` 报
+    `internal: job 仍由活着的 owner 持有，拒绝接管`。
+
+    这条用猴子补丁把窗口**确定性**放大：`enqueue` 一旦被调用，就立刻用第二条
+    连接把作业抢走（模拟驱动线程最坏情况）。原子实现根本不调用 `enqueue`，
+    所以抢不到；谁把它改回"先 enqueue 再 claim"，这里就会 `JobLost` 变红。
+    比"开线程碰运气"可靠——并发版本在 8 次里一次都没撞上。
+    """
+    from tianshu.events import EventLog as _EventLog
+    from tianshu.jobs import JobStore as _JobStore
+
+    log, tasks, _leases, jobs, ws, _data_root = env
+    stolen: list[str] = []
+
+    original_enqueue = jobs.enqueue
+
+    def enqueue_then_steal(run_id: str):
+        job = original_enqueue(run_id)
+        # 第二条连接 = 另一个持写锁的竞争者（daemon 驱动线程的最小同构）。
+        other_log = _EventLog(log.db_path)
+        try:
+            other = _JobStore(other_log)
+            claim = other.claim_next()
+            if claim is not None:
+                stolen.append(claim.job_id)
+                other.finish(claim, outcome="succeeded")
+        finally:
+            other_log.close()
+        return job
+
+    monkeypatch.setattr(jobs, "enqueue", enqueue_then_steal)
+
+    task = tasks.create_task("控制面写", [str(ws)])
+    run = tasks.start_run(task.task_id)
+    job, claim = jobs.enqueue_and_claim(run.run_id)  # 旧实现会在这里 JobLost
+    try:
+        assert stolen == [], f"作业在入队后、认领前被抢走：{stolen}"
+        assert claim.job_id == job.job_id
+    finally:
+        jobs.finish(claim, outcome="succeeded")
+        tasks.finish_run(run.run_id, outcome="succeeded", effect_state="none_applied")

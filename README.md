@@ -81,7 +81,7 @@ uv sync --python 3.12
 ### 跑测试与 lint
 
 ```bash
-uv run pytest -o addopts="" -q   # macOS 本机实测：1728 passed, 7 skipped（N3 + N6 落地、三轮复审整改、合并 main@da6b4a9 后；CI 三平台为准）
+uv run pytest -o addopts="" -q   # macOS 本机实测：1730 passed, 7 skipped（N3 + N6 落地、三轮复审整改、合并 main@da6b4a9 后；CI 三平台为准）
 uv run ruff check .              # 全绿（All checks passed!）
 ```
 
@@ -357,7 +357,7 @@ GitHub Actions。Python 矩阵三个平台 × Python 3.12：`ubuntu-latest` / `m
 
 ```bash
 uv sync --python 3.12
-uv run pytest -o addopts="" -q   # macOS 本机实测：1728 passed, 7 skipped（N3 + N6 落地、三轮复审整改、合并 main@da6b4a9 后；CI 三平台为准）
+uv run pytest -o addopts="" -q   # macOS 本机实测：1730 passed, 7 skipped（N3 + N6 落地、三轮复审整改、合并 main@da6b4a9 后；CI 三平台为准）
 uv run ruff check .              # lint
 ```
 
