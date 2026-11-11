@@ -1484,6 +1484,23 @@ class MemoryProjection:
             return None
         return self._blob_dir / reference
 
+    def content_ref_of(self, memory_id: str) -> tuple[str, int | None] | None:
+        """按 id 取 `(content_ref, erased_at)`，**不做作用域过滤**。
+
+        这是给恢复/审计用的内部读口：`memory.erase` 的副作用（删正文文件）在
+        提交事务**之外**且不可逆，恢复必须能按 memory_id 找到它当时指向的
+        blob 才能给出可核对结论。作用域过滤在这里没有意义——调用方是恢复
+        流程，不是模型；模型侧仍只有 `get()`（带 `allowed`）。
+        """
+        self.ensure_schema()
+        row = self._conn.execute(
+            "SELECT content_ref, erased_at FROM memories WHERE memory_id = ?",
+            (_require_memory_id(memory_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return (str(row["content_ref"]), row["erased_at"])
+
     def count_content_ref(
         self, content_ref: str, *, exclude_memory_id: str
     ) -> tuple[int, list[str]]:

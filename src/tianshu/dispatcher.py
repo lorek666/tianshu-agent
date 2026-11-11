@@ -141,6 +141,9 @@ DISPATCH_REJECTED = "dispatch.rejected"
 DISPATCH_ADMITTED = "dispatch.admitted"
 DISPATCH_REVOKED = "dispatch.revoked"
 
+#: 审计表一次性迁移的持久标记（见 `_migrate_redacted_args`）。
+_BACKFILL_MARKER = "args_redacted_backfilled"
+
 STATE_WAITING = "waiting"
 STATE_ADMITTED = "admitted"
 STATE_REJECTED = "rejected"
@@ -166,6 +169,9 @@ CREATE TABLE IF NOT EXISTS dispatch_requests (
     request_digest TEXT NOT NULL,
     payload        TEXT NOT NULL,
     args_payload   TEXT NOT NULL,
+    -- 请求进入**终态**后 args_payload 已脱敏（只留正文摘要）：审计表不该永久
+    -- 保存记忆正文原文。执行期要用完整参数，所以只能在终态之后做。
+    args_redacted  INTEGER NOT NULL DEFAULT 0,
     state          TEXT NOT NULL,
     reason         TEXT NOT NULL DEFAULT '',
     rule_id        TEXT NOT NULL DEFAULT '',
@@ -207,6 +213,14 @@ CREATE TABLE IF NOT EXISTS dispatches (
 -- provider 给的短 ID 在不同 run 之间会重名，跨 run 唯一会误伤别的运行。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatches_call
     ON dispatches(run_id, call_id);
+
+-- 一次性数据迁移的**持久标记**：只有迁移事务成功提交后才置位。
+-- 用标记而不是"看列在不在"：`ALTER TABLE` 会先落盘，补扫中途被 kill 时
+-- 列已存在，靠列存在性判断会让隐私补扫永远不再重试。
+CREATE TABLE IF NOT EXISTS dispatch_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -356,9 +370,9 @@ def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
     原文不再落地；`content` 之外的字段（kind / scope / 记忆 id / 写前 revision）
     照常留。
 
-    **不覆盖**：被采纳后又被内容闸门（PII / 密钥）挡掉的请求——闸门在
-    `MemoryExecutor` 里跑，而请求行在 `prepare()` 就落库了。那一半见 F10
-    §13 #26，要彻底修得把内容扫描挪到落库之前。
+    **另一半**：被采纳的请求在**进入终态之后**由 `_set_request_state()` 调
+    `_redact_terminal_args()` 补做同一套脱敏（执行期要用完整参数，所以不能更早）。
+    两个半场合起来，审计表里不再永久保存记忆正文原文（F10 §13 #26 已收口）。
     """
     if "content" not in args:
         return args
@@ -372,6 +386,22 @@ def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
     redacted["content_bytes"] = len(raw)
     redacted["content_redacted"] = True
     return redacted
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, declaration: str
+) -> bool:
+    """老库补列（幂等）：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。
+
+    返回"这次真的加了列没有"。调用方据此决定要不要做**一次性的历史数据补扫**：
+    每次打开都全表解析历史行，在大库上是纯浪费，还会带来"补扫把刚刚重新发起
+    的请求又脱敏回去"的竞态。
+    """
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in columns:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    return True
 
 
 class Dispatcher:
@@ -400,6 +430,31 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        # 列不存在时**先**作废持久标记、再加列：`ALTER TABLE` 是 autocommit
+        # 落盘的，若先 ALTER 再删标记，两条语句之间崩溃就会留下"列在、标记也
+        # 在"的状态，下次打开看到标记直接跳过 → 旧终态正文永久漏脱敏。
+        # 反过来先删标记：哪怕在删完之后、加列之前崩溃，下次打开列仍不存在、
+        # 标记仍缺失，两条语句会再跑一遍（幂等）。正常升级路径（标记与列同批
+        # 维护）里列本来就在，这段不执行。
+        columns = {
+            row[1]
+            for row in self._conn.execute(
+                "PRAGMA table_info(dispatch_requests)"
+            ).fetchall()
+        }
+        if "args_redacted" not in columns:
+            # 反向边界：标记在、列却不在（迁移工具或人手把列删了）⇒ 旧终态行的
+            # 正文又回到"未脱敏"，必须作废标记强制重扫，不然永久漏。
+            self._conn.execute(
+                "DELETE FROM dispatch_meta WHERE key = ?", (_BACKFILL_MARKER,)
+            )
+        _ensure_column(
+            self._conn, "dispatch_requests", "args_redacted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
+        # 下次打开会重试（否则列已存在，靠列存在性判断就永远不补了）。
+        self._migrate_redacted_args()
         self._tasks = tasks
         self._leases = leases
         self._policy = policy
@@ -1874,6 +1929,7 @@ class Dispatcher:
         rule_id: str,
         *,
         approval_id: str | None = None,
+        args_redacted: bool = False,
     ) -> None:
         payload = canonical_bytes(request.to_canonical_dict()).decode("utf-8")
         args_payload = canonical_bytes(args).decode("utf-8")
@@ -1881,12 +1937,19 @@ class Dispatcher:
         with self._log.transaction():
             self._conn.execute(
                 "INSERT INTO dispatch_requests (request_id, task_id, run_id,"
-                " request_digest, payload, args_payload, state, reason, rule_id,"
-                " approval_id, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+                " request_digest, payload, args_payload, args_redacted, state,"
+                " reason, rule_id, approval_id, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(request_id) DO UPDATE SET"
                 " state=excluded.state, reason=excluded.reason,"
                 " rule_id=excluded.rule_id, approval_id=excluded.approval_id,"
+                # 同一 `request_id` 会被写多次：`prepare()` 先存完整参数，之后
+                # 被拒绝改成脱敏形态；反过来，终态之后同一请求被**重新发起**时
+                # 又要拿回完整参数（执行期要用它重算 `args_hash`）。所以这里取
+                # "最后一次写入"的形态，不做单向合并——单向保留会让重新发起
+                # 的合法请求永远判成"参数被改过"。
+                " args_payload=excluded.args_payload,"
+                " args_redacted=excluded.args_redacted,"
                 " updated_at=excluded.updated_at",
                 (
                     request.request_id,
@@ -1895,6 +1958,7 @@ class Dispatcher:
                     request.digest(),
                     payload,
                     args_payload,
+                    1 if args_redacted else 0,
                     state,
                     reason,
                     rule_id,
@@ -1913,19 +1977,112 @@ class Dispatcher:
                 " approval_id), updated_at=? WHERE request_id=?",
                 (state, approval_id, self._clock(), request_id),
             )
+            if state in (STATE_DONE, STATE_REJECTED):
+                # 终态之后不会再有人从这张表取参数去执行，正文可以脱敏了。
+                self._redact_terminal_args(request_id)
+
+    def _migrate_redacted_args(self) -> None:
+        """一次性迁移：给升级前的终态行补脱敏，成功后才落持久标记。
+
+        标记在**同一个事务**里写入，所以中途失败/被 kill 时标记不会留下，
+        下次打开会重试；只有标记存在才算"这件事真的做过"。
+        """
+        row = self._conn.execute(
+            "SELECT value FROM dispatch_meta WHERE key = ?",
+            (_BACKFILL_MARKER,),
+        ).fetchone()
+        if row is not None:
+            return
+        with self._log.transaction():
+            self._backfill_redacted_args()
+            self._conn.execute(
+                "INSERT INTO dispatch_meta(key, value) VALUES (?, '1')"
+                " ON CONFLICT(key) DO NOTHING",
+                (_BACKFILL_MARKER,),
+            )
+
+    def _backfill_redacted_args(self) -> None:
+        """升级前就已处于终态的行：补做脱敏。**必须在调用方的事务里**。
+
+        `args_redacted` 列是 N5 才加的，老库里那些 `done` / `rejected` 行不会
+        自己回到终态，所以迁移时必须主动扫一遍。只处理 `args_redacted = 0` 的
+        终态行；解析失败的行**保持原样**——宁可让审计看到"这一行没脱敏"，也不
+        要把读不懂的行直接抹成不可审计。非记忆行 `_audit_args` 原样返回，不动。
+        """
+        rows = self._conn.execute(
+            "SELECT request_id, payload, args_payload FROM dispatch_requests"
+            " WHERE args_redacted = 0 AND state IN (?, ?)",
+            (STATE_DONE, STATE_REJECTED),
+        ).fetchall()
+        updates: list[tuple[str, str]] = []
+        for row in rows:
+            try:
+                request = ActionRequest.of(json.loads(row["payload"]))
+                args = json.loads(row["args_payload"])
+            except (TypeError, ValueError):  # 老库/外力改坏：跳过并保留原样
+                continue
+            if not isinstance(args, dict):
+                continue
+            redacted = _audit_args(request, args)
+            if redacted is args:
+                continue
+            updates.append(
+                (canonical_bytes(redacted).decode("utf-8"), row["request_id"])
+            )
+        for payload, request_id in updates:
+            self._conn.execute(
+                "UPDATE dispatch_requests SET args_payload = ?,"
+                " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0"
+                " AND state IN (?, ?)",
+                (payload, request_id, STATE_DONE, STATE_REJECTED),
+            )
+
+    def _redact_terminal_args(self, request_id: str) -> None:
+        """请求进终态后，把 `args_payload` 里的记忆正文换成摘要。
+
+        执行期的绑定校验与执行器取参数都发生在终态之前；此后这张表只剩审计
+        用途。已经脱敏过的行直接跳过（幂等）。非记忆请求不动。
+        """
+        row = self._conn.execute(
+            "SELECT payload, args_payload, args_redacted FROM dispatch_requests"
+            " WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        if row is None or int(row["args_redacted"]):
+            return
+        try:
+            request = ActionRequest.of(json.loads(row["payload"]))
+            args = json.loads(row["args_payload"])
+        except (TypeError, ValueError):  # pragma: no cover - 库被外力改坏
+            return
+        if not isinstance(args, dict):
+            return
+        redacted = _audit_args(request, args)
+        if redacted is args:
+            return
+        self._conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ?, args_redacted = 1"
+            " WHERE request_id = ?",
+            (canonical_bytes(redacted).decode("utf-8"), request_id),
+        )
 
     @staticmethod
     def _intent_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
         """写进 `tool.intent` 的参数（事件日志**不存记忆正文**）。
 
         F10 §3.1 要求事件日志"只存引用与审计元数据，不重复写记忆正文"。
-        `memory.confirm` / `memory.forget` 的参数只有 memory_id / revision /
-        status，本身不是正文；`memory.propose` 的 `content` 是正文，必须在
-        写事件前拿掉，只留下可核对的长度与哈希。完整参数仍在派发请求表里
-        （受一次审批/派发绑定的操作记录），执行器也从那里取，不依赖事件里的
-        副本。`args_hash` 仍然绑完整参数，不能被这段脱敏改写。
+        `memory.confirm` / `memory.forget` / `memory.erase` 的参数只有
+        memory_id / revision / status，本身不是正文；**凡带 `content` 的记忆写**
+        （`memory.propose` / `memory.remember` / `memory.edit`）都必须在写事件前
+        拿掉正文，只留下可核对的长度与哈希。判断口径是"记忆资源 + 参数里有
+        content"，不是罗列工具名——新增一个带正文的记忆写不会因为忘了登记就把
+        正文漏进 append-only 的事件日志。完整参数仍在派发请求表里（受一次审批/
+        派发绑定的操作记录），执行器也从那里取，不依赖事件里的副本。`args_hash`
+        仍然绑完整参数，不能被这段脱敏改写。
         """
-        if request.tool_id != "memory.propose":
+        if "content" not in args:
+            return args
+        if not any(is_memory_resource(resource) for resource in request.resources):
             return args
         safe = dict(args)
         content = safe.pop("content", None)
@@ -1958,8 +2115,16 @@ class Dispatcher:
         rule_id = check_rule_id(rule_id, where=f"_reject:{event}")
         # 拒绝的行**永远不会执行**，所以这里可以脱敏而不破坏任何
         # 派发/审批绑定：被拒的尝试不该把记忆正文原文永久留在审计表里。
+        redacted_args = _audit_args(request, args)
         self._store_request(
-            request, _audit_args(request, args), STATE_REJECTED, reason, rule_id
+            request,
+            redacted_args,
+            STATE_REJECTED,
+            reason,
+            rule_id,
+            # `args_redacted` 是审计事实字段：非记忆请求（或没有正文的记忆
+            # 请求）本来就不该被标成"已脱敏"。
+            args_redacted=redacted_args is not args,
         )
         self._append(
             request,
