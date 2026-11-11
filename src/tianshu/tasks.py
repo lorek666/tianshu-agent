@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     exec_policy   TEXT NOT NULL DEFAULT '',
     is_control    INTEGER NOT NULL DEFAULT 0,
     memory_scopes TEXT NOT NULL DEFAULT '[]',
+    outbound_allow TEXT NOT NULL DEFAULT '[]',
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -194,6 +195,12 @@ class Task:
     is_control: bool = False
     #: 控制面声明的记忆作用域（`memory://task/...` 等 URI）；模型不可设置。
     memory_scopes: tuple[str, ...] = ()
+    #: 任务级外发白名单（PRD §5.2.3 / G2）：允许出网的**源**，形如
+    #: `network://https/example.com`。空 = 这个任务一条包都不发。
+    #:
+    #: 与 `exec_policy` 同一条理由，创建时定死、`task revise` 不可改：
+    #: 扩权必须是新任务，不能让旧 Run 已经批准的请求跟着悄悄扩大范围。
+    outbound_allow: tuple[str, ...] = ()
     created_at: int = 0
     updated_at: int = 0
 
@@ -319,6 +326,9 @@ class TaskStore:
         _ensure_column(
             self._conn, "tasks", "memory_scopes", "TEXT NOT NULL DEFAULT '[]'"
         )
+        _ensure_column(
+            self._conn, "tasks", "outbound_allow", "TEXT NOT NULL DEFAULT '[]'"
+        )
         self._leases = leases
         self._claims = claims
         # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
@@ -383,6 +393,7 @@ class TaskStore:
         exec_policy: ExecPolicy | None = None,
         control: bool = False,
         memory_scopes: list[str] | None = None,
+        outbound_allow: list[str] | tuple[str, ...] | None = None,
     ) -> Task:
         goal = (goal or "").strip()
         if not goal:
@@ -402,6 +413,15 @@ class TaskStore:
                 parse_memory_uri(item)
             except TianshuError as exc:
                 raise TianshuError(f"memory_scopes 不是合法的记忆作用域：{exc}") from exc
+        # 外发白名单是安全相关输入：每个元素都必须是合法的**源**。
+        # 解析/规范化在 TaskStore 入口再做一次（CLI 之外还有恢复、评测、测试
+        # 直接调它），非法项**拒绝**而不是静默丢弃。
+        from .resources import ResourceError, normalize_network_origins
+
+        try:
+            outbound = normalize_network_origins(outbound_allow)
+        except ResourceError as exc:
+            raise TianshuError(f"outbound_allow 不合法：{exc}") from exc
         parsed = parse_bindings(
             [b.to_dict() if isinstance(b, WorkspaceBinding) else b
              for b in (bindings or [])]
@@ -412,8 +432,8 @@ class TaskStore:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
                 " active_run_id, status, workspaces, exec_policy, is_control,"
-                " memory_scopes, created_at, updated_at)"
-                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?)",
+                " memory_scopes, outbound_allow, created_at, updated_at)"
+                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?,?)",
                 (
                     task_id,
                     goal,
@@ -423,6 +443,7 @@ class TaskStore:
                     else "",
                     1 if control else 0,
                     json.dumps(scopes, ensure_ascii=False),
+                    json.dumps(list(outbound), ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -441,6 +462,9 @@ class TaskStore:
                     # 进程内对象里（崩溃恢复后就分不清谁是控制面）。
                     "control": bool(control),
                     "memory_scopes": scopes,
+                    # G2：外发白名单必须落进事件（崩溃恢复后仍能回答
+                    # "这个任务当时准不准出网、准去哪儿"）。
+                    "outbound_allow": list(outbound),
                 },
                 task_id=task_id,
                 actor_kind="human",
@@ -1615,6 +1639,7 @@ class TaskStore:
             ),
             is_control=bool(row["is_control"]),
             memory_scopes=tuple(json.loads(row["memory_scopes"] or "[]")),
+            outbound_allow=tuple(json.loads(row["outbound_allow"] or "[]")),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

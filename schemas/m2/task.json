@@ -99,6 +99,14 @@
         "pattern": "^memory://"
       },
       "description": "控制面显式声明的记忆作用域 URI（契约 v1.2）。只对记忆动作生效，不授予任何文件权限；普通任务恒为空数组。"
+    },
+    "outbound_allow": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^network://(http|https)/"
+      },
+      "description": "任务级外发白名单（G2）：允许出网的**源**（transport + 主机 + 端口，不带路径）。空 = 一条包都不发；创建后不可改（扩权必须是新任务）。"
     }
   }
 }

@@ -190,6 +190,7 @@ _TOOL_ID = _enum(
     "memory.remember",
     "memory.search",
     "modify_text",
+    "network.fetch",
     "read_content",
     "read_text",
     "restore_file",
@@ -809,6 +810,9 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             # 记忆契约 v1.2（PR #78）：控制面标记与作用域声明必须落进事件。
             "control": _b(),
             "memory_scopes": _arr(_s()),
+            # G2：任务级外发白名单（源级）。新写入恒写（空列表也写）；
+            # 旧事件没有这个键 → detect_version 落到 v0，不按新版补值。
+            "outbound_allow": _arr(_s()),
         },
         required=(
             "task_id",
@@ -819,6 +823,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "exec_policy",
             "control",
             "memory_scopes",
+            "outbound_allow",
         ),
     ),
     "task.revised": _obj(

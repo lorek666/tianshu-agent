@@ -105,6 +105,11 @@ RULE_IDS: frozenset[str] = frozenset(
         "c4.action_resource_mismatch",
         "c4.mixed_resource_kinds",
         "dispatch.resource_kind_unsupported",
+        # ---- 网络外发（G2）：任务级白名单与网络资源归属 ----
+        "c4.outbound_not_allowed",
+        "dispatch.network_resource_mismatch",
+        # ---- 预算账本：预占被拒（额度耗尽 / 已取消 / 过 deadline） ----
+        "dispatch.budget_refused",
         # ---- 记忆（F10）：作用域、种类与记忆目标 ----
         "c4.memory_scope",
         "c4.memory_scope_denied",
@@ -242,6 +247,13 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.memory_resource_mismatch",
         }
     ),
+    "网络外发": frozenset(
+        {
+            "c4.outbound_not_allowed",
+            "dispatch.network_resource_mismatch",
+        }
+    ),
+    "预算账本": frozenset({"dispatch.budget_refused"}),
     "判定结果（非拒绝）": DECISION_RULE_IDS,
     "兜底": frozenset({"dispatch.refused", "c4.unsupported"}),
     "保留未使用": DECLARED_UNUSED_RULE_IDS,

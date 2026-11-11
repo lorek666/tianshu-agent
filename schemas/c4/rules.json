@@ -33,6 +33,7 @@
         "c4.no_binding",
         "c4.no_resource",
         "c4.outbound",
+        "c4.outbound_not_allowed",
         "c4.outside_workspace",
         "c4.outside_workspace_unsupported",
         "c4.overwrite",
@@ -42,6 +43,7 @@
         "c4.unsupported",
         "dispatch.approval_revoked",
         "dispatch.approval_unusable",
+        "dispatch.budget_refused",
         "dispatch.call_id_reused",
         "dispatch.claim_lost",
         "dispatch.claim_mismatch",
@@ -53,6 +55,7 @@
         "dispatch.memory_not_found",
         "dispatch.memory_resource_mismatch",
         "dispatch.memory_stale_revision",
+        "dispatch.network_resource_mismatch",
         "dispatch.no_parent",
         "dispatch.no_task",
         "dispatch.not_admitted",
@@ -128,7 +131,10 @@
     "c4.mixed_resource_kinds": "一次动作声明了多种资源种类，授权无法同时覆盖。",
     "c4.outbound": "判定结果：外发到网络目标需审批（网络请求有成本、有外发，不是本地纯读；没有自动放行路径）。",
     "c4.subtask_unavailable": "子任务能力尚未实现，拒绝委派（没有委派执行器，不接受「批一下就好」的路径）。",
-    "dispatch.resource_kind_unsupported": "该资源种类没有执行器（网络/MCP/委派的执行器属 G2），在派发前拒绝。"
+    "dispatch.resource_kind_unsupported": "该资源种类没有执行器（网络/MCP/委派的执行器属 G2），在派发前拒绝。",
+    "c4.outbound_not_allowed": "任务级外发白名单（outbound_allow）不含这个源：这个任务没被允许跟这台服务器说话。",
+    "dispatch.network_resource_mismatch": "网络工具与非 network:// 资源不匹配（网络不是文件，也不是记忆）。",
+    "dispatch.budget_refused": "预算预占被拒（额度耗尽 / 已取消 / 过 deadline）：请求没有发出。"
   },
   "x-rule-groups": {
     "身份失配": [
@@ -161,6 +167,12 @@
     "准入": [
       "dispatch.not_admitted"
     ],
+    "资源种类": [
+      "c4.action_resource_mismatch",
+      "c4.mixed_resource_kinds",
+      "c4.subtask_unavailable",
+      "dispatch.resource_kind_unsupported"
+    ],
     "前置条件": [
       "dispatch.stale_precondition"
     ],
@@ -176,6 +188,11 @@
       "c4.readonly_binding",
       "dispatch.workspace_blocked"
     ],
+    "执行（exec）": [
+      "c4.exec_not_configured",
+      "c4.exec_policy_denied",
+      "c4.exec_unsupported"
+    ],
     "记忆": [
       "c4.memory_control_scope_binding",
       "c4.memory_kind_unsupported",
@@ -184,11 +201,20 @@
       "dispatch.memory_resource_mismatch",
       "dispatch.memory_stale_revision"
     ],
+    "网络外发": [
+      "c4.outbound_not_allowed",
+      "dispatch.network_resource_mismatch"
+    ],
+    "预算账本": [
+      "dispatch.budget_refused"
+    ],
     "判定结果（非拒绝）": [
       "c4.auto",
       "c4.delete",
       "c4.exec",
+      "c4.mcp_call",
       "c4.memory_scope",
+      "c4.outbound",
       "c4.outside_workspace",
       "c4.overwrite"
     ],
@@ -199,11 +225,6 @@
     "保留未使用": [
       "c4.unhandled",
       "dispatch.denied"
-    ],
-    "执行（exec）": [
-      "c4.exec_not_configured",
-      "c4.exec_policy_denied",
-      "c4.exec_unsupported"
     ]
   },
   "x-declared-unused": [

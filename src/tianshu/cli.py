@@ -86,6 +86,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式开启 run_command：允许的可执行文件绝对路径（可重复）。"
         "不传 = exec 默认全拒；这是显式动作，不是默认白名单",
     )
+    r.add_argument(
+        "--allow-outbound",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="显式声明任务级外发白名单：允许出网的**源**（可重复），"
+        "例如 network://https/example.com 或 network://http/127.0.0.1:8080。"
+        "不传 = 这个任务一条包都不发；声明了源也仍然要逐次人工批准",
+    )
     r.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
     r.add_argument("--provider", default=None, choices=list(MODEL_PROVIDERS),
@@ -116,6 +125,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="ABS_PATH",
         help="显式开启 run_command：允许的可执行文件绝对路径（可重复）。"
         "不传 = exec 默认全拒；这是显式动作，不是默认白名单",
+    )
+    t.add_argument(
+        "--allow-outbound",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="显式声明任务级外发白名单：允许出网的**源**（可重复）。"
+        "不传 = 一条包都不发；声明后仍要逐次人工批准",
     )
 
     w = sub.add_parser(
@@ -497,7 +514,14 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"错误：exec 策略不合法：{exc}", file=sys.stderr)
         return 2
-    task = stack.tasks.create_task(args.task, bindings, exec_policy=exec_policy)
+    try:
+        outbound_allow = _outbound_allow(args)
+    except ValueError as exc:
+        print(f"错误：outbound_allow 不合法：{exc}", file=sys.stderr)
+        return 2
+    task = stack.tasks.create_task(
+        args.task, bindings, exec_policy=exec_policy, outbound_allow=outbound_allow
+    )
     result = _engine(stack, args).start(task.task_id, out_name=args.out)
     return _report(stack, result, args)
 
@@ -726,6 +750,23 @@ def _exec_policy(args: argparse.Namespace):
     )
 
 
+def _outbound_allow(args: argparse.Namespace) -> list[str] | None:
+    """从 CLI 参数构造任务级外发白名单；没给就是 None（= 一条包都不发）。
+
+    非法项**拒绝**（ValueError），不静默丢弃：一个写错的源如果被悄悄忽略，
+    任务看起来"声明了"，实际一条都发不出去——那次排障会很难看。
+    """
+    items = getattr(args, "allow_outbound", None)
+    if not items:
+        return None
+    from .resources import ResourceError, normalize_network_origins
+
+    try:
+        return list(normalize_network_origins(items))
+    except ResourceError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _cmd_task(args: argparse.Namespace) -> int:
     stack = _authority_stack(args.db, args.data_root)
     try:
@@ -738,8 +779,16 @@ def _cmd_task(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 print(f"错误：exec 策略不合法：{exc}", file=sys.stderr)
                 return 2
+            try:
+                outbound_allow = _outbound_allow(args)
+            except ValueError as exc:
+                print(f"错误：outbound_allow 不合法：{exc}", file=sys.stderr)
+                return 2
             task = stack.tasks.create_task(
-                args.goal, _bindings(args), exec_policy=exec_policy
+                args.goal,
+                _bindings(args),
+                exec_policy=exec_policy,
+                outbound_allow=outbound_allow,
             )
             return _print_task(task, args)
         if args.action == "show":
@@ -777,6 +826,7 @@ def _task_json(task) -> dict:
         "exec_policy": task.exec_policy.to_dict() if task.exec_policy else None,
         "is_control": task.is_control,
         "memory_scopes": list(task.memory_scopes),
+        "outbound_allow": list(task.outbound_allow),
         "status": task.status,
         "workspaces": [b.to_dict() for b in task.workspaces],
         "created_at": task.created_at,
@@ -808,6 +858,10 @@ def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
             print(f"  {binding.mode:8s} {binding.root_path}")
     else:
         print("  （没有绑定目录：只能对话，不能读写文件）")
+    if task.outbound_allow:
+        print(f"外发源   : {', '.join(task.outbound_allow)}")
+    else:
+        print("外发源   : （未声明：这个任务不能出网）")
     if stack is not None:
         runs = stack.tasks.list_runs(task.task_id)
         for run in runs:

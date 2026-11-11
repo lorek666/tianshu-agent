@@ -526,9 +526,17 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   被拒（存储层与执行层各自核一次）；读取时**重算 sha256** 比对引用；分页不切半个
   UTF-8 字符。读工具沿用既有的「只读动作不过派发」口径（`read_text` / `memory.search`
   同路），差异见该文档 §4。
-- **未实现**：网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」
-  「私有内容未经外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门
-  已就位、可拒绝，但没有外发面可以验证"发了什么"。
+- **已实现并有判据（G2 网络阶段）**：网络执行器 `network.fetch`（18 + 23 条，负控
+  5 + 8，见 [network-g2.md](network-g2.md)）：任务级外发白名单（`task.created` 的
+  `outbound_allow`，未声明即一条包都不发）、逐次人工批准、GET 抓取、同源重定向、
+  响应字节上限与硬超时、有界摘要 + `content://` 引用、字节账本预占/结算、取消后无
+  新请求、回放不联网。因此「无目录联网任务可运行」与「私有内容未经外发许可不发包」
+  在**执行面**有了可核对的事实（请求里只有目标 URL 与固定头，没有 Cookie/凭据/代理）。
+  仍然不成立的部分逐条登记在 [network-g2.md](network-g2.md) §7：只支持 GET、没有检索
+  API、真实公网研究与真实模型复跑未验证、DNS rebinding 未防护、二进制正文没有文本
+  分页读取。
+- **未实现**：MCP 与委派的**真实执行器**（G2 后续阶段）。这两种资源的解析与许可
+  已就位、可拒绝，但没有执行面可以验证"调了什么"。
 
 
 ### 5.3 C3 Event
@@ -779,10 +787,13 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
-| `dispatch.resource_kind_unsupported` | 资源种类 | 资源种类没有执行器：`network://` / `mcp://` / `subtask://` 的解析与许可已实现，但网络 / MCP / 委派的执行器属 G2，派发前拒绝。 | 当前不可用：这些能力还没接（不是参数问题）。文件操作请用文件工具。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | 资源种类没有执行器：`mcp://` / `subtask://` 的解析与许可已实现，但 MCP 与委派的执行器仍未交付（G2 网络阶段只补了网络），派发前拒绝。 | 当前不可用：MCP / 委派能力还没接（不是参数问题）。文件用文件工具、网页用 `network.fetch`。 |
 | `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
 | `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
 | `c4.subtask_unavailable` | 资源种类 | 子任务能力尚未实现，委派被拒（没有委派执行器，不接受「批一下就好」的路径）。 | 当前不可用：等委派能力上线。 |
+| `dispatch.network_resource_mismatch` | 资源种类（网络） | 工具与资源种类不匹配：网络资源配了非网络工具，或网络工具收到了文件 / 记忆资源。 | 检查工具与参数：抓网页用 `network.fetch` + `network://` 目标，读文件用读工具。 |
+| `c4.outbound_not_allowed` | 网络外发 | 任务级外发白名单（`task.created.outbound_allow`）没有声明任何源，或目标源不在白名单里。任务没被允许跟这台服务器说话，请求在派发前就被拒，**不会**弹批准。 | 确实需要访问这个源时，新建任务并用 `--allow-outbound` 显式声明（白名单创建后不可改）；不确定就不要放开。 |
+| `dispatch.budget_refused` | 预算账本 | 抓取前的字节预占被拒：额度耗尽、账户已取消或已过 deadline。**一个请求都没有发出**。 | 提高该维度的预算上限，或在额度恢复 / 新账户下重新发起；不要靠重试绕过额度。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
 | `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
