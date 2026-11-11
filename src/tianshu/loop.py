@@ -48,6 +48,7 @@ from .capability import (
     declared_output_tokens,
     retry_delay_ms,
 )
+from .contents import DEFAULT_PAGE, ContentStore
 from .context import (
     DEFAULT_MAX_BYTES,
     RUN_START_SEQ,
@@ -544,6 +545,7 @@ class AgentLoop:
         sleep: Callable[[float], None] | None = None,
         memory: object | None = None,
         budget: BudgetLedger | None = None,
+        contents: ContentStore | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -558,6 +560,10 @@ class AgentLoop:
         self._memory = memory
         #: 共享预算账本（PRD §5.6）。为空时退化为旧行为（事后计数）。
         self._budget = budget
+        #: 内容引用存储（PRD §5.2.3）。为空时 spill 仍会写 blob，但**不登记
+        #: 授权**——于是 `read_content` 会明确拒绝（"没有授权"），而不是让人
+        #: 以为引用可用。宁可在读取时确定失败，也不发一个取不回来的引用。
+        self._contents = contents
         self._limits = limits or Limits()
         if self._limits.budget_bound not in BOUNDS:
             # 配置层面的错必须在这里就炸：等到第一次请求前才发现，等于让一个
@@ -929,7 +935,9 @@ class AgentLoop:
         # 剩下的标"来源不明"(RUN_START_SEQ)，不编 seq。
         return derived + [RUN_START_SEQ] * (count - len(derived))
 
-    def _persist_spills(self, spills: list[tuple[str, bytes]]) -> None:
+    def _persist_spills(
+        self, spills: list[tuple[str, bytes]], run_id: str
+    ) -> None:
         """把待落盘的工具输出原文写进内容寻址 blob 目录。
 
         复用已有的 `artifacts/blobs/<sha256>`：`SnapshotStore` 的写前副本与事件
@@ -948,10 +956,18 @@ class AgentLoop:
                 "工具输出需要落盘，但当前 Run 没有可用的 blob 目录"
                 "（SnapshotStore 与 EventLog 都没配置 blob_dir）"
             )
+        task_id = ""
+        run = self._tasks.get_run(run_id)
+        if run is not None:
+            task_id = getattr(run, "task_id", "") or ""
         for digest, data in spills:
             blob = blob_dir / digest
             if not blob.exists():
                 atomic_write_bytes(blob, data)
+            if self._contents is not None and task_id:
+                # 授权在**落盘时**按当前 Run 的任务写入：内容寻址会去重，可见性
+                # 不能记在对象上（否则一个任务能看到另一个任务的原文）。
+                self._contents.record(digest, data, task_id=task_id, run_id=run_id)
 
     # ---------------------------------------------------------------- 准入与重试
 
@@ -1282,7 +1298,7 @@ class AgentLoop:
 
         # 落盘必须在发请求**之前**：先让占位指向的 blob 真的存在，再让模型看到
         # "完整内容已落盘"这句话。反过来的顺序等于先撒谎再补救。
-        self._persist_spills(view.spills)
+        self._persist_spills(view.spills, run_id)
 
         resp, stop_reason = self._complete_with_retry(
             run_id, progress, request_id, view, budget
@@ -1887,6 +1903,53 @@ class AgentLoop:
             item["stale"] = stale
         return item
 
+    def _exec_content_read(
+        self, task: Task, call_id: str, args: dict[str, Any]
+    ) -> ToolResult:
+        """读一份内容引用的分页（`read_content` 工具的执行体）。
+
+        为什么读工具不进派发：`Dispatcher._typecheck()` 的既有口径是"只读动作
+        不经过派发（没有可授权的副作用）"，`read_text` / `memory.search` 都在
+        这条路上。内容引用沿用同一口径，**不是**开了一个后门——它和它们一样
+        要过白名单、schema 与参数校验，结果同样落 `tool.result` 留痕；差别只在
+        "可见范围"这个判据由内容存储执行，因为除了它没有人知道 `(digest, task)`
+        的授权行。
+
+        `call_id` 只用于错误信息定位，不参与授权：授权看的是**任务**，不是
+        某一次调用。
+        """
+        spec = SPECS.get("read_content")
+        if spec is None:  # pragma: no cover - 注册表是模块常量
+            return ToolResult(
+                "rejected", "none_applied", {"error": "read_content 未注册"}
+            )
+        if self._contents is None:
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": "内容存储未配置：本次运行没有可用的内容引用"
+                    "（EventLog 与 SnapshotStore 都没有 blob 目录）"
+                },
+            )
+        try:
+            checked = validate_args(args, spec.input_schema)
+            page = self._contents.read(
+                checked.get("ref"),
+                task_id=task.task_id,
+                offset=int(checked.get("offset", 0)),
+                length=int(checked.get("length", DEFAULT_PAGE)),
+            )
+            return ToolResult("succeeded", "none_applied", page.to_payload())
+        except (ToolArgumentError, TianshuError) as exc:
+            # 形状/越权/缺失/摘要不符都是**确定的**拒绝：读没有副作用，所以
+            # 一律 none_applied（记成 unknown 会把"读越权了"变成"可能写过"）。
+            return ToolResult(
+                "rejected", "none_applied", {"error": f"{type(exc).__name__}: {exc}"}
+            )
+        except Exception as exc:  # noqa: BLE001 - 工具自身炸了
+            return ToolResult("failed", "none_applied", {"error": repr(exc)})
+
     def _exec_read(
         self,
         run_id: str,
@@ -1905,6 +1968,10 @@ class AgentLoop:
         """
         if tool_id in MEMORY_READ_TOOLS:
             return self._exec_memory_read(run_id, task, call_id, tool_id, args)
+        if tool_id == "read_content":
+            # 内容引用不是文件：没有 workspace 也能读（零目录任务同样合法），
+            # 可见范围按**任务**授权，由内容存储自己核（PRD §5.2.3）。
+            return self._exec_content_read(task, call_id, args)
         root = self._primary_root(task)
         if root is None:
             return ToolResult(
@@ -2527,6 +2594,7 @@ def run(
         sleep=sleep,
         memory=stack.memory,
         budget=stack.budget,
+        contents=stack.contents,
     )
     created = stack.tasks.create_task(
         task, [str(workspace_dir)], exec_policy=exec_policy
@@ -2551,6 +2619,9 @@ class Stack:
     #: 共享预算账本（PRD §5.6）。建在事件库同一个 SQLite 文件里：预占与结算
     #: 必须和事件同生共死，不能是第二个事实源。
     budget: Any = field(default=None, repr=False)
+    #: 内容引用存储（PRD §5.2.3「大结果以有界摘要 + 内容引用返回」）。与事件库
+    #: 同一个 SQLite、同一套 blob 目录：引用就是摘要，不能有第二份真身。
+    contents: Any = field(default=None, repr=False)
 
     @property
     def memory(self):
@@ -2626,6 +2697,11 @@ def build_stack(
     budget = BudgetLedger(
         log, clock=clock or (lambda: int(time.time() * 1000))
     )
+    # blob 目录与 `_persist_spills` 用同一套：优先快照目录，其次是事件库 blob 目录。
+    # 两者都没有时不在这里炸——真要用内容引用时 `_persist_spills` 会明确失败。
+    contents = ContentStore(
+        log, blob_dir=getattr(shots, "blob_dir", None) or log.blob_dir
+    )
     cls = dispatcher_cls or Dispatcher
     dispatcher = cls(
         log,
@@ -2652,6 +2728,7 @@ def build_stack(
         data_root=root,
         _memory=memory,
         budget=budget,
+        contents=contents,
     )
 
 

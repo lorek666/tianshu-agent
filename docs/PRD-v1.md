@@ -518,10 +518,17 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
   MCP 与 exec 同级（`c4.mcp_call`）、委派因能力缺失恒拒（`c4.subtask_unavailable`）、
   种类混用一律拒；没有执行器的种类在派发前拒绝（`dispatch.resource_kind_unsupported`）。
-- **未实现**：「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」；
-  网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」「私有内容未经
-  外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门已就位、可拒绝，
-  但没有外发面可以验证"发了什么"。
+- **已实现并有判据**（`tests/test_content_refs.py` 12 条 + `tests/test_content_read.py`
+  5 条，负控 12/12，见 [content-refs.md](content-refs.md)）：「大结果以有界摘要 +
+  内容引用返回，分页读取引用验证任务可见范围」。占位给出可用的
+  `content://sha256:<hex>` 引用；`read_content` 分页读取（`offset` / `length` /
+  `next_offset`，单页上限 64 KiB）；可见范围按 `(digest, task_id)` 授权，跨任务读取
+  被拒（存储层与执行层各自核一次）；读取时**重算 sha256** 比对引用；分页不切半个
+  UTF-8 字符。读工具沿用既有的「只读动作不过派发」口径（`read_text` / `memory.search`
+  同路），差异见该文档 §4。
+- **未实现**：网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」
+  「私有内容未经外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门
+  已就位、可拒绝，但没有外发面可以验证"发了什么"。
 
 
 ### 5.3 C3 Event

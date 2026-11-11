@@ -213,6 +213,10 @@ def test_model_tool_surface_has_no_run_start():
     assert ids == {
         "list_files",
         "read_text",
+        # G1e：内容引用的分页读取。它是**读**：不建 Run、不改文件、不改记忆，
+        # 所以不触及"模型不能建 Run"这条前提；加进这份字面清单本身就是那次
+        # 显式过审（绊线的用法）。
+        "read_content",
         "create_report",
         "modify_text",
         "delete_file",

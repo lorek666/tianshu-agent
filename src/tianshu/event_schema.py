@@ -190,6 +190,7 @@ _TOOL_ID = _enum(
     "memory.remember",
     "memory.search",
     "modify_text",
+    "read_content",
     "read_text",
     "restore_file",
     "run_command",
