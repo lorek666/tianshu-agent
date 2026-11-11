@@ -272,12 +272,14 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 - **物理擦除（单开契约工单）**：需要追踪历史模型消息、来源事件、备份、共享 blob 引用与保留策略。**不能因为删了 FTS 行就声称历史内容已擦除。**
 - 历史 replay 用当时的快照；若用户将来彻底清除导致快照缺失，应明确报「历史证据不可用」，**而不是重取最新记忆**。
 
-**v1.2 把擦除的形状定下来（契约，未落地）**：`memory.erase`（控制面 only，`delete` + 一次性审批 + Receipt）删除该记忆的**正文副本**（`memory_blobs/` 下按 `content_ref`）与**检索索引**，投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；重建时不得复活。
+**擦除已落地（N4，契约 v1.2）**：`memory.erase`（控制面 only，`delete` + 一次性审批 + Receipt）删除该记忆的**正文副本**（`memory_blobs/` 下按 `content_ref`）与**检索索引**，投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；重建时不得复活（`read_content` 见到 `erased_at` 一律 None，哪怕文件还在）。
+
+**删除顺序写死**：**先删文件 → 再让结果与事件同事务提交**。崩在两者之间只会留下"文件没了、行还没标擦除"——重建时正文如实不可用（`content_state=unavailable` 本来就允许）；反过来（先标擦除、文件还在）才是隐私泄漏。删文件失败则整次擦除如实失败，**不写** `erased_at`。
 
 **这条边界必须写在界面上**：事件日志是 append-only，里面的**读快照删不掉**（§3.1 的实测结论：`memory.search` / `memory.get` 的 `tool.result` 保留模型当时看到的正文）。所以"擦除"= 删副本与索引，**不等于**"历史日志里没有这段文字了"。彻底清日志需要日志压缩 / 重写，与红线 1 冲突，单开契约工单，本轮不做；UI 也不许写"已彻底删除"。
 
 **引用计数是必须的，不是优化**：正文是 `sha256` 内容寻址，不同记忆（不同作用域 / kind）可能共享同一个 blob。擦除只能删**没有任何其它投影行引用**的 `content_ref`；仍被引用的保留文件、只把本行标 `erased_at` + `content_state=unavailable`。否则"擦一条"会让另一条记忆的正文凭空消失——那不是擦除，是数据损坏。回执里要列出"删了哪些 / 哪些被谁引用而未删"。**`memory.promote` 会与它退役的旧行共享同一个
-`content_ref`**（搬的是同一段正文，不复制字节）——N4 的引用计数必须把退役行也算进去。
+`content_ref`**（搬的是同一段正文，不复制字节）——引用计数把退役行算进去；但**已擦除的行不算**（它自己都声明副本删了，不能拦住别人的擦除）。
 
 ## 11. 与现行契约 / 红线的关系
 
@@ -345,6 +347,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 26 | 派发审计表的正文保留与闸门时序 | ⚠️ 部分落地 | `dispatch_requests.args_payload` 保存**完整**尝试参数，因此也保存记忆正文原文；而 PII / 密钥闸门在 `MemoryExecutor` 里、请求行在 `prepare()` 就落库——**被闸门阻断的候选仍会在审计表留下原文**。已修的一半：**被拒绝**（`_reject`）的记忆写请求脱敏成 `content_sha256` + `content_bytes`（拒绝的请求永不执行，脱敏不破坏派发/审批绑定；`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`）。未修的一半：**被采纳后**又被内容闸门挡掉的请求仍保留原文——彻底修要把内容扫描挪到落库之前，或给审计表定保留/擦除策略，单开契约工单。注意执行器**从这张表取参数**，所以被采纳的行不能脱敏 |
 | 27 | CLI 对 task 作用域记忆的限制 | ✅ 已解除（N1） | `Dispatcher.open_control_run(memory_scopes=...)` 把声明写进 `task.created` payload 与 `Task.is_control`；CLI `memory confirm\|forget --task-id` 用它在**不绑旧 task 目录**的前提下签字。测试：`test_control_run_can_forget_an_old_task_scope_memory` / `test_cli_can_forget_task_scope_memory_with_task_id` |
 | 28 | 控制面标记与作用域声明（N1） | ✅ 已落地 | `Task.is_control` / `Task.memory_scopes` 从 `task.created` payload 读回；`Dispatcher.open_control_run` 写 `control: true` + `memory_scopes`；`task.created` 只加键、**不新增事件类型**；rebuild 后仍在（`test_control_marker_and_scope_declaration_survive_rebuild`）。越权 → `c4.memory_control_scope_binding` |
+| 29 | 物理擦除 `memory.erase`（N4） | ✅ 已落地 | 控制面专属（`exposed=False`）、`delete` + 一次性审批 + Receipt；删唯一 blob + 置 `forgotten`/`erased_at`；引用计数为 0 才删，否则保留并在回执里列 `retained_by`；**已擦除的行不计入计数**；重建不复活、`read_content` 一律 None。契约：`erased_at` 列（投影 schema v1→v2，只加可空列、不重建）。测试：`test_erase_deletes_unique_blob_and_marks_erased` / `test_erase_keeps_shared_blob_and_reports_retained_by` / `test_erase_is_control_plane_only` / `test_cli_erase_deletes_content_and_marks_erased` / `test_schema_v1_database_is_migrated_in_place` |
 
 **数据落点（别写成系统标准目录）**：投影表（`memories` / `memory_fts` / `memory_meta`）建在**事件日志同一个 sqlite 库**里——构造时强制 `conn is log.conn`（`MemoryProjection.__init__`），所以事件与投影同事务。正文 blob 默认落在 **DB 旁的 `memory_blobs/`**（`MemoryProjection.blob_dir`），**刻意不放进 `log.blob_dir`**：事件 payload 必须留存供 replay / 审计，记忆正文将来要能按策略物理擦除；两者同处一个内容寻址目录时，同一段字节会变成同一个文件——按策略删记忆正文会误删必须留存的日志材料（理由写在 `MemoryProjection.__init__` 的注释里）。纯内存库（`:memory:`）没有"DB 旁边"，此时 `blob_dir` 为 `None`、正文如实标成不可用，不编一个当前目录下的路径。内核子命令默认 `--db .tianshu/events.db`（`cli.DEFAULT_DB`），daemon 用 `--data-root` 时事件库在 `<data root>/events.db`（`daemon.py`）；记忆投影跟着这个库走。测试钉住这条分离：`test_default_blob_dir_is_separate_from_event_payload_store`（`EventLog` 就算配了 `blob_dir`，记忆正文也不跟过去）。`~/Library/Application Support/AgentOS` 那套只存在于 TECH-ARCH 的设计里，别当成现状。
 
@@ -393,6 +396,9 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 编辑一次审批两行：旧版 `superseded` 可查、新版 `active`、不许改 kind | ✅ 已覆盖 | `test_edit_with_approval_keeps_old_row_and_activates_new`（旧行 revision 不变 + 新行 origin=user_confirmed + 凭据可核对）、`test_edit_requires_the_revision_the_human_saw`（过期 revision 拒）、`test_cli_edit_keeps_old_row_and_activates_new`（控制面 edit → 新行 origin=user_explicit） |
 | 提升是移动：原行退役、目标作用域候选、Receipt 指原行、只控制面能做 | ✅ 已覆盖 | `test_promote_is_control_only_and_moves_memory`（模型路径 `c4.memory_control_scope_binding`；原作用域不再召回；`source_refs` 含原 id；**断言 `receipt.payload.resource == 原 id`、`root == 原作用域`**；`verify_receipts` 通过）、`test_promote_to_workspace_canonicalizes_the_target_scope`（原始路径参数归一成 canonical 根）、`test_cli_promote_moves_memory_into_task_scope`（控制面 CLI；来源随行 `user_explicit`） |
 | 编辑 / 提升**永远**要人工审批（`user_explicit` 的免审批只管 confirm） | ✅ 已覆盖 | 策略与 `_requires_approval` 都按 `memory_tool == "memory.confirm"` 收口；负控：去掉该限制 → `test_cli_edit_keeps_old_row_and_activates_new` 红（`overwrite 缺少审批绑定`） |
+
+| 擦除只删唯一引用的正文；共享 blob 保住别的记忆；已擦除行不再计数 | ✅ 已覆盖 | `test_erase_deletes_unique_blob_and_marks_erased`（blob 消失、`erased_at`、重建不复活、回执含 `memory_erasure` 证据）、`test_erase_keeps_shared_blob_and_reports_retained_by`（共享同一 `content_ref`：第一条 `deleted=False`/`retained_by=[另一条]`，第二条才删） |
+| 擦除只控制面能做；重复擦除是确定拒绝；旧库自动补列 | ✅ 已覆盖 | `test_erase_is_control_plane_only`（模型路径 `c4.memory_control_scope_binding`、不在 `tool_manifest()`）、`test_erase_deletes_unique_blob_and_marks_erased`（第二次 prepare 即拒）、`test_schema_v1_database_is_migrated_in_place`（v1 库补 `erased_at` + `schema_version=2`、不重建不丢正文）、`test_cli_erase_deletes_content_and_marks_erased` |
 
 ## 15. 与实施计划的关系
 

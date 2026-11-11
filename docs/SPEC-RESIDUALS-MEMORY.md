@@ -302,10 +302,11 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
      对该 `content_ref` 的引用；只有计数为 0 才物理删文件，否则保留文件、只把本行标
      `erased_at` + `content_state=unavailable`。不做计数 = 擦一条让另一条正文凭空消失，
      那是数据损坏，不是擦除。
-   - 删除该记忆的正文 blob（`blob_dir` 下按 `content_ref` 定位）。顺序写死：**在
-     `EventLog` 事务里更新投影行 → 删文件 → 提交**；删文件失败则整个擦除记 `failed`
-     （不写 `erased_at`，不留"行列说已擦、文件还在"的半态）。记忆没有目录租约，
-     不要拿租约说事；并发保护靠 `memory.erase` 自己的 revision 前置与 SQLite 写事务。
+   - 删除该记忆的正文 blob（`blob_dir` 下按 `content_ref` 定位）。**实际顺序（N4 落地
+     后修正，原规格写反了）**：**先删文件 → 再让结果与事件同事务提交**。崩在两者之间
+     只会留下"文件没了、行还没标擦除"——重建时正文如实不可用；反过来（先标擦除、
+     文件还在）才是隐私泄漏。删文件失败则整次擦除如实失败（不写 `erased_at`）。
+     记忆没有目录租约；并发保护靠 `memory.erase` 自己的 revision 前置与 SQLite 写事务。
    - 投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；
    - **重建后不得复活**：`apply_event` 见到 `erased_at` 的记忆 → 跳过 blob 读取、
      标 `content_state=unavailable`；blob 不存在不视为错误。
@@ -318,9 +319,13 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ### 5.3 判据
 
-- `tests/test_memory_erasure.py`（新）：erase 后 blob 文件不存在（枚举目录断言）、
-  `search` 不召回、`get` 返回 `content_unavailable`、`rebuild` 后仍不可召回；
-  `replay` 老 Run → 报告"历史证据不可用"而不是重取。
+- **测试落点（N4 实际）**：没有单开 `test_memory_erasure.py`，而是追加在既有两个记忆测试文件里
+  （复用它们的 env 夹具，避免复制装配代码）：`test_memory_dispatch.py` 的
+  `test_erase_deletes_unique_blob_and_marks_erased` / `test_erase_keeps_shared_blob_and_reports_retained_by` /
+  `test_erase_is_control_plane_only`，`test_memory_loop.py` 的
+  `test_cli_erase_deletes_content_and_marks_erased`，以及 `test_memory_store.py` 的
+  `test_schema_v1_database_is_migrated_in_place`。判据：erase 后 blob 不存在、`search` 不召回、
+  `get` 返回 `content_unavailable`、`rebuild` 后仍不可召回。
 - 负控：只改 status 不删 blob → rebuild 后能读 → 用例必须红。
 - 跨进程：另一进程正 `get` 时 erase → 要么成功要么明确失败，**不允许**读到半截正文。
 - 不做：备份/快照里的副本、跨库引用追踪。**库内引用计数必须做**（见 §5.2 第 1 条）——
