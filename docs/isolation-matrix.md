@@ -11,10 +11,14 @@
 | `local-posix`（`LocalExecBackend`） | macOS arm64（本机实测） | `not_enforced` | `not_enforced` | `not_enforced` | `enforced`（POSIX 进程组杀树） | **不能启用任何依赖隔离的能力**：四边界只证明了一条 |
 | `local-posix` | macOS x64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
 | `local-posix` | Linux x64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
-| `local-windows`（`LocalExecBackend`，Windows 分支） | Windows x64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机；代码声明 `supports_process_group=False`/`supports_job_objects=False`，杀树不可确认 |
+| `local-windows`（`LocalExecBackend`，Windows 分支） | Windows x64（CI runner） | `not_enforced` | `unknown`/`not_enforced` | `not_enforced` | `unknown` | 无实机；`windows-latest` 上文件/凭据探针实测可越界，网络探针可能因 runner 的 winsock 服务故障落 `unknown`（`WinError 10106`）——未知同样阻断；代码声明 `supports_process_group=False`/`supports_job_objects=False`，杀树不可确认 |
 | `local-windows` | Windows arm64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
 | `app_container` 后端 | 任意 | — | — | — | — | **v1 未实现**（`docs/TECH-ARCH.md` §6 的 L3 未交付），不存在可测后端 |
 | `container` 后端 | 任意 | — | — | — | — | **v1 未实现**，不存在可测后端 |
+
+`windows-latest` 上的 Windows 行只代表 **CI runner** 的经验结果，不是实机；
+网络列允许 `unknown` 是因为 runner 的 winsock 服务可能加载失败（实测
+`[WinError 10106]`），探针跑不成本身必须落 `unknown`，不得洗成「已挡住」。
 
 本机只有 `local-posix` 一个后端可用；它如实声明 `isolation="none"`。
 探针不认声明，只认观察：三个边界被真实子进程越过，进程树终止在 POSIX 上可确认。

@@ -370,8 +370,13 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
    备份 API + 复制顺序把窗口压小，边界见 §2.2。
 4. **迁移步骤只有两步**、且是本模块自有的 `migration_log`：W5 的事件 payload 契约
    版本旁表合入后需要追加新步骤（注册表就是为这个准备的），本轮不预造。
-5. **Windows / APFS / 跨机器**：未验证；`restore` 的原子改名与 fsync 语义在 Windows
-   上的行为没有实机证据（沿用项目既有"Windows 只有 CI，没有实机"的口径）。
+5. **Windows**：只有 `windows-latest` CI，**没有实机**。本轮 CI 暴露并修掉两处
+   Windows 兼容缺陷：① `os.fsync` 对只读句柄报 `EBADF`——`_fsync_file` 改用可写
+   句柄，仍失败只在"该边界已落盘"上降级（哈希/引用校验不受影响）；②
+   `_pid_alive` 在 Windows 上不能用 `os.kill(pid, 0)`（那是 TerminateProcess
+   语义），改用 `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject(0)`，由
+   `windows-latest` 上的 `test_pid_alive_sees_current_process` 给经验证据。
+   `restore` 的原子改名、目录 fsync 与 APFS/跨机器语义仍无实机证据。
 6. **备份大小/耗时**：本轮没有大库压测（测试库都是 KB 级）；在线备份 API 对超大库的
    暂停时间未测量。
 7. **密钥材料**：`ipc.key` 明确不进备份；备份里的 `events.db` 是否含敏感 payload
