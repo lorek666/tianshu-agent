@@ -53,6 +53,12 @@ def spawn(
 | `pty=True` | `False` | 任意 | `PolicyDenied`（规则 `f2.pty_not_allowed`，改策略能解决） |
 | `pty=False` | 任意 | 任意 | 走管道；`stderr_merged=False`，stderr 可独立读取 |
 
+**Windows 的进程树（TECH-ARCH L2）在 v1 未交付。** 零依赖 stdlib 没有 Job
+Object，`_kill_tree` 只能杀直接子进程，`descendants_may_survive` 如实为 True；
+能力声明 `supports_job_objects=False`。不要因为"POSIX 能杀树"就推断 Windows
+也能——证据与支持矩阵见 [isolation-matrix.md](isolation-matrix.md)，选择不做的
+理由见 [F2-sandbox-policy.md](F2-sandbox-policy.md) §7。
+
 **默认必须走管道。** 如果"策略打开 PTY"就等于"每次调用都走 PTY"，会静默改变
 一串真实命令的语义：`isatty()` 变真（git 开颜色、less 分页、进度条、Python
 改缓冲策略）、行尾从 `\n` 变成 `\r\n`、stdin 不再是 DEVNULL。用户看到的

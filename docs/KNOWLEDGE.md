@@ -91,7 +91,12 @@
 
 - **已实现的功能面**（PRD §7 编号 → 落地模块，模块说明取自代码）：
   - **F1 执行原语** → `exec.py`（argv 模式，非 shell；超时/截断/进程组）
-  - **F2 执行策略** → `execpolicy.py`（默认全拒）
+  - **F2 执行策略与沙箱接缝** → `execpolicy.py`（声明式、默认全拒、deny 优先）、
+    `exec_backends.py`（注册表；未实现后端一律 `unsupported`，绝不回落 local）、
+    `exec.py`（本地后端与进程树）、`isolation.py`（四边界实测探针 + 门 +
+    `isolation_view`）。「受信任执行」在**审批前**可见（`ApprovalView.isolation`），
+    执行结果/事件带 `output.isolation`；口径见
+    [F2-sandbox-policy.md](F2-sandbox-policy.md)
   - **F5 上下文编译** → `context.py`（纯函数、按字节预算、丢弃只记账不摘要）
   - **F9a 模型准入** → `capability.py`（能力声明与准入，只用于路由，不用于授权）
   - **F12 凭据** → `credentials.py`（分域查找 + 全链路脱敏；**Keychain 后端 v1 未实现**，如实报 `unsupported`）
@@ -329,7 +334,7 @@
 **PRD 2026-11-11 工程评审新增要求：首轮交付留账（2026-11-11，PR #79–#84；对账见 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md)）**
 
 - **G1 已收口（2026-11-11，PR #91 / #92 / #96 / #97 / #99）**：§5.2.3 通用工具准入（封闭 schema 方言、注册期拒绝、嵌套校验、描述绑定、身份字段双闸、URI 拒绝、准入在派发前）+ 五种资源种类与外发许可（外发恒需人工批准、无执行器种类派发前拒绝）+ 有界摘要/内容引用/分页读取（任务可见范围 + sha256 复核）；§5.6 共享预算账本（**默认记账**、原子预占、幂等分维度结算、未知不记零、父子链、取消传播）+ 硬上限模式的**可验证上界**。**仍不成立**：① 网络 / MCP / 委派的**执行器**（G2），所以「私有内容未经外发许可不发包」只能记 **unknown**（闸门就位、可拒绝，但没有外发面可验证「发了什么」）；② `run_command` 仍只受显式 `ExecPolicy`，不经过隔离门；③ 硬上限的每消息固定开销不在上界内（靠 `overrun` 暴露）；④ 没有任务级外发白名单（`outbound_allow`）；⑤ 账本没有 UI 展示；⑥ 保留期/GC 与跨机器内容引用未做。见 [tool-admission.md](tool-admission.md)、[resource-kinds.md](resource-kinds.md)、[content-refs.md](content-refs.md)、[budget-ledger.md](budget-ledger.md)、[SPEC-G1-CLOSURE-2026-11-11.md](SPEC-G1-CLOSURE-2026-11-11.md)。
-- **⚠ 控制面不是模型隔离边界（F2/exec，2026-11-11 复审确认）**：v1 没有进程级沙箱，`run_command` 以当前 uid 执行子进程；子进程可读 `run/authkey`、连 daemon IPC、跑 `tianshu` CLI，等于能以「人」的身份调控制面并自己落审批。所以"审批需要人"这条在当前实现里只挡**没有** `run_command` 的任务；要真隔离需要进程/文件系统沙箱或独立 OS 用户（G1/exec 的后续工单）。别把 N6 的控制面端点写成"模型无路径"。
+- **⚠ 控制面不是模型隔离边界（F2/exec，2026-11-11 复审确认）**：v1 没有进程级沙箱，`run_command` 以当前 uid 执行子进程；子进程可读 `run/authkey`、连 daemon IPC、跑 `tianshu` CLI，等于能以「人」的身份调控制面并自己落审批。所以"审批需要人"这条在当前实现里只挡**没有** `run_command` 的任务；要真隔离需要进程/文件系统沙箱或独立 OS 用户（G1/exec 的后续工单）。别把 N6 的控制面端点写成"模型无路径"。**F2 收口后仍然成立**：F2 做的是「后端可插拔 + 实测门 + 受信任执行可见」，不是沙箱；`run_command` 仍是同 uid 子进程，四边界探针在本机只有 `process_tree` enforced，任何非空 `isolation_requires` 都会 `unsupported`（见 [F2-sandbox-policy.md](F2-sandbox-policy.md)）。
 - **F10 N6（2026-11-11）**：Host/IPC 端点已落地，但 **React 记忆面板未接**（端点已具备，面板属 UI 工作流）；`memory.search` 的 RPC 未暴露；"无身份拒绝"在单用户本机模型下**无法构造反例**（只有代码/文档论证，不声称已验证）；Windows 命名管道 ACL 未额外加固。
 - **§7.1 已交付但仍有边界**：默认关；跨 Run 不复用（材料身份含 `seq`）；不做增量/分层摘要与自动刷新（CLI 未接）；**没有摘要质量评测**（"比确定性裁剪更好"不许宣称）；提示注入未解决（"不是指令"的包装只是提示级缓解，执行侧闸门才是强制点）；纯事件导出不足以回放摘要轮次（缺记录报 problem 不重生成）；本机夹具里摘要**更贵**（token 324→744、请求字符 4054→7887）换关键约束不丢；保留期/GC 未做。见 [context-summaries.md](context-summaries.md) §8。
 - **F10 L2/L3（N3，2026-11-11）**：只落地**确定性**合成，LLM 合成未做。**没有 L2/L3 vs L1 的检索质量评测**——谁都不能宣称"读页比直接读 L1 更好用"；跨作用域合成、对话抽取、**冲突消解**（两条矛盾的 L1 在页里并列、不裁决）都没做；L3 仅 user 作用域；执行侧 workspace 守护经派发不可达（纵深冗余，无单独测试）；`memory.consolidate` 不进审批表（`ACTION_CREATE`），将来若做"合成后自动 confirm"必须另立契约。
