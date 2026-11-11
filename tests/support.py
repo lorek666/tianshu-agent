@@ -71,6 +71,7 @@ def engine_for(
         snapshots=stack.snapshots,
         model=model,
         limits=limits,
+        budget=getattr(stack, "budget", None),
         # 与生产装配一致：测试替身也复用同一个记忆投影，避免"测试里
         # 默认目录碰巧对上、自定义目录才炸"的假通过。
         memory=stack.memory,
