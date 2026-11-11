@@ -430,7 +430,14 @@ class ControlPlane:
 
     def _run_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         run = self._require_run(_require_str(params, "run_id"))
-        return {"run": self._run_view(self._tasks.request_cancel(run.run_id))}
+        view = self._tasks.request_cancel(run.run_id)
+        # 取消要传递到预算账本（PRD §5.6 第 6 条）：之后**不再预占**，也就
+        # 不会再有新请求。已发出的请求保持原状——取消不是退款，未结算的
+        # 占用仍留在账本里等 `reconcile()`。
+        budget = getattr(self._stack, "budget", None)
+        if budget is not None:
+            budget.cancel(f"run:{run.run_id}")
+        return {"run": self._run_view(view)}
 
     def _require_run(self, run_id: str) -> Any:
         run = self._tasks.get_run(run_id)
