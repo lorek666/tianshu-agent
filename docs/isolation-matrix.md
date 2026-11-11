@@ -16,7 +16,10 @@
 | `app_container` 后端 | 任意 | — | — | — | — | **v1 未实现**（`docs/TECH-ARCH.md` §6 的 L3 未交付），不存在可测后端 |
 | `container` 后端 | 任意 | — | — | — | — | **v1 未实现**，不存在可测后端 |
 
-`windows-latest` 上的 Windows 行只代表 **CI runner** 的经验结果，不是实机；
+`windows-latest` 上的 Windows 行只代表 **CI runner** 的经验结果，不是实机；收尾轮之后
+（`main @ ec7d7ae`）该 runner 上的 isolation 用例已全绿（网络探针按真实结果可以落
+`unknown`，测试不再硬编码 `not_enforced`），但**这仍是 runner 的一次实测，不是 Windows
+实机证据**；
 网络列允许 `unknown` 是因为 runner 的 winsock 服务可能加载失败（实测
 `[WinError 10106]`），探针跑不成本身必须落 `unknown`，不得洗成「已挡住」。
 
