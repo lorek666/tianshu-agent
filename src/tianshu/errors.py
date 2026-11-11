@@ -17,6 +17,15 @@ class ToolArgumentError(TianshuError):
     """工具参数不满足 schema。"""
 
 
+class ToolSchemaError(TianshuError):
+    """工具注册表里的参数 schema 用了本方言不支持的写法。
+
+    是**注册期**错误，不是运行期错误：一个写着 `oneOf` 的 schema，执行侧根本
+    不会检查 `oneOf`，而模型和审批人会以为检查过。所以宁可 import 时就炸，
+    也不许把"没实现的关键字"当注解静默忽略（PRD §5.2.3）。
+    """
+
+
 class OverwriteRefused(TianshuError):
     """目标文件已存在，拒绝覆盖（对应验收 A6）。"""
 

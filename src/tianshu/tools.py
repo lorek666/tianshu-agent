@@ -23,11 +23,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import toolschema
 from .crashpoint import failpoint
 from .errors import (
     OverwriteRefused,
@@ -35,6 +37,7 @@ from .errors import (
     TianshuError,
     ToolArgumentError,
     ToolNotAllowed,
+    ToolSchemaError,
 )
 from .exec import LOCAL_EXEC_CAPABILITIES, spawn
 from .execpolicy import (
@@ -106,6 +109,10 @@ class ToolSpec:
     exposed: bool = True  # 是否出现在给模型看的工具清单里
     path_arg: str = ""  # 参数里表示"要改哪个文件"的键名
     path_default: str = ""  # path_arg 缺失时的默认值（run_command 的 cwd 用）
+
+    def description_digest(self) -> str:
+        """描述的规范摘要：进审批摘要（PRD §5.2.3「任务绑定固定…描述摘要」）。"""
+        return description_digest(self.description)
 
 
 @dataclass(frozen=True)
@@ -221,48 +228,74 @@ class ToolResult:
 
 # ---------------------------------------------------------------- schema 校验
 
-
-def _type_ok(value: Any, expected: str) -> bool:
-    if expected == "string":
-        return isinstance(value, str)
-    if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "boolean":
-        return isinstance(value, bool)
-    if expected == "object":
-        return isinstance(value, dict)
-    if expected == "array":
-        return isinstance(value, list)
-    return True
+#: 模型不可指定的执行身份字段（PRD §5.2.3）。定义在 toolschema，这里转发一份，
+#: 免得调用方为了一个常量去 import 两个模块。
+MODEL_FORBIDDEN_ARGS = toolschema.MODEL_FORBIDDEN_ARGS
 
 
 def validate_args(args: Any, schema: dict[str, Any]) -> dict[str, Any]:
-    """最小 JSON Schema 子集：type / required / properties / additionalProperties。
+    """按**封闭** schema 方言校验参数：嵌套对象、数组与约束都在执行前执行。
 
-    够用即可；M0 不引入 jsonschema 依赖，避免四个目标架构的轮子问题。
+    历史：这里原本只做顶层 `type / required / additionalProperties`，于是
+    `SPECS` 里写着的 `items` / `minItems` / `minimum` / `maximum` 从未被执行
+    （PRD §5.2.3 的「完整 schema」缺口）。现在编译期拒绝未支持关键字、执行期
+    逐层校验；未支持的关键字静默忽略等于对模型撒谎，不做。
+
+    异常类型与调用方不变：仍是 `ToolArgumentError`，所以 `loop.py`、
+    `memory_exec.py` 不需要改。
     """
-    if not isinstance(args, dict):
-        raise ToolArgumentError(f"参数必须是对象，实际是 {type(args).__name__}")
+    compiled = toolschema.compile_cached(schema)
+    return compiled.validate(args)
 
-    props: dict[str, Any] = schema.get("properties", {})
-    required: list[str] = schema.get("required", [])
 
-    missing = [k for k in required if k not in args]
-    if missing:
-        raise ToolArgumentError(f"缺少必填参数：{missing}")
+def schema_digest(schema: dict[str, Any]) -> str:
+    """参数 schema 的规范摘要（与派发侧 `schema_hash` 同一个算法）。"""
+    return toolschema.canonical_digest(schema)
 
-    if schema.get("additionalProperties") is False:
-        extra = [k for k in args if k not in props]
-        if extra:
-            raise ToolArgumentError(f"不允许的参数：{extra}")
 
-    for key, value in args.items():
-        spec = props.get(key)
-        if spec and "type" in spec and not _type_ok(value, spec["type"]):
-            raise ToolArgumentError(
-                f"参数 {key} 期望 {spec['type']}，实际 {type(value).__name__}"
+def description_digest(description: str) -> str:
+    """工具描述的摘要：进审批摘要，改一句话就作废旧批准。"""
+    return toolschema.canonical_digest({"description": description})
+
+
+def validate_registry(specs: dict[str, ToolSpec] | None = None) -> None:
+    """注册期一律编译一遍：schema 用了方言外的写法，这里就炸。
+
+    `SPECS` 是**注册表**，不是建议。写成 `oneOf` 却没人实现，会让模型与审批人
+    以为参数被检查过。所以本函数在模块导入时对内置注册表跑一遍；测试打补丁
+    之后也要显式再调一次，不给"运行时偷偷放行"留后门。
+    """
+    table = SPECS if specs is None else specs
+    for tool_id, spec in table.items():
+        if spec.tool_id != tool_id:
+            raise ToolSchemaError(
+                f"注册表键 {tool_id!r} 与 ToolSpec.tool_id {spec.tool_id!r} 不一致"
             )
-    return args
+        toolschema.compile_schema(spec.input_schema, where=tool_id)
+
+
+# ---------------------------------------------------------------- 路径参数
+
+#: `xxx://` 形状。只用于**拒绝**，不用于解析：资源种类的解析在 resources.py。
+_URI_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+
+
+def reject_uri_path(raw: Any, *, tool_id: str) -> None:
+    """路径参数必须是路径，不能是 URI（PRD §5.2.3「URL 不伪装成文件路径」）。
+
+    没有这一步时 `https://example.com/a` 会被 `Workspace.resolve()` 当成相对
+    路径拼进工作区，变成 `$WS/https:/example.com/a`——一个不存在但**看起来
+    像**访问了网络的目录。不报错、也不联网，只是把模型的意图悄悄改写成
+    另一种东西，这是最难查的一类失败。
+
+    网络目标接入（G2）时必须走 `resources.RESOURCE_KINDS` 与执行侧外发规则，
+    不许把 URL 塞进路径参数来"先跑通"。
+    """
+    if isinstance(raw, str) and _URI_SHAPE.match(raw):
+        raise ToolArgumentError(
+            f"工具 {tool_id} 的路径参数不接受 URI：{raw!r} 不是文件路径"
+            "（网络目标属于 G2，接入时必须走资源种类）"
+        )
 
 
 # ---------------------------------------------------------------- 目标解析
@@ -277,6 +310,7 @@ def _write_target(ws: Workspace, ctx: ToolContext, raw: Any) -> tuple[Path, str]
     """
     if not isinstance(raw, str) or not raw:
         raise ToolArgumentError("目标路径必须是非空字符串")
+    reject_uri_path(raw, tool_id=ctx.admitted.tool_id if ctx.admitted else "写入")
 
     resolved = ws.resolve(raw)
     admitted = ctx.admitted
@@ -297,6 +331,7 @@ def _write_target(ws: Workspace, ctx: ToolContext, raw: Any) -> tuple[Path, str]
 def _list_files(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     io = ctx.io
     sub = args.get("path", ".")
+    reject_uri_path(sub, tool_id="list_files")
     target = ws.resolve(sub)
     if not io.is_dir(target):
         return ToolResult("failed", "none_applied", {"error": f"不是目录：{sub}"})
@@ -318,6 +353,7 @@ def _list_files(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolRe
 
 def _read_text(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     io = ctx.io
+    reject_uri_path(args["path"], tool_id="read_text")
     target = ws.resolve(args["path"])
     if not io.is_file(target):
         return ToolResult("failed", "none_applied", {"error": "不是文件"})
@@ -945,6 +981,11 @@ SPECS: dict[str, ToolSpec] = {
 }
 
 
+#: 注册期校验：**导入即失败**。schema 里写了本方言不支持的约束，不会等到模型
+#: 调用才暴露——那时模型已经看到一份"看起来被检查过"的契约了。
+validate_registry()
+
+
 def tool_manifest() -> list[dict[str, Any]]:
     """给模型看的工具清单（C2 的 ToolDefinition 投影）。内部工具不出现。"""
     return [
@@ -1360,6 +1401,7 @@ __all__ = [
     "AdmittedCall",
     "DispatchRecord",
     "FileExecutor",
+    "MODEL_FORBIDDEN_ARGS",
     "READ_TEXT_LIMIT",
     "SPECS",
     "ToolContext",
@@ -1369,10 +1411,14 @@ __all__ = [
     "check_memory_preconditions",
     "check_preconditions",
     "check_request_preconditions",
+    "description_digest",
     "execute",
     "is_write_tool",
     "observe_state",
+    "reject_uri_path",
+    "schema_digest",
     "target_arg",
     "tool_manifest",
     "validate_args",
+    "validate_registry",
 ]
