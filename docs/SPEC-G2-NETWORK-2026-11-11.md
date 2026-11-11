@@ -327,7 +327,7 @@ def summary_text(fetched, limit_bytes) -> str       # UTF-8 有损解码 + 截�
 |---|---|---|---|---|
 | I1 | `tests/test_outbound_allow.py` | **18**（原估 14，补了匹配/迁移/CLI 三条） | 5 | **5/5 红** |
 | I2 | `tests/test_network_fetch.py`（+`tests/httpserver.py`） | **23**（原估 22） | 8 | **8/8 红** |
-| I3 | `tests/test_network_research_eval.py` | 待回填 | 待回填 | 待回填 |
+| I3 | `tests/test_network_research_eval.py`（+ 真实任务判据在 `test_eval_real_tasks.py`） | **11**（原估 10） | 5 | **5/5 红** |
 
 ## 4 口径冲突与旧口径变更（必须写进 PR body）
 
@@ -378,7 +378,7 @@ def summary_text(fetched, limit_bytes) -> str       # UTF-8 有损解码 + 截�
 
 | 增量 | PR | 内容 | 判据 | 负控 |
 |---|---|---|---|---|
-| I1 | 待回填 | `outbound_allow` | 待回填 | 待回填 |
-| I2 | 待回填 | `network.fetch` | 待回填 | 待回填 |
-| I3 | 待回填 | 联网研究闭环 | 待回填 | 待回填 |
+| 规格 | — | 本文件 | — | — |
+| I1 + I2 | **#110** | `outbound_allow` + `network.fetch` | 18 + 23 条 | 5 + 8 全红 |
+| I3 | 本 PR | §10.5 联网研究闭环（RU-W1 v2 断网 / RU-W2 v2 本机夹具） | 11 条 + 真实任务 22 条 | 5 全红 |
 | 对账 | 待回填 | 交付文档 / PRD / KNOWLEDGE / README | — | — |

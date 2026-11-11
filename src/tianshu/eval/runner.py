@@ -27,10 +27,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ..contents import parse_ref
 from ..errors import TianshuError
 from ..events import EventLog
 from ..loop import AgentLoop, Limits, build_stack
@@ -42,6 +43,7 @@ from ..sandbox import current_backend
 from ..tasks import RUN_WAITING_APPROVAL
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
 from .checks import Observation
+from .webfixture import WebFixture, closed_origin
 
 #: 子进程入口；父进程按同一目录约定拼路径。
 CHILD_MODULE = "tianshu.eval.crash_child"
@@ -166,6 +168,103 @@ def _identity_of(factory: ModelFactory, case: Case) -> dict[str, str | None]:
     }
 
 
+# ---------------------------------------------------------------- 联网夹具（PRD §10.5）
+
+#: 联网研究任务里 `{WEB_BASE}` 的替换值形状：`127.0.0.1:<port>`。
+WEB_BASE_TOKEN = "{WEB_BASE}"
+
+
+def _start_web(case: Case) -> tuple[WebFixture | None, object | None, str]:
+    """按 case 声明启动本机来源（或准备一个"连不上"的地址）。
+
+    返回 `(fixture, 保留的 socket, base)`：
+    - `web_routes` 非空 → 起 loopback 服务器，base 是它的地址；
+    - `web_closed` → 一个已 bind 未 listen 的端口（连接必被拒），base 是它；
+    - 都没有 → base 为空串（不需要替换）。
+    """
+    if case.web_routes:
+        fixture = WebFixture()
+        for path, body in case.web_routes.items():
+            fixture.route(path, body=body)
+        fixture.start()
+        return fixture, None, fixture.base
+    if case.web_closed:
+        base, sock = closed_origin()
+        return None, sock, base
+    return None, None, ""
+
+
+def _materialize_case(case: Case, base: str) -> Case:
+    """把 `{WEB_BASE}` 替换成真实地址（任务文本 / 白名单 / 脚本）。
+
+    地址是内核分配的，事先不知道；所以脚本只能"起来之后再生成"。替换后的 case
+    只在本进程内用于运行与判据，`case_id` / `version` 不变（分母身份由
+    `fixture_digest` 里的声明决定，不随端口号变）。
+    """
+    if (
+        not base
+        and case.script_factory is None
+        and WEB_BASE_TOKEN not in case.task
+        and not any(WEB_BASE_TOKEN in item for item in case.outbound_allow)
+    ):
+        return case
+    script = case.script
+    if case.script_factory is not None:
+        script = tuple(case.script_factory(base))
+    allow = tuple(item.replace(WEB_BASE_TOKEN, base) for item in case.outbound_allow)
+    return replace(
+        case,
+        task=case.task.replace(WEB_BASE_TOKEN, base),
+        script=script,
+        outbound_allow=allow,
+    )
+
+
+def _collect_offline_sources(
+    stack: object, case: Case, events: list, log: EventLog
+) -> list[dict[str, Any]]:
+    """关掉来源服务器**之后**，从内容引用读回每一次成功抓取的字节。
+
+    读的时候会重算 sha256（`ContentStore.read` 的既有保护）：引用与内容对不上
+    就直接在这里炸，判据拿不到"看起来还行"的假来源。`head` 只留前 1 KiB——
+    判据要核对的是"读得回来、内容对得上"，不是把整页塞进报告。
+    """
+    task_id = ""
+    for event in events:
+        if event.type == "run.start":
+            task_id = str(event.payload.get("task_id") or "")
+            break
+    sources: list[dict[str, Any]] = []
+    for event in events:
+        if event.type != "tool.result":
+            continue
+        payload = event.payload
+        if payload.get("tool_id") != "network.fetch":
+            continue
+        if payload.get("status") != "succeeded":
+            continue
+        output = payload.get("output") or {}
+        ref = output.get("ref")
+        url = str(output.get("url") or "")
+        if not isinstance(ref, str) or not ref.startswith("content://sha256:"):
+            # 成功结果却没有引用 = 记录不完整。不在这里判定（replay 会报错），
+            # 但判据需要看到"这条来源不可核验"，所以放进列表且摘要留空。
+            sources.append({"ref": ref, "digest": "", "bytes": 0, "head": "", "url": url})
+            continue
+        digest = parse_ref(ref)
+        page = stack.contents.read(ref, task_id=task_id, length=1024)
+        sources.append(
+            {
+                "ref": ref,
+                "digest": digest,
+                "bytes": page.total_size,
+                "head": page.data,
+                "url": url,
+            }
+        )
+    return sources
+
+
 # ---------------------------------------------------------------- 普通运行
 
 
@@ -194,6 +293,11 @@ def _run_standard(
     log = EventLog(directory / "events.db", blob_dir=directory / "blobs")
     started = time.perf_counter()
     error: str | None = None
+    # 联网研究（PRD §10.5）的本机来源：必须在**开跑之前**起来（地址要写进任务文本
+    # 与脚本），并且在**核验来源之前**关掉（证明"可离线核验"，而不是"服务器还在"）。
+    web: WebFixture | None = None
+    web_socket: object | None = None
+    offline_sources: list[dict[str, Any]] = []
     res = None
     files_at_pause: dict[str, bytes] | None = None
     replay_report: ReplayReport | None = None
@@ -202,6 +306,8 @@ def _run_standard(
     invalid_reason: str | None = None
     post_run: dict[str, Any] = {}
     try:
+        web, web_socket, base = _start_web(case)
+        effective = _materialize_case(case, base)
         stack = build_stack(log, data_root=directory / "data")
         engine = AgentLoop(
             tasks=stack.tasks,
@@ -210,15 +316,19 @@ def _run_standard(
             dispatcher=stack.dispatcher,
             approvals=stack.approvals,
             snapshots=stack.snapshots,
-            model=model_for(case),
-            limits=Limits(case.max_turns, case.max_total_tokens),
+            model=model_for(effective),
+            limits=Limits(effective.max_turns, effective.max_total_tokens),
             # 评测也必须复用装配里的投影：评测若另开一个默认投影，
             # 测到的记忆行为就不是产品装出来的那套。
             memory=stack.memory,
             summaries=stack.summaries,
         )
-        task = stack.tasks.create_task(case.task, [str(ws)])
-        res = engine.start(task.task_id, out_name=case.out_name)
+        task = stack.tasks.create_task(
+            effective.task,
+            [str(ws)],
+            outbound_allow=list(effective.outbound_allow) or None,
+        )
+        res = engine.start(task.task_id, out_name=effective.out_name)
         run_id = res.run_id
 
         rounds = 0
@@ -278,6 +388,16 @@ def _run_standard(
             replay_report = replay(log, res.run_id)
         except Exception as exc:  # noqa: BLE001
             invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
+
+        # 来源可离线核验（PRD §10.5）：**先关服务器**，再读内容引用。
+        if web is not None:
+            web.stop()
+            web = None
+        if case.web_routes or case.web_closed:
+            try:
+                offline_sources = _collect_offline_sources(stack, effective, events, log)
+            except Exception as exc:  # noqa: BLE001 - 读不回来源 = 评测基础设施无效
+                invalid_reason = f"来源离线核验失败：{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001 - 评测器本身出错也要落成证据
         error = f"评测器异常：{type(exc).__name__}: {exc}"
         # 只有"基础设施"类故障才算无效样本（夹具/后端/磁盘）。引擎自己抛异常
@@ -285,6 +405,10 @@ def _run_standard(
         if isinstance(exc, (OSError, sqlite3.Error)):
             invalid_reason = f"评测基础设施无效：{type(exc).__name__}: {exc}"
     finally:
+        if web is not None:
+            web.stop()
+        if web_socket is not None:
+            web_socket.close()
         files = _read_tree(ws)
         outside_files = _read_tree(outside)
         if not run_id:
@@ -312,6 +436,7 @@ def _run_standard(
         model_calls=len([e for e in events if e.type == "model.intent"]),
         invalid_reason=invalid_reason,
         post_run=post_run,
+        offline_sources=offline_sources,
     )
     return obs
 

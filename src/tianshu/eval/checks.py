@@ -73,6 +73,10 @@ class Observation:
     #: 场景钩子（如"撤销冲突"）在 Run 结束后收集到的产品事实。键由场景定义，
     #: 判据只读它、不猜。
     post_run: dict[str, Any] = field(default_factory=dict)
+    #: 联网研究（PRD §10.5）：**已经关掉来源服务器之后**，从内容引用读回的来源事实。
+    #: 每项：{"ref", "digest", "bytes", "head", "url"}。判据只读它，证明「保存的
+    #: 来源可离线核验」——而不是"服务器还在，所以读得到"。
+    offline_sources: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def valid(self) -> bool:
@@ -1120,6 +1124,112 @@ def approval_metric() -> Check:
 
 
 # ---- 真实用户任务集用的判据（PRD §10.5） ------------------------------------
+
+
+def network_fetched(limit: int = 1) -> Check:
+    """确实抓到过网页，且结果是**有内容引用**的成功结果（PRD §10.5 联网研究）。
+
+    "模型说有来源"不算数：要看 `tool.result` 里 `network.fetch` 真的成功、
+    并且带着 `content://sha256:` 引用——那才是可核验的来源。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        ok = [
+            r
+            for r in obs.tool_results()
+            if r.get("tool_id") == "network.fetch"
+            and r.get("status") == "succeeded"
+            and str((r.get("output") or {}).get("ref", "")).startswith(
+                "content://sha256:"
+            )
+        ]
+        return len(ok) >= limit, f"成功的网络抓取={len(ok)}，要求 >= {limit}"
+
+    return Check("network.fetched", False, False, fn)
+
+
+def network_failed_honestly(*, reason_prefix: str | None = None) -> Check:
+    """至少一次抓取失败，且失败结果**没有**编造内容引用。
+
+    给「断网 / 无来源」任务用：失败本身是预期结果，伪造一个 ref 才是作弊。
+    `reason_prefix` 可选：要求失败原因（`output.reason`）以它开头，例如
+    `net.connect`（连接被拒）——用来区分"真的连不上"与"参数写错了"。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        results = [
+            r for r in obs.tool_results() if r.get("tool_id") == "network.fetch"
+        ]
+        failed = [r for r in results if r.get("status") != "succeeded"]
+        forged = [r for r in failed if (r.get("output") or {}).get("ref")]
+        reasons = [
+            str((r.get("output") or {}).get("reason", "")) for r in failed
+        ]
+        matched = (
+            reason_prefix is None
+            or any(r.startswith(reason_prefix) for r in reasons)
+        )
+        ok = bool(failed) and not forged and matched
+        return ok, (
+            f"抓取次数={len(results)}，失败={len(failed)}，"
+            f"失败原因={reasons or '无'}（要求前缀={reason_prefix!r}），"
+            f"失败却带内容引用={len(forged)}"
+        )
+
+    return Check("network.failed_honestly", False, False, fn)
+
+
+def sources_offline(
+    limit: int = 1, *, needles: tuple[str, ...] = ()
+) -> Check:
+    """来源可离线核验：**服务器已经关掉之后**，内容引用仍能读回当时的字节。
+
+    这是 PRD §10.5「保存的来源可离线核验」的判据。它读的是
+    `Observation.offline_sources`（评测器在停掉夹具之后收集的），不是"当前还能
+    上网"。`needles` 用来核对读回的开头里确实有来源里的关键事实。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        sources = obs.offline_sources
+        if len(sources) < limit:
+            return False, f"可离线核验的来源={len(sources)}，要求 >= {limit}"
+        heads = " ".join(str(item.get("head", "")) for item in sources)
+        missing = [needle for needle in needles if needle not in heads]
+        bad_digest = [
+            item
+            for item in sources
+            if len(str(item.get("digest", ""))) != 64
+        ]
+        ok = not missing and not bad_digest
+        return ok, (
+            f"来源数={len(sources)}，缺关键事实={missing or '无'}，"
+            f"摘要形状不对={len(bad_digest)}"
+        )
+
+    return Check("network.sources_offline", False, False, fn)
+
+
+def approval_only_for_network() -> Check:
+    """所有审批请求都是**外发**（`network://`），没有夹带文件 / 记忆动作。
+
+    联网研究任务的授权范围只有"读公开来源 + 写报告"：报告是新建（自动放行），
+    真正需要人批准的不该出现别的东西。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        resources = [
+            str(resource)
+            for event in obs.events_of("approval.requested")
+            for resource in (event.payload.get("resources") or [])
+        ]
+        offenders = sorted(
+            r for r in resources if not r.startswith("network://")
+        )
+        return not offenders, (
+            f"审批资源={resources or '无'}，非外发资源={offenders or '无'}"
+        )
+
+    return Check("network.approval_only_for_network", True, False, fn)
 
 
 def capability_unavailable(expected: str) -> Check:
