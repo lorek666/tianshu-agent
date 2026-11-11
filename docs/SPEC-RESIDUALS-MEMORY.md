@@ -367,7 +367,12 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   （正文引用 / 证据 / 时间 / 来源），**不重算**合成算法（重算会让 replay 变成"再猜
   一次"，事件说 A、投影写 B）；重复页幂等；同作用域同层的 candidate/active 旧页
   `_supersede(seq)` 退役（行保留，旧正文与它当时站的 evidence 仍可 `get`）；正文过
-  `redact_or_block` 闸门（命中就拒，坏页不入库）。
+  `redact_or_block` 闸门（命中就拒，坏页不入库）。**重复页幂等**（同 id + 同 layer +
+  同 `content_ref` 且状态是 candidate/active 直接返回）；**已 confirm 的 active 页不因合成
+  退役**（`memory.consolidate` 是模型可见、免审批的工具，能退役人确认过的页面就等于模型
+  可以撤销人的召回授权；人确认的页只有人能退，新旧页并存由 freshness 决定次序——复审提出
+  的设计边界）；**正文回退**撞回已退役的页 id → fail-closed 报错（不静默停在 superseded，
+  也不悄悄复活）。
 - **工具面**：`memory.consolidate`（`1.0` / `ACTION_CREATE` / `exposed=True` / args 仅
   `{scope, scope_id}`，`additionalProperties=False`）→ `memory_exec._consolidate` →
   `consolidatable_sources(scope)`（只取 `layer='l1'`、active、未擦除、未过期、正文在盘
@@ -379,24 +384,36 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   结果 `candidate` + `origin=inferred`，人 `confirm` 后才进召回（免审批只管
   `memory.confirm`，合成不白送召回权）。
 - **新鲜度与排序**：`_stale_map` 按 `(scope, scope_id)` 取
-  `MAX(last_seq) WHERE layer='l1' AND status='active' AND erased_at IS NULL`，
-  `> basis_seq` ⇒ 陈旧；`Recalled.stale` 只在这条判据能判定时出现；`_crop` 带 stale
-  标记；`search()` / `retrieve()` 都把陈旧页排到**新鲜 L1 之后**（降权，不删、不短路，
-  符合 F10 §8"陈旧层先核验再用"）。
+  `MAX(last_seq) WHERE layer='l1' AND status='active' AND erased_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now)`（过期 L1 不会被合成 / 召回使用，拿它判
+  陈旧是误报），`> basis_seq` ⇒ 陈旧。**`stale` 是三态**：`True` 陈旧 / `False` 已确认
+  新鲜 / `None` 不可判定（旧行没有 `seq:`；主循环输出里**省略**该字段——把"判不了"写成
+  `false` 就是谎报新鲜）。排序键唯一实现在 `_order_by_priority(..., stale=)`，被
+  `search()` 与 `retrieve()` 的**三条路径**（词面 / 无索引 / 索引不可用 / 融合）共用：
+  同一作用域优先级组里陈旧页排到新鲜记忆之后（降权，不删、不短路，符合 F10 §8）。
+  **复审修复**：无索引分支原先只排序、不带 stale，默认生产路径上陈旧页照样排第一——
+  现在三处同键；`test_retrieve_demotes_stale_pages_even_without_a_vector_index` 用
+  "页与 L1 同 origin / 同 created_at"的夹具把 origin 权重的掩盖去掉。
 - **replay**：`test_consolidate_output_is_replayable` 从事件重建，页正文 / 证据 /
   `consolidated_at` 与实时写入逐项一致。
-- **测试**：`tests/test_memory_distill.py`（新，**13 条**：阈值钉住、引用拼装、两次逐
-  字节相同、改一条只动自己那块、proof/evidence 机械一致 + 坏页被就位校验拦、L3 预算 /
-  只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出 L2、旧页被 supersede 仍可 get、
-  replay 一致、freshness stale + 降序、非法 layer 拒）；
+- **测试**：`tests/test_memory_distill.py`（新，**21 条**：阈值钉住、引用拼装、两次逐
+  字节相同、改一条只动自己那块、proof/evidence 机械一致 + 坏页被就位校验拦、坏页应用
+  参数化（未知 layer / `l1` / 空 `source_refs`）、重复应用幂等、正文回退 fail-closed、
+  active 页不被合成退役、L3 预算 / 只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出
+  L2、旧页被 supersede 仍可 get（含 evidence / `source_refs` 快照）、replay 一致、
+  freshness stale + 降序、**无索引路径也降权**、**无 `seq:` 时 `stale=None`**、**过期 L1 不算更新证据**）；
   `tests/test_memory_dispatch.py` **+4 条真派发 e2e**（consolidate 真在
   `tool_manifest()` 并写出候选页、workspace 拒、task 只能本任务、确认后的页进召回并在
-  新 L1 之后变 stale）；`tests/test_memory_store.py` 迁移断言改 `schema_version == 3`、
-  更高版本 fail-closed 用 `'4'`。
+  新 L1 之后变 stale，改走 `retrieve()` 并同时校验 `search()` 的相对顺序）；
+  `tests/test_memory_store.py`：迁移断言改 `schema_version == 3`、更高版本 fail-closed 用
+  `'4'`，并**补了真正的 v2→v3 用例**（`test_schema_v2_database_gains_the_layer_column_in_place`：
+  删 `layer`、版本置 2、重开 → 旧行一律 l1、可重复执行；原 v1 用例从没删过 `layer`，
+  证明不了这条）。
 - **负控（都真跑过，逐条按"改坏什么 → 哪条红"记）**：① 每块掺入全页面字节数（破增量
   delta）→ 逐字节用例红；② `_stale_map` 直接 `return {}` → stale 用例红；③ 派发层去掉
   consolidate 的 workspace 无条件拒 → e2e 红；④ L3 预算因子 ×100 → 预算用例红；⑤ L3
-  去掉 user 限定 → 只 user 用例红；⑥ 就位校验改 `if False` → 坏页用例红。**如实记**：
+  去掉 user 限定 → 只 user 用例红；⑥ 就位校验改 `if False` → 坏页用例红；⑦ 去掉
+  `retrieve()` 无索引分支的 stale 排序键 → 无索引降权用例红（复审抓到的真洞）。**如实记**：
   执行侧 workspace 守护**经派发路径不可达**（派发层先拒），与 `memory.propose` 同款
   纵深防御，**没有测试能单独打红它**——不声称有覆盖。
 - **偏差 / 没做到**：
@@ -406,14 +423,19 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
      `seq:<basis_seq>` 写进 `source_refs` 再比：`consolidated_at` 是钟表时间，系统时间
      回拨会把"陈旧"判成"新鲜"，**而且 `memory.confirm` 这条生命周期推进会把该列改成
      确认时刻**（L1 行也如此）——晚确认的页就会永远"新鲜"；投影里的 `last_seq` 是单调
-     逻辑时钟。旧行没有 `seq:` 时
-     按**不可判定**处理（不标陈旧，也不假装新鲜）。
+     逻辑时钟。旧行没有 `seq:` 时 `stale=None`（**不可判定**，主循环输出省略该字段），
+     不标陈旧、也不写成"新鲜"。
   3. LLM 合成未做（本轮只有确定性合成）；**没有 L2/L3 vs L1 的检索质量评测**——没人
      证明"读页比直接读 L1 更好用"，README / 评测里不许那么写。
   4. L3 只有 user 作用域；workspace / task 的偏好页按设计不做。
   5. 跨作用域合成、对话抽取、**冲突消解**都没做：两条矛盾的 L1 在页里并列，不裁决。
   6. `consolidate` 不进审批表（`ACTION_CREATE`）：将来若要做"合成后自动 confirm"必须
      另立契约，否则等于绕开"人确认才召回"。
+  7. **退役语义**：新页只把同层的 **candidate** 旧页置 superseded；active 页不动（复审
+     指出的设计边界，见上）。代价是"页会越攒越多"（每个不同的正文各一页），人用
+     forget / erase 收；没有自动回收。
+  8. **页 id 回退冲突**：正文回退到旧版会撞回已退役的 id，此时 fail-closed 报错而不是
+     自动复活——要多一条"人工决定"的路径。
 
 ---
 

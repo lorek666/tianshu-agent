@@ -1343,6 +1343,43 @@ def test_schema_v1_database_is_migrated_in_place(env) -> None:
     assert row is not None and int(row[0]) == 3
 
 
+def test_schema_v2_database_gains_the_layer_column_in_place(env) -> None:
+    """v2 的库没有 `layer` 列：打开时补列，旧行一律 l1，不重建、不丢正文。
+
+    v1 用例只删了 `erased_at` / 版本号，**没有经过 v2 → v3 这个分支**——N3 新增
+    的 `layer` 迁移在原地补列的判据只能靠这条（复审指出 v1 用例并不能证明
+    "旧行是 l1"：它压根没删过 `layer`）。
+    """
+    log, projection = env
+    _propose(projection, log, "m_v2", "v2 库里的记忆")
+    projection.rebuild()
+    # 模拟 v2：删掉 N3 才有的 layer 列，并把版本回退到 2。
+    log.conn.execute("ALTER TABLE memories DROP COLUMN layer")
+    log.conn.execute(
+        "INSERT INTO memory_meta(key, value) VALUES ('schema_version', '2')"
+        " ON CONFLICT(key) DO UPDATE SET value = '2'"
+    )
+    projection._schema_ready = False
+    projection.ensure_schema()
+
+    row = log.conn.execute("SELECT layer FROM memories WHERE memory_id = 'm_v2'").fetchone()
+    assert row is not None and row[0] == "l1", "旧行必须被补成 l1，不是留空"
+    memory = projection.get("m_v2", allowed=[MemoryScope.user()])
+    assert memory is not None and memory.layer == "l1"
+    assert projection.read_content(memory) == "v2 库里的记忆"
+    # 迁移必须可重复执行（打开两次不该报"列已存在"）。
+    projection._schema_ready = False
+    projection.ensure_schema()
+    again = log.conn.execute(
+        "SELECT layer FROM memories WHERE memory_id = 'm_v2'"
+    ).fetchone()
+    assert again is not None and again[0] == "l1"
+    meta = log.conn.execute(
+        "SELECT value FROM memory_meta WHERE key = 'schema_version'"
+    ).fetchone()
+    assert meta is not None and int(meta[0]) == 3
+
+
 def test_newer_schema_version_fails_closed(env) -> None:
     """用旧程序打开新投影会读错字段：必须拒绝，而不是"试试看"。"""
     log, projection = env

@@ -251,7 +251,11 @@ class Recalled:
     score_kind: str = "origin"
     #: L2/L3 合成层是否已陈旧（作用域里有比它更新的 L1）：陈旧页降权但**不短路**，
     #: 同时仍保留 L1 证据（F10 §8「陈旧层先核验再用」）。
-    stale: bool = False
+    #:
+    #: **三态，不是二态**：`True` 陈旧 / `False` 已确认新鲜（页的 `basis_seq` 不小于
+    #: 作用域里最大的 L1 `last_seq`）/ `None` **不可判定**（旧行没有 `seq:` 标记）。
+    #: 把"判不了"写成 `False` 就是谎报新鲜——调用方会以为"这页跟得上"。
+    stale: bool | None = None
 
 
 #: 作用域优先级里的"最近"档位（数值越小越靠前）。
@@ -320,12 +324,22 @@ def _proximity_of(memory: Memory, priority: RecallPriority | None) -> int:
 def _order_by_priority(
     candidates: Sequence[tuple[Memory, str]],
     priority: RecallPriority | None,
+    *,
+    stale: dict[str, bool | None] | None = None,
 ) -> list[tuple[Memory, str]]:
-    """词面路的名次：`(作用域优先级, origin 权重, created_at 降序, memory_id)`。"""
+    """词面路的名次：`(作用域优先级, 陈旧, origin 权重, created_at 降序, memory_id)`。
+
+    "陈旧"排在 origin 权重**之前**、作用域优先级**之后**：同一优先级分组里，
+    陈旧的合成层一律排在新鲜记忆后面——否则一条 `origin=inferred` 的旧 L2 页
+    会因为权重比不上 `user_confirmed` 的 L1 而"看起来已经排对了"，等哪天来源
+    权重相同（都是 `inferred`）时旧页又跑到第一（复审探针就是这样复现的）。
+    作用域优先级仍是第一分组键：当前任务的证据永远先于别的作用域。
+    """
     return sorted(
         candidates,
         key=lambda item: (
             _proximity_of(item[0], priority),
+            1 if stale is not None and stale.get(item[0].memory_id) is True else 0,
             -_ORIGIN_WEIGHTS[item[0].origin],
             -item[0].created_at,
             item[0].memory_id,
@@ -363,7 +377,7 @@ def _crop(
                 content=piece,
                 score=score,
                 score_kind=score_kind,
-                stale=bool(stale.get(memory.memory_id)) if stale else False,
+                stale=stale.get(memory.memory_id) if stale is not None else None,
             )
         )
         used_bytes += size
@@ -1320,12 +1334,17 @@ class MemoryProjection:
     ) -> dict[str, bool]:
         """合成层新鲜度：作用域里最大 L1 `last_seq` > 页面 `basis_seq` ⇒ 陈旧。
 
-        `basis_seq` 从 `source_refs` 的 `seq:<n>` 读；旧行没有这个标记就如实当
-        "不可判定"（不标陈旧，也不假装新鲜——`to_dict` 里没有这个字段，调用方
-        看不到"未知"这一档，所以只对能判定的页标记）。
+        `basis_seq` 从 `source_refs` 的 `seq:<n>` 读。**只对能判定的页放键**：
+        旧行没有这个标记就不放，调用方（`Recalled.stale`）会拿到 `None`
+        = "不可判定"，而不是被压成 `False`（那等于谎报新鲜）。
+
+        "更新的证据"只算**真的还能被召回**的 L1：`active`、未擦除、未过期
+        （`expires_at` 已过的行不会被 `consolidatable_sources` 收进合成，也不会
+        被检索返回，用它把页判陈旧就是误报）。
         """
         from .memory_distill import parse_basis_seq
 
+        now = _require_int(self._clock(), "clock() 返回值")
         maxima: dict[tuple[str, str], int] = {}
 
         def scope_max(scope: str, scope_id: str) -> int:
@@ -1334,8 +1353,9 @@ class MemoryProjection:
                 row = self._conn.execute(
                     "SELECT MAX(last_seq) FROM memories"
                     " WHERE scope = ? AND scope_id = ? AND layer = 'l1'"
-                    "   AND status = 'active' AND erased_at IS NULL",
-                    (scope, scope_id),
+                    "   AND status = 'active' AND erased_at IS NULL"
+                    "   AND (expires_at IS NULL OR expires_at > ?)",
+                    (scope, scope_id, now),
                 ).fetchone()
                 maxima[key] = int(row[0]) if row is not None and row[0] is not None else 0
             return maxima[key]
@@ -1453,14 +1473,27 @@ class MemoryProjection:
                 raise MemoryStoreError(
                     f"合成页 id 冲突：{memory_id!r} 已存在且内容不同"
                 )
+            if existing["status"] not in (_STATUS_CANDIDATE, _STATUS_ACTIVE):
+                # 页 id 由内容决定，所以"正文回退到旧版"会撞回一个已经退役的 id。
+                # 静默 `return` 会让事件说"写了候选页"、投影却停在 superseded
+                # （人 confirm 会直接失败）；悄悄复活又会改写已确认的结论。两条
+                # 都不诚实，所以 fail-closed，由人决定怎么处理（复审复现过）。
+                raise MemoryStoreError(
+                    f"合成页 {memory_id!r} 已存在且状态是 {existing['status']!r}："
+                    f"同一段正文不能再作为新的候选页写入"
+                )
             return
 
-        # 旧页退役：同作用域、同层的 candidate/active 页被这一页取代（保留行，
-        # 旧内容与它当时站的证据可查）。这一步只看投影，重放顺序一致。
+        # 旧页退役：同作用域、同层的 **candidate** 页被这一页取代（保留行，旧内容
+        # 与它当时站的证据可查）。**已 `confirm` 的 active 页不在这里退役**：
+        # `memory.consolidate` 是模型可见、免审批的工具，若它能顺手把"人确认过的
+        # 页面"置为 superseded，等于模型可以撤销人的召回授权（复审指出的设计边界）。
+        # 人确认的页只有人能退（`memory.forget` / `memory.erase`）；新页与它并存，
+        # 由 freshness（`stale`）决定谁排在前面。
         old_rows = self._conn.execute(
             "SELECT memory_id FROM memories"
             " WHERE scope = ? AND scope_id = ? AND layer = ?"
-            "   AND status IN ('candidate', 'active') ORDER BY memory_id",
+            "   AND status = 'candidate' ORDER BY memory_id",
             (scope.scope, scope.scope_id, layer),
         ).fetchall()
         for row in old_rows:
@@ -2057,18 +2090,10 @@ class MemoryProjection:
         stale_map = self._stale_map(
             {memory.memory_id: (memory, content) for memory, content in candidates}
         )
-        if stale_map:
-            # 陈旧合成层降权但不短路（F10 §8）：先按优先级分组，同组内新鲜在前。
-            candidates = sorted(
-                candidates,
-                key=lambda item: (
-                    _proximity_of(item[0], priority),
-                    1 if stale_map.get(item[0].memory_id) else 0,
-                    -_ORIGIN_WEIGHTS[item[0].origin],
-                    -item[0].created_at,
-                    item[0].memory_id,
-                ),
-            )
+        # 陈旧合成层降权但不短路（F10 §8）：排序键唯一实现放在
+        # `_order_by_priority`，词面路（search / retrieve 无索引分支）与融合路
+        # 必须用同一套，否则"哪条路有降权"取决于有没有配向量索引——复审复现过。
+        candidates = _order_by_priority(candidates, priority, stale=stale_map)
         return _crop(candidates, limit_value, max_bytes_value, stale=stale_map)
 
     def retrieve(
@@ -2112,7 +2137,7 @@ class MemoryProjection:
         if self._index is None:
             return RecallOutcome(
                 items=_crop(
-                    _order_by_priority(fts_candidates, priority),
+                    _order_by_priority(fts_candidates, priority, stale=stale_map),
                     limit_value,
                     max_bytes_value,
                     stale=stale_map,
@@ -2124,7 +2149,7 @@ class MemoryProjection:
         if not available:
             return RecallOutcome(
                 items=_crop(
-                    _order_by_priority(fts_candidates, priority),
+                    _order_by_priority(fts_candidates, priority, stale=stale_map),
                     limit_value,
                     max_bytes_value,
                     stale=stale_map,

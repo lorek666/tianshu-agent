@@ -64,6 +64,7 @@ def _seed(
     scope: MemoryScope | None = None,
     kind: str = "preference",
     origin: str = "user_confirmed",
+    expires_at: int | None = None,
 ) -> None:
     scope = MemoryScope.user() if scope is None else scope
     content_ref = projection.put_content(content)
@@ -86,7 +87,7 @@ def _seed(
                 "origin": origin,
                 "status": "candidate",
                 "created_at": 1,
-                "expires_at": None,
+                "expires_at": expires_at,
                 "deduped": False,
                 "layer": "l1",
             },
@@ -343,6 +344,11 @@ def test_old_page_is_superseded_and_still_gettable(env) -> None:
     superseded = projection.get(old_id, allowed=(scope,))
     assert superseded is not None and superseded.status == "superseded"
     assert projection.read_content(superseded)
+    # "保留上一版 + 它当时的证据"是这条判据的另一半：只留住正文不算留住结论。
+    assert [item["memory_id"] for item in superseded.evidence] == [
+        item["memory_id"] for item in old.evidence
+    ]
+    assert tuple(superseded.source_refs) == tuple(old.source_refs)
 
 
 def test_consolidate_output_is_replayable(env) -> None:
@@ -388,7 +394,21 @@ def test_freshness_marks_pages_and_demotes_them(env) -> None:
     assert order.index(l2_id) > order.index("m3"), "陈旧页降权但不短路"
 
 
-def test_consolidate_rejects_unknown_layer_or_layer_l1(env) -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "why"),
+    [
+        ("layer", "l9", "未知合成层"),
+        ("layer", "l1", "合成只产出 l2/l3，l1 会与原子事实混淆"),
+        ("source_refs", [], "没有来源的合成页无法核对，必须拒"),
+    ],
+)
+def test_consolidate_rejects_bad_pages(env, field: str, value: object, why: str) -> None:
+    """投影应用层的坏页校验：未知 layer / l1 / 空来源都必须拒。
+
+    就位校验（`consolidate()`）只防得住**生成器**的 bug；这一段防的是"事件里
+    塞进来的坏页"——两者不是同一个入口，得分别有用例（复审指出原名只测了
+    未知 layer，`l1` 与空 `source_refs` 两个分支没有回归）。
+    """
     log, projection = env
     scope = MemoryScope.user()
     _seed(log, projection, "m1", "报告用中文写")
@@ -400,10 +420,10 @@ def test_consolidate_rejects_unknown_layer_or_layer_l1(env) -> None:
             "memory_id": "mem_bad",
             "content_ref": projection.put_content(page.content),
             "consolidated_at": NOW,
-            "layer": "l9",
         }
     )
-    with pytest.raises(MemoryStoreError):
+    item[field] = value
+    with pytest.raises(MemoryStoreError, match="|".join(["layer", "来源", "不能是"])):
         _record(
             log,
             projection,
@@ -413,3 +433,170 @@ def test_consolidate_rejects_unknown_layer_or_layer_l1(env) -> None:
                 "output": {"scope": scope.scope, "scope_id": scope.scope_id, "pages": [item]},
             },
         )
+    assert projection.get("mem_bad", allowed=(scope,)) is None, "坏页一个字节都不该进投影"
+
+def test_retrieve_demotes_stale_pages_even_without_a_vector_index(env) -> None:
+    """默认检索路径（没有向量索引）也必须把陈旧页排在新鲜 L1 之后。
+
+    复审复现过的真洞：`retrieve()` 的"无索引 / 索引不可用"分支只调
+    `_order_by_priority(...)`，而陈旧标记只在融合路的分支里进了排序键——于是
+    生产默认路径上陈旧 L2 页照样排第一。这里让页与 L1 **同为 `inferred`、
+    同一 created_at**，把 origin 权重的掩盖去掉：只有 stale 这一档能把页排到
+    后面。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "数据库迁移分三步：备份、演练、割接", kind="fact",
+          origin="inferred")
+    _seed(log, projection, "m2", "数据库迁移前先做备份演练", kind="fact",
+          origin="inferred")
+    pages = consolidate(_sources(projection), scope=scope)
+    ids = _apply_pages(env, pages)
+    l2_id = ids[0]
+    _confirm_page(log, projection, l2_id)
+    # 页写完之后又出现一条更新的 L1：页从此陈旧。
+    _seed(log, projection, "m3", "数据库迁移要写回滚方案", kind="fact", origin="inferred")
+
+    outcome = projection.retrieve("数据库迁移", allowed=(scope,))
+    assert outcome.semantic is False, "没配索引，这次只有词面路"
+    flags = {item.memory.memory_id: item.stale for item in outcome.items}
+    assert flags.get(l2_id) is True
+    order = [item.memory.memory_id for item in outcome.items]
+    assert l2_id in order and "m3" in order
+    assert order.index(l2_id) > order.index("m3"), (
+        f"陈旧页必须排在新鲜 L1 之后（实际顺序：{order}）"
+    )
+
+
+def test_unknown_freshness_stays_unknown_and_is_not_reported_as_fresh(env) -> None:
+    """旧页没有 `seq:` 标记 ⇒ `stale` 是 `None`（不可判定），不是 `False`。
+
+    把"判不了"压成"新鲜"就是谎报：模型/UI 会以为这页跟得上最新事实。三态里
+    `None` 必须能透出去（`Recalled.stale`），并在主循环的输出里**省略**这个字段
+    而不是写 `false`。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    # 用能聚成 L2 的一对（"报告…" 那对的重叠系数只有 0.33，聚不出来）。
+    _seed(log, projection, "m1", "数据库迁移分三步：备份、演练、割接", kind="fact",
+          origin="inferred")
+    _seed(log, projection, "m2", "数据库迁移前先做备份演练", kind="fact", origin="inferred")
+    pages = consolidate(_sources(projection), scope=scope)
+    l2 = [page for page in pages if page.layer == "l2"][0]
+    # 模拟 N3 之前的旧页：正文/证据都在，但没有 `seq:` 基准。
+    legacy = dataclasses.replace(
+        l2, source_refs=tuple(ref for ref in l2.source_refs if not ref.startswith("seq:"))
+    )
+    ids = _apply_pages(env, [legacy])
+    _confirm_page(log, projection, ids[0])
+
+    outcome = projection.retrieve("数据库迁移", allowed=(scope,))
+    flags = {item.memory.memory_id: item.stale for item in outcome.items}
+    assert flags.get(ids[0]) is None, "没有 seq: 的旧页必须报不可判定"
+
+
+def test_reapplying_the_same_page_is_idempotent(env) -> None:
+    """同一页事件应用两次：不新增行、状态与 revision 都不动。
+
+    "页 id 由 (scope, layer, content) 决定"的设计要靠这条兜住——否则重复
+    `consolidate` 会不断长行，或者把候选页的状态改来改去。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文写")
+    _seed(log, projection, "m2", "报告先讲结论")
+    pages = consolidate(_sources(projection), scope=scope)
+    first = _apply_pages(env, pages)
+    before = projection.get(first[0], allowed=(scope,))
+    assert before is not None
+    rows_before = len(projection.list_memories(allowed=(scope,), limit=100))
+    same = _apply_pages(env, pages)
+    assert same == first
+    after = projection.get(first[0], allowed=(scope,))
+    assert after is not None
+    assert after.status == before.status == "candidate"
+    assert (after.revision, after.content_ref) == (before.revision, before.content_ref)
+    assert len(projection.list_memories(allowed=(scope,), limit=100)) == rows_before
+
+
+def test_confirmed_page_is_not_retired_by_a_later_consolidation(env) -> None:
+    """人 confirm 过的页不因新合成退役：模型可见的 consolidate 不能撤销人的召回授权。
+
+    `memory.consolidate` 是模型可见、免审批的工具；若它能顺手把 active 页置成
+    superseded，模型就成了"能删掉人确认过的页面"的角色（复审提出的设计边界）。
+    现在只有 candidate 页会被新页取代，active 页与新页并存、由 freshness 决定
+    谁排前面；人确认的页只有人能退（forget / erase）。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文写")
+    _seed(log, projection, "m2", "报告先讲结论")
+    pages = consolidate(_sources(projection), scope=scope)
+    confirmed_id = _apply_pages(env, pages)[0]
+    _confirm_page(log, projection, confirmed_id)
+
+    _seed(log, projection, "m3", "报告里术语保留英文")
+    newer = consolidate(_sources(projection), scope=scope)
+    newer_ids = _apply_pages(env, newer)
+    assert newer_ids and newer_ids[0] != confirmed_id
+
+    still = projection.get(confirmed_id, allowed=(scope,))
+    assert still is not None and still.status == "active", "人确认的页不许被合成退役"
+    candidate = projection.get(newer_ids[0], allowed=(scope,))
+    assert candidate is not None and candidate.status == "candidate"
+
+
+def test_reverting_to_an_old_page_body_fails_closed(env) -> None:
+    """正文回退到旧版会撞回同一个页 id：已退役的页 id 不许静默"再当候选"。
+
+    页 id 由内容决定，所以"删掉 m3 再合成"会重新算出第一次那个 id。若此时旧行
+    已是 superseded，静默 `return` 会让事件说"写了候选页"、投影却停在 superseded
+    （人 confirm 直接失败）。悄悄复活又会改写已确认的结论——两条都不诚实，所以
+    明确报错，由人决定是 forget 旧行还是换作用域重来。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文写")
+    _seed(log, projection, "m2", "报告先讲结论")
+    first_pages = consolidate(_sources(projection), scope=scope)
+    first_id = _apply_pages(env, first_pages)[0]
+    # 旧页被新页取代（新页正文不同 ⇒ 新 id），旧行变 superseded。
+    _seed(log, projection, "m3", "报告里术语保留英文")
+    _apply_pages(env, consolidate(_sources(projection), scope=scope))
+    old = projection.get(first_id, allowed=(scope,))
+    assert old is not None and old.status == "superseded"
+
+    with pytest.raises(MemoryStoreError, match="同一段正文|状态"):
+        _apply_pages(
+            env, [dataclasses.replace(page, content=page.content) for page in first_pages]
+        )
+
+
+def test_expired_l1_does_not_age_a_page(env) -> None:
+    """过期 L1 不算"更新的证据"：它不会被合成采纳、也不会被召回。
+
+    `_stale_map` 的"作用域内最大 L1 `last_seq`"若把已过期的行算进去，一条早就
+    失效的临时事实会把页误标陈旧（复审的轻微项）。这里造一条 `expires_at <= now`
+    且 `last_seq` 更新的 L1：页必须仍是新鲜。
+    """
+    log, projection = env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "数据库迁移分三步：备份、演练、割接", kind="fact",
+          origin="inferred")
+    _seed(log, projection, "m2", "数据库迁移前先做备份演练", kind="fact", origin="inferred")
+    pages = consolidate(_sources(projection), scope=scope)
+    page_id = _apply_pages(env, pages)[0]
+    _confirm_page(log, projection, page_id)
+    # 页写完之后来一条**已过期**的更新 L1（NOW + 1 已过）。
+    _seed(
+        log,
+        projection,
+        "m_exp",
+        "数据库迁移明天改到凌晨",
+        kind="fact",
+        origin="inferred",
+        expires_at=NOW - 1,
+    )
+    outcome = projection.retrieve("数据库迁移", allowed=(scope,))
+    flags = {item.memory.memory_id: item.stale for item in outcome.items}
+    assert flags.get(page_id) is False, "过期 L1 不该把页判陈旧"

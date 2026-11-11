@@ -2808,8 +2808,14 @@ def test_confirmed_page_joins_recall_and_stale_after_new_l1(env: Env):
     assert fresh_result.ok, fresh_result.output
     fresh_id = fresh_result.output["memory_id"]
     _confirm_active(env, task, run, claim, fresh_id, 1, call_id="p3-c")
-    after = env.memory.search("报告", allowed=(user,))
-    stale_after = {item.memory.memory_id: item.stale for item in after}
+    # 默认生产路径是 `retrieve()`（`memory.search` 工具走它），不是 FTS-only 的
+    # `search()`；复审指出只测 `search()` 会把"无索引分支没有 stale 排序"的洞漏掉。
+    after = env.memory.retrieve("报告", allowed=(user,))
+    stale_after = {item.memory.memory_id: item.stale for item in after.items}
     assert stale_after[page_id] is True, "新增 L1 后旧页应变陈旧"
-    order = [item.memory.memory_id for item in after]
+    order = [item.memory.memory_id for item in after.items]
     assert order.index(page_id) > order.index(fresh_id), "陈旧页降权但不短路"
+    # 词面路（`search()`）与默认路（`retrieve()`）必须给出同一个相对顺序：
+    # 排序键唯一实现，否则"哪条路降权"取决于有没有配索引。
+    plain = [item.memory.memory_id for item in env.memory.search("报告", allowed=(user,))]
+    assert plain.index(page_id) > plain.index(fresh_id)
