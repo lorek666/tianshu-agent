@@ -98,6 +98,7 @@ from .resources import (
     KIND_MEMORY,
     MemoryScope,
     ResourceError,
+    build_memory_scope,
     is_memory_resource,
     parse_memory_uri,
     parse_resource,
@@ -1334,7 +1335,9 @@ class Dispatcher:
         if is_control and request.tool_id == "memory.promote":
             # 提升目标作用域必须由控制 Run 显式声明（user 恒可）。
             try:
-                new_scope = MemoryScope(args.get("scope"), args.get("scope_id"))
+                new_scope = build_memory_scope(
+                    args.get("scope"), args.get("scope_id")
+                )
             except TianshuError as exc:
                 raise DispatchDenied(
                     f"提升目标作用域不合法：{exc}", "c4.memory_scope_denied"

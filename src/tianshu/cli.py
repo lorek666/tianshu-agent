@@ -40,7 +40,7 @@ from .permissions import HumanIdentity
 from .pricing import format_cost
 from .recovery import recover_run
 from .replay import replay
-from .resources import MEMORY_SCOPES, MemoryScope
+from .resources import MEMORY_SCOPES, MemoryScope, build_memory_scope
 from .tasks import (
     RUN_FENCED,
     RUN_RECONCILING,
@@ -1458,7 +1458,7 @@ def _dispatch_memory_promote(stack, memory, args) -> int:
         else:
             raise TianshuError("--to-scope workspace 需要 --to-scope-id（绝对路径）")
     try:
-        new_scope = MemoryScope(args.to_scope, new_scope_id)
+        new_scope = build_memory_scope(args.to_scope, new_scope_id)
     except TianshuError as exc:
         raise TianshuError(f"提升目标作用域不合法：{exc}") from exc
 

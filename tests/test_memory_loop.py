@@ -771,7 +771,8 @@ def test_cli_edit_keeps_old_row_and_activates_new(env: Env):
         if m.supersedes == memory_id
     ]
     assert len(actives) == 1
-    assert actives[0].origin == "user_confirmed"
+    # 控制面 edit = 人自己写的新正文 → user_explicit（不是"降档"）
+    assert actives[0].origin == "user_explicit"
 
 
 def test_cli_promote_moves_memory_into_task_scope(env: Env):
@@ -795,3 +796,5 @@ def test_cli_promote_moves_memory_into_task_scope(env: Env):
     ]
     assert len(promoted) == 1
     assert memory_id in promoted[0].source_refs
+    # 搬的是同一段正文：来源随行，不降档
+    assert promoted[0].origin == "user_explicit"

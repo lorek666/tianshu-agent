@@ -957,9 +957,12 @@ class MemoryProjection:
             # 出处决定：人批准过的编辑 → user_confirmed。
             if status != _STATUS_ACTIVE:
                 raise MemoryStoreError(f"memory.edit 只能写 active，收到 {status!r}")
-            if origin != "user_confirmed":
+            # origin 描述"这一版正文"的来源：人自己写 → user_explicit；
+            # 模型写、人批准 → user_confirmed。旧版的 origin 留在旧行。
+            if origin not in ("user_explicit", "user_confirmed"):
                 raise MemoryStoreError(
-                    f"memory.edit 的 origin 必须是 user_confirmed，收到 {origin!r}"
+                    f"memory.edit 的 origin 只能是 user_explicit / user_confirmed，"
+                    f"收到 {origin!r}"
                 )
             if supersedes is None:
                 raise MemoryStoreError("memory.edit 必须带 supersedes（旧版 id）")
@@ -974,6 +977,16 @@ class MemoryProjection:
             if supersedes not in source_refs:
                 raise MemoryStoreError(
                     f"memory.promote 的 source_refs 必须包含原记忆：{supersedes!r}"
+                )
+            old_row = self._load_row(supersedes)
+            if old_row is None:
+                raise MemoryStoreError(
+                    f"memory.promote 的 supersedes 指向不存在的记忆：{supersedes!r}"
+                )
+            if origin != old_row["origin"]:
+                raise MemoryStoreError(
+                    f"memory.promote 的 origin 必须随原行（{old_row['origin']!r}），"
+                    f"收到 {origin!r}；搬同一段正文不能降档"
                 )
         else:
             # propose 只生成惰性候选；激活必须走 memory.confirm（F10 §7）。

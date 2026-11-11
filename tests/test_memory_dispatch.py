@@ -1247,6 +1247,62 @@ def test_promote_is_control_only_and_moves_memory(env: Env):
         assert memory_id in promoted.source_refs
         assert env.memory.search("项目用", allowed=(user,)) == []
         verify_receipts(env.log, run_id=control.run.run_id)
+        # 凭据必须针对**原行**（移动的是它），root 是原作用域。
+        receipts = [
+            event
+            for event in env.log.read_run(control.run.run_id)
+            if event.type == "receipt"
+        ]
+        assert receipts, "promote 必须产 Receipt"
+        assert receipts[-1].payload["resource"] == memory_id
+        assert receipts[-1].payload["root"] == user.to_uri()
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state=result.effect_state
+        )
+
+
+def test_promote_to_workspace_canonicalizes_the_target_scope(env: Env):
+    """提升到 workspace 时，参数里的原始路径必须归一到声明里的 canonical 根。
+
+    否则 CLI / UI / 未来的 API 传 `/a/b/.` 会被判"不在控制 Run 的声明内"，
+    而它和 `/a/b` 是同一个目录。
+    """
+    user = MemoryScope.user()
+    canonical = MemoryScope.workspace(env.ws_a)
+    raw = str(env.ws_a) + "/."
+    _task, _run, _claim, output = _proposed(env, content="工作区共享约定")
+    memory_id = output["memory_id"]
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.promote:{memory_id}",
+        workspaces=[],
+        memory_scopes=[canonical],
+    )
+    args = {
+        "memory_id": memory_id,
+        "revision": 1,
+        "scope": "workspace",
+        "scope_id": raw,
+    }
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.promote",
+        target=user.to_uri(),
+        args=args,
+        call_id="promote-ws",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    try:
+        assert result.ok, result.output
+        assert result.output["scope_id"] == canonical.scope_id
+        promoted = env.memory.get(result.output["memory_id"], allowed=(canonical,))
+        assert promoted is not None
+        assert (promoted.scope, promoted.scope_id) == ("workspace", canonical.scope_id)
     finally:
         env.dispatcher.close_control_run(
             control, outcome="succeeded", effect_state=result.effect_state

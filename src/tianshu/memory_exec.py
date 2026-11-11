@@ -41,6 +41,7 @@ from .resources import (
     MEMORY_SCOPES,
     MemoryScope,
     ResourceError,
+    build_memory_scope,
     parse_memory_uri,
 )
 from .tasks import RUN_RUNNING, ExecutionPermit, TaskStore
@@ -347,7 +348,7 @@ class MemoryExecutor:
         if is_control and admitted.tool_id == "memory.promote":
             # 提升的目标作用域必须由控制 Run 显式声明（user 除外——它恒可）。
             try:
-                new_scope = MemoryScope(
+                new_scope = build_memory_scope(
                     admitted.args.get("scope"), admitted.args.get("scope_id")
                 )
             except TianshuError as exc:
@@ -649,6 +650,15 @@ class MemoryExecutor:
             raise TianshuError("记忆投影没有返回 content_ref")
         new_id = f"mem_{uuid.uuid4().hex[:12]}"
         now = self._clock()
+        edit_task = self._tasks.get_task(admitted.request.task_id)
+        # origin 描述的是**这一版正文**的来源，不是记忆的终身属性：
+        # 控制面 edit（人自己写的新正文）→ user_explicit；模型写、人批准 →
+        # user_confirmed。旧版的 origin 留在旧行里，不会被改写。
+        author_origin = (
+            "user_explicit"
+            if edit_task is not None and getattr(edit_task, "is_control", False)
+            else "user_confirmed"
+        )
         return ToolResult(
             "succeeded",
             "applied",
@@ -664,7 +674,7 @@ class MemoryExecutor:
                 "source_refs": list(old.source_refs),
                 "evidence": [],
                 "proof_count": 0,
-                "origin": "user_confirmed",
+                "origin": author_origin,
                 "status": "active",
                 "created_at": now,
                 "expires_at": old.expires_at,
@@ -713,7 +723,7 @@ class MemoryExecutor:
                 "dispatch.memory_not_found",
             )
         try:
-            new_scope = MemoryScope(args["scope"], args.get("scope_id"))
+            new_scope = build_memory_scope(args.get("scope"), args.get("scope_id"))
         except TianshuError as exc:
             raise MemoryDispatchRefused(
                 f"提升目标作用域不合法：{exc}", "c4.memory_scope_denied"
@@ -764,7 +774,8 @@ class MemoryExecutor:
                 "source_refs": source_refs,
                 "evidence": [],
                 "proof_count": 0,
-                "origin": "inferred",
+                # 搬的是同一段正文：来源随行，**不**因为换了作用域就降档。
+                "origin": old.origin,
                 "status": "candidate",
                 "created_at": now,
                 "expires_at": old.expires_at,
