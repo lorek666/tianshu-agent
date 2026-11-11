@@ -611,16 +611,20 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ## 7. N6 · 控制面 UI / Host：看得见、改得动（F10 §9）
 
-### 7.1 现状
+### 7.1 现状（N6 落地前）
 
 `host.py` 零记忆端点；`cli._cmd_memory` 是唯一控制面。UI 只能看任务与审批，看不到
-"Agent 记住了什么"。
+"Agent 记住了什么"。（N6 之后：daemon 的 `ControlPlane` 有 8 个记忆 RPC——见 §7.4；
+React 面板仍未接。）
 
 ### 7.2 设计
 
 1. IPC 新增 `memory.list` / `memory.get` / `memory.remember` / `memory.edit` /
-   `memory.forget` / `memory.promote`，全部要求**本地人身份**（与 CLI 同一条
-   `HumanIdentity.local_cli()` 路径），**不经模型**。
+   `memory.forget` / `memory.promote`（落地时补了 `memory.confirm` 与 `memory.erase`，
+   共 8 个），全部走控制面路径（与 CLI 同一条 `HumanIdentity.local_cli()` 落审批）。
+   **注意：这不是授权边界**——v1 没有进程级沙箱，`run_command` 能以同 uid 起子进程，
+   同 uid 进程本来就能读 `run/authkey` / 连 IPC / 跑 CLI。所以这一条的真实价值是"人机
+   界面与 CLI 共用一套实现、写操作都走 dispatcher"，**不是**"模型不可能调"。
 2. 每条记忆显示的六项不可省：`scope / origin / revision / status / source_refs /
    evidence.proof_count`——缺一项，人就无法判断"是谁的、凭什么、改过没有、还算不算数"。
 3. 正文以**纯文本**渲染（不执行远端 HTML，不解析 markdown 里的链接为可点击外链）。
@@ -629,11 +633,74 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 
 ### 7.3 判据
 
-- `tests/test_host_memory.py`（新）：真 IPC 连接 + 本地人身份 → list/get 正常；无身份
-  → 拒绝；edit/forget 走 dispatcher（断言事件里有 intent/result）；越权作用域 →
-  `c4.memory_scope_denied`。
+- `tests/test_host_memory.py`（新）：真 IPC 连接 → list/get 正常；edit/forget/confirm/
+  promote/erase 走 dispatcher（断言事件里有 **该工具的** intent/result、审批一次性消费）；
+  真 Host `/rpc` + token 代理（无 token 401）。
+- **不测（如实记）**："无身份 → 拒绝"在单用户本机模型下**构造不出反例**（同机同用户），
+  只有代码/文档论证；越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（人本来
+  就是 owner），该判据由模型路径的派发测试覆盖。
 - **负控**：把 UI 端点改成直接调 `projection` 改状态（不经 dispatcher）→ 用例必须红。
 - 明确不测：真实模型驱动 UI（沿用现状"未接过真实模型"的写法，不许写成已接）。
+
+### 7.4 落地记录（N6 实际，2026-11-11，分支 `feat/host-memory`）
+
+- **共享实现**：新模块 `src/tianshu/memory_control.py` = 控制面记忆操作的**唯一**实现
+  （`memory_view` / `list_memories` / `read_memory` / `remember` / `edit` / `transition` /
+  `promote` / `erase` + 内部 `_dispatch_as_human`）。CLI 与 daemon RPC 都调它。**为什么**：
+  "写记忆必须走 dispatcher"这条纪律一旦抄成两份，早晚有一份会图省事直接改投影；
+  原来 CLI 里 `_dispatch_memory_decision` / `_dispatch_memory_write` /
+  `_dispatch_memory_promote` / `_remember_memory` 四个近似重复的助手已收口，只保留打印。
+- **RPC 方法（`control.ControlPlane._methods`）**：`memory.list` / `memory.get` /
+  `memory.remember` / `memory.confirm` / `memory.edit` / `memory.forget` /
+  `memory.promote`。规格 §7.2 的清单漏了 `memory.confirm`——没有它就没有"人确认候选才
+  召回"的入口，一并落地。`host.py` 把浏览器 `POST /rpc` 原样代理给 daemon，**host 侧不用
+  改**。
+- **身份口径（按事实读，不是授权边界）**：这些端点是**人机界面入口**（UI / CLI），与
+  模型工具面是两条路：`memory.list` 不是工具，其余同名工具走 `AgentLoop` →
+  `Dispatcher` → `MemoryExecutor`（按 `allowed` 装备过滤）——**同名不同路**。
+  **但它们挡不住模型**：v1 没有进程级沙箱，`run_command` 能以同一个 uid 跑子进程，
+  同 uid 进程能读 `run/authkey`、连 IPC、跑 `tianshu memory`（并自己落审批）。所以
+  控制面的真实价值是「人与 CLI 共用一套实现、写操作都走 dispatcher、审批一次性消费、
+  执行侧二次核验」，**不是**「模型无路径」。端点权限只在**跨本地用户**这层有意义：
+  POSIX `run/` 0700 + socket 0600；Windows 命名管道 ACL 继承创建者、**未**额外加固且
+  **未验证**。写操作用 `HumanIdentity.local_cli()` 落审批；**不新造身份令牌**——令牌
+  挡不住同 uid，只会多一个能被抄走的东西。
+- **视图**：`memory_view` 统一产出六项判据 `scope` / `origin` / `revision` / `status` /
+  `source_refs` / `proof_count`（+ `memory_id`）；`memory.get` 另给 `content` 与
+  `content_state`（不可用要显式说，不靠 `content=None` 猜）。正文纯文本原样返回，后端不做
+  HTML 转换（转义是 UI 的事）。
+- **错误面**：不存在 → `not_found`；参数不对 → `bad_params`；`revision` 不是当前版本 →
+  `conflict`（**先拒，不派发**）；未知方法 → `unknown_method`。
+- **测试**：`tests/test_host_memory.py`（新，**14 条**，真起 daemon + 真 `ipc.Client`）：
+  六项判据与纯文本正文、默认只看 `user` / 看 task 必须显式给 scope、`memory.list` 没有同名
+  模型工具、8 个方法都注册、edit 走 dispatcher（断言事件里是 **edit 的** `tool.intent` /
+  `tool.result` + 旧行 superseded + 审批已决定）、forget 变 tombstone、对已 active 的记忆
+  confirm 是明确拒绝且 `none_applied`、promote 是移动、未知 id / 缺参数 / 未知方法、
+  task 作用域 edit/forget 带回写后视图、workspace → user 的 promote（`source_scope`）、
+  `memory.erase` 删副本 + `content_state=unavailable`、**真 Host `/rpc` + token 代理
+  （无 token 401）**、revision 过期 `conflict`。
+- **负控（真跑）**：把 `memory.edit` 端点改成"返回假成功、不派发"→ edit 事件用例红。
+- **CI 抓到的真 bug（作业竞态）**：Daemon 驱动线程与 `ControlPlane` 共用作业队列，`open_control_run` 原先先 `enqueue` 再 `claim`，ubuntu CI（慢机器）上驱动线程先 `claim_next()` 认领了控制面的 pending 作业，`memory.remember` 报 `internal: job 仍由活着的 owner 持有`。修法：`JobStore.enqueue_and_claim()` 入队 + 认领在同一个写事务；判据 `test_enqueue_and_claim_never_exposes_a_pending_job` + `test_control_run_claims_its_job_atomically`（负控：改回两步 → 两条红）。
+- **偏差 / 没做**：
+  0. **这些端点不是授权边界**（复审抓到的核心口径错误）：`run_command` 同 uid 可经
+     CLI/IPC 调同一控制面（模型被授予 `run_command` 时等于可达）；要收口需要进程级沙箱
+     或独立 OS 用户——属 F2/exec 的边界，不是 N6 能解决的。文档与判据已按此降级。
+  1. **React 记忆面板未接**：端点已具备（Host 代理任意 RPC），但 UI 没有记忆入口；不声称
+     "UI 上已经能看见"。
+  2. `memory.search` 的 RPC 未暴露（`list` + `get` 之外暂不开检索面）。
+  3. "无身份拒绝"这条在单用户本机模型下由 IPC 端点权限承担，**没有测试**（同机同用户无法
+     构造"无身份"客户端）——只有代码/文档论证。
+  4. 越权作用域 → `c4.memory_scope_denied` 在**人**这条路走不到（控制面自己声明目标作用域，
+     人本来就是 owner）；该判据由模型路径的派发测试覆盖。
+  5. **Windows 命名管道 ACL 未加固且未验证**：`_chmod_private` 在 Windows 直接 return
+     （只影响写位、无 ACL 语义），代码没有设置 pipe security descriptor。跨本地用户的承诺
+     在 Windows 上**没有代码或测试支撑**——如实记为未验证，不按"仅同用户可达"宣称。
+  6. 功能修复（复审抓到）：写后视图曾固定按 user 作用域读回（task/workspace 的 edit /
+     forget 会"成功但 `memory` 是 null"）；`promote` 曾用同一组 `scope` 表达源与目标
+     （导致只能提升 user 作用域的记忆）。现已按记忆自己的作用域回读、源作用域改用
+     `source_scope` / `source_scope_id`，并补 3 条用例。
+
+---
 
 ---
 
@@ -642,8 +709,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 1. **契约 PR**（文档：PRD §4.1 / §5.2.2 / §5.4.2 + F10 §5 / §7 / §9 / §10）→ 合入 `main`。
    **代码注册不在这里**：`tools.SPECS` / `rules.RULE_IDS` / `schemas/` 随各实现 PR 与产生
    路径同落地（见 §0.2）。契约 PR 不合则后续 PR 不开工。
-2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。**已按序落地**：N1（#83/#84）、N4（#85）、
-   N5（#89）、N2（#93）、**N3（#98）**；**只剩 N6（控制面 UI / Host 记忆端点）**。
+2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。**已全部按序落地**：N1（#83/#84）、
+   N4（#85）、N5（#89）、N2（#93）、N3（#98）、**N6（#100，Host/IPC 端点；React 面板未接）**。
 3. 每个 PR 合入前：lead 在最新 `main` 上跑全量 + `ruff` + `uv lock --check`；冲突一律
    lead 解。工具面绊线（`test_veto_scope.py`）随工具变化同步登记。
 4. 全部合入后 lead 收尾：
@@ -676,8 +743,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ## 10. 本文不宣称的事
 
 - 本文**没有**变更任何现行契约：C2/C4/PRD/`schemas/` 的实际改动在 §1 的契约 PR 里。
-- §2–§7 的判据**已全部落地并由测试钉住**（N1/N2/N3/N4/N5）；逐条对账在
-  `docs/F10-memory-design.md` §14 与各工作流的"落地记录"（§2.3 / §3.4 / §4.4 / §5.4 / §6.4）。
-  **N6 仍未实施**，它的判据（§7.3）目前一条测试都没有——别把本文的设计读成已实现。
+- §2–§7 的判据**已全部落地并由测试钉住**（N1/N2/N3/N4/N5/N6）；逐条对账在
+  `docs/F10-memory-design.md` §14 与各工作流的"落地记录"（§2.3 / §3.4 / §4.4 / §5.4 /
+  §6.4 / §7.4）。**N6 的 §7.3 判据里"无身份拒绝"没有测试**（单用户本机模型下构造不出
+  反例），且 **React 面板未接**——这两条如实记在 §7.4 的"偏差 / 没做"。
 - §2–§7 的设计是**待实施**方案，不是"已完成"；实施后每条都要能指到测试函数名与负控
   输出，否则按未修处理。

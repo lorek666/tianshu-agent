@@ -504,3 +504,48 @@ def test_non_object_params_is_bad_params(env: Env) -> None:
 def test_close_is_idempotent(env: Env) -> None:
     env.plane.close()
     env.plane.close()  # 第二次不许抛：装配失败路径与正常路径都会走到它
+
+def test_control_run_claims_its_job_atomically(env: Env, monkeypatch) -> None:
+    """控制 Run 的作业入队/认领必须原子：驱动线程不能在窗口里抢走它。
+
+    为什么在控制面测试里：Daemon 的驱动线程与 `ControlPlane` 共用同一个作业
+    队列。`open_control_run` 若先 `enqueue` 再 `claim`，慢机器上驱动线程会先
+    `claim_next()` 认领那条 pending 作业，随后 `memory.remember` / `undo.apply`
+    这类 RPC 直接报 `internal: job 仍由活着的 owner 持有，拒绝接管`（CI 真复现过）。
+
+    这里把 `enqueue` 猴子补丁成"入队即被另一条连接抢走"——原子实现不经过
+    `enqueue`，所以抢不到；谁改回两步，这条就红。
+    """
+    from tianshu.events import EventLog as _EventLog
+    from tianshu.jobs import JobStore as _JobStore
+    from tianshu.resources import MemoryScope
+
+    stolen: list[str] = []
+    claims = env.stack.claims
+    original_enqueue = claims.enqueue
+
+    def enqueue_then_steal(run_id: str):
+        job = original_enqueue(run_id)
+        other_log = _EventLog(env.stack.log.db_path)
+        try:
+            other = _JobStore(other_log)
+            claim = other.claim_next()
+            if claim is not None:
+                stolen.append(claim.job_id)
+                other.finish(claim, outcome="succeeded")
+        finally:
+            other_log.close()
+        return job
+
+    monkeypatch.setattr(claims, "enqueue", enqueue_then_steal)
+
+    control = env.stack.dispatcher.open_control_run(
+        goal="记忆确认",
+        workspaces=[],
+        memory_scopes=[MemoryScope.user()],
+    )
+    try:
+        assert stolen == [], f"控制 Run 的作业在入队与认领之间被抢走：{stolen}"
+        assert control.claim.job_id
+    finally:
+        env.stack.dispatcher.close_control_run(control)

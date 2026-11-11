@@ -365,64 +365,126 @@ class JobStore:
         而不是由调用方在事务外先看一眼。
         """
         now = self._clock()
-        deadline = now + ttl_ms
         with self._log.transaction() as tx:
-            row = self._conn.execute(
-                "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
-            ).fetchone()
-            if row is None:
-                raise JobUnavailable(f"job 不存在：{job_id}")
-            if row["state"] in TERMINAL_JOB_STATES:
-                raise JobUnavailable(f"job 已终结：{job_id}（state={row['state']}）")
-            if (
-                not take_over_live
-                and row["state"] == JOB_CLAIMED
-                and self.is_live(self._row_to_job(row))
-            ):
-                raise JobLost(
-                    f"job 仍由活着的 owner 持有，拒绝接管：{job_id}"
-                    f"（owner_pid={row['owner_pid']} epoch={row['claim_epoch']}）"
-                )
-
-            epoch = row["claim_epoch"] + 1
-            cur = self._conn.execute(
-                "UPDATE jobs SET state='claimed',"
-                " owner_instance_id=?, owner_pid=?, claim_epoch=?,"
-                " claimed_at=?, heartbeat_at=?, deadline_at=?"
-                " WHERE job_id=?"
-                "   AND claim_epoch=?"
-                "   AND state NOT IN ('done','cancelled')",
-                (
-                    self._identity.instance_id,
-                    self._identity.pid,
-                    epoch,
-                    now,
-                    now,
-                    deadline,
-                    job_id,
-                    row["claim_epoch"],
-                ),
+            return self._claim_in_tx(
+                tx, job_id, now=now, ttl_ms=ttl_ms, take_over_live=take_over_live
             )
-            if cur.rowcount == 0:
-                raise JobLost(f"job 已被别人认领：{job_id}")
 
-            claim = JobClaim(
-                job_id=job_id,
-                run_id=row["run_id"],
-                owner_instance_id=self._identity.instance_id,
-                owner_pid=self._identity.pid,
-                claim_epoch=epoch,
+    def _claim_in_tx(
+        self,
+        tx: Any,
+        job_id: str,
+        *,
+        now: int,
+        ttl_ms: int,
+        take_over_live: bool,
+    ) -> JobClaim:
+        """认领的**事务内**实现：`claim` 与 `enqueue_and_claim` 共用。
+
+        之所以要把"看状态"和"改状态"放进同一个已持写锁的事务里，见 `claim`
+        的 docstring——拆开就会有两个 owner 同时以为自己是 owner。
+        """
+        deadline = now + ttl_ms
+        row = self._conn.execute(
+            "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            raise JobUnavailable(f"job 不存在：{job_id}")
+        if row["state"] in TERMINAL_JOB_STATES:
+            raise JobUnavailable(f"job 已终结：{job_id}（state={row['state']}）")
+        if (
+            not take_over_live
+            and row["state"] == JOB_CLAIMED
+            and self.is_live(self._row_to_job(row))
+        ):
+            raise JobLost(
+                f"job 仍由活着的 owner 持有，拒绝接管：{job_id}"
+                f"（owner_pid={row['owner_pid']} epoch={row['claim_epoch']}）"
+            )
+
+        epoch = row["claim_epoch"] + 1
+        cur = self._conn.execute(
+            "UPDATE jobs SET state='claimed',"
+            " owner_instance_id=?, owner_pid=?, claim_epoch=?,"
+            " claimed_at=?, heartbeat_at=?, deadline_at=?"
+            " WHERE job_id=?"
+            "   AND claim_epoch=?"
+            "   AND state NOT IN ('done','cancelled')",
+            (
+                self._identity.instance_id,
+                self._identity.pid,
+                epoch,
+                now,
+                now,
+                deadline,
+                job_id,
+                row["claim_epoch"],
+            ),
+        )
+        if cur.rowcount == 0:
+            raise JobLost(f"job 已被别人认领：{job_id}")
+
+        claim = JobClaim(
+            job_id=job_id,
+            run_id=row["run_id"],
+            owner_instance_id=self._identity.instance_id,
+            owner_pid=self._identity.pid,
+            claim_epoch=epoch,
+        )
+        tx.append(
+            row["run_id"],
+            JOB_CLAIMED_EVENT,
+            {
+                **claim.to_dict(),
+                "previous_epoch": row["claim_epoch"],
+                "deadline_at": deadline,
+            },
+        )
+        return claim
+
+    def enqueue_and_claim(
+        self, run_id: str, *, ttl_ms: int = DEFAULT_TTL_MS
+    ) -> tuple[Job, JobClaim]:
+        """入队并**原子地**认领同一个作业：`(job, claim)`。
+
+        为什么需要它：控制面（UI / CLI 的撤销、记忆写）要在**已有作业队列**的
+        进程里开一个自己的 Run。若先 `enqueue` 再 `claim`，两步之间会有一个
+        窗口——Daemon 的驱动线程正好 `claim_next()` 扫到这条 `pending` 作业并
+        认领成功，控制面的 `claim` 就会吃 `JobLost`（"仍由活着的 owner 持有"）。
+        这个窗口不是理论问题：慢机器/CI 上真复现过（记忆写端点 `internal`
+        报错）。所以入队与认领必须在同一个写事务里完成。
+
+        语义与分别调用一致：`run_id` 上已有未完成作业时拒绝（与 `enqueue` 同）。
+        """
+        now = self._clock()
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        with self._log.transaction() as tx:
+            existing = self._conn.execute(
+                "SELECT job_id FROM jobs WHERE run_id=?"
+                " AND state IN ('pending','claimed','waiting')",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                raise TianshuError(
+                    f"run 已有未完成作业：{existing['job_id']}（run={run_id}）"
+                )
+            self._conn.execute(
+                "INSERT INTO jobs (job_id, run_id, state, claim_epoch,"
+                " cancel_requested, created_at) VALUES (?,?,'pending',0,0,?)",
+                (job_id, run_id, now),
             )
             tx.append(
-                row["run_id"],
-                JOB_CLAIMED_EVENT,
-                {
-                    **claim.to_dict(),
-                    "previous_epoch": row["claim_epoch"],
-                    "deadline_at": deadline,
-                },
+                run_id,
+                JOB_ENQUEUED,
+                {"job_id": job_id, "run_id": run_id},
             )
-        return claim
+            claim = self._claim_in_tx(
+                tx, job_id, now=now, ttl_ms=ttl_ms, take_over_live=False
+            )
+        job = self.get(job_id)
+        if job is None:  # pragma: no cover - 同一事务里刚写入
+            raise JobUnavailable(f"job 不存在：{job_id}")
+        return job, claim
 
     # ---- 续期 / 收尾 ----
 
