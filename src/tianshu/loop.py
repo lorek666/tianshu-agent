@@ -398,6 +398,7 @@ def open_memory(
     *,
     blob_dir: Path | None = None,
     clock: Callable[[], int] | None = None,
+    embedding_provider: object | None = None,
 ):
     """打开记忆投影（事件日志的另一个可重建投影，F10 §3.1）。
 
@@ -415,6 +416,13 @@ def open_memory(
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
+    if embedding_provider is not None:
+        # 向量索引是可选派生数据：只有装配方显式给了 provider 才接上，否则
+        # 检索如实降级为 FTS-only（不假装有语义能力）。索引与投影必须共用
+        # 同一个 SQLite 连接——向量写进的是同一个事务。
+        from .memory_index import MemoryIndex
+
+        kwargs["index"] = MemoryIndex(log.conn, provider=embedding_provider)
     return MemoryProjection(log.conn, log=log, blob_dir=blob_dir, **kwargs)
 
 
@@ -1438,6 +1446,13 @@ class AgentLoop:
         )
         return tuple(loaded)
 
+    def _memory_priority(self, task: Task):
+        """这次检索"离谁更近"：当前任务 + 本 Run 绑定的 workspace（F10 §8）。"""
+        from .memory import RecallPriority
+
+        roots = tuple(_canonical_root(b) for b in task.workspaces)
+        return RecallPriority(task_id=task.task_id, workspace_roots=roots)
+
     def _exec_memory_read(
         self,
         run_id: str,
@@ -1463,7 +1478,9 @@ class AgentLoop:
             args = validate_args(args, spec.input_schema)
             allowed = self._memory_allowed(task)
             if tool_id == "memory.search":
-                output = self._memory_search_output(projection, args, allowed)
+                output = self._memory_search_output(
+                    projection, args, allowed, self._memory_priority(task)
+                )
             else:
                 output = self._memory_get_output(projection, args, allowed)
             return ToolResult("succeeded", "none_applied", output)
@@ -1475,7 +1492,7 @@ class AgentLoop:
             return ToolResult("failed", "none_applied", {"error": repr(exc)})
 
     @staticmethod
-    def _memory_search_output(projection, args, allowed) -> dict[str, Any]:
+    def _memory_search_output(projection, args, allowed, priority=None) -> dict[str, Any]:
         from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
 
         query = args.get("query")
@@ -1487,12 +1504,16 @@ class AgentLoop:
         # 首版硬上限（F10 §8）：模型可以要求更少，不能要求更多；
         # 字节上限不由模型控制——预算是执行侧的事。
         limit = min(limit, MAX_RECALL_ITEMS)
-        recalled = projection.search(
-            query, allowed=allowed, limit=limit, max_bytes=MAX_RECALL_BYTES
+        outcome = projection.retrieve(
+            query,
+            allowed=allowed,
+            limit=limit,
+            max_bytes=MAX_RECALL_BYTES,
+            priority=priority,
         )
         items = [
             AgentLoop._memory_item(item.memory, item.content, score=item.score)
-            for item in recalled
+            for item in outcome.items
         ]
         return {
             "query": query,
@@ -1501,6 +1522,10 @@ class AgentLoop:
             "limit": limit,
             "max_bytes": MAX_RECALL_BYTES,
             "allowed": [scope.to_dict() for scope in allowed],
+            # 如实报告这一路有没有语义能力：`semantic=false` 不等于"没找到"，
+            # 原因在 `degraded` 里（未配置 provider / 索引与 provider 不匹配）。
+            "semantic": outcome.semantic,
+            "degraded": outcome.degraded,
         }
 
     @staticmethod

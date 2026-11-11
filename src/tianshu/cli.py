@@ -1215,19 +1215,37 @@ def _cmd_memory(args: argparse.Namespace) -> int:
             return 2
 
         if args.action == "search":
-            from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
+            from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS, RecallPriority
 
-            recalled = projection.search(
+            # 控制面检索也带上"离谁更近"的上下文：给了 --task-id / --workspace
+            # 就按 F10 §8 排序，否则退化成 origin → 时间（不猜调用方意图）。
+            priority = RecallPriority(
+                task_id=args.task_id,
+                workspace_roots=tuple(scope.scope_id for scope in allowed
+                                      if scope.scope == "workspace"),
+            )
+            outcome = projection.retrieve(
                 args.value,
                 allowed=allowed,
                 limit=min(max(args.limit, 1), MAX_RECALL_ITEMS),
                 max_bytes=MAX_RECALL_BYTES,
+                priority=priority,
             )
+            recalled = outcome.items
             if args.json:
                 # 检索结果就是模型会看到的那份（F10 §8：带出处，不是全库）。
                 print(json.dumps(
-                    [_memory_public(r.memory, r.content, score=r.score)
-                     for r in recalled],
+                    {
+                        "items": [
+                            _memory_public(r.memory, r.content, score=r.score)
+                            for r in recalled
+                        ],
+                        # 能力边界也进机器可读输出：`semantic=false` 不是"没找到"，
+                        # 原因在 `degraded`。
+                        "semantic": outcome.semantic,
+                        "degraded": outcome.degraded,
+                        "fused": outcome.fused,
+                    },
                     ensure_ascii=False, indent=2, default=str))
                 return 0
             if not recalled:
@@ -1235,6 +1253,8 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 return 0
             print(f"检索到 {len(recalled)} 条（最多 {MAX_RECALL_ITEMS} 条 / "
                   f"{MAX_RECALL_BYTES}B）：")
+            if not outcome.semantic:
+                print(f"（本次只有词面召回：{outcome.degraded}）")
             for index, item in enumerate(recalled):
                 if index:
                     print("")

@@ -393,14 +393,22 @@ def test_loadout_equips_only_authorized_scopes(env: Env, monkeypatch):
     )
 
     projection = env.stack.memory
-    real_search = projection.search
+    real_retrieve = projection.retrieve
     seen: list[tuple[MemoryScope, ...]] = []
 
-    def spy(query, *, allowed, limit=5, max_bytes=4096):
+    def spy(query, *, allowed, limit=5, max_bytes=4096, priority=None):
         seen.append(tuple(allowed))
-        return real_search(query, allowed=allowed, limit=limit, max_bytes=max_bytes)
+        return real_retrieve(
+            query,
+            allowed=allowed,
+            limit=limit,
+            max_bytes=max_bytes,
+            priority=priority,
+        )
 
-    monkeypatch.setattr(projection, "search", spy)
+    # 主循环走 `retrieve()`（要拿语义/降级标注），所以绊线钉在这一层：
+    # 断言的仍是"实际传给检索的 allowed 集合"，不是"能查到"。
+    monkeypatch.setattr(projection, "retrieve", spy)
 
     task_a = env.task("A 的任务", [ws_a])
     result_a, _, _ = env.run_to_end(task_a.task_id, [_search(), _end()])

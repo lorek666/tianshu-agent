@@ -37,13 +37,15 @@ F10 §7 要求投影更新与事件**同事务**。分库做不到原子：事�
    `created_at` 降序；
 3. 裁剪：条数 ``limit`` + 正文字节 ``max_bytes``（超了截断，不是返回空）。
 
-F10 §8 还提到「优先当前任务 / 工作区证据」。本次的硬性口径把排序钉死为
-`origin → created_at DESC`，**没有**把作用域优先级塞进中间：作用域已经在
-过滤阶段决定"看不看得见"，再让可见的作用域互相压序会让同一权重内的顺序
-依赖调用方传了哪些 scope，不可复现。这条差异如实记在设计输入里。
+F10 §8 还要求「优先当前任务 / 工作区证据」，现在由 `RecallPriority` 实现
+（N2）：排序键是 `(作用域优先级, origin 权重, created_at 降序, memory_id)`。
+它是**调用方上下文**的函数，不是 `allowed` 的函数——`allowed` 只决定看不看
+得见，优先级只由"这条记忆自己的 scope"与"当前 Run 的 task / workspace"决定，
+所以同一份库内容 + 同一组 `allowed` + 同一上下文必然排出逐位相同的名次。
 
-FTS5（``bm25`` 可用）只负责**产生候选**，不参与最终排序：让关键词分数绕过
-作用域过滤，等于给越权召回开了一道后门。
+FTS5（``bm25`` 可用）负责**产生候选**，并按名次参与 RRF 融合；但**过滤永远
+在排序与融合之前**：让关键词分数或向量相似度绕过作用域过滤，等于给越权召回
+开了一道后门。
 
 ## 中文词面召回
 
@@ -92,14 +94,21 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .errors import TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
 from .fsutil import atomic_write_bytes
-from .resources import MEMORY_SCOPES, SCOPE_WORKSPACE, MemoryScope, parse_memory_uri
+from .resources import (
+    MEMORY_SCOPES,
+    SCOPE_TASK,
+    SCOPE_USER,
+    SCOPE_WORKSPACE,
+    MemoryScope,
+    parse_memory_uri,
+)
 
 # ---------------------------------------------------------------- 公开常量
 
@@ -229,6 +238,105 @@ class Recalled:
     memory: Memory
     content: str
     score: float
+
+
+#: 作用域优先级里的"最近"档位（数值越小越靠前）。
+_PROXIMITY_TASK = 0
+_PROXIMITY_WORKSPACE = 1
+_PROXIMITY_USER = 2
+#: 其它已授权作用域（v1 的装备里通常不会出现，但排序键必须对全集有定义）。
+_PROXIMITY_OTHER = 3
+
+
+@dataclass(frozen=True)
+class RecallPriority:
+    """这次检索"离谁更近"：当前任务 / 本 Run 绑定的 workspace。
+
+    F10 §8 的"优先当前任务 / 工作区证据"。它是**调用方上下文**的函数，不是
+    `allowed` 的函数：同一份库内容 + 同一组 `allowed`，只要当前任务和绑定目录
+    不变，名次就逐位可复现（这正是旧口径担心的"顺序依赖调用方传了哪些
+    scope"的解药——`allowed` 只决定看不看得见，优先级只由自身的 scope 与
+    Run 的上下文决定）。
+    """
+
+    task_id: str | None = None
+    workspace_roots: tuple[str, ...] = ()
+
+    def proximity(self, scope: MemoryScope) -> int:
+        return self.proximity_pair(scope.scope, scope.scope_id)
+
+    def proximity_pair(self, scope: str, scope_id: str) -> int:
+        """按 `(scope, scope_id)` 判档：不构造对象，排序键里每一行都要算一次。"""
+        if scope == SCOPE_TASK and self.task_id is not None:
+            return _PROXIMITY_TASK if scope_id == self.task_id else _PROXIMITY_OTHER
+        if scope == SCOPE_WORKSPACE and scope_id in self.workspace_roots:
+            return _PROXIMITY_WORKSPACE
+        if scope == SCOPE_USER:
+            return _PROXIMITY_USER
+        return _PROXIMITY_OTHER
+
+
+@dataclass
+class RecallOutcome:
+    """一次检索的完整结果：条目 + **这一路到底有没有语义能力**。
+
+    `semantic=False` 不是"没找到"，而是"这次只有词面召回"；`degraded` 给出
+    原因（未配置 provider / 向量索引是旧 provider 建的 / 还没重建）。把两者
+    混成一句"没结果"就是对能力撒谎。
+    """
+
+    items: list[Recalled] = field(default_factory=list)
+    semantic: bool = False
+    degraded: str | None = None
+    fused: bool = False
+
+
+def _proximity_of(memory: Memory, priority: RecallPriority | None) -> int:
+    """作用域优先级；没有上下文时所有行同档（排序退化成旧的 origin → 时间）。"""
+    if priority is None:
+        return 0
+    return priority.proximity_pair(memory.scope, memory.scope_id)
+
+
+def _crop(
+    ordered: Sequence[tuple[Memory, str]],
+    limit: int,
+    max_bytes: int,
+    *,
+    scores: dict[str, float] | None = None,
+) -> list[Recalled]:
+    """按名次裁剪到条数 + 正文字节上限。`score` 是这次排序用的分数。"""
+    recalled: list[Recalled] = []
+    used_bytes = 0
+    for memory, content in ordered:
+        if len(recalled) >= limit:
+            break
+        piece = _truncate_utf8(content, max_bytes - used_bytes)
+        if piece is None:
+            break
+        size = len(piece.encode("utf-8"))
+        score = (
+            scores[memory.memory_id]
+            if scores is not None
+            else _ORIGIN_WEIGHTS[memory.origin]
+        )
+        recalled.append(Recalled(memory=memory, content=piece, score=score))
+        used_bytes += size
+        if size < len(content.encode("utf-8")):
+            # 本条被截断：后面不可能再放得下，直接结束。
+            break
+    return recalled
+
+
+def _rf_fuse(fts_order: Sequence[str], semantic_order: Sequence[str]) -> list[tuple[str, float]]:
+    """两路名次的 RRF 融合（`score = Σ 1/(60+rank)`，同分按 id 稳定）。
+
+    延迟 import：`memory_index` 要 import 本模块的错误类型与实体，模块级互相
+    import 会成环；融合只在这里用到，运行期再取。
+    """
+    from .memory_index import rf_fuse
+
+    return rf_fuse([list(fts_order), list(semantic_order)])
 
 
 # ---------------------------------------------------------------- 时钟
@@ -604,6 +712,7 @@ class MemoryProjection:
         log: EventLog,
         blob_dir: Path | None = None,
         clock: Callable[[], int] = _now,
+        index: Any | None = None,
     ) -> None:
         if conn is not log.conn:
             raise MemoryStoreError(
@@ -635,6 +744,11 @@ class MemoryProjection:
         else:
             self._blob_dir = log.db_path.parent / "memory_blobs"
         self._clock = clock
+        # 向量索引是**可选的可重建派生数据**（`memory_index.MemoryIndex`），
+        # 不传就是 FTS-only。这里用 duck typing 而不是 import：向量模块要 import
+        # 本模块的错误类型与实体，反向 import 会成环；装配点（`open_memory`）
+        # 负责把两者接起来并核对同一个连接。
+        self._index = index
         # schema 建过一次就不再动。读路径（search / get / list / loadout）
         # 原本每次都走 `ensure_schema()`，而它开的是 `BEGIN IMMEDIATE`——
         # 一次纯读也要抢写锁，跟正在写的进程撞上就是 "database is locked"。
@@ -708,6 +822,8 @@ class MemoryProjection:
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (str(_SCHEMA_VERSION),),
         )
+        if self._index is not None:
+            self._index.ensure_schema()
 
     def _require_tokenizer_version(self) -> None:
         row = self._conn.execute(
@@ -827,6 +943,10 @@ class MemoryProjection:
             intent_seqs: dict[tuple[str, str], int] = {}
             self._conn.execute("DELETE FROM memory_fts")
             self._conn.execute("DELETE FROM memories")
+            if self._index is not None:
+                # 向量与投影同源：重放会按事件重建可召回行，旧向量先清干净，
+                # 免得留下没有行引用的残片。
+                self._conn.execute("DELETE FROM memory_vectors")
             applied = 0
             for event in events:
                 payload = event.payload
@@ -1103,6 +1223,8 @@ class MemoryProjection:
             ) from exc
         if fts_rowid is not None:
             self._insert_fts(fts_rowid, memory_id, tokens)
+        # candidate 不参与召回，钩子自己会跳过；active（remember / edit）立即建向量。
+        self._index_upsert(memory_id)
 
     def _supersede(self, target_id: str, seq: int) -> None:
         """把被 supersede 的旧记忆移出召回，保留行（旧版可查）。"""
@@ -1125,6 +1247,8 @@ class MemoryProjection:
             " WHERE memory_id = ?",
             (_STATUS_SUPERSEDED, seq, target_id),
         )
+        # 退役的行不再召回：向量也必须一起下掉，否则语义路还会把它捞回来。
+        self._index_drop(target_id)
 
     # ---- confirm / forget ----
 
@@ -1193,6 +1317,8 @@ class MemoryProjection:
                 memory_id,
             ),
         )
+        # 确认后进入召回：这时才建向量（候选阶段不需要）。
+        self._index_upsert(memory_id)
 
     def _apply_forget(self, output: dict[str, Any], seq: int) -> None:
         memory_id, row, revision, _ = self._parse_transition(
@@ -1214,6 +1340,7 @@ class MemoryProjection:
             " last_seq = ? WHERE memory_id = ?",
             (revision, _STATUS_FORGOTTEN, seq, memory_id),
         )
+        self._index_drop(memory_id)
 
     def _apply_erase(self, output: dict[str, Any], seq: int) -> None:
         """物理擦除：投影行置 forgotten + erased_at，正文标记不可用。
@@ -1285,6 +1412,8 @@ class MemoryProjection:
                 memory_id,
             ),
         )
+        # 已擦除：向量一并下掉，语义路也不能再把正文捞回来。
+        self._index_drop(memory_id)
 
     def _parse_transition(
         self, output: dict[str, Any], *, expected_status: str
@@ -1529,6 +1658,56 @@ class MemoryProjection:
             return None
         return self._read_blob(memory.content_ref)
 
+    # ---- 向量索引钩子（没有索引时全部 no-op） ----
+
+    def _index_upsert(self, memory_id: str) -> None:
+        """让索引跟随投影：只有**可召回**（active、未擦除、正文在）的行才写向量。"""
+        if self._index is None:
+            return
+        row = self._load_row(memory_id)
+        if row is None:
+            self._index.drop(memory_id)
+            return
+        memory = self._row_to_memory(row)
+        if memory.status != _STATUS_ACTIVE or memory.erased_at is not None:
+            self._index.drop(memory_id)
+            return
+        content = self._read_blob(memory.content_ref)
+        if content is None:
+            return
+        self._index.upsert(memory, content, last_seq=int(row["last_seq"]))
+
+    def _index_drop(self, memory_id: str) -> None:
+        if self._index is not None:
+            self._index.drop(memory_id)
+
+    def iter_indexable(self) -> Iterable[tuple[Memory, str, int]]:
+        """可召回的行（active / 未擦除 / 正文在盘上）——重建向量索引的输入。
+
+        第三项是投影行的 `last_seq`（写向量时一并记下，供审计核对"这条向量
+        对应哪一版"）。
+        """
+        self.ensure_schema()
+        rows = self._conn.execute(
+            f"SELECT {_MEMORY_COLUMNS} FROM memories"
+            " WHERE status = ? AND erased_at IS NULL ORDER BY memory_id",
+            (_STATUS_ACTIVE,),
+        ).fetchall()
+        for row in rows:
+            memory = self._row_to_memory(row)
+            content = self._read_blob(memory.content_ref)
+            if content is None:
+                continue
+            yield (memory, content, int(row["last_seq"]))
+
+    def rebuild_vectors(self) -> int:
+        """用当前 provider 重算全部向量（幂等、可重建）。返回条数。"""
+        if self._index is None:
+            raise MemoryStoreError("没有配置向量索引：rebuild_vectors() 无事可做")
+        with self._log.transaction():
+            self.ensure_schema()
+            return int(self._index.rebuild(self))
+
     # ---- 读接口 ----
 
     def loadout(
@@ -1571,21 +1750,99 @@ class MemoryProjection:
         allowed: Sequence[MemoryScope],
         limit: int = MAX_RECALL_ITEMS,
         max_bytes: int = MAX_RECALL_BYTES,
+        priority: RecallPriority | None = None,
     ) -> list[Recalled]:
-        """在 allowed 作用域内检索。顺序：过滤 → 排序 → 裁剪。"""
+        """在 allowed 作用域内检索（FTS-only）。顺序：过滤 → 排序 → 裁剪。"""
+        return self.retrieve(
+            query,
+            allowed=allowed,
+            limit=limit,
+            max_bytes=max_bytes,
+            priority=priority,
+        ).items
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        allowed: Sequence[MemoryScope],
+        limit: int = MAX_RECALL_ITEMS,
+        max_bytes: int = MAX_RECALL_BYTES,
+        priority: RecallPriority | None = None,
+    ) -> RecallOutcome:
+        """检索并**如实标注**这次有没有语义路（F10 §8 / §12）。
+
+        顺序仍是**先过滤 → 再排序 → 后裁剪**：
+
+        1. 过滤：`allowed` 作用域、`expires_at` 未过期、`status == active`、正文在；
+        2. 排序：FTS 候选按 `(作用域优先级, origin 权重, created_at 降序)` 排，
+           作用域优先级来自 `priority`（当前任务 0 / 本 Run 的 workspace 1 /
+           user 2）；给了向量索引就再用 RRF 把两路名次融合；
+        3. 裁剪：条数 + 正文字节。
+
+        没有向量 provider / 索引与 provider 不匹配时，`semantic=False` 并把原因
+        放进 `degraded`——**不是**"没找到"。
+        """
         self.ensure_schema()
         text = _require_str(query, "query", allow_empty=True)
         limit_value = _require_int(limit, "limit", minimum=0)
         max_bytes_value = _require_int(max_bytes, "max_bytes", minimum=0)
         if limit_value == 0 or max_bytes_value == 0:
-            return []
+            return RecallOutcome()
+        candidates = self._ranked_candidates(text, allowed, priority=priority)
+        if not candidates:
+            return RecallOutcome()
+        if self._index is None:
+            return RecallOutcome(
+                items=_crop(candidates, limit_value, max_bytes_value),
+                semantic=False,
+                degraded="未配置向量索引：本次只有词面召回（FTS）",
+            )
+        available, reason = self._index.availability()
+        if not available:
+            return RecallOutcome(
+                items=_crop(candidates, limit_value, max_bytes_value),
+                semantic=False,
+                degraded=reason,
+            )
+        semantic_ids = self._index.search(text, allowed=allowed, limit=len(candidates))
+        if not semantic_ids:
+            # 语义路没有候选：这一路**跑了**但没命中，不能说自己降级。
+            return RecallOutcome(
+                items=_crop(candidates, limit_value, max_bytes_value),
+                semantic=True,
+                degraded=None,
+                fused=False,
+            )
+        fused = _rf_fuse([item[0].memory_id for item in candidates], semantic_ids)
+        by_id = {item[0].memory_id: item for item in candidates}
+        ordered: list[tuple[Memory, str]] = []
+        scores: dict[str, float] = {}
+        for memory_id, score in fused:
+            item = by_id.get(memory_id)
+            if item is None:  # 语义路捞到了过滤阶段已排除的行：不采用
+                continue
+            ordered.append(item)
+            scores[memory_id] = score
+        if not ordered:  # pragma: no cover - 两路都为空时前面已经返回
+            return RecallOutcome()
+        items = _crop(ordered, limit_value, max_bytes_value, scores=scores)
+        return RecallOutcome(items=items, semantic=True, degraded=None, fused=True)
+
+    def _ranked_candidates(
+        self,
+        text: str,
+        allowed: Sequence[MemoryScope],
+        *,
+        priority: RecallPriority | None,
+    ) -> list[tuple[Memory, str]]:
+        """FTS 产生候选 → 过滤 → 按优先级排序（**裁剪之前**的完整名次）。"""
         allowed_key_set = set(_allowed_keys(allowed))
         if not allowed_key_set:
             return []
         tokens = _tokenize(text)
         if not tokens:
             return []
-
         query_text = " OR ".join(f'"{token}"' for token in tokens)
         rows = self._conn.execute(
             "SELECT m.memory_id, m.revision, m.scope, m.scope_id, m.kind,"
@@ -1619,32 +1876,15 @@ class MemoryProjection:
             seen_ids.add(memory.memory_id)
             candidates.append((memory, content))
 
-        # 先过滤（上面）→ 再排序（这里）→ 后裁剪（下面）。
         candidates.sort(
             key=lambda item: (
+                _proximity_of(item[0], priority),
                 -_ORIGIN_WEIGHTS[item[0].origin],
                 -item[0].created_at,
                 item[0].memory_id,
             )
         )
-
-        recalled: list[Recalled] = []
-        used_bytes = 0
-        for memory, content in candidates:
-            if len(recalled) >= limit_value:
-                break
-            piece = _truncate_utf8(content, max_bytes_value - used_bytes)
-            if piece is None:
-                break
-            size = len(piece.encode("utf-8"))
-            recalled.append(
-                Recalled(memory=memory, content=piece, score=_ORIGIN_WEIGHTS[memory.origin])
-            )
-            used_bytes += size
-            if size < len(content.encode("utf-8")):
-                # 本条被截断：后面不可能再放得下，直接结束。
-                break
-        return recalled
+        return candidates
 
     def get(self, memory_id: str, *, allowed: Sequence[MemoryScope]) -> Memory | None:
         """按 id 取记忆（含 forgotten / 过期 / candidate）。作用域外一律 None。"""

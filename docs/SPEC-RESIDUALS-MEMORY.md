@@ -240,6 +240,44 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   hybrid 各跑一次，报告落 `docs/memory-retrieval-eval.md`。**只报实测数字**；同义改写
   样例若 hybrid 没赢，就如实写没赢。
 
+### 3.4 落地记录（N2 实际，2026-11-11，分支 `feat/memory-retrieval`）
+
+- **作用域优先级（#23）**：`memory.RecallPriority(task_id, workspace_roots)` +
+  `proximity_pair()`；排序键 `(优先级, origin 权重, created_at 降序, memory_id)`。
+  关键决定：优先级是**上下文**的函数，不是 `allowed` 的函数——这正是旧设计里
+  "压序会依赖调用方传了哪些 scope"的解法（`allowed` 只决定可见性）。主循环
+  `loop._memory_priority(task)` 从 Task 的绑定目录算，CLI 从 `--task-id/--workspace` 算。
+  测试 `tests/test_memory_rank.py`（6 条）；负控：去掉优先级 → 顺序用例红。
+- **向量（#20）**：新模块 `src/tianshu/memory_index.py`：
+  - `EmbeddingProvider` 协议（`model_id` / `dim` / `embed`）；
+  - `HashEmbeddingProvider`：确定性哈希基线，**无语义能力**（模块 docstring 写死"不许
+    对外声称语义召回"，评测报告也按这个口径写）；
+  - `MemoryIndex`：表 `memory_vectors` / `memory_vector_meta`；`model_id+dim` 过滤；
+    `availability()` 返回 `(可用, 原因)`；`rebuild()` 清空重算；`rf_fuse()` 纯函数（`k=60`）。
+  - `MemoryProjection` 用 duck-typed `index=` 接上（不 import `memory_index`，避免环），
+    在 `_apply_propose`（仅 active）/`_apply_confirm`/`_supersede`/`_apply_forget`/
+    `_apply_erase` 里维护向量；`rebuild()` 清空向量后按事件重放重建。
+  - `MemoryProjection.retrieve()` 返回 `RecallOutcome(items, semantic, degraded, fused)`；
+    `search()` 是它的 `.items` 兼容壳。主循环 `memory.search` 输出新增 `semantic`/
+    `degraded`；CLI `--json` 也带上（含 `fused`）。
+  - **能力边界**：未配置 provider → FTS-only + `degraded` 原因；换 provider 未重建 →
+    旧向量不参与且仍报降级。`memory_vector_meta` 只在**第一次建表**时记录 provider，
+    后接的 provider 不能改写历史（否则 availability 会误报 True）。
+- **测试**：`tests/test_memory_vectors.py`（11 条）+ `tests/test_memory_rank.py`（6 条）。
+  负控 3 条都真跑过：去掉优先级 / availability 永不降级 / 去掉确认后的索引钩子。
+- **评测**：`scripts/eval_memory_retrieval.py` + `docs/memory-retrieval-eval.md`
+  （22 query / 25 记忆；FTS MRR 0.864 → hybrid-hash 0.977；**Recall@5 两者都 1.000 =
+  饱和**，报告里写清"不是语义能力证明"）。
+- **偏差 / 没做到**：
+  1. `_SCHEMA_VERSION` **没有**从 2 再往上加：`memory_vectors` 是**可选派生表**，随
+     provider 身份落在 `memory_vector_meta`，不进 `memories` 的形状契约；规格 §1 #10 原写
+     "新建 memory_vectors 属于 v2"，N4 已把 v2 用掉，这里按"派生表不参与版本"处理。
+  2. 没有真 embedding provider（只有哈希基线）；语义能力要等用户显式配置的 provider +
+     数据外发许可（F10 §10）。
+  3. `assess_run` 之类的恢复路径不消费向量（向量可重建，不参与副作用结算）。
+  4. reranker 只有接缝设想，未实现；评测不含重排效果。
+  5. 跨千条记忆的召回上限、RRF `k` 的敏感性、bm25 与优先级的加权变体都没评测。
+
 ---
 
 ## 4. N3 · L2/L3 蒸馏（增量、带证据、可回放）+ freshness
