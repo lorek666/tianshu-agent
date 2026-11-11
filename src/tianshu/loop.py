@@ -31,6 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .budget import (
+    BudgetCancelled,
+    BudgetLedger,
+    BudgetRefused,
+    estimate_need,
+)
 from .capability import (
     CapabilityMissing,
     CapabilityProfile,
@@ -146,6 +152,19 @@ class Limits:
     max_model_attempts: int = 3
     #: 重试退避基数（毫秒）。指数退避：基数、2×、4×…；0 表示不退避。
     retry_backoff_ms: int = 500
+    #: 共享预算账本（PRD §5.6）的维度上限：维度 → 上限。
+    #:
+    #: None = 沿用旧行为（只有事后计数 `max_total_tokens`），不启用发送前预占。
+    #: 显式给出时，每次模型 attempt 先向账本原子预占，结算按 provider usage：
+    #: - `reserve()` 失败（额度不足 / 已取消 / 过 deadline）→ **不再调用模型**，
+    #:   Run 如实记为失败并保留原因；
+    #: - provider 不给 usage / 断流 → 维度记为未知，占用**不释放**、不记零。
+    #:
+    #: 为什么不是默认开：估算预占会让"临界 run"提前被拒（估算不是保证，
+    #: PRD §5.7），那是行为变更，需要单独评审。并发委派（G2）接入时必须打开。
+    budget_limits: dict[str, int] | None = None
+    #: 预占时为输出预留的 token 数（PRD §5.7 两阶段：输入估算 + 余量 + 输出预留）。
+    output_reserve_tokens: int = 256
 
 
 @dataclass
@@ -445,6 +464,24 @@ def message_source_seqs(events: list[Event]) -> list[int]:
     return seqs
 
 
+def _message_chars(messages: list[dict[str, Any]]) -> int:
+    """上下文里实际要发给模型的字符数（预占估算的输入）。
+
+    只数 `content`，不数 JSON 结构本身——结构化字段的 token 开销远小于正文，
+    而预占还额外加了 25% 余量与输出预留。这里刻意保守：宁可多估一点。
+    """
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    total += len(part["text"])
+    return total
+
+
 class AgentLoop:
     """E1 的持久化主循环。
 
@@ -467,6 +504,7 @@ class AgentLoop:
         ttl_ms: int = DEFAULT_TTL_MS,
         sleep: Callable[[float], None] | None = None,
         memory: object | None = None,
+        budget: BudgetLedger | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -479,6 +517,8 @@ class AgentLoop:
         #: 不碰记忆的 Run 不该为它建表、也不该因为投影模块有问题而跑不起来。
         #: 一旦记忆工具被调用，缺投影就是明确失败，不会静默当成"没有记忆"。
         self._memory = memory
+        #: 共享预算账本（PRD §5.6）。为空时退化为旧行为（事后计数）。
+        self._budget = budget
         self._limits = limits or Limits()
         # 心跳的 TTL 必须与认领时用的一致：认领说 150ms 过期、心跳却说 30s，
         # 那"我还在跑"这句话就没人核对了。测试用短 TTL 推进真实时间。
@@ -898,6 +938,78 @@ class AgentLoop:
         self._admission[run_id] = profile
         return None
 
+    # ---------------------------------------------------------------- 预算账本
+
+    def _budget_account_id(self, run_id: str) -> str:
+        return f"run:{run_id}"
+
+    def _ensure_budget_account(self, run_id: str) -> None:
+        """建本 Run 的预算账户（幂等）。未配置 `budget_limits` 时整个账本不启用。
+
+        "不启用"是显式状态，不是"忘了接"：旧行为只有事后计数，而估算预占会让
+        临界 run 提前被拒。并发委派（G2）接入时必须打开（见 `Limits.budget_limits`）。
+        """
+        if self._budget is None or self._limits.budget_limits is None:
+            return
+        self._budget.create_account(
+            self._budget_account_id(run_id),
+            limits=dict(self._limits.budget_limits),
+            run_id=run_id,
+            label="run",
+        )
+
+    def _reserve_attempt(self, run_id: str, request_id: str, attempt: int, view):
+        """发送前预占。返回预占凭据；账本未启用时返回 None。"""
+        if self._budget is None or self._limits.budget_limits is None:
+            return None
+        self._ensure_budget_account(run_id)
+        need = estimate_need(
+            input_chars=_message_chars(view.messages),
+            output_reserve=self._limits.output_reserve_tokens,
+            requests=1,
+        )
+        return self._budget.reserve(
+            self._budget_account_id(run_id),
+            attempt_id=f"{request_id}#{attempt}",
+            run_id=run_id,
+            call_id=request_id,
+            need=need,
+        )
+
+    def _settle_attempt(self, reservation, resp: ModelResponse | None) -> None:
+        """按 provider 的最终 usage 结算；没有的维度**保留占用**，不记零。
+
+        - 请求发出去过 → `requests` 维度已知（1 次）；
+        - provider 给了 usage → `tokens` 维度已知；
+        - 查得到价格 → `micros` 维度已知；
+        其余维度留在预占里，由 `reconcile()` 报告（PRD §5.6 第 4 / 7 条）。
+        """
+        if self._budget is None or reservation is None:
+            return
+        usage: dict[str, int] = {"requests": 1}
+        known = {"requests"}
+        if resp is not None:
+            inp = resp.usage.get("input_tokens")
+            outp = resp.usage.get("output_tokens")
+            if inp is not None or outp is not None:
+                usage["tokens"] = (inp or 0) + (outp or 0)
+                known.add("tokens")
+            identity = identity_of(self._model)
+            cost = cost_record(
+                provider=identity.vendor if identity is not None else None,
+                model=identity.model if identity is not None else None,
+                usage=resp.usage,
+                adapter=identity.adapter if identity is not None else "",
+            )
+            if cost.cost is not None:
+                usage["micros"] = cost.cost
+                known.add("micros")
+        self._budget.settle(
+            reservation.reservation_id,
+            usage=usage,
+            known_dimensions=known & set(reservation.need),
+        )
+
     def _complete_with_retry(
         self,
         run_id: str,
@@ -951,6 +1063,27 @@ class AgentLoop:
                 if delay_ms > 0:
                     self._sleep(delay_ms / 1000.0)
 
+            # PRD §5.6 第 1 条：请求发送前在共享账本里**原子预占**。
+            # 预占失败就不发请求——这里的失败不是"重试一下就好"，重试就是绕过闸门。
+            try:
+                reservation = self._reserve_attempt(
+                    run_id, request_id, attempt, view
+                )
+            except (BudgetRefused, BudgetCancelled) as exc:
+                reason = f"预算账本拒绝，不再调用模型：{exc}"
+                self._log.append(
+                    run_id,
+                    "model.error",
+                    {
+                        "request_id": request_id,
+                        "attempt": attempt,
+                        "retryable": False,
+                        "error": reason,
+                    },
+                    actor_kind="core",
+                )
+                return None, reason
+
             self._log.append(
                 run_id,
                 "model.intent",
@@ -975,8 +1108,11 @@ class AgentLoop:
             # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
             progress.model_attempts += 1
             try:
-                return self._model.complete(view.messages, tool_manifest()), ""
+                resp = self._model.complete(view.messages, tool_manifest())
             except ModelError as exc:
+                # 请求已经发出去了：`requests` 维度已知，token / 金额未知。
+                # 未知维度**不释放占用**——"可能已经计费"不能按零结算。
+                self._settle_attempt(reservation, None)
                 last = exc
                 self._log.append(
                     run_id,
@@ -994,6 +1130,7 @@ class AgentLoop:
                         f"模型调用异常（attempt {attempt}/{attempts}，不可重试）：{exc}"
                     )
             except Exception as exc:  # noqa: BLE001 - 非 ModelError 不重试
+                self._settle_attempt(reservation, None)
                 self._log.append(
                     run_id,
                     "model.error",
@@ -1005,6 +1142,10 @@ class AgentLoop:
                     actor_kind="core",
                 )
                 return None, f"模型调用异常（attempt {attempt}/{attempts}）：{exc}"
+            else:
+                # 成功拿到回执：按 provider 的最终 usage 结算（PRD §5.7 第二阶段）。
+                self._settle_attempt(reservation, resp)
+                return resp, ""
 
         detail = repr(last) if last is not None else "（没有可用的错误信息）"
         return None, f"模型调用 {attempts} 次都失败：{detail}"
@@ -2267,6 +2408,7 @@ def run(
         limits=limits,
         sleep=sleep,
         memory=stack.memory,
+        budget=stack.budget,
     )
     created = stack.tasks.create_task(
         task, [str(workspace_dir)], exec_policy=exec_policy
@@ -2288,6 +2430,9 @@ class Stack:
     #: 记忆投影（F10）。`build_stack` 会与 Dispatcher 共用同一个实例；
     #: 构造不建表，第一次真正读写时才 `ensure_schema()`。
     _memory: Any = field(default=None, repr=False)
+    #: 共享预算账本（PRD §5.6）。建在事件库同一个 SQLite 文件里：预占与结算
+    #: 必须和事件同生共死，不能是第二个事实源。
+    budget: Any = field(default=None, repr=False)
 
     @property
     def memory(self):
@@ -2335,6 +2480,9 @@ def build_stack(
         log, leases=leases, claims=claims, approvals=approvals, data_root=root
     )
     shots = snapshots if snapshots is not None else SnapshotStore(root / "artifacts")
+    budget = BudgetLedger(
+        log, clock=clock or (lambda: int(time.time() * 1000))
+    )
     cls = dispatcher_cls or Dispatcher
     dispatcher = cls(
         log,
@@ -2360,6 +2508,7 @@ def build_stack(
         dispatcher=dispatcher,
         data_root=root,
         _memory=memory,
+        budget=budget,
     )
 
 

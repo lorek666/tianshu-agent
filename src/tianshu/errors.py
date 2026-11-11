@@ -57,6 +57,43 @@ class BudgetExceeded(TianshuError):
     """轮数或 token 预算耗尽（对应验收 A5）。"""
 
 
+class BudgetRefused(TianshuError):
+    """共享预算账本拒绝了这次预占（额度不足 / 已过 deadline）。
+
+    与 `BudgetExceeded` 的区别：后者是单 Run 的事后计数（轮数 / token 用完了），
+    前者是**发送前**的原子预占失败。两个都不能被当成"暂时失败"重试——重试
+    就是绕过闸门。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        account_id: str = "",
+        dimension: str = "",
+        limit: int | None = None,
+        used: int | None = None,
+        need: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.account_id = account_id
+        self.dimension = dimension
+        self.limit = limit
+        self.used = used
+        self.need = need
+
+
+class BudgetCancelled(TianshuError):
+    """预算账户已取消：拒绝一切新请求。
+
+    已发出的请求保持原状（可能已计费），**不把取消当退款**（PRD §5.6 第 6 条）。
+    """
+
+    def __init__(self, message: str, *, account_id: str = "") -> None:
+        super().__init__(message)
+        self.account_id = account_id
+
+
 class RunFenced(TianshuError):
     """Run 已被目标变更或租约变更 fence，不得继续写入。
 
