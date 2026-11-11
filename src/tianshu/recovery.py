@@ -407,6 +407,7 @@ def recover_run(
     *,
     leases: LeaseStore | None = None,
     data_root: Path | None = None,
+    memory: object | None = None,
 ) -> RecoveryReport:
     """核对并补全一次被打断的 run。幂等。
 
@@ -425,10 +426,14 @@ def recover_run(
     migration_problems = mirror_blocks_to_authority(log)
     undo_problems: list[str] = []
     if data_root is None:
-        report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+        report = _recover_run(
+            log, run_id, workspace_dir, snapshots, leases=leases, memory=memory
+        )
     else:
         with execution_guard(Path(data_root)):
-            report = _recover_run(log, run_id, workspace_dir, snapshots, leases=leases)
+            report = _recover_run(
+                log, run_id, workspace_dir, snapshots, leases=leases, memory=memory
+            )
             # 未完成的撤销也在这个全序里判：它和"恢复判 unknown"是同一类事实
             # （磁盘上有一批文件的最终状态还没结算），写入侧必须同时看到。
             undo_problems = _block_unfinished_undo(
@@ -446,6 +451,7 @@ def _recover_run(
     snapshots: SnapshotStore | None = None,
     *,
     leases: LeaseStore | None = None,
+    memory: object | None = None,
 ) -> RecoveryReport:
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
@@ -479,7 +485,8 @@ def _recover_run(
                     # 记忆写的结论不依赖这份快照清单（投影/事件同事务），
                     # 清单坏了也不该把它们推成 unknown 并挡住目录。
                     _settle_memory_write(
-                        log, report, run_id, call_id, tool_id, payload, ev.ts
+                        log, report, run_id, call_id, tool_id, payload, ev.ts,
+                        memory=memory,
                     )
                     continue
                 if spec is not None and spec.side_effect_level == "pure":
@@ -522,7 +529,9 @@ def _recover_run(
 
         # 记忆写：见 `_settle_memory_write`（含 erase 的不可逆窗口、孤儿 blob）
         if tool_id in MEMORY_TOOL_IDS:
-            _settle_memory_write(log, report, run_id, call_id, tool_id, payload, ev.ts)
+            _settle_memory_write(
+                log, report, run_id, call_id, tool_id, payload, ev.ts, memory=memory
+            )
             continue
 
         # 只读工具：没有副作用，直接被中断也不影响任何东西
@@ -744,8 +753,12 @@ def _unresolved_by_root(
 _ERASE_TOOL_ID = "memory.erase"
 
 
-def _open_memory_projection(log: EventLog):
+def _open_memory_projection(log: EventLog, blob_dir: Path | None = None):
     """恢复用的记忆投影（与事件日志共用同一连接）。打不开就返回 None。
+
+    `blob_dir` 要给装配方自定义的正文目录：恢复按 DB 旁默认目录去找 blob 时，
+    自定义目录下的正文会"找不到"，擦除结论与孤儿清理都会偏。CLI / daemon 直接
+    把 `stack.memory` 传进来就是为了避开这个坑。
 
     延迟 import：`memory` → `resources` 那条链不该在纯文件恢复路径上也被拖进来。
     """
@@ -754,7 +767,7 @@ def _open_memory_projection(log: EventLog):
     except ImportError:  # pragma: no cover - 装配缺模块
         return None
     try:
-        projection = MemoryProjection(log.conn, log=log)
+        projection = MemoryProjection(log.conn, log=log, blob_dir=blob_dir)
         projection.ensure_schema()
     except Exception:  # noqa: BLE001 - 投影坏了：结论只能是"核不了"
         return None
@@ -792,7 +805,7 @@ def _clean_orphan_blob(projection: Any, content_ref: str) -> bool:
 
 
 def _memory_effect(
-    log: EventLog, intent_payload: dict
+    log: EventLog, intent_payload: dict, *, memory: object | None = None
 ) -> tuple[str, dict[str, Any], str | None]:
     """一条"有 intent 无 result"的记忆写，到底能下什么结论。
 
@@ -805,16 +818,26 @@ def _memory_effect(
       确实没生效；文件没了 → 不可逆部分生效，只能报 unknown；
     - 正文 blob 写在提交之前 ⇒ 恢复顺手清掉本调用留下的孤儿副本（引用计数为 0）。
     """
-    tool_id = intent_payload.get("tool_id")
     raw_args = intent_payload.get("args")
     args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-    projection = _open_memory_projection(log)
+    blob_dir = getattr(memory, "blob_dir", None) if memory is not None else None
+    projection = memory if memory is not None else _open_memory_projection(log, blob_dir)
+    tool_id = intent_payload.get("tool_id")
     if projection is None:
+        # **非 erase** 的结论不依赖投影（投影/事件同事务，没有 result 就是没写），
+        # 投影打不开只影响"能不能顺手清孤儿 blob"。
+        if tool_id != _ERASE_TOOL_ID:
+            return (
+                "none_applied",
+                {"error": "recovered: 记忆写入未生效（结果与投影同事务）",
+                 "recovered": True, "memory_write": tool_id},
+                "记忆投影打不开：可证明这次写没生效，但孤儿正文副本无法清查，需人工核对",
+            )
         return (
             "unknown",
-            {"error": "recovered: 记忆投影不可用，无法核实这次记忆写",
+            {"error": "recovered: 记忆投影不可用，无法核实这次擦除",
              "recovered": True},
-            "记忆投影打不开，无法核实该记忆写（投影损坏或装配缺失）",
+            "擦除的副作用在提交之外且不可逆；投影打不开就无法判断，需人工核对",
         )
     if tool_id == _ERASE_TOOL_ID:
         memory_id = args.get("memory_id")
@@ -824,23 +847,34 @@ def _memory_effect(
             else None
         )
         if observed is None:
+            # 投影里没有这一行：可能是"本来就擦不到"，也可能是"投影被重建时丢了"。
+            # 后者无法证明"一个字节都没删"，所以不宣布没生效，报 unknown 让人核对。
             return (
-                "none_applied",
-                {"error": "recovered: 记忆行不存在，擦除没有可删的正文",
+                "unknown",
+                {"error": "recovered: 投影里没有这条记忆，无法证明擦除没有删掉任何正文",
                  "recovered": True, "memory_write": tool_id},
-                None,
+                "擦除待决但投影中找不到该记忆行（可能是投影重建丢失），需人工核对",
             )
         content_ref, erased_at = observed
         if erased_at is not None:
+            # 行已被**更早的**擦除标掉（它有自己的 result）：本次调用不可能再产生
+            # 新副作用，最多是"重复擦除被拒前崩溃"。
             return (
-                "unknown",
-                {"error": "recovered: 投影已标记 erasure，但缺少 result 事件，"
-                          "回执与事件不一致",
+                "none_applied",
+                {"error": "recovered: 该记忆已被更早的擦除标记，本次没有新副作用",
                  "recovered": True, "memory_write": tool_id},
-                "擦除投影已生效但事件缺失，需要人工核对",
+                None,
             )
         path = projection.blob_path(content_ref)
-        if path is not None and path.is_file():
+        if path is None:
+            # 纯内存库 / 没有正文目录：擦除从不落文件副作用。
+            return (
+                "none_applied",
+                {"error": "recovered: 没有正文目录，擦除没有文件副作用",
+                 "recovered": True, "memory_write": tool_id},
+                None,
+            )
+        if path.is_file():
             return (
                 "none_applied",
                 {"error": "recovered: 正文文件仍在，擦除未生效",
@@ -874,6 +908,8 @@ def _settle_memory_write(
     tool_id: str,
     intent_payload: dict,
     ts: int,
+    *,
+    memory: object | None = None,
 ) -> None:
     """结算一条被打断的记忆写（含 `dispatches` 表状态推进）。
 
@@ -881,7 +917,9 @@ def _settle_memory_write(
     `intent` / `executing`——否则后续 resume / 审计会看到"仍在执行"与"已确认
     未生效"两种说法。
     """
-    bucket_name, extras, problem = _memory_effect(log, intent_payload)
+    bucket_name, extras, problem = _memory_effect(
+        log, intent_payload, memory=memory
+    )
     if bucket_name == "none_applied":
         bucket = report.none_applied
         report.memory_not_applied.append(call_id)

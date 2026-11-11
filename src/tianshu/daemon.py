@@ -795,6 +795,7 @@ class _Daemon:
                 workspace,
                 self.control_stack.snapshots,
                 leases=self.control_stack.leases,
+                memory=self.control_stack.memory,
                 # 恢复扫描发生在 bind 之前（见 `_setup`），此刻没有驱动线程、
                 # 没有客户端，守卫必然空闲——所以这里可以和派发争同一把锁，
                 # 不会自锁（复审 中-1）。

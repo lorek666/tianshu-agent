@@ -878,6 +878,9 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         report = recover_run(
             log, args.run_id, args.workspace, snapshots,
             leases=leases, data_root=data_root,
+            # 把装配好的记忆投影传进去：正文目录可能不是 DB 旁的默认值，
+            # 恢复若按默认目录找 blob，擦除结论与孤儿清理都会偏。
+            memory=stack.memory,
         )
     finally:
         log.close()
@@ -891,6 +894,12 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         print(f"无法核实   : {report.unresolved or '（无）'}")
         if report.memory_not_applied:
             print(f"记忆未生效 : {report.memory_not_applied}")
+        if report.memory_unresolved:
+            # 擦除的删文件在提交之外且不可逆：有这一栏时退出码一定是 1，
+            # 不打印原因等于让人对着一个失败码猜。
+            print(f"记忆待核实 : {report.memory_unresolved}")
+        if report.memory_orphan_blobs:
+            print(f"已清孤儿正文 : {report.memory_orphan_blobs}")
         for p in report.problems:
             print(f"  ! {p}")
     return 0 if report.ok else 1

@@ -2070,7 +2070,11 @@ def test_intent_events_drop_content_for_every_content_memory_write(env: Env):
 
 
 def test_terminal_rows_from_an_older_library_are_redacted_when_opened(env: Env):
-    """升级前的终态行不会自己回到终态：打开库时要补做脱敏。"""
+    """升级前的终态行不会自己回到终态：打开库时要补做脱敏。
+
+    模拟方式是把列真的删掉（老库没有这一列），而不是把标志改回 0——补扫只在
+    "刚加上这一列"时跑一次（避免每次启动全表解析历史行 + 与重新发起竞态）。
+    """
     import json
 
     content = "升级前就留在审计表里的正文"
@@ -2079,10 +2083,11 @@ def test_terminal_rows_from_an_older_library_are_redacted_when_opened(env: Env):
         env, task, run, claim, content=content, call_id="legacy-row"
     )
     assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    # 老库没有 args_redacted 这一列：删掉它，再写回完整参数。
     with env.log.transaction():
+        env.log.conn.execute("ALTER TABLE dispatch_requests DROP COLUMN args_redacted")
         env.log.conn.execute(
-            "UPDATE dispatch_requests SET args_payload = ?, args_redacted = 0"
-            " WHERE request_id = ?",
+            "UPDATE dispatch_requests SET args_payload = ? WHERE request_id = ?",
             (
                 json.dumps({"kind": "preference", "content": content}),
                 decision.request_id,
@@ -2152,3 +2157,76 @@ def test_reissued_request_after_terminal_state_keeps_full_args(env: Env):
     assert env.memory.read_content(
         env.memory.get(result.output["memory_id"], allowed=(user,))
     ) == content
+
+
+def test_cli_recover_names_the_unresolved_erasure_and_cleaned_orphans(env, monkeypatch, capsys):
+    """CLI `recover` 退出码 1 时必须给原因：新栏位要打印出来。"""
+    from argparse import Namespace
+
+    from tianshu.cli import _cmd_recover
+
+    user = MemoryScope.user()
+    content = "擦除崩溃窗口里的正文"
+    _task, _run, _claim, output = _proposed(env, content=content)
+    memory_id = output["memory_id"]
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{memory_id}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": memory_id, "revision": 1}
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.erase",
+        target=user.to_uri(),
+        args=erase_args,
+        call_id="cli-erase",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=erase_args)
+    _approve(env, decision.approval_id)
+    _crash_at_commit(monkeypatch, env.dispatcher)
+    try:
+        with pytest.raises(SystemExit):
+            env.dispatcher.dispatch(decision.request_id, control.claim)
+    finally:
+        env.dispatcher.close_control_run(
+            control, outcome="failed", effect_state="none_applied"
+        )
+    monkeypatch.undo()
+    capsys.readouterr()
+
+    rc = _cmd_recover(
+        Namespace(
+            db=env.root / "events.db",
+            data_root=env.root / "authority",
+            run_id=control.run.run_id,
+            workspace=env.ws_a,
+            json=False,
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 1, "有未结算的不可逆副作用时恢复不能报成功"
+    assert "记忆待核实" in out and "cli-erase" in out
+
+
+def test_recovery_uses_the_supplied_memory_projection_for_blob_checks(env):
+    """恢复必须用装配方给的投影找 blob：自定义 `blob_dir` 下不能按默认目录判。"""
+    from tianshu.memory import MemoryProjection
+    from tianshu.recovery import _memory_effect
+
+    output = _proposed(env, content="自定义目录里的正文")[3]
+    ref = output["content_ref"]
+    default_blob = env.memory.blob_path(ref)
+    assert default_blob is not None and default_blob.is_file()
+
+    custom_dir = env.root / "custom_blobs"
+    custom_dir.mkdir()
+    default_blob.rename(custom_dir / default_blob.name)
+    custom = MemoryProjection(env.log.conn, log=env.log, blob_dir=custom_dir)
+
+    payload = {"tool_id": "memory.erase", "args": {"memory_id": output["memory_id"]}}
+    bucket, _extras, _problem = _memory_effect(env.log, payload, memory=custom)
+    assert bucket == "none_applied", "文件在自定义目录里还在 ⇒ 擦除没生效"
+    # 对照：按默认目录找会误判成"文件已没"（不可逆部分生效 → unknown）。
+    bucket_default, _extras, _problem = _memory_effect(env.log, payload)
+    assert bucket_default == "unknown"

@@ -356,10 +356,13 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ### 6.2 设计
 
 1. **恢复判据（可证明，不猜）**：记忆写入的投影更新与 `tool.result` **同事务**。所以
-   "有 intent 无 result" ⇔ **一定没生效**。恢复时对 `state ∈ {intent, executing}` 且
-   tool ∈ `MEMORY_TOOL_IDS` 的行：标 `rejected`、reason=`recovery.memory_not_applied`，
-   **不写 unknown、不阻断目录、不进 `applied` 快照语义**（记忆没有 preimage），恢复
-   报告单列一段"记忆写入未生效 N 条"。
+   "有 intent 无 result" ⇔ **投影/事件层一定没生效**。恢复时对
+   `state ∈ {intent, executing}` 且 tool ∈ `MEMORY_TOOL_IDS` 的行：标 `rejected`、
+   reason=`recovery.memory_not_applied`，**不写 unknown、不阻断目录、不进 `applied`
+   快照语义**（记忆没有 preimage），恢复报告单列一段"记忆写入未生效 N 条"。
+   **⚠ 这条早期结论只覆盖投影/事件层**：`memory.erase` 的删文件在提交之外且不可逆、
+   内容型写在提交之前就落 blob——两类都要单独判（见 §6.4 的三层判据；两处冲突以
+   §6.4 与代码为准）。
 2. **审计表**：请求进入**终态**后，把 `args_payload` 的记忆正文替换为
    `content_sha256` + `content_bytes`，置 `args_redacted=1`；`args_hash` 保持原值。
    执行期"参数哈希核对"只发生在终态之前；实现时必须先用探针证明终态后**没有任何
@@ -410,14 +413,15 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   `content_sha256` / `content_bytes` / `content_omitted`"，不列工具名。
 - **测试落点（与 §6.3 的偏差，如实记）**：没有新建 `tests/test_memory_recovery.py`——判据本来
   就在 `tests/test_memory_dispatch.py`（同一套 `Env` 夹具），单开文件要复制夹具。实际新增
-  **14 条**，都在该文件：三条终态脱敏（成功 / 闸门 / 中途炸）、`waiting` 行被否决后（ON
+  **18 条**，都在该文件：三条终态脱敏（成功 / 闸门 / 中途炸）、`waiting` 行被否决后（ON
   CONFLICT）、终态后重新发起、旧库终态行补扫、被拒文件请求不标脱敏、intent 不存正文
   （remember + edit）、断电恢复、孤儿 blob、共享 blob 不误删、擦除崩溃窗口、清单损坏仍结算、
-  文件写不脱敏。
-- **负控（7 条都真跑过，逐条变红）**：① 关终态脱敏；② ON CONFLICT 改回单向 CASE；③ 删
+  文件写不脱敏、CLI `recover` 打印新栏位、恢复使用装配方给的 `blob_dir`。
+- **负控（12 条逐条真跑过、都变红）**：① 关终态脱敏；② ON CONFLICT 改回单向 CASE；③ 删
   `_recover_run` 记忆分支；④ 删 `assess_run` 记忆分支；⑤ `_reject` 无条件标脱敏；⑥ 跳过补扫；
-  ⑦ `_intent_args` 只认 propose；另加"把 erase 当普通记忆写""关掉孤儿清理""删清单损坏早退块
-  里的记忆分支"三条也各自变红。
+  ⑦ `_intent_args` 只认 propose；⑧ 把 erase 当普通记忆写；⑨ 关掉孤儿清理；⑩ 删清单损坏早退块
+  里的记忆分支；⑪ CLI 不打印 `memory_unresolved`；⑫ 恢复忽略传入的投影与 `blob_dir`。
+  独立复审另复跑了 ③⑧⑨ 三条，结论一致。
 - **残留（别读成"任何时刻都不存原文 / 一定没生效"）**：
   1. 停在 `waiting` / `admitted` 的行仍是完整参数——`dispatch()` 正是从这张表取参数执行，脱敏会
      把派发打红。要收口得先定义"等待行过期 / 取消即作废"，单开工单。
@@ -427,6 +431,15 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   4. §6.3 要求的"两个真进程断电"没做：现有恢复测试都是同进程构造状态（`monkeypatch` 掉
      `_commit_result` 制造"副作用已发生、提交前硬退"），真跨进程断电不在 CI 可复现范围。
   5. `blob_dir` 里的正文副本不随审计表脱敏——那是设计（正文本来就存 blob，审计表只收重复副本）。
+  6. 模型给出的工具调用参数（含模型自己提议的 propose / edit 正文）仍在 `model.result` 与
+     `run_turns` 里：replay 要它重建模型输入，物理擦除范围见 F10 §10。
+  7. 自定义 `blob_dir` 已支持（`recover_run(memory=...)`，CLI/daemon 都传）；只读库调用方若不给
+     `memory` 也不给 `blob_dir`，恢复仍按 DB 旁默认目录找 blob——这是 `_open_memory_projection`
+     注释里写明的契约限制。
+  8. 补扫只在**刚加 `args_redacted` 列**时跑一次（避免每次启动全表解析 + 与“重新发起”竞态）；
+     此后的库不再回扫，旧库里 payload 修好后不会自动补。
+  9. `assess_run` 对擦除一律报 unknown / 拒接管（只读对账里无法安全判“文件删了没有”），擦除
+     崩溃后要先 `recover` 再接管。
 
 ## 7. N6 · 控制面 UI / Host：看得见、改得动（F10 §9）
 

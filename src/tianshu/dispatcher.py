@@ -379,11 +379,18 @@ def _audit_args(request: ActionRequest, args: dict[str, Any]) -> dict[str, Any]:
 
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, declaration: str
-) -> None:
-    """老库补列（幂等）：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。"""
+) -> bool:
+    """老库补列（幂等）：`CREATE TABLE IF NOT EXISTS` 不会给已有表加列。
+
+    返回"这次真的加了列没有"。调用方据此决定要不要做**一次性的历史数据补扫**：
+    每次打开都全表解析历史行，在大库上是纯浪费，还会带来"补扫把刚刚重新发起
+    的请求又脱敏回去"的竞态。
+    """
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    if column in columns:
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    return True
 
 
 class Dispatcher:
@@ -412,11 +419,12 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
-        _ensure_column(
+        if _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
             "INTEGER NOT NULL DEFAULT 0",
-        )
-        self._backfill_redacted_args()
+        ):
+            # 只在**刚加上这一列**时补扫一次：老库里的终态行不会自己回到终态。
+            self._backfill_redacted_args()
         self._tasks = tasks
         self._leases = leases
         self._policy = policy
@@ -1977,8 +1985,9 @@ class Dispatcher:
             for payload, request_id in updates:
                 self._conn.execute(
                     "UPDATE dispatch_requests SET args_payload = ?,"
-                    " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0",
-                    (payload, request_id),
+                    " args_redacted = 1 WHERE request_id = ? AND args_redacted = 0"
+                    " AND state IN (?, ?)",
+                    (payload, request_id, STATE_DONE, STATE_REJECTED),
                 )
 
     def _redact_terminal_args(self, request_id: str) -> None:
