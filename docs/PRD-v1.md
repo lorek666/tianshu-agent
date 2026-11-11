@@ -167,7 +167,7 @@
 
 **`Memory` 也不是第五张事实表**：它由事件日志（`tool.intent` / `tool.result` + 审批事件）**确定性投影**出来，删掉投影可重建（[F10-memory-design.md](F10-memory-design.md) §3.1）。三个字段要读对：`evidence[]` 是「支撑这条信念的源记忆 + 原文引文」，`proof_count` 是证据条数（L2 必填，机械可算、可核对），`consolidated_at` 是上次蒸馏 / 合并时间（freshness 判据：作用域内有新记忆尚未合并时，该层视为陈旧）。`source_refs[]` 是「每条记忆必须能指回来源」的锚点。字段语义见 [F10-memory-design.md](F10-memory-design.md) §5，**实现状态以该文 §13 的契约增量清单为准**——别把这张表的字段当成已经写进库的列。
 
-**v1.2 新增两个字段（契约已定义、代码未落地）**：`layer` 是资产层（`l1` 原子事实 / `l2` 带证据的信念 / `l3` 偏好页面；L2/L3 是可重建的合成层），`erased_at?` 是**物理擦除**时间戳（与 `status=forgotten` 分开：`forgotten` = 停止召回但正文仍在本机，`erased_at` = 正文副本与检索索引已删）。语义与边界见 [F10-memory-design.md](F10-memory-design.md) §5 / §10，工具入口见 §5.2.2。
+**v1.2 新增两个字段**：`erased_at?` **已落库**（N4）——**物理擦除**时间戳，与 `status=forgotten` 分开：`forgotten` = 停止召回但正文仍在本机，`erased_at` = 正文副本与检索索引已删；`layer` 仍是**契约、未落库**（N3）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3` 偏好页面（L2/L3 是可重建的合成层）。语义与边界见 [F10-memory-design.md](F10-memory-design.md) §5 / §10，工具入口见 §5.2.2。
 
 ### 4.2 Task 与 Run 必须分离
 
@@ -485,7 +485,7 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
   `additionalProperties: false` 保持。
 
-**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` 已落地（含控制面判据、一次性审批、旧版可查、Receipt 与 CLI）——**已落地 8 个**（6 个模型可见 + 2 个控制面专属）；`memory.consolidate` / `memory.erase` 仍是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
+**落地状态（N1，2026-11-11）**：`memory.propose` 已升 `2.0`；`memory.remember` / `memory.edit` / `memory.promote` / `memory.erase` 已落地（含控制面判据、一次性审批、旧版可查、擦除引用计数、Receipt 与 CLI）——**已落地 9 个**（6 个模型可见 + 3 个控制面专属）；只剩 `memory.consolidate` 是**契约、未落地**，实现状态见 [F10-memory-design.md](F10-memory-design.md) §13。
 
 **`origin` 的口径（N1 细化）**：它描述的是**这一版正文**的来源，不是记忆的终身属性——控制面 `memory.edit`（人自己写的新正文）→ `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬的是同一段正文，来源**随行**（旧行 `user_explicit` → 新行仍 `user_explicit`，不降档）。旧版的 `origin` 留在旧行，不被改写。
 

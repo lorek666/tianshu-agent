@@ -222,6 +222,15 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   ② 工具白名单新增 `memory.remember`（同一 PR）。两处已补进 v1 契约——不是放宽，
   是让契约跟上 `main` 的新事实。
 
+- **N4（物理擦除）合入时又抓到两组漂移，同样已补进 v1 契约**：
+  ③ 工具白名单缺 `memory.erase`（`tools.SPECS` 里新增的控制面工具，事件里会出现
+  `tool.intent/tool.result` 的 `tool_id`）；
+  ④ `receipt.evidence` 的 `kind` 封闭集缺 `memory_erasure`、且证据对象
+  `additionalProperties:false` 不接受 `content_ref` / `deleted` / `deleted_bytes` /
+  `retained_by` 四个字段。两处都已登记；擦除回执现在能被 `verify_receipts` 逐字段
+  核对（与同次 `tool.result.output.erasure` 比对）。合入 #84 后本分支全量
+  `1527 passed / 7 skipped`。
+
 负控（真跑过，回退后红）：
 
 1. **去掉写入校验**：把 `EventLog.append` 里的 `detect_version()` 换成直接记当前

@@ -65,11 +65,14 @@ MEMORY_TOOL_IDS = frozenset(
         "memory.promote",
         "memory.confirm",
         "memory.forget",
+        "memory.erase",
     }
 )
 
 #: 只有控制 Run（`Task.is_control`）能调用的记忆写工具。
-CONTROL_ONLY_MEMORY_TOOLS = frozenset({"memory.remember", "memory.promote"})
+CONTROL_ONLY_MEMORY_TOOLS = frozenset(
+    {"memory.remember", "memory.promote", "memory.erase"}
+)
 MEMORY_READ_TOOL_IDS = frozenset({"memory.search", "memory.get"})
 MEMORY_ALL_TOOL_IDS = MEMORY_TOOL_IDS | MEMORY_READ_TOOL_IDS
 
@@ -484,6 +487,8 @@ class MemoryExecutor:
             return self._edit(admitted, scope)
         if admitted.tool_id == "memory.promote":
             return self._promote(admitted, scope)
+        if admitted.tool_id == "memory.erase":
+            return self._erase(admitted, scope)
         if admitted.tool_id == "memory.confirm":
             return self._transition(admitted, scope, to_status="active")
         if admitted.tool_id == "memory.forget":
@@ -783,6 +788,88 @@ class MemoryExecutor:
                 "deduped": False,
                 "before_state": memory_state(memory_id, before_status, before_revision),
                 "after_state": memory_state(new_id, "candidate", 1),
+            },
+        )
+
+    def _erase(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """物理擦除：删正文副本（引用计数为 0 才删）+ 标 `erased_at`。
+
+        顺序写死：**先删文件 → 再返回结果**（结果由 dispatcher 与事件同事务提交）。
+        崩在两者之间只会留下"文件没了、行还没标擦除"，重建时正文如实不可用；
+        反过来（先标擦除、文件还在）才是隐私泄漏。
+        """
+        args = admitted.args
+        memory_id = args["memory_id"]
+        observed = self._observe(memory_id, scope)
+        if observed is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        before_status, before_revision = observed
+        ok, why = check_request_preconditions(
+            admitted.request.action,
+            scope.to_uri(),
+            admitted.request.preconditions or {},
+            memory_observed=observed,
+        )
+        if not ok:
+            raise MemoryDispatchRefused(why, "dispatch.memory_stale_revision")
+        old = self._projection.get(memory_id, allowed=(scope,))
+        if old is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        if old.erased_at is not None:
+            raise MemoryDispatchRefused(
+                f"记忆已经擦除过：{memory_id}", "dispatch.memory_stale_revision"
+            )
+
+        others_count, others = self._projection.count_content_ref(
+            old.content_ref, exclude_memory_id=memory_id
+        )
+        deleted = others_count == 0
+        deleted_bytes = 0
+        if deleted:
+            path = self._projection.blob_path(old.content_ref)
+            if path is not None:
+                try:
+                    deleted_bytes = path.stat().st_size
+                    path.unlink()
+                except FileNotFoundError:
+                    # 文件已经不在了：幂等对待（正文本来就不可用）。
+                    deleted_bytes = 0
+                except OSError as exc:
+                    # 删文件失败：**不**标 erased_at，让整次擦除如实失败。
+                    raise MemoryDispatchRefused(
+                        f"擦除失败：正文文件删不掉（{exc}）", "dispatch.refused"
+                    ) from exc
+
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        revision = before_revision + 1
+        now = self._clock()
+        erasure = {
+            "content_ref": old.content_ref,
+            "deleted": deleted,
+            "deleted_bytes": deleted_bytes,
+            "retained_by": others,
+        }
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "memory_id": memory_id,
+                "revision": revision,
+                "before_status": before_status,
+                "status": "forgotten",
+                "erased_at": now,
+                "before_state": memory_state(memory_id, before_status, before_revision),
+                "after_state": memory_state(memory_id, "forgotten", revision),
+                "erasure": erasure,
+                "content_bytes": deleted_bytes,
             },
         )
 

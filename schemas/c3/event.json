@@ -1136,6 +1136,7 @@
               "list_files",
               "memory.confirm",
               "memory.edit",
+              "memory.erase",
               "memory.forget",
               "memory.get",
               "memory.promote",
@@ -1219,7 +1220,8 @@
                     "result",
                     "intent",
                     "blob",
-                    "memory"
+                    "memory",
+                    "memory_erasure"
                   ]
                 },
                 "call_id": {
@@ -1258,6 +1260,34 @@
                     "boolean",
                     "null"
                   ]
+                },
+                "content_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "deleted": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "deleted_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "retained_by": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "additionalProperties": false,
@@ -2079,6 +2109,7 @@
               "list_files",
               "memory.confirm",
               "memory.edit",
+              "memory.erase",
               "memory.forget",
               "memory.get",
               "memory.promote",
@@ -2156,6 +2187,7 @@
               "list_files",
               "memory.confirm",
               "memory.edit",
+              "memory.erase",
               "memory.forget",
               "memory.get",
               "memory.promote",
@@ -3204,6 +3236,7 @@
               "list_files",
               "memory.confirm",
               "memory.edit",
+              "memory.erase",
               "memory.forget",
               "memory.get",
               "memory.promote",
@@ -4028,6 +4061,7 @@
               "list_files",
               "memory.confirm",
               "memory.edit",
+              "memory.erase",
               "memory.forget",
               "memory.get",
               "memory.promote",
