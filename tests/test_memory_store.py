@@ -1316,3 +1316,23 @@ def test_in_memory_database_marks_content_unavailable() -> None:
         assert projection.search("内存库", allowed=[MemoryScope.user()]) == []
     finally:
         log.close()
+
+
+def test_schema_v1_database_is_migrated_in_place(env) -> None:
+    """v1 的库没有 erased_at 列、也没有 schema_version：打开时补列、不重建。"""
+    log, projection = env
+    _propose(projection, log, "m_old", "旧库里的记忆")
+    projection.rebuild()
+    # 模拟 v1：删掉新列与版本记录（SQLite >= 3.35 支持 DROP COLUMN）。
+    log.conn.execute("ALTER TABLE memories DROP COLUMN erased_at")
+    log.conn.execute("DELETE FROM memory_meta WHERE key = 'schema_version'")
+    projection._schema_ready = False
+    projection.ensure_schema()
+    memory = projection.get("m_old", allowed=[MemoryScope.user()])
+    assert memory is not None
+    assert memory.erased_at is None
+    assert projection.read_content(memory) == "旧库里的记忆"
+    row = log.conn.execute(
+        "SELECT value FROM memory_meta WHERE key = 'schema_version'"
+    ).fetchone()
+    assert row is not None and int(row[0]) == 2

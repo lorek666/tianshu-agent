@@ -1325,6 +1325,7 @@ class Dispatcher:
         if not is_control and request.tool_id in (
             "memory.remember",
             "memory.promote",
+            "memory.erase",
         ):
             # 契约 v1.2：控制面专属工具不能在普通任务里执行。拒绝点在派发层，
             # 执行侧还有一次独立核验（memory_exec._verify）。
@@ -2150,6 +2151,7 @@ class Dispatcher:
                 "memory.remember",
                 "memory.edit",
                 "memory.promote",
+                "memory.erase",
             ):
                 receipt = build_memory_receipt(
                     run_id=request.run_id,
@@ -2167,6 +2169,11 @@ class Dispatcher:
                     action=request.action,
                     intent_seq=intent_seq,
                     backend="memory",
+                    extra_evidence=(
+                        [dict(result.output["erasure"])]
+                        if isinstance(result.output.get("erasure"), dict)
+                        else None
+                    ),
                 )
             else:
                 # propose 是候选草稿，不产凭据（F10 §7）。

@@ -186,6 +186,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "remember",
             "edit",
             "promote",
+            "erase",
         ],
     )
     mem.add_argument(
@@ -1274,6 +1275,15 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 return 2
             return _dispatch_memory_promote(stack, memory, args)
 
+        if args.action == "erase":
+            return _dispatch_memory_write(
+                stack,
+                memory,
+                "memory.erase",
+                {"memory_id": memory.memory_id, "revision": memory.revision},
+                args,
+            )
+
         # confirm / forget 是**人**发起的记忆生命周期操作：人就是批准者本身，
         # 所以这里用本地人身份把那张审批当场签掉。它仍然走完整派发路径——
         # intent/result + Receipt + 一次性消费——不是控制面偷写存储。
@@ -1436,6 +1446,12 @@ def _dispatch_memory_write(stack, memory, tool_id: str, tool_args: dict, args) -
                 print(f"  new memory_id: {result.output['memory_id']}")
             if result.output.get("supersedes"):
                 print(f"  supersedes   : {result.output['supersedes']}")
+            erasure = result.output.get("erasure")
+            if isinstance(erasure, dict):
+                state = "已删除" if erasure.get("deleted") else "被其它记忆引用，保留"
+                print(f"  正文副本     : {state}（{erasure.get('content_ref')}）")
+                if erasure.get("retained_by"):
+                    print(f"  仍被引用     : {', '.join(erasure['retained_by'])}")
             if not result.ok and result.output.get("error"):
                 print(f"  ! {result.output.get('error')}", file=sys.stderr)
         return 0 if result.ok else 1

@@ -304,6 +304,7 @@ def build_memory_receipt(
     action: str = "",
     intent_seq: int = 0,
     backend: str = "memory",
+    extra_evidence: list[dict[str, Any]] | None = None,
 ) -> Receipt | None:
     """记忆激活 / 遗忘的凭据。
 
@@ -359,13 +360,18 @@ def build_memory_receipt(
         after_state=str(after),
         backend=backend,
         intent_seq=int(intent_seq),
-        evidence=_evidence_refs(
-            call_id=call_id,
-            intent_seq=int(intent_seq),
-            blob_ref=None,
-            before_state=str(before),
-            memory_id=str(resource),
-        ),
+        evidence=[
+            *_evidence_refs(
+                call_id=call_id,
+                intent_seq=int(intent_seq),
+                blob_ref=None,
+                before_state=str(before),
+                memory_id=str(resource),
+            ),
+            *(
+                [{"kind": "memory_erasure", **item} for item in (extra_evidence or [])]
+            ),
+        ],
         blob_ref=None,
         issued_at=int(time.time() * 1000),
     )

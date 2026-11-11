@@ -148,11 +148,12 @@ _WRITE_TOOL_IDS = frozenset(
         "memory.forget",
         "memory.edit",
         "memory.promote",
+        "memory.erase",
     }
 )
 
 #: 投影格式版本。投影哈希覆盖它，跨版本不假装可比。
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------- 错误
 
@@ -191,6 +192,9 @@ class Memory:
     created_at: int
     expires_at: int | None
     supersedes: str | None
+    #: 物理擦除时间（契约 v1.2）：与 `status=forgotten` 分开——forgotten 只是停召回，
+    #: erased_at 表示正文副本与检索索引已被删除。
+    erased_at: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON 友好的字典。元组转列表，其余原样（调用方不得据此伪造事件）。"""
@@ -210,6 +214,7 @@ class Memory:
             "created_at": self.created_at,
             "expires_at": self.expires_at,
             "supersedes": self.supersedes,
+            "erased_at": self.erased_at,
         }
 
 
@@ -389,7 +394,8 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         supersedes      TEXT,
         content_state   TEXT NOT NULL,
         last_seq        INTEGER NOT NULL,
-        fts_rowid       INTEGER
+        fts_rowid       INTEGER,
+        erased_at       INTEGER
     )
     """,
     """
@@ -428,7 +434,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
 _MEMORY_COLUMNS = (
     "memory_id, revision, scope, scope_id, kind, content_ref, source_refs, "
     "evidence, proof_count, origin, status, consolidated_at, created_at, "
-    "expires_at, supersedes, content_state, last_seq, fts_rowid"
+    "expires_at, supersedes, content_state, last_seq, fts_rowid, erased_at"
 )
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -674,6 +680,34 @@ class MemoryProjection:
     def _ensure_schema(self) -> None:
         for statement in _SCHEMA_STATEMENTS:
             self._conn.execute(statement)
+        # v1 → v2：只加一个可空列（erased_at），因此**不需要**重建整份投影。
+        # 更结构性的变化仍必须重建（投影可重建，事件是事实源）。
+        columns = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if "erased_at" not in columns:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN erased_at INTEGER")
+        row = self._conn.execute(
+            "SELECT value FROM memory_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is not None:
+            try:
+                stored = int(row[0])
+            except (TypeError, ValueError):
+                # 版本记录本身坏了：投影是可重建的，按"未版本化"处理并重写；
+                # 正文的可用性不依赖这个键，分词器版本另有独立校验。
+                stored = 0
+            if stored > _SCHEMA_VERSION:
+                raise MemoryStoreError(
+                    f"投影 schema_version={stored} 高于本程序支持的 {_SCHEMA_VERSION}；"
+                    "不要用旧版本程序打开新投影（会读错字段）"
+                )
+        self._conn.execute(
+            "INSERT INTO memory_meta(key, value) VALUES ('schema_version', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(_SCHEMA_VERSION),),
+        )
 
     def _require_tokenizer_version(self) -> None:
         row = self._conn.execute(
@@ -763,6 +797,8 @@ class MemoryProjection:
                 self._apply_propose(output, seq_value, mode=mode)
             elif tool_id == "memory.confirm":
                 self._apply_confirm(output, seq_value)
+            elif tool_id == "memory.erase":
+                self._apply_erase(output, seq_value)
             else:
                 self._apply_forget(output, seq_value)
 
@@ -1038,7 +1074,7 @@ class MemoryProjection:
         try:
             self._conn.execute(
                 f"INSERT INTO memories ({_MEMORY_COLUMNS})"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     memory_id,
                     revision,
@@ -1058,6 +1094,7 @@ class MemoryProjection:
                     content_state,
                     seq,
                     fts_rowid,
+                    None,  # erased_at：新写入的行从未擦除
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -1178,6 +1215,77 @@ class MemoryProjection:
             (revision, _STATUS_FORGOTTEN, seq, memory_id),
         )
 
+    def _apply_erase(self, output: dict[str, Any], seq: int) -> None:
+        """物理擦除：投影行置 forgotten + erased_at，正文标记不可用。
+
+        事件本身只记"擦过"；文件删除由执行器在提交前完成。重建时看到
+        `erased_at` 就**不再读 blob**——哪怕崩溃窗口里文件还留着。
+        """
+        for key in (
+            "memory_id",
+            "revision",
+            "before_status",
+            "status",
+            "memory_uri",
+            "erased_at",
+        ):
+            if key not in output:
+                raise MemoryStoreError(f"memory.erase 的 output 缺字段：{key}")
+        memory_id = _require_memory_id(output["memory_id"])
+        revision = _require_int(output["revision"], "revision", minimum=2)
+        before_status = _require_closed(
+            output["before_status"], MEMORY_STATUSES, "before_status"
+        )
+        status = _require_closed(output["status"], MEMORY_STATUSES, "status")
+        if status != _STATUS_FORGOTTEN:
+            raise MemoryStoreError(
+                f"memory.erase 的结果必须是 forgotten，收到 {status!r}"
+            )
+        erased_at = _require_int(output["erased_at"], "erased_at", minimum=0)
+        memory_uri = _require_str(output["memory_uri"], "memory_uri")
+        try:
+            uri_scope = parse_memory_uri(memory_uri)
+        except TianshuError as exc:
+            raise MemoryStoreError(f"memory_uri 不合法：{memory_uri!r}（{exc}）") from exc
+
+        row = self._load_row(memory_id)
+        if row is None:
+            raise MemoryStoreError(f"记忆不存在，无法擦除：{memory_id!r}")
+        if (row["scope"], row["scope_id"]) != _scope_key(uri_scope):
+            raise MemoryStoreError(
+                f"memory_uri 与记忆 {memory_id!r} 的作用域不一致：{memory_uri!r}"
+            )
+        if row["erased_at"] is not None:
+            raise MemoryStoreError(f"记忆 {memory_id!r} 已经擦除过，不能重复擦除")
+        if revision != int(row["revision"]) + 1:
+            raise MemoryStoreError(
+                f"记忆 {memory_id!r} 的 revision 必须从 {row['revision']} 推进到"
+                f" {int(row['revision']) + 1}，收到 {revision}"
+            )
+        if before_status != row["status"]:
+            raise MemoryStoreError(
+                f"记忆 {memory_id!r} 的 before_status={before_status!r} 与投影当前"
+                f"状态 {row['status']!r} 不一致"
+            )
+        if seq <= int(row["last_seq"]):
+            raise MemoryStoreError(
+                f"erase 的事件 seq={seq} 早于/等于记忆 {memory_id!r} 的"
+                f" last_seq={row['last_seq']}；重建顺序会解释不了"
+            )
+        self._drop_fts(row["fts_rowid"])
+        self._conn.execute(
+            "UPDATE memories SET revision = ?, status = ?, content_state = ?,"
+            " erased_at = ?, fts_rowid = NULL, last_seq = ? WHERE memory_id = ?",
+            (
+                revision,
+                _STATUS_FORGOTTEN,
+                _CONTENT_UNAVAILABLE,
+                erased_at,
+                seq,
+                memory_id,
+            ),
+        )
+
     def _parse_transition(
         self, output: dict[str, Any], *, expected_status: str
     ) -> tuple[str, sqlite3.Row, int, int | None]:
@@ -1295,6 +1403,7 @@ class MemoryProjection:
             created_at=created_at,
             expires_at=expires_at,
             supersedes=row["supersedes"],
+            erased_at=_require_optional_int(row["erased_at"], "erased_at"),
         )
 
     # ---- 正文 ----
@@ -1368,10 +1477,37 @@ class MemoryProjection:
         except UnicodeDecodeError as exc:
             raise MemoryStoreError(f"正文 blob 不是 UTF-8：{content_ref[:12]}…") from exc
 
+    def blob_path(self, content_ref: str) -> Path | None:
+        """内容寻址文件路径；纯内存库没有路径（返回 None）。"""
+        reference = _require_content_ref(content_ref)
+        if self._blob_dir is None:
+            return None
+        return self._blob_dir / reference
+
+    def count_content_ref(
+        self, content_ref: str, *, exclude_memory_id: str
+    ) -> tuple[int, list[str]]:
+        """还有多少**其它投影行**（含 forgotten / superseded / erased）引用这个 blob。
+
+        擦除只能删没有任何其它行引用的正文；否则"擦一条"会让另一条正文凭空消失。
+        返回 `(条数, memory_id 列表)`——列表进回执，供人核对"为什么没删"。
+        """
+        reference = _require_content_ref(content_ref)
+        # 已擦除的行不再"占有"正文：它自己都声明副本删了，不能拦住别人的擦除。
+        rows = self._conn.execute(
+            "SELECT memory_id FROM memories WHERE content_ref = ? AND memory_id != ?"
+            " AND erased_at IS NULL ORDER BY memory_id",
+            (reference, exclude_memory_id),
+        ).fetchall()
+        return len(rows), [str(row["memory_id"]) for row in rows]
+
     def read_content(self, memory: Memory) -> str | None:
         """读回这一版正文。blob 缺失或内容哈希不符时**不**回落到其他版本。"""
         if not isinstance(memory, Memory):
             raise MemoryStoreError(f"read_content 需要 Memory：{type(memory).__name__}")
+        if memory.erased_at is not None:
+            # 已擦除：哪怕文件因为崩溃窗口还留着，也**不**再提供正文。
+            return None
         return self._read_blob(memory.content_ref)
 
     # ---- 读接口 ----
@@ -1436,7 +1572,7 @@ class MemoryProjection:
             "SELECT m.memory_id, m.revision, m.scope, m.scope_id, m.kind,"
             " m.content_ref, m.source_refs, m.evidence, m.proof_count, m.origin,"
             " m.status, m.consolidated_at, m.created_at, m.expires_at,"
-            " m.supersedes, m.content_state, m.last_seq, m.fts_rowid"
+            " m.supersedes, m.content_state, m.last_seq, m.fts_rowid, m.erased_at"
             " FROM memory_fts JOIN memories AS m"
             " ON m.memory_id = memory_fts.memory_id"
             " WHERE memory_fts MATCH ?"
