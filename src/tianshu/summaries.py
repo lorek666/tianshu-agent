@@ -754,6 +754,41 @@ class SummaryStore:
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def ready_with_sources(self, run_id: str) -> list[tuple[SummaryRecord, tuple[int, ...]]]:
+        """这个 Run 已经落库的 ready 摘要 + 它们覆盖的事件 seq（按覆盖量降序）。
+
+        为什么要这个查询：调用上限到了之后，**已经存在的**摘要仍然可以盖住
+        "当时已经丢掉的那一段"。如果只用"材料完全一致"去复用，调用一停就整段
+        回落确定性裁剪——最先丢的硬约束又没了。这里允许"子集复用"：摘要是它自己
+        那几条来源的忠实压缩，只要那些来源现在确实都被牺牲了，用它就是成立的。
+        """
+        if not run_id or not self.has_schema():
+            return []
+        rows = self._conn.execute(
+            "SELECT v.*, s.ref AS source_ref FROM summary_versions v"
+            " JOIN summary_sources s ON s.material_id = v.material_id"
+            " WHERE v.run_id = ? AND v.status = ?"
+            " ORDER BY v.created_at, v.version, s.ordinal",
+            (run_id, READY),
+        ).fetchall()
+        grouped: dict[str, tuple[SummaryRecord, list[int]]] = {}
+        for row in rows:
+            record = _row_to_record(row)
+            entry = grouped.get(record.summary_id)
+            if entry is None:
+                entry = (record, [])
+                grouped[record.summary_id] = entry
+            ref = row["source_ref"]
+            if not isinstance(ref, str) or not ref.startswith("seq:"):
+                return []  # 来源形状坏了：宁可不复用，也不按猜的 seq 去盖
+            try:
+                entry[1].append(int(ref[4:]))
+            except ValueError:
+                return []
+        out = [(record, tuple(seqs)) for record, seqs in grouped.values()]
+        out.sort(key=lambda item: (-len(item[1]), -item[0].version, item[0].summary_id))
+        return out
+
     def material(self, material_id: str) -> dict[str, Any] | None:
         """材料台账（审计用）：身份 + 逐条来源。不含渲染文本。"""
         if not self.has_schema():

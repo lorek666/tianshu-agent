@@ -338,6 +338,8 @@ class Worker:
             # 一旦装配用了自定义正文目录，Worker 写进去的记忆在别的入口
             # 就检索不到——表现为"记忆随机丢失"。
             memory=self.stack.memory,
+            # 语义摘要记录（PRD §7.1）：与装配共用同一个存储，默认开关仍是关。
+            summaries=self.stack.summaries,
         )
 
     def _side_channel(self) -> _SideChannel:

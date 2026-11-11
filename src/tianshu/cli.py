@@ -372,6 +372,9 @@ def _engine(stack, args: argparse.Namespace) -> AgentLoop:
         limits=Limits(args.max_turns, args.max_total_tokens),
         # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。
         memory=stack.memory,
+        # 语义摘要记录（PRD §7.1）。摘要开关默认关；开着的时候它必须与主循环
+        # 共用同一个存储，否则"先落库再引用"和回放读不到同一份。
+        summaries=stack.summaries,
     )
 
 

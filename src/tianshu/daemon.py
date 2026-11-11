@@ -1253,6 +1253,8 @@ class _Daemon:
             # 同 Worker：驱动循环必须复用装配里的投影，否则守护进程会开
             # 第二个记忆投影（详见 worker.py 同处注释）。
             memory=self.driver_stack.memory,
+            # 语义摘要记录（PRD §7.1）：同一个存储；开关默认关。
+            summaries=self.driver_stack.summaries,
         )
         consecutive_failures = 0
         try:

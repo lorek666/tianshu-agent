@@ -215,6 +215,7 @@ def _run_standard(
             # 评测也必须复用装配里的投影：评测若另开一个默认投影，
             # 测到的记忆行为就不是产品装出来的那套。
             memory=stack.memory,
+            summaries=stack.summaries,
         )
         task = stack.tasks.create_task(case.task, [str(ws)])
         res = engine.start(task.task_id, out_name=case.out_name)
