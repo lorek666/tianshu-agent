@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from tianshu import event_schema
 from tianshu.errors import TianshuError
 from tianshu.events import (
     DECLARED_UNEMITTED_EVENT_TYPES,
@@ -130,13 +131,22 @@ def test_no_declared_unemitted_types_remain():
 
 @pytest.mark.parametrize("event_type", sorted(EVENT_TYPES))
 def test_every_registered_type_can_be_written_and_read_back(tmp_path, event_type):
+    """每个登记类型都必须能用**自己契约下的最小合法 payload**写进去、读回来。
+
+    旧口径是"payload 任意 dict 都能写"（这里统一写 `{"probe": ...}`）；PRD
+    §5.3.5 之后 payload 是逐类型封闭契约，通用探针 payload 本身非法。覆盖强度
+    没有降低：仍然遍历**全部** 41 个类型（不是抽样），并且额外断言写回的 payload
+    与写入的相同、版本旁表记录的是当前版本。
+    """
+    payload = event_schema.minimal_payload(event_type)
     log = _log(tmp_path)
     try:
-        seq = log.append("run_x", event_type, {"probe": event_type})
+        seq = log.append("run_x", event_type, payload)
         (event,) = log.read_run("run_x")
         assert event.type == event_type
         assert event.seq == seq
-        assert event.payload == {"probe": event_type}
+        assert event.payload == payload
+        assert event.payload_version == event_schema.current_version(event_type)
         assert list(log.all_event_types()) == [event_type]
     finally:
         log.close()
