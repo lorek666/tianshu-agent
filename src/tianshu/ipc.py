@@ -715,6 +715,36 @@ class ServerConnection:
         except OSError:
             pass
 
+    def abort(self) -> None:
+        """**中断**这条连接，然后关闭：用于叫醒阻塞在 send/recv 上的线程。
+
+        与 `close()` 的区别：`close()` 是正常关闭（对端读 EOF）；`abort()` 还会
+        把套接字 shutdown 掉，让**本端**正阻塞在 `send_bytes` 里的线程立刻收到
+        `EPIPE/EBADF` 而不是继续挂在一次写不出去的发送上——慢订阅者被判定放弃时
+        需要这个语义，否则发送线程会一直占着一个线程不放。
+
+        POSIX：`shutdown(SHUT_RDWR)` 作用在 `dup()` 出来的同一套接字上（socket
+        选项/状态按底层 socket 共享），`dup` 的 fd 单独关闭，不影响原连接对象。
+        Windows：命名管道没有 shutdown 语义，只能直接 `close()`；阻塞中的
+        `WriteFile` 是否被唤醒由系统决定，调用方不应依赖线程立刻退出。
+        """
+        if os.name != "nt":
+            fd: int | None = None
+            try:
+                fd = os.dup(self._conn.fileno())
+            except (AttributeError, OSError, ValueError):
+                fd = None
+            if fd is not None:
+                try:
+                    sock = socket.socket(fileno=fd)
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                finally:
+                    sock.close()  # 只关 dup 出来的 fd；原连接仍由 self._conn 持有
+        self.close()
+
 
 # --------------------------------------------------------------------------- 客户端
 

@@ -34,8 +34,24 @@ from .cases import (
     select_cases,
 )
 from .checks import Check, CheckResult, Observation, evaluate_checks
-from .report import build_report, compare_reports, fixture_digest
+from .report import (
+    DIMENSIONS,
+    PATH_COVERAGE_RULE,
+    VALIDITY_RULE,
+    build_report,
+    compare_reports,
+    fixture_digest,
+)
 from .runner import SuiteRun, run_suite
+from .tasks import (
+    REAL_USER_CASES,
+    REAL_USER_TASKS,
+    WEB_RESEARCH_UNAVAILABLE,
+    RealUserTask,
+    real_model_factory,
+    real_model_status,
+    run_real_user_tasks,
+)
 
 __all__ = [
     "CASES",
@@ -49,10 +65,20 @@ __all__ = [
     "CheckResult",
     "Observation",
     "SuiteRun",
+    "DIMENSIONS",
+    "PATH_COVERAGE_RULE",
+    "REAL_USER_CASES",
+    "REAL_USER_TASKS",
+    "VALIDITY_RULE",
+    "WEB_RESEARCH_UNAVAILABLE",
+    "RealUserTask",
     "build_report",
     "compare_reports",
     "evaluate_checks",
     "fixture_digest",
+    "real_model_factory",
+    "real_model_status",
+    "run_real_user_tasks",
     "run_suite",
     "select_cases",
 ]
