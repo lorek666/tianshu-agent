@@ -92,6 +92,9 @@ Memory {
 
 - **kind**：`preference`（偏好）/ `fact`（事实）/ `decision`（决策）/ `procedure`（可执行流程，对应 Skill）。
 - **origin**：`user_explicit`（用户明说「记住」）/ `user_confirmed`（用户确认过候选）/ `inferred`（模型推断）。**只有前两者自动激活**；`inferred` 永远是 `candidate`。
+  **迁移规则（v1.2 契约，代码未落地）**：`memory.confirm` 被人批准后必须把 `inferred`
+  **升级**为 `user_confirmed`（只升级、不降级）；出处是审批记录，不是模型参数。
+  `user_explicit` 只能由控制面 `memory.remember` 创建产生。
 - **status**：`candidate → active → superseded | forgotten`。
 - **layer**（v1.2 契约，代码未落地）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3`
   偏好页面；L2/L3 是可重建的合成层（§4）。`layer` 与 `kind` 正交：`kind` 说"是什么"，
@@ -214,7 +217,10 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | `memory.erase`（v1.2 契约） | 删正文副本与检索索引 | **需要**（等同删除 + Receipt） |
 
 > 带「v1.2 契约」的行是**已定义、未落地**的形状（PRD §5.2.2 / §5.4.2）：代码里还没有这些
-> 工具，`tool_manifest()` 也不会给出它们。别把这张表读成"现在就能调"。
+> 工具，`tool_manifest()` 也不会给出它们。别把这张表读成"现在就能调"。三条"仅控制面"的
+> 判据是 `Task.is_control`（`task.created` payload 的 `control: true`，执行侧再核一次）；
+> `memory.erase` 的回执**不是规则编号**——Receipt 在结果侧产生，回执对不上时结论是
+> `effect_state=unknown` 并阻断后续擦除。
 
 - `propose` 只生成 `candidate`，**不自动激活**；候选是惰性草稿、可重建，所以不挡。
 - `inferred` 来源的候选**永不自动激活**——摘要或网页内容不能变成长期用户事实（防污染与注入）。
@@ -250,7 +256,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
   CLI / 执行器产生 `supersedes`**，所以"用户能编辑"这条目前只是语义准备好，不是能用的动作。
   v1.2 契约把入口定成 `memory.edit`（一次审批产出"旧行 `superseded` + 新行 `active`"两行，
   PRD §5.2.2），落地工作流是 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) 的 N1；
-  在它落地前，这一节的状态不变。
+  在它落地前，这一节的状态不变。新行是**新 `memory_id` + `revision=1` + `supersedes=旧 id`**，
+  旧行 `revision` 不变、仍可按 id 查到；**编辑不允许改 `kind`**。
 - 每条记忆显示来源（事件 seq / 来源引用）。
 - **增量 delta 刷新，禁止全量重生成**：L2/L3 的蒸馏只能**应用新证据隐含的改动**，其余物理不动。全量重生成会让模型悄悄改写未变的部分（bullet 变数字、大小写漂移、同义改写），长文档会缓慢变成「说法差不多的另一份文档」。这是硬约束，不是优化。
 - **保留上一版 + 证据**：每次变化保留上一版内容与它当时站的证据，能回答「上个月它说了什么、依据是什么」。
@@ -264,6 +271,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 **v1.2 把擦除的形状定下来（契约，未落地）**：`memory.erase`（控制面 only，`delete` + 一次性审批 + Receipt）删除该记忆的**正文副本**（`memory_blobs/` 下按 `content_ref`）与**检索索引**，投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；重建时不得复活。
 
 **这条边界必须写在界面上**：事件日志是 append-only，里面的**读快照删不掉**（§3.1 的实测结论：`memory.search` / `memory.get` 的 `tool.result` 保留模型当时看到的正文）。所以"擦除"= 删副本与索引，**不等于**"历史日志里没有这段文字了"。彻底清日志需要日志压缩 / 重写，与红线 1 冲突，单开契约工单，本轮不做；UI 也不许写"已彻底删除"。
+
+**引用计数是必须的，不是优化**：正文是 `sha256` 内容寻址，不同记忆（不同作用域 / kind）可能共享同一个 blob。擦除只能删**没有任何其它投影行引用**的 `content_ref`；仍被引用的保留文件、只把本行标 `erased_at` + `content_state=unavailable`。否则"擦一条"会让另一条记忆的正文凭空消失——那不是擦除，是数据损坏。回执里要列出"删了哪些 / 哪些被谁引用而未删"。
 
 ## 11. 与现行契约 / 红线的关系
 
@@ -303,7 +312,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 | # | 增量 | 状态 | 位置 / 缺口 |
 |---|---|---|---|
-| 1 | PRD §4.1 `Memory` 实体字段（本文 §5） | ✅ 已落地 | 文档 `docs/PRD-v1.md` §4.1；代码 `memory.Memory`（`memory.py`），15 个字段与本文 §5 逐项一致 |
+| 1 | PRD §4.1 `Memory` 实体字段（本文 §5） | ✅ 15 个字段已落地；`layer` / `erased_at` 仅契约 | 文档 `docs/PRD-v1.md` §4.1；代码 `memory.Memory`（`memory.py`）与本文 §5 **原 15 个字段**逐项一致。v1.2 新增的 `layer` / `erased_at?` **尚未落库**（本文 §5 已标注"代码未落地"），落地时由 N3 / N4 把本行改成 17 个字段 |
 | 2 | PRD §7 F10 需求细化（本文 §4 / §6 / §8） | ✅ 文档已写 | `docs/PRD-v1.md` §7 P1 `F10` 行（指向本文） |
 | 3 | C2：`memory.*` 五个工具（版本化 + schema） | ✅ 已落地 | `tools.SPECS` 记忆段（5 个 `ToolSpec`，`version="1.0"`，均无 `path_arg`）；`tool_manifest()` 会投影给模型 |
 | 4 | C2：只读工具执行路径 | ✅ 已落地 | `loop.AgentLoop._exec_read` 在目录解析**之前**分流 → `_exec_memory_read` / `_memory_search_output` / `_memory_get_output`；结果记 `none_applied` |

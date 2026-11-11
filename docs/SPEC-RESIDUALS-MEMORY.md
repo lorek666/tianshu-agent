@@ -23,8 +23,11 @@
    `DECLARED_UNUSED_RULE_IDS` 只给防御兜底，不拿它给计划功能占位。契约 PR 只写文档：
    PRD §4.1 / §5.2.2 / §5.4.2 与 F10 §5 / §7 / §9 / §10。
 3. **禁止改**：`docs/KNOWLEDGE.md`、`README.md`、`docs/PRD-v1.md`、`docs/F10-memory-design.md`、
-   `schemas/**`、`src/tianshu/events.py`、`src/tianshu/errors.py`、`tests/conftest.py`。
-   这些由 lead 在契约 PR / 收尾轮统一落；工作流需要改一行就发消息给 lead。
+   `src/tianshu/events.py`、`src/tianshu/errors.py`、`tests/conftest.py`。这些由 lead 在契约
+   PR / 收尾轮统一落；工作流需要改一行就发消息给 lead。**例外**：`schemas/c4/rules.json`
+   允许**追加**本工作流新登记的规则编号（`rule_id.enum` / `x-rule-descriptions` /
+   `x-rule-groups` 三处同一编号），不许改既有条目——契约要求"编号与产生路径同一次改动"，
+   锁死它等于让工作流无法完成三处同改。
 4. **工具面绊线不许删**：`tests/test_veto_scope.py::test_model_tool_surface_has_no_run_start`
    是**字面判据**。新增/下线工具必须同步登记，删护栏的 PR 直接拒。
 5. **一提交一件事**：`feat:` / `fix:` / `test:` / `docs:` 分开；提交必须有正文
@@ -79,17 +82,20 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 5. 动作映射：`memory.edit` / `memory.promote` → `ACTION_OVERWRITE`（等同覆盖，需审批）；
    `memory.remember` → `ACTION_CREATE`，免审批但只允许控制面 Run；`memory.erase`
    （N4）→ `ACTION_DELETE` + Receipt。
-6. 新增规则编号（当前 `rules.RULE_IDS` 49 条）：**契约 PR 只写语义与用户可见说明**
-   （PRD §5.4.2：`c4.memory_scope_not_in_loadout` / `c4.memory_control_scope_binding` /
-   `c4.memory_edit_requires_prior_revision` / `c4.memory_erasure_requires_receipt`）；
-   **登记**（`rules.RULE_IDS` + `schemas/c4/rules.json` 的 `rule_id.enum` /
-   `x-rule-descriptions` / `x-rule-groups` + PRD §5.4.1 表格）与**产生路径**在同一次改动
-   三处同改。理由：`DECLARED_UNUSED_RULE_IDS` 是防御兜底，不是计划功能占位；`tests/test_rule_ids.py`
-   的判据是"登记了必须有产生路径"。
-7. `Dispatcher.open_control_run` 增可选 `memory_scopes`，并**只允许控制面调用方**
-   （CLI / UI）设置；登记进 `task.created` payload（payload 形状未冻结，**加键不加
-   事件类型**）。用途：让 CLI 能给"任务已结束"的 task 作用域记忆做确认/遗忘（#27），
-   且**不**因此获得该 task 的 workspace 绑定。
+6. **只新增一条规则编号** `c4.memory_control_scope_binding`（控制面专属能力被非控制面使用；
+   契约 PR 已写进 PRD §5.4.2）。另外两种拒绝**复用现有编号**，不造同义新号：作用域越界 →
+   `c4.memory_scope_denied`；编辑 revision 过期 → `dispatch.memory_stale_revision`。擦除回执
+   对不上**不设编号**（Receipt 在结果侧产生，结论是 `effect_state=unknown`，不是"被拒"）。
+   登记（`rules.RULE_IDS` + `schemas/c4/rules.json` 三处 + PRD §5.4.1 表格）与**产生路径**在
+   同一次改动三处同改。理由：`DECLARED_UNUSED_RULE_IDS` 是防御兜底，不是计划功能占位；
+   `tests/test_rule_ids.py` 的判据是"登记了必须有产生路径"。
+7. `Dispatcher.open_control_run` 增可选 `memory_scopes`，并在 `task.created` payload 写
+   `control: true`；`Task` 增加 `is_control`（从事件投影读回）。**执行侧判据**：
+   `memory.remember` / `memory.promote` / `memory.erase` 与 `memory_scopes` 只在
+   `is_control` 的 Run 可用；越权 → `c4.memory_control_scope_binding`。用途：让 CLI 能给
+   旧 task 作用域的记忆做确认 / 遗忘（#27），且**不**因此获得该 task 的 workspace 绑定。
+   payload 形状未冻结，**加键不加事件类型**；`control` 必须落进 `task.created` payload，
+   不许只放在进程内对象里——否则崩溃恢复后就分不清谁是控制面。
 
 **记忆实体（PRD §4.1）**
 
@@ -147,15 +153,19 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
    理由：task 作用域天然按任务隔离，写它不产生跨任务泄漏；workspace 是共享边界，
    共享必须是显式动作（F10 §3.3）。
 3. **编辑**：`memory.edit` 一次审批完成"旧版退役 + 新版激活"：
-   - 投影新增 `_apply_edit` 分支（仍是 `tool.result`，**不新增事件族**）：新行
-     `status=active`、`revision=1`、`supersedes=<旧 id>`、`origin` 按 2.2.1 出处判定；
-     旧行走 `_supersede`（保留行、移出召回）。
-   - 执行器必须绑定"人看到的那一版"：请求 preconditions 带 `revision`，执行侧从权威
-     投影再读一次核对（沿用 `check_request_preconditions`）。
+   - 投影新增 `_apply_edit` 分支（仍是 `tool.result`，**不新增事件族**）：新行是**新
+     `memory_id`**（不是同 id 推进 `revision`）、`revision=1`、`status=active`、
+     `supersedes=<旧 id>`；旧行走 `_supersede`（`revision` 不变、保留行、移出召回，仍可按
+     id 查到）。**不允许改 `kind`**——改 kind 等于换一条记忆。
+   - 执行器必须绑定"人看到的那一版"：请求 preconditions 带 `before_revision`，执行侧从
+     权威投影再读一次核对（沿用 `check_request_preconditions`，失败 →
+     `dispatch.memory_stale_revision`）。
    - 新正文必须过写入闸门 + 去重（与 propose 同一条路径，不复制实现）。
-4. **promote**：`memory.promote(memory_id, revision, scope, scope_id)`；输出 = 目标作用域
-   新行（`candidate`）+ 原行 `superseded`；`source_refs` 必须包含原 `memory_id` 与原
-   `created_at`，否则新记忆失去来源。目标作用域必须落在控制 Run 声明的
+4. **promote**：`memory.promote(memory_id, revision, scope, scope_id)`；**移动语义**：原行
+   立即 `superseded`（原作用域不再召回），目标作用域新行 `candidate`（人 `confirm` 后才
+   召回）。`source_refs` 必须包含原 `memory_id`（执行侧机械校验；`created_at` 是整数，
+   不是引用，不要往里塞）。Receipt 针对**原行**（`root`=原 scope URI、`resource`=原
+   `memory_id`、写前/写后用稳定状态串）。目标作用域必须落在控制 Run 声明的
    `memory_scopes` 或绑定目录内。
 5. **CLI**：`tianshu memory remember <content> --kind ...`（`memory.remember`）、
    `tianshu memory edit <id> --revision N`（走审批 + `memory.edit`）、
@@ -287,10 +297,19 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ### 5.2 设计
 
 1. 新增 `memory.erase`（控制面 only，`ACTION_DELETE` + Receipt）：
-   - 删除该记忆的正文 blob（`blob_dir` 下按 `content_ref` 定位；跨进程先取租约/事务）；
+   - **引用计数必须先做**：`content_ref` 是 `sha256` 内容寻址，不同记忆（不同作用域 /
+     kind）可能共享同一个 blob。删除前统计**所有投影行**（含 `forgotten` / `superseded`）
+     对该 `content_ref` 的引用；只有计数为 0 才物理删文件，否则保留文件、只把本行标
+     `erased_at` + `content_state=unavailable`。不做计数 = 擦一条让另一条正文凭空消失，
+     那是数据损坏，不是擦除。
+   - 删除该记忆的正文 blob（`blob_dir` 下按 `content_ref` 定位）。顺序写死：**在
+     `EventLog` 事务里更新投影行 → 删文件 → 提交**；删文件失败则整个擦除记 `failed`
+     （不写 `erased_at`，不留"行列说已擦、文件还在"的半态）。记忆没有目录租约，
+     不要拿租约说事；并发保护靠 `memory.erase` 自己的 revision 前置与 SQLite 写事务。
    - 投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；
    - **重建后不得复活**：`apply_event` 见到 `erased_at` 的记忆 → 跳过 blob 读取、
      标 `content_state=unavailable`；blob 不存在不视为错误。
+   - Receipt 列出"删了哪些 `content_ref` / 字节数 / 哪些被谁引用而未删"，供独立核对。
 2. **契约必须写清的一句话**："物理擦除 = 删除正文副本与检索索引；事件日志中的读快照
    保留。"彻底清日志需要日志压缩/重写，与红线 1 冲突，单开契约工单，本轮**不做**，
    不许在 UI 上写"已彻底删除"。
@@ -304,8 +323,9 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   `replay` 老 Run → 报告"历史证据不可用"而不是重取。
 - 负控：只改 status 不删 blob → rebuild 后能读 → 用例必须红。
 - 跨进程：另一进程正 `get` 时 erase → 要么成功要么明确失败，**不允许**读到半截正文。
-- 不做：备份/快照里的副本、共享 blob 引用追踪（当前正文目录不与事件 payload 共享，
-  理由见 F10 §13 数据落点）。
+- 不做：备份/快照里的副本、跨库引用追踪。**库内引用计数必须做**（见 §5.2 第 1 条）——
+  "不做共享 blob 引用追踪"曾经写在这里，是错的：同一 `content_ref` 真的可能被多条投影行
+  共享（`put_content` 按 sha256 写单文件），不计数就会擦坏别的记忆。
 
 ---
 

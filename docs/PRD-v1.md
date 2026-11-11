@@ -417,26 +417,32 @@ memory.forget   { memory_id: string, revision: integer,
 
 #### 5.2.2 记忆工具契约增量（v1.2 提案，待 N1 / N4 落地）
 
-本节是**契约定义**，不是实现状态：下面这些工具在代码落地前既不在 `SPECS` 里，也不会出现在
-`tool_manifest()` 里。落地时按红线 8 处理——schema 变化即新工具，旧审批与旧 grant 自动失效，
-不自动升级。逐条实施状态见 [F10-memory-design.md](F10-memory-design.md) §13 与
+本节是**契约定义**，不是实现状态：新增工具在代码落地前不在 `SPECS` 里，也不会出现在
+`tool_manifest()` 里；`memory.propose` 已经在 `SPECS`（`1.0`），这里的 `2.0` 是它的下一个
+版本——落地前代码仍是 `1.0`。落地时按红线 8 处理：schema 变化即新工具，旧审批与旧 grant
+自动失效，不自动升级。逐条实施状态见 [F10-memory-design.md](F10-memory-design.md) §13 与
 [SPEC-RESIDUALS-MEMORY.md](SPEC-RESIDUALS-MEMORY.md) §2 / §5。
+
+**"仅控制面"是可判定的**：`Dispatcher.open_control_run` 创建 task 时在 `task.created`
+payload 写 `control: true`，`Task.is_control` 从事件投影读回；只有 `is_control` 的 Run 能调
+`memory.remember` / `memory.promote` / `memory.erase`。执行侧再核一次（越权 →
+`c4.memory_control_scope_binding`）。这不是"信任调用方"，是把可信来源落成事件事实。
 
 | tool_id | version | C4 动作 | 审批 | 谁能调 | 语义要点 |
 |---|---|---|---|---|---|
-| `memory.propose` | `2.0`（由 `1.0` 升级） | `create` | 不需要（仍是惰性候选） | 模型 + 控制面 | schema 增 `scope`（`user` / `task`）与 `scope_id`：`task` 的 `scope_id` 必须等于本 Run 的 `task_id`；**`workspace` 不从模型进入**——共享边界由人签发（`memory.promote`）。 |
-| `memory.edit` | `1.0` | `overwrite` | 需要（覆盖类） | 模型 + 控制面 | args `memory_id` / `revision` / `content` / `kind?`。一次审批产出两行：旧行 `superseded`（保留可查）+ 新行 `active`。请求必须带人当时看到的那一版 `revision`。 |
-| `memory.remember` | `1.0` | `create` | 不需要（人本人就是签发者） | **仅控制面**（`exposed=False`） | 创建即 `origin=user_explicit`；模型清单里没有这个工具。 |
-| `memory.promote` | `1.0` | `overwrite` | 需要（共享是显式动作） | **仅控制面**（`exposed=False`） | 把 `user` 作用域记忆提升到 `workspace` / `task`；输出 = 目标作用域新行（`candidate`）+ 原行 `superseded`；`source_refs` 必含原 `memory_id`。 |
-| `memory.consolidate` | `1.0` | `create` | 不需要（只写可重建投影） | 模型 + 控制面 | 触发 L2/L3 合成（确定性合成，见 F10 §4）。结果 `candidate`，人 `confirm` 后才进召回。 |
-| `memory.erase` | `1.0` | `delete` | 需要（等同删除，另加 Receipt） | **仅控制面**（`exposed=False`） | 删除正文副本与检索索引；投影行置 `forgotten` + `erased_at`。**事件日志里的读快照保留**——边界见 F10 §10。 |
+| `memory.propose` | `2.0`（由 `1.0` 升级） | `create` | 不需要（仍是惰性候选） | 模型 + 控制面 | schema 增 `scope`（`user` / `task`）与 `scope_id`。模型：`task` 的 `scope_id` 必须是**本 Run** 的 `task_id`；`workspace` 不从模型进入（共享边界由人签发）。控制面：可写 `memory_scopes` 声明的旧 task 作用域。 |
+| `memory.edit` | `1.0` | `overwrite` | 需要（覆盖类） | 模型 + 控制面 | args `memory_id` / `revision` / `content`。**两行形状写死**：新行是**新 `memory_id`**、`revision=1`、`status=active`、`supersedes=旧 id`；旧行 `status=superseded`、`revision` 不变、仍可按 id 查到（"旧版可查"就是这条）。审批绑定 `preconditions.before_revision`，执行侧从权威投影再核一次（不一致 → `dispatch.memory_stale_revision`）。**不允许改 `kind`**：改 kind 等于换一条记忆。 |
+| `memory.remember` | `1.0` | `create` | 不需要（人本人就是签发者） | **仅控制面**（`exposed=False`） | 创建即 `status=active`、`origin=user_explicit`；模型清单里没有这个工具。 |
+| `memory.promote` | `1.0` | `overwrite` | 需要（共享是显式动作） | **仅控制面**（`exposed=False`） | **移动语义**：原行立即 `superseded`（原作用域不再召回，避免双份真相），目标作用域新行 `candidate`（人 `confirm` 后才召回）。一次审批；Receipt 针对**原行**（`root`=原 scope URI、`resource`=原 `memory_id`、写前/写后用稳定状态串）。新行 `source_refs` **必须包含原 `memory_id`**（执行侧机械校验）。 |
+| `memory.consolidate` | `1.0` | `create` | 不需要（只写可重建投影） | 模型 + 控制面 | 触发 L2/L3 合成（确定性合成，见 F10 §4）。作用域限制与 `propose` 相同：模型只能 `user` 与本 Run 的 `task`；`workspace` 的合成结果只能由人 `memory.promote`。结果 `candidate`；人 `confirm` 后进召回，**`confirm` 不改写 `consolidated_at`**（freshness 判据是"合成那一刻看到的 L1"，见 F10 §8）。 |
+| `memory.erase` | `1.0` | `delete` | 需要（等同删除，另加 Receipt） | **仅控制面**（`exposed=False`） | 删除正文副本与检索索引；投影行置 `forgotten` + `erased_at`。**引用计数**：`content_ref` 是 `sha256` 内容寻址，不同记忆可能共享同一 blob——只有**没有任何其它投影行引用**该 `content_ref` 时才物理删文件，否则保留文件、只把这个行标 `content_state=unavailable`。擦除必须产出可独立核对的 Receipt（删了哪些 `content_ref`、多少字节；被别的行引用而未删的也列出）。**事件日志里的读快照保留**——边界见 F10 §10。 |
 
 ```text
 memory.propose     { kind: string, content: string, scope?: string, scope_id?: string,
                      source_refs?: string[], evidence?: object[],
                      expires_at?: integer }                        required: kind, content
-memory.edit        { memory_id: string, revision: integer, content: string,
-                     kind?: string }                               required: memory_id, revision, content
+memory.edit        { memory_id: string, revision: integer, content: string }
+                                                        required: memory_id, revision, content
 memory.remember    { kind: string, content: string, source_refs?: string[],
                      expires_at?: integer }                        required: kind, content
 memory.promote     { memory_id: string, revision: integer,
@@ -447,16 +453,17 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 三条共用规则：
 
-- **不新增事件族**：新工具仍走 `tool.intent` / `tool.result` + 审批事件；`memory.edit` 只多
-  一种 `tool.result` 结果形状（`apply_event` 据此走 `_apply_edit` 分支），事件类型不变。
-  控制 Run 的记忆作用域声明记在 `task.created` payload 的可选键 `memory_scopes` 里——
-  payload 形状尚未冻结（§5.3），**加键不加类型**。
+- **不新增事件族**：新工具仍走 `tool.intent` / `tool.result` + 审批事件；`memory.edit` /
+  `memory.promote` / `memory.remember` 各多一种 `tool.result` 结果形状（`apply_event` 据此走
+  对应分支），事件类型不变。控制 Run 的 `control` 与 `memory_scopes` 记在 `task.created`
+  payload——payload 形状尚未冻结（§5.3），**加键不加类型**。
 - **`exposed=False` 的边界是两道，不是一道**：`tool_manifest()` 只投影 `exposed=True`；
-  模型点名清单外的工具走 `tool.not_dispatched`，不进派发。两个工具落地时各钉一条测试
+  模型点名清单外的工具走 `tool.not_dispatched`，不进派发。三个控制面工具各钉一条测试
   （先例 `restore_file`）。
-- **`origin` 不由模型参数决定**：`user_confirmed` 只能来自"人批准了 `memory.confirm`"这件事
-  （执行侧读审批出处），`user_explicit` 只能由 `memory.remember` 产生。schema 里没有 `origin`
-  字段，`additionalProperties: false` 保持。
+- **`origin` 不由模型参数决定**：`user_explicit` 只能由 `memory.remember` 产生；
+  `user_confirmed` 只能由"人批准了 `memory.confirm`"这件事产生——执行侧读审批记录，并把
+  `inferred` **升级**为 `user_confirmed`（只升级、不降级）。schema 里没有 `origin` 字段，
+  `additionalProperties: false` 保持。
 
 ### 5.3 C3 Event
 
@@ -714,21 +721,30 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 
 #### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
 
-四条编号已定义语义、**尚未登记**进 `rules.RULE_IDS`：登记动作与产生路径在同一次改动
-（`src/tianshu/rules.py` / `schemas/c4/rules.json` / 本表三处同改）。不提前登记的理由见本节末尾。
+**只新增一条编号**；另外两种拒绝复用已登记的编号，不造同义新号——`rules.py` 明写"不许
+改名"，同义编号会让"为什么被拒"出现两个答案。`c4.memory_control_scope_binding` **尚未登记**，
+登记动作与产生路径在同一次改动（`src/tianshu/rules.py` / `schemas/c4/rules.json` / 本表三处同改）。
 
 | rule_id | 类别 | 语义 | 用户该怎么做 |
 |---|---|---|---|
-| `c4.memory_scope_not_in_loadout` | 拒绝 | 请求的作用域不在本 Run 的装备内：`user` 恒可，`task` 只能是本任务，`workspace` 只能由人经 `memory.promote` 签入。 | 改用默认 `user` 作用域，或请人把这条记忆提升到目标作用域（`tianshu memory promote`）。 |
-| `c4.memory_control_scope_binding` | 拒绝 | 只有控制面（CLI / UI）能声明 `memory_scopes`；模型或普通任务试图扩大作用域绑定。 | 这不是可操作项：属越权尝试，报 bug；签发只能走 CLI / UI。 |
-| `c4.memory_edit_requires_prior_revision` | 拒绝 | 编辑必须声明人当时看到的那一版 `revision`，且与权威投影一致。 | 重新读取记忆，按最新 `revision` 重新发起编辑审批。 |
-| `c4.memory_erasure_requires_receipt` | 拒绝 | 擦除必须带可独立核对的回执（删了哪些 `content_ref`、多少字节）。 | 没有回执就不算擦除成功：检查数据根与事件日志，报 bug。 |
+| `c4.memory_control_scope_binding` | 拒绝 | 控制面专属能力被非控制面使用：只有 `Task.is_control` 的 Run 能调 `memory.remember` / `memory.promote` / `memory.erase`，或声明 `memory_scopes`；模型 / 普通任务试图使用。 | 不是可操作项：属越权尝试，报 bug；签发只能走 CLI / UI。 |
+
+**复用现有编号（不新增）**：
+
+- **作用域越界**（模型自选未装备作用域）→ 复用 `c4.memory_scope_denied`：它的现有语义就是
+  "不在本任务授权范围"，再加一条同义编号只会让日志出现两种说法。
+- **编辑声明了过期 `revision`** → 复用 `dispatch.memory_stale_revision`：`confirm` / `forget`
+  已经用它，编辑与它们同一条件（声明版本 ≠ 权威投影）。
+- **擦除回执缺失 / 不可核对** → **不设规则编号**：`rule_id` 只能表达执行前判定
+  （`_reject` / policy），Receipt 是**执行后**在结果侧产生的；回执对不上时结论是
+  `effect_state=unknown` 并阻断后续擦除，不是"被拒"。
 
 **为什么不在本轮登记**：`DECLARED_UNUSED_RULE_IDS` 的定义是"防御性兜底、当前没有产生
-路径"（`rules.py` 顶部注释），不是"计划功能的占位符"；`tests/test_rule_ids.py::test_every_id_has_a_producer_or_is_declared_unused`
-的判据就是"登记了必须有产生路径"。拿它占位等于让注册表替不存在的路径作证。这四条都是
-**拒绝类**，不进 `x-decision-rule-ids`；`c4.memory_scope` 的现有判定口径不变。编号**不许改名**
-（历史日志里的编号是唯一追溯线索）。
+路径"（`rules.py` 顶部注释），不是"计划功能的占位符"；
+`tests/test_rule_ids.py::test_every_id_has_a_producer_or_is_declared_unused` 的判据就是
+"登记了必须有产生路径"。拿它占位等于让注册表替不存在的路径作证。这一条属拒绝类，不进
+`x-decision-rule-ids`；`c4.memory_scope` 的现有判定结果口径不变。编号**不许改名**（历史日志
+里的编号是唯一追溯线索）。
 
 ### 5.5 两个"停止原因"必须分开
 
