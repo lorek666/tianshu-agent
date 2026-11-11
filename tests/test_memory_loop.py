@@ -751,3 +751,47 @@ def test_cli_can_forget_task_scope_memory_with_task_id(env: Env):
     memory = env.stack.memory.get(memory_id, allowed=(scope,))
     assert memory is not None
     assert memory.status == "forgotten"
+
+
+def test_cli_edit_keeps_old_row_and_activates_new(env: Env):
+    """`tianshu memory edit`：人签字后旧版退役、新版立即生效。"""
+    db = str(env.log.db_path)
+    memory_id = env.seed("报告用中文", memory_id="mem_cli_edit", status="active")
+    code, out = _cli(
+        "memory", "edit", memory_id,
+        "--content", "报告用英文", "--db", db,
+    )
+    assert code == 0, out
+    assert "memory.edit -> succeeded" in out
+    old = env.stack.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert old is not None and old.status == "superseded"
+    actives = [
+        m
+        for m in env.stack.memory.list_memories(allowed=(MemoryScope.user(),), status="active")
+        if m.supersedes == memory_id
+    ]
+    assert len(actives) == 1
+    assert actives[0].origin == "user_confirmed"
+
+
+def test_cli_promote_moves_memory_into_task_scope(env: Env):
+    """`tianshu memory promote`：原行退役、目标作用域新行是候选。"""
+    db = str(env.log.db_path)
+    memory_id = env.seed("这条以后给项目用", memory_id="mem_cli_promote", status="active")
+    code, out = _cli(
+        "memory", "promote", memory_id,
+        "--to-scope", "task", "--task-id", "task_cli_target",
+        "--db", db,
+    )
+    assert code == 0, out
+    assert "promote -> succeeded" in out
+    target = MemoryScope.task("task_cli_target")
+    old = env.stack.memory.get(memory_id, allowed=(MemoryScope.user(),))
+    assert old is not None and old.status == "superseded"
+    promoted = [
+        m
+        for m in env.stack.memory.list_memories(allowed=(target,), status="candidate")
+        if m.supersedes == memory_id
+    ]
+    assert len(promoted) == 1
+    assert memory_id in promoted[0].source_refs

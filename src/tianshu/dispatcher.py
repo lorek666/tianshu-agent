@@ -1265,6 +1265,9 @@ class Dispatcher:
             list(getattr(task, "memory_scopes", ()) or ()) if is_control else []
         )
         pre["memory_is_control"] = is_control
+        # 策略要区分"哪个记忆工具"：`user_explicit` 的免审批只属于 confirm，
+        # 不属于 edit / promote（它们改的是长期召回的正文或作用域）。
+        pre["memory_tool"] = request.tool_id
         if request.action == ACTION_CREATE:
             kind = args.get("kind")
             pre["memory_kind"] = kind if isinstance(kind, str) else ""
@@ -1318,13 +1321,34 @@ class Dispatcher:
         """记忆的 status/revision 从权威投影读；不成立就抛确定的拒绝。"""
         task = self._tasks.get_task(request.task_id)
         is_control = bool(getattr(task, "is_control", False)) if task else False
-        if request.tool_id == "memory.remember" and not is_control:
+        if not is_control and request.tool_id in (
+            "memory.remember",
+            "memory.promote",
+        ):
             # 契约 v1.2：控制面专属工具不能在普通任务里执行。拒绝点在派发层，
             # 执行侧还有一次独立核验（memory_exec._verify）。
             raise DispatchDenied(
-                "控制面专属工具不能在普通任务里执行",
+                f"控制面专属工具不能在普通任务里执行：{request.tool_id}",
                 "c4.memory_control_scope_binding",
             )
+        if is_control and request.tool_id == "memory.promote":
+            # 提升目标作用域必须由控制 Run 显式声明（user 恒可）。
+            try:
+                new_scope = MemoryScope(args.get("scope"), args.get("scope_id"))
+            except TianshuError as exc:
+                raise DispatchDenied(
+                    f"提升目标作用域不合法：{exc}", "c4.memory_scope_denied"
+                ) from exc
+            declared = list(getattr(task, "memory_scopes", ()) or ())
+            if new_scope.to_uri() == target.uri:
+                raise DispatchDenied(
+                    "提升目标作用域与原作用域相同", "c4.memory_scope_denied"
+                )
+            if new_scope.scope != "user" and new_scope.to_uri() not in declared:
+                raise DispatchDenied(
+                    f"提升目标作用域不在控制 Run 的声明内：{new_scope.to_uri()}",
+                    "c4.memory_scope_denied",
+                )
         if request.tool_id == "memory.propose" and target.scope.scope == "workspace":
             # workspace 是共享边界：模型可见的 propose **无条件**拒，不因
             # Task.is_control 放行（控制面标记会被同一 Task 上后开的模型 Run
@@ -1615,6 +1639,10 @@ class Dispatcher:
         if (
             isinstance(target, _MemoryTarget)
             and request.action == ACTION_OVERWRITE
+            # 免审批只属于 `memory.confirm`：用户本人刚说的话可以直接确认。
+            # `memory.edit` / `memory.promote` 也在 overwrite 里，但它们改的是
+            # 长期召回的正文或作用域，**永远**要一张人批准的审批。
+            and request.tool_id == "memory.confirm"
         ):
             memory_id = args.get("memory_id")
             if isinstance(memory_id, str) and memory_id:
@@ -2113,7 +2141,13 @@ class Dispatcher:
         batch: list[dict[str, Any]] = [result_event]
 
         if is_memory:
-            if request.tool_id in ("memory.confirm", "memory.forget", "memory.remember"):
+            if request.tool_id in (
+                "memory.confirm",
+                "memory.forget",
+                "memory.remember",
+                "memory.edit",
+                "memory.promote",
+            ):
                 receipt = build_memory_receipt(
                     run_id=request.run_id,
                     call_id=request.call_id,
@@ -2121,7 +2155,12 @@ class Dispatcher:
                     args_hash=request.args_hash,
                     result=result,
                     root=target.uri,
-                    resource=str(result.output.get("memory_id") or ""),
+                    # promote 的凭据针对**原行**（移动的是它）；其余工具就是本行。
+                    resource=str(
+                        result.output.get("receipt_memory_id")
+                        or result.output.get("memory_id")
+                        or ""
+                    ),
                     action=request.action,
                     intent_seq=intent_seq,
                     backend="memory",
@@ -2263,9 +2302,13 @@ def build_request(
                 "memory_exists": False,
             }
         elif spec.action == ACTION_OVERWRITE:
+            # 覆盖类记忆工具不止 confirm 一个（edit / promote 也在这里），目标
+            # 可能是 candidate 也可能是 active——**不能**写死 "candidate"。
+            # 状态由调用方声明（`status` 可选）；真正的状态约束由投影的迁移
+            # 校验（`_apply_confirm` / `_apply_edit`）兜底。
             memory_pre = {
                 "memory_id": args.get("memory_id"),
-                "before_status": "candidate",
+                "before_status": args.get("status"),
                 "before_revision": args.get("revision"),
             }
         elif spec.action == ACTION_DELETE:

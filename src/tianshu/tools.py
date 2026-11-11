@@ -836,6 +836,50 @@ SPECS: dict[str, ToolSpec] = {
         action=ACTION_CREATE,
         exposed=False,
     ),
+    "memory.edit": ToolSpec(
+        tool_id="memory.edit",
+        version="1.0",
+        description=(
+            "改一条记忆的正文：旧版保留可查、新版立即生效。需要人工审批；"
+            "必须声明你看到的那一版 revision；不允许改 kind（改 kind 等于换一条记忆）。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "revision": {"type": "integer"},
+                "content": {"type": "string"},
+            },
+            "required": ["memory_id", "revision", "content"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_OVERWRITE,
+    ),
+    "memory.promote": ToolSpec(
+        tool_id="memory.promote",
+        version="1.0",
+        description=(
+            "把一条记忆移动（共享）到 workspace / task 作用域（控制面专用）。"
+            "原行保留可查但立即停止召回；目标作用域新行是候选，需再确认。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "revision": {"type": "integer"},
+                "scope": {"type": "string"},
+                "scope_id": {"type": "string"},
+            },
+            "required": ["memory_id", "revision", "scope", "scope_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_OVERWRITE,
+        exposed=False,
+    ),
     "memory.confirm": ToolSpec(
         tool_id="memory.confirm",
         version="1.0",

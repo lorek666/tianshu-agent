@@ -57,8 +57,18 @@ if TYPE_CHECKING:  # pragma: no cover - 只要类型，不把 memory.py 拖成�
     from .memory import MemoryProjection
 
 MEMORY_TOOL_IDS = frozenset(
-    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
+    {
+        "memory.propose",
+        "memory.remember",
+        "memory.edit",
+        "memory.promote",
+        "memory.confirm",
+        "memory.forget",
+    }
 )
+
+#: 只有控制 Run（`Task.is_control`）能调用的记忆写工具。
+CONTROL_ONLY_MEMORY_TOOLS = frozenset({"memory.remember", "memory.promote"})
 MEMORY_READ_TOOL_IDS = frozenset({"memory.search", "memory.get"})
 MEMORY_ALL_TOOL_IDS = MEMORY_TOOL_IDS | MEMORY_READ_TOOL_IDS
 
@@ -329,12 +339,31 @@ class MemoryExecutor:
                 f"{target_scope.to_uri()}",
                 "c4.memory_scope_denied",
             )
-        if not is_control:
-            if admitted.tool_id == "memory.remember":
-                raise MemoryDispatchRefused(
-                    "控制面专属工具不能在普通任务里执行",
-                    "c4.memory_control_scope_binding",
+        if not is_control and admitted.tool_id in CONTROL_ONLY_MEMORY_TOOLS:
+            raise MemoryDispatchRefused(
+                f"控制面专属工具不能在普通任务里执行：{admitted.tool_id}",
+                "c4.memory_control_scope_binding",
+            )
+        if is_control and admitted.tool_id == "memory.promote":
+            # 提升的目标作用域必须由控制 Run 显式声明（user 除外——它恒可）。
+            try:
+                new_scope = MemoryScope(
+                    admitted.args.get("scope"), admitted.args.get("scope_id")
                 )
+            except TianshuError as exc:
+                raise MemoryDispatchRefused(
+                    f"提升目标作用域不合法：{exc}", "c4.memory_scope_denied"
+                ) from exc
+            if new_scope == target_scope:
+                raise MemoryDispatchRefused(
+                    "提升目标作用域与原作用域相同", "c4.memory_scope_denied"
+                )
+            if new_scope.scope != "user" and new_scope.to_uri() not in set(declared):
+                raise MemoryDispatchRefused(
+                    f"提升目标作用域不在控制 Run 的声明内：{new_scope.to_uri()}",
+                    "c4.memory_scope_denied",
+                )
+        if not is_control:
             # 注：authority / policy 通常已经先拒了"写别人的 task"，这里保留
             # 同名判定作纵深防御——执行侧不因为"上游说不行"就少一道核验。
             if (
@@ -450,6 +479,10 @@ class MemoryExecutor:
             return self._propose(admitted, scope)
         if admitted.tool_id == "memory.remember":
             return self._remember(admitted, scope)
+        if admitted.tool_id == "memory.edit":
+            return self._edit(admitted, scope)
+        if admitted.tool_id == "memory.promote":
+            return self._promote(admitted, scope)
         if admitted.tool_id == "memory.confirm":
             return self._transition(admitted, scope, to_status="active")
         if admitted.tool_id == "memory.forget":
@@ -539,6 +572,206 @@ class MemoryExecutor:
                 "content_bytes": len(redacted.encode("utf-8")),
                 "content_sha256": _sha(redacted.encode("utf-8")),
                 "redacted": redacted != content,
+            },
+        )
+
+    def _edit(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """改正文：旧版退役 + 新版立即生效，**一次审批**。
+
+        新版是新 `memory_id`、`revision=1`、`status=active`、`supersedes=旧 id`；
+        旧行 `revision` 不变、仍可按 id 查到（"旧版可查"）。不允许改 kind。
+        """
+        args = admitted.args
+        memory_id = args["memory_id"]
+        content = args["content"]
+        observed = self._observe(memory_id, scope)
+        if observed is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        before_status, before_revision = observed
+        ok, why = check_request_preconditions(
+            admitted.request.action,
+            scope.to_uri(),
+            admitted.request.preconditions or {},
+            memory_observed=observed,
+        )
+        if not ok:
+            raise MemoryDispatchRefused(why, "dispatch.memory_stale_revision")
+        if before_status not in ("candidate", "active"):
+            raise MemoryDispatchRefused(
+                f"记忆当前状态不允许编辑：{before_status!r}",
+                "dispatch.memory_stale_revision",
+            )
+        old = self._projection.get(memory_id, allowed=(scope,))
+        if old is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+
+        try:
+            redacted, blocked = self._projection.redact_or_block(content)
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆写入闸门检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if blocked:
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": "新版正文触发 PII/密钥写入闸门，编辑未生效",
+                    "path": scope.to_uri(),
+                },
+            )
+        try:
+            existing = self._projection.find_duplicate(
+                scope=scope, kind=old.kind, content=redacted
+            )
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆去重检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if existing is not None:
+            if existing.memory_id == memory_id:
+                raise MemoryDispatchRefused(
+                    "新版与旧版正文相同，不需要编辑", "dispatch.refused"
+                )
+            raise MemoryDispatchRefused(
+                "同作用域已有相同正文的记忆", "c4.create_over_existing"
+            )
+
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        content_ref = self._projection.put_content(redacted)
+        if not isinstance(content_ref, str) or not content_ref:
+            raise TianshuError("记忆投影没有返回 content_ref")
+        new_id = f"mem_{uuid.uuid4().hex[:12]}"
+        now = self._clock()
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "memory_id": new_id,
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": old.kind,
+                "content_ref": content_ref,
+                "source_refs": list(old.source_refs),
+                "evidence": [],
+                "proof_count": 0,
+                "origin": "user_confirmed",
+                "status": "active",
+                "created_at": now,
+                "expires_at": old.expires_at,
+                "supersedes": memory_id,
+                "deduped": False,
+                "before_state": memory_state(memory_id, before_status, before_revision),
+                "after_state": memory_state(new_id, "active", 1),
+                "content_bytes": len(redacted.encode("utf-8")),
+                "content_sha256": _sha(redacted.encode("utf-8")),
+                "redacted": redacted != content,
+            },
+        )
+
+    def _promote(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """把记忆移动（共享）到新作用域：原行退役、目标作用域新建候选。
+
+        `scope` 是**原记忆**的作用域（资源）；目标作用域在参数里。原行立即
+        `superseded`（原作用域不再召回），新行 `candidate` 需要人再确认。
+        """
+        args = admitted.args
+        memory_id = args["memory_id"]
+        observed = self._observe(memory_id, scope)
+        if observed is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        before_status, before_revision = observed
+        ok, why = check_request_preconditions(
+            admitted.request.action,
+            scope.to_uri(),
+            admitted.request.preconditions or {},
+            memory_observed=observed,
+        )
+        if not ok:
+            raise MemoryDispatchRefused(why, "dispatch.memory_stale_revision")
+        if before_status not in ("candidate", "active"):
+            raise MemoryDispatchRefused(
+                f"记忆当前状态不允许提升：{before_status!r}",
+                "dispatch.memory_stale_revision",
+            )
+        old = self._projection.get(memory_id, allowed=(scope,))
+        if old is None:
+            raise MemoryDispatchRefused(
+                f"记忆不存在或不属于当前作用域：{memory_id}",
+                "dispatch.memory_not_found",
+            )
+        try:
+            new_scope = MemoryScope(args["scope"], args.get("scope_id"))
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"提升目标作用域不合法：{exc}", "c4.memory_scope_denied"
+            ) from exc
+        if (new_scope.scope, new_scope.scope_id) == (old.scope, old.scope_id):
+            raise MemoryDispatchRefused(
+                "提升目标作用域与原作用域相同", "c4.memory_scope_denied"
+            )
+        content = self._projection.read_content(old)
+        if content is None:
+            raise MemoryDispatchRefused(
+                "记忆正文不可用，不能提升（先恢复正文再搬）", "dispatch.refused"
+            )
+        try:
+            existing = self._projection.find_duplicate(
+                scope=new_scope, kind=old.kind, content=content
+            )
+        except TianshuError as exc:
+            raise MemoryDispatchRefused(
+                f"记忆去重检查失败：{exc}", "dispatch.refused"
+            ) from exc
+        if existing is not None:
+            raise MemoryDispatchRefused(
+                f"目标作用域已有相同正文的记忆：{existing.memory_id}",
+                "c4.create_over_existing",
+            )
+
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        new_id = f"mem_{uuid.uuid4().hex[:12]}"
+        now = self._clock()
+        source_refs = list(old.source_refs)
+        if memory_id not in source_refs:
+            source_refs.append(memory_id)
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": new_scope.to_uri(),
+                "memory_uri": new_scope.to_uri(),
+                "memory_id": new_id,
+                "receipt_memory_id": memory_id,
+                "revision": 1,
+                "scope": new_scope.scope,
+                "scope_id": new_scope.scope_id,
+                "kind": old.kind,
+                # 正文没有变：复用同一个内容寻址 blob，不复制字节。
+                "content_ref": old.content_ref,
+                "source_refs": source_refs,
+                "evidence": [],
+                "proof_count": 0,
+                "origin": "inferred",
+                "status": "candidate",
+                "created_at": now,
+                "expires_at": old.expires_at,
+                "supersedes": memory_id,
+                "deduped": False,
+                "before_state": memory_state(memory_id, before_status, before_revision),
+                "after_state": memory_state(new_id, "candidate", 1),
             },
         )
 
