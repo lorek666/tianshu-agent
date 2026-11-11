@@ -3,9 +3,11 @@
 - 立据：`docs/PRD-v1.md` §5.2.3；施工规格
   [`SPEC-G1-CLOSURE-2026-11-11.md`](SPEC-G1-CLOSURE-2026-11-11.md) §2。
 - 状态：**资源的解析/规范化与许可判定已实现**（`resources.py` / `permissions.py` /
-  `dispatcher.py` / `rules.py`）；**执行器未实现**——网络、MCP、委派三种能力本身属 G2，
-  今天它们在派发前被明确拒绝（`dispatch.resource_kind_unsupported`）。
-- 判据：`tests/test_g1d_resource_kinds.py`（15 条）；负控 6 项实测变红（见 §6）。
+  `dispatcher.py` / `rules.py`）。**执行器**：`file` / `memory` 早已有；**网络**在
+  G2 网络阶段补上（`network.fetch`，见 [network-g2.md](network-g2.md)）；**MCP 与委派
+  仍然没有执行器**，在派发前拒绝（`dispatch.resource_kind_unsupported`）。
+- 判据：`tests/test_g1d_resource_kinds.py`（15 条，其中"哪些种类有执行器"一条随 G2
+  网络阶段更新）；负控 6 项实测变红（见 §6）。
 
 ## 1 为什么需要"种类"
 
@@ -57,7 +59,7 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 |---|---|---|---|
 | `file` | read/create/overwrite/delete/exec | 不变 | 不变 |
 | `memory` | 既有 | 不变 | 不变 |
-| `network` | **只能** `fetch` | **恒需人工批准**（无自动路径） | `c4.outbound` |
+| `network` | **只能** `fetch` | 任务级白名单（`outbound_allow`）**先判**，然后**恒需人工批准**（无自动路径） | `c4.outbound_not_allowed` / `c4.outbound` |
 | `mcp` | **只能** `exec` | 恒需人工批准（MCP 工具是不可信外部程序） | `c4.mcp_call` |
 | `subtask` | **只能** `delegate` | **恒拒**（没有委派执行器） | `c4.subtask_unavailable` |
 
@@ -69,9 +71,12 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
-- 有执行器的种类：`file`、`memory`；
-- 其余种类在**派发前**拒绝：`dispatch.resource_kind_unsupported`，消息写明是哪种资源、
-  指向哪个 URI。
+- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）；
+- 其余种类（`mcp`、`subtask`）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
+  消息写明是哪种资源、指向哪个 URI。
+
+网络的"有执行器"不等于"自动放行"：它多一道**任务级白名单**（`outbound_allow`）,
+之后仍要逐次人工批准（见 [network-g2.md](network-g2.md) §1）。
 
 为什么不是"走到审批再失败"：审批是给人做决定的，为一个**注定执行不了**的能力弹批准，
 等于给用户一个"批了就能用"的错觉。反过来，许可判定（§3）仍然完整实现并有判据——它描述的
@@ -93,7 +98,7 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 | `network` 判定改成 AUTO（自动放行） | `test_outbound_always_needs_approval` |
 | 混合种类放行 | `test_mixed_resource_kinds_are_denied` |
 | 文件资源配 `fetch` 落到 `c4.unhandled`/放行 | `test_network_action_must_be_fetch` |
-| 没有执行器的种类按 file 兜底 | `test_kinds_without_an_executor_are_refused_before_dispatch` |
+| 没有执行器的种类按 file 兜底 | `test_kinds_without_an_executor_are_refused_before_dispatch`（现在只覆盖 mcp / subtask） |
 | 规范化不折叠 `..` / 不拒 userinfo | `test_network_target_rejects_confusing_forms` |
 | `subtask` 判定改成 AUTO/APPROVE | `test_subtask_is_denied_because_the_capability_does_not_exist` |
 
@@ -101,8 +106,9 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 | 缺口 | 现状 |
 |---|---|
-| 真实网络请求、MCP 客户端、子代理 | **未做**（G2）。所以「私有内容未经外发许可不发包」仍只能记为 **unknown**：闸门已就位、可拒绝，但没有外发面可验证 |
-| 外发字节计量（`bytes` 维度） | 账本有该维度，但没有真实外发数据 |
-| 任务级外发白名单（`outbound_allow`） | 未做：现在外发只有"逐次人工批准"这一条路，没有"这个任务允许访问这几个域名"的声明（那需要改 `task.created` payload 契约，属 G2） |
+| 真实网络请求 | **已实现**（G2 网络阶段）：`network.fetch` 抓取、任务级白名单、逐次批准、内容引用与字节账本。见 [network-g2.md](network-g2.md)；但**只支持 GET、没有检索 API、真实公网研究未验证** |
+| MCP 客户端、子代理 | **未做**（G2 后续阶段）。它们仍在派发前拒绝 |
+| 外发字节计量（`bytes` 维度） | 已接：发送前按上限预占、读完后按实际字节结算（判据 `test_bytes_budget_is_enforced_before_sending`） |
+| 任务级外发白名单（`outbound_allow`） | **已实现**：`task.created` payload 契约增量 + 执行侧门（见 [network-g2.md](network-g2.md) §2） |
 | 内容分级 / 哪些内容不许外发 | 未做：没有外发表，无法定义"私有内容"的边界 |
 | 子任务执行与预算父子账户 | 未做：`subtasks` 维度与父子链在账本里，但没有委派执行器 |

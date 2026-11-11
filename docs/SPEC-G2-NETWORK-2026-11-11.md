@@ -323,11 +323,11 @@ def summary_text(fetched, limit_bytes) -> str       # UTF-8 有损解码 + 截�
 
 ## 3 判据与负控总表（回填实测）
 
-| 增量 | 新增测试文件 | 条数 | 负控 | 实测 |
+| 增量 | 新增测试文件 | 条数 | 负控 | 实测（2026-11-11，本机 macOS arm64） |
 |---|---|---|---|---|
-| I1 | `tests/test_outbound_allow.py` | 14 | 5 | 待回填 |
-| I2 | `tests/test_network_fetch.py`（+`tests/httpserver.py`） | 22 | 8 | 待回填 |
-| I3 | `tests/test_network_research_eval.py` | 10 | 4 | 待回填 |
+| I1 | `tests/test_outbound_allow.py` | **18**（原估 14，补了匹配/迁移/CLI 三条） | 5 | **5/5 红** |
+| I2 | `tests/test_network_fetch.py`（+`tests/httpserver.py`） | **23**（原估 22） | 8 | **8/8 红** |
+| I3 | `tests/test_network_research_eval.py` | 待回填 | 待回填 | 待回填 |
 
 ## 4 口径冲突与旧口径变更（必须写进 PR body）
 
