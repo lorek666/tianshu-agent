@@ -385,3 +385,15 @@ def test_resume_detects_state_whose_plan_belongs_to_another_version(tmp_path):
         run_migration(root, backup=backup)
     assert "另一套迁移计划" in str(excinfo.value)
     assert read_schema_version(root / "events.db") == 0
+
+
+def test_pid_alive_sees_current_process():
+    """Windows 与 POSIX 都要能判定"自己这个 pid 活着"。
+
+    Windows 上不能用 `os.kill(pid, 0)`（那是 TerminateProcess 语义），实现走
+    `OpenProcess` + `WaitForSingleObject(0)`。当前进程必然活着，所以这条在
+    windows-latest 上能直接给经验证据；死 pid 的结果受 pid 复用影响，不作断言。
+    """
+    assert migrate._pid_alive(os.getpid()) is True
+    assert migrate._pid_alive(0) is None
+    assert migrate._pid_alive("123") is None

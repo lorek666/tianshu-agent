@@ -315,10 +315,17 @@ def plan_migrations(data_root: Path) -> list[MigrationStep]:
 
 
 def _pid_alive(pid: Any) -> bool | None:
+    """pid 是否还活着。`None` = 判不了（不猜）。
+
+    POSIX 用 `os.kill(pid, 0)`；Windows 不能这么判（`os.kill` 在那边是
+    TerminateProcess 语义），改用 `OpenProcess(SYNCHRONIZE)` +
+    `WaitForSingleObject(0)`——这是零依赖（`ctypes` 标准库）且能在
+    windows-latest 上被测试证的经验证据；仍**没有 Windows 实机**。
+    """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return None
     if os.name == "nt":
-        return None  # 没有 Windows 实机：不假装能判定
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -328,6 +335,43 @@ def _pid_alive(pid: Any) -> bool | None:
     except OSError:
         return None
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool | None:
+    """Windows 存活判定：句柄拿不到（拒绝访问）按"活着"保守处理。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, AttributeError):  # pragma: no cover - 非 Windows 不会走到
+        return None
+    synchronize = 0x00100000
+    wait_timeout = 0x00000102
+    wait_object_0 = 0x00000000
+    error_access_denied = 5
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    except (AttributeError, OSError):  # pragma: no cover - 同上
+        return None
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == error_access_denied:
+            return True
+        return None
+    try:
+        code = kernel32.WaitForSingleObject(handle, 0)
+    finally:
+        kernel32.CloseHandle(handle)
+    if code == wait_timeout:
+        return True
+    if code == wait_object_0:
+        return False
+    return None
 
 
 def writers_active(data_root: Path) -> bool | None:
