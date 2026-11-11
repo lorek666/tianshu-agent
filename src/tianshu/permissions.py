@@ -165,9 +165,16 @@ class ActionRequest:
     preconditions: dict[str, Any] = field(default_factory=dict)
     policy_version: str = "c4-1"
     contract_version: str = "1.0"
+    #: 工具**描述**的摘要（PRD §5.2.3「任务绑定固定工具版本、schema 与描述摘要」）。
+    #:
+    #: 空串 = 历史请求（本轮之前写入/构造的），摘要**逐字节不变**——这是刻意的：
+    #: `to_canonical_dict()` 只在非空时写这个键。为了一条新要求把历史库里的审批、
+    #: grant 与派发记录集体作废，和 `resources.py` 拒绝给 `ActionRequest` 加
+    #: `resource_kind` 是同一条理由。
+    description_hash: str = ""
 
     def to_canonical_dict(self) -> dict[str, Any]:
-        return {
+        raw = {
             "action": self.action,
             "args_hash": self.args_hash,
             "attempt_id": self.attempt_id,
@@ -188,6 +195,10 @@ class ActionRequest:
             "tool_id": self.tool_id,
             "tool_version": self.tool_version,
         }
+        # 只在非空时写入：旧请求（没有这个字段）摘要不变，新请求多绑一层描述。
+        if self.description_hash:
+            raw["description_hash"] = self.description_hash
+        return raw
 
     #: 这四个字段回答的是"**谁**在什么身份下执行"，不是"执行**什么**"。
     #:
