@@ -2546,3 +2546,71 @@ def test_cli_recover_names_cleaned_orphan_blobs(env, monkeypatch, capsys):
     ref = hashlib.sha256(content.encode("utf-8")).hexdigest()
     assert rc == 0, "孤儿清理成功后恢复应当报成功"
     assert "已清孤儿正文" in out and ref in out
+
+
+def test_marker_without_the_column_forces_a_rescan(env: Env):
+    """边界：标记在、列却被删（迁移工具/人手误删）⇒ 必须作废标记并重扫。"""
+    import json
+
+    content = "标记在但列没了"
+    task, run, claim = env.new_run()
+    _request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="marker-only"
+    )
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+    with env.log.transaction():
+        env.log.conn.execute("ALTER TABLE dispatch_requests DROP COLUMN args_redacted")
+        env.log.conn.execute(
+            "UPDATE dispatch_requests SET args_payload = ? WHERE request_id = ?",
+            (
+                json.dumps({"kind": "preference", "content": content}),
+                decision.request_id,
+            ),
+        )
+    marker = env.log.conn.execute(
+        "SELECT value FROM dispatch_meta WHERE key = 'args_redacted_backfilled'"
+    ).fetchone()
+    assert marker is not None, "夹具前提：标记原本就在"
+
+    Dispatcher(
+        env.log,
+        env.tasks,
+        env.leases,
+        PolicyEngine(),
+        env.approvals,
+        grants=env.grants,
+        claims=env.claims,
+        snapshots=env.snapshots,
+        data_root=env.root / "authority",
+        memory=env.memory,
+        clock=lambda: NOW,
+    )
+    row = _request_row(env, decision.request_id)
+    assert row is not None
+    assert int(row["args_redacted"]) == 1
+    assert "content" not in json.loads(row["args_payload"])
+
+
+def test_memory_argument_wins_over_blob_dir(env):
+    """`memory` 与 `blob_dir` 同时给：`memory` 胜出，不做静默合并。"""
+    from tianshu.recovery import _memory_effect
+
+    content = "优先级用例"
+    output = _proposed(env, content=content)[3]
+    ref = output["content_ref"]
+    custom = env.root / "custom_blobs"
+    custom.mkdir()
+    (custom / ref).write_text(content, encoding="utf-8")
+    default_blob = env.memory.blob_path(ref)
+    assert default_blob is not None
+    default_blob.unlink()  # 默认目录看不到 → 只有"赢的那个"能决定结论
+
+    payload = {"tool_id": "memory.erase", "args": {"memory_id": output["memory_id"]}}
+    # 传 memory（默认目录）+ 一个"看起来对"的自定义 blob_dir：memory 优先 ⇒ unknown
+    bucket, _extras, _problem = _memory_effect(
+        env.log, payload, memory=env.memory, blob_dir=custom
+    )
+    assert bucket == "unknown", "memory 优先：它看不到文件就是看不到"
+    # 只传 blob_dir（不传 memory）⇒ 按该目录 ⇒ none_applied
+    bucket, _extras, _problem = _memory_effect(env.log, payload, blob_dir=custom)
+    assert bucket == "none_applied"

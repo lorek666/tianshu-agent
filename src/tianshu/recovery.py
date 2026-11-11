@@ -420,6 +420,13 @@ def recover_run(
     之间还能被插进一条阻断事件，而写入侧看不到它。不给（库调用方保持原样）时
     判定口径不变，只是少了这层跨进程线性化。
 
+    `memory` / `blob_dir` 决定"记忆正文的 blob 去哪找"（擦除结论与孤儿清理都要
+    用它）：`memory` 优先（装配方已经打开的那个投影，CLI 传 `stack.memory`、
+    daemon 传 `control_stack.memory`）；只给 `blob_dir` 时按该目录新建一个投影；
+    两者都不给就按 `MemoryProjection` 的默认规则（DB 旁的 `memory_blobs/`）。
+    正文目录与默认值不同却没传这两个参数时，擦除会被判成"文件已没"、孤儿也清
+    不到——这是调用方的契约责任，不是恢复在猜。
+
     每次恢复都先做一次**权威根补登记**（issue #61.1）：本数据根日志里当前有效
     的阻断，如果用户级权威根里还没有（旧版本的库、或换过数据根），先补进去。
     补登记失败只在报告里写「跨数据根阻断未生效」，不炸恢复流程。
@@ -826,6 +833,10 @@ def _memory_effect(
     - `memory.erase` 先删正文文件、后提交，崩溃窗口里可能部分生效：文件还在 →
       确实没生效；文件没了 → 不可逆部分生效，只能报 unknown；
     - 正文 blob 写在提交之前 ⇒ 恢复顺手清掉本调用留下的孤儿副本（引用计数为 0）。
+
+    `memory` 与 `blob_dir` 同时给时**`memory` 胜出**（`blob_dir` 只在没有装配投影
+    时用来新建一个）；要覆盖目录就只传 `blob_dir`，或传一个指向该目录的投影——
+    这里不做"猜你想用哪个"的合并。
     """
     raw_args = intent_payload.get("args")
     args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}

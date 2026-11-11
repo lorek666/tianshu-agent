@@ -430,12 +430,18 @@ class Dispatcher:
         self._conn = log.conn
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
-        _ensure_column(
+        column_added = _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
             "INTEGER NOT NULL DEFAULT 0",
         )
         # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
         # 下次打开会重试（否则列已存在，靠列存在性判断就永远不补了）。
+        # 反向边界：标记在、列却不在（迁移工具或人手把列删了）⇒ 旧终态行的
+        # 正文又回到"未脱敏"，此时必须作废标记强制重扫，不然永久漏。
+        if column_added:
+            self._conn.execute(
+                "DELETE FROM dispatch_meta WHERE key = ?", (_BACKFILL_MARKER,)
+            )
         self._migrate_redacted_args()
         self._tasks = tasks
         self._leases = leases
