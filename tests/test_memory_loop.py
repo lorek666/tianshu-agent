@@ -994,3 +994,75 @@ def test_env_provider_to_built_index_is_an_end_to_end_path(monkeypatch, tmp_path
         assert built.semantic is True
     finally:
         log.close()
+
+
+def test_cli_rebuild_vectors_without_a_provider_fails_loudly(monkeypatch, capsys, tmp_path):
+    """没有 provider 时 `rebuild-vectors` 必须给可行动的失败（退出码 2 + 原因）。"""
+    from tianshu.cli import main
+
+    monkeypatch.delenv("TIANSHU_EMBEDDING_PROVIDER", raising=False)
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        log.append(
+            "run_cli",
+            "run.start",
+            {"task": "t", "workspace": str(tmp_path), "out": "x", "limits": {}, "tools": []},
+            actor_kind="core",
+            legacy_write=True,
+        )
+    finally:
+        log.close()
+    rc = main(["memory", "rebuild-vectors", "--db", str(db), "--data-root", str(tmp_path)])
+    assert rc == 2
+    assert "没有配置向量 provider" in capsys.readouterr().err
+
+
+def test_cli_rebuild_vectors_json_reports_counts_and_availability(monkeypatch, capsys, tmp_path):
+    """`--json` 的形状要稳定：rows / available / reason 三个字段。"""
+    import json as _json
+
+    from tianshu.cli import main
+
+    monkeypatch.setenv("TIANSHU_EMBEDDING_PROVIDER", "hash")
+    data_root = tmp_path / "authority"
+    data_root.mkdir()
+    db = tmp_path / "events.db"
+    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        stack = build_stack(log, data_root=data_root)
+        scope = MemoryScope.user()
+        content_ref = stack.memory.put_content("报告用中文")
+        payload = {
+            "tool_id": "memory.remember",
+            "status": "succeeded",
+            "output": {
+                "memory_id": "mem_json",
+                "revision": 1,
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "kind": "preference",
+                "content_ref": content_ref,
+                "source_refs": ["event:1"],
+                "evidence": [{"source_memory_id": "s", "quote": "q"}],
+                "proof_count": 1,
+                "origin": "user_explicit",
+                "status": "active",
+                "created_at": 1,
+                "expires_at": None,
+                "deduped": False,
+            },
+        }
+        with log.transaction() as tx:
+            seq = tx.append("run_cli", "tool.result", payload, legacy_write=True)
+            stack.memory.apply_event("tool.result", payload, seq=seq)
+    finally:
+        log.close()
+    rc = main(
+        ["memory", "rebuild-vectors", "--json", "--db", str(db), "--data-root", str(data_root)]
+    )
+    assert rc == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert set(out) == {"rows", "available", "reason"}
+    assert out["rows"] == 1
+    assert out["available"] is True

@@ -682,3 +682,37 @@ def test_unreadable_content_drops_the_stale_vector(vector_env) -> None:
     assert (
         log.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0] == 0
     )
+
+
+def test_fused_is_false_when_semantic_ids_all_get_filtered_out(vector_env) -> None:
+    """语义路返回了 id，但候选取正文时全被过滤：`fused` 必须是 False。"""
+    log, projection, index = vector_env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文", scope=scope)
+    projection.rebuild_vectors()
+    # 让语义路算出一个 id，但该行正文随后不可读（模拟竞态/文件被删）。
+    memory = projection.get("m1", allowed=(scope,))
+    assert memory is not None
+    blob = projection.blob_path(memory.content_ref)
+    assert blob is not None
+    blob.unlink()
+    outcome = projection.retrieve("报告 中文", allowed=(scope,))
+    assert outcome.semantic is True
+    assert outcome.fused is False, "语义没有贡献任何候选，不能声称融合过"
+    assert outcome.items == []
+
+
+def test_partial_vector_tables_are_cleaned_on_rebuild(vector_env) -> None:
+    """半迁移的库（只存在一张向量表）：`rebuild()` 也要清掉残片。"""
+    log, projection, index = vector_env
+    scope = MemoryScope.user()
+    _seed(log, projection, "m1", "报告用中文", scope=scope)
+    projection.rebuild_vectors()
+    # 拆掉 meta 表，模拟"只迁移了一半"的库。
+    with log.transaction():
+        log.conn.execute("DROP TABLE memory_vector_meta")
+    plain = MemoryProjection(log.conn, log=log, blob_dir=projection.blob_dir, clock=lambda: NOW)
+    plain.rebuild()
+    assert (
+        log.conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0] == 0
+    )

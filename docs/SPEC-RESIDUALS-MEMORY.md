@@ -272,7 +272,7 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
     `tianshu memory rebuild-vectors`：只装配 provider 不会构建向量，必须显式建一次
     索引（否则 `availability()` 报"尚未建立"、检索永远 FTS-only）。
   - **能力边界**：未配置 provider → FTS-only + `degraded` 原因；换 provider 未重建 →
-    旧向量不参与且仍报降级。`memory_vector_meta` 只在**第一次建表**时记录 provider，
+    旧向量不参与且仍报降级。`memory_vector_meta` 只在**成功 `rebuild()`** 时写 built/provider（建表不写），
     后接的 provider 不能改写历史（否则 availability 会误报 True）；只有成功 `rebuild()` 才写 built/provider。
 - **测试**：`tests/test_memory_vectors.py`（19 条）+ `tests/test_memory_rank.py`（7 条）
   + `tests/test_memory_loop.py` 的 3 条输出/接线用例。负控 5 条都真跑过：去掉优先级 /

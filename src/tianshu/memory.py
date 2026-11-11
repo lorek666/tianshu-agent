@@ -1698,19 +1698,23 @@ class MemoryProjection:
 
     # ---- 向量索引钩子（没有索引时全部 no-op） ----
 
-    def _vector_tables_exist(self) -> bool:
+    def _vector_tables(self) -> set[str]:
         rows = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
             " AND name IN ('memory_vectors', 'memory_vector_meta')"
         ).fetchall()
-        return len(rows) == 2
+        return {str(row["name"]) for row in rows}
+
+    def _vector_tables_exist(self) -> bool:
+        return len(self._vector_tables()) == 2
 
     def _clear_vector_state(self) -> None:
-        """清空向量并作废 built 标记（表不在时什么都不用做）。"""
-        if not self._vector_tables_exist():
-            return
-        self._conn.execute("DELETE FROM memory_vectors")
-        self._conn.execute("DELETE FROM memory_vector_meta")
+        """清空向量并作废 built 标记（哪张表在清哪张，半迁移的库也不留残片）。"""
+        tables = self._vector_tables()
+        if "memory_vectors" in tables:
+            self._conn.execute("DELETE FROM memory_vectors")
+        if "memory_vector_meta" in tables:
+            self._conn.execute("DELETE FROM memory_vector_meta")
 
     def _index_upsert(self, memory_id: str) -> None:
         """让索引跟随投影：只有**可召回**（active、未擦除、正文在）的行才写向量。"""
@@ -1918,10 +1922,12 @@ class MemoryProjection:
             scores=fused,
             score_kind="rrf",
         )
-        # `fused` 只在**语义路真的贡献了名次**时为 True：语义路跑了但一条没命中
-        # 时，分数仍然全来自 FTS 名次，说"融合过"会让调用方误读。
+        # `fused` 只在**语义候选真的进入最终集合**时为 True：语义路返回了 id 但
+        # 全被过滤掉（正文不可读 / 竞态）时，名次里没有任何语义贡献，说"融合过"
+        # 会让调用方误读。
+        contributed = bool(set(semantic_ids) & set(union))
         return RecallOutcome(
-            items=items, semantic=True, degraded=None, fused=bool(semantic_ids)
+            items=items, semantic=True, degraded=None, fused=contributed
         )
 
     def _recall_candidate(

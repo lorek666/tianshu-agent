@@ -324,10 +324,13 @@ class MemoryIndex:
         return (True, None)
 
     def _indexable_row_count(self) -> int:
-        """可索引行数（active / 未擦除 / 正文在）——与 `iter_indexable` 同口径。
+        """可索引行数——与投影 `iter_indexable` 尽量同口径（active / 未擦除 / 正文在）。
 
-        不排除过期行：过期只是"不参与召回"，向量仍保留（重新激活/延长有效期时
-        不用重建）。召回过滤在 `search()` 里做。
+        投影侧按 `content_state` 判"正文在"，`iter_indexable` 真去读 blob：文件被
+        外部删掉而投影仍标 available 时两者会差一条。这种边角只会让
+        `availability()` **保守报不可用**（不会假装可用），所以可以作为覆盖校验
+        的近似——真正的"索引完整"由 `built` 标记 + 向量数共同保证。不排除过期行：
+        过期只是不参与召回，向量保留（重新激活时不用重建）。
         """
         row = self._conn.execute(
             "SELECT COUNT(*) FROM memories WHERE status = 'active'"
