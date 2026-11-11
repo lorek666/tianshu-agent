@@ -158,11 +158,15 @@ _WRITE_TOOL_IDS = frozenset(
         "memory.edit",
         "memory.promote",
         "memory.erase",
+        "memory.consolidate",
     }
 )
 
+#: 记忆资产层（F10 §4 / 契约 v1.2）。`kind` 说"是什么"，`layer` 说"多粗"。
+MEMORY_LAYERS = frozenset({"l1", "l2", "l3"})
+
 #: 投影格式版本。投影哈希覆盖它，跨版本不假装可比。
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------- 错误
 
@@ -201,6 +205,9 @@ class Memory:
     created_at: int
     expires_at: int | None
     supersedes: str | None
+    #: 资产层（契约 v1.2）：`l1` 原子事实 / `l2` 带证据的信念 / `l3` 偏好页面。
+    #: L2/L3 是**可重建的合成层**（F10 §4），与 `kind` 正交。
+    layer: str = "l1"
     #: 物理擦除时间（契约 v1.2）：与 `status=forgotten` 分开——forgotten 只是停召回，
     #: erased_at 表示正文副本与检索索引已被删除。
     erased_at: int | None = None
@@ -223,6 +230,7 @@ class Memory:
             "created_at": self.created_at,
             "expires_at": self.expires_at,
             "supersedes": self.supersedes,
+            "layer": self.layer,
             "erased_at": self.erased_at,
         }
 
@@ -241,6 +249,13 @@ class Recalled:
     #: `score` 的口径：`origin`（词面路的 origin 权重）或 `rrf`（融合分数）。
     #: 两种分数不可比，必须让调用方一眼看出拿的是哪一种。
     score_kind: str = "origin"
+    #: L2/L3 合成层是否已陈旧（作用域里有比它更新的 L1）：陈旧页降权但**不短路**，
+    #: 同时仍保留 L1 证据（F10 §8「陈旧层先核验再用」）。
+    #:
+    #: **三态，不是二态**：`True` 陈旧 / `False` 已确认新鲜（页的 `basis_seq` 不小于
+    #: 作用域里最大的 L1 `last_seq`）/ `None` **不可判定**（旧行没有 `seq:` 标记）。
+    #: 把"判不了"写成 `False` 就是谎报新鲜——调用方会以为"这页跟得上"。
+    stale: bool | None = None
 
 
 #: 作用域优先级里的"最近"档位（数值越小越靠前）。
@@ -306,15 +321,45 @@ def _proximity_of(memory: Memory, priority: RecallPriority | None) -> int:
     return priority.proximity_pair(memory.scope, memory.scope_id)
 
 
+#: 新鲜度位次：`fresh` → `unknown` → `stale`。
+#:
+#: 三档不是二档：`unknown`（旧行没有 `seq:` 基准）**既不冒充新鲜、也不冒充陈旧**，
+#: 排在"已确认新鲜"之后、"已确认陈旧"之前。`L1` 永远是 0——原子事实没有"合成层
+#: 陈旧"这回事，`_stale_map` 也不会给它放键。
+_FRESHNESS_FRESH = 0
+_FRESHNESS_UNKNOWN = 1
+_FRESHNESS_STALE = 2
+
+
+def _freshness_rank(memory: Memory, stale: dict[str, bool | None] | None) -> int:
+    if memory.layer == "l1" or stale is None:
+        return _FRESHNESS_FRESH
+    value = stale.get(memory.memory_id)
+    if value is None:
+        return _FRESHNESS_UNKNOWN
+    return _FRESHNESS_STALE if value else _FRESHNESS_FRESH
+
+
 def _order_by_priority(
     candidates: Sequence[tuple[Memory, str]],
     priority: RecallPriority | None,
+    *,
+    stale: dict[str, bool | None] | None = None,
 ) -> list[tuple[Memory, str]]:
-    """词面路的名次：`(作用域优先级, origin 权重, created_at 降序, memory_id)`。"""
+    """词面路的名次：`(作用域优先级, 新鲜度, origin 权重, created_at 降序, memory_id)`。
+
+    新鲜度排在 origin 权重**之前**、作用域优先级**之后**：同一优先级分组里，
+    陈旧的合成层一律排在新鲜记忆后面——否则一条 `origin=inferred` 的旧 L2 页
+    会因为权重比不上 `user_confirmed` 的 L1 而"看起来已经排对了"，等哪天来源
+    权重相同（都是 `inferred`）时旧页又跑到第一（复审探针就是这样复现的）。
+    三档位次见 `_FRESHNESS_*`：unknown 不冒充任何一档（旧行没有 `seq:` 时既不
+    假设它新鲜、也不假设它陈旧）。作用域优先级仍是第一分组键。
+    """
     return sorted(
         candidates,
         key=lambda item: (
             _proximity_of(item[0], priority),
+            _freshness_rank(item[0], stale),
             -_ORIGIN_WEIGHTS[item[0].origin],
             -item[0].created_at,
             item[0].memory_id,
@@ -329,6 +374,7 @@ def _crop(
     *,
     scores: dict[str, float] | None = None,
     score_kind: str = "origin",
+    stale: dict[str, bool] | None = None,
 ) -> list[Recalled]:
     """按名次裁剪到条数 + 正文字节上限。`score` 是这次排序用的分数。"""
     recalled: list[Recalled] = []
@@ -347,7 +393,11 @@ def _crop(
         )
         recalled.append(
             Recalled(
-                memory=memory, content=piece, score=score, score_kind=score_kind
+                memory=memory,
+                content=piece,
+                score=score,
+                score_kind=score_kind,
+                stale=stale.get(memory.memory_id) if stale is not None else None,
             )
         )
         used_bytes += size
@@ -529,6 +579,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         created_at      INTEGER NOT NULL,
         expires_at      INTEGER,
         supersedes      TEXT,
+        layer           TEXT NOT NULL DEFAULT 'l1',
         content_state   TEXT NOT NULL,
         last_seq        INTEGER NOT NULL,
         fts_rowid       INTEGER,
@@ -571,7 +622,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
 _MEMORY_COLUMNS = (
     "memory_id, revision, scope, scope_id, kind, content_ref, source_refs, "
     "evidence, proof_count, origin, status, consolidated_at, created_at, "
-    "expires_at, supersedes, content_state, last_seq, fts_rowid, erased_at"
+    "expires_at, supersedes, layer, content_state, last_seq, fts_rowid, erased_at"
 )
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -836,6 +887,11 @@ class MemoryProjection:
         }
         if "erased_at" not in columns:
             self._conn.execute("ALTER TABLE memories ADD COLUMN erased_at INTEGER")
+        # v2 → v3：加 `layer` 列（默认 l1，老记忆都是原子事实）。只加列、不重建。
+        if "layer" not in columns:
+            self._conn.execute(
+                "ALTER TABLE memories ADD COLUMN layer TEXT NOT NULL DEFAULT 'l1'"
+            )
         row = self._conn.execute(
             "SELECT value FROM memory_meta WHERE key = 'schema_version'"
         ).fetchone()
@@ -943,7 +999,9 @@ class MemoryProjection:
         mode = modes.get(tool_id)
         with self._log.transaction():
             self.ensure_schema()
-            if mode is not None:
+            if tool_id == "memory.consolidate":
+                self._apply_consolidate(output, seq_value)
+            elif mode is not None:
                 self._apply_propose(output, seq_value, mode=mode)
             elif tool_id == "memory.confirm":
                 self._apply_confirm(output, seq_value)
@@ -1101,6 +1159,8 @@ class MemoryProjection:
             )
         origin = _require_closed(output["origin"], MEMORY_ORIGINS, "origin")
         status = _require_closed(output["status"], MEMORY_STATUSES, "status")
+        # `layer` 可选（默认 l1）：老事件/老测试夹具没有这个键也必须能重放。
+        layer = _require_closed(output.get("layer", "l1"), MEMORY_LAYERS, "layer")
         created_at = _require_int(output["created_at"], "created_at", minimum=0)
         expires_at = _require_optional_int(output.get("expires_at"), "expires_at")
         deduped = _require_bool(output["deduped"], "deduped")
@@ -1232,7 +1292,7 @@ class MemoryProjection:
         try:
             self._conn.execute(
                 f"INSERT INTO memories ({_MEMORY_COLUMNS})"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     memory_id,
                     revision,
@@ -1249,6 +1309,7 @@ class MemoryProjection:
                     created_at,
                     expires_at,
                     supersedes,
+                    layer,
                     content_state,
                     seq,
                     fts_rowid,
@@ -1287,6 +1348,225 @@ class MemoryProjection:
         )
         # 退役的行不再召回：向量也必须一起下掉，否则语义路还会把它捞回来。
         self._index_drop(target_id)
+
+    def _stale_map(
+        self, candidates: dict[str, tuple[Memory, str]]
+    ) -> dict[str, bool]:
+        """合成层新鲜度：作用域里最大 L1 `last_seq` > 页面 `basis_seq` ⇒ 陈旧。
+
+        `basis_seq` 从 `source_refs` 的 `seq:<n>` 读。**只对能判定的页放键**：
+        旧行没有这个标记就不放，调用方（`Recalled.stale`）会拿到 `None`
+        = "不可判定"，而不是被压成 `False`（那等于谎报新鲜）。
+
+        "更新的证据"只算**真的还能被召回**的 L1：`active`、未擦除、未过期
+        （`expires_at` 已过的行不会被 `consolidatable_sources` 收进合成，也不会
+        被检索返回，用它把页判陈旧就是误报）。
+        """
+        from .memory_distill import parse_basis_seq
+
+        now = _require_int(self._clock(), "clock() 返回值")
+        maxima: dict[tuple[str, str], int] = {}
+
+        def scope_max(scope: str, scope_id: str) -> int:
+            key = (scope, scope_id)
+            if key not in maxima:
+                row = self._conn.execute(
+                    "SELECT MAX(last_seq) FROM memories"
+                    " WHERE scope = ? AND scope_id = ? AND layer = 'l1'"
+                    "   AND status = 'active' AND erased_at IS NULL"
+                    "   AND (expires_at IS NULL OR expires_at > ?)",
+                    (scope, scope_id, now),
+                ).fetchone()
+                maxima[key] = int(row[0]) if row is not None and row[0] is not None else 0
+            return maxima[key]
+
+        stale: dict[str, bool] = {}
+        for memory_id, (memory, _content) in candidates.items():
+            if memory.layer == "l1":
+                continue
+            basis = parse_basis_seq(memory.source_refs)
+            if basis is None:
+                continue
+            stale[memory_id] = scope_max(memory.scope, memory.scope_id) > basis
+        return stale
+
+    # ---- consolidate（L2/L3 确定性合成，N3） ----
+
+    def consolidatable_sources(
+        self, scope: MemoryScope
+    ) -> list[Any]:
+        """该作用域里可参与合成的 L1：active、未擦除、正文在盘上。
+
+        只取 `layer='l1'`：合成层的输入永远是原子事实，不是上一版合成页（否则
+        会自我引用、越合越漂）。读不到正文的行跳过（诚实：不可用的证据不进页）。
+        """
+        from .memory_distill import ConsolidationSource
+
+        self.ensure_schema()
+        now = _require_int(self._clock(), "clock() 返回值")
+        rows = self._conn.execute(
+            f"SELECT {_MEMORY_COLUMNS} FROM memories"
+            " WHERE scope = ? AND scope_id = ? AND status = ? AND layer = 'l1'"
+            " AND erased_at IS NULL ORDER BY memory_id",
+            (scope.scope, scope.scope_id, _STATUS_ACTIVE),
+        ).fetchall()
+        sources: list[ConsolidationSource] = []
+        for row in rows:
+            memory = self._row_to_memory(row)
+            if memory.expires_at is not None and memory.expires_at <= now:
+                continue
+            content = self._read_blob(memory.content_ref)
+            if content is None:
+                continue
+            sources.append(
+                ConsolidationSource(
+                    memory_id=memory.memory_id,
+                    revision=memory.revision,
+                    content=content,
+                    last_seq=int(row["last_seq"]),
+                    kind=memory.kind,
+                    origin=memory.origin,
+                    layer=memory.layer,
+                )
+            )
+        return sources
+
+    def _apply_consolidate(self, output: dict[str, Any], seq: int) -> None:
+        """把一次合成结果写进投影：每页一行候选 + 旧页 superseded。
+
+        可回放的唯一依据是**事件里的 output**（正文引用/证据/时间/来源），
+        不重新跑一遍合成算法——重算会让"事件说 A、投影写 B"变成可能，
+        而重建必须逐位复现实时写入。
+        """
+        for key in ("scope", "scope_id", "pages"):
+            if key not in output:
+                raise MemoryStoreError(f"memory.consolidate 的 output 缺字段：{key}")
+        scope = _scope_from_payload(output["scope"], output["scope_id"])
+        pages = output["pages"]
+        if not isinstance(pages, list):
+            raise MemoryStoreError("memory.consolidate 的 pages 必须是数组")
+        for raw in pages:
+            if not isinstance(raw, dict):
+                raise MemoryStoreError("pages 的每一项必须是对象")
+            self._apply_consolidate_page(scope, raw, seq)
+
+    def _apply_consolidate_page(
+        self, scope: MemoryScope, page: dict[str, Any], seq: int
+    ) -> None:
+        required = (
+            "memory_id",
+            "layer",
+            "kind",
+            "content_ref",
+            "evidence",
+            "proof_count",
+            "source_refs",
+            "consolidated_at",
+        )
+        missing = [key for key in required if key not in page]
+        if missing:
+            raise MemoryStoreError(f"合成页缺字段：{missing}")
+        memory_id = _require_memory_id(page["memory_id"])
+        layer = _require_closed(page["layer"], MEMORY_LAYERS, "layer")
+        if layer == "l1":
+            raise MemoryStoreError("合成页的 layer 不能是 l1（合成只产出 l2/l3）")
+        kind = _require_closed(page["kind"], MEMORY_KINDS, "kind")
+        content_ref = _require_content_ref(page["content_ref"])
+        evidence = _require_json_list(page["evidence"], "evidence")
+        proof_count = _require_int(page["proof_count"], "proof_count", minimum=1)
+        if proof_count != len(evidence):
+            raise MemoryStoreError(
+                f"合成页 {memory_id!r} 的 proof_count={proof_count} 与证据条数 "
+                f"{len(evidence)} 不一致"
+            )
+        source_refs = _require_str_tuple(page["source_refs"], "source_refs")
+        if not source_refs:
+            raise MemoryStoreError(f"合成页 {memory_id!r} 没有来源")
+        consolidated_at = _require_int(
+            page["consolidated_at"], "consolidated_at", minimum=0
+        )
+
+        existing = self._load_row(memory_id)
+        if existing is not None:
+            # 同一作用域 + 同一层 + 同一正文 ⇒ 同一个 id：重复合成是幂等的。
+            if existing["layer"] != layer or existing["content_ref"] != content_ref:
+                raise MemoryStoreError(
+                    f"合成页 id 冲突：{memory_id!r} 已存在且内容不同"
+                )
+            if existing["status"] not in (_STATUS_CANDIDATE, _STATUS_ACTIVE):
+                # 页 id 由内容决定，所以"正文回退到旧版"会撞回一个已经退役的 id。
+                # 静默 `return` 会让事件说"写了候选页"、投影却停在 superseded
+                # （人 confirm 会直接失败）；悄悄复活又会改写已确认的结论。两条
+                # 都不诚实，所以 fail-closed，由人决定怎么处理（复审复现过）。
+                raise MemoryStoreError(
+                    f"合成页 {memory_id!r} 已存在且状态是 {existing['status']!r}："
+                    f"同一段正文不能再作为新的候选页写入"
+                )
+            return
+
+        # 旧页退役：同作用域、同层的 **candidate** 页被这一页取代（保留行，旧内容
+        # 与它当时站的证据可查）。**已 `confirm` 的 active 页不在这里退役**：
+        # `memory.consolidate` 是模型可见、免审批的工具，若它能顺手把"人确认过的
+        # 页面"置为 superseded，等于模型可以撤销人的召回授权（复审指出的设计边界）。
+        # 人确认的页只有人能退（`memory.forget` / `memory.erase`）；新页与它并存，
+        # 由 freshness（`stale`）决定谁排在前面。
+        old_rows = self._conn.execute(
+            "SELECT memory_id FROM memories"
+            " WHERE scope = ? AND scope_id = ? AND layer = ?"
+            "   AND status = 'candidate' ORDER BY memory_id",
+            (scope.scope, scope.scope_id, layer),
+        ).fetchall()
+        for row in old_rows:
+            self._supersede(str(row["memory_id"]), seq)
+
+        content = self._read_blob(content_ref)
+        tokens = ""
+        content_state = _CONTENT_UNAVAILABLE
+        if content is not None:
+            safe, blocked = self.redact_or_block(content)
+            if blocked:
+                raise MemoryWriteBlocked(
+                    f"合成页 {memory_id!r} 的正文命中密钥闸门：候选不得入库"
+                )
+            if safe != content:
+                raise MemoryWriteBlocked(
+                    f"合成页 {memory_id!r} 的正文未过写入闸门（含 PII）"
+                )
+            tokens = " ".join(_tokenize(content))
+            content_state = _CONTENT_AVAILABLE
+        fts_rowid = self._alloc_fts_rowid() if tokens else None
+        try:
+            self._conn.execute(
+                f"INSERT INTO memories ({_MEMORY_COLUMNS})"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    memory_id,
+                    1,
+                    scope.scope,
+                    scope.scope_id,
+                    kind,
+                    content_ref,
+                    json.dumps(list(source_refs), ensure_ascii=False),
+                    json.dumps(list(evidence), ensure_ascii=False, sort_keys=True),
+                    proof_count,
+                    "inferred",
+                    _STATUS_CANDIDATE,
+                    consolidated_at,
+                    consolidated_at,
+                    None,
+                    None,
+                    layer,
+                    content_state,
+                    seq,
+                    fts_rowid,
+                    None,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:  # pragma: no cover - id 已先查过
+            raise MemoryStoreError(f"合成页写入被唯一索引拒绝：{memory_id!r}") from exc
+        if fts_rowid is not None:
+            self._insert_fts(fts_rowid, memory_id, tokens)
+        self._index_upsert(memory_id)
 
     # ---- confirm / forget ----
 
@@ -1570,6 +1850,7 @@ class MemoryProjection:
             created_at=created_at,
             expires_at=expires_at,
             supersedes=row["supersedes"],
+            layer=_require_closed(row["layer"], MEMORY_LAYERS, "layer"),
             erased_at=_require_optional_int(row["erased_at"], "erased_at"),
         )
 
@@ -1826,7 +2107,14 @@ class MemoryProjection:
         if limit_value == 0 or max_bytes_value == 0:
             return []
         candidates = self._ranked_candidates(text, allowed, priority=priority)
-        return _crop(candidates, limit_value, max_bytes_value)
+        stale_map = self._stale_map(
+            {memory.memory_id: (memory, content) for memory, content in candidates}
+        )
+        # 陈旧合成层降权但不短路（F10 §8）：排序键唯一实现放在
+        # `_order_by_priority`，词面路（search / retrieve 无索引分支）与融合路
+        # 必须用同一套，否则"哪条路有降权"取决于有没有配向量索引——复审复现过。
+        candidates = _order_by_priority(candidates, priority, stale=stale_map)
+        return _crop(candidates, limit_value, max_bytes_value, stale=stale_map)
 
     def retrieve(
         self,
@@ -1863,12 +2151,16 @@ class MemoryProjection:
             return RecallOutcome()
         now = _require_int(self._clock(), "clock() 返回值")
         fts_candidates = self._fts_candidates(text, allowed_key_set, now)
+        stale_map = self._stale_map(
+            {memory.memory_id: (memory, content) for memory, content in fts_candidates}
+        )
         if self._index is None:
             return RecallOutcome(
                 items=_crop(
-                    _order_by_priority(fts_candidates, priority),
+                    _order_by_priority(fts_candidates, priority, stale=stale_map),
                     limit_value,
                     max_bytes_value,
+                    stale=stale_map,
                 ),
                 semantic=False,
                 degraded="未配置向量索引：本次只有词面召回（FTS）",
@@ -1877,9 +2169,10 @@ class MemoryProjection:
         if not available:
             return RecallOutcome(
                 items=_crop(
-                    _order_by_priority(fts_candidates, priority),
+                    _order_by_priority(fts_candidates, priority, stale=stale_map),
                     limit_value,
                     max_bytes_value,
+                    stale=stale_map,
                 ),
                 semantic=False,
                 degraded=reason,
@@ -1907,10 +2200,14 @@ class MemoryProjection:
         fused = dict(
             _rf_fuse([memory.memory_id for memory, _ in fts_candidates], semantic_ids)
         )
+        stale_map = self._stale_map(union)  # 并集里可能有语义补进来的页
         ordered = sorted(
             union.items(),
             key=lambda item: (
                 _proximity_of(item[1][0], priority),
+                # 新鲜度三档（fresh / unknown / stale）与词面路同一实现：
+                # 陈旧合成层降权但**不短路**，L1 证据照旧参与（F10 §8）。
+                _freshness_rank(item[1][0], stale_map),
                 -fused.get(item[0], 0.0),
                 item[0],
             ),
@@ -1921,6 +2218,7 @@ class MemoryProjection:
             max_bytes_value,
             scores=fused,
             score_kind="rrf",
+            stale=stale_map,
         )
         # `fused` 只在**语义候选真的进入最终集合**时为 True：语义路返回了 id 但
         # 全被过滤掉（正文不可读 / 竞态）时，名次里没有任何语义贡献，说"融合过"
@@ -1967,7 +2265,8 @@ class MemoryProjection:
             "SELECT m.memory_id, m.revision, m.scope, m.scope_id, m.kind,"
             " m.content_ref, m.source_refs, m.evidence, m.proof_count, m.origin,"
             " m.status, m.consolidated_at, m.created_at, m.expires_at,"
-            " m.supersedes, m.content_state, m.last_seq, m.fts_rowid, m.erased_at"
+            " m.supersedes, m.layer, m.content_state, m.last_seq, m.fts_rowid,"
+            " m.erased_at"
             " FROM memory_fts JOIN memories AS m"
             " ON m.memory_id = memory_fts.memory_id"
             " WHERE memory_fts MATCH ?"
@@ -2115,6 +2414,7 @@ __all__ = [
     "MAX_RECALL_BYTES",
     "MAX_RECALL_ITEMS",
     "MEMORY_KINDS",
+    "MEMORY_LAYERS",
     "MEMORY_ORIGINS",
     "MEMORY_STATUSES",
     "TOKENIZER_VERSION",

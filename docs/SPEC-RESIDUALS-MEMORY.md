@@ -338,6 +338,117 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   判据 → stale 用例必须红。
 - 边界如实写：确定性合成**不等于**语义摘要；不承诺"比 L1 更好用"，除非评测拿出来。
 
+### 4.4 落地记录（N3 实际，2026-11-11，分支 `feat/memory-distill`）
+
+- **数据层**：`memory.Memory` 第 17 个字段 `layer`（默认 `"l1"`），封闭集
+  `MEMORY_LAYERS = {l1, l2, l3}`。投影 `_SCHEMA_VERSION` **2 → 3**：`memories` 加
+  `layer TEXT NOT NULL DEFAULT 'l1'`，**in-place `ALTER`**（旧行一律 l1，不重建、不丢
+  正文）；更高版本仍 fail-closed。`_MEMORY_COLUMNS` / `_row_to_memory` / INSERT / FTS
+  的 SELECT 都带 `layer`——N2 之后 FTS 是召回装配主路径，漏一列就是 `IndexError`（实现
+  时真踩过）。
+- **确定性合成器 `src/tianshu/memory_distill.py`（新）**：
+  - 常量写死并进测试：`L2_SIMILARITY = 0.34`（**重叠系数** `|A∩B| / min(|A|,|B|)`，不是
+    Jaccard：中文短句 bigram 多，Jaccard 被长度差压垮）、`L2_MIN_GROUP = 2`、
+    `L3_PAGE_BYTES = 4 * 1024`、`QUOTE_LIMIT_BYTES = 200`、`BASIS_SEQ_PREFIX = "seq:"`。
+  - token 集合 = ASCII 词 + 汉字单字 + 相邻汉字双字组（与 FTS 分词**分开实现**；只收
+    双字时短句交叠被长度差压垮，只收单字则被"的/用"这类高频字主导）。
+  - L2 = 簇内引用式拼装：`- <原文压成一行> [<memory_id>@<revision>]`，块间空行；
+    `evidence` 每条 `{memory_id, revision, quote}`，`proof_count == len(evidence)`；
+    引文超 200 字节截断并标 `…[截断]`（不静默砍）。
+  - L3 = user 作用域 + `kind=preference` + `origin ∈ {user_explicit, user_confirmed}` +
+    `layer='l1'` + active，按 4 KiB 预算**整行**装入；放不下就停并追加
+    `[预算已满：…]`（不做半行截断）。**只做 user 作用域**：偏好页是"关于这个人"的页面。
+  - `source_refs = ("seq:<basis_seq>", *sorted(memory_id))`，`basis_seq = max(last_seq)`。
+    `page_memory_id = mem_<sha256(scope_uri \0 layer \0 content)[:16]>`：同作用域 + 同层 +
+    同正文 ⇒ 同 id，重复 `consolidate` 幂等。
+  - `consolidate()` 就位校验：合成层非法（`l1` / 未知名）或 `proof_count != len(evidence)`
+    一律拒——不给"生成算法漏一条证据"留进门缝。
+- **投影应用** `_apply_consolidate` / `_apply_consolidate_page`：只认**事件里的 output**
+  （正文引用 / 证据 / 时间 / 来源），**不重算**合成算法（重算会让 replay 变成"再猜
+  一次"，事件说 A、投影写 B）；重复页幂等；同作用域同层的 **candidate** 旧页
+  `_supersede(seq)` 退役（行保留，旧正文与它当时站的 evidence 仍可 `get`）；正文过
+  `redact_or_block` 闸门（命中就拒，坏页不入库）。**重复页幂等**（同 id + 同 layer +
+  同 `content_ref` 且状态是 candidate/active 直接返回；执行侧在此之上先看现有状态：
+  active/candidate → 不重复写行、`output` 如实给现有 status；已退役/已擦除 → 在
+  `put_content` **之前** fail-closed（**两阶段：先把全部页预检完，再一次统一写**；
+  否则前几页正文已落盘、后面的页才失败，照样留孤儿）（先写再失败会留孤儿 blob，恢复流程清不到——它的
+  孤儿清理只认 `tool.intent.args.content_sha256`，consolidate 的 args 只有 scope））；
+  **已 confirm 的 active 页不因合成
+  退役**（`memory.consolidate` 是模型可见、免审批的工具，能退役人确认过的页面就等于模型
+  可以撤销人的召回授权；人确认的页只有人能退，新旧页并存由 freshness 决定次序——复审提出
+  的设计边界）；**正文回退**撞回已退役的页 id → fail-closed 报错（不静默停在 superseded，
+  也不悄悄复活）。
+- **工具面**：`memory.consolidate`（`1.0` / `ACTION_CREATE` / `exposed=True` / args 仅
+  `{scope, scope_id}`，`additionalProperties=False`）→ `memory_exec._consolidate` →
+  `consolidatable_sources(scope)`（只取 `layer='l1'`、active、未擦除、未过期、正文在盘
+  上；读不到正文的行跳过——不可用的证据不进页）。**workspace 无条件拒**（与 propose 同
+  款：派发层 `DispatchDenied` + 执行侧同名纵深防御，复用 `c4.memory_scope_denied`，
+  **不新造规则号**）；task 作用域只能给自己；create 分支在
+  `permissions._classify_memory` 里跳过 kind 检查（合成页的 kind 不是模型给的）。
+  `test_veto_scope.py` 的模型可见工具封闭集同步加一名（那条绊线只许改，不许删）。
+  结果 `candidate` + `origin=inferred`，人 `confirm` 后才进召回（免审批只管
+  `memory.confirm`，合成不白送召回权）。
+- **新鲜度与排序**：`_stale_map` 按 `(scope, scope_id)` 取
+  `MAX(last_seq) WHERE layer='l1' AND status='active' AND erased_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now)`（过期 L1 不会被合成 / 召回使用，拿它判
+  陈旧是误报），`> basis_seq` ⇒ 陈旧。**`stale` 是三态**：`True` 陈旧 / `False` 已确认
+  新鲜 / `None` 不可判定（旧行没有 `seq:`；主循环输出里**省略**该字段——把"判不了"写成
+  `false` 就是谎报新鲜）。排序键唯一实现在 `_order_by_priority(..., stale=)`，被
+  `search()` 与 `retrieve()` 的**三条路径**（词面 / 无索引 / 索引不可用 / 融合）共用：
+  同一作用域优先级组里按 **`fresh`(0) → `unknown`(1) → `stale`(2)** 三档排（降权，不删、
+  不短路，符合 F10 §8）；`L1` 恒为 0（原子事实没有合成层陈旧）。
+  **复审修复**：无索引分支原先只排序、不带 stale，默认生产路径上陈旧页照样排第一——
+  现在三处同键；`test_retrieve_demotes_stale_pages_even_without_a_vector_index` 用
+  "页与 L1 同 origin / 同 created_at"的夹具把 origin 权重的掩盖去掉。
+- **replay**：`test_consolidate_output_is_replayable` 从事件重建，页正文 / 证据 /
+  `consolidated_at` 与实时写入逐项一致。
+- **测试**：`tests/test_memory_distill.py`（新，**22 条**：阈值钉住、引用拼装、两次逐
+  字节相同、改一条只动自己那块、proof/evidence 机械一致 + 坏页被就位校验拦、坏页应用
+  参数化（未知 layer / `l1` / 空 `source_refs`）、重复应用幂等、正文回退 fail-closed、
+  active 页不被合成退役、L3 预算 / 只收人给的偏好 / "预算已满"标记、L3 只 user、单条不出
+  L2、旧页被 supersede 仍可 get（含 evidence / `source_refs` 快照）、replay 一致、
+  freshness stale + 降序、**无索引路径也降权**、**无 `seq:` 时 `stale=None`**、**三档排位**、**过期 L1 不算更新证据**）；
+  `tests/test_memory_dispatch.py` **+7 条真派发 e2e**（consolidate 真在
+  `tool_manifest()` 并写出候选页、workspace 拒、task 只能本任务、确认后的页进召回并在
+  新 L1 之后变 stale（改走 `retrieve()` 并校验两路 stale 标记一致）、重复合成如实报
+  active、单页失败路径不写孤儿 blob、**多页失败先预检全部页**（L2 新页 + L3 已擦除页，
+  blob 目录一个文件都不多））；
+  `tests/test_memory_store.py`：迁移断言改 `schema_version == 3`、更高版本 fail-closed 用
+  `'4'`，并**补了真正的 v2→v3 用例**（`test_schema_v2_database_gains_the_layer_column_in_place`：
+  删 `layer`、版本置 2、重开 → 旧行一律 l1、可重复执行；原 v1 用例从没删过 `layer`，
+  证明不了这条）。
+- **负控（都真跑过，逐条按"改坏什么 → 哪条红"记）**：① 每块掺入全页面字节数（破增量
+  delta）→ 逐字节用例红；② `_stale_map` 直接 `return {}` → stale 用例红；③ 派发层去掉
+  consolidate 的 workspace 无条件拒 → e2e 红；④ L3 预算因子 ×100 → 预算用例红；⑤ L3
+  去掉 user 限定 → 只 user 用例红；⑥ 就位校验改 `if False` → 坏页用例红；⑦ 去掉
+  `retrieve()` 无索引分支的 stale 排序键 → 无索引降权用例红（复审抓到的真洞）；⑧ 不可
+  判定当成新鲜 → 三档排位用例红；⑨ 去掉既有页预检（先写正文再失败）→ 单页孤儿用例红；
+  ⑩ 在预检前先写第一页正文 → 多页孤儿用例红。**如实记**：
+  执行侧 workspace 守护**经派发路径不可达**（派发层先拒），与 `memory.propose` 同款
+  纵深防御，**没有测试能单独打红它**——不声称有覆盖。
+- **偏差 / 没做到**：
+  1. `_SCHEMA_VERSION` **这次**从 2 升到 3（与 N2 的"派生表不参与版本"不同）：`layer`
+     是 `memories` 的形状契约，旧库必须能识别；迁移只加 NOT NULL DEFAULT 列。
+  2. 规格 §4.2 #5 原写"比较 `consolidated_at` 与 L1 最大 `last_seq`"，实现改成把
+     `seq:<basis_seq>` 写进 `source_refs` 再比：`consolidated_at` 是钟表时间，系统时间
+     回拨会把"陈旧"判成"新鲜"，**而且 `memory.confirm` 这条生命周期推进会把该列改成
+     确认时刻**（L1 行也如此）——晚确认的页就会永远"新鲜"；投影里的 `last_seq` 是单调
+     逻辑时钟。旧行没有 `seq:` 时 `stale=None`（**不可判定**，主循环输出省略该字段），
+     不标陈旧、也不写成"新鲜"。
+  3. LLM 合成未做（本轮只有确定性合成）；**没有 L2/L3 vs L1 的检索质量评测**——没人
+     证明"读页比直接读 L1 更好用"，README / 评测里不许那么写。
+  4. L3 只有 user 作用域；workspace / task 的偏好页按设计不做。
+  5. 跨作用域合成、对话抽取、**冲突消解**都没做：两条矛盾的 L1 在页里并列，不裁决。
+  6. `consolidate` 不进审批表（`ACTION_CREATE`）：将来若要做"合成后自动 confirm"必须
+     另立契约，否则等于绕开"人确认才召回"。
+  7. **退役语义**：新页只把同层的 **candidate** 旧页置 superseded；active 页不动（复审
+     指出的设计边界，见上）。代价是"页会越攒越多"（每个不同的正文各一页），人用
+     forget / erase 收；没有自动回收。
+  8. **页 id 回退冲突**：正文回退到旧版会撞回已退役的 id，此时 fail-closed 报错而不是
+     自动复活——要多一条"人工决定"的路径。
+
+---
+
 ---
 
 ## 5. N4 · 忘记 vs 物理擦除（契约先行，边界写死）
@@ -531,8 +642,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 1. **契约 PR**（文档：PRD §4.1 / §5.2.2 / §5.4.2 + F10 §5 / §7 / §9 / §10）→ 合入 `main`。
    **代码注册不在这里**：`tools.SPECS` / `rules.RULE_IDS` / `schemas/` 随各实现 PR 与产生
    路径同落地（见 §0.2）。契约 PR 不合则后续 PR 不开工。
-2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。N4 可与 N1 并行；**N5 与 N1 同改
-   `dispatcher.py`，必须排在 N1 之后**；N2 / N3 也要等 N1（同改 `memory.py`）。
+2. 实现顺序：**N1 → N4 → N5 → N2 → N3 → N6**。**已按序落地**：N1（#83/#84）、N4（#85）、
+   N5（#89）、N2（#93）、**N3（#98）**；**只剩 N6（控制面 UI / Host 记忆端点）**。
 3. 每个 PR 合入前：lead 在最新 `main` 上跑全量 + `ruff` + `uv lock --check`；冲突一律
    lead 解。工具面绊线（`test_veto_scope.py`）随工具变化同步登记。
 4. 全部合入后 lead 收尾：
@@ -565,7 +676,8 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
 ## 10. 本文不宣称的事
 
 - 本文**没有**变更任何现行契约：C2/C4/PRD/`schemas/` 的实际改动在 §1 的契约 PR 里。
-- 本文的"现状"全部是 `main @ 915be6a` 的代码事实；**没有**跑过 §2–§7 的判据（那些测试
-  还不存在）。
+- §2–§7 的判据**已全部落地并由测试钉住**（N1/N2/N3/N4/N5）；逐条对账在
+  `docs/F10-memory-design.md` §14 与各工作流的"落地记录"（§2.3 / §3.4 / §4.4 / §5.4 / §6.4）。
+  **N6 仍未实施**，它的判据（§7.3）目前一条测试都没有——别把本文的设计读成已实现。
 - §2–§7 的设计是**待实施**方案，不是"已完成"；实施后每条都要能指到测试函数名与负控
   输出，否则按未修处理。

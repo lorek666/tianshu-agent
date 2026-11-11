@@ -60,6 +60,7 @@ if TYPE_CHECKING:  # pragma: no cover - 只要类型，不把 memory.py 拖成�
 MEMORY_TOOL_IDS = frozenset(
     {
         "memory.propose",
+        "memory.consolidate",
         "memory.remember",
         "memory.edit",
         "memory.promote",
@@ -333,7 +334,10 @@ class MemoryExecutor:
         declared: Sequence[str] = (
             tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
         )
-        if admitted.tool_id == "memory.propose" and target_scope.scope == "workspace":
+        if (
+            admitted.tool_id in ("memory.propose", "memory.consolidate")
+            and target_scope.scope == "workspace"
+        ):
             # workspace 是**共享边界**：它**无条件**拒绝模型可见的 propose，
             # 不因 Task.is_control 放行——控制面标记是 Task 级的，同一 Task 上
             # 后开的模型 Run 会继承它（独立复审的探针复现过这个洞）。
@@ -371,7 +375,7 @@ class MemoryExecutor:
             # 注：authority / policy 通常已经先拒了"写别人的 task"，这里保留
             # 同名判定作纵深防御——执行侧不因为"上游说不行"就少一道核验。
             if (
-                admitted.tool_id == "memory.propose"
+                admitted.tool_id in ("memory.propose", "memory.consolidate")
                 and target_scope.scope == "task"
                 and target_scope.scope_id != req.task_id
             ):
@@ -481,6 +485,8 @@ class MemoryExecutor:
 
         if admitted.tool_id == "memory.propose":
             return self._propose(admitted, scope)
+        if admitted.tool_id == "memory.consolidate":
+            return self._consolidate(admitted, scope)
         if admitted.tool_id == "memory.remember":
             return self._remember(admitted, scope)
         if admitted.tool_id == "memory.edit":
@@ -578,6 +584,92 @@ class MemoryExecutor:
                 "content_bytes": len(redacted.encode("utf-8")),
                 "content_sha256": _sha(redacted.encode("utf-8")),
                 "redacted": redacted != content,
+            },
+        )
+
+    def _consolidate(self, admitted: AdmittedCall, scope: MemoryScope) -> ToolResult:
+        """L2/L3 确定性合成：只读 L1 证据、产出**候选页**（人 confirm 才召回）。"""
+        from .memory_distill import consolidate, page_memory_id
+
+        sources = self._projection.consolidatable_sources(scope)
+        pages = consolidate(sources, scope=scope)
+        # 合成是纯函数：没有可合成的内容就明确返回空页，不写任何行。
+        self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
+        now = self._clock()
+
+        # ---- 阶段一：**先把每一页都预检完**，一行正文都还没写 ----
+        #
+        # 为什么不能"边检边写"：页 id 由 (作用域, 层, 正文) 决定，正文回退会撞回
+        # 已退役的 id。若边检边写，前几页的正文已经落盘、后面的页才失败——那些
+        # 正文就是没人引用的孤儿，而恢复流程的孤儿清理只认
+        # `tool.intent.args.content_sha256`（consolidate 的 args 只有 scope），
+        # 清不到它。所以先预检全部，全部合法再统一写。
+        planned: list[tuple[Any, str, Any]] = []
+        for page in pages:
+            memory_id = page_memory_id(scope.to_uri(), page)
+            existing = self._projection.get(memory_id, allowed=(scope,))
+            if existing is not None and existing.status not in ("candidate", "active"):
+                raise TianshuError(
+                    f"合成页 {memory_id!r} 已存在且状态是 {existing.status!r}："
+                    "同一段正文不能再作为新的候选页写入"
+                )
+            planned.append((page, memory_id, existing))
+
+        # ---- 阶段二：预检全过，才开始写正文 ----
+        out_pages: list[dict[str, Any]] = []
+        created = 0
+        existing_pages = 0
+        for page, memory_id, existing in planned:
+            item = page.to_output()
+            if existing is not None:
+                # candidate / active：这一页已经在库里，不重复写行；output 里如实给
+                # 出现有状态（不能一律写 "candidate"——已确认的页会变成"事件说候选、
+                # 投影是 active"，审计与后续 confirm 都对不上）。
+                item.update(
+                    {
+                        "memory_id": memory_id,
+                        "content_ref": existing.content_ref,
+                        "consolidated_at": existing.consolidated_at or now,
+                        "status": existing.status,
+                        "origin": existing.origin,
+                        "existing": True,
+                    }
+                )
+                existing_pages += 1
+                out_pages.append(item)
+                continue
+            content_ref = self._projection.put_content(page.content)
+            if not isinstance(content_ref, str) or not content_ref:
+                raise TianshuError("记忆投影没有返回 content_ref")
+            item.update(
+                {
+                    "memory_id": memory_id,
+                    "content_ref": content_ref,
+                    "consolidated_at": now,
+                    "status": "candidate",
+                    "origin": "inferred",
+                    "existing": False,
+                }
+            )
+            out_pages.append(item)
+            created += 1
+        return ToolResult(
+            "succeeded",
+            "applied",
+            {
+                "path": scope.to_uri(),
+                "memory_uri": scope.to_uri(),
+                "scope": scope.scope,
+                "scope_id": scope.scope_id,
+                "sources": len(sources),
+                "pages": out_pages,
+                # `created` / `existing` 分开报：重复合成不是"又写了一遍"，
+                # 读结果的人要能分清这几页是新写的还是本来就有的。
+                "created": created,
+                "existing": existing_pages,
+                "before_state": "absent",
+                "after_state": f"memory:{scope.to_uri()}:l2/l3:{len(out_pages)}",
+                "redacted": False,
             },
         )
 

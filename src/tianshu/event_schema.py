@@ -179,6 +179,7 @@ _TOOL_ID = _enum(
     "create_report",
     "delete_file",
     "list_files",
+    "memory.consolidate",
     "memory.confirm",
     "memory.edit",
     "memory.erase",
