@@ -123,15 +123,28 @@ def test_local_report_covers_four_boundaries(local_report):
 
 
 def test_local_backend_statuses_match_reality(local_report):
-    """本机实测：三个边界不隔离；进程树终止 POSIX 可确认、其它平台不宣称。"""
+    """本机实测：三个边界不隔离；进程树终止 POSIX 可确认、其它平台不宣称。
+
+    Windows 上网络探针可能因为 runner 的 winsock 服务故障而落成 `unknown`
+    （实测 [WinError 10106]），那是**探针跑不成**，不是「网络被挡住」。所以
+    只对 POSIX 要求三边界都 `not_enforced`；其它平台允许网络 `unknown`，但
+    仍要求文件/凭据实测 `not_enforced`（它们不依赖 winsock）。
+    """
     expected = {
         ISOLATION_BOUNDARY_FILES: BOUNDARY_NOT_ENFORCED,
-        ISOLATION_BOUNDARY_NETWORK: BOUNDARY_NOT_ENFORCED,
         ISOLATION_BOUNDARY_CREDENTIALS: BOUNDARY_NOT_ENFORCED,
     }
+    if POSIX:
+        expected[ISOLATION_BOUNDARY_NETWORK] = BOUNDARY_NOT_ENFORCED
     for boundary, status in expected.items():
         assert local_report.finding(boundary).status == status, (
             f"{boundary} 实测与预期不符：{local_report.finding(boundary).evidence}"
+        )
+    if not POSIX:
+        # 探针本身跑不成时结论必须是 unknown（fail-closed），不能是 enforced。
+        network = local_report.finding(ISOLATION_BOUNDARY_NETWORK)
+        assert network.status in (BOUNDARY_NOT_ENFORCED, BOUNDARY_UNKNOWN), (
+            f"network 实测与预期不符：{network.evidence}"
         )
     tree = local_report.finding(ISOLATION_BOUNDARY_PROCESS_TREE)
     if POSIX:
@@ -152,7 +165,10 @@ def test_local_declaration_does_not_overclaim_measured_evidence(local_report):
                 f"{boundary}：声明 enforced 但实测 {measured}"
             )
         elif claim == BOUNDARY_NOT_ENFORCED:
-            assert measured == BOUNDARY_NOT_ENFORCED, (
+            # 声明保守、实测读不出（探针跑不成 → unknown）是允许的：unknown
+            # 与 not_enforced 一样会阻断依赖能力。但不允许实测被升级成
+            # enforced 后声明还停在 not_enforced 却不更新。
+            assert measured in (BOUNDARY_NOT_ENFORCED, BOUNDARY_UNKNOWN), (
                 f"{boundary}：声明 not_enforced 但实测 {measured}"
             )
         else:
@@ -213,8 +229,11 @@ def test_lying_backend_is_refused_despite_claiming_isolation(lying_report):
     assert lying_report.finding(ISOLATION_BOUNDARY_FILES).status == (
         BOUNDARY_NOT_ENFORCED
     )
-    assert lying_report.finding(ISOLATION_BOUNDARY_NETWORK).status == (
-        BOUNDARY_NOT_ENFORCED
+    # Windows runner 的 winsock 故障会让网络探针读成 unknown——同样必须被门
+    # 拒绝；这里只要求「不是 enforced」，不把探针失败洗成「已挡住」。
+    assert lying_report.finding(ISOLATION_BOUNDARY_NETWORK).status in (
+        BOUNDARY_NOT_ENFORCED,
+        BOUNDARY_UNKNOWN,
     )
     assert lying_report.finding(ISOLATION_BOUNDARY_CREDENTIALS).status == (
         BOUNDARY_NOT_ENFORCED
@@ -225,7 +244,7 @@ def test_lying_backend_is_refused_despite_claiming_isolation(lying_report):
             isolation.CAPABILITY_UNTRUSTED_LOCAL_MCP,
             report=lying_report,
         )
-    assert "not_enforced" in str(refused.value)
+    assert "not_enforced" in str(refused.value) or "unknown" in str(refused.value)
     assert isolation.enabled_capabilities(backend, report=lying_report) == []
 
 
