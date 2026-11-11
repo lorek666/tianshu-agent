@@ -201,9 +201,11 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**78** 条。41 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+- `tests/test_event_schema.py`：**80** 条。41 个类型 ×（一正一反例）、v1/v0 夹具逐行、
   版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
   blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
+  **`legacy_write` 不被误用的两条元测试**（生产代码零调用点 + 显式 legacy 仍须过
+  v0 封闭 schema）、
   schema JSON 镜像、枚举与代码常量三处绑定、关键字/dialect fail-closed。
 - `tests/fixtures/events/minimal_v1.json`、`legacy_v0.jsonl`。
 - 两处**授权**的既有测试最小改动（旧口径 → 新口径，断言强度不变）：
@@ -213,7 +215,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。
-- 全量（**merge `origin/main` 之后**，本分支实测）：`1414 passed, 6 skipped`，
+- 全量（**merge `origin/main` 之后**，本分支实测）：`1517 passed, 7 skipped`，
   `ruff check .` 干净。
 - merge 后**绑定测试当场抓到两处契约漂移**（正是它们存在的目的）：
   ① `task.created` 新增 `control` / `memory_scopes`（记忆契约 v1.2，PR #78）；
@@ -256,6 +258,14 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
    3 failed, 75 passed
    ```
 
+4. **把 `legacy_write=True` 改成无条件放行任意 payload**（跳过 v0 封闭校验）：
+   `test_legacy_write_is_not_a_wildcard` 红——证明它不是万能开关：
+
+   ```
+   FAILED tests/test_event_schema.py::test_legacy_write_is_not_a_wildcard
+   1 failed, 79 passed
+   ```
+
 复现命令：
 
 ```bash
@@ -295,3 +305,32 @@ PYTHONPATH=/Volumes/Date/ts-wt-events/src /Volumes/Date/天枢Agent/.venv/bin/py
 - `tests/test_event_schema.py` + `tests/fixtures/events/`（新）；`tests/test_events.py`
   两处授权调整；`tests/test_credentials.py` 一处授权调整。
 - 不新增事件类型、不改信封字段、不加运行时依赖。
+
+## 11 附录：测试夹具迁移清单（显式 `legacy_write=True`）
+
+默认严格之后，**历史夹具的播种写入**必须显式声明"我知道这是旧形状"。生产路径
+**零改动**（元测试 `test_production_code_never_requests_legacy_writes` 用 AST 扫
+`src/tianshu/**/*.py` 钉住）。迁移只加关键字参数，不改 payload、不改断言、不删测试；
+内嵌子进程脚本（`_CHILD` / `_PREV`）里的调用同样显式加在脚本内。
+
+| 文件 | 调用点（迁移时行号） | 用途 |
+|---|---|---|
+| `tests/test_memory_store.py` | 72/299/341/358/362/368 | 记忆投影的旧事件夹具播种 |
+| `tests/test_memory_loop.py` | 142/159/659/717 | 记忆工具 proposal/确认/遗忘的旧 result 夹具 |
+| `tests/test_crash_consistency.py` | 内嵌 `_CHILD` 脚本（run.start/tool.intent）、592 | 掉电一致性旧日志夹具（子进程内播种） |
+| `tests/test_backup.py` | 68/71/459 | 备份/恢复的旧事件与 blob 引用夹具 |
+| `tests/test_migration.py` | 59/62 | 迁移前旧库形状夹具 |
+| `tests/test_debug_regressions.py` | 49/52/394/509/528 | DEBUG-M0M1 回归的旧日志夹具（`_intent` helper） |
+| `tests/test_undo_journal.py` | 70 | 未完成撤销的旧 run 夹具 |
+| `tests/test_evidence_keys.py` | 530/582/629 | **旧 receipt 正面证据**（rcpt_legacy/rcpt_old、无 root）与旧 intent |
+| `tests/test_takeover.py` | 283/285/300/302 + 内嵌 `_PREV` 脚本 | 接管对账的"前任旧形状 run"夹具 |
+| `tests/test_failclosed.py` | 211/218/284/291/318 | 历史阻断事件；318 是**故意构造的畸形事件**（注释写明测读侧 fail-closed，不是放行写入） |
+| `tests/test_authority_block.py` | 70/77 | 跨数据根阻断的旧 run 夹具 |
+| `tests/test_transactions.py` | 39/66 | 事务回滚/组合用任意旧 payload 夹具 |
+| `tests/test_context.py` | 918/925/960/972 | replay 的旧日志夹具（F5 之前没有 context 字段） |
+| `tests/test_acceptance.py` | 252/264/265 | append-only/seq 验收的任意 payload 夹具 |
+| `tests/test_run_control.py` | 1263/1268 | 未计费 model.intent 夹具 |
+| `tests/test_recovery.py` | 355/358 | 恢复场景的旧 run 夹具 |
+| `tests/test_dispatch.py` | 500 | 派发恢复的 pending intent 夹具 |
+| `tests/test_daemon.py` | 806 | daemon 恢复的旧 intent 夹具 |
+| `tests/test_job_claims.py` | 346/676 | 用生产 `commit_model_turn` 播种 model turn：把旧 adapter 形状（缺 `output_tokens`、`finish_reason="tool_calls"`）改为当前契约值；**不加 legacy 写**（生产 API 不应该接受旧形状） |
