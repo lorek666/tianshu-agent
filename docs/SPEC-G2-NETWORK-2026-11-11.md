@@ -381,4 +381,4 @@ def summary_text(fetched, limit_bytes) -> str       # UTF-8 有损解码 + 截�
 | 规格 | — | 本文件 | — | — |
 | I1 + I2 | **#110** | `outbound_allow` + `network.fetch` | 18 + 23 条 | 5 + 8 全红 |
 | I3 | 本 PR | §10.5 联网研究闭环（RU-W1 v2 断网 / RU-W2 v2 本机夹具） | 11 条 + 真实任务 22 条 | 5 全红 |
-| 对账 | 待回填 | 交付文档 / PRD / KNOWLEDGE / README | — | — |
+| 对账 | 本 PR | 交付文档 / PRD / KNOWLEDGE / README | — | — |
