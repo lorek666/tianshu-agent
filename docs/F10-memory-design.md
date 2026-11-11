@@ -210,14 +210,15 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | `memory.propose` | 写**候选**（惰性草稿：未激活不召回，可遗忘 / 编辑 / 重建） | 不需要 |
 | `memory.confirm` | **激活**（进入长期召回） | 需要；`origin=user_explicit` 除外——用户本人刚说的话就是授权 |
 | `memory.forget` | 写 tombstone | 需要（等同删除） |
-| `memory.edit`（v1.2 契约） | 改一条记忆：旧版保留可查、新版生效 | **需要**（覆盖类） |
-| `memory.promote`（v1.2 契约） | 把 `user` 记忆**共享**进 workspace / task | **需要**（共享是显式动作） |
-| `memory.remember`（v1.2 契约） | 人直接记住（`origin=user_explicit`） | 不需要——人本人就是签发者；模型清单里没有这个工具 |
+| `memory.edit`（N1 已落地） | 改一条记忆：旧版保留可查、新版生效 | **需要**（覆盖类） |
+| `memory.promote`（N1 已落地） | 把 `user` 记忆**共享**进 workspace / task | **需要**（共享是显式动作） |
+| `memory.remember`（N1 已落地） | 人直接记住（`origin=user_explicit`） | 不需要——人本人就是签发者；模型清单里没有这个工具 |
 | `memory.consolidate`（v1.2 契约） | 合成 L2/L3（只写可重建投影） | 不需要；结果 `candidate`，召回仍需 `confirm` |
 | `memory.erase`（v1.2 契约） | 删正文副本与检索索引 | **需要**（等同删除 + Receipt） |
 
-> 带「v1.2 契约」的行是**已定义、未落地**的形状（PRD §5.2.2 / §5.4.2）：代码里还没有这些
-> 工具，`tool_manifest()` 也不会给出它们。别把这张表读成"现在就能调"。三条"仅控制面"的
+> `memory.consolidate` / `memory.erase` 两行仍是**已定义、未落地**的形状（PRD §5.2.2）：代码里
+> 还没有这两个工具。`memory.remember` / `memory.promote` 是控制面专属（`exposed=False`），
+> 模型清单里没有它们，但 CLI 已经能调。别把整张表读成"模型全能调"。三条"仅控制面"的
 > 判据是 `Task.is_control`（`task.created` payload 的 `control: true`，执行侧再核一次）；
 > `memory.erase` 的回执**不是规则编号**——Receipt 在结果侧产生，回执对不上时结论是
 > `effect_state=unknown` 并阻断后续擦除。
@@ -314,7 +315,7 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 |---|---|---|---|
 | 1 | PRD §4.1 `Memory` 实体字段（本文 §5） | ✅ 15 个字段已落地；`layer` / `erased_at` 仅契约 | 文档 `docs/PRD-v1.md` §4.1；代码 `memory.Memory`（`memory.py`）与本文 §5 **原 15 个字段**逐项一致。v1.2 新增的 `layer` / `erased_at?` **尚未落库**（本文 §5 已标注"代码未落地"），落地时由 N3 / N4 把本行改成 17 个字段 |
 | 2 | PRD §7 F10 需求细化（本文 §4 / §6 / §8） | ✅ 文档已写 | `docs/PRD-v1.md` §7 P1 `F10` 行（指向本文） |
-| 3 | C2：`memory.*` 工具（版本化 + schema） | ✅ 已落地（N1 后 6 个） | `tools.SPECS` 记忆段：5 个模型可见工具（`memory.propose` 升 **2.0**，加 `scope`/`scope_id`；其余 `1.0`）+ 1 个控制面专属 `memory.remember`（`1.0`、`exposed=False`，不进 `tool_manifest()`）；均无 `path_arg` |
+| 3 | C2：`memory.*` 工具（版本化 + schema） | ✅ 已落地（N1 后 8 个） | `tools.SPECS` 记忆段：6 个模型可见工具（`memory.propose` 升 **2.0**，加 `scope`/`scope_id`；其余 `1.0`）+ 2 个控制面专属 `memory.remember` / `memory.promote`（`1.0`、`exposed=False`，不进 `tool_manifest()`）；均无 `path_arg` |
 | 4 | C2：只读工具执行路径 | ✅ 已落地 | `loop.AgentLoop._exec_read` 在目录解析**之前**分流 → `_exec_memory_read` / `_memory_search_output` / `_memory_get_output`；结果记 `none_applied` |
 | 5 | C2：写工具目标解析（`memory://`） | ✅ 已落地 | `loop.AgentLoop._target_for` → `_memory_target`：`confirm` / `forget` 的作用域由记忆自身决定，模型参数改不了 |
 | 6 | C4：资源种类解析（scheme 前缀） | ✅ 已落地 | `resources.parse_resource` / `parse_memory_uri` / `MemoryScope` / `ResourceRef`；封闭集 `RESOURCE_KINDS` |
@@ -335,8 +336,8 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 21 | 崩溃恢复（`recover_run`）的记忆分支 | ❌ 未落地（已知限制） | `recovery.recover_run` 没有记忆专门分支：`tool.intent` 已提交但 `tool.result` 未落库时，恢复按**既有文件写工具的推断**走（多数情况记 `none_applied`，快照缺失时 `unknown` 并可能阻断目录），不是精确的记忆恢复。**投影侧不受影响**——`apply_event` 只在 `_commit_result` 的事务里被调用，没有 result 就不会有半条投影（`test_mid_write_failure_is_unknown_and_leaves_no_half_projection` 钉住这条）；但"这次记忆写入到底生效了没有"的结论仍依赖既有推断，而不是记忆专用证据。要精确回答需给 `recovery.py` 加记忆分支，单独工单 |
 | 22 | `origin` 的 `user_confirmed` 迁移 | ✅ 已落地（N1） | `memory_exec.MemoryExecutor._transition` 在 confirm 有审批且审批人是人（`Approval.decided_by` 非空）时给 output 加 `origin="user_confirmed"`；`memory._apply_confirm` 只允许 `inferred → user_confirmed`（只升级不降级，别的值直接拒绝）。`user_explicit` 由 `memory.remember` 产生。测试：`test_human_approval_upgrades_origin_to_user_confirmed` / `test_remember_is_control_plane_only` |
 | 23 | §8 的作用域优先级（优先当前任务 / 工作区证据） | ❌ 未实现 | 排序口径目前被钉为 `origin` → `created_at` 降序（`MemoryProjection.search`），作用域只用于**过滤**（loadout + `allowed`），不参与打分。后果：同一用户同时有 user 与 workspace 两条相关记忆时，不会优先给贴近当前任务的证据。这是 F10 §8 原述的一部分，未做就如实标注，别当成"已经按 F10 做了" |
-| 24 | 编辑 / `supersede` 的**生产入口** | ❌ 未落地（入口缺口） | 投影层与 `apply_event` 能消费 `output.supersedes` 并保留旧行，但**没有工具 / CLI / 执行器产生它**：`memory.propose` 的 schema 无 `supersedes` 且 `additionalProperties:false`，`MemoryExecutor._propose` 不读它，`grep -rn supersedes src/tianshu` 只命中 `memory.py`（与 `cli.py` 的只读打印）。`test_supersede_keeps_old_row_but_removes_it_from_recall` 是**测试播种** output，不是生产路径。后果：§9"用户能直接编辑"没有兑现。补法：加 `memory.edit`（或给 `memory.confirm` 加受控 `supersedes`），走 C4 overwrite 审批 + Receipt，参数绑 `memory_id`/`revision` 与旧版 |
-| 25 | workspace / task 作用域的**创建**入口 | ⚠️ 部分落地（N1：task 已通；workspace 待 N1 后续） | 模型可 `memory.propose` 到**本任务**的 task 作用域（schema 2.0 的 `scope`/`scope_id`，执行侧核验 scope_id == 本 Run 的 task_id）；控制面可用 `memory_scopes` 声明旧 task 作用域。**workspace 仍不能由模型写，而且这是无条件的**：propose 对 workspace 一律拒，不因 `Task.is_control` 放行——控制面标记是 Task 级的，同一 Task 上后开的模型 Run 会继承它（独立复审探针复现过）。共享写只有一条路：`memory.promote`（`exposed=False`，尚未落地，§13 #24 同一批） |
+| 24 | 编辑 / `supersede` 的**生产入口** | ✅ 已落地（N1） | `memory.edit`（`1.0`，overwrite，需审批）：一次审批 = 旧行 `superseded`（`revision` 不变、仍可按 id 查到）+ 新行 `active`（新 `memory_id`、`revision=1`、`supersedes=旧 id`、`origin` 由审批出处升为 `user_confirmed`）；`check_request_preconditions` 绑定 `before_revision`，不一致 → `dispatch.memory_stale_revision`；不允许改 `kind`。测试：`test_edit_with_approval_keeps_old_row_and_activates_new` / `test_edit_requires_the_revision_the_human_saw` / `test_cli_edit_keeps_old_row_and_activates_new` |
+| 25 | workspace / task 作用域的**创建**入口 | ✅ 已落地（N1） | ① 模型可 `memory.propose` 到**本任务**的 task 作用域；② **workspace 共享**由人经 `memory.promote`（`exposed=False`，需审批）进入：原行立即 `superseded`（原作用域不再召回）、目标作用域新行 `candidate`（再 `confirm` 才召回），`source_refs` 必含原 `memory_id`，Receipt 针对**原行**（`receipt_memory_id`）；③ propose→workspace **无条件拒**（含控制 Task 被复用为模型 Run）。测试：`test_model_can_only_propose_into_its_own_task_scope` / `test_workspace_propose_is_refused_even_on_a_control_task` / `test_promote_is_control_only_and_moves_memory` / `test_cli_promote_moves_memory_into_task_scope` |
 | 26 | 派发审计表的正文保留与闸门时序 | ⚠️ 部分落地 | `dispatch_requests.args_payload` 保存**完整**尝试参数，因此也保存记忆正文原文；而 PII / 密钥闸门在 `MemoryExecutor` 里、请求行在 `prepare()` 就落库——**被闸门阻断的候选仍会在审计表留下原文**。已修的一半：**被拒绝**（`_reject`）的记忆写请求脱敏成 `content_sha256` + `content_bytes`（拒绝的请求永不执行，脱敏不破坏派发/审批绑定；`test_rejected_memory_write_keeps_no_raw_content_in_the_request_table`）。未修的一半：**被采纳后**又被内容闸门挡掉的请求仍保留原文——彻底修要把内容扫描挪到落库之前，或给审计表定保留/擦除策略，单开契约工单。注意执行器**从这张表取参数**，所以被采纳的行不能脱敏 |
 | 27 | CLI 对 task 作用域记忆的限制 | ✅ 已解除（N1） | `Dispatcher.open_control_run(memory_scopes=...)` 把声明写进 `task.created` payload 与 `Task.is_control`；CLI `memory confirm\|forget --task-id` 用它在**不绑旧 task 目录**的前提下签字。测试：`test_control_run_can_forget_an_old_task_scope_memory` / `test_cli_can_forget_task_scope_memory_with_task_id` |
 | 28 | 控制面标记与作用域声明（N1） | ✅ 已落地 | `Task.is_control` / `Task.memory_scopes` 从 `task.created` payload 读回；`Dispatcher.open_control_run` 写 `control: true` + `memory_scopes`；`task.created` 只加键、**不新增事件类型**；rebuild 后仍在（`test_control_marker_and_scope_declaration_survive_rebuild`）。越权 → `c4.memory_control_scope_binding` |
@@ -384,6 +385,10 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 | 控制面标记与声明作用域落进事件、重建后仍在 | ✅ 已覆盖 | `test_control_marker_and_scope_declaration_survive_rebuild`（`tasks.rebuild_from_events()` 后 `is_control` / `memory_scopes` 不变） |
 | 模型只能写本任务的 task 作用域；workspace **无条件**只能由人 `promote` | ✅ 已覆盖 | `test_model_can_only_propose_into_its_own_task_scope`、`test_model_cannot_propose_into_workspace_scope`（派发层即拒、投影无行）、`test_workspace_propose_is_refused_even_on_a_control_task`（**控制任务被复用为模型 Run** 也拒——复审探针复现过的洞） |
 | CLI `memory remember` 直接创建 `active` + `user_explicit` 记忆 | ✅ 已覆盖 | `test_cli_remember_creates_active_user_explicit_memory`（黑盒 CLI + 投影复核） |
+
+| 编辑一次审批两行：旧版 `superseded` 可查、新版 `active`、不许改 kind | ✅ 已覆盖 | `test_edit_with_approval_keeps_old_row_and_activates_new`（旧行 revision 不变 + 新行 origin=user_confirmed + 凭据可核对）、`test_edit_requires_the_revision_the_human_saw`（过期 revision 拒）、`test_cli_edit_keeps_old_row_and_activates_new` |
+| 提升是移动：原行退役、目标作用域候选、Receipt 指原行、只控制面能做 | ✅ 已覆盖 | `test_promote_is_control_only_and_moves_memory`（模型路径 `c4.memory_control_scope_binding`；控制 Run 成功后原作用域不再召回、`source_refs` 含原 id、`verify_receipts` 通过）、`test_cli_promote_moves_memory_into_task_scope` |
+| 编辑 / 提升**永远**要人工审批（`user_explicit` 的免审批只管 confirm） | ✅ 已覆盖 | 策略与 `_requires_approval` 都按 `memory_tool == "memory.confirm"` 收口；负控：去掉该限制 → `test_cli_edit_keeps_old_row_and_activates_new` 红（`overwrite 缺少审批绑定`） |
 
 ## 15. 与实施计划的关系
 
