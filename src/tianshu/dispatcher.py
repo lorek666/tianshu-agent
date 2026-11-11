@@ -270,12 +270,17 @@ class ControlRun:
 
     它有自己的 Task、Run 和 JobClaim，不借用被撤销那个历史 Run 的
     已经失效的身份；同时把"操作的是哪个历史 Run"写在目标里。
+
+    `memory_scopes` 是控制面显式声明的记忆作用域（`memory://...` URI）：
+    有了它，CLI 能替**旧 task** 的记忆做确认 / 遗忘，而不必因此拿到那个 task
+    的 workspace 绑定。它只对记忆动作生效，不是文件权限。
     """
 
     task: Task
     run: Run
     claim: JobClaim
     lease_paths: tuple[str, ...]
+    memory_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1060,7 +1065,11 @@ class Dispatcher:
             raise AuthorityWriteFailed("；".join(problems))
 
     def open_control_run(
-        self, *, goal: str, workspaces: list[WorkspaceBinding | str | dict[str, Any]]
+        self,
+        *,
+        goal: str,
+        workspaces: list[WorkspaceBinding | str | dict[str, Any]],
+        memory_scopes: list[MemoryScope | str] = (),
     ) -> ControlRun:
         """为"用户直接发起的写"建立自己的 Task/Run/JobClaim。
 
@@ -1069,11 +1078,21 @@ class Dispatcher:
 
         抢 stale 租约前**必须对账**（issue #61.2）：前任 run 有未核实副作用时
         拒绝接管、登记阻断，而不是在同一棵目录树上接着写。
+
+        `memory_scopes`（契约 v1.2）：控制面显式声明的记忆作用域，落进
+        `task.created` payload 与 `Task.is_control`。记忆动作据此授权；文件动作
+        仍然只认目录绑定 + 租约，不因这组声明多拿一个字节。
         """
         goal = (goal or "").strip()
         if not goal:
             raise DispatchError("控制 Run 的目标不能为空")
-        task = self._tasks.create_task(goal, workspaces)
+        declared: list[str] = []
+        for item in memory_scopes:
+            scope = item if isinstance(item, MemoryScope) else parse_memory_uri(item)
+            declared.append(scope.to_uri())
+        task = self._tasks.create_task(
+            goal, workspaces, control=True, memory_scopes=declared
+        )
         run = self._tasks.start_run(task.task_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         # **零绑定控制 Run 是合法的**：人直接发起的记忆操作（CLI 的
@@ -1119,6 +1138,7 @@ class Dispatcher:
             run=run,
             claim=claim,
             lease_paths=tuple(str(b.root_path) for b in task.workspaces if b.can_write),
+            memory_scopes=tuple(task.memory_scopes),
         )
 
     def close_control_run(self, control: ControlRun, *, outcome: str = "succeeded",
@@ -1237,6 +1257,14 @@ class Dispatcher:
 
         projection = self._memory_projection()
         scope = target.scope
+        # 控制面声明的作用域（只对 is_control 的任务生效）。**无条件覆盖**请求
+        # 自带的同名键：这个值只能由派发层从 task 投影算出来，不能由调用方填。
+        task = self._tasks.get_task(request.task_id)
+        is_control = bool(getattr(task, "is_control", False)) if task else False
+        pre["memory_declared_scopes"] = (
+            list(getattr(task, "memory_scopes", ()) or ()) if is_control else []
+        )
+        pre["memory_is_control"] = is_control
         if request.action == ACTION_CREATE:
             kind = args.get("kind")
             pre["memory_kind"] = kind if isinstance(kind, str) else ""
@@ -1288,6 +1316,24 @@ class Dispatcher:
         args: dict[str, Any],
     ) -> None:
         """记忆的 status/revision 从权威投影读；不成立就抛确定的拒绝。"""
+        task = self._tasks.get_task(request.task_id)
+        is_control = bool(getattr(task, "is_control", False)) if task else False
+        if request.tool_id == "memory.remember" and not is_control:
+            # 契约 v1.2：控制面专属工具不能在普通任务里执行。拒绝点在派发层，
+            # 执行侧还有一次独立核验（memory_exec._verify）。
+            raise DispatchDenied(
+                "控制面专属工具不能在普通任务里执行",
+                "c4.memory_control_scope_binding",
+            )
+        if request.tool_id == "memory.propose" and target.scope.scope == "workspace":
+            # workspace 是共享边界：模型可见的 propose **无条件**拒，不因
+            # Task.is_control 放行（控制面标记会被同一 Task 上后开的模型 Run
+            # 继承）。执行侧还有一道同名核验，这里只是把拒绝提前到派发。
+            raise DispatchDenied(
+                f"workspace 作用域只能由人经 memory.promote 进入："
+                f"{target.scope.to_uri()}",
+                "c4.memory_scope_denied",
+            )
         if request.action == ACTION_CREATE:
             return
 
@@ -1430,8 +1476,15 @@ class Dispatcher:
                     "dispatch.memory_resource_mismatch",
                 )
             scope = parsed[0].memory_scope
+            is_control = bool(getattr(task, "is_control", False))
+            declared = (
+                tuple(getattr(task, "memory_scopes", ()) or ()) if is_control else ()
+            )
             allowed, reason = memory_scope_allowed(
-                scope, task_id=request.task_id, bindings=bindings
+                scope,
+                task_id=request.task_id,
+                bindings=bindings,
+                declared=declared,
             )
             if not allowed:
                 # 租约是给目录的；记忆跳过租约，但**不跳过**作用域授权。
@@ -2060,7 +2113,7 @@ class Dispatcher:
         batch: list[dict[str, Any]] = [result_event]
 
         if is_memory:
-            if request.tool_id in ("memory.confirm", "memory.forget"):
+            if request.tool_id in ("memory.confirm", "memory.forget", "memory.remember"):
                 receipt = build_memory_receipt(
                     run_id=request.run_id,
                     call_id=request.call_id,
