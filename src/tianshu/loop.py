@@ -32,15 +32,20 @@ from pathlib import Path
 from typing import Any
 
 from .budget import (
+    BOUND_ESTIMATE,
+    BOUND_UPPER,
+    BOUNDS,
     BudgetCancelled,
     BudgetLedger,
     BudgetRefused,
     estimate_need,
+    upper_need,
 )
 from .capability import (
     CapabilityMissing,
     CapabilityProfile,
     admit_model,
+    declared_output_tokens,
     retry_delay_ms,
 )
 from .context import (
@@ -62,6 +67,7 @@ from .dispatcher import (
     build_request,
 )
 from .errors import (
+    BudgetConfigError,
     OverwriteRefused,
     RunFenced,
     TianshuError,
@@ -154,16 +160,29 @@ class Limits:
     retry_backoff_ms: int = 500
     #: 共享预算账本（PRD §5.6）的维度上限：维度 → 上限。
     #:
-    #: None = 沿用旧行为（只有事后计数 `max_total_tokens`），不启用发送前预占。
-    #: 显式给出时，每次模型 attempt 先向账本原子预占，结算按 provider usage：
-    #: - `reserve()` 失败（额度不足 / 已取消 / 过 deadline）→ **不再调用模型**，
-    #:   Run 如实记为失败并保留原因；
-    #: - provider 不给 usage / 断流 → 维度记为未知，占用**不释放**、不记零。
+    #: 账本**默认记账**：账户照建、每次 attempt 照预占、按 provider usage 照结算——
+    #: 因为 §5.6 第 4 条（"尝试过但全失败不得显示没有模型调用"）与第 7 条
+    #: （"恢复先核对未决预占"）在账本关着时在默认路径上根本不成立。
     #:
-    #: 为什么不是默认开：估算预占会让"临界 run"提前被拒（估算不是保证，
-    #: PRD §5.7），那是行为变更，需要单独评审。并发委派（G2）接入时必须打开。
+    #: 这个字段只控制**要不要设闸**：
+    #: - `None`（默认）= 记账模式：任何维度都不设闸，`reserve()` 不会因额度拒发；
+    #: - 显式字典 = 该维度设闸；未列出的维度仍然只记账。
+    #:
+    #: 设闸之后：`reserve()` 失败（额度不足 / 已取消 / 过 deadline / 上界被突破）
+    #: → **不再调用模型**；provider 不给 usage / 断流 → 维度记为未知，占用不释放、
+    #: 不记零。
     budget_limits: dict[str, int] | None = None
+    #: 预占口径（PRD §5.6 第 3 条："估算 token / 金额不能冒充可验证上界"）。
+    #:
+    #: - `"estimate"`（默认）：`budget.estimate_need()`，4 字符 ≈ 1 token + 25% 余量
+    #:   + 输出预留。**它是估算，不是上界**：结算超过它只如实记 `overrun`，不停机。
+    #: - `"upper"`：`budget.upper_need()`，输入用请求体的 UTF-8 字节数（字节级 BPE
+    #:   下 token ≤ 字节）、输出用 adapter 能力声明里的 `output_tokens`。**两项都必须
+    #:   是可验证的上界**，拿不到输出上界就拒绝进入这个模式（`BudgetConfigError`），
+    #:   不用默认预留冒充。上界被打穿后该账户链拒绝一切新预占。
+    budget_bound: str = BOUND_ESTIMATE
     #: 预占时为输出预留的 token 数（PRD §5.7 两阶段：输入估算 + 余量 + 输出预留）。
+    #: **只在 `estimate` 口径下使用**：`upper` 口径要么拿到真实输出上界，要么不进。
     output_reserve_tokens: int = 256
 
 
@@ -490,6 +509,17 @@ def _message_chars(messages: list[dict[str, Any]]) -> int:
     return total
 
 
+def _message_bytes(messages: list[dict[str, Any]]) -> int:
+    """实际请求体的 UTF-8 字节数——硬上限模式下**输入**的那一半上界。
+
+    与 `_message_chars()` 的区别不只是单位：这里序列化成真正要发出去的那份
+    JSON（`ensure_ascii=True`，非 ASCII 展开成 `\\uXXXX`），所以结构字段、角色
+    标记、转义后膨胀的部分都算进去了。字节级 BPE 下 `tokens ≤ bytes`，于是它是
+    一个方向正确的上界；CJK 因此比"4 字符≈1 token"的估算大得多，那正是应该的。
+    """
+    return len(json.dumps(messages, ensure_ascii=True).encode("utf-8"))
+
+
 class AgentLoop:
     """E1 的持久化主循环。
 
@@ -528,6 +558,13 @@ class AgentLoop:
         #: 共享预算账本（PRD §5.6）。为空时退化为旧行为（事后计数）。
         self._budget = budget
         self._limits = limits or Limits()
+        if self._limits.budget_bound not in BOUNDS:
+            # 配置层面的错必须在这里就炸：等到第一次请求前才发现，等于让一个
+            # 立不住的"上界保证"先跑完了准入与上下文编译。
+            raise TianshuError(
+                f"未知的预占口径：{self._limits.budget_bound!r}"
+                f"（合法值：{sorted(BOUNDS)}）"
+            )
         # 心跳的 TTL 必须与认领时用的一致：认领说 150ms 过期、心跳却说 30s，
         # 那"我还在跑"这句话就没人核对了。测试用短 TTL 推进真实时间。
         self._ttl_ms = ttl_ms
@@ -952,30 +989,50 @@ class AgentLoop:
         return f"run:{run_id}"
 
     def _ensure_budget_account(self, run_id: str) -> None:
-        """建本 Run 的预算账户（幂等）。未配置 `budget_limits` 时整个账本不启用。
+        """建本 Run 的预算账户（幂等）。**记账默认打开**。
 
-        "不启用"是显式状态，不是"忘了接"：旧行为只有事后计数，而估算预占会让
-        临界 run 提前被拒。并发委派（G2）接入时必须打开（见 `Limits.budget_limits`）。
+        没有 `budget_limits` 时建的是"不设闸的账户"：预占与结算照记，但任何维度
+        都不拒发。这不是"账本关着"——关着的话 §5.6 第 4 / 7 条（尝试过但全失败
+        不许显示没有调用、恢复先核对未决预占）在默认路径上没有任何事实可核。
         """
-        if self._budget is None or self._limits.budget_limits is None:
+        if self._budget is None:
             return
         self._budget.create_account(
             self._budget_account_id(run_id),
-            limits=dict(self._limits.budget_limits),
+            limits=dict(self._limits.budget_limits or {}),
             run_id=run_id,
             label="run",
+            bound=self._limits.budget_bound,
         )
 
     def _reserve_attempt(self, run_id: str, request_id: str, attempt: int, view):
-        """发送前预占。返回预占凭据；账本未启用时返回 None。"""
-        if self._budget is None or self._limits.budget_limits is None:
+        """发送前预占。返回预占凭据；没有账本时返回 None。
+
+        `estimate` 与 `upper` 两种口径的差别不是"保守程度"，是**性质**：前者是
+        估算（可以偏、偏了照实记），后者是两个上界相加（偏了就是保证失效，停机）。
+        """
+        if self._budget is None:
             return None
         self._ensure_budget_account(run_id)
-        need = estimate_need(
-            input_chars=_message_chars(view.messages),
-            output_reserve=self._limits.output_reserve_tokens,
-            requests=1,
-        )
+        if self._limits.budget_bound == BOUND_UPPER:
+            output_bound = declared_output_tokens(self._model)
+            if output_bound is None:
+                raise BudgetConfigError(
+                    "硬上限模式（budget_bound='upper'）需要 adapter 声明输出上界，"
+                    f"而 {type(self._model).__name__} 没有声明 `output_tokens`；"
+                    "拿默认输出预留冒充上界等于把估算写成保证，所以拒绝进入该模式"
+                )
+            need = upper_need(
+                input_bytes=_message_bytes(view.messages),
+                output_bound=output_bound,
+                requests=1,
+            )
+        else:
+            need = estimate_need(
+                input_chars=_message_chars(view.messages),
+                output_reserve=self._limits.output_reserve_tokens,
+                requests=1,
+            )
         return self._budget.reserve(
             self._budget_account_id(run_id),
             attempt_id=f"{request_id}#{attempt}",
@@ -1077,6 +1134,21 @@ class AgentLoop:
                 reservation = self._reserve_attempt(
                     run_id, request_id, attempt, view
                 )
+            except BudgetConfigError as exc:
+                # 配置立不住 ≠ 这次额度不够：不发请求，也不重试（重试还是同一个配置）。
+                reason = f"预算配置拒绝，不再调用模型：{exc}"
+                self._log.append(
+                    run_id,
+                    "model.error",
+                    {
+                        "request_id": request_id,
+                        "attempt": attempt,
+                        "retryable": False,
+                        "error": reason,
+                    },
+                    actor_kind="core",
+                )
+                return None, reason
             except (BudgetRefused, BudgetCancelled) as exc:
                 reason = f"预算账本拒绝，不再调用模型：{exc}"
                 self._log.append(

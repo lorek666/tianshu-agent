@@ -178,7 +178,7 @@ def test_resource_ref_only_accepts_canonical_values():
     with pytest.raises(ResourceError):
         ResourceRef(KIND_SUBTASK, "subtask://")
     with pytest.raises(ResourceError):
-        parse_resource("network://https/h/x").memory_scope
+        _ = parse_resource("network://https/h/x").memory_scope
 
 
 # ---------------------------------------------------------------- 2 许可
