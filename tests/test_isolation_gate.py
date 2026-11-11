@@ -210,7 +210,7 @@ def test_report_from_another_site_is_refused(tmp_path):
     policy = _policy(tmp_path, isolation_requires=("files_authority",))
     report = _report(tmp_path, other)          # 现场是 other
 
-    with pytest.raises(IsolationRefused, match="没有绑定本次探测现场"):
+    with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
         require_isolation_requirements(
             policy, LOCAL_EXEC_BACKEND,
             workspace=tmp_path, data_root=tmp_path, report=report,
@@ -346,7 +346,6 @@ def test_requirement_blocks_before_spawn(monkeypatch, tmp_path):
     assert result.status == "rejected"
     assert result.output["rule_id"] == "c4.exec_unsupported"
     assert backend.calls == 0
-    assert result.output["isolation"]["rule_id"] if False else True
     view = result.output["isolation"]
     assert view["unverified"] is True          # 拒绝时没有报告 → 不冒充"已实测"
     assert view["level"] == "none"
@@ -552,6 +551,63 @@ def test_task_created_accepts_both_policy_shapes():
     validate_payload("task.created", _task_payload())  # 新 payload 合法
 
 
+def _valid_isolation_view(**overrides) -> dict:
+    view = {
+        "backend": "local-posix",
+        "declared": "none",
+        "measured": None,
+        "level": "none",
+        "unverified": True,
+        "contradicted": False,
+        "boundaries": {
+            "files_authority": "unknown",
+            "network": "unknown",
+            "credentials": "unknown",
+            "process_tree": "unknown",
+        },
+        "enforced_boundaries": [],
+    }
+    view.update(overrides)
+    return view
+
+
+def test_isolation_view_contract_is_strict():
+    base = {
+        "request_id": "req_1",
+        "request_digest": "0" * 64,
+        "action": "exec",
+        "resources": [],
+        "decision": "approve",
+        "rule_id": "c4.exec",
+    }
+    validate_payload("dispatch.requested", {**base, "isolation": _valid_isolation_view()})
+
+    # 缺 measured：契约要求"没有报告"显式写 null，不允许缺字段。
+    incomplete = _valid_isolation_view()
+    incomplete.pop("measured")
+    with pytest.raises(PayloadContractError):
+        validate_payload("dispatch.requested", {**base, "isolation": incomplete})
+
+    # 四边界必须齐全。
+    missing_boundary = _valid_isolation_view()
+    missing_boundary["boundaries"].pop("network")
+    with pytest.raises(PayloadContractError):
+        validate_payload("dispatch.requested", {**base, "isolation": missing_boundary})
+
+    # 假边界名/假级别/假已证明边界都要在写入前拒绝。
+    for bad in (
+        {"boundaries": {**_valid_isolation_view()["boundaries"], "bogus": "unknown"}},
+        {"declared": "super-safe"},
+        {"enforced_boundaries": ["bogus"]},
+        {"level": "partial"},
+    ):
+        with pytest.raises(PayloadContractError):
+            validate_payload(
+                "dispatch.requested",
+                {**base, "isolation": _valid_isolation_view(**bad)},
+            )
+
+
 def test_illegal_boundary_is_rejected_before_write():
     payload = _task_payload()
     payload["exec_policy"]["isolation_requires"] = ["bogus"]
@@ -621,6 +677,37 @@ def test_control_task_create_carries_isolation_requirements(tmp_path):
     assert excinfo.value.code == "bad_params"
 
 
+def test_approval_view_shows_measured_report_when_requirement_passes(
+    env_factory, monkeypatch
+):
+    """有实测报告时，审批前视图必须是报告的（unverified=False），不是声明的。"""
+    backend = RecordingBackend()
+    env = env_factory(exec_backend=backend)
+    report = _report(env.ws, env.data)
+    monkeypatch.setattr(
+        "tianshu.dispatcher.require_isolation_requirements",
+        lambda policy, backend_, *, workspace, data_root: report,
+    )
+    policy = _policy(env.ws, isolation_requires=("process_tree",))
+    task, run, claim = env.new_run(exec_policy=policy)
+    args = {"argv": [PY, "-c", "print(1)"]}
+
+    decision = env.dispatcher.prepare(
+        _exec_request(env, run, claim, args=args, task=task), claim, args=args
+    )
+
+    assert decision.is_waiting, decision
+    payload = next(
+        event.payload
+        for event in env.log.read_run(run.run_id)
+        if event.type == "approval.requested"
+    )
+    view = payload["isolation"]
+    assert view["unverified"] is False
+    assert view["enforced_boundaries"] == ["process_tree"]
+    assert view["level"] == "none"
+
+
 def test_control_approval_view_carries_isolation(tmp_path):
     """控制面 approvals.list 的视图里能读到审批时的隔离视图（PRD §8.1）。"""
     from support import stack_for
@@ -663,3 +750,117 @@ def test_control_approval_view_carries_isolation(tmp_path):
         assert isolation["unverified"] is True
     finally:
         log.close()
+
+
+# ---------------------------------------------------------------- 10. 报告必须属于这个后端/平台
+
+
+def test_report_from_another_backend_is_refused(tmp_path):
+    other = RecordingBackend(name="another-backend")
+    policy = _policy(tmp_path, isolation_requires=("files_authority",))
+    report = _report(tmp_path, tmp_path, backend="local-posix")
+
+    with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
+        require_isolation_requirements(
+            policy, other, workspace=tmp_path, data_root=tmp_path, report=report
+        )
+
+
+def test_report_from_another_platform_is_refused(tmp_path):
+    from dataclasses import replace as dc_replace
+
+    policy = _policy(tmp_path, isolation_requires=("files_authority",))
+    report = dc_replace(_report(tmp_path, tmp_path), platform="windows-x64")
+
+    with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
+        require_isolation_requirements(
+            policy, LOCAL_EXEC_BACKEND,
+            workspace=tmp_path, data_root=tmp_path, report=report,
+        )
+
+
+def test_old_probe_version_is_refused(tmp_path):
+    from dataclasses import replace as dc_replace
+
+    policy = _policy(tmp_path, isolation_requires=("files_authority",))
+    report = dc_replace(_report(tmp_path, tmp_path), probe_version="v0")
+
+    with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
+        require_isolation_requirements(
+            policy, LOCAL_EXEC_BACKEND,
+            workspace=tmp_path, data_root=tmp_path, report=report,
+        )
+
+
+# ---------------------------------------------------------------- 11. 无数据根也能构造/执行
+
+
+def test_file_executor_without_data_root_constructs_and_runs(tmp_path):
+    """没有数据根是合法状态：不声明隔离要求的执行不该因为构造而崩。"""
+    from tianshu.exec import LocalExecBackend
+    from tianshu.tools import FileExecutor
+
+    workspace = tmp_path / WS
+    workspace.mkdir()
+    log = EventLog(tmp_path / "events.db")
+    try:
+        leases = LeaseStore(log)
+        claims = JobStore(log)
+        tasks = TaskStore(log, leases=leases, claims=claims, data_root=None)
+        approvals = ApprovalStore(log)
+        grants = GrantStore(log)
+        executor = FileExecutor(
+            tasks=tasks,
+            leases=leases,
+            grants=grants,
+            approvals=approvals,
+            claims=claims,
+            dispatch_lookup=lambda run_id, call_id: None,
+            dispatch_mark=lambda run_id, call_id, state: None,
+            clock=lambda: 0,
+            log=log,
+        )
+        assert executor.exec_backend is not None
+        assert executor._data_root is None  # noqa: SLF001 - 就是要核这个状态
+
+        # 不要求隔离 → 探针不需要数据根，执行照常（这里只核构造与参数接线，
+        # 真正的 spawn 由其他用例覆盖）。
+        policy = _policy(workspace)
+        ctx = tools.ToolContext(exec_policy=policy, exec_backend=LocalExecBackend())
+        assert ctx.data_root is None
+    finally:
+        log.close()
+
+
+def test_precheck_and_execution_probe_the_same_workspace(env_factory, monkeypatch):
+    """cwd 是子目录时，审批视图与执行视图必须来自同一个探测现场。"""
+    backend = RecordingBackend()
+    env = env_factory(exec_backend=backend)
+    sub = env.ws / "sub"
+    sub.mkdir()
+    seen: list[tuple[str, str]] = []
+
+    def fake_gate(policy, backend_, *, workspace, data_root):
+        seen.append((str(Path(workspace).resolve()), str(Path(data_root).resolve())))
+        return None
+
+    monkeypatch.setattr("tianshu.dispatcher.require_isolation_requirements", fake_gate)
+    monkeypatch.setattr("tianshu.tools.require_isolation_requirements", fake_gate)
+    policy = _policy(env.ws, isolation_requires=("process_tree",))
+    task, run, claim = env.new_run(exec_policy=policy)
+    args = {"argv": [PY, "-c", "print(1)"], "cwd": "sub"}
+    request = _exec_request(env, run, claim, args=args, task=task)
+
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    from tianshu.permissions import HumanIdentity
+
+    env.approvals.decide(
+        decision.approval_id,
+        decision="approved",
+        actor=HumanIdentity.local_cli(),
+    )
+    env.dispatcher.dispatch(decision.request_id, claim)
+
+    workspaces = {item[0] for item in seen}
+    assert workspaces == {str(sub.resolve())}

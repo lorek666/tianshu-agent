@@ -306,7 +306,10 @@ describe("事件 → 时间线句子", () => {
         },
       }),
     );
-    expect(partial.sentence).toContain("已实测的边界：进程树");
+    expect(partial.sentence).toContain("整体未隔离");
+    expect(partial.sentence).toContain("「进程树」边界有实测证据");
+    expect(partial.sentence).not.toContain("已隔离");
+    expect(partial.sentence).not.toContain("部分安全");
 
     const unverified = humanizeEvent(
       event("dispatch.requested", {

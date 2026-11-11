@@ -346,20 +346,26 @@ def require_isolation_requirements(
         report = probe_backend_cached(
             backend, workspace=ws, data_root=root
         )
+    expected_platform = platform_label()
     if (
-        report.workspace != str(ws)
+        report.backend != name
+        or report.platform != expected_platform
+        or report.workspace != str(ws)
         or report.data_root != str(root)
         or report.probe_version != PROBE_VERSION
     ):
+        # 报告是"某个后端在某个平台某个现场"的证据；少核任何一项，
+        # 都会让另一个后端/平台/现场的 enforced 被复用（F2-c6 的反面）。
         raise IsolationRefused(
             backend=name,
             boundary=required[0],
             status=BOUNDARY_UNKNOWN,
             evidence=(
-                "隔离报告没有绑定本次探测现场"
-                f"（报告 workspace={report.workspace!r} data_root={report.data_root!r}"
-                f" probe={report.probe_version!r}；本次 {str(ws)!r}/{str(root)!r}"
-                f"/{PROBE_VERSION!r}）"
+                "隔离报告不属于本次探测现场"
+                f"（报告 backend={report.backend!r} platform={report.platform!r}"
+                f" workspace={report.workspace!r} data_root={report.data_root!r}"
+                f" probe={report.probe_version!r}；本次 {name!r}/"
+                f"{expected_platform!r}/{str(ws)!r}/{str(root)!r}/{PROBE_VERSION!r}）"
             ),
         )
     for boundary in required:

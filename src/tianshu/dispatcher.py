@@ -1617,10 +1617,13 @@ class Dispatcher:
                         rule_id="f2.pty_not_allowed",
                     )
                 check_capabilities(policy, self._exec_backend.capabilities)
+            # 预检与执行必须用**同一个探测现场**：执行时的 workspace 是
+            # `args["cwd"]` 解析后的目录（`_write_target`），不是请求目标本身。
+            probe_workspace = Workspace(target).resolve(args.get("cwd", "."))
             report = require_isolation_requirements(
                 policy,
                 self._exec_backend,
-                workspace=target,
+                workspace=probe_workspace,
                 data_root=self._data_root,
             )
         except PolicyDenied as exc:

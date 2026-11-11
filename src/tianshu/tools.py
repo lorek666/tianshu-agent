@@ -1190,8 +1190,13 @@ class FileExecutor:
         self._exec_backend_pinned = exec_backend is not None
         # 探针报告必须绑定现场：预检（dispatcher._data_root）与执行（这里）必须
         # 指向同一个数据根，否则同一份策略会在两个现场各拿一份证据。
+        data_root_source = (
+            data_root if data_root is not None else getattr(tasks, "data_root", None)
+        )
+        # 没有数据根是合法状态（只有声明了 isolation_requires 的执行才会被拒）；
+        # 构造/普通执行不能因为 None 就崩。
         self._data_root = (
-            Path(data_root) if data_root is not None else Path(tasks.data_root)
+            Path(data_root_source) if data_root_source is not None else None
         )
         self._backend = backend if backend is not None else current_backend()
         if self._backend is not current_backend():

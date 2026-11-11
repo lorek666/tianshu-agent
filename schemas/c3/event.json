@@ -272,12 +272,27 @@
                 "type": "string"
               },
               "declared": {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container"
+                ]
               },
               "measured": {
                 "type": [
                   "string",
                   "null"
+                ],
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container",
+                  null
                 ]
               },
               "level": {
@@ -286,7 +301,8 @@
                   "none",
                   "path_only",
                   "process_tree",
-                  "app_container"
+                  "app_container",
+                  "container"
                 ]
               },
               "unverified": {
@@ -331,12 +347,24 @@
                     ]
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "required": [
+                  "files_authority",
+                  "network",
+                  "credentials",
+                  "process_tree"
+                ]
               },
               "enforced_boundaries": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
                 }
               }
             },
@@ -344,6 +372,7 @@
             "required": [
               "backend",
               "declared",
+              "measured",
               "level",
               "unverified",
               "contradicted",
@@ -596,12 +625,27 @@
                 "type": "string"
               },
               "declared": {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container"
+                ]
               },
               "measured": {
                 "type": [
                   "string",
                   "null"
+                ],
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container",
+                  null
                 ]
               },
               "level": {
@@ -610,7 +654,8 @@
                   "none",
                   "path_only",
                   "process_tree",
-                  "app_container"
+                  "app_container",
+                  "container"
                 ]
               },
               "unverified": {
@@ -655,12 +700,24 @@
                     ]
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "required": [
+                  "files_authority",
+                  "network",
+                  "credentials",
+                  "process_tree"
+                ]
               },
               "enforced_boundaries": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
                 }
               }
             },
@@ -668,6 +725,7 @@
             "required": [
               "backend",
               "declared",
+              "measured",
               "level",
               "unverified",
               "contradicted",
@@ -2707,12 +2765,27 @@
                 "type": "string"
               },
               "declared": {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container"
+                ]
               },
               "measured": {
                 "type": [
                   "string",
                   "null"
+                ],
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container",
+                  null
                 ]
               },
               "level": {
@@ -2721,7 +2794,8 @@
                   "none",
                   "path_only",
                   "process_tree",
-                  "app_container"
+                  "app_container",
+                  "container"
                 ]
               },
               "unverified": {
@@ -2766,12 +2840,24 @@
                     ]
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "required": [
+                  "files_authority",
+                  "network",
+                  "credentials",
+                  "process_tree"
+                ]
               },
               "enforced_boundaries": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
                 }
               }
             },
@@ -2779,6 +2865,7 @@
             "required": [
               "backend",
               "declared",
+              "measured",
               "level",
               "unverified",
               "contradicted",
@@ -3009,12 +3096,27 @@
                 "type": "string"
               },
               "declared": {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container"
+                ]
               },
               "measured": {
                 "type": [
                   "string",
                   "null"
+                ],
+                "enum": [
+                  "none",
+                  "path_only",
+                  "process_tree",
+                  "app_container",
+                  "container",
+                  null
                 ]
               },
               "level": {
@@ -3023,7 +3125,8 @@
                   "none",
                   "path_only",
                   "process_tree",
-                  "app_container"
+                  "app_container",
+                  "container"
                 ]
               },
               "unverified": {
@@ -3068,12 +3171,24 @@
                     ]
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "required": [
+                  "files_authority",
+                  "network",
+                  "credentials",
+                  "process_tree"
+                ]
               },
               "enforced_boundaries": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
                 }
               }
             },
@@ -3081,6 +3196,7 @@
             "required": [
               "backend",
               "declared",
+              "measured",
               "level",
               "unverified",
               "contradicted",

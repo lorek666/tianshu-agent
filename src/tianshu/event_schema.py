@@ -252,22 +252,32 @@ _BOUNDARY_STATUS = _enum("enforced", "not_enforced", "unknown")
 #: 一次执行的隔离视图（F2）。机器可读，不许出现"人话"字段——中文映射在 UI。
 #: `level` 是**累计显示**（`measured_level`），`boundaries` 才是逐边界证据；
 #: `unverified` / `contradicted` 必须由 UI 按优先级先于 `level` 处理。
+_ISOLATION_LEVEL = _enum(
+    "none", "path_only", "process_tree", "app_container", "container"
+)
+
 _ISOLATION_VIEW = _obj(
     {
         "backend": _s(),
-        "declared": _s(),
-        "measured": _opt(_s()),
-        "level": _enum("none", "path_only", "process_tree", "app_container"),
+        # 自述级别：封闭集（后端只能声明这几个；v1 实际只有 none）。
+        "declared": _ISOLATION_LEVEL,
+        # 实测级别：可 null（没有报告），但一旦有值必须是已知级别。
+        "measured": _opt(copy.deepcopy(_ISOLATION_LEVEL)),
+        "level": copy.deepcopy(_ISOLATION_LEVEL),
         "unverified": _b(),
         "contradicted": _b(),
+        # 四边界必须齐全：缺一条就等于"不知道的那条"被静默当成 null。
         "boundaries": _obj(
-            {boundary: _BOUNDARY_STATUS for boundary in ISOLATION_BOUNDARIES}
+            {boundary: _BOUNDARY_STATUS for boundary in ISOLATION_BOUNDARIES},
+            required=tuple(ISOLATION_BOUNDARIES),
         ),
-        "enforced_boundaries": _arr(_s()),
+        # 已证明的边界也只能是四边界名（不是任意字符串）。
+        "enforced_boundaries": _arr(_enum(*ISOLATION_BOUNDARIES)),
     },
     required=(
         "backend",
         "declared",
+        "measured",
         "level",
         "unverified",
         "contradicted",

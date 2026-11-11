@@ -390,9 +390,11 @@ export function isolationSentence(
   }
   if (level === "none") {
     if (enforced.length > 0) {
-      const names = enforced.map(isolationBoundaryLabel).join("、");
+      const names = enforced.map((item) => `「${isolationBoundaryLabel(item)}」`).join("、");
+      // "已实测的边界"容易被读成"部分隔离 = 更安全"。先给整体结论，再说
+      // 哪一条边界有证据——PRD §8.1 要的是真实权限范围，不是分数。
       return {
-        text: `受信任执行：未隔离（已实测的边界：${names}）`,
+        text: `受信任执行：整体未隔离；仅${names}边界有实测证据`,
         tone: "warn",
       };
     }
