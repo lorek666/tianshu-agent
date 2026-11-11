@@ -36,8 +36,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -94,6 +96,78 @@ def local_capabilities() -> ExecBackendCapabilities:
 
 #: 当前进程所在平台的本地后端能力（如实声明，见 `local_capabilities()`）。
 LOCAL_EXEC_CAPABILITIES = local_capabilities()
+
+
+# --------------------------------------------------------------- 隔离边界声明
+#
+# PRD §8.1.1 的四个边界。这里只放**只读声明**：声明是"后端自己说它做得到什么"，
+# 不是实测证据。真正的证据由 `isolation.py` 的真实子进程探针产出；声明与探针
+# 结果不一致时（例如后端自称隔离、探针却看到子进程能读写任意路径），门按
+# 探针证据拒绝——声明不能自己给自己发通行证。
+
+ISOLATION_BOUNDARY_FILES = "files_authority"
+ISOLATION_BOUNDARY_NETWORK = "network"
+ISOLATION_BOUNDARY_CREDENTIALS = "credentials"
+ISOLATION_BOUNDARY_PROCESS_TREE = "process_tree"
+ISOLATION_BOUNDARIES: tuple[str, ...] = (
+    ISOLATION_BOUNDARY_FILES,
+    ISOLATION_BOUNDARY_NETWORK,
+    ISOLATION_BOUNDARY_CREDENTIALS,
+    ISOLATION_BOUNDARY_PROCESS_TREE,
+)
+
+#: 探针结论三态。`unknown` 与 `not_enforced` 一样阻断依赖能力——
+#: "没证明隔离"不等于"隔离成立"。
+BOUNDARY_ENFORCED = "enforced"
+BOUNDARY_NOT_ENFORCED = "not_enforced"
+BOUNDARY_UNKNOWN = "unknown"
+
+
+def platform_label() -> str:
+    """本机平台标签，例如 `macos-arm64` / `windows-x64`。
+
+    只读事实（`sys.platform` + `platform.machine()`），用于隔离矩阵与探针报告
+    定位证据；它不是任何"支持"宣称。
+    """
+    machine = platform.machine().lower()
+    machine = {"aarch64": "arm64", "amd64": "x64"}.get(machine, machine) or "unknown"
+    if sys.platform == "darwin":
+        os_name = "macos"
+    elif sys.platform.startswith("win"):
+        os_name = "windows"
+    elif sys.platform.startswith("linux"):
+        os_name = "linux"
+    else:
+        os_name = sys.platform or "unknown"
+    return f"{os_name}-{machine}"
+
+
+def local_isolation_claims() -> dict[str, str]:
+    """本地后端对四边界的**声明**（不是实测证据，见本节说明）。
+
+    依据 `local_capabilities()` 如实给出：`isolation="none"` 意味着文件与凭据
+    边界都没有隔离；`supports_network_isolation=False` 意味着出网不受控；
+    进程树终止只在 `supports_process_group=True` 时声明能做到，否则是 unknown
+    （Windows 零依赖没有 Job Object，杀不干净子树——不能声明 enforced）。
+    """
+    caps = LOCAL_EXEC_CAPABILITIES
+    file_claim = (
+        BOUNDARY_NOT_ENFORCED if caps.isolation == "none" else BOUNDARY_UNKNOWN
+    )
+    network_claim = (
+        BOUNDARY_NOT_ENFORCED
+        if not caps.supports_network_isolation
+        else BOUNDARY_ENFORCED
+    )
+    process_claim = (
+        BOUNDARY_ENFORCED if caps.supports_process_group else BOUNDARY_UNKNOWN
+    )
+    return {
+        ISOLATION_BOUNDARY_FILES: file_claim,
+        ISOLATION_BOUNDARY_NETWORK: network_claim,
+        ISOLATION_BOUNDARY_CREDENTIALS: file_claim,
+        ISOLATION_BOUNDARY_PROCESS_TREE: process_claim,
+    }
 
 
 @dataclass(frozen=True)
@@ -591,11 +665,21 @@ def _fsync_dir(path: Path) -> None:
 
 
 __all__ = [
+    "BOUNDARY_ENFORCED",
+    "BOUNDARY_NOT_ENFORCED",
+    "BOUNDARY_UNKNOWN",
+    "ISOLATION_BOUNDARIES",
+    "ISOLATION_BOUNDARY_CREDENTIALS",
+    "ISOLATION_BOUNDARY_FILES",
+    "ISOLATION_BOUNDARY_NETWORK",
+    "ISOLATION_BOUNDARY_PROCESS_TREE",
     "LOCAL_EXEC_BACKEND",
     "RULE_PTY_NOT_ALLOWED",
     "LOCAL_EXEC_CAPABILITIES",
     "ExecResult",
     "LocalExecBackend",
     "local_capabilities",
+    "local_isolation_claims",
+    "platform_label",
     "spawn",
 ]
