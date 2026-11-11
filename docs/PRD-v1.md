@@ -501,14 +501,21 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 验收：无目录联网任务可运行；嵌套非法参数在执行前被拒；私有内容未经外发许可不发包；工具描述变更使旧批准失效；取消或额度耗尽后无新请求；replay 只读已保存结果、不访问当前网络或工具清单。
 
-**实现状态（2026-11-11，PR #91，见 [tool-admission.md](tool-admission.md)）**：封闭 schema 方言与
-注册期拒绝、执行期嵌套校验、准入前移到派发之前、工具版本 + schema + **描述摘要**三项绑定、
-身份字段（task/run/call/attempt/预算/deadline）注册期与执行期双闸、URL 不伪装成文件路径、
-replay 只读事件——**已实现并有判据**（`tests/test_g1_admission.py`，负控 9/9）。**未实现**：
-网络 / MCP / 子任务三种资源种类与各自的外发许可（属 G2，接入前必须先补本节的准入）、
-「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」。因此「无目录联网任务
-可运行」「私有内容未经外发许可不发包」两条验收**当前只能记为 unknown**（没有外发面，
-既不能证明通过也不能证明失败）。
+**实现状态（2026-11-11；准入 PR #91、资源种类 PR #97）**：
+
+- **已实现并有判据**（`tests/test_g1_admission.py` 19 条，负控 9/9，见
+  [tool-admission.md](tool-admission.md)）：封闭 schema 方言与注册期拒绝、执行期嵌套校验、
+  准入前移到派发之前、工具版本 + schema + **描述摘要**三项绑定、身份字段（task/run/call/
+  attempt/预算/deadline）注册期与执行期双闸、URL 不伪装成文件路径、replay 只读事件。
+- **已实现并有判据**（`tests/test_g1d_resource_kinds.py` 15 条，负控 6/6，见
+  [resource-kinds.md](resource-kinds.md)）：五种资源种类（file / memory / network / mcp /
+  subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
+  MCP 与 exec 同级（`c4.mcp_call`）、委派因能力缺失恒拒（`c4.subtask_unavailable`）、
+  种类混用一律拒；没有执行器的种类在派发前拒绝（`dispatch.resource_kind_unsupported`）。
+- **未实现**：「大结果以有界摘要 + 内容引用返回，分页读取引用验证任务可见范围」；
+  网络 / MCP / 委派的**真实执行器**（G2）。因此「无目录联网任务可运行」「私有内容未经
+  外发许可不发包」两条验收**当前只能记为 unknown**：外发许可的闸门已就位、可拒绝，
+  但没有外发面可以验证"发了什么"。
 
 
 ### 5.3 C3 Event
@@ -759,6 +766,10 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | 资源种类没有执行器：`network://` / `mcp://` / `subtask://` 的解析与许可已实现，但网络 / MCP / 委派的执行器属 G2，派发前拒绝。 | 当前不可用：这些能力还没接（不是参数问题）。文件操作请用文件工具。 |
+| `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
+| `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
+| `c4.subtask_unavailable` | 资源种类 | 子任务能力尚未实现，委派被拒（没有委派执行器，不接受「批一下就好」的路径）。 | 当前不可用：等委派能力上线。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
 | `c4.readonly_binding` | 工作区阻断 | 目标目录是只读绑定。 | 换成可写目录，或建任务时改用可写绑定。 |
@@ -768,6 +779,8 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.memory_scope` | 判定结果（非拒绝） | 判定结果：记忆作用域在授权范围内（`user` 恒可访问；`workspace` 须是本任务绑定的 canonical 根；`task` 须等于本任务 id），读取与新建候选自动放行。 | 无需操作：读 / 写候选已放行；`memory.confirm` / `memory.forget` 仍按覆盖 / 删除审批。 |
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
 | `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
+| `c4.outbound` | 判定结果（非拒绝） | 判定结果：外发到网络目标需人工审批（`fetch` 动作 + `network://` 资源）。网络请求有成本、有外发，不是本地纯读——**没有自动放行路径**。 | 确认目标主机与路径无误后批准；不确定就拒绝。 |
+| `c4.mcp_call` | 判定结果（非拒绝） | 判定结果：调用 MCP 工具需人工审批（`exec` 动作 + `mcp://` 资源）：MCP 工具是不可信外部程序，与执行命令同级。 | 确认服务器与工具名无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
 | `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |

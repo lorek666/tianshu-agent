@@ -9,6 +9,7 @@
     "rule_id": {
       "type": "string",
       "enum": [
+        "c4.action_resource_mismatch",
         "c4.approval_expired",
         "c4.approval_mismatch",
         "c4.approval_rejected",
@@ -21,18 +22,22 @@
         "c4.exec_not_configured",
         "c4.exec_policy_denied",
         "c4.exec_unsupported",
+        "c4.mcp_call",
         "c4.memory_control_scope_binding",
         "c4.memory_kind_unsupported",
         "c4.memory_scope",
         "c4.memory_scope_denied",
+        "c4.mixed_resource_kinds",
         "c4.multi_resource",
         "c4.no_approval",
         "c4.no_binding",
         "c4.no_resource",
+        "c4.outbound",
         "c4.outside_workspace",
         "c4.outside_workspace_unsupported",
         "c4.overwrite",
         "c4.readonly_binding",
+        "c4.subtask_unavailable",
         "c4.unhandled",
         "c4.unsupported",
         "dispatch.approval_revoked",
@@ -53,6 +58,7 @@
         "dispatch.not_admitted",
         "dispatch.not_running",
         "dispatch.refused",
+        "dispatch.resource_kind_unsupported",
         "dispatch.run_fenced",
         "dispatch.stale_precondition",
         "dispatch.stale_revision",
@@ -116,7 +122,13 @@
     "dispatch.memory_not_found": "拒绝：要确认/忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。用户该怎么做：重新检索记忆并核对 memory_id/revision。",
     "dispatch.memory_resource_mismatch": "拒绝：工具与资源种类不匹配（文件工具收到 memory://，或记忆工具收到文件路径）。用户该怎么做：检查工具参数；这是调用侧拼错了目标。",
     "dispatch.memory_stale_revision": "拒绝：记忆的 status/revision 与请求声明的不一致（批准后被修改、确认或遗忘）。用户该怎么做：重新读取该记忆后按最新 revision 重新发起审批。",
-    "c4.memory_control_scope_binding": "控制面专属能力被非控制面使用：只有控制 Run（Task.is_control）能调用 memory.remember / memory.promote / memory.erase，或声明 memory_scopes。"
+    "c4.memory_control_scope_binding": "控制面专属能力被非控制面使用：只有控制 Run（Task.is_control）能调用 memory.remember / memory.promote / memory.erase，或声明 memory_scopes。",
+    "c4.action_resource_mismatch": "动作与资源种类不匹配（例如对着文件资源做外发/委派）。",
+    "c4.mcp_call": "判定结果：调用 MCP 工具需审批（MCP 工具是不可信外部程序，与执行命令同级）。",
+    "c4.mixed_resource_kinds": "一次动作声明了多种资源种类，授权无法同时覆盖。",
+    "c4.outbound": "判定结果：外发到网络目标需审批（网络请求有成本、有外发，不是本地纯读；没有自动放行路径）。",
+    "c4.subtask_unavailable": "子任务能力尚未实现，拒绝委派（没有委派执行器，不接受「批一下就好」的路径）。",
+    "dispatch.resource_kind_unsupported": "该资源种类没有执行器（网络/MCP/委派的执行器属 G2），在派发前拒绝。"
   },
   "x-rule-groups": {
     "身份失配": [
@@ -202,7 +214,9 @@
     "c4.auto",
     "c4.delete",
     "c4.exec",
+    "c4.mcp_call",
     "c4.memory_scope",
+    "c4.outbound",
     "c4.outside_workspace",
     "c4.overwrite"
   ]
