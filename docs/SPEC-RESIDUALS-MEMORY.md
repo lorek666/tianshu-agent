@@ -306,7 +306,11 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
      后修正，原规格写反了）**：**先删文件 → 再让结果与事件同事务提交**。崩在两者之间
      只会留下"文件没了、行还没标擦除"——重建时正文如实不可用；反过来（先标擦除、
      文件还在）才是隐私泄漏。删文件失败则整次擦除如实失败（不写 `erased_at`）。
-     记忆没有目录租约；并发保护靠 `memory.erase` 自己的 revision 前置与 SQLite 写事务。
+     记忆没有目录租约。**并发保护（N4 复审后修正）**：引用计数 + 删文件必须与**提交**在同一把
+     跨进程执行守卫（`_begin_memory_execution` 的 `execution_guard`）内——只靠 revision 前置与
+     SQLite 写事务**不够**：两条共享同一 blob 的记忆被两个进程同时擦时，双方都会看到"对方
+     还没擦"→ 都保留文件 → 两行都标擦除、孤儿文件永久留存。回归：
+     `test_erase_commit_runs_inside_the_execution_guard`。
    - 投影行置 `forgotten` + `erased_at`，`content_state=unavailable`；
    - **重建后不得复活**：`apply_event` 见到 `erased_at` 的记忆 → 跳过 blob 读取、
      标 `content_state=unavailable`；blob 不存在不视为错误。
@@ -325,7 +329,10 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   `test_erase_is_control_plane_only`，`test_memory_loop.py` 的
   `test_cli_erase_deletes_content_and_marks_erased`，以及 `test_memory_store.py` 的
   `test_schema_v1_database_is_migrated_in_place`。判据：erase 后 blob 不存在、`search` 不召回、
-  `get` 返回 `content_unavailable`、`rebuild` 后仍不可召回。
+  `get` 返回 `content_available: False`（不是 `content_unavailable`，字段名以代码为准）、
+  `rebuild` 后仍不可召回。负控实际做了两条：无视引用计数 → 共享与删除用例红；
+  去掉 control-only 判定 → 只控制面用例红。另加守卫回归（提交必须在守卫内）。**未做**：
+  "只改 status 不删 blob"的负控、"另一进程正 get 时 erase"的并发用例（用守卫回归替代）。
 - 负控：只改 status 不删 blob → rebuild 后能读 → 用例必须红。
 - 跨进程：另一进程正 `get` 时 erase → 要么成功要么明确失败，**不允许**读到半截正文。
 - 不做：备份/快照里的副本、跨库引用追踪。**库内引用计数必须做**（见 §5.2 第 1 条）——
