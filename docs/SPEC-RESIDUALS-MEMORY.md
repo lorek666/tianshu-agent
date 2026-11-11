@@ -379,42 +379,54 @@ N1 / N2 / N3 都动 `memory.py`、`memory_exec.py`，**串行**；N4 / N6 动不
   用例必须红。
 - 两个真进程：一个进程 propose 中崩溃、另一个进程恢复 → 只出现一条"未生效"，无半条投影。
 
-### 6.4 落地记录（N5 实际，2026-11-11）
+### 6.4 落地记录（N5 实际，2026-11-11；含独立复审整改）
 
 - 分支 `fix/memory-recovery-audit`（起点 `main @ 42d786b` = N4 合入后），合入后 #21 / #26 在
-  F10 §13 里都改成 ✅。
-- **恢复分支**：`recovery.RecoveryReport.memory_not_applied`；`recover_run` 在"纯工具 / 文件写"
-  分流**之前**先判 `tool_id in MEMORY_TOOL_IDS`，结算
-  `ToolResult("failed", "none_applied", {error, recovered: True, memory_write})`；
-  `assess_run` 同样把记忆写归 `none_applied` 且**不** `pending_writes += 1`（否则记忆写会被当成
-  "有文件副作用待核对"，把接管判定搞成需要快照证据）。CLI `tianshu recover` 多打一行
-  `记忆未生效 : [...]`。不写 `recovery.blocked`、不阻断目录（记忆没有 preimage，红线 5/11：
-  "没写"与"不知道写没写"不合并）。
-- **审计表**：`dispatch_requests` 加 `args_redacted` 列（`_ensure_column` 老库原地补列）；
-  `_set_request_state()` 在 `done` / `rejected` 两个终态调 `_redact_terminal_args()`（幂等，
-  已脱敏的行跳过）；记忆写的终态推进与投影提交在**同一个事务**里，所以"写完未脱敏"的窗口是零。
-  `_fail_unknown` 的记忆分支本来就收成 `rejected`，因此"中途炸掉"的请求也走同一条脱敏。
-  探针确认：终态之后没有任何代码路径从 `args_payload` 重算 `args_hash`（`args_hash` 存在
-  `ActionRequest`/`tool.intent` 里，`verify_receipts` 用事件里的副本）。
-- **测试落点（与 §6.3 的偏差，如实记）**：没有新建 `tests/test_memory_recovery.py`——三分之二
-  的判据本来就在 `tests/test_memory_dispatch.py`（同一套 `Env` 夹具），单开文件要复制夹具。
-  实际新增 6 条，都在 `tests/test_memory_dispatch.py`：
-  `test_accepted_memory_write_args_are_redacted_at_terminal_state` /
-  `test_gate_blocked_memory_write_is_redacted_after_dispatch` /
-  `test_memory_write_that_crashes_mid_projection_is_still_redacted`（三种终态：成功 / 闸门拒绝 /
-  执行中途未知）、`test_file_write_args_are_not_redacted`（防过度脱敏）、`test_request_stored_before_approval_is_redacted_when_it_is_later_rejected`（`prepare()` 已存的 waiting 行、人否决后走 ON CONFLICT 分支也要脱敏）、
-  `test_recovery_marks_pending_memory_write_as_not_applied`（`SystemExit` 模拟断电 →
-  `memory_not_applied` / `blocked_workspaces == []` / 投影无行 / 恢复后可换 `call_id` 重写）。
-- **负控（都真跑过）**：① 注释掉 `_set_request_state` 里的终态脱敏调用 → 三条脱敏用例红、文件写那条仍绿；④ 只修插入路径、不改 `ON CONFLICT` 的 `args_payload` 覆盖 → "等待后被否决"那条红（这条复现过：`prepare()` 存 waiting 行时是完整参数，人否决在同一个 `request_id` 上重写，不覆盖就是永久残留）；
-  ② 删掉 `_recover_run` 的记忆分支 → 恢复用例红（`memory_not_applied` 为空）；③ 删掉
-  `assess_run` 的记忆分支 → 同一条用例红（`none_applied` 里没有它，接管判定变阻断）。
-- **残留窗口（别读成"任何时刻都不存原文"）**：停在 `waiting` / `admitted` 的行（审批一直没人批、Run 被取消）仍是完整参数——`dispatch()` 正是从这张表取参数执行，脱敏会直接把派发打红。要彻底收口得先定义"等待行过期 / 取消即作废"的策略，单开契约工单；本轮的承诺是"**进入终态**后不再永久保存原文"。
-- **仍未覆盖**：§6.3 最后一条"两个真进程"没做——本仓库现有恢复测试都是同进程内构造状态
-  （既有 `test_mid_write_failure_*` 也是），真跨进程断电不在 CI 里可复现的范围；没写成已验。
-  另外 `blob_dir` 里的正文副本不随审计表脱敏（正文本来就存 blob，审计表脱敏只收掉**重复副本**）
-  ——这条是设计（F10 §10），不是缺口。
-
----
+  F10 §13 里都改成 ✅（复审后又改了一轮，见下）。
+- **恢复分支（三层判据，不能一句话概括）**：
+  - **投影/事件层**：`recover_run` 在"纯工具 / 文件写"分流**之前**先判
+    `tool_id in MEMORY_TOOL_IDS`，结算 `failed/none_applied` + `memory_not_applied`；
+    `assess_run` 同样归 `none_applied` 且**不** `pending_writes += 1`。快照清单损坏的早退
+    路径也先判记忆写（复审 中-A：原来的早退块把记忆写当写工具 → unknown + 阻断目录）。
+  - **正文 blob 层**：内容型记忆写在提交**之前**就把正文写进 `memory_blobs/`，崩溃会留下没有
+    行引用的孤儿副本（复审 高-A）。恢复按 `tool.intent.args.content_sha256` 找 blob，
+    **引用计数为 0 才删**，删掉的进 `RecoveryReport.memory_orphan_blobs`；共享 blob 绝不误删。
+    残留：PII 红act 过的正文引用与原文哈希不同，定位不到 → 不删（`blob_dir` 只留一份，且内容
+    已红act），如实记在这里。
+  - **`memory.erase` 例外（复审 高-B）**：先删文件、后提交，删文件在事务外且不可逆。恢复按
+    memory_id 查投影：**文件还在** ⇒ 确实没生效（`none_applied`）；**文件已没** ⇒ 只能
+    `unknown` + `memory_unresolved`（不进 `report.unresolved`——那个列表末尾会被拿去阻断目录，
+    记忆没有目录可挡），`ok=False`。`_settle` 同时把 `dispatches` 行推进到 `error`
+    （复审 轻-A），不让审计继续显示"仍在执行"。
+- **审计表**：`dispatch_requests` 加 `args_redacted` 列（`_ensure_column` 原地补列）；终态
+  （`done` / `rejected`，含 `_fail_unknown` 那条）由 `_set_request_state()` →
+  `_redact_terminal_args()` 脱敏；**升级前就在终态的行**由 `_backfill_redacted_args()` 在每次
+  打开库时补扫（复审 中-C）。`ON CONFLICT` 取"最后一次写入"的形态（复审 中-D：单向保留会让
+  "终态后重新发起"的合法请求被判"参数被改"）；`_reject` 的 `args_redacted` 改成"真的脱敏了
+  才标 1"（复审 中-E：被拒的文件请求曾被标成已脱敏）。
+- **事件日志（复审 高-C，属于 #26 的同一目标）**：`_intent_args` 原来只对
+  `memory.propose` 拿掉 `content`，N1 新增的 `memory.remember` / `memory.edit` 把正文原样写进了
+  **append-only、不可删** 的 `tool.intent`。改成"记忆资源 + 参数里有 content ⇒ 换成
+  `content_sha256` / `content_bytes` / `content_omitted`"，不列工具名。
+- **测试落点（与 §6.3 的偏差，如实记）**：没有新建 `tests/test_memory_recovery.py`——判据本来
+  就在 `tests/test_memory_dispatch.py`（同一套 `Env` 夹具），单开文件要复制夹具。实际新增
+  **14 条**，都在该文件：三条终态脱敏（成功 / 闸门 / 中途炸）、`waiting` 行被否决后（ON
+  CONFLICT）、终态后重新发起、旧库终态行补扫、被拒文件请求不标脱敏、intent 不存正文
+  （remember + edit）、断电恢复、孤儿 blob、共享 blob 不误删、擦除崩溃窗口、清单损坏仍结算、
+  文件写不脱敏。
+- **负控（7 条都真跑过，逐条变红）**：① 关终态脱敏；② ON CONFLICT 改回单向 CASE；③ 删
+  `_recover_run` 记忆分支；④ 删 `assess_run` 记忆分支；⑤ `_reject` 无条件标脱敏；⑥ 跳过补扫；
+  ⑦ `_intent_args` 只认 propose；另加"把 erase 当普通记忆写""关掉孤儿清理""删清单损坏早退块
+  里的记忆分支"三条也各自变红。
+- **残留（别读成"任何时刻都不存原文 / 一定没生效"）**：
+  1. 停在 `waiting` / `admitted` 的行仍是完整参数——`dispatch()` 正是从这张表取参数执行，脱敏会
+     把派发打红。要收口得先定义"等待行过期 / 取消即作废"，单开工单。
+  2. 升级前终态行若 `payload` 已不可解析，**不补扫**（保留可审计性，`args_redacted` 保持 0）。
+     `_redact_terminal_args` 解析失败也是静默返回——已知 fail-open，人工核查前不得声称"全部脱敏"。
+  3. PII 红act 的孤儿 blob 定位不到（见上）。
+  4. §6.3 要求的"两个真进程断电"没做：现有恢复测试都是同进程构造状态（`monkeypatch` 掉
+     `_commit_result` 制造"副作用已发生、提交前硬退"），真跨进程断电不在 CI 可复现范围。
+  5. `blob_dir` 里的正文副本不随审计表脱敏——那是设计（正文本来就存 blob，审计表只收重复副本）。
 
 ## 7. N6 · 控制面 UI / Host：看得见、改得动（F10 §9）
 
