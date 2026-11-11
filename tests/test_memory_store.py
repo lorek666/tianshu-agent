@@ -1336,3 +1336,16 @@ def test_schema_v1_database_is_migrated_in_place(env) -> None:
         "SELECT value FROM memory_meta WHERE key = 'schema_version'"
     ).fetchone()
     assert row is not None and int(row[0]) == 2
+
+
+def test_newer_schema_version_fails_closed(env) -> None:
+    """用旧程序打开新投影会读错字段：必须拒绝，而不是"试试看"。"""
+    log, projection = env
+    _propose(projection, log, "m_new", "新版本投影")
+    log.conn.execute(
+        "INSERT INTO memory_meta(key, value) VALUES ('schema_version', '3')"
+        " ON CONFLICT(key) DO UPDATE SET value = '3'"
+    )
+    projection._schema_ready = False
+    with pytest.raises(MemoryStoreError):
+        projection.ensure_schema()

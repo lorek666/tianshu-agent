@@ -824,6 +824,7 @@ class Dispatcher:
         dispatch_id = admitted.dispatch_id
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
+        memory_committed = False
         try:
             if isinstance(target, _MemoryTarget):
                 # 记忆没有目录租约：不能走 `begin_execution`（它强制要求资源
@@ -831,6 +832,13 @@ class Dispatcher:
                 # 否则撤销与执行的先后就没有全序。
                 with self._begin_memory_execution(request, claim) as permit:
                     result = self._memory_executor_for().execute(admitted, permit)
+                    if request.tool_id == "memory.erase":
+                        # 擦除的"引用计数 + 删文件 + 行更新"必须与**提交**在同一把
+                        # 跨进程守卫内：否则两个进程同时擦共享同一 blob 的两条
+                        # 记忆，会各自看到"对方还没擦"→ 都保留文件 → 两行都标
+                        # erased、孤儿文件永久留存（复审探针确定性复现过）。
+                        self._commit_result(request, dispatch_id, result, target, seq)
+                        memory_committed = True
             else:
                 with self._tasks.begin_execution(
                     self._data_root, request.run_id, auth.lease_paths
@@ -858,13 +866,14 @@ class Dispatcher:
             return self._fail_unknown(request, dispatch_id, target, exc)
 
         if isinstance(target, _MemoryTarget):
-            try:
-                self._commit_result(request, dispatch_id, result, target, seq)
-            except Exception as exc:  # noqa: BLE001 - 投影事务失败：效果未知
-                # `_commit_result` 的事务已回滚（事件、凭据、投影一起消失）。
-                # 但执行器可能已经写了内容 blob，结论仍只能是 unknown；这里
-                # 补一条 tool.result(unknown)，且**不**再调用 apply_event。
-                return self._fail_unknown(request, dispatch_id, target, exc)
+            if not memory_committed:
+                try:
+                    self._commit_result(request, dispatch_id, result, target, seq)
+                except Exception as exc:  # noqa: BLE001 - 投影事务失败：效果未知
+                    # `_commit_result` 的事务已回滚（事件、凭据、投影一起消失）。
+                    # 但执行器可能已经写了内容 blob，结论仍只能是 unknown；这里
+                    # 补一条 tool.result(unknown)，且**不**再调用 apply_event。
+                    return self._fail_unknown(request, dispatch_id, target, exc)
         else:
             self._commit_result(request, dispatch_id, result, target, seq)
         # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
@@ -1397,6 +1406,13 @@ class Dispatcher:
         )
         if not ok:
             raise DispatchDenied(reason, "dispatch.memory_stale_revision")
+        if request.tool_id == "memory.erase":
+            # 已擦除 = 确定拒绝，别让人为一次注定失败的擦除签字。
+            row = self._memory_projection().get(memory_id, allowed=(target.scope,))
+            if row is not None and row.erased_at is not None:
+                raise DispatchDenied(
+                    f"记忆已经擦除过：{memory_id}", "dispatch.memory_stale_revision"
+                )
 
     def _typecheck(
         self, request: ActionRequest, claim: JobClaim, args: dict[str, Any]
@@ -2324,7 +2340,9 @@ def build_request(
         elif spec.action == ACTION_DELETE:
             memory_pre = {
                 "memory_id": args.get("memory_id"),
-                "before_status": args.get("status", "active"),
+                # 删除类目标可以是 candidate / active / superseded / forgotten：
+                # 不声明状态就只按 revision 绑定；状态约束由执行侧与投影校验兜底。
+                "before_status": args.get("status"),
                 "before_revision": args.get("revision"),
             }
         else:  # pragma: no cover - 记忆读工具不走派发

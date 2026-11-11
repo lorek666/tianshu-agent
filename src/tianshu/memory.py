@@ -1487,7 +1487,9 @@ class MemoryProjection:
     def count_content_ref(
         self, content_ref: str, *, exclude_memory_id: str
     ) -> tuple[int, list[str]]:
-        """还有多少**其它投影行**（含 forgotten / superseded / erased）引用这个 blob。
+        """还有多少**其它未擦除的投影行**（含 forgotten / superseded）引用这个 blob。
+
+        已擦除的行不算：它自己都声明副本删了，不能拦住别人的擦除。
 
         擦除只能删没有任何其它行引用的正文；否则"擦一条"会让另一条正文凭空消失。
         返回 `(条数, memory_id 列表)`——列表进回执，供人核对"为什么没删"。

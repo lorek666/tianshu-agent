@@ -1246,7 +1246,7 @@ def test_promote_is_control_only_and_moves_memory(env: Env):
         )
         assert memory_id in promoted.source_refs
         assert env.memory.search("项目用", allowed=(user,)) == []
-        verify_receipts(env.log, run_id=control.run.run_id)
+        assert verify_receipts(env.log, run_id=control.run.run_id) == []
         # 凭据必须针对**原行**（移动的是它），root 是原作用域。
         receipts = [
             event
@@ -1359,7 +1359,7 @@ def test_erase_deletes_unique_blob_and_marks_erased(env: Env):
         assert revived.erased_at is not None
         assert env.memory.read_content(revived) is None
 
-        verify_receipts(env.log, run_id=control.run.run_id)
+        assert verify_receipts(env.log, run_id=control.run.run_id) == []
         receipts = [
             event
             for event in env.log.read_run(control.run.run_id)
@@ -1460,6 +1460,14 @@ def test_erase_keeps_shared_blob_and_reports_retained_by(env: Env):
     still_there = env.memory.get(id_b, allowed=(task_b,))
     assert still_there is not None
     assert env.memory.read_content(still_there) == content
+    # 文件仍被另一条引用（没删），重建后第一条照样不复活。
+    env.memory.rebuild()
+    erased_a = env.memory.get(id_a, allowed=(task_a,))
+    assert erased_a is not None and erased_a.erased_at is not None
+    assert env.memory.read_content(erased_a) is None
+    assert env.memory.read_content(
+        env.memory.get(id_b, allowed=(task_b,))
+    ) == content
 
     second = erase(id_b, task_b, "erase-b")
     assert second["deleted"] is True
@@ -1483,3 +1491,72 @@ def test_erase_is_control_plane_only(env: Env):
     assert decision.is_rejected, decision
     assert decision.rule_id == "c4.memory_control_scope_binding"
     assert "memory.erase" not in {item["name"] for item in tool_manifest()}
+
+
+def test_erase_commit_runs_inside_the_execution_guard(env: Env):
+    """擦除的引用计数/删文件/提交必须在**同一把跨进程守卫**内。
+
+    否则两个进程同时擦共享同一 blob 的两条记忆，会各自看到"对方还没擦"→
+    都保留文件 → 两行都标 erased、孤儿文件永久留存（复审探针复现）。
+    这里直接把守卫换成可观测的上下文管理器，断言 commit 发生在守卫内。
+    """
+    from contextlib import contextmanager
+
+    import tianshu.dispatcher as dispatcher_module
+
+    depth = {"n": 0}
+    real_guard = dispatcher_module.execution_guard
+
+    @contextmanager
+    def spy_guard(*args, **kwargs):
+        depth["n"] += 1
+        try:
+            with real_guard(*args, **kwargs):
+                yield
+        finally:
+            depth["n"] -= 1
+
+    user = MemoryScope.user()
+    task, run, claim, output = _proposed(env, content="守卫内的擦除")
+    memory_id = output["memory_id"]
+    request, args = _confirm_request(env, task, run, claim, memory_id, revision=1)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    _approve(env, decision.approval_id)
+    assert env.dispatcher.dispatch(decision.request_id, claim).ok
+
+    control = env.dispatcher.open_control_run(
+        goal=f"memory.erase:{memory_id}", workspaces=[], memory_scopes=[]
+    )
+    erase_args = {"memory_id": memory_id, "revision": 2}
+    request = env.request(
+        control.task,
+        control.run,
+        control.claim,
+        tool_id="memory.erase",
+        target=user.to_uri(),
+        args=erase_args,
+        call_id="erase-guard",
+    )
+    decision = env.dispatcher.prepare(request, control.claim, args=erase_args)
+    _approve(env, decision.approval_id)
+
+    real_commit = env.dispatcher._commit_result
+    seen: list[int] = []
+
+    def spy_commit(*a, **k):
+        seen.append(depth["n"])
+        return real_commit(*a, **k)
+
+    dispatcher_module.execution_guard = spy_guard  # type: ignore[assignment]
+    env.dispatcher._commit_result = spy_commit  # type: ignore[method-assign]
+    try:
+        result = env.dispatcher.dispatch(decision.request_id, control.claim)
+    finally:
+        dispatcher_module.execution_guard = real_guard  # type: ignore[assignment]
+        env.dispatcher._commit_result = real_commit  # type: ignore[method-assign]
+        env.dispatcher.close_control_run(
+            control, outcome="succeeded", effect_state="applied"
+        )
+    assert result.ok, result.output
+    assert seen == [1], seen
+    assert depth["n"] == 0
