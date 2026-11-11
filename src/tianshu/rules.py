@@ -101,6 +101,7 @@ RULE_IDS: frozenset[str] = frozenset(
         # ---- 记忆（F10）：作用域、种类与记忆目标 ----
         "c4.memory_scope",
         "c4.memory_scope_denied",
+        "c4.memory_control_scope_binding",
         "c4.memory_kind_unsupported",
         "dispatch.memory_not_found",
         "dispatch.memory_stale_revision",
@@ -217,6 +218,7 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
     "记忆": frozenset(
         {
             "c4.memory_scope_denied",
+            "c4.memory_control_scope_binding",
             "c4.memory_kind_unsupported",
             "dispatch.memory_not_found",
             "dispatch.memory_stale_revision",

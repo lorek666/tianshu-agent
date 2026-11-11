@@ -377,7 +377,7 @@ def _fresh_progress(task: str, out_name: str | None) -> _Progress:
 #: 而不是猜它属于哪条路径。
 MEMORY_READ_TOOLS: frozenset[str] = frozenset({"memory.search", "memory.get"})
 MEMORY_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"memory.propose", "memory.confirm", "memory.forget"}
+    {"memory.propose", "memory.remember", "memory.confirm", "memory.forget"}
 )
 
 
