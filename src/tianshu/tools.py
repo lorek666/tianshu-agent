@@ -39,12 +39,14 @@ from .errors import (
     ToolNotAllowed,
     ToolSchemaError,
 )
-from .exec import LOCAL_EXEC_CAPABILITIES, spawn
+from .exec import RULE_PTY_NOT_ALLOWED
+from .exec_backends import ExecBackend
+from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
-    ExecBackendCapabilities,
     ExecPolicy,
     PolicyDenied,
     PolicyUnsupported,
+    check_exec,
     filtered_env,
 )
 from .guard import assert_paths_not_blocked, ensure_not_blocked
@@ -183,7 +185,8 @@ class ToolContext:
     backend: FileBackend | None = None
     #: 任务级执行策略（None = 未配置 = run_command 默认全拒）。
     exec_policy: ExecPolicy | None = None
-    exec_capabilities: ExecBackendCapabilities | None = None
+    #: 本次执行走的后端（F2 注册表）。None = 解析进程级配置。
+    exec_backend: ExecBackend | None = None
     #: 截断输出的内容寻址目录（快照 blob 目录）；None 时只报 truncated。
     blob_dir: Path | None = None
 
@@ -548,7 +551,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 
     **默认全拒**：`ctx.exec_policy is None` 时这里也拒绝（真正的第一道门在
     PolicyEngine：未配置 exec 的任务连审批都不会发起）。策略判定、能力判定与
-    真正的执行都在 `exec.spawn()` 里，这里只把结果翻译成 C2 的 output 形状。
+    真正的执行在**已注册后端**的 `spawn()` 里，这里只把结果翻译成 C2 的
+    output 形状。调用方先核一遍 `check_exec()`：注册表允许第三方后端，
+    策略判定不能外包给后端自觉。
     """
     policy = ctx.exec_policy
     if policy is None:
@@ -559,19 +564,28 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 
     # 票据已核验过目标；参数里的 cwd 必须解析到同一个目录。
     target, rel = _write_target(ws, ctx, args.get("cwd", "."))
-    capabilities = ctx.exec_capabilities or LOCAL_EXEC_CAPABILITIES
+    backend = ctx.exec_backend if ctx.exec_backend is not None else resolve_exec_backend()
+    capabilities = backend.capabilities
     argv = args["argv"]
     pty = bool(args.get("pty", False))
-    # 凭据/密钥不进入子进程：只传策略白名单里的变量（spawn 内部还会再过滤一次）。
+    # 凭据/密钥不进入子进程：只传策略白名单里的变量（后端内部还会再过滤一次）。
     child_env = filtered_env(policy, dict(os.environ))
 
     try:
-        result = spawn(
+        # 两道判定都在**创建进程之前**：策略（deny 优先/白名单/上限/env）与
+        # 后端能力（PTY 等）。后端自己会再核一次——防御纵深，不是替代。
+        if pty and not policy.allow_pty:
+            raise PolicyDenied(
+                "本次调用请求了 PTY，但策略没有允许（ExecPolicy.allow_pty=False）："
+                "改策略，或本次改用管道",
+                rule_id=RULE_PTY_NOT_ALLOWED,
+            )
+        check_exec(policy, capabilities, argv, target, child_env)
+        result = backend.spawn(
             argv,
             cwd=target,
             env=child_env,
             policy=policy,
-            capabilities=capabilities,
             blob_dir=ctx.blob_dir,
             pty=pty,
         )
@@ -635,6 +649,8 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 "decision": "allowed",
                 "argv0": str(argv[0]) if argv else "",
                 "pty": pty,
+                "backend": capabilities.name,
+                "declared_isolation": capabilities.isolation,
             },
         },
     )
@@ -1127,7 +1143,7 @@ class FileExecutor:
         log: object | None = None,
         snapshots: SnapshotStore | None = None,
         backend: FileBackend | None = None,
-        exec_capabilities: ExecBackendCapabilities | None = None,
+        exec_backend: ExecBackend | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -1139,7 +1155,10 @@ class FileExecutor:
         self._clock = clock
         self._log = log
         self._snapshots = snapshots
-        self._exec_capabilities = exec_capabilities or LOCAL_EXEC_CAPABILITIES
+        # 与文件后端同一纪律：进程级解析一次，执行期用同一个对象。
+        self._exec_backend = (
+            exec_backend if exec_backend is not None else resolve_exec_backend()
+        )
         self._backend = backend if backend is not None else current_backend()
         if self._backend is not current_backend():
             # "executor 用 memfs、precondition 读 local" 这种半真半假状态
@@ -1311,7 +1330,7 @@ class FileExecutor:
             admitted=admitted,
             backend=self._backend,
             exec_policy=task.exec_policy if task is not None else None,
-            exec_capabilities=self._exec_capabilities,
+            exec_backend=self._exec_backend,
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
         )
 
