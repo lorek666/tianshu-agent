@@ -361,14 +361,14 @@ C4 的 `resources` 原本是一条**隐含**约定：里面每一个字符串都
 
 ## 14. 出口验收（判据，逐条对上真实测试）
 
-> **状态时点**：2026-11-11 14:40（`fix/memory-recovery-audit` 工作区实测，已并入 main 的 #88，`1581 passed / 7 skipped`——N5 起点基线 `main @ 42d786b` 为 `1529 passed / 7 skipped`，本分支加 26 条记忆测试（含五轮复审整改）；其中 188 条来自本特性的四个记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
+> **状态时点**：2026-11-11 15:40（`feat/memory-retrieval` 工作区实测，已并入 main 的 #88/#89/#90/#91，`1598 passed / 7 skipped`——N2 起点基线 `main @ 8f2440a`（含 #89 后的 N5）为 `1581 passed / 7 skipped`，N2 加 17 条检索测试；其中 205 条来自本特性的**六个**记忆测试文件，其余来自 main）；以 CI 为准。独立复审的结论与逐条处置见
 > [REVIEW-F10-memory.md](REVIEW-F10-memory.md) 与 [REVIEW-RESPONSE-F10-memory.md](REVIEW-RESPONSE-F10-memory.md)。
 >
 > 判据是"能被一条测试打红"。下表每条都指向**真实存在的测试函数**；写"未覆盖"的就是
-> 真的没有测试，别把它当已验收。函数名来自四个文件：`tests/test_memory_store.py`
+> 真的没有测试，别把它当已验收。函数名来自**六个**文件：`tests/test_memory_store.py`
 > （53 个 `def test_` / 66 条：投影 / 检索 / 闸门 / 去重 / 擦除 / schema 迁移）、`tests/test_memory_dispatch.py`
 > （60 个：真派发 / 审批 / 事务 / 资源种类 / 伪造票据 / 作用域越权 / 零绑定控制 Run / 错装配投影 / 拒绝行脱敏 / 终态脱敏 / 同号重写 / 崩溃窗口 / 擦除不可逆 / 孤儿 blob / 旧库补扫 / 迁移中断重试 / CLI 打印两栏 / blob_dir 与投影接线 / 恢复分支 / 标记与列脱钩 / memory 优先 / 加列与补扫之间崩溃重试）、`tests/test_memory_loop.py`（19 个：主循环 / 预算 /
-> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_resources.py`（23 个 / 43 条：资源种类）。
+> replay / CLI / 工具封闭集 / 遗忘后不可按 id 复活）、`tests/test_resources.py`（23 个 / 43 条：资源种类）、`tests/test_memory_rank.py`（6 个：作用域优先级）、`tests/test_memory_vectors.py`（11 个：向量索引 / RRF / 降级边界）。
 
 | 判据 | 状态 | 证据 / 缺口 |
 |---|---|---|
