@@ -234,6 +234,9 @@ class ControlPlane:
             # 模型清单（`tool_manifest()`）里没有它们；模型走 `AgentLoop` →
             # `Dispatcher` → `MemoryExecutor` 那条路，身份与这里完全不同。
             "memory.list": self._memory_list,
+            # 检索（人机界面）：与模型侧的 `memory.search` 同名但**不同路**——
+            # 这里走投影的 `retrieve()` 并把 `semantic`/`degraded`/`fused` 原样给出。
+            "memory.search": self._memory_search,
             "memory.get": self._memory_get,
             "memory.remember": self._memory_remember,
             "memory.confirm": self._memory_confirm,
@@ -859,6 +862,30 @@ class ControlPlane:
             self._stack.memory, allowed=allowed, status=status, limit=limit
         )
         return {"items": items, "scopes": [scope.to_uri() for scope in allowed]}
+
+    def _memory_search(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`memory.search`：人的检索入口（能力标注原样给，不假装"没结果"）。
+
+        参数只有 `query` / 可选 `scope`+`scope_id` / 可选 `limit`。**没有
+        `status`**：检索只返回可召回集合（active、未过期、正文可读），要看候选 /
+        已忘 / 已擦除用 `memory.list`——"检索"与"盘点"是两个问题，混成一个参数会让
+        空结果的含义变模糊。
+        """
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise ControlError("bad_params", "query 必须是非空字符串")
+        limit = params.get("limit")
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        ):
+            raise ControlError("bad_params", "limit 必须是正整数")
+        allowed = self._memory_allowed(params)
+        result = memory_control.search_memories(
+            self._stack.memory, query=query, allowed=allowed, limit=limit
+        )
+        # 回显实际生效的可见作用域：空结果时人才能分清"没这条记忆"与"没覆盖到"。
+        result["scopes"] = [scope.to_uri() for scope in allowed]
+        return result
 
     def _memory_get(self, params: dict[str, Any]) -> dict[str, Any]:
         """`memory.get`：一条记忆 + 正文（纯文本）。"""
