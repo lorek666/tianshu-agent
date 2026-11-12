@@ -31,16 +31,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ..capability import CapabilityProfile
 from ..contents import parse_ref
 from ..errors import TianshuError
 from ..events import EventLog
 from ..loop import AgentLoop, Limits, build_stack
-from ..model import Model, identity_of
+from ..model import Model, ModelError, ModelIdentity, ScriptedModel, identity_of
 from ..permissions import HumanIdentity
 from ..recovery import RecoveryReport, recover_run
 from ..replay import ReplayReport, replay
 from ..sandbox import current_backend
-from ..tasks import RUN_WAITING_APPROVAL
+from ..tasks import RUN_WAITING_APPROVAL, SUBTASK_UNFINISHED_STATES
+from ..worker import Worker
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
 from .checks import Observation
 from .webfixture import WebFixture, closed_origin
@@ -51,8 +53,40 @@ CHILD_TIMEOUT_S = 120
 #: 审批往返最多几次。一个正常 case 最多停一次；留 6 次是为了让"批准后又停"
 #: 这类 bug 表现为失败，而不是把评测器卡死。
 MAX_APPROVAL_ROUNDS = 6
+#: G2 委派 D3：父 Run 每 park 一次算一轮。上限防的是"父任务反复派子任务、
+#: 永远收不了尾"——超过就把它写成评测失败，不是静默重试到天荒地老。
+MAX_DELEGATION_ROUNDS = 8
 
 ModelFactory = Callable[[Case], Model]
+
+
+class _FailingModel:
+    """子 Run 的"模型直接失败"替身（评测用，不是产品运行时依赖）。
+
+    为什么需要它：D3-c3 要证明"子任务失败时父任务不编造"。让子 Run 模型抛
+    不可重试的 `ModelError`，走的是真实的失败收尾路径；不用改产品代码造一个
+    假终态。能力声明必须给全，否则子 Run 会在准入阶段就失败，测到的就不是
+    "执行中失败"那条路径了。
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls = 0
+
+    def capability_profile(self) -> CapabilityProfile:
+        return CapabilityProfile(
+            provider="scripted",
+            model="failing-child",
+            supports_tool_calling=True,
+            declared_by="eval._FailingModel（子任务失败替身）",
+        )
+
+    def price_identity(self) -> ModelIdentity:
+        return ModelIdentity(adapter="scripted", vendor=None, model="")
+
+    def complete(self, messages, tools):  # noqa: ARG002
+        self.calls += 1
+        raise ModelError(self.message, kind="protocol", retryable=False)
 
 
 def require_local_backend() -> None:
@@ -265,6 +299,155 @@ def _collect_offline_sources(
     return sources
 
 
+# ---------------------------------------------------------------- 委派（G2 D3）
+
+
+def _unfinished_subtasks(stack: Any, parent_run_id: str) -> list[Any]:
+    return [
+        row
+        for row in stack.tasks.list_subtasks(parent_run_id)
+        if row.state in SUBTASK_UNFINISHED_STATES
+    ]
+
+
+def _child_model(case: Case, subtask_id: str) -> Model:
+    """按 `subtask_id` 取子 Run 的模型；没声明就**拒绝**，不拿父脚本冒充。"""
+    plan = case.subtask_scripts.get(subtask_id)
+    if plan is None:
+        raise TianshuError(
+            f"子任务 {subtask_id!r} 没有声明评测脚本（case.subtask_scripts 缺这个 "
+            "slug）；评测器不会用父任务脚本子 Run，也不会猜一个空脚本"
+        )
+    if plan.fail_with is not None:
+        return _FailingModel(plan.fail_with)
+    return ScriptedModel(list(plan.script))
+
+
+def _drive_child_runs(
+    stack: Any,
+    case: Case,
+    parent_run_id: str,
+    *,
+    limits: Limits,
+) -> str | None:
+    """把父 Run 已派出的子任务驱动到终态。返回 None = 成功，否则是失败原因。
+
+    **只驱动子 Run**：Worker 的 `engine_factory` 按 claim 的 Run 查父链，认领到
+    非子 Run（例如父作业被意外唤醒）会直接报错，而不是拿占位模型跑父任务。
+    调用前先确认每个未完成子任务的作业都是 `pending`，因此 `max_jobs` 恰好等于
+    子任务数时，Worker 不会越过最后一个子任务去认领父作业。
+
+    失败一律返回原因（调用方写进样本的 `error`），不静默继续：
+    - 有子任务没有声明脚本；
+    - 子作业不是 pending（不是"还在排队"，可能已被别人认领/已 done 但行未收尾）；
+    - Worker 自身报错、认领了预期外的 Run；
+    - 子任务在 drain 之后仍未到终态；
+    - 子任务全终结但父作业没有被唤醒。
+    """
+    rows = _unfinished_subtasks(stack, parent_run_id)
+    if not rows:
+        return None
+
+    missing = [row.subtask_id for row in rows if row.subtask_id not in case.subtask_scripts]
+    if missing:
+        return (
+            f"子任务没有声明评测脚本，拒绝用父脚本冒充：{missing}（parent_run={parent_run_id}）"
+        )
+
+    parent_job = stack.claims.job_for_run(parent_run_id)
+    if parent_job is None or parent_job.state != "waiting":
+        return (
+            f"父作业不处于 waiting（state={None if parent_job is None else parent_job.state}），"
+            "不能在等待窗口驱动子任务"
+        )
+
+    expected = {row.child_run_id: row.subtask_id for row in rows}
+    not_pending = []
+    for row in rows:
+        job = stack.claims.job_for_run(row.child_run_id)
+        state = None if job is None else job.state
+        if state != "pending":
+            not_pending.append((row.subtask_id, state))
+    if not_pending:
+        return f"子作业不是 pending，拒绝认领顺序不确定的队列：{not_pending}"
+
+    def factory(claim: Any) -> AgentLoop:
+        run = stack.tasks.get_run(claim.run_id)
+        if (
+            run is None
+            or run.parent_run_id != parent_run_id
+            or not run.subtask_id
+            or claim.run_id not in expected
+        ):
+            raise TianshuError(
+                f"评测器只驱动子 Run，却认领到 {claim.run_id}（parent_run={parent_run_id}）"
+            )
+        return AgentLoop(
+            tasks=stack.tasks,
+            leases=stack.leases,
+            claims=stack.claims,
+            dispatcher=stack.dispatcher,
+            approvals=stack.approvals,
+            snapshots=stack.snapshots,
+            model=_child_model(case, run.subtask_id),
+            limits=limits,
+            # 与 Worker._engine 相同的装配：预算/内容/记忆/摘要是同一份，
+            # 否则子任务的上限与结果引用会落在另一个投影里。
+            memory=stack.memory,
+            summaries=stack.summaries,
+            budget=getattr(stack, "budget", None),
+            contents=getattr(stack, "contents", None),
+        )
+
+    worker = Worker(
+        stack=stack,
+        # engine_factory 一定会被调用；这个模型只是 Dataclass 的必填占位。
+        model=_FailingModel("worker 占位模型不应被调用"),
+        engine_factory=factory,
+        heartbeat_interval_ms=None,
+    )
+    try:
+        worker.drain(max_jobs=len(rows))
+    finally:
+        worker.close()
+
+    if worker.errors:
+        return "驱动子任务失败：" + "；".join(worker.errors)
+    unexpected = [run_id for run_id in worker.run_ids if run_id not in expected]
+    if unexpected:
+        return f"Worker 认领了非子任务 Run：{unexpected}（预期={sorted(expected)}）"
+
+    after = _unfinished_subtasks(stack, parent_run_id)
+    if after:
+        return (
+            "子任务没有到终态："
+            + "；".join(f"{row.subtask_id}={row.state}" for row in after)
+        )
+    job = stack.claims.job_for_run(parent_run_id)
+    if job is None or job.state != "pending":
+        return (
+            "子任务已全部终结，但父作业没有被唤醒（"
+            f"state={None if job is None else job.state}）"
+        )
+    return None
+
+
+def _collect_subtask_evidence(
+    stack: Any, parent_run_id: str, log: EventLog
+) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Run 结束后读子任务行与子 Run 事件（父 Run 的 events 不含它们）。"""
+    rows = stack.tasks.list_subtasks(parent_run_id)
+    subtasks: list[dict[str, Any]] = []
+    child_events: list[Any] = []
+    for row in rows:
+        data = row.to_dict()
+        child = stack.tasks.get_run(row.child_run_id)
+        data["child_run_state"] = None if child is None else child.state
+        subtasks.append(data)
+        child_events.extend(log.read_run(row.child_run_id))
+    return subtasks, child_events
+
+
 # ---------------------------------------------------------------- 普通运行
 
 
@@ -305,6 +488,9 @@ def _run_standard(
     run_id = ""
     invalid_reason: str | None = None
     post_run: dict[str, Any] = {}
+    # G2 委派 D3：子任务行与子 Run 事件（父 Run 的 events 不含它们）。
+    subtasks: list[dict[str, Any]] = []
+    subtask_events: list[Any] = []
     try:
         web, web_socket, base = _start_web(case)
         effective = _materialize_case(case, base)
@@ -327,51 +513,85 @@ def _run_standard(
             effective.task,
             [str(ws)],
             outbound_allow=list(effective.outbound_allow) or None,
+            # G2 委派 D3：委派能力必须由任务显式声明；评测里逐条任务写死，
+            # 不给所有任务偷偷打开。
+            max_subtasks=effective.max_subtasks,
         )
         res = engine.start(task.task_id, out_name=effective.out_name)
         run_id = res.run_id
 
         rounds = 0
-        while res.state == RUN_WAITING_APPROVAL and rounds < MAX_APPROVAL_ROUNDS:
-            rounds += 1
-            if files_at_pause is None:
-                # "批准之前文件一个字节都没动"只能在这里证明：等 Run 结束再看
-                # 文件对不对，证明不了中间有没有先写后改。
-                files_at_pause = _read_tree(ws)
-            if case.approval == "hold":
-                # 恶意输入 case：破坏性动作挂进审批队列，人还没决定。
-                # 评测器**不替人批准**，就停在这里观察——这正是要证明的状态。
-                break
-            if case.approval == "none":
-                # 没声明会停却停了：case 与实现不一致，记成 harness 归因。
-                error = "case 未声明审批策略，但 Run 停在等待审批：case 定义与实现不一致"
-                break
-            decision = "rejected" if case.approval == "reject" else "approved"
-            actor = HumanIdentity.local_cli()
-            pending = stack.approvals.pending(run_id=res.run_id)
-            if not pending:
-                error = "Run 停在等待审批，但审批队列为空：状态与记录不一致"
-                break
-            for approval in pending:
-                stack.approvals.decide(
-                    approval.approval_id, decision=decision, actor=actor
-                )
-            if case.approval == "reject":
-                # 人拒绝之后必须继续驱动：新语义（issue #40）下这次 resume 会把
+        delegation_rounds = 0
+        while True:
+            if res.state == RUN_WAITING_APPROVAL:
+                if rounds >= MAX_APPROVAL_ROUNDS:
+                    if case.approval != "hold":
+                        # 只有 hold 是有意的终点（恶意输入被人拦下、人还没决定）。
+                        error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
+                    break
+                rounds += 1
+                if files_at_pause is None:
+                    # "批准之前文件一个字节都没动"只能在这里证明：等 Run 结束再看
+                    # 文件对不对，证明不了中间有没有先写后改。
+                    files_at_pause = _read_tree(ws)
+                if case.approval == "hold":
+                    # 恶意输入 case：破坏性动作挂进审批队列，人还没决定。
+                    # 评测器**不替人批准**，就停在这里观察——这正是要证明的状态。
+                    break
+                if case.approval == "none":
+                    # 没声明会停却停了：case 与实现不一致，记成 harness 归因。
+                    error = (
+                        "case 未声明审批策略，但 Run 停在等待审批：case 定义与实现不一致"
+                    )
+                    break
+                decision = "rejected" if case.approval == "reject" else "approved"
+                actor = HumanIdentity.local_cli()
+                pending = stack.approvals.pending(run_id=res.run_id)
+                if not pending:
+                    error = "Run 停在等待审批，但审批队列为空：状态与记录不一致"
+                    break
+                for approval in pending:
+                    stack.approvals.decide(
+                        approval.approval_id, decision=decision, actor=actor
+                    )
+                # 拒绝之后也要继续驱动：新语义（issue #40）下这次 resume 会把
                 # cursor 里那张待批动作按"否决"拒绝，模型拿不出替代动作时 Run
-                # 以 failed 收束；**不该**再出现第二张审批。
-                #
-                # 旧语义下这里会立刻再停在 waiting_approval，于是下一轮循环又
-                # 点一次拒绝……`MAX_APPROVAL_ROUNDS` 保证评测器不会卡死，
-                # 而 `approval.requested` 的精确计数判据会把这件事判红。
+                # 以 failed 收束；**不该**再出现第二张审批。审批往返上限保证
+                # 评测器不会卡死，`approval.requested` 的精确计数判据负责判红。
                 res = engine.resume_run(res.run_id)
                 continue
-            res = engine.resume_run(res.run_id)
 
-        if res.state == RUN_WAITING_APPROVAL and case.approval != "hold":
-            # 只有 hold 是有意的终点（恶意输入被人拦下、人还没决定）。其余情况
-            # 停在审批 = 审批往返没有收敛，属于评测器/case 与实现不一致。
-            error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
+            unfinished = stack.tasks.count_unfinished_subtasks(res.run_id)
+            if unfinished == 0:
+                if res.state == "running":
+                    error = (
+                        "父 Run 停在 running，但已无未完成子任务（既不是等待审批"
+                        "也不是终态）：评测器不会凭空继续驱动它"
+                    )
+                break
+            if not case.subtask_scripts:
+                error = (
+                    f"父 Run 还有 {unfinished} 个未完成子任务，但 case 没有声明 "
+                    "subtask_scripts：评测器不会用父脚本冒充子 Run"
+                )
+                break
+            if delegation_rounds >= MAX_DELEGATION_ROUNDS:
+                error = (
+                    f"委派往返超过 {MAX_DELEGATION_ROUNDS} 轮仍未收敛"
+                    f"（还有 {unfinished} 个未完成子任务）"
+                )
+                break
+            delegation_rounds += 1
+            drive_error = _drive_child_runs(
+                stack,
+                effective,
+                res.run_id,
+                limits=Limits(effective.max_turns, effective.max_total_tokens),
+            )
+            if drive_error is not None:
+                error = drive_error
+                break
+            res = engine.resume_run(res.run_id)
 
         # 场景钩子（如"撤销冲突"）：Run 结束后再动一下产品 API，收集事实。
         # 它跑在取证之前，钩子里写的事件（undo.*）才会进这次样本的证据。
@@ -386,6 +606,9 @@ def _run_standard(
         try:
             events = log.read_run(res.run_id)
             replay_report = replay(log, res.run_id)
+            subtasks, subtask_events = _collect_subtask_evidence(
+                stack, res.run_id, log
+            )
         except Exception as exc:  # noqa: BLE001
             invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
 
@@ -433,10 +656,15 @@ def _run_standard(
         replay_report=replay_report,
         error=error,
         elapsed_ms=int((time.perf_counter() - started) * 1000),
-        model_calls=len([e for e in events if e.type == "model.intent"]),
+        model_calls=len(
+            [e for e in events if e.type == "model.intent"]
+            + [e for e in subtask_events if e.type == "model.intent"]
+        ),
         invalid_reason=invalid_reason,
         post_run=post_run,
         offline_sources=offline_sources,
+        subtasks=subtasks,
+        subtask_events=subtask_events,
     )
     return obs
 

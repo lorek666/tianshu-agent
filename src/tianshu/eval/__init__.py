@@ -31,6 +31,7 @@ from .cases import (
     MIN_PER_CATEGORY,
     SUITE_VERSION,
     Case,
+    SubtaskScript,
     select_cases,
 )
 from .checks import Check, CheckResult, Observation, evaluate_checks
@@ -63,6 +64,7 @@ __all__ = [
     "SUITE_VERSION",
     "Case",
     "Check",
+    "SubtaskScript",
     "CheckResult",
     "Observation",
     "SuiteRun",

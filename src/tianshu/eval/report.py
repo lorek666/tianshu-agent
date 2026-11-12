@@ -234,6 +234,22 @@ def fixture_digest(case: Case) -> str:
         ),
         "runtime": _runtime_fingerprint(),
     }
+    # G2 委派 D3：委派声明与子 Run 脚本。它们变了，父任务看到的世界与子任务
+    # 的行为都变了——不记进分母会把两次不同的委派评测当成可比。
+    #
+    # 只在**非默认**时加键：默认值（0 / {}）不写进 payload，既有 27 条 case 的
+    # digest 逐字节不变（不因新字段给不相关的 case 换分母，也不需要为此 bump
+    # SUITE_VERSION）。
+    if case.max_subtasks:
+        payload["max_subtasks"] = case.max_subtasks
+    if case.subtask_scripts:
+        payload["subtask_scripts"] = {
+            key: {
+                "script": [resp.to_payload() for resp in plan.script],
+                "fail_with": plan.fail_with,
+            }
+            for key, plan in sorted(case.subtask_scripts.items())
+        }
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
