@@ -155,7 +155,7 @@ intent/result + 一次性审批 + 执行侧二次核验）写入，不是直接�
 
 ### 3.4 M2 实测数字
 
-- 全量：**2093 passed / 7 skipped**，**367.17s**；基线 `main @ 1eeb5fd`（M1 合入后）
+- 全量：**2093 passed / 7 skipped**，**371.43s**；基线 `main @ 1eeb5fd`（M1 合入后）
   同机 **2083 passed / 7 skipped** → **+10**（`tests/test_eval_followup.py` 6 条 +
   `tests/test_eval_real_tasks.py` 记忆 4 条）。
 - `run_real_user_tasks(repeat=3)`：**9 case × 3 = 27 次全绿**、**369 条判据 0 失败**、
