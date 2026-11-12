@@ -1376,7 +1376,14 @@ class Dispatcher:
         #   mcp_after_call —— 响应已经收到（server 确实执行过），而结果/凭据/终态
         #                      还没落盘。与上一个同口径：`unknown` + 阻断，不重放。
         failpoint("mcp_before_call")
-        if not self._mark_mcp_send_boundary(dispatch_id):
+        try:
+            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)
+        except GuardTimeout as exc:
+            # 拿不到执行守卫 = 没抢到"撤销与发送"的分界线：一个字节都没发。
+            # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次
+            # "效果未知"的崩溃——这次调用确实没出去。
+            return self._abort_dispatch(request, dispatch_id, exc)
+        if not boundary_marked:
             # 行已经被撤销/作废还照发，就等于让"撤销成功"这句话变假。这里不发，
             # 结论是确定的 `none_applied`。
             #

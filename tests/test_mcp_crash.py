@@ -54,6 +54,7 @@ from tianshu.dispatcher import (
 from tianshu.errors import WorkspaceBlocked
 from tianshu.events import EventLog
 from tianshu.guard import blocked_workspaces, ensure_not_blocked, unblock
+from tianshu.leases import GuardTimeout
 from tianshu.loop import build_stack
 from tianshu.mcp import McpClients, McpServerConfig
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
@@ -1335,4 +1336,128 @@ def test_dispatch_table_from_an_older_version_does_not_break_recovery(tmp_path):
         assert _mcp_never_sent([("error", 1)]) is False
         assert _mcp_never_sent([("weird", 1)]) is False
     finally:
+        log.close()
+
+
+def _dispatch_row_state(log: EventLog, dispatch_id: str) -> str:
+    row = log.conn.execute(
+        "SELECT state FROM dispatches WHERE dispatch_id=?", (dispatch_id,)
+    ).fetchone()
+    assert row is not None
+    return str(row["state"])
+
+
+def test_send_boundary_only_advances_rows_that_are_still_intent(tmp_path):
+    """`_advance_to_executing` 的 `state=intent` 前置条件必须有判据。
+
+    撤销/作废/结算先到 → 标记推进不上（False），行**不能**被改成 `executing`；
+    只有 `intent` 行能推进。没有这条，把 `AND state=?` 悄悄删掉也没有任何用例会红
+    （复审第二轮 S1：`test_refused_send_boundary_does_not_call_server` 把整个
+    入口 monkeypatch 掉了，只测调用方怎么处理 False）。
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    stack = build_stack(log, data_root=data)
+    try:
+        states = {
+            "d_intent": "intent",
+            "d_revoked": "revoked",
+            "d_rejected": "rejected",
+            "d_done": "done",
+            "d_error": "error",
+        }
+        for index, (dispatch_id, state) in enumerate(states.items()):
+            # 唯一索引在 (run_id, call_id)：每个行给一个不同的 call_id。
+            call_id = f"c_boundary_{index}"
+            log.conn.execute(
+                _DISPATCH_INSERT,
+                (
+                    dispatch_id, "run_boundary", "task_x", call_id, "req_x",
+                    "0" * 64, MCP_TOOL, ACTION_OVERWRITE, "[]",
+                    "mcp://fake/echo", "", "", "key:mcp", None, "grant_x", 1,
+                    "inst_x", 1, 0, 1, state, _NOW, _NOW,
+                ),
+            )
+        dispatcher = stack.dispatcher
+
+        assert dispatcher._advance_to_executing("d_intent") is True
+        assert _dispatch_row_state(log, "d_intent") == DISPATCH_EXECUTING
+        # 已经越过的行不能再被推进（第二次调用已经无行可改）
+        assert dispatcher._advance_to_executing("d_intent") is False
+
+        for dispatch_id, state in states.items():
+            if state == "intent":
+                continue
+            assert dispatcher._advance_to_executing(dispatch_id) is False, state
+            assert _dispatch_row_state(log, dispatch_id) == state, (
+                f"{state} 行被改写成别的状态"
+            )
+
+        # 真实入口（带执行守卫）也要把 False 透传出去，且不改行
+        assert dispatcher._mark_mcp_send_boundary("d_revoked") is False
+        assert _dispatch_row_state(log, "d_revoked") == "revoked"
+    finally:
+        log.close()
+
+
+def test_guard_timeout_before_send_is_a_controlled_rejection(tmp_path, monkeypatch):
+    """拿不到执行守卫 ≠ 效果未知：请求没发出去，按受控拒绝结算（不是 unknown）。
+
+    复审第二轮指出的既有口径差：文件写分支会把 `GuardTimeout` 映射成受控拒绝，
+    MCP 分支原来让它直接抛出去（Run 变成 failed、派发行停在 intent）。这里把
+    "抢守卫超时"钉在**确定没发**这一档。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    call_log = tmp_path / "calls.jsonl"
+    clients = McpClients(
+        {
+            "fake": _config(
+                "normal",
+                call_log=call_log,
+                effect_log=tmp_path / "effects.jsonl",
+                cwd=tmp_path,
+            )
+        }
+    )
+    try:
+        stack = build_stack(log, data_root=data, mcp_clients=clients)
+        task = stack.tasks.create_task(
+            "抢守卫超时的 MCP 调用", [str(ws)], mcp_servers=["fake"]
+        )
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+
+        def timeout(dispatch_id: str) -> bool:
+            raise GuardTimeout("5000ms 内没拿到执行守卫")
+
+        monkeypatch.setattr(stack.dispatcher, "_mark_mcp_send_boundary", timeout)
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        rows = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["status"] == "rejected"
+        assert rows[0]["effect_state"] == "none_applied"
+        assert rows[0]["output"]["rule_id"] == "dispatch.guard_timeout"
+        rejected = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "dispatch.rejected"
+        ]
+        assert any(item.get("rule_id") == "dispatch.guard_timeout" for item in rejected)
+        assert not call_log.exists(), "没抢到守卫就不许打 server"
+        row = stack.dispatcher.dispatch_record(result.run_id, CALL_ID)
+        assert row is not None and row.state == "rejected"
+    finally:
+        clients.close_all()
         log.close()

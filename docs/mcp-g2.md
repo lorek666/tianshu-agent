@@ -47,7 +47,7 @@
 | 库里有什么 | 恢复给的结论 | 凭据 | 阻断 |
 |---|---|---|---|
 | 有 result（含 `isError:true`） | 不动它：`applied` + `status=failed` | 有（`backend="mcp"`，可独立核对） | 不阻断 |
-| 有 intent、没有 result；派发行是 `intent`/`revoked`/`rejected`（**没越过外发边界**） | `failed` + `none_applied` + `reason=mcp.not_sent` | **不补**（没有可归因的效果） | **不阻断**：可直接 `resume` |
+| 有 intent、没有 result；派发行是 `intent`/`revoked`/`rejected`（**没越过外发边界**） | `failed` + `none_applied` + `reason=mcp.not_sent` | **不补**（没有可归因的效果） | **不阻断**：`recover` 之后可直接 `resume`（不需要 `unblock`） |
 | 有 intent、没有 result；派发行是 `executing`，或**无从证明**（老库没有派发表 / 没有行 / 状态不认识） | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断**调用方传入**的那个工作区目录 |
 
 实现上有四处必须说清楚：
@@ -78,6 +78,9 @@
    `boundary_protocol`（新行 1；`ALTER TABLE` 给旧行补 0）。旧版本在写请求前不推进派发
    行、撤销与发送之间也没有互斥，所以旧行的 `intent`/`revoked`/`rejected` 一律按"可能
    已发出"处理（`unknown` + 阻断）；老库缺这一列时按旧行读，不炸、也不当成有标记。
+6. **抢守卫超时按受控拒绝**（复审第二轮）：外发边界标记包在 try 里，`GuardTimeout` 走
+   `_abort_dispatch`（`dispatch.guard_timeout`、`rejected` / `none_applied`）。与文件写
+   分支同一口径——拿不到守卫就等于没发出去，不能记成 `unknown` 去挡目录。
 
 **外发边界**：真正写 server stdin 之前，派发行从 `intent` 推进到 `executing`
 （`_mark_mcp_send_boundary`；只从 `intent` 推进、与 `revoke` 共用执行守卫）。它把"请求
@@ -86,7 +89,7 @@
 **三个窗口，结论各不相同**（`tests/test_mcp_crash.py` 真子进程 + `os._exit(77)`）：
 
 - `mcp_before_call`（标记**没**落盘）：请求一定没写进 server stdin → `none_applied` +
-  `reason=mcp.not_sent`，**不阻断**；解除成本为零，可以直接 `resume`。
+  `reason=mcp.not_sent`，**不阻断**；`recover` 之后可以直接 `resume`，不需要人工 `unblock`。
 - `mcp_marked`（标记已落盘、请求还没写）：恢复**没法**证明没发出去 → `unknown` +
   阻断。这一小段窗口是有意付出的代价（宁可多挡一个目录，也不把可能已经发生的副作用
   说成没发生）。
@@ -102,10 +105,11 @@
 
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
-  **`tests/test_mcp_crash.py`（22；收尾轮 9 → PR #124 扩到 22）**，另有契约判据在
+  **`tests/test_mcp_crash.py`（24；收尾轮 9 → PR #124 扩到 24）**，另有契约判据在
   `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
   → 规格 §4 的 c1–c15 与本文件的测试一一对应。
-- 负控：规格 §5 的 NB1–NB24；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →
+- 负控：规格 §5 的 NB1–NB24，加上本轮脚本化的 NB21 / NB25–NB39
+  （`scripts/negative_controls_mcp_crash.py`，**16 条**）；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →
   目标用例红"，并记录 pytest 返回码与耗时）。
 
 ## 5 仍然不成立 / 未验证（必须一起读）

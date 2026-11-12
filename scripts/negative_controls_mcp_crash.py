@@ -63,6 +63,14 @@ OWNLOG = (
     "tests/test_mcp_crash.py::"
     "test_assess_run_reads_the_send_marker_before_closing_its_own_log"
 )
+BOUNDARY = (
+    "tests/test_mcp_crash.py::"
+    "test_send_boundary_only_advances_rows_that_are_still_intent"
+)
+GUARDTIMEOUT = (
+    "tests/test_mcp_crash.py::"
+    "test_guard_timeout_before_send_is_a_controlled_rejection"
+)
 STATIC = (
     "tests/test_mcp_crash.py::"
     "test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool"
@@ -169,8 +177,9 @@ CASES: tuple[Case, ...] = (
     Case(
         name="NB32",
         relpath="src/tianshu/dispatcher.py",
-        old="        if not self._mark_mcp_send_boundary(dispatch_id):\n",
-        new="        if False:\n",
+        # 变异：不真的推进外发边界，直接当成"已经推进"（= 拿掉发包前的标记）
+        old="            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)\n",
+        new="            boundary_marked = True  # noqa: F841 - 变异：不落标记\n",
         tests=(MARKED, REFUSE),
         why="拿掉发包前的外发边界标记：崩溃在标记之后仍是 intent，恢复会判没发；"
         "「撤销先到就不发」的分界也一起消失（服务器照样被打）",
@@ -239,6 +248,40 @@ CASES: tuple[Case, ...] = (
         tests=(OWNLOG,),
         why="只读对账自己开库时先关连接再读标记（复审 E 的时序错误）：own-log "
         "路径会被安静地降级成「证明不了」，结论从 none_applied 变 unresolved",
+    ),
+    Case(
+        name="NB38",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "                \" WHERE dispatch_id=? AND state=?\",\n"
+            "                (DISPATCH_EXECUTING, self._clock(), dispatch_id,"
+            " DISPATCH_INTENT),"
+        ),
+        new=(
+            "                \" WHERE dispatch_id=?\",\n"
+            "                (DISPATCH_EXECUTING, self._clock(), dispatch_id),"
+        ),
+        tests=(BOUNDARY,),
+        why="去掉外发边界推进的 state=intent 前置条件：已撤销/已拒绝的行会被"
+        "改成 executing，「撤销先到就不发」的分界失效（复审第二轮 S1）",
+    ),
+    Case(
+        name="NB39",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "        except GuardTimeout as exc:\n"
+            "            # 拿不到执行守卫 = 没抢到\"撤销与发送\"的分界线：一个字节都没发。\n"
+            "            # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次\n"
+            "            # \"效果未知\"的崩溃——这次调用确实没出去。\n"
+            "            return self._abort_dispatch(request, dispatch_id, exc)\n"
+        ),
+        new=(
+            "        except GuardTimeout as exc:\n"
+            "            return self._fail_unknown(request, dispatch_id, target, exc)\n"
+        ),
+        tests=(GUARDTIMEOUT,),
+        why="把「抢守卫超时 = 确定没发」错映射成 unknown：一次根本没出去的调用"
+        "会被记成「效果未知」并阻断目录（过度阻断的旧口径）",
     ),
 )
 

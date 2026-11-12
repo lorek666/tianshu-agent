@@ -9,9 +9,10 @@
   `ruff check .` 干净，运行时依赖仍为零（`dependencies = []`）。
 - 收尾轮（PR #122）实测：**2047 passed / 7 skipped**（macOS arm64；同机基线
   `main @ 6140d9c` = 2038/7，差值是本轮 9 条崩溃/恢复判据）。
-- **外发边界标记（PR #124）**实测：**2091 passed / 7 skipped**（macOS arm64，361.81s；
-  同机基线 `main @ 5d4cb67` = **2078 / 7**，363.83s；差值 +13 = `test_mcp_crash.py`
-  9 条 → 22 条）。复审后又补了升级兼容（`boundary_protocol`）与三条安全回退的判据。
+- **外发边界标记（PR #124）**实测：**2093 passed / 7 skipped**（macOS arm64，362.92s；
+  同机基线 `main @ 5d4cb67` = **2078 / 7**，363.83s；差值 +15 = `test_mcp_crash.py`
+  9 条 → 24 条）。复审两轮后补了升级兼容（`boundary_protocol`）、三条安全回退、
+  「边界推进只从 intent」与「抢守卫超时按受控拒绝」的判据。
 - **收尾轮（PR #122）**：补 MCP 崩溃夹具与恢复判据——c10 由「部分」转为**实测**、
   NB21 落地；顺带修掉复审指出的"恢复补写结果却不推进派发行"（R2）与"终态派发行
   被改写 / 更新时间戳倒退"（R2-2、R2-3）。
@@ -34,7 +35,7 @@
 | MCP-c7 | server 改 schema/描述 → `tool_version` 变 → 旧批准失效 | `test_tool_version_binds_the_raw_schema`、`test_tool_version_changes_with_description` | ✅ 通过（版本 = 原始 schema + 归一 schema + 描述 的摘要在纯函数上钉住） |
 | MCP-c8 | 没声明 `--allow-mcp-server` → 不弹批准，`dispatch.rejected` = `c4.mcp_not_allowed` | `test_mcp_call_without_task_allowlist_is_rejected_before_approval` | ✅ 通过 |
 | MCP-c9 | 声明了 → 弹批准（`c4.mcp_call`）→ 执行一次 → intent + result + receipt(backend=mcp)，且凭据**可独立核对**（含响应摘要） | `test_approved_mcp_call_runs_once_and_produces_receipt` | ✅ 通过（真子进程调用日志证明只发一次；`mcp_call` 证据带 `sha256` 响应摘要并与执行摘要逐字核对；`verify_receipts == []`） |
-| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | 派发侧：`test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process`；**恢复侧**：`test_crash_after_server_executed_settles_unknown_and_blocks`、`test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_crash_before_send_settles_none_applied_and_does_not_block`、`test_blocked_workspace_can_be_unblocked_and_run_finishes_without_replay`、`test_ise_error_result_is_applied_and_recovery_leaves_it_alone`、`test_refused_send_boundary_does_not_call_server`、`test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown`、`test_mcp_without_a_dispatch_row_stays_conservative`、`test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent`、`test_finished_dispatch_row_without_a_result_is_still_unknown`、`test_assess_run_reads_the_send_marker_before_closing_its_own_log`、`test_dispatch_table_from_an_older_version_does_not_break_recovery` | **✅ 通过（实测，收尾轮 + PR #124）**：三个崩溃窗口结论各不相同——`mcp_before_call`（外发边界标记**没**落盘）→ `none_applied` + `mcp.not_sent` + **不阻断**，可直接 `resume`；`mcp_marked`（标记已落盘、请求未写）与 `mcp_after_call`（server 的 `--effect-log` 证明它真的执行了）→ `unknown` + `mcp.crash_unsettled` + 阻断。恢复补结果时把派发行推到终态、**不补凭据**、**不重放**（call-log 仍 1 次）、幂等；`assess_run` 同口径（标记前允许接管、标记后拒绝）；标记推进不上（已撤销/作废）就不发请求；`isError` 已有 result 的调用不被重判。仍有一小段窗口保守阻断，见 §4-10 |
+| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | 派发侧：`test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process`；**恢复侧**：`test_crash_after_server_executed_settles_unknown_and_blocks`、`test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_crash_before_send_settles_none_applied_and_does_not_block`、`test_blocked_workspace_can_be_unblocked_and_run_finishes_without_replay`、`test_ise_error_result_is_applied_and_recovery_leaves_it_alone`、`test_refused_send_boundary_does_not_call_server`、`test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown`、`test_mcp_without_a_dispatch_row_stays_conservative`、`test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent`、`test_finished_dispatch_row_without_a_result_is_still_unknown`、`test_assess_run_reads_the_send_marker_before_closing_its_own_log`、`test_dispatch_table_from_an_older_version_does_not_break_recovery`、`test_send_boundary_only_advances_rows_that_are_still_intent`、`test_guard_timeout_before_send_is_a_controlled_rejection` | **✅ 通过（实测，收尾轮 + PR #124）**：三个崩溃窗口结论各不相同——`mcp_before_call`（外发边界标记**没**落盘）→ `none_applied` + `mcp.not_sent` + **不阻断**（`recover` 之后可直接 `resume`，不需要 `unblock`）；`mcp_marked`（标记已落盘、请求未写）与 `mcp_after_call`（server 的 `--effect-log` 证明它真的执行了）→ `unknown` + `mcp.crash_unsettled` + 阻断。恢复补结果时把派发行推到终态、**不补凭据**、**不重放**（call-log 仍 1 次）、幂等；`assess_run` 同口径（标记前允许接管、标记后拒绝）；标记推进不上（已撤销/作废）就不发请求；`isError` 已有 result 的调用不被重判。仍有一小段窗口保守阻断，见 §4-10 |
 | MCP-c11 | 已取消的 Run 一条 `tools/call` 都不发，`none_applied` | `test_cancelled_run_sends_no_mcp_frames` | ✅ 通过（假 server 的调用日志为空） |
 | MCP-c12 | 结果超上限 → 截断 + 字节记账；非文本只记类型不丢（**规格已改成不落内容引用**） | `test_max_result_bytes_truncates_and_reports_bytes`、`test_max_result_bytes_counts_utf8_bytes_not_characters`、`test_structured_content_counts_against_the_result_budget`、`test_call_tool_returns_text_and_keeps_unsupported_content` | ✅ 通过（与**改后的**判据一致：截断 + `bytes`/`dropped_bytes`/`dropped_blocks`，不落 `content://`；见 §4-5） |
 | MCP-c13 | `isolation_requires` 非空 → 任何平台都 `c4.mcp_isolation_unproven` | `test_isolation_requires_makes_mcp_unproven` | ✅ 通过（不因后端自称而放行） |
@@ -80,6 +81,9 @@
    给旧行补 0）。旧版本在写请求前**不推进**派发行、撤销与发送之间也没有互斥，所以
    **旧行的 `intent`/`revoked`/`rejected` 都不能证明"没发出去"**——一律按"可能已发出"
    处理（`unknown` + 阻断）。缺列的老库按旧行读（不炸、也不当成有标记）。
+   **抢守卫超时（复审第二轮整改）**：标记在 try 内，`GuardTimeout` 走 `_abort_dispatch`
+   → `rejected` / `none_applied` / `dispatch.guard_timeout`（与文件写分支同一口径）。
+   拿不到守卫就等于没发出去，不能记成 `unknown` 去挡目录。
 
 ## 3 负控（回退即红，逐条实测）
 
@@ -122,6 +126,8 @@
 | NB35 | 不看 `boundary_protocol`（把"旧行"也当成"有标记"） | `test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent`（intent/revoked/rejected 三格） | **RED（复审整改实测）**：3 failed / 0.48s —— 升级前的旧行（写请求前不推进派发行）会把"可能已执行"洗成"确定没执行"（复审 B1 的假阴性方向） |
 | NB36 | 把 `done`/`error` 也算成"没越过边界" | `test_finished_dispatch_row_without_a_result_is_still_unknown`（done/error 两格） | **RED（复审整改实测）**：2 failed / 0.47s —— 行说已结算、事件里没有结果的自相矛盾形状被恢复替它选了一个结论 |
 | NB37 | 只读对账先关自己的连接、再读派发标记（并静默降级） | `test_assess_run_reads_the_send_marker_before_closing_its_own_log` | **RED（复审整改实测）**：1 failed / 0.46s —— own-log 路径的读序/读不到被安静吞掉，结论从 `none_applied` 变 `unresolved` |
+| NB38 | 去掉外发边界推进的 `state=intent` 前置条件 | `test_send_boundary_only_advances_rows_that_are_still_intent` | **RED（复审第二轮 S1 整改实测）**：1 failed / 0.47s —— 已撤销/已拒绝的行会被改成 `executing`，「撤销先到就不发」的分界失效（此前这条前置条件没有判据：`test_refused_send_boundary...` 把整个入口 monkeypatch 掉了） |
+| NB39 | 把「抢守卫超时 = 确定没发」错映射成 `unknown` | `test_guard_timeout_before_send_is_a_controlled_rejection` | **RED（复审第二轮实测）**：1 failed / 0.51s —— 一次根本没出去的调用被记成「效果未知」并阻断目录（过度阻断的旧口径） |
 
 > 负控脚本自身的坑（PR B 实测踩到）：同尺寸同 mtime 秒的改写会让 Python 复用旧
 > `__pycache__` → **假绿**。脚本清 `__pycache__` + `PYTHONDONTWRITEBYTECODE=1`，
@@ -134,7 +140,7 @@
 > 收尾轮的负控已脚本化、可复现：`uv run python scripts/negative_controls_mcp_crash.py`
 > （快照 → 变异 → 清 pyc + `PYTHONDONTWRITEBYTECODE=1` → 跑目标用例 → 快照还原；
 > 全部按预期变红才返回 0，有一条没红就返回 1）。NB21 / NB28 / NB25 / NB26 / NB27 / NB29 /
-> NB30–NB37 共 **14 条**都在里面；"变红"要同时满足 rc=1、FAILED 行命中
+> NB30–NB39 共 **16 条**都在里面；"变红"要同时满足 rc=1、FAILED 行命中
 > 声明的目标节点、且输出里有 AssertionError（只算 rc 会把 import/collection 炸当成红）。
 > 表中耗时与 failed 数是**各轮实测记录**（同一台机器；每次运行有几十毫秒到一百多毫秒的
 > 波动，失败条数稳定）。
@@ -200,8 +206,9 @@
 2. 真实第三方 server 兼容性验证（≥2 个真实 server）+ 官方规范复核协议版本/`initialize`。
 3. ~~MCP 崩溃夹具（intent 无 result）+ 恢复判据（补 NB21）~~ **已完成（收尾轮 #122）**：
    `tests/test_mcp_crash.py` 9 条，NB21/NB25/NB26/NB27/NB28/NB29 负控实测红。PR #124 把它
-   扩到 **22 条**（三个崩溃窗口 + 标记窗口 + 发包前撤销 + 清单损坏 + 无派发行回退 +
-   旧版本行升级兼容 + 自相矛盾行 + own-log 读序 + 静态表四格 + 终态派发行），负控 **14 条**。
+   扩到 **24 条**（三个崩溃窗口 + 标记窗口 + 发包前撤销 + 清单损坏 + 无派发行回退 +
+   旧版本行升级兼容 + 自相矛盾行 + own-log 读序 + 边界推进前置条件 + 抢守卫超时 +
+   静态表四格 + 终态派发行），负控 **16 条**。
 4. 大结果内容引用与文本分页读取；MCP 预算维度（调用次数/结果字节）。
 5. UI 的 MCP 面板（server 状态、准入/被拒工具、截断说明）。
 6. Windows 实机验证与 CI 基线修复（既有工单）。
