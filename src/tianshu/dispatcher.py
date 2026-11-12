@@ -1840,7 +1840,11 @@ class Dispatcher:
                 "subtask_id": subtask.subtask_id,
                 "state": subtask.state,
                 "done": True,
-                "summary": subtask.summary,
+                # 终态的 `summary` 恒为字符串：行里的 NULL 只代表"没有正文"
+                # （fence / 取消不会写摘要），不是"未知"。把 None 直接抛给
+                # 调用方，会让回放的形状校验把一条**合法**结果判成
+                # "summary 不是字符串"——审计工具在自己的产出上误报。
+                "summary": subtask.summary or "",
                 "result_ref": subtask.result_ref,
                 "error": subtask.error,
             }

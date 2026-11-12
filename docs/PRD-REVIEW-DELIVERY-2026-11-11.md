@@ -28,11 +28,11 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2056 passed / 7 skipped**
+- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2060 passed / 7 skipped**
   （macOS arm64 本机，357.63s），`ruff check .` → `All checks passed!`；基线
-  `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+18**：
+  `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+22**：
   `test_g2_delegation_exec.py`（12）、`test_g2_delegation_fence.py`（2）、
-  `test_g2_delegation_replay.py`（4）。负控 **6/6** 实测红（失败数 20/2/1/2/2/2）。
+  `test_g2_delegation_replay.py`（7）。负控 **6/6** 实测红（失败数 24/2/2/3/15/2；另加复审整改 3 条负控各自红）。
 - 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
   W1–W5 落地；**G1 轮次**补上 §5.2.3 通用工具准入与 §5.6 共享预算账本；**G1 收口轮**
   （#96 / #97 / #99）补上账本默认记账 + 硬上限可验证上界、资源种类与外发许可、
@@ -87,13 +87,13 @@
 | #112 | G2 网络阶段 I3：§10.5 联网研究闭环——本机来源夹具 + `{WEB_BASE}` 模板 + **服务器关掉后**的来源离线核验 + `RU-W1@2.0.0`（断网诚实失败）+ `RU-W2@1.0.0`（本机夹具交付）（+13 tests，负控 5） |
 | #116–#119 | G2 MCP 阶段：stdio 客户端 + 动态工具准入（封闭方言）+ 派发链路（任务级 server 白名单 + 逐次人工批准）+ `tianshu mcp list`（真实第三方 server 未验证、无沙箱） |
 | #120 | G2 子代理 D1：`max_subtasks` 合同 + `subtasks` 实体/父子链 + 四个工具 + 限额 + 共享预算 + 恢复（只排队不执行）（+35 tests，负控 10） |
-| #121 | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+18 tests，负控 6） |
+| #121 | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+22 tests，负控 6） |
 
 ## 3 测试与门禁
 
-- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2056 passed / 7 skipped**（357.63s，
+- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2060 passed / 7 skipped**（354.24s，
   macOS arm64 本机），`ruff check .` 干净；基线 `main @ 6140d9c` 同机 **2038 / 7**
-  （361.47s），本分支 +18（exec 12 / fence 2 / replay 4）。D2 负控 6 条实测红
+  （361.47s），本分支 +22（exec 12 / fence 3 / replay 7）。D2 负控 6 条实测红
   （失败数 20/2/1/2/2/2，红名见 PR body）。
 - 首轮 `main @ c0dfa88`：**1519 passed / 7 skipped**（170.12s，macOS arm64 本机），
   `ruff check .` 干净。基线 `da84d92` 为 1316 / 6：五个工作流新增 **185** 条

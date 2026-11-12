@@ -2578,6 +2578,16 @@ class TaskStore:
                 child = self.get_run(row.child_run_id)
                 if child is None:
                     continue
+                # 与执行侧的收尾路径用**同一套** fence 判定：父目标已变的子任务
+                # 只能记 `fenced`（不写 `subtask.finished`），不能因为"是恢复
+                # 路径"就按子 Run 的 outcome 把一份作废的结论写回父 Run。
+                fence_reason = self._parent_fence_reason_for_row(row)
+                if fence_reason is not None:
+                    self._mark_subtask_fenced_locked(
+                        tx, row, reason=f"启动恢复：{fence_reason}"
+                    )
+                    fixed.append(row.subtask_id)
+                    continue
                 if child.state == RUN_FENCED:
                     self._mark_subtask_fenced_locked(
                         tx, row, reason="子 Run 已被 fence（启动恢复，以 Run 为准）"

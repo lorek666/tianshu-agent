@@ -186,3 +186,52 @@ def test_child_finish_after_parent_revision_is_not_backfilled(tmp_path):
         assert results["read-1"]["status"] == "succeeded"
     finally:
         log.close()
+
+
+def test_recovery_fences_instead_of_backfilling(tmp_path):
+    """启动恢复与收尾路径用**同一套** fence 判定：父目标变了就不回填。
+
+    场景是"子 Run 已终结、`subtasks` 行没来得及收尾"（崩溃窗口 / 旧库升级），
+    而父目标此时已经改了。恢复只有一条正确结论：记 `fenced`、**不写**
+    `subtask.finished`。如果恢复路径只看子 Run 的 `outcome`，同一份事实会得到
+    两个相反答案（执行侧判 fence、恢复侧判 succeeded）。
+    """
+    ws = _workspace(tmp_path)
+    log, stack = _stack(tmp_path)
+    try:
+        task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+        _, parent_result = _spawn_then_park(stack, task)
+        parent_run_id = parent_result.run_id
+        (row,) = stack.tasks.list_subtasks(parent_run_id)
+
+        # 子 Run 真的跑完（无输出，succceeded），行也随之收尾。
+        child_engine = engine_for(
+            stack, ScriptedModel([ModelResponse("end_turn", content="")])
+        )
+        assert child_engine.resume_run(row.child_run_id).state == "succeeded"
+        assert stack.tasks.get_subtask(parent_run_id, "reader").state == "succeeded"
+        before = len(_events(log, parent_run_id, "subtask.finished"))
+        assert before == 1
+
+        # 模拟"收尾事务没提交"留下的窗口：行回到未收尾。
+        stack.tasks._conn.execute(  # noqa: SLF001 - 造窗口，只改投影
+            "UPDATE subtasks SET state='running', summary=NULL, result_ref=NULL,"
+            " ended_at=NULL WHERE parent_run_id=? AND subtask_id=?",
+            (parent_run_id, "reader"),
+        )
+        # 父改目标 → 子任务身份作废。
+        stack.tasks.revise_goal(task.task_id, "换成新目标")
+
+        fixed = stack.tasks.reconcile_finished_subtasks()
+        assert fixed == ["reader"], fixed
+        recovered = stack.tasks.get_subtask(parent_run_id, "reader")
+        assert recovered.state == "fenced", "父目标已变，不能按子 Run 的 outcome 回填"
+        assert recovered.error and (
+            "父目标已变更" in recovered.error or "父 Run 已被 fence" in recovered.error
+        )
+        assert recovered.summary is None and recovered.result_ref is None
+        assert len(_events(log, parent_run_id, "subtask.finished")) == before, (
+            "fence 不写 subtask.finished：恢复路径也不许把作废结论写进父 Run"
+        )
+    finally:
+        log.close()

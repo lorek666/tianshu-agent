@@ -203,7 +203,7 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 崩溃恢复：**Worker 启动时**（`Worker.run_once` 的首次调用）先做两件事，再认领作业：
   ① 子任务行停在未完成、子 Run 已终结 → 以子 Run 终态为准修正（**以证据为准，不按进程
   退出猜**）；② 父作业停在 `waiting`、`subtasks` 表里已无未完成行 → 补一次 `wake`。
-  `recover` CLI **未接**这两步（它是单 Run 对账，不做全库扫描），见 §5 边界 12。
+  `recover` CLI **未接**这两步（它是单 Run 对账，不做全库扫描），见 §5 边界 14。
 
 ### 2.7 事件、规则、工具 id 增量
 
@@ -226,9 +226,13 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 
 - CLI：`task create --max-subtasks N`；`run status` 输出里列出父 Run 的子任务
   （id / state / child_run）。**不做**独立 UI 页面（§5）。
-- 回放：`replay` 对 `subtask.spawn` / `subtask.result` 结果做形状校验（缺
-  `subtask_id` / `child_run_id` / `job_id`、或 `subtask.result` 的 `done:true` 缺
-  `result_ref` → `problem`）；回放**绝不**执行子任务、不唤醒作业、不重算预算。
+- 回放：`replay` 对 `subtask.spawn` / `subtask.result` 结果做形状校验：
+  `subtask.spawn` 缺 `subtask_id` / `child_run_id` / `job_id` → `problem`；
+  `subtask.result` 的 `done:true` 缺 `summary` 键 → `problem`，**有正文**
+  （`summary` 非空）却缺合法 `content://` 引用 → `problem`。`done:true` +
+  空摘要 + 无引用是**合法**形状（子任务确实可能没有输出；fenced / 取消也只写行
+  不写摘要）——把这条判红就是审计工具在自己的正常产出上误报。回放**绝不**执行
+  子任务、不唤醒作业、不重算预算。
 
 ## 3 判据与负控总表（回填实测）
 
@@ -259,16 +263,16 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 | D2-c5 | 父取消 → 子 Job 取消请求 + 传播；已送出费用如实计入 | `test_parent_cancel_propagates` |
 | D2-c6 | 父改目标 → 子任务 fence，结果不回填 | `test_parent_revision_change_fences_children`、`test_child_finish_after_parent_revision_is_not_backfilled` |
 | D2-c7 | `subtask.cancel` 未完成 → `cancelling`；已完成 → 幂等 | `test_subtask_cancel_is_not_instant` |
-| D2-c8 | 父作业 waiting 但子任务已终结（崩溃窗口）→ 启动恢复补 wake | `test_recovery_wakes_stale_parent`、`test_terminal_parent_is_not_woken` |
-| D2-c9 | 回放不执行子任务、缺字段 → `problem` | `test_replay_subtask_shapes`、`test_replay_flags_missing_subtask_identity`、`test_replay_flags_done_without_ref_or_summary`、`test_replay_does_not_execute_or_wake_children` |
+| D2-c8 | 父作业 waiting 但子任务已终结（崩溃窗口）→ 启动恢复补 wake；恢复与收尾用同一套 fence 判定 | `test_recovery_wakes_stale_parent`、`test_terminal_parent_is_not_woken`、`test_recovery_fences_instead_of_backfilling` |
+| D2-c9 | 回放不执行子任务、缺字段 → `problem`；合法空结果/取消/fence **不**误报 | `test_replay_subtask_shapes`、`test_replay_flags_missing_subtask_identity`、`test_replay_flags_done_without_ref_or_summary`、`test_replay_does_not_execute_or_wake_children`、`test_replay_accepts_legit_empty_result`、`test_replay_accepts_legit_cancelled_result`、`test_replay_accepts_fenced_result` |
 | D2-c10 | 负控：§4 每条回退后对应测试变红（实测回填 PR body） | 见 §4 |
 
 **D2 实测回填（2026-11-12，`feat/g2-delegation-d2`）**：
 
-- 测试文件：`tests/test_g2_delegation_exec.py`（c1–c5、c7、c8 + 事务原子性 + 结算守卫 + 无输出不编造 + CLI）、
-  `tests/test_g2_delegation_fence.py`（c6 两条路径）、
-  `tests/test_g2_delegation_replay.py`（c9 四条）。
-- 全量 **2056 passed / 7 skipped**（357.63s，macOS arm64；基线 `main @ 6140d9c` 同机 2038/7、361.47s；+18）。负控 6 条全部实测变红（跑 7 个 `test_g2_delegation_*.py` 共 53 条，失败数 20/2/1/2/2/12，变异方式见 PR body）。额外用
+- 测试文件：`tests/test_g2_delegation_exec.py`（c1–c5、c7、c8 + 事务原子性 + 结算守卫 + 无输出不编造 + CLI，12 条）、
+  `tests/test_g2_delegation_fence.py`（c6 两条路径 + 恢复路径的 fence 一致性，3 条）、
+  `tests/test_g2_delegation_replay.py`（c9 四条 + 合法空结果/取消/fence 不误报，7 条）。
+- 全量 **2060 passed / 7 skipped**（354.24s，macOS arm64；基线 `main @ 6140d9c` 同机 2038/7、361.47s；+22）。负控 6 条全部实测变红（跑 7 个 `test_g2_delegation_*.py` 共 57 条，失败数 24/2/2/3/15/2，变异方式见 PR body；另加复审整改的 3 条负控）。额外用
   `test_child_finish_is_one_transaction` 钉住「行/事件/预算/唤醒同一事务」：
   在预算结算处注入异常，回滚后 Run 仍 `running`、`subtasks` 行未提交、
   父 Run 无 `subtask.finished`、预占仍占着。
@@ -317,7 +321,17 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 10. **Windows 未验证**：委派复用同一套 Job/Worker，Windows 基线红不因本轮改口。
 11. **`max_subtasks` 是任务级静态声明**：变更要新任务（与 `outbound_allow` 一致），
     不支持运行中扩大。
-12. **启动恢复只在 Worker 启动时跑**：`recover` CLI 还是单 Run 对账，不做全库扫描；
+12. **子 Run 收尾是两笔事务**（`claims.finish` 先提交，`run.end` + 子任务行 +
+    预算 + wake 后提交）：若恰在两笔之间崩溃/被 OOM 杀掉，会留下"子作业已 done、
+    子 Run 非终态、`subtasks` 行未收尾、父作业 waiting"。启动恢复**修不了**这种
+    状态（它只认子 Run 终态），需要手动 `run resume <child_run_id>`（`run status`
+    能列出子 Run id）。窗口只有几条语句宽，但没有自动化兜底。
+13. **父 Run 失败时不传播取消**：模型超时/不可重试错误让父 Run `failed` 时，已派出的
+    子任务仍在队列里照常跑完，并在父 `run.end` **之后**写 `subtask.finished`（父 Run
+    不等待、也不读取它们）。费用照实结算；关闭这些子任务目前只能手动
+    `subtask.cancel` / `run cancel`。规格 §2.6 只要求 cancel 传播，故不视为违约，
+    但属未自动化。
+14. **启动恢复只在 Worker 启动时跑**：`recover` CLI 还是单 Run 对账，不做全库扫描；
     所以"没人起 worker"时，停在 `waiting` 的父作业不会自己动。另外 `reconcile_finished_subtasks`
     在修正成功收尾的子任务行时会把说明性文案写进 `error` 列（如"启动恢复：按子 Run 终态
     succeeded 修正"）——这是审计注记，不是失败；`subtask.result` 会把该列原样给出。

@@ -184,7 +184,13 @@ def test_worker_drives_child_run(tmp_path):
 
 
 def test_child_finish_is_one_transaction(tmp_path):
-    """子任务收尾的行 / 事件 / 预算 / 唤醒在**同一个事务**里，失败一起回滚。
+    """子任务收尾的行 / 事件 / 预算在**同一个事务**里，失败一起回滚。
+
+    注意覆盖面：这里的注入点在 `_settle_subtask_budget`（行 → 事件 → 预算的
+    中段），证明这三件同生共死；**不含** `claims.finish` 那一笔——作业收尾是
+    `_finish` 里更早的一次提交，两笔之间的窗口登记在规格 §5 边界 12。
+    `wake` 在本例里走不到（唯一的子任务正是被收尾的那个），所以本测试不断言
+    "唤醒同事务"；唤醒的原子性由 `JobStore.wake` 的条件 UPDATE 自己保证。
 
     注入发生在预算结算（收尾事务的中段）：如果实现把 `subtasks` 行或
     `subtask.finished` 提前提交了，回滚之后就只剩"Run 还是 running、子任务却

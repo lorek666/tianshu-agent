@@ -54,9 +54,9 @@ def _verify_subtask_result(
 
     校验三件事，都是"缺了就无法事后核对"的那种：
     - `subtask.spawn` 成功 → 必须有 `subtask_id` / `child_run_id` / `job_id`；
-    - `subtask.result` 的 `done:true` → 必须有 `content://sha256:` 引用和
-      `summary`（允许空串：子任务确实可能没有输出，但"没有摘要键"和"空摘要"
-      是两件事）；
+    - `subtask.result` 的 `done:true` → 必须有 `summary` 键（允许空串：子任务
+      确实可能没有输出，但"没有摘要键"和"空摘要"是两件事）；**有正文**（summary
+      非空）时还必须有 `content://sha256:` 引用——空摘要配空引用才是合法形状；
     - 子任务状态必须落在封闭集里，否则父 Run 的日志里会出现一个无法解释的
       状态，UI 只能瞎猜。
     """
@@ -91,10 +91,23 @@ def _verify_subtask_result(
         )
     if tool_id != "subtask.result" or output.get("done") is not True:
         return
+    summary = output.get("summary")
     ref = output.get("result_ref")
-    if not isinstance(ref, str) or not _CONTENT_REF.match(ref):
+    ref_ok = isinstance(ref, str) and bool(_CONTENT_REF.match(ref))
+    # 什么时候**必须**有合法引用：有正文（summary 非空），或压根没写 summary 键
+    # （那种记录本身残缺，按最严口径判）。空摘要（""）没有引用是**合法**的：
+    # D2 明确"拿不到最后一轮输出就不编造"，此时 `summary` 为空、`result_ref`
+    # 为 null。把这条判成 problem，就是审计工具在它自己的正常产出上误报——
+    # 本模块的纪律是"误报比不报更糟"。
+    needs_ref = summary not in (None, "") or "summary" not in output
+    if needs_ref and not ref_ok:
         problems.append(
             f"seq={ev.seq} subtask.result 的 done:true 缺合法 content:// 引用"
+            f"（call_id={payload.get('call_id')}，result_ref={ref!r}）"
+        )
+    elif ref is not None and not ref_ok:
+        problems.append(
+            f"seq={ev.seq} subtask.result 的 result_ref 不是合法 content:// 引用"
             f"（call_id={payload.get('call_id')}，result_ref={ref!r}）"
         )
     if "summary" not in output:
@@ -102,7 +115,7 @@ def _verify_subtask_result(
             f"seq={ev.seq} subtask.result 的 done:true 缺 summary"
             f"（call_id={payload.get('call_id')}）"
         )
-    elif not isinstance(output["summary"], str):
+    elif not isinstance(summary, str):
         problems.append(
             f"seq={ev.seq} subtask.result 的 summary 不是字符串"
             f"（call_id={payload.get('call_id')}）"

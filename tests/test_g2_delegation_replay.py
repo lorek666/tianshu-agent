@@ -27,6 +27,14 @@ def _stack(tmp_path: Path):
     return log, stack_for(log, data_root=tmp_path / "data")
 
 
+def _results(log: EventLog, run_id: str) -> dict[str, dict]:
+    return {
+        event.payload["call_id"]: event.payload
+        for event in log.read_run(run_id, verify=False)
+        if event.type == "tool.result"
+    }
+
+
 def _workspace(tmp_path: Path) -> Path:
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -244,5 +252,147 @@ def test_replay_does_not_execute_or_wake_children(tmp_path):
             ),
         }
         assert after == before, "回放只读：不得执行/唤醒/重算"
+    finally:
+        log.close()
+
+
+# ---------------------------------------------------------------- 回归：合法空结果
+
+
+def _parent_reads_after_child(tmp_path: Path, *, mode: str):
+    """父派子 → 子以「无输出」或「取消」收尾 → 父读一次结果。
+
+    两条路径都会产出 `done:true` 但 `summary=""`、`result_ref=None` 的
+    **合法**记录——D2 的"拿不到输出就不编造"就是要求它长这样。回放若把这种
+    形状判成 problem，审计工具就在自己的正常产出上误报。
+    """
+    ws = _workspace(tmp_path)
+    log, stack = _stack(tmp_path)
+    task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                "tool_use",
+                tool_calls=[
+                    ToolCall(
+                        "spawn-1",
+                        "subtask.spawn",
+                        {"subtask_id": "reader", "goal": "读 doc.md 并总结"},
+                    )
+                ],
+            ),
+            ModelResponse("end_turn", content="等结果。"),
+            ModelResponse(
+                "tool_use",
+                tool_calls=[
+                    ToolCall("result-1", "subtask.result", {"subtask_id": "reader"})
+                ],
+            ),
+            ModelResponse("end_turn", content="汇总完成。"),
+        ]
+    )
+    engine = engine_for(stack, model)
+    result = engine.start(task.task_id, out_name="out.md")
+    approve_pending(stack, result.run_id)
+    result = engine.resume_run(result.run_id)
+    assert result.state == "running", result
+    (row,) = stack.tasks.list_subtasks(result.run_id)
+
+    if mode == "cancelled":
+        # 取消一个从未执行过的子任务：行直接以 cancelled 收尾，没有正文。
+        stack.tasks.request_subtask_cancel(result.run_id, "reader")
+        worker = Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=None)
+        try:
+            worker.drain(max_jobs=1)
+        finally:
+            worker.close()
+        assert stack.tasks.get_subtask(result.run_id, "reader").state == "cancelled"
+    elif mode == "fenced":
+        # fence 只改行、**不写摘要**（`_mark_subtask_fenced_locked`），所以
+        # 行里的 `summary` 是 NULL —— 这是另一条"合法但 None"的路径。
+        stack.tasks.fence_child_run(
+            row.child_run_id, reason="父目标已变更（测试夹具）"
+        )
+        assert stack.tasks.get_subtask(result.run_id, "reader").state == "fenced"
+    elif mode == "empty":
+        # 子 Run 正常收尾，但最后一轮没有输出（content 为空串）。
+        worker = Worker(
+            stack,
+            model=ScriptedModel([ModelResponse("end_turn", content="")]),
+            heartbeat_interval_ms=None,
+        )
+        try:
+            worker.drain(max_jobs=1)
+        finally:
+            worker.close()
+        assert stack.tasks.get_subtask(result.run_id, "reader").state == "succeeded"
+
+    finished = engine.resume_run(result.run_id)
+    assert finished.state == "succeeded", finished
+    out = _results(log, result.run_id)["result-1"]["output"]
+    assert out["done"] is True
+    assert out["summary"] == "", "没有正文就写空串（不是 None）"
+    assert out["result_ref"] is None, "没有正文就没有 content:// 引用"
+    return log, result.run_id, task.task_id
+
+
+def test_replay_accepts_legit_empty_result(tmp_path):
+    """无输出的 succeeded 子任务被父读一次 → 回放**不许**报 problem（回归 B1）。
+
+    这是本次复审抓到的假红：`done:true` + 空摘要 + 无引用是 D2 的既定形状
+    （`test_missing_child_output_is_not_fabricated` 就钉着它），而形状校验原来
+    无条件要求 `content://` 引用，于是父 Run 只要读过一次结果，回放就红。
+    """
+    log, parent_run_id, _ = _parent_reads_after_child(tmp_path, mode="empty")
+    try:
+        report = replay(log, parent_run_id)
+        assert report.ok, report.problems
+    finally:
+        log.close()
+
+
+def test_replay_accepts_legit_cancelled_result(tmp_path):
+    """已取消的子任务被父读一次 → 回放不报 problem；但**坏引用**仍要报。"""
+    log, parent_run_id, task_id = _parent_reads_after_child(tmp_path, mode="cancelled")
+    try:
+        assert replay(log, parent_run_id).ok
+
+        # 空摘要 + 一条**不合法**的 result_ref：这不是"没有正文"，是记录坏了。
+        log.append(
+            parent_run_id,
+            "tool.result",
+            {
+                "call_id": "forged-bad-ref",
+                "tool_id": "subtask.result",
+                "status": "succeeded",
+                "effect_state": "none_applied",
+                "output": {
+                    "subtask_id": "ghost",
+                    "state": "cancelled",
+                    "done": True,
+                    "summary": "",
+                    "result_ref": "content://sha256:zzzz",
+                },
+            },
+            task_id=task_id,
+        )
+        report = replay(log, parent_run_id)
+        assert not report.ok
+        assert any("result_ref 不是合法" in p for p in report.problems), report.problems
+    finally:
+        log.close()
+
+
+def test_replay_accepts_fenced_result(tmp_path):
+    """fenced 子任务的 `summary` 是 NULL（fence 只改行）→ 回放仍不报 problem。
+
+    这条钉住派发层的归一：终态 `summary` 恒为字符串（NULL → ""）。否则
+    `subtask.result` 会把 None 交给回放，合法的 fenced 行被判成
+    "summary 不是字符串"。
+    """
+    log, parent_run_id, _ = _parent_reads_after_child(tmp_path, mode="fenced")
+    try:
+        report = replay(log, parent_run_id)
+        assert report.ok, report.problems
     finally:
         log.close()
