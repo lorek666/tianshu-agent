@@ -40,7 +40,7 @@ from tianshu.permissions import (
     APPROVAL_ACTIONS,
     AUTO_ACTIONS,
     DECISION_APPROVE,
-    DECISION_DENY,
+    DECISION_AUTO,
     SUPPORTED_ACTIONS,
     ActionRequest,
     ApprovalStore,
@@ -80,15 +80,21 @@ def test_resource_kinds_are_a_closed_set():
         KIND_MCP,
         KIND_SUBTASK,
     }
-    # 执行器：file / memory / **network**。网络是 G2 网络阶段补的（PR #——）；
-    # MCP 与委派仍然没有执行器，仍在派发前拒绝。这点在执行侧也会被核
-    # （防两边各说一套）。
-    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK}
-    # 动作集合也扩了，但**没有**把外发放进自动放行
+    # 执行器：file / memory / **network** / **subtask**。网络是 G2 网络阶段
+    # 补的；委派是 G2 子代理 D1 补的（D1 只排队，不执行子 Run）。MCP 仍然没有
+    # 执行器，仍在派发前拒绝。这点在执行侧也会被核（防两边各说一套）。
+    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_SUBTASK}
+    # 动作集合也扩了，但**没有**把外发/委派放进动作级自动放行：
+    # - `fetch` 恒需审批；
+    # - `delegate` 的形状按工具判（spawn 审批 / cancel 自动），见
+    #   `tests/test_g2_delegation_contract.py` 与 PolicyEngine._classify_subtask。
     assert {ACTION_FETCH, ACTION_DELEGATE} <= SUPPORTED_ACTIONS
     assert ACTION_FETCH in APPROVAL_ACTIONS
     assert ACTION_FETCH not in AUTO_ACTIONS
     assert ACTION_DELEGATE not in AUTO_ACTIONS
+    assert ACTION_DELEGATE not in APPROVAL_ACTIONS, (
+        "delegate 不是动作级一律审批：cancel 自动放行；动作级会逼出假审批"
+    )
 
 
 def test_a_plain_url_is_still_not_a_resource():
@@ -226,12 +232,44 @@ def test_mcp_is_exec_level(tmp_path):
     assert mismatch.is_denied and mismatch.rule_id == "c4.action_resource_mismatch"
 
 
-def test_subtask_is_denied_because_the_capability_does_not_exist(tmp_path):
-    decision = POLICY.classify(
+def test_subtask_decision_depends_on_tool_and_action(tmp_path):
+    """G2 子代理 D1 起委派有执行器：判定改成按**工具**区分，不再恒拒。
+
+    旧口径（D1 之前）是"有 `subtask://` 就恒拒 `c4.subtask_unavailable`"；新
+    口径是"分类器只回答决策形状"：spawn 需审批、cancel 自动放行、read 自动，
+    其它动作/工具是动作-资源不匹配。`c4.subtask_unavailable` 退役为保留未使用。
+    """
+    spawn = POLICY.classify(
+        ACTION_DELEGATE,
+        ["subtask://task-1"],
+        _bindings(tmp_path),
+        tool_id="subtask.spawn",
+    )
+    assert spawn.kind == DECISION_APPROVE
+    assert spawn.rule_id == "c4.subtask_spawn"
+    cancel = POLICY.classify(
+        ACTION_DELEGATE,
+        ["subtask://task-1"],
+        _bindings(tmp_path),
+        tool_id="subtask.cancel",
+    )
+    assert cancel.kind == DECISION_AUTO
+    assert cancel.rule_id == "c4.subtask_cancel"
+    status = POLICY.classify(
+        ACTION_READ,
+        ["subtask://task-1"],
+        _bindings(tmp_path),
+        tool_id="subtask.status",
+    )
+    assert status.kind == DECISION_AUTO
+    assert status.rule_id == "c4.auto"
+    # 没有工具身份的 delegate（例如有人把它塞进别的工具）：动作-资源不匹配，
+    # 不是"看起来有 subtrask 资源就放行"。
+    bare = POLICY.classify(
         ACTION_DELEGATE, ["subtask://task-1"], _bindings(tmp_path)
     )
-    assert decision.kind == DECISION_DENY
-    assert decision.rule_id == "c4.subtask_unavailable"
+    assert bare.is_denied
+    assert bare.rule_id == "c4.action_resource_mismatch"
     mismatch = POLICY.classify(ACTION_EXEC, ["subtask://task-1"], _bindings(tmp_path))
     assert mismatch.is_denied
     assert mismatch.rule_id == "c4.action_resource_mismatch"
@@ -320,22 +358,25 @@ def test_kinds_without_an_executor_are_refused_before_dispatch():
     网络在 G2 网络阶段有了执行器（`network.fetch`），所以它不再走这条拒绝；
     但它**不是**自动放行——任务级白名单（`outbound_allow`）与逐次人工批准
     仍然是两道门，见 `tests/test_outbound_allow.py` 与
-    `tests/test_network_fetch.py`。
-    """
-    for raw, kind in (
-        ("mcp://files/read_file", KIND_MCP),
-        ("subtask://task-1", KIND_SUBTASK),
-    ):
-        with pytest.raises(DispatchDenied) as excinfo:
-            resolve_scheme_resource(raw)
-        assert excinfo.value.rule_id == "dispatch.resource_kind_unsupported"
-        assert kind in str(excinfo.value)
+    `tests/test_network_fetch.py`。委派在 G2 子代理 D1 有了执行器
+    （`subtask.spawn` 等），同样不是自动放行：任务级 `max_subtasks` 声明、
+    人工批准与数量/局部限额都还在前面。
 
-    # 有执行器的种类照常返回（file 是裸绝对路径，不走这条；memory / network 走）
+    **MCP 是现在唯一没有执行器的种类**：解析得出来、许可判定能做，但派发前拒绝。
+    """
+    with pytest.raises(DispatchDenied) as excinfo:
+        resolve_scheme_resource("mcp://files/read_file")
+    assert excinfo.value.rule_id == "dispatch.resource_kind_unsupported"
+    assert KIND_MCP in str(excinfo.value)
+
+    # 有执行器的种类照常返回（file 是裸绝对路径，不走这条）
     ref = resolve_scheme_resource("memory://user/local")
     assert ref.kind == KIND_MEMORY
     ref = resolve_scheme_resource("network://https/example.com/a")
     assert ref.kind == KIND_NETWORK
+    ref = resolve_scheme_resource("subtask://task-1")
+    assert ref.kind == KIND_SUBTASK
+    assert ref.subtask_id == "task-1"
     with pytest.raises(DispatchDenied) as excinfo:
         resolve_scheme_resource("https://example.com/a")
     assert excinfo.value.rule_id == "c4.unsupported"

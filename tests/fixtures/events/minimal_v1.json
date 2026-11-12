@@ -274,6 +274,22 @@
       "task_id": "x",
       "to": "created"
     },
+    "subtask.finished": {
+      "state": "queued",
+      "subtask_id": "x"
+    },
+    "subtask.spawned": {
+      "child_run_id": "x",
+      "child_task_id": "x",
+      "goal_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "job_id": "x",
+      "limits": {
+        "deadline_ms": 1,
+        "max_tokens": 1,
+        "max_turns": 1
+      },
+      "subtask_id": "x"
+    },
     "task.created": {
       "control": false,
       "exec_policy": {
@@ -288,10 +304,11 @@
       "goal": "x",
       "goal_revision": 1,
       "lease_epoch": 1,
+      "max_subtasks": 0,
       "memory_scopes": [],
+      "outbound_allow": [],
       "task_id": "x",
-      "workspaces": [],
-      "outbound_allow": []
+      "workspaces": []
     },
     "task.revised": {
       "goal": "x",

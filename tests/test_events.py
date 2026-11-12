@@ -41,6 +41,7 @@ FAMILIES = frozenset(
         "receipt",
         "recovery",
         "run",
+        "subtask",
         "task",
         "tool",
         "undo",
