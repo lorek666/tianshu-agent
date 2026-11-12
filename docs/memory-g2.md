@@ -155,11 +155,11 @@ intent/result + 一次性审批 + 执行侧二次核验）写入，不是直接�
 
 ### 3.4 M2 实测数字
 
-- 全量：**2093 passed / 7 skipped**，**371.43s**；基线 `main @ 1eeb5fd`（M1 合入后）
-  同机 **2083 passed / 7 skipped** → **+10**（`tests/test_eval_followup.py` 6 条 +
+- 全量（rebase 到 `main @ 1e17003` 后重测）：**2108 passed / 7 skipped**，**377.69s**；
+  基线 `main @ 1e17003` 同机 **2098 passed / 7 skipped** → **+10**（`tests/test_eval_followup.py` 6 条 +
   `tests/test_eval_real_tasks.py` 记忆 4 条）。
 - `run_real_user_tasks(repeat=3)`：**9 case × 3 = 27 次全绿**、**369 条判据 0 失败**、
-  27.02s（M2 之前 8 case × 24 次 / 339 条 / 26.76s）。
+  28.37s（M2 之前 8 case × 24 次 / 339 条 / 26.76s）。
 - `ruff check .` → `All checks passed!`
 - 口径：公开真实用户任务 8 → **9** 条（`cases 8→9` / `runs 24→27`）；契约基线 20 条
   与 `SUITE_VERSION=m4.6` 未动。
