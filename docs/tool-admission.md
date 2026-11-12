@@ -110,16 +110,18 @@ attempt，**没有任何代码从参数读身份**。这两道闸是让"schema �
   封闭集）；未知 `scheme://` 一律拒绝（既有）。
 - 路径参数在解析前拒绝 `^[A-Za-z][A-Za-z0-9+.-]*://` 形状：`read_text` /
   `list_files` / 所有写入目标 / `run_command` 的 `cwd`。URL 不会被拼进工作区。
-- `network://` / `mcp://` / `subtask://` 属于 G2；接入时必须同时补
-  `RESOURCE_KINDS`、解析器、外发许可与 §8.1.1 隔离门禁，**不得**复用 file 分支。
-  现状：`network`（G2 网络阶段）与 `subtask`（G2 子代理 D1）已接执行器`,
-  `mcp` 仍只在派发前拒绝。
+- `network://` 已在 G2 网络阶段接入（外发白名单 + 逐次批准 + 内容引用）；
+  `mcp://` 已在 G2 MCP 阶段接入（stdio 客户端 + 动态工具准入 + 任务级 server 白名单
+  + 逐次批准，见 [mcp-g2.md](mcp-g2.md)）；`subtask://` 已在 G2 子代理 D1 接入
+  （`max_subtasks` 声明 + 人工批准 + 数量/局部限额 + `subtasks` 维度预占，见
+  [resource-kinds.md](resource-kinds.md) §8）。新种类**不得**复用 file 分支。
 
 ## 8 未实现的部分（不许当作已完成）
 
 | 缺口 | 现状 | 何时能做 |
 |---|---|---|
-| 网络 / MCP / 子任务资源种类 | **已补**（G1d 解析与许可；网络执行器在 G2 网络阶段、委派执行器在 G2 子代理 D1） | MCP 执行器仍待 G2 后续阶段 |
+| 五种资源种类 | **全部已补**（G1d 解析与许可；执行器：网络在 G2 网络阶段、MCP 在 G2 MCP 阶段、委派在 G2 子代理 D1） | — |
+| MCP 工具的参数 schema | **已接入准入**：server 的 `inputSchema` 归一进本方言，认不出就拒该工具（`tool_registry.normalize`） | — |
 | 私有内容外发许可 | **已接网络面**（G2 网络阶段）：外发恒需人工批准、未声明白名单不发包；**内容分级仍未做** | 内容分级单独立项 |
 | 大结果「有界摘要 + 内容引用」、分页读取引用并验证任务可见范围 | 只有 `read_text` 截断 + `truncated` 标记与 `run_command` 的 blob 目录；没有 `ref` 内容引用与分页工具 | 单独立项（要同时改 context / blob / 工具契约） |
 | 无 workspace 的研究任务 | 记忆只读、网络抓取、子任务（委派）都已能不绑目录运行 | 已实现 |

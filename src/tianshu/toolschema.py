@@ -89,6 +89,17 @@ _SCALAR_KEYS = frozenset({
     "pattern",
 })
 
+#: 归一**外部** schema 时，每种标量真正有语义的关键字。`_SCALAR_KEYS` 是编译期
+#: 的宽松并集（历史：编译时各分支只读自己那几个键，多出来的当注解忽略），但准入
+#: 层不能沿用这种"静默忽略"——server 给 `"type": "string"` 配 `minimum` 在 JSON
+#: Schema 里没有意义，我们必须拒绝整个工具，而不是把它悄悄丢掉（拒绝比猜测诚实）。
+_NORMALIZE_SCALAR_KEYS: dict[str, frozenset[str]] = {
+    "string": frozenset({"type", "enum", "minLength", "maxLength", "pattern"}),
+    "integer": frozenset({"type", "enum", "minimum", "maximum"}),
+    "number": frozenset({"type", "enum", "minimum", "maximum"}),
+    "boolean": frozenset({"type", "enum"}),
+}
+
 _TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean"})
 
 #: 递归上限。注册期的 schema 是仓库里的常量，不是用户输入；给一个上限只是
@@ -542,6 +553,254 @@ def _optional_int(
     return value
 
 
+# ---------------------------------------------------------------- 外部 schema 归一
+
+
+def normalize_object_schema(
+    raw: Any, *, where: str = ""
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """把**外部来源**（MCP server 的 `inputSchema`）归一成本方言的封闭子集。
+
+    只允许两个方向，别的都拒绝：
+
+    - **收窄**：`additionalProperties` 缺省时补成显式 `false`，并在返回值里登记
+      `narrowed=("additionalProperties",)`。JSON Schema 的缺省是"允许额外键"，本方言
+      要求封闭对象；收窄的后果是"模型多传一个字段会被拒"，这是可核对的方向，不是
+      放宽。
+    - **拒绝**：其余任何方言外的关键字、方言表达不了的形状（浮点边界、类型数组、
+      schema 形式的 `additionalProperties`、数组缺 `items`……）一律抛
+      `ToolSchemaError`，由准入层记成"这个工具不准入"，**不静默丢关键字**。
+
+    返回的 `normalized` 一定会通过 `compile_schema()`（本函数末尾自己再编译一遍）。
+    """
+    if not isinstance(raw, dict):
+        raise ToolSchemaError(
+            f"{_label(where)}inputSchema 必须是对象，实际是 {_type_name(raw)}"
+        )
+    narrowed: list[str] = []
+    normalized = _normalize_object(raw, where=where, path="", depth=0, narrowed=narrowed)
+    compile_schema(normalized, where=where)
+    return normalized, tuple(narrowed)
+
+
+def _normalize_object(
+    raw: dict[str, Any], *, where: str, path: str, depth: int, narrowed: list[str]
+) -> dict[str, Any]:
+    if depth > MAX_DEPTH:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 嵌套超过 {MAX_DEPTH} 层，拒绝准入"
+        )
+    kind = raw.get("type")
+    if kind != "object":
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 的 type 必须是 \"object\"，实际是 {kind!r}"
+            "（本方言的参数根与嵌套对象都要求显式封闭对象）"
+        )
+    body = _normalize_common(raw, _OBJECT_KEYS, where=where, path=path, kind="object")
+    raw_props = body.get("properties", {})
+    if not isinstance(raw_props, dict):
+        raise ToolSchemaError(f"{_label(where)}{_join(path, 'properties')} 必须是对象")
+    props: dict[str, Any] = {}
+    for name, sub in raw_props.items():
+        if not isinstance(name, str) or not name:
+            raise ToolSchemaError(
+                f"{_label(where)}{_join(path, 'properties')} 的属性名必须是非空字符串"
+            )
+        props[name] = _normalize_node(
+            sub,
+            where=where,
+            path=_join(_join(path, "properties"), name),
+            depth=depth + 1,
+            narrowed=narrowed,
+        )
+    out: dict[str, Any] = {"type": "object"}
+    if "title" in body:
+        out["title"] = body["title"]
+    if "description" in body:
+        out["description"] = body["description"]
+    out["properties"] = props
+    raw_required = body.get("required", [])
+    if not isinstance(raw_required, list) or any(
+        not isinstance(item, str) for item in raw_required
+    ):
+        raise ToolSchemaError(
+            f"{_label(where)}{_join(path, 'required')} 必须是字符串数组"
+        )
+    undeclared = [item for item in raw_required if item not in props]
+    if undeclared:
+        raise ToolSchemaError(
+            f"{_label(where)}{_join(path, 'required')} 引用了未声明的属性：{undeclared}"
+            "（外部 schema 与我们的方言在这一点上不兼容，拒绝准入而不是猜）"
+        )
+    if raw_required:
+        out["required"] = list(raw_required)
+    if "additionalProperties" in body:
+        value = body["additionalProperties"]
+        if not isinstance(value, bool):
+            raise ToolSchemaError(
+                f"{_label(where)}{_join(path, 'additionalProperties')} 只允许 bool："
+                "本方言不支持用 schema 描述额外属性"
+            )
+        out["additionalProperties"] = value
+    else:
+        # 收窄：JSON Schema 缺省允许额外键，本方言要求封闭对象。
+        narrowed.append("additionalProperties" if not path else f"{path}.additionalProperties")
+        out["additionalProperties"] = False
+    return out
+
+
+def _normalize_node(
+    raw: Any, *, where: str, path: str, depth: int, narrowed: list[str]
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 必须是对象，实际是 {_type_name(raw)}"
+        )
+    if depth > MAX_DEPTH:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 嵌套超过 {MAX_DEPTH} 层，拒绝准入"
+        )
+    kind = raw.get("type")
+    # 先报"用了不认识的关键字"：外部 schema 带着 `$ref`/`oneOf`/`format` 时，
+    # 报"类型不对"会把人指向错误的修法（真正的原因是这个关键字我们根本不实现）。
+    # 白名单**按类型**给：`"type": "string"` 配 `minimum` 在 JSON Schema 里没有语义，
+    # 我们必须拒绝整个工具，而不是把它悄悄丢掉（拒绝比猜测诚实）。
+    if isinstance(kind, str) and kind in _TYPES:
+        if kind in _NORMALIZE_SCALAR_KEYS:
+            allowed_for_kind = _NORMALIZE_SCALAR_KEYS[kind]
+        elif kind == "object":
+            allowed_for_kind = _OBJECT_KEYS
+        else:
+            allowed_for_kind = _ARRAY_KEYS
+    else:
+        allowed_for_kind = _SCALAR_KEYS
+    any_allowed = _ANNOTATIONS | allowed_for_kind
+    unknown = sorted(set(raw) - any_allowed)
+    if unknown:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 使用了本方言不支持的关键字 {unknown}。"
+            "外部 schema 的未支持关键字必须拒绝准入，不能静默忽略。"
+        )
+    if not isinstance(kind, str) or kind not in _TYPES:
+        raise ToolSchemaError(
+            f"{_label(where)}{_join(path, 'type')} 必须是单一类型 {sorted(_TYPES)} 之一，"
+            f"实际是 {kind!r}（类型数组/联合类型本方言表达不了）"
+        )
+    if kind == "object":
+        return _normalize_object(raw, where=where, path=path, depth=depth, narrowed=narrowed)
+    if kind == "array":
+        return _normalize_array(raw, where=where, path=path, depth=depth, narrowed=narrowed)
+    return _normalize_scalar(raw, where=where, path=path, kind=kind)
+
+
+def _normalize_array(
+    raw: dict[str, Any], *, where: str, path: str, depth: int, narrowed: list[str]
+) -> dict[str, Any]:
+    body = _normalize_common(raw, _ARRAY_KEYS, where=where, path=path, kind="array")
+    if "items" not in body:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 是数组但没有 items："
+            "本方言要求元素类型显式声明（外部 schema 的 \"任意元素\"我们不接）"
+        )
+    out: dict[str, Any] = {"type": "array"}
+    if "title" in body:
+        out["title"] = body["title"]
+    if "description" in body:
+        out["description"] = body["description"]
+    out["items"] = _normalize_node(
+        body["items"],
+        where=where,
+        path=_join(path, "items"),
+        depth=depth + 1,
+        narrowed=narrowed,
+    )
+    for key in ("minItems", "maxItems"):
+        if key in body:
+            out[key] = _optional_int(body, key, where=where, path=path, floor=0)
+    _check_bounds(out, "minItems", "maxItems", where=where, path=path)
+    return out
+
+
+def _normalize_scalar(
+    raw: dict[str, Any], *, where: str, path: str, kind: str
+) -> dict[str, Any]:
+    body = _normalize_common(raw, _SCALAR_KEYS, where=where, path=path, kind=kind)
+    out: dict[str, Any] = {"type": kind}
+    if "title" in body:
+        out["title"] = body["title"]
+    if "description" in body:
+        out["description"] = body["description"]
+    if "enum" in body:
+        enum = _compile_enum(body, where=where, path=path, kind=kind)
+        assert enum is not None
+        out["enum"] = list(enum)
+    if kind in ("string",):
+        for key in ("minLength", "maxLength"):
+            if key in body:
+                out[key] = _optional_int(body, key, where=where, path=path, floor=0)
+        _check_bounds(out, "minLength", "maxLength", where=where, path=path)
+        if "pattern" in body:
+            pattern = body["pattern"]
+            if not isinstance(pattern, str):
+                raise ToolSchemaError(
+                    f"{_label(where)}{_join(path, 'pattern')} 必须是字符串"
+                )
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ToolSchemaError(
+                    f"{_label(where)}{_join(path, 'pattern')} 不是合法正则：{exc}"
+                ) from exc
+            out["pattern"] = pattern
+    elif kind in ("integer", "number"):
+        for key in ("minimum", "maximum"):
+            if key in body:
+                out[key] = _optional_int(body, key, where=where, path=path, floor=None)
+        _check_bounds(out, "minimum", "maximum", where=where, path=path)
+    return out
+
+
+def _normalize_common(
+    raw: dict[str, Any], allowed: frozenset[str], *, where: str, path: str, kind: str
+) -> dict[str, Any]:
+    """摘掉注解并**拒绝**方言外的关键字（不静默忽略）。"""
+    if "type" in raw and not isinstance(raw["type"], str):
+        raise ToolSchemaError(
+            f"{_label(where)}{_join(path, 'type')} 必须是字符串（类型数组本方言表达不了）"
+        )
+    body = {key: value for key, value in raw.items() if key not in _ANNOTATIONS}
+    for key in _ANNOTATIONS & set(raw):
+        if not isinstance(raw[key], str):
+            raise ToolSchemaError(f"{_label(where)}{_join(path, key)} 必须是字符串")
+    allowed_with_type = allowed | {"type"}
+    unknown = sorted(set(body) - allowed_with_type)
+    if unknown:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 使用了本方言不支持的关键字 {unknown}"
+            f"（{kind} 允许：{sorted(allowed_with_type)}）。外部 schema 的未支持关键字"
+            "必须拒绝准入，不能静默忽略。"
+        )
+    if raw.get("type") in _TYPES and raw["type"] != kind:
+        raise ToolSchemaError(
+            f"{_label(where)}{_join(path, 'type')} 声明为 {raw['type']!r}，"
+            f"但这里按 {kind!r} 归一"
+        )
+    out = dict(body)
+    for key in _ANNOTATIONS:
+        if key in raw:
+            out[key] = raw[key]
+    return out
+
+
+def _check_bounds(
+    body: dict[str, Any], low: str, high: str, *, where: str, path: str
+) -> None:
+    if low in body and high in body and body[low] > body[high]:
+        raise ToolSchemaError(
+            f"{_label(where)}{path or 'schema'} 的 {low} 大于 {high}"
+        )
+
+
 def compile_cached(schema: dict[str, Any], *, where: str = "") -> CompiledSchema:
     """带缓存的编译（执行期热路径用）。同一份 schema 只编译一次。"""
     key = canonical_digest(schema) + "\x00" + where
@@ -564,4 +823,5 @@ __all__ = [
     "clear_cache",
     "compile_cached",
     "compile_schema",
+    "normalize_object_schema",
 ]

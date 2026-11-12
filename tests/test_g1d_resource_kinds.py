@@ -80,10 +80,17 @@ def test_resource_kinds_are_a_closed_set():
         KIND_MCP,
         KIND_SUBTASK,
     }
-    # 执行器：file / memory / **network** / **subtask**。网络是 G2 网络阶段
-    # 补的；委派是 G2 子代理 D1 补的（D1 只排队，不执行子 Run）。MCP 仍然没有
-    # 执行器，仍在派发前拒绝。这点在执行侧也会被核（防两边各说一套）。
-    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_SUBTASK}
+    # 执行器：file / memory / network（G2 网络阶段）/ mcp（G2 MCP 阶段）/
+    # subtask（G2 子代理 D1，只排队不执行子 Run）。五种资源种类**现在都有
+    # 执行器**——"解析得出来但没有执行器"这条口径在 MCP 与委派都接上之后不再存在。
+    # 这点在执行侧也会被核（防两边各说一套）。
+    assert EXECUTABLE_KINDS == {
+        KIND_FILE,
+        KIND_MEMORY,
+        KIND_NETWORK,
+        KIND_MCP,
+        KIND_SUBTASK,
+    }
     # 动作集合也扩了，但**没有**把外发/委派放进动作级自动放行：
     # - `fetch` 恒需审批；
     # - `delegate` 的形状按工具判（spawn 审批 / cancel 自动），见
@@ -352,34 +359,32 @@ def test_approval_binds_the_normalized_network_target(tmp_path):
 # ---------------------------------------------------------------- 4 执行侧
 
 
-def test_kinds_without_an_executor_are_refused_before_dispatch():
-    """解析得出来 ≠ 能执行。没有执行器的种类在派发前拒绝，不回退成文件路径。
+def test_every_resource_kind_has_an_executor_now():
+    """五种资源种类都有执行器了；"没有执行器就拒绝"只剩非法引用那一条。
 
-    网络在 G2 网络阶段有了执行器（`network.fetch`），所以它不再走这条拒绝；
-    但它**不是**自动放行——任务级白名单（`outbound_allow`）与逐次人工批准
-    仍然是两道门，见 `tests/test_outbound_allow.py` 与
-    `tests/test_network_fetch.py`。委派在 G2 子代理 D1 有了执行器
-    （`subtask.spawn` 等），同样不是自动放行：任务级 `max_subtasks` 声明、
-    人工批准与数量/局部限额都还在前面。
+    旧口径（G1d → 网络阶段）：`mcp` / `subtask` 解析得出来、许可判定能做，但
+    没有执行器，在派发前 `dispatch.resource_kind_unsupported`。MCP 阶段与委派
+    D1 之后这条对**任何种类**都不再成立：每个种类都有执行面（`network.fetch`
+    / MCP 动态工具 / `subtask.*`），各有自己的前置门（白名单、人工批准、
+    `max_subtasks` 与限额），但**都不是**自动放行。
 
-    **MCP 是现在唯一没有执行器的种类**：解析得出来、许可判定能做，但派发前拒绝。
+    所以这条测试现在的职责变成：确认没有哪个种类被漏在"没有执行器"那一侧，
+    以及非法引用仍然被拒绝（`https://` 不是本项目的资源写法、`subtask://` 缺 id 也不行）。
     """
-    with pytest.raises(DispatchDenied) as excinfo:
-        resolve_scheme_resource("mcp://files/read_file")
-    assert excinfo.value.rule_id == "dispatch.resource_kind_unsupported"
-    assert KIND_MCP in str(excinfo.value)
-
-    # 有执行器的种类照常返回（file 是裸绝对路径，不走这条）
+    assert EXECUTABLE_KINDS == RESOURCE_KINDS
     ref = resolve_scheme_resource("memory://user/local")
     assert ref.kind == KIND_MEMORY
     ref = resolve_scheme_resource("network://https/example.com/a")
     assert ref.kind == KIND_NETWORK
+    ref = resolve_scheme_resource("mcp://files/read_file")
+    assert ref.kind == KIND_MCP
     ref = resolve_scheme_resource("subtask://task-1")
     assert ref.kind == KIND_SUBTASK
     assert ref.subtask_id == "task-1"
-    with pytest.raises(DispatchDenied) as excinfo:
-        resolve_scheme_resource("https://example.com/a")
-    assert excinfo.value.rule_id == "c4.unsupported"
+    for bogus in ("https://example.com/a", "subtask://"):
+        with pytest.raises(DispatchDenied) as excinfo:
+            resolve_scheme_resource(bogus)
+        assert excinfo.value.rule_id == "c4.unsupported"
 
 
 def test_file_tools_never_accept_a_network_target(tmp_path):

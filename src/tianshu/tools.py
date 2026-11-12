@@ -1226,20 +1226,21 @@ validate_registry()
 
 
 def tool_manifest() -> list[dict[str, Any]]:
-    """给模型看的工具清单（C2 的 ToolDefinition 投影）。内部工具不出现。"""
-    return [
-        {
-            "name": s.tool_id,
-            "description": s.description,
-            "input_schema": s.input_schema,
-        }
-        for s in SPECS.values()
-        if s.exposed
-    ]
+    """给模型看的工具清单（C2 的 ToolDefinition 投影）。内部工具不出现。
+
+    G2 MCP 阶段起走**进程级工具注册表**（内置 `SPECS` + 已准入的记录下来的
+    MCP 工具）。没有配置 MCP 时注册表就是内置表，输出与旧版逐字节一致
+    （顺序也是 `SPECS` 的插入顺序——`ToolRegistry.manifest()` 有判据钉住）。
+    """
+    from .tool_registry import current_registry
+
+    return current_registry().manifest()
 
 
 def action_for(tool_id: str) -> str:
-    spec = SPECS.get(tool_id)
+    from .tool_registry import current_registry
+
+    spec = current_registry().spec(tool_id)
     if spec is None:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
     return spec.action
@@ -1247,7 +1248,9 @@ def action_for(tool_id: str) -> str:
 
 def target_arg(tool_id: str) -> str:
     """这个工具的参数里哪个键是"要改的文件"。"""
-    spec = SPECS.get(tool_id)
+    from .tool_registry import current_registry
+
+    spec = current_registry().spec(tool_id)
     if spec is None:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
     if not spec.path_arg:
@@ -1256,7 +1259,9 @@ def target_arg(tool_id: str) -> str:
 
 
 def is_write_tool(tool_id: str) -> bool:
-    spec = SPECS.get(tool_id)
+    from .tool_registry import current_registry
+
+    spec = current_registry().spec(tool_id)
     return spec is not None and spec.side_effect_level != "pure"
 
 

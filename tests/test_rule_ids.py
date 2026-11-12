@@ -200,6 +200,7 @@ def _producer_hits() -> set[str]:
         "PolicyDecision": 2,  # (kind, reason, rule_id)
         "_reject": 3,  # (request, args, reason, rule_id, *, event)
         "_reject_runtime": 2,  # (request, exc, rule_id)
+        "_fail_unknown": 4,  # (request, dispatch_id, target, exc, rule_id)
     }
     consts: dict[str, str] = {}
     sources = {

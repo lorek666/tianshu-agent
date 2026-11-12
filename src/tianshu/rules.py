@@ -120,6 +120,14 @@ RULE_IDS: frozenset[str] = frozenset(
         # ---- 网络外发（G2）：任务级白名单与网络资源归属 ----
         "c4.outbound_not_allowed",
         "dispatch.network_resource_mismatch",
+        # ---- MCP（G2 MCP 阶段）：任务 server 白名单、server 可用性、
+        # 工具归属、协议失败与隔离不可证明 ----
+        "c4.mcp_not_allowed",
+        "c4.mcp_isolation_unproven",
+        "dispatch.mcp_resource_mismatch",
+        "dispatch.mcp_server_unavailable",
+        "dispatch.mcp_tool_unknown",
+        "dispatch.mcp_protocol_error",
         # ---- 预算账本：预占被拒（额度耗尽 / 已取消 / 过 deadline） ----
         "dispatch.budget_refused",
         # ---- 记忆（F10）：作用域、种类与记忆目标 ----
@@ -291,6 +299,16 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
         {
             "c4.outbound_not_allowed",
             "dispatch.network_resource_mismatch",
+        }
+    ),
+    "MCP": frozenset(
+        {
+            "c4.mcp_not_allowed",
+            "c4.mcp_isolation_unproven",
+            "dispatch.mcp_resource_mismatch",
+            "dispatch.mcp_server_unavailable",
+            "dispatch.mcp_tool_unknown",
+            "dispatch.mcp_protocol_error",
         }
     ),
     "预算账本": frozenset(

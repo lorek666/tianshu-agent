@@ -630,7 +630,17 @@ class _Daemon:
             blob_dir=self.root / "artifacts" / "blobs",
             cross_thread=True,
         )
-        self.driver_stack = build_stack(self.driver_log, data_root=self.root)
+        # 驱动栈会真的执行工具 → 只有它需要 MCP。配置来自进程级
+        # `TIANSHU_MCP_CONFIG`（装机 = 用户信任决定）；没配置时 clients=None，
+        # 工具面与旧版逐字节相同，一个外部进程都不起。
+        from .mcp import config_from_env
+
+        self._mcp_servers = config_from_env()
+        self.driver_stack = build_stack(
+            self.driver_log,
+            data_root=self.root,
+            mcp_servers=self._mcp_servers,
+        )
 
         # §4.1/§5：恢复扫描必须在 bind 之前。此时没有客户端、没有驱动线程，
         # 只有控制线程这一条连接，是最干净的窗口。

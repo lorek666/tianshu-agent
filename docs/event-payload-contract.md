@@ -86,7 +86,7 @@
 | `run.state` | v1 | `run_id`, `task_id`, `from`, `to`, `reason` | 无已知形状差异 |
 | `subtask.spawned` | v1 | `subtask_id`, `child_task_id`, `child_run_id`, `job_id`, `goal_digest`, `limits` | 新增类型（G2 委派 D1）：父 Run 侧只留目标摘要，不留正文 |
 | `subtask.finished` | v1 | `subtask_id`, `state` | 新增类型（G2 委派 D1 登记形状，D2 接发射点）；`result_ref` / `error` / `usage` 可选 |
-| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes`, `outbound_allow`, `max_subtasks` | 历史形状差异（v0）：没有 `outbound_allow`（G2 网络阶段加入）与 `max_subtasks`（G2 委派 D1 加入）；`parent_task_id` / `parent_run_id` / `subtask_id` / `depth` 为可选父链字段 |
+| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes`, `outbound_allow`, `mcp_servers`, `max_subtasks` | 历史形状差异（v0）：没有 `outbound_allow`（G2 网络阶段加入）、`mcp_servers`（G2 MCP 阶段加入）与 `max_subtasks`（G2 委派 D1 加入）；`parent_task_id` / `parent_run_id` / `subtask_id` / `depth` 为可选父链字段 |
 | `task.revised` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces` | 无已知形状差异 |
 | `tool.intent` | v1 | `call_id`, `tool_id`, `args`, `args_hash`, `request_id`, `request_digest`, `dispatch_id`, `grant_id`, `attempt_id`, `claim_epoch` | 历史形状差异（v0 放宽） |
 | `tool.not_dispatched` | v1 | `call_id`, `tool_id`, `reason` | 无已知形状差异 |
@@ -199,6 +199,23 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   不能沿用本轮做法。
 - `isolation_requires` 用**封闭枚举**（四边界名），非法值在写入前就被
   `PayloadContractError` 拒绝；不是"先写进去、加载时再炸"。
+
+### 6.2 G2 MCP 阶段（2026-11-12，PR #118）
+
+- **放宽**：`tool.intent.tool_id` / `tool.not_dispatched.tool_id` / `receipt.tool_id`
+  从**封闭枚举**改为**形状 pattern** `^[a-z][a-z0-9_.]*$`（与 `tool.result.tool_id`
+  逐字相同）。原因：MCP 工具 id（`mcp__server__tool`）是运行时生成的，枚举放不下。
+  放宽的是**数据契约**，不是授权——白名单仍由工具注册表判定；旧事件仍合法（枚举 ⊂
+  pattern）；旧 v1 二进制读新库会因枚举不认识 MCP id 而拒绝（发布前约定，同 §6.1）。
+- **加字段（可选）**：`receipt.backend` 的封闭集加 `"mcp"`；`receipt.evidence[].kind`
+  加 `"mcp_call"`，并给该 kind 加可选 `server` / `tool` / `request_id`（响应摘要复用
+  既有 `sha256`）。不改 `verify_receipts` 的对应分支，合法凭据会被判"无法识别"
+  （N4 忘记登记 `memory_erasure` 是同一类错）。
+- **加字段（恒写）**：`task.created.mcp_servers`（字符串数组，空也写）。**旧行缺这个
+  键时按读取侧默认空元组处理**，语义 = 一个都不许；不是"按 v0 读"（`detect_version`
+  只管写入校验，读取不按当前 schema 重校验，旧行版本仍是 v1）。
+- **`tool.intent.args` / `tool.result.output` 仍是开放对象**：MCP 的参数与结果形状由
+  各 server 的 schema 决定，不在 C3 复制第二份契约。
 
 ## 7 仍冻结不了的字段（与原因）
 

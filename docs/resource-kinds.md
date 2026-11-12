@@ -2,12 +2,13 @@
 
 - 立据：`docs/PRD-v1.md` §5.2.3；施工规格
   [`SPEC-G1-CLOSURE-2026-11-11.md`](SPEC-G1-CLOSURE-2026-11-11.md) §2。
-- 状态：**资源的解析/规范化与许可判定已实现**（`resources.py` / `permissions.py` /
-  `dispatcher.py` / `rules.py`）。**执行器**：`file` / `memory` 早已有；**网络**在
-  G2 网络阶段补上（`network.fetch`，见 [network-g2.md](network-g2.md)）；**委派**在
-  G2 子代理 D1 补上（`subtask.spawn` / `subtask.status` / `subtask.result` /
-  `subtask.cancel`，见本文 §8）。**MCP 仍然没有执行器**，在派发前拒绝
-  （`dispatch.resource_kind_unsupported`）。
+- 状态：**资源的解析/规范化与许可判定已实现，五种种类都有执行器**
+  （`resources.py` / `permissions.py` / `dispatcher.py` / `rules.py`）。
+  **执行器**：`file` / `memory` 早已有；**网络**在 G2 网络阶段补上
+  （`network.fetch`，见 [network-g2.md](network-g2.md)）；**MCP** 在 G2 MCP 阶段
+  补上（stdio 动态工具，见 [mcp-g2.md](mcp-g2.md)）；**委派**在 G2 子代理 D1 补上
+  （`subtask.spawn` / `subtask.status` / `subtask.result` / `subtask.cancel`，
+  见本文 §8）。
 - 判据：`tests/test_g1d_resource_kinds.py`（15 条，其中"哪些种类有执行器"一条随 G2
   网络阶段更新）；负控 6 项实测变红（见 §6）。
 
@@ -76,10 +77,10 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
-- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）、**`subtask`**
-  （G2 子代理 D1）；
-- 其余种类（`mcp`）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
-  消息写明是哪种资源、指向哪个 URI。
+- 有执行器的种类：`file`、`memory`、`network`（G2 网络阶段）、`mcp`（G2 MCP 阶段）、
+  `subtask`（G2 子代理 D1）。
+- `dispatch.resource_kind_unsupported` 保留为**防御性兜底**：正常路径下没有哪种
+  资源"解析得出来却没有执行器"，真看到它说明新增种类只补了解析、漏了执行分支。
 
 网络的"有执行器"不等于"自动放行"：它多一道**任务级白名单**（`outbound_allow`）,
 之后仍要逐次人工批准（见 [network-g2.md](network-g2.md) §1）。
@@ -113,8 +114,8 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 | 缺口 | 现状 |
 |---|---|
 | 真实网络请求 | **已实现**（G2 网络阶段）：`network.fetch` 抓取、任务级白名单、逐次批准、内容引用与字节账本。见 [network-g2.md](network-g2.md)；但**只支持 GET、没有检索 API、真实公网研究未验证** |
-| MCP 客户端 | **未做**（G2 后续阶段）。仍在派发前拒绝 |
-| 子代理 | **D1 已实现**（合同 + 实体 + 四个工具 + 限额 + 共享预算 + 取消请求）；**D2（Worker 执行、父挂起/唤醒、取消传播、fence、结果回填）未做**，所以子任务只排队不执行。见 §8 |
+| MCP 客户端 | **已交付**（G2 MCP 阶段）：stdio 客户端 + 动态工具准入 + 派发链路，见 [mcp-g2.md](mcp-g2.md)。**未验证真实第三方 server、无沙箱** |
+| 子代理 / 委派 | **D1 已实现**（合同 + 实体 + 四个工具 + 限额 + 共享预算 + 取消请求）；**D2（Worker 执行、父挂起/唤醒、取消传播、fence、结果回填）未做**，所以子任务只排队不执行。见 §8 |
 | 外发字节计量（`bytes` 维度） | 已接：发送前按上限预占、读完后按实际字节结算（判据 `test_bytes_budget_is_enforced_before_sending`） |
 | 任务级外发白名单（`outbound_allow`） | **已实现**：`task.created` payload 契约增量 + 执行侧门（见 [network-g2.md](network-g2.md) §2） |
 | 内容分级 / 哪些内容不许外发 | 未做：没有外发表，无法定义"私有内容"的边界 |

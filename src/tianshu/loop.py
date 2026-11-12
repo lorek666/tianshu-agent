@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -381,7 +381,9 @@ class _Progress:
 
 def spec_is_write(tool_id: str) -> bool:
     """该工具是否有副作用。故障注入只打在这类工具上。"""
-    spec = SPECS.get(tool_id)
+    from .tool_registry import current_registry
+
+    spec = current_registry().spec(tool_id)
     return spec is not None and spec.side_effect_level != "pure"
 
 
@@ -403,7 +405,9 @@ def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
         return False, f"finish_reason={resp.finish_reason}"
     if not isinstance(call.arguments, dict):
         return False, "arguments 不是完整 JSON 对象（可能被截断）"
-    spec = SPECS.get(call.name)
+    from .tool_registry import current_registry
+
+    spec = current_registry().spec(call.name)
     if spec is None:
         return False, f"工具不在白名单：{call.name}"
     if not spec.exposed:
@@ -769,6 +773,8 @@ class AgentLoop:
         run_id: str | None = None,
     ) -> RunResult:
         """新建一个 Run 并立刻驱动它。"""
+        from .tool_registry import current_registry
+
         task = self._task(task_id)
         payload = {
             "task": task.goal,
@@ -777,7 +783,7 @@ class AgentLoop:
                 "max_turns": self._limits.max_turns,
                 "max_total_tokens": self._limits.max_total_tokens,
             },
-            "tools": sorted(SPECS),
+            "tools": list(current_registry().ids()),
         }
         run = self._tasks.start_run(task.task_id, run_id=run_id, payload=payload)
         writable = [b.identity() for b in task.workspaces if b.can_write]
@@ -2425,6 +2431,13 @@ class AgentLoop:
         去骗过路径解析——那会让"删掉投影"变成"删掉用户文件"。所以按工具种类
         分流，目标是 `memory://<scope>/<scope_id>`，由 `resources` 原样携带。
         """
+        from .tool_registry import current_registry
+
+        mcp_target = current_registry().mcp_binding(tool_id)
+        if mcp_target is not None:
+            # MCP 工具的目标不是文件、也不是记忆作用域：一个 `mcp://server/tool`
+            # 资源。参数里的内容（server/tool）由注册表决定，模型参数不得改写它。
+            return mcp_target.uri
         if tool_id in NETWORK_TOOL_IDS:
             # 网络目标不是文件：零目录任务也必须能抓取，所以这一支必须在
             # "任务必须绑定目录"之前。参数只接受规范写法，`https://` 会被
@@ -3083,6 +3096,9 @@ class Stack:
     #: 语义摘要记录（PRD §7.1）。同样建在事件库同一个 SQLite 里：摘要正文、
     #: 来源、版本与预算预占必须同生共死。
     summaries: Any = field(default=None, repr=False)
+    #: MCP 客户端（G2 MCP 阶段）：None = 这个进程没启用 MCP。控制面 `mcp list`
+    #: 与关停都要它，所以随 Stack 一起返回（不能只藏在 dispatcher 里）。
+    mcp_clients: Any = field(default=None, repr=False)
 
     @property
     def memory(self):
@@ -3128,6 +3144,8 @@ def build_stack(
     memory: Any | None = None,
     embedding_provider: Any | None = None,
     net_limits: Any | None = None,
+    mcp_servers: Mapping[str, Any] | None = None,
+    mcp_clients: Any | None = None,
 ) -> Stack:
     """装配一套权威存储。CLI、测试和 `run()` 共用同一条装配路径。
 
@@ -3165,6 +3183,28 @@ def build_stack(
         log, blob_dir=getattr(shots, "blob_dir", None) or log.blob_dir
     )
     summaries = SummaryStore(log, clock=clock or (lambda: int(time.time() * 1000)))
+    # MCP（G2 MCP 阶段）：用户配置的 server 由**装配点**启动一次，发现到的工具
+    # 经准入后进进程级注册表。没有配置（也没有显式注入）时 `clients=None`，
+    # 注册表就是内置 SPECS——工具面与旧版逐字节相同，一个 server 进程都不起。
+    if mcp_clients is None and mcp_servers:
+        # **显式装配**：`build_stack` 不自己读环境变量。原因：每一条 CLI 命令
+        # 都会走这个装配点，如果这里隐式读 `TIANSHU_MCP_CONFIG`，连
+        # `task show` / `run status` 都会去启动一批外部进程。要 MCP 的入口
+        # （run / worker / daemon 驱动栈 / `mcp list`）自己把配置传进来。
+        from .mcp import McpClients
+
+        # 数据根可能还没建（首次运行）：那时不给默认 cwd，让 server 继承当前目录，
+        # 而不是因为"目录不存在"整批 server 起不来。
+        mcp_clients = McpClients(
+            mcp_servers, default_cwd=root if root.is_dir() else None
+        )
+    # **总是**设注册表（没有 MCP 时设成纯内置表）：同一进程里先后装配"带 MCP"与
+    # "不带 MCP"的 stack 时，后者不能继承前者的动态工具（复审 v5 建议）。
+    from .tool_registry import build_registry, set_registry
+
+    if mcp_clients is not None:
+        mcp_clients.start_all()
+    set_registry(build_registry(mcp_clients))
     cls = dispatcher_cls or Dispatcher
     dispatcher = cls(
         log,
@@ -3182,6 +3222,7 @@ def build_stack(
         contents=contents,
         budget=budget,
         **({} if net_limits is None else {"net_limits": net_limits}),
+        **({} if mcp_clients is None else {"mcp_clients": mcp_clients}),
         **kwargs,
     )
     return Stack(
@@ -3198,6 +3239,7 @@ def build_stack(
         budget=budget,
         contents=contents,
         summaries=summaries,
+        mcp_clients=mcp_clients,
     )
 
 

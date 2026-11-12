@@ -1074,10 +1074,14 @@ def _undo_change(item: Any) -> dict[str, Any]:
 
 
 def _exposed_tool_ids() -> list[str]:
-    """模型可见的工具清单（与 `AgentLoop.start` 的 payload 一致）。"""
-    from .tools import SPECS
+    """工具清单（与 `AgentLoop.start` 的 payload 一致）。
 
-    return sorted(SPECS)
+    G2 MCP 阶段起 = 进程级注册表的全部 id（内置 19 + 已准入 MCP 工具）；
+    没有配置 MCP 时与旧口径 `sorted(SPECS)` 逐字节相同。
+    """
+    from .tool_registry import current_registry
+
+    return list(current_registry().ids())
 
 
 def _require_str(params: dict[str, Any], key: str) -> str:

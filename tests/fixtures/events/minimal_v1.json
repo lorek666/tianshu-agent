@@ -188,7 +188,7 @@
       "resource": "x",
       "root": "x",
       "run_id": "x",
-      "tool_id": "create_report"
+      "tool_id": "x"
     },
     "recovery.blocked": {
       "call_ids": [],
@@ -305,6 +305,7 @@
       "goal_revision": 1,
       "lease_epoch": 1,
       "max_subtasks": 0,
+      "mcp_servers": [],
       "memory_scopes": [],
       "outbound_allow": [],
       "task_id": "x",
@@ -327,12 +328,12 @@
       "grant_id": "x",
       "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
       "request_id": "x",
-      "tool_id": "create_report"
+      "tool_id": "x"
     },
     "tool.not_dispatched": {
       "call_id": "x",
       "reason": "x",
-      "tool_id": "create_report"
+      "tool_id": "x"
     },
     "tool.result": {
       "call_id": "x",

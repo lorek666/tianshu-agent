@@ -201,6 +201,13 @@ _TOOL_ID = _enum(
     "subtask.spawn",
     "subtask.status",
 )
+#: 动态工具 id 的形状。MCP 工具有 id 是运行时生成的（`mcp__server__tool`），
+#: 枚举放不下；而 `tool.result.tool_id` 从 F10 起就按**形状**收口（注释写明
+#: "红线 8：schema 变即新工具"）。这里把 `tool.intent` / `tool.not_dispatched` /
+#: `receipt` 三处统一成同一条 pattern：**放宽的是数据契约，不是授权**——白名单仍由
+#: 工具注册表判定，旧事件仍合法（枚举 ⊂ pattern）。
+_DYNAMIC_TOOL_ID = _s(pattern=r"^[a-z][a-z0-9_.]*$")
+
 _ACTION = _enum("read", "create", "overwrite", "delete", "exec", "fetch", "delegate")
 _EFFECT_STATE = _enum("applied", "none_applied", "partial", "unknown")
 _OUTCOME = _enum("succeeded", "failed", "cancelled")
@@ -378,7 +385,9 @@ _TOOL_CALL = _obj(
 )
 _RECEIPT_EVIDENCE = _obj(
     {
-        "kind": _enum("result", "intent", "blob", "memory", "memory_erasure"),
+        "kind": _enum(
+            "result", "intent", "blob", "memory", "memory_erasure", "mcp_call"
+        ),
         "call_id": _opt(_s()),
         "seq": _opt(_i()),
         "path": _opt(_s()),
@@ -388,6 +397,11 @@ _RECEIPT_EVIDENCE = _obj(
         "absent": _opt(_b()),
         # 擦除回执的附加证据（memory_erasure）：删了什么、删了多少、还被谁引用
         "content_ref": _opt(_SHA256),
+        # MCP 调用的证据（mcp_call）：哪个 server 的哪个工具、哪次请求。
+        # 响应摘要复用上面的 `sha256`，不另造一个字段。
+        "server": _opt(_s()),
+        "tool": _opt(_s()),
+        "request_id": _opt(_i()),
         "deleted": _opt(_b()),
         "deleted_bytes": _opt(_i()),
         "retained_by": _opt(_arr(_s())),
@@ -700,11 +714,11 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "receipt_id": _s(pattern=r"^rcpt_[0-9a-f]{12}$"),
             "run_id": _s(),
             "call_id": _s(),
-            "tool_id": _TOOL_ID,
+            "tool_id": _DYNAMIC_TOOL_ID,
             "action": _ACTION,
             "args_hash": _SHA256,
             "effect_state": _EFFECT_STATE,
-            "backend": _enum("local_fs", "memfs", "memory"),
+            "backend": _enum("local_fs", "memfs", "memory", "mcp"),
             "issuer": _s(),
             "issued_at": _i(minimum=0),
             "root": _s(),
@@ -928,6 +942,10 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             # G2：任务级外发白名单（源级）。新写入恒写（空列表也写）；
             # 旧事件没有这个键 → detect_version 落到 v0，不按新版补值。
             "outbound_allow": _arr(_s()),
+            # G2 MCP 阶段：任务级 server 白名单（能力白名单，与 outbound_allow
+            # 同层）。新写入恒写（空列表也写）；升级前的旧行缺这个键，读取侧
+            # 按空元组处理（`Task.mcp_servers` 默认 ()），不是"按 v0 读"。
+            "mcp_servers": _arr(_s()),
             # G2 委派 D1：任务级委派能力声明（0–4）。**必填**：
             # 未声明即无委派能力这条纪律只有在"每个新事件都显式写了"时才成立。
             # 用 enum 而不是 maximum（本方言没有 maximum，见 SUPPORTED_KEYWORDS）。
@@ -948,6 +966,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "control",
             "memory_scopes",
             "outbound_allow",
+            "mcp_servers",
             "max_subtasks",
         ),
     ),
@@ -964,7 +983,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
     "tool.intent": _obj(
         {
             "call_id": _s(),
-            "tool_id": _TOOL_ID,
+            "tool_id": _DYNAMIC_TOOL_ID,
             "args": _obj({}, open=True),
             "args_hash": _SHA256,
             "request_id": _s(),
@@ -989,7 +1008,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
         ),
     ),
     "tool.not_dispatched": _obj(
-        {"call_id": _s(), "tool_id": _TOOL_ID, "reason": _s()},
+        {"call_id": _s(), "tool_id": _DYNAMIC_TOOL_ID, "reason": _s()},
         required=("call_id", "tool_id", "reason"),
     ),
     "tool.result": _obj(

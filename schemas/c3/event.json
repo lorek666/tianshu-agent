@@ -1406,31 +1406,7 @@
           },
           "tool_id": {
             "type": "string",
-            "enum": [
-              "create_report",
-              "delete_file",
-              "list_files",
-              "memory.consolidate",
-              "memory.confirm",
-              "memory.edit",
-              "memory.erase",
-              "memory.forget",
-              "memory.get",
-              "memory.promote",
-              "memory.propose",
-              "memory.remember",
-              "memory.search",
-              "modify_text",
-              "network.fetch",
-              "read_content",
-              "read_text",
-              "restore_file",
-              "run_command",
-              "subtask.cancel",
-              "subtask.result",
-              "subtask.spawn",
-              "subtask.status"
-            ]
+            "pattern": "^[a-z][a-z0-9_.]*$"
           },
           "action": {
             "type": "string",
@@ -1462,7 +1438,8 @@
             "enum": [
               "local_fs",
               "memfs",
-              "memory"
+              "memory",
+              "mcp"
             ]
           },
           "issuer": {
@@ -1506,7 +1483,8 @@
                     "intent",
                     "blob",
                     "memory",
-                    "memory_erasure"
+                    "memory_erasure",
+                    "mcp_call"
                   ]
                 },
                 "call_id": {
@@ -1552,6 +1530,24 @@
                     "null"
                   ],
                   "pattern": "^[0-9a-f]{64}$"
+                },
+                "server": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tool": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "request_id": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "deleted": {
                   "type": [
@@ -2441,6 +2437,12 @@
               "type": "string"
             }
           },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "max_subtasks": {
             "type": "integer",
             "enum": [
@@ -2479,6 +2481,7 @@
           "control",
           "memory_scopes",
           "outbound_allow",
+          "mcp_servers",
           "max_subtasks"
         ]
       },
@@ -2548,31 +2551,7 @@
           },
           "tool_id": {
             "type": "string",
-            "enum": [
-              "create_report",
-              "delete_file",
-              "list_files",
-              "memory.consolidate",
-              "memory.confirm",
-              "memory.edit",
-              "memory.erase",
-              "memory.forget",
-              "memory.get",
-              "memory.promote",
-              "memory.propose",
-              "memory.remember",
-              "memory.search",
-              "modify_text",
-              "network.fetch",
-              "read_content",
-              "read_text",
-              "restore_file",
-              "run_command",
-              "subtask.cancel",
-              "subtask.result",
-              "subtask.spawn",
-              "subtask.status"
-            ]
+            "pattern": "^[a-z][a-z0-9_.]*$"
           },
           "args": {
             "type": "object",
@@ -2633,31 +2612,7 @@
           },
           "tool_id": {
             "type": "string",
-            "enum": [
-              "create_report",
-              "delete_file",
-              "list_files",
-              "memory.consolidate",
-              "memory.confirm",
-              "memory.edit",
-              "memory.erase",
-              "memory.forget",
-              "memory.get",
-              "memory.promote",
-              "memory.propose",
-              "memory.remember",
-              "memory.search",
-              "modify_text",
-              "network.fetch",
-              "read_content",
-              "read_text",
-              "restore_file",
-              "run_command",
-              "subtask.cancel",
-              "subtask.result",
-              "subtask.spawn",
-              "subtask.status"
-            ]
+            "pattern": "^[a-z][a-z0-9_.]*$"
           },
           "reason": {
             "type": "string"
@@ -3963,31 +3918,7 @@
           },
           "tool_id": {
             "type": "string",
-            "enum": [
-              "create_report",
-              "delete_file",
-              "list_files",
-              "memory.consolidate",
-              "memory.confirm",
-              "memory.edit",
-              "memory.erase",
-              "memory.forget",
-              "memory.get",
-              "memory.promote",
-              "memory.propose",
-              "memory.remember",
-              "memory.search",
-              "modify_text",
-              "network.fetch",
-              "read_content",
-              "read_text",
-              "restore_file",
-              "run_command",
-              "subtask.cancel",
-              "subtask.result",
-              "subtask.spawn",
-              "subtask.status"
-            ]
+            "pattern": "^[a-z][a-z0-9_.]*$"
           },
           "action": {
             "type": "string"
@@ -4009,7 +3940,8 @@
             "enum": [
               "local_fs",
               "memfs",
-              "memory"
+              "memory",
+              "mcp"
             ]
           },
           "issuer": {
@@ -4804,6 +4736,12 @@
               "type": "string"
             }
           },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "max_subtasks": {
             "type": "integer",
             "enum": [
@@ -4945,31 +4883,7 @@
           },
           "tool_id": {
             "type": "string",
-            "enum": [
-              "create_report",
-              "delete_file",
-              "list_files",
-              "memory.consolidate",
-              "memory.confirm",
-              "memory.edit",
-              "memory.erase",
-              "memory.forget",
-              "memory.get",
-              "memory.promote",
-              "memory.propose",
-              "memory.remember",
-              "memory.search",
-              "modify_text",
-              "network.fetch",
-              "read_content",
-              "read_text",
-              "restore_file",
-              "run_command",
-              "subtask.cancel",
-              "subtask.result",
-              "subtask.spawn",
-              "subtask.status"
-            ]
+            "pattern": "^[a-z][a-z0-9_.]*$"
           },
           "reason": {
             "type": "string"
