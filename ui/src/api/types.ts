@@ -16,6 +16,8 @@ export interface WorkspaceView {
 
 export interface TaskView {
   task_id: string;
+  /** 控制面任务（人签字产生的记忆写等）：不是用户任务，界面不显示。 */
+  control: boolean;
   goal: string;
   goal_revision: number;
   status: string;
@@ -161,4 +163,58 @@ export const RPC = {
   eventsRun: "events.run",
   undoPlan: "undo.plan",
   undoApply: "undo.apply",
+  // 记忆控制面（G2 记忆阶段 M1）：UI 是人机界面入口，与模型工具面是两条路。
+  memoryList: "memory.list",
+  memorySearch: "memory.search",
+  memoryGet: "memory.get",
+  memoryRemember: "memory.remember",
+  memoryConfirm: "memory.confirm",
+  memoryForget: "memory.forget",
+  memoryErase: "memory.erase",
 } as const;
+// ---------------------------------------------------------------- 记忆（M1）
+
+/** 记忆可见作用域：默认 `user`（人自己的记忆），其余要显式点名。 */
+export interface MemoryScopeChoice {
+  scope: "user" | "task" | "workspace";
+  scope_id: string | null;
+}
+
+/** 一条记忆对界面投影的六项判据 + 可选正文/排序解释。 */
+export interface MemoryView {
+  memory_id: string;
+  revision: number;
+  scope: string;
+  scope_id: string | null;
+  kind: string;
+  content_ref: string | null;
+  origin: string;
+  status: string;
+  source_refs: string[];
+  proof_count: number;
+  layer: string;
+  erased_at: number | null;
+  created_at: number | null;
+  updated_at: number | null;
+  content: string | null;
+  content_state: string | null;
+  score: number | null;
+  score_kind: string | null;
+  /** 三态：true 陈旧 / false 已确认新鲜 / undefined 不可判定（后端省略=判不了）。 */
+  stale: boolean | undefined;
+}
+
+export interface MemoryListResult {
+  items: MemoryView[];
+  scopes: string[];
+}
+
+export interface MemorySearchResult extends MemoryListResult {
+  query: string;
+  /** 这一路到底有没有语义能力：false 不是"没找到"，是"只有词面召回"。 */
+  semantic: boolean;
+  /** `semantic=false` 的原因（未配置 provider / 索引未构建 / provider 不匹配）。 */
+  degraded: string | null;
+  fused: boolean;
+  limit: number | null;
+}

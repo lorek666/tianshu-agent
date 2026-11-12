@@ -139,6 +139,7 @@ M5 不重新发明一套。
 
 ```
 TaskView     {task_id, goal, goal_revision, status, active_run_id, workspaces,
+              control,   // 控制面任务（人签字的记忆写等），UI 不当作普通任务显示
               created_at, updated_at}
 RunView      {run_id, task_id, state, outcome, effect_state, control_requested,
               goal_revision, lease_epoch, started_at, ended_at,

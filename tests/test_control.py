@@ -31,6 +31,9 @@ from tianshu.tasks import RUN_RUNNING
 TASK_FIELDS = {
     "task_id",
     "goal",
+    # 控制面任务标记（G2 记忆阶段 M1）：UI 靠它把 `memory.remember` 这类
+    # 人签字产生的控制任务从任务列表里摘出去。
+    "control",
     "goal_revision",
     "status",
     "active_run_id",
@@ -553,3 +556,25 @@ def test_control_run_claims_its_job_atomically(env: Env, monkeypatch) -> None:
         assert control.claim.job_id
     finally:
         env.stack.dispatcher.close_control_run(control)
+
+
+def test_control_plane_tasks_are_marked_control(env: Env) -> None:
+    """控制面自己开的任务带 `control: true`，用户任务带 false（UI 靠它过滤）。
+
+    为什么这条必须在：人一点「记住一条」，控制面就开一个
+    `memory.remember:...` 的任务。没有这个标记，UI 只能把它当普通任务显示——
+    任务列表里会凭空多出"工作量"，选中它还会打开一条人根本没要求的运行。
+    """
+    result = env.plane.handle(
+        "memory.remember", {"kind": "fact", "content": "周五不排会"}
+    )
+    assert result["status"] == "succeeded", result
+    tasks = env.plane.handle("task.list", {})["tasks"]
+    control_tasks = [task for task in tasks if task["control"] is True]
+    assert control_tasks, "记忆写应当留下一条 control=true 的控制面任务"
+    assert all(task["goal"].startswith("memory.") for task in control_tasks), [
+        task["goal"] for task in control_tasks
+    ]
+
+    created = env.create_task("整理这周的会议纪要")
+    assert created["control"] is False, "用户创建的任务绝不能被标成控制面任务"

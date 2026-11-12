@@ -30,6 +30,7 @@ export function normalizeTask(raw: unknown): TaskView | null {
   if (taskId === null) return null;
   return {
     task_id: taskId,
+    control: asBoolean(record["control"]) === true,
     goal: asString(record.goal) ?? "",
     goal_revision: asNumber(record.goal_revision) ?? 1,
     status: asString(record.status) ?? "unknown",
@@ -175,9 +176,11 @@ function normalizeDaemon(raw: unknown): DaemonView {
 export function normalizeState(raw: unknown): StateView {
   const record = asRecord(raw);
   return {
+    // 控制面任务（`control: true`）不进任务列表：人一点「记住一条」，控制面就会
+    // 开一个 `memory.remember:...` 的任务，把它当用户任务显示等于伪造工作量。
     tasks: asArray(record.tasks)
       .map(normalizeTask)
-      .filter((task): task is TaskView => task !== null),
+      .filter((task): task is TaskView => task !== null && !task.control),
     runs: asArray(record.runs)
       .map(normalizeRun)
       .filter((run): run is RunView => run !== null),

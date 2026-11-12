@@ -137,6 +137,10 @@ def task_view(task: Any) -> dict[str, Any]:
     return {
         "task_id": task.task_id,
         "goal": task.goal,
+        # 控制面自己开出来的任务（人敲 `memory.remember` 等）不是用户任务：
+        # 不暴露这个标记，UI 就只能把它们当普通任务显示——人一点"记住一条"，
+        # 任务列表里就多出一个 `memory.remember:...` 的假任务。加键不加类型。
+        "control": bool(getattr(task, "is_control", False)),
         "goal_revision": int(task.goal_revision),
         "status": task.status,
         "active_run_id": task.active_run_id,
