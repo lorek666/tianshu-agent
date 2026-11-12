@@ -28,7 +28,7 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D3（分支 `feat/g2-delegation-d3`，PR 待开）**：实测 **2076 passed / 7 skipped**
+- **G2 子代理 D3（分支 `feat/g2-delegation-d3`，#123）**：实测 **2076 passed / 7 skipped**
   （macOS arm64 本机，356.20s），`ruff check .` → `All checks passed!`；基线
   `main @ 5eed5ee`（D2 #121 合入后）同机 **2069 passed / 7 skipped**（358.23s）。
   本分支 **+7**：`tests/test_eval_real_tasks.py` 新增 7 条（D3-c1 / c2 / c3 各 1 条
@@ -94,11 +94,11 @@
 | #116–#119 | G2 MCP 阶段：stdio 客户端 + 动态工具准入（封闭方言）+ 派发链路（任务级 server 白名单 + 逐次人工批准）+ `tianshu mcp list`（真实第三方 server 未验证、无沙箱） |
 | #120 | G2 子代理 D1：`max_subtasks` 合同 + `subtasks` 实体/父子链 + 四个工具 + 限额 + 共享预算 + 恢复（只排队不执行）（+35 tests，负控 10） |
 | #121 | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+22 tests，负控 6） |
-| 待开 | G2 子代理 D3：`RU-D1@1.0.0`（只读子任务 + 父任务汇总引用 + 只读边界 + 失败不编造）+ runner 驱动子 Run + 文档对账（+7 tests，负控见 PR body） |
+| #123 | G2 子代理 D3：`RU-D1@1.0.0`（只读子任务 + 父任务汇总引用 + 只读边界 + 失败不编造）+ runner 驱动子 Run + 文档对账（+7 tests，负控见 PR body） |
 
 ## 3 测试与门禁
 
-- G2 子代理 D3（`feat/g2-delegation-d3`，PR 待开）：**2076 passed / 7 skipped**
+- G2 子代理 D3（`feat/g2-delegation-d3`，#123）：**2076 passed / 7 skipped**
   （356.20s，macOS arm64 本机），`ruff check .` 干净；基线 `main @ 5eed5ee` 同机
   **2069 / 7**（358.23s），本分支 **+7**（全在 `tests/test_eval_real_tasks.py`：
   D3-c1 派发/汇总、D3-c2 只读边界、D3-c3 失败不编造、2 条判据负控、1 条

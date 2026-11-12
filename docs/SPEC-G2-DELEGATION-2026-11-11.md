@@ -381,4 +381,4 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 | 1 | 本施工规格 | 本 PR | 已合入 |
 | 2 | D1 合同 + 实体 + spawn/status/result + 限额 + 预算 | #120 | 已合入（`main @ 6140d9c`） |
 | 3 | D2 Worker 驱动 + 等待/唤醒 + 取消/fence + 回放 | #121 | 已交付（分支 `feat/g2-delegation-d2`；实测见 §3） |
-| 4 | D3 评测任务 + 文档对账 | 待填（分支 `feat/g2-delegation-d3`） | 已交付（D3-c1…c4；2076 passed / 7 skipped，基线 2069/7，+7；负控见 PR body） |
+| 4 | D3 评测任务 + 文档对账 | #123 | 已交付（D3-c1…c4；2076 passed / 7 skipped，基线 2069/7，+7；负控见 PR body） |
