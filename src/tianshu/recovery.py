@@ -1313,33 +1313,59 @@ def _has_dispatch_table(log: EventLog) -> bool:
     ).fetchone() is not None
 
 
-def _dispatch_row_states(log: EventLog, run_id: str, call_id: str) -> list[str] | None:
-    """一次调用的派发行状态；`None` = 这个库根本没有派发表（无从证明）。
+def _dispatch_row_states(
+    log: EventLog, run_id: str, call_id: str
+) -> list[tuple[str, int]] | None:
+    """一次调用的派发行 `(state, boundary_protocol)`；`None` = 没有派发表。
 
     返回列表而不是单个值：派发表的主键是 `dispatch_id`（由 run+call 哈希），
     正常情况下一次调用只有一行；将来若出现重试行，只要**有任意一行**越过了
-    外发边界，就不能宣布"没发出去"。
+    外发边界（或不知道某一行有没有），就不能宣布"没发出去"。
+
+    老库的 `dispatches` 可能**没有** `boundary_protocol` 列（迁移只在
+    `Dispatcher.__init__` 里跑，恢复可能先开库）：没有这一列就按 0（旧行）读，
+    不因为"读不到列"就崩掉恢复。
     """
     if not _has_dispatch_table(log):
         return None
+    columns = {
+        str(row[1]) for row in log.conn.execute("PRAGMA table_info(dispatches)")
+    }
+    if "boundary_protocol" not in columns:
+        return [
+            (str(row["state"]), 0)
+            for row in log.conn.execute(
+                "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+                (run_id, call_id),
+            )
+        ]
     return [
-        str(row["state"])
+        (str(row["state"]), int(row["boundary_protocol"]))
         for row in log.conn.execute(
-            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+            "SELECT state, boundary_protocol FROM dispatches"
+            " WHERE run_id=? AND call_id=?",
             (run_id, call_id),
         )
     ]
 
 
-def _mcp_never_sent(states: list[str] | None) -> bool:
+#: 写请求前提交外发边界标记的协议版本（0 = 升级前写的旧行）。
+BOUNDARY_PROTOCOL = 1
+
+
+def _mcp_never_sent(rows: list[tuple[str, int]] | None) -> bool:
     """能不能证明这次 MCP 请求没写出。
 
-    判据只有一条：派发行停在 `dispatcher._mark_mcp_send_boundary` 之前。
-    `intent` = 还没到边界；`revoked`/`rejected` = 撤销/作废先到，标记只从
-    `intent` 推进，所以这两种终态同样说明请求没写出（而且它们是审计事实）。
+    两个条件**同时**成立才算：
 
-    没有表、没有行、行已 `executing`/`done`/`error`、或出现任何不认识的状态，
-    一律返回 False："证明不了没发"就按"可能已发出"处理。
+    1. 行由带外发边界标记的版本写的（`boundary_protocol >= 1`）。升级前的旧行
+       在写请求之前**不推进**派发行，所以旧行的 `intent`（甚至 `revoked`——旧版
+       撤销与发送没有互斥）**不能**证明没发；它们一律按"可能已发出"处理。
+    2. 行状态停在边界之前：`intent`（还没到边界）、`revoked`/`rejected`（撤销/
+       作废先到；标记只从 `intent` 推进，且与撤销共用同一把执行守卫）。
+
+    没有表、没有行、旧行、已 `executing`/`done`/`error`、或任何不认识的状态 →
+    False："证明不了没发"就按"可能已发出"处理。
     """
     from .dispatcher import (
         DISPATCH_INTENT,
@@ -1347,10 +1373,13 @@ def _mcp_never_sent(states: list[str] | None) -> bool:
         DISPATCH_ROW_REVOKED,
     )
 
-    if not states:
+    if not rows:
         return False
     proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}
-    return all(state in proven for state in states)
+    return all(
+        protocol >= BOUNDARY_PROTOCOL and state in proven
+        for state, protocol in rows
+    )
 
 
 def _read_mcp_never_sent(
@@ -1400,7 +1429,8 @@ def _settle_mcp_pending(
                 "failed", "none_applied",
                 {
                     "error": "recovered: 这次 MCP 调用没越过外发边界"
-                             "（派发记录仍是 intent），请求没有写出",
+                             "（派发记录停在 intent/revoked/rejected），"
+                             "请求没有写出",
                     "reason": "mcp.not_sent",
                     **common,
                 },

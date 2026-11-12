@@ -246,6 +246,10 @@ CREATE TABLE IF NOT EXISTS dispatches (
     owner_instance_id TEXT NOT NULL,
     attempt_id        INTEGER NOT NULL DEFAULT 1,
     intent_seq        INTEGER NOT NULL DEFAULT 0,
+    -- 这一行是不是由"发包前提交外发边界标记"的版本写的（0=升级前的旧行）。
+    -- 旧版本在请求写出前**不推进派发行**，所以旧行的 `intent`/`revoked` 不能
+    -- 证明"请求没发出去"；恢复必须靠这个标记把旧行排除在 `none_applied` 之外。
+    boundary_protocol INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL,
     reason            TEXT NOT NULL DEFAULT '',
     created_at        INTEGER NOT NULL,
@@ -570,6 +574,14 @@ class Dispatcher:
             )
         _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        # 外发边界协议标记同理：`ALTER TABLE` 只给**已有的旧行**补 0，
+        # 新行由 `_insert_dispatch()` 显式写 1。恢复据此把旧行排除在
+        # 「确定没发出去」之外（旧版本写请求前不推进派发行，旧行的状态不能证明
+        # 请求没写出——这是升级兼容的硬边界，不是可选优化）。
+        _ensure_column(
+            self._conn, "dispatches", "boundary_protocol",
             "INTEGER NOT NULL DEFAULT 0",
         )
         # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
@@ -3157,9 +3169,9 @@ class Dispatcher:
             "INSERT INTO dispatches (dispatch_id, run_id, task_id, call_id,"
             " request_id, request_digest, tool_id, action, resources, target,"
             " rel_path, workspace_root, resource_key, approval_id, grant_id,"
-            " claim_epoch, owner_instance_id, attempt_id, intent_seq, state,"
-            " created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'intent',?,?)",
+            " claim_epoch, owner_instance_id, attempt_id, intent_seq,"
+            " boundary_protocol, state, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'intent',?,?)",
             (
                 self._dispatch_id(request),
                 request.run_id,

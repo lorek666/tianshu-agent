@@ -616,9 +616,9 @@ _DISPATCH_INSERT = (
     "INSERT INTO dispatches (dispatch_id, run_id, task_id, call_id,"
     " request_id, request_digest, tool_id, action, resources, target,"
     " rel_path, workspace_root, resource_key, approval_id, grant_id,"
-    " claim_epoch, owner_instance_id, attempt_id, intent_seq, state,"
-    " created_at, updated_at)"
-    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " claim_epoch, owner_instance_id, attempt_id, intent_seq,"
+    " boundary_protocol, state, created_at, updated_at)"
+    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 _NOW = 1_700_000_000_000
@@ -633,13 +633,19 @@ def _insert_dispatch(
     target: str,
     intent_seq: int,
     state: str = "intent",
+    protocol: int = 1,
 ) -> None:
+    """手写一行派发记录。
+
+    `protocol=1` = 由"发包前提交外发边界标记"的版本写的（当前版本）；
+    `protocol=0` = 升级前的旧行（旧版本写请求前不推进派发行）。
+    """
     log.conn.execute(
         _DISPATCH_INSERT,
         (
             dispatch_id, run_id, "task_x", CALL_ID, "req_x", "0" * 64, tool_id,
             ACTION_OVERWRITE, "[]", target, "", "", f"key:{target}", None,
-            "grant_x", 1, "inst_x", 1, intent_seq, state, _NOW, _NOW,
+            "grant_x", 1, "inst_x", 1, intent_seq, protocol, state, _NOW, _NOW,
         ),
     )
 
@@ -1155,3 +1161,178 @@ def test_mcp_without_a_dispatch_row_stays_conservative(tmp_path):
             assert result["output"]["reason"] == "mcp.crash_unsettled", case
         finally:
             log.close()
+
+
+@pytest.mark.parametrize("state", ["intent", "revoked", "rejected"])
+def test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent(tmp_path, state):
+    """升级前的旧行（`boundary_protocol=0`）不许被当成"没发出去"。
+
+    旧版本在写请求之前**不推进**派发行：崩溃后行停在 `intent`，而请求可能已经
+    发出；旧版本的撤销与发送之间也没有互斥（撤销只看行状态），所以 `revoked`
+    同样不能证明没发。把旧行判成 `none_applied` 正是最危险的方向——一次可能已经
+    执行的调用被写成"确定没执行"，还顺手撤掉了阻断。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    run_id = f"run_legacy_{state}"
+    try:
+        build_stack(log, data_root=data)  # 让派发表带上 boundary_protocol 列
+        store.init_run(run_id)
+        log.append(
+            run_id, "run.start",
+            {"task": "升级前的 MCP 崩溃行", "workspace": str(ws), "out": "out.md",
+             "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id=f"dsp_legacy_{state}", run_id=run_id,
+            tool_id=MCP_TOOL, target="mcp://fake/echo", intent_seq=seq,
+            state=state, protocol=0,  # 升级前的写入方
+        )
+
+        assessment = assess_run(data, run_id, log=log)
+        assert assessment.unresolved == (CALL_ID,), state
+        assert assessment.none_applied == (), "旧行不能证明没发"
+        assert assessment.blocks_takeover is True
+
+        report = recover_run(log, run_id, ws, store, leases=None, data_root=data)
+        assert report.unresolved == [CALL_ID], state
+        assert report.none_applied == []
+        assert report.blocked_workspaces == [str(ws.resolve())]
+        result = [
+            e.payload
+            for e in log.read_run(run_id, verify=False)
+            if e.type == "tool.result"
+        ][0]
+        assert result["output"]["reason"] == "mcp.crash_unsettled"
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("state", ["done", "error"])
+def test_finished_dispatch_row_without_a_result_is_still_unknown(tmp_path, state):
+    """行说"已结算"、事件里却没有 result：数据库自相矛盾 → 只能保守 unknown。
+
+    这种形状不该出现（结果与派发行同事务），但恢复不能替它选一个结论；拿
+    `done`/`error` 当"已结算"或"没发"都是在编事实。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    run_id = f"run_broken_{state}"
+    try:
+        build_stack(log, data_root=data)
+        store.init_run(run_id)
+        log.append(
+            run_id, "run.start",
+            {"task": "行说已结算但没有结果", "workspace": str(ws),
+             "out": "out.md", "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id=f"dsp_broken_{state}", run_id=run_id,
+            tool_id=MCP_TOOL, target="mcp://fake/echo", intent_seq=seq,
+            state=state,
+        )
+
+        report = recover_run(log, run_id, ws, store, leases=None, data_root=data)
+        assert report.unresolved == [CALL_ID], state
+        assert report.none_applied == []
+        assert report.blocked_workspaces == [str(ws.resolve())]
+    finally:
+        log.close()
+
+
+def test_assess_run_reads_the_send_marker_before_closing_its_own_log(tmp_path):
+    """只读对账自己开库时，必须在 `close()` **之前**读到派发表。
+
+    `assess_run(data_root, run_id)`（不传 `log=`）会自己开一个 EventLog，并在
+    `finally` 里关掉；派发标记就在同一个连接里。读晚了不是"少一条判据"，而是
+    拿到"证明不了"（甚至直接炸）——所以单独钉一条 own-log 路径。
+    """
+    root = tmp_path / "data_root"
+    root.mkdir()
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    run_id = "run_own_log"
+    try:
+        build_stack(log, data_root=root)
+        log.append(
+            run_id, "run.start",
+            {"task": "只读对账自己开库", "workspace": str(tmp_path / "ws"),
+             "out": "out.md", "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id="dsp_own_log", run_id=run_id, tool_id=MCP_TOOL,
+            target="mcp://fake/echo", intent_seq=seq,
+        )
+    finally:
+        log.close()
+
+    # 不传 log=：assess_run 自己开库、关库。
+    assessment = assess_run(root, run_id)
+    assert assessment.none_applied == (CALL_ID,)
+    assert assessment.unresolved == ()
+    assert assessment.blocks_takeover is False
+
+
+def test_dispatch_table_from_an_older_version_does_not_break_recovery(tmp_path):
+    """老库的 `dispatches` 没有 `boundary_protocol` 列：按旧行读、按旧行保守判。
+
+    迁移只在 `Dispatcher.__init__` 里跑；恢复可能先开库读到一张**旧形状**的表。
+    这时既不许炸，也不许把行当成"有标记"。
+    """
+    from tianshu.recovery import _dispatch_row_states, _mcp_never_sent
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        log.conn.execute(
+            "CREATE TABLE dispatches (dispatch_id TEXT PRIMARY KEY,"
+            " run_id TEXT NOT NULL, call_id TEXT NOT NULL, state TEXT NOT NULL)"
+        )
+        log.conn.execute(
+            "INSERT INTO dispatches VALUES ('d1', 'r1', 'c1', 'intent')"
+        )
+        rows = _dispatch_row_states(log, "r1", "c1")
+        assert rows == [("intent", 0)], "没有标记列 → 按旧行读"
+        assert _mcp_never_sent(rows) is False, "旧行不能证明没发"
+        assert _mcp_never_sent([("intent", 1)]) is True
+        assert _mcp_never_sent([("executing", 1)]) is False
+        assert _mcp_never_sent([("intent", 1), ("intent", 1)]) is True
+        assert _mcp_never_sent([("intent", 1), ("executing", 1)]) is False
+        assert _mcp_never_sent(None) is False
+        assert _mcp_never_sent([]) is False
+        assert _mcp_never_sent([("done", 1)]) is False
+        assert _mcp_never_sent([("error", 1)]) is False
+        assert _mcp_never_sent([("weird", 1)]) is False
+    finally:
+        log.close()

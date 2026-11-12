@@ -51,6 +51,18 @@ FALLBACK = (
     "tests/test_mcp_crash.py::"
     "test_mcp_without_a_dispatch_row_stays_conservative"
 )
+LEGACY = (
+    "tests/test_mcp_crash.py::"
+    "test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent"
+)
+BROKEN_ROW = (
+    "tests/test_mcp_crash.py::"
+    "test_finished_dispatch_row_without_a_result_is_still_unknown"
+)
+OWNLOG = (
+    "tests/test_mcp_crash.py::"
+    "test_assess_run_reads_the_send_marker_before_closing_its_own_log"
+)
 STATIC = (
     "tests/test_mcp_crash.py::"
     "test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool"
@@ -148,7 +160,7 @@ CASES: tuple[Case, ...] = (
     Case(
         name="NB31",
         relpath="src/tianshu/recovery.py",
-        old="    if not states:\n        return False\n",
+        old="    if not rows:\n        return False\n",
         new="    return True\n",
         tests=(MARKED, FALLBACK),
         why="把「证明不了没发就按可能已发」翻成「一律没发」：标记已落盘的窗口、"
@@ -186,6 +198,47 @@ CASES: tuple[Case, ...] = (
         tests=(CORRUPT,),
         why="清单损坏分支不按 MCP 判：一份无关证据的损毁会把「请求都没写出」的"
         "调用推成 unknown 并挡住目录",
+    ),
+    Case(
+        name="NB35",
+        relpath="src/tianshu/recovery.py",
+        old="        protocol >= BOUNDARY_PROTOCOL and state in proven",
+        new="        state in proven",
+        tests=(LEGACY,),
+        why="不看边界协议标记：升级前的旧行（写请求前不推进派发行）会把"
+        "「可能已执行」洗成「确定没执行」——复审 B1 的假阴性方向",
+    ),
+    Case(
+        name="NB36",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new=(
+            "    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED,"
+            " DISPATCH_ROW_REVOKED, \"done\", \"error\"}"
+        ),
+        tests=(BROKEN_ROW,),
+        why="把 done/error 也算成「没越过边界」：行说已结算、事件里没有结果的自相"
+        "矛盾形状会被恢复替它选一个结论",
+    ),
+    Case(
+        name="NB37",
+        relpath="src/tianshu/recovery.py",
+        old=(
+            "        mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)\n"
+            "    except EventLogCorrupt as exc:\n"
+        ),
+        new=(
+            "        try:  # 变异：先关掉自己的连接再读（= 复审 E 的时序错误）\n"
+            "            if own_log is not None:\n"
+            "                own_log.close()\n"
+            "            mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)\n"
+            "        except Exception:  # noqa: BLE001 - 变异：读不到就当没有标记\n"
+            "            mcp_never_sent = {}\n"
+            "    except EventLogCorrupt as exc:\n"
+        ),
+        tests=(OWNLOG,),
+        why="只读对账自己开库时先关连接再读标记（复审 E 的时序错误）：own-log "
+        "路径会被安静地降级成「证明不了」，结论从 none_applied 变 unresolved",
     ),
 )
 

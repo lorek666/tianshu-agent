@@ -74,6 +74,10 @@
    不能被后到的执行改回"正在执行"），并与 `revoke` 共用执行守卫——撤销先到就不发，
    标记先到撤销就明确报错。标记**没有**落盘时的崩溃（`mcp_before_call`）恢复才敢判
    `none_applied`；标记之后的崩溃一律按"可能已发出"处理。
+5. **只有"本版本写的行"才能证明没发**（升级兼容，复审 B1）：派发表带
+   `boundary_protocol`（新行 1；`ALTER TABLE` 给旧行补 0）。旧版本在写请求前不推进派发
+   行、撤销与发送之间也没有互斥，所以旧行的 `intent`/`revoked`/`rejected` 一律按"可能
+   已发出"处理（`unknown` + 阻断）；老库缺这一列时按旧行读，不炸、也不当成有标记。
 
 **外发边界**：真正写 server stdin 之前，派发行从 `intent` 推进到 `executing`
 （`_mark_mcp_send_boundary`；只从 `intent` 推进、与 `revoke` 共用执行守卫）。它把"请求
@@ -98,7 +102,7 @@
 
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
-  **`tests/test_mcp_crash.py`（15；收尾轮 9 → PR #124 扩到 15）**，另有契约判据在
+  **`tests/test_mcp_crash.py`（22；收尾轮 9 → PR #124 扩到 22）**，另有契约判据在
   `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
   → 规格 §4 的 c1–c15 与本文件的测试一一对应。
 - 负控：规格 §5 的 NB1–NB24；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →
@@ -133,6 +137,8 @@
 10. **崩溃后的结论分三档**（PR #124）：标记之前 → `none_applied` + 不阻断；标记之后
     或无从证明（老库没有派发表 / 没有行 / 状态不认识）→ `unknown` + 阻断。仍然不成立的：
     **标记提交与真正写出之间**那一小段窗口仍按"可能已发出"处理（有意保守，见 §3.1）；
+    **升级前留下的派发行**（没有 `boundary_protocol`）同样一律按"可能已发出"处理——
+    旧版本写请求前不推进派发行，旧行不能证明没发；
     阻断对象只有 workspace 字段、**没有**对象级阻断；"挡哪个目录"由调用方负责
     （`recover --workspace` 必填，代码不按 task 绑定核对，传错就挡错——已知代价）；
     server 侧的私有状态（它到底动了什么）**没有任何证据**，恢复也不去问它。
@@ -142,8 +148,8 @@
 1. ~~MCP 崩溃夹具 + 恢复判据~~ **已完成（收尾轮）**：`tests/test_mcp_crash.py`。
 2. ~~**发送前持久标记**~~ **已完成（PR #124）**：复用 `dispatches.state`
    （`intent` → `executing`），不新增事件、不改事件契约；恢复/接管按它分档，撤销与发送
-   共用执行守卫。**新剩下的**：标记提交与真正写出之间的窄窗口仍保守阻断；要再往前推需要
-   server 侧回执协议（未做）。
+   共用执行守卫；升级前的旧行用 `boundary_protocol=0` 区分（一律保守）。**新剩下的**：
+   标记提交与真正写出之间的窄窗口仍保守阻断；要再往前推需要 server 侧回执协议（未做）。
 3. **对象级阻断**：以 `mcp://server/tool` / server 为阻断对象；现有 guard 只有
    workspace 字段，先定阻断对象模型，不拿调用方传的路径冒充 MCP 的目录。
 4. 把长连接 spawn 收进 `exec_backends` 接缝（新 `spawn_session` 语义 + MCP 专属隔离
