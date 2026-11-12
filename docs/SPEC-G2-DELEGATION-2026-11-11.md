@@ -249,11 +249,25 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 | D2-c3 | 最后一个子任务收尾 → 父作业 `wake` 回 `pending`，父 Run 可继续 | `test_last_child_wakes_parent` |
 | D2-c4 | `subtask.result` 未完成 → `done:false`；完成 → 摘要 + `content://` 引用 | `test_subtask_result_shape` |
 | D2-c5 | 父取消 → 子 Job 取消请求 + 传播；已送出费用如实计入 | `test_parent_cancel_propagates` |
-| D2-c6 | 父改目标 → 子任务 fence，结果不回填 | `test_parent_revision_change_fences_children` |
+| D2-c6 | 父改目标 → 子任务 fence，结果不回填 | `test_parent_revision_change_fences_children`、`test_child_finish_after_parent_revision_is_not_backfilled` |
 | D2-c7 | `subtask.cancel` 未完成 → `cancelling`；已完成 → 幂等 | `test_subtask_cancel_is_not_instant` |
-| D2-c8 | 父作业 waiting 但子任务已终结（崩溃窗口）→ 启动恢复补 wake | `test_recovery_wakes_stale_parent` |
-| D2-c9 | 回放不执行子任务、缺字段 → `problem` | `test_replay_subtask_*` |
+| D2-c8 | 父作业 waiting 但子任务已终结（崩溃窗口）→ 启动恢复补 wake | `test_recovery_wakes_stale_parent`、`test_terminal_parent_is_not_woken` |
+| D2-c9 | 回放不执行子任务、缺字段 → `problem` | `test_replay_subtask_shapes`、`test_replay_flags_missing_subtask_identity`、`test_replay_flags_done_without_ref_or_summary`、`test_replay_does_not_execute_or_wake_children` |
 | D2-c10 | 负控：§4 每条回退后对应测试变红（实测回填 PR body） | 见 §4 |
+
+**D2 实测回填（2026-11-12，`feat/g2-delegation-d2`）**：
+
+- 测试文件：`tests/test_g2_delegation_exec.py`（c1–c5、c7、c8 + 事务原子性 + CLI）、
+  `tests/test_g2_delegation_fence.py`（c6 两条路径）、
+  `tests/test_g2_delegation_replay.py`（c9 四条）。
+- 负控 6 条全部实测变红（失败数 / 通过数 / 红名见 PR body）。额外用
+  `test_child_finish_is_one_transaction` 钉住「行/事件/预算/唤醒同一事务」：
+  在预算结算处注入异常，回滚后 Run 仍 `running`、`subtasks` 行未提交、
+  父 Run 无 `subtask.finished`、预占仍占着。
+- 口径细节（不改判据，只把实现选择写清）：父取消时**确定未开始**的子任务
+  （子 Run 仍 `created`、作业从未被认领）当场以 `cancelled` 收尾并
+  `abandon_unsent`，其余先 `cancelling` 由执行侧安全点确认——否则会留下
+  永远 `created` 的子 Run 与永远 `cancelling` 的行。
 
 **D3（评测与对账，4 条）**
 
@@ -300,7 +314,7 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 
 | # | 内容 | PR | 状态 |
 |---|---|---|---|
-| 1 | 本施工规格 | 本 PR | 本 PR |
-| 2 | D1 合同 + 实体 + spawn/status/result + 限额 + 预算 | 待填 | 待填 |
-| 3 | D2 Worker 驱动 + 等待/唤醒 + 取消/fence + 回放 | 待填 | 待填 |
-| 4 | D3 评测任务 + 文档对账 | 待填 | 待填 |
+| 1 | 本施工规格 | 本 PR | 已合入 |
+| 2 | D1 合同 + 实体 + spawn/status/result + 限额 + 预算 | #120 | 已合入（`main @ 6140d9c`） |
+| 3 | D2 Worker 驱动 + 等待/唤醒 + 取消/fence + 回放 | 本 PR | 已交付（分支 `feat/g2-delegation-d2`；实测见 §3） |
+| 4 | D3 评测任务 + 文档对账 | 待填 | 未做 |

@@ -8,7 +8,8 @@
   （`network.fetch`，见 [network-g2.md](network-g2.md)）；**MCP** 在 G2 MCP 阶段
   补上（stdio 动态工具，见 [mcp-g2.md](mcp-g2.md)）；**委派**在 G2 子代理 D1 补上
   （`subtask.spawn` / `subtask.status` / `subtask.result` / `subtask.cancel`，
-  见本文 §8）；**D1 的执行器只排队、不执行子 Run**（Worker 驱动/唤醒在 D2）。
+  见本文 §8）；**D2 起子 Run 由既有 Worker 执行**，父 Run 挂起/唤醒、取消传播、
+  父目标 fence 与结果回填在同一套事件与事务里（见 §8）。
 - 判据：`tests/test_g1d_resource_kinds.py`（15 条，其中"哪些种类有执行器"一条随 G2
   网络阶段更新）；负控 6 项实测变红（见 §6）。
 
@@ -78,7 +79,7 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
 - 有执行器的种类：`file`、`memory`、`network`（G2 网络阶段）、`mcp`（G2 MCP 阶段）、
-  `subtask`（G2 子代理 D1：只排队、**不执行子 Run**；执行在 D2）。
+  `subtask`（G2 子代理 D1 接派发、D2 接执行：子 Run 由既有 Worker 驱动）。
 - `dispatch.resource_kind_unsupported` 保留为**防御性兜底**：正常路径下没有哪种
   资源"解析得出来却没有执行器"，真看到它说明新增种类只补了解析、漏了执行分支。
 
@@ -115,13 +116,13 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 |---|---|
 | 真实网络请求 | **已实现**（G2 网络阶段）：`network.fetch` 抓取、任务级白名单、逐次批准、内容引用与字节账本。见 [network-g2.md](network-g2.md)；但**只支持 GET、没有检索 API、真实公网研究未验证** |
 | MCP 客户端 | **已交付**（G2 MCP 阶段）：stdio 客户端 + 动态工具准入 + 派发链路，见 [mcp-g2.md](mcp-g2.md)。**未验证真实第三方 server、无沙箱** |
-| 子代理 / 委派 | **D1 已实现**（合同 + 实体 + 四个工具 + 限额 + 共享预算 + 取消请求）；**D2（Worker 执行、父挂起/唤醒、取消传播、fence、结果回填）未做**，所以子任务只排队不执行。见 §8 |
+| 子代理 / 委派 | **D1 + D2 已实现**：D1 是合同/实体/四个工具/限额/共享预算；D2 是 Worker 执行、父挂起/唤醒、取消传播、父目标 fence、结果回填、回放不重跑。**仍不成立**：子任务只读、深度 1、单机同 Worker 池、取消不退款、无 UI 页面。见 §8 |
 | 外发字节计量（`bytes` 维度） | 已接：发送前按上限预占、读完后按实际字节结算（判据 `test_bytes_budget_is_enforced_before_sending`） |
 | 任务级外发白名单（`outbound_allow`） | **已实现**：`task.created` payload 契约增量 + 执行侧门（见 [network-g2.md](network-g2.md) §2） |
 | 内容分级 / 哪些内容不许外发 | 未做：没有外发表，无法定义"私有内容"的边界 |
-| 子任务执行与预算父子账户 | 账本侧 D1 已接：spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的 `parent_id` 指向根 Run 账户（局部上限 `tokens`/`requests`、deadline 固定 300s）；**收尾结算在 D2**（D1 不结算、不退款） |
+| 子任务执行与预算父子账户 | spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的 `parent_id` 指向根 Run 账户（局部上限 `tokens`/`requests`、deadline 固定 300s）；**D2 在子 Run 收尾的同一事务里按实际结果结算**（成功/失败/取消都 settle 1；只有"确定未开始"才 `abandon_unsent`）。取消不退款 |
 
-## 8 G2 子代理 D1：委派资源有了执行器（只排队，不执行）
+## 8 G2 子代理 D1/D2：委派资源有了执行器（D2 起真的执行）
 
 - 判据与范围见 `docs/SPEC-G2-DELEGATION-2026-11-11.md` §2.1–§2.4 / §3 D1；
   测试在 `tests/test_g2_delegation_{contract,spawn,control,recovery}.py`。
@@ -132,6 +133,16 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 - 委派**不是自动放行**：`_authority_subtask()` 在弹批准之前判六件事——工具归属、
   任务级 `max_subtasks > 0`、父任务 `depth == 0`、slug 在父 Run 内唯一、
   数量与局部上限、目标存在（status/result/cancel）。
-- D1 的诚实边界（逐条见规格 §5）：子 Run 停在 `created`、子作业停在 `pending`、
-  子任务停在 `queued`；`subtask.cancel` 只落 `cancelling`（真正停下在 D2）；
-  子任务只能做纯读，且没有任何收尾事件（`subtask.finished` 由 D2 写）。
+- D1 只排队（旧口径，D2 已改）：`subtask.spawn` 之后子 Run 是普通 `created` Run，
+  由既有 `Worker` 认领、走同一条 `AgentLoop.resume_run` 路径；父 Run 想正常收尾但
+  还有未完成子任务时，作业 `park` 成 `waiting`、Run 保持 `running`，子任务收尾的
+  **同一事务**里写 `subtasks` 行 + 父 Run `subtask.finished` + 结算预算 + `wake` 父作业。
+- 父取消：未开始的子任务当场 `cancelled` + `abandon_unsent`；已开始/无法确定的先
+  `cancelling`，子 Run 记 `control_requested=cancel`、子作业 `request_cancel`，执行侧在
+  安全点确认。父 `run.end` 的 reason 带 `subtasks_cancelled=N`。**取消不退款**。
+- 父目标 fence：`subtasks` 记录 spawn 时父 Run 的 `(goal_revision, lease_epoch)`；
+  子 Run 每次派发前与收尾时核验，不一致 → `dispatch.parent_fenced`、子任务 `fenced`、
+  结果**不**回填（不写 `subtask.finished`）。
+- D2 的诚实边界（逐条见规格 §5）：子任务只能做纯读、深度 1、单机同 Worker 池
+  （无跨机器调度）、`wake` 不保证立刻被认领、取消不退款、读不到子 Run 最后一轮输出时
+  `summary` 为空并说明「输出不可用」、没有子任务 UI 页面、Windows 未验证。
