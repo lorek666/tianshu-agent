@@ -1439,9 +1439,13 @@ class Dispatcher:
             return self._dispatch_subtask_cancel(
                 request, dispatch_id, target, intent_seq
             )
-        return self._dispatch_subtask_read(
-            request, dispatch_id, target, intent_seq
-        )
+        if request.tool_id in ("subtask.status", "subtask.result"):
+            return self._dispatch_subtask_read(
+                request, dispatch_id, target, intent_seq
+            )
+        # 四个工具以外的 id 在 `_authority_subtask()` 就被拒了，这里再显式
+        # 炸一次：宁可报"未知子任务工具"，也不要让新工具被当成 result 执行。
+        raise TianshuError(f"未知的子任务工具：{request.tool_id}")
 
     def _dispatch_subtask_spawn(
         self,
