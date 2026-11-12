@@ -325,11 +325,15 @@ def load_mcp_config(path: str | os.PathLike[str]) -> dict[str, McpServerConfig]:
     """从 JSON 文件读配置。不存在 / 不是合法 JSON / 结构不合法 → `McpConfigError`。"""
     target = Path(path)
     try:
-        text = target.read_text(encoding="utf-8")
+        # 字节进字节出：Windows 上文本模式会翻 CRLF，内容与 POSIX 不一致
+        # （`tests/test_windows_compat.py` 对产品侧文本 IO 有 AST 判据）。
+        text = target.read_bytes().decode("utf-8")
     except FileNotFoundError as exc:
         raise McpConfigError(f"MCP 配置文件不存在：{target}") from exc
     except OSError as exc:
         raise McpConfigError(f"MCP 配置文件读不出来：{target}（{exc}）") from exc
+    except UnicodeDecodeError as exc:
+        raise McpConfigError(f"MCP 配置文件不是 UTF-8：{target}（{exc}）") from exc
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as exc:
