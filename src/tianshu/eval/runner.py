@@ -26,7 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -44,7 +44,7 @@ from ..sandbox import current_backend
 from ..tasks import RUN_WAITING_APPROVAL, SUBTASK_UNFINISHED_STATES
 from ..worker import Worker
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
-from .checks import Observation
+from .checks import FollowupObservation, Observation
 from .webfixture import WebFixture, closed_origin
 
 #: 子进程入口；父进程按同一目录约定拼路径。
@@ -451,6 +451,236 @@ def _collect_subtask_evidence(
 # ---------------------------------------------------------------- 普通运行
 
 
+def _build_engine(
+    stack: Any,
+    model: Any,
+    *,
+    max_turns: int,
+    max_total_tokens: int,
+) -> AgentLoop:
+    """按**同一个装配**造引擎（第一次 Run 与 followup 必须用同一套投影）。
+
+    为什么强调"同一套"：评测若给第二段另开一个默认投影，测到的记忆行为就不是
+    产品装出来的那套（第一次 Run 与第二段会读两个库）。所以两段都从同一个
+    `stack` 取 `memory` / `summaries`。
+    """
+    return AgentLoop(
+        tasks=stack.tasks,
+        leases=stack.leases,
+        claims=stack.claims,
+        dispatcher=stack.dispatcher,
+        approvals=stack.approvals,
+        snapshots=stack.snapshots,
+        model=model,
+        limits=Limits(max_turns, max_total_tokens),
+        memory=stack.memory,
+        summaries=stack.summaries,
+    )
+
+
+def _drive_to_terminal(
+    engine: AgentLoop,
+    stack: Any,
+    case: Case,
+    *,
+    res: Any,
+    ws: Path,
+) -> tuple[Any, dict[str, bytes] | None, str | None]:
+    """把一条 Run 驱动到"不再需要我们动手"的状态。
+
+    返回 `(res, files_at_pause, error)`：`error` 非空表示评测器判断这条 Run 没
+    正常收束（停在审批超过上限 / 有未完成子任务却没声明子脚本 / 委派往返超限
+    / 停在 running 且没有子任务可驱动）。
+
+    这段循环是从 `_run_standard` 里原样抽出来的（行为不变）：G2 记忆阶段 M2 的
+    followup 必须走同一套审批与委派规则，复制一份早晚会走岔。
+    """
+    files_at_pause: dict[str, bytes] | None = None
+    error: str | None = None
+    rounds = 0
+    delegation_rounds = 0
+    while True:
+        if res.state == RUN_WAITING_APPROVAL:
+            if rounds >= MAX_APPROVAL_ROUNDS:
+                if case.approval != "hold":
+                    # 只有 hold 是有意的终点（恶意输入被人拦下、人还没决定）。
+                    error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
+                break
+            rounds += 1
+            if files_at_pause is None:
+                # "批准之前文件一个字节都没动"只能在这里证明：等 Run 结束再看
+                # 文件对不对，证明不了中间有没有先写后改。
+                files_at_pause = _read_tree(ws)
+            if case.approval == "hold":
+                # 恶意输入 case：破坏性动作挂进审批队列，人还没决定。
+                # 评测器**不替人批准**，就停在这里观察——这正是要证明的状态。
+                break
+            if case.approval == "none":
+                # 没声明会停却停了：case 与实现不一致，记成 harness 归因。
+                error = (
+                    "case 未声明审批策略，但 Run 停在等待审批：case 定义与实现不一致"
+                )
+                break
+            decision = "rejected" if case.approval == "reject" else "approved"
+            actor = HumanIdentity.local_cli()
+            pending = stack.approvals.pending(run_id=res.run_id)
+            if not pending:
+                error = "Run 停在等待审批，但审批队列为空：状态与记录不一致"
+                break
+            for approval in pending:
+                stack.approvals.decide(
+                    approval.approval_id, decision=decision, actor=actor
+                )
+            # 拒绝之后也要继续驱动：新语义（issue #40）下这次 resume 会把
+            # cursor 里那张待批动作按"否决"拒绝，模型拿不出替代动作时 Run
+            # 以 failed 收束；**不该**再出现第二张审批。审批往返上限保证
+            # 评测器不会卡死，`approval.requested` 的精确计数判据负责判红。
+            res = engine.resume_run(res.run_id)
+            continue
+
+        unfinished = stack.tasks.count_unfinished_subtasks(res.run_id)
+        if unfinished == 0:
+            if res.state == "running":
+                error = (
+                    "父 Run 停在 running，但已无未完成子任务（既不是等待审批"
+                    "也不是终态）：评测器不会凭空继续驱动它"
+                )
+            break
+        if not case.subtask_scripts:
+            error = (
+                f"父 Run 还有 {unfinished} 个未完成子任务，但 case 没有声明 "
+                "subtask_scripts：评测器不会用父脚本冒充子 Run"
+            )
+            break
+        if delegation_rounds >= MAX_DELEGATION_ROUNDS:
+            error = (
+                f"委派往返超过 {MAX_DELEGATION_ROUNDS} 轮仍未收敛"
+                f"（还有 {unfinished} 个未完成子任务）"
+            )
+            break
+        delegation_rounds += 1
+        drive_error = _drive_child_runs(
+            stack,
+            case,
+            res.run_id,
+            limits=Limits(case.max_turns, case.max_total_tokens),
+        )
+        if drive_error is not None:
+            error = drive_error
+            break
+        res = engine.resume_run(res.run_id)
+    return res, files_at_pause, error
+
+
+def _write_fixture(root: Path, fixture: Mapping[str, str]) -> None:
+    """按"相对路径 → 正文"把夹具写进目录（父目录自动建）。"""
+    for rel, text in fixture.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+
+
+def _run_followup(
+    case: Case,
+    stack: Any,
+    log: EventLog,
+    directory: Path,
+    *,
+    first_res: Any,
+    model_for: ModelFactory,
+) -> FollowupObservation:
+    """跑同一个样本的第二段 Run（G2 记忆阶段 M2）。
+
+    硬规矩（不是约定）：
+
+    1. **共享数据根、不同 workspace**：记忆库 / 事件库 / 用户作用域用同一个
+       `stack`（同一个 `data_root`），workspace 必须是另一个目录——同一个目录里
+       跑两次不叫"新任务"；
+    2. **证据不合并**：第二段的事件/产物/回放报告单独返回，判据分开读；
+    3. **第一段没到终态就不跑第二段**：那不是"记忆没用"，是"第一段没做完"，
+       硬跑会让归因变成假的。
+    """
+    plan = case.followup
+    assert plan is not None
+    if plan.workspace == "ws":
+        raise ValueError(
+            "followup.workspace 不能等于第一个 workspace（同一个目录里跑两次不是新任务）"
+        )
+    if first_res.state not in {"succeeded", "failed", "cancelled"}:
+        return FollowupObservation(
+            run_id="",
+            out_name=plan.out_name,
+            error=(
+                f"第一段没有跑到终态（state={first_res.state}），第二段不跑："
+                "那不是「记忆没帮上忙」，是第一段没做完"
+            ),
+            first_run_terminal=False,
+        )
+
+    ws = directory / plan.workspace
+    if ws.exists():
+        # 干净目录是硬前提：有残留说明上一条样本没被清掉。
+        raise ValueError(f"第二段 workspace 目录已存在，拒绝在脏目录上跑：{ws}")
+    ws.mkdir(parents=True)
+    _write_fixture(ws, plan.fixture)
+
+    decoy_ids: list[str] = []
+    if plan.decoy_workspace_memory is not None:
+        # 替"用户"在**另一个目录**里记一条 workspace 私有记忆（人路径）。
+        # 它的作用：让"第二段没有把别的目录的私有记忆捞进来"这条判据有靶子。
+        from .. import memory_control
+        from ..resources import MemoryScope
+
+        decoy_ws = directory / "decoy-ws"
+        decoy_ws.mkdir(parents=True, exist_ok=True)
+        result = memory_control.remember(
+            stack,
+            MemoryScope.workspace(decoy_ws),
+            kind="fact",
+            content=plan.decoy_workspace_memory,
+        )
+        memory_id = (result.output or {}).get("memory_id")
+        if isinstance(memory_id, str):
+            decoy_ids.append(memory_id)
+
+    second_case = replace(
+        case,
+        task=plan.task,
+        out_name=plan.out_name,
+        script=plan.script,
+        checks=plan.checks,
+        fixture=plan.fixture,
+        approval=plan.approval,
+        # 第二段不派生委派：这条 case 只声明第一段的子任务脚本；第二段若真去
+        # 派子任务，`_drive_to_terminal` 会 fail closed（拒绝用父脚本冒充）。
+        subtask_scripts={},
+        max_subtasks=0,
+        followup=None,
+    )
+    engine = _build_engine(
+        stack,
+        model_for(second_case),
+        max_turns=plan.max_turns,
+        max_total_tokens=case.max_total_tokens,
+    )
+    task = stack.tasks.create_task(plan.task, [str(ws)])
+    started = engine.start(task.task_id, out_name=plan.out_name)
+    res, _, error = _drive_to_terminal(engine, stack, second_case, res=started, ws=ws)
+    events = log.read_run(res.run_id)
+    replay_report = replay(log, res.run_id)
+    return FollowupObservation(
+        run_id=res.run_id,
+        out_name=plan.out_name,
+        files=_read_tree(ws),
+        events=events,
+        result=res,
+        replay_report=replay_report,
+        error=error,
+        first_run_terminal=True,
+        decoy_memory_ids=tuple(decoy_ids),
+    )
+
+
 def _run_standard(
     case: Case,
     *,
@@ -491,6 +721,8 @@ def _run_standard(
     # G2 委派 D3：子任务行与子 Run 事件（父 Run 的 events 不含它们）。
     subtasks: list[dict[str, Any]] = []
     subtask_events: list[Any] = []
+    # G2 记忆阶段 M2：第二段 Run 的证据（默认 None = 这条 case 只跑一段）。
+    followup_obs: FollowupObservation | None = None
     try:
         web, web_socket, base = _start_web(case)
         effective = _materialize_case(case, base)
@@ -612,6 +844,30 @@ def _run_standard(
         except Exception as exc:  # noqa: BLE001
             invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
 
+        # G2 记忆阶段 M2：第二段 Run（同一 data_root、另一个 workspace）。
+        if effective.followup is not None:
+            if invalid_reason is not None:
+                followup_obs = FollowupObservation(
+                    run_id="",
+                    out_name=effective.followup.out_name,
+                    error=f"第一段取证失败，第二段不跑：{invalid_reason}",
+                )
+            else:
+                try:
+                    followup_obs = _run_followup(
+                        effective,
+                        stack,
+                        log,
+                        directory,
+                        first_res=res,
+                        model_for=model_for,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 评测基础设施）
+                    followup_obs = None
+                    invalid_reason = (
+                        f"第二段取证失败：{type(exc).__name__}: {exc}"
+                    )
+
         # 来源可离线核验（PRD §10.5）：**先关服务器**，再读内容引用。
         if web is not None:
             web.stop()
@@ -665,6 +921,7 @@ def _run_standard(
         offline_sources=offline_sources,
         subtasks=subtasks,
         subtask_events=subtask_events,
+        followup=followup_obs,
     )
     return obs
 

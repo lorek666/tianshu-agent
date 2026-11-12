@@ -250,6 +250,22 @@ def fixture_digest(case: Case) -> str:
             }
             for key, plan in sorted(case.subtask_scripts.items())
         }
+    # G2 记忆阶段 M2：第二段 Run 的输入。它是这条 case 的一半输入——改了第二段
+    # 的任务/夹具/脚本/判据，两次评测就不可比。与委派字段同一条纪律：**只在
+    # 非默认时加键**，既有 case 的 digest 逐字节不变。
+    if case.followup is not None:
+        plan = case.followup
+        payload["followup"] = {
+            "task": plan.task,
+            "out_name": plan.out_name,
+            "fixture": dict(sorted(plan.fixture.items())),
+            "workspace": plan.workspace,
+            "approval": plan.approval,
+            "max_turns": plan.max_turns,
+            "decoy_workspace_memory": plan.decoy_workspace_memory,
+            "checks": [[_check_fingerprint(c)] for c in plan.checks],
+            "script": [resp.to_payload() for resp in plan.script],
+        }
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
@@ -573,7 +589,11 @@ def build_report(
         invalid_runs = 0
         case_path: dict[str, dict[str, Any]] = {"exercised": set(), "not": set()}
         for obs in runs:
-            results = evaluate_checks(obs, case.checks)
+            # G2 记忆阶段 M2：第二段的判据单独声明在 `case.followup.checks` 里，
+            # 但证据在同一个 Observation 上（`obs.followup`），所以在这里一起评。
+            # 漏掉它们，报告就会"看不见第二段"——那正是这段要证明的东西。
+            followup_checks = () if case.followup is None else case.followup.checks
+            results = evaluate_checks(obs, (*case.checks, *followup_checks))
             entry = _run_entry(
                 obs, results, scope=case.scope, real_model=real_model
             )

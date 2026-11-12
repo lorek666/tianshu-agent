@@ -118,6 +118,44 @@ class SubtaskScript:
 
 
 @dataclass(frozen=True)
+class FollowupRun:
+    """同一个样本里的**第二个 Run**（G2 记忆阶段 M2）。
+
+    为什么需要它："记住偏好 → 新任务召回"天然是两次 Run：第一件任务把偏好写进
+    记忆库，第二件任务（新 workspace、同一用户）在**没有再次被告知**的情况下
+    召回并使用它。只跑一个 Run 就只能证明"工具能调用"，证明不了记忆有用。
+
+    两条硬规矩（由 runner 强制，不是约定）：
+
+    1. 两次 Run **共享** `data_root`（同一个事件库 / 记忆投影 / 用户作用域），
+       但 workspace **必须不同**——同一个目录里跑两次不叫"新任务"；
+    2. 证据**不合并**：第二个 Run 的事件/产物放 `Observation.followup`，判据分开
+       读。混成一条链就分不清"是第一段没记住"还是"第二段没召回"。
+    """
+
+    #: 第二个任务的文本。
+    task: str
+    #: 第二个任务的产物名。
+    out_name: str = "final.md"
+    #: 第二个 workspace 的夹具（相对路径 → 正文）。第一个 workspace 的夹具在
+    #: `Case.fixture` 里，两者互不影响。
+    fixture: Mapping[str, str] = field(default_factory=dict)
+    #: 第二个 Run 的脚本（真实模型跑这条 case 时忽略）。
+    script: tuple[ModelResponse, ...] = ()
+    #: 第二个 Run 的判据（与第一个 Run 的判据分开声明，读的是 followup 证据）。
+    checks: tuple[Check, ...] = ()
+    #: 第二个 workspace 的目录名（相对运行目录）；**不能**等于第一个的 `ws`。
+    workspace: str = "ws2"
+    #: none | approve | reject —— 第二个 Run 的审批替身策略。
+    approval: str = "none"
+    max_turns: int = 8
+    #: 第二段之前替"用户"在**另一个目录**里写下的一条 workspace 私有记忆
+    #: （`memory.remember`，人路径）。它的存在是为了让"作用域没串"这条判据
+    #: 有靶子：第二个 Run 只绑定自己的 workspace，不该召回别的目录的私有记忆。
+    decoy_workspace_memory: str | None = None
+
+
+@dataclass(frozen=True)
 class Case:
     case_id: str
     category: str
@@ -165,6 +203,9 @@ class Case:
     #: G2 委派 D3：按 `subtask_id` 声明的子 Run 脚本。父脚本与子脚本必须分开，
     #: 否则子 Run 会把父脚本从头重放。未声明的子任务拒绝驱动（不猜）。
     subtask_scripts: Mapping[str, SubtaskScript] = field(default_factory=dict)
+    #: G2 记忆阶段 M2：同一数据根下的第二个 Run（默认 None = 行为完全不变）。
+    #: 非空时 runner 会先跑完第一段、再在**另一个 workspace** 跑第二段，证据分栏。
+    followup: FollowupRun | None = None
 
 
 # ---------------------------------------------------------------- 脚本拼装

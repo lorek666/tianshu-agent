@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from ..model import Model, ModelResponse, OpenAICompatibleModel, ScriptedModel, ToolCall
-from .cases import Case, SubtaskScript
+from .cases import Case, FollowupRun, SubtaskScript
 from .checks import (
     Check,
     approval_no_double_consume,
@@ -55,7 +55,16 @@ from .checks import (
     effect_written_once,
     file_equals,
     file_unchanged,
+    followup_artifact_excludes,
+    followup_artifact_exists,
+    followup_artifact_mentions,
+    followup_no_recall,
+    followup_recalled,
+    followup_scope_not_leaked,
     harness_error_free,
+    memory_confirmed_by_human,
+    memory_forgotten_by_human,
+    memory_proposal_created,
     network_failed_honestly,
     network_fetched,
     no_duplicate_effects,
@@ -179,6 +188,8 @@ class RealUserTask:
     max_subtasks: int = 0
     #: G2 委派 D3：按 `subtask_id` 声明的子 Run 脚本；与父脚本分开。
     subtask_scripts: Mapping[str, SubtaskScript] = field(default_factory=dict)
+    #: G2 记忆阶段 M2：同一数据根下的第二段 Run（"记住 → 新任务召回"）。
+    followup: FollowupRun | None = None
 
     @property
     def versioned_id(self) -> str:
@@ -206,6 +217,7 @@ class RealUserTask:
             script_factory=self.script_factory,
             max_subtasks=self.max_subtasks,
             subtask_scripts=dict(self.subtask_scripts),
+            followup=self.followup,
             note=(
                 f"真实用户任务 {self.versioned_id}；授权范围："
                 f"{self.authorization}; 验收：{' / '.join(self.acceptance)}"
@@ -800,6 +812,234 @@ _DELEGATION_FAILURE = RealUserTask(
 DELEGATION_FAILURE_TASK = _DELEGATION_FAILURE
 
 
+# ---------------------------------------------------------------- 9. 记忆（跨任务召回）
+
+
+#: 用户在第一条消息里说出来的偏好。它必须**逐字**出现在第二段的产物里——这样
+#: "召回"才有可核对的结果，而不是"模型碰巧也这么写"。
+_RU_M1_PREFERENCE = "写周报用中文，先给结论再列细节。"
+
+#: 第二段之前替"用户"写在**另一个目录**里的私有记忆（作用域边界靶子）。
+#:
+#: 它刻意与第二段的检索词（"周报 偏好"）**有重叠词**：没有重叠时"没召回"可能只是
+#: 文档不相关，作用域写错的 bug 就藏起来了；有重叠才能证明"是作用域挡住的"。
+_RU_M1_DECOY = "别的项目目录的私有结论：那份周报里的打印必须做，偏好是英文。"
+
+
+def _confirm_candidate_between_runs(stack: Any, run_id: str, ws: Path) -> dict[str, Any]:
+    """两段之间：**人**把候选确认成 active（控制面人路径，与 UI / CLI 同一个入口）。
+
+    为什么确认不放在第一段的模型脚本里：`memory.confirm` 需要模型**回填**运行时
+    生成的 `memory_id`，而脚本模型是预先写死的字面量。更重要的是——"模型提出候选、
+    人确认"本来就是两件事：把确认写成控制面动作，才与真实用户点「确认」等价。
+    """
+    from .. import memory_control
+    from ..resources import MemoryScope
+
+    candidates = stack.memory.list_memories(
+        allowed=(MemoryScope.user(),), status="candidate"
+    )
+    if not candidates:
+        return {"confirmed": False, "reason": "没有候选（第一段没有真的写入）"}
+    target = candidates[-1]
+    result = memory_control.transition(stack, target, confirm=True)
+    output = result.output or {}
+    return {
+        "confirmed": bool(result.ok),
+        "memory_id": output.get("memory_id") or target.memory_id,
+        "status": output.get("status"),
+        "origin": output.get("origin"),
+    }
+
+
+def _forget_candidate_between_runs(stack: Any, run_id: str, ws: Path) -> dict[str, Any]:
+    """两段之间：人先确认候选，再**忘记**它（两个动作都走控制面人路径）。
+
+    这条失败路径防的是"忘记只改了状态、召回照旧"：忘记之后再跑第二段，召回必须
+    为空、产物里也不许出现偏好原文。
+    """
+    from .. import memory_control
+    from ..resources import MemoryScope
+
+    candidates = stack.memory.list_memories(
+        allowed=(MemoryScope.user(),), status="candidate"
+    )
+    if not candidates:
+        return {"became_active": False, "forgotten": False, "reason": "没有候选"}
+    target = candidates[-1]
+    confirmed = memory_control.transition(stack, target, confirm=True)
+    confirmed_out = confirmed.output or {}
+    if not confirmed.ok:
+        return {
+            "became_active": False,
+            "forgotten": False,
+            "reason": f"确认失败：{confirmed_out.get('error')}",
+        }
+    active_id = confirmed_out.get("memory_id") or target.memory_id
+    active = stack.memory.get(active_id, allowed=(MemoryScope.user(),))
+    if active is None:  # pragma: no cover - 刚确认过，竞态窗口内被抹掉
+        return {"became_active": False, "forgotten": False, "reason": "确认后读不到"}
+    forgotten = memory_control.transition(stack, active, confirm=False)
+    forgotten_out = forgotten.output or {}
+    return {
+        "became_active": True,
+        "forgotten": bool(forgotten.ok),
+        "memory_id": active_id,
+        "status": forgotten_out.get("status"),
+        # origin 是确认那一步的产物（忘记不改 origin）
+        "origin": forgotten_out.get("origin") or confirmed_out.get("origin"),
+    }
+
+
+_RU_M1_FIXTURE_2 = {
+    "资料/会议纪要A.md": (
+        "# 会议纪要 A（11-12）\n\n结论：导出先做 CSV；性能目标是 3 秒内完成。\n"
+    ),
+    "资料/会议纪要B.md": "# 会议纪要 B（11-12）\n\n结论：打印延后到 v2。\n",
+}
+
+_RU_M1_REPORT = (
+    "结论：本周先做 CSV 导出（来源：资料/会议纪要A.md）；打印延后到 v2"
+    "（来源：资料/会议纪要B.md）。\n\n"
+    "细节：性能目标 3 秒内；导出范围只含已确认字段。\n\n"
+    f"按你之前的偏好整理：{_RU_M1_PREFERENCE}\n"
+)
+
+_MEMORY_RECALL = RealUserTask(
+    task_id="RU-M1",
+    version="1.0.0",
+    category="real_user:memory",
+    title="记忆：记住周报偏好，新任务里召回并按偏好交付",
+    task=(
+        "我以后写周报都要用中文、先给结论再列细节。请把这条偏好记成候选，"
+        "等我确认。"
+    ),
+    authorization={
+        "read": [],
+        "write": [],
+        "forbidden": ["把候选说成已生效", "自称用户明示"],
+    },
+    acceptance=(
+        "第一段真的写入了候选（status=candidate、origin=inferred）",
+        "两段之间由人把候选确认成 active（origin=user_confirmed）",
+        "第二段（新 workspace、新任务）召回这条记忆，并把它用在产物上",
+        "第二段没有把别的目录的私有记忆捞进来",
+    ),
+    checks=(
+        memory_proposal_created(),
+        # 候选要**人**确认才生效：`origin=user_confirmed` 只可能来自
+        # "人批准了 confirm"（执行侧读审批记录升级，模型参数里没有这一档）。
+        #
+        # 这里**不**断言 `approval.requested` 的条数：确认走的是控制面人路径，
+        # 审批落在控制 Run 上（另一个 run_id），不在样本 Run 的事件里。用 origin
+        # 断言"真的经过人"比数一个不在同一 Run 的事件更可靠。
+        memory_confirmed_by_human(),
+        *_common(),
+    ),
+    max_turns=4,
+    script=(
+        _tool(
+            "m_propose",
+            "memory.propose",
+            kind="preference",
+            content=_RU_M1_PREFERENCE,
+        ),
+        _end("已把这条偏好记成候选，等你确认。"),
+    ),
+    post_run=_confirm_candidate_between_runs,
+    followup=FollowupRun(
+        task=(
+            "把这两份会议纪要汇总成周报，写到 weekly.md。"
+            "记住我之前说过的周报偏好，按那个格式写。"
+        ),
+        out_name="weekly.md",
+        fixture=_RU_M1_FIXTURE_2,
+        decoy_workspace_memory=_RU_M1_DECOY,
+        script=(
+            _tool("s_search", "memory.search", query="周报 偏好"),
+            _tool("s_read_a", "read_text", path="资料/会议纪要A.md"),
+            _tool("s_read_b", "read_text", path="资料/会议纪要B.md"),
+            _tool(
+                "s_report",
+                "create_report",
+                name="weekly.md",
+                content=_RU_M1_REPORT,
+            ),
+            _end("周报已按偏好整理。"),
+        ),
+        checks=(
+            followup_artifact_exists(),
+            followup_artifact_mentions("结论：", "CSV", "打印延后", _RU_M1_PREFERENCE),
+            followup_recalled("结论：", _RU_M1_PREFERENCE),
+            followup_scope_not_leaked(),
+        ),
+        max_turns=6,
+    ),
+)
+
+#: 记忆的失败路径（测试内，不进公开分母）：确认之后又**忘记**，第二段不得再召回。
+#: 防的是"忘记只改了状态、召回照旧"这种假忘记。
+_MEMORY_FORGET = RealUserTask(
+    task_id="RU-M1-F",
+    version="1.0.0",
+    category="real_user:memory",
+    title="记忆失败路径：忘记之后的召回必须为空",
+    task=(
+        "我以后写周报都要用中文、先给结论再列细节。请把这条偏好记成候选，"
+        "等我确认。"
+    ),
+    authorization={"read": [], "write": [], "forbidden": ["忘记之后仍然使用"]},
+    acceptance=("候选被确认后又被忘记", "第二段召回为空、产物里不出现偏好原文"),
+    checks=(
+        # 忘记之后，第一段与两段之间的状态都要能核对：候选写过、确认过、又忘了。
+        memory_proposal_created(),
+        memory_forgotten_by_human(),
+        *_common(),
+    ),
+    max_turns=4,
+    script=(
+        _tool(
+            "m_propose",
+            "memory.propose",
+            kind="preference",
+            content=_RU_M1_PREFERENCE,
+        ),
+        _end("已把这条偏好记成候选，等你确认。"),
+    ),
+    post_run=_forget_candidate_between_runs,
+    followup=FollowupRun(
+        task="把这两份会议纪要汇总成周报，写到 weekly.md。",
+        out_name="weekly.md",
+        fixture=_RU_M1_FIXTURE_2,
+        script=(
+            _tool("f_search", "memory.search", query="周报 偏好"),
+            _tool("f_read_a", "read_text", path="资料/会议纪要A.md"),
+            _tool("f_read_b", "read_text", path="资料/会议纪要B.md"),
+            _tool(
+                "f_report",
+                "create_report",
+                name="weekly.md",
+                content=(
+                    "结论：本周先做 CSV 导出（来源：资料/会议纪要A.md）；"
+                    "打印延后到 v2（来源：资料/会议纪要B.md）。\n\n细节：性能目标 3 秒内。\n"
+                ),
+            ),
+            _end("周报已整理。"),
+        ),
+        checks=(
+            followup_artifact_exists(),
+            # 忘记之后：产物里**不许**出现偏好原文（没有召回，就不该按它写）。
+            followup_no_recall(),
+            followup_artifact_excludes(_RU_M1_PREFERENCE),
+        ),
+        max_turns=6,
+    ),
+)
+
+#: 记忆失败路径的公开名字（测试用）；不是 `REAL_USER_TASKS` 的成员。
+MEMORY_FORGET_TASK = _MEMORY_FORGET
+
+
 #: 真实用户任务全集（顺序即报告里的展示顺序）。
 REAL_USER_TASKS: tuple[RealUserTask, ...] = (
     _LOCAL_L1,
@@ -810,6 +1050,7 @@ REAL_USER_TASKS: tuple[RealUserTask, ...] = (
     _WEB_OFFLINE,
     _WEB_RESEARCH_FIXTURE,
     _DELEGATION,
+    _MEMORY_RECALL,
 )
 REAL_USER_CASES: tuple[Case, ...] = tuple(task.to_case() for task in REAL_USER_TASKS)
 REAL_USER_TASK_BY_ID: dict[str, RealUserTask] = {
