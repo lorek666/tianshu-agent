@@ -219,7 +219,9 @@ def load_authkey(data_root: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private(path.parent, 0o700)
     key = os.urandom(32)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    # Windows CRT 的默认文本模式会把随机 key 中的 LF 扩成 CRLF：创建者
+    # 持有原始 key，后续读取者拿到不同字节，重试握手也永远不会成功（#50）。
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
         fd = os.open(str(path), flags, 0o600)
     except FileExistsError:  # 另一个进程刚建好：用它的

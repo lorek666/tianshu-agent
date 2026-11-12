@@ -46,13 +46,10 @@ jobs:
           # 这个平台必须一直在矩阵里——它掉出过一次，代价是 5 个里程碑都没在
           # 主平台上验证过。
           #
-          # 已知：M5 的 IPC 在这个平台上会**偶发**握手失败（issue #50，
-          # digest sent was rejected / digest received was wrong，每轮失败的
-          # 用例与条数都不同）。根因未定位，需要真 Windows 机器；生产侧的
-          # accept 循环本就按"可重试"实现，测试侧也已按契约重试。
-          # 不设为 required（main 的必需检查只有 ubuntu + macOS），所以它红着
-          # 不挡合并——但**不**给它 continue-on-error：那会让失败彻底消失，
-          # issue #50 修好之前，这个 job 每次红都是在提醒还欠着一件事。
+          # issue #50：首次生成的 IPC 二进制密钥曾被文本模式改写换行，
+          # 导致创建者和后续读取者认证不一致；固定字节回归在 Windows 验证。
+          # required 列表仍只有 ubuntu + macOS；Windows 失败必须如实暴露，
+          # 不使用 continue-on-error。分支保护的收口独立于此处测试矩阵。
           - windows-latest
         python:
           - "3.12"
@@ -90,10 +87,6 @@ jobs:
         # --frozen 让 uv run 不去动锁文件；否则 pyproject 一有风吹草动，
         # uv run 会顺手把锁文件改掉，上面那条漂移门禁就白设了。
         run: uv run --frozen ruff check .
-
-      - name: Windows IPC 二进制密钥回归
-        if: runner.os == 'Windows'
-        run: uv run --frozen pytest tests/test_ipc.py::test_authkey_preserves_binary_bytes_on_disk -o addopts="" -vv --tb=short
 
       - name: Pytest
         # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
