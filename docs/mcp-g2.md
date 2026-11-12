@@ -39,16 +39,18 @@
 | 超时 / 管道断开 / server 退出 / 畸形帧 | `unknown` + 对应原因（`mcp.timeout` / `mcp.closed` / `dispatch.mcp_protocol_error`）；超时自动发 `notifications/cancelled`（**只是请求**） |
 | 结果超 `max_result_bytes` | 客户端按 UTF-8 字节截断并报 `bytes` / `truncated` / `dropped_bytes`；`structuredContent` 计入同一预算 |
 
-### 3.1 崩溃与恢复（收尾轮实测口径）
+### 3.1 崩溃与恢复（收尾轮 + PR #124 实测口径）
 
-判定只认**一件事**：这次调用有没有落盘的 `tool.result`。
+判定认**两件事**：有没有落盘的 `tool.result`；没有的话，这次调用有没有越过**外发边界**
+（发包前提交的 `dispatches.state=executing`）。
 
 | 库里有什么 | 恢复给的结论 | 凭据 | 阻断 |
 |---|---|---|---|
 | 有 result（含 `isError:true`） | 不动它：`applied` + `status=failed` | 有（`backend="mcp"`，可独立核对） | 不阻断 |
-| 有 intent、没有 result | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断**调用方传入**的那个工作区目录 |
+| 有 intent、没有 result；派发行是 `intent`/`revoked`/`rejected`（**没越过外发边界**） | `failed` + `none_applied` + `reason=mcp.not_sent` | **不补**（没有可归因的效果） | **不阻断**：可直接 `resume` |
+| 有 intent、没有 result；派发行是 `executing`，或**无从证明**（老库没有派发表 / 没有行 / 状态不认识） | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断**调用方传入**的那个工作区目录 |
 
-实现上有三处必须说清楚：
+实现上有四处必须说清楚：
 
 1. **按 id 形状认 MCP，不按"`SPECS` 里没有它"认**。MCP 工具确实故意不进静态
    `SPECS`，但"不在表里"是会变的前提（有人把动态 id 塞进静态表、或注册表装配错）。
@@ -67,21 +69,36 @@
    审计事实，恢复补一条结果不该把它改写（撤销先于结算时尤其明显）；
    ② `updated_at` 用**恢复这一刻**的时钟，不用行自己的 `created_at`（否则更新时间倒退，
    审计/排序会看到"越恢复越旧"）。老库没有 `dispatches` 表时只写结果、不崩。
+4. **外发边界标记是"发没发出去"的唯一本机证据**（PR #124）：真正写 server stdin 之前
+   先把派发行从 `intent` 推到 `executing`。它只从 `intent` 推进（撤销/作废是审计终态，
+   不能被后到的执行改回"正在执行"），并与 `revoke` 共用执行守卫——撤销先到就不发，
+   标记先到撤销就明确报错。标记**没有**落盘时的崩溃（`mcp_before_call`）恢复才敢判
+   `none_applied`；标记之后的崩溃一律按"可能已发出"处理。
 
-**两个窗口，一个代价**（`tests/test_mcp_crash.py` 真子进程 + `os._exit(77)`）：
+**外发边界**：真正写 server stdin 之前，派发行从 `intent` 推进到 `executing`
+（`_mark_mcp_send_boundary`；只从 `intent` 推进、与 `revoke` 共用执行守卫）。它把"请求
+发没发出去"变成一条**本机持久化**的事实，恢复不再靠"没有结果就当没发生"去猜。
 
-- `mcp_after_call`：响应已收到（假 server 的 `--effect-log` 证明它真的执行了）、
-  结果/凭据/终态都没落盘 → `unknown` + 阻断，**不重放**（server 只被调用 1 次）。
-- `mcp_before_call`：intent 已提交、请求还没写进 server stdin → **同样是**
-  `unknown` + 阻断。恢复手上没有任何持久化证据能区分这两者，所以"没发出去"也要
-  人工核对后 `unblock`。这是保守方向的代价，不是 bug；要消掉它必须"发送前落一条
-  持久标记"（契约增量，见 §6）——不能靠恢复去猜。
+**三个窗口，结论各不相同**（`tests/test_mcp_crash.py` 真子进程 + `os._exit(77)`）：
+
+- `mcp_before_call`（标记**没**落盘）：请求一定没写进 server stdin → `none_applied` +
+  `reason=mcp.not_sent`，**不阻断**；解除成本为零，可以直接 `resume`。
+- `mcp_marked`（标记已落盘、请求还没写）：恢复**没法**证明没发出去 → `unknown` +
+  阻断。这一小段窗口是有意付出的代价（宁可多挡一个目录，也不把可能已经发生的副作用
+  说成没发生）。
+- `mcp_after_call`（响应已收到）：假 server 的 `--effect-log` 证明它真的执行了、结果/
+  凭据/终态都没落盘 → `unknown` + 阻断，**不重放**（server 只被调用 1 次）。
+
+撤销与发送也由这条标记分界：撤销先到（行已 `revoked`/`rejected`）→ 这次**不发**，结论
+是确定的 `rejected`/`none_applied`；标记先到 → 撤销会明确报错"已经开始执行"，而不是假装
+撤销成功。`revoked`/`rejected` 在恢复侧同样算"没越过边界"，但**行保持终态**（撤销过就该
+一直看得出撤销过）。
 
 ## 4 判据与负控
 
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
-  **`tests/test_mcp_crash.py`（9，收尾轮）**，另有契约判据在
+  **`tests/test_mcp_crash.py`（14；收尾轮 9 → PR #124 扩到 14）**，另有契约判据在
   `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
   → 规格 §4 的 c1–c15 与本文件的测试一一对应。
 - 负控：规格 §5 的 NB1–NB24；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →
@@ -113,17 +130,20 @@
 9. **回放只读**：不重连 server、不重放调用；事件里只有结果摘要（`mcp:<sha256>`）与
    有界文本，**没有** server 原始响应全文。
 
-10. **崩溃后的结论只到 `unknown` + 阻断**：恢复分不出"没发出去"与"发了但响应丢了"
-    （两者都 `unknown` + 阻断调用方传入的工作区，可能过度阻断）；阻断对象只有 workspace
-    字段，**没有**对象级阻断；"挡哪个目录"由调用方负责（`recover --workspace` 必填，
-    代码不按 task 绑定核对，传错就挡错——已知代价）；server 侧的私有状态（它到底动了
-    什么）**没有任何证据**，恢复也不去问它。
+10. **崩溃后的结论分三档**（PR #124）：标记之前 → `none_applied` + 不阻断；标记之后
+    或无从证明（老库没有派发表 / 没有行 / 状态不认识）→ `unknown` + 阻断。仍然不成立的：
+    **标记提交与真正写出之间**那一小段窗口仍按"可能已发出"处理（有意保守，见 §3.1）；
+    阻断对象只有 workspace 字段、**没有**对象级阻断；"挡哪个目录"由调用方负责
+    （`recover --workspace` 必填，代码不按 task 绑定核对，传错就挡错——已知代价）；
+    server 侧的私有状态（它到底动了什么）**没有任何证据**，恢复也不去问它。
 
 ## 6 后续工单
 
 1. ~~MCP 崩溃夹具 + 恢复判据~~ **已完成（收尾轮）**：`tests/test_mcp_crash.py`。
-2. **发送前持久标记**：让恢复区分"未发出 → `none_applied` + 不阻断"与"已发出 →
-   `unknown` + 阻断"，消掉 §3.1 的过度阻断。需要事件契约增量与规格修订。
+2. ~~**发送前持久标记**~~ **已完成（PR #124）**：复用 `dispatches.state`
+   （`intent` → `executing`），不新增事件、不改事件契约；恢复/接管按它分档，撤销与发送
+   共用执行守卫。**新剩下的**：标记提交与真正写出之间的窄窗口仍保守阻断；要再往前推需要
+   server 侧回执协议（未做）。
 3. **对象级阻断**：以 `mcp://server/tool` / server 为阻断对象；现有 guard 只有
    workspace 字段，先定阻断对象模型，不拿调用方传的路径冒充 MCP 的目录。
 4. 把长连接 spawn 收进 `exec_backends` 接缝（新 `spawn_session` 语义 + MCP 专属隔离
