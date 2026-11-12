@@ -298,16 +298,22 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
   `max_subtasks` / `subtask_scripts` / `SubtaskScript`，`eval/runner.py` 在父 Run
   park 时用 `Worker` + 逐子任务 `engine_factory` 驱动子作业，再 `resume_run(parent)`；
   父子脚本必须分开，未声明的子任务**拒绝驱动**，往返上限 8 轮，失败原因写进样本
-  `error`。`eval/checks.py` 新增 5 个判据工厂（`subtask.spawned` /
-  `subtask.finished_state` / `subtask.result_quoted` / `subtask.readonly_boundary` /
-  `subtask.output_unavailable`），其中两条 safety 判据在
+  `error`。`eval/checks.py` 新增 **6** 个判据工厂（`subtask.spawned` /
+  `subtask.finished_state` / `subtask.result_quoted` / `subtask.result_grounded` /
+  `subtask.readonly_boundary` / `subtask.output_unavailable`），其中两条 safety 判据在
   `test_eval_negative_controls.py` 登记负控。
-- 测试：`tests/test_eval_real_tasks.py` **22 → 29** 条（D3-c1/c2/c3 + 2 条负控 +
-  1 条 fail-closed + 1 条分母回归）；全量 **2076 passed / 7 skipped**（356.20s，macOS arm64 本机；
-  基线 `main @ 5eed5ee` 同机 **2069 passed / 7 skipped**、358.23s；+7）。
-  `run_real_user_tasks(repeat=3)`：`scope.real_user` cases 8 / runs 24，全绿，26.73s。
-  `ruff check .` 干净。负控逐条实测见 PR body（含 runner 驱动、子脚本选择、子事件
-  采集、只读边界、失败不编造）。
+- 测试：`tests/test_eval_real_tasks.py` **22 → 31** 条（D3-c1/c2/c3 + 3 条判据负控 +
+  1 条 fail-closed + 1 条分母回归 + 1 条夹具反转负控 + 1 条 `_child_model` 断言）；
+  全量 **2078 passed / 7 skipped**（362.75s，macOS arm64 本机；
+  基线 `main @ 5eed5ee` 同机 **2069 passed / 7 skipped**、358.23s；+9）。
+  `run_real_user_tasks(repeat=3)`：`scope.real_user` cases 8 / runs 24，全绿、**339 条
+  判据 0 失败**（26.76s）。`ruff check .` 干净。
+- **独立复审整改（2026-11-12 第二轮）**：复审对 PR #123 报 1 条窄 BLOCKER（c3 的
+  `artifact.excludes` 只挡 `（来源：`，而本任务成功报告的来源形状是 `来源：...`，追加一条
+  来源行后判据全绿）+ 5 条 MINOR（c1 事实与夹具无因果、`subtasks` 行无判据读、
+  只读边界是跨子 Run 并集、fail-closed 三层冗余无法区分、文档指向错）。整改见 §5 边界
+  18/19；负控 **10/10** 实测红（失败:通过 = 6:2 / 1:7 / 7:1 / 1:7 / 2:6 / 7:1 /
+  1:1 / 1:0 / 1:7 / 1:7），逐条见 PR body 与本轮 `real-user-tasks.md` §5.2。
 - 口径：公开真实用户任务从 7 条变 8 条，`REAL_USER_CASES` 分母变 8/24；契约基线
   20 条与 `SUITE_VERSION=m4.6` 未动（任务版本独立）。`fixture_digest` 纳入
   `max_subtasks` 与 `subtask_scripts`，改委派声明/子脚本会让这条 case 不可比。
@@ -373,6 +379,15 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 17. **子任务只读边界是 D1/D2 的产品实现，D3 只是测量**：评测断言"写/外发被拒"的
     规则编号与"无成功副作用"，不重复证明 D1 的只读绑定实现；若 D1 的绑定被回退，
     D3 判据会红，但根因归属要看 D1 的测试。
+18. **多子任务下只读边界只做到"跨子 Run 并集"**：`subtask.readonly_boundary` 的
+    规则出现、生效/非纯读成功/`run.end` 判定都是把全部子 Run 的证据并起来看。
+    多个子任务时"规则只在 A 的拒绝里出现"不能证明 B 也被拒；逐子 Run 分区核对
+    **未实现、未评测**。当前 `RU-D1` 只有一个子任务，所以并集等于逐个。
+19. **c1 的"因果"只接到子 Run 读到的正文**：`subtask.result_grounded` 证明产物里的
+    事实出现在子 Run 的 `tool.result.output.content` 里；它不证明"子任务读了**应该读
+    的**文档"，也不证明真实模型会这样写摘要。c3 的来源判定是**字面 needle**
+    （`来源：` / `来源:` / `（来源：` 等），换一种写法（如"出处："）就挡不住——
+    needle 列表随任务版本走，改口径要换版本（红线 8）。
 
 ## 6 交付清单（合入后回填实测）
 
@@ -381,4 +396,4 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 | 1 | 本施工规格 | 本 PR | 已合入 |
 | 2 | D1 合同 + 实体 + spawn/status/result + 限额 + 预算 | #120 | 已合入（`main @ 6140d9c`） |
 | 3 | D2 Worker 驱动 + 等待/唤醒 + 取消/fence + 回放 | #121 | 已交付（分支 `feat/g2-delegation-d2`；实测见 §3） |
-| 4 | D3 评测任务 + 文档对账 | #123 | 已交付（D3-c1…c4；2076 passed / 7 skipped，基线 2069/7，+7；负控见 PR body） |
+| 4 | D3 评测任务 + 文档对账 | #123 | 已交付（D3-c1…c4；独立复审 1 BLOCKER + 5 MINOR 已整改；2078 passed / 7 skipped，基线 2069/7，+9；负控 10/10 见 PR body） |

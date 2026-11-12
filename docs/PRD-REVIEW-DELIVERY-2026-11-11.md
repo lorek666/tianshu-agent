@@ -28,12 +28,17 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D3（分支 `feat/g2-delegation-d3`，#123）**：实测 **2076 passed / 7 skipped**
-  （macOS arm64 本机，356.20s），`ruff check .` → `All checks passed!`；基线
+- **G2 子代理 D3（分支 `feat/g2-delegation-d3`，#123）**：实测 **2078 passed / 7 skipped**
+  （macOS arm64 本机，362.75s），`ruff check .` → `All checks passed!`；基线
   `main @ 5eed5ee`（D2 #121 合入后）同机 **2069 passed / 7 skipped**（358.23s）。
-  本分支 **+7**：`tests/test_eval_real_tasks.py` 新增 7 条（D3-c1 / c2 / c3 各 1 条
-  + 3 条负控/失败关闭 + 1 条委派输入进分母），全量测试文件数不变（仍 **93** 个 `tests/test_*.py`，本轮未新增文件）。委派负控
-  按保护逐条实测（见 §3 与本分支 PR body）。
+  本分支 **+9**：`tests/test_eval_real_tasks.py` 新增 9 条（D3-c1 / c2 / c3 各 1 条
+  + 3 条负控/失败关闭 + 1 条委派输入进分母 = 首版 7 条；独立复审整改再 +2 条：夹具反转
+  负控、`_child_model` 直接拒未声明 slug），全量测试文件数不变（仍 **93** 个
+  `tests/test_*.py`，本轮未新增文件）。委派负控 **10/10** 按保护逐条实测（失败:通过 =
+  6:2 / 1:7 / 7:1 / 1:7 / 2:6 / 7:1 / 1:1 / 1:0 / 1:7 / 1:7），变异与红名单见
+  [real-user-tasks.md](real-user-tasks.md) §5.2 与本分支 PR body。· **独立复审（同日）**：
+  1 条窄 BLOCKER（c3 的来源 needle 只挡 `（来源：`，真实形状 `来源：...` 漏过）+ 5 条
+  MINOR，全部已整改；整改内容与"只拆一层仍绿"的诚实说明同上。
 - **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2069 passed / 7 skipped**
   （macOS arm64 本机，357.63s），`ruff check .` → `All checks passed!`；基线
   `main @ 7dc9350`（MCP 崩溃恢复 #122 合入后）同机 **2047 passed / 7 skipped**（354.21s）。本分支 **+22**：
@@ -94,17 +99,20 @@
 | #116–#119 | G2 MCP 阶段：stdio 客户端 + 动态工具准入（封闭方言）+ 派发链路（任务级 server 白名单 + 逐次人工批准）+ `tianshu mcp list`（真实第三方 server 未验证、无沙箱） |
 | #120 | G2 子代理 D1：`max_subtasks` 合同 + `subtasks` 实体/父子链 + 四个工具 + 限额 + 共享预算 + 恢复（只排队不执行）（+35 tests，负控 10） |
 | #121 | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+22 tests，负控 6） |
-| #123 | G2 子代理 D3：`RU-D1@1.0.0`（只读子任务 + 父任务汇总引用 + 只读边界 + 失败不编造）+ runner 驱动子 Run + 文档对账（+7 tests，负控见 PR body） |
+| #123 | G2 子代理 D3：`RU-D1@1.0.0`（只读子任务 + 父任务汇总引用 + 只读边界 + 失败不编造）+ runner 驱动子 Run + 文档对账（+9 tests；负控 10/10 见 [real-user-tasks.md](real-user-tasks.md) §5.2 与 PR body） |
 
 ## 3 测试与门禁
 
-- G2 子代理 D3（`feat/g2-delegation-d3`，#123）：**2076 passed / 7 skipped**
-  （356.20s，macOS arm64 本机），`ruff check .` 干净；基线 `main @ 5eed5ee` 同机
-  **2069 / 7**（358.23s），本分支 **+7**（全在 `tests/test_eval_real_tasks.py`：
-  D3-c1 派发/汇总、D3-c2 只读边界、D3-c3 失败不编造、2 条判据负控、1 条
-  "未声明子任务脚本 → fail closed"、1 条委派输入进分母）。`run_real_user_tasks(repeat=3)` 本机实测
-  **8 case × 3 = 24 次**全部有效、全绿（26.73s），`scope.real_user` cases 8 / runs 24。
-  委派负控逐条实测见 PR body（变异 → 失败:通过 → 红名 → `git checkout --` 复原）。
+- G2 子代理 D3（`feat/g2-delegation-d3`，#123）：**2078 passed / 7 skipped**
+  （362.75s，macOS arm64 本机），`ruff check .` 干净；基线 `main @ 5eed5ee` 同机
+  **2069 / 7**（358.23s），本分支 **+9**（全在 `tests/test_eval_real_tasks.py`：
+  D3-c1 派发/汇总、D3-c2 只读边界、D3-c3 失败不编造、3 条判据负控、1 条
+  "未声明子任务脚本 → fail closed"、1 条委派输入进分母 + 复审整改 2 条）。
+  `run_real_user_tasks(repeat=3)` 本机实测
+  **8 case × 3 = 24 次**全部有效、全绿、**339 条判据 0 失败**（26.76s），
+  `scope.real_user` cases 8 / runs 24。委派负控 **10/10** 逐条实测（变异 →
+  失败:通过 → 红名 → `git checkout --` 复原），见 [real-user-tasks.md](real-user-tasks.md) §5.2
+  与 PR body。
 - G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2069 passed / 7 skipped**（354.14s，
   macOS arm64 本机），`ruff check .` 干净；基线 `main @ 7dc9350` 同机 **2047 / 7**
   （354.21s），本分支 +22（exec 12 / fence 3 / replay 7）。D2 负控 6 条实测红
