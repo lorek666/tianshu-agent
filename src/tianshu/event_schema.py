@@ -196,6 +196,10 @@ _TOOL_ID = _enum(
     "read_text",
     "restore_file",
     "run_command",
+    "subtask.cancel",
+    "subtask.result",
+    "subtask.spawn",
+    "subtask.status",
 )
 _ACTION = _enum("read", "create", "overwrite", "delete", "exec", "fetch", "delegate")
 _EFFECT_STATE = _enum("applied", "none_applied", "partial", "unknown")
@@ -423,6 +427,33 @@ _TAKEOVER_CHECKED = _obj(
 _UNDO_ENTRY = _obj(
     {"root": _s(), "path": _s(), "result": _s()},
     required=("root", "path", "result"),
+)
+
+#: 子任务状态机（G2 委派）。与 `tasks.SUBTASK_STATES` 同一个封闭集：
+#: 规格 §2.1 的 DDL 注释列了 6 个，§2.6 又要求取消先落 `cancelling`（真正停下
+#: 在 D2），合起来才是完整的 7 个。未知状态写不进去。
+_SUBTASK_STATE = _enum(
+    "queued",
+    "running",
+    "cancelling",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "fenced",
+)
+#: 子任务局部上限。`deadline_ms` 固定 300000，不由模型抬高。
+_SUBTASK_LIMITS = _obj(
+    {
+        "max_turns": _i(minimum=1),
+        "max_tokens": _i(minimum=1),
+        "deadline_ms": _i(minimum=1),
+    },
+    required=("max_turns", "max_tokens", "deadline_ms"),
+)
+#: 子任务用量（D2 收尾时写）。`subtask.finished` 里可选：D1 不写这条事件。
+_SUBTASK_USAGE = _obj(
+    {"turns": _i(minimum=0), "tokens": _i(minimum=0)},
+    required=("turns", "tokens"),
 )
 
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
@@ -832,6 +863,11 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
                 {"max_turns": _i(minimum=0), "max_total_tokens": _i(minimum=0)}
             ),
             "tools": _arr(_s()),
+            # G2 委派 D1：子 Run 的父链（可选；根 Run 不写这两个键）。
+            # 子任务身份必须在 Run 侧留下事件证据，否则投影重建后
+            # "这个 Run 是谁派的"就只能从另一张表猜。
+            "parent_run_id": _s(),
+            "subtask_id": _s(),
         },
         required=("run_id", "task_id", "goal_revision", "lease_epoch"),
     ),
@@ -847,6 +883,37 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         required=("run_id", "task_id", "from", "to", "reason"),
     ),
+    "subtask.spawned": _obj(
+        {
+            # 父 Run 侧的委派审计：派了谁、子任务身份是什么、给了多少额度。
+            "subtask_id": _s(),
+            "child_task_id": _s(),
+            "child_run_id": _s(),
+            "job_id": _s(),
+            # 目标正文**不进**父 Run：只留摘要，正文在子 Task 的 goal 里。
+            "goal_digest": _SHA256,
+            "limits": _SUBTASK_LIMITS,
+        },
+        required=(
+            "subtask_id",
+            "child_task_id",
+            "child_run_id",
+            "job_id",
+            "goal_digest",
+            "limits",
+        ),
+    ),
+    "subtask.finished": _obj(
+        {
+            "subtask_id": _s(),
+            # 子任务状态机（不是子 Run 状态机）。
+            "state": _SUBTASK_STATE,
+            "result_ref": _opt(_s()),
+            "error": _opt(_s()),
+            "usage": _SUBTASK_USAGE,
+        },
+        required=("subtask_id", "state"),
+    ),
     "task.created": _obj(
         {
             "task_id": _s(),
@@ -861,6 +928,15 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             # G2：任务级外发白名单（源级）。新写入恒写（空列表也写）；
             # 旧事件没有这个键 → detect_version 落到 v0，不按新版补值。
             "outbound_allow": _arr(_s()),
+            # G2 委派 D1：任务级委派能力声明（0–4）。**必填**：
+            # 未声明即无委派能力这条纪律只有在"每个新事件都显式写了"时才成立。
+            # 用 enum 而不是 maximum（本方言没有 maximum，见 SUPPORTED_KEYWORDS）。
+            "max_subtasks": _enum(0, 1, 2, 3, 4),
+            # 父链（可选；根任务不写）。子任务的 depth 恒为 1。
+            "parent_task_id": _s(),
+            "parent_run_id": _s(),
+            "subtask_id": _s(),
+            "depth": _enum(0, 1),
         },
         required=(
             "task_id",
@@ -872,6 +948,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "control",
             "memory_scopes",
             "outbound_allow",
+            "max_subtasks",
         ),
     ),
     "task.revised": _obj(

@@ -107,6 +107,7 @@ from .resources import (
     KIND_FILE,
     KIND_MEMORY,
     KIND_NETWORK,
+    KIND_SUBTASK,
     MemoryScope,
     NetworkTarget,
     ResourceError,
@@ -120,10 +121,23 @@ from .resources import (
 from .rules import check_rule_id
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
-from .tasks import RUN_RUNNING, ExecutionPermit, Run, Task, TaskStore
+from .tasks import (
+    RUN_RUNNING,
+    SUBTASK_GOAL_MAX_BYTES,
+    SUBTASK_MAX_PER_ROOT_TASK,
+    SUBTASK_MAX_UNFINISHED_PER_RUN,
+    SUBTASK_TERMINAL_STATES,
+    ExecutionPermit,
+    Run,
+    Task,
+    TaskStore,
+    clean_subtask_limits,
+    subtask_budget_attempt,
+)
 from .tools import (
     NETWORK_TOOL_IDS,
     SPECS,
+    SUBTASK_TOOL_IDS,
     AdmittedCall,
     DispatchRecord,
     FileExecutor,
@@ -313,9 +327,12 @@ class ControlRun:
     memory_scopes: tuple[str, ...] = ()
 
 
-#: 有**执行器**的资源种类。其余种类（mcp / subtask）解析得出来、也能做许可
-#: 判定，但没有执行器——MCP 与委派的执行器仍未交付（G2 的网络阶段只补了网络）。
-EXECUTABLE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY, KIND_NETWORK})
+#: 有**执行器**的资源种类。其余种类（mcp）解析得出来、也能做许可判定，但
+#: 没有执行器——MCP 客户端仍未交付（G2 后续阶段），派发前明确拒绝。
+#: 网络在 G2 网络阶段补上；委派在 G2 子代理 D1 补上（只排队，不执行子 Run）。
+EXECUTABLE_KINDS: frozenset[str] = frozenset(
+    {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_SUBTASK}
+)
 
 
 def resolve_scheme_resource(raw: str) -> ResourceRef:
@@ -381,7 +398,20 @@ class _NetworkTarget:
     kind: str = KIND_NETWORK
 
 
-_Target = _FileTarget | _MemoryTarget | _NetworkTarget
+@dataclass(frozen=True)
+class _SubtaskTarget:
+    """子任务目标：父 Run 作用域内的一个 slug，没有路径、没有目录租约。
+
+    零目录任务同样合法：委派与"在哪个目录里工作"无关。子任务自己的绑定是父
+    任务绑定的只读改写，由 `TaskStore.create_subtask()` 在创建时定死。
+    """
+
+    uri: str
+    subtask_id: str
+    kind: str = KIND_SUBTASK
+
+
+_Target = _FileTarget | _MemoryTarget | _NetworkTarget | _SubtaskTarget
 
 
 def _now() -> int:
@@ -730,15 +760,15 @@ class Dispatcher:
 
         isolation: dict[str, Any] | None = None
         try:
-            auth = self._authority(request, claim)
+            auth = self._authority(request, claim, args=args)
             target = self._resolve_target(request, auth)
             if isinstance(target, _MemoryTarget):
                 # 记忆前置条件是 status/revision；文件分支保持原样，连调用
                 # 顺序都不改（file 的 digest/approval 行为不能因记忆上线变化）。
                 self._check_memory_preconditions(request, target, args)
-            elif isinstance(target, _NetworkTarget):
-                # 网络没有"写前状态"：没有本地副作用，也没有可撤销内容。
-                # 真正的门是任务白名单（`_authority`）与逐次人工批准。
+            elif isinstance(target, (_NetworkTarget, _SubtaskTarget)):
+                # 网络没有"写前状态"：没有本地副作用，也没有可撤销内容；
+                # 子任务同样没有文件写前状态（身份/限额在 `_authority` 判完）。
                 pass
             else:
                 if request.action == ACTION_EXEC:
@@ -773,6 +803,9 @@ class Dispatcher:
             auth.bindings,
             policy_preconditions,
             task_id=request.task_id,
+            # 子任务的决策形状按**工具**区分（spawn 审批 / cancel 自动）：
+            # 只看 action 的话两者都是 delegate，分不开。
+            tool_id=request.tool_id,
         )
         # 放行/需审批的判定结果也会写进 payload.rule_id（dispatch.requested），
         # 所以和拒绝路径一样要过同一张表；否则"为什么放行"仍然没有契约。
@@ -907,10 +940,12 @@ class Dispatcher:
         # ---- 阶段一：同一事务里核验 + 消费审批 + 签发票据 + 登记 intent ----
         try:
             with self._log.transaction() as tx:
-                auth = self._authority(request, claim)
+                auth = self._authority(request, claim, args=args)
                 target = self._resolve_target(request, auth)
                 if (
-                    not isinstance(target, (_MemoryTarget, _NetworkTarget))
+                    not isinstance(
+                        target, (_MemoryTarget, _NetworkTarget, _SubtaskTarget)
+                    )
                     and request.action == ACTION_EXEC
                 ):
                     self._precheck_exec(request, args, target.path)
@@ -933,7 +968,7 @@ class Dispatcher:
 
                 if isinstance(target, _MemoryTarget):
                     self._check_memory_preconditions(request, target, args)
-                elif isinstance(target, _NetworkTarget):
+                elif isinstance(target, (_NetworkTarget, _SubtaskTarget)):
                     pass
                 else:
                     ok, reason = check_request_preconditions(
@@ -1013,6 +1048,12 @@ class Dispatcher:
         if isinstance(target, _NetworkTarget):
             return self._dispatch_network(
                 request, dispatch_id, target, seq
+            )
+
+        # ---- 委派分支：没有目录、没有租约；spawn 在一个事务里建五件事 ----
+        if isinstance(target, _SubtaskTarget):
+            return self._dispatch_subtask(
+                request, dispatch_id, target, seq, args
             )
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
@@ -1312,6 +1353,280 @@ class Dispatcher:
         self._settle_network_bytes(reservation, len(fetched.body))
         self._commit_result(request, dispatch_id, result, target, intent_seq)
         failpoint("after_result")
+        return result
+
+    # ---- 委派执行 ----
+
+    def _subtask_limits(self, args: dict[str, Any]) -> dict[str, int]:
+        """spawn 的局部上限：默认值 + 固定 deadline。
+
+        两处调用（`_authority_subtask` 的限额检查与这里真正落库）必须得到同一个
+        结论，所以只有这一个函数负责"补默认值"；deadline 在**spawn 那一刻**
+        钉成 `now + 300s`（相对时间进账本，绝对值进 `subtasks.limits`）。
+        """
+        return clean_subtask_limits(
+            {
+                key: args[key]
+                for key in ("max_turns", "max_tokens")
+                if key in args
+            }
+        )
+
+    def _reserve_subtask(self, request: ActionRequest, subtask_id: str) -> object | None:
+        """在父账户的 `subtasks` 维度预占 1。
+
+        账户不存在（直接调派发的单元测试 / 没有账本的装配）时不预占，也不
+        伪造一个账户——如实登记为"未记账"，而不是让账本看起来有一笔占用。
+        """
+        if self._budget is None:
+            return None
+        account_id = f"run:{request.run_id}"
+        if getattr(self._budget, "account", lambda _a: None)(account_id) is None:
+            return None
+        return self._budget.reserve(
+            account_id,
+            attempt_id=subtask_budget_attempt(request.run_id, subtask_id),
+            run_id=request.run_id,
+            call_id=request.call_id,
+            need={"subtasks": 1},
+        )
+
+    def _ensure_child_budget_account(
+        self, request: ActionRequest, child_run_id: str, limits: dict[str, int]
+    ) -> None:
+        """子 Run 的账户：`run:<child_run_id>`，父链指向父（=根）Run 账户。
+
+        子账户**只声明局部上限**，不继承父任务剩余余量当自己的上限：父链负责
+        扣减，局部上限负责"这个子任务最多花多少"。父账户不存在时不建子账户
+        （建了会因 `parent_id` 不存在而抛错，而伪造一个父又会让账本说假话）。
+        """
+        if self._budget is None:
+            return
+        parent_id = f"run:{request.run_id}"
+        if getattr(self._budget, "account", lambda _a: None)(parent_id) is None:
+            return
+        self._budget.create_account(
+            f"run:{child_run_id}",
+            limits={
+                "tokens": int(limits.get("max_tokens", 0)),
+                "requests": int(limits.get("max_turns", 0)),
+            },
+            parent_id=parent_id,
+            run_id=child_run_id,
+            label="subtask",
+            deadline_ms=self._clock() + int(limits.get("deadline_ms", 0)),
+        )
+
+    def _dispatch_subtask(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _SubtaskTarget,
+        intent_seq: int,
+        args: dict[str, Any],
+    ) -> ToolResult:
+        """委派分支：spawn / cancel / status / result 四个工具一个入口。
+
+        为什么纯读也走这里：父任务身份、父 Run 作用域与"子任务是否存在"都要在
+        这里判（`_authority_subtask()` 门 6）。绕过派发就等于把"不存在"伪装成
+        空结果——那是 D1 明确拒绝的形状。
+        """
+        if request.tool_id == "subtask.spawn":
+            return self._dispatch_subtask_spawn(
+                request, dispatch_id, target, intent_seq, args
+            )
+        if request.tool_id == "subtask.cancel":
+            return self._dispatch_subtask_cancel(
+                request, dispatch_id, target, intent_seq
+            )
+        return self._dispatch_subtask_read(
+            request, dispatch_id, target, intent_seq
+        )
+
+    def _dispatch_subtask_spawn(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _SubtaskTarget,
+        intent_seq: int,
+        args: dict[str, Any],
+    ) -> ToolResult:
+        """spawn：子 Task + 子 Run + 子 Job + `subtasks` 行 + 父 Run 事件，同一事务。
+
+        预算预占也在这一个事务里：预占被拒时整笔回滚，父 Run 的日志里不会出现
+        "派了但没派成"的半条记录。
+        """
+        subtask_id = target.subtask_id
+        goal = str(args.get("goal") or "").strip()
+        limits = self._subtask_limits(args)
+        task = self._tasks.get_task(request.task_id)
+        run = self._tasks.get_run(request.run_id)
+        if task is None or run is None:  # pragma: no cover - 派发前已核验
+            raise TianshuError("派发前的任务/Run 已经不在了：无法创建子任务")
+        try:
+            with self._log.transaction() as tx:
+                self._reserve_subtask(request, subtask_id)
+                subtask = self._tasks.create_subtask(
+                    task,
+                    run,
+                    subtask_id=subtask_id,
+                    goal=goal,
+                    limits=limits,
+                )
+                self._ensure_child_budget_account(
+                    request, subtask.child_run_id, limits
+                )
+                tx.append(
+                    request.run_id,
+                    "subtask.spawned",
+                    {
+                        "subtask_id": subtask.subtask_id,
+                        "child_task_id": subtask.child_task_id,
+                        "child_run_id": subtask.child_run_id,
+                        "job_id": subtask.job_id,
+                        # 目标正文只留在子 Task 里；父 Run 只记摘要。
+                        "goal_digest": sha256_hex(goal.encode("utf-8")),
+                        "limits": dict(subtask.limits),
+                    },
+                    task_id=request.task_id,
+                    actor_kind="core",
+                )
+        except (BudgetRefused, BudgetCancelled) as exc:
+            # 预占被拒 = 确定什么都没建。走既有的"守卫内拒绝"路径，事件与派发
+            # 状态与其它守卫内拒绝保持同一形状（effect_state=none_applied）。
+            return self._abort_dispatch(
+                request,
+                dispatch_id,
+                DispatchDenied(str(exc), "dispatch.budget_refused"),
+            )
+
+        result = ToolResult(
+            "succeeded",
+            "none_applied",
+            {
+                "subtask_id": subtask.subtask_id,
+                "child_task_id": subtask.child_task_id,
+                "child_run_id": subtask.child_run_id,
+                "job_id": subtask.job_id,
+                # 排队就是排队：D1 没有执行器，不假装已经跑起来。
+                "state": subtask.state,
+                "limits": dict(subtask.limits),
+            },
+        )
+        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        failpoint("after_result")
+        return result
+
+    def _dispatch_subtask_cancel(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _SubtaskTarget,
+        intent_seq: int,
+    ) -> ToolResult:
+        """cancel：只记录取消请求（`cancelling`），**不**写 `cancelled`。
+
+        真正停下由执行侧在安全点确认（D2）。已终结的子任务幂等返回当前状态，
+        不报错，也不假装撤销。
+        """
+        subtask = self._tasks.request_subtask_cancel(
+            request.run_id, target.subtask_id
+        )
+        if subtask is None:  # pragma: no cover - 授权阶段已确认存在
+            result = ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": f"子任务不存在：{target.subtask_id}",
+                    "rule_id": "dispatch.subtask_not_found",
+                    "subtask_id": target.subtask_id,
+                },
+            )
+        else:
+            finished = subtask.state in SUBTASK_TERMINAL_STATES
+            result = ToolResult(
+                "succeeded",
+                "none_applied",
+                {
+                    "subtask_id": subtask.subtask_id,
+                    "state": subtask.state,
+                    "cancel_requested": (
+                        not finished and subtask.state == "cancelling"
+                    ),
+                    # 已经结束的子任务：如实说"没有可撤销的执行"，不是"撤销成功"。
+                    "already_finished": finished,
+                    "child_run_id": subtask.child_run_id,
+                    "job_id": subtask.job_id,
+                },
+            )
+        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        return result
+
+    def _dispatch_subtask_read(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _SubtaskTarget,
+        intent_seq: int,
+    ) -> ToolResult:
+        """status / result：读本地状态与已落库结果，**不**触发执行。"""
+        subtask = self._tasks.get_subtask(request.run_id, target.subtask_id)
+        if subtask is None:  # pragma: no cover - 授权阶段已确认存在
+            result = ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": f"子任务不存在：{target.subtask_id}",
+                    "rule_id": "dispatch.subtask_not_found",
+                    "subtask_id": target.subtask_id,
+                },
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+        now = self._clock()
+        if request.tool_id == "subtask.status":
+            child = self._tasks.get_run(subtask.child_run_id)
+            ended = subtask.ended_at
+            output: dict[str, Any] = {
+                "subtask_id": subtask.subtask_id,
+                "state": subtask.state,
+                "child_task_id": subtask.child_task_id,
+                "child_run_id": subtask.child_run_id,
+                # 子 Run 的状态与子任务状态是两个维度：都给出，不互相冒充。
+                "child_run_state": child.state if child is not None else None,
+                "job_id": subtask.job_id,
+                "limits": dict(subtask.limits),
+                "created_at": subtask.created_at,
+                "elapsed_ms": max(0, (ended if ended is not None else now)
+                                  - subtask.created_at),
+                "error": subtask.error,
+            }
+        elif subtask.state not in SUBTASK_TERMINAL_STATES:
+            # 未完成不是失败、也不是空结果：done=false 只说"还没有"。
+            output = {
+                "subtask_id": subtask.subtask_id,
+                "state": subtask.state,
+                "done": False,
+            }
+        else:
+            output = {
+                "subtask_id": subtask.subtask_id,
+                "state": subtask.state,
+                "done": True,
+                "summary": subtask.summary,
+                "result_ref": subtask.result_ref,
+                "error": subtask.error,
+            }
+            stored = self._tasks.load_cursor(subtask.child_run_id)
+            if stored is not None:
+                # 用量从子 Run 的游标账本读；读不到就**不写** usage（未知不是零）。
+                ledger = stored[0].budget_ledger or {}
+                output["usage"] = {
+                    "turns": int(ledger.get("turns", 0) or 0),
+                    "tokens": int(ledger.get("tokens", 0) or 0),
+                }
+        result = ToolResult("succeeded", "none_applied", output)
+        self._commit_result(request, dispatch_id, result, target, intent_seq)
         return result
 
     # ---- 撤销 ----
@@ -1879,14 +2194,27 @@ class Dispatcher:
             raise DispatchError("必须传 JobClaim")
         if not isinstance(args, dict):
             raise DispatchError("args 必须是对象")
-        if request.action not in APPROVAL_ACTIONS and request.action != ACTION_CREATE:
+        if (
+            request.action not in APPROVAL_ACTIONS
+            and request.action != ACTION_CREATE
+            # 子任务工具即使 action=read 也必须走派发：父任务身份、父 Run
+            # 作用域与"子任务是否存在"都在 `_authority_subtask()` 里判。
+            # 绕过派发就等于把"不存在"伪装成空结果。
+            and request.tool_id not in SUBTASK_TOOL_IDS
+        ):
             raise DispatchError(
                 f"只读动作不经过派发（没有可授权的副作用）：{request.action}"
             )
         if request.tool_id not in SPECS:
             raise DispatchError(f"工具不在白名单：{request.tool_id}")
 
-    def _authority(self, request: ActionRequest, claim: JobClaim) -> _Authority:
+    def _authority(
+        self,
+        request: ActionRequest,
+        claim: JobClaim,
+        *,
+        args: dict[str, Any] | None = None,
+    ) -> _Authority:
         if claim.run_id != request.run_id:
             raise DispatchDenied(
                 f"claim 属于另一个 Run：claim.run_id={claim.run_id}，"
@@ -1991,9 +2319,22 @@ class Dispatcher:
                 return _Authority(run, task, bindings, [], [])
             if ref.kind == KIND_NETWORK:
                 return self._authority_network(request, task, run, bindings, ref)
+            if ref.kind == KIND_SUBTASK:
+                return self._authority_subtask(
+                    request, task, run, bindings, ref, args or {}
+                )
             raise DispatchDenied(
                 f"{ref.kind} 资源的执行器尚未实现（G2），拒绝派发：{ref.uri}",
                 "dispatch.resource_kind_unsupported",
+            )
+
+        if request.tool_id in SUBTASK_TOOL_IDS:
+            # 反向不匹配：子任务工具拿了文件/记忆资源。没有 `subtask://`
+            # 就没有可判定的父作用域，一律拒绝而不是回退成文件动作。
+            raise DispatchDenied(
+                f"子任务工具必须使用 subtask:// 资源：{request.tool_id} → "
+                f"{request.resources[0]!r}",
+                "dispatch.subtask_rejected",
             )
 
         if request.tool_id in MEMORY_TOOL_IDS:
@@ -2080,6 +2421,132 @@ class Dispatcher:
             )
         return _Authority(run, task, bindings, [], [])
 
+    def _authority_subtask(
+        self,
+        request: ActionRequest,
+        task: Task,
+        run: Run,
+        bindings: list[WorkspaceBinding],
+        ref: ResourceRef,
+        args: dict[str, Any],
+    ) -> _Authority:
+        """委派资源的授权：六道门全部在**弹批准之前**走完（规格 §2.3）。
+
+        顺序是刻意的——先把"这个任务根本没有委派能力 / 这一层不能再派 /
+        slug 已经用过 / 额度不够"判掉，再决定要不要请人批准。给一个注定被拒
+        的子任务弹批准，等于给用户一个"批了就能派"的错觉。
+
+        委派没有目录租约、也没有 workspace 绑定：零目录任务同样合法（子任务
+        的绑定是父任务绑定的只读改写，由 `TaskStore.create_subtask()` 定死）。
+        """
+        if request.tool_id not in SUBTASK_TOOL_IDS:
+            # 门 1：工具归属。非子任务工具带着 `subtask://` 资源来，说明调用
+            # 方把目标拼错了——按文件/网络去试都不对，而是"这不是给你的资源"。
+            raise DispatchDenied(
+                f"非子任务工具收到子任务资源：{request.tool_id} → {ref.uri}",
+                "dispatch.subtask_rejected",
+            )
+        subtask_id = ref.subtask_id
+        declared_id = args.get("subtask_id")
+        if declared_id is not None and declared_id != subtask_id:
+            # 资源与参数指向两个不同的 slug：审批摘要绑的是资源，执行时用的
+            # 是参数——让它们分叉等于让批准覆盖一个不同的目标。
+            raise DispatchDenied(
+                f"参数里的 subtask_id 与资源不一致：{declared_id!r} ≠ "
+                f"{subtask_id!r}",
+                "dispatch.subtask_rejected",
+            )
+
+        # 门 2：任务级能力声明。未声明即无委派能力（与 outbound_allow 同一条
+        # 纪律）：补一个默认值等于凭空给每个老任务新增一种能力。
+        if int(getattr(task, "max_subtasks", 0) or 0) <= 0:
+            raise DispatchDenied(
+                "任务没有声明委派能力（max_subtasks=0），拒绝派生子任务："
+                "创建任务时用 --max-subtasks N 显式声明（0 = 不允许委派）",
+                "c4.subtask_not_configured",
+            )
+
+        # 门 3：深度固定 1。子任务不能再委派（它自己的 max_subtasks 恒为 0，
+        # 但这里先判深度，给出比"未声明能力"更准确的拒绝原因）。
+        if int(getattr(task, "depth", 0) or 0) != 0:
+            raise DispatchDenied(
+                f"深度 {task.depth} 的任务不能再委派（委派只支持一层）："
+                f"{task.task_id}",
+                "dispatch.subtask_depth_exceeded",
+            )
+
+        parent_run_id = run.run_id
+        existing = self._tasks.get_subtask(parent_run_id, subtask_id)
+
+        if request.tool_id == "subtask.spawn":
+            # 门 4：同一父 Run 里 slug 必须唯一。不同父 Run 可以重名——
+            # 主键是 (parent_run_id, subtask_id)，不是全局 slug。
+            if existing is not None:
+                raise DispatchDenied(
+                    f"这个父 Run 里已经有同名子任务：{subtask_id!r}"
+                    f"（state={existing.state}，child_run={existing.child_run_id}）",
+                    "dispatch.subtask_exists",
+                )
+            # 门 5：数量与局部上限。越界**拒绝**，不静默夹到上限。
+            self._check_subtask_quota(task, parent_run_id, args, subtask_id)
+        elif existing is None:
+            # 门 6：status / result / cancel 的目标必须存在于**该父 Run** 下。
+            # 不存在就说"不存在"，不用空结果或"已经完成"冒充成功。
+            raise DispatchDenied(
+                f"这个父 Run 下没有子任务：{subtask_id!r}",
+                "dispatch.subtask_not_found",
+            )
+        return _Authority(run, task, bindings, [], [])
+
+    def _check_subtask_quota(
+        self,
+        task: Task,
+        parent_run_id: str,
+        args: dict[str, Any],
+        subtask_id: str,
+    ) -> None:
+        """数量、轮次、token 三条限额。任一条不满足 → `dispatch.subtask_limit`。
+
+        `max_turns` / `max_tokens` 的越界是**拒绝**而不是夹到上限：悄悄夹取
+        会让"我批的是 100 轮"和"实际只给 8 轮"变成同一张批准，而用户永远
+        不会知道自己的请求被改过。
+        """
+        try:
+            clean_subtask_limits(
+                {
+                    key: args[key]
+                    for key in ("max_turns", "max_tokens", "deadline_ms")
+                    if key in args
+                }
+            )
+        except TianshuError as exc:
+            raise DispatchDenied(str(exc), "dispatch.subtask_limit") from exc
+        goal = args.get("goal")
+        if not isinstance(goal, str) or not goal.strip():
+            raise DispatchDenied(
+                "子任务目标必须是非空字符串", "dispatch.subtask_rejected"
+            )
+        raw = goal.strip().encode("utf-8")
+        if len(raw) > SUBTASK_GOAL_MAX_BYTES:
+            raise DispatchDenied(
+                f"子任务目标超过 {SUBTASK_GOAL_MAX_BYTES} 字节：{len(raw)}",
+                "dispatch.subtask_limit",
+            )
+        unfinished = self._tasks.count_unfinished_subtasks(parent_run_id)
+        if unfinished >= SUBTASK_MAX_UNFINISHED_PER_RUN:
+            raise DispatchDenied(
+                f"每个父 Run 最多 {SUBTASK_MAX_UNFINISHED_PER_RUN} 个未完成子任务，"
+                f"当前已有 {unfinished} 个（slug={subtask_id!r} 未派发）",
+                "dispatch.subtask_limit",
+            )
+        total = self._tasks.count_subtasks_for_task(task.task_id)
+        if total >= SUBTASK_MAX_PER_ROOT_TASK:
+            raise DispatchDenied(
+                f"每根任务最多派生 {SUBTASK_MAX_PER_ROOT_TASK} 个子任务，"
+                f"当前已有 {total} 个（slug={subtask_id!r} 未派发）",
+                "dispatch.subtask_limit",
+            )
+
     def _resolve_target(self, request: ActionRequest, auth: _Authority) -> _Target:
         if len(request.resources) != 1:
             # 文件分支的历史文案与编号保持不变（旧日志/测试逐字依赖它）。
@@ -2112,6 +2579,19 @@ class Dispatcher:
                 )
             ref = resolve_scheme_resource(raw)
             return _NetworkTarget(uri=ref.uri, target=ref.network_target)
+
+        if isinstance(raw, str) and raw.startswith("subtask://"):
+            if request.tool_id not in SUBTASK_TOOL_IDS:
+                raise DispatchDenied(
+                    f"子任务资源只能配子任务工具：{request.tool_id} → {raw}",
+                    "dispatch.subtask_rejected",
+                )
+            ref = resolve_scheme_resource(raw)
+            if ref.kind != KIND_SUBTASK:  # pragma: no cover - 前缀已判
+                raise DispatchDenied(
+                    f"不是子任务资源：{raw}", "dispatch.subtask_rejected"
+                )
+            return _SubtaskTarget(uri=ref.uri, subtask_id=ref.subtask_id)
 
         # 资源种类按 scheme 判定（见 resources.py）。**没有执行器**的种类在这里
         # 就拒绝：既不回退成"当成文件路径试试"，也不进审批流程给用户一个
@@ -2167,6 +2647,11 @@ class Dispatcher:
         唯一例外是记忆本身的 `origin=user_explicit`：用户本人刚说的话就是
         授权。这里从**权威投影**读 origin，不接受模型参数或调用方声明。
         """
+        if isinstance(target, _SubtaskTarget):
+            # 子任务的审批形状**按工具**区分：spawn 要人批，cancel 自动放行。
+            # 必须与 `PolicyEngine._classify_subtask()` 的口径一致，否则会
+            # 出现"prepare 弹了审批、dispatch 却不消费"（或反过来）的分叉。
+            return request.tool_id == "subtask.spawn"
         if request.action not in APPROVAL_ACTIONS:
             return False
         if (
@@ -2291,6 +2776,13 @@ class Dispatcher:
             resource_key = (
                 f"network:{target.target.origin_uri}{target.target.path}"
             )
+        elif isinstance(target, _SubtaskTarget):
+            # 委派既没有目录也没有作用域：目标记规范 URI，资源键按父 Run 作用域
+            # 里的 slug 记（事后能直接回答"派的到底是谁"）。
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = f"subtask:{target.subtask_id}"
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -2370,6 +2862,11 @@ class Dispatcher:
             resource_key = (
                 f"network:{target.target.origin_uri}{target.target.path}"
             )
+        elif isinstance(target, _SubtaskTarget):
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = f"subtask:{target.subtask_id}"
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -2726,8 +3223,8 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
-        if isinstance(target, (_MemoryTarget, _NetworkTarget)):
-            # 记忆没有可阻断的目录；网络同样没有本地目录可阻断。
+        if isinstance(target, (_MemoryTarget, _NetworkTarget, _SubtaskTarget)):
+            # 记忆没有可阻断的目录；网络与委派同样没有本地目录可阻断。
             # 而且**绝不**在这里调用 apply_event：
             # 结果未知就是"投影是否更新不知道"，补写一条投影会让未知变成
             # 一个编出来的确定结论。事件与派发状态仍同事务落库。
@@ -2783,6 +3280,7 @@ class Dispatcher:
         """
         is_memory = isinstance(target, _MemoryTarget)
         is_network = isinstance(target, _NetworkTarget)
+        is_subtask = isinstance(target, _SubtaskTarget)
         projection = self._memory_projection() if is_memory else None
 
         result_event = {
@@ -2835,9 +3333,9 @@ class Dispatcher:
             else:
                 # propose 是候选草稿，不产凭据（F10 §7）。
                 receipt = None
-        elif is_network:
-            # 网络没有本地副作用，也没有可撤销内容：不产凭据。
-            # （凭据回答"改了什么"；"发了什么"在 tool.result 的 url/ref 里。）
+        elif is_network or is_subtask:
+            # 网络与委派都没有本地文件副作用、也没有可撤销内容：不产凭据。
+            # （凭据回答"改了什么文件"；"发了什么 / 派了什么"在 tool.result 里。）
             receipt = None
         elif request.action == ACTION_EXEC:
             # 命令的"写后状态"不是文件哈希：凭据记的是执行摘要，磁盘核对
@@ -3050,8 +3548,48 @@ def build_request(
             preconditions={},
         )
 
+    if raw_target.startswith("subtask://"):
+        if tool_id not in SUBTASK_TOOL_IDS:
+            raise ToolNotAllowed(
+                f"非子任务工具不能使用子任务资源：{tool_id} → {raw_target}"
+            )
+        try:
+            sub_ref = parse_resource(raw_target)
+        except ResourceError as exc:
+            raise ToolArgumentError(f"子任务资源引用不合法：{exc}") from exc
+        if sub_ref.kind != KIND_SUBTASK:  # pragma: no cover - 前缀已判
+            raise ToolArgumentError(f"不是子任务资源：{raw_target}")
+        # 委派没有"写前状态"：没有本地副作用，也没有可撤销内容。真正的门是
+        # 父任务声明、父 Run 作用域与限额（派发层从权威投影再读一次）。
+        return ActionRequest(
+            request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
+            task_id=task.task_id,
+            run_id=run.run_id,
+            job_id=claim.job_id,
+            claim_epoch=claim.claim_epoch,
+            owner_instance_id=claim.owner_instance_id,
+            goal_revision=run.goal_revision,
+            lease_epoch=run.lease_epoch,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            tool_id=tool_id,
+            tool_version=spec.version,
+            schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
+            description_hash=spec.description_digest(),
+            action=spec.action,
+            resources=(sub_ref.uri,),
+            args_hash=sha256_hex(canonical_bytes(args)),
+            preconditions={},
+        )
+
     if tool_id in MEMORY_ALL_TOOL_IDS:
         raise ToolNotAllowed(f"记忆工具必须使用 memory:// 资源：{raw_target}")
+
+    if tool_id in SUBTASK_TOOL_IDS:
+        # 子任务工具拿文件目标：在请求构造处就拒绝，不给"回退成文件动作"留路。
+        raise ToolNotAllowed(
+            f"子任务工具必须使用 subtask:// 资源：{tool_id} → {raw_target}"
+        )
 
     target = Path(target).resolve()
     io = current_backend()

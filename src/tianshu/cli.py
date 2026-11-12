@@ -144,6 +144,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="显式声明任务级外发白名单：允许出网的**源**（可重复）。"
         "不传 = 一条包都不发；声明后仍要逐次人工批准",
     )
+    t.add_argument(
+        "--max-subtasks",
+        type=int,
+        default=0,
+        metavar="N",
+        help="显式声明任务级委派能力：最多可派生 N 个子任务（0–4）。"
+        "不传 = 0 = 不能委派；这是能力声明，不是可选项。"
+        "声明后每次 spawn 仍要人工批准",
+    )
 
     w = sub.add_parser(
         "worker",
@@ -608,6 +617,9 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                     if job is not None
                     else None
                 ),
+                "subtasks": [
+                    item.to_dict() for item in stack.tasks.list_subtasks(run_id)
+                ],
             },
             ensure_ascii=False, indent=2, default=str))
         return _status_exit_code(record)
@@ -634,12 +646,31 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                   turns=model_turns,
                   attempts=model_attempts,
               ))
+    _print_subtasks(stack, run_id)
     if pending:
         print(f"待批      : {len(pending)} 条")
         for approval in pending:
             print(f"  - {approval.approval_id}  {approval.action}  "
                   f"{','.join(approval.resources)}")
     return _status_exit_code(record)
+
+
+def _print_subtasks(stack, run_id: str) -> None:
+    """父 Run 派了哪些子任务（id / state / child_run）。
+
+    D1 只有排队与查询：这里显示的是**子任务状态机**（queued 等），不是子 Run
+    状态机——两者都列出来，不互相冒充。
+    """
+    subtasks = stack.tasks.list_subtasks(run_id)
+    if not subtasks:
+        return
+    print(f"子任务    : {len(subtasks)} 个")
+    for item in subtasks:
+        child = stack.tasks.get_run(item.child_run_id)
+        print(f"  - {item.subtask_id}  {item.state}"
+              f"  child_run={item.child_run_id}"
+              f"（{child.state if child is not None else '缺失'}）"
+              + (f"  error={item.error}" if item.error else ""))
 
 
 def _status_exit_code(run) -> int:
@@ -806,6 +837,7 @@ def _cmd_task(args: argparse.Namespace) -> int:
                 _bindings(args),
                 exec_policy=exec_policy,
                 outbound_allow=outbound_allow,
+                max_subtasks=args.max_subtasks,
             )
             return _print_task(task, args)
         if args.action == "show":
@@ -844,6 +876,11 @@ def _task_json(task) -> dict:
         "is_control": task.is_control,
         "memory_scopes": list(task.memory_scopes),
         "outbound_allow": list(task.outbound_allow),
+        "max_subtasks": task.max_subtasks,
+        "depth": task.depth,
+        "parent_task_id": task.parent_task_id,
+        "parent_run_id": task.parent_run_id,
+        "subtask_id": task.subtask_id,
         "status": task.status,
         "workspaces": [b.to_dict() for b in task.workspaces],
         "created_at": task.created_at,
@@ -879,6 +916,14 @@ def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
         print(f"外发源   : {', '.join(task.outbound_allow)}")
     else:
         print("外发源   : （未声明：这个任务不能出网）")
+    if task.max_subtasks:
+        print(f"委派     : 最多 {task.max_subtasks} 个子任务"
+              f"（每 Run 最多 2 个未完成；每次 spawn 仍需人工批准）")
+    else:
+        print("委派     : （未声明：这个任务不能派生子任务）")
+    if task.parent_task_id:
+        print(f"父任务   : {task.parent_task_id} / run {task.parent_run_id}"
+              f"（slug={task.subtask_id}，depth={task.depth}）")
     if stack is not None:
         runs = stack.tasks.list_runs(task.task_id)
         for run in runs:

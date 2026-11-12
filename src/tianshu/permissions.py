@@ -95,8 +95,10 @@ AUTO_ACTIONS = {ACTION_READ, ACTION_CREATE}
 # 必须人批的动作
 #:
 #: `fetch` 在这里是刻意的：外发**永远**要人批，没有"只读所以自动放行"的例外。
-#: `delegate` 不在里面——子任务能力尚未实现，它的判定是恒拒（fail-closed），
-#: 放进审批集合会给人一个"批了就能用"的错觉。
+#: `delegate` 不在里面——它不是**动作级**一律审批：`subtask.spawn` 要人批，
+#: `subtask.cancel` 自动放行（只减少执行、不扩权）。按工具区分的判定在
+#: `PolicyEngine._classify_subtask()`，真正的"要不要找一张批准"由派发层的
+#: `Dispatcher._requires_approval()` 按同一个口径回答；两边必须一致。
 APPROVAL_ACTIONS = {ACTION_OVERWRITE, ACTION_DELETE, ACTION_EXEC, ACTION_FETCH}
 
 DECISION_AUTO = "auto"
@@ -452,6 +454,7 @@ class PolicyEngine:
         preconditions: dict[str, Any] | None = None,
         *,
         task_id: str | None = None,
+        tool_id: str | None = None,
     ) -> PolicyDecision:
         if action not in SUPPORTED_ACTIONS:
             return PolicyDecision(
@@ -485,7 +488,7 @@ class PolicyEngine:
         if kind == KIND_MCP:
             return self._classify_mcp(action, resources)
         if kind == KIND_SUBTASK:
-            return self._classify_subtask(action, resources)
+            return self._classify_subtask(action, resources, tool_id=tool_id)
 
         bindings = [WorkspaceBinding.of(b) for b in bindings]
         if not bindings:
@@ -626,28 +629,74 @@ class PolicyEngine:
             "c4.mcp_call",
         )
 
-    def _classify_subtask(self, action: str, resources: list[str]) -> PolicyDecision:
-        """子任务：能力尚未实现，恒拒。
+    def _classify_subtask(
+        self,
+        action: str,
+        resources: list[str],
+        *,
+        tool_id: str | None = None,
+    ) -> PolicyDecision:
+        """子任务：回答**决策形状**，不回答"这个父任务能不能派"。
 
-        这不是"保守"：账本已经有 `subtasks` 维度，但**没有委派执行器**。让它走到
-        审批再失败，等于给用户一个"批了就能用"的错觉；恒拒才是如实的当前状态。
-        接入委派时这里改成审批，并把本注释一起改。
+        委派有两种形状，靠工具 id 区分（同一个 `delegate` 动作）：
+
+        - `subtask.spawn`：派生新执行体、会花预算、可能并发 → **必须人批**；
+        - `subtask.cancel`：只会减少执行、不扩权 → 自动放行。
+
+        `read`（status / result）是纯读本地状态 → 自动。其它动作与资源种类不
+        匹配 → `c4.action_resource_mismatch`。
+
+        **不是**"有 `subtask://` 就放行"：工具归属、父任务身份、`max_subtasks`
+        声明、深度、slug 唯一性、限额与预算都在派发层的 `_authority_subtask()`
+        里判。分类器只回答"这次该弹审批、自动放行，还是拒绝"。
         """
+        if len(resources) != 1:
+            return PolicyDecision(
+                DECISION_DENY, "子任务动作一次只能有一个目标", "c4.multi_resource"
+            )
         try:
-            task_id = parse_resource(resources[0]).subtask_id if len(resources) == 1 else ""
+            subtask_id = parse_resource(resources[0]).subtask_id
         except ResourceError as exc:
             return PolicyDecision(DECISION_DENY, str(exc), "c4.unsupported")
-        if action != ACTION_DELEGATE:
+        if action == ACTION_DELEGATE:
+            if tool_id == "subtask.spawn":
+                return PolicyDecision(
+                    DECISION_APPROVE,
+                    f"派生子任务 {subtask_id!r} 需要人工批准："
+                    "它会创建新的执行体、占用共享预算，并可能并发运行",
+                    "c4.subtask_spawn",
+                )
+            if tool_id == "subtask.cancel":
+                return PolicyDecision(
+                    DECISION_AUTO,
+                    f"取消子任务 {subtask_id!r} 自动放行："
+                    "它只会减少执行，不扩大任何权限",
+                    "c4.subtask_cancel",
+                )
             return PolicyDecision(
                 DECISION_DENY,
-                f"子任务资源只能配 delegate 动作，收到：{action}",
+                f"委派动作只由 subtask.spawn / subtask.cancel 发起，收到："
+                f"{tool_id!r}",
+                "c4.action_resource_mismatch",
+            )
+        if action == ACTION_READ:
+            if tool_id in ("subtask.status", "subtask.result"):
+                return PolicyDecision(
+                    DECISION_AUTO,
+                    f"读取子任务 {subtask_id!r} 的本地状态自动放行"
+                    "（不触发执行、不唤醒作业、不重算预算）",
+                    "c4.auto",
+                )
+            return PolicyDecision(
+                DECISION_DENY,
+                f"子任务资源的读动作只由 subtask.status / subtask.result 发起，"
+                f"收到：{tool_id!r}",
                 "c4.action_resource_mismatch",
             )
         return PolicyDecision(
             DECISION_DENY,
-            f"子任务能力尚未实现，拒绝委派 {task_id!r}"
-            "（没有委派执行器，不接受「批一下就好」的路径）",
-            "c4.subtask_unavailable",
+            f"子任务资源只能配 delegate / read 动作，收到：{action}",
+            "c4.action_resource_mismatch",
         )
 
     def _classify_memory(

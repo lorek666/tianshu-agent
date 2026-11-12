@@ -101,10 +101,22 @@ RULE_IDS: frozenset[str] = frozenset(
         # ---- 资源种类（G1d）：外发、MCP、委派与种类混用 ----
         "c4.outbound",
         "c4.mcp_call",
+        # 保留未使用（G2 D1 起委派已可用）：登记在 DECLARED_UNUSED_RULE_IDS，
+        # 历史日志里它回答"当时为什么不能委派"，不能删也不能改名。
         "c4.subtask_unavailable",
         "c4.action_resource_mismatch",
         "c4.mixed_resource_kinds",
         "dispatch.resource_kind_unsupported",
+        # ---- 委派（G2 子代理 D1）：能力声明、工具归属、深度、slug、限额 ----
+        "c4.subtask_not_configured",
+        "dispatch.subtask_rejected",
+        "dispatch.subtask_exists",
+        "dispatch.subtask_not_found",
+        "dispatch.subtask_limit",
+        "dispatch.subtask_depth_exceeded",
+        # `dispatch.parent_fenced`：编号与语义在 D1 登记（子任务 fence），产生
+        # 路径在 D2 接（父 Run 改目标 → 子任务 fence）。见 DECLARED_UNUSED。
+        "dispatch.parent_fenced",
         # ---- 网络外发（G2）：任务级白名单与网络资源归属 ----
         "c4.outbound_not_allowed",
         "dispatch.network_resource_mismatch",
@@ -124,6 +136,9 @@ RULE_IDS: frozenset[str] = frozenset(
         "c4.delete",
         "c4.exec",
         "c4.outside_workspace",
+        # G2 子代理 D1：spawn 需审批、cancel 自动放行。
+        "c4.subtask_spawn",
+        "c4.subtask_cancel",
         # ---- 兜底：正常情况下不该出现，真出现时必须能记下来 ----
         "dispatch.refused",
         "c4.unsupported",
@@ -135,7 +150,17 @@ RULE_IDS: frozenset[str] = frozenset(
 
 #: 登记为合法、但**当前没有产生路径**的编号。
 #:
-#: 两个都是防御性兜底，不是漏实现：
+#: 前两个是防御性兜底，不是漏实现；后两个是历史归档与"先登记、后接发射点"：
+#:
+#: - `dispatch.parent_fenced`：D1 登记编号与语义（父 Run 改目标 → 子任务被
+#:   fence、结果不能回填），**产生路径在 D2**（父改目标/租约版本核验）。D2 接上
+#:   之后把它移出本集合——与 C3 的 `DECLARED_UNEMITTED_EVENT_TYPES` 同一套纪律：
+#:   先让"未接"这件事机器可读，而不是假装已经接上。
+#:
+#: - `c4.subtask_unavailable`：`_classify_subtask` 在委派执行器缺失时恒拒用过的
+#:   编号。D1 起委派可执行（受 `max_subtasks` 声明 + 人工批准 + 深度/数量限额
+#:   约束），这条路径不再产生。**不删也不改名**：历史事件日志里的 `rule_id`
+#:   是事后判断"用户当时为什么被拒"的唯一线索（见本模块"改名"一节）。
 #:
 #: - `dispatch.denied`：`DispatchDenied.__init__` 的 `rule_id` 默认值。现有 30 余处
 #:   抛出点全部显式给了编号（`grep 'DispatchDenied('` 逐个确认），所以这个默认值
@@ -147,7 +172,12 @@ RULE_IDS: frozenset[str] = frozenset(
 #:   将来往 `SUPPORTED_ACTIONS` 加动作时，忘了加分类分支会落到"未覆盖"而不是
 #:   悄悄放行。
 DECLARED_UNUSED_RULE_IDS: frozenset[str] = frozenset(
-    {"dispatch.denied", "c4.unhandled"}
+    {
+        "dispatch.denied",
+        "c4.unhandled",
+        "c4.subtask_unavailable",
+        "dispatch.parent_fenced",
+    }
 )
 
 #: 判定结果（放行 / 需审批），不是拒绝。同样会写进 `payload.rule_id`。
@@ -161,6 +191,10 @@ DECISION_RULE_IDS: frozenset[str] = frozenset(
         "c4.memory_scope",
         "c4.outbound",
         "c4.outside_workspace",
+        # G2 子代理 D1：委派的两个判定形状。spawn 需审批、cancel 自动放行
+        # （只会减少执行，不扩权），所以两条都是判定结果而不是拒绝。
+        "c4.subtask_spawn",
+        "c4.subtask_cancel",
     }
 )
 
@@ -181,6 +215,10 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.no_task",
             "dispatch.no_parent",
             "dispatch.stale_revision",
+            # G2 子代理 D1：子任务身份（父 Run 作用域 / 深度 / 父改目标）。
+            "dispatch.subtask_exists",
+            "dispatch.subtask_not_found",
+            "dispatch.subtask_depth_exceeded",
         }
     ),
     "审批不可用": frozenset(
@@ -207,10 +245,12 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
     "准入": frozenset({"dispatch.not_admitted"}),
     "资源种类": frozenset(
         {
-            "c4.subtask_unavailable",
             "c4.action_resource_mismatch",
             "c4.mixed_resource_kinds",
             "dispatch.resource_kind_unsupported",
+            # G2 子代理 D1：委派能力缺失 / 工具与资源种类不匹配。
+            "c4.subtask_not_configured",
+            "dispatch.subtask_rejected",
         }
     ),
     "前置条件": frozenset({"dispatch.stale_precondition"}),
@@ -253,7 +293,13 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.network_resource_mismatch",
         }
     ),
-    "预算账本": frozenset({"dispatch.budget_refused"}),
+    "预算账本": frozenset(
+        {
+            "dispatch.budget_refused",
+            # G2 子代理 D1：任务级/局部限额（数量、轮次、token）不满足。
+            "dispatch.subtask_limit",
+        }
+    ),
     "判定结果（非拒绝）": DECISION_RULE_IDS,
     "兜底": frozenset({"dispatch.refused", "c4.unsupported"}),
     "保留未使用": DECLARED_UNUSED_RULE_IDS,

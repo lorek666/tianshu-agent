@@ -107,6 +107,8 @@
         "run.model_turn",
         "run.start",
         "run.state",
+        "subtask.finished",
+        "subtask.spawned",
         "task.created",
         "task.revised",
         "tool.intent",
@@ -1423,7 +1425,11 @@
               "read_content",
               "read_text",
               "restore_file",
-              "run_command"
+              "run_command",
+              "subtask.cancel",
+              "subtask.result",
+              "subtask.spawn",
+              "subtask.status"
             ]
           },
           "action": {
@@ -2118,6 +2124,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "subtask_id": {
+            "type": "string"
           }
         },
         "additionalProperties": false,
@@ -2193,6 +2205,114 @@
           "from",
           "to",
           "reason"
+        ]
+      },
+      "subtask.spawned": {
+        "type": "object",
+        "properties": {
+          "subtask_id": {
+            "type": "string"
+          },
+          "child_task_id": {
+            "type": "string"
+          },
+          "child_run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "goal_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_turns": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "deadline_ms": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "max_turns",
+              "max_tokens",
+              "deadline_ms"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "subtask_id",
+          "child_task_id",
+          "child_run_id",
+          "job_id",
+          "goal_digest",
+          "limits"
+        ]
+      },
+      "subtask.finished": {
+        "type": "object",
+        "properties": {
+          "subtask_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "result_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "turns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "turns",
+              "tokens"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "subtask_id",
+          "state"
         ]
       },
       "task.created": {
@@ -2320,6 +2440,32 @@
             "items": {
               "type": "string"
             }
+          },
+          "max_subtasks": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "parent_task_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "subtask_id": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
           }
         },
         "additionalProperties": false,
@@ -2332,7 +2478,8 @@
           "exec_policy",
           "control",
           "memory_scopes",
-          "outbound_allow"
+          "outbound_allow",
+          "max_subtasks"
         ]
       },
       "task.revised": {
@@ -2420,7 +2567,11 @@
               "read_content",
               "read_text",
               "restore_file",
-              "run_command"
+              "run_command",
+              "subtask.cancel",
+              "subtask.result",
+              "subtask.spawn",
+              "subtask.status"
             ]
           },
           "args": {
@@ -2501,7 +2652,11 @@
               "read_content",
               "read_text",
               "restore_file",
-              "run_command"
+              "run_command",
+              "subtask.cancel",
+              "subtask.result",
+              "subtask.spawn",
+              "subtask.status"
             ]
           },
           "reason": {
@@ -3827,7 +3982,11 @@
               "read_content",
               "read_text",
               "restore_file",
-              "run_command"
+              "run_command",
+              "subtask.cancel",
+              "subtask.result",
+              "subtask.spawn",
+              "subtask.status"
             ]
           },
           "action": {
@@ -4329,6 +4488,12 @@
               "type": "string"
             }
           },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "subtask_id": {
+            "type": "string"
+          },
           "workspace": {
             "type": "string"
           },
@@ -4406,6 +4571,106 @@
             "type": [
               "boolean",
               "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "subtask.spawned": {
+        "type": "object",
+        "properties": {
+          "subtask_id": {
+            "type": "string"
+          },
+          "child_task_id": {
+            "type": "string"
+          },
+          "child_run_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "goal_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_turns": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "deadline_ms": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "max_turns",
+              "max_tokens",
+              "deadline_ms"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "subtask.finished": {
+        "type": "object",
+        "properties": {
+          "subtask_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "fenced"
+            ]
+          },
+          "result_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "turns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "turns",
+              "tokens"
             ]
           }
         },
@@ -4538,6 +4803,32 @@
             "items": {
               "type": "string"
             }
+          },
+          "max_subtasks": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "parent_task_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "subtask_id": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
           }
         },
         "additionalProperties": false,
@@ -4673,7 +4964,11 @@
               "read_content",
               "read_text",
               "restore_file",
-              "run_command"
+              "run_command",
+              "subtask.cancel",
+              "subtask.result",
+              "subtask.spawn",
+              "subtask.status"
             ]
           },
           "reason": {
