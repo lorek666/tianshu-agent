@@ -67,7 +67,7 @@
 | `job.enqueued` | v1 | `run_id`, `job_id` | 无已知形状差异 |
 | `job.finished` | v1 | `run_id`, `job_id`, `claim_epoch`, `owner_pid`, `owner_instance_id`, `outcome` | 无已知形状差异 |
 | `job.parked` | v1 | `run_id`, `job_id`, `claim_epoch`, `owner_pid`, `owner_instance_id`, `reason` | 无已知形状差异 |
-| `job.requeued` | v1 | `run_id`, `job_id`, `claim_epoch`, `owner_pid`, `owner_instance_id` | 无已知形状差异 |
+| `job.requeued` | v1 | `run_id`, `job_id`, `claim_epoch` | G2 委派 D2 起两个来源共用：owner 主动交还（带 `owner_pid` / `owner_instance_id`）与 `JobStore.wake()` 唤醒（owner 已被 `park` 清空，两者为 `null`，另带可选 `by` / `reason`）。旧事件仍合法 |
 | `model.error` | v1 | `request_id`, `error` | 无已知形状差异 |
 | `model.intent` | v1 | `request_id`, `attempt`, `messages_hash`, `context` | 历史形状差异（v0 放宽） |
 | `model.result` | v1 | `request_id`, `content`, `finish_reason`, `tool_calls`, `usage`, `cost` | 无已知形状差异 |
@@ -75,7 +75,7 @@
 | `receipt` | v1 | `receipt_id`, `run_id`, `call_id`, `tool_id`, `action`, `args_hash`, `effect_state`, `backend`, `issuer`, `issued_at`, `root`, `resource`, `before_state`, `after_state`, `intent_seq`, `blob_ref`, `evidence` | 历史形状差异（v0 放宽） |
 | `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异 |
 | `recovery.unblocked` | v1 | `workspace`, `reason` | 无已知形状差异 |
-| `run.control` | v1 | `run_id`, `task_id`, `action` | 无已知形状差异 |
+| `run.control` | v1 | `run_id`, `task_id`, `action` | 无已知形状差异（G2 委派 D2 起可选 `reason`：`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） |
 | `run.cursor` | v1 | `run_id`, `goal_revision`, `lease_epoch`, `claim_epoch`, `completed_call_ids`, `pending_proposals`, `payload_hash` | 无已知形状差异 |
 | `run.effect` | v1 | `run_id`, `task_id`, `effect_state`, `n_applied`, `n_unknown` | 无已知形状差异 |
 | `run.end` | v1 | `outcome`, `effect_state`, `artifact`, `error`, `receipt_ids`, `tokens`, `tokens_unknown_calls`, `turns`, `unbilled_model_intents`, `budget_enforced` | 无已知形状差异 |
@@ -85,7 +85,7 @@
 | `run.start` | v1 | `run_id`, `task_id`, `goal_revision`, `lease_epoch` | 历史形状差异（v0 放宽） |
 | `run.state` | v1 | `run_id`, `task_id`, `from`, `to`, `reason` | 无已知形状差异 |
 | `subtask.spawned` | v1 | `subtask_id`, `child_task_id`, `child_run_id`, `job_id`, `goal_digest`, `limits` | 新增类型（G2 委派 D1）：父 Run 侧只留目标摘要，不留正文 |
-| `subtask.finished` | v1 | `subtask_id`, `state` | 新增类型（G2 委派 D1 登记形状，D2 接发射点）；`result_ref` / `error` / `usage` 可选 |
+| `subtask.finished` | v1 | `subtask_id`, `state` | 新增类型（G2 委派 D1 登记形状，**D2 接发射点**）：子 Run 终态写入的同一事务里追加到**父 Run**；`result_ref` / `error` / `usage` 可选。被 fence 的子任务**不写**这条事件（结果不能回填父 Run） |
 | `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes`, `outbound_allow`, `mcp_servers`, `max_subtasks` | 历史形状差异（v0）：没有 `outbound_allow`（G2 网络阶段加入）、`mcp_servers`（G2 MCP 阶段加入）与 `max_subtasks`（G2 委派 D1 加入）；`parent_task_id` / `parent_run_id` / `subtask_id` / `depth` 为可选父链字段 |
 | `task.revised` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces` | 无已知形状差异 |
 | `tool.intent` | v1 | `call_id`, `tool_id`, `args`, `args_hash`, `request_id`, `request_digest`, `dispatch_id`, `grant_id`, `attempt_id`, `claim_epoch` | 历史形状差异（v0 放宽） |
@@ -379,3 +379,17 @@ PYTHONPATH=/Volumes/Date/ts-wt-events/src /Volumes/Date/天枢Agent/.venv/bin/py
 | `tests/test_dispatch.py` | 500 | 派发恢复的 pending intent 夹具 |
 | `tests/test_daemon.py` | 806 | daemon 恢复的旧 intent 夹具 |
 | `tests/test_job_claims.py` | 346/676 | 用生产 `commit_model_turn` 播种 model turn：把旧 adapter 形状（缺 `output_tokens`、`finish_reason="tool_calls"`）改为当前契约值；**不加 legacy 写**（生产 API 不应该接受旧形状） |
+
+## 12 D2 契约增量（2026-11-12，PR #121）
+
+G2 子代理 D2 接执行与收束时，**没有新增事件类型**，只放宽了两个既有 payload 的
+可选性；两处变化都向后兼容（旧事件逐字合法）：
+
+| 类型 | 原方案 | 新方案 | 为什么改 | 影响哪些代码 |
+|---|---|---|---|---|
+| `job.requeued` | required：`run_id` / `job_id` / `claim_epoch` / `owner_pid` / `owner_instance_id` | required 缩为 `run_id` / `job_id` / `claim_epoch`；`owner_pid` / `owner_instance_id` 改为可选（允许显式 `null`）；新增可选 `by`（`owner` / `wake`）与 `reason` | 新增 `JobStore.wake()`：子任务收尾把父作业从 `waiting` 置回 `pending`。这个动作**不是 owner 交还**——唤醒时 `park` 已把 owner 清空，写一个假 owner 才是违约 | `jobs.JobStore.wake()`、`tasks._maybe_wake_parent()` / `wake_stale_parents()`、`tests/test_event_schema.py` 的最小夹具、`tests/fixtures/events/minimal_v1.json` |
+| `run.control` | required：`run_id` / `task_id` / `action`；无 `reason` | 新增可选 `reason`（`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） | 取消传播需要一个可审计的“谁要求停”：子任务取消、父取消传播、父目标 fence 都会写 `action=cancel`，没有 reason 就只能靠猜 | `tasks.request_cancel_deferred()`、`tasks.request_subtask_cancel()`、`tasks.fence_child_run()` |
+
+没有新增事件类型（仍为 43），没有 bump payload 版本；旧日志按原 required 集合
+仍然合法。回放对 `subtask.spawn` / `subtask.result` 的**工具结果**做形状校验
+（不是事件契约），见 `replay._verify_subtask_result`。

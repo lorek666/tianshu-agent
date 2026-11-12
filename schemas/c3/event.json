@@ -1023,20 +1023,36 @@
             "minimum": 0
           },
           "owner_pid": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "owner_instance_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false,
         "required": [
           "run_id",
           "job_id",
-          "claim_epoch",
-          "owner_pid",
-          "owner_instance_id"
+          "claim_epoch"
         ]
       },
       "model.error": {
@@ -1690,6 +1706,12 @@
               "partial",
               "unknown",
               null
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "previous_run": {
@@ -3557,11 +3579,29 @@
             "minimum": 0
           },
           "owner_pid": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "owner_instance_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false,
@@ -4067,6 +4107,12 @@
               "partial",
               "unknown",
               null
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "previous_run": {

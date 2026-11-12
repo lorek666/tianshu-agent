@@ -235,9 +235,12 @@ def test_tool_id_enum():
     assert DECISION_RULE_IDS.isdisjoint(DECLARED_UNUSED_RULE_IDS)
     # 委派的两条判定必须是"判定结果"而不是拒绝：spawn 审批、cancel 自动。
     assert {"c4.subtask_spawn", "c4.subtask_cancel"} <= DECISION_RULE_IDS
-    # 委派退役编号与 D2 编号显式登记为"保留未使用"，不冒充有产生路径。
+    # 委派退役编号仍是"保留未使用"；D2 起 `dispatch.parent_fenced` 有了产生
+    # 路径（子 Run 派发前核验父目标版本），必须从保留集合里移出。
     assert "c4.subtask_unavailable" in DECLARED_UNUSED_RULE_IDS
-    assert "dispatch.parent_fenced" in DECLARED_UNUSED_RULE_IDS
+    assert "dispatch.parent_fenced" in RULE_IDS
+    assert "dispatch.parent_fenced" not in DECLARED_UNUSED_RULE_IDS
+    assert "dispatch.parent_fenced" in REJECTION_RULE_IDS
     # `task.created` 的必填键也进 task 契约镜像（M2）。
     task_doc = json.loads(M2_TASK.read_text(encoding="utf-8"))
     assert "max_subtasks" in task_doc["properties"]

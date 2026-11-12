@@ -847,6 +847,10 @@ class AgentLoop:
         self._tasks.transition(
             run_id, RUN_RUNNING, claim=claim, reason="resumed"
         )
+        # G2 D2：子 Run 真正被驱动 = 子任务从 queued 进 running。只允许
+        # queued→running：`cancelling` 是人的决定，不能被"我开始了"覆盖。
+        if run.parent_run_id:
+            self._tasks.mark_subtask_running(run_id)
 
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
@@ -958,6 +962,12 @@ class AgentLoop:
                                 else CANCEL_REASON,
                             )
                         outcome, stop_error = self._end_outcome(message)
+                        # G2 D2：父 Run 想正常收尾（succeeded/noop）时，如果
+                        # 还有未完成子任务，作业挂起而不是结束——Run 保持
+                        # RUNNING，游标照常落库，由子任务收尾的事务唤醒。
+                        parked = self._park_for_children(run_id, claim, progress)
+                        if parked is not None:
+                            return parked
                         return self._finish(
                             run_id, claim, progress, outcome=outcome, error=stop_error
                         )
@@ -1022,6 +1032,46 @@ class AgentLoop:
             return self._finish(run_id, claim, progress, outcome="failed", error=error)
 
         return self._finish(run_id, claim, progress, outcome="failed", error=error)
+
+    def _park_for_children(
+        self, run_id: str, claim: JobClaim, progress: _Progress
+    ) -> RunResult | None:
+        """正常收尾前还有未完成子任务 → 挂起作业，Run 保持 RUNNING。
+
+        两个决定：
+        - 不新增 Run 状态：UI / CLI / 状态机仍然只有既有的那几个；
+        - **计数与 park 在同一写事务**。分开做会留下一个真实的竞态：父数到
+          "还有 1 个" → 子任务收尾并 `wake`（此时父作业还是 claimed，wake 是
+          no-op）→ 父再 park。父作业从此永远停在 waiting，没有任何事件会
+          再叫醒它。把计数放进 `BEGIN IMMEDIATE` 事务后，子任务收尾要么在
+          计数前完成（这里数到 0、直接正常收尾），要么在 park 之后提交
+          （它看到的父作业是 waiting，wake 生效）。
+        """
+        if not self._tasks.list_subtasks(run_id):
+            return None
+        try:
+            with self._log.transaction():
+                unfinished = self._tasks.count_unfinished_subtasks(run_id)
+                if unfinished == 0:
+                    return None
+                # 游标与 park 同一事务：崩溃后不会出现"作业 waiting、游标却
+                # 还停在更早的轮次"这种要靠猜补的状态。
+                self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
+                self._claims.park(claim, reason="waiting_children")
+        except JobLost as exc:
+            # 已经不是 owner：不替新 owner 写状态，把结论如实带回去。
+            return self._result(
+                run_id,
+                progress,
+                state=self._state_of(run_id),
+                error=f"挂起未生效（claim 已失效）：{exc}",
+            )
+        return self._result(
+            run_id,
+            progress,
+            state=RUN_RUNNING,
+            error=f"等待子任务：{unfinished} 个未完成（作业已挂起，子任务收尾后唤醒）",
+        )
 
     def _safe_point(
         self, run_id: str, claim: JobClaim, progress: _Progress
@@ -3170,17 +3220,25 @@ def build_stack(
     claims = JobStore(log, **ident, **kwargs)
     approvals = ApprovalStore(log, **kwargs)
     grants = GrantStore(log, **kwargs)
-    tasks = TaskStore(
-        log, leases=leases, claims=claims, approvals=approvals, data_root=root
-    )
     shots = snapshots if snapshots is not None else SnapshotStore(root / "artifacts")
     budget = BudgetLedger(
         log, clock=clock or (lambda: int(time.time() * 1000))
     )
     # blob 目录与 `_persist_spills` 用同一套：优先快照目录，其次是事件库 blob 目录。
     # 两者都没有时不在这里炸——真要用内容引用时 `_persist_spills` 会明确失败。
-    contents = ContentStore(
-        log, blob_dir=getattr(shots, "blob_dir", None) or log.blob_dir
+    blob_dir = getattr(shots, "blob_dir", None) or log.blob_dir
+    contents = ContentStore(log, blob_dir=blob_dir)
+    tasks = TaskStore(
+        log,
+        leases=leases,
+        claims=claims,
+        approvals=approvals,
+        data_root=root,
+        # G2 委派 D2：子任务收尾要结算父账户的 `subtasks` 维度、并把子 Run 的
+        # 最后一轮输出写成 `content://` 引用。两者都与事件同一事务。
+        budget=budget,
+        contents=contents,
+        blob_dir=blob_dir,
     )
     summaries = SummaryStore(log, clock=clock or (lambda: int(time.time() * 1000)))
     # MCP（G2 MCP 阶段）：用户配置的 server 由**装配点**启动一次，发现到的工具

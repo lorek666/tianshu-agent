@@ -664,10 +664,16 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "run_id": _s(),
             "job_id": _s(),
             "claim_epoch": _i(minimum=0),
-            "owner_pid": _i(minimum=0),
-            "owner_instance_id": _s(),
+            # G2 子代理 D2：`JobStore.wake()` 由子任务收尾触发，不是 owner 交还。
+            # 唤醒时 owner 已经被 park 清空，如实写 null；旧事件（owner 交还）
+            # 仍带完整 owner 字段，向后兼容。
+            "owner_pid": _opt(_i(minimum=0)),
+            "owner_instance_id": _opt(_s()),
+            # 谁让它回到队列：`owner`（主动交还）或 `wake`（子任务收尾）。
+            "by": _opt(_s()),
+            "reason": _opt(_s()),
         },
-        required=("run_id", "job_id", "claim_epoch", "owner_pid", "owner_instance_id"),
+        required=("run_id", "job_id", "claim_epoch"),
     ),
     "model.error": _obj(
         {
@@ -770,6 +776,9 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "request_effective": _opt(_b()),
             "stronger_request": _opt(_s()),
             "effect_state": _opt(_EFFECT_STATE),
+            # G2 D2：控制请求的发起原因（`subtask_cancel_requested` /
+            # `parent_cancelled` / `parent_fenced`）。旧事件不带这个键。
+            "reason": _opt(_s()),
             "previous_run": _opt(_s()),
             "checked": _opt(_TAKEOVER_CHECKED),
         },

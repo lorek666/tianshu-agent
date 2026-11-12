@@ -586,10 +586,12 @@ def test_spawn_refused_when_parent_budget_exhausted(tmp_path):
 
 
 def test_spawn_requires_approval_then_queues(tmp_path):
-    """`subtask.spawn` 必须人工批准；批准后子任务 **queued**，没有被执行。
+    """`subtask.spawn` 必须人工批准；批准后子任务 **queued**，父作业挂起等待。
 
-    D1 的诚实边界就在最后一句：子任务只是排上了队，子 Run 停在 `created`、
-    子作业停在 `pending`，日志里没有 `subtask.finished`——不假装已经跑过。
+    D2 改变的是父 Run 的收尾方式：父模型说"派好了，等结果"时，父 Run 不再
+    直接 succeeded，而是把作业 `park` 成 `waiting`、Run 保持 `running`——因为
+    还有未完成子任务。子任务本身仍是 `queued`：执行由既有 Worker 认领子 Job
+    来完成（见 `test_worker_drives_child_run`），spawn 自己不会顺手跑它。
     """
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -627,7 +629,11 @@ def test_spawn_requires_approval_then_queues(tmp_path):
         approve_pending(stack, result.run_id)
         assert stack.tasks.list_subtasks(result.run_id) == []
         result = engine.resume_run(result.run_id)
-        assert result.state in ("succeeded", "noop", "failed"), result
+        # D2 口径：还有未完成子任务 → 父作业 waiting、Run 保持 running。
+        assert result.state == "running", result
+        assert stack.tasks.get_run(result.run_id).state == "running"
+        parent_job = stack.claims.job_for_run(result.run_id)
+        assert parent_job is not None and parent_job.state == "waiting"
 
         (row,) = stack.tasks.list_subtasks(result.run_id)
         assert row.state == "queued"
@@ -636,7 +642,7 @@ def test_spawn_requires_approval_then_queues(tmp_path):
         job = stack.claims.get(row.job_id)
         assert job is not None and job.state == "pending"
         assert _events(log, result.run_id, "subtask.finished") == [], (
-            "D1 没有执行器：不许写 finished 事件假装跑完"
+            "spawn 不执行子任务：不许写 finished 事件假装跑完"
         )
         tool_result = _results(log, result.run_id)["c1"]
         assert tool_result["status"] == "succeeded"

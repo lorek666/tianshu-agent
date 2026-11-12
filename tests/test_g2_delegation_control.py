@@ -396,7 +396,13 @@ def test_subtask_reads_go_through_dispatch_without_approval(tmp_path):
             rounds += 1
             approve_pending(stack, result.run_id)
             result = engine.resume_run(result.run_id)
-        assert result.state in ("succeeded", "noop"), result
+        # D2 口径：cancel 让子任务停在 cancelling（执行侧还没确认），父 Run
+        # 因此还有未完成子任务 → 作业挂起、Run 保持 running。旧断言要求父 Run
+        # 直接 succeeded，那是"D1 不执行/不等待"时的口径。
+        assert result.state == "running", result
+        assert stack.tasks.get_run(result.run_id).state == "running"
+        parked = stack.claims.job_for_run(result.run_id)
+        assert parked is not None and parked.state == "waiting"
 
         results = _results(log, result.run_id)
         assert results["c2"]["status"] == "succeeded"

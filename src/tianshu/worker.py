@@ -228,6 +228,9 @@ class Worker:
     _side_stuck: bool = False
     #: 上一趟 drain 是否因为"没活干"结束（而不是撞上上限或被占用打断）
     exhausted: bool = False
+    #: G2 委派 D2：启动恢复只做一次（协调未收尾的子任务行 + 唤醒停在
+    #: `waiting` 的父作业）。每轮都扫一遍没有意义，还会在热路径上加写事务。
+    _startup_reconciled: bool = False
 
     def __post_init__(self) -> None:
         self._claims = self.claims or self.stack.claims
@@ -238,6 +241,7 @@ class Worker:
 
     def run_once(self) -> bool:
         """认领一个作业并推进它。返回"这次有没有活干"。"""
+        self._reconcile_subtask_state()
         claim = self._claims.claim_next(ttl_ms=self.ttl_ms)
         if claim is None:
             return False
@@ -320,6 +324,34 @@ class Worker:
 
     # ---- 内部 ----
 
+    def _reconcile_subtask_state(self) -> None:
+        """G2 委派 D2：worker 启动时先按证据修子任务状态，再认领作业。
+
+        两件独立的事：
+        1. 子 Run 已终结、`subtasks` 行还停在未完成（升级旧库 / 早退实现留下的
+           窗口）→ 以子 Run 终态为准修正；
+        2. 父作业停在 `waiting`、子任务却已经全终结（收尾事务提交了、wake 却
+           没发生）→ 补一次 `wake`。
+
+        为什么放在 worker 而不是 CLI：worker 是"自动推进队列"的那个角色，
+        它启动时必须先让队列反映真实证据；否则一条 waiting 作业谁都不会碰。
+        """
+        if self._startup_reconciled:
+            return
+        self._startup_reconciled = True
+        try:
+            fixed = self._tasks.reconcile_finished_subtasks()
+            woken = self._tasks.wake_stale_parents()
+        except TianshuError as exc:
+            # 修不了就说出来（进 errors，CLI 退出码会红），不要带着半截状态
+            # 继续认领作业。
+            self.errors.append(f"子任务启动恢复失败：{exc}")
+            return
+        if fixed:
+            self.notes.append(f"启动恢复：按子 Run 终态修正 {len(fixed)} 个子任务")
+        if woken:
+            self.notes.append(f"启动恢复：唤醒 {len(woken)} 个等待中的父作业")
+
     def _engine(self, claim: JobClaim) -> AgentLoop:
         if self.engine_factory is not None:
             return self.engine_factory(claim)
@@ -340,6 +372,12 @@ class Worker:
             memory=self.stack.memory,
             # 语义摘要记录（PRD §7.1）：与装配共用同一个存储，默认开关仍是关。
             summaries=self.stack.summaries,
+            # G2 委派 D2：子 Run 的"局部 max_turns / max_tokens"记在它自己的
+            # 预算账户上，只有把同一个账本交给执行引擎才会真正生效；不传的话
+            # 子任务的上限只是 spawn 时的一行 JSON，跑起来谁也不看。
+            budget=getattr(self.stack, "budget", None),
+            # 内容引用（截断溢出 / 子任务结果）同样要与装配共用一份。
+            contents=getattr(self.stack, "contents", None),
         )
 
     def _side_channel(self) -> _SideChannel:

@@ -173,6 +173,7 @@
       "dispatch.no_parent",
       "dispatch.no_task",
       "dispatch.not_running",
+      "dispatch.parent_fenced",
       "dispatch.run_fenced",
       "dispatch.stale_revision",
       "dispatch.subtask_depth_exceeded",
@@ -270,15 +271,13 @@
     "保留未使用": [
       "c4.subtask_unavailable",
       "c4.unhandled",
-      "dispatch.denied",
-      "dispatch.parent_fenced"
+      "dispatch.denied"
     ]
   },
   "x-declared-unused": [
     "c4.subtask_unavailable",
     "c4.unhandled",
-    "dispatch.denied",
-    "dispatch.parent_fenced"
+    "dispatch.denied"
   ],
   "x-decision-rule-ids": [
     "c4.auto",

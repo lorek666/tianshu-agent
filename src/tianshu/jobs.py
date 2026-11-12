@@ -603,6 +603,56 @@ class JobStore:
             tx.append(claim.run_id, JOB_REQUEUED, claim.to_dict())
         return self.get(claim.job_id)  # type: ignore[return-value]
 
+    def wake(self, job_id: str, *, reason: str = "children_finished") -> Job | None:
+        """把**等待中**的作业叫醒（G2 D2：子任务收尾时用）。
+
+        为什么需要它：父 Run 等子任务时会 `park` 成 `waiting`——这是刻意的，
+        轮询 worker 不该反复认领它。子任务收尾是那个"外面的事件"，它把作业
+        从 `waiting` 置回 `pending`，下一次 `claim_next` 才可能认领到。
+
+        只对 `waiting` 生效，且只在**同一个事务**里做（调用方通常正是子 Run
+        收尾的事务）：
+        - `pending`：已经在队列里，不需要动；
+        - `claimed`：有 owner 在跑，抢它的作业会把用户刚批的审批作废；
+        - 终态：Run 已经结束，唤醒等于制造一条永远轮不到的僵尸作业。
+        因此这里是幂等的：重复唤醒不写第二条事件、不改 `claim_epoch`。
+
+        复用 `job.requeued` 而不是新造事件类型：它表达的就是"作业回到可认领
+        状态"，只是发起者不是 owner（`by=wake`），所以 owner 字段如实为 null。
+        """
+        with self._log.transaction() as tx:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            if row["state"] != JOB_WAITING:
+                return self._row_to_job(row)
+            cur = self._conn.execute(
+                "UPDATE jobs SET state='pending', owner_instance_id=NULL,"
+                " owner_pid=NULL, heartbeat_at=NULL, deadline_at=NULL,"
+                " claimed_at=NULL"
+                " WHERE job_id=? AND state='waiting'",
+                (job_id,),
+            )
+            if cur.rowcount == 0:  # pragma: no cover - 同一事务里刚查过
+                return self.get(job_id)
+            tx.append(
+                row["run_id"],
+                JOB_REQUEUED,
+                {
+                    "run_id": row["run_id"],
+                    "job_id": job_id,
+                    "claim_epoch": int(row["claim_epoch"]),
+                    # 唤醒时 owner 已被 park 清空：如实写 null，不冒充一个 owner。
+                    "owner_pid": row["owner_pid"],
+                    "owner_instance_id": row["owner_instance_id"],
+                    "by": "wake",
+                    "reason": reason,
+                },
+            )
+        return self.get(job_id)
+
     def park(self, claim: JobClaim, *, reason: str) -> Job:
         """把作业挂起：还开着，但不该被自动跑，等外面的事件叫醒它。
 

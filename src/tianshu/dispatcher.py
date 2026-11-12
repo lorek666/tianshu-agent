@@ -1840,7 +1840,11 @@ class Dispatcher:
                 "subtask_id": subtask.subtask_id,
                 "state": subtask.state,
                 "done": True,
-                "summary": subtask.summary,
+                # 终态的 `summary` 恒为字符串：行里的 NULL 只代表"没有正文"
+                # （fence / 取消不会写摘要），不是"未知"。把 None 直接抛给
+                # 调用方，会让回放的形状校验把一条**合法**结果判成
+                # "summary 不是字符串"——审计工具在自己的产出上误报。
+                "summary": subtask.summary or "",
                 "result_ref": subtask.result_ref,
                 "error": subtask.error,
             }
@@ -2509,6 +2513,18 @@ class Dispatcher:
         task = self._tasks.get_task(request.task_id)
         if task is None:
             raise DispatchDenied(f"task 不存在：{request.task_id}", "dispatch.no_task")
+
+        # G2 委派 D2（规格 §2.6）：子 Run 每次派发前核验父目标是否还是 spawn
+        # 时那个版本。放在资源解析之前是刻意的——父目标已经改了，这次调用
+        # 无论指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。
+        # 一旦发现不一致：子任务置 `fenced`（结果不回填父 Run，也不写
+        # `subtask.finished`），并给子 Run 留下取消请求，让它在安全点停下。
+        if run.parent_run_id:
+            fence_reason = self._tasks.parent_fence_reason(run.run_id)
+            if fence_reason is not None:
+                self._tasks.fence_child_run(run.run_id, reason=fence_reason)
+                raise DispatchDenied(fence_reason, "dispatch.parent_fenced")
+
         if not request.resources:
             raise DispatchDenied("动作没有声明资源", "c4.no_resource")
 
