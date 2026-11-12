@@ -1,21 +1,23 @@
-"""MCP 崩溃夹具与恢复判据（G2 MCP 阶段收尾轮：c10 的实测、NB21 的负控对象）。
+"""MCP 崩溃夹具与恢复判据（G2 MCP 阶段：c10 的实测、NB21 的负控对象）。
 
 对端是 `tests/fixtures/fake_mcp_server.py` **真子进程**，跑 Run 的也是真子进程
 （CLI）。崩溃是 `os._exit(77)` 硬退：不走清理、不给恢复代码机会。它与 `kill -9`
 在"进程死在这一步"这个意义上等价——**不**证明内核缓冲里的字节真的丢了（这一
 口径与 `docs/powercut-evidence.md` 相同）。
 
-为什么要两个窗口，各自证明什么：
+三个窗口，各自的结论**不相等**，这是本阶段的全部要点：
 
-- `mcp_after_call`（响应已收到；`tool.result` / 凭据 / 终态都没落盘）才是真正的
-  "**可能已生效但结论丢了**"的窗口。server 的 `--effect-log` 证明它确实执行了。
-  恢复对它唯一诚实的答案是 `unknown` + 阻断，**不是**重放、也不是"没证据=没写"。
-- `mcp_before_call`（intent/dispatches 已提交、请求还没写进 server stdin）：恢复
-  **分不出**它与上者的区别——它手上没有任何本机证据能说明"发没发出去"。所以同
-  样是 `unknown` + 阻断。这条用例把"宁可不发也先列出来"的代价钉住，防止有人为
-  了让日志好看，把"没收到结果"写成 `none_applied`。
+- `mcp_before_call`（intent/dispatches 已提交，**外发边界标记还没落盘**）：请求
+  一定没写进 server 的 stdin。恢复可以判 `none_applied` + 不阻断——它的判据
+  是发送**之前**提交的那一行 `dispatches.state=executing`。
+- `mcp_marked`（标记已落盘，请求还没写）：恢复**没法**证明没发出去。它只能保
+  守判 `unknown` + 阻断。这一小段窗口是有意付出的代价：宁可多挡一个目录，也不
+  把可能已经发生的副作用说成没发生。
+- `mcp_after_call`（响应已收到；`tool.result` / 凭据 / 终态都没落盘）：真正的
+  "可能已生效但结论丢了"。server 的 `--effect-log` 证明它确实执行了。同样是
+  `unknown` + 阻断，**不是**重放、也不是"没证据=没写"。
 
-另外三条用例不崩溃，测的是**不该被重判 / 不该留下互相矛盾的说法**：
+另外几条用例不崩溃，测的是**不该被重判 / 不该留下互相矛盾的说法**：
 
 - `isError: true` 的调用已经有 `tool.result`：结论是 `applied`（确实执行过）+
   `status=failed` + 凭据。恢复的判据是"结果事件有没有提交"，不是 server 回了
@@ -23,8 +25,11 @@
 - 文件写工具的恢复终态：`applied` → 派发行 `done`，其余 → `error`。只写结果
   不动派发行，`dispatch_record()` 会继续显示 `intent/executing`——同一件事在事件
   里是"已结算"、在派发表里是"仍在执行"（复审 R2）。
+- `revoked`/`rejected` 的派发行是审计事实：MCP 的结论可以按"没越过外发边界"
+  判 `none_applied`，但那行**不许**被改写（撤销过就该一直看得出撤销过）。
 - MCP 工具 id 被误塞进静态 `SPECS` 时，恢复仍必须按 MCP 结算（不查磁盘）。身份
   由 id 形状决定，不靠"静态表里没有它"。
+- 发包前撤销：标记推进不上就**不发**，结论是确定的 `rejected`/`none_applied`。
 """
 
 from __future__ import annotations
@@ -40,14 +45,20 @@ from pathlib import Path
 import pytest
 from support import CHILD_TEXT, approve_pending, engine_for
 
-from tianshu.dispatcher import DISPATCH_ERROR, DISPATCH_FINISHED
+from tianshu.dispatcher import (
+    DISPATCH_ERROR,
+    DISPATCH_EXECUTING,
+    DISPATCH_FINISHED,
+    DISPATCH_INTENT,
+)
 from tianshu.errors import WorkspaceBlocked
 from tianshu.events import EventLog
 from tianshu.guard import blocked_workspaces, ensure_not_blocked, unblock
+from tianshu.leases import GuardTimeout
 from tianshu.loop import build_stack
 from tianshu.mcp import McpClients, McpServerConfig
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
-from tianshu.permissions import ACTION_OVERWRITE, HumanIdentity
+from tianshu.permissions import ACTION_OVERWRITE, ApprovalError, HumanIdentity
 from tianshu.receipt import verify_receipts
 from tianshu.recovery import assess_run, recover_run
 from tianshu.snapshot import SnapshotStore
@@ -326,8 +337,8 @@ def test_crash_after_server_executed_settles_unknown_and_blocks(tmp_path):
         assert len(env.calls()) == 1
         assert len(env.effects()) == 1
         assert env.effects()[0]["name"] == "echo"
-        # 崩在派发中途：派发行还没到终态
-        assert _dispatch_state(env, run_id) in ("intent", "executing")
+        # 崩在派发中途：外发边界标记已落盘（这次调用确实"可能已经发出"）
+        assert _dispatch_state(env, run_id) == DISPATCH_EXECUTING
 
         # 只读对账：拒绝接手、报告 unresolved，且不落任何事件
         before = len(env.types(run_id))
@@ -377,12 +388,13 @@ def test_crash_after_server_executed_settles_unknown_and_blocks(tmp_path):
         env.log.close()
 
 
-def test_crash_before_send_is_indistinguishable_and_still_blocks(tmp_path):
-    """请求没发出去也照样 unknown + 阻断：恢复没有证据分得清。
+def test_crash_before_send_settles_none_applied_and_does_not_block(tmp_path):
+    """外发边界之前崩掉：请求一定没写出 → `none_applied`，不阻断、可直接接着跑。
 
-    这条不是"要求"而是**代价**：为了不在"可能已生效"上撒谎，恢复必须把"连发都
-    没发"的一次调用也列出来等人工核对。谁要是把这里改成 `none_applied` 让日志
-    好看，另一条用例（响应已收到）就会变成假话。
+    判据不是"日志里没有结果所以就当没发生"，而是**发送之前**提交的那一行
+    `dispatches.state=executing`（`dispatcher._mark_mcp_send_boundary`）：崩溃
+    发生在标记落盘之前，行还停在 `intent`。server 的 call-log 也是空的——请求
+    确实没到。
     """
     env = _env(tmp_path)
     try:
@@ -401,9 +413,95 @@ def test_crash_before_send_is_indistinguishable_and_still_blocks(tmp_path):
         # 一个字节都没写进 server：call-log 与 effect-log 都是空的
         assert env.calls() == []
         assert env.effects() == []
+        # 外发边界标记没有落盘 → 行还停在 `intent`
+        assert _dispatch_state(env, run_id) == DISPATCH_INTENT
+
+        # 只读对账也要能判"没发"：不拒绝接手，也不落事件
+        before = len(env.types(run_id))
+        assessment = assess_run(env.data, run_id, log=env.log)
+        assert assessment.none_applied == (CALL_ID,)
+        assert assessment.unresolved == ()
+        assert assessment.blocks_takeover is False
+        assert len(env.types(run_id)) == before, "只读对账不许写事件"
 
         report = _recover(env, run_id)
-        assert report.unresolved == [CALL_ID], "口径：分不清就只报 unknown"
+        assert report.none_applied == [CALL_ID]
+        assert report.unresolved == [] and report.applied == []
+        assert report.blocked_workspaces == [], "没发出去的调用不该挡任何目录"
+        assert report.ok, report.problems
+        results = env.payloads(run_id, "tool.result")
+        assert len(results) == 1
+        result = results[0]
+        assert result["status"] == "failed"
+        assert result["effect_state"] == "none_applied"
+        output = result["output"]
+        assert output["recovered"] is True
+        assert output["reason"] == "mcp.not_sent"
+        assert output["tool_id"] == MCP_TOOL
+        # 不补凭据：没越过边界的调用没有可归因的效果
+        assert env.types(run_id).count("receipt") == 0
+        # 已结算的派发行不能继续显示"还没结算"
+        assert _dispatch_state(env, run_id) == DISPATCH_ERROR
+        assert env.ws_root not in blocked_workspaces(env.log)
+        ensure_not_blocked(env.log, env.ws)
+
+        # 幂等：再恢复一次，不新增结果/凭据/阻断
+        report2 = _recover(env, run_id)
+        assert report2.ok and report2.none_applied == []
+        assert env.types(run_id).count("tool.result") == 1
+        assert env.types(run_id).count("recovery.blocked") == 0
+
+        # 不用人工解除阻断就能接着跑：不重放、也不再打 server
+        proc = _resume(env, run_id, responses=[_end()])
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        env.reopen()
+        assert env.types(run_id).count("tool.intent") == 1, "不许重派"
+        assert len(env.calls()) == 0, "恢复/续跑都不许再打 server"
+        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+    finally:
+        env.log.close()
+
+
+def test_crash_after_marker_conservatively_blocks_and_refuses_revoke(tmp_path):
+    """标记已落盘、请求还没写：恢复没法证明"没发"，只能保守 unknown + 阻断。
+
+    这一小段窗口是有意付出的代价：宁可多挡一个目录，也不把可能已经发生的副作
+    用说成没发生。它同时钉住另一半——派发行一旦越过外发边界，**撤销**就不能再
+    假装成功，否则"撤销成功"这句话会盖住一个可能已经发出的请求。
+    """
+    env = _env(tmp_path)
+    try:
+        run_id = _start(env)
+        approved = _approve(env, run_id)
+        assert approved, "MCP 调用必须先弹人工批准"
+        proc = _resume(
+            env, run_id, responses=[_end()],
+            env_extra={"TIANSHU_FAILPOINT": "mcp_marked"},
+        )
+        assert proc.returncode == 77, proc.stdout + proc.stderr
+        assert "[failpoint] mcp_marked" in proc.stderr, proc.stderr
+        env.reopen()
+
+        assert env.types(run_id).count("tool.intent") == 1
+        assert env.types(run_id).count("tool.result") == 0
+        # 请求还没写进 server（call-log 空），但外发边界标记已经落盘
+        assert env.calls() == []
+        assert env.effects() == []
+        assert _dispatch_state(env, run_id) == DISPATCH_EXECUTING
+
+        # 越过外发边界之后，撤销必须报错，而不是"撤销成功"
+        with pytest.raises(ApprovalError):
+            env.stack.dispatcher.revoke(
+                approved[0], actor=HumanIdentity.local_cli(), reason="想撤掉"
+            )
+
+        # 只读对账：无从证明没发 → 拒绝接手
+        assessment = assess_run(env.data, run_id, log=env.log)
+        assert assessment.unresolved == (CALL_ID,)
+        assert assessment.blocks_takeover is True
+
+        report = _recover(env, run_id)
+        assert report.unresolved == [CALL_ID], "证明不了没发 = 按可能已发处理"
         assert report.none_applied == []
         result = env.payloads(run_id, "tool.result")[0]
         assert result["effect_state"] == "unknown"
@@ -519,9 +617,9 @@ _DISPATCH_INSERT = (
     "INSERT INTO dispatches (dispatch_id, run_id, task_id, call_id,"
     " request_id, request_digest, tool_id, action, resources, target,"
     " rel_path, workspace_root, resource_key, approval_id, grant_id,"
-    " claim_epoch, owner_instance_id, attempt_id, intent_seq, state,"
-    " created_at, updated_at)"
-    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    " claim_epoch, owner_instance_id, attempt_id, intent_seq,"
+    " boundary_protocol, state, created_at, updated_at)"
+    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 _NOW = 1_700_000_000_000
@@ -536,38 +634,52 @@ def _insert_dispatch(
     target: str,
     intent_seq: int,
     state: str = "intent",
+    protocol: int = 1,
 ) -> None:
+    """手写一行派发记录。
+
+    `protocol=1` = 由"发包前提交外发边界标记"的版本写的（当前版本）；
+    `protocol=0` = 升级前的旧行（旧版本写请求前不推进派发行）。
+    """
     log.conn.execute(
         _DISPATCH_INSERT,
         (
             dispatch_id, run_id, "task_x", CALL_ID, "req_x", "0" * 64, tool_id,
             ACTION_OVERWRITE, "[]", target, "", "", f"key:{target}", None,
-            "grant_x", 1, "inst_x", 1, intent_seq, state, _NOW, _NOW,
+            "grant_x", 1, "inst_x", 1, intent_seq, protocol, state, _NOW, _NOW,
         ),
     )
 
 
+@pytest.mark.parametrize("dispatch_state", ["intent", "executing"])
 @pytest.mark.parametrize("side_effect_level", ["idempotent", "pure"])
 def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
-    tmp_path, monkeypatch, side_effect_level
+    tmp_path, monkeypatch, side_effect_level, dispatch_state
 ):
     """MCP id 万一进了静态 `SPECS`，恢复仍按 MCP 判（不读磁盘）。
 
     "不在 `SPECS` 里"是个会变的前提：有人把动态 id 塞进静态表、或注册表装配错
-    了，恢复就会去查快照清单，把"没有写前证据"读成"确定没写"——一次可能已经
-    生效的 MCP 调用被洗成 `none_applied`。身份由 id 形状决定，不由静态表决定。
+    了，恢复就会去查快照清单。这个夹具的清单**存在但没有本次调用条目**——按文件
+    工具的口径那就等于"确定没写"。所以只要 MCP 判据被绕开，两种派发行状态都会
+    露出马脚：
+
+    - `executing`（越过外发边界）：必须 `unknown` + 阻断，不能按空清单判
+      `none_applied`（那会把一次可能已生效的调用洗掉）；
+    - `intent`（没越过边界）：结论可以 `none_applied`，但 reason 必须是
+      `mcp.not_sent`——不能是"清单里没有条目"那条文件工具的推理。
     """
-    ws = tmp_path / "ws"
+    tag = f"{side_effect_level}-{dispatch_state}"
+    ws = tmp_path / f"ws-{tag}"
     ws.mkdir()
-    data = tmp_path / "data"
+    data = tmp_path / f"data-{tag}"
     data.mkdir()
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
-    artifacts = tmp_path / "artifacts"
+    log = EventLog(tmp_path / f"events-{tag}.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / f"artifacts-{tag}"
     artifacts.mkdir()
     store = SnapshotStore(artifacts)
     try:
         stack = build_stack(log, data_root=data)
-        run_id = "run_mcp_static"
+        run_id = f"run_mcp_static_{tag}"
         store.init_run(run_id)  # 清单存在但**没有**本次调用条目
         log.append(
             run_id,
@@ -587,7 +699,7 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
         )
         _insert_dispatch(
             log, dispatch_id="dsp_mcp", run_id=run_id, tool_id=MCP_TOOL,
-            target="mcp://fake/echo", intent_seq=seq,
+            target="mcp://fake/echo", intent_seq=seq, state=dispatch_state,
         )
         monkeypatch.setitem(
             SPECS,
@@ -608,18 +720,18 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
         # MCP id 不在静态表时仍会 unresolved，测不出来）。
         before = len(log.read_run(run_id, verify=False))
         assessment = assess_run(data, run_id, log=log)
-        assert assessment.unresolved == (CALL_ID,)
-        assert assessment.blocks_takeover is True
+        if dispatch_state == "executing":
+            assert assessment.unresolved == (CALL_ID,)
+            assert assessment.none_applied == ()
+            assert assessment.blocks_takeover is True
+        else:
+            assert assessment.none_applied == (CALL_ID,)
+            assert assessment.unresolved == ()
+            assert assessment.blocks_takeover is False
         assert len(log.read_run(run_id, verify=False)) == before, "只读对账不许写事件"
 
         report = recover_run(log, run_id, ws, store, leases=stack.leases,
                              data_root=data)
-        assert report.unresolved == [CALL_ID], (
-            "即使静态表里出现了这个 id，也只能按 MCP 判 unknown"
-        )
-        assert report.none_applied == [], (
-            "空清单里没有本次调用的条目，不能拿来证明 MCP 没执行"
-        )
         results = [
             e.payload
             for e in log.read_run(run_id, verify=False)
@@ -627,7 +739,22 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
         ]
         assert len(results) == 1
         assert results[0]["tool_id"] == MCP_TOOL
-        assert results[0]["output"]["reason"] == "mcp.crash_unsettled"
+        if dispatch_state == "executing":
+            assert report.unresolved == [CALL_ID], (
+                "即使静态表里出现了这个 id，也只能按 MCP 判 unknown"
+            )
+            assert report.none_applied == [], (
+                "空清单里没有本次调用的条目，不能拿来证明 MCP 没执行"
+            )
+            assert results[0]["output"]["reason"] == "mcp.crash_unsettled"
+            assert report.blocked_workspaces == [str(ws.resolve())]
+        else:
+            assert report.none_applied == [CALL_ID]
+            assert report.unresolved == []
+            assert results[0]["output"]["reason"] == "mcp.not_sent", (
+                "空清单不是判据：没发出这条结论来自外发边界标记"
+            )
+            assert report.blocked_workspaces == []
     finally:
         log.close()
 
@@ -666,6 +793,10 @@ def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
 
     复审 R2-2：撤销先于结算时把 `revoked` 改成 `error`（或 `applied` 改成
     `done`），等于在审计里抹掉"这次派发被撤销过"这条事实。结果照写，行不动。
+
+    对 MCP 还多一层：`revoked`/`rejected` 同时是**"请求没越过外发边界"**的证据
+    （标记只从 `intent` 推进），所以结论从 `unknown` 变成了确定的
+    `none_applied`——行本身依旧保持终态。
     """
     # (a) 文件写：行已 revoked，磁盘却是写后状态 → 结果 applied，行仍 revoked
     ws = tmp_path / "ws"
@@ -717,7 +848,8 @@ def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
     finally:
         log.close()
 
-    # (b) MCP：行已 rejected，intent 无 result → 结果 unknown，行仍 rejected
+    # (b) MCP：行已 rejected（撤销/拒绝先到，标记只从 intent 推进 → 请求一定
+    #     没写出）→ 结论 none_applied、不阻断，但行仍 rejected（审计事实）
     ws2 = tmp_path / "ws-mcp"
     ws2.mkdir()
     data2 = tmp_path / "data-mcp"
@@ -749,7 +881,11 @@ def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
 
         report2 = recover_run(log2, run_id2, ws2, store2, leases=stack2.leases,
                               data_root=data2)
-        assert report2.unresolved == [CALL_ID]
+        assert report2.none_applied == [CALL_ID], (
+            "rejected 说明标记从没推进：请求没写出，结论只能是确定没生效"
+        )
+        assert report2.unresolved == []
+        assert report2.blocked_workspaces == [], "没发出的调用不该挡目录"
         row2 = log2.conn.execute(
             "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
             (run_id2, CALL_ID),
@@ -831,3 +967,497 @@ def test_recovery_marks_dispatch_row_terminal_for_file_writes(tmp_path):
             )
         finally:
             log.close()
+
+
+def test_refused_send_boundary_does_not_call_server(tmp_path, monkeypatch):
+    """标记推进不上（行已撤销/作废）→ 不发请求、结论确定、行保持终态。
+
+    真实时间窗里"撤销恰好插在 intent 与标记之间"没法按需制造，所以这里把
+    `_mark_mcp_send_boundary` 换成一个"把行改成撤销、返回 False"的替身：要测的
+    是**调用方怎么处理 False**——不发请求、写确定结论、不产凭据、不改写行。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    call_log = tmp_path / "calls.jsonl"
+    clients = McpClients(
+        {
+            "fake": _config(
+                "normal",
+                call_log=call_log,
+                effect_log=tmp_path / "effects.jsonl",
+                cwd=tmp_path,
+            )
+        }
+    )
+    try:
+        stack = build_stack(log, data_root=data, mcp_clients=clients)
+        task = stack.tasks.create_task(
+            "发包前撤销", [str(ws)], mcp_servers=["fake"]
+        )
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+
+        def refuse(dispatch_id: str) -> bool:
+            log.conn.execute(
+                "UPDATE dispatches SET state='revoked' WHERE dispatch_id=?",
+                (dispatch_id,),
+            )
+            return False
+
+        monkeypatch.setattr(stack.dispatcher, "_mark_mcp_send_boundary", refuse)
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        rows = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert len(rows) == 1, rows
+        assert rows[0]["status"] == "rejected"
+        assert rows[0]["effect_state"] == "none_applied"
+        assert rows[0]["output"]["reason"] == "mcp.revoked_before_send"
+        receipts = [
+            e for e in log.read_run(result.run_id, verify=False)
+            if e.type == "receipt"
+        ]
+        assert receipts == [], "没发出去的调用不产凭据"
+        assert not call_log.exists() or call_log.read_text(encoding="utf-8") == "", (
+            "标记推进不上就不许打 server"
+        )
+        row = stack.dispatcher.dispatch_record(result.run_id, CALL_ID)
+        assert row is not None and row.state == "revoked", (
+            "撤销是审计事实，不许被这次结果改写成 done/error"
+        )
+    finally:
+        clients.close_all()
+        log.close()
+
+
+def test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown(tmp_path):
+    """快照清单坏了也不该把"请求都没写出"的 MCP 调用推成 unknown 并挡目录。
+
+    MCP 的判据是外发边界标记，不是那份文件证据。拿无关证据的损毁去冒充 MCP 的
+    证据，等于凭空多挡一个目录——过度阻断也是误报。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    try:
+        stack = build_stack(log, data_root=data)
+        run_id = "run_mcp_corrupt"
+        store.init_run(run_id)
+        store.manifest_path(run_id).write_bytes(b"{not json")
+        log.append(
+            run_id,
+            "run.start",
+            {"task": "清单坏掉时的 MCP 调用", "workspace": str(ws), "out": "out.md",
+             "limits": {}, "tools": []},
+            actor_kind="core",
+            legacy_write=True,
+        )
+        seq = log.append(
+            run_id,
+            "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core",
+            legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id="dsp_corrupt", run_id=run_id, tool_id=MCP_TOOL,
+            target="mcp://fake/echo", intent_seq=seq,
+        )
+
+        report = recover_run(log, run_id, ws, store, leases=stack.leases,
+                             data_root=data)
+        assert report.none_applied == [CALL_ID]
+        assert report.unresolved == []
+        assert report.blocked_workspaces == [], "MCP 不读清单，不该被清单的损毁挡住"
+        results = [
+            e.payload
+            for e in log.read_run(run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert len(results) == 1
+        assert results[0]["output"]["reason"] == "mcp.not_sent"
+        row = log.conn.execute(
+            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id, CALL_ID),
+        ).fetchone()
+        assert row["state"] == DISPATCH_ERROR
+    finally:
+        log.close()
+
+
+def test_mcp_without_a_dispatch_row_stays_conservative(tmp_path):
+    """证明不了"没发出"就必须保守：没有派发表、或表里没有这一行 → unknown + 阻断。
+
+    "标记不存在 = 没发"是把**缺证据**当成**证据**。恢复只允许在派发行明确停在
+    外发边界之前时判 `none_applied`；其余一律按"可能已发出"处理。
+    """
+    cases = ("no_table", "no_row")
+    for case in cases:
+        ws = tmp_path / f"ws-{case}"
+        ws.mkdir()
+        data = tmp_path / f"data-{case}"
+        data.mkdir()
+        log = EventLog(tmp_path / f"events-{case}.db", blob_dir=tmp_path / "blobs")
+        artifacts = tmp_path / f"artifacts-{case}"
+        artifacts.mkdir()
+        store = SnapshotStore(artifacts)
+        try:
+            if case == "no_table":
+                # 只开过 EventLog、没有经 Dispatcher：库里没有 `dispatches` 表。
+                stack = None
+                leases = None
+            else:
+                # 经 Dispatcher 开库：表在，但这次调用没有派发行（更早版本的库、
+                # 或手工写的事件流）。
+                stack = build_stack(log, data_root=data)
+                leases = stack.leases
+            run_id = f"run_{case}"
+            store.init_run(run_id)
+            log.append(
+                run_id,
+                "run.start",
+                {"task": "没有派发行的 MCP 调用", "workspace": str(ws),
+                 "out": "out.md", "limits": {}, "tools": []},
+                actor_kind="core",
+                legacy_write=True,
+            )
+            log.append(
+                run_id,
+                "tool.intent",
+                {"call_id": CALL_ID, "tool_id": MCP_TOOL,
+                 "args": {"message": "hi"}, "args_hash": "0" * 64},
+                actor_kind="core",
+                legacy_write=True,
+            )
+
+            assessment = assess_run(data, run_id, log=log)
+            assert assessment.unresolved == (CALL_ID,), case
+            assert assessment.none_applied == (), case
+            assert assessment.blocks_takeover is True, case
+
+            report = recover_run(log, run_id, ws, store, leases=leases,
+                                 data_root=data)
+            assert report.unresolved == [CALL_ID], case
+            assert report.none_applied == [], case
+            assert report.blocked_workspaces == [str(ws.resolve())], case
+            result = [
+                e.payload
+                for e in log.read_run(run_id, verify=False)
+                if e.type == "tool.result"
+            ][0]
+            assert result["output"]["reason"] == "mcp.crash_unsettled", case
+        finally:
+            log.close()
+
+
+@pytest.mark.parametrize("state", ["intent", "revoked", "rejected"])
+def test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent(tmp_path, state):
+    """升级前的旧行（`boundary_protocol=0`）不许被当成"没发出去"。
+
+    旧版本在写请求之前**不推进**派发行：崩溃后行停在 `intent`，而请求可能已经
+    发出；旧版本的撤销与发送之间也没有互斥（撤销只看行状态），所以 `revoked`
+    同样不能证明没发。把旧行判成 `none_applied` 正是最危险的方向——一次可能已经
+    执行的调用被写成"确定没执行"，还顺手撤掉了阻断。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    run_id = f"run_legacy_{state}"
+    try:
+        build_stack(log, data_root=data)  # 让派发表带上 boundary_protocol 列
+        store.init_run(run_id)
+        log.append(
+            run_id, "run.start",
+            {"task": "升级前的 MCP 崩溃行", "workspace": str(ws), "out": "out.md",
+             "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id=f"dsp_legacy_{state}", run_id=run_id,
+            tool_id=MCP_TOOL, target="mcp://fake/echo", intent_seq=seq,
+            state=state, protocol=0,  # 升级前的写入方
+        )
+
+        assessment = assess_run(data, run_id, log=log)
+        assert assessment.unresolved == (CALL_ID,), state
+        assert assessment.none_applied == (), "旧行不能证明没发"
+        assert assessment.blocks_takeover is True
+
+        report = recover_run(log, run_id, ws, store, leases=None, data_root=data)
+        assert report.unresolved == [CALL_ID], state
+        assert report.none_applied == []
+        assert report.blocked_workspaces == [str(ws.resolve())]
+        result = [
+            e.payload
+            for e in log.read_run(run_id, verify=False)
+            if e.type == "tool.result"
+        ][0]
+        assert result["output"]["reason"] == "mcp.crash_unsettled"
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("state", ["done", "error"])
+def test_finished_dispatch_row_without_a_result_is_still_unknown(tmp_path, state):
+    """行说"已结算"、事件里却没有 result：数据库自相矛盾 → 只能保守 unknown。
+
+    这种形状不该出现（结果与派发行同事务），但恢复不能替它选一个结论；拿
+    `done`/`error` 当"已结算"或"没发"都是在编事实。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    run_id = f"run_broken_{state}"
+    try:
+        build_stack(log, data_root=data)
+        store.init_run(run_id)
+        log.append(
+            run_id, "run.start",
+            {"task": "行说已结算但没有结果", "workspace": str(ws),
+             "out": "out.md", "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id=f"dsp_broken_{state}", run_id=run_id,
+            tool_id=MCP_TOOL, target="mcp://fake/echo", intent_seq=seq,
+            state=state,
+        )
+
+        report = recover_run(log, run_id, ws, store, leases=None, data_root=data)
+        assert report.unresolved == [CALL_ID], state
+        assert report.none_applied == []
+        assert report.blocked_workspaces == [str(ws.resolve())]
+    finally:
+        log.close()
+
+
+def test_assess_run_reads_the_send_marker_before_closing_its_own_log(tmp_path):
+    """只读对账自己开库时，必须在 `close()` **之前**读到派发表。
+
+    `assess_run(data_root, run_id)`（不传 `log=`）会自己开一个 EventLog，并在
+    `finally` 里关掉；派发标记就在同一个连接里。读晚了不是"少一条判据"，而是
+    拿到"证明不了"（甚至直接炸）——所以单独钉一条 own-log 路径。
+    """
+    root = tmp_path / "data_root"
+    root.mkdir()
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    run_id = "run_own_log"
+    try:
+        build_stack(log, data_root=root)
+        log.append(
+            run_id, "run.start",
+            {"task": "只读对账自己开库", "workspace": str(tmp_path / "ws"),
+             "out": "out.md", "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id="dsp_own_log", run_id=run_id, tool_id=MCP_TOOL,
+            target="mcp://fake/echo", intent_seq=seq,
+        )
+    finally:
+        log.close()
+
+    # 不传 log=：assess_run 自己开库、关库。
+    assessment = assess_run(root, run_id)
+    assert assessment.none_applied == (CALL_ID,)
+    assert assessment.unresolved == ()
+    assert assessment.blocks_takeover is False
+
+
+def test_dispatch_table_from_an_older_version_does_not_break_recovery(tmp_path):
+    """老库的 `dispatches` 没有 `boundary_protocol` 列：按旧行读、按旧行保守判。
+
+    迁移只在 `Dispatcher.__init__` 里跑；恢复可能先开库读到一张**旧形状**的表。
+    这时既不许炸，也不许把行当成"有标记"。
+    """
+    from tianshu.recovery import _dispatch_row_states, _mcp_never_sent
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        log.conn.execute(
+            "CREATE TABLE dispatches (dispatch_id TEXT PRIMARY KEY,"
+            " run_id TEXT NOT NULL, call_id TEXT NOT NULL, state TEXT NOT NULL)"
+        )
+        log.conn.execute(
+            "INSERT INTO dispatches VALUES ('d1', 'r1', 'c1', 'intent')"
+        )
+        rows = _dispatch_row_states(log, "r1", "c1")
+        assert rows == [("intent", 0)], "没有标记列 → 按旧行读"
+        assert _mcp_never_sent(rows) is False, "旧行不能证明没发"
+        assert _mcp_never_sent([("intent", 1)]) is True
+        assert _mcp_never_sent([("executing", 1)]) is False
+        assert _mcp_never_sent([("intent", 1), ("intent", 1)]) is True
+        assert _mcp_never_sent([("intent", 1), ("executing", 1)]) is False
+        assert _mcp_never_sent(None) is False
+        assert _mcp_never_sent([]) is False
+        assert _mcp_never_sent([("done", 1)]) is False
+        assert _mcp_never_sent([("error", 1)]) is False
+        assert _mcp_never_sent([("weird", 1)]) is False
+    finally:
+        log.close()
+
+
+def _dispatch_row_state(log: EventLog, dispatch_id: str) -> str:
+    row = log.conn.execute(
+        "SELECT state FROM dispatches WHERE dispatch_id=?", (dispatch_id,)
+    ).fetchone()
+    assert row is not None
+    return str(row["state"])
+
+
+def test_send_boundary_only_advances_rows_that_are_still_intent(tmp_path):
+    """`_advance_to_executing` 的 `state=intent` 前置条件必须有判据。
+
+    撤销/作废/结算先到 → 标记推进不上（False），行**不能**被改成 `executing`；
+    只有 `intent` 行能推进。没有这条，把 `AND state=?` 悄悄删掉也没有任何用例会红
+    （复审第二轮 S1：`test_refused_send_boundary_does_not_call_server` 把整个
+    入口 monkeypatch 掉了，只测调用方怎么处理 False）。
+    """
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    stack = build_stack(log, data_root=data)
+    try:
+        states = {
+            "d_intent": "intent",
+            "d_revoked": "revoked",
+            "d_rejected": "rejected",
+            "d_done": "done",
+            "d_error": "error",
+        }
+        for index, (dispatch_id, state) in enumerate(states.items()):
+            # 唯一索引在 (run_id, call_id)：每个行给一个不同的 call_id。
+            call_id = f"c_boundary_{index}"
+            log.conn.execute(
+                _DISPATCH_INSERT,
+                (
+                    dispatch_id, "run_boundary", "task_x", call_id, "req_x",
+                    "0" * 64, MCP_TOOL, ACTION_OVERWRITE, "[]",
+                    "mcp://fake/echo", "", "", "key:mcp", None, "grant_x", 1,
+                    "inst_x", 1, 0, 1, state, _NOW, _NOW,
+                ),
+            )
+        dispatcher = stack.dispatcher
+
+        assert dispatcher._advance_to_executing("d_intent") is True
+        assert _dispatch_row_state(log, "d_intent") == DISPATCH_EXECUTING
+        # 已经越过的行不能再被推进（第二次调用已经无行可改）
+        assert dispatcher._advance_to_executing("d_intent") is False
+
+        for dispatch_id, state in states.items():
+            if state == "intent":
+                continue
+            assert dispatcher._advance_to_executing(dispatch_id) is False, state
+            assert _dispatch_row_state(log, dispatch_id) == state, (
+                f"{state} 行被改写成别的状态"
+            )
+
+        # 真实入口（带执行守卫）也要把 False 透传出去，且不改行
+        assert dispatcher._mark_mcp_send_boundary("d_revoked") is False
+        assert _dispatch_row_state(log, "d_revoked") == "revoked"
+    finally:
+        log.close()
+
+
+def test_guard_timeout_before_send_is_a_controlled_rejection(tmp_path, monkeypatch):
+    """拿不到执行守卫 ≠ 效果未知：请求没发出去，按受控拒绝结算（不是 unknown）。
+
+    复审第二轮指出的既有口径差：文件写分支会把 `GuardTimeout` 映射成受控拒绝，
+    MCP 分支原来让它直接抛出去（Run 变成 failed、派发行停在 intent）。这里把
+    "抢守卫超时"钉在**确定没发**这一档。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    call_log = tmp_path / "calls.jsonl"
+    clients = McpClients(
+        {
+            "fake": _config(
+                "normal",
+                call_log=call_log,
+                effect_log=tmp_path / "effects.jsonl",
+                cwd=tmp_path,
+            )
+        }
+    )
+    try:
+        stack = build_stack(log, data_root=data, mcp_clients=clients)
+        task = stack.tasks.create_task(
+            "抢守卫超时的 MCP 调用", [str(ws)], mcp_servers=["fake"]
+        )
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+
+        def timeout(dispatch_id: str) -> bool:
+            raise GuardTimeout("5000ms 内没拿到执行守卫")
+
+        monkeypatch.setattr(stack.dispatcher, "_mark_mcp_send_boundary", timeout)
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        rows = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert len(rows) == 1
+        assert rows[0]["status"] == "rejected"
+        assert rows[0]["effect_state"] == "none_applied"
+        assert rows[0]["output"]["rule_id"] == "dispatch.guard_timeout"
+        rejected = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "dispatch.rejected"
+        ]
+        assert any(item.get("rule_id") == "dispatch.guard_timeout" for item in rejected)
+        assert not call_log.exists(), "没抢到守卫就不许打 server"
+        row = stack.dispatcher.dispatch_record(result.run_id, CALL_ID)
+        assert row is not None and row.state == "rejected"
+    finally:
+        clients.close_all()
+        log.close()

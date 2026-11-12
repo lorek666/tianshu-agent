@@ -37,7 +37,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: 目标用例的缩写（负控表与文档里的名字保持一致）。
 CRASH = "tests/test_mcp_crash.py::test_crash_after_server_executed_settles_unknown_and_blocks"
-BEFORE = "tests/test_mcp_crash.py::test_crash_before_send_is_indistinguishable_and_still_blocks"
+BEFORE = (
+    "tests/test_mcp_crash.py::"
+    "test_crash_before_send_settles_none_applied_and_does_not_block"
+)
+MARKED = "tests/test_mcp_crash.py::test_crash_after_marker_conservatively_blocks_and_refuses_revoke"
+REFUSE = "tests/test_mcp_crash.py::test_refused_send_boundary_does_not_call_server"
+CORRUPT = (
+    "tests/test_mcp_crash.py::"
+    "test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown"
+)
+FALLBACK = (
+    "tests/test_mcp_crash.py::"
+    "test_mcp_without_a_dispatch_row_stays_conservative"
+)
+LEGACY = (
+    "tests/test_mcp_crash.py::"
+    "test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent"
+)
+BROKEN_ROW = (
+    "tests/test_mcp_crash.py::"
+    "test_finished_dispatch_row_without_a_result_is_still_unknown"
+)
+OWNLOG = (
+    "tests/test_mcp_crash.py::"
+    "test_assess_run_reads_the_send_marker_before_closing_its_own_log"
+)
+BOUNDARY = (
+    "tests/test_mcp_crash.py::"
+    "test_send_boundary_only_advances_rows_that_are_still_intent"
+)
+GUARDTIMEOUT = (
+    "tests/test_mcp_crash.py::"
+    "test_guard_timeout_before_send_is_a_controlled_rejection"
+)
 STATIC = (
     "tests/test_mcp_crash.py::"
     "test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool"
@@ -60,8 +93,9 @@ CASES: tuple[Case, ...] = (
     Case(
         name="NB21",
         relpath="src/tianshu/recovery.py",
-        old="        if tool_id.startswith(MCP_TOOL_PREFIX):\n            _settle(",
-        new="        if False:\n            _settle(",
+        old="        if tool_id.startswith(MCP_TOOL_PREFIX):\n"
+        "            _settle_mcp_pending(",
+        new="        if False:\n            _settle_mcp_pending(",
         tests=(STATIC, CRASH),
         why="撤掉恢复的 MCP 分支（同时静态表里放了 MCP id）→ 空清单会被读成"
         "「确定没写」，unknown 变成 none_applied",
@@ -71,11 +105,13 @@ CASES: tuple[Case, ...] = (
         relpath="src/tianshu/recovery.py",
         old=(
             "        if tool_id.startswith(MCP_TOOL_PREFIX):\n"
-            "            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与"
+            "            # MCP 没有本地 preimage：唯一判据是"
+            "\"请求有没有越过外发边界\"（发送前"
         ),
         new=(
             "        if False:\n"
-            "            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与"
+            "            # MCP 没有本地 preimage：唯一判据是"
+            "\"请求有没有越过外发边界\"（发送前"
         ),
         tests=(STATIC,),
         why="只撤 assess_run 的 MCP 分支：正常崩溃用例里 id 不在静态表，仍 unresolved，"
@@ -119,6 +155,133 @@ CASES: tuple[Case, ...] = (
         tests=(TERMINAL,),
         why="去掉「只从 intent/executing 推进」的保护：已 revoked/rejected 的派发行"
         "会被改写，审计里丢掉「被撤销/被拒绝过」这条事实",
+    ),
+    Case(
+        name="NB30",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new="    proven: set[str] = set()",
+        tests=(BEFORE,),
+        why="把三个「没越过外发边界」的状态清空：恢复拿不到任何本机证据，"
+        "窗口一又变回 unknown + 阻断（过度阻断回归）",
+    ),
+    Case(
+        name="NB31",
+        relpath="src/tianshu/recovery.py",
+        old="    if not rows:\n        return False\n",
+        new="    return True\n",
+        tests=(MARKED, FALLBACK),
+        why="把「证明不了没发就按可能已发」翻成「一律没发」：标记已落盘的窗口、"
+        "以及没有派发表/没有行的老库，都会被洗成 none_applied——最危险的方向",
+    ),
+    Case(
+        name="NB32",
+        relpath="src/tianshu/dispatcher.py",
+        # 变异：不真的推进外发边界，直接当成"已经推进"（= 拿掉发包前的标记）
+        old="            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)\n",
+        new="            boundary_marked = True  # noqa: F841 - 变异：不落标记\n",
+        tests=(MARKED, REFUSE),
+        why="拿掉发包前的外发边界标记：崩溃在标记之后仍是 intent，恢复会判没发；"
+        "「撤销先到就不发」的分界也一起消失（服务器照样被打）",
+    ),
+    Case(
+        name="NB33",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new="    proven = {DISPATCH_INTENT}",
+        tests=(TERMINAL,),
+        why="只认 intent、不认 revoked/rejected：已撤销的调用又变回 unknown + 阻断"
+        "（拿不出证据却硬要挡）",
+    ),
+    Case(
+        name="NB34",
+        relpath="src/tianshu/recovery.py",
+        old=(
+            "                if tool_id.startswith(MCP_TOOL_PREFIX):\n"
+            "                    # MCP 不读这份快照清单：它的判据是外发边界标记。"
+        ),
+        new=(
+            "                if False:\n"
+            "                    # MCP 不读这份快照清单：它的判据是外发边界标记。"
+        ),
+        tests=(CORRUPT,),
+        why="清单损坏分支不按 MCP 判：一份无关证据的损毁会把「请求都没写出」的"
+        "调用推成 unknown 并挡住目录",
+    ),
+    Case(
+        name="NB35",
+        relpath="src/tianshu/recovery.py",
+        old="        protocol >= BOUNDARY_PROTOCOL and state in proven",
+        new="        state in proven",
+        tests=(LEGACY,),
+        why="不看边界协议标记：升级前的旧行（写请求前不推进派发行）会把"
+        "「可能已执行」洗成「确定没执行」——复审 B1 的假阴性方向",
+    ),
+    Case(
+        name="NB36",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new=(
+            "    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED,"
+            " DISPATCH_ROW_REVOKED, \"done\", \"error\"}"
+        ),
+        tests=(BROKEN_ROW,),
+        why="把 done/error 也算成「没越过边界」：行说已结算、事件里没有结果的自相"
+        "矛盾形状会被恢复替它选一个结论",
+    ),
+    Case(
+        name="NB37",
+        relpath="src/tianshu/recovery.py",
+        old=(
+            "        mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)\n"
+            "    except EventLogCorrupt as exc:\n"
+        ),
+        new=(
+            "        try:  # 变异：先关掉自己的连接再读（= 复审 E 的时序错误）\n"
+            "            if own_log is not None:\n"
+            "                own_log.close()\n"
+            "            mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)\n"
+            "        except Exception:  # noqa: BLE001 - 变异：读不到就当没有标记\n"
+            "            mcp_never_sent = {}\n"
+            "    except EventLogCorrupt as exc:\n"
+        ),
+        tests=(OWNLOG,),
+        why="只读对账自己开库时先关连接再读标记（复审 E 的时序错误）：own-log "
+        "路径会被安静地降级成「证明不了」，结论从 none_applied 变 unresolved",
+    ),
+    Case(
+        name="NB38",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "                \" WHERE dispatch_id=? AND state=?\",\n"
+            "                (DISPATCH_EXECUTING, self._clock(), dispatch_id,"
+            " DISPATCH_INTENT),"
+        ),
+        new=(
+            "                \" WHERE dispatch_id=?\",\n"
+            "                (DISPATCH_EXECUTING, self._clock(), dispatch_id),"
+        ),
+        tests=(BOUNDARY,),
+        why="去掉外发边界推进的 state=intent 前置条件：已撤销/已拒绝的行会被"
+        "改成 executing，「撤销先到就不发」的分界失效（复审第二轮 S1）",
+    ),
+    Case(
+        name="NB39",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "        except GuardTimeout as exc:\n"
+            "            # 拿不到执行守卫 = 没抢到\"撤销与发送\"的分界线：一个字节都没发。\n"
+            "            # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次\n"
+            "            # \"效果未知\"的崩溃——这次调用确实没出去。\n"
+            "            return self._abort_dispatch(request, dispatch_id, exc)\n"
+        ),
+        new=(
+            "        except GuardTimeout as exc:\n"
+            "            return self._fail_unknown(request, dispatch_id, target, exc)\n"
+        ),
+        tests=(GUARDTIMEOUT,),
+        why="把「抢守卫超时 = 确定没发」错映射成 unknown：一次根本没出去的调用"
+        "会被记成「效果未知」并阻断目录（过度阻断的旧口径）",
     ),
 )
 

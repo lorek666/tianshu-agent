@@ -246,6 +246,10 @@ CREATE TABLE IF NOT EXISTS dispatches (
     owner_instance_id TEXT NOT NULL,
     attempt_id        INTEGER NOT NULL DEFAULT 1,
     intent_seq        INTEGER NOT NULL DEFAULT 0,
+    -- 这一行是不是由"发包前提交外发边界标记"的版本写的（0=升级前的旧行）。
+    -- 旧版本在请求写出前**不推进派发行**，所以旧行的 `intent`/`revoked` 不能
+    -- 证明"请求没发出去"；恢复必须靠这个标记把旧行排除在 `none_applied` 之外。
+    boundary_protocol INTEGER NOT NULL DEFAULT 0,
     state             TEXT NOT NULL,
     reason            TEXT NOT NULL DEFAULT '',
     created_at        INTEGER NOT NULL,
@@ -570,6 +574,14 @@ class Dispatcher:
             )
         _ensure_column(
             self._conn, "dispatch_requests", "args_redacted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        # 外发边界协议标记同理：`ALTER TABLE` 只给**已有的旧行**补 0，
+        # 新行由 `_insert_dispatch()` 显式写 1。恢复据此把旧行排除在
+        # 「确定没发出去」之外（旧版本写请求前不推进派发行，旧行的状态不能证明
+        # 请求没写出——这是升级兼容的硬边界，不是可选优化）。
+        _ensure_column(
+            self._conn, "dispatches", "boundary_protocol",
             "INTEGER NOT NULL DEFAULT 0",
         )
         # 用持久标记判"补扫做过没有"：中途被 kill / 抛错时标记不会置位，
@@ -1347,12 +1359,49 @@ class Dispatcher:
                 "spawn": spawn,
             }
         }
+        # 外发边界：请求一旦写进 server 的 stdin，"这次调用到底发没发出去"在本机
+        # 就再也没法证明了。所以写之前先把派发行从 `intent` 推到 `executing`——
+        # 这一行同时是**撤销与发送的分界线**：
+        #   - 撤销先到（行已 revoked/rejected）→ 推进不上，这次不发；
+        #   - 推进先到 → 撤销会明确报错"已经开始执行"，而不是假装撤销成功。
+        # 两者抢同一把跨进程执行守卫（`_mark_mcp_send_boundary`），否则"看一眼
+        # 行状态、再改"之间还能插进另一个进程的撤销。
+        #
         # 崩溃窗口注入（只给测试用；生产路径永远不设 `TIANSHU_FAILPOINT`）：
-        #   mcp_before_call —— intent/dispatches 已提交、请求还没写进 server stdin；
-        #   mcp_after_call  —— 响应已经收到（server 确实执行过），而结果/凭据/终态
-        #                      还没落盘。后一个才是"可能已生效但结果丢了"的窗口，
-        #                      恢复对它的唯一诚实答案是 `unknown` + 阻断，不是重放。
+        #   mcp_before_call —— intent/dispatches 已提交、外发边界标记还没落盘。
+        #                      请求一定没写出，恢复可以判 `none_applied` 且不阻断；
+        #   mcp_marked     —— 标记已落盘、请求还没写进 stdin。恢复**无法**证明没
+        #                      发出去，只能保守判 `unknown` + 阻断（这一小段窗口
+        #                      是有意付出的代价，不是漏洞）；
+        #   mcp_after_call —— 响应已经收到（server 确实执行过），而结果/凭据/终态
+        #                      还没落盘。与上一个同口径：`unknown` + 阻断，不重放。
         failpoint("mcp_before_call")
+        try:
+            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)
+        except GuardTimeout as exc:
+            # 拿不到执行守卫 = 没抢到"撤销与发送"的分界线：一个字节都没发。
+            # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次
+            # "效果未知"的崩溃——这次调用确实没出去。
+            return self._abort_dispatch(request, dispatch_id, exc)
+        if not boundary_marked:
+            # 行已经被撤销/作废还照发，就等于让"撤销成功"这句话变假。这里不发，
+            # 结论是确定的 `none_applied`。
+            #
+            # 与 `_abort_dispatch` 同一分工：派发行停在自己的终态（撤销/作废是
+            # 审计事实，不被结果改写），`tool.result` 由**主循环**按返回值补写
+            # ——派发层只在"自己真的写进结果"的行状态下才写事件，否则主循环会
+            # 再补一条，日志里就出现两条同 call_id 的结果。
+            self._set_request_state(request.request_id, STATE_REJECTED)
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": "这次 MCP 调用在发出前已被撤销或作废；请求没有写出",
+                    "reason": "mcp.revoked_before_send",
+                    "mcp": dict(base_output["mcp"]),
+                },
+            )
+        failpoint("mcp_marked")
         try:
             called = server.call_tool(
                 target.tool, self._mcp_arguments(request), call_id=request.call_id
@@ -3127,9 +3176,9 @@ class Dispatcher:
             "INSERT INTO dispatches (dispatch_id, run_id, task_id, call_id,"
             " request_id, request_digest, tool_id, action, resources, target,"
             " rel_path, workspace_root, resource_key, approval_id, grant_id,"
-            " claim_epoch, owner_instance_id, attempt_id, intent_seq, state,"
-            " created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'intent',?,?)",
+            " claim_epoch, owner_instance_id, attempt_id, intent_seq,"
+            " boundary_protocol, state, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'intent',?,?)",
             (
                 self._dispatch_id(request),
                 request.run_id,
@@ -3174,6 +3223,45 @@ class Dispatcher:
                 " WHERE run_id=? AND call_id=?",
                 (state, self._clock(), run_id, call_id),
             )
+
+    def _mark_mcp_send_boundary(self, dispatch_id: str) -> bool:
+        """把这次 MCP 派发从 `intent` 推到 `executing` —— 外发边界。
+
+        为什么需要它：`tools/call` 写进 server 的 stdin 之后，"发没发出去"在本机
+        就不可证明了。此前恢复只能把"没有结果事件"一律读成 `unknown` + 阻断，
+        连"请求连发都没发"的崩溃也一起挡（验收报告 §4-10 承认的过度阻断）。有了
+        这条在发包**之前**提交的标记，恢复才有第二条路：
+
+        - 行仍停在外发边界之前（`intent` / 已被撤销 / 已作废）→ 请求没写出 →
+          `none_applied`，不阻断；
+        - 行是 `executing` → 可能已经发出 → `unknown` + 阻断（保守方向）。
+
+        标记本身也有代价：在"标记提交"与"真正写出"之间崩掉，恢复会按已发出处理。
+        这是**有意**选的保守方向——宁可多挡一个目录，也不把可能已经发生的副作用
+        说成没发生。
+
+        只从 `intent` 推进（`where state=intent`）：撤销/作废是审计事实，不能让一
+        个后到的执行把它改回"正在执行"。与 `revoke` 共用执行守卫，谁先拿到锁谁
+        说话：撤销先到就不再发；标记先到，撤销会明确报错而不是假装成功。
+
+        返回 `False` 表示这条派发已经不能再发了（被撤销/作废，或没有派发行）。
+        """
+        root = self._data_root
+        if root is None:
+            # 没有数据根就没有撤销入口（`revoke` 同样要求它），也就没有要抢的
+            # 那把锁；库调用方保持原行为，只做状态推进。
+            return self._advance_to_executing(dispatch_id)
+        with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
+            return self._advance_to_executing(dispatch_id)
+
+    def _advance_to_executing(self, dispatch_id: str) -> bool:
+        with self._log.transaction():
+            cursor = self._conn.execute(
+                "UPDATE dispatches SET state=?, updated_at=?"
+                " WHERE dispatch_id=? AND state=?",
+                (DISPATCH_EXECUTING, self._clock(), dispatch_id, DISPATCH_INTENT),
+            )
+            return cursor.rowcount > 0
 
     def _admitted(
         self,
