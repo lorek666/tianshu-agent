@@ -1,9 +1,9 @@
 name: CI
 
-# 本仓库唯一的门禁。跑的是 CONTRIBUTING.md §5「提交前检查」列的那两条命令，
-# 逐字相同——本地绿而 CI 红，只可能是环境差异，不是命令差异。
-# 在此之上多一条锁文件漂移门禁（`uv lock --check`）：§5 没写，但锁文件
-# 一旦漂移，本地跑同样的两条命令照样是绿的，这条只能放在 CI。
+# Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
+# uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
+# 长等待诊断参数。UI 另有类型、测试、构建与 dist 一致性检查。
+# 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
 #
 # 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
 # 3.13 不在支持范围内，矩阵里加它等于给自己造一个必然红的目标。
@@ -48,16 +48,15 @@ jobs:
           #
           # issue #50：首次生成的 IPC 二进制密钥曾被文本模式改写换行，
           # 导致创建者和后续读取者认证不一致；固定字节回归在 Windows 验证。
-          # required 列表仍只有 ubuntu + macOS；Windows 失败必须如实暴露，
-          # 不使用 continue-on-error。分支保护的收口独立于此处测试矩阵。
+          # Windows 与 ubuntu、macOS、UI 同为 required；失败如实阻止合并，
+          # 不使用 continue-on-error。修改矩阵/名称后须核对远端分支保护。
           - windows-latest
         python:
           - "3.12"
     defaults:
       run:
-        # 显式写 bash：这两个平台的默认 shell 本来就是 bash，写出来是为了
-        # 将来把 Windows 加回矩阵时语义不变（Windows 默认是 PowerShell，
-        # 那边的引号规则会让 addopts="" 这类参数长得不一样）。
+        # 三个平台统一使用 bash，避免 Windows 默认 PowerShell 的引号规则
+        # 改变 addopts="" 等参数的传递方式。
         shell: bash
     steps:
       - uses: actions/checkout@v4
