@@ -101,7 +101,7 @@
 撤销成功。`revoked`/`rejected` 在恢复侧同样算"没越过边界"，但**行保持终态**（撤销过就该
 一直看得出撤销过）。
 
-### 3.2 对象级阻断（§5-8，PR #125）
+### 3.2 对象级阻断（§5-8，PR #129）
 
 之前只有**一种**阻断对象：workspace 目录。MCP 调用结算成 `unknown` 时，恢复按最保守
 口径挡**调用方自己传进来的**那个目录——于是有两处说不通：
@@ -153,7 +153,7 @@ server 侧时，工具仍然发不出去。
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
   **`tests/test_mcp_crash.py`（24；收尾轮 9 → PR #124 扩到 24）**、
-  **`tests/test_mcp_object_block.py`（21；对象级阻断，PR #125）**，另有契约判据在
+  **`tests/test_mcp_object_block.py`（21；对象级阻断，PR #129）**，另有契约判据在
   `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
   → 规格 §4 的 c1–c16 与本文件的测试一一对应。
 - 负控：规格 §5 的 NB1–NB24 + 脚本化的 NB21 / NB25–NB39
@@ -211,7 +211,7 @@ server 侧时，工具仍然发不出去。
    （`intent` → `executing`），不新增事件、不改事件契约；恢复/接管按它分档，撤销与发送
    共用执行守卫；升级前的旧行用 `boundary_protocol=0` 区分（一律保守）。**新剩下的**：
    标记提交与真正写出之间的窄窗口仍保守阻断；要再往前推需要 server 侧回执协议（未做）。
-3. ~~**对象级阻断**~~ **已完成（PR #125）**：阻断对象 = `mcp://server/tool`（工具级）
+3. ~~**对象级阻断**~~ **已完成（PR #129）**：阻断对象 = `mcp://server/tool`（工具级）
    或 `mcp://server`（server 级），与目录阻断并存；发外前两道核验（判定阶段 +
    外发边界前），解除走 `unblock_object`（`unblock` 不碰对象）。契约增量：事件
    `recovery.object_blocked` / `recovery.object_unblocked` + 规则编号
