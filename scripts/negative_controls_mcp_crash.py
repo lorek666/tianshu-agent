@@ -37,7 +37,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 #: 目标用例的缩写（负控表与文档里的名字保持一致）。
 CRASH = "tests/test_mcp_crash.py::test_crash_after_server_executed_settles_unknown_and_blocks"
-BEFORE = "tests/test_mcp_crash.py::test_crash_before_send_is_indistinguishable_and_still_blocks"
+BEFORE = (
+    "tests/test_mcp_crash.py::"
+    "test_crash_before_send_settles_none_applied_and_does_not_block"
+)
+MARKED = "tests/test_mcp_crash.py::test_crash_after_marker_conservatively_blocks_and_refuses_revoke"
+REFUSE = "tests/test_mcp_crash.py::test_refused_send_boundary_does_not_call_server"
+CORRUPT = (
+    "tests/test_mcp_crash.py::"
+    "test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown"
+)
 STATIC = (
     "tests/test_mcp_crash.py::"
     "test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool"
@@ -60,8 +69,9 @@ CASES: tuple[Case, ...] = (
     Case(
         name="NB21",
         relpath="src/tianshu/recovery.py",
-        old="        if tool_id.startswith(MCP_TOOL_PREFIX):\n            _settle(",
-        new="        if False:\n            _settle(",
+        old="        if tool_id.startswith(MCP_TOOL_PREFIX):\n"
+        "            _settle_mcp_pending(",
+        new="        if False:\n            _settle_mcp_pending(",
         tests=(STATIC, CRASH),
         why="撤掉恢复的 MCP 分支（同时静态表里放了 MCP id）→ 空清单会被读成"
         "「确定没写」，unknown 变成 none_applied",
@@ -71,11 +81,13 @@ CASES: tuple[Case, ...] = (
         relpath="src/tianshu/recovery.py",
         old=(
             "        if tool_id.startswith(MCP_TOOL_PREFIX):\n"
-            "            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与"
+            "            # MCP 没有本地 preimage：唯一判据是"
+            "\"请求有没有越过外发边界\"（发送前"
         ),
         new=(
             "        if False:\n"
-            "            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与"
+            "            # MCP 没有本地 preimage：唯一判据是"
+            "\"请求有没有越过外发边界\"（发送前"
         ),
         tests=(STATIC,),
         why="只撤 assess_run 的 MCP 分支：正常崩溃用例里 id 不在静态表，仍 unresolved，"
@@ -119,6 +131,57 @@ CASES: tuple[Case, ...] = (
         tests=(TERMINAL,),
         why="去掉「只从 intent/executing 推进」的保护：已 revoked/rejected 的派发行"
         "会被改写，审计里丢掉「被撤销/被拒绝过」这条事实",
+    ),
+    Case(
+        name="NB30",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new="    proven: set[str] = set()",
+        tests=(BEFORE,),
+        why="把三个「没越过外发边界」的状态清空：恢复拿不到任何本机证据，"
+        "窗口一又变回 unknown + 阻断（过度阻断回归）",
+    ),
+    Case(
+        name="NB31",
+        relpath="src/tianshu/recovery.py",
+        old="    if not states:\n        return False\n",
+        new="    return True\n",
+        tests=(MARKED,),
+        why="把「证明不了没发就按可能已发」翻成「一律没发」：标记已落盘的窗口"
+        "会被洗成 none_applied——最危险的方向",
+    ),
+    Case(
+        name="NB32",
+        relpath="src/tianshu/dispatcher.py",
+        old="        if not self._mark_mcp_send_boundary(dispatch_id):\n",
+        new="        if False:\n",
+        tests=(MARKED, REFUSE),
+        why="拿掉发包前的外发边界标记：崩溃在标记之后仍是 intent，恢复会判没发；"
+        "「撤销先到就不发」的分界也一起消失（服务器照样被打）",
+    ),
+    Case(
+        name="NB33",
+        relpath="src/tianshu/recovery.py",
+        old="    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}",
+        new="    proven = {DISPATCH_INTENT}",
+        tests=(TERMINAL,),
+        why="只认 intent、不认 revoked/rejected：已撤销的调用又变回 unknown + 阻断"
+        "（拿不出证据却硬要挡）",
+    ),
+    Case(
+        name="NB34",
+        relpath="src/tianshu/recovery.py",
+        old=(
+            "                if tool_id.startswith(MCP_TOOL_PREFIX):\n"
+            "                    # MCP 不读这份快照清单：它的判据是外发边界标记。"
+        ),
+        new=(
+            "                if False:\n"
+            "                    # MCP 不读这份快照清单：它的判据是外发边界标记。"
+        ),
+        tests=(CORRUPT,),
+        why="清单损坏分支不按 MCP 判：一份无关证据的损毁会把「请求都没写出」的"
+        "调用推成 unknown 并挡住目录",
     ),
 )
 

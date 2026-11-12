@@ -229,6 +229,14 @@ def assess_run(
         own_log = log
     try:
         events = log.read_run(run_id)
+        intents = {
+            e.payload["call_id"]: e for e in events if e.type == "tool.intent"
+        }
+        results = {e.payload["call_id"] for e in events if e.type == "tool.result"}
+        pending = {cid: ev for cid, ev in intents.items() if cid not in results}
+        # 外发边界标记要在日志还开着的时候读出来：`own_log` 会在 finally 里关掉，
+        # 而 MCP 的判据（发送前标记）就存在同一张 `dispatches` 表里。
+        mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)
     except EventLogCorrupt as exc:
         return RunAssessment(
             run_id=run_id,
@@ -238,10 +246,6 @@ def assess_run(
     finally:
         if own_log is not None:
             own_log.close()
-
-    intents = {e.payload["call_id"]: e for e in events if e.type == "tool.intent"}
-    results = {e.payload["call_id"] for e in events if e.type == "tool.result"}
-    pending = {cid: ev for cid, ev in intents.items() if cid not in results}
 
     applied: list[str] = []
     none_applied: list[str] = []
@@ -261,9 +265,14 @@ def assess_run(
         tool_id = payload["tool_id"]
         spec = SPECS.get(tool_id)
         if tool_id.startswith(MCP_TOOL_PREFIX):
-            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与
-            # `_recover_run` 同一口径；按 id 形状判，不靠 `SPECS` 缺条目）。
-            unresolved.append(call_id)
+            # MCP 没有本地 preimage：唯一判据是"请求有没有越过外发边界"（发送前
+            # 提交的派发行状态，与 `_recover_run` 同一口径；按 id 形状判身份，
+            # 不靠 `SPECS` 缺条目）。停在外发边界之前 → 确定没发，可以接手；
+            # 越过边界或无从证明 → 拒绝接手，等人核对。
+            if mcp_never_sent.get(call_id, False):
+                none_applied.append(call_id)
+            else:
+                unresolved.append(call_id)
             continue
         if spec is None:
             # 语义未知的工具：不能替它假设"没写"（与 recover 同一口径）。
@@ -511,6 +520,18 @@ def _recover_run(
                 payload = ev.payload
                 tool_id = payload["tool_id"]
                 spec = SPECS.get(tool_id)
+                if tool_id.startswith(MCP_TOOL_PREFIX):
+                    # MCP 不读这份快照清单：它的判据是外发边界标记。清单坏了
+                    # 也不该把一条"请求都没写出"的调用推成 unknown 并挡住目录
+                    # ——那是拿无关证据的损毁去冒充 MCP 的证据。
+                    if _settle_mcp_pending(
+                        log, report, run_id, call_id, tool_id, payload,
+                        never_sent=_mcp_never_sent(
+                            _dispatch_row_states(log, run_id, call_id)
+                        ),
+                    ):
+                        unverified.append(call_id)
+                    continue
                 if tool_id in MEMORY_TOOL_IDS:
                     # 记忆写的结论不依赖这份快照清单（投影/事件同事务），
                     # 清单坏了也不该把它们推成 unknown 并挡住目录。
@@ -550,28 +571,22 @@ def _recover_run(
         spec = SPECS.get(tool_id)
 
         # MCP（G2 MCP 阶段）：副作用发生在 **server 那一侧**，本地没有 preimage
-        # 可查。判定只认"有没有落盘的结果"：没有 → unknown，不猜"没执行"。
+        # 可查。唯一判据是"请求有没有越过外发边界"——派发行在发包**之前**被
+        # 提交为 `executing`（`dispatcher._mark_mcp_send_boundary`）：仍是
+        # `intent`/`revoked`/`rejected` 说明请求一定没写出，可以判 `none_applied`
+        # 且不阻断；`executing` 或无从证明，就只能 unknown + 阻断。
         #
         # 为什么按前缀而不是按 `SPECS` 有没有条目：MCP 工具**故意不进** `SPECS`，
         # 但"不在表里"是个会变的前提（有人把动态 id 塞进静态表、或注册表装配错
         # 了）。身份由 id 形状决定，恢复不该依赖一张静态表来认出"这不是文件工
         # 具"——认错了就会去查磁盘，然后把"没有写前证据"读成"确定没写"。
         if tool_id.startswith(MCP_TOOL_PREFIX):
-            _settle(log, report, run_id, call_id, tool_id, payload,
-                    ToolResult("unknown", "unknown",
-                               {"error": "recovered: MCP 调用没有落盘的结果，"
-                                         "server 侧可能已经执行（本地目录也可能"
-                                         "被它改过），需人工核对后再解除阻断",
-                                "recovered": True,
-                                "reason": "mcp.crash_unsettled",
-                                "tool_id": tool_id,
-                                # 不按 `__` 反解 server/tool：规范化把 `-`/`.`
-                                # 换成了 `_`，反解出来的名字可能不是用户配的那
-                                # 个。给人一条能自己查的命令，比编一个像名字的
-                                # 字符串诚实。
-                                "mcp": {"tool_id": tool_id,
-                                        "lookup": "tianshu mcp list"}}),
-                    bucket=report.unresolved)
+            _settle_mcp_pending(
+                log, report, run_id, call_id, tool_id, payload,
+                never_sent=_mcp_never_sent(
+                    _dispatch_row_states(log, run_id, call_id)
+                ),
+            )
             continue
 
         if spec is None:
@@ -1296,6 +1311,117 @@ def _has_dispatch_table(log: EventLog) -> bool:
     return log.conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dispatches'"
     ).fetchone() is not None
+
+
+def _dispatch_row_states(log: EventLog, run_id: str, call_id: str) -> list[str] | None:
+    """一次调用的派发行状态；`None` = 这个库根本没有派发表（无从证明）。
+
+    返回列表而不是单个值：派发表的主键是 `dispatch_id`（由 run+call 哈希），
+    正常情况下一次调用只有一行；将来若出现重试行，只要**有任意一行**越过了
+    外发边界，就不能宣布"没发出去"。
+    """
+    if not _has_dispatch_table(log):
+        return None
+    return [
+        str(row["state"])
+        for row in log.conn.execute(
+            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id, call_id),
+        )
+    ]
+
+
+def _mcp_never_sent(states: list[str] | None) -> bool:
+    """能不能证明这次 MCP 请求没写出。
+
+    判据只有一条：派发行停在 `dispatcher._mark_mcp_send_boundary` 之前。
+    `intent` = 还没到边界；`revoked`/`rejected` = 撤销/作废先到，标记只从
+    `intent` 推进，所以这两种终态同样说明请求没写出（而且它们是审计事实）。
+
+    没有表、没有行、行已 `executing`/`done`/`error`、或出现任何不认识的状态，
+    一律返回 False："证明不了没发"就按"可能已发出"处理。
+    """
+    from .dispatcher import (
+        DISPATCH_INTENT,
+        DISPATCH_ROW_REJECTED,
+        DISPATCH_ROW_REVOKED,
+    )
+
+    if not states:
+        return False
+    proven = {DISPATCH_INTENT, DISPATCH_ROW_REJECTED, DISPATCH_ROW_REVOKED}
+    return all(state in proven for state in states)
+
+
+def _read_mcp_never_sent(
+    log: EventLog, run_id: str, pending: dict[str, Any]
+) -> dict[str, bool]:
+    """只读对账用：一次读出所有待决 MCP 调用的"没发出"结论。"""
+    return {
+        call_id: _mcp_never_sent(_dispatch_row_states(log, run_id, call_id))
+        for call_id, ev in pending.items()
+        if str(ev.payload.get("tool_id", "")).startswith(MCP_TOOL_PREFIX)
+    }
+
+
+def _settle_mcp_pending(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    payload: dict,
+    *,
+    never_sent: bool,
+) -> bool:
+    """结算一条没有 `tool.result` 的 MCP 调用；返回它是否被判成了 `unknown`。
+
+    MCP 的副作用在 **server 那一侧**，本地没有 preimage。判据只有"请求有没有
+    越过外发边界"（发送前提交的派发行状态）：
+
+    - 没越过 → 请求没写出 → `none_applied`，**不阻断**任何目录；
+    - 越过或无从证明 → `unknown` + 阻断，等人核对后再解除。
+
+    两种结论都不补凭据（`build_mcp_receipt` 只对 `applied` 出凭据）：没有越过
+    边界就没有可归因的效果；越过边界但结论未知时，凭据会把"不知道"写成一个
+    可核对的结论。也不按 `__` 反解 server/tool 名字：规范化把 `-`/`.` 换成了
+    `_`，反解出来的名字可能不是用户配的那个——给人一条能自己查的命令，比编一
+    个像名字的字符串诚实。
+    """
+    common = {
+        "recovered": True,
+        "tool_id": tool_id,
+        "mcp": {"tool_id": tool_id, "lookup": "tianshu mcp list"},
+    }
+    if never_sent:
+        _settle(
+            log, report, run_id, call_id, tool_id, payload,
+            ToolResult(
+                "failed", "none_applied",
+                {
+                    "error": "recovered: 这次 MCP 调用没越过外发边界"
+                             "（派发记录仍是 intent），请求没有写出",
+                    "reason": "mcp.not_sent",
+                    **common,
+                },
+            ),
+            bucket=report.none_applied,
+        )
+        return False
+    _settle(
+        log, report, run_id, call_id, tool_id, payload,
+        ToolResult(
+            "unknown", "unknown",
+            {
+                "error": "recovered: MCP 调用已越过外发边界，server 侧可能已经"
+                         "执行（本地目录也可能被它改过），需人工核对后再解除阻断",
+                "reason": "mcp.crash_unsettled",
+                **common,
+            },
+        ),
+        bucket=report.unresolved,
+    )
+    return True
 
 
 def _default_dispatch_state(result: ToolResult, explicit: str | None) -> str:
