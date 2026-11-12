@@ -114,8 +114,8 @@ RULE_IDS: frozenset[str] = frozenset(
         "dispatch.subtask_not_found",
         "dispatch.subtask_limit",
         "dispatch.subtask_depth_exceeded",
-        # `dispatch.parent_fenced`：编号与语义在 D1 登记（子任务 fence），产生
-        # 路径在 D2 接（父 Run 改目标 → 子任务 fence）。见 DECLARED_UNUSED。
+        # D2 起有产生路径：父 Run 改目标 → 子 Run 派发前核验失败 → 子任务
+        # fence（见 `Dispatcher._authority`）。
         "dispatch.parent_fenced",
         # ---- 网络外发（G2）：任务级白名单与网络资源归属 ----
         "c4.outbound_not_allowed",
@@ -158,12 +158,7 @@ RULE_IDS: frozenset[str] = frozenset(
 
 #: 登记为合法、但**当前没有产生路径**的编号。
 #:
-#: 前两个是防御性兜底，不是漏实现；后两个是历史归档与"先登记、后接发射点"：
-#:
-#: - `dispatch.parent_fenced`：D1 登记编号与语义（父 Run 改目标 → 子任务被
-#:   fence、结果不能回填），**产生路径在 D2**（父改目标/租约版本核验）。D2 接上
-#:   之后把它移出本集合——与 C3 的 `DECLARED_UNEMITTED_EVENT_TYPES` 同一套纪律：
-#:   先让"未接"这件事机器可读，而不是假装已经接上。
+#: 两个是防御性兜底，不是漏实现；后两个是历史归档：
 #:
 #: - `c4.subtask_unavailable`：`_classify_subtask` 在委派执行器缺失时恒拒用过的
 #:   编号。D1 起委派可执行（受 `max_subtasks` 声明 + 人工批准 + 深度/数量限额
@@ -184,7 +179,6 @@ DECLARED_UNUSED_RULE_IDS: frozenset[str] = frozenset(
         "dispatch.denied",
         "c4.unhandled",
         "c4.subtask_unavailable",
-        "dispatch.parent_fenced",
     }
 )
 
@@ -227,6 +221,8 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.subtask_exists",
             "dispatch.subtask_not_found",
             "dispatch.subtask_depth_exceeded",
+            # D2 起有产生路径：父目标变了，子任务身份就不再有效。
+            "dispatch.parent_fenced",
         }
     ),
     "审批不可用": frozenset(

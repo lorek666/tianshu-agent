@@ -655,6 +655,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                 "subtasks": [
                     item.to_dict() for item in stack.tasks.list_subtasks(run_id)
                 ],
+                "unfinished_subtasks": stack.tasks.count_unfinished_subtasks(run_id),
             },
             ensure_ascii=False, indent=2, default=str))
         return _status_exit_code(record)
@@ -682,6 +683,13 @@ def _run_status(stack, args: argparse.Namespace) -> int:
                   attempts=model_attempts,
               ))
     _print_subtasks(stack, run_id)
+    unfinished = stack.tasks.count_unfinished_subtasks(run_id)
+    if unfinished:
+        # 父 Run 等子任务时会停在 RUNNING + 作业 waiting。只说"running"会让人
+        # 以为它还在干活；这里明确"在等谁"和"谁会叫醒它"。
+        print(f"等待子任务 : {unfinished} 个未完成"
+              + ("（作业 waiting，子任务收尾后自动唤醒）"
+                 if job is not None and job.state == "waiting" else ""))
     if pending:
         print(f"待批      : {len(pending)} 条")
         for approval in pending:

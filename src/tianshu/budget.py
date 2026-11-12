@@ -516,6 +516,23 @@ class BudgetLedger:
         ).fetchone()
         return self._row_to_reservation(row) if row else None
 
+    def reservation_for(
+        self, account_id: str, attempt_id: str
+    ) -> Reservation | None:
+        """按 `(账户, attempt)` 找回预占（G2 D2 子任务收尾时结算用）。
+
+        收尾时手里只有 `(父 Run, subtask slug)`，没有 D1 时生成的随机
+        `reservation_id`。用**可重算的身份**找回同一张预占，比把 id 存进
+        `subtasks` 行更稳：身份错了会查不到（明确不结算），而存错的 id
+        会结算到别人的预占上。
+        """
+        row = self._conn.execute(
+            "SELECT * FROM budget_reservations"
+            " WHERE account_id = ? AND attempt_id = ?",
+            (account_id, attempt_id),
+        ).fetchone()
+        return self._row_to_reservation(row) if row else None
+
     def _row_to_reservation(self, row: sqlite3.Row) -> Reservation:
         return Reservation(
             reservation_id=row["reservation_id"],

@@ -121,9 +121,7 @@
     "job.requeued": {
       "run_id": "x",
       "job_id": "x",
-      "claim_epoch": 0,
-      "owner_pid": 0,
-      "owner_instance_id": "x"
+      "claim_epoch": 0
     },
     "model.error": {
       "request_id": "x",

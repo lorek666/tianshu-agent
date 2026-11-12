@@ -38,6 +38,75 @@ from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
 from .loop import SYSTEM_PROMPT, message_source_seqs
 from .summaries import SummaryStore
+from .tasks import SUBTASK_STATES
+
+#: 回放要校验形状的子任务工具（G2 委派 D2 §2.8）。
+_SUBTASK_TOOL_IDS = frozenset(
+    {"subtask.spawn", "subtask.status", "subtask.result", "subtask.cancel"}
+)
+_CONTENT_REF = re.compile(r"^content://sha256:[0-9a-f]{64}$")
+
+
+def _verify_subtask_result(
+    ev: Event, payload: dict[str, Any], problems: list[str]
+) -> None:
+    """子任务工具结果的形状校验。**只读事件，不执行、不唤醒、不重算预算。**
+
+    校验三件事，都是"缺了就无法事后核对"的那种：
+    - `subtask.spawn` 成功 → 必须有 `subtask_id` / `child_run_id` / `job_id`；
+    - `subtask.result` 的 `done:true` → 必须有 `content://sha256:` 引用和
+      `summary`（允许空串：子任务确实可能没有输出，但"没有摘要键"和"空摘要"
+      是两件事）；
+    - 子任务状态必须落在封闭集里，否则父 Run 的日志里会出现一个无法解释的
+      状态，UI 只能瞎猜。
+    """
+    tool_id = payload.get("tool_id")
+    if payload.get("status") != "succeeded":
+        return
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        problems.append(
+            f"seq={ev.seq} {tool_id} 成功结果没有对象输出（call_id="
+            f"{payload.get('call_id')}）"
+        )
+        return
+    if tool_id == "subtask.spawn":
+        for key in ("subtask_id", "child_run_id", "job_id"):
+            value = output.get(key)
+            if not isinstance(value, str) or not value:
+                problems.append(
+                    f"seq={ev.seq} subtask.spawn 结果缺 {key}（call_id="
+                    f"{payload.get('call_id')}）"
+                )
+        state = output.get("state")
+        if state is not None and state not in SUBTASK_STATES:
+            problems.append(
+                f"seq={ev.seq} subtask.spawn 结果的状态不在封闭集：{state!r}"
+            )
+        return
+    state = output.get("state")
+    if state is not None and state not in SUBTASK_STATES:
+        problems.append(
+            f"seq={ev.seq} {tool_id} 结果的状态不在封闭集：{state!r}"
+        )
+    if tool_id != "subtask.result" or output.get("done") is not True:
+        return
+    ref = output.get("result_ref")
+    if not isinstance(ref, str) or not _CONTENT_REF.match(ref):
+        problems.append(
+            f"seq={ev.seq} subtask.result 的 done:true 缺合法 content:// 引用"
+            f"（call_id={payload.get('call_id')}，result_ref={ref!r}）"
+        )
+    if "summary" not in output:
+        problems.append(
+            f"seq={ev.seq} subtask.result 的 done:true 缺 summary"
+            f"（call_id={payload.get('call_id')}）"
+        )
+    elif not isinstance(output["summary"], str):
+        problems.append(
+            f"seq={ev.seq} subtask.result 的 summary 不是字符串"
+            f"（call_id={payload.get('call_id')}）"
+        )
 
 
 @dataclass
@@ -145,6 +214,8 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                 # 外发结果必须有内容引用：回放不重新发请求，读到的是当时存下来的
                 # 那份；缺引用说明这条记录不完整（例如写事件时漏了落盘），
                 # 不能静默当成普通工具输出继续往下走。
+                if p.get("tool_id") in _SUBTASK_TOOL_IDS:
+                    _verify_subtask_result(ev, p, problems)
                 if p.get("tool_id") == "network.fetch":
                     ref = out.get("ref")
                     if not isinstance(ref, str) or not ref.startswith(
