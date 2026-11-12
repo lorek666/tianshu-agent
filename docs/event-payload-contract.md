@@ -379,3 +379,17 @@ PYTHONPATH=/Volumes/Date/ts-wt-events/src /Volumes/Date/天枢Agent/.venv/bin/py
 | `tests/test_dispatch.py` | 500 | 派发恢复的 pending intent 夹具 |
 | `tests/test_daemon.py` | 806 | daemon 恢复的旧 intent 夹具 |
 | `tests/test_job_claims.py` | 346/676 | 用生产 `commit_model_turn` 播种 model turn：把旧 adapter 形状（缺 `output_tokens`、`finish_reason="tool_calls"`）改为当前契约值；**不加 legacy 写**（生产 API 不应该接受旧形状） |
+
+## 12 D2 契约增量（2026-11-12，PR #121）
+
+G2 子代理 D2 接执行与收束时，**没有新增事件类型**，只放宽了两个既有 payload 的
+可选性；两处变化都向后兼容（旧事件逐字合法）：
+
+| 类型 | 原方案 | 新方案 | 为什么改 | 影响哪些代码 |
+|---|---|---|---|---|
+| `job.requeued` | required：`run_id` / `job_id` / `claim_epoch` / `owner_pid` / `owner_instance_id` | required 缩为 `run_id` / `job_id` / `claim_epoch`；`owner_pid` / `owner_instance_id` 改为可选（允许显式 `null`）；新增可选 `by`（`owner` / `wake`）与 `reason` | 新增 `JobStore.wake()`：子任务收尾把父作业从 `waiting` 置回 `pending`。这个动作**不是 owner 交还**——唤醒时 `park` 已把 owner 清空，写一个假 owner 才是违约 | `jobs.JobStore.wake()`、`tasks._maybe_wake_parent()` / `wake_stale_parents()`、`tests/test_event_schema.py` 的最小夹具、`tests/fixtures/events/minimal_v1.json` |
+| `run.control` | required：`run_id` / `task_id` / `action`；无 `reason` | 新增可选 `reason`（`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） | 取消传播需要一个可审计的“谁要求停”：子任务取消、父取消传播、父目标 fence 都会写 `action=cancel`，没有 reason 就只能靠猜 | `tasks.request_cancel_deferred()`、`tasks.request_subtask_cancel()`、`tasks.fence_child_run()` |
+
+没有新增事件类型（仍为 43），没有 bump payload 版本；旧日志按原 required 集合
+仍然合法。回放对 `subtask.spawn` / `subtask.result` 的**工具结果**做形状校验
+（不是事件契约），见 `replay._verify_subtask_result`。
