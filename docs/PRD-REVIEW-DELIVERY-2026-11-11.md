@@ -50,11 +50,11 @@
 | §5.3.5 第 3 条：迁移中断 | **已交付（库 + 演练）** | 新 `migrate.py`：结构版本（`user_version`/旁表）、步骤注册表、每步进度持久化、迁移前要求 `verify_backup` 通过、`crashpoint` 每步注入硬退、重启续做、不 UPDATE/DELETE 历史事件 | PR #80；[backup-restore.md](backup-restore.md)；负控：去掉备份前置 / 迁移先删后建 / 去掉中断保护，各红 |
 | §5.3.5 第 1–2 条：payload 契约与旧版映射 | **已交付** | `event_schema.py`：41 个类型逐类 payload schema（严格子集、注册期 fail-closed）；`events.py`：`event_versions` 旁表与事件行同事务、`append(legacy_write=False)` 默认只收 v1、显式 legacy 才写 v0、读取按旁表给精确版本、旁表缺失/损坏 → `PayloadVersionUnavailable` 不猜；41 类型 v1/v0 夹具 + 旧版映射测试 | PR #84；[event-payload-contract.md](event-payload-contract.md)；负控 ①–④（去掉写入校验 / v0 按新版补值 / 恢复自动回退 v0 / legacy 变万能开关）各红 |
 | §1.4 / §3.4 / §13.6 文档基线 | **已交付（文档）** | 新增章节合入 `main`（§5.2.1 的冲突按「记忆工具 5.2.1 / 记忆契约增量 5.2.2 / 通用工具准入 5.2.3」编号，保留既有记忆章节） | PR #77 |
-| §5.2.3 通用工具准入 | **已交付（G1a + G1d + G1e + G2 网络阶段）** | 封闭 schema 方言 + 注册期拒绝 + 执行期嵌套校验 + 准入前移 + 工具版本/schema/描述三项绑定 + 身份字段双闸（G1a）；五种资源种类（file/memory/network/mcp/subtask）规范化与外发许可门（外发恒需人工批准、MCP 与 exec 同级、委派恒拒、混用拒、无执行器种类派发前拒绝）（G1d）；大结果有界摘要 + 内容引用 + 分页读取 + 任务可见范围 + sha256 复核（G1e）；**网络执行器** `network.fetch` + 任务级白名单 + 同源重定向 + 响应上限/硬超时 + 字节账本 + 取消无新请求 + 回放不联网（G2 网络阶段） | PR #91 / #97 / #99 / #110；[tool-admission.md](tool-admission.md)、[resource-kinds.md](resource-kinds.md)、[content-refs.md](content-refs.md)、[network-g2.md](network-g2.md)；`test_g1_admission.py`(19) / `test_g1d_resource_kinds.py`(15) / `test_content_refs.py`(12) / `test_content_read.py`(5) / `test_outbound_allow.py`(18) / `test_network_fetch.py`(23)；负控 9+6+12+5+8 全红 |
+| §5.2.3 通用工具准入 | **已交付（G1a + G1d + G1e + G2 网络阶段）** | 封闭 schema 方言 + 注册期拒绝 + 执行期嵌套校验 + 准入前移 + 工具版本/schema/描述三项绑定 + 身份字段双闸（G1a）；五种资源种类（file/memory/network/mcp/subtask）规范化与外发许可门（外发恒需人工批准、MCP 与 exec 同级、混用拒、无执行器种类派发前拒绝；委派在 G2 子代理 D1 之前恒拒，D1 起按工具判定）（G1d）；大结果有界摘要 + 内容引用 + 分页读取 + 任务可见范围 + sha256 复核（G1e）；**网络执行器** `network.fetch` + 任务级白名单 + 同源重定向 + 响应上限/硬超时 + 字节账本 + 取消无新请求 + 回放不联网（G2 网络阶段） | PR #91 / #97 / #99 / #110；[tool-admission.md](tool-admission.md)、[resource-kinds.md](resource-kinds.md)、[content-refs.md](content-refs.md)、[network-g2.md](network-g2.md)；`test_g1_admission.py`(19) / `test_g1d_resource_kinds.py`(15) / `test_content_refs.py`(12) / `test_content_read.py`(5) / `test_outbound_allow.py`(18) / `test_network_fetch.py`(23)；负控 9+6+12+5+8 全红 |
 | §5.6 共享预算账本 | **已交付（G1b + G1c；默认记账，设闸需显式上限）** | 四表建在事件库同一 SQLite；`BEGIN IMMEDIATE` 原子预占；按 attempt 幂等结算；分维度 `partial`；未知用量保留占用不记零；父子链；`cancel` 子树传播；`reconcile` 只报告；**默认记账**（任何维度都不设闸）；硬上限模式用**可验证上界**（请求体 UTF-8 字节 + adapter 声明的 `output_tokens`，拿不到就拒绝启动）；`overrun` 越界如实记、上界口径停机；`run.cancel` 在账户未建时先建后取消 | PR #92 / #96；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`(30，含真并发)；负控 10+6 全红 |
 | §7.1 模型语义摘要 | **已交付（H1 + H2 + H3；默认关，显式开启）** | 新 `summaries.py`：三张表建在事件库同一 SQLite；材料身份 = JCS(`材料版本, 作用域, 来源[seq + 原文 sha256]`)，三个字节上限（单条 1 KiB / 材料 8 KiB / 正文 2 KiB），`pending→ready\|failed` 一次性、正文写入后不可改（代码 + 触发器）、表禁 DELETE、usage 未知留 NULL（H1）；`compile_context(..., summaries=())` 仍纯函数、激活 = **整段覆盖 + 真的被牺牲**、`summarized_seqs`/`dropped_seqs` 互斥、装不下就**放弃摘要**回落确定性、`model.intent.payload.context.summaries` 只写实际用上的身份（正文不进事件）、回放按 id 读正文并三道校验、**缺记录 = problem 不重新生成**（H2）；`summary_mode`（默认 `off`）+ `summary_max_calls=3`、可复用优先（含**子集复用**）、`begin(pending) → 账本预占 → 模型调用 → complete(ready)`、授权四条件（显式开关 + 准入 + 边界 + 预占，不是人工审批）、失败一律回落、崩溃见 `pending` **不重试**、摘要调用计入 `model_attempts`/tokens 与 `RunResult.summary_calls`（H3） | PR #103 / #105；[context-summaries.md](context-summaries.md)、[SPEC-SUMMARY-2026-11-11.md](SPEC-SUMMARY-2026-11-11.md)；`tests/test_summaries.py`(22) / `test_summary_context.py`(17) / `test_summary_replay.py`(7) / `test_summary_loop.py`(14)；负控 **7+7+10 全红**；长任务夹具 off → 「约束缺失」、model → 「约束已保留」 |
 | **G2 网络阶段** | **已交付（#110 + #112；默认拒绝出网）** | ① 任务级外发白名单 `outbound_allow`（`task.created` payload 契约增量；未声明 = 一条包都不发；源级精确匹配；创建后不可改）；② `network.fetch` 执行器（GET、同源重定向、1 MiB 响应上限、10s 硬超时、每跳/每块取消检查、固定请求头、不读代理、不发 Cookie/凭据、字节账本预占/结算、有界摘要 + `content://` 引用、回放不联网）；③ §10.5 联网研究闭环：`RU-W1`（断网诚实失败）+ `RU-W2`（本机夹具交付，来源在服务器关掉后仍可离线核验） | PR #110 / #112；[network-g2.md](network-g2.md)、[real-user-tasks.md](real-user-tasks.md)；`test_outbound_allow.py`(18) / `test_network_fetch.py`(23) / `test_network_research_eval.py`(11)；负控 5+8+5 全红 |
-| G2 MCP / 记忆执行器 / 子代理 | **未做** | 没有新能力：MCP 与委派仍在派发前拒绝（`dispatch.resource_kind_unsupported`），记忆执行器、子代理未接；联网研究的**真实公网**仍未验证（判据全部跑本机来源夹具） | [resource-kinds.md](resource-kinds.md) §7 |
+| G2 MCP / 记忆执行器 / 子代理 | **部分交付** | MCP 仍在派发前拒绝（`dispatch.resource_kind_unsupported`）；记忆执行器未接；**子代理 D1 已交付排队面**（合同 + 实体 + `subtask.spawn/status/result/cancel` + 限额 + 共享预算 + 恢复），但**子任务不会执行**（D2）；联网研究的**真实公网**仍未验证（判据全部跑本机来源夹具） | [resource-kinds.md](resource-kinds.md) §7/§8 |
 | G3 平台实机 | **未做** | 只有 macOS arm64 本机证据；Windows / mac-x64 / win-arm64 的安装、升级、回退、隔离证据均为 **unknown**。收尾轮把 Windows CI 从 35 failed 压到 **5 failed / 1509 passed / 29 skipped**（逐条见 §3），仍不是绿、也没有实机 | [isolation-matrix.md](isolation-matrix.md) §1、[runtime-metrics.md](runtime-metrics.md) §7、[backup-restore.md](backup-restore.md) §9 |
 
 ## 2 本轮合入的 PR
@@ -162,7 +162,8 @@
 
 ## 4 仍然不成立 / 未验证的宣称（不许写进「已完成」）
 
-- **G1（只剩这几条不成立）**：① MCP / 委派的**执行器**没有（G2 后续阶段）；**网络
+- **G1（只剩这几条不成立）**：① **MCP 的**执行器没有（G2 后续阶段；委派在 G2 子代理 D1
+  已接排队面，见 §4 的 G2 条目）；**网络
   执行器已交付**（#110），「私有内容未经外发许可不发包」在**执行面**有了可核对的事实
   （请求里只有目标 URL 与固定头，不读代理、不发 Cookie/凭据、无请求体），但它的边界
   见下面的 G2 条目；无执行器种类仍在派发前拒绝（`dispatch.resource_kind_unsupported`）；
@@ -188,7 +189,15 @@
   字节无法撤回；⑥ **DNS rebinding / 解析后二次校验未做**（白名单显式声明源，解析到私有
   地址会照发）；⑦ 每 Run 的抓取配置是进程级常量，没接 CLI/任务声明；⑧ 无速率限制、无重试
   策略；⑨ 内容分级（哪些材料不许外发）未实现——审批展示完整 URL，由人判断；⑩ 保留期 / GC
-  未做（抓回的内容只写不删）；⑪ MCP / 记忆执行器 / 子代理未做。
+  未做（抓回的内容只写不删）；⑪ MCP / 记忆执行器未做。
+- **G2 子代理 D1（已交付排队面，执行未做）**：① 子任务**不会执行**——子 Run 停在
+  `created`、子作业停在 `pending`、子任务停在 `queued`；Worker 驱动、父 Run 挂起/唤醒、
+  取消传播、fence、结果回填与回放是 D2；② `subtask.cancel` 只记录请求（`cancelling`），
+  真正停下在 D2；③ 子任务只能做纯读（写文件/出网/exec/MCP/记忆写/再委派都是拒绝），
+  没有嵌套审批；④ 深度固定 1、每父 Run 未完成上限 2、每根任务累计上限 4，不做配置化
+  扩容；⑤ 子任务与父任务共用同一台机器/同一个 Worker 池，「跨机器调度」不成立；
+  ⑥ 父账户只在 spawn 时按 `subtasks` 维度预占 1，**收尾结算在 D2**（D1 不结算、不退款）；
+  ⑦ 没有子任务 UI 页面（只有 CLI `run status` 与事件）。
 - **G3**：无 Windows / mac-x64 / win-arm64 实机；安装、升级、回退、凭据存储（Keychain）、
   平台 SLO 均未验证。macOS 13+ 最低版本未实测。Windows 收尾态仍是 **5 failed**（既有族），
   且有过一次命名管道阻塞导致的 25 分钟超时取消——两者都按实测写在 §3，不当作绿。
@@ -206,8 +215,11 @@
 
 1. ~~§7.1 模型语义摘要~~ **已交付**（#103 / #105，见 §1）。
 2. ~~G2 网络阶段~~ **已交付**（#110 / #112，见 §1）。G2 后续顺序：**MCP → 记忆执行器 →
-   子代理**，仍按「同一任务集证明收益」推进；MCP 与委派当前在派发前拒绝，接执行器前先补
-   §8.1.1 的隔离门禁（MCP 程序是不可信外部程序）与 `subtasks` 维度的父子账户验证。
+   子代理**，仍按「同一任务集证明收益」推进。**子代理 D1（合同 + 实体 + 四个工具 + 限额 +
+   共享预算 + 取消请求）已交付**，下一步是 D2（Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 +
+   fence + 结果回填 + 回放）与 D3（真实用户任务 `RU-D1@1.0.0`）。MCP 仍在派发前拒绝，
+   接执行器前先补 §8.1.1 的隔离门禁（MCP 程序是不可信外部程序）；`subtasks` 维度的
+   父子账户在 D1 已接（预占 + 父链），收尾结算在 D2。
 3. **G3**：历史数据升级/备份恢复、凭据存储、运行 SLO、长时间测试、安装/更新/回退与
    四目标平台矩阵；Windows IPC（issue #50）根因修复后才谈把 Windows 纳入 required。
 4. **G1 剩余三条**（不阻塞 G2 的可以后做）：`run_command` 隔离门、每消息固定开销的上界

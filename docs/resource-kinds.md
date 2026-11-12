@@ -4,8 +4,10 @@
   [`SPEC-G1-CLOSURE-2026-11-11.md`](SPEC-G1-CLOSURE-2026-11-11.md) §2。
 - 状态：**资源的解析/规范化与许可判定已实现**（`resources.py` / `permissions.py` /
   `dispatcher.py` / `rules.py`）。**执行器**：`file` / `memory` 早已有；**网络**在
-  G2 网络阶段补上（`network.fetch`，见 [network-g2.md](network-g2.md)）；**MCP 与委派
-  仍然没有执行器**，在派发前拒绝（`dispatch.resource_kind_unsupported`）。
+  G2 网络阶段补上（`network.fetch`，见 [network-g2.md](network-g2.md)）；**委派**在
+  G2 子代理 D1 补上（`subtask.spawn` / `subtask.status` / `subtask.result` /
+  `subtask.cancel`，见本文 §8）。**MCP 仍然没有执行器**，在派发前拒绝
+  （`dispatch.resource_kind_unsupported`）。
 - 判据：`tests/test_g1d_resource_kinds.py`（15 条，其中"哪些种类有执行器"一条随 G2
   网络阶段更新）；负控 6 项实测变红（见 §6）。
 
@@ -61,7 +63,10 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 | `memory` | 既有 | 不变 | 不变 |
 | `network` | **只能** `fetch` | 任务级白名单（`outbound_allow`）**先判**，然后**恒需人工批准**（无自动路径） | `c4.outbound_not_allowed` / `c4.outbound` |
 | `mcp` | **只能** `exec` | 恒需人工批准（MCP 工具是不可信外部程序） | `c4.mcp_call` |
-| `subtask` | **只能** `delegate` | **恒拒**（没有委派执行器） | `c4.subtask_unavailable` |
+| `subtask` | `delegate`（spawn / cancel）与 `read`（status / result） | **按工具**：spawn 需人工批准、cancel 自动放行（只减少执行）、read 自动；父任务能力声明/深度/限额/预算在派发层判 | `c4.subtask_spawn` / `c4.subtask_cancel` / `c4.auto` |
+
+> **D1 起 `c4.subtask_unavailable` 退役为"保留未使用"**：它回答的是 D1 之前
+> "委派没有执行器"的拒绝。编号保留给历史日志，但不再有产生路径（`rules.DECLARED_UNUSED_RULE_IDS`）。
 
 一次动作**只能有一种种类**（`c4.mixed_resource_kinds`）；种类与动作不匹配是
 `c4.action_resource_mismatch`（例如文件资源配 `fetch`）。多目标同种类沿用既有
@@ -71,8 +76,9 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
-- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）；
-- 其余种类（`mcp`、`subtask`）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
+- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）、**`subtask`**
+  （G2 子代理 D1）；
+- 其余种类（`mcp`）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
   消息写明是哪种资源、指向哪个 URI。
 
 网络的"有执行器"不等于"自动放行"：它多一道**任务级白名单**（`outbound_allow`）,
@@ -100,15 +106,31 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 | 文件资源配 `fetch` 落到 `c4.unhandled`/放行 | `test_network_action_must_be_fetch` |
 | 没有执行器的种类按 file 兜底 | `test_kinds_without_an_executor_are_refused_before_dispatch`（现在只覆盖 mcp / subtask） |
 | 规范化不折叠 `..` / 不拒 userinfo | `test_network_target_rejects_confusing_forms` |
-| `subtask` 判定改成 AUTO/APPROVE | `test_subtask_is_denied_because_the_capability_does_not_exist` |
+| `subtask` 判定改成动作级 AUTO/APPROVE（不区分工具） | `test_subtask_decision_depends_on_tool_and_action` |
 
 ## 7 没做 / 不成立的部分
 
 | 缺口 | 现状 |
 |---|---|
 | 真实网络请求 | **已实现**（G2 网络阶段）：`network.fetch` 抓取、任务级白名单、逐次批准、内容引用与字节账本。见 [network-g2.md](network-g2.md)；但**只支持 GET、没有检索 API、真实公网研究未验证** |
-| MCP 客户端、子代理 | **未做**（G2 后续阶段）。它们仍在派发前拒绝 |
+| MCP 客户端 | **未做**（G2 后续阶段）。仍在派发前拒绝 |
+| 子代理 | **D1 已实现**（合同 + 实体 + 四个工具 + 限额 + 共享预算 + 取消请求）；**D2（Worker 执行、父挂起/唤醒、取消传播、fence、结果回填）未做**，所以子任务只排队不执行。见 §8 |
 | 外发字节计量（`bytes` 维度） | 已接：发送前按上限预占、读完后按实际字节结算（判据 `test_bytes_budget_is_enforced_before_sending`） |
 | 任务级外发白名单（`outbound_allow`） | **已实现**：`task.created` payload 契约增量 + 执行侧门（见 [network-g2.md](network-g2.md) §2） |
 | 内容分级 / 哪些内容不许外发 | 未做：没有外发表，无法定义"私有内容"的边界 |
-| 子任务执行与预算父子账户 | 未做：`subtasks` 维度与父子链在账本里，但没有委派执行器 |
+| 子任务执行与预算父子账户 | 账本侧 D1 已接：spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的 `parent_id` 指向根 Run 账户（局部上限 `tokens`/`requests`、deadline 固定 300s）；**收尾结算在 D2**（D1 不结算、不退款） |
+
+## 8 G2 子代理 D1：委派资源有了执行器（只排队，不执行）
+
+- 判据与范围见 `docs/SPEC-G2-DELEGATION-2026-11-11.md` §2.1–§2.4 / §3 D1；
+  测试在 `tests/test_g2_delegation_{contract,spawn,control,recovery}.py`。
+- 资源形状不变：`subtask://<slug>`，slug 走既有 `_OPAQUE_ID`
+  （`[A-Za-z0-9_.:-]{1,128}`）。**没有新增解析器**。
+- 四个工具：`subtask.spawn`（`delegate`，需审批）、`subtask.status` /
+  `subtask.result`（`read`，自动）、`subtask.cancel`（`delegate`，自动）。
+- 委派**不是自动放行**：`_authority_subtask()` 在弹批准之前判六件事——工具归属、
+  任务级 `max_subtasks > 0`、父任务 `depth == 0`、slug 在父 Run 内唯一、
+  数量与局部上限、目标存在（status/result/cancel）。
+- D1 的诚实边界（逐条见规格 §5）：子 Run 停在 `created`、子作业停在 `pending`、
+  子任务停在 `queued`；`subtask.cancel` 只落 `cancelling`（真正停下在 D2）；
+  子任务只能做纯读，且没有任何收尾事件（`subtask.finished` 由 D2 写）。
