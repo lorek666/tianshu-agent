@@ -820,7 +820,10 @@ DELEGATION_FAILURE_TASK = _DELEGATION_FAILURE
 _RU_M1_PREFERENCE = "写周报用中文，先给结论再列细节。"
 
 #: 第二段之前替"用户"写在**另一个目录**里的私有记忆（作用域边界靶子）。
-_RU_M1_DECOY = "别的项目目录的私有结论：这个项目必须做打印。"
+#:
+#: 它刻意与第二段的检索词（"周报 偏好"）**有重叠词**：没有重叠时"没召回"可能只是
+#: 文档不相关，作用域写错的 bug 就藏起来了；有重叠才能证明"是作用域挡住的"。
+_RU_M1_DECOY = "别的项目目录的私有结论：那份周报里的打印必须做，偏好是英文。"
 
 
 def _confirm_candidate_between_runs(stack: Any, run_id: str, ws: Path) -> dict[str, Any]:
