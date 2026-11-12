@@ -35,6 +35,7 @@ from .memory_exec import MEMORY_TOOL_IDS
 from .receipt import build_receipt
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
+from .tool_registry import MCP_TOOL_PREFIX
 from .tools import SPECS, SUBTASK_TOOL_IDS, ToolResult, action_for
 from .workspace import Workspace
 
@@ -258,6 +259,11 @@ def assess_run(
         payload = ev.payload
         tool_id = payload["tool_id"]
         spec = SPECS.get(tool_id)
+        if tool_id.startswith(MCP_TOOL_PREFIX):
+            # MCP 没有本地 preimage：只读对账无从核实，一律拒绝接手（与
+            # `_recover_run` 同一口径；按 id 形状判，不靠 `SPECS` 缺条目）。
+            unresolved.append(call_id)
+            continue
         if spec is None:
             # 语义未知的工具：不能替它假设"没写"（与 recover 同一口径）。
             unresolved.append(call_id)
@@ -541,6 +547,31 @@ def _recover_run(
         payload = ev.payload
         tool_id = payload["tool_id"]
         spec = SPECS.get(tool_id)
+
+        # MCP（G2 MCP 阶段）：副作用发生在 **server 那一侧**，本地没有 preimage
+        # 可查。判定只认"有没有落盘的结果"：没有 → unknown，不猜"没执行"。
+        #
+        # 为什么按前缀而不是按 `SPECS` 有没有条目：MCP 工具**故意不进** `SPECS`，
+        # 但"不在表里"是个会变的前提（有人把动态 id 塞进静态表、或注册表装配错
+        # 了）。身份由 id 形状决定，恢复不该依赖一张静态表来认出"这不是文件工
+        # 具"——认错了就会去查磁盘，然后把"没有写前证据"读成"确定没写"。
+        if tool_id.startswith(MCP_TOOL_PREFIX):
+            _settle(log, report, run_id, call_id, tool_id, payload,
+                    ToolResult("unknown", "unknown",
+                               {"error": "recovered: MCP 调用没有落盘的结果，"
+                                         "server 侧可能已经执行（本地目录也可能"
+                                         "被它改过），需人工核对后再解除阻断",
+                                "recovered": True,
+                                "reason": "mcp.crash_unsettled",
+                                "tool_id": tool_id,
+                                # 不按 `__` 反解 server/tool：规范化把 `-`/`.`
+                                # 换成了 `_`，反解出来的名字可能不是用户配的那
+                                # 个。给人一条能自己查的命令，比编一个像名字的
+                                # 字符串诚实。
+                                "mcp": {"tool_id": tool_id,
+                                        "lookup": "tianshu mcp list"}}),
+                    bucket=report.unresolved)
+            continue
 
         if spec is None:
             # 复审 中-2：tool_id 不在当前工具清单里（更早/更新版本的日志）时，
@@ -1190,18 +1221,73 @@ def _settle(
             })
 
     if dispatch_ts is None:
-        log.append_many(batch)
-    else:
-        # 事件与 dispatches 状态一次提交：恢复写的结果与"这次派发已结算"
-        # 不能出现一个有一个没有。
-        with log.transaction():
+        # 恢复补写的每一条结果都**必须**让派发行有终态（复审 R2）：只写事件不动
+        # 行的话，`dispatch_record()` 会继续显示 intent/executing——同一件事在
+        # 事件里是"已结算"、在派发表里是"仍在执行"，后续 resume / 审计就分不清
+        # 谁在说真话。记忆与委派分支早就这么做了，文件分支一直漏着。
+        #
+        # 派发表可能根本不存在：库早于"派发登记"（或夹具只手工写事件，例如
+        # `tests/test_crash_consistency.py` 的断电库）。没有表就没有可推进的行
+        # ——只写结果，不为了"顺带改状态"把恢复变成一个会崩的命令。
+        if not _has_dispatch_table(log):
             log.append_many(batch)
-            _mark_dispatch_settled(
-                log,
-                run_id,
-                call_id,
-                dispatch_ts,
-                str(result.output.get("error", "")),
-                state=dispatch_state,
-            )
+            bucket.append(call_id)
+            return
+        # 没有 intent 时间戳时用行自己的 `created_at`（同一条派发的登记时刻），
+        # 并且**与事件同一个事务**提交：不允许出现"结果有了、行还没推进"。
+        row = log.conn.execute(
+            "SELECT created_at FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id, call_id),
+        ).fetchone()
+        if row is None:
+            # 历史日志里可能没有这条派发行（该工具在派发表引入之前就存在）：
+            # 没有可推进的行，只写结果，不编造一条。
+            log.append_many(batch)
+        else:
+            with log.transaction():
+                log.append_many(batch)
+                _mark_dispatch_settled(
+                    log,
+                    run_id,
+                    call_id,
+                    int(row["created_at"] or 0),
+                    str(result.output.get("error", "")),
+                    state=_default_dispatch_state(result, dispatch_state),
+                )
+        bucket.append(call_id)
+        return
+
+    # 事件与 dispatches 状态一次提交：恢复写的结果与"这次派发已结算"
+    # 不能出现一个有一个没有。
+    with log.transaction():
+        log.append_many(batch)
+        _mark_dispatch_settled(
+            log,
+            run_id,
+            call_id,
+            dispatch_ts,
+            str(result.output.get("error", "")),
+            state=_default_dispatch_state(result, dispatch_state),
+        )
     bucket.append(call_id)
+
+
+def _has_dispatch_table(log: EventLog) -> bool:
+    """这个库里有没有 `dispatches` 表（恢复可能被叫到很老的库上）。"""
+    return log.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dispatches'"
+    ).fetchone() is not None
+
+
+def _default_dispatch_state(result: ToolResult, explicit: str | None) -> str:
+    """恢复补写结果时派发行该写什么终态。
+
+    确定落地（`applied`）→ `done`；其余（none_applied / unknown）→ `error`。
+    把 applied 写成 error 会在日志里留一句与事实相反的话；把 unknown 写成 done
+    则是替一次没核实过的调用宣布成功。
+    """
+    if explicit is not None:
+        return explicit
+    from .dispatcher import DISPATCH_ERROR, DISPATCH_FINISHED
+
+    return DISPATCH_FINISHED if result.effect_state == "applied" else DISPATCH_ERROR

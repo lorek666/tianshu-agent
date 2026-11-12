@@ -91,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tools-file", default="")
     parser.add_argument("--page-size", type=int, default=0)
     parser.add_argument("--call-log", default="")
+    # 工具**真的执行了**的证据（在算完结果、写响应之前追加）：call-log 只证明
+    # server 收到了 tools/call，进程在"响应已回、结果未落"处崩掉时，这一行才
+    # 能证明副作用真的发生过。
+    parser.add_argument("--effect-log", default="")
     parser.add_argument("--cancel-log", default="")
     parser.add_argument("--stderr-bytes", type=int, default=0)
     parser.add_argument("--env-probe", default="")
@@ -191,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 continue
             if args.mode == "is_error":
+                _append_line(args.effect_log, {"name": name, "executed": True})
                 _result(
                     request_id,
                     {"content": [{"type": "text", "text": "工具说它失败了"}], "isError": True},
@@ -222,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
                 content = [{"type": "text", "text": str(total)}]
             else:
                 content = [{"type": "text", "text": f"unknown tool {name}"}]
+            _append_line(args.effect_log, {"name": name, "executed": True})
             _result(request_id, {"content": content})
             continue
 
