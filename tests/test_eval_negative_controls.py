@@ -47,6 +47,8 @@ from tianshu.eval.checks import (
     receipts_for_target,
     recovery_bucket_exclusive,
     recovery_clean,
+    subtask_output_unavailable,
+    subtask_readonly_boundary,
     unchanged_while_pending,
     undo_did_not_overwrite_user_edit,
 )
@@ -303,6 +305,70 @@ NEGATIVE_CONTROLS: dict[str, Callable[[], tuple[Check, Observation]]] = {
                     },
                 )
             ]
+        ),
+    ),
+    # ---- G2 委派 D3：子任务只读边界（写/外发被允许一次就是权限边界破了） ----
+    "subtask.readonly_boundary": lambda: (
+        subtask_readonly_boundary("c4.readonly_binding", "c4.outbound_not_allowed"),
+        _obs(
+            events=[],
+            subtask_events=[
+                _event("dispatch.rejected", {"rule_id": "c4.readonly_binding"}, seq=2),
+                _event(
+                    "dispatch.rejected",
+                    {"rule_id": "c4.outbound_not_allowed"},
+                    seq=3,
+                ),
+                # 子 Run 真的写成功了 → 判据必须红
+                _event(
+                    "tool.result",
+                    {
+                        "call_id": "c_child_write",
+                        "tool_id": "create_report",
+                        "status": "succeeded",
+                        "effect_state": "applied",
+                        "output": {"path": "child_output.md"},
+                    },
+                    seq=4,
+                ),
+            ],
+        ),
+    ),
+    # ---- G2 委派 D3：子任务失败时父任务不许编造 ----
+    "subtask.output_unavailable": lambda: (
+        subtask_output_unavailable(),
+        _obs(
+            files={"summary.md": "子任务失败了。\n".encode()},
+            # 行与事件一起伪造：收束后的结论里被补了内容（判据两栏都读）
+            subtasks=[
+                {
+                    "subtask_id": "docs_reader",
+                    "state": "failed",
+                    "summary": "据来源：CSV 导出 3 秒内完成。",
+                    "result_ref": "content://sha256:" + "a" * 64,
+                    "child_run_state": "failed",
+                }
+            ],
+            events=[
+                _event(
+                    "tool.result",
+                    {
+                        "call_id": "c_result",
+                        "tool_id": "subtask.result",
+                        "status": "succeeded",
+                        "effect_state": "none_applied",
+                        "output": {
+                            "subtask_id": "docs_reader",
+                            "state": "failed",
+                            "done": True,
+                            # 空摘要/无引用才合法；这里给一段"编造的结论"
+                            "summary": "据来源：CSV 导出 3 秒内完成。",
+                            "result_ref": None,
+                            "error": "输出不可用",
+                        },
+                    },
+                )
+            ],
         ),
     ),
     # ---- 恢复类 ----

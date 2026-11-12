@@ -100,6 +100,24 @@ OUT = "summary.md"
 
 
 @dataclass(frozen=True)
+class SubtaskScript:
+    """评测用子任务模型脚本（G2 委派 D3）。
+
+    为什么子任务要有自己的脚本：`_run_standard` 里父 Run 用 `model_for(case)`，
+    子 Run 由 `Worker` 另行认领。若子 Run 复用父脚本，父脚本会被子 Run 从第一
+    条开始重放——那不是"子任务模型"，是把两条 Run 混成一条。所以按
+    `subtask_id` 显式声明每个子任务的脚本；没声明的子任务一律**拒绝驱动**
+    （fail closed），不拿父脚本冒充。
+    """
+
+    #: `ScriptedModel` 的响应序列（子 Run 用）。
+    script: tuple[ModelResponse, ...] = ()
+    #: 非 None = 子 Run 的模型直接抛不可重试的 `ModelError`。用来覆盖
+    #: "子任务失败 → 父任务报告必须写输出不可用、不编造"这条路径。
+    fail_with: str | None = None
+
+
+@dataclass(frozen=True)
 class Case:
     case_id: str
     category: str
@@ -141,6 +159,12 @@ class Case:
     #: 依赖夹具地址的脚本工厂：夹具起来之后才生成脚本（地址是内核分配的，事先
     #: 不知道）。真实模型跑这条 case 时忽略它。
     script_factory: Callable[[str], tuple[ModelResponse, ...]] | None = None
+    #: G2 委派 D3：任务允许派生的子任务数（0 = 不允许委派）。父 Run 必须显式
+    #: 声明 > 0 才能调用 `subtask.spawn`；评测里逐条任务声明。
+    max_subtasks: int = 0
+    #: G2 委派 D3：按 `subtask_id` 声明的子 Run 脚本。父脚本与子脚本必须分开，
+    #: 否则子 Run 会把父脚本从头重放。未声明的子任务拒绝驱动（不猜）。
+    subtask_scripts: Mapping[str, SubtaskScript] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- 脚本拼装
@@ -887,5 +911,6 @@ __all__ = [
     "OUT",
     "SUITE_VERSION",
     "Case",
+    "SubtaskScript",
     "select_cases",
 ]
