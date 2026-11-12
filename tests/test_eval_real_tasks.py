@@ -48,6 +48,7 @@ from tianshu.eval.checks import (
 )
 from tianshu.eval.tasks import (
     DELEGATION_FAILURE_TASK,
+    MEMORY_FORGET_TASK,
     REAL_MODEL_ENV,
     REAL_USER_CASES,
     REAL_USER_TASK_BY_ID,
@@ -61,10 +62,12 @@ from tianshu.model import ScriptedModel
 
 
 def test_every_real_task_is_versioned_and_documented():
-    # 联网研究在 G2 网络阶段变成**真的能跑**：RU-W1（断网诚实失败）+ RU-W2（本机夹具交付）。
-    assert len(REAL_USER_TASKS) == 8
+    # 联网研究在 G2 网络阶段变成**真的能跑**：RU-W1（断网诚实失败）+ RU-W2（本机夹具交付）；
+    # 记忆在 G2 记忆阶段 M2 变成**真的用上**：RU-M1（记住偏好 → 新任务召回）。
+    assert len(REAL_USER_TASKS) == 9
     assert {task.task_id for task in REAL_USER_TASKS} == {
-        "RU-L1", "RU-L2", "RU-C1", "RU-C2", "RU-C3", "RU-W1", "RU-W2", "RU-D1"
+        "RU-L1", "RU-L2", "RU-C1", "RU-C2", "RU-C3", "RU-W1", "RU-W2", "RU-D1",
+        "RU-M1",
     }
     for task in REAL_USER_TASKS:
         assert task.version, task.task_id
@@ -136,9 +139,9 @@ def test_real_user_suite_is_green_with_harness_model(tmp_path):
     report = build_report(suite, REAL_USER_CASES)
     assert report["verdict"] == "pass"
     assert report["suite_version"] == SUITE_VERSION
-    assert report["scope"]["real_user"]["cases"] == 8
-    assert report["scope"]["real_user"]["runs"] == 24
-    assert report["scope"]["real_user"]["valid_runs"] == 24
+    assert report["scope"]["real_user"]["cases"] == 9
+    assert report["scope"]["real_user"]["runs"] == 27
+    assert report["scope"]["real_user"]["valid_runs"] == 27
     assert report["scope"]["real_user"]["invalid_runs"] == 0
     assert report["validity"]["invalid"] == 0
     for case in report["cases"]:
@@ -158,10 +161,10 @@ def test_real_user_scope_is_counted_separately_from_contract_cases(tmp_path):
         workdir=Path(tmp_path) / "combined",
     )
     report = build_report(suite, combined)
-    assert report["overall"]["cases"] == len(CASES) + len(REAL_USER_CASES) == 28
+    assert report["overall"]["cases"] == len(CASES) + len(REAL_USER_CASES) == 29
     assert set(report["scope"]) == {"model", "harness", "real_user"}
-    assert report["scope"]["real_user"]["cases"] == 8
-    assert report["scope"]["real_user"]["runs"] == 24
+    assert report["scope"]["real_user"]["cases"] == 9
+    assert report["scope"]["real_user"]["runs"] == 27
     assert report["scope"]["model"]["runs"] == 17 * 3  # 契约基线 20 条里 17 条 model
     assert report["scope"]["harness"]["runs"] == 3 * 3
     # scope 之间的样本不许串：real_user 的 case 只能出现在 real_user 里
@@ -442,8 +445,13 @@ def _event(kind: str, payload: dict, seq: int = 1):
     )
 
 
-def _assert_all_checks_green(obs, task) -> None:
-    results = evaluate_checks(obs, task.to_case().checks)
+def _assert_all_checks_green(obs, task, *, extra=()) -> None:
+    """第一条 Run 的判据 + （可选）第二段 followup 的判据全部通过。
+
+    `extra` 用于 followup 判据：它们读的是 `Observation.followup`，与第一条 Run
+    的判据同一次 `evaluate_checks` 跑（判据只是函数，证据都在同一个 Observation 上）。
+    """
+    results = evaluate_checks(obs, (*task.to_case().checks, *extra))
     assert all(result.passed for result in results), [
         (result.check_id, result.detail) for result in results if not result.passed
     ]
@@ -697,6 +705,154 @@ def test_delegation_without_child_script_fails_closed(tmp_path):
     assert len(obs.subtasks) == 1
     assert obs.subtasks[0]["state"] == "queued"
     assert obs.subtasks[0]["child_run_state"] == "created"
+
+
+# ---------------------------------------------------------------- 记忆（M2）
+
+
+def test_memory_task_confirms_then_recalls_in_a_new_task(tmp_path):
+    """M2-c1：第一段写候选 → 人确认 → 第二段（新 workspace、新任务）召回并使用。
+
+    这条证明的是**记忆有用**，不只是"工具能调用"：第二段没有再次被告知偏好，
+    它自己从记忆库召回，并把偏好用进产物。判据分三层（工具层 / 上下文层 /
+    结果层），见 `followup_recalled` 的说明。
+    """
+    task, observations = _task_obs(tmp_path, "RU-M1")
+    for obs in observations:
+        assert obs.unavailable is None
+        assert obs.invalid_reason is None, obs.invalid_reason
+        assert obs.error is None, obs.error
+        assert obs.result is not None and obs.result.terminal
+        # 两段之间：人把候选确认成 active（origin 只能由"人批准了 confirm"产生）
+        facts = obs.post_run
+        assert facts.get("confirmed") is True, facts
+        assert facts.get("status") == "active", facts
+        assert facts.get("origin") == "user_confirmed", facts
+        confirmed_id = facts["memory_id"]
+        # 第一段：模型真的写了候选（candidate + inferred）
+        proposals = [
+            r
+            for r in obs.tool_results()
+            if r.get("tool_id") == "memory.propose" and r.get("status") == "succeeded"
+        ]
+        assert proposals, "第一段没有写入候选"
+        assert proposals[-1]["output"]["memory_id"] == confirmed_id
+
+        followup = obs.followup
+        assert followup is not None, "第二段没有跑"
+        assert followup.error is None, followup.error
+        assert followup.first_run_terminal is True
+        assert followup.run_id != obs.run_id
+        assert followup.result is not None and followup.result.terminal
+        # 第二段召回：既在 memory.search 的命中里，也在**上下文**里
+        hits = [
+            item
+            for r in followup.tool_results()
+            if r.get("tool_id") == "memory.search" and r.get("status") == "succeeded"
+            for item in (r.get("output") or {}).get("items") or []
+        ]
+        assert confirmed_id in {str(item.get("memory_id")) for item in hits}, hits
+        assert confirmed_id in followup.recalled_memory_ids()
+        # 产物按偏好写：中文、先结论，且逐字包含偏好原文
+        text = followup.artifact_text
+        assert text.startswith("结论："), text
+        assert "写周报用中文，先给结论再列细节。" in text
+        assert "CSV" in text and "打印延后" in text
+        # 作用域没串：另一个目录的私有记忆没有被召回，也没进产物
+        assert followup.decoy_memory_ids
+        assert not set(followup.decoy_memory_ids) & set(followup.recalled_memory_ids())
+        assert "别的项目目录的私有结论" not in text
+        # 第一段与第二段的判据都过
+        _assert_all_checks_green(obs, task, extra=task.followup.checks)
+
+
+def test_memory_forget_path_has_no_recall(tmp_path):
+    """M2-c2（测试内任务）：确认后忘记 → 第二段召回为空、产物不出现偏好原文。"""
+    task = MEMORY_FORGET_TASK
+    suite = run_real_user_tasks(
+        Path(tmp_path) / "real-RU-M1-F", cases=(task.to_case(),), repeat=3
+    )
+    for obs in suite.observations:
+        assert obs.invalid_reason is None, obs.invalid_reason
+        assert obs.error is None, obs.error
+        facts = obs.post_run
+        assert facts.get("became_active") is True, facts
+        assert facts.get("forgotten") is True, facts
+        assert facts.get("status") == "forgotten", facts
+        followup = obs.followup
+        assert followup is not None and followup.error is None, (
+            None if followup is None else followup.error
+        )
+        # 忘记之后：工具查不到、上下文里也没有
+        hits = [
+            item
+            for r in followup.tool_results()
+            if r.get("tool_id") == "memory.search" and r.get("status") == "succeeded"
+            for item in (r.get("output") or {}).get("items") or []
+        ]
+        assert hits == [], hits
+        assert followup.recalled_memory_ids() == []
+        assert "写周报用中文，先给结论再列细节。" not in followup.artifact_text
+        _assert_all_checks_green(obs, task, extra=task.followup.checks)
+
+
+def test_memory_forget_negative_control(tmp_path):
+    """负控：忘记之后若仍被召回/仍按偏好写，两条判据都必须红。"""
+    from tianshu.eval.checks import followup_artifact_excludes, followup_no_recall
+
+    task = MEMORY_FORGET_TASK
+    suite = run_real_user_tasks(
+        Path(tmp_path) / "real-RU-M1-F", cases=(task.to_case(),), repeat=1
+    )
+    obs = suite.observations[0]
+    assert followup_no_recall().fn(obs)[0] is True
+    assert followup_artifact_excludes("写周报用中文，先给结论再列细节。").fn(obs)[0] is True
+
+    followup = obs.followup
+    assert followup is not None
+    # 伪造：忘记之后仍把那条记忆塞进了上下文
+    forged = copy.deepcopy(followup.events)
+    forged.append(
+        _event(
+            "model.intent",
+            {"context": {"memories": [{"memory_id": "mem_forgotten", "revision": 1}]}},
+            seq=999,
+        )
+    )
+    followup.events = forged
+    passed, detail = followup_no_recall().fn(obs)
+    assert passed is False, detail
+    # 伪造：产物里按偏好写了
+    followup.files["weekly.md"] = (
+        followup.files["weekly.md"] + "写周报用中文，先给结论再列细节。\n".encode()
+    )
+    assert followup_artifact_excludes("写周报用中文，先给结论再列细节。").fn(obs)[0] is False
+
+
+def test_memory_inputs_are_part_of_the_denominator():
+    """第二段的输入进分母：改第二段任务/夹具/脚本/判据都会让这条任务不可比。"""
+    from dataclasses import replace
+
+    task = REAL_USER_TASK_BY_ID["RU-M1"]
+    base = fixture_digest(task.to_case())
+    assert task.followup is not None
+    variants = [
+        replace(task, followup=replace(task.followup, task="换一个第二段任务")),
+        replace(task, followup=replace(task.followup, out_name="other.md")),
+        replace(
+            task,
+            followup=replace(task.followup, fixture={"资料/会议纪要A.md": "换一份\n"}),
+        ),
+        replace(
+            task,
+            followup=replace(
+                task.followup, script=tuple(task.followup.script[:1])
+            ),
+        ),
+    ]
+    digests = {fixture_digest(variant.to_case()) for variant in variants}
+    assert base not in digests
+    assert len(digests) == len(variants)
 
 
 # ---------------------------------------------------------------- 真实模型 opt-in

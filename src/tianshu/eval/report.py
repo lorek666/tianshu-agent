@@ -250,6 +250,22 @@ def fixture_digest(case: Case) -> str:
             }
             for key, plan in sorted(case.subtask_scripts.items())
         }
+    # G2 记忆阶段 M2：第二段 Run 的输入。它是这条 case 的一半输入——改了第二段
+    # 的任务/夹具/脚本/判据，两次评测就不可比。与委派字段同一条纪律：**只在
+    # 非默认时加键**，既有 case 的 digest 逐字节不变。
+    if case.followup is not None:
+        plan = case.followup
+        payload["followup"] = {
+            "task": plan.task,
+            "out_name": plan.out_name,
+            "fixture": dict(sorted(plan.fixture.items())),
+            "workspace": plan.workspace,
+            "approval": plan.approval,
+            "max_turns": plan.max_turns,
+            "decoy_workspace_memory": plan.decoy_workspace_memory,
+            "checks": [[_check_fingerprint(c)] for c in plan.checks],
+            "script": [resp.to_payload() for resp in plan.script],
+        }
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
