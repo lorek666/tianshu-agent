@@ -48,3 +48,20 @@ def _pin_local_backend(monkeypatch):
     finally:
         # reset 同时清掉 memfs 单例的虚拟状态，避免跨用例残留。
         sandbox.reset_backend()
+
+
+@pytest.fixture(autouse=True)
+def _pin_tool_registry():
+    """进程级工具注册表在用例之间必须复位。
+
+    MCP 阶段把"内置 SPECS + 运行时准入"放进了一个进程级注册表（与
+    `sandbox` 后端的进程级状态同一类）。一个用例装了动态工具，下一个用例不该
+    继承它——否则"工具面没变"的判据会在别人的残留上假绿。
+    """
+    from tianshu.tool_registry import reset_registry
+
+    reset_registry()
+    try:
+        yield
+    finally:
+        reset_registry()
