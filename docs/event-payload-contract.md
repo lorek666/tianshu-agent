@@ -73,8 +73,10 @@
 | `model.result` | v1 | `request_id`, `content`, `finish_reason`, `tool_calls`, `usage`, `cost` | 无已知形状差异 |
 | `policy.denied` | v1 | `request_id`, `request_digest`, `action`, `resources`, `rule_id`, `reason` | 无已知形状差异 |
 | `receipt` | v1 | `receipt_id`, `run_id`, `call_id`, `tool_id`, `action`, `args_hash`, `effect_state`, `backend`, `issuer`, `issued_at`, `root`, `resource`, `before_state`, `after_state`, `intent_seq`, `blob_ref`, `evidence` | 历史形状差异（v0 放宽） |
-| `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异 |
-| `recovery.unblocked` | v1 | `workspace`, `reason` | 无已知形状差异 |
+| `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异（目录阻断） |
+| `recovery.object_blocked` | v1 | `object`, `call_ids`, `reason` | 无已知形状差异（**对象**阻断：`mcp://server/tool` / `mcp://server`；对象键不是路径，与 `recovery.blocked` 的目录是两种对象模型） |
+| `recovery.object_unblocked` | v1 | `object`, `reason` | 无已知形状差异（解除对象阻断；**不**解除目录阻断，反之亦然） |
+| `recovery.unblocked` | v1 | `workspace`, `reason` | 无已知形状差异（目录解除） |
 | `run.control` | v1 | `run_id`, `task_id`, `action` | 无已知形状差异（G2 委派 D2 起可选 `reason`：`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） |
 | `run.cursor` | v1 | `run_id`, `goal_revision`, `lease_epoch`, `claim_epoch`, `completed_call_ids`, `pending_proposals`, `payload_hash` | 无已知形状差异 |
 | `run.effect` | v1 | `run_id`, `task_id`, `effect_state`, `n_applied`, `n_unknown` | 无已知形状差异 |
@@ -162,9 +164,9 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 夹具（`tests/fixtures/events/`，由 `event_schema` 生成并校验）：
 
-- `minimal_v1.json`：43 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
+- `minimal_v1.json`：45 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
   test_minimal_v1_fixture_is_valid_and_round_trips`）。
-- `legacy_v0.jsonl`：43 个类型各一行 `{type,payload,note}`，逐行可读；
+- `legacy_v0.jsonl`：45 个类型各一行 `{type,payload,note}`，逐行可读；
   其中 **6 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
   `run.model_turn` / `run.start` / `tool.intent`）是"v1 拒绝、v0 接受"的真实历史
   形状差异；其余 35 行形状与当前一致，用来证明**"旁表无记录的历史行 → v0 读出"**
@@ -236,7 +238,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**82** 条。43 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+- `tests/test_event_schema.py`：**82** 条。45 个类型 ×（一正一反例）、v1/v0 夹具逐行、
   版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
   blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
   **`legacy_write` 不被误用的两条元测试**（生产代码零调用点 + 显式 legacy 仍须过
@@ -246,7 +248,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - 两处**授权**的既有测试最小改动（旧口径 → 新口径，断言强度不变）：
   1. `tests/test_events.py::test_every_registered_type_can_be_written_and_read_back`：
      旧=`{"probe": type}` 任意 dict 可写；新=每类型用 `event_schema.minimal_payload()`
-     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 43 个类型。
+     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 45 个类型。
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。

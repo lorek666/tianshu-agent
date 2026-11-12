@@ -764,6 +764,20 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         required=("workspace", "call_ids", "reason"),
     ),
+    "recovery.object_blocked": _obj(
+        {
+            #: 阻断对象：`mcp://<server>/<tool>`（工具级）或 `mcp://<server>`
+            #: （server 级，遮住该 server 的全部工具）。**不是**目录路径——
+            #: 目录阻断走 `recovery.blocked`，两者是不同的对象模型。
+            "object": _s(),
+            "call_ids": _arr(_s()),
+            "reason": _s(),
+        },
+        required=("object", "call_ids", "reason"),
+    ),
+    "recovery.object_unblocked": _obj(
+        {"object": _s(), "reason": _s()}, required=("object", "reason")
+    ),
     "recovery.unblocked": _obj(
         {"workspace": _s(), "reason": _s()}, required=("workspace", "reason")
     ),

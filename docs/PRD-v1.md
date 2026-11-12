@@ -591,7 +591,7 @@ Event {
 
 **原方案**：`type` 是一个 9 值抽象枚举 `intent|result|model_call|approval|receipt|compaction|job|checkpoint|audit`。
 
-**新方案**：两层——**族**（`type` 的名字空间前缀；14 个在用 + 3 个声明未实现）→ **具体类型注册表**（43 个，机器可校验，写入侧强制）。
+**新方案**：两层——**族**（`type` 的名字空间前缀；14 个在用 + 3 个声明未实现）→ **具体类型注册表**（45 个，机器可校验，写入侧强制）。
 
 **为什么改**（三条都是实测出来的）：
 
@@ -611,7 +611,7 @@ Event {
 | `job` | 族 `job`（5 种） |
 | `compaction` / `checkpoint` / `audit` | **未实现**，登记在 `UNIMPLEMENTED_EVENT_FAMILIES` |
 
-#### 5.3.2 注册表：14 个族 / 43 个具体类型
+#### 5.3.2 注册表：14 个族 / 45 个具体类型
 
 族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
 
@@ -625,7 +625,7 @@ Event {
 | `model` | 模型调用：意图、结果、错误（C1） | `model.error` / `model.intent` / `model.result` |
 | `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
-| `recovery` | 崩溃恢复：阻断与解除阻断 | `recovery.blocked` / `recovery.unblocked` |
+| `recovery` | 崩溃恢复：阻断与解除阻断（目录与 MCP 对象两种对象模型，见 §5.4.1 的 `dispatch.mcp_object_blocked`） | `recovery.blocked` / `recovery.object_blocked` / `recovery.object_unblocked` / `recovery.unblocked` |
 | `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
@@ -660,7 +660,7 @@ Event {
 
 **已封闭**：
 
-- **类型集合**：41 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
+- **类型集合**：45 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
 - **信封必填字段**：`seq / run_id / type / ts / actor / payload / payload_hash`；`task_id`、`idem_key`、`parent_seq` 可空。
 - **`payload_hash` 形状**（sha256 hex）与 `seq` 语义。
 
@@ -829,6 +829,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.mcp_server_unavailable` | MCP | 配置里的这个 server 当前不可用（没启动 / 握手失败 / 已断开），原因带诊断。 | 看 `tianshu mcp list` 的诊断修 server；修好前这个工具用不了。 |
 | `dispatch.mcp_tool_unknown` | MCP | 这个工具没有准入（server 没声明、schema 用了方言外关键字、名字越界或被 `max_tools` 截断）。 | 看 `tianshu mcp list` 的 `rejected_tools` 原因；模型看不到它，别让它去猜。 |
 | `dispatch.mcp_protocol_error` | MCP | 协议层失败（畸形帧、响应 id 不匹配、结果形状不合法）。**副作用未知**，按 `unknown` 结算并阻断待核查。 | 不要重放；先 `recover` 看结论，再决定人工核对。 |
+| `dispatch.mcp_object_blocked` | MCP · 对象阻断 | 这个 MCP 对象（`mcp://server/tool` 或 server 级 `mcp://server`）之前有一次调用**可能已在 server 侧执行**、副作用无法核实，因此拒绝再次发外。判定阶段（弹批准之前）与外发边界之前各核验一次；结论是 `rejected` + `none_applied`，**一个字节都没发出**。与目录阻断是两件事：解除 workspace 阻断**不会**解除它。 | 先核对 server 侧的输出/日志确认那次调用到底做了什么，再显式解除对象阻断（`guard.unblock_object`）；没核对过就别放开。 |
 | `dispatch.budget_refused` | 预算账本 | 抓取前的字节预占被拒：额度耗尽、账户已取消或已过 deadline。**一个请求都没有发出**。 | 提高该维度的预算上限，或在额度恢复 / 新账户下重新发起；不要靠重试绕过额度。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |

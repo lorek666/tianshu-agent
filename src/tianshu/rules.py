@@ -128,6 +128,10 @@ RULE_IDS: frozenset[str] = frozenset(
         "dispatch.mcp_server_unavailable",
         "dispatch.mcp_tool_unknown",
         "dispatch.mcp_protocol_error",
+        # 对象级阻断（MCP 后续工单）：这个工具/服务器有未核实的副作用，
+        # 在人工核对 server 侧之前拒绝再发外。与 `dispatch.workspace_blocked`
+        # 分开：阻断对象是外部的 `mcp://…`，不是本地目录。
+        "dispatch.mcp_object_blocked",
         # ---- 预算账本：预占被拒（额度耗尽 / 已取消 / 过 deadline） ----
         "dispatch.budget_refused",
         # ---- 记忆（F10）：作用域、种类与记忆目标 ----
@@ -305,6 +309,7 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.mcp_server_unavailable",
             "dispatch.mcp_tool_unknown",
             "dispatch.mcp_protocol_error",
+            "dispatch.mcp_object_blocked",
         }
     ),
     "预算账本": frozenset(

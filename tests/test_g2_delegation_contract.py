@@ -40,10 +40,14 @@ M2_TASK = REPO / "schemas" / "m2" / "task.json"
 #:
 #: 规则数说明：D1 分支基线的 `main` 是 59；本分支 +9（§2.7 的 8 条 + §2.3 额外
 #: 要求的 `dispatch.subtask_rejected`）；合并 `main` 上的 G2 MCP 阶段（+6）之后
-#: 是 74。D1 自己的增量与规格预估的差异写进 PR body 对账。
-EXPECTED_EVENT_TYPES = 43
+#: 是 74；对象级阻断工单 +1（`dispatch.mcp_object_blocked`）= 75。D1 自己的增量
+#: 与规格预估的差异写进 PR body 对账。
+#:
+#: 事件类型 43 → 45：对象级阻断新增 `recovery.object_blocked` /
+#: `recovery.object_unblocked`（MCP 后续工单 §5-8）。
+EXPECTED_EVENT_TYPES = 45
 EXPECTED_TOOL_IDS = 23
-EXPECTED_RULE_IDS = 74
+EXPECTED_RULE_IDS = 75
 
 
 def _stack(tmp_path: Path):
@@ -176,7 +180,7 @@ def test_task_created_schema_declares_the_parent_chain(tmp_path):
 
 
 def test_event_schema_mirror():
-    """事件类型 43 + 逐类型契约与 `schemas/c3/event.json` 逐字一致。
+    """事件类型 45 + 逐类型契约与 `schemas/c3/event.json` 逐字一致。
 
     事件类型是封闭集合，"多了两个类型"必须在代码、schema 文件、PRD §5.3.2
     三处同时成立；这里把前两处绑死（PRD 由 `test_rule_ids` 之外的文档对账覆盖）。
@@ -216,7 +220,7 @@ def test_tool_id_enum():
     assert set(tool_enum) == set(SPECS)
     assert len(set(tool_enum)) == len(tool_enum), "工具 id 不能重复"
 
-    # 规则 id 74（D1 +9；合并 MCP 阶段后在 65 的基础上是 74。规格 §2.7 对本轮
+    # 规则 id 75（D1 +9，合并 MCP 阶段后 74，对象级阻断 +1。规格 §2.7 对本轮
     # 增量的预估是 8 条，差的那一条是 §2.3 要求的 `dispatch.subtask_rejected`）。
     assert len(RULE_IDS) == EXPECTED_RULE_IDS
     raw = C4.read_text(encoding="utf-8")

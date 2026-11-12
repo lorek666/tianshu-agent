@@ -193,6 +193,15 @@
       "call_ids": [],
       "reason": "x"
     },
+    "recovery.object_blocked": {
+      "object": "x",
+      "call_ids": [],
+      "reason": "x"
+    },
+    "recovery.object_unblocked": {
+      "object": "x",
+      "reason": "x"
+    },
     "recovery.unblocked": {
       "workspace": "x",
       "reason": "x"
