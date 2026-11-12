@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from tianshu.errors import TianshuError
 from tianshu.eval import (
     CASES,
     SUITE_VERSION,
@@ -41,6 +42,8 @@ from tianshu.eval.checks import (
     read_absent,
     subtask_output_unavailable,
     subtask_readonly_boundary,
+    subtask_result_grounded,
+    subtask_result_quoted,
     undo_did_not_overwrite_user_edit,
 )
 from tianshu.eval.tasks import (
@@ -484,7 +487,51 @@ def test_delegation_task_spawns_readonly_subtask_and_aggregates(tmp_path):
         assert output["summary"] in obs.artifact_text
         assert "产品需求.md" in obs.artifact_text
         assert "评审纪要.md" in obs.artifact_text
+        # 事实有据可查：三条结论必须出现在**子 Run 读到的正文**里。只核
+        # "父引用了子摘要"核不到这条——属性报告与脚本是两份预先写好的字面量，
+        # 把夹具改成相反内容时它会照旧绿。
+        child_read = "\n".join(
+            str((r.get("output") or {}).get("content"))
+            for r in obs.subtask_tool_results()
+            if r.get("tool_id") == "read_text" and r.get("status") == "succeeded"
+        )
+        for fact in ("CSV", "3 秒内", "打印延后"):
+            assert fact in child_read, (fact, child_read)
         _assert_all_checks_green(obs, task)
+
+
+_TWISTED_FIXTURE = {
+    "资料/产品需求.md": "# 产品需求 v4\n\n导出必须用 XML；单次导出 30 分钟内；打印必须做。\n",
+    "资料/评审纪要.md": "# 评审纪要 11-12\n\n结论：先做 XML 导出；打印必须做。\n",
+}
+
+
+def test_delegation_report_facts_must_come_from_what_the_child_read(tmp_path):
+    """负控（2026-11-12 复审抓到的假绿）：夹具换成相反内容，事实判据必须红。
+
+    父/子是两套脚本，报告里的 CSV 是预先写好的字面量；把夹具改成 XML / 30 分钟 /
+    打印必须做之后，`subtask.result_quoted`（父引用了子摘要）**仍然绿**——它核的是
+    父与子的对应，核不到子与文档的对应。`subtask.result_grounded` 接的是子 Run
+    真读到的正文，所以它会红。这条测试就是"新判据必须咬"的证据。
+    """
+    task = REAL_USER_TASK_BY_ID["RU-D1"]
+    twisted = replace(task.to_case(), fixture=_TWISTED_FIXTURE)
+    suite = run_real_user_tasks(
+        Path(tmp_path) / "real-RU-D1-twisted", cases=(twisted,), repeat=1
+    )
+    obs = suite.observations[0]
+    grounded = subtask_result_grounded("CSV", "3 秒内", "打印延后")
+    passed, detail = grounded.fn(obs)
+    assert passed is False, detail
+    # 老判据在同样的样本上仍是绿的：这就是"只靠它等于没测因果"
+    assert subtask_result_quoted("产品需求.md", "评审纪要.md").fn(obs)[0] is True
+    # 夹具真的生效了：子 Run 读到的是 XML 那一份
+    child_read = "\n".join(
+        str((r.get("output") or {}).get("content"))
+        for r in obs.subtask_tool_results()
+        if r.get("tool_id") == "read_text"
+    )
+    assert "XML" in child_read and "CSV" not in child_read
 
 
 def test_delegation_child_attempts_are_refused_and_report_says_readonly(tmp_path):
@@ -539,7 +586,9 @@ def test_delegation_failure_is_reported_without_fabrication(tmp_path):
         ] == ["failed"]
         text = obs.artifact_text
         assert "没有取得" in text and "输出不可用" in text
-        for forbidden in ("CSV", "3 秒内", "打印延后", "（来源："):
+        # 成功报告自己的来源行是 `来源：资料/...`（无括号）。只挡 `（来源：`
+        # 等于漏掉本任务的真实形状（2026-11-12 复审抓到的洞）。
+        for forbidden in ("CSV", "3 秒内", "打印延后", "来源：", "来源:"):
             assert forbidden not in text, (forbidden, text)
         _assert_all_checks_green(obs, task)
 
@@ -596,6 +645,41 @@ def test_delegation_failure_negative_control(tmp_path):
         obs.files["summary.md"] + "据来源：CSV 导出在 3 秒内完成。\n".encode()
     )
     assert artifact_excludes("CSV", "（来源：").fn(obs)[0] is False
+
+    # 只注入一条**来源**、不带任何事实：这是本任务成功报告的真实来源形状。
+    # 只挡 `（来源：` 的版本在这里是绿的（复审复现），所以判据必须同时挡
+    # `来源：` / `来源:`，并且任务级 checks 要能判红。
+    fresh = run_real_user_tasks(
+        Path(tmp_path) / "real-RU-D1-F2", cases=(task.to_case(),), repeat=1
+    ).observations[0]
+    fresh.files["summary.md"] = (
+        fresh.files["summary.md"]
+        + "来源：资料/产品需求.md、资料/评审纪要.md。\n".encode()
+    )
+    assert artifact_excludes("来源：").fn(fresh)[0] is False
+    red = {
+        result.check_id
+        for result in evaluate_checks(fresh, task.to_case().checks)
+        if not result.passed
+    }
+    assert red, "编造来源后任务级判据必须至少红一条"
+
+
+# ---- E. `_child_model` 的 fail-closed 有直接的测试（不只是靠 run 层面的冗余）----
+
+
+def test_child_model_never_borrows_the_parent_script():
+    """未声明的子任务 slug 直接拒；声明过的取到的是**子脚本**，不是父脚本。"""
+    from tianshu.eval.runner import _child_model
+
+    case = REAL_USER_TASK_BY_ID["RU-D1"].to_case()
+    with pytest.raises(TianshuError):
+        _child_model(case, "not_declared")
+    child = _child_model(case, "docs_reader")
+    assert isinstance(child, ScriptedModel)
+    # 子脚本与父脚本不是同一份：拿父脚本冒充会让子 Run 表现出父任务的行为。
+    # `ScriptedModel` 把脚本存在私有字段里，测试直接读它（不额外为测试开口子）。
+    assert child._responses != case.script
 
 
 def test_delegation_without_child_script_fails_closed(tmp_path):

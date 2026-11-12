@@ -82,7 +82,9 @@ class Observation:
     #: 把子事件混进父事件会让"父 Run 拒绝了什么"与"子 Run 拒绝了什么"分不开。
     subtask_events: list[Event] = field(default_factory=list)
     #: G2 委派 D3：Run 结束后从 `TaskStore` 读到的子任务行（含 `child_run_state`）。
-    #: 行是"当前结论"，事件是"当时结论"；判据两者都看。
+    #: 行是"收束后的结论"，事件是"当时那一刻"。谁读哪一栏要写清楚，别泛泛说
+    #: "两者都看"：`subtask.output_unavailable`（c3）两栏都读（空摘要 + 无引用
+    #: 要同时成立），`subtask.result_quoted`（c1）只读事件，行由测试单独断言。
     subtasks: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -1357,6 +1359,35 @@ def subtask_result_quoted(*needles: str) -> Check:
     return Check("subtask.result_quoted", False, False, fn)
 
 
+def subtask_result_grounded(*needles: str) -> Check:
+    """父报告里的事实必须**有据可查**：出现在子 Run 真的读到的正文里。
+
+    为什么不能只靠 `subtask.result_quoted`：那条判据核的是"父与子的对应"（摘要被
+    逐字引用），核不到"子与文档的对应"。把夹具换成相反内容（XML / 30 分钟 /
+    打印必须做）而脚本不变，父报告仍是 CSV，它照旧绿——脚本模型的两个字面量
+    碰巧一致，不能当因果证据。这条判据把链条接到子 Run 的 `tool.result`：
+    每个 needle 都要在某条成功的 `tool.result.output.content` 里出现过。
+    夹具一改，子 Run 读到的正文就变了，这条必红。
+    """
+
+    def fn(obs: Observation) -> tuple[bool, str]:
+        chunks = [
+            str((r.get("output") or {}).get("content"))
+            for r in obs.subtask_tool_results()
+            if r.get("status") == "succeeded"
+            and isinstance((r.get("output") or {}).get("content"), str)
+        ]
+        haystack = "\n".join(chunks)
+        missing = [needle for needle in needles if needle not in haystack]
+        ok = bool(haystack) and not missing
+        return ok, (
+            f"子 Run 成功读到的正文={len(chunks)} 段/{len(haystack)} 字符；"
+            f"产物事实在子证据里缺={missing or '无'}"
+        )
+
+    return Check("subtask.result_grounded", False, False, fn)
+
+
 def subtask_readonly_boundary(*rule_ids: str) -> Check:
     """子任务只能读：写文件/出网在子 Run 里被**拒绝**，且没有成功副作用。
 
@@ -1369,6 +1400,11 @@ def subtask_readonly_boundary(*rule_ids: str) -> Check:
     2. 子 Run 没有任何 `tool.result` 以 `effect_state=applied` 生效；
     3. 子 Run 里除纯读工具（`read_text` / `list_files`）外没有成功结果；
     4. 子 Run 的 `run.end` 没有 `effect_state=applied`。
+
+    第 1 条是**跨子 Run 的并集**（只要有一条子 Run 的拒绝里有这个规则就算出现过），
+    第 2/3/4 条同样是**全并集**（任一子 Run 生效就红）。当前 `RU-D1` 只有一个子
+    任务，所以并集等于逐个；多子任务时"规则只在 A 的拒绝里出现"不能证明 B 也被
+    拒——那条口径（逐子 Run 分区核对）本轮**没有实现也没有评测**，别把它读成已覆盖。
     """
 
     safe_tools = frozenset({"read_text", "list_files"})
@@ -1414,7 +1450,11 @@ def subtask_output_unavailable() -> Check:
     证据链：
     1. 父 Run 的 `subtask.result` 是 `done=true`，但摘要为空、没有内容引用，
        且 `error` 写明"输出不可用"（这是产品在"拿不到子 Run 输出"时的既有形状）；
-    2. 父任务产物同时写了"没有取得"与"输出不可用"。
+    2. `subtasks` 行（**权威结论**，不是父任务的自述）同样是空摘要 + 无内容引用；
+    3. 父任务产物同时写了"没有取得"与"输出不可用"。
+
+    为什么第 2 条要单独看行：事件是"当时那一刻"的形状，行是"收束后的结论"。
+    只读事件时，一条"事件里空摘要、行里却被补了内容"的路径不会被发现。
 
     它不要求子任务一定是 `failed`（超时/没输出也是合法路径），但要求父任务
     **不许**在这种情况下产出任何被引用的来源或事实——那由任务上的
@@ -1437,11 +1477,24 @@ def subtask_output_unavailable() -> Check:
             error = str(output.get("error") or "")
             if not summary.strip() and ref is None and "输出不可用" in error:
                 unavailable.append(result)
+        settled = [
+            row
+            for row in obs.subtasks
+            if str(row.get("state")) in {"failed", "cancelled", "fenced"}
+        ]
+        rows_honest = [
+            row
+            for row in settled
+            if not str(row.get("summary") or "").strip()
+            and row.get("result_ref") is None
+        ]
+        row_ok = bool(settled) and len(rows_honest) == len(settled)
         text = obs.artifact_text
         said = "没有取得" in text and "输出不可用" in text
-        ok = bool(unavailable) and said
+        ok = bool(unavailable) and row_ok and said
         return ok, (
             f"done=true 次数={len(done)}，其中空摘要+无引用+输出不可用={len(unavailable)}；"
+            f"终态子任务行={len(settled)}，其中空摘要+无引用={len(rows_honest)}；"
             f"产物写「没有取得」与「输出不可用」={said}"
         )
 

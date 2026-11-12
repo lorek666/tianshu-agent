@@ -339,6 +339,16 @@ NEGATIVE_CONTROLS: dict[str, Callable[[], tuple[Check, Observation]]] = {
         subtask_output_unavailable(),
         _obs(
             files={"summary.md": "子任务失败了。\n".encode()},
+            # 行与事件一起伪造：收束后的结论里被补了内容（判据两栏都读）
+            subtasks=[
+                {
+                    "subtask_id": "docs_reader",
+                    "state": "failed",
+                    "summary": "据来源：CSV 导出 3 秒内完成。",
+                    "result_ref": "content://sha256:" + "a" * 64,
+                    "child_run_state": "failed",
+                }
+            ],
             events=[
                 _event(
                     "tool.result",
