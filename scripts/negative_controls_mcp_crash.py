@@ -110,7 +110,12 @@ CASES: tuple[Case, ...] = (
         name="NB29",
         relpath="src/tianshu/recovery.py",
         old='        " WHERE run_id=? AND call_id=? AND state IN (?, ?)",',
-        new='        " WHERE run_id=? AND call_id=?",',
+        # 保留两个占位符（否则绑定数不对，炸的是 sqlite 而不是判据），把终态也
+        # 放进允许集合 = 等于没有保护。
+        new=(
+            '        " WHERE run_id=? AND call_id=? AND state IN (?, ?,'
+            " 'revoked', 'rejected', 'done', 'error')\","
+        ),
         tests=(TERMINAL,),
         why="去掉「只从 intent/executing 推进」的保护：已 revoked/rejected 的派发行"
         "会被改写，审计里丢掉「被撤销/被拒绝过」这条事实",
@@ -163,16 +168,29 @@ def run_case(case: Case, workdir: Path) -> tuple[bool, str]:
     finally:
         shutil.copyfile(backup, target)
 
-    # 变红还不够：要确认红在**那条判据**上，不是 import/夹具炸了。
-    relevant = [
-        line
-        for line in output.splitlines()
-        if line.startswith("FAILED") or "AssertionError" in line
-    ]
-    tail = "\n".join(relevant[-3:]) if relevant else "\n".join(
-        output.strip().splitlines()[-3:]
+    # "变红"有三条硬条件，缺一条都不算（复审第三轮指出的可骗人处）：
+    #   1. pytest 退出码是 1（断言失败）。2/3/4/5 是用法错误、内部错误、
+    #      没收集到用例——那些不是"判据变红"，是脚本或夹具坏了；
+    #   2. 输出的 FAILED 行命中**本用例声明的目标节点**（不是别的用例替它红）；
+    #   3. 有 AssertionError（真断言失败，不是 import/collection 炸）。
+    failed = [line for line in output.splitlines() if line.startswith("FAILED ")]
+    names = {node.rsplit("::", 1)[-1] for node in case.tests}
+    hit = [line for line in failed if any(name in line for name in names)]
+    has_assert = "AssertionError" in output
+    ok = code == 1 and bool(hit) and has_assert
+    if ok:
+        reason = "命中目标用例的断言失败"
+    elif code != 1:
+        reason = f"pytest rc={code}（不是断言失败；2/3/4/5 说明脚本或夹具坏了）"
+    elif not hit:
+        reason = f"FAILED 行没命中目标节点（实际：{failed[:2]}）"
+    else:
+        reason = "没有 AssertionError（可能是 import/collection 炸）"
+    tail = "\n".join((hit or failed or output.strip().splitlines())[-3:])
+    return ok, (
+        f"rc={code} {seconds}s（{reason}）\n      "
+        + tail.replace(chr(10), chr(10) + "      ")
     )
-    return code != 0, f"rc={code} {seconds}s\n      {tail.replace(chr(10), chr(10) + '      ')}"
 
 
 def main(argv: list[str]) -> int:
