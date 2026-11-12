@@ -229,7 +229,8 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 回放：`replay` 对 `subtask.spawn` / `subtask.result` 结果做形状校验：
   `subtask.spawn` 缺 `subtask_id` / `child_run_id` / `job_id` → `problem`；
   `subtask.result` 的 `done:true` 缺 `summary` 键 → `problem`，**有正文**
-  （`summary` 非空）却缺合法 `content://` 引用 → `problem`。`done:true` +
+  （`summary` 非空）却缺合法 `content://` 引用 → `problem`，`result_ref` 存在但
+  不是合法 `content://` → `problem`（即使摘要为空）。`done:true` +
   空摘要 + 无引用是**合法**形状（子任务确实可能没有输出；fenced / 取消也只写行
   不写摘要）——把这条判红就是审计工具在自己的正常产出上误报。回放**绝不**执行
   子任务、不唤醒作业、不重算预算。

@@ -126,7 +126,7 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 - 判据与范围见 `docs/SPEC-G2-DELEGATION-2026-11-11.md` §2.1–§2.6 / §3 D1+D2；
   测试在 `tests/test_g2_delegation_*.py`：D1 是 `{contract,spawn,control,recovery}`
-  （35 条），D2 是 `{exec,fence,replay}`（18 条）。
+  （35 条），D2 是 `{exec,fence,replay}`（22 条）。
 - 资源形状不变：`subtask://<slug>`，slug 走既有 `_OPAQUE_ID`
   （`[A-Za-z0-9_.:-]{1,128}`）。**没有新增解析器**。
 - 四个工具：`subtask.spawn`（`delegate`，需审批）、`subtask.status` /

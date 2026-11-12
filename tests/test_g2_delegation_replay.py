@@ -3,8 +3,9 @@
 回放的三条硬边界（规格 §2.8）：
 1. **绝不执行子任务**：只读事件，不认领作业、不调用模型；
 2. **绝不唤醒作业 / 重算预算**：`job.requeued` 不会多一条，账本不变；
-3. 形状不对要报 `problem`：`subtask.spawn` 缺身份、`subtask.result` 的
-   `done:true` 缺 `content://` 引用或缺 `summary`。
+3. 形状不对要报 `problem`：`subtask.spawn` 缺身份；`subtask.result` 的
+   `done:true` 缺 `summary` 键、**有正文**却缺合法 `content://` 引用、或
+   `result_ref` 存在但不合法。空摘要 + 无引用是合法形状（没有正文就没有引用）。
 
 形状校验只覆盖"缺了就无法事后核对"的字段，不冒充对结果内容的复核——子任务
 到底读到了什么，仍在子 Run 自己的事件里。
@@ -186,6 +187,31 @@ def test_replay_flags_done_without_ref_or_summary(tmp_path):
         )
         report = replay(log, parent_run_id)
         assert not any("forged-empty-summary" in p for p in report.problems)
+
+        # 有正文却**没有**引用：这是真残缺（正文承诺了一份存不下来的内容）。
+        # 这条钉住 `needs_ref` 里的"有正文才要求引用"——只判"缺 summary 键"是不够的。
+        log.append(
+            parent_run_id,
+            "tool.result",
+            {
+                "call_id": "forged-body-no-ref",
+                "tool_id": "subtask.result",
+                "status": "succeeded",
+                "effect_state": "none_applied",
+                "output": {
+                    "subtask_id": "ghost",
+                    "state": "succeeded",
+                    "done": True,
+                    "summary": "这是正文，但没有 content:// 引用",
+                },
+            },
+            task_id=task.task_id,
+        )
+        problems = replay(log, parent_run_id).problems
+        assert any(
+            "forged-body-no-ref" in p and "缺合法 content:// 引用" in p
+            for p in problems
+        ), problems
     finally:
         log.close()
 
