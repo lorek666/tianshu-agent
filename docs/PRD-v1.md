@@ -517,7 +517,7 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   [resource-kinds.md](resource-kinds.md)）：五种资源种类（file / memory / network / mcp /
   subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
   MCP 与 exec 同级（`c4.mcp_call`）、种类混用一律拒；没有执行器的种类在派发前拒绝
-  （`dispatch.resource_kind_unsupported`）。**委派在 G2 子代理 D1 接上执行器后不再恒拒**：
+  （`dispatch.resource_kind_unsupported`）。**委派在 G2 子代理 D1 接上派发分支后不再恒拒**（D1 的这一支只排队、**不执行子 Run**；执行在 D2）：
   `subtask.spawn` 需人工批准、`subtask.cancel` 自动放行、`status`/`result` 自动，
   `c4.subtask_unavailable` 退役为保留未使用（见 §5.4.1）。
 - **已实现并有判据**（`tests/test_content_refs.py` 12 条 + `tests/test_content_read.py`
@@ -799,7 +799,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
-| `dispatch.resource_kind_unsupported` | 资源种类 | **防御性兜底**：五种资源种类（file / memory / network / mcp / subtask）现在都有执行器，正常路径不应再出现这个编号。保留它是为了将来新增种类却漏接分支时，拒绝仍然有编号可记，而不是静默回退成文件路径或未分类异常。 | 正常不该看到；真看到说明有新资源种类只补了解析、没补执行分支（代码 bug，报 issue）。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | **防御性兜底**：五种资源种类（file / memory / network / mcp / subtask）现在都有派发分支（subtask 的这一支只排队、**不执行子 Run**——执行在 D2），正常路径不应再出现这个编号。保留它是为了将来新增种类却漏接分支时，拒绝仍然有编号可记，而不是静默回退成文件路径或未分类异常。 | 正常不该看到；真看到说明有新资源种类只补了解析、没补执行分支（代码 bug，报 issue）。 |
 | `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
 | `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
 | `c4.subtask_not_configured` | 资源种类 | 任务没有声明委派能力（`task.created.max_subtasks = 0`）：未声明即不允许派生任何子任务（与 `outbound_allow` 同一条纪律）。请求在**弹批准之前**就被拒。 | 确实需要委派时新建任务并加 `--max-subtasks N`（0–4，创建后不可改）；不确定就不要放开。 |
@@ -829,8 +829,8 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
 | `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
 | `c4.outbound` | 判定结果（非拒绝） | 判定结果：外发到网络目标需人工审批（`fetch` 动作 + `network://` 资源）。网络请求有成本、有外发，不是本地纯读——**没有自动放行路径**。 | 确认目标主机与路径无误后批准；不确定就拒绝。 |
-| `c4.subtask_spawn` | 判定结果（非拒绝） | 判定结果：派生子任务需要人工批准（会创建新执行体、占用共享预算，并可能并发运行）。 | 批准前核对 slug、目标与局部上限；不确定就拒绝。 |
-| `c4.subtask_cancel` | 判定结果（非拒绝） | 判定结果：取消子任务自动放行（只会减少执行，不扩大任何权限）。 | 无需操作：已记录取消请求；子任务会在安全点停下（真正停下由执行侧确认）。 |
+| `c4.subtask_spawn` | 判定结果（非拒绝） | 判定结果：派生子任务需要人工批准（会创建子任务实体、占用共享预算；D1 只排队、**不执行**，并发运行在 D2）。 | 批准前核对 slug、目标与局部上限；不确定就拒绝。 |
+| `c4.subtask_cancel` | 判定结果（非拒绝） | 判定结果：取消子任务自动放行（只会减少执行，不扩大任何权限）。 | 无需操作：D1 只记录取消请求（`cancelling`）；子任务真正停下在 D2 由执行侧确认。 |
 | `c4.mcp_call` | 判定结果（非拒绝） | 判定结果：调用 MCP 工具需人工审批（`exec` 动作 + `mcp://` 资源）：MCP 工具是不可信外部程序，与执行命令同级。 | 确认服务器与工具名无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
@@ -930,7 +930,7 @@ class Limits(TypedDict, total=False):
 如实记 `overrun` 但不停机）；`budget_bound="upper"` 用**可验证上界**（输入 = 请求体 UTF-8
 字节数，输出 = adapter 能力声明的 `output_tokens`），拿不到输出上界就拒绝进入该模式，
 越界后该账户链拒绝一切新预占。网络字节账本已在 G2 网络阶段接上；子任务在 G2 子代理 D1
-接上：spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的
+接上排队面（只预占、**不执行**；执行在 D2）：spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的
 `parent_id` 指向根 Run 账户（只声明局部 `tokens`/`requests` 上限与固定 300s deadline）。
 **仍未做**：界面分别展示已知费用与未知用量；子任务的**收尾结算**与取消传播（D2）；
 真实并发子任务争抢同一份额度的验收（账本层已覆盖）。

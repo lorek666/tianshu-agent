@@ -8,7 +8,7 @@
   （`network.fetch`，见 [network-g2.md](network-g2.md)）；**MCP** 在 G2 MCP 阶段
   补上（stdio 动态工具，见 [mcp-g2.md](mcp-g2.md)）；**委派**在 G2 子代理 D1 补上
   （`subtask.spawn` / `subtask.status` / `subtask.result` / `subtask.cancel`，
-  见本文 §8）。
+  见本文 §8）；**D1 的执行器只排队、不执行子 Run**（Worker 驱动/唤醒在 D2）。
 - 判据：`tests/test_g1d_resource_kinds.py`（15 条，其中"哪些种类有执行器"一条随 G2
   网络阶段更新）；负控 6 项实测变红（见 §6）。
 
@@ -78,7 +78,7 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
 - 有执行器的种类：`file`、`memory`、`network`（G2 网络阶段）、`mcp`（G2 MCP 阶段）、
-  `subtask`（G2 子代理 D1）。
+  `subtask`（G2 子代理 D1：只排队、**不执行子 Run**；执行在 D2）。
 - `dispatch.resource_kind_unsupported` 保留为**防御性兜底**：正常路径下没有哪种
   资源"解析得出来却没有执行器"，真看到它说明新增种类只补了解析、漏了执行分支。
 
