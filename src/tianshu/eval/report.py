@@ -589,7 +589,11 @@ def build_report(
         invalid_runs = 0
         case_path: dict[str, dict[str, Any]] = {"exercised": set(), "not": set()}
         for obs in runs:
-            results = evaluate_checks(obs, case.checks)
+            # G2 记忆阶段 M2：第二段的判据单独声明在 `case.followup.checks` 里，
+            # 但证据在同一个 Observation 上（`obs.followup`），所以在这里一起评。
+            # 漏掉它们，报告就会"看不见第二段"——那正是这段要证明的东西。
+            followup_checks = () if case.followup is None else case.followup.checks
+            results = evaluate_checks(obs, (*case.checks, *followup_checks))
             entry = _run_entry(
                 obs, results, scope=case.scope, real_model=real_model
             )

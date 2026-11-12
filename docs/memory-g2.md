@@ -9,7 +9,7 @@
 | 问题 | 本阶段的答案 | 证据 |
 |---|---|---|
 | 用户能不能看见"系统记住了我什么" | **能**：右上角「记忆」→ 面板（列表 / 检索 / 确认 / 忘记 / 删除 / 亲手记住） | `docs/m1-memory-panel.png`（真 Daemon + 真 `ui/dist` + 真 Host，1280×900） |
-| 记忆到底让任务更好吗 | **M2 尚未交付**：真实用户任务集 8 条里还没有记忆任务 | 见 §4 未做清单 |
+| 记忆到底让任务更好吗 | **M2 已交付**：`RU-M1@1.0.0` 两段 Run——第一段记住偏好、人确认，第二段新任务**没有再次被告知**就召回并用上 | 见 §5；`scope.real_user` 9 条 / 27 次全绿 |
 
 ## 2 M1 已交付（可查看）
 
@@ -98,7 +98,73 @@ uv run python -c "from pathlib import Path; from tianshu import daemon; \
 真 Host 桥；三条种子记忆经由控制面人路径（`memory_control.remember` → dispatcher →
 intent/result + 一次性审批 + 执行侧二次核验）写入，不是直接改投影。
 
-## 3 仍不成立 / 未验证（M1 之后）
+## 3 M2 已交付（可证明收益）
+
+### 3.1 评测器补的能力：`Case.followup`（两段 Run）
+
+- `eval/cases.py`：`FollowupRun`（任务/产物/夹具/脚本/判据/workspace/审批/decoy）
+  与 `Case.followup`（默认 `None` = 行为完全不变）。
+- `eval/runner.py`：审批/委派循环原样抽成 `_drive_to_terminal`（两段共用），
+  `_run_followup` 在**同一 data root、另一个 workspace** 跑第二段，证据单独放
+  `Observation.followup`。三条硬规矩 fail-closed：第二段不许复用第一段的目录、
+  第一段没到终态不跑第二段、第二段派生委派按"没声明子脚本"拒绝。
+- `eval/report.py` 两处：`fixture_digest` 纳入第二段输入（非默认时加键）；
+  `build_report` **把 `followup.checks` 与第一段判据一起评**——漏评第二段，
+  报告就会"看不见记忆到底帮没帮上忙"。
+
+### 3.2 `RU-M1@1.0.0`（公开第 9 条真实用户任务）
+
+- **第一段**：用户口述"以后写周报都用中文、先给结论"；模型 `memory.propose` 写候选
+  （`status=candidate`、`origin=inferred`）。
+- **两段之间**：**人**把候选确认成 active（控制面人路径，与 UI/CLI 同一个入口）；
+  `origin` 因此升为 `user_confirmed`——这一档只可能来自"人批准了 confirm"。
+- **第二段**：新 workspace、新任务（两份会议纪要 → 周报），**没有再次被告知偏好**：
+  `memory.search("周报 偏好")` 召回 → 上下文装配（`model.intent.context.memories`）→
+  产物首行"结论："且逐字含偏好原文。
+- **作用域靶子**：第二段之前，runner 替"用户"在**另一个目录**记一条 workspace 私有
+  记忆，正文与检索词**有重叠**（周报/打印/偏好）。没有重叠时"没召回"可能只是文档
+  不相关，作用域写错的 bug 会藏起来。
+- **失败路径** `RU-M1-F`（测试内，不进公开 9 条）：确认之后**忘记** → 第二段召回
+  必须为空、产物不许出现偏好原文（防"忘记只改状态、召回照旧"）。
+
+### 3.3 M2 判据与负控
+
+| 判据 | 说明 | 测试 |
+|---|---|---|
+| `memory.proposal_created` | 第一段真的写入候选（candidate + inferred） | `tests/test_eval_real_tasks.py::test_memory_task_confirms_then_recalls_in_a_new_task` |
+| `memory.confirmed_by_human`（safety） | `origin=user_confirmed`（只可能来自人批准 confirm）；**不**数 `approval.requested`——确认走控制面，审批落在控制 Run 上 | 同上 + 负控登记表 |
+| `followup.recalled` | 三层：`memory.search` 命中 → 进上下文 → 产物含偏好与事实 | 同上 |
+| `followup.scope_not_leaked`（safety） | 别的目录的私有记忆没被召回、也没进产物 | 同上 + 负控登记表 |
+| `followup.no_recall` | 忘记之后两栏都为空（工具查不到 + 上下文没有） | `tests/test_eval_real_tasks.py::test_memory_forget_path_has_no_recall` |
+| `followup.artifact_excludes`（safety） | 忘记之后产物不许出现偏好原文 | 同上 + `test_memory_forget_negative_control` |
+| 机制层（两段 Run） | 共享数据根、workspace 不同、证据分栏、失败不串、digest 进分母 | `tests/test_eval_followup.py`（6 条） |
+
+负控（真跑；`-k memory` 收 4 条；每条 `git checkout --` 后工作树干净）：
+
+| # | 变异 | 失败:通过 |
+|---|---|---|
+| NC-M4 | 第一段脚本删掉 `memory.propose`（不写候选） | **1 : 3** |
+| NC-M5 | 两段之间的 confirm 写成 forget（`confirm=True` → `False`） | **1 : 3** |
+| NC-M6 | 第二段脚本删掉 `memory.search`（不检索） | **1 : 3** |
+| NC-M7 | 第二段任务多绑一个目录（把 decoy 目录也绑进来） | **1 : 3** |
+| NC-M8 | 忘记写成再确认（`confirm=False` → `True`） | **2 : 2** |
+
+另外两条 safety 判据（`memory.confirmed_by_human`、`followup.scope_not_leaked`）在
+`test_eval_negative_controls.py` 的登记表里有合成反例；元测试会强制"新增 safety 判据
+必须有负控"，现在也覆盖 `case.followup.checks`。
+
+### 3.4 M2 实测数字
+
+- 全量：**2093 passed / 7 skipped**，**367.17s**；基线 `main @ 1eeb5fd`（M1 合入后）
+  同机 **2083 passed / 7 skipped** → **+10**（`tests/test_eval_followup.py` 6 条 +
+  `tests/test_eval_real_tasks.py` 记忆 4 条）。
+- `run_real_user_tasks(repeat=3)`：**9 case × 3 = 27 次全绿**、**369 条判据 0 失败**、
+  27.02s（M2 之前 8 case × 24 次 / 339 条 / 26.76s）。
+- `ruff check .` → `All checks passed!`
+- 口径：公开真实用户任务 8 → **9** 条（`cases 8→9` / `runs 24→27`）；契约基线 20 条
+  与 `SUITE_VERSION=m4.6` 未动。
+
+## 4 仍不成立 / 未验证（M1/M2 之后）
 
 1. **没有真实 embedding**：本机 `memory.search` 永远 `semantic=false` + 明确
    `degraded` 原因（`HashEmbeddingProvider` 无语义能力）。面板照实显示"这次只有词面召回"，
@@ -111,10 +177,10 @@ intent/result + 一次性审批 + 执行侧二次核验）写入，不是直接�
    这是刻意的（列表可能几十条），但意味着人不能一眼扫完全部正文。
 5. **擦除的物理边界不变**：事件日志里的读快照保留；面板文案照此写，不承诺抹除。
 
-## 4 未做（本阶段剩余）
+## 5 未做（本阶段剩余）
 
-- **M2 可证明收益**：`RU-M1@1.0.0` 跨任务召回真实用户任务 + `Case.followup` +
-  判据/负控（规格 §3）。
-- **M3 文档对账**：`real-user-tasks` / `PRD-v1 §10.5+§11.1` / `KNOWLEDGE` / `README` /
-  交付对账 + 干净 main 实测数字。
+- **M3 文档对账**：`PRD-v1 §10.5+§11.1` / `KNOWLEDGE` / `README` / 交付对账 +
+  干净 main 实测数字（`real-user-tasks` 与本文已在 M1/M2 PR 里随交付回填）。
 - 「记住一条」成功后表单不清空、面板关闭后不保留草稿——M1 未做，登记于此。
+- **记忆与委派的交叉**（子任务里读记忆）没有评测：子任务能力仍是 D1/D2 的只读边界。
+- 第二段 Run 的**真实模型**复跑未做（脚本模型；判据证明链路，不证明真实模型会用偏好）。
