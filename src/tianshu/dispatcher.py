@@ -1335,6 +1335,10 @@ class Dispatcher:
         clients = self._mcp_clients
         server = None if clients is None else clients.server(target.server)
         if server is None or not server.is_alive:  # pragma: no cover - authority 已判
+            # 这一支在**写 stdin 之前**：进程已经死了/拿不到，一个字节都写不进去。
+            # `unknown` 的结算沿用旧口径（不在本工单改结论），但**不能**落对象
+            # 阻断：对象阻断的语义是"server 侧可能已经执行过"，而这里确定没发出，
+            # 记一条就是假记录（`sent=False`）。
             return self._fail_unknown(
                 request,
                 dispatch_id,
@@ -1343,6 +1347,7 @@ class Dispatcher:
                     f"MCP server 已不可用：{target.server!r}",
                     "dispatch.mcp_server_unavailable",
                 ),
+                sent=False,
             )
         binding = self.registry.mcp_binding(target.tool_id)
         spawn = {
@@ -3667,6 +3672,8 @@ class Dispatcher:
         target: _Target,
         exc: BaseException,
         rule_id: str = "",
+        *,
+        sent: bool = True,
     ) -> ToolResult:
         """执行中途炸了：结论只能是 unknown，并且立刻阻断后续写入。
 
@@ -3695,10 +3702,10 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
-        if isinstance(target, _McpTarget):
-            # MCP 没有本地目录可阻断，但它有**对象**：走到 `_fail_unknown` 说明
-            # 请求已经越过外发边界（超时 / 断线 / server 内部错误），server 侧可能
-            # 已经执行。这里就地落一条对象阻断事件（与文件写分支"就地落
+        if isinstance(target, _McpTarget) and sent:
+            # MCP 没有本地目录可阻断，但它有**对象**：走到 `_fail_unknown` 且
+            # `sent` 说明请求已经越过外发边界（超时 / 断线 / server 内部错误），
+            # server 侧可能已经执行。这里就地落一条对象阻断事件（与文件写分支"就地落
             # `recovery.blocked`、不在派发层写权威根"同一分工；跨数据根由下一次
             # `recover` 的启动补登记带上）。
             #
