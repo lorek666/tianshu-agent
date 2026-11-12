@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 DEFAULT_TOOLS = [
     {
@@ -82,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
             "is_error",
             "jsonrpc_error",
             "internal_error",
+            "late_on_call",
+            "bad_json_at_runtime",
         ],
     )
     parser.add_argument("--tools-file", default="")
@@ -115,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.env_probe:
         server_info["env_probe"] = os.environ.get(args.env_probe, "<unset>")
 
+    first_call = True
     for raw in sys.stdin:
         line = raw.strip()
         if not line:
@@ -162,6 +166,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.call_log,
                 {"name": name, "arguments": call_arguments, "_meta": params.get("_meta")},
             )
+            if args.mode == "bad_json_at_runtime":
+                sys.stdout.write("{not json}\n")
+                sys.stdout.flush()
+                continue
+            if args.mode == "late_on_call":
+                if first_call:
+                    first_call = False
+                    time.sleep(0.3)
+            else:
+                first_call = False
             if args.mode == "crash_on_call":
                 os._exit(3)
             if args.mode == "hang_on_call":

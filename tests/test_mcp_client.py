@@ -221,8 +221,8 @@ def test_timeout_then_cancel_notification_reaches_the_server(tmp_path):
     assert time.monotonic() - started >= 0.15
     request_id = caught.value.request_id
     assert request_id > 0
-    instance.cancel(request_id, reason="test")
-    time.sleep(0.05)
+    # 超时由客户端**自动**发取消通知（`cancel()` 只是手动入口的备份）。
+    time.sleep(0.1)
     instance.close()
     assert _read_jsonl(cancel_log) == [{"requestId": request_id}]
 
@@ -339,3 +339,75 @@ def test_missing_binary_is_reported_not_raised_at_construction():
         assert state.diagnostics
     finally:
         clients.close_all()
+
+# ---------------------------------------------------------------- 复审补的边界
+
+
+def test_max_tools_is_enforced_at_discovery():
+    instance = StdioServer(_config("fake", max_tools=1))
+    instance.start()
+    try:
+        assert [tool.name for tool in instance.tools] == ["echo"]
+        assert instance.tools_truncated is True
+    finally:
+        instance.close()
+
+
+def test_max_result_bytes_truncates_and_reports_bytes():
+    instance = StdioServer(_config("fake", "--mode", "big_output", max_result_bytes=100))
+    instance.start()
+    try:
+        result = instance.call_tool("echo", {"message": "x"})
+        assert result.truncated is True
+        assert result.bytes == 300_000
+        assert result.dropped_bytes == 300_000 - 100
+        assert len(result.text_parts[0].encode("utf-8")) == 100
+    finally:
+        instance.close()
+
+
+def test_max_result_bytes_counts_utf8_bytes_not_characters():
+    instance = StdioServer(_config("fake", max_result_bytes=12))
+    instance.start()
+    try:
+        # 假 server 回 "echo:" + 文本（"中" 3 字节）再跟一个 image 块。
+        # 12 字节预算只装得下 "echo:中中"（11 字节），image 块被丢弃并按个数记。
+        result = instance.call_tool("echo", {"message": "中" * 10})
+        assert result.bytes == len(("echo:" + "中" * 10).encode("utf-8")) == 35
+        assert result.truncated is True
+        assert result.text_parts[0] == "echo:中中"
+        assert result.dropped_bytes == 24
+        assert result.dropped_blocks == 1
+    finally:
+        instance.close()
+
+
+def test_runtime_protocol_failure_reaps_the_process():
+    instance = StdioServer(_config("fake", "--mode", "bad_json_at_runtime"))
+    instance.start()
+    with pytest.raises(McpClosed, match="畸形 JSON"):
+        instance.call_tool("echo", {"message": "x"}, timeout_ms=5_000)
+    deadline = time.monotonic() + 3
+    while instance.exit_code() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert instance.exit_code() is not None, "协议失败后进程必须被收掉，不能只是标失效"
+    instance.close()
+
+
+def test_late_response_after_timeout_does_not_poison_the_next_call():
+    instance = StdioServer(_config("fake", "--mode", "late_on_call"))
+    instance.start()
+    try:
+        with pytest.raises(McpTimeout):
+            instance.call_tool("echo", {"message": "late"}, timeout_ms=100)
+        time.sleep(0.4)  # 让晚到的响应进队列
+        result = instance.call_tool("add", {"a": 1, "b": 2}, timeout_ms=5_000)
+        assert result.text_parts == ("3",)
+        assert instance.is_alive is True
+    finally:
+        instance.close()
+
+
+def test_relative_config_env_path_is_refused():
+    with pytest.raises(McpConfigError, match="绝对路径"):
+        config_from_env({MCP_CONFIG_ENV: "mcp.json"})

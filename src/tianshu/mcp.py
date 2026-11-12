@@ -347,6 +347,11 @@ def config_from_env(env: Mapping[str, str] | None = None) -> dict[str, McpServer
     raw_path = table.get(MCP_CONFIG_ENV, "").strip()
     if not raw_path:
         return {}
+    if not os.path.isabs(raw_path):
+        raise McpConfigError(
+            f"{MCP_CONFIG_ENV} 必须是绝对路径（相对路径会随进程 cwd 变化指向另一份"
+            f"配置，等于换了一组 server）：{raw_path!r}"
+        )
     return load_mcp_config(raw_path)
 
 
@@ -390,6 +395,14 @@ class McpCallResult:
     is_error: bool
     structured: Any
     duration_ms: int
+    #: 文本正文**实际收到**的字节数（截断前）。
+    bytes: int = 0
+    #: 是否因为超过 `max_result_bytes` 被截断。
+    truncated: bool = False
+    #: 被截掉的字节数（只统计文本）。
+    dropped_bytes: int = 0
+    #: 因为上限被丢弃的非文本块数量。
+    dropped_blocks: int = 0
 
     @property
     def text_parts(self) -> tuple[str, ...]:
@@ -421,10 +434,57 @@ class McpServerState:
     tools: tuple[McpTool, ...] = ()
     diagnostics: tuple[str, ...] = ()
     pid: int | None = None
+    #: server 声明的工具比 `max_tools` 多、被截断了吗（"没有这个工具"与
+    #: "被我们截掉了"必须能分开）。
+    tools_truncated: bool = False
 
     @property
     def ready(self) -> bool:
         return self.status == "ready"
+
+
+def _clip_blocks(
+    blocks: tuple[dict[str, Any], ...], *, limit: int
+) -> tuple[tuple[dict[str, Any], ...], int, int, int]:
+    """按 UTF-8 字节上限裁剪结果块。
+
+    返回 `(kept, total_text_bytes, dropped_text_bytes, dropped_block_count)`：
+    `total_text_bytes` 是**实际收到**的文本字节（截断前），所以事件里能如实写
+    "收到多少、留下多少、丢了多少"，而不是只给一个 `truncated=true`。
+
+    截断按 UTF-8 字符边界切（多字节字符不会被劈成半个）。非文本块（图片/资源）
+    本身不收正文，超过上限后不再保留、按个数记。
+    """
+    kept: list[dict[str, Any]] = []
+    total_bytes = 0
+    kept_bytes = 0
+    dropped_bytes = 0
+    dropped_blocks = 0
+    overflow = False
+    for item in blocks:
+        raw_text = item.get("text") if item.get("type") == "text" else None
+        if isinstance(raw_text, str):
+            raw = raw_text.encode("utf-8")
+            total_bytes += len(raw)
+            if overflow:
+                dropped_bytes += len(raw)
+                continue
+            room = limit - kept_bytes
+            if len(raw) <= room:
+                kept.append(item)
+                kept_bytes += len(raw)
+                continue
+            cut = raw[:room].decode("utf-8", errors="ignore")
+            kept.append({**item, "text": cut})
+            kept_bytes += len(cut.encode("utf-8"))
+            dropped_bytes += len(raw) - len(cut.encode("utf-8"))
+            overflow = True
+            continue
+        if overflow:
+            dropped_blocks += 1
+            continue
+        kept.append(item)
+    return tuple(kept), total_bytes, dropped_bytes, dropped_blocks
 
 
 # ---------------------------------------------------------------- 进程
@@ -451,6 +511,9 @@ class StdioServer:
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
         self._responses: queue.Queue[tuple[int | None, dict[str, Any]]] = queue.Queue()
+        #: 已经超时放弃的请求 id：它们的响应可能**晚到**，晚到不能算"id 不匹配"，
+        #: 否则一个健康的 server 会因为一次超时被下一次请求判死。
+        self._abandoned: set[int] = set()
         self._send_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._stderr_lock = threading.Lock()
@@ -461,6 +524,7 @@ class StdioServer:
         self._stderr_tail = bytearray()
         self._protocol_version = ""
         self._server_info: dict[str, Any] = {}
+        self._tools_truncated = False
         self._capabilities: dict[str, Any] = {}
         self._tools: tuple[McpTool, ...] = ()
         self._notifications = 0
@@ -488,6 +552,11 @@ class StdioServer:
     @property
     def tools(self) -> tuple[McpTool, ...]:
         return self._tools
+
+    @property
+    def tools_truncated(self) -> bool:
+        """server 声明的工具比 `max_tools` 多、被截断了吗（诊断用）。"""
+        return self._tools_truncated
 
     @property
     def pid(self) -> int | None:
@@ -645,6 +714,7 @@ class StdioServer:
                 try:
                     got_id, payload = self._responses.get(timeout=remaining)
                 except queue.Empty:
+                    self._abandon(request_id, method)
                     raise McpTimeout(
                         f"server {self.name!r} 在 {timeout_ms}ms 内没有响应 {method}"
                         f"（request_id={request_id}）",
@@ -654,6 +724,9 @@ class StdioServer:
                     raise McpClosed(
                         f"server {self.name!r} 已断开：{self._failure or 'closed'}"
                     )
+                if got_id in self._abandoned:
+                    self._abandoned.discard(got_id)
+                    continue
                 if got_id != request_id:
                     reason = (
                         f"server {self.name!r} 回了不属于当前请求的响应"
@@ -677,6 +750,21 @@ class StdioServer:
                     )
                 result = payload.get("result")
                 return result if isinstance(result, dict) else {}
+
+    def _abandon(self, request_id: int, method: str) -> None:
+        """一个请求超时了：记下它的 id（晚到的响应要丢掉），并尽力通知 server 取消。
+
+        取消**只是请求**（server 可以不理会）：这里不假装副作用被撤回，调用方按
+        "副作用未知"结算。发不出去（连接已断）也不改变超时的结论。
+        """
+        self._abandoned.add(request_id)
+        try:
+            self.notify(
+                "notifications/cancelled",
+                {"requestId": request_id, "reason": f"{method} timeout in client"},
+            )
+        except McpError:
+            pass
 
     def call_tool(
         self,
@@ -704,12 +792,19 @@ class StdioServer:
             )
         blocks = tuple(item for item in content if isinstance(item, dict))
         structured = result.get("structuredContent")
+        kept, total_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
+            blocks, limit=self.config.max_result_bytes
+        )
         return McpCallResult(
             request_id=self._last_request_id,
-            content=blocks,
+            content=kept,
             is_error=bool(result.get("isError", False)),
             structured=structured,
             duration_ms=int((time.monotonic() - started) * 1000),
+            bytes=total_bytes,
+            truncated=dropped_bytes > 0 or dropped_blocks > 0,
+            dropped_bytes=dropped_bytes,
+            dropped_blocks=dropped_blocks,
         )
 
     def cancel(self, request_id: int, reason: str = "cancelled by client") -> None:
@@ -766,12 +861,15 @@ class StdioServer:
                     f"server {self.name!r} 的 tools/list 结果 tools 不是数组"
                 )
             for item in page:
+                if len(tools) >= self.config.max_tools:
+                    # 配置说最多几个就最多几个：多出来的不建对象、也不问下一页，
+                    # 只记"被截断"（诊断与 CLI 能看出来是截断，不是 server 没有）。
+                    self._tools_truncated = True
+                    break
                 tools.append(McpTool.from_raw(item))
-                if len(tools) > MCP_MAX_TOOLS:
-                    raise McpProtocolError(
-                        f"server {self.name!r} 声明的工具数超过 {MCP_MAX_TOOLS}"
-                    )
             pages += 1
+            if self._tools_truncated:
+                break
             next_cursor = result.get("nextCursor")
             if not next_cursor:
                 break
@@ -911,8 +1009,29 @@ class StdioServer:
                     del self._stderr_tail[: len(self._stderr_tail) - MCP_STDERR_TAIL_BYTES]
 
     def _fail(self, reason: str) -> None:
-        if not self._failure:
+        """协议/管道失败：标记失效、唤醒等待方，并且**真的把进程收掉**。
+
+        只把 `is_alive` 改成 False 是不够的：进程还活着就是一个跑飞的外部程序
+        （它可能还在写文件/联网），调用方也永远等不到它退出。这里 terminate +
+        有界等待，必要时 kill；`close()` 之后仍会再收一次（幂等）。
+        """
+        first = not self._failure
+        if first:
             self._failure = reason
+            proc = self._proc
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                deadline = time.monotonic() + MCP_CLOSE_GRACE_MS / 1000
+                while proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
 
 
 # ---------------------------------------------------------------- 多 server
@@ -1027,6 +1146,7 @@ class McpClients:
                         tools=server.tools,
                         diagnostics=(),
                         pid=server.pid,
+                        tools_truncated=server.tools_truncated,
                     )
                 )
                 continue
