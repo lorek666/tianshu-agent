@@ -983,6 +983,11 @@ def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
         print(f"外发源   : {', '.join(task.outbound_allow)}")
     else:
         print("外发源   : （未声明：这个任务不能出网）")
+    if task.mcp_servers:
+        print(f"MCP      : {', '.join(task.mcp_servers)}"
+              "（每次调用仍需人工批准）")
+    else:
+        print("MCP      : （未声明：这个任务不能调用 MCP server）")
     if task.max_subtasks:
         print(f"委派     : 最多 {task.max_subtasks} 个子任务"
               f"（每 Run 最多 2 个未完成；每次 spawn 仍需人工批准）")
