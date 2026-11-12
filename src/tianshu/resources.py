@@ -354,6 +354,59 @@ class McpTarget:
         return cls(server=parts[0], tool=parts[1])
 
 
+_MCP_OBJECT_PREFIX = "mcp://"
+
+
+def mcp_object_key(server: str, tool: str) -> str:
+    """工具级阻断对象的键：与 `McpTarget.to_uri()` 同形（`mcp://<server>/<tool>`）。
+
+    为什么复用 URI 而不是另发明一种键：审批摘要、事件 `resources`、派发行
+    `target`/`resources` 里存的都是这个字符串，恢复从这里读到的对象与用户看到
+    的目标本来就是同一个东西——另造一种键等于给"同一个工具"两套身份。
+    """
+    return McpTarget(server=server, tool=tool).to_uri()
+
+
+def mcp_server_key(server: str) -> str:
+    """server 级阻断对象的键：`mcp://<server>`（遮住该 server 的全部工具）。
+
+    形状单独校验（它不是合法 `McpTarget`：没有 tool 段），段规则与工具名同一套
+    `[a-z0-9_.-]`——否则日志里会出现两个"看起来一样"的 server。
+    """
+    if not isinstance(server, str) or not _MCP_NAME.match(server):
+        raise ResourceError(f"MCP server 形状不合法：{server!r}")
+    return f"{MCP_SCHEME}{SCHEME_SEP}{server}"
+
+
+def mcp_block_keys(server: str, tool: str) -> tuple[str, str]:
+    """一次给出"这次调用要查哪些阻断键"：工具级 + server 级（顺序固定）。
+
+    server 级必须在里面：只查工具级的话，一条 `mcp://<server>` 的阻断记录
+    对它下面的所有工具都不生效——那是一条永远不会被读到的阻断。
+    """
+    return mcp_object_key(server, tool), mcp_server_key(server)
+
+
+def parse_mcp_object_key(key: str) -> tuple[str, str | None]:
+    """`mcp://<server>/<tool>` → `(server, tool)`；`mcp://<server>` → `(server, None)`。
+
+    解除阻断前用它校验形状（解除一个永远匹配不上的键，等于什么都没做却回一句
+    "已解除"）。返回的段已按同一套规则校验过。
+    """
+    if not isinstance(key, str) or not key.startswith(_MCP_OBJECT_PREFIX):
+        raise ResourceError(f"不是 MCP 对象键：{key!r}")
+    rest = key[len(_MCP_OBJECT_PREFIX) :]
+    parts = rest.split("/")
+    if len(parts) == 1 and parts[0]:
+        return parts[0], None
+    if len(parts) == 2 and parts[0] and parts[1]:
+        target = McpTarget(server=parts[0], tool=parts[1])
+        return target.server, target.tool
+    raise ResourceError(
+        f"MCP 对象键必须是 mcp://<server> 或 mcp://<server>/<tool>：{key!r}"
+    )
+
+
 def _validate_subtask_id(task_id: str) -> str:
     if not isinstance(task_id, str) or not _OPAQUE_ID.match(task_id):
         raise ResourceError(f"子任务 id 形状不合法：{task_id!r}")
@@ -618,6 +671,10 @@ __all__ = [
     "KIND_SUBTASK",
     "MCP_SCHEME",
     "McpTarget",
+    "mcp_block_keys",
+    "mcp_object_key",
+    "mcp_server_key",
+    "parse_mcp_object_key",
     "NETWORK_SCHEME",
     "NETWORK_TRANSPORTS",
     "NetworkTarget",

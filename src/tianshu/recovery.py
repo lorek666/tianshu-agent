@@ -34,6 +34,7 @@ from .guard import (
 from .leases import Lease, LeaseStore, execution_guard
 from .memory_exec import MEMORY_TOOL_IDS
 from .receipt import build_receipt
+from .resources import ResourceError, parse_mcp_object_key
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
 from .tool_registry import MCP_TOOL_PREFIX
@@ -59,6 +60,11 @@ class RecoveryReport:
     problems: list[str] = field(default_factory=list)
     #: 本次被阻断的 workspace 根。多目录任务里要能看出到底挡的是哪一个。
     blocked_workspaces: list[str] = field(default_factory=list)
+    #: 本次被阻断的 **MCP 对象**（`mcp://server/tool` / `mcp://server`）。与
+    #: `blocked_workspaces` 并存而不是替代：目录问"还能不能写这个目录"，对象问
+    #: "还能不能调这个工具"。能证明是哪个对象时才登记；证明不了就不登记（目录
+    #: 阻断仍然照旧，不放松保守方向）。
+    blocked_objects: list[str] = field(default_factory=list)
     #: 本次确认"未生效"的记忆写入（投影/事件层可证明）。单独列出来，不混进
     #: 文件写统计。
     memory_not_applied: list[str] = field(default_factory=list)
@@ -529,6 +535,7 @@ def _recover_run(
                         never_sent=_mcp_never_sent(
                             _dispatch_row_states(log, run_id, call_id)
                         ),
+                        objects=_dispatch_row_targets(log, run_id, call_id),
                     ):
                         unverified.append(call_id)
                     continue
@@ -586,6 +593,7 @@ def _recover_run(
                 never_sent=_mcp_never_sent(
                     _dispatch_row_states(log, run_id, call_id)
                 ),
+                objects=_dispatch_row_targets(log, run_id, call_id),
             )
             continue
 
@@ -1349,6 +1357,37 @@ def _dispatch_row_states(
     ]
 
 
+def _dispatch_row_targets(log: EventLog, run_id: str, call_id: str) -> tuple[str, ...]:
+    """这次调用派发时用的**对象**（派发行的 `target`，已规范化为 `mcp://s/t`）。
+
+    为什么从派发行读而不是从 `tool_id` 反解：工具 id 是 `mcp__server__tool`，
+    规范化把 `-`/`.` 换成了 `_`，反解出来的名字可能不是用户配的那个
+    （`_settle_mcp_pending` 的既有结论）。派发行的 `target` 是派发当时的原始
+    URI，那是**事实**；反解只是猜。
+
+    没有派发表 / 没有行 / 形状不是 `mcp://…` 或解析不了 → 空元组。空元组 =
+    "证明不了是哪个对象"，调用方**不**登记对象阻断（目录阻断仍照旧）。
+    """
+    if not _has_dispatch_table(log):
+        return ()
+    rows = log.conn.execute(
+        "SELECT target FROM dispatches WHERE run_id=? AND call_id=?",
+        (run_id, call_id),
+    ).fetchall()
+    keys: list[str] = []
+    for row in rows:
+        raw = str(row["target"] or "")
+        if not raw:
+            continue
+        try:
+            parse_mcp_object_key(raw)
+        except ResourceError:
+            continue
+        if raw not in keys:
+            keys.append(raw)
+    return tuple(keys)
+
+
 #: 写请求前提交外发边界标记的协议版本（0 = 升级前写的旧行）。
 BOUNDARY_PROTOCOL = 1
 
@@ -1402,20 +1441,25 @@ def _settle_mcp_pending(
     payload: dict,
     *,
     never_sent: bool,
+    objects: tuple[str, ...] = (),
 ) -> bool:
     """结算一条没有 `tool.result` 的 MCP 调用；返回它是否被判成了 `unknown`。
 
     MCP 的副作用在 **server 那一侧**，本地没有 preimage。判据只有"请求有没有
     越过外发边界"（发送前提交的派发行状态）：
 
-    - 没越过 → 请求没写出 → `none_applied`，**不阻断**任何目录；
-    - 越过或无从证明 → `unknown` + 阻断，等人核对后再解除。
+    - 没越过 → 请求没写出 → `none_applied`，**不阻断**任何对象/目录；
+    - 越过或无从证明 → `unknown` + 阻断（目录 + 对象），等人核对后再解除。
+
+    `objects` 是派发行 `target` 读出来的**对象键**（`mcp://server/tool`）：只有
+    看得见派发行、且形状合法时才登记对象阻断。证明不了是哪个对象（没有派发
+    表/没有行/target 不是 mcp URI）就不登记对象阻断——目录阻断仍由调用方照旧
+    落下（保守方向不放松）。
 
     两种结论都不补凭据（`build_mcp_receipt` 只对 `applied` 出凭据）：没有越过
     边界就没有可归因的效果；越过边界但结论未知时，凭据会把"不知道"写成一个
-    可核对的结论。也不按 `__` 反解 server/tool 名字：规范化把 `-`/`.` 换成了
-    `_`，反解出来的名字可能不是用户配的那个——给人一条能自己查的命令，比编一
-    个像名字的字符串诚实。
+    可核对的结论。也**不**按 `__` 反解 server/tool 名字（规范化把 `-`/`.` 换成
+    了 `_`，反解出来的名字可能不是用户配的那个）——对象键只从派发行读。
     """
     common = {
         "recovered": True,
@@ -1451,7 +1495,44 @@ def _settle_mcp_pending(
         ),
         bucket=report.unresolved,
     )
+    for object_key in objects:
+        _block_mcp_object(log, report, run_id, object_key, [call_id])
     return True
+
+
+def _block_mcp_object(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    object_key: str,
+    call_ids: list[str],
+) -> None:
+    """把"这个 MCP 对象可能已经在 server 侧执行过"落成事件并记进报告。
+
+    与 `_block_workspace` 同构（append-only 事件 + 权威根 + 失败进报告），但
+    对象是外部的 `mcp://…`。解除由 `guard.unblock_object` 追加一条
+    `recovery.object_unblocked`；**目录阻断的解除不会碰它**——核对过工作区文件
+    不等于核对过 server 侧副作用（那件事本地根本没法核对，只能由人看 server
+    的输出/日志后确认）。
+    """
+    if object_key in report.blocked_objects:
+        return
+    report.blocked_objects.append(object_key)
+    reason = "MCP 工具可能已在 server 侧执行、副作用无法核实：阻断再次调用"
+    log.append(
+        run_id,
+        "recovery.object_blocked",
+        {
+            "object": object_key,
+            "call_ids": call_ids,
+            "reason": reason,
+        },
+        actor_kind="system",
+    )
+    try:
+        authority.register_object_blocked(object_key, run_id=run_id, reason=reason)
+    except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
+        report.problems.append(f"跨数据根对象阻断未生效：{object_key}（{exc}）")
 
 
 def _default_dispatch_state(result: ToolResult, explicit: str | None) -> str:
