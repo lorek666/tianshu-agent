@@ -261,14 +261,14 @@ PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被�
 
 **M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
 
-五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（41 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（43 个 rule id 的封闭注册表：36 条拒绝原因 + 5 条非拒绝判定 + 2 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.4`）。
+五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（75 个 rule id 的封闭注册表：62 条拒绝原因 + 10 条非拒绝判定 + 3 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.4`）。
 
 ```
 src/tianshu/          49 个 .py + eval/ 子包（下面按职责分组，47 个实义模块，余两个是 __init__.py / __main__.py）
 ├─ 事实源与契约 ─────────────────────────────────────────────
 │  events.py        SQLite WAL append-only 事件日志 + 可组合事务
 │  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
-│  rules.py         C4 rule id 封闭注册表（43 个：36 拒绝 + 5 判定 + 2 保留未使用）
+│  rules.py         C4 rule id 封闭注册表（75 个：62 拒绝 + 10 判定 + 3 保留未使用）
 │  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
 ├─ 路径与磁盘 ───────────────────────────────────────────────
 │  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定

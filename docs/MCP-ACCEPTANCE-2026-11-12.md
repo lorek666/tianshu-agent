@@ -23,7 +23,7 @@
   "标记已落盘、请求还没写"这一小段（该窗口仍然保守，见 §4-10）。
 - 逐条对账口径：**有回归测试 + 负控实测红**才算做完；判据编号与规格 §4 一一对应。
 
-## 1 判据逐条对账（c1–c15）
+## 1 判据逐条对账（c1–c16）
 
 | 编号 | 判据 | 落点（测试） | 结论 |
 |---|---|---|---|
@@ -42,6 +42,7 @@
 | MCP-c13 | `isolation_requires` 非空 → 任何平台都 `c4.mcp_isolation_unproven` | `test_isolation_requires_makes_mcp_unproven` | ✅ 通过（不因后端自称而放行） |
 | MCP-c14 | `tianshu mcp list --json` 如实列 server 状态 / 协议版本 / 准入与被拒工具与原因 / 截断 | `test_mcp_list_reports_servers_tools_and_protocol`、`test_mcp_list_surfaces_rejected_tools_with_reason`、`test_mcp_list_reports_unconfigured_without_starting_anything` | ✅ 通过 |
 | MCP-c15 | 回放不碰 server：**装配探针**记录 `start_all()` 只在装配点发生 1 次，回放后仍为 1；调用日志前后一致 | `test_replay_does_not_construct_or_start_clients`、`test_replay_does_not_talk_to_the_server` | ✅ 通过 |
+| MCP-c16 | **对象级阻断**：MCP 调用结算 `unknown` → 同时阻断该工具（`mcp://server/tool`，从派发行 `target` 读）+ 调用方传入的目录；发外前两道核验（判定阶段 / 外发边界前）都是 `rejected` + `none_applied` 且 server 收不到请求；server 级阻断遮住全部工具；解除分开（`unblock` 不碰对象） | `test_recovery_registers_object_from_dispatch_target_not_from_tool_id`、`test_recovery_never_sent_does_not_register_object_block`、`test_recovery_without_dispatch_row_blocks_dir_but_cannot_name_the_object`、`test_recovery_legacy_row_blocks_object_but_stays_conservative_on_the_row`、`test_blocked_object_is_refused_before_any_approval_is_requested`、`test_send_boundary_guard_recheck_holds_even_if_dispatch_phase_check_is_bypassed`、`test_block_registered_while_waiting_for_approval_is_refused_before_send`、`test_server_level_block_covers_every_tool_of_that_server`、`test_block_of_another_object_does_not_block_this_one`、`test_in_run_unknown_registers_object_block`、`test_unblock_workspace_does_not_release_the_object`、`test_unblock_object_allows_the_call_again_and_is_auditable`、`test_object_block_is_cross_data_root`、`test_old_authority_database_without_objects_table_is_empty_not_broken`、`test_corrupt_authority_makes_object_checks_block_not_pass` | **✅ 通过（实测，PR #125）**：`tests/test_mcp_object_block.py` **21 条**；假 server 的 `--call-log` 证明被拒时**一个请求都没发**，`--effect-log` 证明运行期 unknown 那条路径确实执行过。负控 `scripts/negative_controls_object_block.py` **13 条**全部实测红 |
 
 ## 2 契约与口径变更（逐条）
 
@@ -86,6 +87,19 @@
    → `rejected` / `none_applied` / `dispatch.guard_timeout`（与文件写分支同一口径）。
    拿不到守卫就等于没发出去，不能记成 `unknown` 去挡目录。
 
+9. **对象级阻断（PR #125，本阶段唯一一次"事件类型 + 规则编号"增量）**：新增事件
+   `recovery.object_blocked`（`object` / `call_ids` / `reason`）与
+   `recovery.object_unblocked`（`object` / `reason`）——**事件类型 43 → 45**，
+   `EVENT_TYPES` / `event_schema.CURRENT_SCHEMAS` / `schemas/c3/event.json` / PRD §5.3.2
+   四处同步；夹具 `minimal_v1.json` / `legacy_v0.jsonl` 覆盖到 45 个类型。新增规则编号
+   `dispatch.mcp_object_blocked`——**74 → 75**，`RULE_IDS` / `RULE_GROUPS["MCP"]` /
+   `schemas/c4/rules.json` / PRD §5.4.1 四处同步。**为什么不复用** `recovery.blocked` 的
+   `workspace` 字段：目录回放会把 `mcp://…` 当成一个不存在的目录路径，既是假阻断也是假
+   解除——两种阻断对象是两种对象模型，键的"同一个"判定也不同（`overlap_key` vs URI 逐字节）。
+   权威库新增 `blocked_objects` 表；旧版本库缺这张表 = 空集（能证明：旧版本写不出这类
+   记录），表在但读不出 → 按已阻断处理。**不放松**：目录阻断照旧登记，对象阻断是额外
+   一层；`unblock()` 解目录但**不**解对象，对象要走 `unblock_object()`。
+
 ## 3 负控（回退即红，逐条实测）
 
 | 编号 | 回退（把保护拿掉） | 目标用例 | 实测 |
@@ -129,6 +143,19 @@
 | NB37 | 只读对账先关自己的连接、再读派发标记（并静默降级） | `test_assess_run_reads_the_send_marker_before_closing_its_own_log` | **RED（复审整改实测）**：1 failed / 0.46s —— own-log 路径的读序/读不到被安静吞掉，结论从 `none_applied` 变 `unresolved` |
 | NB38 | 去掉外发边界推进的 `state=intent` 前置条件 | `test_send_boundary_only_advances_rows_that_are_still_intent` | **RED（复审第二轮 S1 整改实测）**：1 failed / 0.47s —— 已撤销/已拒绝的行会被改成 `executing`，「撤销先到就不发」的分界失效（此前这条前置条件没有判据：`test_refused_send_boundary...` 把整个入口 monkeypatch 掉了） |
 | NB39 | 把「抢守卫超时 = 确定没发」错映射成 `unknown` | `test_guard_timeout_before_send_is_a_controlled_rejection` | **RED（复审第二轮实测）**：1 failed / 0.51s —— 一次根本没出去的调用被记成「效果未知」并阻断目录（过度阻断的旧口径） |
+| NC-O1 | 撤掉判定阶段的对象阻断拒绝（`_resolve_target` 里那行换成 `pass`） | `test_blocked_object_is_refused_before_any_approval_is_requested` | **RED（PR #125 实测）**：被阻断的调用会弹批准、批准后真发出去 |
+| NC-O2 | 外发边界前的复核拿到空键（`keys = ()`，等于不检查） | `test_send_boundary_guard_recheck_holds_even_if_dispatch_phase_check_is_bypassed` | **RED（PR #125 实测）**：批准期间落下的阻断被放过去，请求真写进 server 的 stdin |
+| NC-O3 | `mcp_block_keys` 只给工具级、不给 server 级 | `test_server_level_block_covers_every_tool_of_that_server` | **RED（PR #125 实测）**：一条 `mcp://<server>` 的阻断记录永远读不到 |
+| NC-O4 | 把派发行 `target` 里的 `-`/`.` 也折叠成 `_`（反解工具 id 的错口径） | `test_recovery_registers_object_from_dispatch_target_not_from_tool_id` | **RED（PR #125 实测）**：阻断对象变成 `srv_a/do_thing`，不是用户配的 `srv.a/do-thing` |
+| NC-O5 | 没越过外发边界的调用也登记对象阻断 | `test_recovery_never_sent_does_not_register_object_block` | **RED（PR #125 实测）**：确定没发的调用被记成「可能已执行」 |
+| NC-O6 | 没有派发行时编一个对象键出来 | `test_recovery_without_dispatch_row_blocks_dir_but_cannot_name_the_object` | **RED（PR #125 实测）**：证明不了对象却登记阻断（假精确） |
+| NC-O7 | 畸形对象阻断记录静默跳过（`except: continue` 同类错误） | `test_log_replay_block_and_unblock` | **RED（PR #125 实测）**：无法判定的记录被当成「没阻断」放行 |
+| NC-O8 | 解除 workspace 阻断时顺手把所有对象阻断也解了 | `test_unblock_workspace_does_not_release_the_object` | **RED（PR #125 实测）**：核对过工作区文件就等于核对过 server 侧（本轮要消掉的错误口径） |
+| NC-O9 | 权威根读不出来时 fail-open（对象守卫返回「没阻断」） | `test_corrupt_authority_makes_object_checks_block_not_pass` | **RED（PR #125 实测）**：坏库/锁死会让对象阻断凭空消失 |
+| NC-O10 | 旧版本库没有对象表 → 返回「已阻断」 | `test_old_authority_database_without_objects_table_is_empty_not_broken` | **RED（PR #125 实测）**：升级用户第一次用就被自己挡住（缺表能被证明是空集） |
+| NC-O11 | 运行期 unknown 不落对象阻断事件 | `test_in_run_unknown_registers_object_block` | **RED（PR #125 实测）**：同一个可能已执行的工具下次还能再发一次 |
+| NC-O12 | 启动补登记不带对象阻断 | `test_object_block_is_cross_data_root` | **RED（PR #125 实测）**：换个 `--db` 就看不见「这个工具不许再调」（#61.1 同类逃逸） |
+| NC-O13 | 守卫内对象阻断被错记成 `unknown`（`_abort_dispatch` → `_fail_unknown`） | `test_send_boundary_guard_recheck_holds_even_if_dispatch_phase_check_is_bypassed` | **RED（PR #125 实测）**：确定没发的调用变成「效果未知」，结论不诚实且多挡目录 |
 
 > 负控脚本自身的坑（PR B 实测踩到）：同尺寸同 mtime 秒的改写会让 Python 复用旧
 > `__pycache__` → **假绿**。脚本清 `__pycache__` + `PYTHONDONTWRITEBYTECODE=1`，
@@ -138,13 +165,17 @@
 > **尚未提交**的改动一起抹掉（本轮把 `recovery.py` / `dispatcher.py` 的新代码抹过一次，靠
 > 重放补丁修回来）。负控的还原必须是"变异前自己拍的文件快照"，不能借用 git 的 HEAD。
 >
-> 收尾轮的负控已脚本化、可复现：`uv run python scripts/negative_controls_mcp_crash.py`
-> （快照 → 变异 → 清 pyc + `PYTHONDONTWRITEBYTECODE=1` → 跑目标用例 → 快照还原；
-> 全部按预期变红才返回 0，有一条没红就返回 1）。NB21 / NB28 / NB25 / NB26 / NB27 / NB29 /
-> NB30–NB39 共 **16 条**都在里面；"变红"要同时满足 rc=1、FAILED 行命中
-> 声明的目标节点、且输出里有 AssertionError（只算 rc 会把 import/collection 炸当成红）。
-> 表中耗时与 failed 数是**各轮实测记录**（同一台机器；每次运行有几十毫秒到一百多毫秒的
-> 波动，失败条数稳定）。
+> 负控已脚本化、可复现（同一套"快照 → 变异 → 清 pyc + `PYTHONDONTWRITEBYTECODE=1` →
+> 跑目标用例 → 快照还原"；全部按预期变红才返回 0，有一条没红就返回 1）：
+>
+> - `uv run python scripts/negative_controls_mcp_crash.py`：NB21 / NB28 / NB25–NB27 /
+>   NB29 / NB30–NB39 共 **16 条**；
+> - `uv run python scripts/negative_controls_object_block.py`：NC-O1–NC-O13 共 **13 条**
+>   （对象级阻断，PR #125）。
+>
+> "变红"要同时满足 rc=1、FAILED 行命中声明的目标节点、且输出里有 AssertionError
+> （只算 rc 会把 import/collection 炸当成红）。表中耗时与 failed 数是**各轮实测记录**
+> （同一台机器；每次运行有几十毫秒到一百多毫秒的波动，失败条数稳定）。
 
 ## 4 诚实边界（交付后仍然不成立 / 未验证）
 
@@ -182,14 +213,24 @@
     - **升级边界**：只有"由本版本写的派发行"才能证明没发（`boundary_protocol=1`）。
       升级前留下的行（包括 `intent`/`revoked`）一律 `unknown` + 阻断——旧版本在写请求前
       不推进派发行，拿旧行当"没发"就是假阴性。
-    - 阻断对象只有 workspace：MCP server 以当前用户权限跑在本机，传入的工作区**可能**
-      被它改过，所以按最保守口径挡这个目录。**"哪个目录"由调用方负责**：`tianshu recover`
-      的 `--workspace` 是必填参数，代码**没有**拿 `task_id` 去核对它属于该 Task 的哪些绑定
+    - **阻断对象现在有两种**（PR #125，见 §1-c16/§2-9）：目录（workspace，文件写用）与
+      MCP 对象（`mcp://server/tool` / server 级 `mcp://server`）。MCP 结算 `unknown` 时
+      **同时**登记两者——目录是保守层（server 以当前用户权限跑在本机，传入的工作区**可能**
+      被它改过），对象是精确层。**"哪个目录"仍由调用方负责**：`tianshu recover` 的
+      `--workspace` 是必填参数，代码**没有**拿 `task_id` 去核对它属于该 Task 的哪些绑定
       （零目录 Task 也合法，CLI 却强制给一个路径）。传错就挡错目录 —— 这是已知代价，不是
-      代码保证过的事。server 侧自己的状态（它动过哪些文件、发过什么请求）**没有任何证
-      据**，恢复也不去问它（问了也不是本机证据）。
-    - 没有对象级阻断（以 `mcp://server/tool` / server 为阻断对象）：现有 guard 只有
-      workspace 字段（§5-8）。
+      代码保证过的事。对象键不靠调用方：从派发行的 `target` 读（派发当时写下的原始
+      `mcp://server/tool`），**不按 `mcp__…__…` 反解**（规范化把 `-`/`.` 换成了 `_`，反解
+      出来的名字可能不是用户配的那个）；读不到派发行就**不登记**对象阻断（不编）。
+    - **对象阻断的解除是人工动作**：`unblock_object()` 单独解除，`unblock()`（目录）不碰
+      它——核对过工作区文件不等于核对过 server 侧副作用（后者本地没法核对，只能人看
+      server 的输出/日志）。没有"核对通过"的自动判据，也没有过期时间。server 侧自己的
+      状态（它动过哪些文件、发过什么请求、执行了几次）**没有任何证据**，恢复也不去问它
+      （问了也不是本机证据）。
+    - **对象粒度只到工具/服务器**：没有 per-call 回执。要证明"这一次到底跑没跑"需要
+      server 侧确认协议（例如请求 id 回执），未做。运行期 `unknown`（超时/断线/内部错误）
+      用的同一条对象阻断，但那条事件只落在**本数据根日志**（跨数据根要等下一次 `recover`
+      的启动补登记，不是即时的）。
 11. **等批准期间取消不立即生效**：`tools/call` 是同步阻塞调用，取消只在发包前检查
     一次；等响应期间取消要等这次调用结算（超时或返回）才生效。已发出的 RPC 无法
     撤回（同网络阶段的"在途 TCP 字节无法撤回"）。
@@ -218,5 +259,11 @@
    （`intent` → `executing`），不新增事件、不改事件契约；恢复/接管按它分档，撤销与发送
    共用执行守卫。剩余窄窗口（标记提交 → 真正写出）仍按"可能已发出"保守处理，见 §4-10；
    要再往前推需要 server 侧回执协议（新的工单，**未做**）。
-8. **对象级阻断**：以 `mcp://server/tool` 或 server 作为阻断对象。现有 guard 只有 workspace
-   字段，先决定阻断对象模型再谈"精准阻断"；不拿调用方传进来的路径冒充 MCP 的目录。
+8. ~~**对象级阻断**~~ **已完成（PR #125）**：阻断对象模型 = 目录 + MCP 对象
+   （`mcp://server/tool` 工具级 / `mcp://server` server 级）。MCP 结算 `unknown` 时两者
+   同时登记（不放松目录层）；发外前两道核验（判定阶段、外发边界前），解除分开
+   （`unblock` 只解目录，`unblock_object` 才解对象）。契约增量：事件
+   `recovery.object_blocked` / `recovery.object_unblocked`（43 → 45）+ 规则编号
+   `dispatch.mcp_object_blocked`（74 → 75）。**新剩下的**：对象阻断是人工解除、无自动
+   判据/过期；粒度只到工具/服务器（没有 per-call 回执）；运行期 unknown 的对象阻断
+   跨数据根靠下一次 `recover` 补登记，不是即时。
