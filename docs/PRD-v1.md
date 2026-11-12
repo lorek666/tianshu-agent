@@ -807,7 +807,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
-| `dispatch.resource_kind_unsupported` | 资源种类 | **防御性兜底**：五种资源种类（file / memory / network / mcp / subtask）现在都有派发分支（subtask 的这一支只排队、**不执行子 Run**——执行在 D2），正常路径不应再出现这个编号。保留它是为了将来新增种类却漏接分支时，拒绝仍然有编号可记，而不是静默回退成文件路径或未分类异常。 | 正常不该看到；真看到说明有新资源种类只补了解析、没补执行分支（代码 bug，报 issue）。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | **防御性兜底**：五种资源种类（file / memory / network / mcp / subtask）现在都有派发分支（subtask 的这一支 D1 排队、D2 由既有 Worker 执行），正常路径不应再出现这个编号。保留它是为了将来新增种类却漏接分支时，拒绝仍然有编号可记，而不是静默回退成文件路径或未分类异常。 | 正常不该看到；真看到说明有新资源种类只补了解析、没补执行分支（代码 bug，报 issue）。 |
 | `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
 | `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
 | `c4.subtask_not_configured` | 资源种类 | 任务没有声明委派能力（`task.created.max_subtasks = 0`）：未声明即不允许派生任何子任务（与 `outbound_allow` 同一条纪律）。请求在**弹批准之前**就被拒。 | 确实需要委派时新建任务并加 `--max-subtasks N`（0–4，创建后不可改）；不确定就不要放开。 |
