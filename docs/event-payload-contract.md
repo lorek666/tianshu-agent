@@ -10,8 +10,8 @@
 
 | 维度 | 冻结前（`da84d92`） | 本 PR 之后 |
 |---|---|---|
-| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（本 PR 不新增类型；后续 G2 网络/委派阶段各自增量，当前 43） |
-| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 当时 41 个类型各有 v1 schema（当前 43）：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
+| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（本 PR 不新增类型；后续 G2 网络/委派/MCP 阶段各自增量，当前 45） |
+| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 当时 41 个类型各有 v1 schema（当前 45）：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
 | 版本 | 无 | 事件旁表 `event_versions(seq,type,version)`；当前版本 `1`，冻结前 `0` |
 | 写入校验 | 只校验类型名 | 类型名 + payload 契约；非法 payload 在**落 blob / 写库之前**被拒，错误带类型与字段路径。默认**只接受当前契约**，v0 写入必须显式 `legacy_write=True`（只给夹具/历史播种/迁移测试，生产路径零调用点） |
 | 旧数据读取 | 只能"按现在的代码猜" | 旁表无记录的历史行 → `payload_version=0`，按 v0 映射读取；**不按新版默认补值** |
@@ -43,7 +43,7 @@
 
 ## 3 类型清单与版本
 
-当前所有 **43** 个类型的 payload 版本都是 **v1**（本 PR 引入；G2 委派 D1 增加了
+当前所有 **45** 个类型的 payload 版本都是 **v1**（本 PR 引入；G2 委派 D1 增加了
 `subtask.spawned` / `subtask.finished` 两个类型，并把 `task.created` 的必填键
 扩到含 `max_subtasks`）。下表列每个类型的
 必填字段与"是否存在已知历史形状差异"（有差异的类型在 v0 映射里放宽，见 §6）：
@@ -73,8 +73,10 @@
 | `model.result` | v1 | `request_id`, `content`, `finish_reason`, `tool_calls`, `usage`, `cost` | 无已知形状差异 |
 | `policy.denied` | v1 | `request_id`, `request_digest`, `action`, `resources`, `rule_id`, `reason` | 无已知形状差异 |
 | `receipt` | v1 | `receipt_id`, `run_id`, `call_id`, `tool_id`, `action`, `args_hash`, `effect_state`, `backend`, `issuer`, `issued_at`, `root`, `resource`, `before_state`, `after_state`, `intent_seq`, `blob_ref`, `evidence` | 历史形状差异（v0 放宽） |
-| `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异 |
-| `recovery.unblocked` | v1 | `workspace`, `reason` | 无已知形状差异 |
+| `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异（目录阻断） |
+| `recovery.object_blocked` | v1 | `object`, `call_ids`, `reason` | 无已知形状差异（**对象**阻断：`mcp://server/tool` / `mcp://server`；对象键不是路径，与 `recovery.blocked` 的目录是两种对象模型） |
+| `recovery.object_unblocked` | v1 | `object`, `reason` | 无已知形状差异（解除对象阻断；**不**解除目录阻断，反之亦然） |
+| `recovery.unblocked` | v1 | `workspace`, `reason` | 无已知形状差异（目录解除） |
 | `run.control` | v1 | `run_id`, `task_id`, `action` | 无已知形状差异（G2 委派 D2 起可选 `reason`：`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） |
 | `run.cursor` | v1 | `run_id`, `goal_revision`, `lease_epoch`, `claim_epoch`, `completed_call_ids`, `pending_proposals`, `payload_hash` | 无已知形状差异 |
 | `run.effect` | v1 | `run_id`, `task_id`, `effect_state`, `n_applied`, `n_unknown` | 无已知形状差异 |
@@ -162,12 +164,13 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 夹具（`tests/fixtures/events/`，由 `event_schema` 生成并校验）：
 
-- `minimal_v1.json`：43 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
+- `minimal_v1.json`：45 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
   test_minimal_v1_fixture_is_valid_and_round_trips`）。
-- `legacy_v0.jsonl`：43 个类型各一行 `{type,payload,note}`，逐行可读；
-  其中 **6 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
-  `run.model_turn` / `run.start` / `tool.intent`）是"v1 拒绝、v0 接受"的真实历史
-  形状差异；其余 35 行形状与当前一致，用来证明**"旁表无记录的历史行 → v0 读出"**
+- `legacy_v0.jsonl`：45 个类型各一行 `{type,payload,note}`，逐行可读；
+  其中 **7 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
+  `run.model_turn` / `run.start` / `task.created` / `tool.intent`）是"v1 拒绝、
+  v0 接受"的真实历史形状差异；其余 **38 行**形状与当前一致，用来证明
+  **"旁表无记录的历史行 → v0 读出"**
   这条迁移路径（`test_legacy_fixture_covers_every_type_and_is_readable`）。
 
 **正面证据（旧 receipt 被正确识别为 v0，且语义不变）**：
@@ -236,7 +239,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**82** 条。43 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+- `tests/test_event_schema.py`：**84** 条。45 个类型 ×（一正一反例）、v1/v0 夹具逐行、
   版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
   blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
   **`legacy_write` 不被误用的两条元测试**（生产代码零调用点 + 显式 legacy 仍须过
@@ -246,7 +249,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - 两处**授权**的既有测试最小改动（旧口径 → 新口径，断言强度不变）：
   1. `tests/test_events.py::test_every_registered_type_can_be_written_and_read_back`：
      旧=`{"probe": type}` 任意 dict 可写；新=每类型用 `event_schema.minimal_payload()`
-     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 43 个类型。
+     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 45 个类型。
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。
@@ -390,6 +393,6 @@ G2 子代理 D2 接执行与收束时，**没有新增事件类型**，只放宽
 | `job.requeued` | required：`run_id` / `job_id` / `claim_epoch` / `owner_pid` / `owner_instance_id` | required 缩为 `run_id` / `job_id` / `claim_epoch`；`owner_pid` / `owner_instance_id` 改为可选（允许显式 `null`）；新增可选 `by`（`owner` / `wake`）与 `reason` | 新增 `JobStore.wake()`：子任务收尾把父作业从 `waiting` 置回 `pending`。这个动作**不是 owner 交还**——唤醒时 `park` 已把 owner 清空，写一个假 owner 才是违约 | `jobs.JobStore.wake()`、`tasks._maybe_wake_parent()` / `wake_stale_parents()`、`tests/test_event_schema.py` 的最小夹具、`tests/fixtures/events/minimal_v1.json` |
 | `run.control` | required：`run_id` / `task_id` / `action`；无 `reason` | 新增可选 `reason`（`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） | 取消传播需要一个可审计的“谁要求停”：子任务取消、父取消传播、父目标 fence 都会写 `action=cancel`，没有 reason 就只能靠猜 | `tasks.request_cancel_deferred()`、`tasks.request_subtask_cancel()`、`tasks.fence_child_run()` |
 
-没有新增事件类型（仍为 43），没有 bump payload 版本；旧日志按原 required 集合
+没有新增事件类型（当时仍为 43；本次对象级阻断不在此 PR 范围），没有 bump payload 版本；旧日志按原 required 集合
 仍然合法。回放对 `subtask.spawn` / `subtask.result` 的**工具结果**做形状校验
 （不是事件契约），见 `replay._verify_subtask_result`。

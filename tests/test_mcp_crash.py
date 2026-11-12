@@ -999,7 +999,7 @@ def test_refused_send_boundary_does_not_call_server(tmp_path, monkeypatch):
         )
         engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
 
-        def refuse(dispatch_id: str) -> bool:
+        def refuse(dispatch_id: str, *, server: str, tool: str) -> bool:
             log.conn.execute(
                 "UPDATE dispatches SET state='revoked' WHERE dispatch_id=?",
                 (dispatch_id,),
@@ -1395,7 +1395,9 @@ def test_send_boundary_only_advances_rows_that_are_still_intent(tmp_path):
             )
 
         # 真实入口（带执行守卫）也要把 False 透传出去，且不改行
-        assert dispatcher._mark_mcp_send_boundary("d_revoked") is False
+        assert dispatcher._mark_mcp_send_boundary(
+            "d_revoked", server="fake", tool="echo"
+        ) is False
         assert _dispatch_row_state(log, "d_revoked") == "revoked"
     finally:
         log.close()
@@ -1431,7 +1433,7 @@ def test_guard_timeout_before_send_is_a_controlled_rejection(tmp_path, monkeypat
         )
         engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
 
-        def timeout(dispatch_id: str) -> bool:
+        def timeout(dispatch_id: str, *, server: str, tool: str) -> bool:
             raise GuardTimeout("5000ms 内没拿到执行守卫")
 
         monkeypatch.setattr(stack.dispatcher, "_mark_mcp_send_boundary", timeout)

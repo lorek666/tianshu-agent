@@ -528,12 +528,20 @@ def _fixture_lines() -> list[dict]:
 
 
 def test_legacy_fixture_covers_every_type_and_is_readable(tmp_path):
-    """41 个类型逐个可读：旧形状按"本来就没有"读取，不按新版补值。"""
+    """45 个类型逐个可读：旧形状按"本来就没有"读取，不按新版补值。"""
     rows = _fixture_lines()
     assert {r["type"] for r in rows} == set(EVENT_TYPES)
     assert len(rows) == len(EVENT_TYPES)
-    drift = [r["type"] for r in rows if "历史形状" in r["note"]]
+    # 注意：注释里"无已知历史形状差异"也含"历史形状"四个字——只用子串判定会把
+    # 45 行全算成 drift，`>= 5` 就永远成立（这条判据自己变成摆设）。必须排除
+    # "无已知"，当前真实 drift 是 7 个类型。
+    drift = [
+        r["type"]
+        for r in rows
+        if "历史形状" in r["note"] and "无已知" not in r["note"]
+    ]
     assert len(drift) >= 5, f"旧形状覆盖太少，夹具失去区分度：{drift}"
+    assert len(drift) < len(rows), "全部行都被标成历史形状差异 = 注释失去了区分度"
 
     log = _log(tmp_path)
     try:

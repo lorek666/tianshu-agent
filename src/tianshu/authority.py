@@ -8,6 +8,11 @@
 - 只有**阻断**状态进这里。事件日志仍是唯一事实源，这里存的是「跨数据根的
   安全告示牌」：数据根自己的日志（append-only）记"为什么阻断"，本模块记
   "整台机器上这些目录现在不许写"。
+- 阻断对象有**两种**，分别两张表：`blocked_workspaces`（目录，文件写用）与
+  `blocked_objects`（外部对象，当前只有 `mcp://server/tool` 与 server 级
+  `mcp://server`）。**不合并成一张表**：目录键经过 `overlap_key` 规范化（大小
+  写/Unicode 折叠、resolved 路径），对象键是 URI，两者的"同一个"判定规则不同；
+  混在一张表里会让"同一目录两种写法"与"两个不同 server"用同一套比较。
 
 失败语义（安全方向，全是「宁可挡住」）：
 
@@ -36,11 +41,13 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import TianshuError
 from .pathkeys import overlap_key
+from .resources import ResourceError, parse_mcp_object_key
 
 AUTHORITY_ROOT_ENV = "TIANSHU_AUTHORITY_ROOT"
 DB_NAME = "authority.db"
@@ -61,6 +68,24 @@ CREATE TABLE IF NOT EXISTS blocked_workspaces (
 
 CREATE INDEX IF NOT EXISTS idx_blocked_workspaces_active
     ON blocked_workspaces(released_at);
+
+-- MCP 对象阻断（对象级阻断，见 docs/mcp-g2.md §5-10）：阻断对象是外部工具，
+-- 不是本地目录。键 = `mcp://<server>/<tool>` 或 server 级 `mcp://<server>`
+-- （遮住该 server 的全部工具）。与 blocked_workspaces 分开建表，理由见模块
+-- 说明：两种键的"同一个"判定规则不同。
+-- 旧版本库没有这张表 = 从来没有过对象阻断 = 空集（不是损坏：旧版本写不出
+-- 对象阻断）。读路径不创建任何东西，写路径才建表。
+CREATE TABLE IF NOT EXISTS blocked_objects (
+    object_key      TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL DEFAULT '',
+    reason          TEXT NOT NULL DEFAULT '',
+    blocked_at      INTEGER NOT NULL,
+    released_at     INTEGER,
+    release_reason  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_blocked_objects_active
+    ON blocked_objects(released_at);
 """
 
 
@@ -74,10 +99,24 @@ class AuthorityWriteFailed(TianshuError):
 
 @dataclass(frozen=True)
 class AuthorityBlock:
-    """一条当前有效的阻断记录。"""
+    """一条当前有效的目录阻断记录。"""
 
     workspace_key: str
     workspace_path: str
+    run_id: str
+    reason: str
+    blocked_at: int
+
+
+@dataclass(frozen=True)
+class AuthorityObjectBlock:
+    """一条当前有效的**对象**阻断记录（`mcp://server/tool` / `mcp://server`）。
+
+    没有 `path`：对象不是本地路径。原始键原样保存（URI 已是规范形状：
+    `McpTarget` 只接受 `[a-z0-9_.-]` 段），比较用逐字节相等。
+    """
+
+    object_key: str
     run_id: str
     reason: str
     blocked_at: int
@@ -111,6 +150,19 @@ def _db_path(root: Path | None = None) -> Path:
 def _is_lock_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     return "locked" in text or "busy" in text
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    """只读连接上的"这张表在不在"。
+
+    用途只有一个：区分「旧版本库没有这张表 = 空集」与「表在但读坏了 = 按阻断
+    处理」。拿"查表失败"当空集会替一个读不出来的状态撒谎，拿"缺表"当损坏则
+    让每个升级用户第一次用就被自己挡住。
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
 
 
 def _open_ro(db: Path) -> sqlite3.Connection | None:
@@ -191,6 +243,61 @@ def active_paths(root: Path | None = None) -> list[str]:
     return [b.workspace_path for b in active_blocks(root)]
 
 
+def _query_active_objects(conn: sqlite3.Connection) -> list[AuthorityObjectBlock]:
+    rows = conn.execute(
+        "SELECT object_key, run_id, reason, blocked_at FROM blocked_objects"
+        " WHERE released_at IS NULL ORDER BY blocked_at"
+    ).fetchall()
+    for row in rows:
+        try:
+            parse_mcp_object_key(row["object_key"])
+        except ResourceError as exc:
+            # 表里出现形状不合法的键（只可能来自手工写库/旧 bug）：它永远匹配不上
+            # 真实目标，当成"一条不匹配的阻断"就是 fail-open。判定不了 → 按已阻断
+            # 处理（读侧抛 AuthorityUnavailable，守卫会转成 McpObjectBlocked）。
+            raise AuthorityUnavailable(
+                "权威对象阻断表里有形状不合法的键"
+                f"（{row['object_key']!r}）：{exc}。按已阻断处理"
+            ) from exc
+    return [
+        AuthorityObjectBlock(
+            object_key=row["object_key"],
+            run_id=row["run_id"],
+            reason=row["reason"],
+            blocked_at=row["blocked_at"],
+        )
+        for row in rows
+    ]
+
+
+def active_object_blocks(root: Path | None = None) -> list[AuthorityObjectBlock]:
+    """当前有效的对象阻断记录。
+
+    库不存在 = 空集；**表不存在**（旧版本库）= 空集——旧版本没有对象阻断这个
+    概念，写不出这类记录，所以"没有表"能被证明就是空集；表在但读不出来 →
+    `AuthorityUnavailable`（不可当成空集）。
+    """
+    conn = _open_ro(_db_path(root))
+    if conn is None:
+        return []
+    try:
+        if not _table_exists(conn, "blocked_objects"):
+            return []
+        return _query_active_objects(conn)
+    except sqlite3.Error as exc:
+        raise AuthorityUnavailable(
+            f"权威对象阻断状态读不出来（{_db_path(root)}）："
+            f"{type(exc).__name__}: {exc}。按已阻断处理（读不出来 ≠ 没阻断）"
+        ) from exc
+    finally:
+        conn.close()
+
+
+def active_object_keys(root: Path | None = None) -> list[str]:
+    """当前有效对象阻断的原始键（排障与文档用）。"""
+    return [b.object_key for b in active_object_blocks(root)]
+
+
 def is_blocked(path: Path | str, root: Path | None = None) -> bool:
     """这个目录是否在权威根里被标成阻断。
 
@@ -212,6 +319,99 @@ def is_blocked(path: Path | str, root: Path | None = None) -> bool:
         raise AuthorityUnavailable(
             f"权威阻断状态读不出来（{db}）：{type(exc).__name__}: {exc}。"
             "按已阻断处理（读不出来 ≠ 没阻断）"
+        ) from exc
+    finally:
+        conn.close()
+
+
+def is_object_blocked(
+    object_keys: str | Iterable[str], root: Path | None = None
+) -> bool:
+    """这些对象键里有没有**当前有效**的阻断。
+
+    调用方一次传 `(工具级, server 级)` 两个键：server 级阻断要能遮住它的全部
+    工具，所以"查一个键"不够。单行查询、`LIMIT 1`：写入路径每次发外之前都要问，
+    这不是可以随记录变多而变慢的查询。
+
+    **这是低层精确查询**：只回答"这几个键里有没有一条有效记录"，**不**扫描表内
+    其它行、也不对它们做形状校验。守卫用的是 `active_object_keys()`（读侧
+    fail-closed：表里有坏键就整体按已阻断），生产路径不直接调本函数。查询键
+    本身形状不合法时抛 `ResourceError`——一个永远匹配不上的键不该回一个
+    "没阻断"的假答案。
+    """
+    if isinstance(object_keys, str):
+        keys = (object_keys,)
+    else:
+        keys = tuple(str(key) for key in object_keys)
+    if not keys:
+        return False
+    for key in keys:
+        parse_mcp_object_key(key)
+
+    db = _db_path(root)
+    conn = _open_ro(db)
+    if conn is None:
+        return False
+    try:
+        if not _table_exists(conn, "blocked_objects"):
+            return False
+        placeholders = ",".join("?" * len(keys))
+        row = conn.execute(
+            "SELECT 1 FROM blocked_objects"
+            f" WHERE object_key IN ({placeholders}) AND released_at IS NULL"
+            " LIMIT 1",
+            keys,
+        ).fetchone()
+        return row is not None
+    except sqlite3.Error as exc:
+        raise AuthorityUnavailable(
+            f"权威对象阻断状态读不出来（{db}）：{type(exc).__name__}: {exc}。"
+            "按已阻断处理（读不出来 ≠ 没阻断）"
+        ) from exc
+    finally:
+        conn.close()
+
+
+def register_object_blocked(
+    object_key: str, *, run_id: str = "", reason: str = "",
+    root: Path | None = None,
+) -> None:
+    """登记一条对象阻断（幂等：已有效则保持原记录；已解除则重新激活）。"""
+    key = str(object_key)
+    try:
+        parse_mcp_object_key(key)
+    except ResourceError:
+        # 写路径先校验：`mcp://A` / `mcp://` / `mcp://a/b/c` 写进去只会变成一条
+        # **永远读不到**的阻断记录（真实目标段只接受 [a-z0-9_.-]），那等于"看起来
+        # 记了、实际没记"。直接拒绝，让调用方当场发现。
+        raise
+    target = root if root is not None else authority_root()
+    conn = _open_rw(target)
+    try:
+        with conn:  # 极短事务：单条 upsert，绝不跨到调用方的执行期间
+            row = conn.execute(
+                "SELECT released_at FROM blocked_objects WHERE object_key=?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO blocked_objects"
+                    " (object_key, run_id, reason, blocked_at)"
+                    " VALUES (?,?,?,?)",
+                    (key, run_id, reason, _now_ms()),
+                )
+            elif row["released_at"] is not None:
+                conn.execute(
+                    "UPDATE blocked_objects SET run_id=?, reason=?, blocked_at=?,"
+                    " released_at=NULL, release_reason=NULL WHERE object_key=?",
+                    (run_id, reason, _now_ms(), key),
+                )
+            # 已有效：幂等返回，不刷新 blocked_at（否则每次恢复都像"刚阻断"）
+    except sqlite3.Error as exc:
+        hint = "权威状态暂时不可用（锁忙）" if _is_lock_error(exc) else "权威根损坏"
+        raise AuthorityWriteFailed(
+            f"{hint}：跨数据根对象阻断未生效（{key}）："
+            f"{type(exc).__name__}: {exc}"
         ) from exc
     finally:
         conn.close()
@@ -294,6 +494,41 @@ def backfill_blocked(
     return problems
 
 
+def backfill_object_blocked(
+    object_keys: list[str], *, run_id: str = "", reason: str = "",
+    root: Path | None = None,
+) -> list[str]:
+    """把日志里「当前有效但权威根没有」的对象阻断补登记（幂等，`INSERT OR IGNORE`）。
+
+    与目录版同一条理由（issue #61.1）：只写在某个数据根的日志里，换个 `--db`
+    就看不见。只补不覆盖：已解除的记录**不会**被日志里的旧阻断复活——调用方
+    只应传"日志当前有效"的对象。返回失败项，调用方写进报告，不炸启动。
+    """
+    if not object_keys:
+        return []
+    target = root if root is not None else authority_root()
+    problems: list[str] = []
+    try:
+        conn = _open_rw(target)
+    except AuthorityWriteFailed as exc:
+        return [f"跨数据根对象阻断未生效：{key}（{exc}）" for key in object_keys]
+    try:
+        with conn:
+            for key in sorted(set(object_keys)):
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO blocked_objects"
+                        " (object_key, run_id, reason, blocked_at)"
+                        " VALUES (?,?,?,?)",
+                        (str(key), run_id, reason, _now_ms()),
+                    )
+                except sqlite3.Error as exc:
+                    problems.append(f"跨数据根对象阻断未生效：{key}（{exc}）")
+    finally:
+        conn.close()
+    return problems
+
+
 def release_blocked(
     path: Path | str, *, reason: str = "", root: Path | None = None
 ) -> bool:
@@ -327,17 +562,61 @@ def release_blocked(
         ) from exc
 
 
+def release_object_blocked(
+    object_key: str, *, reason: str = "", root: Path | None = None
+) -> bool:
+    """释放一条对象阻断。返回是否真的释放了一条有效记录。
+
+    库不存在/表不存在/没有有效记录 = 没有东西要释放（不是错误）；写失败抛
+    `AuthorityWriteFailed`——调用方必须保持阻断方向并如实报错。
+    """
+    db = _db_path(root)
+    if not db.exists():
+        return False
+    key = str(object_key)
+    try:
+        conn = sqlite3.connect(str(db), timeout=BUSY_TIMEOUT_MS / 1000)
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            if not _table_exists(conn, "blocked_objects"):
+                return False
+            with conn:
+                cur = conn.execute(
+                    "UPDATE blocked_objects SET released_at=?, release_reason=?"
+                    " WHERE object_key=? AND released_at IS NULL",
+                    (_now_ms(), reason, key),
+                )
+                released = cur.rowcount > 0
+            return released
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError) as exc:
+        hint = "权威状态暂时不可用（锁忙）" if _is_lock_error(exc) else "权威根损坏"
+        raise AuthorityWriteFailed(
+            f"{hint}：对象阻断未释放（{db}）：{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 __all__ = [
     "AUTHORITY_ROOT_ENV",
     "AuthorityBlock",
+    "AuthorityObjectBlock",
     "AuthorityUnavailable",
     "AuthorityWriteFailed",
     "active_blocks",
+    "active_object_blocks",
+    "active_object_keys",
     "active_paths",
     "authority_root",
     "backfill_blocked",
+    "backfill_object_blocked",
     "is_blocked",
+    "is_object_blocked",
     "register_blocked",
+    "register_object_blocked",
     "release_blocked",
+    "release_object_blocked",
     "workspace_key",
 ]

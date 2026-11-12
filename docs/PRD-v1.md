@@ -591,7 +591,7 @@ Event {
 
 **原方案**：`type` 是一个 9 值抽象枚举 `intent|result|model_call|approval|receipt|compaction|job|checkpoint|audit`。
 
-**新方案**：两层——**族**（`type` 的名字空间前缀；14 个在用 + 3 个声明未实现）→ **具体类型注册表**（43 个，机器可校验，写入侧强制）。
+**新方案**：两层——**族**（`type` 的名字空间前缀；14 个在用 + 3 个声明未实现）→ **具体类型注册表**（45 个，机器可校验，写入侧强制）。
 
 **为什么改**（三条都是实测出来的）：
 
@@ -611,7 +611,7 @@ Event {
 | `job` | 族 `job`（5 种） |
 | `compaction` / `checkpoint` / `audit` | **未实现**，登记在 `UNIMPLEMENTED_EVENT_FAMILIES` |
 
-#### 5.3.2 注册表：14 个族 / 43 个具体类型
+#### 5.3.2 注册表：14 个族 / 45 个具体类型
 
 族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
 
@@ -625,7 +625,7 @@ Event {
 | `model` | 模型调用：意图、结果、错误（C1） | `model.error` / `model.intent` / `model.result` |
 | `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
-| `recovery` | 崩溃恢复：阻断与解除阻断 | `recovery.blocked` / `recovery.unblocked` |
+| `recovery` | 崩溃恢复：阻断与解除阻断（目录与 MCP 对象两种对象模型，见 §5.4.1 的 `dispatch.mcp_object_blocked`） | `recovery.blocked` / `recovery.object_blocked` / `recovery.object_unblocked` / `recovery.unblocked` |
 | `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
@@ -660,7 +660,7 @@ Event {
 
 **已封闭**：
 
-- **类型集合**：41 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
+- **类型集合**：45 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
 - **信封必填字段**：`seq / run_id / type / ts / actor / payload / payload_hash`；`task_id`、`idem_key`、`parent_seq` 可空。
 - **`payload_hash` 形状**（sha256 hex）与 `seq` 语义。
 
@@ -829,6 +829,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.mcp_server_unavailable` | MCP | 配置里的这个 server 当前不可用（没启动 / 握手失败 / 已断开），原因带诊断。 | 看 `tianshu mcp list` 的诊断修 server；修好前这个工具用不了。 |
 | `dispatch.mcp_tool_unknown` | MCP | 这个工具没有准入（server 没声明、schema 用了方言外关键字、名字越界或被 `max_tools` 截断）。 | 看 `tianshu mcp list` 的 `rejected_tools` 原因；模型看不到它，别让它去猜。 |
 | `dispatch.mcp_protocol_error` | MCP | 协议层失败（畸形帧、响应 id 不匹配、结果形状不合法）。**副作用未知**，按 `unknown` 结算并阻断待核查。 | 不要重放；先 `recover` 看结论，再决定人工核对。 |
+| `dispatch.mcp_object_blocked` | MCP · 对象阻断 | 这个 MCP 对象（`mcp://server/tool` 或 server 级 `mcp://server`）之前有一次调用**可能已在 server 侧执行**、副作用无法核实，因此拒绝再次发外。判定阶段（弹批准之前）与外发边界之前各核验一次；结论是 `rejected` + `none_applied`，**一个字节都没发出**。与目录阻断是两件事：解除 workspace 阻断**不会**解除它。 | 先核对 server 侧的输出/日志确认那次调用到底做了什么，再显式解除对象阻断（`guard.unblock_object`）；没核对过就别放开。 |
 | `dispatch.budget_refused` | 预算账本 | 抓取前的字节预占被拒：额度耗尽、账户已取消或已过 deadline。**一个请求都没有发出**。 | 提高该维度的预算上限，或在额度恢复 / 新账户下重新发起；不要靠重试绕过额度。 |
 | `c4.no_resource` | 工作区阻断 | 动作没有声明任何资源。 | 工具实现没声明资源，属代码 bug；报 issue。 |
 | `c4.outside_workspace_unsupported` | 工作区阻断 | 目标在工作区之外，且当前后端不支持域外操作。 | 把目标移进已绑定目录，或换支持域外操作的后端。 |
@@ -1289,7 +1290,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 **仍不成立**：父/子模型都是**脚本模型**，不是真实模型分数；评测只覆盖一条公开委派
 任务 + 一条测试内失败路径，不是所有委派场景；公网/真实模型复跑仍未验证。
 
-**实现状态（2026-11-12，G2 MCP 阶段 #116 / #117 / #119 / #122 / #124）**：MCP **已接入**——stdio 客户端
+**实现状态（2026-11-12，G2 MCP 阶段 #116 / #117 / #119 / #122 / #124 / #129）**：MCP **已接入**——stdio 客户端
 （`initialize` / `tools/list` / `tools/call` / `notifications/cancelled`）、server 配置校验、
 工具准入（外部 `inputSchema` 归一进封闭方言，认不出就拒该工具）、动态工具身份与版本
 （原始 schema + 归一 schema + 描述摘要）、`mcp://` 资源执行器、任务级 server 白名单
@@ -1357,7 +1358,7 @@ embedding 只有 `HashEmbeddingProvider`（**无语义能力**，永远 `semanti
 |---|---|---|
 | **G0 可信评测** | 第一优先级 | 修复 P1/P2 判据、版本化并复跑；四维结果与正负控成立，实际失败保留；真实用户任务集开始形成 |
 | **G1 通用执行基础** | 新增网络 / MCP 前；并发委派前完成共享账本 | §5.2.3 / §5.6 的准入、外发、预算、deadline 与取消测试通过；模型生成代码或不可信本地程序另须 §8.1.1 隔离门禁 |
-| **G2 完整用户体验** | G0 + 相关 G1 能力 | 按“网络 → MCP → 记忆 → 子代理”推进；网络阶段先完成 §10.5 的本地任务和联网研究闭环，可查看产物、来源、费用与恢复状态。后续各阶段用同一任务集证明新增收益。**网络阶段已交付（2026-11-11，PR #110 / #112）**；**MCP 阶段已交付（2026-11-12，PR #116 / #117 / #119 / #122 / #124）**；**子代理 D1 已交付**（合同 + 实体 + 四个工具 + 限额 + 共享预算）；**子代理 D2 已交付**（Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑）；**子代理 D3 已交付**（真实用户任务 `RU-D1@1.0.0`：只读子任务 + 父任务汇总引用 + 事实有据可查 + 只读边界/失败不编造判据 + 文档对账；独立复审 1 BLOCKER + 5 MINOR 已整改；脚本模型，不是真实模型分数）；**记忆阶段已交付**（2026-11-12，PR #125 / #126 / #127：`memory.search` 控制面 RPC + React 记忆面板（列出/检索/确认/忘记/擦除、六项判据 + 纯文本正文、不做乐观更新）+ 真实用户任务 `RU-M1@1.0.0` 跨任务召回（两段 Run：产物真的体现偏好、别的项目目录的诱饵记忆不被召回、忘记后不再召回）；两段都是脚本模型，不是真实模型分数、也不是召回质量证明；**仍不成立**：真 embedding provider、并发 / daemon 重启、记忆×委派交叉、Windows 未验证） |
+| **G2 完整用户体验** | G0 + 相关 G1 能力 | 按“网络 → MCP → 记忆 → 子代理”推进；网络阶段先完成 §10.5 的本地任务和联网研究闭环，可查看产物、来源、费用与恢复状态。后续各阶段用同一任务集证明新增收益。**网络阶段已交付（2026-11-11，PR #110 / #112）**；**MCP 阶段已交付（2026-11-12，PR #116 / #117 / #119 / #122 / #124 / #129）**；**子代理 D1 已交付**（合同 + 实体 + 四个工具 + 限额 + 共享预算）；**子代理 D2 已交付**（Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑）；**子代理 D3 已交付**（真实用户任务 `RU-D1@1.0.0`：只读子任务 + 父任务汇总引用 + 事实有据可查 + 只读边界/失败不编造判据 + 文档对账；独立复审 1 BLOCKER + 5 MINOR 已整改；脚本模型，不是真实模型分数）；**记忆阶段已交付**（2026-11-12，PR #125 / #126 / #127：`memory.search` 控制面 RPC + React 记忆面板（列出/检索/确认/忘记/擦除、六项判据 + 纯文本正文、不做乐观更新）+ 真实用户任务 `RU-M1@1.0.0` 跨任务召回（两段 Run：产物真的体现偏好、别的项目目录的诱饵记忆不被召回、忘记后不再召回）；两段都是脚本模型，不是真实模型分数、也不是召回质量证明；**仍不成立**：真 embedding provider、并发 / daemon 重启、记忆×委派交叉、Windows 未验证） |
 | **G3 正式发布准备** | 可与 G1/G2 并行修复；发布前全部满足 | 历史数据升级 / 备份恢复、凭据存储、运行 SLO、长时间测试、安装 / 更新 / 回退和平台矩阵全部有证据；遗留阻断问题明确裁决 |
 
 **G3 的平台与交付要求：**

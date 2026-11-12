@@ -163,6 +163,24 @@ describe("事件 → 时间线句子", () => {
     expect(humanizeEvent(event("run.fenced")).sentence).toContain("新目标");
   });
 
+  it("对象级阻断事件说清楚挡住的是哪个 MCP 对象", () => {
+    const blocked = humanizeEvent(
+      event("recovery.object_blocked", { object: "mcp://weather/get-now" }),
+    );
+    expect(blocked.sentence).toContain("mcp://weather/get-now");
+    expect(blocked.tone).toBe("warn");
+    // 缺 object 字段也不能抛：退回一句通用文案
+    expect(humanizeEvent(event("recovery.object_blocked")).sentence).toBe(
+      "MCP 工具可能已执行，已阻断再次调用",
+    );
+
+    const released = humanizeEvent(
+      event("recovery.object_unblocked", { object: "mcp://weather/get-now" }),
+    );
+    expect(released.sentence).toContain("mcp://weather/get-now");
+    expect(released.tone).toBe("success");
+  });
+
   it("工具请求被压成一句短动作，路径只显示文件名", () => {
     const requested = humanizeEvent(
       event("tool.requested", {

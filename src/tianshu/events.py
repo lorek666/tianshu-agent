@@ -76,6 +76,11 @@ EVENT_TYPES: frozenset[str] = frozenset(
         # 恢复
         "recovery.blocked",
         "recovery.unblocked",
+        # 阻断对象（G2 MCP 后续工单：对象级阻断）。与上面两个是**不同对象
+        # 模型**：目录 vs `mcp://server/tool`。不能合用一个类型——目录回放会
+        # 把 `mcp://…` 当成一个不存在的目录路径，那既是假阻断也是假解除。
+        "recovery.object_blocked",
+        "recovery.object_unblocked",
         # Run 生命周期
         "run.start",
         "run.state",

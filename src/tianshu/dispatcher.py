@@ -44,6 +44,7 @@ from .crashpoint import failpoint
 from .errors import (
     BudgetCancelled,
     BudgetRefused,
+    McpObjectBlocked,
     OverwriteRefused,
     RunFenced,
     TianshuError,
@@ -63,7 +64,7 @@ from .execpolicy import (
     filtered_env,
 )
 from .fsutil import atomic_write_bytes
-from .guard import ensure_not_blocked
+from .guard import ensure_not_blocked, ensure_object_not_blocked
 from .isolation import isolation_view, require_isolation_requirements
 from .jobs import JobClaim, JobLost, JobStore
 from .leases import (
@@ -128,6 +129,7 @@ from .resources import (
     ResourceRef,
     build_memory_scope,
     is_memory_resource,
+    mcp_block_keys,
     network_origin_allowed,
     parse_memory_uri,
     parse_resource,
@@ -1333,6 +1335,10 @@ class Dispatcher:
         clients = self._mcp_clients
         server = None if clients is None else clients.server(target.server)
         if server is None or not server.is_alive:  # pragma: no cover - authority 已判
+            # 这一支在**写 stdin 之前**：进程已经死了/拿不到，一个字节都写不进去。
+            # `unknown` 的结算沿用旧口径（不在本工单改结论），但**不能**落对象
+            # 阻断：对象阻断的语义是"server 侧可能已经执行过"，而这里确定没发出，
+            # 记一条就是假记录（`sent=False`）。
             return self._fail_unknown(
                 request,
                 dispatch_id,
@@ -1341,6 +1347,7 @@ class Dispatcher:
                     f"MCP server 已不可用：{target.server!r}",
                     "dispatch.mcp_server_unavailable",
                 ),
+                sent=False,
             )
         binding = self.registry.mcp_binding(target.tool_id)
         spawn = {
@@ -1377,11 +1384,18 @@ class Dispatcher:
         #                      还没落盘。与上一个同口径：`unknown` + 阻断，不重放。
         failpoint("mcp_before_call")
         try:
-            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)
+            boundary_marked = self._mark_mcp_send_boundary(
+                dispatch_id, server=target.server, tool=target.tool
+            )
         except GuardTimeout as exc:
             # 拿不到执行守卫 = 没抢到"撤销与发送"的分界线：一个字节都没发。
             # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次
             # "效果未知"的崩溃——这次调用确实没出去。
+            return self._abort_dispatch(request, dispatch_id, exc)
+        except McpObjectBlocked as exc:
+            # 等批准/等租约期间这个对象被别的 Run 标成阻断：同样一个字节都没发。
+            # 按受控拒绝结算（`dispatch.mcp_object_blocked`），不能记成 unknown ——
+            # "确定没发"被写成"可能发了"会凭空多挡一个目录。
             return self._abort_dispatch(request, dispatch_id, exc)
         if not boundary_marked:
             # 行已经被撤销/作废还照发，就等于让"撤销成功"这句话变假。这里不发，
@@ -2951,12 +2965,18 @@ class Dispatcher:
                     "dispatch.mcp_tool_unknown",
                 )
             ref = resolve_scheme_resource(raw)
-            return _McpTarget(
+            target = _McpTarget(
                 uri=ref.uri,
                 server=ref.mcp_target.server,
                 tool=ref.mcp_target.tool,
                 tool_id=request.tool_id,
             )
+            # 对象级阻断（MCP 后续工单 §5-8）：这个工具/server 有未核实的副作用，
+            # 在**弹批准之前**就拒——不能让人批一个注定不会发的调用。
+            # 这里与发外边界前那道复核分工不同：这里拦"已经知道的阻断"，
+            # 那里拦"批准期间新落下的阻断"（见 `_mark_mcp_send_boundary`）。
+            self._refuse_blocked_mcp_object(target.server, target.tool)
+            return target
 
         if isinstance(raw, str) and raw.startswith("subtask://"):
             if request.tool_id not in SUBTASK_TOOL_IDS:
@@ -3224,7 +3244,22 @@ class Dispatcher:
                 (state, self._clock(), run_id, call_id),
             )
 
-    def _mark_mcp_send_boundary(self, dispatch_id: str) -> bool:
+    def _refuse_blocked_mcp_object(self, server: str, tool: str) -> None:
+        """对象被阻断 → `DispatchDenied`（带 C4 规则编号，用户可见）。
+
+        判定不了的两种情况（日志里有畸形对象阻断记录、权威根读不出来）同样拒绝：
+        `ensure_object_not_blocked` 把它们转成 `McpObjectBlocked`，这里再统一
+        转成一次"拒绝"而不是让派发崩掉。
+        """
+        keys = mcp_block_keys(server, tool)
+        try:
+            ensure_object_not_blocked(self._log, keys)
+        except McpObjectBlocked as exc:
+            raise DispatchDenied(str(exc), "dispatch.mcp_object_blocked") from exc
+
+    def _mark_mcp_send_boundary(
+        self, dispatch_id: str, *, server: str, tool: str
+    ) -> bool:
         """把这次 MCP 派发从 `intent` 推到 `executing` —— 外发边界。
 
         为什么需要它：`tools/call` 写进 server 的 stdin 之后，"发没发出去"在本机
@@ -3245,13 +3280,27 @@ class Dispatcher:
         说话：撤销先到就不再发；标记先到，撤销会明确报错而不是假装成功。
 
         返回 `False` 表示这条派发已经不能再发了（被撤销/作废，或没有派发行）。
+
+        **对象阻断复核也在这里**（与 `_advance_to_executing` 同一把锁内）：
+        `_resolve_target` 已经判过一次，但"判定通过 → 真正写 stdin"之间可能隔着
+        等批准、等租约；这期间另一个 Run 可能把同一个对象标成阻断（例如它刚超
+        时、还没人核对）。检查放在守卫内、紧贴状态推进：**撤销**与**恢复侧**的
+        阻断提交（恢复侧与运行期 unknown 的 `_commit_mcp_unknown`）共用这把守卫，
+        排不进这道缝；`unblock_object` 是人工解除，与 `unblock()` 一样不抢守卫
+         （解除只会放宽，不会漏挡）。仍剩两条窗口：没有 `data_root` 的库调用方
+        没有守卫可抢；提交侧抢守卫超时时照常提交并写 `block_guard="timeout"`
+        （见 docs/SPEC §3.4 线性化边界）。命中就抛 `McpObjectBlocked`，由
+        `_dispatch_mcp` 按受控拒绝处理（一个字节都没发）。
         """
+        keys = mcp_block_keys(server, tool)
         root = self._data_root
         if root is None:
             # 没有数据根就没有撤销入口（`revoke` 同样要求它），也就没有要抢的
-            # 那把锁；库调用方保持原行为，只做状态推进。
+            # 那把锁；库调用方保持原行为，只做状态推进（对象阻断照样复核）。
+            ensure_object_not_blocked(self._log, keys)
             return self._advance_to_executing(dispatch_id)
         with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
+            ensure_object_not_blocked(self._log, keys)
             return self._advance_to_executing(dispatch_id)
 
     def _advance_to_executing(self, dispatch_id: str) -> bool:
@@ -3579,6 +3628,8 @@ class Dispatcher:
             # 守卫内二次阻断核验（复审 中-1）被拒：和 phase-1 那条用同一个
             # rule id，用户看到的仍然只是"这个目录有未核实的副作用"。
             WorkspaceBlocked: "dispatch.workspace_blocked",
+            # 守卫内的对象阻断复核（MCP §5-8）：与目录阻断分开的规则编号。
+            McpObjectBlocked: "dispatch.mcp_object_blocked",
         }.get(type(exc), "dispatch.refused")
         rule_id = check_rule_id(rule_id, where="_abort_dispatch")
 
@@ -3625,6 +3676,8 @@ class Dispatcher:
         target: _Target,
         exc: BaseException,
         rule_id: str = "",
+        *,
+        sent: bool = True,
     ) -> ToolResult:
         """执行中途炸了：结论只能是 unknown，并且立刻阻断后续写入。
 
@@ -3653,10 +3706,51 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
+        if isinstance(target, _McpTarget) and not sent:
+            # 发包**之前**就确定没发出去（server 已经不可用）：不落对象阻断，但结果
+            # 仍要如实落库（`unknown` 是这一支的旧口径，本工单不改结论）。这里**不**
+            # 能掉进下面文件写的分支——`_McpTarget` 没有 `workspace_root`。
+            with self._log.transaction():
+                self._log.append(**result_event)
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+                    " WHERE dispatch_id=?",
+                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_REJECTED)
+            return result
+
+        if isinstance(target, _McpTarget):
+            # 到这里说明 `sent`：请求已越过外发边界，server 侧可能已经执行。
+            # MCP 没有本地目录可阻断，但它有**对象**：走到 `_fail_unknown` 且
+            # `sent` 说明请求已经越过外发边界（超时 / 断线 / server 内部错误），
+            # server 侧可能已经执行。这里就地落一条对象阻断事件（与文件写分支"就地落
+            # `recovery.blocked`、不在派发层写权威根"同一分工；跨数据根由下一次
+            # `recover` 的启动补登记带上）。
+            #
+            # 只挡这个工具（+ 它属于的 server 由读侧 `mcp_block_keys` 一起查），
+            # 不挡目录：目录阻断是恢复侧"目录状态可能被改过"的判断，这里没有
+            # 任何证据支持它。
+            #
+            # **绝不**在这里调用 apply_event：结果未知就是"投影是否更新不知道"。
+            object_event = {
+                "run_id": request.run_id,
+                "type": "recovery.object_blocked",
+                "payload": {
+                    "object": target.uri,
+                    "call_ids": [request.call_id],
+                    "reason": f"执行中断且效果未知：{reason}",
+                },
+                "task_id": request.task_id,
+                "actor_kind": "system",
+            }
+            self._commit_mcp_unknown(request, dispatch_id, result_event, object_event, reason)
+            return result
+
         if isinstance(
-            target, (_MemoryTarget, _NetworkTarget, _McpTarget, _SubtaskTarget)
+            target, (_MemoryTarget, _NetworkTarget, _SubtaskTarget)
         ):
-            # 记忆没有可阻断的目录；网络 / MCP / 委派同样没有本地目录可阻断。
+            # 记忆没有可阻断的目录；网络 / 委派同样没有本地目录可阻断。
             # 而且**绝不**在这里调用 apply_event：
             # 结果未知就是"投影是否更新不知道"，补写一条投影会让未知变成
             # 一个编出来的确定结论。事件与派发状态仍同事务落库。
@@ -3693,6 +3787,62 @@ class Dispatcher:
             )
             self._set_request_state(request.request_id, STATE_REJECTED)
         return result
+
+    def _guarded_write(self, write, result_event: dict[str, Any]) -> None:
+        """有数据根就在执行守卫内提交，抢不到守卫也**必须**提交（结果不能丢）。
+
+        守卫把"发外边界复核 → 推进"与"阻断提交"排进同一个全序（复审 B1）。
+        抢不到守卫（`GuardTimeout`，说明有别的写者正在持锁）时按最坏情况照常
+        提交，并在结果里写 `block_guard="timeout"`——如实说明这一条没排在守卫里，
+        而不是为了"排进守卫"把结果与阻断丢掉。
+        """
+        root = self._data_root
+        if root is None:
+            write()
+            return
+        try:
+            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
+                write()
+        except GuardTimeout:
+            result_event["payload"]["output"]["block_guard"] = "timeout"
+            write()
+
+    def _commit_mcp_unknown(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        result_event: dict[str, Any],
+        object_event: dict[str, Any],
+        reason: str,
+    ) -> None:
+        """MCP 效果未知时的提交：结果 + 对象阻断 + 派发行终态，同一事务。
+
+        为什么这里要抢**执行守卫**（复审第一轮 B1）：发外边界上"复核对象阻断 →
+        把派发行推进到 `executing`"是在同一把守卫里完成的。如果对象阻断的提交不
+        走守卫，它就能插在别人的"复核通过之后、推进之前"——那次调用照样发出去，
+        "阻断已记录 → 之后不会再发"这句话就不成立。两边共用一把守卫之后顺序是
+        确定的：要么阻断先提交（对方的复核看得见），要么对方的推进先完成（这次
+        调用早已越过外发边界，阻断只约束它之后的新调用）。
+
+        没有 `data_root`（库调用方）时没有撤销入口、也没有这把锁可抢：保持原行为，
+        那一小段窗口仍在（文档如实写着，不假装已消掉）。
+
+        守卫抢不到（`GuardTimeout`）时**不能**丢掉结果与阻断：照常提交，并在结果
+        里写 `block_guard="timeout"`——这条阻断没有排在守卫里，读的人要知道。
+        """
+
+        def _write() -> None:
+            with self._log.transaction():
+                self._log.append(**result_event)
+                self._log.append(**object_event)
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+                    " WHERE dispatch_id=?",
+                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_REJECTED)
+
+        self._guarded_write(_write, result_event)
 
     def _commit_result(
         self,
@@ -3731,6 +3881,43 @@ class Dispatcher:
             "idem_key": request.call_id,
         }
         batch: list[dict[str, Any]] = [result_event]
+
+        if is_mcp and result.effect_state == "unknown":
+            # 运行期 unknown 的**其余**出口（超时 `McpTimeout`、断线 `McpClosed`）
+            # 走的是 `_commit_result`，不是 `_fail_unknown`：必须在这里补一条对象
+            # 阻断，否则最常见的两种 unknown 之后同一个工具还能再发一次（复审 N1：
+            # 文档声称"超时/断线就地落"，代码只覆盖了 -32603）。
+            # 与结果同事务落库；跨数据根由下一次 `recover` 的启动补登记带上。
+            # 提交同样拿执行守卫（与发外边界共用），抢不到时 `_guarded_write`
+            # 照常提交并写 `block_guard="timeout"`。
+            object_event = {
+                "run_id": request.run_id,
+                "type": "recovery.object_blocked",
+                "payload": {
+                    "object": target.uri,
+                    "call_ids": [request.call_id],
+                    "reason": (
+                        "执行中断且效果未知："
+                        f"{str(result.output.get('reason') or result.output.get('error') or '')}"
+                    ),
+                },
+                "task_id": request.task_id,
+                "actor_kind": "system",
+            }
+            batch.append(object_event)
+
+            def _write_mcp_unknown() -> None:
+                self._log.append_many(batch)
+                with self._log.transaction():
+                    self._conn.execute(
+                        "UPDATE dispatches SET state=?, updated_at=?"
+                        " WHERE dispatch_id=?",
+                        (DISPATCH_ERROR, self._clock(), dispatch_id),
+                    )
+                    self._set_request_state(request.request_id, STATE_DONE)
+
+            self._guarded_write(_write_mcp_unknown, result_event)
+            return
 
         if is_memory:
             if request.tool_id in (

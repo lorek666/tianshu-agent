@@ -48,7 +48,7 @@
 |---|---|---|---|
 | 有 result（含 `isError:true`） | 不动它：`applied` + `status=failed` | 有（`backend="mcp"`，可独立核对） | 不阻断 |
 | 有 intent、没有 result；派发行是 `intent`/`revoked`/`rejected`（**没越过外发边界**） | `failed` + `none_applied` + `reason=mcp.not_sent` | **不补**（没有可归因的效果） | **不阻断**：`recover` 之后可直接 `resume`（不需要 `unblock`） |
-| 有 intent、没有 result；派发行是 `executing`，或**无从证明**（老库没有派发表 / 没有行 / 状态不认识） | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断**调用方传入**的那个工作区目录 |
+| 有 intent、没有 result；派发行是 `executing`，或**无从证明**（老库没有派发表 / 没有行 / 状态不认识） | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 目录 → 阻断**调用方传入**的那个工作区；对象 → 阻断这次调用的 `mcp://server/tool`（**能从派发行 `target` 读到才登记**；读不到就不编，目录阻断照旧） |
 
 实现上有四处必须说清楚：
 
@@ -101,16 +101,78 @@
 撤销成功。`revoked`/`rejected` 在恢复侧同样算"没越过边界"，但**行保持终态**（撤销过就该
 一直看得出撤销过）。
 
+### 3.2 对象级阻断（§5-8，PR #129）
+
+之前只有**一种**阻断对象：workspace 目录。MCP 调用结算成 `unknown` 时，恢复按最保守
+口径挡**调用方自己传进来的**那个目录——于是有两处说不通：
+
+- **挡错东西**：真正有未核实副作用的是那个**工具**（在 server 那一侧），不是本地目录；
+  而且 `recover --workspace` 是调用方填的路径，代码没按 task 绑定核对过（零目录任务也
+  合法），拿它冒充"MCP 的目录"是假精确。
+- **解除粒度粗**：人工核对完工作区文件后 `unblock`（目录）会把一切都放开，包括那个
+  "server 侧可能已经执行过"的工具。
+
+现在有**两种**阻断对象（并存，默认不放松）：
+
+| 对象 | 键 | 谁登记 | 语义 |
+|---|---|---|---|
+| 目录 | resolved 路径（`overlap_key`） | 文件写恢复、`assess_run`、undo journal | "这个目录可能被动过，别再写" |
+| MCP 对象 | `mcp://server/tool` 或 server 级 `mcp://server` | 恢复判 `unknown`（对象键从派发行 `target` 读）；运行期 `unknown`（`-32603` / 超时 / 断线）就地落 | "这个工具可能已在 server 侧执行过，别再发" |
+
+**发外前两道核验**（都是受控拒绝 `rejected` / `none_applied`，一个字节都不发）：
+
+1. **判定阶段**（`_resolve_target`，**弹批准之前**）：已经知道被阻断就直接拒，不给人
+   一张"批了也发不出去"的批准；
+2. **外发边界之前**（`_mark_mcp_send_boundary`，**执行守卫内**、紧贴状态推进）：拦"判定
+   通过之后、真正写 stdin 之前"新落下的阻断（例如等批准期间另一个 Run 刚超时）。
+
+两道用同一个 C4 编号 `dispatch.mcp_object_blocked`；命中时派发行**不会**推进到
+`executing`：第一道在事件登记之前（还没有派发行），第二道命中按受控拒绝把行标成
+`rejected`（`_abort_dispatch` 的既有口径），事后不会被洗成"可能已发出"。
+
+**线性化边界（复审两轮后修正）**：对象阻断的**两种提交路径**（恢复侧、运行期
+`unknown` 的 `_commit_mcp_unknown` 与 `_commit_result` 的 unknown 分支）都先拿
+`execution_guard`，与发外边界的"复核 → 推进"共用同一把守卫——要么阻断先提交（复核
+看得见、拒发），要么推进先完成（这次调用已越过边界，阻断只约束之后的新调用）。
+`unblock_object` 是人工解除，与 `unblock()` 一样**不**抢守卫（解除只会放宽，不会漏挡）。
+**仍剩两条窗口**：没有 `data_root` 的库调用方没有守卫可抢；提交侧抢守卫超时时按最坏
+情况照常提交并在结果里写 `block_guard="timeout"`（有单测钉住）。发包前 server 不可用
+（确定一个字节都没写）**不**登记对象阻断。超时 `McpTimeout` 与断线 `McpClosed` 走的是
+`_commit_result`，那里同样登记对象阻断（复审第二轮 N1 抓到的真实假阴性：此前只有
+`-32603` 一条路径落阻断）。
+
+**解除分开**：`unblock()` 只解目录，`unblock_object()` 才解对象——核对过工作区文件不等于
+核对过 server 侧副作用（后者本地根本没法核对，只能人看 server 的输出/日志后确认）。
+解除同样"先写日志审计事件、再释放权威根"；权威根释放失败 → 日志已不挡、权威根仍挡，
+异常如实抛出，绝不假装解除成功。
+
+**契约增量**（这是本轮唯一改契约的地方）：新增事件 `recovery.object_blocked` /
+`recovery.object_unblocked`（事件类型 43 → **45**），新增规则编号
+`dispatch.mcp_object_blocked`（74 → **75**）。**没有**复用 `recovery.blocked` 的
+`workspace` 字段——目录回放会把 `mcp://…` 当成一个不存在的目录路径，那既是假阻断也是
+假解除。
+
+**升级兼容**：权威库新增 `blocked_objects` 表。旧版本库没有这张表 = 从来没有对象阻断
+= **空集**（能证明：旧版本写不出这类记录）；表在但读不出来 → 按已阻断处理。日志侧
+由此前版本写的行不存在（事件类型是新增的），无需迁移。
+
+**为什么这一层不是"放松"**：目录阻断仍然存在、仍然由恢复登记；对象阻断是**额外**一层。
+它带来的不是"少挡"，而是"挡得能被单独解除 + 拒在发外之前"——核对了工作区但没核对
+server 侧时，工具仍然发不出去。
+
 ## 4 判据与负控
 
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
-  **`tests/test_mcp_crash.py`（24；收尾轮 9 → PR #124 扩到 24）**，另有契约判据在
-  `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
-  → 规格 §4 的 c1–c15 与本文件的测试一一对应。
-- 负控：规格 §5 的 NB1–NB24，加上本轮脚本化的 NB21 / NB25–NB39
-  （`scripts/negative_controls_mcp_crash.py`，**16 条**）；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →
-  目标用例红"，并记录 pytest 返回码与耗时）。
+  **`tests/test_mcp_crash.py`（24；收尾轮 9 → PR #124 扩到 24）**、
+  **`tests/test_mcp_object_block.py`（34；对象级阻断，PR #129，两轮复审整改后）**，另有契约
+  判据在 `tests/test_event_schema.py` / `tests/test_rule_ids.py` /
+  `tests/test_g1d_resource_kinds.py`。→ 规格 §4 的 c1–c16 与本文件的测试一一对应。
+- 负控：规格 §5 的 NB1–NB24 + 脚本化的 NB21 / NB25–NB39
+  （`scripts/negative_controls_mcp_crash.py`，**16 条**）+ 对象阻断 **NC-O1–NC-O26**
+  （`scripts/negative_controls_object_block.py`，**26 条**）→ 合计 **42 条脚本化**；
+  已实测红的逐条列在验收报告 §3（每条都是"回退保护 → 目标用例红"，并记录 pytest
+  返回码与耗时）。
 
 ## 5 仍然不成立 / 未验证（必须一起读）
 
@@ -143,9 +205,17 @@
     **标记提交与真正写出之间**那一小段窗口仍按"可能已发出"处理（有意保守，见 §3.1）；
     **升级前留下的派发行**（没有 `boundary_protocol`）同样一律按"可能已发出"处理——
     旧版本写请求前不推进派发行，旧行不能证明没发；
-    阻断对象只有 workspace 字段、**没有**对象级阻断；"挡哪个目录"由调用方负责
-    （`recover --workspace` 必填，代码不按 task 绑定核对，传错就挡错——已知代价）；
-    server 侧的私有状态（它到底动了什么）**没有任何证据**，恢复也不去问它。
+     **阻断对象有两种**（v5 起）：目录与 MCP 对象（`mcp://server/tool` / server 级），
+    对象阻断只在**能从派发行 `target` 读到对象**时登记（读不到、缺 `target` 列、形状不
+    认识都不编，目录阻断照旧）；server 级键目前只有**读侧**能力（产品只登记工具级）；
+    "挡哪个目录"仍由调用方负责（`recover --workspace` 必填，代码不按 task 绑定核对，
+    传错就挡错——已知代价）；对象阻断的**解除**是人工动作（`unblock_object`），没有
+    "核对通过"的自动判据、也没有过期时间——挡住之后必须有人看 server 侧再解；
+    server 侧的私有状态（它到底动了什么、动了几次）**没有任何证据**，恢复也不去问它；
+    对象粒度只到"工具/服务器"，没有 per-call 回执（要精确到"这一次到底跑没跑"需要
+    server 侧回执协议，未做）；运行期 `unknown`（超时/断线/内部错误）用的是同一条
+    对象阻断，但它发生在**进程内**，只在本地日志里——跨数据根要等下一次 `recover`
+    的启动补登记，不是即时的。
 
 ## 6 后续工单
 
@@ -154,8 +224,11 @@
    （`intent` → `executing`），不新增事件、不改事件契约；恢复/接管按它分档，撤销与发送
    共用执行守卫；升级前的旧行用 `boundary_protocol=0` 区分（一律保守）。**新剩下的**：
    标记提交与真正写出之间的窄窗口仍保守阻断；要再往前推需要 server 侧回执协议（未做）。
-3. **对象级阻断**：以 `mcp://server/tool` / server 为阻断对象；现有 guard 只有
-   workspace 字段，先定阻断对象模型，不拿调用方传的路径冒充 MCP 的目录。
+3. ~~**对象级阻断**~~ **已完成（PR #129）**：阻断对象 = `mcp://server/tool`（工具级）
+   或 `mcp://server`（server 级），与目录阻断并存；发外前两道核验（判定阶段 +
+   外发边界前），解除走 `unblock_object`（`unblock` 不碰对象）。契约增量：事件
+   `recovery.object_blocked` / `recovery.object_unblocked` + 规则编号
+   `dispatch.mcp_object_blocked`。见 §3.2；剩余欠账见 §5-10。
 4. 把长连接 spawn 收进 `exec_backends` 接缝（新 `spawn_session` 语义 + MCP 专属隔离
    探针），之后才谈 `isolation_requires` 对 MCP 成立。
 5. 真实第三方 server 兼容性验证（至少两个真实 server），并把协议版本集合与

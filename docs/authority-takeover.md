@@ -17,9 +17,15 @@
 - 路径：`TIANSHU_AUTHORITY_ROOT`，否则 `Path.home()/".tianshu"/"authority"`；
   **与 `--db` / `--data-root` / cwd 无关**。默认值就是"这台机器上这台用户"，
   换项目目录、换事件库都改不了它。
-- 存储：SQLite（`authority.db`，`synchronous=FULL`）表
-  `blocked_workspaces(workspace_key PK, workspace_path, run_id, reason, blocked_at, released_at, release_reason)`
-  —— 解除不删行，谁因为什么解除也是审计材料。
+- 存储：SQLite（`authority.db`，`synchronous=FULL`）两张表，**两种阻断对象**：
+  - `blocked_workspaces(workspace_key PK, workspace_path, run_id, reason, blocked_at, released_at, release_reason)`
+    —— 目录（文件写用）；
+  - `blocked_objects(object_key PK, run_id, reason, blocked_at, released_at, release_reason)`
+    —— 外部对象（MCP 后续工单；键 = `mcp://server/tool` 或 server 级 `mcp://server`）。
+    旧版本库**没有**这张表 = 从来没有对象阻断 = **空集**（能证明，不是损坏）；
+    表在但读不出来 → 按已阻断处理。
+  两张表不合并：目录键要过 `overlap_key`（大小写/Unicode 折叠、resolved 路径），
+  URI 键是逐字节相等的另一种"同一个"。解除都不删行，谁因为什么解除是审计材料。
 - 键：`workspace_key = pathkeys.overlap_key(resolve(path))`（Unicode NFC + 大小写折叠），
   与 `ResourceIdentity`/租约同一口径；换一种路径写法绕不过去。原始绝对路径另存一列排障。
 
@@ -28,6 +34,7 @@
 | 情形 | 行为 | 理由 |
 |---|---|---|
 | 库/目录不存在 | **空集** | 新用户/新环境本来就没有阻断记录；当损坏会"第一次用就被自己挡住" |
+| 库在但**对象表**不存在（旧版本库） | **空集**（只对对象查询） | 旧版本写不出对象阻断，缺表能被证明就是空集；当成损坏会让升级用户被全量挡住 |
 | 库存在但读不出来（坏库/锁死/权限） | `AuthorityUnavailable` → 守卫按**已阻断** | 读不出来 ≠ 没阻断 |
 | 写失败（锁忙 / 损坏） | `AuthorityWriteFailed` → 恢复报告/CLI 如实写「跨数据根阻断未生效」 | 不许假装跨数据根阻断成功 |
 | 读路径 | **不** `mkdir`、不建库（SQLite 自己的 `-wal/-shm` 除外） | 只读对账不能改别人的数据根 |
@@ -41,9 +48,15 @@
 - `ensure_not_blocked` 用 `pathkeys.overlap_key` 比目录身份：同一目录换个大小写写法不能绕过。
 - `unblock()` 顺序：**先写日志审计事件 → 再释放权威根**。释放失败 → 日志已不挡、权威根仍挡
   （最多"多挡一会儿"），并抛 `AuthorityWriteFailed`，绝不假装解除成功。
+- `blocked_objects(log)` / `ensure_object_not_blocked(log, keys)`：对象阻断的读侧与发外守卫。
+  调用方一次给 `(工具级, server 级)` 两个键（server 级阻断必须能遮住它下面全部工具）；
+  日志有畸形对象阻断记录或权威根读不出来 → 按**已阻断**抛 `McpObjectBlocked`。
+- `unblock_object(log, key, reason=...)`：只解除对象阻断，顺序与 `unblock()` 相同
+  （先写日志审计事件、再释放权威根）。**`unblock()` 不碰对象阻断**——核对过工作区文件
+  不等于核对过 server 侧副作用。
 - `mirror_blocks_to_authority(log)`：迁移入口。每次 `recover_run` 前把本数据根日志里
-  **当前有效**的阻断幂等补登记进权威根（旧版本的库、换过数据根的情况）；已解除的不会复活。
-  补登记失败只写进恢复报告的问题列表，不炸恢复流程。
+  **当前有效**的目录阻断与对象阻断都幂等补登记进权威根（旧版本的库、换过数据根的情况）；
+  已解除的不会复活。补登记失败只写进恢复报告的问题列表，不炸恢复流程。
 
 **双 `--db` 探针**（`test_cross_data_root_block_is_visible_to_another_db`，真子进程）：
 

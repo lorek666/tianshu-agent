@@ -97,6 +97,8 @@
         "policy.denied",
         "receipt",
         "recovery.blocked",
+        "recovery.object_blocked",
+        "recovery.object_unblocked",
         "recovery.unblocked",
         "run.control",
         "run.cursor",
@@ -1641,6 +1643,45 @@
         "required": [
           "workspace",
           "call_ids",
+          "reason"
+        ]
+      },
+      "recovery.object_blocked": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "call_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "object",
+          "call_ids",
+          "reason"
+        ]
+      },
+      "recovery.object_unblocked": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "object",
           "reason"
         ]
       },
@@ -4041,6 +4082,40 @@
               "string",
               "null"
             ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "recovery.object_blocked": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "call_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "recovery.object_unblocked": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "additionalProperties": false,

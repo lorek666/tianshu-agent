@@ -57,6 +57,7 @@
         "dispatch.foreign_instance",
         "dispatch.guard_timeout",
         "dispatch.lease_lost",
+        "dispatch.mcp_object_blocked",
         "dispatch.mcp_protocol_error",
         "dispatch.mcp_resource_mismatch",
         "dispatch.mcp_server_unavailable",
@@ -139,6 +140,7 @@
     "dispatch.foreign_instance": "claim 属于另一个实例，本实例无权执行。",
     "dispatch.guard_timeout": "执行守卫在限定时间内没有完成复核。",
     "dispatch.lease_lost": "派发过程中工作区租约丢失。",
+    "dispatch.mcp_object_blocked": "MCP 对象（工具或 server）有未核实的副作用：拒绝再次发外。先核对 server 侧是否已执行，再显式解除对象阻断；解除 workspace 阻断**不会**解除它。",
     "dispatch.mcp_protocol_error": "MCP 协议层失败（畸形帧、响应 id 不匹配、结果形状不合法）。副作用**未知**，按 unknown 结算。",
     "dispatch.mcp_resource_mismatch": "工具与 `mcp://server/tool` 资源不匹配：工具不在已准入的 MCP 注册表里，或其 (server, tool) 与资源两段不一致。",
     "dispatch.mcp_server_unavailable": "配置里的这个 MCP server 当前不可用（没启动 / 握手失败 / 已断开）。派发前拒绝，原因带诊断。",
@@ -243,6 +245,7 @@
     "MCP": [
       "c4.mcp_isolation_unproven",
       "c4.mcp_not_allowed",
+      "dispatch.mcp_object_blocked",
       "dispatch.mcp_protocol_error",
       "dispatch.mcp_resource_mismatch",
       "dispatch.mcp_server_unavailable",
