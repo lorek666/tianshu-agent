@@ -10,10 +10,10 @@
 
 F10 的 v1.2 契约增量（`layer` / `erased_at` / 6 个新工具 + 1 个升级 / 6 条规则编号 /
 物理擦除 / 恢复分支 / 检索质量 / L2-L3 蒸馏 / 控制面端点）**逐条落地并有测试**；
-**仍然不成立或未验证的 10 项在 §6 全部列出**——其中 3 项是能力缺口（真 embedding provider、
+**仍然不成立或未验证的项目在 §6 全部列出**（10 条里 2 条已在 G2 记忆阶段 M1 / PR #126 交付并标 ✅）——其中 3 项是能力缺口（真 embedding provider、
 L2/L3 检索质量评测、LLM 蒸馏），4 项是平台/环境未验证（Windows 实机与命名管道 ACL、
 Windows CI 的 6 条既有失败、控制面不是模型隔离边界、跨进程断电与真实模型驱动 UI），
-3 项是产品面未做（React 记忆面板、`memory.search` RPC、冲突消解）。
+1 项是产品面未做（冲突消解）。
 
 ## 1. 交付清单（按合并顺序）
 
@@ -28,6 +28,7 @@ Windows CI 的 6 条既有失败、控制面不是模型隔离边界、跨进程
 | #93 | N2 检索质量：作用域优先级 + 向量索引/RRF（**受能力边界约束**） | `memory_index.py` / `memory.py` / `loop.py` |
 | #98 | N3 确定性 L2/L3 蒸馏 + freshness（`memory.consolidate` / schema **v3**） | `memory_distill.py` / `memory.py` / `memory_exec.py` |
 | #100 | N6 控制面 Host/IPC 端点（8 个 RPC）+ 共享控制面模块 + 作业原子性修复 | `memory_control.py` / `control.py` / `cli.py` / `jobs.py` |
+| #126 | **G2 记忆阶段 M1**：`memory.search`（第 9 个 RPC）+ React 记忆面板（补上本报告第 7/8 条缺口） | `memory_control.py` / `control.py` / `ui/src/components/MemoryPanel.tsx` / `ui/src/api/memory.ts` |
 
 合并后 `main` 与记忆相关的**数字**：`SPECS` 18 个（记忆 10 个），`tool_manifest()` 14 个
 （记忆可见 7 个）、C3 事件类型 41 个（**未新增**）、C4 规则 56 个（拒绝 46 + 判定 8 +
@@ -171,8 +172,8 @@ Windows CI 的 6 条既有失败、控制面不是模型隔离边界、跨进程
 | 4 | **Windows 实机 + 命名管道 ACL** | ❌ 未验证 | 没有 Windows 机器；`ipc._chmod_private` 在 Windows 直接 return（只影响写位、无 ACL 语义），pipe security descriptor 未设置。Windows CI 只作为非必需检查跑（见 #5） |
 | 5 | **Windows CI 全绿** | ❌ 6 条既有非记忆族失败（`test_authority_block` ×2 / `test_host` / `test_ipc` ×2 / `test_resources`）；**记忆相关用例在 Windows 上全过** | 这些族不是本轮引入；Windows job 不在 required checks。别写成"Windows 已验证" |
 | 6 | **控制面不是模型隔离边界** | ⚠ 已知边界，**不是已解决** | v1 没有进程级沙箱：`run_command` 以当前 uid 跑子进程，可读 `run/authkey`、连 IPC、跑 CLI 并自己落审批。所以"审批需要人"只对**没有** `run_command` 的任务成立。要收口需要进程/文件系统沙箱或独立 OS 用户（F2/exec 后续工单） |
-| 7 | **React 记忆面板** | ❌ 未接 | Host/IPC 端点已通（8 个 RPC + 真 Host 回归），但 UI 没有记忆列表/编辑入口。端点可被调用 ≠ UI 上能看见 |
-| 8 | **`memory.search` 的 RPC** | ❌ 未暴露 | 控制面只开了 list/get 与写操作；检索面另开 |
+| 7 | **React 记忆面板** | ✅ 已接（#126） | 端点之外补了 UI：列表/检索/确认/忘记/擦除，六项判据 + `score`/`score_kind`，正文纯文本、不做乐观更新、冲突只刷新重读；UI 测试 10 文件 75 条。**端点仍不是授权边界**（见第 6 条） |
+| 8 | **`memory.search` 的 RPC** | ✅ 已暴露（#126） | 第 9 个记忆方法；复用 `retrieve()`，所以返回带 `semantic`/`degraded`/`fused`；显式 `scope` 是**追加**不是替换（人永远还看得见 `user` 记忆）；无 `status` 参数（刻意收窄） |
 | 9 | **跨进程断电测试 / 真实模型驱动 UI** | ❌ 未做 | 断电用 `SystemExit` 打在 `_commit_result` 覆盖"副作用已发生、提交未发生"的逻辑窗口，不是真跨进程死亡；UI 演示用 `scripted` 模型，不是真实模型驱动 |
 | 10 | **冲突消解 / 跨作用域合成 / 对话抽取** | ❌ 不做 | 两条矛盾的 L1 在页里并列、不裁决；明确记在 SPEC §9 |
 
@@ -203,7 +204,7 @@ uv run --python 3.12 -m tianshu --data-root /tmp/ts-demo memory confirm <memory_
 
 1. **F2/exec 进程沙箱**（控制面/审批的真实隔离边界；与 `run_command` 一起收口）。
 2. **Windows pipe security descriptor + 实机 ACL 测试**（或明确 N6 Windows unsupported）。
-3. **React 记忆面板**（消费已有 8 个 RPC；只做转义与排版，正文保持纯文本）。
+3. ~~**React 记忆面板**~~ **已交付**（#126：消费 9 个 RPC，正文纯文本）。
 4. **真 embedding provider 接线 + 重跑评测**（含数据外发许可、密钥管理）。
-5. **`memory.search` RPC**（UI 侧检索面；可复用 `retrieve()` 的能力标注）。
+5. ~~**`memory.search` RPC**~~ **已交付**（#126：复用 `retrieve()` 的能力标注）。
 6. **LLM 蒸馏契约**（生成式合成的事件形状、replay 口径、评测）。

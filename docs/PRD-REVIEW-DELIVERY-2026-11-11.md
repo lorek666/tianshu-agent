@@ -51,7 +51,7 @@
   能力**（记录、注入、回放、生成、崩溃恢复、长任务夹具）；**G2 网络阶段**
   （#110 / #112）补上任务级外发白名单 + `network.fetch` 执行器 + §10.5 联网研究闭环
   （本机夹具、来源可离线核验、断网诚实失败）。
-  **G2 的 MCP / 记忆执行器 / 子代理、G3 平台实机仍未做，逐条登记，不冒充完成。**
+  **G2 的 MCP / 记忆 / 子代理三段都已交付（各有明确边界），G3 平台实机仍未做，逐条登记，不冒充完成。**
 
 ## 1 逐条对账
 
@@ -70,7 +70,8 @@
 | §5.6 共享预算账本 | **已交付（G1b + G1c；默认记账，设闸需显式上限）** | 四表建在事件库同一 SQLite；`BEGIN IMMEDIATE` 原子预占；按 attempt 幂等结算；分维度 `partial`；未知用量保留占用不记零；父子链；`cancel` 子树传播；`reconcile` 只报告；**默认记账**（任何维度都不设闸）；硬上限模式用**可验证上界**（请求体 UTF-8 字节 + adapter 声明的 `output_tokens`，拿不到就拒绝启动）；`overrun` 越界如实记、上界口径停机；`run.cancel` 在账户未建时先建后取消 | PR #92 / #96；[budget-ledger.md](budget-ledger.md)；`tests/test_budget_ledger.py`(30，含真并发)；负控 10+6 全红 |
 | §7.1 模型语义摘要 | **已交付（H1 + H2 + H3；默认关，显式开启）** | 新 `summaries.py`：三张表建在事件库同一 SQLite；材料身份 = JCS(`材料版本, 作用域, 来源[seq + 原文 sha256]`)，三个字节上限（单条 1 KiB / 材料 8 KiB / 正文 2 KiB），`pending→ready\|failed` 一次性、正文写入后不可改（代码 + 触发器）、表禁 DELETE、usage 未知留 NULL（H1）；`compile_context(..., summaries=())` 仍纯函数、激活 = **整段覆盖 + 真的被牺牲**、`summarized_seqs`/`dropped_seqs` 互斥、装不下就**放弃摘要**回落确定性、`model.intent.payload.context.summaries` 只写实际用上的身份（正文不进事件）、回放按 id 读正文并三道校验、**缺记录 = problem 不重新生成**（H2）；`summary_mode`（默认 `off`）+ `summary_max_calls=3`、可复用优先（含**子集复用**）、`begin(pending) → 账本预占 → 模型调用 → complete(ready)`、授权四条件（显式开关 + 准入 + 边界 + 预占，不是人工审批）、失败一律回落、崩溃见 `pending` **不重试**、摘要调用计入 `model_attempts`/tokens 与 `RunResult.summary_calls`（H3） | PR #103 / #105；[context-summaries.md](context-summaries.md)、[SPEC-SUMMARY-2026-11-11.md](SPEC-SUMMARY-2026-11-11.md)；`tests/test_summaries.py`(22) / `test_summary_context.py`(17) / `test_summary_replay.py`(7) / `test_summary_loop.py`(14)；负控 **7+7+10 全红**；长任务夹具 off → 「约束缺失」、model → 「约束已保留」 |
 | **G2 网络阶段** | **已交付（#110 + #112；默认拒绝出网）** | ① 任务级外发白名单 `outbound_allow`（`task.created` payload 契约增量；未声明 = 一条包都不发；源级精确匹配；创建后不可改）；② `network.fetch` 执行器（GET、同源重定向、1 MiB 响应上限、10s 硬超时、每跳/每块取消检查、固定请求头、不读代理、不发 Cookie/凭据、字节账本预占/结算、有界摘要 + `content://` 引用、回放不联网）；③ §10.5 联网研究闭环：`RU-W1`（断网诚实失败）+ `RU-W2`（本机夹具交付，来源在服务器关掉后仍可离线核验） | PR #110 / #112；[network-g2.md](network-g2.md)、[real-user-tasks.md](real-user-tasks.md)；`test_outbound_allow.py`(18) / `test_network_fetch.py`(23) / `test_network_research_eval.py`(11)；负控 5+8+5 全红 |
-| G2 MCP / 记忆执行器 / 子代理 | **部分交付** | MCP 已交付（stdio 客户端 + 动态工具准入 + 派发链路；真实第三方 server 未验证、无沙箱，见 §6.2 与 [mcp-g2.md](mcp-g2.md)）；记忆执行器未接；**子代理 D1 + D2 + D3 已交付**（合同/实体/四个工具/限额/共享预算 + Worker 驱动子 Run/父挂起唤醒/取消传播/父目标 fence/结果回填/回放 + `RU-D1@1.0.0` 只读子任务评测/汇总引用/只读边界/失败不编造）；D3 是**脚本模型**评测，不是真实模型分数；联网研究的**真实公网**仍未验证（判据全部跑本机来源夹具） | [resource-kinds.md](resource-kinds.md) §7/§8；[real-user-tasks.md](real-user-tasks.md)；[SPEC-G2-DELEGATION-2026-11-11.md](SPEC-G2-DELEGATION-2026-11-11.md) |
+| **G2 记忆阶段** | **已交付（#125 / #126 / #127）** | ① 可查看：控制面第 9 个记忆方法 `memory.search`（显式 `scope` 是**追加**不是替换——人永远还看得见 `user` 记忆；无 `status` 参数）+ React 记忆面板（列出/检索/确认/忘记/擦除；六项判据 + `score`/`score_kind`；`stale` 不可判定就省略字段；正文纯文本；不做乐观更新、冲突只刷新重读）；② 可证明收益：`RU-M1@1.0.0`（两段 Run 共用 `data_root`、第二段换 workspace；产物真的体现偏好、诱饵 workspace 记忆不被召回也不进产物、忘记后召回为空；失败路径 `RU-M1-F` 不进公开分母）；③ 顺带修掉控制面任务污染 UI 任务列表（`task_view` 加 `control` 字段 + UI 过滤） | PR #125（规格）/ #126（M1）/ #127（M2）；[memory-g2.md](memory-g2.md)、[SPEC-G2-MEMORY-2026-11-12.md](SPEC-G2-MEMORY-2026-11-12.md)；`test_host_memory.py`(18) / `test_eval_followup.py`(6) / `test_eval_real_tasks.py`(35)；UI `vitest` 10 文件 75 条；负控 8 条全红（M1 3 + M2 5） |
+| G2 MCP / 记忆阶段 / 子代理 | **已交付（各段边界见右）** | MCP 已交付（stdio 客户端 + 动态工具准入 + 派发链路；真实第三方 server 未验证、无沙箱，见 §6.2 与 [mcp-g2.md](mcp-g2.md)）；**记忆阶段已交付**（`memory.search` 控制面 RPC + React 记忆面板：列出/检索/确认/忘记/擦除、六项判据 + `score`/`score_kind`、纯文本正文、不做乐观更新；`RU-M1@1.0.0` 跨任务召回（两段 Run：产物真的体现偏好、诱饵 workspace 记忆不被召回、忘记后不再召回）；**脚本模型**，不是真实模型分数，也不是召回质量证明）；**子代理 D1 + D2 + D3 已交付**（合同/实体/四个工具/限额/共享预算 + Worker 驱动子 Run/父挂起唤醒/取消传播/父目标 fence/结果回填/回放 + `RU-D1@1.0.0` 只读子任务评测/汇总引用/只读边界/失败不编造）；D3 是**脚本模型**评测，不是真实模型分数；联网研究的**真实公网**仍未验证（判据全部跑本机来源夹具） | [resource-kinds.md](resource-kinds.md) §7/§8；[real-user-tasks.md](real-user-tasks.md)；[SPEC-G2-DELEGATION-2026-11-11.md](SPEC-G2-DELEGATION-2026-11-11.md) |
 | G3 平台实机 | **未做** | 只有 macOS arm64 本机证据；Windows / mac-x64 / win-arm64 的安装、升级、回退、隔离证据均为 **unknown**。收尾轮把 Windows CI 从 35 failed 压到 **5 failed / 1509 passed / 29 skipped**（逐条见 §3），仍不是绿、也没有实机 | [isolation-matrix.md](isolation-matrix.md) §1、[runtime-metrics.md](runtime-metrics.md) §7、[backup-restore.md](backup-restore.md) §9 |
 
 ## 2 本轮合入的 PR
@@ -222,7 +223,7 @@
   字节无法撤回；⑥ **DNS rebinding / 解析后二次校验未做**（白名单显式声明源，解析到私有
   地址会照发）；⑦ 每 Run 的抓取配置是进程级常量，没接 CLI/任务声明；⑧ 无速率限制、无重试
   策略；⑨ 内容分级（哪些材料不许外发）未实现——审批展示完整 URL，由人判断；⑩ 保留期 / GC
-  未做（抓回的内容只写不删）；⑪ MCP / 记忆执行器未做。
+  未做（抓回的内容只写不删）；⑪ 当时未做的 MCP / 记忆执行器**都已交付**（见 §1 的 MCP 行与记忆阶段行），本条其余 10 条边界不变。
 - **G2 子代理 D3（已交付评测与对账，边界必须一起读）**：① 父/子模型都是**脚本
   模型**，`RU-D1@1.0.0` 的父报告汇总文字是预先写好的；判据证明产品链路
   （派发 → Worker 驱动 → 结果回填 → 逐字汇总 → 引用），**不是真实模型能力分数**；
@@ -263,7 +264,7 @@
    无沙箱，见 §4）。**子代理 D1 + D2 已交付**（D1 合同/实体/四工具/限额/共享预算；
    D2 Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放）；
    ~~D3~~ **已交付**（`RU-D1@1.0.0` 只读子任务评测 + 汇总引用 + 只读边界/失败不编造
-   判据 + 文档对账；脚本模型，不是真实模型分数）。G2 的 **记忆执行器**仍未做。
+   判据 + 文档对账；脚本模型，不是真实模型分数）。G2 的 **记忆阶段**也已交付（#125 / #126 / #127：`memory.search` + React 面板 + `RU-M1@1.0.0` 跨任务召回；两段都是脚本模型，不是真实模型分数）。
 3. **G3**：历史数据升级/备份恢复、凭据存储、运行 SLO、长时间测试、安装/更新/回退与
    四目标平台矩阵；Windows IPC（issue #50）根因修复后才谈把 Windows 纳入 required。
 4. **G1 剩余三条**（不阻塞 G2 的可以后做）：`run_command` 隔离门、每消息固定开销的上界
