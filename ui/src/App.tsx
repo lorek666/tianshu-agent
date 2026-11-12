@@ -38,6 +38,9 @@ import { TaskDetail } from "./components/TaskDetail";
 import { RunDetail } from "./components/RunDetail";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { NewTaskDialog } from "./components/NewTaskDialog";
+import { MemoryDialog } from "./components/MemoryDialog";
+import { createMemoryApi } from "./api/memory";
+import type { MemoryApi } from "./api/memory";
 import { UndoDialog } from "./components/UndoDialog";
 import type { UndoPlanState } from "./components/UndoDialog";
 import { Modal } from "./components/Modal";
@@ -106,6 +109,8 @@ function pickInitialTask(state: StateView): TaskView | null {
 
 export function App() {
   const demoMode = useMemo(() => isDemoRequested(), []);
+  // 记忆面板的 RPC 面：Host 装配好（phase=ready）之后才建一次，避免拿空 client。
+  const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
   const now = useNow(10_000);
 
   const [phase, setPhase] = useState<Phase>("booting");
@@ -126,6 +131,7 @@ export function App() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [undoPlan, setUndoPlan] = useState<UndoPlanState | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
@@ -363,6 +369,7 @@ export function App() {
         const next = await host.getState();
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = host;
+        setMemoryApi((previous) => previous ?? createMemoryApi(host));
         setState(next);
         stateRef.current = next;
 
@@ -380,6 +387,7 @@ export function App() {
       } catch (error) {
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = null;
+        setMemoryApi(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
       } finally {
@@ -803,6 +811,7 @@ export function App() {
         connectionLost={connectionLost}
         now={now}
         onRefresh={handleRefresh}
+        onOpenMemory={() => setMemoryOpen(true)}
       />
 
       {demoMode ? (
@@ -947,6 +956,10 @@ export function App() {
           立即刷新
         </button>
       </footer>
+
+      {memoryOpen && memoryApi !== null ? (
+        <MemoryDialog open api={memoryApi} onClose={() => setMemoryOpen(false)} />
+      ) : null}
 
       {newTaskOpen ? (
         <NewTaskDialog

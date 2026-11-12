@@ -11,6 +11,8 @@ export interface AppHeaderProps {
   connectionLost: boolean;
   now: number;
   onRefresh: () => void;
+  /** 打开记忆面板（G2 记忆阶段 M1）：人查看/确认/忘记 Agent 记住了什么。 */
+  onOpenMemory: () => void;
 }
 
 export function streamStatusText(status: StreamStatus, detail: string | null): string {
@@ -40,6 +42,7 @@ export function AppHeader({
   connectionLost,
   now,
   onRefresh,
+  onOpenMemory,
 }: AppHeaderProps) {
   const versionText = daemon.version !== null ? `v${daemon.version}` : "版本未知";
   const startedText =
@@ -77,6 +80,14 @@ export function AppHeader({
           守护进程 {versionText}
           {startedText !== null ? ` · ${startedText}` : ""}
         </span>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onOpenMemory}
+          title="查看 Agent 记住了什么（候选、生效、忘记、删除）"
+        >
+          记忆
+        </button>
         <button type="button" className="icon-btn" onClick={onRefresh} title="刷新任务与运行状态" aria-label="刷新">
           <IconRefresh size={15} />
         </button>

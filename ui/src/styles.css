@@ -2026,3 +2026,170 @@ pre,
     flex-wrap: wrap;
   }
 }
+/* ============================================================================
+   记忆面板（G2 记忆阶段 M1）
+   - 与任务列表同一套克制样式：不做"记忆卡片墙"，只把六项判据与动作排开。
+   - 正文一律纯文本（等宽块）；不引入任何富文本/HTML 渲染。
+   ========================================================================== */
+
+.memory-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.memory-toolbar .field {
+  margin: 0;
+  min-width: 150px;
+}
+
+.memory-search-field {
+  flex: 1 1 220px;
+}
+
+.memory-capability {
+  color: var(--warn);
+}
+
+.memory-scopes {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.memory-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.memory-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.memory-row-head strong {
+  font-weight: 600;
+}
+
+.memory-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.memory-scope {
+  margin: 0;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.memory-summary {
+  margin: 2px 0;
+  color: var(--text);
+}
+
+.memory-evidence,
+.memory-score {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.memory-stale {
+  margin: 0;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.memory-fresh {
+  margin: 0;
+  color: var(--success);
+  font-size: 12px;
+}
+
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.memory-content {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 26vh;
+  overflow-y: auto;
+}
+
+.memory-detail,
+.memory-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.memory-detail h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.memory-remember {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.memory-remember summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.memory-remember[open] summary {
+  margin-bottom: 4px;
+}

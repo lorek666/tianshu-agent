@@ -37,11 +37,12 @@ from tianshu.loop import Limits
 from tianshu.model import ScriptedModel
 from tianshu.tools import tool_manifest
 
-#: 控制面的 8 个记忆 RPC（`memory.list` 不是模型工具；其余同名但路径不同）。
+#: 控制面的 9 个记忆 RPC（`memory.list` 不是模型工具；其余同名但路径不同）。
 #: 这个集合必须与 `ControlPlane._methods` 里的记忆方法**逐一对应**：漏一个就意味着
 #: "某个能力根本没注册"，而注册表覆盖断言是唯一能发现它的地方。
 CONTROL_PLANE_METHODS = {
     "memory.list",
+    "memory.search",
     "memory.get",
     "memory.remember",
     "memory.confirm",
@@ -156,8 +157,8 @@ def test_memory_list_has_no_model_tool_counterpart() -> None:
     assert "memory.list" not in names, "模型不该有列出全库记忆的工具"
 
 
-def test_all_eight_control_plane_methods_are_registered(tmp_path) -> None:
-    """8 个记忆 RPC 都注册在控制面上：少一个 UI 就有一块功能是死的。"""
+def test_all_nine_control_plane_methods_are_registered(tmp_path) -> None:
+    """9 个记忆 RPC 都注册在控制面上：少一个 UI 就有一块功能是死的。"""
     from support import stack_for
 
     from tianshu.control import ControlError, ControlPlane
@@ -227,6 +228,115 @@ def test_default_scope_is_user_and_other_scopes_must_be_named(live) -> None:
     with pytest.raises(ipc.RemoteError) as error:
         client.call("memory.list", {"scope": "task"})
     assert error.value.code == "bad_params"
+
+
+# --------------------------------------------------------------------------- 检索
+
+
+def test_memory_search_rpc_returns_capability_labels(live) -> None:
+    """M1-a：`memory.search` 走 `retrieve()`，能力标注与投影一致（不是 FTS-only）。
+
+    为什么必须断言 `semantic` / `degraded` / `fused`：人在 UI 上检索时，空结果要能
+    分清"没有这条记忆"与"这次只有词面召回"。用投影的 `search()`（FTS-only）实现
+    时这三个键会退化成 `False` / `None` / `False`，与真实能力不符——这条会红。
+    """
+    client, _root = live
+    client.call(
+        "memory.remember",
+        {"kind": "preference", "content": "报告用中文写，先列结论"},
+    )
+    result = client.call("memory.search", {"query": "报告"})
+    # 能力标注必须**存在且是三个独立字段**，不能压成一句 found/not-found。
+    assert set(result) >= {"items", "semantic", "degraded", "fused", "query", "scopes"}
+    assert result["query"] == "报告"
+    assert isinstance(result["semantic"], bool)
+    assert isinstance(result["fused"], bool)
+    # 本机没有真 embedding：语义路如实为 false，并给出原因（不许装成"有语义"）。
+    assert result["semantic"] is False
+    assert result["degraded"], "没有语义能力时必须给出降级原因"
+    assert result["scopes"] == ["memory://user/local"]
+    assert result["items"], "刚记住的记忆应当被词面检索命中"
+    item = result["items"][0]
+    # 条目形状与模型侧同口径：六项判据都在，且带排序解释。
+    assert REQUIRED_FIELDS <= set(item), REQUIRED_FIELDS - set(item)
+    assert item["content"], "检索带正文（列表才刻意不带）"
+    assert "score" in item and item["score_kind"] in {"origin", "rrf"}
+
+
+def test_memory_search_rpc_is_scope_filtered(live) -> None:
+    """M1-b：作用域过滤生效——未授权作用域的命中不出现，`scopes` 回显与实际一致。
+
+    口径按既有控制面语义读（`ControlPlane._memory_allowed`）：**默认只有 `user`**；
+    显式给 `scope` + `scope_id` 是**追加**一个可见作用域（人永远看得见自己的 user
+    记忆），不是替换。所以这里钉两件事：① 默认检索不串到 task 作用域；② 指名
+    task A 之后，**task B 的私有记忆仍然不出现**（这才是"过滤生效"）。
+    """
+    client, _root = live
+    user_id = client.call(
+        "memory.remember", {"kind": "preference", "content": "周报用中文"}
+    )["output"]["memory_id"]
+    task_a = client.call(
+        "memory.remember",
+        {"kind": "fact", "content": "周报用中文写，结论先行", "scope": "task",
+         "scope_id": "task_a"},
+    )["output"]["memory_id"]
+    task_b = client.call(
+        "memory.remember",
+        {"kind": "fact", "content": "周报里不要写结论", "scope": "task",
+         "scope_id": "task_b"},
+    )["output"]["memory_id"]
+
+    default = client.call("memory.search", {"query": "周报"})
+    assert default["scopes"] == ["memory://user/local"]
+    assert user_id in {item["memory_id"] for item in default["items"]}
+    assert {task_a, task_b} & {item["memory_id"] for item in default["items"]} == set(), (
+        "默认只看 user：task 作用域的私有记忆不许漏进来"
+    )
+
+    scoped = client.call(
+        "memory.search", {"query": "周报", "scope": "task", "scope_id": "task_a"}
+    )
+    assert scoped["scopes"] == ["memory://user/local", "memory://task/task_a"]
+    hits = {item["memory_id"] for item in scoped["items"]}
+    assert task_a in hits and user_id in hits, "人永远看得见自己的 user 记忆"
+    assert task_b not in hits, "指名 task_a 不代表能看 task_b"
+
+    only_b = client.call(
+        "memory.search", {"query": "周报", "scope": "task", "scope_id": "task_b"}
+    )
+    assert task_a not in {item["memory_id"] for item in only_b["items"]}
+
+
+def test_memory_search_rpc_empty_is_not_an_error(live) -> None:
+    """M1-c：空结果与能力降级是**不同形状**——空结果不是错误，降级原因照样给。"""
+    client, _root = live
+    result = client.call("memory.search", {"query": "库里根本没有这条"})
+    assert result["items"] == []
+    assert result["semantic"] is False and result["degraded"]
+    assert result["scopes"] == ["memory://user/local"]
+
+
+def test_memory_search_rpc_param_errors(live) -> None:
+    """M1-d：参数错误面统一是 `bad_params`，不是 500、也不是静默空结果。"""
+    client, _root = live
+    for params in (
+        {},
+        {"query": ""},
+        {"query": "   "},
+        {"query": 42},
+        {"query": "报告", "limit": 0},
+        {"query": "报告", "limit": -1},
+        {"query": "报告", "limit": "5"},
+        {"query": "报告", "limit": True},
+        {"query": "报告", "scope": "task"},  # 缺 scope_id
+        {"query": "报告", "scope": "nope"},
+    ):
+        with pytest.raises(ipc.RemoteError) as error:
+            client.call("memory.search", params)
+        assert error.value.code == "bad_params", params
+    # 超过上限按上限夹，不报错（与模型侧同口径）。
+    clamped = client.call("memory.search", {"query": "报告", "limit": 99})
+    assert clamped["limit"] == 5
 
 
 # --------------------------------------------------------------------------- 改得动

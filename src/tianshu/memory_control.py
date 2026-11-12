@@ -54,6 +54,7 @@ __all__ = [
     "MISSING",
     "memory_view",
     "list_memories",
+    "search_memories",
     "read_memory",
     "remember",
     "edit",
@@ -111,6 +112,64 @@ def list_memories(
     kwargs = {} if limit is None else {"limit": limit}
     rows = projection.list_memories(allowed=allowed, status=status, **kwargs)
     return [memory_view(memory) for memory in rows]
+
+
+def search_memories(
+    projection: MemoryProjection,
+    *,
+    query: str,
+    allowed: tuple[MemoryScope, ...],
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """检索（人机界面入口）：**必须**走 `retrieve()`，把能力标注原样交出去。
+
+    为什么不用 `search()`：库里的 `search()` 明确是 FTS-only（它的注释写着"不要
+    偷偷变 hybrid"），而"这次到底有没有语义路"只在 `retrieve()` 的
+    `RecallOutcome` 上。人在 UI 上检索时，空结果必须能分清两种含义——"没有这条
+    记忆"与"这次只有词面召回（`semantic=False` + `degraded` 原因）"；用 `search()`
+    就会把后一种洗成前一种。
+
+    条目形状与模型侧 `loop._memory_item` 同口径（六项判据 + `content_ref` +
+    `score` / `score_kind` / `stale`）：同一条记忆，人和模型看到的排序解释必须一致，
+    否则"为什么这条排第一"会有两个答案。`stale` 是**三态**，`None`（不可判定）时
+    **省略**该键——与模型侧一致，不把"判不了"写成"新鲜"。
+
+    正文带回来（这是检索不是列表）：投影按 `MAX_RECALL_BYTES` 裁剪，`content` 可能
+    短于投影里的正文，原文位置看 `content_ref`。
+    """
+    from .memory import MAX_RECALL_BYTES, MAX_RECALL_ITEMS
+
+    if not isinstance(query, str) or not query.strip():
+        raise TianshuError("记忆检索的 query 必须是非空字符串")
+    # 上限不由调用方扩：可以要更少，要更多按上限夹（不报错）——与模型侧
+    # `_memory_search_output` 同口径。RPC 不是模型工具，这里也不新增权限。
+    effective = MAX_RECALL_ITEMS if limit is None else min(limit, MAX_RECALL_ITEMS)
+    outcome = projection.retrieve(
+        query,
+        allowed=allowed,
+        limit=effective,
+        max_bytes=MAX_RECALL_BYTES,
+        priority=None,
+    )
+    items: list[dict[str, Any]] = []
+    for item in outcome.items:
+        view = memory_view(
+            item.memory,
+            item.content,
+            score=item.score,
+            score_kind=item.score_kind,
+        )
+        if item.stale is not None:
+            view["stale"] = item.stale
+        items.append(view)
+    return {
+        "items": items,
+        "query": query,
+        "semantic": outcome.semantic,
+        "degraded": outcome.degraded,
+        "fused": outcome.fused,
+        "limit": effective,
+    }
 
 
 def read_memory(

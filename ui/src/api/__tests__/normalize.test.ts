@@ -107,3 +107,25 @@ describe("normalizeApproval 的隔离视图", () => {
     expect(approval?.isolation).toBeNull();
   });
 });
+
+describe("控制面任务不进任务列表（G2 记忆阶段 M1）", () => {
+  it("control=true 的任务被摘掉，用户任务保留", () => {
+    const state = normalizeState({
+      tasks: [
+        { task_id: "task_user", goal: "整理纪要", control: false },
+        { task_id: "task_ctl", goal: "memory.remember:memory_remember_1", control: true },
+        // 旧后端没有这个键：按 false 处理（不能反过来把用户任务藏起来）
+        { task_id: "task_legacy", goal: "旧版任务" },
+      ],
+      runs: [],
+      approvals: [],
+    });
+    expect(state.tasks.map((task) => task.task_id)).toEqual(["task_user", "task_legacy"]);
+    expect(state.tasks[0]?.control).toBe(false);
+  });
+
+  it("normalizeTask 如实读 control（不因为缺键就删任务）", () => {
+    expect(normalizeTask({ task_id: "t", control: true })?.control).toBe(true);
+    expect(normalizeTask({ task_id: "t" })?.control).toBe(false);
+  });
+});
