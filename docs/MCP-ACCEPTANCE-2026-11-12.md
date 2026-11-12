@@ -120,7 +120,7 @@
 | NB27 | 恢复只写 `tool.result`、不推进派发行（回到 R2 之前的口径） | 同上 | **RED（收尾轮实测）**：2 failed / 0.66s |
 | NB30 | 把"没越过外发边界"的三个状态清空（`proven: set[str] = set()`） | `test_crash_before_send_settles_none_applied_and_does_not_block` | **RED（PR #124 实测）**：1 failed / 0.98s —— 恢复拿不到本机证据，窗口一又变回 `unknown` + 阻断（过度阻断回归） |
 | NB31 | 把"证明不了没发就按可能已发"翻成"一律没发" | `test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_mcp_without_a_dispatch_row_stays_conservative` | **RED（PR #124 实测）**：2 failed / 0.98s —— 标记已落盘的窗口、以及没有派发表/没有行的老库都被洗成 `none_applied`，**最危险的方向**（把可能已发生的副作用说成没发生） |
-| NB32 | 拿掉发包前的外发边界标记（`if not self._mark_mcp_send_boundary(...)` → `if False`） | 标记窗口 + 发包前撤销 | **RED（PR #124 实测）**：2 failed / 1.06s —— 崩溃在"标记之后"仍是 `intent`，恢复会判没发；撤销与发送的分界也一起消失（server 照样被打） |
+| NB32 | 拿掉发包前的外发边界标记（`boundary_marked = True`：不落标记、直接当成已推进） | 标记窗口 + 发包前撤销 | **RED（PR #124 实测）**：2 failed / 0.97s —— 崩溃在"标记之后"仍是 `intent`，恢复会判没发；撤销与发送的分界也一起消失（server 照样被打） |
 | NB33 | 只认 `intent`、不认 `revoked`/`rejected` | `test_recovery_does_not_rewrite_terminal_dispatch_rows`（`rejected` 格） | **RED（PR #124 实测）**：1 failed / 0.47s —— 已撤销的调用又变回 `unknown` + 阻断（拿不出证据却硬要挡） |
 | NB34 | 清单损坏分支不按 MCP 判（`if False`） | `test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown` | **RED（PR #124 实测）**：1 failed / 0.47s —— 一份无关证据（文件快照清单）的损毁会把"请求都没写出"的调用推成 `unknown` 并挡住目录 |
 | NB35 | 不看 `boundary_protocol`（把"旧行"也当成"有标记"） | `test_legacy_dispatch_rows_cannot_prove_the_request_was_not_sent`（intent/revoked/rejected 三格） | **RED（复审整改实测）**：3 failed / 0.48s —— 升级前的旧行（写请求前不推进派发行）会把"可能已执行"洗成"确定没执行"（复审 B1 的假阴性方向） |
