@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -53,6 +54,11 @@ from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
     from .permissions import ApprovalStore
 
+#: MCP server 名形状：与 `resources.McpTarget` 的资源段**逐字一致**（两处各写
+#: 一份是刻意的：tasks 不该为拿一个正则去 import 解析器；但改一处必须改另一处，
+#: `tests/test_mcp_dispatch.py` 有交叉断言）。
+_MCP_SERVER_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     task_id       TEXT PRIMARY KEY,
@@ -66,6 +72,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     is_control    INTEGER NOT NULL DEFAULT 0,
     memory_scopes TEXT NOT NULL DEFAULT '[]',
     outbound_allow TEXT NOT NULL DEFAULT '[]',
+    mcp_servers   TEXT NOT NULL DEFAULT '[]',
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -201,6 +208,9 @@ class Task:
     #: 与 `exec_policy` 同一条理由，创建时定死、`task revise` 不可改：
     #: 扩权必须是新任务，不能让旧 Run 已经批准的请求跟着悄悄扩大范围。
     outbound_allow: tuple[str, ...] = ()
+    #: 任务级 MCP server 白名单（G2 MCP 阶段）：允许这个任务使用的 server 名。
+    #: 空 = 一个都不许。与 `outbound_allow` 同形：创建时定死、`task revise` 不可改。
+    mcp_servers: tuple[str, ...] = ()
     created_at: int = 0
     updated_at: int = 0
 
@@ -329,6 +339,9 @@ class TaskStore:
         _ensure_column(
             self._conn, "tasks", "outbound_allow", "TEXT NOT NULL DEFAULT '[]'"
         )
+        _ensure_column(
+            self._conn, "tasks", "mcp_servers", "TEXT NOT NULL DEFAULT '[]'"
+        )
         self._leases = leases
         self._claims = claims
         # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
@@ -394,6 +407,7 @@ class TaskStore:
         control: bool = False,
         memory_scopes: list[str] | None = None,
         outbound_allow: list[str] | tuple[str, ...] | None = None,
+        mcp_servers: list[str] | tuple[str, ...] | None = None,
     ) -> Task:
         goal = (goal or "").strip()
         if not goal:
@@ -422,6 +436,18 @@ class TaskStore:
             outbound = normalize_network_origins(outbound_allow)
         except ResourceError as exc:
             raise TianshuError(f"outbound_allow 不合法：{exc}") from exc
+        # MCP server 白名单也是安全相关输入：每个名字都必须是资源段形状
+        # （`mcp://<server>/<tool>` 与工具 id 都依赖它）。排序去重，让"同一份
+        # 声明"在任务行与事件里逐字节一致。
+        servers: list[str] = []
+        for name in mcp_servers or []:
+            if not isinstance(name, str) or not _MCP_SERVER_RE.match(name):
+                raise TianshuError(
+                    f"mcp_servers 里的 server 名不合法：{name!r}"
+                    f"（必须是 {_MCP_SERVER_RE.pattern}）"
+                )
+            servers.append(name)
+        servers = sorted(set(servers))
         parsed = parse_bindings(
             [b.to_dict() if isinstance(b, WorkspaceBinding) else b
              for b in (bindings or [])]
@@ -432,8 +458,8 @@ class TaskStore:
             self._conn.execute(
                 "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
                 " active_run_id, status, workspaces, exec_policy, is_control,"
-                " memory_scopes, outbound_allow, created_at, updated_at)"
-                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?,?)",
+                " memory_scopes, outbound_allow, mcp_servers, created_at, updated_at)"
+                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?,?,?)",
                 (
                     task_id,
                     goal,
@@ -444,6 +470,7 @@ class TaskStore:
                     1 if control else 0,
                     json.dumps(scopes, ensure_ascii=False),
                     json.dumps(list(outbound), ensure_ascii=False),
+                    json.dumps(servers, ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -465,6 +492,9 @@ class TaskStore:
                     # G2：外发白名单必须落进事件（崩溃恢复后仍能回答
                     # "这个任务当时准不准出网、准去哪儿"）。
                     "outbound_allow": list(outbound),
+                    # G2 MCP 阶段：任务级 server 白名单也进事件（崩溃恢复后仍能
+                    # 回答"这个任务当时准用哪些外部 server"）。
+                    "mcp_servers": servers,
                 },
                 task_id=task_id,
                 actor_kind="human",
@@ -1640,6 +1670,7 @@ class TaskStore:
             is_control=bool(row["is_control"]),
             memory_scopes=tuple(json.loads(row["memory_scopes"] or "[]")),
             outbound_allow=tuple(json.loads(row["outbound_allow"] or "[]")),
+            mcp_servers=tuple(json.loads(row["mcp_servers"] or "[]")),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -80,10 +80,10 @@ def test_resource_kinds_are_a_closed_set():
         KIND_MCP,
         KIND_SUBTASK,
     }
-    # 执行器：file / memory / **network**。网络是 G2 网络阶段补的（PR #——）；
-    # MCP 与委派仍然没有执行器，仍在派发前拒绝。这点在执行侧也会被核
+    # 执行器：file / memory / **network**（G2 网络阶段）/ **mcp**（G2 MCP 阶段）；
+    # 只有委派（subtask）没有执行器，仍在派发前拒绝。这点在执行侧也会被核
     # （防两边各说一套）。
-    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK}
+    assert EXECUTABLE_KINDS == {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_MCP}
     # 动作集合也扩了，但**没有**把外发放进自动放行
     assert {ACTION_FETCH, ACTION_DELEGATE} <= SUPPORTED_ACTIONS
     assert ACTION_FETCH in APPROVAL_ACTIONS
@@ -322,10 +322,10 @@ def test_kinds_without_an_executor_are_refused_before_dispatch():
     仍然是两道门，见 `tests/test_outbound_allow.py` 与
     `tests/test_network_fetch.py`。
     """
-    for raw, kind in (
-        ("mcp://files/read_file", KIND_MCP),
-        ("subtask://task-1", KIND_SUBTASK),
-    ):
+    # MCP 在 G2 MCP 阶段有了执行器（stdio 客户端），所以只剩委派走这条拒绝；
+    # 但 MCP **不是**自动放行——任务级 server 白名单 + 逐次人工批准仍是两道门
+    # （见 tests/test_mcp_dispatch.py）。
+    for raw, kind in (("subtask://task-1", KIND_SUBTASK),):
         with pytest.raises(DispatchDenied) as excinfo:
             resolve_scheme_resource(raw)
         assert excinfo.value.rule_id == "dispatch.resource_kind_unsupported"
@@ -336,6 +336,8 @@ def test_kinds_without_an_executor_are_refused_before_dispatch():
     assert ref.kind == KIND_MEMORY
     ref = resolve_scheme_resource("network://https/example.com/a")
     assert ref.kind == KIND_NETWORK
+    ref = resolve_scheme_resource("mcp://files/read_file")
+    assert ref.kind == KIND_MCP
     with pytest.raises(DispatchDenied) as excinfo:
         resolve_scheme_resource("https://example.com/a")
     assert excinfo.value.rule_id == "c4.unsupported"
