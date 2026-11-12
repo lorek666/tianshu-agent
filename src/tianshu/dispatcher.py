@@ -1347,6 +1347,12 @@ class Dispatcher:
                 "spawn": spawn,
             }
         }
+        # 崩溃窗口注入（只给测试用；生产路径永远不设 `TIANSHU_FAILPOINT`）：
+        #   mcp_before_call —— intent/dispatches 已提交、请求还没写进 server stdin；
+        #   mcp_after_call  —— 响应已经收到（server 确实执行过），而结果/凭据/终态
+        #                      还没落盘。后一个才是"可能已生效但结果丢了"的窗口，
+        #                      恢复对它的唯一诚实答案是 `unknown` + 阻断，不是重放。
+        failpoint("mcp_before_call")
         try:
             called = server.call_tool(
                 target.tool, self._mcp_arguments(request), call_id=request.call_id
@@ -1391,6 +1397,7 @@ class Dispatcher:
         except Exception as exc:  # noqa: BLE001 - 执行器自己炸了：效果未知
             return self._fail_unknown(request, dispatch_id, target, exc)
 
+        failpoint("mcp_after_call")
         content_text = list(called.text_parts)
         kept_text = "\n".join(content_text)
         mcp_output = {

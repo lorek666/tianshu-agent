@@ -7,6 +7,11 @@
 - 基线：`main @ 0f30d01`（F2 收口），本机实测 **1905 passed / 7 skipped**；
   交付后本机实测 **1999 passed / 7 skipped**（macOS arm64），UI `vitest` **51 passed** 不变，
   `ruff check .` 干净，运行时依赖仍为零（`dependencies = []`）。
+- 收尾轮（PR #122）实测：**2047 passed / 7 skipped**（macOS arm64；同机基线
+  `main @ 6140d9c` = 2038/7，差值是本轮 9 条崩溃/恢复判据）。
+- **收尾轮（PR #122）**：补 MCP 崩溃夹具与恢复判据——c10 由「部分」转为**实测**、
+  NB21 落地；顺带修掉复审指出的"恢复补写结果却不推进派发行"（R2）与"终态派发行
+  被改写 / 更新时间戳倒退"（R2-2、R2-3）。
 - 逐条对账口径：**有回归测试 + 负控实测红**才算做完；判据编号与规格 §4 一一对应。
 
 ## 1 判据逐条对账（c1–c15）
@@ -22,7 +27,7 @@
 | MCP-c7 | server 改 schema/描述 → `tool_version` 变 → 旧批准失效 | `test_tool_version_binds_the_raw_schema`、`test_tool_version_changes_with_description` | ✅ 通过（版本 = 原始 schema + 归一 schema + 描述 的摘要在纯函数上钉住） |
 | MCP-c8 | 没声明 `--allow-mcp-server` → 不弹批准，`dispatch.rejected` = `c4.mcp_not_allowed` | `test_mcp_call_without_task_allowlist_is_rejected_before_approval` | ✅ 通过 |
 | MCP-c9 | 声明了 → 弹批准（`c4.mcp_call`）→ 执行一次 → intent + result + receipt(backend=mcp)，且凭据**可独立核对**（含响应摘要） | `test_approved_mcp_call_runs_once_and_produces_receipt` | ✅ 通过（真子进程调用日志证明只发一次；`mcp_call` 证据带 `sha256` 响应摘要并与执行摘要逐字核对；`verify_receipts == []`） |
-| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | `test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process` | **部分**：`unknown` 结算已测；**`recovery` 对 MCP intent 的判定未测**（NB21 未做，见 §4-10） |
+| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | 派发侧：`test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process`；**恢复侧（收尾轮新增）**：`test_crash_after_server_executed_settles_unknown_and_blocks`、`test_crash_before_send_is_indistinguishable_and_still_blocks`、`test_blocked_workspace_can_be_unblocked_and_run_finishes_without_replay`、`test_ise_error_result_is_applied_and_recovery_leaves_it_alone` | **✅ 通过（实测，收尾轮）**：真子进程在「响应已收到、结果未落盘」处硬退（server 的 `--effect-log` 证明它真的执行了）→ 恢复补 `status/effect_state=unknown` + `reason=mcp.crash_unsettled` + 阻断该 workspace + **不补凭据** + **不重放**（call-log 仍 1 次）+ 幂等（再恢复一次无新事件）；派发行从 `intent` 推到 `error`；`assess_run` 只读拒绝接手；`isError` 已有 result 的调用不被重判。「请求没发出去」的窗口照样 unknown + 阻断（恢复没有证据区分——见 §4-10 的代价说明） |
 | MCP-c11 | 已取消的 Run 一条 `tools/call` 都不发，`none_applied` | `test_cancelled_run_sends_no_mcp_frames` | ✅ 通过（假 server 的调用日志为空） |
 | MCP-c12 | 结果超上限 → 截断 + 字节记账；非文本只记类型不丢（**规格已改成不落内容引用**） | `test_max_result_bytes_truncates_and_reports_bytes`、`test_max_result_bytes_counts_utf8_bytes_not_characters`、`test_structured_content_counts_against_the_result_budget`、`test_call_tool_returns_text_and_keeps_unsupported_content` | ✅ 通过（与**改后的**判据一致：截断 + `bytes`/`dropped_bytes`/`dropped_blocks`，不落 `content://`；见 §4-5） |
 | MCP-c13 | `isolation_requires` 非空 → 任何平台都 `c4.mcp_isolation_unproven` | `test_isolation_requires_makes_mcp_unproven` | ✅ 通过（不因后端自称而放行） |
@@ -36,7 +41,12 @@
    放宽的是**数据契约**，白名单仍由注册表判定。`schemas/c3/event.json` 重新生成，
    `tool.intent.args` / `tool.result.output` 仍是开放对象不变。
 2. `task.created.mcp_servers`：字符串数组、**新写恒写**（空也写），`tasks` 表加列
-   （旧行缺键 → 读取侧按空元组，语义 = 一个都不许）。
+   （旧行缺键 → 读取侧按空元组，语义 = 一个都不许）。**两件事必须分开说**：
+   `tasks` 表旧行补列后读成空元组（已测）；而 `task.created` **事件**的当前 v1 契约把
+   `mcp_servers` 放在 `required` 里，升级前写入的那些 v1 行缺这个键——读取路径不重校验，
+   所以**读得出来**，但按当前 v1 严格校验它们**不再是合法 payload**。这不是"向前兼容的
+   合法升级"，而是"读取侧宽容 + 当前契约更严"；谁要是拿 `payload_errors(v1)` 去复核历史
+   行，会如实地拿到失败。
 3. `receipt.backend` += `"mcp"`；`receipt.evidence[].kind` += `"mcp_call"`
    （可选字段 `server` / `tool` / `request_id`，响应摘要复用既有 `sha256`）。
 4. 新规则编号 6 个：`c4.mcp_not_allowed`、`c4.mcp_isolation_unproven`、
@@ -47,6 +57,12 @@
    `tool-admission.md` §7/§8 的"没有执行器"口径改写。
 6. 工具面判据（`test_veto_scope.py`）：基线保持 15 项字面集合；动态工具只在配置 MCP 时
    出现，故该判据的"没有新增可见工具"结论**在没有 MCP 配置时仍成立**。
+7. **恢复的派发行口径**（收尾轮修正，不属于事件契约，但审计看得到）：恢复补写
+   `tool.result` 时，`dispatches` 行必须同时离开 `intent/executing`——
+   `applied → done`、`none_applied`/`unknown` → `error`，并且**只从
+   `intent/executing` 推进**（`revoked`/`rejected`/`done`/`error` 是审计事实，不许被
+   恢复改写）；`updated_at` 用恢复这一刻的时钟（不是行自己的 `created_at`，否则更新
+   时间倒退）。这条对**所有工具**生效，不只 MCP——文件写的恢复分支原来漏着（复审 R2）。
 
 ## 3 负控（回退即红，逐条实测）
 
@@ -72,14 +88,27 @@
 | NB18 | 取消检查挪到发包之后 | c11 用例 | **RED**（0.25s） |
 | NB19 | `task.created` 不写 `mcp_servers` | 任务记录用例 | **RED**（0.23s） |
 | NB20 | `tool_id` 不放开（保持枚举） | c9 用例 | **RED**（0.24s） |
-| NB21 | MCP 工具塞进 `SPECS`（让 recovery 认为"已知"） | **未做**（缺一条"intent 无 result 的 MCP 崩溃"夹具） | **未验证** |
+| NB21 | 撤掉 `_recover_run` 里的 MCP 分支（`if False`）——静态表里本来就有那个 MCP id（用例自己 `monkeypatch.setitem`），即"恢复只靠静态表缺条目认出 MCP"的退化 | `test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool`（`idempotent` / `pure` 两格）、`test_crash_after_server_executed_settles_unknown_and_blocks` | **RED（收尾轮实测）**：3 failed / 0.92s ——空清单里没有本次条目，退化后会判 `none_applied`（把可能已执行的 MCP 调用洗成"确定没写"），崩后结算里也丢掉了 `reason=mcp.crash_unsettled`。**口径**：正确实现 + 同一份"静态表里有 MCP id"的世界是**绿**的（它按 id 形状判）；**红的是撤掉分支之后**，两者别混着写 |
+| NB28 | 只撤 `assess_run` 的 MCP 分支 | 同上（它断言 `assess_run.unresolved`） | **RED（收尾轮实测）**：1 failed / 0.42s —— 正常崩溃用例里 MCP id 不在静态表（`spec is None` → unresolved），撤掉这条分支**测不出来**，所以必须单独覆盖只读对账 |
+| NB29 | 去掉 `_mark_dispatch_settled` 的 `state IN ('intent','executing')` 保护 | `test_recovery_does_not_rewrite_terminal_dispatch_rows`（`revoked` + `rejected` 两格） | **RED（收尾轮实测）**：1 failed / 0.42s —— 已撤销/已拒绝的派发行会被改写成 `done`/`error`，审计里丢掉"被撤销过"这条事实 |
 | NB22 | `isolation_requires` 放行 | c13 用例 | **RED**（0.20s） |
 | NB23 | replay 装配里调用 `start_all()` | **未做**（c15 只证明了"回放不调用 server"，没有把装配改成反面） | **未验证** |
 | NB24 | MCP 凭据按 exec 口径核对 | c9 的凭据核对 | **RED**（0.22s） |
+| NB25 | 拿掉 `dispatcher` 里 `failpoint("mcp_after_call")`（崩溃窗口不复存在） | c10 的崩溃夹具 | **RED（收尾轮实测）**：1 failed / 0.68s —— 用例断言 rc=77 + stderr 注入标记，"没崩在响应之后"当场暴露 |
+| NB26 | 恢复把派发行一律写 `done`（unknown 也写成功） | c10 崩溃夹具 + 文件写派发行终态用例 | **RED（收尾轮实测）**：2 failed / 0.71s |
+| NB27 | 恢复只写 `tool.result`、不推进派发行（回到 R2 之前的口径） | 同上 | **RED（收尾轮实测）**：2 failed / 0.66s |
 
 > 负控脚本自身的坑（PR B 实测踩到）：同尺寸同 mtime 秒的改写会让 Python 复用旧
 > `__pycache__` → **假绿**。脚本清 `__pycache__` + `PYTHONDONTWRITEBYTECODE=1`，
 > 并逐条记录返回码与耗时。
+>
+> 收尾轮又踩到第二种坑：还原用 `git checkout -- <file>` 回到的是 **HEAD**，会把同一轮里
+> **尚未提交**的改动一起抹掉（本轮把 `recovery.py` / `dispatcher.py` 的新代码抹过一次，靠
+> 重放补丁修回来）。负控的还原必须是"变异前自己拍的文件快照"，不能借用 git 的 HEAD。
+>
+> 收尾轮的负控已脚本化、可复现：`uv run python scripts/negative_controls_mcp_crash.py`
+> （快照 → 变异 → 清 pyc + `PYTHONDONTWRITEBYTECODE=1` → 跑目标用例 → 快照还原；
+> 全部按预期变红才返回 0，有一条没红就返回 1）。NB21 / NB28 / NB25 / NB26 / NB27 / NB29 都在里面。
 
 ## 4 诚实边界（交付后仍然不成立 / 未验证）
 
@@ -105,9 +134,24 @@
 8. **UI 没有 MCP 面板**：审批卡片能看到 `mcp://` 目标，`tianshu mcp list` 是命令行诊断。
 9. **回放只读**：不重连 server、不重放调用；事件里只有结果摘要（`mcp:<sha256>`）与
    有界文本，**没有** server 原始响应全文。
-10. **恢复链路靠既有保守分支**：MCP 工具**故意不进** `SPECS`，`recovery.py` 的"未知
-    工具"分支给出 `unknown` + 阻断待核查。**没有**针对 MCP 的崩溃夹具（NB21 未做），
-    所以"崩溃后判定"这条只在既有 recovery 语义上成立，**未在本轮实测**。
+10. **崩溃后的 MCP 结论只到 `unknown` + 阻断，"没发出去"也算在内**（收尾轮已用真子进程
+    夹具实测，见 §1-c10）。仍然不成立的：
+    - 恢复**分不出**"请求没写进 server stdin"与"写进去了、响应丢了"：本机没有任何持久化
+      证据说明"这一帧发出去了"，所以两者都判 `unknown` + 阻断该 workspace。**代价**是可能
+      过度阻断（一次根本没发出去的调用也要人工核对后 `unblock`）；**方向**是对的（宁可多
+      挡，不把可能已发生的副作用说成没发生）。要消除它需要"发送前落一条持久标记"，那是
+      契约增量（§5-7）。
+    - 阻断对象只有 workspace：MCP server 以当前用户权限跑在本机，传入的工作区**可能**
+      被它改过，所以按最保守口径挡这个目录。**"哪个目录"由调用方负责**：`tianshu recover`
+      的 `--workspace` 是必填参数，代码**没有**拿 `task_id` 去核对它属于该 Task 的哪些绑定
+      （零目录 Task 也合法，CLI 却强制给一个路径）。传错就挡错目录 —— 这是已知代价，不是
+      代码保证过的事。server 侧自己的状态（它动过哪些文件、发过什么请求）**没有任何证
+      据**，恢复也不去问它（问了也不是本机证据）。
+    - 没有对象级阻断（以 `mcp://server/tool` / server 为阻断对象）：现有 guard 只有
+      workspace 字段（§5-8）。
+11. **等批准期间取消不立即生效**：`tools/call` 是同步阻塞调用，取消只在发包前检查
+    一次；等响应期间取消要等这次调用结算（超时或返回）才生效。已发出的 RPC 无法
+    撤回（同网络阶段的"在途 TCP 字节无法撤回"）。
 12. **`max_tools` 两层都判**：客户端发现阶段截断（并报 `<truncated>` 拒绝行），准入层
     再判一次；截断发生在客户端时，被截掉的工具名我们根本收不到——拒绝行只能说明
     "还有更多，被截断了"，不能列出名字。
@@ -115,17 +159,19 @@
 14. **跨进程注册表一致性**：`build_stack` 现在**总是**设进程级注册表（没有 MCP 时设成
     纯内置表），同进程先后装配不会互相继承动态工具；但多进程各有一份注册表，跨进程
     一致性靠"同配置同准入"，未做跨进程比对。
-    所以"崩溃后判定"这条只在既有 recovery 语义上成立，**未在本轮实测**——c10 因此
-    在 §1 标"部分"。
-11. **等批准期间取消不立即生效**：`tools/call` 是同步阻塞调用，取消只在发包前检查
-    一次；等响应期间取消要等这次调用结算（超时或返回）才生效。已发出的 RPC 无法
-    撤回（同网络阶段的"在途 TCP 字节无法撤回"）。
 ## 5 后续工单
 
 1. 把长连接 spawn 收进 `exec_backends` 接缝（`spawn_session`）+ MCP 专属隔离探针，之后
    才谈 `isolation_requires` 对 MCP 成立。
 2. 真实第三方 server 兼容性验证（≥2 个真实 server）+ 官方规范复核协议版本/`initialize`。
-3. MCP 崩溃夹具（intent 无 result）+ 恢复判据（补 NB21）。
+3. ~~MCP 崩溃夹具（intent 无 result）+ 恢复判据（补 NB21）~~ **已完成（收尾轮，本 PR）**：
+   `tests/test_mcp_crash.py` 6 条（3 条真子进程崩溃用例 + `isError` 不重判 + 静态表误装 +
+   文件写派发行终态），NB21/NB25/NB26/NB27 负控实测红。
 4. 大结果内容引用与文本分页读取；MCP 预算维度（调用次数/结果字节）。
 5. UI 的 MCP 面板（server 状态、准入/被拒工具、截断说明）。
 6. Windows 实机验证与 CI 基线修复（既有工单）。
+7. **发送前持久标记**：让恢复能区分"未发出 → `none_applied` + 不阻断"与"已发出 → `unknown`
+   + 阻断"，消掉 §4-10 的过度阻断。需要事件契约增量（新事件或 `tool.intent` 扩展字段）
+   与规格修订，不能只改恢复的推断。
+8. **对象级阻断**：以 `mcp://server/tool` 或 server 作为阻断对象。现有 guard 只有 workspace
+   字段，先决定阻断对象模型再谈"精准阻断"；不拿调用方传进来的路径冒充 MCP 的目录。
