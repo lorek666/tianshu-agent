@@ -174,16 +174,23 @@ def test_code_constants_bound_to_schema_enums():
         ("receipt", "action"),
     ):
         assert _enum_of(type_name, field) == ALL_ACTIONS, type_name
+    # 工具 id 从 G2 MCP 阶段起统一按**形状**收口（G2 MCP SPEC §3.6-1）：
+    # 动态工具（`mcp__server__tool`）的 id 是运行时生成的，枚举放不下。
+    # 放宽的是数据契约，不是授权——白名单仍由工具注册表判定；旧事件仍合法
+    # （枚举 ⊂ pattern）。这里钉三件事：三处 pattern 逐字相同、静态工具 id 全match、
+    # 恶意形状被拒。
     tool_ids = set(SPECS)
-    assert _enum_of("tool.intent", "tool_id") == tool_ids
-    assert _enum_of("tool.not_dispatched", "tool_id") == tool_ids
-    assert _enum_of("receipt", "tool_id") == tool_ids
-    # 恢复历史日志时 tool.result 允许未知（旧版）工具 id：形状封闭、白名单放开
-    tool_result_id = _prop("tool.result", "tool_id")
-    assert "enum" not in tool_result_id
-    assert re.search(tool_result_id["pattern"], "rename_everything") is not None
-    assert re.search(tool_result_id["pattern"], "Bad Tool Id!") is None
-    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory"}
+    pattern = _prop("tool.intent", "tool_id")["pattern"]
+    assert pattern == r"^[a-z][a-z0-9_.]*$"
+    for type_name in ("tool.intent", "tool.not_dispatched", "receipt"):
+        node = _prop(type_name, "tool_id")
+        assert "enum" not in node, f"{type_name}.tool_id 不该再有封闭枚举"
+        assert node["pattern"] == pattern, f"{type_name}.tool_id 的 pattern 与 tool.intent 不一致"
+    assert all(re.fullmatch(pattern, tool_id) for tool_id in tool_ids)
+    assert re.fullmatch(pattern, "mcp__server__tool") is not None
+    assert re.fullmatch(pattern, "rename_everything") is not None
+    assert re.fullmatch(pattern, "Bad Tool Id!") is None
+    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory", "mcp"}
     exec_policy_fields = set(ExecPolicy.__dataclass_fields__)
     assert set(_prop("task.created", "exec_policy")["properties"]) == exec_policy_fields
     binding = _prop("task.created", "workspaces")["items"]

@@ -76,6 +76,14 @@ from .leases import (
     ReconcileFn,
     execution_guard,
 )
+from .mcp import (
+    McpCallError,
+    McpClients,
+    McpClosed,
+    McpError,
+    McpProtocolError,
+    McpTimeout,
+)
 from .memory_exec import (
     MEMORY_ALL_TOOL_IDS,
     MEMORY_TOOL_IDS,
@@ -102,9 +110,15 @@ from .permissions import (
     PolicyEngine,
     supported_memory_kinds,
 )
-from .receipt import build_exec_receipt, build_memory_receipt, build_receipt
+from .receipt import (
+    build_exec_receipt,
+    build_mcp_receipt,
+    build_memory_receipt,
+    build_receipt,
+)
 from .resources import (
     KIND_FILE,
+    KIND_MCP,
     KIND_MEMORY,
     KIND_NETWORK,
     MemoryScope,
@@ -121,9 +135,9 @@ from .rules import check_rule_id
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
 from .tasks import RUN_RUNNING, ExecutionPermit, Run, Task, TaskStore
+from .tool_registry import ToolRegistry, current_registry
 from .tools import (
     NETWORK_TOOL_IDS,
-    SPECS,
     AdmittedCall,
     DispatchRecord,
     FileExecutor,
@@ -313,9 +327,11 @@ class ControlRun:
     memory_scopes: tuple[str, ...] = ()
 
 
-#: 有**执行器**的资源种类。其余种类（mcp / subtask）解析得出来、也能做许可
-#: 判定，但没有执行器——MCP 与委派的执行器仍未交付（G2 的网络阶段只补了网络）。
-EXECUTABLE_KINDS: frozenset[str] = frozenset({KIND_FILE, KIND_MEMORY, KIND_NETWORK})
+#: 有**执行器**的资源种类。只有 `subtask` 还没有执行器（委派仍不做）。
+#: `mcp` 在 G2 MCP 阶段补上（stdio 客户端；恒需人工批准 + 任务级 server 白名单）。
+EXECUTABLE_KINDS: frozenset[str] = frozenset(
+    {KIND_FILE, KIND_MEMORY, KIND_NETWORK, KIND_MCP}
+)
 
 
 def resolve_scheme_resource(raw: str) -> ResourceRef:
@@ -381,7 +397,22 @@ class _NetworkTarget:
     kind: str = KIND_NETWORK
 
 
-_Target = _FileTarget | _MemoryTarget | _NetworkTarget
+@dataclass(frozen=True)
+class _McpTarget:
+    """MCP 目标：没有文件路径、没有目录租约，也没有可回滚的本地写前状态。
+
+    `rel_path` / `workspace_root` 在派发表里是历史列，MCP 行留空；任何文件执行器
+    都不会拿到这个对象（`dispatch()` 的 MCP 分支独立于文件分支）。
+    """
+
+    uri: str
+    server: str
+    tool: str
+    tool_id: str
+    kind: str = KIND_MCP
+
+
+_Target = _FileTarget | _MemoryTarget | _NetworkTarget | _McpTarget
 
 
 def _now() -> int:
@@ -478,6 +509,8 @@ class Dispatcher:
         net_limits: NetLimits | None = None,
         budget: object | None = None,
         exec_backend: ExecBackend | None = None,
+        mcp_clients: McpClients | None = None,
+        registry: ToolRegistry | None = None,
         clock=_now,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -545,6 +578,13 @@ class Dispatcher:
             )
         # 网络抓取上限（超时 / 字节 / 跳数）：默认模块常量，测试可注入。
         self._net_limits = net_limits or NetLimits()
+        # MCP 客户端（G2 MCP 阶段）：进程级、由装配点启动；None = 这个进程没启用
+        # MCP（工具面与旧版逐字节相同）。
+        self._mcp_clients = mcp_clients
+        # 工具注册表：显示传进来的优先；None = 每次现取进程级注册表（与
+        # `exec_backend()` 同一套"默认进程级 + 可显式注入"的模式，测试与
+        # 多实例装配都靠它，而不是让构造顺序决定用哪张表）。
+        self._registry = registry
         # 共享预算账本（PRD §5.6）：网络抓取按 `bytes` 维度预占/结算。
         self._budget = budget
         # `MemoryProjection` 构造处的检查只保证"它自己和一个日志同连接"，
@@ -661,6 +701,11 @@ class Dispatcher:
         assert self._memory_executor is not None
         return self._memory_executor
 
+    @property
+    def registry(self) -> ToolRegistry:
+        """当前生效的工具注册表（内置 + 已准入 MCP）。"""
+        return self._registry if self._registry is not None else current_registry()
+
     def dispatch_record(self, run_id: str, call_id: str) -> DispatchRecord | None:
         row = self._conn.execute(
             "SELECT * FROM dispatches WHERE run_id=? AND call_id=?",
@@ -739,6 +784,11 @@ class Dispatcher:
             elif isinstance(target, _NetworkTarget):
                 # 网络没有"写前状态"：没有本地副作用，也没有可撤销内容。
                 # 真正的门是任务白名单（`_authority`）与逐次人工批准。
+                pass
+            elif isinstance(target, _McpTarget):
+                # MCP 没有本地写前状态、没有可对账的 after_state：真正的门是
+                # 任务白名单 + 逐次人工批准（`_authority` 已判完），执行期结论
+                # 由 server 的响应决定（超时/断线一律 unknown）。
                 pass
             else:
                 if request.action == ACTION_EXEC:
@@ -910,7 +960,9 @@ class Dispatcher:
                 auth = self._authority(request, claim)
                 target = self._resolve_target(request, auth)
                 if (
-                    not isinstance(target, (_MemoryTarget, _NetworkTarget))
+                    not isinstance(
+                        target, (_MemoryTarget, _NetworkTarget, _McpTarget)
+                    )
                     and request.action == ACTION_EXEC
                 ):
                     self._precheck_exec(request, args, target.path)
@@ -933,7 +985,7 @@ class Dispatcher:
 
                 if isinstance(target, _MemoryTarget):
                     self._check_memory_preconditions(request, target, args)
-                elif isinstance(target, _NetworkTarget):
+                elif isinstance(target, (_NetworkTarget, _McpTarget)):
                     pass
                 else:
                     ok, reason = check_request_preconditions(
@@ -1014,6 +1066,10 @@ class Dispatcher:
             return self._dispatch_network(
                 request, dispatch_id, target, seq
             )
+
+        # ---- MCP 分支：外部 server 执行，副作用在它那边 ----
+        if isinstance(target, _McpTarget):
+            return self._dispatch_mcp(request, dispatch_id, target, seq)
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
         memory_committed = False
@@ -1188,6 +1244,148 @@ class Dispatcher:
             digest, body, task_id=request.task_id, run_id=request.run_id
         )
         return make_ref(digest)
+
+    def _dispatch_mcp(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        target: _McpTarget,
+        intent_seq: int,
+    ) -> ToolResult:
+        """MCP 分支：已取消不发包；超时/断线/协议失败按 `unknown` 结算。
+
+        为什么超时是 `unknown` 而不是 `none_applied`：`tools/call` 可能已经在
+        server 那边执行完，只是响应没回来。红线 11 要求"不知道"就如实说不知道，
+        恢复流程会因此阻断该目录等待人工核对，而不是自动重放。
+        """
+        if self._cancel_requested(request.run_id):
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {
+                    "error": "Run 已取消：没有发出 MCP 调用",
+                    "reason": "mcp.cancelled",
+                    "mcp": {"server": target.server, "tool": target.tool},
+                },
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+
+        clients = self._mcp_clients
+        server = None if clients is None else clients.server(target.server)
+        if server is None or not server.is_alive:  # pragma: no cover - authority 已判
+            return self._fail_unknown(
+                request,
+                dispatch_id,
+                target,
+                DispatchDenied(
+                    f"MCP server 已不可用：{target.server!r}",
+                    "dispatch.mcp_server_unavailable",
+                ),
+            )
+        binding = self.registry.mcp_binding(target.tool_id)
+        spawn = {
+            "via_exec_backend": False,
+            "pid": server.pid,
+            "argv0": server.config.command[0] if server.config.command else "",
+            "cwd": server.config.cwd,
+            "env_keys": sorted(server.config.env),
+        }
+        base_output: dict[str, Any] = {
+            "mcp": {
+                "server": target.server,
+                "tool": target.tool,
+                "tool_version": "" if binding is None else binding.tool_version,
+                "protocol_version": server.protocol_version,
+                "spawn": spawn,
+            }
+        }
+        try:
+            called = server.call_tool(
+                target.tool, self._mcp_arguments(request), call_id=request.call_id
+            )
+        except McpTimeout as exc:
+            # 客户端已经在超时时尽力发了 `notifications/cancelled`；这里只负责
+            # 如实结算：**请求可能已经被执行**，所以是 unknown。
+            output = dict(base_output)
+            output["mcp"] = {**output["mcp"], "is_error": None, "timeout": True}
+            output["reason"] = "mcp.timeout"
+            output["error"] = str(exc)
+            result = ToolResult("failed", "unknown", output)
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+        except McpClosed as exc:
+            output = dict(base_output)
+            output["mcp"] = {**output["mcp"], "is_error": None, "closed": True}
+            output["reason"] = "mcp.closed"
+            output["error"] = str(exc)
+            result = ToolResult("failed", "unknown", output)
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+        except McpCallError as exc:
+            # 协议层拒绝（解析/方法/参数）说明请求没有被当成工具调用执行，
+            # 所以是确定结论 `none_applied`；其余错误码（含 -32603 内部错误）
+            # 可能已经在执行后失败 → unknown + 已登记的规则编号。
+            if exc.protocol_rejection:
+                output = dict(base_output)
+                output["mcp"] = {**output["mcp"], "is_error": None, "code": exc.code}
+                output["reason"] = "mcp.rejected"
+                output["error"] = str(exc)
+                result = ToolResult("failed", "none_applied", output)
+                self._commit_result(request, dispatch_id, result, target, intent_seq)
+                return result
+            return self._fail_unknown(
+                request, dispatch_id, target, exc, "dispatch.mcp_protocol_error"
+            )
+        except (McpProtocolError, McpError) as exc:
+            return self._fail_unknown(
+                request, dispatch_id, target, exc, "dispatch.mcp_protocol_error"
+            )
+        except Exception as exc:  # noqa: BLE001 - 执行器自己炸了：效果未知
+            return self._fail_unknown(request, dispatch_id, target, exc)
+
+        content_text = list(called.text_parts)
+        kept_text = "\n".join(content_text)
+        mcp_output = {
+            **base_output["mcp"],
+            "is_error": called.is_error,
+            "content": content_text,
+            "unsupported_content": list(called.unsupported_types),
+            "structured": called.structured,
+            "bytes": called.bytes,
+            "truncated": called.truncated,
+            "dropped_bytes": called.dropped_bytes,
+            "dropped_blocks": called.dropped_blocks,
+            "duration_ms": called.duration_ms,
+            "request_id": called.request_id,
+            # 执行摘要进凭据的 after_state（mcp:<sha256>）；没有磁盘可比对的
+            # after_state 时凭据无从"独立核对"，所以这里必须给。
+            "after_state": "mcp:" + sha256_hex(
+                "\x00".join(
+                    [
+                        target.server,
+                        target.tool,
+                        str(called.request_id),
+                        kept_text,
+                        str(called.is_error),
+                    ]
+                ).encode("utf-8")
+            ),
+        }
+        output: dict[str, Any] = {"mcp": mcp_output}
+        status = "failed" if called.is_error else "succeeded"
+        # 与 `run_command` 同一口径：完成落地的调用记 applied（它确实执行过），
+        # isError 只影响 status；"是否动过、动了什么"我们无法核对，已登记。
+        result = ToolResult(status, "applied", output)
+        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        failpoint("after_result")
+        return result
+
+    def _mcp_arguments(self, request: ActionRequest) -> dict[str, Any]:
+        """MCP 工具参数：从**权威库**取本次派发的参数（不信任调用方给的副本）。"""
+        stored = self.get_request(request.request_id)
+        raw = {} if stored is None else dict(stored.args)
+        return raw
 
     def _dispatch_network(
         self,
@@ -1883,7 +2081,7 @@ class Dispatcher:
             raise DispatchError(
                 f"只读动作不经过派发（没有可授权的副作用）：{request.action}"
             )
-        if request.tool_id not in SPECS:
+        if request.tool_id not in self.registry:
             raise DispatchError(f"工具不在白名单：{request.tool_id}")
 
     def _authority(self, request: ActionRequest, claim: JobClaim) -> _Authority:
@@ -1991,6 +2189,8 @@ class Dispatcher:
                 return _Authority(run, task, bindings, [], [])
             if ref.kind == KIND_NETWORK:
                 return self._authority_network(request, task, run, bindings, ref)
+            if ref.kind == KIND_MCP:
+                return self._authority_mcp(request, task, run, bindings, ref)
             raise DispatchDenied(
                 f"{ref.kind} 资源的执行器尚未实现（G2），拒绝派发：{ref.uri}",
                 "dispatch.resource_kind_unsupported",
@@ -2080,6 +2280,61 @@ class Dispatcher:
             )
         return _Authority(run, task, bindings, [], [])
 
+    def _authority_mcp(
+        self,
+        request: ActionRequest,
+        task: Task,
+        run: Run,
+        bindings: list[WorkspaceBinding],
+        ref: ResourceRef,
+    ) -> _Authority:
+        """MCP 资源的授权（**弹批准之前**的五步，见 SPEC §3.4）。
+
+        MCP server 是用户装的外部程序：能不能用它由**任务级白名单**决定，能不能
+        跑由进程级配置决定，要不要批准由 C4 决定（`c4.mcp_call` 恒需批准）。三道门
+        都在这里或之前走完，所以用户不会收到"批了也发不出去"的批准。
+        """
+        target = ref.mcp_target
+        binding = self.registry.mcp_binding(request.tool_id)
+        if binding is None or (binding.server, binding.tool) != (target.server, target.tool):
+            raise DispatchDenied(
+                f"工具与 MCP 资源不匹配：tool_id={request.tool_id} → {ref.uri}"
+                "（工具不在已准入的 MCP 注册表里，或 (server, tool) 与资源两段不一致）",
+                "dispatch.mcp_resource_mismatch",
+            )
+        if target.server not in tuple(getattr(task, "mcp_servers", ()) or ()):
+            raise DispatchDenied(
+                f"任务没有声明 MCP server {target.server!r}（task.created.mcp_servers），"
+                f"拒绝调用 {ref.uri}（创建任务时用 --allow-mcp-server 显式声明）",
+                "c4.mcp_not_allowed",
+            )
+        policy = task.exec_policy
+        if policy is not None and tuple(policy.isolation_requires):
+            # 隔离实测报告来自 exec backend 的一次性探针，测的不是这个长连接
+            # server 进程；跨对象作证不可接受，所以非空要求一律拒绝（SPEC §3.1）。
+            raise DispatchDenied(
+                "任务声明了 isolation_requires，但 MCP server 进程不经过 exec 后端"
+                f"（现有实测报告测的不是它），拒绝调用 {ref.uri}"
+                "：等 MCP 专属探针/后端接缝落地",
+                "c4.mcp_isolation_unproven",
+            )
+        clients = self._mcp_clients
+        server = None if clients is None else clients.server(target.server)
+        if server is None or not server.is_alive:
+            diagnostics = ""
+            if clients is not None:
+                for state in clients.states():
+                    if state.name == target.server:
+                        diagnostics = "；".join(state.diagnostics) or "未启动"
+                        break
+            raise DispatchDenied(
+                f"MCP server {target.server!r} 当前不可用（{diagnostics or '未配置'}），"
+                f"拒绝派发 {ref.uri}",
+                "dispatch.mcp_server_unavailable",
+            )
+        # MCP 工具没有目录、没有作用域、没有租约：零目录任务也能用。
+        return _Authority(run, task, bindings, [], [])
+
     def _resolve_target(self, request: ActionRequest, auth: _Authority) -> _Target:
         if len(request.resources) != 1:
             # 文件分支的历史文案与编号保持不变（旧日志/测试逐字依赖它）。
@@ -2112,6 +2367,22 @@ class Dispatcher:
                 )
             ref = resolve_scheme_resource(raw)
             return _NetworkTarget(uri=ref.uri, target=ref.network_target)
+
+        if isinstance(raw, str) and raw.startswith("mcp://"):
+            binding = self.registry.mcp_binding(request.tool_id)
+            if binding is None:
+                raise DispatchDenied(
+                    f"工具不在已准入的 MCP 注册表里：{request.tool_id}"
+                    "（动态工具必须先由 server 发现并通过 schema 准入）",
+                    "dispatch.mcp_tool_unknown",
+                )
+            ref = resolve_scheme_resource(raw)
+            return _McpTarget(
+                uri=ref.uri,
+                server=ref.mcp_target.server,
+                tool=ref.mcp_target.tool,
+                tool_id=request.tool_id,
+            )
 
         # 资源种类按 scheme 判定（见 resources.py）。**没有执行器**的种类在这里
         # 就拒绝：既不回退成"当成文件路径试试"，也不进审批流程给用户一个
@@ -2291,6 +2562,12 @@ class Dispatcher:
             resource_key = (
                 f"network:{target.target.origin_uri}{target.target.path}"
             )
+        elif isinstance(target, _McpTarget):
+            # MCP 同样没有目录：目标记 mcp:// URI，资源键用 server/tool。
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = f"mcp:{target.server}/{target.tool}"
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -2370,6 +2647,11 @@ class Dispatcher:
             resource_key = (
                 f"network:{target.target.origin_uri}{target.target.path}"
             )
+        elif isinstance(target, _McpTarget):
+            target_value = target.uri
+            rel_path = ""
+            workspace_root = ""
+            resource_key = f"mcp:{target.server}/{target.tool}"
         else:
             target_value = str(target.path)
             rel_path = target.rel_path
@@ -2699,6 +2981,7 @@ class Dispatcher:
         dispatch_id: str,
         target: _Target,
         exc: BaseException,
+        rule_id: str = "",
     ) -> ToolResult:
         """执行中途炸了：结论只能是 unknown，并且立刻阻断后续写入。
 
@@ -2707,11 +2990,12 @@ class Dispatcher:
         目录上继续改。
         """
         reason = f"{type(exc).__name__}: {exc}"
-        result = ToolResult(
-            "failed",
-            "unknown",
-            {"error": reason, "request_id": request.request_id},
-        )
+        output: dict[str, Any] = {"error": reason, "request_id": request.request_id}
+        if rule_id:
+            # 用户看到的失败原因必须是登记过的编号之一（契约里能查到的说法），
+            # 不能只是一句自由文本。
+            output["rule_id"] = check_rule_id(rule_id, where="_fail_unknown")
+        result = ToolResult("failed", "unknown", output)
         result_event = {
             "run_id": request.run_id,
             "type": "tool.result",
@@ -2726,8 +3010,8 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
-        if isinstance(target, (_MemoryTarget, _NetworkTarget)):
-            # 记忆没有可阻断的目录；网络同样没有本地目录可阻断。
+        if isinstance(target, (_MemoryTarget, _NetworkTarget, _McpTarget)):
+            # 记忆没有可阻断的目录；网络与 MCP 同样没有本地目录可阻断。
             # 而且**绝不**在这里调用 apply_event：
             # 结果未知就是"投影是否更新不知道"，补写一条投影会让未知变成
             # 一个编出来的确定结论。事件与派发状态仍同事务落库。
@@ -2783,6 +3067,7 @@ class Dispatcher:
         """
         is_memory = isinstance(target, _MemoryTarget)
         is_network = isinstance(target, _NetworkTarget)
+        is_mcp = isinstance(target, _McpTarget)
         projection = self._memory_projection() if is_memory else None
 
         result_event = {
@@ -2839,6 +3124,21 @@ class Dispatcher:
             # 网络没有本地副作用，也没有可撤销内容：不产凭据。
             # （凭据回答"改了什么"；"发了什么"在 tool.result 的 url/ref 里。）
             receipt = None
+        elif is_mcp:
+            # MCP 的副作用在 server 那边，但我们知道"它跑了"：凭据把
+            # server/tool/请求 id 与执行摘要绑在一起（after_state=mcp:<sha256>），
+            # `verify_receipts()` 对 `backend=="mcp"` 只核事件引用与结果字段，
+            # **不比较磁盘**（与 exec 同一口径，见 receipt.build_mcp_receipt）。
+            receipt = build_mcp_receipt(
+                run_id=request.run_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                args_hash=request.args_hash,
+                result=result,
+                resource=target.uri,
+                action=request.action,
+                intent_seq=intent_seq,
+            )
         elif request.action == ACTION_EXEC:
             # 命令的"写后状态"不是文件哈希：凭据记的是执行摘要，磁盘核对
             # 由 verify_receipts 明确跳过（见 receipt.build_exec_receipt）。
@@ -2944,6 +3244,7 @@ def build_request(
     request_id: str | None = None,
     attempt_id: int = 1,
     preconditions: dict[str, Any] | None = None,
+    registry: ToolRegistry | None = None,
 ) -> ActionRequest:
     """从"我要做什么"生成一份可派发的请求。
 
@@ -2955,11 +3256,37 @@ def build_request(
     由参数带进 `preconditions`（执行侧会从权威投影再读一次核对）。显式传入
     `preconditions` 只对记忆分支生效——文件分支的写前状态仍然由这里读盘决定。
     """
-    spec = SPECS.get(tool_id)
-    if spec is None:
+    table = registry if registry is not None else current_registry()
+    resolved = table.spec(tool_id)
+    if resolved is None:
         raise ToolNotAllowed(f"工具不在白名单：{tool_id}")
 
     raw_target = str(target)
+    if raw_target.startswith("mcp://"):
+        target_ref = parse_resource(raw_target)
+        found = table.mcp_binding(tool_id)
+        if found is None:
+            raise ToolNotAllowed(f"工具不在已准入的 MCP 注册表里：{tool_id}")
+        return ActionRequest(
+            request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
+            task_id=task.task_id,
+            run_id=run.run_id,
+            job_id=claim.job_id,
+            claim_epoch=claim.claim_epoch,
+            owner_instance_id=claim.owner_instance_id,
+            call_id=call_id,
+            goal_revision=run.goal_revision,
+            lease_epoch=run.lease_epoch,
+            tool_id=tool_id,
+            tool_version=found.tool_version,
+            schema_hash=found.schema_hash,
+            description_hash=found.description_hash,
+            action=resolved.action,
+            resources=(target_ref.uri,),
+            args_hash=sha256_hex(canonical_bytes(args)),
+            attempt_id=attempt_id,
+            preconditions={},
+        )
     if raw_target.startswith("memory://"):
         if tool_id not in MEMORY_ALL_TOOL_IDS:
             raise ToolNotAllowed(f"文件工具不能使用记忆资源：{tool_id} → {raw_target}")
@@ -2967,12 +3294,12 @@ def build_request(
             scope = parse_memory_uri(raw_target)
         except ResourceError as exc:
             raise ToolArgumentError(f"记忆资源引用不合法：{exc}") from exc
-        if spec.action == ACTION_CREATE:
+        if resolved.action == ACTION_CREATE:
             memory_pre: dict[str, Any] = {
                 "memory_kind": args.get("kind"),
                 "memory_exists": False,
             }
-        elif spec.action == ACTION_OVERWRITE:
+        elif resolved.action == ACTION_OVERWRITE:
             # 覆盖类记忆工具不止 confirm 一个（edit / promote 也在这里），目标
             # 可能是 candidate 也可能是 active——**不能**写死 "candidate"。
             # 状态由调用方声明（`status` 可选）；真正的状态约束由投影的迁移
@@ -2982,7 +3309,7 @@ def build_request(
                 "before_status": args.get("status"),
                 "before_revision": args.get("revision"),
             }
-        elif spec.action == ACTION_DELETE:
+        elif resolved.action == ACTION_DELETE:
             memory_pre = {
                 "memory_id": args.get("memory_id"),
                 # 删除类目标可以是 candidate / active / superseded / forgotten：
@@ -3006,10 +3333,10 @@ def build_request(
             call_id=call_id,
             attempt_id=attempt_id,
             tool_id=tool_id,
-            tool_version=spec.version,
-            schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
-            description_hash=spec.description_digest(),
-            action=spec.action,
+            tool_version=resolved.version,
+            schema_hash=sha256_hex(canonical_bytes(resolved.input_schema)),
+            description_hash=resolved.description_digest(),
+            action=resolved.action,
             resources=(scope.to_uri(),),
             args_hash=sha256_hex(canonical_bytes(args)),
             preconditions=memory_pre,
@@ -3041,10 +3368,10 @@ def build_request(
             call_id=call_id,
             attempt_id=attempt_id,
             tool_id=tool_id,
-            tool_version=spec.version,
-            schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
-            description_hash=spec.description_digest(),
-            action=spec.action,
+            tool_version=resolved.version,
+            schema_hash=sha256_hex(canonical_bytes(resolved.input_schema)),
+            description_hash=resolved.description_digest(),
+            action=resolved.action,
             resources=(net_ref.uri,),
             args_hash=sha256_hex(canonical_bytes(args)),
             preconditions={},
@@ -3055,11 +3382,11 @@ def build_request(
 
     target = Path(target).resolve()
     io = current_backend()
-    if spec.action == ACTION_CREATE:
+    if resolved.action == ACTION_CREATE:
         file_preconditions: dict[str, Any] = {"target_exists": io.exists(target)}
-    elif spec.action in (ACTION_OVERWRITE, ACTION_DELETE):
+    elif resolved.action in (ACTION_OVERWRITE, ACTION_DELETE):
         file_preconditions = {"before_state": observe_state(target, backend=io)}
-    elif spec.action == ACTION_EXEC:
+    elif resolved.action == ACTION_EXEC:
         # 这个标记进 actions 摘要：任务有没有开启 exec 策略，必须由审批绑住。
         file_preconditions = {"exec_configured": task.exec_policy is not None}
     else:  # pragma: no cover - 只读动作不走派发
@@ -3077,10 +3404,10 @@ def build_request(
         call_id=call_id,
         attempt_id=attempt_id,
         tool_id=tool_id,
-        tool_version=spec.version,
-        schema_hash=sha256_hex(canonical_bytes(spec.input_schema)),
-        description_hash=spec.description_digest(),
-        action=spec.action,
+        tool_version=resolved.version,
+        schema_hash=sha256_hex(canonical_bytes(resolved.input_schema)),
+        description_hash=resolved.description_digest(),
+        action=resolved.action,
         resources=(str(target),),
         args_hash=sha256_hex(canonical_bytes(args)),
         preconditions=file_preconditions,

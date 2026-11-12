@@ -196,6 +196,23 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - `isolation_requires` 用**封闭枚举**（四边界名），非法值在写入前就被
   `PayloadContractError` 拒绝；不是"先写进去、加载时再炸"。
 
+### 6.2 G2 MCP 阶段（2026-11-12，PR #118）
+
+- **放宽**：`tool.intent.tool_id` / `tool.not_dispatched.tool_id` / `receipt.tool_id`
+  从**封闭枚举**改为**形状 pattern** `^[a-z][a-z0-9_.]*$`（与 `tool.result.tool_id`
+  逐字相同）。原因：MCP 工具 id（`mcp__server__tool`）是运行时生成的，枚举放不下。
+  放宽的是**数据契约**，不是授权——白名单仍由工具注册表判定；旧事件仍合法（枚举 ⊂
+  pattern）；旧 v1 二进制读新库会因枚举不认识 MCP id 而拒绝（发布前约定，同 §6.1）。
+- **加字段（可选）**：`receipt.backend` 的封闭集加 `"mcp"`；`receipt.evidence[].kind`
+  加 `"mcp_call"`，并给该 kind 加可选 `server` / `tool` / `request_id`（响应摘要复用
+  既有 `sha256`）。不改 `verify_receipts` 的对应分支，合法凭据会被判"无法识别"
+  （N4 忘记登记 `memory_erasure` 是同一类错）。
+- **加字段（恒写）**：`task.created.mcp_servers`（字符串数组，空也写）。**旧行缺这个
+  键时按读取侧默认空元组处理**，语义 = 一个都不许；不是"按 v0 读"（`detect_version`
+  只管写入校验，读取不按当前 schema 重校验，旧行版本仍是 v1）。
+- **`tool.intent.args` / `tool.result.output` 仍是开放对象**：MCP 的参数与结果形状由
+  各 server 的 schema 决定，不在 C3 复制第二份契约。
+
 ## 7 仍冻结不了的字段（与原因）
 
 | 位置 | 现状 | 原因 / 边界 |

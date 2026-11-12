@@ -96,6 +96,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "不传 = 这个任务一条包都不发；声明了源也仍然要逐次人工批准",
     )
     r.add_argument(
+        "--allow-mcp-server",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="显式声明任务级 MCP server 白名单（可重复）：这个任务准用哪些已配置的 "
+        "server。不传 = 一个都不许；声明了也仍然要逐次人工批准（c4.mcp_call）",
+    )
+    r.add_argument(
         "--require-isolation",
         action="append",
         default=None,
@@ -118,6 +126,15 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="authority 数据根（默认与 --db 同目录）")
     r.add_argument("--db", type=Path, default=DEFAULT_DB)
     r.add_argument("--json", action="store_true", help="输出 JSON 而不是人话")
+
+    m = sub.add_parser(
+        "mcp",
+        help="MCP server 与工具准入（只读）：读 TIANSHU_MCP_CONFIG 起一次、列出"
+        "server 状态与准入/被拒工具，然后关掉",
+    )
+    m.add_argument("action", choices=["list"])
+    m.add_argument("--json", action="store_true", help="输出 JSON")
+    m.add_argument("--data-root", type=Path, default=None)
 
     t = sub.add_parser("task", help="任务：创建 / 查看 / 改目标或绑定")
     t.add_argument("action", choices=["create", "show", "revise"])
@@ -143,6 +160,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="ORIGIN",
         help="显式声明任务级外发白名单：允许出网的**源**（可重复）。"
         "不传 = 一条包都不发；声明后仍要逐次人工批准",
+    )
+    t.add_argument(
+        "--allow-mcp-server",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="显式声明任务级 MCP server 白名单（可重复）。不传 = 一个都不许；"
+        "声明后仍要逐次人工批准",
     )
 
     w = sub.add_parser(
@@ -488,7 +513,8 @@ def _print_result(result, *, as_json: bool) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    stack = _authority_stack(args.db, args.data_root)
+    needs_mcp = args.action in (None, "start", "resume")
+    stack = _authority_stack(args.db, args.data_root, mcp=needs_mcp)
     try:
         action = args.action
         if action is None:
@@ -529,8 +555,17 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"错误：outbound_allow 不合法：{exc}", file=sys.stderr)
         return 2
+    try:
+        mcp_servers = _mcp_servers(args)
+    except ValueError as exc:
+        print(f"错误：mcp_servers 不合法：{exc}", file=sys.stderr)
+        return 2
     task = stack.tasks.create_task(
-        args.task, bindings, exec_policy=exec_policy, outbound_allow=outbound_allow
+        args.task,
+        bindings,
+        exec_policy=exec_policy,
+        outbound_allow=outbound_allow,
+        mcp_servers=mcp_servers,
     )
     result = _engine(stack, args).start(task.task_id, out_name=args.out)
     return _report(stack, result, args)
@@ -767,6 +802,31 @@ def _exec_policy(args: argparse.Namespace):
     )
 
 
+def _mcp_servers(args: argparse.Namespace) -> list[str] | None:
+    """从 CLI 参数构造任务级 MCP server 白名单；没给就是 None（= 一个都不许）。"""
+    items = getattr(args, "allow_mcp_server", None)
+    if not items:
+        return None
+    import re
+
+    pattern = re.compile(r"^[a-z0-9_.-]{1,64}$")
+    for name in items:
+        if not pattern.match(name):
+            raise ValueError(f"server 名不合法：{name!r}（必须是 {pattern.pattern}）")
+    return sorted(set(items))
+
+
+def _mcp_config():
+    """进程级 MCP 配置（`TIANSHU_MCP_CONFIG`）；没配置 → 空。
+
+    只有**会执行工具**的入口（run / worker / daemon 驱动栈 / mcp list）才读它；
+    控制面只读命令不启动外部进程。
+    """
+    from .mcp import config_from_env
+
+    return config_from_env()
+
+
 def _outbound_allow(args: argparse.Namespace) -> list[str] | None:
     """从 CLI 参数构造任务级外发白名单；没给就是 None（= 一条包都不发）。
 
@@ -801,11 +861,17 @@ def _cmd_task(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 print(f"错误：outbound_allow 不合法：{exc}", file=sys.stderr)
                 return 2
+            try:
+                mcp_servers = _mcp_servers(args)
+            except ValueError as exc:
+                print(f"错误：mcp_servers 不合法：{exc}", file=sys.stderr)
+                return 2
             task = stack.tasks.create_task(
                 args.goal,
                 _bindings(args),
                 exec_policy=exec_policy,
                 outbound_allow=outbound_allow,
+                mcp_servers=mcp_servers,
             )
             return _print_task(task, args)
         if args.action == "show":
@@ -844,6 +910,7 @@ def _task_json(task) -> dict:
         "is_control": task.is_control,
         "memory_scopes": list(task.memory_scopes),
         "outbound_allow": list(task.outbound_allow),
+        "mcp_servers": list(task.mcp_servers),
         "status": task.status,
         "workspaces": [b.to_dict() for b in task.workspaces],
         "created_at": task.created_at,
@@ -887,6 +954,90 @@ def _print_task(task, args: argparse.Namespace, *, stack=None) -> int:
     return 0
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    """`tianshu mcp list`：只读地起一次、列状态与准入结论、关掉。
+
+    为什么值得一条命令：MCP 的"没做"有三种——server 没有这个工具、schema 不准入、
+    被 `max_tools` 截断。只给模型一个 boolean 或静默丢弃，用户永远查不出区别。
+    """
+    from .mcp import McpClients
+    from .tool_registry import build_registry
+
+    configs = _mcp_config()
+    if not configs:
+        payload = {
+            "configured": False,
+            "reason": "没有配置 MCP server（设置 TIANSHU_MCP_CONFIG 指向 JSON 配置）",
+            "servers": [],
+            "tools": [],
+            "rejected_tools": [],
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(payload["reason"])
+        return 0
+    clients = McpClients(configs)
+    try:
+        clients.start_all()
+        registry = build_registry(clients)
+        servers = []
+        for state in clients.states():
+            servers.append(
+                {
+                    "name": state.name,
+                    "status": state.status,
+                    "protocol_version": state.protocol_version,
+                    "tools": [tool.name for tool in state.tools],
+                    "tools_truncated": state.tools_truncated,
+                    "diagnostics": list(state.diagnostics),
+                    "pid": state.pid,
+                }
+            )
+        tools = []
+        for tool_id in registry.ids():
+            binding = registry.mcp_binding(tool_id)
+            if binding is None:
+                continue
+            tools.append(
+                {
+                    "tool_id": tool_id,
+                    "uri": binding.uri,
+                    "server": binding.server,
+                    "tool": binding.tool,
+                    "tool_version": binding.tool_version,
+                    "schema_hash": binding.schema_hash,
+                    "narrowed": list(binding.narrowed),
+                }
+            )
+        payload = {
+            "configured": True,
+            "servers": servers,
+            "tools": tools,
+            "rejected_tools": registry.rejected_tools(),
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            for row in servers:
+                state = "可用" if row["status"] == "ready" else "不可用"
+                print(f"{row['name']}  {state}  protocol={row['protocol_version'] or '-'}"
+                      f"  工具 {len(row['tools'])}")
+                for line in row["diagnostics"]:
+                    print(f"  ! {line}")
+            print(f"准入工具：{len(tools)}")
+            for row in tools:
+                narrowed = f"  收窄={row['narrowed']}" if row["narrowed"] else ""
+                print(f"  {row['tool_id']}  ← {row['uri']}  {row['tool_version']}{narrowed}")
+            if payload["rejected_tools"]:
+                print(f"未准入：{len(payload['rejected_tools'])}")
+                for row in payload["rejected_tools"]:
+                    print(f"  {row['server']}/{row['tool']}  {row['reason']}")
+        return 0
+    finally:
+        clients.close_all()
+
+
 def _cmd_worker(args: argparse.Namespace) -> int:
     """作业循环入口。
 
@@ -896,7 +1047,8 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     """
     from .worker import Worker
 
-    stack = _authority_stack(args.db, args.data_root)
+    # worker 会真的执行工具 → 必须启动 MCP（没有配置时就是内置工具面）。
+    stack = _authority_stack(args.db, args.data_root, mcp=True)
     try:
         worker = Worker(
             stack,
@@ -980,7 +1132,9 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
-def _authority_stack(db: Path, data_root: Path | None = None):
+def _authority_stack(
+    db: Path, data_root: Path | None = None, *, mcp: bool = False
+):
     """把 M2 的权威存储装配起来。
 
     CLI 只做装配与格式化，判定全在库里——也包括"用了哪些 store"这件事：
@@ -988,7 +1142,12 @@ def _authority_stack(db: Path, data_root: Path | None = None):
     绕过点会一直存在。
     """
     log = EventLog(db, blob_dir=db.parent / "blobs")
-    return build_stack(log, data_root=data_root if data_root is not None else db.parent)
+    configs = _mcp_config() if mcp else {}
+    return build_stack(
+        log,
+        data_root=data_root if data_root is not None else db.parent,
+        mcp_servers=configs,
+    )
 
 
 def _cmd_approvals(args: argparse.Namespace) -> int:
@@ -1837,6 +1996,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_run(args)
         if args.cmd == "task":
             return _cmd_task(args)
+        if args.cmd == "mcp":
+            return _cmd_mcp(args)
         if args.cmd == "worker":
             return _cmd_worker(args)
         if args.cmd == "daemon":

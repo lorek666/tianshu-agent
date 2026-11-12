@@ -23,6 +23,8 @@
         "c4.exec_policy_denied",
         "c4.exec_unsupported",
         "c4.mcp_call",
+        "c4.mcp_isolation_unproven",
+        "c4.mcp_not_allowed",
         "c4.memory_control_scope_binding",
         "c4.memory_kind_unsupported",
         "c4.memory_scope",
@@ -52,6 +54,10 @@
         "dispatch.foreign_instance",
         "dispatch.guard_timeout",
         "dispatch.lease_lost",
+        "dispatch.mcp_protocol_error",
+        "dispatch.mcp_resource_mismatch",
+        "dispatch.mcp_server_unavailable",
+        "dispatch.mcp_tool_unknown",
         "dispatch.memory_not_found",
         "dispatch.memory_resource_mismatch",
         "dispatch.memory_stale_revision",
@@ -134,7 +140,13 @@
     "dispatch.resource_kind_unsupported": "该资源种类没有执行器（网络/MCP/委派的执行器属 G2），在派发前拒绝。",
     "c4.outbound_not_allowed": "任务级外发白名单（outbound_allow）不含这个源：这个任务没被允许跟这台服务器说话。",
     "dispatch.network_resource_mismatch": "网络工具与非 network:// 资源不匹配（网络不是文件，也不是记忆）。",
-    "dispatch.budget_refused": "预算预占被拒（额度耗尽 / 已取消 / 过 deadline）：请求没有发出。"
+    "dispatch.budget_refused": "预算预占被拒（额度耗尽 / 已取消 / 过 deadline）：请求没有发出。",
+    "c4.mcp_not_allowed": "任务的 server 白名单（`task.created.mcp_servers`）没有声明这个 MCP server。请求在弹批准之前就被拒——不会让人批准一个注定发不出去的调用。",
+    "c4.mcp_isolation_unproven": "任务声明了 `exec_policy.isolation_requires`，但 MCP server 进程**不经过** exec 后端（长连接 vs 一次性 spawn），现有隔离实测报告测的不是它。跨对象作证不可接受，所以一律拒绝；等 MCP 专属探针/后端接缝落地。",
+    "dispatch.mcp_resource_mismatch": "工具与 `mcp://server/tool` 资源不匹配：工具不在已准入的 MCP 注册表里，或其 (server, tool) 与资源两段不一致。",
+    "dispatch.mcp_server_unavailable": "配置里的这个 MCP server 当前不可用（没启动 / 握手失败 / 已断开）。派发前拒绝，原因带诊断。",
+    "dispatch.mcp_tool_unknown": "这个 MCP 工具没有准入（server 没声明、schema 用了方言外关键字、名字越界或被截断）。模型看不到它；派发层同样拒绝。",
+    "dispatch.mcp_protocol_error": "MCP 协议层失败（畸形帧、响应 id 不匹配、结果形状不合法）。副作用**未知**，按 unknown 结算。"
   },
   "x-rule-groups": {
     "身份失配": [

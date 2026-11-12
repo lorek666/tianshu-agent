@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -292,6 +293,103 @@ def build_exec_receipt(
     )
 
 
+def build_mcp_receipt(
+    *,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    args_hash: str,
+    result: ToolResult,
+    resource: str = "",
+    action: str = "",
+    intent_seq: int = 0,
+    backend: str = "mcp",
+) -> Receipt | None:
+    """MCP 调用的凭据。
+
+    副作用发生在 **server 那边**：我们不知道它动了哪些文件，所以 `before_state`
+    显式记 `"unknown"`、`after_state` 是执行摘要（`mcp:<sha256>`，由 server/tool/
+    请求 id/结果文本/isError 算出）。**磁盘核对不适用**——`verify_receipts()` 对
+    `backend=="mcp"` 只核对事件引用、结果字段与 `mcp_call` 证据是否一致。
+
+    为什么要有凭据：红线 6「每个副作用必须产出 Receipt，且可独立核对」。MCP 调用
+    是副作用（server 可能改了它自己的状态），凭据至少要回答"哪次调用、调了谁、
+    结论是什么摘要"。
+    """
+    if result.effect_state != "applied":
+        return None
+    mcp = result.output.get("mcp")
+    if not isinstance(mcp, dict):
+        raise ValueError(f"MCP 结果 applied 但没有 mcp 输出：{result.output!r}")
+    after = mcp.get("after_state")
+    server = mcp.get("server")
+    tool = mcp.get("tool")
+    request_id = mcp.get("request_id")
+    missing = [
+        name
+        for name, value in (
+            ("after_state", after),
+            ("server", server),
+            ("tool", tool),
+            ("request_id", request_id),
+            ("resource", resource),
+            ("action", action),
+            ("intent_seq", intent_seq),
+        )
+        if not value and value != 0
+    ]
+    if missing:
+        raise ValueError(
+            f"MCP 结果 applied 但缺少凭据定位信息 {missing}，无法产出可核对的凭据"
+        )
+    if action != ACTION_EXEC:
+        raise ValueError(f"MCP 凭据的 action 必须是 {ACTION_EXEC}，收到 {action!r}")
+    expected = f"mcp://{server}/{tool}"
+    if resource != expected:
+        raise ValueError(
+            f"MCP 凭据的 resource 与 server/tool 不一致：{resource!r} ≠ {expected!r}"
+        )
+    evidence = _evidence_refs(
+        call_id=call_id,
+        intent_seq=int(intent_seq),
+        blob_ref=None,
+        before_state="unknown",
+    )
+    digest = str(after).split(":", 1)[1] if ":" in str(after) else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", digest or ""):
+        raise ValueError(f"MCP 执行摘要形状不对（期望 mcp:<64 hex>）：{after!r}")
+    evidence.append(
+        {
+            "kind": "mcp_call",
+            "server": server,
+            "tool": tool,
+            "request_id": int(request_id),
+            # 响应摘要（与 after_state 同一个摘要）：凭据要能独立核对"服务器回来
+            # 的是同一份结果"，只绑 server/tool/request_id 不够（复审 v5 阻断）。
+            "sha256": digest,
+        }
+    )
+    return Receipt(
+        receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
+        run_id=run_id,
+        call_id=call_id,
+        tool_id=tool_id,
+        action=ACTION_EXEC,
+        args_hash=args_hash,
+        root="",
+        resource=resource,
+        effect_state=result.effect_state,
+        before_state="unknown",
+        after_state=str(after),
+        backend=backend,
+        intent_seq=int(intent_seq),
+        evidence=evidence,
+        blob_ref=None,
+        issued_at=int(time.time() * 1000),
+    )
+
+
+
 def build_memory_receipt(
     *,
     run_id: str,
@@ -470,6 +568,28 @@ def _verify_evidence(
                             f"{ref.get(field)!r} ≠ {actual.get(field)!r}"
                         )
             kinds.add("memory_erasure")
+        elif kind == "mcp_call":
+            # 与同一次 tool.result 的 `output.mcp` 逐字段比对（不是"有字段就算数"）。
+            actual = (output or {}).get("mcp")
+            if not isinstance(actual, dict):
+                problems.append(
+                    f"凭据 {label} 带了 mcp_call 证据，但工具结果没有 mcp 输出"
+                )
+            else:
+                for field in ("server", "tool", "request_id"):
+                    if ref.get(field) != actual.get(field):
+                        problems.append(
+                            f"凭据 {label} 的 mcp_call.{field} 与工具结果不一致："
+                            f"{ref.get(field)!r} ≠ {actual.get(field)!r}"
+                        )
+                after = str(actual.get("after_state") or "")
+                digest = after.split(":", 1)[1] if ":" in after else ""
+                if ref.get("sha256") != digest:
+                    problems.append(
+                        f"凭据 {label} 的 mcp_call 响应摘要与执行摘要不一致："
+                        f"{ref.get('sha256')!r} ≠ {digest!r}"
+                    )
+            kinds.add("mcp_call")
         elif kind == "blob":
             if ref.get("absent"):
                 if payload.get("before_state") != ABSENT:
@@ -588,7 +708,15 @@ def verify_receipts(log, run_id: str) -> list[str]:
                 f"凭据 {label} 声称 applied，但工具结果是 {res.get('effect_state')}"
             )
         out = res.get("output") or {}
-        actual_after = out.get("sha256") or out.get("after_state")
+        # 文件凭据的写后摘要在 output.sha256 / output.after_state；MCP 凭据的在
+        # `output.mcp.after_state`（副作用在 server 那边，顶层没有文件哈希）。
+        # 这里只做"凭据声明的摘要与结果里那条一致"的通用核对，不猜哪一种是权威。
+        nested_mcp = out.get("mcp")
+        actual_after = (
+            out.get("sha256")
+            or out.get("after_state")
+            or (nested_mcp.get("after_state") if isinstance(nested_mcp, dict) else None)
+        )
         if actual_after != p.get("after_state"):
             problems.append(
                 f"凭据 {label} 的 after_state 与工具结果哈希不一致"
@@ -634,6 +762,30 @@ def verify_receipts(log, run_id: str) -> list[str]:
                 problems.append(
                     f"凭据 {label} 的 memory_id 与工具结果不一致："
                     f"{p.get('resource')!r} ≠ {matched_id!r}"
+                )
+        elif p.get("backend") == "mcp":
+            # MCP 的副作用在 server 那边，磁盘核对不适用：核对"结果字段齐全 +
+            # 证据引用（result / intent / mcp_call）能逐条对上 + after_state 形状"。
+            problems.extend(
+                _verify_evidence(
+                    p,
+                    label,
+                    by_seq=by_seq,
+                    intents=intents,
+                    required=("result", "intent", "mcp_call"),
+                    output=out,
+                )
+            )
+            for field in ("server", "tool", "is_error", "duration_ms", "after_state"):
+                if field not in out.get("mcp", {}) if isinstance(out.get("mcp"), dict) else True:
+                    problems.append(f"凭据 {label} 的 MCP 结果缺少审计字段：{field}")
+            if not str(p.get("after_state") or "").startswith("mcp:"):
+                problems.append(
+                    f"凭据 {label} 的 MCP 执行摘要形状不对：{p.get('after_state')!r}"
+                )
+            if p.get("before_state") != "unknown":
+                problems.append(
+                    f"凭据 {label} 的 MCP 写前状态必须是 unknown，实际 {p.get('before_state')!r}"
                 )
         elif p.get("action") == ACTION_EXEC:
             # 执行命令没有文件写后哈希，磁盘核对不适用；核对的是
