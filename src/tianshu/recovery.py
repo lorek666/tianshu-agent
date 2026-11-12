@@ -1397,7 +1397,9 @@ def _dispatch_row_targets(log: EventLog, run_id: str, call_id: str) -> tuple[str
         except ResourceError:
             continue
         # 用解析出的段重新拼规范键：别名/编码差异将来会拼出"同一对象的两个键"，
-        # 而对象阻断的判定是逐字节相等。
+        # 而对象阻断的判定是逐字节相等。**今天这一步是恒等的**（写入侧只写规范
+        # 形状），所以没有判据能区分它——留着是把"同一对象只有一个键"写进代码，
+        # 而不是等将来出现别名时才发现两个键。
         canonical = (
             mcp_object_key(server, tool) if tool is not None else mcp_server_key(server)
         )

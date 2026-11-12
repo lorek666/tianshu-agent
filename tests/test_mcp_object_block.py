@@ -92,7 +92,13 @@ def _lines(path: Path) -> list[dict]:
 
 
 def _config(
-    mode: str, *, call_log: Path, effect_log: Path, cwd: Path, name: str = "fake"
+    mode: str,
+    *,
+    call_log: Path,
+    effect_log: Path,
+    cwd: Path,
+    name: str = "fake",
+    call_timeout_ms: int | None = None,
 ) -> McpServerConfig:
     return McpServerConfig(
         name=name,
@@ -107,10 +113,13 @@ def _config(
             str(effect_log),
         ),
         cwd=str(cwd),
+        **({"call_timeout_ms": call_timeout_ms} if call_timeout_ms is not None else {}),
     )
 
 
-def _stack_with_server(tmp_path: Path, *, mode: str = "normal", mcp: bool = True):
+def _stack_with_server(
+    tmp_path: Path, *, mode: str = "normal", mcp: bool = True, call_timeout_ms: int | None = None
+):
     """开一个带假 MCP server 的栈；返回 (log, stack, ws, data, call_log)。"""
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -126,7 +135,11 @@ def _stack_with_server(tmp_path: Path, *, mode: str = "normal", mcp: bool = True
     clients = McpClients(
         {
             "fake": _config(
-                mode, call_log=call_log, effect_log=effect_log, cwd=tmp_path
+                mode,
+                call_log=call_log,
+                effect_log=effect_log,
+                cwd=tmp_path,
+                call_timeout_ms=call_timeout_ms,
             )
         }
     )
@@ -980,15 +993,28 @@ def test_unknown_commit_takes_the_execution_guard(tmp_path, monkeypatch):
     log, stack, ws, _data, call_log = _stack_with_server(tmp_path, mode="internal_error")
     real = tianshu_dispatcher().execution_guard
     acquired: list[str] = []
+    inside = {"value": False}
+    appended_inside: list[bool] = []
+    real_append = log.append
+
+    def append_spy(run_id, type, payload, **kwargs):  # noqa: ANN001 - 测试替身
+        if type == "recovery.object_blocked":
+            appended_inside.append(inside["value"])
+        return real_append(run_id, type, payload, **kwargs)
 
     @contextlib.contextmanager
     def spy(root, timeout_ms=None):
         acquired.append(str(root))
         kwargs = {} if timeout_ms is None else {"timeout_ms": timeout_ms}
-        with real(root, **kwargs):
-            yield
+        inside["value"] = True
+        try:
+            with real(root, **kwargs):
+                yield
+        finally:
+            inside["value"] = False
 
     monkeypatch.setattr(tianshu_dispatcher(), "execution_guard", spy)
+    monkeypatch.setattr(log, "append", append_spy)
     try:
         task = stack.tasks.create_task("守卫内提交", [str(ws)], mcp_servers=["fake"])
         engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
@@ -1007,6 +1033,11 @@ def test_unknown_commit_takes_the_execution_guard(tmp_path, monkeypatch):
         assert len(acquired) >= 2, (
             "对象阻断的提交没有拿执行守卫：它能在别人的复核与推进之间插进去，"
             f"实测只获取了 {len(acquired)} 次"
+        )
+        # 只数"拿了几次"是空壳判据（复审 N2）：守卫拿在别处、提交挪到守卫外
+        # 一样能让计数 ≥2。必须是**对象阻断落库时确实持锁**。
+        assert appended_inside == [True], (
+            "对象阻断不是在执行守卫内提交的（守卫拿到了，但提交在守卫外）"
         )
     finally:
         log.close()
@@ -1111,6 +1142,132 @@ def test_each_unsettled_call_gets_its_own_block_event(tmp_path):
         assert authority.active_object_keys() == [_ECHO]
     finally:
         log.close()
+
+
+def test_timeout_unknown_registers_object_block_and_refuses_next_call(tmp_path):
+    """超时（最常见的 unknown）也要登记对象阻断（复审 N1 的真实假阴性）。"""
+    log, stack, ws, _data, call_log = _stack_with_server(
+        tmp_path, mode="late_on_call", call_timeout_ms=150
+    )
+    try:
+        task = stack.tasks.create_task("超时", [str(ws)], mcp_servers=["fake"])
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        (tool_result,) = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert (tool_result["status"], tool_result["effect_state"]) == (
+            "failed",
+            "unknown",
+        )
+        assert tool_result["output"]["reason"] == "mcp.timeout"
+        blocked = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "recovery.object_blocked"
+        ]
+        assert [b["object"] for b in blocked] == [_ECHO], (
+            "超时是 unknown（可能已执行），必须登记对象阻断；否则下一次还能再发"
+        )
+        assert _ECHO in blocked_objects(log)
+
+        # 下一次调同一个工具：判定阶段就拒，请求不会再发（call-log 仍 1）
+        engine2 = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        second = engine2.start(task.task_id, out_name="out2.md")
+        rejected = [
+            e.payload
+            for e in log.read_run(second.run_id, verify=False)
+            if e.type == "dispatch.rejected"
+        ]
+        assert [r["rule_id"] for r in rejected] == ["dispatch.mcp_object_blocked"]
+        assert len(_lines(call_log)) == 1
+    finally:
+        log.close()
+
+
+def test_closed_unknown_registers_object_block(tmp_path):
+    """断线（server 在调用中退出，`McpClosed`）也要登记对象阻断。"""
+    log, stack, ws, _data, call_log = _stack_with_server(tmp_path, mode="crash_on_call")
+    try:
+        task = stack.tasks.create_task("断线", [str(ws)], mcp_servers=["fake"])
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        (tool_result,) = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert tool_result["effect_state"] == "unknown"
+        assert tool_result["output"]["reason"] == "mcp.closed"
+        blocked = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "recovery.object_blocked"
+        ]
+        assert [b["object"] for b in blocked] == [_ECHO]
+    finally:
+        log.close()
+
+
+def test_guard_timeout_does_not_lose_unknown_result_or_block(tmp_path, monkeypatch):
+    """抢守卫超时：结果与阻断都必须落库，并如实写 `block_guard="timeout"`。"""
+    log, stack, ws, _data, call_log = _stack_with_server(tmp_path, mode="internal_error")
+    real = tianshu_dispatcher().execution_guard
+    calls = {"n": 0}
+
+    @contextlib.contextmanager
+    def flaky(root, timeout_ms=None):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 第一次是发外边界，正常拿锁
+            kwargs = {} if timeout_ms is None else {"timeout_ms": timeout_ms}
+            with real(root, **kwargs):
+                yield
+            return
+        raise _guard_timeout("第二次（阻断提交）抢不到守卫")
+
+    monkeypatch.setattr(tianshu_dispatcher(), "execution_guard", flaky)
+    try:
+        task = stack.tasks.create_task("守卫超时", [str(ws)], mcp_servers=["fake"])
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        (tool_result,) = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert tool_result["effect_state"] == "unknown"
+        assert tool_result["output"].get("block_guard") == "timeout", (
+            "没抢到守卫必须如实写出来，不能假装排进了守卫"
+        )
+        blocked = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "recovery.object_blocked"
+        ]
+        assert [b["object"] for b in blocked] == [_ECHO], "抢不到守卫也不能丢阻断"
+        assert calls["n"] == 2
+    finally:
+        log.close()
+
+
+def _guard_timeout(message: str):
+    from tianshu.leases import GuardTimeout
+
+    return GuardTimeout(message)
 
 
 def tianshu_dispatcher():

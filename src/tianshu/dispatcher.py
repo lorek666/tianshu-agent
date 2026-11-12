@@ -3285,10 +3285,11 @@ class Dispatcher:
         `_resolve_target` 已经判过一次，但"判定通过 → 真正写 stdin"之间可能隔着
         等批准、等租约；这期间另一个 Run 可能把同一个对象标成阻断（例如它刚超
         时、还没人核对）。检查放在守卫内、紧贴状态推进：**撤销**与**恢复侧**的
-        阻断提交共用这把守卫，排不进这道缝；**运行期 unknown** 的对象阻断是另一
-        个进程在释放守卫之后追加的日志事件，它与"复核 → 推进"之间仍有一小段窗口
-        （落进去的调用会发出去；要消掉得把那条阻断提交也纳入同一次守卫获取，
-        未做，见 docs/SPEC §3.4 线性化边界）。命中就抛 `McpObjectBlocked`，由
+        阻断提交（恢复侧与运行期 unknown 的 `_commit_mcp_unknown`）共用这把守卫，
+        排不进这道缝；`unblock_object` 是人工解除，与 `unblock()` 一样不抢守卫
+         （解除只会放宽，不会漏挡）。仍剩两条窗口：没有 `data_root` 的库调用方
+        没有守卫可抢；提交侧抢守卫超时时照常提交并写 `block_guard="timeout"`
+        （见 docs/SPEC §3.4 线性化边界）。命中就抛 `McpObjectBlocked`，由
         `_dispatch_mcp` 按受控拒绝处理（一个字节都没发）。
         """
         keys = mcp_block_keys(server, tool)
@@ -3787,6 +3788,25 @@ class Dispatcher:
             self._set_request_state(request.request_id, STATE_REJECTED)
         return result
 
+    def _guarded_write(self, write, result_event: dict[str, Any]) -> None:
+        """有数据根就在执行守卫内提交，抢不到守卫也**必须**提交（结果不能丢）。
+
+        守卫把"发外边界复核 → 推进"与"阻断提交"排进同一个全序（复审 B1）。
+        抢不到守卫（`GuardTimeout`，说明有别的写者正在持锁）时按最坏情况照常
+        提交，并在结果里写 `block_guard="timeout"`——如实说明这一条没排在守卫里，
+        而不是为了"排进守卫"把结果与阻断丢掉。
+        """
+        root = self._data_root
+        if root is None:
+            write()
+            return
+        try:
+            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
+                write()
+        except GuardTimeout:
+            result_event["payload"]["output"]["block_guard"] = "timeout"
+            write()
+
     def _commit_mcp_unknown(
         self,
         request: ActionRequest,
@@ -3822,16 +3842,7 @@ class Dispatcher:
                 )
                 self._set_request_state(request.request_id, STATE_REJECTED)
 
-        root = self._data_root
-        if root is None:
-            _write()
-            return
-        try:
-            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
-                _write()
-        except GuardTimeout:
-            result_event["payload"]["output"]["block_guard"] = "timeout"
-            _write()
+        self._guarded_write(_write, result_event)
 
     def _commit_result(
         self,
@@ -3870,6 +3881,43 @@ class Dispatcher:
             "idem_key": request.call_id,
         }
         batch: list[dict[str, Any]] = [result_event]
+
+        if is_mcp and result.effect_state == "unknown":
+            # 运行期 unknown 的**其余**出口（超时 `McpTimeout`、断线 `McpClosed`）
+            # 走的是 `_commit_result`，不是 `_fail_unknown`：必须在这里补一条对象
+            # 阻断，否则最常见的两种 unknown 之后同一个工具还能再发一次（复审 N1：
+            # 文档声称"超时/断线就地落"，代码只覆盖了 -32603）。
+            # 与结果同事务落库；跨数据根由下一次 `recover` 的启动补登记带上。
+            # 提交同样拿执行守卫（与发外边界共用），抢不到时 `_guarded_write`
+            # 照常提交并写 `block_guard="timeout"`。
+            object_event = {
+                "run_id": request.run_id,
+                "type": "recovery.object_blocked",
+                "payload": {
+                    "object": target.uri,
+                    "call_ids": [request.call_id],
+                    "reason": (
+                        "执行中断且效果未知："
+                        f"{str(result.output.get('reason') or result.output.get('error') or '')}"
+                    ),
+                },
+                "task_id": request.task_id,
+                "actor_kind": "system",
+            }
+            batch.append(object_event)
+
+            def _write_mcp_unknown() -> None:
+                self._log.append_many(batch)
+                with self._log.transaction():
+                    self._conn.execute(
+                        "UPDATE dispatches SET state=?, updated_at=?"
+                        " WHERE dispatch_id=?",
+                        (DISPATCH_ERROR, self._clock(), dispatch_id),
+                    )
+                    self._set_request_state(request.request_id, STATE_DONE)
+
+            self._guarded_write(_write_mcp_unknown, result_event)
+            return
 
         if is_memory:
             if request.tool_id in (

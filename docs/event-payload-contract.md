@@ -239,7 +239,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**82** 条。45 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+- `tests/test_event_schema.py`：**84** 条。45 个类型 ×（一正一反例）、v1/v0 夹具逐行、
   版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
   blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
   **`legacy_write` 不被误用的两条元测试**（生产代码零调用点 + 显式 legacy 仍须过

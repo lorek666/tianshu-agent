@@ -61,6 +61,8 @@ GUARD_COMMIT = OBJ + "test_unknown_commit_takes_the_execution_guard"
 OLD_TARGET_COL = OBJ + "test_recovery_survives_dispatch_table_without_target_column"
 DEAD_AT_DISPATCH = OBJ + "test_server_dead_at_dispatch_is_unknown_without_object_block"
 EACH_CALL = OBJ + "test_each_unsettled_call_gets_its_own_block_event"
+TIMEOUT_BLOCK = OBJ + "test_timeout_unknown_registers_object_block_and_refuses_next_call"
+GUARD_TIMEOUT_NOTE = OBJ + "test_guard_timeout_does_not_lose_unknown_result_or_block"
 
 
 @dataclass(frozen=True)
@@ -297,12 +299,12 @@ CASES: tuple[Case, ...] = (
         old=(
             "        try:\n"
             "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
-            "                _write()\n"
+            "                write()\n"
             "        except GuardTimeout:\n"
             "            result_event[\"payload\"][\"output\"][\"block_guard\"] = \"timeout\"\n"
-            "            _write()\n"
+            "            write()\n"
         ),
-        new="        _write()  # 变异：对象阻断的提交不拿执行守卫\n",
+        new="        write()  # 变异：对象阻断的提交不拿执行守卫\n",
         tests=(GUARD_COMMIT,),
         why="对象阻断的提交不拿执行守卫（复审 B1）：它能在别人的「复核通过 → 推进」"
         "之间插进去，那次调用照样发出去",
@@ -340,6 +342,47 @@ CASES: tuple[Case, ...] = (
         tests=(EACH_CALL,),
         why="同一对象的后续未结算调用直接 return：`call_ids` 只剩第一条归因"
         "（事件仍然有效，但证据丢了）",
+    ),
+    Case(
+        name="NC-O24",
+        relpath="src/tianshu/dispatcher.py",
+        old="        if is_mcp and result.effect_state == \"unknown\":\n",
+        new="        if False and is_mcp and result.effect_state == \"unknown\":\n",
+        tests=(TIMEOUT_BLOCK,),
+        why="超时/断线走 `_commit_result` 却不落对象阻断（复审 N1）：最常见的两种"
+        "unknown 之后同一个工具还能再发一次——文档声称「超时/断线就地落」",
+    ),
+    Case(
+        name="NC-O25",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
+            "                write()\n"
+        ),
+        new=(
+            "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
+            "                pass\n"
+            "            write()\n"
+        ),
+        tests=(GUARD_COMMIT,),
+        why="守卫拿到了、但提交在守卫外（复审 N2 的 R8 形状）：计数判据看不出，"
+        "必须是「阻断落库时确实持锁」",
+    ),
+    Case(
+        name="NC-O26",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "        except GuardTimeout:\n"
+            "            result_event[\"payload\"][\"output\"][\"block_guard\"] = \"timeout\"\n"
+            "            write()\n"
+        ),
+        new=(
+            "        except GuardTimeout:\n"
+            "            write()\n"
+        ),
+        tests=(GUARD_TIMEOUT_NOTE,),
+        why="抢不到守卫时不写 `block_guard=timeout`：读者会把一条没排在守卫里的"
+        "阻断当成已线性化的（复审 N4）",
     ),
     Case(
         name="NC-O13",

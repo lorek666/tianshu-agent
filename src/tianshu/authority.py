@@ -332,6 +332,12 @@ def is_object_blocked(
     调用方一次传 `(工具级, server 级)` 两个键：server 级阻断要能遮住它的全部
     工具，所以"查一个键"不够。单行查询、`LIMIT 1`：写入路径每次发外之前都要问，
     这不是可以随记录变多而变慢的查询。
+
+    **这是低层精确查询**：只回答"这几个键里有没有一条有效记录"，**不**扫描表内
+    其它行、也不对它们做形状校验。守卫用的是 `active_object_keys()`（读侧
+    fail-closed：表里有坏键就整体按已阻断），生产路径不直接调本函数。查询键
+    本身形状不合法时抛 `ResourceError`——一个永远匹配不上的键不该回一个
+    "没阻断"的假答案。
     """
     if isinstance(object_keys, str):
         keys = (object_keys,)
@@ -339,6 +345,9 @@ def is_object_blocked(
         keys = tuple(str(key) for key in object_keys)
     if not keys:
         return False
+    for key in keys:
+        parse_mcp_object_key(key)
+
     db = _db_path(root)
     conn = _open_ro(db)
     if conn is None:

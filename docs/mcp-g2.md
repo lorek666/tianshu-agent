@@ -130,12 +130,16 @@
 `executing`：第一道在事件登记之前（还没有派发行），第二道命中按受控拒绝把行标成
 `rejected`（`_abort_dispatch` 的既有口径），事后不会被洗成"可能已发出"。
 
-**线性化边界（复审第一轮后修正）**：对象阻断的三种提交路径（恢复侧、运行期
-`unknown` 的 `_commit_mcp_unknown`、手工 `unblock_object`）都先拿 `execution_guard`，
-与发外边界的"复核 → 推进"共用同一把守卫——要么阻断先提交（复核看得见、拒发），要么
-推进先完成（这次调用已越过边界，阻断只约束之后的新调用）。**仍剩两条窗口**：没有
-`data_root` 的库调用方没有守卫可抢；提交侧抢守卫超时时按最坏情况照常提交并在结果里写
-`block_guard="timeout"`。发包前 server 不可用（确定一个字节都没写）**不**登记对象阻断。
+**线性化边界（复审两轮后修正）**：对象阻断的**两种提交路径**（恢复侧、运行期
+`unknown` 的 `_commit_mcp_unknown` 与 `_commit_result` 的 unknown 分支）都先拿
+`execution_guard`，与发外边界的"复核 → 推进"共用同一把守卫——要么阻断先提交（复核
+看得见、拒发），要么推进先完成（这次调用已越过边界，阻断只约束之后的新调用）。
+`unblock_object` 是人工解除，与 `unblock()` 一样**不**抢守卫（解除只会放宽，不会漏挡）。
+**仍剩两条窗口**：没有 `data_root` 的库调用方没有守卫可抢；提交侧抢守卫超时时按最坏
+情况照常提交并在结果里写 `block_guard="timeout"`（有单测钉住）。发包前 server 不可用
+（确定一个字节都没写）**不**登记对象阻断。超时 `McpTimeout` 与断线 `McpClosed` 走的是
+`_commit_result`，那里同样登记对象阻断（复审第二轮 N1 抓到的真实假阴性：此前只有
+`-32603` 一条路径落阻断）。
 
 **解除分开**：`unblock()` 只解目录，`unblock_object()` 才解对象——核对过工作区文件不等于
 核对过 server 侧副作用（后者本地根本没法核对，只能人看 server 的输出/日志后确认）。
@@ -161,12 +165,12 @@ server 侧时，工具仍然发不出去。
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
   **`tests/test_mcp_crash.py`（24；收尾轮 9 → PR #124 扩到 24）**、
-  **`tests/test_mcp_object_block.py`（31；对象级阻断，PR #129，复审整改后）**，另有契约
+  **`tests/test_mcp_object_block.py`（34；对象级阻断，PR #129，两轮复审整改后）**，另有契约
   判据在 `tests/test_event_schema.py` / `tests/test_rule_ids.py` /
   `tests/test_g1d_resource_kinds.py`。→ 规格 §4 的 c1–c16 与本文件的测试一一对应。
 - 负控：规格 §5 的 NB1–NB24 + 脚本化的 NB21 / NB25–NB39
-  （`scripts/negative_controls_mcp_crash.py`，**16 条**）+ 对象阻断 **NC-O1–NC-O23**
-  （`scripts/negative_controls_object_block.py`，**23 条**）→ 合计 **39 条脚本化**；
+  （`scripts/negative_controls_mcp_crash.py`，**16 条**）+ 对象阻断 **NC-O1–NC-O26**
+  （`scripts/negative_controls_object_block.py`，**26 条**）→ 合计 **42 条脚本化**；
   已实测红的逐条列在验收报告 §3（每条都是"回退保护 → 目标用例红"，并记录 pytest
   返回码与耗时）。
 
