@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -354,12 +355,18 @@ def build_mcp_receipt(
         blob_ref=None,
         before_state="unknown",
     )
+    digest = str(after).split(":", 1)[1] if ":" in str(after) else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", digest or ""):
+        raise ValueError(f"MCP 执行摘要形状不对（期望 mcp:<64 hex>）：{after!r}")
     evidence.append(
         {
             "kind": "mcp_call",
             "server": server,
             "tool": tool,
             "request_id": int(request_id),
+            # 响应摘要（与 after_state 同一个摘要）：凭据要能独立核对"服务器回来
+            # 的是同一份结果"，只绑 server/tool/request_id 不够（复审 v5 阻断）。
+            "sha256": digest,
         }
     )
     return Receipt(
@@ -575,6 +582,13 @@ def _verify_evidence(
                             f"凭据 {label} 的 mcp_call.{field} 与工具结果不一致："
                             f"{ref.get(field)!r} ≠ {actual.get(field)!r}"
                         )
+                after = str(actual.get("after_state") or "")
+                digest = after.split(":", 1)[1] if ":" in after else ""
+                if ref.get("sha256") != digest:
+                    problems.append(
+                        f"凭据 {label} 的 mcp_call 响应摘要与执行摘要不一致："
+                        f"{ref.get('sha256')!r} ≠ {digest!r}"
+                    )
             kinds.add("mcp_call")
         elif kind == "blob":
             if ref.get("absent"):

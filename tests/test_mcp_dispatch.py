@@ -173,6 +173,11 @@ def test_approved_mcp_call_runs_once_and_produces_receipt(tmp_path):
         assert receipt["backend"] == "mcp"
         assert receipt["before_state"] == "unknown"
         assert {ref["kind"] for ref in receipt["evidence"]} >= {"result", "intent", "mcp_call"}
+        mcp_ref = next(ref for ref in receipt["evidence"] if ref["kind"] == "mcp_call")
+        assert mcp_ref["server"] == "fake" and mcp_ref["tool"] == "echo"
+        # 响应摘要必须进证据：只绑 server/tool/request_id 核对不了"结果是不是同一份"。
+        assert len(mcp_ref["sha256"]) == 64
+        assert receipt["after_state"] == "mcp:" + mcp_ref["sha256"]
         assert verify_receipts(log, result.run_id) == []
     finally:
         clients.close_all()
@@ -349,3 +354,44 @@ def test_task_records_mcp_servers_in_row_and_event(tmp_path):
         assert event.payload["mcp_servers"] == ["fake", "other"]
     finally:
         clients.close_all()
+
+
+# ---------------------------------------------------------------- c15：装配探针（复审 v5）
+
+
+class _RecordingClients:
+    """只记录 `start_all()` 调用次数的装配探针（形态与 `McpClients` 对齐）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.configs: dict = {}
+
+    def start_all(self) -> None:
+        self.calls += 1
+
+    def states(self):
+        return ()
+
+    def server(self, name):
+        return None
+
+    def close_all(self) -> None:
+        pass
+
+
+def test_replay_does_not_construct_or_start_clients(tmp_path):
+    """回放不碰 MCP：装配探针的 `start_all()` 只在 build_stack 里发生一次。"""
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    probe = _RecordingClients()
+    stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=probe)
+    try:
+        assert probe.calls == 1, "装配点应当启动一次"
+        task = _task(stack, servers=())
+        engine = engine_for(stack, _script())
+        result = engine.start(task.task_id, out_name="out.md")
+        assert probe.calls == 1, "执行 Run 不该再启动客户端"
+        report = replay(log, result.run_id)
+        assert report.ok, report.problems
+        assert probe.calls == 1, "回放不该启动/构造 MCP 客户端"
+    finally:
+        log.close()

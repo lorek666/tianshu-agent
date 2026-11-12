@@ -2,7 +2,8 @@
 
 - 施工规格：[`SPEC-G2-MCP-2026-11-12.md`](SPEC-G2-MCP-2026-11-12.md)（v2，经两轮独立复审整改）。
 - 设计说明与边界：[`mcp-g2.md`](mcp-g2.md)。
-- 交付 PR：**#115**（规格）、**#116**（客户端）、**#117**（注册表与准入）、**#118**（派发链路 + 契约 + CLI + 文档）。
+- 交付 PR：**#115**（规格）、**#116**（客户端）、**#117**（注册表与准入）、**#119**（派发链路 + 契约 + CLI + 文档）。
+  （#118 是并行工作流「子代理阶段施工规格」，与本轮无关，登记在此避免编号混淆。）
 - 基线：`main @ 0f30d01`（F2 收口），本机实测 **1905 passed / 7 skipped**；
   交付后本机实测 **1998 passed / 7 skipped**（macOS arm64），UI `vitest` **51 passed** 不变，
   `ruff check .` 干净，运行时依赖仍为零（`dependencies = []`）。
@@ -20,13 +21,13 @@
 | MCP-c6 | 工具 id 映射冲突（两段都查）→ 两者都不准入 | `test_tool_id_collision_rejects_both_sides`、`test_tool_collision_covers_tool_segment_too` | ✅ 通过 |
 | MCP-c7 | server 改 schema/描述 → `tool_version` 变 → 旧批准失效 | `test_tool_version_binds_the_raw_schema`、`test_tool_version_changes_with_description` | ✅ 通过（版本 = 原始 schema + 归一 schema + 描述 的摘要在纯函数上钉住） |
 | MCP-c8 | 没声明 `--allow-mcp-server` → 不弹批准，`dispatch.rejected` = `c4.mcp_not_allowed` | `test_mcp_call_without_task_allowlist_is_rejected_before_approval` | ✅ 通过 |
-| MCP-c9 | 声明了 → 弹批准（`c4.mcp_call`）→ 执行一次 → intent + result + receipt(backend=mcp) | `test_approved_mcp_call_runs_once_and_produces_receipt` | ✅ 通过（真子进程调用日志证明只发一次；`verify_receipts == []`） |
-| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | `test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process` | ✅ 通过；**恢复链路靠 recovery 的未知工具分支**（见 §4-10） |
+| MCP-c9 | 声明了 → 弹批准（`c4.mcp_call`）→ 执行一次 → intent + result + receipt(backend=mcp)，且凭据**可独立核对**（含响应摘要） | `test_approved_mcp_call_runs_once_and_produces_receipt` | ✅ 通过（真子进程调用日志证明只发一次；`mcp_call` 证据带 `sha256` 响应摘要并与执行摘要逐字核对；`verify_receipts == []`） |
+| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | `test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process` | **部分**：`unknown` 结算已测；**`recovery` 对 MCP intent 的判定未测**（NB21 未做，见 §4-10） |
 | MCP-c11 | 已取消的 Run 一条 `tools/call` 都不发，`none_applied` | `test_cancelled_run_sends_no_mcp_frames` | ✅ 通过（假 server 的调用日志为空） |
-| MCP-c12 | 结果超上限 → 截断 + 字节记账；非文本只记类型不丢 | `test_max_result_bytes_truncates_and_reports_bytes`、`test_max_result_bytes_counts_utf8_bytes_not_characters`、`test_structured_content_counts_against_the_result_budget`、`test_call_tool_returns_text_and_keeps_unsupported_content` | ✅ 通过（**不落内容引用**，见 §4-5） |
+| MCP-c12 | 结果超上限 → 截断 + 字节记账；非文本只记类型不丢（**规格已改成不落内容引用**） | `test_max_result_bytes_truncates_and_reports_bytes`、`test_max_result_bytes_counts_utf8_bytes_not_characters`、`test_structured_content_counts_against_the_result_budget`、`test_call_tool_returns_text_and_keeps_unsupported_content` | ✅ 通过（与**改后的**判据一致：截断 + `bytes`/`dropped_bytes`/`dropped_blocks`，不落 `content://`；见 §4-5） |
 | MCP-c13 | `isolation_requires` 非空 → 任何平台都 `c4.mcp_isolation_unproven` | `test_isolation_requires_makes_mcp_unproven` | ✅ 通过（不因后端自称而放行） |
 | MCP-c14 | `tianshu mcp list --json` 如实列 server 状态 / 协议版本 / 准入与被拒工具与原因 / 截断 | `test_mcp_list_reports_servers_tools_and_protocol`、`test_mcp_list_surfaces_rejected_tools_with_reason`、`test_mcp_list_reports_unconfigured_without_starting_anything` | ✅ 通过 |
-| MCP-c15 | 回放不碰 server：调用日志在回放前后完全一致 | `test_replay_does_not_talk_to_the_server` | ✅ 通过（读的事件只读） |
+| MCP-c15 | 回放不碰 server：**装配探针**记录 `start_all()` 只在装配点发生 1 次，回放后仍为 1；调用日志前后一致 | `test_replay_does_not_construct_or_start_clients`、`test_replay_does_not_talk_to_the_server` | ✅ 通过 |
 
 ## 2 契约与口径变更（逐条）
 
@@ -107,11 +108,18 @@
 10. **恢复链路靠既有保守分支**：MCP 工具**故意不进** `SPECS`，`recovery.py` 的"未知
     工具"分支给出 `unknown` + 阻断待核查。**没有**针对 MCP 的崩溃夹具（NB21 未做），
     所以"崩溃后判定"这条只在既有 recovery 语义上成立，**未在本轮实测**。
-11. **`max_tools` 两层都判**：客户端发现阶段截断（并报 `<truncated>` 拒绝行），准入层
+12. **`max_tools` 两层都判**：客户端发现阶段截断（并报 `<truncated>` 拒绝行），准入层
     再判一次；截断发生在客户端时，被截掉的工具名我们根本收不到——拒绝行只能说明
     "还有更多，被截断了"，不能列出名字。
-12. **Windows arm64 / 安装升级 / 签名**等 G3 事项与本轮无关，仍未做。
-
+13. **Windows arm64 / 安装升级 / 签名**等 G3 事项与本轮无关，仍未做。
+14. **跨进程注册表一致性**：`build_stack` 现在**总是**设进程级注册表（没有 MCP 时设成
+    纯内置表），同进程先后装配不会互相继承动态工具；但多进程各有一份注册表，跨进程
+    一致性靠"同配置同准入"，未做跨进程比对。
+    所以"崩溃后判定"这条只在既有 recovery 语义上成立，**未在本轮实测**——c10 因此
+    在 §1 标"部分"。
+11. **等批准期间取消不立即生效**：`tools/call` 是同步阻塞调用，取消只在发包前检查
+    一次；等响应期间取消要等这次调用结算（超时或返回）才生效。已发出的 RPC 无法
+    撤回（同网络阶段的"在途 TCP 字节无法撤回"）。
 ## 5 后续工单
 
 1. 把长连接 spawn 收进 `exec_backends` 接缝（`spawn_session`）+ MCP 专属隔离探针，之后

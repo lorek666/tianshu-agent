@@ -3167,12 +3167,13 @@ def build_stack(
         mcp_clients = McpClients(
             mcp_servers, default_cwd=root if root.is_dir() else None
         )
-    if mcp_clients is not None:
-        from .tool_registry import build_registry, set_registry
+    # **总是**设注册表（没有 MCP 时设成纯内置表）：同一进程里先后装配"带 MCP"与
+    # "不带 MCP"的 stack 时，后者不能继承前者的动态工具（复审 v5 建议）。
+    from .tool_registry import build_registry, set_registry
 
+    if mcp_clients is not None:
         mcp_clients.start_all()
-        registry = build_registry(mcp_clients)
-        set_registry(registry)
+    set_registry(build_registry(mcp_clients))
     cls = dispatcher_cls or Dispatcher
     dispatcher = cls(
         log,

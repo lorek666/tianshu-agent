@@ -65,6 +65,7 @@
    实测报告测的不是这个进程，跨对象作证不可接受。
 4. **只做 stdio**：HTTP/SSE、OAuth、远程 server 未做。**只做 tools**：resources /
    prompts / sampling / roots / logging / progress / `list_changed` 未做。
+   **等批准期间取消不立即生效**：`tools/call` 同步阻塞，取消只在发包前检查一次。
 5. **图片/音频/资源正文不收**，只记类型。大结果**不落内容引用**（客户端截断并报字节，
    与 `run_command` 的 `stdout_ref` 不是同一机制）。
 6. **没有 MCP 专属预算维度**：调用不预占账本；server 的 CPU/内存/磁盘占用无上限（只有
