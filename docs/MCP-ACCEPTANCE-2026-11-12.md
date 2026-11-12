@@ -57,6 +57,12 @@
    `tool-admission.md` §7/§8 的"没有执行器"口径改写。
 6. 工具面判据（`test_veto_scope.py`）：基线保持 15 项字面集合；动态工具只在配置 MCP 时
    出现，故该判据的"没有新增可见工具"结论**在没有 MCP 配置时仍成立**。
+7. **恢复的派发行口径**（收尾轮修正，不属于事件契约，但审计看得到）：恢复补写
+   `tool.result` 时，`dispatches` 行必须同时离开 `intent/executing`——
+   `applied → done`、`none_applied`/`unknown` → `error`，并且**只从
+   `intent/executing` 推进**（`revoked`/`rejected`/`done`/`error` 是审计事实，不许被
+   恢复改写）；`updated_at` 用恢复这一刻的时钟（不是行自己的 `created_at`，否则更新
+   时间倒退）。这条对**所有工具**生效，不只 MCP——文件写的恢复分支原来漏着（复审 R2）。
 
 ## 3 负控（回退即红，逐条实测）
 
