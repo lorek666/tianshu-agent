@@ -1596,7 +1596,12 @@ class Dispatcher:
         )
 
     def _ensure_child_budget_account(
-        self, request: ActionRequest, child_run_id: str, limits: dict[str, int]
+        self,
+        request: ActionRequest,
+        child_run_id: str,
+        limits: dict[str, int],
+        *,
+        created_at: int,
     ) -> None:
         """子 Run 的账户：`run:<child_run_id>`，父链指向父（=根）Run 账户。
 
@@ -1618,7 +1623,11 @@ class Dispatcher:
             parent_id=parent_id,
             run_id=child_run_id,
             label="subtask",
-            deadline_ms=self._clock() + int(limits.get("deadline_ms", 0)),
+            # deadline 从 `subtasks.created_at` 起算，**不**再读一次墙钟：
+            # 两次读钟在 CI 上可能相差 ±1ms（NTP 回拨），会让"deadline 正好是
+            # 300s"这条可复现的不变量变成偶发失败。创建时间就是同一个事务里
+            # 已经落库的那个时刻，用它才既可复现又与账本行一致。
+            deadline_ms=created_at + int(limits.get("deadline_ms", 0)),
         )
 
     def _dispatch_subtask(
@@ -1682,7 +1691,10 @@ class Dispatcher:
                     limits=limits,
                 )
                 self._ensure_child_budget_account(
-                    request, subtask.child_run_id, limits
+                    request,
+                    subtask.child_run_id,
+                    limits,
+                    created_at=subtask.created_at,
                 )
                 tx.append(
                     request.run_id,

@@ -545,10 +545,9 @@ def test_spawn_reserves_subtasks_dimension(tmp_path):
         child_limits = stack.budget._limits(f"run:{row.child_run_id}")
         assert child_limits == {"tokens": 1200, "requests": 3}
         assert child_account["deadline_ms"] is not None
-        assert (
-            child_account["deadline_ms"] - row.created_at
-            <= SUBTASK_DEADLINE_MS
-        )
+        # deadline 从子任务 created_at 起算（不重复读墙钟）：这条是**精确**不变量，
+        # 不是"大约 300 秒"。CI 上曾经因为两次读钟相差 1ms 让 <= 断言偶发红。
+        assert child_account["deadline_ms"] - row.created_at == SUBTASK_DEADLINE_MS
     finally:
         log.close()
 
