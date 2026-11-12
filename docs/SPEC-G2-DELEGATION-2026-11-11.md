@@ -159,8 +159,10 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 共享预算：子 Run 的账户 `run:<child_run_id>`，`parent_id = 根任务账户`（父任务所属
   根 Run 的 `run:<root_run_id>`）；子账户只声明局部上限，**不**继承父任务剩余余量当
   自己的上限（父链负责扣减）。spawn 时在父账户的 `subtasks` 维度 `reserve` 1，
-  子任务收尾时按实际结果 `settle`（成功/失败都 settle 1；`abandon_unsent` 只在父取消
-  且子任务**未执行**时用）。子任务未声明可用额度 → 预占失败 → spawn 拒绝
+  子任务收尾时按实际结果 `settle`（成功/失败/取消都 settle 1；`abandon_unsent` 只在
+  子任务**确定未执行**即终止时用——判据是子 Run 仍 `created`、作业从未被认领
+  （`claim_epoch=0`）、作业仍 `pending`；父取消、fence、`subtask.cancel` 三条路径都按
+  这个判据，而不是"父取消"这一个来源）。子任务未声明可用额度 → 预占失败 → spawn 拒绝
   （`dispatch.budget_refused`，复用既有编号）。
 
 ### 2.5 执行、等待与唤醒（D2）
@@ -172,16 +174,21 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 子任务收尾（成功 / 失败 / 取消 / fence）：在子 Run 收尾的同一事务里
   1. 更新 `subtasks.state / result_ref / summary / error / ended_at`；
   2. 往**父 Run** 追加一条 `subtask.finished` 事件（跨 Run 写事件用既有事件日志的显式
-     `run_id` 参数，不另建日志）；
+     `run_id` 参数，不另建日志）。**fence 例外：只改行、不写 `subtask.finished`**——
+    事件名是"完成"，把一次"结果作废"写进去会让父 Run 的审计里出现一个不该被采信的结论；
+     父 Run 要问 fenced 结果就调 `subtask.status`（读行，不读事件）；
   3. 若该父 Run 已无未完成子任务 → `JobStore.wake(parent_job)` 把父作业从 `waiting`
      置回 `pending`（新 API；`wake` 只对 `state='waiting'` 生效，不抢别人的 claim）。
-- `subtask.status` 返回 `{subtask_id, state, child_run_state?, turns?, elapsed_ms?, error?}`；
-  `state` 是子任务状态（queued/running/succeeded/failed/cancelled/fenced），不是子 Run
-  状态机——两者都给出，不互相冒充。
-- `subtask.result`：未完成 → `{state, done:false}`（**不是**失败，也不是空结果）；
-  完成 → `{done:true, state, summary, result_ref, usage:{turns, tokens}, sources:[...]}`，
-  `result_ref` 指向子 Run 最后一轮模型输出的**有界文本**（≤4 KiB 内联 + 全文引用）。
+- `subtask.status` 返回 `{subtask_id, state, child_task_id, child_run_id, child_run_state,
+  job_id, limits, created_at, elapsed_ms, error}`；`state` 是子任务状态
+  （queued/running/succeeded/failed/cancelled/fenced），`child_run_state` 是子 Run 状态机
+  ——两者都给出，不互相冒充。
+- `subtask.result`：未完成 → `{subtask_id, state, done:false}`（**不是**失败，也不是空结果）；
+  完成 → `{subtask_id, state, done:true, summary, result_ref, error}`，另有可选的
+  `usage:{turns?, tokens?}`——**未知的维度不写**（不拿 0 补齐，只有账本里显式记着 0 才写 0）。
+  `result_ref` 指向子 Run 最后一轮模型输出的**有界文本**（≤4 KiB 内联 + `content://` 全文引用）。
   子任务没有文件写入，结果只经内容存储与事件保存，**不**要求父任务落地成用户文件。
+  没有 `sources` 字段（D1 规格里写过，D2 未实现，这里按代码改口）。
 
 ### 2.6 取消、fence 与恢复（D2）
 
@@ -193,9 +200,10 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
   `dispatch.parent_fenced`，子任务状态置 `fenced`，结果不能回填父 Run。
 - `subtask.cancel`：未完成 → 子 Job 取消请求 + 状态 `cancelling`（**不是** `cancelled`；
   执行侧在安全点确认）；已完成 → 幂等返回当前状态，不报错、不假装撤销。
-- 崩溃恢复：父作业停在 `waiting` 而子任务已终结 → `recover`/worker 启动时先核
-  `subtasks` 表，把父作业 `wake`；子任务行有 `running` 但子 Run 已终结 → 以子 Run 的
-  终态为准修正（**以证据为准，不按进程退出猜**）。
+- 崩溃恢复：**Worker 启动时**（`Worker.run_once` 的首次调用）先做两件事，再认领作业：
+  ① 子任务行停在未完成、子 Run 已终结 → 以子 Run 终态为准修正（**以证据为准，不按进程
+  退出猜**）；② 父作业停在 `waiting`、`subtasks` 表里已无未完成行 → 补一次 `wake`。
+  `recover` CLI **未接**这两步（它是单 Run 对账，不做全库扫描），见 §5 边界 12。
 
 ### 2.7 事件、规则、工具 id 增量
 
@@ -260,7 +268,7 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 测试文件：`tests/test_g2_delegation_exec.py`（c1–c5、c7、c8 + 事务原子性 + 结算守卫 + 无输出不编造 + CLI）、
   `tests/test_g2_delegation_fence.py`（c6 两条路径）、
   `tests/test_g2_delegation_replay.py`（c9 四条）。
-- 全量 **2056 passed / 7 skipped**（357.63s，macOS arm64；基线 `main @ 6140d9c` 同机 2038/7、361.47s；+18）。负控 6 条全部实测变红（失败数 20/2/1/2/2/2，红名见 PR body）。额外用
+- 全量 **2056 passed / 7 skipped**（357.63s，macOS arm64；基线 `main @ 6140d9c` 同机 2038/7、361.47s；+18）。负控 6 条全部实测变红（跑 7 个 `test_g2_delegation_*.py` 共 53 条，失败数 20/2/1/2/2/12，变异方式见 PR body）。额外用
   `test_child_finish_is_one_transaction` 钉住「行/事件/预算/唤醒同一事务」：
   在预算结算处注入异常，回滚后 Run 仍 `running`、`subtasks` 行未提交、
   父 Run 无 `subtask.finished`、预占仍占着。
@@ -309,6 +317,10 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 10. **Windows 未验证**：委派复用同一套 Job/Worker，Windows 基线红不因本轮改口。
 11. **`max_subtasks` 是任务级静态声明**：变更要新任务（与 `outbound_allow` 一致），
     不支持运行中扩大。
+12. **启动恢复只在 Worker 启动时跑**：`recover` CLI 还是单 Run 对账，不做全库扫描；
+    所以"没人起 worker"时，停在 `waiting` 的父作业不会自己动。另外 `reconcile_finished_subtasks`
+    在修正成功收尾的子任务行时会把说明性文案写进 `error` 列（如"启动恢复：按子 Run 终态
+    succeeded 修正"）——这是审计注记，不是失败；`subtask.result` 会把该列原样给出。
 
 ## 6 交付清单（合入后回填实测）
 

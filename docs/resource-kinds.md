@@ -124,8 +124,9 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 ## 8 G2 子代理 D1/D2：委派资源有了执行器（D2 起真的执行）
 
-- 判据与范围见 `docs/SPEC-G2-DELEGATION-2026-11-11.md` §2.1–§2.4 / §3 D1；
-  测试在 `tests/test_g2_delegation_{contract,spawn,control,recovery}.py`。
+- 判据与范围见 `docs/SPEC-G2-DELEGATION-2026-11-11.md` §2.1–§2.6 / §3 D1+D2；
+  测试在 `tests/test_g2_delegation_*.py`：D1 是 `{contract,spawn,control,recovery}`
+  （35 条），D2 是 `{exec,fence,replay}`（18 条）。
 - 资源形状不变：`subtask://<slug>`，slug 走既有 `_OPAQUE_ID`
   （`[A-Za-z0-9_.:-]{1,128}`）。**没有新增解析器**。
 - 四个工具：`subtask.spawn`（`delegate`，需审批）、`subtask.status` /
