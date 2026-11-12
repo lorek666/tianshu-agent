@@ -25,7 +25,7 @@ from support import engine_for, stack_for
 from tianshu.dispatcher import build_request
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
-from tianshu.tasks import RUN_RUNNING
+from tianshu.tasks import RUN_RUNNING, RunCursor
 
 # ---------------------------------------------------------------- 夹具
 
@@ -225,6 +225,49 @@ def test_result_reports_bounded_summary_when_finished(tmp_path):
         # 读结果不产生执行副作用：没有新的子 Run、没有唤醒作业。
         (row,) = stack.tasks.list_subtasks(run.run_id)
         assert stack.claims.get(row.job_id).state == "pending"
+    finally:
+        log.close()
+
+
+def test_result_usage_does_not_turn_unknown_into_zero(tmp_path):
+    """子 Run 的游标账本没记某个维度 → 那个键**不出现**，不是写 0。
+
+    反例很具体：`int(ledger.get("turns", 0) or 0)` 会把"D2 还没记账"说成"花了
+    0 个回合"。父任务据此对账时会少算——这正是预算口径「未知不是零」禁止的。
+    两个维度各自判定：空账本 → 整个 `usage` 不出现；只记了 turns（tokens 未知）
+    → 只写 turns，不拿 0 补齐另一个。
+    """
+    log, stack = _stack(tmp_path)
+    try:
+        task = _task(stack)
+        run, claim = _parent_run(stack, task)
+        assert _spawn(stack, task, run, claim)[0].is_admitted
+        _mark_finished(log, run.run_id)
+        (row,) = stack.tasks.list_subtasks(run.run_id)
+        # D2 的收尾会写子 Run 游标；D1 只读它，不替它编用量。
+        child_claim = stack.claims.claim(row.job_id)
+        stack.tasks.save_cursor(row.child_run_id, RunCursor(), child_claim)
+
+        decision, empty = _call(stack, task, run, claim, "subtask.result", "reader")
+        assert decision.is_admitted
+        assert empty is not None and empty.output["done"] is True
+        assert "usage" not in empty.output, "空账本 = 未知，不能写成 0"
+
+        stack.tasks.save_cursor(
+            row.child_run_id, RunCursor(budget_ledger={"turns": 2}), child_claim
+        )
+        decision, partial = _call(
+            stack,
+            task,
+            run,
+            claim,
+            "subtask.result",
+            "reader",
+            call_id="subtask.result-reader-after-usage",
+        )
+        assert decision.is_admitted
+        assert partial is not None
+        assert partial.output["usage"] == {"turns": 2}, "tokens 未知就不写，不补 0"
     finally:
         log.close()
 

@@ -1837,14 +1837,26 @@ class Dispatcher:
                 "result_ref": subtask.result_ref,
                 "error": subtask.error,
             }
+            # 用量从子 Run 的游标账本读。口径是"**未知不写、零照写**"：
+            #
+            # - 没有游标行 / 账本里没有这个键 → 这个维度的用量**未知**，键不出现在
+            #   output 里（`int(None or 0)` 会把"没记账"洗成"花了 0"，正是预算口径
+            #   `未知不是零` 要禁止的事）；
+            # - 账本里显式写着 `0` → 这是已发生的事实（例如模型回合已记账、确实没
+            #   花 token），照写 0。
+            #
+            # 两个维度各自判定：只知道 turns 时就只给 turns，不拿 0 补齐另一个。
             stored = self._tasks.load_cursor(subtask.child_run_id)
             if stored is not None:
-                # 用量从子 Run 的游标账本读；读不到就**不写** usage（未知不是零）。
                 ledger = stored[0].budget_ledger or {}
-                output["usage"] = {
-                    "turns": int(ledger.get("turns", 0) or 0),
-                    "tokens": int(ledger.get("tokens", 0) or 0),
+                usage = {
+                    key: int(ledger[key])
+                    for key in ("turns", "tokens")
+                    if isinstance(ledger.get(key), int)
+                    and not isinstance(ledger.get(key), bool)
                 }
+                if usage:
+                    output["usage"] = usage
         result = ToolResult("succeeded", "none_applied", output)
         self._commit_result(request, dispatch_id, result, target, intent_seq)
         return result
