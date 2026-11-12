@@ -178,7 +178,12 @@ CASES: tuple[Case, ...] = (
         name="NB32",
         relpath="src/tianshu/dispatcher.py",
         # 变异：不真的推进外发边界，直接当成"已经推进"（= 拿掉发包前的标记）
-        old="            boundary_marked = self._mark_mcp_send_boundary(dispatch_id)\n",
+        # 锚点跟随 #129：调用点多了 server/tool 两个关键字参数（对象阻断复核）。
+        old=(
+            "            boundary_marked = self._mark_mcp_send_boundary(\n"
+            "                dispatch_id, server=target.server, tool=target.tool\n"
+            "            )\n"
+        ),
         new="            boundary_marked = True  # noqa: F841 - 变异：不落标记\n",
         tests=(MARKED, REFUSE),
         why="拿掉发包前的外发边界标记：崩溃在标记之后仍是 intent，恢复会判没发；"
