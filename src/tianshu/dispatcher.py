@@ -3284,9 +3284,12 @@ class Dispatcher:
         **对象阻断复核也在这里**（与 `_advance_to_executing` 同一把锁内）：
         `_resolve_target` 已经判过一次，但"判定通过 → 真正写 stdin"之间可能隔着
         等批准、等租约；这期间另一个 Run 可能把同一个对象标成阻断（例如它刚超
-        时、还没人核对）。检查放在守卫内、紧贴状态推进：撤销与阻断都排不进这道
-        缝。命中就抛 `McpObjectBlocked`，由 `_dispatch_mcp` 按受控拒绝处理（一个
-        字节都没发）。
+        时、还没人核对）。检查放在守卫内、紧贴状态推进：**撤销**与**恢复侧**的
+        阻断提交共用这把守卫，排不进这道缝；**运行期 unknown** 的对象阻断是另一
+        个进程在释放守卫之后追加的日志事件，它与"复核 → 推进"之间仍有一小段窗口
+        （落进去的调用会发出去；要消掉得把那条阻断提交也纳入同一次守卫获取，
+        未做，见 docs/SPEC §3.4 线性化边界）。命中就抛 `McpObjectBlocked`，由
+        `_dispatch_mcp` 按受控拒绝处理（一个字节都没发）。
         """
         keys = mcp_block_keys(server, tool)
         root = self._data_root
@@ -3702,7 +3705,22 @@ class Dispatcher:
             "actor_kind": "tool",
             "idem_key": request.call_id,
         }
-        if isinstance(target, _McpTarget) and sent:
+        if isinstance(target, _McpTarget) and not sent:
+            # 发包**之前**就确定没发出去（server 已经不可用）：不落对象阻断，但结果
+            # 仍要如实落库（`unknown` 是这一支的旧口径，本工单不改结论）。这里**不**
+            # 能掉进下面文件写的分支——`_McpTarget` 没有 `workspace_root`。
+            with self._log.transaction():
+                self._log.append(**result_event)
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+                    " WHERE dispatch_id=?",
+                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_REJECTED)
+            return result
+
+        if isinstance(target, _McpTarget):
+            # 到这里说明 `sent`：请求已越过外发边界，server 侧可能已经执行。
             # MCP 没有本地目录可阻断，但它有**对象**：走到 `_fail_unknown` 且
             # `sent` 说明请求已经越过外发边界（超时 / 断线 / server 内部错误），
             # server 侧可能已经执行。这里就地落一条对象阻断事件（与文件写分支"就地落
@@ -3725,15 +3743,7 @@ class Dispatcher:
                 "task_id": request.task_id,
                 "actor_kind": "system",
             }
-            with self._log.transaction():
-                self._log.append(**result_event)
-                self._log.append(**object_event)
-                self._conn.execute(
-                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
-                    " WHERE dispatch_id=?",
-                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
-                )
-                self._set_request_state(request.request_id, STATE_REJECTED)
+            self._commit_mcp_unknown(request, dispatch_id, result_event, object_event, reason)
             return result
 
         if isinstance(
@@ -3776,6 +3786,52 @@ class Dispatcher:
             )
             self._set_request_state(request.request_id, STATE_REJECTED)
         return result
+
+    def _commit_mcp_unknown(
+        self,
+        request: ActionRequest,
+        dispatch_id: str,
+        result_event: dict[str, Any],
+        object_event: dict[str, Any],
+        reason: str,
+    ) -> None:
+        """MCP 效果未知时的提交：结果 + 对象阻断 + 派发行终态，同一事务。
+
+        为什么这里要抢**执行守卫**（复审第一轮 B1）：发外边界上"复核对象阻断 →
+        把派发行推进到 `executing`"是在同一把守卫里完成的。如果对象阻断的提交不
+        走守卫，它就能插在别人的"复核通过之后、推进之前"——那次调用照样发出去，
+        "阻断已记录 → 之后不会再发"这句话就不成立。两边共用一把守卫之后顺序是
+        确定的：要么阻断先提交（对方的复核看得见），要么对方的推进先完成（这次
+        调用早已越过外发边界，阻断只约束它之后的新调用）。
+
+        没有 `data_root`（库调用方）时没有撤销入口、也没有这把锁可抢：保持原行为，
+        那一小段窗口仍在（文档如实写着，不假装已消掉）。
+
+        守卫抢不到（`GuardTimeout`）时**不能**丢掉结果与阻断：照常提交，并在结果
+        里写 `block_guard="timeout"`——这条阻断没有排在守卫里，读的人要知道。
+        """
+
+        def _write() -> None:
+            with self._log.transaction():
+                self._log.append(**result_event)
+                self._log.append(**object_event)
+                self._conn.execute(
+                    "UPDATE dispatches SET state=?, reason=?, updated_at=?"
+                    " WHERE dispatch_id=?",
+                    (DISPATCH_ERROR, reason, self._clock(), dispatch_id),
+                )
+                self._set_request_state(request.request_id, STATE_REJECTED)
+
+        root = self._data_root
+        if root is None:
+            _write()
+            return
+        try:
+            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
+                _write()
+        except GuardTimeout:
+            result_event["payload"]["output"]["block_guard"] = "timeout"
+            _write()
 
     def _commit_result(
         self,

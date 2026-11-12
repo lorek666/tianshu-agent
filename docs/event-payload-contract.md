@@ -10,8 +10,8 @@
 
 | 维度 | 冻结前（`da84d92`） | 本 PR 之后 |
 |---|---|---|
-| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（本 PR 不新增类型；后续 G2 网络/委派阶段各自增量，当前 43） |
-| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 当时 41 个类型各有 v1 schema（当前 43）：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
+| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（本 PR 不新增类型；后续 G2 网络/委派/MCP 阶段各自增量，当前 45） |
+| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 当时 41 个类型各有 v1 schema（当前 45）：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
 | 版本 | 无 | 事件旁表 `event_versions(seq,type,version)`；当前版本 `1`，冻结前 `0` |
 | 写入校验 | 只校验类型名 | 类型名 + payload 契约；非法 payload 在**落 blob / 写库之前**被拒，错误带类型与字段路径。默认**只接受当前契约**，v0 写入必须显式 `legacy_write=True`（只给夹具/历史播种/迁移测试，生产路径零调用点） |
 | 旧数据读取 | 只能"按现在的代码猜" | 旁表无记录的历史行 → `payload_version=0`，按 v0 映射读取；**不按新版默认补值** |
@@ -43,7 +43,7 @@
 
 ## 3 类型清单与版本
 
-当前所有 **43** 个类型的 payload 版本都是 **v1**（本 PR 引入；G2 委派 D1 增加了
+当前所有 **45** 个类型的 payload 版本都是 **v1**（本 PR 引入；G2 委派 D1 增加了
 `subtask.spawned` / `subtask.finished` 两个类型，并把 `task.created` 的必填键
 扩到含 `max_subtasks`）。下表列每个类型的
 必填字段与"是否存在已知历史形状差异"（有差异的类型在 v0 映射里放宽，见 §6）：
@@ -167,9 +167,10 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - `minimal_v1.json`：45 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
   test_minimal_v1_fixture_is_valid_and_round_trips`）。
 - `legacy_v0.jsonl`：45 个类型各一行 `{type,payload,note}`，逐行可读；
-  其中 **6 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
-  `run.model_turn` / `run.start` / `tool.intent`）是"v1 拒绝、v0 接受"的真实历史
-  形状差异；其余 35 行形状与当前一致，用来证明**"旁表无记录的历史行 → v0 读出"**
+  其中 **7 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
+  `run.model_turn` / `run.start` / `task.created` / `tool.intent`）是"v1 拒绝、
+  v0 接受"的真实历史形状差异；其余 **38 行**形状与当前一致，用来证明
+  **"旁表无记录的历史行 → v0 读出"**
   这条迁移路径（`test_legacy_fixture_covers_every_type_and_is_readable`）。
 
 **正面证据（旧 receipt 被正确识别为 v0，且语义不变）**：
@@ -392,6 +393,6 @@ G2 子代理 D2 接执行与收束时，**没有新增事件类型**，只放宽
 | `job.requeued` | required：`run_id` / `job_id` / `claim_epoch` / `owner_pid` / `owner_instance_id` | required 缩为 `run_id` / `job_id` / `claim_epoch`；`owner_pid` / `owner_instance_id` 改为可选（允许显式 `null`）；新增可选 `by`（`owner` / `wake`）与 `reason` | 新增 `JobStore.wake()`：子任务收尾把父作业从 `waiting` 置回 `pending`。这个动作**不是 owner 交还**——唤醒时 `park` 已把 owner 清空，写一个假 owner 才是违约 | `jobs.JobStore.wake()`、`tasks._maybe_wake_parent()` / `wake_stale_parents()`、`tests/test_event_schema.py` 的最小夹具、`tests/fixtures/events/minimal_v1.json` |
 | `run.control` | required：`run_id` / `task_id` / `action`；无 `reason` | 新增可选 `reason`（`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） | 取消传播需要一个可审计的“谁要求停”：子任务取消、父取消传播、父目标 fence 都会写 `action=cancel`，没有 reason 就只能靠猜 | `tasks.request_cancel_deferred()`、`tasks.request_subtask_cancel()`、`tasks.fence_child_run()` |
 
-没有新增事件类型（仍为 43），没有 bump payload 版本；旧日志按原 required 集合
+没有新增事件类型（当时仍为 43；本次对象级阻断不在此 PR 范围），没有 bump payload 版本；旧日志按原 required 集合
 仍然合法。回放对 `subtask.spawn` / `subtask.result` 的**工具结果**做形状校验
 （不是事件契约），见 `replay._verify_subtask_result`。

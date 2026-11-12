@@ -52,6 +52,15 @@ MALFORMED = OBJ + "test_log_replay_block_and_unblock"
 IN_RUN = OBJ + "test_in_run_unknown_registers_object_block"
 XROOT = OBJ + "test_object_block_is_cross_data_root"
 NOT_UNKNOWN = OBJ + "test_blocked_object_refusal_is_a_controlled_rejection_not_unknown"
+MALFORMED_KEYS = OBJ + "test_log_replay_rejects_malformed_object_keys_fail_closed"
+SINGLE_STR = OBJ + "test_ensure_object_not_blocked_accepts_a_single_string"
+BACKFILL = OBJ + "test_backfill_does_not_revive_a_released_object"
+PREFIX = OBJ + "test_object_keys_match_only_themselves_not_by_prefix"
+NO_DATA_ROOT = OBJ + "test_library_dispatch_without_data_root_still_checks_objects"
+GUARD_COMMIT = OBJ + "test_unknown_commit_takes_the_execution_guard"
+OLD_TARGET_COL = OBJ + "test_recovery_survives_dispatch_table_without_target_column"
+DEAD_AT_DISPATCH = OBJ + "test_server_dead_at_dispatch_is_unknown_without_object_block"
+EACH_CALL = OBJ + "test_each_unsettled_call_gets_its_own_block_event"
 
 
 @dataclass(frozen=True)
@@ -197,6 +206,140 @@ CASES: tuple[Case, ...] = (
         tests=(XROOT,),
         why="启动补登记不带对象：换个 --db 数据根就看不见「这个工具不许再调」"
         "（issue #61.1 的同类逃逸）",
+    ),
+    Case(
+        name="NC-O14",
+        relpath="src/tianshu/guard.py",
+        old=(
+            "        try:\n"
+            "            parse_mcp_object_key(obj)\n"
+            "        except ResourceError:\n"
+            "            # 形状不合法的对象键**永远**匹配不上真实目标（真实目标只接受\n"
+            "            # `[a-z0-9_.-]` 段）。把它当成\"一条不匹配的有效阻断\"就是 fail-open：\n"
+            "            # 日志里出现 `not-a-key` / `mcp://FAKE/echo` 时，真实的 `mcp://fake/echo`\n"
+            "            # 调用会被放行。判定不了 = 按已阻断处理。\n"
+            "            malformed.append(int(row[\"seq\"]))\n"
+            "            continue\n"
+        ),
+        new="        pass\n",
+        tests=(MALFORMED_KEYS,),
+        why="回放不校验对象键形状：`not-a-key` / `mcp://FAKE/echo` 被当成一条"
+        "「有效但不匹配」的阻断，真实的 `mcp://fake/echo` 调用被放行（fail-open）",
+    ),
+    Case(
+        name="NC-O15",
+        relpath="src/tianshu/guard.py",
+        old=(
+            "    if isinstance(object_keys, str):\n"
+            "        # 单个键（`ensure_object_not_blocked(log, \"mcp://s/t\")`）必须当成一个键：\n"
+            "        # 按字符迭代会拆成 `m`/`c`/`p`…，所有比较都落空 → 静默放行（fail-open）。\n"
+            "        raw: Iterable[str] = (object_keys,)\n"
+            "    else:\n"
+            "        raw = object_keys\n"
+        ),
+        new="    raw: Iterable[str] = object_keys  # 变异：不收单字符串\n",
+        tests=(SINGLE_STR,),
+        why="单字符串按字符拆开：`ensure_object_not_blocked(log, \"mcp://s/t\")` 拿"
+        "字符去比对，什么都不匹配 → 静默放行",
+    ),
+    Case(
+        name="NC-O16",
+        relpath="src/tianshu/authority.py",
+        old='"INSERT OR IGNORE INTO blocked_objects"',
+        new='"INSERT OR REPLACE INTO blocked_objects"',
+        tests=(BACKFILL,),
+        why="补登记用 INSERT OR REPLACE：已人工解除的行（released_at 非空）会被日志里"
+        "的旧阻断连行带 released_at 一起覆盖回「有效」——过度阻断",
+    ),
+    Case(
+        name="NC-O17",
+        relpath="src/tianshu/guard.py",
+        old="    hits = tuple(key for key in keys if key in roots)\n",
+        new=(
+            "    hits = tuple(\n"
+            "        key for key in keys\n"
+            "        if any(key.startswith(r) or r.startswith(key) for r in roots)\n"
+            "    )\n"
+        ),
+        tests=(PREFIX,),
+        why="对象守卫改成前缀匹配：`mcp://a` 的阻断会把 `mcp://ab/*` 一起挡住"
+        "（键只能等于自己）",
+    ),
+    Case(
+        name="NC-O18",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "            # 没有数据根就没有撤销入口（`revoke` 同样要求它），也就没有要抢的\n"
+            "            # 那把锁；库调用方保持原行为，只做状态推进（对象阻断照样复核）。\n"
+            "            ensure_object_not_blocked(self._log, keys)\n"
+            "            return self._advance_to_executing(dispatch_id)\n"
+        ),
+        new=(
+            "            # 变异：无数据根分支不做对象复核\n"
+            "            return self._advance_to_executing(dispatch_id)\n"
+        ),
+        tests=(NO_DATA_ROOT,),
+        why="删掉无 `data_root` 分支的边界前复核：库调用方的第二道门消失"
+        "（有守卫的分支还在，测试却看不到这条路径）",
+    ),
+    Case(
+        name="NC-O19",
+        relpath="src/tianshu/guard.py",
+        old="    hits = tuple(key for key in keys if key in roots)\n",
+        new="    hits = tuple(key for key in keys if key in roots and False)\n",
+        tests=(BEFORE,),
+        why="对照：把守卫命中判定直接短路成「永不命中」（最直接的 fail-open 变异），"
+        "确认判定阶段那条用例真能咬住",
+    ),
+    Case(
+        name="NC-O20",
+        relpath="src/tianshu/dispatcher.py",
+        old=(
+            "        try:\n"
+            "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
+            "                _write()\n"
+            "        except GuardTimeout:\n"
+            "            result_event[\"payload\"][\"output\"][\"block_guard\"] = \"timeout\"\n"
+            "            _write()\n"
+        ),
+        new="        _write()  # 变异：对象阻断的提交不拿执行守卫\n",
+        tests=(GUARD_COMMIT,),
+        why="对象阻断的提交不拿执行守卫（复审 B1）：它能在别人的「复核通过 → 推进」"
+        "之间插进去，那次调用照样发出去",
+    ),
+    Case(
+        name="NC-O21",
+        relpath="src/tianshu/recovery.py",
+        old='    if "target" not in columns:\n        return ()\n',
+        new="    pass  # 变异：不检查 target 列在不在\n",
+        tests=(OLD_TARGET_COL,),
+        why="派发表缺 target 列时不做回退：`SELECT target` 直接抛错，恢复在写任何"
+        "阻断之前崩掉（安全方向上的 fail-open）",
+    ),
+    Case(
+        name="NC-O22",
+        relpath="src/tianshu/dispatcher.py",
+        old="                sent=False,\n",
+        new="                sent=True,\n",
+        tests=(DEAD_AT_DISPATCH,),
+        why="发包前 server 不可用也当成「可能已执行」：请求一个字节都没发，却登记"
+        "对象阻断（过度阻断，复审 M6）",
+    ),
+    Case(
+        name="NC-O23",
+        relpath="src/tianshu/recovery.py",
+        old=(
+            "    if object_key not in report.blocked_objects:\n"
+            "        report.blocked_objects.append(object_key)\n"
+        ),
+        new=(
+            "    if object_key in report.blocked_objects:\n"
+            "        return\n"
+            "    report.blocked_objects.append(object_key)\n"
+        ),
+        tests=(EACH_CALL,),
+        why="同一对象的后续未结算调用直接 return：`call_ids` 只剩第一条归因"
+        "（事件仍然有效，但证据丢了）",
     ),
     Case(
         name="NC-O13",

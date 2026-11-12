@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import json
 import sqlite3
 import sys
@@ -53,7 +55,7 @@ from tianshu.loop import build_stack
 from tianshu.mcp import McpClients, McpServerConfig
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import ACTION_OVERWRITE
-from tianshu.recovery import recover_run
+from tianshu.recovery import RecoveryReport, _block_mcp_object, recover_run
 from tianshu.resources import (
     ResourceError,
     mcp_block_keys,
@@ -277,19 +279,154 @@ def test_mirror_backfills_objects_but_does_not_revive_released_ones(tmp_path):
             {"object": _ECHO, "call_ids": ["c1"], "reason": "x"},
             actor_kind="system",
         )
-        log.append(
-            "run_a",
-            "recovery.object_unblocked",
-            {"object": _SERVER, "reason": "核对过"},
-            actor_kind="human",
-        )
-        # `_SERVER` 从未登记过，回放里它是"先解除"——不影响补登记结果。
         problems = mirror_blocks_to_authority(log)
         assert problems == []
         assert authority.active_object_keys() == [_ECHO]
         # 幂等：再补一次不报错、不重复
         assert mirror_blocks_to_authority(log) == []
         assert authority.active_object_keys() == [_ECHO]
+
+        # 解除之后日志里**仍然是那条 block 事件**（append-only）：再补登记不许把它
+        # 复活。这条必须用**同一个 key**跑，否则测的是"另一个 key 没被加进去"，
+        # 而不是"已解除的不复活"（`INSERT OR REPLACE` 的变异能溜过去）。
+        assert authority.release_object_blocked(_ECHO, reason="核对过") is True
+        assert mirror_blocks_to_authority(log) == []
+        assert authority.active_object_keys() == [], "已人工解除的对象不许被日志复活"
+    finally:
+        log.close()
+
+
+def test_backfill_does_not_revive_a_released_object(tmp_path):
+    """`backfill_object_blocked` 只补不覆盖：已解除行保持解除（不是 REPLACE）。"""
+    root = tmp_path / "authority"
+    root.mkdir()
+    authority.register_object_blocked(_ECHO, run_id="r1", reason="x", root=root)
+    assert authority.release_object_blocked(_ECHO, reason="核对过", root=root) is True
+    assert authority.active_object_keys(root) == []
+
+    problems = authority.backfill_object_blocked(
+        [_ECHO], run_id="r1", reason="启动补登记", root=root
+    )
+    assert problems == []
+    assert authority.active_object_keys(root) == [], (
+        "补登记用 INSERT OR REPLACE 会把已解除的记录连同 released_at 一起覆盖回"
+        "「有效」——过度阻断，而且用户已经核对过"
+    )
+
+
+def test_object_keys_match_only_themselves_not_by_prefix(tmp_path):
+    """`mcp://a` 只等于 `mcp://a`，不许前缀匹配到 `mcp://ab/*`。"""
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        authority.register_object_blocked(mcp_server_key("a"), run_id="r1", reason="x")
+        # server `a` 被挡 → 它自己的工具被挡
+        try:
+            ensure_object_not_blocked(log, mcp_block_keys("a", "echo"))
+        except McpObjectBlocked:
+            pass
+        else:  # pragma: no cover - 阻断失效才会走到
+            raise AssertionError("server a 被阻断时它的工具必须被拒")
+        # 名字只是前缀相同的 server `ab` **不**受牵连（键只能等于自己）
+        try:
+            ensure_object_not_blocked(log, mcp_block_keys("ab", "echo"))
+        except McpObjectBlocked as exc:
+            raise AssertionError(
+                f"mcp://a 不许挡 mcp://ab/*（键只能等于自己）：{exc}"
+            ) from exc
+        assert blocked_objects(log) == {mcp_server_key("a")}
+    finally:
+        log.close()
+
+
+def test_library_dispatch_without_data_root_still_checks_objects(tmp_path):
+    """没有 `data_root` 的库调用方也要第二道门（守卫那圈只是没有撤销入口）。"""
+    log, stack, _ws, _data, _call = _stack_with_server(tmp_path, mcp=False)
+    try:
+        _block(_ECHO)
+        dispatcher = stack.dispatcher
+        dispatcher._data_root = None
+        try:
+            # 屏障推进函数在拿守卫之前就会复核对象阻断（无数据根时变成直查）。
+            dispatcher._mark_mcp_send_boundary("d_unused", server="fake", tool="echo")
+        except McpObjectBlocked as exc:
+            assert "mcp://fake/echo" in str(exc)
+        else:  # pragma: no cover - 第二道门在这条路径上丢了才会走到
+            raise AssertionError("没有 data_root 的库调用方也必须过第二道门")
+    finally:
+        log.close()
+
+
+def test_log_replay_rejects_malformed_object_keys_fail_closed(tmp_path):
+    """畸形对象键不是"一条不匹配的阻断"，是"判定不了" → 按已阻断处理。"""
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        bad = ("not-a-key", "mcp://FAKE/echo", "mcp://fake/echo/", "mcp://")
+        for index, key in enumerate(bad):
+            log.append(
+                f"run_{index}",
+                "recovery.object_blocked",
+                {"object": key, "call_ids": [], "reason": "x"},
+                actor_kind="system",
+            )
+        scan = scan_blocked_objects(log)
+        assert len(scan.malformed) == len(bad)
+        with pytest.raises(EventLogCorrupt, match="无法判定"):
+            blocked_objects(log)
+        try:
+            ensure_object_not_blocked(log, mcp_block_keys("fake", "echo"))
+        except McpObjectBlocked as exc:
+            assert "无法判定的对象阻断记录" in str(exc)
+        else:  # pragma: no cover - 畸形键被当成"不匹配"放行（fail-open）才会到
+            raise AssertionError("畸形对象键必须按已阻断处理")
+    finally:
+        log.close()
+
+
+def test_authority_row_with_bad_key_fails_closed(tmp_path):
+    """权威根表里出现形状不合法的键：读不出来 = 判定不了 → 按已阻断处理。"""
+    root = tmp_path / "authority"
+    root.mkdir()
+    authority.register_object_blocked(_ECHO, run_id="r1", reason="x", root=root)
+    db = root / authority.DB_NAME
+    conn = sqlite3.connect(db)
+    try:
+        # 模拟手工写库/旧 bug 留下的坏行（现在 register 会拒绝，只能直接改库）
+        conn.execute(
+            "UPDATE blocked_objects SET object_key='mcp://FAKE/echo' WHERE object_key=?",
+            (_ECHO,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        with pytest.raises(AuthorityUnavailable, match="形状不合法"):
+            authority.active_object_blocks(root)
+        try:
+            ensure_object_not_blocked(log, mcp_block_keys("fake", "echo"))
+        except McpObjectBlocked as exc:
+            assert "权威对象阻断状态读不出来" in str(exc)
+        else:  # pragma: no cover - 坏行被当成"不匹配"才会走到
+            raise AssertionError("权威根里的坏键必须按已阻断处理")
+        with pytest.raises(AuthorityUnavailable):
+            blocked_objects(log)
+    finally:
+        log.close()
+
+
+def test_ensure_object_not_blocked_accepts_a_single_string(tmp_path):
+    """传单个字符串 = 一个键，不许按字符拆开（拆开就静默放行）。"""
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        authority.register_object_blocked(_ECHO, run_id="r1", reason="x")
+        try:
+            ensure_object_not_blocked(log, _ECHO)
+        except McpObjectBlocked as exc:
+            assert "mcp://fake/echo" in str(exc)
+        else:  # pragma: no cover - 按字符拆开静默放行才会走到
+            raise AssertionError("传单个字符串必须当成一个键（不能按字符拆开）")
+        ensure_object_not_blocked(log, mcp_server_key("other"))  # 不抛
     finally:
         log.close()
 
@@ -382,7 +519,13 @@ def test_block_of_another_object_does_not_block_this_one(tmp_path):
 
 
 def test_block_registered_while_waiting_for_approval_is_refused_before_send(tmp_path):
-    """等批准期间别的 Run 把同一对象标成阻断 → 批准后也**不发**（守卫内复核）。"""
+    """等批准期间别的 Run 把同一对象标成阻断 → 批准后也**不发**。
+
+    归因（复审指出过）：这条用例打的是**派发阶段**的判定（`dispatch()` 里重新
+    `_resolve_target`），不是"守卫内的第二道门"——后者由
+    `test_send_boundary_guard_recheck_holds_even_if_dispatch_phase_check_is_bypassed`
+    单独钉住（它把第一道门替身跳掉）。两条都要有：一道在弹批准之前，一道在发包之前。
+    """
     log, stack, ws, _data, call_log = _stack_with_server(tmp_path)
     try:
         task = stack.tasks.create_task(
@@ -743,12 +886,18 @@ def test_unblock_object_allows_the_call_again_and_is_auditable(tmp_path):
 
 
 def test_unblock_object_rejects_malformed_keys(tmp_path):
-    """解除一个永远匹配不上的键 = 什么都没做却说"已解除"：直接拒绝。"""
+    """解除**或登记**一个永远匹配不上的键 = 什么都没做却说"已解除"：直接拒绝。"""
     log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     try:
-        for bad in ("mcp://", "mcp://a/b/c", "file:///tmp/x", "mcp://A/b"):
+        for bad in (
+            "mcp://", "mcp://a/b/c", "file:///tmp/x", "mcp://A/b",
+            "mcp://A", "mcp://a b", "mcp://a b/c",
+        ):
             with pytest.raises(ResourceError):
                 unblock_object(log, bad, reason="x")
+            # 写侧同样拒绝：大写/空格键写进权威根后会静默不匹配真实目标。
+            with pytest.raises(ResourceError):
+                authority.register_object_blocked(bad, reason="x")
     finally:
         log.close()
 
@@ -818,6 +967,156 @@ def test_blocked_object_refusal_is_a_controlled_rejection_not_unknown(tmp_path):
         assert report_ok(log, result.run_id), "拒绝路径不该留下 unknown 或阻断目录"
     finally:
         log.close()
+
+
+def test_unknown_commit_takes_the_execution_guard(tmp_path, monkeypatch):
+    """对象阻断的提交与发外边界共用一把执行守卫（复审 B1）。
+
+    发外边界是"守卫内复核 → 守卫内推进"，如果对象阻断的提交不拿同一把守卫，
+    它就能插在别人的"复核通过后、推进前"——那次调用照样发出去。这里直接数
+    守卫获取次数：一次发外（边界）+ 一次效果未知提交 = 至少两次。去掉提交侧
+    的守卫（负控 NC-O20）之后只剩一次。
+    """
+    log, stack, ws, _data, call_log = _stack_with_server(tmp_path, mode="internal_error")
+    real = tianshu_dispatcher().execution_guard
+    acquired: list[str] = []
+
+    @contextlib.contextmanager
+    def spy(root, timeout_ms=None):
+        acquired.append(str(root))
+        kwargs = {} if timeout_ms is None else {"timeout_ms": timeout_ms}
+        with real(root, **kwargs):
+            yield
+
+    monkeypatch.setattr(tianshu_dispatcher(), "execution_guard", spy)
+    try:
+        task = stack.tasks.create_task("守卫内提交", [str(ws)], mcp_servers=["fake"])
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        (tool_result,) = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert tool_result["effect_state"] == "unknown"
+        assert len(_lines(call_log)) == 1
+        assert len(acquired) >= 2, (
+            "对象阻断的提交没有拿执行守卫：它能在别人的复核与推进之间插进去，"
+            f"实测只获取了 {len(acquired)} 次"
+        )
+    finally:
+        log.close()
+
+
+def test_server_dead_at_dispatch_is_unknown_without_object_block(tmp_path):
+    """server 恰在 `_dispatch_mcp` 检查时死掉：请求一定没发出 → 不登记对象阻断。
+
+    复审 M6：这一支在写 stdin 之前，`unknown` 是沿用旧口径（本工单不改结论），
+    但对象阻断的语义是"server 侧可能已执行"，这里记一条就是假记录（`sent=False`）。
+    用 `is_alive` 的调用栈识别"正好在 `_dispatch_mcp` 里被问一次"来构造这条路径。
+    """
+
+    class DeadAtDispatch:
+        def __init__(self, real):
+            self.real = real
+
+        @property
+        def is_alive(self):
+            frame = inspect.currentframe()
+            try:
+                probe = frame.f_back if frame is not None else None
+                while probe is not None:
+                    if probe.f_code.co_name == "_dispatch_mcp":
+                        return False
+                    probe = probe.f_back
+            finally:
+                del frame
+            return self.real.is_alive
+
+        def __getattr__(self, name):
+            return getattr(self.real, name)
+
+    log, stack, ws, _data, call_log = _stack_with_server(tmp_path)
+    try:
+        task = stack.tasks.create_task("发包前 server 死掉", [str(ws)], mcp_servers=["fake"])
+        real_server = stack.dispatcher._mcp_clients.server("fake")
+        wrapper = DeadAtDispatch(real_server)
+        stack.dispatcher._mcp_clients.server = lambda name: wrapper  # type: ignore[method-assign]
+        engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
+        result = engine.start(task.task_id, out_name="out.md")
+        while result.state == "waiting_approval":
+            approve_pending(stack, result.run_id)
+            result = engine.resume_run(result.run_id)
+
+        (tool_result,) = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "tool.result"
+        ]
+        assert tool_result["effect_state"] == "unknown"  # 旧口径，本工单不改
+        blocked = [
+            e.payload
+            for e in log.read_run(result.run_id, verify=False)
+            if e.type == "recovery.object_blocked"
+        ]
+        assert blocked == [], "请求一个字节都没发出去，不许登记「可能已执行」的对象阻断"
+        assert _lines(call_log) == []
+    finally:
+        log.close()
+
+
+def test_recovery_survives_dispatch_table_without_target_column(tmp_path):
+    """派发表缺 `target` 列：恢复不许崩，按"证明不了对象"继续（目录阻断照旧）。"""
+    log, stack, ws, data, store, run_id = _legacy_run(
+        tmp_path, dispatch_state="executing"
+    )
+    try:
+        log.conn.execute("ALTER TABLE dispatches DROP COLUMN target")
+        log.conn.commit()
+        try:
+            report = recover_run(
+                log, run_id, ws, store, leases=stack.leases, data_root=data
+            )
+        except Exception as exc:  # noqa: BLE001 - 缺列时恢复崩掉就是 fail-open
+            raise AssertionError(
+                f"派发表缺 target 列不该让恢复崩掉（安全方向上什么都没写）：{exc!r}"
+            ) from exc
+        assert report.unresolved == [CALL_ID]
+        assert report.blocked_objects == []
+        assert report.blocked_workspaces == [str(ws.resolve())]
+    finally:
+        log.close()
+
+
+def test_each_unsettled_call_gets_its_own_block_event(tmp_path):
+    """同一对象的两次未结算调用，各自留一条阻断事件（`call_ids` 是归因材料）。"""
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        report = RecoveryReport(run_id="run_x")
+        _block_mcp_object(log, report, "run_x", _ECHO, ["c1"])
+        _block_mcp_object(log, report, "run_x", _ECHO, ["c2"])
+        assert report.blocked_objects == [_ECHO], "报告里同一对象只列一次"
+        events = [
+            e.payload
+            for e in log.read_run("run_x", verify=False)
+            if e.type == "recovery.object_blocked"
+        ]
+        assert [e["call_ids"] for e in events] == [["c1"], ["c2"]], (
+            "第二条调用的归因被去重丢掉了"
+        )
+        assert authority.active_object_keys() == [_ECHO]
+    finally:
+        log.close()
+
+
+def tianshu_dispatcher():
+    import tianshu.dispatcher as module
+
+    return module
 
 
 def report_ok(log: EventLog, run_id: str) -> bool:

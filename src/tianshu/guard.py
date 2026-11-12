@@ -38,6 +38,7 @@ from .authority import AuthorityUnavailable, AuthorityWriteFailed
 from .errors import EventLogCorrupt, McpObjectBlocked, WorkspaceBlocked
 from .events import EventLog, sha256_hex
 from .pathkeys import overlap_key
+from .resources import ResourceError, parse_mcp_object_key
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,15 @@ def scan_blocked_objects(log: EventLog) -> ObjectScan:
             malformed.append(int(row["seq"]))
             continue
         if not isinstance(obj, str) or not obj:
+            malformed.append(int(row["seq"]))
+            continue
+        try:
+            parse_mcp_object_key(obj)
+        except ResourceError:
+            # 形状不合法的对象键**永远**匹配不上真实目标（真实目标只接受
+            # `[a-z0-9_.-]` 段）。把它当成"一条不匹配的有效阻断"就是 fail-open：
+            # 日志里出现 `not-a-key` / `mcp://FAKE/echo` 时，真实的 `mcp://fake/echo`
+            # 调用会被放行。判定不了 = 按已阻断处理。
             malformed.append(int(row["seq"]))
             continue
         if row["type"] == "recovery.object_blocked":
@@ -218,7 +228,9 @@ def _guard_object_keys(log: EventLog) -> set[str]:
         ) from exc
 
 
-def ensure_object_not_blocked(log: EventLog, object_keys: Iterable[str]) -> None:
+def ensure_object_not_blocked(
+    log: EventLog, object_keys: str | Iterable[str]
+) -> None:
     """发外前的对象阻断核验：这批键里**任何一个**被阻断就拒绝。
 
     `object_keys` 由调用方一次给全（工具级 + server 级，见
@@ -229,7 +241,13 @@ def ensure_object_not_blocked(log: EventLog, object_keys: Iterable[str]) -> None
     server 的工具"会把 `mcp://ab` 也算进 `mcp://a` 的阻断里——一个键只能等于
     自己，server 级关系由调用方显式给第二个键表达。
     """
-    keys = tuple(dict.fromkeys(str(key) for key in object_keys))
+    if isinstance(object_keys, str):
+        # 单个键（`ensure_object_not_blocked(log, "mcp://s/t")`）必须当成一个键：
+        # 按字符迭代会拆成 `m`/`c`/`p`…，所有比较都落空 → 静默放行（fail-open）。
+        raw: Iterable[str] = (object_keys,)
+    else:
+        raw = object_keys
+    keys = tuple(dict.fromkeys(str(key) for key in raw))
     if not keys:
         return
     roots = _guard_object_keys(log)

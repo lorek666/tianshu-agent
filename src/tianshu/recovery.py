@@ -34,7 +34,12 @@ from .guard import (
 from .leases import Lease, LeaseStore, execution_guard
 from .memory_exec import MEMORY_TOOL_IDS
 from .receipt import build_receipt
-from .resources import ResourceError, parse_mcp_object_key
+from .resources import (
+    ResourceError,
+    mcp_object_key,
+    mcp_server_key,
+    parse_mcp_object_key,
+)
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
 from .tool_registry import MCP_TOOL_PREFIX
@@ -1365,10 +1370,18 @@ def _dispatch_row_targets(log: EventLog, run_id: str, call_id: str) -> tuple[str
     （`_settle_mcp_pending` 的既有结论）。派发行的 `target` 是派发当时的原始
     URI，那是**事实**；反解只是猜。
 
-    没有派发表 / 没有行 / 形状不是 `mcp://…` 或解析不了 → 空元组。空元组 =
-    "证明不了是哪个对象"，调用方**不**登记对象阻断（目录阻断仍照旧）。
+    没有派发表 / **没有 `target` 列** / 没有行 / 形状不是 `mcp://…` 或解析不了 →
+    空元组。空元组 = "证明不了是哪个对象"，调用方**不**登记对象阻断（目录阻断仍
+    照旧）。缺列这一条是复审抓到的：`target` 与派发表同时引入，正常升级不会缺，
+    但损坏/手改/部分迁移的库会让 `SELECT target` 直接抛错——恢复在写任何阻断之前
+    崩掉，等于安全方向上的 fail-open。
     """
     if not _has_dispatch_table(log):
+        return ()
+    columns = {
+        str(row[1]) for row in log.conn.execute("PRAGMA table_info(dispatches)")
+    }
+    if "target" not in columns:
         return ()
     rows = log.conn.execute(
         "SELECT target FROM dispatches WHERE run_id=? AND call_id=?",
@@ -1380,11 +1393,16 @@ def _dispatch_row_targets(log: EventLog, run_id: str, call_id: str) -> tuple[str
         if not raw:
             continue
         try:
-            parse_mcp_object_key(raw)
+            server, tool = parse_mcp_object_key(raw)
         except ResourceError:
             continue
-        if raw not in keys:
-            keys.append(raw)
+        # 用解析出的段重新拼规范键：别名/编码差异将来会拼出"同一对象的两个键"，
+        # 而对象阻断的判定是逐字节相等。
+        canonical = (
+            mcp_object_key(server, tool) if tool is not None else mcp_server_key(server)
+        )
+        if canonical not in keys:
+            keys.append(canonical)
     return tuple(keys)
 
 
@@ -1515,9 +1533,11 @@ def _block_mcp_object(
     不等于核对过 server 侧副作用（那件事本地根本没法核对，只能由人看 server
     的输出/日志后确认）。
     """
-    if object_key in report.blocked_objects:
-        return
-    report.blocked_objects.append(object_key)
+    # 报告里同一对象只列一次（它是"本次被阻断的对象集合"）；但**每条**未结算调用
+    # 都要落一条事件：`call_ids` 是归因材料，去重会丢掉第二条调用的证据。事件
+    # 回放按下标做集合语义，重复阻断无害。
+    if object_key not in report.blocked_objects:
+        report.blocked_objects.append(object_key)
     reason = "MCP 工具可能已在 server 侧执行、副作用无法核实：阻断再次调用"
     log.append(
         run_id,

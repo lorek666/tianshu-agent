@@ -47,6 +47,7 @@ from pathlib import Path
 
 from .errors import TianshuError
 from .pathkeys import overlap_key
+from .resources import ResourceError, parse_mcp_object_key
 
 AUTHORITY_ROOT_ENV = "TIANSHU_AUTHORITY_ROOT"
 DB_NAME = "authority.db"
@@ -247,6 +248,17 @@ def _query_active_objects(conn: sqlite3.Connection) -> list[AuthorityObjectBlock
         "SELECT object_key, run_id, reason, blocked_at FROM blocked_objects"
         " WHERE released_at IS NULL ORDER BY blocked_at"
     ).fetchall()
+    for row in rows:
+        try:
+            parse_mcp_object_key(row["object_key"])
+        except ResourceError as exc:
+            # 表里出现形状不合法的键（只可能来自手工写库/旧 bug）：它永远匹配不上
+            # 真实目标，当成"一条不匹配的阻断"就是 fail-open。判定不了 → 按已阻断
+            # 处理（读侧抛 AuthorityUnavailable，守卫会转成 McpObjectBlocked）。
+            raise AuthorityUnavailable(
+                "权威对象阻断表里有形状不合法的键"
+                f"（{row['object_key']!r}）：{exc}。按已阻断处理"
+            ) from exc
     return [
         AuthorityObjectBlock(
             object_key=row["object_key"],
@@ -357,6 +369,13 @@ def register_object_blocked(
 ) -> None:
     """登记一条对象阻断（幂等：已有效则保持原记录；已解除则重新激活）。"""
     key = str(object_key)
+    try:
+        parse_mcp_object_key(key)
+    except ResourceError:
+        # 写路径先校验：`mcp://A` / `mcp://` / `mcp://a/b/c` 写进去只会变成一条
+        # **永远读不到**的阻断记录（真实目标段只接受 [a-z0-9_.-]），那等于"看起来
+        # 记了、实际没记"。直接拒绝，让调用方当场发现。
+        raise
     target = root if root is not None else authority_root()
     conn = _open_rw(target)
     try:

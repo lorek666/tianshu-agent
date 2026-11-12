@@ -398,6 +398,11 @@ def parse_mcp_object_key(key: str) -> tuple[str, str | None]:
     rest = key[len(_MCP_OBJECT_PREFIX) :]
     parts = rest.split("/")
     if len(parts) == 1 and parts[0]:
+        # server 级键同样要过段规则：`mcp://A` / `mcp://a b` 这类键**永远**匹配不上
+        # 真正的目标（目标段只接受 [a-z0-9_.-]），存进权威根只会变成一条读不到的
+        # 阻断记录。形状不合法就在这里拒绝，别让它变成"看起来记了、实际没记"。
+        if not _MCP_NAME.match(parts[0]):
+            raise ResourceError(f"MCP server 形状不合法：{parts[0]!r}")
         return parts[0], None
     if len(parts) == 2 and parts[0] and parts[1]:
         target = McpTarget(server=parts[0], tool=parts[1])
