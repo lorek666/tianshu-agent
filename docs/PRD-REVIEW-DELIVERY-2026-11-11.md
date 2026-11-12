@@ -28,11 +28,11 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2054 passed / 7 skipped**
-  （macOS arm64 本机，360.20s），`ruff check .` → `All checks passed!`；基线
-  `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+16**：
-  `test_g2_delegation_exec.py`（10）、`test_g2_delegation_fence.py`（2）、
-  `test_g2_delegation_replay.py`（4）。负控 **6/6** 实测红（失败数 18/2/1/2/2/2）。
+- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2056 passed / 7 skipped**
+  （macOS arm64 本机，357.63s），`ruff check .` → `All checks passed!`；基线
+  `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+18**：
+  `test_g2_delegation_exec.py`（12）、`test_g2_delegation_fence.py`（2）、
+  `test_g2_delegation_replay.py`（4）。负控 **6/6** 实测红（失败数 20/2/1/2/2/2）。
 - 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
   W1–W5 落地；**G1 轮次**补上 §5.2.3 通用工具准入与 §5.6 共享预算账本；**G1 收口轮**
   （#96 / #97 / #99）补上账本默认记账 + 硬上限可验证上界、资源种类与外发许可、
@@ -91,10 +91,10 @@
 
 ## 3 测试与门禁
 
-- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2054 passed / 7 skipped**（360.20s，
+- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2056 passed / 7 skipped**（357.63s，
   macOS arm64 本机），`ruff check .` 干净；基线 `main @ 6140d9c` 同机 **2038 / 7**
-  （361.47s），本分支 +16（exec 10 / fence 2 / replay 4）。D2 负控 6 条实测红
-  （失败数 18/2/1/2/2/2，红名见 PR body）。
+  （361.47s），本分支 +18（exec 12 / fence 2 / replay 4）。D2 负控 6 条实测红
+  （失败数 20/2/1/2/2/2，红名见 PR body）。
 - 首轮 `main @ c0dfa88`：**1519 passed / 7 skipped**（170.12s，macOS arm64 本机），
   `ruff check .` 干净。基线 `da84d92` 为 1316 / 6：五个工作流新增 **185** 条
   （W1 +50、W2 +15、W3 +13、W4 +31、W5 +76），其余 +18 来自并行的记忆工作流（#78/#83）。
