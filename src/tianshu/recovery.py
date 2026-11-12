@@ -35,7 +35,7 @@ from .memory_exec import MEMORY_TOOL_IDS
 from .receipt import build_receipt
 from .sandbox import current_backend
 from .snapshot import ABSENT, Change, SnapshotStore
-from .tools import SPECS, ToolResult, action_for
+from .tools import SPECS, SUBTASK_TOOL_IDS, ToolResult, action_for
 from .workspace import Workspace
 
 __all__ = [
@@ -67,12 +67,17 @@ class RecoveryReport:
     #: 恢复时清掉的孤儿正文 blob 的 `content_ref`（写正文在提交之前落盘，
     #: 崩溃会留下没有投影行引用的字节）。
     memory_orphan_blobs: list[str] = field(default_factory=list)
+    #: 子任务派发里**不能**判断"建了没有"的那一类（intent 已提交、`subtasks`
+    #: 表里却没有对应行）。与记忆同一条理由：委派没有目录 preimage，硬挡一个
+    #: 无关目录比不挡更糟；但报告必须 not ok，让人看到这次派发没结算。
+    subtask_unresolved: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return (
             not self.unresolved
             and not self.memory_unresolved
+            and not self.subtask_unresolved
             and not self.problems
         )
 
@@ -258,6 +263,13 @@ def assess_run(
             unresolved.append(call_id)
             continue
         if spec.side_effect_level == "pure":
+            none_applied.append(call_id)
+            continue
+        if tool_id in SUBTASK_TOOL_IDS:
+            # 委派没有文件副作用：最坏情况是多了一条 queued 子任务行（以及一个
+            # 排队中的子作业），它不会让任何目录的磁盘状态变得不可核实。
+            # 所以不占 pending_writes——否则一次"派了子任务"会让整个工作区被
+            # 判成"证据缺失"而拒绝接管，那是误报。
             none_applied.append(call_id)
             continue
         if tool_id in MEMORY_TOOL_IDS:
@@ -507,6 +519,13 @@ def _recover_run(
                                         "recovered": True}),
                             bucket=report.none_applied)
                     continue
+                if tool_id in SUBTASK_TOOL_IDS:
+                    # 委派不读快照清单：它的证据在 `subtasks` 表里。清单坏了
+                    # 也不该把它推成"无法核实"并挡住任何目录。
+                    _settle_subtask_intent(
+                        log, report, run_id, call_id, tool_id, payload, ev.ts
+                    )
+                    continue
                 unverified.append(call_id)
                 _settle(log, report, run_id, call_id, tool_id, payload,
                         ToolResult("unknown", "unknown",
@@ -553,6 +572,15 @@ def _recover_run(
                                {"error": "recovered: 只读工具无副作用",
                                 "recovered": True}),
                     bucket=report.none_applied)
+            continue
+
+        # 委派（G2 子代理 D1）：证据在 `subtasks` 表里，不在快照清单里。
+        # 有行 → 补身份一致的长结果；没行 → unknown（可能已建也可能没建），
+        # 且**不**阻断任何目录（委派没有目录 preimage）。
+        if tool_id in SUBTASK_TOOL_IDS:
+            _settle_subtask_intent(
+                log, report, run_id, call_id, tool_id, payload, ev.ts
+            )
             continue
 
         # 写工具：唯一判据是写前证据
@@ -969,15 +997,134 @@ def _settle_memory_write(
 
 
 def _mark_dispatch_settled(
-    log: EventLog, run_id: str, call_id: str, ts: int, reason: str
+    log: EventLog,
+    run_id: str,
+    call_id: str,
+    ts: int,
+    reason: str,
+    *,
+    state: str | None = None,
 ) -> None:
-    """把 `dispatches` 行从 intent/executing 推进到 error（恢复补写结果时）。"""
+    """把 `dispatches` 行从 intent/executing 推进到终态（恢复补写结果时）。
+
+    `state` 默认 `error`（"这次派发没执行成功"）；委派恢复在**证据证明它已经
+    发生**（`subtasks` 行存在）时显式传 `done`——那时把派发行写成 error 就是
+    在日志里留一句与事实相反的话。
+    """
     from .dispatcher import DISPATCH_ERROR
 
     log.conn.execute(
         "UPDATE dispatches SET state=?, reason=?, updated_at=?"
         " WHERE run_id=? AND call_id=?",
-        (DISPATCH_ERROR, reason, ts, run_id, call_id),
+        (state or DISPATCH_ERROR, reason, ts, run_id, call_id),
+    )
+
+
+def _settle_subtask_intent(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    call_id: str,
+    tool_id: str,
+    intent_payload: dict,
+    ts: int,
+) -> None:
+    """结算一条被打断的委派调用（D1-c10）。
+
+    **以证据为准，不按进程退出猜**：
+
+    - `subtask.spawn`：`(父 Run, slug)` 在 `subtasks` 表里有行 → 补一条**身份
+      一致**的 `succeeded`（child_task / child_run / job 从行里读，不重新生成）；
+      没有行 → `unknown`：intent 已提交，建行可能就发生在崩溃窗口里，"没看到
+      行"证明不了"没建"。这类不挡目录（委派没有目录 preimage），但报告 not ok。
+    - `subtask.cancel`：行已经是 `cancelling` → 请求确实记下了；否则就是没记下。
+      两种都是确定结论，不产生 unknown。
+    """
+    from .dispatcher import DISPATCH_FINISHED
+
+    args = intent_payload.get("args")
+    subtask_id = args.get("subtask_id") if isinstance(args, dict) else None
+    row = None
+    if isinstance(subtask_id, str) and subtask_id:
+        row = log.conn.execute(
+            "SELECT * FROM subtasks WHERE parent_run_id=? AND subtask_id=?",
+            (run_id, subtask_id),
+        ).fetchone()
+    if tool_id == "subtask.cancel":
+        if row is not None and row["state"] == "cancelling":
+            _settle(
+                log, report, run_id, call_id, tool_id, intent_payload,
+                ToolResult(
+                    "succeeded",
+                    "none_applied",
+                    {
+                        "subtask_id": row["subtask_id"],
+                        "state": row["state"],
+                        "cancel_requested": True,
+                        "recovered": True,
+                    },
+                ),
+                bucket=report.none_applied,
+                dispatch_ts=ts,
+                dispatch_state=DISPATCH_FINISHED,
+            )
+            return
+        if row is None:
+            reason = f"recovered: 子任务不存在（{subtask_id!r}），取消请求没有记下"
+        else:
+            reason = (
+                f"recovered: 子任务状态是 {row['state']}，取消请求没有记下"
+            )
+        _settle(
+            log, report, run_id, call_id, tool_id, intent_payload,
+            ToolResult("failed", "none_applied", {"error": reason, "recovered": True}),
+            bucket=report.none_applied,
+            # 派发记录也要离开 intent：否则后续 resume / 审计会看到
+            # "仍在执行"与"已确认没记下"两种说法。
+            dispatch_ts=ts,
+        )
+        return
+    if row is None:
+        # intent 已提交、行却不在：可能已建也可能没建。**不猜**。
+        _settle(
+            log, report, run_id, call_id, tool_id, intent_payload,
+            ToolResult(
+                "unknown",
+                "unknown",
+                {
+                    "error": "recovered: 子任务派发的副作用无法核实"
+                             "（subtasks 表里没有这一行；可能已建也可能没建）",
+                    "recovered": True,
+                    "subtask_id": subtask_id,
+                },
+            ),
+            bucket=report.subtask_unresolved,
+            # 结论是 unknown，派发记录按 error 收：它既不是"没执行"，
+            # 也不能继续显示"正在派发"。
+            dispatch_ts=ts,
+        )
+        return
+    import json
+
+    limits = json.loads(row["limits"] or "{}")
+    _settle(
+        log, report, run_id, call_id, tool_id, intent_payload,
+        ToolResult(
+            "succeeded",
+            "none_applied",
+            {
+                "subtask_id": row["subtask_id"],
+                "child_task_id": row["child_task_id"],
+                "child_run_id": row["child_run_id"],
+                "job_id": row["job_id"],
+                "state": row["state"],
+                "limits": limits,
+                "recovered": True,
+            },
+        ),
+        bucket=report.none_applied,
+        dispatch_ts=ts,
+        dispatch_state=DISPATCH_FINISHED,
     )
 
 
@@ -996,6 +1143,7 @@ def _settle(
     receipt_change: Change | None = None,
     intent_seq: int | None = None,
     dispatch_ts: int | None = None,
+    dispatch_state: str | None = None,
 ) -> None:
     batch = [{
         "run_id": run_id,
@@ -1049,6 +1197,11 @@ def _settle(
         with log.transaction():
             log.append_many(batch)
             _mark_dispatch_settled(
-                log, run_id, call_id, dispatch_ts, str(result.output.get("error", ""))
+                log,
+                run_id,
+                call_id,
+                dispatch_ts,
+                str(result.output.get("error", "")),
+                state=dispatch_state,
             )
     bucket.append(call_id)

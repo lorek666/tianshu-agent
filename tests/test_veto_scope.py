@@ -68,7 +68,19 @@ from tianshu.tools import SPECS, ExecutionPermit, tool_manifest
 REPO = Path(__file__).resolve().parents[1]
 ORIGINAL = "原始内容\n"
 #: 模型动作的封闭集合（PRD §5.2 / C4）。没有任何一项等于"启动 Run"。
-MODEL_ACTION_SET = {"read", "create", "overwrite", "delete", "exec", "fetch"}
+#:
+#: G2 子代理 D1 起模型可以 `delegate`（`subtask.spawn` / `subtask.cancel`）：
+#: 它派生的是**子任务**，不是新 Run——子 Run 由 Worker 认领，模型仍然不能
+#: 自己开一次执行。所以这条绊线仍然成立，只是动作集合多了一项。
+MODEL_ACTION_SET = {
+    "read",
+    "create",
+    "overwrite",
+    "delete",
+    "exec",
+    "fetch",
+    "delegate",
+}
 #: 控制面/CLI 才有的动作名。模型工具里出现它们就是越界。
 CONTROL_ONLY_NAMES = {
     "run_start",
@@ -232,6 +244,15 @@ def test_model_tool_surface_has_no_run_start():
         # 拿不到 TaskStore），所以不触及"模型不能建 Run"这条前提；放进这份
         # 字面清单就是那次显式过审。
         "network.fetch",
+        # G2 子代理 D1：四个工具派生/查询/取消**子任务**，不是新建 Run。
+        # `subtask.spawn` 建的是子 Task + 子 Run + 子 Job（由 Dispatcher 的
+        # 委派分支在事务里做），模型拿不到 `TaskStore.start_run`；子 Run 由
+        # Worker 认领。所以"模型不能自己开一次执行"这条前提仍然成立。放进
+        # 这份字面清单就是那次显式过审。
+        "subtask.spawn",
+        "subtask.status",
+        "subtask.result",
+        "subtask.cancel",
     }
 
 

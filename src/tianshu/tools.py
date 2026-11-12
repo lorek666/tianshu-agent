@@ -55,6 +55,7 @@ from .isolation import isolation_view, require_isolation_requirements
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
+    ACTION_DELEGATE,
     ACTION_DELETE,
     ACTION_EXEC,
     ACTION_FETCH,
@@ -686,6 +687,21 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 #: 状态；派发层据此把请求分到 `Dispatcher` 的网络分支（见 `dispatcher.py`）。
 NETWORK_TOOL_IDS: frozenset[str] = frozenset({"network.fetch"})
 
+#: 有**委派执行器**的工具（G2 子代理 D1）。
+#:
+#: `subtask.status` / `subtask.result` 是纯读，却仍然要走派发：父任务身份、
+#: 父 Run 作用域与"子任务是否存在"都在 `dispatcher._authority_subtask()` 里判
+#: （D1-c7）。把"有没有副作用"和"要不要派发"分开表达，才不会为了让纯读进
+#: 派发而谎报它写文件。
+SUBTASK_TOOL_IDS: frozenset[str] = frozenset(
+    {
+        "subtask.spawn",
+        "subtask.status",
+        "subtask.result",
+        "subtask.cancel",
+    }
+)
+
 _HANDLERS: dict[str, Callable[[Workspace, dict[str, Any], ToolContext], ToolResult]] = {
     "list_files": _list_files,
     "read_text": _read_text,
@@ -1094,6 +1110,112 @@ SPECS: dict[str, ToolSpec] = {
         side_effect_level="non_idempotent",
         exec_model="E3",
         action=ACTION_FETCH,
+    ),
+
+    "subtask.spawn": ToolSpec(
+        tool_id="subtask.spawn",
+        version="1.0",
+        description=(
+            "派生一个**只读**子任务并排队。subtask_id 是父作用域内的稳定 slug"
+            "（字母数字与 _.:-），goal ≤ 2 KiB。子任务只能做纯读：写文件/出网/"
+            "执行命令/调用 MCP/再委派一律被拒，不会弹嵌套审批。"
+            "max_turns 1–8（默认 8）、max_tokens 256–8000（默认 2000），"
+            "越界拒绝、不夹取。任务必须先用 --max-subtasks 声明委派能力，"
+            "且必须人工批准。批准后子任务状态是 queued——本版本只排队，不执行。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                },
+                "goal": {"type": "string", "minLength": 1, "maxLength": 2048},
+                # 范围**不写进 schema**：越界必须由派发层给出
+                # `dispatch.subtask_limit`（D1-c6），而不是在准入阶段变成
+                # "参数不合法"——用户需要知道"被限额拒绝"这件事。
+                "max_turns": {"type": "integer"},
+                "max_tokens": {"type": "integer"},
+            },
+            "required": ["subtask_id", "goal"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_DELEGATE,
+    ),
+    "subtask.status": ToolSpec(
+        tool_id="subtask.status",
+        version="1.0",
+        description=(
+            "查一个已派生（本 Run 下）的子任务状态：子任务状态机与子 Run 状态"
+            "分别给出，不互相冒充。纯读，不触发执行。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                },
+            },
+            "required": ["subtask_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="pure",
+        action=ACTION_READ,
+    ),
+    "subtask.result": ToolSpec(
+        tool_id="subtask.result",
+        version="1.0",
+        description=(
+            "读一个已派生（本 Run 下）子任务的有界结果。未完成时返回 "
+            "done=false（不是失败、也不是空结果）；完成时返回摘要与内容引用。"
+            "纯读，不触发执行、不唤醒作业、不重算预算。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                },
+            },
+            "required": ["subtask_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="pure",
+        action=ACTION_READ,
+    ),
+    "subtask.cancel": ToolSpec(
+        tool_id="subtask.cancel",
+        version="1.0",
+        description=(
+            "请求取消一个子任务：只记录取消请求（状态置 cancelling），"
+            "真正停下由执行侧在安全点确认。已完成的子任务幂等返回当前状态。"
+            "自动放行：它只会减少执行，不扩权。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                },
+            },
+            "required": ["subtask_id"],
+            "additionalProperties": False,
+        },
+        side_effect_level="idempotent",
+        action=ACTION_DELEGATE,
     ),
 }
 
@@ -1565,6 +1687,7 @@ __all__ = [
     "FileExecutor",
     "MODEL_FORBIDDEN_ARGS",
     "NETWORK_TOOL_IDS",
+    "SUBTASK_TOOL_IDS",
     "READ_TEXT_LIMIT",
     "SPECS",
     "ToolContext",

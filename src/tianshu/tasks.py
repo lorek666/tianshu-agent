@@ -110,6 +110,30 @@ CREATE TABLE IF NOT EXISTS run_turns (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (run_id, turn_id)
 );
+
+-- 子任务（G2 委派 D1）：一行 = 一次委派。与事件库同一个 SQLite，
+-- 和事件同生共死——父 Run 说"派了"而这张表里没有行，等于在撒谎。
+-- 主键是 (parent_run_id, subtask_id)：不同父 Run 可以各有一个同名 slug，
+-- 同一父 Run 里重复 spawn 同一 slug 是拒绝（dispatch.subtask_exists）。
+CREATE TABLE IF NOT EXISTS subtasks (
+    subtask_id      TEXT NOT NULL,
+    parent_task_id  TEXT NOT NULL,
+    parent_run_id   TEXT NOT NULL,
+    child_task_id   TEXT NOT NULL,
+    child_run_id    TEXT NOT NULL,
+    job_id          TEXT NOT NULL,
+    goal            TEXT NOT NULL,
+    limits          TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    result_ref      TEXT,
+    summary         TEXT,
+    error           TEXT,
+    created_at      INTEGER NOT NULL,
+    ended_at        INTEGER,
+    PRIMARY KEY (parent_run_id, subtask_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subtasks_parent_task ON subtasks(parent_task_id);
 """
 
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
@@ -172,6 +196,103 @@ RUN_EFFECT = "run.effect"
 # Task 级事件不属于某个 Run；用空 run_id 把它们与 run 作用域事件分开。
 TASK_SCOPE = ""
 
+# ---- 子任务（G2 委派 D1） ----
+#
+# 任务级声明 `max_subtasks` 是**能力声明**：0 = 这个任务不能委派（与
+# `outbound_allow` 空 = 一条包都不发同一条纪律）。上限是固定值，不做配置化扩容：
+# 每父 Run 最多 2 个未完成、每根 Task 累计最多 4 个、深度固定 1。
+SUBTASK_MAX_UNFINISHED_PER_RUN = 2
+SUBTASK_MAX_PER_ROOT_TASK = 4
+SUBTASK_MAX_DEPTH = 1
+SUBTASK_TURNS_RANGE = (1, 8)
+SUBTASK_TOKENS_RANGE = (256, 8000)
+SUBTASK_DEFAULT_MAX_TURNS = 8
+SUBTASK_DEFAULT_MAX_TOKENS = 2000
+#: 子任务 deadline 固定 300 秒，**不可由模型抬高**（D1 §2.4）。
+SUBTASK_DEADLINE_MS = 300_000
+#: 子任务目标的有界摘要（D1 §2.1：`goal` ≤ 2 KiB）。
+SUBTASK_GOAL_MAX_BYTES = 2048
+
+SUBTASK_QUEUED = "queued"
+SUBTASK_RUNNING = "running"
+#: D1 只记录**取消请求**：真正停下在 D2。写成 `cancelled` 是在假装撤销已完成。
+SUBTASK_CANCELLING = "cancelling"
+SUBTASK_SUCCEEDED = "succeeded"
+SUBTASK_FAILED = "failed"
+SUBTASK_CANCELLED = "cancelled"
+SUBTASK_FENCED = "fenced"
+
+#: 规格 §2.1 的 DDL 注释列了 6 个状态，§2.6 又要求取消先落 `cancelling`。
+#: 两个口径合起来才是完整封闭集（这一点写进 PR body 对账）。
+SUBTASK_STATES = frozenset(
+    {
+        SUBTASK_QUEUED,
+        SUBTASK_RUNNING,
+        SUBTASK_CANCELLING,
+        SUBTASK_SUCCEEDED,
+        SUBTASK_FAILED,
+        SUBTASK_CANCELLED,
+        SUBTASK_FENCED,
+    }
+)
+#: "未完成"：还占着并发额度、父 Run 必须等它。终态 + fenced 都不算。
+SUBTASK_UNFINISHED_STATES = frozenset(
+    {SUBTASK_QUEUED, SUBTASK_RUNNING, SUBTASK_CANCELLING}
+)
+SUBTASK_TERMINAL_STATES = frozenset(
+    {SUBTASK_SUCCEEDED, SUBTASK_FAILED, SUBTASK_CANCELLED, SUBTASK_FENCED}
+)
+
+
+def subtask_budget_attempt(parent_run_id: str, subtask_id: str) -> str:
+    """子任务在父账户 `subtasks` 维度上的**预占身份**。
+
+    身份必须可重算：D1 只在 spawn 时预占，D2 收尾时要结算同一张预占。把
+    `(父 Run, slug)` 拼成稳定字符串，就不必在 `subtasks` 行里再存一个预算 id
+    （规格 §2.1 的 DDL 没有这一列）。`BudgetLedger.reserve()` 对同一
+    `(account_id, attempt_id)` 幂等，重算不会重复扣。
+    """
+    return f"subtask:{parent_run_id}:{subtask_id}"
+
+
+def clean_subtask_limits(raw: dict[str, Any] | None) -> dict[str, int]:
+    """子任务局部上限：补默认值、**越界拒绝**（绝不静默夹到上限）。
+
+    `deadline_ms` 是固定值，不接受调用方抬高：传进来也和
+    `SUBTASK_DEADLINE_MS` 不同就拒绝。返回值**总是**含三项（含固定的 deadline），
+    因为 `subtasks.limits` 与 `subtask.spawned` 的契约要求三项齐全；派发层据此
+    在 spawn 那一刻把它换算成账户的绝对 deadline（`now + 300s`）。
+    """
+    raw = dict(raw or {})
+    unknown = sorted(set(raw) - {"max_turns", "max_tokens", "deadline_ms"})
+    if unknown:
+        raise TianshuError(f"未知的子任务上限字段：{unknown}")
+    if "deadline_ms" in raw and raw["deadline_ms"] != SUBTASK_DEADLINE_MS:
+        raise TianshuError(
+            f"deadline_ms 固定 {SUBTASK_DEADLINE_MS}，不能由模型抬高："
+            f"{raw['deadline_ms']}"
+        )
+    turns = raw.get("max_turns", SUBTASK_DEFAULT_MAX_TURNS)
+    tokens = raw.get("max_tokens", SUBTASK_DEFAULT_MAX_TOKENS)
+    for name, value in (("max_turns", turns), ("max_tokens", tokens)):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TianshuError(f"{name} 必须是整数：{value!r}")
+    low, high = SUBTASK_TURNS_RANGE
+    if not low <= turns <= high:
+        raise TianshuError(
+            f"max_turns 必须在 {low}–{high} 之间：{turns}（超过上限就拒绝，不夹取）"
+        )
+    low, high = SUBTASK_TOKENS_RANGE
+    if not low <= tokens <= high:
+        raise TianshuError(
+            f"max_tokens 必须在 {low}–{high} 之间：{tokens}（超过上限就拒绝，不夹取）"
+        )
+    return {
+        "max_turns": turns,
+        "max_tokens": tokens,
+        "deadline_ms": SUBTASK_DEADLINE_MS,
+    }
+
 
 def _ensure_column(
     conn: sqlite3.Connection, table: str, name: str, ddl: str
@@ -211,6 +332,15 @@ class Task:
     #: 任务级 MCP server 白名单（G2 MCP 阶段）：允许这个任务使用的 server 名。
     #: 空 = 一个都不许。与 `outbound_allow` 同形：创建时定死、`task revise` 不可改。
     mcp_servers: tuple[str, ...] = ()
+    #: 父链（G2 委派 D1）。根任务三项都是 None、depth=0；
+    #: 子任务的 depth 恒为 1，并记住是谁派的（事件与投影都要能回答）。
+    parent_task_id: str | None = None
+    parent_run_id: str | None = None
+    subtask_id: str | None = None
+    depth: int = 0
+    #: 任务级委派能力声明：0 = 不能委派（**未声明即无委派能力**）。
+    #: 与 `outbound_allow` 同一条纪律：扩权必须是新任务，运行中不可改。
+    max_subtasks: int = 0
     created_at: int = 0
     updated_at: int = 0
 
@@ -225,8 +355,53 @@ class Run:
     outcome: str | None = None
     effect_state: str | None = None
     control_requested: str | None = None
+    #: 子 Run 的父链（G2 委派 D1）：父 Run + 父作用域内的 slug。
+    parent_run_id: str | None = None
+    subtask_id: str | None = None
     created_at: int = 0
     ended_at: int | None = None
+
+
+@dataclass
+class Subtask:
+    """一次委派（`subtasks` 表的一行）。
+
+    `state` 是**子任务**的状态机（queued/running/cancelling/succeeded/failed/
+    cancelled/fenced），不是子 Run 的状态机：两者都给出，不互相冒充。
+    """
+
+    subtask_id: str
+    parent_task_id: str
+    parent_run_id: str
+    child_task_id: str
+    child_run_id: str
+    job_id: str
+    goal: str
+    limits: dict[str, int]
+    state: str
+    result_ref: str | None = None
+    summary: str | None = None
+    error: str | None = None
+    created_at: int = 0
+    ended_at: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subtask_id": self.subtask_id,
+            "parent_task_id": self.parent_task_id,
+            "parent_run_id": self.parent_run_id,
+            "child_task_id": self.child_task_id,
+            "child_run_id": self.child_run_id,
+            "job_id": self.job_id,
+            "goal": self.goal,
+            "limits": dict(self.limits),
+            "state": self.state,
+            "result_ref": self.result_ref,
+            "summary": self.summary,
+            "error": self.error,
+            "created_at": self.created_at,
+            "ended_at": self.ended_at,
+        }
 
 
 @dataclass
@@ -342,6 +517,19 @@ class TaskStore:
         _ensure_column(
             self._conn, "tasks", "mcp_servers", "TEXT NOT NULL DEFAULT '[]'"
         )
+        # G2 委派 D1：父链与能力声明。旧库补列后旧行读成「根任务、不能委派」，
+        # 这是唯一正确的默认值——未声明即无委派能力，不能因为补了个列就多出一种能力。
+        _ensure_column(self._conn, "tasks", "parent_task_id", "TEXT")
+        _ensure_column(self._conn, "tasks", "parent_run_id", "TEXT")
+        _ensure_column(self._conn, "tasks", "subtask_id", "TEXT")
+        _ensure_column(
+            self._conn, "tasks", "depth", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            self._conn, "tasks", "max_subtasks", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(self._conn, "runs", "parent_run_id", "TEXT")
+        _ensure_column(self._conn, "runs", "subtask_id", "TEXT")
         self._leases = leases
         self._claims = claims
         # 审批存储是可选的：fence 时要作废旧审批，但 TaskStore 不该因此依赖
@@ -408,10 +596,28 @@ class TaskStore:
         memory_scopes: list[str] | None = None,
         outbound_allow: list[str] | tuple[str, ...] | None = None,
         mcp_servers: list[str] | tuple[str, ...] | None = None,
+        max_subtasks: int = 0,
+        parent_task_id: str | None = None,
+        parent_run_id: str | None = None,
+        subtask_id: str | None = None,
+        depth: int = 0,
     ) -> Task:
         goal = (goal or "").strip()
         if not goal:
             raise TianshuError("goal 不能为空")
+        self._check_parent_chain(
+            parent_task_id=parent_task_id,
+            parent_run_id=parent_run_id,
+            subtask_id=subtask_id,
+            depth=depth,
+        )
+        if not isinstance(max_subtasks, int) or isinstance(max_subtasks, bool):
+            raise TianshuError(f"max_subtasks 必须是整数：{max_subtasks!r}")
+        if not 0 <= max_subtasks <= SUBTASK_MAX_PER_ROOT_TASK:
+            raise TianshuError(
+                f"max_subtasks 必须在 0–{SUBTASK_MAX_PER_ROOT_TASK} 之间："
+                f"{max_subtasks}（0 = 不允许委派；这是能力声明，不是可选项）"
+            )
         scopes = list(memory_scopes or [])
         # 声明的作用域是安全相关输入：存进来的每个元素都必须是合法的
         # `memory://` URI。只在 Dispatcher 里校验不够——直接调 TaskStore 的
@@ -452,54 +658,140 @@ class TaskStore:
             [b.to_dict() if isinstance(b, WorkspaceBinding) else b
              for b in (bindings or [])]
         )
-        now = _now()
-        task_id = f"task_{uuid.uuid4().hex[:12]}"
         with self._log.transaction() as tx:
-            self._conn.execute(
-                "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-                " active_run_id, status, workspaces, exec_policy, is_control,"
-                " memory_scopes, outbound_allow, mcp_servers, created_at, updated_at)"
-                " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?,?,?)",
-                (
-                    task_id,
-                    goal,
-                    json.dumps([b.to_dict() for b in parsed], ensure_ascii=False),
-                    json.dumps(exec_policy.to_dict(), ensure_ascii=False)
-                    if exec_policy is not None
-                    else "",
-                    1 if control else 0,
-                    json.dumps(scopes, ensure_ascii=False),
-                    json.dumps(list(outbound), ensure_ascii=False),
-                    json.dumps(servers, ensure_ascii=False),
-                    now,
-                    now,
-                ),
-            )
-            tx.append(
-                TASK_SCOPE,
-                TASK_CREATED,
-                {
-                    "task_id": task_id,
-                    "goal": goal,
-                    "goal_revision": 1,
-                    "lease_epoch": 1,
-                    "workspaces": [b.to_dict() for b in parsed],
-                    "exec_policy": exec_policy.to_dict() if exec_policy else None,
-                    # 契约 v1.2：控制面标记与作用域声明必须落进事件，不许只存在
-                    # 进程内对象里（崩溃恢复后就分不清谁是控制面）。
-                    "control": bool(control),
-                    "memory_scopes": scopes,
-                    # G2：外发白名单必须落进事件（崩溃恢复后仍能回答
-                    # "这个任务当时准不准出网、准去哪儿"）。
-                    "outbound_allow": list(outbound),
-                    # G2 MCP 阶段：任务级 server 白名单也进事件（崩溃恢复后仍能
-                    # 回答"这个任务当时准用哪些外部 server"）。
-                    "mcp_servers": servers,
-                },
-                task_id=task_id,
+            task_id = self._create_task_locked(
+                tx,
+                goal=goal,
+                bindings=parsed,
+                exec_policy=exec_policy,
+                control=control,
+                memory_scopes=scopes,
+                outbound_allow=outbound,
+                mcp_servers=servers,
+                max_subtasks=max_subtasks,
+                parent_task_id=parent_task_id,
+                parent_run_id=parent_run_id,
+                subtask_id=subtask_id,
+                depth=depth,
                 actor_kind="human",
             )
         return self.get_task(task_id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _check_parent_chain(
+        *,
+        parent_task_id: str | None,
+        parent_run_id: str | None,
+        subtask_id: str | None,
+        depth: int,
+    ) -> None:
+        """父链三项 + depth 必须自洽：要么全都是空（根任务），要么全都齐（子任务）。
+
+        允许"有父任务但没有父 Run"会让"谁派的"这个问题有两个答案；而 depth
+        与父链不一致就等于给出两种深度。
+        """
+        if depth not in (0, SUBTASK_MAX_DEPTH):
+            raise TianshuError(
+                f"depth 只能是 0 或 {SUBTASK_MAX_DEPTH}：{depth}"
+            )
+        chain = (parent_task_id, parent_run_id, subtask_id)
+        if depth == 0:
+            if any(item is not None for item in chain):
+                raise TianshuError("根任务不能带父链字段（depth=0 时三项必须为空）")
+            return
+        if any(not item for item in chain):
+            raise TianshuError(
+                "子任务必须同时有 parent_task_id / parent_run_id / subtask_id"
+            )
+
+    def _create_task_locked(
+        self,
+        tx,
+        *,
+        goal: str,
+        bindings: list[WorkspaceBinding],
+        exec_policy: ExecPolicy | None,
+        control: bool,
+        memory_scopes: list[str],
+        outbound_allow: tuple[str, ...],
+        mcp_servers: list[str],
+        max_subtasks: int,
+        parent_task_id: str | None,
+        parent_run_id: str | None,
+        subtask_id: str | None,
+        depth: int,
+        actor_kind: str,
+    ) -> str:
+        """建任务行 + `task.created`（调用方负责事务）。
+
+        子任务与根任务共用这一处，是为了让两份 `task.created` 永远同形状：
+        一次兴之所至的复制粘贴，就会让"子任务的父链只存在于表里"。
+        """
+        now = _now()
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        self._conn.execute(
+            "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
+            " active_run_id, status, workspaces, exec_policy, is_control,"
+            " memory_scopes, outbound_allow, mcp_servers, parent_task_id,"
+            " parent_run_id, subtask_id, depth, max_subtasks, created_at,"
+            " updated_at)"
+            " VALUES (?,?,1,1,NULL,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                task_id,
+                goal,
+                json.dumps([b.to_dict() for b in bindings], ensure_ascii=False),
+                json.dumps(exec_policy.to_dict(), ensure_ascii=False)
+                if exec_policy is not None
+                else "",
+                1 if control else 0,
+                json.dumps(list(memory_scopes), ensure_ascii=False),
+                json.dumps(list(outbound_allow), ensure_ascii=False),
+                json.dumps(list(mcp_servers), ensure_ascii=False),
+                parent_task_id,
+                parent_run_id,
+                subtask_id,
+                depth,
+                max_subtasks,
+                now,
+                now,
+            ),
+        )
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "goal": goal,
+            "goal_revision": 1,
+            "lease_epoch": 1,
+            "workspaces": [b.to_dict() for b in bindings],
+            "exec_policy": exec_policy.to_dict() if exec_policy else None,
+            # 契约 v1.2：控制面标记与作用域声明必须落进事件，不许只存在
+            # 进程内对象里（崩溃恢复后就分不清谁是控制面）。
+            "control": bool(control),
+            "memory_scopes": list(memory_scopes),
+            # G2：外发白名单必须落进事件（崩溃恢复后仍能回答
+            # "这个任务当时准不准出网、准去哪儿"）。
+            "outbound_allow": list(outbound_allow),
+            # G2 MCP 阶段：任务级 server 白名单也进事件（崩溃恢复后仍能回答
+            # "这个任务当时准用哪些外部 server"）。
+            "mcp_servers": list(mcp_servers),
+            # G2 委派 D1：能力声明**恒写**（0 也写）。旧事件缺这个键 → v0；
+            # 不按新版补值，也就不存在"补列顺便补出一种能力"。
+            "max_subtasks": max_subtasks,
+        }
+        # 父链只在**确实是子任务**时写。根写 None 会把"没有父"与"父未知"
+        # 混成同一个形状，而这两件事在事后审计里完全不同。
+        if depth:
+            payload["parent_task_id"] = parent_task_id
+            payload["parent_run_id"] = parent_run_id
+            payload["subtask_id"] = subtask_id
+            payload["depth"] = depth
+        tx.append(
+            TASK_SCOPE,
+            TASK_CREATED,
+            payload,
+            task_id=task_id,
+            actor_kind=actor_kind,
+        )
+        return task_id
 
     def get_task(self, task_id: str) -> Task | None:
         row = self._conn.execute(
@@ -666,28 +958,66 @@ class TaskStore:
                     )
 
             now = _now()
-            self._conn.execute(
-                "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
-                " state, created_at) VALUES (?,?,?,?,'created',?)",
-                (run_id, task_id, task.goal_revision, task.lease_epoch, now),
-            )
-            self._conn.execute(
-                "UPDATE tasks SET active_run_id=?, updated_at=? WHERE task_id=?",
-                (run_id, now, task_id),
-            )
-            tx.append(
-                run_id,
-                RUN_START,
-                {
-                    **(payload or {}),
-                    "run_id": run_id,
-                    "task_id": task_id,
-                    "goal_revision": task.goal_revision,
-                    "lease_epoch": task.lease_epoch,
-                },
-                task_id=task_id,
+            self._insert_run_locked(
+                tx,
+                task=task,
+                run_id=run_id,
+                now=now,
+                payload=payload,
             )
         return self.get_run(run_id)  # type: ignore[return-value]
+
+    def _insert_run_locked(
+        self,
+        tx,
+        *,
+        task: Task,
+        run_id: str,
+        now: int,
+        payload: dict[str, Any] | None = None,
+        parent_run_id: str | None = None,
+        subtask_id: str | None = None,
+    ) -> str:
+        """建 Run 行 + `run.start`（调用方负责事务与活跃 Run 的前置判定）。
+
+        父链字段只在**子 Run** 上非空：它们是子任务身份在 Run 这一侧的镜像，
+        重建投影时从 `run.start` 读回来（投影可丢，事件不可丢）。
+        """
+        self._conn.execute(
+            "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
+            " state, parent_run_id, subtask_id, created_at)"
+            " VALUES (?,?,?,?,'created',?,?,?)",
+            (
+                run_id,
+                task.task_id,
+                task.goal_revision,
+                task.lease_epoch,
+                parent_run_id,
+                subtask_id,
+                now,
+            ),
+        )
+        self._conn.execute(
+            "UPDATE tasks SET active_run_id=?, updated_at=? WHERE task_id=?",
+            (run_id, now, task.task_id),
+        )
+        start: dict[str, Any] = {
+            **(payload or {}),
+            "run_id": run_id,
+            "task_id": task.task_id,
+            "goal_revision": task.goal_revision,
+            "lease_epoch": task.lease_epoch,
+        }
+        if subtask_id is not None:
+            start["parent_run_id"] = parent_run_id
+            start["subtask_id"] = subtask_id
+        tx.append(
+            run_id,
+            RUN_START,
+            start,
+            task_id=task.task_id,
+        )
+        return run_id
 
     def run_payload(self, run_id: str) -> dict[str, Any]:
         """`run.start` 的原始字段（目标、输出文件名、预算）。"""
@@ -1488,6 +1818,173 @@ class TaskStore:
         ).fetchall()
         return [self._row_to_run(r) for r in rows]
 
+    # ---- 子任务（G2 委派 D1） ----
+
+    def create_subtask(
+        self,
+        parent_task: Task,
+        parent_run: Run,
+        *,
+        subtask_id: str,
+        goal: str,
+        limits: dict[str, int] | None = None,
+    ) -> Subtask:
+        """建一次委派：子 Task + 子 Run + 子 Job + `subtasks` 行，**同一事务**。
+
+        四件事必须同生同死：少建子 Task 就是"父任务说派了、子任务不存在"；
+        少建子 Job 就是"子 Run 永远不会被任何 worker 认领"；少了 `subtasks`
+        行则父任务连自己派过什么都答不出来。父 Run 的 `subtask.spawned`
+        事件由派发层在**同一个事务**里补写（它需要预算预占的结果）。
+
+        子 Task 的字段是**固定**的（规格 §2.1）：父任务的全部绑定逐个改写成
+        只读、去重；没有 exec 策略、没有外发白名单、没有记忆作用域、
+        `max_subtasks=0`、`depth=1`。于是它在既有策略下天然只能做纯读——
+        写文件/出网/exec/MCP 都是**拒绝**，不是"弹审批"。
+        """
+        if self._claims is None:
+            raise TianshuError(
+                "未配置 JobStore：创建子任务必须同时建子作业"
+                "（否则子 Run 永远不会被认领）"
+            )
+        if parent_task.depth != 0:
+            raise TianshuError(
+                f"深度 {parent_task.depth} 的任务不能再委派：{parent_task.task_id}"
+            )
+        if parent_run.task_id != parent_task.task_id:
+            raise TianshuError(
+                f"父 Run 不属于这个父任务：{parent_run.run_id}"
+                f"（run.task_id={parent_run.task_id}）"
+            )
+        goal = (goal or "").strip()
+        if not goal:
+            raise TianshuError("子任务目标不能为空")
+        raw = goal.encode("utf-8")
+        if len(raw) > SUBTASK_GOAL_MAX_BYTES:
+            raise TianshuError(
+                f"子任务目标超过 {SUBTASK_GOAL_MAX_BYTES} 字节：{len(raw)}"
+            )
+        clean = clean_subtask_limits(limits)
+        # 只读绑定：去重按 (canonical 根, 快照策略) —— 同一个目录的两种写法
+        # 在 WorkspaceBinding 构造时就归一到同一个根了，这里只需按根去重。
+        readonly: dict[tuple[str, str], WorkspaceBinding] = {}
+        for binding in parent_task.workspaces:
+            rewritten = WorkspaceBinding(
+                root_path=binding.root_path,
+                mode="readonly",
+                snapshot_policy=binding.snapshot_policy,
+            )
+            readonly[(rewritten.root_path, rewritten.snapshot_policy)] = rewritten
+        bindings = list(readonly.values())
+        now = _now()
+        with self._log.transaction() as tx:
+            child_task_id = self._create_task_locked(
+                tx,
+                goal=goal,
+                bindings=bindings,
+                exec_policy=None,
+                control=False,
+                memory_scopes=[],
+                outbound_allow=(),
+                # 子任务不能调 MCP：白名单为空（子任务只能纯读）。
+                mcp_servers=[],
+                max_subtasks=0,
+                parent_task_id=parent_task.task_id,
+                parent_run_id=parent_run.run_id,
+                subtask_id=subtask_id,
+                depth=SUBTASK_MAX_DEPTH,
+                actor_kind="core",
+            )
+            child_task = self.get_task(child_task_id)
+            if child_task is None:  # pragma: no cover - 同一事务里刚写的行
+                raise TianshuError("子任务创建失败：子 Task 投影不存在")
+            child_run_id = f"run_{uuid.uuid4().hex[:12]}"
+            self._insert_run_locked(
+                tx,
+                task=child_task,
+                run_id=child_run_id,
+                now=now,
+                parent_run_id=parent_run.run_id,
+                subtask_id=subtask_id,
+            )
+            job = self._claims.enqueue(child_run_id)
+            self._conn.execute(
+                "INSERT INTO subtasks (subtask_id, parent_task_id, parent_run_id,"
+                " child_task_id, child_run_id, job_id, goal, limits, state,"
+                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    subtask_id,
+                    parent_task.task_id,
+                    parent_run.run_id,
+                    child_task_id,
+                    child_run_id,
+                    job.job_id,
+                    goal,
+                    json.dumps(clean, ensure_ascii=False, sort_keys=True),
+                    SUBTASK_QUEUED,
+                    now,
+                ),
+            )
+        return self.get_subtask(parent_run.run_id, subtask_id)  # type: ignore[return-value]
+
+    def get_subtask(self, parent_run_id: str, subtask_id: str) -> Subtask | None:
+        row = self._conn.execute(
+            "SELECT * FROM subtasks WHERE parent_run_id=? AND subtask_id=?",
+            (parent_run_id, subtask_id),
+        ).fetchone()
+        return self._row_to_subtask(row) if row is not None else None
+
+    def list_subtasks(self, parent_run_id: str) -> list[Subtask]:
+        rows = self._conn.execute(
+            "SELECT * FROM subtasks WHERE parent_run_id=? ORDER BY created_at,"
+            " subtask_id",
+            (parent_run_id,),
+        ).fetchall()
+        return [self._row_to_subtask(row) for row in rows]
+
+    def count_unfinished_subtasks(self, parent_run_id: str) -> int:
+        marks = ",".join("?" * len(SUBTASK_UNFINISHED_STATES))
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM subtasks WHERE parent_run_id=?"
+            f" AND state IN ({marks})",
+            (parent_run_id, *sorted(SUBTASK_UNFINISHED_STATES)),
+        ).fetchone()
+        return int(row["n"])
+
+    def count_subtasks_for_task(self, parent_task_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM subtasks WHERE parent_task_id=?",
+            (parent_task_id,),
+        ).fetchone()
+        return int(row["n"])
+
+    def request_subtask_cancel(
+        self, parent_run_id: str, subtask_id: str
+    ) -> Subtask | None:
+        """记录取消请求：状态置 `cancelling` + 子作业 `cancel_requested=1`。
+
+        **D1 不写 `cancelled`**：真正停下由执行侧在安全点确认（D2）。这里只
+        留下"人要求停"这件事，不假装撤销已经完成。已终结的子任务原样返回
+        （幂等：不报错，也不假装撤销）。
+        """
+        with self._log.transaction():
+            row = self.get_subtask(parent_run_id, subtask_id)
+            if row is None:
+                return None
+            if row.state in SUBTASK_TERMINAL_STATES:
+                return row
+            if row.state == SUBTASK_CANCELLING:
+                return row
+            self._conn.execute(
+                "UPDATE subtasks SET state=? WHERE parent_run_id=? AND subtask_id=?"
+                " AND state=?",
+                (SUBTASK_CANCELLING, parent_run_id, subtask_id, row.state),
+            )
+            if self._claims is not None:
+                # 只置请求位：`request_cancel` 不写 `cancelled`，作业状态仍是
+                # pending/claimed/waiting，执行侧自己决定何时在安全点收手。
+                self._claims.request_cancel(row.job_id)
+        return self.get_subtask(parent_run_id, subtask_id)
+
     # ---- 投影重建 ----
 
     def rebuild_from_events(self) -> None:
@@ -1532,6 +2029,18 @@ class TaskStore:
                     "memory_scopes": json.dumps(
                         list(p.get("memory_scopes") or []), ensure_ascii=False
                     ),
+                    "outbound_allow": json.dumps(
+                        list(p.get("outbound_allow") or []), ensure_ascii=False
+                    ),
+                    "mcp_servers": json.dumps(
+                        list(p.get("mcp_servers") or []), ensure_ascii=False
+                    ),
+                    # 旧事件没有这些键：按"根任务、不能委派"重建（v0 不补值）。
+                    "parent_task_id": p.get("parent_task_id"),
+                    "parent_run_id": p.get("parent_run_id"),
+                    "subtask_id": p.get("subtask_id"),
+                    "depth": int(p.get("depth") or 0),
+                    "max_subtasks": int(p.get("max_subtasks") or 0),
                     "created_at": ev.ts,
                     "updated_at": ev.ts,
                 }
@@ -1564,6 +2073,9 @@ class TaskStore:
                     "outcome": None,
                     "effect_state": None,
                     "control_requested": None,
+                    # 子 Run 的父链（子任务身份在 Run 侧的证据）。
+                    "parent_run_id": p.get("parent_run_id"),
+                    "subtask_id": p.get("subtask_id"),
                     "created_at": ev.ts,
                     "ended_at": None,
                 }
@@ -1635,20 +2147,22 @@ class TaskStore:
                 self._conn.execute(
                     "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
                     " active_run_id, status, workspaces, is_control, memory_scopes,"
-                    " created_at, updated_at)"
+                    " outbound_allow, mcp_servers, parent_task_id, parent_run_id,"
+                    " subtask_id, depth, max_subtasks, created_at, updated_at)"
                     " VALUES (:task_id,:goal,:goal_revision,:lease_epoch,"
                     " :active_run_id,:status,:workspaces,:is_control,:memory_scopes,"
-                    " :created_at,:updated_at)",
+                    " :outbound_allow,:mcp_servers,:parent_task_id,:parent_run_id,"
+                    " :subtask_id,:depth,:max_subtasks,:created_at,:updated_at)",
                     t,
                 )
             for r in runs.values():
                 self._conn.execute(
                     "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
                     " state, outcome, effect_state, control_requested,"
-                    " created_at, ended_at)"
+                    " parent_run_id, subtask_id, created_at, ended_at)"
                     " VALUES (:run_id,:task_id,:goal_revision,:lease_epoch,"
                     " :state,:outcome,:effect_state,:control_requested,"
-                    " :created_at,:ended_at)",
+                    " :parent_run_id,:subtask_id,:created_at,:ended_at)",
                     r,
                 )
 
@@ -1671,6 +2185,11 @@ class TaskStore:
             memory_scopes=tuple(json.loads(row["memory_scopes"] or "[]")),
             outbound_allow=tuple(json.loads(row["outbound_allow"] or "[]")),
             mcp_servers=tuple(json.loads(row["mcp_servers"] or "[]")),
+            parent_task_id=row["parent_task_id"],
+            parent_run_id=row["parent_run_id"],
+            subtask_id=row["subtask_id"],
+            depth=int(row["depth"] or 0),
+            max_subtasks=int(row["max_subtasks"] or 0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -1689,8 +2208,32 @@ class TaskStore:
             control_requested=(
                 row["control_requested"] if "control_requested" in keys else None
             ),
+            parent_run_id=(
+                row["parent_run_id"] if "parent_run_id" in keys else None
+            ),
+            subtask_id=row["subtask_id"] if "subtask_id" in keys else None,
             created_at=row["created_at"],
             ended_at=row["ended_at"] if "ended_at" in keys else None,
+        )
+
+    @staticmethod
+    def _row_to_subtask(row: sqlite3.Row) -> Subtask:
+        limits = json.loads(row["limits"] or "{}")
+        return Subtask(
+            subtask_id=row["subtask_id"],
+            parent_task_id=row["parent_task_id"],
+            parent_run_id=row["parent_run_id"],
+            child_task_id=row["child_task_id"],
+            child_run_id=row["child_run_id"],
+            job_id=row["job_id"],
+            goal=row["goal"],
+            limits={k: int(v) for k, v in limits.items()},
+            state=row["state"],
+            result_ref=row["result_ref"],
+            summary=row["summary"],
+            error=row["error"],
+            created_at=row["created_at"],
+            ended_at=row["ended_at"],
         )
 
 
@@ -1698,10 +2241,25 @@ __all__: list[Any] = [
     "TaskStore",
     "Task",
     "Run",
+    "Subtask",
     "RunFenced",
     "TERMINAL_STATES",
     "NON_TERMINAL_STATES",
     "RUN_STATES",
     "RUN_OUTCOMES",
     "EFFECT_STATES",
+    "SUBTASK_STATES",
+    "SUBTASK_UNFINISHED_STATES",
+    "SUBTASK_TERMINAL_STATES",
+    "SUBTASK_MAX_UNFINISHED_PER_RUN",
+    "SUBTASK_MAX_PER_ROOT_TASK",
+    "SUBTASK_MAX_DEPTH",
+    "SUBTASK_TURNS_RANGE",
+    "SUBTASK_TOKENS_RANGE",
+    "SUBTASK_DEFAULT_MAX_TURNS",
+    "SUBTASK_DEFAULT_MAX_TOKENS",
+    "SUBTASK_DEADLINE_MS",
+    "SUBTASK_GOAL_MAX_BYTES",
+    "clean_subtask_limits",
+    "subtask_budget_attempt",
 ]

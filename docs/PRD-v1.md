@@ -516,8 +516,10 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 - **已实现并有判据**（`tests/test_g1d_resource_kinds.py` 15 条，负控 6/6，见
   [resource-kinds.md](resource-kinds.md)）：五种资源种类（file / memory / network / mcp /
   subtask）各自的规范化与校验；外发恒需人工批准（`fetch` + `c4.outbound`，无自动路径）、
-  MCP 与 exec 同级（`c4.mcp_call`）、委派因能力缺失恒拒（`c4.subtask_unavailable`）、
-  种类混用一律拒；没有执行器的种类在派发前拒绝（`dispatch.resource_kind_unsupported`）。
+  MCP 与 exec 同级（`c4.mcp_call`）、种类混用一律拒；没有执行器的种类在派发前拒绝
+  （`dispatch.resource_kind_unsupported`）。**委派在 G2 子代理 D1 接上派发分支后不再恒拒**（D1 的这一支只排队、**不执行子 Run**；执行在 D2）：
+  `subtask.spawn` 需人工批准、`subtask.cancel` 自动放行、`status`/`result` 自动，
+  `c4.subtask_unavailable` 退役为保留未使用（见 §5.4.1）。
 - **已实现并有判据**（`tests/test_content_refs.py` 12 条 + `tests/test_content_read.py`
   5 条，负控 12/12，见 [content-refs.md](content-refs.md)）：「大结果以有界摘要 +
   内容引用返回，分页读取引用验证任务可见范围」。占位给出可用的
@@ -535,8 +537,14 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   仍然不成立的部分逐条登记在 [network-g2.md](network-g2.md) §7：只支持 GET、没有检索
   API、真实公网研究与真实模型复跑未验证、DNS rebinding 未防护、二进制正文没有文本
   分页读取。
-- **未实现**：MCP 与委派的**真实执行器**（G2 后续阶段）。这两种资源的解析与许可
-  已就位、可拒绝，但没有执行面可以验证"调了什么"。
+- **已实现并有判据（G2 子代理 D1）**：委派的**排队面**——`task.created.max_subtasks`
+  （必填能力声明）、`subtasks` 实体与父子链、四个工具（`subtask.spawn/status/result/cancel`）、
+  六道授权门（工具归属 / 能力声明 / 深度 / slug 唯一 / 数量与局部上限 / 目标存在）、
+  `subtasks` 维度真实预占与子账户父链、崩溃恢复按证据补结果。测试与负控见
+  `tests/test_g2_delegation_*.py` 与 PR body。**D1 不执行子 Run**：子任务停在 `queued`，
+  执行/挂起唤醒/取消传播/fence/结果回填是 D2（规格 §2.5–§2.6）。
+- **未实现**：MCP 的**真实执行器**（G2 后续阶段）。它的解析与许可已就位、可拒绝，
+  但没有执行面可以验证"调了什么"。
 
 
 ### 5.3 C3 Event
@@ -572,7 +580,7 @@ Event {
 
 **原方案**：`type` 是一个 9 值抽象枚举 `intent|result|model_call|approval|receipt|compaction|job|checkpoint|audit`。
 
-**新方案**：两层——**族**（`type` 的名字空间前缀；13 个在用 + 3 个声明未实现）→ **具体类型注册表**（41 个，机器可校验，写入侧强制）。
+**新方案**：两层——**族**（`type` 的名字空间前缀；14 个在用 + 3 个声明未实现）→ **具体类型注册表**（43 个，机器可校验，写入侧强制）。
 
 **为什么改**（三条都是实测出来的）：
 
@@ -592,7 +600,7 @@ Event {
 | `job` | 族 `job`（5 种） |
 | `compaction` / `checkpoint` / `audit` | **未实现**，登记在 `UNIMPLEMENTED_EVENT_FAMILIES` |
 
-#### 5.3.2 注册表：13 个族 / 41 个具体类型
+#### 5.3.2 注册表：14 个族 / 43 个具体类型
 
 族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
 
@@ -608,6 +616,7 @@ Event {
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
 | `recovery` | 崩溃恢复：阻断与解除阻断 | `recovery.blocked` / `recovery.unblocked` |
 | `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
+| `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
 | `undo` | 撤销：完成与中断 | `undo.completed` / `undo.failed` |
@@ -735,10 +744,13 @@ reject`）之后，同一 Run 内**同一动作内容**的派发请求不再发�
 - **机器可校验副本**：`schemas/c4/rules.json` 的 `rule_id.enum`；
   `tests/test_rule_ids.py` 把两边绑在一起，改一处忘另一处会红——包括"这个编号
   有没有真实产生路径"。
-- **保留未使用**：`dispatch.denied`（`DispatchDenied` 的默认编号，现无调用方使用）
-  与 `c4.unhandled`（策略分类的末尾兜底，当前动作集合已全覆盖）。它们保留在集合里，
-  因为都是防御性兜底：真被触发时仍要能记下一条拒绝，而不是让拒绝路径自己崩掉。
-  这两条在表里明确标注，不参与"有产生路径"的归类。
+- **保留未使用**：`dispatch.denied`（`DispatchDenied` 的默认编号，现无调用方使用）、
+  `c4.unhandled`（策略分类的末尾兜底，当前动作集合已全覆盖），以及
+  `c4.subtask_unavailable`（G2 子代理 D1 **之前**"委派无执行器"的恒拒编号；D1 起
+  委派可用，这条路径不再产生，但历史日志里它回答"当时为什么不能委派"，故不删、
+  不改名）。它们保留在集合里：前两条是防御性兜底，真被触发时仍要能记下一条拒绝，
+  而不是让拒绝路径自己崩掉；第三条是历史编号的归档。三条在表里明确标注，不参与
+  "有产生路径"的归类。
 
 **这些是规则编号，不是事件类型。** 不要登记进 `events.EVENT_TYPES`——事件类型
 注册表只回答"代码会写哪些事件"，混进规则编号等于让它替不存在的类型作证。
@@ -787,10 +799,17 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.memory_not_found` | 记忆 | 要确认 / 忘记的记忆在当前授权作用域内不存在（已删除、revision 已变或不属于本作用域）。 | 重新检索记忆并核对 `memory_id` 与 `revision` 后再发起。 |
 | `dispatch.memory_resource_mismatch` | 记忆 | 工具与资源种类不匹配：文件工具收到 `memory://`，或记忆工具收到文件路径。 | 检查工具参数——这是调用侧把目标拼错了，不是权限问题。 |
 | `dispatch.memory_stale_revision` | 记忆 | 记忆的 `status` / `revision` 与请求声明的不一致（批准后被确认、遗忘或改写）。 | 重新读取该记忆，按最新 `revision` 重新发起审批。 |
-| `dispatch.resource_kind_unsupported` | 资源种类 | 资源种类没有执行器：`subtask://` 的解析与许可已实现，但**委派**执行器仍未交付（网络在 G2 网络阶段补上、MCP 在 G2 MCP 阶段补上），派发前拒绝。 | 当前不可用：委派能力还没接（不是参数问题）。文件用文件工具、网页用 `network.fetch`、MCP 工具先配 server 再用。 |
+| `dispatch.resource_kind_unsupported` | 资源种类 | **防御性兜底**：五种资源种类（file / memory / network / mcp / subtask）现在都有派发分支（subtask 的这一支只排队、**不执行子 Run**——执行在 D2），正常路径不应再出现这个编号。保留它是为了将来新增种类却漏接分支时，拒绝仍然有编号可记，而不是静默回退成文件路径或未分类异常。 | 正常不该看到；真看到说明有新资源种类只补了解析、没补执行分支（代码 bug，报 issue）。 |
 | `c4.mixed_resource_kinds` | 资源种类 | 一次动作声明了多种资源种类，授权无法同时覆盖。 | 一次只做一类：拆成多个请求，别把外发目标塞进文件请求里。 |
 | `c4.action_resource_mismatch` | 资源种类 | 动作与资源种类不匹配（例如文件资源配 `fetch` / `delegate`，或网络资源配 `read`）。 | 检查工具与参数：外发用 `fetch`、委派用 `delegate`，读文件用 `read`。 |
-| `c4.subtask_unavailable` | 资源种类 | 子任务能力尚未实现，委派被拒（没有委派执行器，不接受「批一下就好」的路径）。 | 当前不可用：等委派能力上线。 |
+| `c4.subtask_not_configured` | 资源种类 | 任务没有声明委派能力（`task.created.max_subtasks = 0`）：未声明即不允许派生任何子任务（与 `outbound_allow` 同一条纪律）。请求在**弹批准之前**就被拒。 | 确实需要委派时新建任务并加 `--max-subtasks N`（0–4，创建后不可改）；不确定就不要放开。 |
+| `dispatch.subtask_rejected` | 资源种类 | 工具与资源种类不匹配：非子任务工具收到 `subtask://` 资源，或子任务工具收到别的资源（不回退成文件动作）。 | 检查工具与参数：委派用四个 `subtask.*` 工具 + `subtask://` 目标；不要把它塞进文件工具。 |
+| `dispatch.subtask_exists` | 身份失配 | 同一父 Run 里已经有同名子任务：slug 在父 Run 内唯一，重复 spawn 是拒绝而不是静默复用。 | 换一个 slug，或用 `subtask.status` 看那个 slug 现在是什么状态。 |
+| `dispatch.subtask_not_found` | 身份失配 | 这个父 Run 下没有该子任务：status / result / cancel 明确拒绝，不用空结果或「已完成」冒充成功。 | 核对 slug；子任务只能在**派它的那个 Run** 里查询与取消。 |
+| `dispatch.subtask_depth_exceeded` | 身份失配 | 深度不为 0 的任务不能再委派：委派只支持一层。 | 子任务自己不能再派子任务；把要做的事写进它自己的目标里。 |
+| `dispatch.parent_fenced` | 保留未使用 | 保留未使用（D2 启用）：父 Run 的目标/租约版本变了（或子任务记录的版本与父不一致）时，子任务被 fence、结果不能回填父 Run。编号与语义在 D1 登记，**产生路径在 D2**（父改目标核验）。 | 目前不会出现；D2 接上后含义如左：父任务目标已改，那个子任务的结论不再算数，需要时在新 Run 里重新派。 |
+| `dispatch.subtask_limit` | 预算账本 | 委派限额不满足：每父 Run 未完成子任务数（上限 2）、每根任务累计总数（上限 4），或 `max_turns` / `max_tokens` 越界（拒绝，不静默夹取）。 | 等已有子任务收尾；限额是固定值、不做配置化扩容。请求值越界就改成范围内的值（轮次 1–8、token 256–8000）。 |
+| `c4.subtask_unavailable` | 保留未使用 | 保留未使用：G2 子代理 D1 之前"委派无执行器"的恒拒编号。D1 起委派可用，这条路径不再产生；编号保留给历史日志。 | 保留未使用；真看到它说明日志来自 D1 之前（或有人回退了委派能力），对照任务创建时间判断。 |
 | `dispatch.network_resource_mismatch` | 资源种类（网络） | 工具与资源种类不匹配：网络资源配了非网络工具，或网络工具收到了文件 / 记忆资源。 | 检查工具与参数：抓网页用 `network.fetch` + `network://` 目标，读文件用读工具。 |
 | `c4.outbound_not_allowed` | 网络外发 | 任务级外发白名单（`task.created.outbound_allow`）没有声明任何源，或目标源不在白名单里。任务没被允许跟这台服务器说话，请求在派发前就被拒，**不会**弹批准。 | 确实需要访问这个源时，新建任务并用 `--allow-outbound` 显式声明（白名单创建后不可改）；不确定就不要放开。 |
 | `c4.mcp_not_allowed` | MCP | 任务的 server 白名单（`task.created.mcp_servers`）没有声明这个 MCP server，请求在**弹批准之前**就被拒（不给"批了也发不出去"的批准）。 | 确实要这个任务用这个 server 时，新建任务并加 `--allow-mcp-server <名字>`；不确定就不要放开。 |
@@ -810,6 +829,8 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.outside_workspace` | 判定结果（非拒绝） | 判定结果：目录外访问，需审批。 | 目录外访问需人工确认：批准后执行。 |
 | `c4.exec` | 判定结果（非拒绝） | 判定结果：执行命令需要人工审批（任务已显式开启 exec 策略）。 | 确认命令与参数无误后批准；不确定就拒绝。 |
 | `c4.outbound` | 判定结果（非拒绝） | 判定结果：外发到网络目标需人工审批（`fetch` 动作 + `network://` 资源）。网络请求有成本、有外发，不是本地纯读——**没有自动放行路径**。 | 确认目标主机与路径无误后批准；不确定就拒绝。 |
+| `c4.subtask_spawn` | 判定结果（非拒绝） | 判定结果：派生子任务需要人工批准（会创建子任务实体、占用共享预算；D1 只排队、**不执行**，并发运行在 D2）。 | 批准前核对 slug、目标与局部上限；不确定就拒绝。 |
+| `c4.subtask_cancel` | 判定结果（非拒绝） | 判定结果：取消子任务自动放行（只会减少执行，不扩大任何权限）。 | 无需操作：D1 只记录取消请求（`cancelling`）；子任务真正停下在 D2 由执行侧确认。 |
 | `c4.mcp_call` | 判定结果（非拒绝） | 判定结果：调用 MCP 工具需人工审批（`exec` 动作 + `mcp://` 资源）：MCP 工具是不可信外部程序，与执行命令同级。 | 确认服务器与工具名无误后批准；不确定就拒绝。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
@@ -908,8 +929,11 @@ class Limits(TypedDict, total=False):
 第 3 条"估算不冒充可验证上界"现在有两种口径：默认 `budget_bound="estimate"`（估算，越界
 如实记 `overrun` 但不停机）；`budget_bound="upper"` 用**可验证上界**（输入 = 请求体 UTF-8
 字节数，输出 = adapter 能力声明的 `output_tokens`），拿不到输出上界就拒绝进入该模式，
-越界后该账户链拒绝一切新预占。**仍未做**：界面分别展示已知费用与未知用量；子任务/网络
-的真实账户与计费（G2）。
+越界后该账户链拒绝一切新预占。网络字节账本已在 G2 网络阶段接上；子任务在 G2 子代理 D1
+接上排队面（只预占、**不执行**；执行在 D2）：spawn 在父账户 `subtasks` 维度真实预占 1、子账户 `run:<child_run_id>` 的
+`parent_id` 指向根 Run 账户（只声明局部 `tokens`/`requests` 上限与固定 300s deadline）。
+**仍未做**：界面分别展示已知费用与未知用量；子任务的**收尾结算**与取消传播（D2）；
+真实并发子任务争抢同一份额度的验收（账本层已覆盖）。
 
 **验收**：真并发竞争最后一份额度只放行一次；重复结算不重复扣款；预占后崩溃可核对；未知费用不记零；父额度耗尽时子任务和摘要均拒发；取消确认后无新请求。
 
@@ -1283,7 +1307,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 |---|---|---|
 | **G0 可信评测** | 第一优先级 | 修复 P1/P2 判据、版本化并复跑；四维结果与正负控成立，实际失败保留；真实用户任务集开始形成 |
 | **G1 通用执行基础** | 新增网络 / MCP 前；并发委派前完成共享账本 | §5.2.3 / §5.6 的准入、外发、预算、deadline 与取消测试通过；模型生成代码或不可信本地程序另须 §8.1.1 隔离门禁 |
-| **G2 完整用户体验** | G0 + 相关 G1 能力 | 按“网络 → MCP → 记忆 → 子代理”推进；网络阶段先完成 §10.5 的本地任务和联网研究闭环，可查看产物、来源、费用与恢复状态。后续各阶段用同一任务集证明新增收益。**网络阶段已交付（2026-11-11，PR #110 / #112）**；**MCP 阶段已交付（2026-11-12，PR #116 / #117 / #118）**；记忆执行器 / 子代理未做 |
+| **G2 完整用户体验** | G0 + 相关 G1 能力 | 按“网络 → MCP → 记忆 → 子代理”推进；网络阶段先完成 §10.5 的本地任务和联网研究闭环，可查看产物、来源、费用与恢复状态。后续各阶段用同一任务集证明新增收益。**网络阶段已交付（2026-11-11，PR #110 / #112）**；**MCP 阶段已交付（2026-11-12，PR #116 / #117 / #118）**；**子代理 D1 已交付（合同 + 实体 + 四个工具 + 限额 + 共享预算；子任务只排队不执行）**，子代理 D2（执行与收束）未做；记忆执行器未做 |
 | **G3 正式发布准备** | 可与 G1/G2 并行修复；发布前全部满足 | 历史数据升级 / 备份恢复、凭据存储、运行 SLO、长时间测试、安装 / 更新 / 回退和平台矩阵全部有证据；遗留阻断问题明确裁决 |
 
 **G3 的平台与交付要求：**

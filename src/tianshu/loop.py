@@ -139,6 +139,7 @@ from .tasks import (
 from .tools import (
     NETWORK_TOOL_IDS,
     SPECS,
+    SUBTASK_TOOL_IDS,
     ToolContext,
     ToolResult,
     execute,
@@ -384,6 +385,18 @@ def spec_is_write(tool_id: str) -> bool:
 
     spec = current_registry().spec(tool_id)
     return spec is not None and spec.side_effect_level != "pure"
+
+
+def proposal_requires_dispatch(tool_id: str) -> bool:
+    """这条调用是否必须经过 Dispatcher。
+
+    **与"有没有副作用"是两件事**：`subtask.status` / `subtask.result` 是纯读，
+    但父任务身份、父 Run 作用域与"子任务是否存在"都在
+    `Dispatcher._authority_subtask()` 里判（D1-c7）。把它们当普通只读工具直接
+    执行，等于把"不存在"伪装成空结果。所以委派工具一律走派发；它们的
+    `side_effect_level` 仍然如实写 `pure`（不为了让它们进派发而谎报写文件）。
+    """
+    return spec_is_write(tool_id) or tool_id in SUBTASK_TOOL_IDS
 
 
 def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
@@ -1802,7 +1815,11 @@ class AgentLoop:
                     "tool_id": call.name,
                     # 只读工具不进派发（没有可授权的副作用），但它同样要进游标：
                     # 否则"读到一半崩了"之后重建的消息序列会和 replay 对不上。
-                    "kind": "write" if spec_is_write(call.name) else "read",
+                    "kind": (
+                        "write"
+                        if proposal_requires_dispatch(call.name)
+                        else "read"
+                    ),
                     "args": props,
                     "request_id": None,
                     "approval_id": None,
@@ -2435,6 +2452,20 @@ class AgentLoop:
             except NetError as exc:
                 raise ToolArgumentError(str(exc)) from exc
             return target.to_uri()
+        if tool_id in SUBTASK_TOOL_IDS:
+            # 子任务是父 Run 作用域里的一个 slug，不是文件：零目录任务同样合法，
+            # 所以这一支也在"任务必须绑定目录"之前。形状校验走 resources 的
+            # 既有解析器（不新写一份规则）。
+            from .resources import ResourceError, parse_resource
+
+            raw = args.get("subtask_id")
+            if not isinstance(raw, str) or not raw:
+                raise ToolArgumentError("子任务工具的 subtask_id 必须是非空字符串")
+            try:
+                ref = parse_resource(f"subtask://{raw}")
+            except ResourceError as exc:
+                raise ToolArgumentError(str(exc)) from exc
+            return ref.uri
         if tool_id in MEMORY_WRITE_TOOLS:
             return self._memory_target(task, tool_id, args)
         key = target_arg(tool_id)

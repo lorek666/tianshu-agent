@@ -89,6 +89,20 @@
         null
       ],
       "description": "用户控制请求。请求与生效状态分开：RUNNING 时只记录请求，执行器在安全点确认后才改 state。"
+    },
+    "parent_run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "子 Run 的父 Run id（G2 子代理 D1）：根 Run 为 null。"
+    },
+    "subtask_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "子 Run 对应的子任务 slug：根 Run 为 null。"
     }
   }
 }

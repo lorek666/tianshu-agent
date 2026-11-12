@@ -10,8 +10,8 @@
 
 | 维度 | 冻结前（`da84d92`） | 本 PR 之后 |
 |---|---|---|
-| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（不新增类型） |
-| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 41 个类型各有 v1 schema：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
+| 事件类型 | `EVENT_TYPES` 封闭（41 个） | 不变（本 PR 不新增类型；后续 G2 网络/委派阶段各自增量，当前 43） |
+| payload 形状 | `schemas/c3/event.json` 里是 `type: object`，**任意字段** | 当时 41 个类型各有 v1 schema（当前 43）：`required`、`additionalProperties: false`、嵌套对象/数组/封闭枚举 |
 | 版本 | 无 | 事件旁表 `event_versions(seq,type,version)`；当前版本 `1`，冻结前 `0` |
 | 写入校验 | 只校验类型名 | 类型名 + payload 契约；非法 payload 在**落 blob / 写库之前**被拒，错误带类型与字段路径。默认**只接受当前契约**，v0 写入必须显式 `legacy_write=True`（只给夹具/历史播种/迁移测试，生产路径零调用点） |
 | 旧数据读取 | 只能"按现在的代码猜" | 旁表无记录的历史行 → `payload_version=0`，按 v0 映射读取；**不按新版默认补值** |
@@ -43,7 +43,9 @@
 
 ## 3 类型清单与版本
 
-当前所有 41 个类型的 payload 版本都是 **v1**（本 PR 引入）。下表列每个类型的
+当前所有 **43** 个类型的 payload 版本都是 **v1**（本 PR 引入；G2 委派 D1 增加了
+`subtask.spawned` / `subtask.finished` 两个类型，并把 `task.created` 的必填键
+扩到含 `max_subtasks`）。下表列每个类型的
 必填字段与"是否存在已知历史形状差异"（有差异的类型在 v0 映射里放宽，见 §6）：
 
 | 类型 | 当前版本 | v1 required | v0 备注 |
@@ -82,7 +84,9 @@
 | `run.model_turn` | v1 | `run_id`, `turn_id`, `seq`, `claim_epoch`, `finish_reason`, `usage`, `payload_hash` | 历史形状差异（v0 放宽） |
 | `run.start` | v1 | `run_id`, `task_id`, `goal_revision`, `lease_epoch` | 历史形状差异（v0 放宽） |
 | `run.state` | v1 | `run_id`, `task_id`, `from`, `to`, `reason` | 无已知形状差异 |
-| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes` | 无已知形状差异（F2 起 `exec_policy` 可选 `isolation_requires`；边界名封闭枚举，旧行缺字段仍合法） |
+| `subtask.spawned` | v1 | `subtask_id`, `child_task_id`, `child_run_id`, `job_id`, `goal_digest`, `limits` | 新增类型（G2 委派 D1）：父 Run 侧只留目标摘要，不留正文 |
+| `subtask.finished` | v1 | `subtask_id`, `state` | 新增类型（G2 委派 D1 登记形状，D2 接发射点）；`result_ref` / `error` / `usage` 可选 |
+| `task.created` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces`, `exec_policy`, `control`, `memory_scopes`, `outbound_allow`, `mcp_servers`, `max_subtasks` | 历史形状差异（v0）：没有 `outbound_allow`（G2 网络阶段加入）、`mcp_servers`（G2 MCP 阶段加入）与 `max_subtasks`（G2 委派 D1 加入）；`parent_task_id` / `parent_run_id` / `subtask_id` / `depth` 为可选父链字段 |
 | `task.revised` | v1 | `task_id`, `goal`, `goal_revision`, `lease_epoch`, `workspaces` | 无已知形状差异 |
 | `tool.intent` | v1 | `call_id`, `tool_id`, `args`, `args_hash`, `request_id`, `request_digest`, `dispatch_id`, `grant_id`, `attempt_id`, `claim_epoch` | 历史形状差异（v0 放宽） |
 | `tool.not_dispatched` | v1 | `call_id`, `tool_id`, `reason` | 无已知形状差异 |
@@ -158,9 +162,9 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 夹具（`tests/fixtures/events/`，由 `event_schema` 生成并校验）：
 
-- `minimal_v1.json`：41 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
+- `minimal_v1.json`：43 个类型的 v1 最小合法样例（`tests/test_event_schema.py::
   test_minimal_v1_fixture_is_valid_and_round_trips`）。
-- `legacy_v0.jsonl`：41 个类型各一行 `{type,payload,note}`，逐行可读；
+- `legacy_v0.jsonl`：43 个类型各一行 `{type,payload,note}`，逐行可读；
   其中 **6 个类型**（`dispatch.admitted` / `model.intent` / `receipt` /
   `run.model_turn` / `run.start` / `tool.intent`）是"v1 拒绝、v0 接受"的真实历史
   形状差异；其余 35 行形状与当前一致，用来证明**"旁表无记录的历史行 → v0 读出"**
@@ -232,7 +236,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 
 新增/调整的测试：
 
-- `tests/test_event_schema.py`：**80** 条。41 个类型 ×（一正一反例）、v1/v0 夹具逐行、
+- `tests/test_event_schema.py`：**82** 条。43 个类型 ×（一正一反例）、v1/v0 夹具逐行、
   版本旁表（缺失/损坏/未来版本/无记录）、**默认严格/显式 legacy 写入**、事务性、
   blob 路径、**备份→恢复后版本仍精确**、`replay` 兼容、
   **`legacy_write` 不被误用的两条元测试**（生产代码零调用点 + 显式 legacy 仍须过
@@ -242,7 +246,7 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - 两处**授权**的既有测试最小改动（旧口径 → 新口径，断言强度不变）：
   1. `tests/test_events.py::test_every_registered_type_can_be_written_and_read_back`：
      旧=`{"probe": type}` 任意 dict 可写；新=每类型用 `event_schema.minimal_payload()`
-     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 41 个类型。
+     写读往返，并额外断言 `payload_version == 1`。仍遍历全部 43 个类型。
   2. `tests/test_credentials.py::test_event_db_actually_can_contain_text_...`（授权一处）：
      旧=`run.start` 写任意 `{"probe": sentinel}`；新=最小合法 `run.start` payload +
      `task=sentinel`，断言（sentinel 明文出现在 SQLite 字节里）未动。

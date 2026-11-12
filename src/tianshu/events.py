@@ -89,6 +89,9 @@ EVENT_TYPES: frozenset[str] = frozenset(
         # Task
         "task.created",
         "task.revised",
+        # 子任务（G2 委派）：父 Run 侧的委派审计
+        "subtask.spawned",
+        "subtask.finished",
         # 工具（C2）
         "tool.intent",
         "tool.result",

@@ -274,6 +274,22 @@
       "to": "created",
       "reason": "x"
     },
+    "subtask.finished": {
+      "subtask_id": "x",
+      "state": "queued"
+    },
+    "subtask.spawned": {
+      "subtask_id": "x",
+      "child_task_id": "x",
+      "child_run_id": "x",
+      "job_id": "x",
+      "goal_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "limits": {
+        "max_turns": 1,
+        "max_tokens": 1,
+        "deadline_ms": 1
+      }
+    },
     "task.created": {
       "task_id": "x",
       "goal": "x",
@@ -292,7 +308,8 @@
       "control": false,
       "memory_scopes": [],
       "outbound_allow": [],
-      "mcp_servers": []
+      "mcp_servers": [],
+      "max_subtasks": 0
     },
     "task.revised": {
       "task_id": "x",
