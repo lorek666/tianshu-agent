@@ -141,6 +141,14 @@ def test_handshake_records_version_and_tools(server):
     assert instance.is_alive
 
 
+def test_stdio_protocol_is_utf8_under_non_utf8_process_default(server):
+    instance = server(env={"PYTHONIOENCODING": "cp1252"})
+    echo = next(tool for tool in instance.tools if tool.name == "echo")
+    assert echo.description == "回显一段文本"
+    result = instance.call_tool("echo", {"message": "中文与 café"})
+    assert result.text_parts == ("echo:中文与 café",)
+
+
 def test_tools_list_pagination_is_followed(server):
     instance = server("--page-size", "1")
     assert {tool.name for tool in instance.tools} == {"echo", "add"}

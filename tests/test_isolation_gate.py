@@ -533,8 +533,8 @@ def test_precheck_rejects_unproven_requirement_before_approval(env_factory, monk
 # ---------------------------------------------------------------- 7. 契约
 
 
-def _task_payload(**policy_overrides) -> dict:
-    policy = _policy(Path("/tmp"), **policy_overrides)
+def _task_payload(root: Path, **policy_overrides) -> dict:
+    policy = _policy(root, **policy_overrides)
     return {
         "task_id": "task_1",
         "goal": "g",
@@ -552,14 +552,14 @@ def _task_payload(**policy_overrides) -> dict:
     }
 
 
-def test_task_created_accepts_both_policy_shapes():
-    old_policy = _policy(Path("/tmp")).to_dict()
+def test_task_created_accepts_both_policy_shapes(tmp_path):
+    old_policy = _policy(tmp_path).to_dict()
     old_policy.pop("isolation_requires")
-    old = _task_payload()
+    old = _task_payload(tmp_path)
     old["exec_policy"] = old_policy
 
     validate_payload("task.created", old)          # 旧 payload 仍合法
-    validate_payload("task.created", _task_payload())  # 新 payload 合法
+    validate_payload("task.created", _task_payload(tmp_path))  # 新 payload 合法
 
 
 def _valid_isolation_view(**overrides) -> dict:
@@ -619,8 +619,8 @@ def test_isolation_view_contract_is_strict():
             )
 
 
-def test_illegal_boundary_is_rejected_before_write():
-    payload = _task_payload()
+def test_illegal_boundary_is_rejected_before_write(tmp_path):
+    payload = _task_payload(tmp_path)
     payload["exec_policy"]["isolation_requires"] = ["bogus"]
 
     with pytest.raises(PayloadContractError):
@@ -630,8 +630,8 @@ def test_illegal_boundary_is_rejected_before_write():
 # ---------------------------------------------------------------- 8. 契约/口往返
 
 
-def test_require_isolation_roundtrips_through_exec_policy():
-    policy = _policy(Path("/tmp"), isolation_requires=("process_tree", "process_tree"))
+def test_require_isolation_roundtrips_through_exec_policy(tmp_path):
+    policy = _policy(tmp_path, isolation_requires=("process_tree", "process_tree"))
     assert policy.isolation_requires == ("process_tree",)     # 去重保序
 
     again = ExecPolicy.from_dict(policy.to_dict())
@@ -781,7 +781,8 @@ def test_report_from_another_platform_is_refused(tmp_path):
     from dataclasses import replace as dc_replace
 
     policy = _policy(tmp_path, isolation_requires=("files_authority",))
-    report = dc_replace(_report(tmp_path, tmp_path), platform="windows-x64")
+    other_platform = "macos-arm64" if sys.platform == "win32" else "windows-x64"
+    report = dc_replace(_report(tmp_path, tmp_path), platform=other_platform)
 
     with pytest.raises(IsolationRefused, match="不属于本次探测现场"):
         require_isolation_requirements(

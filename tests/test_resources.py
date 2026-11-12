@@ -137,12 +137,14 @@ def test_workspace_scope_is_canonicalized():
     assert a == b == c
 
 
-def test_workspace_uri_percent_encodes_and_round_trips():
-    root = "/Volumes/Date/天枢Agent"
+def test_workspace_uri_percent_encodes_and_round_trips(tmp_path):
+    root = str(tmp_path / "天枢Agent")
     uri = memory_uri(MemoryScope.workspace(root))
-    # 斜杠必须被编码，否则 URI 的段边界会被路径吃掉
-    assert "/Volumes" not in uri
-    assert "%2F" in uri
+    # 路径分隔符必须被编码，否则 URI 的段边界会被路径吃掉。
+    encoded_root = uri.removeprefix("memory://workspace/")
+    assert "/" not in encoded_root
+    assert "\\" not in encoded_root
+    assert ("%5C" if os.name == "nt" else "%2F") in encoded_root
     assert parse_memory_uri(uri) == MemoryScope.workspace(root)
 
 

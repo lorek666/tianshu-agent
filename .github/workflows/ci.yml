@@ -91,14 +91,19 @@ jobs:
         # uv run 会顺手把锁文件改掉，上面那条漂移门禁就白设了。
         run: uv run --frozen ruff check .
 
+      - name: Windows IPC 二进制密钥回归
+        if: runner.os == 'Windows'
+        run: uv run --frozen pytest tests/test_ipc.py::test_authkey_preserves_binary_bytes_on_disk -o addopts="" -vv --tb=short
+
       - name: Pytest
-        # pyproject 的 addopts 里已经有 -q，直接 `uv run pytest` 会叠加成 -qq，
-        # 把 "514 passed" 那行汇总吞掉——CI 日志里就看不见到底跑过多少。
-        # 所以显式清空 addopts，再给一个 -q。
-        # `-rs` 把跳过原因打进日志：允许 skip 的前提是"每条都能解释清楚"，
-        # 看不见原因就等于默许。目前只有三类：memfs 符号链接、POSIX 专属的
-        # pid 存活探测、Windows 没有 POSIX 权限位语义。
-        run: uv run --frozen pytest -o addopts="" -q -rs
+        # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
+        # Windows 输出逐条用例和长等待时的线程栈，作业超时也能定位卡点（#50）。
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            uv run --frozen pytest -o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60
+          else
+            uv run --frozen pytest -o addopts="" -q -rs
+          fi
 
   # UI 是 M5 才进仓库的：React + TS，构建产物（ui/dist）提交进仓库，因为
   # Host 运行时直接加载它——用户机器上不需要 Node。既然产物是"源码的一部分"，

@@ -109,6 +109,7 @@ def _block_in_data_root(ws: Path, data_root: Path) -> tuple[EventLog, RecoveryRe
 #: 调用方替它兜底。
 _B_CHILD = """
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, {src!r})
 from pathlib import Path
 
