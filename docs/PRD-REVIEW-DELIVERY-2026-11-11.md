@@ -32,7 +32,7 @@
   （macOS arm64 本机，357.63s），`ruff check .` → `All checks passed!`；基线
   `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+22**：
   `test_g2_delegation_exec.py`（12）、`test_g2_delegation_fence.py`（2）、
-  `test_g2_delegation_replay.py`（7）。负控 **6/6** 实测红（失败数 24/2/2/3/15/2；另加复审整改 3 条负控各自红）。
+  `test_g2_delegation_replay.py`（7）。负控 **6/6** 实测红（失败数 24/2/1/3/15/2；另加复审整改 3 条负控各自红）。
 - 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
   W1–W5 落地；**G1 轮次**补上 §5.2.3 通用工具准入与 §5.6 共享预算账本；**G1 收口轮**
   （#96 / #97 / #99）补上账本默认记账 + 硬上限可验证上界、资源种类与外发许可、
