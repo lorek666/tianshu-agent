@@ -255,13 +255,15 @@ RU-L2 3/3   RU-W1 3/3   RU-W2 3/3
   RU-D1-F 不在公开 8 条里，只由 D3-c3 测试按 repeat=3 跑失败路径。）
 ```
 
-实测（2026-11-12，macOS arm64 本机，G2 记忆阶段 M2 之后）：`run_real_user_tasks(repeat=3)`
-共 **9 case × 3 = 27 次**，全部有效、全绿，**369 条判据 0 失败**，耗时 28.37s；
-（M2 之前是 8 case × 3 = 24 次 / 339 条判据 / 26.76s；多出来的是 `RU-M1` 第一段 +
-第二段判据，第二段的判据在 `build_report` 里与第一段一起评——漏评第二段，报告就会
-"看不见记忆到底帮没帮上忙"。）
-`tests/test_eval_real_tasks.py` **31 条**（旧 22 + D3 7 条 + 复审整改 2 条）
-+ `tests/test_network_research_eval.py` 11 条判据全过。
+实测（2026-11-12，macOS arm64 本机）：`run_real_user_tasks(repeat=3)`
+共 **9 case × 3 = 27 次**，全部有效、全绿，**369 条判据 0 失败**。两次复跑同一口径：
+M2 分支上 28.37s；合并后**干净 `main @ bfe5916`** 重测 **27.78s**（M3 文档对账时复核，
+数字以干净 main 为准）。（M2 之前是 8 case × 3 = 24 次 / 339 条判据 / 26.76s；多出来的是
+`RU-M1` 第一段 + 第二段判据，第二段的判据在 `build_report` 里与第一段一起评——漏评第二段，
+报告就会"看不见记忆到底帮没帮上忙"。）
+判据测试：`tests/test_eval_real_tasks.py` **35 条**（旧 22 + D3 7 条 + 复审整改 2 条 +
+M2 4 条）、`tests/test_eval_followup.py` **6 条**、
+`tests/test_network_research_eval.py` 11 条判据全过。
 **这是脚本模型结果，不是真实模型分数。**
 
 ### 5.2 复审整改（2026-11-12，独立复审 + 本机复测）
