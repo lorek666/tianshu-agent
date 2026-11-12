@@ -74,9 +74,12 @@ FTS-only（注释写明"不要偷偷变 hybrid"），而能力标注（`semantic
   "params": { "query": "报告用中文",
               "scope": "user",            // 可选：user | task | workspace
               "scope_id": "…",            // 可选：task id / workspace 绝对路径
-              "limit": 5,                 // 可选：正整数，执行侧夹到 ≤ MAX_RECALL_ITEMS
-              "status": "active" } }      // 可选：投影的封闭集，默认 active
+              "limit": 5 } }              // 可选：正整数，执行侧夹到 ≤ MAX_RECALL_ITEMS
 ```
+
+> **没有 `status` 参数**（与模型侧 `memory.search` 一致）：检索只返回**可召回集合**
+> （`active`、未过期、正文可读）。要看候选 / 已忘 / 已擦除用 `memory.list` 的
+> `status` 过滤——"检索"与"盘点"是两个问题，混在一个参数里会让空结果的含义变模糊。
 
 **响应**（`ok: true`）
 
@@ -104,6 +107,7 @@ FTS-only（注释写明"不要偷偷变 hybrid"），而能力标注（`semantic
 |---|---|
 | `query` 缺失 / 空串 / 非字符串 | `bad_params` |
 | `limit` 不是正整数 / 超过 `MAX_RECALL_ITEMS` | `bad_params`（超出上限按上限夹，不报错——与模型侧一致） |
+| 传了 `status`（不支持） | 忽略该键，不报错（与 `additionalProperties` 口径不同：RPC 不是模型工具，宽容读参不会放宽权限） |
 | `scope` 未知 / `scope_id` 与 scope 不匹配 | `bad_params` |
 | 未声明任何可见作用域 | `bad_params`（人这条路上不该发生；发生就是装配错） |
 
