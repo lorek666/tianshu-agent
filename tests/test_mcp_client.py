@@ -450,5 +450,46 @@ def test_abandoned_timeout_ids_are_bounded():
         for request_id in range(200):
             instance._abandon(request_id, "tools/call")
         assert instance.pending_timeouts <= 64
+        assert 0 not in instance._abandoned, "最老的超时 id 必须被淘汰（FIFO）"
+        assert 199 in instance._abandoned
+        assert 0 not in instance._abandoned, "最老的超时 id 必须被淘汰（FIFO）"
+        assert 199 in instance._abandoned
+    finally:
+        instance.close()
+
+
+def test_exact_max_tools_without_more_pages_is_not_truncation():
+    """恰好装满 max_tools 且没有 nextCursor：server 就只有这么多，不算截断。"""
+    instance = StdioServer(_config("fake", max_tools=2))
+    instance.start()
+    try:
+        assert len(instance.tools) == 2
+        assert instance.tools_truncated is False
+    finally:
+        instance.close()
+
+
+def test_paged_server_hitting_max_tools_is_truncation(tmp_path):
+    tools_file = tmp_path / "tools.json"
+    tools_file.write_text(
+        json.dumps(
+            [
+                {
+                    "name": f"t{i}",
+                    "description": "",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+                for i in range(3)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    instance = StdioServer(
+        _config("fake", "--page-size", "1", "--tools-file", str(tools_file), max_tools=2)
+    )
+    instance.start()
+    try:
+        assert len(instance.tools) == 2
+        assert instance.tools_truncated is True, "server 还有第三个工具，必须报截断"
     finally:
         instance.close()

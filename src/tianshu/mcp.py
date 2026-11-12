@@ -518,7 +518,7 @@ class StdioServer:
         #: 有界（FIFO）：server 永不回应时每个超时 id 都留在这里会无界增长；
         #: 只保留最近 64 个——比这还晚的响应本身就该按协议错误处理。
         self._abandoned: set[int] = set()
-        self._abandoned_order: collections.deque[int] = collections.deque(maxlen=64)
+        self._abandoned_order: collections.deque[int] = collections.deque()
         self._send_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._stderr_lock = threading.Lock()
@@ -768,15 +768,10 @@ class StdioServer:
         "副作用未知"结算。发不出去（连接已断）也不改变超时的结论。
         """
         if request_id not in self._abandoned:
+            while len(self._abandoned_order) >= 64:
+                self._abandoned.discard(self._abandoned_order.popleft())
             self._abandoned.add(request_id)
             self._abandoned_order.append(request_id)
-            while len(self._abandoned) > 64:
-                self._abandoned.discard(self._abandoned_order[0])
-                # deque(maxlen) 自己会丢最老的，pop 一侧同步：
-                try:
-                    self._abandoned_order.popleft()
-                except IndexError:  # pragma: no cover
-                    break
         try:
             self.notify(
                 "notifications/cancelled",
@@ -887,6 +882,7 @@ class StdioServer:
         cursor: str | None = None
         pages = 0
         while True:
+            stopped_mid_page = False
             params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
             result = self.request(
                 "tools/list", params, timeout_ms=self.config.handshake_timeout_ms
@@ -900,18 +896,20 @@ class StdioServer:
                 )
             for item in page:
                 if len(tools) >= self.config.max_tools:
-                    # 配置说最多几个就最多几个：多出来的不建对象、也不问下一页，
-                    # 只记"被截断"（诊断与 CLI 能看出来是截断，不是 server 没有）。
+                    # 配置说最多几个就最多几个：多出来的不建对象、也不问下一页。
+                    # 只有"页内还有剩余"才算截断——恰好装满且没有下一页时，
+                    # server 确实就只有这么多工具，不能谎报截断（那会让准入层
+                    # 生成一条假的 `<truncated>` 拒绝行）。
+                    stopped_mid_page = True
                     self._tools_truncated = True
                     break
                 tools.append(McpTool.from_raw(item))
             pages += 1
-            if len(tools) >= self.config.max_tools:
+            next_cursor = None if stopped_mid_page else result.get("nextCursor")
+            if stopped_mid_page or (len(tools) >= self.config.max_tools and next_cursor):
+                # 满了且**确实还有更多**（页内剩余或 nextCursor 非空）才算截断。
                 self._tools_truncated = True
                 break
-            if self._tools_truncated:
-                break
-            next_cursor = result.get("nextCursor")
             if not next_cursor:
                 break
             if not isinstance(next_cursor, str):
