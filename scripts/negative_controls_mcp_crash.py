@@ -193,8 +193,20 @@ def run_case(case: Case, workdir: Path) -> tuple[bool, str]:
     )
 
 
+def _select(argv: list[str]) -> tuple[set[str], list[str]]:
+    """挑出要跑的编号；顺带把"不认识的编号"单独交出来（空 = 都认识）。"""
+    known = {case.name for case in CASES}
+    wanted = set(argv) or set(known)
+    return wanted, sorted(wanted - known)
+
+
 def main(argv: list[str]) -> int:
-    wanted = set(argv) or {case.name for case in CASES}
+    wanted, unknown = _select(argv)
+    if unknown:
+        # 复审第三轮抓到的第二个"静默跳过"入口：写错编号时一个用例都没跑，
+        # 却打印"全部按预期变红"并返回 0。这类失败必须自己响。
+        print(f"不认识的负控编号：{unknown}（可用：{sorted(c.name for c in CASES)}）")
+        return 1
     failed_to_go_red: list[str] = []
     print(f"负控 {len(CASES)} 条（仓库根：{ROOT}）\n")
     with tempfile.TemporaryDirectory(prefix="nc-mcp-crash-") as tmp:

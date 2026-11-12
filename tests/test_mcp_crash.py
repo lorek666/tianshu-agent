@@ -632,6 +632,35 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
         log.close()
 
 
+def test_negative_control_script_refuses_unknown_case_ids():
+    """负控脚本不许"静默跳过"：写错编号要返回 1，不能打印"全部变红"。
+
+    复审第三轮抓到的假红入口之一。脚本本身跑真用例（要几十秒），所以这里只测
+    **参数校验**这一段：`main(["NOT_A_CASE"])` 必须在跑任何用例之前拒绝。
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "negative_controls_mcp_crash.py"
+    spec = importlib.util.spec_from_file_location("nc_mcp_crash", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # dataclass 在 exec 时要能从 `sys.modules` 找到自己的模块（否则
+    # `_process_class` 解析注解会 KeyError），所以先登记、用完再清。
+    sys.modules["nc_mcp_crash"] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop("nc_mcp_crash", None)
+    # 只测参数校验这一段（跑用例要几十秒，测试里不跑）
+    wanted, unknown = module._select(["NOT_A_CASE"])
+    assert unknown == ["NOT_A_CASE"], "不认识的编号必须被点出来"
+    assert wanted == {"NOT_A_CASE"}, "不认识的编号不许被悄悄换成别的"
+    wanted, unknown = module._select([])
+    assert unknown == []
+    assert wanted == {case.name for case in module.CASES}, "空参数 = 全跑"
+    assert module.main(["NOT_A_CASE"]) == 1, "拒绝时进程退出码必须是 1"
+
+
 def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
     """恢复只推进 `intent/executing`；`revoked` / `rejected` 这些终态保留。
 
