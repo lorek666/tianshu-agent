@@ -16,6 +16,7 @@ from pathlib import Path
 from support import approve_pending, engine_for, stack_for
 
 from tianshu.events import EventLog
+from tianshu.jobs import JobClaim
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.worker import Worker
 
@@ -254,6 +255,76 @@ def test_parent_parks_while_children_pending(tmp_path):
         assert len(_events(log, parent_run_id, "job.parked")) == 2
         (row,) = stack.tasks.list_subtasks(parent_run_id)
         assert row.state == "queued"
+    finally:
+        log.close()
+
+
+def test_worker_settle_does_not_touch_parked_job(tmp_path):
+    """Worker 结算前先看作业状态：已经不是 `claimed` 就什么都不做。
+
+    父 Run 在 `_drive` 里用自己的 claim 挂起作业；`run_once` 的 `_settle` 随后
+    看到的是一条 `waiting` 作业。如果它无条件再 park 一次，每轮都会多一条
+    `job.parked`，而真正的问题是它可能替新 owner 写状态。
+    """
+    ws = _workspace(tmp_path)
+    log, stack = _stack(tmp_path)
+    try:
+        task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+        _, parent_result = _spawn_then_park(stack, task)
+        parent_run_id = parent_result.run_id
+        job = stack.claims.job_for_run(parent_run_id)
+        assert job.state == "waiting"
+        parked_before = len(_events(log, parent_run_id, "job.parked"))
+        claim = JobClaim(
+            job_id=job.job_id,
+            run_id=parent_run_id,
+            owner_instance_id=stack.claims.identity.instance_id,
+            owner_pid=stack.claims.identity.pid,
+            claim_epoch=job.claim_epoch,
+        )
+        worker = Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=None)
+        try:
+            worker._settle(claim)  # noqa: SLF001 - 直接测结算守卫
+        finally:
+            worker.close()
+        assert stack.claims.job_for_run(parent_run_id).state == "waiting"
+        assert len(_events(log, parent_run_id, "job.parked")) == parked_before
+        assert worker.errors == []
+    finally:
+        log.close()
+
+
+def test_missing_child_output_is_not_fabricated(tmp_path):
+    """子 Run 没有最后输出 → `summary` 为空、`error` 说明「输出不可用」。
+
+    这是"不许编造"的直接判据：不能拿子任务目标、状态或"已完成"拼一句看起来
+    像结论的话；`result_ref` 也不能凭空生成（没有正文就没有内容引用）。
+    """
+    ws = _workspace(tmp_path)
+    log, stack = _stack(tmp_path)
+    try:
+        task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+        _, parent_result = _spawn_then_park(stack, task)
+        parent_run_id = parent_result.run_id
+        (row,) = stack.tasks.list_subtasks(parent_run_id)
+        worker = Worker(
+            stack,
+            model=ScriptedModel([ModelResponse("end_turn", content="")]),
+            heartbeat_interval_ms=None,
+        )
+        try:
+            worker.drain(max_jobs=1)
+        finally:
+            worker.close()
+        settled = stack.tasks.get_subtask(parent_run_id, "reader")
+        assert settled.state == "succeeded"
+        assert settled.summary == "", "没有输出就写空，不拿目标冒充摘要"
+        assert settled.result_ref is None, "没有正文就没有 content:// 引用"
+        assert settled.error and "输出不可用" in settled.error
+        finished = _events(log, parent_run_id, "subtask.finished")[-1]
+        assert finished["state"] == "succeeded"
+        assert "result_ref" not in finished
+        assert "输出不可用" in finished["error"]
     finally:
         log.close()
 
