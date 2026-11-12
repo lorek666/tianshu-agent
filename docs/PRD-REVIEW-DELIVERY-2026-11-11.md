@@ -28,9 +28,9 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2060 passed / 7 skipped**
+- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2069 passed / 7 skipped**
   （macOS arm64 本机，357.63s），`ruff check .` → `All checks passed!`；基线
-  `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+22**：
+  `main @ 7dc9350`（MCP 崩溃恢复 #122 合入后）同机 **2047 passed / 7 skipped**（354.21s）。本分支 **+22**：
   `test_g2_delegation_exec.py`（12）、`test_g2_delegation_fence.py`（2）、
   `test_g2_delegation_replay.py`（7）。负控 **6/6** 实测红（失败数 24/2/1/3/15/2；另加复审整改 3 条负控各自红）。
 - 一句话：**第一轮**把「不需要网络 / MCP / 子代理、不需要新依赖、不需要 Windows 实机」的
@@ -91,9 +91,9 @@
 
 ## 3 测试与门禁
 
-- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2060 passed / 7 skipped**（354.24s，
-  macOS arm64 本机），`ruff check .` 干净；基线 `main @ 6140d9c` 同机 **2038 / 7**
-  （361.47s），本分支 +22（exec 12 / fence 3 / replay 7）。D2 负控 6 条实测红
+- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2069 passed / 7 skipped**（354.14s，
+  macOS arm64 本机），`ruff check .` 干净；基线 `main @ 7dc9350` 同机 **2047 / 7**
+  （354.21s），本分支 +22（exec 12 / fence 3 / replay 7）。D2 负控 6 条实测红
   （失败数 20/2/1/2/2/2，红名见 PR body）。
 - 首轮 `main @ c0dfa88`：**1519 passed / 7 skipped**（170.12s，macOS arm64 本机），
   `ruff check .` 干净。基线 `da84d92` 为 1316 / 6：五个工作流新增 **185** 条

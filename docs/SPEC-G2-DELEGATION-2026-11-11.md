@@ -272,7 +272,7 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 - 测试文件：`tests/test_g2_delegation_exec.py`（c1–c5、c7、c8 + 事务原子性 + 结算守卫 + 无输出不编造 + CLI，12 条）、
   `tests/test_g2_delegation_fence.py`（c6 两条路径 + 恢复路径的 fence 一致性，3 条）、
   `tests/test_g2_delegation_replay.py`（c9 四条 + 合法空结果/取消/fence 不误报，7 条）。
-- 全量 **2060 passed / 7 skipped**（354.24s，macOS arm64；基线 `main @ 6140d9c` 同机 2038/7、361.47s；+22）。负控 6 条全部实测变红（跑 7 个 `test_g2_delegation_*.py` 共 57 条，失败数 24/2/1/3/15/2，变异方式见 PR body；另加复审整改的 3 条负控）。额外用
+- 全量 **2069 passed / 7 skipped**（354.14s，macOS arm64；基线 `main @ 7dc9350` 同机 2047/7、354.21s；+22）。负控 6 条全部实测变红（跑 7 个 `test_g2_delegation_*.py` 共 57 条，失败数 24/2/1/3/15/2，变异方式见 PR body；另加复审整改的 3 条负控）。额外用
   `test_child_finish_is_one_transaction` 钉住「行/事件/预算/唤醒同一事务」：
   在预算结算处注入异常，回滚后 Run 仍 `running`、`subtasks` 行未提交、
   父 Run 无 `subtask.finished`、预占仍占着。
