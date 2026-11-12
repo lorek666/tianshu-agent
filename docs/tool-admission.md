@@ -109,14 +109,17 @@ attempt，**没有任何代码从参数读身份**。这两道闸是让"schema �
 - `resources.RESOURCE_KINDS = {file, memory}`；未知 `scheme://` 一律拒绝（既有）。
 - 路径参数在解析前拒绝 `^[A-Za-z][A-Za-z0-9+.-]*://` 形状：`read_text` /
   `list_files` / 所有写入目标 / `run_command` 的 `cwd`。URL 不会被拼进工作区。
-- `network://` / `mcp://` / `subtask://` 属于 G2；接入时必须同时补
-  `RESOURCE_KINDS`、解析器、外发许可与 §8.1.1 隔离门禁，**不得**复用 file 分支。
+- `network://` 已在 G2 网络阶段接入（外发白名单 + 逐次批准 + 内容引用）；
+  `mcp://` 已在 G2 MCP 阶段接入（stdio 客户端 + 动态工具准入 + 任务级 server 白名单
+  + 逐次批准，见 [mcp-g2.md](mcp-g2.md)）；`subtask://` 仍只有解析与许可、没有执行器。
+  新种类**不得**复用 file 分支。
 
 ## 8 未实现的部分（不许当作已完成）
 
 | 缺口 | 现状 | 何时能做 |
 |---|---|---|
-| 网络 / MCP / 子任务资源种类 | 拒绝（未知 scheme），没有解析器 | G2 接入时，先补准入再开放能力 |
+| 子任务资源种类 | 解析得出来、许可判定在，但**没有执行器**（派发前拒绝） | 委派立项时 |
+| MCP 工具的参数 schema | **已接入准入**：server 的 `inputSchema` 归一进本方言，认不出就拒该工具（`tool_registry.normalize`） | — |
 | 私有内容外发许可 | 当前**没有外发面**（无网络工具），无从违反；不写「已验证」 | G2 |
 | 大结果「有界摘要 + 内容引用」、分页读取引用并验证任务可见范围 | 只有 `read_text` 截断 + `truncated` 标记与 `run_command` 的 blob 目录；没有 `ref` 内容引用与分页工具 | 单独立项（要同时改 context / blob / 工具契约） |
 | 无 workspace 的联网研究任务 | 记忆只读工具已能不绑目录运行；**联网**不存在，所以 PRD 那条验收只能等 G2 | G2 |

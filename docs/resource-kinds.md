@@ -71,8 +71,8 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 
 `dispatcher.resolve_scheme_resource()` 是"资源种类"在执行侧的唯一落点：
 
-- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）；
-- 其余种类（`mcp`、`subtask`）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
+- 有执行器的种类：`file`、`memory`、**`network`**（G2 网络阶段）、**`mcp`**（G2 MCP 阶段）；
+- 只剩 `subtask`（委派）在**派发前**拒绝：`dispatch.resource_kind_unsupported`，
   消息写明是哪种资源、指向哪个 URI。
 
 网络的"有执行器"不等于"自动放行"：它多一道**任务级白名单**（`outbound_allow`）,
@@ -107,7 +107,8 @@ PRD 明写"网络 GET / 搜索不是无成本、无外发的本地纯读"，塞�
 | 缺口 | 现状 |
 |---|---|
 | 真实网络请求 | **已实现**（G2 网络阶段）：`network.fetch` 抓取、任务级白名单、逐次批准、内容引用与字节账本。见 [network-g2.md](network-g2.md)；但**只支持 GET、没有检索 API、真实公网研究未验证** |
-| MCP 客户端、子代理 | **未做**（G2 后续阶段）。它们仍在派发前拒绝 |
+| MCP 客户端 | **已交付**（G2 MCP 阶段）：stdio 客户端 + 动态工具准入 + 派发链路，见 [mcp-g2.md](mcp-g2.md)。**未验证真实第三方 server、无沙箱** |
+| 子代理 / 委派 | **未做**（仍在派发前拒绝） |
 | 外发字节计量（`bytes` 维度） | 已接：发送前按上限预占、读完后按实际字节结算（判据 `test_bytes_budget_is_enforced_before_sending`） |
 | 任务级外发白名单（`outbound_allow`） | **已实现**：`task.created` payload 契约增量 + 执行侧门（见 [network-g2.md](network-g2.md) §2） |
 | 内容分级 / 哪些内容不许外发 | 未做：没有外发表，无法定义"私有内容"的边界 |
