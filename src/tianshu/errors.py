@@ -53,6 +53,22 @@ class WorkspaceBlocked(TianshuError):
     """workspace 上有未核实的副作用，禁止继续写入。"""
 
 
+class McpObjectBlocked(TianshuError):
+    """MCP 对象（`mcp://server/tool` / server）有未核实的副作用，拒绝再发外。
+
+    与 `WorkspaceBlocked` **刻意分开**：阻断对象是外部的工具/服务器，不是本地
+    目录。两者的解除路径也不同——`guard.unblock` 只解目录阻断，对象阻断必须由
+    `guard.unblock_object` 单独解除（核对过 server 侧输出之后）。
+
+    安全方向：读不出阻断状态（权威根坏、日志里阻断记录无法判定）也抛这个
+    异常，并把"为什么判定不了"写在消息里；不把"不知道"当成"没阻断"。
+    """
+
+    def __init__(self, message: str, *, object_keys: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.object_keys = tuple(object_keys)
+
+
 class BudgetExceeded(TianshuError):
     """轮数或 token 预算耗尽（对应验收 A5）。"""
 

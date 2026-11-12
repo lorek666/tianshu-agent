@@ -41,3 +41,5 @@
 {"type": "tool.result", "payload": {"call_id": "x", "tool_id": "x", "status": "succeeded", "effect_state": "applied", "output": {}}, "note": "无已知历史形状差异：证明旁表无记录的历史行按 v0 读出（形状仍是当前形状）"}
 {"type": "undo.completed", "payload": {"run_id": "x", "control_run": "x", "restored": [], "deleted": [], "entries": []}, "note": "无已知历史形状差异：证明旁表无记录的历史行按 v0 读出（形状仍是当前形状）"}
 {"type": "undo.failed", "payload": {"run_id": "x", "control_run": "x", "error": "x"}, "note": "无已知历史形状差异：证明旁表无记录的历史行按 v0 读出（形状仍是当前形状）"}
+{"type": "recovery.object_blocked", "payload": {"object": "x", "call_ids": [], "reason": "x"}, "note": "无已知历史形状差异：证明旁表无记录的历史行按 v0 读出（形状仍是当前形状）"}
+{"type": "recovery.object_unblocked", "payload": {"object": "x", "reason": "x"}, "note": "无已知历史形状差异：证明旁表无记录的历史行按 v0 读出（形状仍是当前形状）"}

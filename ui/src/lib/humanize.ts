@@ -763,6 +763,28 @@ export function humanizeEvent(event: EventView): TimelineEntry {
     case "recovery.unblocked":
       return toTimelineEntry(event, "恢复流程已解除阻塞", "success");
 
+    case "recovery.object_blocked": {
+      // 阻断对象是外部的 MCP 工具/服务器（`mcp://server/tool`），不是目录：
+      // 文案里要能看出"哪个工具被挡住"，否则用户只知道"恢复受阻"。
+      const object = readString(payload, "object");
+      return toTimelineEntry(
+        event,
+        object !== null
+          ? `${object} 可能已在 server 侧执行，已阻断再次调用`
+          : "MCP 工具可能已执行，已阻断再次调用",
+        "warn",
+      );
+    }
+
+    case "recovery.object_unblocked": {
+      const object = readString(payload, "object");
+      return toTimelineEntry(
+        event,
+        object !== null ? `已解除 ${object} 的阻断` : "已解除 MCP 工具阻断",
+        "success",
+      );
+    }
+
     case "task.created":
       return toTimelineEntry(event, "任务已创建", "info");
 

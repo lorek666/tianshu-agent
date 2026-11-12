@@ -1177,6 +1177,13 @@ def _cmd_recover(args: argparse.Namespace) -> int:
         print(f"已确认执行 : {report.applied or '（无）'}")
         print(f"确认未执行 : {report.none_applied or '（无）'}")
         print(f"无法核实   : {report.unresolved or '（无）'}")
+        if report.blocked_objects:
+            # 对象阻断与目录阻断是两件事：解除目录阻断不会解除它，所以这里有
+            # 单独一行——否则用户对着一个"已 unblock 却还是发不出去"的工具猜。
+            print(
+                "MCP 对象已阻断 : "
+                f"{report.blocked_objects}（核对 server 侧后用 unblock_object 解除）"
+            )
         if report.memory_not_applied:
             print(f"记忆未生效 : {report.memory_not_applied}")
         if report.memory_unresolved:
