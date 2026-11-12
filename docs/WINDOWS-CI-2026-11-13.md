@@ -1,6 +1,6 @@
 # Windows CI 修复证据 · 2026-11-13
 
-基线：`main@2100fde`。修复：[PR #130](https://github.com/lorek666/tianshu-agent/pull/130)。本轮使用 GitHub 托管 Windows runner，不是 Windows 10/11 用户设备实测。
+初始基线：`main@2100fde`；验证前已整合 `main@3648d79`。修复：[PR #130](https://github.com/lorek666/tianshu-agent/pull/130)。本轮使用 GitHub 托管 Windows runner，不是 Windows 10/11 用户设备实测。
 
 ## 1. 原始失败与根因
 
@@ -36,7 +36,14 @@
 - 本机相关回归：**267 passed in 11.70s**，覆盖 IPC、authority、exec、isolation、resources 与 MCP。
 - 本机初始全量：**1 failed / 2107 passed / 7 skipped**，382.65 秒。唯一失败是终端已有 `ANTHROPIC_BASE_URL` 影响 `test_official_endpoint_is_priced`；去除变量后该用例通过。未改计价实现或放宽断言。
 - 锁文件检查、Ruff、diff 空白检查通过。
-- 修复后的完整本地与云端矩阵仍待完成；本节不将局部通过当成 Windows 全绿。
+- 整合提交 **`4bb1781`** 的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) **四个 job 全 success**：
+  - Windows job `131409199401`：**2127 passed / 30 skipped**，1393.12 秒，Windows Server 2025 / `windows-2025-vs2026`；固定密钥落盘与真实子进程认证均 PASSED。
+  - macOS job `131409199202`：**2150 passed / 7 skipped**，569.34 秒。
+  - Ubuntu job `131409199622`：**2149 passed / 8 skipped / 3 warnings**，269.43 秒。
+  - UI job `131409198854`：类型检查、测试、构建、产物漂移检查通过。
+- 本地整合后全量：在移除 `ANTHROPIC_BASE_URL` / `TIANSHU_BASE_URL` 的子命令环境中执行 `uv run --frozen pytest`，**2150 passed / 7 skipped**，386.97 秒；没有修改用户环境变量或产品默认行为。
+- 独立复审确认：真实文件与子进程回归有效、旧 key 的字节与 mtime 不变、认证未放宽、合并未夹带其他实现。最终日志另由 verifier 核对。
+- 后续证据回填提交仅修改文档；上面的结果绑定已验证实现提交，不冒称为后续提交的新运行结果。
 
 Windows pytest 保留失败语义，增加 `-vv --tb=short --durations=20 -o faulthandler_timeout=60`，便于保留当前用例和长等待线程栈。没有 `continue-on-error`，没有延长作业上限。
 
@@ -45,3 +52,5 @@ Windows pytest 保留失败语义，增加 `-vv --tb=short --durations=20 -o fau
 Windows 新增的跳过只针对 POSIX 残留 socket 文件；Windows 命名管道的连接、认证、关闭及重复实例拒绝仍执行。现有平台跳过须继续通过 `-rs` 暴露原因。
 
 本 PR 不修改分支保护、审批契约或历史密钥，不验证 Windows 桌面安装包、签名、托盘、杀毒软件兼容或 ARM64 用户设备。issue #50 旧记录中「生产不受影响」「必须实机才能定位」的判断已由本轮证据推翻。
+
+Windows 全量用时 23 分 13 秒，距离 25 分钟 job 上限较近。耗时表中两个 isolation fixture 各约 120 秒，仍需后续性能维护；本轮没有用加长超时掩盖问题，单次全绿也不等于长期稳定性证明。
