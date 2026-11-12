@@ -9,8 +9,8 @@
   `ruff check .` 干净，运行时依赖仍为零（`dependencies = []`）。
 - 收尾轮（PR #122）实测：**2047 passed / 7 skipped**（macOS arm64；同机基线
   `main @ 6140d9c` = 2038/7，差值是本轮 9 条崩溃/恢复判据）。
-- **外发边界标记（PR #124）**实测：**2082 passed / 7 skipped**（macOS arm64，355.07s；
-  同机基线 `main @ 5eed5ee` = **2069 / 7**，360.90s；差值 +13 = `test_mcp_crash.py`
+- **外发边界标记（PR #124）**实测：**2091 passed / 7 skipped**（macOS arm64，361.81s；
+  同机基线 `main @ 5d4cb67` = **2078 / 7**，363.83s；差值 +13 = `test_mcp_crash.py`
   9 条 → 22 条）。复审后又补了升级兼容（`boundary_protocol`）与三条安全回退的判据。
 - **收尾轮（PR #122）**：补 MCP 崩溃夹具与恢复判据——c10 由「部分」转为**实测**、
   NB21 落地；顺带修掉复审指出的"恢复补写结果却不推进派发行"（R2）与"终态派发行
