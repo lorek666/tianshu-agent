@@ -17,9 +17,10 @@
 
 ## 三、流程门禁（机械，不可绕过）
 
-- **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。**（required 检查目前是 ubuntu + macOS 两项；Windows 在矩阵里但只跑不挡，见 CONTRIBUTING §6。）
-- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的前后两条与之逐字相同，只有 pytest 那条多带 `-o addopts="" -q`（为了强制打印汇总行），本地不需要加。
+- **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。** required 检查为 ubuntu、macOS、Windows Python 三项与 UI 一项，准确名称及范围见 CONTRIBUTING §6；改检查名称时同步核对远端分支保护。
+- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`，Windows 增加 `-o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`，用于汇总、跳过原因与长等待诊断。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
 - **高危改动必须独立复审**：碰授权 / 租约 / 并发写 / 事件日志 / 计费，须由「第二读者」（另一会话或人）复审，不读作者自查结论，只按计划验收项逐条对照，并给出**可复现探针证据**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决。
+- **复审与 CI 绑定版本**：记录完整提交 SHA、范围、复现命令、关键输出与未决项；后续实质改动重审受影响范围，不把旧提交的结论冒充最新提交已通过。单维护者的 GitHub 批准人数可以为 0，但不能省略高危独立复审。
 - **契约变更单独提交**：`docs(contract):` 单独 commit / 单独 PR，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」，不夹带代码。
 - **红就是红，不装作绿**：不用 `continue-on-error` 掩盖失败、不用 `type: ignore` 压契约越界。**失败要么修掉，要么如实摘除并记 issue**；摘除必须在配置里留下指向该 issue 的注释，不许让失败悄悄消失。历史上 Windows 曾因首跑 12 项失败被摘出 CI 矩阵（issue #21），后来逐项修好、issue 关闭、job 加回矩阵——这条规则的价值不在于"永远摘除"，而在于**摘除必须留痕、修好后必须归位**。
 
@@ -63,12 +64,12 @@
 - **零第三方运行时依赖**（纯标准库），不擅自引入运行时库。
 - **新增依赖须四目标可用**：`mac-arm64` / `mac-x64` / `win-x64` / `win-arm64`（TECH-ARCH §8.3）。
 - **`uv.lock` 必须提交且不让它漂移**（CI 有 `uv lock --check` 门禁）；用 `uv run --frozen` 避免顺手改锁文件。
-- **平台陈述如实**：没测过的平台不宣称支持。现在 Windows 已在 CI 矩阵里并且是绿的，但那是 `windows-latest`（Server 2022 runner）的证据——**没有实机验证**，所以可以写"CI 覆盖 Windows"，不能写"在 Windows 上验证过"。
+- **平台陈述如实**：没测过的平台不宣称支持。Windows 已在 CI 矩阵里；具体提交的通过/失败状态以 CI 结果与知识库 §2 为准，runner 系统版本以该次日志为准，不把 `windows-latest` 永久等同于某个 Windows Server 版本。**CI 不是用户设备实测**，应写清验证环境，不宣称未经验证的 Windows 10/11、ARM64 或桌面体验支持。
 - **Python 3.12**（`>=3.12,<3.13`），不升 3.13 / 3.14。
 
 ## 九、提交与仓库卫生
 
-- **Conventional Commits**，body 写「为什么这么改」，不是「改了什么」。
+- **Conventional Commits**，新写提交的 body 写「为什么这么改」；Git 自动生成的同步 merge commit 可保留默认消息。squash 最终正文须保留原因、验证与未决项；不为补格式重写已共享历史。Codex 分支使用 `codex/<scope>`，其他分支规范见 CONTRIBUTING §2。
 - **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从环境变量读；用过的中转 key 应自行作废。
 - **不提交** `refs/`（762MB 参考仓库）、`playground/`、本地数据 / 日志 / 快照（`.tianshu/`）。
 - **单用户假设（D2）**：不引入多租户 / 多用户设计；租约只防「同用户双实例」。

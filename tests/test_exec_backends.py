@@ -431,7 +431,7 @@ def test_precheck_uses_configured_backend_capabilities(env_factory):
     assert recorded.calls == []          # 一次都没执行
 
 
-def test_backend_failure_is_not_retried_against_local(monkeypatch):
+def test_backend_failure_is_not_retried_against_local(monkeypatch, tmp_path):
     """后端自己抛错时，异常照原样传出去；不换成 local 再试一次。
 
     把本地后端的 `spawn` 换成计数器：如果实现"先跑一次 local 再抛原异常"，
@@ -449,8 +449,8 @@ def test_backend_failure_is_not_retried_against_local(monkeypatch):
     monkeypatch.setattr(LocalExecBackend, "spawn", spy)
 
     broken = RecordingBackend(fail=RuntimeError("后端坏了"))
-    ws = Workspace(Path("/tmp"))  # 只用来解参数，不会真写
-    ctx = tools.ToolContext(exec_policy=_policy(Path("/tmp")), exec_backend=broken)
+    ws = Workspace(tmp_path)  # 只用来解参数，不会真写
+    ctx = tools.ToolContext(exec_policy=_policy(tmp_path), exec_backend=broken)
 
     with pytest.raises(RuntimeError, match="后端坏了"):
         tools._run_command(ws, {"argv": [PY, "-c", "print(1)"]}, ctx)
@@ -514,9 +514,9 @@ def test_valid_request_reaches_the_backend_exactly_once(env_factory):
     assert sloppy.calls == 1
 
 
-def test_policy_is_checked_by_caller_even_if_backend_skips_it():
+def test_policy_is_checked_by_caller_even_if_backend_skips_it(tmp_path):
     """后端不核策略（SloppyBackend）时，调用方仍然先拒绝，且一次都没执行。"""
-    ws = Workspace(Path("/tmp"))
+    ws = Workspace(tmp_path)
     sloppy = SloppyBackend()
     ctx = tools.ToolContext(exec_policy=ExecPolicy(), exec_backend=sloppy)
 
@@ -528,11 +528,11 @@ def test_policy_is_checked_by_caller_even_if_backend_skips_it():
     assert sloppy.calls == 0
 
 
-def test_caller_check_order_matches_spawn():
+def test_caller_check_order_matches_spawn(tmp_path):
     """argv 与 pty 同时非法时，先报的规则必须与 `exec.spawn()` 内部一致。"""
     sloppy = SloppyBackend()
     ctx = tools.ToolContext(exec_policy=ExecPolicy(), exec_backend=sloppy)
-    ws = Workspace(Path("/tmp"))
+    ws = Workspace(tmp_path)
 
     result = tools._run_command(
         ws, {"argv": ["/bin/sh", "-c", "true"], "pty": True}, ctx
@@ -562,11 +562,11 @@ def test_dispatcher_rejects_bad_argv_before_backend_runs(env_factory):
     assert sloppy.calls == 0
 
 
-def test_pty_policy_is_checked_by_caller_even_if_backend_skips_it():
-    ws = Workspace(Path("/tmp"))
+def test_pty_policy_is_checked_by_caller_even_if_backend_skips_it(tmp_path):
+    ws = Workspace(tmp_path)
     sloppy = SloppyBackend()
     ctx = tools.ToolContext(
-        exec_policy=_policy(Path("/tmp")), exec_backend=sloppy
+        exec_policy=_policy(tmp_path), exec_backend=sloppy
     )
 
     result = tools._run_command(

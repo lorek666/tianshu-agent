@@ -1,9 +1,9 @@
 name: CI
 
-# 本仓库唯一的门禁。跑的是 CONTRIBUTING.md §5「提交前检查」列的那两条命令，
-# 逐字相同——本地绿而 CI 红，只可能是环境差异，不是命令差异。
-# 在此之上多一条锁文件漂移门禁（`uv lock --check`）：§5 没写，但锁文件
-# 一旦漂移，本地跑同样的两条命令照样是绿的，这条只能放在 CI。
+# Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
+# uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
+# 长等待诊断参数。UI 另有类型、测试、构建与 dist 一致性检查。
+# 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
 #
 # 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
 # 3.13 不在支持范围内，矩阵里加它等于给自己造一个必然红的目标。
@@ -46,21 +46,17 @@ jobs:
           # 这个平台必须一直在矩阵里——它掉出过一次，代价是 5 个里程碑都没在
           # 主平台上验证过。
           #
-          # 已知：M5 的 IPC 在这个平台上会**偶发**握手失败（issue #50，
-          # digest sent was rejected / digest received was wrong，每轮失败的
-          # 用例与条数都不同）。根因未定位，需要真 Windows 机器；生产侧的
-          # accept 循环本就按"可重试"实现，测试侧也已按契约重试。
-          # 不设为 required（main 的必需检查只有 ubuntu + macOS），所以它红着
-          # 不挡合并——但**不**给它 continue-on-error：那会让失败彻底消失，
-          # issue #50 修好之前，这个 job 每次红都是在提醒还欠着一件事。
+          # issue #50：首次生成的 IPC 二进制密钥曾被文本模式改写换行，
+          # 导致创建者和后续读取者认证不一致；固定字节回归在 Windows 验证。
+          # Windows 与 ubuntu、macOS、UI 同为 required；失败如实阻止合并，
+          # 不使用 continue-on-error。修改矩阵/名称后须核对远端分支保护。
           - windows-latest
         python:
           - "3.12"
     defaults:
       run:
-        # 显式写 bash：这两个平台的默认 shell 本来就是 bash，写出来是为了
-        # 将来把 Windows 加回矩阵时语义不变（Windows 默认是 PowerShell，
-        # 那边的引号规则会让 addopts="" 这类参数长得不一样）。
+        # 三个平台统一使用 bash，避免 Windows 默认 PowerShell 的引号规则
+        # 改变 addopts="" 等参数的传递方式。
         shell: bash
     steps:
       - uses: actions/checkout@v4
@@ -92,13 +88,14 @@ jobs:
         run: uv run --frozen ruff check .
 
       - name: Pytest
-        # pyproject 的 addopts 里已经有 -q，直接 `uv run pytest` 会叠加成 -qq，
-        # 把 "514 passed" 那行汇总吞掉——CI 日志里就看不见到底跑过多少。
-        # 所以显式清空 addopts，再给一个 -q。
-        # `-rs` 把跳过原因打进日志：允许 skip 的前提是"每条都能解释清楚"，
-        # 看不见原因就等于默许。目前只有三类：memfs 符号链接、POSIX 专属的
-        # pid 存活探测、Windows 没有 POSIX 权限位语义。
-        run: uv run --frozen pytest -o addopts="" -q -rs
+        # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
+        # Windows 输出逐条用例和长等待时的线程栈，作业超时也能定位卡点（#50）。
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            uv run --frozen pytest -o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60
+          else
+            uv run --frozen pytest -o addopts="" -q -rs
+          fi
 
   # UI 是 M5 才进仓库的：React + TS，构建产物（ui/dist）提交进仓库，因为
   # Host 运行时直接加载它——用户机器上不需要 Node。既然产物是"源码的一部分"，

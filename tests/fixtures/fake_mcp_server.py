@@ -67,6 +67,9 @@ def _append_line(path: str | None, payload: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # MCP stdio 是 UTF-8；Windows 重定向的标准流默认可能是 cp1252。
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     parser = argparse.ArgumentParser()
     parser.add_argument("--protocol-version", default="2025-06-18")
     parser.add_argument(

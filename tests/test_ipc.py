@@ -19,6 +19,7 @@ import errno
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -154,6 +155,60 @@ def test_authkey_is_private_and_stable(root: Path) -> None:
     if os.name != "nt":
         assert oct(ipc.authkey_path(root).stat().st_mode & 0o777) == "0o600"
         assert oct(ipc.run_dir(root).stat().st_mode & 0o777) == "0o700"
+
+
+def test_authkey_preserves_binary_bytes_on_disk(root: Path, monkeypatch) -> None:
+    """随机密钥含 LF 时，Windows 文本模式写入不能把它扩成 CRLF。
+
+    首次调用返回生成值，后续调用读取文件；两者不同会让同一个 data_root 的
+    服务端与客户端永久握手失败。固定包含 LF/CRLF/NUL/EOF 字节的 32 字节输入，
+    不靠随机生成约八次才碰到一次 LF，也不替换实际文件读写。
+    """
+    expected = b"\n\r\n\x00\x1a" + bytes(range(27))
+    monkeypatch.setattr(ipc.os, "urandom", lambda size: expected[:size])
+    assert ipc.load_authkey(root) == expected
+    assert ipc.authkey_path(root).read_bytes() == expected
+    assert ipc.load_authkey(root) == expected
+
+
+def test_new_server_authenticates_client_in_another_process(root: Path, monkeypatch) -> None:
+    """创建者持有原始 key，另一进程读落盘 key，首次连接必须认证成功。"""
+    expected = b"\n\r\n\x00\x1a" + bytes(range(27))
+    with monkeypatch.context() as patch:
+        patch.setattr(ipc.os, "urandom", lambda size: expected[:size])
+        server = EchoServer(root)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; from tianshu import ipc; "
+                "client = ipc.Client(Path(sys.argv[1]), timeout=0.5); "
+                "client.connect(); "
+                "assert client.call('echo', {'binary_key': True}) "
+                "== {'echo': {'binary_key': True}}; client.close()",
+                str(root),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        server.stop()
+
+
+def test_existing_authkey_is_not_rewritten_or_rotated(root: Path) -> None:
+    """旧版文本写入可能扩成超过32字节；升级不得猜测还原或轮转既有key。"""
+    existing = b"\r\n" * 20
+    key_path = ipc.authkey_path(root)
+    key_path.parent.mkdir(parents=True)
+    key_path.write_bytes(existing)
+    assert ipc.load_authkey(root) == existing
+    assert ipc.load_authkey(root) == existing
+    server = ipc.Server(root)
+    assert server.authkey == existing
+    assert key_path.read_bytes() == existing
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows 端点不是文件路径，没有长度上限")
@@ -442,7 +497,7 @@ def test_probe_distinguishes_alive_from_dead(root: Path) -> None:
     assert ipc.probe(root, timeout=0.2) is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason="stale socket 文件是 POSIX 概念")
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket 的监听队列；Windows 走命名管道")
 def test_start_returns_with_listening_endpoint_even_without_accept_loop(
     root: Path,
 ) -> None:
@@ -663,6 +718,7 @@ def test_server_exposes_accepting_state(root: Path) -> None:
         server.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="残留 socket 文件是 POSIX 概念；命名管道不是文件")
 def test_stale_endpoint_is_replaced_on_start(root: Path) -> None:
     """上次 kill -9 留下的 socket 文件不该让下一次启动失败。"""
     endpoint = ipc.endpoint_path(root)
