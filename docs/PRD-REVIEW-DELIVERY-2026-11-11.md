@@ -28,7 +28,7 @@
   轮的 1790 是 **+79**：#110 本特性 **+41**（白名单 18 + 执行器 23），#112 **+13**
   （评测夹具与判据 11 + 真实任务判据净增 2），其余 **+25** 来自并行的 F2 工作流
   （#108，同轮先合）。
-- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，本 PR）**：实测 **2054 passed / 7 skipped**
+- **G2 子代理 D2（分支 `feat/g2-delegation-d2`，#121）**：实测 **2054 passed / 7 skipped**
   （macOS arm64 本机，360.20s），`ruff check .` → `All checks passed!`；基线
   `main @ 6140d9c`（D1 合入后）同机 **2038 passed / 7 skipped**（361.47s）。本分支 **+16**：
   `test_g2_delegation_exec.py`（10）、`test_g2_delegation_fence.py`（2）、
@@ -87,11 +87,11 @@
 | #112 | G2 网络阶段 I3：§10.5 联网研究闭环——本机来源夹具 + `{WEB_BASE}` 模板 + **服务器关掉后**的来源离线核验 + `RU-W1@2.0.0`（断网诚实失败）+ `RU-W2@1.0.0`（本机夹具交付）（+13 tests，负控 5） |
 | #116–#119 | G2 MCP 阶段：stdio 客户端 + 动态工具准入（封闭方言）+ 派发链路（任务级 server 白名单 + 逐次人工批准）+ `tianshu mcp list`（真实第三方 server 未验证、无沙箱） |
 | #120 | G2 子代理 D1：`max_subtasks` 合同 + `subtasks` 实体/父子链 + 四个工具 + 限额 + 共享预算 + 恢复（只排队不执行）（+35 tests，负控 10） |
-| 本 PR | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+16 tests，负控 6） |
+| #121 | G2 子代理 D2：Worker 驱动子 Run + 父挂起/唤醒 + 取消传播 + 父目标 fence + 结果回填 + 回放不重跑（+16 tests，负控 6） |
 
 ## 3 测试与门禁
 
-- G2 子代理 D2（`feat/g2-delegation-d2`，本 PR）：**2054 passed / 7 skipped**（360.20s，
+- G2 子代理 D2（`feat/g2-delegation-d2`，#121）：**2054 passed / 7 skipped**（360.20s，
   macOS arm64 本机），`ruff check .` 干净；基线 `main @ 6140d9c` 同机 **2038 / 7**
   （361.47s），本分支 +16（exec 10 / fence 2 / replay 4）。D2 负控 6 条实测红
   （失败数 18/2/1/2/2/2，红名见 PR body）。
