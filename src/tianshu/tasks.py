@@ -2051,11 +2051,12 @@ class TaskStore:
     def request_subtask_cancel(
         self, parent_run_id: str, subtask_id: str
     ) -> Subtask | None:
-        """记录取消请求：状态置 `cancelling` + 子作业 `cancel_requested=1`。
+        """记录取消请求：状态置 `cancelling` + 子作业与子 Run 取消请求。
 
-        **D1 不写 `cancelled`**：真正停下由执行侧在安全点确认（D2）。这里只
-        留下"人要求停"这件事，不假装撤销已经完成。已终结的子任务原样返回
-        （幂等：不报错，也不假装撤销）。
+        **这里不写 `cancelled`**：真正停下由执行侧在安全点确认（D2）。D1 只
+        记录请求，D2 起子 Run 也会看到 `control_requested=cancel`，但它仍然
+        由 `confirm_control()` 在安全点收尾——不假装撤销已经完成。已终结的
+        子任务原样返回（幂等：不报错，也不假装撤销）。
         """
         with self._log.transaction():
             row = self.get_subtask(parent_run_id, subtask_id)
