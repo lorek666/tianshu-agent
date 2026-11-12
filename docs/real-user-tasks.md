@@ -2,14 +2,18 @@
 
 > 契约基线（`eval/cases.py` 的 20 条）回答"系统行为对不对"；
 > 这一层回答"一个真实用户把一件真事交给它，做得怎么样"。
-> 三类任务，**三类都能真跑**（脚本模型）：联网研究用的是**本机来源夹具**
+> 四类任务，**四类都能真跑**（脚本模型）：联网研究用的是**本机来源夹具**
 > （loopback HTTP），不是公网站点——它验证的是执行链与判据（白名单、逐次批准、
 > 有界摘要 + 内容引用、来源可离线核验、断网诚实失败），**不是**"公网研究能跑"。
 > 另外配一条**断网**任务，证明来源不可达时会如实失败而不是编造。
+> 委派调查（G2 子代理 D3）真的派一个只读子任务、由既有 Worker 驱动到终态、父任务
+> 汇总并引用子任务来源；子任务的写/外发被**拒绝**、失败时父报告写"没有取得"。
 
 - 实现在 `src/tianshu/eval/tasks.py`；运行入口 `run_real_user_tasks()`；
   报告 `scope=real_user`（与 `model` / `harness` 分开计数）。
-- suite 版本：m4.6（任务版本独立于 suite 版本，见 §4）。
+- suite 版本：m4.6（任务版本独立于 suite 版本，见 §4）。G2 子代理 D3 新增
+  `RU-D1@1.0.0`：真实任务集从 7 条变 8 条（`scope.real_user` 的 `cases/runs`
+  随之从 7/21 变 8/24），契约基线 20 条与 `SUITE_VERSION` 未动。
 
 ## 1. 任务台账（版本化输入 / 授权范围 / 目标产物 / 验收判据）
 
@@ -22,6 +26,7 @@
 | `RU-C3` | 1.0.0 | 受控文件修改 | `notes.md` | 写 `notes.md`（需审批）；Run 后用户又手改，撤销不得覆盖 | harness 可跑 |
 | `RU-W1` | 2.0.0 | 联网研究交付·断网 | `research.md`（如实写"没拿到"） | 网络：只允许 `{WEB_BASE}` 一个源（本机、不可达）；只写 `research.md` | 脚本可跑（真跑） |
 | `RU-W2` | 1.0.0 | 联网研究交付·本机夹具 | `research.md`（带两条来源引用） | 网络：只允许 `{WEB_BASE}` 一个源；**两次抓取各自一次人工批准**；只写 `research.md` | 脚本可跑（真跑） |
+| `RU-D1` | 1.0.0 | 委派调查（只读子代理） | `summary.md`（逐字引用子任务摘要 + 两个文档名） | 派一个只读子任务 `docs_reader`（需人工批准）；子任务只读两份文档，写文件/出网被拒；父任务只写 `summary.md` | 脚本可跑（真跑；父/子两套脚本） |
 
 ## 2. 逐条任务与判据
 
@@ -125,6 +130,8 @@
   `cases / runs / valid_runs / invalid_runs`，不与 `model`（契约基线被评测模型）、
   `harness`（崩溃恢复）混算。`overall` 总数包含它们，但四维/通过率的来源可分离。
 - 每个任务 **≥3 次重复**（报告层强制；`repeat<3` 直接 `ValueError`）。
+- 委派任务的子 Run 事件单独放进 `Observation.subtask_events`、子任务行放进
+  `Observation.subtasks`；判据不把"父 Run 的事件"与"子 Run 的事件"混成一条链。
 - 联网任务（RU-W1 / RU-W2）的「来源可离线核验」在 `Observation.offline_sources`
   里：每项含 `ref / digest / bytes / head / url`，收集发生在**服务器关掉之后**；
   读不回来记 `invalid_reason`（评测基础设施无效），不是"通过"。
@@ -168,6 +175,36 @@ RU-W1 3/3   RU-W2 3/3
 3 = 21 次**，全部有效、全绿；`tests/test_eval_real_tasks.py` 22 条 +
 `tests/test_network_research_eval.py` 11 条判据全过。
 
+### 5.1 G2 子代理 D3 复跑（2026-11-12，本 worktree）
+
+```bash
+cd /Volumes/Date/ts-wt-deleg-d3
+uv run --frozen python - <<'PY'
+from pathlib import Path
+from tianshu.eval import run_real_user_tasks, build_report
+from tianshu.eval.tasks import REAL_USER_CASES
+suite = run_real_user_tasks(Path("/tmp/d3-real-full"), repeat=3)
+report = build_report(suite, REAL_USER_CASES)
+PY
+```
+
+```text
+verdict: pass
+scope.real_user: {'cases': 8, 'runs': 24, 'valid_runs': 24, 'invalid_runs': 0,
+                  'case_pass_rate': 1.0, 'cases_all_green': 8}
+RU-C1 3/3   RU-C2 3/3   RU-C3 3/3   RU-D1 3/3   RU-L1 3/3
+RU-L2 3/3   RU-W1 3/3   RU-W2 3/3
+（RU-D1 每次：父任务派 1 个只读子任务 → 子 Run 由 Worker 驱动到 succeeded；
+  子任务读两份文档、写/外网两次尝试被 c4.readonly_binding / c4.outbound_not_allowed
+  拒绝 → 父任务读 subtask.result 并逐字汇总；父报告写「子任务只能读」。
+  RU-D1-F 不在公开 8 条里，只由 D3-c3 测试按 repeat=3 跑失败路径。）
+```
+
+实测（2026-11-12，macOS arm64 本机）：`run_real_user_tasks(repeat=3)` 共 **8 case ×
+3 = 24 次**，全部有效、全绿，耗时 26.73s；`tests/test_eval_real_tasks.py` **29 条**
+（旧 22 + D3 7 条）+ `tests/test_network_research_eval.py` 11 条判据全过。
+**这是脚本模型结果，不是真实模型分数。**
+
 **真实模型复跑：未跑。** 开关 `TIANSHU_EVAL_REAL_MODEL=1` + `TIANSHU_API_KEY` +
 `TIANSHU_BASE_URL` + `TIANSHU_MODEL_NAME` 齐全才启用；缺任何一项
 `real_model_status()` 会逐字写"未跑真实模型：缺少…（不伪造分数）"。
@@ -182,5 +219,8 @@ RU-W1 3/3   RU-W2 3/3
 | 本机夹具 ≠ 线上结果 | 如实登记 | RU-W2 的"来源"是 loopback 夹具；任务文本与台账都写明这一点，不把夹具通过当成公网研究能力 |
 | 撤销的授权派发链路 | 未在评测里覆盖 | 评测只调 `SnapshotStore.undo` 预检路径；授权链路见 `tests/test_undo*` |
 | CLI 集成 | **未接** | `cli.py` 不在文件所有权内；真实任务集通过库 API 运行 |
-| 更多真实用户任务 | 3 类 × 2/3 条 | 不是"覆盖所有用户场景"；新增任务必须带版本与负控 |
+| 更多真实用户任务 | 4 类 × 2/3 条（8 条） | 不是"覆盖所有用户场景"；新增任务必须带版本与负控 |
+| 委派任务的真实模型 | **未跑** | 父/子两套脚本都是脚本模型；父报告汇总文字预先写好，判据只证产品链路。真实模型改写摘要会判**完成度**失败（`subtask.result_quoted` 要求逐字引用），要改口径须换任务版本 |
+| 委派失败路径的公开分母 | 测试内任务 | `RU-D1-F`（`DELEGATION_FAILURE_TASK`）只由 D3-c3 测试跑，不计入公开 8 条；它不是第二条公开用户任务 |
+| 子任务只读的"产品实现" | 依赖 D1/D2 | D3 只**测量**只读边界（写/外发被拒）；子 Task 的只读绑定由 D1 落地、D2 执行。评测不重复证明 D1 的内部实现 |
 | 任务集的统计功效 | 每条 3 次 | 3 次是 PRD 下限采样，不做统计推断 |

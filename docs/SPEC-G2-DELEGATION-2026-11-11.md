@@ -286,10 +286,34 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 
 | # | 判据 | 钉住它的测试 |
 |---|---|---|
-| D3-c1 | `RU-D1@1.0.0`：父任务派一个只读子任务，子任务读两份本地文档并回报，父任务汇总 | `test_eval_real_tasks.py` 增项 |
-| D3-c2 | 子任务是只读的：子任务尝试写文件/出网在评测里被拒，报告如实呈现 | 同上 |
-| D3-c3 | 子任务失败/超时 → 父任务报告写「没有取得」，不编造 | 同上 |
-| D3-c4 | 文档对账：PRD / KNOWLEDGE / README / 交付对账更新，含未做清单 | 文档 diff |
+| D3-c1 | `RU-D1@1.0.0`：父任务派一个只读子任务，子任务读两份本地文档并回报，父任务汇总 | `test_eval_real_tasks.py::test_delegation_task_spawns_readonly_subtask_and_aggregates` |
+| D3-c2 | 子任务是只读的：子任务尝试写文件/出网在评测里被拒，报告如实呈现 | `test_delegation_child_attempts_are_refused_and_report_says_readonly` + `test_delegation_readonly_negative_control` |
+| D3-c3 | 子任务失败/超时 → 父任务报告写「没有取得」，不编造 | `test_delegation_failure_is_reported_without_fabrication` + `test_delegation_failure_negative_control` |
+| D3-c4 | 文档对账：PRD / KNOWLEDGE / README / 交付对账更新，含未做清单 | 文档 diff（本文件 §6、`real-user-tasks.md`、`PRD-v1.md` §10.5/§11.1、`KNOWLEDGE.md` §8、`README.md`、`PRD-REVIEW-DELIVERY-2026-11-11.md`） |
+
+**D3 实测回填（2026-11-12，`feat/g2-delegation-d3`）**：
+
+- 任务与 runner：`src/tianshu/eval/tasks.py` 新增 `RU-D1@1.0.0`（公开，第 8 条）与
+  `DELEGATION_FAILURE_TASK`（测试内失败路径，不进公开分母）；`eval/cases.py` 增
+  `max_subtasks` / `subtask_scripts` / `SubtaskScript`，`eval/runner.py` 在父 Run
+  park 时用 `Worker` + 逐子任务 `engine_factory` 驱动子作业，再 `resume_run(parent)`；
+  父子脚本必须分开，未声明的子任务**拒绝驱动**，往返上限 8 轮，失败原因写进样本
+  `error`。`eval/checks.py` 新增 5 个判据工厂（`subtask.spawned` /
+  `subtask.finished_state` / `subtask.result_quoted` / `subtask.readonly_boundary` /
+  `subtask.output_unavailable`），其中两条 safety 判据在
+  `test_eval_negative_controls.py` 登记负控。
+- 测试：`tests/test_eval_real_tasks.py` **22 → 29** 条（D3-c1/c2/c3 + 2 条负控 +
+  1 条 fail-closed + 1 条分母回归）；全量 **2076 passed / 7 skipped**（356.20s，macOS arm64 本机；
+  基线 `main @ 5eed5ee` 同机 **2069 passed / 7 skipped**、358.23s；+7）。
+  `run_real_user_tasks(repeat=3)`：`scope.real_user` cases 8 / runs 24，全绿，26.73s。
+  `ruff check .` 干净。负控逐条实测见 PR body（含 runner 驱动、子脚本选择、子事件
+  采集、只读边界、失败不编造）。
+- 口径：公开真实用户任务从 7 条变 8 条，`REAL_USER_CASES` 分母变 8/24；契约基线
+  20 条与 `SUITE_VERSION=m4.6` 未动（任务版本独立）。`fixture_digest` 纳入
+  `max_subtasks` 与 `subtask_scripts`，改委派声明/子脚本会让这条 case 不可比。
+  **这两个键只在非默认时写入**，所以既有 27 条 case 的 digest 逐字节不变（实测
+  `main @ 5eed5ee` 同机对比一致），不需要为此 bump `SUITE_VERSION`；新增 `RU-D1`
+  让 case 集合变化，旧报告与新报告本就不可比（集合不同）。
 
 ## 4 口径冲突与旧口径变更（必须写进 PR body）
 
@@ -336,6 +360,19 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
     所以"没人起 worker"时，停在 `waiting` 的父作业不会自己动。另外 `reconcile_finished_subtasks`
     在修正成功收尾的子任务行时会把说明性文案写进 `error` 列（如"启动恢复：按子 Run 终态
     succeeded 修正"）——这是审计注记，不是失败；`subtask.result` 会把该列原样给出。
+15. **D3 评测是脚本模型，不是真实模型分数**：父/子两套脚本都是 `ScriptedModel`；
+    父报告汇总文字预先写好，判据证明"派发 → Worker 驱动 → 结果回填 → 逐字汇总 →
+    引用"这条产品链路，不证明真实模型会写摘要。`subtask.result_quoted` 要求产物
+    **逐字**包含子任务摘要；真实模型改写摘要会判**完成度**失败（不是安全失败），
+    要改口径必须换任务版本。
+16. **D3 只覆盖一条公开委派任务 + 一条测试内失败路径**：失败路径 `RU-D1-F`
+    （`DELEGATION_FAILURE_TASK`）只在 `tests/test_eval_real_tasks.py` 里按 repeat=3
+    跑，**不计入** `REAL_USER_TASKS` 的 8 条公开分母；它证明"子任务失败 → 父报告不
+    编造"，但不是第二条公开用户任务。多子任务并发、子任务取消/fence 的**评测**仍未做
+    （D2 的单元/集成测试覆盖，不是真实用户任务评测）。
+17. **子任务只读边界是 D1/D2 的产品实现，D3 只是测量**：评测断言"写/外发被拒"的
+    规则编号与"无成功副作用"，不重复证明 D1 的只读绑定实现；若 D1 的绑定被回退，
+    D3 判据会红，但根因归属要看 D1 的测试。
 
 ## 6 交付清单（合入后回填实测）
 
@@ -344,4 +381,4 @@ D1 单独合入时子任务**不会被执行**（只有排队与查询），这�
 | 1 | 本施工规格 | 本 PR | 已合入 |
 | 2 | D1 合同 + 实体 + spawn/status/result + 限额 + 预算 | #120 | 已合入（`main @ 6140d9c`） |
 | 3 | D2 Worker 驱动 + 等待/唤醒 + 取消/fence + 回放 | #121 | 已交付（分支 `feat/g2-delegation-d2`；实测见 §3） |
-| 4 | D3 评测任务 + 文档对账 | 待填 | 未做 |
+| 4 | D3 评测任务 + 文档对账 | 待填（分支 `feat/g2-delegation-d3`） | 已交付（D3-c1…c4；2076 passed / 7 skipped，基线 2069/7，+7；负控见 PR body） |
