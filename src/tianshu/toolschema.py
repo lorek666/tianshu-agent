@@ -89,6 +89,17 @@ _SCALAR_KEYS = frozenset({
     "pattern",
 })
 
+#: 归一**外部** schema 时，每种标量真正有语义的关键字。`_SCALAR_KEYS` 是编译期
+#: 的宽松并集（历史：编译时各分支只读自己那几个键，多出来的当注解忽略），但准入
+#: 层不能沿用这种"静默忽略"——server 给 `"type": "string"` 配 `minimum` 在 JSON
+#: Schema 里没有意义，我们必须拒绝整个工具，而不是把它悄悄丢掉（拒绝比猜测诚实）。
+_NORMALIZE_SCALAR_KEYS: dict[str, frozenset[str]] = {
+    "string": frozenset({"type", "enum", "minLength", "maxLength", "pattern"}),
+    "integer": frozenset({"type", "enum", "minimum", "maximum"}),
+    "number": frozenset({"type", "enum", "minimum", "maximum"}),
+    "boolean": frozenset({"type", "enum"}),
+}
+
 _TYPES = frozenset({"object", "array", "string", "integer", "number", "boolean"})
 
 #: 递归上限。注册期的 schema 是仓库里的常量，不是用户输入；给一个上限只是
@@ -649,16 +660,27 @@ def _normalize_node(
         raise ToolSchemaError(
             f"{_label(where)}{path or 'schema'} 嵌套超过 {MAX_DEPTH} 层，拒绝准入"
         )
+    kind = raw.get("type")
     # 先报"用了不认识的关键字"：外部 schema 带着 `$ref`/`oneOf`/`format` 时，
     # 报"类型不对"会把人指向错误的修法（真正的原因是这个关键字我们根本不实现）。
-    any_allowed = _ANNOTATIONS | _OBJECT_KEYS | _ARRAY_KEYS | _SCALAR_KEYS | {"type"}
+    # 白名单**按类型**给：`"type": "string"` 配 `minimum` 在 JSON Schema 里没有语义，
+    # 我们必须拒绝整个工具，而不是把它悄悄丢掉（拒绝比猜测诚实）。
+    if isinstance(kind, str) and kind in _TYPES:
+        if kind in _NORMALIZE_SCALAR_KEYS:
+            allowed_for_kind = _NORMALIZE_SCALAR_KEYS[kind]
+        elif kind == "object":
+            allowed_for_kind = _OBJECT_KEYS
+        else:
+            allowed_for_kind = _ARRAY_KEYS
+    else:
+        allowed_for_kind = _SCALAR_KEYS
+    any_allowed = _ANNOTATIONS | allowed_for_kind
     unknown = sorted(set(raw) - any_allowed)
     if unknown:
         raise ToolSchemaError(
             f"{_label(where)}{path or 'schema'} 使用了本方言不支持的关键字 {unknown}。"
             "外部 schema 的未支持关键字必须拒绝准入，不能静默忽略。"
         )
-    kind = raw.get("type")
     if not isinstance(kind, str) or kind not in _TYPES:
         raise ToolSchemaError(
             f"{_label(where)}{_join(path, 'type')} 必须是单一类型 {sorted(_TYPES)} 之一，"

@@ -284,6 +284,17 @@ def admit_mcp_tools(
             continue
         config = configs.get(state.name)
         limit = MCP_DEFAULT_MAX_TOOLS if config is None else config.max_tools
+        if state.tools_truncated:
+            # 客户端按 `max_tools` 在**发现阶段**就停了：被截掉的工具名我们根本
+            # 收不到。这里补一条显式的拒绝行，让 `tianshu mcp list` 能回答
+            # "是 server 没有这个工具，还是我们截断了"——只留一个 boolean 不够。
+            _reject(
+                rejected,
+                state.name,
+                "<truncated>",
+                f"server 声明的工具超过客户端 max_tools={limit}，多出来的没有发现"
+                "（不是 server 没有，是我们截断了；要更多请调大 max_tools）",
+            )
         tools = sorted(state.tools, key=lambda item: item.name)
         if len(tools) > limit:
             for extra in tools[limit:]:
@@ -375,11 +386,27 @@ class ToolRegistry:
         return tuple(sorted(self._base))
 
     def manifest(self) -> list[dict[str, Any]]:
-        """给模型看的清单（只投影 `exposed=True`，按 id 排序）。"""
+        """给模型看的清单（只投影 `exposed=True`）。
+
+        **顺序**：先按内置 `SPECS` 的**插入顺序**（与 `tools.tool_manifest()` 的
+        旧口径逐字节一致，否则"没有 MCP 时工具面不变"只是集合相同、顺序不同），
+        再按 id 排序追加已准入的 MCP 工具。动态工具追加在末尾，既有工具的位置不会
+        因为装了一个 server 就漂移。
+        """
         rows: list[dict[str, Any]] = []
-        for tool_id in self.ids():
-            spec = self.spec(tool_id)
-            if spec is None or not spec.exposed:
+        for spec in self._base.values():
+            if not spec.exposed:
+                continue
+            rows.append(
+                {
+                    "name": spec.tool_id,
+                    "description": spec.description,
+                    "input_schema": spec.input_schema,
+                }
+            )
+        for tool_id in sorted(self._mcp):
+            spec = self._mcp[tool_id]
+            if not spec.exposed:
                 continue
             rows.append(
                 {

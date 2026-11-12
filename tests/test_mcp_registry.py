@@ -24,6 +24,7 @@ from tianshu.tool_registry import (
     current_registry,
     reset_registry,
     set_registry,
+    tool_version_for,
 )
 from tianshu.tools import SPECS, description_digest, schema_digest, tool_manifest
 from tianshu.toolschema import normalize_object_schema
@@ -148,19 +149,39 @@ def test_admission_binds_identity_and_manifest_row():
     assert registry.is_mcp("read_text") is False
 
 
-def test_tool_version_changes_with_raw_schema_even_for_dropped_keyword():
-    base = _tool("t", {"type": "object", "properties": {"a": {"type": "string"}}})
-    with_dropped = _tool(
-        "t",
-        {"type": "object", "properties": {"a": {"type": "string", "minimum": 1}}},
+def test_tool_version_binds_the_raw_schema():
+    """原始 schema 必须进版本摘要：归一后的 schema 相同也要换版本。
+
+    为什么单独测 `tool_version_for()`：归一现在是严格拒绝（类型不匹配的关键字
+    不再被"丢掉"），能通过准入的两个不同原始 schema 一定会归一出不同的 schema，
+    所以"只差原始摘要"这条性质只能在这个纯函数上钉住。它的意义是：将来归一逻辑
+    变宽松时，旧批准不能因为"归一结果恰好相同"被静默复用。
+    """
+    normalized = {"type": "object", "properties": {}, "additionalProperties": False}
+    desc = "[MCP s/t] x"
+    first = tool_version_for(
+        server="s", tool="t", raw_schema={"a": 1}, normalized=normalized, description=desc
     )
-    first = admit_mcp_tools(_StubClients([_state("s", base)])).admitted[0].binding
-    second = admit_mcp_tools(_StubClients([_state("s", with_dropped)])).admitted[0].binding
-    # 归一后的 schema 一样（string 上的 minimum 在本方言里无意义、被丢弃），
-    # 但**原始 schema 不同**：server 改了我们不认的关键字，也算换了一个工具。
-    assert first.schema_hash == second.schema_hash
-    assert first.raw_schema_hash != second.raw_schema_hash
-    assert first.tool_version != second.tool_version
+    second = tool_version_for(
+        server="s", tool="t", raw_schema={"a": 2}, normalized=normalized, description=desc
+    )
+    assert first != second
+
+
+@pytest.mark.parametrize(
+    "scalar, match",
+    [
+        ({"type": "string", "minimum": 1}, "minimum"),
+        ({"type": "integer", "minLength": 1}, "minLength"),
+        ({"type": "number", "pattern": "^x$"}, "pattern"),
+        ({"type": "boolean", "minimum": 0}, "minimum"),
+    ],
+)
+def test_normalize_rejects_type_mismatched_keywords(scalar, match):
+    """JSON Schema 里 `"type": "string"` 配 `minimum` 没有语义；必须拒绝工具，
+    不能静默丢掉关键字（§3.3 的"不静默丢"包括这一种）。"""
+    with pytest.raises(ToolSchemaError, match=match):
+        normalize_object_schema({"type": "object", "properties": {"a": scalar}})
 
 
 def test_tool_version_changes_with_description():
@@ -260,6 +281,24 @@ def test_description_is_prefixed_and_bounded():
     assert binding.binding.description_hash == description_digest(description)
 
 
+def test_truncated_discovery_is_reported_as_rejected_row():
+    schema = {"type": "object", "properties": {}}
+    clients = _StubClients(
+        [
+            McpServerState(
+                name="s",
+                status="ready",
+                tools=(_tool("a", schema),),
+                tools_truncated=True,
+            )
+        ]
+    )
+    admission = admit_mcp_tools(clients)
+    assert [item.binding.tool for item in admission.admitted] == ["a"]
+    assert [(row.server, row.tool) for row in admission.rejected] == [("s", "<truncated>")]
+    assert "截断" in admission.rejected[0].reason
+
+
 def test_unavailable_server_admits_nothing():
     schema = {"type": "object", "properties": {}}
     clients = _StubClients(
@@ -284,10 +323,19 @@ def test_registry_without_clients_equals_builtins():
     registry = build_registry(None)
     assert registry.ids() == tuple(sorted(SPECS))
     assert registry.builtin_ids() == tuple(sorted(SPECS))
-    assert sorted(registry.manifest(), key=lambda row: row["name"]) == sorted(
-        tool_manifest(), key=lambda row: row["name"]
-    )
+    # **顺序也要一致**：断言用 list 相等而不是 sorted，否则"逐字节不变"漏掉顺序。
+    assert registry.manifest() == tool_manifest()
     assert registry.rejected_tools() == []
+
+
+def test_manifest_keeps_builtin_order_and_appends_dynamic_tools():
+    schema = {"type": "object", "properties": {}}
+    admission = admit_mcp_tools(_StubClients([_state("zz", _tool("t", schema))]))
+    registry = ToolRegistry(SPECS, admission=admission)
+    manifest = registry.manifest()
+    names = [row["name"] for row in manifest]
+    assert names[: len(tool_manifest())] == [row["name"] for row in tool_manifest()]
+    assert names[-1] == "mcp__zz__t"
 
 
 def test_registry_lists_dynamic_tools_after_builtins_only_by_sort():
@@ -322,6 +370,19 @@ def test_empty_admission_has_empty_views():
 
 
 # ---------------------------------------------------------------- 端到端（真子进程）
+
+
+def test_end_to_end_real_client_truncates_at_max_tools():
+    config = McpServerConfig(name="fake", command=(sys.executable, str(FIXTURE)), max_tools=1)
+    clients = McpClients({"fake": config})
+    try:
+        clients.start_all()
+        registry = build_registry(clients)
+        names = [row["name"] for row in registry.manifest() if row["name"].startswith("mcp__")]
+        assert names == ["mcp__fake__echo"]
+        assert any(row["tool"] == "<truncated>" for row in registry.rejected_tools())
+    finally:
+        clients.close_all()
 
 
 def test_end_to_end_with_real_stdio_server():
