@@ -16,6 +16,7 @@ v2 的判据只有一条：**写前证据是否存在**。
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1041,13 +1042,25 @@ def _mark_dispatch_settled(
     `state` 默认 `error`（"这次派发没执行成功"）；委派恢复在**证据证明它已经
     发生**（`subtasks` 行存在）时显式传 `done`——那时把派发行写成 error 就是
     在日志里留一句与事实相反的话。
+
+    **只从非终态推进**（复审 R2-2）：`revoked` / `rejected` / `done` / `error`
+    已经是终态，恢复补写一条结果不该把它们改写——撤销先于结算时把 `revoked`
+    改成 `error`，是在审计里抹掉"这次派发被撤销过"这条事实。结果照写，行不动。
     """
-    from .dispatcher import DISPATCH_ERROR
+    from .dispatcher import DISPATCH_ERROR, DISPATCH_EXECUTING, DISPATCH_INTENT
 
     log.conn.execute(
         "UPDATE dispatches SET state=?, reason=?, updated_at=?"
-        " WHERE run_id=? AND call_id=?",
-        (state or DISPATCH_ERROR, reason, ts, run_id, call_id),
+        " WHERE run_id=? AND call_id=? AND state IN (?, ?)",
+        (
+            state or DISPATCH_ERROR,
+            reason,
+            ts,
+            run_id,
+            call_id,
+            DISPATCH_INTENT,
+            DISPATCH_EXECUTING,
+        ),
     )
 
 
@@ -1233,10 +1246,8 @@ def _settle(
             log.append_many(batch)
             bucket.append(call_id)
             return
-        # 没有 intent 时间戳时用行自己的 `created_at`（同一条派发的登记时刻），
-        # 并且**与事件同一个事务**提交：不允许出现"结果有了、行还没推进"。
         row = log.conn.execute(
-            "SELECT created_at FROM dispatches WHERE run_id=? AND call_id=?",
+            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
             (run_id, call_id),
         ).fetchone()
         if row is None:
@@ -1244,13 +1255,16 @@ def _settle(
             # 没有可推进的行，只写结果，不编造一条。
             log.append_many(batch)
         else:
+            # `updated_at` 用**恢复这一刻**的时钟（不是行自己的 `created_at`：
+            # 那会让更新时间倒退，审计/排序看到"越恢复越旧"）；与事件同一个
+            # 事务提交，不允许出现"结果有了、行还没推进"。
             with log.transaction():
                 log.append_many(batch)
                 _mark_dispatch_settled(
                     log,
                     run_id,
                     call_id,
-                    int(row["created_at"] or 0),
+                    _now_ms(),
                     str(result.output.get("error", "")),
                     state=_default_dispatch_state(result, dispatch_state),
                 )
@@ -1270,6 +1284,11 @@ def _settle(
             state=_default_dispatch_state(result, dispatch_state),
         )
     bucket.append(call_id)
+
+
+def _now_ms() -> int:
+    """恢复自己写事件/推进派发行用的时钟（毫秒，与 `dispatcher._now` 同口径）。"""
+    return int(time.time() * 1000)
 
 
 def _has_dispatch_table(log: EventLog) -> bool:

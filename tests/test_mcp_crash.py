@@ -535,19 +535,21 @@ def _insert_dispatch(
     tool_id: str,
     target: str,
     intent_seq: int,
+    state: str = "intent",
 ) -> None:
     log.conn.execute(
         _DISPATCH_INSERT,
         (
             dispatch_id, run_id, "task_x", CALL_ID, "req_x", "0" * 64, tool_id,
             ACTION_OVERWRITE, "[]", target, "", "", f"key:{target}", None,
-            "grant_x", 1, "inst_x", 1, intent_seq, "intent", _NOW, _NOW,
+            "grant_x", 1, "inst_x", 1, intent_seq, state, _NOW, _NOW,
         ),
     )
 
 
+@pytest.mark.parametrize("side_effect_level", ["idempotent", "pure"])
 def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, side_effect_level
 ):
     """MCP id 万一进了静态 `SPECS`，恢复仍按 MCP 判（不读磁盘）。
 
@@ -596,11 +598,19 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
                 description="故意塞进静态表的 MCP 工具（NB21 的变异形状）",
                 input_schema={"type": "object", "properties": {},
                               "additionalProperties": False},
-                side_effect_level="idempotent",
+                side_effect_level=side_effect_level,
                 action=ACTION_OVERWRITE,
             ),
         )
         assert MCP_TOOL in SPECS, "变异必须真的生效，否则这条用例什么都没测"
+
+        # 只读对账也要按 MCP 判（它是**另一条分支**：撤了它，正常崩溃用例里
+        # MCP id 不在静态表时仍会 unresolved，测不出来）。
+        before = len(log.read_run(run_id, verify=False))
+        assessment = assess_run(data, run_id, log=log)
+        assert assessment.unresolved == (CALL_ID,)
+        assert assessment.blocks_takeover is True
+        assert len(log.read_run(run_id, verify=False)) == before, "只读对账不许写事件"
 
         report = recover_run(log, run_id, ws, store, leases=stack.leases,
                              data_root=data)
@@ -620,6 +630,104 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
         assert results[0]["output"]["reason"] == "mcp.crash_unsettled"
     finally:
         log.close()
+
+
+def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
+    """恢复只推进 `intent/executing`；`revoked` / `rejected` 这些终态保留。
+
+    复审 R2-2：撤销先于结算时把 `revoked` 改成 `error`（或 `applied` 改成
+    `done`），等于在审计里抹掉"这次派发被撤销过"这条事实。结果照写，行不动。
+    """
+    # (a) 文件写：行已 revoked，磁盘却是写后状态 → 结果 applied，行仍 revoked
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    store = SnapshotStore(artifacts)
+    try:
+        stack = build_stack(log, data_root=data)
+        run_id = "run_revoked"
+        store.init_run(run_id)
+        before = b"before\n"
+        after = b"after\n"
+        (ws / "report.md").write_bytes(before)
+        store.record_preimage(
+            run_id, CALL_ID, "report.md", before,
+            hashlib.sha256(after).hexdigest(), root=ws,
+        )
+        log.append(
+            run_id, "run.start",
+            {"task": "撤销先于结算", "workspace": str(ws), "out": "out.md",
+             "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq = log.append(
+            run_id, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": "create_report",
+             "args": {"name": "report.md", "content": "after\n"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log, dispatch_id="dsp_revoked", run_id=run_id, tool_id="create_report",
+            target=str(ws / "report.md"), intent_seq=seq, state="revoked",
+        )
+        (ws / "report.md").write_bytes(after)
+
+        report = recover_run(log, run_id, ws, store, leases=stack.leases,
+                             data_root=data)
+        assert report.applied == [CALL_ID], "结果照写（磁盘确实是写后状态）"
+        row = log.conn.execute(
+            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id, CALL_ID),
+        ).fetchone()
+        assert row["state"] == "revoked", "已撤销的派发行不许被恢复改写成 done/error"
+    finally:
+        log.close()
+
+    # (b) MCP：行已 rejected，intent 无 result → 结果 unknown，行仍 rejected
+    ws2 = tmp_path / "ws-mcp"
+    ws2.mkdir()
+    data2 = tmp_path / "data-mcp"
+    data2.mkdir()
+    log2 = EventLog(tmp_path / "events-mcp.db", blob_dir=tmp_path / "blobs")
+    artifacts2 = tmp_path / "artifacts-mcp"
+    artifacts2.mkdir()
+    store2 = SnapshotStore(artifacts2)
+    try:
+        stack2 = build_stack(log2, data_root=data2)
+        run_id2 = "run_rejected"
+        store2.init_run(run_id2)
+        log2.append(
+            run_id2, "run.start",
+            {"task": "MCP 被拒后崩溃", "workspace": str(ws2), "out": "out.md",
+             "limits": {}, "tools": []},
+            actor_kind="core", legacy_write=True,
+        )
+        seq2 = log2.append(
+            run_id2, "tool.intent",
+            {"call_id": CALL_ID, "tool_id": MCP_TOOL, "args": {"message": "hi"},
+             "args_hash": "0" * 64},
+            actor_kind="core", legacy_write=True,
+        )
+        _insert_dispatch(
+            log2, dispatch_id="dsp_rejected", run_id=run_id2, tool_id=MCP_TOOL,
+            target="mcp://fake/echo", intent_seq=seq2, state="rejected",
+        )
+
+        report2 = recover_run(log2, run_id2, ws2, store2, leases=stack2.leases,
+                              data_root=data2)
+        assert report2.unresolved == [CALL_ID]
+        row2 = log2.conn.execute(
+            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id2, CALL_ID),
+        ).fetchone()
+        assert row2["state"] == "rejected", "已被拒绝的派发行不许被改写成 error"
+    finally:
+        log2.close()
 
 
 def test_recovery_marks_dispatch_row_terminal_for_file_writes(tmp_path):
@@ -684,5 +792,13 @@ def test_recovery_marks_dispatch_row_terminal_for_file_writes(tmp_path):
             else:
                 assert report.none_applied == [CALL_ID]
                 assert row["state"] == DISPATCH_ERROR
+            stamp = log.conn.execute(
+                "SELECT created_at, updated_at FROM dispatches"
+                " WHERE run_id=? AND call_id=?",
+                (run_id, CALL_ID),
+            ).fetchone()
+            assert stamp["updated_at"] > stamp["created_at"], (
+                "恢复的推进时间戳必须是恢复那一刻，不能倒退成登记时刻"
+            )
         finally:
             log.close()

@@ -46,7 +46,7 @@
 | 库里有什么 | 恢复给的结论 | 凭据 | 阻断 |
 |---|---|---|---|
 | 有 result（含 `isError:true`） | 不动它：`applied` + `status=failed` | 有（`backend="mcp"`，可独立核对） | 不阻断 |
-| 有 intent、没有 result | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断该 Run 声明的工作区 |
+| 有 intent、没有 result | `status/effect_state = unknown`，`reason=mcp.crash_unsettled` | **不补**（unknown 不满足 applied） | 阻断**调用方传入**的那个工作区目录 |
 
 实现上有三处必须说清楚：
 
@@ -62,7 +62,11 @@
 3. **派发行同时推到终态**：恢复补写结果时，`dispatches` 行必须离开
    `intent/executing`（`applied → done`，其余 `→ error`），否则
    `dispatch_record()` 会继续显示"仍在执行"，与事件里的"已结算"互相打脸。这条不只
-   为 MCP 修：文件写的恢复分支原来也漏着（复审 R2），现在一起修了。
+   为 MCP 修：文件写的恢复分支原来也漏着（复审 R2），现在一起修了。两个边界：
+   ① **只从 `intent/executing` 推进**——已经 `revoked`/`rejected`/`done`/`error` 的行是
+   审计事实，恢复补一条结果不该把它改写（撤销先于结算时尤其明显）；
+   ② `updated_at` 用**恢复这一刻**的时钟，不用行自己的 `created_at`（否则更新时间倒退，
+   审计/排序会看到"越恢复越旧"）。老库没有 `dispatches` 表时只写结果、不崩。
 
 **两个窗口，一个代价**（`tests/test_mcp_crash.py` 真子进程 + `os._exit(77)`）：
 
@@ -110,9 +114,10 @@
    有界文本，**没有** server 原始响应全文。
 
 10. **崩溃后的结论只到 `unknown` + 阻断**：恢复分不出"没发出去"与"发了但响应丢了"
-    （两者都 `unknown` + 阻断该工作区，可能过度阻断）；阻断对象只有 workspace 字段，
-    **没有**对象级阻断；server 侧的私有状态（它到底动了什么）**没有任何证据**，
-    恢复也不去问它。
+    （两者都 `unknown` + 阻断调用方传入的工作区，可能过度阻断）；阻断对象只有 workspace
+    字段，**没有**对象级阻断；"挡哪个目录"由调用方负责（`recover --workspace` 必填，
+    代码不按 task 绑定核对，传错就挡错——已知代价）；server 侧的私有状态（它到底动了
+    什么）**没有任何证据**，恢复也不去问它。
 
 ## 6 后续工单
 

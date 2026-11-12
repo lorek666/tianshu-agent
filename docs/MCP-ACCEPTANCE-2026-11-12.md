@@ -81,7 +81,9 @@
 | NB18 | 取消检查挪到发包之后 | c11 用例 | **RED**（0.25s） |
 | NB19 | `task.created` 不写 `mcp_servers` | 任务记录用例 | **RED**（0.23s） |
 | NB20 | `tool_id` 不放开（保持枚举） | c9 用例 | **RED**（0.24s） |
-| NB21 | 撤掉 `_recover_run` 里的 MCP 分支（`if False`），同时允许 MCP 工具 id 进静态 `SPECS`——即"恢复只靠静态表缺条目认出 MCP"的退化 | `test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool`、`test_crash_after_server_executed_settles_unknown_and_blocks` | **RED（收尾轮实测）**：2 failed / 0.66s ——空清单里没有本次条目，退化后会判 `none_applied`（把可能已执行的 MCP 调用洗成"确定没写"），且崩后结算里丢掉了 `reason=mcp.crash_unsettled` 这条可诊断结论 |
+| NB21 | 撤掉 `_recover_run` 里的 MCP 分支（`if False`）——静态表里本来就有那个 MCP id（用例自己 `monkeypatch.setitem`），即"恢复只靠静态表缺条目认出 MCP"的退化 | `test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool`（`idempotent` / `pure` 两格）、`test_crash_after_server_executed_settles_unknown_and_blocks` | **RED（收尾轮实测）**：3 failed / 0.92s ——空清单里没有本次条目，退化后会判 `none_applied`（把可能已执行的 MCP 调用洗成"确定没写"），崩后结算里也丢掉了 `reason=mcp.crash_unsettled`。**口径**：正确实现 + 同一份"静态表里有 MCP id"的世界是**绿**的（它按 id 形状判）；**红的是撤掉分支之后**，两者别混着写 |
+| NB28 | 只撤 `assess_run` 的 MCP 分支 | 同上（它断言 `assess_run.unresolved`） | **RED（收尾轮实测）**：1 failed / 0.42s —— 正常崩溃用例里 MCP id 不在静态表（`spec is None` → unresolved），撤掉这条分支**测不出来**，所以必须单独覆盖只读对账 |
+| NB29 | 去掉 `_mark_dispatch_settled` 的 `state IN ('intent','executing')` 保护 | `test_recovery_does_not_rewrite_terminal_dispatch_rows`（`revoked` + `rejected` 两格） | **RED（收尾轮实测）**：1 failed / 0.42s —— 已撤销/已拒绝的派发行会被改写成 `done`/`error`，审计里丢掉"被撤销过"这条事实 |
 | NB22 | `isolation_requires` 放行 | c13 用例 | **RED**（0.20s） |
 | NB23 | replay 装配里调用 `start_all()` | **未做**（c15 只证明了"回放不调用 server"，没有把装配改成反面） | **未验证** |
 | NB24 | MCP 凭据按 exec 口径核对 | c9 的凭据核对 | **RED**（0.22s） |
@@ -96,6 +98,10 @@
 > 收尾轮又踩到第二种坑：还原用 `git checkout -- <file>` 回到的是 **HEAD**，会把同一轮里
 > **尚未提交**的改动一起抹掉（本轮把 `recovery.py` / `dispatcher.py` 的新代码抹过一次，靠
 > 重放补丁修回来）。负控的还原必须是"变异前自己拍的文件快照"，不能借用 git 的 HEAD。
+>
+> 收尾轮的负控已脚本化、可复现：`uv run python scripts/negative_controls_mcp_crash.py`
+> （快照 → 变异 → 清 pyc + `PYTHONDONTWRITEBYTECODE=1` → 跑目标用例 → 快照还原；
+> 全部按预期变红才返回 0，有一条没红就返回 1）。NB21 / NB28 / NB25 / NB26 / NB27 / NB29 都在里面。
 
 ## 4 诚实边界（交付后仍然不成立 / 未验证）
 
@@ -128,9 +134,12 @@
       过度阻断（一次根本没发出去的调用也要人工核对后 `unblock`）；**方向**是对的（宁可多
       挡，不把可能已发生的副作用说成没发生）。要消除它需要"发送前落一条持久标记"，那是
       契约增量（§5-7）。
-    - 阻断对象只有 workspace：MCP server 以当前用户权限跑在本机，这个工作区**可能**被它
-      改过，所以按最保守口径挡这个 Run 声明的工作区。server 侧自己的状态（它动过哪些
-      文件、发过什么请求）**没有任何证据**，恢复也不去问它（问了也不是本机证据）。
+    - 阻断对象只有 workspace：MCP server 以当前用户权限跑在本机，传入的工作区**可能**
+      被它改过，所以按最保守口径挡这个目录。**"哪个目录"由调用方负责**：`tianshu recover`
+      的 `--workspace` 是必填参数，代码**没有**拿 `task_id` 去核对它属于该 Task 的哪些绑定
+      （零目录 Task 也合法，CLI 却强制给一个路径）。传错就挡错目录 —— 这是已知代价，不是
+      代码保证过的事。server 侧自己的状态（它动过哪些文件、发过什么请求）**没有任何证
+      据**，恢复也不去问它（问了也不是本机证据）。
     - 没有对象级阻断（以 `mcp://server/tool` / server 为阻断对象）：现有 guard 只有
       workspace 字段（§5-8）。
 11. **等批准期间取消不立即生效**：`tools/call` 是同步阻塞调用，取消只在发包前检查
