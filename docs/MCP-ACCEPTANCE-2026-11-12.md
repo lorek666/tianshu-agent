@@ -9,9 +9,9 @@
   `ruff check .` 干净，运行时依赖仍为零（`dependencies = []`）。
 - 收尾轮（PR #122）实测：**2047 passed / 7 skipped**（macOS arm64；同机基线
   `main @ 6140d9c` = 2038/7，差值是本轮 9 条崩溃/恢复判据）。
-- **外发边界标记（PR #124）**实测：**2074 passed / 7 skipped**（macOS arm64，362.70s；
-  同机基线 `main @ 5eed5ee` = **2069 / 7**，360.90s；差值 +5 = `test_mcp_crash.py`
-  9 条 → 14 条）。
+- **外发边界标记（PR #124）**实测：**2075 passed / 7 skipped**（macOS arm64，360.86s；
+  同机基线 `main @ 5eed5ee` = **2069 / 7**，360.90s；差值 +6 = `test_mcp_crash.py`
+  9 条 → 15 条）。
 - **收尾轮（PR #122）**：补 MCP 崩溃夹具与恢复判据——c10 由「部分」转为**实测**、
   NB21 落地；顺带修掉复审指出的"恢复补写结果却不推进派发行"（R2）与"终态派发行
   被改写 / 更新时间戳倒退"（R2-2、R2-3）。
@@ -34,7 +34,7 @@
 | MCP-c7 | server 改 schema/描述 → `tool_version` 变 → 旧批准失效 | `test_tool_version_binds_the_raw_schema`、`test_tool_version_changes_with_description` | ✅ 通过（版本 = 原始 schema + 归一 schema + 描述 的摘要在纯函数上钉住） |
 | MCP-c8 | 没声明 `--allow-mcp-server` → 不弹批准，`dispatch.rejected` = `c4.mcp_not_allowed` | `test_mcp_call_without_task_allowlist_is_rejected_before_approval` | ✅ 通过 |
 | MCP-c9 | 声明了 → 弹批准（`c4.mcp_call`）→ 执行一次 → intent + result + receipt(backend=mcp)，且凭据**可独立核对**（含响应摘要） | `test_approved_mcp_call_runs_once_and_produces_receipt` | ✅ 通过（真子进程调用日志证明只发一次；`mcp_call` 证据带 `sha256` 响应摘要并与执行摘要逐字核对；`verify_receipts == []`） |
-| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | 派发侧：`test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process`；**恢复侧**：`test_crash_after_server_executed_settles_unknown_and_blocks`、`test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_crash_before_send_settles_none_applied_and_does_not_block`、`test_blocked_workspace_can_be_unblocked_and_run_finishes_without_replay`、`test_ise_error_result_is_applied_and_recovery_leaves_it_alone`、`test_refused_send_boundary_does_not_call_server`、`test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown` | **✅ 通过（实测，收尾轮 + PR #124）**：三个崩溃窗口结论各不相同——`mcp_before_call`（外发边界标记**没**落盘）→ `none_applied` + `mcp.not_sent` + **不阻断**，可直接 `resume`；`mcp_marked`（标记已落盘、请求未写）与 `mcp_after_call`（server 的 `--effect-log` 证明它真的执行了）→ `unknown` + `mcp.crash_unsettled` + 阻断。恢复补结果时把派发行推到终态、**不补凭据**、**不重放**（call-log 仍 1 次）、幂等；`assess_run` 同口径（标记前允许接管、标记后拒绝）；标记推进不上（已撤销/作废）就不发请求；`isError` 已有 result 的调用不被重判。仍有一小段窗口保守阻断，见 §4-10 |
+| MCP-c10 | 超时/崩溃/断线 → `failed` + `unknown`，可核查 | 派发侧：`test_call_timeout_is_unknown_not_none_applied`、`test_crash_during_call_raises_closed`、`test_runtime_protocol_failure_reaps_the_process`；**恢复侧**：`test_crash_after_server_executed_settles_unknown_and_blocks`、`test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_crash_before_send_settles_none_applied_and_does_not_block`、`test_blocked_workspace_can_be_unblocked_and_run_finishes_without_replay`、`test_ise_error_result_is_applied_and_recovery_leaves_it_alone`、`test_refused_send_boundary_does_not_call_server`、`test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown`、`test_mcp_without_a_dispatch_row_stays_conservative` | **✅ 通过（实测，收尾轮 + PR #124）**：三个崩溃窗口结论各不相同——`mcp_before_call`（外发边界标记**没**落盘）→ `none_applied` + `mcp.not_sent` + **不阻断**，可直接 `resume`；`mcp_marked`（标记已落盘、请求未写）与 `mcp_after_call`（server 的 `--effect-log` 证明它真的执行了）→ `unknown` + `mcp.crash_unsettled` + 阻断。恢复补结果时把派发行推到终态、**不补凭据**、**不重放**（call-log 仍 1 次）、幂等；`assess_run` 同口径（标记前允许接管、标记后拒绝）；标记推进不上（已撤销/作废）就不发请求；`isError` 已有 result 的调用不被重判。仍有一小段窗口保守阻断，见 §4-10 |
 | MCP-c11 | 已取消的 Run 一条 `tools/call` 都不发，`none_applied` | `test_cancelled_run_sends_no_mcp_frames` | ✅ 通过（假 server 的调用日志为空） |
 | MCP-c12 | 结果超上限 → 截断 + 字节记账；非文本只记类型不丢（**规格已改成不落内容引用**） | `test_max_result_bytes_truncates_and_reports_bytes`、`test_max_result_bytes_counts_utf8_bytes_not_characters`、`test_structured_content_counts_against_the_result_budget`、`test_call_tool_returns_text_and_keeps_unsupported_content` | ✅ 通过（与**改后的**判据一致：截断 + `bytes`/`dropped_bytes`/`dropped_blocks`，不落 `content://`；见 §4-5） |
 | MCP-c13 | `isolation_requires` 非空 → 任何平台都 `c4.mcp_isolation_unproven` | `test_isolation_requires_makes_mcp_unproven` | ✅ 通过（不因后端自称而放行） |
@@ -111,7 +111,7 @@
 | NB26 | 恢复把派发行一律写 `done`（unknown 也写成功） | c10 崩溃夹具 + 文件写派发行终态用例 | **RED（收尾轮实测）**：2 failed / 0.71s |
 | NB27 | 恢复只写 `tool.result`、不推进派发行（回到 R2 之前的口径） | 同上 | **RED（收尾轮实测）**：2 failed / 0.66s |
 | NB30 | 把"没越过外发边界"的三个状态清空（`proven: set[str] = set()`） | `test_crash_before_send_settles_none_applied_and_does_not_block` | **RED（PR #124 实测）**：1 failed / 0.98s —— 恢复拿不到本机证据，窗口一又变回 `unknown` + 阻断（过度阻断回归） |
-| NB31 | 把"证明不了没发就按可能已发"翻成"一律没发" | `test_crash_after_marker_conservatively_blocks_and_refuses_revoke` | **RED（PR #124 实测）**：1 failed / 0.92s —— 标记已落盘的窗口被洗成 `none_applied`，**最危险的方向**（把可能已发生的副作用说成没发生） |
+| NB31 | 把"证明不了没发就按可能已发"翻成"一律没发" | `test_crash_after_marker_conservatively_blocks_and_refuses_revoke`、`test_mcp_without_a_dispatch_row_stays_conservative` | **RED（PR #124 实测）**：2 failed / 0.98s —— 标记已落盘的窗口、以及没有派发表/没有行的老库都被洗成 `none_applied`，**最危险的方向**（把可能已发生的副作用说成没发生） |
 | NB32 | 拿掉发包前的外发边界标记（`if not self._mark_mcp_send_boundary(...)` → `if False`） | 标记窗口 + 发包前撤销 | **RED（PR #124 实测）**：2 failed / 1.06s —— 崩溃在"标记之后"仍是 `intent`，恢复会判没发；撤销与发送的分界也一起消失（server 照样被打） |
 | NB33 | 只认 `intent`、不认 `revoked`/`rejected` | `test_recovery_does_not_rewrite_terminal_dispatch_rows`（`rejected` 格） | **RED（PR #124 实测）**：1 failed / 0.47s —— 已撤销的调用又变回 `unknown` + 阻断（拿不出证据却硬要挡） |
 | NB34 | 清单损坏分支不按 MCP 判（`if False`） | `test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown` | **RED（PR #124 实测）**：1 failed / 0.52s —— 一份无关证据（文件快照清单）的损毁会把"请求都没写出"的调用推成 `unknown` 并挡住目录 |
@@ -129,6 +129,8 @@
 > 全部按预期变红才返回 0，有一条没红就返回 1）。NB21 / NB28 / NB25 / NB26 / NB27 / NB29 /
 > NB30 / NB31 / NB32 / NB33 / NB34 共 **11 条**都在里面；"变红"要同时满足 rc=1、FAILED 行命中
 > 声明的目标节点、且输出里有 AssertionError（只算 rc 会把 import/collection 炸当成红）。
+> 表中耗时与 failed 数是**各轮实测记录**（同一台机器；每次运行有几十毫秒到一百多毫秒的
+> 波动，失败条数稳定）。
 
 ## 4 诚实边界（交付后仍然不成立 / 未验证）
 
@@ -188,8 +190,8 @@
 2. 真实第三方 server 兼容性验证（≥2 个真实 server）+ 官方规范复核协议版本/`initialize`。
 3. ~~MCP 崩溃夹具（intent 无 result）+ 恢复判据（补 NB21）~~ **已完成（收尾轮 #122）**：
    `tests/test_mcp_crash.py` 9 条，NB21/NB25/NB26/NB27/NB28/NB29 负控实测红。PR #124 把它
-   扩到 **14 条**（三个崩溃窗口 + 标记窗口 + 发包前撤销 + 清单损坏 + 静态表四格 + 终态
-   派发行），负控 **11 条**。
+   扩到 **15 条**（三个崩溃窗口 + 标记窗口 + 发包前撤销 + 清单损坏 + 无派发行回退 + 静态表
+   四格 + 终态派发行），负控 **11 条**。
 4. 大结果内容引用与文本分页读取；MCP 预算维度（调用次数/结果字节）。
 5. UI 的 MCP 面板（server 状态、准入/被拒工具、截断说明）。
 6. Windows 实机验证与 CI 基线修复（既有工单）。

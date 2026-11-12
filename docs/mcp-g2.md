@@ -98,7 +98,7 @@
 
 - 判据：`tests/test_mcp_client.py`（43）、`tests/test_mcp_registry.py`（33）、
   `tests/test_mcp_dispatch.py`（12）、`tests/test_mcp_cli.py`（6）、
-  **`tests/test_mcp_crash.py`（14；收尾轮 9 → PR #124 扩到 14）**，另有契约判据在
+  **`tests/test_mcp_crash.py`（15；收尾轮 9 → PR #124 扩到 15）**，另有契约判据在
   `tests/test_event_schema.py` / `tests/test_rule_ids.py` / `tests/test_g1d_resource_kinds.py`。
   → 规格 §4 的 c1–c15 与本文件的测试一一对应。
 - 负控：规格 §5 的 NB1–NB24；已实测红的逐条列在验收报告 §3（每条都是"回退保护 →

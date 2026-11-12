@@ -47,6 +47,10 @@ CORRUPT = (
     "tests/test_mcp_crash.py::"
     "test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown"
 )
+FALLBACK = (
+    "tests/test_mcp_crash.py::"
+    "test_mcp_without_a_dispatch_row_stays_conservative"
+)
 STATIC = (
     "tests/test_mcp_crash.py::"
     "test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool"
@@ -146,9 +150,9 @@ CASES: tuple[Case, ...] = (
         relpath="src/tianshu/recovery.py",
         old="    if not states:\n        return False\n",
         new="    return True\n",
-        tests=(MARKED,),
-        why="把「证明不了没发就按可能已发」翻成「一律没发」：标记已落盘的窗口"
-        "会被洗成 none_applied——最危险的方向",
+        tests=(MARKED, FALLBACK),
+        why="把「证明不了没发就按可能已发」翻成「一律没发」：标记已落盘的窗口、"
+        "以及没有派发表/没有行的老库，都会被洗成 none_applied——最危险的方向",
     ),
     Case(
         name="NB32",

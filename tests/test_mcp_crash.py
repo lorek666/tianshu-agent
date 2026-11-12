@@ -1090,3 +1090,68 @@ def test_corrupt_manifest_does_not_drag_never_sent_mcp_into_unknown(tmp_path):
         assert row["state"] == DISPATCH_ERROR
     finally:
         log.close()
+
+
+def test_mcp_without_a_dispatch_row_stays_conservative(tmp_path):
+    """证明不了"没发出"就必须保守：没有派发表、或表里没有这一行 → unknown + 阻断。
+
+    "标记不存在 = 没发"是把**缺证据**当成**证据**。恢复只允许在派发行明确停在
+    外发边界之前时判 `none_applied`；其余一律按"可能已发出"处理。
+    """
+    cases = ("no_table", "no_row")
+    for case in cases:
+        ws = tmp_path / f"ws-{case}"
+        ws.mkdir()
+        data = tmp_path / f"data-{case}"
+        data.mkdir()
+        log = EventLog(tmp_path / f"events-{case}.db", blob_dir=tmp_path / "blobs")
+        artifacts = tmp_path / f"artifacts-{case}"
+        artifacts.mkdir()
+        store = SnapshotStore(artifacts)
+        try:
+            if case == "no_table":
+                # 只开过 EventLog、没有经 Dispatcher：库里没有 `dispatches` 表。
+                stack = None
+                leases = None
+            else:
+                # 经 Dispatcher 开库：表在，但这次调用没有派发行（更早版本的库、
+                # 或手工写的事件流）。
+                stack = build_stack(log, data_root=data)
+                leases = stack.leases
+            run_id = f"run_{case}"
+            store.init_run(run_id)
+            log.append(
+                run_id,
+                "run.start",
+                {"task": "没有派发行的 MCP 调用", "workspace": str(ws),
+                 "out": "out.md", "limits": {}, "tools": []},
+                actor_kind="core",
+                legacy_write=True,
+            )
+            log.append(
+                run_id,
+                "tool.intent",
+                {"call_id": CALL_ID, "tool_id": MCP_TOOL,
+                 "args": {"message": "hi"}, "args_hash": "0" * 64},
+                actor_kind="core",
+                legacy_write=True,
+            )
+
+            assessment = assess_run(data, run_id, log=log)
+            assert assessment.unresolved == (CALL_ID,), case
+            assert assessment.none_applied == (), case
+            assert assessment.blocks_takeover is True, case
+
+            report = recover_run(log, run_id, ws, store, leases=leases,
+                                 data_root=data)
+            assert report.unresolved == [CALL_ID], case
+            assert report.none_applied == [], case
+            assert report.blocked_workspaces == [str(ws.resolve())], case
+            result = [
+                e.payload
+                for e in log.read_run(run_id, verify=False)
+                if e.type == "tool.result"
+            ][0]
+            assert result["output"]["reason"] == "mcp.crash_unsettled", case
+        finally:
+            log.close()
