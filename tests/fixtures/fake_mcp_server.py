@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             "internal_error",
             "late_on_call",
             "bad_json_at_runtime",
+            "structured_output",
         ],
     )
     parser.add_argument("--tools-file", default="")
@@ -179,6 +180,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.mode == "crash_on_call":
                 os._exit(3)
             if args.mode == "hang_on_call":
+                continue
+            if args.mode == "structured_output":
+                _result(
+                    request_id,
+                    {
+                        "content": [{"type": "text", "text": "ok"}],
+                        "structuredContent": {"rows": ["x" * 100] * 50},
+                    },
+                )
                 continue
             if args.mode == "is_error":
                 _result(

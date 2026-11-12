@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import atexit
+import collections
 import json
 import os
 import queue
@@ -445,10 +446,11 @@ class McpServerState:
 
 def _clip_blocks(
     blocks: tuple[dict[str, Any], ...], *, limit: int
-) -> tuple[tuple[dict[str, Any], ...], int, int, int]:
+) -> tuple[tuple[dict[str, Any], ...], int, int, int, int]:
     """按 UTF-8 字节上限裁剪结果块。
 
-    返回 `(kept, total_text_bytes, dropped_text_bytes, dropped_block_count)`：
+    返回 `(kept, total_text_bytes, kept_text_bytes, dropped_text_bytes,
+    dropped_block_count)`：
     `total_text_bytes` 是**实际收到**的文本字节（截断前），所以事件里能如实写
     "收到多少、留下多少、丢了多少"，而不是只给一个 `truncated=true`。
 
@@ -484,7 +486,7 @@ def _clip_blocks(
             dropped_blocks += 1
             continue
         kept.append(item)
-    return tuple(kept), total_bytes, dropped_bytes, dropped_blocks
+    return tuple(kept), total_bytes, kept_bytes, dropped_bytes, dropped_blocks
 
 
 # ---------------------------------------------------------------- 进程
@@ -513,7 +515,10 @@ class StdioServer:
         self._responses: queue.Queue[tuple[int | None, dict[str, Any]]] = queue.Queue()
         #: 已经超时放弃的请求 id：它们的响应可能**晚到**，晚到不能算"id 不匹配"，
         #: 否则一个健康的 server 会因为一次超时被下一次请求判死。
+        #: 有界（FIFO）：server 永不回应时每个超时 id 都留在这里会无界增长；
+        #: 只保留最近 64 个——比这还晚的响应本身就该按协议错误处理。
         self._abandoned: set[int] = set()
+        self._abandoned_order: collections.deque[int] = collections.deque(maxlen=64)
         self._send_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._stderr_lock = threading.Lock()
@@ -569,6 +574,11 @@ class StdioServer:
     @property
     def notifications_seen(self) -> int:
         return self._notifications
+
+    @property
+    def pending_timeouts(self) -> int:
+        """还在等"晚到响应"的超时请求数（有界，见 `_abandon`）。"""
+        return len(self._abandoned)
 
     def stderr_tail(self) -> str:
         with self._stderr_lock:
@@ -757,7 +767,16 @@ class StdioServer:
         取消**只是请求**（server 可以不理会）：这里不假装副作用被撤回，调用方按
         "副作用未知"结算。发不出去（连接已断）也不改变超时的结论。
         """
-        self._abandoned.add(request_id)
+        if request_id not in self._abandoned:
+            self._abandoned.add(request_id)
+            self._abandoned_order.append(request_id)
+            while len(self._abandoned) > 64:
+                self._abandoned.discard(self._abandoned_order[0])
+                # deque(maxlen) 自己会丢最老的，pop 一侧同步：
+                try:
+                    self._abandoned_order.popleft()
+                except IndexError:  # pragma: no cover
+                    break
         try:
             self.notify(
                 "notifications/cancelled",
@@ -792,9 +811,28 @@ class StdioServer:
             )
         blocks = tuple(item for item in content if isinstance(item, dict))
         structured = result.get("structuredContent")
-        kept, total_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
+        kept, total_bytes, kept_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
             blocks, limit=self.config.max_result_bytes
         )
+        # `structuredContent` 也是结果正文：它同样受 `max_result_bytes` 约束。
+        # 只统计文本会让"结果上限"名不副实（一个 5 MB 的 structuredContent 能
+        # 原样通过）；这里把它按紧凑 JSON 的字节数计入同一份预算。
+        if structured is not None:
+            try:
+                encoded = json.dumps(
+                    structured, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            except (TypeError, ValueError):  # pragma: no cover - 服务端给了不可序列化对象
+                encoded = b""
+                structured = None
+            total_bytes += len(encoded)
+            room = self.config.max_result_bytes - kept_bytes
+            if encoded and len(encoded) <= room:
+                kept_bytes += len(encoded)
+            elif encoded:
+                dropped_bytes += len(encoded)
+                structured = None
+        dropped = dropped_bytes > 0 or dropped_blocks > 0
         return McpCallResult(
             request_id=self._last_request_id,
             content=kept,
@@ -802,7 +840,7 @@ class StdioServer:
             structured=structured,
             duration_ms=int((time.monotonic() - started) * 1000),
             bytes=total_bytes,
-            truncated=dropped_bytes > 0 or dropped_blocks > 0,
+            truncated=dropped,
             dropped_bytes=dropped_bytes,
             dropped_blocks=dropped_blocks,
         )
@@ -868,6 +906,9 @@ class StdioServer:
                     break
                 tools.append(McpTool.from_raw(item))
             pages += 1
+            if len(tools) >= self.config.max_tools:
+                self._tools_truncated = True
+                break
             if self._tools_truncated:
                 break
             next_cursor = result.get("nextCursor")

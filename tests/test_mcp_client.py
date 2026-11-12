@@ -411,3 +411,44 @@ def test_late_response_after_timeout_does_not_poison_the_next_call():
 def test_relative_config_env_path_is_refused():
     with pytest.raises(McpConfigError, match="绝对路径"):
         config_from_env({MCP_CONFIG_ENV: "mcp.json"})
+
+
+def test_structured_content_counts_against_the_result_budget():
+    instance = StdioServer(
+        _config("fake", "--mode", "structured_output", max_result_bytes=200)
+    )
+    instance.start()
+    try:
+        result = instance.call_tool("echo", {"message": "x"})
+        # 文本 "ok" 占 2 字节；structuredContent 的紧凑 JSON 远大于剩余预算 →
+        # 被丢弃并计入 dropped_bytes（不是"只统计文本"）。
+        assert result.text_parts == ("ok",)
+        assert result.structured is None
+        assert result.truncated is True
+        assert result.bytes > 200
+        assert result.dropped_bytes == result.bytes - 2
+    finally:
+        instance.close()
+
+
+def test_structured_content_within_budget_is_kept():
+    instance = StdioServer(_config("fake", "--mode", "structured_output"))
+    instance.start()
+    try:
+        result = instance.call_tool("echo", {"message": "x"})
+        assert result.structured == {"rows": ["x" * 100] * 50}
+        assert result.truncated is False
+        assert result.bytes > 0
+    finally:
+        instance.close()
+
+
+def test_abandoned_timeout_ids_are_bounded():
+    instance = StdioServer(_config("fake"))
+    try:
+        # 不必真起 server：`_abandon` 在连接不可用时只记 id，发不出取消也不改变结论。
+        for request_id in range(200):
+            instance._abandon(request_id, "tools/call")
+        assert instance.pending_timeouts <= 64
+    finally:
+        instance.close()
