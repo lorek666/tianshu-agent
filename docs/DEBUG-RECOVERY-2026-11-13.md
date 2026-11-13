@@ -3,6 +3,14 @@
 日期：2026-11-13。受影响基准：`ccff93e79cfeb93e47e5a35012fd92fae366e941`。
 本报告是作者的施工证据，不构成独立批准。完整修复 SHA、第二读者亲跑结论与四项 CI 在对应 PR 正文绑定。本机环境为 macOS 26.6.2 arm64 / Python3.12.13，所有数据库、命令产物及故障注入均在临时目录。
 
+## 最终恢复候选提交前状态
+
+本批独立已审组合为 `d482c26f2eae2eeff2b45533df48a55e424c7b75`，普通merge同步实际main `a8399062dd87675cc10b7c258ab4ce3679b53613` 后为 `dce34faad57374d7aca7dda8e256c1613a3c16f8`，完整tree未变。本次只回填事实文档，所有生产源码、强化恢复测试、UI/dist、schema、依赖和锁文件仍是原已审对象；独立组合报告 `verify-final-local-integrations-formal-report.md` SHA256 `5bd73e2a650e749bf695a3e77014ad614a357b5e9f24b6e4640fedc9f8c4a1ae`，manifest SHA256 `09d14b3cf4d7d7e50b59561c8327dd25e190ba5e2da1e4add3fef836e11b762a`。本机最终2316 passed/8 skipped（442.55s）、lock/ruff0按251条精确冻结对象继承；未重复无变化业务或全量。
+
+真实页面补验以该d482产品对象完成：真实Daemon硬退出-9、CLI重启、页面显示暂停并继续同Run成功；21条旧事件前缀与一次文件Receipt保持，报告hash/mtime不变，`unbilled_model_intents=1`及费用未知如实保留。它覆盖已settled写入后模型中断，不代替下文unknown/执行中途故障矩阵，也不覆盖Host自动监护或Windows实机；证据与限制见 [I/O报告F/G](DEBUG-IO-2026-11-13.md)。
+
+最后文档提交的新完整SHA须独立核对文档差异与对象继承，然后只推最终候选。当前四required、实际merge及最终main/本地同步状态见 [PR #133](https://github.com/lorek666/tianshu-agent/pull/133) 的最终版本记录，本提交前快照不提前宣称通过或合并，旧7df绿色不挪用。下文历史“待验”按其当时版本阅读；跨库authority补登记窗口与unknown不盲重放等边界仍保留。
+
 ## 实际执行路径及覆盖
 
 `CLI/Control → Worker/AgentLoop → Dispatcher.prepare → _authority(claim/run/revision/lease/resource) → PolicyEngine/ApprovalStore → dispatch（审批消费、grant、intent、dispatch 同事务）→ TaskStore.begin_execution 执行守卫 → FileExecutor._verify → mark executing → handler → tool.result+Receipt → recovery/assess/takeover`。

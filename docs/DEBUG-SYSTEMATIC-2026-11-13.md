@@ -3,6 +3,24 @@
 本轮日期：2026-11-13。项目：`lorek666/tianshu-agent`。
 基准完整 SHA：`ccff93e79cfeb93e47e5a35012fd92fae366e941`。基准从 fetch 后的 `origin/main` 确认，原主目录干净、打开PR为0；在独立工作树执行，历史工作树和其他内容不覆盖。
 
+## 最终候选提交前的交付快照
+
+本节记录最后一批提交前的事实，不预先声明尚未发生的CI或合并；之后的完整head、当前required与实际merge SHA以对应PR版本记录为准，避免为回填自引用SHA反复触发CI。后文施工、失败和待验表述均按各自历史版本阅读。
+
+| 批次 | 最终已审/受测内容 | 实际门禁与合并 |
+|---|---|---|
+| [I/O #131](https://github.com/lorek666/tianshu-agent/pull/131) | `b6fe974d9751a2252c2180bdec70e44a081dfb74` | [PR run43373823819](https://github.com/lorek666/tianshu-agent/actions/runs/43373823819) 四required success；正常合并main `6f05c4c681d9805ca4db1b1f5640822e113128a4`，完整tree相同；[main run43376113307](https://github.com/lorek666/tianshu-agent/actions/runs/43376113307) 也四success。 |
+| [预算 #132](https://github.com/lorek666/tianshu-agent/pull/132) | `a36a792c7b5ea2eaa0a6277443f96e5ceb594ea9` | [PR run43376464937](https://github.com/lorek666/tianshu-agent/actions/runs/43376464937) 四required success；正常合并main `a8399062dd87675cc10b7c258ab4ce3679b53613`，完整tree相同。 |
+| [恢复 #133](https://github.com/lorek666/tianshu-agent/pull/133) | 独立已审组合 `d482c26f2eae2eeff2b45533df48a55e424c7b75`；普通merge同步实际main后的 `dce34faad57374d7aca7dda8e256c1613a3c16f8` 与它完整tree相同 | 最后只回填本组事实文档；新完整SHA须再绑定精确对象与文档差异，然后只推最终候选，取得其自己的四required后才正常合并。最终执行状态见PR，不使用旧7df绿色代替。 |
+
+I/O最终PR：Ubuntu2218/9（311.71s）、macOS2219/8（538.55s）、Windows2195/32（1142.05s）。预算最终PR：Ubuntu2292/9（318.79s）、macOS2293/8（646.80s）、Windows2269/32（1343.04s）。两批UI均80 passed，typecheck/build/dist一致性通过。实际PR checkout的完整tree已与正式head核对相同；主分支I/O同内容Windows另一次为842.28s，说明耗时仍波动。基准与最终各一次不同负载，不能宣称整体稳定提速；25分钟上限没有增加。未见本轮已知Python线程警告或watchdog失败，Actions弃用/runner迁移提示保留。
+
+独立批准按对象逐层继承：I/O b6报告 `verify-c007-b6fe974-formal-review.md` SHA256 `caf1f931c5dd97f5d7c43ff83112ed3eeda527a65dcbfd8acfb93048f73cb607`；预算a36报告 `verify-budget-a36-main-formal-report.md` SHA256 `afd716a28a5d48f79dd6f851e4875e9b1d366460b36c587490b2dfb0f2d31655`；预算/恢复最终本地组合报告 `verify-final-local-integrations-formal-report.md` SHA256 `5bd73e2a650e749bf695a3e77014ad614a357b5e9f24b6e4640fedc9f8c4a1ae`。本机最终三批lock/ruff/full均exit0，分别2219/8、2293/8、2316/8；精确冻结的是全部跟踪文件排除`docs/`，仍包含根Markdown，代码/测试/产物未变时不机械重复全量。后续新SHA的独立绑定和CI仍单独记录。
+
+C-007最终Windows原生专项 `5e7da8059aa57d1c21536a5af297adf2ade955df` / [run43375185081](https://github.com/lorek666/tianshu-agent/actions/runs/43375185081) 全部步骤通过：20 passed/1 skipped、helper2 passed、旧7111拒读负控真实1 failed且被精确matcher验收。第二读者亲核142份原件，报告SHA256 `95ce210a834417da11082bcfbe4517ab3a6ee4281c02ebe861b6d37252de8857`；实际worker/launcher/Daemon在人工fallback前退出、IPC关闭、锁内硬退出、monitor同GET顺序及双实例唯一owner均有原生证据。诊断分支不合main，旧误红不改写。性能原件与独立复核、真实页面硬崩溃恢复补验及其边界见 [I/O记录节首及F/G](DEBUG-IO-2026-11-13.md)。
+
+原件根 `/tmp/tianshu-debug-20261113`，逐hash持久归档到原主目录被忽略的 `.omc/artifacts/debug-2026-11-13`，含命令/环境/完整SHA/退出码、失败、跳过、真实截图与独立报告；不提交日志、凭据或数据库。最终main CI、同步和已合分支清理记录在PR最终说明及归档状态，不在此提交前快照中预先宣布完成。其他G3/历史工作树和未提交内容不操作。
+
 ## 路径与证据覆盖
 
 CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC → Daemon控制面/队列 → Worker/AgentLoop → provider适配器 → manifest/schema准入 → Dispatcher审批/执行边界 → File/Exec/Network/MCP/Memory/Subtask执行器 → EventLog、投影、Receipt → 恢复/回放。
@@ -11,10 +29,10 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 |---|---|---|---|
 | A 授权 | 执行侧摘要/票据/claim/lease二次验证；一次批准；路径规范化 | permissions/dispatcher/guard；test_permissions、test_dispatch（含真子进程并发消费）、test_leases、test_job_claims、test_takeover | 已有真实并发/注入时钟路径通过；未发现新的已确认授权绕过。路径限制、同uid控制面不是物理沙箱；Windows跨用户ACL仍未验证。 |
 | B 数据恢复 | append-only、同事务投影、intent/result/Receipt、三态、重复恢复 | events/recovery/snapshot/authority；test_transactions、test_failclosed、test_crash_consistency、test_recovery、test_exec_recovery、test_recovery_atomicity、test_undo_recovery | AB-01/02两个P1确认并修复；历史孤立unknown、人工unblock保留、MCP对象/authority补偿有证据。没有证明所有损坏库与调度交错都已覆盖。 |
-| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_host_cleanup、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002/004为P2；C-005为CI诊断器P2，C-006为测试夹具P3，C-007为Host元数据所有权/失败语义P2；其修后Windows实验仍在定位失败。Windows慢测按实际耗时、阶段与栈区分，不能把所有耗时归为同一根因。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
+| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_host_cleanup、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002/004为P2；C-005为CI诊断器P2，C-006为测试夹具P3，C-007为Host元数据所有权/失败语义P2；正式b6四required和5e7 Windows原生独立验收均通过。Windows慢测按实际耗时、阶段与栈区分，仍有未归因波动，不把所有耗时归同一根因。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
 | D 外部输入 | 真实manifest/schema、封闭结束原因、协议错误、MCP身份/发送边界、网络外发/上限 | model/tool_registry/toolschema/mcp/net；test_model_contract、test_g1_admission、test_mcp_registry/client/dispatch/crash/object_block、test_network_fetch/outbound_allow | DE-01/02与C-003联动，DE-03无界redirect正文已修；未穷举provider异常形状、公网DNS/TLS与DNS rebinding。受控响应不证明任意“OpenAI-compatible”端点兼容。 |
 | E 记忆/上下文/预算/子任务 | 作用域/确认/忘记/擦除；来源/版本；哈希/任务可见；预占/结算；父子fence/取消/恢复 | memory*/contents/context/summaries/budget/delegation；test_memory*、test_content*、test_summary*、test_budget_ledger、test_budget_review、test_g2_delegation* | DE-01/02及独立复审B1/B2/B3确认预算缺陷；三态/未知不退款保留。已有记忆/内容/子任务相关测试未确认新缺陷；hash embedding与脚本评测不代表语义或真实模型效果。 |
-| F 用户闭环 | 真实页面状态与真实文件/事件一致；断线重连有界；关UI继续 | ui/src/api/components、Host/Control；Vitest、真loopback响应、真实浏览器、真进程M5集成 | F-01/02 P2修复。实操创建、批准、否决、取消、重开、结果、记忆检索；没有把演示装配冒充三进程，也没用伪造截图。未穷举所有重复点击/乱序与桌面系统组合。 |
+| F 用户闭环 | 真实页面状态与真实文件/事件一致；断线重连有界；关UI继续 | ui/src/api/components、Host/Control；Vitest、真loopback响应、真实浏览器、真进程M5集成、verify-ui-crash-recovery | F-01/02 P2修复。实操创建、批准、否决、取消、重开、结果、记忆检索；另以真实CLI/Host/Daemon和已提交dist完成硬崩溃后页面暂停/继续同Run，旧事件前缀及一次Receipt/文件不变。没有将演示装配冒充三进程；补验只覆盖已settled写入后的模型中断和手动重启，不覆盖unknown人工核查或自动监护。未穷举所有重复点击/乱序与桌面组合。 |
 | G 仓库交付 | 文档/实现一致；四required；版本绑定；隔离与同步 | AGENTS、README、KNOWLEDGE、CONTRIBUTING、GitHub保护/CI、lock/ruff/UI dist | G-01 P3纠正旧门禁/Windows/摘要/数据根叙述。未改PRD/T1/依赖/Python，不提交运行数据或密钥。合并状态与复审证据须按下面具体版本阅读。 |
 
 ## 确认问题与原实现负控
@@ -36,7 +54,7 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 | P2 | DE-03 | redirect正文无界读取且不计入正文用量 | [I/O记录](DEBUG-IO-2026-11-13.md)，原262146字节→仅读最终2字节 |
 | P2 | F-01 | HTTP正文停滞令UI永久busy | [I/O记录](DEBUG-IO-2026-11-13.md)，真loopback HTTP原失败 |
 | P2 | F-02 | SSE收到头就清失败数，自动重连无界 | [I/O记录](DEBUG-IO-2026-11-13.md)，fake timers确定性原失败 |
-| P2 | C-007 | Host元数据双删、旧快照/晚发布误删改新owner，拒读/损坏误当缺失；原Windows正常停止裸WinError5 | [I/O记录](DEBUG-IO-2026-11-13.md)，20项真进程回归；两轮候选被独立反例退回，最终dd49内容已审，修后Windows实验失败仍待核 |
+| P2 | C-007 | Host元数据双删、旧快照/晚发布误删改新owner，拒读/损坏误当缺失；原Windows正常停止裸WinError5 | [I/O记录](DEBUG-IO-2026-11-13.md)，20项真进程回归；两轮候选被独立反例退回，最终b6正式对象/四required及5e7原生正负控已通过；旧dd49六红保留为历史 |
 | P3 | G-01 | 现行入口文档与代码、required配置相矛盾 | AGENTS/README/F1/exec修正，M5历史记录保留并加后续说明 |
 | P3 | C-006 | MCP对象阻断测试不关闭客户端，14进程和28读线程留至atexit，污染后续用例与诊断 | [I/O记录](DEBUG-IO-2026-11-13.md)，原业务测试绿但资源探针红；13行finalizer覆盖正常、测试失败和构栈失败，独立观察器在自身清理前验证零残留 |
 

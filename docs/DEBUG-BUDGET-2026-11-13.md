@@ -3,6 +3,12 @@
 日期：2026-11-13。受影响基准：`ccff93e79cfeb93e47e5a35012fd92fae366e941`。
 本记录是作者的可复现证据，不是独立批准；完整修复 SHA、第二读者亲跑结论和当前四项 CI 绑定在对应 PR 正文。
 
+## 最终预算交付状态
+
+[PR #132](https://github.com/lorek666/tianshu-agent/pull/132) 已正常合并。最终head `a36a792c7b5ea2eaa0a6277443f96e5ceb594ea9` 的 [run43376464937](https://github.com/lorek666/tianshu-agent/actions/runs/43376464937) 四required全部success：Ubuntu2292/9（318.79s）、macOS2293/8（646.80s）、Windows2269/32（1343.04s），UI80及typecheck/build/dist一致性通过。四job实际checkout `58ed92ec8f6b7bfcf58b0b245959fe9d154ee08c` 的完整tree等于a36；合并main `a8399062dd87675cc10b7c258ab4ce3679b53613` 的tree也相同。本轮没有提高25分钟上限、添加重试或把估算当硬上界。
+
+第二读者 `verify_integration` 的正式a36绑定报告 `verify-budget-a36-main-formal-report.md` SHA256 `afd716a28a5d48f79dd6f851e4875e9b1d366460b36c587490b2dfb0f2d31655`，manifest SHA256 `3281b4c33fa88890845c14977cfe49f6d78a9399ba6a6d7d110bef9f1b30a609`。323文件完整tree与已审10cf相同，249条精确冻结对象和六份本机lock/ruff/full原件一致；本机2293/8（439.61s）按内容映射继承，未声称在新SHA重跑。此前B1/B2/B3业务独立探针与原红均按未变对象保留。后文“待审/待CI”均是其对应历史版本的施工时点；最终main后续结果见系统总账/PR，历史合法误结清不可还原、非法旧库不洗白、未知费用不退款等边界不变。
+
 ## 范围与契约
 
 真实两种 adapter → C1 normalize_usage → 普通/摘要调用 → BudgetLedger 预占/结算。保留 PRD §5.1 / §5.6 的既定口径：未知不等于零，账本不自动退款，估算预占不冒充硬上界。没有更改 schema、计费策略、Python版本或依赖。
