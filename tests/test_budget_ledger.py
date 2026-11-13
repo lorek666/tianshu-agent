@@ -21,9 +21,11 @@ from pathlib import Path
 
 import pytest
 from support import stack_for
+from test_model_contract import VENDORS, FakeTransport, _model, _payload
 
 from tianshu.budget import (
     BOUND_UPPER,
+    DIMENSIONS,
     PARTIAL,
     PENDING,
     RELEASED,
@@ -105,6 +107,33 @@ def test_real_usage_above_estimate_is_recorded_not_clipped(tmp_path):
         assert ledger.usage("a")["settled"]["tokens"] == 9
         with pytest.raises(BudgetRefused):
             ledger.reserve("a", attempt_id="t2", need={"tokens": 2})
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("dimension", DIMENSIONS)
+@pytest.mark.parametrize("value", [-1, True, 1.5, "3"])
+def test_settlement_rejects_invalid_usage_without_changing_accounts(
+    tmp_path, dimension, value,
+):
+    """结算入口也要守非负整数，不依赖某个 adapter 恰好先校验过。"""
+    log, ledger = _ledger(tmp_path)
+    try:
+        ledger.create_account("root", limits={dimension: 10})
+        ledger.create_account("child", limits={dimension: 10}, parent_id="root")
+        reservation = ledger.reserve(
+            "child", attempt_id="t1", need={dimension: 6},
+        )
+        before = {account: ledger.usage(account) for account in ("root", "child")}
+        with pytest.raises(TianshuError, match="非负整数"):
+            ledger.settle(reservation.reservation_id, usage={dimension: value})
+        assert ledger.get(reservation.reservation_id).state == PENDING
+        assert {account: ledger.usage(account) for account in before} == before
+        # 被拒的回执不能破坏随后合法结算的机会。
+        ledger.settle(reservation.reservation_id, usage={dimension: 4})
+        for account in before:
+            assert ledger.usage(account)["settled"][dimension] == 4
+            assert ledger.usage(account)["reserved"][dimension] == 0
     finally:
         log.close()
 
@@ -417,6 +446,67 @@ def test_model_without_usage_leaves_unknown_occupation(tmp_path):
         assert usage["settled"].get("tokens", 0) == 0
         assert usage["reserved"]["tokens"] > 0, "未知用量必须保留占用"
         assert usage["unknown_reservations"] == 1
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize("known_field", ["input_tokens", "output_tokens"])
+def test_partial_provider_usage_keeps_token_occupation(tmp_path, vendor, known_field):
+    """只报输入或输出都不代表总用量已知；保留预占并继续阻止超预算。"""
+    raw_field = {
+        "input_tokens": "prompt_tokens", "output_tokens": "completion_tokens",
+    }[known_field] if vendor == "openai" else known_field
+    transport = FakeTransport(_payload(vendor, usage={raw_field: 7}))
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        result = run(
+            task="读一下", workspace_dir=_ws(tmp_path), out_name="",
+            model=_model(vendor, transport), log=log,
+            limits=Limits(4, 20_000, budget_limits={"tokens": 5000, "requests": 10}),
+        )
+        ledger = BudgetLedger(log)
+        account = f"run:{result.run_id}"
+        usage = ledger.usage(account)
+        assert usage["reserved"]["tokens"] > 0, "缺一半的 token 用量不能释放预占"
+        assert usage["settled"].get("tokens", 0) == 0
+        assert usage["settled"]["requests"] == len(transport.calls) == 1
+        assert usage["unknown_reservations"] == 1
+        assert result.unknown_usage_calls == 1
+        assert result.tokens == 7, "已知部分仍是可核对的下界，不丢失"
+        with pytest.raises(BudgetRefused):
+            ledger.reserve(account, attempt_id="next", need={"tokens": 5000})
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize("negative_field", ["input_tokens", "output_tokens"])
+def test_negative_provider_usage_cannot_refund_run_budget(
+    tmp_path, vendor, negative_field,
+):
+    raw = {"input_tokens": 11, "output_tokens": 7}
+    raw[negative_field] = -100
+    if vendor == "openai":
+        raw = {"prompt_tokens": raw["input_tokens"],
+               "completion_tokens": raw["output_tokens"]}
+    transport = FakeTransport(_payload(vendor, usage=raw))
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        result = run(
+            task="读一下", workspace_dir=_ws(tmp_path), out_name="",
+            model=_model(vendor, transport), log=log,
+            limits=Limits(4, 20_000, budget_limits={"tokens": 5000, "requests": 10}),
+        )
+        assert result.outcome == "failed"
+        errors = [event.payload for event in log.read_run(result.run_id)
+                  if event.type == "model.error"]
+        assert errors and "kind=protocol" in errors[-1]["error"]
+        assert errors[-1]["retryable"] is False
+        usage = BudgetLedger(log).usage(f"run:{result.run_id}")
+        assert usage["reserved"]["tokens"] > 0
+        assert usage["settled"].get("tokens", 0) == result.tokens == 0
+        assert usage["settled"]["requests"] == len(transport.calls) == 1
     finally:
         log.close()
 

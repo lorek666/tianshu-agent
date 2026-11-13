@@ -570,6 +570,11 @@ class BudgetLedger:
             raise TianshuError(
                 f"未知的预算维度：{unknown}（合法值：{list(DIMENSIONS)}）"
             )
+        for dimension, value in usage.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TianshuError(
+                    f"结算数量必须是非负整数：{dimension}={value!r}"
+                )
         with self._tx():
             row = self._conn.execute(
                 "SELECT * FROM budget_reservations WHERE reservation_id = ?",

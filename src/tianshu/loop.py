@@ -1247,7 +1247,7 @@ class AgentLoop:
         """按 provider 的最终 usage 结算；没有的维度**保留占用**，不记零。
 
         - 请求发出去过 → `requests` 维度已知（1 次）；
-        - provider 给了 usage → `tokens` 维度已知；
+        - provider 给全输入和输出 usage → `tokens` 维度已知；
         - 查得到价格 → `micros` 维度已知；
         其余维度留在预占里，由 `reconcile()` 报告（PRD §5.6 第 4 / 7 条）。
         """
@@ -1258,8 +1258,8 @@ class AgentLoop:
         if resp is not None:
             inp = resp.usage.get("input_tokens")
             outp = resp.usage.get("output_tokens")
-            if inp is not None or outp is not None:
-                usage["tokens"] = (inp or 0) + (outp or 0)
+            if inp is not None and outp is not None:
+                usage["tokens"] = inp + outp
                 known.add("tokens")
             identity = identity_of(self._model)
             cost = cost_record(
@@ -1494,10 +1494,10 @@ class AgentLoop:
         """把摘要调用的用量记进**同一个** Run 账本（未知不记零）。"""
         inp = resp.usage.get("input_tokens")
         outp = resp.usage.get("output_tokens")
-        if inp is None and outp is None:
+        if inp is None or outp is None:
             progress.unknown_usage_calls += 1
-        else:
-            progress.tokens += (inp or 0) + (outp or 0)
+        # 已知部分照实累计为下界；缺项仍由未知计数和账本预占表达。
+        progress.tokens += (inp or 0) + (outp or 0)
         cost = self._summary_cost(resp)
         if cost.cost is None:
             progress.unknown_cost_calls += 1
@@ -1513,8 +1513,8 @@ class AgentLoop:
         if resp is not None:
             inp = resp.usage.get("input_tokens")
             outp = resp.usage.get("output_tokens")
-            if inp is not None or outp is not None:
-                usage["tokens"] = (inp or 0) + (outp or 0)
+            if inp is not None and outp is not None:
+                usage["tokens"] = inp + outp
                 known.add("tokens")
             cost = self._summary_cost(resp)
             if cost.cost is not None:
@@ -1780,13 +1780,13 @@ class AgentLoop:
 
         inp = resp.usage.get("input_tokens")
         outp = resp.usage.get("output_tokens")
-        if inp is None and outp is None:
-            # provider 没给 usage：预算无法核实。不能记 0 冒充，必须留痕。
+        if inp is None or outp is None:
+            # 任一组成缺失，总用量就无法核实；不能把缺项冒充 0。
             progress.unknown_usage_calls += 1
         else:
-            progress.tokens += (inp or 0) + (outp or 0)
-            # 给下一次重试的预算投影留个依据（只在真有 usage 时更新）。
-            self._last_usage[run_id] = (inp or 0) + (outp or 0)
+            # 给下一次重试的预算投影留依据，只使用完整的真实 usage。
+            self._last_usage[run_id] = inp + outp
+        progress.tokens += (inp or 0) + (outp or 0)
         progress.turns = hop
 
         # F13：把这一轮换算成钱。**查不到价格就记"未知的调用次数"**，
