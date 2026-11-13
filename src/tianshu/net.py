@@ -36,11 +36,13 @@
 from __future__ import annotations
 
 import http.client
+import socket
 import ssl
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from .errors import TianshuError
 from .resources import NetworkTarget, ResourceError, parse_resource
@@ -193,14 +195,16 @@ def _resolve_location(current: NetworkTarget, location: str) -> NetworkTarget:
 
     - 绝对 URL（`http(s)://...`）：解析后必须与当前同源；
     - 以 `/` 开头的路径：同源，替换路径；
-    - 其他相对路径：按当前路径的目录解析（RFC 3986 的简化版）；
+    - 其他相对引用：按 RFC 3986 合并，空路径保留当前路径；
     - fragment 丢弃（它不会发给服务器），query 原样保留。
     """
     location = location.strip()
     if not location:
         raise NetError("重定向的 Location 为空", reason="net.redirect_invalid")
-    split = urlsplit(location)
-    if split.scheme:
+    base = f"{current.transport}://{urlsplit(current.origin_uri).path.lstrip('/')}"
+    base += current.path + (f"?{current.query}" if current.query else "")
+    try:
+        split = urlsplit(urljoin(base, location))
         if split.scheme not in ("http", "https"):
             raise NetError(
                 f"重定向到不支持的 scheme：{split.scheme!r}",
@@ -211,31 +215,14 @@ def _resolve_location(current: NetworkTarget, location: str) -> NetworkTarget:
                 "重定向目标带 userinfo（凭据混淆），拒绝",
                 reason="net.redirect_invalid",
             )
-        authority = split.netloc
-        try:
-            target = NetworkTarget.parse(
-                f"network://{split.scheme}/{authority}{split.path or '/'}"
-                + (f"?{split.query}" if split.query else "")
-            )
-        except ResourceError as exc:
-            raise NetError(
-                f"重定向目标不合法：{exc}", reason="net.redirect_invalid"
-            ) from exc
-    else:
-        path = split.path
-        if not path.startswith("/"):
-            # 相对路径：拼到当前路径的目录上（`/a/b` + `c` → `/a/c`）。
-            base = current.path.rsplit("/", 1)[0] or "/"
-            path = f"{base}/{path}"
-        try:
-            target = NetworkTarget.parse(
-                current.origin_uri + path
-                + (f"?{split.query}" if split.query else "")
-            )
-        except ResourceError as exc:
-            raise NetError(
-                f"重定向目标不合法：{exc}", reason="net.redirect_invalid"
-            ) from exc
+        target = NetworkTarget.parse(
+            f"network://{split.scheme}/{split.netloc}{split.path or '/'}"
+            + (f"?{split.query}" if split.query else "")
+        )
+    except (ResourceError, ValueError) as exc:
+        raise NetError(
+            f"重定向目标不合法：{exc}", reason="net.redirect_invalid"
+        ) from exc
     if (target.transport, target.host, target.port) != (
         current.transport,
         current.host,
@@ -267,6 +254,7 @@ def fetch(
         _check_cancel(cancel)
         remaining = _remaining(deadline)
         conn = _connect(current, remaining)
+        timer: threading.Timer | None = None
         try:
             # 显式连接：把"连不上 / TLS 握手失败"（确定一个请求字节都没发）与
             # "读到一半断了"（用量未知）分开。账本结算要靠这个区分。
@@ -284,6 +272,23 @@ def fetch(
                     f"网络不可达：{type(exc).__name__}: {exc}",
                     reason="net.connect",
                 ) from exc
+            # HTTPResponse.read/readline 内部可能持续多次 recv；socket 的空闲
+            # 超时无法约束滴流。保留实际 socket（getresponse 后 conn.sock 可能
+            # 已移交给 response），在同一绝对期限到达时中断头/正文的阻塞读。
+            sock = conn.sock
+            remaining = _remaining(deadline)
+
+            def interrupt_read(sock: socket.socket | None = sock) -> None:
+                if sock is not None:
+                    try:
+                        # 只打断底层 fd；不在另一线程改 SSLSocket._sslobj。
+                        socket.socket.shutdown(sock, socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+            timer = threading.Timer(remaining, interrupt_read)
+            timer.daemon = True
+            timer.start()
             path = current.path + (f"?{current.query}" if current.query else "")
             conn.request(
                 "GET",
@@ -295,7 +300,9 @@ def fetch(
                     "Connection": "close",
                 },
             )
+            _remaining(deadline)
             response = conn.getresponse()
+            _remaining(deadline)
             status = response.status
             content_type = response.getheader("Content-Type", "") or ""
 
@@ -335,6 +342,7 @@ def fetch(
                     truncated = True
                     break
                 chunk = response.read(want)
+                _remaining(deadline)
                 if not chunk:
                     break
                 body.extend(chunk)
@@ -364,17 +372,22 @@ def fetch(
         except ssl.SSLError as exc:
             raise NetError(f"TLS 失败：{exc}", reason="net.tls") from exc
         except OSError as exc:
+            _remaining(deadline)
             # 连接已经建立之后的 IO 失败：可能已经读到了一部分字节，用量未知。
             raise NetError(
                 f"读取失败：{type(exc).__name__}: {exc}",
                 reason="net.read",
             ) from exc
         except http.client.HTTPException as exc:
+            _remaining(deadline)
             raise NetError(
                 f"HTTP 协议错误：{type(exc).__name__}: {exc}",
                 reason="net.protocol",
             ) from exc
         finally:
+            if timer is not None:
+                timer.cancel()
+                timer.join()
             conn.close()
     # 循环只会因为 continue 走完 max_redirects+1 轮，未在上面返回就是越界。
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")

@@ -135,6 +135,86 @@ def test_modify_and_undo_round_trip_keeps_bytes_exact(tmp_path):
         log.close()
 
 
+def _http_open_calls(tree: ast.AST) -> set[ast.Call]:
+    """只识别紧邻 build_opener 赋值的 HTTP with 调用，不按变量名豁免。"""
+    calls: set[ast.Call] = set()
+    for parent in ast.walk(tree):
+        for _, statements in ast.iter_fields(parent):
+            if not isinstance(statements, list):
+                continue
+            for previous, current in zip(statements, statements[1:], strict=False):
+                if not (isinstance(previous, ast.Assign) and len(previous.targets) == 1
+                        and isinstance(previous.targets[0], ast.Name)
+                        and isinstance(previous.value, ast.Call)
+                        and ast.unparse(previous.value.func) == "urllib.request.build_opener"
+                        and isinstance(current, ast.With)):
+                    continue
+                call = current.items[0].context_expr
+                if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "open" and isinstance(call.func.value, ast.Name)
+                        and call.func.value.id == previous.targets[0].id):
+                    calls.add(call)
+    return calls
+
+
+def _text_mode_file_violations(source: str, filename: str) -> list[str]:
+    tree = ast.parse(source, filename=filename)
+    http_calls = _http_open_calls(tree)
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ("write_text", "read_text"):
+            violations.append(f"{filename}:{node.lineno} .{node.attr}()")
+        if not isinstance(node, ast.Call) or node in http_calls:
+            continue
+        func = node.func
+        mode_index: int | None = None
+        label = "open"
+        if isinstance(func, ast.Name) and func.id == "open":
+            mode_index = 1
+        elif isinstance(func, ast.Attribute) and func.attr == "fdopen":
+            mode_index, label = 1, "os.fdopen"
+        elif isinstance(func, ast.Attribute) and func.attr == "open":
+            receiver = func.value
+            if isinstance(receiver, ast.Name) and receiver.id == "os":
+                continue  # fd 层接口，没有文本模式
+            if isinstance(receiver, ast.Name) and receiver.id == "io":
+                mode_index, label = 1, "io.open"
+            else:
+                mode_index, label = 0, "Path.open"
+        if mode_index is None:
+            continue
+        mode = None
+        if len(node.args) > mode_index and isinstance(node.args[mode_index], ast.Constant):
+            mode = node.args[mode_index].value
+        for kw in node.keywords:
+            if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                mode = kw.value.value
+        if not isinstance(mode, str) or "b" not in mode:
+            violations.append(f"{filename}:{node.lineno} {label}(mode={mode!r})")
+    return violations
+
+
+@pytest.mark.parametrize("source, count", [
+    ("opener = urllib.request.build_opener(handler)\n"
+     "with opener.open(req, timeout=1) as response:\n    response.read()", 0),
+    ("opener = Path('file')\nwith opener.open() as stream:\n    pass", 1),
+    ("opener = urllib.request.build_opener(handler)\n"
+     "opener = Path('file')\nwith opener.open() as stream:\n    pass", 1),
+    ("opener = urllib.request.build_opener(handler)\n"
+     "with opener.open(req) as response:\n    Path('file').open()", 1),
+    ("opener = urllib.request.build_opener(handler)\n"
+     "with opener.open(req) as response, Path('file').open() as stream:\n    pass", 1),
+    ("opener = urllib.request.build_opener(handler)\n"
+     "def other(opener):\n    return opener.open()", 1),
+    ("open('file')\nPath('file').open('w')\nio.open('file')\n"
+     "os.fdopen(fd)\nPath('file').write_text('x')\nPath('file').read_text()", 6),
+    ("open('file', 'rb')\nPath('file').open('wb')\nio.open('file', 'rb')\n"
+     "os.fdopen(fd, 'wb')\nos.open('file', os.O_RDONLY)", 0),
+])
+def test_file_io_guard_distinguishes_http_and_keeps_file_negative_controls(source, count):
+    assert len(_text_mode_file_violations(source, "fixture.py")) == count
+
+
 def test_product_never_uses_text_mode_file_io():
     """产品代码里不许出现文本模式的文件读写（新增一处就会让哈希随平台漂移）。
 
@@ -149,41 +229,9 @@ def test_product_never_uses_text_mode_file_io():
     """
     violations: list[str] = []
     for path in sorted((SRC / "tianshu").glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in (
-                "write_text", "read_text"
-            ):
-                violations.append(f"{path.name}:{node.lineno} .{node.attr}()")
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            mode_index: int | None = None
-            label = "open"
-            if isinstance(func, ast.Name) and func.id == "open":
-                mode_index = 1
-            elif isinstance(func, ast.Attribute) and func.attr == "fdopen":
-                mode_index, label = 1, "os.fdopen"
-            elif isinstance(func, ast.Attribute) and func.attr == "open":
-                receiver = func.value
-                if isinstance(receiver, ast.Name) and receiver.id == "os":
-                    continue  # fd 层接口，没有文本模式
-                if isinstance(receiver, ast.Name) and receiver.id == "io":
-                    mode_index, label = 1, "io.open"
-                else:
-                    mode_index, label = 0, "Path.open"
-            if mode_index is None:
-                continue
-            mode = None
-            if len(node.args) > mode_index and isinstance(
-                node.args[mode_index], ast.Constant
-            ):
-                mode = node.args[mode_index].value
-            for kw in node.keywords:
-                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
-                    mode = kw.value.value
-            if not isinstance(mode, str) or "b" not in mode:
-                violations.append(f"{path.name}:{node.lineno} {label}(mode={mode!r})")
+        violations.extend(_text_mode_file_violations(
+            path.read_text(encoding="utf-8"), path.name,
+        ))
     assert violations == [], (
         "产品侧文件读写必须字节进字节出（文本模式会在 Windows 上翻 CRLF，"
         f"导致内容哈希与 POSIX 不一致）：{violations}"

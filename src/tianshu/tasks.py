@@ -1921,8 +1921,9 @@ class TaskStore:
 
         子 Task 的字段是**固定**的（规格 §2.1）：父任务的全部绑定逐个改写成
         只读、去重；没有 exec 策略、没有外发白名单、没有记忆作用域、
-        `max_subtasks=0`、`depth=1`。于是它在既有策略下天然只能做纯读——
-        写文件/出网/exec/MCP 都是**拒绝**，不是"弹审批"。
+        `max_subtasks=0`、`depth=1`。写文件/出网/exec/MCP 都是**拒绝**，
+        不是"弹审批"。空 memory_scopes 不会禁止 user/task 记忆；派发层和
+        记忆执行器还必须根据 depth/父链独立拒绝所有记忆写入。
         """
         if self._claims is None:
             raise TianshuError(
