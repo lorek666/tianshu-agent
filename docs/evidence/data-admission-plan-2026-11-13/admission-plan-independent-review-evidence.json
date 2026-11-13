@@ -1,0 +1,145 @@
+{
+  "review_date": "2026-11-13",
+  "timezone": "Asia/Shanghai",
+  "reviewer": "/root/review_admission_contract",
+  "author": "/root/executor_data_cli",
+  "verdict": "PASS_IMPLEMENTATION_PLAN_ONLY",
+  "open_plan_blockers": 0,
+  "product_fixed": false,
+  "new_implementation_verified": false,
+  "product_implementation_authorized": false,
+  "g3_complete": false,
+  "repository_modified_by_reviewer": false,
+  "read_author_selfcheck_contents": false,
+  "paid_models_or_real_user_data_used": false,
+  "task_count": 3,
+  "pending_checkboxes": 16,
+  "completed_checkboxes": 0,
+  "contract": {
+    "commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+    "parent_commit": "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45",
+    "blob_oid": "b31fb28511e4be3d9214de165bc4fb72e60a110a",
+    "sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+    "pure_docs_changed_paths": 11
+  },
+  "inheritance": {
+    "stable_head": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+    "comparison_parent": "16721ff14ad08456e8f6a2522c3300b2652b0918",
+    "pure_docs_changed_paths": 11,
+    "relevant_product_blobs_unchanged": 7
+  },
+  "resolved_plan_items": [
+    {
+      "subject": "initial_and_resume_real_version_mechanism_equalities",
+      "status": "fixed_in_plan_only",
+      "plan_lines": [
+        188,
+        196,
+        198,
+        245,
+        247,
+        249
+      ]
+    },
+    {
+      "subject": "actual_v2_without_progress_refused_without_fabricating_bindings",
+      "status": "fixed_in_plan_only",
+      "plan_lines": [
+        151,
+        196,
+        233,
+        243,
+        245
+      ]
+    },
+    {
+      "subject": "close_reopen_fts_shadow_and_wrong_position_negative_controls",
+      "status": "fixed_in_plan_only",
+      "plan_lines": [
+        126,
+        233,
+        245
+      ]
+    },
+    {
+      "subject": "stable_contract_git_object_binding",
+      "status": "fixed_in_plan_only",
+      "plan_lines": [
+        11,
+        272
+      ]
+    }
+  ],
+  "narrow_decisions": {
+    "dual_completed": "strict independent records compare only common completed-to-v2 fact",
+    "completed_noop_A": "original canonical backup path must satisfy historical binding; no fallback",
+    "completed_noop_B": "different fresh backup path compares full current version/mechanism/business/materials, no state writes and no old backup dependency",
+    "v2_no_state": "normal and migration reject as migration_incomplete; only legacy ordinary compatibility remains when valid legacy completed exists"
+  },
+  "independent_probe": {
+    "executed_in_previous_review_turn": true,
+    "prior_exit_code": 0,
+    "rerun_in_this_resume": false,
+    "scope": "synthetic reasoning probe using existing backup/old migrate; not future product implementation acceptance",
+    "results": {
+      "status": "PLAN_REASONING_PROBE_ONLY_NOT_PRODUCT_IMPLEMENTATION",
+      "synthetic_root": "/tmp/tianshu-g3-20261113/admission-plan-independent-g6t5jb0s",
+      "completed_then_valid_business_event": {
+        "old_backup_still_verifies": true,
+        "business_digest_changed": true,
+        "historical_progress_bytes_unchanged": true,
+        "new_backup_verifies": true,
+        "new_backup_business_digest_matches_live": true,
+        "new_backup_actual_version": 2,
+        "new_backup_full_mechanism_matches_live_before_audit_mutation": true
+      },
+      "no_op_must_compare_mechanism_separately": {
+        "business_digest_still_matches_new_backup_after_audit_only_mutation": true,
+        "full_typed_mechanism_still_matches": false
+      }
+    }
+  },
+  "test_limits": {
+    "new_product_tests_run": false,
+    "full_suite_run": false,
+    "native_ci_checked": false,
+    "parent_full_suite_claim_reused_as_reviewer_evidence": false
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "bytes": 34894
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "sha256": "8bfa48053665c93e217a6777013ac8ad16955053a12c33751fda8ade8120de82",
+      "bytes": 3482
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "sha256": "ee8af37af6b14cfbb7d2433c68c1e5904cc8c05a9a9e37ec79ead40fd55bc165",
+      "bytes": 16846
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "sha256": "66a28e740bcfa6af8cb4300bacb6cabca0425a6ff22b3bbb9b5cb1cfd08b77ed",
+      "bytes": 4724
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "sha256": "aed113acb7e80d96dee89af6c430a272ec0733a025b7f0f6b654456e5dd6b636",
+      "bytes": 2269
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.py",
+      "sha256": "f616f5b741a4587d468c49884f08406d694fc1eeb44db81ba7290e315c0c34e9",
+      "bytes": 4657
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.json",
+      "sha256": "8d37c8d5f82850ee89391a0b88609c66b3193f09f2e52abdda6a33ab2b04be22",
+      "bytes": 703
+    }
+  ]
+}

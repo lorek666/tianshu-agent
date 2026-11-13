@@ -1,0 +1,84 @@
+{
+  "reviewer": "/root/review_admission_contract",
+  "contract_commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+  "parent_commit": "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45",
+  "original_probe_source_head": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+  "commit_parents": [
+    "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45"
+  ],
+  "contract_blob_oid": "b31fb28511e4be3d9214de165bc4fb72e60a110a",
+  "contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+  "pure_docs": true,
+  "diff_name_status": [
+    "M\tdocs/KNOWLEDGE.md",
+    "M\tdocs/PRD-v1.md",
+    "A\tdocs/REVIEW-DATA-ADMISSION-CONTRACT-2026-11-13.md",
+    "A\tdocs/data-admission-contract.md",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/README.md",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.py.txt",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-review-evidence.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-focused-tests.txt",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.py.txt"
+  ],
+  "non_docs_diff": [],
+  "archive_files": [
+    {
+      "git_path": "docs/REVIEW-DATA-ADMISSION-CONTRACT-2026-11-13.md",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-contract-independent-review.md",
+      "byte_equal": true,
+      "sha256": "a541404561b55dc37dabe31e73cba2f8565395bc4a1a7089c291b48399e7cc93",
+      "bytes": 14201
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-contract-review-evidence.json",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-contract-review-evidence.json",
+      "byte_equal": true,
+      "sha256": "5f2da5192c94539c63fe8f4fe186a576102d0070f15e17cb69d6f4814b988fac",
+      "bytes": 2996
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.json",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-contract-probes.json",
+      "byte_equal": true,
+      "sha256": "580410d6ecb36471f42ee399c67d5f625d68f0afff49fcedfad6837ac26542ab",
+      "bytes": 1294
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.py.txt",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-contract-probes.py",
+      "byte_equal": true,
+      "sha256": "2b78e186f6f60c44854ba99a905c42fd68f3a443f1a10c85ed0e273d73daf819",
+      "bytes": 4926
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-focused-tests.txt",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-focused-tests.txt",
+      "byte_equal": true,
+      "sha256": "d1978c1eb0cd573d5cf5e8ee23d605b25cb10239a5f893264096c00592fc2bbf",
+      "bytes": 98
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.json",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-legacy-probes.json",
+      "byte_equal": true,
+      "sha256": "85cd6f8fe3d26b6b1f3af278b57340626a156df1f1a9cfee8890fe25be62eca1",
+      "bytes": 617
+    },
+    {
+      "git_path": "docs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.py.txt",
+      "source_path": "/tmp/tianshu-g3-20261113/admission-legacy-probes.py",
+      "byte_equal": true,
+      "sha256": "8543142189baed263303edf27b8d72bd4d57d18dbb7502862aeaaec98e2874ab",
+      "bytes": 2163
+    }
+  ],
+  "readme_sha256": "f540f867ce66d61844d2174756a2d4d545b12bbd4a7c647d7f1a49307b92ece1",
+  "readme_scope_checked": "design passed only; implementation/CLI/restore/G3 not accepted; old probes tied to f509 baseline; future regressions and negative controls required",
+  "original_source_to_contract_non_docs_paths": [
+    "tests/test_backup_materials.py"
+  ],
+  "original_source_to_contract_non_docs_diff": "diff --git a/tests/test_backup_materials.py b/tests/test_backup_materials.py\nindex 69615a4..65bc84a 100644\n--- a/tests/test_backup_materials.py\n+++ b/tests/test_backup_materials.py\n@@ -109,5 +109,5 @@ def test_backup_covers_cli_payload_memory_and_content(tmp_path):\n     }\n     assert expected <= {entry.path for entry in manifest.files}\n-    assert (dest / \"memory_blobs\" / refs[\"memory\"]).read_text() == MEMORY_TEXT\n+    assert (dest / \"memory_blobs\" / refs[\"memory\"]).read_text(encoding=\"utf-8\") == MEMORY_TEXT\n     assert (dest / \"artifacts\" / \"blobs\" / refs[\"content\"]).read_bytes() == CONTENT_BYTES\n     checked = verify_backup(dest)\n",
+  "product_tests_rerun_in_this_resume": false
+}

@@ -1,0 +1,125 @@
+"""Planning experiment only. Not a proposed production implementation."""
+from pathlib import Path
+from contextlib import closing
+import hashlib, json, os, shutil, sqlite3, struct, subprocess, tempfile
+OUT=Path('/tmp/tianshu-g3-20261113').resolve()
+BASE=Path(tempfile.mkdtemp(prefix='admission-plan-fixtures-',dir=OUT)).resolve()
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(BASE/'authority')
+os.environ.pop('TIANSHU_EMBEDDING_PROVIDER',None)
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu import memory_control, backup, migrate
+from tianshu.resources import MemoryScope
+from tianshu.maintenance import database_lock_path
+
+def ident(value):
+    return '"'+value.replace('"','""')+'"'
+
+def atom(value):
+    if value is None: return ['null']
+    if type(value) is int: return ['int',str(value)]
+    if type(value) is float: return ['float64',struct.pack('>d',value).hex()]
+    if type(value) is str: return ['text',value]
+    if type(value) is bytes: return ['blob',value.hex()]
+    raise TypeError(type(value).__name__)
+
+def encoded(value):
+    return json.dumps(value,ensure_ascii=False,separators=(',',':')).encode()
+
+def logical(conn):
+    # Use one read transaction. Do not turn on immutable or checkpoint live WAL.
+    conn.execute('BEGIN')
+    try:
+        integrity=[r[0] for r in conn.execute('PRAGMA integrity_check')]
+        assert integrity==['ok'],integrity
+        excluded={'migration_log','idx_migration_log_applied'}
+        objects=[list(row) for row in conn.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name') if row[1] not in excluded]
+        flags={r[1]:r[4] for r in conn.execute('PRAGMA main.table_list')}
+        tables=[]
+        for _,name,_,_ in objects:
+            if not any(obj[0]=='table' and obj[1]==name for obj in objects) or name in [t['name'] for t in tables]: continue
+            columns=[list(r) for r in conn.execute('PRAGMA table_xinfo('+ident(name)+')')]
+            selected=[str(c[1]) for c in columns if c[6]!=1]
+            names={str(c[1]) for c in columns}
+            rowid=None
+            if flags.get(name)==0:
+                rowid=next((candidate for candidate in ('rowid','_rowid_','oid') if candidate not in names),None)
+                if rowid is None: raise ValueError('All rowid aliases shadowed')
+            expressions=([rowid] if rowid else [])+[ident(c) for c in selected]
+            rows=sorted(encoded([atom(v) for v in row]) for row in conn.execute('SELECT '+','.join(expressions)+' FROM '+ident(name)))
+            tables.append({'name':name,'columns':columns,'rowid':bool(rowid),'rows':[r.decode() for r in rows]})
+        payload={'prototype_algorithm':'all-tables-typed-v1','objects':objects,'tables':tables}
+        return hashlib.sha256(encoded(payload)).hexdigest(),[t['name'] for t in tables]
+    finally:
+        conn.rollback()
+
+def materials(root):
+    entries=[]
+    for top in ('artifacts','blobs','memory_blobs'):
+        for path in sorted((root/top).rglob('*')):
+            if path.is_symlink(): raise ValueError('symlink')
+            if path.is_file():
+                raw=path.read_bytes()
+                entries.append([str(path.relative_to(root)),len(raw),hashlib.sha256(raw).hexdigest()])
+    return hashlib.sha256(encoded(entries)).hexdigest(),entries
+
+root=BASE/'data'
+log=EventLog(root/'events.db',blob_dir=root/'blobs')
+stack=build_stack(log,data_root=root)
+r=memory_control.remember(stack,MemoryScope.user(),kind='preference',content='规划探针，仅本地临时材料。')
+assert r.ok
+# Add an unknown persistent table as a guard against hardcoded table allowlists.
+log.conn.execute('CREATE TABLE extension_projection(key TEXT PRIMARY KEY, value)')
+log.conn.execute('INSERT INTO extension_projection VALUES (?,?)',('typed',1))
+log.close()
+saved=BASE/'backup'
+backup.create_backup(root,saved)
+with closing(sqlite3.connect(root/'events.db',isolation_level=None)) as conn:
+    d0,tables=logical(conn)
+    m0,entries=materials(root)
+    with closing(sqlite3.connect((saved/'events.db').as_uri()+'?mode=ro&immutable=1',uri=True,isolation_level=None)) as snap:
+        ds,_=logical(snap)
+    migrate._apply_step(root/'events.db',migrate.STEPS[0])
+    d1,_=logical(conn)
+    migrate._apply_step(root/'events.db',migrate.STEPS[1])
+    d2,_=logical(conn)
+    conn.execute("UPDATE extension_projection SET value='1' WHERE key='typed'")
+    d_changed,_=logical(conn)
+    conn.execute("UPDATE extension_projection SET value=1 WHERE key='typed'")
+    conn.execute('CREATE TABLE extra_business_state(value BLOB)')
+    d_schema,_=logical(conn)
+    conn.execute('DROP TABLE extra_business_state')
+    restored,_=logical(conn)
+# Logical-identical copied snapshot is equivalent at the initial point, not inode identity.
+copy=BASE/'byte-copy.sqlite'
+shutil.copyfile(saved/'events.db',copy)
+with closing(sqlite3.connect(copy,isolation_level=None)) as conn:
+    dc,_=logical(conn)
+extra=root/'memory_blobs'/'extra-unreferenced-file'
+extra.write_bytes(b'not in saved backup')
+m_extra,extra_entries=materials(root)
+link=BASE/'hardlink.sqlite'
+os.link(root/'events.db',link)
+observed={
+ 'head':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+ 'contract_sha256':hashlib.sha256(Path('docs/data-admission-contract.md').read_bytes()).hexdigest(),
+ 'fixture_base':str(BASE),'persistent_tables_included':tables,
+ 'digest_v0':d0,'saved_snapshot_digest':ds,'digest_v1':d1,'digest_v2':d2,
+ 'mechanism_only_chain_preserves_full_business_digest':d0==d1==d2==restored,
+ 'integer_to_text_change_detected':d_changed!=d2,
+ 'unknown_business_schema_change_detected':d_schema!=d2,
+ 'byte_identical_copy_logically_equal_at_initial_point':dc==d0,
+ 'materials_baseline':m0,'extra_material_changes_inventory':m_extra!=m0,
+ 'extra_material_relative_path':str(extra.relative_to(root)),
+ 'same_inode_hardlink':os.path.samefile(root/'events.db',link),
+ 'hardlink_nlink':(root/'events.db').stat().st_nlink,
+ 'canonical_path_lock_keys_differ_for_hardlink':database_lock_path(root/'events.db')!=database_lock_path(link),
+ 'limits':'Prototype verifies equality/invariance only, not completed product schema, full production digest API, new progress parsing or CLI implementation.'
+}
+assert observed['mechanism_only_chain_preserves_full_business_digest']
+assert observed['integer_to_text_change_detected']
+assert observed['unknown_business_schema_change_detected']
+assert observed['byte_identical_copy_logically_equal_at_initial_point']
+assert observed['extra_material_changes_inventory']
+(OUT/'admission-plan-probe-results.json').write_text(json.dumps(observed,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps(observed,ensure_ascii=False,indent=2))

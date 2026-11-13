@@ -1,0 +1,17 @@
+{
+  "status": "PLAN_REASONING_PROBE_ONLY_NOT_PRODUCT_IMPLEMENTATION",
+  "synthetic_root": "/tmp/tianshu-g3-20261113/admission-plan-independent-g6t5jb0s",
+  "completed_then_valid_business_event": {
+    "old_backup_still_verifies": true,
+    "business_digest_changed": true,
+    "historical_progress_bytes_unchanged": true,
+    "new_backup_verifies": true,
+    "new_backup_business_digest_matches_live": true,
+    "new_backup_actual_version": 2,
+    "new_backup_full_mechanism_matches_live_before_audit_mutation": true
+  },
+  "no_op_must_compare_mechanism_separately": {
+    "business_digest_still_matches_new_backup_after_audit_only_mutation": true,
+    "full_typed_mechanism_still_matches": false
+  }
+}

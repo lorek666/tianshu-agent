@@ -1,0 +1,60 @@
+{
+  "inherited_head": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+  "comparison_parent": "16721ff14ad08456e8f6a2522c3300b2652b0918",
+  "reviewed_contract_commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+  "contract_is_ancestor": true,
+  "contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+  "relative_diff": [
+    "M\tdocs/KNOWLEDGE.md",
+    "M\tdocs/PRD-v1.md",
+    "A\tdocs/REVIEW-DATA-ADMISSION-CONTRACT-2026-11-13.md",
+    "A\tdocs/data-admission-contract.md",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/README.md",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-probes.py.txt",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-contract-review-evidence.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-focused-tests.txt",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.json",
+    "A\tdocs/evidence/data-admission-contract-2026-11-13/admission-legacy-probes.py.txt"
+  ],
+  "pure_docs_vs_comparison_parent": true,
+  "relevant_product_objects": [
+    {
+      "path": "src/tianshu/events.py",
+      "same_blob": true,
+      "blob_oid": "3ae35afda68bef24ca3db3a7a10b1cb4f395c66f"
+    },
+    {
+      "path": "src/tianshu/migrate.py",
+      "same_blob": true,
+      "blob_oid": "d49a7a3c1c6bcf4e7305fd6df185ac908f07e2b5"
+    },
+    {
+      "path": "src/tianshu/data_cli.py",
+      "same_blob": true,
+      "blob_oid": "0ffe7a781ad2f24f12d856ed962f8dca6470c49d"
+    },
+    {
+      "path": "src/tianshu/backup.py",
+      "same_blob": true,
+      "blob_oid": "314950d8aa56718b8318244f03e314bbafeafba8"
+    },
+    {
+      "path": "src/tianshu/maintenance.py",
+      "same_blob": true,
+      "blob_oid": "02ab696d35239f0ec8b331bff22f28160fbee4d4"
+    },
+    {
+      "path": "src/tianshu/event_schema.py",
+      "same_blob": true,
+      "blob_oid": "3fefe3f459a07250aa08894c5de9235714c61328"
+    },
+    {
+      "path": "src/tianshu/memory.py",
+      "same_blob": true,
+      "blob_oid": "5676e597806527eea188282952b1bf48689e1999"
+    }
+  ],
+  "new_test_execution": false,
+  "parent_full_suite_claim_independently_rerun": false
+}

@@ -1,0 +1,36 @@
+{
+  "verdict": "PASS_IMPLEMENTATION_PLAN_ONLY",
+  "product_implementation_authorized": false,
+  "files": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "sha256": "ee8af37af6b14cfbb7d2433c68c1e5904cc8c05a9a9e37ec79ead40fd55bc165",
+      "bytes": 16846
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-independent-review-evidence.json",
+      "sha256": "407d79e61119f18e0d3080db027b2c7f53d2d701a97ab2651898e769fb6a1a6d",
+      "bytes": 5118
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "sha256": "66a28e740bcfa6af8cb4300bacb6cabca0425a6ff22b3bbb9b5cb1cfd08b77ed",
+      "bytes": 4724
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "sha256": "aed113acb7e80d96dee89af6c430a272ec0733a025b7f0f6b654456e5dd6b636",
+      "bytes": 2269
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "bytes": 34894
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "sha256": "8bfa48053665c93e217a6777013ac8ad16955053a12c33751fda8ade8120de82",
+      "bytes": 3482
+    }
+  ]
+}
