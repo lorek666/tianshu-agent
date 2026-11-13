@@ -18,7 +18,7 @@
 ## 三、流程门禁（机械，不可绕过）
 
 - **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。** required 检查为 ubuntu、macOS、Windows Python 三项与 UI 一项，准确名称及范围见 CONTRIBUTING §6；改检查名称时同步核对远端分支保护。
-- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`，Windows 增加 `-o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`，用于汇总、跳过原因与长等待诊断。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
+- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60`，用于汇总、跳过原因与长等待诊断。包装器保留原生fatal handler，以Python线程替代有frame竞态的原生定时转储；诊断失败必须非零，不能提高25分钟job上限掩盖问题。C扩展长期独占GIL时不能保证60秒栈，须如实保留该诊断边界。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
 - **高危改动必须独立复审**：碰授权 / 租约 / 并发写 / 事件日志 / 计费，须由「第二读者」（另一会话或人）复审，不读作者自查结论，只按计划验收项逐条对照，并给出**可复现探针证据**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决。
 - **复审与 CI 绑定版本**：记录完整提交 SHA、范围、复现命令、关键输出与未决项；后续实质改动重审受影响范围，不把旧提交的结论冒充最新提交已通过。单维护者的 GitHub 批准人数可以为 0，但不能省略高危独立复审。
 - **契约变更单独提交**：`docs(contract):` 单独 commit / 单独 PR，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」，不夹带代码。
@@ -73,7 +73,7 @@
 - **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从环境变量读；用过的中转 key 应自行作废。
 - **不提交** `refs/`（762MB 参考仓库）、`playground/`、本地数据 / 日志 / 快照（`.tianshu/`）。
 - **单用户假设（D2）**：不引入多租户 / 多用户设计；租约只防「同用户双实例」。
-- **运行时数据目录别写错**：事件库默认落在**当前工作目录下的 `.tianshu/`**（`cli.DEFAULT_DB = .tianshu/events.db`，相对路径，已被 `.gitignore` 排除）——**别提交它**。`~/Library/Application Support/AgentOS/` / `%LOCALAPPDATA%\AgentOS\` 那套系统标准位置只存在于 `docs/TECH-ARCH.md`，是 **M5 的设计、还没实现**，别当成现状写进文档。
+- **运行时数据目录按入口区分**：内核 CLI 的 `--db` 默认是**当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`）；`daemon` / `host` 已通过 `ipc.default_data_root()` 使用平台标准目录（macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`，缺省 `~/.local/share/AgentOS`），可由 `--data-root` / `TIANSHU_DATA_ROOT` 覆盖。两者都不是可提交的项目源码；测试必须使用临时数据根。
 
 ## 十、反模式（明确禁止，PRD §12）
 

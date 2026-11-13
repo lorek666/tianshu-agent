@@ -69,7 +69,7 @@ READ_CHUNK = 64 * 1024
 """每次 read 的字节数。足够大以减少 syscall，又不会让单次内存尖峰太夸张。"""
 
 _JOIN_TIMEOUT_S = 5.0
-"""杀进程后等读线程收尾的上限。超过就关读端，宁可少收尾也不永久挂住。"""
+"""进程退出后等读线程排空的总上限，超过就通知读线程自行关闭读端。"""
 
 RULE_PTY_NOT_ALLOWED = "f2.pty_not_allowed"
 """本次调用请求了 PTY，但策略没允许（`ExecPolicy.allow_pty=False`）。
@@ -315,16 +315,22 @@ def _spawn_pipes(
         start_new_session=(os.name == "posix"),
     )
     assert proc.stdout is not None and proc.stderr is not None
+    # Python 3.12 的 os.set_blocking 也支持 Windows 管道。读端必须可停止：
+    # 孙进程可能仍握着写端；跨线程 close 正在 read 的 BufferedReader 会等待
+    # 它的内部锁，反而让有界收尾永久阻塞。
+    os.set_blocking(proc.stdout.fileno(), False)
+    os.set_blocking(proc.stderr.fileno(), False)
 
     out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
     err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
+    stop_reading = threading.Event()
     threads = [
-        _start_pump(_pump_file, proc.stdout, out),
-        _start_pump(_pump_file, proc.stderr, err),
+        _start_pump(_pump_file, proc.stdout, out, stop_reading),
+        _start_pump(_pump_file, proc.stderr, err, stop_reading),
     ]
 
     timed_out, tree_killed = _wait_with_timeout(proc, policy.timeout_ms)
-    _join_pumps(threads, (proc.stdout, proc.stderr))
+    _join_pumps(threads, stop_reading)
     return _build_result(
         proc,
         out,
@@ -366,10 +372,12 @@ def _spawn_pty(
         # 父进程必须关掉从端，否则读主端永远等不到 EOF。
         os.close(slave_fd)
 
+    os.set_blocking(master_fd, False)
     collector = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
-    reader = _start_pump(_pump_fd, master_fd, collector)
+    stop_reading = threading.Event()
+    reader = _start_pump(_pump_fd, master_fd, collector, stop_reading)
     timed_out, tree_killed = _wait_with_timeout(proc, policy.timeout_ms)
-    _join_pumps([reader], ())
+    _join_pumps([reader], stop_reading)
     _close_fd_quietly(master_fd)
 
     # PTY 把 stdout/stderr 合成一条流：都写进 `stdout`，`stderr` 为空。
@@ -427,33 +435,37 @@ def _kill_tree(proc: subprocess.Popen) -> bool:
 # --------------------------------------------------------------- 读流
 
 
-def _start_pump(target, stream, collector) -> threading.Thread:
+def _start_pump(target, stream, collector, stop_reading) -> threading.Thread:
     thread = threading.Thread(
-        target=target, args=(stream, collector), daemon=True
+        target=target, args=(stream, collector, stop_reading), daemon=True
     )
     thread.start()
     return thread
 
 
-def _pump_file(stream: IO[bytes], collector: _StreamCollector) -> None:
+def _pump_file(
+    stream: IO[bytes], collector: _StreamCollector, stop_reading: threading.Event
+) -> None:
     try:
-        while True:
-            chunk = stream.read(READ_CHUNK)
-            if not chunk:
-                break
-            collector.feed(chunk)
+        _pump_fd(stream.fileno(), collector, stop_reading)
     except (OSError, ValueError):
-        # 主线程在收尾时可能主动关掉读端（孙进程还握着管道）；这不是错误，
-        # 已经读到的部分照样保留。
+        # 对端关闭或读端不可用；已读到的部分仍然保留。
         pass
     finally:
         _close_quietly(stream)
 
 
-def _pump_fd(fd: int, collector: _StreamCollector) -> None:
-    while True:
+def _pump_fd(
+    fd: int, collector: _StreamCollector, stop_reading: threading.Event
+) -> None:
+    while not stop_reading.is_set():
         try:
             chunk = os.read(fd, READ_CHUNK)
+        except BlockingIOError:
+            # 没有数据不等于 EOF。短、有停止信号的等待既避免空转，也让孙进程
+            # 不关闭继承的写端时，读线程仍能在收尾上限后退出。
+            stop_reading.wait(0.01)
+            continue
         except OSError:
             # Linux/macOS 上从端关闭后读主端会得到 EIO。
             break
@@ -463,16 +475,15 @@ def _pump_fd(fd: int, collector: _StreamCollector) -> None:
 
 
 def _join_pumps(
-    threads: list[threading.Thread], streams: tuple[IO[bytes], ...]
+    threads: list[threading.Thread], stop_reading: threading.Event
 ) -> None:
+    deadline = time.monotonic() + _JOIN_TIMEOUT_S
     for thread in threads:
-        thread.join(timeout=_JOIN_TIMEOUT_S)
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
     if not any(thread.is_alive() for thread in threads):
         return
-    # 有孙进程握着写端（Windows 只杀了直接子进程时最可能）。关读端解阻塞，
-    # 读线程会把 ValueError/OSError 吞掉并退出；绝不为了"读干净"永久挂住。
-    for stream in streams:
-        _close_quietly(stream)
+    # 只发停止信号；每条读线程自己关闭所属流，主线程不争 BufferedReader 锁。
+    stop_reading.set()
     for thread in threads:
         thread.join(timeout=1.0)
 

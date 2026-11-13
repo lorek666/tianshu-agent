@@ -71,6 +71,19 @@ _ECHO = "mcp://fake/echo"
 _SERVER = "mcp://fake"
 
 
+@pytest.fixture(autouse=True)
+def _close_mcp_clients(request, monkeypatch):
+    """启动前登记清理；构栈或测试失败也不能把 server 留给后续用例。"""
+    clients_type = McpClients
+
+    def managed_clients(*args, **kwargs):
+        clients = clients_type(*args, **kwargs)
+        request.addfinalizer(clients.close_all)
+        return clients
+
+    monkeypatch.setattr(sys.modules[__name__], "McpClients", managed_clients)
+
+
 def _tool_call() -> ModelResponse:
     return ModelResponse(
         "tool_use", tool_calls=[ToolCall(CALL_ID, MCP_TOOL, {"message": "hi"})]

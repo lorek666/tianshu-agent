@@ -80,7 +80,9 @@ uv run --frozen pytest
 uv run --frozen ruff check .
 ```
 
-以上是当前提交前检查；CI 使用同一锁文件和测试套件，并附加日志参数：Ubuntu/macOS 使用 `-o addopts="" -q -rs`；Windows 使用 `-o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
+以上是当前提交前检查；CI 使用同一锁文件和测试套件，并附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60`。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
+
+Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
 改动 UI 源码时，还须运行 `pnpm --dir ui install --frozen-lockfile`、`pnpm --dir ui run typecheck`、`pnpm --dir ui run test` 和 `pnpm --dir ui run build`，将对应 `ui/dist` 产物一并提交。CI 会重建并检查产物是否漂移。
 

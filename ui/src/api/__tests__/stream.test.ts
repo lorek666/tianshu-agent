@@ -46,6 +46,33 @@ describe("事件流重连策略", () => {
     expect(host.openEvents).toHaveBeenCalledTimes(4);
   });
 
+  it("每次收到响应头后断流也受连续失败上限约束", async () => {
+    const statuses: StreamStatus[] = [];
+    const host: HostClient = {
+      mode: "host",
+      rpc: vi.fn(),
+      getState: vi.fn(),
+      openEvents: vi.fn(async (_since, callbacks) => {
+        callbacks.onOpen?.();
+        throw new Error("response body disconnected");
+      }),
+    };
+    const handle = startEventStream({
+      host,
+      initialSeq: () => 1,
+      onEvent: () => undefined,
+      onStatus: (status) => statuses.push(status),
+      maxFailures: 4,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(statuses.at(-1)).toBe("disconnected");
+      expect(host.openEvents).toHaveBeenCalledTimes(4);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("正常结束（服务端补齐后关闭）会带新 seq 重新发起，而不是判定为断线", async () => {
     const statuses: StreamStatus[] = [];
     let attempt = 0;

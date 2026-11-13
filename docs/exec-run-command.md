@@ -82,7 +82,9 @@ task = stack.tasks.create_task(goal, [str(workspace_dir)], exec_policy=policy)
 
 - **POSIX（macOS / Linux）**：标准库 `pty.openpty()` 可用。
 - **Windows**：标准库没有 ConPTY → 一律 `PolicyUnsupported`（`c4.exec_unsupported`），
-  **不会用管道假装 PTY**。当前仓库 CI 只有 macOS + Ubuntu，Windows 行为尚未实测。
+  **不会用管道假装 PTY**。当前 CI 包含 Ubuntu、macOS、Windows Python 3.12，且三者均为必过检查。Windows runner 验证不等于 Windows 10/11、ARM64 用户设备实测；具体系统版本与结果按对应 run 记录。
+
+管道输出由可停止的非阻塞读线程收集；进程退出后先有界排空，再由读线程自行关闭读端。孙进程仍持有写端时，不再由主线程关闭正被读取的缓冲流。此修复保证收尾有界，不新增进程级隔离，也不声称能杀死所有逃离进程组的子孙进程。
 
 ## 明确没做
 
