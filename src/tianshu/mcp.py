@@ -112,6 +112,8 @@ MCP_CLOSE_GRACE_MS = 2_000
 MCP_MAX_LIST_PAGES = 32
 #: 每次从 stdout 读多少字节（同时是"单条消息上限"的检查粒度）。
 _MCP_READ_CHUNK = 65_536
+#: 取消是尽力通知；不能让已经超时的调用再次等待完整调用期限。
+_MCP_CANCEL_SEND_GRACE_MS = 100
 
 #: 协议层"请求没有被当成工具调用执行"的错误码（详见 SPEC §2.4）。
 _PROTOCOL_REJECTION_CODES = frozenset({-32700, -32600, -32601, -32602})
@@ -156,7 +158,7 @@ class McpProtocolError(McpError):
 
 
 class McpTimeout(McpError):
-    """等响应超时。**副作用未知**：请求可能已经被 server 执行。"""
+    """发送或等响应超时。**副作用未知**：请求可能已经被 server 执行。"""
 
     def __init__(self, message: str, *, request_id: int = 0) -> None:
         super().__init__(message)
@@ -631,6 +633,15 @@ class StdioServer:
                 f"server {self.name!r} 拉不起来：{type(exc).__name__}: {exc}",
                 server=self.name,
             ) from exc
+        try:
+            assert self._proc.stdin is not None
+            # Python 3.12 在 Windows 也支持非阻塞 pipe。期限必须覆盖写入本身：
+            # 对端完成握手后不再读 stdin 时，阻塞 write 永远到不了响应计时器。
+            os.set_blocking(self._proc.stdin.fileno(), False)
+        except OSError as exc:
+            self._failure = f"配置非阻塞 stdin 失败：{exc}"
+            self.close()
+            raise McpServerUnavailable(self._failure, server=self.name) from exc
         self._reader = threading.Thread(
             target=self._read_loop, name=f"mcp-{self.name}-stdout", daemon=True
         )
@@ -700,7 +711,10 @@ class StdioServer:
     ) -> dict[str, Any]:
         if not self.is_alive:
             raise McpClosed(f"server {self.name!r} 已失效：{self._failure or 'closed'}")
-        with self._request_lock:
+        deadline = time.monotonic() + timeout_ms / 1000
+        if not self._request_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise McpTimeout(f"server {self.name!r} 等待前一请求结束超时")
+        try:
             request_id = self._next_id
             self._next_id += 1
             self._last_request_id = request_id
@@ -711,11 +725,11 @@ class StdioServer:
             }
             if params is not None:
                 message["params"] = params
-            self._send(message)
-            deadline = time.monotonic() + timeout_ms / 1000
+            self._send(message, deadline=deadline)
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._abandon(request_id, method)
                     raise McpTimeout(
                         f"server {self.name!r} 在 {timeout_ms}ms 内没有响应 {method}"
                         f"（request_id={request_id}）",
@@ -760,6 +774,8 @@ class StdioServer:
                     )
                 result = payload.get("result")
                 return result if isinstance(result, dict) else {}
+        finally:
+            self._request_lock.release()
 
     def _abandon(self, request_id: int, method: str) -> None:
         """一个请求超时了：记下它的 id（晚到的响应要丢掉），并尽力通知 server 取消。
@@ -773,9 +789,13 @@ class StdioServer:
             self._abandoned.add(request_id)
             self._abandoned_order.append(request_id)
         try:
-            self.notify(
-                "notifications/cancelled",
-                {"requestId": request_id, "reason": f"{method} timeout in client"},
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": request_id, "reason": f"{method} timeout in client"},
+                },
+                deadline=time.monotonic() + _MCP_CANCEL_SEND_GRACE_MS / 1000,
             )
         except McpError:
             pass
@@ -843,7 +863,14 @@ class StdioServer:
     def cancel(self, request_id: int, reason: str = "cancelled by client") -> None:
         """发取消通知（**只是请求**：server 可以不理会）。"""
         try:
-            self.notify("notifications/cancelled", {"requestId": request_id, "reason": reason})
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": request_id, "reason": reason},
+                },
+                deadline=time.monotonic() + _MCP_CANCEL_SEND_GRACE_MS / 1000,
+            )
         except McpError:
             # 已经断开的连接没有"取消"可言；调用方会按 unknown 结算。
             pass
@@ -925,7 +952,9 @@ class StdioServer:
 
     # ---- 读写
 
-    def _send(self, message: dict[str, Any]) -> None:
+    def _send(self, message: dict[str, Any], *, deadline: float | None = None) -> None:
+        if deadline is None:
+            deadline = time.monotonic() + self.config.call_timeout_ms / 1000
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
@@ -937,13 +966,41 @@ class StdioServer:
         stream = None if proc is None else proc.stdin
         if stream is None:
             raise McpClosed(f"server {self.name!r} 没有 stdin（已关闭）")
-        with self._send_lock:
+        request_id = message.get("id", 0)
+        if not isinstance(request_id, int):
+            request_id = 0
+        if not self._send_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise McpTimeout(
+                f"server {self.name!r} 等待 stdin 写锁超时", request_id=request_id
+            )
+        try:
+            frame = memoryview(payload + b"\n")
+            offset = 0
             try:
-                stream.write(payload + b"\n")
-                stream.flush()
-            except (BrokenPipeError, OSError) as exc:
+                while offset < len(frame):
+                    if not self.is_alive:
+                        raise McpClosed(f"server {self.name!r} 已断开")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        if offset:
+                            # 半帧不能接着复用：下一条 JSON 会接到残帧后面。
+                            self._fail("写 stdin 超时，已发送不完整消息")
+                        raise McpTimeout(
+                            f"server {self.name!r} 写 stdin 超时", request_id=request_id
+                        )
+                    try:
+                        written = os.write(stream.fileno(), frame[offset:])
+                    except BlockingIOError:
+                        written = 0
+                    if written:
+                        offset += written
+                    else:
+                        time.sleep(min(0.01, remaining))
+            except (OSError, ValueError) as exc:
                 self._fail(f"写 stdin 失败：{exc}")
                 raise McpClosed(f"server {self.name!r} 的 stdin 已断开") from exc
+        finally:
+            self._send_lock.release()
 
     def _read_loop(self) -> None:
         proc = self._proc

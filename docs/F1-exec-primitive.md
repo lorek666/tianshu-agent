@@ -79,9 +79,7 @@ PTY 是终端语义：stdout/stderr 只有一条流，所以 `stderr` 恒为空�
 | `supports_job_objects` | ❌ | ❌（未接 pywin32/ctypes） |
 | `supports_network_isolation` | ❌ | ❌ |
 
-**Windows 的证据状态**：本机是 macOS，Windows 专属分支的用例标了
-`skipif(os.name != "nt")`，当前没有 Windows CI，因此这些行为**尚未被实测**。
-不接受"看起来写了就算验证过"。
+**Windows 的证据状态（2026-11-13 对账）**：本机 macOS 跳过 Windows 专属用例，GitHub 的 Windows Python 3.12 required job 会运行它们。基准 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 run `43298476414` 为绿色；本轮 I/O 修复的证据绑定其对应 PR 当前 SHA。runner 验证不等于 Windows 10/11、ARM64 或用户设备实测，也不增加上表未实现能力。
 
 `pty=True` 在 Windows 上永远是 `PolicyUnsupported`（标准库没有 ConPTY）；
 即使调用方伪造 `supports_pty=True`，实现也会拒绝，不会用管道假装。

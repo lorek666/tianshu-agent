@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -225,6 +226,103 @@ def _rpc(port: int, method: str, params: dict, *, token: str = "tok") -> tuple[i
     body = json.dumps({"method": method, "params": params}).encode("utf-8")
     status, payload = _http(port, "POST", "/rpc", token=token, body=body)
     return status, json.loads(payload.decode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "method,path,body,length",
+    [
+        ("POST", "/rpc", b"[]", None),
+        ("POST", "/rpc", b"null", None),
+        ("POST", "/rpc", b'"text"', None),
+        ("POST", "/rpc", b"42", None),
+        ("POST", "/rpc", b"{}", "not-a-number"),
+        ("GET", "/events?since_seq=not-a-number", None, None),
+    ],
+)
+def test_malformed_bridge_inputs_return_bad_params(root, method, path, body, length):
+    """真实 HTTP 输入错误应有可识别的 400，不能裸异常断线。"""
+    bridge, port = _start_bridge(root)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    headers = {"X-Tianshu-Token": "tok"}
+    if length is not None:
+        headers["Content-Length"] = length
+    try:
+        connection.request(method, path, body, headers)
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 400
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "bad_params"
+    finally:
+        connection.close()
+        bridge.stop()
+
+
+def _deep_json_body() -> bytes:
+    body = (
+        b'{"method":"echo","params":{"x":'
+        + b"[" * 10_000
+        + b"0"
+        + b"]" * 10_000
+        + b"}}"
+    )
+    assert len(body) < host.MAX_RPC_BODY
+    return body
+
+
+def test_deep_json_returns_bad_params_and_preserves_request_boundary(root, fake_daemon):
+    """解析深度失败仍须完整消费该帧，下一条普通 JSON 能在原连接成功。"""
+    bridge, port = _start_bridge(root)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    headers = {"X-Tianshu-Token": "tok"}
+    body = _deep_json_body()
+    # 负控前提：输入并未超字节上限，但本运行时确实拒绝其解析深度。
+    with pytest.raises(RecursionError):
+        json.loads(body)
+    try:
+        connection.request("POST", "/rpc", body, headers)
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 400
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "bad_params"
+        original_socket = connection.sock
+        assert original_socket is not None
+        ordinary = {"method": "echo", "params": {"message": "普通 JSON"}}
+        connection.request("POST", "/rpc", json.dumps(ordinary).encode(), headers)
+        assert connection.sock is original_socket
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["ok"] is True
+        assert payload["result"]["echo"] == ordinary["params"]
+    finally:
+        connection.close()
+        bridge.stop()
+
+
+@pytest.mark.parametrize(
+    "extra_headers,status,code",
+    [
+        ({"X-Tianshu-Token": "wrong"}, 401, "unauthorized"),
+        ({"Host": "evil.example"}, 403, "forbidden"),
+    ],
+)
+def test_deep_json_is_authenticated_before_parsing(root, extra_headers, status, code):
+    bridge, port = _start_bridge(root)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        connection.request(
+            "POST", "/rpc", _deep_json_body(), {"X-Tianshu-Token": "tok", **extra_headers}
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == status
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == code
+    finally:
+        connection.close()
+        bridge.stop()
 
 
 # --------------------------------------------------------------------------- 单实例锁

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import http.client
 import re
 import threading
 import time
@@ -188,6 +189,39 @@ def test_response_is_capped_by_the_executor_limit(tmp_path):
 
 
 # ---------------------------------------------------------------- 2 重定向
+
+
+def test_redirect_body_is_not_downloaded_outside_the_byte_limit(tmp_path, monkeypatch):
+    """真实 HTTP 跳转正文不能在最终响应大小与字节账本之外无界读取。"""
+    reads = []
+    original_read = http.client.HTTPResponse.read
+
+    def record_read(response, amt=None):
+        data = original_read(response, amt)
+        reads.append((response.status, len(data)))
+        return data
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", record_read)
+    fixture = NetFixture().route(
+        "/redirect", status=302, body=b"x" * 262_144,
+        headers={"Location": "/final"},
+    ).route("/final", body=b"ok").start()
+    log, stack, _ = _stack(tmp_path, net_limits=NetLimits(max_bytes=64))
+    try:
+        task = _task(stack, allow=(fixture.origin_uri,), ws=_ws(tmp_path))
+        result = _drive(stack, engine_for(stack, _script(fixture.url("/redirect"))), task)
+        payload = _results(log, result.run_id)["c1"]
+        assert payload["status"] == "succeeded", payload
+        assert payload["output"]["bytes"] == 2
+        assert fixture.hits == [("GET", "/redirect"), ("GET", "/final")]
+        assert sum(size for _, size in reads) == 2, reads
+        assert all(status == 200 for status, _ in reads), reads
+        usage = stack.budget.usage(f"run:{result.run_id}")
+        assert usage["settled"]["bytes"] == 2
+        assert usage["reserved"].get("bytes", 0) == 0
+    finally:
+        log.close()
+        fixture.stop()
 
 
 def test_same_origin_redirect_is_followed_and_recorded(tmp_path):

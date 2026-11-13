@@ -33,3 +33,9 @@ python3 docs/evidence/data-lifecycle-2026-11-13/run_clean.py \
 它们记录原始 cp1252 异常，以及携带父提交原 conftest 的 ASCII 环境红绿和 144 项回归；
 这三件文件逐字节归档，不改写既有产品复审。复核对象仅为测试读取显式指定 UTF-8 的一行，
 不宣称新 Windows CI 已通过。后续完整提交与组合验证另行绑定。
+
+`windows-encoding-commit-review.md` / `windows-encoding-commit-binding.json` 将一行修正及
+原件绑定到 `fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45`。
+`main132-integration-independent-review.md` / JSON 记录与 main a839906 的内容继承；
+`main132-integration-local-gates.json` 保存该组合 2416/8 的本机输出、253 个冻结对象及
+UI 80 项/构建产物一致证据。内容继承、提交对象、作者全量与新原生 CI 分别解释。

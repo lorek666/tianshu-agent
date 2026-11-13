@@ -22,11 +22,14 @@ import ast
 import hashlib
 import os
 import signal
+import socket
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
+import tianshu.exec as execution
 from tianshu.exec import (
     LOCAL_EXEC_CAPABILITIES,
     RULE_PTY_NOT_ALLOWED,
@@ -607,3 +610,81 @@ def test_blob_dir_is_created_when_needed(tmp_path):
 
     assert result.stdout_ref is not None
     assert (blob_dir / result.stdout_ref).is_file()
+
+
+# ---------------------------------------------------- 后代持有 stdio 的有界收尾
+
+@pytest.mark.parametrize('timed_out', [False, True])
+def test_pipe_owner_cannot_hold_spawn_after_child_exit(tmp_path, monkeypatch, timed_out):
+    # 只缩短收尾窗口；进程、继承的管道与就绪/释放屏障都是真实的。
+    monkeypatch.setattr(execution, '_JOIN_TIMEOUT_S', 0.1)
+    cwd = tmp_path.resolve()
+    with socket.socket() as control:
+        control.bind(('127.0.0.1', 0))
+        control.listen(1)
+        control.settimeout(10)
+        port = control.getsockname()[1]
+        grandchild = (
+            'import os, socket\n'
+            f's=socket.create_connection(("127.0.0.1",{port}),timeout=15)\n'
+            's.sendall(b"ready"); s.recv(1)\n'
+            'try: os.write(1,b"late-output")\n'
+            'except OSError: pass\n'
+            's.sendall(b"done"); s.close()\n'
+        )
+        child = (
+            'import os,subprocess,sys,time\n'
+            f'subprocess.Popen([sys.executable,"-c",{grandchild!r}],start_new_session=(os.name=="posix"))\n'
+            'os.write(1,b"early-out"); os.write(2,b"early-err")\n'
+            + ('time.sleep(30)\n' if timed_out else '')
+        )
+        policy = ExecPolicy(
+            argv_allowlist=(sys.executable,), cwd_roots=(cwd,),
+            env_allowlist=('PATH','SystemRoot','SYSTEMROOT'),
+            timeout_ms=5000, max_output_bytes=65536,
+        )
+        done = threading.Event()
+        result = {}
+        existing = set(threading.enumerate())
+        def run():
+            try:
+                result['value'] = spawn(
+                    [sys.executable,'-c',child],cwd=cwd,env=dict(os.environ),
+                    policy=policy,capabilities=LOCAL_EXEC_CAPABILITIES,
+                )
+            except BaseException as exc:
+                result['error'] = exc
+            finally:
+                done.set()
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        peer = None
+        try:
+            peer, _ = control.accept()
+            peer.settimeout(10)
+            assert peer.recv(5) == b'ready'
+            completed = done.wait(7 if timed_out else 2)
+            if completed:
+                worker.join(1)
+            pump_leaks = [
+                t.name for t in threading.enumerate() if t not in existing and t is not worker
+            ]
+        finally:
+            if peer is not None:
+                peer.sendall(b'x')
+                assert peer.recv(4) == b'done'
+                peer.close()
+            worker.join(10)
+        assert completed, 'spawn blocked after child exit while descendant held PIPE'
+        assert not pump_leaks, f'output readers leaked: {pump_leaks}'
+        assert 'error' not in result, result
+        value = result['value']
+        assert value.timed_out is timed_out
+        assert value.stdout == 'early-out'
+        assert value.stderr == 'early-err'
+        if timed_out:
+            assert value.exit_code is None
+            if os.name == 'nt':
+                assert value.descendants_may_survive is True
+        else:
+            assert value.exit_code == 0

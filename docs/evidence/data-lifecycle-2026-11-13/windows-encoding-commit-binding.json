@@ -1,0 +1,286 @@
+{
+  "reviewed_commit": "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45",
+  "parent_commit": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+  "conclusion": "passes local independent commit binding; native Windows encoding-fix verification remains pending new CI",
+  "changed_paths": [
+    "docs/DATA-LIFECYCLE-2026-11-13.md",
+    "docs/KNOWLEDGE.md",
+    "docs/evidence/data-lifecycle-2026-11-13/README.md",
+    "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-evidence.json",
+    "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-local-gates.json",
+    "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-review.md",
+    "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-scope.json",
+    "tests/test_backup_materials.py"
+  ],
+  "reviewed_objects": [
+    {
+      "path": "src/tianshu/maintenance.py",
+      "sha256": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "src/tianshu/events.py",
+      "sha256": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "src/tianshu/backup.py",
+      "sha256": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "src/tianshu/data_cli.py",
+      "sha256": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "src/tianshu/cli.py",
+      "sha256": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "tests/test_maintenance.py",
+      "sha256": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "tests/test_backup_materials.py",
+      "sha256": "a9af99927d18d3035a719f4d325ed22c3d06e1bfd93943681ba0788d33e7f6ad",
+      "matches_reviewed_object": true,
+      "kind": "one-line test encoding correction"
+    },
+    {
+      "path": "tests/test_backup.py",
+      "sha256": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "tests/test_data_cli.py",
+      "sha256": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/run_clean.py",
+      "sha256": "37ec6764bf506906629a9b1f4ab85fe6baf625629c36c8b8f209eb6f0ca20be4",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_locks.py",
+      "sha256": "afe650e5f68a779902989b78295200389b78382de8726b0a44058774819fe937",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_cleanup_fixed.py",
+      "sha256": "a9f6d794cd7af3c8aebfd83050b8008b69088182fa09426a6418db7642d220fa",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_readonly_edges_fixed.py",
+      "sha256": "69315d3a09cb27ce1ec5688d1db2439b33e0cedea16def126ba4433c17c12ef0",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_materials_cli.py",
+      "sha256": "32d4fede56e91645c44e22088dd1fdb64526fcca64abf351284abc3a85165b4b",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_live_wal.py",
+      "sha256": "d21b3c3ee2d1586f5f3bc871c47da88af3023776c2a3f01b07f9a8c619e82aa2",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_wal_sidecars.py",
+      "sha256": "d2ab7c7d9760052ccf162586f4a1601a1b0877fee2f22ddfc77e974dcdb00325",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_lock_permissions_fixed.py",
+      "sha256": "cd45ba479dc1c631e5d3e934e7c25e73136ba0bb24a0ddfe1b3891f32d50a6a8",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_lock_identity_env.py",
+      "sha256": "fe907d55bdb802dd1bdab94bea3361e1b7de682155cdf138340146f2369656ae",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/probe_source_alias_fixed.py",
+      "sha256": "e01cf6e42b3e6abf4abc93eb09808655e138e0adcd7adb9ec202bf804722eded",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/final-bundle-manifest.json",
+      "sha256": "ff5baa49a64407bf21d9751ea81aaf2ab00faa4ae93d9686fa4db4690432416d",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/final-independent-probe-evidence.json",
+      "sha256": "66161eeebfc37aa61e9617f599ff263c0f7b00a6284f2fc0073d529e7eb40a6c",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/final-probe-style-evidence.json",
+      "sha256": "3c13248f243af001e9aa03eaea3a01def81d8ba91d3ac971a11577e29dc677e4",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/final-targeted-pytest-evidence.json",
+      "sha256": "cfb90dd9e11cadf62bc73d7653478a7481a4522a45ecbd8e18bea33a6902b2c3",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/final-reviewed-hashes.json",
+      "sha256": "1257de79d39d12da91941983411f655bebc44e33cd109f40546bb4cf9485b111",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/candidate-commit-binding.json",
+      "sha256": "a73bc66a89766df78a99f5e6c6a00691906f9fccd070437a1f636aee14eb27ad",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/candidate-freeze-inheritance.json",
+      "sha256": "2a7df20c87c813a5f35b19bd5283c28db1acc596f25d1db0eec379c561ea7046",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/archived-readme-smoke.json",
+      "sha256": "881d120c0df089dae2e54644eb7fd171900451a6f4e4e69a97477572660305da",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/REVIEW-DATA-LIFECYCLE-2026-11-13.md",
+      "sha256": "ce6a0fc58c68dd695ec441c5f83b9d31a73fa5ee850dc590de364511270806ef",
+      "matches_reviewed_object": true,
+      "kind": "inherited"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-review.md",
+      "sha256": "171714877ac1fe4650340edfc033d985e43e5c5f257c267306ddc39412effb48",
+      "matches_independent_source": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-evidence.json",
+      "sha256": "3e3e998a4d9e8b0b8544f9a1b1cb457b5bb71c0b45e801ec4907c090388575a8",
+      "matches_independent_source": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-scope.json",
+      "sha256": "7a03d9b545d6c38f1cab0fb4e85b7182747462d39c37c0eeb4f74439ddc34da6",
+      "matches_independent_source": true
+    }
+  ],
+  "non_document_gate_files": {
+    "count": 246,
+    "all_git_objects_match_frozen_hashes": true,
+    "during_gate_drift": []
+  },
+  "author_run_gates": {
+    "checks": [
+      {
+        "command": [
+          "uv",
+          "lock",
+          "--check"
+        ],
+        "exit_code": 0,
+        "seconds": 0.02
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--frozen",
+          "ruff",
+          "check",
+          "."
+        ],
+        "exit_code": 0,
+        "seconds": 0.07
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--frozen",
+          "pytest"
+        ],
+        "exit_code": 0,
+        "seconds": 375.4
+      }
+    ],
+    "logs": [
+      {
+        "kind": "lock",
+        "sha256": "443c5be1aad53dd334fa682898710bfb80ff6dd937ef7105924eb199103f2f70",
+        "matches_original_log_and_archived_output": true
+      },
+      {
+        "kind": "ruff",
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "matches_original_log_and_archived_output": true
+      },
+      {
+        "kind": "pytest",
+        "sha256": "f8aed531be195c596e7e0d0c3ae2b0dd4a3d8b208d3d7bb1e8252dde0f86df39",
+        "matches_original_log_and_archived_output": true
+      }
+    ],
+    "pytest_summary": "2273 passed, 7 skipped in 374.91s (0:06:14)",
+    "attribution": "executed by main agent; independent reader checked original logs and frozen Git objects, not independently rerun full suite"
+  },
+  "independent_evidence_inherited": {
+    "locale": "LC_ALL=C LANG=C PYTHONUTF8=0; US-ASCII, utf8_mode=0",
+    "original_test": "1 failed in0.34s with original conftest fixtures active",
+    "fixed_test": "1 passed in0.10s",
+    "four_modules": "144 passed in6.23s"
+  },
+  "documentation_review": {
+    "ascii_not_claimed_as_native_windows": true,
+    "new_windows_ci_explicitly_pending": true,
+    "scope": "test encoding only; product and assertions unchanged"
+  },
+  "diff_check": {
+    "command": [
+      "git",
+      "diff",
+      "--check",
+      "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+      "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45"
+    ],
+    "returncode": 0
+  }
+}

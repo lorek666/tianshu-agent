@@ -71,6 +71,24 @@ Windows 唯一失败在本片新增的 `test_backup_covers_cli_payload_memory_an
 [编码修正本机门禁](evidence/data-lifecycle-2026-11-13/windows-encoding-local-gates.json)。
 这些结果只绑定本次编码修正候选，后续同步 main 或实现准入时须重新验证受影响组合。
 
+### 2.2 同步 main 的 I/O 与预算修复
+
+本地从编码修正 `fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45` 合并
+main `a8399062dd87675cc10b7c258ab4ce3679b53613`（PR #131/#132 已合入）。
+产品与测试没有人工解冲，唯一知识库冲突保留双方历史。第二读者逐项核对 353 条路径
+（含旧 UI 资产的删除），除 README/知识库外均精确继承对应父对象；本片十个产品/测试/忽略项
+全部继承已审编码修正，未接管另一 debug 会话的业务修改。
+
+该组合本机 `uv lock --check`、`uv run --frozen ruff check .` 均退出 0，
+全量 **2416 passed / 8 skipped，425.09s**，253 个非文档对象在运行前后无漂移。
+UI install/typecheck/**80 tests**/build 均退出 0，提交的 dist 重建后逐字节一致。
+证据见 [组合本机门禁](evidence/data-lifecycle-2026-11-13/main132-integration-local-gates.json)和
+[独立内容继承](evidence/data-lifecycle-2026-11-13/main132-integration-independent-review.md)。
+编码修正的提交级报告也已归档为同目录 `windows-encoding-commit-review.md` / JSON。
+
+以上仅为 a839906 组合；最终恢复修复 PR #133 仍由另一会话推进，后续同步须重新绑定。
+本组合的完整 Git 提交及原生 Windows/四项 required CI 另行确认，不从本机或历史绿色推断。
+
 ## 3. 交付边界与后续顺序
 
 1. 锁是协作式准入，旧版或同 uid 直接 SQLite 可绕过；不承诺硬链接别名收敛。锁统一位于稳定的 OS 用户临时根，不要求数据根上级目录可写；Windows 未独立验证 owner SID / 跨用户 ACL。低层 `create_backup()` 保留在线语义，只有新 CLI 持独占准入。

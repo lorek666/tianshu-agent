@@ -42,7 +42,7 @@
 | ↩️ | **写前快照 + 冲突安全撤销** | 默认可写就默认可撤销；撤销前核对内容哈希，被外部改过就拒绝 |
 | 🧯 | **崩溃恢复** | `applied` / `none_applied` / `unknown` 三态**不合并**，只有 `none_applied` 可安全重试 |
 | 🧵 | **跨进程租约 + fencing** | 防同用户双实例重复执行；旧 worker 不得覆盖新 owner |
-| 🧠 | **上下文编译** | 纯函数、按**字节**预算裁历史，丢弃只记账不摘要（摘要会毁掉可重放性） |
+| 🧠 | **上下文编译** | 纯函数、按**字节**预算裁历史；默认确定性裁剪，可选摘要先保存来源与版本，回放读取当时材料 |
 | 🛠️ | **执行工具** | `run_command` 走 argv 不经 shell、默认全拒、需审批、有超时与输出截断 |
 | 🌐 | **受控出网** | `network.fetch` 只支持 GET；**任务级外发白名单**（未声明 = 一条包都不发）+ 逐次人工批准；同源重定向、1 MiB 响应上限、10s 硬超时、字节账本、有界摘要 + `content://` 引用；回放不联网 |
 | 🧩 | **受控子代理** | 父任务声明 `--max-subtasks N` 后可用 `subtask.spawn` 派**只读**子任务（写文件/出网/exec/MCP/记忆写/再委派都是拒绝，不弹嵌套审批）；子 Run 由既有 Worker 驱动，父 Run 在等子任务时挂起作业、子任务收尾的同一事务里唤醒；父取消传播、父改目标 fence（`dispatch.parent_fenced`）；结果以 ≤4 KiB 摘要 + `content://` 引用回填，回放不重跑。**评测**：`RU-D1@1.0.0` 在脚本模型下真的派一个只读子任务 → 父任务逐字汇总并引用两个本地文档；写/外发被规则拒绝、子任务失败时父报告写「没有取得 / 输出不可用」。**没有跨机器调度、取消不退款、不是真实模型分数**（见下方诚实清单） |
@@ -60,7 +60,7 @@
 
 - **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend().capabilities.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
-- **Windows 没有实机验证。** 三平台 CI 里 Windows 是真跑，但**不稳定**：命名管道上偶发握手失败（issue [#50](https://github.com/lorek666/tianshu-agent/issues/50)，根因未定位，有些不稳定的轮次会让作业撞上超时被取消）；跑在 `windows-latest`（Server 2022）上，并按平台跳过若干项（`memfs` 符号链接、标准库无 PTY、无进程组 / Unix 信号、无 POSIX 权限位语义、PID 存活探测仅 POSIX……），跳过原因逐条写在测试的跳过消息里，条数以 CI `-rs` 日志为准。
+- **Windows 没有用户设备实测。** Windows 已是四项 required checks 之一；基准 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 [main CI](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项通过。该次 runner 为 Windows Server 2025；不能把 `windows-latest` 永久等同于某一系统版本，也不代表 Windows 10/11、ARM64 或安装体验。历史认证问题已定位为密钥文本模式写入并修复；本轮另定位了输出管道收尾阻塞，修复与实际耗时见 [系统 debug 记录](docs/DEBUG-IO-2026-11-13.md)。平台跳过原因以该次 CI 的 `-rs` 日志为准。
 - **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
 - **F10 记忆：L1 + 生命周期（N1）+ 检索质量（N2）+ 擦除（N4）+ 恢复/审计（N5）+ L2/L3 蒸馏（N3）已落地；控制面 UI/Host 端点（N6）也已交付——**React 记忆面板**（列出/检索/确认/忘记/擦除）+ 第 9 个记忆 RPC `memory.search`。** 已落地：事件日志上的可重建投影（`memory.py`；schema **v3**，`memories` 带 `layer` / `erased_at`）、10 个 `memory.*` 工具（**7 个模型可见**；`memory.propose` 升 2.0，可写 `user` / **本任务** `task` 作用域；`memory.remember` / `memory.promote` / `memory.erase` 是控制面专属、`exposed=False`，不进模型清单；`memory.edit` 一次审批保留旧版）、`memory://` 资源种类、C4 审批与 Receipt、CLI 控制面（`list|search|get|confirm|forget|remember|edit|promote|erase`，`--task-id` 可替旧 task 作用域签字且不绑它的目录）、`origin` 两档（`user_explicit` 由 `remember` 产生，`user_confirmed` 由人批准 `confirm` 升级）。**N2 检索质量**：作用域优先级（当前 task 0 / 本 Run 的 workspace 1 / user 2；优先级是**上下文**的函数、不是 `allowed` 的函数，同一上下文逐位可复现）；向量索引 `memory_index.py`（`EmbeddingProvider` 接缝 + `memory_vectors` 表）；`retrieve()` 取 **FTS 候选 ∪ 语义候选**（语义命中 FTS 没召回的行也并进来）并按 `bm25` 名次 + 语义名次做 RRF，输出带 `semantic` / `degraded` / `fused`，条目带 `score_kind`。**能力边界（自报）**：内置只有确定性 `HashEmbeddingProvider`（**无语义能力**，评测写明不是语义能力证明）；未配置 provider / 索引未完整构建 / 换 provider 未 `rebuild_vectors()` → 一律 FTS-only 并说明原因（`availability()` 校验 `built` 标记与向量覆盖，空索引不会装成可用）。生产入口：`build_stack(embedding_provider=...)` 或环境变量 `TIANSHU_EMBEDDING_PROVIDER=hash`，并用 `tianshu memory rebuild-vectors` 显式建一次索引（只装配 provider 不会构建向量；只接受 hash 基线，外部 provider 需数据外发许可，尚未接线）。评测见 [docs/memory-retrieval-eval.md](docs/memory-retrieval-eval.md)（22 query / 25 记忆：FTS MRR 0.864 → hybrid 0.955，Recall@5 两者饱和为 1.000）。**CLI breaking**：`memory search --json` 从裸数组改成 `{items, semantic, degraded, fused}`（为携带能力标注）。**N3 L2/L3 蒸馏（只做确定性合成）**：`memory.consolidate`（1.0 / create / 模型可见，args 仅 `{scope, scope_id}`）把同作用域 `active` 的 L1 聚成 **L2 场景页**（token 重叠系数 0.34 聚簇 → 引用式拼装，每行带 `[memory_id@revision]`，`evidence` 每条 `{memory_id, revision, quote}` 且 `proof_count == len(evidence)`）与 **L3 偏好页**（user 作用域里人给的 `preference` 按 4 KiB 预算整行打包，放不下标"预算已满"）；两次合成**逐字节相同**、改一条源只动它那一块；结果写 `candidate`，人 `confirm` 才进召回；新页只取代同层的**候选**旧页（旧正文与它当时的 evidence 仍可按 id 查到），**人确认过的页不因合成退役**——合成是模型可见、免审批的工具，不能撤销人的召回授权。**新鲜度**：`source_refs` 带 `seq:<basis_seq>`，作用域里出现更新的 L1 后旧页 `stale=true` 并排在新鲜 L1 之后（降权不短路；`search()` 与 `retrieve()` 的三条路径共用同一排序键）；没有 `seq:` 的旧行 `stale` 是 **`None`**（不可判定，输出里省略该字段），不谎报新鲜。workspace / 他人 task 的 consolidate **无条件拒**，task 只能写自己。**N6 控制面端点（Host/IPC 一侧）**：daemon 的 `ControlPlane` 有 8 个记忆 RPC——`memory.list` / `memory.get` / `memory.remember` / `memory.confirm` / `memory.edit` / `memory.forget` / `memory.promote` / `memory.erase`；`host.py` 把浏览器 `POST /rpc` 原样代理给 daemon（有真 Host + token 回归用例）。**⚠ 这些端点不是授权边界**：v1 没有进程级沙箱，`run_command` 能以同 uid 起子进程，同 uid 进程能读 IPC 凭据、跑 CLI 并自己落审批——所以它们交付的是"人机界面与 CLI 共用一套实现 + 写操作都走 dispatcher"，**不是**"模型不可能写记忆"；跨本地用户的保护只有 POSIX 的文件权限（Windows 命名管道 ACL 未加固、未验证）。**记忆面板已交付**（`ui/src/components/MemoryPanel.tsx`）：列表/检索/确认/忘记/擦除，正文纯文本、不做乐观更新、冲突只刷新重读；端点这层仍然**不是**授权边界（见上两句）。CLI 与 RPC 共用同一份实现 `memory_control.py`（写操作永远走 dispatcher：intent/result + 一次性审批 + 执行侧二次核验），视图统一给六项判据（`scope` / `origin` / `revision` / `status` / `source_refs` / `proof_count`）；身份口径按事实写：**端点权限只在跨本地用户这层有意义**（POSIX 0700/0600；Windows ACL 未加固），**不新造身份令牌**；模型工具面与这条控制面是两条路（`memory.list` 不是工具，其余同名工具走主循环的 `allowed` 过滤），但**同 uid 的 `run_command` 仍可达**——见上一条。**评测**：真实用户任务 `RU-M1@1.0.0`——第一段人记一条写作偏好，第二段新任务召回并真的按偏好产出，同时不召回别的项目目录的诱饵记忆、产物里也不出现诱饵正文；忘记之后召回为空（失败路径 `RU-M1-F` 不进公开分母）。**两段都是脚本模型**，不是真实模型分数、也不是召回质量证明。**未实现**：LLM 蒸馏（生成式合成无法机械核对，明确延后）、L2/L3 vs L1 的检索质量评测（**不做"比 L1 更好用"的宣称**）、冲突消解（矛盾的 L1 在页里并列、不裁决）、真 embedding provider、reranker。**崩溃恢复**：`recovery.recover_run` 有记忆专用分支，判据分三层——投影/事件层（与 `tool.result` 同事务，"有 intent 无 result"⇔这一层一定没生效）、正文 blob 层（提交前已落盘，恢复按引用计数清孤儿副本）、`memory.erase` 例外（先删文件、后提交，删文件不可逆：文件还在才算没生效，文件已没报 unknown，不冒充"没写"）。记忆写不阻断目录（没有 preimage），`dispatches` 行会一并推进到 `error`。**脱敏**：`tool.intent` 对带正文的记忆写（propose / remember / edit）只留 `content_sha256` + `content_bytes`；`dispatch_requests.args_payload` 在请求进入终态（成功 / 拒绝 / 执行中途未知）后脱敏，老库里的终态行打开时补扫，执行期仍保留完整参数（`args_hash` 绑定 + 执行器取参）。**残留**：停在 waiting/admitted 的请求仍带正文；payload 损坏的行不补扫（fail-open，反查口径是 `args_redacted=0`）；模型工具调用里的正文另存于 `model.result` / `run_turns`（replay 必需，物理擦除见 F10 §10）；擦除崩溃按文件是否还在分层：还在 ⇒ 确未生效，已没 ⇒ unknown 待人工核对；`assess_run` 对擦除一律保守判 unknown；正文目录不是 DB 旁默认值时，库调用方要传 `recover_run(memory=...)` 或 `blob_dir=...`（`memory` 优先；CLI/daemon 已传）；文件写请求的审计不受影响。`memory.erase` 会删正文副本与索引（引用计数为 0 才删，事件日志里的历史读快照保留）；workspace 的 propose 是**无条件**拒绝的（即便同一 Task 上后开的模型 Run 继承了控制面标记也一样），共享只能由人 `memory.promote` 进入。逐条状态见 [docs/F10-memory-design.md](docs/F10-memory-design.md) §13/§14；剩余施工规格见 [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md)——那是**待实施**方案，不是已完成。
 - **MCP 只做到「stdio + tools + 假 server」。** G2 MCP 阶段交付了 stdio 客户端、动态工具准入（server 的 `inputSchema` 必须过封闭方言，认不出就拒该工具）、派发链路（任务级 server 白名单 + 每次人工批准）、`receipt(backend="mcp")` 与 `tianshu mcp list` 诊断。**但**：真实第三方 server **没验证过**（本机 web provider 不可用，协议形状按 MCP 2025-06-18 的已知口径实现并与自写假 server 对齐——自测通过不是兼容性证据）；**没有沙箱**，server 以当前用户权限运行，三道门只防"模型自作主张"、不防恶意 server；MCP 进程**不经过** `exec_backends`（长连接 vs 一次性 `spawn`），所以任务的 `isolation_requires` 对 MCP **一律拒绝**（`c4.mcp_isolation_unproven`）；只做 stdio，HTTP/SSE / OAuth / resources / prompts / sampling 全没做；大结果**不落内容引用**（客户端按 `max_result_bytes` 截断并报字节）；没有 MCP 预算维度；UI 没有 MCP 面板。细节与逐条边界见 [docs/mcp-g2.md](docs/mcp-g2.md) 与 [docs/MCP-ACCEPTANCE-2026-11-12.md](docs/MCP-ACCEPTANCE-2026-11-12.md)。
@@ -88,8 +88,8 @@ uv sync --python 3.12
 ### 跑测试与 lint
 
 ```bash
-uv run pytest -o addopts="" -q   # macOS 本机实测：2146 passed, 7 skipped（PR #129 分支，已 rebase 到 main @ 2100fde；CI 三平台为准）
-uv run ruff check .              # 全绿（All checks passed!）
+uv run --frozen pytest           # 当前结果以提交 SHA 和验证日志为准
+uv run --frozen ruff check .      # lint
 ```
 
 > 注意 `pyproject.toml` 里 `addopts = "-q"`，再叠一个 `-q` 会把汇总行吞掉，所以要 `-o addopts="" -q`。
@@ -375,23 +375,23 @@ M5 同批修掉了 issue #40（**否决即终局**）：`approval="reject"` 的�
 GitHub Actions。Python 矩阵三个平台 × Python 3.12：`ubuntu-latest` / `macos-latest` / `windows-latest`，检查名形如 `test (macos-latest) · py3.12`；
 另有一个前端 job `ui · typecheck / test / build`（ubuntu）：typecheck → vitest → build → `git diff --exit-code -- ui/dist`（产物漂移门禁）。
 
-步骤与本地 `CONTRIBUTING.md` §5「提交前检查」的命令逐字相同（本地绿而 CI 红只可能是环境差异），另加两条只在 CI 才可能的门禁：
+本地与 CI 使用同一锁文件和测试套件；CI 另加汇总、跳过原因和 Windows 长等待诊断参数，完整命令见 `CONTRIBUTING.md` §5 与 `.github/workflows/ci.yml`。两处均检查：
 
 - `uv lock --check` —— 锁文件漂移。`uv sync --frozen` **不是**漂移门禁（`pyproject.toml` 变了它照样 exit 0，实测如此）。
 - `uv run --frozen` —— 防止顺手改写锁文件绕过上面那条。
 
 `main` 已开分支保护：必须走 PR、`strict`（要求分支与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推 / 禁删除。
 
-> ⚠️ **目前只有 `ubuntu-latest` 和 `macos-latest` 两个 Python 检查是「必过」。Windows 会跑、会报红，但没有设成必过状态**——
-> 也就是说 Windows 红了不会自动挡住合并。而 `ci.yml` 里自己写着「Windows 是**主打平台**」。
-> 这是已知的门禁缺口，建议在 Windows 稳定一段时间后把它也设为 required（见 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) 已知限制）。
+> 四项均为必过：Ubuntu、macOS、Windows Python 检查与 UI 检查；准确名称见 [CONTRIBUTING §6](CONTRIBUTING.md#6-pr-要求)。2026-11-13 已通过 GitHub API 回读核验；任一失败或未完成均不能合并。
+
+
 
 ## 开发
 
 ```bash
 uv sync --python 3.12
-uv run pytest -o addopts="" -q   # macOS 本机实测：2146 passed, 7 skipped（PR #129 分支，已 rebase 到 main @ 2100fde；CI 三平台为准）
-uv run ruff check .              # lint
+uv run --frozen pytest           # 当前结果以提交 SHA 和验证日志为准
+uv run --frozen ruff check .      # lint
 ```
 
 约定（完整版见 [CONTRIBUTING.md](CONTRIBUTING.md)）：

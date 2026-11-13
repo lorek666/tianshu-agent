@@ -28,7 +28,25 @@
 
 - **G3 下一片契约（2026-11-13，待实施）**：[数据准入与迁移绑定契约](data-admission-contract.md) 选择实际 DB 的兼容准入、独占迁移与备份/进度绑定；正常 v0 不盲标为 v2，0→2 仍只代表迁移机制。整批恢复 hold 是后续形状，具体记录和 apply 尚未实现；低磁盘、保留/GC 也未交付。该文档不是新的测试或发布通过记录。
 
+- **G3 首片吸收 main 已合修复（2026-11-13）**：本地 PR #134 候选从编码修正 `fd5f56c` 同步 main `a8399062dd87675cc10b7c258ab4ce3679b53613`（I/O #131、预算 #132 均已合入）；仅知识库发生内容冲突并保留双方记录，产品和测试按各自已审对象组合。本组合 lock/ruff 均 exit0，全量 **2416 passed / 8 skipped，425.09s**，253 个非文档文件无漂移；UI 类型/80 测试/构建通过且 dist 不变。第二读者内容继承核对通过，完整合并提交及新原生 CI 另行绑定；恢复 #133 仍由另一 debug 会话推进，不采用其旧绿色替本组合背书。
+
 - **G3 数据生命周期首片（2026-11-13，`codex/g3-data-lifecycle`，基线 `ccff93e`）**：新增显式 `data backup / verify / restore-plan`。CLI 备份持独占维护准入，正常 `EventLog` 真实连接持共享准入；材料覆盖 `events.db`、`artifacts/`、根 `blobs/` 和 `memory_blobs/`，发布前校验并从备份 DB 重推引用。预演只读，不创建目标、不激活旧记忆，报告未决 intent/审批/Run/租约及后续删除历史不可证明。实际恢复、全产品版本准入/迁移启动门、低磁盘保护和 GC 均未交付；首片不能记成整个 G3 已完成。行为与验收见 [数据生命周期记录](DATA-LIFECYCLE-2026-11-13.md)，操作见 [备份指南](backup-restore.md)。
+
+- **预算最终测试版整合（2026-11-13）**：继承I/O `b6fe974d9751a2252c2180bdec70e44a081dfb74` 的dc274a正式回归，产品与九个预算业务对象不变。最终冻结组合本机2293 passed / 8 skipped、439.61s，lock/ruff0，249个非文档文件全量前后无漂移；独立对象映射、正式SHA与当前CI另绑，不使用旧609或a3绿色替代。三批本地收口后按依赖顺序只推最终候选。
+
+- **预算批整合C-007（2026-11-13）**：本地556预算提交吸收正式I/O `dd49f21530899d2d643fba031a7fe46ea69ebbde`；源码/测试只继承其Host边界，预算业务对象不变，知识库冲突保留双方历史。冻结323跟踪文件的新组合全量 **2293 passed / 8 skipped，420.63s**，lock/ruff exit0，运行前后hash一致。独立整合复审与后续当前提交四项CI继续绑定，旧a3四绿不代替本轮；本机不能执行的Windows原生拒读仍待runner。
+
+- **诊断修复整合本机门禁（2026-11-13）**：合入已独立批准的I/O `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 后，冻结组合 `uv lock --check`、`uv run --frozen ruff check .`、`uv run --frozen pytest` 均exit0；本机 **2274 passed / 7 skipped / 394.72s**，运行前后全体跟踪文件hash不变。生产src/UI/schema/依赖与上一轮已审范围相同。该历史组合已绑定本地提交 `556e533d88a6258f55ecbade9434211901e5d00a`，第二读者已完成精确Git对象继承核验；尚未包含C-007，也没有该提交的远端四项CI，不能代替后续整合门禁。
+
+- **系统 debug：预算结算（2026-11-13）**：原部分 usage 与负 usage 两缺陷经 40 项回归修复，独立复审又发现真实调用漏金额限额、旧负计数仍能准入、摘要错误未计未知三项。第二轮接通普通/摘要/重试金额预占与父子限额；缺价且金额受限则发前拒绝，无金额限额的零货币预留不代表零费用，实际缺价调用的金额仍 `partial` 未决；旧非法数量拒读拒写、不洗白。第二轮新增 32 项、原 40 项、独立 8 候选通过，关联 328 项通过（批次有重叠），本机全量 **2235 passed / 7 skipped / 381.25s**，lock/ruff 通过；但二审在 `51d46e0…` 确认 B3 仍部分修：摘要失败后立即预算拒发时终态读到旧游标。第三轮已补摘要调用后立即保存游标，两 provider 正式回归与冻结独立探针均 **2 红→2 绿**，并检查数据库重开与 replay；受影响 183 项通过，新全量 **2237 passed / 7 skipped / 384.75s**，lock/ruff 通过。当前提交独立复审/CI 继续单独绑定。详见 [预算证据](DEBUG-BUDGET-2026-11-13.md)；作者测试不构成新提交的独立批准。
+
+- **Host 元数据整改：C-007/P2（2026-11-13）**：I/O PR #131 的正式 `dd49f21530899d2d643fba031a7fe46ea69ebbde` / run43367761924 **仍不能合并**：Ubuntu2218/9、macOS2219/8与UI80tests成功；Windows **6 failed / 2189 passed / 32 skipped，1149.02s**。不是先前7111的一红，也不是cdc隔离实验的两红。第二读者用精确dd49测试在真实cp1252环境复现五项失败；只补测试`_CHILD`对生产CLI已有UTF-8初始化的调用，相同源码/环境/断言即五项通过。第六项是share0实际拒读成立、但错误强求CRT没有提供的winerror32；另修monitor探针主动丢弃GET造成的后台10053。产品保持68ea的条件发布→monitor实际启动→HTTP服务顺序，未吞异常/重试或改契约。最终测试dc274a已在保留cp1252的本机整文件19 passed/1 Windows-only skipped（24.06s）；失败stderr、真实worker身份与清理结果保全，Mac真失败路径已验两PID无残留。该测试版独立新增范围内容预验已通过（报告SHA256 0988a65c…），正式SHA、Windows与四CI仍待完成；旧3c68的2219/8本机全量及内容预验不能转移成新门禁。7111 WinError5、d6ee双Host退回、a624未启动join退回和全部旧版本证据仍保留，见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **I/O CI诊断整改：C-005/P2（2026-11-13）**：原I/O的Windows CI在60秒原生转储时access violation；另建纯标准库Windows实验 `92545fa418478afd1be6886f70ba5f5470e24c0b` / run43353423204，在相同CPython3.12.16/Server2025上0.687s复现原生dump退出0xC0000005，而Python线程和无dump控制正常。确认诊断机制风险，不把原失败COMMIT栈当成SQLite根因。仅测试包装器替换Windows定时诊断，保留fatal handler、60秒阈值、25分钟期限及全部门禁；后台等待/采样/写出异常不得假绿，真实abort/阻塞PIPE/退出码负控随代码提交。最终冻结工作区（a0基线加补丁）lock/ruff/full均exit0，全量2200 passed/7 skipped、390.82秒；第二读者随后将八文件Git对象与280份原件绑定正式提交 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 批准；该版Windows正式矩阵31项诊断回归通过，三个60秒栈后相应用例继续通过。但整轮CI因C-007失败，不能把领域批准当成合并批准；细节及残余GIL边界见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **MCP测试生命周期整改：C-006/P3（2026-11-13）**：独立观察发现对象阻断测试业务通过后真实server/泵线程仍存活，原因是夹具未close client而被atexit保留，不是生产关闭失效。仅测试模块构造成功即登记finalizer，早于构栈/启动；90项相关测试、57次启动记录（55个唯一pid）在每teardown及结束均零残留，主动测试失败/构栈失败仍以pytest exit1如实失败且清理完成。与C-005最终补丁一同通过冻结工作区2200/7全量，八文件运行期间hash未变；已绑定正式提交7111的八文件独立批准；该领域未决与新C-007整体CI阻断分开记录，见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **系统 debug：I/O 边界修复（2026-11-13）**：从 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941` 隔离排查。确认输出管道收尾锁等待、MCP 发送背压不受期限限制、Host 非法请求裸异常、重定向正文无界读取、UI 正文超时缺口和 SSE 失败计数重置，均先取得原实现失败证据再修复。第二读者在 `4479088ecb2d161755d7ba3a89e46119c94a8b8e` 补充发现深层JSON仍裸异常，原Host结论为部分修；补丁只捕获解析处RecursionError，新增真HTTP回归覆盖结构化400、认证顺序及同连接下一请求边界。随后对照Ubuntu原始日志确认既存C-004/P2：半帧写入遇到并发关闭，发送线程裸TypeError；真实子进程/短写屏障复现后，仅在传输已关闭时规范为ConnectionClosed，保留cause与两项类型错误负控，该IPC增量随后由第二读者绑定 `a0cb461702e538b22192eacc9b27fffc030a34ac` 验收，并经7111精确对象继承。构建与真页面验证、Windows 慢测栈、范围及未验证项见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。本条不代替具体提交的独立复审和四项 CI；最终门禁结果绑定对应 PR 当前 SHA。
 
 > 各功能条目保留其注明日期、PR 与提交的验收快照；条目中的“仍未做”不能脱离该版本引用。后续同主题交付覆盖旧状态，历史数字不汇总成当前测试数。合并门禁以本节“门禁”条目为准，Windows 最新已验证结果以本节 Windows 条目及其 run 为准。
 
@@ -48,17 +66,17 @@
 - **M0–M5 对抗性复审（2026-11-10）**：[DEBUG-M0M5.md](DEBUG-M0M5.md) 对 `main@4eb4ea9` 做了独立复审（严重 0 / 中等 5 / 轻微 7），本轮把 12 条**逐条裁决**（修复记录追加在同一文档末尾）：5 中等里 4 条已修（中-1 阻断 TOCTOU、中-2 未知工具恢复、中-3 注入证据面、中-4 畸形阻断记录 fail-open）、1 条**误报**（中-5：`prepare` 当场就拒，补钉住测试而非改代码）；6 条轻微修复（同内容写入口径、缺 blob 域错误、unblock 稳定 id、M3 diff 区间、封闭集全等断言、eval 归因分层）+ 1 条纯文档补登（Host 强杀后 Daemon 残留）。复审留账的静态疑点/未验证项开成 issue **#53 / #54 / #55**。
 - **M0–M1 报告修复对账（2026-11-10 复核）**：[DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾补了「修复状态总表」——S1–S4 / M1–M4 / L1–L2 / R1–R5 逐条对应代码位置与钉住它的测试，含负控口径。复核中发现并修掉一条残留：**快照清单损坏时恢复/撤销漏出裸 `JSONDecodeError`**（现为 `SnapshotCorrupt` → unknown+阻断 / 拒绝撤销）。仍然不成立的四项如实写在总表末尾：真实断电、Windows 实机、authority 数据根逃逸 + 完整 takeover（issue #61）、跨多文件撤销的事务性。
 - **2026-11-11 收尾轮：DEBUG-M0M1 除 Windows 实机外全部落地（PR #66–#72）**：① 真实断电 → 持久化边界注入 × 撕裂写 × 真实 HFS+ 强制摘卷（[powercut-evidence.md](powercut-evidence.md)），并**新发现两个真 bug**：删除类动作的恢复去读已被删除的文件（`FileNotFoundError` 穿出 `recover_run`）、撕裂 WAL 被静默洗成空库（fail-open，历史全丢）；② authority 数据根逃逸 → 固定用户级权威根（`authority.py`，与 `--db`/cwd 无关），守卫双读；③ 完整 takeover → `recovery.assess_run` 只读对账 + 三个接管入口；④ 跨多文件撤销 → 写前意图日志 + 崩溃后幂等续做 + 恢复侧阻断；⑤ #63 就绪竞态根因是 **`Listener` 默认 backlog=1，`probe` 的未认证连接自己占掉唯一队列位**；⑥ #58 费用行按**尝试次数**说话；⑦ #57 评测判据按目标作用域化（`SUITE_VERSION` m4.5，完成度/安全分栏）；⑧ #53/#54/#40 销账。规格与并发施工纪律见 [SPEC-RESIDUALS-M0M1.md](SPEC-RESIDUALS-M0M1.md)，判据↔测试映射见 [DEBUG-M0M1.md](DEBUG-M0M1.md) 末尾新表。· **仍未成立**：块设备断电语义、Windows 实机、真实模型 m4.5 复跑（中转站 503 全模型不可用）、撤销不是两阶段提交。
-- **测试（当前，2026-11-12，G2 记忆阶段合入后）**：**2108 passed, 7 skipped**（干净 `main @ bfe5916` 实测，macOS arm64 本机，**386.76s**；同机 `main @ 1e17003` 基线 2098/7 ⇒ 记忆阶段 **+10** = `tests/test_eval_followup.py` 6 条 + `tests/test_eval_real_tasks.py` 4 条）；`run_real_user_tasks(repeat=3)` **9 case × 27 次全绿、369 条判据 0 失败、27.78s**；`ruff check .` → `All checks passed!`；UI `vitest` **10 文件 75 条**、`pnpm build` 成功；负控 M1 **3/3** + M2 **5/5** 逐条实测红（见 §8 该条与 PR body）。
+- **测试（历史快照，2026-11-12，G2 记忆阶段合入后）**：**2108 passed, 7 skipped**（干净 `main @ bfe5916` 实测，macOS arm64 本机，**386.76s**；同机 `main @ 1e17003` 基线 2098/7 ⇒ 记忆阶段 **+10** = `tests/test_eval_followup.py` 6 条 + `tests/test_eval_real_tasks.py` 4 条）；`run_real_user_tasks(repeat=3)` **9 case × 27 次全绿、369 条判据 0 失败、27.78s**；`ruff check .` → `All checks passed!`；UI `vitest` **10 文件 75 条**、`pnpm build` 成功；负控 M1 **3/3** + M2 **5/5** 逐条实测红（见 §8 该条与 PR body）。
 - **测试（上一轮，G2 子代理 D3 分支，保留原样）**：**2078 passed, 7 skipped**（`feat/g2-delegation-d3` 分支实测，2026-11-12，362.75s，macOS arm64 本机；基线 `main @ 5eed5ee`（D2 #121 合入后）同机实测 **2069 passed / 7 skipped / 358.23s**，本轮 **+9** = `tests/test_eval_real_tasks.py` 新增 9 条：D3-c1/c2/c3 三条 + 2 条判据负控 + 1 条"未声明子任务脚本 → fail closed" + 1 条委派输入进分母（首版 7 条）+ **独立复审整改新增 2 条**（夹具反转负控、`_child_model` 直接拒未声明 slug））。`run_real_user_tasks(repeat=3)` 本机实测 8 case × 3 = 24 次全绿、**339 条判据 0 失败**（26.76s，`scope.real_user` cases 8 / runs 24）；`ruff check .` → `All checks passed!`。负控 **10/10** 逐条实测（失败:通过 = 6:2 / 1:7 / 7:1 / 1:7 / 2:6 / 7:1 / 1:1 / 1:0 / 1:7 / 1:7），变异与红名单见 §8 该条与 PR body。**下面是上一轮的记录，保留原样**。
 - **测试（历史）**：**2069 passed, 7 skipped**（`feat/g2-delegation-d2` 分支实测，2026-11-12，354.14s，macOS arm64 本机；基线 `main @ 7dc9350`（MCP 崩溃恢复 #122 合入后）同机实测 **2047 passed / 7 skipped / 354.21s**，本轮 **+22** = D2 三个测试文件（exec 12 / fence 3 / replay 7）22 条）。`ruff check .` → `All checks passed!`；D2 负控 6 条实测红（失败数 24/2/1/3/15/2，逐条见 §8 该条与 PR body）。
 - **测试（G2 网络阶段）**：**1869 passed, 7 skipped**（**`main @ b60f976`** 实测，2026-11-11，341.71s，macOS arm64 本机；已含 G2 网络阶段 #110/#112 与并行 F2 工作流 #108）。构成：§7.1 轮的 1790 → +79 = #110 **+41**（`test_outbound_allow.py` 18 + `test_network_fetch.py` 23）+ #112 **+13**（`test_network_research_eval.py` 11 + 真实任务判据净增 2）+ 并行 #108 **+25**。负控本轮 **18/18** 实测红（白名单 5 + 执行器 8 + 联网评测 5）。`ruff check .` → `All checks passed!`。耗时从 180s 涨到 342s 主要来自联网评测任务（每套真实用户任务要起本机来源服务、跑 7 case × 3 次）。**下面几条是历史记录，保留原样**。
 - **测试（历史）**：**1641 passed, 7 skipped**（`feat/memory-retrieval`（N2，含两轮复审整改）分支实测，2026-11-11，已并入 main 的 #89/#91/#92；N2 起点基线为 `main @ 8f2440a` 的 1581 passed / 7 skipped，本分支 +36，其余来自 main）。
 - **测试（main 历史记录）**：**1536 passed, 7 skipped**（`main @ ec7d7ae`（收尾轮 #88 合入）实测，2026-11-11，158.55s，macOS arm64 本机；CI 同刻 macOS job 也是 1536 / 7，ubuntu 是 1535 / 8（多 1 条 skip = `test_ipc.py` 里 AF_UNIX backlog 的 macOS 专属用例）。相对 #85 合入时的 **1529**（`feat/memory-erasure` 合入 #84 后实测）再 +7：Windows 运行时兼容（`perf_counter` 启动计时 / Windows pid 存活判定）+1、IPC 握手期 EOF 类型化 +3、指标并发读取尾巴 +3；1529 的构成是 N4 自身 +8，其余来自 main 的 #79/#82/#84；`main` 上一次提交态基线 1316 passed / 6 skipped，macOS 本机实测，收尾轮 `43d04ef`，115.97s；上一轮 DEBUG-M0M1 复核轮为 1080 passed / 3 skipped；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **63** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮按 CI 重核过**（收尾轮）：`main @ ec7d7ae` 的 `windows-latest` 实测 **5 failed / 1509 passed / 29 skipped**（939.99s；修复前 35 failed → #87 后 8 → #88 合入前 6），5 条失败逐条登记在 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md) §3；另有一次 Windows job 因命名管道阻塞在 25 分钟上限被取消（同一棵树在 main 上 15:39 跑完），也如实记在那里。仍然**没有 Windows 实机**，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **58** 个模块（2026-11-12 实测 `ls src/tianshu/*.py | wc -l`；上一版写 54 是漏计 MCP 阶段与并行工作流新增的 4 个）。模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **93** 个（2026-11-12 实测 `ls tests/test_*.py | wc -l`；上一版写 92 漏计 1 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
-- **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；本轮绿色属于修复分支，**不代表已经合入 main，也不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
+- **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；这条绿色属于当时修复分支；其后 PR #130 已合入 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941`，该 main 的 [run 43298476414](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项全绿。两份结果分别绑定各自 SHA，**均不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。2026-11-13 经 GitHub API 写入并回读确认，required status checks 为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build` 四项，均绑定 GitHub Actions（app_id=15368）；批准人数仍为 0。设置已在远端生效，文档随 PR #130 交付。
-- **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用逐例输出、短错误栈、耗时与 60 秒长等待线程栈（`-vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`），其余平台保留 `-o addopts="" -q -rs`。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
-- **Windows 跳过项**：按平台跳过的是 memfs 符号链接、POSIX PID 探活、POSIX 权限位 ×2、无 PTY ×2、无进程组/信号 ×2，以及只在 POSIX 成立的真 socket 断言（AF_UNIX backlog、假对端「只 listen 不握手」）这几类；收尾轮 CI 实测 skip 数：macOS **7**、ubuntu **8**、Windows **29**，跳过原因写在跳过消息里，CI 用 `-rs` 打进日志。 · **2026-11-13 修复分支**：Windows 30（恢复 POSIX 残留 socket 用例遗漏的平台条件，较历史多 1），macOS 7、Ubuntu 8；Windows 命名管道认证/关闭/重复实例等测试仍运行。
+- **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60` 输出逐例、短错误栈、耗时与Python线程定时栈，其余平台保留 `uv run --frozen pytest -o addopts="" -q -rs`。原生fatal handler保留，C扩展长期独占GIL时不能保证60秒栈；25分钟上限不替代这个诊断缺口。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
+- **Windows 跳过项（历史阶段快照）**：按平台跳过的是 memfs 符号链接、POSIX PID 探活、POSIX 权限位 ×2、无 PTY ×2、无进程组/信号 ×2，以及只在 POSIX 成立的真 socket 断言（AF_UNIX backlog、假对端「只 listen 不握手」）这几类；收尾轮 CI 实测 skip 数：macOS **7**、ubuntu **8**、Windows **29**，跳过原因写在跳过消息里，CI 用 `-rs` 打进日志。 · **2026-11-13 修复分支**：Windows 30（恢复 POSIX 残留 socket 用例遗漏的平台条件，较历史多 1），macOS 7、Ubuntu 8；Windows 命名管道认证/关闭/重复实例等测试仍运行。
 - **M5 新入口**：`tianshu daemon`（常驻守护进程）与 `tianshu host run|stop|status`（桌面外壳）。运行数据根默认平台标准目录，`TIANSHU_DATA_ROOT` 覆盖；**旧的内核子命令（`run` / `task` / `approvals` / …）仍默认 CWD 下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`，`--db` 可改）——两套落点并存，文档必须分开写。
 - **数据目录**：`ipc.default_data_root()` 已把平台标准位置实现出来——macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`（不用 Roaming：事件日志会撑爆漫游同步）、Linux `$XDG_DATA_HOME/AgentOS`（缺省 `~/.local/share/AgentOS`）。目录内：`events.db`、`artifacts/{blobs,snapshots}`、`run/`（IPC 端点 / `ipc.key` / 锁）、`logs/daemon.log`（Host 重定向的 daemon stderr）。测试与 CI 一律显式传 `--data-root` 到 tmp，**不允许**写用户主目录。
 - **模型**：两个线上协议（OpenAI-compatible、Anthropic Messages），各一个 adapter，主循环只认内部规范化形状；契约测试在 `tests/test_model_contract.py`。桌面演示与验收默认 `scripted` 模型（不联网、不花钱）。**2026-11-10 起有两个真实模型的完整评测数据**（deepseek-v4.1-flash 18/20 case、glm-5.2 15/20 case，同一 suite m4.4）+ 一次真实模型审批流端到端；逐条证据与裁决见 [M4-verification.md](M4-verification.md) §7.1。key 走环境变量，不落库、不进文档。
@@ -251,6 +269,23 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **测试入口也必须匹配生产初始化（2026-11-13）**：Windows上stdout重定向到DEVNULL仍可能以cp1252编码；测试用`python -c`直调Host、遗漏真实`cli.main`已有的`_force_utf8_streams`，中文print会在发布ready后异常、清元数据，表现为EOF/错误接管。用同一源码、同一cp1252环境、只补真实入口初始化的正负控定位，不能全局开UTF8掩盖差异。stderr保留原始bytes并按子进程实际UTF-8解码；失败收尾不能提前kill截断traceback或误杀Windows launcher而留下实际worker。只在最终runner证明Windows收尾，不拿Mac PID相同的情况代言。
+
+- **探针必须持有自己发出的请求（2026-11-13）**：暂停真实Thread.start时发GET，0.4秒无响应就主动关TCP，会在放行后制造服务端10053。边界期限保持不变，但应保持同一连接，服务ready后在普通I/O预算内读完同一响应；继续检查stderr、资源与实际worker PID。`Path.read_bytes`经CRT可只剩EACCES，不能把底层share0必然等于异常对象winerror32当跨层契约。原红切源码时还须覆盖pytest的`pythonpath`配置并在同一进程核验导入hash，环境PYTHONPATH单独设置不足以证明跑到旧版。
+
+- **条件删必须与读、写、接管处于同一互斥（2026-11-13）**：读到“还是我的pid”不代表unlink时还是；stop拿旧快照后，新Host已经接管也会被误删，pid复用还要求实例token/started_at绑定。只给unlink加锁或只加pid参数都不完整。HostInfo使用`run/execution.guard`，不占业务根守卫，HTTP/Daemon等待不入锁；晚到的启动者条件发布失败时只能关自己资源，不能误停胜者复用的Daemon。Windows WinError5既可能来自真实双删，也可能是持久只读拒绝，不能统一吞掉。读失败更不能等同物理缺失；只在FileNotFoundError时宣布缺失。
+
+- **发布端口不等于已启动服务（2026-11-13）**：仅在写端口时校验owner，之后到`serve_background`之间仍可被真health失败的后启动者接管，旧实例继续serve会形成两个活Host。发布和服务线程启动须处于同一短元数据临界区，停止回调先安装、monitor在条件发布后且HTTP开放前实际启动。验证正确互斥时必须以第二进程真实OS锁busy作为放行信号；先等第二进程ready才释放第一进程会把探针自身循环等待误判成产品死锁。全量绿不能压过独立反例，改后重跑受影响验收。
+
+- **HTTP开放前必须完成所需线程启动（2026-11-13）**：a624把monitor移到HTTP服务之后，真实`Thread.start`边界暂停时`_thread`已发布而尚未启动；stop真实join抛RuntimeError，但finally仍关闭HTTP并放行主循环，导致退出0且日志未关。只有退出码/Daemon不可达断言会漏掉它，回归必须同时验收后台异常和所有本实例资源。修复启动顺序，不能通过隐藏`_thread`、跳过join或吞异常假装修好；本例Daemon已停，不扩大成孤儿进程。
+
+- **定时诊断测试必须证明采到了所声称阶段（2026-11-13）**：第二读者用无sleep的setup屏障发现，旧三阶段测试只有栈header断言，snapshot都在setup时仍3 passed；真实Lock正控也会因提前采样缺目标帧而误红。测试专用ready事件应绑定实际目标阶段，setup/call/teardown各自断言不同函数帧；隐私测试也须确认采到带敏感变量的目标函数。等待诊断完成时要同步排空输出或落临时文件，不能引入未读PIPE阻塞。修夹具不等于修改生产60秒协议，旧测试版本的全量绿不移用为新版本门禁。
+
+- **后台诊断的等待本身也会失败（2026-11-13）**：有限浮点数并不一定是平台可接受的等待秒数；`1e30`在Event.wait中OverflowError，若只把snapshot放try里，pytest可能1 passed/exit0而诊断线程已死。配置须受`threading.TIMEOUT_MAX`约束，后台等待与采样同置错误收口，并以真实成功/失败/中断子pytest验证非零诊断及原退出码保持。
+
+- **诊断本身也会改变被诊断进程**：CPython3.12原生定时dump能在纯标准库动态frame负载中access violation；Python栈最后落在COMMIT不等于SQLite根因。须用无项目代码的同环境正负控区分。后台线程已经输出部分字节后仍可能抛错，`exit0 + stack_bytes>0`不足以作证；错误必须显式传到会话退出码。fatal负控也必须确认真的执行到abort，配置提前失败的非零不是有效负控。Python线程方案拿不到GIL时不能保证栈，不能把外部期限说成等价诊断。
+- **清理要在资源构造成功时登记**：只在helper返回后或测试最后close，构栈/启动中途失败时仍会把真实子进程留给后续用例。MCP对象阻断夹具改为构造成功立即登记finalizer，并用测试失败/构栈失败两类注入证明资源清零；业务断言通过不代表夹具没有污染环境。
+
 - **"审批门"要在弹批准之前判完**：白名单/额度这类注定失败的前置条件如果只在执行时检查，用户会收到一个"批了也发不出去"的批准——白占一次人工决定。把前置条件放进 `prepare()`（`c4.outbound_not_allowed` / `dispatch.budget_refused`），批准只发给能执行的请求。
 - **冗余保护要"证明"，不是"声明"**：取消检查做了两层（派发前 + 执行器每块之前），单独拆掉派发前那层两个判据**仍然绿**（执行器第一跳之前就看到了取消），两处都去掉才真的发包。写负控时要先确认拆的是"最后一层保护"，否则会把冗余误判成"这行没用"。
 - **"来源可离线核验"必须真的关掉服务器再读**：否则测的是"服务器还在，所以读得到"。runner 的收集顺序（Run 结束 → 停夹具 → 读内容引用并重算 sha256）就是这条判据的本体；读不回来记无效样本，不是通过。
@@ -329,6 +364,9 @@
 
 - **CI 慢机器会把「窗口」放大成真 bug**（N6）：`open_control_run` 先 enqueue 再 claim，本地毫秒级窗口在 ubuntu CI 上被 Daemon 驱动线程的 `claim_next()` 抢走，`memory.remember` 报 `internal: job 仍由活着的 owner 持有`。修法是 `JobStore.enqueue_and_claim()` 把入队与认领放进同一个写事务；判据用「另一条连接在 enqueue 瞬间抢」的确定性补丁，而不是开线程碰运气（并发版本 8 次一次没撞上）。
 
+- **预算底层通过不等于真实调用已接线（2026-11-13 独立复审）**：账本支持 `micros`，但普通/摘要预占不带这个维度时，零金额上限也会漏发。必须在真实 adapter 的受控 transport 边界观察预占，并核对实际费用、重试与父子链。新写入口拒绝负数也不能保护旧负计数；升级后读取和新准入必须 fail-closed，不能把“历史数据”当作授予额外余额的理由。未知 token 与未知金额是两个维度，修正未决计数时分别用精确断言，不能为保住旧数字漏记未知费用。
+- **内存统计修好不等于终态已记住（2026-11-13 B3 二审）**：摘要失败后未知计数在 `RunResult` 中正确，但若依赖下一普通调用成功再存游标，预算立即拒发会让 `run.end` 读旧值。回归必须覆盖“失败后马上停止”，并分别核对内存、持久游标、终态与重开结果；不能只凭继续运行的成功路径宣称修完。
+
 ## 6. 流程规则（机械 + 纪律）
 
 - **单人维护口径**：0 人 GitHub 批准、自己合 PR 可以接受；CODEOWNERS、issue assignee 与 GitHub milestones 按协作需要启用，不强制重复维护。高危改动仍须另一会话或人提供独立证据，绑定被审提交完整 SHA、验收范围、命令、输出与未决项；后续实质改动须重审对应范围。新增提交说明原因，合并说明保留原因与证据，不为整理格式改写历史。
@@ -341,6 +379,14 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **预算历史数据与金额上界**：本轮拒绝读取/使用已有非法负计数，没有迁移、洗白；真实数据库异常需单独取证。旧版已误结清但只剩合法正数量的 partial 记录不能凭空重建未知信息。估算模式不是硬上界，当前价格表无法提供所有计价档位的金额硬上界，`upper` 加金额限额会明确拒发；缺价且任一祖先受金额限制也拒发。默认无金额限额仍记录未决费用，零金额预留不表示免费，未知用量不自动退款。
+
+- **C-007验收与边界（2026-11-13）**：dd49正式Windows六红已独立分类；cp1252原红与仅调用真实CLI初始化后的阳性证明测试入口缺口，但不声称找回原CI已丢弃的stderr，monitor本地EOF与原CI10054也不冒称同栈。最终dc274a测试的本机19/1及Mac失败清理不代替新SHA独立复核、Windows原生拒读/实际worker清理和四项required CI；三批本地稳定后集中验证，不继续推送中间候选。7111、d6ee、a624各自失败和旧绿均保留，不挪用为新门禁。HostInfo guard保护合作进程的短读写/条件删以及条件发布→monitor实际启动→HTTP服务启动的转换，不是整个启动周期或运行期的排他锁，也不是同uid安全边界；port0期间可被后启动者接管，但败者必须拒绝发布/删除。外部程序/杀软的持续拒绝仍返回失败，Windows10/11/ARM64用户设备仍未验证。
+
+- **CI线程栈边界（2026-11-13）**：为避开已在Windows3.12.16独立重现的原生定时frame竞态，Windows使用Python线程定时采样；C扩展长期占用GIL时无法保证60秒出栈。fatal handler仍保留，25分钟job上限不变，但两者不是该缺口的等价替代。未验证所有C扩展/GIL死锁、真实百线程并发或stdout/stderr同时外部阻塞。7111正式Windows矩阵已逐项通过31项包装器回归，三个60秒栈后相应用例继续通过；整轮因C-007失败。这些结果和临时原生实验success都不替代后续提交的业务套件通过。
+
+- **I/O debug 范围（2026-11-13）**：已修复的有界读写不等于进程隔离或网络带宽硬配额；Windows 命名管道 ACL、Windows 用户设备/ARM64、真实模型驱动 UI、安装与升级仍未验证。C-004是已确认的既存POSIX发送关闭竞态，本机回归不代替新提交独立复审与Ubuntu CI；Windows的不同发送路径保留既有测试，不用POSIX调度探针代言。当前工作区的本机绿不冒充独立批准或云端绿。逐项证据与尚未验证范围见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。
 
 > 本节含按日期保留的阶段交付记录，其中“未做”只描述该阶段；后续交付以 §2 和相应专题文档为准。平台与合并门禁以 §2 的具体提交 / CI / 远端配置为准，旧失败数字不代表最新提交。
 
@@ -451,9 +497,45 @@
 
 - **2026-11-13 · G3 准入/迁移契约分片**：只读临时探针确认正常库仍为 v0、实际自定义 DB 可被无关根的版本误作证、现有迁移只看 daemon/host 而不排斥普通连接、异根备份可被接受，且旧备份恢复会带回旧 active 记忆和已存正文游标。比较最小准入与完整产品格式后，先明确实际文件准入、备份/计划/进度绑定及离线互斥；完整 schema 集中冻结另行处理。恢复选整批持久执行隔离，具体字段与实现后置，避免只挡新搜索却漏旧游标。本提交只改契约与状态指针，不修改产品或另一 debug 会话代码。
 
+- **2026-11-13 · G3 首片吸收已合修复**：同步远端 main a839906 的 I/O 与预算修复，唯一知识库冲突按段保留两边历史；保留本轮 UTF-8 测试修正、备份与只读恢复预演，不修改另一会话的业务实现。新组合本机 2416 passed / 8 skipped、425.09s，lock/ruff0，253 非文档文件无漂移；UI 80 项及类型/构建通过，dist 字节一致。第二读者核 353 条路径按双方对象继承，提交级绑定及新原生 CI 继续另记；最终同步后再集中推送，未借历史 CI 预填通过。
+
 - **2026-11-13 · G3 首片 Windows 编码修正**：PR #134 的 `f509a53` 初次 CI 中 UI/Ubuntu/macOS 成功，Windows 为 1 failed / 2244 passed / 35 skipped，唯一失败是本片新增测试用默认 cp1252 读取 UTF-8 记忆正文。仅把该行改成显式 UTF-8，不改产品、断言或 CI。第二读者携带父提交原 conftest 在 ASCII 默认编码环境亲跑原红→新绿及 144 项回归；完整修复提交绑定与新原生 Windows CI 另行记录，不借另一 debug 会话绿色作证。原始失败和独立证据见 [本轮记录 §2.1](DATA-LIFECYCLE-2026-11-13.md#21-首次-ci-与-windows-测试编码修正)。
 
 - **2026-11-13 · G3 数据生命周期首片**：按用户授权分批推进，避开另一 debug 会话的 I/O、预算、恢复及 Host/CI 修复。补齐离线 backup / 独立 verify / 只读 restore-plan；修正旧备份遗漏根 blobs 与 memory_blobs、manifest 隐藏引用、只读连接失败回退读写等边界。维护准入绑定真实 SQLite 连接，关闭失败或外部连接/游标继续存活时不提前放锁；锁固定在 OS 用户临时根，避免数据根上级权限和可变环境影响身份。独立复审发现并修正清理候选漏引用、静态 WAL 库校验生成旁文件、缺投影误报空状态；macOS 根别名在创建时核对后保存，后续校验不回源。发现迁移版本 2 只是演示而实际产品库为 v0，决定先做独立版本/恢复隔离契约，再接迁移与恢复 apply；本轮不改契约，不做 GC。测试、独立复审与 CI 口径集中见 [本轮记录](DATA-LIFECYCLE-2026-11-13.md)，不借另一会话的历史绿色作证。
+
+- **2026-11-13 · 最终测试版本地集中门禁**：Host68ea不变，正式测试dc274a及协议本地内容预验通过（独立报告0988a65c…）。三批候选并行跑lock/ruff/full全部exit0：I/O2219/8、437.57s；预算2293/8、439.61s；恢复2316/8、442.55s。各248/249/251个非文档文件前后无漂移，日志原HEAD与最终工作区内容通过冻结清单映射，不拿旧dd49 CI或旧测试全量代替。正式SHA绑定、最终Windows探针与四required仍待；集中推送节奏保留，不提前推后两批。
+
+- **2026-11-13 · C-007 Windows六红分类与最终测试协议冻结**：正式dd49/run43367761924 Windows为6失败/2189通过/32跳过，其他三项成功；cdc隔离实验2失败另记。第二读者精确dd49/cp1252五红→唯一真实CLI初始化五绿，报告c9aef076…及37原件台账4d89a387…；未回填成原CI丢失stderr。正式helper只补入口、保全原异常与stderr/worker/清理输出；share0断言EACCES并保留字节，monitor同连接0.4秒边界→ready后5秒完整读取，产品68ea不动。最终dc274a测试本机cp1252整文件19/1、24.06s，hash稳定；真实child自然exit1和父失败后Host/Daemon均无残留已验Mac。实验握手/锁内真实os._exit23及validator同步校准，撤销PYTHONPATH被pytest覆盖的无效负控，未将中断测试认绿。新独立复核及Windows/四CI待最终集中执行，无commit/push、无中间全量，未改生产、契约或门禁。
+
+- **2026-11-13 · 预算整合Host最终补丁**：吸收dd49精确Host/20项测试及证据文档，保留预算与I/O知识库双方记录，纠正556历史对象继承已完成的状态。新组合323文件全量前后不变，2293/8、420.63s，lock/ruff0；预算业务代码未改。第二读者重新检查关键预算契约及正式对象，当前CI尚待，不把本机绿或旧a3结果当合并资格。
+
+- **2026-11-13 · 诊断修复整合**：合入I/O `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 的测试包装器、MCP夹具与文档。生产src、UI、锁文件相对上一轮已审对象不变；知识库冲突保留双方记录。重新冻结组合并完成本机门禁：2274 passed / 7 skipped / 394.72s，lock/ruff均exit0，运行期hash全匹配；最终SHA独立继承与当前CI另行记录，不移用旧CI绿色。
+
+- **2026-11-13 · B3 二审补修**：`51d46e06f230d50b8d7ec27eb5ce3d3c763c2a0a` 上复现摘要失败后普通调用因金额不足被拒，内存未知为 1 而终态为 0。正式新增两 provider 回归先红，再在摘要调用后立即保存现有游标，正式与冻结独立探针均 2 绿；数据库重开、未决账本与 replay 保持一致，受影响 183 项通过。本机全量 **2237 passed / 7 skipped / 384.75s**，lock/ruff 通过。未改费用或数据契约；独立复审与 CI 仍按最终版本绑定。
+
+- **2026-11-13 · 预算独立复审整改（B1/B2/B3）**：在 `e89a95d4c7e8f7196b38c51148e294d4c72bed9a` 的独立工作树中，将复审发现吸收为正式回归（首批 16 项原红，最终 32 项在冻结原实现全红、修复后全绿），接通金额预占/结算/父子闸、摘要失败 unknown 和旧非法账本拒读。原 40、冻结候选 8、关联 328 项通过；旧版本 API 种出的负账本重开后两次拒绝、四表不变。本机全量 **2235 passed / 7 skipped / 381.25s**，lock/ruff 通过。持久化仍是整数 need；零货币预留与未知实际费用明确区分，未引入 null 数据格式或假价格。独立二审与 CI 按本轮最终提交继续绑定，作者不自批。
+
+- **2026-11-13 · 系统 debug / 预算批次**：修复部分 usage 释放预占与负 usage 回补预算；两真实适配器、普通/摘要、父子账本回归与真子进程竞争验证。沿用既定未知计费契约，未动历史用户账本；高危变更交第二读者绑定提交复审。
+
+- **2026-11-13** · **C-007第三版本机与独立内容预验收口**：68ea源码/3c68测试冻结全量2219/8、407.48s，lock/ruff exit0，245非文档运行前后hash一致。第二读者57/1及真实monitor、两启动窗口、stop替换owner、supervise=True拒删/原异常均通过；内容报告865def8e…，正式SHA与修后Windows/四CI仍待绑定。同步纠正C-004/C-005/C-006的旧“待批准”叙述，保留其已经完成的精确领域批准，也保留7111整轮Windows红和d6ee/a624两次候选退回；未提交运行数据、未改契约/超时/重试/门禁。
+
+- **2026-11-13 · C-007修复新引入的monitor启动竞态**：a624虽全量2218 passed/8 skipped、404.50s且245非文档文件hash无漂移，第二读者仍以真实Thread.start屏障复现HTTP可停止、monitor尚未启动，join裸RuntimeError、log_open=True而CLI/run_host均0，判未批准；clean7111相同时序正常，本轮排序引入不能算既存问题。第20项正式回归先在a624原红1项/5.62s，再只将monitor启动移到同guard内条件发布之后、HTTPserve之前，保留双Host互斥与败者不关共享Daemon。新68ea/3c68内容hash作者定向57 passed/1 skipped、52.92s、ruff通过；断言覆盖真实停止、后台stderr、monitor/log/socket及Daemon/元数据。旧全量明确标历史未批准，新内容仍交独立反例与负控复跑、重新全量和正式SHA CI，不把本机作者转绿当独立批准。
+
+- **2026-11-13 · C-007独立复审再收紧发布边界**：初版Host元数据guard虽通过2217/8本机全量，第二读者在真ensure+实际端口已写、serve尚未启动的屏障上复现B接管后A继续serve，两个不同PID/端口均HTTP成功，判部分修未批准。只采用分别采A/B的v2证据，误重复采B的早期探针撤销。第19项正式回归先在d6ee原红1项（0.79s），随后把条件端口发布与服务线程启动纳同一短guard；停止回调先装、monitor后启，无HTTP/Daemon锁内等待。修后探针以B真实OS锁busy后放A，不制造等待Bready的自身死锁。新a624/4af4内容hash冻结，作者定向56 passed/1 skipped、47.19s、ruff通过；重新交第二读者与全量门禁，旧全量不冒充新批准。
+
+- **2026-11-13 · Host停止与实例所有权：C-007/P2**：正式7111四项CI中只有Windows失败，6.41秒的正常Host停止泄漏WinError5；保留失败状态，确认既有31项诊断回归实际通过。独立Windows实验真双进程10组3次重现同读双删的WinError5，持久只读5及普通读句柄32作不同负控；人工share-delete候选本轮无错，未冒充根因。独立真文件/真进程又复现拒读假缺失、旧stop删新owner、旧健康结果覆盖新owner，以及A真ensure后晚发布覆盖已运行B。先跑首批11红/1绿，旧健康检查与真双Host回归另各原红1项，再复用run目录内既有OS guard和实例快照条件操作。败者返回非零并只收本实例socket/log，monitor在发布后才启动；正常stop仍由真Host+Daemon验收。作者冻结源码/测试的定向55 passed/1 skipped、41.37s、ruff通过；未改C-005诊断包装器与C-006夹具，也不把本机定向结果当成新提交批准。证据与待完成门禁见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **2026-11-13 · C-005测试证据校准与等待侧收口**：独立setup屏障反例确认Lock正控提前采样会误红、仅查header的三阶段测试会误绿；测试ready同步并检查各阶段独立函数帧，锁诊断输出改临时文件，隐私检查确认目标函数在栈中。第二读者再以1e30确认后台wait溢出仍pytest exit0；最小增加TIMEOUT_MAX配置上界并把wait/snapshot同置try，默认60秒及生产src不变。新增四项先在旧实现4 failed，最终31项新回归+8项eval为39 passed/18.87秒、ruff通过。精确中断先前full留下exit2记录，历史2195/7不冒充最终门禁。最终八文件冻结整合为lock/ruff/full exit0，2200 passed/7 skipped、390.82秒，运行前后hash相同；独立内容hash预验覆盖19场景、10配置、阶段扰动及C-006失败清理。结果后仅回填两文档；正式SHA复审和四项CI仍待完成，不以自查或内容hash预验冒充提交批准。
+
+- **2026-11-13 · MCP测试生命周期：C-006/P3**：第二调查者定位对象阻断helper真实client没有close、被atexit留到pytest退出；最小单测业务1pass但观察器抓到1进程/2线程残留并exit1。仅该模块新增13行生命周期fixture；90项、57次启动记录（55个唯一pid）每teardown与最终均零残留，test call及build_stack主动失败仍pytest exit1且清理完成。未改变生产逻辑，未将其扩大为全部Windows耗时根因；与C-005整改合并工作区重新跑门禁，后续正式SHA仍需独立复审与CI。
+
+- **2026-11-13 · Windows CI诊断原生失败：C-005/P2**：在I/O工作树a0cb461702e538b22192eacc9b27fffc030a34ac上只追加测试工具和回归。先调查原Windows60秒dump截断/AV，保留同测试100.83秒正常通过的反证；纯标准库Windows实验92545fa/run43353423204独立复现原生诊断0xC0000005，Python/no-dump控制正常。新增Python线程pytest包装器并同步CI、CONTRIBUTING与AGENTS；保留fatal handler、60秒/25分钟及原pytest失败/中断退出码。真实子进程验证后台错误、阻塞写、abort到达marker与隐私/输出界限，撤销一次配置提前失败的旧负控；不改变生产模块或产品契约。新提交仍待第二读者复核与required CI，详见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **2026-11-13 · I/O CI 警告整改：C-004/P2**：原main与I/O首提交的Ubuntu慢订阅者用例均有发送线程write(None,buf)警告，不能把success状态当成没有异常。基于 `72af1ae9f7a5c826b1dde568ba30005e1c4dc45d`，用真实IPC子进程、实际短写和关闭屏障重现；确认线程能退出，无daemon死亡/数据损坏证据，按P2关闭竞态处理。仅在底层连接已关闭时把send_bytes的TypeError转为ConnectionClosed并保留cause，编码在try外、开放连接TypeError原样暴露；两项负控保留。68项定向在未处理线程警告升错误下通过，lock/ruff通过，macOS arm64全量2169 passed / 7 skipped（377.77s，exit0）；新SHA待独立复审与CI。POSIX短写用例在Windows明确跳过该不同实现路径，两项负控及既有Windows IPC覆盖不移除。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **2026-11-13 · I/O 独立复审整改：Host JSON 深度**：第二读者在 `4479088ecb2d161755d7ba3a89e46119c94a8b8e` 复现约20KB深层JSON仍触发RecursionError并断线，确认原Host修复未覆盖全部解析失败边界。在独立 `codex/debug-io-review` 工作树先取得真HTTP原红，再仅捕获解析递归错误返回400；保留认证在前、完整读取后解析，新增同连接正常请求及401/403回归。原独立12项探针由作者复跑全部通过；本机Host相关65项通过，全量2166 passed / 7 skipped（379.90s），lock/ruff通过。5000位整数候选实测已由ValueError边界返回400，撤销疑点。上述结果绑定基线加补丁，后续新完整SHA仍须原第二读者复核与CI；不把字节有界等同解析深度可处理，也不把自查当独立批准。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **2026-11-13 · 系统 debug / I/O 批次**：真实不读管道、持有写端孙进程、半响应 HTTP、SSE 头后断流复现后做最小修复；纠正 README required checks/摘要/Windows 口径及 AGENTS 数据目录陈述。区分 API 支持、本机执行、GitHub runner 与用户设备实测，未改变 Python 版本、运行时依赖或产品契约。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
 - **2026-11-13 · 分支与本地状态对账**：按维护者授权开展全部分支、本地草稿、备份与同步处理；原工作区草稿已保存至仓库外备份（`repo-sync-20261113-034435`，含 patch / bundle / `.omc` 副本）与 stash `263737c304d9d885f5d5d428c3b88a7f7bd7103b`，原工作区已切到 main 并快进 133 个提交。已核实并删除 7 条本地旧分支与 5 条远端残留分支；旧工作树保留为 detached 历史快照，文件未删除。远端已开启合并后自动删除分支。记录时仅剩 PR #130 待最终 CI / 合并；后续合并状态以 GitHub PR 与 main 为准。修正 CONTRIBUTING §8 先前新增的“必须签名/公证”要求：它与 PRD §11.1 / §13 T1“不支付 OS 签名成本”冲突，现按既定分发策略验证安装脚本、系统提示、权限、产物校验及更新/回退；未来改变 T1 须单独契约 PR。从上述备份恢复原工作区的 2026-11-10 能力提案，按 CONTRIBUTING §1 将[原文](archive/2026-11-10-next-capabilities-plan.md) 放入 `docs/archive/`；[原路径](NEXT-CAPABILITIES-PLAN.md) 只保留历史警告与现行依据索引。原 281 行正文逐字节保留，本次归档没有修改备份原文，不把历史计划当作当前契约或验收证据。
 
