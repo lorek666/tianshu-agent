@@ -87,7 +87,11 @@ UI install/typecheck/**80 tests**/build 均退出 0，提交的 dist 重建后�
 编码修正的提交级报告也已归档为同目录 `windows-encoding-commit-review.md` / JSON。
 
 以上仅为 a839906 组合；最终恢复修复 PR #133 仍由另一会话推进，后续同步须重新绑定。
-本组合的完整 Git 提交及原生 Windows/四项 required CI 另行确认，不从本机或历史绿色推断。
+本组合的完整 Git 提交 `16721ff14ad08456e8f6a2522c3300b2652b0918` 已由第二读者
+[正式绑定](evidence/data-lifecycle-2026-11-13/main132-integration-commit-review.md)，核对父对象、
+253 个冻结非文档文件与原始日志，未冒称独立复跑全量。原生 Windows/四项 required CI
+仍另行确认，不从本机或历史绿色推断。旧报告的历史段落/新增行统计口径另有更正附录，
+原件与实际内容继承均保持。
 
 ## 3. 交付边界与后续顺序
 
