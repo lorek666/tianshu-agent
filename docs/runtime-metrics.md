@@ -277,3 +277,34 @@ E  AssertionError: stop 计时必须覆盖到安全点（负控：谎填 0 会�
 - [x] 文档写了当前边界、未验证项、仍不成立的宣称（§7）。
 - [x] 没改 `host.py`；没改既有判据；没加运行时依赖；没联网。
 - [x] PR body 含：改了什么、为什么、判据、负控摘要、剩余 unknown。
+
+## 9. 将显式指标文件与已有报告一同保全（开发工具，2026-11-13）
+
+`scripts/baseline_evidence.py` 接受至少一份显式 C5 报告，以及至多一份显式
+`metrics.jsonl` 文件；不扫描数据根、不采样、不调用模型、不启动 soak：
+
+```bash
+mkdir -p .omc/artifacts
+uv run --frozen python scripts/baseline_evidence.py \
+  --repo "$PWD" --report /absolute/path/report.json \
+  --metrics /absolute/path/metrics.jsonl \
+  --out .omc/artifacts/baseline-evidence-new-id
+```
+
+仓库必须 clean，输出父目录须已存在、目标目录必须不存在；仓库内目标须由真实
+`git check-ignore` 确认已忽略。指标先逐条严格解析（包括没有换行的尾段），再对
+字节副本调用 `read_metrics()`；截断坏尾行拒绝收集，不沿用实时读者对正在写尾段
+的容错。这个检查不生成聚合数值，也不冻结 §7 的 SLO。
+
+`inputs/` 原件和含本机路径的 `collection.json` 仅留本地私有。
+`summary.json` 是固定字段的可分享摘要，不含路径、模型、端点、正文、分数或原始
+输入 hash，且不能单独证明收集完成。完成收据最后原子发布，成功静默；发布前
+失败没有完成收据，发布后进程被终止可保留收据。自身最终退出码由外部观察者取得，
+不提前写成工具观察到的 exit0。
+
+收据只证明本次收集观察，执行与批准固定为 `NOT_EXECUTED_BY_TOOL` /
+`NOT_EVALUATED`；不认证历史执行，不检测变化后还原的所有瞬态变化，也不承诺
+断电持久性、抗同 uid 篡改或 Windows ACL 隔离。本提交前独立内容复验与本机组合
+lock/full/ruff 已通过；正式提交绑定及新原生 CI 仍待核，后续结果见
+`codex/g3-baseline-evidence` 对应 PR。未新增十小时实跑、静默机测量或用户 Windows
+设备证据。
