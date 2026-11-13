@@ -21,12 +21,12 @@ jobs:
         run: uv python install 3.12
       - name: Validate lock
         run: uv lock --check
-      - name: Record real process and Win32 boundary evidence
+      - name: Record serialized real-process interleavings
         env:
           PYTHONUTF8: "1"
         run: |
           mkdir -p c007-evidence
-          uv run --frozen python scripts/probe_host_cleanup.py --repo . --output c007-evidence/results.json --repetitions 10 > c007-evidence/probe.stdout.log 2> c007-evidence/probe.stderr.log
+          uv run --frozen python scripts/probe_host_interleavings.py --repo . --helper scripts/probe_host_cleanup.py --output c007-evidence/interleavings.json > c007-evidence/probe.stdout.log 2> c007-evidence/probe.stderr.log
       - name: Record exclusive-handle read denial
         if: always()
         env:
@@ -34,6 +34,31 @@ jobs:
         run: |
           mkdir -p c007-evidence
           uv run --frozen python scripts/probe_host_exclusive_read.py --repo . --output c007-evidence/exclusive-read.json > c007-evidence/exclusive-read.stdout.log 2> c007-evidence/exclusive-read.stderr.log
+      - name: Record publication and service transition
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          mkdir -p c007-evidence
+          uv run --frozen python scripts/probe_host_ready_transition.py --repo . --helper scripts/probe_host_cleanup.py --output c007-evidence/ready-transition.json > c007-evidence/ready-transition.stdout.log 2> c007-evidence/ready-transition.stderr.log
+      - name: Record real monitor startup and shutdown
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          mkdir -p c007-evidence
+          uv run --frozen python scripts/probe_host_monitor_start.py --repo . --helper scripts/probe_host_cleanup.py --output c007-evidence/monitor-start.json > c007-evidence/monitor-start.stdout.log 2> c007-evidence/monitor-start.stderr.log
+      - name: Assert observed repair boundaries
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: uv run --frozen python scripts/check_host_evidence.py c007-evidence
+      - name: Run real Host lifecycle regressions
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          uv run --frozen python scripts/pytest_with_stacks.py tests/test_host_cleanup.py tests/test_integration_m5.py::test_host_stop_stops_daemon_too -o addopts="" -vv -rs --tb=short --stack-timeout=60 > c007-evidence/regressions.log 2>&1
       - name: Preserve original outcomes even when collection fails
         if: always()
         uses: actions/upload-artifact@v4
