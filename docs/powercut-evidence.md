@@ -2,7 +2,7 @@
 
 - 分支：`feat/powercut-consistency`（worktree `/Volumes/Date/ts-wt-power`）
 - 基线：`main @ 540c543`，全量 `1080 passed / 3 skipped`，`ruff clean`
-- 规格：[`SPEC-RESIDUALS-M0M1.md` §T1](../ts-wt-lead/docs/SPEC-RESIDUALS-M0M1.md)（本工作流只做 T1）
+- 规格：[`SPEC-RESIDUALS-M0M1.md` §T1](SPEC-RESIDUALS-M0M1.md)（本工作流只做 T1；2026-11-14 改指入库文档，原链接指向已删除的 `ts-wt-lead` 工作树）
 - 收工全量：见 §8（本次实测数字）
 
 ---

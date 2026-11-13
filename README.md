@@ -67,7 +67,7 @@
 - **子代理：D1 + D2 + D3，只读、单机、不退款。** `task.created.max_subtasks`（0–4）+ `subtasks` 实体与父子链 + `subtask.spawn/status/result/cancel` 四个工具 + 数量/局部限额 + `subtasks` 维度预算预占（D1）；子 Run 由**既有 Worker** 驱动、父 Run 在等子任务时挂起作业（Run 保持 running）、子任务收尾的同一事务里写行/写父 Run 事件/结算预算/唤醒父作业、父取消传播、父改目标 fence（`dispatch.parent_fenced`）、结果以 ≤4 KiB 摘要 + `content://` 引用回填、回放不重跑（D2）。**仍不成立**：子任务只能做纯读（写文件/出网/exec/MCP/记忆写/再委派都是拒绝，不弹嵌套审批）；深度固定 1、每父 Run 未完成上限 2、每根任务累计上限 4；子任务与父任务共用同一台机器/同一个 Worker 池（**没有跨机器调度**），`wake` 只保证可被重新认领、**不保证立刻被认领**；**取消不退款**（已发生费用照实计），读不到子 Run 最后一轮输出时 `summary` 为空并说明「输出不可用」，**不编造**；没有子任务 UI 页面（CLI `run status` 与事件里有）；**D3 评测只覆盖脚本模型**（父/子两套脚本，不是真实模型分数），公开委派任务只有 `RU-D1@1.0.0` 一条 + 测试内失败路径 `RU-D1-F`，不是所有委派场景；Windows 未验证。见 [resource-kinds.md](docs/resource-kinds.md) §8、[real-user-tasks.md](docs/real-user-tasks.md) 与 [SPEC-G2-DELEGATION-2026-11-11.md](docs/SPEC-G2-DELEGATION-2026-11-11.md)。
 - **联网研究只在本机夹具上闭环。** 网络执行器（`network.fetch`）与任务级白名单已交付，§10.5 的联网研究任务现在真的跑——但来源是 loopback 夹具，不是公网站点：**没有检索 / 搜索 API**（没有搜索引擎与凭据）、**真实公网研究未验证**、DNS rebinding / 解析后二次校验未做、无速率限制、二进制正文没有文本分页读取、内容分级与保留期未做。别把"能发一个受控 GET"读成"公网研究能力已具备"（细节见 [docs/network-g2.md](docs/network-g2.md) §7）。
 - **真实模型没有接过 UI。** 演示与验收用 `scripted` 模型（不联网、不花钱），它证明的是进程语义，**不代表真实模型能力**；真实模型路径见下文「接真实模型」。CLI 与评测已跑过真实模型（2026-11-10，两家模型完整 20 条 × 3 次，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1），但**还没有真实模型驱动过 UI**。
-- 已知缺口：issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**（PR #48）——否决即终局，`SUITE_VERSION` 升 `m4.4`，工单仍开着等确认；issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）已收敛关闭。
+- 已知缺口：issue [#40](https://github.com/lorek666/tianshu-agent/issues/40)（审批被否决后 resume 会重新请求审批）**已修**（PR #48）——否决即终局，`SUITE_VERSION` 升 `m4.4`，工单已关闭（2026-11-14 对账：#53/#54/#40 均已销账）；issue [#27](https://github.com/lorek666/tianshu-agent/issues/27)（PRD §4.1 字段漂移）已收敛关闭。
 
 ## 快速开始
 
@@ -236,8 +236,8 @@ PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被�
 | 码 | 含义 |
 |---|---|
 | `0` | 有结论且成功 |
-| `1` | 失败 / 取消（`worker` 被接管或结算失败也是 1） |
-| `2` | 用法或前置条件错误（含 `recover` 发现未核实效果） |
+| `1` | 失败 / 取消（`worker` 被接管或结算失败、`recover` 发现未核实效果也是 1） |
+| `2` | 用法或前置条件错误 |
 | `3` | 需要人决定（等审批 / 已暂停 / 待核查；`undo` 未带 `--approve` 的预演） |
 | `4` | （仅 `evaluate`）安全门槛被击穿 = unsafe |
 
@@ -274,20 +274,25 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 
 **M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
 
-五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（75 个 rule id 的封闭注册表：62 条拒绝原因 + 10 条非拒绝判定 + 3 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.4`）。
+五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（75 个 rule id 的封闭注册表：62 条拒绝原因 + 10 条非拒绝判定 + 3 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.6`）。
 
 ```
-src/tianshu/          49 个 .py + eval/ 子包（下面按职责分组，47 个实义模块，余两个是 __init__.py / __main__.py）
+src/tianshu/          63 个 .py + eval/ 子包（下面按职责分组，61 个实义模块，余两个是 __init__.py / __main__.py）
 ├─ 事实源与契约 ─────────────────────────────────────────────
 │  events.py        SQLite WAL append-only 事件日志 + 可组合事务
 │  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
 │  rules.py         C4 rule id 封闭注册表（75 个：62 拒绝 + 10 判定 + 3 保留未使用）
+│  event_schema.py  C3 逐类型事件 payload 契约（v1 schema + 版本旁表）
+│  toolschema.py    C2 工具参数封闭 JSON Schema 子集（编译期拒绝）
+│  tool_registry.py 动态工具注册表（内置 SPECS + MCP 运行时准入）
 │  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
 ├─ 路径与磁盘 ───────────────────────────────────────────────
 │  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
 │  pathkeys.py      路径键：大小写 / Unicode 规范化与祖先判断
 │  fsutil.py        原子写入：临时文件 → fsync → os.replace → fsync 目录
 │  sandbox.py       存储后端接缝：LocalBackend（真实盘）/ MemBackend（进程内，不是沙箱）
+│  resources.py     资源种类：把「要操作什么」从文件路径解耦（memory:// 等）
+│  authority.py     用户级「权威根」：跨数据根的阻断状态
 ├─ 授权与执行 ───────────────────────────────────────────────
 │  permissions.py   C4 动作分类 / 审批 / 一次性 grant
 │  dispatcher.py    唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
@@ -301,23 +306,45 @@ src/tianshu/          49 个 .py + eval/ 子包（下面按职责分组，47 个
 │  snapshot.py      写前快照与冲突安全撤销
 │  receipt.py       操作凭据（能独立核对，不必信调用方）
 │  undo.py          撤销：把一次 Run 的写入还原或删除（本身也走审批/租约/receipt）
+│  undo_journal.py  撤销意图日志：跨多文件撤销的可续做边界
 │  recovery.py      中断核查：applied / none_applied / unknown 三者不合并
 │  crashpoint.py    故障注入点（os._exit 硬退，仅 TIANSHU_FAILPOINT 生效）
 ├─ 任务、租约、作业 ─────────────────────────────────────────
 │  tasks.py         Task / Run / RunCursor 状态机，fencing，控制请求
 │  leases.py        跨进程资源租约 + 本机执行守卫（POSIX / Windows）
 │  jobs.py          作业认领与 claim_epoch（旧 worker 不得覆盖新 owner）
+├─ 记忆（F10）────────────────────────────────────────────────
+│  memory.py        事件日志的可重建投影：L0–L3、作用域、forget=tombstone
+│  memory_index.py  向量索引第二路（FTS ∪ 语义 RRF；Hash 基线 provider）
+│  memory_distill.py L2/L3 确定性合成（场景页 / 偏好页 + freshness）
+│  memory_exec.py   受信任的记忆执行器
+│  memory_control.py 控制面记忆操作（CLI 与 RPC 共用，写走 dispatcher）
+├─ 数据维护与迁移（G3）──────────────────────────────────────
+│  data_admission.py 真实事件库只读准入前缀（版本 / 进度校验）
+│  data_digest.py   迁移一致点算法 v1
+│  data_state.py    迁移进度的严格类型与纯校验
+│  migrate.py       标准根离线迁移（一致点绑定、严格续做）
+│  maintenance.py   数据库维护准入（协作式维护窗口）
+│  backup.py        一致点备份 / 校验 / 干净根恢复 / 保留期与引用保护
+│  data_cli.py      data 子命令：backup / verify / restore-plan / migrate
 ├─ 模型层 ───────────────────────────────────────────────────
 │  model.py         C1 接缝：adapter 只做双向翻译，不改写内部形状
 │  capability.py    F9a 能力声明与准入（只用于路由，不用于授权）
 │  credentials.py   F12 凭据分域查找 + 全链路脱敏（Keychain 后端 v1 未实现）
 │  pricing.py       F13 成本账：整数微美元，未知价格记 None 并单独计数
+│  budget.py        共享预算账本（PRD §5.6）：token / 金额预占与结算
 │  context.py       F5 上下文编译：纯函数、按字节预算、丢弃只记账不摘要
 ├─ 驱动 ─────────────────────────────────────────────────────
 │  loop.py          E1 主循环（持久游标、暂停 / 取消 / 恢复）+ 栈装配
 │  worker.py        作业循环：认领排队中的 Run（一次性 drain）
 │  replay.py        回放校验：seq / messages_hash / 产物哈希三方核对
+│  metrics.py       本地运行质量指标（PRD §10.6）：进程内采样、写数据根
 │  cli.py           命令行入口（含 daemon / host 两个常驻入口）
+├─ 网络 / MCP / 摘要（G2）────────────────────────────────────
+│  net.py           network.fetch 执行器（GET、同源重定向、1 MiB 上限）
+│  mcp.py           MCP stdio 客户端（三道门、封闭方言准入）
+│  summaries.py     模型语义摘要的记录与材料身份（PRD §7.1）
+│  contents.py      内容引用：大结果的有界摘要 + 可分页读取的引用
 ├─ 桌面三进程（M5）─────────────────────────────────────────
 │  ipc.py           本地 IPC：AF_UNIX / 命名管道、版本区间协商、推送游标、断线语义
 │  daemon.py        常驻守护进程：锁、恢复扫描、请求线程、驱动线程、优雅退出
@@ -363,7 +390,7 @@ probe 版本/timeout；未隔离执行在审批卡片、时间线、`tool.result
 **真实模型驱动 UI**（CLI / `evaluate` 已用真实模型跑过：deepseek-v4.1-flash 18/20、glm-5.2 15/20，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1；UI 仍未接过真实模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
 完整清单见 [docs/M5-verification.md](docs/M5-verification.md)。
 
-**M4 实测**：`SUITE_VERSION = m4.4`，20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
+**M4 实测**：`SUITE_VERSION = m4.4`（该轮实测时点值；现行 `SUITE_VERSION` 已升 `m4.6`，判据按目标作用域化后逐版本不可比），20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
 每类有下限守卫；安全门槛一票否决，不能被其它分数抵消。
 M5 同批修掉了 issue #40（**否决即终局**）：`approval="reject"` 的判据改为 `approval.veto_terminates`，
 并保留「无重复审批请求」的机械判据。
@@ -430,7 +457,7 @@ uv run --frozen ruff check .      # lint
 
 ## 贡献
 
-欢迎 issue 与 PR。请先读 [CONTRIBUTING.md](CONTRIBUTING.md)：契约变更需单独 PR，高危改动需独立复审并附可复现证据，必过的 CI 检查（ubuntu + macOS）绿了才能合。
+欢迎 issue 与 PR。请先读 [CONTRIBUTING.md](CONTRIBUTING.md)：契约变更需单独 PR，高危改动需独立复审并附可复现证据，四项必过检查（Ubuntu / macOS / Windows Python / UI）绿了才能合。
 
 ## 许可证
 

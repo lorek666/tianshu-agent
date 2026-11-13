@@ -1,7 +1,7 @@
 # 权威根与完整接管（#61）证据
 
 - 分支：`feat/authority-takeover`；基线 `main @ 540c543`（1080 passed / 3 skipped）。
-- 规格：[`SPEC-RESIDUALS-M0M1.md` §T2](../ts-wt-lead/docs/SPEC-RESIDUALS-M0M1.md)；
+- 规格：[`SPEC-RESIDUALS-M0M1.md` §T2](SPEC-RESIDUALS-M0M1.md)（2026-11-14 改指入库文档；原链接指向已删除的 `ts-wt-lead` 工作树）；
   对应 `docs/DEBUG-M0M1.md` 修复状态总表 M4 行的「仍未覆盖」与 `M2-verification.md` §8 的两条「未实现」。
 - 收工全量：**1097 passed, 3 skipped in 103.67s**；`ruff check .` → `All checks passed!`。
 

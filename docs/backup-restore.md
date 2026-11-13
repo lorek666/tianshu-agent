@@ -37,7 +37,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 | `verify_backup` 校验哈希/引用/事件 seq 连续/清单可解析/版本兼容 | **已实现 + 有测试** | §3 |
 | `data restore-plan` 只读报告原路径、干净目标、版本与未决项 | **本轮新增；不执行恢复** | `tests/test_data_cli.py` |
 | 低层 `restore_backup` 只恢复干净根；失败保留原数据 | **原 W4 库函数；不是新 CLI 的恢复许可** | §4；未补齐后续删除历史与记忆隔离 |
-| 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2 库 + T3 CLI 本机候选；T3 独立待验** | §5、T2/T3 事实记录 |
+| 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2 库 + T3 CLI 已独立验收**（2026-11-14 对账：T3 独立复审 `PASS_TASK3_CONTENT_ONLY`、未决 0，见 [DATA-ADMISSION-2026-11-13.md](DATA-ADMISSION-2026-11-13.md)；本行原「T3 独立待验」为 T3 冻结时点状态，与文首「均已独立验收」对齐） | §5、T2/T3 事实记录 |
 | 迁移不 UPDATE/DELETE 历史事件；append-only 触发器保留 | **已实现 + 有测试** | §5 |
 | 保留期声明 + 引用保护（被引用 blob 永不进清理候选） | **已实现 + 有测试** | §6 |
 | **换路径恢复（重定位）** | **未实现** | §4.2：事件 `payload_ref` / 快照 `blob_ref` 是绝对路径；`events.py`/`snapshot.py` 不在本工作流所有权 |
