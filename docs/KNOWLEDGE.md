@@ -26,6 +26,10 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **低磁盘准入契约，产品待实施（2026-11-14）**：[低磁盘 Run 准入契约](low-disk-admission-contract.md) 固定创建前 `pure_only/effects` 资格、默认 effects 与显式纯读入口，并覆盖已有 Run 纯读/模型恢复、停止控制例外和真实跨卷材料位置。v2 独立文字复核为 `CONTRACT_TEXT_READY_FOR_FORMAL_PR`，已修文字2、部分0、未修0；LD-01–06 产品验收全部 `NOT_RUN`。本次只提交契约与事实记录，恢复 apply、容量/GC、真实付费任务、十小时长跑及普通用户发行未因此交付。
+
+- **PR #137 原生 CI 已通过，GitHub 合并状态未同步（2026-11-14）**：正式 head `5d046f724ac14aa2a79ce266f4bfc9a6abf0239f` 的 [run43495488294 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43495488294/attempts/1) 六个 job 全 success：Ubuntu **2982 passed / 13 skipped**、macOS **2987 / 8**；Windows 两片 **1487 / 11** 与 **1471 / 26**，合 **2958 / 37**，同一完整 collection 2995 项分为1498/1497，Windows required 汇总成功；UI 12文件87测试及类型/构建/dist一致性通过。第二读者结论 `PASS_THIS_NATIVE_PR_CI_ONLY`，核对两份原生 artifact 的完整阶段与身份；3次 watchdog 后对应测试均 PASS。Windows 证据限 Server 2025 x86_64 / Python 3.12.16 runner。普通、绑定 head 的合并请求返回502后，真实 main 已推进至 `6c291a600d8edcd5435eea268b3c2f2a71470c2d`（tree `69f8bfeca64460a6a8a72b2d8e279ab45e76e026`，有序 parents 为 `016910970d381a66ab12a94a5c88080a8cbf7437`、上述 head）；截至 `2026-11-13T20:35:32Z`，[PR #137](https://github.com/lorek666/tianshu-agent/pull/137) 的 REST/GraphQL 仍为 OPEN / merged=false，且没有该 main 的 push CI。一次相同 SHA 绑定请求恢复返回405后已停止修改重试；结论为 `GIT_REF_ADVANCED_BUT_PR_AND_EVENT_SETTLEMENT_UNCONFIRMED`，不能称 GitHub 已确认合并或 main 自身 CI 已通过。下方旧红与候选记录保留各自历史时点。
+
 - **PR #137 H3 原生 CI 仍未通过（2026-11-14）**：正式 head `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 [run43474954367 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43474954367/attempts/1) 中 Ubuntu、macOS、UI 三项 success；Windows job132056273251 达到25分钟上限取消。三个原失败 CLI 已 PASS，但 Windows 部分输出的 **2765 PASS / 31 SKIP** 不是整套汇总或整套通过，不能合并。旧红保留，不用相邻输出时间窗口作 pytest duration 或性能根因。
 
 - **Windows 双 runner 分片作者候选（2026-11-14）**：仅 CI 基础设施及流程文档变更，原 watchdog、业务源码/测试、collector、锁与 UI 保持不变；两个独立 Windows runner 从同 SHA 完整 collection 按文件节点数分组，Ubuntu required 汇总同时要求上游 success 与两份完整、同身份阶段报告。合法 teardown skip/xfail 沿 pytest exit0 语义接受，迟发 wrapper 失败不能被 session0 覆盖。v1本机67项与原包装器31项定向98 passed / 0 skipped（25.36s）后，独立实际复审确认 **C1：收集错误原生 exit2 被插件异常改成3**，旧绿色不能作该行为已修证据。v2只修插件并加强测试：语法错误+0/1/2有效文件及收集早/晚、调用期真实中断均对照原 wrapper 精确保留2，新增文件定向 **71 passed / 0 skipped（16.60s）**；冻结v1上精确新回归4 failed / 2 passed，原件保留。第二读者已给出 `PASS_C1_DELTA_CONTENT_AND_LOCAL_BEHAVIOR_COMBINED_GATES_NATIVE_CI_PENDING`：12个真实受影响场景确认C1已修，部分修/未修/内容未决均0，其余未变主线继承v1独立32场景；不是把作者71项当独立证据。最终本机 lock/full/ruff 均exit0，**2987 passed / 8 skipped，pytest汇总485.59s**（命令485.79s），537份文件、HEAD与状态前后不变。执行身份为H3加六文件v2未提交冻结组合，之后仅补本知识库事实；正式提交绑定与新原生CI仍另核。节点数仅为平衡启发式，未宣称性能改善或交付通过。
@@ -189,6 +193,8 @@
   - **F10 记忆**属 v1.1，v1 不做（PRD §2.2 / §7）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **低磁盘 Run 资格决定（2026-11-14，待实施）**：创建前固定 `pure_only/effects`，默认 effects，同时提供真实 CLI/RPC/UI 纯读选择；避免首次副作用时追加资格状态机。代价是选择 effects 后最终只读的新 Run 仍须准入。普通/摘要模型及必要内部审计不算本条 C2 业务副作用，仍守预算、取消与持久化；已有 effects/legacy 的读与模型恢复保留原门，新普通非 pure 动作现测空间。字段、停止控制例外及逐事件版本以[独立契约](low-disk-admission-contract.md)为准，尚无产品验收。
 
 | ID | 决策 | 直接后果 |
 |---|---|---|
@@ -449,6 +455,10 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **低磁盘保护尚未实施（2026-11-14）**：契约文字复核通过仅允许形成正式契约 PR，不能替代 LD-01–06 产品验收。真实 TaskStore/Loop/控制面/执行器、CLI/RPC/UI 的接线与 `run.start` payload v2 均待实现；authority.db/WAL 与独立 execution.guard 的跨卷探测不能遗漏。既有 Run 纯读/模型与停止控制须保留原规则，不得用全面拒绝恢复掩盖缺口。恢复 apply/隔离、容量与执行 GC 仍未交付。
+
+- **PR #137 服务端合并状态未确认（2026-11-14）**：精确 PR 原生 CI 已通过，真实 main 已含其合并对象；截至 §2 所列观察时点，PR 元数据仍 OPEN / merged=false，也没有 `6c291a6` 自身 push CI。停止重复合并操作并保留异常原件，后续提交的 CI 不能补证这个缺失事件。该异常不放宽四 required、25分钟上限或独立复审；Windows runner 通过也不证明 Windows 10/11、ARM64、安装/ACL 或用户设备体验。下方旧“未通过”条目是各自历史 head 的结论。
+
 - **Windows 分片 C1 整改候选（2026-11-14）**：独立读者用同一真实fixture证明原 wrapper 收集错误 exit2、v1分片 exit3；作者新增精确对照又复现收集晚期 `KeyboardInterrupt` 被改成3。v2在已有收集失败时保留原生流程，不对部分collection分组；未进入分组的收集中断也不触发最终列表异常。失败报告仍不满足session0/完整覆盖，汇总拒绝；无错误时空集合/空片/晚过滤守卫保留。作者71项定向已过；第二读者12个真实受影响场景已确认C1已修、部分修/未修/内容未决均0，正常覆盖及空片/晚过滤/缺阶段/失败拒绝守卫仍在。最终537文件组合lock/full/ruff通过（2987 passed / 8 skipped），正式SHA绑定与新原生CI另核，不将“非零即可”当退出码保留证据。
 
 - **PR #137 Windows 整套仍未通过（2026-11-14）**：H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 run43474954367 attempt1 仍在25分钟取消，另三项绿；三个 CLI 已通过，2765 PASS / 31 SKIP 只是部分输出。双独立 runner 文件分片是后续基础设施候选，新原生 CI、完整覆盖、独立实施复审与实际耗时仍待核；节点数平衡不保证25分钟完成。不得加时、移除 required 或借本机绿色合并；输出窗口不足以判定性能根因。Windows Server runner 也不代替 Windows 用户设备、ARM64 或安装体验验证。
@@ -577,6 +587,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-14 · 低磁盘准入契约与 PR #137 状态对账**：将文字 v2 整理为独立待实施契约，保留 pure Dispatcher 调用、停止空间例外、既有 effects/legacy 读与模型恢复，以及 authority/guard 真实位置；PRD §5.3.5 / §8.4 增加引用。第二读者只确认两项文字问题已修，LD-01–06 全部 `NOT_RUN`；产品另 PR。补录正式 head `5d046f7` 的六 job 原生 CI 与独立核验通过，同时披露正常合并请求502后的真实 main `6c291a6` / PR仍OPEN、无该main push CI 的服务端不一致；一次同 SHA 请求恢复405后停止修改重试，不伪称已合并或补造 main 绿色。历史红与候选原文保留，未运行真实付费任务或十小时长跑。
 
 - **2026-11-14 · Windows 分片独立C1复验与最终本机门禁**：第二读者仅重验v2受影响12个真实场景，确认C1已修、部分修/未修/内容未决0；未变主线按精确v1独立报告继承，旧收集错误改码及作者回归时序如实保留。root在H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 加六文件v2冻结组合集中执行lock/full/ruff，全部exit0，2987 passed / 8 skipped、pytest485.59s（命令485.79s），537文件/HEAD/status无漂移；之后仅补本知识库事实，不冒称正式新提交自身已跑。正式对象独立绑定、单push后的六job原生CI与两份artifact仍待核，不称Windows或第二批整批完成。
 
