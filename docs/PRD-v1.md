@@ -185,12 +185,13 @@ Task: 整理 ~/Reports 下的 PDF
 
 ```
 CREATED → QUEUED → RUNNING ─┬→ WAITING_APPROVAL → RUNNING
-                            ├→ WAITING_USER      → RUNNING
                             ├→ PAUSED            → RUNNING     # 仅 E1/E3，安全点暂停
                             ├→ RECONCILING       → SUCCEEDED|FAILED
                             ├→ CANCELLING        → CANCELLED
-                            └→ SUCCEEDED | FAILED
+                            └→ SUCCEEDED | FAILED | FENCED   # fenced：被 fence 的终态（tasks.py `RUN_FENCED`；2026-11-14 对账补记）
 ```
+
+> **§4.3 对账（2026-11-14）**：`WAITING_USER` 是本图残留草案，实现中不存在该 Run 状态（`schemas/m2/run.json` 与 `tasks.py` 的状态封闭集均无该值）；等待人工审批不改变 Run 状态（审批是 §5.4 的独立对象），需要控制面干预的挂起用 `run.control_requested` 表达（`schemas/m2/run.json`）。
 
 **`WAITING_APPROVAL` 只是"在等人对某个动作做决定"，不是"一直在等人批准"。**
 人否决一个动作之后，这个动作在同一 Run 内即被否决（§5.4 的 `c4.approval_rejected`），
@@ -203,7 +204,7 @@ Run **不会**再为它回到 `WAITING_APPROVAL`：resume 后要么由模型改�
 
 ```python
 outcome      = succeeded | failed | cancelled
-effect_state = none | applied | partial | unknown     # 复用 C2 的语义
+effect_state = none_applied | applied | partial | unknown  # 复用 C2 的语义（schemas/m2/run.json 同值集；2026-11-14 对账：none → none_applied）
 ```
 
 **目标变更（用户改主意）用 fencing，不用"覆盖"：**
@@ -215,7 +216,7 @@ effect_state = none | applied | partial | unknown     # 复用 C2 的语义
 | `Task` | `workspace_lease_epoch` | 每次目标变更 +1 |
 | `Run` | 绑定不可变的 `goal_revision + lease_epoch` | 两者任一与 Task 当前值不符，即视为被 fence |
 
-fencing 触发时：旧 Run 的审批、grant、排队中的 intent **立即失效**，Run 进入 `CANCELLING`。新目标创建**新的 Run**，不改写旧 Run 的记录。
+fencing 触发时：旧 Run 的审批、grant、排队中的 intent **立即失效**，Run 进入 `CANCELLING`（对账完成后落终态；实现另有独立 `fenced` 终态——`tasks.py` `RUN_FENCED`、`schemas/m2/run.json` state 枚举同值集，用于绑定已失效的 Run 收束，2026-11-14 对账补记）。新目标创建**新的 Run**，不改写旧 Run 的记录。
 
 - 正在执行的副作用允许进入 `RECONCILING`（对账中）
 - **取消只保证"不再派发新副作用"，不保证撤销已经发生的那一次**
@@ -567,7 +568,7 @@ Event {
   type         string       # 必须是 §5.3.2 注册表里的具体类型（封闭集合）
   ts           int64        # 墙钟毫秒（"单调时钟 + 墙钟双写"尚未实现，见 §5.3.4）
   actor        {kind, id}   # core|harness|tool|human|system
-  payload      object|ref   # >256KiB 落盘，此处留 ref；每种类型的字段形状尚未冻结
+  payload      object|ref   # >256KiB 落盘，此处留 ref；字段形状已按类型封闭（v1 契约，见 §5.3.4 与 schemas/c3/event.json）
   payload_hash sha256       # canonical_bytes(payload) 的 sha256
   parent_seq   uint64?      # 保留字段：当前不写，新写入恒为 null（见 §5.3.3）
   idem_key     string?
@@ -663,10 +664,11 @@ Event {
 - **类型集合**：45 个具体类型；`schemas/c3/event.json` 的 `type.enum` 与 `src/tianshu/events.py:EVENT_TYPES` 由 `tests/test_events.py` 双向绑定（改一处忘另一处会红）；写入侧拒绝未登记类型。
 - **信封必填字段**：`seq / run_id / type / ts / actor / payload / payload_hash`；`task_id`、`idem_key`、`parent_seq` 可空。
 - **`payload_hash` 形状**（sha256 hex）与 `seq` 语义。
+- **逐类型 payload 字段形状（v1）**：`event_schema.py` 的 `CURRENT_SCHEMAS` 覆盖全部 45 个类型的 payload 契约，`events.append()` 落库前校验并同事务写 `event_versions` 版本旁表；权威副本 `schemas/c3/event.json` `$defs.payload`，契约文档 [event-payload-contract.md](event-payload-contract.md)（2026-11-14 对账：从下方「尚未封闭」清单移入）。
 
 **当前尚未封闭（M0–M5 历史验收未包含；后续发布按 §5.3.5 补齐，不表示本轮已经实现）**：
 
-- **每种类型自己的 payload 字段形状**：现在统一是 `object`。这是 C3 真正冻结前的最后一层。
+- （**2026-11-14 对账**：原首项「每种类型自己的 payload 字段形状：现在统一是 `object`」**已封闭**，移入上方「已封闭」清单。）
 - `ts` 的"单调时钟 + 墙钟双写"：代码只写墙钟毫秒。
 - 事件导出格式的版本协商（§5 的版本策略）尚未落地到导出上。
 
@@ -689,9 +691,12 @@ Event {
 ```
 Grant    { grant_id, subject, action, resource, data_domain,
            quota, ttl, approval_ref?, issued_by, policy_ver, digest }
+           # ↑ 早期草图，仅示意字段方向；字段级机器契约以 schemas/m2/grant.json 为准
+           #   （request_digest / issuer / remaining_uses / expires_at / run_id / task_id；
+           #     data_domain / quota / ttl / approval_ref 未进入实现）
 Approval { approval_id, request, digest,
-           state: proposed|pending|approved|rejected|expired|
-                  revoked|consumed|superseded,
+           state: pending|approved|rejected|expired|
+                  revoked|consumed|superseded
            decided_by, decided_at, expires_at }
 ```
 
@@ -1149,7 +1154,7 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 
 | 工具 | 动作 | 默认 |
 |---|---|---|
-| `list_files` / `read_file` | `read` | 自动（只读工具不产生副作用，崩溃也只记 `none_applied`） |
+| `list_files` / `read_text` | `read` | 自动（只读工具不产生副作用，崩溃也只记 `none_applied`） |
 | `create_report`，目标**不存在** | `create` | 自动 |
 | `create_report`，目标**已存在** | —（**拒绝**，`c4.create_over_existing`；工具本身不覆盖，批准了也执行不了） | 拒绝，并提示改用 `modify_text` |
 | `modify_text`（整文件替换） | `overwrite` | 需审批 |
