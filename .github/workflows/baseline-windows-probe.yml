@@ -29,5 +29,16 @@ jobs:
         run: uv lock --check
       - name: Sync frozen dependencies
         run: uv sync --frozen
-      - name: Three original failing CLI cases
-        run: uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=long --show-capture=all --durations=3 --stack-timeout=60 tests/test_baseline_evidence.py::test_cli_child_commit_boundary tests/test_baseline_evidence.py::test_cli_real_success_and_failure
+      - name: Original prefix with full collection imports
+        run: |
+          uv run --frozen python - <<'PYPROBE'
+          from pathlib import Path
+          import subprocess
+          import sys
+          keep = {"test_acceptance.py", "test_approval_reject.py", "test_authority_block.py", "test_backend_contract.py", "test_backup.py", "test_backup_materials.py", "test_baseline_evidence.py"}
+          excluded = sorted(p.as_posix() for p in Path("tests").rglob("test_*.py") if p.name not in keep)
+          command = [sys.executable, "scripts/pytest_with_stacks.py", "-o", "addopts=", "-vv", "-rs", "--tb=long", "--show-capture=all", "--durations=20", "--stack-timeout=60"]
+          command.extend("--deselect=" + path for path in excluded)
+          print("FULL_COLLECTION_PREFIX", sorted(keep), "deselect_files", len(excluded), flush=True)
+          raise SystemExit(subprocess.run(command).returncode)
+          PYPROBE
