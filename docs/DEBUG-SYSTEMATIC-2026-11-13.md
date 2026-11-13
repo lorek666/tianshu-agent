@@ -11,7 +11,7 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 |---|---|---|---|
 | A 授权 | 执行侧摘要/票据/claim/lease二次验证；一次批准；路径规范化 | permissions/dispatcher/guard；test_permissions、test_dispatch（含真子进程并发消费）、test_leases、test_job_claims、test_takeover | 已有真实并发/注入时钟路径通过；未发现新的已确认授权绕过。路径限制、同uid控制面不是物理沙箱；Windows跨用户ACL仍未验证。 |
 | B 数据恢复 | append-only、同事务投影、intent/result/Receipt、三态、重复恢复 | events/recovery/snapshot/authority；test_transactions、test_failclosed、test_crash_consistency、test_recovery、test_exec_recovery、test_recovery_atomicity、test_undo_recovery | AB-01/02两个P1确认并修复；历史孤立unknown、人工unblock保留、MCP对象/authority补偿有证据。没有证明所有损坏库与调度交错都已覆盖。 |
-| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002为P2。Windows基准慢测用耗时与线程栈定位；同名新CI实际耗时单列。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
+| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002/004为P2；C-005为CI诊断器P2，C-006为测试夹具P3。Windows慢测按实际耗时、阶段与栈区分，不能把所有耗时归为同一根因。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
 | D 外部输入 | 真实manifest/schema、封闭结束原因、协议错误、MCP身份/发送边界、网络外发/上限 | model/tool_registry/toolschema/mcp/net；test_model_contract、test_g1_admission、test_mcp_registry/client/dispatch/crash/object_block、test_network_fetch/outbound_allow | DE-01/02与C-003联动，DE-03无界redirect正文已修；未穷举provider异常形状、公网DNS/TLS与DNS rebinding。受控响应不证明任意“OpenAI-compatible”端点兼容。 |
 | E 记忆/上下文/预算/子任务 | 作用域/确认/忘记/擦除；来源/版本；哈希/任务可见；预占/结算；父子fence/取消/恢复 | memory*/contents/context/summaries/budget/delegation；test_memory*、test_content*、test_summary*、test_budget_ledger、test_budget_review、test_g2_delegation* | DE-01/02及独立复审B1/B2/B3确认预算缺陷；三态/未知不退款保留。已有记忆/内容/子任务相关测试未确认新缺陷；hash embedding与脚本评测不代表语义或真实模型效果。 |
 | F 用户闭环 | 真实页面状态与真实文件/事件一致；断线重连有界；关UI继续 | ui/src/api/components、Host/Control；Vitest、真loopback响应、真实浏览器、真进程M5集成 | F-01/02 P2修复。实操创建、批准、否决、取消、重开、结果、记忆检索；没有把演示装配冒充三进程，也没用伪造截图。未穷举所有重复点击/乱序与桌面系统组合。 |
@@ -31,11 +31,13 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 | P1 | B2 | 历史负settled在升级后仍增加可用余额 | [预算记录](DEBUG-BUDGET-2026-11-13.md)，旧API生成负数库，新实现拒读/拒准入且四表逐行不变 |
 | P2 | C-002 | 畸形Host请求裸异常断线，初修仍漏深层JSON解析错误 | [I/O记录](DEBUG-IO-2026-11-13.md)，原6真HTTP回归失败；第二读者深度探针原红，补充400后同TCP下一请求及认证顺序 |
 | P2 | C-004 | 慢订阅连接关闭与短写竞态使sender抛未处理TypeError | [I/O记录](DEBUG-IO-2026-11-13.md)，真IPC客户端子进程与实际短写屏障；仅已关闭底层连接的错误转换为ConnectionClosed，开放连接/编码错误负控仍传播 |
+| P2 | C-005 | Windows的原生定时栈诊断自身触发访问冲突，不能可靠诊断慢测 | [I/O记录](DEBUG-IO-2026-11-13.md)，同Python3.12.16/Server2025纯标准库反例；改Python线程定时采样，保留fatal handler、60秒时点与25分钟job上限 |
 | P2 | B3 | 摘要协议失败留下未知预占，但run.end漏计未知调用并声称预算完整约束 | [预算记录](DEBUG-BUDGET-2026-11-13.md)，摘要错误回落、未知计数与账本对账 |
 | P2 | DE-03 | redirect正文无界读取且不计入正文用量 | [I/O记录](DEBUG-IO-2026-11-13.md)，原262146字节→仅读最终2字节 |
 | P2 | F-01 | HTTP正文停滞令UI永久busy | [I/O记录](DEBUG-IO-2026-11-13.md)，真loopback HTTP原失败 |
 | P2 | F-02 | SSE收到头就清失败数，自动重连无界 | [I/O记录](DEBUG-IO-2026-11-13.md)，fake timers确定性原失败 |
 | P3 | G-01 | 现行入口文档与代码、required配置相矛盾 | AGENTS/README/F1/exec修正，M5历史记录保留并加后续说明 |
+| P3 | C-006 | MCP对象阻断测试不关闭客户端，14进程和28读线程留至atexit，污染后续用例与诊断 | [I/O记录](DEBUG-IO-2026-11-13.md)，原业务测试绿但资源探针红；13行finalizer覆盖正常、测试失败和构栈失败，独立观察器在自身清理前验证零残留 |
 
 无已确认P0。没有把缺实现的新功能、已声明限制或单纯可疑源码列为已确认bug。
 
@@ -67,9 +69,23 @@ Windows初始I/O套件为2140 passed / 30 skipped、844.37s；预算批2180 / 30
 ## 末次整改与当前门禁快照
 
 - I/O 独立第二读者 `verify_io` 绑定 `a0cb461702e538b22192eacc9b27fffc030a34ac`，原竞态探针与 3 项正式回归通过；父版本负控 1 failed / 2 passed，相关 68 项以线程异常警告升级错误方式通过。已审 Host/exec/MCP/net/UI 与 dist 对象继承核对通过。本机全量 2169 passed / 7 skipped（377.77s）。
-- 预算独立第二读者 `verify_budget` 绑定 `21cd9b253e11ba71fcd8ad8fa610ab5646b42076`：初始 40 项及 B1/B2/B3 均已修，冻结 21 项组合探针通过，原两项失败在未改断言下转绿；关闭重开/replay、旧负账本四表不变和 claim/cursor 检查通过。整合最终 I/O 后提交 `a3ac288c7ce403bbcb020c99057a50e8e224202c`，本机全量 2243 passed / 7 skipped（387.42s），lock/ruff exit 0；当前集成 CI 另行核验。
-- 恢复生产代码在 `ab7706ba2a0ee837776f7c68b618f803b6f58258` 经 `verify_recovery` 独立验收；按其建议，正式测试同时拦截两种 authority 首次登记，并核对 MCP before_authority 的 dispatch error。强化回归 10 passed，旧实现负控 2 failed / 2 passed / 6 deselected。合入最终 I/O 与预算后的完整组合本机全量 2266 passed / 7 skipped（390.29s），lock/ruff exit 0；243 个代码/测试/配置文件在运行前后指纹一致，强化测试与最终集成对象仍交第二读者绑定新提交。
-- **当前不得合并**：I/O 当前 [run 43349177427](https://github.com/lorek666/tianshu-agent/actions/runs/43349177427) 的 UI/Ubuntu/macOS success，Windows failure。Windows 的 `test_cli_compare_accepts_previous_report_as_baseline` 在 60 秒诊断输出过程中发生 access violation、exit 139；实际 CPython 3.12.16 x86_64、Windows Server 2025、pytest 9.2.0。原因正在取证，不能将其归为已修问题或简单重跑取绿。原始日志 `io-final-windows-failed.log` 已保留，原成功提交不可替代当前失败。当前 Ubuntu 为 2168 passed / 8 skipped（279.84s），原 sender 线程警告已消失。
+- 预算独立第二读者 `verify_budget` 绑定 `21cd9b253e11ba71fcd8ad8fa610ab5646b42076`：初始 40 项及 B1/B2/B3 均已修，冻结 21 项组合探针通过，原两项失败在未改断言下转绿；关闭重开/replay、旧负账本四表不变和 claim/cursor 检查通过。整合最终 I/O 后提交 `a3ac288c7ce403bbcb020c99057a50e8e224202c`，本机全量 2243 passed / 7 skipped（387.42s），lock/ruff exit 0；该提交的云端结果见下述精确run记录。
+- 恢复生产代码在 `ab7706ba2a0ee837776f7c68b618f803b6f58258` 经 `verify_recovery` 独立验收；按其建议，正式测试同时拦截两种 authority 首次登记，并核对 MCP before_authority 的 dispatch error。强化回归 10 passed，旧实现负控 2 failed / 2 passed / 6 deselected。合入最终 I/O 与预算后的完整组合本机全量 2266 passed / 7 skipped（390.29s），lock/ruff exit 0；243 个代码/测试/配置文件在运行前后指纹一致，第二读者已将强化测试、六组独立探针及对象继承绑定 `7dfed61db80a0124f3b934feb7f07356b2e25553` 验收通过；不把这份代码批准当成后续提交的CI批准。
+- I/O `a0cb461…` 的 [run 43349177427](https://github.com/lorek666/tianshu-agent/actions/runs/43349177427) 为 UI/Ubuntu/macOS success、Windows failure，失败原件完整保留。Windows在60秒原生诊断输出时access violation/exit139；实际CPython3.12.16 x86_64、Windows Server2025、pytest9.2.0。后续隔离实验 `92545fa418478afd1be6886f70ba5f5470e24c0b` 的 [run 43353423204](https://github.com/lorek666/tianshu-agent/actions/runs/43353423204) 在同环境、无产品代码参与时复现原生采样0xC0000005；Python采样与无采样控制正常。它确认原生定时机制风险，不证明原业务失败的全部C指令因果；实验分支不合入main，实验完成也不是required CI通过。
+- 预算整合 `a3ac288c7ce403bbcb020c99057a50e8e224202c` 的 [run 43351470704](https://github.com/lorek666/tianshu-agent/actions/runs/43351470704) 四绿：Ubuntu2242/8（235.76s）、macOS2243/7（602.87s）、Windows2219/31（870.64s）。恢复整合 `7dfed61db80a0124f3b934feb7f07356b2e25553` 的 [run 43351471256](https://github.com/lorek666/tianshu-agent/actions/runs/43351471256) 四绿：Ubuntu2265/8（278.07s）、macOS2266/7（628.85s）、Windows2242/31（1363.31s）。两份旧绿色不抵消I/O失败，也不代替后续诊断器增量的当前提交检查。
+- Windows后两次总耗时差492.67秒；新增23项恢复测试的日志墙钟包络约18.10秒，共同eval慢项增加约205.89秒，原100次故障注入增加15.43秒。MCP测试在慢eval之后开始，因此C-006残留不能解释更早eval耗时；现有close能在0.295秒清空残留，未证实生产close泄漏。没有提高超时、增加重试或削减测试来取绿，剩余耗时波动没有足够证据归为单一根因。
+- C-005新诊断器的独立内容预验由第二读者亲跑：19个真实场景（setup/call/teardown各实际60秒、GIL两侧65秒、fatal双侧真实abort、失败/中断/诊断异常、正常及同fd阻塞收尾）、10个配置边界与5项阶段扰动均符合预期。采样脚本SHA256为 `22c25d059f87cac109cc7d64374ecf43e7941555c7e75d315a8f1388ea79b111`；正式测试为 `b8fa248960a173faf30079db3972525e0bd931d86048c8a2def3dcd8802ba166`。新候选曾发现同fd覆盖缺口、20ms测试时序误红/误绿及有限超大timeout后台异常假绿，均有独立反例并整改；未发布的候选缺陷不冒充基准产品新增缺陷。这里是内容hash预验，正式提交仍须绑定SHA与四项CI。
+
+## 诊断整改后的整合验证（2026-11-13）
+
+C-005/C-006正式I/O提交为 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee`。第二读者已核验精确8文件Git blob、交接哈希及280份原始证据并正式批准；报告 `verify-io-final-7111cbb-report.md` SHA256为 `60c90cab41ae45b54cc89ae60bc1cfded7f8a4cb237f60de8f9285b9219708b6`。上述19场景/10配置/5扰动和C-006的90项/两失败路径可继承，当前范围无部分修/未修阻断。I/O本机最终2200 passed / 7 skipped、390.82s，lock/ruff exit0；[当前run43359223697](https://github.com/lorek666/tianshu-agent/actions/runs/43359223697) 尚需四项真实结论，不能由本机或原生隔离实验代替。
+
+| 整合内容 | 本机结果 | 内容绑定 |
+|---|---|---|
+| 预算a3 + 已审I/O7111 | 2274 passed / 7 skipped，394.72s；lock/ruff exit0 | 322个跟踪文件在全量前后hash完全相同 |
+| 恢复7df + 已审I/O7111 | 2297 passed / 7 skipped，396.59s；lock/ruff exit0 | 326个跟踪文件在全量前后hash完全相同 |
+
+两轮仅测试子命令隔离相关环境并使用不同临时数据根，未修改用户全局配置。生产src、UI、schema、依赖相对各自已审a3/7df完全相同；新增测试/包装器按7111对象继承。结果后的变更只有证据文档回填。提交前日志仍记录原HEAD；`*-freeze.json` / `*-stable.json` 记录组合内容，提交后须核Git对象及第二读者继承。各PR正文记录最终完整SHA、当前CI与合并状态；本表不把未完成的门禁写成通过。
 
 ## 明确保留的边界
 
@@ -79,5 +95,6 @@ Windows初始I/O套件为2140 passed / 30 skipped、844.37s；预算批2180 / 30
 - 记忆forget不等于全部历史副本擦除；hash embedding没有语义能力；摘要/委派脚本模型只验证执行链。
 - Windows10/11/ARM64、mac-x64用户设备、安装/升级/回退、真实模型UI、公网链路未验证，不从runner扩大支持承诺。
 - 未穷举恶意MCP孙进程继承输出端、所有并发取消交错、所有损坏旧库或provider输入。事件版本缺失与人为吞内层异常等疑点缺可靠生产复现，未报确认缺陷。
+- Python定时诊断无法保证在C扩展长期独占GIL时出栈；fatal handler与外部job期限不是该诊断缺口的等价替代。诊断专用fd阻塞时返回非零并保留活跃writer持有的fd到CLI进程退出，不声称该错误路径已经无线程/句柄残留。
 
 本轮完成的每条负控能区分已知坏实现与修复实现；它们不能证明整个系统不存在其他bug。

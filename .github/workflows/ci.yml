@@ -89,10 +89,12 @@ jobs:
 
       - name: Pytest
         # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
-        # Windows 输出逐条用例和长等待时的线程栈，作业超时也能定位卡点（#50）。
+        # Windows 输出逐条用例；Python 线程负责60秒定时栈，避免3.12原生
+        # timed dump的frame遍历竞态。保留fatal handler；GIL被C扩展长期占用时
+        # Python线程无法保证出栈，25分钟作业上限不等于补齐该诊断缺口。
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            uv run --frozen pytest -o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60
+            uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
           else
             uv run --frozen pytest -o addopts="" -q -rs
           fi
