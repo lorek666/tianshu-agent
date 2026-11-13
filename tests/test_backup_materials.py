@@ -108,7 +108,7 @@ def test_backup_covers_cli_payload_memory_and_content(tmp_path):
         f"artifacts/blobs/{refs['content']}",
     }
     assert expected <= {entry.path for entry in manifest.files}
-    assert (dest / "memory_blobs" / refs["memory"]).read_text() == MEMORY_TEXT
+    assert (dest / "memory_blobs" / refs["memory"]).read_text(encoding="utf-8") == MEMORY_TEXT
     assert (dest / "artifacts" / "blobs" / refs["content"]).read_bytes() == CONTENT_BYTES
     checked = verify_backup(dest)
     assert checked.ok, checked.problems

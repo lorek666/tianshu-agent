@@ -27,3 +27,9 @@ python3 docs/evidence/data-lifecycle-2026-11-13/run_clean.py \
 本包记录的运行平台是 macOS arm64。权限探针需要 POSIX 权限语义；符号链接探针需要宿主允许创建链接；不要将其结果说成 Windows 原生验证。权限探针固定读取基线提交 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 `events.py`，浅克隆缺少该对象时须先获取该提交，不能把取不到基线当成产品失败或通过。
 
 `final-bundle-manifest.json` 绑定基线、被审产品/测试与脚本 SHA256。其余运行 JSON 分别保存九探针命令与关键输出、格式检查、144 项定向测试和最终被审文件哈希。`candidate-commit-binding.json` / `candidate-freeze-inheritance.json` / `archived-readme-smoke.json` 记录产品提交的 Git 对象、全量后仅文档/JSON 差异和第二读者对归档说明的亲跑。输出里的 `/tmp/...` 与系统临时路径是当次现场，不要求复跑生成相同临时名。完整提交结论见 [独立复审报告](../../REVIEW-DATA-LIFECYCLE-2026-11-13.md)；该报告与全量、CI 记录各自区分，不能相互替代。
+
+`windows-encoding-review.md`、`windows-encoding-evidence.json` 和
+`windows-encoding-scope.json` 是首次 CI 唯一 Windows 失败的独立复核原件。
+它们记录原始 cp1252 异常，以及携带父提交原 conftest 的 ASCII 环境红绿和 144 项回归；
+这三件文件逐字节归档，不改写既有产品复审。复核对象仅为测试读取显式指定 UTF-8 的一行，
+不宣称新 Windows CI 已通过。后续完整提交与组合验证另行绑定。

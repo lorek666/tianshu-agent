@@ -44,6 +44,33 @@ uv run --frozen pytest -o addopts='' -q \
 
 [正式独立复审](REVIEW-DATA-LIFECYCLE-2026-11-13.md) 已将本地结论绑定到产品提交 **`5093bf9a74ce082974096f4c38a2b529fff2da9b`**：被审对象、十脚本与五份独立运行 JSON 均与冻结字节一致，并亲跑归档 README 的锁探针。后续报告归档提交仅增加文档/JSON，不改变受审产品、测试或脚本；继承范围须再次核对。本报告不预填云端通过结论，本轮 PR 当前 head 的 required 状态另看 Actions。
 
+### 2.1 首次 CI 与 Windows 测试编码修正
+
+PR #134 head `f509a53881c372d8d7f4b1e2718130edaff4ed06` 的
+[run 43375968422](https://github.com/lorek666/tianshu-agent/actions/runs/43375968422)
+已完成：UI **76 passed**、Ubuntu **2268 passed / 12 skipped / 3 warnings，363.99s**、
+macOS **2273 passed / 7 skipped，569.17s**，三项成功；Windows 为
+**1 failed / 2244 passed / 35 skipped，1168.94s**，失败不能算作通过。
+
+Windows 唯一失败在本片新增的 `test_backup_covers_cli_payload_memory_and_content`：
+第 111 行用默认 `Path.read_text()` 读取既有 UTF-8 记忆正文，该 runner 默认 cp1252，
+解码抛 `UnicodeDecodeError`。实际被测合成提交为
+`a6deecd98b0ce40a0f397bd25ae03e4770eb7cf4`，环境为 Windows Server 2025
+（image `windows-2025-vs2026`）、Python 3.12.16；不泛化为用户设备验证。
+
+修正仅为该测试显式指定 `encoding="utf-8"`，断言、产品、CI 和 skip 条件不变。
+第二读者在 `LC_ALL=C LANG=C PYTHONUTF8=0` 中亲跑：父提交原测试与原 conftest
+逐字节复制后 **1 failed**（ASCII 解码错误），当前测试 **1 passed**，同环境四模块
+**144 passed，6.23s**。这是非 UTF-8 默认编码的独立红绿证据，原生 Windows 仍需新 CI。
+完整命令、原始输出和对象摘要见
+[独立编码复核](evidence/data-lifecycle-2026-11-13/windows-encoding-review.md)及其同目录 JSON。
+
+该一行修正后的本机全量为 **2273 passed / 7 skipped，374.91s**，
+`uv lock --check` 与 `uv run --frozen ruff check .` 均退出 0；
+246 个非文档文件在运行前后摘要完全一致。运行输出、命令及冻结对象见
+[编码修正本机门禁](evidence/data-lifecycle-2026-11-13/windows-encoding-local-gates.json)。
+这些结果只绑定本次编码修正候选，后续同步 main 或实现准入时须重新验证受影响组合。
+
 ## 3. 交付边界与后续顺序
 
 1. 锁是协作式准入，旧版或同 uid 直接 SQLite 可绕过；不承诺硬链接别名收敛。锁统一位于稳定的 OS 用户临时根，不要求数据根上级目录可写；Windows 未独立验证 owner SID / 跨用户 ACL。低层 `create_backup()` 保留在线语义，只有新 CLI 持独占准入。

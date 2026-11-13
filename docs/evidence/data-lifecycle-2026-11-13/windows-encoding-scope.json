@@ -1,0 +1,105 @@
+{
+  "candidate_parent": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+  "candidate_status": " M tests/test_backup_materials.py\n",
+  "diff": "diff --git a/tests/test_backup_materials.py b/tests/test_backup_materials.py\nindex 69615a4..65bc84a 100644\n--- a/tests/test_backup_materials.py\n+++ b/tests/test_backup_materials.py\n@@ -108,7 +108,7 @@ def test_backup_covers_cli_payload_memory_and_content(tmp_path):\n         f\"artifacts/blobs/{refs['content']}\",\n     }\n     assert expected <= {entry.path for entry in manifest.files}\n-    assert (dest / \"memory_blobs\" / refs[\"memory\"]).read_text() == MEMORY_TEXT\n+    assert (dest / \"memory_blobs\" / refs[\"memory\"]).read_text(encoding=\"utf-8\") == MEMORY_TEXT\n     assert (dest / \"artifacts\" / \"blobs\" / refs[\"content\"]).read_bytes() == CONTENT_BYTES\n     checked = verify_backup(dest)\n     assert checked.ok, checked.problems\n",
+  "objects": [
+    {
+      "path": "src/tianshu/maintenance.py",
+      "baseline_sha256": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+      "candidate_sha256": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+      "unchanged": true
+    },
+    {
+      "path": "src/tianshu/events.py",
+      "baseline_sha256": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+      "candidate_sha256": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+      "unchanged": true
+    },
+    {
+      "path": "src/tianshu/backup.py",
+      "baseline_sha256": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+      "candidate_sha256": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+      "unchanged": true
+    },
+    {
+      "path": "src/tianshu/data_cli.py",
+      "baseline_sha256": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+      "candidate_sha256": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+      "unchanged": true
+    },
+    {
+      "path": "src/tianshu/cli.py",
+      "baseline_sha256": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+      "candidate_sha256": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+      "unchanged": true
+    },
+    {
+      "path": "tests/test_maintenance.py",
+      "baseline_sha256": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+      "candidate_sha256": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+      "unchanged": true
+    },
+    {
+      "path": "tests/test_backup_materials.py",
+      "baseline_sha256": "0ea3c8ea529b0f95b8e9d778b3bda23d31bd5cefbf347ebf66264197052de101",
+      "candidate_sha256": "a9af99927d18d3035a719f4d325ed22c3d06e1bfd93943681ba0788d33e7f6ad",
+      "unchanged": false
+    },
+    {
+      "path": "tests/test_backup.py",
+      "baseline_sha256": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+      "candidate_sha256": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+      "unchanged": true
+    },
+    {
+      "path": "tests/test_data_cli.py",
+      "baseline_sha256": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee",
+      "candidate_sha256": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee",
+      "unchanged": true
+    },
+    {
+      "path": ".gitignore",
+      "baseline_sha256": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49",
+      "candidate_sha256": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49",
+      "unchanged": true
+    }
+  ],
+  "ci_failure": {
+    "run_id": 43375968422,
+    "job_id": 131722421320,
+    "raw_log_sha256": "50cc3668fe49eff7a61bc1c5f395f5e5e4d3c7fcdb9a3da1fb7c2e9990514d63",
+    "raw_log_path": "/tmp/tianshu-g3-20261113/ci-43375968422/job-131722421320.log",
+    "key_lines": [
+      {
+        "line": 106,
+        "text": "2026-11-13T06:03:01.8361771Z HEAD is now at a6deecd Merge f509a53881c372d8d7f4b1e2718130edaff4ed06 into ccff93e79cfeb93e47e5a35012fd92fae366e941"
+      },
+      {
+        "line": 211,
+        "text": "2026-11-13T06:03:14.7197361Z platform win32 -- Python 3.12.16, pytest-9.2.0, pluggy-1.7.0 -- D:\\a\\tianshu-agent\\tianshu-agent\\.venv\\Scripts\\python.exe"
+      },
+      {
+        "line": 2937,
+        "text": "2026-11-13T06:22:43.8464090Z tests\\test_backup_materials.py:111: in test_backup_covers_cli_payload_memory_and_content"
+      },
+      {
+        "line": 2943,
+        "text": "2026-11-13T06:22:43.8469347Z C:\\Users\\runneradmin\\AppData\\Roaming\\uv\\python\\cpython-3.12-windows-x86_64-none\\Lib\\encodings\\cp1252.py:23: in decode"
+      },
+      {
+        "line": 2946,
+        "text": "2026-11-13T06:22:43.8472859Z E   UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f in position 2: character maps to <undefined>"
+      },
+      {
+        "line": 3001,
+        "text": "2026-11-13T06:22:43.8518049Z =========== 1 failed, 2244 passed, 35 skipped in 1168.94s (0:19:28) ==========="
+      }
+    ],
+    "tested_merge_commit": "a6deecd98b0ce40a0f397bd25ae03e4770eb7cf4",
+    "tested_pr_head": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+    "runner_os": "Microsoft Windows Server 2025",
+    "runner_image": "windows-2025-vs2026",
+    "python": "3.12.16"
+  },
+  "scope": "one test encoding argument only; five product source objects unchanged; Windows fix still awaits new native CI"
+}
