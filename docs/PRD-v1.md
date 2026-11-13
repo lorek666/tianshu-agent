@@ -857,6 +857,18 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.unhandled` | 保留未使用 | 保留未使用：策略分类的兜底分支，当前 SUPPORTED_ACTIONS 已全覆盖。 | 保留未使用；真看到它说明策略分类漏了分支，报 bug。 |
 | `dispatch.denied` | 保留未使用 | 保留未使用：DispatchDenied 的默认编号，当前无调用方使用。 | 保留未使用；真看到它说明有调用方漏传编号，报 bug。 |
 
+#### 待实施补充：低磁盘 C4 拒绝编号（2026-11-14）
+
+以下三项尚未登记到当前可写清单，当前仍为 75 项；判定条件、pure/模型恢复与停止控制例外以[低磁盘 Run 准入契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)为准。
+
+| rule_id | 待实施含义 | 用户该怎么做 |
+|---|---|---|
+| `dispatch.run_effects_disallowed` | `pure_only` 请求真实非 pure 工具。 | 结束/取消后显式新开 effects Run；不升级原 Run。 |
+| `dispatch.disk_space_low` | 实际位置的有效 free 低于 2 GiB，含真实 0。 | 清理对应卷，或显式新建 pure_only Run；不自动删除、不升级原 Run。 |
+| `dispatch.disk_space_unknown` | 无法证明必需位置的空间，区别于真实 0。 | 修复配置、访问权限或探测后重新判定；不盲重试当足量。 |
+
+产品实现时随真实产生路径同时登记代码、schema 与 §5.4.1 当前清单；本次不作运行时登记或产品通过声明。
+
 #### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
 
 **只新增一条编号**；另外两种拒绝复用已登记的编号，不造同义新号——`rules.py` 明写"不许
