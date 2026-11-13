@@ -324,3 +324,33 @@ NC7 用 `-k denominator`（2 条）、NC8 用 `-k task_spawns`（1 条）；每�
 | 多子任务的只读边界分区 | **未覆盖** | `subtask.readonly_boundary` 的规则出现是**跨子 Run 并集**：多个子任务时"规则只在 A 的拒绝里出现"不能证明 B 也被拒。当前 RU-D1 只有一个子任务，逐子 Run 分区核对未实现也未评测 |
 | 汇总事实的"因果"边界 | 已收窄但仍有限 | `subtask.result_grounded` 只证明"产物里的事实出现在子 Run 读到的正文里"；它不证明"子任务真的读了**应该读的**文档"（那是 `read_text` 路径断言），也不证明真实模型会这样写摘要 |
 | 任务集的统计功效 | 每条 3 次 | 3 次是 PRD 下限采样，不做统计推断 |
+
+## 7. 显式收集已有报告（开发工具，2026-11-13）
+
+`scripts/baseline_evidence.py` 只收集调用者逐项指定的已有 C5 报告与可选指标，
+不运行任务、模型或 soak，不跟随报告里的路径、命令或 URL。在 clean Git 根使用：
+
+```bash
+mkdir -p .omc/artifacts
+uv run --frozen python scripts/baseline_evidence.py \
+  --repo "$PWD" --report /absolute/path/report.json \
+  --metrics /absolute/path/metrics.jsonl \
+  --out .omc/artifacts/baseline-evidence-new-id
+```
+
+`--report` 可重复，至少一份；没有指标时省略 `--metrics`。输出父目录须已存在，
+输出目录必须是新目录；若位于任一 Git 仓库内，目标必须由该仓库的
+`git check-ignore` 确认为已忽略。不要把原件或收据加入公开仓库。
+
+`inputs/` 保留原件字节；`collection.json` 含本机路径，只留本地私有。
+可分享的 `summary.json` 只有固定字段，不含路径、模型、端点、正文、分数或原始
+输入 hash；它单独存在不证明收集完成。工具先核输入形状、复制原件，再复核输入、
+收集器与 Git 状态，最后原子发布 `collection.json`；成功静默，外部进程观察者
+自行记录退出码。发布前失败没有完成收据；发布后被终止可保留已完成的收集收据。
+
+收据固定为 `NOT_EXECUTED_BY_TOOL` / `NOT_EVALUATED`，历史执行声明仍是
+`UNVERIFIED`。字节与 Git 快照不证明报告曾按该源码执行，也不保证发现变化后
+还原的瞬态变化；不承诺断电持久性、抗同 uid 篡改或 Windows ACL 隔离。
+本提交前的独立内容复验与本机组合 lock/full/ruff 已通过；正式提交绑定及新原生 CI
+仍待核，后续准确 SHA/run/合并结果见 `codex/g3-baseline-evidence` 对应 PR。收集测试
+不验证 §6 的真实模型、公网研究或十小时长跑，也不改变任务版本和 C5 分母。
