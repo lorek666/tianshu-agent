@@ -121,3 +121,7 @@ git diff --check -- src/tianshu/recovery.py tests/test_exec_recovery.py tests/te
 
 
 最终分域关联结果为 **237 passed / 22.46s**，Ruff与diff-check通过。完整项目门禁与当前提交云端结果独立记录，不累加重叠测试组。
+
+## 独立复审后的测试强化
+
+第二读者在 `ab7706ba2a0ee837776f7c68b618f803b6f58258` 的独立工作树亲跑23项新增、235项关联与2个Windows专属跳过，另以六组独立故障探针核验实际副作用、首次authority登记、事务已提交及人工unblock。实现未发现阻断缺陷。其负控发现原MCP before_authority夹具只截较晚的目录登记，现同时截取目录与对象首次登记，并断言派发终态error。强化后当前10项通过；仅将生产代码回退到上游 `e89a95d4c7e8f7196b38c51148e294d4c72bed9a` 时同组before_authority为2 failed/2 passed，真正打中旧MCP漏目录窗口。未修改恢复生产代码；日志 `recovery-strengthened-{red,green}`。最终报告将此测试差异绑定后续提交，不把早期复审SHA冒充新SHA。

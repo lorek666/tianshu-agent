@@ -65,6 +65,7 @@ else:
     def crash_before_authority(*args, **kwargs):
         failpoint('after_result')
     authority.register_blocked = crash_before_authority
+    authority.register_object_blocked = crash_before_authority
 os.environ['TIANSHU_FAILPOINT'] = 'after_result'
 recover_run(log, 'run-probe', root / 'ws', SnapshotStore(root / 'artifacts'),
             data_root=root)
@@ -104,6 +105,10 @@ def test_unknown_result_and_block_survive_interrupted_recovery_together(
         if stage == "before_authority":
             assert results and blocks
             assert authority.active_paths() == []
+            if mcp:
+                assert log.conn.execute(
+                    "SELECT state FROM dispatches WHERE dispatch_id='disp'"
+                ).fetchone()[0] == "error"
         recover_run(log, "run-probe", ws, snapshots, data_root=tmp_path)
         assert blocked_workspaces(log) == {str(ws.resolve())}
         assert authority.active_paths() == [str(ws.resolve())]
