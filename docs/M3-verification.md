@@ -125,7 +125,7 @@ OpenAI 协议要的是 `parameters`。于是**参数 schema 从来没到达模�
    现在 `action` 是真实动作、`resource` 是绝对路径并带 `root`/`intent_seq`/`blob_ref`，
    `evidence` 是逐条可解析的结构化引用，`verify_receipts` 会核对事件、快照 blob
    与磁盘现状；旧格式凭据被报成"无法独立核对"而不是默认通过。
-9. **内部工具 `restore_file` 能被模型提案派发**：`_dispatchable` 不校验 `exposed`（issue #19）。
+9. **（M3 之后已修，PR #42，issue #19 closed）内部工具 `restore_file` 能被模型提案派发**：`_dispatchable` 不校验 `exposed`——已改为 exposed 即能力边界（2026-11-14 补注：本条在 acf7f85 销账轮被遗漏）。
 10. **打开前没有 realpath 复核**：`Workspace.resolve` 在解析时消解符号链接，但
     resolve 与 open 之间仍有 TOCTOU 窗口（与 M2 同，未变好也未变坏）。
 11. **`retryable` 无调用方**：给上层策略留的判据，不是自动重试。

@@ -92,3 +92,38 @@ PR body 按「原方案 → 新方案 → 为什么 → 影响哪些代码」；
 - 每处修改引用的依据（file:line / 命令输出）在基线 `0169109` 上已核实；本文行号随编辑漂移，定位以关键短语为准。
 - 提交前门禁：`uv lock --check` + `uv run --frozen ruff check .` + `uv run --frozen pytest -o addopts="" -q -rs`（纯文档改动不影响测试，仍按 AGENTS 门禁跑全量）。
 - CI：两个 PR 各走四项 required；合并由维护者执行（enforce_admins）。
+
+## 7. 重验轮记录（2026-11-16）
+
+原轮 26 项因列车阻塞滞留；rebase 到 `main@702ba40` 后逐项对照现 main 重验，结论分三类：
+
+- **保留 24 项**：引用与事实全部重证——issue #40/#53/#54/#50 实查 CLOSED、#55 仍 OPEN；
+  `recover` 未核实效果实测 `cli.py` `_cmd_recover` 返回 1；`run.end` required 集合含
+  tokens/turns/budget_enforced（`event_schema.py`）；PRD F14 在 §7；M4 §7.4、
+  `tests/test_slow_subscriber.py`、`daemon.py SEND_QUEUE_MAX=1024`、
+  `WINDOWS-CI-2026-11-13.md` 等注内引用全部存在。23 ToolSpec（19 可见）与
+  `SUITE_VERSION=m4.6` 经 AST/代码实测在现 main 仍然为真（W5 未新增工具）。
+- **升级执行 1 项**：§8 错位日志归位从原轮 5 条扩到 **9 条**——main 其后又积压
+  4 条（低磁盘 T2 冻结 / 低磁盘 T2 独立+T3 冻结 / 低磁盘 T3 收口 / PR #144），
+  9 条全部归位到 §8 各自日期区（11-13 五条插「工程管理归纳」后，11-14 四条插
+  「新组合本机全门」后、11-15 W3 条目前），§9 索引后不再有日志条目。
+- **销 1 项**：backup-restore §0 T3 行——现 main 已写「三片精确内容均已独立验收」
+  「T2/T3 已随 PR #136 交付」，原漂移（「T3 独立待验」）不存在，不重复修复。
+
+### 7.1 数字类修复按现 main 重测（原轮数字已过期）
+
+- §2/README 代码规模：原轮 63 模块 / 117 测试文件 → 现测 **73 / 133**（其后 W5 调度、
+  W4 恢复B、W6 embedding、F12 Keychain、run_policy/disk_admission/platform_identity
+  等新增 10 模块；测试文件 +16）。README 架构树按现 main 补全 **34** 个缺失模块
+  （原轮 24 + 其后新增 10），头部保持「数量以当前目录实测为准」不写死计数。
+- 23 ToolSpec（19 模型可见 + 4 控制面专属）与 `SUITE_VERSION = m4.6` 原轮数字在现
+  main 仍真，按实测保留不改。
+
+### 7.2 重验轮新抓漂移（原轮 26 项之外，顺手修）
+
+F12 Keychain 四处「v1 未实现」旧口径——`keychain_macos.py` 已随 W1 落地（SecItem
+直调、仅 darwin 加载）并经 #151 独立复审（PRD F12 行当时已补落地状态，入口文档漏改）：
+README「密钥没有存进系统钥匙串」句、README `credentials.py` 行、
+KNOWLEDGE §7 F12 行与 §已知限制 Keychain 条，全部改为「macOS 已落地 / 其余平台如实
+报 `unsupported`」两段式口径。另：README `data_cli.py` 行补 `retention-audit`（#169
+已交付，原树行未列）。
