@@ -106,3 +106,7 @@ uv run --frozen pytest tests/test_budget_review.py tests/test_budget_ledger.py t
 ```sh
 uv run --frozen pytest tests/test_budget_review.py -k failed_summary_unknown_survives -o addopts= -q
 ```
+
+## 诊断修复整合快照（2026-11-13）
+
+将I/O `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 合入此前预算整合 `a3ac288c7ce403bbcb020c99057a50e8e224202c`。预算与其他生产src、UI、schema、锁文件完全不变；本批仅继承已独立批准的CI诊断包装器、MCP测试清理与对应文档，知识库保留双方记录。322个跟踪文件在全量前后hash相同，`budget-diagnostic-integrated-*` 原件记录 lock/ruff/full exit0，**2274 passed / 7 skipped / 394.72s**。这是提交前组合快照，日志HEAD仍为a3；后续完整SHA以Git对象继承把此证据绑定，不将旧a3的CI绿色当作新提交门禁。最终current SHA、第二读者继承与四required结果以PR #132正文版本记录为准。

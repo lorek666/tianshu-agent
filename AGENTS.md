@@ -18,7 +18,7 @@
 ## 三、流程门禁（机械，不可绕过）
 
 - **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。** required 检查为 ubuntu、macOS、Windows Python 三项与 UI 一项，准确名称及范围见 CONTRIBUTING §6；改检查名称时同步核对远端分支保护。
-- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`，Windows 增加 `-o addopts="" -vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`，用于汇总、跳过原因与长等待诊断。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
+- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60`，用于汇总、跳过原因与长等待诊断。包装器保留原生fatal handler，以Python线程替代有frame竞态的原生定时转储；诊断失败必须非零，不能提高25分钟job上限掩盖问题。C扩展长期独占GIL时不能保证60秒栈，须如实保留该诊断边界。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
 - **高危改动必须独立复审**：碰授权 / 租约 / 并发写 / 事件日志 / 计费，须由「第二读者」（另一会话或人）复审，不读作者自查结论，只按计划验收项逐条对照，并给出**可复现探针证据**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决。
 - **复审与 CI 绑定版本**：记录完整提交 SHA、范围、复现命令、关键输出与未决项；后续实质改动重审受影响范围，不把旧提交的结论冒充最新提交已通过。单维护者的 GitHub 批准人数可以为 0，但不能省略高危独立复审。
 - **契约变更单独提交**：`docs(contract):` 单独 commit / 单独 PR，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」，不夹带代码。
