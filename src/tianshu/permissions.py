@@ -719,6 +719,10 @@ class PolicyEngine:
         - `task`：scope_id 必须等于本任务 id；
         - 其它/未知 scope：拒绝。
         """
+        if action != ACTION_READ and preconditions.get("memory_readonly_task") is True:
+            return PolicyDecision(
+                DECISION_DENY, "只读子任务不能写入记忆或发起审批", "c4.memory_scope_denied"
+            )
         if len(resources) != 1:
             return PolicyDecision(
                 DECISION_DENY,

@@ -1265,6 +1265,9 @@ class _Daemon:
             memory=self.driver_stack.memory,
             # 语义摘要记录（PRD §7.1）：同一个存储；开关默认关。
             summaries=self.driver_stack.summaries,
+            # 审批/显式续跑与普通 Worker 共用预算：人工等待不重置限额，
+            # 未设限时也必须记录续跑的真实模型调用。
+            budget=self.driver_stack.budget,
         )
         consecutive_failures = 0
         try:

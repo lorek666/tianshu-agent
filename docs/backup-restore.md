@@ -23,6 +23,10 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 
 新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。迁移不启停服务、不执行恢复。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口仍须等记忆隔离等后续契约实现与验收。
 
+第二轮修复还要求Receipt的blob引用独立完整，受控文件Receipt有一致写前快照；快照/undo使用各自原生解析器。
+`verify` 拒绝非法清单整数与未来/负数真实DB版本；`restore-plan` 对全部事件做精确payload版本校验，并将runs全集身份/最终状态与事件对账。
+缺行或矛盾不自动重建、不把未知报告为空；这不等于已实现恢复apply、审批/租约全历史重建或GC。证据见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)。
+
 预演需要 `runs`、`approvals`、`leases` 三张投影及事件版本旁表可读。缺失或损坏时退出 `2`、`ok=false`、`reconciliation.complete=false`，不会将未能核对的状态报告为空。只有事件日志的旧库也不猜测重建成功；须先由匹配版本重建并验证必要投影。
 
 | 宣称 | 状态 | 证据 |
@@ -135,7 +139,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 | `source_aliases` | 可选的已核对同根别名，默认为空；仅创建时发现，保存后的校验不回源解析。格式版本仍为 `1` |
 | `files[]` | 每个文件的 `path`（数据根相对、`/` 分隔）、`sha256`、`size`、`category` |
 | `event_count` / `event_seq_head` / `run_ids` | 一致点的事件统计与 Run 清单 |
-| `references` | 事件 payload、快照、撤销日志、内容对象和未擦除记忆的引用；兼容旧字段。校验时从备份材料重新推导，删除清单里的引用也不能隐藏缺材料 |
+| `references` | 事件 payload、Receipt材料、快照、撤销日志、内容对象和未擦除记忆的引用；兼容旧字段。校验时从备份材料重新推导，删除清单里的引用也不能隐藏缺材料 |
 | `writer` | 备份时只读探到的写者状态（不是锁，不停止任何进程） |
 | `excluded` | 明确排除的顶层条目 |
 | `retention` | 保留期声明（§6） |

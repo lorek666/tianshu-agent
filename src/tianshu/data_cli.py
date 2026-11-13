@@ -96,10 +96,11 @@ def _reconciliation(
             " e.payload_ref, e.payload_hash, v.type AS version_type,"
             " COALESCE(v.version, 0) AS version FROM events e"
             " LEFT JOIN event_versions v ON v.seq=e.seq"
-            " WHERE e.type IN ('tool.intent','tool.result') ORDER BY e.seq"
+            " ORDER BY e.seq"
         )
         intents: list[dict[str, Any]] = []
         last_result: dict[tuple[str, str], int] = {}
+        expected_runs: dict[str, tuple[str, str]] = {}
         for row in rows:
             seq = _integer(row["seq"], "events.seq")
             event_type = row["type"]
@@ -109,6 +110,31 @@ def _reconciliation(
                 backup, row, source_root=source_root, source_aliases=source_aliases,
             )
             event_schema.validate_payload(event_type, payload, row["version"])
+            if event_type in {"run.start", "run.state", "run.finish", "run.fenced"}:
+                run_id = _text(payload.get("run_id"), f"seq={seq} run_id")
+                task_id = _text(payload.get("task_id"), f"seq={seq} task_id")
+                if run_id != row["run_id"]:
+                    raise ValueError(f"seq={seq} 的 Run 身份与事件不一致")
+                if event_type == "run.start":
+                    if run_id in expected_runs:
+                        raise ValueError(f"Run {run_id} 存在重复开始事件")
+                    expected_runs[run_id] = (task_id, "created")
+                else:
+                    prior = expected_runs.get(run_id)
+                    if prior is None or prior[0] != task_id:
+                        raise ValueError(f"Run {run_id} 的状态事件缺少一致的开始事件")
+                    if event_type == "run.state":
+                        if payload.get("from") != prior[1]:
+                            raise ValueError(f"Run {run_id} 的状态事件不连续")
+                        state = payload.get("to")
+                    else:
+                        state = "fenced" if event_type == "run.fenced" else payload.get("outcome")
+                    if state not in RUN_STATES:
+                        raise ValueError(f"Run 事件状态无法识别：{state!r}")
+                    expected_runs[run_id] = (task_id, state)
+            # 全部事件都完成精确版本/字段校验后，才选择工具事件汇总未决调用。
+            if event_type not in {"tool.intent", "tool.result"}:
+                continue
             run_id = _text(row["run_id"], f"seq={seq} run_id")
             call_id = _text(payload.get("call_id"), f"seq={seq} call_id")
             if event_type == "tool.result":
@@ -154,17 +180,26 @@ def _reconciliation(
                     "expires_at": _integer(row["expires_at"], "approvals.expires_at"),
                 })
         if "runs" in tables:
+            actual_runs: dict[str, tuple[str, str]] = {}
             for row in conn.execute(
                 "SELECT run_id, task_id, state FROM runs ORDER BY created_at, run_id"
             ):
                 if row["state"] not in RUN_STATES:
                     raise ValueError(f"Run 状态无法识别：{row['state']!r}")
+                run_id = _text(row["run_id"], "runs.run_id")
+                task_id = _text(row["task_id"], "runs.task_id")
+                actual_runs[run_id] = (task_id, row["state"])
                 if row["state"] in NON_TERMINAL_STATES:
                     result["non_terminal_runs"].append({
-                        "run_id": _text(row["run_id"], "runs.run_id"),
-                        "task_id": _text(row["task_id"], "runs.task_id"),
+                        "run_id": run_id,
+                        "task_id": task_id,
                         "state": row["state"],
                     })
+            if actual_runs != expected_runs:
+                raise ValueError(
+                    "runs 投影与事件中的 Run 身份/最终状态不一致；"
+                    "须由匹配版本重建并验证，不能把缺失或矛盾状态当成空状态"
+                )
         if "leases" in tables:
             now = int(time.time() * 1000)
             for row in conn.execute(

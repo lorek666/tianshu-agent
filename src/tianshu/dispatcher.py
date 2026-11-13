@@ -1119,7 +1119,7 @@ class Dispatcher:
         # ---- 网络分支：没有目录、没有租约、没有本地副作用 ----
         if isinstance(target, _NetworkTarget):
             return self._dispatch_network(
-                request, dispatch_id, target, seq
+                request, dispatch_id, target, seq, admitted
             )
 
         # ---- MCP 分支：外部 server 执行，副作用在它那边 ----
@@ -1128,9 +1128,15 @@ class Dispatcher:
 
         # ---- 委派分支：没有目录、没有租约；spawn 在一个事务里建五件事 ----
         if isinstance(target, _SubtaskTarget):
-            return self._dispatch_subtask(
-                request, dispatch_id, target, seq, args
-            )
+            try:
+                with execution_guard(
+                    self._require_data_root(), timeout_ms=self._guard_timeout_ms
+                ):
+                    return self._dispatch_subtask(
+                        request, dispatch_id, target, seq, args, admitted
+                    )
+            except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
+                return self._abort_dispatch(request, dispatch_id, exc)
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
         memory_committed = False
@@ -1510,6 +1516,7 @@ class Dispatcher:
         dispatch_id: str,
         target: _NetworkTarget,
         intent_seq: int,
+        admitted: AdmittedCall,
     ) -> ToolResult:
         """网络分支：先查取消、再预占字节、最后才发包。
 
@@ -1531,12 +1538,24 @@ class Dispatcher:
                     "url": target.uri,
                 },
             )
-            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            self._abort_dispatch(
+                request, dispatch_id,
+                DispatchDenied("Run 已取消或暂停", "dispatch.not_running"),
+            )
             return result
 
-        # 2) 字节预算预占（可验证上界 = 本次最多读多少）。
+        # 与撤销/改目标共用守卫；取消/暂停与此处共用同库写事务。
+        # 所有资格和预算在执行开始标记前复核，提交后才允许请求越界。
         try:
-            reservation = self._reserve_network_bytes(request)
+            with execution_guard(
+                self._require_data_root(), timeout_ms=self._guard_timeout_ms
+            ):
+                with self._log.transaction():
+                    self._verify_resource_execution(admitted)
+                    reservation = self._reserve_network_bytes(request)
+                    self._start_resource_execution(request, dispatch_id)
+        except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
+            return self._abort_dispatch(request, dispatch_id, exc)
         except (BudgetRefused, BudgetCancelled) as exc:
             # 预占被拒 = 确定没发包。走既有的"复审拒绝"路径，事件/派发状态
             # 与其它守卫内拒绝保持同一形状。
@@ -1707,6 +1726,7 @@ class Dispatcher:
         target: _SubtaskTarget,
         intent_seq: int,
         args: dict[str, Any],
+        admitted: AdmittedCall,
     ) -> ToolResult:
         """委派分支：spawn / cancel / status / result 四个工具一个入口。
 
@@ -1716,8 +1736,11 @@ class Dispatcher:
         """
         if request.tool_id == "subtask.spawn":
             return self._dispatch_subtask_spawn(
-                request, dispatch_id, target, intent_seq, args
+                request, dispatch_id, target, intent_seq, args, admitted
             )
+        with self._log.transaction():
+            self._verify_resource_execution(admitted)
+            self._start_resource_execution(request, dispatch_id)
         if request.tool_id == "subtask.cancel":
             return self._dispatch_subtask_cancel(
                 request, dispatch_id, target, intent_seq
@@ -1737,6 +1760,7 @@ class Dispatcher:
         target: _SubtaskTarget,
         intent_seq: int,
         args: dict[str, Any],
+        admitted: AdmittedCall,
     ) -> ToolResult:
         """spawn：子 Task + 子 Run + 子 Job + `subtasks` 行 + 父 Run 事件，同一事务。
 
@@ -1746,16 +1770,16 @@ class Dispatcher:
         subtask_id = target.subtask_id
         goal = str(args.get("goal") or "").strip()
         limits = self._subtask_limits(args)
-        task = self._tasks.get_task(request.task_id)
-        run = self._tasks.get_run(request.run_id)
-        if task is None or run is None:  # pragma: no cover - 派发前已核验
-            raise TianshuError("派发前的任务/Run 已经不在了：无法创建子任务")
         try:
             with self._log.transaction() as tx:
+                # 资格、数量上限、父版本和创建同事务，不能先读新版 Task 再
+                # 搭配旧 Run 建孩子；外层执行守卫同时排除了撤销与目标变更。
+                auth = self._verify_resource_execution(admitted)
                 self._reserve_subtask(request, subtask_id)
+                self._start_resource_execution(request, dispatch_id)
                 subtask = self._tasks.create_subtask(
-                    task,
-                    run,
+                    auth.task,
+                    auth.run,
                     subtask_id=subtask_id,
                     goal=goal,
                     limits=limits,
@@ -2324,6 +2348,68 @@ class Dispatcher:
                 started_at=started_at,
             )
 
+    def _verify_resource_execution(self, admitted: AdmittedCall) -> _Authority:
+        """非文件资源在守卫与写事务内独立核票，不信任 intent 时的判定。"""
+        request = admitted.request
+        self._typecheck(request, admitted.claim, admitted.args)
+        if (request.digest() != admitted.request_digest
+                or sha256_hex(canonical_bytes(admitted.args)) != request.args_hash):
+            raise DispatchDenied("执行票据摘要不匹配", "dispatch.not_admitted")
+        stored = self.get_request(request.request_id)
+        if (stored is None or stored.request.digest() != admitted.request_digest
+                or stored.state != STATE_ADMITTED
+                or sha256_hex(canonical_bytes(stored.args)) != request.args_hash):
+            raise DispatchDenied("权威请求已改变或不可执行", "dispatch.not_admitted")
+        auth = self._authority(request, admitted.claim, args=stored.args)
+        if self._cancel_requested(request.run_id):
+            raise DispatchDenied("Run 已取消或暂停", "dispatch.not_running")
+        row = self.dispatch_record(request.run_id, request.call_id)
+        if row is None or row.state != DISPATCH_INTENT:
+            raise DispatchDenied(
+                "派发已被撤销或不再处于 intent", "dispatch.approval_revoked"
+            )
+        if (row.dispatch_id != admitted.dispatch_id
+                or row.request_digest != admitted.request_digest
+                or row.grant_id != admitted.grant_id
+                or row.approval_id != admitted.approval_id
+                or row.tool_id != request.tool_id or row.action != request.action
+                or row.claim_epoch != admitted.claim.claim_epoch
+                or row.owner_instance_id != admitted.claim.owner_instance_id):
+            raise DispatchDenied("派发记录与执行票据不匹配", "dispatch.not_admitted")
+        grant = self._grants.get(admitted.grant_id)
+        if (grant is None or grant.request_digest != admitted.request_digest
+                or grant.subject != f"{request.run_id}#{request.claim_epoch}"
+                or grant.remaining_uses != 0 or grant.expires_at <= self._clock()):
+            raise DispatchDenied("执行许可已失效或不匹配", "dispatch.not_admitted")
+        target = self._resolve_target(request, auth)
+        if self._requires_approval(request, target, stored.args) and not admitted.approval_id:
+            raise DispatchDenied("执行票据缺少审批", "c4.no_approval")
+        if admitted.approval_id:
+            approval = self._approvals.get(admitted.approval_id)
+            if approval is None or approval.state != "consumed":
+                raise DispatchDenied("审批未消费或已撤销", "dispatch.approval_revoked")
+            if approval.run_id != request.run_id:
+                raise DispatchDenied("审批不属于本 Run", "c4.approval_run_mismatch")
+            if (approval.action_digest or approval.request_digest) != (
+                request.action_digest() if approval.action_digest else request.digest()
+            ):
+                raise DispatchDenied("审批动作摘要不匹配", "c4.approval_mismatch")
+            if approval.expires_at <= self._clock():
+                raise DispatchDenied("审批已过期", "c4.approval_expired")
+        return auth
+
+    def _start_resource_execution(self, request: ActionRequest, dispatch_id: str) -> None:
+        """调用方已持守卫与事务；标记与复核在同一提交中生效。"""
+        if not self._advance_to_executing(dispatch_id):
+            raise DispatchDenied("派发已不能执行", "dispatch.approval_revoked")
+        self._append(request, "execution.started", {
+            "run_id": request.run_id,
+            "task_id": request.task_id,
+            "goal_revision": request.goal_revision,
+            "lease_epoch": request.lease_epoch,
+            "resources": list(request.resources),
+        })
+
     def _policy_preconditions(
         self, request: ActionRequest, target: _Target, args: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2349,6 +2435,7 @@ class Dispatcher:
             list(getattr(task, "memory_scopes", ()) or ()) if is_control else []
         )
         pre["memory_is_control"] = is_control
+        pre["memory_readonly_task"] = bool(task and task.depth)
         # 策略要区分"哪个记忆工具"：`user_explicit` 的免审批只属于 confirm，
         # 不属于 edit / promote（它们改的是长期召回的正文或作用域）。
         pre["memory_tool"] = request.tool_id
@@ -2617,6 +2704,10 @@ class Dispatcher:
                         f"非记忆工具收到记忆资源：{request.tool_id} → "
                         f"{request.resources[0]!r}",
                         "dispatch.memory_resource_mismatch",
+                    )
+                if task.depth or run.parent_run_id:
+                    raise DispatchDenied(
+                        "只读子任务不能写入记忆或发起记忆审批", "c4.memory_scope_denied"
                     )
                 scope = ref.memory_scope
                 is_control = bool(getattr(task, "is_control", False))

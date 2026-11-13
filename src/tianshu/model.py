@@ -288,6 +288,31 @@ class Transport(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """模型凭据绑定配置的源；响应不能选择另一个凭据接收方。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        def origin(url):
+            parsed = urlsplit(url)
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError("重定向目标不能包含 userinfo")
+            port = parsed.port
+            if port is None:
+                port = 443 if parsed.scheme.lower() == "https" else 80
+            return (
+                parsed.scheme.lower(), parsed.hostname, port,
+            )
+
+        try:
+            allowed = origin(req.full_url) == origin(newurl)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            fp.close()
+            raise ModelError("模型端点跨源重定向已拒绝", kind="protocol")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class UrllibTransport:
     """stdlib 实现。零第三方依赖是这个项目的一条硬线（PRD §7.3）。"""
 
@@ -301,7 +326,8 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            opener = urllib.request.build_opener(_SameOriginRedirect())
+            with opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:400]
@@ -578,29 +604,51 @@ class OpenAICompatibleModel(_HttpModel):
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ModelError("响应里没有 choices", kind="protocol")
-        choice = choices[0] if isinstance(choices[0], dict) else {}
-        msg = choice.get("message") or {}
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise ModelError("choices 里有非对象元素", kind="protocol")
+        msg = choice.get("message")
         if not isinstance(msg, dict):
             raise ModelError("响应里 message 不是对象", kind="protocol")
-        content = msg.get("content") or ""
+        content = msg.get("content")
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            raise ModelError("响应里 content 不是文本", kind="protocol")
         finish = _map_finish(
             choice.get("finish_reason"), vendor="openai", excerpt=content
         )
 
         calls: list[ToolCall] = []
-        for i, tc in enumerate(msg.get("tool_calls") or []):
+        tool_calls = msg.get("tool_calls", [])
+        if not isinstance(tool_calls, list):
+            raise ModelError("响应里 tool_calls 不是数组", kind="protocol")
+        for tc in tool_calls:
             if not isinstance(tc, dict):
                 raise ModelError("tool_calls 里有非对象元素", kind="protocol")
-            fn = tc.get("function") or {}
+            if tc.get("type") != "function":
+                raise ModelError("未知 tool_calls 类型", kind="protocol")
+            fn = tc.get("function")
+            if not isinstance(fn, dict):
+                raise ModelError("tool_calls function 不是对象", kind="protocol")
+            call_id, name = tc.get("id"), fn.get("name")
+            if not isinstance(call_id, str) or not call_id:
+                raise ModelError("tool_calls id 不是非空字符串", kind="protocol")
+            if not isinstance(name, str) or not name:
+                raise ModelError("tool_calls name 不是非空字符串", kind="protocol")
             raw = fn.get("arguments")
+            if not isinstance(raw, str):
+                raise ModelError("tool_calls arguments 不是 JSON 字符串", kind="protocol")
             try:
-                parsed = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                parsed = json.loads(raw)
             except json.JSONDecodeError:
                 parsed = raw  # 半截 JSON：原样带出，交给执行侧拒绝
+            if not isinstance(parsed, dict):
+                parsed = raw  # 非对象 JSON 同样不可作为完整工具参数派发
             calls.append(
                 ToolCall(
-                    call_id=tc.get("id") or f"call_{i}",
-                    name=fn.get("name", ""),
+                    call_id=call_id,
+                    name=name,
                     arguments=parsed,
                 )
             )
@@ -688,18 +736,28 @@ class AnthropicMessagesModel(_HttpModel):
             raise ModelError("响应里没有 content 数组", kind="protocol")
         text_parts: list[str] = []
         calls: list[ToolCall] = []
-        for i, block in enumerate(blocks):
+        for block in blocks:
             if not isinstance(block, dict):
                 raise ModelError("content 里有非对象元素", kind="protocol")
             kind = block.get("type")
             if kind == "text":
-                text_parts.append(block.get("text") or "")
+                text = block.get("text")
+                if not isinstance(text, str):
+                    raise ModelError("text 内容块不是文本", kind="protocol")
+                text_parts.append(text)
             elif kind == "tool_use":
+                call_id, name, arguments = block.get("id"), block.get("name"), block.get("input")
+                if not isinstance(call_id, str) or not call_id:
+                    raise ModelError("tool_use id 不是非空字符串", kind="protocol")
+                if not isinstance(name, str) or not name:
+                    raise ModelError("tool_use name 不是非空字符串", kind="protocol")
+                if not isinstance(arguments, dict):
+                    raise ModelError("tool_use input 不是对象", kind="protocol")
                 calls.append(
                     ToolCall(
-                        call_id=block.get("id") or f"call_{i}",
-                        name=block.get("name", ""),
-                        arguments=block.get("input") or {},
+                        call_id=call_id,
+                        name=name,
+                        arguments=arguments,
                     )
                 )
             elif kind in ("thinking", "redacted_thinking"):

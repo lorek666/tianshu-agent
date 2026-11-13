@@ -328,6 +328,10 @@ class MemoryExecutor:
         task = self._tasks.get_task(req.task_id)
         if task is None:
             raise ToolNotAllowed(f"task 不存在：{req.task_id}")
+        if task.depth or run.parent_run_id:
+            raise MemoryDispatchRefused(
+                "只读子任务不能写入记忆", "c4.memory_scope_denied"
+            )
         # 契约 v1.2：控制面 Run 的标记与作用域声明都从 `task.created` 投影读，
         # **不**信任调用方传进来的任何"我是控制面"。普通任务拿不到声明作用域。
         is_control = bool(getattr(task, "is_control", False))

@@ -773,7 +773,11 @@ class StdioServer:
                         data=data,
                     )
                 result = payload.get("result")
-                return result if isinstance(result, dict) else {}
+                if not isinstance(result, dict):
+                    raise McpProtocolError(
+                        f"server {self.name!r} 的 {method} 结果不是对象"
+                    )
+                return result
         finally:
             self._request_lock.release()
 
@@ -819,12 +823,26 @@ class StdioServer:
             # MCP 的 `_meta` 是可选的透传位；我们只放自己的 call_id 便于日志对齐。
             params["_meta"] = {"tianshu/call_id": call_id}
         result = self.request(request_method, params, timeout_ms=limit)
-        content = result.get("content", [])
+        content = result.get("content")
         if not isinstance(content, list):
             raise McpProtocolError(
                 f"server {self.name!r} 的 tools/call 结果 content 不是数组"
             )
-        blocks = tuple(item for item in content if isinstance(item, dict))
+        for item in content:
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/call content 含非法内容块"
+                )
+            if item["type"] == "text" and not isinstance(item.get("text"), str):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/call text 不是文本"
+                )
+        is_error = result.get("isError", False)
+        if not isinstance(is_error, bool):
+            raise McpProtocolError(
+                f"server {self.name!r} 的 tools/call isError 不是布尔值"
+            )
+        blocks = tuple(content)
         structured = result.get("structuredContent")
         kept, total_bytes, kept_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
             blocks, limit=self.config.max_result_bytes
@@ -851,7 +869,7 @@ class StdioServer:
         return McpCallResult(
             request_id=self._last_request_id,
             content=kept,
-            is_error=bool(result.get("isError", False)),
+            is_error=is_error,
             structured=structured,
             duration_ms=int((time.monotonic() - started) * 1000),
             bytes=total_bytes,

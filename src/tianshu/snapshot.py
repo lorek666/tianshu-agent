@@ -225,7 +225,8 @@ class SnapshotStore:
                 "撤销必须拒绝，不能当成空清单继续。"
             ) from exc
 
-    def _parse(self, raw_bytes: bytes) -> list[Change]:
+    @staticmethod
+    def _parse(raw_bytes: bytes) -> list[Change]:
         raw = json.loads(raw_bytes.decode("utf-8"))
         if isinstance(raw, dict):
             version = raw.get("version")

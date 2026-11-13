@@ -62,14 +62,16 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import socket
+import struct
 import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass
-from multiprocessing.connection import AuthenticationError, Listener
+from multiprocessing.connection import AuthenticationError, Connection, Listener
 from multiprocessing.connection import Client as _Socket
 from pathlib import Path
 from typing import Any
@@ -653,6 +655,112 @@ class Server:
         self.close()
 
 
+class _MessageReader:
+    """在整帧期限内读 CPython 3.12 connection；超时保留有界半帧。
+
+    Socket 的 poll 只保证一次 read 不阻塞，不保证整帧存在。AF_PIPE 则是
+    Windows 原生消息，没有四字节头；用同一个 overlapped read 跨超时续等，
+    不另起不可收尾的阻塞线程，也不把两个 native message 拼成一个。
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._size: int | None = None
+        self._header_bytes = 4
+        self._pending: Any = None
+        self._state_lock = threading.Lock()
+        self._closed = False
+
+    def close(self) -> None:
+        with self._state_lock:
+            self._closed = True
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            overlapped, _ = pending
+            try:
+                overlapped.cancel()
+                overlapped.GetOverlappedResult(True)
+            except OSError:
+                pass
+
+    def read(self, conn: Any, deadline: float | None) -> bytes | None:
+        if isinstance(conn, Connection):
+            return self._read_socket(conn, deadline)
+        if os.name == "nt":
+            return self._read_pipe(conn, deadline)
+        raise ProtocolError("不支持的 IPC 连接类型")
+
+    def _read_socket(self, conn: Any, deadline: float | None) -> bytes | None:
+        while True:
+            if self._closed:
+                raise OSError("IPC 读取已关闭")
+            if self._size is None and len(self._buffer) >= self._header_bytes:
+                size = struct.unpack("!i", self._buffer[:4])[0]
+                if size == -1:
+                    self._header_bytes = 12
+                    if len(self._buffer) >= 12:
+                        size = struct.unpack("!Q", self._buffer[4:12])[0]
+                if size != -1:
+                    if size < 0 or size > MAX_MESSAGE_BYTES:
+                        raise ProtocolError(f"消息长度 {size} 越过上限 {MAX_MESSAGE_BYTES}")
+                    self._size = size
+            end = self._header_bytes + (self._size or 0)
+            if self._size is not None and len(self._buffer) == end:
+                raw = bytes(self._buffer[self._header_bytes:])
+                self._buffer.clear()
+                self._size, self._header_bytes = None, 4
+                return raw
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return None
+            if not conn.poll(remaining):
+                return None
+            # 与 CPython Connection._recv 使用同一个单次 OS read；每次前都
+            # poll，读到目前可用的部分就重新检查期限，不进入整帧阻塞循环。
+            chunk = conn._read(conn.fileno(), min(end - len(self._buffer), 65536))
+            if not chunk:
+                raise EOFError("对端在消息结束前关闭")
+            self._buffer.extend(chunk)
+
+    def _read_pipe(self, conn: Any, deadline: float | None) -> bytes | None:
+        import _winapi
+
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return None
+            with self._state_lock:
+                if self._closed:
+                    raise OSError("IPC 读取已关闭")
+                if self._pending is None:
+                    # Peek 的第二项是当前原生消息剩余长度；在整帧分配前拒绝。
+                    left = _winapi.PeekNamedPipe(conn.fileno())[1]
+                    if len(self._buffer) + left > MAX_MESSAGE_BYTES:
+                        raise ProtocolError(f"消息超过上限 {MAX_MESSAGE_BYTES}")
+                    self._pending = _winapi.ReadFile(conn.fileno(), 65536, overlapped=True)
+                pending = self._pending
+            overlapped, err = pending
+            if err == _winapi.ERROR_IO_PENDING:
+                milliseconds = (_winapi.INFINITE if remaining is None
+                                else max(1, math.ceil(remaining * 1000)))
+                waited = _winapi.WaitForMultipleObjects([overlapped.event], False, milliseconds)
+                if waited == _winapi.WAIT_TIMEOUT:
+                    return None
+            _, err = overlapped.GetOverlappedResult(False)
+            with self._state_lock:
+                if self._pending is pending:
+                    self._pending = None
+            if err not in (0, _winapi.ERROR_MORE_DATA):
+                raise OSError(err, "IPC 管道读取已中止")
+            self._buffer.extend(overlapped.getbuffer())
+            if len(self._buffer) > MAX_MESSAGE_BYTES:
+                raise ProtocolError(f"消息超过上限 {MAX_MESSAGE_BYTES}")
+            if err == 0:
+                raw = bytes(self._buffer)
+                self._buffer.clear()
+                return raw
+
+
 class ServerConnection:
     """服务端看到的客户端连接。
 
@@ -663,6 +771,7 @@ class ServerConnection:
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
+        self._reader = _MessageReader()
         self._eof = False
         self.client: dict[str, Any] = {}
         self.subscribed = False
@@ -696,9 +805,15 @@ class ServerConnection:
         if self._eof:
             return None
         try:
-            if timeout is not None and not self._conn.poll(timeout):
+            deadline = None if timeout is None else time.monotonic() + timeout
+            raw = self._reader.read(self._conn, deadline)
+            if raw is None:
                 return None
-            raw = self._conn.recv_bytes()
+            return decode(raw)
+        except ProtocolError:
+            self._eof = True
+            self.close()
+            raise
         except EOFError:
             self._eof = True
             return None
@@ -707,9 +822,6 @@ class ServerConnection:
             # `PeekNamedPipe` 会直接抛 BrokenPipeError / OSError。语义一样是断线。
             self._eof = True
             return None
-        if len(raw) > MAX_MESSAGE_BYTES:
-            raise ProtocolError(f"消息 {len(raw)} 字节，超过上限 {MAX_MESSAGE_BYTES}")
-        return decode(raw)
 
     @property
     def eof(self) -> bool:
@@ -721,6 +833,7 @@ class ServerConnection:
         return bool(self._conn.closed)
 
     def close(self) -> None:
+        self._reader.close()
         try:
             self._conn.close()
         except OSError:
@@ -772,6 +885,7 @@ class Client:
         self.data_root = Path(data_root)
         self.timeout = timeout
         self._conn: Any = None
+        self._reader = _MessageReader()
         self._next_id = 0
         self._pushes: list[dict[str, Any]] = []
         self.welcome: dict[str, Any] = {}
@@ -831,12 +945,14 @@ class Client:
         return self.welcome
 
     def close(self) -> None:
+        self._reader.close()
         if self._conn is not None:
             try:
                 self._conn.close()
             except OSError:
                 pass
             self._conn = None
+        self._reader = _MessageReader()
 
     def __enter__(self) -> Client:
         self.connect()
@@ -885,19 +1001,18 @@ class Client:
     def _receive(self, deadline: float) -> dict[str, Any]:
         if self._conn is None:
             raise ConnectionClosed("Client 未连接")
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+        try:
+            raw = self._reader.read(self._conn, deadline)
+            if raw is None:
+                self.close()
                 raise ConnectionClosed("等待响应超时")
-            try:
-                if not self._conn.poll(remaining):
-                    continue
-                raw = self._conn.recv_bytes()
-            except (EOFError, OSError) as exc:
-                raise ConnectionClosed(f"连接已断开：{exc}") from exc
-            if len(raw) > MAX_MESSAGE_BYTES:
-                raise ProtocolError(f"消息 {len(raw)} 字节，超过上限 {MAX_MESSAGE_BYTES}")
             return decode(raw)
+        except ProtocolError:
+            self.close()
+            raise
+        except (EOFError, OSError) as exc:
+            self.close()
+            raise ConnectionClosed(f"连接已断开：{exc}") from exc
 
     # -- 推送 --
 
@@ -920,24 +1035,24 @@ class Client:
             return self._pushes.pop(0)
         budget = self.timeout if timeout is None else timeout
         deadline = time.monotonic() + budget
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+        if self._conn is None:
+            raise ConnectionClosed("Client 未连接")
+        try:
+            raw = self._reader.read(self._conn, deadline)
+            if raw is None:
                 return None
-            try:
-                if not self._conn.poll(remaining):
-                    return None
-                raw = self._conn.recv_bytes()
-            except (EOFError, OSError) as exc:
-                raise ConnectionClosed(f"连接已断开：{exc}") from exc
-            except AttributeError as exc:
-                raise ConnectionClosed("Client 未连接") from exc
             message = decode(raw)
             if "push" in message:
                 return message
             # 订阅连接上不该出现响应；出现说明调用方把两种用途混在一条连接，
             # 明确报错比静默丢弃好。
             raise ProtocolError(f"订阅连接上收到非推送消息：{message!r}")
+        except ProtocolError:
+            self.close()
+            raise
+        except (EOFError, OSError) as exc:
+            self.close()
+            raise ConnectionClosed(f"连接已断开：{exc}") from exc
 
 
 __all__ = [

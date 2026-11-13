@@ -139,7 +139,8 @@ def test_recover_spawn_is_evidence_based(tmp_path):
         )
         (row,) = stack.tasks.list_subtasks(run.run_id)
         assert _tool_results(log, run.run_id) == [], "崩在结果之前：没有 tool.result"
-        assert _dispatch_state(log, run.run_id, "call-crashed") == "intent"
+        # 子任务创建已越过执行边界；尚未落结果不等于仍可成功撤销。
+        assert _dispatch_state(log, run.run_id, "call-crashed") == "executing"
 
         report = recover_run(
             log, run.run_id, ws, stack.snapshots, data_root=tmp_path / "data"
