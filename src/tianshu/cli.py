@@ -364,6 +364,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--out", type=Path, default=None, help="把报告 JSON 写到这个路径")
     ev.add_argument("--json", action="store_true")
 
+    from .data_cli import add_parser
+
+    add_parser(sub)
     return p
 
 
@@ -2079,6 +2082,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_memory(args)
         if args.cmd == "replay":
             return _cmd_replay(args)
+        if args.cmd == "data":
+            from .data_cli import run
+
+            return run(args)
         return _cmd_evaluate(args)
     except Exception as exc:  # CLI 边界：打印可读错误，不抛栈
         # 脱敏：异常文案可能带着端点回显的 Authorization 或 URL 里的 userinfo。

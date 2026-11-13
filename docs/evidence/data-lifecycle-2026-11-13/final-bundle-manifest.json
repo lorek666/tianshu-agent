@@ -1,0 +1,40 @@
+{
+  "baseline_commit": "ccff93e79cfeb93e47e5a35012fd92fae366e941",
+  "product_and_test_hashes": {
+    "src/tianshu/maintenance.py": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+    "src/tianshu/events.py": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+    "src/tianshu/backup.py": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+    "src/tianshu/data_cli.py": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+    "src/tianshu/cli.py": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+    "tests/test_maintenance.py": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+    "tests/test_backup_materials.py": "0ea3c8ea529b0f95b8e9d778b3bda23d31bd5cefbf347ebf66264197052de101",
+    "tests/test_backup.py": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+    "tests/test_data_cli.py": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee",
+    ".gitignore": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49"
+  },
+  "scripts": {
+    "run_clean.py": "37ec6764bf506906629a9b1f4ab85fe6baf625629c36c8b8f209eb6f0ca20be4",
+    "probe_locks.py": "afe650e5f68a779902989b78295200389b78382de8726b0a44058774819fe937",
+    "probe_cleanup_fixed.py": "a9f6d794cd7af3c8aebfd83050b8008b69088182fa09426a6418db7642d220fa",
+    "probe_readonly_edges_fixed.py": "69315d3a09cb27ce1ec5688d1db2439b33e0cedea16def126ba4433c17c12ef0",
+    "probe_materials_cli.py": "32d4fede56e91645c44e22088dd1fdb64526fcca64abf351284abc3a85165b4b",
+    "probe_live_wal.py": "d21b3c3ee2d1586f5f3bc871c47da88af3023776c2a3f01b07f9a8c619e82aa2",
+    "probe_wal_sidecars.py": "d2ab7c7d9760052ccf162586f4a1601a1b0877fee2f22ddfc77e974dcdb00325",
+    "probe_lock_permissions_fixed.py": "cd45ba479dc1c631e5d3e934e7c25e73136ba0bb24a0ddfe1b3891f32d50a6a8",
+    "probe_lock_identity_env.py": "fe907d55bdb802dd1bdab94bea3361e1b7de682155cdf138340146f2369656ae",
+    "probe_source_alias_fixed.py": "e01cf6e42b3e6abf4abc93eb09808655e138e0adcd7adb9ec202bf804722eded"
+  },
+  "test_environment": {
+    "command": [
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "-c",
+      "import platform,sys,sqlite3; print(platform.platform(),platform.machine(),sys.version,sqlite3.sqlite_version)"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python -c import platform,sys,sqlite3; print(platform.platform(),platform.machine(),sys.version,sqlite3.sqlite_version)\nmacOS-26.6.2-arm64-arm-64bit arm64 3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ] 3.50.4\nEXIT 0\n",
+    "stderr": ""
+  }
+}

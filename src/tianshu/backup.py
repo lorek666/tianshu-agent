@@ -43,12 +43,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from . import __version__
@@ -177,7 +179,7 @@ class BackupFile:
         category = raw.get("category")
         if not isinstance(path, str) or not path:
             raise ValueError("files.path 必须是非空字符串")
-        if not isinstance(sha, str) or len(sha) != 64:
+        if not _is_digest(sha):
             raise ValueError(f"files.sha256 不是 64 位十六进制：{sha!r}")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ValueError(f"files.size 必须是非负整数：{size!r}")
@@ -207,6 +209,8 @@ class BackupManifest:
     excluded: list[str] = field(default_factory=list)
     retention: dict[str, Any] = field(default_factory=dict)
     restore_notes: list[str] = field(default_factory=list)
+    #: 仅创建时核对与 source_path 同根的词法别名；保存后的读取绝不回源解析。
+    source_aliases: list[str] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
@@ -221,6 +225,7 @@ class BackupManifest:
             "created_at_ms": self.created_at_ms,
             "source_name": self.source_name,
             "source_path": self.source_path,
+            "source_aliases": list(self.source_aliases),
             "files": [f.to_dict() for f in self.files],
             "event_count": self.event_count,
             "event_seq_head": self.event_seq_head,
@@ -255,6 +260,13 @@ class BackupManifest:
         source_path = raw.get("source_path")
         if not isinstance(source_path, str) or not source_path:
             raise ValueError("backup.json 缺少 source_path（恢复必须回到原数据根）")
+        root = _source_root(source_path)
+        source_aliases = raw.get("source_aliases", [])
+        if not isinstance(source_aliases, list):
+            raise ValueError("backup.json 的 source_aliases 必须是绝对路径列表")
+        for alias in source_aliases:
+            if type(_source_root(alias)) is not type(root):
+                raise ValueError("source_aliases 必须与 source_path 使用同一种平台路径")
         return cls(
             format=str(raw.get("format", "")),
             format_version=int(raw.get("format_version", 0)),
@@ -275,6 +287,7 @@ class BackupManifest:
             if isinstance(raw.get("retention"), dict) else {},
             restore_notes=raw.get("restore_notes")
             if isinstance(raw.get("restore_notes"), list) else [],
+            source_aliases=source_aliases,
         )
 
 
@@ -287,6 +300,17 @@ class BackupVerification:
     files_checked: int = 0
     bytes_checked: int = 0
     db_user_version: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "manifest": self.manifest.to_dict() if self.manifest is not None else None,
+            "problems": list(self.problems),
+            "remediation": list(self.remediation),
+            "files_checked": self.files_checked,
+            "bytes_checked": self.bytes_checked,
+            "db_user_version": self.db_user_version,
+        }
 
     def require_ok(self) -> BackupManifest:
         if not self.ok or self.manifest is None:
@@ -429,12 +453,141 @@ def _rel_posix(path: Path, root: Path) -> str:
 def _validate_rel(raw: Any) -> str:
     if not isinstance(raw, str) or not raw:
         raise ValueError("相对路径必须是非空字符串")
-    if "\\" in raw:
+    if "\\" in raw or "\x00" in raw:
         raise ValueError(f"相对路径必须用 / 分隔：{raw!r}")
+    if Path(raw).is_absolute() or PureWindowsPath(raw).drive:
+        raise ValueError(f"不允许绝对路径或盘符：{raw!r}")
     parts = raw.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError(f"相对路径不允许空段 / . / ..：{raw!r}")
     return raw
+
+
+def _is_digest(raw: Any) -> bool:
+    return isinstance(raw, str) and re.fullmatch(r"[0-9a-f]{64}", raw) is not None
+
+
+def _checked_file(root: Path, rel: str) -> Path:
+    """只在指定根里寻址；先拒绝任一层符号链接，再检查文件内容。"""
+    _validate_rel(rel)
+    if root.is_symlink():
+        raise ValueError(f"不允许符号链接材料根：{root}")
+    path = root
+    for part in rel.split("/"):
+        path = path / part
+        if path.is_symlink():
+            raise ValueError(f"不允许符号链接材料：{rel}")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"材料路径不在备份根内：{rel}")
+    return path
+
+
+def _source_root(raw: Any) -> PurePosixPath | PureWindowsPath:
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        raise ValueError("源数据根必须是非空绝对路径")
+    root = PureWindowsPath(raw) if PureWindowsPath(raw).drive else PurePosixPath(raw)
+    if not root.is_absolute() or ".." in root.parts:
+        raise ValueError(f"源数据根必须是无 .. 的绝对路径：{raw!r}")
+    return root
+
+
+def _reference_rel(
+    raw: Any, source_root: Path, *, source_aliases: Sequence[str] = (),
+) -> str:
+    """把历史绝对引用映射为备份根内路径，不读取源材料的内容。"""
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("引用必须是非空路径")
+    # 使用纯路径对象：验证备份绝不因源目录被移走或替换成链接而访问活源。
+    root = _source_root(str(source_root))
+    path_type = type(root)
+    roots = [root, *(_source_root(alias) for alias in source_aliases)]
+    if any(type(candidate) is not path_type for candidate in roots):
+        raise ValueError("源数据根与别名的平台路径不一致")
+    path = path_type(raw)
+    if path.is_absolute():
+        for candidate in roots:
+            try:
+                rel = path.relative_to(candidate)
+                break
+            except ValueError:
+                continue
+        else:
+            raise ValueError(f"引用不在记录的数据根或已验证别名内：{raw!r}")
+    else:
+        if path.drive or path.root:
+            raise ValueError(f"引用不允许不完整的绝对路径：{raw!r}")
+        rel = path
+        parts = rel.parts
+        # CLI 可以把相对于启动目录的 .tianshu/blobs/... 写进事件。
+        # 只接纳与已记录根路径尾部一致的前缀，不把任意外部路径洗成根内。
+        for offset in range(len(parts) - 1, 0, -1):
+            if any(tuple(candidate.parts[-offset:]) == tuple(parts[:offset])
+                   for candidate in roots):
+                rel = path_type(*parts[offset:])
+                break
+    result = _validate_rel(rel.as_posix())
+    if result.split("/", 1)[0] not in {"artifacts", "blobs", "memory_blobs"}:
+        raise ValueError(f"不支持的数据材料布局：{raw!r}")
+    return result
+
+
+def _reference_rel_live(
+    raw: Any, source_root: Path, *, source_aliases: list[str],
+) -> str:
+    """只在活源阶段发现别名；同根身份及完整材料后缀必须同时吻合。"""
+    try:
+        return _reference_rel(raw, source_root, source_aliases=source_aliases)
+    except ValueError:
+        pass
+    if not isinstance(raw, str) or not Path(raw).is_absolute():
+        raise ValueError(f"无法核对源根别名：{raw!r}")
+    path = Path(raw)
+    resolved = path.resolve(strict=True)
+    rel = Path(_reference_rel(str(resolved), source_root))
+    # 只允许根本身的别名；材料路径内部的链接不能被洗成根别名。
+    if Path(*path.parts[-len(rel.parts):]) != rel:
+        raise ValueError(f"源根别名的材料后缀不一致：{raw!r}")
+    alias = path.parents[len(rel.parts) - 1]
+    _source_root(str(alias))
+    if alias.resolve(strict=True) != source_root:
+        raise ValueError(f"路径不是同一数据根的别名：{raw!r}")
+    if str(alias) not in source_aliases:
+        source_aliases.append(str(alias))
+    return _reference_rel(raw, source_root, source_aliases=source_aliases)
+
+
+def read_saved_event_payload(
+    backup_dir: Path,
+    row: sqlite3.Row | Mapping[str, Any],
+    *,
+    source_root: Path,
+    source_aliases: Sequence[str] = (),
+) -> Any:
+    """只读保存的事件 payload；外部引用仅按原根词法映射至备份内。
+
+    调用方查询时将 ``payload`` 列命名为 ``payload_inline``。哈希和 JSON
+    核验失败即拒绝；不得把损坏事件降级成空对象或读取原数据根。
+    """
+    try:
+        inline = row["payload_inline"]
+        ref = row["payload_ref"]
+        expected = row["payload_hash"]
+        if (inline is None) == (ref is None):
+            raise ValueError("payload_inline 与 payload_ref 必须且只能提供一个")
+        if not _is_digest(expected):
+            raise ValueError("payload_hash 不是 sha256")
+        if ref is not None:
+            rel = _reference_rel(ref, source_root, source_aliases=source_aliases)
+            raw = _checked_file(Path(backup_dir), rel).read_bytes()
+        elif isinstance(inline, str):
+            raw = inline.encode("utf-8")
+        else:
+            raise ValueError("payload_inline 必须是字符串")
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise ValueError("payload_hash 不符")
+        return json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, KeyError, IndexError, TypeError, UnicodeError) as exc:
+        raise BackupInvalid([f"保存的事件 payload 无法核验：{exc}"]) from exc
 
 
 def _category_for(rel: str) -> str:
@@ -459,16 +612,22 @@ def _is_excluded(rel: str) -> bool:
 
 
 def _iter_backup_inputs(data_root: Path) -> list[tuple[Path, str]]:
-    """要进备份的文件：events.db + artifacts/**（排除临时文件与隐藏文件）。"""
+    """标准布局的材料；不能把链接指向的根外文件带进备份。"""
     entries: list[tuple[Path, str]] = []
     db = data_root / "events.db"
     if not db.is_file():
         raise BackupRefused(
             f"数据根里没有事件库：{data_root}。这不像一个天枢数据根，拒绝生成空备份。"
         )
-    artifacts = data_root / "artifacts"
-    if artifacts.is_dir():
-        for path in sorted(artifacts.rglob("*")):
+    for name in ("artifacts", "blobs", "memory_blobs"):
+        material_dir = data_root / name
+        if material_dir.is_symlink():
+            raise BackupRefused(f"不允许符号链接材料目录：{material_dir}")
+        if not material_dir.is_dir():
+            continue
+        for path in sorted(material_dir.rglob("*")):
+            if path.is_symlink():
+                raise BackupRefused(f"不允许符号链接材料：{path}")
             if not path.is_file():
                 continue
             rel = _rel_posix(path, data_root)
@@ -504,12 +663,15 @@ def _copy_file_verified(src: Path, dst: Path) -> tuple[str, int]:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    """只读连接（URI mode=ro）。打不开时退回普通连接——调用方只读不写。"""
-    try:
-        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
-        return sqlite3.connect(uri, uri=True)
-    except sqlite3.Error:
-        return sqlite3.connect(str(db_path))
+    """严格只读；失败不得降级成会创建数据库的普通连接。"""
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+    return sqlite3.connect(uri, uri=True)
+
+
+def _connect_saved_readonly(db_path: Path) -> sqlite3.Connection:
+    """只读自包含静态快照，不创建 WAL/SHM；绝不用于仍有写者的活源。"""
+    uri = Path(db_path).resolve().as_uri() + "?mode=ro&immutable=1"
+    return sqlite3.connect(uri, uri=True)
 
 
 def _db_snapshot(src_db: Path, dst_db: Path) -> None:
@@ -532,8 +694,8 @@ def _db_snapshot(src_db: Path, dst_db: Path) -> None:
             leftover.unlink()
 
 
-def _db_meta(db_path: Path) -> dict[str, Any]:
-    conn = _connect_readonly(db_path)
+def _db_meta(db_path: Path, *, saved: bool = False) -> dict[str, Any]:
+    conn = _connect_saved_readonly(db_path) if saved else _connect_readonly(db_path)
     try:
         row = conn.execute("SELECT COUNT(*) AS n, COALESCE(MAX(seq),0) AS head,"
                            " COALESCE(MIN(seq),0) AS first_seq FROM events").fetchone()
@@ -556,11 +718,14 @@ def _db_meta(db_path: Path) -> dict[str, Any]:
     }
 
 
-def _db_references(db_path: Path, data_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def _db_references(
+    db_path: Path, data_root: Path, *, saved: bool = False,
+    source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """外部 payload blob 引用。返回 (引用列表, 读不出来的问题)。"""
     refs: list[dict[str, Any]] = []
     problems: list[str] = []
-    conn = _connect_readonly(db_path)
+    conn = _connect_saved_readonly(db_path) if saved else _connect_readonly(db_path)
     try:
         rows = conn.execute(
             "SELECT seq, payload_ref, payload_hash FROM events"
@@ -570,16 +735,16 @@ def _db_references(db_path: Path, data_root: Path) -> tuple[list[dict[str, Any]]
         conn.close()
     for seq, ref, payload_hash in rows:
         try:
-            raw = Path(str(ref))
-            if raw.is_absolute():
-                # 引用可能记的是未 resolve 的路径（macOS /tmp → /private/tmp），
-                # 两边都 normalize 再比；仍在数据根外则如实记为问题。
-                rel = raw.resolve().relative_to(data_root.resolve())
-            else:
-                rel = raw
+            if not _is_digest(payload_hash):
+                raise ValueError(f"payload_hash 不是 sha256：{payload_hash!r}")
+            rel = (
+                _reference_rel_live(ref, data_root, source_aliases=discover_aliases)
+                if discover_aliases is not None else
+                _reference_rel(ref, data_root, source_aliases=source_aliases)
+            )
             refs.append({
                 "seq": int(seq),
-                "path": _validate_rel(rel.as_posix()),
+                "path": rel,
                 "sha256": str(payload_hash),
             })
         except (OSError, ValueError) as exc:
@@ -589,34 +754,45 @@ def _db_references(db_path: Path, data_root: Path) -> tuple[list[dict[str, Any]]
 
 def _snapshot_references(
     data_root: Path,
+    *,
+    source_root: Path | None = None,
+    source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """快照清单引用的 blob；manifest 本身损坏记为问题，不猜。"""
     refs: list[dict[str, Any]] = []
     problems: list[str] = []
-    snapshots = data_root / "artifacts" / "snapshots"
+    try:
+        snapshots = _checked_file(data_root, "artifacts/snapshots")
+    except ValueError as exc:
+        return refs, [str(exc)]
     if not snapshots.is_dir():
         return refs, problems
     for manifest in sorted(snapshots.glob("*.json")):
         rel = _rel_posix(manifest, data_root)
         try:
-            raw = json.loads(manifest.read_bytes().decode("utf-8"))
+            raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
             items = raw["changes"] if isinstance(raw, dict) else raw
+            if not isinstance(items, list):
+                raise ValueError("快照 changes 必须是列表")
             for item in items:
-                blob_ref = item.get("blob_ref") if isinstance(item, dict) else None
-                before_state = item.get("before_state") if isinstance(item, dict) else None
+                if not isinstance(item, dict):
+                    raise ValueError("快照 changes 条目必须是对象")
+                blob_ref = item.get("blob_ref")
+                before_state = item.get("before_state")
                 if not blob_ref:
                     continue
-                blob = Path(str(blob_ref))
-                if blob.is_absolute():
-                    blob_rel = (
-                        blob.resolve().relative_to(data_root.resolve()).as_posix()
-                    )
-                else:
-                    blob_rel = blob.as_posix()
+                if not _is_digest(before_state):
+                    raise ValueError(f"before_state 不是 sha256：{before_state!r}")
+                origin = source_root or data_root.resolve()
+                blob_rel = (
+                    _reference_rel_live(blob_ref, origin, source_aliases=discover_aliases)
+                    if discover_aliases is not None else
+                    _reference_rel(blob_ref, origin, source_aliases=source_aliases)
+                )
                 refs.append({
                     "manifest": rel,
                     "call_id": str(item.get("call_id", "")),
-                    "path": _validate_rel(blob_rel),
+                    "path": blob_rel,
                     "sha256": str(before_state or ""),
                 })
         except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
@@ -628,20 +804,29 @@ def _undo_references(data_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
     """撤销意图日志引用的 blob（before_state 内容寻址）。"""
     refs: list[dict[str, Any]] = []
     problems: list[str] = []
-    journals = data_root / "artifacts" / "undo"
+    try:
+        journals = _checked_file(data_root, "artifacts/undo")
+    except ValueError as exc:
+        return refs, [str(exc)]
     if not journals.is_dir():
         return refs, problems
     for journal in sorted(journals.glob("*.json")):
         rel = _rel_posix(journal, data_root)
         try:
-            raw = json.loads(journal.read_bytes().decode("utf-8"))
-            items = raw.get("items") or []
+            raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("撤销日志必须是对象")
+            items = raw.get("items", [])
+            if not isinstance(items, list):
+                raise ValueError("撤销日志 items 必须是列表")
             for item in items:
                 if not isinstance(item, dict):
-                    continue
+                    raise ValueError("撤销日志 items 条目必须是对象")
                 before = item.get("before_state")
                 action = item.get("action")
                 if action == "restore" and isinstance(before, str) and before != "absent":
+                    if not _is_digest(before):
+                        raise ValueError(f"before_state 不是 sha256：{before!r}")
                     refs.append({
                         "journal": rel,
                         "call_id": str(item.get("call_id", "")),
@@ -654,6 +839,78 @@ def _undo_references(data_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
             problems.append(f"撤销日志读不出来：{rel}（{type(exc).__name__}: {exc}）")
     return refs, problems
+
+
+def _projection_references(
+    db_path: Path, *, saved: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """从已保存数据库读出内容与记忆引用，而非相信 manifest 的可选字段。"""
+    contents: list[dict[str, Any]] = []
+    memories: list[dict[str, Any]] = []
+    problems: list[str] = []
+    conn = _connect_saved_readonly(db_path) if saved else _connect_readonly(db_path)
+    try:
+        has_contents = _has_table(conn, "content_objects")
+        has_grants = _has_table(conn, "content_grants")
+        if has_contents != has_grants:
+            problems.append("内容投影不完整：content_objects 与 content_grants 必须同时存在")
+        if has_contents:
+            for digest, size in conn.execute(
+                "SELECT digest, size FROM content_objects ORDER BY digest"
+            ):
+                if not _is_digest(digest) or not isinstance(size, int) or size < 0:
+                    problems.append(f"content_objects 引用非法：digest={digest!r}, size={size!r}")
+                    continue
+                contents.append({"path": f"artifacts/blobs/{digest}",
+                                 "sha256": digest, "size": size, "content_digest": digest})
+        if has_contents and has_grants:
+            for (digest,) in conn.execute(
+                "SELECT DISTINCT g.digest FROM content_grants AS g "
+                "LEFT JOIN content_objects AS o ON o.digest = g.digest WHERE o.digest IS NULL"
+            ):
+                problems.append(f"content_grants 引用了未登记的内容：{digest!r}")
+        if _has_table(conn, "memories"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+            erased = "erased_at" if "erased_at" in columns else "NULL"
+            for memory_id, digest, erased_at in conn.execute(
+                f"SELECT memory_id, content_ref, {erased} FROM memories ORDER BY memory_id"
+            ):
+                if erased_at is not None:
+                    if not isinstance(erased_at, int) or erased_at < 0:
+                        problems.append(f"记忆 {memory_id} 的 erased_at 非法：{erased_at!r}")
+                    continue
+                if not _is_digest(digest):
+                    problems.append(f"记忆 {memory_id} 的 content_ref 不是 sha256：{digest!r}")
+                    continue
+                memories.append({"path": f"memory_blobs/{digest}", "sha256": digest,
+                                 "memory_id": str(memory_id)})
+    finally:
+        conn.close()
+    return contents, memories, problems
+
+
+def _material_references(
+    data_root: Path, *, source_root: Path,
+    source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    db = _checked_file(data_root, "events.db")
+    payload, payload_problems = _db_references(
+        db, source_root, saved=True, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
+    snapshots, snapshot_problems = _snapshot_references(
+        data_root, source_root=source_root, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
+    undo, undo_problems = _undo_references(data_root)
+    contents, memories, projection_problems = _projection_references(db, saved=True)
+    return {
+        "event_payload_refs": payload,
+        "snapshot_blobs": snapshots,
+        "undo_journal_blobs": undo,
+        "content_blobs": contents,
+        "memory_blobs": memories,
+    }, payload_problems + snapshot_problems + undo_problems + projection_problems
 
 
 def inspect_writers(data_root: Path) -> dict[str, Any]:
@@ -711,6 +968,8 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
         raise BackupRefused(
             f"数据根里没有事件库：{data_root}。这不像一个天枢数据根，拒绝生成空备份。"
         )
+    if (data_root / "events.db").is_symlink():
+        raise BackupRefused("不允许符号链接事件库：events.db")
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / f".{dest.name}{_PARTIAL_TAG}{uuid.uuid4().hex[:8]}"
@@ -739,29 +998,12 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
             files.append(BackupFile(rel, sha, size, _category_for(rel)))
         files.sort(key=lambda f: f.path)
 
-        meta = _db_meta(tmp / "events.db")
-        payload_refs, payload_problems = _db_references(tmp / "events.db", data_root)
-        snapshot_refs, snapshot_problems = _snapshot_references(data_root)
-        undo_refs, undo_problems = _undo_references(data_root)
+        meta = _db_meta(tmp / "events.db", saved=True)
+        source_aliases: list[str] = []
+        references, reference_problems = _material_references(
+            tmp, source_root=data_root, discover_aliases=source_aliases
+        )
         failpoint("backup-before-manifest")
-
-        files_by_rel = {f.path: tmp / f.path for f in files}
-        problems = payload_problems + snapshot_problems + undo_problems
-        missing: list[str] = []
-        for ref in payload_refs + snapshot_refs + undo_refs:
-            rel = ref["path"]
-            target = files_by_rel.get(rel)
-            if target is None or not target.is_file():
-                missing.append(f"{rel}（被 {_ref_owner(ref)} 引用）")
-                continue
-            expected = ref.get("sha256") or ""
-            if expected:
-                actual = sha256_file(target)
-                if actual != expected:
-                    problems.append(
-                        f"引用完整性失败：{rel} 的 sha256 与引用不符"
-                        f"（引用 {expected[:12]}…，实际 {actual[:12]}…）"
-                    )
 
         manifest = BackupManifest(
             format=FORMAT_NAME,
@@ -771,16 +1013,15 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
             created_at_ms=int(time.time() * 1000),
             source_name=data_root.name,
             source_path=str(data_root),
+            source_aliases=sorted(source_aliases),
             files=files,
             event_count=int(meta["event_count"]),
             event_seq_head=int(meta["event_seq_head"]),
             run_ids=list(meta["run_ids"]),
             references={
-                "event_payload_refs": payload_refs,
-                "snapshot_blobs": snapshot_refs,
-                "undo_journal_blobs": undo_refs,
-                "missing": missing,
-                "problems": problems,
+                **references,
+                "missing": [],
+                "problems": reference_problems,
                 "seq_contiguous": bool(meta["seq_contiguous"]),
             },
             writer=inspect_writers(data_root),
@@ -792,6 +1033,8 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
         # 清单写完、还没去掉 .partial 标记/改名：如果在这里断电，目录里"看起来
         # 什么都有"，只有 .partial 标记能证明它不是一份已发布的备份。
         failpoint("backup-after-manifest")
+        # 内部校验只忽略本次构建标记；公共 verify 始终拒绝未发布目录。
+        _verify_contents(tmp, manifest, allow_partial_marker=True).require_ok()
         _fsync_tree(tmp)
         marker.unlink()
         _fsync_dir(tmp)
@@ -811,6 +1054,10 @@ def _ref_owner(ref: dict[str, Any]) -> str:
         return f"撤销日志 {ref['journal']}"
     if "seq" in ref:
         return f"事件 seq={ref['seq']} 的 payload_ref"
+    if "memory_id" in ref:
+        return f"记忆 {ref['memory_id']}"
+    if "content_digest" in ref:
+        return f"内容对象 {ref['content_digest']}"
     return "备份引用"
 
 
@@ -818,11 +1065,11 @@ def _ref_owner(ref: dict[str, Any]) -> str:
 
 
 def _load_manifest(dest: Path, problems: list[str]) -> BackupManifest | None:
-    path = dest / MANIFEST_NAME
-    if not path.is_file():
-        problems.append(f"缺少 {MANIFEST_NAME}（不是备份目录，或备份没有写完）")
-        return None
     try:
+        path = _checked_file(dest, MANIFEST_NAME)
+        if not path.is_file():
+            problems.append(f"缺少 {MANIFEST_NAME}（不是备份目录，或备份没有写完）")
+            return None
         raw = json.loads(path.read_bytes().decode("utf-8"))
         manifest = BackupManifest.from_dict(raw)
     except (OSError, ValueError, TypeError, UnicodeDecodeError) as exc:
@@ -843,35 +1090,47 @@ def _load_manifest(dest: Path, problems: list[str]) -> BackupManifest | None:
 
 
 def _check_files(
-    dest: Path, manifest: BackupManifest, problems: list[str]
+    dest: Path, manifest: BackupManifest, problems: list[str], *,
+    allow_partial_marker: bool = False,
 ) -> tuple[int, int]:
     checked = 0
     total = 0
-    declared = {f.path: f for f in manifest.files}
-    for rel in declared:
+    declared: dict[str, BackupFile] = {}
+    for entry in manifest.files:
         try:
-            _validate_rel(rel)
+            rel = _validate_rel(entry.path)
         except ValueError as exc:
             problems.append(f"清单里的路径非法：{exc}")
+            continue
+        if rel in declared:
+            problems.append(f"清单里的路径重复：{rel}")
+        declared[rel] = entry
     actual: set[str] = set()
     for path in dest.rglob("*"):
+        rel = _rel_posix(path, dest)
+        if path.is_symlink():
+            problems.append(f"不允许符号链接材料：{rel}")
+            continue
         if path.is_file():
-            rel = _rel_posix(path, dest)
-            if rel == MANIFEST_NAME:
+            if rel == MANIFEST_NAME or (allow_partial_marker and rel == PARTIAL_MARKER):
                 continue
             actual.add(rel)
     for rel in sorted(actual - set(declared)):
         problems.append(f"备份里有清单之外的文件：{rel}")
     for rel, entry in sorted(declared.items()):
-        path = dest / rel
-        if not path.is_file():
-            problems.append(f"清单声明的文件缺失：{rel}")
+        try:
+            path = _checked_file(dest, rel)
+            if not path.is_file():
+                problems.append(f"清单声明的文件缺失：{rel}")
+                continue
+            size = path.stat().st_size
+            if size != entry.size:
+                problems.append(f"{rel} 大小不符：清单 {entry.size}，实际 {size}")
+                continue
+            sha = sha256_file(path)
+        except (OSError, ValueError) as exc:
+            problems.append(f"清单文件无法核验：{rel}（{exc}）")
             continue
-        size = path.stat().st_size
-        if size != entry.size:
-            problems.append(f"{rel} 大小不符：清单 {entry.size}，实际 {size}")
-            continue
-        sha = sha256_file(path)
         if sha != entry.sha256:
             problems.append(f"{rel} 内容被改过：清单 {entry.sha256[:12]}…，实际 {sha[:12]}…")
             continue
@@ -881,13 +1140,29 @@ def _check_files(
 
 
 def _check_db(dest: Path, manifest: BackupManifest, problems: list[str]) -> int | None:
-    db = dest / "events.db"
-    if not db.is_file():
-        problems.append("备份里没有 events.db")
-        return None
     try:
-        meta = _db_meta(db)
-    except sqlite3.Error as exc:
+        db = _checked_file(dest, "events.db")
+        if not db.is_file():
+            problems.append("备份里没有 events.db")
+            return None
+        meta = _db_meta(db, saved=True)
+        conn = _connect_saved_readonly(db)
+        try:
+            conn.row_factory = sqlite3.Row
+            for row in conn.execute(
+                "SELECT seq,payload AS payload_inline,payload_ref,payload_hash "
+                "FROM events ORDER BY seq"
+            ):
+                try:
+                    read_saved_event_payload(
+                        dest, row, source_root=Path(manifest.source_path),
+                        source_aliases=manifest.source_aliases,
+                    )
+                except BackupInvalid as exc:
+                    problems.extend(f"事件 seq={row['seq']}：{p}" for p in exc.problems)
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError) as exc:
         problems.append(f"备份的事件库打不开：{type(exc).__name__}: {exc}")
         return None
     if int(meta["db_user_version"]) != manifest.db_user_version:
@@ -914,33 +1189,97 @@ def _check_db(dest: Path, manifest: BackupManifest, problems: list[str]) -> int 
 def _check_references(
     dest: Path, manifest: BackupManifest, problems: list[str]
 ) -> None:
-    for rel in manifest.references.get("missing") or []:
-        problems.append(f"备份时引用就已缺失：{rel}")
-    for rel in manifest.references.get("problems") or []:
-        problems.append(f"备份时引用关系就读不出来：{rel}")
+    for key, label in (("missing", "引用就已缺失"), ("problems", "引用关系就读不出来")):
+        values = manifest.references.get(key, [])
+        if not isinstance(values, list):
+            problems.append(f"references.{key} 必须是列表")
+            continue
+        problems.extend(f"备份时{label}：{value}" for value in values)
+    _check_reference_groups(dest, manifest, manifest.references, problems)
+    try:
+        saved, saved_problems = _material_references(
+            dest, source_root=Path(manifest.source_path),
+            source_aliases=manifest.source_aliases,
+        )
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        problems.append(f"保存的材料引用无法推导：{type(exc).__name__}: {exc}")
+        return
+    problems.extend(saved_problems)
+    _check_reference_groups(dest, manifest, saved, problems)
+
+
+def _check_reference_groups(
+    dest: Path, manifest: BackupManifest, references: dict[str, Any], problems: list[str],
+) -> None:
     declared = {f.path for f in manifest.files}
-    for key in ("event_payload_refs", "snapshot_blobs", "undo_journal_blobs"):
-        for ref in manifest.references.get(key) or []:
+    for key in ("event_payload_refs", "snapshot_blobs", "undo_journal_blobs",
+                "content_blobs", "memory_blobs"):
+        refs = references.get(key, [])
+        if not isinstance(refs, list):
+            problems.append(f"references.{key} 必须是列表")
+            continue
+        for ref in refs:
             try:
+                if not isinstance(ref, dict):
+                    raise ValueError("引用必须是对象")
                 rel = _validate_rel(ref.get("path"))
+                expected = ref.get("sha256")
+                if not _is_digest(expected):
+                    raise ValueError(f"引用 sha256 非法：{expected!r}")
             except ValueError as exc:
                 problems.append(f"{key} 的引用路径非法：{exc}")
                 continue
             if rel not in declared:
-                problems.append(f"{key} 引用的文件不在备份里：{rel}")
+                problems.append(
+                    f"{key} 引用的文件不在备份里：{rel}（{_ref_owner(ref)}）"
+                )
                 continue
-            path = dest / rel
-            if not path.is_file():
-                problems.append(f"{key} 引用的文件缺失：{rel}")
-                continue
-            expected = ref.get("sha256") or ""
-            if expected:
+            try:
+                path = _checked_file(dest, rel)
+                if not path.is_file():
+                    problems.append(f"{key} 引用的文件缺失：{rel}")
+                    continue
                 actual = sha256_file(path)
                 if actual != expected:
                     problems.append(
                         f"{key} 引用 {rel} 的内容哈希不符"
                         f"（引用 {expected[:12]}…，实际 {actual[:12]}…）"
                     )
+                if "size" in ref:
+                    size = ref["size"]
+                    if (not isinstance(size, int) or isinstance(size, bool)
+                            or size < 0 or path.stat().st_size != size):
+                        problems.append(f"{key} 引用 {rel} 的大小不符：登记 {size!r}")
+            except (OSError, ValueError) as exc:
+                problems.append(f"{key} 引用无法核验：{rel}（{exc}）")
+
+
+def _verify_contents(
+    dest: Path, manifest: BackupManifest, *,
+    allow_partial_marker: bool = False, problems: list[str] | None = None,
+) -> BackupVerification:
+    problems = list(problems or [])
+    files_checked, bytes_checked = _check_files(
+        dest, manifest, problems, allow_partial_marker=allow_partial_marker
+    )
+    companion_names = {"events.db-wal", "events.db-shm", "events.db-journal"}
+    companions = sorted(path.name for path in dest.iterdir()
+                        if path.name.casefold() in companion_names)
+    if companions:
+        problems.extend(f"备份不是自包含数据库，拒绝伴随文件：{rel}" for rel in companions)
+        return BackupVerification(
+            ok=False, manifest=manifest, problems=problems,
+            files_checked=files_checked, bytes_checked=bytes_checked,
+        )
+    db_user_version = _check_db(dest, manifest, problems)
+    _check_references(dest, manifest, problems)
+    if manifest.format_version < 1:
+        problems.append(f"备份格式版本非法：{manifest.format_version}")
+    return BackupVerification(
+        ok=not problems, manifest=manifest, problems=problems,
+        files_checked=files_checked, bytes_checked=bytes_checked,
+        db_user_version=db_user_version,
+    )
 
 
 def verify_backup(dest: Path) -> BackupVerification:
@@ -955,6 +1294,8 @@ def verify_backup(dest: Path) -> BackupVerification:
         "如果是中断留下的 .partial-* 目录：删除它，重新执行 create_backup",
         "如果备份文件缺失/被改过：换一个备份恢复，或用旧版本程序核对现场后再备份",
     ]
+    if dest.is_symlink():
+        return BackupVerification(False, None, ["备份目录不允许符号链接"], remediation)
     if not dest.exists():
         return BackupVerification(
             False, None, [f"备份目录不存在：{dest}"], remediation
@@ -963,7 +1304,8 @@ def verify_backup(dest: Path) -> BackupVerification:
         return BackupVerification(
             False, None, [f"备份路径不是目录：{dest}"], remediation
         )
-    if PARTIAL_MARKER in dest.name or (dest / PARTIAL_MARKER).exists():
+    if (PARTIAL_MARKER in dest.name or (dest / PARTIAL_MARKER).exists()
+            or (dest / PARTIAL_MARKER).is_symlink()):
         return BackupVerification(
             False, None,
             [f"这是一个未完成的临时备份目录（含 {PARTIAL_MARKER} 标记）：不是有效备份"],
@@ -971,24 +1313,11 @@ def verify_backup(dest: Path) -> BackupVerification:
         )
 
     manifest = _load_manifest(dest, problems)
-    db_user_version = None
-    files_checked = bytes_checked = 0
     if manifest is not None:
-        files_checked, bytes_checked = _check_files(dest, manifest, problems)
-        db_user_version = _check_db(dest, manifest, problems)
-        _check_references(dest, manifest, problems)
-        if manifest.format_version < 1:
-            problems.append(f"备份格式版本非法：{manifest.format_version}")
-
-    return BackupVerification(
-        ok=not problems,
-        manifest=manifest,
-        problems=problems,
-        remediation=remediation if problems else [],
-        files_checked=files_checked,
-        bytes_checked=bytes_checked,
-        db_user_version=db_user_version,
-    )
+        result = _verify_contents(dest, manifest, problems=problems)
+        result.remediation = remediation if result.problems else []
+        return result
+    return BackupVerification(False, None, problems, remediation)
 
 
 # --------------------------------------------------------------------------- 恢复
@@ -1227,8 +1556,9 @@ class ReferenceIndex:
 def collect_references(data_root: Path) -> ReferenceIndex:
     """算出"哪些 blob 被引用、哪些是孤儿、哪些判定不了"。
 
-    判定不了（清单/日志/事件库读不出来）必须抛 `ReferenceUnknown`：不给出
-    清理结论。误删证据比留一份多余 blob 严重得多。
+    判定不了（清单/日志/事件库读不出来，或登记的内容/未擦除记忆正文无法通过
+    哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
+    留一份多余 blob 严重得多；本函数不执行删除。
     """
     data_root = Path(data_root).resolve()
     db = data_root / "events.db"
@@ -1236,12 +1566,19 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         raise ReferenceUnknown(f"数据根里没有事件库，无法判定引用：{data_root}")
     index = ReferenceIndex()
     try:
-        payload_refs, payload_problems = _db_references(db, data_root)
-        snapshot_refs, snapshot_problems = _snapshot_references(data_root)
+        db = _checked_file(data_root, "events.db")
+        source_aliases: list[str] = []
+        payload_refs, payload_problems = _db_references(
+            db, data_root, discover_aliases=source_aliases
+        )
+        snapshot_refs, snapshot_problems = _snapshot_references(
+            data_root, source_root=data_root, discover_aliases=source_aliases
+        )
         undo_refs, undo_problems = _undo_references(data_root)
-    except sqlite3.Error as exc:
+        content_refs, memory_refs, projection_problems = _projection_references(db)
+    except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
-    for problem in payload_problems + snapshot_problems + undo_problems:
+    for problem in payload_problems + snapshot_problems + undo_problems + projection_problems:
         index.unknown.append(problem)
     for ref in payload_refs:
         index.protected_blobs.setdefault(ref["path"], []).append(
@@ -1257,6 +1594,20 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         index.protected_blobs.setdefault(ref["path"], []).append(
             f"撤销日志 {ref['journal']}"
         )
+    for ref in content_refs + memory_refs:
+        rel = ref["path"]
+        index.protected_blobs.setdefault(rel, []).append(_ref_owner(ref))
+        try:
+            with _checked_file(data_root, rel).open("rb") as fh:
+                digest, size = _sha256_stream(fh)
+            if digest != ref["sha256"]:
+                raise ValueError("内容哈希不符")
+            if "size" in ref and size != ref["size"]:
+                raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
+        except (OSError, ValueError) as exc:
+            index.unknown.append(f"投影材料无法核验：{rel}（{exc}）")
+    if index.unknown:
+        raise ReferenceUnknown("；".join(index.unknown))
     journals = data_root / "artifacts" / "undo"
     if journals.is_dir():
         for journal in sorted(journals.glob("*.json")):
@@ -1359,8 +1710,9 @@ def usage_report(data_root: Path) -> UsageReport:
 def cleanup_plan(data_root: Path) -> dict[str, Any]:
     """给出"可人工清理"的候选清单——不删除任何东西，也不自动 GC。
 
-    只有"未被任何清单/事件/未完成撤销引用"的 blob 才是候选；读不出引用关系
-    时`collect_references` 抛 `ReferenceUnknown`，本函数跟着拒绝。
+    候选范围仅 artifacts/blobs；只有未被清单/事件/撤销/内容对象/未擦除记忆
+    引用的 blob 才是候选。引用或投影材料无法核验时 `collect_references` 抛
+    `ReferenceUnknown`，本函数跟着拒绝，不扩大为自动 GC。
     """
     index = collect_references(data_root)
     return {
@@ -1378,7 +1730,7 @@ def cleanup_plan(data_root: Path) -> dict[str, Any]:
         "retention": RETENTION_POLICY,
         "notes": [
             "本函数只出候选清单，不删除任何文件；自动 GC 不在本轮范围。",
-            "被引用/未完成撤销正在用的材料永远不进候选。",
+            "清单/事件/撤销/内容对象/未擦除记忆引用的材料永远不进候选。",
         ],
     }
 

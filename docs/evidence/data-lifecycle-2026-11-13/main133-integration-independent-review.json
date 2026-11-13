@@ -1,0 +1,296 @@
+{
+  "schema": "tianshu.independent_index_review.summary.v1",
+  "reviewer": "/root/verify_lifecycle",
+  "reviewed_at": "2026-11-13T10:27:30.892957+00:00",
+  "repository": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+  "head": "857e547657c3654935fa32b300cd85d4206c504e",
+  "merge_head": "f2aef9da75d2e546af99baa523d196d1e099c196",
+  "merge_base": "a8399062dd87675cc10b7c258ab4ce3679b53613",
+  "reviewed_index_git_tree": "c1f044e01dbc89c1c45f652d1479fc53016a1650",
+  "index_path_count": 368,
+  "index_entries_canonical_sha256": "3459267748a904f25cf15d305bbe80f24cdc1b2ff5f6a7bfc0186a54f4475aed",
+  "content_inheritance": {
+    "initial_parent_union_paths": 367,
+    "initial_source_counts": {
+      "both": 312,
+      "lifecycle-857": 46,
+      "upstream-main133": 8,
+      "manual-knowledge": 1
+    },
+    "initial_366_exact_except_knowledge": true,
+    "current_364_exact_parent_objects_plus_4_reviewed_evidence_documents": true,
+    "no_third_product_test_ui_or_configuration_content": true,
+    "owned_ten_exact_fd5_and_head": [
+      {
+        "path": "src/tianshu/maintenance.py",
+        "git_blob": "02ab696d35239f0ec8b331bff22f28160fbee4d4",
+        "sha256": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a"
+      },
+      {
+        "path": "src/tianshu/events.py",
+        "git_blob": "3ae35afda68bef24ca3db3a7a10b1cb4f395c66f",
+        "sha256": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e"
+      },
+      {
+        "path": "src/tianshu/backup.py",
+        "git_blob": "314950d8aa56718b8318244f03e314bbafeafba8",
+        "sha256": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0"
+      },
+      {
+        "path": "src/tianshu/data_cli.py",
+        "git_blob": "0ffe7a781ad2f24f12d856ed962f8dca6470c49d",
+        "sha256": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239"
+      },
+      {
+        "path": "src/tianshu/cli.py",
+        "git_blob": "72f0695d5c397fcfea2796c7b9913c8928695f8c",
+        "sha256": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60"
+      },
+      {
+        "path": "tests/test_maintenance.py",
+        "git_blob": "bb7f4dcc1e617a4f04c1edd92b95031f09dc6f7b",
+        "sha256": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9"
+      },
+      {
+        "path": "tests/test_backup.py",
+        "git_blob": "be3210e8240a3722bb0211e95820c7bef8cc7e8b",
+        "sha256": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a"
+      },
+      {
+        "path": "tests/test_data_cli.py",
+        "git_blob": "469cbbfe676ef78594502f9d6b986ee9a40fef4a",
+        "sha256": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee"
+      },
+      {
+        "path": "tests/test_backup_materials.py",
+        "git_blob": "65bc84a7d9605b03412adf2cc3efa1694a5dedb5",
+        "sha256": "a9af99927d18d3035a719f4d325ed22c3d06e1bfd93943681ba0788d33e7f6ad"
+      },
+      {
+        "path": ".gitignore",
+        "git_blob": "70dc544b65839951541cb707dd428e3e3e4cb85b",
+        "sha256": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49"
+      }
+    ],
+    "upstream_recovery_three_exact_main": [
+      {
+        "path": "src/tianshu/recovery.py",
+        "git_blob": "abb2aad5fcab8ebbf1e295a89f24abf59323ca52",
+        "sha256": "35720ad961128b98f376b8df4c735be685267ed827ff624d0ee1e357b39bf30d"
+      },
+      {
+        "path": "tests/test_exec_recovery.py",
+        "git_blob": "5a3cc6d23ec6c88f4748f252a66726727e542e66",
+        "sha256": "70b19e16e6092cb3867ee068050fc5e7b830064d3a7d0d77c0aacf706b471882"
+      },
+      {
+        "path": "tests/test_recovery_atomicity.py",
+        "git_blob": "702d1ee12b52a48bf1c95852b12e79278882d3f9",
+        "sha256": "18ca31d283dbbc343d5dd73ddaf13d63a4796a0cd2ff0b3227325e2a2b79a4cb"
+      }
+    ],
+    "readme_exact_857_and_167": true,
+    "knowledge_preservation": [
+      {
+        "parent": "857e547657c3654935fa32b300cd85d4206c504e",
+        "all_new_nonempty_diff_lines_present": true,
+        "all_section8_original_log_lines_present": true
+      },
+      {
+        "parent": "f2aef9da75d2e546af99baa523d196d1e099c196",
+        "all_new_nonempty_diff_lines_present": true,
+        "all_section8_original_log_lines_present": true
+      }
+    ],
+    "post_gate_evidence_documents": [
+      {
+        "path": "docs/DATA-LIFECYCLE-2026-11-13.md",
+        "before_git_blob": "8d841d5ad7776144850408eed40ac02321194b9d",
+        "after_git_blob": "963898fd880f05c91be8989d0a255d0ad92b950a",
+        "sha256": "55ade096170d12745528b4a05945a8b5ecc327d99a5aaf3342c16da3d0f004c8",
+        "review": "Append only evidence section"
+      },
+      {
+        "path": "docs/KNOWLEDGE.md",
+        "before_git_blob": "ed7c9445ed3e98eae3b018f70f1071151221091d",
+        "after_git_blob": "3f25772cf61d8c34369e2101fe35dff100517449",
+        "sha256": "058d1dff27935571dbc7a8f6f0481e158d720247cca99c58ec5851acd22545d5",
+        "review": "Update this combination from validating to measured local results and append one log; no parent history removed"
+      },
+      {
+        "path": "docs/evidence/data-lifecycle-2026-11-13/README.md",
+        "before_git_blob": "2b7a446ed7b20c1370abc165241b0235098a7b06",
+        "after_git_blob": "33427cbaef959aa922c82c0ec53afba7abaab615",
+        "sha256": "fcd13590baa7c4a05e7d46d9e3ffd00c8fb21f5ca206a5d187e66dc53c9222e4",
+        "review": "Append only evidence section"
+      },
+      {
+        "path": "docs/evidence/data-lifecycle-2026-11-13/main133-integration-local-gates.json",
+        "before_git_blob": null,
+        "after_git_blob": "1d4c94b725bdcc217cd3be9aacc2e812dcc82b5a",
+        "sha256": "c78f437fe9fdc83ee6302ecab021e9a563c778b97062dadbdf51aed6f3347460",
+        "review": "New author gate archive matches original logs, metadata, freeze/stable and inherited UI hashes"
+      }
+    ]
+  },
+  "original_archives": [
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-integration-independent-review.json",
+      "original_path": "/tmp/main132-integration-independent-review.json",
+      "sha256": "e6ad126592b5b22605b89e348ed7206bf826d4d11afa06c609830527a9dfc99f",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-integration-independent-review.md",
+      "original_path": "/tmp/main132-integration-independent-review.md",
+      "sha256": "00d9f272230bc46353f5dec906691882d669bf61559b40d3a563768a0bae4a7f",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-commit-binding.json",
+      "original_path": "/tmp/tianshu-g3-20261113/independent/windows-encoding-commit-binding.json",
+      "sha256": "f969fcafeab258c0b4a9ad86a6102aa85da9a1d0a83f06968f236416b63770b9",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/windows-encoding-commit-review.md",
+      "original_path": "/tmp/tianshu-g3-20261113/independent/windows-encoding-commit-review.md",
+      "sha256": "40cf78c1b1f96554273382c59e91fd4f11f98882300a9a8eb08754c41b6fe56d",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-integration-commit-binding.json",
+      "original_path": "/tmp/main132-integration-commit-binding.json",
+      "sha256": "c8cb36aadb413891af28db368e84182c78da719f93e5c485ff36445292e5811a",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-integration-commit-review.md",
+      "original_path": "/tmp/main132-integration-commit-review.md",
+      "sha256": "0dc55f54e26a6bf769dd5dade6a6722e06527e13dcf9eec846f48318ce1f83af",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-integration-commit-verify.py.txt",
+      "original_path": "/tmp/main132-integration-commit-verify.py",
+      "sha256": "62817c3a69f79c82f6d55bba705a7eb31b464374767eda15bf1c405bdd25ba33",
+      "byte_identical": true
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/main132-readme-count-clarification.md",
+      "original_path": "/tmp/main132-readme-count-clarification.md",
+      "sha256": "445d7e6f970584442b4aa4661885a3af9760a31f7ba1583d5ae3e020c49606a2",
+      "byte_identical": true
+    }
+  ],
+  "archive_explanations_accurate": true,
+  "author_local_gates": {
+    "executor": "/root",
+    "independent_reader_attribution": "Second reader inspected original log bytes/metadata/output/hash/exit codes and freeze/stable mapping; did not rerun full pytest.",
+    "checks": [
+      {
+        "command": [
+          "uv",
+          "lock",
+          "--check"
+        ],
+        "exit_code": 0,
+        "wrapper_seconds": 0.011377457994967699,
+        "log_path": "/tmp/tianshu-g3-20261113/main133-integration-lock.log",
+        "log_sha256": "d78ed9b5b8661fc4db7129738dc9f5dc6a4d57eda08c74e892527c46380bef22",
+        "metadata_path": "/tmp/tianshu-g3-20261113/main133-integration-lock.json",
+        "metadata_sha256": "b5c1bbbdf3a0e582b4c74ea6f0794870530250cdd016c1a77d0099048a72ac4b",
+        "summary": "Resolved 8 packages in 3ms"
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--frozen",
+          "ruff",
+          "check",
+          "."
+        ],
+        "exit_code": 0,
+        "wrapper_seconds": 0.07003220799379051,
+        "log_path": "/tmp/tianshu-g3-20261113/main133-integration-ruff.log",
+        "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "metadata_path": "/tmp/tianshu-g3-20261113/main133-integration-ruff.json",
+        "metadata_sha256": "28c786f3674567844259bb7d865a5cd694024108afa4050a4e4719f62358e575",
+        "summary": "All checks passed!"
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--frozen",
+          "pytest"
+        ],
+        "exit_code": 0,
+        "wrapper_seconds": 427.46405299997423,
+        "log_path": "/tmp/tianshu-g3-20261113/main133-integration-pytest.log",
+        "log_sha256": "297d85a11920d755e16a31e8accf5cefe6434c57e7877f3525ac2adf8c930b5c",
+        "metadata_path": "/tmp/tianshu-g3-20261113/main133-integration-pytest.json",
+        "metadata_sha256": "78d84c9cee39daf0841a04fce9fe24e2bea756b6a3dd2402367f14fa221ec3a4",
+        "summary": "2439 passed, 8 skipped in 427.25s (0:07:07)"
+      }
+    ],
+    "archived_path": "docs/evidence/data-lifecycle-2026-11-13/main133-integration-local-gates.json",
+    "archived_sha256": "c78f437fe9fdc83ee6302ecab021e9a563c778b97062dadbdf51aed6f3347460",
+    "archive_matches_original_command_metadata_freeze_stable": true,
+    "freeze_path": "/tmp/tianshu-g3-20261113/main133-integration-freeze.json",
+    "freeze_sha256": "75d110fd0bb7cf6df06ed4e46cf070733d66466a565736b7ddb99cf614a42135",
+    "stable_path": "/tmp/tianshu-g3-20261113/main133-integration-stable.json",
+    "stable_sha256": "f91b923f99478f4755c2b73827152f08f17fe66d4985a582cf925d040715f795",
+    "frozen_file_count": 255,
+    "frozen_scope": "All tracked regular files excluding docs/** and root README.md",
+    "freeze_equals_stable": true,
+    "drift": [],
+    "all_255_files_match_index_and_post_run_worktree": true,
+    "runner_path": "/tmp/tianshu-g3-20261113/main133-integration-run.py",
+    "runner_sha256": "bd93209297caf9598f521986ca69f863e87d30a0e43f0d5974449760472c0719"
+  },
+  "ui": {
+    "all_ui_objects_exact_857_mainf2_and_167": true,
+    "prior_verified_tests": 80,
+    "new_execution": false,
+    "dist": [
+      {
+        "path": "ui/dist/assets/index-Bg66gMXY.js",
+        "sha256": "d42b07dc3cd3b08e2e2076a2daa65dba73307f122cfcaf1edde2a86b906bc35d"
+      },
+      {
+        "path": "ui/dist/assets/index-tHfDYJNM.css",
+        "sha256": "77dbeffdd1b736a2de3fd3c6a0dee193f52d1a6ad9f0aaa2bfe5020b0df26ad3"
+      },
+      {
+        "path": "ui/dist/index.html",
+        "sha256": "bb57239967bd9d2b79f960742e01187c70b5572405048d76557ed6bed9527652"
+      }
+    ],
+    "source_evidence": "16721ff14ad08456e8f6a2522c3300b2652b0918:docs/evidence/data-lifecycle-2026-11-13/main132-integration-local-gates.json",
+    "attribution": "Prior parent UI execution and prior independent evidence inspection; exact unchanged object inheritance checked in this pass."
+  },
+  "independent_commands_and_method": [
+    "git ls-files --stage -z: stage0 mode/blob map, no unmerged entries",
+    "git ls-tree -rz --full-tree: base/HEAD/main and existing index tree map; three-way parent source selection",
+    "git cat-file tree: independently SHA1-hash existing tree with Git header; no tree written by reviewer",
+    "git show :path / git cat-file blob plus hashlib.sha256: archive bytes, index/worktree and frozen-object matches",
+    "git diff --cached --check and git diff --check: exit0",
+    "Inline Python in reviewer tool transcript performs comparisons; no separate new verifier script was written."
+  ],
+  "current_worktree_matches_index": true,
+  "conflict_markers": [],
+  "unmerged_entries": [],
+  "repository_modified_by_reviewer": false,
+  "conclusion": "Staged content inheritance, eight old original archives, four post-gate evidence documents, parent fresh local gates and unchanged UI evidence inheritance passed for this exact index tree.",
+  "pending_complete_merge_commit_binding": true,
+  "new_native_ci_verified": false,
+  "merge_approval": false,
+  "limitations": [
+    "Final merge commit is not bound by this index review.",
+    "No new native Windows/four-required CI result is asserted for this composition.",
+    "No full-suite/UI/lifecycle-probe rerun by second reader in this pass.",
+    "Original cooperative lock, online low-level backup, absent restore apply/deletion-history guarantees and unverified user-device platform boundaries remain."
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "base_sha": "ccff93e79cfeb93e47e5a35012fd92fae366e941",
+  "files_checked": 336,
+  "drift": [],
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.02
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit_code": 0,
+      "seconds": 0.07
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "exit_code": 0,
+      "seconds": 373.58
+    }
+  ],
+  "candidate_kind": "base_commit_plus_frozen_worktree",
+  "product_and_test_hashes": {
+    "src/tianshu/maintenance.py": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+    "src/tianshu/events.py": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+    "tests/test_maintenance.py": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+    "src/tianshu/backup.py": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+    "tests/test_backup_materials.py": "0ea3c8ea529b0f95b8e9d778b3bda23d31bd5cefbf347ebf66264197052de101",
+    "tests/test_backup.py": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+    "src/tianshu/data_cli.py": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+    "src/tianshu/cli.py": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+    "tests/test_data_cli.py": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee"
+  },
+  "environment_isolation": "Only test subprocesses remove TIANSHU_* and ANTHROPIC/OPENAI BASE_URL/API_KEY; no values recorded.",
+  "logs": {
+    "lock": {
+      "sha256": "952c52098285918d7989036dbb2f826309f2fb4952b61e8d4f6b564250c94155",
+      "last_lines": [
+        "Resolved 8 packages in 12ms"
+      ]
+    },
+    "ruff": {
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "last_lines": [
+        "All checks passed!"
+      ]
+    },
+    "pytest": {
+      "sha256": "84a1c9c09142fdf554d4bd8821e36285afe46613fea4c73dfa8273be28118e08",
+      "last_lines": [
+        "........................................................................ [ 97%]",
+        "................................................                         [100%]",
+        "2273 passed, 7 skipped in 373.01s (0:06:13)"
+      ]
+    }
+  },
+  "pytest_summary": "2273 passed, 7 skipped in 373.01s (0:06:13)",
+  "targeted_summary": "157 passed in 6.83s"
+}

@@ -1,0 +1,55 @@
+[
+  {
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "ruff",
+      "format",
+      "--check",
+      "--config",
+      "pyproject.toml",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_locks.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_materials_cli.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_live_wal.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen ruff format --check --config pyproject.toml /tmp/tianshu-g3-20261113/independent/run_clean.py /tmp/tianshu-g3-20261113/independent/probe_locks.py /tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py /tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py /tmp/tianshu-g3-20261113/independent/probe_materials_cli.py /tmp/tianshu-g3-20261113/independent/probe_live_wal.py /tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py /tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py /tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py /tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py\n10 files already formatted\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "ruff",
+      "check",
+      "--config",
+      "pyproject.toml",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_locks.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_materials_cli.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_live_wal.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py",
+      "/tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen ruff check --config pyproject.toml /tmp/tianshu-g3-20261113/independent/run_clean.py /tmp/tianshu-g3-20261113/independent/probe_locks.py /tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py /tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py /tmp/tianshu-g3-20261113/independent/probe_materials_cli.py /tmp/tianshu-g3-20261113/independent/probe_live_wal.py /tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py /tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py /tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py /tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py\nAll checks passed!\nEXIT 0\n",
+    "stderr": ""
+  }
+]

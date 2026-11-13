@@ -1,16 +1,26 @@
-# 一致备份 / 干净根恢复 / 版本化迁移（W4 · PRD §8.5 + §5.3.5 第 3 条）
+# 数据备份、校验与恢复预演（PRD §8.5）
 
-- 分支：`feat/backup-restore`（worktree `/Volumes/Date/ts-wt-backup`）
-- 基线：`main @ da84d92`（PR #75 之后；本工作流落笔时全量 1316 passed / 6 skipped）
-- 收工实测：全量 **1347 passed / 6 skipped**（116.63s）、`ruff check .` 干净（本机 macOS arm64）
-- 规格：[`SPEC-PRD-REVIEW-2026-11-11.md` §5](../ts-wt-prd/docs/SPEC-PRD-REVIEW-2026-11-11.md)
-- 新增模块：`src/tianshu/backup.py`、`src/tianshu/migrate.py`
-- 新增测试：`tests/test_backup.py`（19 条）、`tests/test_migration.py`（12 条）
-- 未改任何别人文件（`events.py` / `snapshot.py` / `recovery.py` / `host.py` 等只读引用）
+2026-11-13 的数据生命周期首片新增三个 CLI 入口，基于 `main @ ccff93e`；本轮验收记录见 [DATA-LIFECYCLE-2026-11-13.md](DATA-LIFECYCLE-2026-11-13.md)。原 W4 库函数验收（`feat/backup-restore`，基线 `da84d92`，1347 passed / 6 skipped）保留在 §7–§8，属于 2026-11-11 的历史证据，不代表当前全量测试数。
+
+规格：[PRD §8.5](PRD-v1.md)、[原 W4 规格 §5](SPEC-PRD-REVIEW-2026-11-11.md)。库实现为 `backup.py` / `migrate.py`；新入口为 `data_cli.py`，协作式维护准入为 `maintenance.py`。
 
 ---
 
 ## 0. 先给结论（哪些成立、哪些仍不成立）
+
+先关闭使用该数据根的 Host、Daemon 和内核 CLI；备份命令遇到活跃连接会退出 `2`，不会强停进程。所有命令都要求明确指定根或备份目录：
+
+```bash
+uv run --frozen tianshu data backup --data-root /absolute/data-root --dest /absolute/backups/backup-1 --json
+uv run --frozen tianshu data verify /absolute/backups/backup-1 --json
+uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root /absolute/data-root --json
+```
+
+`backup` / `verify` 成功退出 `0`；`verify` 不完整退出 `1`；前置条件不满足退出 `2`。`restore-plan` 的检查通过退出 `3`，表示待人工复核，**没有执行恢复**；检查不通过退出 `2`。去掉 `--json` 可读人话输出。
+
+新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口须等版本准入和记忆隔离契约落地。
+
+预演需要 `runs`、`approvals`、`leases` 三张投影及事件版本旁表可读。缺失或损坏时退出 `2`、`ok=false`、`reconciliation.complete=false`，不会将未能核对的状态报告为空。只有事件日志的旧库也不猜测重建成功；须先由匹配版本重建并验证必要投影。
 
 | 宣称 | 状态 | 证据 |
 |---|---|---|
@@ -18,14 +28,15 @@
 | `backup.json` 记录版本/每文件 sha256/引用清单/恢复须知/保留期 | **已实现** | §2.4 |
 | 备份原子发布；中断的 `.partial-*` 目录**不会**被 `verify` 当有效备份 | **已实现 + 有测试（含子进程真崩溃）** | §2.5、§7 负控 |
 | `verify_backup` 校验哈希/引用/事件 seq 连续/清单可解析/版本兼容 | **已实现 + 有测试** | §3 |
-| `restore_backup` 只恢复干净根；失败保留原数据；恢复后核对未决 intent/审批/租约 | **已实现 + 有测试** | §4 |
+| `data restore-plan` 只读报告原路径、干净目标、版本与未决项 | **本轮新增；不执行恢复** | `tests/test_data_cli.py` |
+| 低层 `restore_backup` 只恢复干净根；失败保留原数据 | **原 W4 库函数；不是新 CLI 的恢复许可** | §4；未补齐后续删除历史与记忆隔离 |
 | 迁移有结构版本号、步骤注册表、进度持久化、备份前置、前/后故障注入、中断续做 | **已实现 + 子进程中断测试** | §5 |
 | 迁移不 UPDATE/DELETE 历史事件；append-only 触发器保留 | **已实现 + 有测试** | §5 |
 | 保留期声明 + 引用保护（被引用 blob 永不进清理候选） | **已实现 + 有测试** | §6 |
 | **换路径恢复（重定位）** | **未实现** | §4.2：事件 `payload_ref` / 快照 `blob_ref` 是绝对路径；`events.py`/`snapshot.py` 不在本工作流所有权 |
 | **迁移写入门已接进 CLI/daemon** | **未接线** | §5.5：`migrate.assert_writable()` 只有库函数；接入点需要改 `cli.py`/`daemon.py`（不在所有权） |
 | **首次启动自动建库并迁移** | **未实现** | 新库 `user_version=0`，当前程序不会自动迁移；见 §5.5 |
-| 备份时**停止并发写者** | **未实现（有意）** | §2.3：用在线备份 API + 复制顺序压小窗口；不停止 daemon/host，边界如实写 |
+| CLI 备份与正常 `EventLog` 连接互斥 | **本轮新增协作准入；不强停进程** | §2.2；直接调用低层在线 API 不自动独占 |
 | Windows 实机 / APFS / 跨机器恢复 | **未验证** | 只有 macOS arm64 本机；换路径/跨机重定位未实现 |
 
 ---
@@ -54,7 +65,9 @@
 | 数据根相对路径 | 进备份 | 类别 | 说明 |
 |---|---|---|---|
 | `events.db` | ✅ | `event_log` | **SQLite 在线备份 API** 取一致点，不是文件复制 |
-| `artifacts/blobs/<sha256>` | ✅ | `blob` | 事件外部 payload blob + 快照写前内容，内容寻址、不可变 |
+| `artifacts/blobs/<sha256>` | ✅ | `blob` | 快照写前内容与内容对象，内容寻址、不可变 |
+| `blobs/<sha256>` | ✅ | `artifact_other` | 内核 CLI 大事件 payload 的默认位置 |
+| `memory_blobs/<sha256>` | ✅ | `artifact_other` | 记忆正文；未擦除记忆的正文引用须完整 |
 | `artifacts/snapshots/<run>.json` | ✅ | `snapshot_manifest` | 撤销/恢复证据；原子整文件替换 |
 | `artifacts/undo/<run>.json` | ✅ | `undo_journal` | 撤销意图日志（含未完成撤销） |
 | `artifacts/**`（其它） | ✅ | `artifact_other` | 保守带上，宁可多一份证据 |
@@ -67,6 +80,14 @@
 
 ### 2.2 一致性怎么来（以及窗口有多大）
 
+**CLI 离线入口**在复制前对 canonical `ROOT/events.db` 取得独占维护准入。每个正常 `EventLog` 的真实 SQLite 连接持有共享准入直到连接关闭；共享连接可共存，独占与共享相互拒绝。连接被外部变量或游标继续持有时也不提前放锁；关闭失败且连接仍可写时保持准入。POSIX 使用 `flock`，Windows 使用 `LockFileEx`；两者均非阻塞。CLI 不启动服务，也不代替用户停止活跃进程。
+
+锁位于固定的 OS 用户临时目录：POSIX 为 `/tmp/tianshu-maintenance-<uid>/<数据库身份摘要>.lock`；Windows 由原生已知目录 API 取得用户 LocalAppData，再用 `Temp/tianshu-maintenance/`。不按 cwd、数据根、`HOME` / `TMPDIR` / `LOCALAPPDATA` 环境变量或权限失败切换锁根；数据库上级目录不可写也不影响锁准入。数据根更换前后仍使用相同 canonical 数据库路径摘要。
+
+锁不进入备份，正常释放不删除文件（删除会造成 inode 竞态）。POSIX 核对锁目录所有者并收紧为 `0700`、文件 `0600`；Windows 继承 OS 用户目录 ACL，拒绝最终目录的 symlink/junction，未单独核对 owner SID 或验证跨用户 ACL。锁是**协作式准入**，不抵御旧版本或同 uid 直接 SQLite；不作为沙箱或授权边界。清理这些锁文件前必须关闭所有天枢进程。
+
+**低层 `create_backup()`** 保留在线 API，调用者负责离线准入；原有复制机制如下：
+
 1. **事件库**：`sqlite3.Connection.backup()` 在线备份 API。写者不会被中断，拿到的是
    单个事务边界上的一致快照（不是"复制一个正在写的文件"）。
 2. **材料**：blob 内容寻址不可变；快照清单 / 撤销日志用 `os.replace` 整文件替换。
@@ -75,11 +96,15 @@
    的大 payload 也是先写 blob）。DB 先快照 → 之后复制的材料至少包含快照引用到的
    blob；反过来可能漏掉窗口内新写的 payload blob，而 DB 已经引用它（`verify` 会
    正确判备份无效）。
-4. **没有停止写者**。备份期间 daemon/host 可以继续跑；`backup.json` 用只读探针
+4. **低层 API 本身没有停止写者**。未持独占准入时，备份期间 daemon/host 可以继续跑；`backup.json` 用只读探针
    记录当时写者状态（`writer.ipc_probe` / `run/daemon.lock` / `run/host.lock`），
    供恢复者判断现场。**代价**：DB 快照与材料复制之间有一个窗口，材料可能是比 DB
    更新的超集（多出来的证据，不破坏一致性）；要严格跨库一致必须停止写者，本轮
-   不做（host/daemon 不在文件所有权内）。这是**已知边界**，不是"已经做到停顿一致"。
+   必须由调用者持独占准入；本轮 CLI 已持有。直接使用库函数仍有此边界。
+
+发布前必须对临时备份做完整校验；缺材料的源数据不能发布一个“成功备份”。校验从**备份中的数据库**重新推导事件、内容对象与未擦除记忆的引用，不仅信任 `backup.json.references`。源目录已丢失或被符号链接替换时也不回源读取。
+
+历史绝对引用可能使用同一数据根的另一种拼写，例如 macOS 的 `/tmp` 与 `/private/tmp`。创建备份时仅在活源上核对“别名根解析后等于 canonical 根、材料相对后缀完全一致”，再将验证过的根保存到可选 `source_aliases`。后续 `verify` 与 `restore-plan` 只按保存的根做词法映射并读取备份材料，不解析或读取活源。无此字段的旧 v1 备份仍可校验 canonical 引用；确实需要别名却缺映射时明确失败，不猜测根外材料属于该备份。
 
 ### 2.3 原子发布与中断
 
@@ -104,9 +129,10 @@
 | `app_version` | 生成备份的程序版本（`tianshu.__version__`） |
 | `db_user_version` | 事件库结构版本（`PRAGMA user_version`，由 `migrate.py` 管理） |
 | `created_at_ms` / `source_name` / `source_path` | 时间 / 数据根名 / **数据根绝对路径**（恢复只能回原路径，见 §4.2） |
+| `source_aliases` | 可选的已核对同根别名，默认为空；仅创建时发现，保存后的校验不回源解析。格式版本仍为 `1` |
 | `files[]` | 每个文件的 `path`（数据根相对、`/` 分隔）、`sha256`、`size`、`category` |
 | `event_count` / `event_seq_head` / `run_ids` | 一致点的事件统计与 Run 清单 |
-| `references` | `event_payload_refs[]` / `snapshot_blobs[]` / `undo_journal_blobs[]` / `missing[]` / `problems[]` / `seq_contiguous` |
+| `references` | 事件 payload、快照、撤销日志、内容对象和未擦除记忆的引用；兼容旧字段。校验时从备份材料重新推导，删除清单里的引用也不能隐藏缺材料 |
 | `writer` | 备份时只读探到的写者状态（不是锁，不停止任何进程） |
 | `excluded` | 明确排除的顶层条目 |
 | `retention` | 保留期声明（§6） |
@@ -130,14 +156,18 @@ message 里带**问题 + 处置建议**。
 | 文件集合 | 清单声明的文件缺失；备份里有清单之外的文件 |
 | 文件内容 | 大小或 sha256 与清单不符 |
 | 事件库 | 打不开 / 结构版本不符 / 事件条数或 `seq_head` 不符 / **seq 不连续** |
-| 引用 | 快照清单/blob 引用缺失或哈希不符；事件 `payload_ref` 缺失/哈希不符；备份时引用就已缺失/读不出 |
+| 引用 | 快照/撤销日志/blob、事件 payload、内容对象或未擦除记忆正文缺失、哈希/大小不符；不支持的根外布局或畸形材料；清单隐藏引用无效 |
 | 版本 | `db_user_version > migrate.SCHEMA_VERSION` → 拒绝（来自更新版本） |
 
 明确不做：把"读不出来"当成"空历史"。清单/日志/事件库读不出来一律 `ok=False`。
 
+已保存的自包含快照用专用 immutable 只读连接，避免 WAL 模式数据库在校验时生成 `-wal` / `-shm`。备份内的数据库伴随 `-wal` / `-shm` / `-journal` 即便写进清单也拒绝；不能忽略未折叠事务后声称完整。活源读取仍使用普通只读连接，SQLite 在线备份 API 会包含尚未 checkpoint 的已提交 WAL 事务，不把活源当 immutable。
+
 ---
 
 ## 4. 恢复（`backup.restore_backup`）
+
+本节描述原 W4 **低层库函数**，不是面向普通用户的安全恢复闭环；它未证明备份之后的 forget/erase/delete 历史，也不实现恢复记忆隔离。本轮 CLI 只提供 §0 的只读预演，不调用此函数。不要把库测试通过当成可直接激活旧备份的证据。
 
 ### 4.1 规则
 
@@ -154,8 +184,8 @@ message 里带**问题 + 处置建议**。
 
 事件库里的 `payload_ref` 与快照清单里的 `blob_ref` 都是**绝对路径**。恢复到另一个
 路径后，这些引用仍指向旧位置：轻则读到旧数据（假恢复），重则读不到（`EventLogCorrupt`）。
-把引用改成相对路径需要动 `events.py` / `snapshot.py`（本轮不在文件所有权内），
-所以本版**强制** `data_root == manifest.source_path`，不同路径直接
+本轮只给保存备份的读取增加已核对根别名，不重写历史引用，也不迁移恢复后的绝对路径。
+低层恢复仍**强制** `data_root == manifest.source_path`，不同路径直接
 `RestoreRefused` 并说明原因。**换路径重定位 = 未实现**，不要写成已支持。
 
 ### 4.3 恢复演练（本机实测）
@@ -174,7 +204,7 @@ message 里带**问题 + 处置建议**。
 - `STEPS` 是首尾相接的 `MigrationStep` 注册表。每一步在自己的事务里执行
   DDL **并** `PRAGMA user_version = to_version` —— 两者同提交、同回滚，
   不存在"表改了版本没改"的混合状态。
-- 本版步骤：`0→1` 建迁移审计表 `migration_log`；`1→2` 给该表加 `note` 列并建索引
+- 本版步骤是迁移机制的演示登记，不是全产品表结构版本：`0→1` 建迁移审计表 `migration_log`；`1→2` 给该表加 `note` 列并建索引
   （第二个步骤刻意用 `ALTER`，用来验证"提交后、写进度前崩溃"的续做分支）。
 - **不 UPDATE/DELETE 历史事件**；`events` 表的 append-only 触发器保持原样。
 
@@ -226,9 +256,9 @@ message 里带**问题 + 处置建议**。
 - 一个停在 `user_version=0/1` 的库，**不会**被现有 CLI/daemon 拒绝写入；
 - 新库（`EventLog` 直接建出 `user_version=0`）也**不会**自动迁移；
 - 这两个缺口是"要求写进 PRD ≠ 已实现"的典型例子，**不得**当成已完成。
-  接入点建议：daemon 启动恢复扫描前、CLI 每个写命令装配 stack 前各调一次
-  `assert_writable()`；新库初始化时跑 `migrate()`（需要 Lead 统一落，因为改的是
-  公共入口）。
+  接线前须先按 PRD §5.3.5 单独登记全产品版本与 v0 准入契约；不能直接用演示的
+  `SCHEMA_VERSION=2` 拒绝全部正常 v0 产品库。本轮恢复预演只报告该演示版本差异，
+  `migration_required` 不表示已有可用的产品升级入口。
 
 ---
 
@@ -243,21 +273,24 @@ message 里带**问题 + 处置建议**。
 | `snapshot_blobs` | 被引用即永久保护 | 2 GiB | 人工清理，本模块只出候选 |
 | `undo_journals` | 未完成必须保留；完成后可归档 | 64 MiB | 人工清理 |
 | `diagnostic_trace` | 默认 30 天 | 50 MiB | 人工清理，不参与备份 |
-| `indexes` | 可重建，不备份 | — | 重建代替清理 |
+| `indexes` | 可重建；同库派生表随 `events.db` 一并保存 | — | 不单独备份外置索引；重建代替清理 |
 
 引用保护（可测试、**不实现全自动 GC**）：
 
-- `collect_references(data_root)` 汇总三类引用：事件 `payload_ref`、快照清单的
-  `blob_ref`、撤销日志的 `before_state`；返回 `protected_blobs` / `orphan_blobs`。
+- `collect_references(data_root)` 汇总事件 `payload_ref`、快照清单的
+  `blob_ref`、撤销日志的 `before_state`、内容对象与未擦除记忆正文引用；返回
+  `protected_blobs` / `orphan_blobs`。投影引用材料还要通过哈希与大小核验。
 - 读不出引用（清单坏、日志坏、事件库坏）→ 抛 `ReferenceUnknown`，**拒绝**给出
   清理结论（误删证据比留多余 blob 严重）。
 - `cleanup_plan(data_root)` 只返回 `dry_run` 候选清单（未引用的孤儿 blob），
-  不删除任何文件；未完成的撤销日志单独列出。
+  不删除任何文件；候选范围仍为 `artifacts/blobs/`，不扩展为根 blobs/记忆 GC。
+  未完成的撤销日志单独列出。该库 API 不持维护独占准入，不承诺在线清理安全；
+  不能直接按旧候选执行删除，执行 GC 仍需独立设计。
 - `usage_report(data_root)` 按声明类别统计占用并对照额度，超额度只点名，不清理。
 
 ---
 
-## 7. 验收
+## 7. 原 W4 验收（2026-11-11 历史证据）
 
 ### 7.1 测试命令
 
@@ -366,8 +399,9 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
    （`events.py` / `snapshot.py` 属别的工作流）或恢复时重写引用表（不能 UPDATE 历史
    事件，需要新机制）。
 2. **写入门未接进 CLI/daemon**、新库不自动迁移：§5.5。
-3. **备份期间没有停止写者**：跨"事件库 + 材料"的严格一致需要停写者；当前用在线
-   备份 API + 复制顺序把窗口压小，边界见 §2.2。
+3. **低层在线 API 没有停止写者**：跨"事件库 + 材料"的严格一致需要独占维护；
+   `create_backup()` 自身只有在线备份 API + 复制顺序。新 `data backup` CLI 已持独占
+   准入；旧版本与直接 SQLite 访问不参与该协作锁，边界见 §2.2。
 4. **迁移步骤只有两步**、且是本模块自有的 `migration_log`：W5 的事件 payload 契约
    版本旁表合入后需要追加新步骤（注册表就是为这个准备的），本轮不预造。
 5. **Windows**：只有 `windows-latest` CI，**没有实机**。本轮 CI 暴露并修掉两处

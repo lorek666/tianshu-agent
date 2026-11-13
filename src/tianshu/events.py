@@ -24,6 +24,7 @@ from . import event_schema
 from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
+from .maintenance import DatabaseAccess, MaintenanceConnection, acquire_database_access
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -291,6 +292,23 @@ class EventLog:
         心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
         那条），所以关掉这个检查是安全的。除此之外不要传它。
         """
+        access = acquire_database_access(db_path)
+        try:
+            self._open_database(db_path, blob_dir, cross_thread, access)
+        except BaseException:
+            if hasattr(self, "_conn"):
+                self._conn.close()
+            else:
+                access.close()
+            raise
+
+    def _open_database(
+        self,
+        db_path: Path,
+        blob_dir: Path | None,
+        cross_thread: bool,
+        access: DatabaseAccess,
+    ) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._blob_dir = blob_dir
@@ -309,7 +327,9 @@ class EventLog:
             str(db_path),
             isolation_level=None,
             check_same_thread=not cross_thread,
+            factory=MaintenanceConnection,
         )
+        self._conn.database_access = access
         self._conn.row_factory = sqlite3.Row
         # 先读 schema、再设 journal_mode。
         #
@@ -328,14 +348,12 @@ class EventLog:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
             ).fetchone() is not None
         except sqlite3.DatabaseError as exc:
-            self._conn.close()
             raise EventLogCorrupt(
                 f"事件库读不出来：{db_path}（{type(exc).__name__}: {exc}）。"
                 "这份日志不能作为结论来源。**不要删除 events.db**：先备份整个"
                 "数据目录，再用 `tianshu recover` 核对，人工确认损失范围后再处理。"
             ) from exc
         if pre_existing and not has_schema:
-            self._conn.close()
             raise EventLogCorrupt(
                 f"事件库文件存在但读不出 schema：{db_path}。"
                 "通常意味着 WAL 被撕裂/损坏后历史已经丢失（这不是一个新库）。"
