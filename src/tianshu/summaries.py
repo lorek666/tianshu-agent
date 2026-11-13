@@ -406,11 +406,18 @@ def prompt_for(material: SummaryMaterial) -> str:
 # ---------------------------------------------------------------- 存储
 
 
+def _stored_integer(value: Any, name: str, *, minimum: int = 0) -> int:
+    # SQLite 的 INTEGER affinity 仍能存 REAL/TEXT；读取不能用 int() 把损坏洗白。
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"摘要台账 {name} 必须是大于等于 {minimum} 的整数")
+    return value
+
+
 def _row_to_record(row: sqlite3.Row) -> SummaryRecord:
     return SummaryRecord(
         summary_id=row["summary_id"],
         material_id=row["material_id"],
-        version=int(row["version"]),
+        version=_stored_integer(row["version"], "version", minimum=1),
         status=row["status"],
         text=row["text"],
         text_digest=row["text_digest"],
@@ -808,12 +815,12 @@ class SummaryStore:
             "scope": row["scope"],
             "task_id": row["task_id"],
             "run_id": row["run_id"],
-            "bytes": int(row["bytes"]),
+            "bytes": _stored_integer(row["bytes"], "bytes"),
             "text_digest": row["text_digest"],
             "created_at": int(row["created_at"]),
             "sources": [
                 {
-                    "ordinal": int(s["ordinal"]),
+                    "ordinal": _stored_integer(s["ordinal"], "ordinal"),
                     "kind": s["kind"],
                     "ref": s["ref"],
                     "digest": s["digest"],

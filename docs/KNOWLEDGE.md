@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **第二轮debug修复候选（2026-11-13）**：从真实main `cefa1e375974d96e2ec25e199f6605f6dcf2239b` 重新复现19项（6P1/11P2/2P3），授权、审批resume预算、两provider/MCP/网络/IPC、备份预演、记忆UI与摘要来源已完成最小修复及独立内容复审。DATA05已由cefa迁移修复销账。二审发现摘要REAL被int截断残留，补严格整数后原探针拒绝；首全量1failed/2836passed/8skipped为AST误把HTTP opener.open当文件IO，已窄修并经独立负控，最终完整门禁lock/ruff/full均exit0，2845passed/8skipped、500.10s，277个非docs对象前后无漂移；UI类型/87tests/build及dist一致。正式四required另核。只同步main `c1bad0a` 的工程教训文档，不覆盖另一会话。完整范围、红绿原件、边界与最终版本记录见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)及对应PR；本条候选快照不预先宣称合并或Windows原生通过。
+
 - **G3 数据准入与迁移提交前本机快照（2026-11-13）**：T1 最终585、T2、T3精确内容已分别通过独立第二读者，未决0；普通merge同步实际main0df，保留双方知识库历史，已审产品/测试不变。最终组合 lock/full/ruff 均exit0，**2672 passed / 8 skipped，433.15s**，267个非docs冻结对象前后无漂移。T2独立81+298+2，12变异11真实kill、M05保留守卫拒绝不记kill；T3独立35/0skip、两个窄CLI变异真实kill，首30/5为观察器顺序问题且原件保留。README/指南已补实际版本准入与显式migrate，作者历史候选原件不回写为新批准。本条提交前快照时正式提交、四required与新main自身CI仍待核；后续完整SHA、当前检查与合并事实以 `codex/g3-data-admission` 对应实现PR正文和后续独立原件为准，不回写本条历史时点。不能称G3整批完成；下方均为各自历史时点。见[集成记录](DATA-ADMISSION-2026-11-13.md)。
 
 - **G3首片PR #134已正常合并（2026-11-13）**：最终head `b5b5c7fed03f3bd7c75ce759708e383e5ec46091` 的run43409722913四required全部success（Ubuntu2434/13、macOS2439/8、Windows2410/37、UI80及typecheck/build/dist）。第二读者核对四份原始日志、实际checkout/tree与保护后，正常merge为main `69119f009096df74fc8e370d5d1c6d71cad3f290`，完整tree与已测head一致；未改门禁或重跑旧CI。见[独立CI记录](evidence/data-lifecycle-2026-11-13/pr134-b5-ci-independent-review.md)。main自己的push CI另核，T1/迁移/恢复隔离/容量GC不在本PR验收范围。
@@ -425,6 +427,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **第二轮修复后的保留边界（2026-11-13）**：模型跨源redirect拒绝，但同源POST307/308仍是urllib既有HTTP错误，仅302正控已验；网络响应总deadline修复不等于可中断DNS系统解析；IPC认证握手期限、命名管道跨用户ACL、Windows10/11/ARM64用户设备未由本机证明。备份Receipt材料/原生parser/事件版本/runs全集核对已修候选，仍未交付审批租约全历史重建、恢复apply/隔离、低磁盘与GC。最终提交和CI见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)，下方G3“旧backup边界未修”为其历史切片时点，不能覆盖本条。
+
 - **G3本切片边界（2026-11-13）**：实际EventLog准入、备份绑定迁移和显式CLI已有内容独立验收及最终本机全量；本条提交前快照时新CI待核，后续状态见对应实现PR正文及后续独立原件。0→2仍只改变迁移机制；restore hold/journal、实际apply、记忆隔离、低磁盘保护、保留/GC未交付。v2备份不带进度，不能补造/复制旧绑定绕过恢复后准入。另一轮只读debug已确认的Receipt材料、snapshot/undo语义、未来版本、投影缺行、manifest类型等旧backup/restore-plan边界未在本片修；后续恢复或GC前须收口，不能借完整digest宣称全部备份语义已修。
 
 - **T2 候选不等于迁移产品接线或 G3 完成**：本机实现仍待第二读者按冻结四文件做具名变异验收；T3 的 `data migrate` CLI 尚未接，整合全量与原生 CI 未跑。恢复 apply/隔离、低磁盘和 GC 仍缺；维护锁只约束合作式调用，当前仅适用于两步机制迁移，边界见 [T2 记录](DATA-ADMISSION-T2-2026-11-13.md)。
@@ -545,6 +549,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-13 · 第二轮系统debug修复与独立复审**：按用户“开始修复”和集中CI要求，在隔离debug-round2工作树从最新cefa建立冻结基线，三作者唯一文件所有权修复19项；root与独立第二读者各验授权、输入、数据、预算/UI/摘要。先旧实现真红再修，保留初始夹具错误与首全量AST误报；摘要REAL截断被二审抓出并补修。不改契约、依赖、job上限或required checks，main后来仅8行教训文档安全快进保留。真实浏览器记忆写/刷新失败及晚到回包截图来自实际dist与Host/Daemon，临时进程正常收尾。最终门禁、完整SHA及CI另由对应PR绑定，不把本机专项绿当云端绿；原件E与可执行测试见第二轮总账。
 
 - **2026-11-13 · T3 迁移 CLI 候选**：仅接显式标准根与现有备份；首轮真实 RED 为 25 failed / 26 passed，只证明入口尚缺，未冒充深层协议负控。接线后首轮 51 passed，再补三种标准根与两种编程异常边界得 56 passed；六 code、四硬退出续做、真实跨进程互斥和失败原子性均实际到达。T2 24 项非知识库冻结原件与其他非授权基线无漂移，未改另一 debug 会话范围，未 full/CI/commit/push。更新维护指南与独立 T3 事实原件，交第二读者验收；不自批、不借历史全量或 CI 代替本批次结论。
 

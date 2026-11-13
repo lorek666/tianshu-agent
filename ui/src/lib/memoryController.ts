@@ -42,7 +42,7 @@ function initialState(scope: MemoryScopeChoice = USER_SCOPE): MemoryPanelState {
   };
 }
 
-function messageOf(error: unknown): { text: string; conflict: boolean } {
+function messageOf(error: unknown, writing = false): { text: string; conflict: boolean } {
   const code =
     typeof error === "object" && error !== null && "code" in error
       ? String((error as { code: unknown }).code)
@@ -50,20 +50,26 @@ function messageOf(error: unknown): { text: string; conflict: boolean } {
   const raw = error instanceof Error ? error.message : String(error);
   if (code === "conflict") {
     return {
-      text: "这条记忆已经被改过（你看到的 revision 过期了）。已刷新列表，请重新确认。",
+      text: "这条记忆已经被改过（你看到的 revision 过期了）。",
       conflict: true,
     };
   }
   if (code === "not_found") return { text: "这条记忆不存在或不可见。", conflict: false };
   if (code === "bad_params") return { text: `请求参数不对：${raw}`, conflict: false };
   if (code === "unreachable" || code === "timeout") {
-    return { text: "连不上守护进程，记忆操作没有执行。", conflict: false };
+    return {
+      text: writing
+        ? "与守护进程的连接中断，无法确认记忆操作结果。请先刷新核对，再决定是否重试。"
+        : "与守护进程的连接中断，请刷新重试。",
+      conflict: false,
+    };
   }
   return { text: raw === "" ? "记忆操作失败。" : raw, conflict: false };
 }
 
 export class MemoryController {
   private state: MemoryPanelState;
+  private viewGeneration = 0;
 
   constructor(
     private readonly api: MemoryApi,
@@ -84,14 +90,16 @@ export class MemoryController {
 
   /** 换可见作用域：直接重拉列表（不是把已有结果过滤一遍——那会骗人）。 */
   async setScope(scope: MemoryScopeChoice): Promise<void> {
-    this.emit({ scope, query: "", result: null });
+    this.emit({ scope, query: "", items: [], result: null });
     await this.load();
   }
 
   async load(): Promise<void> {
-    this.emit({ phase: "loading", error: null });
+    const generation = ++this.viewGeneration;
+    this.emit({ phase: "loading", error: null, query: "" });
     try {
       const list = await this.api.list(this.state.scope, null);
+      if (generation !== this.viewGeneration) return;
       this.emit({
         phase: "ready",
         items: list.items,
@@ -100,6 +108,7 @@ export class MemoryController {
         error: null,
       });
     } catch (error) {
+      if (generation !== this.viewGeneration) return;
       this.emit({ phase: "error", error: messageOf(error).text });
     }
   }
@@ -110,9 +119,11 @@ export class MemoryController {
       await this.load();
       return;
     }
+    const generation = ++this.viewGeneration;
     this.emit({ phase: "loading", error: null, query: trimmed });
     try {
       const result = await this.api.search(trimmed, this.state.scope);
+      if (generation !== this.viewGeneration) return;
       this.emit({
         phase: "ready",
         items: result.items,
@@ -121,6 +132,7 @@ export class MemoryController {
         error: null,
       });
     } catch (error) {
+      if (generation !== this.viewGeneration) return;
       this.emit({ phase: "error", error: messageOf(error).text });
     }
   }
@@ -132,37 +144,46 @@ export class MemoryController {
     success: string,
   ): Promise<void> {
     this.emit({ busy: label, error: null, notice: null });
+    let notice = success;
+    let conflict = false;
     try {
       await action();
-      const list = await this.api.list(this.state.scope, null);
-      this.emit({
-        phase: "ready",
-        items: list.items,
-        result: null,
-        busy: null,
-        notice: success,
-        error: null,
-      });
     } catch (error) {
-      const message = messageOf(error);
-      if (message.conflict) {
-        // 冲突：刷新 + 提示；**不**自动重试（自动重放会悄悄替你确认一个你没看过的版本）。
-        try {
-          const list = await this.api.list(this.state.scope, null);
-          this.emit({
-            phase: "ready",
-            items: list.items,
-            result: null,
-            busy: null,
-            notice: message.text,
-            error: null,
-          });
-          return;
-        } catch {
-          // 连刷新都失败：保留原错误，不装作刷新成功。
-        }
+      const message = messageOf(error, true);
+      if (!message.conflict) {
+        this.emit({ phase: "error", busy: null, error: message.text });
+        return;
       }
-      this.emit({ phase: "error", busy: null, error: message.text });
+      // revision 冲突只刷新，不自动重放写请求。
+      notice = message.text;
+      conflict = true;
+    }
+
+    // 写操作的结果已经确定；接下来的刷新是另一条请求，不能改写这个事实。
+    // 与 load/search 共用代次，晚到的刷新不得覆盖用户新选择的作用域或查询。
+    const generation = ++this.viewGeneration;
+    const { scope, query } = this.state;
+    try {
+      const result = query ? await this.api.search(query, scope) : null;
+      const list = result ?? await this.api.list(scope, null);
+      if (generation === this.viewGeneration) {
+        this.emit({
+          phase: "ready", items: list.items, result, busy: null,
+          notice: conflict ? `${notice}已刷新列表，请重新确认。` : notice,
+          error: null,
+        });
+      } else {
+        this.emit({ busy: null, notice });
+      }
+    } catch (error) {
+      if (generation === this.viewGeneration) {
+        this.emit({
+          phase: "error", busy: null, notice: conflict ? null : notice,
+          error: `${conflict ? notice : ""}列表刷新失败：${messageOf(error).text}`,
+        });
+      } else {
+        this.emit({ busy: null, notice });
+      }
     }
   }
 

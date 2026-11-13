@@ -311,11 +311,11 @@ class _Resp:
     ],
 )
 def test_http_status_is_classified(vendor, status, kind, retryable, monkeypatch):
-    model = _model(vendor, None)  # 用真的 UrllibTransport，只换掉 urlopen
+    model = _model(vendor, None)  # 用真的 UrllibTransport，只换掉 opener.open
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
-        lambda req, timeout=None: (_ for _ in ()).throw(
+        urllib.request.OpenerDirector,
+        "open",
+        lambda self, req, timeout=None: (_ for _ in ()).throw(
             urllib.error.HTTPError(
                 req.full_url, status, "boom", {}, io.BytesIO(b'{"error":"x"}')
             )
@@ -333,9 +333,9 @@ def test_http_status_is_classified(vendor, status, kind, retryable, monkeypatch)
 def test_network_error_is_transport(vendor, monkeypatch):
     model = _model(vendor, None)
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
-        lambda req, timeout=None: (_ for _ in ()).throw(
+        urllib.request.OpenerDirector,
+        "open",
+        lambda self, req, timeout=None: (_ for _ in ()).throw(
             urllib.error.URLError(ConnectionResetError("connection reset"))
         ),
     )
@@ -349,9 +349,9 @@ def test_network_error_is_transport(vendor, monkeypatch):
 def test_timeout_is_timeout(vendor, monkeypatch):
     model = _model(vendor, None)
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
-        lambda req, timeout=None: (_ for _ in ()).throw(TimeoutError("timed out")),
+        urllib.request.OpenerDirector,
+        "open",
+        lambda self, req, timeout=None: (_ for _ in ()).throw(TimeoutError("timed out")),
     )
     with pytest.raises(ModelError) as ei:
         model.complete(list(MESSAGES), list(TOOLS))
@@ -362,7 +362,8 @@ def test_timeout_is_timeout(vendor, monkeypatch):
 @pytest.mark.parametrize("vendor", VENDORS)
 def test_non_json_body_is_protocol(vendor, monkeypatch):
     model = _model(vendor, None)
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp(b"<html>"))
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open",
+                        lambda self, req, timeout=None: _Resp(b"<html>"))
     with pytest.raises(ModelError) as ei:
         model.complete(list(MESSAGES), list(TOOLS))
     assert ei.value.kind == "protocol"

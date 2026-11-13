@@ -37,7 +37,7 @@ from .context import (
 from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
 from .loop import SYSTEM_PROMPT, message_source_seqs
-from .summaries import SummaryStore
+from .summaries import MaterialBlock, SummaryMaterialError, SummaryStore, build_material
 from .tasks import SUBTASK_STATES
 
 #: 回放要校验形状的子任务工具（G2 委派 D2 §2.8）。
@@ -188,7 +188,7 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     for ev in events:
         if ev.type == "model.intent":
             if _verify_model_intent(
-                ev, messages, all_seqs[: len(messages)], problems, summaries
+                ev, messages, all_seqs[: len(messages)], problems, summaries, start.task_id
             ):
                 verified += 1
             turns += 1
@@ -328,6 +328,7 @@ def _verify_model_intent(
     seqs: list[int],
     problems: list[str],
     summaries: SummaryStore,
+    task_id: str | None,
 ) -> bool:
     """核对一条 `model.intent`：它声称发出去的那份，能不能从事件重建出来。
 
@@ -357,7 +358,7 @@ def _verify_model_intent(
         problems.append(f"seq={ev.seq} context 不是对象，无法核对编译结果")
         return False
 
-    loaded = _recorded_summaries(context, ev.seq, problems, summaries)
+    loaded = _recorded_summaries(context, ev, task_id, messages, seqs, problems, summaries)
     if loaded is None:
         return False
     slices, recorded_summaries = loaded
@@ -421,16 +422,20 @@ def _summary_identity(items: tuple[SummarySlice, ...]) -> list[dict[str, Any]]:
 
 def _recorded_summaries(
     context: dict[str, Any],
-    seq: int,
+    event: Event,
+    task_id: str | None,
+    messages: list[dict[str, Any]],
+    message_seqs: list[int],
     problems: list[str],
     store: SummaryStore,
 ) -> tuple[tuple[SummarySlice, ...], list[dict[str, Any]]] | None:
     """把 `context.summaries` 解码成编译输入，并把能核的都核了。
 
-    三道校验：**行在不在**、**版本/正文摘要对不对**、**材料台账在不在**。
+    三道校验：**行在不在**、**版本/正文摘要对不对**、**来源能否与历史事件核对**。
     任何一道不过都记 problem 并返回 None——没有"跳过后继续"这个选项：
     摘要读不回来时，"发出去的到底是什么"就无法核对，硬说 ok 等于替它作证。
     """
+    seq = event.seq
     raw = context.get("summaries")
     if raw is None:
         return (), []
@@ -459,7 +464,11 @@ def _recorded_summaries(
         if not source or any(value <= 0 for value in source):
             problems.append(f"seq={seq} context.summaries[{index}] 的 source_seqs 不合法")
             return None
-        record = store.read(summary_id)
+        try:
+            record = store.read(summary_id)
+        except (ValueError, TypeError) as exc:
+            problems.append(f"seq={seq} 摘要来源记录结构损坏：{type(exc).__name__}")
+            return None
         if record is None:
             problems.append(
                 f"seq={seq} 摘要记录缺失（summary_id={summary_id[:12]}…）："
@@ -486,12 +495,59 @@ def _recorded_summaries(
         if record.text is None:
             problems.append(f"seq={seq} 摘要 {summary_id[:12]}… 是 ready 但没有正文")
             return None
-        material = store.material(record.material_id)
+        try:
+            material = store.material(record.material_id)
+        except (ValueError, TypeError) as exc:
+            problems.append(f"seq={seq} 摘要来源台账结构损坏：{type(exc).__name__}")
+            return None
         if material is None:
             problems.append(
                 f"seq={seq} 摘要 {summary_id[:12]}… 的材料台账缺失："
                 "没有来源就无法判断这份摘要是从什么材料来的"
             )
+            return None
+        # 只使用这条 intent 之前、由本 Run 的保存事件重建的原文；不检索当前
+        # 索引，不重新调用摘要模型。仅有材料主行不能证明逐条来源仍然完整。
+        source_messages = dict(zip(message_seqs, messages, strict=True))
+        if len(set(source)) != len(source) or any(value not in source_messages for value in source):
+            problems.append(f"seq={seq} 摘要来源不属于本 Run 的历史消息或存在重复")
+            return None
+        try:
+            expected = build_material(
+                [
+                    MaterialBlock(
+                        seq=value,
+                        role=source_messages[value]["role"],
+                        content=(
+                            source_messages[value]["content"]
+                            if isinstance(source_messages[value].get("content"), str) else ""
+                        ),
+                    )
+                    for value in source
+                ],
+                scope=f"task:{task_id}", task_id=task_id or "", run_id=event.run_id,
+            )
+        except SummaryMaterialError:
+            problems.append(f"seq={seq} 摘要来源无法按保存的材料版本重建")
+            return None
+        expected_sources = [
+            {"ordinal": index, "kind": item.kind, "ref": item.ref, "digest": item.digest}
+            for index, item in enumerate(expected.sources)
+        ]
+        if (
+            len(expected.sources) != len(source)
+            or record.material_id != expected.material_id
+            or record.scope != expected.scope
+            or record.task_id != task_id
+            or record.run_id != event.run_id
+            or material["sources"] != expected_sources
+            or material["scope"] != expected.scope
+            or material["task_id"] != task_id
+            or material["run_id"] != event.run_id
+            or material["bytes"] != expected.bytes
+            or material["text_digest"] != expected.digest
+        ):
+            problems.append(f"seq={seq} 摘要来源或材料身份与本 Run 保存的历史事件不符")
             return None
         slices.append(
             SummarySlice(

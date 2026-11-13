@@ -55,7 +55,11 @@ from typing import Any
 
 from . import __version__
 from .crashpoint import failpoint
+from .data_state import SCHEMA_VERSION
+from .errors import TianshuError
 from .fsutil import atomic_write_bytes
+from .snapshot import SnapshotStore
+from .undo_journal import UndoJournal
 
 MANIFEST_NAME = "backup.json"
 FORMAT_NAME = "tianshu-backup"
@@ -267,17 +271,24 @@ class BackupManifest:
         for alias in source_aliases:
             if type(_source_root(alias)) is not type(root):
                 raise ValueError("source_aliases 必须与 source_path 使用同一种平台路径")
+        numbers: dict[str, int] = {}
+        for name in ("format_version", "db_user_version", "created_at_ms",
+                     "event_count", "event_seq_head"):
+            value = raw.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"backup.json 的 {name} 必须是非负整数：{value!r}")
+            numbers[name] = value
         return cls(
             format=str(raw.get("format", "")),
-            format_version=int(raw.get("format_version", 0)),
+            format_version=numbers["format_version"],
             app_version=str(raw.get("app_version", "")),
-            db_user_version=int(raw.get("db_user_version", -1)),
-            created_at_ms=int(raw.get("created_at_ms", 0)),
+            db_user_version=numbers["db_user_version"],
+            created_at_ms=numbers["created_at_ms"],
             source_name=str(raw.get("source_name", "")),
             source_path=source_path,
             files=[BackupFile.from_dict(item) for item in files_raw],
-            event_count=int(raw.get("event_count", -1)),
-            event_seq_head=int(raw.get("event_seq_head", -1)),
+            event_count=numbers["event_count"],
+            event_seq_head=numbers["event_seq_head"],
             run_ids=run_ids,
             references=references,
             writer=raw.get("writer") if isinstance(raw.get("writer"), dict) else {},
@@ -752,6 +763,78 @@ def _db_references(
     return refs, problems
 
 
+def _receipt_references(
+    data_root: Path, *, source_root: Path, saved: bool = False,
+    source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """凭据是独立审计引用；丢快照清单不能使写前材料变成孤儿。"""
+    refs: list[dict[str, Any]] = []
+    problems: list[str] = []
+    snapshots: dict[str, list[Any]] = {}
+    db = _checked_file(data_root, "events.db")
+    conn = _connect_saved_readonly(db) if saved else _connect_readonly(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT seq,run_id,payload AS payload_inline,payload_ref,payload_hash"
+            " FROM events WHERE type='receipt' ORDER BY seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        try:
+            aliases = source_aliases if discover_aliases is None else discover_aliases
+            payload = read_saved_event_payload(
+                data_root, row, source_root=source_root, source_aliases=aliases,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Receipt payload 必须是对象")
+            blob_refs = []
+            if payload.get("blob_ref") is not None:
+                blob_refs.append((payload["blob_ref"], payload.get("before_state")))
+            evidence = payload.get("evidence", [])
+            if not isinstance(evidence, list):
+                raise ValueError("Receipt evidence 必须是列表")
+            for item in evidence:
+                if not isinstance(item, dict):
+                    raise ValueError("Receipt evidence 条目必须是对象")
+                if item.get("kind") == "blob" and item.get("absent") is not True:
+                    blob_refs.append((item.get("path"), item.get("sha256")))
+            seen: set[tuple[str, str]] = set()
+            for ref, digest in blob_refs:
+                if not _is_digest(digest):
+                    raise ValueError(f"Receipt blob 的 sha256 非法：{digest!r}")
+                rel = (
+                    _reference_rel_live(ref, source_root, source_aliases=discover_aliases)
+                    if discover_aliases is not None else
+                    _reference_rel(ref, source_root, source_aliases=source_aliases)
+                )
+                if (rel, digest) not in seen:
+                    refs.append({"seq": row["seq"], "receipt_id": payload.get("receipt_id"),
+                                 "path": rel, "sha256": digest})
+                    seen.add((rel, digest))
+            # 仅已由受控文件工具产出的凭据要求对应快照；exec / memory / MCP
+            # 有各自的证据，不能把它们误当成文件写前快照。
+            if (payload.get("tool_id") in {"create_report", "modify_text", "delete_file"}
+                    and payload.get("backend") in {"local_fs", "memfs"}):
+                run_id = payload.get("run_id")
+                if not isinstance(run_id, str) or not run_id or run_id != row["run_id"]:
+                    raise ValueError("Receipt 的 run_id 与事件不一致")
+                manifest = _validate_rel(f"artifacts/snapshots/{run_id}.json")
+                if manifest not in snapshots:
+                    snapshots[manifest] = SnapshotStore._parse(
+                        _checked_file(data_root, manifest).read_bytes()
+                    )
+                matching = [change for change in snapshots[manifest]
+                            if change.call_id == payload.get("call_id")]
+                if len(matching) != 1 or matching[0].before_state != payload.get("before_state"):
+                    raise ValueError(f"Receipt 缺少一致的快照证据：{manifest}")
+        except (BackupError, TianshuError, OSError, ValueError, KeyError, TypeError,
+                UnicodeError) as exc:
+            problems.append(f"Receipt seq={row['seq']} 的材料无法核验：{exc}")
+    return refs, problems
+
+
 def _snapshot_references(
     data_root: Path,
     *,
@@ -770,15 +853,10 @@ def _snapshot_references(
     for manifest in sorted(snapshots.glob("*.json")):
         rel = _rel_posix(manifest, data_root)
         try:
-            raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
-            items = raw["changes"] if isinstance(raw, dict) else raw
-            if not isinstance(items, list):
-                raise ValueError("快照 changes 必须是列表")
+            items = SnapshotStore._parse(_checked_file(data_root, rel).read_bytes())
             for item in items:
-                if not isinstance(item, dict):
-                    raise ValueError("快照 changes 条目必须是对象")
-                blob_ref = item.get("blob_ref")
-                before_state = item.get("before_state")
+                blob_ref = item.blob_ref
+                before_state = item.before_state
                 if not blob_ref:
                     continue
                 if not _is_digest(before_state):
@@ -791,11 +869,12 @@ def _snapshot_references(
                 )
                 refs.append({
                     "manifest": rel,
-                    "call_id": str(item.get("call_id", "")),
+                    "call_id": item.call_id,
                     "path": blob_rel,
                     "sha256": str(before_state or ""),
                 })
-        except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError,
+                TianshuError) as exc:
             problems.append(f"快照清单读不出来：{rel}（{type(exc).__name__}: {exc}）")
     return refs, problems
 
@@ -814,29 +893,21 @@ def _undo_references(data_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         rel = _rel_posix(journal, data_root)
         try:
             raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("撤销日志必须是对象")
-            items = raw.get("items", [])
-            if not isinstance(items, list):
-                raise ValueError("撤销日志 items 必须是列表")
-            for item in items:
-                if not isinstance(item, dict):
-                    raise ValueError("撤销日志 items 条目必须是对象")
-                before = item.get("before_state")
-                action = item.get("action")
+            parsed = UndoJournal.from_dict(raw, run_id=journal.stem)
+            for item in parsed.items:
+                before = item.before_state
+                action = item.action
                 if action == "restore" and isinstance(before, str) and before != "absent":
                     if not _is_digest(before):
                         raise ValueError(f"before_state 不是 sha256：{before!r}")
                     refs.append({
                         "journal": rel,
-                        "call_id": str(item.get("call_id", "")),
+                        "call_id": item.call_id,
                         "path": f"artifacts/blobs/{before}",
                         "sha256": before,
                     })
-            status = raw.get("status")
-            if status not in ("in_progress", "completed"):
-                problems.append(f"撤销日志状态无法识别：{rel}（status={status!r}）")
-        except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError,
+                TianshuError) as exc:
             problems.append(f"撤销日志读不出来：{rel}（{type(exc).__name__}: {exc}）")
     return refs, problems
 
@@ -898,6 +969,10 @@ def _material_references(
         db, source_root, saved=True, source_aliases=source_aliases,
         discover_aliases=discover_aliases,
     )
+    receipts, receipt_problems = _receipt_references(
+        data_root, source_root=source_root, saved=True, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
     snapshots, snapshot_problems = _snapshot_references(
         data_root, source_root=source_root, source_aliases=source_aliases,
         discover_aliases=discover_aliases,
@@ -906,11 +981,13 @@ def _material_references(
     contents, memories, projection_problems = _projection_references(db, saved=True)
     return {
         "event_payload_refs": payload,
+        "receipt_blobs": receipts,
         "snapshot_blobs": snapshots,
         "undo_journal_blobs": undo,
         "content_blobs": contents,
         "memory_blobs": memories,
-    }, payload_problems + snapshot_problems + undo_problems + projection_problems
+    }, (payload_problems + receipt_problems + snapshot_problems + undo_problems
+        + projection_problems)
 
 
 def inspect_writers(data_root: Path) -> dict[str, Any]:
@@ -1048,6 +1125,8 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
 
 
 def _ref_owner(ref: dict[str, Any]) -> str:
+    if "receipt_id" in ref:
+        return f"Receipt {ref['receipt_id']}（事件 seq={ref['seq']}）"
     if "manifest" in ref:
         return f"快照清单 {ref['manifest']}"
     if "journal" in ref:
@@ -1170,6 +1249,13 @@ def _check_db(dest: Path, manifest: BackupManifest, problems: list[str]) -> int 
             f"事件库结构版本不符：清单 {manifest.db_user_version}，"
             f"实际 {meta['db_user_version']}"
         )
+    if int(meta["db_user_version"]) > SCHEMA_VERSION:
+        problems.append(
+            f"事件库结构版本 {meta['db_user_version']} 高于本程序支持的 {SCHEMA_VERSION}；"
+            "需要匹配版本的程序，不能按旧语义解释"
+        )
+    elif int(meta["db_user_version"]) < 0:
+        problems.append(f"事件库结构版本非法：{meta['db_user_version']}")
     if int(meta["event_count"]) != manifest.event_count:
         problems.append(
             f"事件条数不符：清单 {manifest.event_count}，实际 {meta['event_count']}"
@@ -1212,7 +1298,7 @@ def _check_reference_groups(
     dest: Path, manifest: BackupManifest, references: dict[str, Any], problems: list[str],
 ) -> None:
     declared = {f.path for f in manifest.files}
-    for key in ("event_payload_refs", "snapshot_blobs", "undo_journal_blobs",
+    for key in ("event_payload_refs", "receipt_blobs", "snapshot_blobs", "undo_journal_blobs",
                 "content_blobs", "memory_blobs"):
         refs = references.get(key, [])
         if not isinstance(refs, list):
@@ -1571,6 +1657,9 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         payload_refs, payload_problems = _db_references(
             db, data_root, discover_aliases=source_aliases
         )
+        receipt_refs, receipt_problems = _receipt_references(
+            data_root, source_root=data_root, discover_aliases=source_aliases,
+        )
         snapshot_refs, snapshot_problems = _snapshot_references(
             data_root, source_root=data_root, discover_aliases=source_aliases
         )
@@ -1578,7 +1667,8 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         content_refs, memory_refs, projection_problems = _projection_references(db)
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
-    for problem in payload_problems + snapshot_problems + undo_problems + projection_problems:
+    for problem in (payload_problems + receipt_problems + snapshot_problems + undo_problems
+                    + projection_problems):
         index.unknown.append(problem)
     for ref in payload_refs:
         index.protected_blobs.setdefault(ref["path"], []).append(
@@ -1594,7 +1684,7 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         index.protected_blobs.setdefault(ref["path"], []).append(
             f"撤销日志 {ref['journal']}"
         )
-    for ref in content_refs + memory_refs:
+    for ref in receipt_refs + content_refs + memory_refs:
         rel = ref["path"]
         index.protected_blobs.setdefault(rel, []).append(_ref_owner(ref))
         try:
@@ -1605,7 +1695,7 @@ def collect_references(data_root: Path) -> ReferenceIndex:
             if "size" in ref and size != ref["size"]:
                 raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
         except (OSError, ValueError) as exc:
-            index.unknown.append(f"投影材料无法核验：{rel}（{exc}）")
+            index.unknown.append(f"引用材料无法核验：{rel}（{exc}）")
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
     journals = data_root / "artifacts" / "undo"
