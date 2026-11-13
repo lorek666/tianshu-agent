@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -661,6 +662,7 @@ def clean_child_env():
 
 BARRIER_BOOTSTRAP = r'''
 import importlib.util
+import os
 import sys
 
 script, phase = sys.argv[1:3]
@@ -672,7 +674,7 @@ publish = collector._publish_receipt
 def blocked_publish(path, payload):
     if phase == "after":
         publish(path, payload)
-    sys.stdout.buffer.write(b"RECEIPT_BARRIER\n")
+    sys.stdout.buffer.write(f"RECEIPT_BARRIER {os.getpid()}\n".encode("ascii"))
     sys.stdout.buffer.flush()
     if sys.stdin.buffer.readline() != b"CONTINUE\n":
         raise RuntimeError("test barrier closed")
@@ -687,8 +689,10 @@ raise SystemExit(collector.main(sys.argv[3:]))
 @pytest.mark.parametrize("phase", ["before", "after"])
 def test_cli_child_commit_boundary(source_repo, report_file, tmp_path, phase):
     out = tmp_path / "collected"
+    # Windows venv Python is a launcher; terminate the actual interpreter.
+    executable = sys._base_executable if os.name == "nt" else sys.executable
     process = subprocess.Popen(
-        [sys.executable, "-c", BARRIER_BOOTSTRAP, str(SCRIPT), phase,
+        [executable, "-c", BARRIER_BOOTSTRAP, str(SCRIPT), phase,
          *args_for(source_repo, report_file, out)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=clean_child_env(),
@@ -697,11 +701,14 @@ def test_cli_child_commit_boundary(source_repo, report_file, tmp_path, phase):
     reader = threading.Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True)
     reader.start()
     try:
-        assert ready.get(timeout=15) == b"RECEIPT_BARRIER\n", "collector missed publish barrier"
+        barrier = re.fullmatch(rb"RECEIPT_BARRIER ([1-9][0-9]*)\n", ready.get(timeout=15))
+        assert barrier is not None, "collector missed publish barrier"
+        assert int(barrier[1]) == process.pid
         assert process.poll() is None
         assert (out / "inputs" / "report-0001.json").read_bytes() == report_file.read_bytes()
         assert (out / "collection.json").exists() == (phase == "after")
         process.terminate()
+        process.wait(timeout=15)
         stdout, stderr = process.communicate(timeout=15)
         assert process.returncode != 0
         assert stdout == stderr == b""
@@ -710,11 +717,14 @@ def test_cli_child_commit_boundary(source_repo, report_file, tmp_path, phase):
             observed = json.loads((out / "collection.json").read_bytes())["tool_observed"]
             assert "exit_code" not in observed
     finally:
-        if process.poll() is None:
-            process.kill()
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=15)
             process.communicate(timeout=15)
-        reader.join(timeout=5)
-        assert not reader.is_alive()
+        finally:
+            reader.join(timeout=5)
+            assert not reader.is_alive()
 
 
 def test_cli_real_success_and_failure(source_repo, report_file, tmp_path):
@@ -733,5 +743,5 @@ def test_cli_real_success_and_failure(source_repo, report_file, tmp_path):
     )
     assert failure.returncode == 2
     assert failure.stdout == b""
-    assert failure.stderr == b"baseline-evidence: INPUT_INVALID\n"
+    assert failure.stderr == f"baseline-evidence: INPUT_INVALID{os.linesep}".encode("ascii")
     assert not (tmp_path / "bad" / "collection.json").exists()
