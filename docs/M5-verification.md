@@ -382,6 +382,8 @@ uv run --python 3.12 python -c "from pathlib import Path; from tianshu import da
 
 ## 9. 已知限制（照抄 `docs/M5-desktop.md` §10，不美化）
 
+> 以下保留 M5 当时的验收记录，不是当前限制的唯一清单。2026-11-13 对账：第3项同步发送已由后续独立发送线程与有界队列取代，当前有 `tests/test_slow_subscriber.py` 覆盖慢订阅者、队列溢出与重连；其余状态以知识库 §2/§7 和对应提交证据为准。
+
 1. **Daemon 生命周期不写事件日志。** C3 的事件类型是封闭集合、且每条事件都挂
    `run_id`；`shutdown(reason)` 是进程级事实，硬塞进 run 作用域的日志会同时污染
    “按 run 回放”与事件注册表。取舍：`reason` 只进日志文件（`logs/daemon.log`），

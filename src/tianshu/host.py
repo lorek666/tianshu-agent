@@ -433,7 +433,17 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 since = query.get("since_seq", ["0"])[0]
                 once = query.get("once", ["0"])[0] == "1"
-                return self._stream_events(int(since), once=once)
+                try:
+                    since_seq = int(since)
+                except ValueError:
+                    return self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "ok": False,
+                            "error": {"code": "bad_params", "message": "since_seq 必须是整数"},
+                        },
+                    )
+                return self._stream_events(since_seq, once=once)
             if path == "/shutdown":
                 # 读请求不能关 Host；也**不能**落到 SPA 兜底（那会回 200 + index.html，
                 # 让人以为"通知成功了"）。
@@ -469,7 +479,18 @@ class _Handler(BaseHTTPRequestHandler):
             )
         if not self._authorized():
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            # 不知道请求体边界时不能在同一连接上继续解析下一条请求。
+            self.close_connection = True
+            return self._json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error": {"code": "bad_params", "message": "Content-Length 必须是整数"},
+                },
+            )
         if length <= 0 or length > MAX_RPC_BODY:
             if 0 < length <= MAX_DRAIN_BODY:
                 # 读完再拒绝：否则客户端在 sendall 中途被 RST，拿不到 413，
@@ -488,6 +509,11 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(
                 HTTPStatus.BAD_REQUEST,
                 {"ok": False, "error": {"code": "bad_params", "message": "请求体不是 JSON"}},
+            )
+        if not isinstance(payload, dict):
+            return self._json(
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": {"code": "bad_params", "message": "请求体必须是 JSON 对象"}},
             )
         method = str(payload.get("method") or "")
         params = payload.get("params") if isinstance(payload.get("params"), dict) else {}

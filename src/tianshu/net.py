@@ -306,7 +306,8 @@ def fetch(
                         f"HTTP {status} 重定向缺少 Location",
                         reason="net.redirect_invalid",
                     )
-                response.read()
+                # 重定向正文不会作为结果返回，不能在 max_bytes 之外无界下载。
+                # 每跳都用独立连接；finally 会关闭当前连接，无需 drain 正文。
                 nxt = _resolve_location(current, location)
                 if nxt.to_uri() in visited:
                     raise NetError(

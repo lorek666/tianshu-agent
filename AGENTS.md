@@ -73,7 +73,7 @@
 - **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从环境变量读；用过的中转 key 应自行作废。
 - **不提交** `refs/`（762MB 参考仓库）、`playground/`、本地数据 / 日志 / 快照（`.tianshu/`）。
 - **单用户假设（D2）**：不引入多租户 / 多用户设计；租约只防「同用户双实例」。
-- **运行时数据目录别写错**：事件库默认落在**当前工作目录下的 `.tianshu/`**（`cli.DEFAULT_DB = .tianshu/events.db`，相对路径，已被 `.gitignore` 排除）——**别提交它**。`~/Library/Application Support/AgentOS/` / `%LOCALAPPDATA%\AgentOS\` 那套系统标准位置只存在于 `docs/TECH-ARCH.md`，是 **M5 的设计、还没实现**，别当成现状写进文档。
+- **运行时数据目录按入口区分**：内核 CLI 的 `--db` 默认是**当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`）；`daemon` / `host` 已通过 `ipc.default_data_root()` 使用平台标准目录（macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`，缺省 `~/.local/share/AgentOS`），可由 `--data-root` / `TIANSHU_DATA_ROOT` 覆盖。两者都不是可提交的项目源码；测试必须使用临时数据根。
 
 ## 十、反模式（明确禁止，PRD §12）
 

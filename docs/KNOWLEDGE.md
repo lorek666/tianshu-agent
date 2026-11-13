@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **系统 debug：I/O 边界修复（2026-11-13）**：从 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941` 隔离排查。确认输出管道收尾锁等待、MCP 发送背压不受期限限制、Host 非法请求裸异常、重定向正文无界读取、UI 正文超时缺口和 SSE 失败计数重置，均先取得原实现失败证据再修复。构建与真页面验证、Windows 慢测栈、范围及未验证项见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。本条不代替具体提交的独立复审和四项 CI；最终门禁结果绑定对应 PR 当前 SHA。
+
 > 各功能条目保留其注明日期、PR 与提交的验收快照；条目中的“仍未做”不能脱离该版本引用。后续同主题交付覆盖旧状态，历史数字不汇总成当前测试数。合并门禁以本节“门禁”条目为准，Windows 最新已验证结果以本节 Windows 条目及其 run 为准。
 
 - **里程碑**：**M0–M5 已完成**。M4 由 PR #41 / #45 合入（代码在 `src/tianshu/eval/`）；**M5 桌面闭环由 PR #49 完成**（2026-11-10，`feat/m5-desktop`）：Daemon / Host / UI 三进程打通、审批 UI、关 UI 任务继续、重启后恢复。设计与契约见 [M5-desktop.md](M5-desktop.md)，实测证据见 [M5-verification.md](M5-verification.md)。
@@ -51,7 +53,7 @@
 - **测试（历史）**：**1641 passed, 7 skipped**（`feat/memory-retrieval`（N2，含两轮复审整改）分支实测，2026-11-11，已并入 main 的 #89/#91/#92；N2 起点基线为 `main @ 8f2440a` 的 1581 passed / 7 skipped，本分支 +36，其余来自 main）。
 - **测试（main 历史记录）**：**1536 passed, 7 skipped**（`main @ ec7d7ae`（收尾轮 #88 合入）实测，2026-11-11，158.55s，macOS arm64 本机；CI 同刻 macOS job 也是 1536 / 7，ubuntu 是 1535 / 8（多 1 条 skip = `test_ipc.py` 里 AF_UNIX backlog 的 macOS 专属用例）。相对 #85 合入时的 **1529**（`feat/memory-erasure` 合入 #84 后实测）再 +7：Windows 运行时兼容（`perf_counter` 启动计时 / Windows pid 存活判定）+1、IPC 握手期 EOF 类型化 +3、指标并发读取尾巴 +3；1529 的构成是 N4 自身 +8，其余来自 main 的 #79/#82/#84；`main` 上一次提交态基线 1316 passed / 6 skipped，macOS 本机实测，收尾轮 `43d04ef`，115.97s；上一轮 DEBUG-M0M1 复核轮为 1080 passed / 3 skipped；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **63** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮按 CI 重核过**（收尾轮）：`main @ ec7d7ae` 的 `windows-latest` 实测 **5 failed / 1509 passed / 29 skipped**（939.99s；修复前 35 failed → #87 后 8 → #88 合入前 6），5 条失败逐条登记在 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md) §3；另有一次 Windows job 因命名管道阻塞在 25 分钟上限被取消（同一棵树在 main 上 15:39 跑完），也如实记在那里。仍然**没有 Windows 实机**，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
 - **代码规模**：`src/tianshu/*.py` **58** 个模块（2026-11-12 实测 `ls src/tianshu/*.py | wc -l`；上一版写 54 是漏计 MCP 阶段与并行工作流新增的 4 个）。模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **93** 个（2026-11-12 实测 `ls tests/test_*.py | wc -l`；上一版写 92 漏计 1 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
-- **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；本轮绿色属于修复分支，**不代表已经合入 main，也不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
+- **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；这条绿色属于当时修复分支；其后 PR #130 已合入 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941`，该 main 的 [run 43298476414](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项全绿。两份结果分别绑定各自 SHA，**均不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。2026-11-13 经 GitHub API 写入并回读确认，required status checks 为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build` 四项，均绑定 GitHub Actions（app_id=15368）；批准人数仍为 0。设置已在远端生效，文档随 PR #130 交付。
 - **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用逐例输出、短错误栈、耗时与 60 秒长等待线程栈（`-vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`），其余平台保留 `-o addopts="" -q -rs`。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
 - **Windows 跳过项**：按平台跳过的是 memfs 符号链接、POSIX PID 探活、POSIX 权限位 ×2、无 PTY ×2、无进程组/信号 ×2，以及只在 POSIX 成立的真 socket 断言（AF_UNIX backlog、假对端「只 listen 不握手」）这几类；收尾轮 CI 实测 skip 数：macOS **7**、ubuntu **8**、Windows **29**，跳过原因写在跳过消息里，CI 用 `-rs` 打进日志。 · **2026-11-13 修复分支**：Windows 30（恢复 POSIX 残留 socket 用例遗漏的平台条件，较历史多 1），macOS 7、Ubuntu 8；Windows 命名管道认证/关闭/重复实例等测试仍运行。
@@ -338,6 +340,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **I/O debug 范围（2026-11-13）**：已修复的有界读写不等于进程隔离或网络带宽硬配额；Windows 命名管道 ACL、Windows 用户设备/ARM64、真实模型驱动 UI、安装与升级仍未验证。当前工作区的本机绿不冒充云端绿；逐项证据与尚未验证范围见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。
+
 > 本节含按日期保留的阶段交付记录，其中“未做”只描述该阶段；后续交付以 §2 和相应专题文档为准。平台与合并门禁以 §2 的具体提交 / CI / 远端配置为准，旧失败数字不代表最新提交。
 
 **PRD 2026-11-11 工程评审新增要求：首轮交付留账（2026-11-11，PR #79–#84；对账见 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md)）**
@@ -444,6 +448,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-13 · 系统 debug / I/O 批次**：真实不读管道、持有写端孙进程、半响应 HTTP、SSE 头后断流复现后做最小修复；纠正 README required checks/摘要/Windows 口径及 AGENTS 数据目录陈述。区分 API 支持、本机执行、GitHub runner 与用户设备实测，未改变 Python 版本、运行时依赖或产品契约。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
 - **2026-11-13 · 分支与本地状态对账**：按维护者授权开展全部分支、本地草稿、备份与同步处理；原工作区草稿已保存至仓库外备份（`repo-sync-20261113-034435`，含 patch / bundle / `.omc` 副本）与 stash `263737c304d9d885f5d5d428c3b88a7f7bd7103b`，原工作区已切到 main 并快进 133 个提交。已核实并删除 7 条本地旧分支与 5 条远端残留分支；旧工作树保留为 detached 历史快照，文件未删除。远端已开启合并后自动删除分支。记录时仅剩 PR #130 待最终 CI / 合并；后续合并状态以 GitHub PR 与 main 为准。修正 CONTRIBUTING §8 先前新增的“必须签名/公证”要求：它与 PRD §11.1 / §13 T1“不支付 OS 签名成本”冲突，现按既定分发策略验证安装脚本、系统提示、权限、产物校验及更新/回退；未来改变 T1 须单独契约 PR。从上述备份恢复原工作区的 2026-11-10 能力提案，按 CONTRIBUTING §1 将[原文](archive/2026-11-10-next-capabilities-plan.md) 放入 `docs/archive/`；[原路径](NEXT-CAPABILITIES-PLAN.md) 只保留历史警告与现行依据索引。原 281 行正文逐字节保留，本次归档没有修改备份原文，不把历史计划当作当前契约或验收证据。
 

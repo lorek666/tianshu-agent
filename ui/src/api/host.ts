@@ -106,6 +106,7 @@ class RealHostClient implements HostClient {
     }, timeoutMs);
 
     let response: Response;
+    let text: string;
     try {
       response = await fetch(this.url(path), {
         method: init.method,
@@ -117,6 +118,8 @@ class RealHostClient implements HostClient {
         cache: "no-store",
         credentials: "same-origin",
       });
+      // fetch 在收到响应头时就返回；期限必须覆盖正文，否则半条响应会永久挂起。
+      text = await response.text();
     } catch (error) {
       if (timedOut) {
         throw new HostRpcError("timeout", "守护进程响应超时", { httpStatus: null });
@@ -129,12 +132,6 @@ class RealHostClient implements HostClient {
       clearTimeout(timer);
     }
 
-    let text = "";
-    try {
-      text = await response.text();
-    } catch {
-      text = "";
-    }
     const raw = text.trim() === "" ? null : parseJson(text);
 
     if (!response.ok) {

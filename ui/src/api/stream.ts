@@ -82,10 +82,10 @@ export function startEventStream(options: EventStreamOptions): EventStreamHandle
           since,
           {
             onOpen: () => {
-              failures = 0;
               options.onStatus?.("live");
             },
             onEvent: (event) => {
+              failures = 0;
               cursor = Math.max(cursor, event.seq + 1);
               delivered += 1;
               options.onEvent(event);
@@ -94,6 +94,7 @@ export function startEventStream(options: EventStreamOptions): EventStreamHandle
           controller.signal,
         );
         if (stopped) break;
+        failures = 0;
         options.onEnd?.();
         options.onStatus?.("reconnecting", "事件流已结束，正在补齐缺口");
         await sleep(delivered === 0 ? EMPTY_END_DELAY_MS : NORMAL_END_DELAY_MS);
@@ -103,7 +104,7 @@ export function startEventStream(options: EventStreamOptions): EventStreamHandle
         if (failures >= maxFailures) {
           // 不无限重试：交给用户决定什么时候再试。轮询仍在跑，界面不会变成死页面。
           disconnected = true;
-          options.onStatus?.("disconnected", "与守护进程的连接已断开，正在重试…");
+          options.onStatus?.("disconnected", "事件流重连失败，请点击重试");
           break;
         }
         const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(failures - 1, 3));
