@@ -224,10 +224,14 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
     for src, dst in _USAGE_KEYS.items():
         v = raw.get(src)
         if isinstance(v, int) and not isinstance(v, bool):
+            if v < 0:
+                raise ModelError(f"usage.{src} 必须是非负整数", kind="protocol")
             out[dst] = v
     for src, dst in _USAGE_OPTIONAL.items():
         v = raw.get(src)
         if isinstance(v, int) and not isinstance(v, bool):
+            if v < 0:
+                raise ModelError(f"usage.{src} 必须是非负整数", kind="protocol")
             out[dst] = v
     return out
 

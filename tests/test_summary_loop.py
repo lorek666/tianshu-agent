@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 from support import engine_for, stack_for, write_exact
+from test_model_contract import VENDORS, FakeTransport, _model, _payload
 
 from tianshu.capability import CapabilityProfile
 from tianshu.context import ContextBudget, compile_context
@@ -190,6 +191,48 @@ def test_summary_calls_are_bounded_and_recorded(tmp_path):
     assert record.input_tokens == 120 and record.output_tokens == 20
     assert record.text == CONSTRAINT
     log.close()
+
+
+@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize("known_field", ["input_tokens", "output_tokens"])
+def test_partial_summary_usage_keeps_token_occupation(tmp_path, vendor, known_field):
+    raw_field = {
+        "input_tokens": "prompt_tokens", "output_tokens": "completion_tokens",
+    }[known_field] if vendor == "openai" else known_field
+    transport = FakeTransport(_payload(vendor, text=CONSTRAINT, usage={raw_field: 7}))
+    adapter = _model(vendor, transport)
+
+    class PartialSummaryModel(ConstraintModel):
+        def complete(self, messages, tools):
+            if not tools:
+                self.calls += 1
+                self.summary_calls += 1
+                return adapter.complete(messages, tools)
+            return super().complete(messages, tools)
+
+    model = PartialSummaryModel()
+    result, stack, log = _run(
+        tmp_path, model, summary_mode="model",
+        limits_kwargs={"summary_max_calls": 1,
+                       "budget_limits": {"tokens": 100_000, "requests": 100}},
+    )
+    try:
+        assert result.outcome in ("succeeded", "noop")
+        assert result.summary_calls == model.summary_calls == len(transport.calls) == 1
+        usage = stack.budget.usage(f"run:{result.run_id}")
+        assert usage["reserved"]["tokens"] > 0, "摘要缺一半用量也不能释放 token 预占"
+        assert result.unknown_usage_calls == 1
+        # 普通轮次也没有可核验价格：每次金额都应未决，只有摘要缺 token。
+        rows = stack.budget.reconcile(f"run:{result.run_id}")
+        assert usage["unknown_reservations"] == len(rows) == model.calls
+        assert all("micros" not in row["usage"] for row in rows)
+        assert sum("tokens" not in row["usage"] for row in rows) == 1
+        normal_tokens = ROUNDS * (40 + 8) + 30 + 6
+        assert usage["settled"]["tokens"] == normal_tokens
+        assert result.tokens == normal_tokens + 7
+        assert usage["settled"]["requests"] == model.calls
+    finally:
+        log.close()
 
 
 def test_summary_is_referenced_by_the_next_model_request(tmp_path):
