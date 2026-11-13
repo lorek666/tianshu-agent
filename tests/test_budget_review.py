@@ -13,6 +13,7 @@ from tianshu.events import EventLog
 from tianshu.loop import Limits, run
 from tianshu.model import AnthropicMessagesModel, ModelError, OpenAICompatibleModel
 from tianshu.replay import replay
+from tianshu.tasks import TaskStore
 
 
 class ControlledTransport:
@@ -258,6 +259,84 @@ def test_failed_summary_protocol_was_already_unknown(tmp_path, vendor):
         assert replay(log, result.run_id).ok
     finally:
         log.close()
+
+
+@pytest.mark.parametrize("vendor", ["openai", "anthropic"])
+def test_failed_summary_unknown_survives_immediate_budget_stop_and_reopen(tmp_path, vendor):
+    observed = []
+
+    def observe(log, transport):
+        ledger = BudgetLedger(log)
+        pending = ledger.pending()
+        assert len(pending) == 1
+        usage = ledger.usage(pending[0].account_id)
+        observed.append(
+            (
+                pending[0].attempt_id.startswith("summary#"),
+                usage["settled"]["micros"] + usage["reserved"]["micros"],
+            )
+        )
+
+    calibrate = tmp_path / "calibrate"
+    calibrate.mkdir()
+    _, _, log = execute(
+        calibrate,
+        vendor,
+        {"input_tokens": 12, "output_tokens": 3},
+        summary=True,
+        summary_error=True,
+        priced=True,
+        observe=observe,
+    )
+    log.close()
+    summary_index = next(index for index, row in enumerate(observed) if row[0])
+    limit = observed[summary_index][1]
+    assert all(amount <= limit for _, amount in observed[:summary_index])
+    limited = tmp_path / "limited"
+    limited.mkdir()
+    result, transport, log = execute(
+        limited,
+        vendor,
+        {"input_tokens": 12, "output_tokens": 3},
+        summary=True,
+        summary_error=True,
+        priced=True,
+        limits={"micros": limit},
+    )
+    try:
+        assert result.outcome == "failed" and "micros" in result.error
+        assert transport.normal_calls == summary_index
+        assert transport.summary_calls == 1
+        assert result.model_attempts == transport.calls == summary_index + 1
+        assert result.unknown_usage_calls == result.unknown_cost_calls == 1
+        events = log.read_run(result.run_id)
+        end = [event.payload for event in events if event.type == "run.end"][-1]
+        assert end["tokens_unknown_calls"] == 1
+        assert end["budget_enforced"] is False
+        assert end["unbilled_model_intents"] == 0
+        assert end["tokens"] == result.tokens
+        stored = TaskStore(log).load_cursor(result.run_id)
+        assert stored is not None
+        cursor = stored[0].to_dict()
+        assert cursor["budget_ledger"]["unknown_usage_calls"] == 1
+        assert cursor["budget_ledger"]["unknown_cost_calls"] == 1
+        assert cursor["budget_ledger"]["model_attempts"] == transport.calls
+        rows = BudgetLedger(log).reconcile(f"run:{result.run_id}")
+        assert len(rows) == 1 and rows[0]["attempt_id"].startswith("summary#")
+        assert rows[0]["usage"] == {"requests": 1}
+        assert replay(log, result.run_id).ok
+    finally:
+        log.close()
+
+    reopened = EventLog(limited / "events.db", blob_dir=limited / "blobs")
+    try:
+        assert TaskStore(reopened).load_cursor(result.run_id)[0].to_dict() == cursor
+        assert BudgetLedger(reopened).reconcile(f"run:{result.run_id}") == rows
+        reopened_end = [e.payload for e in reopened.read_run(result.run_id) if e.type == "run.end"]
+        assert reopened_end == [end]
+        assert replay(reopened, result.run_id).ok
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize("vendor", ["openai", "anthropic"])

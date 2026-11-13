@@ -1794,7 +1794,12 @@ class AgentLoop:
 
         # PRD §7.1：把"本来就要丢的历史"换成一份已持久化的摘要（默认关）。
         # 放在落盘之前：摘要重编译可能产生新的 spills，必须一起落盘。
+        attempts_before_summary = progress.model_attempts
         view = self._maybe_summarize(run_id, task, progress, view, budget)
+        if progress.model_attempts != attempts_before_summary:
+            # 摘要已经发生，下一普通调用却可能被预算拒发或在落盘时失败。
+            # 终态从游标汇总，不能等下一次成功模型结果才保存摘要的用量。
+            self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
 
         # 落盘必须在发请求**之前**：先让占位指向的 blob 真的存在，再让模型看到
         # "完整内容已落盘"这句话。反过来的顺序等于先撒谎再补救。

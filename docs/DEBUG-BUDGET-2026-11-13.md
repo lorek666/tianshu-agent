@@ -90,3 +90,19 @@ uv run --frozen pytest tests/test_budget_review.py tests/test_budget_ledger.py t
 ```
 
 第二轮没有新增生产模块、schema、枚举、价格行或依赖，也没有接触真实用户账本或付费服务。金额估算仍不能承诺绝对不超额；真实 provider 计费、用户设备与云端平台验证不能从本机受控 transport 推出。
+
+## 第三轮：B3 的立即终止路径补修
+
+独立二审对 `51d46e06f230d50b8d7ec27eb5ce3d3c763c2a0a` 的 B3 结论为**部分修**：摘要协议失败后，保留的金额预占使下一次普通调用在发送前被 `micros` 上限拒绝。此时内存 `RunResult.unknown_usage_calls=unknown_cost_calls=1`，但 `run.end` 从旧游标汇总，错误写成 `tokens_unknown_calls=0`、`budget_enforced=true`。因为普通请求未发送，没有新的 `model.intent`，`unbilled_model_intents=0` 也不能揭示摘要的未知用量。这是同一 P2 的未闭合路径，不把上一轮的绿色当成已完整解决。
+
+根因是摘要统计更新后依赖下一次普通模型结果顺带保存游标。最小修复在 `_model_step` 检查摘要前后 `model_attempts`；确有摘要调用就立即通过现有 `TaskStore.save_cursor` 保存，先于正文落盘与下一次普通请求预算准入。摘要关闭、复用或预算提前拒发时没有发生新调用，不新增游标。没有改 `TaskStore`、终态契约、价格、预占或结算语义。
+
+正式回归 `test_failed_summary_unknown_survives_immediate_budget_stop_and_reopen` 使用两个真实 adapter 和受控 transport：先在无金额上限时测得摘要发送前的实际总预占，再用该金额作限额，确保摘要已发送且失败、后续普通调用确实没有发送。断言内存、持久游标、`run.end`、未决账本一致；关闭数据库再重开，逐项核对游标、终态和未决预占，并执行 replay。此处“重开”是数据库关闭/重开，不声称新增了硬崩溃故障注入证据。
+
+- 冻结独立探针 `test_verify_budget_r2_extra.py -k summary_failure_remains_unknown`：**2 failed → 2 passed**；正式新增回归：**2 failed → 2 passed**，原红均准确停在 `tokens_unknown_calls: 0 != 1`。
+- 原始日志 `/tmp/tianshu-debug-20261113/budget-r3-{independent,formal}-{red,green}.{log,json}` 记录完整基准 SHA、命令、退出码与隔离环境。首次关联命令误写不存在的 `tests/test_resume.py`，exit 4 且没有测试执行，保存在 `budget-r3-affected`；纠正为实存 `tests/test_run_control.py` 后另存 `budget-r3-affected-corrected`，不把命令错误充当产品红绿。
+- 当前修改仍基于 `51d46e0…` 的未提交工作区；受影响九模块 **183 passed / 5.07s**，lock/ruff 均 exit 0；全量 **2237 passed / 7 skipped / 384.75s**（记录器 385.282s、exit 0，`budget-r3-full`）。最终提交独立复审与四项 CI 仍须重新绑定；本轮作者亲跑独立探针不等于第二读者已批准。
+
+```sh
+uv run --frozen pytest tests/test_budget_review.py -k failed_summary_unknown_survives -o addopts= -q
+```
