@@ -1,0 +1,23 @@
+from pathlib import Path
+import json,os,shutil,subprocess
+root=Path('/tmp/t1-admission');source=root/'review-snapshot'
+python='/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python'
+baseenv={k:v for k,v in os.environ.items() if not k.startswith('TIANSHU_') and not k.endswith(('BASE_URL','API_KEY'))}
+cases=[
+ ('omit-admission','src/tianshu/events.py','        check_connection(self._conn, db_path)\n','        # independent mutation: omitted check\n',['tests/test_data_admission.py::test_future_actual_db_refused_before_ddl_and_blob_mkdir','tests/test_data_admission.py::test_live_wal_future_version_is_not_ignored']),
+ ('omit-version-shape','src/tianshu/data_admission.py','            _versions(conn)\n','            # independent mutation: omitted registered versions\n',['tests/test_data_admission.py::test_missing_entire_event_versions_refused_after_close_reopen','tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter']),
+ ('omit-material-evidence','src/tianshu/data_admission.py','                if _has_material(path):\n','                if False:  # independent mutation only\n',['tests/test_data_admission.py::test_new_database_refuses_nested_material_files']),
+ ('omit-mechanism','src/tianshu/data_admission.py','            _mechanism(conn, version)\n','            # independent mutation: omitted mechanism\n',['tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit','tests/test_data_admission.py::test_completed_rejects_unregistered_mechanism_shape']),
+]
+results=[]
+for label,rel,old,new,tests in cases:
+ dst=root/('mutant-'+label);shutil.copytree(source,dst)
+ p=dst/rel;text=p.read_text(encoding='utf-8');assert text.count(old)==1;p.write_text(text.replace(old,new),encoding='utf-8')
+ env=dict(baseenv);env['PYTHONPATH']=str(dst/'src')+os.pathsep+str(dst/'tests');env['PYTHONDONTWRITEBYTECODE']='1'
+ r=subprocess.run([python,'-m','pytest','-o','addopts=','-q','-p','no:cacheprovider','--basetemp',str(root/('pytest-mutant-'+label)),*tests],cwd=dst,env=env,capture_output=True,encoding='utf-8',timeout=45)
+ log=root/('independent-mutant-'+label+'.txt');log.write_text(r.stdout+r.stderr,encoding='utf-8')
+ assert r.returncode==1,(label,r.returncode,r.stdout,r.stderr)
+ assert 'SyntaxError' not in r.stdout+r.stderr
+ results.append({'mutation':label,'source':str(p),'test_nodes':tests,'exit_code':r.returncode,'log':str(log),'targeted_negative_control_red':True})
+(root/'independent-mutation-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+print(json.dumps({'mutations_red':len(results)}))

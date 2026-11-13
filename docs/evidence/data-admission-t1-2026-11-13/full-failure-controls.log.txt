@@ -1,0 +1,192 @@
+CONTROL candidate, clean=False
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+________ test_recovery_blocking_write_contends_for_the_execution_guard _________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2720/test_recovery_blocking_write_c0')
+
+    def test_recovery_blocking_write_contends_for_the_execution_guard(tmp_path: Path):
+        """恢复写 `recovery.blocked` 要和派发落盘抢同一把守卫，而不是各写各的。
+    
+        复审 中-1 的第二种修法：两件事排进同一个全序。守卫被占着的时候，恢复
+        应该**等着**（而不是抢先落阻断），释放之后才落。
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        write_exact(ws / "note.md", "原始内容\n")
+        data = tmp_path / "authority"
+        data.mkdir()
+        db = tmp_path / "events.db"
+        snapshots = SnapshotStore(tmp_path / "artifacts")
+    
+        # 造一个"核实不了"的 run：有写前证据，磁盘却是第三种内容
+>       setup = EventLog(db)
+                ^^^^^^^^^^^^
+
+tests/test_failclosed.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/events.py:298: in __init__
+    self._open_database(db_path, blob_dir, cross_thread, access)
+src/tianshu/events.py:317: in _open_database
+    check_new_file_evidence(db_path)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2720/test_recovery_blocking_write_c0/events.db')
+
+    def check_new_file_evidence(db_path: Path) -> None:
+        """SQLite打开前排除孤立旁文件；读取空主库可能丢弃它们。"""
+        if str(db_path) == ":memory:":
+            return
+        try:
+            if db_path.stat().st_size > 0:
+                return
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise _incompatible("无法检查原数据库文件") from exc
+        try:
+            actual = db_path.resolve()
+            for path in associated_state_paths(actual):
+                if path.is_symlink() or path.exists():
+                    raise AdmissionRefused("migration_incomplete", "新空主库旁存在迁移历史")
+            for suffix in ("-wal", "-journal", "-shm"):
+                path = actual.with_name(actual.name + suffix)
+                if path.is_symlink() or (path.exists() and path.stat().st_size > 0):
+                    raise _incompatible(f"新空主库旁存在历史{suffix}")
+            if actual.name == "events.db":
+                for name in ("artifacts", "blobs", "memory_blobs"):
+                    path = actual.parent / name
+                    if path.is_symlink() or (path.exists() and any(path.iterdir())):
+>                       raise _incompatible(f"新空事件库旁存在历史材料{name}")
+E                       tianshu.data_state.AdmissionRefused: [incompatible] 新空事件库旁存在历史材料artifacts。请保全数据目录，使用匹配版本核对备份和恢复；不要手改版本或删除数据库。
+
+src/tianshu/data_admission.py:62: AdmissionRefused
+_______________________ test_official_endpoint_is_priced _______________________
+
+    def test_official_endpoint_is_priced():
+        model = OpenAICompatibleModel("gpt-4o-mini", api_key="k")
+        identity = identity_of(model)
+        assert identity == ModelIdentity(
+            adapter="openai-compatible", vendor="openai", model="gpt-4o-mini"
+        )
+    
+        claude = AnthropicMessagesModel("claude-sonnet-4-5", api_key="k")
+>       assert identity_of(claude) == ModelIdentity(
+            adapter="anthropic", vendor="anthropic", model="claude-sonnet-4-5"
+        )
+E       AssertionError: assert ModelIdentity...e-sonnet-4-5') == ModelIdentity...e-sonnet-4-5')
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing attributes:
+E         ['vendor']
+E         
+E         Drill down into differing attribute vendor:
+E           vendor: None != 'anthropic'
+
+tests/test_pricing.py:302: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_failclosed.py::test_recovery_blocking_write_contends_for_the_execution_guard
+FAILED tests/test_pricing.py::test_official_endpoint_is_priced - AssertionErr...
+2 failed in 1.58s
+EXIT 1
+CONTROL candidate, clean=True
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+________ test_recovery_blocking_write_contends_for_the_execution_guard _________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2721/test_recovery_blocking_write_c0')
+
+    def test_recovery_blocking_write_contends_for_the_execution_guard(tmp_path: Path):
+        """恢复写 `recovery.blocked` 要和派发落盘抢同一把守卫，而不是各写各的。
+    
+        复审 中-1 的第二种修法：两件事排进同一个全序。守卫被占着的时候，恢复
+        应该**等着**（而不是抢先落阻断），释放之后才落。
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        write_exact(ws / "note.md", "原始内容\n")
+        data = tmp_path / "authority"
+        data.mkdir()
+        db = tmp_path / "events.db"
+        snapshots = SnapshotStore(tmp_path / "artifacts")
+    
+        # 造一个"核实不了"的 run：有写前证据，磁盘却是第三种内容
+>       setup = EventLog(db)
+                ^^^^^^^^^^^^
+
+tests/test_failclosed.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/events.py:298: in __init__
+    self._open_database(db_path, blob_dir, cross_thread, access)
+src/tianshu/events.py:317: in _open_database
+    check_new_file_evidence(db_path)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2721/test_recovery_blocking_write_c0/events.db')
+
+    def check_new_file_evidence(db_path: Path) -> None:
+        """SQLite打开前排除孤立旁文件；读取空主库可能丢弃它们。"""
+        if str(db_path) == ":memory:":
+            return
+        try:
+            if db_path.stat().st_size > 0:
+                return
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise _incompatible("无法检查原数据库文件") from exc
+        try:
+            actual = db_path.resolve()
+            for path in associated_state_paths(actual):
+                if path.is_symlink() or path.exists():
+                    raise AdmissionRefused("migration_incomplete", "新空主库旁存在迁移历史")
+            for suffix in ("-wal", "-journal", "-shm"):
+                path = actual.with_name(actual.name + suffix)
+                if path.is_symlink() or (path.exists() and path.stat().st_size > 0):
+                    raise _incompatible(f"新空主库旁存在历史{suffix}")
+            if actual.name == "events.db":
+                for name in ("artifacts", "blobs", "memory_blobs"):
+                    path = actual.parent / name
+                    if path.is_symlink() or (path.exists() and any(path.iterdir())):
+>                       raise _incompatible(f"新空事件库旁存在历史材料{name}")
+E                       tianshu.data_state.AdmissionRefused: [incompatible] 新空事件库旁存在历史材料artifacts。请保全数据目录，使用匹配版本核对备份和恢复；不要手改版本或删除数据库。
+
+src/tianshu/data_admission.py:62: AdmissionRefused
+=========================== short test summary info ============================
+FAILED tests/test_failclosed.py::test_recovery_blocking_write_contends_for_the_execution_guard
+1 failed, 1 passed in 0.10s
+EXIT 1
+CONTROL baseline-30b, clean=False
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_______________________ test_official_endpoint_is_priced _______________________
+
+    def test_official_endpoint_is_priced():
+        model = OpenAICompatibleModel("gpt-4o-mini", api_key="k")
+        identity = identity_of(model)
+        assert identity == ModelIdentity(
+            adapter="openai-compatible", vendor="openai", model="gpt-4o-mini"
+        )
+    
+        claude = AnthropicMessagesModel("claude-sonnet-4-5", api_key="k")
+>       assert identity_of(claude) == ModelIdentity(
+            adapter="anthropic", vendor="anthropic", model="claude-sonnet-4-5"
+        )
+E       AssertionError: assert ModelIdentity...e-sonnet-4-5') == ModelIdentity...e-sonnet-4-5')
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing attributes:
+E         ['vendor']
+E         
+E         Drill down into differing attribute vendor:
+E           vendor: None != 'anthropic'
+
+/tmp/t1-admission/baseline-test/tests/test_pricing.py:302: AssertionError
+=========================== short test summary info ============================
+FAILED ../../../../../../tmp/t1-admission/baseline-test/tests/test_pricing.py::test_official_endpoint_is_priced
+1 failed, 1 passed in 0.52s
+EXIT 1
+CONTROL baseline-30b, clean=True
+..                                                                       [100%]
+2 passed in 0.37s
+EXIT 0

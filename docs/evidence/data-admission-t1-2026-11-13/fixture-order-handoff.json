@@ -1,0 +1,36 @@
+{
+  "head": "91290950099b1202beeb9b34cd2d71af7e945118",
+  "authorization": "fixture order only; product and KNOWLEDGE unchanged; no full/commit/push",
+  "changed_files": [
+    "tests/test_recovery_atomicity.py"
+  ],
+  "final_file_sha256": "736d77c60f8f1d655867dab8bb7b0a7e85623613c182e8ca8d0402d6b46e7573",
+  "t1_nine_files_unchanged": {
+    "src/tianshu/data_state.py": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+    "src/tianshu/data_admission.py": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+    "src/tianshu/events.py": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+    "tests/test_data_state.py": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+    "tests/test_data_admission.py": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+    "tests/fixtures/data_admission/README.md": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+    "tests/fixtures/data_admission/legacy-completed.json": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+    "tests/fixtures/data_admission/legacy-v2.sql": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+    "tests/fixtures/data_admission/v0.sql": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692"
+  },
+  "other_scope_254_files_unchanged": true,
+  "results": {
+    "original_corrupt": "4 failed,4 deselected in0.11s;EXIT1",
+    "all_eight": "8passed in0.86s;EXIT0",
+    "recovery_and_T1_associated": "346passed in23.40s;EXIT0",
+    "ruff_target": "exit0",
+    "diff_check": "exit0"
+  },
+  "evidence": {
+    "before.json": "0e205b8860b92e8ec25e3906d0cb9dd4e154395033f5c79dfca7872b92cf7a6c",
+    "green-eight.log": "7daeb4f1b7322190c581ba950350a5c493dbc0b9da2f3e8e6b69ea92b91b3766",
+    "green-recovery-admission-result.json": "124fd50cb6d223cdd18fedc166d00af7254199b6e6dedf9be82f71db87af6d01",
+    "green-recovery-admission.log": "d3063f48e0d38904dea8a4601206f1c00819d8fe50560cd895d674ef2f2afb87",
+    "red-four-result.json": "2618b95f1f6be6bfde8537756f85b83845d039001563135b9d59d817446733eb",
+    "red-four.log": "105d30b12b166928c7d4a5b1889e2eece60b3dd597425597006766802b177630",
+    "test_recovery_atomicity-before.py": "18ca31d283dbbc343d5dd73ddaf13d63a4796a0cd2ff0b3227325e2a2b79a4cb"
+  }
+}

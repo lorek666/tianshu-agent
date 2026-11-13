@@ -1,0 +1,54 @@
+{
+  "base": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+  "branch": "codex/g3-data-admission",
+  "scope": "T1 author handoff candidate; 127 new tests, 300 associated green; independent content review and integrated full/CI remain separate",
+  "files": {
+    "src/tianshu/data_state.py": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+    "src/tianshu/data_admission.py": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+    "src/tianshu/events.py": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+    "tests/test_data_state.py": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+    "tests/test_data_admission.py": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+    "tests/fixtures/data_admission/README.md": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+    "tests/fixtures/data_admission/legacy-completed.json": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+    "tests/fixtures/data_admission/legacy-v2.sql": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+    "tests/fixtures/data_admission/v0.sql": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692",
+    "docs/KNOWLEDGE.md": "55c4983f234042efaa45015979cfbdf2d72097169b3e323ce91f1261b8f420a1",
+    "docs/DATA-ADMISSION-T1-2026-11-13.md": "421f4d0daf974e92c629713e091ca441f27490048d33bcf412722ecd7ad1bb7e"
+  },
+  "difference_from_full_frozen_tests": [
+    "tests/test_data_state.py"
+  ],
+  "test_count": 127,
+  "full_before_test_change": "full-final-clean-boundary.json",
+  "checks": {
+    "lock": 0,
+    "ruff": 0
+  },
+  "evidence": {
+    "collected.log": "237282ca102237568e0018055827432bbf98fa2c89748b4805dcc863d10d4a3d",
+    "control-source-paths.log": "97af3938dc1d2cdfb903aabb84439a1b66511f8539ef85fd77588ba3f0a9cf9b",
+    "full-failure-controls.log": "a3cb9e577fe250ffd0af653623d1150d5ec46e6e6b4f8f479fbca29b4315b310",
+    "full-final-clean.log": "fbf790a0a1491528c3786d807fa109e478b97eed4ddb507f8fa172e354803c82",
+    "full-first.log": "7f00079f40ed1252c2044877dff0416d1347efd28dc8ba1ebf6b0a0f940570f9",
+    "green-final-associated.log": "01d0c9d68ba6478ab74143bf570420f035f7020d5b92975f6816e4619744c7df",
+    "green-first.log": "9f5ea43c2457617dcad421b4be454a4054df26c1c5661ccdecb9f7df612e965e",
+    "green-full-regressions.log": "b8e32833bbdf5ee2f55c311121186a4967f9853d518e987810ff8b45b0d47c00",
+    "green-targeted.log": "e9d810b236e42d944f868e33d1c55097e353f37309f0a97b05dc51974540c890",
+    "green-targeted2.log": "516db691560bf416acd970d094d4499ca2bb32dd474feee285b1864ff9b3a4a4",
+    "lock-final.log": "0f4c4376cc529f35ded38095a4aeb519c6cabdf794424c78daa006410591d5da",
+    "lock.log": "d4ce3a7a74366c7352b65ba40cd6b367438b9549e2cc5c7d2040bda4bf66f661",
+    "red-admission.log": "a580e0dc65a628aba7457d9ba1e81d9c0a183df63c07c65007df4e9c70e27b6d",
+    "red-all.log": "5bda62c8cc3690baa5b7a981966787e4b173ad52b6d3b5055fe39fcb6c762dbd",
+    "red-duplicate-hook-mutant.log": "e6bfe69ebb77fa38bb701eacee95ce444831ac737d355a02e81a77246638bace",
+    "red-final-setup.log": "37e00a097c917967779565c286f3577d5f33d4c11ee5611bdd2b5f4c55f21ffe",
+    "red-full-regressions-final-tests.log": "8aa6b1c2156992d62b50fffa92ba5d33bb0863a3d1bc2cfadb1234a5fa3e1a0b",
+    "red-full-regressions.log": "92faf3b1fb8603d424be7742aa8466bbfd4d0f212c44ff827990b5b5e37b491b",
+    "red-shape.log": "bbe4726cd69c36a692429b857c4d5923f88cf875a53e6f13a4afe3a0d82b0653",
+    "ruff-final.log": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "ruff-first.log": "54d960305b25752de9954a932fed16dadf7f255c9078a40a4cc37b55c68c44d3",
+    "ruff-fix.log": "7b6b4ca54096526a65903e48eac2b258e1a70f2dc0c26fecda98b15be06c2555",
+    "ruff-fix2.log": "0f653a2890d2575780c4e7e61f665bdaedce6660ab1fe9dd93d1f94698c9abbb",
+    "ruff.log": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+  },
+  "handoff": "Author returns T1 repository write ownership to parent; no commit/push; source independent review and integrated full/CI remain separate"
+}

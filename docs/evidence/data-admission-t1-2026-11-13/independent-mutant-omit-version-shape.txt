@@ -1,0 +1,209 @@
+FFFFFFFF                                                                 [100%]
+=================================== FAILURES ===================================
+________ test_missing_entire_event_versions_refused_after_close_reopen _________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_missing_entire_event_vers0')
+
+    def test_missing_entire_event_versions_refused_after_close_reopen(tmp_path):
+        db = make_db(tmp_path)
+        execute(db, "DROP TABLE event_versions")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:118: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_missing_entire_event_vers0/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+__________ test_bad_registered_memory_version_refused_before_alter[4] __________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver0')
+version = '4'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver0/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_________ test_bad_registered_memory_version_refused_before_alter[-1] __________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver1')
+version = '-1'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver1/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_________ test_bad_registered_memory_version_refused_before_alter[bad] _________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver2')
+version = 'bad'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver2/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_________ test_bad_registered_memory_version_refused_before_alter[1.5] _________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver3')
+version = '1.5'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver3/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+________ test_bad_registered_memory_version_refused_before_alter[true] _________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver4')
+version = 'true'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver4/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_________ test_bad_registered_memory_version_refused_before_alter[ 3] __________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver5')
+version = ' 3'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver5/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_________ test_bad_registered_memory_version_refused_before_alter[03] __________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver6')
+version = '03'
+
+    @pytest.mark.parametrize("version", ["4", "-1", "bad", "1.5", "true", " 3", "03"])
+    def test_bad_registered_memory_version_refused_before_alter(tmp_path, version):
+        db = make_db(tmp_path)
+        execute(db, "CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        execute(db, "INSERT INTO memory_meta VALUES('schema_version',?)", (version,))
+>       refuse_unchanged(db, code="incompatible")
+
+tests/test_data_admission.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-version-shape/test_bad_registered_memory_ver6/events.db')
+code = 'incompatible'
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+=========================== short test summary info ============================
+FAILED tests/test_data_admission.py::test_missing_entire_event_versions_refused_after_close_reopen
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[4]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[-1]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[bad]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[1.5]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[true]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[ 3]
+FAILED tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter[03]
+8 failed in 0.12s

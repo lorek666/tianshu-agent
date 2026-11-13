@@ -1,0 +1,250 @@
+"""T1 independent synthetic probes against an exact frozen source copy."""
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path('/tmp/t1-admission')
+SNAP = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / 'review-snapshot'
+sys.path.insert(0, str(SNAP / 'src'))
+from tianshu import event_schema
+from tianshu.data_admission import check_connection
+from tianshu.data_state import MigrationStateCorrupt, parse_state, read_state_file
+from tianshu.errors import TianshuError
+from tianshu.events import EventLog
+from tianshu.snapshot import SnapshotStore
+
+RUN = Path(tempfile.mkdtemp(prefix='independent-data-', dir=ROOT))
+FIXTURES = SNAP / 'tests/fixtures/data_admission'
+CHECKS = []
+
+def record(name, **detail):
+    CHECKS.append({'name': name, 'passed': True, **detail})
+
+def db_at(label, name='events.db', legacy=False):
+    base = RUN / label
+    base.mkdir(parents=True, exist_ok=True)
+    db = base / name
+    with sqlite3.connect(db) as con:
+        con.executescript((FIXTURES / ('legacy-v2.sql' if legacy else 'v0.sql')).read_text(encoding='utf-8'))
+    return db
+
+def sql(db, statement, params=()):
+    with sqlite3.connect(db) as con:
+        con.execute(statement, params)
+
+def v2_state(db, origin=0):
+    return {
+        'format': 'tianshu-migration', 'format_version': 2,
+        'db_path': str(db.resolve()), 'from_version': origin, 'target_version': 2,
+        'status': 'completed', 'applied_steps': list(range(origin + 1, 3)), 'current_step': None,
+        'plan_sha256': 'a'*64,
+        'backup': {'path': str((db.parent / '备份').resolve()), 'manifest_sha256': 'b'*64},
+        'baseline': {'sqlite_algorithm': 'tianshu-sqlite-logical-v1', 'sqlite_sha256': 'c'*64,
+                     'material_algorithm': 'tianshu-material-inventory-v1', 'material_sha256': 'd'*64},
+        'started_at_ms': 1, 'updated_at_ms': 2,
+    }
+
+def sidecar(db, state=None):
+    p = db.with_name(db.name + '.migration.json')
+    p.write_text(json.dumps(state or v2_state(db), ensure_ascii=False), encoding='utf-8')
+    return p
+
+def oldstate(db):
+    p = db.parent / 'migration.json'
+    p.write_bytes((FIXTURES / 'legacy-completed.json').read_bytes())
+    return p
+
+def unchanged_state(db):
+    # A logical WAL-aware snapshot; journal/SHM physical maintenance is not a product mutation.
+    with sqlite3.connect(db.as_uri() + '?mode=ro', uri=True) as con:
+        logical = tuple(con.iterdump())
+        version = con.execute('PRAGMA user_version').fetchone()[0]
+        journal = con.execute('PRAGMA journal_mode').fetchone()[0]
+    files = {}
+    for p in db.parent.rglob('*'):
+        if p.is_symlink():
+            files[str(p.relative_to(db.parent))] = ['symlink', os.readlink(p)]
+        elif p.is_file() and p != db and not p.name.endswith(('-wal', '-shm', '-journal')):
+            files[str(p.relative_to(db.parent))] = ['file', hashlib.sha256(p.read_bytes()).hexdigest()]
+    return logical, version, journal, files
+
+def refused(db, expected=None):
+    before = unchanged_state(db)
+    try:
+        EventLog(db, blob_dir=db.parent/'new-payload')
+    except TianshuError as exc:
+        code = getattr(exc, 'code', None)
+        if expected is not None:
+            assert code == expected, (expected, code)
+    else:
+        raise AssertionError('unexpected admission: ' + str(db))
+    assert unchanged_state(db) == before
+    assert not (db.parent/'new-payload').exists()
+    return code
+
+# Ordinary v0 and a missing per-row version keep the legacy mapping, across a reopen.
+db = db_at('v0')
+for _ in range(2):
+    log = EventLog(db)
+    assert log.read_run('legacy')[0].payload_version == 0
+    assert log.conn.execute('PRAGMA user_version').fetchone()[0] == 0
+    log.close()
+record('v0_single_missing_version_row_and_reopen_allowed')
+sql(db, 'DROP TABLE event_versions')
+refused(db, 'incompatible'); refused(db, 'incompatible')
+with sqlite3.connect(db) as con:
+    assert con.execute("SELECT 1 FROM sqlite_schema WHERE name='event_versions'").fetchone() is None
+record('whole_event_versions_missing_refused_twice_without_recreation')
+
+# Actual custom DB, unrelated default DB, true CLI process and connection identity.
+unrelated = db_at('unrelated', legacy=True); oldstate(unrelated)
+actual = db_at('actual', name='custom.sqlite'); sql(actual, 'PRAGMA user_version=999')
+refused(actual, 'incompatible')
+env = dict(os.environ); env['PYTHONPATH'] = str(SNAP/'src')
+before = unchanged_state(actual)
+r = subprocess.run([sys.executable, '-m', 'tianshu.cli', 'replay', '--run-id', 'legacy', '--db', str(actual)],
+                   cwd=unrelated.parent, env=env, capture_output=True, encoding='utf-8', timeout=15)
+assert r.returncode == 2 and 'incompatible' in r.stderr
+assert unchanged_state(actual) == before
+with sqlite3.connect(unrelated) as con:
+    try: check_connection(con, actual)
+    except TianshuError: pass
+    else: raise AssertionError('connection-path mismatch admitted')
+record('custom_future_actual_path_cli_and_real_connection_identity', cli_exit=r.returncode)
+
+# Prove the future version lives only in WAL while the source connection remains pinned.
+wal = db_at('wal')
+con = sqlite3.connect(wal, isolation_level=None)
+try:
+    con.execute('PRAGMA journal_mode=WAL'); con.execute('PRAGMA wal_autocheckpoint=0')
+    con.execute('PRAGMA user_version=999')
+    assert wal.with_name(wal.name+'-wal').stat().st_size > 0
+    main_copy = RUN/'main-only.db'; main_copy.write_bytes(wal.read_bytes())
+    with sqlite3.connect(main_copy) as main:
+        assert main.execute('PRAGMA user_version').fetchone()[0] == 0
+    assert con.execute('PRAGMA user_version').fetchone()[0] == 999
+    refused(wal, 'incompatible')
+    record('live_wal_is_read_while_stale_main_version_is_zero', main_version=0, live_version=999)
+finally:
+    con.close()
+
+# Ordinary v2 remains usable after a real, current-contract business write.
+for origin in (0, 1, 2):
+    db = db_at('completed-'+str(origin), legacy=True)
+    legacy = oldstate(db); new = sidecar(db, v2_state(db, origin))
+    original = (legacy.read_bytes(), new.read_bytes())
+    log = EventLog(db)
+    log.append('independent-later', 'run.start', event_schema.minimal_payload('run.start'))
+    log.close(); EventLog(db).close()
+    assert (legacy.read_bytes(), new.read_bytes()) == original
+    record('dual_completed_and_later_current_business_write_origin_'+str(origin))
+legacy = db_at('legacy-only', legacy=True); oldstate(legacy); EventLog(legacy).close()
+record('historical_legacy_v2_without_format2_ordinary_compatibility')
+
+for label, setup, code in [
+    ('v2-no-progress', lambda db: None, 'migration_incomplete'),
+    ('legacy-at-new', lambda db: sidecar(db, json.loads((FIXTURES/'legacy-completed.json').read_text(encoding='utf-8'))), 'progress_corrupt'),
+    ('v2-at-old', lambda db: (db.parent/'migration.json').write_text(json.dumps(v2_state(db)), encoding='utf-8'), 'progress_corrupt'),
+    ('bad-other-file', lambda db: (sidecar(db), (db.parent/'migration.json').write_text('{', encoding='utf-8')), 'progress_corrupt'),
+]:
+    db = db_at(label, legacy=True); setup(db); refused(db, code); record(label+'_refuses_unchanged')
+custom = db_at('custom-sidecar', name='named.sqlite', legacy=True)
+state = v2_state(custom); state['status']='in_progress'; sidecar(custom,state)
+refused(custom,'migration_incomplete'); record('custom_actual_db_obeys_own_sidecar')
+
+# Registered SQL value types and real mechanism objects/audit must be checked before writes.
+for label, change in [
+    ('payload-future', lambda db: sql(db, "INSERT INTO event_versions VALUES(1,'run.start',999)")),
+    ('memory-future', lambda db: (sql(db,'CREATE TABLE memory_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)'), sql(db,"INSERT INTO memory_meta VALUES('schema_version','4')"))),
+]:
+    db=db_at(label); change(db); refused(db,'incompatible'); record(label+'_refuses_unchanged')
+for label, change in [
+    ('audit-float', lambda db: sql(db,'UPDATE migration_log SET applied_at=1.5 WHERE step=1')),
+    ('missing-step', lambda db: sql(db,'DELETE FROM migration_log WHERE step=1')),
+    ('hidden-column', lambda db: sql(db,'ALTER TABLE migration_log ADD COLUMN x INTEGER GENERATED ALWAYS AS (step*2) VIRTUAL')),
+    ('descending-index', lambda db: (sql(db,'DROP INDEX idx_migration_log_applied'), sql(db,'CREATE INDEX idx_migration_log_applied ON migration_log(applied_at DESC)'))),
+]:
+    db=db_at(label,legacy=True);oldstate(db);change(db);refused(db,'incompatible');record(label+'_refuses_unchanged')
+
+# Real SnapshotStore creates an all-empty skeleton before EventLog at some call sites.
+for exists in (False,True):
+    base=RUN/('skeleton-'+str(exists));base.mkdir();db=base/'events.db'
+    shots=SnapshotStore(base/'artifacts')
+    if exists:db.touch()
+    log=EventLog(db,blob_dir=shots.blob_dir); assert log.conn.execute('SELECT COUNT(*) FROM events').fetchone()[0]==0
+    log.close();record('snapshot_store_empty_skeleton_new_'+str(exists))
+for material in ('artifacts','blobs','memory_blobs'):
+    for kind in ('empty-file','content','symlink','dangling-symlink'):
+        base=RUN/(material+'-'+kind); base.mkdir();db=base/'events.db'
+        p=base/material/'nested'/'old';p.parent.mkdir(parents=True)
+        if kind=='empty-file':p.write_bytes(b'')
+        elif kind=='content':p.write_bytes(b'old')
+        else:
+            target=RUN/('target-'+material)
+            if kind=='symlink':target.mkdir(exist_ok=True)
+            p.symlink_to(target if kind=='symlink' else RUN/'absent-target', target_is_directory=True)
+        try:EventLog(db,blob_dir=base/'new-payload')
+        except TianshuError:pass
+        else:raise AssertionError('historical material admitted')
+        assert not db.exists() and not (base/'new-payload').exists()
+        if kind.endswith('symlink'):assert p.is_symlink()
+        record('new_db_refuses_'+material+'_'+kind)
+
+# Complete valid state first, then duplicate top-level and nested key; no missing-field confound.
+valid=v2_state(RUN/'unicode-测试'/'events.db')
+statefile=RUN/'valid-state.json';text=json.dumps(valid,ensure_ascii=False)
+statefile.write_text(text,encoding='utf-8');assert read_state_file(statefile)==parse_state(valid)
+for name,payload in [
+    ('top-level', text.replace('"format_version": 2', '"format_version": 2, "format_version": 2',1)),
+    ('nested', text.replace('"manifest_sha256":', '"manifest_sha256":"'+'b'*64+'", "manifest_sha256":',1)),
+]:
+    statefile.write_text(payload,encoding='utf-8')
+    try:read_state_file(statefile)
+    except MigrationStateCorrupt:pass
+    else:raise AssertionError('duplicate '+name+' accepted')
+    record('otherwise_valid_state_duplicate_'+name+'_refused')
+for label,mutate in [('bool',lambda s:s.update(from_version=True)),('nested-bool',lambda s:s['backup'].update(manifest_sha256=True)),('unknown',lambda s:s.update(other=1))]:
+    raw=json.loads(json.dumps(valid));mutate(raw)
+    try:parse_state(raw)
+    except MigrationStateCorrupt:pass
+    else:raise AssertionError('invalid strict state accepted')
+    record('strict_state_'+label+'_refused')
+statefile.write_text(text,encoding='utf-8')
+env_ascii=dict(env);env_ascii.update(LC_ALL='C',PYTHONCOERCECLOCALE='0',PYTHONUTF8='0')
+ascii_run=subprocess.run([sys.executable,'-X','warn_default_encoding','-c',
+    "import json,locale;from pathlib import Path;from tianshu.data_state import read_state_file;"
+    "s=read_state_file(Path("+repr(str(statefile))+"));print(json.dumps({'loaded':s is not None,'encoding':locale.getencoding()}))"],
+    cwd=SNAP,env=env_ascii,capture_output=True,encoding='utf-8',timeout=15)
+assert ascii_run.returncode==0,(ascii_run.stdout,ascii_run.stderr)
+assert 'EncodingWarning' not in ascii_run.stderr
+record('utf8_progress_reads_with_non_utf8_default_and_no_encoding_warning', result=json.loads(ascii_run.stdout))
+
+# Memory does not inspect the current directory, and import-only boundary excludes execution modules.
+memdir=RUN/'memory';memdir.mkdir();(memdir/'migration.json').write_bytes(b'{');before=set(memdir.iterdir())
+cwd=Path.cwd()
+try:
+    os.chdir(memdir);EventLog(Path(':memory:')).close()
+finally:os.chdir(cwd)
+assert set(memdir.iterdir())==before
+record('memory_db_no_file_or_sidecar_access')
+r=subprocess.run([sys.executable,'-c',"import sys;import tianshu.data_admission;assert not any('tianshu.'+m in sys.modules for m in ('events','backup','migrate','memory','loop'))"],cwd=SNAP,env=env,capture_output=True,timeout=15)
+assert r.returncode==0
+for module in ('data_state','data_admission'):
+    tree=ast.parse((SNAP/'src/tianshu'/f'{module}.py').read_text(encoding='utf-8'))
+    banned={'events','backup','migrate','memory','loop','store'}
+    for node in ast.walk(tree):
+        if isinstance(node,ast.ImportFrom):assert not banned.intersection((node.module or '').split('.'))
+        elif isinstance(node,ast.Import):assert all(not banned.intersection(n.name.split('.')) for n in node.names)
+record('import_subprocess_and_ast_no_execution_or_business_store_dependency')
+
+RESULT={'status':'PASS_T1_INDEPENDENT_SYNTHETIC_PROBES','snapshot':str(SNAP),'synthetic_root':str(RUN),'check_count':len(CHECKS),'checks':CHECKS,'full_suite_run':False,'native_platform_ci_verified':False}
+(ROOT/'independent-probe-results.json').write_text(json.dumps(RESULT,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+print(json.dumps({'status':RESULT['status'],'check_count':len(CHECKS),'synthetic_root':str(RUN)}))

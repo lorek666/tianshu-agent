@@ -1,0 +1,81 @@
+{
+  "schema": "tianshu.contract_inheritance.summary.v1",
+  "reviewer": "/root/verify_lifecycle",
+  "verified_at": "2026-11-13T10:34:56.658888+00:00",
+  "commit": "91290950099b1202beeb9b34cd2d71af7e945118",
+  "parents": [
+    "44b0a695317adc9ded3998220c92a5253bc8e222",
+    "b5b5c7fed03f3bd7c75ce759708e383e5ec46091"
+  ],
+  "merge_base": "16721ff14ad08456e8f6a2522c3300b2652b0918",
+  "tree": "a8378ba220478a6e8089c69fe864bf874ab1a6be",
+  "object_inheritance": {
+    "commit_path_count": 394,
+    "parent_selection_counts": {
+      "both": 351,
+      "b5-lifecycle": 17,
+      "knowledge-combination": 1,
+      "contract-44b": 25
+    },
+    "only_manual_combination": "docs/KNOWLEDGE.md",
+    "changed_paths_relative_to_b5": 26,
+    "all_changes_relative_to_b5_under_docs": true,
+    "all_non_docs_objects_exact_b5": true,
+    "no_T1_product_or_test_code_added": true
+  },
+  "fixed_documents": [
+    {
+      "path": "docs/data-admission-contract.md",
+      "git_blob": "b31fb28511e4be3d9214de165bc4fb72e60a110a",
+      "sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+      "exact_contract_parent": true
+    },
+    {
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-implementation-plan.md",
+      "git_blob": "3b8adb210447198963e0a444c441686286ac908e",
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "exact_contract_parent": true
+    }
+  ],
+  "knowledge": {
+    "parent_preservation": [
+      {
+        "parent": "44b0a695317adc9ded3998220c92a5253bc8e222",
+        "all_new_nonempty_diff_lines_preserved": true,
+        "all_section8_original_log_lines_preserved": true
+      },
+      {
+        "parent": "b5b5c7fed03f3bd7c75ce759708e383e5ec46091",
+        "all_new_nonempty_diff_lines_preserved": true,
+        "all_section8_original_log_lines_preserved": true
+      }
+    ],
+    "only_new_sync_fact": "- 2026-11-13 · 准入契约分支吸收已审备份候选b5b5c7f及main f2aef9d；只合并知识库双方历史，契约正文与全部产品/测试对象保持。PR134新CI运行中，T1仍在另一工作树独立验收；本同步不新增产品通过结论。",
+    "conflict_markers": []
+  },
+  "previously_tested_objects": {
+    "count": 255,
+    "all_mode_blob_and_sha256_exact_b5_and_frozen_manifest": true,
+    "inherited_gate_archive": "docs/evidence/data-lifecycle-2026-11-13/main133-integration-local-gates.json",
+    "gate_archive_sha256": "c78f437fe9fdc83ee6302ecab021e9a563c778b97062dadbdf51aed6f3347460",
+    "attribution": "Inherited b5 author local-gate evidence; no test/UI rerun and no new contract/T1 implementation acceptance."
+  },
+  "diff_check": [
+    {
+      "base": "44b0a695317adc9ded3998220c92a5253bc8e222",
+      "exit_code": 0
+    },
+    {
+      "base": "b5b5c7fed03f3bd7c75ce759708e383e5ec46091",
+      "exit_code": 0
+    }
+  ],
+  "worktree_clean_at_verification": true,
+  "repository_modified_by_reviewer": false,
+  "contract_plan_and_original_evidence_re_reviewed": false,
+  "conclusion": "Limited independent inheritance check passed. Contract/plan objects and all b5 product/test/config/UI objects remain unchanged; only docs are added/combined.",
+  "PR134_new_CI_run": "43409722913",
+  "CI_result_independently_checked": false,
+  "CI_state_from_parent": "running; await actual result without controlling it",
+  "merge_approval": false
+}

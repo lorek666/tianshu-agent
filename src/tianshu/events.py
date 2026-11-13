@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import event_schema
+from .data_admission import check_connection, check_new_file_evidence
 from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
@@ -312,17 +313,17 @@ class EventLog:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._blob_dir = blob_dir
-        if blob_dir is not None:
-            blob_dir.mkdir(parents=True, exist_ok=True)
-        # 打开之前先记下"这个库本来就有内容"。0 字节文件按**新库**处理：
-        # 首次启动可能在建文件之后、建 schema 之前崩掉，那种情况下没有任何
-        # 历史可丢，判 corrupt 是误报。判据只看主库文件本身，不因为 `-wal`
-        # 存在与否就换口径。
+        # SQLite打开空主文件前先排除孤立历史旁证；准入通过后才建payload目录。
+        check_new_file_evidence(db_path)
+        # 保留原先是否非空的证据，不把损坏的既有库初始化成空库。
         pre_existing = False
         try:
-            pre_existing = db_path.exists() and db_path.stat().st_size > 0
-        except OSError:
-            pre_existing = False
+            pre_existing = (
+                str(db_path) != ":memory:"
+                and db_path.exists() and db_path.stat().st_size > 0
+            )
+        except OSError as exc:
+            raise EventLogCorrupt(f"无法检查原事件库文件：{db_path}") from exc
         self._conn = sqlite3.connect(
             str(db_path),
             isolation_level=None,
@@ -360,6 +361,9 @@ class EventLog:
                 "**不要删除 events.db**：先备份整个数据目录，再用 `tianshu recover`"
                 " 核对，人工确认损失范围后再处理。"
             )
+        check_connection(self._conn, db_path)
+        if blob_dir is not None:
+            blob_dir.mkdir(parents=True, exist_ok=True)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         # 有界的锁等待：两个进程同时 BEGIN IMMEDIATE 时，后来的那个等一小会

@@ -1,0 +1,187 @@
+............................................................s........... [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+........................................................................ [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+...................................................................ss... [ 42%]
+........................................................................ [ 45%]
+..........F............................................................. [ 48%]
+........................................................................ [ 51%]
+..........s............................................................. [ 53%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 73%]
+........................................................................ [ 76%]
+........................................................................ [ 79%]
+........................................................................ [ 82%]
+...............................................................sss...... [ 85%]
+..................F..................................................... [ 87%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+.........................s.............................................. [ 96%]
+........................................................................ [ 99%]
+............F.....                                                       [100%]
+=================================== FAILURES ===================================
+________ test_recovery_blocking_write_contends_for_the_execution_guard _________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2717/test_recovery_blocking_write_c0')
+
+    def test_recovery_blocking_write_contends_for_the_execution_guard(tmp_path: Path):
+        """恢复写 `recovery.blocked` 要和派发落盘抢同一把守卫，而不是各写各的。
+    
+        复审 中-1 的第二种修法：两件事排进同一个全序。守卫被占着的时候，恢复
+        应该**等着**（而不是抢先落阻断），释放之后才落。
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        write_exact(ws / "note.md", "原始内容\n")
+        data = tmp_path / "authority"
+        data.mkdir()
+        db = tmp_path / "events.db"
+        snapshots = SnapshotStore(tmp_path / "artifacts")
+    
+        # 造一个"核实不了"的 run：有写前证据，磁盘却是第三种内容
+>       setup = EventLog(db)
+                ^^^^^^^^^^^^
+
+tests/test_failclosed.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/events.py:298: in __init__
+    self._open_database(db_path, blob_dir, cross_thread, access)
+src/tianshu/events.py:317: in _open_database
+    check_new_file_evidence(db_path)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2717/test_recovery_blocking_write_c0/events.db')
+
+    def check_new_file_evidence(db_path: Path) -> None:
+        """SQLite打开前排除孤立旁文件；读取空主库可能丢弃它们。"""
+        if str(db_path) == ":memory:":
+            return
+        try:
+            if db_path.stat().st_size > 0:
+                return
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise _incompatible("无法检查原数据库文件") from exc
+        try:
+            actual = db_path.resolve()
+            for path in associated_state_paths(actual):
+                if path.is_symlink() or path.exists():
+                    raise AdmissionRefused("migration_incomplete", "新空主库旁存在迁移历史")
+            for suffix in ("-wal", "-journal", "-shm"):
+                path = actual.with_name(actual.name + suffix)
+                if path.is_symlink() or (path.exists() and path.stat().st_size > 0):
+                    raise _incompatible(f"新空主库旁存在历史{suffix}")
+            if actual.name == "events.db":
+                for name in ("artifacts", "blobs", "memory_blobs"):
+                    path = actual.parent / name
+                    if path.is_symlink() or (path.exists() and any(path.iterdir())):
+>                       raise _incompatible(f"新空事件库旁存在历史材料{name}")
+E                       tianshu.data_state.AdmissionRefused: [incompatible] 新空事件库旁存在历史材料artifacts。请保全数据目录，使用匹配版本核对备份和恢复；不要手改版本或删除数据库。
+
+src/tianshu/data_admission.py:62: AdmissionRefused
+_______________________ test_official_endpoint_is_priced _______________________
+
+    def test_official_endpoint_is_priced():
+        model = OpenAICompatibleModel("gpt-4o-mini", api_key="k")
+        identity = identity_of(model)
+        assert identity == ModelIdentity(
+            adapter="openai-compatible", vendor="openai", model="gpt-4o-mini"
+        )
+    
+        claude = AnthropicMessagesModel("claude-sonnet-4-5", api_key="k")
+>       assert identity_of(claude) == ModelIdentity(
+            adapter="anthropic", vendor="anthropic", model="claude-sonnet-4-5"
+        )
+E       AssertionError: assert ModelIdentity...e-sonnet-4-5') == ModelIdentity...e-sonnet-4-5')
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing attributes:
+E         ['vendor']
+E         
+E         Drill down into differing attribute vendor:
+E           vendor: None != 'anthropic'
+
+tests/test_pricing.py:302: AssertionError
+__________________ test_product_never_uses_text_mode_file_io ___________________
+
+    def test_product_never_uses_text_mode_file_io():
+        """产品代码里不许出现文本模式的文件读写（新增一处就会让哈希随平台漂移）。
+    
+        `Path.write_text` / `Path.read_text` 一律禁止；任何文本模式的文件读写都禁止。
+        逐个形状识别（mode 参数的位置不一样）：
+    
+        - 内建 `open(path, mode, ...)` → 第 2 个参数是 mode；
+        - `Path.open(mode, ...)` → 第 1 个参数；
+        - `io.open(path, mode, ...)` → 第 2 个参数；
+        - `os.fdopen(fd, mode, ...)` → 第 2 个参数；
+        - `os.open(path, flags, ...)` 不在此列：它是 fd 接口，本来就没有文本模式。
+        """
+        violations: list[str] = []
+        for path in sorted((SRC / "tianshu").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in (
+                    "write_text", "read_text"
+                ):
+                    violations.append(f"{path.name}:{node.lineno} .{node.attr}()")
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                mode_index: int | None = None
+                label = "open"
+                if isinstance(func, ast.Name) and func.id == "open":
+                    mode_index = 1
+                elif isinstance(func, ast.Attribute) and func.attr == "fdopen":
+                    mode_index, label = 1, "os.fdopen"
+                elif isinstance(func, ast.Attribute) and func.attr == "open":
+                    receiver = func.value
+                    if isinstance(receiver, ast.Name) and receiver.id == "os":
+                        continue  # fd 层接口，没有文本模式
+                    if isinstance(receiver, ast.Name) and receiver.id == "io":
+                        mode_index, label = 1, "io.open"
+                    else:
+                        mode_index, label = 0, "Path.open"
+                if mode_index is None:
+                    continue
+                mode = None
+                if len(node.args) > mode_index and isinstance(
+                    node.args[mode_index], ast.Constant
+                ):
+                    mode = node.args[mode_index].value
+                for kw in node.keywords:
+                    if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                        mode = kw.value.value
+                if not isinstance(mode, str) or "b" not in mode:
+                    violations.append(f"{path.name}:{node.lineno} {label}(mode={mode!r})")
+>       assert violations == [], (
+            "产品侧文件读写必须字节进字节出（文本模式会在 Windows 上翻 CRLF，"
+            f"导致内容哈希与 POSIX 不一致）：{violations}"
+        )
+E       AssertionError: 产品侧文件读写必须字节进字节出（文本模式会在 Windows 上翻 CRLF，导致内容哈希与 POSIX 不一致）：['data_state.py:263 .read_text()']
+E       assert ['data_state.....read_text()'] == []
+E         
+E         Left contains one more item: 'data_state.py:263 .read_text()'
+E         Use -v to get more diff
+
+tests/test_windows_compat.py:187: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_failclosed.py::test_recovery_blocking_write_contends_for_the_execution_guard
+FAILED tests/test_pricing.py::test_official_endpoint_is_priced - AssertionErr...
+FAILED tests/test_windows_compat.py::test_product_never_uses_text_mode_file_io
+3 failed, 2527 passed, 8 skipped in 426.24s (0:07:06)

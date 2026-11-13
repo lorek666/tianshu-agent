@@ -1,0 +1,241 @@
+FFFFFFF                                                                  [100%]
+=================================== FAILURES ===================================
+_____ test_completed_requires_real_mechanism_objects_and_audit[audit_type] _____
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m0')
+bad = 'audit_type'
+
+    @pytest.mark.parametrize("bad", ["audit_type", "audit_steps", "index", "note"])
+    def test_completed_requires_real_mechanism_objects_and_audit(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "audit_type":
+            execute(db, "UPDATE migration_log SET applied_at='bad' WHERE step=1")
+        if bad == "audit_steps":
+            execute(db, "DELETE FROM migration_log WHERE step=1")
+        if bad == "index":
+            execute(db, "DROP INDEX idx_migration_log_applied")
+        if bad == "note":
+            execute(db, "ALTER TABLE migration_log DROP COLUMN note")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m0/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+____ test_completed_requires_real_mechanism_objects_and_audit[audit_steps] _____
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m1')
+bad = 'audit_steps'
+
+    @pytest.mark.parametrize("bad", ["audit_type", "audit_steps", "index", "note"])
+    def test_completed_requires_real_mechanism_objects_and_audit(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "audit_type":
+            execute(db, "UPDATE migration_log SET applied_at='bad' WHERE step=1")
+        if bad == "audit_steps":
+            execute(db, "DELETE FROM migration_log WHERE step=1")
+        if bad == "index":
+            execute(db, "DROP INDEX idx_migration_log_applied")
+        if bad == "note":
+            execute(db, "ALTER TABLE migration_log DROP COLUMN note")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m1/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+_______ test_completed_requires_real_mechanism_objects_and_audit[index] ________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m2')
+bad = 'index'
+
+    @pytest.mark.parametrize("bad", ["audit_type", "audit_steps", "index", "note"])
+    def test_completed_requires_real_mechanism_objects_and_audit(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "audit_type":
+            execute(db, "UPDATE migration_log SET applied_at='bad' WHERE step=1")
+        if bad == "audit_steps":
+            execute(db, "DELETE FROM migration_log WHERE step=1")
+        if bad == "index":
+            execute(db, "DROP INDEX idx_migration_log_applied")
+        if bad == "note":
+            execute(db, "ALTER TABLE migration_log DROP COLUMN note")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m2/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+________ test_completed_requires_real_mechanism_objects_and_audit[note] ________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m3')
+bad = 'note'
+
+    @pytest.mark.parametrize("bad", ["audit_type", "audit_steps", "index", "note"])
+    def test_completed_requires_real_mechanism_objects_and_audit(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "audit_type":
+            execute(db, "UPDATE migration_log SET applied_at='bad' WHERE step=1")
+        if bad == "audit_steps":
+            execute(db, "DELETE FROM migration_log WHERE step=1")
+        if bad == "index":
+            execute(db, "DROP INDEX idx_migration_log_applied")
+        if bad == "note":
+            execute(db, "ALTER TABLE migration_log DROP COLUMN note")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:356: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_requires_real_m3/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+______ test_completed_rejects_unregistered_mechanism_shape[hidden_column] ______
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis0')
+bad = 'hidden_column'
+
+    @pytest.mark.parametrize("bad", ["hidden_column", "descending_index", "collation"])
+    def test_completed_rejects_unregistered_mechanism_shape(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "hidden_column":
+            execute(
+                db,
+                "ALTER TABLE migration_log ADD COLUMN extra INTEGER "
+                "GENERATED ALWAYS AS (step*2) VIRTUAL",
+            )
+        else:
+            execute(db, "DROP INDEX idx_migration_log_applied")
+            suffix = "DESC" if bad == "descending_index" else "COLLATE NOCASE"
+            execute(db, f"CREATE INDEX idx_migration_log_applied ON migration_log(applied_at {suffix})")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:386: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis0/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+____ test_completed_rejects_unregistered_mechanism_shape[descending_index] _____
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis1')
+bad = 'descending_index'
+
+    @pytest.mark.parametrize("bad", ["hidden_column", "descending_index", "collation"])
+    def test_completed_rejects_unregistered_mechanism_shape(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "hidden_column":
+            execute(
+                db,
+                "ALTER TABLE migration_log ADD COLUMN extra INTEGER "
+                "GENERATED ALWAYS AS (step*2) VIRTUAL",
+            )
+        else:
+            execute(db, "DROP INDEX idx_migration_log_applied")
+            suffix = "DESC" if bad == "descending_index" else "COLLATE NOCASE"
+            execute(db, f"CREATE INDEX idx_migration_log_applied ON migration_log(applied_at {suffix})")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:386: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis1/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+________ test_completed_rejects_unregistered_mechanism_shape[collation] ________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis2')
+bad = 'collation'
+
+    @pytest.mark.parametrize("bad", ["hidden_column", "descending_index", "collation"])
+    def test_completed_rejects_unregistered_mechanism_shape(tmp_path, bad):
+        db = make_db(tmp_path, legacy=True)
+        legacy_state(db)
+        if bad == "hidden_column":
+            execute(
+                db,
+                "ALTER TABLE migration_log ADD COLUMN extra INTEGER "
+                "GENERATED ALWAYS AS (step*2) VIRTUAL",
+            )
+        else:
+            execute(db, "DROP INDEX idx_migration_log_applied")
+            suffix = "DESC" if bad == "descending_index" else "COLLATE NOCASE"
+            execute(db, f"CREATE INDEX idx_migration_log_applied ON migration_log(applied_at {suffix})")
+>       refuse_unchanged(db)
+
+tests/test_data_admission.py:386: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+db = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-mechanism/test_completed_rejects_unregis2/events.db')
+code = None
+
+    def refuse_unchanged(db, *, code=None):
+        before = snapshot(db)
+>       with pytest.raises(TianshuError) as exc:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:83: Failed
+=========================== short test summary info ============================
+FAILED tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit[audit_type]
+FAILED tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit[audit_steps]
+FAILED tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit[index]
+FAILED tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit[note]
+FAILED tests/test_data_admission.py::test_completed_rejects_unregistered_mechanism_shape[hidden_column]
+FAILED tests/test_data_admission.py::test_completed_rejects_unregistered_mechanism_shape[descending_index]
+FAILED tests/test_data_admission.py::test_completed_rejects_unregistered_mechanism_shape[collation]
+7 failed in 0.17s

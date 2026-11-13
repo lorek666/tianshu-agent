@@ -1,0 +1,146 @@
+{
+  "admission-contract-main133-inheritance.json": {
+    "sha256": "1f0b90f0d33dbc3045b29417fa377e74c8b6d67d85e1b39daa11090a89de507e",
+    "bytes": 3370
+  },
+  "fixture-order-green-eight.log.txt": {
+    "sha256": "7daeb4f1b7322190c581ba950350a5c493dbc0b9da2f3e8e6b69ea92b91b3766",
+    "bytes": 253
+  },
+  "fixture-order-green-recovery-admission.log.txt": {
+    "sha256": "d3063f48e0d38904dea8a4601206f1c00819d8fe50560cd895d674ef2f2afb87",
+    "bytes": 805
+  },
+  "fixture-order-handoff.json": {
+    "sha256": "843dbad052f6c429166b1b116a8ca60e2d0ecab21c7e7999372daa019e225c6f",
+    "bytes": 2313
+  },
+  "fixture-order-red-four.log.txt": {
+    "sha256": "105d30b12b166928c7d4a5b1889e2eece60b3dd597425597006766802b177630",
+    "bytes": 14330
+  },
+  "freeze-source-final.json": {
+    "sha256": "d6115cac7ba6152abe094b68f94c13a24e04f3da8d6092b56be273a8a9ca13b0",
+    "bytes": 1390
+  },
+  "full-failure-controls.log.txt": {
+    "sha256": "a3cb9e577fe250ffd0af653623d1150d5ec46e6e6b4f8f479fbca29b4315b310",
+    "bytes": 9691
+  },
+  "full-final-clean-boundary.json": {
+    "sha256": "0e6e41060ee323481a96fbc952cd2654f9da21681925777da2a749d55d5dd8e5",
+    "bytes": 428
+  },
+  "full-final-clean.log.txt": {
+    "sha256": "fbf790a0a1491528c3786d807fa109e478b97eed4ddb507f8fa172e354803c82",
+    "bytes": 2962
+  },
+  "full-first.log.txt": {
+    "sha256": "7f00079f40ed1252c2044877dff0416d1347efd28dc8ba1ebf6b0a0f940570f9",
+    "bytes": 10855
+  },
+  "green-final-associated.log.txt": {
+    "sha256": "01d0c9d68ba6478ab74143bf570420f035f7020d5b92975f6816e4619744c7df",
+    "bytes": 655
+  },
+  "handoff-manifest.json": {
+    "sha256": "17cd4879c39a01eced9e01ca101cec39d9aa6c4e9c8f11d73f6aaef4879f575a",
+    "bytes": 4081
+  },
+  "independent-evidence.json": {
+    "sha256": "35ca1e539818d598cb883484d4f5964248d7602c96fe890d3adec63d404be744",
+    "bytes": 6610
+  },
+  "independent-existing-regressions.txt": {
+    "sha256": "531c63c69410923f4725a1b1734a71a33e8a4198f0d5c309b75c3d4ab393cfe1",
+    "bytes": 260
+  },
+  "independent-final-duplicate-mutant.txt": {
+    "sha256": "6f50832b4192c8d9eb0a64f4a17af9066ef23e88cf6ad08558db13e1299e7ec8",
+    "bytes": 2732
+  },
+  "independent-final-new-tests.txt": {
+    "sha256": "f24a0c1a296abe7564206bdf7cced2ba99c070df4f9bc41bd972364d649b4f9f",
+    "bytes": 180
+  },
+  "independent-mutant-duplicate-test.txt": {
+    "sha256": "5b19689a97d618d5cdfce632de67285a8efa3c57100a80350a5bb7ca9e05ae34",
+    "bytes": 98
+  },
+  "independent-mutant-omit-admission.txt": {
+    "sha256": "02de9f1d7025bed0a0d9d8ead72e23d78b83bf970094bd8fe1574db6b516b772",
+    "bytes": 2505
+  },
+  "independent-mutant-omit-material-evidence.txt": {
+    "sha256": "812e2a8a5a1925b87b59eb04a510b808d5ba29ac416c92103db278b3db7e2e19",
+    "bytes": 5962
+  },
+  "independent-mutant-omit-mechanism.txt": {
+    "sha256": "b5e9d2f1a1e1f70575eee2698a6311b4bdc7b39c2ac124a4547e731e9fcfedd6",
+    "bytes": 10804
+  },
+  "independent-mutant-omit-version-shape.txt": {
+    "sha256": "e1fa3751940e96924572e27c8b9ea123fe7bf1a3be0460e027823e6b05de3175",
+    "bytes": 9973
+  },
+  "independent-mutation-results.json": {
+    "sha256": "720836f097565c91e0c5411f449a4e4744c4226c48e9387a7d7607c9c0d24425",
+    "bytes": 1831
+  },
+  "independent-probe-results.json": {
+    "sha256": "032b0eca09e2c8b1c98f36b96d157e3088a3b120bcac1ace84f7677ed667e227",
+    "bytes": 4192
+  },
+  "independent-probe.py.txt": {
+    "sha256": "accf8dbe98a4be364acf9e8eb2cb0849a8ab557d517668508bc2e513a10cc951",
+    "bytes": 13478
+  },
+  "independent-review.md": {
+    "sha256": "c28a14d1b6ed4aab7b5999bcc973c61c72f5095587c743280f753d6fce4c2594",
+    "bytes": 12246
+  },
+  "integration-precheck.json": {
+    "sha256": "2327e25ad5207cec4367d7d0f849bb3d4365147c2b3430833cb2219fe16883c0",
+    "bytes": 10515
+  },
+  "main133-first-gates.json": {
+    "sha256": "5796f72063afaac60bf65cb7464c15110ee1cb7e4ac4e36de539fa57ab5f3079",
+    "bytes": 54926
+  },
+  "main133-first-pytest.log.txt": {
+    "sha256": "f6f5c4d244ee3afb80f951755b7d6818746639493cb47b522751fb2d81ed5ea4",
+    "bytes": 16986
+  },
+  "recovery-fixture-independent-evidence.json": {
+    "sha256": "74cdd41e594a103a2f8559fa6fa57bb9de1b449181452b4992ebc1b293c38689",
+    "bytes": 11110
+  },
+  "recovery-fixture-independent-review.md": {
+    "sha256": "9d053c14681070cc41bc2c432782be03c09713133823d8633c1c7b796fdd3b19",
+    "bytes": 3874
+  },
+  "red-duplicate-hook-mutant.log.txt": {
+    "sha256": "e6bfe69ebb77fa38bb701eacee95ce444831ac737d355a02e81a77246638bace",
+    "bytes": 2872
+  },
+  "run-independent-mutations.py.txt": {
+    "sha256": "5a92f0a8e04b2f84672148c0b3b181c935e9e83e5e4ae067c1a3c44b95f097cd",
+    "bytes": 2643
+  },
+  "t1-main133-fixed-gates.json": {
+    "sha256": "8cfae6546db2708c9060bd2e3bf7c5b61edc5b88d94a8b3aacc55e892bdd14f5",
+    "bytes": 54953
+  },
+  "t1-main133-fixed-lock.log.txt": {
+    "sha256": "3811ad9b6f7f6f638c3359b7cc7cd5b798750f8906476cdeebc195a6ccc7fa6d",
+    "bytes": 28
+  },
+  "t1-main133-fixed-pytest.log.txt": {
+    "sha256": "ebe21ebcbbaa3db5515f2e020d5cff3530ea59e9037354acf112e51de8b4f2e4",
+    "bytes": 2924
+  },
+  "t1-main133-fixed-ruff.log.txt": {
+    "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "bytes": 19
+  }
+}

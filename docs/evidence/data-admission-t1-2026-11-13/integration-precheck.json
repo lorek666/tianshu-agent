@@ -1,0 +1,239 @@
+{
+  "reviewer": "/root/review_admission_contract",
+  "date": "2026-11-13",
+  "verdict": "PASS_T1_INTEGRATION_PRECHECK_ONLY",
+  "base": "91290950099b1202beeb9b34cd2d71af7e945118",
+  "head_at_check": "91290950099b1202beeb9b34cd2d71af7e945118",
+  "branch": "codex/g3-data-admission",
+  "scope": "read-only inheritance, knowledge-log preservation and archive precheck; not new product review, full-suite or CI acceptance",
+  "source": {
+    "freeze_path": "/tmp/t1-admission/freeze-source-final.json",
+    "freeze_sha256": "d6115cac7ba6152abe094b68f94c13a24e04f3da8d6092b56be273a8a9ca13b0",
+    "files": {
+      "src/tianshu/data_state.py": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+      "src/tianshu/data_admission.py": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+      "src/tianshu/events.py": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+      "tests/test_data_state.py": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+      "tests/test_data_admission.py": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+      "tests/fixtures/data_admission/README.md": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+      "tests/fixtures/data_admission/legacy-completed.json": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+      "tests/fixtures/data_admission/legacy-v2.sql": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+      "tests/fixtures/data_admission/v0.sql": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692"
+    },
+    "all_nine_match": true,
+    "base_non_docs_outside_nine_compared": 255,
+    "all_other_non_docs_byte_and_mode_equal_base": true,
+    "all_changed_and_untracked_paths_are_nine_or_docs": true,
+    "unmerged_paths": 0
+  },
+  "knowledge": {
+    "base_section8_line_count": 117,
+    "base_section8_preserved_in_order": true,
+    "author_snapshot_stash": "0c5f5d586906767a848371fec4e1a76eb98f59c9",
+    "author_knowledge_sha256": "55c4983f234042efaa45015979cfbdf2d72097169b3e323ce91f1261b8f420a1",
+    "author_snapshot_matches_handoff": true,
+    "author_new_section8_nonblank_lines": 1,
+    "author_new_section8_preserved": true,
+    "current_knowledge_sha256": "760787b717664991d50d4e77bd8a2bd137b03a9ad35302f7859ec414fbac0dec",
+    "all_main133_or_912_history_kept": true
+  },
+  "archive": {
+    "directory": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/docs/evidence/data-admission-t1-2026-11-13",
+    "original_count": 23,
+    "total_original_bytes": 109818,
+    "directory_files": 25,
+    "archive_manifest_sha256": "71fe801bd2d95e84dabe85629250810bfeb3fe19006bf11e55fc4cd8bb5c4738",
+    "readme_sha256": "03e5564030ccf7d29bf69ac81fa7883fcf787cb6a40f76f2bf83585fb3ed926d",
+    "all_source_bytes_and_manifest_hashes_equal": true,
+    "renaming_only": ".log and .py originals add .txt suffix; byte content unchanged",
+    "files": [
+      {
+        "archive": "admission-contract-main133-inheritance.json",
+        "source": "/tmp/admission-contract-main133-inheritance.json",
+        "byte_equal": true,
+        "sha256": "1f0b90f0d33dbc3045b29417fa377e74c8b6d67d85e1b39daa11090a89de507e",
+        "bytes": 3370
+      },
+      {
+        "archive": "freeze-source-final.json",
+        "source": "/tmp/t1-admission/freeze-source-final.json",
+        "byte_equal": true,
+        "sha256": "d6115cac7ba6152abe094b68f94c13a24e04f3da8d6092b56be273a8a9ca13b0",
+        "bytes": 1390
+      },
+      {
+        "archive": "full-failure-controls.log.txt",
+        "source": "/tmp/t1-admission/full-failure-controls.log",
+        "byte_equal": true,
+        "sha256": "a3cb9e577fe250ffd0af653623d1150d5ec46e6e6b4f8f479fbca29b4315b310",
+        "bytes": 9691
+      },
+      {
+        "archive": "full-final-clean-boundary.json",
+        "source": "/tmp/t1-admission/full-final-clean-boundary.json",
+        "byte_equal": true,
+        "sha256": "0e6e41060ee323481a96fbc952cd2654f9da21681925777da2a749d55d5dd8e5",
+        "bytes": 428
+      },
+      {
+        "archive": "full-final-clean.log.txt",
+        "source": "/tmp/t1-admission/full-final-clean.log",
+        "byte_equal": true,
+        "sha256": "fbf790a0a1491528c3786d807fa109e478b97eed4ddb507f8fa172e354803c82",
+        "bytes": 2962
+      },
+      {
+        "archive": "full-first.log.txt",
+        "source": "/tmp/t1-admission/full-first.log",
+        "byte_equal": true,
+        "sha256": "7f00079f40ed1252c2044877dff0416d1347efd28dc8ba1ebf6b0a0f940570f9",
+        "bytes": 10855
+      },
+      {
+        "archive": "green-final-associated.log.txt",
+        "source": "/tmp/t1-admission/green-final-associated.log",
+        "byte_equal": true,
+        "sha256": "01d0c9d68ba6478ab74143bf570420f035f7020d5b92975f6816e4619744c7df",
+        "bytes": 655
+      },
+      {
+        "archive": "handoff-manifest.json",
+        "source": "/tmp/t1-admission/handoff-manifest.json",
+        "byte_equal": true,
+        "sha256": "17cd4879c39a01eced9e01ca101cec39d9aa6c4e9c8f11d73f6aaef4879f575a",
+        "bytes": 4081
+      },
+      {
+        "archive": "independent-evidence.json",
+        "source": "/tmp/t1-admission/independent-evidence.json",
+        "byte_equal": true,
+        "sha256": "35ca1e539818d598cb883484d4f5964248d7602c96fe890d3adec63d404be744",
+        "bytes": 6610
+      },
+      {
+        "archive": "independent-existing-regressions.txt",
+        "source": "/tmp/t1-admission/independent-existing-regressions.txt",
+        "byte_equal": true,
+        "sha256": "531c63c69410923f4725a1b1734a71a33e8a4198f0d5c309b75c3d4ab393cfe1",
+        "bytes": 260
+      },
+      {
+        "archive": "independent-final-duplicate-mutant.txt",
+        "source": "/tmp/t1-admission/independent-final-duplicate-mutant.txt",
+        "byte_equal": true,
+        "sha256": "6f50832b4192c8d9eb0a64f4a17af9066ef23e88cf6ad08558db13e1299e7ec8",
+        "bytes": 2732
+      },
+      {
+        "archive": "independent-final-new-tests.txt",
+        "source": "/tmp/t1-admission/independent-final-new-tests.txt",
+        "byte_equal": true,
+        "sha256": "f24a0c1a296abe7564206bdf7cced2ba99c070df4f9bc41bd972364d649b4f9f",
+        "bytes": 180
+      },
+      {
+        "archive": "independent-mutant-duplicate-test.txt",
+        "source": "/tmp/t1-admission/independent-mutant-duplicate-test.txt",
+        "byte_equal": true,
+        "sha256": "5b19689a97d618d5cdfce632de67285a8efa3c57100a80350a5bb7ca9e05ae34",
+        "bytes": 98
+      },
+      {
+        "archive": "independent-mutant-omit-admission.txt",
+        "source": "/tmp/t1-admission/independent-mutant-omit-admission.txt",
+        "byte_equal": true,
+        "sha256": "02de9f1d7025bed0a0d9d8ead72e23d78b83bf970094bd8fe1574db6b516b772",
+        "bytes": 2505
+      },
+      {
+        "archive": "independent-mutant-omit-material-evidence.txt",
+        "source": "/tmp/t1-admission/independent-mutant-omit-material-evidence.txt",
+        "byte_equal": true,
+        "sha256": "812e2a8a5a1925b87b59eb04a510b808d5ba29ac416c92103db278b3db7e2e19",
+        "bytes": 5962
+      },
+      {
+        "archive": "independent-mutant-omit-mechanism.txt",
+        "source": "/tmp/t1-admission/independent-mutant-omit-mechanism.txt",
+        "byte_equal": true,
+        "sha256": "b5e9d2f1a1e1f70575eee2698a6311b4bdc7b39c2ac124a4547e731e9fcfedd6",
+        "bytes": 10804
+      },
+      {
+        "archive": "independent-mutant-omit-version-shape.txt",
+        "source": "/tmp/t1-admission/independent-mutant-omit-version-shape.txt",
+        "byte_equal": true,
+        "sha256": "e1fa3751940e96924572e27c8b9ea123fe7bf1a3be0460e027823e6b05de3175",
+        "bytes": 9973
+      },
+      {
+        "archive": "independent-mutation-results.json",
+        "source": "/tmp/t1-admission/independent-mutation-results.json",
+        "byte_equal": true,
+        "sha256": "720836f097565c91e0c5411f449a4e4744c4226c48e9387a7d7607c9c0d24425",
+        "bytes": 1831
+      },
+      {
+        "archive": "independent-probe-results.json",
+        "source": "/tmp/t1-admission/independent-probe-results.json",
+        "byte_equal": true,
+        "sha256": "032b0eca09e2c8b1c98f36b96d157e3088a3b120bcac1ace84f7677ed667e227",
+        "bytes": 4192
+      },
+      {
+        "archive": "independent-probe.py.txt",
+        "source": "/tmp/t1-admission/independent-probe.py",
+        "byte_equal": true,
+        "sha256": "accf8dbe98a4be364acf9e8eb2cb0849a8ab557d517668508bc2e513a10cc951",
+        "bytes": 13478
+      },
+      {
+        "archive": "independent-review.md",
+        "source": "/tmp/t1-admission/independent-review.md",
+        "byte_equal": true,
+        "sha256": "c28a14d1b6ed4aab7b5999bcc973c61c72f5095587c743280f753d6fce4c2594",
+        "bytes": 12246
+      },
+      {
+        "archive": "red-duplicate-hook-mutant.log.txt",
+        "source": "/tmp/t1-admission/red-duplicate-hook-mutant.log",
+        "byte_equal": true,
+        "sha256": "e6bfe69ebb77fa38bb701eacee95ce444831ac737d355a02e81a77246638bace",
+        "bytes": 2872
+      },
+      {
+        "archive": "run-independent-mutations.py.txt",
+        "source": "/tmp/t1-admission/run-independent-mutations.py",
+        "byte_equal": true,
+        "sha256": "5a92f0a8e04b2f84672148c0b3b181c935e9e83e5e4ae067c1a3c44b95f097cd",
+        "bytes": 2643
+      }
+    ]
+  },
+  "readme_boundary": {
+    "old_full_is_author_30b_before_test_enhancement": true,
+    "old_full_not_claimed_to_cover_final_127_or_main133": true,
+    "final_127_plus_158_plus_41_are_independent_limited_evidence": true,
+    "mutation_failures_not_counted_as_candidate_green": true,
+    "main133_inheritance_not_t1_or_ci_acceptance": true,
+    "final_combination_full_and_commit_binding_explicitly_pending": true,
+    "t2_t3_restore_gc_g3_not_accepted": true
+  },
+  "sensitive_scan": {
+    "archive_and_t1_doc_http_url_occurrences": 0,
+    "recognized_token_private_key_bearer_patterns": 0,
+    "environment_values_read_or_printed": false,
+    "limitation": "targeted text scan and manual scope checks; not a universal proof against every possible secret representation"
+  },
+  "not_performed": {
+    "product_tests_or_probes": true,
+    "full_suite": true,
+    "native_ci": true,
+    "new_plan_review": true,
+    "author_selfcheck_read": true,
+    "author_full_log_used_as_product_acceptance": true
+  },
+  "full_session_93317": "not polled; final result and formal commit binding await parent notification",
+  "repository_written_by_reviewer": false,
+  "final_commit_binding": null
+}
