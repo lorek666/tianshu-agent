@@ -53,6 +53,24 @@
 - 远端 MCP、任意命令可能写到的全部外部位置无法由本地探测证明；只对本程序掌握的本地持久材料、声明 workspace/cwd 与实际文件目标承诺。不能因远端未知把本地测量写成“所有副作用绝不会满盘”。
 - 执行复查是对已有 Run 的当前安全保护，**不能替代第 4 节的创建前准入**。新 effects 创建检查不通过不得创建该 Run；已有 Run 的普通非 pure 执行检查不通过不得派发，pure/模型恢复与停止控制仍分别按 §4.5–7/§4.9。已经执行/不明结果不改成 none_applied，不盲重试，不清快照/Receipt/未决 intent；必要写证据失败也不伪称已持久化。
 
+### 5.1 C4 拒绝编号（待实施补充）
+
+以下三类拒绝只增加限制，不授予 C4 权限；判定位置与时点沿用 §4/§5。
+
+| rule_id | 判定条件 | 用户该怎么做 |
+|---|---|---|
+| `dispatch.run_effects_disallowed` | Run 明确为 `pure_only`，却请求真实 ToolSpec 的非 pure 工具；包括 `subtask.cancel`，不能以停止控制的空间例外扩大资格。 | 结束/取消本 Run 后，显式新开 effects Run；不升级原 Run。 |
+| `dispatch.disk_space_low` | 本契约要求检查的实际位置，现测 free 为严格非 bool、非负整数且 `< 2147483648`；真实 `0` 属低盘。 | 清理对应卷，或显式新建 pure_only Run；不自动删除材料、不升级原 Run。 |
+| `dispatch.disk_space_unknown` | 测量异常或值无效，或缺少完整必需 context、实际实例不一致，因而无法证明必需位置的空间；不得把这些情形当成真实 `0`。 | 修复配置、访问权限或探测后重新判定；不盲重试或把未知当足量。 |
+
+真实 pure 工具不落这三门，仍过原身份、作用域、C4、预算与审计校验。已声明 effects 与 legacy Run 的低盘/未知读及普通/摘要模型恢复沿用 §4.5–6；§4.9 既有停止控制的空间例外保持，仅豁免空间两门，不给 pure_only 的非 pure `subtask.cancel` 放行。
+
+未知或畸形的持久执行资格沿用 §3 的损坏/契约错误异常路径，不能兜底为 effects，也不归为上述空间未知或另造第四编号。
+
+创建前拒绝沿原入口返回错误，并按当时可用的审计条件处理；不得为承载 rule_id 另造 Run、dispatch 请求或事件。已执行或结果未知的副作用保留原 effect_state，不改为 none_applied。
+
+本补充合入后，产品实现须在交付真实产生路径时，同时登记 `rules.RULE_IDS`、`schemas/c4/rules.json` 与 PRD §5.4.1 当前清单；这是实现已合契约，不再改变上述语义。本次只约定待实施编号，当前可写清单仍为 75 项。
+
 ## 6. 最小验收（全部 NOT_RUN）
 
 - LD-01：真实 registry/schema 绑定 pure/非 pure 分类，含零目录记忆、动态 MCP、网络、subtask.spawn/cancel/status/result；低盘/未知时 Dispatcher 的 pure status/result 正控仍通过原校验，另一父 Run/不存在目标仍拒绝，pure_only 非 pure 拒绝；删执行侧资格守卫、误将全部 Dispatcher 调用过门或伪造 payload/票据的负控须红。

@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **低磁盘 C4 拒绝编号补充，产品待实施（2026-11-14）**：[契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)约定资格不允许、低盘、空间未知三类拒绝；PRD 单列待实施表，当前可写规则仍为 75 项。本次仅补文档，实际产生路径与代码/schema/PRD 当前清单的同步登记待产品实现；LD-01–06 仍为 `NOT_RUN`。
+
 - **低磁盘准入契约，产品待实施（2026-11-14）**：[低磁盘 Run 准入契约](low-disk-admission-contract.md) 固定创建前 `pure_only/effects` 资格、默认 effects 与显式纯读入口，并覆盖已有 Run 纯读/模型恢复、停止控制例外和真实跨卷材料位置。v2 独立文字复核为 `CONTRACT_TEXT_READY_FOR_FORMAL_PR`，已修文字2、部分0、未修0；LD-01–06 产品验收全部 `NOT_RUN`。本次只提交契约与事实记录，恢复 apply、容量/GC、真实付费任务、十小时长跑及普通用户发行未因此交付。
 
 - **PR #137 原生 CI 已通过，GitHub 合并状态未同步（2026-11-14）**：正式 head `5d046f724ac14aa2a79ce266f4bfc9a6abf0239f` 的 [run43495488294 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43495488294/attempts/1) 六个 job 全 success：Ubuntu **2982 passed / 13 skipped**、macOS **2987 / 8**；Windows 两片 **1487 / 11** 与 **1471 / 26**，合 **2958 / 37**，同一完整 collection 2995 项分为1498/1497，Windows required 汇总成功；UI 12文件87测试及类型/构建/dist一致性通过。第二读者结论 `PASS_THIS_NATIVE_PR_CI_ONLY`，核对两份原生 artifact 的完整阶段与身份；3次 watchdog 后对应测试均 PASS。Windows 证据限 Server 2025 x86_64 / Python 3.12.16 runner。普通、绑定 head 的合并请求返回502后，真实 main 已推进至 `6c291a600d8edcd5435eea268b3c2f2a71470c2d`（tree `69f8bfeca64460a6a8a72b2d8e279ab45e76e026`，有序 parents 为 `016910970d381a66ab12a94a5c88080a8cbf7437`、上述 head）；截至 `2026-11-13T20:35:32Z`，[PR #137](https://github.com/lorek666/tianshu-agent/pull/137) 的 REST/GraphQL 仍为 OPEN / merged=false，且没有该 main 的 push CI。一次相同 SHA 绑定请求恢复返回405后已停止修改重试；结论为 `GIT_REF_ADVANCED_BUT_PR_AND_EVENT_SETTLEMENT_UNCONFIRMED`，不能称 GitHub 已确认合并或 main 自身 CI 已通过。下方旧红与候选记录保留各自历史时点。
@@ -455,6 +457,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **低磁盘三类拒绝尚未接线（2026-11-14）**：待实施编号见[契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)；不得作为保留未使用编号提前登记。产品实现时须连同真实产生路径、代码/schema/PRD 当前清单一起交付；资格损坏仍走原异常，读/模型恢复与停止控制例外保持已定契约，尚无产品验收。
+
 - **低磁盘保护尚未实施（2026-11-14）**：契约文字复核通过仅允许形成正式契约 PR，不能替代 LD-01–06 产品验收。真实 TaskStore/Loop/控制面/执行器、CLI/RPC/UI 的接线与 `run.start` payload v2 均待实现；authority.db/WAL 与独立 execution.guard 的跨卷探测不能遗漏。既有 Run 纯读/模型与停止控制须保留原规则，不得用全面拒绝恢复掩盖缺口。恢复 apply/隔离、容量与执行 GC 仍未交付。
 
 - **PR #137 服务端合并状态未确认（2026-11-14）**：精确 PR 原生 CI 已通过，真实 main 已含其合并对象；截至 §2 所列观察时点，PR 元数据仍 OPEN / merged=false，也没有 `6c291a6` 自身 push CI。停止重复合并操作并保留异常原件，后续提交的 CI 不能补证这个缺失事件。该异常不放宽四 required、25分钟上限或独立复审；Windows runner 通过也不证明 Windows 10/11、ARM64、安装/ACL 或用户设备体验。下方旧“未通过”条目是各自历史 head 的结论。
@@ -587,6 +591,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-14 · 低磁盘 C4 拒绝编号契约增补**：将资格不允许、低盘与空间未知区分为三类待实施拒绝，补入独立契约与 PRD 待实施指针；区分真实 0、测量无效/位置不可证明及持久资格损坏。当前 75 项可写清单不变；本草案阶段未改运行时代码/schema，未运行产品、测试、API 或模型，后续正式提交检查另按实际记录；LD-01–06 保持 `NOT_RUN`。
 
 - **2026-11-14 · 低磁盘准入契约与 PR #137 状态对账**：将文字 v2 整理为独立待实施契约，保留 pure Dispatcher 调用、停止空间例外、既有 effects/legacy 读与模型恢复，以及 authority/guard 真实位置；PRD §5.3.5 / §8.4 增加引用。第二读者只确认两项文字问题已修，LD-01–06 全部 `NOT_RUN`；产品另 PR。补录正式 head `5d046f7` 的六 job 原生 CI 与独立核验通过，同时披露正常合并请求502后的真实 main `6c291a6` / PR仍OPEN、无该main push CI 的服务端不一致；一次同 SHA 请求恢复405后停止修改重试，不伪称已合并或补造 main 绿色。历史红与候选原文保留，未运行真实付费任务或十小时长跑。
 
