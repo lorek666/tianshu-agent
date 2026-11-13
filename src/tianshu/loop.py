@@ -1235,13 +1235,37 @@ class AgentLoop:
                 output_reserve=self._limits.output_reserve_tokens,
                 requests=1,
             )
+        need, unpriced = self._with_money_need(need)
         return self._budget.reserve(
             self._budget_account_id(run_id),
             attempt_id=f"{request_id}#{attempt}",
             run_id=run_id,
             call_id=request_id,
             need=need,
+            unpriced=unpriced,
         )
+
+    def _with_money_need(self, need: dict[str, int]) -> tuple[dict[str, int], bool]:
+        """金额与 token 同次预占；缺价不发明名义价格。
+
+        现有价格表只承诺标准档估价，不是所有计费档位的可验证上界。
+        upper 口径因此不生成金额上界；若账户链设金额限额，账本会拒发。
+        无金额限额时零金额预留只表示没有预留额度；缺价的费用仍为 None，
+        micros 维度未决（partial）；仅缺金额上界但有实际价格时正常结算。
+        """
+        micros = None
+        if self._limits.budget_bound == BOUND_ESTIMATE:
+            output = max(0, self._limits.output_reserve_tokens)
+            identity = identity_of(self._model)
+            cost = cost_record(
+                provider=identity.vendor if identity is not None else None,
+                model=identity.model if identity is not None else None,
+                usage={"input_tokens": max(0, need["tokens"] - output),
+                       "output_tokens": output},
+                adapter=identity.adapter if identity is not None else "",
+            )
+            micros = cost.cost
+        return {**need, "micros": 0 if micros is None else micros}, micros is None
 
     def _settle_attempt(self, reservation, resp: ModelResponse | None) -> None:
         """按 provider 的最终 usage 结算；没有的维度**保留占用**，不记零。
@@ -1428,6 +1452,8 @@ class AgentLoop:
                 [{"role": "user", "content": prompt_for(material)}], []
             )
         except Exception as exc:  # noqa: BLE001 - 摘要失败一律回落
+            progress.unknown_usage_calls += 1
+            progress.unknown_cost_calls += 1
             self._settle_summary(reservation, None)
             self._fail_summary(record, f"模型调用失败：{exc!r}")
             return None
@@ -1473,12 +1499,14 @@ class AgentLoop:
                 output_reserve=self._limits.output_reserve_tokens,
                 requests=1,
             )
+        need, unpriced = self._with_money_need(need)
         return self._budget.reserve(
             self._budget_account_id(run_id),
             attempt_id=attempt_id,
             run_id=run_id,
             call_id=attempt_id,
             need=need,
+            unpriced=unpriced,
         )
 
     def _summary_cost(self, resp: ModelResponse) -> Any:

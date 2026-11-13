@@ -43,3 +43,50 @@ uv run --frozen pytest tests/test_budget_ledger.py tests/test_model_contract.py 
 另外使用真实spawn子进程与Barrier(3)竞争预算10中的6，两个不同PID一成功一拒绝，最终reserved=6；原始探针 `audit-de/budget_process_probe.py` 与 `de-budget-process-final` 日志保留。这是并发证据，不把同进程两连接冒充多进程。
 
 调用两adapter的测试用的是受控响应和真实适配器/主循环，不是实时服务商语义或实际模型效果验证。既有历史负账本未自动迁移、改写或洗白；若发现真实旧数据异常应单独取证。本轮没有修改用户数据。
+
+## 独立复审后的第二轮修复（B1 / B2 / B3）
+
+第二读者在 `e89a95d4c7e8f7196b38c51148e294d4c72bed9a` 确认原 40 项修复成立，另外找到两项 P1、一项 P2。以下是作者在 `codex/debug-budget-review` 的处理证据，**不是独立批准**；新提交仍须第二读者复跑并绑定完整 SHA。
+
+### B1 · P1：显式金额限额没有接入真实模型调用
+
+原实现普通/摘要预占 `need` 不含 `micros`，结算又把金额从已知维度中排除。两真实 adapter 设置 `budget_limits={"micros": 0}` 后仍发送一次请求，Run 的已知费用与账本不一致；默认未知价调用的账本还错误地全部结清。
+
+修复普通、摘要和每次重试共同使用的金额预占接线。估算模式根据已有版本价格表、输入估算（含余量）及输出预留计算金额；完整实际费用随后进入同一父子账户链，不能二次汇总扣费。账户链任何金额上限耗尽都会在发送前拒绝。
+
+未知金额的表示保持现有持久化格式，**没有把整数 `need_json` 改成 nullable**：
+
+- 缺价或没有可验证金额上界，且自身/任意祖先设金额限额：执行前 `BudgetConfigError`，一次请求也不发。
+- 无金额限额时，`need.micros=0` 只表示**没有预留货币额度**，不是零价格或已知零费用。若实际价格也缺失，`CostRecord.cost` 保持 `None`，结算的 `known_dimensions` 不含 `micros`，预占维持 `partial`，`reconcile()` 明确缺少该维度的实际用量；若仅缺金额上界、实际价格已知，则照常结算实际金额。没有 epsilon 价格、假汇率或自动退款。
+- 当前价格表只覆盖标准档估价，未声明覆盖所有计费档位的可验证上界。因此 `budget_bound="upper"` 与显式金额限额同时出现时拒发；只设 token 上界而未设金额上限仍可运行，已知实际费用照记，零金额预留不冒充金额上界。
+
+正式回归 `tests/test_budget_review.py` 覆盖两 adapter 的零金额拒发、默认未知金额重开仍未决、发送前确有金额预占、普通/摘要实际结算、祖先金额闸、重试不退款且重新核限、摘要预算不足不发送，以及真实具有输出上界的 Anthropic adapter 在 upper 模式的金额边界。OpenAI-compatible 没有声明输出上界，未假造能力来声称支持该模式。
+
+### B2 · P1：旧负计数在升级后仍可增加可用余额
+
+旧版本公开 API 曾能留下 root `settled.tokens=-7`；根限额 10 时，新兄弟账户仍可预占 17。新写结算校验不能保护已经存在的错误账本。
+
+修复限额、计数器、预占数量与历史结算数量的读取校验。新预占、结算、释放在写入前核验整条账户链；非法数量抛 `TianshuError`，不清零、不截断、不迁移，事务失败不允许部分写入。
+
+历史跨版本证据：用 `4479088ecb2d161755d7ba3a89e46119c94a8b8e` 的公开 API 和冻结脚本种出真实旧账本；新实现 `usage("root")` 与 `reserve(...tokens=17)` 都因负整数域违规拒绝，四张预算表逐行保持相同。原冻结 `inspect` 脚本先要求读到负数，因此现在在第 31 行拒读并 exit 1，**该退出码没有冒充绿**；另用 `check_budget_history_fixed.py` 明确断言两次拒绝和四表不变，exit 0。旧版本误结清的 partial 历史无法仅凭合法正数重建未知信息，此边界保留，未洗白为已恢复。
+
+### B3 · P2：摘要失败没有计入未知预算汇总
+
+摘要协议错误或非法负 usage 被 C1 拒绝后，账本已保留预占，但游标的 `unknown_usage_calls` / `unknown_cost_calls` 未增加，导致 `run.end.budget_enforced=true`。
+
+修复摘要调用异常分支，记录本次尝试的未知用量和未知费用；既有游标与终态汇总据此产生 `tokens_unknown_calls=1`、`budget_enforced=false`。正式回归通过两个真实 adapter 分别触发负 usage 与通用 protocol error，核对调用次数、未决预算、RunResult、终态事件，并执行 replay；没有新增伪 `finish_reason` 或改写历史事件。
+
+### 第二轮验证与旧断言修正
+
+- 首批正式回归在原实现 **16 failed**；扩展到金额发送边界、祖先额度、摘要、重试、历史非法记录后 **32 passed**。最终同一份 32 项又在冻结原实现 `e89a95d4c7e8f7196b38c51148e294d4c72bed9a` 上跑出 **32 failed / 1.96s**：其中 8 项在受控 transport 的发送前观察器中发现缺少 `micros` 预占，因而中止后续流程；其余直接暴露拒发、结算、未知汇总或坏历史数量判据失败。这个结果是断言能区分原实现的证据，不代表 32 个独立缺陷，也不把未到达的后续分支称为已验证。
+- 原预算 **40 项通过**；冻结独立候选探针 **8 passed**；十四模块关联 **328 passed / 4.97s**。这些批次存在重叠，不相加充当项目测试总数。
+- 原四个部分摘要用量测试的 `unknown_reservations==1` 需要精确修正：其 8 次假模型调用全部没有可核验价格，修复 B1 后应有 8 次金额未决，而缺 token 的调用仍恰好 1 次。现在断言 `unknown_reservations == model.calls == len(reconcile)`、每条 `usage` 缺 `micros`、恰好一条缺 `tokens`；没有放宽为 `>0`。
+- 本机 `uv lock --check`、`uv run --frozen ruff check .` 均 exit 0；`uv run --frozen pytest` 为 **2235 passed / 7 skipped / 381.25s**（记录器总耗时 381.784s，exit 0，`budget-review-full`）。全量期间及之后仅澄清注释/证据文字并恢复原有 EOF 格式，没有行为变更；当前提交的独立复审与四项 CI 仍须另行绑定，不借用旧绿色。
+- 日志位于 `/tmp/tianshu-debug-20261113/budget-review-*`，同名 JSON 保存完整 HEAD、命令、环境、退出码。测试时 HEAD 为 `e89a95d…` 加未提交修复，不能把这个 HEAD 冒充最终修复 SHA。`budget-review-history-frozen-inspect` 的 exit 1 是上述明确拒读；`budget-review-history-fixed` 为通过的接受性探针。
+
+```sh
+uv run --frozen pytest tests/test_budget_review.py -o addopts= -q
+uv run --frozen pytest tests/test_budget_review.py tests/test_budget_ledger.py tests/test_model_contract.py tests/test_summary_loop.py tests/test_cost_line.py tests/test_pricing.py tests/test_usage.py tests/test_summary_context.py tests/test_summary_replay.py tests/test_summaries.py tests/test_g2_delegation_spawn.py tests/test_g2_delegation_exec.py tests/test_g2_delegation_recovery.py tests/test_g2_delegation_control.py -o addopts= -q -rs
+```
+
+第二轮没有新增生产模块、schema、枚举、价格行或依赖，也没有接触真实用户账本或付费服务。金额估算仍不能承诺绝对不超额；真实 provider 计费、用户设备与云端平台验证不能从本机受控 transport 推出。

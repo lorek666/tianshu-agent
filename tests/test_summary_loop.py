@@ -221,7 +221,12 @@ def test_partial_summary_usage_keeps_token_occupation(tmp_path, vendor, known_fi
         assert result.summary_calls == model.summary_calls == len(transport.calls) == 1
         usage = stack.budget.usage(f"run:{result.run_id}")
         assert usage["reserved"]["tokens"] > 0, "摘要缺一半用量也不能释放 token 预占"
-        assert usage["unknown_reservations"] == result.unknown_usage_calls == 1
+        assert result.unknown_usage_calls == 1
+        # 普通轮次也没有可核验价格：每次金额都应未决，只有摘要缺 token。
+        rows = stack.budget.reconcile(f"run:{result.run_id}")
+        assert usage["unknown_reservations"] == len(rows) == model.calls
+        assert all("micros" not in row["usage"] for row in rows)
+        assert sum("tokens" not in row["usage"] for row in rows) == 1
         normal_tokens = ROUNDS * (40 + 8) + 30 + 6
         assert usage["settled"]["tokens"] == normal_tokens
         assert result.tokens == normal_tokens + 7
