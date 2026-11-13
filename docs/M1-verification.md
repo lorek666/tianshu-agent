@@ -134,7 +134,7 @@ uv run ruff check . →  All checks passed
 | 项 | 原因 |
 |---|---|
 | Windows 平台 | 只有 macOS |
-| 真实断电（文件系统层缓冲） | 用 `os._exit` 模拟，未测 fsync 边界 |
+| 真实断电（文件系统层缓冲） | **2026-11-14 对账**：进程级四个持久化边界 + 撕裂写 + 真实 HFS+ 强制摘卷已由 PR #71 覆盖（`tests/test_crash_consistency.py`、[powercut-evidence.md](powercut-evidence.md)，与 M2 §8 同口径）；仍未验的只剩块设备/固件级断电（`detach -force` 仍刷脏页） |
 | 多进程并发写同一 workspace | M1 是单 writer，未做锁 |
 | 大 workspace（数百文件）性能 | 未压测 |
 | undo 中途崩溃的多文件一致性 | 预检阶段保证缺/坏证据零修改；执行中异常仍可能部分还原，完整 undo journal 由 M2 统一执行入口实现，不能宣称已解决 |

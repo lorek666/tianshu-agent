@@ -34,3 +34,7 @@ target/
 *.log
 crash-*.txt
 data/
+
+# AI 插件本地状态（不入库）
+.mimosa/
+.video_agent/

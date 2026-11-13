@@ -59,7 +59,7 @@ NOT DISPATCHED  create_report reason: 缺少必填参数：['name']
 
 ### 2.2 待办
 
-- [ ] A7 扩展：`arguments = {}`、`arguments = null`、`arguments` 为数组，三种都覆盖
+- [x] A7 扩展：`arguments = {}`、`arguments = null`、`arguments` 为数组，三种都覆盖（**2026-11-14 销账**：PR #139 INPUT04 已覆盖三形状——`tests/test_round2_inputs_model_mcp.py` 以 missing/null/array 双 provider 参数化，另带 valid-empty 正控）
 - [ ] 统计「空参数重试率」，超过 10% 就把参数要求写进 system prompt 的显式条目
 
 ## 3. 未验证

@@ -93,4 +93,4 @@
 - 权威规格 → [docs/PRD-v1.md](docs/PRD-v1.md) / [docs/TECH-ARCH.md](docs/TECH-ARCH.md)
 - 流程规范 → [CONTRIBUTING.md](CONTRIBUTING.md)
 - 复审范例 → [docs/REVIEW-PRA.md](docs/REVIEW-PRA.md)
-- 各里程碑验收证据 → [docs/M0-verification.md](docs/M0-verification.md) … [docs/M4-verification.md](docs/M4-verification.md)
+- 各里程碑验收证据 → [docs/M0-verification.md](docs/M0-verification.md) … [docs/M4-verification.md](docs/M4-verification.md) / [docs/M5-verification.md](docs/M5-verification.md)
