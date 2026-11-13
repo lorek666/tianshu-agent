@@ -1,0 +1,53 @@
+# G3 数据生命周期首片 · 2026-11-13
+
+本轮基于 `ccff93e79cfeb93e47e5a35012fd92fae366e941`，分支为 `codex/g3-data-lifecycle`。交付范围是完整离线备份、独立校验与只读恢复预演；本轮不改 C1–C5、事件版本或数据库结构版本。操作说明集中在 [备份指南](backup-restore.md)。
+
+## 1. 范围与验收判据
+
+- `data backup --data-root ROOT --dest BACKUP` 要求标准 `ROOT/events.db`。正常 `EventLog` 真实连接持共享准入，CLI 备份持独占准入；多个正常连接可共存，任一活跃连接会阻止维护，维护中也拒绝新写连接。拒绝不强停进程。
+- 准入随真实连接存活，包括外部继续持有的连接与游标；错误线程关闭失败且连接仍可写时不提前放锁。构造失败须清理，硬退后由 OS 释放。锁位于数据根外，不删除锁文件。
+- 备份收 `events.db`、`artifacts/**`、根 `blobs/**` 与 `memory_blobs/**`，排除工作区、IPC 密钥和诊断日志。发布前完整校验，缺材料不能生成成功备份。
+- `verify` 从保存数据库和材料重新推导引用，校验事件 payload、快照、撤销日志、内容对象与未擦除记忆正文。删除 manifest 引用不能隐藏漏材料。源目录丢失或换成符号链接后不回源读取；备份内符号链接、根外引用与畸形材料拒绝。
+- 创建时核对历史路径的同根别名并保存可选 `source_aliases`，兼容 macOS `/tmp` 与 `/private/tmp` 及已验证根别名。保存后的读取只做词法映射；缺必要别名时拒绝，不回源补映射，不将实际根外材料当成同根。
+- `restore-plan` 只读，报告原路径/目标干净度、版本、未决 intent/审批/Run/租约。损坏状态、未来 payload 版本和未知封闭值不能降级为空状态。备份 hash/mtime 不变，目标不存在时仍不存在，不启动服务，不激活记忆。
+- 预演必要的 `runs` / `approvals` / `leases` 投影缺失时明确拒绝、`reconciliation.complete=false`；仅事件日志的旧库不猜测状态为空。静态备份的专用只读连接不创建 WAL/SHM，活源仍通过 SQLite 在线备份包含已提交 WAL。
+- 原有清理候选 API 纳入内容对象与未擦除记忆引用保护，坏引用拒绝候选；不新增删除操作，不扩展 GC 范围或承诺在线 GC 安全。
+- 三个备份 failpoint 在真实子进程硬退 `77`；中断目录不发布，公共 verify 始终拒绝 partial，重新备份仍可成功。
+
+## 2. 本机证据
+
+环境为 macOS arm64、Python 3.12。测试只用临时目录，不读取真实用户数据、不调用真实模型。子命令环境隔离 `TIANSHU_*` 和 `ANTHROPIC_BASE_URL/API_KEY`、`OPENAI_BASE_URL/API_KEY`，不修改用户全局环境，也不记录变量值。
+
+基线执行 `uv lock --check` 和 `uv run --frozen ruff check .` 均成功。未隔离的全量为 **1 failed / 2149 passed / 7 skipped，378.81s**；唯一失败是 `test_official_endpoint_is_priced`，受本机 `ANTHROPIC_BASE_URL` 环境配置影响。只在测试子命令隔离相应变量后，该测试 **1 passed，0.06s**；没有为此修改产品或测试。
+
+独立复审整改后的集成定向检查：
+
+```bash
+uv run --frozen pytest -o addopts='' -q \
+  tests/test_maintenance.py tests/test_backup_materials.py \
+  tests/test_backup.py tests/test_migration.py tests/test_data_cli.py
+# 157 passed in 6.83s
+```
+
+测试先在原实现上真实变红：缺命令、漏记忆/根 payload、清单隐藏引用、外部持有连接时过早放锁、人话输出遗漏和源根被符号链接替换等均有原红记录。原红与本机运行日志保存在工作区外的 `/tmp/tianshu-g3-20261113/`；九份最终独立探针、环境包装器和关键 JSON 已归档到 [复现材料](evidence/data-lifecycle-2026-11-13/README.md)，复跑不依赖原临时目录。
+
+第二读者独立发现并亲复验五类问题：清理候选漏 content/memory 引用、静态 WAL 校验创建旁文件、缺投影误报空状态、锁根依赖上级目录权限、合法源根别名被拒。最终九探针均退出 `0`，独立四模块回归 **144 passed，6.40s**；十份脚本的格式与 lint 检查通过。这些是内容级独立复验，完整提交绑定另记，不替代全量及本次 CI。
+
+最终本机候选（基准提交加冻结工作区）运行：
+
+- `uv lock --check`：退出 `0`。
+- `uv run --frozen ruff check .`：退出 `0`，包括新入库的探针。
+- `uv run --frozen pytest`：**2273 passed / 7 skipped，373.01s**，退出 `0`。
+- 检查前后 **336 个文件无漂移**。首次候选因独立复审发现问题主动中断，不计作全量通过；上述为整改后的完整重跑。
+
+命令、退出码、被测产品/测试 SHA256、原日志摘要与日志哈希见 [local-gates.json](evidence/data-lifecycle-2026-11-13/local-gates.json)。这次全量后仅回填文档与 JSON 证据；提交级独立核对须确认产品、测试和探针对象继承，不能把基准 HEAD 当成已测候选。独立第二读者和本轮四项 required CI 仍须分别绑定完整提交 SHA；本机通过不代表 Windows 已验证或满足合并门禁。
+
+## 3. 交付边界与后续顺序
+
+1. 锁是协作式准入，旧版或同 uid 直接 SQLite 可绕过；不承诺硬链接别名收敛。锁统一位于稳定的 OS 用户临时根，不要求数据根上级目录可写；Windows 未独立验证 owner SID / 跨用户 ACL。低层 `create_backup()` 保留在线语义，只有新 CLI 持独占准入。
+2. 新 CLI **不提供恢复 apply**。原 `restore_backup()` 是 W4 库函数；它未证明备份后的 forget/erase/delete 历史完整，也没有恢复记忆隔离。旧备份漏材料时会如实拒绝，不把校验通过当成激活许可。
+3. `migrate.SCHEMA_VERSION=2` 仍是两步迁移机制演示；正常产品库仍是 `user_version=0`。先以独立 `docs(contract):` PR 登记全产品版本、v0 准入和记忆恢复隔离，再实现迁移启动门与实际恢复，不能直接拒写所有现有 v0 库。
+4. 换路径恢复、低磁盘保护、自动保留/GC 均未交付。现有清理候选 API 不等于可执行的全数据根 GC。
+5. Windows 原生锁行为要等本次提交的 Windows runner；runner 结果不等于 Windows 10/11、ARM64 或用户设备安装体验。未运行 10 小时稳定性、真实模型评测、凭据/安装升级回退，不能将本切片登记成整个 G3 或后续批次完成。
+
+本轮避开另一个 debug 会话负责的 I/O、预算、模型、恢复、Host/IPC、UI 和 CI 修改；不接管其 PR #131–#133，不用其历史绿色为本轮作证。

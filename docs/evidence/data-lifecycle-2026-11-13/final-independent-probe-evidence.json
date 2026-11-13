@@ -1,0 +1,146 @@
+[
+  {
+    "script": "probe_locks.py",
+    "sha256": "afe650e5f68a779902989b78295200389b78382de8726b0a44058774819fe937",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_locks.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_locks.py\n{\n  \"ok\": true,\n  \"cases\": [\n    \"two real EventLog children coexist; exclusive BUSY until both close\",\n    \"shared child hard-exit=77 releases access\",\n    \"exclusive child hard-exit=77 releases access\",\n    \"eventlog child hard-exit=77 releases access\",\n    \"exclusive rejects EventLog before root/database creation\",\n    \"corrupt constructor fails closed, preserves bytes, releases access\",\n    \"wrong-thread close retains lock while actual connection remains writable\",\n    \"replacing root at original path cannot replace lock identity\"\n  ]\n}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_cleanup_fixed.py",
+    "sha256": "a9f6d794cd7af3c8aebfd83050b8008b69088182fa09426a6418db7642d220fa",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_cleanup_fixed.py\n{\n  \"ok\": true,\n  \"cases\": [\n    {\n      \"case\": \"live content protected\",\n      \"protected\": [\n        \"内容对象 5d65149b1a3bf6a6c0b8753a65f680ff14e3c90f045879404cedcdbfeb2a3ae6\"\n      ]\n    },\n    {\n      \"case\": \"live memory protected\",\n      \"protected\": [\n        \"记忆 mem_c26847ad3c16\"\n      ]\n    },\n    {\n      \"case\": \"bad content_objects reference\",\n      \"error\": \"ReferenceUnknown\",\n      \"detail\": \"content_objects 引用非法：digest='invalid/../../digest', size=41；content_grants 引用了未登记的内容：'5d65149b1a3bf6a6c0b8753a65f680ff14e3c90f045879404cedcdbfeb2a3ae6'\"\n    },\n    {\n      \"case\": \"bad memories reference\",\n      \"error\": \"ReferenceUnknown\",\n      \"detail\": \"记忆 mem_c26847ad3c16 的 content_ref 不是 sha256：'invalid/../../digest'\"\n    }\n  ]\n}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_readonly_edges_fixed.py",
+    "sha256": "69315d3a09cb27ce1ec5688d1db2439b33e0cedea16def126ba4433c17c12ef0",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_readonly_edges_fixed.py\n{\"case\": \"wal-verify\", \"exit\": 0, \"ok\": true, \"files_added\": [], \"prior_files_changed\": []}\n{\"case\": \"missing-runs-projection\", \"exit\": 2, \"ok\": false, \"problems\": [\"无法完成恢复核对：恢复核对所需投影缺失：runs。无法判定未决审批、Run 和租约，不把缺失状态当成空状态；EventLog-only 历史备份也须先由匹配版本重建并验证投影。\"], \"reconciliation\": {\"pending_intents\": [], \"pending_approvals\": [], \"non_terminal_runs\": [], \"live_leases\": [], \"complete\": false}, \"target_exists\": false}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_materials_cli.py",
+    "sha256": "32d4fede56e91645c44e22088dd1fdb64526fcca64abf351284abc3a85165b4b",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_materials_cli.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_materials_cli.py\n{\n  \"ok\": true,\n  \"cases\": [\n    {\n      \"case\": \"full CLI backup\",\n      \"exit\": 0,\n      \"materials\": {\n        \"payload\": \"blobs/6c3069cfde44a59bd7668695846c8ad19449e81e3a45d55c8311ef72654a02c8\",\n        \"memory\": \"memory_blobs/b20bf9f51591fea114bb73a3e24c4b4ec2b723ff69bd85f4efbfb24118347144\",\n        \"content\": \"artifacts/blobs/5c0e19fbef6a05a4dc6962ac9b4e469ce3f15f2819353e458d07670b1f118e82\"\n      }\n    },\n    {\n      \"case\": \"source removed + readonly verify/plan\",\n      \"verify_exit\": 0,\n      \"plan_exit\": 3,\n      \"hash_and_mtime_unchanged\": true,\n      \"target_exists\": false,\n      \"pending_call\": [\n        {\n          \"run_id\": \"run_2f661d78348f\",\n          \"call_id\": \"independent-pending\",\n          \"seq\": 3,\n          \"tool_id\": \"modify_text\"\n        }\n      ]\n    },\n    {\n      \"case\": \"manifest hides missing payload\",\n      \"accepted\": false,\n      \"problems\": [\n        \"事件 seq=3：保存的事件 payload 无法核验：[Errno 2] No such file or directory: '/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/tianshu-g3-materials-cli-kardy84i/hidden-payload/blobs/6c3069cfde44a59bd7668695846c8ad19449e81e3a45d55c8311ef72654a02c8'\",\n        \"event_payload_refs 引用的文件不在备份里：blobs/6c3069cfde44a59bd7668695846c8ad19449e81e3a45d55c8311ef72654a02c8（事件 seq=3 的 payload_ref）\"\n      ]\n    },\n    {\n      \"case\": \"manifest hides missing memory\",\n      \"accepted\": false,\n      \"problems\": [\n        \"memory_blobs 引用的文件不在备份里：memory_blobs/b20bf9f51591fea114bb73a3e24c4b4ec2b723ff69bd85f4efbfb24118347144（记忆 mem_e48987f99b1a）\"\n      ]\n    },\n    {\n      \"case\": \"manifest hides missing content\",\n      \"accepted\": false,\n      \"problems\": [\n        \"content_blobs 引用的文件不在备份里：artifacts/blobs/5c0e19fbef6a05a4dc6962ac9b4e469ce3f15f2819353e458d07670b1f118e82（内容对象 5c0e19fbef6a05a4dc6962ac9b4e469ce3f15f2819353e458d07670b1f118e82）\"\n      ]\n    },\n    {\n      \"case\": \"bad-run-state\",\n      \"exit\": 2,\n      \"problems\": [\n        \"无法完成恢复核对：Run 状态无法识别：'unrecognized-new-state'\"\n      ]\n    },\n    {\n      \"case\": \"future-tool-version\",\n      \"exit\": 2,\n      \"problems\": [\n        \"无法完成恢复核对：事件类型 'tool.intent' 的 payload 版本 999 本程序不认识（已知 [0, 1]）\"\n      ]\n    },\n    {\n      \"case\": \"missing-event-versions\",\n      \"exit\": 2,\n      \"problems\": [\n        \"无法完成恢复核对：no such table: event_versions\"\n      ]\n    },\n    {\n      \"case\": \"backup-after-db\",\n      \"crash_exit\": 77,\n      \"partial_verify_exit\": 1,\n      \"retry_exit\": 0\n    },\n    {\n      \"case\": \"backup-before-manifest\",\n      \"crash_exit\": 77,\n      \"partial_verify_exit\": 1,\n      \"retry_exit\": 0\n    },\n    {\n      \"case\": \"backup-after-manifest\",\n      \"crash_exit\": 77,\n      \"partial_verify_exit\": 1,\n      \"retry_exit\": 0\n    }\n  ]\n}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_live_wal.py",
+    "sha256": "d21b3c3ee2d1586f5f3bc871c47da88af3023776c2a3f01b07f9a8c619e82aa2",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_live_wal.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_live_wal.py\n{\"ok\": true, \"source_base_file_events\": 0, \"source_live_with_wal_events\": 1, \"online_backup_events\": 1, \"backup_verified\": true}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_wal_sidecars.py",
+    "sha256": "d2ab7c7d9760052ccf162586f4a1601a1b0877fee2f22ddfc77e974dcdb00325",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_wal_sidecars.py\n{\n  \"ok\": true,\n  \"accepted_backup_with_declared_wal\": false,\n  \"unchanged\": true,\n  \"problems\": [\n    \"备份不是自包含数据库，拒绝伴随文件：events.db-shm\",\n    \"备份不是自包含数据库，拒绝伴随文件：events.db-wal\"\n  ]\n}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_lock_permissions_fixed.py",
+    "sha256": "cd45ba479dc1c631e5d3e934e7c25e73136ba0bb24a0ddfe1b3891f32d50a6a8",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_lock_permissions_fixed.py\n{\n  \"baseline_EventLog\": \"open+append+close ok\",\n  \"raw_sqlite\": \"create+commit+close ok\",\n  \"candidate_EventLog\": \"open+append+close ok\",\n  \"lock_outside_writable_directory\": true\n}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_lock_identity_env.py",
+    "sha256": "fe907d55bdb802dd1bdab94bea3361e1b7de682155cdf138340146f2369656ae",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_lock_identity_env.py\n{\"ok\": true, \"same_database_same_lock_under_HOME_TMPDIR_data_root_variations\": true, \"lock_path\": \"/tmp/tianshu-maintenance-501/15f0c28e560f09ae899d28ac15924d53f65fbfe7ea28be93de3081ff645c8645.lock\", \"all_environment_variants_blocked_before_database_creation\": true}\nEXIT 0\n",
+    "stderr": ""
+  },
+  {
+    "script": "probe_source_alias_fixed.py",
+    "sha256": "e01cf6e42b3e6abf4abc93eb09808655e138e0adcd7adb9ec202bf804722eded",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+      "uv",
+      "run",
+      "--frozen",
+      "python",
+      "/tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py"
+    ],
+    "returncode": 0,
+    "stdout": "COMMAND uv run --frozen python /tmp/tianshu-g3-20261113/independent/probe_source_alias_fixed.py\n{\n  \"ok\": true,\n  \"cases\": [\n    {\n      \"case\": \"raw-input\",\n      \"aliases\": [\n        \"/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/tianshu-g3-source-alias-fixed-re111kvs/alias/data\"\n      ],\n      \"ok\": true\n    },\n    {\n      \"case\": \"canonical-input\",\n      \"aliases\": [\n        \"/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/tianshu-g3-source-alias-fixed-re111kvs/alias/data\"\n      ],\n      \"ok\": true\n    },\n    {\n      \"case\": \"source deleted and alias replaced; no live resolve\",\n      \"ok\": true\n    },\n    {\n      \"case\": \"remove-alias\",\n      \"accepted\": false\n    },\n    {\n      \"case\": \"malformed-alias\",\n      \"accepted\": false\n    },\n    {\n      \"case\": \"material-symlink\",\n      \"accepted\": false\n    },\n    {\n      \"case\": \"legacy canonical v1 without alias field\",\n      \"ok\": true\n    },\n    {\n      \"case\": \"external same-name blobs rejected\",\n      \"ok\": true\n    },\n    {\n      \"case\": \"real macOS /tmp to /private/tmp alias\",\n      \"ok\": true\n    }\n  ],\n  \"original_payload_ref\": \"/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/tianshu-g3-source-alias-fixed-re111kvs/alias/data/blobs/3bb926dce3b868ca848e9c113a4dc1272ab02b1a53340b0455a6c69bdc580e55\"\n}\nEXIT 0\n",
+    "stderr": ""
+  }
+]

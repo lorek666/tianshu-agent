@@ -1,0 +1,33 @@
+{
+  "command": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "/tmp/tianshu-g3-20261113/independent/run_clean.py",
+    "uv",
+    "run",
+    "--frozen",
+    "pytest",
+    "-o",
+    "addopts=",
+    "-q",
+    "-rs",
+    "tests/test_maintenance.py",
+    "tests/test_backup_materials.py",
+    "tests/test_data_cli.py",
+    "tests/test_backup.py"
+  ],
+  "returncode": 0,
+  "stdout": "COMMAND uv run --frozen pytest -o addopts= -q -rs tests/test_maintenance.py tests/test_backup_materials.py tests/test_data_cli.py tests/test_backup.py\n........................................................................ [ 50%]\n........................................................................ [100%]\n144 passed in 6.40s\nEXIT 0\n",
+  "stderr": "",
+  "reviewed_hashes": {
+    "src/tianshu/maintenance.py": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a",
+    "src/tianshu/events.py": "c380e4f1ba33f32e1cf11d5200488b44cccccf42ea0caa1fad85721628a8c01e",
+    "src/tianshu/backup.py": "79f9f64812d4456dcbfe725b96b7edffbbde304981e8c1501b9cbc151f2682e0",
+    "src/tianshu/data_cli.py": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+    "src/tianshu/cli.py": "101272eff7891d74c76f09b5e534f2ff0e049983890b39a055a96520d92b7f60",
+    "tests/test_maintenance.py": "04b810726846b033f0df6e2d5e9ac7eb0c3c55d5c34dc4fd72609b509c0c38f9",
+    "tests/test_backup_materials.py": "0ea3c8ea529b0f95b8e9d778b3bda23d31bd5cefbf347ebf66264197052de101",
+    "tests/test_backup.py": "7c96ac1b4fcd074ca08115c1901bd0eb43e23318db000c4f4e2ae5db17193d7a",
+    "tests/test_data_cli.py": "67a37e2a33bb6f3ac73ee5bdd23b44415651adff0aa306739e172f9bb8d4a4ee",
+    ".gitignore": "8cc75edc2ad9978fd697a49e594c350f7556357c8e168dfd41934182612aed49"
+  }
+}

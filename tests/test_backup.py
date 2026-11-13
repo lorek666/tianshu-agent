@@ -404,7 +404,9 @@ def test_verify_rejects_unknown_newer_format_and_missing_source_path(tmp_path):
 def test_verify_detects_seq_gap(tmp_path):
     """事件 seq 有缺口的历史不是完整历史：verify 必须拒绝。"""
     root = _make_data_root(tmp_path)
-    db = root / "events.db"
+    dest = tmp_path / "backup"
+    create_backup(root, dest)
+    db = dest / "events.db"
     conn = sqlite3.connect(db)
     try:
         # 直接插一条跳过 seq 的记录（trigger 只禁 UPDATE/DELETE）
@@ -417,8 +419,12 @@ def test_verify_detects_seq_gap(tmp_path):
         conn.commit()
     finally:
         conn.close()
-    dest = tmp_path / "backup"
-    create_backup(root, dest)
+    # 更新文件哈希，确保拒绝原因来自事件历史本身，而非外层清单的哈希。
+    raw = json.loads((dest / backup.MANIFEST_NAME).read_bytes())
+    data = db.read_bytes()
+    entry = next(item for item in raw["files"] if item["path"] == "events.db")
+    entry.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+    (dest / backup.MANIFEST_NAME).write_text(json.dumps(raw), encoding="utf-8")
     bad = verify_backup(dest)
     assert bad.ok is False
     assert any("seq 不连续" in p for p in bad.problems), bad.problems

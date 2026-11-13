@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **G3 数据生命周期首片（2026-11-13，`codex/g3-data-lifecycle`，基线 `ccff93e`）**：新增显式 `data backup / verify / restore-plan`。CLI 备份持独占维护准入，正常 `EventLog` 真实连接持共享准入；材料覆盖 `events.db`、`artifacts/`、根 `blobs/` 和 `memory_blobs/`，发布前校验并从备份 DB 重推引用。预演只读，不创建目标、不激活旧记忆，报告未决 intent/审批/Run/租约及后续删除历史不可证明。实际恢复、全产品版本准入/迁移启动门、低磁盘保护和 GC 均未交付；首片不能记成整个 G3 已完成。行为与验收见 [数据生命周期记录](DATA-LIFECYCLE-2026-11-13.md)，操作见 [备份指南](backup-restore.md)。
+
 > 各功能条目保留其注明日期、PR 与提交的验收快照；条目中的“仍未做”不能脱离该版本引用。后续同主题交付覆盖旧状态，历史数字不汇总成当前测试数。合并门禁以本节“门禁”条目为准，Windows 最新已验证结果以本节 Windows 条目及其 run 为准。
 
 - **里程碑**：**M0–M5 已完成**。M4 由 PR #41 / #45 合入（代码在 `src/tianshu/eval/`）；**M5 桌面闭环由 PR #49 完成**（2026-11-10，`feat/m5-desktop`）：Daemon / Host / UI 三进程打通、审批 UI、关 UI 任务继续、重启后恢复。设计与契约见 [M5-desktop.md](M5-desktop.md)，实测证据见 [M5-verification.md](M5-verification.md)。
@@ -87,8 +89,8 @@
   9. 能力声明只用于路由，不用于授权
   10. replay 与 evaluate 不得混称，安全门槛不可被其他分数抵消
   11. 任何「崩溃后无法判定状态」的设计视为 bug
-- **模块地图**：`src/tianshu/` 58 个 .py + `eval/` 子包。按功能分：事件与状态（`events`/`tasks`/`jobs`/`leases`/`snapshot`/`recovery`/`replay`）、授权与派发（`permissions`/`rules`/`dispatcher`/`guard`/`receipt`）、模型与执行（`model`/`capability`/`context`/`exec`/`execpolicy`/`credentials`/`pricing`/`sandbox`）、工具与路径（`tools`/`workspace`/`pathkeys`/`fsutil`/`canonical`）、撤销（`undo`）、主循环与入口（`loop`/`worker`/`cli`/`errors`/`crashpoint`）、**桌面三进程（`ipc` 传输与契约 / `daemon` 常驻与恢复 / `control` RPC 映射 / `host` 外壳与 UI 桥）**、记忆（`memory` / `memory_exec` / `resources`）、**本轮新增（`metrics` 运行指标 / `isolation` 隔离探针 / `backup` 备份恢复 / `migrate` 迁移 / `event_schema` 事件 payload 契约）**、评测（`eval/`）。细节见 PRD / TECH-ARCH 与 [M5-desktop.md](M5-desktop.md)。
-- **CLI 子命令**（实测 `tianshu --help`）：`run` / `task` / `worker` / `recover` / `undo` / `approvals`（别名 `approval`）/ `replay` / `daemon` / `host` / `evaluate`。
+- **模块地图**：按功能分：事件与状态（`events`/`tasks`/`jobs`/`leases`/`snapshot`/`recovery`/`replay`）、授权与派发（`permissions`/`rules`/`dispatcher`/`guard`/`receipt`）、模型与执行（`model`/`capability`/`context`/`exec`/`execpolicy`/`credentials`/`pricing`/`sandbox`）、工具与路径（`tools`/`workspace`/`pathkeys`/`fsutil`/`canonical`）、撤销（`undo`）、主循环与入口（`loop`/`worker`/`cli`/`errors`/`crashpoint`）、**桌面三进程（`ipc` 传输与契约 / `daemon` 常驻与恢复 / `control` RPC 映射 / `host` 外壳与 UI 桥）**、记忆（`memory` / `memory_exec` / `resources`）、运行与维护（`metrics` 运行指标 / `isolation` 隔离探针 / `backup` 备份恢复 / `data_cli` 数据维护入口 / `maintenance` 协作准入 / `migrate` 迁移 / `event_schema` 事件 payload 契约）、评测（`eval/`）。细节见 PRD / TECH-ARCH 与 [M5-desktop.md](M5-desktop.md)。
+- **CLI 子命令**（`tianshu --help`）：`run` / `mcp` / `task` / `worker` / `recover` / `undo` / `approvals`（别名 `approval`）/ `replay` / `daemon` / `host` / `evaluate` / `memory`（别名 `memories`）/ `data`。
   - `worker` 是**一次性 drain**——队空或撞上被占用的工作区就退出；**常驻进程是 `daemon`**（`host run` 会拉起并监护它）。
   - `host` 只有 `run` / `stop` / `status` 三个动作（不带动作 = `run`）；`status` 在跑退出 0、没跑退出 1。
   - `replay` 审计不调模型；`evaluate` 换模跑固定 case。
@@ -349,7 +351,7 @@
 - **F10 L2/L3（N3，2026-11-11）**：只落地**确定性**合成，LLM 合成未做。**没有 L2/L3 vs L1 的检索质量评测**——谁都不能宣称"读页比直接读 L1 更好用"；跨作用域合成、对话抽取、**冲突消解**（两条矛盾的 L1 在页里并列、不裁决）都没做；L3 仅 user 作用域；执行侧 workspace 守护经派发不可达（纵深冗余，无单独测试）；`memory.consolidate` 不进审批表（`ACTION_CREATE`），将来若做"合成后自动 confirm"必须另立契约。
 - **G2 网络阶段已交付，但边界必须一起读**（2026-11-11，PR #110 / #112）：`outbound_allow` + `network.fetch` + §10.5 联网研究闭环（本机夹具）。**仍不成立**：只支持 GET、**没有检索/搜索 API**（§10.5 的"检索公开来源"在真实意义上未闭环）；**真实公网研究与真实模型复跑未验证**（判据全跑 loopback 夹具）；重定向只许同源；响应上限 1 MiB / 摘要 4 KiB，二进制正文只有有损摘要且没有文本分页读取；取消只能阻止新请求/新读（在途 TCP 字节无法撤回）；**DNS rebinding / 解析后二次校验未做**（白名单显式声明源，解析到私有地址会照发）；每 Run 抓取配置是进程级常量；无速率限制/重试；内容分级未实现（审批展示完整 URL 由人判断）；保留期/GC 未做。MCP **已交付**（#116–#119；真实第三方 server 未验证、无沙箱），**记忆阶段也已交付**（#126 `memory.search` + React 面板 = 可查看；#127 `RU-M1@1.0.0` 跨任务召回 = 可证明收益；见 §8 的 2026-11-12 记忆阶段条目）。**子代理 D1 + D2 + D3 已交付**（D1 排队面：`max_subtasks` + `subtasks` 实体/父子链 + 四个工具 + 数量/局部限额 + 预占；D2 执行与收束：Worker 驱动子 Run、父挂起/唤醒、取消传播、父目标 fence、结果回填、回放不重跑；D3 真实用户任务评测：`RU-D1@1.0.0` 只读子任务 + 父任务逐字汇总引用 + 只读边界/失败不编造判据）。D3 是**脚本模型**评测，不是真实模型分数；只覆盖一条公开委派任务 + 一条测试内失败路径。**仍不成立**：子任务只读、深度 1、单机同 Worker 池、取消不退款、读不到输出时摘要为空、无 UI 页面、Windows 未验证。见 [network-g2.md](network-g2.md) §7 与 [resource-kinds.md](resource-kinds.md) §8。
 - **G3 未做**：无 Windows / mac-x64 / win-arm64 实机；安装/升级/回退、Keychain、平台 SLO、macOS 13+ 最低版本均未验证。历史 G3 收尾轮 Windows CI 为 **5 failed / 1509 passed / 29 skipped**（交付对账 §3），另有 25 分钟超时记录；这些是当时的失败证据。2026-11-13 修复分支的后续结果见 §2 与 [Windows CI 报告](WINDOWS-CI-2026-11-13.md)，不把历史失败当成当前结论；实机、安装与升级验收仍未完成。
-- **备份**：换路径恢复未实现（`payload_ref` 绝对路径）；备份期间未停写者（只压小窗口）；迁移写入门未接 CLI/daemon。
+- **数据生命周期**：`data backup` 通过协作式共享/独占锁排斥正常活跃连接；低层在线 `create_backup()` 不自动独占，旧版或同 uid 直接 SQLite 可绕过。完整材料校验与只读 `restore-plan` 已接 CLI，实际恢复/记忆隔离、换路径恢复、全产品版本准入与迁移启动门、低磁盘保护及 GC 未交付。原 `migrate.SCHEMA_VERSION=2` 是迁移机制演示，正常产品库仍为 `user_version=0`，不能据此直接拒写全部现有库。旧备份若缺未擦除记忆或 content/payload 材料会校验失败；不可把校验通过当成备份后删除历史完整的证据。
 - **指标**：SLO 阈值未冻结；`rss_mib` 是峰值口径；指标文件无轮转；`state` 响应可超 IPC 8MiB（`control.py` 所有，已登记未修）；慢订阅者宽限窗内主循环会从落后游标重读。
 - **事件契约**：`oneOf`/`anyOf`/`$ref`/`format` 注册期拒绝；每工具 output 子契约未做；CLI 未区分版本错误文案；历史上从未出现的旧字段组合读作 v0、写入口不识别。
 - **评测**：真实模型未跑（无凭据），harness 分数不得当真实模型结论；报告没有「四维总分」（设计如此）；撤销的授权派发链路未进评测（只走 `SnapshotStore.undo` 数据安全预检）。
@@ -444,6 +446,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-13 · G3 数据生命周期首片**：按用户授权分批推进，避开另一 debug 会话的 I/O、预算、恢复及 Host/CI 修复。补齐离线 backup / 独立 verify / 只读 restore-plan；修正旧备份遗漏根 blobs 与 memory_blobs、manifest 隐藏引用、只读连接失败回退读写等边界。维护准入绑定真实 SQLite 连接，关闭失败或外部连接/游标继续存活时不提前放锁；锁固定在 OS 用户临时根，避免数据根上级权限和可变环境影响身份。独立复审发现并修正清理候选漏引用、静态 WAL 库校验生成旁文件、缺投影误报空状态；macOS 根别名在创建时核对后保存，后续校验不回源。发现迁移版本 2 只是演示而实际产品库为 v0，决定先做独立版本/恢复隔离契约，再接迁移与恢复 apply；本轮不改契约，不做 GC。测试、独立复审与 CI 口径集中见 [本轮记录](DATA-LIFECYCLE-2026-11-13.md)，不借另一会话的历史绿色作证。
 
 - **2026-11-13 · 分支与本地状态对账**：按维护者授权开展全部分支、本地草稿、备份与同步处理；原工作区草稿已保存至仓库外备份（`repo-sync-20261113-034435`，含 patch / bundle / `.omc` 副本）与 stash `263737c304d9d885f5d5d428c3b88a7f7bd7103b`，原工作区已切到 main 并快进 133 个提交。已核实并删除 7 条本地旧分支与 5 条远端残留分支；旧工作树保留为 detached 历史快照，文件未删除。远端已开启合并后自动删除分支。记录时仅剩 PR #130 待最终 CI / 合并；后续合并状态以 GitHub PR 与 main 为准。修正 CONTRIBUTING §8 先前新增的“必须签名/公证”要求：它与 PRD §11.1 / §13 T1“不支付 OS 签名成本”冲突，现按既定分发策略验证安装脚本、系统提示、权限、产物校验及更新/回退；未来改变 T1 须单独契约 PR。从上述备份恢复原工作区的 2026-11-10 能力提案，按 CONTRIBUTING §1 将[原文](archive/2026-11-10-next-capabilities-plan.md) 放入 `docs/archive/`；[原路径](NEXT-CAPABILITIES-PLAN.md) 只保留历史警告与现行依据索引。原 281 行正文逐字节保留，本次归档没有修改备份原文，不把历史计划当作当前契约或验收证据。
 
