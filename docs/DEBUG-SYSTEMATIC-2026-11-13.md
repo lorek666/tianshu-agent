@@ -11,7 +11,7 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 |---|---|---|---|
 | A 授权 | 执行侧摘要/票据/claim/lease二次验证；一次批准；路径规范化 | permissions/dispatcher/guard；test_permissions、test_dispatch（含真子进程并发消费）、test_leases、test_job_claims、test_takeover | 已有真实并发/注入时钟路径通过；未发现新的已确认授权绕过。路径限制、同uid控制面不是物理沙箱；Windows跨用户ACL仍未验证。 |
 | B 数据恢复 | append-only、同事务投影、intent/result/Receipt、三态、重复恢复 | events/recovery/snapshot/authority；test_transactions、test_failclosed、test_crash_consistency、test_recovery、test_exec_recovery、test_recovery_atomicity、test_undo_recovery | AB-01/02两个P1确认并修复；历史孤立unknown、人工unblock保留、MCP对象/authority补偿有证据。没有证明所有损坏库与调度交错都已覆盖。 |
-| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002/004为P2；C-005为CI诊断器P2，C-006为测试夹具P3。Windows慢测按实际耗时、阶段与栈区分，不能把所有耗时归为同一根因。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
+| C 生命周期 | 真IPC认证/重复实例/停止；断线不空转；PIPE和MCP期限 | ipc/daemon/host/exec/mcp；test_ipc、test_daemon、test_slow_subscriber、test_integration_m5、test_host_cleanup、test_exec、test_mcp_transport_timeout | C-001/003为P1，C-002/004为P2；C-005为CI诊断器P2，C-006为测试夹具P3，C-007为Host元数据所有权/失败语义P2；其修后Windows实验仍在定位失败。Windows慢测按实际耗时、阶段与栈区分，不能把所有耗时归为同一根因。逃逸孙进程、物理隔离、Windows用户设备未补交。 |
 | D 外部输入 | 真实manifest/schema、封闭结束原因、协议错误、MCP身份/发送边界、网络外发/上限 | model/tool_registry/toolschema/mcp/net；test_model_contract、test_g1_admission、test_mcp_registry/client/dispatch/crash/object_block、test_network_fetch/outbound_allow | DE-01/02与C-003联动，DE-03无界redirect正文已修；未穷举provider异常形状、公网DNS/TLS与DNS rebinding。受控响应不证明任意“OpenAI-compatible”端点兼容。 |
 | E 记忆/上下文/预算/子任务 | 作用域/确认/忘记/擦除；来源/版本；哈希/任务可见；预占/结算；父子fence/取消/恢复 | memory*/contents/context/summaries/budget/delegation；test_memory*、test_content*、test_summary*、test_budget_ledger、test_budget_review、test_g2_delegation* | DE-01/02及独立复审B1/B2/B3确认预算缺陷；三态/未知不退款保留。已有记忆/内容/子任务相关测试未确认新缺陷；hash embedding与脚本评测不代表语义或真实模型效果。 |
 | F 用户闭环 | 真实页面状态与真实文件/事件一致；断线重连有界；关UI继续 | ui/src/api/components、Host/Control；Vitest、真loopback响应、真实浏览器、真进程M5集成 | F-01/02 P2修复。实操创建、批准、否决、取消、重开、结果、记忆检索；没有把演示装配冒充三进程，也没用伪造截图。未穷举所有重复点击/乱序与桌面系统组合。 |
@@ -36,10 +36,11 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 | P2 | DE-03 | redirect正文无界读取且不计入正文用量 | [I/O记录](DEBUG-IO-2026-11-13.md)，原262146字节→仅读最终2字节 |
 | P2 | F-01 | HTTP正文停滞令UI永久busy | [I/O记录](DEBUG-IO-2026-11-13.md)，真loopback HTTP原失败 |
 | P2 | F-02 | SSE收到头就清失败数，自动重连无界 | [I/O记录](DEBUG-IO-2026-11-13.md)，fake timers确定性原失败 |
+| P2 | C-007 | Host元数据双删、旧快照/晚发布误删改新owner，拒读/损坏误当缺失；原Windows正常停止裸WinError5 | [I/O记录](DEBUG-IO-2026-11-13.md)，20项真进程回归；两轮候选被独立反例退回，最终dd49内容已审，修后Windows实验失败仍待核 |
 | P3 | G-01 | 现行入口文档与代码、required配置相矛盾 | AGENTS/README/F1/exec修正，M5历史记录保留并加后续说明 |
 | P3 | C-006 | MCP对象阻断测试不关闭客户端，14进程和28读线程留至atexit，污染后续用例与诊断 | [I/O记录](DEBUG-IO-2026-11-13.md)，原业务测试绿但资源探针红；13行finalizer覆盖正常、测试失败和构栈失败，独立观察器在自身清理前验证零残留 |
 
-无已确认P0。没有把缺实现的新功能、已声明限制或单纯可疑源码列为已确认bug。
+基准已确认共18项：8 P1、8 P2、2 P3，无已确认P0。候选整改引入的monitor问题归入C-007过程，不另充基准缺陷数。没有把缺实现的新功能、已声明限制或单纯可疑源码列为已确认bug。
 
 第二读者独立找到Host深层JSON与B1/B2/B3，初始绿色不能作为这些边界已修的证据。预算后续 `51d46e06f230d50b8d7ec27eb5ce3d3c763c2a0a` 的二审又以两provider证实：摘要失败后若普通调用在发送前因金额不足被拒，终态仍从旧cursor漏计未知费用，因此该SHA的B3只能判部分修。5000位整数的Host输入候选经真实HTTP验证已由原ValueError边界返回400，已撤销。初始Ubuntu CI中的sender关闭竞态警告也在基准main存在，后经真进程屏障复现确认为C-004；没有守护进程退出或数据损坏证据，不将影响等级夸大，也不把绿色退出码等同没有后台异常。
 
@@ -66,7 +67,7 @@ CLI / 浏览器 `ui/dist` → Host（HTTP/SSE、token与来源校验）→ IPC �
 
 Windows初始I/O套件为2140 passed / 30 skipped、844.37s；预算批2180 / 30、911.48s；恢复批2203 / 30、1090.74s。I/O的两个isolation setup为9.78s/9.71s，对比基准120.34s/120.26s，不再等待孙进程120秒退出。整套时间还含真实故障注入、脚本评测子进程与runner波动，不能将三批总时长差异都归因于同一个修复。没有提高25分钟上限或添加重试。基准Ubuntu为2149 passed / 8 skipped / 2 warnings（263.43s）；两个warning与I/O初始CI均为slow_subscriber sender的同一None handle异常，未谎称本轮新引入或已经消除。
 
-## 末次整改与当前门禁快照
+## 历史整改与门禁快照
 
 - I/O 独立第二读者 `verify_io` 绑定 `a0cb461702e538b22192eacc9b27fffc030a34ac`，原竞态探针与 3 项正式回归通过；父版本负控 1 failed / 2 passed，相关 68 项以线程异常警告升级错误方式通过。已审 Host/exec/MCP/net/UI 与 dist 对象继承核对通过。本机全量 2169 passed / 7 skipped（377.77s）。
 - 预算独立第二读者 `verify_budget` 绑定 `21cd9b253e11ba71fcd8ad8fa610ab5646b42076`：初始 40 项及 B1/B2/B3 均已修，冻结 21 项组合探针通过，原两项失败在未改断言下转绿；关闭重开/replay、旧负账本四表不变和 claim/cursor 检查通过。整合最终 I/O 后提交 `a3ac288c7ce403bbcb020c99057a50e8e224202c`，本机全量 2243 passed / 7 skipped（387.42s），lock/ruff exit 0；该提交的云端结果见下述精确run记录。
@@ -78,14 +79,24 @@ Windows初始I/O套件为2140 passed / 30 skipped、844.37s；预算批2180 / 30
 
 ## 诊断整改后的整合验证（2026-11-13）
 
-C-005/C-006正式I/O提交为 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee`。第二读者已核验精确8文件Git blob、交接哈希及280份原始证据并正式批准；报告 `verify-io-final-7111cbb-report.md` SHA256为 `60c90cab41ae45b54cc89ae60bc1cfded7f8a4cb237f60de8f9285b9219708b6`。上述19场景/10配置/5扰动和C-006的90项/两失败路径可继承，当前范围无部分修/未修阻断。I/O本机最终2200 passed / 7 skipped、390.82s，lock/ruff exit0；[当前run43359223697](https://github.com/lorek666/tianshu-agent/actions/runs/43359223697) 尚需四项真实结论，不能由本机或原生隔离实验代替。
+C-005/C-006正式I/O提交为 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee`。第二读者已核验精确8文件Git blob、交接哈希及280份原始证据并正式批准；报告 `verify-io-final-7111cbb-report.md` SHA256为 `60c90cab41ae45b54cc89ae60bc1cfded7f8a4cb237f60de8f9285b9219708b6`。上述19场景/10配置/5扰动和C-006的90项/两失败路径可继承，上述7111的C-005/C-006精确八文件范围无部分修/未修阻断；不含随后C-007，不构成整批I/O合并批准。I/O本机最终2200 passed / 7 skipped、390.82s，lock/ruff exit0；[历史7111 run43359223697](https://github.com/lorek666/tianshu-agent/actions/runs/43359223697) 已完成：Ubuntu2199/8、macOS2200/7、UI80成功；Windows1 failed/2175 passed/31 skipped/1107.46s，唯一失败Host停止unlink WinError5；31项诊断回归及三个60秒栈后用例通过但不能抵消整轮失败，不能由本机或原生隔离实验代替。
 
 | 整合内容 | 本机结果 | 内容绑定 |
 |---|---|---|
 | 预算a3 + 已审I/O7111 | 2274 passed / 7 skipped，394.72s；lock/ruff exit0 | 322个跟踪文件在全量前后hash完全相同 |
 | 恢复7df + 已审I/O7111 | 2297 passed / 7 skipped，396.59s；lock/ruff exit0 | 326个跟踪文件在全量前后hash完全相同 |
 
-两轮仅测试子命令隔离相关环境并使用不同临时数据根，未修改用户全局配置。生产src、UI、schema、依赖相对各自已审a3/7df完全相同；新增测试/包装器按7111对象继承。结果后的变更只有证据文档回填。提交前日志仍记录原HEAD；`*-freeze.json` / `*-stable.json` 记录组合内容，提交后须核Git对象及第二读者继承。各PR正文记录最终完整SHA、当前CI与合并状态；本表不把未完成的门禁写成通过。
+两轮仅测试子命令隔离相关环境并使用不同临时数据根，未修改用户全局配置。生产src、UI、schema、依赖相对各自已审a3/7df完全相同；新增测试/包装器按7111对象继承。结果后的变更只有证据文档回填。提交前日志仍记录原HEAD；`*-freeze.json` / `*-stable.json` 记录组合内容，该两组合后来已分别绑定本地556与4eb完整提交，并由第二读者 `verify-post-diagnostic-integration-report.md` 完成对象继承；尚未push且不含C-007，不是当前CI或合并批准。各PR正文记录最终完整SHA、当前CI与合并状态；本表不把未完成的门禁写成通过。
+
+## C-007与最新整合状态（2026-11-13）
+
+I/O正式提交 `dd49f21530899d2d643fba031a7fe46ea69ebbde` 已由独立第二读者完整SHA验收，报告 `verify-c007-dd49-formal-review.md` SHA256 `3e9778149d3fbbb0941436a8b33388511315a7deae24188c38430d2997b12d16`。源码68ea/测试3c68及245冻结文件精确匹配Git blob，本机2219 passed/8 skipped、407.48s，lock/ruff0；321跟踪文件Git/index/工作区一致，13核心及280历史原件hash不变。独立亲跑57/1及真实monitor、双启动窗口、stop新owner保护、supervise=True拒删/原异常；之前7个元数据交错以精确内容继承。未将d6ee的2217/8或a624的2218/8绿色沿用：前者真复现两个Host，后者新排序使未启动monitor被join、日志未关但退出0，均被退回。
+
+当前 [dd49 run43367761924](https://github.com/lorek666/tianshu-agent/actions/runs/43367761924) 尚未四项收齐；隔离修后Windows [run43368502126](https://github.com/lorek666/tianshu-agent/actions/runs/43368502126) 绑定 `cdc191f6a08f23373162580061946ce2bcdcf2ff` 返回失败，第二读者正在亲读artifact定位，不能把实验success或collector0代替验收。原版Windows实验run43363720150真双删10组有3组WinError5，普通读32、只读5、share0拒读假缺失；人工share-delete候选本轮无错，保留反证，不反推历史CI所有句柄交错。
+
+预算本地 `609c1f8cebd6e4bb10dad115bcad3d6038bb43bf` 已吸收dd49，本机2293 passed/8 skipped、420.63s，lock/ruff0且323文件稳定；独立关键预算正式组201项、冻结探针85项及旧负库fail-closed通过，正式对象复审报告 `verify-integration-budget-609-formal.md` SHA256为 `06101f5c0763c88dde186ae7a3a2567a79cc3d3a547ee59d87b7046d3dbc34a2`。恢复批基于4eb吸收609，只有Host源码及回归继承、证据文档合并，本机2316 passed/8 skipped、424.20s，lock/ruff0；327跟踪文件在全量前后hash不变。第二读者已亲跑151项及六组独立崩溃/恢复探针并通过内容预验，正式提交绑定仍待。上述结果均对应尚未修正Windows取证测试的组合，不沿用为下一测试版本的门禁。三个PR均未合，旧a3/7df四绿仍只属于旧提交。
+
+用户要求全部修复稳定后集中跑CI：中间候选留在本地，先完成回归、独立复审和最终内容冻结，再集中推送。已运行的CI仍保留完整结果，不重跑旧版本取绿。三个PR各自当前SHA的四项required检查不省略；顺序合并后的strict同步或最终CI揭示的新缺陷，只补必要受影响版本。
 
 ## 明确保留的边界
 
