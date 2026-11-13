@@ -1,0 +1,42 @@
+{
+  "commit": "5093bf9a74ce082974096f4c38a2b529fff2da9b",
+  "freeze_files": 336,
+  "drift": [
+    {
+      "path": "docs/DATA-LIFECYCLE-2026-11-13.md",
+      "expected": "716dc942242e83820c8800ca30dcc66cd06d8f519b43460f58bd6988943d58eb",
+      "actual": "40681745abf3cd97e4844d966ee4c13a5a13f5c5248e2c3631786dca63cb95a7"
+    },
+    {
+      "path": "docs/backup-restore.md",
+      "expected": "b0fbb0a16bbcc61836e6d1b074d964164492fd413f0b185835076527a2a407c0",
+      "actual": "78d38c571675571ba2e0bdbcba0eade5e18a5cee54726fa90d8edf007ad575d8"
+    },
+    {
+      "path": "docs/evidence/data-lifecycle-2026-11-13/README.md",
+      "expected": "f15806a54f990759a2951230bbeba6d33b6f634f763fed3a992cf43e0f4c66bb",
+      "actual": "090ac5dc61066d513eb740b204555e21d1cc1842d312c5eb8b45803fef719eea"
+    }
+  ],
+  "new_files_after_freeze": [
+    "docs/evidence/data-lifecycle-2026-11-13/local-gates.json"
+  ],
+  "gate_logs": [
+    {
+      "kind": "lock",
+      "sha256": "952c52098285918d7989036dbb2f826309f2fb4952b61e8d4f6b564250c94155",
+      "matches_archived_hash": true
+    },
+    {
+      "kind": "ruff",
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "matches_archived_hash": true
+    },
+    {
+      "kind": "pytest",
+      "sha256": "84a1c9c09142fdf554d4bd8821e36285afe46613fea4c73dfa8273be28118e08",
+      "matches_archived_hash": true
+    }
+  ],
+  "assessment": "only three reviewed Markdown updates and gate JSON after full test; code, tests, lockfile and probes unchanged"
+}

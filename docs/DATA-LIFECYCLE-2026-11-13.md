@@ -42,6 +42,8 @@ uv run --frozen pytest -o addopts='' -q \
 
 命令、退出码、被测产品/测试 SHA256、原日志摘要与日志哈希见 [local-gates.json](evidence/data-lifecycle-2026-11-13/local-gates.json)。这次全量后仅回填文档与 JSON 证据；提交级独立核对须确认产品、测试和探针对象继承，不能把基准 HEAD 当成已测候选。独立第二读者和本轮四项 required CI 仍须分别绑定完整提交 SHA；本机通过不代表 Windows 已验证或满足合并门禁。
 
+[正式独立复审](REVIEW-DATA-LIFECYCLE-2026-11-13.md) 已将本地结论绑定到产品提交 **`5093bf9a74ce082974096f4c38a2b529fff2da9b`**：被审对象、十脚本与五份独立运行 JSON 均与冻结字节一致，并亲跑归档 README 的锁探针。后续报告归档提交仅增加文档/JSON，不改变受审产品、测试或脚本；继承范围须再次核对。本报告不预填云端通过结论，本轮 PR 当前 head 的 required 状态另看 Actions。
+
 ## 3. 交付边界与后续顺序
 
 1. 锁是协作式准入，旧版或同 uid 直接 SQLite 可绕过；不承诺硬链接别名收敛。锁统一位于稳定的 OS 用户临时根，不要求数据根上级目录可写；Windows 未独立验证 owner SID / 跨用户 ACL。低层 `create_backup()` 保留在线语义，只有新 CLI 持独占准入。

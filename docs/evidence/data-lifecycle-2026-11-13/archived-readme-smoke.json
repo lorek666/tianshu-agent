@@ -1,0 +1,14 @@
+{
+  "command": [
+    "python3",
+    "docs/evidence/data-lifecycle-2026-11-13/run_clean.py",
+    "uv",
+    "run",
+    "--frozen",
+    "python",
+    "docs/evidence/data-lifecycle-2026-11-13/probe_locks.py"
+  ],
+  "returncode": 0,
+  "stdout": "COMMAND uv run --frozen python docs/evidence/data-lifecycle-2026-11-13/probe_locks.py\n{\n  \"ok\": true,\n  \"cases\": [\n    \"two real EventLog children coexist; exclusive BUSY until both close\",\n    \"shared child hard-exit=77 releases access\",\n    \"exclusive child hard-exit=77 releases access\",\n    \"eventlog child hard-exit=77 releases access\",\n    \"exclusive rejects EventLog before root/database creation\",\n    \"corrupt constructor fails closed, preserves bytes, releases access\",\n    \"wrong-thread close retains lock while actual connection remains writable\",\n    \"replacing root at original path cannot replace lock identity\"\n  ]\n}\nEXIT 0\n",
+  "stderr": ""
+}
