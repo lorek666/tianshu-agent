@@ -26,6 +26,10 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **PR #137 H3 原生 CI 仍未通过（2026-11-14）**：正式 head `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 [run43474954367 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43474954367/attempts/1) 中 Ubuntu、macOS、UI 三项 success；Windows job132056273251 达到25分钟上限取消。三个原失败 CLI 已 PASS，但 Windows 部分输出的 **2765 PASS / 31 SKIP** 不是整套汇总或整套通过，不能合并。旧红保留，不用相邻输出时间窗口作 pytest duration 或性能根因。
+
+- **Windows 双 runner 分片作者候选（2026-11-14）**：仅 CI 基础设施及流程文档变更，原 watchdog、业务源码/测试、collector、锁与 UI 保持不变；两个独立 Windows runner 从同 SHA 完整 collection 按文件节点数分组，Ubuntu required 汇总同时要求上游 success 与两份完整、同身份阶段报告。合法 teardown skip/xfail 沿 pytest exit0 语义接受，迟发 wrapper 失败不能被 session0 覆盖。v1本机67项与原包装器31项定向98 passed / 0 skipped（25.36s）后，独立实际复审确认 **C1：收集错误原生 exit2 被插件异常改成3**，旧绿色不能作该行为已修证据。v2只修插件并加强测试：语法错误+0/1/2有效文件及收集早/晚、调用期真实中断均对照原 wrapper 精确保留2，新增文件定向 **71 passed / 0 skipped（16.60s）**；冻结v1上精确新回归4 failed / 2 passed，原件保留。第二读者已给出 `PASS_C1_DELTA_CONTENT_AND_LOCAL_BEHAVIOR_COMBINED_GATES_NATIVE_CI_PENDING`：12个真实受影响场景确认C1已修，部分修/未修/内容未决均0，其余未变主线继承v1独立32场景；不是把作者71项当独立证据。最终本机 lock/full/ruff 均exit0，**2987 passed / 8 skipped，pytest汇总485.59s**（命令485.79s），537份文件、HEAD与状态前后不变。执行身份为H3加六文件v2未提交冻结组合，之后仅补本知识库事实；正式提交绑定与新原生CI仍另核。节点数仅为平衡启发式，未宣称性能改善或交付通过。
+
 - **PR #137 同步最新 main（2026-11-14）**：本分支先形成 Windows 测试修正 `cbd80f7350953df2179845c7f5e344e25f795985`，随后普通 merge 同步另一会话已合 PR #139 的 main `016910970d381a66ab12a94a5c88080a8cbf7437`。仅知识库三处新增记录冲突，按双方历史并存解决；该 main 的生产模块、测试及 UI 产物逐字节继承，不在本片重复修改。旧2743项本机结果不外推这次实质变化后的新组合。来源及知识库解冲突已由第二读者独立核对；新535文件冻结组合的 lock/full/ruff 均exit0，**2916 passed / 8 skipped，pytest汇总489.93s**，535文件、HEAD与状态前后不变。执行身份为 H2 加待提交的 main 集成组合，之后仅回填本知识库两条结果；最终正式对象与四 required 继续另核。
 
 - **PR #137 Windows 测试修正候选（2026-11-14）**：正式旧 head `0b3f60d6fe330a2a9b3fe1bfc8ff373f8b7dd5ff` 的首次 run43443020017 中 Ubuntu、macOS、UI success，Windows 三项 CLI 测试 FAILED 后整套达到25分钟上限，故未通过、未合并。固定旧源码的短诊断证明文本 stderr 使用 CRLF，原 LF 字节断言不适用；完整 collection 后执行原顺序266项又复现发布屏障后的 `INTERNAL_ERROR`。进一步真实 PID/EOF 观测确认 Windows venv 启动器与执行收集器的解释器 PID 不同；直接基解释器的两个 phase 均 PID 等于 Popen PID，真实 terminate→wait 后同进程句柄已退出、零剩余输出、收据边界正确。当前仅修测试：精确匹配平台文本换行，硬终止用例在 Windows 直接启动基解释器、同一屏障严格核 PID，等待退出后再收尾管道；普通 CLI 仍覆盖 venv 入口，生产收集器不改。精确测试候选 `22fdda8d…` 经第二读者窄审无本范围阻断，独立3项真实 CLI 通过，真子进程伪报 PID 在身份断言被拒绝。修后本机 lock/full/ruff 全部exit0，**2743 passed / 8 skipped，pytest汇总462.23s**；执行身份为旧 head 加测试与当时知识库的未提交组合，524文件、HEAD与状态前后不变，随后仅补本知识库结果。正式新 SHA 的对象绑定与四 required 继续另核；不以诊断或本机结果代替 Windows 通过，所有原红保留。
@@ -197,6 +201,8 @@
 | D7 | 诊断包仅本地导出、永不上传 | 但默认脱敏（最终用途是贴公开 issue） |
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
+
+- **Windows CI 分片决定（2026-11-14）**：保留四 required 名称与25分钟上限，以两个独立 runner 按整文件分片，避免同 runner 并发引入端口/进程/资源竞争。汇总 job 在 Ubuntu 核验真实 Windows job 的结论与开发报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不新增产品契约、依赖或 skip。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 
@@ -443,7 +449,9 @@
 
 ## 7. 已知限制 / 未决问题
 
-- **PR #137 Windows 整套仍未通过（2026-11-14）**：首次 Windows job 达到25分钟上限，无最终 pytest 汇总；新增 CLI 失败和整套耗时是分别跟踪的问题。两次 runner 的输出时间窗口不足以判定稳定性能回归或基础设施根因；不得提高上限、移除 required 或借本机绿色合并。当前修正只涉及测试身份与文本换行，新提交的原生整套结果仍待核。Windows Server runner 也不代替 Windows 用户设备、ARM64 或安装体验验证。
+- **Windows 分片 C1 整改候选（2026-11-14）**：独立读者用同一真实fixture证明原 wrapper 收集错误 exit2、v1分片 exit3；作者新增精确对照又复现收集晚期 `KeyboardInterrupt` 被改成3。v2在已有收集失败时保留原生流程，不对部分collection分组；未进入分组的收集中断也不触发最终列表异常。失败报告仍不满足session0/完整覆盖，汇总拒绝；无错误时空集合/空片/晚过滤守卫保留。作者71项定向已过；第二读者12个真实受影响场景已确认C1已修、部分修/未修/内容未决均0，正常覆盖及空片/晚过滤/缺阶段/失败拒绝守卫仍在。最终537文件组合lock/full/ruff通过（2987 passed / 8 skipped），正式SHA绑定与新原生CI另核，不将“非零即可”当退出码保留证据。
+
+- **PR #137 Windows 整套仍未通过（2026-11-14）**：H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 run43474954367 attempt1 仍在25分钟取消，另三项绿；三个 CLI 已通过，2765 PASS / 31 SKIP 只是部分输出。双独立 runner 文件分片是后续基础设施候选，新原生 CI、完整覆盖、独立实施复审与实际耗时仍待核；节点数平衡不保证25分钟完成。不得加时、移除 required 或借本机绿色合并；输出窗口不足以判定性能根因。Windows Server runner 也不代替 Windows 用户设备、ARM64 或安装体验验证。
 
 - **基线收集不是执行或批准（2026-11-13）**：该开发工具只检查显式输入的完整结构并保全字节，无法鉴别完整伪造、证明历史命令/退出码，或保证发现先改后还原的瞬态变化。收据与原件包含私有材料，只能分享固定字段摘要；摘要单独存在不是完成凭证。发布后被终止仍可有合法收据，不提前记自身 exit0；不承诺断电持久性、同 uid 防篡改或 Windows ACL。真实模型、公网任务、十小时长跑、SLO 和用户设备验收仍须另验，不能借收集器本机通过收口。
 
@@ -569,6 +577,12 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-14 · Windows 分片独立C1复验与最终本机门禁**：第二读者仅重验v2受影响12个真实场景，确认C1已修、部分修/未修/内容未决0；未变主线按精确v1独立报告继承，旧收集错误改码及作者回归时序如实保留。root在H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 加六文件v2冻结组合集中执行lock/full/ruff，全部exit0，2987 passed / 8 skipped、pytest485.59s（命令485.79s），537文件/HEAD/status无漂移；之后仅补本知识库事实，不冒称正式新提交自身已跑。正式对象独立绑定、单push后的六job原生CI与两份artifact仍待核，不称Windows或第二批整批完成。
+
+- **2026-11-14 · Windows 分片 C1 最小整改**：亲读独立同fixture原 wrapper exit2/分片exit3原件；只改插件、新基础设施测试与本知识库事实，其他三源及原包装器/collector/锁不动。精确新回归在冻结v1上4红/2绿（含0/1/2有效文件和收集晚期中断），候选新增文件71 passed / 0 skipped（16.60s）；初始5项先跑候选再回退冻结v1验红，ledger如实记录时序，不伪称最初red-first。旧v1冻结和root旧537对象历史不覆盖，v2另冻，独立复验、集中全量与新CI继续待核。
+
+- **2026-11-14 · Windows 双 runner 分片基础设施候选**：H3 三绿/Windows25分钟取消如实入账，保留旧失败与部分输出边界。新增开发插件按真实完整 collection 分组、记录阶段，汇总同时核本 run/attempt/SHA、节点覆盖和上游 job success；四 required 名称、原 wrapper/fatal/GIL 边界与25分钟不变。真实子 pytest 覆盖三阶段 skip/xfail、XPASS、失败/中断、缺件/身份/阶段变异及迟发诊断 session0→wrapper3；手算第三文件归属首错单列为观察器错误，不计产品负控。实施仅六文件，不碰另一会话业务修复；新增与原包装器定向合跑98 passed / 0 skipped（25.36s），窄 ruff / actionlint 通过，原包装器、collector、pyproject、lock 与 UI job 字节不变。独立实施复审、集中全量和新 CI 结果继续分开绑定，当前不称 Windows 通过或性能改善。
 
 - **2026-11-14 · PR #137 集成另一会话已合修复**：远端 main 前进至 `016910970d381a66ab12a94a5c88080a8cbf7437` 后，在本会话分支正常 merge；保留 collect-only、Windows 诊断与第二轮 debug 双方知识库历史。生产与 UI 继承上游，收集器及测试继承已审候选；实质组合变化后重新冻结并集中跑本机门禁，lock/full/ruff 全过（2916 passed / 8 skipped，pytest汇总489.93s），535文件及HEAD/状态无漂移。独立读者核535文件来源及三处冲突的双历史保留；随后仅回填本知识库两条事实，最终正式对象与新原生CI另绑，不借先前2743项结果或另一会话 CI 代替验收。
 

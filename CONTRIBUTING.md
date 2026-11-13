@@ -80,7 +80,15 @@ uv run --frozen pytest
 uv run --frozen ruff check .
 ```
 
-以上是当前提交前检查；CI 使用同一锁文件和测试套件，并附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60`。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
+以上是当前提交前检查；CI 使用同一锁文件和测试套件，并附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows 在两个独立 `windows-latest` runner 上使用原包装器和分片插件，每片执行以下命令（`INDEX` 为 0 或 1，`REPORT` 为 runner 临时目录下的绝对路径）。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
+
+```bash
+uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=2 --ci-shard-report=REPORT -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
+```
+
+每片从同一 checkout SHA 做真实完整 collection，按文件节点数确定性分组，同文件不拆、组内保持原收集顺序；节点数只是平衡启发式，不代表耗时或性能改善。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
+
+Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，且汇总硬要求两个 Windows job 整体 `success`。汇总只下载本 run/attempt 的两份独立报告，核对实际/预期 SHA、完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报或重复均拒绝。报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。两片及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
 
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
@@ -102,7 +110,7 @@ Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/te
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
 | `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint |
-| `test (windows-latest) · py3.12` | Windows runner Python 套件、锁文件与 lint |
+| `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖 |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 
 required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更新该配置。改检查名称或矩阵时必须同步核对远端配置。Windows CI 的通过范围以具体 run 的系统版本和架构为准，不代表已验证 Windows 10/11、ARM64 或桌面安装体验。

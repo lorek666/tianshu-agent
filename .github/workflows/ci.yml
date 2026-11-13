@@ -2,7 +2,8 @@ name: CI
 
 # Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
 # uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
-# 长等待诊断参数。UI 另有类型、测试、构建与 dist 一致性检查。
+# 长等待诊断参数，并在两个独立 Windows runner 按文件分片。
+# UI 另有类型、测试、构建与 dist 一致性检查。
 # 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
 #
 # 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
@@ -41,21 +42,11 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          # Windows 是**主打平台**。issue #21 记的那 12 项已经逐条定位并修掉
-          # （CRLF 哈希、控制台编码、权限位语义、Windows 的 pid/心跳探测），
-          # 这个平台必须一直在矩阵里——它掉出过一次，代价是 5 个里程碑都没在
-          # 主平台上验证过。
-          #
-          # issue #50：首次生成的 IPC 二进制密钥曾被文本模式改写换行，
-          # 导致创建者和后续读取者认证不一致；固定字节回归在 Windows 验证。
-          # Windows 与 ubuntu、macOS、UI 同为 required；失败如实阻止合并，
-          # 不使用 continue-on-error。修改矩阵/名称后须核对远端分支保护。
-          - windows-latest
         python:
           - "3.12"
     defaults:
       run:
-        # 三个平台统一使用 bash，避免 Windows 默认 PowerShell 的引号规则
+        # Python job 统一使用 bash，避免 Windows 默认 PowerShell 的引号规则
         # 改变 addopts="" 等参数的传递方式。
         shell: bash
     steps:
@@ -89,15 +80,93 @@ jobs:
 
       - name: Pytest
         # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
-        # Windows 输出逐条用例；Python 线程负责60秒定时栈，避免3.12原生
-        # timed dump的frame遍历竞态。保留fatal handler；GIL被C扩展长期占用时
-        # Python线程无法保证出栈，25分钟作业上限不等于补齐该诊断缺口。
-        run: |
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
-          else
-            uv run --frozen pytest -o addopts="" -q -rs
-          fi
+        run: uv run --frozen pytest -o addopts="" -q -rs
+
+  # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
+  # node 数只用于确定性平衡，不保证25分钟内完成；不加时或忽略失败。
+  windows_shards:
+    name: windows shard ${{ matrix.shard }} · py3.12
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv lock --check
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff check .
+      - name: Pytest Windows 分片
+        env:
+          PYTEST_ADDOPTS: ""
+          CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json
+        # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL
+        # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
+        run: >-
+          uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards
+          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=2
+          --ci-shard-report="$CI_SHARD_REPORT" -o addopts="" -vv -rs --tb=short
+          --durations=20 --stack-timeout=60
+      - name: 上传本分片原始报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-ci/shard.json
+          if-no-files-found: error
+
+  windows_summary:
+    # 名称保留为原 required check；此 job 在 Ubuntu 核验两个 Windows job。
+    name: test (windows-latest) · py3.12
+    runs-on: ubuntu-latest
+    needs: windows_shards
+    # 上游失败也必须进入汇总，不能让 required 因依赖失败而 skip 成 success。
+    if: always()
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: 下载分片 0
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0
+          path: ${{ runner.temp }}/windows-ci-shards/0
+      - name: 下载分片 1
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1
+          path: ${{ runner.temp }}/windows-ci-shards/1
+      - name: 验证上游结论与完整覆盖
+        if: always()
+        env:
+          SHARD_REPORTS: ${{ runner.temp }}/windows-ci-shards
+          UPSTREAM_RESULT: ${{ needs.windows_shards.result }}
+        # JSON 的 session exit 不能替代 wrapper 最终退出或上传/取消的 job 结论。
+        run: >-
+          uv run --frozen python scripts/pytest_ci_shards.py verify
+          --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 2 --indices 0 1
+          --needs-result "$UPSTREAM_RESULT"
 
   # UI 是 M5 才进仓库的：React + TS，构建产物（ui/dist）提交进仓库，因为
   # Host 运行时直接加载它——用户机器上不需要 Node。既然产物是"源码的一部分"，
