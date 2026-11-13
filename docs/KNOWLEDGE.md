@@ -26,6 +26,10 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **I/O CI诊断整改：C-005/P2（2026-11-13）**：原I/O的Windows CI在60秒原生转储时access violation；另建纯标准库Windows实验 `92545fa418478afd1be6886f70ba5f5470e24c0b` / run43353423204，在相同CPython3.12.16/Server2025上0.687s复现原生dump退出0xC0000005，而Python线程和无dump控制正常。确认诊断机制风险，不把原失败COMMIT栈当成SQLite根因。仅测试包装器替换Windows定时诊断，保留fatal handler、60秒阈值、25分钟期限及全部门禁；后台等待/采样/写出异常不得假绿，真实abort/阻塞PIPE/退出码负控随代码提交。最终冻结工作区（a0基线加补丁）lock/ruff/full均exit0，全量2200 passed/7 skipped、390.82秒；第二读者完成最终脚本/测试内容hash预验，但不冒充正式SHA批准。独立复审与新SHA四项CI仍是后续门禁；细节及残余GIL边界见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
+- **MCP测试生命周期整改：C-006/P3（2026-11-13）**：独立观察发现对象阻断测试业务通过后真实server/泵线程仍存活，原因是夹具未close client而被atexit保留，不是生产关闭失效。仅测试模块构造成功即登记finalizer，早于构栈/启动；90项相关测试、57次启动记录（55个唯一pid）在每teardown及结束均零残留，主动测试失败/构栈失败仍以pytest exit1如实失败且清理完成。与C-005最终补丁一同通过冻结工作区2200/7全量，八文件运行期间hash未变；正式提交仍须绑定SHA复审和四项CI，见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+
 - **系统 debug：I/O 边界修复（2026-11-13）**：从 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941` 隔离排查。确认输出管道收尾锁等待、MCP 发送背压不受期限限制、Host 非法请求裸异常、重定向正文无界读取、UI 正文超时缺口和 SSE 失败计数重置，均先取得原实现失败证据再修复。第二读者在 `4479088ecb2d161755d7ba3a89e46119c94a8b8e` 补充发现深层JSON仍裸异常，原Host结论为部分修；补丁只捕获解析处RecursionError，新增真HTTP回归覆盖结构化400、认证顺序及同连接下一请求边界。随后对照Ubuntu原始日志确认既存C-004/P2：半帧写入遇到并发关闭，发送线程裸TypeError；真实子进程/短写屏障复现后，仅在传输已关闭时规范为ConnectionClosed，保留cause与两项类型错误负控，新IPC补丁另待新SHA复核。构建与真页面验证、Windows 慢测栈、范围及未验证项见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。本条不代替具体提交的独立复审和四项 CI；最终门禁结果绑定对应 PR 当前 SHA。
 
 > 各功能条目保留其注明日期、PR 与提交的验收快照；条目中的“仍未做”不能脱离该版本引用。后续同主题交付覆盖旧状态，历史数字不汇总成当前测试数。合并门禁以本节“门禁”条目为准，Windows 最新已验证结果以本节 Windows 条目及其 run 为准。
@@ -55,7 +59,7 @@
 - **代码规模**：`src/tianshu/*.py` **58** 个模块（2026-11-12 实测 `ls src/tianshu/*.py | wc -l`；上一版写 54 是漏计 MCP 阶段与并行工作流新增的 4 个）。模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **93** 个（2026-11-12 实测 `ls tests/test_*.py | wc -l`；上一版写 92 漏计 1 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
 - **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；这条绿色属于当时修复分支；其后 PR #130 已合入 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941`，该 main 的 [run 43298476414](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项全绿。两份结果分别绑定各自 SHA，**均不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。2026-11-13 经 GitHub API 写入并回读确认，required status checks 为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build` 四项，均绑定 GitHub Actions（app_id=15368）；批准人数仍为 0。设置已在远端生效，文档随 PR #130 交付。
-- **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用逐例输出、短错误栈、耗时与 60 秒长等待线程栈（`-vv -rs --tb=short --durations=20 -o faulthandler_timeout=60`），其余平台保留 `-o addopts="" -q -rs`。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
+- **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60` 输出逐例、短错误栈、耗时与Python线程定时栈，其余平台保留 `uv run --frozen pytest -o addopts="" -q -rs`。原生fatal handler保留，C扩展长期独占GIL时不能保证60秒栈；25分钟上限不替代这个诊断缺口。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
 - **Windows 跳过项**：按平台跳过的是 memfs 符号链接、POSIX PID 探活、POSIX 权限位 ×2、无 PTY ×2、无进程组/信号 ×2，以及只在 POSIX 成立的真 socket 断言（AF_UNIX backlog、假对端「只 listen 不握手」）这几类；收尾轮 CI 实测 skip 数：macOS **7**、ubuntu **8**、Windows **29**，跳过原因写在跳过消息里，CI 用 `-rs` 打进日志。 · **2026-11-13 修复分支**：Windows 30（恢复 POSIX 残留 socket 用例遗漏的平台条件，较历史多 1），macOS 7、Ubuntu 8；Windows 命名管道认证/关闭/重复实例等测试仍运行。
 - **M5 新入口**：`tianshu daemon`（常驻守护进程）与 `tianshu host run|stop|status`（桌面外壳）。运行数据根默认平台标准目录，`TIANSHU_DATA_ROOT` 覆盖；**旧的内核子命令（`run` / `task` / `approvals` / …）仍默认 CWD 下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`，`--db` 可改）——两套落点并存，文档必须分开写。
 - **数据目录**：`ipc.default_data_root()` 已把平台标准位置实现出来——macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`（不用 Roaming：事件日志会撑爆漫游同步）、Linux `$XDG_DATA_HOME/AgentOS`（缺省 `~/.local/share/AgentOS`）。目录内：`events.db`、`artifacts/{blobs,snapshots}`、`run/`（IPC 端点 / `ipc.key` / 锁）、`logs/daemon.log`（Host 重定向的 daemon stderr）。测试与 CI 一律显式传 `--data-root` 到 tmp，**不允许**写用户主目录。
@@ -249,6 +253,13 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **定时诊断测试必须证明采到了所声称阶段（2026-11-13）**：第二读者用无sleep的setup屏障发现，旧三阶段测试只有栈header断言，snapshot都在setup时仍3 passed；真实Lock正控也会因提前采样缺目标帧而误红。测试专用ready事件应绑定实际目标阶段，setup/call/teardown各自断言不同函数帧；隐私测试也须确认采到带敏感变量的目标函数。等待诊断完成时要同步排空输出或落临时文件，不能引入未读PIPE阻塞。修夹具不等于修改生产60秒协议，旧测试版本的全量绿不移用为新版本门禁。
+
+- **后台诊断的等待本身也会失败（2026-11-13）**：有限浮点数并不一定是平台可接受的等待秒数；`1e30`在Event.wait中OverflowError，若只把snapshot放try里，pytest可能1 passed/exit0而诊断线程已死。配置须受`threading.TIMEOUT_MAX`约束，后台等待与采样同置错误收口，并以真实成功/失败/中断子pytest验证非零诊断及原退出码保持。
+
+- **诊断本身也会改变被诊断进程**：CPython3.12原生定时dump能在纯标准库动态frame负载中access violation；Python栈最后落在COMMIT不等于SQLite根因。须用无项目代码的同环境正负控区分。后台线程已经输出部分字节后仍可能抛错，`exit0 + stack_bytes>0`不足以作证；错误必须显式传到会话退出码。fatal负控也必须确认真的执行到abort，配置提前失败的非零不是有效负控。Python线程方案拿不到GIL时不能保证栈，不能把外部期限说成等价诊断。
+- **清理要在资源构造成功时登记**：只在helper返回后或测试最后close，构栈/启动中途失败时仍会把真实子进程留给后续用例。MCP对象阻断夹具改为构造成功立即登记finalizer，并用测试失败/构栈失败两类注入证明资源清零；业务断言通过不代表夹具没有污染环境。
+
 - **"审批门"要在弹批准之前判完**：白名单/额度这类注定失败的前置条件如果只在执行时检查，用户会收到一个"批了也发不出去"的批准——白占一次人工决定。把前置条件放进 `prepare()`（`c4.outbound_not_allowed` / `dispatch.budget_refused`），批准只发给能执行的请求。
 - **冗余保护要"证明"，不是"声明"**：取消检查做了两层（派发前 + 执行器每块之前），单独拆掉派发前那层两个判据**仍然绿**（执行器第一跳之前就看到了取消），两处都去掉才真的发包。写负控时要先确认拆的是"最后一层保护"，否则会把冗余误判成"这行没用"。
 - **"来源可离线核验"必须真的关掉服务器再读**：否则测的是"服务器还在，所以读得到"。runner 的收集顺序（Run 结束 → 停夹具 → 读内容引用并重算 sha256）就是这条判据的本体；读不回来记无效样本，不是通过。
@@ -339,6 +350,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **CI线程栈边界（2026-11-13）**：为避开已在Windows3.12.16独立重现的原生定时frame竞态，Windows使用Python线程定时采样；C扩展长期占用GIL时无法保证60秒出栈。fatal handler仍保留，25分钟job上限不变，但两者不是该缺口的等价替代。未验证所有C扩展/GIL死锁、真实百线程并发或stdout/stderr同时外部阻塞。新包装器的正式Windows矩阵结果须绑定后续提交，不以临时原生实验的success状态代替业务套件通过。
 
 - **I/O debug 范围（2026-11-13）**：已修复的有界读写不等于进程隔离或网络带宽硬配额；Windows 命名管道 ACL、Windows 用户设备/ARM64、真实模型驱动 UI、安装与升级仍未验证。C-004是已确认的既存POSIX发送关闭竞态，本机回归不代替新提交独立复审与Ubuntu CI；Windows的不同发送路径保留既有测试，不用POSIX调度探针代言。当前工作区的本机绿不冒充独立批准或云端绿。逐项证据与尚未验证范围见 [I/O debug 记录](DEBUG-IO-2026-11-13.md)。
 
@@ -448,6 +461,12 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-13 · C-005测试证据校准与等待侧收口**：独立setup屏障反例确认Lock正控提前采样会误红、仅查header的三阶段测试会误绿；测试ready同步并检查各阶段独立函数帧，锁诊断输出改临时文件，隐私检查确认目标函数在栈中。第二读者再以1e30确认后台wait溢出仍pytest exit0；最小增加TIMEOUT_MAX配置上界并把wait/snapshot同置try，默认60秒及生产src不变。新增四项先在旧实现4 failed，最终31项新回归+8项eval为39 passed/18.87秒、ruff通过。精确中断先前full留下exit2记录，历史2195/7不冒充最终门禁。最终八文件冻结整合为lock/ruff/full exit0，2200 passed/7 skipped、390.82秒，运行前后hash相同；独立内容hash预验覆盖19场景、10配置、阶段扰动及C-006失败清理。结果后仅回填两文档；正式SHA复审和四项CI仍待完成，不以自查或内容hash预验冒充提交批准。
+
+- **2026-11-13 · MCP测试生命周期：C-006/P3**：第二调查者定位对象阻断helper真实client没有close、被atexit留到pytest退出；最小单测业务1pass但观察器抓到1进程/2线程残留并exit1。仅该模块新增13行生命周期fixture；90项、57次启动记录（55个唯一pid）每teardown与最终均零残留，test call及build_stack主动失败仍pytest exit1且清理完成。未改变生产逻辑，未将其扩大为全部Windows耗时根因；与C-005整改合并工作区重新跑门禁，后续正式SHA仍需独立复审与CI。
+
+- **2026-11-13 · Windows CI诊断原生失败：C-005/P2**：在I/O工作树a0cb461702e538b22192eacc9b27fffc030a34ac上只追加测试工具和回归。先调查原Windows60秒dump截断/AV，保留同测试100.83秒正常通过的反证；纯标准库Windows实验92545fa/run43353423204独立复现原生诊断0xC0000005，Python/no-dump控制正常。新增Python线程pytest包装器并同步CI、CONTRIBUTING与AGENTS；保留fatal handler、60秒/25分钟及原pytest失败/中断退出码。真实子进程验证后台错误、阻塞写、abort到达marker与隐私/输出界限，撤销一次配置提前失败的旧负控；不改变生产模块或产品契约。新提交仍待第二读者复核与required CI，详见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
 - **2026-11-13 · I/O CI 警告整改：C-004/P2**：原main与I/O首提交的Ubuntu慢订阅者用例均有发送线程write(None,buf)警告，不能把success状态当成没有异常。基于 `72af1ae9f7a5c826b1dde568ba30005e1c4dc45d`，用真实IPC子进程、实际短写和关闭屏障重现；确认线程能退出，无daemon死亡/数据损坏证据，按P2关闭竞态处理。仅在底层连接已关闭时把send_bytes的TypeError转为ConnectionClosed并保留cause，编码在try外、开放连接TypeError原样暴露；两项负控保留。68项定向在未处理线程警告升错误下通过，lock/ruff通过，macOS arm64全量2169 passed / 7 skipped（377.77s，exit0）；新SHA待独立复审与CI。POSIX短写用例在Windows明确跳过该不同实现路径，两项负控及既有Windows IPC覆盖不移除。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
