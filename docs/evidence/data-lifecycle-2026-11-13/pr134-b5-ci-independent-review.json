@@ -1,0 +1,327 @@
+{
+  "schema": "tianshu.independent_ci_review.v1",
+  "reviewer": "/root/verify_lifecycle",
+  "verified_at": "2026-11-13T10:53:00.591554+00:00",
+  "repository": "lorek666/tianshu-agent",
+  "pull_request": 134,
+  "run": {
+    "id": 43409722913,
+    "attempt": 1,
+    "event": "pull_request",
+    "head_sha": "b5b5c7fed03f3bd7c75ce759708e383e5ec46091",
+    "status": "completed",
+    "conclusion": "success",
+    "check_suite_id": 117544805723,
+    "created_at": "2026-11-13T10:31:35Z",
+    "completed_updated_at": "2026-11-13T10:49:43Z",
+    "url": "https://github.com/lorek666/tianshu-agent/actions/runs/43409722913"
+  },
+  "tested_object_binding": {
+    "head_commit": "b5b5c7fed03f3bd7c75ce759708e383e5ec46091",
+    "pr_base_commit": "f2aef9da75d2e546af99baa523d196d1e099c196",
+    "actual_checkout_merge_commit": "3de38bcdfbf80d12bdebdf7a5c651c44909f4ebe",
+    "merge_parents": [
+      "f2aef9da75d2e546af99baa523d196d1e099c196",
+      "b5b5c7fed03f3bd7c75ce759708e383e5ec46091"
+    ],
+    "merge_tree": "7709aeeac0a0a55bb620867580f452f1940f2828",
+    "head_tree": "7709aeeac0a0a55bb620867580f452f1940f2828",
+    "merge_tree_equals_head_tree": true,
+    "all_four_raw_checkout_logs_match_merge_commit": true,
+    "raw_remote_objects": [
+      "head-git-commit.json",
+      "merge-git-commit.json",
+      "pr-merge-ref-final.json"
+    ]
+  },
+  "jobs": [
+    {
+      "id": 131832816305,
+      "name": "test (windows-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-13T10:31:38Z",
+      "completed_at": "2026-11-13T10:49:42Z",
+      "log_path": "/tmp/tianshu-g3-20261113/ci-43409722913/windows-job-131832816305.log",
+      "log_sha256": "b1dbfbdec4e98851d3ad524e6c185020285f67b03853d9d5d82146f0033664f9",
+      "checkout_commit_from_raw_log": "3de38bcdfbf80d12bdebdf7a5c651c44909f4ebe",
+      "platform": {
+        "operating_system": "Microsoft Windows Server 2025 10.0.26100 Datacenter",
+        "runner_image": "windows-2025-vs2026",
+        "image_version": "20261103.298.1",
+        "python": "3.12.16"
+      },
+      "tests": {
+        "passed": 2410,
+        "skipped": 37,
+        "pytest_seconds": "1061.41",
+        "python_collected_total": 2447,
+        "ui_test_files": null
+      },
+      "skip_summary_lines": [
+        "SKIPPED [1] tests\\\\test_backend_contract.py:383: memfs \\u6ca1\\u6709\\u7b26\\u53f7\\u94fe\\u63a5\\uff0c\\u4e0d\\u627f\\u8bfa\\u8fd9\\u6761",
+        "SKIPPED [1] tests\\\\test_backup.py:566: POSIX \\u8bed\\u4e49",
+        "SKIPPED [2] tests\\\\test_backup_materials.py:592: \\u5f53\\u524d\\u5e73\\u53f0\\u6ca1\\u6709 /tmp \\u7684\\u7cfb\\u7edf\\u8def\\u5f84\\u522b\\u540d",
+        "SKIPPED [1] tests\\\\test_daemon.py:911: Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09",
+        "SKIPPED [1] tests\\\\test_daemon.py:964: Windows \\u4e0a os.kill \\u7684 SIGTERM \\u4e0d\\u662f\\u4f18\\u96c5\\u9000\\u51fa\\u8def\\u5f84",
+        "SKIPPED [2] tests\\\\test_data_cli.py:118: \\u9a8c\\u8bc1 macOS /tmp \\u2192 /private/tmp \\u7cfb\\u7edf\\u522b\\u540d",
+        "SKIPPED [1] tests\\\\test_exec.py:196: Windows \\u6ca1\\u6709\\u8fdb\\u7a0b\\u7ec4/\\u4fe1\\u53f7\\uff0c\\u89c1 Windows \\u4e13\\u5c5e\\u7528\\u4f8b",
+        "SKIPPED [1] tests\\\\test_exec.py:467: Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY",
+        "SKIPPED [1] tests\\\\test_exec.py:484: Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY",
+        "SKIPPED [1] tests\\\\test_exec.py:502: Windows \\u6ca1\\u6709 Unix \\u4fe1\\u53f7",
+        "SKIPPED [1] tests\\\\test_host_cleanup.py:500: chmod 000 \\u8bfb\\u6743\\u9650\\u8bed\\u4e49\\u53ea\\u9002\\u7528\\u4e8e POSIX",
+        "SKIPPED [1] tests\\\\test_integration_m5.py:453: SIGKILL / AF_UNIX \\u8bed\\u4e49\\uff1bWindows \\u7528 taskkill\\uff0c\\u672c\\u6d4b\\u8bd5\\u4e0d\\u8986\\u76d6",
+        "SKIPPED [1] tests\\\\test_ipc.py:214: Windows \\u7aef\\u70b9\\u4e0d\\u662f\\u6587\\u4ef6\\u8def\\u5f84\\uff0c\\u6ca1\\u6709\\u957f\\u5ea6\\u4e0a\\u9650",
+        "SKIPPED [1] tests\\\\test_ipc.py:405: Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09",
+        "SKIPPED [1] tests\\\\test_ipc.py:500: Unix socket \\u7684\\u76d1\\u542c\\u961f\\u5217\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053",
+        "SKIPPED [1] tests\\\\test_ipc.py:526: \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709 ENOENT/ECONNREFUSED \\u5206\\u5c42",
+        "SKIPPED [1] tests\\\\test_ipc.py:550: \\u91cd\\u8bd5\\u8bed\\u4e49\\u53ea\\u5728 POSIX \\u63a2\\u6d3b\\u5b9e\\u73b0\\u4e0a\\u6210\\u7acb",
+        "SKIPPED [1] tests\\\\test_ipc.py:601: Unix socket \\u7684\\u6392\\u961f\\u8bed\\u4e49\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053",
+        "SKIPPED [1] tests\\\\test_ipc.py:721: \\u6b8b\\u7559 socket \\u6587\\u4ef6\\u662f POSIX \\u6982\\u5ff5\\uff1b\\u547d\\u540d\\u7ba1\\u9053\\u4e0d\\u662f\\u6587\\u4ef6",
+        "SKIPPED [1] tests\\\\test_ipc_send_close.py:18: POSIX Connection._send \\u77ed\\u5199\\u5faa\\u73af\\uff1bWindows PipeConnection \\u4f7f\\u7528\\u4e0d\\u540c\\u7684\\u53d1\\u9001\\u5b9e\\u73b0",
+        "SKIPPED [1] tests\\\\test_isolation.py:200: \\u8fdb\\u7a0b\\u7ec4\\u6740\\u6811\\u53ea\\u6709 POSIX \\u80fd\\u786e\\u8ba4",
+        "SKIPPED [1] tests\\\\test_leases.py:238: PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0",
+        "SKIPPED [1] tests\\test_maintenance.py:272: POSIX uid; Windows inherits OS user-directory ACL",
+        "SKIPPED [1] tests\\\\test_powercut_image.py:223: \\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09",
+        "SKIPPED [2] tests\\\\test_powercut_image.py:269: \\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09",
+        "SKIPPED [1] tests\\\\test_sandbox_backend.py:57: Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09",
+        "SKIPPED [1] tests\\\\test_sandbox_backend.py:70: Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09",
+        "SKIPPED [1] tests\\\\test_soak.py:186: \\u6d78\\u6ce1\\u6d4b\\u8bd5\\u9ed8\\u8ba4\\u8df3\\u8fc7\\uff1aTIANSHU_SOAK=1 \\u624d\\u8dd1\\uff08\\u6709\\u754c\\u3001\\u6309 TIANSHU_SOAK_SECONDS \\u79d2\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:179: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:220: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:257: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:280: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:297: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "SKIPPED [1] tests\\\\test_takeover.py:351: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      ],
+      "pytest_runtime_warning_or_fatal_markers_found": false,
+      "watchdog_dump_count": 2,
+      "annotation_path": "/tmp/tianshu-g3-20261113/ci-43409722913/windows-annotations.json",
+      "annotations": [
+        {
+          "level": "warning",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+        }
+      ],
+      "all_steps_success": true
+    },
+    {
+      "id": 131832816671,
+      "name": "ui · typecheck / test / build",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-13T10:31:38Z",
+      "completed_at": "2026-11-13T10:31:54Z",
+      "log_path": "/tmp/tianshu-g3-20261113/ci-43409722913/ui-job-131832816671.log",
+      "log_sha256": "ae0d726dd4b9d21742f4ef65f26c9e51b262b54876ffb804c6c73cf5e1ea748c",
+      "checkout_commit_from_raw_log": "3de38bcdfbf80d12bdebdf7a5c651c44909f4ebe",
+      "platform": {
+        "operating_system": "Ubuntu 26.04.1 LTS",
+        "runner_image": "ubuntu-26.04",
+        "image_version": "20261101.186.1",
+        "python": null
+      },
+      "tests": {
+        "passed": 80,
+        "skipped": 0,
+        "pytest_seconds": null,
+        "python_collected_total": null,
+        "ui_test_files": 11
+      },
+      "skip_summary_lines": [],
+      "pytest_runtime_warning_or_fatal_markers_found": false,
+      "watchdog_dump_count": 0,
+      "annotation_path": "/tmp/tianshu-g3-20261113/ci-43409722913/ui-annotations.json",
+      "annotations": [
+        {
+          "level": "warning",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, pnpm/action-setup@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+        },
+        {
+          "level": "notice",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\""
+        }
+      ],
+      "all_steps_success": true
+    },
+    {
+      "id": 131832816703,
+      "name": "test (ubuntu-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-13T10:31:38Z",
+      "completed_at": "2026-11-13T10:36:32Z",
+      "log_path": "/tmp/tianshu-g3-20261113/ci-43409722913/ubuntu-job-131832816703.log",
+      "log_sha256": "e1acae4d9c1e988ddf6247c96e90aedd75fb813aa7d627ff2d99102c46a2c7b9",
+      "checkout_commit_from_raw_log": "3de38bcdfbf80d12bdebdf7a5c651c44909f4ebe",
+      "platform": {
+        "operating_system": "Ubuntu 26.04.1 LTS",
+        "runner_image": "ubuntu-26.04",
+        "image_version": "20261111.82.6",
+        "python": "3.12.16"
+      },
+      "tests": {
+        "passed": 2434,
+        "skipped": 13,
+        "pytest_seconds": "278.86",
+        "python_collected_total": 2447,
+        "ui_test_files": null
+      },
+      "skip_summary_lines": [
+        "SKIPPED [1] tests/test_backend_contract.py:383: memfs 没有符号链接，不承诺这条",
+        "SKIPPED [2] tests/test_backup_materials.py:592: 当前平台没有 /tmp 的系统路径别名",
+        "SKIPPED [2] tests/test_data_cli.py:118: 验证 macOS /tmp → /private/tmp 系统别名",
+        "SKIPPED [1] tests/test_exec.py:525: 仅 Windows：本机不可执行",
+        "SKIPPED [1] tests/test_exec.py:540: 仅 Windows：本机不可执行",
+        "SKIPPED [1] tests/test_host_cleanup.py:514: 真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "SKIPPED [1] tests/test_ipc.py:612: AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，同样连接会排队。重试逻辑见 test_probe_result_retries_transient_errors_deterministically",
+        "SKIPPED [1] tests/test_powercut_image.py:223: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "SKIPPED [2] tests/test_powercut_image.py:269: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "SKIPPED [1] tests/test_soak.py:186: 浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）"
+      ],
+      "pytest_runtime_warning_or_fatal_markers_found": false,
+      "watchdog_dump_count": 0,
+      "annotation_path": "/tmp/tianshu-g3-20261113/ci-43409722913/ubuntu-annotations.json",
+      "annotations": [
+        {
+          "level": "warning",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+        },
+        {
+          "level": "notice",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\""
+        }
+      ],
+      "all_steps_success": true
+    },
+    {
+      "id": 131832816718,
+      "name": "test (macos-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-13T10:31:38Z",
+      "completed_at": "2026-11-13T10:42:45Z",
+      "log_path": "/tmp/tianshu-g3-20261113/ci-43409722913/macos-job-131832816718.log",
+      "log_sha256": "7e118df9d976cafbbd6c4406a8cbce73e4d37c0ac465812644d5ca57205e392d",
+      "checkout_commit_from_raw_log": "3de38bcdfbf80d12bdebdf7a5c651c44909f4ebe",
+      "platform": {
+        "operating_system": "macOS 26.7.2 (25G332)",
+        "runner_image": "macos-26-arm64",
+        "image_version": "20261102.0473.1",
+        "python": "3.12.16"
+      },
+      "tests": {
+        "passed": 2439,
+        "skipped": 8,
+        "pytest_seconds": "650.61",
+        "python_collected_total": 2447,
+        "ui_test_files": null
+      },
+      "skip_summary_lines": [
+        "SKIPPED [1] tests/test_backend_contract.py:383: memfs 没有符号链接，不承诺这条",
+        "SKIPPED [1] tests/test_exec.py:525: 仅 Windows：本机不可执行",
+        "SKIPPED [1] tests/test_exec.py:540: 仅 Windows：本机不可执行",
+        "SKIPPED [1] tests/test_host_cleanup.py:514: 真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "SKIPPED [1] tests/test_powercut_image.py:223: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "SKIPPED [2] tests/test_powercut_image.py:269: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "SKIPPED [1] tests/test_soak.py:186: 浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）"
+      ],
+      "pytest_runtime_warning_or_fatal_markers_found": false,
+      "watchdog_dump_count": 0,
+      "annotation_path": "/tmp/tianshu-g3-20261113/ci-43409722913/macos-annotations.json",
+      "annotations": [
+        {
+          "level": "warning",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/"
+        },
+        {
+          "level": "notice",
+          "message": "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times."
+        }
+      ],
+      "all_steps_success": true
+    }
+  ],
+  "warnings_and_diagnostics": {
+    "pytest_runtime_warning_summary_present": false,
+    "action_node_deprecation": "All four jobs retain Node.js20/Actions forced-Node24 warning; raw action logs also show DEP0040 punycode and DEP0169 url.parse deprecations.",
+    "runner_notices": "Ubuntu/UI runner migration notice; macOS arm64 queue-capacity notice.",
+    "windows_long_test_diagnostics": [
+      {
+        "utc": "2026-11-13T10:40:10.9063238Z",
+        "test": "tests/test_eval_separation.py::test_cli_compare_accepts_previous_report_as_baseline",
+        "call_seconds": "80.79",
+        "subsequent_pass_utc": "2026-11-13T10:40:31.6918956Z"
+      },
+      {
+        "utc": "2026-11-13T10:48:01.9652887Z",
+        "test": "tests/test_recovery.py::test_100_random_fault_injections",
+        "call_seconds": "68.29",
+        "subsequent_pass_utc": "2026-11-13T10:48:10.2575350Z"
+      }
+    ],
+    "diagnostic_scope": "Watchdog snapshots were emitted at 60s and both tests subsequently passed. They are retained as long-duration diagnostics, not labelled warnings/failures; no root-cause or performance improvement claim is made."
+  },
+  "branch_protection": {
+    "raw_path": "/tmp/tianshu-g3-20261113/ci-43409722913/branch-protection-final.json",
+    "required_checks": [
+      {
+        "context": "test (ubuntu-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "test (macos-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "test (windows-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "ui · typecheck / test / build",
+        "app_id": 15368
+      }
+    ],
+    "strict": true,
+    "enforce_admins": true,
+    "required_approving_review_count": 0,
+    "force_push_allowed": false,
+    "deletion_allowed": false,
+    "all_required_contexts_match_current_successful_job_checks": true,
+    "checks_app_id": 15368
+  },
+  "review_state": {
+    "formal_reviews": 0,
+    "unresolved_review_threads": 0,
+    "all_threads_returned": true,
+    "review_decision": null,
+    "pr_state": "OPEN",
+    "mergeable": "MERGEABLE",
+    "merge_state_status": "CLEAN",
+    "already_merged": false,
+    "raw_paths": [
+      "reviews-final.json",
+      "review-threads-final.json",
+      "pr-final.json"
+    ]
+  },
+  "raw_evidence_manifest": {
+    "path": "/tmp/tianshu-g3-20261113/ci-43409722913/evidence-sha256.json",
+    "sha256": "aeccb67dc9c9bc849cbb1fa4e0688ee00fac0c0622cdafd2fe7ae1c1de3d564c",
+    "file_count": 27
+  },
+  "read_only_methods": [
+    "gh run watch --interval 90 --exit-status",
+    "gh api actions/runs, jobs/logs, check-runs/annotations, commits, PR and branch-protection endpoints",
+    "gh api graphql reviewThreads; no approval, rerun or merge mutation"
+  ],
+  "conclusion": "This exact PR134 b5 head has all four required CI checks successful on run43409722913 attempt1; raw job checkout merge tree equals the head tree. Current protection and review-state evidence is recorded.",
+  "merge_approval": false,
+  "limitations": [
+    "This is CI/object/gate evidence, not a merge command or blanket product approval.",
+    "Only this exact head and tested merge tree are covered; no T1/admission implementation or later composition is accepted.",
+    "Hosted Windows Server2025/x86_64 Python3.12 CI is not Windows10/11/ARM64 user-device or install/upgrade validation.",
+    "Platform/opt-in skips remain; original cooperative-lock, backup/restore and sandbox boundaries are not enlarged.",
+    "Actions/Node deprecations, runner notices and two Windows long-test watchdog dumps remain visible; success is not a stable performance or SLO claim."
+  ]
+}

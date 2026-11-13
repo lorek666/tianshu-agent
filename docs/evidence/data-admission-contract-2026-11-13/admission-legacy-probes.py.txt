@@ -1,0 +1,60 @@
+from __future__ import annotations
+import json
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+sys.path.insert(0, '/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/src')
+from tianshu.backup import create_backup
+from tianshu.events import EventLog
+from tianshu.event_schema import minimal_payload, PayloadVersionUnavailable
+from tianshu.migrate import migrate, assert_writable
+out = Path('/tmp/tianshu-g3-20261113')
+tmp = Path(tempfile.mkdtemp(prefix='admission-legacy-independent-', dir=out))
+root = tmp / 'completed-v1-state'
+root.mkdir()
+log = EventLog(root / 'events.db')
+log.close()
+try:
+    assert_writable(root)
+    old_v0_gate = 'accepted'
+except Exception as exc:
+    old_v0_gate = type(exc).__name__
+backup = tmp / 'backup'
+create_backup(root, backup)
+report = migrate(root, backup=backup)
+raw = json.loads((root / 'migration.json').read_text())
+conn = sqlite3.connect(root / 'events.db')
+steps = conn.execute('SELECT step FROM migration_log ORDER BY step').fetchall()
+conn.close()
+other = tmp / 'missing-side-table.db'
+log = EventLog(other)
+seq = log.append('run_probe', 'run.start', minimal_payload('run.start'))
+log.conn.execute('DROP TABLE event_versions')
+try:
+    log.read_run('run_probe')
+    before_close = 'accepted'
+except PayloadVersionUnavailable:
+    before_close = 'PayloadVersionUnavailable'
+log.close()
+log = EventLog(other)
+reopened_version = log.read_run('run_probe')[0].payload_version
+log.close()
+print(json.dumps({
+    'temp_root': str(tmp),
+    'current_helper_on_real_normal_v0': old_v0_gate,
+    'current_successful_migration': {
+        'report_to_version': report.to_version,
+        'format': raw['format'],
+        'format_version': raw['format_version'],
+        'target_version': raw['target_version'],
+        'status': raw['status'],
+        'applied_steps': raw['applied_steps'],
+        'current_step': raw['current_step'],
+        'actual_audit_steps': [r[0] for r in steps],
+    },
+    'missing_event_versions_ordering_hazard_in_current_code': {
+        'before_close': before_close,
+        'payload_version_after_current_reopen': reopened_version,
+    }
+}, ensure_ascii=False, indent=2))

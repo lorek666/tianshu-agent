@@ -1,0 +1,79 @@
+{
+  "scope": "Frozen implementation-plan review and reasoning probes, not product acceptance",
+  "contract_commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+  "stable_implementation_base": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+  "files": [
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-implementation-plan.md",
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "bytes": 34894
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-freeze.json",
+      "sha256": "8bfa48053665c93e217a6777013ac8ad16955053a12c33751fda8ade8120de82",
+      "bytes": 3482
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-git-binding.json",
+      "sha256": "66a28e740bcfa6af8cb4300bacb6cabca0425a6ff22b3bbb9b5cb1cfd08b77ed",
+      "bytes": 4724
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.json",
+      "sha256": "8d37c8d5f82850ee89391a0b88609c66b3193f09f2e52abdda6a33ab2b04be22",
+      "bytes": 703
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.py",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.py.txt",
+      "sha256": "f616f5b741a4587d468c49884f08406d694fc1eeb44db81ba7290e315c0c34e9",
+      "bytes": 4657
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review-evidence.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review-evidence.json",
+      "sha256": "407d79e61119f18e0d3080db027b2c7f53d2d701a97ab2651898e769fb6a1a6d",
+      "bytes": 5118
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review.md",
+      "sha256": "ee8af37af6b14cfbb7d2433c68c1e5904cc8c05a9a9e37ec79ead40fd55bc165",
+      "bytes": 16846
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-inheritance-binding.json",
+      "sha256": "aed113acb7e80d96dee89af6c430a272ec0733a025b7f0f6b654456e5dd6b636",
+      "bytes": 2269
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe-results.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe-results.json",
+      "sha256": "dd0bd4c0a1f2540624e35832bd191a3e537e185ad81718036d8615956458fc63",
+      "bytes": 2014
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe.py",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe.py.txt",
+      "sha256": "a1ba16ebc12597bf4b1d825900f74718ffef240c4251572116f397ddb47f1aff",
+      "bytes": 6687
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-review-artifacts.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-review-artifacts.json",
+      "sha256": "aab0cc0a51eac96a07ab3cc123a0b2432e00eb0f9bf7ff15571a2af49ecc81ba",
+      "bytes": 1285
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-selfcheck.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-selfcheck.json",
+      "sha256": "1897c2186f73752a211b2c3251bc2f6145756e9628b1dd7504916650a630fc46",
+      "bytes": 1643
+    }
+  ]
+}

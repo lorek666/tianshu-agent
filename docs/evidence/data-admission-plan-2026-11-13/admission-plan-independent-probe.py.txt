@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+import struct
+import sys
+import tempfile
+
+sys.path.insert(0, '/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/src')
+from tianshu.backup import create_backup, verify_backup
+from tianshu.event_schema import minimal_payload
+from tianshu.events import EventLog
+from tianshu.migrate import migrate
+
+OUT = Path('/tmp/tianshu-g3-20261113')
+ROOT = Path(tempfile.mkdtemp(prefix='admission-plan-independent-', dir=OUT))
+source = ROOT / 'source'
+source.mkdir()
+db = source / 'events.db'
+log = EventLog(db)
+log.close()
+old_backup = ROOT / 'before-migration-backup'
+create_backup(source, old_backup)
+migrate(source, backup=old_backup)
+old_progress_bytes = (source / 'migration.json').read_bytes()
+
+
+def quote(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def typed(v):
+    if v is None:
+        return ['null']
+    if isinstance(v, int):
+        return ['integer', str(v)]
+    if isinstance(v, float):
+        return ['float64', struct.pack('>d', v).hex()]
+    if isinstance(v, str):
+        return ['text', v]
+    if isinstance(v, bytes):
+        return ['blob', v.hex()]
+    raise TypeError(type(v).__name__)
+
+
+def digest(file):
+    conn = sqlite3.connect(file)
+    try:
+        schema = conn.execute(
+            'SELECT type,name,tbl_name,sql FROM sqlite_schema '
+            'WHERE name NOT IN (?,?) ORDER BY type,name,tbl_name,sql',
+            ('migration_log', 'idx_migration_log_applied'),
+        ).fetchall()
+        tables = [r[1] for r in schema if r[0] == 'table']
+        contents = []
+        for name in tables:
+            values = [
+                [typed(v) for v in row]
+                for row in conn.execute('SELECT rowid,* FROM ' + quote(name))
+            ]
+            values.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(',', ':')))
+            contents.append([name, values])
+        data = json.dumps([schema, contents], ensure_ascii=False, separators=(',', ':')).encode()
+        return hashlib.sha256(data).hexdigest()
+    finally:
+        conn.close()
+
+
+def mechanism(file):
+    conn = sqlite3.connect(file)
+    try:
+        version = conn.execute('PRAGMA user_version').fetchone()[0]
+        schema = conn.execute(
+            'SELECT type,name,tbl_name,sql FROM sqlite_schema '
+            'WHERE name IN (?,?) ORDER BY type,name,tbl_name,sql',
+            ('migration_log', 'idx_migration_log_applied'),
+        ).fetchall()
+        rows = conn.execute('SELECT step,applied_at,note FROM migration_log ORDER BY step').fetchall()
+        return [version, schema, [[typed(v) for v in r] for r in rows]]
+    finally:
+        conn.close()
+
+
+before_business = digest(db)
+log = EventLog(db)
+log.append('legitimate_later_run', 'run.start', minimal_payload('run.start'))
+log.close()
+after_business = digest(db)
+fresh_backup = ROOT / 'fresh-v2-backup'
+create_backup(source, fresh_backup)
+fresh_digest = digest(fresh_backup / 'events.db')
+fresh_mechanism = mechanism(fresh_backup / 'events.db')
+live_mechanism_before = mechanism(db)
+current_progress_equal = old_progress_bytes == (source / 'migration.json').read_bytes()
+old_verified = verify_backup(old_backup).ok
+fresh_verified = verify_backup(fresh_backup).ok
+
+conn = sqlite3.connect(db)
+conn.execute("UPDATE migration_log SET note='audit-only-change' WHERE step=1")
+conn.commit()
+conn.close()
+result = {
+    'status': 'PLAN_REASONING_PROBE_ONLY_NOT_PRODUCT_IMPLEMENTATION',
+    'synthetic_root': str(ROOT),
+    'completed_then_valid_business_event': {
+        'old_backup_still_verifies': old_verified,
+        'business_digest_changed': before_business != after_business,
+        'historical_progress_bytes_unchanged': current_progress_equal,
+        'new_backup_verifies': fresh_verified,
+        'new_backup_business_digest_matches_live': after_business == fresh_digest,
+        'new_backup_actual_version': fresh_mechanism[0],
+        'new_backup_full_mechanism_matches_live_before_audit_mutation': fresh_mechanism == live_mechanism_before,
+    },
+    'no_op_must_compare_mechanism_separately': {
+        'business_digest_still_matches_new_backup_after_audit_only_mutation': digest(db) == fresh_digest,
+        'full_typed_mechanism_still_matches': mechanism(db) == fresh_mechanism,
+    },
+}
+assert all(result['completed_then_valid_business_event'].values())
+assert result['no_op_must_compare_mechanism_separately']['business_digest_still_matches_new_backup_after_audit_only_mutation']
+assert not result['no_op_must_compare_mechanism_separately']['full_typed_mechanism_still_matches']
+print(json.dumps(result, ensure_ascii=False, indent=2))

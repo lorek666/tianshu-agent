@@ -1,0 +1,57 @@
+{
+  "temp_root": "/tmp/tianshu-g3-20261113/admission-independent-flbms2f0",
+  "material_inventory": {
+    "backup_verify_ok": true,
+    "events_equal": true,
+    "all_backup_listed_materials_still_equal": true,
+    "source_inventory": [
+      "artifacts/offline-review.json",
+      "artifacts/stable-evidence.json"
+    ],
+    "backup_inventory": [
+      "artifacts/stable-evidence.json"
+    ],
+    "inventory_equal": false
+  },
+  "hardlink": {
+    "same_inode": true,
+    "root_resolved": "/private/tmp/tianshu-g3-20261113/admission-independent-flbms2f0/source/events.db",
+    "alias_resolved": "/private/tmp/tianshu-g3-20261113/admission-independent-flbms2f0/alias.db",
+    "different_maintenance_keys": true,
+    "exclusive_acquired_while_real_child_holds_shared_alias": true,
+    "link_count": 2
+  },
+  "fts": {
+    "virtual_rows_equal_after_optimize": true,
+    "shadow_tables": [
+      "memory_fts_config",
+      "memory_fts_content",
+      "memory_fts_data",
+      "memory_fts_docsize",
+      "memory_fts_idx"
+    ],
+    "persistent_shadow_content_equal": false
+  },
+  "sql_types": [
+    [
+      "null",
+      "NULL"
+    ],
+    [
+      "text",
+      "'1'"
+    ],
+    [
+      "integer",
+      "1"
+    ],
+    [
+      "real",
+      "1.0"
+    ],
+    [
+      "blob",
+      "X'31'"
+    ]
+  ]
+}

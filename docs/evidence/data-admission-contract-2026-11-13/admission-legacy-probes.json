@@ -1,0 +1,24 @@
+{
+  "temp_root": "/tmp/tianshu-g3-20261113/admission-legacy-independent-9t1ns1ih",
+  "current_helper_on_real_normal_v0": "UnsupportedSchemaVersion",
+  "current_successful_migration": {
+    "report_to_version": 2,
+    "format": "tianshu-migration",
+    "format_version": 1,
+    "target_version": 2,
+    "status": "completed",
+    "applied_steps": [
+      1,
+      2
+    ],
+    "current_step": null,
+    "actual_audit_steps": [
+      1,
+      2
+    ]
+  },
+  "missing_event_versions_ordering_hazard_in_current_code": {
+    "before_close": "PayloadVersionUnavailable",
+    "payload_version_after_current_reopen": 0
+  }
+}

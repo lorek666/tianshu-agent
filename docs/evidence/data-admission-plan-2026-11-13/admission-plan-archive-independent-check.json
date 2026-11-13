@@ -1,0 +1,339 @@
+{
+  "review_date": "2026-11-13",
+  "reviewer": "/root/review_admission_contract",
+  "scope": "archive integrity only; no product review or tests",
+  "verdict": "PASS_ARCHIVE_ONLY",
+  "base_head": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+  "archive_directory": "docs/evidence/data-admission-plan-2026-11-13",
+  "source_file_count": 12,
+  "source_total_bytes": 84322,
+  "archive_directory_file_count": 14,
+  "files": [
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-implementation-plan.md",
+      "byte_equal": true,
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "bytes": 34894,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-freeze.json",
+      "byte_equal": true,
+      "sha256": "8bfa48053665c93e217a6777013ac8ad16955053a12c33751fda8ade8120de82",
+      "bytes": 3482,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-git-binding.json",
+      "byte_equal": true,
+      "sha256": "66a28e740bcfa6af8cb4300bacb6cabca0425a6ff22b3bbb9b5cb1cfd08b77ed",
+      "bytes": 4724,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.json",
+      "byte_equal": true,
+      "sha256": "8d37c8d5f82850ee89391a0b88609c66b3193f09f2e52abdda6a33ab2b04be22",
+      "bytes": 703,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.py",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.py.txt",
+      "byte_equal": true,
+      "sha256": "f616f5b741a4587d468c49884f08406d694fc1eeb44db81ba7290e315c0c34e9",
+      "bytes": 4657,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review-evidence.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review-evidence.json",
+      "byte_equal": true,
+      "sha256": "407d79e61119f18e0d3080db027b2c7f53d2d701a97ab2651898e769fb6a1a6d",
+      "bytes": 5118,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review.md",
+      "byte_equal": true,
+      "sha256": "ee8af37af6b14cfbb7d2433c68c1e5904cc8c05a9a9e37ec79ead40fd55bc165",
+      "bytes": 16846,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-inheritance-binding.json",
+      "byte_equal": true,
+      "sha256": "aed113acb7e80d96dee89af6c430a272ec0733a025b7f0f6b654456e5dd6b636",
+      "bytes": 2269,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe-results.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe-results.json",
+      "byte_equal": true,
+      "sha256": "dd0bd4c0a1f2540624e35832bd191a3e537e185ad81718036d8615956458fc63",
+      "bytes": 2014,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe.py",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe.py.txt",
+      "byte_equal": true,
+      "sha256": "a1ba16ebc12597bf4b1d825900f74718ffef240c4251572116f397ddb47f1aff",
+      "bytes": 6687,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-review-artifacts.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-review-artifacts.json",
+      "byte_equal": true,
+      "sha256": "aab0cc0a51eac96a07ab3cc123a0b2432e00eb0f9bf7ff15571a2af49ecc81ba",
+      "bytes": 1285,
+      "selfcheck_hash_only": false
+    },
+    {
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-selfcheck.json",
+      "archive": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-selfcheck.json",
+      "byte_equal": true,
+      "sha256": "1897c2186f73752a211b2c3251bc2f6145756e9628b1dd7504916650a630fc46",
+      "bytes": 1643,
+      "selfcheck_hash_only": true
+    }
+  ],
+  "original_meta_cross_checks": [
+    {
+      "meta": "admission-plan-freeze.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-freeze.json",
+      "source": "/tmp/tianshu-g3-20261113/data-admission-contract-review-copy.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": false,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-freeze.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe.py",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-freeze.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-probe-results.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-freeze.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-selfcheck.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": true
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review-evidence.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-review-artifacts.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-freeze.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-review.md",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-git-binding.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-inheritance-binding.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.py",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    },
+    {
+      "meta": "admission-plan-independent-review-evidence.json",
+      "source": "/tmp/tianshu-g3-20261113/admission-plan-independent-probe.json",
+      "sha256_match": true,
+      "bytes_match": true,
+      "archived_in_plan_directory": true,
+      "selfcheck_hash_only": false
+    }
+  ],
+  "final_contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+  "final_plan_sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+  "working_changes_docs_only": true,
+  "observed_status": [
+    {
+      "status": " M",
+      "path": "docs/KNOWLEDGE.md"
+    },
+    {
+      "status": " M",
+      "path": "docs/evidence/data-admission-contract-2026-11-13/README.md"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/README.md"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-implementation-plan.md"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-freeze.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-git-binding.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-probe.py.txt"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review-evidence.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-independent-review.md"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-inheritance-binding.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe-results.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-probe.py.txt"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-review-artifacts.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/admission-plan-selfcheck.json"
+    },
+    {
+      "status": "??",
+      "path": "docs/evidence/data-admission-plan-2026-11-13/archive-manifest.json"
+    }
+  ],
+  "read_author_selfcheck_contents": false,
+  "selfcheck_access": "raw bytes only for SHA256, size and byte equality; never decoded or parsed",
+  "authorization_boundary": {
+    "frozen_plan_at_review": "not_started / product_implementation_authorized=false / 16 pending steps retained verbatim",
+    "subsequent_authorization": "parent confirmed T1-only authorization, sole writer executor_data_cli, isolated codex/g3-data-admission at 30b973d; T2/T3 not authorized",
+    "trusted_confirmation_source": "parent /root MESSAGE in this archive-review task confirmed prior followup and new MESSAGE to executor; executor acknowledged reading final T1 and independent review, starting TDD, no migrate/CLI writes",
+    "canonical_state": "parent identifies claude-mem MCP work_state g3-batched-delivery; no local replacement was created or required",
+    "product_acceptance": "none claimed; README and KNOWLEDGE say T1 not independently accepted"
+  },
+  "historical_contract_readme_wording": "current branch replaced with exact ccade5edbe47a66c0a48ad09e0667ee7393c148b historical object; later upstream merge no longer makes sentence stale",
+  "repository_modified_by_reviewer": false,
+  "author_worktree_accessed": false,
+  "product_tests_run": false,
+  "plan_re_reviewed": false,
+  "later_16721ff_formal_binding_archive": "outside scope; not inspected as part of this audit"
+}

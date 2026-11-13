@@ -1,0 +1,95 @@
+{
+  "review_date": "2026-11-13",
+  "timezone": "Asia/Shanghai",
+  "reviewer": "/root/review_admission_contract",
+  "repository": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+  "source_head": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+  "contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+  "verdict": "PASS_DESIGN_CONTRACT_ONLY",
+  "open_design_blockers": 0,
+  "product_fixed": false,
+  "new_implementation_verified": false,
+  "g3_complete": false,
+  "repository_modified_by_reviewer": false,
+  "paid_models_or_real_user_data_used": false,
+  "probe_exit_codes": {
+    "main": 0,
+    "legacy": 0
+  },
+  "existing_focused_tests": {
+    "passed": 5,
+    "failed": 0,
+    "elapsed_seconds": 0.08
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "P1",
+      "status": "contract_fixed",
+      "subject": "bidirectional_material_inventory"
+    },
+    {
+      "id": "F2",
+      "severity": "P1",
+      "status": "contract_fixed",
+      "subject": "hardlink_maintenance_precondition"
+    },
+    {
+      "id": "F3",
+      "severity": "P2",
+      "status": "contract_fixed",
+      "subject": "lightweight_state_parser_boundary"
+    },
+    {
+      "id": "F4",
+      "severity": "P2",
+      "status": "contract_fixed",
+      "subject": "fts_shadow_table_digest_scope"
+    },
+    {
+      "id": "F5",
+      "severity": "P2",
+      "status": "contract_clarified",
+      "subject": "legacy_completed_state_read_compatibility"
+    }
+  ],
+  "files": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-contract-independent-review.md",
+      "sha256": "a541404561b55dc37dabe31e73cba2f8565395bc4a1a7089c291b48399e7cc93",
+      "bytes": 14201
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-contract-probes.py",
+      "sha256": "2b78e186f6f60c44854ba99a905c42fd68f3a443f1a10c85ed0e273d73daf819",
+      "bytes": 4926
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-contract-probes.json",
+      "sha256": "580410d6ecb36471f42ee399c67d5f625d68f0afff49fcedfad6837ac26542ab",
+      "bytes": 1294
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-legacy-probes.py",
+      "sha256": "8543142189baed263303edf27b8d72bd4d57d18dbb7502862aeaaec98e2874ab",
+      "bytes": 2163
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-legacy-probes.json",
+      "sha256": "85cd6f8fe3d26b6b1f3af278b57340626a156df1f1a9cfee8890fe25be62eca1",
+      "bytes": 617
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-focused-tests.txt",
+      "sha256": "d1978c1eb0cd573d5cf5e8ee23d605b25cb10239a5f893264096c00592fc2bbf",
+      "bytes": 98
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-contract-reviewed.md",
+      "sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+      "bytes": 13588
+    }
+  ],
+  "author_contract_stash": "45e9a7aef0945ffb9577d43a303f83c775babbd0",
+  "author_contract_copy": "/tmp/tianshu-g3-20261113/data-admission-contract-review-copy.md"
+}

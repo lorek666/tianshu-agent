@@ -1,0 +1,35 @@
+{
+  "revision": 3,
+  "task_count": 3,
+  "pending_checkboxes": 16,
+  "completed_checkboxes": 0,
+  "planned_tests_run": false,
+  "product_implementation_authorized": false,
+  "contract_git_object_and_copy_sha256_verified": true,
+  "scope": "plan and planning prototype only; /tmp files only",
+  "design_review_passed": true,
+  "contract_commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+  "plan_review_final_verdict_pending": true,
+  "review_open_points": [],
+  "revision3_line_map": {
+    "spec_git_object": 11,
+    "normal_v2_missing_progress": 151,
+    "initial_version_equation": 196,
+    "initial_mechanism_equation": 196,
+    "resume_version_equation": 198,
+    "migration_v2_refusal": 243,
+    "close_reopen_control": 233,
+    "wrong_sidecar_control": 233,
+    "fts_shadow_control": 245,
+    "version_audit_control": 245,
+    "original_version_resume_control": 245
+  },
+  "closed_review_items": [
+    "Actual initial backup version equals live starting version; complete mechanism snapshot equality before any DDL.",
+    "Resume/original repeat backup version equals state.from_version; live mechanism differences only at reachable committed registered steps.",
+    "New binding limited to actual v0/v1 with no progress; actual v2 without valid format2 completed migration-incomplete without writes.",
+    "Normal actual v2 needs correctly located strict completed progress; missing both is migration-incomplete, bad JSON progress-corrupt.",
+    "Explicit FTS optimize shadow, entire-version-table close/reopen, and wrong-format-location controls.",
+    "T1 ordinary CLI only; migration coordinator/CLI assertions remain T2/T3."
+  ]
+}

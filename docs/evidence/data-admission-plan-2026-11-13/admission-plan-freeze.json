@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-11-13T09:52:55.469376+00:00",
+  "revision": 3,
+  "previous_plan_sha256": "a59cff3e12677d34c3889a00f7e48f57e6389dc6a1541b36f135cf24b76c080b",
+  "previous_freeze_sha256": "3f211c285499dd10c06cd1a106b58bd5363e31218222ce4c010fe43a2da2e9b1",
+  "product_implementation_authorized": false,
+  "implementation_status": "not_started",
+  "cwd": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+  "planning_product_head": "f509a53881c372d8d7f4b1e2718130edaff4ed06",
+  "current_head_observation_only": "fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45",
+  "shared_checkout_note": "Parent is synchronizing PR132/PR134. Working tree is not a stable plan input and no repository files were written by this task.",
+  "stable_contract_input": {
+    "kind": "git_object",
+    "commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+    "path": "docs/data-admission-contract.md",
+    "blob_oid": "b31fb28511e4be3d9214de165bc4fb72e60a110a",
+    "body_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+    "matching_preserved_copy": "/tmp/tianshu-g3-20261113/data-admission-contract-review-copy.md"
+  },
+  "contract_source": "/tmp/tianshu-g3-20261113/data-admission-contract-review-copy.md",
+  "contract_original_repository_path": "docs/data-admission-contract.md",
+  "contract_commit": "ccade5edbe47a66c0a48ad09e0667ee7393c148b",
+  "input_contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+  "design_review_status": "passed; contract separately committed",
+  "plan_review_status": "revision3 closes requested equalities and controls; final reviewer readback pending",
+  "revision_authorization_source": "review_admission_contract NEW_TASK/MESSAGE relaying parent authorization; /tmp only",
+  "revision3_line_map": {
+    "spec_git_object": 11,
+    "normal_v2_missing_progress": 151,
+    "initial_version_equation": 196,
+    "initial_mechanism_equation": 196,
+    "resume_version_equation": 198,
+    "migration_v2_refusal": 243,
+    "close_reopen_control": 233,
+    "wrong_sidecar_control": 233,
+    "fts_shadow_control": 245,
+    "version_audit_control": 245,
+    "original_version_resume_control": 245
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-implementation-plan.md",
+      "sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875",
+      "bytes": 34894
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/data-admission-contract-review-copy.md",
+      "sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+      "bytes": 13588
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-probe.py",
+      "sha256": "a1ba16ebc12597bf4b1d825900f74718ffef240c4251572116f397ddb47f1aff",
+      "bytes": 6687
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-probe-results.json",
+      "sha256": "dd0bd4c0a1f2540624e35832bd191a3e537e185ad81718036d8615956458fc63",
+      "bytes": 2014
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/admission-plan-selfcheck.json",
+      "sha256": "1897c2186f73752a211b2c3251bc2f6145756e9628b1dd7504916650a630fc46",
+      "bytes": 1643
+    }
+  ],
+  "evidence_limits": [
+    "No new prototypes or product tests run in revision3; existing prototype only proves its recorded equality/invariance.",
+    "Product implementation is not authorized or started; native CI not claimed.",
+    "Must bind parent-provided stable product implementation baseline before repo writes."
+  ]
+}
