@@ -1,0 +1,33 @@
+name: Baseline CLI Windows diagnostic
+on:
+  push:
+    branches: [codex/g3-baseline-windows-probe]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 6
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0b3f60d6fe330a2a9b3fe1bfc8ff373f8b7dd5ff
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - name: Install Python 3.12
+        run: uv python install 3.12
+      - name: Verify frozen source
+        run: |
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git status --porcelain=v1
+          uv run --frozen python -c 'import hashlib, pathlib, sys; print(sys.version); print(sys.executable); [(print(str(p), hashlib.sha256(p.read_bytes()).hexdigest())) for p in map(pathlib.Path, ["scripts/baseline_evidence.py", "tests/test_baseline_evidence.py"])]'
+      - name: Lockfile
+        run: uv lock --check
+      - name: Sync frozen dependencies
+        run: uv sync --frozen
+      - name: Three original failing CLI cases
+        run: uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=long --show-capture=all --durations=3 --stack-timeout=60 tests/test_baseline_evidence.py::test_cli_child_commit_boundary tests/test_baseline_evidence.py::test_cli_real_success_and_failure
