@@ -1,0 +1,347 @@
+{
+  "date": "2026-11-13",
+  "reviewer": "independent review_admission_contract agent",
+  "verdict": "PASS_FIXTURE_INTEGRATION_ONLY",
+  "scope": "main #133 recovery-atomicity fixture setup adaptation to final frozen T1 admission on base 9129095; no full suite, no CI, no formal-commit approval",
+  "base": "91290950099b1202beeb9b34cd2d71af7e945118",
+  "fixture_path": "tests/test_recovery_atomicity.py",
+  "fixture_sha256": "736d77c60f8f1d655867dab8bb7b0a7e85623613c182e8ca8d0402d6b46e7573",
+  "review_tree": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "python_version": "3.12.13",
+  "pre_adaptation_parent_full": {
+    "source": "read raw parent log; not independently rerun full",
+    "path": "/tmp/tianshu-g3-20261113/t1-main133-integration-pytest.log",
+    "sha256": "f6f5c4d244ee3afb80f951755b7d6818746639493cb47b522751fb2d81ed5ea4",
+    "result": "4 failed, 2562 passed, 8 skipped in 432.50s",
+    "failure_stage": "parent setup opens the first EventLog after already writing corrupt manifest; check_new_file_evidence refuses before recovery child starts"
+  },
+  "positive": {
+    "runner": "independent /tmp archive plus frozen nine T1 files and adapted fixture",
+    "result": "4 passed, 4 deselected in 0.74s",
+    "returncode": 0,
+    "parameters": [
+      "after_result-False-corrupt",
+      "after_result-True-corrupt",
+      "before_authority-False-corrupt",
+      "before_authority-True-corrupt"
+    ]
+  },
+  "negative": {
+    "change": "only replace recovery.py in separate /tmp snapshot with actual historical pre-AB02 implementation",
+    "source_commit": "e89a95d4c7e8f7196b38c51148e294d4c72bed9a",
+    "source_blob": "4414b71384e68359562e5b46e535431e31d44bf2",
+    "sha256": "35573e90e1a48e40a80c999fd8d1b3150fc99a3cb1f45b02326aaead5bb79c54",
+    "result": "2 failed, 2 passed, 4 deselected in 0.72s",
+    "returncode": 1,
+    "failed_parameters": [
+      "after_result-False-corrupt",
+      "before_authority-True-corrupt"
+    ],
+    "failure": "original fixture assertion bool(results) == bool(blocks): True != False; durable DB independently confirms 1 unknown result and 0 workspace block in both failures",
+    "not_claimed": "The historical implementation is not claimed to fail all four variants."
+  },
+  "ast_check": {
+    "equivalent_after_only_allowed_setup_move_and_new_corrupt_byte_assert": true,
+    "child_literal_unchanged": true,
+    "original_assert_count": 13,
+    "final_assert_count": 14,
+    "decorators_unchanged": true,
+    "full_module_other_content_unchanged": true,
+    "added_assert": "assert (snapshots.manifest_dir / 'run-probe.json').read_bytes() == b'corrupt'"
+  },
+  "durable_summary": [
+    {
+      "implementation": "positive",
+      "parameter": "after_result-False-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 0
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 0
+      },
+      "dispatches": []
+    },
+    {
+      "implementation": "positive",
+      "parameter": "after_result-True-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 1
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 1
+      },
+      "dispatches": [
+        [
+          "disp",
+          "error"
+        ]
+      ]
+    },
+    {
+      "implementation": "positive",
+      "parameter": "before_authority-False-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 0
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 0
+      },
+      "dispatches": []
+    },
+    {
+      "implementation": "positive",
+      "parameter": "before_authority-True-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 1
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 1
+      },
+      "dispatches": [
+        [
+          "disp",
+          "error"
+        ]
+      ]
+    },
+    {
+      "implementation": "negative",
+      "parameter": "after_result-False-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 0,
+        "recovery.object_blocked": 0
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {},
+      "dispatches": []
+    },
+    {
+      "implementation": "negative",
+      "parameter": "after_result-True-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 1
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 1
+      },
+      "dispatches": [
+        [
+          "disp",
+          "error"
+        ]
+      ]
+    },
+    {
+      "implementation": "negative",
+      "parameter": "before_authority-False-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 1,
+        "recovery.object_blocked": 0
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {
+        "blocked_workspaces": 1,
+        "blocked_objects": 0
+      },
+      "dispatches": []
+    },
+    {
+      "implementation": "negative",
+      "parameter": "before_authority-True-corrupt",
+      "manifest_bytes": "corrupt",
+      "event_counts": {
+        "tool.intent": 1,
+        "tool.result": 1,
+        "recovery.blocked": 0,
+        "recovery.object_blocked": 1
+      },
+      "result_status": [
+        "unknown"
+      ],
+      "result_effect_state": [
+        "unknown"
+      ],
+      "active_authority_counts": {},
+      "dispatches": [
+        [
+          "disp",
+          "error"
+        ]
+      ]
+    }
+  ],
+  "boundary": {
+    "nine_frozen_t1_files_match": true,
+    "recovery_unchanged_from_base": true,
+    "other_base_non_doc_files_unchanged": 254,
+    "repo_writes_by_reviewer": 0
+  },
+  "runs": [
+    {
+      "label": "positive",
+      "cwd": "/tmp/t1-main133-fixture-independent/positive-source",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_recovery_atomicity.py::test_unknown_result_and_block_survive_interrupted_recovery_together",
+        "-k",
+        "corrupt",
+        "-o",
+        "addopts=",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp",
+        "/tmp/t1-main133-fixture-independent/positive-cases",
+        "--tb=short"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.899,
+      "log": "/tmp/t1-main133-fixture-independent/positive-pytest.log",
+      "log_sha256": "065f77b5b84f358632e961625435568fbb2e75e5906849209fd12a2687d9cf39",
+      "environment": "remove TIANSHU_* and keys ending BASE_URL or API_KEY; set PYTHONPATH/PYTHONDONTWRITEBYTECODE and temporary TIANSHU_DATA_ROOT/TIANSHU_AUTHORITY_ROOT; per-test conftest further pins authority"
+    },
+    {
+      "label": "negative",
+      "cwd": "/tmp/t1-main133-fixture-independent/negative-source",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_recovery_atomicity.py::test_unknown_result_and_block_survive_interrupted_recovery_together",
+        "-k",
+        "corrupt",
+        "-o",
+        "addopts=",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp",
+        "/tmp/t1-main133-fixture-independent/negative-cases",
+        "--tb=short"
+      ],
+      "returncode": 1,
+      "elapsed_seconds": 0.814,
+      "log": "/tmp/t1-main133-fixture-independent/negative-pytest.log",
+      "log_sha256": "613ec28087a2b8c976d8cef5ae4ead45c0bcdd81563c049c59293787ed5f4c78",
+      "environment": "remove TIANSHU_* and keys ending BASE_URL or API_KEY; set PYTHONPATH/PYTHONDONTWRITEBYTECODE and temporary TIANSHU_DATA_ROOT/TIANSHU_AUTHORITY_ROOT; per-test conftest further pins authority"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/tmp/t1-main133-fixture-independent/snapshot.json",
+      "sha256": "b98a89145f251a3b0197417a2c9b186c73d3aaa54c64b48f997eeda3963e999a"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/runs.json",
+      "sha256": "fb40d3fff6a2b41627ea2c7453978a12155e56c4b3f151c844ce87a945f9d6d9"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/positive-pytest.log",
+      "sha256": "065f77b5b84f358632e961625435568fbb2e75e5906849209fd12a2687d9cf39"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/negative-pytest.log",
+      "sha256": "613ec28087a2b8c976d8cef5ae4ead45c0bcdd81563c049c59293787ed5f4c78"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/ast-check.json",
+      "sha256": "8852a2b5a464f3ee060a43dbb824b7f4567c926d9d3123e5f7079e0d29e8605a"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/durable-facts.json",
+      "sha256": "a07a9020383cbc48d74e3267c6e4ec7673c0398cd43120561944839d2e049a35"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/durable-summary.json",
+      "sha256": "6da1940299a1e2c9fe56797ef7372d5e90d3c13fdc585803914b7d60e47bba2a"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/final-boundary.json",
+      "sha256": "86709ccb31460b2c580ef7f4ea98bb35120d727977467e2164b56f0d54f6218f"
+    },
+    {
+      "path": "/tmp/t1-main133-fixture-independent/historical-recovery.py.txt",
+      "sha256": "35573e90e1a48e40a80c999fd8d1b3150fc99a3cb1f45b02326aaead5bb79c54"
+    }
+  ],
+  "unresolved_in_review_scope": [],
+  "outside_scope": [
+    "No final full-suite run by reviewer",
+    "No CI run or platform support conclusion",
+    "No formal commit SHA exists yet; parent must bind final full/CI/review to submitted snapshot",
+    "No re-review of T1 product contract or main #133 recovery product implementation"
+  ]
+}

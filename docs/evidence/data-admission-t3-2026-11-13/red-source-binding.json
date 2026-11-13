@@ -1,0 +1,27 @@
+{
+  "files": {
+    "src/tianshu/data_cli.py": {
+      "sha256": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+      "copy": "/tmp/t3-admission/red-first/data_cli.py"
+    },
+    "tests/test_data_migration_cli.py": {
+      "sha256": "e6aa5fe93fae09623d57b27c29269127ed1af422ab0662c355e9f820ed5e1bb3",
+      "copy": "/tmp/t3-admission/red-first/test_data_migration_cli.py"
+    },
+    "tests/test_data_cli.py": {
+      "sha256": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14",
+      "copy": "/tmp/t3-admission/red-first/test_data_cli.py"
+    },
+    "log": {
+      "sha256": "5069bdcc88954c321b0f8b9b69e887bb572dfa39dbef9fce4ad0563574855328",
+      "path": "/tmp/t3-admission/red-first.log"
+    }
+  },
+  "result": "25 failed, 26 passed in 7.13s",
+  "runner": "uv run --frozen python docs/evidence/data-lifecycle-2026-11-13/run_clean.py uv run --frozen pytest -o addopts= -q tests/test_data_migration_cli.py tests/test_data_cli.py",
+  "archived_copies": {
+    "red-data-cli.py.txt": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+    "red-test-data-migration-cli.py.txt": "e6aa5fe93fae09623d57b27c29269127ed1af422ab0662c355e9f820ed5e1bb3",
+    "red-test-data-cli.py.txt": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14"
+  }
+}

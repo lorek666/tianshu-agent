@@ -1,0 +1,19 @@
+{
+  "format": "tianshu-migration",
+  "format_version": 1,
+  "target_version": 2,
+  "status": "completed",
+  "applied_steps": [
+    1,
+    2
+  ],
+  "current_step": null,
+  "backup": {
+    "path": "/historical/backup",
+    "format_version": 1,
+    "db_user_version": 0,
+    "event_count": 1
+  },
+  "started_at_ms": 1,
+  "updated_at_ms": 20
+}

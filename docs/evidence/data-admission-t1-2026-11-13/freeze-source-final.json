@@ -1,0 +1,21 @@
+{
+  "base": "30b973dfe21ce71f40ccfd7e84412de33d23877a",
+  "branch": "codex/g3-data-admission",
+  "scope": "T1 source/tests after independent duplicate-key regression enhancement; uncommitted, not handed off; read-only review only",
+  "files": {
+    "src/tianshu/data_state.py": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+    "src/tianshu/data_admission.py": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+    "src/tianshu/events.py": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+    "tests/test_data_state.py": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+    "tests/test_data_admission.py": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+    "tests/fixtures/data_admission/README.md": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+    "tests/fixtures/data_admission/legacy-completed.json": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+    "tests/fixtures/data_admission/legacy-v2.sql": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+    "tests/fixtures/data_admission/v0.sql": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692"
+  },
+  "difference_from_full_frozen_tests": [
+    "tests/test_data_state.py"
+  ],
+  "test_count": 127,
+  "full_before_test_change": "full-final-clean-boundary.json"
+}

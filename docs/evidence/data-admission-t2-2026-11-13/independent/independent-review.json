@@ -1,0 +1,850 @@
+{
+  "date": "2026-11-13",
+  "reviewer": "独立第二读者 /root/review_admission_contract",
+  "verdict": "PASS_TASK2_CONTENT_ONLY",
+  "pending_task2_findings": 0,
+  "binding": {
+    "base_commit": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+    "handoff_manifest_sha256": "dddec59d87775811550493c535efee2fdc30faff199c41bb6bdbf9c80598c68a",
+    "candidate_binding_sha256": "fd215d2a6347b017f7b4120fb53f6caf752d238156bc132a8965ab1d89f42042",
+    "overlay_count": 25,
+    "overlay_files": {
+      "src/tianshu/data_digest.py": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+      "src/tianshu/migrate.py": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+      "tests/test_data_binding.py": "1c56e2d66a9bc2dcea54e3a26f988c8ad9a2c5e9c1b563341dcb7160220d5e83",
+      "tests/test_migration.py": "02bb86f3608c1841d74516b63d801f0b8e9b17cc9777ada7caba300d304fe2eb",
+      "docs/DATA-ADMISSION-T2-2026-11-13.md": "65467910a911f937dfc2f9db4126be274eb1cacf88a62c15e6cf461aa8d1df79",
+      "docs/KNOWLEDGE.md": "82cfe7c9d87b33597e1937f0715ebf0d0cbe70112d833699740c4ed812aa9ee6",
+      "docs/evidence/data-admission-t2-2026-11-13/README.md": "6d8a1e807bb5c2178603a14e9e07c7d18851a1d7395fd9ff04574170e1abdefc",
+      "docs/evidence/data-admission-t2-2026-11-13/archive-manifest.json": "b64c461d837315b80aac559fc24464adca7e18bfa6feb945515430d22624966c",
+      "docs/evidence/data-admission-t2-2026-11-13/author-ledger.md": "65017aa15e12093c8f22af3a90dec91b2ecb635675c955031ffc04c64ba405b7",
+      "docs/evidence/data-admission-t2-2026-11-13/baseline-behavior-source-binding.json": "24b68bd6b63253c447b0def050f5b0ae632d5a4c43714ab13aaf1b0c13627cd8",
+      "docs/evidence/data-admission-t2-2026-11-13/baseline-behavior-tests.py.txt": "f5c26ff2e58e20d4fb739deec66a149bc555d8063cc7d6cabf16d396dbe33f6e",
+      "docs/evidence/data-admission-t2-2026-11-13/baseline-files.json.gz": "b701bb195d9c5d67cdb93e9b1dc3605111180f8f55c60e5f8b19b79cc8e5ead2",
+      "docs/evidence/data-admission-t2-2026-11-13/final-binding.log.txt": "a86578605783c645af8202975193d45110de8fd6c28fd4430df65c379c42b29f",
+      "docs/evidence/data-admission-t2-2026-11-13/final-byte-io.log.txt": "f574bf83729b682055fea4742e2eec06cd32be9f8694d8319d5361875228ed00",
+      "docs/evidence/data-admission-t2-2026-11-13/final-diff.log.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docs/evidence/data-admission-t2-2026-11-13/final-local-results.json": "190f83e2ca81a064cc20026f8879f49461434191777379ae349f7517a83ef675",
+      "docs/evidence/data-admission-t2-2026-11-13/final-lock.log.txt": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d",
+      "docs/evidence/data-admission-t2-2026-11-13/final-related.log.txt": "efc3ac676a7d6351a4a5f41d5731665ed726d21015da0b0a6da4b62e86b2936c",
+      "docs/evidence/data-admission-t2-2026-11-13/final-ruff.log.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "docs/evidence/data-admission-t2-2026-11-13/freeze-product-tests.json": "508d9adea192d68fad01f51664a81f0b01a814e907baf73246ad779e98ccff69",
+      "docs/evidence/data-admission-t2-2026-11-13/green-first.log.txt.gz": "96e80958c74c8e0106b917f61a6d80c54ffc7b254f4f3d4617fb4eb13f55587c",
+      "docs/evidence/data-admission-t2-2026-11-13/green-preopen.log.txt": "2c7f3ca5d21eb2e115c4aa2aaf6527d6ae1971ae14ac652b55456859e91f2ddd",
+      "docs/evidence/data-admission-t2-2026-11-13/red-first.log.txt.gz": "4a03127fb9ff6a0536e9d4b9f82ebfc1ae7ca6f7649b202527b92cc7010c7d84",
+      "docs/evidence/data-admission-t2-2026-11-13/red-original-behavior.log.txt.gz": "883749c7bcc33c2228bf23fb7bc02515af9130cabce20c09112755e40057da11",
+      "docs/evidence/data-admission-t2-2026-11-13/red-preopen.log.txt.gz": "b521be42939f1a2dd1a2be27c4a22834cd33a611dd5998472ad9dec5f9070404"
+    },
+    "unchanged_baseline_files": 438,
+    "candidate_files": 463,
+    "candidate_drift": [],
+    "t1_nine_plus_recovery_fixture_exact": [
+      {
+        "path": "src/tianshu/data_state.py",
+        "sha256": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "src/tianshu/data_admission.py",
+        "sha256": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "src/tianshu/events.py",
+        "sha256": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/test_data_state.py",
+        "sha256": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/test_data_admission.py",
+        "sha256": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/fixtures/data_admission/README.md",
+        "sha256": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/fixtures/data_admission/legacy-completed.json",
+        "sha256": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/fixtures/data_admission/legacy-v2.sql",
+        "sha256": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/fixtures/data_admission/v0.sql",
+        "sha256": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692",
+        "same_in_c145_and_585": true
+      },
+      {
+        "path": "tests/test_recovery_atomicity.py",
+        "sha256": "736d77c60f8f1d655867dab8bb7b0a7e85623613c182e8ca8d0402d6b46e7573",
+        "same_in_c145_and_585": true
+      }
+    ],
+    "authority_contract_sha256": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+    "authority_plan_sha256": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875"
+  },
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "python": "3.12.13",
+    "pytest": "9.2.0",
+    "candidate_execution": "isolated full585 + exact25 overlay; author worktree read-only"
+  },
+  "runs": {
+    "independent_final": {
+      "exit": 0,
+      "counts": {
+        "tests": 81,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "seconds": 8.139,
+      "probe_sha256": "38ec396febcafbee45ae6a10c7c2037c79bbe93d6651d05bd782a1dd365cea8a",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "-o",
+        "addopts=",
+        "-vv",
+        "-s",
+        "-p",
+        "no:cacheprovider",
+        "/private/tmp/t2-admission-independent/probes/test_t2_independent.py",
+        "--basetemp",
+        "/private/tmp/t2-admission-independent/runs/candidate-positive-final",
+        "--junitxml",
+        "/private/tmp/t2-admission-independent/logs/candidate-positive-final.xml"
+      ]
+    },
+    "targeted_regression": {
+      "exit": 0,
+      "counts": {
+        "tests": 298,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "seconds": 8.369,
+      "probe_sha256": "38ec396febcafbee45ae6a10c7c2037c79bbe93d6651d05bd782a1dd365cea8a",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "-o",
+        "addopts=",
+        "-vv",
+        "-s",
+        "-p",
+        "no:cacheprovider",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_data_binding.py",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_migration.py",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_backup.py",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_backup_materials.py",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_data_state.py",
+        "/private/tmp/t2-admission-independent/candidate-frozen/tests/test_data_admission.py",
+        "--basetemp",
+        "/private/tmp/t2-admission-independent/runs/candidate-targeted-regression",
+        "--junitxml",
+        "/private/tmp/t2-admission-independent/logs/candidate-targeted-regression.xml"
+      ]
+    },
+    "same_byte_noop_supplement": {
+      "exit": 0,
+      "counts": {
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "seconds": 0.667,
+      "probe_sha256": "7f95092333eeff6e5973cf32d49b33d537560e31aa00452a84ec305e9f595a51",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "-o",
+        "addopts=",
+        "-vv",
+        "-s",
+        "-p",
+        "no:cacheprovider",
+        "/tmp/t2-admission-independent/probes/test_t2_supplemental.py",
+        "--basetemp",
+        "/private/tmp/t2-admission-independent/runs/candidate-noop-samebytes",
+        "--junitxml",
+        "/private/tmp/t2-admission-independent/logs/candidate-noop-samebytes.xml"
+      ]
+    },
+    "same_byte_noop_mutant": {
+      "exit": 1,
+      "counts": {
+        "tests": 2,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      "seconds": 0.527,
+      "probe_sha256": "7f95092333eeff6e5973cf32d49b33d537560e31aa00452a84ec305e9f595a51",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "-o",
+        "addopts=",
+        "-vv",
+        "-s",
+        "-p",
+        "no:cacheprovider",
+        "/tmp/t2-admission-independent/probes/test_t2_supplemental.py",
+        "--basetemp",
+        "/private/tmp/t2-admission-independent/runs/mutant-M12-noop-samebytes",
+        "--junitxml",
+        "/private/tmp/t2-admission-independent/logs/mutant-M12-noop-samebytes.xml"
+      ]
+    }
+  },
+  "counting": "81独立 + 2新补充候选通过；298既有目标回归（76 binding+14 migration+21 backup+60 materials+52 state+75 admission）；原55为81子集，不重复计数。非full/CI。",
+  "mutation_summary": {
+    "named_count": 12,
+    "behavior_or_invariance_killed": 11,
+    "retained_guard_not_kill": [
+      "M05"
+    ],
+    "paired_real_positive_passes": 24,
+    "target_assertion_failures": 26,
+    "retained_guard_target_passes": 3,
+    "errors": 0,
+    "skipped": 0,
+    "supplemental_M12_same_byte_failures": 2
+  },
+  "mutations": [
+    {
+      "id": "M01",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "229bb50e4239f40500583d977b0354456941be2606b9dc3b22752e9aa839a006",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M01.patch",
+        "diff_sha256": "e44244b4f980da1e7cd3970727efd26e2cfceefb6ec5d8c0018b6daec6353c67"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M01-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M01_extra_live_material[artifacts/.orphan.tmp]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M01_extra_live_material[blobs/orphan]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M01_extra_live_material[memory_blobs/orphan]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 5,
+        "failures": 3,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M01_extra_live_material[artifacts/.orphan.tmp]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M01_extra_live_material[blobs/orphan]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M01_extra_live_material[memory_blobs/orphan]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M02",
+      "mutation": {
+        "file": "src/tianshu/data_digest.py",
+        "before_sha256": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+        "after_sha256": "4322e3494779f422f3ef3a3e05fa133fd5294e3634f263ed28f0078173db9fbe",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M02.patch",
+        "diff_sha256": "749e6a567abfaca94a27acbf40496932c05a93896d31fec35958bed2f6bbae74"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M02-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M02_non_event_business[projection]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[typed]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[table]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[index]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[view]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[trigger]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 8,
+        "failures": 6,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M02_non_event_business[projection]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[typed]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[table]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[index]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[view]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M02_non_event_business[trigger]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M03",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "02a3c29ce22abfa2c89a47f01759ebc96a5be342a0fe2f5461dd48784ffd230a",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M03.patch",
+        "diff_sha256": "5573a7de8fdb8102ef72636a909ad2f4b9bc60160892cf305ad1298ebe4fdd1a"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M03-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M03_manifest_bytes[resume]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M03_manifest_bytes[A]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 4,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M03_manifest_bytes[resume]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M03_manifest_bytes[A]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M04",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "b5245d5a5ad5f44937eb3be8940bf5a00a83678160c8a0f59de48a97d21d3c65",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M04.patch",
+        "diff_sha256": "bb0b5fdcba89eb4e25b0ceb019270578eaa2c63a79c59b0722650bdc360fab3e"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M04-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M04_plan_binding[resume]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M04_plan_binding[A]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M04_plan_binding[B]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 5,
+        "failures": 3,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M04_plan_binding[resume]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M04_plan_binding[A]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M04_plan_binding[B]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M05",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "5dfff9a52f5ffee9c3830939349006d267216e804c6f2477ca2fabd5a1cfdd8a",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M05.patch",
+        "diff_sha256": "85a559513f084827e934b87a2864c67d89ac520b085a48c5312b01cf954037da"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M05-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M05_real_backup_version[initial]",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "test_M05_real_backup_version[resume]",
+          "status": "passed",
+          "message": null
+        },
+        {
+          "name": "test_M05_real_backup_version[B]",
+          "status": "passed",
+          "message": null
+        }
+      ],
+      "counts": {
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 0,
+      "status": "STILL_REFUSED_BY_RETAINED_GUARD",
+      "verified_target_failures": [],
+      "retained_guards": [
+        "initial full mechanism_digest includes actual version",
+        "resume _reachable_mechanism requires saved version == original from_version",
+        "fresh B full mechanism_digest includes actual version"
+      ],
+      "limitation": "This does not prove each removed explicit comparison is independently necessary. Real-version disagreement is still refused; no kill claimed."
+    },
+    {
+      "id": "M06",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "e5e9d50223a6e7e43ef97807089621e8c715c47eec5d770b767b907a507e88fb",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M06.patch",
+        "diff_sha256": "7ac0b9927b0030ee560170303d7a6fb3e59fd67222998fb1a23c0fc1c927505f"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M06-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M06_initial_full_mechanism",
+          "status": "failed",
+          "message": "AssertionError: refusal changed logical database/material/progress\n[+10214 more lines; full report in element text]"
+        }
+      ],
+      "counts": {
+        "tests": 3,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M06_initial_full_mechanism",
+          "assertion": "AssertionError: refusal changed logical database/material/progress"
+        }
+      ],
+      "assertion_detail": "Late reachable-mechanism guard still refuses, but original pre-DDL refusal invariant fails: actual v1 advanced to v2 and in_progress published."
+    },
+    {
+      "id": "M07",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "c663105d95fd38721a39c192b1215cf16ed19cf42267d691e2af1b293c11ca98",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M07.patch",
+        "diff_sha256": "8ca43b8801699e3b08182395572c7e091f458d39d155734eb2539e06bf6fdb46"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M07-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M07_inherited_audit[applied_at]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M07_inherited_audit[note]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 4,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M07_inherited_audit[applied_at]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M07_inherited_audit[note]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M08",
+      "mutation": {
+        "file": "src/tianshu/data_digest.py",
+        "before_sha256": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+        "after_sha256": "bb56d577b9ab3f0ca59fa8a500e24674158a741c3e242f648d40b995da4b37cf",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M08.patch",
+        "diff_sha256": "b28a7e74a3f208d88c4124e7655498470a5703fad7fda83e9461dfac963ff996"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M08-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M08_real_fts_optimize",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 3,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M08_real_fts_optimize",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M09",
+      "mutation": {
+        "file": "src/tianshu/data_state.py",
+        "before_sha256": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+        "after_sha256": "b5f5f2f373707a6b67004023b1d54ee0bcf347fb36e3518e7a6825c631e571f6",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M09.patch",
+        "diff_sha256": "44dd9fac850d94281316b73e6ddc1a1d23eb140dbaa12b56e179576d94abdb4a"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M09-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M09_unreachable_progress[1-done0-None]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M09_unreachable_progress[2-done1-1]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 4,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M09_unreachable_progress[1-done0-None]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M09_unreachable_progress[2-done1-1]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "assertion_detail": "Isolated shared classifier deliberately restores numeric-union coercion; all original shared T1 files remain byte-identical in candidate."
+    },
+    {
+      "id": "M10",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "51b422c622adf94fe92622339368b9d20e0089bbc51e75d2aaf720978f9163e5",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M10.patch",
+        "diff_sha256": "9ed82df7dc0b038de6185c7a90c9c6c0746f85eba3d3fec230bb9bbf353fd1b9"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M10-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M10_same_path_A_replacement",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 3,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M10_same_path_A_replacement",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M11",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "3c0fe5c17e1e9e524257b8a43c427ad861fd5c4ba08dc7e128c2f269daca8f69",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M11.patch",
+        "diff_sha256": "4c032cf56ce0160f32a0bc624fc8853079af2207acece220d5ce2f0578c627b1"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M11-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M11_fresh_B_full_mechanism[applied_at]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M11_fresh_B_full_mechanism[note]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M11_fresh_B_full_mechanism[definition]",
+          "status": "failed",
+          "message": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ],
+      "counts": {
+        "tests": 5,
+        "failures": 3,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M11_fresh_B_full_mechanism[applied_at]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M11_fresh_B_full_mechanism[note]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        },
+        {
+          "name": "test_M11_fresh_B_full_mechanism[definition]",
+          "assertion": "Failed: DID NOT RAISE AdmissionRefused"
+        }
+      ]
+    },
+    {
+      "id": "M12",
+      "mutation": {
+        "file": "src/tianshu/migrate.py",
+        "before_sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+        "after_sha256": "0ab88747204a23c4284e8e6f7e3ee552400c365802fcba9b3f7fb74e69926733",
+        "diff": "/private/tmp/t2-admission-independent/diffs/M12.patch",
+        "diff_sha256": "c37c5389dbbaaaca9a9ff0144a3929ffe5a7fbf54dd2e490802d52cace13a060"
+      },
+      "run_record": "/private/tmp/t2-admission-independent/logs/mutant-M12-run.json",
+      "positive_controls": 2,
+      "targets": [
+        {
+          "name": "test_M12_noop_read_only[A]",
+          "status": "failed",
+          "message": "AssertionError: no-op modified database/material/progress\n[+10212 more lines; full report in element text]"
+        },
+        {
+          "name": "test_M12_noop_read_only[B]",
+          "status": "failed",
+          "message": "AssertionError: no-op modified database/material/progress\n[+11720 more lines; full report in element text]"
+        }
+      ],
+      "counts": {
+        "tests": 4,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      "exit": 1,
+      "status": "KILLED_BY_BEHAVIOR_OR_INVARIANCE",
+      "verified_target_failures": [
+        {
+          "name": "test_M12_noop_read_only[A]",
+          "assertion": "AssertionError: no-op modified database/material/progress"
+        },
+        {
+          "name": "test_M12_noop_read_only[B]",
+          "assertion": "AssertionError: no-op modified database/material/progress"
+        }
+      ],
+      "supplemental": "Fixed clock + both associated sidecars: candidate 2 pass; mutant 2 fail specifically on publication attempts with same_bytes=true."
+    }
+  ],
+  "classification": {
+    "已修": [
+      {
+        "area": "共享严格类型/旧兼容边界",
+        "status": "已修",
+        "evidence": "migrate重导出同一MigrationState与MigrationStateCorrupt；无第二份coerce/parse；T1九项及恢复fixture逐hash继承；legacy-only/v2无modern状态拒绝且不写。",
+        "code": "migrate.py:29-47,265-270,450-460"
+      },
+      {
+        "area": "单真实连接与布局",
+        "status": "已修",
+        "evidence": "from0/from1未checkpoint提交WAL正控；live inspect/digest/每步事务共用唯一真实conn并持独占；conn关闭；hardlink/symlink及锁后布局复核拒绝；空主库先复用T1历史旁证检查。",
+        "code": "migrate.py:248-252,303-337,450-554,557-572"
+      },
+      {
+        "area": "完整逻辑/机制/材料绑定",
+        "status": "已修",
+        "evidence": "真实6次控制面记忆栈含FTS/vector/summary/游标/账本，未知typed扩展；schema/table/columns/rowid/sequence/重复/generated/WITHOUT ROWID/IEEE754编码；不可读拒绝；FTS真实optimize；三方双向材料；manifest/plan；完整机制起点与继承audit。",
+        "code": "data_digest.py:35-172,182-224; migrate.py:290-300,340-371,404-447"
+      },
+      {
+        "area": "严格续做与只读A/B",
+        "status": "已修",
+        "evidence": "6个from0/from1库级os._exit(77)起点与21种合法形状/实际位置组合；same-path A替换不降级；B业务真实新增且移走A成功；合法ASC定义与audit变体拒绝；no-op字节及writer尝试均0。",
+        "code": "migrate.py:450-554"
+      },
+      {
+        "area": "失败原子性及资源释放",
+        "status": "已修",
+        "evidence": "六次进度发布失败、两次DDL后抛错：不completed，可重获维护准入/SQLite独占并成功续做；DDL/version/audit回滚；历史事件与append-only触发器保留。",
+        "code": "migrate.py:374-401,557-572"
+      }
+    ],
+    "部分修": [],
+    "未修": [],
+    "未决": []
+  },
+  "review_axes": {
+    "intent": "PASS：按契约c62d、计划4648 §1.4/§2/Task2及冻结12项矩阵，亲跑真实接口和变异，不采用作者自查结论代替实测。",
+    "standards": "PASS：仅两产品/两测试/21文档证据overlay；纯标准库，无第二parser；既有test_migration负例保留并加强format2/plan现场断言；未改Task1/CLI/schema依赖。"
+  },
+  "test_evidence_caveats": [
+    "M05三处显式version比较删除后仍被完整机制比较或_reachable_mechanism版本检查拒绝，不授予这些单行独立必要性，不记kill。",
+    "M06变异仍被收尾机制守卫拒绝，但已从v1推进v2并落in_progress，准确红在前置拒绝不变性。",
+    "M09只在隔离副本把共享classifier换成旧数字union补齐；候选T1共享文件未改。",
+    "既有作者定义负例用DESC可先被shape拒绝；独立ASC合法等效定义verify/inspect通过后仍被完整机制比较拒绝，M11真红。",
+    "保存备份未声明文件由既有verify首先拒绝，不把该分支冒充M01额外活材料kill。",
+    "首次独立运行因runs父目录缺失出现55个setup ERROR，全部未到产品调用；保留原日志并排除产品红/kills。修正运行器后55通过，后扩至81；无failures被覆盖。"
+  ],
+  "limits": [
+    "仅Task2库内容验收，未签发Task3 CLI/跨进程验收或授权。库级真实硬退不是CLI四点验收。",
+    "未full、未新CI、未commit/push；后续正式提交及原生平台CI需另绑定。",
+    "本机macOS arm64，不代表Windows/Linux/ARM64设备或桌面体验。",
+    "合作式锁不抵抗同uid raw writer；无inode/generation同内容替换身份保证；只限当前两步机制DDL。"
+  ],
+  "raw_evidence": {
+    "index_path": "/tmp/t2-admission-independent/evidence-index.json",
+    "index_sha256": "56885f13e63914ca10ee50ac4c3b8bcd020d0eca657b8986a4c858818b6d5132",
+    "synthetic_index_path": "/tmp/t2-admission-independent/synthetic-artifact-index.json",
+    "synthetic_index_sha256": "c9e4f5fc54c69e9d9b47ad1d4e6de79e00434c6c55112b0b264cb7eba9fb7a47",
+    "synthetic_entries": 5008,
+    "frozen_matrix_sha256": "9039015c3d85f659bc73614743219898f5cff7021032ce46e8ccb5cb945375b3"
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "status": "PASS_T1_INDEPENDENT_SYNTHETIC_PROBES",
+  "snapshot": "/tmp/t1-admission/review-snapshot",
+  "synthetic_root": "/tmp/t1-admission/independent-data-tnik181u",
+  "check_count": 41,
+  "checks": [
+    {
+      "name": "v0_single_missing_version_row_and_reopen_allowed",
+      "passed": true
+    },
+    {
+      "name": "whole_event_versions_missing_refused_twice_without_recreation",
+      "passed": true
+    },
+    {
+      "name": "custom_future_actual_path_cli_and_real_connection_identity",
+      "passed": true,
+      "cli_exit": 2
+    },
+    {
+      "name": "live_wal_is_read_while_stale_main_version_is_zero",
+      "passed": true,
+      "main_version": 0,
+      "live_version": 999
+    },
+    {
+      "name": "dual_completed_and_later_current_business_write_origin_0",
+      "passed": true
+    },
+    {
+      "name": "dual_completed_and_later_current_business_write_origin_1",
+      "passed": true
+    },
+    {
+      "name": "dual_completed_and_later_current_business_write_origin_2",
+      "passed": true
+    },
+    {
+      "name": "historical_legacy_v2_without_format2_ordinary_compatibility",
+      "passed": true
+    },
+    {
+      "name": "v2-no-progress_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "legacy-at-new_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "v2-at-old_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "bad-other-file_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "custom_actual_db_obeys_own_sidecar",
+      "passed": true
+    },
+    {
+      "name": "payload-future_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "memory-future_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "audit-float_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "missing-step_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "hidden-column_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "descending-index_refuses_unchanged",
+      "passed": true
+    },
+    {
+      "name": "snapshot_store_empty_skeleton_new_False",
+      "passed": true
+    },
+    {
+      "name": "snapshot_store_empty_skeleton_new_True",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_artifacts_empty-file",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_artifacts_content",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_artifacts_symlink",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_artifacts_dangling-symlink",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_blobs_empty-file",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_blobs_content",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_blobs_symlink",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_blobs_dangling-symlink",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_memory_blobs_empty-file",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_memory_blobs_content",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_memory_blobs_symlink",
+      "passed": true
+    },
+    {
+      "name": "new_db_refuses_memory_blobs_dangling-symlink",
+      "passed": true
+    },
+    {
+      "name": "otherwise_valid_state_duplicate_top-level_refused",
+      "passed": true
+    },
+    {
+      "name": "otherwise_valid_state_duplicate_nested_refused",
+      "passed": true
+    },
+    {
+      "name": "strict_state_bool_refused",
+      "passed": true
+    },
+    {
+      "name": "strict_state_nested-bool_refused",
+      "passed": true
+    },
+    {
+      "name": "strict_state_unknown_refused",
+      "passed": true
+    },
+    {
+      "name": "utf8_progress_reads_with_non_utf8_default_and_no_encoding_warning",
+      "passed": true,
+      "result": {
+        "loaded": true,
+        "encoding": "US-ASCII"
+      }
+    },
+    {
+      "name": "memory_db_no_file_or_sidecar_access",
+      "passed": true
+    },
+    {
+      "name": "import_subprocess_and_ast_no_execution_or_business_store_dependency",
+      "passed": true
+    }
+  ],
+  "full_suite_run": false,
+  "native_platform_ci_verified": false
+}

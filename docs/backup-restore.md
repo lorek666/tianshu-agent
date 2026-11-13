@@ -1,6 +1,6 @@
-# 数据备份、校验与恢复预演（PRD §8.5）
+# 数据备份、校验、迁移与恢复预演（PRD §8.5）
 
-2026-11-13 的数据生命周期首片新增三个 CLI 入口，基于 `main @ ccff93e`；本轮验收记录见 [DATA-LIFECYCLE-2026-11-13.md](DATA-LIFECYCLE-2026-11-13.md)。原 W4 库函数验收（`feat/backup-restore`，基线 `da84d92`，1347 passed / 6 skipped）保留在 §7–§8，属于 2026-11-11 的历史证据，不代表当前全量测试数。
+2026-11-13 的数据生命周期首片新增 backup、verify、restore-plan 三个 CLI 入口，记录见 [DATA-LIFECYCLE-2026-11-13.md](DATA-LIFECYCLE-2026-11-13.md)。后续 T1 接入实际 EventLog 准入，T2 收紧迁移绑定，T3 新增第四个入口 `data migrate`；三片精确内容均已独立验收，最终组合门禁及新原生 CI 状态见[集成记录](DATA-ADMISSION-2026-11-13.md)。[T2](DATA-ADMISSION-T2-2026-11-13.md)/[T3](DATA-ADMISSION-T3-2026-11-13.md)作者记录保留其历史冻结时点。原 W4 库函数验收（`feat/backup-restore`，基线 `da84d92`，1347 passed / 6 skipped）保留在 §7–§8，属于 2026-11-11 的历史证据，不代表当前全量测试数。
 
 规格：[PRD §8.5](PRD-v1.md)、[原 W4 规格 §5](SPEC-PRD-REVIEW-2026-11-11.md)。库实现为 `backup.py` / `migrate.py`；新入口为 `data_cli.py`，协作式维护准入为 `maintenance.py`。
 
@@ -14,11 +14,14 @@
 uv run --frozen tianshu data backup --data-root /absolute/data-root --dest /absolute/backups/backup-1 --json
 uv run --frozen tianshu data verify /absolute/backups/backup-1 --json
 uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root /absolute/data-root --json
+uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /absolute/backups/backup-1 --json
 ```
 
 `backup` / `verify` 成功退出 `0`；`verify` 不完整退出 `1`；前置条件不满足退出 `2`。`restore-plan` 的检查通过退出 `3`，表示待人工复核，**没有执行恢复**；检查不通过退出 `2`。去掉 `--json` 可读人话输出。
 
-新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口须等版本准入和记忆隔离契约落地。
+`migrate` 必须同时给出 `--data-root` 与既有的 `--backup`，不会自动生成备份；成功退出 `0`，拒绝或执行失败退出 `2`，四个原故障注入点退出 `77`。JSON 失败含 `operation="migrate"`、`ok=false`、`code` 与 `error`；六类 code 为 `incompatible`、`migration_incomplete`、`progress_corrupt`、`backup_mismatch`、`maintenance_busy`、`migration_failed`。成功含 `ok=true`、`code=null` 和迁移库报告。JSON 及迁移文本统一脱敏；内部编程异常不伪装成这六类业务失败。
+
+新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。迁移不启停服务、不执行恢复。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口仍须等记忆隔离等后续契约实现与验收。
 
 预演需要 `runs`、`approvals`、`leases` 三张投影及事件版本旁表可读。缺失或损坏时退出 `2`、`ok=false`、`reconciliation.complete=false`，不会将未能核对的状态报告为空。只有事件日志的旧库也不猜测重建成功；须先由匹配版本重建并验证必要投影。
 
@@ -30,11 +33,11 @@ uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root
 | `verify_backup` 校验哈希/引用/事件 seq 连续/清单可解析/版本兼容 | **已实现 + 有测试** | §3 |
 | `data restore-plan` 只读报告原路径、干净目标、版本与未决项 | **本轮新增；不执行恢复** | `tests/test_data_cli.py` |
 | 低层 `restore_backup` 只恢复干净根；失败保留原数据 | **原 W4 库函数；不是新 CLI 的恢复许可** | §4；未补齐后续删除历史与记忆隔离 |
-| 迁移有结构版本号、步骤注册表、进度持久化、备份前置、前/后故障注入、中断续做 | **已实现 + 子进程中断测试** | §5 |
+| 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2 库 + T3 CLI 本机候选；T3 独立待验** | §5、T2/T3 事实记录 |
 | 迁移不 UPDATE/DELETE 历史事件；append-only 触发器保留 | **已实现 + 有测试** | §5 |
 | 保留期声明 + 引用保护（被引用 blob 永不进清理候选） | **已实现 + 有测试** | §6 |
 | **换路径恢复（重定位）** | **未实现** | §4.2：事件 `payload_ref` / 快照 `blob_ref` 是绝对路径；`events.py`/`snapshot.py` 不在本工作流所有权 |
-| **迁移写入门已接进 CLI/daemon** | **未接线** | §5.5：`migrate.assert_writable()` 只有库函数；接入点需要改 `cli.py`/`daemon.py`（不在所有权） |
+| 实际 EventLog 打开前的版本/进度准入 | **T1 已接线** | §5.5；正常 v0 兼容，不自动迁移 |
 | **首次启动自动建库并迁移** | **未实现** | 新库 `user_version=0`，当前程序不会自动迁移；见 §5.5 |
 | CLI 备份与正常 `EventLog` 连接互斥 | **本轮新增协作准入；不强停进程** | §2.2；直接调用低层在线 API 不自动独占 |
 | Windows 实机 / APFS / 跨机器恢复 | **未验证** | 只有 macOS arm64 本机；换路径/跨机重定位未实现 |
@@ -76,7 +79,7 @@ uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root
 | `metrics.jsonl` | ❌ | — | 本地指标 |
 | `events.db-wal` / `-shm` | ❌ | — | 在线备份已给出单文件一致点 |
 | 工作区里的用户文件 | ❌ | — | 不属于数据根 |
-| `migration.json` | ❌ | — | 迁移进行中的瞬时进度；从旧备份恢复后应重新迁移 |
+| `migration.json` / `events.db.migration.json` | ❌ | — | 旧进度/新绑定进度不进备份；仅有旧备份不等于取得新的迁移或恢复许可 |
 
 ### 2.2 一致性怎么来（以及窗口有多大）
 
@@ -210,15 +213,9 @@ message 里带**问题 + 处置建议**。
 
 ### 5.2 进度与续做
 
-`<data_root>/migration.json`（原子写）：
+新进度原子写到 `<data_root>/events.db.migration.json`，固定 `format="tianshu-migration"`、`format_version=2`。字段及严格规则以 [数据准入契约](data-admission-contract.md) §2.2/§3.1 和 `data_state.MigrationStateV2` 为准：绑定 canonical `db_path`、`from_version`/`target_version`、状态/步骤/时间、完整 SQL `plan_sha256`、原备份路径及 manifest 字节摘要、业务与材料的版本化摘要。数字不强制转换，坏类型、重复字段、未知字段与不可达步骤拒绝。
 
-```json
-{"format":"tianshu-migration","format_version":1,
- "target_version":2,"status":"in_progress",
- "applied_steps":[1],"current_step":2,
- "backup":{"path":"…","format_version":1,"db_user_version":0,"event_count":N},
- "started_at_ms":…,"updated_at_ms":…}
-```
+标准根的旧 `migration.json` 只接受格式 1；新 sidecar 只接受格式 2。两份都在就都验证，格式放错位置或内容冲突均拒绝。有限 legacy completed 只给普通连接兼容，不授予迁移或续做权，也不自动转换为格式 2。
 
 每步落盘两次：**步骤开始前**（写 `current_step`）与**完成后**（追加
 `applied_steps`）。崩溃点与恢复行为：
@@ -229,16 +226,15 @@ message 里带**问题 + 处置建议**。
 | `migration-after-step-N` | N | `in_progress, current_step=N` | 识别第 N 步已提交 → 标记完成，继续 N+1 |
 | 最后一步提交后、写完成前 | 2 | `in_progress, current_step=2` | 以库版本为权威，补成 `completed` |
 
-续做时**重新校验**进度文件里记录的备份；备份被移走/损坏 → 拒绝续做（不猜）。
-`migration.json` 读不懂、或与库版本自相矛盾（例如声称完成但版本没到、目标版本属于
-另一套迁移计划）→ `MigrationStateCorrupt`，拒绝继续并让人工处理。
+续做时重新验证实际文件、原备份路径、manifest 字节、真实备份起点、业务与双向材料清单，并仅接受已登记步骤的提交前/后窗口。备份移走、损坏或绑定变化就拒绝；不按 DB 数字补造步骤。完成后用原备份重复核原绑定，或用不同路径的新 v2 备份核当前一致点，两路均不重写 DB/进度。细节与证据见 [T2 记录](DATA-ADMISSION-T2-2026-11-13.md)。
 
 ### 5.3 前置条件（不满足一律不动库）
 
-1. 数据根存在且含 `events.db`；
-2. 没有活着的 daemon/host 写者（只读探针：IPC probe + 锁文件 pid 存活判定）；
-   **判定不了也拒绝**（unknown + 阻断方向）；
-3. 有一份 `verify_backup()` 通过的备份（路径与摘要写进进度文件，续做时复用）。
+1. 标准根内 `events.db` 是单硬链接普通文件，用户 symlink/junction 或根外材料拒绝；取得锁后复查布局。
+2. 对实际 DB 持独占维护准入，覆盖到全部进度收尾。正常 EventLog 的共享连接会挡迁移；迁移持锁时普通打开在创建 payload 目录前拒绝。daemon/host 的 IPC/PID 探活只作补充；判定不了也拒绝。
+3. 备份先通过完整验证，再证明与活库升级前的完整机制、业务及材料一致；仅同根、同事件数或 verify 通过都不充分。第一份严格绑定进度写成后才执行 DDL。
+
+拒绝保持历史事件、库逻辑内容、进度及材料不变；SQLite 打开活 WAL 的自身锁/SHM 行为不构成物理文件零写承诺。合作式维护锁不抵抗 raw SQLite 或旧版程序。
 
 ### 5.4 故障注入
 
@@ -247,18 +243,16 @@ message 里带**问题 + 处置建议**。
 永不触发）。测试用**真子进程**在四个注入点崩溃，重启后续做，断言：可完成、
 最终 `user_version=2`、每步只应用一次、历史事件摘要不变、append-only 触发器仍在。
 
-### 5.5 写入门（**未接线**，如实登记）
+### 5.5 实际 EventLog 准入与显式迁移
 
-`migrate.assert_writable(data_root)`：版本高于程序支持、低于程序要求、或迁移未完成时
-抛 `UnsupportedSchemaVersion` / `MigrationIncomplete`，并给恢复路径。**本轮没有把它
-接进 CLI/daemon**——`cli.py` / `daemon.py` 不在本工作流文件所有权内。因此当前状态：
+T1 已在所有正常 EventLog 的实际连接前缀接入共享准入与只读检查，先检查真实 DB 及其关联进度，再设置 WAL、执行事件 DDL、创建 payload 目录。自定义 DB 检查自身 `<数据库名>.migration.json`，不借旁边标准库作证。
 
-- 一个停在 `user_version=0/1` 的库，**不会**被现有 CLI/daemon 拒绝写入；
-- 新库（`EventLog` 直接建出 `user_version=0`）也**不会**自动迁移；
-- 这两个缺口是"要求写进 PRD ≠ 已实现"的典型例子，**不得**当成已完成。
-  接线前须先按 PRD §5.3.5 单独登记全产品版本与 v0 准入契约；不能直接用演示的
-  `SCHEMA_VERSION=2` 拒绝全部正常 v0 产品库。本轮恢复预演只报告该演示版本差异，
-  `migration_required` 不表示已有可用的产品升级入口。
+- 真正新空库与合法无进度 v0 保持兼容，不盲标为 v2，也不自动迁移。
+- v1 与任何 `in_progress` 拒绝普通打开；v2 必须有严格合法、与真实 DB/机制对象一致的 completed 证据；无进度不放行。
+- 未来/畸形已登记版本、缺整个事件版本旁表、坏 JSON 或关联记录冲突拒绝。标准库的有限 legacy completed 兼容仅限普通打开，不能转成新续做权。
+- `migrate.assert_writable()` 保留为旧专用严格 helper，未原样塞入普通启动；它会拒绝正常 v0。T3 的 `data migrate` 仅接 T2 迁移库，不复制版本、摘要或路径算法。
+
+当前 0→2 仍只证明迁移机制，完整产品格式、恢复隔离与自动升级回退矩阵尚未交付。T1 的组合与 T2/T3 的定向、独立和 CI 状态分别见知识库及各片事实记录。
 
 ---
 
@@ -398,13 +392,13 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
 1. **换路径恢复（重定位）未实现**：见 §4.2。需要相对化 `payload_ref` / `blob_ref`
    （`events.py` / `snapshot.py` 属别的工作流）或恢复时重写引用表（不能 UPDATE 历史
    事件，需要新机制）。
-2. **写入门未接进 CLI/daemon**、新库不自动迁移：§5.5。
+2. **新库不自动迁移，完整产品格式与升级回退矩阵未交付**：实际 EventLog 准入及显式迁移边界见 §5.5。
 3. **低层在线 API 没有停止写者**：跨"事件库 + 材料"的严格一致需要独占维护；
    `create_backup()` 自身只有在线备份 API + 复制顺序。新 `data backup` CLI 已持独占
    准入；旧版本与直接 SQLite 访问不参与该协作锁，边界见 §2.2。
 4. **迁移步骤只有两步**、且是本模块自有的 `migration_log`：W5 的事件 payload 契约
    版本旁表合入后需要追加新步骤（注册表就是为这个准备的），本轮不预造。
-5. **Windows**：只有 `windows-latest` CI，**没有实机**。本轮 CI 暴露并修掉两处
+5. **Windows 历史 W4 证据**：只有 `windows-latest` CI，**没有实机**。当时 CI 暴露并修掉两处
    Windows 兼容缺陷：① `os.fsync` 对只读句柄报 `EBADF`——`_fsync_file` 改用可写
    句柄，仍失败只在"该边界已落盘"上降级（哈希/引用校验不受影响）；②
    `_pid_alive` 在 Windows 上不能用 `os.kill(pid, 0)`（那是 TerminateProcess
@@ -413,7 +407,7 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
    `restore` 的原子改名、目录 fsync 与 APFS/跨机器语义仍无实机证据。**收尾态实测**：
    `main @ ec7d7ae` 的 `windows-latest` 上 `test_pid_alive_sees_current_process` 与全部
    backup/migrate 用例通过（该 job 总计 5 failed / 1509 passed / 29 skipped，剩余失败都是
-   authority 子进程编码、命名管道、资源 URI 编码这些既有族，与备份无关）。
+   authority 子进程编码、命名管道、资源 URI 编码这些既有族，与备份无关）。这不证明 T3 候选的原生 Windows CI 已通过，T3 本轮只有 macOS 本机定向证据。
 6. **备份大小/耗时**：本轮没有大库压测（测试库都是 KB 级）；在线备份 API 对超大库的
    暂停时间未测量。
 7. **密钥材料**：`ipc.key` 明确不进备份；备份里的 `events.db` 是否含敏感 payload

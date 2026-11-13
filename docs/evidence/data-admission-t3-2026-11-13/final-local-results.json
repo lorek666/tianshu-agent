@@ -1,0 +1,85 @@
+{
+  "base": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+  "t2_handoff_sha256": "dddec59d87775811550493c535efee2fdc30faff199c41bb6bdbf9c80598c68a",
+  "commands": [
+    {
+      "label": "final-cli",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "docs/evidence/data-lifecycle-2026-11-13/run_clean.py",
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "tests/test_data_migration_cli.py",
+        "tests/test_data_cli.py"
+      ],
+      "returncode": 0,
+      "log": "/tmp/t3-admission/final-cli.log"
+    },
+    {
+      "label": "final-lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "returncode": 0,
+      "log": "/tmp/t3-admission/final-lock.log"
+    },
+    {
+      "label": "final-ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "returncode": 0,
+      "log": "/tmp/t3-admission/final-ruff.log"
+    },
+    {
+      "label": "final-diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0,
+      "log": "/tmp/t3-admission/final-diff.log"
+    },
+    {
+      "label": "final-runtime",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "-c",
+        "import json,platform,sys; print(json.dumps({\"python\":sys.version,\"machine\":platform.machine(),\"system\":platform.system(),\"release\":platform.release()},sort_keys=True))"
+      ],
+      "returncode": 0,
+      "log": "/tmp/t3-admission/final-runtime.log"
+    }
+  ],
+  "files_before": {
+    "src/tianshu/data_cli.py": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+    "tests/test_data_migration_cli.py": "d8fe54a496881a7b9da38beb09604a876fea7a7c7b0844037ef6627ac3234bc6",
+    "tests/test_data_cli.py": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14"
+  },
+  "files_after": {
+    "src/tianshu/data_cli.py": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+    "tests/test_data_migration_cli.py": "d8fe54a496881a7b9da38beb09604a876fea7a7c7b0844037ef6627ac3234bc6",
+    "tests/test_data_cli.py": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14"
+  },
+  "files_stable": true,
+  "limits": "T3 targeted local only; no full, native CI, UI, commit or push"
+}

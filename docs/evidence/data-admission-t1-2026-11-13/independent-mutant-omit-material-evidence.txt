@@ -1,0 +1,112 @@
+FFFFFF                                                                   [100%]
+=================================== FAILURES ===================================
+_________ test_new_database_refuses_nested_material_files[-artifacts] __________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest0')
+material = 'artifacts', content = b''
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+___________ test_new_database_refuses_nested_material_files[-blobs] ____________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest1')
+material = 'blobs', content = b''
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+________ test_new_database_refuses_nested_material_files[-memory_blobs] ________
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest2')
+material = 'memory_blobs', content = b''
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+____ test_new_database_refuses_nested_material_files[old history-artifacts] ____
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest3')
+material = 'artifacts', content = b'old history'
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+______ test_new_database_refuses_nested_material_files[old history-blobs] ______
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest4')
+material = 'blobs', content = b'old history'
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+__ test_new_database_refuses_nested_material_files[old history-memory_blobs] ___
+
+tmp_path = PosixPath('/private/tmp/t1-admission/pytest-mutant-omit-material-evidence/test_new_database_refuses_nest5')
+material = 'memory_blobs', content = b'old history'
+
+    @pytest.mark.parametrize("material", ["artifacts", "blobs", "memory_blobs"])
+    @pytest.mark.parametrize("content", [b"", b"old history"])
+    def test_new_database_refuses_nested_material_files(tmp_path, material, content):
+        db = tmp_path / "events.db"
+        old = tmp_path / material / "nested" / "old"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(content)
+>       with pytest.raises(TianshuError, match="incompatible"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE TianshuError
+
+tests/test_data_admission.py:288: Failed
+=========================== short test summary info ============================
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[-artifacts]
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[-blobs]
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[-memory_blobs]
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[old history-artifacts]
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[old history-blobs]
+FAILED tests/test_data_admission.py::test_new_database_refuses_nested_material_files[old history-memory_blobs]
+6 failed in 0.11s

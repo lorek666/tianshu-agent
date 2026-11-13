@@ -84,10 +84,11 @@ def test_unknown_result_and_block_survive_interrupted_recovery_together(
     ws.mkdir()
     (ws / "target.txt").write_bytes(b"PARTIAL UNKNOWN CONTENT")
     snapshots = SnapshotStore(tmp_path / "artifacts")
-    if manifest == "corrupt":
-        (snapshots.manifest_dir / "run-probe.json").write_bytes(b"corrupt")
     with closing(EventLog(tmp_path / "events.db")) as log:
         _seed_intent(log, mcp=mcp)
+    if manifest == "corrupt":
+        (snapshots.manifest_dir / "run-probe.json").write_bytes(b"corrupt")
+        assert (snapshots.manifest_dir / "run-probe.json").read_bytes() == b"corrupt"
     child = subprocess.run(
         [sys.executable, "-c", _CHILD, str(tmp_path), stage],
         env=dict(os.environ), capture_output=True, timeout=15, **CHILD_TEXT,

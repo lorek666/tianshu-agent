@@ -1,0 +1,4 @@
+COMMAND uv run --frozen pytest -o addopts= -q tests/test_data_binding.py::test_zero_main_historical_sidefiles_refused_before_open
+...                                                                      [100%]
+3 passed in 0.20s
+EXIT 0

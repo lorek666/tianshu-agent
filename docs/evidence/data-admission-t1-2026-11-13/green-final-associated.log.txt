@@ -1,0 +1,8 @@
+COMMAND uv run --frozen pytest -o addopts= -q tests/test_data_state.py tests/test_data_admission.py tests/test_events.py tests/test_maintenance.py tests/test_memory_store.py tests/test_windows_compat.py tests/test_failclosed.py
+........................................................................ [ 24%]
+........................................................................ [ 48%]
+........................................................................ [ 72%]
+........................................................................ [ 96%]
+............                                                             [100%]
+300 passed in 4.46s
+EXIT 0

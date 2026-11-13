@@ -1,0 +1,26 @@
+{
+  "scope": "Original PREPARATION_ONLY inputs; this archive closes the original index without executing or adding a bare Python evidence script to the source lint scope. Original reports/index unchanged.",
+  "original_index": "preparation-sha256.json",
+  "original_index_sha256": "71fe872051c25a5b4cdbe1dedada4c5dfe8d93c5041ced580afee7cadb810cad",
+  "archive": "preparation-originals.tar.gz",
+  "archive_bytes": 55302,
+  "archive_sha256": "375d7660afddd13d3d136104c0844f8b306f9f62c39e03e99d037ffe3f2ad0dc",
+  "members": {
+    "prepare-source-binding.py": {
+      "sha256": "db2f0b19a811b08cecd4a670e639e10b9cc0b9800ef30c7df0f31dd5d9e5190e",
+      "bytes": 20120
+    },
+    "source-object-map.json": {
+      "sha256": "23186f7712b00ad81d56560aea6f309ed78e4ae8317db73550fff700504919e1",
+      "bytes": 209069
+    },
+    "source-preparation.json": {
+      "sha256": "907c75b3d1c5911fbb3b6f294412b62a8084850c6500119733d76a60a7d29058",
+      "bytes": 14520
+    },
+    "acceptance-checklist.md": {
+      "sha256": "4fb3aacfb9a64dcaa3e57220ed7b8dd63859d13f13bbed36723560b2d4c3a5f1",
+      "bytes": 2486
+    }
+  }
+}

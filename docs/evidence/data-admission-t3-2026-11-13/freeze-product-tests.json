@@ -1,0 +1,5 @@
+{
+  "src/tianshu/data_cli.py": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+  "tests/test_data_migration_cli.py": "d8fe54a496881a7b9da38beb09604a876fea7a7c7b0844037ef6627ac3234bc6",
+  "tests/test_data_cli.py": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14"
+}

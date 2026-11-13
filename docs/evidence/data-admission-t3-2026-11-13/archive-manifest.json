@@ -1,0 +1,23 @@
+{
+  "files": {
+    "README.md": "6fc2cd2a9f84f56a2fc6761ed8623a0c395a7fb8f63188bbccf1a2528d995947",
+    "author-ledger.md": "dd8410106b3d8b6782b1001d3be4ab23449c9a16f42cca233da1caf2a6aa7887",
+    "baseline-files.json.gz": "fc9c1aaecef427e33fe36a07e8d44dc38a7549b844ec48d4d7631fd412d36334",
+    "final-cli.log.txt": "6ed50cebea27053017ffe054864fe10c740cb11aed105911b3a8aaffdd0521b5",
+    "final-diff.log.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-local-results.json": "54b043baeb1fe615c4f7783b10dc728b6b920b7a8cd58672d7ad0668c3e66157",
+    "final-lock.log.txt": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d",
+    "final-ruff.log.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "final-runtime.log.txt": "f005f2233bc39bea7f0e7cc4be92a388a14a4d89b8e374317dc14658184f4bd4",
+    "freeze-product-tests.json": "d3fe570ed94d27de6a039ae63bf65f69d1a1e4b3996616ccc92463284140c41d",
+    "green-attempt-1.log.txt": "c653df0b38b92f7c9dbbf72deba55df12c20cbcef3f29c4bc3a7cdb7efbe2c04",
+    "green-attempt-2.log.txt": "7d7fc9e8f5d63d793673cfbe527b47036d9fdaea3e0c58ff687cc4fb720b2acb",
+    "placeholder-check.log.txt": "16719bd0c1c7c6c9eb8a194b13ea8f0b0f5155b39d690627c0b31e9e50efc46d",
+    "red-data-cli.py.txt": "881714d85a10d46426d1a956fb5cc910f50c87b651b625b87aeae75d17c15239",
+    "red-first.log.txt.gz": "23c1d1baba489779232672a280d4b934b8cdc113476a8ddf58c4ed8ff37dadf0",
+    "red-source-binding.json": "e65eea59f7aec8d1958d9766680f25155410825ca762f0c0f4cda7eac90ad79e",
+    "red-test-data-cli.py.txt": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14",
+    "red-test-data-migration-cli.py.txt": "e6aa5fe93fae09623d57b27c29269127ed1af422ab0662c355e9f820ed5e1bb3",
+    "scope-check.json": "10ec7c25db0b927613566de2df4709ef9b043825322f86648ebe13cd9e17d67a"
+  }
+}

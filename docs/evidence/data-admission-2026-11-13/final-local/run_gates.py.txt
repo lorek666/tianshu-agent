@@ -1,0 +1,65 @@
+"""Run the final combined local gates once, only after frozen handoff."""
+from pathlib import Path
+import datetime
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+
+root = Path('/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent')
+out = Path('/tmp/tianshu-g3-20261113/final-admission')
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def paths():
+    raw = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root)
+    return sorted(set(p.decode() for p in raw.split(b'\0') if p and not p.startswith(b'docs/')))
+
+def snapshot():
+    return {name: sha(root / name) for name in paths() if (root / name).is_file()}
+
+if len(sys.argv) != 2 or sys.argv[1] != '--run-frozen-combination':
+    raise SystemExit('Explicit --run-frozen-combination is required after root integrates the reviewed handoff.')
+if (out / 'results.json').exists() or (out / 'before.json').exists():
+    raise SystemExit('Refusing to overwrite existing final gate evidence.')
+for stage in ('t2', 't3'):
+    m = json.loads(Path(f'/tmp/{stage}-admission/handoff-manifest.json').read_text())
+    files = m['files']
+    for name, expected in files.items():
+        if name.startswith(('src/', 'tests/')):
+            if isinstance(expected, dict):
+                expected = expected['sha256']
+            assert sha(root / name) == expected, f'{stage} reviewed object drift: {name}'
+before = snapshot()
+(out / 'before.json').write_text(json.dumps(before, ensure_ascii=False, indent=2) + '\n')
+clean_env = os.environ.copy()
+removed_env_names = sorted(name for name in clean_env if name.startswith('TIANSHU_') or name.endswith(('BASE_URL', 'API_KEY')))
+for name in removed_env_names:
+    clean_env.pop(name)
+results = {'root': str(root), 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           'runtime_head': subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
+           'merge_head': subprocess.run(['git','rev-parse','--verify','MERGE_HEAD'],cwd=root,text=True,capture_output=True).stdout.strip(),
+           'frozen_non_docs': len(before), 'removed_env_names': removed_env_names, 'commands': []}
+for label, command in [('lock',['uv','lock','--check']),('pytest',['uv','run','--frozen','pytest']),('ruff',['uv','run','--frozen','ruff','check','.'])]:
+    start = time.monotonic()
+    log = out / f'{label}.log'
+    with log.open('wb') as stream:
+        result = subprocess.run(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT, env=clean_env)
+    entry = {'label':label, 'command':command, 'exit':result.returncode, 'seconds':round(time.monotonic()-start,2),
+             'log':str(log), 'bytes':log.stat().st_size, 'sha256':sha(log)}
+    results['commands'].append(entry)
+    (out / 'running-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2)+'\n')
+    print(json.dumps(entry,ensure_ascii=False),flush=True)
+    if result.returncode:
+        break
+after = snapshot()
+(out / 'after.json').write_text(json.dumps(after,ensure_ascii=False,indent=2)+'\n')
+results['source_drift'] = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+results['completed_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+results['passed'] = len(results['commands']) == 3 and all(e['exit']==0 for e in results['commands']) and not results['source_drift']
+(out / 'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps({'passed':results['passed'],'source_drift':results['source_drift']},ensure_ascii=False),flush=True)
+raise SystemExit(0 if results['passed'] else 1)

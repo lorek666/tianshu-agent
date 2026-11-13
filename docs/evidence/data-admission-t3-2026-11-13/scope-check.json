@@ -1,0 +1,23 @@
+{
+  "base": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+  "baseline_count": 463,
+  "permitted_existing_changes": [
+    "docs/KNOWLEDGE.md",
+    "docs/backup-restore.md",
+    "src/tianshu/data_cli.py",
+    "tests/test_data_cli.py"
+  ],
+  "non_authorized_existing_count": 459,
+  "non_authorized_drift": [],
+  "t2_input_count": 25,
+  "t2_non_knowledge_count": 24,
+  "t2_non_knowledge_drift": [],
+  "t2_original_baseline_outside_freeze_count": 438,
+  "t2_original_baseline_outside_freeze_unchanged_non_authorized_count": 435,
+  "knowledge_without_two_t3_additions_sha256": "82cfe7c9d87b33597e1937f0715ebf0d0cbe70112d833699740c4ed812aa9ee6",
+  "knowledge_exact_t2_restoration": true,
+  "old_cli_test_prefix_unchanged": true,
+  "unexpected_new_files": [],
+  "author_only": true,
+  "no_full_or_ci": true
+}

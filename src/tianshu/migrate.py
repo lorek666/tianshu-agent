@@ -1,86 +1,77 @@
-"""版本化迁移与中断恢复（PRD §5.3.5 第 3 条）。
+"""标准根离线迁移：完整一致点绑定、单连接事务与严格可达续做。
 
-## 问题
-
-事件库现在只有 `CREATE TABLE IF NOT EXISTS`：每个模块启动时自己补表/补列
-（`ApprovalStore._ensure_column`、`LeaseStore._ensure_columns`……），**没有**
-统一的结构版本号，也没有「迁移做到一半崩了怎么办」的答案。模块各补各的，
-一个步骤失败就留下"有的表新、有的表旧"的混合状态，而没有任何记录能说明
-"迁移到第几步、下一步该做什么"。
-
-## 做法（不是假装两阶段提交）
-
-1. **结构版本号**：`PRAGMA user_version` 是唯一权威。每一步在自己的事务里
-   同时改 DDL 与 `user_version`——两者要么一起生效、要么一起回滚，不存在
-   "表改了但版本没改"的窗口。
-2. **步骤注册表**：`STEPS` 是有序的 `MigrationStep` 列表，`from_version → to_version`
-   必须首尾相接。新增结构变化 = 追加一步，不改历史步骤。
-3. **进度持久化**：`<data_root>/migration.json` 记录目标版本、当前步骤、
-   已完成步骤、备份引用。每步落盘两次（开始 / 完成），都是原子替换。
-4. **前置备份**：开始迁移/续做前，必须有一份 `backup.verify_backup()` 通过的
-   备份；备份路径与摘要写进进度文件，续做时重新校验。没有备份就不动库。
-5. **故障注入**：每步前/后调用 `crashpoint.failpoint`（`os._exit(77)`，仅
-   `TIANSHU_FAILPOINT` 命中时生效），测试用子进程在中断后重启，断言可续做、
-   最终版本一致、历史事件一个字节都没变。
-6. **不支持版本拒绝写入**：`assert_writable()` 在版本更高（来自更新程序）、
-   版本更低（尚未迁移）、或迁移未完成时一律拒绝，并给出恢复路径。**注意**：
-   本轮没有把它接进 CLI / daemon（文件所有权在别的工作流），接入点与缺口
-   写在 `docs/backup-restore.md`。
-
-## 迁移不碰的东西
-
-- **不 UPDATE / DELETE 历史事件**：步骤只做 DDL 与自有表写入；`events` 表的
-  append-only 触发器保持原样。
-- 不重排、不删除既有列（旧库补列仍由各 store 的 `_ensure_column` 负责）；
-  迁移只负责"版本号 + 每个版本必须存在的新对象"。
+0→2只改变迁移机制对象；普通v0兼容归data_admission，恢复apply另行实现。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
+import stat
+import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from contextlib import closing
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .backup import inspect_writers, verify_backup
+from .backup import MANIFEST_NAME, _connect_saved_readonly, inspect_writers, verify_backup
 from .crashpoint import failpoint
+from .data_admission import check_new_file_evidence, inspect_connection
+from .data_digest import (
+    MATERIAL_ALGORITHM,
+    MECHANISM_NAMES,
+    SQLITE_ALGORITHM,
+    MaterialRecord,
+    _mechanism_snapshot,
+    material_digest,
+    material_inventory,
+    mechanism_digest,
+    sqlite_digest,
+)
+from .data_state import (
+    SCHEMA_VERSION,
+    AdmissionRefused,
+    BackupBinding,
+    BaselineDigest,
+    MigrationState,
+    MigrationStateCorrupt,
+    MigrationStateV2,
+    associated_state_paths,
+    classify_progress,
+    encode_state,
+)
+from .data_state import STATE_FORMAT as STATE_FORMAT
+from .data_state import STATE_FORMAT_VERSION as STATE_FORMAT_VERSION
 from .fsutil import atomic_write_bytes
+from .maintenance import MaintenanceBusy, MaintenanceError, acquire_database_access
+from .pathkeys import overlap_key
 
-STATE_NAME = "migration.json"
-STATE_FORMAT = "tianshu-migration"
-STATE_FORMAT_VERSION = 1
-
-#: 当前程序支持的结构版本。历史库从 0 开始（基线只有 `CREATE TABLE IF NOT
-#: EXISTS`，用户代码层没有版本号，全部按 0 处理）。
-SCHEMA_VERSION = 2
+STATE_NAME = "events.db.migration.json"
+MigrationError = AdmissionRefused
 
 
-class MigrationError(Exception):
-    """迁移模块的域错误基类。"""
+class UnsupportedSchemaVersion(AdmissionRefused):
+    def __init__(self, message):
+        super().__init__("incompatible", message)
 
 
-class UnsupportedSchemaVersion(MigrationError):
-    """库结构版本高于本程序支持，或不在已知升级链上：拒绝按猜的语义继续。"""
+class MigrationRefused(AdmissionRefused):
+    def __init__(self, message, code="backup_mismatch"):
+        super().__init__(code, message)
 
 
-class MigrationRefused(MigrationError):
-    """前置条件不满足（没有备份、备份校验失败、有写者、状态文件损坏）。"""
+class MigrationFailed(AdmissionRefused):
+    def __init__(self, message):
+        super().__init__("migration_failed", message)
 
 
-class MigrationFailed(MigrationError):
-    """某一步执行失败；已回滚该步事务，库停在上一步完成的版本。"""
-
-
-class MigrationIncomplete(MigrationError):
-    """存在未完成的迁移：拒绝写入，要求续做或从备份恢复。"""
-
-
-class MigrationStateCorrupt(MigrationError):
-    """`migration.json` 读不懂/与库版本自相矛盾：不猜，人工处置。"""
+class MigrationIncomplete(AdmissionRefused):
+    def __init__(self, message):
+        super().__init__("migration_incomplete", message)
 
 
 @dataclass(frozen=True)
@@ -105,8 +96,6 @@ class MigrationStep:
             conn.execute(statement)
 
 
-#: 迁移步骤注册表。追加步骤，不改历史步骤——历史步骤是别的机器上已经落地的
-#: 事实；改它就等于给已升级的库安排第二次不同的语义。
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(
         from_version=0,
@@ -125,76 +114,10 @@ STEPS: tuple[MigrationStep, ...] = (
         description="给 migration_log 增加 note 列并建索引（验证 ALTER 步骤也能中断续做）",
         statements=(
             "ALTER TABLE migration_log ADD COLUMN note TEXT NOT NULL DEFAULT ''",
-            "CREATE INDEX IF NOT EXISTS idx_migration_log_applied"
-            " ON migration_log(applied_at)",
+            "CREATE INDEX IF NOT EXISTS idx_migration_log_applied ON migration_log(applied_at)",
         ),
     ),
 )
-
-
-@dataclass
-class MigrationState:
-    target_version: int
-    status: str  # in_progress | completed
-    applied_steps: list[int] = field(default_factory=list)
-    current_step: int | None = None
-    backup: dict[str, Any] = field(default_factory=dict)
-    started_at_ms: int = 0
-    updated_at_ms: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "format": STATE_FORMAT,
-            "format_version": STATE_FORMAT_VERSION,
-            "target_version": self.target_version,
-            "status": self.status,
-            "applied_steps": list(self.applied_steps),
-            "current_step": self.current_step,
-            "backup": self.backup,
-            "started_at_ms": self.started_at_ms,
-            "updated_at_ms": self.updated_at_ms,
-        }
-
-    def to_json_bytes(self) -> bytes:
-        return json.dumps(
-            self.to_dict(), ensure_ascii=False, sort_keys=True, indent=2
-        ).encode("utf-8")
-
-    @classmethod
-    def from_dict(cls, raw: Any) -> MigrationState:
-        if not isinstance(raw, dict):
-            raise MigrationStateCorrupt("migration.json 必须是 JSON 对象")
-        if raw.get("format") != STATE_FORMAT:
-            raise MigrationStateCorrupt(
-                f"migration.json 的 format 不认识：{raw.get('format')!r}"
-            )
-        if int(raw.get("format_version", 0)) != STATE_FORMAT_VERSION:
-            raise MigrationStateCorrupt(
-                f"migration.json 的 format_version 不支持：{raw.get('format_version')!r}"
-            )
-        status = raw.get("status")
-        if status not in ("in_progress", "completed"):
-            raise MigrationStateCorrupt(f"migration.json 的 status 非法：{status!r}")
-        applied = raw.get("applied_steps")
-        if not isinstance(applied, list) or not all(
-            isinstance(v, int) and not isinstance(v, bool) for v in applied
-        ):
-            raise MigrationStateCorrupt("migration.json 的 applied_steps 必须是整数列表")
-        current = raw.get("current_step")
-        if current is not None and not isinstance(current, int):
-            raise MigrationStateCorrupt("migration.json 的 current_step 必须是整数或 null")
-        backup = raw.get("backup")
-        if not isinstance(backup, dict):
-            raise MigrationStateCorrupt("migration.json 的 backup 必须是对象")
-        return cls(
-            target_version=int(raw.get("target_version", -1)),
-            status=status,
-            applied_steps=[int(v) for v in applied],
-            current_step=current,
-            backup=backup,
-            started_at_ms=int(raw.get("started_at_ms", 0)),
-            updated_at_ms=int(raw.get("updated_at_ms", 0)),
-        )
 
 
 @dataclass
@@ -229,89 +152,6 @@ class MigrationReport:
             f"应用步骤 {self.applied_steps or '（无）'}；"
             f"备份 {self.backup_path}；事件 {self.event_count} 条未改动。"
         )
-
-
-# --------------------------------------------------------------------------- 版本
-
-
-def db_path(data_root: Path) -> Path:
-    return Path(data_root) / "events.db"
-
-
-def state_path(data_root: Path) -> Path:
-    return Path(data_root) / STATE_NAME
-
-
-def _connect(db: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def read_schema_version(db: Path) -> int:
-    """读 `PRAGMA user_version`。库打不开 → 域错误（不是"版本 0"）。"""
-    if not Path(db).is_file():
-        raise MigrationRefused(f"事件库不存在：{db}")
-    try:
-        conn = _connect(Path(db))
-    except sqlite3.Error as exc:
-        raise MigrationError(f"事件库打不开：{db}（{type(exc).__name__}: {exc}）") from exc
-    try:
-        row = conn.execute("PRAGMA user_version").fetchone()
-        return int(row[0]) if row is not None else 0
-    except sqlite3.Error as exc:
-        raise MigrationError(
-            f"读不出事件库结构版本：{db}（{type(exc).__name__}: {exc}）"
-        ) from exc
-    finally:
-        conn.close()
-
-
-def read_state(data_root: Path) -> MigrationState | None:
-    path = state_path(data_root)
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_bytes().decode("utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
-        raise MigrationStateCorrupt(
-            f"migration.json 读不出来：{path}（{type(exc).__name__}: {exc}）。"
-            "迁移进度不可判定：拒绝继续，先备份现场并人工核对。"
-        ) from exc
-    return MigrationState.from_dict(raw)
-
-
-def plan_migrations(data_root: Path) -> list[MigrationStep]:
-    """返回从当前版本到 `SCHEMA_VERSION` 还需要的步骤；版本不可知/更高则抛错。"""
-    root = Path(data_root)
-    current = read_schema_version(db_path(root))
-    if current > SCHEMA_VERSION:
-        raise UnsupportedSchemaVersion(
-            f"库结构版本 {current} 高于本程序支持的 {SCHEMA_VERSION}："
-            "不能按旧语义写入。请升级程序；或用匹配版本的备份恢复后再迁移。"
-        )
-    if current == SCHEMA_VERSION:
-        return []
-    steps: list[MigrationStep] = []
-    version = current
-    for step in STEPS:
-        if step.to_version <= version:
-            continue
-        if step.from_version != version:
-            raise UnsupportedSchemaVersion(
-                f"没有从 v{version} 到 v{step.to_version} 的迁移步骤（注册表首尾不接）："
-                "拒绝按猜的链继续；请用与库匹配的程序版本，或从备份恢复"
-            )
-        steps.append(step)
-        version = step.to_version
-    if version != SCHEMA_VERSION:
-        raise UnsupportedSchemaVersion(
-            f"迁移链只到 v{version}，达不到目标 v{SCHEMA_VERSION}：拒绝继续"
-        )
-    return steps
-
-
-# --------------------------------------------------------------------------- 写者 / 备份前置
 
 
 def _pid_alive(pid: Any) -> bool | None:
@@ -397,252 +237,360 @@ def writers_active(data_root: Path) -> bool | None:
     return False
 
 
-def _require_backup(path: Path) -> dict[str, Any]:
-    verification = verify_backup(path)
-    if not verification.ok:
-        raise MigrationRefused(
-            "迁移前必须有校验通过的备份，但这份备份不通过："
-            + "；".join(verification.problems)
-            + "。处置建议："
-            + "；".join(verification.remediation)
-        )
-    manifest = verification.manifest
-    assert manifest is not None
-    return {
-        "path": str(Path(path).resolve()),
-        "format_version": manifest.format_version,
-        "db_user_version": manifest.db_user_version,
-        "event_count": manifest.event_count,
+def db_path(data_root: Path) -> Path:
+    return Path(data_root) / "events.db"
+
+
+def state_path(data_root: Path) -> Path:
+    return Path(data_root) / STATE_NAME
+
+
+def _connect(db: Path) -> sqlite3.Connection:
+    check_new_file_evidence(db)
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def read_schema_version(db: Path) -> int:
+    if not Path(db).is_file():
+        raise MigrationRefused("事件库不存在", "incompatible")
+    try:
+        with closing(_connect(Path(db))) as conn:
+            return conn.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.Error as exc:
+        raise UnsupportedSchemaVersion("无法读取真实机制版本") from exc
+
+
+def read_state(data_root: Path) -> MigrationState | None:
+    db = db_path(data_root).resolve()
+    if not any(p.exists() or p.is_symlink() for p in associated_state_paths(db)):
+        return None
+    with closing(_connect(db)) as conn:
+        return inspect_connection(conn, db).progress
+
+
+def _plan(current: int) -> list[MigrationStep]:
+    if type(current) is not int or current not in (0, 1, 2):
+        raise UnsupportedSchemaVersion(f"库版本{current}高于或不在支持机制链")
+    version = 0
+    for step in STEPS:
+        if step.from_version != version or step.to_version != version + 1 or step.apply is not None:
+            raise UnsupportedSchemaVersion("注册步骤不是可冻结的连续SQL链")
+        version = step.to_version
+    if version != SCHEMA_VERSION:
+        raise UnsupportedSchemaVersion("迁移链达不到目标版本")
+    return [step for step in STEPS if step.to_version > current]
+
+
+def plan_migrations(data_root: Path) -> list[MigrationStep]:
+    return _plan(read_schema_version(db_path(data_root)))
+
+
+def _plan_digest() -> str:
+    _plan(0)
+    raw = {
+        "sqlite_algorithm": SQLITE_ALGORITHM,
+        "material_algorithm": MATERIAL_ALGORITHM,
+        "excluded_objects": MECHANISM_NAMES,
+        "steps": [[s.from_version, s.to_version, s.description, s.statements] for s in STEPS],
     }
+    return hashlib.sha256(
+        json.dumps(raw, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
-# --------------------------------------------------------------------------- 迁移
+def _no_links(path: Path) -> None:
+    for part in [path.absolute(), *path.absolute().parents]:
+        if part.is_junction():
+            raise MigrationRefused("不支持junction维护布局", "incompatible")
+        if part.is_symlink():
+            # macOS系统固定别名，不借此放行用户根或根内链接。
+            system_alias = (
+                sys.platform == "darwin"
+                and part in (Path("/var"), Path("/tmp"), Path("/etc"))
+                and part.resolve() == Path("/private") / part.name
+            )
+            if not system_alias:
+                raise MigrationRefused("不支持符号链接维护布局", "incompatible")
 
 
-def _write_state(data_root: Path, state: MigrationState) -> None:
-    state.updated_at_ms = int(time.time() * 1000)
-    atomic_write_bytes(state_path(data_root), state.to_json_bytes())
+def _layout(data_root: Path) -> tuple[Path, Path]:
+    supplied = Path(data_root).absolute()
+    _no_links(supplied)
+    _no_links(supplied / "events.db")
+    root = supplied.resolve()
+    db = root / "events.db"
+    try:
+        info = db.lstat()
+        if (
+            not root.is_dir()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or db.resolve().parent != root
+        ):
+            raise MigrationRefused("迁移要求标准根内单硬链接普通events.db", "incompatible")
+    except OSError as exc:
+        raise MigrationRefused("标准根布局不可判定", "incompatible") from exc
+    # 不跟随材料链接，且在写进度前验证完整布局。
+    material_inventory(root)
+    return root, db
 
 
-def _apply_step(db: Path, step: MigrationStep) -> None:
-    conn = _connect(db)
+def _backup(path: Path, root: Path):
+    _no_links(Path(path))
+    saved = Path(path).resolve()
+    verification = verify_backup(saved)
+    if not verification.ok or verification.manifest is None:
+        raise MigrationRefused("备份校验未通过：" + "；".join(verification.problems))
+    manifest = verification.manifest
+    # source_path是保存时canonical事实；不跟随活源后来替换的链接重解释。
+    if overlap_key(manifest.source_path) != overlap_key(str(root)):
+        raise MigrationRefused("备份源数据根与实际文件不匹配")
+    raw = (saved / MANIFEST_NAME).read_bytes()
+    return saved, manifest, hashlib.sha256(raw).hexdigest()
+
+
+def _material_point(root: Path, saved: Path, manifest) -> str:
+    try:
+        live = material_inventory(root)
+        actual = material_inventory(saved)
+        declared = tuple(
+            sorted(
+                MaterialRecord(f.path, f.size, f.sha256)
+                for f in manifest.files
+                if f.path != "events.db"
+            )
+        )
+        if len({r.path for r in declared}) != len(declared) or live != actual or actual != declared:
+            raise MigrationRefused("备份与活根材料清单双向不相等")
+        return material_digest(live)
+    except AdmissionRefused as exc:
+        if exc.code == "backup_mismatch":
+            raise
+        raise MigrationRefused("备份材料一致点不可判定") from exc
+
+
+def _write_state(root: Path, state: MigrationStateV2) -> MigrationStateV2:
+    state = replace(state, updated_at_ms=max(state.updated_at_ms, int(time.time() * 1000)))
+    try:
+        atomic_write_bytes(state_path(root), encode_state(state))
+    except OSError as exc:
+        raise MigrationFailed("进度持久化失败，不能声称完成") from exc
+    return state
+
+
+def _apply_step(conn: sqlite3.Connection, step: MigrationStep) -> None:
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if conn.execute("PRAGMA user_version").fetchone()[0] != step.from_version:
+                raise MigrationFailed("执行步骤与当前真实版本不相符")
             step.run(conn)
-            conn.execute(f"PRAGMA user_version = {int(step.to_version)}")
-            # 只写两列：`note` 是 v2 才加的列，v1 还没建出来。迁移审计不依赖
-            # 后加的列，步骤说明本来也写在注册表里。
+            conn.execute(f"PRAGMA user_version={step.to_version}")
             conn.execute(
-                "INSERT OR REPLACE INTO migration_log(step, applied_at)"
-                " VALUES (?, ?)",
-                (int(step.to_version), int(time.time() * 1000)),
+                "INSERT INTO migration_log(step,applied_at) VALUES(?,?)",
+                (step.to_version, int(time.time() * 1000)),
             )
+            conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.rollback()
             raise
-        conn.execute("COMMIT")
     except sqlite3.Error as exc:
-        raise MigrationFailed(
-            f"步骤 v{step.from_version} → v{step.to_version} 失败并已回滚："
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-    finally:
-        conn.close()
+        raise MigrationFailed("步骤DDL/version/audit事务失败并回滚") from exc
+
+
+def _reachable_mechanism(live: sqlite3.Connection, saved: sqlite3.Connection, origin: int) -> None:
+    """从保存起点仅重演已提交机制步骤；继承audit原值不可改写。"""
+    current = _mechanism_snapshot(live)
+    initial = _mechanism_snapshot(saved)
+    if initial["version"] != origin or current["version"] < origin:
+        raise MigrationRefused("备份真实起始机制版本不匹配")
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as expected:
+        # 只复制机制定义/行，不调用业务initializer或真实迁移回调。
+        for kind, _name, _owner, sql in initial["objects"]:
+            if kind == "table":
+                expected.execute(sql)
+        for row in initial["rows"]:
+            expected.execute(
+                "INSERT INTO migration_log VALUES(" + ",".join("?" for _ in row) + ")", row
+            )
+        for kind, _name, _owner, sql in initial["objects"]:
+            if kind == "index":
+                expected.execute(sql)
+        expected.execute(f"PRAGMA user_version={origin}")
+        for step in _plan(origin):
+            if step.to_version > current["version"]:
+                break
+            step.run(expected)
+            expected.execute(f"PRAGMA user_version={step.to_version}")
+            audit = next(r for r in current["rows"] if r[0] == step.to_version)
+            expected.execute("INSERT INTO migration_log(step,applied_at) VALUES(?,?)", audit[:2])
+        if mechanism_digest(expected) != mechanism_digest(live):
+            raise MigrationRefused("真实机制变化不只来自已提交注册步骤或继承审计被改写")
+
+
+def _check_bound(conn, source, root, saved, manifest, raw_hash, state):
+    if state.plan_sha256 != _plan_digest():
+        raise MigrationStateCorrupt("进度属于另一套迁移计划")
+    if state.backup.path != str(saved) or state.backup.manifest_sha256 != raw_hash:
+        raise MigrationRefused("原备份路径或manifest字节绑定不符")
+    if source.execute("PRAGMA user_version").fetchone()[0] != state.from_version:
+        raise MigrationRefused("备份真实版本不等于绑定from_version")
+    business = sqlite_digest(conn)
+    if business != state.baseline.sqlite_sha256 or sqlite_digest(source) != business:
+        raise MigrationRefused("业务逻辑内容已离开绑定基线")
+    material = _material_point(root, saved, manifest)
+    if material != state.baseline.material_sha256:
+        raise MigrationRefused("材料已离开绑定基线")
+    _reachable_mechanism(conn, source, state.from_version)
+
+
+def _run_locked(root, db, backup):
+    root, db = _layout(root)
+    with closing(_connect(db)) as conn:
+        _plan(conn.execute("PRAGMA user_version").fetchone()[0])
+        snapshot = inspect_connection(conn, db)
+        state = snapshot.progress
+        if state is not None and type(state) is not MigrationStateV2:
+            raise MigrationIncomplete("旧格式不能授予续做许可")
+        if snapshot.mechanism_version == 2 and (state is None or state.status != "completed"):
+            # 合法最后一步commit窗口仍可按format2续做；无记录/legacy不能补造。
+            if state is None:
+                raise MigrationIncomplete("v2缺少format2 completed或合法续做证据")
+        if state is not None and state.plan_sha256 != _plan_digest():
+            raise MigrationStateCorrupt("进度属于另一套迁移计划")
+        saved, manifest, raw_hash = _backup(backup, root)
+        with closing(_connect_saved_readonly(saved / "events.db")) as source:
+            inspect_connection(source, saved / "events.db")
+            origin = snapshot.mechanism_version
+            if state is not None:
+                position = classify_progress(state, origin)
+                fresh = state.status == "completed" and str(saved) != state.backup.path
+                if fresh:
+                    if source.execute("PRAGMA user_version").fetchone()[0] != 2 or mechanism_digest(
+                        source
+                    ) != mechanism_digest(conn):
+                        raise MigrationRefused("新备份与当前完整机制不相等")
+                    if sqlite_digest(source) != sqlite_digest(conn):
+                        raise MigrationRefused("新备份与当前业务逻辑不相等")
+                    _material_point(root, saved, manifest)
+                else:
+                    _check_bound(conn, source, root, saved, manifest, raw_hash, state)
+                if state.status == "completed":
+                    return MigrationReport(
+                        2,
+                        2,
+                        [],
+                        False,
+                        True,
+                        str(saved),
+                        conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+                    )
+                resumed = True
+                if position == "after_step":
+                    state = _write_state(
+                        root,
+                        replace(
+                            state,
+                            applied_steps=state.applied_steps + (state.current_step,),
+                            current_step=None,
+                        ),
+                    )
+            else:
+                if source.execute("PRAGMA user_version").fetchone()[
+                    0
+                ] != origin or mechanism_digest(source) != mechanism_digest(conn):
+                    raise MigrationRefused("首次绑定真实版本或完整机制起点不相等")
+                business = sqlite_digest(conn)
+                if sqlite_digest(source) != business:
+                    raise MigrationRefused("备份不是当前业务一致点")
+                materials = _material_point(root, saved, manifest)
+                now = int(time.time() * 1000)
+                state = _write_state(
+                    root,
+                    MigrationStateV2(
+                        str(db),
+                        origin,
+                        SCHEMA_VERSION,
+                        "in_progress",
+                        (),
+                        None,
+                        _plan_digest(),
+                        BackupBinding(str(saved), raw_hash),
+                        BaselineDigest(SQLITE_ALGORITHM, business, MATERIAL_ALGORITHM, materials),
+                        now,
+                        now,
+                    ),
+                )
+                resumed = False
+            applied = []
+            for step in _plan(conn.execute("PRAGMA user_version").fetchone()[0]):
+                state = _write_state(root, replace(state, current_step=step.to_version))
+                failpoint(f"migration-before-step-{step.to_version}")
+                _apply_step(conn, step)
+                failpoint(f"migration-after-step-{step.to_version}")
+                applied.append(step.to_version)
+                state = _write_state(
+                    root,
+                    replace(
+                        state,
+                        applied_steps=state.applied_steps + (step.to_version,),
+                        current_step=None,
+                    ),
+                )
+            inspect_connection(conn, db)
+            _check_bound(conn, source, root, saved, manifest, raw_hash, state)
+            state = _write_state(root, replace(state, status="completed", current_step=None))
+            return MigrationReport(
+                origin,
+                SCHEMA_VERSION,
+                applied,
+                resumed,
+                False,
+                str(saved),
+                conn.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+            )
 
 
 def migrate(data_root: Path, *, backup: Path) -> MigrationReport:
-    """把数据根的事件库迁移到 `SCHEMA_VERSION`。可续做。
-
-    前置条件（不满足一律拒绝，不动库）：
-    - 有事件库；
-    - 没有活着的 daemon/host 写者（判不了也拒绝：unknown + 阻断）；
-    - 有一份 `verify_backup()` 通过的备份。
-    """
-    root = Path(data_root).resolve()
-    if not root.is_dir():
-        raise MigrationRefused(f"数据根不存在或不是目录：{root}")
-    db = db_path(root)
-    if not db.is_file():
-        raise MigrationRefused(f"数据根里没有事件库：{root}")
-
-    writers = writers_active(root)
-    if writers is not False:
-        raise MigrationRefused(
-            "迁移要求没有活着的写者，但"
-            + ("检测到 daemon/host 仍在运行" if writers else "无法判定写者状态（unknown）")
-            + "：先停止 host/daemon 再迁移，避免迁移与写入交错。"
-        )
-
-    current = read_schema_version(db)
-    state = read_state(root)
-    if state is not None and state.target_version != SCHEMA_VERSION:
-        raise MigrationStateCorrupt(
-            f"migration.json 记录的目标版本 {state.target_version} 与当前程序支持的 "
-            f"{SCHEMA_VERSION} 不一致：这份进度属于另一套迁移计划。"
-            "拒绝按猜的语义续做；请用与进度文件匹配的程序版本，或从备份恢复。"
-        )
-    if state is not None and state.status == "completed" and current != SCHEMA_VERSION:
-        raise MigrationStateCorrupt(
-            f"migration.json 声称已完成，但库结构版本是 v{current}（目标 v{SCHEMA_VERSION}）："
-            "进度与事实矛盾，拒绝继续。先备份现场并人工核对。"
-        )
-
-    if state is not None and state.status == "in_progress":
-        backup_info = _require_backup(Path(str(state.backup.get("path", ""))))
-        resumed = True
-        started_at = state.started_at_ms or int(time.time() * 1000)
-    else:
-        backup_info = _require_backup(Path(backup))
-        resumed = False
-        started_at = int(time.time() * 1000)
-
-    steps = plan_migrations(root)
-    if not steps:
-        # 已经是最新版本：如果留下的是"完成但未收尾"的进度文件，补一次收尾。
-        if state is not None and state.status != "completed":
-            # 最后一步提交后、写"完成"之前崩溃：库版本已经是目标版本，
-            # 把进度补成完成；applied_steps 以库版本为权威补齐。
-            state.applied_steps = [
-                step.to_version for step in STEPS if step.to_version <= current
-            ]
-            state.status = "completed"
-            state.current_step = None
-            _write_state(root, state)
-        return MigrationReport(
-            from_version=current,
-            to_version=current,
-            applied_steps=[],
-            resumed=resumed,
-            already_current=True,
-            backup_path=backup_info["path"],
-            event_count=_event_count(db),
-        )
-
-    state = state or MigrationState(
-        target_version=SCHEMA_VERSION,
-        status="in_progress",
-        applied_steps=[],
-        current_step=None,
-        backup=backup_info,
-        started_at_ms=started_at,
-    )
-    state.status = "in_progress"
-    state.target_version = SCHEMA_VERSION
-    state.backup = backup_info
-    state.started_at_ms = started_at
-    # 续做时把进度记录与库版本对齐：库版本是唯一权威。库里已经到达的版本
-    # 一律算已完成（崩溃可能发生在"提交了 DDL 但没来得及写进度"的窗口）；
-    # 库里没到、进度却声称完成的步骤不采信（那会让续做跳过一步）。
-    state.applied_steps = sorted(
-        {int(v) for v in state.applied_steps if int(v) <= current}
-        | {step.to_version for step in STEPS if step.to_version <= current}
-    )
-    applied: list[int] = []
-    for step in steps:
-        state.current_step = step.to_version
-        _write_state(root, state)
-        failpoint(f"migration-before-step-{step.to_version}")
-        _apply_step(db, step)
-        failpoint(f"migration-after-step-{step.to_version}")
-        applied.append(step.to_version)
-        state.applied_steps = sorted(set(state.applied_steps) | {step.to_version})
-        state.current_step = None
-        _write_state(root, state)
-
-    final = read_schema_version(db)
-    if final != SCHEMA_VERSION:
-        raise MigrationFailed(
-            f"迁移结束后库结构版本是 v{final}，期望 v{SCHEMA_VERSION}："
-            "拒绝声称成功；请从备份恢复后重试"
-        )
-    state.status = "completed"
-    state.current_step = None
-    _write_state(root, state)
-    return MigrationReport(
-        from_version=current,
-        to_version=final,
-        applied_steps=applied,
-        resumed=resumed,
-        already_current=False,
-        backup_path=backup_info["path"],
-        event_count=_event_count(db),
-        warnings=[
-            "备份前置要求见依赖链：迁移期间的每一步都在备份之后，"
-            "失败可从该备份恢复",
-        ],
-    )
-
-
-def _event_count(db: Path) -> int:
-    conn = _connect(db)
     try:
-        row = conn.execute("SELECT COUNT(*) FROM events").fetchone()
-        return int(row[0]) if row is not None else 0
-    except sqlite3.Error:
-        return -1
-    finally:
-        conn.close()
+        root, db = _layout(data_root)
+        with acquire_database_access(db, exclusive=True):
+            writers = writers_active(root)
+            if writers is not False:
+                raise MigrationRefused(
+                    "写者仍活跃" if writers else "无法判定写者状态", "maintenance_busy"
+                )
+            return _run_locked(root, db, backup)
+    except MaintenanceBusy as exc:
+        raise AdmissionRefused("maintenance_busy", "实际数据库存在合作式连接") from exc
+    except MaintenanceError as exc:
+        raise AdmissionRefused("incompatible", "数据库维护准入不可判定") from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise MigrationFailed(f"迁移读写失败（{type(exc).__name__}）") from exc
 
 
 def resume_migration(data_root: Path) -> MigrationReport | None:
-    """如果存在未完成迁移，按进度文件续做；没有未完成迁移返回 None。"""
-    root = Path(data_root).resolve()
-    state = read_state(root)
-    if state is None or state.status != "in_progress":
+    state = read_state(data_root)
+    if state is None:
         return None
-    backup = Path(str(state.backup.get("path", "")))
-    return migrate(root, backup=backup)
+    if type(state) is not MigrationStateV2:
+        raise MigrationIncomplete("旧格式不能续做")
+    return migrate(data_root, backup=Path(state.backup.path))
 
 
 def assert_writable(data_root: Path) -> int:
-    """写入前必须调的版本门。返回当前版本，或抛出带恢复路径的域错误。
-
-    **本轮没有把它接进 CLI / daemon**（文件所有权不在本工作流）：接入点与
-    缺口写在 `docs/backup-restore.md`。
-    """
-    root = Path(data_root).resolve()
-    db = db_path(root)
-    version = read_schema_version(db)
-    state = read_state(root)
+    """保留旧专用严格helper；普通v0连接不使用它。"""
+    version = read_schema_version(db_path(data_root))
+    state = read_state(data_root)
     if state is not None and state.status == "in_progress":
-        raise MigrationIncomplete(
-            f"迁移未完成（目标 v{state.target_version}，当前 v{version}）："
-            "拒绝写入。续做：resume_migration(data_root)；或从迁移前备份恢复。"
-        )
-    if version > SCHEMA_VERSION:
-        raise UnsupportedSchemaVersion(
-            f"库结构版本 v{version} 高于本程序支持的 v{SCHEMA_VERSION}："
-            "拒绝写入。请升级程序；或从匹配版本的备份恢复。"
-        )
+        raise MigrationIncomplete("迁移未完成，要求显式续做")
     if version < SCHEMA_VERSION:
-        raise UnsupportedSchemaVersion(
-            f"库结构版本 v{version} 低于本程序要求的 v{SCHEMA_VERSION}："
-            "拒绝写入。先创建备份并运行 migrate。"
-        )
+        raise UnsupportedSchemaVersion("版本低于迁移目标")
+    if version > SCHEMA_VERSION:
+        raise UnsupportedSchemaVersion("版本高于迁移目标")
+    if state is None:
+        raise MigrationIncomplete("缺少完成进度")
     return version
-
-
-__all__ = [
-    "SCHEMA_VERSION",
-    "STATE_NAME",
-    "MigrationError",
-    "MigrationFailed",
-    "MigrationIncomplete",
-    "MigrationRefused",
-    "MigrationReport",
-    "MigrationState",
-    "MigrationStateCorrupt",
-    "MigrationStep",
-    "STEPS",
-    "UnsupportedSchemaVersion",
-    "assert_writable",
-    "db_path",
-    "migrate",
-    "plan_migrations",
-    "read_schema_version",
-    "read_state",
-    "resume_migration",
-    "state_path",
-    "writers_active",
-]

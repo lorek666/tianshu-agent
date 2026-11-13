@@ -1,0 +1,33 @@
+{
+  "scope": "One final local combined lock/full/ruff run; exact commands and original byte logs. Runtime HEAD585 plus merge main0df and frozen candidate, not a post-commit rerun or native CI.",
+  "files": {
+    "before.json": {
+      "bytes": 26530,
+      "sha256": "c78e13331e19e4d1efac32ee1f7ad42e7ca5c445685236f661543292834d7976"
+    },
+    "run_gates.py.txt": {
+      "bytes": 3706,
+      "sha256": "1a54cd68ddfdf1195b592d927a380f7c59760a9d1b5c066bf6b8cc18a48f7c49"
+    },
+    "results.json": {
+      "bytes": 1570,
+      "sha256": "d8ceb251f959697c495992d932b4d5299400241ba9829a9b55fa9e6727454b7b"
+    },
+    "lock.log.txt": {
+      "bytes": 28,
+      "sha256": "0cd253495a5288d4ac6891c39de59d0ac1ebccd9533b687e3d5ad3c6136a8ea5"
+    },
+    "after.json": {
+      "bytes": 26530,
+      "sha256": "c78e13331e19e4d1efac32ee1f7ad42e7ca5c445685236f661543292834d7976"
+    },
+    "pytest.log.txt": {
+      "bytes": 3084,
+      "sha256": "18141c3f4d0f2639db0c140fa0a09735c0727b57dd70ccb3b7463279da5292bc"
+    },
+    "ruff.log.txt": {
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    }
+  }
+}

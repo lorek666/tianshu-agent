@@ -1,0 +1,21 @@
+{
+  "stage": "PREPARATION_ONLY",
+  "files": {
+    "prepare-source-binding.py": {
+      "sha256": "db2f0b19a811b08cecd4a670e639e10b9cc0b9800ef30c7df0f31dd5d9e5190e",
+      "bytes": 20120
+    },
+    "source-object-map.json": {
+      "sha256": "23186f7712b00ad81d56560aea6f309ed78e4ae8317db73550fff700504919e1",
+      "bytes": 209069
+    },
+    "source-preparation.json": {
+      "sha256": "907c75b3d1c5911fbb3b6f294412b62a8084850c6500119733d76a60a7d29058",
+      "bytes": 14520
+    },
+    "acceptance-checklist.md": {
+      "sha256": "4fb3aacfb9a64dcaa3e57220ed7b8dd63859d13f13bbed36723560b2d4c3a5f1",
+      "bytes": 2486
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source_manifest": "freeze-source.json",
+  "source_manifest_sha256": "0813f13bee82fc1b67e71c8a47f83ae54dd72e5c63cb6db69e4d6e2ea1d88527",
+  "full_log_sha256": "fbf790a0a1491528c3786d807fa109e478b97eed4ddb507f8fa172e354803c82",
+  "result": "2542 passed, 8 skipped in 424.60s; EXIT 0",
+  "test_count_at_full": 126,
+  "notes": "Before independent duplicate-key test enhancement; full does not cover the later test-source edit"
+}

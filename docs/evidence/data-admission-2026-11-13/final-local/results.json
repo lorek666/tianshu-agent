@@ -1,0 +1,61 @@
+{
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "started_at": "2026-11-13T11:57:46.966177+00:00",
+  "runtime_head": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+  "merge_head": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+  "frozen_non_docs": 267,
+  "removed_env_names": [
+    "ANTHROPIC_BASE_URL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "commands": [
+    {
+      "label": "lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.1,
+      "log": "/tmp/tianshu-g3-20261113/final-admission/lock.log",
+      "bytes": 28,
+      "sha256": "0cd253495a5288d4ac6891c39de59d0ac1ebccd9533b687e3d5ad3c6136a8ea5"
+    },
+    {
+      "label": "pytest",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "exit": 0,
+      "seconds": 433.42,
+      "log": "/tmp/tianshu-g3-20261113/final-admission/pytest.log",
+      "bytes": 3084,
+      "sha256": "18141c3f4d0f2639db0c140fa0a09735c0727b57dd70ccb3b7463279da5292bc"
+    },
+    {
+      "label": "ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit": 0,
+      "seconds": 0.15,
+      "log": "/tmp/tianshu-g3-20261113/final-admission/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    }
+  ],
+  "source_drift": [],
+  "completed_at": "2026-11-13T12:05:00.639100+00:00",
+  "passed": true
+}

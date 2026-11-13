@@ -1,0 +1,45 @@
+[
+  {
+    "mutation": "omit-admission",
+    "source": "/tmp/t1-admission/mutant-omit-admission/src/tianshu/events.py",
+    "test_nodes": [
+      "tests/test_data_admission.py::test_future_actual_db_refused_before_ddl_and_blob_mkdir",
+      "tests/test_data_admission.py::test_live_wal_future_version_is_not_ignored"
+    ],
+    "exit_code": 1,
+    "log": "/tmp/t1-admission/independent-mutant-omit-admission.txt",
+    "targeted_negative_control_red": true
+  },
+  {
+    "mutation": "omit-version-shape",
+    "source": "/tmp/t1-admission/mutant-omit-version-shape/src/tianshu/data_admission.py",
+    "test_nodes": [
+      "tests/test_data_admission.py::test_missing_entire_event_versions_refused_after_close_reopen",
+      "tests/test_data_admission.py::test_bad_registered_memory_version_refused_before_alter"
+    ],
+    "exit_code": 1,
+    "log": "/tmp/t1-admission/independent-mutant-omit-version-shape.txt",
+    "targeted_negative_control_red": true
+  },
+  {
+    "mutation": "omit-material-evidence",
+    "source": "/tmp/t1-admission/mutant-omit-material-evidence/src/tianshu/data_admission.py",
+    "test_nodes": [
+      "tests/test_data_admission.py::test_new_database_refuses_nested_material_files"
+    ],
+    "exit_code": 1,
+    "log": "/tmp/t1-admission/independent-mutant-omit-material-evidence.txt",
+    "targeted_negative_control_red": true
+  },
+  {
+    "mutation": "omit-mechanism",
+    "source": "/tmp/t1-admission/mutant-omit-mechanism/src/tianshu/data_admission.py",
+    "test_nodes": [
+      "tests/test_data_admission.py::test_completed_requires_real_mechanism_objects_and_audit",
+      "tests/test_data_admission.py::test_completed_rejects_unregistered_mechanism_shape"
+    ],
+    "exit_code": 1,
+    "log": "/tmp/t1-admission/independent-mutant-omit-mechanism.txt",
+    "targeted_negative_control_red": true
+  }
+]
