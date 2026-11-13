@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **G3首片PR #134已正常合并（2026-11-13）**：最终head `b5b5c7fed03f3bd7c75ce759708e383e5ec46091` 的run43409722913四required全部success（Ubuntu2434/13、macOS2439/8、Windows2410/37、UI80及typecheck/build/dist）。第二读者核对四份原始日志、实际checkout/tree与保护后，正常merge为main `69119f009096df74fc8e370d5d1c6d71cad3f290`，完整tree与已测head一致；未改门禁或重跑旧CI。见[独立CI记录](evidence/data-lifecycle-2026-11-13/pr134-b5-ci-independent-review.md)。main自己的push CI另核，T1/迁移/恢复隔离/容量GC不在本PR验收范围。
+
 - **数据准入 T1 已开工（2026-11-13，未验收）**：最终计划 `464849b2…e875` 经第二读者终审为 `PASS_IMPLEMENTATION_PLAN_ONLY`，0 计划阻断；[计划与终审原件](evidence/data-admission-plan-2026-11-13/README.md) 按字节保全。随后父会话仅授权 `/root/executor_data_cli` 从稳定基线 `30b973d` 在隔离 `codex/g3-data-admission` 实施实际 DB 准入及对应测试，不改迁移协调器/CLI。T1 正在 TDD，产品独立复审和新原生 CI 均未验收；T2/T3 与实际恢复、容量/GC 仍待后续实施。历史原件的未授权字段属于终审快照，不代表当前 T1 停止，也不授予后两项写权。
 
 - **G3 下一片契约（2026-11-13，待实施）**：[数据准入与迁移绑定契约](data-admission-contract.md) 选择实际 DB 的兼容准入、独占迁移与备份/进度绑定；正常 v0 不盲标为 v2，0→2 仍只代表迁移机制。整批恢复 hold 是后续形状，具体记录和 apply 尚未实现；低磁盘、保留/GC 也未交付。该文档不是新的测试或发布通过记录。
@@ -657,3 +659,5 @@
 - [REFS.md](REFS.md) — 参考仓库与固定 commit
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — 分支、提交、独立复审规范
 - [../AGENTS.md](../AGENTS.md) — AI 开发强制指令
+
+- 2026-11-13 · PR134最终b5四required真实全绿，独立原始CI核对及当前head/base/保护guard均无阻断，正常合入main69119f0且tree完全相同。契约分支仅吸收该合并事实和CI证据，不夹T1产品；后续另开纯docs契约PR。
