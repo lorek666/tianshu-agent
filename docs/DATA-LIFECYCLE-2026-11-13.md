@@ -93,6 +93,20 @@ UI install/typecheck/**80 tests**/build 均退出 0，提交的 dist 重建后�
 仍另行确认，不从本机或历史绿色推断。旧报告的历史段落/新增行统计口径另有更正附录，
 原件与实际内容继承均保持。
 
+### 同步实际 main #133 后的新组合
+
+恢复修复由原 debug 会话正常合入 main
+`f2aef9da75d2e546af99baa523d196d1e099c196` 后，本分支同步该实际对象。
+知识库两处冲突保留双方内容；本片维护/备份/CLI 与测试不重写上游恢复实现。
+新组合 `uv lock --check`、`uv run --frozen ruff check .`、`uv run --frozen pytest`
+均退出0：**2439 passed / 8 skipped，427.25s**，255个冻结非文档文件前后无漂移。
+测试仅对子进程隔离项目/provider配置，不打印环境值。UI对象及3份dist完全未变，
+精确继承a839上已记录的typecheck/80tests/build证据，没有另跑UI。
+[原日志与冻结清单](evidence/data-lifecycle-2026-11-13/main133-integration-local-gates.json)
+绑定本次作者执行；正式提交与该候选的新原生四项CI仍须分别核实。
+第二读者的[内容与门禁复核](evidence/data-lifecycle-2026-11-13/main133-integration-independent-review.md)
+已经归档；产品、测试和配置均按已审父对象继承，最终提交与当前 CI 分别绑定。
+
 ## 3. 交付边界与后续顺序
 
 1. 锁是协作式准入，旧版或同 uid 直接 SQLite 可绕过；不承诺硬链接别名收敛。锁统一位于稳定的 OS 用户临时根，不要求数据根上级目录可写；Windows 未独立验证 owner SID / 跨用户 ACL。低层 `create_backup()` 保留在线语义，只有新 CLI 持独占准入。

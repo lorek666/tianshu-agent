@@ -78,6 +78,12 @@ task = stack.tasks.create_task(goal, [str(workspace_dir)], exec_policy=policy)
 `verify_receipts` 对 exec 凭据**核对事件引用与结果字段，但不比较磁盘**——
 磁盘上哪些文件被改过，命令自己没说，我们不假装知道。
 
+## 崩溃恢复
+
+命令没有文件preimage，空快照清单不能证明“没有执行”。有intent、无result时，恢复依据派发记录的持久化执行前边界：只有明确尚未开始的状态可判 `none_applied`；已进入执行、缺记录或旧协议证据不足一律 `unknown`，并按派发时工作区阻断。已有result/Receipt不重分类，重复恢复不重跑命令，也不编造Receipt。
+
+未知结果与本地阻断同事务提交；旧版孤立恢复结果可补登记，但不复活用户已解除的阻断。跨库authority仍靠提交后登记与重启补偿，不能宣称跨库原子。证据见 [恢复debug记录](DEBUG-RECOVERY-2026-11-13.md)。
+
 ## PTY 的平台状态
 
 - **POSIX（macOS / Linux）**：标准库 `pty.openpty()` 可用。
