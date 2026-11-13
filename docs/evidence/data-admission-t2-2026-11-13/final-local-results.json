@@ -1,0 +1,118 @@
+{
+  "base": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+  "python": "3.12.13",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "sqlite": "3.50.4",
+  "files": {
+    "src/tianshu/data_digest.py": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+    "src/tianshu/migrate.py": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+    "tests/test_data_binding.py": "1c56e2d66a9bc2dcea54e3a26f988c8ad9a2c5e9c1b563341dcb7160220d5e83",
+    "tests/test_migration.py": "02bb86f3608c1841d74516b63d801f0b8e9b17cc9777ada7caba300d304fe2eb"
+  },
+  "results": [
+    {
+      "name": "final-binding",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "docs/evidence/data-lifecycle-2026-11-13/run_clean.py",
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "tests/test_data_binding.py",
+        "tests/test_migration.py"
+      ],
+      "exit": 0,
+      "seconds": 4.883,
+      "log_sha256": "a86578605783c645af8202975193d45110de8fd6c28fd4430df65c379c42b29f"
+    },
+    {
+      "name": "final-related",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "docs/evidence/data-lifecycle-2026-11-13/run_clean.py",
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "tests/test_backup.py",
+        "tests/test_backup_materials.py",
+        "tests/test_data_state.py",
+        "tests/test_data_admission.py"
+      ],
+      "exit": 0,
+      "seconds": 2.541,
+      "log_sha256": "efc3ac676a7d6351a4a5f41d5731665ed726d21015da0b0a6da4b62e86b2936c"
+    },
+    {
+      "name": "final-byte-io",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "tests/test_windows_compat.py::test_product_never_uses_text_mode_file_io"
+      ],
+      "exit": 0,
+      "seconds": 0.391,
+      "log_sha256": "f574bf83729b682055fea4742e2eec06cd32be9f8694d8319d5361875228ed00"
+    },
+    {
+      "name": "final-lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.01,
+      "log_sha256": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d"
+    },
+    {
+      "name": "final-ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit": 0,
+      "seconds": 0.074,
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "name": "final-diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.066,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "product_tests_stable": true,
+  "untouched_baseline_count": 438,
+  "untouched_baseline_drift": [],
+  "full_run": false,
+  "ci_run": false,
+  "independent_approval": false
+}

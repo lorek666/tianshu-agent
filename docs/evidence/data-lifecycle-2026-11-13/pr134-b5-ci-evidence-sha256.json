@@ -1,0 +1,142 @@
+{
+  "schema": "tianshu.ci_raw_evidence_manifest.v1",
+  "created_at": "2026-11-13T10:53:00.589122+00:00",
+  "run_id": 43409722913,
+  "files": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/branch-protection-before.json",
+      "bytes": 1600,
+      "sha256": "523290b37f7e102126f4f900174395a4fda64135613c4c3e8c5225ce6af7fe27"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/branch-protection-final.json",
+      "bytes": 1600,
+      "sha256": "523290b37f7e102126f4f900174395a4fda64135613c4c3e8c5225ce6af7fe27"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/head-check-runs-before.json",
+      "bytes": 14275,
+      "sha256": "420560a7b31b1a4bc7267c00ce2a5b6b639106d2108151dfdc905a6ee1c95148"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/head-check-runs-final.json",
+      "bytes": 14296,
+      "sha256": "4aa1920a90160d3d99692e9ff00f20ea76d34ccb15ba7d85c1e04c7eb3440acf"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/head-git-commit.json",
+      "bytes": 1930,
+      "sha256": "471497c8f50d2ca31d1dbe22419317be06471f951d811a475f7d3af976f5c4cc"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/jobs-final.json",
+      "bytes": 11067,
+      "sha256": "e5661fcc3f6d556260f9aae938a70cfb3c6626299dd69c7df0c851d3ece597ea"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/macos-annotations.json",
+      "bytes": 897,
+      "sha256": "260602cec6512e5893c0e92af8697e4b6741eb323df0353744066975360aa546"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/macos-job-131832816718.log",
+      "bytes": 22350,
+      "sha256": "7e118df9d976cafbbd6c4406a8cbce73e4d37c0ac465812644d5ca57205e392d"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/merge-check-runs-before.json",
+      "bytes": 33,
+      "sha256": "e83cfac35507982a40cfeb776ce85aa0367e7646f81fe857df4a6c841ea8a170"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/merge-git-commit.json",
+      "bytes": 2633,
+      "sha256": "3cd2a2cded9549e6221da6315f5a5d06c39f1b4f246526cdfa03d08a6b5d783f"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/pr-before.json",
+      "bytes": 19049,
+      "sha256": "a74c8f6650c6216bfc51efe18ad884e2b672af991bcc46ddfa9f60dc7c53a65b"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/pr-final.json",
+      "bytes": 19047,
+      "sha256": "48f022fb40a62c5ebcb2fd7de67b57bcaded2e293852c8717b593d1cd5c3ed52"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/pr-merge-commit-before.json",
+      "bytes": 355,
+      "sha256": "3314aecd24eb2ab5d2cbddaf99407e79ec931b97e9eeedb6836349fc17f82d97"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/pr-merge-ref-final.json",
+      "bytes": 355,
+      "sha256": "3314aecd24eb2ab5d2cbddaf99407e79ec931b97e9eeedb6836349fc17f82d97"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/review-threads-before.json",
+      "bytes": 366,
+      "sha256": "102be067b5d17c1f7c98bc96b69f056e0898fcbdd5b1f7e5198f9a4e7333a25e"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/review-threads-final.json",
+      "bytes": 364,
+      "sha256": "a92fbfd7a83d5de71a31964d7e50c2e83d4e1d256106b56ff8e78452da23e430"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/reviews-before.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/reviews-final.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/run-before.json",
+      "bytes": 8352,
+      "sha256": "88d16d28194a94ccdacaa4591fa55f667fc437f19249f0391c34258466c48616"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/run-final.json",
+      "bytes": 13455,
+      "sha256": "309b6f1ab2d2bc3a424bfb862d242e653a7de1ff90075616eb0d6489d2850084"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/ubuntu-annotations.json",
+      "bytes": 960,
+      "sha256": "2639b9f5e34f6b771d866106452a618591751e4ec3ccacd520ae55abe5ec6119"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/ubuntu-job-131832816703.log",
+      "bytes": 23368,
+      "sha256": "e1acae4d9c1e988ddf6247c96e90aedd75fb813aa7d627ff2d99102c46a2c7b9"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/ui-annotations.json",
+      "bytes": 982,
+      "sha256": "9168481ef2c72fe870831017a9db06d5c472e4a833a108a0bee6206f625c7267"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/ui-job-131832816671.log",
+      "bytes": 22165,
+      "sha256": "ae0d726dd4b9d21742f4ef65f26c9e51b262b54876ffb804c6c73cf5e1ea748c"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/watch.log",
+      "bytes": 23611,
+      "sha256": "6f3df2d5e584903ea477972b1b74829873d81ba2853227407e1160807d067a05"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/windows-annotations.json",
+      "bytes": 535,
+      "sha256": "0589024a0b378ed98332eab52eec21904b86cc8c662a3837a2cd34638589bf23"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/ci-43409722913/windows-job-131832816305.log",
+      "bytes": 348980,
+      "sha256": "b1dbfbdec4e98851d3ad524e6c185020285f67b03853d9d5d82146f0033664f9"
+    }
+  ]
+}

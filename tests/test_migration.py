@@ -8,7 +8,7 @@
    写者（或判定不了）一律拒绝，且**不动库**。
 3. 每步前/后都能被 `os._exit` 打断（子进程真实崩溃），重启后能续做；
    最终版本一致、历史事件一个字节都没变、事件 append-only 触发器仍在。
-4. 不支持/更新版本的库：拒绝写入并给恢复路径；`migration.json` 损坏时
+4. 不支持/更新版本的库：拒绝写入并给恢复路径；关联进度文件损坏时
    不猜，直接拒绝。
 
 负控（回退后本文件必须红，见 docs/backup-restore.md）：去掉备份前置检查 →
@@ -316,7 +316,7 @@ def test_interrupted_migration_resumes_to_same_final_state(
     state = read_state(root)
     assert state is not None and state.status == "in_progress"
     assert state.current_step == current_step
-    assert state.backup["path"] == str(backup.resolve())
+    assert state.backup.path == str(backup.resolve())
     # DDL 与版本号同事务：version=1 时 migration_log 一定在；version=0 时一定不在
     assert ("migration_log" in _tables(db)) is (version_after_crash >= 1)
     if version_after_crash == 2:
@@ -330,11 +330,11 @@ def test_interrupted_migration_resumes_to_same_final_state(
     assert "note" in _columns(db, "migration_log")
     final_state = read_state(root)
     assert final_state is not None and final_state.status == "completed"
-    assert final_state.applied_steps == [1, 2]
+    assert final_state.applied_steps == (1, 2)
     assert assert_writable(root) == SCHEMA_VERSION
     # 历史事件一个字节都没变
     assert _event_digest(db) == digest_before
-    # 每一步只应用一次（INSERT OR REPLACE 的审计表）
+    # 每一步只应用一次，审计记录不覆盖重写
     conn = sqlite3.connect(db)
     try:
         rows = [r[0] for r in conn.execute(
@@ -366,25 +366,25 @@ def test_resume_requires_the_recorded_backup(tmp_path):
     assert read_schema_version(root / "events.db") == SCHEMA_VERSION
 
 
-def test_resume_detects_state_whose_plan_belongs_to_another_version(tmp_path):
+@pytest.mark.parametrize("change", ["plan", "target"])
+def test_resume_detects_state_whose_plan_belongs_to_another_version(tmp_path, change):
     root = _make_root(tmp_path)
     backup = _make_backup(root, tmp_path)
-    state = {
-        "format": "tianshu-migration",
-        "format_version": 1,
-        "target_version": 99,
-        "status": "in_progress",
-        "applied_steps": [],
-        "current_step": 99,
-        "backup": {"path": str(backup.resolve())},
-        "started_at_ms": 1,
-        "updated_at_ms": 1,
-    }
-    (root / migrate.STATE_NAME).write_text(json.dumps(state), encoding="utf-8")
+    proc = _migration_subprocess(root, backup, "migration-before-step-2")
+    assert proc.returncode == 77, proc.stderr
+    state = json.loads((root / migrate.STATE_NAME).read_bytes())
+    assert state["format_version"] == 2
+    if change == "plan":
+        state["plan_sha256"] = "0" * 64
+    else:
+        state["target_version"] = 99
+    raw = json.dumps(state).encode("utf-8")
+    (root / migrate.STATE_NAME).write_bytes(raw)
     with pytest.raises(MigrationStateCorrupt) as excinfo:
         run_migration(root, backup=backup)
-    assert "另一套迁移计划" in str(excinfo.value)
-    assert read_schema_version(root / "events.db") == 0
+    assert ("另一套迁移计划" if change == "plan" else "起止版本") in str(excinfo.value)
+    assert (root / migrate.STATE_NAME).read_bytes() == raw
+    assert read_schema_version(root / "events.db") == 1
 
 
 def test_pid_alive_sees_current_process():

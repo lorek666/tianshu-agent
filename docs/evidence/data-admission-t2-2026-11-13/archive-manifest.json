@@ -1,0 +1,23 @@
+{
+  "purpose": "T2作者本机候选原件；不是独立实现批准、全量或CI",
+  "files": {
+    "README.md": "6d8a1e807bb5c2178603a14e9e07c7d18851a1d7395fd9ff04574170e1abdefc",
+    "author-ledger.md": "65017aa15e12093c8f22af3a90dec91b2ecb635675c955031ffc04c64ba405b7",
+    "baseline-behavior-source-binding.json": "24b68bd6b63253c447b0def050f5b0ae632d5a4c43714ab13aaf1b0c13627cd8",
+    "baseline-behavior-tests.py.txt": "f5c26ff2e58e20d4fb739deec66a149bc555d8063cc7d6cabf16d396dbe33f6e",
+    "baseline-files.json.gz": "b701bb195d9c5d67cdb93e9b1dc3605111180f8f55c60e5f8b19b79cc8e5ead2",
+    "final-binding.log.txt": "a86578605783c645af8202975193d45110de8fd6c28fd4430df65c379c42b29f",
+    "final-byte-io.log.txt": "f574bf83729b682055fea4742e2eec06cd32be9f8694d8319d5361875228ed00",
+    "final-diff.log.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-local-results.json": "190f83e2ca81a064cc20026f8879f49461434191777379ae349f7517a83ef675",
+    "final-lock.log.txt": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d",
+    "final-related.log.txt": "efc3ac676a7d6351a4a5f41d5731665ed726d21015da0b0a6da4b62e86b2936c",
+    "final-ruff.log.txt": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "freeze-product-tests.json": "508d9adea192d68fad01f51664a81f0b01a814e907baf73246ad779e98ccff69",
+    "green-first.log.txt.gz": "96e80958c74c8e0106b917f61a6d80c54ffc7b254f4f3d4617fb4eb13f55587c",
+    "green-preopen.log.txt": "2c7f3ca5d21eb2e115c4aa2aaf6527d6ae1971ae14ac652b55456859e91f2ddd",
+    "red-first.log.txt.gz": "4a03127fb9ff6a0536e9d4b9f82ebfc1ae7ca6f7649b202527b92cc7010c7d84",
+    "red-original-behavior.log.txt.gz": "883749c7bcc33c2228bf23fb7bc02515af9130cabce20c09112755e40057da11",
+    "red-preopen.log.txt.gz": "b521be42939f1a2dd1a2be27c4a22834cd33a611dd5998472ad9dec5f9070404"
+  }
+}

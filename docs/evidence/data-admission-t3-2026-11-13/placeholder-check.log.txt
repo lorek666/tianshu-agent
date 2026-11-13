@@ -1,0 +1,9 @@
+COMMAND rg -n "TODO/test.skip/.only/NotImplementedError/pass/pytest.skip" src/tianshu/data_cli.py tests/test_data_migration_cli.py tests/test_data_cli.py
+tests/test_data_cli.py:308:        pytest.skip(f"当前平台不能创建符号链接：{exc}")
+tests/test_data_migration_cli.py:263:            pass
+tests/test_data_migration_cli.py:497:        except (OSError, NotImplementedError) as exc:
+tests/test_data_migration_cli.py:498:            pytest.skip(f"平台不能构造真实hardlink：{type(exc).__name__}: {exc}")
+tests/test_data_migration_cli.py:504:        except (OSError, NotImplementedError) as exc:
+tests/test_data_migration_cli.py:505:            pytest.skip(f"平台不能构造真实symlink：{type(exc).__name__}: {exc}")
+
+REVIEW: matches are EventLog context-body initialization and native link construction exception/skip guards; no placeholder or unimplemented product branch.

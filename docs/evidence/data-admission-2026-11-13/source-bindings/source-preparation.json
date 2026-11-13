@@ -1,0 +1,377 @@
+{
+  "date": "2026-11-13",
+  "reviewer": "/root/verify_lifecycle",
+  "verdict": "PREPARATION_ONLY",
+  "scope": "source bytes/object inheritance and later acceptance checklist only; no new behavioral approval",
+  "cwd": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+  "cwd_head": "a38e814577ce721ed747aa40d77637cf10c857d7",
+  "cwd_status_at_preparation": "## codex/g3-lifecycle-contract...origin/codex/g3-lifecycle-contract",
+  "fixed_inputs": {
+    "/tmp/t1-admission/final-585-commit-binding.json": {
+      "sha256": "e10f905ca1605d4caacd177d5cd3f0b397ec62fc00e92eca98874c1f48fa5cb7",
+      "bytes": 86528
+    },
+    "/tmp/t1-admission/independent-review.md": {
+      "sha256": "c28a14d1b6ed4aab7b5999bcc973c61c72f5095587c743280f753d6fce4c2594",
+      "bytes": 12246
+    },
+    "/tmp/t1-admission/independent-evidence.json": {
+      "sha256": "35ca1e539818d598cb883484d4f5964248d7602c96fe890d3adec63d404be744",
+      "bytes": 6610
+    },
+    "/tmp/t1-admission/recovery-fixture-independent-review.md": {
+      "sha256": "9d053c14681070cc41bc2c432782be03c09713133823d8633c1c7b796fdd3b19",
+      "bytes": 3874
+    },
+    "/tmp/t1-admission/recovery-fixture-independent-evidence.json": {
+      "sha256": "74cdd41e594a103a2f8559fa6fa57bb9de1b449181452b4992ebc1b293c38689",
+      "bytes": 11110
+    },
+    "/tmp/t2-admission/handoff-manifest.json": {
+      "sha256": "dddec59d87775811550493c535efee2fdc30faff199c41bb6bdbf9c80598c68a",
+      "bytes": 3711
+    },
+    "/tmp/t2-admission-independent/independent-review.md": {
+      "sha256": "b1cd6e2473184bef683c702bf2fcd08159888fb555633371ce81bcb6334648d1",
+      "bytes": 7744
+    },
+    "/tmp/t2-admission-independent/independent-review.json": {
+      "sha256": "68c29faa4900a3ea65760ed79837553db6f1010dce788b7239f12386ecc8517d",
+      "bytes": 34569
+    },
+    "/tmp/t2-admission-independent/candidate-binding.json": {
+      "sha256": "fd215d2a6347b017f7b4120fb53f6caf752d238156bc132a8965ab1d89f42042",
+      "bytes": 56130
+    },
+    "/tmp/t3-admission/handoff-manifest.json": {
+      "sha256": "79f5287dcf3719816649ffd49386e6087e04afb7f3e3810735d84164b7c828ee",
+      "bytes": 4723
+    },
+    "/tmp/t3-admission-independent/candidate-binding.json": {
+      "sha256": "8ee219c4ec1304d48fab4d2dd24f8c7d7abb14dfa7d6ac345092a3a2e1f25fdd",
+      "bytes": 56161
+    }
+  },
+  "t1_prior_approval_archive_binding": [
+    {
+      "path": "docs/evidence/data-admission-t1-2026-11-13/independent-review.md",
+      "sha256": "c28a14d1b6ed4aab7b5999bcc973c61c72f5095587c743280f753d6fce4c2594",
+      "local_and_git585_archive_exact": true
+    },
+    {
+      "path": "docs/evidence/data-admission-t1-2026-11-13/independent-evidence.json",
+      "sha256": "35ca1e539818d598cb883484d4f5964248d7602c96fe890d3adec63d404be744",
+      "local_and_git585_archive_exact": true
+    },
+    {
+      "path": "docs/evidence/data-admission-t1-2026-11-13/recovery-fixture-independent-review.md",
+      "sha256": "9d053c14681070cc41bc2c432782be03c09713133823d8633c1c7b796fdd3b19",
+      "local_and_git585_archive_exact": true
+    },
+    {
+      "path": "docs/evidence/data-admission-t1-2026-11-13/recovery-fixture-independent-evidence.json",
+      "sha256": "74cdd41e594a103a2f8559fa6fa57bb9de1b449181452b4992ebc1b293c38689",
+      "local_and_git585_archive_exact": true
+    }
+  ],
+  "counts": {
+    "git585": 441,
+    "t2_overlay": 25,
+    "t2_candidate": 463,
+    "t3_overlay": 26,
+    "combined_overlay": 50,
+    "t3_candidate": 485,
+    "expected_non_docs": 267,
+    "t1_nine_and_fixture": 10,
+    "t2_product_test": 4,
+    "t3_product_test": 3,
+    "main_delta": 4,
+    "pre_final_facts_after_main_sync": 488
+  },
+  "source_checks": {
+    "all_t2_463_bytes_match_git585_plus_manifest": true,
+    "all_t3_485_bytes_match_git585_plus_t2_plus_t3": true,
+    "all_t2_non_knowledge_24_files_inherited_exactly": true,
+    "authority_contract_and_plan_unchanged": true,
+    "no_unexpected_source_files_in_frozen_snapshots": true,
+    "no_git_object_written": true,
+    "author_worktree_read": false
+  },
+  "authority_hashes": {
+    "docs/data-admission-contract.md": "c62dba28c2e4b4c2d17ce100da233ea26c71f8dcea5f4c0611608fbabf2f8584",
+    "docs/evidence/data-admission-plan-2026-11-13/admission-implementation-plan.md": "464849b2ea0f6e5a0dde4b00b4aed00b72d1e51c9af9bdda4d7d38d7eafde875"
+  },
+  "inheritance_17": [
+    {
+      "task": "T1+recovery-fixture",
+      "path": "src/tianshu/data_state.py",
+      "sha256": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "922b75ca5fd4339db88f8ba0073db28655d25cd9",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "src/tianshu/data_admission.py",
+      "sha256": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "63da843a31db04ced24d886b2f5ba9cd27b5e377",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "src/tianshu/events.py",
+      "sha256": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "7793c031f8ce9ab46896a24dc67c7da208866fd0",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/test_data_state.py",
+      "sha256": "e5826e76e6738b716344f773148552554b14b816f5b5e44b508becbe1f3e748c",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "bc41be1cf5eddbf354c0b35cb090c058f861b431",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/test_data_admission.py",
+      "sha256": "c4d95784b6d6a7d0e1f5c64f53783665cd1f275f471a2e197110e1914df2db0d",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "12894b533009650ef02185a2949a47fa3a109e19",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/fixtures/data_admission/README.md",
+      "sha256": "df3f17b269e61ccdd936c21effb2953bfa1b1bdcd9a344521e235ca4f725feba",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "481ce92dff4bf099a4658f687ebc7c44ac1389ab",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/fixtures/data_admission/legacy-completed.json",
+      "sha256": "3db8145607ee790b234024f253d4ac558d4f8913b150b2c323b27ad078034d5b",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "4aae9089aa856cfff2400c218b9340704d5cf7f6",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/fixtures/data_admission/legacy-v2.sql",
+      "sha256": "42f980a4ec9b5022c72898d88378bb5977db5ddf31d42626c91f94bd7d535ded",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "3c47d4ff58a2d8453c11b14bc340f0cb759bbf35",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/fixtures/data_admission/v0.sql",
+      "sha256": "5650eaf9d900abc1971e6f742bcde756adcd76409dcb7b93af8d148564ec3692",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "688f2df0c1903e5f9996b16c72c5d7eac27b45ff",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T1+recovery-fixture",
+      "path": "tests/test_recovery_atomicity.py",
+      "sha256": "736d77c60f8f1d655867dab8bb7b0a7e85623613c182e8ca8d0402d6b46e7573",
+      "mode": "100644",
+      "kind": "blob",
+      "git_blob": "3a786971c6b147cb583bcfd1afdda3760a6a30d8",
+      "c145_585_t2_t3_exact": true
+    },
+    {
+      "task": "T2",
+      "path": "src/tianshu/data_digest.py",
+      "sha256": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+      "git_blob": "be92c3fdcc0fd51d257af876190166bd6e4d52ae",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t2-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PASS_TASK2_CONTENT_ONLY"
+    },
+    {
+      "task": "T2",
+      "path": "src/tianshu/migrate.py",
+      "sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+      "git_blob": "4162172115388431fe9cb9b9127573f34dd0bd9d",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t2-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PASS_TASK2_CONTENT_ONLY"
+    },
+    {
+      "task": "T2",
+      "path": "tests/test_data_binding.py",
+      "sha256": "1c56e2d66a9bc2dcea54e3a26f988c8ad9a2c5e9c1b563341dcb7160220d5e83",
+      "git_blob": "ab634f1683fd2888b4ff924bfa92ad67729a4cf1",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t2-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PASS_TASK2_CONTENT_ONLY"
+    },
+    {
+      "task": "T2",
+      "path": "tests/test_migration.py",
+      "sha256": "02bb86f3608c1841d74516b63d801f0b8e9b17cc9777ada7caba300d304fe2eb",
+      "git_blob": "ccd09ef38a14fffe718f0836e67ed012fdc0ab36",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t2-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PASS_TASK2_CONTENT_ONLY"
+    },
+    {
+      "task": "T3",
+      "path": "src/tianshu/data_cli.py",
+      "sha256": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+      "git_blob": "3d78c6b9d7576e8771b0e4dcfff4dfdf7e69b23f",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t3-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PENDING_SEPARATE_INDEPENDENT_REVIEW"
+    },
+    {
+      "task": "T3",
+      "path": "tests/test_data_cli.py",
+      "sha256": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14",
+      "git_blob": "91de330d0ef8715a7d46f2ecf4a5c44127d4ced5",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t3-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PENDING_SEPARATE_INDEPENDENT_REVIEW"
+    },
+    {
+      "task": "T3",
+      "path": "tests/test_data_migration_cli.py",
+      "sha256": "d8fe54a496881a7b9da38beb09604a876fea7a7c7b0844037ef6627ac3234bc6",
+      "git_blob": "b079aa9ae47ad8cd7474816eca94a49dd7270324",
+      "expected_mode": "100644",
+      "source_snapshot": "/tmp/t3-admission-independent/candidate-frozen",
+      "source_match": true,
+      "behavior_verdict": "PENDING_SEPARATE_INDEPENDENT_REVIEW"
+    }
+  ],
+  "main_sync_preparation": {
+    "actual_main": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+    "actual_main_tree": "8ce2e0e817144fdca1336ff266b7d047f9cb462a",
+    "merge_base": "91290950099b1202beeb9b34cd2d71af7e945118",
+    "delta_files": [
+      {
+        "path": "docs/KNOWLEDGE.md",
+        "status": "modified",
+        "sha256": "35a85411e0df46e88e475a619352e389aaf79cf52f4644b4ff22ac67f86c55a6",
+        "mode": "100644",
+        "kind": "blob",
+        "git_blob": "f97fb2a2a49f229d2b706298ab5d75c2b02b69e7",
+        "integration_policy": "MANUAL_FACT_MERGE_PENDING"
+      },
+      {
+        "path": "docs/evidence/data-lifecycle-2026-11-13/pr134-b5-ci-evidence-sha256.json",
+        "status": "added",
+        "sha256": "aeccb67dc9c9bc849cbb1fa4e0688ee00fac0c0622cdafd2fe7ae1c1de3d564c",
+        "mode": "100644",
+        "kind": "blob",
+        "git_blob": "00d51015610ecd9e6d1d9df837826eb18e6cbd7e",
+        "integration_policy": "INHERIT_EXACT_MAIN_OBJECT"
+      },
+      {
+        "path": "docs/evidence/data-lifecycle-2026-11-13/pr134-b5-ci-independent-review.json",
+        "status": "added",
+        "sha256": "bef9c57e141412f378654f0f83e48d24db233574a73b981748911990c6b6c9fd",
+        "mode": "100644",
+        "kind": "blob",
+        "git_blob": "f7cee700499eaa4e1dbefa153e3e7595fd17a5eb",
+        "integration_policy": "INHERIT_EXACT_MAIN_OBJECT"
+      },
+      {
+        "path": "docs/evidence/data-lifecycle-2026-11-13/pr134-b5-ci-independent-review.md",
+        "status": "added",
+        "sha256": "540d80c32824850d3fe0d96fe3ef77676255c6ef53fbab0a558ef8ab79b07f6b",
+        "mode": "100644",
+        "kind": "blob",
+        "git_blob": "8de7d050b558f779e41db6aea33dbd5080faa1b7",
+        "integration_policy": "INHERIT_EXACT_MAIN_OBJECT"
+      }
+    ],
+    "main_side_product_test_delta": [],
+    "sync_performed": false,
+    "proposed_merged_knowledge": {
+      "source_path": "/private/tmp/tianshu-g3-20261113/final-admission/knowledge-after-main-sync.md",
+      "sha256": "d7426e9dbba1c56f67f05b8b760dd48db9bd103050f9a326c1d052b0d180971e",
+      "git_blob": "110dd79e8d037544448f9041371fa51d85f6855a",
+      "expected_mode": "100644",
+      "all_t3_lines_preserved": true,
+      "exact_main_only_insertions": true,
+      "main_inserted_blocks": 2,
+      "main_inserted_lines": 4,
+      "status": "TMP_PROPOSAL_VERIFIED_NOT_APPLIED"
+    }
+  },
+  "knowledge_exception": {
+    "t2_sha256": "82cfe7c9d87b33597e1937f0715ebf0d0cbe70112d833699740c4ed812aa9ee6",
+    "t3_sha256": "a2e5fe4cb23d7d0c07660612990b04f0e411a21106fab87f35d7c4e09051e49b",
+    "whole_file_bytes_equal": false,
+    "all_t2_lines_preserved_with_only_t3_insertions": true,
+    "insertions": [
+      {
+        "operation": "insert",
+        "t2_lines_0_based": [
+          27,
+          27
+        ],
+        "t3_lines_0_based": [
+          27,
+          29
+        ]
+      },
+      {
+        "operation": "insert",
+        "t2_lines_0_based": [
+          534,
+          534
+        ],
+        "t3_lines_0_based": [
+          536,
+          538
+        ]
+      }
+    ],
+    "final_main_and_candidate_fact_merge": "TMP_PROPOSAL_VERIFIED; APPLICATION_PENDING"
+  },
+  "execution": {
+    "product_imports": 0,
+    "tests": 0,
+    "full_suites": 0,
+    "lock_checks": 0,
+    "ruff_checks": 0,
+    "independent_probe_reruns": 0,
+    "author_tree_writes": 0,
+    "checkout_merge_commit_push": 0
+  },
+  "pending": [
+    "T3 independent behavioral verdict and exact report binding",
+    "parent integration of actual main0df and factual KNOWLEDGE merge",
+    "parent final combined freeze and one centralized full/lock/ruff with raw originals",
+    "formal combined commit/blob/mode and gate-result binding",
+    "current implementation PR four required native CI checks and final merge verification"
+  ],
+  "not_claimed": [
+    "T3 behavioral approval",
+    "integrated local gates pass",
+    "new combined commit approval",
+    "new implementation PR/native CI pass",
+    "release or device support"
+  ]
+}

@@ -402,8 +402,13 @@ def test_backup_cli_refuses_live_eventlog_without_stopping_it(tmp_path):
         log.close()
 
 
-def test_restore_apply_and_migrate_are_not_exposed(tmp_path):
-    for name in ("restore", "migrate"):
-        result = _cli(name, "--data-root", tmp_path, "--approve")
-        assert result.returncode == 2
-        assert "invalid choice" in result.stderr
+def test_restore_apply_is_not_exposed_and_migrate_requires_backup(tmp_path):
+    result = _cli("restore", "--data-root", tmp_path, "--approve")
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
+    result = _cli("restore-plan", tmp_path, "--data-root", tmp_path, "--apply")
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+    result = _cli("migrate", "--data-root", tmp_path)
+    assert result.returncode == 2
+    assert "--backup" in result.stderr and "invalid choice" not in result.stderr

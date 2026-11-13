@@ -1,0 +1,311 @@
+{
+  "schema": "tianshu.ci_independent_review.v1",
+  "reviewer": "/root/verify_lifecycle",
+  "verified_at": "2026-11-13T11:46:47.998046+00:00",
+  "repository": "lorek666/tianshu-agent",
+  "run": {
+    "id": 43416712660,
+    "attempt": 1,
+    "event": "push",
+    "branch": "main",
+    "head_sha": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+    "status": "completed",
+    "conclusion": "success",
+    "check_suite_id": 117563625881,
+    "started_at": "2026-11-13T11:23:43Z",
+    "updated_at": "2026-11-13T11:43:53Z"
+  },
+  "binding": {
+    "all_four_raw_log_checkouts_exact_main": true,
+    "main_commit": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+    "parents": [
+      "69119f009096df74fc8e370d5d1c6d71cad3f290",
+      "a38e814577ce721ed747aa40d77637cf10c857d7"
+    ],
+    "main_and_PR135_a38_complete_tree": "8ce2e0e817144fdca1336ff266b7d047f9cb462a",
+    "main_ref_at_final_read": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+    "GitHub_Git_objects_previously_independently_read_and_immutable_originals_in_manifest": true,
+    "previous_merged_object_binding": {
+      "path": "/tmp/tianshu-g3-20261113/main-0df-independent-merge-binding.json",
+      "sha256": "50712a263734dbf781a60ce2e1933d7222bff36b3ae0a4f9398eb5a28ee016df"
+    },
+    "PR135_CI_result_not_used_as_this_run_result": true
+  },
+  "jobs": [
+    {
+      "platform": "ui",
+      "job_name": "ui · typecheck / test / build",
+      "job_id": 131856334965,
+      "check_id": 131856334965,
+      "check_suite_id": 117563625881,
+      "app_id": 15368,
+      "conclusion": "success",
+      "started_at": "2026-11-13T11:23:46Z",
+      "completed_at": "2026-11-13T11:24:13Z",
+      "actual_checkout": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+      "tests": {
+        "passed": 80,
+        "test_files": 11,
+        "typecheck_build_dist_steps_success": true
+      },
+      "raw_summary_log_lines": [
+        "2026-11-13T11:24:05.7877625Z  Test Files  11 passed (11)",
+        "2026-11-13T11:24:05.7932524Z       Tests  80 passed (80)"
+      ],
+      "environment": {
+        "operating_system": [
+          "Ubuntu",
+          "26.04.1",
+          "LTS"
+        ],
+        "runner_image": [
+          "Image: ubuntu-26.04",
+          "Version: 20261111.196.1"
+        ]
+      },
+      "specified_failure_warning_marker_counts": {
+        "warnings summary": 0,
+        "PytestUnhandledThreadExceptionWarning": 0,
+        "ResourceWarning": 0,
+        "Fatal Python error:": 0,
+        "Exception in thread": 0,
+        "##[error]": 0
+      },
+      "watchdog": [],
+      "deprecation_log_counts": {
+        "DEP0040": 2,
+        "DEP0169": 2,
+        "action_warning": 1
+      },
+      "annotation_levels": [
+        "warning",
+        "notice"
+      ],
+      "raw_log": {
+        "path": "/tmp/tianshu-g3-20261113/ci-43416712660/ui-job-131856334965.log",
+        "bytes": 21089,
+        "sha256": "e76c698a788eebd7bd932c9b8d3563d6fad56f4926c98d02265a5ad7101b3dc0"
+      }
+    },
+    {
+      "platform": "ubuntu",
+      "job_name": "test (ubuntu-latest) · py3.12",
+      "job_id": 131856335219,
+      "check_id": 131856335219,
+      "check_suite_id": 117563625881,
+      "app_id": 15368,
+      "conclusion": "success",
+      "started_at": "2026-11-13T11:23:45Z",
+      "completed_at": "2026-11-13T11:29:04Z",
+      "actual_checkout": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+      "tests": {
+        "passed": 2434,
+        "skipped": 13,
+        "seconds": 309.17,
+        "collected_total": 2447,
+        "lock_and_ruff_steps_success": true
+      },
+      "raw_summary_log_lines": [
+        "2026-11-13T11:29:01.8055372Z 2434 passed, 13 skipped in 309.17s (0:05:09)"
+      ],
+      "environment": {
+        "operating_system": [
+          "Ubuntu",
+          "26.04.1",
+          "LTS"
+        ],
+        "runner_image": [
+          "Image: ubuntu-26.04",
+          "Version: 20261111.196.1"
+        ],
+        "python": "3.12.16"
+      },
+      "specified_failure_warning_marker_counts": {
+        "warnings summary": 0,
+        "PytestUnhandledThreadExceptionWarning": 0,
+        "ResourceWarning": 0,
+        "Fatal Python error:": 0,
+        "Exception in thread": 0,
+        "##[error]": 0
+      },
+      "watchdog": [],
+      "deprecation_log_counts": {
+        "DEP0040": 2,
+        "DEP0169": 1,
+        "action_warning": 1
+      },
+      "annotation_levels": [
+        "warning",
+        "notice"
+      ],
+      "raw_log": {
+        "path": "/tmp/tianshu-g3-20261113/ci-43416712660/ubuntu-job-131856335219.log",
+        "bytes": 22307,
+        "sha256": "a0b9aa9e960d077dc330a435dbfb9ae7b2843c9f44c40b39acdf82a152f059bc"
+      }
+    },
+    {
+      "platform": "windows",
+      "job_name": "test (windows-latest) · py3.12",
+      "job_id": 131856335391,
+      "check_id": 131856335391,
+      "check_suite_id": 117563625881,
+      "app_id": 15368,
+      "conclusion": "success",
+      "started_at": "2026-11-13T11:23:46Z",
+      "completed_at": "2026-11-13T11:43:53Z",
+      "actual_checkout": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+      "tests": {
+        "passed": 2410,
+        "skipped": 37,
+        "seconds": 1181.99,
+        "collected_total": 2447,
+        "lock_and_ruff_steps_success": true
+      },
+      "raw_summary_log_lines": [
+        "2026-11-13T11:43:48.2372391Z ================ 2410 passed, 37 skipped in 1181.99s (0:19:41) ================"
+      ],
+      "environment": {
+        "operating_system": [
+          "Microsoft Windows Server 2025",
+          "10.0.26100",
+          "Datacenter"
+        ],
+        "runner_image": [
+          "Image: windows-2025-vs2026",
+          "Version: 20261103.298.1"
+        ],
+        "python": "3.12.16"
+      },
+      "specified_failure_warning_marker_counts": {
+        "warnings summary": 0,
+        "PytestUnhandledThreadExceptionWarning": 0,
+        "ResourceWarning": 0,
+        "Fatal Python error:": 0,
+        "Exception in thread": 0,
+        "##[error]": 0
+      },
+      "watchdog": [
+        {
+          "watchdog_log_line": "2026-11-13T11:30:19.7342040Z PYTHON STACK WATCHDOG",
+          "next_PASSED_log_line": "2026-11-13T11:30:56.5428094Z tests/test_eval_real_tasks.py::test_real_user_scope_is_counted_separately_from_contract_cases PASSED [ 27%]",
+          "no_claim_of_performance_root_cause": true
+        },
+        {
+          "watchdog_log_line": "2026-11-13T11:33:52.1283974Z PYTHON STACK WATCHDOG",
+          "next_PASSED_log_line": "2026-11-13T11:34:02.8954881Z tests/test_eval_separation.py::test_cli_compare_accepts_previous_report_as_baseline PASSED [ 30%]",
+          "no_claim_of_performance_root_cause": true
+        },
+        {
+          "watchdog_log_line": "2026-11-13T11:41:52.4586673Z PYTHON STACK WATCHDOG",
+          "next_PASSED_log_line": "2026-11-13T11:42:11.0790846Z tests/test_recovery.py::test_100_random_fault_injections PASSED          [ 87%]",
+          "no_claim_of_performance_root_cause": true
+        }
+      ],
+      "deprecation_log_counts": {
+        "DEP0040": 2,
+        "DEP0169": 1,
+        "action_warning": 1
+      },
+      "annotation_levels": [
+        "warning"
+      ],
+      "raw_log": {
+        "path": "/tmp/tianshu-g3-20261113/ci-43416712660/windows-job-131856335391.log",
+        "bytes": 357207,
+        "sha256": "e7e1f070acfbc38456b314b9e9d76e1085910f6281d47c87b7bb6add1bc19753"
+      }
+    },
+    {
+      "platform": "macos",
+      "job_name": "test (macos-latest) · py3.12",
+      "job_id": 131856336782,
+      "check_id": 131856336782,
+      "check_suite_id": 117563625881,
+      "app_id": 15368,
+      "conclusion": "success",
+      "started_at": "2026-11-13T11:23:45Z",
+      "completed_at": "2026-11-13T11:33:12Z",
+      "actual_checkout": "0df7019aeed4f9116262e38f86561d5eff06d0e4",
+      "tests": {
+        "passed": 2439,
+        "skipped": 8,
+        "seconds": 555.89,
+        "collected_total": 2447,
+        "lock_and_ruff_steps_success": true
+      },
+      "raw_summary_log_lines": [
+        "2026-11-13T11:33:09.0862420Z 2439 passed, 8 skipped in 555.89s (0:09:15)"
+      ],
+      "environment": {
+        "operating_system": [
+          "macOS",
+          "26.7.2",
+          "25G332"
+        ],
+        "runner_image": [
+          "Image: macos-26-arm64",
+          "Version: 20261102.0473.1"
+        ],
+        "python": "3.12.16"
+      },
+      "specified_failure_warning_marker_counts": {
+        "warnings summary": 0,
+        "PytestUnhandledThreadExceptionWarning": 0,
+        "ResourceWarning": 0,
+        "Fatal Python error:": 0,
+        "Exception in thread": 0,
+        "##[error]": 0
+      },
+      "watchdog": [],
+      "deprecation_log_counts": {
+        "DEP0040": 2,
+        "DEP0169": 1,
+        "action_warning": 1
+      },
+      "annotation_levels": [
+        "warning",
+        "notice"
+      ],
+      "raw_log": {
+        "path": "/tmp/tianshu-g3-20261113/ci-43416712660/macos-job-131856336782.log",
+        "bytes": 22339,
+        "sha256": "228fc06d41fe71997f320ef3a9c02ca3d7e6b21bc5a3df32ae93904b5c3181c7"
+      }
+    }
+  ],
+  "protection_snapshot": {
+    "strict": true,
+    "enforce_admins": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false,
+    "required_checks": [
+      {
+        "context": "test (ubuntu-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "test (macos-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "test (windows-latest) · py3.12",
+        "app_id": 15368
+      },
+      {
+        "context": "ui · typecheck / test / build",
+        "app_id": 15368
+      }
+    ],
+    "required_approving_review_count": 0,
+    "four_current_head_checks_total": 4
+  },
+  "watch_exit_code": 0,
+  "raw_evidence_manifest": {
+    "path": "/tmp/tianshu-g3-20261113/ci-43416712660/evidence-sha256.json",
+    "file_count": 24,
+    "sha256": "f9fcb4abe3264750fb3fdb88a4787e2437fa891bc0314b67db160a7367ed8011"
+  },
+  "scope": "Only main0df push run43416712660 attempt1 and its actual checkout/tree. PR135 green is not used as this push-CI result. No T1/T2/T3 tree absorption or acceptance, no test rerun, CI control, repository write, commit, push or merge by reviewer. Hosted CI does not establish user-device or other-platform support.",
+  "conclusion": "PASS_MAIN_0DF_PUSH_CI_EXACT_OBJECT"
+}

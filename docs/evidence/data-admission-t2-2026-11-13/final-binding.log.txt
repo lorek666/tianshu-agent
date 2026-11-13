@@ -1,0 +1,5 @@
+COMMAND uv run --frozen pytest -o addopts= -q tests/test_data_binding.py tests/test_migration.py
+........................................................................ [ 80%]
+..................                                                       [100%]
+90 passed in 4.71s
+EXIT 0

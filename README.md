@@ -194,7 +194,7 @@ uv run tianshu run --workspace /tmp/ws --task "..." \
 | `host` | 桌面外壳：`run`（默认）/ `stop` / `status`，把 UI 桥到本地 IPC |
 | `replay` | 从事件日志回放并校验（**审计，不调模型**） |
 | `evaluate` | 在干净 fixture 上换模型跑固定 case（**换模，与 replay 是两件事**） |
-| `data` | 显式数据根的离线 `backup`、独立 `verify` 与只读 `restore-plan`；尚不执行恢复 |
+| `data` | 显式数据根的离线 `backup`、独立 `verify`、备份绑定的 `migrate` 与只读 `restore-plan`；尚不执行恢复 |
 
 ```bash
 # 建任务（目录可重复；--readonly 指定只读目录；不传目录 = 纯对话任务）
@@ -252,9 +252,10 @@ PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被�
 uv run --frozen tianshu data backup --data-root /absolute/data-root --dest /absolute/backups/backup-1
 uv run --frozen tianshu data verify /absolute/backups/backup-1 --json
 uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root /absolute/data-root --json
+uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /absolute/backups/backup-1 --json
 ```
 
-备份包含 `events.db`、`artifacts/`、根 `blobs/` 与 `memory_blobs/`，不含工作区文件、IPC 密钥和日志。`restore-plan` 检查通过退出 `3`，只报告条件与未决项；**不会恢复或激活旧记忆**。实际恢复、迁移启动门、自动清理仍待后续交付。材料布局、协作锁边界与退出码见 [备份指南](docs/backup-restore.md)。
+备份包含 `events.db`、`artifacts/`、根 `blobs/` 与 `memory_blobs/`，不含工作区文件、IPC 密钥和日志。实际 EventLog 打开前检查版本与迁移进度；显式 `migrate` 只处理标准 `ROOT/events.db`，要求备份与升级前完整一致点绑定，支持严格续做。现有 0→2 只改变迁移机制，不代表全产品格式已冻结。`restore-plan` 检查通过退出 `3`，只报告条件与未决项；**不会恢复或激活旧记忆**。恢复隔离、实际恢复、容量保护与自动清理仍待后续交付。材料布局、协作锁边界与退出码见 [备份指南](docs/backup-restore.md)，本切片验证范围见 [数据准入记录](docs/DATA-ADMISSION-2026-11-13.md)。
 
 **M5 起有两套落点，别混：**
 

@@ -1,4 +1,4 @@
-"""显式数据根的离线备份、独立验证与只读恢复预演。"""
+"""显式数据根的离线备份、独立验证、迁移与只读恢复预演。"""
 
 from __future__ import annotations
 
@@ -13,16 +13,18 @@ from typing import Any
 from . import event_schema
 from .backup import BackupError, BackupRefused, create_backup, verify_backup
 from .credentials import redact
+from .data_state import AdmissionRefused
 from .errors import TianshuError
 from .maintenance import acquire_database_access
 from .migrate import SCHEMA_VERSION
+from .migrate import migrate as run_migration
 from .pathkeys import overlap_key
 from .permissions import APPROVAL_STATES
 from .tasks import NON_TERMINAL_STATES, RUN_STATES
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser("data", help="数据维护：离线备份 / 验证 / 只读恢复预演")
+    parser = subparsers.add_parser("data", help="数据维护：离线备份 / 验证 / 迁移 / 只读恢复预演")
     commands = parser.add_subparsers(dest="data_action", required=True)
     backup = commands.add_parser("backup", help="所有天枢连接关闭后，生成完整备份")
     backup.add_argument("--data-root", type=Path, required=True)
@@ -35,6 +37,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     plan.add_argument("backup", type=Path)
     plan.add_argument("--data-root", type=Path, required=True)
     plan.add_argument("--json", action="store_true")
+    migration = commands.add_parser("migrate", help="使用已验证备份显式迁移标准数据根")
+    migration.add_argument("--data-root", type=Path, required=True)
+    migration.add_argument("--backup", type=Path, required=True)
+    migration.add_argument("--json", action="store_true")
 
 
 def _backup(data_root: Path, dest: Path) -> dict[str, Any]:
@@ -248,6 +254,8 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
         print(f"离线备份已生成并验证：{report['backup']}")
     elif operation == "verify":
         print("备份校验通过" if report["ok"] else "备份校验失败")
+    elif operation == "migrate":
+        print(redact(report["message"] if report["ok"] else report["error"]))
     else:
         print("恢复预演通过，仍需人工复核；未执行恢复" if report["ok"] else "恢复预演未通过")
         print(f"备份：{report['backup']}")
@@ -284,6 +292,21 @@ def run(args: argparse.Namespace) -> int:
     elif args.data_action == "verify":
         report = {"operation": "verify", **verify_backup(args.backup).to_dict()}
         code = 0 if report["ok"] else 1
+    elif args.data_action == "migrate":
+        try:
+            migration = run_migration(args.data_root, backup=args.backup)
+        except AdmissionRefused as exc:
+            report = {
+                "operation": "migrate", "ok": False, "code": exc.code,
+                "error": str(exc),
+            }
+            code = 2
+        else:
+            report = {
+                "operation": "migrate", "ok": True, "code": None,
+                **migration.to_dict(), "message": migration.to_text(),
+            }
+            code = 0
     else:
         report = _restore_plan(args.backup, args.data_root)
         code = 3 if report["ok"] else 2

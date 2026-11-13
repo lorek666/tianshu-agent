@@ -1,0 +1,182 @@
+{
+  "verdict": "PASS_TASK3_CONTENT_ONLY",
+  "date": "2026-11-13",
+  "reviewer_lane": "independent second reader; no author writes",
+  "binding": {
+    "base_git": "585e3474b7f9f03bb118308470fac1f500c3a02e",
+    "t3_author_handoff_sha256": "79f5287dcf3719816649ffd49386e6087e04afb7f3e3810735d84164b7c828ee",
+    "candidate_binding_path": "/tmp/t3-admission-independent/candidate-binding.json",
+    "candidate_binding_sha256": "8ee219c4ec1304d48fab4d2dd24f8c7d7abb14dfa7d6ac345092a3a2e1f25fdd",
+    "candidate_files": 485,
+    "base_files": 441,
+    "t2_overlay": 25,
+    "t3_overlay": 26,
+    "combined_overlay": 50,
+    "combined_non_docs": 7,
+    "t2_non_knowledge_unchanged": 24,
+    "base_outside_combined_unchanged": 435,
+    "t3_product_tests": {
+      "src/tianshu/data_cli.py": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+      "tests/test_data_migration_cli.py": "d8fe54a496881a7b9da38beb09604a876fea7a7c7b0844037ef6627ac3234bc6",
+      "tests/test_data_cli.py": "349346aaee2dbad0cffd0915afffcc6008756a866e05946ab0d3fdbe9f35ec14"
+    },
+    "four_frozen_t2_product_test_files": {
+      "src/tianshu/data_digest.py": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b",
+      "src/tianshu/migrate.py": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8",
+      "tests/test_data_binding.py": "1c56e2d66a9bc2dcea54e3a26f988c8ad9a2c5e9c1b563341dcb7160220d5e83",
+      "tests/test_migration.py": "02bb86f3608c1841d74516b63d801f0b8e9b17cc9777ada7caba300d304fe2eb"
+    }
+  },
+  "independent_verification": {
+    "final": {
+      "passed": 35,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 19.03,
+      "run": "/tmp/t3-admission-independent/final-frozen-run/run.json",
+      "run_sha256": "c96186f156bca058176db5cf8eb131dc2b1cf73283966430eeb6c4acba45e80b",
+      "junit_sha256": "36d0999c230b258067a48215040a9ec29331a2cce5aab2ca80c76561f80d7fd7",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "-o",
+        "addopts=",
+        "-vv",
+        "-rs",
+        "-p",
+        "no:cacheprovider",
+        "/private/tmp/t3-admission-independent/probes/test_t3_cli_independent.py",
+        "--basetemp",
+        "/tmp/t3-admission-independent/final-frozen-run/cases",
+        "--junitxml",
+        "/tmp/t3-admission-independent/final-frozen-run/junit.xml"
+      ],
+      "runtime": {
+        "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+        "system": "Darwin",
+        "release": "25.6.0",
+        "machine": "arm64"
+      }
+    },
+    "first": {
+      "passed": 30,
+      "failed": 5,
+      "classification": "INDEPENDENT_FIXTURE_OBSERVER_ORDER; no product failure established",
+      "source_unchanged": true,
+      "raw_run": "/tmp/t3-admission-independent/first-frozen-run/run.json",
+      "raw_run_sha256": "f0568a9397e257062450a88b85c9f6fe1235a4cda34ee26390d0927327623e1e",
+      "correction": "/tmp/t3-admission-independent/fixture-history/observer-order.patch",
+      "correction_sha256": "2b434b8ff0644bd563d8a7f8bc57058cd2acd5592af0f2872256140a8c4abe4d"
+    },
+    "scope": "six actual code paths with positive controls and JSON/text; real child process barriers; four actual CLI77 windows; actual publication/DDL faults; real root/DB symlinks and hardlink; redaction; internal programming error separate from six business paths"
+  },
+  "negative_controls": [
+    {
+      "name": "MCLI1-code",
+      "classification": "KILLED_BY_REAL_CLI_BEHAVIOR",
+      "selected": "six_real_single_fault_paths and json-backup_mismatch",
+      "returncode": 1,
+      "executed": 1,
+      "failures": 1,
+      "errors": 0,
+      "failure_message": "AssertionError: assert 'migration_failed' == 'backup_mismatch'\n  \n  - backup_mismatch\n  + migration_failed",
+      "changed_path": "src/tianshu/data_cli.py",
+      "before_sha256": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+      "after_sha256": "fce720b279141d82ff0c50870daab8f013d93ab747520bc3cc3f11b89fe642a1",
+      "binding_path": "/private/tmp/t3-admission-independent/MCLI1-code-binding.json",
+      "binding_sha256": "9a1b95133e0854dce95d3b64eb8997ae5826d6d3da05b28acf47e4af7ddbdcb4",
+      "diff_path": "/private/tmp/t3-admission-independent/MCLI1-code.patch",
+      "diff_sha256": "6ca295876f29f1f251a34035307c9e9f9fdaaabae8dabe94079e23c1268b66b7",
+      "run_path": "/private/tmp/t3-admission-independent/MCLI1-code-run/run.json",
+      "run_sha256": "5facb0493892901b73c48ee4767fc16c92f00bf8dc76eb39483f99be12433ce9"
+    },
+    {
+      "name": "MCLI2-raw-path",
+      "classification": "KILLED_BY_REAL_CLI_BEHAVIOR",
+      "selected": "true_link_layout and root-symlink",
+      "returncode": 1,
+      "executed": 1,
+      "failures": 1,
+      "errors": 0,
+      "failure_message": "AssertionError: (0, '{\n    \"operation\": \"migrate\",\n    \"ok\": true,\n    \"code\": null,\n    \"from_version\": 0,\n    \"to_version\": 2,\n    \"applied_steps\": [\n      1,\n      2\n    ],\n    \"resumed\": false,\n    \"already_current\": false,\n    \"backup_path\": \"/private/tmp/t3-admission-independent/MCLI2-raw-path-run/cases/test_true_link_layout_is_refus0/root-symlink/backup\",\n    \"event_count\": 3,\n    \"warnings\": [],\n[+5 more lines; full report in element text]",
+      "changed_path": "src/tianshu/data_cli.py",
+      "before_sha256": "4f3ce8b6b35f484354878a91186298196023c970bd1a26275f544a993d167734",
+      "after_sha256": "40a3cfe1fffa46c8aa554ddad9874eb02f87670c532535ffca0e01cc60416de0",
+      "binding_path": "/private/tmp/t3-admission-independent/MCLI2-raw-path-binding.json",
+      "binding_sha256": "7192e3b30d7ee086c6dcb581b7d0f21ab18b8bed426c16bae045e2e0b69df9ed",
+      "diff_path": "/private/tmp/t3-admission-independent/MCLI2-raw-path.patch",
+      "diff_sha256": "0cadc85129d5bc73661b6a20530c739e32d003cefc8fa4f85840c4d6aa5583e6",
+      "run_path": "/private/tmp/t3-admission-independent/MCLI2-raw-path-run/run.json",
+      "run_sha256": "fc67e57da3b446d43a8e6bb5dfb52e8534d184a2289eeedcfa137b8248b8e698"
+    }
+  ],
+  "author_evidence_audit": {
+    "independent_rerun": false,
+    "audited_final_targeted_passed": 56,
+    "static_test_count_split": [
+      29,
+      27
+    ],
+    "original_log_pairs_byte_identical": 5,
+    "archive_members_verified": 19,
+    "source_test_before_after_binding_matches": true,
+    "red_failed": 25,
+    "red_passed": 26,
+    "red_interpretation": "missing CLI gate only; not deep protocol/lock mutation evidence",
+    "raw_audit_sha256": "bd68b7c3ea17194ba933a309e299683ff5b7537c0e9221a0aad42caa74bb9e41"
+  },
+  "classification": {
+    "已修": {
+      "产品缺陷": [],
+      "独立探针": [
+        "修正只读SQLite观察器生成空WAL/SHM后的no-op采样顺序；全部原断言保留，首轮原件不删除"
+      ]
+    },
+    "部分修": [],
+    "未修": [],
+    "未决": [],
+    "已满足的T3验收项": [
+      "T3-ARGS",
+      "T3-SUCCESS",
+      "T3-SIX",
+      "T3-SHARED",
+      "T3-EXCLUSIVE",
+      "T3-77",
+      "T3-WRITE",
+      "T3-LAYOUT",
+      "T3-REDACT",
+      "T3-BOUNDARY",
+      "T3-MUTATION",
+      "T3-SCOPE"
+    ]
+  },
+  "limits": [
+    "Content-only approval of the exact frozen source, not a commit/PR/full/native-CI approval",
+    "No T1/T2/full/CI repetition; author 56 read back and hash-audited rather than independently rerun",
+    "No Windows device/native runner claim; actual local runtime Darwin arm64 Python3.12.13",
+    "Final main integration/full/required CI and formal commit binding remain parent-owned later-phase gates",
+    "No author tree writes, commits, pushes or contract changes"
+  ],
+  "evidence_index": {
+    "path": "/tmp/t3-admission-independent/evidence-index.json",
+    "sha256": "9649685ed8c585b698d16586194608a35a302c35e9ba975a4546c36090580d89",
+    "entries": 1767
+  },
+  "parent_owned_followup": {
+    "path": "README.md",
+    "frozen_sha256": "b0f1738608a6d770330cc4b310c39fc1c2b9b854f64636e310e95c9a55f9f66c",
+    "observed_lines": [
+      197,
+      252,
+      254,
+      257
+    ],
+    "status": "OUTSIDE_T3_AUTHORIZED_FILES; root explicitly owns next documentation reconciliation",
+    "observation": "Frozen README still lists only backup/verify/restore-plan and says migration admission gate is not delivered",
+    "required_binding": "Any root README usage/migrate command update is a later docs-only source change and must receive its own final integration hash; current approval does not claim that unwritten text was reviewed",
+    "seven_non_docs_unchanged_by_followup": true
+  }
+}

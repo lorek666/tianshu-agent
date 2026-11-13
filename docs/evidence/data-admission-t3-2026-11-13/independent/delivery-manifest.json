@@ -1,0 +1,18 @@
+{
+  "verdict": "PASS_TASK3_CONTENT_ONLY",
+  "root": "/tmp/t3-admission-independent",
+  "candidate_files_stable": 485,
+  "delivery_count": 10,
+  "files": {
+    "independent-review.md": "67407160aad7de3639f8ec17ea192c6e71ed1cc68e373db76ff9518c2d669e17",
+    "independent-review.json": "34237d0c26ca300c1c035e916215cea227dd3675d02774039238015881a0523e",
+    "candidate-binding.json": "8ee219c4ec1304d48fab4d2dd24f8c7d7abb14dfa7d6ac345092a3a2e1f25fdd",
+    "acceptance-results.json": "54cac6f1122b5c607a5074a6a2617755892bee130031719141bcf8585f95d2d4",
+    "raw-audit.json": "bd68b7c3ea17194ba933a309e299683ff5b7537c0e9221a0aad42caa74bb9e41",
+    "cli-mutation-results.json": "842f6d3ba9d09c3c20adf349d7fa024f3984e6895b9ad29af773960d7b12e715",
+    "evidence-index.json": "9649685ed8c585b698d16586194608a35a302c35e9ba975a4546c36090580d89",
+    "fixture-history/classification.json": "0b86a8c792042eabdd48b054471abc2b80e67f419e58340d6a8e244144866413",
+    "final-frozen-run/run.json": "c96186f156bca058176db5cf8eb131dc2b1cf73283966430eeb6c4acba45e80b",
+    "final-frozen-run/junit.xml": "36d0999c230b258067a48215040a9ec29331a2cce5aab2ca80c76561f80d7fd7"
+  }
+}

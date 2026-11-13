@@ -1,0 +1,661 @@
+"""真实备份一致点与迁移绑定；版本、投影、材料和机制不能互相代替。"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import os
+import sqlite3
+from contextlib import closing, contextmanager
+from pathlib import Path
+
+import pytest
+
+from tianshu import memory_control, migrate
+from tianshu.backup import create_backup, verify_backup
+from tianshu.data_state import AdmissionRefused
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.resources import MemoryScope
+
+
+def root_for(tmp_path):
+    root = (tmp_path / "data").resolve()
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+        stack = build_stack(log, data_root=root)
+        assert memory_control.remember(
+            stack, MemoryScope.user(), kind="preference", content="binding evidence"
+        ).ok
+        log.conn.execute("CREATE TABLE extension_projection(key TEXT PRIMARY KEY, value)")
+        log.conn.execute("INSERT INTO extension_projection VALUES ('typed',1)")
+    return root
+
+
+def saved_for(root, tmp_path, name="backup"):
+    dest = tmp_path / name
+    create_backup(root, dest)
+    assert verify_backup(dest).ok
+    return dest
+
+
+def execute(root, sql):
+    with sqlite3.connect(root / "events.db") as conn:
+        conn.executescript(sql)
+
+
+def mechanism_v1(root):
+    execute(
+        root,
+        migrate.STEPS[0].statements[0] + ";"
+        "INSERT INTO migration_log VALUES(1,123); PRAGMA user_version=1;",
+    )
+
+
+def reseal(saved):
+    path = saved / "backup.json"
+    raw = json.loads(path.read_bytes())
+    with sqlite3.connect(saved / "events.db") as conn:
+        raw["db_user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
+    body = (saved / "events.db").read_bytes()
+    entry = next(f for f in raw["files"] if f["path"] == "events.db")
+    entry.update(sha256=hashlib.sha256(body).hexdigest(), size=len(body))
+    path.write_bytes(json.dumps(raw).encode())
+    assert verify_backup(saved).ok
+
+
+def point(root):
+    with sqlite3.connect(root / "events.db") as conn:
+        db = (conn.execute("PRAGMA user_version").fetchone()[0], tuple(conn.iterdump()))
+    files = {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file() and not p.name.startswith("events.db")
+    }
+    side = root / "events.db.migration.json"
+    return db, files, side.read_bytes() if side.exists() else None
+
+
+def refused(root, saved):
+    before = point(root)
+    with pytest.raises(AdmissionRefused) as exc:
+        migrate.migrate(root, backup=saved)
+    assert point(root) == before
+    return exc.value
+
+
+def interrupted(root, saved, failpoint="migration-before-step-2"):
+    from test_migration import _migration_subprocess
+
+    child = _migration_subprocess(root, saved, failpoint)
+    assert child.returncode == 77, child.stderr
+
+
+def test_typed_rows_distinguish_null_text_integer_float_blob():
+    from tianshu.data_digest import sqlite_digest
+
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute("CREATE TABLE values_t(value)")
+        hashes = []
+        for item in [None, "1", 1, 1.0, b"1"]:
+            conn.execute("DELETE FROM values_t")
+            conn.execute("INSERT INTO values_t VALUES(?)", (item,))
+            hashes.append(sqlite_digest(conn))
+        assert len(set(hashes)) == 5
+
+
+def test_binding_includes_every_persistent_table_and_schema_object(tmp_path):
+    from tianshu.data_digest import sqlite_digest
+
+    root = root_for(tmp_path)
+    with closing(sqlite3.connect(root / "events.db", isolation_level=None)) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        assert {
+            "memory_fts_data",
+            "memory_fts_idx",
+            "memories",
+            "extension_projection",
+            "sqlite_sequence",
+        } <= tables
+        assert any("budget" in t for t in tables)
+        assert any("summary" in t or "summar" in t for t in tables)
+        before = sqlite_digest(conn)
+        for sql in [
+            "CREATE TABLE extra_unknown(value BLOB)",
+            "CREATE INDEX extra_index ON extension_projection(value)",
+            "CREATE VIEW extra_view AS SELECT * FROM extension_projection",
+            "CREATE TRIGGER extra_trigger AFTER INSERT ON extension_projection BEGIN SELECT 1; END",
+        ]:
+            conn.execute("BEGIN")
+            conn.execute(sql)
+            assert sqlite_digest(conn) != before
+            assert conn.in_transaction
+            conn.rollback()
+        conn.execute("UPDATE extension_projection SET value='1'")
+        assert sqlite_digest(conn) != before
+
+
+def test_digest_covers_rowid_duplicates_generated_withoutrowid_and_sequence():
+    from tianshu.data_digest import sqlite_digest
+
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.executescript(
+            'CREATE TABLE "a"(id INTEGER PRIMARY KEY AUTOINCREMENT, value);'
+            'CREATE TABLE "odd name"(k TEXT PRIMARY KEY,v) WITHOUT ROWID;'
+            "CREATE TABLE generated(x, y GENERATED ALWAYS AS (x*2) STORED);"
+            "INSERT INTO a(value) VALUES(1),(1); INSERT INTO generated(x) VALUES(2);"
+        )
+        initial = sqlite_digest(conn)
+        for sql in [
+            "UPDATE a SET id=9 WHERE id=1",
+            "DELETE FROM a WHERE id=1",
+            "UPDATE sqlite_sequence SET seq=99",
+            "UPDATE generated SET x=3",
+        ]:
+            conn.execute("BEGIN")
+            conn.execute(sql)
+            assert sqlite_digest(conn) != initial
+            conn.rollback()
+        conn.execute("CREATE TABLE hidden_aliases(rowid,_rowid_,oid)")
+        with pytest.raises(Exception, match="rowid"):
+            sqlite_digest(conn)
+
+
+@pytest.mark.parametrize("change", ["foreign", "stale"])
+def test_foreign_and_stale_backup_refused(tmp_path, change):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    if change == "foreign":
+        foreign = root_for(tmp_path / "other")
+        assert refused(foreign, saved).code == "backup_mismatch"
+        return
+    with closing(EventLog(root / "events.db")) as log:
+        log.append(
+            "later",
+            "run.start",
+            {"task": "x", "workspace": "/x", "out": "x", "limits": {}, "tools": []},
+            legacy_write=True,
+        )
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_projection_only_change_refused(tmp_path):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    execute(root, "UPDATE extension_projection SET value=2")
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "artifacts/new",
+        "blobs/orphan",
+        "memory_blobs/orphan",
+        "blobs/.hidden",
+        "artifacts/extra.tmp",
+    ],
+)
+def test_live_extra_and_saved_undeclared_material_refused(tmp_path, rel):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    extra = root / rel
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_bytes(b"unreferenced")
+    assert refused(root, saved).code == "backup_mismatch"
+    extra.unlink()
+    target = saved / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"undeclared")
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_fts_optimize_same_virtual_rows_changed_shadow_refuses_stale_backup(tmp_path):
+    root = root_for(tmp_path)
+    with closing(sqlite3.connect(root / "events.db", isolation_level=None)) as conn:
+        conn.execute("INSERT INTO memory_fts(memory_fts,rank) VALUES('automerge',0)")
+        for i in range(12):
+            conn.execute(
+                "INSERT INTO memory_fts(memory_id,tokens) VALUES(?,?)", (f"x{i}", f"needle {i}")
+            )
+        virtual = conn.execute("SELECT rowid,* FROM memory_fts ORDER BY rowid").fetchall()
+        shadow = conn.execute("SELECT * FROM memory_fts_data ORDER BY id").fetchall()
+    saved = saved_for(root, tmp_path)
+    execute(root, "INSERT INTO memory_fts(memory_fts) VALUES('optimize')")
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        assert conn.execute("SELECT rowid,* FROM memory_fts ORDER BY rowid").fetchall() == virtual
+        assert conn.execute("SELECT * FROM memory_fts_data ORDER BY id").fetchall() != shadow
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+@pytest.mark.parametrize("change", ["version", "audit"])
+def test_initial_binding_requires_real_version_and_full_mechanism_equality(tmp_path, change):
+    root = root_for(tmp_path)
+    if change == "audit":
+        mechanism_v1(root)
+    saved = saved_for(root, tmp_path)
+    if change == "version":
+        mechanism_v1(saved)
+    else:
+        execute(saved, "UPDATE migration_log SET applied_at=999")
+    reseal(saved)
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_resume_keeps_original_version_backup_as_valid_baseline(tmp_path):
+    from tianshu.data_digest import sqlite_digest
+
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        baseline = sqlite_digest(conn)
+    interrupted(root, saved)
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert sqlite_digest(conn) == baseline
+    assert migrate.migrate(root, backup=saved).resumed
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        assert sqlite_digest(conn) == baseline
+    EventLog(root / "events.db").close()
+
+
+def test_resume_rejects_unplanned_inherited_audit_change(tmp_path):
+    root = root_for(tmp_path)
+    mechanism_v1(root)
+    saved = saved_for(root, tmp_path)
+    interrupted(root, saved)
+    execute(root, "UPDATE migration_log SET applied_at=999 WHERE step=1")
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_v2_without_format2_completed_refuses_without_creating_progress(tmp_path, legacy):
+    root = root_for(tmp_path)
+    mechanism_v1(root)
+    execute(
+        root,
+        ";".join(migrate.STEPS[1].statements)
+        + ";INSERT INTO migration_log VALUES(2,456,'');PRAGMA user_version=2",
+    )
+    if legacy:
+        fixture = Path(__file__).parent / "fixtures/data_admission/legacy-completed.json"
+        (root / "migration.json").write_bytes(fixture.read_bytes())
+        EventLog(root / "events.db").close()
+    saved = saved_for(root, tmp_path)
+    assert refused(root, saved).code == "migration_incomplete"
+    assert not (root / "events.db.migration.json").exists()
+
+
+@pytest.mark.parametrize("change", ["manifest", "plan", "path", "jump"])
+def test_manifest_or_plan_replacement_refuses_resume(tmp_path, change):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    interrupted(root, saved)
+    path = root / "events.db.migration.json"
+    if change == "manifest":
+        target = saved / "backup.json"
+        target.write_bytes(target.read_bytes() + b"\n")
+    else:
+        raw = json.loads(path.read_bytes())
+        if change == "plan":
+            raw["plan_sha256"] = "0" * 64
+        elif change == "path":
+            raw["db_path"] = str(root / "other.db")
+        else:
+            raw.update(applied_steps=[], current_step=None)
+        path.write_bytes(json.dumps(raw).encode())
+    refused(root, saved)
+
+
+@pytest.mark.parametrize("change", ["business", "material", "missing", "replacement"])
+def test_completed_original_backup_path_never_falls_back_to_fresh_noop(tmp_path, change):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    migrate.migrate(root, backup=saved)
+    if change == "business":
+        execute(root, "UPDATE extension_projection SET value=2")
+    elif change == "material":
+        (root / "memory_blobs/later").write_bytes(b"later")
+    elif change == "missing":
+        saved.rename(tmp_path / "moved")
+    else:
+        import shutil
+
+        shutil.rmtree(saved)
+        create_backup(root, saved)
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_completed_fresh_backup_noop_without_old_backup_or_rebinding(tmp_path):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    migrate.migrate(root, backup=saved)
+    execute(root, "UPDATE extension_projection SET value=2")
+    new = saved_for(root, tmp_path, "new")
+    saved.rename(tmp_path / "moved")
+    before = point(root)
+    report = migrate.migrate(root, backup=new)
+    assert report.from_version == report.to_version == 2
+    assert report.applied_steps == [] and report.already_current and not report.resumed
+    assert report.backup_path == str(new.resolve())
+    assert point(root) == before
+
+
+@pytest.mark.parametrize("change", ["applied_at", "note", "definition"])
+def test_fresh_noop_compares_full_mechanism_audit_and_definitions(tmp_path, change):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    migrate.migrate(root, backup=saved)
+    new = saved_for(root, tmp_path, "new")
+    sql = (
+        (f"UPDATE migration_log SET {change}=" + ("999" if change == "applied_at" else "'altered'"))
+        if change != "definition"
+        else (
+            "DROP INDEX idx_migration_log_applied;"
+            "CREATE INDEX idx_migration_log_applied ON migration_log(applied_at DESC)"
+        )
+    )
+    execute(new, sql)
+    reseal(new)
+    refused(root, new)
+
+
+@pytest.mark.parametrize("change", ["in_progress", "corrupt"])
+def test_noop_refuses_in_progress_or_corrupt_state(tmp_path, change):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    migrate.migrate(root, backup=saved)
+    new = saved_for(root, tmp_path, "new")
+    path = root / "events.db.migration.json"
+    raw = json.loads(path.read_bytes())
+    raw["status"] = "in_progress" if change == "in_progress" else "corrupt"
+    path.write_bytes(json.dumps(raw).encode())
+    refused(root, new)
+
+
+def test_live_wal_and_same_connection_are_used(tmp_path, monkeypatch):
+    root = root_for(tmp_path)
+    with closing(sqlite3.connect(root / "events.db", isolation_level=None)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE extension_projection SET value=42")
+        assert (root / "events.db-wal").stat().st_size > 0
+        saved = saved_for(root, tmp_path)
+        observed = []
+        original = migrate._apply_step
+
+        def record(conn, step):
+            assert isinstance(conn, sqlite3.Connection)
+            observed.append(conn)
+            return original(conn, step)
+
+        monkeypatch.setattr(migrate, "_apply_step", record)
+        migrate.migrate(root, backup=saved)
+        assert len(observed) == 2 and observed[0] is observed[1]
+
+
+def test_hardlink_layout_refused_before_progress(tmp_path):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    os.link(root / "events.db", tmp_path / "alias.db")
+    assert refused(root, saved).code == "incompatible"
+    assert not (root / "events.db.migration.json").exists()
+
+
+@pytest.mark.parametrize(
+    "origin,actual,done,current",
+    [
+        (origin, actual, done, current)
+        for origin in (0, 1)
+        for actual in range(origin, 3)
+        for done, current in (
+            [((), None), ((), 1), ((1,), None), ((1,), 2), ((1, 2), None)]
+            if origin == 0
+            else [((), None), ((), 2), ((2,), None)]
+        )
+    ],
+)
+def test_resume_accepts_only_current_step_commit_window(tmp_path, origin, actual, done, current):
+    root = root_for(tmp_path)
+    if origin == 1:
+        mechanism_v1(root)
+    saved = saved_for(root, tmp_path)
+    fail = (
+        f"migration-after-step-{actual}"
+        if actual > origin
+        else (f"migration-before-step-{origin + 1}")
+    )
+    interrupted(root, saved, fail)
+    path = root / migrate.STATE_NAME
+    raw = json.loads(path.read_bytes())
+    raw.update(applied_steps=list(done), current_step=current)
+    path.write_bytes(json.dumps(raw).encode())
+    expected_version = done[-1] if done else origin
+    allowed = actual == expected_version or current is not None and actual == current
+    if not allowed:
+        assert refused(root, saved).code == "progress_corrupt"
+        return
+    report = migrate.migrate(root, backup=saved)
+    assert report.resumed and report.to_version == 2
+    state = migrate.read_state(root)
+    assert state.status == "completed"
+    assert state.from_version == origin
+    assert state.applied_steps == tuple(range(origin + 1, 3))
+    with sqlite3.connect(root / "events.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        if origin == 1:
+            assert conn.execute(
+                "SELECT applied_at,note FROM migration_log WHERE step=1"
+            ).fetchone() == (123, "")
+
+
+@pytest.mark.parametrize("target", ["root", "db", "material"])
+def test_symlink_layout_refused_before_progress(tmp_path, target):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    link = root if target == "root" else root / ("events.db" if target == "db" else "memory_blobs")
+    actual = tmp_path / (target + "-actual")
+    link.rename(actual)
+    try:
+        link.symlink_to(actual, target_is_directory=target != "db")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"平台不能构造真实symlink：{type(exc).__name__}")
+    assert refused(root, saved).code == "incompatible"
+    assert not (root / migrate.STATE_NAME).exists()
+
+
+def test_completed_original_backup_rejects_later_business_or_material_change(tmp_path):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    migrate.migrate(root, backup=saved)
+    before = point(root)
+    assert migrate.migrate(root, backup=saved).already_current
+    assert point(root) == before
+    execute(root, "UPDATE extension_projection SET value=42")
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_identical_saved_database_replacement_preserves_binding(tmp_path):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    interrupted(root, saved)
+    db = saved / "events.db"
+    replacement = saved / "replacement"
+    replacement.write_bytes(db.read_bytes())
+    os.replace(replacement, db)
+    assert verify_backup(saved).ok
+    assert migrate.migrate(root, backup=saved).resumed
+
+
+@pytest.mark.parametrize("write_number", [1, 2, 3, 4, 5, 6])
+def test_progress_persistence_failure_never_claims_completion(tmp_path, monkeypatch, write_number):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    original = migrate.atomic_write_bytes
+    calls = 0
+
+    def fail_once(path, data):
+        nonlocal calls
+        calls += 1
+        if calls == write_number:
+            raise OSError("injected state publication failure")
+        return original(path, data)
+
+    monkeypatch.setattr(migrate, "atomic_write_bytes", fail_once)
+    with pytest.raises(migrate.MigrationFailed, match="进度持久化"):
+        migrate.migrate(root, backup=saved)
+    state = migrate.read_state(root)
+    if write_number == 1:
+        assert state is None
+        with sqlite3.connect(root / "events.db") as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    else:
+        assert state.status == "in_progress"
+    monkeypatch.setattr(migrate, "atomic_write_bytes", original)
+    assert migrate.migrate(root, backup=saved).to_version == 2
+
+
+@pytest.mark.parametrize("failed_step", [1, 2])
+def test_failed_step_rolls_back_ddl_version_and_audit_together(tmp_path, monkeypatch, failed_step):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    original = migrate.MigrationStep.run
+
+    def fail_after_ddl(step, conn):
+        original(step, conn)
+        if step.to_version == failed_step:
+            raise sqlite3.OperationalError("injected after DDL")
+
+    monkeypatch.setattr(migrate.MigrationStep, "run", fail_after_ddl)
+    with pytest.raises(migrate.MigrationFailed, match="事务失败并回滚"):
+        migrate.migrate(root, backup=saved)
+    with sqlite3.connect(root / "events.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == failed_step - 1
+        if failed_step == 1:
+            assert (
+                conn.execute("SELECT 1 FROM sqlite_schema WHERE name='migration_log'").fetchone()
+                is None
+            )
+        else:
+            assert [r[1] for r in conn.execute("PRAGMA table_info(migration_log)")] == [
+                "step",
+                "applied_at",
+            ]
+            assert conn.execute("SELECT step FROM migration_log").fetchall() == [(1,)]
+    state = migrate.read_state(root)
+    assert state.status == "in_progress" and state.current_step == failed_step
+    monkeypatch.setattr(migrate.MigrationStep, "run", original)
+    assert migrate.migrate(root, backup=saved).resumed
+
+
+def test_all_live_observation_and_steps_share_one_locked_connection(tmp_path, monkeypatch):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    live = []
+    held = False
+    original_access = migrate.acquire_database_access
+    original_connect = migrate._connect
+
+    @contextmanager
+    def access(db, *, exclusive):
+        nonlocal held
+        assert exclusive
+        with original_access(db, exclusive=exclusive):
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+    def connect(db):
+        assert held
+        conn = original_connect(db)
+        live.append(conn)
+        return conn
+
+    monkeypatch.setattr(migrate, "acquire_database_access", access)
+    monkeypatch.setattr(migrate, "_connect", connect)
+    observed = []
+    for name in ("inspect_connection", "sqlite_digest", "mechanism_digest", "_apply_step"):
+        original = getattr(migrate, name)
+
+        def observe(conn, *args, _original=original, _name=name):
+            actual = conn.execute("PRAGMA database_list").fetchone()[2]
+            if actual == str(root / "events.db"):
+                assert held and conn is live[0]
+                observed.append(_name)
+            return _original(conn, *args)
+
+        monkeypatch.setattr(migrate, name, observe)
+    migrate.migrate(root, backup=saved)
+    assert len(live) == 1
+    assert set(observed) == {
+        "inspect_connection",
+        "sqlite_digest",
+        "mechanism_digest",
+        "_apply_step",
+    }
+
+
+def test_digest_has_no_business_store_or_backup_dependency():
+    from tianshu import data_digest
+
+    module = ast.parse(Path(data_digest.__file__).read_text(encoding="utf-8"))
+    imports = {
+        node.module for node in ast.walk(module) if isinstance(node, ast.ImportFrom) and node.level
+    }
+    assert imports == {"data_state"}
+
+
+@pytest.mark.parametrize("kind", ["index", "trigger"])
+def test_unknown_objects_attached_to_mechanism_are_not_excluded(tmp_path, kind):
+    from tianshu.data_digest import sqlite_digest
+
+    root = root_for(tmp_path)
+    mechanism_v1(root)
+    saved = saved_for(root, tmp_path)
+    with closing(sqlite3.connect(root / "events.db", isolation_level=None)) as conn:
+        before = sqlite_digest(conn)
+        sql = (
+            "CREATE INDEX extension_audit ON migration_log(step)"
+            if kind == "index"
+            else "CREATE TRIGGER extension_audit AFTER INSERT ON migration_log BEGIN SELECT 1; END"
+        )
+        conn.execute(sql)
+        assert sqlite_digest(conn) != before
+    assert refused(root, saved).code == "backup_mismatch"
+
+
+def test_layout_is_rechecked_after_exclusive_access(tmp_path, monkeypatch):
+    root = root_for(tmp_path)
+    saved = saved_for(root, tmp_path)
+    original = migrate.acquire_database_access
+
+    @contextmanager
+    def change_layout(db, *, exclusive):
+        with original(db, exclusive=exclusive):
+            os.link(root / "events.db", tmp_path / "late-alias.db")
+            yield
+
+    monkeypatch.setattr(migrate, "acquire_database_access", change_layout)
+    assert refused(root, saved).code == "incompatible"
+    assert not (root / migrate.STATE_NAME).exists()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+def test_zero_main_historical_sidefiles_refused_before_open(tmp_path, monkeypatch, suffix):
+    root = tmp_path / "empty"
+    root.mkdir()
+    db = root / "events.db"
+    db.write_bytes(b"")
+    historical = root / (db.name + suffix)
+    historical.write_bytes(b"historical evidence must survive admission")
+    before = {p.name: p.read_bytes() for p in root.iterdir()}
+
+    def unexpected_connect(*args, **kwargs):
+        raise AssertionError("historical evidence must be rejected before sqlite3.connect")
+
+    monkeypatch.setattr(migrate.sqlite3, "connect", unexpected_connect)
+    with pytest.raises(AdmissionRefused) as exc:
+        migrate.migrate(root, backup=tmp_path / "missing")
+    assert exc.value.code == "incompatible"
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == before

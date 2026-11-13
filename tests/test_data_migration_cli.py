@@ -1,0 +1,528 @@
+"""迁移真实CLI：结构化分类、跨进程屏障、硬退出与失败原子性。"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import queue
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+from contextlib import closing, contextmanager
+from pathlib import Path
+
+import pytest
+from support import CHILD_TEXT
+
+from tianshu import data_cli, migrate
+from tianshu.backup import create_backup, verify_backup
+from tianshu.data_state import AdmissionRefused
+from tianshu.events import EventLog
+
+SRC = str(Path(__file__).resolve().parents[1] / "src")
+
+
+def _env(*, failpoint=None):
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("TIANSHU_") and not k.endswith(("BASE_URL", "API_KEY"))
+    }
+    env["PYTHONPATH"] = SRC
+    if "TIANSHU_AUTHORITY_ROOT" in os.environ:
+        env["TIANSHU_AUTHORITY_ROOT"] = os.environ["TIANSHU_AUTHORITY_ROOT"]
+    if failpoint:
+        env["TIANSHU_FAILPOINT"] = failpoint
+    return env
+
+
+def _cli(*args, failpoint=None, setup=""):
+    command = [sys.executable, "-m", "tianshu"]
+    if setup:
+        command = [
+            sys.executable,
+            "-c",
+            setup + ("\nfrom tianshu.cli import main\nraise SystemExit(main())\n"),
+        ]
+    return subprocess.run(
+        [*command, "data", *(str(a) for a in args)],
+        env=_env(failpoint=failpoint),
+        capture_output=True,
+        timeout=30,
+        **CHILD_TEXT,
+    )
+
+
+def _root(tmp_path):
+    root = (tmp_path / "data").resolve()
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+        log.append(
+            "cli_fixture",
+            "run.start",
+            {
+                "task": "迁移CLI",
+                "workspace": str(tmp_path),
+                "out": "out.md",
+                "limits": {},
+                "tools": [],
+            },
+            legacy_write=True,
+        )
+        log.append(
+            "cli_fixture",
+            "tool.intent",
+            {
+                "call_id": "big",
+                "tool_id": "read_text",
+                "args_hash": "a" * 64,
+                "args": {"content": "payload\n" * 50_000},
+            },
+            legacy_write=True,
+        )
+        log.conn.execute("CREATE TABLE cli_projection(value INTEGER)")
+        log.conn.execute("INSERT INTO cli_projection VALUES(1)")
+    saved = tmp_path / "backup"
+    create_backup(root, saved)
+    assert verify_backup(saved).ok
+    return root, saved
+
+
+def _history(root):
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        return (
+            conn.execute("SELECT * FROM events ORDER BY seq").fetchall(),
+            conn.execute("SELECT * FROM event_versions ORDER BY seq").fetchall(),
+        )
+
+
+def _point(root):
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        logical = conn.execute("PRAGMA user_version").fetchone()[0], tuple(conn.iterdump())
+    material = {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file() and not p.name.startswith("events.db")
+    }
+    progress = root / migrate.STATE_NAME
+    return logical, material, progress.read_bytes() if progress.is_file() else None
+
+
+def _report(result, code=None):
+    assert result.returncode == (0 if code is None else 2), (result.stdout, result.stderr)
+    value = json.loads(result.stdout)
+    assert value["operation"] == "migrate"
+    assert value["ok"] is (code is None)
+    if code is not None:
+        assert value["code"] == code
+        assert value["error"]
+    return value
+
+
+@contextmanager
+def _child(code, *args):
+    with tempfile.TemporaryFile("w+b") as errors:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", code, *(str(a) for a in args)],
+            env=_env(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+            **CHILD_TEXT,
+        )
+        try:
+            yield proc, errors
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate(timeout=10)
+
+
+def _stderr(errors):
+    errors.seek(0)
+    return errors.read().decode("utf-8", "replace")
+
+
+def _message(proc, errors):
+    messages = queue.Queue()
+    reader = threading.Thread(target=lambda: messages.put(proc.stdout.readline()), daemon=True)
+    reader.start()
+    try:
+        line = messages.get(timeout=15)
+    except queue.Empty:
+        proc.kill()
+        proc.wait(timeout=10)
+        raise AssertionError(f"子进程未到屏障：{_stderr(errors)}") from None
+    finally:
+        reader.join(timeout=2)
+    assert not reader.is_alive()
+    assert line, (proc.poll(), _stderr(errors))
+    return json.loads(line)
+
+
+def _send(proc, value):
+    proc.stdin.write(value + "\n")
+    proc.stdin.flush()
+
+
+_EVENTLOG_CHILD = r"""
+import json, os, sys
+from pathlib import Path
+from tianshu.events import EventLog
+root = Path(sys.argv[1])
+log = EventLog(root / "events.db")
+try:
+    print(json.dumps({"ready": "shared", "pid": os.getpid()}), flush=True)
+    for line in sys.stdin:
+        action = line.strip()
+        if action == "close":
+            break
+        if action != "append":
+            raise RuntimeError("unexpected barrier command")
+        seq = log.append("cli_fixture", "tool.result", {
+            "call_id": "after_refusal", "tool_id": "read_text", "status": "succeeded",
+            "effect_state": "none_applied", "output": {"content": "original connection alive"},
+        }, actor_kind="core")
+        print(json.dumps({"appended": seq}), flush=True)
+finally:
+    log.close()
+"""
+
+_EXCLUSIVE_CHILD = r"""
+import json, os, sys
+from contextlib import contextmanager
+from tianshu import migrate
+from tianshu.cli import main
+original = migrate.acquire_database_access
+@contextmanager
+def pause_with_actual_lock(db, *, exclusive):
+    with original(db, exclusive=exclusive):
+        print(json.dumps({"ready": "exclusive", "pid": os.getpid()}), flush=True)
+        if sys.stdin.readline().strip() != "release":
+            raise RuntimeError("exclusive barrier not released")
+        yield
+migrate.acquire_database_access = pause_with_actual_lock
+raise SystemExit(main(["data", "migrate", "--data-root", sys.argv[1],
+                       "--backup", sys.argv[2], "--json"]))
+"""
+
+_PROGRESS_FAILURE = r"""
+from tianshu import migrate
+original = migrate.atomic_write_bytes
+def blocked_real_publication(path, data):
+    path.mkdir()
+    return original(path, data)
+migrate.atomic_write_bytes = blocked_real_publication
+"""
+
+_DDL_FAILURE = r"""
+from tianshu import migrate
+original = migrate.MigrationStep.run
+def fail_with_real_sql(step, conn):
+    original(step, conn)
+    conn.execute("INSERT INTO tianshu_missing_fault_table VALUES(1)")
+migrate.MigrationStep.run = fail_with_real_sql
+"""
+
+
+@pytest.mark.parametrize("missing", ["root", "backup", "both"])
+def test_cli_requires_explicit_standard_root_and_backup(tmp_path, missing):
+    args = []
+    if missing != "root" and missing != "both":
+        args += ["--data-root", tmp_path / "data"]
+    if missing != "backup" and missing != "both":
+        args += ["--backup", tmp_path / "backup"]
+    result = _cli("migrate", *args)
+    assert result.returncode == 2
+    assert "required" in result.stderr and "invalid choice" not in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
+def test_cli_migrates_standard_root_with_no_service_or_implicit_backup(tmp_path):
+    root, saved = _root(tmp_path)
+    before = _history(root)
+    report = _report(_cli("migrate", "--data-root", root, "--backup", saved, "--json"))
+    assert report["from_version"] == 0 and report["to_version"] == 2
+    assert report["applied_steps"] == [1, 2] and not report["resumed"]
+    assert report["event_count"] == len(before[0])
+    assert report["backup_path"] == str(saved.resolve())
+    assert _history(root) == before
+    assert not (root / "run").exists() and not (root / "logs").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["backup", "data"]
+
+
+@pytest.mark.parametrize("layout", ["missing", "empty", "custom_db"])
+def test_cli_refuses_nonstandard_root_without_initializing_it(tmp_path, layout):
+    root = tmp_path / "data"
+    if layout != "missing":
+        root.mkdir()
+    if layout == "custom_db":
+        with closing(EventLog(root / "custom.db")):
+            pass
+    before = {p.name: p.read_bytes() for p in root.iterdir()} if root.exists() else None
+    _report(
+        _cli("migrate", "--data-root", root, "--backup", tmp_path / "backup", "--json"),
+        "incompatible",
+    )
+    after = {p.name: p.read_bytes() for p in root.iterdir()} if root.exists() else None
+    assert after == before
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_migration_programming_errors_are_not_domain_failures(
+    tmp_path, monkeypatch, capsys, error_type
+):
+    def broken_internal(data_root, *, backup):
+        raise error_type("internal invariant broken")
+
+    monkeypatch.setattr(data_cli, "run_migration", broken_internal)
+    arguments = argparse.Namespace(
+        data_action="migrate", data_root=tmp_path / "data", backup=tmp_path / "backup", json=True
+    )
+    with pytest.raises(error_type, match="internal invariant broken"):
+        data_cli.run(arguments)
+    output = capsys.readouterr()
+    assert output.out == output.err == ""
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "incompatible",
+        "migration_incomplete",
+        "progress_corrupt",
+        "backup_mismatch",
+        "maintenance_busy",
+        "migration_failed",
+    ],
+)
+def test_cli_reports_six_distinct_failure_codes(tmp_path, code):
+    root, saved = _root(tmp_path)
+    arguments = ("migrate", "--data-root", root, "--backup", saved, "--json")
+    side = root / migrate.STATE_NAME
+    restore = None
+    if code == "incompatible":
+        with sqlite3.connect(root / "events.db") as conn:
+            conn.execute("PRAGMA user_version=99")
+    elif code == "migration_incomplete":
+        migrate.migrate(root, backup=saved)
+        restore = side.read_bytes()
+        side.unlink()
+    elif code == "progress_corrupt":
+        side.write_bytes(b"{broken")
+    elif code == "backup_mismatch":
+        with sqlite3.connect(root / "events.db") as conn:
+            conn.execute("UPDATE cli_projection SET value=2")
+    if code == "maintenance_busy":
+        with _child(_EVENTLOG_CHILD, root) as (proc, errors):
+            ready = _message(proc, errors)
+            assert ready["ready"] == "shared" and ready["pid"] != os.getpid()
+            before = _point(root)
+            _report(_cli(*arguments), code)
+            assert _point(root) == before and proc.poll() is None
+            _send(proc, "close")
+            proc.communicate(timeout=10)
+            assert proc.returncode == 0, _stderr(errors)
+    elif code == "migration_failed":
+        _report(_cli(*arguments, setup=_PROGRESS_FAILURE), code)
+        assert side.is_dir()
+        side.rmdir()
+    else:
+        before = _point(root)
+        _report(_cli(*arguments), code)
+        assert _point(root) == before
+    if code == "incompatible":
+        with sqlite3.connect(root / "events.db") as conn:
+            conn.execute("PRAGMA user_version=0")
+    elif code == "migration_incomplete":
+        side.write_bytes(restore)
+    elif code == "progress_corrupt":
+        side.unlink()
+    elif code == "backup_mismatch":
+        with sqlite3.connect(root / "events.db") as conn:
+            conn.execute("UPDATE cli_projection SET value=1")
+    _report(_cli(*arguments))
+
+
+def test_child_eventlog_blocks_migration(tmp_path):
+    root, saved = _root(tmp_path)
+    initial = _history(root)
+    with _child(_EVENTLOG_CHILD, root) as (proc, errors):
+        ready = _message(proc, errors)
+        assert ready["ready"] == "shared" and ready["pid"] != os.getpid()
+        before = _point(root)
+        _report(
+            _cli("migrate", "--data-root", root, "--backup", saved, "--json"), "maintenance_busy"
+        )
+        assert _point(root) == before and proc.poll() is None
+        _send(proc, "append")
+        assert _message(proc, errors)["appended"] > initial[0][-1][0]
+        after = _history(root)
+        assert after[0][:-1] == initial[0]
+        with closing(sqlite3.connect(root / "events.db")) as conn:
+            payload = conn.execute(
+                "SELECT payload FROM events WHERE seq=?", (after[0][-1][0],)
+            ).fetchone()[0]
+        assert json.loads(payload)["output"]["content"] == "original connection alive"
+        _send(proc, "close")
+        proc.communicate(timeout=10)
+        assert proc.returncode == 0, _stderr(errors)
+    fresh = tmp_path / "fresh"
+    create_backup(root, fresh)
+    _report(_cli("migrate", "--data-root", root, "--backup", fresh, "--json"))
+
+
+def test_exclusive_migration_blocks_child_eventlog_before_payload_creation(tmp_path):
+    root, saved = _root(tmp_path)
+    probe = root / "new-payload-directory"
+    before = _history(root)
+    with _child(_EXCLUSIVE_CHILD, root, saved) as (proc, errors):
+        ready = _message(proc, errors)
+        assert ready["ready"] == "exclusive" and ready["pid"] != os.getpid()
+        code = r"""
+import json, sys
+from pathlib import Path
+from tianshu.events import EventLog
+from tianshu.maintenance import MaintenanceBusy
+try:
+    log = EventLog(Path(sys.argv[1]) / "events.db", blob_dir=Path(sys.argv[2]))
+except MaintenanceBusy:
+    print(json.dumps({"code": "maintenance_busy", "payload_exists": Path(sys.argv[2]).exists()}))
+    raise SystemExit(2)
+else:
+    log.close()
+    raise SystemExit(0)
+"""
+        second = subprocess.run(
+            [sys.executable, "-c", code, str(root), str(probe)],
+            env=_env(),
+            capture_output=True,
+            timeout=20,
+            **CHILD_TEXT,
+        )
+        assert second.returncode == 2, (second.stdout, second.stderr)
+        assert json.loads(second.stdout) == {"code": "maintenance_busy", "payload_exists": False}
+        assert not probe.exists() and proc.poll() is None
+        assert _history(root) == before
+        _send(proc, "release")
+        stdout, _ = proc.communicate(timeout=20)
+        assert proc.returncode == 0, (stdout, _stderr(errors))
+        assert json.loads(stdout)["ok"] is True
+    with closing(EventLog(root / "events.db", blob_dir=probe)):
+        assert probe.is_dir()
+
+
+@pytest.mark.parametrize(
+    "failpoint,version,applied,current",
+    [
+        ("migration-before-step-1", 0, (), 1),
+        ("migration-after-step-1", 1, (), 1),
+        ("migration-before-step-2", 1, (1,), 2),
+        ("migration-after-step-2", 2, (1,), 2),
+    ],
+)
+def test_cli_four_failpoints_resume_idempotently(tmp_path, failpoint, version, applied, current):
+    root, saved = _root(tmp_path)
+    history = _history(root)
+    arguments = ("migrate", "--data-root", root, "--backup", saved, "--json")
+    crashed = _cli(*arguments, failpoint=failpoint)
+    assert crashed.returncode == 77, (crashed.stdout, crashed.stderr)
+    assert f"[failpoint] {failpoint}" in crashed.stderr
+    assert _history(root) == history
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == version
+    state = migrate.read_state(root)
+    assert state.status == "in_progress" and state.from_version == 0
+    assert state.applied_steps == applied and state.current_step == current
+    assert state.db_path == str(root / "events.db")
+    raw = json.loads((root / migrate.STATE_NAME).read_bytes())
+    assert raw["format_version"] == 2 and not (root / "migration.json").exists()
+    probe = root / "not-created-on-incomplete"
+    with pytest.raises(AdmissionRefused) as exc:
+        EventLog(root / "events.db", blob_dir=probe)
+    assert exc.value.code == "migration_incomplete" and not probe.exists()
+    resumed = _report(_cli(*arguments))
+    assert resumed["resumed"] and resumed["to_version"] == 2
+    assert _history(root) == history
+    before = _point(root)
+    again = _report(_cli(*arguments))
+    assert again["already_current"] and again["applied_steps"] == []
+    assert _point(root) == before
+    with closing(EventLog(root / "events.db")) as log:
+        rows = log.conn.execute("SELECT step FROM migration_log ORDER BY step").fetchall()
+        assert [row[0] for row in rows] == [1, 2]
+        with pytest.raises(sqlite3.IntegrityError):
+            log.conn.execute("UPDATE events SET actor_id='changed'")
+        with pytest.raises(sqlite3.IntegrityError):
+            log.conn.execute("DELETE FROM events")
+    assert _history(root) == history
+
+
+@pytest.mark.parametrize("fault", ["progress", "ddl"])
+def test_progress_or_ddl_write_failure_never_reports_completed(tmp_path, fault):
+    root, saved = _root(tmp_path)
+    history = _history(root)
+    arguments = ("migrate", "--data-root", root, "--backup", saved, "--json")
+    setup = _PROGRESS_FAILURE if fault == "progress" else _DDL_FAILURE
+    _report(_cli(*arguments, setup=setup), "migration_failed")
+    assert _history(root) == history
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT 1 FROM sqlite_schema WHERE name='migration_log'").fetchone()
+            is None
+        )
+    side = root / migrate.STATE_NAME
+    if fault == "progress":
+        assert side.is_dir()
+        assert not list(root.glob(".events.db.migration.json.*.tmp"))
+        side.rmdir()
+    else:
+        state = migrate.read_state(root)
+        assert state.status == "in_progress" and state.current_step == 1
+    _report(_cli(*arguments))
+
+
+@pytest.mark.parametrize("layout", ["hardlink", "symlink"])
+def test_cli_rejects_real_link_layout_before_creating_progress(tmp_path, layout):
+    root, saved = _root(tmp_path)
+    db = root / "events.db"
+    target = tmp_path / "other-name.db"
+    if layout == "hardlink":
+        try:
+            os.link(db, target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"平台不能构造真实hardlink：{type(exc).__name__}: {exc}")
+        assert db.stat().st_nlink == 2 and os.path.samefile(db, target)
+    else:
+        db.rename(target)
+        try:
+            db.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"平台不能构造真实symlink：{type(exc).__name__}: {exc}")
+        assert db.is_symlink() and os.path.samefile(db, target)
+    before = _history(root)
+    _report(_cli("migrate", "--data-root", root, "--backup", saved, "--json"), "incompatible")
+    assert _history(root) == before and not (root / migrate.STATE_NAME).exists()
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("success", [False, True])
+def test_migration_output_redacts_paths_in_success_and_failure(tmp_path, as_json, success):
+    root, saved = _root(tmp_path)
+    secret = "sk-FAKEcliMigrationSecret12345"
+    target = tmp_path / secret
+    if success:
+        saved.rename(target)
+    args = ["migrate", "--data-root", root, "--backup", target]
+    if as_json:
+        args.append("--json")
+    result = _cli(*args)
+    assert result.returncode == (0 if success else 2), (result.stdout, result.stderr)
+    output = result.stdout + result.stderr
+    assert secret not in output and "***" in output
+    if as_json:
+        assert json.loads(result.stdout)["ok"] is success

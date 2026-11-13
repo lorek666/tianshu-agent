@@ -1,0 +1,57 @@
+{
+  "status": "PASS_TASK2_CONTENT_ONLY",
+  "pending_task2_findings": 0,
+  "root": "/tmp/t2-admission-independent",
+  "files": [
+    {
+      "path": "independent-review.md",
+      "bytes": 7744,
+      "sha256": "b1cd6e2473184bef683c702bf2fcd08159888fb555633371ce81bcb6334648d1"
+    },
+    {
+      "path": "independent-review.json",
+      "bytes": 34569,
+      "sha256": "68c29faa4900a3ea65760ed79837553db6f1010dce788b7239f12386ecc8517d"
+    },
+    {
+      "path": "evidence-index.json",
+      "bytes": 18487,
+      "sha256": "56885f13e63914ca10ee50ac4c3b8bcd020d0eca657b8986a4c858818b6d5132"
+    },
+    {
+      "path": "synthetic-artifact-index.json",
+      "bytes": 1349526,
+      "sha256": "c9e4f5fc54c69e9d9b47ad1d4e6de79e00434c6c55112b0b264cb7eba9fb7a47"
+    },
+    {
+      "path": "candidate-binding.json",
+      "bytes": 56130,
+      "sha256": "fd215d2a6347b017f7b4120fb53f6caf752d238156bc132a8965ab1d89f42042"
+    },
+    {
+      "path": "mutation-source-bindings.json",
+      "bytes": 3982,
+      "sha256": "90ee1ebf9e93c8dd5ce2a3054b05ec9ea323f11676644c65269b73ba94e47a38"
+    },
+    {
+      "path": "mutation-results.json",
+      "bytes": 18419,
+      "sha256": "30aef5a1cdd59994aa68327bd9cb4ba2999b4be4570bd0510539280c05e3fb99"
+    },
+    {
+      "path": "run_review.py",
+      "bytes": 10290,
+      "sha256": "ddf444e9f057eb4d066f01306b8a058b2f3356f2a852991539e38d2a15804a0f"
+    },
+    {
+      "path": "probes/test_t2_independent.py",
+      "bytes": 26894,
+      "sha256": "38ec396febcafbee45ae6a10c7c2037c79bbe93d6651d05bd782a1dd365cea8a"
+    },
+    {
+      "path": "probes/test_t2_supplemental.py",
+      "bytes": 1638,
+      "sha256": "7f95092333eeff6e5973cf32d49b33d537560e31aa00452a84ec305e9f595a51"
+    }
+  ]
+}
