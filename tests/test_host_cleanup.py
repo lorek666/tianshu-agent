@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import socket
@@ -24,6 +25,10 @@ import sys
 import threading
 from pathlib import Path
 from tianshu import host, ipc, leases
+from tianshu.cli import _force_utf8_streams
+
+# 与真实CLI入口一致；Windows文本流即使重定向也可能仍是cp1252。
+_force_utf8_streams()
 
 root = Path(sys.argv[1])
 mode = sys.argv[2]
@@ -218,18 +223,65 @@ def _peer(root: Path, mode: str):
             env=env,
         )
         peer = None
+        conn = None
+        failure = None
         try:
             conn, _ = listener.accept()
             conn.settimeout(15)
             peer = _Peer(proc, conn)
             yield peer
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            if proc.poll() is None:
-                proc.kill()
-            proc.communicate(timeout=10)
-            if peer is not None:
-                peer.stream.close()
-                peer.conn.close()
+            # 先让屏障中的真实worker收到EOF，并等它写完原始traceback。
+            # 直接kill可能只杀Windows venv launcher，还会截断首个异常。
+            if conn is not None:
+                with contextlib.suppress(OSError):
+                    conn.shutdown(socket.SHUT_RDWR)
+                if peer is not None:
+                    peer.stream.close()
+                conn.close()
+            cleanup = None
+            stderr = b""
+            stderr_complete = False
+            try:
+                try:
+                    _, stderr = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired as timeout_error:
+                    stderr = timeout_error.stderr or b""
+                    if os.name == "nt":
+                        worker_pid = peer.pid if peer is not None else proc.pid
+                        cleanup = subprocess.run(
+                            ["taskkill", "/PID", str(worker_pid), "/T", "/F"],
+                            capture_output=True, timeout=10,
+                        )
+                    else:
+                        proc.kill()
+                    _, stderr = proc.communicate(timeout=10)
+                stderr_complete = True
+                if cleanup is not None and cleanup.returncode != 0:
+                    raise AssertionError(
+                        f"taskkill exit={cleanup.returncode}，"
+                        f"stdout={cleanup.stdout!r}，stderr={cleanup.stderr!r}"
+                    )
+            except BaseException as cleanup_error:
+                if failure is None:
+                    raise
+                failure.add_note(f"子进程清理异常：{cleanup_error!r}")
+            if failure is not None:
+                failure.add_note(
+                    f"子进程mode={mode}，launcher_pid={proc.pid}，"
+                    f"worker_pid={peer.pid if peer is not None else None}，"
+                    f"exit={proc.returncode}，stderr_complete={stderr_complete}；"
+                    f"stderr原始bytes={stderr!r}\n"
+                    f"stderr UTF-8:\n{stderr.decode('utf-8', errors='backslashreplace')}"
+                )
+                if cleanup is not None:
+                    failure.add_note(
+                        f"taskkill exit={cleanup.returncode}，"
+                        f"stdout={cleanup.stdout!r}，stderr={cleanup.stderr!r}"
+                    )
 
 
 def _seed(root: Path, *, pid: int = 424242) -> host.HostInfo:
@@ -372,14 +424,38 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                     boundary = running.receive()
                 assert boundary["monitor_start_held"] is True
                 assert boundary["thread_published"] is True
-                info = host.HostInfo(running.pid, boundary["port"], boundary["token"], 0)
-                http_alive_before_start = host._http_alive(info)
                 released = False
                 try:
-                    if not http_alive_before_start:
-                        running.send("start")
-                        released = True
-                        assert running.receive() == {"ready": True}
+                    # 观测期限到达不代表放弃这条真实请求。若服务尚未启动，保持
+                    # 同一TCP连接到放行后读完，避免探针主动断线污染后台stderr。
+                    with socket.create_connection(
+                        ("127.0.0.1", boundary["port"]), timeout=0.4
+                    ) as client:
+                        client.sendall(
+                            f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{boundary['port']}\r\n"
+                            "Connection: close\r\n\r\n".encode("ascii")
+                        )
+                        response = b""
+                        http_alive_before_start = True
+                        try:
+                            while chunk := client.recv(65536):
+                                response += chunk
+                        except TimeoutError:
+                            assert response == b"", ("partial boundary response", response)
+                            http_alive_before_start = False
+                        if not http_alive_before_start:
+                            assert client.fileno() >= 0
+                            running.send("start")
+                            released = True
+                            assert running.receive() == {"ready": True}
+                            # 边界观测仍为0.4秒；服务确认启动后只读完同一请求。
+                            client.settimeout(5)
+                            while chunk := client.recv(65536):
+                                response += chunk
+                        headers, separator, body = response.partition(b"\r\n\r\n")
+                        assert separator and headers.split(b"\r\n")[0].split()[1] == b"200"
+                        health = json.loads(body)
+                        assert health == {"ok": True, "pid": running.pid}
                     env = {
                         k: v for k, v in os.environ.items()
                         if not k.startswith(("TIANSHU_", "OPENAI_", "ANTHROPIC_"))
@@ -437,17 +513,23 @@ def test_real_read_permission_denial_cannot_become_success(tmp_path: Path) -> No
 
 @pytest.mark.skipif(os.name != "nt", reason="真实无 FILE_SHARE_READ 句柄只适用于 Windows")
 def test_windows_real_read_denial_cannot_become_success(tmp_path: Path) -> None:
-    _seed(tmp_path)
+    original_info = _seed(tmp_path)
+    path = host.host_lock_path(tmp_path)
+    original_bytes = path.read_bytes()
     with _peer(tmp_path, "deny-read") as holder:
         assert holder.receive() == {"read_denied": True}
-        with pytest.raises(host.HostError) as caught:
-            host.read_host_info(tmp_path)
-        assert isinstance(caught.value.__cause__, OSError)
-        assert caught.value.__cause__.winerror == 32
-        assert host.stop_host(tmp_path) != 0
-        holder.send("exit")
-        assert holder.proc.wait(timeout=10) == 0
-    assert host.host_lock_path(tmp_path).is_file()
+        try:
+            with pytest.raises(host.HostError) as caught:
+                host.read_host_info(tmp_path)
+            # Path.read_bytes经CRT得到EACCES；不要求已经丢失的原生winerror32。
+            assert isinstance(caught.value.__cause__, PermissionError)
+            assert caught.value.__cause__.errno == errno.EACCES
+            assert host.stop_host(tmp_path) == 1
+        finally:
+            holder.send("exit")
+            assert holder.proc.wait(timeout=10) == 0
+    assert path.read_bytes() == original_bytes
+    assert host.read_host_info(tmp_path) == original_info
 
 
 def test_real_delete_permission_denial_is_explicit_stop_failure(tmp_path: Path) -> None:
