@@ -79,9 +79,11 @@ jobs:
           import hashlib
           import json
           import platform
+          import re
           import subprocess
           import sys
           from pathlib import Path
+
           from tianshu import host
 
           root = Path("c007-evidence")
@@ -107,8 +109,16 @@ jobs:
           )
           print(output)
           assert result.returncode == 1, record
-          assert "DID NOT RAISE <class 'tianshu.host.HostError'>" in output, output
-          assert "1 failed" in output and "TypeError" not in output, output
+          missing_exception = (
+              r"^E[ \t]+Failed: DID NOT RAISE "
+              r"(?:HostError|<class 'tianshu\.host\.HostError'>)$"
+          )
+          assert len(re.findall(missing_exception, output, re.MULTILINE)) == 1, output
+          summaries = re.findall(r"^\d+ (?:failed|passed|skipped|errors?).*$", output, re.MULTILINE)
+          assert len(summaries) == 1 and re.fullmatch(
+              r"1 failed in \d+(?:\.\d+)?s", summaries[0]
+          ), output
+          assert "TypeError" not in output, output
           print("Original 7111 read-denial regression failed for missing HostError as expected.")
           PY
       - name: Preserve original outcomes even when collection fails
