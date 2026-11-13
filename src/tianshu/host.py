@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import webbrowser
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +51,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ipc
 from .errors import TianshuError
+from .leases import GuardTimeout, execution_guard
 
 HOST_LOCK_NAME = "host.lock"
 MAX_RPC_BODY = 1 * 1024 * 1024
@@ -82,14 +84,35 @@ def host_lock_path(data_root: Path) -> Path:
     return ipc.run_dir(data_root) / HOST_LOCK_NAME
 
 
+@contextmanager
+def _host_info_guard(data_root: Path):
+    """只串行化 Host 元数据，不占业务执行锁，不在锁内等待 HTTP/Daemon。
+
+    复用现有 OS 互斥及其 5 秒等待上限，路径在 run/ 下，与业务数据根的
+    execution.guard 分开。所有读者关闭文件后才释放，Windows 删除时不会
+    撞到本项目另一个仍打开的读句柄；条件删除与接管也处于同一临界区。
+    """
+    try:
+        with execution_guard(ipc.run_dir(data_root)):
+            yield
+    except (OSError, GuardTimeout) as exc:
+        raise HostError(f"无法访问 Host 元数据：{exc}") from exc
+
+
 def read_host_info(data_root: Path) -> HostInfo | None:
+    with _host_info_guard(data_root):
+        return _read_host_info(data_root)
+
+
+def _read_host_info(data_root: Path) -> HostInfo | None:
+    """调用方持有元数据互斥；只有真实不存在才返回 None。"""
     path = host_lock_path(data_root)
-    if not path.exists():
-        return None
     try:
         raw = json.loads(path.read_bytes().decode("utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
+    except FileNotFoundError:
         return None
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HostError("Host 元数据损坏，无法确认实例状态") from exc
     try:
         return HostInfo(
             pid=int(raw["pid"]),
@@ -98,11 +121,31 @@ def read_host_info(data_root: Path) -> HostInfo | None:
             started_at=int(raw.get("started_at") or 0),
             ui_dir=str(raw.get("ui_dir") or ""),
         )
-    except (KeyError, TypeError, ValueError):
-        return None
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HostError("Host 元数据损坏，无法确认实例状态") from exc
 
 
-def write_host_info(data_root: Path, info: HostInfo) -> None:
+def _same_host_instance(left: HostInfo, right: HostInfo) -> bool:
+    # port 在启动时由 0 更新为实际端口；实例身份不能依赖它，也不能只比 PID。
+    return (left.pid, left.token, left.started_at) == (
+        right.pid, right.token, right.started_at
+    )
+
+
+def write_host_info(
+    data_root: Path, info: HostInfo, *, expected: HostInfo | None = None
+) -> None:
+    with _host_info_guard(data_root):
+        _write_host_info(data_root, info, expected=expected)
+
+
+def _write_host_info(
+    data_root: Path, info: HostInfo, *, expected: HostInfo | None = None
+) -> None:
+    if expected is not None:
+        current = _read_host_info(data_root)
+        if current is None or not _same_host_instance(current, expected):
+            raise HostError("Host 实例已变更，不能覆盖另一实例的信息")
     path = host_lock_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -120,14 +163,19 @@ def write_host_info(data_root: Path, info: HostInfo) -> None:
             pass
 
 
-def clear_host_info(data_root: Path, *, pid: int | None = None) -> None:
+def clear_host_info(
+    data_root: Path, *, pid: int | None = None, expected: HostInfo | None = None
+) -> None:
     """只有还属于自己时才删：别把新实例刚写好的锁删掉。"""
-    current = read_host_info(data_root)
-    if current is None:
-        return
-    if pid is not None and current.pid != pid:
-        return
-    host_lock_path(data_root).unlink(missing_ok=True)
+    with _host_info_guard(data_root):
+        current = _read_host_info(data_root)
+        if current is None:
+            return
+        if pid is not None and current.pid != pid:
+            return
+        if expected is not None and not _same_host_instance(current, expected):
+            return
+        host_lock_path(data_root).unlink(missing_ok=True)
 
 
 def _http_alive(info: HostInfo, *, timeout: float = 0.4) -> bool:
@@ -174,12 +222,8 @@ def _http_get(port: int, path: str, *, timeout: float = 1.0) -> tuple[int, dict[
 def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
     """写锁前先确认没有活着的 Host；有就抛 `HostError`（附 URL，调用方直接复用）。"""
     existing = read_host_info(data_root)
-    if existing is not None:
-        if _http_alive(existing):
-            raise HostError(f"Host 已在运行：http://127.0.0.1:{existing.port}/")
-        # 残留锁：进程已死或端口被别的东西占了。删掉重建，不沿用旧 token
-        # （旧 token 可能已经出现在某个聊天窗口里了）。
-        host_lock_path(data_root).unlink(missing_ok=True)
+    if existing is not None and _http_alive(existing):
+        raise HostError(f"Host 已在运行：http://127.0.0.1:{existing.port}/")
     info = HostInfo(
         pid=os.getpid(),
         port=0,
@@ -187,7 +231,12 @@ def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
         started_at=int(time.time() * 1000),
         ui_dir=str(ui_dir),
     )
-    write_host_info(data_root, info)
+    with _host_info_guard(data_root):
+        # 健康检查期间可能已被另一进程接管，不能用旧结果覆盖新快照。
+        if _read_host_info(data_root) != existing:
+            raise HostError("Host 实例信息已变更，请重新确认后启动")
+        # 残留信息直接写入新 token，无须先 unlink 产生额外的删除窗口。
+        _write_host_info(data_root, info)
     return info
 
 
@@ -822,20 +871,16 @@ def run_host(
         return 1
 
     supervisor = DaemonSupervisor(data_root, daemon_command, start_timeout_s=start_timeout_s)
+    exit_code = 1
     try:
         try:
             supervisor.ensure()
         except HostError as exc:
             print(f"启动守护进程失败：{exc}", file=sys.stderr)
-            clear_host_info(data_root, pid=info.pid)
             return 1
-        if supervise:
-            supervisor.start_monitor()
-
         config = BridgeConfig(data_root=data_root, ui_dir=ui_dir, token=info.token, port=port)
         bridge = UiBridge(config)
         info.port = bridge.port
-        write_host_info(data_root, info)
 
         stop_event = threading.Event()  # 主循环等这个：**清理完成**才放行
         stop_requested = threading.Event()  # 回调去重（重复点 /shutdown 不重复清理）
@@ -856,7 +901,24 @@ def run_host(
                     stop_event.set()
 
         bridge.install_stop_callback(stop_all)
-        bridge.serve_background()
+        try:
+            with _host_info_guard(data_root):
+                _write_host_info(data_root, info, expected=info)
+                # 停止入口开放前必须完成monitor的Thread.start，避免stop线程
+                # join已发布但尚未启动的Thread，跳过日志等后续收尾。
+                if supervise:
+                    supervisor.start_monitor()
+                # 发布与启动服务线程是同一短临界区。否则端口已写但尚未服务时，
+                # 第二进程可按真实健康检查接管，旧实例随后仍开始服务。
+                # 这里只 thread.start，不在元数据锁内等待 HTTP 或 Daemon。
+                bridge.serve_background()
+        except HostError as exc:
+            # 尚未 serve，不能 shutdown（它会等 serve_forever）；只收本实例资源。
+            # 此时 Daemon 可能已被接管者复用，绝不能 supervisor.stop 它。
+            bridge.server_close()
+            supervisor._close_log()
+            print(f"发布 Host 实例失败：{exc}", file=sys.stderr)
+            return 1
         print(f"天枢 Agent 已启动：{bridge.url}", flush=True)
         if open_browser:
             # 用 open_new_tab 而不是 open：后者是 `.open(...)` 形态，会被
@@ -870,16 +932,33 @@ def run_host(
         except KeyboardInterrupt:
             print("收到中断，正在退出…", file=sys.stderr, flush=True)
             stop_all()
-        return 0
+        exit_code = 0
     finally:
-        clear_host_info(data_root, pid=info.pid)
+        try:
+            clear_host_info(data_root, expected=info)
+        except HostError as exc:
+            # 清理失败不能把成功变绿，也不能遮住启动/运行中的原始异常。
+            print(f"清理 Host 信息失败：{exc}", file=sys.stderr)
+            exit_code = 1
+    return exit_code
 
 
 def stop_host(data_root: Path, *, timeout: float = 10.0) -> int:
     """`tianshu host stop`：让活着的 Host 自己退出（它负责关 Daemon）。"""
-    info = read_host_info(data_root)
-    if info is None or not _http_alive(info):
-        clear_host_info(data_root)
+    try:
+        info = read_host_info(data_root)
+    except HostError as exc:
+        print(f"无法确认 Host 状态：{exc}", file=sys.stderr)
+        return 1
+    if info is None:
+        print("Host 没有在运行", flush=True)
+        return 0
+    if not _http_alive(info):
+        try:
+            clear_host_info(data_root, expected=info)
+        except HostError as exc:
+            print(f"清理 Host 信息失败：{exc}", file=sys.stderr)
+            return 1
         print("Host 没有在运行", flush=True)
         return 0
     try:
@@ -890,7 +969,11 @@ def stop_host(data_root: Path, *, timeout: float = 10.0) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _http_alive(info):
-            clear_host_info(data_root)
+            try:
+                clear_host_info(data_root, expected=info)
+            except HostError as exc:
+                print(f"清理 Host 信息失败：{exc}", file=sys.stderr)
+                return 1
             print("Host 已退出", flush=True)
             return 0
         time.sleep(0.1)
