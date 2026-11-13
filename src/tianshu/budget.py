@@ -50,7 +50,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import BudgetCancelled, BudgetRefused, TianshuError
+from .errors import BudgetCancelled, BudgetConfigError, BudgetRefused, TianshuError
 
 #: 记账维度。**按维度分别扣**：token 够但请求次数用完了，同样拒发。
 #:
@@ -381,7 +381,28 @@ class BudgetLedger:
             "SELECT dimension, limit_value FROM budget_limits WHERE account_id = ?",
             (account_id,),
         ).fetchall()
-        return {row["dimension"]: row["limit_value"] for row in rows}
+        values = {row["dimension"]: row["limit_value"] for row in rows}
+        self._validate_quantities(values)
+        return values
+
+    @staticmethod
+    def _validate_quantities(values: Any) -> None:
+        """旧库与新写入口遵守同一数量域；拒绝坏值，不修写历史账目。"""
+        if not isinstance(values, dict) or set(values) - set(DIMENSIONS):
+            raise TianshuError("预算账本含非法维度或数量对象")
+        for dimension, value in values.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TianshuError(
+                    f"预算账本数量必须是非负整数：{dimension}={value!r}"
+                )
+
+    def _read_quantities(self, raw: str) -> dict[str, int]:
+        try:
+            values = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise TianshuError("预算账本数量记录损坏") from exc
+        self._validate_quantities(values)
+        return values
 
     def _counters(self, account_id: str) -> dict[str, dict[str, int]]:
         rows = self._conn.execute(
@@ -389,13 +410,23 @@ class BudgetLedger:
             " WHERE account_id = ?",
             (account_id,),
         ).fetchall()
-        return {
+        counters = {
             row["dimension"]: {
                 "reserved": row["reserved"],
                 "settled": row["settled"],
             }
             for row in rows
         }
+        for column in ("reserved", "settled"):
+            self._validate_quantities({dim: values[column] for dim, values in counters.items()})
+        return counters
+
+    def _validated_chain(self, account_id: str) -> list[str]:
+        chain = self._chain(account_id)
+        for level in chain:
+            self._limits(level)
+            self._counters(level)
+        return chain
 
     # ------------------------------------------------------------ 预占
 
@@ -407,12 +438,16 @@ class BudgetLedger:
         run_id: str = "",
         call_id: str = "",
         need: dict[str, int] | None = None,
+        unpriced: bool = False,
     ) -> Reservation:
         """原子预占。额度不足 / 已取消 / 已过 deadline 一律拒绝。
 
         `attempt_id` 是**真实 attempt 的身份**（例如 `run#turn#attempt`），
         不是"第几次调用"的模糊编号：同一个 attempt 重复预占返回同一张占位，
         不会重复扣。
+
+        `unpriced` 表示金额无法估算/保证。无金额闸时用 micros=0 记录没有
+        预留货币额度，结算仍需明确的已知金额；祖先任意金额闸都拒绝准入。
         """
         need = dict(need or {})
         unknown = sorted(set(need) - set(DIMENSIONS))
@@ -427,8 +462,11 @@ class BudgetLedger:
                 )
         if not attempt_id:
             raise TianshuError("预占必须有 attempt 身份")
+        if unpriced and need.get("micros") != 0:
+            raise TianshuError("无法估价时只能记录零金额预留，不能猜测金额")
 
         with self._tx():
+            chain = self._validated_chain(account_id)
             existing = self._conn.execute(
                 "SELECT * FROM budget_reservations"
                 " WHERE account_id = ? AND attempt_id = ?",
@@ -437,7 +475,6 @@ class BudgetLedger:
             if existing is not None:
                 return self._row_to_reservation(existing)
 
-            chain = self._chain(account_id)
             now = self._clock()
             for level in chain:
                 account = self.account(level)
@@ -469,6 +506,11 @@ class BudgetLedger:
                     if limit is None:
                         # 没设上限的维度照常记账，但不设闸（PRD：分维度记账）。
                         continue
+                    if dimension == "micros" and unpriced:
+                        raise BudgetConfigError(
+                            f"账户 {level} 设有金额上限，但本次金额无法形成估算或上界；"
+                            "拒绝发送，不以零代替未知价格"
+                        )
                     used = counters.get(dimension, {}).get("reserved", 0) + (
                         counters.get(dimension, {}).get("settled", 0)
                     )
@@ -534,13 +576,16 @@ class BudgetLedger:
         return self._row_to_reservation(row) if row else None
 
     def _row_to_reservation(self, row: sqlite3.Row) -> Reservation:
+        need = self._read_quantities(row["need_json"])
+        if row["usage_json"] and row["state"] != RELEASED:
+            self._read_quantities(row["usage_json"])
         return Reservation(
             reservation_id=row["reservation_id"],
             account_id=row["account_id"],
             attempt_id=row["attempt_id"],
             run_id=row["run_id"],
             call_id=row["call_id"],
-            need=json.loads(row["need_json"]),
+            need=need,
             state=row["state"],
         )
 
@@ -570,6 +615,11 @@ class BudgetLedger:
             raise TianshuError(
                 f"未知的预算维度：{unknown}（合法值：{list(DIMENSIONS)}）"
             )
+        for dimension, value in usage.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TianshuError(
+                    f"结算数量必须是非负整数：{dimension}={value!r}"
+                )
         with self._tx():
             row = self._conn.execute(
                 "SELECT * FROM budget_reservations WHERE reservation_id = ?",
@@ -577,6 +627,8 @@ class BudgetLedger:
             ).fetchone()
             if row is None:
                 raise TianshuError(f"预占不存在：{reservation_id}")
+            reservation = self._row_to_reservation(row)
+            chain = self._validated_chain(row["account_id"])
             if row["state"] != PENDING:
                 # 幂等：第二次回执不改账本，只把已记录的结果再报一次。
                 return Settlement(
@@ -586,8 +638,7 @@ class BudgetLedger:
                     known=bool(row["known"]),
                     duplicate=True,
                 )
-            need = json.loads(row["need_json"])
-            chain = self._chain(row["account_id"])
+            need = reservation.need
             now = self._clock()
             if known_dimensions is None:
                 known_dims: set[str] = set(need) if known else set()
@@ -620,6 +671,10 @@ class BudgetLedger:
                 dimension
                 for dimension, value in sorted(usage.items())
                 if dimension in known_dims and value > need.get(dimension, 0)
+                # 无金额闸的零预留不是金额上界。实际费用仍入账，但不能把
+                # 从未声称的货币上界被突破，当成 token upper 模式失败。
+                and not (dimension == "micros" and need.get(dimension) == 0
+                         and all("micros" not in self._limits(level) for level in chain))
             )
             if overrun_dims:
                 for level in chain:
@@ -668,10 +723,12 @@ class BudgetLedger:
             ).fetchone()
             if row is None:
                 raise TianshuError(f"预占不存在：{reservation_id}")
+            reservation = self._row_to_reservation(row)
+            chain = self._validated_chain(row["account_id"])
             if row["state"] != PENDING:
                 return False
-            need = json.loads(row["need_json"])
-            for level in self._chain(row["account_id"]):
+            need = reservation.need
+            for level in chain:
                 for dimension, value in need.items():
                     self._conn.execute(
                         "UPDATE budget_counters SET reserved = reserved - ?"
@@ -793,6 +850,7 @@ class BudgetLedger:
             ).fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
+            reservation = self._row_to_reservation(row)
             out.append({
                 "reservation_id": row["reservation_id"],
                 "account_id": row["account_id"],
@@ -800,7 +858,7 @@ class BudgetLedger:
                 "run_id": row["run_id"],
                 "call_id": row["call_id"],
                 "state": row["state"],
-                "need": json.loads(row["need_json"]),
+                "need": reservation.need,
                 "usage": json.loads(row["usage_json"] or "{}"),
                 "created_at": row["created_at"],
             })

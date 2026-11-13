@@ -232,6 +232,25 @@ def test_usage_missing_is_none_not_zero(vendor):
     assert resp.usage["output_tokens"] is None
 
 
+@pytest.mark.parametrize("vendor", VENDORS)
+@pytest.mark.parametrize(
+    "field",
+    ["input_tokens", "output_tokens", "cache_read_input_tokens",
+     "cache_creation_input_tokens"],
+)
+def test_negative_usage_is_a_nonretryable_protocol_error(vendor, field):
+    """外部计数不能变成负消费；两个真实 adapter 都在 C1 边界拒绝。"""
+    raw_field = {
+        "input_tokens": "prompt_tokens",
+        "output_tokens": "completion_tokens",
+    }.get(field, field) if vendor == "openai" else field
+    payload = _payload(vendor, usage={raw_field: -1})
+    with pytest.raises(ModelError) as caught:
+        _model(vendor, FakeTransport(payload)).complete(list(MESSAGES), list(TOOLS))
+    assert caught.value.kind == "protocol"
+    assert caught.value.retryable is False
+
+
 def test_anthropic_cache_tokens_not_folded():
     """缓存读写的 token 不能加进 input_tokens，否则同一批 token 被计两次费。"""
     payload = _payload(
