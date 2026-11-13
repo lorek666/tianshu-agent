@@ -87,7 +87,11 @@ def worker(args):
             directory = ipc.run_dir(root) if args.role == "hold_meta" else root
             with leases.execution_guard(directory):
                 emit({"phase": "GUARD_HELD", "pid": os.getpid(), "scope": args.role})
-                assert sys.stdin.readline().strip() == "RELEASE"
+                command = sys.stdin.readline().strip()
+                if command == "CRASH":
+                    emit({"phase": "CRASHING", "pid": os.getpid(), "scope": args.role})
+                    os._exit(23)
+                assert command == "RELEASE"
             value = None
         elif args.role.startswith("clear"):
             value = host.clear_host_info(root, pid=424242)
@@ -179,6 +183,8 @@ def run(args):
             out, err = proc.communicate(timeout=10)
             assert proc.returncode == 0, (out, err, proc.returncode)
             assert not out.strip(), ("unexpected remaining protocol", out)
+            assert not err, err
+            return {"stdout": out, "stderr": err}
 
         for name, first_role, second_role in (
             ("clear_then_writer", "clear_hold_read", "write_observe"),
@@ -225,13 +231,21 @@ def run(args):
             assert held["phase"] == "GUARD_HELD"
             reader = spawn(root, "read_observe")
             event = helper.line(reader)
+            crash_event = None
             if hard_exit:
-                holder.kill()
-                holder.communicate(timeout=5)
+                helper.signal(holder, "CRASH")
+                crash_event = helper.line(holder)
+                assert crash_event == {
+                    "phase": "CRASHING", "pid": held["pid"], "scope": held_scope
+                }, crash_event
+                out, err = holder.communicate(timeout=5)
+                assert holder.returncode == 23, (holder.returncode, out, err)
+                assert not out and not err, (out, err)
+                holder_output = {"stdout": out, "stderr": err}
             else:
                 helper.signal(holder, "RELEASE")
                 assert helper.line(holder)["phase"] == "RESULT"
-                complete(holder)
+                holder_output = complete(holder)
             if event["phase"] == "LOCK_BUSY":
                 helper.signal(reader, "RETRY")
                 outcome = helper.line(reader)
@@ -241,9 +255,14 @@ def run(args):
             results["cases"].append(
                 {
                     "name": name,
+                    "holder_event": held,
+                    "holder_worker_pid": held["pid"],
+                    "holder_launcher_pid": holder.pid,
+                    "crash_event": crash_event,
                     "first_reader_event": event,
                     "reader_result": outcome,
                     "holder_returncode": holder.returncode,
+                    "holder_output": holder_output,
                 }
             )
 

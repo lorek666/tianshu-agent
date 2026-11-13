@@ -28,6 +28,7 @@ def load(repo):
 
 def worker(args):
     _daemon, host, _ipc, leases = load(args.repo)
+    emit({"phase": "WORKER_READY", "role": args.role, "pid": os.getpid()})
     original_serve = host.UiBridge.serve_background
     original_lock = leases._try_lock
     notified = False
@@ -42,6 +43,8 @@ def worker(args):
                 emit(
                     {
                         "phase": "LOCK_BUSY",
+                        "role": args.role,
+                        "pid": os.getpid(),
                         "errno": exc.errno,
                         "winerror": getattr(exc, "winerror", None),
                     }
@@ -52,7 +55,9 @@ def worker(args):
     def serve(self):
         # The ephemeral test token travels only through the private protocol;
         # the parent strips it from every persisted result.
-        identity = {"pid": os.getpid(), "port": self.port, "token": self.config.token}
+        identity = {
+            "role": args.role, "pid": os.getpid(), "port": self.port, "token": self.config.token
+        }
         if args.role == "first":
             emit({"phase": "SERVE_HELD", **identity})
             assert sys.stdin.readline().strip() == "SERVE"
@@ -70,10 +75,16 @@ def worker(args):
                 daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
                 supervise=False,
             )
-        emit({"phase": "EXIT", "returned": returned, "stdout": output.getvalue()})
+        emit({
+            "phase": "EXIT", "role": args.role, "pid": os.getpid(),
+            "returned": returned, "stdout": output.getvalue(),
+        })
         return returned
     except Exception as exc:
-        emit({"phase": "EXIT", "error": type(exc).__name__, "message": str(exc)})
+        emit({
+            "phase": "EXIT", "role": args.role, "pid": os.getpid(),
+            "error": type(exc).__name__, "message": str(exc),
+        })
         return 2
 
 
@@ -100,13 +111,18 @@ def run(args):
         ).hexdigest(),
         "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "events": [],
+        "workers": {},
     }
     snapshots = []
+    children = {}
+    exit_events = {}
 
     def record(event):
         result["events"].append({k: v for k, v in event.items() if k != "token"})
         if event["phase"] == "SERVER_STARTED":
             snapshots.append(host.HostInfo(event["pid"], event["port"], event["token"], 0))
+        elif event["phase"] == "EXIT":
+            exit_events[event["role"]] = event
 
     with tempfile.TemporaryDirectory(
         prefix="c007-ready-", dir=None if os.name == "nt" else "/tmp"
@@ -132,6 +148,13 @@ def run(args):
                 env=env,
             )
             helper.CHILDREN.append(proc)
+            children[role] = proc
+            ready = helper.line(proc)
+            assert ready["phase"] == "WORKER_READY" and ready["role"] == role, ready
+            assert isinstance(ready["pid"], int) and ready["pid"] > 0, ready
+            result["workers"][role] = {
+                "worker_pid": ready["pid"], "launcher_pid": proc.pid, "handshake": ready
+            }
             return proc
 
         try:
@@ -171,11 +194,24 @@ def run(args):
                         host._http_post(info.port, "/shutdown", info.token, timeout=5)
                     except OSError as exc:
                         result.setdefault("cleanup_http_errors", []).append(type(exc).__name__)
-            for proc in helper.CHILDREN:
+            for role, proc in children.items():
                 try:
                     out, err = proc.communicate(timeout=20)
+                    for line in out.splitlines():
+                        event = json.loads(line)
+                        assert event["phase"] == "EXIT" and event["role"] == role, event
+                        assert role not in exit_events, (role, exit_events)
+                        exit_events[role] = event
                     result.setdefault("process_exits", []).append(
-                        {"pid": proc.pid, "exit": proc.returncode, "stdout": out, "stderr": err}
+                        {
+                            "role": role,
+                            "worker_pid": result["workers"][role]["worker_pid"],
+                            "launcher_pid": proc.pid,
+                            "exit": proc.returncode,
+                            "event": exit_events.get(role),
+                            "stdout": out,
+                            "stderr": err,
+                        }
                     )
                 except subprocess.TimeoutExpired:
                     proc.kill()

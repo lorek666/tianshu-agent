@@ -59,6 +59,58 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           uv run --frozen python scripts/pytest_with_stacks.py tests/test_host_cleanup.py tests/test_integration_m5.py::test_host_stop_stops_daemon_too -o addopts="" -vv -rs --tb=short --stack-timeout=60 > c007-evidence/regressions.log 2>&1
+      - name: Prove real helper failure cleanup and stderr preservation
+        if: always()
+        env:
+          PYTHONUTF8: "0"
+          PYTHONIOENCODING: cp1252
+        run: |
+          uv run --frozen python scripts/probe_host_helper_failure.py --repo . --output c007-evidence/helper-failure.json > c007-evidence/helper-failure.stdout.log 2> c007-evidence/helper-failure.stderr.log
+      - name: Prove original read denial regression is red
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          baseline_sha=7111cbb43cd71db9f25a1348d91e7b39a0d97dee
+          git fetch --no-tags --depth=1 origin "$baseline_sha"
+          mkdir -p c007-evidence/original-7111
+          git archive "$baseline_sha" src | tar -x -C c007-evidence/original-7111
+          PYTHONPATH="$PWD/c007-evidence/original-7111/src" uv run --frozen python - <<'PY'
+          import hashlib
+          import json
+          import platform
+          import subprocess
+          import sys
+          from pathlib import Path
+          from tianshu import host
+
+          root = Path("c007-evidence")
+          source = Path(host.__file__).resolve()
+          assert source == (root / "original-7111/src/tianshu/host.py").resolve(), source
+          command = [
+              sys.executable, "-m", "pytest",
+              "tests/test_host_cleanup.py::test_windows_real_read_denial_cannot_become_success",
+              "-o", "addopts=", "-o", "pythonpath=", "-q", "-rs", "--tb=short",
+          ]
+          result = subprocess.run(command, capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          (root / "original-7111-read-denial.log").write_text(output, encoding="utf-8")
+          record = {
+              "baseline_sha": "7111cbb43cd71db9f25a1348d91e7b39a0d97dee",
+              "host_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+              "test_sha256": hashlib.sha256(Path("tests/test_host_cleanup.py").read_bytes()).hexdigest(),
+              "platform": platform.platform(), "python": sys.version,
+              "command": command, "pytest_exit": result.returncode,
+          }
+          (root / "original-7111-read-denial.json").write_text(
+              json.dumps(record, indent=2) + "\n", encoding="utf-8"
+          )
+          print(output)
+          assert result.returncode == 1, record
+          assert "DID NOT RAISE <class 'tianshu.host.HostError'>" in output, output
+          assert "1 failed" in output and "TypeError" not in output, output
+          print("Original 7111 read-denial regression failed for missing HostError as expected.")
+          PY
       - name: Preserve original outcomes even when collection fails
         if: always()
         uses: actions/upload-artifact@v4

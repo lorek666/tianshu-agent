@@ -34,6 +34,7 @@ def worker(args):
             "errno": getattr(exc, "errno", None),
             "winerror": getattr(exc, "winerror", None),
             "cause_type": None if cause is None else type(cause).__name__,
+            "cause_errno": getattr(cause, "errno", None),
             "cause_winerror": getattr(cause, "winerror", None),
         }
     result["path_exists"] = host.host_lock_path(root).exists()
@@ -64,9 +65,8 @@ def run(args):
     }
     with tempfile.TemporaryDirectory(prefix="verify-host-exclusive-") as temp:
         root = Path(temp)
-        host.write_host_info(
-            root, host.HostInfo(pid=424242, port=0, token="probe-only", started_at=1)
-        )
+        original_info = host.HostInfo(pid=424242, port=0, token="probe-only", started_at=1)
+        host.write_host_info(root, original_info)
         path = host.host_lock_path(root)
         original = path.read_bytes()
         # GENERIC_READ, share=0, OPEN_EXISTING: a real deny-sharing native handle.
@@ -97,6 +97,11 @@ def run(args):
             if not api.CloseHandle(handle):
                 raise ctypes.WinError(ctypes.get_last_error())
         result["original_bytes_preserved"] = path.read_bytes() == original
+        restored = host.read_host_info(root)
+        result["read_after_release_matches_original"] = restored == original_info
+        result["read_after_release"] = (
+            None if restored is None else {"pid": restored.pid, "started_at": restored.started_at}
+        )
     target = Path(args.output)
     target.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"output": str(target), "result": result}))

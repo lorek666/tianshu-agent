@@ -26,7 +26,7 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
-- **Host 元数据整改：C-007/P2（2026-11-13）**：I/O PR #131 的 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` / run43359223697 **不能合并**：Ubuntu/macOS/UI成功，Windows为1 failed/2175 passed/31 skipped（1107.46s），唯一失败是Host正常停止清`host.lock`裸WinError5。诊断新回归31项在该Windows runner实际通过，但不能据此把整轮改绿。独立原生实验 `6d26a27c702e0d40f207f6a191c7ae1fad74ff63` / run43363720150 用真实双进程同读后双删，10组中3组实际WinError5；另确认普通读句柄导致32、只读属性导致持久5，人工share-delete第二删本轮无错。独立屏障同时确认旧stop/旧健康结果误删改新owner、真双Host晚发布覆盖，以及拒读/坏JSON被当缺失。初版d6ee虽全量2217/8仍因发布后被接管出两个活Host而退回；a624虽全量2218/8、404.50s且245文件hash稳定，仍被真实Thread.start屏障复现新引入的未启动join异常、日志未关及退出0，**未批准，两轮旧全量均不沿用**。当前68ea/3c68内容hash只收紧为短guard内条件发布→monitor实际启动→HTTP服务启动；败者仍不停止共享Daemon。作者定向57/1（52.92s）及第二读者独立57/1（52.06s）通过，Windows原生拒读本机不执行；本机新全量2219 passed/8 skipped（407.48s），lock/ruff exit0、245非文档hash稳定。第二读者68ea内容预验通过，仍需正式Git SHA绑定、修后Windows实验与四项CI；原红及版本边界见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
+- **Host 元数据整改：C-007/P2（2026-11-13）**：I/O PR #131 的正式 `dd49f21530899d2d643fba031a7fe46ea69ebbde` / run43367761924 **仍不能合并**：Ubuntu2218/9、macOS2219/8与UI80tests成功；Windows **6 failed / 2189 passed / 32 skipped，1149.02s**。不是先前7111的一红，也不是cdc隔离实验的两红。第二读者用精确dd49测试在真实cp1252环境复现五项失败；只补测试`_CHILD`对生产CLI已有UTF-8初始化的调用，相同源码/环境/断言即五项通过。第六项是share0实际拒读成立、但错误强求CRT没有提供的winerror32；另修monitor探针主动丢弃GET造成的后台10053。产品保持68ea的条件发布→monitor实际启动→HTTP服务顺序，未吞异常/重试或改契约。最终测试dc274a已在保留cp1252的本机整文件19 passed/1 Windows-only skipped（24.06s）；失败stderr、真实worker身份与清理结果保全，Mac真失败路径已验两PID无残留。该测试版独立新增范围内容预验已通过（报告SHA256 0988a65c…），正式SHA、Windows与四CI仍待完成；旧3c68的2219/8本机全量及内容预验不能转移成新门禁。7111 WinError5、d6ee双Host退回、a624未启动join退回和全部旧版本证据仍保留，见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
 - **I/O CI诊断整改：C-005/P2（2026-11-13）**：原I/O的Windows CI在60秒原生转储时access violation；另建纯标准库Windows实验 `92545fa418478afd1be6886f70ba5f5470e24c0b` / run43353423204，在相同CPython3.12.16/Server2025上0.687s复现原生dump退出0xC0000005，而Python线程和无dump控制正常。确认诊断机制风险，不把原失败COMMIT栈当成SQLite根因。仅测试包装器替换Windows定时诊断，保留fatal handler、60秒阈值、25分钟期限及全部门禁；后台等待/采样/写出异常不得假绿，真实abort/阻塞PIPE/退出码负控随代码提交。最终冻结工作区（a0基线加补丁）lock/ruff/full均exit0，全量2200 passed/7 skipped、390.82秒；第二读者随后将八文件Git对象与280份原件绑定正式提交 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 批准；该版Windows正式矩阵31项诊断回归通过，三个60秒栈后相应用例继续通过。但整轮CI因C-007失败，不能把领域批准当成合并批准；细节及残余GIL边界见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
@@ -255,6 +255,10 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **测试入口也必须匹配生产初始化（2026-11-13）**：Windows上stdout重定向到DEVNULL仍可能以cp1252编码；测试用`python -c`直调Host、遗漏真实`cli.main`已有的`_force_utf8_streams`，中文print会在发布ready后异常、清元数据，表现为EOF/错误接管。用同一源码、同一cp1252环境、只补真实入口初始化的正负控定位，不能全局开UTF8掩盖差异。stderr保留原始bytes并按子进程实际UTF-8解码；失败收尾不能提前kill截断traceback或误杀Windows launcher而留下实际worker。只在最终runner证明Windows收尾，不拿Mac PID相同的情况代言。
+
+- **探针必须持有自己发出的请求（2026-11-13）**：暂停真实Thread.start时发GET，0.4秒无响应就主动关TCP，会在放行后制造服务端10053。边界期限保持不变，但应保持同一连接，服务ready后在普通I/O预算内读完同一响应；继续检查stderr、资源与实际worker PID。`Path.read_bytes`经CRT可只剩EACCES，不能把底层share0必然等于异常对象winerror32当跨层契约。原红切源码时还须覆盖pytest的`pythonpath`配置并在同一进程核验导入hash，环境PYTHONPATH单独设置不足以证明跑到旧版。
+
 - **条件删必须与读、写、接管处于同一互斥（2026-11-13）**：读到“还是我的pid”不代表unlink时还是；stop拿旧快照后，新Host已经接管也会被误删，pid复用还要求实例token/started_at绑定。只给unlink加锁或只加pid参数都不完整。HostInfo使用`run/execution.guard`，不占业务根守卫，HTTP/Daemon等待不入锁；晚到的启动者条件发布失败时只能关自己资源，不能误停胜者复用的Daemon。Windows WinError5既可能来自真实双删，也可能是持久只读拒绝，不能统一吞掉。读失败更不能等同物理缺失；只在FileNotFoundError时宣布缺失。
 
 - **发布端口不等于已启动服务（2026-11-13）**：仅在写端口时校验owner，之后到`serve_background`之间仍可被真health失败的后启动者接管，旧实例继续serve会形成两个活Host。发布和服务线程启动须处于同一短元数据临界区，停止回调先安装、monitor在条件发布后且HTTP开放前实际启动。验证正确互斥时必须以第二进程真实OS锁busy作为放行信号；先等第二进程ready才释放第一进程会把探针自身循环等待误判成产品死锁。全量绿不能压过独立反例，改后重跑受影响验收。
@@ -359,7 +363,7 @@
 
 ## 7. 已知限制 / 未决问题
 
-- **C-007验收与边界（2026-11-13）**：7111正式Windows CI因Host清理失败为红；d6ee被独立后发布反例退回，a624全量虽绿又被新monitor启动反例退回，当前68ea/3c68已通过本机全量和内容级独立预验，仍待正式SHA与Windows/CI，不使用旧全量或临时Windows原生实验success替代新SHA门禁。HostInfo guard保护合作进程的短读写/条件删以及条件发布→monitor实际启动→HTTP服务启动的转换，不是整个启动周期或运行期的排他锁，也不是同uid安全边界；port0期间可被后启动者接管，但败者必须拒绝发布/删除。原CI未保留Host内部stderr，不能由同类双删复现倒推出原现场所有句柄；外部程序/杀软的持续拒绝仍返回失败，Windows10/11/ARM64用户设备仍未验证。
+- **C-007验收与边界（2026-11-13）**：dd49正式Windows六红已独立分类；cp1252原红与仅调用真实CLI初始化后的阳性证明测试入口缺口，但不声称找回原CI已丢弃的stderr，monitor本地EOF与原CI10054也不冒称同栈。最终dc274a测试的本机19/1及Mac失败清理不代替新SHA独立复核、Windows原生拒读/实际worker清理和四项required CI；三批本地稳定后集中验证，不继续推送中间候选。7111、d6ee、a624各自失败和旧绿均保留，不挪用为新门禁。HostInfo guard保护合作进程的短读写/条件删以及条件发布→monitor实际启动→HTTP服务启动的转换，不是整个启动周期或运行期的排他锁，也不是同uid安全边界；port0期间可被后启动者接管，但败者必须拒绝发布/删除。外部程序/杀软的持续拒绝仍返回失败，Windows10/11/ARM64用户设备仍未验证。
 
 - **CI线程栈边界（2026-11-13）**：为避开已在Windows3.12.16独立重现的原生定时frame竞态，Windows使用Python线程定时采样；C扩展长期占用GIL时无法保证60秒出栈。fatal handler仍保留，25分钟job上限不变，但两者不是该缺口的等价替代。未验证所有C扩展/GIL死锁、真实百线程并发或stdout/stderr同时外部阻塞。7111正式Windows矩阵已逐项通过31项包装器回归，三个60秒栈后相应用例继续通过；整轮因C-007失败。这些结果和临时原生实验success都不替代后续提交的业务套件通过。
 
@@ -471,6 +475,10 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-13 · 最终测试版本地集中门禁**：Host68ea不变，正式测试dc274a及协议本地内容预验通过（独立报告0988a65c…）。三批候选并行跑lock/ruff/full全部exit0：I/O2219/8、437.57s；预算2293/8、439.61s；恢复2316/8、442.55s。各248/249/251个非文档文件前后无漂移，日志原HEAD与最终工作区内容通过冻结清单映射，不拿旧dd49 CI或旧测试全量代替。正式SHA绑定、最终Windows探针与四required仍待；集中推送节奏保留，不提前推后两批。
+
+- **2026-11-13 · C-007 Windows六红分类与最终测试协议冻结**：正式dd49/run43367761924 Windows为6失败/2189通过/32跳过，其他三项成功；cdc隔离实验2失败另记。第二读者精确dd49/cp1252五红→唯一真实CLI初始化五绿，报告c9aef076…及37原件台账4d89a387…；未回填成原CI丢失stderr。正式helper只补入口、保全原异常与stderr/worker/清理输出；share0断言EACCES并保留字节，monitor同连接0.4秒边界→ready后5秒完整读取，产品68ea不动。最终dc274a测试本机cp1252整文件19/1、24.06s，hash稳定；真实child自然exit1和父失败后Host/Daemon均无残留已验Mac。实验握手/锁内真实os._exit23及validator同步校准，撤销PYTHONPATH被pytest覆盖的无效负控，未将中断测试认绿。新独立复核及Windows/四CI待最终集中执行，无commit/push、无中间全量，未改生产、契约或门禁。
 
 - **2026-11-13** · **C-007第三版本机与独立内容预验收口**：68ea源码/3c68测试冻结全量2219/8、407.48s，lock/ruff exit0，245非文档运行前后hash一致。第二读者57/1及真实monitor、两启动窗口、stop替换owner、supervise=True拒删/原异常均通过；内容报告865def8e…，正式SHA与修后Windows/四CI仍待绑定。同步纠正C-004/C-005/C-006的旧“待批准”叙述，保留其已经完成的精确领域批准，也保留7111整轮Windows红和d6ee/a624两次候选退回；未提交运行数据、未改契约/超时/重试/门禁。
 

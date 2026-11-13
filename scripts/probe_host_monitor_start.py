@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -138,14 +139,47 @@ def run(args):
                 if event["phase"] == "MONITOR_START_HELD":
                     break
                 assert event["phase"] == "SERVER_READY", event
-            info = host.HostInfo(event["pid"], event["port"], event["token"], 0)
-            result["http_alive_at_thread_start_boundary"] = host._http_alive(info)
-            if not result["http_alive_at_thread_start_boundary"]:
-                helper.signal(proc, "START")
-                released = True
-                ready = helper.line(proc)
-                result["events"].append(ready)
-                assert ready["phase"] == "SERVER_READY", ready
+            # Keep the same real request alive across the observation deadline.
+            # Closing a queued GET would make the probe create its own write error.
+            with socket.create_connection(("127.0.0.1", event["port"]), timeout=0.4) as client:
+                client.sendall(
+                    f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{event['port']}\r\n"
+                    "Connection: close\r\n\r\n".encode("ascii")
+                )
+                raw_response = b""
+                timed_out = False
+                try:
+                    while chunk := client.recv(65536):
+                        raw_response += chunk
+                except TimeoutError:
+                    timed_out = True
+                    assert raw_response == b"", ("partial boundary response", raw_response)
+                result["http_alive_at_thread_start_boundary"] = not timed_out
+                result["boundary_client"] = {
+                    "timed_out_before_release": timed_out,
+                    "received_before_release": len(raw_response),
+                    "kept_open_at_release": timed_out and client.fileno() >= 0,
+                }
+                if timed_out:
+                    helper.signal(proc, "START")
+                    released = True
+                    ready = helper.line(proc)
+                    result["events"].append(ready)
+                    assert ready["phase"] == "SERVER_READY", ready
+                    # Preserve the 0.4s boundary observation; drain the same request
+                    # only after service readiness using its ordinary I/O budget.
+                    client.settimeout(5)
+                    while chunk := client.recv(65536):
+                        raw_response += chunk
+                header, separator, body = raw_response.partition(b"\r\n\r\n")
+                assert separator and header.split(b"\r\n")[0].split()[1] == b"200", raw_response
+                health = json.loads(body)
+                assert health == {"ok": True, "pid": event["pid"]}, health
+                result["boundary_client"].update({
+                    "full_response_drained": True,
+                    "health_pid": health["pid"],
+                    "response_bytes": len(raw_response),
+                })
             stopper = subprocess.run(
                 [sys.executable, "-m", "tianshu", "host", "stop", "--data-root", str(root)],
                 capture_output=True,
