@@ -505,6 +505,11 @@ class _Handler(BaseHTTPRequestHandler):
             )
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except RecursionError:
+            return self._json(
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": {"code": "bad_params", "message": "请求体 JSON 嵌套过深"}},
+            )
         except (UnicodeDecodeError, ValueError):
             return self._json(
                 HTTPStatus.BAD_REQUEST,

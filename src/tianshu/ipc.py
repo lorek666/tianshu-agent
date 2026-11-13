@@ -669,7 +669,16 @@ class ServerConnection:
         self.since_seq = 0
 
     def send(self, message: dict[str, Any]) -> None:
-        self._conn.send_bytes(encode(message))
+        data = encode(message)
+        try:
+            self._conn.send_bytes(data)
+        except TypeError as exc:
+            # POSIX 的半帧短写遇到并发 abort 时，下一次 write 可能读取到
+            # close() 已清空的句柄。仅将已确认关闭的传输映射为断线；编码
+            # 在 try 外，仍开放连接里的 TypeError 也必须原样暴露。
+            if self._conn.closed:
+                raise ConnectionClosed("发送期间连接已关闭") from exc
+            raise
 
     def recv(self, *, timeout: float | None = None) -> dict[str, Any] | None:
         """读一条消息；超时返回 None，对端关闭也返回 None **但会置 `eof`**。
