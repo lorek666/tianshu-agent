@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import tempfile
+
+REPO = Path('/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent')
+sys.path.insert(0, str(REPO / 'src'))
+from tianshu.backup import create_backup, verify_backup
+from tianshu.events import EventLog
+from tianshu.maintenance import acquire_database_access, database_lock_path
+
+if len(sys.argv) == 3 and sys.argv[1] == '--hold':
+    with acquire_database_access(Path(sys.argv[2])):
+        print('shared-ready', flush=True)
+        assert sys.stdin.readline().strip() == 'release'
+    raise SystemExit(0)
+
+OUT = Path('/tmp/tianshu-g3-20261113')
+TMP = Path(tempfile.mkdtemp(prefix='admission-independent-', dir=OUT))
+root = TMP / 'source'
+root.mkdir()
+with_db = root / 'events.db'
+log = EventLog(with_db)
+log.close()
+(root / 'artifacts').mkdir()
+(root / 'artifacts' / 'stable-evidence.json').write_text('{"existing":true}\n')
+backup = TMP / 'backup'
+manifest = create_backup(root, backup)
+assert verify_backup(backup).ok
+
+def rows(db: Path):
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute('SELECT * FROM events ORDER BY seq').fetchall()
+    finally:
+        conn.close()
+
+old_rows = rows(with_db)
+new_material = root / 'artifacts' / 'offline-review.json'
+new_material.parent.mkdir(exist_ok=True)
+new_material.write_text('{"pending_evidence":"must not disappear in an upgrade rollback"}\n')
+listed = [entry for entry in manifest.files if entry.path != 'events.db']
+one_way_match = all(
+    (root / entry.path).is_file()
+    and (root / entry.path).stat().st_size == entry.size
+    and hashlib.sha256((root / entry.path).read_bytes()).hexdigest() == entry.sha256
+    for entry in listed
+)
+source_materials = sorted(
+    str(p.relative_to(root))
+    for name in ('artifacts', 'blobs', 'memory_blobs')
+    for p in (root / name).rglob('*')
+    if p.is_file() and not p.name.startswith('.') and not p.name.endswith('.tmp')
+)
+backup_materials = sorted(entry.path for entry in listed)
+result = {
+    'temp_root': str(TMP),
+    'material_inventory': {
+        'backup_verify_ok': verify_backup(backup).ok,
+        'events_equal': old_rows == rows(with_db),
+        'all_backup_listed_materials_still_equal': one_way_match,
+        'source_inventory': source_materials,
+        'backup_inventory': backup_materials,
+        'inventory_equal': source_materials == backup_materials,
+    },
+}
+
+alias = TMP / 'alias.db'
+os.link(with_db, alias)
+same_inode = os.stat(with_db).st_ino == os.stat(alias).st_ino
+child = subprocess.Popen(
+    [sys.executable, __file__, '--hold', str(alias)],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+)
+assert child.stdout is not None and child.stdin is not None
+assert child.stdout.readline().strip() == 'shared-ready'
+try:
+    with acquire_database_access(with_db, exclusive=True):
+        exclusive_acquired = True
+finally:
+    child.stdin.write('release\n')
+    child.stdin.flush()
+    child.stdin.close()
+    assert child.wait(timeout=10) == 0
+result['hardlink'] = {
+    'same_inode': same_inode,
+    'root_resolved': str(with_db.resolve()),
+    'alias_resolved': str(alias.resolve()),
+    'different_maintenance_keys': database_lock_path(with_db) != database_lock_path(alias),
+    'exclusive_acquired_while_real_child_holds_shared_alias': exclusive_acquired,
+    'link_count': os.stat(with_db).st_nlink,
+}
+
+fts = sqlite3.connect(TMP / 'fts.db')
+fts.execute('CREATE VIRTUAL TABLE memory_fts USING fts5(memory_id UNINDEXED, tokens)')
+for i in range(10):
+    fts.execute('INSERT INTO memory_fts(memory_id,tokens) VALUES (?,?)', (str(i), f'token{i} common'))
+    fts.commit()
+fts_rows_before = fts.execute('SELECT rowid,memory_id,tokens FROM memory_fts ORDER BY rowid').fetchall()
+shadows = [row[0] for row in fts.execute('SELECT name FROM sqlite_schema WHERE type="table" AND name LIKE "memory_fts_%" ORDER BY name')]
+def shadow_bytes():
+    return repr([(name, fts.execute('SELECT * FROM "' + name + '"').fetchall()) for name in shadows]).encode()
+shadow_before = shadow_bytes()
+fts.execute("INSERT INTO memory_fts(memory_fts) VALUES('optimize')")
+fts.commit()
+fts_rows_after = fts.execute('SELECT rowid,memory_id,tokens FROM memory_fts ORDER BY rowid').fetchall()
+shadow_after = shadow_bytes()
+result['fts'] = {
+    'virtual_rows_equal_after_optimize': fts_rows_before == fts_rows_after,
+    'shadow_tables': shadows,
+    'persistent_shadow_content_equal': shadow_before == shadow_after,
+}
+fts.close()
+
+v = sqlite3.connect(':memory:')
+v.execute('CREATE TABLE typed(v)')
+for value in (None, '1', 1, 1.0, b'1'):
+    v.execute('INSERT INTO typed VALUES(?)', (value,))
+result['sql_types'] = [list(row) for row in v.execute('SELECT typeof(v),quote(v) FROM typed')]
+v.close()
+print(json.dumps(result, ensure_ascii=False, indent=2))
