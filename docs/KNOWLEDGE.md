@@ -449,6 +449,8 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-13 · 隔离 Windows 诊断实验（不合并分支）**：在 `a0cb461` 的 Windows CI access violation 后，用独立分支仅执行不导入天枢的纯标准库原生诊断/安全帧采样对照。原生子进程异常、外部期限和原始栈均保存；实验控制组通过不代表原生诊断已修，也不代替任何 required check。现有CI、25分钟上限与产品实现不改。
+
 - **2026-11-13 · I/O CI 警告整改：C-004/P2**：原main与I/O首提交的Ubuntu慢订阅者用例均有发送线程write(None,buf)警告，不能把success状态当成没有异常。基于 `72af1ae9f7a5c826b1dde568ba30005e1c4dc45d`，用真实IPC子进程、实际短写和关闭屏障重现；确认线程能退出，无daemon死亡/数据损坏证据，按P2关闭竞态处理。仅在底层连接已关闭时把send_bytes的TypeError转为ConnectionClosed并保留cause，编码在try外、开放连接TypeError原样暴露；两项负控保留。68项定向在未处理线程警告升错误下通过，lock/ruff通过，macOS arm64全量2169 passed / 7 skipped（377.77s，exit0）；新SHA待独立复审与CI。POSIX短写用例在Windows明确跳过该不同实现路径，两项负控及既有Windows IPC覆盖不移除。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。
 
 - **2026-11-13 · I/O 独立复审整改：Host JSON 深度**：第二读者在 `4479088ecb2d161755d7ba3a89e46119c94a8b8e` 复现约20KB深层JSON仍触发RecursionError并断线，确认原Host修复未覆盖全部解析失败边界。在独立 `codex/debug-io-review` 工作树先取得真HTTP原红，再仅捕获解析递归错误返回400；保留认证在前、完整读取后解析，新增同连接正常请求及401/403回归。原独立12项探针由作者复跑全部通过；本机Host相关65项通过，全量2166 passed / 7 skipped（379.90s），lock/ruff通过。5000位整数候选实测已由ValueError边界返回400，撤销疑点。上述结果绑定基线加补丁，后续新完整SHA仍须原第二读者复核与CI；不把字节有界等同解析深度可处理，也不把自查当独立批准。证据见 [DEBUG-IO](DEBUG-IO-2026-11-13.md)。

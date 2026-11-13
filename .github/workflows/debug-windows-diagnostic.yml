@@ -1,0 +1,33 @@
+name: Windows diagnostic experiment
+
+# Isolated experiment only. This branch is never merged into main.
+on:
+  push:
+    branches: [codex/debug-windows-diagnostic]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    name: CPython frame diagnostic experiment
+    runs-on: windows-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install project Python
+        run: uv python install 3.12
+      - name: Validate lock
+        run: uv lock --check
+      - name: Record bounded native and Python-thread controls
+        run: uv run --frozen python scripts/probe_faulthandler_frames.py --directory diagnostic-evidence --seconds 2
+      - name: Preserve original results and stacks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-diagnostic-evidence
+          path: diagnostic-evidence/
+          if-no-files-found: error
+          retention-days: 30
