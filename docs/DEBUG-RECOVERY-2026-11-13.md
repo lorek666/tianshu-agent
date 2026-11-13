@@ -125,3 +125,7 @@ git diff --check -- src/tianshu/recovery.py tests/test_exec_recovery.py tests/te
 ## 独立复审后的测试强化
 
 第二读者在 `ab7706ba2a0ee837776f7c68b618f803b6f58258` 的独立工作树亲跑23项新增、235项关联与2个Windows专属跳过，另以六组独立故障探针核验实际副作用、首次authority登记、事务已提交及人工unblock。实现未发现阻断缺陷。其负控发现原MCP before_authority夹具只截较晚的目录登记，现同时截取目录与对象首次登记，并断言派发终态error。强化后当前10项通过；仅将生产代码回退到上游 `e89a95d4c7e8f7196b38c51148e294d4c72bed9a` 时同组before_authority为2 failed/2 passed，真正打中旧MCP漏目录窗口。未修改恢复生产代码；日志 `recovery-strengthened-{red,green}`。最终报告将此测试差异绑定后续提交，不把早期复审SHA冒充新SHA。
+
+## 最终Host测试协议继承
+
+恢复组合吸收预算 `10cf60f6772f9ddec0ffd7a43b14f24f7dd333d3` 和I/O `b6fe974d9751a2252c2180bdec70e44a081dfb74`，恢复生产与强化原子性测试保持已审对象，Host68ea与正式回归dc274a精确继承。三候选并行执行的本机lock/ruff/full均exit0：本组合2316 passed / 8 skipped、442.55s；251条冻结对象（仅排除docs/目录，包含根Markdown）全量前后hash不变。原件 `recovery-final-batched-*`，freeze清单SHA256 `84aa4946e608df310b1062637b76197afe9f5603756e2d006cebaf2981ba40eb`；日志HEAD记251，受控测试复制与后续精确Git对象合入通过映射关联。文档冲突逐段保留恢复、预算和I/O历史；正式SHA对象复审及当前CI另绑。未重复无变化的151项/六组独立业务探针，也未把旧7df绿色当作新提交证据。

@@ -92,11 +92,19 @@ C-005/C-006正式I/O提交为 `7111cbb43cd71db9f25a1348d91e7b39a0d97dee`。第�
 
 I/O正式提交 `dd49f21530899d2d643fba031a7fe46ea69ebbde` 已由独立第二读者完整SHA验收，报告 `verify-c007-dd49-formal-review.md` SHA256 `3e9778149d3fbbb0941436a8b33388511315a7deae24188c38430d2997b12d16`。源码68ea/测试3c68及245冻结文件精确匹配Git blob，本机2219 passed/8 skipped、407.48s，lock/ruff0；321跟踪文件Git/index/工作区一致，13核心及280历史原件hash不变。独立亲跑57/1及真实monitor、双启动窗口、stop新owner保护、supervise=True拒删/原异常；之前7个元数据交错以精确内容继承。未将d6ee的2217/8或a624的2218/8绿色沿用：前者真复现两个Host，后者新排序使未启动monitor被join、日志未关但退出0，均被退回。
 
-当前 [dd49 run43367761924](https://github.com/lorek666/tianshu-agent/actions/runs/43367761924) 尚未四项收齐；隔离修后Windows [run43368502126](https://github.com/lorek666/tianshu-agent/actions/runs/43368502126) 绑定 `cdc191f6a08f23373162580061946ce2bcdcf2ff` 返回失败，第二读者正在亲读artifact定位，不能把实验success或collector0代替验收。原版Windows实验run43363720150真双删10组有3组WinError5，普通读32、只读5、share0拒读假缺失；人工share-delete候选本轮无错，保留反证，不反推历史CI所有句柄交错。
+[dd49 run43367761924](https://github.com/lorek666/tianshu-agent/actions/runs/43367761924) 已完成：Ubuntu2218/9、324.56s，macOS2219/8、630.64s，UI80通过；Windows **6 failed / 2189 passed / 32 skipped、1149.02s**。第二读者保全完整Windows日志，SHA256为 `15e8218f32705e09234b98fe4cbf97733d4ec67fada31baace03e5da673b4d0d`，实际checkout `fdf52734c489715adba95f56bd120715e8d6f820` 与dd49同tree。隔离修后Windows [run43368502126](https://github.com/lorek666/tianshu-agent/actions/runs/43368502126) 绑定 `cdc191f6a08f23373162580061946ce2bcdcf2ff`，2 failed / 18 passed / 1 skipped、34.46s；真实CRT拒读已产生HostError/PermissionError errno13但winerror丢失，测试硬求32误红；monitor探针主动关闭尚未服务的HTTP连接造成后台异常。实验的launcher/worker身份和持锁worker硬退出证据也不完整，须修正采集协议，不能删stderr断言或用collector0替代验收。
+
+正式六红中的另外五项，第二读者在精确dd49测试/Host对象上以 `PYTHONIOENCODING=cp1252`、`PYTHONUTF8=0` 真实复现为5 failed：stale-stop两项EOF、晚发布winner缺失、第二Host错误ready、monitor EOF；保全的子stderr指向Host中文print的UnicodeEncodeError。仅在测试子进程调用生产CLI已有的 `cli._force_utf8_streams()`，不改src/断言/环境，同五项转为5 passed。原测试直接调用Host而绕过CLI初始化，且失败时丢弃stderr；正式helper将对齐真实入口并保全失败证据。报告 `verify-c007-dd49-ci-codepage-review.md` SHA256为 `c9aef076f05037b0f35a76fe5cf97774ce5cafdcf014b2eda531336e5861b30c`，37份原件台账SHA256为 `4d89a387d574a8dfb05ddbe79fb3a07c954301179d4fb5ec01264995ea713294`。本机monitor EOF不同于Windows10054，原CI丢失stderr无法找回，不把机制对照冒充原现场逐字归因；最终修正仍待Windows runner验收。
+
+原版Windows实验run43363720150真双删10组有3组WinError5，普通读32、只读5、share0拒读假缺失；人工share-delete候选本轮无错，保留反证，不反推历史CI所有句柄交错。d6ee/a624反例、无效import覆盖负控及中断的无退出码日志均原样保留；测试/探针整改不另充基准缺陷数。
 
 预算本地 `609c1f8cebd6e4bb10dad115bcad3d6038bb43bf` 已吸收dd49，本机2293 passed/8 skipped、420.63s，lock/ruff0且323文件稳定；独立关键预算正式组201项、冻结探针85项及旧负库fail-closed通过，正式对象复审报告 `verify-integration-budget-609-formal.md` SHA256为 `06101f5c0763c88dde186ae7a3a2567a79cc3d3a547ee59d87b7046d3dbc34a2`。恢复批基于4eb吸收609，只有Host源码及回归继承、证据文档合并，本机2316 passed/8 skipped、424.20s，lock/ruff0；327跟踪文件在全量前后hash不变。第二读者已亲跑151项及六组独立崩溃/恢复探针并通过内容预验，正式提交绑定仍待。上述结果均对应尚未修正Windows取证测试的组合，不沿用为下一测试版本的门禁。三个PR均未合，旧a3/7df四绿仍只属于旧提交。
 
 用户要求全部修复稳定后集中跑CI：中间候选留在本地，先完成回归、独立复审和最终内容冻结，再集中推送。已运行的CI仍保留完整结果，不重跑旧版本取绿。三个PR各自当前SHA的四项required检查不省略；顺序合并后的strict同步或最终CI揭示的新缺陷，只补必要受影响版本。
+
+最终正式测试 `dc274a06197b1b3fc67bbbad817d330e0242838b65c0976a1654c38a5d695048` 的独立内容预验通过：cp1252五项5 passed，精确a624仍因真实join/log_open失败；四种helper正常/异常路径保留原异常对象及完整stderr。报告SHA256 `0988a65c488bad22a6361b6c8751a6e177b6f60732fc1b4d67a8f7a4f4e69ae1`；Windows失败收尾的诊断专用新probe另验，不混入该批准。
+
+三批最终工作区于05:26:11Z并行执行本地门禁，lock/ruff/full均exit0：I/O **2219 passed / 8 skipped、437.57s**，预算 **2293 / 8、439.61s**，恢复 **2316 / 8、442.55s**。248/249/251个非文档跟踪文件前后hash全部一致；冻结清单SHA256为 `84aa4946e608df310b1062637b76197afe9f5603756e2d006cebaf2981ba40eb`，原件 `*-final-batched-*` 及 `final-batched-local-nondocument-stable.json`。三个运行的日志HEAD分别仍为dd49、609、251，正式提交后须核Git/index/工作区与冻结内容映射；后续只回填文档，不把本机通过冒充当前云端通过。并行耗时不与旧串行时间直接作性能比较。
 
 ## 明确保留的边界
 
@@ -109,3 +117,5 @@ I/O正式提交 `dd49f21530899d2d643fba031a7fe46ea69ebbde` 已由独立第二读
 - Python定时诊断无法保证在C扩展长期独占GIL时出栈；fatal handler与外部job期限不是该诊断缺口的等价替代。诊断专用fd阻塞时返回非零并保留活跃writer持有的fd到CLI进程退出，不声称该错误路径已经无线程/句柄残留。
 
 本轮完成的每条负控能区分已知坏实现与修复实现；它们不能证明整个系统不存在其他bug。
+
+本轮冻结清单的 `non_document_files` 精确含义是排除 `docs/` 目录，并非排除全部Markdown；AGENTS、README等根目录文件也在248/249/251条冻结对象中。正式版本绑定按精确路径集合和hash核对，不靠该标签推断范围。

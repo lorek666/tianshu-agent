@@ -110,3 +110,7 @@ uv run --frozen pytest tests/test_budget_review.py -k failed_summary_unknown_sur
 ## 诊断修复整合快照（2026-11-13）
 
 将I/O `7111cbb43cd71db9f25a1348d91e7b39a0d97dee` 合入此前预算整合 `a3ac288c7ce403bbcb020c99057a50e8e224202c`。预算与其他生产src、UI、schema、锁文件完全不变；本批仅继承已独立批准的CI诊断包装器、MCP测试清理与对应文档，知识库保留双方记录。322个跟踪文件在全量前后hash相同，`budget-diagnostic-integrated-*` 原件记录 lock/ruff/full exit0，**2274 passed / 7 skipped / 394.72s**。这是提交前组合快照，日志HEAD仍为a3；后续完整SHA以Git对象继承把此证据绑定，不将旧a3的CI绿色当作新提交门禁。最终current SHA、第二读者继承与四required结果以PR #132正文版本记录为准。
+
+## 最终Host测试协议继承
+
+本地预算组合继承I/O `b6fe974d9751a2252c2180bdec70e44a081dfb74`；Host仍为68ea，正式Host回归为dc274a。九个预算业务对象精确继承独立批准的21cd，未修改计费或数据契约。本轮与I/O、恢复候选并行执行的lock/ruff/full均exit0：2293 passed / 8 skipped、439.61s；249个非文档跟踪文件在全量前后hash一致。原件为 `budget-final-batched-*`，freeze清单SHA256 `84aa4946e608df310b1062637b76197afe9f5603756e2d006cebaf2981ba40eb`。运行日志HEAD记609，最终提交前只有受控Host测试复制，合入同一精确Git对象后重新核映射；文档冲突保留双方历史。当前SHA独立绑定及CI仍待，后续先同步实际main再推最终版本，不提前推送触发重复CI。
