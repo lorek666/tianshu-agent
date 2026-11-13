@@ -4,13 +4,14 @@
 这在文件本来就有相同内容时必然误报成功——哈希相同不能证明写者是谁，
 更不能证明这次调用发生过。
 
-v2 的判据只有一条：**写前证据是否存在**。
+受控文件写入的判据是：**写前证据是否存在**。
 证据（preimage + expected_after，以 call_id 为键）在写文件之前原子落盘，
 所以：
 - 没有证据 → 本次调用根本没进入写入阶段 → `none_applied`
 - 有证据 → 用证据里的 before/after 对磁盘做三方比对 → applied / none_applied / unknown
 
 其余一律 unknown，绝不编造 before_state，绝不生成成功凭据。
+命令与 MCP 不遵循文件快照协议：只允许用派发边界证明尚未执行，越界后未知。
 """
 
 from __future__ import annotations
@@ -248,6 +249,10 @@ def assess_run(
         # 外发边界标记要在日志还开着的时候读出来：`own_log` 会在 finally 里关掉，
         # 而 MCP 的判据（发送前标记）就存在同一张 `dispatches` 表里。
         mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)
+        exec_not_started = {
+            cid: _dispatch_not_started(_dispatch_row_states(log, run_id, cid))
+            for cid, ev in pending.items() if ev.payload["tool_id"] == "run_command"
+        }
     except EventLogCorrupt as exc:
         return RunAssessment(
             run_id=run_id,
@@ -284,6 +289,14 @@ def assess_run(
                 none_applied.append(call_id)
             else:
                 unresolved.append(call_id)
+            continue
+        if tool_id == "run_command":
+            # 命令没有受控文件写前证据；空清单不能证明进程没有执行。
+            pending_writes += 1
+            if exec_not_started.get(call_id, False):
+                none_applied.append(call_id)
+            else:
+                unknown.append(call_id)
             continue
         if spec is None:
             # 语义未知的工具：不能替它假设"没写"（与 recover 同一口径）。
@@ -516,6 +529,7 @@ def _recover_run(
         snapshots.init_run(run_id)
 
     report = RecoveryReport(run_id=run_id)
+    _repair_orphan_recovery_blocks(log, report, events, intents, snapshots, ws)
 
     # 清单存在但读不出内容：证据**曾经存在过**，只是现在不可信。这比"清单整个
     # 缺失"更糟——不能像"没有证据=没写"那样替任何一条未完成的调用下结论。
@@ -526,23 +540,29 @@ def _recover_run(
         try:
             snapshots.load(run_id)
         except SnapshotCorrupt as exc:
-            unverified: list[str] = []
             for call_id, ev in pending.items():
                 payload = ev.payload
                 tool_id = payload["tool_id"]
                 spec = SPECS.get(tool_id)
+                roots = _unresolved_roots(
+                    log, run_id, call_id,
+                    None if tool_id == "run_command" else snapshots, ws,
+                )
                 if tool_id.startswith(MCP_TOOL_PREFIX):
                     # MCP 不读这份快照清单：它的判据是外发边界标记。清单坏了
                     # 也不该把一条"请求都没写出"的调用推成 unknown 并挡住目录
                     # ——那是拿无关证据的损毁去冒充 MCP 的证据。
-                    if _settle_mcp_pending(
+                    _settle_mcp_pending(
                         log, report, run_id, call_id, tool_id, payload,
                         never_sent=_mcp_never_sent(
                             _dispatch_row_states(log, run_id, call_id)
                         ),
                         objects=_dispatch_row_targets(log, run_id, call_id),
-                    ):
-                        unverified.append(call_id)
+                        workspace_roots=roots,
+                    )
+                    continue
+                if tool_id == "run_command":
+                    _settle_exec_pending(log, report, run_id, call_id, payload, roots)
                     continue
                 if tool_id in MEMORY_TOOL_IDS:
                     # 记忆写的结论不依赖这份快照清单（投影/事件同事务），
@@ -566,21 +586,22 @@ def _recover_run(
                         log, report, run_id, call_id, tool_id, payload, ev.ts
                     )
                     continue
-                unverified.append(call_id)
                 _settle(log, report, run_id, call_id, tool_id, payload,
                         ToolResult("unknown", "unknown",
                                    {"error": "recovered: 快照清单损坏，无法核实任何"
                                              f"副作用（{exc}）",
                                     "recovered": True}),
-                        bucket=report.unresolved)
-            if unverified:
-                _block_workspace(log, report, run_id, str(ws.root), unverified)
+                        bucket=report.unresolved, blocked_roots=roots)
             return report
 
     for call_id, ev in pending.items():
         payload = ev.payload
         tool_id = payload["tool_id"]
         spec = SPECS.get(tool_id)
+        roots = _unresolved_roots(
+            log, run_id, call_id,
+            None if tool_id == "run_command" else snapshots, ws,
+        )
 
         # MCP（G2 MCP 阶段）：副作用发生在 **server 那一侧**，本地没有 preimage
         # 可查。唯一判据是"请求有没有越过外发边界"——派发行在发包**之前**被
@@ -599,7 +620,12 @@ def _recover_run(
                     _dispatch_row_states(log, run_id, call_id)
                 ),
                 objects=_dispatch_row_targets(log, run_id, call_id),
+                workspace_roots=roots,
             )
+            continue
+
+        if tool_id == "run_command":
+            _settle_exec_pending(log, report, run_id, call_id, payload, roots)
             continue
 
         if spec is None:
@@ -614,7 +640,7 @@ def _recover_run(
                                          "（tool_id 不在当前工具清单）",
                                 "recovered": True,
                                 "tool_id": tool_id}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         # 记忆写：见 `_settle_memory_write`（含 erase 的不可逆窗口、孤儿 blob）
@@ -649,7 +675,7 @@ def _recover_run(
                     ToolResult("unknown", "unknown",
                                {"error": "recovered: 未提供快照存储，无法核实",
                                 "recovered": True}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         # run.start 与 init_run 之间崩溃时尚未产生任何 tool intent，能安全补建
@@ -659,7 +685,7 @@ def _recover_run(
                     ToolResult("unknown", "unknown",
                                {"error": "recovered: 清单缺失，无法确认是否写入",
                                 "recovered": True}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         try:
@@ -672,7 +698,7 @@ def _recover_run(
                                {"error": "recovered: 快照清单损坏，无法核实"
                                          f"（{exc}）",
                                 "recovered": True}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         if change is None:
@@ -695,7 +721,7 @@ def _recover_run(
                                          f"（{exc}），无法核实",
                                 "recovered": True,
                                 "root": change.root}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         # 有别的活 Run 正在这条路径上写：现在读到的字节不可信，不下结论。
@@ -709,7 +735,7 @@ def _recover_run(
                                 "recovered": True,
                                 "held_by_run": holder.run_id,
                                 "held_by_instance": holder.owner_instance_id}),
-                    bucket=report.unresolved)
+                    bucket=report.unresolved, blocked_roots=roots)
             continue
 
         current = _observe(obs_ws, change.path)
@@ -777,18 +803,113 @@ def _recover_run(
                             "observed": current,
                             "expected_after": change.expected_after,
                             "before_state": change.before_state}),
-                bucket=report.unresolved)
-
-    if report.unresolved:
-        # 阻断要落在**无法核实的那个目录**上：多 workspace 的 Run 里，
-        # 拿调用方传进来的 ws 一概阻断会挡错目录，而真正状态不明的目录却
-        # 还开着——那是比不阻断更糟的结果。
-        for root, call_ids in _unresolved_by_root(
-            snapshots, run_id, report.unresolved, ws
-        ).items():
-            _block_workspace(log, report, run_id, root, call_ids)
+                bucket=report.unresolved, blocked_roots=roots)
 
     return report
+
+
+_WORKSPACE_BLOCK_REASON = "存在无法核实的副作用，阻断后续写入"
+_MCP_BLOCK_REASON = "MCP 工具可能已在 server 侧执行、副作用无法核实：阻断再次调用"
+
+
+def _block_events(
+    run_id: str,
+    call_id: str,
+    roots: tuple[str, ...],
+    objects: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "run_id": run_id,
+            "type": event_type,
+            "payload": {key: target, "call_ids": [call_id], "reason": reason},
+            "actor_kind": "system",
+        }
+        for event_type, key, targets, reason in (
+            ("recovery.blocked", "workspace", roots, _WORKSPACE_BLOCK_REASON),
+            ("recovery.object_blocked", "object", objects, _MCP_BLOCK_REASON),
+        )
+        for target in targets
+    ]
+
+
+def _repair_orphan_recovery_blocks(
+    log: EventLog,
+    report: RecoveryReport,
+    events: list[Any],
+    intents: dict[str, Any],
+    snapshots: SnapshotStore | None,
+    ws: Workspace,
+) -> None:
+    """补偿旧版本在 result 与 block 之间崩溃留下的孤立 unknown。
+
+    不改写既有结果；只追加缺少的阻断。该调用已有阻断历史，或人在结果之后
+    已明确解除对应目标时，不重建它，避免把已完成的人工核查撤销。
+    """
+    uncertain = [
+        event for event in events
+        if event.type == "tool.result"
+        and event.payload.get("effect_state") == "unknown"
+        and event.payload.get("output", {}).get("recovered") is True
+    ]
+    if not uncertain:
+        return
+    history = log.read_types({
+        "recovery.blocked", "recovery.unblocked",
+        "recovery.object_blocked", "recovery.object_unblocked",
+    })
+    for result in uncertain:
+        call_id = result.payload["call_id"]
+        intent = intents.get(call_id)
+        if intent is None:
+            report.problems.append(f"{call_id}：旧恢复结果缺少 intent，无法补齐阻断归属")
+            continue
+        tool_id = intent.payload["tool_id"]
+        spec = SPECS.get(tool_id)
+        if tool_id in MEMORY_TOOL_IDS or tool_id in SUBTASK_TOOL_IDS:
+            continue
+        if spec is not None and spec.side_effect_level == "pure":
+            continue
+        own_blocks = [
+            event for event in history
+            if event.run_id == report.run_id
+            and call_id in event.payload.get("call_ids", [])
+        ]
+        roots = () if any(e.type == "recovery.blocked" for e in own_blocks) else (
+            _unresolved_roots(
+                log, report.run_id, call_id,
+                None if tool_id == "run_command" else snapshots, ws,
+            )
+        )
+        roots = tuple(root for root in roots if not any(
+            e.type == "recovery.unblocked" and e.seq > result.seq
+            and e.payload.get("workspace") == root for e in history
+        ))
+        objects = (
+            _dispatch_row_targets(log, report.run_id, call_id)
+            if tool_id.startswith(MCP_TOOL_PREFIX) else ()
+        )
+        objects = tuple(obj for obj in objects if not any(
+            e.type == "recovery.object_blocked" and e.payload.get("object") == obj
+            for e in own_blocks
+        ) and not any(
+            e.type == "recovery.object_unblocked" and e.seq > result.seq
+            and e.payload.get("object") == obj for e in history
+        ))
+        if not roots and not objects:
+            continue
+        with log.transaction():
+            log.append_many(_block_events(report.run_id, call_id, roots, objects))
+            if _has_dispatch_table(log):
+                _mark_dispatch_settled(
+                    log, report.run_id, call_id, _now_ms(),
+                    "recovered: 补齐旧 unknown 结果缺失的阻断",
+                )
+        report.unresolved.append(call_id)
+        for root in roots:
+            _block_workspace(log, report, report.run_id, root, [call_id], persist=False)
+        for obj in objects:
+            _block_mcp_object(log, report, report.run_id, obj, [call_id], persist=False)
 
 
 def _block_workspace(
@@ -797,6 +918,8 @@ def _block_workspace(
     run_id: str,
     root: str,
     call_ids: list[str],
+    *,
+    persist: bool = True,
 ) -> None:
     """把"这个目录里有核实不了的副作用"落成事件并记进报告。
 
@@ -807,46 +930,51 @@ def _block_workspace(
     `--db` 就看不见这条阻断。权威根写失败不能假装成功——在报告里如实写
     「跨数据根阻断未生效」，本数据根这一侧仍然是阻断的（日志已经写了）。
     """
-    report.blocked_workspaces.append(root)
-    reason = "存在无法核实的副作用，阻断后续写入"
-    log.append(
-        run_id,
-        "recovery.blocked",
-        {
-            "workspace": root,
-            "call_ids": call_ids,
-            "reason": reason,
-        },
-        actor_kind="system",
-    )
+    if root not in report.blocked_workspaces:
+        report.blocked_workspaces.append(root)
+    reason = _WORKSPACE_BLOCK_REASON
+    if persist:
+        log.append(
+            run_id, "recovery.blocked",
+            {"workspace": root, "call_ids": call_ids, "reason": reason},
+            actor_kind="system",
+        )
     try:
         authority.register_blocked(root, run_id=run_id, reason=reason)
     except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
         report.problems.append(f"跨数据根阻断未生效：{root}（{exc}）")
 
 
-def _unresolved_by_root(
-    snapshots: SnapshotStore | None,
+def _unresolved_roots(
+    log: EventLog,
     run_id: str,
-    unresolved: list[str],
+    call_id: str,
+    snapshots: SnapshotStore | None,
     fallback: Workspace,
-) -> dict[str, list[str]]:
-    """无法核实的调用分别属于哪个目录（根 → call_id 列表，按根排序）。
-
-    旧格式记录（没有 root）只能算调用方显式给的目录；除此之外一切都按证据
-    自己的根分组——每个目录的阻断事件只列属于它自己的那些调用。
-    """
-    grouped: dict[str, list[str]] = {}
-    for call_id in unresolved:
-        try:
-            change = snapshots.find(run_id, call_id) if snapshots is not None else None
-        except SnapshotCorrupt:
-            # 清单在这条路径上坏掉时，唯一还能说的根是调用方显式给的那个：
-            # 宁可阻断这个目录（可能偏保守），也不能因为读不懂就什么都不挡。
-            change = None
-        root = change.root if change is not None and change.root else str(fallback.root)
-        grouped.setdefault(root, []).append(call_id)
-    return dict(sorted(grouped.items()))
+) -> tuple[str, ...]:
+    """优先按写前证据归属；命令无快照时按派发时记录的工作区阻断。"""
+    try:
+        change = snapshots.find(run_id, call_id) if snapshots is not None else None
+    except SnapshotCorrupt:
+        change = None
+    if change is not None and change.root:
+        return (change.root,)
+    if _has_dispatch_table(log):
+        columns = {
+            str(row[1]) for row in log.conn.execute("PRAGMA table_info(dispatches)")
+        }
+        if "workspace_root" in columns:
+            roots = {
+                str(Path(row[0]).resolve())
+                for row in log.conn.execute(
+                    "SELECT workspace_root FROM dispatches WHERE run_id=? AND call_id=?",
+                    (run_id, call_id),
+                )
+                if row[0] and Path(row[0]).is_absolute()
+            }
+            if roots:
+                return tuple(sorted(roots))
+    return (str(fallback.root),)
 
 
 #: 记忆写里唯一"副作用在提交事务之外且不可逆"的工具（先删正文文件、再提交）。
@@ -1216,6 +1344,8 @@ def _settle(
     intent_seq: int | None = None,
     dispatch_ts: int | None = None,
     dispatch_state: str | None = None,
+    blocked_roots: tuple[str, ...] = (),
+    blocked_objects: tuple[str, ...] = (),
 ) -> None:
     batch = [{
         "run_id": run_id,
@@ -1230,6 +1360,9 @@ def _settle(
         "actor_kind": "system",
         "idem_key": call_id,
     }]
+    # unknown 结果与本地阻断必须同生同死。若先提交结果再写阻断，恢复进程
+    # 在两者之间崩溃后，下一次会因“已有 result”跳过这条 intent，永远漏挡。
+    batch.extend(_block_events(run_id, call_id, blocked_roots, blocked_objects))
 
     if with_receipt:
         if receipt_root is None or receipt_change is None or intent_seq is None:
@@ -1261,57 +1394,24 @@ def _settle(
                 "idem_key": receipt.receipt_id,
             })
 
-    if dispatch_ts is None:
-        # 恢复补写的每一条结果都**必须**让派发行有终态（复审 R2）：只写事件不动
-        # 行的话，`dispatch_record()` 会继续显示 intent/executing——同一件事在
-        # 事件里是"已结算"、在派发表里是"仍在执行"，后续 resume / 审计就分不清
-        # 谁在说真话。记忆与委派分支早就这么做了，文件分支一直漏着。
-        #
-        # 派发表可能根本不存在：库早于"派发登记"（或夹具只手工写事件，例如
-        # `tests/test_crash_consistency.py` 的断电库）。没有表就没有可推进的行
-        # ——只写结果，不为了"顺带改状态"把恢复变成一个会崩的命令。
-        if not _has_dispatch_table(log):
-            log.append_many(batch)
-            bucket.append(call_id)
-            return
-        row = log.conn.execute(
-            "SELECT state FROM dispatches WHERE run_id=? AND call_id=?",
-            (run_id, call_id),
-        ).fetchone()
-        if row is None:
-            # 历史日志里可能没有这条派发行（该工具在派发表引入之前就存在）：
-            # 没有可推进的行，只写结果，不编造一条。
-            log.append_many(batch)
-        else:
-            # `updated_at` 用**恢复这一刻**的时钟（不是行自己的 `created_at`：
-            # 那会让更新时间倒退，审计/排序看到"越恢复越旧"）；与事件同一个
-            # 事务提交，不允许出现"结果有了、行还没推进"。
-            with log.transaction():
-                log.append_many(batch)
-                _mark_dispatch_settled(
-                    log,
-                    run_id,
-                    call_id,
-                    _now_ms(),
-                    str(result.output.get("error", "")),
-                    state=_default_dispatch_state(result, dispatch_state),
-                )
-        bucket.append(call_id)
-        return
-
-    # 事件与 dispatches 状态一次提交：恢复写的结果与"这次派发已结算"
-    # 不能出现一个有一个没有。
+    # 事务只含本事件库的写入：结果、阻断与派发终态一次提交。历史库没有
+    # 派发表/行时只补事件，不编造派发行。updated_at 默认使用恢复时钟。
     with log.transaction():
         log.append_many(batch)
-        _mark_dispatch_settled(
-            log,
-            run_id,
-            call_id,
-            dispatch_ts,
-            str(result.output.get("error", "")),
-            state=_default_dispatch_state(result, dispatch_state),
-        )
+        if _has_dispatch_table(log):
+            _mark_dispatch_settled(
+                log, run_id, call_id,
+                dispatch_ts if dispatch_ts is not None else _now_ms(),
+                str(result.output.get("error", "")),
+                state=_default_dispatch_state(result, dispatch_state),
+            )
     bucket.append(call_id)
+    # authority 是另一个库，不能伪称跨库原子。先保证本地事实已提交，再登记；
+    # 失败仍报告 problem，或在二次崩溃后的 mirror_blocks_to_authority 补登记。
+    for root in blocked_roots:
+        _block_workspace(log, report, run_id, root, [call_id], persist=False)
+    for object_key in blocked_objects:
+        _block_mcp_object(log, report, run_id, object_key, [call_id], persist=False)
 
 
 def _now_ms() -> int:
@@ -1426,6 +1526,11 @@ def _mcp_never_sent(rows: list[tuple[str, int]] | None) -> bool:
     没有表、没有行、旧行、已 `executing`/`done`/`error`、或任何不认识的状态 →
     False："证明不了没发"就按"可能已发出"处理。
     """
+    return _dispatch_not_started(rows)
+
+
+def _dispatch_not_started(rows: list[tuple[str, int]] | None) -> bool:
+    """只有带执行前持久化标记的派发行停在边界前，才可证明尚未执行。"""
     from .dispatcher import (
         DISPATCH_INTENT,
         DISPATCH_ROW_REJECTED,
@@ -1438,6 +1543,36 @@ def _mcp_never_sent(rows: list[tuple[str, int]] | None) -> bool:
     return all(
         protocol >= BOUNDARY_PROTOCOL and state in proven
         for state, protocol in rows
+    )
+
+
+def _settle_exec_pending(
+    log: EventLog,
+    report: RecoveryReport,
+    run_id: str,
+    call_id: str,
+    payload: dict,
+    workspace_roots: tuple[str, ...],
+) -> None:
+    """命令可能影响任意文件；不拿文件快照冒充命令副作用证据。"""
+    not_started = _dispatch_not_started(_dispatch_row_states(log, run_id, call_id))
+    _settle(
+        log, report, run_id, call_id, "run_command", payload,
+        ToolResult(
+            "failed" if not_started else "unknown",
+            "none_applied" if not_started else "unknown",
+            {
+                "error": (
+                    "recovered: 命令尚未越过执行边界，没有启动"
+                    if not_started else
+                    "recovered: 命令可能已经执行，无法从文件快照核实副作用，需人工核对"
+                ),
+                "reason": "exec.not_started" if not_started else "exec.crash_unsettled",
+                "recovered": True,
+            },
+        ),
+        bucket=report.none_applied if not_started else report.unresolved,
+        blocked_roots=() if not_started else workspace_roots,
     )
 
 
@@ -1462,6 +1597,7 @@ def _settle_mcp_pending(
     *,
     never_sent: bool,
     objects: tuple[str, ...] = (),
+    workspace_roots: tuple[str, ...] = (),
 ) -> bool:
     """结算一条没有 `tool.result` 的 MCP 调用；返回它是否被判成了 `unknown`。
 
@@ -1514,9 +1650,9 @@ def _settle_mcp_pending(
             },
         ),
         bucket=report.unresolved,
+        blocked_roots=workspace_roots,
+        blocked_objects=objects,
     )
-    for object_key in objects:
-        _block_mcp_object(log, report, run_id, object_key, [call_id])
     return True
 
 
@@ -1526,6 +1662,8 @@ def _block_mcp_object(
     run_id: str,
     object_key: str,
     call_ids: list[str],
+    *,
+    persist: bool = True,
 ) -> None:
     """把"这个 MCP 对象可能已经在 server 侧执行过"落成事件并记进报告。
 
@@ -1540,17 +1678,13 @@ def _block_mcp_object(
     # 回放按下标做集合语义，重复阻断无害。
     if object_key not in report.blocked_objects:
         report.blocked_objects.append(object_key)
-    reason = "MCP 工具可能已在 server 侧执行、副作用无法核实：阻断再次调用"
-    log.append(
-        run_id,
-        "recovery.object_blocked",
-        {
-            "object": object_key,
-            "call_ids": call_ids,
-            "reason": reason,
-        },
-        actor_kind="system",
-    )
+    reason = _MCP_BLOCK_REASON
+    if persist:
+        log.append(
+            run_id, "recovery.object_blocked",
+            {"object": object_key, "call_ids": call_ids, "reason": reason},
+            actor_kind="system",
+        )
     try:
         authority.register_object_blocked(object_key, run_id=run_id, reason=reason)
     except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
