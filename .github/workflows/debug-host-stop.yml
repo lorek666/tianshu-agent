@@ -1,0 +1,44 @@
+name: Windows Host cleanup experiment
+
+# Isolated evidence collection only. This branch is never merged into main.
+on:
+  push:
+    branches: [codex/debug-host-stop-diagnostic]
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    name: Host metadata cleanup boundary experiment
+    runs-on: windows-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install project Python
+        run: uv python install 3.12
+      - name: Validate lock
+        run: uv lock --check
+      - name: Record real process and Win32 boundary evidence
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          mkdir -p c007-evidence
+          uv run --frozen python scripts/probe_host_cleanup.py --repo . --output c007-evidence/results.json --repetitions 10 > c007-evidence/probe.stdout.log 2> c007-evidence/probe.stderr.log
+      - name: Record exclusive-handle read denial
+        if: always()
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          mkdir -p c007-evidence
+          uv run --frozen python scripts/probe_host_exclusive_read.py --repo . --output c007-evidence/exclusive-read.json > c007-evidence/exclusive-read.stdout.log 2> c007-evidence/exclusive-read.stderr.log
+      - name: Preserve original outcomes even when collection fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-host-cleanup-evidence
+          path: c007-evidence/
+          if-no-files-found: error
+          retention-days: 30
