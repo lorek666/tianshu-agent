@@ -1,0 +1,137 @@
+import collections, datetime, hashlib, json, pathlib, re, subprocess
+R=pathlib.Path('/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent')
+T=pathlib.Path('/tmp/tianshu-g3-20261113')
+C='16721ff14ad08456e8f6a2522c3300b2652b0918'
+L='fd5f56cdbc83b07f65358c5bd4ae56d7cf18bc45'
+U='a8399062dd87675cc10b7c258ab4ce3679b53613'
+B='ccff93e79cfeb93e47e5a35012fd92fae366e941'
+E='docs/evidence/data-lifecycle-2026-11-13/'
+def git(*a): return subprocess.check_output(['git',*a],cwd=R)
+def blob(co,p): return git('show',co+':'+p)
+def sha(b): return hashlib.sha256(b).hexdigest()
+def tree(co):
+ out={}
+ for row in git('ls-tree','-rz','--full-tree',co).split(b'\0'):
+  if row:
+   head,p=row.split(b'\t',1);mode,typ,oid=head.decode().split();out[p.decode()]={'mode':mode,'git_blob':oid}
+ return out
+bt,lt,ut,ct=map(tree,[B,L,U,C])
+parents=git('show','-s','--format=%P',C).decode().split()
+assert parents==[L,U]
+assert git('merge-base',L,U).decode().strip()==B
+candidate=json.loads(blob(C,E+'main132-integration-independent-review.json'))
+gates=json.loads(blob(C,E+'main132-integration-local-gates.json'))
+allowed={'docs/DATA-LIFECYCLE-2026-11-13.md','docs/evidence/data-lifecycle-2026-11-13/README.md'}
+rows=[]
+for old in candidate['working_tree_checks']:
+ p=old['path']; bm,lm,um=bt.get(p),lt.get(p),ut.get(p)
+ if lm==um: source='both';expected=lm
+ elif lm==bm: source='upstream-main132';expected=um
+ elif um==bm: source='lifecycle-fd5';expected=lm
+ else: raise AssertionError(('unreviewed_two_sided_path',p))
+ assert source==old['source']
+ assert expected==(None if old['git_blob'] is None else {'mode':old['mode'],'git_blob':old['git_blob']})
+ actual=ct.get(p);exact=actual==expected
+ assert exact or p in allowed
+ if exact and actual: assert sha(blob(C,p))==old['working_sha256']
+ rows.append({'path':p,'source':source,'expected':expected,'actual':actual,'exact_parent_inheritance':exact,'sha256':sha(blob(C,p)) if actual else None,'document_evidence_append_only_exception':not exact})
+assert len(rows)==353
+assert {x['path'] for x in rows}==(set(lt)|set(ut))-{'README.md','docs/KNOWLEDGE.md'}
+assert {x['path'] for x in rows if not x['exact_parent_inheritance']}==allowed
+owned=['src/tianshu/maintenance.py','src/tianshu/events.py','src/tianshu/backup.py','src/tianshu/data_cli.py','src/tianshu/cli.py','tests/test_maintenance.py','tests/test_backup.py','tests/test_data_cli.py','tests/test_backup_materials.py','.gitignore']
+assert all(ct[p]==lt[p] for p in owned)
+assert sha(blob(C,'README.md'))==candidate['readme_sha256']
+originals={
+'main132-integration-independent-review.json':pathlib.Path('/tmp/main132-integration-independent-review.json'),
+'main132-integration-independent-review.md':pathlib.Path('/tmp/main132-integration-independent-review.md'),
+'windows-encoding-commit-binding.json':T/'independent/windows-encoding-commit-binding.json',
+'windows-encoding-commit-review.md':T/'independent/windows-encoding-commit-review.md'}
+archive=[]
+for name,p in originals.items():
+ data=blob(C,E+name);assert data==p.read_bytes()
+ archive.append({'path':E+name,'original':str(p),'byte_identical':True,'git_blob':ct[E+name]['git_blob'],'sha256':sha(data)})
+newpaths=set(ct)-(set(lt)|set(ut))
+assert newpaths=={E+n for n in originals}|{E+'main132-integration-local-gates.json'}
+freeze=json.loads((T/'main132-integration-freeze.json').read_bytes())
+stable=json.loads((T/'main132-integration-stable.json').read_bytes())
+assert gates['parent']==L and gates['incoming_main']==U
+assert freeze['base_sha']==stable['base_sha']==L
+assert freeze['files']==gates['files'] and len(freeze['files'])==253
+assert stable['checks']==gates['checks'] and stable['drift']==gates['drift']==[] and stable['files_checked']==253
+frozen=[]
+for p,expected in freeze['files'].items():
+ actual=sha(blob(C,p));assert actual==expected
+ frozen.append({'path':p,'sha256':actual,'git_blob':ct[p]['git_blob']})
+author_logs=[]
+for n in ['lock','ruff','pytest']:
+ p=T/f'main132-integration-{n}.log';data=p.read_bytes();meta=json.loads((T/f'main132-integration-{n}.json').read_bytes())
+ assert sha(data)==gates['logs'][n]['sha256'] and data.decode()==gates['logs'][n]['output']
+ assert meta in gates['checks'] and meta['exit_code']==0
+ author_logs.append({'name':n,'path':str(p),'sha256':sha(data),'metadata':meta,'archive_output_and_hash_match':True,'executed_by':'parent /root; not rerun by second reader'})
+assert '2416 passed, 8 skipped in 425.09s (0:07:05)' in (T/'main132-integration-pytest.log').read_text()
+ui=json.loads((T/'main132-ui-gates.json').read_bytes());assert ui==gates['ui']
+assert ui['before']==ui['after'] and ui['dist_unchanged'] and all(x['exit_code']==0 for x in ui['checks'])
+assert ui['base_main']==U and ui['pr134_parent']==L
+assert set(ui['after'])=={p for p in ct if p.startswith('ui/dist/')}
+for p,h in ui['after'].items():assert sha(blob(C,p))==h and ct[p]==ut[p]
+ui_logs=[]
+for n in ['install','typecheck','test','build']:
+ p=T/f'main132-ui-{n}.log';data=p.read_bytes()
+ ui_logs.append({'name':n,'path':str(p),'sha256':sha(data),'bytes':len(data),'executed_by':'parent /root; not rerun by second reader'})
+assert 'Tests  80 passed (80)' in (T/'main132-ui-test.log').read_text()
+text_checks=[]
+for p in ['README.md','docs/KNOWLEDGE.md']:
+ target=blob(C,p).decode(); base=blob(B,p).decode()
+ for co in [L,U]:
+  diff=git('diff','--no-ext-diff','--unified=0',B,co,'--',p).decode()
+  adds=[x[1:] for x in diff.splitlines() if x.startswith('+') and not x.startswith('+++') and x[1:].strip() and x[1:] not in base]
+  missing=[x for x in adds if x not in target];assert not missing
+  entry={'path':p,'parent':co,'new_nonempty_lines_excluding_unchanged_license_eol':len(adds),'missing_added_lines':missing}
+  if p=='docs/KNOWLEDGE.md':
+   section=blob(co,p).decode().split('## 8. 会话更新日志',1)[1].split('\n## ',1)[0]
+   logs=[x.strip() for x in section.split('\n\n') if x.strip().startswith('- **')]
+   missing_logs=[x for x in logs if x not in target];assert not missing_logs
+   legacy_tail=blob(co,p).decode().split('## 8. 会话更新日志',1)[1].split('\n',1)[1]
+   legacy_paragraphs=[x.strip() for x in legacy_tail.split('\n\n') if x.strip()]
+   assert all(x in target for x in legacy_paragraphs)
+   entry.update({'actual_section8_log_entries':len(logs),'missing_log_entries':missing_logs,'legacy_suffix_paragraph_count_including_adjacent_index':len(legacy_paragraphs),'all_legacy_suffix_paragraphs_preserved':True})
+  text_checks.append(entry)
+k=blob(C,'docs/KNOWLEDGE.md').decode()
+assert '**G3 首片吸收 main 已合修复（2026-11-13）**' in k
+assert '**G3 首片同步已合 main' not in k
+for p in ['README.md','docs/KNOWLEDGE.md',*sorted(allowed)]:
+ assert not any(x.startswith(('<<<<<<< ','=======','>>>>>>> ')) for x in blob(C,p).decode().splitlines())
+# The two exception paths add evidence paragraphs only; old body occurs in order in the new body.
+appends=[]
+for p in sorted(allowed):
+ old=blob(L,p).decode().splitlines();new=blob(C,p).decode().splitlines();at=0
+ for line in old:
+  while at<len(new) and new[at]!=line:at+=1
+  assert at<len(new),(p,line)
+  at+=1
+ appends.append({'path':p,'old_body_preserved_as_ordered_lines':True,'old_sha256':sha(blob(L,p)),'target_sha256':sha(blob(C,p)),'human_review':'Only a839 integration/local gate facts, original evidence archive attribution, and pending commit/native CI limitations were appended.'})
+probe_rows=[x for x in rows if (x['path'].startswith(E) and x['path']!=E+'README.md') or x['path']=='docs/REVIEW-DATA-LIFECYCLE-2026-11-13.md']
+assert all(x['exact_parent_inheritance'] and ct[x['path']]==lt[x['path']] for x in probe_rows)
+checks=[]
+for co in [L,U]:
+ p=subprocess.run(['git','diff','--check',co,C],cwd=R,capture_output=True,text=True);assert p.returncode==0
+ checks.append({'command':['git','diff','--check',co,C],'exit_code':p.returncode,'stdout':p.stdout,'stderr':p.stderr,'executed_by':'second reader /root/verify_lifecycle'})
+checks.append({'operation':'Git object, SHA256, JSON, raw log and parent-content comparisons in this verifier script','executed_by':'second reader /root/verify_lifecycle','result':'passed'})
+report={
+'schema':'tianshu.independent_commit_binding.v1','reviewed_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+'reviewer':'/root/verify_lifecycle','repository':str(R),'reviewed_commit':C,'parents':parents,'merge_base':B,
+'repository_mutated_by_reviewer':False,'review_method':'Read immutable Git objects; current contract worktree is outside the reviewed target. No full-suite, UI suite, Windows or lifecycle probe rerun in this binding pass.',
+'conclusion':'Reviewed parent-content inheritance, evidence archives, author local-gate logs, and frozen object-to-commit binding passed for this a839 combination only.',
+'merge_approval':False,'new_native_ci_verified':False,'includes_main_pr133':False,
+'candidate_path_count':len(rows),'candidate_exact_count':sum(x['exact_parent_inheritance'] for x in rows),'candidate_deleted_path_count':sum(x['actual'] is None for x in rows),'candidate_to_commit_rows':rows,
+'owned_ten_exact_left':[{'path':p,'git_blob':ct[p]['git_blob'],'sha256':sha(blob(C,p))} for p in owned],
+'additional_target_paths':sorted(newpaths),'four_original_archives':archive,
+'author_local_gates':{'archived_path':E+'main132-integration-local-gates.json','archive_sha256':sha(blob(C,E+'main132-integration-local-gates.json')),'frozen_files':frozen,'drift':stable['drift'],'logs':author_logs,'pytest_summary':'2416 passed, 8 skipped in 425.09s (0:07:05)','raw_metadata_sha256':{n:sha((T/n).read_bytes()) for n in ['main132-integration-freeze.json','main132-integration-stable.json','main132-integration-lock.json','main132-integration-ruff.json','main132-integration-pytest.json']},'attribution':'Parent /root executed these commands. Second reader independently read raw logs/metadata and matched archived outputs and immutable target objects; this is not an independently rerun full suite.'},
+'author_ui_gates':{'metadata':ui,'raw_logs':ui_logs,'metadata_sha256':sha((T/'main132-ui-gates.json').read_bytes()),'tests':80,'dist_exact_upstream':True,'attribution':'Parent /root executed; second reader read original logs and verified metadata/dist object correspondence. UI execution was not rerun.'},
+'parent_document_preservation':text_checks,'document_evidence_appends':appends,'readme_candidate_sha256_match':True,'knowledge_title_fixed_in_actual_commit':True,
+'candidate_report_count_correction':'Old candidate report called its 19/34 suffix paragraphs section-8 history paragraphs; the count included formatting/section-9 index material. Actual section-8 log entries are 15/30. Both original suffix content and all actual log entries remain verbatim; the old four originals remain byte-identical, and this report clarifies the count instead of rewriting them.',
+'prior_lifecycle_report_and_evidence_exact_left_count':len(probe_rows),
+'independently_executed_checks':checks,
+'limitations':['No result here covers final main PR #133 composition or later code changes.','New native Windows and all four required CI checks for this exact composition remain unverified.','Inherited earlier lifecycle/encoding probes keep their original run attribution and platform limitations; no probes were rerun in this binding pass.','Local gates were run by the parent, not independently rerun by this second reader.','The maintenance lock is cooperative, low-level backup remains online, restore apply and deletion-history integrity guarantees are not delivered by this slice; user-device/Windows 10/11/ARM64 experiences remain unverified.']}
+pathlib.Path('/tmp/main132-integration-commit-binding.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps({'reviewed_commit':C,'candidate_paths':len(rows),'exact':report['candidate_exact_count'],'document_exceptions':len(appends),'frozen_files':len(frozen),'probe_evidence_inherited':len(probe_rows),'four_originals':len(archive),'diff_checks':[x['exit_code'] for x in checks if 'exit_code' in x],'json_sha256':sha(pathlib.Path('/tmp/main132-integration-commit-binding.json').read_bytes())},ensure_ascii=False,indent=2))

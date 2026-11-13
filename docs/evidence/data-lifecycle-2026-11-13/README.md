@@ -39,3 +39,17 @@ python3 docs/evidence/data-lifecycle-2026-11-13/run_clean.py \
 `main132-integration-independent-review.md` / JSON 记录与 main a839906 的内容继承；
 `main132-integration-local-gates.json` 保存该组合 2416/8 的本机输出、253 个冻结对象及
 UI 80 项/构建产物一致证据。内容继承、提交对象、作者全量与新原生 CI 分别解释。
+
+`main132-integration-commit-review.md` / `main132-integration-commit-binding.json` 是第二读者
+对 `16721ff14ad08456e8f6a2522c3300b2652b0918` 的正式提交绑定；只读重核脚本另以
+`main132-integration-commit-verify.py.txt` 保全。旧候选报告的 19/34 是包含相邻索引的段落数，
+真正 §8 日志为 15/30 条，均保留。README 新增行的 9/8 与正式 JSON 的 7/8 使用不同过滤，
+详见 `main132-readme-count-clarification.md`；它们不代表内容丢失，旧原件保持原字节。
+本轮未重跑产品测试，不为后续 #133 组合或新原生 CI 提供结论。
+
+`main133-integration-local-gates.json` 是随后同步实际 main
+`f2aef9da75d2e546af99baa523d196d1e099c196` 的新组合作者门禁：lock/ruff0、
+full2439/8（427.25s）、255非文档对象无漂移。其 UI 项只记录未变对象与已有
+main132/UI80 证据的继承，不是新 UI 执行。该文件不证明新原生 CI 或产品独立批准。
+`main133-integration-independent-review.md` / JSON 是第二读者随后对该新组合的
+对象继承、原始门禁及归档核对；不冒称独立复跑全量或当前候选的新原生 CI。
