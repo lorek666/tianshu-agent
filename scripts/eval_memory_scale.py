@@ -250,7 +250,17 @@ def _run_mode(n: int, hybrid: bool, provider) -> dict[str, float | str]:  # noqa
                 limit=MAX_RECALL_ITEMS,
                 max_bytes=MAX_RECALL_BYTES,
                 priority=priority,
+                # 评测是人在终端显式发起的离线动作（控制面口径）：显式允许
+                # 外发。漏传它不会报错——外部 provider 下 hybrid 行会被检索
+                # gate 静默降级成 FTS-only（复审实测：hybrid MRR 与 fts 逐位
+                # 相同、检索 0 次 embed），假数字比失败更糟。
+                allow_embedding_outbound=True,
             )
+            if hybrid and not outcome.semantic:
+                raise RuntimeError(
+                    f"hybrid 行被降级成 FTS-only（semantic=False）：{outcome.degraded}"
+                    "——外部 provider 检索路失效时不许印假 hybrid 数字"
+                )
             rankings.append([item.memory.memory_id for item in outcome.items])
         by_kind = {
             kind: _metrics(

@@ -168,6 +168,31 @@ def test_unknown_reason_is_rejected_at_construction() -> None:
         EmbeddingError("corrupted", "非法分类不该被接受")
 
 
+def test_error_message_masks_registered_api_key() -> None:
+    """端点回显认证头时，错误串不得带明文 key（复审发现3）。
+
+    Run 内写入路径（memory.confirm/edit 的 apply → embed 失败）会把
+    `f"{type(exc).__name__}: {exc}"` 经 dispatcher._fail_unknown **不脱敏**
+    持久化进 append-only 事件日志——掩码必须发生在 EmbeddingError 构造期，
+    不指望下游自觉。牙：装配即 register_secret。注意这里刻意用**无形态**
+    key（不是 sk- 开头、不带 Bearer / api_key 上下文）——那些形状由
+    redact() 的模式兜底掩掉，钉不住「注册」这条路径；任意形状的中转站
+    key 只有精确值替换能救。
+    """
+    from tianshu.credentials import MASK
+
+    key = "tianshu-selftest-echo-key-7f3a9b2c"
+    OpenAICompatibleEmbeddingProvider(
+        base_url="https://emb.example/v1", model="demo", dim=4, api_key=key
+    )
+    # 模拟端点把 key 回显进 401 响应体的中性字段（真实探针复现过的形态）。
+    err = EmbeddingError(
+        "auth", f'端点拒绝凭据（HTTP 401）：{{"error": {{"detail": "{key}"}}}}'
+    )
+    assert key not in str(err), "明文 key 泄进错误串——构造期脱敏失效"
+    assert MASK in str(err), "错误串应含掩码占位"
+
+
 # ---------------------------------------------------------------- 装配
 
 

@@ -6,9 +6,17 @@
 
 - `sends_data_off_device = True` 是能力自报；检索 gate
   （`MemoryProjection.retrieve(..., allow_embedding_outbound=False)`，默认
-  False）按这个属性判定，**模型工具的检索永不外发**——网络调用只允许发生在
-  人显式发起的控制面动作里（`rebuild-vectors` / CLI search / 面板 RPC）。
-- 配置**只从环境变量读**（`from_env()`）；API 密钥永不落盘、不进事件日志。
+  False）按这个属性判定，**模型工具的检索永不外发**——检索路径的网络调用
+  只允许发生在人显式发起的控制面动作里（`rebuild-vectors` / CLI search /
+  面板 RPC）。
+- **写入激活也会外发**：`memory.confirm` / `memory.edit` / `memory.remember`
+  的 apply 经 `_index_upsert` 把记忆正文送 embed——这条不在检索 gate 里，
+  外发授权来自批准该记忆动作的人（边界表见 SPEC-N2 §2.3；要不要纳入同一
+  gate 是登记在案的未决项）。
+- 配置**只从环境变量读**（`from_env()`）；API 密钥不落盘。端点若在响应体里
+  回显认证头（错配代理 / debug 网关），错误串会在**构造期**经 `redact()`
+  掩码（密钥装配即注册进脱敏表）——Run 内写入路径的失败会经
+  `_fail_unknown` 进 append-only 事件日志，构造期脱敏是硬前提，不指望下游自觉。
 - 缺任一项在装配时报错并点名缺什么，不静默降级成「没有 provider」。
 
 ## 与 net.fetch 的关系
@@ -30,6 +38,7 @@ import ssl
 import urllib.parse
 from collections.abc import Sequence
 
+from .credentials import redact, register_secret
 from .errors import TianshuError
 
 __all__ = [
@@ -61,7 +70,9 @@ BATCH_LIMIT = 64
 _DEFAULT_TIMEOUT_S = 60.0
 # 响应字节上限：64 条 × 3072 维浮点的 JSON 远小于这个数；超出按 shape 拒。
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
-# 报错里引用端点响应体时的截断长度（错误信息只进终端/stderr，不进事件）。
+# 报错里引用端点响应体时的截断长度。错误串可能进 append-only 事件日志
+# （Run 内写入路径经 dispatcher._fail_unknown），所以片段必须在 EmbeddingError
+# 构造期过 redact 表打码——见模块 docstring 与 __init__ 注释。
 _MAX_ERROR_BODY = 500
 
 # 失败分类封闭集。未知分类在构造时即报错，不兜底。
@@ -74,7 +85,11 @@ class EmbeddingError(TianshuError):
     def __init__(self, reason: str, message: str) -> None:
         if reason not in _REASONS:
             raise ValueError(f"未知的 embedding 失败分类：{reason!r}")
-        super().__init__(f"[{reason}] {message}")
+        # 构造期统一脱敏：端点响应体可能回显认证头（错配代理 / debug 网关），
+        # 而写入路径的失败串会被持久化进 append-only 事件日志——掩码必须
+        # 发生在消息构造这一层，不指望每个下游（stderr / 事件 / UI）自觉调
+        # redact。变形回显（base64 等）不在防范围，docstring 如实声明。
+        super().__init__(f"[{reason}] {redact(message)}")
         self.reason = reason
 
 
@@ -153,6 +168,9 @@ class OpenAICompatibleEmbeddingProvider:
         self._path = f"{path}/embeddings" if path else "/embeddings"
         self._model = model.strip()
         self._api_key = api_key
+        # 装配即注册：之后任何包含该密钥的错误串（含端点回显的响应体片段）
+        # 在 EmbeddingError 构造期就被 redact 掩码。
+        register_secret(api_key)
         self._timeout_s = (
             float(timeout_s) if timeout_s is not None
             else _env_float(ENV_TIMEOUT_S, _DEFAULT_TIMEOUT_S)

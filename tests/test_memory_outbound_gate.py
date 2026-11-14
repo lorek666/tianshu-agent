@@ -273,12 +273,12 @@ def test_provider_without_capability_flag_defaults_to_gated(gate_env) -> None:
     projection.rebuild_vectors()
     fixture.hits.clear()
 
-    # 剥掉能力自报属性：模拟一个未按协议自报家门的 provider。
+    # 真的剥掉能力自报属性：模拟一个未按协议自报家门的 provider。
+    # （复审发现2：初版误把 setattr(_Mute, attr, True) 当「剥掉」，导致
+    # getattr(..., True) 的缺省分支从未被测、安全默认变异全绿没牙。）
     class _Mute:
         pass
 
-    for attr in ("sends_data_off_device",):
-        setattr(_Mute, attr, True)
     mute = _Mute()
     mute.model_id = index.provider.model_id
     mute.dim = index.provider.dim
@@ -323,3 +323,41 @@ def test_scale_eval_reports_both_modes_and_is_deterministic() -> None:
     # 确定性：同样输入两次跑，数字逐位一致。
     again = module._run_mode(50, hybrid=True, provider=module.HashEmbeddingProvider(dim=64))
     assert again["all_mrr"] == hybrid_row["all_mrr"]
+
+
+def test_scale_eval_retrieve_explicitly_allows_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """复审牙齿：评测脚本的 retrieve 必须显式传 allow_embedding_outbound=True。
+
+    漏传它不会报错——外部 provider 下 hybrid 行被检索 gate 静默降级成
+    FTS-only（复审探针实测：hybrid MRR 与 fts 逐位相同、检索 0 次 embed），
+    假数字比失败更糟。把调用参数钉在测试里，谁删这个参数谁红。
+    """
+    module = _load_scale_script()
+    from tianshu.memory import MemoryProjection
+
+    captured: list[dict] = []
+    original = MemoryProjection.retrieve
+
+    def _spy(self: MemoryProjection, query: str, **kwargs: object):
+        captured.append(dict(kwargs))
+        return original(self, query, **kwargs)
+
+    monkeypatch.setattr(MemoryProjection, "retrieve", _spy)
+    module._run_mode(20, hybrid=True, provider=module.HashEmbeddingProvider(dim=64))
+    assert captured, "评测脚本没有走 retrieve（判据失效）"
+    assert all(
+        kwargs.get("allow_embedding_outbound") is True for kwargs in captured
+    ), f"retrieve 未显式允许外发：{captured[0].get('allow_embedding_outbound')!r}"
+
+
+def test_scale_eval_refuses_degraded_hybrid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """hybrid 行被降级（semantic=False）必须报错退出，不许印假 hybrid 数字。"""
+    module = _load_scale_script()
+    from tianshu.memory import MemoryProjection, RecallOutcome
+
+    def _degraded(self: MemoryProjection, query: str, **kwargs: object):
+        return RecallOutcome(semantic=False, degraded="模拟：外发未被允许")
+
+    monkeypatch.setattr(MemoryProjection, "retrieve", _degraded)
+    with pytest.raises(RuntimeError, match="hybrid"):
+        module._run_mode(20, hybrid=True, provider=module.HashEmbeddingProvider(dim=64))
