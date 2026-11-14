@@ -1,0 +1,89 @@
+{
+  "kind": "SEALED_REVIEW_INDEX",
+  "fixed_commit": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+  "fixed_tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+  "draft_sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+  "inputs": [
+    {
+      "role": "draft_v3",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/DRAFT.md",
+      "sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+      "bytes": 32025,
+      "lines": 143
+    },
+    {
+      "role": "draft_v3_inputs_hash_only",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/inputs.json",
+      "sha256": "b7c2ceb9e0840dbdefcecc4e950d9d0443286795fc9fbc99fb4fd60fcfda33c4",
+      "bytes": 4842,
+      "lines": 123
+    },
+    {
+      "role": "draft_v2",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/DRAFT.md",
+      "sha256": "76364357e1ca99b2f3c845efb41356d5cde00a6d241c916cfeeb3ae9f052f57e",
+      "bytes": 30724,
+      "lines": 143
+    },
+    {
+      "role": "v2_independent_report",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v2-9413-20261114-tdirwihn/REPORT.md",
+      "sha256": "fe876e4466c6de738a4a448f89e894ab98373319ab7a054f2312f487e939def8",
+      "bytes": 5092,
+      "lines": 27
+    }
+  ],
+  "independent_changed_lines": [
+    1,
+    4,
+    114,
+    115,
+    116,
+    135,
+    140,
+    143
+  ],
+  "git_ref_observations": [
+    {
+      "ref": "refs/heads/main",
+      "commit": "016910970d381a66ab12a94a5c88080a8cbf7437",
+      "tree": "810d5de91e279244559bc55c3e749ddefc0a3c2b",
+      "method": "local read-only ref/object lookup; no fetch/API/CI"
+    },
+    {
+      "ref": "refs/remotes/origin/main",
+      "commit": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+      "method": "local read-only ref/object lookup; no fetch/API/CI"
+    },
+    {
+      "ref": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+      "commit": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+      "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+      "method": "local read-only ref/object lookup; no fetch/API/CI"
+    },
+    {
+      "ref": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "commit": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+      "method": "local read-only ref/object lookup; no fetch/API/CI"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "REPORT.md",
+      "sha256": "27eb7a99f2f49407a3b521d16e7b74b2ac7246a41abb562af5588d86b2493528",
+      "bytes": 2469,
+      "lines": 13,
+      "mode": "0444"
+    },
+    {
+      "name": "facts.json",
+      "sha256": "716ca8150e8dcb14a3024578e9ddd2567f9fba7d63909a19e6a3fd5dc369cf9f",
+      "bytes": 5319,
+      "lines": 148,
+      "mode": "0444"
+    }
+  ],
+  "self_excluded": true
+}

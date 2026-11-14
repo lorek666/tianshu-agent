@@ -1,0 +1,123 @@
+{
+  "status": "DRAFT_NOT_APPROVED_NOT_PRODUCT_ACCEPTANCE",
+  "revision": "B-v3",
+  "created_at": "2026-11-14 Asia/Shanghai",
+  "fixed_commit": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+  "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+  "local_git_observation": {
+    "main": "016910970d381a66ab12a94a5c88080a8cbf7437",
+    "origin/main": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+    "existing_8f2_object_tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+    "remote_api_queried": false,
+    "remote_merge_source": "root message only; PR144 merged; not independently queried",
+    "ci_status": "NOT_QUERIED_NO_PASS_CLAIM"
+  },
+  "inputs": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-9413-20261114-n8ng4o8l/DRAFT.md",
+      "sha256": "325a537637a5abecc3c9889bc10a24456065d426a782219174182f53688a922d",
+      "bytes": 21959,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-9413-20261114-n8ng4o8l/inputs.json",
+      "sha256": "1027d5d1061e744e981a84d3ff61801129357fec3d1dc7032d40b6846a130ecf",
+      "bytes": 5952,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-9413-20261114-4mn8p0qc/REPORT.md",
+      "sha256": "d4a31e439333bab08833ffa1508d542e19f11211ce815cb50425ae4d90e1ec29",
+      "bytes": 5899,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-9413-20261114-4mn8p0qc/facts.json",
+      "sha256": "31365ba0ecec823b06141216603b2a07bbc28b216ecff8d04944ef1b7e6a3cae",
+      "bytes": 6321,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-9413-20261114-4mn8p0qc/index.json",
+      "sha256": "1943f5c27b0a5774b1440a949a6bb8d8846a54eaeb33e80b00183cdb057ef10d",
+      "bytes": 3720,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/DELTA.md",
+      "sha256": "ae08e4662e40338c2edf9005edf50771aa2d2d50aa0c9b84a39c7ce326157648",
+      "bytes": 1954,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/DRAFT.md",
+      "sha256": "76364357e1ca99b2f3c845efb41356d5cde00a6d241c916cfeeb3ae9f052f57e",
+      "bytes": 30724,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/draft-v1-v2.diff",
+      "sha256": "fb2ede43f97837838280bad281018d16ffc7c697ea67669a193c0d2a2c0aaf70",
+      "bytes": 31487,
+      "mode": "0o444"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/inputs.json",
+      "sha256": "92a7897c2bbcd54ae2cef9b0e184851e4377df8fbb8461c8f14f39dd6d6ca0ef",
+      "bytes": 4130,
+      "mode": "0o444"
+    }
+  ],
+  "root_ruling": {
+    "source": "2026-11-14 direct parent task message; formal reader report not yet supplied",
+    "scope": "Only directory durability after abort cleanup and local main-reference wording; preserve all other passed v2 body",
+    "requirements": [
+      "After each unlink/rmdir persist affected directory; after S rmdir persist stable parent P before durable aborted",
+      "Keep abort_intent and same CleanupPlan on flush failure or crash; verify remaining/reappeared planned nodes, clean and redo barriers",
+      "All barriers must succeed and no residue be rechecked before durable aborted, including separate-volume registry; do not release scope early",
+      "Unsupported platform durability fails without aborted",
+      "Real failpoints after each cleanup deletion, before/after each directory barrier, and before/after aborted",
+      "Local main is 016910970d381a66ab12a94a5c88080a8cbf7437; local origin/main and existing merged object 8f2a508e68f27efc4100b7466fcd79043341f7fa; local existing object shares fixed tree, remote merge from root only"
+    ]
+  },
+  "v2_original_four_and_capacity": "parent reports independent reader textually satisfied; not product acceptance; formal report pending",
+  "changed_draft_lines": [
+    1,
+    4,
+    114,
+    115,
+    116,
+    135,
+    140,
+    143
+  ],
+  "outputs": [
+    {
+      "path": "DRAFT.md",
+      "sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+      "bytes": 32025,
+      "lines": 143
+    },
+    {
+      "path": "DELTA.md",
+      "sha256": "ca908797233a148ecde13c62cb41e84e9cac4d196efe9a0cf9d0eadfcac18f06",
+      "bytes": 1311,
+      "lines": 10
+    }
+  ],
+  "self_excluded": "inputs.json",
+  "not_run": [
+    "product",
+    "tests",
+    "probes",
+    "API",
+    "CI query",
+    "model",
+    "paid calls",
+    "43 old acceptance",
+    "seven dependency probes"
+  ],
+  "repo_modified": false,
+  "originals_unchanged": true,
+  "independent_revision_verdict": "PENDING"
+}

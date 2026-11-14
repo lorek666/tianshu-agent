@@ -1,0 +1,102 @@
+{
+  "status": "PASS_MAIN_PUSH_CI_8F2A_COMPLETE_EVIDENCE_ONLY_WITH_UNRESOLVED_145",
+  "run_id": 43555557537,
+  "run_attempt": 1,
+  "head": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+  "ordered_parents": [
+    "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+    "9413c7ca66af56fce8ac1664e989cf8cd6fc9808"
+  ],
+  "event": "push",
+  "head_branch": "main",
+  "actual_checkout": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "six_jobs_native_identity_verified": true,
+  "github_actions_app_id": 15368,
+  "all_70_steps_succeeded": true,
+  "four_required_strict_admin_no_force_delete_verified": true,
+  "fresh_raw_main_pr144_and_issue145_bound": true,
+  "merged_at": "2026-11-14T04:13:29Z",
+  "windows_coverage": {
+    "collected": 3191,
+    "selected": [
+      1596,
+      1595
+    ]
+  },
+  "windows_combined_passed": 3154,
+  "windows_combined_skipped": 37,
+  "windows_targets_setup_call_teardown_passed": true,
+  "artifact_byte_digest_zip_member_identity_and_all_ordered_phases_verified": true,
+  "exact_main_workflow_plugin_wrapper_sha256": {
+    ".github/workflows/ci.yml": "85a6aeb82363810a78ce778e55370c45b6c2757833cff296971e6606b5c26d40",
+    "scripts/pytest_ci_shards.py": "b5f7d48bec96b95ed6b030cc062984a1c2311e0921c82548f74dd33f6b35f57f",
+    "scripts/pytest_with_stacks.py": "22c25d059f87cac109cc7d64374ecf43e7941555c7e75d315a8f1388ea79b111"
+  },
+  "platforms": "Ubuntu 26.04.1 x86_64; macOS 26.7.2 arm64; Windows Server 2025 10.0.26100 x86_64; CPython 3.12.16",
+  "pytest_results": {
+    "ubuntu": [
+      3178,
+      13,
+      445.75
+    ],
+    "macos": [
+      3183,
+      8,
+      764.93
+    ],
+    "windows_shard0": [
+      1584,
+      12,
+      792.09
+    ],
+    "windows_shard1": [
+      1570,
+      25,
+      506.15
+    ]
+  },
+  "ui": {
+    "files": 13,
+    "tests": 91,
+    "typecheck_build_dist_consistency_steps": "success"
+  },
+  "watchdog": {
+    "observed_stack_dumps": 1,
+    "affected_test_later_passed": true,
+    "failure_markers": 0,
+    "not_a_proof_of_timely_stacks_when_c_extension_holds_gil": true
+  },
+  "annotations": {
+    "warning": 6,
+    "notice": 4,
+    "failure": 0,
+    "classification": "Node20 action deprecation; Ubuntu label migration and macOS arm64 queue notices"
+  },
+  "issue145": {
+    "state": "open",
+    "raw": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/issue145.json",
+    "sha256": "db076ae936482223d069b673ad8e38bb6dc18e26d8f5ef0ac29d768785b39e5d",
+    "root_cause": "unknown and unfixed",
+    "not_proven_baseline": "Cannot attribute the retained failure to baseline, heartbeat, SQLite or low-disk logic.",
+    "current_60_iteration_ci_pass_does_not_close_issue": true,
+    "body_prior_run_in_progress_statement_is_stale_not_used_as_current_ci_status": true
+  },
+  "prior_reviews_exact_sha256": {
+    "/tmp/low-disk-pr144-9413-native-final-independent-20261114-indo9gk8/REPORT.md": "2be26b81e4a28d46039197136b83896d94218cb6209d3ab493602bd9f7a1bbf5",
+    "/tmp/low-disk-pr144-diagnostic-commit-independent-20261114-jvutdisk/REPORT.md": "857769a70c3df6e08d8cd2afe5c7bc1888d64b1ba6604c848c6ef8b81b26ad15",
+    "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/REPORT.md": "55e15a3eba65b6e0b7ed0c65925a27291a633bc6e96dbb48b3ea745491fd575a",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/REPORT.md": "016f4c2f709da334f155c9d2da2db0f62d3980c976d3e43aa1a7751ab9cb4501"
+  },
+  "prior_product_approval_scope_not_expanded": true,
+  "known_BASE_B1_budget_wiring_gap": "Unchanged prior limitation; not resolved by this native CI",
+  "new_blockers_in_this_main_ci_evidence": [],
+  "remaining_risk": "Original normal-finish Run failed remains unknown and unfixed; this green main run cannot exclude a PR regression.",
+  "disposition": "Main push CI evidence passes. Maintainer accepted the internal development risk at merge; this reviewer does not grant unconditional whole-PR approval or close issue145.",
+  "approval": false,
+  "merge_executed": false,
+  "api_calls": false,
+  "live_writes": false,
+  "old_controls_behavior_full_ui_reexecuted": false,
+  "used_original_files": 59
+}
