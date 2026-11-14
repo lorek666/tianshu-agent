@@ -38,10 +38,14 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args: object) -> None:  # noqa: D401 - 继承接口
         return
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 接口
+    def _serve(self, method: str) -> None:
         fixture: NetFixture = self.server.fixture  # type: ignore[attr-defined]
         path = self.path
-        fixture.hits.append(("GET", path))
+        fixture.hits.append((method, path))
+        if method == "POST":
+            # 请求体全量记录：外发内容断言（"到底把什么发给了端点"）靠它。
+            length = int(self.headers.get("Content-Length") or 0)
+            fixture.bodies.append(self.rfile.read(length) if length else b"")
         reply = fixture.reply_for(path)
         if reply is None:
             reply = Reply(status=404, body=b"no such fixture route")
@@ -60,6 +64,12 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端取消
             pass
 
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 接口
+        self._serve("GET")
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 接口
+        self._serve("POST")
+
 
 class NetFixture:
     """一个 loopback HTTP 服务 + 命中记录。"""
@@ -67,6 +77,8 @@ class NetFixture:
     def __init__(self) -> None:
         self.routes: dict[str, Reply] = {}
         self.hits: list[tuple[str, str]] = []
+        # POST 请求体（与 hits 同序；GET 请求不记录）。
+        self.bodies: list[bytes] = []
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
