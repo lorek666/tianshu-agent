@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/independent_probe.py", line 152, in <module>
+    drive=diag.pinned.get('drive');assert drive is not None,'ORACLE_REJECTED: real swallowed drive capture missing'
+                                          ^^^^^^^^^^^^^^^^^
+AssertionError: ORACLE_REJECTED: real swallowed drive capture missing

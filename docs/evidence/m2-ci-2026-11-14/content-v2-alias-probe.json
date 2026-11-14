@@ -1,0 +1,115 @@
+{
+  "platform": "darwin",
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "windows_junction_executed": false,
+  "cases": [
+    {
+      "case": "original-src",
+      "real_symlink": true,
+      "alias_path": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/tianshu/leases.py",
+      "canonical_target": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src/tianshu/leases.py",
+      "canonical_inside_src": true,
+      "samefile_original": true,
+      "alias_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+      "original_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+      "co_filename": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/tianshu/leases.py",
+      "exception_type": "LeaseConflict",
+      "caller": {
+        "file": "src/tianshu/leases.py",
+        "line": 370,
+        "function": "acquire"
+      },
+      "lease_frames": [
+        {
+          "file": "src/tianshu/leases.py",
+          "line": 371,
+          "function": "acquire"
+        },
+        {
+          "file": "src/tianshu/leases.py",
+          "line": 421,
+          "function": "_acquire_locked"
+        }
+      ],
+      "all_frames": [
+        {
+          "file": "tests/test_m2_acceptance.py",
+          "line": 794,
+          "function": "transaction"
+        },
+        {
+          "file": "src/tianshu/leases.py",
+          "line": 371,
+          "function": "acquire"
+        },
+        {
+          "file": "src/tianshu/leases.py",
+          "line": 421,
+          "function": "_acquire_locked"
+        }
+      ],
+      "context_phase": "body",
+      "event_phases": [
+        "attempt",
+        "acquired",
+        "exit"
+      ],
+      "active_after": {},
+      "notes_chars": 2065,
+      "notes_utf8_bytes": 2065,
+      "canary_and_absolute_paths_absent": true
+    },
+    {
+      "case": "external-copy",
+      "real_symlink": true,
+      "alias_path": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+      "canonical_target": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/external-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+      "canonical_inside_src": false,
+      "samefile_original": false,
+      "alias_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+      "original_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+      "co_filename": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+      "exception_type": "LeaseConflict",
+      "caller": null,
+      "lease_frames": [
+        {
+          "file": "<external>",
+          "line": 371,
+          "function": "acquire"
+        },
+        {
+          "file": "<external>",
+          "line": 421,
+          "function": "_acquire_locked"
+        }
+      ],
+      "all_frames": [
+        {
+          "file": "tests/test_m2_acceptance.py",
+          "line": 794,
+          "function": "transaction"
+        },
+        {
+          "file": "<external>",
+          "line": 371,
+          "function": "acquire"
+        },
+        {
+          "file": "<external>",
+          "line": 421,
+          "function": "_acquire_locked"
+        }
+      ],
+      "context_phase": "body",
+      "event_phases": [
+        "attempt",
+        "acquired",
+        "exit"
+      ],
+      "active_after": {},
+      "notes_chars": 1718,
+      "notes_utf8_bytes": 1718,
+      "canary_and_absolute_paths_absent": true
+    }
+  ]
+}

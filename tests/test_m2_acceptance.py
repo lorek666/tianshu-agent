@@ -22,12 +22,19 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
+from collections import OrderedDict, deque
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from support import CHILD_TEXT, tool_capable_profile
 
+from tianshu import worker as worker_module
+from tianshu.credentials import redact
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
 from tianshu.jobs import JOB_WAITING, JobStore
@@ -622,6 +629,275 @@ def test_read_a_write_b_and_chat_without_workspace(env):
 # ---------------------------------------------------------------- 5. 心跳
 
 
+class _WorkerDiagnostics:
+    """只观测本用例进程内的真实调用；context 活跃不等于 OS 权威锁 owner。"""
+
+    def __init__(self, db):
+        self.db = db
+        self.lock = threading.Lock()
+        self.local = threading.local()
+        self.events = deque(maxlen=128)
+        self.errors = deque(maxlen=8)
+        self.connections = OrderedDict()
+        self.threads = OrderedDict()
+        self.active = {}
+        self.pinned = {}
+        self.failures = deque(maxlen=4)
+        self.counts = dict.fromkeys(("tx_dropped", "error_dropped", "connection_evicted",
+                                    "thread_evicted", "active_dropped", "frames_dropped",
+                                    "collection_failed"), 0)
+        self.sequence = 0
+
+    def failed(self, error):
+        with self.lock:
+            self.counts["collection_failed"] += 1
+            self.failures.append(type(error).__name__[:80])
+
+    def alias(self, obj, mapping, kind):
+        # 弱引用按对象身份分配代号，不保留 log/thread，不把复用的整数 id 当身份。
+        for key in list(mapping):
+            if key() is None:
+                del mapping[key]
+        key = weakref.ref(obj)
+        if key in mapping:
+            mapping.move_to_end(key)
+            return mapping[key]
+        if len(mapping) == 8:
+            mapping.popitem(last=False)
+            self.counts[kind + "_evicted"] += 1
+        self.sequence += 1
+        mapping[key] = kind + str(self.sequence)
+        return mapping[key]
+
+    @staticmethod
+    def frames(error):
+        result = deque(maxlen=16)
+        total = 0
+        tb = error.__traceback__
+        try:
+            while tb is not None:
+                code = tb.tb_frame.f_code
+                path = Path(code.co_filename).resolve()
+                try:
+                    file = path.relative_to(Path(SRC).parent).as_posix()
+                except ValueError:
+                    file = "<external>"
+                result.append({"file": file[:180], "line": tb.tb_lineno,
+                               "function": code.co_name[:80]})
+                total += 1
+                tb = tb.tb_next
+        finally:
+            del tb
+        return list(result), max(0, total - 16)
+
+    @staticmethod
+    def caller():
+        frame = sys._getframe(1)
+        try:
+            while frame is not None:
+                try:
+                    file = Path(frame.f_code.co_filename).resolve().relative_to(SRC)
+                except ValueError:
+                    frame = frame.f_back
+                    continue
+                return {"file": (Path("src") / file).as_posix()[:180], "line": frame.f_lineno,
+                        "function": frame.f_code.co_name[:80]}
+        finally:
+            del frame
+        return None
+
+    def begin(self, log):
+        try:
+            nested = log.in_transaction
+            caller = self.caller()
+            with self.lock:
+                connection = self.alias(log, self.connections, "connection")
+                thread = threading.current_thread()
+                thread_alias = self.alias(thread, self.threads, "thread")
+                self.sequence += 1
+                token = {"tx": self.sequence, "connection": connection,
+                         "thread": thread_alias, "thread_name": thread.name[:80],
+                         "nested": nested, "caller": caller,
+                         **getattr(self.local, "context", {})}
+            self.observe("attempt", token, log)
+            return token
+        except Exception as error:
+            self.failed(error)
+            return None
+
+    def event(self, phase, token, native=None):
+        if token is None:
+            return
+        try:
+            item = {**token, "phase": phase, "at_ns": time.monotonic_ns()}
+            if native is not None:
+                item["native_in_transaction"] = native
+            with self.lock:
+                if phase == "acquired":
+                    if len(self.active) < 8:
+                        self.active[token["tx"]] = item
+                    else:
+                        self.counts["active_dropped"] += 1
+                elif phase == "exit":
+                    self.active.pop(token["tx"], None)
+                if len(self.events) == self.events.maxlen:
+                    self.counts["tx_dropped"] += 1
+                self.events.append(item)
+        except Exception as error:
+            self.failed(error)
+
+    def observe(self, phase, token, log):
+        try:
+            native = log.conn.in_transaction
+        except Exception as error:
+            self.failed(error)
+            native = None
+        self.event(phase, token, native)
+
+    def capture(self, source, error, token=None, phase=None):
+        try:
+            at_ns = time.monotonic_ns()
+            frames, dropped = self.frames(error)
+            item = {"source": source, "type": type(error).__name__[:80],
+                    "at_ns": at_ns,
+                    "sqlite_errorcode": getattr(error, "sqlite_errorcode", None),
+                    "sqlite_errorname": getattr(error, "sqlite_errorname", None),
+                    "phase": phase, "frames": frames,
+                    **getattr(self.local, "context", {})}
+            if token is not None:
+                item.update(token)
+            with self.lock:
+                item["active_at_error"] = list(self.active.values())
+                if len(self.errors) == self.errors.maxlen:
+                    self.counts["error_dropped"] += 1
+                self.errors.append(item)
+                if source in ("drive", "beat", "transaction", "test"):
+                    self.pinned.setdefault(source, item)
+                self.counts["frames_dropped"] += dropped
+        except Exception as collection_error:
+            self.failed(collection_error)
+
+    @contextmanager
+    def transaction(self, log, original):
+        if log.db_path != self.db:
+            with original(log) as tx:
+                yield tx
+            return
+        token = self.begin(log)
+        entered = body_failed = False
+        try:
+            with original(log) as tx:
+                entered = True
+                self.observe("reuse" if token and token["nested"] else "acquired",
+                             token, log)
+                try:
+                    yield tx
+                except BaseException as error:
+                    body_failed = True
+                    self.capture("transaction", error, token, "body")
+                    raise
+                else:
+                    self.observe("body-return", token, log)
+        except BaseException as error:
+            if not body_failed:
+                self.capture("transaction", error, token,
+                             "enter" if not entered else "exit")
+            raise
+        finally:
+            self.observe("exit", token, log)
+            # body-return 不代表 COMMIT 起点；异常的实际位置只看结构化帧。
+
+    def call(self, source, original, owner, claim, **kwargs):
+        old = getattr(self.local, "context", {})
+        context = {"run_id": claim.run_id, "job_id": claim.job_id,
+                   "claim_epoch": claim.claim_epoch}
+        self.local.context = context
+        if source == "drive":
+            with self.lock:
+                self.pinned.clear()
+        try:
+            return original(owner, claim, **kwargs)
+        except BaseException as error:
+            self.capture(source, error)
+            raise
+        finally:
+            self.local.context = old
+
+    def annotate(self, error):
+        lines = ["M2 worker diagnostics: item<=1200 chars; total<=24000 chars; "
+                 "observed contexts in this process only; not OS lock ownership"]
+
+        def note(source, data):
+            text = source + ": " + redact(json.dumps(data, ensure_ascii=False))
+            marker = " [truncated item]"
+            lines.append(text if len(text) <= 1200 else text[:1200 - len(marker)] + marker)
+
+        with self.lock:
+            counts, failures = dict(self.counts), list(self.failures)
+            pinned, events = dict(self.pinned), list(self.events)[-32:]
+        note("collection", {**counts, "collection_failed_types": failures})
+        # 关键异常/实际 caller/发生时 context 快照先输出，不能被详细 ring 挤掉。
+        critical = [(source, pinned[source]) for source in
+                    ("drive", "transaction", "beat", "test") if source in pinned]
+        for source, item in critical:
+            note("error", {k: v for k, v in item.items()
+                           if k not in ("frames", "active_at_error")})
+            if item["frames"]:
+                note(source + ".caller", item["frames"][-1])
+        for source, item in critical:
+            for active in item["active_at_error"]:
+                note(source + ".active_at_error", active)
+        for source, item in critical:
+            for frame in item["frames"][:-1]:
+                note(source + ".frame", frame)
+        for event in events:
+            note("transaction", event)
+        text = "\n".join(lines)
+        marker = "\n[truncated total]"
+        error.add_note(text if len(text) <= 24000 else text[:24000 - len(marker)] + marker)
+
+
+def _diagnose_worker_failure(test):
+    @wraps(test)
+    def diagnosed(env):
+        diagnostics = _WorkerDiagnostics(env.db)
+        original_drive = Worker._drive
+        original_beat = worker_module._SideChannel.beat
+        original_transaction = EventLog.transaction
+
+        def drive(worker, claim):
+            if worker.stack.log.db_path != env.db:
+                return original_drive(worker, claim)
+            return diagnostics.call("drive", original_drive, worker, claim)
+
+        def beat(channel, claim, **kwargs):
+            if channel._log.db_path != env.db:
+                return original_beat(channel, claim, **kwargs)
+            return diagnostics.call("beat", original_beat, channel, claim, **kwargs)
+
+        def transaction(log):
+            return diagnostics.transaction(log, original_transaction)
+
+        with patch.object(Worker, "_drive", drive), \
+                patch.object(worker_module._SideChannel, "beat", beat), \
+                patch.object(EventLog, "transaction", transaction):
+            try:
+                return test(env)
+            except Exception as error:
+                diagnostics.capture("test", error)
+                try:
+                    diagnostics.annotate(error)
+                except Exception as collection_error:
+                    try:
+                        error.add_note("M2 worker diagnostics: collection_failed="
+                                       + type(collection_error).__name__[:80])
+                    except Exception:
+                        pass
+                raise
+
+    return diagnosed
+
+
 def _steal_attempt(env: Env) -> bool:
     """从**另一条连接**（相当于另一个进程）试着认领一次：抢得到就是 True。"""
     log = EventLog(env.db, blob_dir=env.root / "blobs")
@@ -707,6 +983,7 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     assert worker2.errors, "被抢走之后必须留下痕迹，不能静默成功"
 
 
+@_diagnose_worker_failure
 def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
     """正常收尾/暂停时心跳线程晚一步看到"作业已结束""租约已释放"，不算失败。
 
@@ -740,6 +1017,337 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
     assert worker.run_once() is True
     assert env.stack.tasks.get_run(paused_id).state == "paused"
     assert worker.errors == [], worker.errors
+
+
+def test_worker_diagnostics_success_is_silent_and_restores_methods(env, capsys):
+    from tianshu import worker as worker_module
+
+    original = (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction)
+    marker = object()
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        run_id, _, _ = env.enqueue(root=env.ws, out="diagnostic.md")
+        worker = Worker(env.stack, model=ScriptedModel([
+            _create("diagnostic.md", "x", "c1"), _end(),
+        ]), heartbeat_interval_ms=1)
+        try:
+            assert worker.run_once() is True
+            assert env.stack.tasks.get_run(run_id).state == "succeeded"
+            assert worker.errors == []
+        finally:
+            worker.close()
+        return marker
+
+    assert exercise(env) is marker
+    assert (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction) == original
+    assert capsys.readouterr() == ("", "")
+
+
+def test_worker_diagnostics_capture_native_error_before_worker_swallows_it(env):
+    failure = AssertionError("original assertion")
+
+    class Engine:
+        def resume_run(self, run_id):
+            with env.log.transaction():
+                env.log.conn.execute("SELECT * FROM diagnostic_private_missing_table")
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        env.enqueue(root=env.ws)
+        worker = Worker(env.stack, model=ScriptedModel([]),
+                        heartbeat_interval_ms=None, engine_factory=lambda claim: Engine())
+        assert worker.run_once() is True
+        raise failure
+
+    with pytest.raises(AssertionError) as caught:
+        exercise(env)
+    assert caught.value is failure
+    notes = "\n".join(failure.__notes__)
+    assert '"source": "drive"' in notes
+    assert '"sqlite_errorcode": 1' in notes
+    assert '"sqlite_errorname": "SQLITE_ERROR"' in notes
+    assert '"function": "resume_run"' in notes
+    assert '"phase": "body"' in notes
+    assert "diagnostic_private_missing_table" not in notes
+    assert "SELECT" not in notes
+
+
+def test_worker_diagnostics_transactions_keep_commit_rollback_and_nested_identity(env, monkeypatch):
+    from contextlib import contextmanager
+
+    env.log.conn.execute("CREATE TABLE diagnostic_values (value INTEGER)")
+    original = EventLog.transaction
+    seen = []
+    failure = AssertionError("rollback marker")
+
+    @contextmanager
+    def observed(log):
+        with original(log) as tx:
+            seen.append(tx)
+            yield tx
+
+    monkeypatch.setattr(EventLog, "transaction", observed)
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        with env.log.transaction() as outer:
+            assert outer is seen[-1]
+            env.log.conn.execute("INSERT INTO diagnostic_values VALUES (1)")
+            with env.log.transaction() as nested:
+                assert nested is seen[-1]
+                assert env.log.conn.in_transaction
+                env.log.conn.execute("INSERT INTO diagnostic_values VALUES (2)")
+        with pytest.raises(AssertionError) as caught:
+            with env.log.transaction():
+                env.log.conn.execute("INSERT INTO diagnostic_values VALUES (3)")
+                raise failure
+        assert caught.value is failure
+
+    exercise(env)
+    assert len(seen) == 3
+    assert [row[0] for row in env.log.conn.execute("SELECT value FROM diagnostic_values")] == [1, 2]
+    assert not env.log.in_transaction and not env.log.conn.in_transaction
+    assert EventLog.transaction is observed
+    assert not hasattr(failure, "__notes__")
+
+
+def test_worker_diagnostics_capture_real_native_beat_error(env, monkeypatch):
+    from tianshu import worker as worker_module
+
+    beat_done = threading.Event()
+    failure = AssertionError("original assertion")
+
+    def bad_beat(channel, claim, **kwargs):
+        try:
+            channel._log.conn.execute("SELECT * FROM private_beat_missing_table")
+        finally:
+            beat_done.set()
+
+    class Engine:
+        def resume_run(self, run_id):
+            assert beat_done.wait(10), "native beat did not run"
+
+    monkeypatch.setattr(worker_module._SideChannel, "beat", bad_beat)
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        env.enqueue(root=env.ws)
+        worker = Worker(env.stack, model=ScriptedModel([]), heartbeat_interval_ms=1,
+                        engine_factory=lambda claim: Engine())
+        try:
+            assert worker.run_once() is True
+            assert worker.errors and worker.errors[0].startswith("心跳失效：")
+        finally:
+            worker.close()
+        raise failure
+
+    with pytest.raises(AssertionError) as caught:
+        exercise(env)
+    assert caught.value is failure
+    notes = "\n".join(failure.__notes__)
+    assert '"source": "beat"' in notes
+    assert '"sqlite_errorname": "SQLITE_ERROR"' in notes
+    assert '"function": "bad_beat"' in notes
+    assert "private_beat_missing_table" not in notes
+
+
+def test_worker_diagnostics_bound_rings_keep_critical_error_and_redact(env, monkeypatch):
+    from tianshu import credentials
+
+    diagnostics = _WorkerDiagnostics(env.db)
+    secret = "worker-diagnostic-registered-secret"
+    monkeypatch.setattr(credentials, "_REGISTERED", set(credentials._REGISTERED))
+    credentials.register_secret(secret)
+    thread = threading.current_thread()
+    old_name = thread.name
+    failure = AssertionError("original assertion")
+    try:
+        thread.name = secret
+        try:
+            raise RuntimeError("private exception text")
+        except RuntimeError as error:
+            diagnostics.capture("drive", error)
+        for _ in range(180):
+            with diagnostics.transaction(env.log, EventLog.transaction):
+                pass
+        diagnostics.annotate(failure)
+    finally:
+        thread.name = old_name
+    notes = "\n".join(failure.__notes__)
+    assert '"source": "drive"' in notes
+    assert ('"function": "test_worker_diagnostics_bound_rings_keep_critical_error_and_redact"'
+            in notes)
+    assert '"tx_dropped": 0' not in notes
+    assert secret not in notes and "private exception text" not in notes
+    assert "***" in notes
+    assert len(diagnostics.events) <= 128 and len(diagnostics.errors) <= 8
+    assert len(diagnostics.connections) <= 8 and len(diagnostics.threads) <= 8
+    assert len(diagnostics.active) <= 8
+    assert len(notes) <= 24000 and all(len(line) <= 1200 for line in notes.splitlines())
+
+
+def test_worker_diagnostics_closed_connection_does_not_mask_original_error(env):
+    log = EventLog(env.root / "diagnostic-closed.db")
+    diagnostics = _WorkerDiagnostics(log.db_path)
+    failure = AssertionError("original assertion")
+    with pytest.raises(AssertionError) as caught:
+        with diagnostics.transaction(log, EventLog.transaction):
+            log.close()
+            raise failure
+    assert caught.value is failure
+    assert diagnostics.active == {}
+    assert diagnostics.counts["collection_failed"] >= 1
+
+
+def test_worker_diagnostics_real_transaction_caller_and_nested_reuse(env):
+    diagnostics = _WorkerDiagnostics(env.db)
+    original = EventLog.transaction
+    run_id, _, _ = env.enqueue(root=env.ws)
+    with patch.object(EventLog, "transaction", lambda log: diagnostics.transaction(log, original)):
+        env.stack.leases.acquire([str(env.ws)], run_id)
+        with env.log.transaction():
+            with env.log.transaction():
+                assert len(diagnostics.active) == 1
+    attempts = [item for item in diagnostics.events if item["phase"] == "attempt"]
+    assert attempts[0]["caller"]["file"] == "src/tianshu/leases.py"
+    assert attempts[0]["caller"]["function"] == "acquire"
+    assert attempts[0]["caller"]["line"] > 0
+    assert sum(item["phase"] == "acquired" for item in diagnostics.events) == 2
+    assert sum(item["phase"] == "reuse" for item in diagnostics.events) == 1
+    assert diagnostics.active == {}
+
+
+@pytest.mark.parametrize("external", [False, True], ids=["original-src", "external-copy"])
+def test_worker_diagnostics_symlink_source_paths(env, monkeypatch, external):
+    from importlib import util
+
+    source = Path(SRC)
+    if external:
+        source = env.root / "external-src"
+        (source / "tianshu").mkdir(parents=True)
+        (source / "tianshu/leases.py").write_bytes((Path(SRC) / "tianshu/leases.py").read_bytes())
+    alias = env.root / "source-alias"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(source)],
+            check=True, capture_output=True, **CHILD_TEXT,
+        )
+    else:
+        alias.symlink_to(source, target_is_directory=True)
+    assert alias.resolve() == source.resolve()
+    name = "tianshu._diagnostic_alias_leases"
+    spec = util.spec_from_file_location(name, alias / "tianshu/leases.py")
+    module = util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    assert module.LeaseStore.acquire.__code__.co_filename == str(alias / "tianshu/leases.py")
+    run_id, _, _ = env.enqueue(root=env.ws)
+    env.stack.leases.acquire([str(env.ws)], run_id)
+    contender = module.LeaseStore(env.log, identity=ProcessIdentity.mint())
+    diagnostics = _WorkerDiagnostics(env.db)
+    original = EventLog.transaction
+    with patch.object(EventLog, "transaction", lambda log: diagnostics.transaction(log, original)):
+        with pytest.raises(module.LeaseConflict):
+            contender.acquire([str(env.ws)], run_id, steal_stale=False)
+    error = diagnostics.errors[-1]
+    if external:
+        assert error["caller"] is None
+    else:
+        assert error["caller"] is not None
+        assert error["caller"]["file"] == "src/tianshu/leases.py"
+        assert error["caller"]["function"] == "acquire"
+    frames = [frame for frame in error["frames"]
+              if frame["function"] in ("acquire", "_acquire_locked")]
+    assert len(frames) == 2
+    assert {frame["file"] for frame in frames} == (
+        {"<external>"} if external else {"src/tianshu/leases.py"}
+    )
+
+
+def test_worker_diagnostics_metadata_bounds_and_weak_identity(env):
+    diagnostics = _WorkerDiagnostics(env.db)
+    logs = [EventLog(env.root / f"diagnostic-bounded-{i}.db") for i in range(12)]
+    threads = [threading.Thread(name="same-name") for _ in range(12)]
+    tokens = []
+    retired_log, retired_thread = weakref.ref(logs[0]), weakref.ref(threads[0])
+    try:
+        # 容量单测：不同数据库各开真实事务，不把它说成同库多个 OS writer。
+        with ExitStack() as stack:
+            for log, thread in zip(logs, threads, strict=True):
+                token = diagnostics.begin(log)
+                tokens.append(token)
+                stack.enter_context(log.transaction())
+                diagnostics.observe("acquired", token, log)
+                with diagnostics.lock:
+                    diagnostics.alias(thread, diagnostics.threads, "thread")
+            assert len(diagnostics.active) == 8
+            assert diagnostics.counts["active_dropped"] == 4
+            for _ in range(20):
+                try:
+                    raise RuntimeError("unrecorded private message")
+                except RuntimeError as error:
+                    diagnostics.capture("test", error)
+            assert len(diagnostics.errors) == 8
+            assert diagnostics.counts["error_dropped"] == 12
+            assert len(diagnostics.pinned["test"]["active_at_error"]) == 8
+            assert all(item["at_ns"] <= diagnostics.errors[-1]["at_ns"]
+                       for item in diagnostics.errors[-1]["active_at_error"])
+            for token, log in zip(tokens, logs, strict=True):
+                diagnostics.observe("exit", token, log)
+        assert diagnostics.active == {}
+        assert len(diagnostics.connections) == 8 and len(diagnostics.threads) == 8
+        assert diagnostics.counts["connection_evicted"] == 4
+        assert diagnostics.counts["thread_evicted"] > 0
+        assert len({token["connection"] for token in tokens}) == 12
+        old_alias = tokens[0]["connection"]
+        with diagnostics.lock:
+            new_alias = diagnostics.alias(logs[0], diagnostics.connections, "connection")
+        assert new_alias != old_alias  # 已逐出的仍存活对象不冒充旧采集区间。
+    finally:
+        for log in logs:
+            log.close()
+        logs.clear()
+        threads.clear()
+    assert retired_log() is None and retired_thread() is None
+    assert all(isinstance(key, weakref.ReferenceType) for key in diagnostics.connections)
+    assert all(isinstance(key, weakref.ReferenceType) for key in diagnostics.threads)
+
+
+def test_worker_diagnostics_note_failure_does_not_mask_original_error(env):
+    class NoteFailure(AssertionError):
+        def add_note(self, note):
+            raise RuntimeError("private note error")
+
+    failure = NoteFailure("original assertion")
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        raise failure
+
+    with pytest.raises(NoteFailure) as caught:
+        exercise(env)
+    assert caught.value is failure
+
+
+def test_worker_diagnostics_collection_failure_does_not_mask_assertion(env, monkeypatch):
+    failure = AssertionError("original assertion")
+
+    def fail_frames(error):
+        raise RuntimeError("private collector exception")
+
+    monkeypatch.setattr(_WorkerDiagnostics, "frames", staticmethod(fail_frames))
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        raise failure
+
+    with pytest.raises(AssertionError) as caught:
+        exercise(env)
+    assert caught.value is failure
+    notes = "\n".join(failure.__notes__)
+    assert "collection_failed" in notes and "RuntimeError" in notes
+    assert "private collector exception" not in notes
 
 
 def test_heartbeat_stop_waits_for_the_blocked_beat(env):

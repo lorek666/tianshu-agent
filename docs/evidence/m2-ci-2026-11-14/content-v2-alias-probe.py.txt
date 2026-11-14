@@ -1,0 +1,118 @@
+from pathlib import Path
+from importlib import util
+import hashlib
+import importlib
+import json
+import os
+import sys
+from unittest.mock import patch
+
+ROOT = Path(__file__).parent
+SOURCE = ROOT / "source"
+sys.path[:0] = [str(SOURCE / "src"), str(SOURCE / "tests")]
+m = importlib.import_module("test_m2_acceptance")
+assert Path(m.__file__).resolve() == (SOURCE / "tests/test_m2_acceptance.py").resolve()
+for module_name in ("tianshu.events", "tianshu.leases", "tianshu.loop", "tianshu.tasks", "support"):
+    module = importlib.import_module(module_name)
+    assert Path(module.__file__).resolve().is_relative_to(SOURCE.resolve()), module_name
+assert os.name == "posix", "This probe covers real POSIX symlinks only, not Windows junctions."
+cases = []
+for external in (False, True):
+    label = "external-copy" if external else "original-src"
+    canary = f"PRIVATE_ALIAS_CANARY_{label}_7d9c5ea32b"
+    case_root = ROOT / f"data-independent-{canary}"
+    case_root.mkdir()
+    fixture = m.env.__wrapped__(case_root)
+    env = next(fixture)
+    module_name = "tianshu._reviewer_alias_" + label.replace("-", "_")
+    try:
+        target = Path(m.SRC)
+        original_file = target / "tianshu/leases.py"
+        if external:
+            target = case_root / f"external-{canary}"
+            (target / "tianshu").mkdir(parents=True)
+            (target / "tianshu/leases.py").write_bytes(original_file.read_bytes())
+        alias = case_root / f"source-alias-{canary}"
+        alias.symlink_to(target, target_is_directory=True)
+        alias_file = alias / "tianshu/leases.py"
+        assert alias.is_symlink() and alias.resolve() == target.resolve()
+        assert alias_file.samefile(target / "tianshu/leases.py")
+        original_sha = hashlib.sha256(original_file.read_bytes()).hexdigest()
+        alias_sha = hashlib.sha256(alias_file.read_bytes()).hexdigest()
+        assert alias_sha == original_sha
+        assert alias_file.samefile(original_file) is (not external)
+        assert alias_file.resolve().is_relative_to(Path(m.SRC)) is (not external)
+        spec = util.spec_from_file_location(module_name, alias_file)
+        alias_module = util.module_from_spec(spec)
+        sys.modules[module_name] = alias_module
+        spec.loader.exec_module(alias_module)
+        assert alias_module.LeaseStore.acquire.__code__.co_filename == str(alias_file)
+        run_id, _, _ = env.enqueue(root=env.ws)
+        env.stack.leases.acquire([str(env.ws)], run_id)
+        contender = alias_module.LeaseStore(env.log, identity=m.ProcessIdentity.mint())
+        diagnostic = m._WorkerDiagnostics(env.db)
+        original_transaction = m.EventLog.transaction
+        caught = None
+        with patch.object(m.EventLog, "transaction", lambda log: diagnostic.transaction(log, original_transaction)):
+            try:
+                contender.acquire([str(env.ws)], run_id, steal_stale=False)
+            except alias_module.LeaseConflict as error:
+                caught = error
+        assert isinstance(caught, alias_module.LeaseConflict)
+        assert len(diagnostic.errors) == 1
+        observation = diagnostic.errors[-1]
+        attempts = [event for event in diagnostic.events if event["phase"] == "attempt"]
+        assert len(attempts) == 1
+        assert attempts[0]["caller"] == observation["caller"]
+        frames = [frame for frame in observation["frames"] if frame["function"] in ("acquire", "_acquire_locked")]
+        assert len(frames) == 2
+        assert observation["phase"] == "body"
+        assert diagnostic.active == {} and not env.log.in_transaction
+        if external:
+            assert observation["caller"] is None
+            assert {frame["file"] for frame in frames} == {"<external>"}
+        else:
+            assert observation["caller"]["file"] == "src/tianshu/leases.py"
+            assert observation["caller"]["function"] == "acquire"
+            assert observation["caller"]["line"] > 0
+            assert {frame["file"] for frame in frames} == {"src/tianshu/leases.py"}
+        attached = AssertionError("independent probe notes")
+        diagnostic.annotate(attached)
+        notes = "\n".join(attached.__notes__)
+        serialized = json.dumps({"events": list(diagnostic.events), "errors": list(diagnostic.errors)}, ensure_ascii=False)
+        for private in (canary, str(alias), str(target), str(SOURCE), str(case_root)):
+            assert private not in notes
+            assert private not in serialized
+        assert len(notes) <= 24000 and all(len(line) <= 1200 for line in notes.splitlines())
+        cases.append({
+            "case": label,
+            "real_symlink": True,
+            "alias_path": str(alias_file),
+            "canonical_target": str(alias_file.resolve()),
+            "canonical_inside_src": alias_file.resolve().is_relative_to(Path(m.SRC)),
+            "samefile_original": alias_file.samefile(original_file),
+            "alias_sha256": alias_sha,
+            "original_sha256": original_sha,
+            "co_filename": alias_module.LeaseStore.acquire.__code__.co_filename,
+            "exception_type": type(caught).__name__,
+            "caller": observation["caller"],
+            "lease_frames": frames,
+            "all_frames": observation["frames"],
+            "context_phase": observation["phase"],
+            "event_phases": [e["phase"] for e in diagnostic.events],
+            "active_after": diagnostic.active,
+            "notes_chars": len(notes),
+            "notes_utf8_bytes": len(notes.encode("utf-8")),
+            "canary_and_absolute_paths_absent": True,
+        })
+        (ROOT / "evidence" / f"independent-{label}-notes.txt").write_text(notes + "\n")
+    finally:
+        sys.modules.pop(module_name, None)
+        try:
+            next(fixture)
+        except StopIteration:
+            pass
+result = {"platform": sys.platform, "python": sys.version,
+          "windows_junction_executed": False, "cases": cases}
+(ROOT / "evidence/independent-alias-probe.json").write_text(json.dumps(result, indent=2) + "\n")
+print(json.dumps(result, indent=2))

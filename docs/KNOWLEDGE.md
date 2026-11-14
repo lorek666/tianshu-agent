@@ -26,6 +26,12 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **M2测试诊断修后本机通过，原生CI待核（2026-11-14，提交前）**：原9eb完整门3196 passed/8 skipped虽绿，但独立真实路径别名验收FAIL，原件保留；只补两处canonical和真实别名/外部副本回归后，766a源以其余1111文件精确继承获得独立内容窄PASS。最终1112输入lock/full/ruff全0，**3198 passed/8 skipped（546.63s）**，源/HEAD/status稳定；原六assert/60轮、生产/CI/UI不变。旧独立两个真实BEGIN区分与有界语义按同源继承，不冒充重跑；Windows junction分支本机未执行，新原生执行另核。只补失败现场，不宣称#145/#147或b450原红根因已修，恢复B仍暂停。[M2诊断记录](M2-CI-DIAGNOSTICS-2026-11-14.md)绑定旧FAIL、新PASS及完整门原件。
+
+- **main 正常收尾 CI 新红，根因仍待定位（2026-11-14）**：审批诊断 PR148 已正常保护合入 main `b450c339d546ae2007ed9754e70de0108c4b86c4`，自身 push run43567298082 attempt1 经第二读者确认 `FAIL_THIS_MAIN_PUSH_CI_ONLY`。Windows片1正常收尾测试第55轮出现 `database is locked`，Run queued、无 run.end；Windows合3156 passed/1 failed/37 skipped，required汇总正确拒绝，其余四job成功。本次审批节点通过，#147根因未建立、#145未修，不能并为同因。隔离真实心跳持锁在租约获取和running转换两个BEGIN均产生同指纹，无hold正控通过；人为>5000ms不是原CI根因证明。本轮只补测试侧有界失败现场，原断言/60轮/生产/CI不改；详见[M2诊断记录](M2-CI-DIAGNOSTICS-2026-11-14.md)。
+
+- **恢复B同步仅保存本地对象（2026-11-14）**：本地普通merge `277e82e265b54e0e8fe1b2fc1a99d747e95306d5` 的1127个blob已由第二读者绑定至已测冻结加唯一已审知识库事实delta，结论 `PASS_LOCAL_MERGE_OBJECT_BINDING`。未推送；main新红仍阻断恢复契约PR146推进，B产品全部未实施。该对象身份结论不是新full或新原生CI通过。
+
 - **审批删除根因未定，失败诊断已补（2026-11-14，提交前记录）**：PR #146 head `3e9da0bd63399fc86488018605138b54b22fb427` 首次 run43559488826 attempt1 的 Windows 片0在 Run succeeded 后 old.txt 仍在处失败；原红、未合状态及 issue #147 保留，不归因 flaky/基线或与 #145 同因。固定77源的50次本机未复现不抵消原红。本片保留原13assert/时限，仅补 failure-only 真实链与采集保护；最终源 `f138d6c1` 通过独立短关键字段 delta 验收，本机 lock/full/ruff 全0，3186 passed/8 skipped（544.97s），1080项前后稳定。旧截断与 resource 遗漏的 PARTIAL、观察器过强及人工中断门均保留；正式 Git 对象与原生 CI 需另行绑定，不能外推本记录。[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)给出原件与字符/分页/脱敏边界；恢复B仍未实现。
 
 - **低磁盘PR #144 首轮原生CI失败，测试诊断增量待云端（2026-11-14）**：旧head `96e3e485eb4ecbecadbadb54a60414967ab63649` 的run43549430150 attempt1已结束，Ubuntu/macOS/UI/Windows片0成功，Windows片1两项失败且required汇总失败。当前仅修两测试的CRLF文本协议与60次收尾失败诊断，生产/CI不变；心跳根因仍未复现、未修复。1030源清单 `2922a345` 的本机lock/full/全仓ruff通过（3183 passed / 8 skipped，513.63s），执行前后源与Git状态稳定。两测试已独立窄审通过，含强制真实子进程CRLF正控、坏READY及reason注入call真红；不等于Windows通过或心跳已修。原首红与新公开子集、独立身份见[低磁盘交付记录](LOW-DISK-2026-11-14.md)；下方旧“原生CI待核”为历史时点。
@@ -481,6 +487,10 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **M2诊断验证边界（2026-11-14）**：766a候选已在本机真实POSIX别名输入修复诊断caller丢失，并独立核根外同内容副本仍external；Windows junction分支本机未执行。诊断成功静默、失败附note，但包装及resolve有非零时序成本；它只观察已装配本进程context，不是OS锁owner、外部写者或精确COMMIT起点。新完整本机门不覆盖原Windows根因，正式对象/原生CI另核。
+
+- **正常收尾锁错误未修（2026-11-14）**：main b450原生push CI失败已独立确认；同一queued/五事件指纹可来自两个不同事务BEGIN，当前没有原CI底层帧、SQLite错误码或持锁轨迹，实际根因 `NOT_ESTABLISHED`。本轮测试观测只覆盖已装配的本进程事务，不能排除未观测的外部写者，也不能用本机或PR绿覆盖原main红；恢复B契约推送和产品保持暂停。
+
 - **当前数据生命周期边界（2026-11-14，本次提交前）**：低磁盘 PR #144 已合 main8f2a，PR及main自身首次六job CI均已独立核验通过；issue #145 的旧Run failed原因未知，未关闭。恢复B纯契约PR #146首次CI另有审批后删除未发生失败，issue #147根因未建立，原红仍阻断该提交合并。本片只补有界失败诊断，短关键字段独立验收与最终本机门已通过，不把它们当作新原生CI或根因修复；后续绑定详见[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)。恢复apply/review/resume/abort、解除与完整旧Run恢复均未实现；旧作者时点保留历史含义，当前以精确提交及交付记录为准。
 
 - **T1装配/恢复继承缺口已在T2独立范围内修复（2026-11-14）**：固定已审T1源上的六个受影响测试原样复现失败：4个跨进程pending MCP恢复缺发现注册表、dead-at-dispatch夹具启动前取server、摘要硬退子进程漏传真实memory。T2只补pending MCP按需准备和两个夹具实际实例；原硬退/unknown/对象阻断断言保持。另原并发审批用例固定T1通过，新增执行上下文门后测试两线程手装配缺context，最薄补同连接Snapshot/authority/guard后通过，未放宽生产校验、竞争和一次消费断言。上述不撤销T1此前已审范围；T2 的完整冻结内容与窄 delta 已由第二读者独立 PASS，但仍不扩大为 T3/整功能通过。
@@ -623,6 +633,10 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-14 · M2诊断路径别名真红与窄修收口**：保留9eb独立FAIL、旧完整门及审阅观察器错误；作者仅两处resolve+真实symlink/junction参数化回归，修前1F1P、修后12项诊断与42项整文件绿。第二读者新3P及两类单点行为负控关闭POSIX路径别名缺陷，按1111精确继承既有有界/原异常/真实两个BEGIN证据。root亲读并逐hash保全54件旧FAIL与38件新PASS；最终1112固定源lock/full/ruff0，3198P8skip546.63s，前后稳定。门后只补事实与原字节公开子集，最终对象/新CI另核；原Windows根因及145/147均未销账，恢复B未推进。
+
+- **2026-11-14 · main新红独立销账与M2诊断续做**：亲读并逐hash保全main b450独立FAIL原件77件，以及恢复B本地merge277对象绑定PASS原件10件；原恢复分支保持干净未push。隔离调查原件保留真实heartbeat持锁下两个不同BEGIN的同指纹和无hold正控，明确原CI根因仍未知。另开 `codex/windows-m2-lock-diagnostics`，只授权原正常收尾用例的测试侧有界诊断；保留六assert/60轮、生产/CI与所有旧红，独立验收及本机/原生CI另核，B产品未授。
 
 - **2026-11-14 · 审批失败诊断短关键字段收口**：初版独立PARTIAL确认总截断/长error丢关键事实；第二版独立真红确认短receipt.resource遗漏，原全量由root主动中断exit2并保留，不动GitHub原首红。作者先增断言真红再仅补摘要字段；最终v3独立PASS_DEFINED_DELTA_SCOPE，两新正/两旧真实负控与原成功一次有证据，原13assert及未变真实拒绝/fallback边界按身份继承。最终源f138d6c1在1080项固定输入上lock/full/ruff全0，3186 passed/8 skipped（544.97s），前后身份稳定。只发布事实文档和原字节公开子集；字符而非KB、首页1000事件、任意长字段有损及脱敏/墙钟限制明确保留。原147根因NOT_ESTABLISHED、146未合，正式对象/新CI另绑，恢复B产品和真实付费/soak未启动。
 

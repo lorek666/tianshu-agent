@@ -1,0 +1,13 @@
+{
+  "v1_sha256": "d8224bc93d4f2929ea7ca40556c223fc0a46b6ab1a97b847f7e287a3c63083db",
+  "v2_sha256": "4f689bfeb09cd27a8fcd954ce168dd8302a851ca1135f4e2d7db4ea971f7cfbc",
+  "reason": "v1 incorrectly expected heartbeat active at Worker._drive catch; original HeartbeatLoop.__exit__ joins it first. Correct snapshot is transaction error before release; candidate unchanged.",
+  "v1_failures_retained": [
+    "probe-lease.stderr",
+    "probe-running.stderr"
+  ],
+  "v2_repeats_only": [
+    "lease",
+    "running"
+  ]
+}

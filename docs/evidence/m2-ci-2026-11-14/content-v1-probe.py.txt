@@ -1,0 +1,167 @@
+import contextlib,io,importlib,json,os,sqlite3,sys,threading,time,types
+from pathlib import Path
+from unittest.mock import patch
+ROOT=Path(__file__).resolve().parent;SRC=(ROOT/'source').resolve();sys.path[:0]=[str(SRC/'src'),str(SRC/'tests')]
+mode=sys.argv[1];out=ROOT/('probe-'+mode+'.json')
+mods={}
+for name in ('tianshu.worker','tianshu.events','tianshu.loop','tianshu.tasks','tianshu.leases','test_m2_acceptance'):
+ mod=importlib.import_module(name);p=Path(mod.__file__).resolve();assert p.is_relative_to(SRC),(name,str(p));mods[name]=str(p)
+m=importlib.import_module('test_m2_acceptance');from tianshu import sandbox
+sandbox.configure_backend('local_fs')
+data=ROOT/('data-v2-'+mode);data.mkdir();os.environ['TIANSHU_AUTHORITY_ROOT']=str(data/'authority')
+gen=m.env.__wrapped__(data);env=next(gen)
+result={'mode':mode,'mechanism':'one isolated process, real main+heartbeat threads and two connections; no external writer','pid':os.getpid(),'imports':mods,'python':sys.version,'sqlite':sqlite3.sqlite_version}
+try:
+ if mode=='semantics':
+  D=m._WorkerDiagnostics;original=m.EventLog.transaction;d=D(env.db);conn=env.log.conn
+  conn.execute('CREATE TABLE review_values(value INTEGER)')
+  body_error=AssertionError('private-body-canary');observed=[]
+  @contextlib.contextmanager
+  def observing(log):
+   with original(log) as tx:
+    observed.append(tx);yield tx
+  with d.transaction(env.log,observing) as tx:
+   assert tx is observed[-1];conn.execute('INSERT INTO review_values VALUES(1)')
+   with d.transaction(env.log,observing) as inner:
+    assert inner is observed[-1];conn.execute('INSERT INTO review_values VALUES(2)')
+  try:
+   with d.transaction(env.log,original):
+    conn.execute('INSERT INTO review_values VALUES(3)');raise body_error
+  except AssertionError as error:assert error is body_error
+  assert [r[0] for r in conn.execute('SELECT value FROM review_values')]==[1,2]
+  assert not conn.in_transaction and not env.log.in_transaction and not d.active
+  reuse=[e for e in d.events if e['phase']=='reuse'];assert len(reuse)==1 and reuse[0]['nested'] is True
+  assert all(e['phase'] in ('attempt','acquired','reuse','body-return','exit') for e in d.events)
+  commit_error=sqlite3.OperationalError('synthetic commit fault');commands=[]
+  class CommitProxy:
+   def __getattr__(self,n):return getattr(conn,n)
+   def execute(self,sql,*args):
+    commands.append(sql)
+    if sql=='COMMIT':raise commit_error
+    return conn.execute(sql,*args)
+  env.log._conn=CommitProxy()
+  try:
+   try:
+    with d.transaction(env.log,original):conn.execute('INSERT INTO review_values VALUES(4)')
+   except sqlite3.OperationalError as error:assert error is commit_error
+   else:raise AssertionError('commit error disappeared')
+  finally:env.log._conn=conn
+  assert commands==['BEGIN IMMEDIATE','COMMIT','ROLLBACK'] and not conn.in_transaction and not env.log.in_transaction
+  assert [r[0] for r in conn.execute('SELECT value FROM review_values')]==[1,2]
+  collector=D(env.db)
+  class BadEvents:
+   maxlen=128
+   def __len__(self):return 0
+   def append(self,item):raise RuntimeError('private-event-recorder-fault')
+  collector.events=BadEvents()
+  with collector.transaction(env.log,original):conn.execute('INSERT INTO review_values VALUES(5)')
+  assert conn.execute('SELECT max(value) FROM review_values').fetchone()[0]==5
+  assert collector.counts['collection_failed']>0 and not collector.active
+  collector2=D(env.db)
+  def bad_frames(error):raise RuntimeError('private-frames-recorder-fault')
+  collector2.frames=bad_frames
+  try:
+   with collector2.transaction(env.log,original):raise body_error
+  except AssertionError as error:assert error is body_error
+  else:raise AssertionError('body error disappeared')
+  assert collector2.counts['collection_failed']>0 and not collector2.active and not conn.in_transaction
+  claim=types.SimpleNamespace(run_id='review-run',job_id='review-job',claim_epoch=1)
+  def beats(seq):
+   diag=D(env.db);calls=[]
+   def raw(owner,claim):
+    value=seq[len(calls)];calls.append(value)
+    if isinstance(value,BaseException):raise value
+    return value
+   loop=m.HeartbeatLoop(lambda:diag.call('beat',raw,None,claim),interval_ms=1);loop._run();return loop,calls,diag
+  busy=[sqlite3.OperationalError('database is locked') for _ in range(4)]
+  loop,calls,_=beats(busy);assert len(calls)==4 and loop.error is busy[3] and loop.beats==0
+  seq=busy[:3]+[True]+busy[:3]+[False];loop,calls,_=beats(seq);assert len(calls)==8 and loop.error is None and loop.beats==1
+  native=sqlite3.OperationalError('not a retryable failure');loop,calls,_=beats([native]);assert len(calls)==1 and loop.error is native
+  loop,calls,_=beats([False]);assert len(calls)==1 and loop.error is None and loop.beats==0
+  bound=D(env.db)
+  for _ in range(180):
+   with bound.transaction(env.log,original):pass
+  def recursive(n):
+   if n:return recursive(n-1)
+   raise RuntimeError('private-message-canary')
+  try:recursive(40)
+  except RuntimeError as error:
+   error.__cause__=error;bound.capture('drive',error)
+  for _ in range(20):bound.capture('test',body_error)
+  note=AssertionError('original');bound.annotate(note);notes='\n'.join(note.__notes__)
+  assert len(bound.events)==128 and len(bound.errors)==8 and bound.counts['frames_dropped']>0
+  assert 'private-message-canary' not in notes and 'private-body-canary' not in notes
+  assert len(notes)<=24000 and all(len(l)<=1200 for l in notes.splitlines())
+  assert 'sqlite_errorcode' in notes and 'drive.caller:' in notes
+  result.update({'transaction_identity_commit_rollback':True,'commit_failure_same_object':True,'commit_failure_commands':commands,'nested_reuse_only':True,'record_event_failure_success_unchanged':True,'record_frames_failure_original_identity':True,'heartbeat_retry_semantics':True,'bounds':{'ring':len(bound.events),'errors':len(bound.errors),'frames_dropped':bound.counts['frames_dropped'],'chars':len(notes),'utf8_bytes':len(notes.encode()),'cause_context_retained':0},'secret_canaries_absent':True})
+ else:
+  mode_base='lease' if mode=='red-no-drive-capture' else mode
+  held=threading.Event();release=threading.Event();requested=threading.Event();records=[];instances=[];raw_errors=[];worker_box=[]
+  Base=m._WorkerDiagnostics
+  class Observed(Base):
+   def __init__(self,*a,**kw):super().__init__(*a,**kw);instances.append(self)
+   def capture(self,source,error,*a,**kw):
+    if mode=='red-no-drive-capture' and source=='drive':return
+    return super().capture(source,error,*a,**kw)
+  original_engine=m.Worker._engine;original_transition=m.worker_module.AgentLoop.__module__
+  from tianshu.tasks import TaskStore
+  product_transition=TaskStore.transition
+  def engine(worker,claim):
+   if mode_base=='lease':assert held.wait(10),'heartbeat did not acquire'
+   return original_engine(worker,claim)
+  def transition(store,run_id,state,*a,**kw):
+   if mode_base=='running' and state=='running':
+    requested.set();assert held.wait(10),'heartbeat did not acquire after lease'
+   return product_transition(store,run_id,state,*a,**kw)
+  with patch.object(m,'_WorkerDiagnostics',Observed):
+   @m._diagnose_worker_failure
+   def exercise(env):
+    diagnostic_transaction=m.EventLog.transaction
+    @contextlib.contextmanager
+    def holding(log):
+     try:
+      with diagnostic_transaction(log) as tx:
+       should=mode_base=='lease' or (mode_base=='running' and requested.is_set())
+       if should and threading.current_thread().name=='tianshu-heartbeat' and not held.is_set():
+        records.append({'phase':'actual-heartbeat-tx-held','pid':os.getpid(),'native':log.conn.in_transaction,'thread':threading.current_thread().name});held.set()
+        assert release.wait(15),'release timed out'
+       yield tx
+     except sqlite3.OperationalError as error:
+      raw_errors.append(error);records.append({'phase':'real-sqlite-error','pid':os.getpid(),'thread':threading.current_thread().name,'code':error.sqlite_errorcode,'name':error.sqlite_errorname});release.set();raise
+    run_id,_,job_id=env.enqueue(root=env.ws,out='review.md')
+    worker=m.Worker(env.stack,model=m.ScriptedModel([m._create('review.md','x','c1'),m._end()]),heartbeat_interval_ms=1);worker_box.append(worker)
+    with patch.object(m.EventLog,'transaction',holding),patch.object(m.Worker,'_engine',engine),patch.object(TaskStore,'transition',transition):
+     try:
+      assert worker.run_once() is True
+      run=env.stack.tasks.get_run(run_id)
+      result.update({'state':run.state,'errors':list(worker.errors),'events':env.events(run_id),'job_state':env.stack.claims.get(job_id).state,'busy_timeout':env.log.conn.execute('PRAGMA busy_timeout').fetchone()[0]})
+      assert run.state=='succeeded',(worker.errors,env.events(run_id))
+      assert worker.errors==[],worker.errors
+     finally:release.set();worker.close()
+   stdout,stderr=io.StringIO(),io.StringIO();caught=None
+   with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr):
+    try:exercise(env)
+    except AssertionError as error:caught=error
+  diag=instances[0];result['records']=records;result['stdout_chars']=len(stdout.getvalue());result['stderr_chars']=len(stderr.getvalue());assert not stdout.getvalue() and not stderr.getvalue()
+  if mode_base=='no-hold':
+   assert caught is None and result['state']=='succeeded' and not result['errors'];result['silent_success']=True
+  else:
+   assert caught is not None and result['state']=='queued' and result['errors']==['OperationalError: database is locked']
+   assert result['events']==['run.start','job.enqueued','run.state','job.claimed','job.parked']
+   assert result['busy_timeout']==5000 and len(raw_errors)==1 and raw_errors[0].sqlite_errorcode==sqlite3.SQLITE_BUSY
+   drive=diag.pinned.get('drive');assert drive is not None,'ORACLE_REJECTED: real swallowed drive capture missing'
+   assert drive['sqlite_errorcode']==5 and drive['sqlite_errorname']=='SQLITE_BUSY'
+   functions=[f['function'] for f in drive['frames']]
+   assert 'resume_run' in functions
+   assert ('_acquire_leases' in functions and 'acquire' in functions) if mode_base=='lease' else ('transition' in functions and '_acquire_leases' not in functions)
+   transaction=diag.pinned['transaction'];expected='acquire' if mode_base=='lease' else 'transition';assert transaction['caller']['function']==expected
+   assert transaction['phase']=='enter' and not transaction['nested']
+   assert any(e['thread_name']=='tianshu-heartbeat' and e['native_in_transaction'] for e in transaction['active_at_error'])
+   notes='\n'.join(caught.__notes__);assert len(notes)<=24000
+   assert '"source": "drive"' in notes and expected in notes and 'SQLITE_BUSY' in notes
+   assert not diag.active
+   result.update({'real_swallowed_drive_captured':True,'diagnostic_same_code_as_real_error':True,'functions':functions,'transaction_caller':transaction['caller'],'main_phase':transaction['phase'],'actual_same_process_two_connections':len({e['connection'] for e in diag.events})>=2,'active_heartbeat_snapshot':transaction['active_at_error'],'drive_catch_active_after_join':drive['active_at_error'],'note_chars':len(notes),'note_utf8_bytes':len(notes.encode()),'notes':notes,'root_cause':'NOT_ESTABLISHED'})
+ result['passed']=True;out.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n');print(json.dumps({'mode':mode,'passed':True}))
+finally:
+ try:next(gen)
+ except StopIteration:pass
