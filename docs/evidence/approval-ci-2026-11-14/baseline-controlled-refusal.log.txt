@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.2.0, pluggy-1.7.0 -- /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+configfile: pyproject.toml
+collecting ... collected 1 item
+
+tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues FAILED [100%]
+
+=================================== FAILURES ===================================
+____________ test_approval_is_decided_through_ipc_and_run_continues ____________
+tests/test_integration_m5.py:271: in test_approval_is_decided_through_ipc_and_run_continues
+    assert not (ws / "old.txt").exists()
+E   AssertionError: assert not True
+E    +  where True = exists()
+E    +    where exists = (PosixPath('/tmp/m5int-agepagyk/ws') / 'old.txt').exists
+----------------------------- Captured stderr call -----------------------------
+[tianshu-daemon] 收到 shutdown（reason=test）
+[tianshu-daemon] daemon 退出（reason=test）
+============================== 1 failed in 0.92s ===============================

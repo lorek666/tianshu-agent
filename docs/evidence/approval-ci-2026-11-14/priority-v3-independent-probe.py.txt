@@ -1,0 +1,219 @@
+"""Prepared only. Execute after root supplies a new freeze and authorizes the delta."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--test-sha256", required=True)
+    parser.add_argument("--expect", choices=("new-positive", "old-negative"), required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    source = args.source.resolve()
+    target = source / "tests/test_integration_m5.py"
+    target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    assert target_hash == args.test_sha256
+    if args.expect == "old-negative":
+        assert target_hash == "fa9921084936dd0cb9374418e1cf9601a7c4789f5b54fae462baf275326c6fc7"
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(source / "src"))
+    watched = sorted((source / "src").rglob("*.py")) + [target]
+    before = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest() for p in watched}
+    spec = importlib.util.spec_from_file_location("independent_frozen_delta_m5", target)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    facts = {"expectation": args.expect, "source": str(source), "test_sha256": target_hash, "cases": {}}
+
+    def checkpoint(phase):
+        facts["phase"] = phase
+        facts["test_import"] = str(Path(module.__file__).resolve())
+        facts["imports"] = {name: str(Path(mod.__file__).resolve()) for name, mod in sys.modules.items()
+                            if (name == "tianshu" or name.startswith("tianshu.")) and getattr(mod, "__file__", None)}
+        facts["all_tianshu_imports_from_copy"] = all(Path(p).is_relative_to(source / "src")
+                                                   for p in facts["imports"].values())
+        facts["source_hashes_before"] = before
+        facts["source_hashes_at_checkpoint"] = {
+            str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest() for p in watched}
+        facts["source_unchanged_at_checkpoint"] = facts["source_hashes_at_checkpoint"] == before
+        (out / "checkpoint.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2) + "\n")
+
+    class ThinClient:
+        def __init__(self, page):
+            self.page, self.calls = page, []
+
+        def call(self, method, params):
+            self.calls.append({"method": method, "params": params})
+            if method == "run.status":
+                return {"run": {"run_id": "synthetic_run", "state": "succeeded"}}
+            if method == "approvals.list":
+                return {"approvals": []}
+            if method == "events.run":
+                return self.page
+            raise AssertionError("Unexpected method")
+
+    def objects(text):
+        result, invalid = [], []
+
+        def walk(value):
+            if isinstance(value, dict):
+                result.append(value)
+                for child in value.values():
+                    walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child)
+
+        for number, line in enumerate(text.splitlines(), 1):
+            opening = line.find("{")
+            if opening < 0:
+                continue
+            try:
+                value, _ = json.JSONDecoder().raw_decode(line[opening:])
+            except json.JSONDecodeError:
+                invalid.append(number)
+            else:
+                walk(value)
+        return result, invalid
+
+    def capture(name, events, has_more):
+        root = out / name
+        root.mkdir()
+        page = {"events": events, "has_more": has_more}
+        input_before = json.dumps(page, ensure_ascii=False, sort_keys=True)
+        client = ThinClient(page)
+        original = AssertionError("independent original assertion")
+        try:
+            raise original
+        except AssertionError as caught:
+            original_tb = caught.__traceback__
+            module._note_approval_failure(caught, client, root, "synthetic_run", {}, {}, {})
+            assert caught is original and caught.__traceback__ is original_tb
+        text = "\n".join(original.__notes__)
+        (root / "notes.txt").write_text(text + "\n")
+        (root / "input.json").write_text(input_before + "\n")
+        parsed, invalid = objects(text)
+        row = {"chars": len(text), "utf8_bytes": len(text.encode()),
+               "calls": client.calls, "item_truncated": "[truncated item]" in text,
+               "total_truncated": "[truncated total]" in text,
+               "unparseable_json_line_numbers": invalid,
+               "original_exception_identity_and_traceback": True,
+               "input_unchanged": input_before == json.dumps(page, ensure_ascii=False, sort_keys=True),
+               "db_created": (root / "events.db").exists()}
+        facts["cases"][name] = row
+        assert len(text) <= 24000
+        assert all(len(line) <= 1200 for line in text.splitlines())
+        assert [c["method"] for c in client.calls] == ["run.status", "approvals.list", "events.run"]
+        assert row["input_unchanged"] and not row["db_created"]
+        return text, parsed, row
+
+    # The same long-chain payload as v1: 60 long noise events and four required tail events.
+    events = [{"seq": seq, "type": "dispatch.requested", "payload": {
+        "call_id": f"noise_{seq}", "reason": "诊断" * 1000}} for seq in range(1, 61)]
+    events.extend([
+        {"seq": 61, "type": "tool.result", "payload": {"call_id": "c1", "status": "rejected",
+            "effect_state": "none_applied", "error": "tail-required-error"}},
+        {"seq": 62, "type": "receipt", "payload": {"call_id": "c1", "resource": "tail-required-resource",
+            "after_state": "tail-required-after", "intent_seq": 7}},
+        {"seq": 63, "type": "run.end", "payload": {"outcome": "tail-required-end"}},
+        {"seq": 64, "type": "run.finish", "payload": {"outcome": "tail-required-finish"}},
+    ])
+    text, parsed, row = capture("volume_and_unicode", events, True)
+    row["critical_facts"] = {
+        "c1_result_identity_status_effect_error": any(
+            d.get("call_id") == "c1" and d.get("status") == "rejected"
+            and d.get("effect_state") == "none_applied"
+            and (d.get("error") == "tail-required-error"
+                 or isinstance(d.get("output"), dict) and d["output"].get("error") == "tail-required-error")
+            for d in parsed),
+        "c1_receipt_identity_resource_after_state_intent_seq": any(
+            d.get("call_id") == "c1" and d.get("resource") == "tail-required-resource"
+            and d.get("after_state") == "tail-required-after" and d.get("intent_seq") == 7
+            for d in parsed),
+        "run_end": any(d.get("outcome") == "tail-required-end" for d in parsed),
+        "run_finish": any(d.get("outcome") == "tail-required-finish" for d in parsed),
+    }
+    row["critical_marker_offsets"] = {marker: text.find(marker) for marker in (
+        "tail-required-error", "tail-required-resource", "tail-required-after",
+        "tail-required-end", "tail-required-finish")}
+    checkpoint("longchain-before-acceptance-assertion")
+    if args.expect == "new-positive":
+        assert all(row["critical_facts"].values()), row["critical_facts"]
+    else:
+        assert not any(row["critical_facts"].values()), row["critical_facts"]
+        assert row["total_truncated"] and row["chars"] == 24000 and row["utf8_bytes"] > 24000
+
+    def visible_truncated_priority_error(text):
+        observed = []
+        for line in text.splitlines():
+            if not line.startswith("priority ") or " tool.result: " not in line:
+                continue
+            payload = line.split(": ", 1)[1]
+            if ', "error": ' not in payload:
+                continue
+            short, tail = payload.split(', "error": ', 1)
+            try:
+                fields = json.loads(short + "}")
+            except json.JSONDecodeError:
+                continue
+            matches = (fields.get("call_id") == "c1" and fields.get("status") == "rejected"
+                       and fields.get("effect_state") == "none_applied"
+                       and fields.get("rule_id") == "tail-rule-identifier"
+                       and tail.startswith('"' + "错误" * 20))
+            if matches:
+                observed.append({"short_fields": fields, "error_prefix_40_chars_visible": True,
+                                 "line_label": line.split(": ", 1)[0]})
+        return observed
+
+    text, parsed, row = capture("item_field_order", [
+        {"seq": 1, "type": "tool.result", "payload": {"call_id": "c1", "status": "rejected",
+            "effect_state": "none_applied", "output": {"error": "错误" * 1200,
+                                                        "rule_id": "tail-rule-identifier"}}}
+    ], False)
+    row["rule_id_raw_visible"] = "tail-rule-identifier" in text
+    row["c1_result_with_rule_id_and_error_prefix"] = any(
+        d.get("call_id") == "c1" and d.get("status") == "rejected"
+        and d.get("effect_state") == "none_applied"
+        and any(isinstance(error, dict) and error.get("rule_id") == "tail-rule-identifier"
+                and isinstance(error.get("error"), str) and error["error"].startswith("错误" * 20)
+                for error in (d, d.get("output"))) for d in parsed)
+    row["observed_priority_prefix"] = visible_truncated_priority_error(text)
+    row["c1_result_with_rule_id_and_error_prefix"] = (
+        row["c1_result_with_rule_id_and_error_prefix"] or bool(row["observed_priority_prefix"]))
+    checkpoint("longerror-before-acceptance-assertion")
+    if args.expect == "new-positive":
+        assert row["rule_id_raw_visible"] and row["c1_result_with_rule_id_and_error_prefix"]
+    else:
+        assert not row["rule_id_raw_visible"] and row["item_truncated"]
+
+    after = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest() for p in watched}
+    assert after == before
+    facts["source_hashes_before"] = before
+    facts["source_hashes_after"] = after
+    facts["source_unchanged"] = True
+    facts["test_import"] = str(Path(module.__file__).resolve())
+    facts["imports"] = {name: str(Path(mod.__file__).resolve()) for name, mod in sys.modules.items()
+                        if (name == "tianshu" or name.startswith("tianshu.")) and getattr(mod, "__file__", None)}
+    facts["all_tianshu_imports_from_copy"] = all(Path(p).is_relative_to(source / "src")
+                                                for p in facts["imports"].values())
+    assert facts["all_tianshu_imports_from_copy"]
+    facts["exit_code"] = 0
+    facts["interpretation"] = ("new candidate critical facts positively visible" if args.expect == "new-positive"
+                                else "old frozen candidate limitations reproduced as a genuine negative control")
+    (out / "result.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps({"expectation": args.expect, "exit_code": 0,
+                      "critical_facts": facts["cases"]["volume_and_unicode"]["critical_facts"],
+                      "rule_id_visible": facts["cases"]["item_field_order"]["rule_id_raw_visible"]}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

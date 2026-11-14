@@ -1,0 +1,53 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.2.0, pluggy-1.7.0 -- /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+configfile: pyproject.toml
+collecting ... collected 1 item
+
+tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues FAILED [100%]
+
+=================================== FAILURES ===================================
+____________ test_approval_is_decided_through_ipc_and_run_continues ____________
+tests/test_integration_m5.py:413: in test_approval_is_decided_through_ipc_and_run_continues
+    assert not (ws / "old.txt").exists()
+E   AssertionError: assert not True
+E    +  where True = exists()
+E    +    where exists = (PosixPath('/tmp/m5int-v18m63lo/ws') / 'old.txt').exists
+E   M5 approval diagnostics: item<=1200 chars; events<=40; total<=24000 chars
+E   run.cached: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "state": "succeeded", "effect_state": "none_applied", "outcome": "succeeded", "goal_revision": 1, "lease_epoch": 1}
+E   approval.card: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "state": "pending", "rule_id": "c4.delete", "reason": "删除需要审批", "action": "delete", "approval_id": "appr_97cc3032d0db", "resources": ["/private/tmp/m5int-v18m63lo/ws/old.txt"], "created_at": 1794634419991, "expires_at": 1794635019991}
+E   approval.decided: {"resumed": true, "approval": {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "state": "approved", "rule_id": "c4.delete", "reason": "删除需要审批", "action": "delete", "approval_id": "appr_97cc3032d0db", "resources": ["/private/tmp/m5int-v18m63lo/ws/old.txt"], "created_at": 1794634419991, "expires_at": 1794635019991}, "missing": false}
+E   old.txt: {"path": "/tmp/m5int-v18m63lo/ws/old.txt", "exists": true, "size": 21, "mode": 33188, "mtime_ns": 1794634419731031233}
+E   run.status: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "state": "succeeded", "effect_state": "none_applied", "outcome": "succeeded", "goal_revision": 1, "lease_epoch": 1}
+E   approvals.list: {"cards": [], "truncated": false}
+E   leases.current: {"rows": [], "missing": true, "truncated": false}
+E   events.run: {"received": 34, "chain_count": 24, "truncated": false, "missing_in_page": ["receipt"]}
+E   seq=2 run.start: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "goal_revision": 1, "lease_epoch": 1}
+E   seq=3 job.enqueued: {"run_id": "run_83fe52522633", "job_id": "job_3eda190a1ac8"}
+E   seq=4 job.claimed: {"run_id": "run_83fe52522633", "job_id": "job_3eda190a1ac8", "claim_epoch": 1, "owner_pid": 46328, "owner_instance_id": "ac7a63942094420e9e84e4a041723df8"}
+E   seq=5 run.state: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "reason": "resumed", "claim_epoch": 1, "from": "created", "to": "running"}
+E   seq=10 approval.requested: {"rule_id": "c4.delete", "reason": "删除需要审批", "action": "delete", "request_id": "req_3ddd415b0861", "approval_id": "appr_97cc3032d0db", "resources": ["/private/tmp/m5int-v18m63lo/ws/old.txt"], "expires_at": 1794635019991}
+E   seq=11 dispatch.requested: {"rule_id": "c4.delete", "action": "delete", "decision": "approve", "request_id": "req_3ddd415b0861", "approval_id": "appr_97cc3032d0db", "resources": ["/private/tmp/m5int-v18m63lo/ws/old.txt"]}
+E   seq=13 run.state: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "reason": "approval_pending", "claim_epoch": 1, "from": "running", "to": "waiting_approval"}
+E   seq=14 job.parked: {"run_id": "run_83fe52522633", "reason": "waiting_approval", "job_id": "job_3eda190a1ac8", "claim_epoch": 1, "owner_pid": 46328, "owner_instance_id": "ac7a63942094420e9e84e4a041723df8"}
+E   seq=15 approval.decided: {"decision": "approved", "approval_id": "appr_97cc3032d0db"}
+E   seq=16 job.claimed: {"run_id": "run_83fe52522633", "job_id": "job_3eda190a1ac8", "claim_epoch": 2, "owner_pid": 46328, "owner_instance_id": "ac7a63942094420e9e84e4a041723df8"}
+E   seq=17 run.state: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "reason": "resumed", "claim_epoch": 2, "from": "waiting_approval", "to": "running"}
+E   seq=18 dispatch.requested: {"rule_id": "c4.delete", "action": "delete", "decision": "approve", "request_id": "req_ab10a4df783e", "approval_id": "appr_97cc3032d0db", "resources": ["/private/tmp/m5int-v18m63lo/ws/old.txt"]}
+E   seq=19 approval.consumed: {"approval_id": "appr_97cc3032d0db"}
+E   seq=20 grant.issued: {"action": "delete", "grant_id": "grant_8656a647ece2", "expires_at": 1794634450126}
+E   seq=21 grant.consumed: {"grant_id": "grant_8656a647ece2"}
+E   seq=22 tool.intent: {"call_id": "c1", "tool_id": "delete_file", "request_id": "req_ab10a4df783e", "dispatch_id": "disp_989554fdef3e7601", "approval_id": "appr_97cc3032d0db", "grant_id": "grant_8656a647ece2", "claim_epoch": 2, "args": {"path": "old.txt"}}
+E   seq=23 dispatch.admitted: {"call_id": "c1", "request_id": "req_ab10a4df783e", "approval_id": "appr_97cc3032d0db", "grant_id": "grant_8656a647ece2", "intent_seq": 22}
+E   seq=24 execution.started: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "resources": ["/private/tmp/m5int-v18m63lo/ws"], "goal_revision": 1, "lease_epoch": 1}
+E   seq=25 dispatch.rejected: {"call_id": "c1", "rule_id": "dispatch.not_admitted", "reason": "ToolNotAllowed: issue147 controlled refusal after normal verification", "request_id": "req_ab10a4df783e", "dispatch_id": "disp_989554fdef3e7601", "phase": "guard"}
+E   seq=26 tool.result: {"call_id": "c1", "tool_id": "delete_file", "status": "rejected", "effect_state": "none_applied", "output": {"error": "ToolNotAllowed: issue147 controlled refusal after normal verification", "rule_id": "dispatch.not_admitted", "request_id": "req_ab10a4df783e"}}
+E   seq=27 run.effect: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "effect_state": "none_applied"}
+E   seq=33 job.finished: {"run_id": "run_83fe52522633", "outcome": "succeeded", "job_id": "job_3eda190a1ac8", "claim_epoch": 2, "owner_pid": 46328, "owner_instance_id": "ac7a63942094420e9e84e4a041723df8"}
+E   seq=34 run.end: {"effect_state": "none_applied", "outcome": "noop", "error": null, "receipt_ids": []}
+E   seq=35 run.finish: {"run_id": "run_83fe52522633", "task_id": "task_69c5803db3dd", "effect_state": "none_applied", "outcome": "succeeded"}
+----------------------------- Captured stderr call -----------------------------
+[tianshu-daemon] 收到 shutdown（reason=test）
+[tianshu-daemon] daemon 退出（reason=test）
+============================== 1 failed in 1.02s ===============================

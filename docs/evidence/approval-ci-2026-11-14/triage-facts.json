@@ -1,0 +1,523 @@
+{
+  "kind": "INDEPENDENT_NARROW_NATIVE_CI_FAILURE_TRIAGE",
+  "date": "2026-11-14",
+  "reviewer": "/root/review_admission_contract",
+  "verdict": "NOT_ESTABLISHED",
+  "root_cause_established": false,
+  "merge_approved": false,
+  "scope": "fixed Git objects and supplied immutable CI originals; unchanged original offline integration test only, at most 50 runs in a new /tmp source copy",
+  "fixed_objects": {
+    "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+    "parent": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+    "head_tree": "0348cdf86e290253f6bf6b8064c046bf1b687779",
+    "actual_CI_checkout": "819cc342b8359ce0e45a6b3b4b75907e8829a573",
+    "actual_checkout_tree_as_collected": "0348cdf86e290253f6bf6b8064c046bf1b687779",
+    "head_and_actual_checkout_tree_equal": true,
+    "actual_checkout_log_line": 90,
+    "checkout_object_provenance": "supplied checkout-git-commit.json, including signed payload; no new API call",
+    "copy_source_manifest": "source-manifest.json",
+    "fixed_copy_files": 77,
+    "all_copy_files_match_fixed_head": true,
+    "all_copy_files_match_parent": true,
+    "parent_test_runs": 0,
+    "baseline_causation_proved": false
+  },
+  "native_CI": {
+    "run_id": 43559488826,
+    "attempt": 1,
+    "PR": 146,
+    "event": "pull_request",
+    "conclusion": "failure",
+    "collector_errors": [],
+    "collector_exit_from_root_handoff": 1,
+    "collector_PTY_exit_independently_observed": false,
+    "collected_file_count": 90,
+    "jobs": [
+      {
+        "id": 132339743945,
+        "name": "windows shard 1 · py3.12",
+        "conclusion": "success"
+      },
+      {
+        "id": 132339744125,
+        "name": "ui · typecheck / test / build",
+        "conclusion": "success"
+      },
+      {
+        "id": 132339744259,
+        "name": "test (ubuntu-latest) · py3.12",
+        "conclusion": "success"
+      },
+      {
+        "id": 132339744300,
+        "name": "test (macos-latest) · py3.12",
+        "conclusion": "success"
+      },
+      {
+        "id": 132339744589,
+        "name": "windows shard 0 · py3.12",
+        "conclusion": "failure"
+      },
+      {
+        "id": 132343301042,
+        "name": "test (windows-latest) · py3.12",
+        "conclusion": "failure"
+      }
+    ],
+    "failure_job_id": 132339744589,
+    "failure_log": "/tmp/tianshu-g3-20261113/restore-b-pr146-native-ci-20261114/job-132339744589.log",
+    "failure_log_sha256": "a9bcbac71119e6962f63713582aba3269813dabfd78061e3102ab5c661be1233",
+    "aggregate_job_id": 132343301042,
+    "aggregate_reason": "Windows shard jobs did not all succeed",
+    "platform_from_failure_log": "Microsoft Windows Server 2025 / windows-2025-vs2026 / CPython 3.12.16 / pytest 9.2.0",
+    "failed": 1,
+    "passed": 1583,
+    "skipped": 12,
+    "deselected": 1595,
+    "pytest_seconds": 800.66,
+    "failure_nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+    "failure_line": 271,
+    "failure_expression": "assert not (ws / \"old.txt\").exists()",
+    "actual_observation": "Path.exists() returned True after the preceding run.state == succeeded assertion passed",
+    "target_phase_reports": [
+      {
+        "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+        "when": "setup",
+        "outcome": "passed"
+      },
+      {
+        "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+        "when": "call",
+        "outcome": "failed"
+      },
+      {
+        "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+        "when": "teardown",
+        "outcome": "passed"
+      }
+    ],
+    "earlier_assertions_completed": [
+      "waiting_approval",
+      "exactly one delete approval",
+      "old.txt exists before approval",
+      "approvals.decide returned resumed=True",
+      "run.state is succeeded"
+    ],
+    "later_assertions_not_reached": [
+      "approval.requested/decided/consumed event presence",
+      "receipt event presence",
+      "approvals.list empty"
+    ],
+    "actual_tool_result_or_receipt_payload_present_in_supplied_failure_output": false,
+    "artifact_bindings": [
+      {
+        "artifact_id": 14100216373,
+        "zip_path": "/tmp/tianshu-g3-20261113/restore-b-pr146-native-ci-20261114/artifact-14100216373.zip",
+        "zip_sha256": "26722805424701fcca4af1ffb92933d6310d2edc8897ebc1159a50aaebb4257a",
+        "report_member": "shard.json",
+        "report_sha256": "a35523e127e93bf57cbe53cd79fe774e309bedae2a0a2c7de1196b22510193b0",
+        "report_bytes": 1307922,
+        "shard_index": 0,
+        "checkout_sha": "819cc342b8359ce0e45a6b3b4b75907e8829a573",
+        "full_collection_count": 3191,
+        "selected_count": 1596,
+        "stage_report_count": 4777,
+        "finished_count": 1596,
+        "pytest_session_exit": 1
+      },
+      {
+        "artifact_id": 14099759454,
+        "zip_path": "/tmp/tianshu-g3-20261113/restore-b-pr146-native-ci-20261114/artifact-14099759454.zip",
+        "zip_sha256": "0124af1323aaf56a89ba2111be1466747ddb31048d4e379c1a1749897cf11365",
+        "report_member": "shard.json",
+        "report_sha256": "ab2d118fdaee43898f14a8d48f671b852f43780ec9089ff8656621b8755c8a60",
+        "report_bytes": 1308375,
+        "shard_index": 1,
+        "checkout_sha": "819cc342b8359ce0e45a6b3b4b75907e8829a573",
+        "full_collection_count": 3191,
+        "selected_count": 1595,
+        "stage_report_count": 4763,
+        "finished_count": 1595,
+        "pytest_session_exit": 0
+      }
+    ],
+    "collection_verification": {
+      "full_ordered_nodeid_file_pairs_equal": true,
+      "full_count": 3191,
+      "selected_sets_disjoint_and_cover_full": true,
+      "finished_lists_cover_selected": true,
+      "stage_keys_unique": true,
+      "only_failed_stage": [
+        {
+          "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+          "when": "call",
+          "outcome": "failed"
+        }
+      ]
+    }
+  },
+  "local_reproduction": {
+    "source": "results.json",
+    "runner": "runner.py",
+    "exact_bootstrap": "bootstrap.py.txt",
+    "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+    "original_test_byte_for_byte_unchanged": true,
+    "original_assertions_preserved": true,
+    "new_process_per_run": true,
+    "runs": 50,
+    "passed": 50,
+    "failed": 0,
+    "timeouts": 0,
+    "not_reproduced": true,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python_version": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+    "python_executable": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/.venv/bin/python",
+    "CI_python_patch_differs": true,
+    "dependency_versions": {
+      "pytest": "9.2.0",
+      "pluggy": "1.7.0",
+      "iniconfig": "2.3.1",
+      "packaging": "26.3",
+      "pygments": "2.21.0",
+      "ruff": "0.17.4"
+    },
+    "all_six_dev_versions_equal_fixed_uv_lock": true,
+    "all_50_import_proofs_checked": true,
+    "tianshu_and_test_module_paths_point_only_to_copy": true,
+    "loaded_module_count_each": 57,
+    "source_hashes_unchanged": true,
+    "per_process_timeout_s": 90,
+    "started_utc": "2026-11-14T05:19:26.084345+00:00",
+    "ended_utc": "2026-11-14T05:20:30.016201+00:00",
+    "environment_value_recording": false,
+    "removed_environment_names": [
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "TIANSHU_DATAHUB_API_KEY",
+      "TIANSHU_INDEVS_API_KEY",
+      "TIANSHU_INDEVS_PROXY_URL"
+    ],
+    "framework_options": [
+      "-o addopts=",
+      "-vv",
+      "-ra",
+      "--tb=short",
+      "-p no:cacheprovider",
+      "per-run --basetemp",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"
+    ],
+    "native_Windows_or_CI_shard_wrapper_executed": false,
+    "full_suite_executed": false,
+    "baseline_suite_or_parent_test_executed": false,
+    "paid_model_or_external_API_calls": 0
+  },
+  "source_bindings": [
+    {
+      "path": "tests/test_integration_m5.py",
+      "sha256": "90bacf76c02db4f77ee4092a3b76f01a839ad62c4a7f67d981d8744fc1746d9d",
+      "bytes": 30636,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          45,
+          77
+        ],
+        [
+          94,
+          140
+        ],
+        [
+          240,
+          281
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/control.py",
+      "sha256": "7bef3a8f1feceebba6bc6b1f3758782e68ba99f15648d63a61389b5f6cce5093",
+      "bytes": 52968,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          623,
+          668
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/daemon.py",
+      "sha256": "29a98743cb9cb35a48368e0980e95cd6d72a554a2981434a7d40fe24418722e1",
+      "bytes": 70441,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          1251,
+          1285
+        ],
+        [
+          1311,
+          1352
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/loop.py",
+      "sha256": "40b02ab497f912756f51f742057323afff470c4514fcb35dee120d46577724e3",
+      "bytes": 155496,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          826,
+          891
+        ],
+        [
+          1992,
+          1995
+        ],
+        [
+          2136,
+          2170
+        ],
+        [
+          2172,
+          2197
+        ],
+        [
+          2786,
+          2847
+        ],
+        [
+          2971,
+          2984
+        ],
+        [
+          2990,
+          3041
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/dispatcher.py",
+      "sha256": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6",
+      "bytes": 208447,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          983,
+          1013
+        ],
+        [
+          1103,
+          1117
+        ],
+        [
+          1146,
+          1205
+        ],
+        [
+          3841,
+          3895
+        ],
+        [
+          4072,
+          4108
+        ],
+        [
+          4216,
+          4242
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/tools.py",
+      "sha256": "98ec0177260779e5b70edcb543a6ba669bfa0bd94b597e7507dd0b1026210b89",
+      "bytes": 69441,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          485,
+          519
+        ],
+        [
+          1374,
+          1454
+        ],
+        [
+          1486,
+          1558
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/permissions.py",
+      "sha256": "33254223c4ef7eae1a6ac253d63e907e23026f8e5e96ce28a8468d48e5258d3d",
+      "bytes": 61967,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          969,
+          1014
+        ],
+        [
+          1061,
+          1097
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/receipt.py",
+      "sha256": "ff0333a54c60494b4a462795334876e57c1a4f5ecf4af14a29bb44be28757238",
+      "bytes": 33021,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          126,
+          200
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/sandbox.py",
+      "sha256": "0d901d855880e571855c9c6a2e375d19fa1685c51deb05fa5cf32ce90b1f829f",
+      "bytes": 13796,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          102,
+          115
+        ],
+        [
+          139,
+          150
+        ]
+      ]
+    },
+    {
+      "path": "src/tianshu/tasks.py",
+      "sha256": "eb2a3de26ce8fc0526a7cdb92f522c845977e905a315f3d4e9a8dee804a64e63",
+      "bytes": 129799,
+      "head": "3e9da0bd63399fc86488018605138b54b22fb427",
+      "parent_bytes_equal": true,
+      "read_ranges": [
+        [
+          1800,
+          1818
+        ],
+        [
+          1864,
+          1889
+        ],
+        [
+          1922,
+          1965
+        ]
+      ]
+    }
+  ],
+  "static_findings_not_runtime_diagnosis": [
+    {
+      "finding": "approvals.decide persists the decision then enqueues the run; resumed=True means enqueued, not execution completion",
+      "source": "control.py:623-668"
+    },
+    {
+      "finding": "resume restores pending cursor and dispatches through real admission/executor; queue acknowledgement alone does not identify c1 result",
+      "source": "daemon.py:1311-1352; loop.py:826-891"
+    },
+    {
+      "finding": "ordinary rejected/none_applied tool results can be absorbed and execution can continue; the scripted model then returns end_turn; no artifact yields noop and _finish maps noop to Run succeeded",
+      "source": "loop.py:2136-2170,2172-2197,1992-1995,2971-2984,2990-3041",
+      "is_actual_CI_path_proved": false
+    },
+    {
+      "finding": "real delete handler reads/prewrites/unlinks synchronously before returning succeeded/applied; successful file receipt is only built for applied and identifies resource/intent/result",
+      "source": "tools.py:485-519; sandbox.py:139-150; receipt.py:126-200; dispatcher.py:4216-4242",
+      "actual_CI_handler_result_known": false
+    }
+  ],
+  "next_minimum_evidence": {
+    "proposed_only_not_implemented": true,
+    "separate_failure_diagnostic_branch_owned_by_root": true,
+    "point": "after _wait_run, before original L270/L271 assertions and before the fixture removes the test root",
+    "preserve_all_original_assertions_and_time_limits": true,
+    "capture": [
+      "run_id, task_id, original approval card, approvals.decide response, full terminal run view, exact old.txt target and exists/is_file observation",
+      "ordered actual events with seq/type/payload for c1: tool.intent, execution.started, dispatch rejection, tool.result (status/effect_state/output.error/rule_id/request_id), receipt (call_id/resource/before_state/after_state/intent_seq)",
+      "approval.requested/decided/consumed/revoked/expired, relevant lease/job/claim events and owner/epoch bindings, run.end and run.finish including outcome/effect_state/reason and counts",
+      "failure-safe copy or emitted JSON before root fixture cleanup; capture diagnostic collection errors without replacing the original assertion failure"
+    ],
+    "decision_gate": [
+      "if c1 rejected/none_applied, use its real error/rule_id/phase to locate the exact refusing boundary",
+      "if c1 succeeded/applied and receipt says absent while original file exists, compare exact resource/backend/path identity and deletion result; do not assume delayed filesystem visibility",
+      "if c1 lacks result or was not dispatched, use cursor/intent/dispatch/event sequence to find the skipped or incomplete boundary"
+    ],
+    "not_authorized_or_done": [
+      "no speculative shared DB lock change",
+      "no generic retry",
+      "no relaxing existence/receipt/approval assertions",
+      "no CI configuration or product change in pure docs PR"
+    ]
+  },
+  "unknowns": [
+    "actual Windows c1 tool.result and receipt payload",
+    "which admission/execution boundary, if any, refused or skipped deletion",
+    "whether this has any timing, platform, suite-order, environment or baseline dependence",
+    "relationship to issue145: not established; distinct failure node"
+  ],
+  "observer_correction": {
+    "file": "observer-correction.txt",
+    "first_error": "TypeError: cannot use list as a set element (unhashable type: list)",
+    "cause": "read-only verifier initially treated full_collection pair entries as strings",
+    "correction": "preserved ordered [nodeid,file_path] pairs; extracted pair[0] for nodeid set coverage",
+    "product_failure": false,
+    "extra_test_runs_caused": 0
+  },
+  "actions": {
+    "new_local_test_executions": 50,
+    "new_full_runs": 0,
+    "new_parent_baseline_runs": 0,
+    "new_native_Windows_runs": 0,
+    "new_API_calls": 0,
+    "repo_or_refs_writes": 0,
+    "live_content_writes": 0,
+    "original_input_writes": 0,
+    "product_fixes": 0,
+    "test_assertion_changes": 0,
+    "CI_changes": 0
+  },
+  "limits": [
+    "NOT_ESTABLISHED, not Windows-specific/flaky/baseline/issue145 attribution",
+    "50 macOS passes do not erase original Windows failure",
+    "PR146 native CI remains failed; no merge approval",
+    "B product/crashpoint acceptance remains NOT_RUN; BASE-B1 and issue145 are not fixed"
+  ],
+  "raw_evidence": {
+    "original_CI_index": "ci-input-index.json",
+    "original_count": 90,
+    "all_original_hashes_rechecked_before_seal": true,
+    "copy_source_index": "source-manifest.json",
+    "local_results": "results.json",
+    "all_50_stdout_stderr_logs": "runs/run-01.log through runs/run-50.log",
+    "all_50_import_proofs": "runs/run-01-imports.json through runs/run-50-imports.json",
+    "raw_files_kept": true
+  }
+}

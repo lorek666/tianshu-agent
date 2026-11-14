@@ -1,0 +1,131 @@
+{
+  "head_before": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "head_after": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "status_after": "## codex/windows-approval-diagnostics...origin/main\n M docs/KNOWLEDGE.md\n M tests/test_integration_m5.py\n?? docs/APPROVAL-CI-DIAGNOSTICS-2026-11-14.md\n?? docs/evidence/approval-ci-2026-11-14/\n",
+  "git_visible_files_checked": 1080,
+  "changed_files": [
+    "tests/test_integration_m5.py"
+  ],
+  "added_or_removed_git_visible_files": [],
+  "original_assert_count": 13,
+  "original_assert_AST_preserved": true,
+  "original_try_body_AST_preserved": true,
+  "original_finally_AST_preserved": true,
+  "unchanged_approval_test_vs_v1": true,
+  "changed_functions_vs_v1": [
+    "_note_approval_failure"
+  ],
+  "added_functions_vs_v1": [
+    "test_approval_failure_diagnostics_keep_critical_fields"
+  ],
+  "test_v1_sha256": "fa9921084936dd0cb9374418e1cf9601a7c4789f5b54fae462baf275326c6fc7",
+  "test_final_sha256": "f198cef96da3a3d24e933151f6cf76e99dcb6644a91ab1e2ab26849775141ca4",
+  "controlled_red": {
+    "call_failed_at_original_assertion": true,
+    "setup_teardown_passed": true,
+    "normal_verify_then_one_ToolNotAllowed": true,
+    "critical_summaries_before_detail": true,
+    "rejected_none_applied_rule_id_visible": true,
+    "missing_receipt_reported": true,
+    "run_end_noop_run_finish_succeeded": true,
+    "not_windows_reproduction": true
+  },
+  "scope": "author-only; target file and target Ruff/diff checks; no full suite, lock check, Windows, CI, commit/push or independent approval",
+  "windows_root_cause": "NOT_ESTABLISHED",
+  "validation_commands": [
+    {
+      "stage": "priority-regression-red",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "tests/test_integration_m5.py::test_approval_failure_diagnostics_keep_critical_fields",
+        "-o",
+        "addopts=",
+        "-q",
+        "--tb=short"
+      ],
+      "exit_code": 1,
+      "elapsed_seconds": 0.28978045796975493
+    },
+    {
+      "stage": "priority-regression-green",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "tests/test_integration_m5.py::test_approval_failure_diagnostics_keep_critical_fields",
+        "-o",
+        "addopts=",
+        "-q",
+        "--tb=short"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.2762732499977574
+    },
+    {
+      "stage": "priority-controlled-refusal",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/probe.py",
+        "priority"
+      ],
+      "exit_code": 1,
+      "elapsed_seconds": 3.4467350419727154
+    },
+    {
+      "stage": "priority-target-ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "tests/test_integration_m5.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.07734187500318512
+    },
+    {
+      "stage": "priority-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.01580987503984943
+    },
+    {
+      "stage": "priority-target-file",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "tests/test_integration_m5.py",
+        "-o",
+        "addopts=",
+        "-q",
+        "--tb=short"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 21.53309929202078
+    }
+  ],
+  "added_diff_placeholder_scan": {
+    "TODO": false,
+    "FIXME": false,
+    "test.skip": false,
+    "pytest.mark.skip": false,
+    "pytest.mark.xfail": false,
+    "continue-on-error": false,
+    "type: ignore": false
+  },
+  "final_sha256_rechecked": "f198cef96da3a3d24e933151f6cf76e99dcb6644a91ab1e2ab26849775141ca4"
+}
