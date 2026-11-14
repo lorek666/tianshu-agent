@@ -1988,6 +1988,7 @@ class TaskStore:
         subtask_id: str,
         goal: str,
         limits: dict[str, int] | None = None,
+        write: bool = False,
     ) -> Subtask:
         """建一次委派：子 Task + 子 Run + 子 Job + `subtasks` 行，**同一事务**。
 
@@ -1996,12 +1997,20 @@ class TaskStore:
         行则父任务连自己派过什么都答不出来。父 Run 的 `subtask.spawned`
         事件由派发层在**同一个事务**里补写（它需要预算预占的结果）。
 
-        子 Task 的字段是**固定**的（规格 §2.1）：父任务的全部绑定逐个改写成
-        只读、去重；没有 exec 策略、没有外发白名单、没有记忆作用域、
-        `max_subtasks=0`、`depth=1`。写文件/出网/exec/MCP 都是**拒绝**，
-        不是"弹审批"。空 memory_scopes 不会禁止 user/task 记忆；派发层和
-        记忆执行器还必须根据 depth/父链独立拒绝所有记忆写入。
+        子 Task 的字段默认与 W10 之前一致（规格 §2.1）：父任务的全部绑定逐个
+        改写成只读、去重；没有 exec 策略、没有外发白名单、没有记忆作用域、
+        `max_subtasks=0`、`depth=1`；子 Run `pure_only`。写文件/出网/exec/
+        MCP 都是**拒绝**，不是"弹审批"。空 memory_scopes 不会禁止 user/task
+        记忆；派发层和记忆执行器还必须根据 depth/父链独立拒绝所有记忆写入。
+
+        W10（`write=True`，`subtask.spawn` 2.0 显式声明）：子任务可以写**父任务
+        自己就能写**的目录——绑定逐条保留父的 mode（父只读的根仍然只读，授权
+        上限恒为父绑定），子 Run 改为 `effects` 资格。出网/MCP/exec/记忆写/
+        再委派依旧全拒；子 Run 里的每个写动作仍走既有派发审批（与父 Run 完全
+        同构），没有任何"子代理免审通道"。
         """
+        if not isinstance(write, bool):
+            raise TianshuError("write 必须是布尔值")
         if self._claims is None:
             raise TianshuError(
                 "未配置 JobStore：创建子任务必须同时建子作业"
@@ -2025,17 +2034,29 @@ class TaskStore:
                 f"子任务目标超过 {SUBTASK_GOAL_MAX_BYTES} 字节：{len(raw)}"
             )
         clean = clean_subtask_limits(limits)
-        # 只读绑定：去重按 (canonical 根, 快照策略) —— 同一个目录的两种写法
-        # 在 WorkspaceBinding 构造时就归一到同一个根了，这里只需按根去重。
-        readonly: dict[tuple[str, str], WorkspaceBinding] = {}
+        # 绑定改写：默认全部只读（W10 之前的固定行为）；`write=True` 时逐条
+        # **保留父的 mode**——父可写的根子任务才可写，父只读的根仍然只读。
+        # 授权上限恒为父绑定：子任务永远拿不到父任务没有的目录或模式。
+        # 去重按 (canonical 根, 快照策略) —— 同一个目录的两种写法在
+        # WorkspaceBinding 构造时就归一到同一个根了，这里只需按根去重。
+        rewritten: dict[tuple[str, str], WorkspaceBinding] = {}
         for binding in parent_task.workspaces:
-            rewritten = WorkspaceBinding(
+            mode = binding.mode if write else "readonly"
+            child_binding = WorkspaceBinding(
                 root_path=binding.root_path,
-                mode="readonly",
+                mode=mode,
                 snapshot_policy=binding.snapshot_policy,
             )
-            readonly[(rewritten.root_path, rewritten.snapshot_policy)] = rewritten
-        bindings = list(readonly.values())
+            rewritten[
+                (child_binding.root_path, child_binding.snapshot_policy)
+            ] = child_binding
+        bindings = list(rewritten.values())
+        # effects 资格只在"实际拿到了可写绑定"时才给：write=true 但父任务全只读
+        # 是**如实降级**（子任务就是只读的），子 Run 仍是 pure_only——不凭空给一个
+        # 没有可写面的 effects 资格。effects 只放开"既有派发审批链路里的文件写"：
+        # pure_only 的子 Run 连写工具都看不见（清单过滤），effects 的每个写动作
+        # 仍要过 prepare 判定 + 人工批准 + 执行侧 digest 复核。
+        write_effective = write and any(b.mode == "writable" for b in bindings)
         now = _now()
         with self._log.transaction() as tx:
             child_task_id = self._create_task_locked(
@@ -2046,7 +2067,7 @@ class TaskStore:
                 control=False,
                 memory_scopes=[],
                 outbound_allow=(),
-                # 子任务不能调 MCP：白名单为空（子任务只能纯读）。
+                # 子任务不能调 MCP：白名单为空（write=True 也只放开文件写）。
                 mcp_servers=[],
                 max_subtasks=0,
                 parent_task_id=parent_task.task_id,
@@ -2064,7 +2085,7 @@ class TaskStore:
                 task=child_task,
                 run_id=child_run_id,
                 now=now,
-                execution_policy=PURE_ONLY,
+                execution_policy=EFFECTS if write_effective else PURE_ONLY,
                 # `task` 必须进 run.start：`replay` 用它重建首条用户消息。
                 # 子 Run 少了它，回放会拿空字符串去比 messages_hash，必然红。
                 payload={"task": goal},

@@ -1809,6 +1809,14 @@ class Dispatcher:
         subtask_id = target.subtask_id
         goal = str(args.get("goal") or "").strip()
         limits = self._subtask_limits(args)
+        # W10（subtask.spawn 2.0）：显式写声明。缺省 False 与旧版逐字节一致；
+        # 非布尔值进不了这里（`validate_args` 按工具 schema 先拒），这里的
+        # isinstance 是防御性双保险——布尔语义绝不允许被真值 truethy 混过。
+        write = args.get("write", False)
+        if not isinstance(write, bool):
+            raise DispatchDenied(
+                f"write 必须是布尔值：{write!r}", "dispatch.subtask_rejected"
+            )
         try:
             with self._log.transaction() as tx:
                 # 资格、数量上限、父版本和创建同事务，不能先读新版 Task 再
@@ -1822,6 +1830,7 @@ class Dispatcher:
                     subtask_id=subtask_id,
                     goal=goal,
                     limits=limits,
+                    write=write,
                 )
                 self._ensure_child_budget_account(
                     request,
