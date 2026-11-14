@@ -1,0 +1,76 @@
+"""Controlled refusal probe; not a reproduction of the Windows CI failure."""
+from __future__ import annotations
+import hashlib
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path('/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent')
+sys.path.insert(0, str(REPO / 'src'))
+from tianshu.errors import ToolNotAllowed
+from tianshu.tools import FileExecutor
+
+OUT = Path(__file__).parent
+STAGE = sys.argv[1]
+TARGET = 'tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues'
+FIELDS = {'call_id', 'tool_id', 'request_id', 'dispatch_id', 'approval_id', 'grant_id',
+          'intent_seq', 'receipt_id', 'status', 'effect_state', 'outcome', 'error',
+          'reason', 'rule_id', 'action', 'decision', 'resource', 'after_state',
+          'state', 'from', 'to', 'job_id', 'claim_epoch', 'lease_epoch', 'owner_pid'}
+ORIGINAL_VERIFY = FileExecutor._verify
+counts = {'normal_verifications': 0, 'injections': 0}
+
+def controlled_refusal(self, admitted, permit):
+    ORIGINAL_VERIFY(self, admitted, permit)
+    counts['normal_verifications'] += 1
+    if admitted.request.call_id == 'c1' and admitted.tool_id == 'delete_file':
+        counts['injections'] += 1
+        raise ToolNotAllowed('issue147 controlled refusal after normal verification')
+
+class Probe:
+    def __init__(self):
+        self.reports = []
+
+    def pytest_runtest_makereport(self, item, call):
+        self.reports.append({'nodeid': item.nodeid, 'phase': call.when,
+                             'failed': call.excinfo is not None,
+                             'exception': None if call.excinfo is None else call.excinfo.typename})
+        if call.when != 'call' or item.nodeid != TARGET:
+            return
+        root = item.funcargs['root']
+        db = root / 'events.db'
+        conn = sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            rows = conn.execute('SELECT seq,type,payload FROM events ORDER BY seq').fetchall()
+            events = []
+            for seq, kind, text in rows:
+                payload = json.loads(text) if text else {}
+                data = {key: value for key, value in payload.items() if key in FIELDS}
+                if isinstance(payload.get('output'), dict):
+                    data['output'] = {key: value for key,value in payload['output'].items() if key in FIELDS}
+                events.append({'seq': seq, 'type': kind, 'payload': data})
+            runs = conn.execute('SELECT run_id,state,outcome,effect_state FROM runs').fetchall()
+        finally:
+            conn.close()
+        (OUT / (STAGE + '.truth.json')).write_text(json.dumps({
+            'controlled_injection': counts,
+            'root_exists_during_call_report': root.exists(),
+            'old_exists_during_call_report': (root / 'ws' / 'old.txt').exists(),
+            'runs': runs, 'events': events,
+        }, ensure_ascii=False, indent=2) + '\n')
+
+plugin = Probe()
+FileExecutor._verify = controlled_refusal
+try:
+    result = int(pytest.main([TARGET, '-o', 'addopts=', '-vv', '-rs', '--tb=short'], plugins=[plugin]))
+finally:
+    FileExecutor._verify = ORIGINAL_VERIFY
+(OUT / (STAGE + '.phases.json')).write_text(json.dumps(plugin.reports, indent=2) + '\n')
+(OUT / (STAGE + '.metadata.json')).write_text(json.dumps({
+    'exit_code': result, 'source_sha256': hashlib.sha256((REPO / 'tests/test_integration_m5.py').read_bytes()).hexdigest(),
+    'python': sys.version, 'injection': counts, 'controlled_not_windows_reproduction': True,
+}, ensure_ascii=False, indent=2) + '\n')
+raise SystemExit(result)

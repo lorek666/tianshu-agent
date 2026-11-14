@@ -1,0 +1,203 @@
+{
+  "scope": "Selected original triage, author, independent review and local gate artifacts only. Reports bind their stated snapshots; not a complete sealed pack or a formal-commit/native-CI approval.",
+  "files": [
+    {
+      "path": "triage-report.md",
+      "original": "/tmp/tianshu-g3-20261113/restore-b-pr146-triage-independent-20261114-u4_1um69/REPORT.md",
+      "bytes": 4685,
+      "sha256": "f1b0942374472ff320af2698ada86855ae1664c137ded56220ec0760a54fc8f2"
+    },
+    {
+      "path": "triage-facts.json",
+      "original": "/tmp/tianshu-g3-20261113/restore-b-pr146-triage-independent-20261114-u4_1um69/facts.json",
+      "bytes": 17543,
+      "sha256": "33b7e041313584f7e3ffc9fe6490d76718d489d55ded21579ef04d00c0da379d"
+    },
+    {
+      "path": "author-facts.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/facts.json",
+      "bytes": 1091,
+      "sha256": "c7226b66ff4c0eb7668bc21011447b560aa5dea915d8ac31d0602b3aded80cd5"
+    },
+    {
+      "path": "author-commands.jsonl",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/commands.jsonl",
+      "bytes": 2502,
+      "sha256": "43526444007ce5b5ce2faad29d164f783fcc70b64f39e3382967aaef22f06130"
+    },
+    {
+      "path": "baseline-controlled-phases.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/baseline.phases.json",
+      "bytes": 544,
+      "sha256": "1a39b42d6248968ea2e31b1b0f1bd6694573a711228b4f0af6d5b2f0aa04fd0f"
+    },
+    {
+      "path": "baseline-controlled-truth.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/baseline.truth.json",
+      "bytes": 6675,
+      "sha256": "67e94348d8cfe2b82bb4e46c90494500e220c9dc39f4aa92df555e33ba61d29b"
+    },
+    {
+      "path": "diagnostic-controlled-phases.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/diagnostic.phases.json",
+      "bytes": 544,
+      "sha256": "1a39b42d6248968ea2e31b1b0f1bd6694573a711228b4f0af6d5b2f0aa04fd0f"
+    },
+    {
+      "path": "diagnostic-controlled-truth.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/diagnostic.truth.json",
+      "bytes": 6675,
+      "sha256": "09c387c76eca1780e51364c8103e0e2c8a1e1f77a5a85cc108806245927d027d"
+    },
+    {
+      "path": "diagnostic-controlled-refusal.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/diagnostic-controlled-refusal.log",
+      "bytes": 6771,
+      "sha256": "394586f3980129155e9f9dce52107891144e4bb2e7191111aa34e7276e923f01"
+    },
+    {
+      "path": "baseline-controlled-refusal.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/baseline-controlled-refusal.log",
+      "bytes": 1182,
+      "sha256": "22d3ba685b2fbfe518f5511196f7e16e4acbac60c529a45602639d3ff0383315"
+    },
+    {
+      "path": "author-restored-file.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/restored-file.log",
+      "bytes": 100,
+      "sha256": "6198da6f185e91cfb221fbbf7867cb021d914fcf760ba0665fcf0dd54d6fbcdd"
+    },
+    {
+      "path": "author-ruff-target.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-author-exyyq5ql/ruff-target.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "path": "diagnostic-v1-independent-report.md",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostics-independent-review-20261114-_ijnfr0h/REPORT.md",
+      "bytes": 11218,
+      "sha256": "bf81e0e9c01ceca298ac3177e36ca439a2976b9f524939e00652e416f580c183"
+    },
+    {
+      "path": "priority-v2-author-facts.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/facts.json",
+      "bytes": 3814,
+      "sha256": "c41a73052a06bdd8ba0d0ca4dfed919503d144905bb57d3b65422724c3baa525"
+    },
+    {
+      "path": "priority-v2-regression-red.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/priority-regression-red.log",
+      "bytes": 1459,
+      "sha256": "3665aa661c736a8ea1953f07baf49d832d524753a83fc1ee0972a28d7dcd476e"
+    },
+    {
+      "path": "priority-v2-regression-green.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/priority-regression-green.log",
+      "bytes": 98,
+      "sha256": "471c77f65875e4c272e08d0f1104f654c2ee63bed8cefdd055594fbb60385d29"
+    },
+    {
+      "path": "priority-v2-controlled-refusal.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/priority-controlled-refusal.log",
+      "bytes": 7205,
+      "sha256": "103706bee48ea047a9ad92eec13d0c7cdea8ab7887f5370e88e0430e79ca60ba"
+    },
+    {
+      "path": "priority-v2-controlled-phases.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/priority.phases.json",
+      "bytes": 544,
+      "sha256": "1a39b42d6248968ea2e31b1b0f1bd6694573a711228b4f0af6d5b2f0aa04fd0f"
+    },
+    {
+      "path": "priority-v2-controlled-truth.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/priority.truth.json",
+      "bytes": 6675,
+      "sha256": "c5693b0a3bda3291e86a9dda66b4e259f0c0014b9f5d4c2df3444d086e509c77"
+    },
+    {
+      "path": "priority-v2-probe.py.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-priority-author-ju89wom8/probe.py",
+      "bytes": 3585,
+      "sha256": "417f33bb086278c88228277fb9b7c4caaf7680cefc19a78002515a32429fe44d"
+    },
+    {
+      "path": "priority-v2-independent-partial.md",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostics-delta-review-20261114-m5qy6_zh/PARTIAL.md",
+      "bytes": 3303,
+      "sha256": "3d1ae8729a6b72570cbab2b38c8ef5c6842f35326a31f6ca530a5c2a68be2d57"
+    },
+    {
+      "path": "resource-v3-author-facts.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-resource-author-ry658hvo/facts.json",
+      "bytes": 693,
+      "sha256": "eeec992d2c9f0d1d65ad4b5a59c3ae8f69ccfb1cdc2c1010fec7b6d64ccc7895"
+    },
+    {
+      "path": "resource-v3-regression-red.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-resource-author-ry658hvo/resource-regression-red.log",
+      "bytes": 864,
+      "sha256": "eaabd7c2f3c8729e9579349d5ae89d0b8c0c4238a1d801c4f052cf502eda29be"
+    },
+    {
+      "path": "resource-v3-regression-green.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostic-resource-author-ry658hvo/resource-regression-green.log",
+      "bytes": 98,
+      "sha256": "f4c61c0ac8f55c6c9a2d6c593731bf5f8c4a6c5bebbe514284fd4f899818f9e0"
+    },
+    {
+      "path": "priority-v3-independent-report.md",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostics-v3-independent-20261114-411t9l42/REPORT.md",
+      "bytes": 3566,
+      "sha256": "2432913a3790854f50d7b2280bd216b889764e353c67c4e29ea5a00e6e4d7396"
+    },
+    {
+      "path": "priority-v3-independent-facts.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostics-v3-independent-20261114-411t9l42/facts.json",
+      "bytes": 18339,
+      "sha256": "2e9bb1384267162b8402fa13cfea3ec68f9a8da1c7e1bea4b3a370b89252bba0"
+    },
+    {
+      "path": "priority-v3-independent-probe.py.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-diagnostics-v3-independent-20261114-411t9l42/delta_probe.py",
+      "bytes": 11511,
+      "sha256": "000559eb0b4a2f0d08872331e2a851b24c1ae0dafc4ed7a304d5f210d8f47258"
+    },
+    {
+      "path": "final-local-gates-results.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-215zzvjb/results.json",
+      "bytes": 1707,
+      "sha256": "d553b2e1e9c34dcbeb71fe026881e08e9be2301050727cd81045161d6e9a19a5"
+    },
+    {
+      "path": "final-local-pytest.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-215zzvjb/pytest.log",
+      "bytes": 3644,
+      "sha256": "e948bb7cbd8aaf427e78f15eb9b1eaca298d1c0871552712ea900477605540c5"
+    },
+    {
+      "path": "final-local-lock.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-215zzvjb/lock.log",
+      "bytes": 27,
+      "sha256": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d"
+    },
+    {
+      "path": "final-local-ruff.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-215zzvjb/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "path": "interrupted-v2-gates-results.json",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-8olq_uot/results.json",
+      "bytes": 1708,
+      "sha256": "0962b168a3c78aaff8459aff82f95fd71edc61dfc44d09bc0a14bf0ad9c076c0"
+    },
+    {
+      "path": "interrupted-v2-pytest.log.txt",
+      "original": "/tmp/tianshu-g3-20261113/pr147-approval-diagnostic-gates-8olq_uot/pytest.log",
+      "bytes": 1393,
+      "sha256": "eba5ce295ae5bca1b75d3826f27cbeaa3b107a99ae5007fa0006bdc857332e9f"
+    }
+  ]
+}

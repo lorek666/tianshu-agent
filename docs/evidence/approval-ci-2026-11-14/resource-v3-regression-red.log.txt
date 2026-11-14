@@ -1,0 +1,9 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_________ test_approval_failure_diagnostics_keep_critical_fields[True] _________
+tests/test_integration_m5.py:439: in test_approval_failure_diagnostics_keep_critical_fields
+    assert '"resource": "old.txt"' in notes
+E   assert '"resource": "old.txt"' in 'M5 approval diagnostics: item<=1200 chars; events<=40; total<=24000 chars\nrun.cached: {"missing": true}\napproval.ca...eason-long-reason-long-reason-long-reason-long-reason-long-reason-long-reason-long-reason-long-reas\n[truncated total]'
+=========================== short test summary info ============================
+FAILED tests/test_integration_m5.py::test_approval_failure_diagnostics_keep_critical_fields[True]
+1 failed, 1 passed in 0.12s

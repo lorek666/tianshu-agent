@@ -1,0 +1,14 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+________ test_approval_failure_diagnostics_keep_critical_fields[False] _________
+tests/test_integration_m5.py:416: in test_approval_failure_diagnostics_keep_critical_fields
+    assert '"rule_id": "dispatch.lease_lost"' in notes
+E   assert '"rule_id": "dispatch.lease_lost"' in 'M5 approval diagnostics: item<=1200 chars; events<=40; total<=24000 chars\nrun.cached: {"missing": true}\napproval.ca...ong-error-long-error- [truncated item]\nseq=2 run.end: {"outcome": "noop"}\nseq=3 run.finish: {"outcome": "succeeded"}'
+_________ test_approval_failure_diagnostics_keep_critical_fields[True] _________
+tests/test_integration_m5.py:413: in test_approval_failure_diagnostics_keep_critical_fields
+    assert '"call_id": "c1"' in notes
+E   assert '"call_id": "c1"' in 'M5 approval diagnostics: item<=1200 chars; events<=40; total<=24000 chars\nrun.cached: {"missing": true}\napproval.ca...-reason-long-reason-long-reason-long-reason-long-reason-long-reason-long-reason-long-reason-long-re\n[truncated total]'
+=========================== short test summary info ============================
+FAILED tests/test_integration_m5.py::test_approval_failure_diagnostics_keep_critical_fields[False]
+FAILED tests/test_integration_m5.py::test_approval_failure_diagnostics_keep_critical_fields[True]
+2 failed in 0.12s

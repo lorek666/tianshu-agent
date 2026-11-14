@@ -1,0 +1,474 @@
+{
+  "status": "PASS_DEFINED_DELTA_SCOPE",
+  "date": "2026-11-14",
+  "base_head": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "binding": {
+    "freeze": "/tmp/tianshu-g3-20261113/pr147-resource-root-freeze-3xpdjmcg",
+    "expected_hashes": {
+      "manifest.json": "1338d0901d802b5c4c39c6ac48fa3b22b377929f2d29c2a13a03fe31a6803591",
+      "tests/test_integration_m5.py": "f138d6c13e3ed2966870626effed5488c776bfd66052c3a8800396b35203f01a",
+      "delta-from-v2.patch": "606a939d1edc2085793f754643d743a98e6ac3760c2d346b76b7848f980306c5"
+    },
+    "manifest_entries": 1080,
+    "only_changed_from_v2": [
+      "tests/test_integration_m5.py"
+    ],
+    "all_other_1079_manifest_entries_equal_to_v2": true,
+    "source_files_copied": 77,
+    "source_hashes_before": {
+      "uv.lock": {
+        "bytes": 10480,
+        "sha256": "11162919fb2e996fac9c90c2243b5d4419e1c4d7631909bcd425dec665c2cd6b"
+      },
+      "pyproject.toml": {
+        "bytes": 682,
+        "sha256": "9887b61d3907bf44a14920ea604f6297106fda86281ba101dc370a22ae6969e3"
+      },
+      "tests/conftest.py": {
+        "bytes": 2679,
+        "sha256": "f6bc8e04f8f8def1c1d0a33ab71a703ffeaac3a74850eefcd6d1dec79f72b7c1"
+      },
+      "tests/test_integration_m5.py": {
+        "bytes": 41698,
+        "sha256": "f138d6c13e3ed2966870626effed5488c776bfd66052c3a8800396b35203f01a"
+      },
+      "src/tianshu/dispatcher.py": {
+        "bytes": 208447,
+        "sha256": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6"
+      },
+      "src/tianshu/worker.py": {
+        "bytes": 21993,
+        "sha256": "62a1b51497f24c3c5e1f6d340b698c32740968c6b07cdc488ed7b32d52fd813d"
+      },
+      "src/tianshu/isolation.py": {
+        "bytes": 33933,
+        "sha256": "cc677cbb74f5d6ba81a8b8fb4b5a32b11f318946a5c774537b10402ab87b05a1"
+      },
+      "src/tianshu/leases.py": {
+        "bytes": 30275,
+        "sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74"
+      },
+      "src/tianshu/metrics.py": {
+        "bytes": 19762,
+        "sha256": "7b5d1a5d68513b840a5159288fc3221a3662d1a80244826c3d3d16e3b41c78f8"
+      },
+      "src/tianshu/event_schema.py": {
+        "bytes": 52977,
+        "sha256": "26770be95c23e9fbfea6748abc2456809a47d48442b26b881e1464ebc2454bf0"
+      },
+      "src/tianshu/backup.py": {
+        "bytes": 78512,
+        "sha256": "d4dd17615ea45bcc40c4bb2b91fe5a24d0e98763b4e43c1e1ff774d3a88577af"
+      },
+      "src/tianshu/undo_journal.py": {
+        "bytes": 17994,
+        "sha256": "4203aba9f4e9352a31f4b6cc73d87b919a5e85b735aa959e6f1bf45a9814df07"
+      },
+      "src/tianshu/tasks.py": {
+        "bytes": 129799,
+        "sha256": "eb2a3de26ce8fc0526a7cdb92f522c845977e905a315f3d4e9a8dee804a64e63"
+      },
+      "src/tianshu/recovery.py": {
+        "bytes": 75210,
+        "sha256": "35720ad961128b98f376b8df4c735be685267ed827ff624d0ee1e357b39bf30d"
+      },
+      "src/tianshu/contents.py": {
+        "bytes": 12610,
+        "sha256": "53cb3d35cfc1a1d8887e00d1a69686de1222d647ce8c0f42be19f7736a3a1869"
+      },
+      "src/tianshu/memory.py": {
+        "bytes": 107026,
+        "sha256": "82f520ce5a76e194969b35018167ab5936571f894ba66754675375ce51930cae"
+      },
+      "src/tianshu/credentials.py": {
+        "bytes": 14799,
+        "sha256": "01bba69b18b5436b6dbf5e91244c8f49b5c4fcc9067b948ecbec1091f7c34437"
+      },
+      "src/tianshu/maintenance.py": {
+        "bytes": 8619,
+        "sha256": "4ae3414ee3ccea7644c34a6e743aa90a650b4672b2cf67cc8862ed17bf8b9c3a"
+      },
+      "src/tianshu/ipc.py": {
+        "bytes": 45569,
+        "sha256": "4c04dfe17b56008cb2cf6a3665d2c917b8ee1727e98f916db7c72f22844e0c7f"
+      },
+      "src/tianshu/host.py": {
+        "bytes": 40467,
+        "sha256": "68ea19824784ff3b079e1696adb0088ff9227c7ba2a53a6e94fe78a044976ffd"
+      },
+      "src/tianshu/events.py": {
+        "bytes": 26083,
+        "sha256": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a"
+      },
+      "src/tianshu/exec.py": {
+        "bytes": 24807,
+        "sha256": "06f2edb187adfff7c65cdd0b2e80d0b27c9a13c4b4400cd7fe5e2d16ed698734"
+      },
+      "src/tianshu/budget.py": {
+        "bytes": 38100,
+        "sha256": "9bacbf11653260d271f3cabc8608c09899627a767ac444331610b761bfad4081"
+      },
+      "src/tianshu/tool_registry.py": {
+        "bytes": 17678,
+        "sha256": "89b7e78daf2d79bb9ac01d188a9d9379d1b2544754eaa2349f4a5cd8f2193fea"
+      },
+      "src/tianshu/tools.py": {
+        "bytes": 69441,
+        "sha256": "98ec0177260779e5b70edcb543a6ba669bfa0bd94b597e7507dd0b1026210b89"
+      },
+      "src/tianshu/control.py": {
+        "bytes": 52968,
+        "sha256": "7bef3a8f1feceebba6bc6b1f3758782e68ba99f15648d63a61389b5f6cce5093"
+      },
+      "src/tianshu/net.py": {
+        "bytes": 17461,
+        "sha256": "81941a5335556632623af368c4120a09e956146ec94510e0166ff441746cbe62"
+      },
+      "src/tianshu/memory_index.py": {
+        "bytes": 19834,
+        "sha256": "6da49dfbfc365a1fbde48215daa8891eb8dacfea05684f1bb5f7b783e6c2830b"
+      },
+      "src/tianshu/__init__.py": {
+        "bytes": 83,
+        "sha256": "e70de055d51cb7f3f89ccf3045c8b3ce8fdec1334d6d64a78be1dec8e94ee363"
+      },
+      "src/tianshu/pathkeys.py": {
+        "bytes": 1666,
+        "sha256": "2e99f35172302352e69b0beb9b8254142c844914d22a4289821b54d42a2359de"
+      },
+      "src/tianshu/rules.py": {
+        "bytes": 14769,
+        "sha256": "ca0b9340a6c74005f530ace0d02ebe6894bba277d9d998da7765a00f51b99c40"
+      },
+      "src/tianshu/memory_distill.py": {
+        "bytes": 12695,
+        "sha256": "1c986992655f0418ce2af0501e83b887d77fae92d455105d0ddc910eecc1a8ae"
+      },
+      "src/tianshu/data_admission.py": {
+        "bytes": 10610,
+        "sha256": "57f75e945ff37a6ef3b232ac154afa52182bf2f90f861edfebaaa77e8508e303"
+      },
+      "src/tianshu/model.py": {
+        "bytes": 40504,
+        "sha256": "cd958dd13938f39dab9c86cbc26aac243d7b98391f7eff6d6b246685feaf973d"
+      },
+      "src/tianshu/jobs.py": {
+        "bytes": 33058,
+        "sha256": "1033504a14329e8e1584dee0d2a8d09e12c0000b117fa3ad1e8969e7a5fa6550"
+      },
+      "src/tianshu/sandbox.py": {
+        "bytes": 13796,
+        "sha256": "0d901d855880e571855c9c6a2e375d19fa1685c51deb05fa5cf32ce90b1f829f"
+      },
+      "src/tianshu/toolschema.py": {
+        "bytes": 33393,
+        "sha256": "190f2cdc9c370137eb825092525ae588c42217b1f43ff5af97dbda109a41d6fc"
+      },
+      "src/tianshu/capability.py": {
+        "bytes": 15183,
+        "sha256": "99c9e6d20bd51ff6344ec3192677636811fdf9797c77ca653075e2127ea810e3"
+      },
+      "src/tianshu/replay.py": {
+        "bytes": 25674,
+        "sha256": "50e1bc146d9c9f171e168464fd91bd655e0133fe57dfa58d6b7327bf2fad9674"
+      },
+      "src/tianshu/context.py": {
+        "bytes": 28939,
+        "sha256": "d7a3610b6cf94945b9ac27912a954df6adb77a0e47ce5cf3a60b3f749634973e"
+      },
+      "src/tianshu/cli.py": {
+        "bytes": 90946,
+        "sha256": "20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7"
+      },
+      "src/tianshu/memory_control.py": {
+        "bytes": 16676,
+        "sha256": "5ea9451f26133ffb4d3a6074f7a7541bb09e4a4ef1790d565c3e4f7da9715920"
+      },
+      "src/tianshu/mcp.py": {
+        "bytes": 52191,
+        "sha256": "2ff8999c94e0112509e1c3eb034f4865cf8658f4def5dd1efe7117b843a47b84"
+      },
+      "src/tianshu/run_policy.py": {
+        "bytes": 1265,
+        "sha256": "6e6c5a72c744ac706a8de948b2af1fabf2595945cc4178984b8552241e7e8d12"
+      },
+      "src/tianshu/fsutil.py": {
+        "bytes": 3250,
+        "sha256": "21cc65730a83c315113d4f863498fee68182c1929930d2f5d75e8190394fdb2d"
+      },
+      "src/tianshu/canonical.py": {
+        "bytes": 4713,
+        "sha256": "b59670e6715b1aeda913679a71c94e15a91bf1d42acffac3fb88810c79318c65"
+      },
+      "src/tianshu/authority.py": {
+        "bytes": 25161,
+        "sha256": "9727c97c520753a16a39301d0304cf931c19b93beb4c1466b63a3d93debac9f1"
+      },
+      "src/tianshu/pricing.py": {
+        "bytes": 16560,
+        "sha256": "9af4772009acc430c9810a6c2057fea8c09db575637df889168e2dabe8377cd3"
+      },
+      "src/tianshu/undo.py": {
+        "bytes": 25112,
+        "sha256": "cdb061f02fa78836e25f696fb335753fbe0dbbc3e2e976d5364406a500309d31"
+      },
+      "src/tianshu/loop.py": {
+        "bytes": 155496,
+        "sha256": "40b02ab497f912756f51f742057323afff470c4514fcb35dee120d46577724e3"
+      },
+      "src/tianshu/permissions.py": {
+        "bytes": 61967,
+        "sha256": "33254223c4ef7eae1a6ac253d63e907e23026f8e5e96ce28a8468d48e5258d3d"
+      },
+      "src/tianshu/crashpoint.py": {
+        "bytes": 2351,
+        "sha256": "db0e2cf2d10b6caa088004c298c597c59aee1ce6543edfc0a10ba1008529307b"
+      },
+      "src/tianshu/receipt.py": {
+        "bytes": 33021,
+        "sha256": "ff0333a54c60494b4a462795334876e57c1a4f5ecf4af14a29bb44be28757238"
+      },
+      "src/tianshu/guard.py": {
+        "bytes": 17946,
+        "sha256": "f65ef6178605a3c957e6a8fca099333708dfd814b0ab222c4305cbfa07270b2b"
+      },
+      "src/tianshu/resources.py": {
+        "bytes": 30683,
+        "sha256": "42b40f619984699baf6a5581f24705cca96b85d80bd42e0325ea4372108c881f"
+      },
+      "src/tianshu/errors.py": {
+        "bytes": 5999,
+        "sha256": "1bde45e64de7c173326a4e81db254fd1849ee39ac44a7b9df0c4482871efa0c3"
+      },
+      "src/tianshu/memory_exec.py": {
+        "bytes": 51219,
+        "sha256": "cd9098705587b3117ca7109d245f20f1cc8c3487a2742e75789ed5bcd027a80b"
+      },
+      "src/tianshu/disk_admission.py": {
+        "bytes": 5038,
+        "sha256": "edf3f0f1460d49d496c53da6c8c4e3d8404d0ba85bff4d4e87af14b4f176eb8f"
+      },
+      "src/tianshu/workspace.py": {
+        "bytes": 7456,
+        "sha256": "e2f7eefecbd202f8f1da1e4a0a3127d4a29108607e2339020a004473db56d879"
+      },
+      "src/tianshu/execpolicy.py": {
+        "bytes": 25577,
+        "sha256": "e7ae8748a1c889aa10c0bdff06abb20df9d00c7611fc079989f3f726c3ac2ad0"
+      },
+      "src/tianshu/summaries.py": {
+        "bytes": 34747,
+        "sha256": "c9f22acd885f796d98f8088ca5c289e3332c7532ad3ae6880279ffe8c992651c"
+      },
+      "src/tianshu/migrate.py": {
+        "bytes": 23472,
+        "sha256": "686e59b8ff5a5360a02c0a3d8ae54190e126133c1014464ab34e693400875cf8"
+      },
+      "src/tianshu/__main__.py": {
+        "bytes": 79,
+        "sha256": "307299fda7b77d22c64cb51430ec75e5f59d78e9c948786afb3b2544fe45e4b7"
+      },
+      "src/tianshu/exec_backends.py": {
+        "bytes": 12365,
+        "sha256": "127acaaa9412c879a54d41288ffd3a58a646b47cc573448c3376cab716491b6d"
+      },
+      "src/tianshu/data_cli.py": {
+        "bytes": 17320,
+        "sha256": "2067114bae483e0214dc0f7815b5877c7cf706028adc319e828d31b1e54994a2"
+      },
+      "src/tianshu/daemon.py": {
+        "bytes": 70441,
+        "sha256": "29a98743cb9cb35a48368e0980e95cd6d72a554a2981434a7d40fe24418722e1"
+      },
+      "src/tianshu/snapshot.py": {
+        "bytes": 30435,
+        "sha256": "7d2a5c4e28eb02f82e86fd5b893cc9de81ed2a613df83a61dcff8a5880dc5925"
+      },
+      "src/tianshu/data_state.py": {
+        "bytes": 10636,
+        "sha256": "cd687ecb8e0f823681d95b2d6e873ba1ea153a7618bd6f96742ad2d5dc06c5f4"
+      },
+      "src/tianshu/data_digest.py": {
+        "bytes": 8714,
+        "sha256": "e22ad1d0c8488df5d36984f7dbf3f8cd76afb482649e73c2e7fb31fbf340930b"
+      },
+      "src/tianshu/eval/runner.py": {
+        "bytes": 46755,
+        "sha256": "91e558852f36a77dd4ef3de91ba6690a83789402eea65c4c3dab84449ec4f298"
+      },
+      "src/tianshu/eval/tasks.py": {
+        "bytes": 47270,
+        "sha256": "be5426afcc340edd83093873a05ae3cb378ec6708ca0c2ffac174472415c53a7"
+      },
+      "src/tianshu/eval/checks.py": {
+        "bytes": 82701,
+        "sha256": "a05f8ea4745c2bc6e52cf00dba9bc990616ab8bcf5f2b1f7f79a5b5ad9789991"
+      },
+      "src/tianshu/eval/__init__.py": {
+        "bytes": 2322,
+        "sha256": "428b9bb17e4440f531e1fa4a021f8b3c58f3837570a4a079ba0e68b40df1741b"
+      },
+      "src/tianshu/eval/cases.py": {
+        "bytes": 35381,
+        "sha256": "893076bdbb8157f59f2234f5fa3cfda153b7a03f88f1d180a0e0f7a329b9f4ec"
+      },
+      "src/tianshu/eval/crash_child.py": {
+        "bytes": 1942,
+        "sha256": "9e187ce7b40d9ed1fc61f69cddaa1a644bffa5cd40f472e1f56d0398ad972eb4"
+      },
+      "src/tianshu/eval/webfixture.py": {
+        "bytes": 5610,
+        "sha256": "5630d3d98957ed381c4660bf5d9f359e42622109d426b2e93b7cfcb812aa97f1"
+      },
+      "src/tianshu/eval/report.py": {
+        "bytes": 45957,
+        "sha256": "0afb8ddb4f19479bcaed31d6444c9c1073e6b873fc8a81999af67ba13e5014a4"
+      }
+    },
+    "ast_identity_v1_v2_v3": {
+      "test_approval_is_decided_through_ipc_and_run_continues": true,
+      "FakeModel": true,
+      "DaemonHarness": true,
+      "root": true,
+      "_client": true,
+      "_wait_state": true,
+      "_wait_run": true
+    },
+    "original_assert_count": 13,
+    "negative_source": "/tmp/tianshu-g3-20261113/pr147-diagnostics-independent-review-20261114-_ijnfr0h/candidate",
+    "negative_test_sha256": "fa9921084936dd0cb9374418e1cf9601a7c4789f5b54fae462baf275326c6fc7",
+    "parser_adapter": "raw observed priority short-field prefix decoded separately; required field values and binding unchanged; full truncated JSON not required",
+    "acceptance_assertions_ast_multiset_unchanged": true,
+    "partial_originals_preserved": {
+      "path": "/tmp/tianshu-g3-20261113/pr147-diagnostics-delta-review-20261114-m5qy6_zh",
+      "report_sha256": "3d1ae8729a6b72570cbab2b38c8ef5c6842f35326a31f6ca530a5c2a68be2d57",
+      "index_sha256": "fc0e46fe55c2d8c476dd408a6b5a69db1fa76c3d190d00a2807c329e6c9f5c82"
+    },
+    "author_conclusions_and_live_not_read": true,
+    "additional_docs_manifest_identity_only": true
+  },
+  "freeze_hashes_after": {
+    "manifest.json": {
+      "bytes": 215512,
+      "sha256": "1338d0901d802b5c4c39c6ac48fa3b22b377929f2d29c2a13a03fe31a6803591"
+    },
+    "delta-from-v2.patch": {
+      "bytes": 1342,
+      "sha256": "606a939d1edc2085793f754643d743a98e6ac3760c2d346b76b7848f980306c5"
+    },
+    "delta-from-v1.patch": {
+      "bytes": 6030,
+      "sha256": "b1f11a9ca8aec788ac9a7911266e629d40b7626d0b265bfa5845026a47334fda"
+    },
+    "tests/test_integration_m5.py": {
+      "bytes": 41698,
+      "sha256": "f138d6c13e3ed2966870626effed5488c776bfd66052c3a8800396b35203f01a"
+    }
+  },
+  "new_two_positive_exit": 0,
+  "old_two_genuine_negative_exit": 0,
+  "new_original_success_exit": 0,
+  "new_positive_critical_facts": {
+    "c1_result_identity_status_effect_error": true,
+    "c1_receipt_identity_resource_after_state_intent_seq": true,
+    "run_end": true,
+    "run_finish": true
+  },
+  "new_longerror_same_priority_line_short_fields": [
+    {
+      "short_fields": {
+        "call_id": "c1",
+        "status": "rejected",
+        "effect_state": "none_applied",
+        "rule_id": "tail-rule-identifier"
+      },
+      "error_prefix_40_chars_visible": true,
+      "line_label": "priority seq=1 tool.result"
+    }
+  ],
+  "old_negative_critical_facts": {
+    "c1_result_identity_status_effect_error": false,
+    "c1_receipt_identity_resource_after_state_intent_seq": false,
+    "run_end": false,
+    "run_finish": false
+  },
+  "old_negative_longerror_rule_visible": false,
+  "negative_interpretation": "old limitations reproduced by its real frozen helper, not a claim that old candidate is fixed",
+  "measurements": {
+    "new-positive": {
+      "volume_and_unicode": {
+        "chars": 24000,
+        "utf8_bytes": 66634,
+        "event_lines": 24,
+        "item_truncated": true,
+        "total_truncated": true
+      },
+      "item_field_order": {
+        "chars": 3153,
+        "utf8_bytes": 7301,
+        "event_lines": 2,
+        "item_truncated": true,
+        "total_truncated": false
+      }
+    },
+    "old-negative": {
+      "volume_and_unicode": {
+        "chars": 24000,
+        "utf8_bytes": 67398,
+        "event_lines": 20,
+        "item_truncated": true,
+        "total_truncated": true
+      },
+      "item_field_order": {
+        "chars": 1952,
+        "utf8_bytes": 4094,
+        "event_lines": 1,
+        "item_truncated": true,
+        "total_truncated": false
+      }
+    }
+  },
+  "new_success": {
+    "collector_calls": 0,
+    "diagnostic_rpc_count": 0,
+    "total_rpc_count": 11,
+    "all_rpc_phases_original": true,
+    "nonpoll_rpc_methods_equal_to_v1": true,
+    "polling_count_difference": "ordinary scheduling; v3 11 total calls vs v1 10 is not a diagnostic call",
+    "setup_call_teardown": "passed",
+    "root_removed_after_fixture": true
+  },
+  "source_copy77_and_old_source77_unchanged_after_execution": true,
+  "new_and_old_real_import_paths_present": true,
+  "inheritance": {
+    "original_13_asserts_full_original_node_and_fixture_helpers_identical_v1_v2_v3": true,
+    "production_sources_unchanged": true,
+    "v1_real_refusal_and_collector_fallback_evidence": "inherited only for unchanged production/node/collection call/except/finally boundaries; not reexecuted for v3",
+    "priority_output_delta": "executed in the two new synthetic cases, not claimed as new full real refusal execution"
+  },
+  "prior_v2_probe_false_rejection_preserved": {
+    "path": "/tmp/tianshu-g3-20261113/pr147-diagnostics-delta-review-20261114-m5qy6_zh",
+    "classification": "JSON completeness expectation too strong; raw short fields visible; fixed only parser adaptation in this run; no field/value/binding assertion weakened"
+  },
+  "not_run": {
+    "baseline_repeat": "NOT_RUN",
+    "real_refusal_repeat": "NOT_RUN",
+    "collector_fallback_repeat": "NOT_RUN",
+    "full_suite": "NOT_RUN_BY_REVIEWER",
+    "windows_runner": "NOT_RUN",
+    "50_repeat_or_stress": "NOT_RUN"
+  },
+  "remaining_limits": [
+    "1200/24000 are Python chars; UTF8 bytes measured separately",
+    "verbose chain and arbitrary long fields remain lossy; truncated item may be invalid JSON",
+    "first 1000 events only, no pagination",
+    "known redact formats only; no general secret completeness claim",
+    "RPC counts finite but no general hard wall-clock guarantee",
+    "base+patch frozen identity only; not a later formal commit or native CI approval"
+  ],
+  "original_windows_root_cause": "NOT_ESTABLISHED",
+  "merge_approval": "NOT_GIVEN",
+  "live_or_author_conclusions_read": false,
+  "removed_links_metadata_count": 1,
+  "platform_inheritance": "same external Python3.12.13/macOS arm64 offline environment; no packages changed"
+}

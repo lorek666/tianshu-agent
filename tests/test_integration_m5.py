@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,7 @@ import pytest
 
 from tianshu import daemon, host, ipc
 from tianshu.capability import CapabilityProfile
+from tianshu.credentials import redact
 from tianshu.model import ModelIdentity, ModelResponse, ToolCall
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -191,6 +194,128 @@ def _start(client: ipc.Client, task_id: str, out_name: str = "summary.md") -> st
     ]
 
 
+def _note_approval_failure(
+    exc: Exception, client: ipc.Client, root: Path, run_id: str | None,
+    run: dict[str, Any], card: dict[str, Any], decided: dict[str, Any],
+) -> None:
+    """仅为本用例失败留证；不读正文、环境、凭据或任意对象 repr。"""
+    lines = ["M5 approval diagnostics: item<=1200 chars; events<=40; total<=24000 chars"]
+    fields = (
+        "run_id", "task_id", "call_id", "tool_id", "state", "status", "effect_state",
+        "outcome", "rule_id", "action", "decision", "resumed",
+        "request_id", "dispatch_id", "approval_id", "grant_id", "receipt_id",
+        "intent_seq", "deleted",
+        "before_state", "after_state", "backend", "job_id", "claim_epoch",
+        "owner_pid", "owner_instance_id", "goal_revision", "lease_epoch",
+        "created_at", "expires_at", "from", "to", "phase", "receipt_ids",
+        "resource", "resources", "root", "path", "error", "reason",
+    )
+
+    def selected(data: dict[str, Any]) -> dict[str, Any]:
+        return {key: data[key] for key in fields if key in data}
+
+    def note(source: str, data: Any) -> None:
+        try:
+            text = source + ": " + redact(json.dumps(data, ensure_ascii=False))
+        except Exception as error:  # 诊断序列化失败也不能盖掉原异常。
+            text = f"{source}: collection_failed={type(error).__name__}"
+        marker = " [truncated item]"
+        lines.append(text if len(text) <= 1200 else text[:1200 - len(marker)] + marker)
+
+    note("run.cached", selected(run) or {"missing": True})
+    note("approval.card", selected(card) or {"missing": True})
+    note("approval.decided", {
+        **selected(decided), "approval": selected(decided.get("approval", {})),
+        "missing": not bool(decided),
+    })
+    old = root / "ws" / "old.txt"
+    try:
+        info = old.stat()
+        note("old.txt", {"path": str(old), "exists": True, "size": info.st_size,
+                         "mode": info.st_mode, "mtime_ns": info.st_mtime_ns})
+    except FileNotFoundError:
+        note("old.txt", {"path": str(old), "exists": False})
+    except Exception as error:
+        note("old.txt", {"collection_failed": type(error).__name__})
+
+    if run_id is None:
+        note("run.status/events.run/leases", {"missing": "run_id"})
+    else:
+        for method, key in (("run.status", "run"), ("approvals.list", "approvals")):
+            try:
+                value = client.call(method, {"run_id": run_id})[key]
+                note(method, selected(value) if key == "run" else
+                     {"cards": [selected(c) for c in value[:8]], "truncated": len(value) > 8})
+            except Exception as error:
+                note(method, {"collection_failed": type(error).__name__})
+        # LeaseStore 构造会初始化 schema；这里只读失败当下的投影，不解释历史租约。
+        try:
+            conn = sqlite3.connect((root / "events.db").resolve().as_uri() + "?mode=ro",
+                                   uri=True, timeout=1)
+            try:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT run_id,resource_key,canonical_path,owner_pid,owner_instance_id,"
+                    "acquired_at,expires_at FROM leases WHERE run_id=?"
+                    " ORDER BY resource_key LIMIT 9", (run_id,),
+                ).fetchall()
+                note("leases.current", {"rows": [dict(row) for row in rows[:8]],
+                                        "missing": not rows, "truncated": len(rows) > 8})
+            finally:
+                conn.close()
+        except Exception as error:
+            note("leases.current", {"collection_failed": type(error).__name__})
+        try:
+            page = client.call("events.run", {"run_id": run_id, "limit": 1000})
+            events = sorted(page["events"], key=lambda event: event["seq"])
+            chain = [e for e in events if e["type"].startswith(
+                ("tool.", "execution.", "dispatch.", "approval.", "grant.", "job.", "lease.")
+            ) or e["type"] in ("receipt", "run.start", "run.state", "run.effect", "run.end",
+                               "run.finish", "run.fenced")]
+            required = ("tool.intent", "execution.started", "tool.result", "receipt",
+                        "approval.requested", "approval.decided", "approval.consumed",
+                        "run.end", "run.finish")
+            note("events.run", {
+                "received": len(events), "chain_count": len(chain),
+                "truncated": bool(page["has_more"] or len(chain) > 36),
+                "missing_in_page": [kind for kind in required if not any(
+                    e["type"] == kind and (kind not in ("tool.intent", "tool.result", "receipt")
+                                          or e["payload"].get("call_id") == "c1")
+                    for e in events)],
+            })
+            # 最多四条关键摘要优先，详细链最多36条；总长截断不能先吞掉结论。
+            for kind in ("tool.result", "receipt", "run.end", "run.finish"):
+                event = next((e for e in reversed(events) if e["type"] == kind
+                              and (kind in ("run.end", "run.finish")
+                                   or e["payload"].get("call_id") == "c1")), None)
+                if event is None:
+                    continue
+                payload = event["payload"]
+                data = {key: payload[key] for key in (
+                    "call_id", "tool_id", "status", "effect_state", "outcome",
+                    "receipt_id", "intent_seq", "after_state",
+                ) if key in payload}
+                output = payload.get("output") or {}
+                for key in ("rule_id", "resource", "error", "reason"):
+                    if key in output or key in payload:
+                        data[key] = output.get(key, payload.get(key))
+                note(f"priority seq={event['seq']} {kind}", data)
+            for event in chain if len(chain) <= 36 else chain[:18] + chain[-18:]:
+                payload = event["payload"]
+                data = selected(payload)
+                if isinstance(payload.get("output"), dict):
+                    data["output"] = selected(payload["output"])
+                if isinstance(payload.get("args"), dict) and "path" in payload["args"]:
+                    data["args"] = {"path": payload["args"]["path"]}
+                note(f"seq={event['seq']} {event['type']}", data)
+        except Exception as error:
+            note("events.run", {"collection_failed": type(error).__name__})
+
+    text = "\n".join(lines)
+    marker = "\n[truncated total]"
+    exc.add_note(text if len(text) <= 24000 else text[:24000 - len(marker)] + marker)
+
+
 SUMMARY_SCRIPT = [
     ModelResponse(
         finish_reason="tool_use", tool_calls=[ToolCall("c1", "list_files", {"path": "."})]
@@ -237,6 +362,94 @@ def test_daemon_runs_task_to_terminal_state(root: Path) -> None:
             client.close()
 
 
+def test_approval_failure_diagnostics_preserve_original_error(tmp_path, monkeypatch) -> None:
+    client = ipc.Client(tmp_path)
+    private = "diagnostic-private-marker"
+
+    def fail_call(*args, **kwargs):
+        raise RuntimeError(private)
+
+    original_stat = Path.stat
+
+    def fail_old_stat(path, *args, **kwargs):
+        if path == tmp_path / "ws" / "old.txt":
+            raise PermissionError(private)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(client, "call", fail_call)
+    monkeypatch.setattr(Path, "stat", fail_old_stat)
+    failure = AssertionError("original assertion")
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise failure
+        except Exception as exc:
+            _note_approval_failure(exc, client, tmp_path, "run_missing", {}, {}, {})
+            raise
+    assert caught.value is failure
+    notes = "\n".join(failure.__notes__)
+    for source in ("old.txt", "run.status", "approvals.list", "leases.current", "events.run"):
+        assert f'{source}: {{"collection_failed":' in notes
+    assert private not in notes
+    assert not (tmp_path / "events.db").exists()
+
+
+@pytest.mark.parametrize("long_chain", [False, True])
+def test_approval_failure_diagnostics_keep_critical_fields(tmp_path, monkeypatch, long_chain):
+    result = {
+        "call_id": "c1", "tool_id": "delete_file",
+        "status": "succeeded" if long_chain else "rejected",
+        "effect_state": "applied" if long_chain else "none_applied",
+        "output": {"error": "long-error-" * 1000, "rule_id": "dispatch.lease_lost"},
+    }
+    events = [{"type": "dispatch.rejected", "payload": {"reason": "long-reason-" * 1000}}
+              for _ in range(80 if long_chain else 0)]
+    events.insert(len(events) // 2, {"type": "tool.result", "payload": result})
+    if long_chain:
+        events.insert(41, {"type": "receipt", "payload": {
+            "call_id": "c1", "receipt_id": "rcpt_0123456789ab", "intent_seq": 7,
+            "effect_state": "applied", "after_state": "absent", "resource": "old.txt",
+        }})
+    events.extend([
+        {"type": "run.end", "payload": {"outcome": "succeeded" if long_chain else "noop"}},
+        {"type": "run.finish", "payload": {"outcome": "succeeded"}},
+    ])
+    for seq, event in enumerate(events, 1):
+        event["seq"] = seq
+    client = ipc.Client(tmp_path)
+
+    def call(method, params):
+        return {
+            "run.status": {"run": {"state": "succeeded"}},
+            "approvals.list": {"approvals": []},
+            "events.run": {"events": events, "has_more": False},
+        }[method]
+
+    monkeypatch.setattr(client, "call", call)
+    failure = AssertionError("original assertion")
+    _note_approval_failure(failure, client, tmp_path, "run_test", {}, {}, {})
+    notes = "\n".join(failure.__notes__)
+    assert '"call_id": "c1"' in notes
+    assert f'"status": "{result["status"]}"' in notes
+    assert f'"effect_state": "{result["effect_state"]}"' in notes
+    assert '"rule_id": "dispatch.lease_lost"' in notes
+    assert "run.end:" in notes and "run.finish:" in notes
+    if long_chain:
+        assert '"receipt_id": "rcpt_0123456789ab"' in notes
+        assert '"intent_seq": 7' in notes
+        assert '"resource": "old.txt"' in notes
+        assert "[truncated total]" in notes
+    else:
+        assert '"outcome": "noop"' in notes
+    page = json.loads(next(line.split(": ", 1)[1] for line in notes.splitlines()
+                           if line.startswith("events.run: ")))
+    assert ("receipt" in page["missing_in_page"]) is not long_chain
+    assert "run.end" not in page["missing_in_page"]
+    assert "run.finish" not in page["missing_in_page"]
+    assert len(notes) <= 24000
+    assert all(len(line) <= 1200 for line in notes.splitlines())
+    assert sum("seq=" in line for line in notes.splitlines()) <= 40
+
+
 def test_approval_is_decided_through_ipc_and_run_continues(root: Path) -> None:
     ws = root / "ws"
     ws.mkdir()
@@ -249,6 +462,10 @@ def test_approval_is_decided_through_ipc_and_run_continues(root: Path) -> None:
     ]
     with DaemonHarness(root, FakeModel(script)):
         client = _client(root)
+        run_id = None
+        run: dict[str, Any] = {}
+        card: dict[str, Any] = {}
+        decided: dict[str, Any] = {}
         try:
             task_id = _make_task(client, ws, goal="删掉旧账单")
             run_id = _start(client, task_id)
@@ -277,6 +494,12 @@ def test_approval_is_decided_through_ipc_and_run_continues(root: Path) -> None:
             assert "approval.consumed" in types
             assert "receipt" in types
             assert client.call("approvals.list", {})["approvals"] == []
+        except Exception as exc:
+            try:
+                _note_approval_failure(exc, client, root, run_id, run, card, decided)
+            except Exception as error:
+                exc.add_note(f"M5 approval diagnostics: collection_failed={type(error).__name__}")
+            raise
         finally:
             client.close()
 

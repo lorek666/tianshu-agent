@@ -1,0 +1,67 @@
+{
+  "started_utc": "2026-11-14T05:52:30.866499+00:00",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "baseline_head": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "removed_env_names": [
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "commands": [
+    {
+      "label": "lock",
+      "argv": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "exit": 0,
+      "elapsed_s": 0.01,
+      "log_sha256": "59e90acc6cbbcc385ac79e49651ca41c6e91e4d913e2aac8d97eb63b65cf4e9d"
+    },
+    {
+      "label": "pytest",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "exit": 2,
+      "elapsed_s": 167.22,
+      "log_sha256": "eba5ce295ae5bca1b75d3826f27cbeaa3b107a99ae5007fa0006bdc857332e9f"
+    },
+    {
+      "label": "ruff",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit": 0,
+      "elapsed_s": 0.07,
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    }
+  ],
+  "stable": true,
+  "file_count": 1080,
+  "product_delta": "tests/test_integration_m5.py\n",
+  "ended_utc": "2026-11-14T05:55:18.408771+00:00",
+  "passed": false
+}
