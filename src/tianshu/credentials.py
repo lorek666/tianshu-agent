@@ -1,17 +1,17 @@
 """凭据接缝（F12）。
 
 PRD §7 F12 原文写的是「密钥只存 OS Keychain」。**v1 没有 Keychain 后端**，
-这个模块不假装有：它交付的是**接缝** + 一个诚实的开发用后端（环境变量）
+这个模块不假装有：v1 交付的是**接缝** + 一个诚实的开发用后端（环境变量）
 + 全链路脱敏，并把「Keychain 未实现」表达成 `CredentialUnsupported`，
 而不是静默降级成环境变量。
 
 为什么 v1 不做 ctypes 版 Keychain：零依赖是硬约束（`dependencies = []`），
-唯一的路是 ctypes 直接调 macOS `Security.framework` 与 Windows
-`CredReadW/CredWriteW`。那是两块平台专属的 C API：错误码、内存所有权、
-`CFTypeRef` 的生命周期都要自己管，而我们**没有任何平台能测**它（CI 只有
-ubuntu/macos 的 runner，且 macOS runner 没有已解锁的 login keychain）。
-写一个没人跑过的安全关键后端，比明说"没做"更危险——这个项目已经因为
-"文档承诺了没落地"付过几次代价（Artifact / F5 / F9a）。
+唯一的路是 ctypes 直调平台 C API。当时的判断是「没有任何平台能测它」（CI 只有
+ubuntu/macos runner，且以为 macOS runner 没有可用的 login keychain）——
+写一个没人跑过的安全关键后端，比明说"没做"更危险。**2026-11 F12 W1 起这个
+前提被推翻**：实测 macOS runner 的 login keychain 可用，`keychain_macos.py`
+（ctypes 直调 Security.framework）据此落地，keychain 测试在 CI 与本机都真实
+跑过；其他平台维持诚实 stub。
 
 ## 三种状态必须分清（本模块的核心）
 
@@ -35,8 +35,9 @@ ubuntu/macos 的 runner，且 macOS runner 没有已解锁的 login keychain）�
 - **进进程列表**：`ps -E`（部分平台）与调试器能看到；
 - **被日志/APM 顺手带走**：常见框架打印配置时会枚举环境。
 
-所以它的定位是**开发/CI 用**。生产要走 Keychain，而 Keychain 待实现——
-在实现之前，这个模块至少保证**密钥不会出现在事件、日志、错误信息与 trace 里**。
+所以它的定位是**开发/CI 用**。macOS 生产可用 Keychain（`TIANSHU_CREDENTIAL_BACKEND=keychain`，
+见 `keychain_macos.py`）；这个模块始终保证的是**密钥不会出现在事件、日志、
+错误信息与 trace 里**。
 """
 
 from __future__ import annotations
@@ -309,8 +310,9 @@ _KEYCHAIN_REASON = (
     "OS Keychain 后端**仅 macOS 实现**（ctypes 直调 Security.framework 的 "
     "SecItem，默认/login keychain；防交互挂 kSecUseAuthenticationUIFail）。"
     "Windows Credential Manager 与 Linux Secret Service 未实现。"
-    "本机探针证明这版 macOS 上文件 keychain 的 SecItem 路由已失效、"
-    "进程内创建也已不可用，所以只支持默认 keychain。"
+    "文件 keychain（keychain_path）不在本版支持范围——这是范围裁决，不是平台"
+    "事实断言：两轮独立探针对 SecItem 路由结论相反（见 SPEC §2 复审更正），"
+    "不以单轮探针事实为依据。"
     "详见 src/tianshu/keychain_macos.py 模块文档与 "
     "docs/SPEC-F12-KEYCHAIN-2026-11-14.md。"
 )
@@ -331,17 +333,17 @@ class KeychainCredentialStore:
     Keychain 里"悄悄变成"其实在环境变量里"。两者的安全属性差一个数量级
     （见模块文档的威胁模型），静默降级等于把安全承诺换成了安慰剂。
 
-    `keychain_path` 参数**本版只接受 None**（默认 keychain）：本机探针证明
-    文件 keychain 的创建与 SecItem 路由都已失效，提供一个"看起来能用其实
-    不路由"的路径参数就是撒谎。
+    `keychain_path` 参数**本版只接受 None**（默认 keychain）：对文件 keychain
+    的 SecItem 路由，2026-11-14 与 2026-11-15 两轮探针结论相反——不提供平台
+    语义不可依赖的路径参数，按范围裁决只支持默认 keychain（SPEC §2 复审更正）。
     """
 
     def __init__(self, keychain_path: Path | None = None) -> None:
         if keychain_path is not None:
             raise ValueError(
-                "keychain_path 本版不支持：文件 keychain 的进程内创建与 SecItem "
-                "路由在现行 macOS 上已失效（探针证据见 keychain_macos.py 文档），"
-                "默认 keychain 是唯一支持的通路。"
+                "keychain_path 本版不支持：文件 keychain 的 SecItem 路由在两轮 "
+                "探针中结论相反（见 keychain_macos.py 文档），不提供语义不可"
+                "依赖的路径参数；默认 keychain 是唯一支持的通路。"
             )
         if sys.platform == "darwin":
             from . import keychain_macos
@@ -404,8 +406,9 @@ class UnsupportedCredentialStore:
 def default_store() -> CredentialStore:
     """当前选的凭据后端。由 `TIANSHU_CREDENTIAL_BACKEND` 决定，默认 `env`。
 
-    选 `keychain` 不是"换个更安全的实现"，而是**明确地让读取失败**——
-    这正是我们要的：v1 不能提供 Keychain，就不能让人以为自己在用 Keychain。
+    选 `keychain` 在 macOS 上是换到 OS 安全存储（真实现）；平台没有实现时
+    **明确失败**，绝不静默回退环境变量——「以为在 Keychain 里、其实在 env 里」
+    的静默降级，等于把安全承诺换成安慰剂。
     """
     name = (os.environ.get("TIANSHU_CREDENTIAL_BACKEND") or "env").strip().lower()
     if name == "env":
@@ -413,5 +416,5 @@ def default_store() -> CredentialStore:
     if name == "keychain":
         return KeychainCredentialStore()
     raise CredentialUnsupported(
-        f"未知的凭据后端：{name!r}（可选 env / keychain；v1 只有 env 真正实现）"
+        f"未知的凭据后端：{name!r}（可选 env / keychain；keychain 仅 macOS 实现）"
     )

@@ -1,16 +1,15 @@
 """macOS Keychain 直调后端（F12 W1，仅 darwin 加载）。
 
-探针证据（2026-11-14，darwin 25 / macOS arm64，见
-[SPEC-F12-KEYCHAIN-2026-11-14](../../docs/SPEC-F12-KEYCHAIN-2026-11-14.md) §2）：
+探针证据（2026-11-14 初探，2026-11-15 独立复审两臂对照更正；darwin 25 /
+macOS arm64，见 [SPEC-F12-KEYCHAIN-2026-11-14](../../docs/SPEC-F12-KEYCHAIN-2026-11-14.md) §2）：
 
 1. **默认（login）keychain 的 `SecItemAdd` / `SecItemCopyMatching` /
    `SecItemUpdate` / `SecItemDelete` 全链路可用**——这是本模块唯一的通路；
-2. `SecKeychainCreate` 一律返回 `-25294`：文件 keychain 的进程内创建已不可用
-   （`.keychain` / `.keychain-db` / 无扩展名三种子路径都试过）；
-3. `SecItem*` 挂 `kSecUseKeychain=<文件引用>` 时**该键被忽略**，条目实际落进
-   login keychain（`security dump-keychain <文件>` 0 命中、
-   `security find-generic-password` 命中 login）——文件 keychain 的 SecItem
-   路由在这版 macOS 上已失效，本模块因此**只支持默认 keychain**。
+2. **只支持默认 keychain 是范围裁决，不是平台事实断言**：对文件 keychain
+   （`keychain_path`），2026-11-14 探针曾报告进程内创建不可用、SecItem 不
+   路由；2026-11-15 独立复审的两臂对照探针在同一台机器上复现出相反结果
+   （挂 `kSecUseKeychain=<文件引用>` 时条目落进文件 keychain）。两轮矛盾
+   ⇒ 平台行为不可依赖，API 层拒绝该参数，不以任一轮探针事实为依据。
 
 ## 防交互卡死（daemon 的硬要求）
 
@@ -57,7 +56,12 @@ class _CFRange(ctypes.Structure):
 
 
 class _Bindings:
-    """框架绑定：函数签名与常量全部 `in_dll` 读取，不手抄数值。"""
+    """框架绑定：函数签名与常量尽量 `in_dll` 读取，不手抄数值。
+
+    唯一例外是 `kCFStringEncodingUTF8`：它是 CF 枚举（无导出符号可 in_dll），
+    按 CF 文档语义手抄 `0x08000100`——2026-11-14 探针用非 ASCII 条目做过
+    字节级往返验证（换 0x00000801 反而返回 NULL）。
+    """
 
     def __init__(self) -> None:
         cf_path = ctypes.util.find_library("CoreFoundation")
