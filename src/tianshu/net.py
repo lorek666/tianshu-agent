@@ -22,7 +22,14 @@
   等于绕过批准。同源换路径允许（仍在同一台服务器上），跨源/换端口/换 transport
   一律拒绝；需要跨源时让模型重新发起动作、重新拿批准。
 - **不信任 `Content-Length`**：只数实际读到的字节。声明可以是假的，读到的不能。
-- **不自动重试**：一次失败就是失败。重试策略不在本层，也不在 v1 的网络阶段。
+- **只自动重试「可证明没发出去」的失败**（2026-11-14，SPEC-G2-NET-RESILIENCE）：
+  连接阶段失败（`net.connect` / `net.connect_timeout`——TCP 从未建立，零字节
+  到达对端）按 `NetLimits.connect_attempts` 重试；TLS 之后的一切失败（读断、
+  超时、协议错、任何 HTTP 响应含 5xx）**绝不自动重试**——服务器已经见过这次
+  请求，重发是第二个 GET，必须由模型重新发起、重新拿批准。这条边界被
+  服务器端命中数测试钉住。
+- **进程级速率下限**：相邻两次 `fetch` 开始时刻至少隔 `min_interval_s`
+  （默认 1.0s，`0` 显式关闭；等待分片并随时可取消，等待不计入抓取 deadline）。
 - **不做内容判级**：不判断"这是不是私有材料"；审批展示完整 URL，由人判断。
 
 ## 诚实边界
@@ -36,12 +43,13 @@
 from __future__ import annotations
 
 import http.client
+import os
 import socket
 import ssl
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
 from .errors import TianshuError
@@ -59,6 +67,20 @@ NET_SUMMARY_BYTES = 4_096
 NET_CHUNK = 65_536
 #: 固定 User-Agent：不随任务/内容变化，避免把它当成一条外发通道。
 NET_USER_AGENT = "tianshu-agent/1 net-fetch"
+
+#: 连接阶段的总尝试次数（1 = 不重试）。只对「TCP 从未建立」的失败重试，
+#: 见模块 docstring 与 SPEC-G2-NET-RESILIENCE §2.3。
+NET_CONNECT_ATTEMPTS = 2
+#: 相邻两次抓取开始时刻的进程级最小间隔（秒），0 = 关闭。
+NET_MIN_INTERVAL_S = 1.0
+
+#: 环境覆盖：非法值回落默认（沿用本仓库 env 容错惯例），不做静默禁用。
+ENV_NET_CONNECT_ATTEMPTS = "TIANSHU_NET_CONNECT_ATTEMPTS"
+ENV_NET_MIN_INTERVAL_S = "TIANSHU_NET_MIN_INTERVAL_S"
+
+#: 可自动重试的失败分类。**只有这两类**发生在 `conn.connect()` 里、TCP 连接
+#: 从未建立——零字节到达对端，重发不构成第二次外发请求（不需要重新审批）。
+_RETRYABLE_REASONS = frozenset({"net.connect", "net.connect_timeout"})
 
 #: 需要跟随的重定向状态码。304 不是重定向（没有 Location 也合法）。
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
@@ -90,18 +112,42 @@ class NetCancelled(TianshuError):
     """抓取过程中发现 Run 已被取消。已经发出的请求无法撤回，但不再发新请求。"""
 
 
+def _env_connect_attempts() -> int:
+    raw = os.environ.get(ENV_NET_CONNECT_ATTEMPTS)
+    if not raw:
+        return NET_CONNECT_ATTEMPTS
+    try:
+        value = int(raw)
+    except ValueError:
+        return NET_CONNECT_ATTEMPTS
+    return value if value >= 1 else NET_CONNECT_ATTEMPTS
+
+
+def _env_min_interval_s() -> float:
+    raw = os.environ.get(ENV_NET_MIN_INTERVAL_S)
+    if not raw:
+        return NET_MIN_INTERVAL_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return NET_MIN_INTERVAL_S
+    return value if value >= 0 else NET_MIN_INTERVAL_S
+
+
 @dataclass(frozen=True)
 class NetLimits:
     """一次 Run 的网络抓取上限。
 
-    默认值就是模块常量；测试与将来的按 Run 配置都通过这个对象注入，
-    不在执行器里散落魔法数字。
+    默认值就是模块常量（env 可覆盖默认）；测试与将来的按 Run 配置都通过
+    这个对象注入，不在执行器里散落魔法数字。
     """
 
     timeout_ms: int = NET_TIMEOUT_MS
     max_bytes: int = NET_MAX_BYTES
     max_redirects: int = NET_MAX_REDIRECTS
     summary_bytes: int = NET_SUMMARY_BYTES
+    connect_attempts: int = field(default_factory=_env_connect_attempts)
+    min_interval_s: float = field(default_factory=_env_min_interval_s)
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -114,6 +160,24 @@ class NetLimits:
         if not isinstance(self.max_redirects, int) or self.max_redirects < 0:
             raise NetError(
                 f"max_redirects 必须是非负整数：{self.max_redirects!r}",
+                reason="net.limits",
+            )
+        if (
+            not isinstance(self.connect_attempts, int)
+            or isinstance(self.connect_attempts, bool)
+            or self.connect_attempts < 1
+        ):
+            raise NetError(
+                f"connect_attempts 必须是 >= 1 的整数：{self.connect_attempts!r}",
+                reason="net.limits",
+            )
+        if (
+            not isinstance(self.min_interval_s, (int, float))
+            or isinstance(self.min_interval_s, bool)
+            or self.min_interval_s < 0
+        ):
+            raise NetError(
+                f"min_interval_s 必须是 >= 0 的数值：{self.min_interval_s!r}",
                 reason="net.limits",
             )
 
@@ -129,6 +193,8 @@ class Fetched:
     truncated: bool
     redirects: tuple[str, ...]
     elapsed_ms: int
+    #: 到这次成功为止的连接尝试次数（1 = 首次即成功；库层事实，不进工具输出）。
+    attempts: int = 1
 
     @property
     def is_text(self) -> bool:
@@ -236,19 +302,84 @@ def _resolve_location(current: NetworkTarget, location: str) -> NetworkTarget:
     return target
 
 
+#: 进程级速率状态：相邻两次 `fetch` 开始时刻的间隔由 `_wait_for_rate_slot`
+#: 保证。礼貌是进程属性——两个 Run 的抓取互相计入对方的间隔（SPEC §6）。
+_FETCH_STATE_LOCK = threading.Lock()
+_LAST_FETCH_START: float | None = None
+
+
+def _wait_for_rate_slot(
+    clock: Callable[[], float],
+    last_started: float | None,
+    min_interval_s: float,
+    cancel: Callable[[], bool] | None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """距上次抓取开始不足 `min_interval_s` 就分片等待（注入时钟，测试确定性）。
+
+    - `min_interval_s <= 0` 或首次抓取（`last_started is None`）不等待；
+    - 等待分片上限 50ms，每片前查取消——等待中取消立即 `NetCancelled`；
+    - 等待不计入抓取 deadline（deadline 从真正开始连接起算，由调用方处理）。
+    """
+    if min_interval_s <= 0 or last_started is None:
+        return
+    while True:
+        _check_cancel(cancel)
+        elapsed = clock() - last_started
+        if elapsed >= min_interval_s:
+            return
+        sleep(min(min_interval_s - elapsed, 0.05))
+
+
 def fetch(
     target: NetworkTarget,
     *,
     limits: NetLimits | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> Fetched:
-    """GET 一个网络目标。阻塞式；所有失败都以 `NetError` / `NetCancelled` 抛出。"""
+    """GET 一个网络目标。阻塞式；所有失败都以 `NetError` / `NetCancelled` 抛出。
+
+    连接阶段失败（`net.connect` / `net.connect_timeout`）按
+    `NetLimits.connect_attempts` 自动重试——TCP 从未建立，重发不构成第二次
+    外发请求；其余失败原样抛出（服务器已见过请求，重试必须重新批准）。
+    重试共享同一个绝对期限，每次尝试前查取消。
+    """
+    global _LAST_FETCH_START
     limits = limits or NetLimits()
-    started = time.monotonic()
+    with _FETCH_STATE_LOCK:
+        _wait_for_rate_slot(
+            time.monotonic, _LAST_FETCH_START, limits.min_interval_s, cancel
+        )
+        started = time.monotonic()
+        _LAST_FETCH_START = started
     deadline = started + limits.timeout_ms / 1000.0
+    # visited 跨尝试保留：重定向防环不因重试而重置。
+    visited: set[str] = {target.to_uri()}
+    for attempt in range(1, limits.connect_attempts + 1):
+        if attempt > 1:
+            _check_cancel(cancel)
+        try:
+            return _fetch_once(
+                target, limits, cancel, deadline, visited, attempt, started
+            )
+        except NetError as exc:
+            if exc.reason not in _RETRYABLE_REASONS or attempt >= limits.connect_attempts:
+                raise
+    raise NetError("重定向次数超过上限", reason="net.redirect_limit")  # pragma: no cover
+
+
+def _fetch_once(
+    target: NetworkTarget,
+    limits: NetLimits,
+    cancel: Callable[[], bool] | None,
+    deadline: float,
+    visited: set[str],
+    attempt: int,
+    fetch_started: float,
+) -> Fetched:
+    """单次尝试：完整的重定向跟随 + 有界读取。失败以 `NetError` / `NetCancelled` 抛出。"""
     current = target
     redirects: list[str] = []
-    visited: set[str] = {current.to_uri()}
 
     for hop in range(limits.max_redirects + 1):
         _check_cancel(cancel)
@@ -350,7 +481,7 @@ def fetch(
                     del body[limits.max_bytes :]
                     truncated = True
                     break
-            elapsed_ms = int((time.monotonic() - started) * 1000)
+            elapsed_ms = int((time.monotonic() - fetch_started) * 1000)
             return Fetched(
                 uri=current.to_uri(),
                 status=status,
@@ -359,6 +490,7 @@ def fetch(
                 truncated=truncated,
                 redirects=tuple(redirects),
                 elapsed_ms=elapsed_ms,
+                attempts=attempt,
             )
         except NetCancelled:
             raise
@@ -415,9 +547,13 @@ def summary_text(
 
 
 __all__ = [
+    "ENV_NET_CONNECT_ATTEMPTS",
+    "ENV_NET_MIN_INTERVAL_S",
     "NET_CHUNK",
+    "NET_CONNECT_ATTEMPTS",
     "NET_MAX_BYTES",
     "NET_MAX_REDIRECTS",
+    "NET_MIN_INTERVAL_S",
     "NET_SUMMARY_BYTES",
     "NET_TIMEOUT_MS",
     "NET_USER_AGENT",
