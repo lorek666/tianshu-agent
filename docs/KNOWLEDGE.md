@@ -634,6 +634,8 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-14 · 「全做」路线图 + W1 Keychain 凭据后端（`feat/credentials-keychain`）**：维护者拍板全量缺口收口，落 [ROADMAP-COMPLETE-AGENT-2026-11-14](ROADMAP-COMPLETE-AGENT-2026-11-14.md)（15 个工作流 + 外部阻塞清单 + 占用面排序；沙箱/外壳/流式等结构性项单列，不冒充单会话可完成）。**W1 先行**：F12 的 Keychain 后端从 stub 变 macOS 真实现——新 `keychain_macos.py`（ctypes SecItem 直调默认/login keychain，`kSecUseAuthenticationUIFail` 防无头进程交互卡死，`-25300`→未配置 `None`、`-25299`→转 `SecItemUpdate`、其余 OSStatus→`CredentialUnsupported`）；`credentials.py` 能力声明分平台（darwin `implemented/supports_write/secure_storage` 全 True）。**本机探针证据**（SPEC §2）：默认 keychain 全链路可用；`SecKeychainCreate` 一律 `-25294`、`kSecUseKeychain` 文件路由被忽略——文件 keychain 已死，`keychain_path` 参数如实只收 None。**显式偏差**：测试直接对真实 login keychain 自证（唯一 service 名 + finally 清理复核 + 锁定 `-25308` 如实跳过），「临时数据根」纪律在本工单无法完全遵守、SPEC §3.4 登记。三态契约测试存活：防回退在 darwin 改断言「空 keychain + env 假 key → 构造报缺少 API key」。定向 43 passed / 3 skipped（skip=非 darwin stub 测试）+ 负控三条实跑红还原（NC1 未配置吞成空串 / NC2 拆 update / NC3 静默回退 env）；不碰 C1–C5。平台陈述：仅 macOS，Windows/Linux 仍 stub，CI macOS runner 钥匙串状态以当次 run 为准。
+
 - **2026-11-14 · M2诊断路径别名真红与窄修收口**：保留9eb独立FAIL、旧完整门及审阅观察器错误；作者仅两处resolve+真实symlink/junction参数化回归，修前1F1P、修后12项诊断与42项整文件绿。第二读者新3P及两类单点行为负控关闭POSIX路径别名缺陷，按1111精确继承既有有界/原异常/真实两个BEGIN证据。root亲读并逐hash保全54件旧FAIL与38件新PASS；最终1112固定源lock/full/ruff0，3198P8skip546.63s，前后稳定。门后只补事实与原字节公开子集，最终对象/新CI另核；原Windows根因及145/147均未销账，恢复B未推进。
 
 - **2026-11-14 · main新红独立销账与M2诊断续做**：亲读并逐hash保全main b450独立FAIL原件77件，以及恢复B本地merge277对象绑定PASS原件10件；原恢复分支保持干净未push。隔离调查原件保留真实heartbeat持锁下两个不同BEGIN的同指纹和无hold正控，明确原CI根因仍未知。另开 `codex/windows-m2-lock-diagnostics`，只授权原正常收尾用例的测试侧有界诊断；保留六assert/60轮、生产/CI与所有旧红，独立验收及本机/原生CI另核，B产品未授。
