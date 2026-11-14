@@ -50,6 +50,14 @@ export function formatCostSummary(summary: CostLike): string {
   return `${known}（${summary.knownCalls} 次调用）`;
 }
 
+/** 大整数千分位分组（确定性：固定 en-US 规则，不随运行环境 locale 变化）。 */
+export function formatInt(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  const sign = value < 0 ? "-" : "";
+  const digits = String(Math.abs(Math.trunc(value)));
+  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 export function formatClock(ts: number | null | undefined): string {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return "--:--:--";
   const date = new Date(ts);

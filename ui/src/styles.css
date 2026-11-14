@@ -2206,3 +2206,90 @@ pre,
 .memory-remember[open] summary {
   margin-bottom: 4px;
 }
+
+/* ------------------------------------------------------------------ 预算与子任务面板（W8） */
+
+.pane-subhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.pane-subhead h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.pane-subhead-note {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.budget-summary {
+  margin-top: 0;
+}
+
+.budget-refusals {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.budget-refusal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.budget-refusal-reason {
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subtask-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--surface-2);
+}
+
+.subtask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.subtask-name {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.subtask-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.subtask-error {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger, #b3261e);
+  font-size: 11.5px;
+}
