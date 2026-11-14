@@ -141,7 +141,7 @@ UI 无法从 `events.run` 重建**账户级**账本状态（上限设置、未�
 | J4 | 费用已知/未知分列与 `summarizeCost` 一致 | 同上 |
 | J5 | token 只累计显式 usage；未知尝试单独计数 | 同上 |
 | J6 | `run.start` limits 展示；缺 limits 显示未知，不造默认值 | 同上 |
-| J7 | `policy.denied` rule_id=`dispatch.budget_refused` / `dispatch.subtask_limit` → C4 人话 + 详情区原始编号 | `lib/__tests__/budgetView.test.ts` + `components/__tests__/budget-panel.test.tsx` |
+| J7 | `policy.denied` rule_id=`dispatch.budget_refused` / `dispatch.subtask_limit` → C4 人话 + 详情区原始编号 | `lib/__tests__/budgetView.test.ts` + `components/__tests__/run-panels.test.tsx` |
 | J8 | 无子任务 / 无预算相关事件的 Run：两个面板都不渲染 | `components/__tests__/run-panels.test.tsx` |
 | J9 | 畸形 payload（非对象 / 缺键 / 错型）不崩、显示未知 | `lib/__tests__/budgetView.test.ts` + subtasks 测试 |
 | J10 | `subtask.finished.error` 任意文本被转义（XSS 负例） | `components/__tests__/run-panels.test.tsx` |
@@ -210,7 +210,8 @@ UI 侧对应留白（当前不展示、不编造）：账户上限设置、未�
 
 ## 8. 实测回填（2026-11-14，本会话填）
 
-**实现规模**：新增 `ui/src/lib/budgetView.ts`（151 行）、`ui/src/lib/subtasks.ts`（171 行）、
+**实现规模**：新增 `ui/src/lib/budgetView.ts`（147 行）、`ui/src/lib/subtasks.ts`（160 行）
+（2026-11-15 复审更正：初版误写 151/171）、
 `ui/src/components/BudgetPanel.tsx`、`ui/src/components/SubtaskPanel.tsx`、测试 3 个文件；
 修改 `App.tsx`（传 `events`/`runs` 两个 prop）、`RunDetail.tsx`（挂两个面板）、
 `lib/humanize.ts`（`SUBTASK_STATE_LABELS` 7 态、`BUDGET_REFUSAL_LABELS` 2 条、
@@ -258,3 +259,28 @@ token 3,000 · 期限 300s / 用量：轮次 2 · token 1,842」，时间线出�
 ≤ 2 · token ≤ 3000）」「子任务完成（轮次 2 · token 1842）」人话；失败 Run 显示拒绝记录
 「委派限额不满足 + 根任务累计子任务数已达上限 4」与时间线「未获放行：委派限额不满足」；
 无 usage 的种子 Run 显示「用量未知不当作 0」，不显示 0。截图已核对布局无破版。
+
+## 9. 复审轮（2026-11-15，独立第二读者 + 修复）
+
+独立第二读者（不读作者结论）在 3090ca9 复审本 PR：总结论 **PASS（带 1 项 P1）**——
+J1–J14 全 PASS；负控 NC1/NC2/NC3 独立复跑先红后绿（红测试名与声称逐字一致）；
+前端 install/typecheck/test（123 条）/build 全 exit0，build 后工作区干净（提交的
+dist 就是当前源码产物）；**事件 schema 逐字段对照无错位**（subtask.spawned 六键 +
+limits 三键 / subtask.finished usage / run.start limits 双键 / model.result usage 归一 /
+cost 单一口径 / policy.denied 两个编号都有真实产生路径）；后端 3199P/8S 与声称一致；
+PR body 逐条对账无夸大、无假话。
+
+- **[P1] 子运行状态回填在真实与 demo 场景都不可达**：App 传父任务过滤的
+  `taskRuns`，而子 Run 的 `task_id` 是子 Task id（`_insert_run_locked(task=child_task)`），
+  `childRunId` 永远查不到；SPEC §2.3 原设计是传全量 `state.runs`。单测夹具把子 Run
+  伪造成父 task_id 掩盖了它。修复：App 改传全量 runs（RunDetail 的 runs 只喂
+  SubtaskPanel，无其他消费点）；测试夹具改用子 Task id 如实造形。
+- **[P2] SPEC §8 行数假数字**（budgetView 151→实测 147、subtasks 171→实测 160）→ 已更正。
+- **[P3] `hasExplicitUsage` 死分支**（`asRecord` 对缺失返回 `{}` 永不 null）→ 已删；
+- **[P3] 显式 usage {0,0} 显示「无记录」**（「有无记录」与「>0」混淆）→ 已修：
+  BudgetView 增 `explicitUsageResults` 计数，面板把「有记录且已知 0」与「用量未知」
+  分开渲染，新测试钉住；
+- **[P3] J7 判据引用了不存在的测试文件名** → 已更正为 run-panels.test.tsx。
+
+复审轮门禁：`pnpm run test` **124 passed**（+1 显式零用量）、typecheck/build exit0、
+dist 产物随源码更新提交；后端零改动（diff 核实）。
