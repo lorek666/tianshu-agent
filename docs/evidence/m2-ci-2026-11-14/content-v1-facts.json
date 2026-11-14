@@ -1,0 +1,216 @@
+{
+  "verdict": "FAIL_CONTENT_CANDIDATE_PATH_ALIAS_OPEN",
+  "candidate_test_sha256": "9eb5ced6d9040aa593c3387bd29cd606faf0e115232017aa73dc6bdc1ee3eadc",
+  "frozen_manifest_sha256": "d56715ae710c9b899b30dc9ec8e3817b51b64c0d0808125cf4805e434c1883f8",
+  "baseline": "b450c339d546ae2007ed9754e70de0108c4b86c4",
+  "source_files": 1112,
+  "source_rehash_before_after": true,
+  "original_body_ast_and_6_asserts_identical": true,
+  "non_docs_delta": [
+    "tests/test_m2_acceptance.py"
+  ],
+  "opaque_docs_delta_count": 12,
+  "open_findings": [
+    {
+      "id": "PATH_ALIAS_CALLER_LOSS",
+      "severity": "P2",
+      "status": "OPEN_BLOCKING_UNQUALIFIED_PASS",
+      "source_lines": {
+        "frames": [
+          673,
+          691
+        ],
+        "caller": [
+          694,
+          707
+        ],
+        "new_test": [
+          1203,
+          1218
+        ]
+      },
+      "observed": "valid /tmp symlink import of the same frozen copy: added caller test fails TypeError caller=None; canonical-only single-node passes",
+      "root": "code.co_filename is compared lexically with resolved SRC; candidate does not canonicalize the code filename",
+      "runtime_record": "alias-input-identity.json"
+    }
+  ],
+  "targeted_tests": {
+    "first_alias_input": {
+      "exit": 1,
+      "passed": 10,
+      "failed": 1,
+      "deselected": 29,
+      "original_60_loop_executions": 1,
+      "log": "candidate-targeted-tests.log"
+    },
+    "canonical_single_node": {
+      "exit": 0,
+      "passed": 1,
+      "deselected": 39,
+      "original_60_loop_repeated": false,
+      "log": "canonical-single-node.log"
+    }
+  },
+  "gates": {
+    "1_original_contract_production": "PASS_STATIC",
+    "2_silent_capture_beat_semantics": "PASS_CANONICAL_WITH_PATH_ALIAS_LIMITATION",
+    "3_boundaries_active_metadata": "PASS_CANONICAL_WITH_ACCEPTED_REUSE_AND_PATH_ALIAS_LIMITATION",
+    "4_exception_transaction_semantics": "PASS_BOUNDED_PROBES",
+    "5_bounds_no_sensitive_payload": "PASS_TESTED_CANARIES_AND_CAPS_ONLY",
+    "6_two_actual_heartbeat_begin_boundaries": "PASS_CANONICAL_BOUNDED_MECHANISM_ONLY"
+  },
+  "mechanism_probes": {
+    "lease": {
+      "pid": 87667,
+      "state": "queued",
+      "errors": [
+        "OperationalError: database is locked"
+      ],
+      "events": [
+        "run.start",
+        "job.enqueued",
+        "run.state",
+        "job.claimed",
+        "job.parked"
+      ],
+      "busy_timeout": 5000,
+      "functions": [
+        "call",
+        "_drive",
+        "resume_run",
+        "_acquire_leases",
+        "acquire",
+        "__enter__",
+        "holding",
+        "__enter__",
+        "transaction",
+        "__enter__",
+        "transaction"
+      ],
+      "transaction_caller": {
+        "file": "src/tianshu/leases.py",
+        "line": 370,
+        "function": "acquire"
+      },
+      "note_chars": 12283,
+      "note_utf8_bytes": 12283,
+      "actual_same_process_two_connections": true
+    },
+    "running": {
+      "pid": 87668,
+      "state": "queued",
+      "errors": [
+        "OperationalError: database is locked"
+      ],
+      "events": [
+        "run.start",
+        "job.enqueued",
+        "run.state",
+        "job.claimed",
+        "job.parked"
+      ],
+      "busy_timeout": 5000,
+      "functions": [
+        "call",
+        "_drive",
+        "resume_run",
+        "transition",
+        "transition",
+        "__enter__",
+        "holding",
+        "__enter__",
+        "transaction",
+        "__enter__",
+        "transaction"
+      ],
+      "transaction_caller": {
+        "file": "src/tianshu/tasks.py",
+        "line": 1300,
+        "function": "transition"
+      },
+      "note_chars": 13217,
+      "note_utf8_bytes": 13217,
+      "actual_same_process_two_connections": true
+    },
+    "no_hold": {
+      "passed": true,
+      "silent_success": true,
+      "state": "succeeded"
+    },
+    "semantics": {
+      "mode": "semantics",
+      "mechanism": "one isolated process, real main+heartbeat threads and two connections; no external writer",
+      "pid": 83437,
+      "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+      "sqlite": "3.50.4",
+      "transaction_identity_commit_rollback": true,
+      "commit_failure_same_object": true,
+      "commit_failure_commands": [
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+        "ROLLBACK"
+      ],
+      "nested_reuse_only": true,
+      "record_event_failure_success_unchanged": true,
+      "record_frames_failure_original_identity": true,
+      "heartbeat_retry_semantics": true,
+      "bounds": {
+        "ring": 128,
+        "errors": 8,
+        "frames_dropped": 26,
+        "chars": 8800,
+        "utf8_bytes": 8800,
+        "cause_context_retained": 0
+      },
+      "secret_canaries_absent": true,
+      "passed": true
+    }
+  },
+  "negative_control": {
+    "name": "suppress only drive capture, retain real heartbeat lock mechanism",
+    "exit": 1,
+    "oracle": "ORACLE_REJECTED: real swallowed drive capture missing",
+    "log": "probe-red-no-drive-capture.stderr"
+  },
+  "reviewer_probe_corrections": [
+    {
+      "version": "v1",
+      "error": "incorrect expectation that heartbeat remained active at drive catch after original join; failed at reviewer assertion",
+      "raw": [
+        "probe-lease.stderr",
+        "probe-running.stderr"
+      ],
+      "correction": "inspect transaction-error active_at_error, preserve original join semantics"
+    },
+    {
+      "version": "v2",
+      "error": "FileExistsError before probe/product execution due retained v1 data directories",
+      "raw": [
+        "probe-v2-lease.stderr",
+        "probe-v2-running.stderr"
+      ],
+      "correction": "fresh data-v2 dirs only"
+    },
+    {
+      "version": "v3",
+      "result": "both corrected real-boundary probes exit0 once; candidate source unchanged"
+    }
+  ],
+  "accepted_scope": {
+    "rulings": [
+      "reuse is accepted only for real nested context enter, not native BEGIN/COMMIT/OS owner, and must not count as another active writer",
+      "single process main+heartbeat two real connections; independent process only isolates the mechanism; external writer not required",
+      "cause/context traversal absent means storage bound 0; no new traversal requirement",
+      "24000 character cap differs from byte count; record actual bytes without adding a byte-cap requirement"
+    ],
+    "prep_scope_correction": "sealed prepared ACCEPTANCE item6 external writer requirement is superseded; original sealed prep not rewritten"
+  },
+  "limits": [
+    "content evidence only, not Git object/PR CI admission or Windows approval",
+    "artificial barrier hold only demonstrates observer discrimination, original CI root cause remains NOT_ESTABLISHED",
+    "no full/CI/API/paid/commit; live/full session belongs to root and was not consumed",
+    "not a universal no-secret proof; only inspected allowlist and recorded canary/cap probes",
+    "no author conclusions read; prior b450 probe sources used only as construction references"
+  ],
+  "finished_at": "2026-11-14T07:33:11.458937+00:00"
+}

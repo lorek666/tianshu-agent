@@ -1,0 +1,86 @@
+from __future__ import annotations
+import contextlib, hashlib, json, os, platform, sqlite3, sys, threading, time, traceback
+from pathlib import Path
+
+OUT=Path(__file__).parent
+SRC=OUT/'source'
+sys.path[:0]=[str(SRC/'src'),str(SRC/'tests')]
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.model import ScriptedModel, ModelResponse, ToolCall
+from tianshu.worker import Worker
+import tianshu.worker as worker_module
+assert Path(worker_module.__file__).resolve()==(SRC/'src/tianshu/worker.py').resolve()
+mode=sys.argv[1]
+root=OUT/('data-alternative-'+mode);root.mkdir()
+ws=root/'ws';ws.mkdir();(ws/'note.md').write_bytes(b'original\n')
+data=root/'authority';data.mkdir()
+log=EventLog(root/'events.db',blob_dir=root/'blobs')
+stack=build_stack(log,data_root=data)
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(data)
+from tianshu import sandbox
+sandbox.configure_backend('local_fs')
+task=stack.tasks.create_task('整理笔记',[str(ws)])
+run=stack.tasks.start_run(task.task_id,payload={'task':'整理笔记','out':'probe.md'})
+job=stack.claims.enqueue(run.run_id)
+stack.tasks.transition(run.run_id,'queued',reason='enqueued')
+run_id,job_id=run.run_id,job.job_id
+held=threading.Event();release=threading.Event();hold_requested=threading.Event()
+original_transaction=EventLog.transaction
+original_engine=Worker._engine
+records=[]
+@contextlib.contextmanager
+def transaction(self):
+    try:
+        with original_transaction(self) as tx:
+            if mode=='hold-transition' and hold_requested.is_set() and threading.current_thread().name=='tianshu-heartbeat' and not held.is_set():
+                records.append({'phase':'heartbeat-real-BEGIN-acquired','thread':threading.current_thread().name,'monotonic':time.monotonic(),'native_in_transaction':self.conn.in_transaction})
+                held.set()
+                if not release.wait(15):raise RuntimeError('probe barrier timed out')
+                records.append({'phase':'heartbeat-release-after-main-error','monotonic':time.monotonic()})
+            yield tx
+    except sqlite3.OperationalError as exc:
+        records.append({'phase':'native-sqlite-error','thread':threading.current_thread().name,'monotonic':time.monotonic(),'exception':str(exc),'sqlite_errorcode':getattr(exc,'sqlite_errorcode',None),'sqlite_errorname':getattr(exc,'sqlite_errorname',None),'traceback':traceback.format_exc(),'native_in_transaction':self.conn.in_transaction})
+        release.set()
+        raise
+
+def engine(self,claim):
+    if mode=='hold-heartbeat' and not held.wait(10):raise RuntimeError('heartbeat did not acquire real write transaction')
+    records.append({'phase':'main-before-engine','thread':threading.current_thread().name,'monotonic':time.monotonic()})
+    return original_engine(self,claim)
+from tianshu.tasks import TaskStore
+original_transition=TaskStore.transition
+def transition(self,run_id,state,*args,**kwargs):
+    if mode=='hold-transition' and state=='running':
+        hold_requested.set()
+        if not held.wait(10):raise RuntimeError('heartbeat did not lock before transition')
+    return original_transition(self,run_id,state,*args,**kwargs)
+TaskStore.transition=transition
+EventLog.transaction=transaction
+Worker._engine=engine
+original_drive=Worker._drive
+def drive(self,claim):
+    try:return original_drive(self,claim)
+    except Exception as exc:
+        records.append({'phase':'full-drive-error-before-worker-catch','exception':str(exc),'traceback':traceback.format_exc()})
+        raise
+Worker._drive=drive
+worker=Worker(stack,model=ScriptedModel([ModelResponse('tool_use',tool_calls=[ToolCall('c1','create_report',{'name':'probe.md','content':'x'})]),ModelResponse('end_turn',content='完成')]),heartbeat_interval_ms=1)
+start=time.monotonic()
+try:
+    worked=worker.run_once()
+    run=stack.tasks.get_run(run_id)
+    events=log.read_run(run_id)
+    result={'mode':mode,'source_sha':'b450c339d546ae2007ed9754e70de0108c4b86c4','python':sys.version,'platform':platform.platform(),'sqlite_version':sqlite3.sqlite_version,'busy_timeout':log.conn.execute('PRAGMA busy_timeout').fetchone()[0],'worked':worked,'state':run.state,'worker_errors':worker.errors,'worker_beats':worker.beats,'job_state':stack.claims.get(job_id).state,'run_end':[e.payload for e in events if e.type=='run.end'],'events':[e.type for e in events],'park_payloads':[e.payload for e in events if e.type=='job.parked'],'file_exists':(ws/'probe.md').exists(),'elapsed':time.monotonic()-start,'records':records}
+    if mode in ('hold-heartbeat','hold-transition'):
+        assert result['worker_errors']==['OperationalError: database is locked'],result
+        assert result['state']=='queued' and result['job_state']=='waiting',result
+        assert result['events']==['run.start','job.enqueued','run.state','job.claimed','job.parked'],result
+        assert not result['run_end'] and not result['file_exists'],result
+        assert any(r.get('sqlite_errorcode')==sqlite3.SQLITE_BUSY for r in records),result
+    else:
+        assert result['state']=='succeeded' and not result['worker_errors'],result
+    (OUT/('alternative-'+mode+'.json')).write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
+    print(json.dumps(result,ensure_ascii=False,indent=2))
+finally:
+    release.set();worker.close();log.close()

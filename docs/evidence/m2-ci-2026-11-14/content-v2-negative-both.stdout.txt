@@ -1,0 +1,13 @@
+FF.                                                                      [100%]
+=================================== FAILURES ===================================
+_______ test_worker_diagnostics_real_transaction_caller_and_nested_reuse _______
+/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests/test_m2_acceptance.py:1213: in test_worker_diagnostics_real_transaction_caller_and_nested_reuse
+    assert attempts[0]["caller"]["file"] == "src/tianshu/leases.py"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: 'NoneType' object is not subscriptable
+__________ test_worker_diagnostics_symlink_source_paths[original-src] __________
+/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests/test_m2_acceptance.py:1257: in test_worker_diagnostics_symlink_source_paths
+    assert error["caller"] is not None
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError
+2 failed, 1 passed, 39 deselected in 0.12s

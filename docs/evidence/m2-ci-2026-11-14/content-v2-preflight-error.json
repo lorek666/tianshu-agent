@@ -1,0 +1,8 @@
+{
+  "stage": "input preflight; candidate not executed",
+  "exit_code": 1,
+  "exception": "AssertionError",
+  "line": 49,
+  "cause": "reviewer method-source normalization omitted @staticmethod decorator; using AST-only replacement preserves decorator",
+  "candidate_failure": false
+}

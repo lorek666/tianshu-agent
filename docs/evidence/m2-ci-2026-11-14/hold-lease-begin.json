@@ -1,0 +1,67 @@
+{
+  "mode": "hold-heartbeat",
+  "source_sha": "b450c339d546ae2007ed9754e70de0108c4b86c4",
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "sqlite_version": "3.50.4",
+  "busy_timeout": 5000,
+  "worked": true,
+  "state": "queued",
+  "worker_errors": [
+    "OperationalError: database is locked"
+  ],
+  "worker_beats": 0,
+  "job_state": "waiting",
+  "run_end": [],
+  "events": [
+    "run.start",
+    "job.enqueued",
+    "run.state",
+    "job.claimed",
+    "job.parked"
+  ],
+  "park_payloads": [
+    {
+      "claim_epoch": 1,
+      "job_id": "job_bc6d22741bae",
+      "owner_instance_id": "80942379a17b4b1d87d9e098857df943",
+      "owner_pid": 51680,
+      "reason": "queued",
+      "run_id": "run_9ba4650c2053"
+    }
+  ],
+  "file_exists": false,
+  "elapsed": 5.292677208955865,
+  "records": [
+    {
+      "phase": "heartbeat-real-BEGIN-acquired",
+      "thread": "tianshu-heartbeat",
+      "monotonic": 333558.33614525,
+      "native_in_transaction": true
+    },
+    {
+      "phase": "main-before-engine",
+      "thread": "MainThread",
+      "monotonic": 333558.336154166
+    },
+    {
+      "phase": "native-sqlite-error",
+      "thread": "MainThread",
+      "monotonic": 333563.604114083,
+      "exception": "database is locked",
+      "sqlite_errorcode": 5,
+      "sqlite_errorname": "SQLITE_BUSY",
+      "traceback": "Traceback (most recent call last):\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-v2.py\", line 35, in transaction\n    with original_transaction(self) as tx:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/events.py\", line 412, in transaction\n    self._conn.execute(\"BEGIN IMMEDIATE\")\nsqlite3.OperationalError: database is locked\n",
+      "native_in_transaction": false
+    },
+    {
+      "phase": "heartbeat-release-after-main-error",
+      "monotonic": 333563.607673541
+    },
+    {
+      "phase": "full-drive-error-before-worker-catch",
+      "exception": "database is locked",
+      "traceback": "Traceback (most recent call last):\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-v2.py\", line 55, in drive\n    try:return original_drive(self,claim)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/worker.py\", line 420, in _drive\n    result = self._engine(claim).resume_run(claim.run_id)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/loop.py\", line 872, in resume_run\n    self._acquire_leases(missing, run_id, task.task_id)\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/loop.py\", line 764, in _acquire_leases\n    self._leases.acquire(\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/leases.py\", line 370, in acquire\n    with self._log.transaction():\n         ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-v2.py\", line 35, in transaction\n    with original_transaction(self) as tx:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/events.py\", line 412, in transaction\n    self._conn.execute(\"BEGIN IMMEDIATE\")\nsqlite3.OperationalError: database is locked\n"
+    }
+  ]
+}

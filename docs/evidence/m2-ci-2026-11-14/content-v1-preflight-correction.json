@@ -1,0 +1,7 @@
+{
+  "v2_preflight": "FileExistsError before product/probe execution; previous data directories retained",
+  "v2_sha256": "4f689bfeb09cd27a8fcd954ce168dd8302a851ca1135f4e2d7db4ea971f7cfbc",
+  "v3_sha256": "d68d99130e964f2074770d727fe25dca8af942dd9ff9cf98a2db19a71122fb1c",
+  "only_change": "fresh isolated data-v2 directory names",
+  "candidate_change": false
+}

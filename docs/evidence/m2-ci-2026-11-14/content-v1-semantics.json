@@ -1,0 +1,36 @@
+{
+  "mode": "semantics",
+  "mechanism": "one isolated process, real main+heartbeat threads and two connections; no external writer",
+  "pid": 83437,
+  "imports": {
+    "tianshu.worker": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/worker.py",
+    "tianshu.events": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/events.py",
+    "tianshu.loop": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/loop.py",
+    "tianshu.tasks": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/tasks.py",
+    "tianshu.leases": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/leases.py",
+    "test_m2_acceptance": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/tests/test_m2_acceptance.py"
+  },
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "sqlite": "3.50.4",
+  "transaction_identity_commit_rollback": true,
+  "commit_failure_same_object": true,
+  "commit_failure_commands": [
+    "BEGIN IMMEDIATE",
+    "COMMIT",
+    "ROLLBACK"
+  ],
+  "nested_reuse_only": true,
+  "record_event_failure_success_unchanged": true,
+  "record_frames_failure_original_identity": true,
+  "heartbeat_retry_semantics": true,
+  "bounds": {
+    "ring": 128,
+    "errors": 8,
+    "frames_dropped": 26,
+    "chars": 8800,
+    "utf8_bytes": 8800,
+    "cause_context_retained": 0
+  },
+  "secret_canaries_absent": true,
+  "passed": true
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "mode": "lease",
+    "returncode": 0,
+    "elapsed": 5.65499070903752,
+    "oracle": "v2-transaction-snapshot",
+    "data": "fresh data-v2"
+  },
+  {
+    "mode": "running",
+    "returncode": 0,
+    "elapsed": 5.65994366700761,
+    "oracle": "v2-transaction-snapshot",
+    "data": "fresh data-v2"
+  }
+]

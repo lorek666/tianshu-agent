@@ -1,0 +1,206 @@
+{
+  "scope": "Selected exact original bytes, not the complete sealed local evidence or a proof of the original Windows root cause. Scripts stored as text are historical probes, not runtime code. Raw .log originals use .log.txt names so the archive stays explicit without changing the repository log ignore rule.",
+  "self_excluded": "subset-index.json",
+  "files": {
+    "main-failure-independent-report.md": {
+      "source": "/tmp/tianshu-g3-20261113/pr148-main-b450-independent-native-20261114-2k9eusbp/REPORT.md",
+      "bytes": 7646,
+      "sha256": "b75d475b80f505df83aa05546dc3799733a3b1054dcf57a3c5ea972d7b04987f"
+    },
+    "mechanism-investigation-report.md": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/REPORT.md",
+      "bytes": 8432,
+      "sha256": "794f85037237ec1b31ef2bc5b503c82a6dc5e98d859987298d8ae7840b712f7a"
+    },
+    "restore-local-object-report.md": {
+      "source": "/tmp/restore-b-local-merge-object-binding-20261114-zh22uv52/REPORT.md",
+      "bytes": 2757,
+      "sha256": "ddb5c8d9cd05a648674405a8cf4c28f32cc28af8762cae94510c13812595ec97"
+    },
+    "probe.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe.py",
+      "bytes": 4491,
+      "sha256": "a6c29afa5ee985c3764df6356cecc8fa433bfdf08e49eeaf782ac7b7284bbaac"
+    },
+    "probe-v2.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-v2.py",
+      "bytes": 4786,
+      "sha256": "9d8b2c148824c39c489eb299fc0d648dec99ffeb4677abaff7ad24a6f60678d0"
+    },
+    "probe-alternative.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-alternative.py",
+      "bytes": 5286,
+      "sha256": "61a3ed3c7d898326ce81c6af4c1de67595da41defec5caec83a262c829edb83d"
+    },
+    "no-hold.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/no-hold.json",
+      "bytes": 1703,
+      "sha256": "547e88cecfec51fae0327e5a3eb9d4cd78defc68c680d4a8d12754b3a3ec9b13"
+    },
+    "hold-lease-begin.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/v2-hold-heartbeat.json",
+      "bytes": 4064,
+      "sha256": "747eb6494ed9ce98d2f640771e8d7a75ad8cd4c82092946ec9d8fab1f8c5a55b"
+    },
+    "hold-running-begin.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/alternative-hold-transition.json",
+      "bytes": 4168,
+      "sha256": "8990c8e608d88758f02aecb6df38d0e9502ef8777657e3599ce2320f7f9e00bb"
+    },
+    "content-v1-fail-report.md": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/REPORT.md",
+      "bytes": 7590,
+      "sha256": "e38efbc0695e84a5a31e71fbc41896389de60f8e12100c46efc8b2c15ac6c5b7"
+    },
+    "content-v1-facts.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/facts.json",
+      "bytes": 7024,
+      "sha256": "a8964fcb2066ddb57cd7205ad3ffdeeb69f34b27521a231e5369d486725684e5"
+    },
+    "content-v1-probe.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/independent_probe-v3.py",
+      "bytes": 11323,
+      "sha256": "d68d99130e964f2074770d727fe25dca8af942dd9ff9cf98a2db19a71122fb1c"
+    },
+    "content-v1-lease.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-lease.json",
+      "bytes": 16639,
+      "sha256": "96666b7440ef52216daf88046df34ceed2c3b36d97e4252ba01df28f724975c0"
+    },
+    "content-v1-running.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-running.json",
+      "bytes": 17696,
+      "sha256": "78af2dc260c7984c95315025c38dda4fc44e32e34b73f95257373b6e0b245ad8"
+    },
+    "content-v1-no-hold.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-no-hold.json",
+      "bytes": 1766,
+      "sha256": "737aedf5806d5dff39913b9d005a815a946c6c1f80f8d2b47a31cf77de916611"
+    },
+    "content-v1-semantics.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-semantics.json",
+      "bytes": 1597,
+      "sha256": "c68105e4dacaecfcdfbf1011fb98b530fc91de0ad29b36a097cee10a3b8d68c4"
+    },
+    "content-v1-negative-drive.stderr.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-red-no-drive-capture.stderr",
+      "bytes": 403,
+      "sha256": "aa7d38582eadb26c03abd2e7f666cafe82bcb2ea8fbfa8743323f23099dd25cc"
+    },
+    "content-v1-probe-results.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-v3-results.json",
+      "bytes": 311,
+      "sha256": "081e320edd887a2df53c057007f87fc548bea11305b46894af030b93d854f5fe"
+    },
+    "content-v1-oracle-correction.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-oracle-correction.json",
+      "bytes": 513,
+      "sha256": "cbdd561c45345b4d250d1c1b62a15a668c883ec20fe25b4a09a53a981040f885"
+    },
+    "content-v1-preflight-correction.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/probe-preflight-correction.json",
+      "bytes": 361,
+      "sha256": "5b9842e69cba3ca8cc50881f6d401cc2af85bf69069d3dfe647d96f19a0b969b"
+    },
+    "content-v2-report.md": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/REPORT.md",
+      "bytes": 6488,
+      "sha256": "ef26fabc4e02933a46f16b935ebe6d9a54f37c6501d68f06bbd1c08cb9e943e8"
+    },
+    "content-v2-facts.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/facts.json",
+      "bytes": 13391,
+      "sha256": "2d5be24fa8709d6d0d28fbad19b9f280fbc2a8475219ca352a4205b6f7dbc4eb"
+    },
+    "content-v2-alias-probe.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/independent_alias_probe.py",
+      "bytes": 6038,
+      "sha256": "f9f64658ac812c896ecf1b359c452b14992495148eef0a2e7d15a31126d9f988"
+    },
+    "content-v2-alias-probe.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/independent-alias-probe.json",
+      "bytes": 4154,
+      "sha256": "dbefa09bc17c424ae2a7be34024e4a356787dac12e5b776456b0bd6a0d7f885d"
+    },
+    "content-v2-run-narrow.py.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/run_narrow_pytest.py",
+      "bytes": 2410,
+      "sha256": "77413849540240b0b0d881916359a49fd60514aaa45dd5b7ae4e9815223e0ef1"
+    },
+    "content-v2-run-results.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/run-results.json",
+      "bytes": 3049,
+      "sha256": "c7005f7692c2f1cfa30731deff54720cdd772951e406a9aecf4ef375cabc746a"
+    },
+    "content-v2-green.stdout.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/green.stdout",
+      "bytes": 113,
+      "sha256": "f6d6e2d7534bade8825568dedaa855ae860cca1b895102aa0c32dd8d01c0b5fc"
+    },
+    "content-v2-negative-both.stdout.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/negative-both.stdout",
+      "bytes": 964,
+      "sha256": "e1e8f9e4848dada3277f92a35eafc6d8c3810f3010fb461087a247af6b0ea49a"
+    },
+    "content-v2-negative-frames.stdout.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/negative-frames.stdout",
+      "bytes": 515,
+      "sha256": "40da52364ddfb7ff0dbecebe89020c908b530279e0ccb680f874b550378caef8"
+    },
+    "content-v2-preflight-error.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/report-bundle/preflight-v1-failure.json",
+      "bytes": 283,
+      "sha256": "9a41b4c820c0bec69f1d81e6426c08cf28109395e8961c8e36b94d285aa800b2"
+    },
+    "local-v1-results.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-uyvsi4ci/results.json",
+      "bytes": 1706,
+      "sha256": "1dc931f4430d60ba9875257aeb2f8017403d4074655c0fa789c761133daf20fd"
+    },
+    "local-v2-results.json": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-5c75dhyp/results.json",
+      "bytes": 1706,
+      "sha256": "1cf572d2c270f39a2e06b3460dade6f097f2fb51f345dfb6c644cd417db9be2d"
+    },
+    "content-v1-alias-first-red.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle/candidate-targeted-tests.log",
+      "bytes": 1438,
+      "sha256": "5704ad9102738cf704afcc778bbb9b9235ffdfb217266e16deff47f783427e4f"
+    },
+    "symlink-before-fix.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-canonical-fix-k9fo0cqh/symlink-behavior-red.log",
+      "bytes": 610,
+      "sha256": "737b764d0d7b032f885e78f671b6c84e36175bb6fba75e484add2ab107b17e0c"
+    },
+    "local-v1-pytest.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-uyvsi4ci/pytest.log",
+      "bytes": 3644,
+      "sha256": "df6ac46c2eda7f483529cadeb87e7eb7215e3fb6d0a23f6af0c635246ed4e3ea"
+    },
+    "local-v1-lock.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-uyvsi4ci/lock.log",
+      "bytes": 28,
+      "sha256": "952c52098285918d7989036dbb2f826309f2fb4952b61e8d4f6b564250c94155"
+    },
+    "local-v1-ruff.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-uyvsi4ci/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "local-v2-pytest.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-5c75dhyp/pytest.log",
+      "bytes": 3644,
+      "sha256": "d3579f9873352c844a6c01b8311121969ad7cdf91b0b93f1df00431cc6d9a4d4"
+    },
+    "local-v2-lock.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-5c75dhyp/lock.log",
+      "bytes": 28,
+      "sha256": "d3a3f7b505c275d62928488587632734bf0c67d96a4c4abd39ac4a5c9692d702"
+    },
+    "local-v2-ruff.log.txt": {
+      "source": "/tmp/tianshu-g3-20261113/m2-diagnostics-complete-gates-5c75dhyp/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    }
+  }
+}
