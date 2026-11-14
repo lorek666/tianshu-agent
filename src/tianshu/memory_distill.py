@@ -11,6 +11,14 @@
 不承诺"比 L1 更好用"——除非评测拿出来（现在没有）。L2/L3 是**投影**，不是第二份
 事实：正文放进内容寻址目录、证据写 `memory_id + revision + 原文引文`，重建时按事件
 重放即可复现同一页。
+
+**冲突消解（W7，确定性裁决）**：N3 的缺口是"两条矛盾的 L1 在页里并列，不裁决"。本版在
+L2 页合成时对**替换型差异**的同页成员对（同 kind、互不为子集、token 规模相等、重叠系数
+≥ `CONFLICT_SIMILARITY`——这是确定性度量能给出的最强"同主题不同值"信号，**不是**逻辑
+矛盾的证明）按写死的三级规则裁决"以谁为准"，并把裁决作为标注节写进页尾。裁决**只发生在
+页内**：不删行、不改 L1、不改召回集合——两条源记忆仍各自 active、仍可单独检索，淘汰式
+处置（覆盖/删除语义）需要审批，模型可见且免审批的 `memory.consolidate` 不能顺手做。
+误报的代价被压到"页上多一行可核查的标注"，而不是"一条仍有效的记忆从页里消失"。
 """
 
 from __future__ import annotations
@@ -22,6 +30,8 @@ from typing import Any
 from .memory import MEMORY_LAYERS, MemoryStoreError
 
 __all__ = [
+    "CONFLICT_ANNOTATION_LIMIT",
+    "CONFLICT_SIMILARITY",
     "L2_MIN_GROUP",
     "L2_SIMILARITY",
     "L3_PAGE_BYTES",
@@ -50,6 +60,20 @@ QUOTE_LIMIT_BYTES = 200
 
 #: `source_refs` 里记录"这一页看到的最大逻辑时钟"的标记前缀。
 BASIS_SEQ_PREFIX = "seq:"
+
+#: 冲突候选阈值：同页成员对的**重叠系数**（`|A∩B| / min(|A|,|B|)`）≥ 该值才可能成为
+#: 冲突候选。阈值**高于**聚类阈值（`L2_SIMILARITY`）：进簇只要求"同场景"（0.34），标注
+#: 冲突要求"几乎是同一句话换了值"（0.6）。写死并进测试，调了就是换了裁决口径。
+CONFLICT_SIMILARITY = 0.6
+
+#: 页内裁决标注行上限：病态簇（N 条近重复事实产生 N(N-1)/2 对）不许把页正文撑爆；
+#: 超限截断并**如实报数**，不许静默吞。写死并进测试。
+CONFLICT_ANNOTATION_LIMIT = 8
+
+#: 裁决用的 origin 等级（只比大小，不复制召回排序的权重数值）：
+#: user_explicit > user_confirmed > inferred，与 `memory._ORIGIN_WEIGHTS`
+#: （1.0 / 0.6 / 0.3）的高低序对齐——"人给的比人确认的可信、人确认的比模型猜的可信"。
+_ORIGIN_RANK = {"inferred": 0, "user_confirmed": 1, "user_explicit": 2}
 
 
 @dataclass(frozen=True)
@@ -166,6 +190,88 @@ def _one_line(content: str) -> str:
     return " ".join(content.split())
 
 
+def _resolve_conflict_pair(
+    first: ConsolidationSource, second: ConsolidationSource
+) -> tuple[ConsolidationSource, ConsolidationSource, str]:
+    """冲突候选对的裁决：返回 `(winner, loser, rule)`。
+
+    规则写死、优先级从高到低，全程无模型参与：
+
+    1. `origin`：等级高者为准（人给的 > 人确认的 > 模型猜的，与召回的 origin 权重
+       同一高低序）。**这条先于时间**——人早就确认过的结论，不因模型后来猜了新的
+       而被推翻；
+    2. `seq`：`last_seq` 大者为准。逻辑时钟（与 freshness 同基准，不用可回拨的钟表
+       时间）：同 origin 时，后写入的推翻先写入的；
+    3. `memory_id`：字典序小者为准。全序 tie-break——同 origin 且同 `last_seq` 在
+       "每条记忆一个事件" 的投影里几乎不可达，但规则必须全序，否则两次合成可能差一个字。
+    """
+    rank_first = _ORIGIN_RANK.get(first.origin, -1)
+    rank_second = _ORIGIN_RANK.get(second.origin, -1)
+    if rank_first != rank_second:
+        if rank_first > rank_second:
+            return first, second, "origin"
+        return second, first, "origin"
+    if first.last_seq != second.last_seq:
+        if first.last_seq > second.last_seq:
+            return first, second, "seq"
+        return second, first, "seq"
+    if first.memory_id <= second.memory_id:
+        return first, second, "memory_id"
+    return second, first, "memory_id"
+
+
+def _conflict_pairs(
+    members: list[ConsolidationSource],
+) -> list[tuple[ConsolidationSource, ConsolidationSource]]:
+    """同一页的被采用成员里，满足全部检测判据的冲突候选对（按 id 定序）。
+
+    判据（全部可机械复现，见 SPEC §3.1）：同 kind；压成一行后仍不同；互不为子集
+    （子集 = 信息增量/补充，不是冲突）；token 规模相等（替换型差异的形状特征——
+    等量词汇、共享骨架、互斥值；互补事实与改写/扩写的规模必不等，借此排除）；
+    重叠系数 ≥ `CONFLICT_SIMILARITY`。
+    """
+    ordered = sorted(members, key=lambda item: item.memory_id)
+    pairs: list[tuple[ConsolidationSource, ConsolidationSource]] = []
+    for index, first in enumerate(ordered):
+        for second in ordered[index + 1 :]:
+            if first.kind != second.kind:
+                continue
+            if _one_line(first.content) == _one_line(second.content):
+                continue
+            first_tokens = _tokens(first.content)
+            second_tokens = _tokens(second.content)
+            if not first_tokens or not second_tokens:
+                continue
+            if first_tokens <= second_tokens or second_tokens <= first_tokens:
+                continue
+            if len(first_tokens) != len(second_tokens):
+                continue
+            if _similarity(first_tokens, second_tokens) < CONFLICT_SIMILARITY:
+                continue
+            pairs.append((first, second))
+    return pairs
+
+
+def _conflict_annotation_lines(
+    pairs: list[tuple[ConsolidationSource, ConsolidationSource]],
+) -> list[str]:
+    """裁决标注行：每个候选对一行 `[冲突裁决] …`；超限截断并如实报数。"""
+    lines = []
+    for first, second in pairs:
+        winner, loser, rule = _resolve_conflict_pair(first, second)
+        lines.append(
+            f"[冲突裁决] {winner.memory_id}@{winner.revision} 与 "
+            f"{loser.memory_id}@{loser.revision} 按 {rule} 规则以 "
+            f"{winner.memory_id}@{winner.revision} 为准（两条 L1 均仍有效）"
+        )
+    if len(lines) > CONFLICT_ANNOTATION_LIMIT:
+        omitted = len(lines) - CONFLICT_ANNOTATION_LIMIT
+        return lines[:CONFLICT_ANNOTATION_LIMIT] + [
+            f"[冲突裁决] 其余 {omitted} 对省略（标注上限 {CONFLICT_ANNOTATION_LIMIT}）"
+        ]
+    return lines
+
+
 def _quote(content: str) -> str:
     """证据引文：截断到 `QUOTE_LIMIT_BYTES`，截断处明确标注。"""
     raw = content.encode("utf-8")
@@ -233,6 +339,13 @@ def build_l2_page(sources: list[ConsolidationSource]) -> Page | None:
             )
             used.append(member)
     content = "\n\n".join(blocks) + "\n"
+    # 冲突消解（W7）：对整页被采用成员做候选检测（不限于同簇——聚类的贪心只对簇代表
+    # 比相似度，两条高重叠成员可能落进同页的不同簇），裁决写进页尾标注节。成员行序、
+    # evidence / proof_count / source_refs / basis_seq 一概不变；无候选时正文与
+    # 旧版逐字节相同。
+    annotations = _conflict_annotation_lines(_conflict_pairs(used))
+    if annotations:
+        content += "\n".join(["", *annotations]) + "\n"
     return Page(
         layer="l2",
         kind="fact",
