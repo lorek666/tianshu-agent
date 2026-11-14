@@ -11,12 +11,16 @@
 
 这里只定义**接缝**，不假装有能力：
 
-- :class:`EmbeddingProvider` 是协议（`model_id` / `dim` / `embed()`）；
+- :class:`EmbeddingProvider` 是协议（`model_id` / `dim` / `embed()`）；实现方
+  还应自报 `sends_data_off_device`（会不把传入文本发到网络）——缺省按**会
+  外发**处理（安全默认，W6 外发 gate 的判定依据）；
 - :class:`HashEmbeddingProvider` 是**确定性哈希基线，没有语义能力**——它只用于
   测试与离线基线，任何对外说明都不许把它写成"语义召回"；
-- 外部 provider 只有在用户显式配置、且该任务允许数据外发时才启用；未配置时
-  检索**降级为 FTS-only 并如实标注**（`semantic=False` + `degraded` 原因），
-  不静默假装有语义。
+- 外部 provider（`embedding_openai.OpenAICompatibleEmbeddingProvider`）需要
+  用户显式配置环境变量四件套才装配；**外发 gate**：`retrieve()` 默认不允许
+  外发——模型工具的检索永不触发端点请求（自动降级 FTS-only 并如实标注），
+  网络调用只允许发生在人显式发起的控制面动作里（rebuild / CLI search /
+  面板 RPC，见 SPEC-N2-EMBEDDING-PROVIDER §2.3）。
 
 ## 不混空间
 
@@ -132,6 +136,10 @@ class HashEmbeddingProvider:
     它当语义模型的说法都是假的，`docs/memory-retrieval-eval.md` 里按这个口径
     报告数字。
     """
+
+    #: 能力自报（外发 gate 依据）：全部计算在本机完成，**零网络外发**——
+    #: 模型工具的检索路径对它不降级（对照 `embedding_openai` 的 True）。
+    sends_data_off_device = False
 
     def __init__(self, *, dim: int = 64, model_id: str = "hash-64-v1") -> None:
         if not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0:

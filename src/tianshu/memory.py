@@ -2124,6 +2124,7 @@ class MemoryProjection:
         limit: int = MAX_RECALL_ITEMS,
         max_bytes: int = MAX_RECALL_BYTES,
         priority: RecallPriority | None = None,
+        allow_embedding_outbound: bool = False,
     ) -> RecallOutcome:
         """检索并**如实标注**这次有没有语义路（F10 §8 / §12）。
 
@@ -2136,9 +2137,14 @@ class MemoryProjection:
            memory_id)` 稳定排列（F10 §8 的"优先当前任务/工作区"仍是第一分组键）；
         4. 裁剪：条数 + 正文字节。
 
-        `semantic=False` 只在"没有 provider / 索引未完整构建 / provider 不匹配"
-        时出现，原因写进 `degraded`；语义路**跑了但没命中**是 `semantic=True` +
-        空结果，不叫降级。
+        `semantic=False` 只在"没有 provider / 索引未完整构建 / provider 不匹配 /
+        外部 provider 的外发未被本次调用允许"时出现，原因写进 `degraded`；
+        语义路**跑了但没命中**是 `semantic=True` + 空结果，不叫降级。
+
+        外发 gate：`allow_embedding_outbound` 默认 **False**——模型工具的检索
+        永不触发 embedding 的网络外发；只有人显式发起的控制面动作（CLI search /
+        面板 RPC）才传 True。`sends_data_off_device=False` 的本机 provider
+        （如 hash 基线）不受此门影响。
         """
         self.ensure_schema()
         text = _require_str(query, "query", allow_empty=True)
@@ -2176,6 +2182,28 @@ class MemoryProjection:
                 ),
                 semantic=False,
                 degraded=reason,
+            )
+        # 外发 gate（W6，SPEC-N2-EMBEDDING-PROVIDER §2.3）：检索 embed(query)
+        # 会把查询文本发给配置端点——模型工具路径默认不打开这个许可（安全默认），
+        # 外部 provider 时降级为 FTS-only 并如实标注；控制面显式动作（CLI /
+        # 面板 RPC）由调用点传 True。未知 provider 按"会外发"处理。
+        provider = self._index.provider
+        sends_off_device = bool(
+            getattr(provider, "sends_data_off_device", True) if provider is not None else False
+        )
+        if sends_off_device and not allow_embedding_outbound:
+            return RecallOutcome(
+                items=_crop(
+                    _order_by_priority(fts_candidates, priority, stale=stale_map),
+                    limit_value,
+                    max_bytes_value,
+                    stale=stale_map,
+                ),
+                semantic=False,
+                degraded=(
+                    "外部 embedding provider 的网络外发未被本次调用允许"
+                    "（模型检索不外发）；本次只有词面召回（FTS）"
+                ),
             )
         semantic_ids = self._index.search(
             text,
