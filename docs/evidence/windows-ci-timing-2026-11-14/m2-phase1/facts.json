@@ -1,0 +1,78 @@
+{
+  "verdict": "PHASE1_LOCALIZED_NOT_ROOT_CAUSE",
+  "executed_product_or_probe": false,
+  "facts": [
+    {
+      "id": "F01",
+      "classification": "observed",
+      "claim": "CI iteration13, worker.errors=[], run failed with main-loop OperationalError; execution.started exists, tool.result/receipt/recovery.blocked do not exist in printed run event list.",
+      "evidence": "CI L1928-L1931"
+    },
+    {
+      "id": "F02",
+      "classification": "observed",
+      "claim": "tx1413 connection1 MainThread outer append_many transaction failed in enter; sqlite_errorcode5 SQLITE_BUSY. Bottom original source frame is events.py:412 BEGIN IMMEDIATE.",
+      "evidence": "CI L1937-L1938; events.py:398-424"
+    },
+    {
+      "id": "F03",
+      "classification": "observed",
+      "claim": "tx1474 heartbeat LeaseStore.renew was in acquired active snapshot: acquired/body-return693843000000, error693875000000, exit693906000000.",
+      "evidence": "CI L1941,L1945-L1949,L1951"
+    },
+    {
+      "id": "F04",
+      "classification": "derived_arithmetic_only",
+      "claim": "Observed acquired-to-error32ms, observed acquired-to-exit63ms; neither is native BEGIN wait length, exact SQLite lock lifetime, nor proof of a five-second holder. Clock resolution in original run not recorded.",
+      "evidence": "F03; diagnostics.py-equivalent test_m2_acceptance.py:732-807"
+    },
+    {
+      "id": "F05",
+      "classification": "observed",
+      "claim": "tx_dropped5660/error_dropped8, other reported dropped/eviction counts0, collection_failed0. Final output carries only last32 ring events. tx1413 attempt is absent.",
+      "evidence": "CI L1936; test_m2_acceptance.py:635-648,826-859"
+    },
+    {
+      "id": "F06",
+      "classification": "source",
+      "claim": "renew_claim reads/validates claim, writes JobStore.heartbeat in transaction1, reads live_paths, writes LeaseStore.renew in transaction2 if paths exist. Successful beat then waits configured interval; retries do not apply to main append_many.",
+      "evidence": "jobs.py:158-224,491-513; leases.py:610-641; worker.py:145-178"
+    },
+    {
+      "id": "F07",
+      "classification": "source",
+      "claim": "Worker sidechannel uses separate EventLog connection and real renew_claim; AgentLoop.heartbeat_once can also run same chain on main connection.",
+      "evidence": "worker.py:181-205,409-420; loop.py:890-908"
+    },
+    {
+      "id": "F08",
+      "classification": "source",
+      "claim": "Stress test config interval1ms, sixty iterations; default HEARTBEAT_MS5000. First heartbeat runs immediately; intervals are waits after beats, not exact periods or FIFO writer handoff.",
+      "evidence": "test_m2_acceptance.py:986-1019; worker.py:145-178,219,409-420; leases.py:56"
+    },
+    {
+      "id": "F09",
+      "classification": "source",
+      "claim": "Known file append_many top callers include Dispatcher._commit_result:4263 and Dispatcher._fail_unknown:4006; AgentLoop._record_result:2838 is another source callsite. Current caller returns first src frame only.",
+      "evidence": "dispatcher.py:3897-4014,4072-4269; loop.py:2172-2182,2786-2847; test_m2_acceptance.py:695-707"
+    },
+    {
+      "id": "F10",
+      "classification": "inference_limited",
+      "claim": "For create_report execution.started with no result, normal commit-result versus failed-unknown persistence cannot be distinguished by current append_many caller. Full bounded source callchain/batch event types would separate them without payload collection.",
+      "evidence": "F01,F09; dispatcher.py:1147-1199"
+    },
+    {
+      "id": "F11",
+      "classification": "source_explains_observation",
+      "claim": "AgentLoop catches generic exception then writes failed end; Worker can return normally with empty errors because exception did not escape engine. none_applied run projection does not prove actual file was untouched after execution.started.",
+      "evidence": "loop.py:1057-1059,2172-2195,3006-3025; worker.py:252-267,420-443"
+    },
+    {
+      "id": "F12",
+      "classification": "hypothesis_not_cause",
+      "claim": "Two short heartbeat writes per beat plus 1ms stress interval permit a continuous reacquisition / scheduling starvation hypothesis. Original missing pending-window trace cannot establish it or exclude long hold / unobserved writer / OS scheduling.",
+      "evidence": "F02-F08"
+    }
+  ]
+}

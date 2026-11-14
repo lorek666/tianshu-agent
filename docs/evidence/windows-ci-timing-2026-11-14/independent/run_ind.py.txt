@@ -1,0 +1,36 @@
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import subprocess
+import sys
+import time
+
+root = Path(__file__).resolve().parent
+label, mode, source = sys.argv[1:]
+source = Path(source).resolve()
+assert not (root / f"ind-{label}.run.json").exists(), "preserve original evidence"
+command = [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python3",
+    "-B", "-m", "pytest", "-p", "regression_plugin", "-p", "no:cacheprovider",
+    "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry",
+    "-o", "addopts=", "-q", "--tb=short", "--basetemp", str(root / f"ind-{label}-pytest"),
+]
+env = os.environ.copy()
+env.update(PYTHONPATH=str(root), PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+           MCP_REGRESSION_MODE=mode, MCP_REGRESSION_OUTPUT=str(root / f"ind-{label}.json"))
+start = time.monotonic_ns()
+result = subprocess.run(command, cwd=source, env=env, timeout=40,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+(root / f"ind-{label}.log").write_bytes(result.stdout)
+metadata = {"command": command, "cwd": str(source), "mode": mode,
+            "platform": platform.platform(), "returncode": result.returncode,
+            "elapsed_ns": time.monotonic_ns()-start,
+            "test_sha256": hashlib.sha256((source / "tests/test_mcp_transport_timeout.py").read_bytes()).hexdigest(),
+            "plugin_sha256": hashlib.sha256((root / "regression_plugin.py").read_bytes()).hexdigest(),
+            "log_sha256": hashlib.sha256(result.stdout).hexdigest()}
+(root / f"ind-{label}.run.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2)+"\n")
+print(json.dumps(metadata, ensure_ascii=False, indent=2))
+print(result.stdout.decode(errors="replace"))
+raise SystemExit(result.returncode)

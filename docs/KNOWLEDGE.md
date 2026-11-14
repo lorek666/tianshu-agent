@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **PR149已交付测试诊断，main首次CI仍红（2026-11-14）**：PR首次run43573586653 attempt1六job成功并经独立核验，正常保护合入main `c2cf1c71c65f46dea161e41b140df99d137a5686`。该main自身首次run43576167008 attempt1为独立确认的`FAIL_THIS_MAIN_PUSH_CI_ONLY`：Windows两片各一个call失败，合计2 failed/3167 passed/37 skipped、完整3206节点，汇总正确拒绝；UI/Ubuntu/macOS成功。M2第13轮定位到append_many真实BEGIN SQLITE_BUSY，等待起点已从ring淘汰；MCP原2秒从服务发现起等待整个worker，隔离审批/unknown屏障证明该测试混合计时。最终MCP569b/M2f220两文件已获独立限定内容PASS；启动/accept清理真缺口修后复验，原断言与期限保留。1163固定输入的lock/full/ruff均0，3199 passed/8 skipped、635.00s，前后无漂移。门后只回填事实与证据，正式对象/新原生CI另核；实际Windows锁机制及MCP原卡点仍未知。详见[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)。#145/#147保持开放，恢复B继续暂停；下方“待原生CI”是旧提交前时点。
+
 - **M2测试诊断修后本机通过，原生CI待核（2026-11-14，提交前）**：原9eb完整门3196 passed/8 skipped虽绿，但独立真实路径别名验收FAIL，原件保留；只补两处canonical和真实别名/外部副本回归后，766a源以其余1111文件精确继承获得独立内容窄PASS。最终1112输入lock/full/ruff全0，**3198 passed/8 skipped（546.63s）**，源/HEAD/status稳定；原六assert/60轮、生产/CI/UI不变。旧独立两个真实BEGIN区分与有界语义按同源继承，不冒充重跑；Windows junction分支本机未执行，新原生执行另核。只补失败现场，不宣称#145/#147或b450原红根因已修，恢复B仍暂停。[M2诊断记录](M2-CI-DIAGNOSTICS-2026-11-14.md)绑定旧FAIL、新PASS及完整门原件。
 
 - **main 正常收尾 CI 新红，根因仍待定位（2026-11-14）**：审批诊断 PR148 已正常保护合入 main `b450c339d546ae2007ed9754e70de0108c4b86c4`，自身 push run43567298082 attempt1 经第二读者确认 `FAIL_THIS_MAIN_PUSH_CI_ONLY`。Windows片1正常收尾测试第55轮出现 `database is locked`，Run queued、无 run.end；Windows合3156 passed/1 failed/37 skipped，required汇总正确拒绝，其余四job成功。本次审批节点通过，#147根因未建立、#145未修，不能并为同因。隔离真实心跳持锁在租约获取和running转换两个BEGIN均产生同指纹，无hold正控通过；人为>5000ms不是原CI根因证明。本轮只补测试侧有界失败现场，原断言/60轮/生产/CI不改；详见[M2诊断记录](M2-CI-DIAGNOSTICS-2026-11-14.md)。
@@ -487,6 +489,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **c2cf双红与诊断边界（2026-11-14）**：M2活跃renew context的32ms/63ms观测差不证明单次5秒持锁，run.end的none_applied也不证明execution.started后文件未动；不按无证据假设修改锁策略。MCP此次CI在returned断言停止，后续unknown/replay断言未执行；本机真实屏障只证明原测试能混入审批和落盘等待，不定位原Windows卡点。最终测试计时/清理和M2起点/调用链诊断已独立限定PASS、本机完整门通过；实际Windows与正式对象仍另验，不借PR149绿色销账。READONLY和注入7ms仅验诊断；[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)保留范围。
+
 - **M2诊断验证边界（2026-11-14）**：766a候选已在本机真实POSIX别名输入修复诊断caller丢失，并独立核根外同内容副本仍external；Windows junction分支本机未执行。诊断成功静默、失败附note，但包装及resolve有非零时序成本；它只观察已装配本进程context，不是OS锁owner、外部写者或精确COMMIT起点。新完整本机门不覆盖原Windows根因，正式对象/原生CI另核。
 
 - **正常收尾锁错误未修（2026-11-14）**：main b450原生push CI失败已独立确认；同一queued/五事件指纹可来自两个不同事务BEGIN，当前没有原CI底层帧、SQLite错误码或持锁轨迹，实际根因 `NOT_ESTABLISHED`。本轮测试观测只覆盖已装配的本进程事务，不能排除未观测的外部写者，也不能用本机或PR绿覆盖原main红；恢复B契约推送和产品保持暂停。
@@ -633,6 +637,10 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-14 · Windows计时与保留诊断最终候选收口**：MCP真实call_tool入口/退出直接受原2秒约束，独立审批/unknown屏障正控、真实blocking与迟调度负控和前置错传播均按预期；accept旧泄漏及9abd新启动错覆盖的FAIL保留，最终569b真探针销账。M2f220局部保留enter起点、最多4个canonical上层caller与有限runtime，READONLY/180事务ring淘汰/7ms注入和两删功能call红证明诊断，原六assert/60轮/1ms不变。第二读者正式限定内容PASS，76件紧凑包逐hash只读保全；root最终1163源lock/full/ruff均0，3199P8skip635.00s、前后无漂移。旧611.04s门不覆盖清理增量，公开73份原字节子集明确不完整；提交预检为该目录日志补最窄忽略例外，保全15份原日志。正式Git对象与新CI另绑；未改生产/期限/重试/CI门、不关闭145/147、不推进恢复B或触碰凭据与metrics他线。
+
+- **2026-11-14 · PR149保护合并与main双红分路定位**：亲读并逐hash保全PR149独立原生PASS与正常合并身份；main c2cf首次六job原件96件1762771B保全，第二读者完整3206节点/全部阶段确认两个真实call红与汇总拒绝，不重跑或取消。MCP原测在精确隔离源用一次观察及审批/unknown两真实屏障证实混合计时，原红保留；M2只定位append_many BEGIN，不能把活跃心跳快照当根因。另开codex/windows-deadline-and-lock-observation，两作者分别窄改MCP计时与M2不淘汰起点/调用链，生产/200ms/2秒/1ms/60轮/CI门不改，最终验收另绑，恢复B未推进。
 
 - **2026-11-14 · M2诊断路径别名真红与窄修收口**：保留9eb独立FAIL、旧完整门及审阅观察器错误；作者仅两处resolve+真实symlink/junction参数化回归，修前1F1P、修后12项诊断与42项整文件绿。第二读者新3P及两类单点行为负控关闭POSIX路径别名缺陷，按1111精确继承既有有界/原异常/真实两个BEGIN证据。root亲读并逐hash保全54件旧FAIL与38件新PASS；最终1112固定源lock/full/ruff0，3198P8skip546.63s，前后稳定。门后只补事实与原字节公开子集，最终对象/新CI另核；原Windows根因及145/147均未销账，恢复B未推进。
 

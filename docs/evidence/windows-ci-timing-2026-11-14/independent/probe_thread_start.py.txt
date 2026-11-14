@@ -1,0 +1,40 @@
+from pathlib import Path
+from importlib import util
+from types import SimpleNamespace
+import hashlib, json, os, sys, tempfile, threading
+ROOT=Path(__file__).parent
+sys.path[:0]=[str(ROOT/'snapshot-new/src'),str(ROOT/'snapshot-new/tests')]
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(ROOT/'outputs/start-authority')
+os.environ['TIANSHU_SANDBOX_BACKEND']='local_fs'
+import pytest
+from tianshu import sandbox
+sandbox.configure_backend('local_fs')
+path=ROOT/'snapshot-new/tests/test_mcp_transport_timeout.py'
+spec=util.spec_from_file_location('thread_start_probe',path)
+m=util.module_from_spec(spec);spec.loader.exec_module(m)
+original_thread=threading.Thread
+original_close=m.McpClients.close_all
+marker=RuntimeError('injected actual thread start refusal')
+threads=[];closes=[]
+def make_thread(*args,**kwargs):
+    t=original_thread(*args,**kwargs);threads.append(t)
+    def fail_start():raise marker
+    t.start=fail_start
+    return t
+def close(clients):
+    closes.append(len(clients._servers))
+    return original_close(clients)
+facts={'test_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'probe':'real Thread instance whose start raises exact injected RuntimeError before starting'}
+with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(m,'threading',SimpleNamespace(Event=threading.Event,Thread=make_thread))
+    mp.setattr(m.McpClients,'close_all',close)
+    try:
+        m.test_stalled_send_is_unknown_and_replay_does_not_retry(Path(tempfile.mkdtemp(prefix='start-probe-',dir=ROOT/'outputs')),mp)
+    except BaseException as error:
+        facts.update(caught_type=type(error).__name__,caught_message=str(error),caught_is_original_marker=error is marker,context_is_original_marker=error.__context__ is marker)
+    facts.update(close_calls=len(closes),thread_count=len(threads),thread_idents=[t.ident for t in threads],threads_alive=[t.is_alive() for t in threads])
+facts['close_method_identity_restored']=m.McpClients.close_all is original_close
+assert facts['thread_count']==1 and facts['thread_idents']==[None] and facts['threads_alive']==[False]
+assert facts['close_calls']==1 and facts['close_method_identity_restored']
+(ROOT/'outputs/thread-start-facts.json').write_text(json.dumps(facts,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps(facts,ensure_ascii=False,indent=2))
