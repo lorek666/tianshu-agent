@@ -315,3 +315,51 @@ def test_limits_validation() -> None:
     with pytest.raises(NetError) as excinfo:
         NetLimits(min_interval_s=-0.1)
     assert excinfo.value.reason == "net.limits"
+
+
+# ---------------------------------------------------------------- deadline 烧尽
+
+
+class _SlowConn:
+    """假连接：connect() 烧满 socket 超时（= 整次 deadline）再抛 TimeoutError。"""
+
+    def __init__(self, budget: float) -> None:
+        self._budget = budget
+
+    def connect(self) -> None:
+        time.sleep(self._budget + 0.1)
+        raise TimeoutError("injected connect timeout")
+
+    def close(self) -> None:  # pragma: no cover - _fetch_once 的 finally 会调
+        return None
+
+
+def test_deadline_exhausted_keeps_connect_classification(monkeypatch) -> None:
+    """第一次连接尝试烧满整次 deadline → 重试不得把分类顶成 net.timeout。
+
+    修复前：第二次尝试进 `_fetch_once` 后由 `_remaining(deadline)` 抛
+    net.timeout——「连接阶段失败、0 字节已知」被顶成「连接建立后的失败、
+    用量未知」，失败分类与字节账本口径一起错档；且与本机时钟毫秒级竞争
+    （本机侥幸绿、CI 随机红）。修复后：deadline 尽即尝试用尽，最终失败 =
+    最后一次真实尝试的原始分类。sleep(+0.1s) 让 deadline **确定性**先到，
+    不是竞态。
+    """
+    port, sock = closed_port()
+    try:
+        calls: list[int] = []
+
+        def slow_connect(target_obj, timeout_s):  # noqa: ANN001 - 与 _connect 同签名
+            calls.append(1)
+            return _SlowConn(timeout_s)
+
+        monkeypatch.setattr(net_mod, "_connect", slow_connect)
+        target = net_mod.canonical_target(f"network://http/127.0.0.1:{port}/x")
+        with pytest.raises(NetError) as err:
+            net_mod.fetch(
+                target,
+                limits=NetLimits(timeout_ms=200, connect_attempts=2, min_interval_s=0.0),
+            )
+        assert err.value.reason == "net.connect_timeout"
+        assert len(calls) == 1, "deadline 已尽，第二次尝试不应发生"
+    finally:
+        sock.close()

@@ -355,9 +355,19 @@ def fetch(
     deadline = started + limits.timeout_ms / 1000.0
     # visited 跨尝试保留：重定向防环不因重试而重置。
     visited: set[str] = {target.to_uri()}
+    # 最后一次连接阶段失败的原始错误：deadline 烧尽时重抛它，保住如实分类。
+    last_connect_error: NetError | None = None
     for attempt in range(1, limits.connect_attempts + 1):
         if attempt > 1:
             _check_cancel(cancel)
+            # deadline 已烧尽就不进下一次尝试：否则 _fetch_once 开头的
+            # _remaining(deadline) 会抛 net.timeout，把「连接阶段失败、
+            # 0 字节已知」的如实分类顶成「连接建立后的失败、用量未知」——
+            # 失败分类与字节账本口径一起错档。deadline 是总预算，用尽即
+            # 尝试用尽，最终失败 = 最后一次真实尝试的原始分类。
+            assert last_connect_error is not None  # pragma: no cover - 结构保证
+            if deadline - time.monotonic() <= 0:
+                raise last_connect_error
         try:
             return _fetch_once(
                 target, limits, cancel, deadline, visited, attempt, started
@@ -365,6 +375,7 @@ def fetch(
         except NetError as exc:
             if exc.reason not in _RETRYABLE_REASONS or attempt >= limits.connect_attempts:
                 raise
+            last_connect_error = exc
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")  # pragma: no cover
 
 
