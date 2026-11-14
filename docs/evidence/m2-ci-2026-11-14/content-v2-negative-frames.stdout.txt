@@ -1,0 +1,7 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_worker_diagnostics_symlink_source_paths[original-src] __________
+/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests/test_m2_acceptance.py:1263: in test_worker_diagnostics_symlink_source_paths
+    assert {frame["file"] for frame in frames} == (
+E   AssertionError
+1 failed, 1 passed, 40 deselected in 0.07s

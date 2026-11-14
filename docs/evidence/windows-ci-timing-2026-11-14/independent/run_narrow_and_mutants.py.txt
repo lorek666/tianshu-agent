@@ -1,0 +1,23 @@
+from pathlib import Path
+import hashlib,json,os,shutil,subprocess,sys,time
+ROOT=Path(__file__).parent
+SOURCE=ROOT/'snapshot-final'
+PYTHON='/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python'
+def run(label,source,args,expect):
+ command=[PYTHON,'-B','-m','pytest','-p','review_phase_plugin','-p','no:cacheprovider','-o','addopts=','-q','--tb=short','--basetemp',str(ROOT/('final-'+label+'-pytest')),*args]
+ env=dict(os.environ,PYTHONPATH=str(ROOT)+os.pathsep+str(source/'src'),PYTEST_DISABLE_PLUGIN_AUTOLOAD='1',PYTHONDONTWRITEBYTECODE='1',REVIEW_PHASE_OUTPUT=str(ROOT/'outputs'/('final-'+label+'-phases.json')))
+ start=time.monotonic_ns();result=subprocess.run(command,cwd=source,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=60)
+ (ROOT/'outputs'/('final-'+label+'.log')).write_bytes(result.stdout)
+ facts={'command':command,'cwd':str(source),'returncode':result.returncode,'expected_exit':expect,'elapsed_ns':time.monotonic_ns()-start,'test_sha256':hashlib.sha256((source/'tests'/('test_mcp_transport_timeout.py' if label=='mcp4' else 'test_m2_acceptance.py')).read_bytes()).hexdigest()}
+ (ROOT/'outputs'/('final-'+label+'-run.json')).write_text(json.dumps(facts,indent=2)+'\n')
+ print(label,result.returncode,result.stdout.decode(),flush=True)
+ assert result.returncode==expect
+ phases=json.loads((ROOT/'outputs'/('final-'+label+'-phases.json')).read_text())
+ assert all(p.get('setup')=='passed' and p.get('teardown')=='passed' for p in phases['reports'].values())
+ if expect:assert all(p.get('call')=='failed' for p in phases['reports'].values())
+run('mcp4',SOURCE,['tests/test_mcp_transport_timeout.py'],0)
+run('m2-14',SOURCE,['tests/test_m2_acceptance.py','-k','worker_diagnostics or normal_finish'],0)
+for label,old,new in [('m2-no-timing','token["enter_start_ns"] = time.monotonic_ns()','_discarded_start_ns = time.monotonic_ns()'),('m2-no-chain','for frame in item.get("caller_chain", []):','for frame in []:')]:
+ mutant=ROOT/('mutant-'+label);assert not mutant.exists();shutil.copytree(SOURCE,mutant,ignore=shutil.ignore_patterns('__pycache__','.pytest_cache'))
+ path=mutant/'tests/test_m2_acceptance.py';text=path.read_text();assert text.count(old)==1;path.write_text(text.replace(old,new))
+ run(label,mutant,['tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction'],1)

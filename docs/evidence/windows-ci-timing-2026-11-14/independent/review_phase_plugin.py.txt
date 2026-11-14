@@ -1,0 +1,7 @@
+import json, os
+from pathlib import Path
+REPORTS={}
+def pytest_runtest_logreport(report):
+    REPORTS.setdefault(report.nodeid,{})[report.when]=report.outcome
+def pytest_sessionfinish(session,exitstatus):
+    Path(os.environ['REVIEW_PHASE_OUTPUT']).write_text(json.dumps({'exit':int(exitstatus),'reports':REPORTS},indent=2)+'\n')

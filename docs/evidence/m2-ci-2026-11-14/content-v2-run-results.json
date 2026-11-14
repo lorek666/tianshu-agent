@@ -1,0 +1,65 @@
+[
+  {
+    "name": "green",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/windows-ci-fix/\u5929\u67a2Agent/.venv/bin/python",
+      "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+      "green"
+    ],
+    "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+    "started_at_utc": "2026-11-14T07:40:21.574471+00:00",
+    "elapsed_seconds": 0.39945,
+    "exit_code": 0,
+    "expected_exit_code": 0,
+    "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+  },
+  {
+    "name": "negative-both",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/windows-ci-fix/\u5929\u67a2Agent/.venv/bin/python",
+      "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+      "negative-both"
+    ],
+    "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+    "started_at_utc": "2026-11-14T07:40:21.974337+00:00",
+    "elapsed_seconds": 0.396909,
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+  },
+  {
+    "name": "negative-frames",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/windows-ci-fix/\u5929\u67a2Agent/.venv/bin/python",
+      "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+      "negative-frames"
+    ],
+    "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+    "started_at_utc": "2026-11-14T07:40:22.371679+00:00",
+    "elapsed_seconds": 0.338973,
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+  },
+  {
+    "name": "independent-probe",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/windows-ci-fix/\u5929\u67a2Agent/.venv/bin/python",
+      "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/independent_alias_probe.py"
+    ],
+    "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+    "started_at_utc": "2026-11-14T07:40:22.711062+00:00",
+    "elapsed_seconds": 0.264729,
+    "exit_code": 0,
+    "expected_exit_code": 0,
+    "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+  }
+]

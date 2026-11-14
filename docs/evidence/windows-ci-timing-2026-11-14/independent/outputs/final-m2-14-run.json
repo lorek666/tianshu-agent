@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "review_phase_plugin",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "addopts=",
+    "-q",
+    "--tb=short",
+    "--basetemp",
+    "/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/final-m2-14-pytest",
+    "tests/test_m2_acceptance.py",
+    "-k",
+    "worker_diagnostics or normal_finish"
+  ],
+  "cwd": "/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final",
+  "returncode": 0,
+  "expected_exit": 0,
+  "elapsed_ns": 13390876292,
+  "test_sha256": "f2200905cc0d644709c04af300e58abbc70222b6de890ce90b770e99c7a087ba"
+}

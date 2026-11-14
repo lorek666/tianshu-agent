@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python3",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "regression_plugin",
+    "-p",
+    "no:cacheprovider",
+    "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry",
+    "-o",
+    "addopts=",
+    "-q",
+    "--tb=short",
+    "--basetemp",
+    "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/ind-final-early-failure-pytest"
+  ],
+  "cwd": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final",
+  "mode": "early-failure",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "returncode": 1,
+  "elapsed_ns": 486245375,
+  "test_sha256": "569b774b52f05cf4bd5f2c3f92f2df70037ecbae22b01877520302bae7acef5e",
+  "plugin_sha256": "5c5cb0b828ed1af25ac4deb286c63a9a4179b77fb9c3bcb502638514cc978381",
+  "log_sha256": "6bc98bbb448e01c57330c5ac82c0bad769a7ed720e96b14a67703458927fbcdb"
+}

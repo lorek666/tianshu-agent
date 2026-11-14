@@ -1,0 +1,9 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_worker_diagnostics_symlink_source_paths[original-src] __________
+tests/test_m2_acceptance.py:1257: in test_worker_diagnostics_symlink_source_paths
+    assert error["caller"] is not None
+E   assert None is not None
+=========================== short test summary info ============================
+FAILED tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[original-src]
+1 failed, 1 passed, 40 deselected in 2.98s

@@ -1,0 +1,25 @@
+{
+  "exit": 0,
+  "reports": {
+    "tests/test_mcp_transport_timeout.py::test_stalled_stdin_cannot_escape_send_timeout[False]": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_mcp_transport_timeout.py::test_stalled_stdin_cannot_escape_send_timeout[True]": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_mcp_transport_timeout.py::test_large_request_is_written_completely_to_reading_server": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    }
+  }
+}

@@ -1,0 +1,59 @@
+from pathlib import Path
+from contextlib import contextmanager
+from importlib import util
+from types import SimpleNamespace
+import hashlib,json,os,sys,threading,tempfile
+ROOT=Path(__file__).parent
+sys.path[:0]=[str(ROOT/'snapshot-final/src'),str(ROOT/'snapshot-final/tests')]
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(ROOT/'outputs/accept-final-authority')
+os.environ['TIANSHU_SANDBOX_BACKEND']='local_fs'
+import pytest
+from tianshu import sandbox
+sandbox.configure_backend('local_fs')
+path=ROOT/'snapshot-final/tests/test_mcp_transport_timeout.py'
+spec=util.spec_from_file_location('accept_v2',path);m=util.module_from_spec(spec);spec.loader.exec_module(m)
+original_config=m._server_config;original_clients=m.McpClients;original_thread=threading.Thread
+original_close=original_clients.close_all
+clients=[];workers=[];peers=[];servers=[];closes=[]
+marker=TimeoutError('independent accept failure after real MCP peer connected')
+def client_factory(*args,**kwargs):
+ c=original_clients(*args,**kwargs);clients.append(c);return c
+def worker_factory(*args,**kwargs):
+ t=original_thread(*args,**kwargs);workers.append(t);return t
+def close(c):
+ servers.extend(s for s in c._servers.values() if s not in servers)
+ closes.append({'servers_before':[s.is_alive for s in c._servers.values()]})
+ return original_close(c)
+class Control:
+ def __init__(self,real):self.real=real
+ def accept(self):
+  peer,address=self.real.accept();peers.append(peer)
+  # Actual returned peer is intentionally hidden when accept fails. No approval gate:
+  # the new test must close the real client to release transport and join its worker.
+  raise marker
+@contextmanager
+def config(*args,**kwargs):
+ with original_config(*args,**kwargs) as (c,control):yield c,Control(control)
+facts={'test_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'probe':'accept injected failure with actual real subprocess/connected control peer; no incompatible approval gate'}
+try:
+ with pytest.MonkeyPatch.context() as mp:
+  mp.setattr(m,'_server_config',config);mp.setattr(m,'McpClients',client_factory)
+  mp.setattr(original_clients,'close_all',close)
+  mp.setattr(m,'threading',SimpleNamespace(Event=threading.Event,Thread=worker_factory))
+  try:m.test_stalled_send_is_unknown_and_replay_does_not_retry(Path(tempfile.mkdtemp(prefix='accept-v2-',dir=ROOT/'outputs')),mp)
+  except BaseException as error:
+   facts['caught_type']=type(error).__name__;facts['caught_is_exact_injected_accept_exception']=error is marker
+  facts.update(real_peer_connections=len(peers),client_close_calls=len(closes),real_servers=len(servers),workers_alive_after_test=[t.is_alive() for t in workers],server_processes_alive_after_test=[s._proc is not None and s._proc.poll() is None for s in servers],clients_empty_after_test=[not c._servers for c in clients],close_observations=closes)
+  assert facts['caught_is_exact_injected_accept_exception'] and len(peers)==len(clients)==len(servers)==1
+  assert len(closes)>=1 and not any(facts['workers_alive_after_test']) and not any(facts['server_processes_alive_after_test']) and all(facts['clients_empty_after_test'])
+finally:
+ for peer in peers:
+  try:peer.sendall(b'x')
+  except OSError:pass
+  peer.close()
+ for c in clients:original_close(c)
+ for t in workers:t.join(5)
+facts['method_identity_restored']=original_clients.close_all is original_close
+assert facts['method_identity_restored']
+(ROOT/'outputs/accept-cleanup-final-facts.json').write_text(json.dumps(facts,indent=2,ensure_ascii=False)+'\n')
+print(json.dumps(facts,indent=2,ensure_ascii=False))

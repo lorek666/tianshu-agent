@@ -1,0 +1,207 @@
+"""Only the isolated exact-c2cf test is observed; no source or timeout changes."""
+import contextlib
+import json
+import os
+import platform
+import sqlite3
+import sys
+import threading
+import time
+from collections import deque
+from functools import wraps
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+MODE = os.environ['MCP_BOUNDARY_MODE']
+OUTPUT = Path(os.environ['MCP_BOUNDARY_OUTPUT'])
+SOURCE = Path(__file__).parent / 'source'
+TARGET = 'test_stalled_send_is_unknown_and_replay_does_not_retry'
+EVENTS = deque(maxlen=1024)
+LOCK = threading.Lock()
+GATE = threading.Event()
+FINISHED = threading.Event()
+STATS = {'dropped': 0}
+REPORT = {'mode': MODE, 'reports': {}, 'python': sys.version, 'platform': platform.platform(),
+          'sqlite_version': sqlite3.sqlite_version}
+
+
+def event(phase, **data):
+    entry = {'phase': phase, 'at_ns': time.monotonic_ns(),
+             'thread': threading.current_thread().name, **data}
+    with LOCK:
+        if len(EVENTS) == EVENTS.maxlen:
+            STATS['dropped'] += 1
+        EVENTS.append(entry)
+
+
+def wrapper(original, label, *, gate=None, details=None):
+    @wraps(original)
+    def observed(*args, **kwargs):
+        metadata = details(args, kwargs) if details else {}
+        event(label + '.enter', **metadata)
+        if gate and gate(args, kwargs):
+            event('gate.enter', boundary=label)
+            assert GATE.wait(15), 'bounded diagnostic gate not released'
+            event('gate.released', boundary=label)
+        try:
+            result = original(*args, **kwargs)
+        except BaseException as error:
+            event(label + '.error', type=type(error).__name__,
+                  sqlite_errorcode=getattr(error, 'sqlite_errorcode', None))
+            raise
+        event(label + '.return', **metadata)
+        return result
+    return observed
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    if item.name != TARGET:
+        yield
+        return
+    module = item.module
+    import tianshu.mcp as mcp
+    from tianshu.dispatcher import Dispatcher
+    from tianshu.events import EventLog
+    from tianshu.loop import AgentLoop
+    from tianshu.model import ScriptedModel
+    from tianshu.permissions import ApprovalStore
+    from tianshu.tasks import TaskStore
+
+    assert Path(mcp.__file__).resolve() == (SOURCE / 'src/tianshu/mcp.py').resolve()
+    REPORT['product_file'] = str(Path(mcp.__file__).resolve())
+    original_wait = threading.Event.wait
+    original_run = threading.Thread.run
+    original_release = module._release
+    original_transaction = EventLog.transaction
+
+    def wait(self, timeout=None):
+        frame = sys._getframe(1)
+        try:
+            target = frame.f_code.co_name == TARGET and timeout == 2
+        finally:
+            del frame
+        if not target:
+            return original_wait(self, timeout)
+        event('original.done.wait.enter', timeout=timeout)
+        result = original_wait(self, timeout)
+        event('original.done.wait.return', returned=result)
+        REPORT['returned'] = result
+        return result
+
+    def run(thread):
+        target = getattr(getattr(thread, '_target', None), '__name__', '') == 'resume'
+        if not target:
+            return original_run(thread)
+        event('worker.resume.enter')
+        try:
+            return original_run(thread)
+        finally:
+            event('worker.resume.return')
+            FINISHED.set()
+
+    def release(peer, worker):
+        event('test.finally.release.enter')
+        if MODE != 'observe':
+            GATE.set()
+            # Keep the actual server stalled until the real 200ms call and settlement finish.
+            assert FINISHED.wait(10), 'diagnostic worker did not finish after gate release'
+        result = original_release(peer, worker)
+        event('test.finally.release.return')
+        return result
+
+    @contextlib.contextmanager
+    def transaction(log):
+        event('sqlite.tx.attempt', nested=log.in_transaction)
+        try:
+            with original_transaction(log) as tx:
+                event('sqlite.tx.acquired')
+                yield tx
+                event('sqlite.tx.body-return')
+        except BaseException as error:
+            event('sqlite.tx.error', type=type(error).__name__,
+                  sqlite_errorcode=getattr(error, 'sqlite_errorcode', None))
+            raise
+        finally:
+            event('sqlite.tx.exit')
+
+    methods = [
+        (module, 'build_stack', 'stack.build', None, None),
+        (module, 'approve_pending', 'approval.approve_pending', None, None),
+        (TaskStore, 'create_task', 'task.create', None, None),
+        (TaskStore, 'start_run', 'run.create', None, None),
+        (TaskStore, 'transition', 'run.transition', None,
+         lambda a, k: {'state': a[2] if len(a) > 2 else k.get('state')}),
+        (TaskStore, 'save_cursor', 'cursor.save', None, None),
+        (AgentLoop, 'start', 'engine.start', None, None),
+        (AgentLoop, 'resume_run', 'engine.resume', None, None),
+        (AgentLoop, '_finish', 'run.finish', None, None),
+        (ScriptedModel, 'complete', 'model.scripted', None, None),
+        (ApprovalStore, 'decide', 'approval.decide',
+         lambda a, k: MODE == 'gate-approval', None),
+        (Dispatcher, 'prepare', 'dispatch.prepare', None, None),
+        (Dispatcher, 'dispatch', 'dispatch.dispatch', None, None),
+        (Dispatcher, '_mark_mcp_send_boundary', 'dispatch.send-boundary', None, None),
+        (Dispatcher, '_dispatch_mcp', 'dispatch.mcp', None, None),
+        (Dispatcher, '_commit_result', 'dispatch.commit-result',
+         lambda a, k: MODE == 'gate-unknown' and a[3].effect_state == 'unknown',
+         lambda a, k: {'status': a[3].status, 'effect_state': a[3].effect_state,
+                       'reason': a[3].output.get('reason')}),
+        (mcp.StdioServer, 'start', 'mcp.start', None, None),
+        (mcp.StdioServer, '_handshake', 'mcp.handshake', None, None),
+        (mcp.StdioServer, '_discover_tools', 'mcp.tools-list', None, None),
+        (mcp.StdioServer, 'call_tool', 'mcp.call-tool', None,
+         lambda a, k: {'configured_timeout_ms': a[0].config.call_timeout_ms}),
+        (mcp.StdioServer, 'request', 'mcp.request', None,
+         lambda a, k: {'method': a[1], 'timeout_ms': k.get('timeout_ms')}),
+        (mcp.StdioServer, '_send', 'mcp.send', None,
+         lambda a, k: {'method': a[1].get('method')}),
+        (mcp.StdioServer, '_fail', 'mcp.fail', None, None),
+        (mcp.StdioServer, 'close', 'mcp.close', None, None),
+    ]
+    with contextlib.ExitStack() as patches:
+        patches.enter_context(patch.object(threading.Event, 'wait', wait))
+        patches.enter_context(patch.object(threading.Thread, 'run', run))
+        patches.enter_context(patch.object(module, '_release', release))
+        patches.enter_context(patch.object(EventLog, 'transaction', transaction))
+        for owner, name, label, gate, details in methods:
+            patches.enter_context(patch.object(owner, name,
+                wrapper(getattr(owner, name), label, gate=gate, details=details)))
+        try:
+            outcome = yield
+            REPORT['call_exception'] = type(outcome.excinfo[1]).__name__ if outcome.excinfo else None
+        finally:
+            GATE.set()
+            REPORT['worker_finished'] = FINISHED.is_set()
+    database = item.funcargs['tmp_path'] / 'events.db'
+    if REPORT['worker_finished'] and database.exists():
+        log = EventLog(database, blob_dir=item.funcargs['tmp_path'] / 'blobs')
+        try:
+            rows = log.conn.execute('SELECT run_id FROM runs').fetchall()
+            REPORT['runs'] = []
+            for row in rows:
+                events = log.read_run(row[0], verify=True)
+                results = [e.payload for e in events if e.type == 'tool.result']
+                REPORT['runs'].append({'run_id': row[0], 'events': [e.type for e in events],
+                    'results': [{'status': r['status'], 'effect_state': r['effect_state'],
+                                 'reason': r.get('output', {}).get('reason')} for r in results],
+                    'receipt_count': sum(e.type == 'receipt' for e in events)})
+        finally:
+            log.close()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    REPORT['reports'][report.when] = report.outcome
+    if report.failed and hasattr(report.longrepr, 'reprcrash'):
+        REPORT['failure_at'] = {'file': report.longrepr.reprcrash.path,
+                                'line': report.longrepr.reprcrash.lineno}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    REPORT.update({'events': list(EVENTS), 'stats': STATS, 'pytest_exit': exitstatus})
+    OUTPUT.write_text(json.dumps(REPORT, ensure_ascii=False, indent=2) + '\n')

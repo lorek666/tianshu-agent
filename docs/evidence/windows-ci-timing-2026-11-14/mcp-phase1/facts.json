@@ -1,0 +1,271 @@
+{
+  "source_identity": {
+    "commit": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "tree": "35bc297ce3125be4fd8db6fc4087196507a94045",
+    "archive_sha256": "99d2709d82aa513d85ff21d55411b7e3d43edfc0adc7097905d77686d0cfe02e",
+    "archive_files": 1143
+  },
+  "original_failure": {
+    "run": 43576167008,
+    "attempt": 1,
+    "job": 132390772345,
+    "line": 163,
+    "log": "/tmp/tianshu-g3-20261113/m2-main-c2cf-shard1-first-red-20261114/job.log",
+    "original_sha256": "36fa0f28dbfea5fe207a2ca627926adef3580bb94a9325a2b4b24795550ed475",
+    "current_sha256": "36fa0f28dbfea5fe207a2ca627926adef3580bb94a9325a2b4b24795550ed475",
+    "root_cause": "NOT_ESTABLISHED"
+  },
+  "probe_scope": "one observe, one gate-approval, one gate-unknown; macOS only",
+  "probes": {
+    "observe": {
+      "reports": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "returned": true,
+      "failure_at": null,
+      "worker_finished": true,
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+      "events_dropped": 0,
+      "runs": [
+        {
+          "run_id": "run_4cb7db3bcb11",
+          "events": [
+            "run.start",
+            "job.enqueued",
+            "run.state",
+            "job.claimed",
+            "run.state",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "approval.requested",
+            "dispatch.requested",
+            "run.cursor",
+            "run.state",
+            "approval.decided",
+            "run.state",
+            "dispatch.requested",
+            "approval.consumed",
+            "grant.issued",
+            "grant.consumed",
+            "tool.intent",
+            "dispatch.admitted",
+            "tool.result",
+            "recovery.object_blocked",
+            "run.effect",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "job.finished",
+            "run.end",
+            "run.finish"
+          ],
+          "results": [
+            {
+              "status": "failed",
+              "effect_state": "unknown",
+              "reason": "mcp.timeout"
+            }
+          ],
+          "receipt_count": 0
+        }
+      ],
+      "send_error": "McpTimeout",
+      "send_elapsed_ms": 222.491583,
+      "call_entry_since_wait_ms": 139.367292,
+      "send_error_since_wait_ms": 361.869792,
+      "worker_exit_since_wait_ms": 408.023792,
+      "wait_exit_ms": 408.041625,
+      "configured_call_timeout_ms": 200,
+      "original_post_failure_assertions_executed": true
+    },
+    "gate-approval": {
+      "reports": {
+        "setup": "passed",
+        "call": "failed",
+        "teardown": "passed"
+      },
+      "returned": false,
+      "failure_at": {
+        "file": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/tests/test_mcp_transport_timeout.py",
+        "line": 163
+      },
+      "worker_finished": true,
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+      "events_dropped": 0,
+      "runs": [
+        {
+          "run_id": "run_60ad7300ccfa",
+          "events": [
+            "run.start",
+            "job.enqueued",
+            "run.state",
+            "job.claimed",
+            "run.state",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "approval.requested",
+            "dispatch.requested",
+            "run.cursor",
+            "run.state",
+            "approval.decided",
+            "run.state",
+            "dispatch.requested",
+            "approval.consumed",
+            "grant.issued",
+            "grant.consumed",
+            "tool.intent",
+            "dispatch.admitted",
+            "tool.result",
+            "recovery.object_blocked",
+            "run.effect",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "job.finished",
+            "run.end",
+            "run.finish"
+          ],
+          "results": [
+            {
+              "status": "failed",
+              "effect_state": "unknown",
+              "reason": "mcp.timeout"
+            }
+          ],
+          "receipt_count": 0
+        }
+      ],
+      "send_error": "McpTimeout",
+      "send_elapsed_ms": 224.124584,
+      "call_entry_since_wait_ms": 2057.226708,
+      "send_error_since_wait_ms": 2281.36225,
+      "worker_exit_since_wait_ms": 2328.889083,
+      "wait_exit_ms": 2000.136708,
+      "configured_call_timeout_ms": 200,
+      "original_post_failure_assertions_executed": false,
+      "gate": {
+        "boundary": "approval.decide",
+        "entered_since_wait_ms": 111.456291
+      }
+    },
+    "gate-unknown": {
+      "reports": {
+        "setup": "passed",
+        "call": "failed",
+        "teardown": "passed"
+      },
+      "returned": false,
+      "failure_at": {
+        "file": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/tests/test_mcp_transport_timeout.py",
+        "line": 163
+      },
+      "worker_finished": true,
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+      "events_dropped": 0,
+      "runs": [
+        {
+          "run_id": "run_9b4eac05ae6c",
+          "events": [
+            "run.start",
+            "job.enqueued",
+            "run.state",
+            "job.claimed",
+            "run.state",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "approval.requested",
+            "dispatch.requested",
+            "run.cursor",
+            "run.state",
+            "approval.decided",
+            "run.state",
+            "dispatch.requested",
+            "approval.consumed",
+            "grant.issued",
+            "grant.consumed",
+            "tool.intent",
+            "dispatch.admitted",
+            "tool.result",
+            "recovery.object_blocked",
+            "run.effect",
+            "run.cursor",
+            "model.intent",
+            "model.result",
+            "run.model_turn",
+            "run.cursor",
+            "job.finished",
+            "run.end",
+            "run.finish"
+          ],
+          "results": [
+            {
+              "status": "failed",
+              "effect_state": "unknown",
+              "reason": "mcp.timeout"
+            }
+          ],
+          "receipt_count": 0
+        }
+      ],
+      "send_error": "McpTimeout",
+      "send_elapsed_ms": 224.211458,
+      "call_entry_since_wait_ms": 124.194958,
+      "send_error_since_wait_ms": 348.416208,
+      "worker_exit_since_wait_ms": 2053.782791,
+      "wait_exit_ms": 2005.248791,
+      "configured_call_timeout_ms": 200,
+      "original_post_failure_assertions_executed": false,
+      "gate": {
+        "boundary": "dispatch.commit-result",
+        "entered_since_wait_ms": 348.4425
+      }
+    }
+  },
+  "extra_replay": {
+    "gate-approval": {
+      "original_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/gate-approval-pytest/test_stalled_send_is_unknown_a0/events.db",
+      "copy_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/replay-check/gate-approval/events.db",
+      "original_db_sha256": "669b2170a67340774172b22867183ed86729f77c77b6a299dbf8e7f23cb87ca9",
+      "events_before": 33,
+      "unknown_timeout_no_receipt": true,
+      "first_replay_unchanged": true,
+      "second_replay_unchanged": true,
+      "scope": "additional probe on copied DB; original call remains failed"
+    },
+    "gate-unknown": {
+      "original_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/gate-unknown-pytest/test_stalled_send_is_unknown_a0/events.db",
+      "copy_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/replay-check/gate-unknown/events.db",
+      "original_db_sha256": "b543d0e3d0e8238c2cccb4de8bdb0b0c98c966bfc87588e4ec99d3e300fb4ca6",
+      "events_before": 33,
+      "unknown_timeout_no_receipt": true,
+      "first_replay_unchanged": true,
+      "second_replay_unchanged": true,
+      "scope": "additional probe on copied DB; original call remains failed"
+    }
+  },
+  "integrity": {
+    "archive_files_checked": 1143,
+    "changed_archive_files": [],
+    "live_head": "a079455ee5aac0b4458cf8166511ab8abd9f79e6",
+    "live_status_porcelain": "",
+    "original_log_unchanged": true
+  }
+}

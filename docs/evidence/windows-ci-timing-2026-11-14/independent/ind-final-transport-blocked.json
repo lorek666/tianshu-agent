@@ -1,0 +1,88 @@
+{
+  "reports": {
+    "setup": "passed",
+    "call": "failed",
+    "teardown": "passed"
+  },
+  "mode": "transport-blocked",
+  "call_count": 1,
+  "product_file": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/src/tianshu/mcp.py",
+  "exception": "AssertionError",
+  "failure_at": {
+    "path": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/tests/test_mcp_transport_timeout.py",
+    "line": 194
+  },
+  "events": [
+    {
+      "phase": "test.wait.enter",
+      "at_ns": 344433875207500,
+      "thread": "MainThread",
+      "timeout": 5
+    },
+    {
+      "phase": "real.call.enter",
+      "at_ns": 344434077609125,
+      "thread": "Thread-1 (resume)",
+      "configured_timeout_ms": 200
+    },
+    {
+      "phase": "pipe.blocking.enabled",
+      "at_ns": 344434077624458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "kernel.write.enter",
+      "at_ns": 344434079411375,
+      "thread": "Thread-1 (resume)",
+      "size": 1000132
+    },
+    {
+      "phase": "test.wait.exit",
+      "at_ns": 344434079430125,
+      "thread": "MainThread",
+      "timeout": 5,
+      "returned": true
+    },
+    {
+      "phase": "test.wait.enter",
+      "at_ns": 344434079439750,
+      "thread": "MainThread",
+      "timeout": 2
+    },
+    {
+      "phase": "test.wait.exit",
+      "at_ns": 344436081230416,
+      "thread": "MainThread",
+      "timeout": 2,
+      "returned": false
+    },
+    {
+      "phase": "original.release.enter",
+      "at_ns": 344436081241833,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "kernel.write.exit",
+      "at_ns": 344436085494625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "real.call.error",
+      "at_ns": 344436085591250,
+      "thread": "Thread-1 (resume)",
+      "type": "McpClosed"
+    },
+    {
+      "phase": "real.call.exit",
+      "at_ns": 344436085593708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "original.release.exit",
+      "at_ns": 344436125154000,
+      "thread": "MainThread",
+      "worker_alive": false
+    }
+  ],
+  "pytest_exit": 1
+}

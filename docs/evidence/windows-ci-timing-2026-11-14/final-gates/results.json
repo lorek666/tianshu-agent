@@ -1,0 +1,49 @@
+{
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "output": "/tmp/tianshu-g3-20261113/windows-timing-final-full-y7imvu41",
+  "results": [
+    {
+      "label": "lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "returncode": 0,
+      "elapsed_s": 0.11876991699682549
+    },
+    {
+      "label": "pytest",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "returncode": 0,
+      "elapsed_s": 635.4008784589823
+    },
+    {
+      "label": "ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "returncode": 0,
+      "elapsed_s": 0.24186099995858967
+    }
+  ],
+  "source_files": 1163,
+  "source_head_status_unchanged": true,
+  "removed_environment_names": [
+    "ANTHROPIC_BASE_URL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "approval": false
+}

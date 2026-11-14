@@ -1,0 +1,22 @@
+.......F...                                                              [100%]
+=================================== FAILURES ===================================
+_______ test_worker_diagnostics_real_transaction_caller_and_nested_reuse _______
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-3111/test_worker_...vate/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-3111/test_worker_diagnostics_real_t0/ro'))
+
+    def test_worker_diagnostics_real_transaction_caller_and_nested_reuse(env):
+        diagnostics = _WorkerDiagnostics(env.db)
+        original = EventLog.transaction
+        run_id, _, _ = env.enqueue(root=env.ws)
+        with patch.object(EventLog, "transaction", lambda log: diagnostics.transaction(log, original)):
+            env.stack.leases.acquire([str(env.ws)], run_id)
+            with env.log.transaction():
+                with env.log.transaction():
+                    assert len(diagnostics.active) == 1
+        attempts = [item for item in diagnostics.events if item["phase"] == "attempt"]
+>       assert attempts[0]["caller"]["file"] == "src/tianshu/leases.py"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: 'NoneType' object is not subscriptable
+
+/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/tests/test_m2_acceptance.py:1213: TypeError
+1 failed, 10 passed, 29 deselected in 9.75s

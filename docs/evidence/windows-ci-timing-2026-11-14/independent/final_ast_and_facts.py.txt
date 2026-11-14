@@ -1,0 +1,54 @@
+from pathlib import Path
+from collections import Counter
+import ast,hashlib,json,platform,subprocess
+R=Path(__file__).parent
+B=R/'baseline/tests';F=R/'snapshot-final/tests'
+def parse(path):
+ text=path.read_text();tree=ast.parse(text)
+ return text,{n.name:n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
+def dump(node):return ast.dump(node,include_attributes=False)
+def asserts(node):return Counter(dump(n) for n in ast.walk(node) if isinstance(n,ast.Assert))
+def data(path):
+ raw=path.read_bytes();return {'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+facts={'baseline':'c2cf1c71c65f46dea161e41b140df99d137a5686','verdict':'PASS_FROZEN_TWO_TEST_FILES_NARROW_CONTENT_ONLY','platform':platform.platform(),'tests':{},'AST':{}}
+for file in ('test_mcp_transport_timeout.py','test_m2_acceptance.py'):
+ bt,b=parse(B/file);ft,f=parse(F/file)
+ changed=[n for n in b.keys()|f.keys() if n not in b or n not in f or dump(b[n])!=dump(f[n])]
+ facts['tests'][file]=data(F/file)
+ facts['AST'][file]={'changed_top_level_functions_or_classes':sorted(changed)}
+ if file.startswith('test_mcp'):
+  name='test_stalled_send_is_unknown_and_replay_does_not_retry'
+  ba,fa=asserts(b[name]),asserts(f[name])
+  baseline_replay=[dump(n) for n in ast.walk(b[name]) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='replay']
+  final_replay=[dump(n) for n in ast.walk(f[name]) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='replay']
+  facts['AST']['MCP']={'original_assert_count':sum(ba.values()),'original_assert_ASTs_retained':all(fa[k]>=v for k,v in ba.items()),'replay_calls_AST_identical':baseline_replay==final_replay,'replay_calls':len(final_replay),'server_config_AST_identical':dump(b['_server_config'])==dump(f['_server_config']),'release_AST_identical':dump(b['_release'])==dump(f['_release']),'other_tests_AST_identical':all(dump(b[n])==dump(f[n]) for n in b if n.startswith('test_') and n!=name)}
+  assert all([facts['AST']['MCP']['original_assert_ASTs_retained'],facts['AST']['MCP']['replay_calls_AST_identical'],facts['AST']['MCP']['server_config_AST_identical'],facts['AST']['MCP']['release_AST_identical'],facts['AST']['MCP']['other_tests_AST_identical']])
+ else:
+  name='test_normal_finish_and_pause_do_not_report_heartbeat_failure'
+  facts['AST']['M2_normal']={'function_source_identical':ast.get_source_segment(bt,b[name])==ast.get_source_segment(ft,f[name]),'AST_and_decorators_identical':dump(b[name])==dump(f[name]),'assert_count':sum(asserts(b[name]).values())}
+  assert facts['AST']['M2_normal']['function_source_identical'] and facts['AST']['M2_normal']['AST_and_decorators_identical']
+# Bind exact actual isolated runtime source to baseline objects.
+repo=Path('/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent')
+paths=subprocess.check_output(['git','ls-tree','-r','--name-only',facts['baseline'],'--','src'],cwd=repo,text=True).splitlines()
+assert paths and all((R/'snapshot-final'/p).read_bytes()==subprocess.check_output(['git','show',facts['baseline']+':'+p],cwd=repo) for p in paths)
+facts['runtime_source']={'exact_baseline_src_files':len(paths),'all_bytes_identical':True,'support_and_conftest':{p:data(F/p) for p in ('support.py','conftest.py')}}
+facts['final_probes']={}
+for label in ('stage-approval','stage-unknown','transport-blocked','transport-delayed','early-failure'):
+ raw=json.loads((R/f'ind-final-{label}.json').read_text());run=json.loads((R/f'ind-final-{label}.run.json').read_text())
+ assert raw['reports']['setup']=='passed' and raw['reports']['teardown']=='passed'
+ assert run['test_sha256']==facts['tests']['test_mcp_transport_timeout.py']['sha256']
+ events=raw['events'];enter=[e for e in events if e['phase']=='real.call.enter'];leave=[e for e in events if e['phase']=='real.call.exit']
+ item={'exit':run['returncode'],'phases':raw['reports'],'call_count':raw['call_count'],'failure_at':raw.get('failure_at'),'controller_finished':raw.get('controller_finished'),'configured_timeouts_ms':[e['configured_timeout_ms'] for e in enter],'real_observed_call_elapsed_ns':leave[0]['at_ns']-enter[0]['at_ns'] if enter and leave else None,'worker_alive_at_release':[e['worker_alive'] for e in events if e['phase']=='original.release.exit'],'waits':[{'timeout':e['timeout'],'returned':e['returned']} for e in events if e['phase']=='test.wait.exit'],'kernel_write_sizes':[e['size'] for e in events if e['phase']=='kernel.write.enter']}
+ facts['final_probes'][label]=item
+ assert raw['call_count']==(0 if label=='early-failure' else 1)
+ assert item['worker_alive_at_release']==[False]
+ assert run['returncode']==(0 if label.startswith('stage-') else 1)
+ if label=='transport-delayed':assert any(e['phase']=='delayed-main.transport-finished-before-original-wait' for e in events) and item['waits'][-1]=={'timeout':2,'returned':True}
+for label in ('mcp4','m2-14','m2-no-timing','m2-no-chain'):
+ phase=json.loads((R/'outputs'/f'final-{label}-phases.json').read_text());run=json.loads((R/'outputs'/f'final-{label}-run.json').read_text())
+ facts['final_probes'][label]={'exit':run['returncode'],'expected_exit':run['expected_exit'],'phase_counts':dict(Counter((p['setup'],p['call'],p['teardown']) for p in phase['reports'].values())) if False else [{'setup':k[0],'call':k[1],'teardown':k[2],'count':v} for k,v in Counter((p['setup'],p['call'],p['teardown']) for p in phase['reports'].values()).items()],'log_file':f'outputs/final-{label}.log'}
+for label,file in [('start','thread-start-final-facts.json'),('accept','accept-cleanup-final-facts.json'),('m2-retention','m2-retention-facts.json')]:facts['final_probes'][label]=json.loads((R/'outputs'/file).read_text())
+facts['history']={'old_3d69':'initial frozen MCP; earlier five probes retained separately, never substituted for final runs','old_accept':'baseline and 3d69 actual accept error leaked resources; preexisting gap; final actual accept verified fixed','old_9abd_start':'new illegal join covered injected original RuntimeError; independent failure retained; final startup verified fixed','observer_attempts':['system python3 failed to import pytest before probe; rerun with repository Python3.12 venv','initial revised accept probe path substitution reran old snapshot; excluded from final evidence','approval-gated cleanup probe conflicted with new close_all flow and failed at observer gate; replaced by actual connected-peer accept exception without incompatible gate']}
+facts['scope_limits']=['Only frozen two test deltas; no production change or root-cause resolution claim.','No full suite, lock, lint or CI run performed by this independent reviewer. Root owns those gates.','Local macOS arm64 evidence is not Windows support or Windows CI evidence; actual Windows lock mechanism and original MCP stage remain unknown.','M2 injected monotonic 7ms is wrapper-enter elapsed evidence, not a claim SQLite blocked 7ms. Active contexts are not OS lock ownership.','Additional retained-frame probe uses controlled live frames compiled under a canonical source filename; actual product caller and symlink/external-copy behavior are covered by independently run repository tests.','MCP early-error probe covers actual approval after discovery; it does not exhaustively inject every constructor failure.','Formatting stress expands a real native capture to field caps, distinct from observed real error metadata.']
+(R/'final-facts.json').write_text(json.dumps(facts,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps({'verdict':facts['verdict'],'tests':facts['tests'],'AST':facts['AST'],'runtime_source':facts['runtime_source'],'final_probe_modes':list(facts['final_probes'])},ensure_ascii=False,indent=2))

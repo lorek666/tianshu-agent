@@ -1,0 +1,2414 @@
+{
+  "mode": "gate-unknown",
+  "reports": {
+    "setup": "passed",
+    "call": "failed",
+    "teardown": "passed"
+  },
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "sqlite_version": "3.50.4",
+  "product_file": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/mcp.py",
+  "returned": false,
+  "call_exception": "AssertionError",
+  "worker_finished": true,
+  "runs": [
+    {
+      "run_id": "run_9b4eac05ae6c",
+      "events": [
+        "run.start",
+        "job.enqueued",
+        "run.state",
+        "job.claimed",
+        "run.state",
+        "run.cursor",
+        "model.intent",
+        "model.result",
+        "run.model_turn",
+        "run.cursor",
+        "approval.requested",
+        "dispatch.requested",
+        "run.cursor",
+        "run.state",
+        "approval.decided",
+        "run.state",
+        "dispatch.requested",
+        "approval.consumed",
+        "grant.issued",
+        "grant.consumed",
+        "tool.intent",
+        "dispatch.admitted",
+        "tool.result",
+        "recovery.object_blocked",
+        "run.effect",
+        "run.cursor",
+        "model.intent",
+        "model.result",
+        "run.model_turn",
+        "run.cursor",
+        "job.finished",
+        "run.end",
+        "run.finish"
+      ],
+      "results": [
+        {
+          "status": "failed",
+          "effect_state": "unknown",
+          "reason": "mcp.timeout"
+        }
+      ],
+      "receipt_count": 0
+    }
+  ],
+  "failure_at": {
+    "file": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/tests/test_mcp_transport_timeout.py",
+    "line": 163
+  },
+  "events": [
+    {
+      "phase": "worker.resume.enter",
+      "at_ns": 340561215477750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "stack.build.enter",
+      "at_ns": 340561217345208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561232476416,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561232485541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561232502708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561232556166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "stack.build.return",
+      "at_ns": 340561232580458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "task.create.enter",
+      "at_ns": 340561232582583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561232592625,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561232596833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561232672541,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561232674583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561232692583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561232694375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561232695791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561232780000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "task.create.return",
+      "at_ns": 340561232821541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "engine.start.enter",
+      "at_ns": 340561232870083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "mcp.start.enter",
+      "at_ns": 340561233461416,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "mcp.handshake.enter",
+      "at_ns": 340561235246708,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "mcp.request.enter",
+      "at_ns": 340561235278583,
+      "thread": "mcp-boot-backpressure",
+      "method": "initialize",
+      "timeout_ms": 10000
+    },
+    {
+      "phase": "mcp.send.enter",
+      "at_ns": 340561235309000,
+      "thread": "mcp-boot-backpressure",
+      "method": "initialize"
+    },
+    {
+      "phase": "mcp.send.return",
+      "at_ns": 340561235355166,
+      "thread": "mcp-boot-backpressure",
+      "method": "initialize"
+    },
+    {
+      "phase": "mcp.request.return",
+      "at_ns": 340561249424000,
+      "thread": "mcp-boot-backpressure",
+      "method": "initialize",
+      "timeout_ms": 10000
+    },
+    {
+      "phase": "mcp.send.enter",
+      "at_ns": 340561249437416,
+      "thread": "mcp-boot-backpressure",
+      "method": "notifications/initialized"
+    },
+    {
+      "phase": "mcp.send.return",
+      "at_ns": 340561249453291,
+      "thread": "mcp-boot-backpressure",
+      "method": "notifications/initialized"
+    },
+    {
+      "phase": "mcp.handshake.return",
+      "at_ns": 340561249454666,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "mcp.tools-list.enter",
+      "at_ns": 340561249456125,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "mcp.request.enter",
+      "at_ns": 340561249457916,
+      "thread": "mcp-boot-backpressure",
+      "method": "tools/list",
+      "timeout_ms": 10000
+    },
+    {
+      "phase": "mcp.send.enter",
+      "at_ns": 340561249462791,
+      "thread": "mcp-boot-backpressure",
+      "method": "tools/list"
+    },
+    {
+      "phase": "mcp.send.return",
+      "at_ns": 340561249469250,
+      "thread": "mcp-boot-backpressure",
+      "method": "tools/list"
+    },
+    {
+      "phase": "mcp.request.return",
+      "at_ns": 340561249518583,
+      "thread": "mcp-boot-backpressure",
+      "method": "tools/list",
+      "timeout_ms": 10000
+    },
+    {
+      "phase": "mcp.tools-list.return",
+      "at_ns": 340561249530708,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "mcp.start.return",
+      "at_ns": 340561249533333,
+      "thread": "mcp-boot-backpressure"
+    },
+    {
+      "phase": "run.create.enter",
+      "at_ns": 340561249763500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561249795583,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561249830541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561250469208,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561250471375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250505166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561250507291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250508625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "original.done.wait.enter",
+      "at_ns": 340561250601250,
+      "thread": "MainThread",
+      "timeout": 2
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561250655125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.create.return",
+      "at_ns": 340561250696791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561250710958,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561250714500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561250768750,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561250769875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250776833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561250778916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250779833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561250903875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.enter",
+      "at_ns": 340561250942875,
+      "thread": "Thread-1 (resume)",
+      "state": "queued"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561250946625,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561250949625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561250986791,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561250987750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250995541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561250997250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561250998083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251081291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.return",
+      "at_ns": 340561251094083,
+      "thread": "Thread-1 (resume)",
+      "state": "queued"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251098791,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251101125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251155541,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251156666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251162833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251163458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251165791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251262041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.enter",
+      "at_ns": 340561251264791,
+      "thread": "Thread-1 (resume)",
+      "state": "running"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251266625,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251270375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251319666,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251320500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251325333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251326000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251326791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251405250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.return",
+      "at_ns": 340561251415375,
+      "thread": "Thread-1 (resume)",
+      "state": "running"
+    },
+    {
+      "phase": "cursor.save.enter",
+      "at_ns": 340561251431750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251449333,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251452166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561251524250,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561251525375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251530833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251531583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561251532541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561251617208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.return",
+      "at_ns": 340561251619041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561252146750,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561252149791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561252173000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561252175500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561252186000,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561252188458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561252201500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561252261583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561252369708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561252372750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561252392375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561252483791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561252519000,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561252522166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561252696916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561252771958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561252817708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561252820125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561252825666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561252900000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "model.scripted.enter",
+      "at_ns": 340561252997833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "model.scripted.return",
+      "at_ns": 340561252999375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561253010708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561253013333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561253061375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561253140375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561256882666,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561256886583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561259281708,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561259283416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561259289833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561259290708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561260915791,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561260916708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561263531833,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561263532708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561263538291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561263539041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561263539750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561263540250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.enter",
+      "at_ns": 340561263543833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561270305583,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561270306833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561281529500,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561281533250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561281587583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561281589916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561281591166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561281591791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.return",
+      "at_ns": 340561281594750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561281595791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561289794041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561289834000,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561289855625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561289952791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561289959375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561289989083,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561289994875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561290007708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561290064500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.prepare.enter",
+      "at_ns": 340561292369166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561298449458,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561298453791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561298527750,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561298529041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561298539916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561298541083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561298542125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561298650250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561300298250,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561300301041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561300477083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561301382875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561301477708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561301484125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561301494375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561301538500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.prepare.return",
+      "at_ns": 340561301602291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.enter",
+      "at_ns": 340561301608791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561309562458,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561309570541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561320444375,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561320449958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561320493875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561320497333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561320498291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561328421625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.return",
+      "at_ns": 340561328431083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.enter",
+      "at_ns": 340561328435625,
+      "thread": "Thread-1 (resume)",
+      "state": "waiting_approval"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561328440083,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561328446958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561328543000,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561328544541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561328555291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561328556250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561328557208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561328635916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.return",
+      "at_ns": 340561328644958,
+      "thread": "Thread-1 (resume)",
+      "state": "waiting_approval"
+    },
+    {
+      "phase": "engine.start.return",
+      "at_ns": 340561330204333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "approval.approve_pending.enter",
+      "at_ns": 340561330251125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "approval.decide.enter",
+      "at_ns": 340561330366625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561330375000,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561330380125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561330436416,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561330437708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561330446791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561330448500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561330449625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561330536833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "approval.decide.return",
+      "at_ns": 340561330548333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "approval.approve_pending.return",
+      "at_ns": 340561330549416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "engine.resume.enter",
+      "at_ns": 340561330550875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.enter",
+      "at_ns": 340561331901458,
+      "thread": "Thread-1 (resume)",
+      "state": "running"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561331904666,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561331908000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561331953375,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561331954333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561331961166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561331962125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561331963000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561332016458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.transition.return",
+      "at_ns": 340561332023666,
+      "thread": "Thread-1 (resume)",
+      "state": "running"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561335824833,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561335827541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561335833875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561335878583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561338402500,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561338405166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561338426750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561338429000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561338436250,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561338438250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561338443708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561338477500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561338482833,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561338484750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561338505125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561338507250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561338513625,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561338515500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561338517708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561338519333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.prepare.enter",
+      "at_ns": 340561346678708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561353610083,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561353615666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561354005958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561354990125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561355082041,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561355087833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561355106000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561355158750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.prepare.return",
+      "at_ns": 340561355224875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.dispatch.enter",
+      "at_ns": 340561355228083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561355955333,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561355958583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359136625,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359139125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359195541,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359196541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359203375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359204625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359205625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359206125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359223416,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359224208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359355791,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359356708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359362750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359363500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359364333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359364791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359384291,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359385125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561359407666,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561359408500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359413208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359413791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561359414500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561359415041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561362417666,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561362419416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561362427291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561362428250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561362518291,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561362519416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561362620666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561362621625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561362685416,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561362686375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561362691625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561362692250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561362693125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561362791416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.mcp.enter",
+      "at_ns": 340561363567375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.send-boundary.enter",
+      "at_ns": 340561363588916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561363721833,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561363724833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340561373953166,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340561373955708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561373968041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561373969000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340561373969666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340561374010000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.send-boundary.return",
+      "at_ns": 340561374036750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "mcp.call-tool.enter",
+      "at_ns": 340561374796208,
+      "thread": "Thread-1 (resume)",
+      "configured_timeout_ms": 200
+    },
+    {
+      "phase": "mcp.request.enter",
+      "at_ns": 340561374800166,
+      "thread": "Thread-1 (resume)",
+      "method": "tools/call",
+      "timeout_ms": 200
+    },
+    {
+      "phase": "mcp.send.enter",
+      "at_ns": 340561374806000,
+      "thread": "Thread-1 (resume)",
+      "method": "tools/call"
+    },
+    {
+      "phase": "mcp.fail.enter",
+      "at_ns": 340561575259250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "mcp.fail.enter",
+      "at_ns": 340561575804125,
+      "thread": "mcp-backpressure-stdout"
+    },
+    {
+      "phase": "mcp.fail.return",
+      "at_ns": 340561575806375,
+      "thread": "mcp-backpressure-stdout"
+    },
+    {
+      "phase": "mcp.fail.return",
+      "at_ns": 340561598994125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "mcp.send.error",
+      "at_ns": 340561599017458,
+      "thread": "Thread-1 (resume)",
+      "type": "McpTimeout",
+      "sqlite_errorcode": null
+    },
+    {
+      "phase": "mcp.request.error",
+      "at_ns": 340561599022333,
+      "thread": "Thread-1 (resume)",
+      "type": "McpTimeout",
+      "sqlite_errorcode": null
+    },
+    {
+      "phase": "mcp.call-tool.error",
+      "at_ns": 340561599024083,
+      "thread": "Thread-1 (resume)",
+      "type": "McpTimeout",
+      "sqlite_errorcode": null
+    },
+    {
+      "phase": "dispatch.commit-result.enter",
+      "at_ns": 340561599040750,
+      "thread": "Thread-1 (resume)",
+      "status": "failed",
+      "effect_state": "unknown",
+      "reason": "mcp.timeout"
+    },
+    {
+      "phase": "gate.enter",
+      "at_ns": 340561599043750,
+      "thread": "Thread-1 (resume)",
+      "boundary": "dispatch.commit-result"
+    },
+    {
+      "phase": "original.done.wait.return",
+      "at_ns": 340563255850041,
+      "thread": "MainThread",
+      "returned": false
+    },
+    {
+      "phase": "test.finally.release.enter",
+      "at_ns": 340563255927125,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "gate.released",
+      "at_ns": 340563256172333,
+      "thread": "Thread-1 (resume)",
+      "boundary": "dispatch.commit-result"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563257660708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563257748625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563258156875,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563258193375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563258251208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563258261833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563258369791,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563258390625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563258419458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563258423291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563258426708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563258624041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563258631541,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563258643416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563258792250,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563258796166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563262336541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563262348791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563262351500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563265161333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.commit-result.return",
+      "at_ns": 340563265225666,
+      "thread": "Thread-1 (resume)",
+      "status": "failed",
+      "effect_state": "unknown",
+      "reason": "mcp.timeout"
+    },
+    {
+      "phase": "dispatch.mcp.return",
+      "at_ns": 340563265259291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "dispatch.dispatch.return",
+      "at_ns": 340563265272625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563270692208,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563270725833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563270960166,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563270963333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563270994541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563270999750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563271001750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563271169791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.enter",
+      "at_ns": 340563271212916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563275816458,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563275842666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563279358833,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563279362000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563279383416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563279386541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563279387833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563280285916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.return",
+      "at_ns": 340563280288708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563280292250,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563280297000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563280338875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563280341791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563280353916,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563280358083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563280363125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563280396125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563284795833,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563284799000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563284805875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563284808291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563284833500,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563284836375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563284905458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563284946416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563284986291,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563284989000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563284996125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563285034958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "model.scripted.enter",
+      "at_ns": 340563287614791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "model.scripted.return",
+      "at_ns": 340563287617833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563287631958,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563287635208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563287670666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563287710541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563287725708,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563287728958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563287756833,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563287757833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563287764666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563287765500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563287772833,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563287773625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563287826041,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563287826916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563287832916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563287833750,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563287834625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563287835125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.enter",
+      "at_ns": 340563287839083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563290061375,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563290062541,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563292910333,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563292911333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563292918708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563292919583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563292920416,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563292920916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "cursor.save.return",
+      "at_ns": 340563292922208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563292923041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563296482333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563296504416,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563296514000,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563296576625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563296580916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563296595291,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563296599083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563296609166,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563296671583,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.finish.enter",
+      "at_ns": 340563296738625,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563296746041,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563296750375,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563296841791,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563296843458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563296854125,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563296855666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563296856791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563296917666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563296930500,
+      "thread": "Thread-1 (resume)",
+      "nested": false
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563296932958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563300735000,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563300736833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563300745708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563300746666,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563300755083,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563300755958,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563300760875,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563300761458,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.attempt",
+      "at_ns": 340563300765375,
+      "thread": "Thread-1 (resume)",
+      "nested": true
+    },
+    {
+      "phase": "sqlite.tx.acquired",
+      "at_ns": 340563300766083,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563300777291,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563300777916,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.body-return",
+      "at_ns": 340563300784333,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "sqlite.tx.exit",
+      "at_ns": 340563300853708,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "run.finish.return",
+      "at_ns": 340563303244250,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "engine.resume.return",
+      "at_ns": 340563303252833,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "worker.resume.return",
+      "at_ns": 340563304384041,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "test.finally.release.return",
+      "at_ns": 340563304455250,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "mcp.close.enter",
+      "at_ns": 340563304460000,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "mcp.close.return",
+      "at_ns": 340563304483083,
+      "thread": "MainThread"
+    }
+  ],
+  "stats": {
+    "dropped": 0
+  },
+  "pytest_exit": 1
+}

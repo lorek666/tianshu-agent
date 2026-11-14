@@ -1,0 +1,1930 @@
+{
+  "verdict": "FAIL_THIS_MAIN_PUSH_CI_ONLY",
+  "audit_status": "COMPLETED_EXACT_MAIN_FAILURE_RETAINED",
+  "binding": {
+    "repository": "lorek666/tianshu-agent",
+    "run_id": 43576167008,
+    "run_attempt": 1,
+    "event": "push",
+    "head_branch": "main",
+    "head": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "actual_checkout": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "tree": "35bc297ce3125be4fd8db6fc4087196507a94045",
+    "ordered_parents": [
+      "b450c339d546ae2007ed9754e70de0108c4b86c4",
+      "a079455ee5aac0b4458cf8166511ab8abd9f79e6"
+    ]
+  },
+  "run_conclusion": "failure",
+  "jobs": {
+    "132390772107": {
+      "name": "ui · typecheck / test / build",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-14T08:30:47Z",
+      "completed_at": "2026-11-14T08:31:12Z",
+      "runner_labels": [
+        "ubuntu-latest"
+      ],
+      "os": [
+        "Ubuntu",
+        "26.04.1",
+        "LTS"
+      ],
+      "image": [
+        "Image: ubuntu-26.04"
+      ],
+      "installed_python": [],
+      "pytest_platform_lines": [],
+      "checkout_log_line": 107,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "安装前端依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "类型检查",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "前端单测",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "构建",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 9,
+          "name": "提交的 dist 必须与源码构建一致",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 16,
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Post Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 18,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 19,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    },
+    "132390772315": {
+      "name": "test (ubuntu-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-14T08:30:48Z",
+      "completed_at": "2026-11-14T08:38:46Z",
+      "runner_labels": [
+        "ubuntu-latest"
+      ],
+      "os": [
+        "Ubuntu",
+        "26.04.1",
+        "LTS"
+      ],
+      "image": [
+        "Image: ubuntu-26.04"
+      ],
+      "installed_python": [
+        "Installed Python 3.12.16 in 706ms"
+      ],
+      "pytest_platform_lines": [],
+      "checkout_log_line": 106,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 15,
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 16,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    },
+    "132390772334": {
+      "name": "test (macos-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-14T08:30:48Z",
+      "completed_at": "2026-11-14T08:46:10Z",
+      "runner_labels": [
+        "macos-latest"
+      ],
+      "os": [
+        "macOS",
+        "26.7.2",
+        "25G332"
+      ],
+      "image": [
+        "Image: macos-26-arm64"
+      ],
+      "installed_python": [
+        "Installed Python 3.12.16 in 2.37s"
+      ],
+      "pytest_platform_lines": [],
+      "checkout_log_line": 107,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 15,
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 16,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    },
+    "132390772345": {
+      "name": "windows shard 1 · py3.12",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-11-14T08:30:50Z",
+      "completed_at": "2026-11-14T08:43:40Z",
+      "runner_labels": [
+        "windows-latest"
+      ],
+      "os": [
+        "Microsoft Windows Server 2025",
+        "10.0.26100",
+        "Datacenter"
+      ],
+      "image": [
+        "Image: windows-2025-vs2026"
+      ],
+      "installed_python": [
+        "Installed Python 3.12.16 in 6.11s"
+      ],
+      "pytest_platform_lines": [
+        "platform win32 -- Python 3.12.16, pytest-9.2.0, pluggy-1.7.0 -- D:\\a\\tianshu-agent\\tianshu-agent\\.venv\\Scripts\\python.exe"
+      ],
+      "checkout_log_line": 111,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "number": 9,
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 18,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 19,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [
+        {
+          "line": 1867,
+          "raw": "2026-11-14T08:43:35.4356148Z ##[error]Process completed with exit code 1."
+        }
+      ],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    },
+    "132390772492": {
+      "name": "windows shard 0 · py3.12",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-11-14T08:30:48Z",
+      "completed_at": "2026-11-14T08:46:04Z",
+      "runner_labels": [
+        "windows-latest"
+      ],
+      "os": [
+        "Microsoft Windows Server 2025",
+        "10.0.26100",
+        "Datacenter"
+      ],
+      "image": [
+        "Image: windows-2025-vs2026"
+      ],
+      "installed_python": [
+        "Installed Python 3.12.16 in 4.44s"
+      ],
+      "pytest_platform_lines": [
+        "platform win32 -- Python 3.12.16, pytest-9.2.0, pluggy-1.7.0 -- D:\\a\\tianshu-agent\\tianshu-agent\\.venv\\Scripts\\python.exe"
+      ],
+      "checkout_log_line": 111,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "number": 9,
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 18,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 19,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [
+        {
+          "line": 2018,
+          "raw": "2026-11-14T08:45:59.2643106Z ##[error]Process completed with exit code 1."
+        }
+      ],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    },
+    "132394433521": {
+      "name": "test (windows-latest) · py3.12",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-11-14T08:46:06Z",
+      "completed_at": "2026-11-14T08:46:22Z",
+      "runner_labels": [
+        "ubuntu-latest"
+      ],
+      "os": [
+        "Ubuntu",
+        "26.04.1",
+        "LTS"
+      ],
+      "image": [
+        "Image: ubuntu-26.04"
+      ],
+      "installed_python": [
+        "Installed Python 3.12.16 in 763ms"
+      ],
+      "pytest_platform_lines": [],
+      "checkout_log_line": 124,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 5,
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 6,
+          "name": "下载分片 0",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 7,
+          "name": "下载分片 1",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 8,
+          "name": "验证上游结论与完整覆盖",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "number": 15,
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "number": 16,
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 17,
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "error_log_markers": [
+        {
+          "line": 241,
+          "raw": "2026-11-14T08:46:19.7072037Z ##[error]Process completed with exit code 1."
+        }
+      ],
+      "fatal_python_errors": [],
+      "watchdog_diagnostic_errors": []
+    }
+  },
+  "artifacts": [
+    {
+      "id": 14106651538,
+      "index": 0,
+      "name": "windows-pytest-43576167008-1-0",
+      "zip_bytes": 132022,
+      "zip_sha256": "ca9ea030aacdebb491f8b6d780ebe415a70b0ab9e1bfb139d767420d8fa681ab",
+      "shard_json_bytes": 1326615,
+      "shard_json_sha256": "a52a81c3e6fce9f5e5c683f3679303320b1bea1458a8009bb0dd749012af6e58",
+      "pytest_session_exit": 1
+    },
+    {
+      "id": 14106374876,
+      "index": 1,
+      "name": "windows-pytest-43576167008-1-1",
+      "zip_bytes": 133074,
+      "zip_sha256": "6fc9a83bb4d98420669dddb5c5bfb7e14ecd9e683e49d496f41f2074719c69f7",
+      "shard_json_bytes": 1303066,
+      "shard_json_sha256": "7935d602606e9232447d2e33bba1f4b2db968de63ea9f5c9964794ed8df4c8c5",
+      "pytest_session_exit": 1
+    }
+  ],
+  "watchdogs": [
+    {
+      "job_id": 132390772492,
+      "marker_log_line": 750,
+      "marker_raw": "2026-11-14T08:37:56.2838009Z PYTHON STACK WATCHDOG",
+      "node": "tests/test_eval_separation.py::test_cli_compare_accepts_previous_report_as_baseline",
+      "test_frames": [
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\tests\\test_eval_separation.py\", line 114, in test_cli_compare_accepts_previous_report_as_baseline"
+      ],
+      "final_result_raw": "2026-11-14T08:37:56.5327952Z tests/test_eval_separation.py::test_cli_compare_accepts_previous_report_as_baseline PASSED [ 33%]",
+      "final_log_line": 796,
+      "phases": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "duration_raw": "60.25s call     tests/test_eval_separation.py::test_cli_compare_accepts_previous_report_as_baseline",
+      "stack_source_frames": [
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\dispatcher.py\", line 560, in __init__",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\loop.py\", line 3347, in build_stack",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\eval\\runner.py\", line 730, in _run_standard",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\eval\\runner.py\", line 1103, in run_suite",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\cli.py\", line 1920, in _cmd_evaluate",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\src\\tianshu\\cli.py\", line 2117, in main"
+      ],
+      "excerpt": {
+        "file": "watchdog-1.txt",
+        "log_lines": [
+          748,
+          796
+        ],
+        "job_id": 132390772492
+      }
+    },
+    {
+      "job_id": 132390772492,
+      "marker_log_line": 1543,
+      "marker_raw": "2026-11-14T08:43:45.6220794Z PYTHON STACK WATCHDOG",
+      "node": "tests/test_recovery.py::test_100_random_fault_injections",
+      "test_frames": [
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\tests\\test_recovery.py\", line 135, in _spawn",
+        "  File \"D:\\a\\tianshu-agent\\tianshu-agent\\tests\\test_recovery.py\", line 419, in test_100_random_fault_injections"
+      ],
+      "final_result_raw": "2026-11-14T08:43:48.2422412Z tests/test_recovery.py::test_100_random_fault_injections PASSED          [ 79%]",
+      "final_log_line": 1599,
+      "phases": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "duration_raw": "62.62s call     tests/test_recovery.py::test_100_random_fault_injections",
+      "stack_source_frames": [],
+      "excerpt": {
+        "file": "watchdog-2.txt",
+        "log_lines": [
+          1541,
+          1599
+        ],
+        "job_id": 132390772492
+      }
+    }
+  ],
+  "summaries": {
+    "132390772315": {
+      "failed": 0,
+      "passed": 3193,
+      "skipped": 13,
+      "deselected": 0,
+      "seconds": 468.51,
+      "line": 245,
+      "raw": "2026-11-14T08:38:43.6835897Z 3193 passed, 13 skipped in 468.51s (0:07:48)"
+    },
+    "132390772334": {
+      "failed": 0,
+      "passed": 3198,
+      "skipped": 8,
+      "deselected": 0,
+      "seconds": 900.11,
+      "line": 243,
+      "raw": "2026-11-14T08:46:03.9283600Z 3198 passed, 8 skipped in 900.11s (0:15:00)"
+    },
+    "132390772345": {
+      "failed": 1,
+      "passed": 1585,
+      "skipped": 17,
+      "deselected": 1603,
+      "seconds": 741.15,
+      "line": 1866,
+      "raw": "2026-11-14T08:43:35.0788291Z === 1 failed, 1585 passed, 17 skipped, 1603 deselected in 741.15s (0:12:21) ==="
+    },
+    "132390772492": {
+      "failed": 1,
+      "passed": 1582,
+      "skipped": 20,
+      "deselected": 1603,
+      "seconds": 891.19,
+      "line": 2017,
+      "raw": "2026-11-14T08:45:59.0558284Z === 1 failed, 1582 passed, 20 skipped, 1603 deselected in 891.19s (0:14:51) ==="
+    }
+  },
+  "skips": {
+    "132390772315": [
+      {
+        "count": 1,
+        "file_raw": "tests/test_backend_contract.py",
+        "source_line": 386,
+        "reason_raw": "memfs 没有符号链接，不承诺这条",
+        "reason_decoded_unicode_only": "memfs 没有符号链接，不承诺这条",
+        "log_line": 235,
+        "raw": "2026-11-14T08:38:43.6825784Z SKIPPED [1] tests/test_backend_contract.py:386: memfs 没有符号链接，不承诺这条"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests/test_backup_materials.py",
+        "source_line": 592,
+        "reason_raw": "当前平台没有 /tmp 的系统路径别名",
+        "reason_decoded_unicode_only": "当前平台没有 /tmp 的系统路径别名",
+        "log_line": 236,
+        "raw": "2026-11-14T08:38:43.6826887Z SKIPPED [2] tests/test_backup_materials.py:592: 当前平台没有 /tmp 的系统路径别名"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests/test_data_cli.py",
+        "source_line": 118,
+        "reason_raw": "验证 macOS /tmp → /private/tmp 系统别名",
+        "reason_decoded_unicode_only": "验证 macOS /tmp → /private/tmp 系统别名",
+        "log_line": 237,
+        "raw": "2026-11-14T08:38:43.6828045Z SKIPPED [2] tests/test_data_cli.py:118: 验证 macOS /tmp → /private/tmp 系统别名"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_exec.py",
+        "source_line": 525,
+        "reason_raw": "仅 Windows：本机不可执行",
+        "reason_decoded_unicode_only": "仅 Windows：本机不可执行",
+        "log_line": 238,
+        "raw": "2026-11-14T08:38:43.6829146Z SKIPPED [1] tests/test_exec.py:525: 仅 Windows：本机不可执行"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_exec.py",
+        "source_line": 540,
+        "reason_raw": "仅 Windows：本机不可执行",
+        "reason_decoded_unicode_only": "仅 Windows：本机不可执行",
+        "log_line": 239,
+        "raw": "2026-11-14T08:38:43.6830117Z SKIPPED [1] tests/test_exec.py:540: 仅 Windows：本机不可执行"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_host_cleanup.py",
+        "source_line": 514,
+        "reason_raw": "真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "reason_decoded_unicode_only": "真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "log_line": 240,
+        "raw": "2026-11-14T08:38:43.6831139Z SKIPPED [1] tests/test_host_cleanup.py:514: 真实无 FILE_SHARE_READ 句柄只适用于 Windows"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_ipc.py",
+        "source_line": 612,
+        "reason_raw": "AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，同样连接会排队。重试逻辑见 test_probe_result_retries_transient_errors_deterministically",
+        "reason_decoded_unicode_only": "AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，同样连接会排队。重试逻辑见 test_probe_result_retries_transient_errors_deterministically",
+        "log_line": 241,
+        "raw": "2026-11-14T08:38:43.6832286Z SKIPPED [1] tests/test_ipc.py:612: AF_UNIX 队列满时'立即拒绝'是 macOS 语义；Linux 的 backlog 只是提示，同样连接会排队。重试逻辑见 test_probe_result_retries_transient_errors_deterministically"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_powercut_image.py",
+        "source_line": 223,
+        "reason_raw": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 242,
+        "raw": "2026-11-14T08:38:43.6833394Z SKIPPED [1] tests/test_powercut_image.py:223: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests/test_powercut_image.py",
+        "source_line": 269,
+        "reason_raw": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 243,
+        "raw": "2026-11-14T08:38:43.6834236Z SKIPPED [2] tests/test_powercut_image.py:269: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_soak.py",
+        "source_line": 186,
+        "reason_raw": "浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）",
+        "reason_decoded_unicode_only": "浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）",
+        "log_line": 244,
+        "raw": "2026-11-14T08:38:43.6835336Z SKIPPED [1] tests/test_soak.py:186: 浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）"
+      }
+    ],
+    "132390772334": [
+      {
+        "count": 1,
+        "file_raw": "tests/test_backend_contract.py",
+        "source_line": 386,
+        "reason_raw": "memfs 没有符号链接，不承诺这条",
+        "reason_decoded_unicode_only": "memfs 没有符号链接，不承诺这条",
+        "log_line": 236,
+        "raw": "2026-11-14T08:46:03.9209740Z SKIPPED [1] tests/test_backend_contract.py:386: memfs 没有符号链接，不承诺这条"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_exec.py",
+        "source_line": 525,
+        "reason_raw": "仅 Windows：本机不可执行",
+        "reason_decoded_unicode_only": "仅 Windows：本机不可执行",
+        "log_line": 237,
+        "raw": "2026-11-14T08:46:03.9254070Z SKIPPED [1] tests/test_exec.py:525: 仅 Windows：本机不可执行"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_exec.py",
+        "source_line": 540,
+        "reason_raw": "仅 Windows：本机不可执行",
+        "reason_decoded_unicode_only": "仅 Windows：本机不可执行",
+        "log_line": 238,
+        "raw": "2026-11-14T08:46:03.9272760Z SKIPPED [1] tests/test_exec.py:540: 仅 Windows：本机不可执行"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_host_cleanup.py",
+        "source_line": 514,
+        "reason_raw": "真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "reason_decoded_unicode_only": "真实无 FILE_SHARE_READ 句柄只适用于 Windows",
+        "log_line": 239,
+        "raw": "2026-11-14T08:46:03.9275170Z SKIPPED [1] tests/test_host_cleanup.py:514: 真实无 FILE_SHARE_READ 句柄只适用于 Windows"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_powercut_image.py",
+        "source_line": 223,
+        "reason_raw": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 240,
+        "raw": "2026-11-14T08:46:03.9281240Z SKIPPED [1] tests/test_powercut_image.py:223: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests/test_powercut_image.py",
+        "source_line": 269,
+        "reason_raw": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 241,
+        "raw": "2026-11-14T08:46:03.9282270Z SKIPPED [2] tests/test_powercut_image.py:269: 真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests/test_soak.py",
+        "source_line": 186,
+        "reason_raw": "浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）",
+        "reason_decoded_unicode_only": "浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）",
+        "log_line": 242,
+        "raw": "2026-11-14T08:46:03.9283020Z SKIPPED [1] tests/test_soak.py:186: 浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）"
+      }
+    ],
+    "132390772345": [
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_backend_contract.py",
+        "source_line": 386,
+        "reason_raw": "memfs \\u6ca1\\u6709\\u7b26\\u53f7\\u94fe\\u63a5\\uff0c\\u4e0d\\u627f\\u8bfa\\u8fd9\\u6761",
+        "reason_decoded_unicode_only": "memfs 没有符号链接，不承诺这条",
+        "log_line": 1850,
+        "raw": "2026-11-14T08:43:35.0775152Z SKIPPED [1] tests\\\\test_backend_contract.py:386: memfs \\u6ca1\\u6709\\u7b26\\u53f7\\u94fe\\u63a5\\uff0c\\u4e0d\\u627f\\u8bfa\\u8fd9\\u6761"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests\\\\test_backup_materials.py",
+        "source_line": 592,
+        "reason_raw": "\\u5f53\\u524d\\u5e73\\u53f0\\u6ca1\\u6709 /tmp \\u7684\\u7cfb\\u7edf\\u8def\\u5f84\\u522b\\u540d",
+        "reason_decoded_unicode_only": "当前平台没有 /tmp 的系统路径别名",
+        "log_line": 1851,
+        "raw": "2026-11-14T08:43:35.0775986Z SKIPPED [2] tests\\\\test_backup_materials.py:592: \\u5f53\\u524d\\u5e73\\u53f0\\u6ca1\\u6709 /tmp \\u7684\\u7cfb\\u7edf\\u8def\\u5f84\\u522b\\u540d"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_daemon.py",
+        "source_line": 911,
+        "reason_raw": "Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09",
+        "reason_decoded_unicode_only": "Windows 命名管道没有'只 listen 不握手'的裸句柄（见 tests/support.HangupPeer）",
+        "log_line": 1852,
+        "raw": "2026-11-14T08:43:35.0776951Z SKIPPED [1] tests\\\\test_daemon.py:911: Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_daemon.py",
+        "source_line": 964,
+        "reason_raw": "Windows \\u4e0a os.kill \\u7684 SIGTERM \\u4e0d\\u662f\\u4f18\\u96c5\\u9000\\u51fa\\u8def\\u5f84",
+        "reason_decoded_unicode_only": "Windows 上 os.kill 的 SIGTERM 不是优雅退出路径",
+        "log_line": 1853,
+        "raw": "2026-11-14T08:43:35.0778035Z SKIPPED [1] tests\\\\test_daemon.py:964: Windows \\u4e0a os.kill \\u7684 SIGTERM \\u4e0d\\u662f\\u4f18\\u96c5\\u9000\\u51fa\\u8def\\u5f84"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_host_cleanup.py",
+        "source_line": 500,
+        "reason_raw": "chmod 000 \\u8bfb\\u6743\\u9650\\u8bed\\u4e49\\u53ea\\u9002\\u7528\\u4e8e POSIX",
+        "reason_decoded_unicode_only": "chmod 000 读权限语义只适用于 POSIX",
+        "log_line": 1854,
+        "raw": "2026-11-14T08:43:35.0778767Z SKIPPED [1] tests\\\\test_host_cleanup.py:500: chmod 000 \\u8bfb\\u6743\\u9650\\u8bed\\u4e49\\u53ea\\u9002\\u7528\\u4e8e POSIX"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 214,
+        "reason_raw": "Windows \\u7aef\\u70b9\\u4e0d\\u662f\\u6587\\u4ef6\\u8def\\u5f84\\uff0c\\u6ca1\\u6709\\u957f\\u5ea6\\u4e0a\\u9650",
+        "reason_decoded_unicode_only": "Windows 端点不是文件路径，没有长度上限",
+        "log_line": 1855,
+        "raw": "2026-11-14T08:43:35.0779512Z SKIPPED [1] tests\\\\test_ipc.py:214: Windows \\u7aef\\u70b9\\u4e0d\\u662f\\u6587\\u4ef6\\u8def\\u5f84\\uff0c\\u6ca1\\u6709\\u957f\\u5ea6\\u4e0a\\u9650"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 405,
+        "reason_raw": "Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09",
+        "reason_decoded_unicode_only": "Windows 命名管道没有'只 listen 不握手'的裸句柄（见 tests/support.HangupPeer）",
+        "log_line": 1856,
+        "raw": "2026-11-14T08:43:35.0780460Z SKIPPED [1] tests\\\\test_ipc.py:405: Windows \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709'\\u53ea listen \\u4e0d\\u63e1\\u624b'\\u7684\\u88f8\\u53e5\\u67c4\\uff08\\u89c1 tests/support.HangupPeer\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 500,
+        "reason_raw": "Unix socket \\u7684\\u76d1\\u542c\\u961f\\u5217\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053",
+        "reason_decoded_unicode_only": "Unix socket 的监听队列；Windows 走命名管道",
+        "log_line": 1857,
+        "raw": "2026-11-14T08:43:35.0781371Z SKIPPED [1] tests\\\\test_ipc.py:500: Unix socket \\u7684\\u76d1\\u542c\\u961f\\u5217\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 526,
+        "reason_raw": "\\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709 ENOENT/ECONNREFUSED \\u5206\\u5c42",
+        "reason_decoded_unicode_only": "命名管道没有 ENOENT/ECONNREFUSED 分层",
+        "log_line": 1858,
+        "raw": "2026-11-14T08:43:35.0782044Z SKIPPED [1] tests\\\\test_ipc.py:526: \\u547d\\u540d\\u7ba1\\u9053\\u6ca1\\u6709 ENOENT/ECONNREFUSED \\u5206\\u5c42"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 550,
+        "reason_raw": "\\u91cd\\u8bd5\\u8bed\\u4e49\\u53ea\\u5728 POSIX \\u63a2\\u6d3b\\u5b9e\\u73b0\\u4e0a\\u6210\\u7acb",
+        "reason_decoded_unicode_only": "重试语义只在 POSIX 探活实现上成立",
+        "log_line": 1859,
+        "raw": "2026-11-14T08:43:35.0782712Z SKIPPED [1] tests\\\\test_ipc.py:550: \\u91cd\\u8bd5\\u8bed\\u4e49\\u53ea\\u5728 POSIX \\u63a2\\u6d3b\\u5b9e\\u73b0\\u4e0a\\u6210\\u7acb"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 601,
+        "reason_raw": "Unix socket \\u7684\\u6392\\u961f\\u8bed\\u4e49\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053",
+        "reason_decoded_unicode_only": "Unix socket 的排队语义；Windows 走命名管道",
+        "log_line": 1860,
+        "raw": "2026-11-14T08:43:35.0783429Z SKIPPED [1] tests\\\\test_ipc.py:601: Unix socket \\u7684\\u6392\\u961f\\u8bed\\u4e49\\uff1bWindows \\u8d70\\u547d\\u540d\\u7ba1\\u9053"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc.py",
+        "source_line": 721,
+        "reason_raw": "\\u6b8b\\u7559 socket \\u6587\\u4ef6\\u662f POSIX \\u6982\\u5ff5\\uff1b\\u547d\\u540d\\u7ba1\\u9053\\u4e0d\\u662f\\u6587\\u4ef6",
+        "reason_decoded_unicode_only": "残留 socket 文件是 POSIX 概念；命名管道不是文件",
+        "log_line": 1861,
+        "raw": "2026-11-14T08:43:35.0784210Z SKIPPED [1] tests\\\\test_ipc.py:721: \\u6b8b\\u7559 socket \\u6587\\u4ef6\\u662f POSIX \\u6982\\u5ff5\\uff1b\\u547d\\u540d\\u7ba1\\u9053\\u4e0d\\u662f\\u6587\\u4ef6"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_ipc_send_close.py",
+        "source_line": 18,
+        "reason_raw": "POSIX Connection._send \\u77ed\\u5199\\u5faa\\u73af\\uff1bWindows PipeConnection \\u4f7f\\u7528\\u4e0d\\u540c\\u7684\\u53d1\\u9001\\u5b9e\\u73b0",
+        "reason_decoded_unicode_only": "POSIX Connection._send 短写循环；Windows PipeConnection 使用不同的发送实现",
+        "log_line": 1862,
+        "raw": "2026-11-14T08:43:35.0785201Z SKIPPED [1] tests\\\\test_ipc_send_close.py:18: POSIX Connection._send \\u77ed\\u5199\\u5faa\\u73af\\uff1bWindows PipeConnection \\u4f7f\\u7528\\u4e0d\\u540c\\u7684\\u53d1\\u9001\\u5b9e\\u73b0"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_isolation.py",
+        "source_line": 200,
+        "reason_raw": "\\u8fdb\\u7a0b\\u7ec4\\u6740\\u6811\\u53ea\\u6709 POSIX \\u80fd\\u786e\\u8ba4",
+        "reason_decoded_unicode_only": "进程组杀树只有 POSIX 能确认",
+        "log_line": 1863,
+        "raw": "2026-11-14T08:43:35.0786082Z SKIPPED [1] tests\\\\test_isolation.py:200: \\u8fdb\\u7a0b\\u7ec4\\u6740\\u6811\\u53ea\\u6709 POSIX \\u80fd\\u786e\\u8ba4"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_leases.py",
+        "source_line": 238,
+        "reason_raw": "PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0",
+        "reason_decoded_unicode_only": "PID 存活探测仅 POSIX 实现",
+        "log_line": 1864,
+        "raw": "2026-11-14T08:43:35.0786678Z SKIPPED [1] tests\\\\test_leases.py:238: PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_soak.py",
+        "source_line": 186,
+        "reason_raw": "\\u6d78\\u6ce1\\u6d4b\\u8bd5\\u9ed8\\u8ba4\\u8df3\\u8fc7\\uff1aTIANSHU_SOAK=1 \\u624d\\u8dd1\\uff08\\u6709\\u754c\\u3001\\u6309 TIANSHU_SOAK_SECONDS \\u79d2\\uff09",
+        "reason_decoded_unicode_only": "浸泡测试默认跳过：TIANSHU_SOAK=1 才跑（有界、按 TIANSHU_SOAK_SECONDS 秒）",
+        "log_line": 1865,
+        "raw": "2026-11-14T08:43:35.0787503Z SKIPPED [1] tests\\\\test_soak.py:186: \\u6d78\\u6ce1\\u6d4b\\u8bd5\\u9ed8\\u8ba4\\u8df3\\u8fc7\\uff1aTIANSHU_SOAK=1 \\u624d\\u8dd1\\uff08\\u6709\\u754c\\u3001\\u6309 TIANSHU_SOAK_SECONDS \\u79d2\\uff09"
+      }
+    ],
+    "132390772492": [
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_backup.py",
+        "source_line": 566,
+        "reason_raw": "POSIX \\u8bed\\u4e49",
+        "reason_decoded_unicode_only": "POSIX 语义",
+        "log_line": 1999,
+        "raw": "2026-11-14T08:45:59.0545473Z SKIPPED [1] tests\\\\test_backup.py:566: POSIX \\u8bed\\u4e49"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests\\\\test_data_cli.py",
+        "source_line": 118,
+        "reason_raw": "\\u9a8c\\u8bc1 macOS /tmp \\u2192 /private/tmp \\u7cfb\\u7edf\\u522b\\u540d",
+        "reason_decoded_unicode_only": "验证 macOS /tmp → /private/tmp 系统别名",
+        "log_line": 2000,
+        "raw": "2026-11-14T08:45:59.0546213Z SKIPPED [2] tests\\\\test_data_cli.py:118: \\u9a8c\\u8bc1 macOS /tmp \\u2192 /private/tmp \\u7cfb\\u7edf\\u522b\\u540d"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_exec.py",
+        "source_line": 196,
+        "reason_raw": "Windows \\u6ca1\\u6709\\u8fdb\\u7a0b\\u7ec4/\\u4fe1\\u53f7\\uff0c\\u89c1 Windows \\u4e13\\u5c5e\\u7528\\u4f8b",
+        "reason_decoded_unicode_only": "Windows 没有进程组/信号，见 Windows 专属用例",
+        "log_line": 2001,
+        "raw": "2026-11-14T08:45:59.0547113Z SKIPPED [1] tests\\\\test_exec.py:196: Windows \\u6ca1\\u6709\\u8fdb\\u7a0b\\u7ec4/\\u4fe1\\u53f7\\uff0c\\u89c1 Windows \\u4e13\\u5c5e\\u7528\\u4f8b"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_exec.py",
+        "source_line": 467,
+        "reason_raw": "Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY",
+        "reason_decoded_unicode_only": "Windows 标准库没有 PTY",
+        "log_line": 2002,
+        "raw": "2026-11-14T08:45:59.0547609Z SKIPPED [1] tests\\\\test_exec.py:467: Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_exec.py",
+        "source_line": 484,
+        "reason_raw": "Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY",
+        "reason_decoded_unicode_only": "Windows 标准库没有 PTY",
+        "log_line": 2003,
+        "raw": "2026-11-14T08:45:59.0548128Z SKIPPED [1] tests\\\\test_exec.py:484: Windows \\u6807\\u51c6\\u5e93\\u6ca1\\u6709 PTY"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_exec.py",
+        "source_line": 502,
+        "reason_raw": "Windows \\u6ca1\\u6709 Unix \\u4fe1\\u53f7",
+        "reason_decoded_unicode_only": "Windows 没有 Unix 信号",
+        "log_line": 2004,
+        "raw": "2026-11-14T08:45:59.0548487Z SKIPPED [1] tests\\\\test_exec.py:502: Windows \\u6ca1\\u6709 Unix \\u4fe1\\u53f7"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_integration_m5.py",
+        "source_line": 676,
+        "reason_raw": "SIGKILL / AF_UNIX \\u8bed\\u4e49\\uff1bWindows \\u7528 taskkill\\uff0c\\u672c\\u6d4b\\u8bd5\\u4e0d\\u8986\\u76d6",
+        "reason_decoded_unicode_only": "SIGKILL / AF_UNIX 语义；Windows 用 taskkill，本测试不覆盖",
+        "log_line": 2005,
+        "raw": "2026-11-14T08:45:59.0549023Z SKIPPED [1] tests\\\\test_integration_m5.py:676: SIGKILL / AF_UNIX \\u8bed\\u4e49\\uff1bWindows \\u7528 taskkill\\uff0c\\u672c\\u6d4b\\u8bd5\\u4e0d\\u8986\\u76d6"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\test_maintenance.py",
+        "source_line": 272,
+        "reason_raw": "POSIX uid; Windows inherits OS user-directory ACL",
+        "reason_decoded_unicode_only": "POSIX uid; Windows inherits OS user-directory ACL",
+        "log_line": 2006,
+        "raw": "2026-11-14T08:45:59.0549597Z SKIPPED [1] tests\\test_maintenance.py:272: POSIX uid; Windows inherits OS user-directory ACL"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_powercut_image.py",
+        "source_line": 223,
+        "reason_raw": "\\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 2007,
+        "raw": "2026-11-14T08:45:59.0550235Z SKIPPED [1] tests\\\\test_powercut_image.py:223: \\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09"
+      },
+      {
+        "count": 2,
+        "file_raw": "tests\\\\test_powercut_image.py",
+        "source_line": 269,
+        "reason_raw": "\\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09",
+        "reason_decoded_unicode_only": "真实摘卷实验是 opt-in：设 TIANSHU_POWERCUT=1 才跑（CI 默认 skip）",
+        "log_line": 2008,
+        "raw": "2026-11-14T08:45:59.0551009Z SKIPPED [2] tests\\\\test_powercut_image.py:269: \\u771f\\u5b9e\\u6458\\u5377\\u5b9e\\u9a8c\\u662f opt-in\\uff1a\\u8bbe TIANSHU_POWERCUT=1 \\u624d\\u8dd1\\uff08CI \\u9ed8\\u8ba4 skip\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_sandbox_backend.py",
+        "source_line": 57,
+        "reason_raw": "Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09",
+        "reason_decoded_unicode_only": "Windows 没有 POSIX 权限位语义（chmod 只能切只读位，S_IMODE 对可写文件恒为 0o666）",
+        "log_line": 2009,
+        "raw": "2026-11-14T08:45:59.0551890Z SKIPPED [1] tests\\\\test_sandbox_backend.py:57: Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_sandbox_backend.py",
+        "source_line": 70,
+        "reason_raw": "Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09",
+        "reason_decoded_unicode_only": "Windows 没有 POSIX 权限位语义（chmod 只能切只读位，S_IMODE 对可写文件恒为 0o666）",
+        "log_line": 2010,
+        "raw": "2026-11-14T08:45:59.0552882Z SKIPPED [1] tests\\\\test_sandbox_backend.py:70: Windows \\u6ca1\\u6709 POSIX \\u6743\\u9650\\u4f4d\\u8bed\\u4e49\\uff08chmod \\u53ea\\u80fd\\u5207\\u53ea\\u8bfb\\u4f4d\\uff0cS_IMODE \\u5bf9\\u53ef\\u5199\\u6587\\u4ef6\\u6052\\u4e3a 0o666\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 179,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2011,
+        "raw": "2026-11-14T08:45:59.0553727Z SKIPPED [1] tests\\\\test_takeover.py:179: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 220,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2012,
+        "raw": "2026-11-14T08:45:59.0554434Z SKIPPED [1] tests\\\\test_takeover.py:220: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 257,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2013,
+        "raw": "2026-11-14T08:45:59.0555137Z SKIPPED [1] tests\\\\test_takeover.py:257: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 280,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2014,
+        "raw": "2026-11-14T08:45:59.0555839Z SKIPPED [1] tests\\\\test_takeover.py:280: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 297,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2015,
+        "raw": "2026-11-14T08:45:59.0556542Z SKIPPED [1] tests\\\\test_takeover.py:297: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      },
+      {
+        "count": 1,
+        "file_raw": "tests\\\\test_takeover.py",
+        "source_line": 352,
+        "reason_raw": "SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09",
+        "reason_decoded_unicode_only": "SIGKILL 与 PID 存活探测仅 POSIX 实现（Windows 无对应语义）",
+        "log_line": 2016,
+        "raw": "2026-11-14T08:45:59.0557726Z SKIPPED [1] tests\\\\test_takeover.py:352: SIGKILL \\u4e0e PID \\u5b58\\u6d3b\\u63a2\\u6d4b\\u4ec5 POSIX \\u5b9e\\u73b0\\uff08Windows \\u65e0\\u5bf9\\u5e94\\u8bed\\u4e49\\uff09"
+      }
+    ]
+  },
+  "annotations": {
+    "132390772107": {
+      "count": 2,
+      "levels": {
+        "warning": 1,
+        "notice": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4, pnpm/action-setup@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "notice",
+          "title": "",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+          "raw_details": ""
+        }
+      ]
+    },
+    "132390772315": {
+      "count": 2,
+      "levels": {
+        "warning": 1,
+        "notice": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "notice",
+          "title": "",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+          "raw_details": ""
+        }
+      ]
+    },
+    "132390772334": {
+      "count": 2,
+      "levels": {
+        "warning": 1,
+        "notice": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "notice",
+          "title": "",
+          "message": "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.",
+          "raw_details": ""
+        }
+      ]
+    },
+    "132390772345": {
+      "count": 2,
+      "levels": {
+        "warning": 1,
+        "failure": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1668,
+          "start_column": null,
+          "end_line": 1668,
+          "end_column": null,
+          "annotation_level": "failure",
+          "title": "",
+          "message": "Process completed with exit code 1.",
+          "raw_details": ""
+        }
+      ]
+    },
+    "132390772492": {
+      "count": 2,
+      "levels": {
+        "warning": 1,
+        "failure": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1819,
+          "start_column": null,
+          "end_line": 1819,
+          "end_column": null,
+          "annotation_level": "failure",
+          "title": "",
+          "message": "Process completed with exit code 1.",
+          "raw_details": ""
+        }
+      ]
+    },
+    "132394433521": {
+      "count": 3,
+      "levels": {
+        "warning": 1,
+        "failure": 1,
+        "notice": 1
+      },
+      "annotations": [
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 2,
+          "start_column": null,
+          "end_line": 2,
+          "end_column": null,
+          "annotation_level": "warning",
+          "title": "",
+          "message": "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/download-artifact@v4, astral-sh/setup-uv@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 10,
+          "start_column": null,
+          "end_line": 10,
+          "end_column": null,
+          "annotation_level": "failure",
+          "title": "",
+          "message": "Process completed with exit code 1.",
+          "raw_details": ""
+        },
+        {
+          "path": ".github",
+          "blob_href": "https://github.com/lorek666/tianshu-agent/blob/c2cf1c71c65f46dea161e41b140df99d137a5686/.github",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 1,
+          "end_column": null,
+          "annotation_level": "notice",
+          "title": "",
+          "message": "\"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"",
+          "raw_details": ""
+        }
+      ]
+    }
+  },
+  "special_nodes": {
+    "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure": {
+      "shard": 0,
+      "job_id": 132390772492,
+      "phases": {
+        "setup": "passed",
+        "call": "failed",
+        "teardown": "passed"
+      },
+      "log": {
+        "line": 1049,
+        "raw": "2026-11-14T08:40:30.6605007Z tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure FAILED [ 48%]"
+      },
+      "duration_raw": "34.68s call     tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_real_transaction_caller_and_nested_reuse": {
+      "shard": 0,
+      "job_id": 132390772492,
+      "phases": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "log": {
+        "line": 1056,
+        "raw": "2026-11-14T08:40:36.6671140Z tests/test_m2_acceptance.py::test_worker_diagnostics_real_transaction_caller_and_nested_reuse PASSED [ 49%]"
+      },
+      "duration_raw": null
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[original-src]": {
+      "shard": 0,
+      "job_id": 132390772492,
+      "phases": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "log": {
+        "line": 1057,
+        "raw": "2026-11-14T08:40:36.9486471Z tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[original-src] PASSED [ 49%]"
+      },
+      "duration_raw": null
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[external-copy]": {
+      "shard": 0,
+      "job_id": 132390772492,
+      "phases": {
+        "setup": "passed",
+        "call": "passed",
+        "teardown": "passed"
+      },
+      "log": {
+        "line": 1058,
+        "raw": "2026-11-14T08:40:37.1921253Z tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[external-copy] PASSED [ 49%]"
+      },
+      "duration_raw": null
+    },
+    "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry": {
+      "shard": 1,
+      "job_id": 132390772345,
+      "phases": {
+        "setup": "passed",
+        "call": "failed",
+        "teardown": "passed"
+      },
+      "log": {
+        "line": 1467,
+        "raw": "2026-11-14T08:40:50.6420448Z tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry FAILED [ 77%]"
+      },
+      "duration_raw": "8.84s call     tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry"
+    }
+  },
+  "original_b450_CI_root_cause": "NOT_ESTABLISHED",
+  "this_main_failure_root_causes": "NOT_ESTABLISHED",
+  "PR149_success_inherited_as_main_result": false,
+  "author_or_collector_conclusions_used_as_verdict": false,
+  "collector_metadata_only": {
+    "run_id": 43576167008,
+    "sha": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "event": "push",
+    "conclusion": "failure",
+    "jobs_collected": [
+      132390772107,
+      132390772315,
+      132390772334,
+      132390772345,
+      132390772492,
+      132394433521
+    ],
+    "artifact_ids_collected": [
+      14106651538,
+      14106374876
+    ],
+    "actual_checkout": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "errors": [],
+    "approval": false
+  },
+  "windows_collection": {
+    "full_count": 3206,
+    "files": 123,
+    "counts": [
+      1603,
+      1603
+    ],
+    "both_full_lists_identical": true,
+    "independently_partitioned": true,
+    "shards_disjoint_and_union_full": true,
+    "collection_errors": 0,
+    "session_exits": [
+      1,
+      1
+    ],
+    "phase_counts": {
+      "0": {
+        "setup": 1603,
+        "call": 1584,
+        "teardown": 1603
+      },
+      "1": {
+        "setup": 1603,
+        "call": 1589,
+        "teardown": 1603
+      }
+    },
+    "phase_outcomes": {
+      "0": {
+        "setup:passed": 1584,
+        "call:passed": 1582,
+        "teardown:passed": 1603,
+        "call:skipped": 1,
+        "setup:skipped": 19,
+        "call:failed": 1
+      },
+      "1": {
+        "setup:passed": 1589,
+        "call:passed": 1585,
+        "teardown:passed": 1603,
+        "call:skipped": 3,
+        "setup:skipped": 14,
+        "call:failed": 1
+      }
+    },
+    "node_outcomes": {
+      "0": {
+        "passed": 1582,
+        "skipped": 20,
+        "failed": 1
+      },
+      "1": {
+        "passed": 1585,
+        "skipped": 17,
+        "failed": 1
+      }
+    },
+    "wasxfail_rows": {
+      "0": [],
+      "1": []
+    },
+    "failed_phases": [
+      {
+        "shard": 0,
+        "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+        "when": "call",
+        "outcome": "failed"
+      },
+      {
+        "shard": 1,
+        "nodeid": "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry",
+        "when": "call",
+        "outcome": "failed"
+      }
+    ],
+    "verbose_log_crosscheck": {
+      "0": {
+        "result_rows": 1603,
+        "all_outcomes_match_by_ordinal": true,
+        "nodeids_literal_equal": 1600,
+        "literal_log_redaction_placeholders": [
+          {
+            "ordinal_zero_based": 177,
+            "artifact_nodeid": "tests/test_credentials.py::test_redact_patterns[Authorization: Bearer sk-proj-FAKE0000deadbeef1234567890abcdef]",
+            "literal_log_nodeid": "tests/test_credentials.py::test_redact_patterns[Authorization: ***",
+            "result": "PASSED"
+          },
+          {
+            "ordinal_zero_based": 181,
+            "artifact_nodeid": "tests/test_credentials.py::test_redact_patterns[https://user:hunter2pass@api.example.com/v1]",
+            "literal_log_nodeid": "tests/test_credentials.py::test_redact_patterns[***api.example.com/v1]",
+            "result": "PASSED"
+          },
+          {
+            "ordinal_zero_based": 945,
+            "artifact_nodeid": "tests/test_memory_store.py::test_secret_patterns_are_blocked_before_storage[ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+            "literal_log_nodeid": "tests/test_memory_store.py::test_secret_patterns_are_blocked_before_storage[***]",
+            "result": "PASSED"
+          }
+        ],
+        "note": "Retain literal *** log placeholders; do not claim every log nodeid is byte-identical to artifact nodeid."
+      },
+      "1": {
+        "result_rows": 1603,
+        "all_outcomes_match_by_ordinal": true,
+        "nodeids_literal_equal": 1603,
+        "literal_log_redaction_placeholders": [],
+        "note": "Retain literal *** log placeholders; do not claim every log nodeid is byte-identical to artifact nodeid."
+      }
+    }
+  },
+  "junction_evidence": {
+    "status": "EXECUTED_AND_PASSED_ON_THIS_WINDOWS_MAIN_PUSH_CI",
+    "basis": "fixed nt branch plus actual Windows platform/checkout and both true passed calls",
+    "separate_mklink_stdout": "not printed by passing pytest capture; not claimed as an independent command trace",
+    "original_src_and_external_copy_true_calls": true
+  },
+  "normal_failure": {
+    "node": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+    "iteration": 13,
+    "worker_errors": [],
+    "actual_run_state": "failed",
+    "expected_run_state": "succeeded",
+    "run_end": [
+      {
+        "artifact": null,
+        "budget_enforced": false,
+        "effect_state": "none_applied",
+        "error": "主循环异常：OperationalError: database is locked",
+        "outcome": "failed",
+        "receipt_ids": [],
+        "tokens": 0,
+        "tokens_unknown_calls": 1,
+        "turns": 1,
+        "unbilled_model_intents": 0
+      }
+    ],
+    "events": [
+      "run.start",
+      "job.enqueued",
+      "run.state",
+      "job.claimed",
+      "run.state",
+      "model.intent",
+      "model.result",
+      "run.model_turn",
+      "run.cursor",
+      "dispatch.requested",
+      "grant.issued",
+      "grant.consumed",
+      "tool.intent",
+      "dispatch.admitted",
+      "execution.started",
+      "job.finished",
+      "run.end",
+      "run.finish"
+    ],
+    "diagnostic_rows": 41,
+    "diagnostic_categories": {
+      "collection": 1,
+      "error": 2,
+      "transaction.caller": 1,
+      "test.caller": 1,
+      "transaction.active_at_error": 1,
+      "transaction.frame": 2,
+      "test.frame": 1,
+      "transaction": 32
+    },
+    "collection": {
+      "tx_dropped": 5660,
+      "error_dropped": 8,
+      "connection_evicted": 0,
+      "thread_evicted": 0,
+      "active_dropped": 0,
+      "frames_dropped": 0,
+      "collection_failed": 0,
+      "collection_failed_types": []
+    },
+    "transaction_error": {
+      "source": "transaction",
+      "type": "OperationalError",
+      "at_ns": 693875000000,
+      "sqlite_errorcode": 5,
+      "sqlite_errorname": "SQLITE_BUSY",
+      "phase": "enter",
+      "run_id": "run_e02cdf7dfe87",
+      "job_id": "job_ca008b8b997e",
+      "claim_epoch": 1,
+      "tx": 1413,
+      "connection": "connection1",
+      "thread": "thread2",
+      "thread_name": "MainThread",
+      "nested": false,
+      "caller": {
+        "file": "src/tianshu/events.py",
+        "line": 508,
+        "function": "append_many"
+      }
+    },
+    "deepest_transaction_frame": {
+      "file": "src/tianshu/events.py",
+      "line": 412,
+      "function": "transaction"
+    },
+    "active_at_error": [
+      {
+        "tx": 1474,
+        "connection": "connection1373",
+        "thread": "thread1374",
+        "thread_name": "tianshu-heartbeat",
+        "nested": false,
+        "caller": {
+          "file": "src/tianshu/leases.py",
+          "line": 621,
+          "function": "renew"
+        },
+        "run_id": "run_e02cdf7dfe87",
+        "job_id": "job_ca008b8b997e",
+        "claim_epoch": 1,
+        "phase": "acquired",
+        "at_ns": 693843000000,
+        "native_in_transaction": true
+      }
+    ],
+    "excerpt": {
+      "file": "failure-normal-finish.txt",
+      "log_lines": [
+        1926,
+        1976
+      ],
+      "job_id": 132390772492
+    },
+    "interpretation_boundary": "Observed process contexts only, not OS lock ownership; truncated rings do not establish a full transaction history or root cause."
+  },
+  "mcp_failure": {
+    "node": "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry",
+    "source_assertion_line": 163,
+    "failed_assertion": "    assert returned, \"真实派发因 MCP stdin 背压突破调用期限\"",
+    "observed_returned": false,
+    "done_wait_source_line": 159,
+    "done_wait_seconds": 2,
+    "later_unknown_and_replay_assertions": "NOT_REACHED_AFTER_FAILED_ASSERTION",
+    "excerpt": {
+      "file": "failure-mcp-send.txt",
+      "log_lines": [
+        1822,
+        1827
+      ],
+      "job_id": 132390772345
+    },
+    "root_cause": "NOT_ESTABLISHED"
+  },
+  "windows_summary": {
+    "job_id": 132394433521,
+    "upstream_result": "failure",
+    "verification_step": "failure",
+    "download_steps": "both success",
+    "coverage_verified_by_official_summary": false,
+    "independent_coverage_audit_completed": true,
+    "excerpt": {
+      "file": "failure-windows-summary.txt",
+      "log_lines": [
+        232,
+        241
+      ],
+      "job_id": 132394433521
+    }
+  },
+  "UI": {
+    "files_passed": 13,
+    "tests_passed": 91,
+    "typecheck_build_dist_steps_all_success": true
+  },
+  "fresh_main_and_required": {
+    "main_ref": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "PR149": {
+      "state": "closed",
+      "merged": true,
+      "merge_commit_sha": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+      "head": "a079455ee5aac0b4458cf8166511ab8abd9f79e6",
+      "base": "b450c339d546ae2007ed9754e70de0108c4b86c4"
+    },
+    "required_contexts": [
+      "test (ubuntu-latest) · py3.12",
+      "test (macos-latest) · py3.12",
+      "test (windows-latest) · py3.12",
+      "ui · typecheck / test / build"
+    ],
+    "required_count": 4,
+    "actual_job_count": 6,
+    "required_app_id": 15368,
+    "required_conclusions": {
+      "test (ubuntu-latest) · py3.12": "success",
+      "test (macos-latest) · py3.12": "success",
+      "test (windows-latest) · py3.12": "failure",
+      "ui · typecheck / test / build": "success"
+    },
+    "strict": true,
+    "enforce_admins": true,
+    "force_push_allowed": false,
+    "deletion_allowed": false,
+    "required_approving_review_count": 0,
+    "rulesets_branch_rules": [],
+    "legacy_commit_status": {
+      "state": "pending",
+      "total_count": 0,
+      "statuses": [],
+      "interpretation": "no legacy contexts; six actual CheckRuns include three failures, and required Windows summary is failure"
+    },
+    "snapshot_only": true
+  },
+  "unresolved_boundaries": [
+    "Both main failed nodes retain their actual failure; PR149 success and same tree do not supersede this run.",
+    "Normal-finish context/error diagnostics do not establish the OS lock owner or root cause; dropped ring entries preclude a complete history.",
+    "MCP returned assertion failed before later unknown/replay assertions; no claim on those unexecuted assertions.",
+    "Two real watchdog dumps remain long-wait evidence, both corresponding nodes passed all phases.",
+    "Windows evidence is hosted Windows Server 2025 x86_64 CPython 3.12.16 CI, not Windows 10/11/ARM64 user-device or desktop experience.",
+    "Skipped tests retain exact reasons and do not establish omitted semantics.",
+    "Python watchdog cannot guarantee a 60-second stack if a C extension retains the GIL.",
+    "Fresh GETs are point-in-time snapshots, not continuous monitoring or authorization."
+  ],
+  "finished_at_utc": "2026-11-14T08:59:57.494600+00:00",
+  "native_copy": {
+    "file_count": 96,
+    "bytes": 1762771,
+    "before_copy_after_audit_exact": true,
+    "first_red_log_terminal_byte_equal": true,
+    "first_red_terminal_log_sha256": "36fa0f28dbfea5fe207a2ca627926adef3580bb94a9325a2b4b24795550ed475"
+  },
+  "source_identity": {
+    "fixed_input_count": 4,
+    "fixed_and_failure_source_count_reexported": 6,
+    "existing_git_commit": "a079455ee5aac0b4458cf8166511ab8abd9f79e6",
+    "main_and_local_source_tree": "35bc297ce3125be4fd8db6fc4087196507a94045",
+    "no_fetch": true,
+    "only_same_tree_source_identity_inherited": true,
+    "prior_PR_result_is_historical_separate_verdict": "PASS_PR149_ATTEMPT1_NATIVE_WITH_RETAINED_WATCHDOG_EVIDENCE",
+    "prior_PR_identity_and_full_bundle_rehashed_unchanged": true
+  },
+  "fresh_reads": {
+    "requests": 6,
+    "all_methods": "GET",
+    "all_exit_codes_zero": true,
+    "snapshot_only_not_continuous_monitor": true,
+    "request_manifest": "fresh-get-manifest.json"
+  },
+  "observer_attempts_retained": {
+    "observer-attempt-1": "source-spelling expectation corrected to actual require expression",
+    "observer-attempt-2": "overstrict literal log/artifact nodeid equality corrected; three literal *** log placeholders retained separately"
+  },
+  "live_readback": {
+    "at_utc": "2026-11-14T09:05:43.933825+00:00",
+    "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+    "results": {
+      "status_short_branch": {
+        "command": [
+          "git",
+          "status",
+          "--short",
+          "--branch"
+        ],
+        "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+        "exit_code": 0,
+        "stdout": "## codex/windows-deadline-and-lock-observation...origin/main\n",
+        "stderr": ""
+      },
+      "head": {
+        "command": [
+          "git",
+          "rev-parse",
+          "HEAD"
+        ],
+        "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+        "exit_code": 0,
+        "stdout": "c2cf1c71c65f46dea161e41b140df99d137a5686\n",
+        "stderr": ""
+      },
+      "status_porcelain": {
+        "command": [
+          "git",
+          "status",
+          "--porcelain"
+        ],
+        "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    "read_only_continuity": true,
+    "binding_boundary": "Correct g3 worktree snapshot only. Independent main CI identity comes from fixed originals; other authors may begin edits after this read. No live mutation by this reviewer."
+  },
+  "observer_continuity_expectation": {
+    "step": "pre-report continuity observer",
+    "wrong_worktree_read": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+    "wrong_worktree_HEAD": "cefa1e375974d96e2ec25e199f6605f6dcf2239b",
+    "mistake": "Used default worktree for live continuity and incorrectly described its HEAD as a live change; it is not the g3 HEAD.",
+    "original_wrapper_result": "AssertionError before report preparation because stale a079 expectation was checked against wrong worktree",
+    "correct_worktree": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+    "correct_HEAD": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+    "correct_status_porcelain": "",
+    "disposition": "Historical unsealed draft/readbacks preserved under observer-wrong-worktree; final report corrected, all later Git reads use explicit g3 cwd; no live reset/fetch/write."
+  }
+}

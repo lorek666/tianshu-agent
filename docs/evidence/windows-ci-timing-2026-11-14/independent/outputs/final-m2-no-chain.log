@@ -1,0 +1,12 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__ test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction ___
+tests/test_m2_acceptance.py:1166: in test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction
+    assert [frame["function"] for frame in chain[:2]] == [
+E   AssertionError: assert [] == ['append_many...ommit_result']
+E     
+E     Right contains 2 more items, first extra item: 'append_many'
+E     Use -v to get more diff
+=========================== short test summary info ============================
+FAILED tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction
+1 failed in 1.07s

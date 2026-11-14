@@ -1,0 +1,17 @@
+{
+  "test_sha256": "9abd3035581cfb73a5f518dac49dde1532b3ffe3e6f620ee25bc15792462cf9e",
+  "probe": "real Thread instance whose start raises exact injected RuntimeError before starting",
+  "caught_type": "RuntimeError",
+  "caught_message": "cannot join thread before it is started",
+  "caught_is_original_marker": false,
+  "context_is_original_marker": true,
+  "close_calls": 1,
+  "thread_count": 1,
+  "thread_idents": [
+    null
+  ],
+  "threads_alive": [
+    false
+  ],
+  "close_method_identity_restored": true
+}

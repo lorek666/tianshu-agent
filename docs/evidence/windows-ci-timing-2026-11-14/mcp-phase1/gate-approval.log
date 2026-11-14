@@ -1,0 +1,10 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_stalled_send_is_unknown_and_replay_does_not_retry ____________
+tests/test_mcp_transport_timeout.py:163: in test_stalled_send_is_unknown_and_replay_does_not_retry
+    assert returned, "真实派发因 MCP stdin 背压突破调用期限"
+E   AssertionError: 真实派发因 MCP stdin 背压突破调用期限
+E   assert False
+=========================== short test summary info ============================
+FAILED tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry
+1 failed in 2.55s

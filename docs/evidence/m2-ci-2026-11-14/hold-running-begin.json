@@ -1,0 +1,67 @@
+{
+  "mode": "hold-transition",
+  "source_sha": "b450c339d546ae2007ed9754e70de0108c4b86c4",
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "sqlite_version": "3.50.4",
+  "busy_timeout": 5000,
+  "worked": true,
+  "state": "queued",
+  "worker_errors": [
+    "OperationalError: database is locked"
+  ],
+  "worker_beats": 0,
+  "job_state": "waiting",
+  "run_end": [],
+  "events": [
+    "run.start",
+    "job.enqueued",
+    "run.state",
+    "job.claimed",
+    "job.parked"
+  ],
+  "park_payloads": [
+    {
+      "claim_epoch": 1,
+      "job_id": "job_d88bc44e807f",
+      "owner_instance_id": "9973299203544eb387b22c3d6be4f51b",
+      "owner_pid": 52189,
+      "reason": "queued",
+      "run_id": "run_857e2230536b"
+    }
+  ],
+  "file_exists": false,
+  "elapsed": 5.2559935839963146,
+  "records": [
+    {
+      "phase": "main-before-engine",
+      "thread": "MainThread",
+      "monotonic": 333625.304341875
+    },
+    {
+      "phase": "heartbeat-real-BEGIN-acquired",
+      "thread": "tianshu-heartbeat",
+      "monotonic": 333625.305538208,
+      "native_in_transaction": true
+    },
+    {
+      "phase": "native-sqlite-error",
+      "thread": "MainThread",
+      "monotonic": 333630.515081625,
+      "exception": "database is locked",
+      "sqlite_errorcode": 5,
+      "sqlite_errorname": "SQLITE_BUSY",
+      "traceback": "Traceback (most recent call last):\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-alternative.py\", line 35, in transaction\n    with original_transaction(self) as tx:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/events.py\", line 412, in transaction\n    self._conn.execute(\"BEGIN IMMEDIATE\")\nsqlite3.OperationalError: database is locked\n",
+      "native_in_transaction": false
+    },
+    {
+      "phase": "heartbeat-release-after-main-error",
+      "monotonic": 333630.521617916
+    },
+    {
+      "phase": "full-drive-error-before-worker-catch",
+      "exception": "database is locked",
+      "traceback": "Traceback (most recent call last):\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-alternative.py\", line 63, in drive\n    try:return original_drive(self,claim)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/worker.py\", line 420, in _drive\n    result = self._engine(claim).resume_run(claim.run_id)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/loop.py\", line 873, in resume_run\n    self._tasks.transition(\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-alternative.py\", line 57, in transition\n    return original_transition(self,run_id,state,*args,**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/tasks.py\", line 1300, in transition\n    with self._log.transaction() as tx:\n         ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/probe-alternative.py\", line 35, in transaction\n    with original_transaction(self) as tx:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/tmp/tianshu-g3-20261113/m2-heartbeat-rootcause-j9ba0w7y/source/src/tianshu/events.py\", line 412, in transaction\n    self._conn.execute(\"BEGIN IMMEDIATE\")\nsqlite3.OperationalError: database is locked\n"
+    }
+  ]
+}

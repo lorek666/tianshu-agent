@@ -1,0 +1,296 @@
+{
+  "verdict": "PASS_CONTENT_V2_NARROW_DELTA_WITH_INHERITED_BOUNDED_EVIDENCE",
+  "candidate_test_sha256": "766a3496526594009638739bf093fd190d76d4adcd16c61acdf405504a0a4161",
+  "frozen_manifest_sha256": "eb856c2981c40af0c841ee15fe1b7b291277630fee9847fbc618ea095798a919",
+  "baseline": "b450c339d546ae2007ed9754e70de0108c4b86c4",
+  "source_files": 1112,
+  "scope": {
+    "created_at_utc": "2026-11-14T07:42:35.672128+00:00",
+    "new_frozen": "/tmp/tianshu-g3-20261113/m2-diagnostics-root-v2-frozen-9_zzhznc/source",
+    "independent_source": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+    "new_manifest_sha256": "eb856c2981c40af0c841ee15fe1b7b291277630fee9847fbc618ea095798a919",
+    "prior_manifest_sha256": "d56715ae710c9b899b30dc9ec8e3817b51b64c0d0808125cf4805e434c1883f8",
+    "target_sha256": "766a3496526594009638739bf093fd190d76d4adcd16c61acdf405504a0a4161",
+    "prior_target_sha256": "9eb5ced6d9040aa593c3387bd29cd606faf0e115232017aa73dc6bdc1ee3eadc",
+    "file_count": 1112,
+    "unchanged_files": 1111,
+    "changed_files": [
+      "tests/test_m2_acceptance.py"
+    ],
+    "added_top_level_defs": [
+      "test_worker_diagnostics_symlink_source_paths"
+    ],
+    "removed_top_level_defs": [],
+    "changed_top_level_defs": [
+      "_WorkerDiagnostics"
+    ],
+    "changed_methods": [
+      "frames",
+      "caller"
+    ],
+    "only_resolve_added_in_changed_methods": true,
+    "entire_module_ast_equal_after_removing_authorized_delta": true,
+    "normal_finish_full_function_source_equal": true,
+    "normal_finish_ast_equal": true,
+    "normal_finish_assert_count": 6,
+    "canonical_delta_patch_exact": true,
+    "copy_matches_frozen": true,
+    "docs_read_as_opaque_hashes_only": true
+  },
+  "source_before_after_frozen_identical": true,
+  "finding": {
+    "id": "PATH_ALIAS_CALLER_LOSS",
+    "prior_status": "OPEN_BLOCKING_UNQUALIFIED_PASS",
+    "new_candidate_status": "CLOSED_ON_V2_FOR_TESTED_POSIX_ALIAS",
+    "old_candidate_verdict_retained": "FAIL_CONTENT_CANDIDATE_PATH_ALIAS_OPEN",
+    "windows_junction_status": "NOT_EXECUTED_LOCALLY",
+    "reason": "real alias retains co_filename spelling, canonicalization now recovers in-root caller/frames; identical bytes outside root remain external"
+  },
+  "new_runs": [
+    {
+      "name": "green",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/.venv/bin/python",
+        "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+        "green"
+      ],
+      "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+      "started_at_utc": "2026-11-14T07:40:21.574471+00:00",
+      "elapsed_seconds": 0.39945,
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+    },
+    {
+      "name": "negative-both",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/.venv/bin/python",
+        "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+        "negative-both"
+      ],
+      "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+      "started_at_utc": "2026-11-14T07:40:21.974337+00:00",
+      "elapsed_seconds": 0.396909,
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+    },
+    {
+      "name": "negative-frames",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/.venv/bin/python",
+        "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/run_narrow_pytest.py",
+        "negative-frames"
+      ],
+      "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+      "started_at_utc": "2026-11-14T07:40:22.371679+00:00",
+      "elapsed_seconds": 0.338973,
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+    },
+    {
+      "name": "independent-probe",
+      "command": [
+        "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent/.venv/bin/python",
+        "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/independent_alias_probe.py"
+      ],
+      "cwd": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source",
+      "started_at_utc": "2026-11-14T07:40:22.711062+00:00",
+      "elapsed_seconds": 0.264729,
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "PYTHONPATH": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src:/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/tests",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+    }
+  ],
+  "new_run_summaries": {
+    "green": "3 passed, 39 deselected",
+    "negative-both": "2 failed, 1 passed, 39 deselected",
+    "negative-frames": "1 failed, 1 passed, 40 deselected"
+  },
+  "independent_probe": {
+    "platform": "darwin",
+    "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+    "windows_junction_executed": false,
+    "cases": [
+      {
+        "case": "original-src",
+        "real_symlink": true,
+        "alias_path": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/tianshu/leases.py",
+        "canonical_target": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/source/src/tianshu/leases.py",
+        "canonical_inside_src": true,
+        "samefile_original": true,
+        "alias_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+        "original_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+        "co_filename": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_original-src_7d9c5ea32b/tianshu/leases.py",
+        "exception_type": "LeaseConflict",
+        "caller": {
+          "file": "src/tianshu/leases.py",
+          "line": 370,
+          "function": "acquire"
+        },
+        "lease_frames": [
+          {
+            "file": "src/tianshu/leases.py",
+            "line": 371,
+            "function": "acquire"
+          },
+          {
+            "file": "src/tianshu/leases.py",
+            "line": 421,
+            "function": "_acquire_locked"
+          }
+        ],
+        "all_frames": [
+          {
+            "file": "tests/test_m2_acceptance.py",
+            "line": 794,
+            "function": "transaction"
+          },
+          {
+            "file": "src/tianshu/leases.py",
+            "line": 371,
+            "function": "acquire"
+          },
+          {
+            "file": "src/tianshu/leases.py",
+            "line": 421,
+            "function": "_acquire_locked"
+          }
+        ],
+        "context_phase": "body",
+        "event_phases": [
+          "attempt",
+          "acquired",
+          "exit"
+        ],
+        "active_after": {},
+        "notes_chars": 2065,
+        "notes_utf8_bytes": 2065,
+        "canary_and_absolute_paths_absent": true
+      },
+      {
+        "case": "external-copy",
+        "real_symlink": true,
+        "alias_path": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+        "canonical_target": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/external-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+        "canonical_inside_src": false,
+        "samefile_original": false,
+        "alias_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+        "original_sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+        "co_filename": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-v2-delta-zqbcetec/data-independent-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/source-alias-PRIVATE_ALIAS_CANARY_external-copy_7d9c5ea32b/tianshu/leases.py",
+        "exception_type": "LeaseConflict",
+        "caller": null,
+        "lease_frames": [
+          {
+            "file": "<external>",
+            "line": 371,
+            "function": "acquire"
+          },
+          {
+            "file": "<external>",
+            "line": 421,
+            "function": "_acquire_locked"
+          }
+        ],
+        "all_frames": [
+          {
+            "file": "tests/test_m2_acceptance.py",
+            "line": 794,
+            "function": "transaction"
+          },
+          {
+            "file": "<external>",
+            "line": 371,
+            "function": "acquire"
+          },
+          {
+            "file": "<external>",
+            "line": 421,
+            "function": "_acquire_locked"
+          }
+        ],
+        "context_phase": "body",
+        "event_phases": [
+          "attempt",
+          "acquired",
+          "exit"
+        ],
+        "active_after": {},
+        "notes_chars": 1718,
+        "notes_utf8_bytes": 1718,
+        "canary_and_absolute_paths_absent": true
+      }
+    ]
+  },
+  "inheritance": {
+    "prior_bundle": "/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/report-bundle",
+    "prior_verdict": "FAIL_CONTENT_CANDIDATE_PATH_ALIAS_OPEN",
+    "prior_candidate_sha256": "9eb5ced6d9040aa593c3387bd29cd606faf0e115232017aa73dc6bdc1ee3eadc",
+    "prior_exact_file_count": 54,
+    "prior_exact_bytes": 801913,
+    "prior_report_sha256": "e38efbc0695e84a5a31e71fbc41896389de60f8e12100c46efc8b2c15ac6c5b7",
+    "prior_facts_sha256": "a8964fcb2066ddb57cd7205ad3ffdeeb69f34b27521a231e5369d486725684e5",
+    "prior_index_sha256": "fb959a9b7fcffccf78abd3eba0be4af13bf8db0d40acbf0fc3901decf41b091d",
+    "prior_payload_and_self_rechecked": true,
+    "prior_modes_and_no_symlink_rechecked": true,
+    "prior_report_not_modified": true,
+    "source_files_unchanged_except_authorized_delta": 1111,
+    "entire_test_module_ast_unchanged_after_authorized_delta_removed": true,
+    "inherited_not_rerun": [
+      "original normal_finish 60-round test and its six assertions",
+      "silent success / swallowed drive capture and beat semantics",
+      "bounded rings, metadata identity, active context snapshots, redaction canaries",
+      "exception identity, real nested transaction reuse, commit/rollback and diagnostic failure non-interference",
+      "real main+heartbeat two-connection BEGIN boundaries at leases.acquire and tasks.transition",
+      "negative control suppressing only drive capture"
+    ],
+    "inherited_limits_and_accepted_scope": {
+      "rulings": [
+        "reuse is accepted only for real nested context enter, not native BEGIN/COMMIT/OS owner, and must not count as another active writer",
+        "single process main+heartbeat two real connections; independent process only isolates the mechanism; external writer not required",
+        "cause/context traversal absent means storage bound 0; no new traversal requirement",
+        "24000 character cap differs from byte count; record actual bytes without adding a byte-cap requirement"
+      ],
+      "prep_scope_correction": "sealed prepared ACCEPTANCE item6 external writer requirement is superseded; original sealed prep not rewritten"
+    },
+    "inherited_original_ci_root_cause": "NOT_ESTABLISHED",
+    "not_claimed_as_new_runs": true
+  },
+  "reviewer_preflight_error": {
+    "stage": "input preflight; candidate not executed",
+    "exit_code": 1,
+    "exception": "AssertionError",
+    "line": 49,
+    "cause": "reviewer method-source normalization omitted @staticmethod decorator; using AST-only replacement preserves decorator",
+    "candidate_failure": false
+  },
+  "open_findings_in_authorized_delta": [],
+  "not_executed": [
+    "full suite",
+    "original 60-round loop rerun",
+    "CI",
+    "Windows junction",
+    "API",
+    "paid request",
+    "commit",
+    "live source write"
+  ],
+  "original_ci_root_cause": "NOT_ESTABLISHED",
+  "author_conclusions_read": false,
+  "limits": [
+    "only content narrow-delta approval with hash-bound inherited bounded evidence; no native Windows/CI/PR approval",
+    "privacy claim covers inspected allowlist, actual paths and recorded canaries, not all possible secrets",
+    "old artificial hold probes distinguish observer behavior, not the original CI root cause",
+    "this report does not consume or claim root's concurrent full-suite result"
+  ],
+  "finished_at_utc": "2026-11-14T07:42:35.865774+00:00"
+}

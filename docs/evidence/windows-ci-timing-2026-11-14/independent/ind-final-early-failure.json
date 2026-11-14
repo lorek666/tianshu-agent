@@ -1,0 +1,42 @@
+{
+  "reports": {
+    "setup": "passed",
+    "call": "failed",
+    "teardown": "passed"
+  },
+  "mode": "early-failure",
+  "call_count": 0,
+  "product_file": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/src/tianshu/mcp.py",
+  "exception": "AssertionError",
+  "failure_at": {
+    "path": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/tests/test_mcp_transport_timeout.py",
+    "line": 178
+  },
+  "events": [
+    {
+      "phase": "test.wait.enter",
+      "at_ns": 344434392792458,
+      "thread": "MainThread",
+      "timeout": 5
+    },
+    {
+      "phase": "test.wait.exit",
+      "at_ns": 344434520571750,
+      "thread": "MainThread",
+      "timeout": 5,
+      "returned": true
+    },
+    {
+      "phase": "original.release.enter",
+      "at_ns": 344434521611958,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "original.release.exit",
+      "at_ns": 344434521654541,
+      "thread": "MainThread",
+      "worker_alive": false
+    }
+  ],
+  "pytest_exit": 1
+}

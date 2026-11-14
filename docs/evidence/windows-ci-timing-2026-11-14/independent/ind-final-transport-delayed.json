@@ -1,0 +1,108 @@
+{
+  "reports": {
+    "setup": "passed",
+    "call": "failed",
+    "teardown": "passed"
+  },
+  "mode": "transport-blocked-delayed-main",
+  "call_count": 1,
+  "product_file": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/src/tianshu/mcp.py",
+  "exception": "AssertionError",
+  "failure_at": {
+    "path": "/private/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/snapshot-final/tests/test_mcp_transport_timeout.py",
+    "line": 196
+  },
+  "events": [
+    {
+      "phase": "test.wait.enter",
+      "at_ns": 344433970032375,
+      "thread": "MainThread",
+      "timeout": 5
+    },
+    {
+      "phase": "real.call.enter",
+      "at_ns": 344434178252458,
+      "thread": "Thread-1 (resume)",
+      "configured_timeout_ms": 200
+    },
+    {
+      "phase": "pipe.blocking.enabled",
+      "at_ns": 344434178263208,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "kernel.write.enter",
+      "at_ns": 344434180020375,
+      "thread": "Thread-1 (resume)",
+      "size": 1000132
+    },
+    {
+      "phase": "test.wait.exit",
+      "at_ns": 344434180045291,
+      "thread": "MainThread",
+      "timeout": 5,
+      "returned": true
+    },
+    {
+      "phase": "test.wait.enter",
+      "at_ns": 344434180056958,
+      "thread": "MainThread",
+      "timeout": 2
+    },
+    {
+      "phase": "delayed-main.observation.enter",
+      "at_ns": 344434180060375,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "delayed-main.transport-still-blocked",
+      "at_ns": 344436183154333,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "delayed-main.peer-released",
+      "at_ns": 344436183220916,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "kernel.write.exit",
+      "at_ns": 344436186898500,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "real.call.error",
+      "at_ns": 344436186914458,
+      "thread": "Thread-1 (resume)",
+      "type": "McpClosed"
+    },
+    {
+      "phase": "real.call.exit",
+      "at_ns": 344436186915791,
+      "thread": "Thread-1 (resume)"
+    },
+    {
+      "phase": "delayed-main.transport-finished-before-original-wait",
+      "at_ns": 344436187041208,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "test.wait.exit",
+      "at_ns": 344436187043833,
+      "thread": "MainThread",
+      "timeout": 2,
+      "returned": true
+    },
+    {
+      "phase": "original.release.enter",
+      "at_ns": 344436187050416,
+      "thread": "MainThread"
+    },
+    {
+      "phase": "original.release.exit",
+      "at_ns": 344436223590666,
+      "thread": "MainThread",
+      "worker_alive": false
+    }
+  ],
+  "pytest_exit": 1
+}

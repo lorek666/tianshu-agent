@@ -1,0 +1,48 @@
+{
+  "probe": "control.accept failure cleanup with real MCP subprocess and actual connected peer, worker held at real approval barrier",
+  "baseline": {
+    "caught_type": "TimeoutError",
+    "caught_is_exact_injected_accept_exception": true,
+    "real_peer_connections": 1,
+    "client_objects": 1,
+    "client_close_calls_before_harness_cleanup": 0,
+    "real_servers": 1,
+    "real_processes_alive_before_harness_cleanup": [
+      true
+    ],
+    "worker_threads_alive_before_harness_cleanup": [
+      true
+    ],
+    "approval_barrier_reached": true,
+    "workers_alive_after_harness_cleanup": [
+      false
+    ],
+    "processes_alive_after_harness_cleanup": [
+      false
+    ],
+    "method_identity_restored": true
+  },
+  "frozen": {
+    "caught_type": "TimeoutError",
+    "caught_is_exact_injected_accept_exception": true,
+    "real_peer_connections": 1,
+    "client_objects": 1,
+    "client_close_calls_before_harness_cleanup": 0,
+    "real_servers": 1,
+    "real_processes_alive_before_harness_cleanup": [
+      true
+    ],
+    "worker_threads_alive_before_harness_cleanup": [
+      true
+    ],
+    "approval_barrier_reached": true,
+    "workers_alive_after_harness_cleanup": [
+      false
+    ],
+    "processes_alive_after_harness_cleanup": [
+      false
+    ],
+    "method_identity_restored": true
+  },
+  "classification": "PREEXISTING_GAP_REMAINS_NOT_NEW_REGRESSION; planned finite pre-call cleanup is incomplete"
+}

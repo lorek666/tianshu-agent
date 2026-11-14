@@ -1,0 +1,51 @@
+from pathlib import Path
+import ast
+import hashlib
+import importlib
+import json
+import os
+import sys
+
+ROOT = Path(__file__).parent
+SOURCE = ROOT / "source"
+MODE = sys.argv[1]
+assert MODE in ("green", "negative-both", "negative-frames")
+sys.path[:0] = [str(SOURCE / "src"), str(SOURCE / "tests")]
+modules = {}
+for name in ("tianshu", "tianshu.worker", "tianshu.events", "tianshu.loop",
+             "tianshu.tasks", "tianshu.leases", "support", "test_m2_acceptance"):
+    module = importlib.import_module(name)
+    path = Path(module.__file__).resolve()
+    assert path.is_relative_to(SOURCE.resolve()), (name, str(path))
+    modules[name] = {"file": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+m = sys.modules["test_m2_acceptance"]
+guard = {
+    "mode": MODE, "python": sys.version, "executable": sys.executable,
+    "PYTHONPATH": os.environ.get("PYTHONPATH"), "modules": modules,
+    "product_co_filename": m.ProcessIdentity.mint.__code__.co_filename,
+    "diagnostic_SRC": m.SRC,
+    "legacy_method_overrides": [],
+}
+if MODE != "green":
+    old_path = Path("/tmp/tianshu-g3-20261113/m2-diagnostics-root-frozen-csroc57j/source/tests/test_m2_acceptance.py")
+    old_tree = ast.parse(old_path.read_text())
+    old_class = next(n for n in old_tree.body if isinstance(n, ast.ClassDef) and n.name == "_WorkerDiagnostics")
+    wanted = {"frames", "caller"} if MODE == "negative-both" else {"frames"}
+    for method in old_class.body:
+        if isinstance(method, ast.FunctionDef) and method.name in wanted:
+            namespace = dict(m.__dict__)
+            exec(compile(ast.Module(body=[method], type_ignores=[]), str(old_path), "exec"), namespace)
+            setattr(m._WorkerDiagnostics, method.name, namespace[method.name])
+            guard["legacy_method_overrides"].append(method.name)
+    assert set(guard["legacy_method_overrides"]) == wanted
+(ROOT / "evidence" / f"{MODE}-import-guard.json").write_text(json.dumps(guard, indent=2) + "\n")
+import pytest
+expression = "worker_diagnostics_symlink_source_paths"
+if MODE != "negative-frames":
+    expression += " or worker_diagnostics_real_transaction_caller_and_nested_reuse"
+raise SystemExit(pytest.main([
+    "-o", "addopts=", "-o", f"cache_dir={ROOT}/pytest-cache-{MODE}",
+    "--basetemp", str(ROOT / f"data-pytest-{MODE}"),
+    "-q", "-rs", "--tb=short", str(SOURCE / "tests/test_m2_acceptance.py"),
+    "-k", expression,
+]))

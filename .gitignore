@@ -34,5 +34,7 @@ target/
 # 本地数据与日志
 .tianshu/
 *.log
+# 本轮公开验收日志是固定证据，须与子集索引一同提交。
+!docs/evidence/windows-ci-timing-2026-11-14/**/*.log
 crash-*.txt
 data/

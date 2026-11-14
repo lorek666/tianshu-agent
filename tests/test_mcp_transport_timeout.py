@@ -7,6 +7,7 @@ import hashlib
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -115,11 +116,25 @@ def test_large_request_is_written_completely_to_reading_server(tmp_path):
             server.close()
 
 
-def test_stalled_send_is_unknown_and_replay_does_not_retry(tmp_path):
+def test_stalled_send_is_unknown_and_replay_does_not_retry(tmp_path, monkeypatch):
     with _server_config(tmp_path) as (config, control):
         clients = McpClients({config.name: config})
+        call_ready = threading.Event()
         done = threading.Event()
+        call_times = {}
         outcome = {}
+        original_call_tool = StdioServer.call_tool
+
+        def observed_call_tool(server, *args, **kwargs):
+            call_times["start_ns"] = time.monotonic_ns()
+            call_ready.set()
+            try:
+                return original_call_tool(server, *args, **kwargs)
+            finally:
+                call_times["end_ns"] = time.monotonic_ns()
+                done.set()
+
+        monkeypatch.setattr(StdioServer, "call_tool", observed_call_tool)
 
         def resume():
             log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
@@ -148,19 +163,37 @@ def test_stalled_send_is_unknown_and_replay_does_not_retry(tmp_path):
             except BaseException as exc:
                 outcome["error"] = exc
             finally:
-                log.close()
-                done.set()
+                try:
+                    log.close()
+                finally:
+                    call_ready.set()  # 审批等前置阶段失败，也要唤醒主线程传播原错。
 
         worker = threading.Thread(target=resume, daemon=True)
-        worker.start()
-        peer, _ = control.accept()
-        assert peer.recv(5) == b"ready"
+        peer = None
         try:
+            worker.start()
+            peer, _ = control.accept()
+            assert peer.recv(5) == b"ready"
+            assert call_ready.wait(5), "MCP 调用未进入，前置阶段未完成"
+            assert "error" not in outcome, outcome
+            assert "start_ns" in call_times, "worker 结束却未进入 MCP 调用"
             returned = done.wait(2)
         finally:
-            _release(peer, worker)
-            clients.close_all()
+            if peer is not None:
+                try:
+                    _release(peer, worker)
+                finally:
+                    clients.close_all()
+            else:
+                try:
+                    clients.close_all()
+                finally:
+                    if worker.ident is not None:
+                        worker.join(5)
+                assert not worker.is_alive(), "MCP 前置阶段失败后 worker 未退出"
         assert returned, "真实派发因 MCP stdin 背压突破调用期限"
+        # 主线程即使被延迟调度，也不能让已经超时返回的调用冒充按期完成。
+        assert call_times["end_ns"] - call_times["start_ns"] <= 2_000_000_000
         assert "error" not in outcome, outcome
         log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
         run_id = outcome["run_id"]

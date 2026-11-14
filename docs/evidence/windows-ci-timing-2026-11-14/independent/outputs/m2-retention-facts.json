@@ -1,0 +1,38 @@
+{
+  "test_sha256": "f2200905cc0d644709c04af300e58abbc70222b6de890ce90b770e99c7a087ba",
+  "genuine_native_error": "SQLITE_READONLY",
+  "phase": "enter",
+  "native_caller_count": 4,
+  "canonical_callers": [
+    {
+      "file": "src/tianshu/events.py",
+      "line": 5,
+      "function": "enter_via_source"
+    },
+    {
+      "file": "src/tianshu/events.py",
+      "line": 3,
+      "function": "enter_via_source"
+    },
+    {
+      "file": "src/tianshu/events.py",
+      "line": 3,
+      "function": "enter_via_source"
+    },
+    {
+      "file": "src/tianshu/events.py",
+      "line": 3,
+      "function": "enter_via_source"
+    }
+  ],
+  "source_local_sentinel_collected": true,
+  "no_frame_traceback_exception_in_retained_metadata": true,
+  "caller_chain_absent_from_ring_and_active": true,
+  "format_stress": "copied actual native item expanded to documented field caps; not a claim those long fields occurred in production",
+  "critical_error_count_after_total_truncation": 4,
+  "all_critical_timing_fields_retained": true,
+  "note_chars": 24000,
+  "max_line_chars": 778,
+  "total_truncation_present": true,
+  "failure_text_not_in_note": true
+}

@@ -1,0 +1,17 @@
+{
+  "test_sha256": "569b774b52f05cf4bd5f2c3f92f2df70037ecbae22b01877520302bae7acef5e",
+  "probe": "real Thread instance whose start raises exact injected RuntimeError before starting",
+  "caught_type": "RuntimeError",
+  "caught_message": "injected actual thread start refusal",
+  "caught_is_original_marker": true,
+  "context_is_original_marker": false,
+  "close_calls": 1,
+  "thread_count": 1,
+  "thread_idents": [
+    null
+  ],
+  "threads_alive": [
+    false
+  ],
+  "close_method_identity_restored": true
+}

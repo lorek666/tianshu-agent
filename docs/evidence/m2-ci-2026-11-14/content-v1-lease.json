@@ -1,0 +1,93 @@
+{
+  "mode": "lease",
+  "mechanism": "one isolated process, real main+heartbeat threads and two connections; no external writer",
+  "pid": 87667,
+  "imports": {
+    "tianshu.worker": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/worker.py",
+    "tianshu.events": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/events.py",
+    "tianshu.loop": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/loop.py",
+    "tianshu.tasks": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/tasks.py",
+    "tianshu.leases": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/src/tianshu/leases.py",
+    "test_m2_acceptance": "/private/tmp/tianshu-g3-20261113/m2-diagnostics-independent-content-36pnh8sh/source/tests/test_m2_acceptance.py"
+  },
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "sqlite": "3.50.4",
+  "state": "queued",
+  "errors": [
+    "OperationalError: database is locked"
+  ],
+  "events": [
+    "run.start",
+    "job.enqueued",
+    "run.state",
+    "job.claimed",
+    "job.parked"
+  ],
+  "job_state": "waiting",
+  "busy_timeout": 5000,
+  "records": [
+    {
+      "phase": "actual-heartbeat-tx-held",
+      "pid": 87667,
+      "native": true,
+      "thread": "tianshu-heartbeat"
+    },
+    {
+      "phase": "real-sqlite-error",
+      "pid": 87667,
+      "thread": "MainThread",
+      "code": 5,
+      "name": "SQLITE_BUSY"
+    }
+  ],
+  "stdout_chars": 0,
+  "stderr_chars": 0,
+  "real_swallowed_drive_captured": true,
+  "diagnostic_same_code_as_real_error": true,
+  "functions": [
+    "call",
+    "_drive",
+    "resume_run",
+    "_acquire_leases",
+    "acquire",
+    "__enter__",
+    "holding",
+    "__enter__",
+    "transaction",
+    "__enter__",
+    "transaction"
+  ],
+  "transaction_caller": {
+    "file": "src/tianshu/leases.py",
+    "line": 370,
+    "function": "acquire"
+  },
+  "main_phase": "enter",
+  "actual_same_process_two_connections": true,
+  "active_heartbeat_snapshot": [
+    {
+      "tx": 18,
+      "connection": "connection16",
+      "thread": "thread17",
+      "thread_name": "tianshu-heartbeat",
+      "nested": false,
+      "caller": {
+        "file": "src/tianshu/jobs.py",
+        "line": 495,
+        "function": "heartbeat"
+      },
+      "run_id": "run_785eeb802bbf",
+      "job_id": "job_18ea582825b4",
+      "claim_epoch": 1,
+      "phase": "acquired",
+      "at_ns": 335385408145625,
+      "native_in_transaction": true
+    }
+  ],
+  "drive_catch_active_after_join": [],
+  "note_chars": 12283,
+  "note_utf8_bytes": 12283,
+  "notes": "M2 worker diagnostics: item<=1200 chars; total<=24000 chars; observed contexts in this process only; not OS lock ownership\ncollection: {\"tx_dropped\": 0, \"error_dropped\": 0, \"connection_evicted\": 0, \"thread_evicted\": 0, \"active_dropped\": 0, \"frames_dropped\": 0, \"collection_failed\": 0, \"collection_failed_types\": []}\nerror: {\"source\": \"drive\", \"type\": \"OperationalError\", \"at_ns\": 335390730924541, \"sqlite_errorcode\": 5, \"sqlite_errorname\": \"SQLITE_BUSY\", \"phase\": null, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1}\ndrive.caller: {\"file\": \"src/tianshu/events.py\", \"line\": 412, \"function\": \"transaction\"}\nerror: {\"source\": \"transaction\", \"type\": \"OperationalError\", \"at_ns\": 335390729054916, \"sqlite_errorcode\": 5, \"sqlite_errorname\": \"SQLITE_BUSY\", \"phase\": \"enter\", \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"tx\": 19, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/leases.py\", \"line\": 370, \"function\": \"acquire\"}}\ntransaction.caller: {\"file\": \"src/tianshu/events.py\", \"line\": 412, \"function\": \"transaction\"}\nerror: {\"source\": \"test\", \"type\": \"AssertionError\", \"at_ns\": 335390734967375, \"sqlite_errorcode\": null, \"sqlite_errorname\": null, \"phase\": null}\ntest.caller: {\"file\": \"<external>\", \"line\": 138, \"function\": \"exercise\"}\ntransaction.active_at_error: {\"tx\": 18, \"connection\": \"connection16\", \"thread\": \"thread17\", \"thread_name\": \"tianshu-heartbeat\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 495, \"function\": \"heartbeat\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"acquired\", \"at_ns\": 335385408145625, \"native_in_transaction\": true}\ndrive.frame: {\"file\": \"tests/test_m2_acceptance.py\", \"line\": 819, \"function\": \"call\"}\ndrive.frame: {\"file\": \"src/tianshu/worker.py\", \"line\": 420, \"function\": \"_drive\"}\ndrive.frame: {\"file\": \"src/tianshu/loop.py\", \"line\": 872, \"function\": \"resume_run\"}\ndrive.frame: {\"file\": \"src/tianshu/loop.py\", \"line\": 764, \"function\": \"_acquire_leases\"}\ndrive.frame: {\"file\": \"src/tianshu/leases.py\", \"line\": 370, \"function\": \"acquire\"}\ndrive.frame: {\"file\": \"<external>\", \"line\": 137, \"function\": \"__enter__\"}\ndrive.frame: {\"file\": \"<external>\", \"line\": 123, \"function\": \"holding\"}\ndrive.frame: {\"file\": \"<external>\", \"line\": 137, \"function\": \"__enter__\"}\ndrive.frame: {\"file\": \"tests/test_m2_acceptance.py\", \"line\": 789, \"function\": \"transaction\"}\ndrive.frame: {\"file\": \"<external>\", \"line\": 137, \"function\": \"__enter__\"}\ntransaction.frame: {\"file\": \"tests/test_m2_acceptance.py\", \"line\": 789, \"function\": \"transaction\"}\ntransaction.frame: {\"file\": \"<external>\", \"line\": 137, \"function\": \"__enter__\"}\ntest.frame: {\"file\": \"tests/test_m2_acceptance.py\", \"line\": 885, \"function\": \"diagnosed\"}\ntransaction: {\"tx\": 11, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2646, \"function\": \"reconcile_finished_subtasks\"}, \"phase\": \"body-return\", \"at_ns\": 335385406306958, \"native_in_transaction\": true}\ntransaction: {\"tx\": 11, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2646, \"function\": \"reconcile_finished_subtasks\"}, \"phase\": \"exit\", \"at_ns\": 335385406311625, \"native_in_transaction\": false}\ntransaction: {\"tx\": 12, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2621, \"function\": \"wake_stale_parents\"}, \"phase\": \"attempt\", \"at_ns\": 335385406510500, \"native_in_transaction\": false}\ntransaction: {\"tx\": 12, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2621, \"function\": \"wake_stale_parents\"}, \"phase\": \"acquired\", \"at_ns\": 335385406518375, \"native_in_transaction\": true}\ntransaction: {\"tx\": 12, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2621, \"function\": \"wake_stale_parents\"}, \"phase\": \"body-return\", \"at_ns\": 335385406541000, \"native_in_transaction\": true}\ntransaction: {\"tx\": 12, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/tasks.py\", \"line\": 2621, \"function\": \"wake_stale_parents\"}, \"phase\": \"exit\", \"at_ns\": 335385406546333, \"native_in_transaction\": false}\ntransaction: {\"tx\": 13, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 330, \"function\": \"claim_next\"}, \"phase\": \"attempt\", \"at_ns\": 335385406680000, \"native_in_transaction\": false}\ntransaction: {\"tx\": 13, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 330, \"function\": \"claim_next\"}, \"phase\": \"acquired\", \"at_ns\": 335385406684333, \"native_in_transaction\": true}\ntransaction: {\"tx\": 14, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 368, \"function\": \"claim\"}, \"phase\": \"attempt\", \"at_ns\": 335385406865666, \"native_in_transaction\": true}\ntransaction: {\"tx\": 14, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 368, \"function\": \"claim\"}, \"phase\": \"reuse\", \"at_ns\": 335385406867625, \"native_in_transaction\": true}\ntransaction: {\"tx\": 15, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"attempt\", \"at_ns\": 335385407052833, \"native_in_transaction\": true}\ntransaction: {\"tx\": 15, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"reuse\", \"at_ns\": 335385407054625, \"native_in_transaction\": true}\ntransaction: {\"tx\": 15, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"body-return\", \"at_ns\": 335385407063666, \"native_in_transaction\": true}\ntransaction: {\"tx\": 15, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"exit\", \"at_ns\": 335385407065041, \"native_in_transaction\": true}\ntransaction: {\"tx\": 14, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 368, \"function\": \"claim\"}, \"phase\": \"body-return\", \"at_ns\": 335385407067333, \"native_in_transaction\": true}\ntransaction: {\"tx\": 14, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 368, \"function\": \"claim\"}, \"phase\": \"exit\", \"at_ns\": 335385407068000, \"native_in_transaction\": true}\ntransaction: {\"tx\": 13, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 330, \"function\": \"claim_next\"}, \"phase\": \"body-return\", \"at_ns\": 335385407069000, \"native_in_transaction\": true}\ntransaction: {\"tx\": 13, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 330, \"function\": \"claim_next\"}, \"phase\": \"exit\", \"at_ns\": 335385407182166, \"native_in_transaction\": false}\ntransaction: {\"tx\": 18, \"connection\": \"connection16\", \"thread\": \"thread17\", \"thread_name\": \"tianshu-heartbeat\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 495, \"function\": \"heartbeat\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"attempt\", \"at_ns\": 335385408139041, \"native_in_transaction\": false}\ntransaction: {\"tx\": 18, \"connection\": \"connection16\", \"thread\": \"thread17\", \"thread_name\": \"tianshu-heartbeat\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 495, \"function\": \"heartbeat\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"acquired\", \"at_ns\": 335385408145625, \"native_in_transaction\": true}\ntransaction: {\"tx\": 19, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/leases.py\", \"line\": 370, \"function\": \"acquire\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"attempt\", \"at_ns\": 335385408581291, \"native_in_transaction\": false}\ntransaction: {\"tx\": 19, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/leases.py\", \"line\": 370, \"function\": \"acquire\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"exit\", \"at_ns\": 335390729661333, \"native_in_transaction\": false}\ntransaction: {\"tx\": 18, \"connection\": \"connection16\", \"thread\": \"thread17\", \"thread_name\": \"tianshu-heartbeat\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 495, \"function\": \"heartbeat\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"body-return\", \"at_ns\": 335390729855750, \"native_in_transaction\": true}\ntransaction: {\"tx\": 18, \"connection\": \"connection16\", \"thread\": \"thread17\", \"thread_name\": \"tianshu-heartbeat\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 495, \"function\": \"heartbeat\"}, \"run_id\": \"run_785eeb802bbf\", \"job_id\": \"job_18ea582825b4\", \"claim_epoch\": 1, \"phase\": \"exit\", \"at_ns\": 335390730569916, \"native_in_transaction\": false}\ntransaction: {\"tx\": 20, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 665, \"function\": \"park\"}, \"phase\": \"attempt\", \"at_ns\": 335390733331375, \"native_in_transaction\": false}\ntransaction: {\"tx\": 20, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 665, \"function\": \"park\"}, \"phase\": \"acquired\", \"at_ns\": 335390733347250, \"native_in_transaction\": true}\ntransaction: {\"tx\": 21, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"attempt\", \"at_ns\": 335390734093875, \"native_in_transaction\": true}\ntransaction: {\"tx\": 21, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"reuse\", \"at_ns\": 335390734100083, \"native_in_transaction\": true}\ntransaction: {\"tx\": 21, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"body-return\", \"at_ns\": 335390734152875, \"native_in_transaction\": true}\ntransaction: {\"tx\": 21, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": true, \"caller\": {\"file\": \"src/tianshu/events.py\", \"line\": 473, \"function\": \"append\"}, \"phase\": \"exit\", \"at_ns\": 335390734157833, \"native_in_transaction\": true}\ntransaction: {\"tx\": 20, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 665, \"function\": \"park\"}, \"phase\": \"body-return\", \"at_ns\": 335390734163375, \"native_in_transaction\": true}\ntransaction: {\"tx\": 20, \"connection\": \"connection1\", \"thread\": \"thread2\", \"thread_name\": \"MainThread\", \"nested\": false, \"caller\": {\"file\": \"src/tianshu/jobs.py\", \"line\": 665, \"function\": \"park\"}, \"phase\": \"exit\", \"at_ns\": 335390734433375, \"native_in_transaction\": false}",
+  "root_cause": "NOT_ESTABLISHED",
+  "passed": true
+}
