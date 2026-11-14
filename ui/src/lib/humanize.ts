@@ -101,6 +101,34 @@ const ACTOR_LABELS: Record<string, string> = {
 };
 
 /**
+ * 子任务状态机（G2 D1/D2，`event_schema.py` `_SUBTASK_STATE` 的 7 态）。
+ * 与 run.state 不是同一套枚举：`running` 在这里是"子任务进行中"。
+ */
+const SUBTASK_STATE_LABELS: Record<string, string> = {
+  queued: "排队中",
+  running: "进行中",
+  cancelling: "正在取消",
+  succeeded: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+  fenced: "已被新目标取代",
+};
+
+/** 委派限额不满足 / 预算预占被拒两个 C4 编号的固定说明（预算面板主文案同源）。 */
+export const BUDGET_REFUSAL_LABELS: Record<string, string> = {
+  "dispatch.budget_refused": "预算额度不足，请求没有发出",
+  "dispatch.subtask_limit": "委派限额不满足",
+};
+
+export function subtaskStateLabel(state: string | null | undefined): string {
+  return lookup(SUBTASK_STATE_LABELS, state, "状态未知");
+}
+
+export function budgetRefusalLabel(ruleId: string): string {
+  return BUDGET_REFUSAL_LABELS[ruleId] ?? "操作被安全策略拦截";
+}
+
+/**
  * C4 规则编号 → 用户能读的动作/原因。
  *
  * 契约里的六个是界面必显的；其余已登记编号来自 `schemas/c4/rules.json`，
@@ -142,6 +170,8 @@ const ACTION_LABELS: Record<string, string> = {
   "dispatch.stale_revision": "任务目标已经更新",
   "dispatch.target_is_directory": "目标是文件夹，不是文件",
   "dispatch.workspace_blocked": "目录访问被拦截",
+  "dispatch.budget_refused": "预算额度不足，请求没有发出",
+  "dispatch.subtask_limit": "委派限额不满足",
 };
 
 function lookup(table: Record<string, string>, value: string | null | undefined, fallback: string): string {
@@ -830,6 +860,44 @@ export function humanizeEvent(event: EventView): TimelineEntry {
 
     case "approval.superseded":
       return toTimelineEntry(event, "审批已失效（目标已更新）", "warn");
+
+    case "subtask.spawned": {
+      const limits = asRecord(payload.limits);
+      const maxTurns = readNumber(limits, "max_turns", "maxTurns");
+      const maxTokens = readNumber(limits, "max_tokens", "maxTokens");
+      const budget =
+        maxTurns !== null || maxTokens !== null
+          ? `（轮次${maxTurns !== null ? ` ≤ ${maxTurns}` : "不限"} · token${
+              maxTokens !== null ? ` ≤ ${maxTokens}` : "不限"
+            }）`
+          : "";
+      return toTimelineEntry(event, `派发了子任务${budget}`, "action");
+    }
+
+    case "subtask.finished": {
+      const state = readString(payload, "state");
+      const usage = asRecord(payload.usage);
+      const turns = readNumber(usage, "turns");
+      const tokens = readNumber(usage, "tokens");
+      const usageNote =
+        turns !== null || tokens !== null
+          ? `（轮次 ${turns ?? "未知"} · token ${tokens ?? "未知"}）`
+          : "";
+      const label = subtaskStateLabel(state);
+      if (state === "succeeded") {
+        return toTimelineEntry(event, `子任务完成${usageNote}`, "success");
+      }
+      if (state === "failed") {
+        return toTimelineEntry(event, `子任务失败${usageNote}`, "danger");
+      }
+      if (state === "cancelled" || state === "cancelling") {
+        return toTimelineEntry(event, `子任务${label}${usageNote}`, "warn");
+      }
+      if (state === "fenced") {
+        return toTimelineEntry(event, "子任务已随目标更新停止", "warn");
+      }
+      return toTimelineEntry(event, `子任务${label}${usageNote}`, "info");
+    }
 
     default: {
       if (type.startsWith("worker.")) {

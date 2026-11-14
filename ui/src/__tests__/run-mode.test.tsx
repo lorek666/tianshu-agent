@@ -18,6 +18,8 @@ import type { EventStreamCallbacks, HostClient, RpcParams } from "../api/host";
 import { HostRpcError } from "../api/errors";
 import { DemoHostClient } from "../demo/host";
 import { DemoWorld } from "../demo/world";
+import { buildBudgetView } from "../lib/budgetView";
+import { buildSubtaskViews } from "../lib/subtasks";
 
 const mocked = vi.hoisted(() => ({
   host: null as unknown,
@@ -321,6 +323,52 @@ describe("Run 执行模式的真实 UI 入口", () => {
       });
       const event = result.events.find((item) => item.type === "run.started");
       expect(event?.payload.execution_policy).toEqual(PURE_ONLY);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("演示世界的事件能驱动预算与子任务面板（W8 判据 J12）", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new DemoHostClient(new DemoWorld(1));
+      const created = await host.rpc<TaskEnvelope>("task.create", {
+        goal: "演示预算与子任务",
+        workspaces: [{ root_path: "/tmp/demo", mode: "writable" }],
+      });
+      const started = await host.rpc<RunEnvelope>("run.start", {
+        task_id: created.task.task_id,
+        execution_policy: EFFECTS,
+      });
+      // 演示世界的动作都挂在 window.setTimeout 上：推到收尾之后。
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      const result = await host.rpc<EventsResult>("events.run", {
+        run_id: started.run.run_id,
+      });
+      const events = result.events;
+
+      const budget = buildBudgetView(events);
+      expect(budget).not.toBeNull();
+      expect(budget?.limits).toEqual({ maxTurns: 8, maxTotalTokens: 12_000 });
+      expect(budget?.results).toBe(2);
+      expect(budget?.inputTokens).toBe(1_150);
+      expect(budget?.outputTokens).toBe(218);
+      expect(budget?.unknownUsageAttempts).toBe(0);
+      expect(budget?.cost.knownCalls).toBe(2);
+      expect(budget?.cost.totalMicros).toBe(8_900); // 0.0051 + 0.0038 美元
+
+      const subtasks = buildSubtaskViews(events, []);
+      expect(subtasks).toHaveLength(1);
+      expect(subtasks[0]?.finishedState).toBe("succeeded");
+      expect(subtasks[0]?.limits).toEqual({
+        maxTurns: 2,
+        maxTokens: 3_000,
+        deadlineMs: 300_000,
+      });
+      expect(subtasks[0]?.usage).toEqual({ turns: 2, tokens: 1_842 });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
