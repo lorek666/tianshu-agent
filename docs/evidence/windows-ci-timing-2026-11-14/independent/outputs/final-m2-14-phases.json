@@ -1,0 +1,75 @@
+{
+  "exit": 0,
+  "reports": {
+    "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_success_is_silent_and_restores_methods": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_capture_native_error_before_worker_swallows_it": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_transactions_keep_commit_rollback_and_nested_identity": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_capture_real_native_beat_error": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_bound_rings_keep_critical_error_and_redact": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_closed_connection_does_not_mask_original_error": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_real_transaction_caller_and_nested_reuse": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[original-src]": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_symlink_source_paths[external-copy]": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_metadata_bounds_and_weak_identity": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_note_failure_does_not_mask_original_error": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    },
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_collection_failure_does_not_mask_assertion": {
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed"
+    }
+  }
+}

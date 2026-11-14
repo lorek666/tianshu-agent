@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "review_phase_plugin",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "addopts=",
+    "-q",
+    "--tb=short",
+    "--basetemp",
+    "/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/final-m2-no-chain-pytest",
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction"
+  ],
+  "cwd": "/tmp/tianshu-g3-20261113/windows-timing-independent-zlmhcb29/mutant-m2-no-chain",
+  "returncode": 1,
+  "expected_exit": 1,
+  "elapsed_ns": 1245140541,
+  "test_sha256": "3f89ef11969def97814c641dd4cc61640305c7188851c7f91be313311dcd3805"
+}

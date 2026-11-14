@@ -1,0 +1,22 @@
+{
+  "gate-approval": {
+    "original_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/gate-approval-pytest/test_stalled_send_is_unknown_a0/events.db",
+    "copy_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/replay-check/gate-approval/events.db",
+    "original_db_sha256": "669b2170a67340774172b22867183ed86729f77c77b6a299dbf8e7f23cb87ca9",
+    "events_before": 33,
+    "unknown_timeout_no_receipt": true,
+    "first_replay_unchanged": true,
+    "second_replay_unchanged": true,
+    "scope": "additional probe on copied DB; original call remains failed"
+  },
+  "gate-unknown": {
+    "original_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/gate-unknown-pytest/test_stalled_send_is_unknown_a0/events.db",
+    "copy_db": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/replay-check/gate-unknown/events.db",
+    "original_db_sha256": "b543d0e3d0e8238c2cccb4de8bdb0b0c98c966bfc87588e4ec99d3e300fb4ca6",
+    "events_before": 33,
+    "unknown_timeout_no_receipt": true,
+    "first_replay_unchanged": true,
+    "second_replay_unchanged": true,
+    "scope": "additional probe on copied DB; original call remains failed"
+  }
+}

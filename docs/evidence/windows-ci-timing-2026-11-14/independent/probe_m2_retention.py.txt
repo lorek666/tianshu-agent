@@ -1,0 +1,74 @@
+from pathlib import Path
+from importlib import util
+from types import FrameType, TracebackType
+import gc, hashlib, json, os, sys, tempfile, weakref
+ROOT=Path(__file__).parent
+sys.path[:0]=[str(ROOT/'snapshot-final/src'),str(ROOT/'snapshot-final/tests')]
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(ROOT/'outputs/m2-retention-authority')
+os.environ['TIANSHU_SANDBOX_BACKEND']='local_fs'
+from tianshu import sandbox
+sandbox.configure_backend('local_fs')
+path=ROOT/'snapshot-final/tests/test_m2_acceptance.py'
+spec=util.spec_from_file_location('m2_retention',path);m=util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+base=Path(tempfile.mkdtemp(prefix='m2-retention-',dir=ROOT/'outputs'))
+log=m.EventLog(base/'native.db');d=m._WorkerDiagnostics(log.db_path)
+log.conn.execute('PRAGMA query_only=ON')
+class Sentinel:pass
+weak=[];errors=[]
+namespace={'d':d,'log':log,'original':m.EventLog.transaction,'Sentinel':Sentinel,'weak':weak,'errors':errors,'weakref':weakref}
+# These are real live Python frames using the canonical filename of the imported source.
+exec(compile('''def enter_via_source(remaining, sentinel):
+    if remaining:
+        return enter_via_source(remaining-1, sentinel)
+    try:
+        with d.transaction(log, original):
+            pass
+    except Exception as error:
+        errors.append(type(error).__name__)
+def run_source():
+    sentinel=Sentinel()
+    weak.append(weakref.ref(sentinel))
+    enter_via_source(8, sentinel)
+''',str(Path(m.SRC)/'tianshu/events.py'),'exec'),namespace)
+namespace['run_source']();gc.collect()
+assert errors==['OperationalError'] and weak[0]() is None
+item=d.pinned['transaction'];chain=item['caller_chain']
+assert item['phase']=='enter' and item['sqlite_errorname']=='SQLITE_READONLY'
+assert len(chain)==4 and all(f['file']=='src/tianshu/events.py' for f in chain)
+assert all('caller_chain' not in entry for entry in [*d.events,*d.active.values()])
+def no_live_frames(value):
+    if isinstance(value,(FrameType,TracebackType,BaseException)):return False
+    if isinstance(value,dict):return all(no_live_frames(k) and no_live_frames(v) for k,v in value.items())
+    if isinstance(value,(list,tuple)):return all(map(no_live_frames,value))
+    return True
+assert no_live_frames([*d.events,*d.errors,*d.pinned.values()])
+# Stress only bounded presentation values; native capture above remains separate.
+long_frame={'file':'src/'+'p'*176,'function':'f'*80,'line':999999}
+maximum=dict(item,run_id='r'*20,job_id='j'*20,thread_name='t'*80,caller=long_frame,
+             caller_chain=[dict(long_frame) for _ in range(4)],
+             frames=[dict(long_frame) for _ in range(16)],
+             enter_start_ns=1_000,enter_elapsed_ns=7_000_000,
+             active_at_error=[{'caller':long_frame,'thread_name':'t'*80} for _ in range(8)])
+d.pinned={source:dict(maximum,source=source) for source in ('drive','transaction','beat','test')}
+d.runtime={'python':list(sys.version_info[:3]),'sqlite':m.sqlite3.sqlite_version,
+           'monotonic_implementation':m.time.get_clock_info('monotonic').implementation,
+           'monotonic_resolution_s':m.time.get_clock_info('monotonic').resolution,
+           'busy_timeout_ms':5000}
+for _ in range(128):d.events.append({'caller':long_frame,'thread_name':'t'*80})
+assertion=AssertionError('private body must not enter notes');d.annotate(assertion)
+notes='\n'.join(assertion.__notes__)
+critical=[json.loads(line[len('error: '):]) for line in notes.splitlines() if line.startswith('error: ')]
+assert len(critical)==4 and all(e['enter_start_ns']==1000 and e['enter_elapsed_ns']==7000000 for e in critical)
+assert len(notes)<=24000 and all(len(line)<=1200 for line in notes.splitlines())
+assert '[truncated total]' in notes and 'private body' not in notes
+facts={'test_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'genuine_native_error':item['sqlite_errorname'],
+       'phase':item['phase'],'native_caller_count':len(chain),'canonical_callers':chain,
+       'source_local_sentinel_collected':weak[0]() is None,'no_frame_traceback_exception_in_retained_metadata':True,
+       'caller_chain_absent_from_ring_and_active':True,'format_stress':'copied actual native item expanded to documented field caps; not a claim those long fields occurred in production',
+       'critical_error_count_after_total_truncation':len(critical),'all_critical_timing_fields_retained':True,
+       'note_chars':len(notes),'max_line_chars':max(map(len,notes.splitlines())),'total_truncation_present':True,
+       'failure_text_not_in_note':True}
+log.close()
+(ROOT/'outputs/m2-retention-facts.json').write_text(json.dumps(facts,ensure_ascii=False,indent=2)+'\n')
+(ROOT/'outputs/m2-retention-notes.txt').write_text(notes+'\n')
+print(json.dumps(facts,ensure_ascii=False,indent=2))

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -647,6 +648,7 @@ class _WorkerDiagnostics:
                                     "thread_evicted", "active_dropped", "frames_dropped",
                                     "collection_failed"), 0)
         self.sequence = 0
+        self.runtime = {}
 
     def failed(self, error):
         with self.lock:
@@ -691,25 +693,27 @@ class _WorkerDiagnostics:
         return list(result), max(0, total - 16)
 
     @staticmethod
-    def caller():
+    def callers():
+        result = []
         frame = sys._getframe(1)
         try:
-            while frame is not None:
+            while frame is not None and len(result) < 4:
                 try:
                     file = Path(frame.f_code.co_filename).resolve().relative_to(SRC)
                 except ValueError:
                     frame = frame.f_back
                     continue
-                return {"file": (Path("src") / file).as_posix()[:180], "line": frame.f_lineno,
-                        "function": frame.f_code.co_name[:80]}
+                result.append({"file": (Path("src") / file).as_posix()[:180],
+                               "line": frame.f_lineno, "function": frame.f_code.co_name[:80]})
+                frame = frame.f_back
         finally:
             del frame
-        return None
+        return result
 
     def begin(self, log):
         try:
             nested = log.in_transaction
-            caller = self.caller()
+            callers = self.callers()
             with self.lock:
                 connection = self.alias(log, self.connections, "connection")
                 thread = threading.current_thread()
@@ -717,7 +721,8 @@ class _WorkerDiagnostics:
                 self.sequence += 1
                 token = {"tx": self.sequence, "connection": connection,
                          "thread": thread_alias, "thread_name": thread.name[:80],
-                         "nested": nested, "caller": caller,
+                         "nested": nested, "caller": callers[0] if callers else None,
+                         "caller_chain": callers,
                          **getattr(self.local, "context", {})}
             self.observe("attempt", token, log)
             return token
@@ -729,7 +734,8 @@ class _WorkerDiagnostics:
         if token is None:
             return
         try:
-            item = {**token, "phase": phase, "at_ns": time.monotonic_ns()}
+            item = {k: v for k, v in token.items() if k != "caller_chain"}
+            item.update(phase=phase, at_ns=time.monotonic_ns())
             if native is not None:
                 item["native_in_transaction"] = native
             with self.lock:
@@ -766,6 +772,8 @@ class _WorkerDiagnostics:
                     **getattr(self.local, "context", {})}
             if token is not None:
                 item.update(token)
+                if phase == "enter" and "enter_start_ns" in token:
+                    item["enter_elapsed_ns"] = at_ns - token["enter_start_ns"]
             with self.lock:
                 item["active_at_error"] = list(self.active.values())
                 if len(self.errors) == self.errors.maxlen:
@@ -786,7 +794,13 @@ class _WorkerDiagnostics:
         token = self.begin(log)
         entered = body_failed = False
         try:
-            with original(log) as tx:
+            manager = original(log)
+            if token is not None and not token["nested"]:
+                try:
+                    token["enter_start_ns"] = time.monotonic_ns()
+                except Exception as error:
+                    self.failed(error)
+            with manager as tx:
                 entered = True
                 self.observe("reuse" if token and token["nested"] else "acquired",
                              token, log)
@@ -825,7 +839,8 @@ class _WorkerDiagnostics:
 
     def annotate(self, error):
         lines = ["M2 worker diagnostics: item<=1200 chars; total<=24000 chars; "
-                 "observed contexts in this process only; not OS lock ownership"]
+                 "observed contexts in this process only; not OS lock ownership; "
+                 "wrapper enter elapsed includes scheduling, not pure SQLite wait"]
 
         def note(source, data):
             text = source + ": " + redact(json.dumps(data, ensure_ascii=False))
@@ -836,14 +851,17 @@ class _WorkerDiagnostics:
             counts, failures = dict(self.counts), list(self.failures)
             pinned, events = dict(self.pinned), list(self.events)[-32:]
         note("collection", {**counts, "collection_failed_types": failures})
+        note("runtime", self.runtime)
         # 关键异常/实际 caller/发生时 context 快照先输出，不能被详细 ring 挤掉。
         critical = [(source, pinned[source]) for source in
                     ("drive", "transaction", "beat", "test") if source in pinned]
         for source, item in critical:
             note("error", {k: v for k, v in item.items()
-                           if k not in ("frames", "active_at_error")})
+                           if k not in ("frames", "active_at_error", "caller_chain")})
             if item["frames"]:
                 note(source + ".caller", item["frames"][-1])
+            for frame in item.get("caller_chain", []):
+                note(source + ".call_chain", frame)
         for source, item in critical:
             for active in item["active_at_error"]:
                 note(source + ".active_at_error", active)
@@ -861,6 +879,16 @@ def _diagnose_worker_failure(test):
     @wraps(test)
     def diagnosed(env):
         diagnostics = _WorkerDiagnostics(env.db)
+        try:
+            clock = time.get_clock_info("monotonic")
+            diagnostics.runtime = {
+                "python": list(sys.version_info[:3]), "sqlite": sqlite3.sqlite_version,
+                "monotonic_implementation": clock.implementation,
+                "monotonic_resolution_s": clock.resolution,
+                "busy_timeout_ms": env.log.conn.execute("PRAGMA busy_timeout").fetchone()[0],
+            }
+        except Exception as error:
+            diagnostics.failed(error)
         original_drive = Worker._drive
         original_beat = worker_module._SideChannel.beat
         original_transaction = EventLog.transaction
@@ -1071,6 +1099,89 @@ def test_worker_diagnostics_capture_native_error_before_worker_swallows_it(env):
     assert '"phase": "body"' in notes
     assert "diagnostic_private_missing_table" not in notes
     assert "SELECT" not in notes
+
+
+def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(env, monkeypatch):
+    """真实结果提交的 BEGIN 拒绝后，起点/上层栈不靠已淘汰的 ring 恢复。"""
+    original_transaction = EventLog.transaction
+    original_append_many = EventLog.append_many
+    clock = {"now": 1_000}
+    starts = []
+    failure = AssertionError("original assertion")
+
+    @contextmanager
+    def native_transaction(log):
+        if log is env.log and log.conn.execute("PRAGMA query_only").fetchone()[0]:
+            starts.append(clock["now"])
+            clock["now"] += 7_000_000
+        with original_transaction(log) as tx:
+            yield tx
+
+    def read_only_result(log, items):
+        if log is not env.log or items[0]["type"] != "tool.result":
+            return original_append_many(log, items)
+        # 只在真实派发结果进入真实 BEGIN 时拒写；不伪造 SQLite 异常。
+        log.conn.execute("PRAGMA query_only=ON")
+        try:
+            return original_append_many(log, items)
+        finally:
+            log.conn.execute("PRAGMA query_only=OFF")
+
+    monkeypatch.setattr(time, "monotonic_ns", lambda: clock["now"])
+    monkeypatch.setattr(EventLog, "transaction", native_transaction)
+    monkeypatch.setattr(EventLog, "append_many", read_only_result)
+    original = (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction)
+
+    @_diagnose_worker_failure
+    def exercise(env):
+        run_id, _, _ = env.enqueue(root=env.ws, out="diagnostic-private-body.md")
+        worker = Worker(env.stack, model=ScriptedModel([
+            _create("diagnostic-private-body.md", "private body", "c1"), _end(),
+        ]), heartbeat_interval_ms=None)
+        try:
+            assert worker.run_once() is True
+            assert env.stack.tasks.get_run(run_id).state == "failed"
+            assert "execution.started" in env.events(run_id)
+            assert "tool.result" not in env.events(run_id)
+        finally:
+            worker.close()
+        for _ in range(180):
+            with env.log.transaction():
+                pass
+        raise failure
+
+    with pytest.raises(AssertionError) as caught:
+        exercise(env)
+    assert caught.value is failure
+    assert (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction) == original
+    assert starts == [1_000]
+    notes = "\n".join(failure.__notes__)
+    error = next(json.loads(line.removeprefix("error: ")) for line in notes.splitlines()
+                 if line.startswith("error: ") and '"source": "transaction"' in line)
+    assert error["sqlite_errorname"] == "SQLITE_READONLY" and error["phase"] == "enter"
+    assert error["enter_start_ns"] == 1_000
+    assert error["enter_elapsed_ns"] == 7_000_000
+    chain = [json.loads(line.removeprefix("transaction.call_chain: "))
+             for line in notes.splitlines() if line.startswith("transaction.call_chain: ")]
+    assert [frame["function"] for frame in chain[:2]] == [
+        "append_many", "_commit_result",
+    ]
+    assert 2 <= len(chain) <= 4
+    assert all(frame["file"].startswith("src/") for frame in chain)
+    collection = next(json.loads(line.removeprefix("collection: "))
+                      for line in notes.splitlines() if line.startswith("collection: "))
+    assert collection["tx_dropped"] > 0 and collection["collection_failed"] == 0
+    runtime_items = [json.loads(line.removeprefix("runtime: "))
+                     for line in notes.splitlines() if line.startswith("runtime: ")]
+    assert len(runtime_items) == 1
+    runtime = runtime_items[0]
+    assert runtime["python"] == list(sys.version_info[:3])
+    assert runtime["busy_timeout_ms"] == 5_000
+    assert runtime["sqlite"] and runtime["monotonic_implementation"]
+    assert runtime["monotonic_resolution_s"] > 0
+    assert "wrapper enter elapsed includes scheduling" in notes
+    assert "diagnostic-private-body" not in notes and "private body" not in notes
+    assert len(notes) <= 24000 and all(len(line) <= 1200 for line in notes.splitlines())
 
 
 def test_worker_diagnostics_transactions_keep_commit_rollback_and_nested_identity(env, monkeypatch):

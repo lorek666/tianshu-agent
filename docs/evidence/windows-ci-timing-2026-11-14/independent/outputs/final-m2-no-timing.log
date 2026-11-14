@@ -1,0 +1,10 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__ test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction ___
+tests/test_m2_acceptance.py:1162: in test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction
+    assert error["enter_start_ns"] == 1_000
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'enter_start_ns'
+=========================== short test summary info ============================
+FAILED tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction
+1 failed in 0.92s

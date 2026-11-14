@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python3",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "boundary_plugin",
+    "-p",
+    "no:cacheprovider",
+    "tests/test_mcp_transport_timeout.py::test_stalled_send_is_unknown_and_replay_does_not_retry",
+    "-o",
+    "addopts=",
+    "-q",
+    "--tb=short",
+    "--basetemp",
+    "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/gate-approval-pytest"
+  ],
+  "cwd": "/private/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source",
+  "mode": "gate-approval",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "plugin_sha256": "7297cbdc828f166a42659040ad4726adf098f966160d3dc93f8197fb50d909a7",
+  "returncode": 1,
+  "elapsed_ns": 2738235875,
+  "log_sha256": "bbea6ec04f1c4b5cfa43fefe3f2625d3e70afbfc54376986f9d72f3aea477df7"
+}

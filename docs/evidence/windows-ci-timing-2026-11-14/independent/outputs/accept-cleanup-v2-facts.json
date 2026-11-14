@@ -1,0 +1,26 @@
+{
+  "test_sha256": "9abd3035581cfb73a5f518dac49dde1532b3ffe3e6f620ee25bc15792462cf9e",
+  "probe": "accept injected failure with actual real subprocess/connected control peer; no incompatible approval gate",
+  "caught_type": "TimeoutError",
+  "caught_is_exact_injected_accept_exception": true,
+  "real_peer_connections": 1,
+  "client_close_calls": 1,
+  "real_servers": 1,
+  "workers_alive_after_test": [
+    false
+  ],
+  "server_processes_alive_after_test": [
+    false
+  ],
+  "clients_empty_after_test": [
+    true
+  ],
+  "close_observations": [
+    {
+      "servers_before": [
+        true
+      ]
+    }
+  ],
+  "method_identity_restored": true
+}

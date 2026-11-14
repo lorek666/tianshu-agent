@@ -1,0 +1,172 @@
+"""External bounded real-component regression probes; never changes source files."""
+import contextlib
+import json
+import os
+from pathlib import Path
+import sys
+import threading
+import time
+from unittest.mock import patch
+
+import pytest
+
+TARGET = "test_stalled_send_is_unknown_and_replay_does_not_retry"
+MODE = os.environ["MCP_REGRESSION_MODE"]
+OUTPUT = Path(os.environ["MCP_REGRESSION_OUTPUT"])
+EVENTS = []
+LOCK = threading.Lock()
+GATE_ENTERED = threading.Event()
+GATE_RELEASE = threading.Event()
+WRITE_ENTERED = threading.Event()
+STATE = {"reports": {}, "mode": MODE, "call_count": 0}
+
+
+def record(phase, **data):
+    with LOCK:
+        EVENTS.append({"phase": phase, "at_ns": time.monotonic_ns(),
+                       "thread": threading.current_thread().name, **data})
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    if item.name != TARGET:
+        yield
+        return
+    from tianshu.dispatcher import Dispatcher
+    from tianshu.mcp import StdioServer
+    from tianshu.permissions import ApprovalStore
+
+    STATE["product_file"] = sys.modules["tianshu.mcp"].__file__
+    original_wait = threading.Event.wait
+    original_accept = item.module.socket.socket.accept
+    original_release = item.module._release
+    original_call = StdioServer.call_tool
+    original_write = os.write
+    original_decide = ApprovalStore.decide
+    original_commit = Dispatcher._commit_result
+    peer_holder = {}
+    fd_holder = {}
+    controller = None
+
+    def hold_stage():
+        record("stage.gate.enter")
+        GATE_ENTERED.set()
+        assert original_wait(GATE_RELEASE, 5), "bounded real stage gate not released"
+        record("stage.gate.released")
+
+    def release_after_observation():
+        assert original_wait(GATE_ENTERED, 5), "real stage not reached"
+        record("stage.observation.enter", seconds=2)
+        # An explicit two-second observation while a proven real stage is held.
+        # No guessed sleep point, and no product/transport timeout changes.
+        assert not original_wait(threading.Event(), 2)
+        record("stage.observation.expired")
+        GATE_RELEASE.set()
+
+    def decide(*args, **kwargs):
+        if MODE == "stage-approval":
+            hold_stage()
+        if MODE == "early-failure":
+            raise RuntimeError("probe approval before transport")
+        return original_decide(*args, **kwargs)
+
+    def commit(*args, **kwargs):
+        if MODE == "stage-unknown" and args[3].effect_state == "unknown":
+            hold_stage()
+        return original_commit(*args, **kwargs)
+
+    def accept(sock, *args, **kwargs):
+        peer, address = original_accept(sock, *args, **kwargs)
+        if threading.current_thread() is threading.main_thread():
+            peer_holder["peer"] = peer
+        return peer, address
+
+    def call(server, *args, **kwargs):
+        STATE["call_count"] += 1
+        record("real.call.enter", configured_timeout_ms=server.config.call_timeout_ms)
+        if MODE.startswith("transport-blocked"):
+            fd_holder["fd"] = server._proc.stdin.fileno()
+            os.set_blocking(fd_holder["fd"], True)
+            record("pipe.blocking.enabled")
+        try:
+            return original_call(server, *args, **kwargs)
+        except BaseException as error:
+            record("real.call.error", type=type(error).__name__)
+            raise
+        finally:
+            record("real.call.exit")
+
+    def write(fd, data):
+        if fd == fd_holder.get("fd"):
+            record("kernel.write.enter", size=len(data))
+            WRITE_ENTERED.set()
+            try:
+                return original_write(fd, data)
+            finally:
+                record("kernel.write.exit")
+        return original_write(fd, data)
+
+    def wait(signal, timeout=None):
+        frame = sys._getframe(1)
+        try:
+            observed = frame.f_code.co_name == TARGET
+        finally:
+            del frame
+        if observed:
+            record("test.wait.enter", timeout=timeout)
+        if observed and timeout == 2 and MODE == "transport-blocked-delayed-main":
+            assert original_wait(WRITE_ENTERED, 5), "real kernel write not entered"
+            record("delayed-main.observation.enter")
+            assert not original_wait(signal, 2), "real blocked transport unexpectedly completed"
+            record("delayed-main.transport-still-blocked")
+            peer_holder["peer"].sendall(b"x")
+            record("delayed-main.peer-released")
+            assert original_wait(signal, 5), "transport did not exit after real peer release"
+            record("delayed-main.transport-finished-before-original-wait")
+        result = original_wait(signal, timeout)
+        if observed:
+            record("test.wait.exit", timeout=timeout, returned=result)
+        return result
+
+    def release(peer, worker):
+        record("original.release.enter")
+        try:
+            return original_release(peer, worker)
+        finally:
+            record("original.release.exit", worker_alive=worker.is_alive())
+
+    with contextlib.ExitStack() as patches:
+        patches.enter_context(patch.object(threading.Event, "wait", wait))
+        patches.enter_context(patch.object(item.module.socket.socket, "accept", accept))
+        patches.enter_context(patch.object(item.module, "_release", release))
+        patches.enter_context(patch.object(ApprovalStore, "decide", decide))
+        patches.enter_context(patch.object(Dispatcher, "_commit_result", commit))
+        patches.enter_context(patch.object(StdioServer, "call_tool", call))
+        patches.enter_context(patch.object(os, "write", write))
+        if MODE.startswith("stage-"):
+            controller = threading.Thread(target=release_after_observation,
+                                          name="bounded-stage-observer", daemon=True)
+            controller.start()
+        try:
+            outcome = yield
+            STATE["exception"] = type(outcome.excinfo[1]).__name__ if outcome.excinfo else None
+        finally:
+            GATE_RELEASE.set()
+            if controller:
+                controller.join(5)
+                STATE["controller_finished"] = not controller.is_alive()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    STATE["reports"][report.when] = report.outcome
+    if report.failed and hasattr(report.longrepr, "reprcrash"):
+        STATE["failure_at"] = {"path": report.longrepr.reprcrash.path,
+                               "line": report.longrepr.reprcrash.lineno}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    STATE.update(events=EVENTS, pytest_exit=exitstatus)
+    OUTPUT.write_text(json.dumps(STATE, ensure_ascii=False, indent=2)+"\n")

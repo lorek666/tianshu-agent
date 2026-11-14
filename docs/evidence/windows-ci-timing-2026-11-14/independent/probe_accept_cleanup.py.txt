@@ -1,0 +1,73 @@
+from pathlib import Path
+from contextlib import contextmanager
+from importlib import util
+from types import SimpleNamespace
+import json,os,sys,threading,tempfile,time
+ROOT=Path(__file__).parent
+sys.path[:0]=[str(ROOT/'snapshot/src'),str(ROOT/'snapshot/tests')]
+os.environ['TIANSHU_AUTHORITY_ROOT']=str(ROOT/'outputs/accept-authority')
+os.environ['TIANSHU_SANDBOX_BACKEND']='local_fs'
+import pytest
+from tianshu import sandbox
+from tianshu.tool_registry import reset_registry
+sandbox.configure_backend('local_fs')
+def exercise(kind):
+ reset_registry()
+ path=ROOT/('baseline' if kind=='baseline' else 'snapshot')/'tests/test_mcp_transport_timeout.py'
+ spec=util.spec_from_file_location('accept_probe_'+kind,path);module=util.module_from_spec(spec);spec.loader.exec_module(module)
+ clients=[];workers=[];peers=[];closed=[];servers=[]
+ approval_arrived=threading.Event();approval_release=threading.Event()
+ marker=TimeoutError('independent accept boundary injected after real peer connection')
+ original_config=module._server_config;original_clients=module.McpClients;original_thread=threading.Thread
+ original_close=original_clients.close_all;original_approve=module.approve_pending
+ def client_factory(*args,**kwargs):
+  c=original_clients(*args,**kwargs);clients.append(c);return c
+ def close(c):closed.append(c);return original_close(c)
+ def worker_factory(*args,**kwargs):
+  t=original_thread(*args,**kwargs);workers.append(t);return t
+ def approval(*args,**kwargs):
+  approval_arrived.set()
+  assert approval_release.wait(10),'independent finite approval release missing'
+  return original_approve(*args,**kwargs)
+ class Control:
+  def __init__(self,real):self.real=real
+  def accept(self):
+   peer,address=self.real.accept();peers.append(peer)
+   raise marker
+ @contextmanager
+ def config(*args,**kwargs):
+  with original_config(*args,**kwargs) as (c,control):yield c,Control(control)
+ result={}
+ with pytest.MonkeyPatch.context() as mp:
+  mp.setattr(module,'_server_config',config);mp.setattr(module,'McpClients',client_factory)
+  mp.setattr(original_clients,'close_all',close);mp.setattr(module,'approve_pending',approval)
+  mp.setattr(module,'threading',SimpleNamespace(Event=threading.Event,Thread=worker_factory))
+  tmp=Path(tempfile.mkdtemp(prefix=kind+'-',dir=ROOT/'outputs'))
+  try:
+   try:
+    if kind=='baseline':module.test_stalled_send_is_unknown_and_replay_does_not_retry(tmp)
+    else:module.test_stalled_send_is_unknown_and_replay_does_not_retry(tmp,mp)
+   except BaseException as error:
+    result['caught_type']=type(error).__name__;result['caught_is_exact_injected_accept_exception']=error is marker
+   assert approval_arrived.wait(3),'worker never reached real approval gate'
+   for c in clients:servers.extend(c._servers.values())
+   result.update(real_peer_connections=len(peers),client_objects=len(clients),client_close_calls_before_harness_cleanup=len(closed),real_servers=len(servers),real_processes_alive_before_harness_cleanup=[s._proc.poll() is None for s in servers],worker_threads_alive_before_harness_cleanup=[t.is_alive() for t in workers],approval_barrier_reached=True)
+   assert result['caught_is_exact_injected_accept_exception'] and len(peers)==len(clients)==len(servers)==1
+   assert not closed and all(result['real_processes_alive_before_harness_cleanup']) and any(result['worker_threads_alive_before_harness_cleanup'])
+  finally:
+   approval_release.set()
+   for peer in peers:
+    try:peer.sendall(b'x')
+    except OSError:pass
+    peer.close()
+   for c in clients:original_close(c)
+   for t in workers:t.join(5)
+   result['workers_alive_after_harness_cleanup']=[t.is_alive() for t in workers]
+   result['processes_alive_after_harness_cleanup']=[s._proc is not None and s._proc.poll() is None for s in servers]
+   assert not any(result['workers_alive_after_harness_cleanup']) and not any(result['processes_alive_after_harness_cleanup'])
+ result['method_identity_restored']=original_clients.close_all is original_close
+ assert result['method_identity_restored']
+ return result
+facts={'probe':'control.accept failure cleanup with real MCP subprocess and actual connected peer, worker held at real approval barrier','baseline':exercise('baseline'),'frozen':exercise('frozen'),'classification':'PREEXISTING_GAP_REMAINS_NOT_NEW_REGRESSION; planned finite pre-call cleanup is incomplete'}
+(ROOT/'outputs/accept-cleanup-facts.json').write_text(json.dumps(facts,indent=2,ensure_ascii=False)+'\n')
+print(json.dumps(facts,indent=2,ensure_ascii=False))

@@ -1,0 +1,10 @@
+{
+  "exit": 1,
+  "reports": {
+    "tests/test_m2_acceptance.py::test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction": {
+      "setup": "passed",
+      "call": "failed",
+      "teardown": "passed"
+    }
+  }
+}

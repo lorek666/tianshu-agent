@@ -1,0 +1,102 @@
+{
+  "commit": "c2cf1c71c65f46dea161e41b140df99d137a5686",
+  "tree": "35bc297ce3125be4fd8db6fc4087196507a94045",
+  "bare_object_store": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/objects.git",
+  "binding": "Selected inputs only; byte-compared to exact c2cf Git blobs. No claim about entire mutable shared source directory.",
+  "inputs": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/events.py",
+      "repo_path": "src/tianshu/events.py",
+      "bytes": 26083,
+      "sha256": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+      "matches_exact_commit_blob": true,
+      "git_blob": "7793c031f8ce9ab46896a24dc67c7da208866fd0"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/jobs.py",
+      "repo_path": "src/tianshu/jobs.py",
+      "bytes": 33058,
+      "sha256": "1033504a14329e8e1584dee0d2a8d09e12c0000b117fa3ad1e8969e7a5fa6550",
+      "matches_exact_commit_blob": true,
+      "git_blob": "4746a64a9cbeac133dd9d1a6198ca894da063193"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/leases.py",
+      "repo_path": "src/tianshu/leases.py",
+      "bytes": 30275,
+      "sha256": "84c9de72cf218a604ca7d51be5232ba3ca7faba39726a1e300927c3fcb3b4a74",
+      "matches_exact_commit_blob": true,
+      "git_blob": "48c734ae230d7cda5e46b9771fe5a149e9bd54b8"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/worker.py",
+      "repo_path": "src/tianshu/worker.py",
+      "bytes": 21993,
+      "sha256": "62a1b51497f24c3c5e1f6d340b698c32740968c6b07cdc488ed7b32d52fd813d",
+      "matches_exact_commit_blob": true,
+      "git_blob": "025374660b04f1c4ffe5213a9c470605bc4a5163"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/loop.py",
+      "repo_path": "src/tianshu/loop.py",
+      "bytes": 155496,
+      "sha256": "40b02ab497f912756f51f742057323afff470c4514fcb35dee120d46577724e3",
+      "matches_exact_commit_blob": true,
+      "git_blob": "92d857fdd1a65cc43fc587a13062ce41c32a135f"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/dispatcher.py",
+      "repo_path": "src/tianshu/dispatcher.py",
+      "bytes": 208447,
+      "sha256": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6",
+      "matches_exact_commit_blob": true,
+      "git_blob": "56ad8495ca25d31ec7267eca090ee2b1a1f7a9de"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/src/tianshu/tasks.py",
+      "repo_path": "src/tianshu/tasks.py",
+      "bytes": 129799,
+      "sha256": "eb2a3de26ce8fc0526a7cdb92f522c845977e905a315f3d4e9a8dee804a64e63",
+      "matches_exact_commit_blob": true,
+      "git_blob": "c0765782ae37b9f3830afd36f5af732537e0a88a"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/tests/test_m2_acceptance.py",
+      "repo_path": "tests/test_m2_acceptance.py",
+      "bytes": 78227,
+      "sha256": "766a3496526594009638739bf093fd190d76d4adcd16c61acdf405504a0a4161",
+      "matches_exact_commit_blob": true,
+      "git_blob": "403e8c81c5d1a177259dfca1db38f674792da14e"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/docs/KNOWLEDGE.md",
+      "repo_path": "docs/KNOWLEDGE.md",
+      "bytes": 343682,
+      "sha256": "1b782be73e09679a98eeb75be9be73ce6be08f3fbe4dcbee56835e4c92028930",
+      "matches_exact_commit_blob": true,
+      "git_blob": "bc89bf05f94f6fcc9ace1dbcb507addaac8a8678"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/docs/PRD-v1.md",
+      "repo_path": "docs/PRD-v1.md",
+      "bytes": 147045,
+      "sha256": "0f29f7238102afde3cc94a37c9bcf1084fd45e106ad00d61571eee4bf6d5ddc2",
+      "matches_exact_commit_blob": true,
+      "git_blob": "29aaea598f5f2a939eefc3a6b3d7c9731394364e"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/mcp-c2cf-diagnosis-cccgpyt_/source/CONTRIBUTING.md",
+      "repo_path": "CONTRIBUTING.md",
+      "bytes": 13192,
+      "sha256": "b4710eb27ec395b957a6356cbd35edacce7b42428f0b9b62f05f5e43edca4505",
+      "matches_exact_commit_blob": true,
+      "git_blob": "56ec705ccd5ecf43895d58424856f764170a26a9"
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/m2-main-c2cf1c7-native-attempt1-20261114/job-132390772492.log",
+      "bytes": 265809,
+      "sha256": "c5050f4287e1493bca5b4c57d1ba08e0a114746aa9ad3943d46122211b8636d1",
+      "role": "original Windows shard0 job log; c2cf checkout at lines37/81/90/111"
+    }
+  ]
+}
