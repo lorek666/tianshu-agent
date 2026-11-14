@@ -1,0 +1,111 @@
+{
+  "status": "PASS_NARROW_TWO_TEST_DIAGNOSTIC_DELTA_NOT_HEARTBEAT_FIX",
+  "date": "2026-11-14",
+  "base_commit": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+  "candidate": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-freeze-gpdzfziw/candidate-complete",
+  "candidate_source_map_sha256": "2922a34503134aa6674c905dffc016b87a839687cb41ec66dbed6839a1448bc9",
+  "twofile_patch_sha256": "eb9acabaa33b39ba7c135305ba730db065083964f782e6d470c50ace833e33a1",
+  "source_count": 1030,
+  "changed_paths": [
+    "tests/test_low_disk_run_creation.py",
+    "tests/test_m2_acceptance.py"
+  ],
+  "unchanged_1028_inherited_by_exact_manifest_identity": true,
+  "inheritance_only_not_a_new_full_source_review": true,
+  "actual_rechecked_product_files": {
+    "src/tianshu/events.py": "b0a8c2e6b8515a10186474f5e47af1c4e3575a5495542ec76bbb1f09cff2da5a",
+    "src/tianshu/worker.py": "62a1b51497f24c3c5e1f6d340b698c32740968c6b07cdc488ed7b32d52fd813d",
+    "src/tianshu/model.py": "cd958dd13938f39dab9c86cbc26aac243d7b98391f7eff6d6b246685feaf973d"
+  },
+  "minimal_harness_restored_to_candidate": true,
+  "static_results": "logs/static-results.json",
+  "executions": {
+    "positive": {
+      "exit_code": 0,
+      "duration_seconds": 3.275,
+      "call_results": [
+        {
+          "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+          "outcome": "passed"
+        },
+        {
+          "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+          "outcome": "passed"
+        }
+      ],
+      "execution": "runs/positive/execution.json",
+      "raw_stdout": "runs/positive/stdout.txt",
+      "phase_reports": "runs/positive/pytest-reports.json"
+    },
+    "forced-crlf": {
+      "exit_code": 0,
+      "duration_seconds": 0.47,
+      "call_results": [
+        {
+          "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+          "outcome": "passed"
+        }
+      ],
+      "execution": "runs/forced-crlf/execution.json",
+      "raw_stdout": "runs/forced-crlf/stdout.txt",
+      "phase_reports": "runs/forced-crlf/pytest-reports.json"
+    },
+    "bad-ready": {
+      "exit_code": 1,
+      "duration_seconds": 0.432,
+      "call_results": [
+        {
+          "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+          "outcome": "failed"
+        }
+      ],
+      "execution": "runs/bad-ready/execution.json",
+      "raw_stdout": "runs/bad-ready/stdout.txt",
+      "phase_reports": "runs/bad-ready/pytest-reports.json"
+    },
+    "diagnostic-reason": {
+      "exit_code": 1,
+      "duration_seconds": 0.308,
+      "call_results": [
+        {
+          "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+          "outcome": "failed"
+        }
+      ],
+      "execution": "runs/diagnostic-reason/execution.json",
+      "raw_stdout": "runs/diagnostic-reason/stdout.txt",
+      "phase_reports": "runs/diagnostic-reason/pytest-reports.json"
+    }
+  },
+  "positive_database_run_states": {
+    "paused": 1,
+    "succeeded": 60
+  },
+  "positive_database_run_end_count": 60,
+  "forced_crlf_validated_in_real_children_on_macos": true,
+  "bad_ready_rejected_in_call_phase": true,
+  "diagnostic_real_run_end_error_marker_visible": true,
+  "heartbeat_root_cause_reproduced": false,
+  "heartbeat_root_cause_fixed": false,
+  "heartbeat_success_does_not_clear_original_windows_failure": true,
+  "events_diagnostic_contains_only_type_names": true,
+  "diagnostic_reason_not_guaranteed_without_run_end": true,
+  "known_original_ci": {
+    "run_id": 43549430150,
+    "conclusion": "failure",
+    "errors": [],
+    "errors_array_is_collection_errors_not_test_verdict": true,
+    "raw_binding": "logs/native-original-binding.json"
+  },
+  "native_windows_retest": false,
+  "full_suite_or_ui_or_old_matrix_rerun": false,
+  "production_shared_lock_proposal_accepted": false,
+  "approval_scope": "仅两个测试的已述协议修正与诊断增量；不批准心跳修复、集中 full、后续事实文稿、正式提交或任何 CI/合并。",
+  "prior_inheritance": {
+    "directory": "/tmp/low-disk-final-docfix-independent-20261114-i_yj51yj",
+    "REPORT.md_sha256": "fdd853e7227b127b17e82cc2081f71375458e776fdce53eefdbcd616159ca653",
+    "facts.json_sha256": "87ecf297c960d752f3abb7b3195655317716d9ac556cd13ebb1d7267e7fc1ff5",
+    "hash-index.json_sha256": "3063c9f10ab85eac723188f99a83ff175ee034e4853592a9a111f27632f96447",
+    "source_map_sha256": "c832741dd0f3a809b22e154938eaddf889d1cf9788e9406043b50213d2766f62"
+  }
+}

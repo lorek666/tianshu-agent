@@ -1,0 +1,41 @@
+{
+  "exitstatus": 0,
+  "reports": [
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "setup",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "call",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "teardown",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+      "when": "setup",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+      "when": "call",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_m2_acceptance.py::test_normal_finish_and_pause_do_not_report_heartbeat_failure",
+      "when": "teardown",
+      "outcome": "passed",
+      "longrepr": null
+    }
+  ]
+}

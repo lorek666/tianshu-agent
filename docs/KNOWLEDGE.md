@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **低磁盘PR #144 首轮原生CI失败，测试诊断增量待云端（2026-11-14）**：旧head `96e3e485eb4ecbecadbadb54a60414967ab63649` 的run43549430150 attempt1已结束，Ubuntu/macOS/UI/Windows片0成功，Windows片1两项失败且required汇总失败。当前仅修两测试的CRLF文本协议与60次收尾失败诊断，生产/CI不变；心跳根因仍未复现、未修复。1030源清单 `2922a345` 的本机lock/full/全仓ruff通过（3183 passed / 8 skipped，513.63s），执行前后源与Git状态稳定。两测试已独立窄审通过，含强制真实子进程CRLF正控、坏READY及reason注入call真红；不等于Windows通过或心跳已修。原首红与新公开子集、独立身份见[低磁盘交付记录](LOW-DISK-2026-11-14.md)；下方旧“原生CI待核”为历史时点。
+
 - **低磁盘修后完整本机门禁通过（2026-11-14）**：906项固定源清单 `df72efbd` 上lock/full/全仓ruff均exit0，**3183 passed / 8 skipped（509.43s）**，源码、HEAD与状态无漂移；57份UI源码/测试/锁/dist精确继承879候选完整13文件91测试和install/typecheck/build通过结果，未重复未变UI。七文件修正保留原AUTH/eval/fence与硬退断言，修复过早提案过滤和旧夹具实际实例；六份历史脚本仅移名文本，原件/索引不改。906七文件窄增量已独立PASS（报告`016f4c2f`，四项已修、无新增窄范围阻断，BASE-B1仍未修）；最终事实封装/正式SHA和原生CI仍待，旧首红完整保留。[交付记录](LOW-DISK-2026-11-14.md)给出原件与范围。
 
 - **低磁盘首轮统一门禁失败（2026-11-14，历史时点，修后结果见上）**：879 项固定候选的 lock exit0，全量 **41 failed / 3141 passed / 8 skipped（495.61s）**，源码、HEAD、状态前后稳定；同源完整 UI **13 文件 / 91 测试通过**，install/typecheck/build及dist一致性通过。独立诊断确认过早的 pure_only 提案过滤跳过原 Dispatcher 的父版本失效检查与拒绝审计，须保留原 AUTH/eval/fence 断言修复；另有旧手装 Loop 未接同一存储实例、旧规则计数及纵深故障夹具适配。ruff 7错来自6份历史探针，按原字节移名文本并显式映射，未压低lint门。历史879文档/公开证据增量已独立PASS，但不抵消本次失败；最终修后组合、正式SHA与CI待核。详见[交付记录](LOW-DISK-2026-11-14.md)。
@@ -477,7 +479,7 @@
 
 ## 7. 已知限制 / 未决问题
 
-- **当前低磁盘边界（2026-11-14）**：T1 round1、T2、T3各自冻结内容已由第二读者窄范围销账；修后906源的本机lock/full/全仓ruff通过，完整UI按57项精确不变继承13文件91测试与类型/构建结果。906七文件窄增量已独立PASS；最终事实封装/正式SHA和原生CI仍待。以下旧 T1/T2 作者时点条目保留原文，其中“尚未独立/仍待实施”只描述当时；当前分项以 §2 和[低磁盘交付记录](LOW-DISK-2026-11-14.md)为准。T1/T2/T3 的测试使用本机 macOS/Python 3.12、真实临时文件/SQLite/loopback网络/MCP子进程与可控空间 probe；逐位置测试不等于真实跨卷挂载/Windows设备验证，探测不是磁盘配额，读/模型仍依赖原审计可写与预算/取消条件。恢复时新的MCP发现仅面向原pending请求，schema变化会拒绝旧动作，不能升级原批准；未知intent/result不盲重放。真实付费模型、10h soak、恢复 apply、容量/GC、发行以及 Windows 10/11/ARM64/其他用户设备仍未验证。
+- **当前低磁盘边界（2026-11-14）**：T1 round1、T2、T3各自冻结内容及906七文件修正已由第二读者窄范围销账；正式96e3对象已独立绑定，但PR #144 首次原生CI因Windows片1两红失败，不能合并。当前两测试诊断增量的本机完整门和独立窄审通过，心跳根因仍未复现/未修，新正式对象与原生CI另核。完整UI按57项精确不变继承13文件91测试与类型/构建结果。以下旧 T1/T2 作者时点条目保留原文，其中“尚未独立/仍待实施”只描述当时；当前分项以 §2 和[低磁盘交付记录](LOW-DISK-2026-11-14.md)为准。T1/T2/T3 的测试使用本机 macOS/Python 3.12、真实临时文件/SQLite/loopback网络/MCP子进程与可控空间 probe；逐位置测试不等于真实跨卷挂载/Windows设备验证，探测不是磁盘配额，读/模型仍依赖原审计可写与预算/取消条件。恢复时新的MCP发现仅面向原pending请求，schema变化会拒绝旧动作，不能升级原批准；未知intent/result不盲重放。真实付费模型、10h soak、恢复 apply、容量/GC、发行以及 Windows 10/11/ARM64/其他用户设备仍未验证。
 
 - **T1装配/恢复继承缺口已在T2独立范围内修复（2026-11-14）**：固定已审T1源上的六个受影响测试原样复现失败：4个跨进程pending MCP恢复缺发现注册表、dead-at-dispatch夹具启动前取server、摘要硬退子进程漏传真实memory。T2只补pending MCP按需准备和两个夹具实际实例；原硬退/unknown/对象阻断断言保持。另原并发审批用例固定T1通过，新增执行上下文门后测试两线程手装配缺context，最薄补同连接Snapshot/authority/guard后通过，未放宽生产校验、竞争和一次消费断言。上述不撤销T1此前已审范围；T2 的完整冻结内容与窄 delta 已由第二读者独立 PASS，但仍不扩大为 T3/整功能通过。
 
@@ -815,3 +817,5 @@
 - **2026-11-14 · 低磁盘 T2 独立通过、T3 作者候选冻结**：第二读者在543源冻结上给出 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立80 passed、9变异10个行为失败、0 setup/import/collection kill、阻断0；T2报告/facts/index及T1/T2源映射已复制到仓库内[证据目录](evidence/low-disk-2026-11-14/)。T3接通CLI/RPC/UI同一严格资格，真实CLI与IPC验证默认effects、显式pure_only、坏策略`bad_params`、重开token和workspace writable独立；UI两路径与失败重试保留选择。CLI首红argparse未知参数、RPC首红低盘`internal`、显式null/array红、UI 13文件87P3F、IPC跨线程观察器红均保留。三项最终负控（CLI改effects、RPC绕过解析、UI详情漏传policy）真红后恢复。最终定向门禁Python 76 passed、UI目标4 passed、typecheck/build/install/ruff/compile/stub扫描均exit0，dist从`B-xT4bPb/tHfDYJNM`换为`CIZ6Bgii/XPu6LbkB`且前后清单与SHA留档。T3独立复审、统一全量、lock、全仓ruff、完整UI suite和原生CI未运行；详见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，不commit/push或创建PR。
 
 - **2026-11-14 · 低磁盘T3独立通过与公开证据收口**：亲读T3独立报告并逐hash核1485项加索引自身，52Python/4App与11行为红按实际阶段记录，完整原件1486件保全ignored档案。整分支原717报告明确INT-E1索引缺3视觉dist不批准，root核实系dist忽略规则而非产品产物丢失，只补最窄例外与原字节，不重写旧失败；作者711核心与root717含6派生区别、契约75项为历史时点同步澄清。原a022/T2/T3 CLI预算接线缺口BASE-B1如实披露并单列跟踪，未顺手修预算。当前只改事实文档/证据封装，267产品/测试/锁/dist不变量保持；新候选独立销账、最终组合、正式对象和原生CI另核。
+
+- **2026-11-14 · PR #144 首次Windows红与两测试诊断候选**：原run43549430150六job/两artifact和完整失败原件保全；Windows片1的READY CRLF比较与正常收尾Run failed保持真实失败，未rerun/取消/放宽required。拒绝无根因证据的共享锁提案并恢复生产字节，仅复用CHILD_TEXT修协议、将原心跳收尾断言扩至60次并显示真实run.end。新1030源2922a345上lock/full/ruff通过，3183 passed/8 skipped（513.63s），前后无漂移。第二读者在固定副本确认原断言未减、真实CRLF正控及坏READY/reason两call负控；完整182件独立包和9件本机门原件逐hash保全ignored，公开只发明确34原件子集及两份导航清单。心跳根因未复现/未修，Windows和新正式对象尚待，不合并旧红、不外推设备平台；本次只更新两测试和事实证据。

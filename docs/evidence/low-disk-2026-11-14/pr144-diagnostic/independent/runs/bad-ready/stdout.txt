@@ -1,0 +1,62 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________________ test_two_real_processes_reopen_and_compete __________________
+
+tmp_path = PosixPath('/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/pytest/test_two_real_processes_reopen0')
+
+    def test_two_real_processes_reopen_and_compete(tmp_path):
+        import os
+        import subprocess
+        import sys
+    
+        with closing(EventLog(tmp_path / "events.db")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            task = stack.tasks.create_task("compete")
+        code = """
+    import json,sys
+    from pathlib import Path
+    from tianshu.events import EventLog
+    from tianshu.loop import build_stack
+    from tianshu.errors import TianshuError
+    root=Path(sys.argv[1])
+    log=EventLog(root/"events.db")
+    stack=build_stack(log,data_root=root/"data")
+    sys.stdout.buffer.write(bytes([78, 79, 84, 95, 82, 69, 65, 68, 89, 13, 10]));sys.stdout.buffer.flush()
+    assert sys.stdin.readline()=="GO\\n"
+    try:
+        run=stack.tasks.start_run(sys.argv[2])
+        print(json.dumps({"run_id":run.run_id,"policy":stack.tasks.run_execution_policy(run.run_id).to_dict()}),flush=True)
+    except TianshuError as exc:
+        print(json.dumps({"error":str(exc)}),flush=True)
+    log.close()
+    """
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not (
+                k.startswith("TIANSHU_") or any(x in k for x in ("API_KEY", "ENDPOINT", "BASE_URL"))
+            )
+        }
+        env["TIANSHU_AUTHORITY_ROOT"] = str(tmp_path / "authority")
+        children = [
+            subprocess.Popen(
+                [sys.executable, "-u", "-c", code, str(tmp_path), task.task_id],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **CHILD_TEXT,
+                env=env,
+            )
+            for _ in range(2)
+        ]
+        try:
+            for child in children:
+>               assert child.stdout.readline() == "READY\n"
+E               AssertionError: assert 'NOT_READY\n' == 'READY\n'
+E                 
+E                 - READY
+E                 + NOT_READY
+E                 ? ++++
+
+tests/test_low_disk_run_creation.py:583: AssertionError
+1 failed in 0.34s

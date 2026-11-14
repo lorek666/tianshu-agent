@@ -6,7 +6,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from support import engine_for, stack_for
+from support import CHILD_TEXT, engine_for, stack_for
 
 from tianshu import event_schema
 from tianshu.errors import TianshuError
@@ -573,20 +573,21 @@ log.close()
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **CHILD_TEXT,
             env=env,
         )
         for _ in range(2)
     ]
     try:
         for child in children:
-            assert child.stdout.readline() == b"READY\n"
+            assert child.stdout.readline() == "READY\n"
         for child in children:
-            child.stdin.write(b"GO\n")
+            child.stdin.write("GO\n")
             child.stdin.flush()
         rows = []
         for child in children:
             stdout, stderr = child.communicate(timeout=15)
-            assert child.returncode == 0, stderr.decode("utf-8", "replace")
+            assert child.returncode == 0, stderr
             rows.append(json.loads(stdout))
         assert sum("run_id" in row for row in rows) == 1
         assert sum("error" in row and "活跃 run" in row["error"] for row in rows) == 1

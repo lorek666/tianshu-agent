@@ -1,0 +1,11 @@
+{
+  "database": "runs/positive/pytest/test_normal_finish_and_pause_d0/events.db",
+  "open_mode": "SQLite URI mode=ro; PRAGMA query_only=ON",
+  "run_state_counts": {
+    "paused": 1,
+    "succeeded": 60
+  },
+  "run_end_count": 60,
+  "all_60_run_end_outcomes_succeeded": true,
+  "all_60_run_end_errors_null": true
+}

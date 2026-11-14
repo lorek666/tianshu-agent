@@ -1,0 +1,5 @@
+{
+  "head": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+  "status": "## codex/g3-low-disk-admission...origin/codex/g3-low-disk-admission\n M tests/test_low_disk_run_creation.py\n M tests/test_m2_acceptance.py\n",
+  "live_writes_by_reviewer": false
+}

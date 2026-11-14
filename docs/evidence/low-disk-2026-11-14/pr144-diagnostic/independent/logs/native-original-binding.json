@@ -1,0 +1,12 @@
+{
+  "origin": "/tmp/tianshu-g3-20261113/low-disk-pr144-native-ci/job-132308197359.log",
+  "sha256": "1ecf5aab428799a119ade0703bdf5f60ce7b7a0277349f75b7c8d1849bcf120a",
+  "bytes": 243025,
+  "excerpt_original_lines_1_based": [
+    1876,
+    1894
+  ],
+  "metadata_sha256": "970caf26f1ff3f9d610434832fb294b5f54de4c3b7efbbe518fd1aaf631589b3",
+  "run_is_failure": true,
+  "errors_empty_means_collection_success_not_test_success": true
+}

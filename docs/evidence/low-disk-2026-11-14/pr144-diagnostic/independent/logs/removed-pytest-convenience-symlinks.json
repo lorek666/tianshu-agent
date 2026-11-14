@@ -1,0 +1,22 @@
+[
+  {
+    "path": "runs/bad-ready/pytest/test_two_real_processes_reopencurrent",
+    "target": "/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/pytest/test_two_real_processes_reopen0"
+  },
+  {
+    "path": "runs/diagnostic-reason/pytest/test_normal_finish_and_pause_dcurrent",
+    "target": "/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/diagnostic-reason/pytest/test_normal_finish_and_pause_d0"
+  },
+  {
+    "path": "runs/forced-crlf/pytest/test_two_real_processes_reopencurrent",
+    "target": "/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/forced-crlf/pytest/test_two_real_processes_reopen0"
+  },
+  {
+    "path": "runs/positive/pytest/test_normal_finish_and_pause_dcurrent",
+    "target": "/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/pytest/test_normal_finish_and_pause_d0"
+  },
+  {
+    "path": "runs/positive/pytest/test_two_real_processes_reopencurrent",
+    "target": "/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/pytest/test_two_real_processes_reopen0"
+  }
+]
