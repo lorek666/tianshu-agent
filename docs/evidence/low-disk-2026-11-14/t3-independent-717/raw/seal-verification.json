@@ -1,0 +1,11 @@
+{
+  "at": "2026-11-14T10:01:06.404931+08:00",
+  "all_717_work_and_root_frozen_source_hashes_match": true,
+  "all_8_inherited_input_hashes_match": true,
+  "all_5_positive_phase_command_source_maps_and_exit0_verified": true,
+  "all_11_mutation_maps_fully_restored": true,
+  "all_27_retained_rejections_no_new_run_material": true,
+  "all_recorded_child_peer_pids_exited_at_seal": true,
+  "no_symlinks_to_external_directories": true,
+  "report_read_back_nonempty": true
+}

@@ -1,0 +1,8 @@
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+branch=codex/g3-low-disk-admission
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py::test_cli_run_start_explicit_pure_only_bypasses_low_probe
+test_sha256=d3d5c93de71d96b5c21fd267e6c44317cc45934f531ab79f48b29432d9fad90f
+cli_sha256=ad6e5ec78949305d5736239c35c699b8f47f15c10840b5abe0995a3b18e826b3
+control_sha256=3818d94cfa5954c31a81ca624fa9adfc6d78ee41665cda5511493c66ac96dab6
+relevant_env_names=TIANSHU_AUTHORITY_ROOT (set by child), TIANSHU_MCP_CONFIG (removed by child)

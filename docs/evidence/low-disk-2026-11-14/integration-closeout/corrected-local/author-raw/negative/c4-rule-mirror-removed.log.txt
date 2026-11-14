@@ -1,0 +1,34 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________________________ test_tool_id_enum _______________________________
+
+    def test_tool_id_enum():
+        """工具 id 23：`SPECS`、事件 schema 的 `_TOOL_ID`、C4 规则表三处一致。
+    
+        `_TOOL_ID` 出现在 `tool.intent` / `tool.result` / `approval.requested` 等
+        payload 里，是**写入前**的封闭枚举：少一个 id 会让新工具的结果写不进日志。
+        """
+        assert len(SPECS) == EXPECTED_TOOL_IDS
+        for tool_id in (
+            "subtask.spawn",
+            "subtask.status",
+            "subtask.result",
+            "subtask.cancel",
+        ):
+            assert tool_id in SPECS
+        tool_enum = event_schema._TOOL_ID["enum"]
+        assert len(tool_enum) == EXPECTED_TOOL_IDS
+        assert set(tool_enum) == set(SPECS)
+        assert len(set(tool_enum)) == len(tool_enum), "工具 id 不能重复"
+    
+        # 规则 id 78（D1 75 + 低磁盘资格/空间未知/空间不足 3 条）。规格 §2.7 对
+        # D1 增量的预估是 8 条，差的那一条是 §2.3 要求的
+        # `dispatch.subtask_rejected`。
+>       assert len(RULE_IDS) == EXPECTED_RULE_IDS
+E       AssertionError: assert 78 == 75
+E        +  where 78 = len(frozenset({'c4.action_resource_mismatch', 'c4.approval_expired', 'c4.approval_mismatch', 'c4.approval_rejected', 'c4.approval_run_mismatch', 'c4.approval_state', ...}))
+
+tests/test_g2_delegation_contract.py:227: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_g2_delegation_contract.py::test_tool_id_enum - AssertionErr...
+1 failed in 0.06s

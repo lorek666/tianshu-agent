@@ -1,0 +1,11 @@
+--- 879/tests/test_approval_reject.py
++++ 906/tests/test_approval_reject.py
+@@ -65,6 +65,8 @@
+             snapshots=self.stack.snapshots,
+             model=ScriptedModel(list(responses)),
+             limits=limits or Limits(8, 20_000),
++            memory=self.stack.memory,
++            contents=self.stack.contents,
+         )
+ 
+     def task(self, goal: str = "整理目录里的笔记") -> Task:

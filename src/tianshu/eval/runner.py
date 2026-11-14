@@ -471,6 +471,7 @@ def _build_engine(
         dispatcher=stack.dispatcher,
         approvals=stack.approvals,
         snapshots=stack.snapshots,
+        contents=stack.contents,
         model=model,
         limits=Limits(max_turns, max_total_tokens),
         memory=stack.memory,
@@ -734,6 +735,7 @@ def _run_standard(
             dispatcher=stack.dispatcher,
             approvals=stack.approvals,
             snapshots=stack.snapshots,
+            contents=stack.contents,
             model=model_for(effective),
             limits=Limits(effective.max_turns, effective.max_total_tokens),
             # 评测也必须复用装配里的投影：评测若另开一个默认投影，

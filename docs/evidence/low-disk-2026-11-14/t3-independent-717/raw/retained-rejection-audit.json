@@ -1,0 +1,552 @@
+{
+  "kind": "post-run retained material audit, not additional pytest passes",
+  "database_open_mode": "sqlite uri mode=ro",
+  "count": 27,
+  "classification_counts": {
+    "cli": 8,
+    "ipc_threshold": 5,
+    "ipc_bad": 14
+  },
+  "results": [
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-ifjx5kab",
+      "database_sha256": "4a1303482c4f5ea5c2ade06d8e4f8f30c75983108ae5c0aba77f2c88e96e0dcc",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-2dimkpyh",
+      "database_sha256": "c33557ad04772c372e738657fa62ad3a06e59adc3397734adca9926f1984d4ff",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-fyyjfacc",
+      "database_sha256": "8d7b4cf48627b2ebe1ab5f4234cdbdd74610077a78a1539e090adb70d85cb7b8",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-e58yh36c",
+      "database_sha256": "840c0a132885d9275858ffe4a27ec2ea976ae1336fa43f8e68e1d92ba80b608e",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-xjzk91f4",
+      "database_sha256": "0af4d48458aa5409f11bc22baf7fcadf087e194e010574be714fc1d19dc2c527",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-wawkuj1v",
+      "database_sha256": "e269e03d4da6be901345d95d95004e395cfba798e5e1bf30f173e8021ad05b30",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-h7ag4624",
+      "database_sha256": "87221b8dedff888c16b6e94f617c50379c3ee50d4b6e2c4d9ec63fe6e46bbce2",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "cli",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-c2kyzock",
+      "database_sha256": "05bd826028e1b9434ab2d6948996a5fd24e4be8d7003ade91b5f91459e977085",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_threshold",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-vul5wpnu",
+      "database_sha256": "6c341555634d89e66bce10f0bbd9356b05537d029764e50d3ea0984bd8386355",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_threshold",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-g2g1q4wq",
+      "database_sha256": "0275eeb1036c8a533341300c20b606d61cb7948e5a243ba508b1d24b3c167d7b",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_threshold",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-_t74099s",
+      "database_sha256": "c95e8d3cb5aa712f8e4418d4226c66e9aaeefdbf2d3dcff333654664ebe39521",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_threshold",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-5mq4e4ee",
+      "database_sha256": "169f34236f71d01ad606e1db9bd39326fe762d00463b985d3fd7239422c3c80c",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_threshold",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-ddgzetu6",
+      "database_sha256": "995429b5edecc956627143ecee06e3cc4f0058cb31723b134c952d27cda40911",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-ievzp9i8",
+      "database_sha256": "e6a65445ac3b37323ce8a323e6bcc90dbe9e987ec31fe4d67b947a998b307a73",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-psd_i60k",
+      "database_sha256": "fe070a1f73c2fa10ab0873c240ac764771c00f2aa038fb0d991a76bc2b5636d6",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-zizj27wa",
+      "database_sha256": "af01a1993f7b4cf2910446280ab3bd11c3b6c8cbba356006eb974dc297000490",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-dbhaauow",
+      "database_sha256": "38e781b41c89443ecf97da9056899a1e9c636c63ba6b9eb8e7e1f88684a53172",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-17ey60nv",
+      "database_sha256": "1558506a197f1c9e2c12193971b71dfe7a98157a96cea7303b911b632889d84d",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-8h7iiqeq",
+      "database_sha256": "90da0d5127cb4b033bbd73f1ce28f13431b501b2576f1d6051c788fe39f71d72",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-n766p1zr",
+      "database_sha256": "a25ce729271366afb3f5ba3cb5d4d57f3c10240cf304e950b9f6fb96b3a9821c",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-kj1ngxkz",
+      "database_sha256": "9af3b5cbdf3ffb63d741e9545fd3e2419451a4f4d8e3b0e84ae200c4b6ff28d6",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-xkgji8go",
+      "database_sha256": "07e624b8571b721175f6ed34e9935e245c46940f40c09a5fcf41ddf60b7a1553",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-2_5wnc51",
+      "database_sha256": "d6bcfccebe34ff8e291ed41863896eff58dd1b94d5e1dbe6fa72466316f08fab",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-qa_d4cys",
+      "database_sha256": "63fb4f3521e3b73af023cb5373b6a40001342f5ae5270e310b0c63a0e48e1bc4",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-iq760wgi",
+      "database_sha256": "be156d598c11de9c952c9df72b9faf43847978d60019ce6462db3107a801c331",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-be083f8g",
+      "database_sha256": "a2c7ea1516b7d6e7a65329bdcba54724ac2dbd2cc1fec0494c430ece438ea4a2",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    },
+    {
+      "probe": "ipc_bad",
+      "root": "/tmp/low-disk-t3-independent-20261114/runs/i-kffmsmo6",
+      "database_sha256": "24c0ee777fb19fb78a512515b9f7e1566c2cca32d941730303c00f3ac95f4e56",
+      "counts": {
+        "runs": 0,
+        "jobs": 0,
+        "leases": 0,
+        "approvals": 0,
+        "grants": 0,
+        "dispatch_requests": 0,
+        "budget_reservations": 0
+      },
+      "event_types": [
+        "task.created"
+      ],
+      "manifests": [],
+      "model_log_exists": false,
+      "authority_database_files": []
+    }
+  ]
+}

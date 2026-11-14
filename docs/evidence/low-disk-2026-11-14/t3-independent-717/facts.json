@@ -1,0 +1,354 @@
+{
+  "status": "SEALED_T3_INDEPENDENT_FROZEN_CONTENT_REVIEW",
+  "date": "2026-11-14",
+  "timezone": "Asia/Shanghai",
+  "reviewer": "/root/review_admission_contract",
+  "spec_verdict": "PASS_T3_FROZEN_ENTRYPOINT_SCOPE",
+  "quality_verdict": "PASS_T3_FROZEN_NARROW_DELTA",
+  "confirmed_behavior_blockers": 0,
+  "reviewed_fixes": "已修（本717项冻结入口范围与精确T1/T2继承条件内）",
+  "final_repository_acceptance": "NOT_GRANTED; root final object/full gates/native CI remain separate",
+  "source": {
+    "frozen": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/candidate-complete",
+    "mapping": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/source-hashes.json",
+    "mapping_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+    "entries": 717,
+    "actual_all_entries_rehashed_before_and_after": true,
+    "all_entries_match_root_and_restored_work": true,
+    "source_before_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+    "source_after_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+    "diff_vs_t2": {
+      "unchanged": 524,
+      "changed": [
+        "README.md",
+        "docs/KNOWLEDGE.md",
+        "docs/PRD-v1.md",
+        "docs/low-disk-admission-contract.md",
+        "src/tianshu/cli.py",
+        "src/tianshu/control.py",
+        "ui/dist/index.html",
+        "ui/package.json",
+        "ui/pnpm-lock.yaml",
+        "ui/src/App.tsx",
+        "ui/src/api/errors.ts",
+        "ui/src/api/types.ts",
+        "ui/src/components/NewTaskDialog.tsx",
+        "ui/src/components/TaskDetail.tsx",
+        "ui/src/demo/host.ts",
+        "ui/src/demo/world.ts",
+        "ui/src/styles.css"
+      ],
+      "added_count": 176,
+      "removed": [
+        "ui/dist/assets/index-B-xT4bPb.js",
+        "ui/dist/assets/index-tHfDYJNM.css"
+      ]
+    },
+    "unchanged_runtime_modules_excluding_cli_control": 71,
+    "unchanged_tests_fixtures": 133,
+    "unchanged_schemas": 7,
+    "unchanged_total_src_tests_schemas_excluding_cli_control": 211,
+    "historical_reviewer_checkout_head_not_candidate_commit": "cefa1e375974d96e2ec25e199f6605f6dcf2239b"
+  },
+  "environment": {
+    "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+    "python_executable": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+    "node": "v24.22.2",
+    "host": "macOS-26.6.2-arm64-arm-64bit",
+    "dependencies": {
+      "react": "19.3.1",
+      "react-dom": "19.3.1",
+      "vitest": "3.2.7",
+      "jsdom": "26.1.0",
+      "jsdom_engines": {
+        "node": ">=18"
+      }
+    },
+    "reviewer_checkout": {
+      "cwd": "/Users/ronfee/.codex/worktrees/windows-ci-fix/天枢Agent",
+      "head": "cefa1e375974d96e2ec25e199f6605f6dcf2239b",
+      "status": "## HEAD (no branch)"
+    }
+  },
+  "positive_phases": [
+    {
+      "label": "python-first",
+      "exit": 0,
+      "result": {
+        "passed": 50,
+        "unique": true,
+        "seconds": 22.74
+      },
+      "command": "raw/python-first.command.json",
+      "command_sha256": "19eba4e421012b182884f70a99870fe5787e8298674b129cf1a1e6ac581df442",
+      "raw": "raw/python-first.log",
+      "raw_sha256": "f2c4c69655b0246b3b363e186f8c1580056697286154aabc194feb04b497e6da",
+      "argv": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "addopts=",
+        "-s",
+        "-q",
+        "--tb=short",
+        "/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py"
+      ]
+    },
+    {
+      "label": "paused-supplement",
+      "exit": 0,
+      "result": {
+        "passed": 2,
+        "deselected": 50,
+        "unique": true,
+        "seconds": 0.96
+      },
+      "command": "raw/paused-supplement.command.json",
+      "command_sha256": "d2ffa720048df3446952e7130156fa5b324b3c9532221bafef133514d664b8ab",
+      "raw": "raw/paused-supplement.log",
+      "raw_sha256": "11b47f4e99687cc52d00e679c797c245b39e3ffd6fb5ff6443ea27bda9bfa066",
+      "argv": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "addopts=",
+        "-s",
+        "-q",
+        "--tb=short",
+        "--junitxml=/tmp/low-disk-t3-independent-20261114/raw/paused-supplement.junit.xml",
+        "/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py",
+        "-k",
+        "test_paused_run_flag_reject_then_original_low_resume"
+      ]
+    },
+    {
+      "label": "ui-first",
+      "exit": 0,
+      "result": {
+        "passed": 4,
+        "skipped": 0,
+        "unique": true
+      },
+      "command": "raw/ui-first.command.json",
+      "command_sha256": "e41d602054e3f2baa2e140e40eb85eb4a74e8da2c9c18eb0579a1173aa579a70",
+      "raw": "raw/ui-first.log",
+      "raw_sha256": "223714c65231258cb3d488f69b6ffc8a31585655108ad91945f732439a414d9f",
+      "argv": [
+        "/Users/ronfee/.local/bin/node",
+        "/tmp/low-disk-t3-independent-20261114/probes/node_modules/vitest/vitest.mjs",
+        "run",
+        "--config",
+        "/tmp/low-disk-t3-independent-20261114/probes/vitest.independent.config.mjs",
+        "--reporter=verbose"
+      ]
+    },
+    {
+      "label": "restored-controls",
+      "exit": 0,
+      "result": {
+        "passed": 5,
+        "deselected": 47,
+        "unique": false
+      },
+      "command": "raw/restored-controls.command.json",
+      "command_sha256": "8521ad77affb235f36963427954da8a1669ee6a12ebca8a564b1f37c2449b571",
+      "raw": "raw/restored-controls.log",
+      "raw_sha256": "4d15f067765b577d7bf1a5a3a82ab5cb4168074ec48fa871d7949309a2d219aa",
+      "argv": [
+        "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "addopts=",
+        "-s",
+        "-q",
+        "--tb=short",
+        "--junitxml=/tmp/low-disk-t3-independent-20261114/raw/restored-controls.junit.xml",
+        "/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py",
+        "-k",
+        "(test_cli_both_explicit_modes and pure_only) or (test_paused_run_flag_reject_then_original_low_resume and pure_only) or (test_real_ipc_explicit_modes and pure_only) or (test_real_ipc_bad_policy and None)"
+      ]
+    },
+    {
+      "label": "ui-restored-controls",
+      "exit": 0,
+      "result": {
+        "passed": 2,
+        "filtered_unexecuted_reported_as_skipped": 2,
+        "unique": false
+      },
+      "command": "raw/ui-restored-controls.command.json",
+      "command_sha256": "424da5dd8f2f12a056c93306eb409b609412ed4f4049c1aba33c73604bd884fc",
+      "raw": "raw/ui-restored-controls.log",
+      "raw_sha256": "cf800dc4d59e66c243f6ec0bcbf8529f8feab290857e6ba687ebe95794671d3e",
+      "argv": [
+        "/Users/ronfee/.local/bin/node",
+        "/tmp/low-disk-t3-independent-20261114/probes/node_modules/vitest/vitest.mjs",
+        "run",
+        "--config",
+        "/tmp/low-disk-t3-independent-20261114/probes/vitest.independent.config.mjs",
+        "--reporter=verbose",
+        "-t",
+        "new pure low failure|existing task path sends both"
+      ]
+    }
+  ],
+  "unique_positive_counts": {
+    "python": 52,
+    "app_dom": 4,
+    "single_combined_56_pass_command": false,
+    "inherited_or_author_tests_included": false
+  },
+  "negative_controls": {
+    "variants": 11,
+    "call_behavior_failures": 11,
+    "setup_import_collection_kills": 0,
+    "all_717_entries_restored_after_each": true,
+    "aggregate": "raw/mutation-results.json",
+    "labels": [
+      "cli-start-policy",
+      "cli-compat-policy",
+      "cli-noncreation-guard",
+      "rpc-prepare-policy",
+      "rpc-persist-policy",
+      "rpc-manifest-policy",
+      "rpc-truthiness-default",
+      "ui-create-policy",
+      "ui-detail-policy",
+      "ui-dialog-retry-seed",
+      "ui-task-key-isolation"
+    ],
+    "ui_filter_classification": "each has 1 selected call failure; 3 name-filtered cases reported skipped; authored_skips=0",
+    "restored_positive_rechecks_in_unique_counts": false
+  },
+  "retained_rejection_material_audit": {
+    "cases": 27,
+    "breakdown": {
+      "cli": 8,
+      "ipc_threshold": 5,
+      "ipc_bad": 14
+    },
+    "is_new_pytest_passes": false,
+    "database_mode": "sqlite uri mode=ro",
+    "zero_tables": [
+      "runs",
+      "jobs",
+      "leases",
+      "approvals",
+      "grants",
+      "dispatch_requests",
+      "budget_reservations"
+    ],
+    "no_new_run_intent_model_manifest": true,
+    "whole_database_zero_writes_claimed": false,
+    "evidence": "raw/retained-rejection-audit.json"
+  },
+  "quality": {
+    "new_authorization_lease_event_billing_bypass_found": false,
+    "task_workspace_permissions_remain_independent_from_run_policy": true,
+    "runtime_dependencies_added": false,
+    "only_new_ui_dev_dependency": "jsdom",
+    "pyproject_and_uv_lock_unchanged": true,
+    "node_20_19_execution": "NOT_RUN; static engines compatibility only",
+    "added_source_test_lines_placeholder_skip_only_hits": [],
+    "dist_rebuild_consistency": "NOT_RUN in independent lane; root gate"
+  },
+  "observer_errors_retained": [
+    {
+      "kind": "UI name-filter skipped metadata classification",
+      "evidence": "raw/filter-metadata-correction.json",
+      "product_failure": false,
+      "originals": "raw/metadata-before-filter-correction"
+    },
+    {
+      "kind": "finalize observer wrong 71-vs-211 path selection assertion",
+      "evidence": "raw/finalize-observer-first-error.json",
+      "product_failure": false
+    }
+  ],
+  "nonbehavior_document_followup": [
+    {
+      "path": "docs/low-disk-admission-contract.md",
+      "line": 81,
+      "note": "historical 75 rule-count sentence should state contract-stage time explicitly",
+      "owner": "root",
+      "followup_live_delta_reviewed_in_this_717": "NO",
+      "contract_semantics_relaxed": false
+    }
+  ],
+  "ld_mapping": {
+    "LD-01": [
+      "T1",
+      "T2"
+    ],
+    "LD-02": [
+      "T1",
+      "T3"
+    ],
+    "LD-03": [
+      "T1",
+      "T2",
+      "T3"
+    ],
+    "LD-04": [
+      "T1"
+    ],
+    "LD-05": [
+      "T2"
+    ],
+    "LD-06": [
+      "T1",
+      "T2"
+    ]
+  },
+  "inherited_binding": {
+    "path": "inputs/inherited-evidence-binding.json",
+    "sha256": "3726f2fdd46e70addf113b48ec9b65f70b5a1c4f90e2ccd0aaf92859cf40dba7",
+    "all_8_input_file_hashes_and_sizes_rechecked": true,
+    "T2_80_passes_counted_as_new_T3": false
+  },
+  "limitations": [
+    "OBSERVED_LOCK_HELD_DURING_CONTROLLED_LEAF is only controlled-leaf lock observation; no native disk_usage time bound, deadlock elimination, or SLO guarantee.",
+    "Same temporary-volume injected leaf is not native cross-volume/nested-mount or Windows/Linux device evidence.",
+    "Threshold is not capacity reservation; pure_only still permits necessary audit writes and model network/billing.",
+    "App HostClient-boundary mock is UI wiring evidence; real backend evidence is independent CLI/native IPC."
+  ],
+  "not_run_or_not_granted_in_this_lane": [
+    "uv lock --check",
+    "full pytest",
+    "whole-repository ruff",
+    "full UI frozen install/typecheck/test/build",
+    "dist rebuild consistency",
+    "official commit/PR",
+    "latest main synchronization",
+    "four required native CI checks including Windows two shards and aggregate",
+    "protected merge and new main own CI",
+    "paid model",
+    "10h soak",
+    "recovery apply",
+    "capacity GC",
+    "release",
+    "other-platform user-device support"
+  ],
+  "process_and_work_integrity": {
+    "all_recorded_child_peer_pids_exited": true,
+    "work_extra_files": [],
+    "pycache_or_pytest_cache_dirs": [],
+    "dependency_symlinks_removed_without_chmod_external_target": true,
+    "evidence": "raw/process-and-extras-audit.json"
+  },
+  "seal_policy": {
+    "files": "0444",
+    "directories": "0555",
+    "hash_index": "all local regular files excluding hash-index.json itself",
+    "stop_writing_after_seal": true
+  }
+}

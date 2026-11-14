@@ -1,0 +1,719 @@
+{
+  "meaning": "Exact report/probe/raw/mutation subset. Original hash-index covers additional retained source/inputs/run data that are not all published here. Raw .py/.log files use an extra .txt suffix without changing bytes.",
+  "entries": {
+    "REPORT.md": {
+      "bytes": 14118,
+      "sha256": "e1de27bf1c6ae73718a91ce9bf8568a2a0fca8956db37f6a64401c36428c877d",
+      "original": "/tmp/low-disk-t3-independent-20261114/REPORT.md",
+      "original_relative_path": "REPORT.md"
+    },
+    "facts.json": {
+      "bytes": 12092,
+      "sha256": "a07fe5ce56a24884edcd4ed5756a033194c081e1d833dcbd14cfe79e02ebdeb1",
+      "original": "/tmp/low-disk-t3-independent-20261114/facts.json",
+      "original_relative_path": "facts.json"
+    },
+    "inputs.json": {
+      "bytes": 6652,
+      "sha256": "9fed5431a6a964baf1b5764a5ecf59754f5307b099cd332b56f485a03d170fdb",
+      "original": "/tmp/low-disk-t3-independent-20261114/inputs.json",
+      "original_relative_path": "inputs.json"
+    },
+    "hash-index.json": {
+      "bytes": 240561,
+      "sha256": "537c937fe34e0395f5861abc660bb90edc88944f4b1876098adbd1c2138bb757",
+      "original": "/tmp/low-disk-t3-independent-20261114/hash-index.json",
+      "original_relative_path": "hash-index.json"
+    },
+    "probes/vitest.independent.config.mjs": {
+      "bytes": 373,
+      "sha256": "b2128759530278ea7c080e00aaa3635c5338fb23f9672b30f2029d03ff22dd14",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/vitest.independent.config.mjs",
+      "original_relative_path": "probes/vitest.independent.config.mjs"
+    },
+    "probes/seal_evidence.py.txt": {
+      "bytes": 12829,
+      "sha256": "de699cc91765b486ccc1b9f0d390bad9e447b360ae2e5107341de5875d53590f",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/seal_evidence.py",
+      "original_relative_path": "probes/seal_evidence.py"
+    },
+    "probes/leaf_runtime.py.txt": {
+      "bytes": 1052,
+      "sha256": "fdac1b3e4bb16337daab7eef19735df0a1eaf822b5faa72711536a138e97947d",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/leaf_runtime.py",
+      "original_relative_path": "probes/leaf_runtime.py"
+    },
+    "probes/test_entry_independent.py.txt": {
+      "bytes": 14461,
+      "sha256": "2e17df3fdce1a81f3fd87747708fb7f2949a399d6b5ec99d4a1ab949685a9329",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py",
+      "original_relative_path": "probes/test_entry_independent.py"
+    },
+    "probes/cli_child.py.txt": {
+      "bytes": 316,
+      "sha256": "8e21212c240b3f8d1bfc3dab515795e45b5ae125879d06abc34d45ee7a631d4a",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/cli_child.py",
+      "original_relative_path": "probes/cli_child.py"
+    },
+    "probes/run_python.py.txt": {
+      "bytes": 1393,
+      "sha256": "dbf3a0976889b18ccd38999fa6e64acbc13ed6dc6243ea14e63c53b90ae86263",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/run_python.py",
+      "original_relative_path": "probes/run_python.py"
+    },
+    "probes/run_mutations.py.txt": {
+      "bytes": 5739,
+      "sha256": "52b50b3b53376754ce4018cea1dcef855f0e71dc37f5992207d4a6c8c6334295",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/run_mutations.py",
+      "original_relative_path": "probes/run_mutations.py"
+    },
+    "probes/run_ui.py.txt": {
+      "bytes": 1196,
+      "sha256": "d7bdbc6a8c9080cf98cc934adf0ef8d428e2cc4643ecce1ed7d93cbda7db6b49",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/run_ui.py",
+      "original_relative_path": "probes/run_ui.py"
+    },
+    "probes/finalize_evidence.py.txt": {
+      "bytes": 9804,
+      "sha256": "7d16cf2500090d54fca067390f0939378546fb090395a69a1fcaec92faa9c940",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/finalize_evidence.py",
+      "original_relative_path": "probes/finalize_evidence.py"
+    },
+    "probes/app-independent.test.tsx": {
+      "bytes": 8673,
+      "sha256": "bb3b832a43f3e984c3131d749701a08c299e415e6d22d054a9ae558e2e653e2f",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/app-independent.test.tsx",
+      "original_relative_path": "probes/app-independent.test.tsx"
+    },
+    "probes/daemon_child.py.txt": {
+      "bytes": 338,
+      "sha256": "2594c4496ad0b33ebebbda59c88294c1cd3739d46a475ef63e1c03c3b9de2d36",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/daemon_child.py",
+      "original_relative_path": "probes/daemon_child.py"
+    },
+    "probes/mcp_peer.py.txt": {
+      "bytes": 179,
+      "sha256": "8b230e8f198ffd1e1dd9fe8e51ce4cc3a77c999ddcdee021f4a783c9789c180d",
+      "original": "/tmp/low-disk-t3-independent-20261114/probes/mcp_peer.py",
+      "original_relative_path": "probes/mcp_peer.py"
+    },
+    "raw/mutant-rpc-prepare-policy.junit.xml": {
+      "bytes": 1102,
+      "sha256": "fe49d414a5082444577dc4c1416a6adbe747d6775cf8e3310723b39f8c6958ea",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-prepare-policy.junit.xml",
+      "original_relative_path": "raw/mutant-rpc-prepare-policy.junit.xml"
+    },
+    "raw/mutant-ui-dialog-retry-seed.command.json": {
+      "bytes": 90894,
+      "sha256": "c7b98349d85fa593c51b1e800b8510c7119ef0688d673dde0556ec82f2a06be2",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-dialog-retry-seed.command.json",
+      "original_relative_path": "raw/mutant-ui-dialog-retry-seed.command.json"
+    },
+    "raw/mutant-rpc-truthiness-default.junit.xml": {
+      "bytes": 1093,
+      "sha256": "11a84be9bea5435b1166bfa3ecbbd6212850381c26ccad7995478ddc0795f2ad",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-truthiness-default.junit.xml",
+      "original_relative_path": "raw/mutant-rpc-truthiness-default.junit.xml"
+    },
+    "raw/python-first.command.json": {
+      "bytes": 90545,
+      "sha256": "19eba4e421012b182884f70a99870fe5787e8298674b129cf1a1e6ac581df442",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/python-first.command.json",
+      "original_relative_path": "raw/python-first.command.json"
+    },
+    "raw/python-first.log.txt": {
+      "bytes": 28489,
+      "sha256": "f2c4c69655b0246b3b363e186f8c1580056697286154aabc194feb04b497e6da",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/python-first.log",
+      "original_relative_path": "raw/python-first.log"
+    },
+    "raw/mutant-rpc-manifest-policy.log.txt": {
+      "bytes": 1249,
+      "sha256": "a9a9071a8a644f185e57a5f47136b0e91d3d551922192416a431c9db2da59f99",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-manifest-policy.log",
+      "original_relative_path": "raw/mutant-rpc-manifest-policy.log"
+    },
+    "raw/paused-supplement.log.txt": {
+      "bytes": 468,
+      "sha256": "11b47f4e99687cc52d00e679c797c245b39e3ffd6fb5ff6443ea27bda9bfa066",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/paused-supplement.log",
+      "original_relative_path": "raw/paused-supplement.log"
+    },
+    "raw/mutant-rpc-prepare-policy.log.txt": {
+      "bytes": 1226,
+      "sha256": "553c6f1987803d022dd1677b435449354d17d60328d794c4fdcada417df3bd1e",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-prepare-policy.log",
+      "original_relative_path": "raw/mutant-rpc-prepare-policy.log"
+    },
+    "raw/mutant-ui-detail-policy.log.txt": {
+      "bytes": 2342,
+      "sha256": "9324ec2eb0bac3c7d072d643b5831048d8eeb094af2e4fcc5f5990d132c85603",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-detail-policy.log",
+      "original_relative_path": "raw/mutant-ui-detail-policy.log"
+    },
+    "raw/retained-rejection-audit.json": {
+      "bytes": 15016,
+      "sha256": "d9bc080d8a9ef9f08abc786f7ccac2b2269796047e6a7eae9338d88973aa2816",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/retained-rejection-audit.json",
+      "original_relative_path": "raw/retained-rejection-audit.json"
+    },
+    "raw/mutant-rpc-persist-policy.log.txt": {
+      "bytes": 1226,
+      "sha256": "01c86da74da34553d2f0e04b7322e2698224f3ccbaba53389c8b5f13955a77ea",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-persist-policy.log",
+      "original_relative_path": "raw/mutant-rpc-persist-policy.log"
+    },
+    "raw/mutant-rpc-prepare-policy.command.json": {
+      "bytes": 90877,
+      "sha256": "f33ef662a06e041d16873830b9e8adda2ceb5b553fa220432ce1273f5920037a",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-prepare-policy.command.json",
+      "original_relative_path": "raw/mutant-rpc-prepare-policy.command.json"
+    },
+    "raw/mutant-rpc-manifest-policy.command.json": {
+      "bytes": 90878,
+      "sha256": "e976d49248a564f2fa5cdfb7901811a26cf40bb00ca4bdb5a294c5c70a3c587d",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-manifest-policy.command.json",
+      "original_relative_path": "raw/mutant-rpc-manifest-policy.command.json"
+    },
+    "raw/mutant-rpc-persist-policy.command.json": {
+      "bytes": 90877,
+      "sha256": "52e19335c9c943547c5cc08d35fe329d01abb2e132a0086e115f67a8576eed47",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-persist-policy.command.json",
+      "original_relative_path": "raw/mutant-rpc-persist-policy.command.json"
+    },
+    "raw/restored-controls.junit.xml": {
+      "bytes": 821,
+      "sha256": "81fbba8c12a9713acedad3892ff6628ae62f1f48f53dda13318dc7f9bd12bf20",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/restored-controls.junit.xml",
+      "original_relative_path": "raw/restored-controls.junit.xml"
+    },
+    "raw/finalize-evidence.log.txt": {
+      "bytes": 210,
+      "sha256": "cac8639c84890733504eae7b2164e783ca81c30596b7c71e5b25ebe666ee9aef",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/finalize-evidence.log",
+      "original_relative_path": "raw/finalize-evidence.log"
+    },
+    "raw/run_mutations-before-filter-correction.py.txt": {
+      "bytes": 5629,
+      "sha256": "0bb03a9e8844c7c01fe8187967a88b2239d89d12acba9b527a74de1aeeb21a0e",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/run_mutations-before-filter-correction.py",
+      "original_relative_path": "raw/run_mutations-before-filter-correction.py"
+    },
+    "raw/process-and-extras-audit.json": {
+      "bytes": 1017,
+      "sha256": "5ab99c882cccde503993b456a1be98f44df7bc27ea5aa9140fa312bb65ef2a52",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/process-and-extras-audit.json",
+      "original_relative_path": "raw/process-and-extras-audit.json"
+    },
+    "raw/mutant-rpc-truthiness-default.command.json": {
+      "bytes": 90872,
+      "sha256": "3e87b2e8da982dcb3c1c93c530597210aa3c171fe8aacb857c1c77925d880200",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-truthiness-default.command.json",
+      "original_relative_path": "raw/mutant-rpc-truthiness-default.command.json"
+    },
+    "raw/inherited-input-recheck.json": {
+      "bytes": 1847,
+      "sha256": "297129321f01ac02a36ea6549a5d0e79b35c6e91343ebb1137274a662bff3560",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/inherited-input-recheck.json",
+      "original_relative_path": "raw/inherited-input-recheck.json"
+    },
+    "raw/finalize-observer-first-error.json": {
+      "bytes": 1142,
+      "sha256": "bdd501c81e1a76bdc5b23df8f8d3ba89ab5468117e932445630872293adfc50d",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/finalize-observer-first-error.json",
+      "original_relative_path": "raw/finalize-observer-first-error.json"
+    },
+    "raw/ui-restored-controls.command.json": {
+      "bytes": 90922,
+      "sha256": "424da5dd8f2f12a056c93306eb409b609412ed4f4049c1aba33c73604bd884fc",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/ui-restored-controls.command.json",
+      "original_relative_path": "raw/ui-restored-controls.command.json"
+    },
+    "raw/mutant-cli-noncreation-guard.command.json": {
+      "bytes": 90904,
+      "sha256": "c74ad8abcaa3f9e930a2a7104e132478bfd6095d18f6e567298de39bfd35c0eb",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-noncreation-guard.command.json",
+      "original_relative_path": "raw/mutant-cli-noncreation-guard.command.json"
+    },
+    "raw/mutant-cli-noncreation-guard.log.txt": {
+      "bytes": 916,
+      "sha256": "1dfbfa4c223d84bfd6ef64a2797a45ef24fa9881042080b00c8f6417b801eccf",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-noncreation-guard.log",
+      "original_relative_path": "raw/mutant-cli-noncreation-guard.log"
+    },
+    "raw/seal-verification.json": {
+      "bytes": 468,
+      "sha256": "f3ec07065d68cb453b0c226ae51740b8f97af792c0681c5b67d18eedc1579ed0",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/seal-verification.json",
+      "original_relative_path": "raw/seal-verification.json"
+    },
+    "raw/mutant-cli-compat-policy.command.json": {
+      "bytes": 90887,
+      "sha256": "953426c88c9008801741df9d9d294b14fde1e27c2aa3c265218b246b12d4cd76",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-compat-policy.command.json",
+      "original_relative_path": "raw/mutant-cli-compat-policy.command.json"
+    },
+    "raw/restored-controls.command.json": {
+      "bytes": 91031,
+      "sha256": "8521ad77affb235f36963427954da8a1669ee6a12ebca8a564b1f37c2449b571",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/restored-controls.command.json",
+      "original_relative_path": "raw/restored-controls.command.json"
+    },
+    "raw/dependency-links.json": {
+      "bytes": 799,
+      "sha256": "a618b5dc139994f3acb0869bafaf048a3d8fc6c94bbfc2bf31c4e06050ddbc55",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/dependency-links.json",
+      "original_relative_path": "raw/dependency-links.json"
+    },
+    "raw/paused-supplement.command.json": {
+      "bytes": 90787,
+      "sha256": "d2ffa720048df3446952e7130156fa5b324b3c9532221bafef133514d664b8ab",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/paused-supplement.command.json",
+      "original_relative_path": "raw/paused-supplement.command.json"
+    },
+    "raw/mutant-cli-noncreation-guard.junit.xml": {
+      "bytes": 1240,
+      "sha256": "3a461e2e0fee18506734545ef4482e0ed3cdbdbc5a91c64584b4c3cd9c943a55",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-noncreation-guard.junit.xml",
+      "original_relative_path": "raw/mutant-cli-noncreation-guard.junit.xml"
+    },
+    "raw/mutant-ui-dialog-retry-seed.log.txt": {
+      "bytes": 2187,
+      "sha256": "67df0e996ba8dfeb3cf3c09241cb1e91f4d5a409d9953f7a0dc0ecd1c13fb705",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-dialog-retry-seed.log",
+      "original_relative_path": "raw/mutant-ui-dialog-retry-seed.log"
+    },
+    "raw/paused-supplement.junit.xml": {
+      "bytes": 518,
+      "sha256": "84fa903f27efede2d2685d605d347ea111a1ed35b52e16b1db782b5c2e309a9a",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/paused-supplement.junit.xml",
+      "original_relative_path": "raw/paused-supplement.junit.xml"
+    },
+    "raw/source-and-quality-audit.json": {
+      "bytes": 8820,
+      "sha256": "7a1912543ccb657b8c01c0f81aadf1cff7f7fef158702847da07b799d3671468",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/source-and-quality-audit.json",
+      "original_relative_path": "raw/source-and-quality-audit.json"
+    },
+    "raw/mutant-ui-task-key-isolation.command.json": {
+      "bytes": 90892,
+      "sha256": "97e59a0e2de70b725ce4b580aeed9d3402f68c205d1fc747657020a65ae34331",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-task-key-isolation.command.json",
+      "original_relative_path": "raw/mutant-ui-task-key-isolation.command.json"
+    },
+    "raw/mutant-cli-start-policy.junit.xml": {
+      "bytes": 1241,
+      "sha256": "98c85f52b475392e5a17b0934dccddfc5f25ff9a2b19f5aec24f301f26bdc514",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-start-policy.junit.xml",
+      "original_relative_path": "raw/mutant-cli-start-policy.junit.xml"
+    },
+    "raw/mutant-rpc-persist-policy.junit.xml": {
+      "bytes": 1102,
+      "sha256": "e397702b61e75080f613cde45eb4cec150cb8b2ed5d911485fe23adac438bb16",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-persist-policy.junit.xml",
+      "original_relative_path": "raw/mutant-rpc-persist-policy.junit.xml"
+    },
+    "raw/python-first.test_entry_independent.py.txt": {
+      "bytes": 12076,
+      "sha256": "cd1f82824af23c31226f7734dfdcd18ebdd8bc6669e26047ffd28fc97e4f24a3",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/python-first.test_entry_independent.py",
+      "original_relative_path": "raw/python-first.test_entry_independent.py"
+    },
+    "raw/mutant-cli-start-policy.command.json": {
+      "bytes": 90886,
+      "sha256": "c018ec9de1a0e0aec891171bad67a54560d6eb6650720c0b2c18bfbd2b9206ce",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-start-policy.command.json",
+      "original_relative_path": "raw/mutant-cli-start-policy.command.json"
+    },
+    "raw/ui-first.command.json": {
+      "bytes": 90763,
+      "sha256": "e41d602054e3f2baa2e140e40eb85eb4a74e8da2c9c18eb0579a1173aa579a70",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/ui-first.command.json",
+      "original_relative_path": "raw/ui-first.command.json"
+    },
+    "raw/mutant-ui-create-policy.log.txt": {
+      "bytes": 2124,
+      "sha256": "a759627697bb5b820c9ee7c9f52418de989ba79263ef17a102250aba36fa5332",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-create-policy.log",
+      "original_relative_path": "raw/mutant-ui-create-policy.log"
+    },
+    "raw/mutant-cli-compat-policy.log.txt": {
+      "bytes": 1260,
+      "sha256": "90ba2964ef0b3220ddc9a03c4deb0172823447400798f698acf1f40ab476e30d",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-compat-policy.log",
+      "original_relative_path": "raw/mutant-cli-compat-policy.log"
+    },
+    "raw/restored-controls.log.txt": {
+      "bytes": 2888,
+      "sha256": "4d15f067765b577d7bf1a5a3a82ab5cb4168074ec48fa871d7949309a2d219aa",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/restored-controls.log",
+      "original_relative_path": "raw/restored-controls.log"
+    },
+    "raw/mutant-ui-detail-policy.command.json": {
+      "bytes": 90901,
+      "sha256": "3c221d50bc70a75956d39b166a2cb6e77ca855ec90aea7292ad30b2043e05631",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-detail-policy.command.json",
+      "original_relative_path": "raw/mutant-ui-detail-policy.command.json"
+    },
+    "raw/mutant-cli-start-policy.log.txt": {
+      "bytes": 1258,
+      "sha256": "fd00f22ab663ed4ae1755d66834f78f4b3d4da911ea08cc09ea32eeadc645c63",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-start-policy.log",
+      "original_relative_path": "raw/mutant-cli-start-policy.log"
+    },
+    "raw/mutant-ui-create-policy.command.json": {
+      "bytes": 90893,
+      "sha256": "de44ee13cc64cc0f466b958ae9ab67f91860f7be18ec2d5de6dfda934aa66140",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-create-policy.command.json",
+      "original_relative_path": "raw/mutant-ui-create-policy.command.json"
+    },
+    "raw/environment.json": {
+      "bytes": 617,
+      "sha256": "284ddae5327328d45c07c1a587cd8444468e2fe7f63432e5ad8fb7fd21e5130e",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/environment.json",
+      "original_relative_path": "raw/environment.json"
+    },
+    "raw/ui-first.log.txt": {
+      "bytes": 3699,
+      "sha256": "223714c65231258cb3d488f69b6ffc8a31585655108ad91945f732439a414d9f",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/ui-first.log",
+      "original_relative_path": "raw/ui-first.log"
+    },
+    "raw/mutant-cli-compat-policy.junit.xml": {
+      "bytes": 1242,
+      "sha256": "d51c6de862fbffffb7dcb4b9ac91ab4eda557e4682c098d7fd25d490a3ebddbe",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-cli-compat-policy.junit.xml",
+      "original_relative_path": "raw/mutant-cli-compat-policy.junit.xml"
+    },
+    "raw/mutant-ui-task-key-isolation.log.txt": {
+      "bytes": 2027,
+      "sha256": "fffdad4c5041d2c5ae16bd4c3d08c23819f24f0f1a3ac9ccc5ae7b4745f8d879",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-ui-task-key-isolation.log",
+      "original_relative_path": "raw/mutant-ui-task-key-isolation.log"
+    },
+    "raw/mutant-rpc-truthiness-default.log.txt": {
+      "bytes": 1255,
+      "sha256": "64a18da1aa52cedb31634cdc910a1f0a9ee1be68cb91bdcac3576d4a2af4c54e",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-truthiness-default.log",
+      "original_relative_path": "raw/mutant-rpc-truthiness-default.log"
+    },
+    "raw/filter-metadata-correction.json": {
+      "bytes": 1359,
+      "sha256": "cf1270c55e883eacf03044ebf976b99ece27b2a399c992ab0f7a589442fc806a",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/filter-metadata-correction.json",
+      "original_relative_path": "raw/filter-metadata-correction.json"
+    },
+    "raw/ui-restored-controls.log.txt": {
+      "bytes": 2556,
+      "sha256": "cf800dc4d59e66c243f6ec0bcbf8529f8feab290857e6ba687ebe95794671d3e",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/ui-restored-controls.log",
+      "original_relative_path": "raw/ui-restored-controls.log"
+    },
+    "raw/mutant-rpc-manifest-policy.junit.xml": {
+      "bytes": 1056,
+      "sha256": "1917c1694a76b920f2b3308afeee76151fd2dfe3f81c0b32f730eb48defa555b",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutant-rpc-manifest-policy.junit.xml",
+      "original_relative_path": "raw/mutant-rpc-manifest-policy.junit.xml"
+    },
+    "raw/mutation-results.json": {
+      "bytes": 3003095,
+      "sha256": "f0da3ddfc9a1ba5e8f8b553455a301ad4f4c1072840939ef9523eea25db2c56d",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/mutation-results.json",
+      "original_relative_path": "raw/mutation-results.json"
+    },
+    "raw/metadata-before-filter-correction/ui-task-key-isolation.record.json": {
+      "bytes": 268559,
+      "sha256": "c1770861f65415a0fe24c987cfadff5cc1c6bbe1ecba377755c8b48495a04b5b",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction/ui-task-key-isolation.record.json",
+      "original_relative_path": "raw/metadata-before-filter-correction/ui-task-key-isolation.record.json"
+    },
+    "raw/metadata-before-filter-correction/ui-detail-policy.record.json": {
+      "bytes": 268563,
+      "sha256": "52420846ed8faaeaebb18f5f7b86bf2a5969baaf5d51849ca9d5f157aca765d9",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction/ui-detail-policy.record.json",
+      "original_relative_path": "raw/metadata-before-filter-correction/ui-detail-policy.record.json"
+    },
+    "raw/metadata-before-filter-correction/ui-create-policy.record.json": {
+      "bytes": 268554,
+      "sha256": "572d7bed71b622ad13c07d7f237b0c4f8920a138db79375ecd1c615d1f952126",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction/ui-create-policy.record.json",
+      "original_relative_path": "raw/metadata-before-filter-correction/ui-create-policy.record.json"
+    },
+    "raw/metadata-before-filter-correction/ui-dialog-retry-seed.record.json": {
+      "bytes": 268558,
+      "sha256": "009d1e5074747c128cd5e4bc59992d981ac7a055384b753e7b077dfbe74a97c1",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction/ui-dialog-retry-seed.record.json",
+      "original_relative_path": "raw/metadata-before-filter-correction/ui-dialog-retry-seed.record.json"
+    },
+    "raw/metadata-before-filter-correction/mutation-results.json": {
+      "bytes": 3002173,
+      "sha256": "6ca44f2b614bdd997a2de2a4113eb7600a992d89bd142090cbdf736dd96dc327",
+      "original": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction/mutation-results.json",
+      "original_relative_path": "raw/metadata-before-filter-correction/mutation-results.json"
+    },
+    "mutations/rpc-manifest-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-manifest-policy/runner.stderr",
+      "original_relative_path": "mutations/rpc-manifest-policy/runner.stderr"
+    },
+    "mutations/rpc-manifest-policy/record.json": {
+      "bytes": 268587,
+      "sha256": "866758e80dc7d9348442744e482f94e249b3cbe90470e427a0b2808a5609bf64",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-manifest-policy/record.json",
+      "original_relative_path": "mutations/rpc-manifest-policy/record.json"
+    },
+    "mutations/rpc-manifest-policy/runner.stdout": {
+      "bytes": 1300,
+      "sha256": "b2b0850a0124dde7683891be6e1a3aaee3fe0f440f8fc5de5589c04029fa0c69",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-manifest-policy/runner.stdout",
+      "original_relative_path": "mutations/rpc-manifest-policy/runner.stdout"
+    },
+    "mutations/rpc-manifest-policy/change.patch": {
+      "bytes": 404,
+      "sha256": "e1ceec68d8cfc45a6c917ad17290c2648927e21b93cf261c4fc2cdf100027d8c",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-manifest-policy/change.patch",
+      "original_relative_path": "mutations/rpc-manifest-policy/change.patch"
+    },
+    "mutations/rpc-prepare-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-prepare-policy/runner.stderr",
+      "original_relative_path": "mutations/rpc-prepare-policy/runner.stderr"
+    },
+    "mutations/rpc-prepare-policy/record.json": {
+      "bytes": 268586,
+      "sha256": "3456bfe3d69a1331ddc32d89e8352608b8e2931687069671c89d4ebbddae5815",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-prepare-policy/record.json",
+      "original_relative_path": "mutations/rpc-prepare-policy/record.json"
+    },
+    "mutations/rpc-prepare-policy/runner.stdout": {
+      "bytes": 1276,
+      "sha256": "73a7b624e7a1d30dd6f532f7d92907d93a806bfcb895f3564572703e9aa0d1ac",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-prepare-policy/runner.stdout",
+      "original_relative_path": "mutations/rpc-prepare-policy/runner.stdout"
+    },
+    "mutations/rpc-prepare-policy/change.patch": {
+      "bytes": 414,
+      "sha256": "3a786e0b504439183635c14fc39a6019ac51f50034d1212a0f59a187c22906a9",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-prepare-policy/change.patch",
+      "original_relative_path": "mutations/rpc-prepare-policy/change.patch"
+    },
+    "mutations/rpc-truthiness-default/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-truthiness-default/runner.stderr",
+      "original_relative_path": "mutations/rpc-truthiness-default/runner.stderr"
+    },
+    "mutations/rpc-truthiness-default/record.json": {
+      "bytes": 268581,
+      "sha256": "de8c83be49796992a4235824fc3f469048aadf9a3f1e74ea33b66c4ae2f219fa",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-truthiness-default/record.json",
+      "original_relative_path": "mutations/rpc-truthiness-default/record.json"
+    },
+    "mutations/rpc-truthiness-default/runner.stdout": {
+      "bytes": 1309,
+      "sha256": "d72b7b777ddb2e3001c9637ea081e27d3922e25d22a219c67f05969350029259",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-truthiness-default/runner.stdout",
+      "original_relative_path": "mutations/rpc-truthiness-default/runner.stdout"
+    },
+    "mutations/rpc-truthiness-default/change.patch": {
+      "bytes": 368,
+      "sha256": "5dff5aa01078f6ffa8765c5e544e805281f2232118fa0883c30ccaa2fc78e677",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-truthiness-default/change.patch",
+      "original_relative_path": "mutations/rpc-truthiness-default/change.patch"
+    },
+    "mutations/ui-dialog-retry-seed/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-dialog-retry-seed/runner.stderr",
+      "original_relative_path": "mutations/ui-dialog-retry-seed/runner.stderr"
+    },
+    "mutations/ui-dialog-retry-seed/record.json": {
+      "bytes": 268687,
+      "sha256": "91bb5d17a7539c5f2c26dfb8a1459eee902a066ddf2eedd284354df1a5a5d1d2",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-dialog-retry-seed/record.json",
+      "original_relative_path": "mutations/ui-dialog-retry-seed/record.json"
+    },
+    "mutations/ui-dialog-retry-seed/runner.stdout": {
+      "bytes": 2239,
+      "sha256": "aece1d4589d54d49455fdc1c16874d55c7c98bd55023a052062751844694ee9e",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-dialog-retry-seed/runner.stdout",
+      "original_relative_path": "mutations/ui-dialog-retry-seed/runner.stdout"
+    },
+    "mutations/ui-dialog-retry-seed/change.patch": {
+      "bytes": 411,
+      "sha256": "5e66f5c3eaac3b6f8c765c6cddd4c52aecbcbdb3cb0a587a6373c011142d8061",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-dialog-retry-seed/change.patch",
+      "original_relative_path": "mutations/ui-dialog-retry-seed/change.patch"
+    },
+    "mutations/cli-compat-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-compat-policy/runner.stderr",
+      "original_relative_path": "mutations/cli-compat-policy/runner.stderr"
+    },
+    "mutations/cli-compat-policy/record.json": {
+      "bytes": 268592,
+      "sha256": "9881493c582cca32e974c63707dad623feb5e59765473b5b175325d24392a3bc",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-compat-policy/record.json",
+      "original_relative_path": "mutations/cli-compat-policy/record.json"
+    },
+    "mutations/cli-compat-policy/runner.stdout": {
+      "bytes": 1309,
+      "sha256": "e8fb8903fbc7d905aabbec4f93c7fe3a8dd8aff1bf0a7fd57293bc94fa6ccecc",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-compat-policy/runner.stdout",
+      "original_relative_path": "mutations/cli-compat-policy/runner.stdout"
+    },
+    "mutations/cli-compat-policy/change.patch": {
+      "bytes": 367,
+      "sha256": "67a6b77156cfcfee8b6fae12456952c99c813c68d256be7091868762cf378036",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-compat-policy/change.patch",
+      "original_relative_path": "mutations/cli-compat-policy/change.patch"
+    },
+    "mutations/rpc-persist-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-persist-policy/runner.stderr",
+      "original_relative_path": "mutations/rpc-persist-policy/runner.stderr"
+    },
+    "mutations/rpc-persist-policy/record.json": {
+      "bytes": 268586,
+      "sha256": "36e7e704bb8b2dd0f197f6d889845ac0bbe0cebc98258116c21570cd71f551fc",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-persist-policy/record.json",
+      "original_relative_path": "mutations/rpc-persist-policy/record.json"
+    },
+    "mutations/rpc-persist-policy/runner.stdout": {
+      "bytes": 1276,
+      "sha256": "853954bc8b2ac7e8b9c67c4731099618dd4358fa9daa0691a9022778115a3221",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-persist-policy/runner.stdout",
+      "original_relative_path": "mutations/rpc-persist-policy/runner.stdout"
+    },
+    "mutations/rpc-persist-policy/change.patch": {
+      "bytes": 419,
+      "sha256": "0f20938439b0787a5bc55da6834d103848489605caba7b1a1fabda7da9095485",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/rpc-persist-policy/change.patch",
+      "original_relative_path": "mutations/rpc-persist-policy/change.patch"
+    },
+    "mutations/ui-task-key-isolation/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-task-key-isolation/runner.stderr",
+      "original_relative_path": "mutations/ui-task-key-isolation/runner.stderr"
+    },
+    "mutations/ui-task-key-isolation/record.json": {
+      "bytes": 268688,
+      "sha256": "9490860ab63efad8a894c7fbe0014229edb45576ee2920e838bb90987a87ada4",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-task-key-isolation/record.json",
+      "original_relative_path": "mutations/ui-task-key-isolation/record.json"
+    },
+    "mutations/ui-task-key-isolation/runner.stdout": {
+      "bytes": 2080,
+      "sha256": "bdf4194abf95a3e1bc8a6abc4bb13df329767d326d64a5b42e0d16b0ce592c7c",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-task-key-isolation/runner.stdout",
+      "original_relative_path": "mutations/ui-task-key-isolation/runner.stdout"
+    },
+    "mutations/ui-task-key-isolation/change.patch": {
+      "bytes": 434,
+      "sha256": "ec44c5b525d8d61b3fec7a43cf4cc976e1c7ce85b45b000318ab878becf65534",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-task-key-isolation/change.patch",
+      "original_relative_path": "mutations/ui-task-key-isolation/change.patch"
+    },
+    "mutations/cli-noncreation-guard/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-noncreation-guard/runner.stderr",
+      "original_relative_path": "mutations/cli-noncreation-guard/runner.stderr"
+    },
+    "mutations/cli-noncreation-guard/record.json": {
+      "bytes": 268609,
+      "sha256": "d37e93b85016a6a0715674f41bcc1beec297a844741bf31b0c775b04d827eb63",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-noncreation-guard/record.json",
+      "original_relative_path": "mutations/cli-noncreation-guard/record.json"
+    },
+    "mutations/cli-noncreation-guard/runner.stdout": {
+      "bytes": 969,
+      "sha256": "c9cf8fd2f4cff155e036fbb4760b8e96432d39b0c4ad66d07e09ff5692e3a4bd",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-noncreation-guard/runner.stdout",
+      "original_relative_path": "mutations/cli-noncreation-guard/runner.stdout"
+    },
+    "mutations/cli-noncreation-guard/change.patch": {
+      "bytes": 522,
+      "sha256": "2df2fc91a25f1d2b664d17c499da54463f18567e99182c3dfd4ff174d72d021b",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-noncreation-guard/change.patch",
+      "original_relative_path": "mutations/cli-noncreation-guard/change.patch"
+    },
+    "mutations/ui-detail-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-detail-policy/runner.stderr",
+      "original_relative_path": "mutations/ui-detail-policy/runner.stderr"
+    },
+    "mutations/ui-detail-policy/record.json": {
+      "bytes": 268692,
+      "sha256": "e468c8426021d9e3863e76d6675c4ccfc46f0d5ae9d4699625a1a6175c291702",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-detail-policy/record.json",
+      "original_relative_path": "mutations/ui-detail-policy/record.json"
+    },
+    "mutations/ui-detail-policy/runner.stdout": {
+      "bytes": 2390,
+      "sha256": "2a9b09391d0402c0b170d5418394ac6696fbb0a41a1a7c29edeac227a7b9d06c",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-detail-policy/runner.stdout",
+      "original_relative_path": "mutations/ui-detail-policy/runner.stdout"
+    },
+    "mutations/ui-detail-policy/change.patch": {
+      "bytes": 472,
+      "sha256": "1ee8ec79d5c01306647ffe54c0fff746ad4e3a25ec90f8caf14dd1b71480ce4a",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-detail-policy/change.patch",
+      "original_relative_path": "mutations/ui-detail-policy/change.patch"
+    },
+    "mutations/ui-create-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-create-policy/runner.stderr",
+      "original_relative_path": "mutations/ui-create-policy/runner.stderr"
+    },
+    "mutations/ui-create-policy/record.json": {
+      "bytes": 268683,
+      "sha256": "80eb986655494c199447d9a303fb92c2136450401e3be122afa8fe22b9d2a00f",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-create-policy/record.json",
+      "original_relative_path": "mutations/ui-create-policy/record.json"
+    },
+    "mutations/ui-create-policy/runner.stdout": {
+      "bytes": 2172,
+      "sha256": "e5d4c144a93c580b2472f909a275d006595a158c792d624b67508bb0410cde54",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-create-policy/runner.stdout",
+      "original_relative_path": "mutations/ui-create-policy/runner.stdout"
+    },
+    "mutations/ui-create-policy/change.patch": {
+      "bytes": 404,
+      "sha256": "1dc6de089a8a855b59648a16f7584fe745871660b091393d4426af172c05b301",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/ui-create-policy/change.patch",
+      "original_relative_path": "mutations/ui-create-policy/change.patch"
+    },
+    "mutations/cli-start-policy/runner.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-start-policy/runner.stderr",
+      "original_relative_path": "mutations/cli-start-policy/runner.stderr"
+    },
+    "mutations/cli-start-policy/record.json": {
+      "bytes": 268590,
+      "sha256": "3cbe172e79252db0ca01fcb27d7b3f75593453906f6453e798de56686db1f84f",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-start-policy/record.json",
+      "original_relative_path": "mutations/cli-start-policy/record.json"
+    },
+    "mutations/cli-start-policy/runner.stdout": {
+      "bytes": 1306,
+      "sha256": "b74dcb2f57d463b72030adf55966c94fb36096d2b7ff7b57d7bfde1a74c0d306",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-start-policy/runner.stdout",
+      "original_relative_path": "mutations/cli-start-policy/runner.stdout"
+    },
+    "mutations/cli-start-policy/change.patch": {
+      "bytes": 445,
+      "sha256": "00b326f2e09c00450c1dc678a5a9c1b37cb58fd1ddf8f8f42a7a4145948e7086",
+      "original": "/tmp/low-disk-t3-independent-20261114/mutations/cli-start-policy/change.patch",
+      "original_relative_path": "mutations/cli-start-policy/change.patch"
+    }
+  }
+}

@@ -1,0 +1,97 @@
+"""Read final source stability, negative failure phases and external gate identity."""
+from pathlib import Path
+import hashlib
+import json
+import re
+import shutil
+
+OUT = Path('/tmp/low-disk-906-independent-20261114-3m_2fig_')
+FREEZE = Path('/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6')
+GATES = Path('/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3')
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def mapping(root):
+    return {str(p.relative_to(root)): sha(p) for p in root.rglob('*') if p.is_file()}
+
+expected = json.loads((OUT / 'inputs/source-hashes.json').read_text())
+assert mapping(OUT / 'source') == mapping(OUT / 'work') == mapping(FREEZE / 'candidate-complete') == expected
+for name in ['source-before.json', 'source-after.json']:
+    assert json.loads((GATES / name).read_text()) == expected
+for a, b in [('status-before.txt', 'status-after.txt'), ('deleted-before.json', 'deleted-after.json')]:
+    assert (GATES / a).read_bytes() == (GATES / b).read_bytes()
+external = json.loads((GATES / 'results.json').read_text())
+assert external['source_files'] == 906 and external['manifest_sha256'] == sha(OUT / 'inputs/source-hashes.json')
+assert external['head'] == 'a0223aa269efcdf70df4c4d8c43e5629b4fa0215'
+assert external['passed'] and external['source_drift'] == []
+assert [c['label'] for c in external['commands']] == ['lock', 'pytest', 'ruff']
+for c in external['commands']:
+    p = Path(c['log'])
+    assert c['exit'] == 0 and c['source_stable'] and c['git_stable']
+    assert p.stat().st_size == c['log_bytes'] and sha(p) == c['log_sha256']
+assert '3183 passed, 8 skipped in 509.43s' in (GATES / 'pytest.log').read_text()
+assert (GATES / 'ruff.log').read_text().strip() == 'All checks passed!'
+archive = OUT / 'external-corrected-python-gates'
+archive.mkdir(exist_ok=True)
+external_files = {}
+for p in sorted(GATES.iterdir()):
+    if p.is_file():
+        shutil.copyfile(p, archive / p.name)
+        assert sha(archive / p.name) == sha(p)
+        external_files[p.name] = {'sha256': sha(p), 'bytes': p.stat().st_size}
+
+phases = {}
+for label in ['negative-old-filter-worker', 'negative-old-filter-fence']:
+    text = (OUT / 'logs' / f'{label}.stdout.txt').read_text()
+    stderr = (OUT / 'logs' / f'{label}.stderr.txt').read_text()
+    assert 'OBSERVED' in text and 'tool.not_dispatched' in text
+    assert 'AssertionError' in stderr and 'ImportError' not in stderr
+    phases[label] = 'behavior observed; old filter suppresses dispatcher denial audit'
+assert 'FENCE_OBSERVED succeeded 2' in (OUT / 'logs/negative-old-filter-fence.stdout.txt').read_text()
+inner = (OUT / 'logs/negative-inner-verify.stdout.txt').read_text()
+assert '2 failed' in inner and inner.count('E               Failed: DID NOT RAISE MemoryDispatchRefused') == 2
+assert inner.count('tests/test_round2_auth_memory.py:265: Failed') == 2
+test_source = (OUT / 'source/tests/test_round2_auth_memory.py').read_text().splitlines()
+assert 'with pytest.raises(MemoryDispatchRefused' in test_source[264]
+assert test_source[265].strip() == 'executor._verify(admitted, permit)'
+phases['negative-inner-verify'] = 'two call-phase DID NOT RAISE failures at direct _verify; does not claim actual write'
+for label in ['negative-fixture-approval', 'negative-fixture-m2', 'negative-fixture-recovery']:
+    text = (OUT / 'logs' / f'{label}.stdout.txt').read_text()
+    assert '1 failed' in text and '实际存储实例与 Run context 不一致' in text
+    assert 'ERROR at setup' not in text
+    phases[label] = 'call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced'
+
+links = []
+for rel in ['docs/KNOWLEDGE.md', 'docs/LOW-DISK-2026-11-14.md']:
+    patch = (OUT / 'logs' / (rel.replace('/', '--') + '.patch')).read_text()
+    additions = '\n'.join(line[1:] for line in patch.splitlines() if line.startswith('+') and not line.startswith('+++'))
+    for target in re.findall(r'\]\(([^)]+)\)', additions):
+        if target.startswith(('https:', 'http:', '#')):
+            continue
+        resolved = (OUT / 'source' / rel).parent / target.split('#')[0]
+        assert resolved.is_file()
+        links.append({'document': rel, 'link': target, 'exists': True})
+
+# Pytest's convenience symlinks are not source or execution evidence. Record them
+# before removing them; every target must stay inside this review's own output.
+symlinks = []
+for p in OUT.rglob('*'):
+    if p.is_symlink():
+        assert p.resolve().is_relative_to(OUT.resolve()) and p.name.endswith('current')
+        symlinks.append({'path': str(p.relative_to(OUT)), 'target': str(p.readlink())})
+for e in symlinks:
+    (OUT / e['path']).unlink()
+(OUT / 'logs/pytest-convenience-symlinks-removed.json').write_text(json.dumps(symlinks, indent=2)+'\n')
+result = {'status': 'PASS_FINAL_READBACK', 'all_three_source_maps_equal_906': True,
+          'work_mutations_fully_restored': True, 'negative_phases': phases,
+          'new_local_document_links_resolved': links,
+          'external_corrected_gates': {'origin': str(GATES), 'files': external_files,
+              'results_sha256': sha(GATES / 'results.json'), 'source_before_after_exact_906': True,
+              'status_and_deleted_before_after_byte_equal': True,
+              'lock_pytest_ruff_exit_codes': [0, 0, 0], 'pytest_summary': '3183 passed, 8 skipped in 509.43s',
+              'independently_rerun_by_this_reviewer': False,
+              'interpretation': 'external root-run full-gate evidence; identity and original bytes checked independently'},
+          'native_ci_or_final_commit_approval': False}
+(OUT / 'logs/close-readback.json').write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')
+print(json.dumps({k: v for k, v in result.items() if k not in ['external_corrected_gates','new_local_document_links_resolved']}, ensure_ascii=False, indent=2))

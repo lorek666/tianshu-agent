@@ -207,6 +207,9 @@ uv run tianshu run pause  --run-id run_xxxx
 uv run tianshu run resume --run-id run_xxxx
 uv run tianshu run cancel --run-id run_xxxx
 
+# 低盘或只想读写分离时，显式新建一个仅读取与对话的 Run
+uv run tianshu run start --task-id task_xxxx --execution-mode pure_only --out summary.md
+
 # 人工审批（覆盖、删除、执行命令都不会被自动执行）
 uv run tianshu approvals list
 uv run tianshu approvals approve appr_xxxx
@@ -227,6 +230,11 @@ uv run tianshu host run --data-root /tmp/ts-data
 但执行仍要求当前 claim 与租约在手，且**改目标 / 改参数会让批准作废**。
 **否决是终局**：同一 Run 内同一动作被拒绝后，后续派发直接以 `c4.approval_rejected` 拒绝，
 不会反复弹同一张卡；模型改了参数或目标才是一次新的审批。
+
+`--execution-mode` 缺省为 `effects`，`pure_only` 只约束这次新建的 Run：它禁止该 Run
+调用真实有副作用的工具，但不能把 workspace 的 `readonly` / `writable` 绑定改成权限，
+也不能把已经创建的 Run 原地升级成 `effects`。已有 Run 的 `status` / `pause` / `resume` /
+`cancel` 不接受该参数；需要另一资格时新开 Run。低盘原因会明确返回，入口不会静默降级。
 
 `replay` 与 `evaluate` 不是同一个东西：前者只读历史日志做审计，后者换模型重跑。
 PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被其它分数抵消。
@@ -274,14 +282,14 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 
 **M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
 
-五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（75 个 rule id 的封闭注册表：62 条拒绝原因 + 10 条非拒绝判定 + 3 条保留未使用）、**C5** 评测（`SUITE_VERSION = m4.4`）。
+五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（rule id 封闭注册表，写入前校验；[规则清单](docs/PRD-v1.md#541-拒绝规则编号payloadrule_id)）、**C5** 评测（`SUITE_VERSION = m4.4`）。
 
 ```
-src/tianshu/          49 个 .py + eval/ 子包（下面按职责分组，47 个实义模块，余两个是 __init__.py / __main__.py）
+src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；数量以当前目录实测为准）
 ├─ 事实源与契约 ─────────────────────────────────────────────
 │  events.py        SQLite WAL append-only 事件日志 + 可组合事务
 │  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
-│  rules.py         C4 rule id 封闭注册表（75 个：62 拒绝 + 10 判定 + 3 保留未使用）
+│  rules.py         C4 rule id 封闭注册表（代码 / schema / PRD 同步核对）
 │  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
 ├─ 路径与磁盘 ───────────────────────────────────────────────
 │  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定

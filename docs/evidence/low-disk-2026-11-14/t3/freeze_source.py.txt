@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[4]
+OUT = Path(__file__).resolve().parent
+BASE_MAP = ROOT / (
+    "docs/evidence/low-disk-2026-11-14/inherited/source-manifests/"
+    "t2-source-hashes.json"
+)
+SOURCE_MAP = OUT / "t3-source-hashes.json"
+SUMMARY = OUT / "t3-source-summary.json"
+PATCH = OUT / "t3-delta-vs-t2.patch"
+ARTIFACT_INDEX = ROOT / "docs/evidence/low-disk-2026-11-14/artifact-index.json"
+VERIFY_SCRIPT = OUT / "final-gates/verify_freeze.py"
+POSTCHECK = OUT / "final-gates/freeze-postcheck.json"
+T2_ROOT = Path("/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/candidate-complete")
+DERIVED = {
+    SOURCE_MAP.relative_to(ROOT).as_posix(),
+    SUMMARY.relative_to(ROOT).as_posix(),
+    PATCH.relative_to(ROOT).as_posix(),
+    ARTIFACT_INDEX.relative_to(ROOT).as_posix(),
+    VERIFY_SCRIPT.relative_to(ROOT).as_posix(),
+    POSTCHECK.relative_to(ROOT).as_posix(),
+}
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+base: dict[str, str] = json.loads(BASE_MAP.read_text(encoding="utf-8"))
+added = set(
+    filter(
+        None,
+        subprocess.check_output(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines(),
+    )
+)
+
+deleted: list[str] = []
+modified: list[str] = []
+unchanged: list[str] = []
+current = dict(base)
+for relative, old_hash in base.items():
+    path = ROOT / relative
+    if not path.is_file():
+        deleted.append(relative)
+        current.pop(relative)
+        continue
+    new_hash = sha256(path)
+    current[relative] = new_hash
+    if new_hash == old_hash:
+        unchanged.append(relative)
+    else:
+        modified.append(relative)
+
+new_paths: list[str] = []
+for relative in sorted(added):
+    if relative in base:
+        continue
+    path = ROOT / relative
+    if not path.is_file():
+        continue
+    new_paths.append(relative)
+    current[relative] = sha256(path)
+
+for relative in DERIVED:
+    current.pop(relative, None)
+
+SOURCE_MAP.write_text(
+    json.dumps(dict(sorted(current.items())), indent=2) + "\n", encoding="utf-8"
+)
+
+kernel_prefixes = ("src/tianshu/", "schemas/", "tests/")
+entrypoint_exceptions = {
+    "src/tianshu/cli.py",
+    "src/tianshu/control.py",
+}
+kernel_paths = [
+    path
+    for path in base
+    if path.startswith(kernel_prefixes) and path not in entrypoint_exceptions
+]
+kernel_changed = [path for path in kernel_paths if path in modified or path in deleted]
+
+with tempfile.TemporaryDirectory(prefix="tianshu-t3-freeze-") as temp:
+    repo = Path(temp) / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T3 Freeze"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t3-freeze@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    for relative in base:
+        source = T2_ROOT / relative
+        if source.is_file():
+            target = repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "T2 frozen input"], cwd=repo, check=True)
+
+    for entry in list(repo.iterdir()):
+        if entry.name == ".git":
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    for relative in current:
+        source = ROOT / relative
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    for relative in (SOURCE_MAP, SUMMARY):
+        relative_path = relative.relative_to(ROOT).as_posix()
+        target = repo / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if relative.exists():
+            shutil.copy2(relative, target)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    patch = subprocess.check_output(
+        ["git", "diff", "--cached", "--binary", "--full-index"], cwd=repo
+    )
+    PATCH.write_bytes(patch)
+
+summary = {
+    "status": "T3_AUTHOR_SOURCE_FROZEN_NOT_INDEPENDENT_REVIEW",
+    "head": subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip(),
+    "t2_input_map": str(BASE_MAP.relative_to(ROOT)),
+    "t2_input_count": len(base),
+    "t3_source_count": len(current),
+    "unchanged_from_t2": len(unchanged),
+    "modified_from_t2": modified,
+    "added_since_t2": new_paths,
+    "deleted_since_t2": deleted,
+    "modified_count": len(modified),
+    "added_count": len(new_paths),
+    "deleted_count": len(deleted),
+    "kernel_guard": {
+        "prefixes": list(kernel_prefixes),
+        "entrypoint_exceptions": sorted(entrypoint_exceptions),
+        "checked_paths": len(kernel_paths),
+        "changed_or_deleted": kernel_changed,
+        "passed": not kernel_changed,
+        "meaning": (
+            "All T2 source/schema/test kernel paths remain byte-identical except "
+            "the T3 CLI and ControlPlane entrypoints."
+        ),
+    },
+    "source_map_sha256": sha256(SOURCE_MAP),
+    "delta_patch_sha256": sha256(PATCH),
+    "delta_patch_bytes": PATCH.stat().st_size,
+    "delta_patch": str(PATCH.relative_to(ROOT)),
+    "environment": {
+        "python": subprocess.check_output(
+            ["uv", "run", "--frozen", "python", "-c", "import sys; print(sys.version)"],
+            cwd=ROOT,
+            text=True,
+        ).strip(),
+        "platform": os.uname().machine,
+    },
+}
+SUMMARY.write_text(
+    json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+print(
+    json.dumps(
+        {
+            "source_count": len(current),
+            "modified": len(modified),
+            "added": len(new_paths),
+            "deleted": len(deleted),
+            "kernel_changed": kernel_changed,
+            "source_map_sha256": summary["source_map_sha256"],
+            "delta_patch_sha256": summary["delta_patch_sha256"],
+        },
+        ensure_ascii=False,
+    )
+)

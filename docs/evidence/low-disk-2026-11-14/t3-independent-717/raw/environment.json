@@ -1,0 +1,20 @@
+{
+  "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "python_executable": "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+  "node": "v24.22.2",
+  "host": "macOS-26.6.2-arm64-arm-64bit",
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "vitest": "3.2.7",
+    "jsdom": "26.1.0",
+    "jsdom_engines": {
+      "node": ">=18"
+    }
+  },
+  "reviewer_checkout": {
+    "cwd": "/Users/ronfee/.codex/worktrees/windows-ci-fix/\u5929\u67a2Agent",
+    "head": "cefa1e375974d96e2ec25e199f6605f6dcf2239b",
+    "status": "## HEAD (no branch)"
+  }
+}

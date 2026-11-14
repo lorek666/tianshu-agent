@@ -1,0 +1,373 @@
+{
+  "scope": "Byte-identical selected local originals; complete source snapshots, test DBs and independent workspaces are not republished here. This index does not change the historical 173-entry or 25-file indexes.",
+  "files": 61,
+  "bytes": 983323,
+  "entries": [
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/results.json",
+      "published_relative_path": "complete-gates/results.json",
+      "bytes": 2849,
+      "sha256": "dc40987ad27f772c3c428e3b27ad121f4c9ad47a6515844eab6572923ac21812"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/lock.log",
+      "published_relative_path": "complete-gates/lock.log.txt",
+      "bytes": 28,
+      "sha256": "3811ad9b6f7f6f638c3359b7cc7cd5b798750f8906476cdeebc195a6ccc7fa6d"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/pytest.log",
+      "published_relative_path": "complete-gates/pytest.log.txt",
+      "bytes": 3644,
+      "sha256": "214f7559200eb9a8580be2394c1490b67515d381994c07e59a1a26ce62ec86b1"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/ruff.log",
+      "published_relative_path": "complete-gates/ruff.log.txt",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/source-before.json",
+      "published_relative_path": "complete-gates/source-before.json",
+      "bytes": 118998,
+      "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/source-after.json",
+      "published_relative_path": "complete-gates/source-after.json",
+      "bytes": 118998,
+      "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/deleted-before.json",
+      "published_relative_path": "complete-gates/deleted-before.json",
+      "bytes": 80,
+      "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/deleted-after.json",
+      "published_relative_path": "complete-gates/deleted-after.json",
+      "bytes": 80,
+      "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6/facts.json",
+      "published_relative_path": "root-frozen-906/facts.json",
+      "bytes": 4793,
+      "sha256": "2dfbaf5f718b8bbf303560fc458bd02e422e91e56e66edc8a1625024937f89c9"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6/source-hashes.json",
+      "published_relative_path": "root-frozen-906/source-hashes.json",
+      "bytes": 118998,
+      "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6/deleted-paths.json",
+      "published_relative_path": "root-frozen-906/deleted-paths.json",
+      "bytes": 80,
+      "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6/delta-vs-reviewed-879.patch",
+      "published_relative_path": "root-frozen-906/delta-vs-reviewed-879.patch",
+      "bytes": 511519,
+      "sha256": "6bb515f5cb5651edecd1acb607802271a29e75c2017bd75d54890c95bd35bc30"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/run_low_disk_corrected_python_gates.py",
+      "published_relative_path": "complete-gates/run_low_disk_corrected_python_gates.py.txt",
+      "bytes": 5978,
+      "sha256": "04f231a84ae589e6dff51e673314de22d71b44ad9d8aaa99357b43f1218e3c42"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261113/low-disk-final-readonly-preflight.json",
+      "published_relative_path": "readonly-preflight.json",
+      "bytes": 1670,
+      "sha256": "a0328c4370e17078a683547f6f0789a13643949852edff1af1fb954ab4219b02"
+    },
+    {
+      "original_path": "/tmp/low-disk-t3-frozen-7path-handoff.md",
+      "published_relative_path": "author-seven-path-handoff.md",
+      "bytes": 1653,
+      "sha256": "fb8917610e969a818573c3397704cecb311220363a4ae2286c73f026d6a1e424"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/affected-files-final.exit",
+      "published_relative_path": "author-raw/green/affected-files-final.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/affected-files-final.log",
+      "published_relative_path": "author-raw/green/affected-files-final.log.txt",
+      "bytes": 432,
+      "sha256": "6a6e03e44cf5bb7ce95ab388b4f88ab1f91ca9bd556536d3e41d3e05b3923e46"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/affected-files.exit",
+      "published_relative_path": "author-raw/green/affected-files.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/affected-files.log",
+      "published_relative_path": "author-raw/green/affected-files.log.txt",
+      "bytes": 432,
+      "sha256": "b66bdde02b4d3bea3ddc2e9d7be5037cf880e755bacde9272c7ab6624cec9fe7"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/c4-rule-mirror.exit",
+      "published_relative_path": "author-raw/green/c4-rule-mirror.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/c4-rule-mirror.log",
+      "published_relative_path": "author-raw/green/c4-rule-mirror.log.txt",
+      "bytes": 98,
+      "sha256": "5b19689a97d618d5cdfce632de67285a8efa3c57100a80350a5bb7ca9e05ae34"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/fixture-group.exit",
+      "published_relative_path": "author-raw/green/fixture-group.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/fixture-group.log",
+      "published_relative_path": "author-raw/green/fixture-group.log.txt",
+      "bytes": 100,
+      "sha256": "e34d2fffacc84e8b5ef78a831c577347a41cfe3d38c66fe76504488db7168805"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/loop-audit-affected.exit",
+      "published_relative_path": "author-raw/green/loop-audit-affected.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/loop-audit-affected.log",
+      "published_relative_path": "author-raw/green/loop-audit-affected.log.txt",
+      "bytes": 100,
+      "sha256": "b5219f4ac0f411625dfb0f79d663f14e000570be7aa9331cf956bd853ab02703"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v2.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v2.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v2.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v2.log.txt",
+      "bytes": 98,
+      "sha256": "05969f68db42c0d80b5f203b4c913fe621ff8643af5b714630e061a4653df4b3"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v3.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v3.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v3.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v3.log.txt",
+      "bytes": 98,
+      "sha256": "570d6eca2cee31278223b2b6adcac2ab615ae9199c8a0c16418279c36414f36e"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v4.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v4.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v4.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v4.log.txt",
+      "bytes": 98,
+      "sha256": "449f48faab28952069f2e297454c2a3b0f42069bcbc27c7b2b56439fc80297ed"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v5.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v5.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v5.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v5.log.txt",
+      "bytes": 98,
+      "sha256": "570d6eca2cee31278223b2b6adcac2ab615ae9199c8a0c16418279c36414f36e"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v6.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v6.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary-v6.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary-v6.log.txt",
+      "bytes": 98,
+      "sha256": "449f48faab28952069f2e297454c2a3b0f42069bcbc27c7b2b56439fc80297ed"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary.exit",
+      "published_relative_path": "author-raw/green/memory-executor-boundary.exit",
+      "bytes": 2,
+      "sha256": "7de1555df0c2700329e815b93b32c571c3ea54dc967b89e81ab73b9972b72d1d"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-boundary.log",
+      "published_relative_path": "author-raw/green/memory-executor-boundary.log.txt",
+      "bytes": 1905,
+      "sha256": "b80017a877fc79cb1368cada6e4585c4510d79a56b10225b37e9c6caea02b35a"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-upstream-restored.exit",
+      "published_relative_path": "author-raw/green/memory-executor-upstream-restored.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/memory-executor-upstream-restored.log",
+      "published_relative_path": "author-raw/green/memory-executor-upstream-restored.log.txt",
+      "bytes": 98,
+      "sha256": "570d6eca2cee31278223b2b6adcac2ab615ae9199c8a0c16418279c36414f36e"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/narrow-ruff.exit",
+      "published_relative_path": "author-raw/green/narrow-ruff.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/narrow-ruff.log",
+      "published_relative_path": "author-raw/green/narrow-ruff.log.txt",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/pure-only-audit-v2.exit",
+      "published_relative_path": "author-raw/green/pure-only-audit-v2.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/pure-only-audit-v2.log",
+      "published_relative_path": "author-raw/green/pure-only-audit-v2.log.txt",
+      "bytes": 98,
+      "sha256": "4e8b6c5a89da44bf05d17100903172be04033067c113a6831bdfafbd42b7da52"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/pure-only-audit.exit",
+      "published_relative_path": "author-raw/green/pure-only-audit.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/green/pure-only-audit.log",
+      "published_relative_path": "author-raw/green/pure-only-audit.log.txt",
+      "bytes": 2540,
+      "sha256": "5358ad0f3a50e52343ea1113c9f36375308d946547c15684c4aa767cac8dd03b"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/c4-rule-mirror-removed.exit",
+      "published_relative_path": "author-raw/negative/c4-rule-mirror-removed.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/c4-rule-mirror-removed.log",
+      "published_relative_path": "author-raw/negative/c4-rule-mirror-removed.log.txt",
+      "bytes": 1792,
+      "sha256": "94f3c1e3d17b003a42c82413eee2612faad48de97612fe9532afb89102b94d61"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/fixture-wiring-removed.exit",
+      "published_relative_path": "author-raw/negative/fixture-wiring-removed.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/fixture-wiring-removed.log",
+      "published_relative_path": "author-raw/negative/fixture-wiring-removed.log.txt",
+      "bytes": 6922,
+      "sha256": "0b71d837b8d65a1b3b2735044f14e85743a776910f777d0ec8f0041988075b41"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/memory-executor-inner-child-gate-removed.exit",
+      "published_relative_path": "author-raw/negative/memory-executor-inner-child-gate-removed.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/memory-executor-inner-child-gate-removed.log",
+      "published_relative_path": "author-raw/negative/memory-executor-inner-child-gate-removed.log.txt",
+      "bytes": 12282,
+      "sha256": "dd747665926062cde5f7d27227aae42d56f60842447a74b72c24f7be28166c8e"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/memory-executor-inner-verify-removed-v2.exit",
+      "published_relative_path": "author-raw/negative/memory-executor-inner-verify-removed-v2.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/negative/memory-executor-inner-verify-removed-v2.log",
+      "published_relative_path": "author-raw/negative/memory-executor-inner-verify-removed-v2.log.txt",
+      "bytes": 11348,
+      "sha256": "ef025f295449cb966b30e732e82aa5ba0ecbfe805c078c991d9d774becb85113"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/c4-rule-mirror.exit",
+      "published_relative_path": "author-raw/red/c4-rule-mirror.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/c4-rule-mirror.log",
+      "published_relative_path": "author-raw/red/c4-rule-mirror.log.txt",
+      "bytes": 1782,
+      "sha256": "c88acfffa0d5569a5796d2d9096330b155dcdd8fe9470113925cb3a1d169eaf5"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/fixture-group.exit",
+      "published_relative_path": "author-raw/red/fixture-group.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/fixture-group.log",
+      "published_relative_path": "author-raw/red/fixture-group.log.txt",
+      "bytes": 48590,
+      "sha256": "0e53d22bfaa0d1dc62587e5402b813a455d70eb44ce6e79e850567d921a9693a"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/pure-only-audit-v2.exit",
+      "published_relative_path": "author-raw/red/pure-only-audit-v2.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/pure-only-audit-v2.log",
+      "published_relative_path": "author-raw/red/pure-only-audit-v2.log.txt",
+      "bytes": 2531,
+      "sha256": "30b8e343309a19d7b93e086bdcae42b19f78f8b720a688f43e99fb0bf91ffdfd"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/pure-only-audit.exit",
+      "published_relative_path": "author-raw/red/pure-only-audit.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "original_path": "/tmp/tianshu-g3-20261114/full-fix-manual-20261114-01/red/pure-only-audit.log",
+      "published_relative_path": "author-raw/red/pure-only-audit.log.txt",
+      "bytes": 2331,
+      "sha256": "43657571c4b66466f9057b1582579126a36701d18b17b30583b060cc04330dd3"
+    }
+  ]
+}

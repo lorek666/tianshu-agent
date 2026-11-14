@@ -1,0 +1,21 @@
+{
+  "label": "negative-old-filter-worker",
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py",
+    "worker"
+  ],
+  "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+    "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-old-filter-worker/authority",
+    "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    "REVIEW_LABEL": "negative-old-filter-worker",
+    "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "REVIEW_MUTATION": "1"
+  },
+  "expected_exit": 1,
+  "expected_output_contains": "AssertionError"
+}

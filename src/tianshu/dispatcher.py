@@ -35,12 +35,13 @@ import os
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .contents import make_ref
 from .crashpoint import failpoint
+from .disk_admission import DiskAdmissionError
 from .errors import (
     BudgetCancelled,
     BudgetRefused,
@@ -135,6 +136,7 @@ from .resources import (
     parse_resource,
 )
 from .rules import check_rule_id
+from .run_policy import EFFECTS, PURE_ONLY, RunEffectsDisallowed, RunExecutionPolicyV1
 from .sandbox import FileBackend, current_backend
 from .snapshot import SnapshotStore
 from .tasks import (
@@ -622,9 +624,10 @@ class Dispatcher:
             )
         # 网络抓取上限（超时 / 字节 / 跳数）：默认模块常量，测试可注入。
         self._net_limits = net_limits or NetLimits()
-        # MCP 客户端（G2 MCP 阶段）：进程级、由装配点启动；None = 这个进程没启用
+        # MCP 客户端（G2 MCP 阶段）：进程级、新 effects 预检通过后启动；None = 没启用
         # MCP（工具面与旧版逐字节相同）。
         self._mcp_clients = mcp_clients
+        self._mcp_prepared = bool(getattr(mcp_clients, "_started", False))
         # 工具注册表：显示传进来的优先；None = 每次现取进程级注册表（与
         # `exec_backend()` 同一套"默认进程级 + 可显式注入"的模式，测试与
         # 多实例装配都靠它，而不是让构造顺序决定用哪张表）。
@@ -821,6 +824,7 @@ class Dispatcher:
         try:
             auth = self._authority(request, claim, args=args)
             target = self._resolve_target(request, auth)
+            self._check_run_execution(request, target)
             if isinstance(target, _MemoryTarget):
                 # 记忆前置条件是 status/revision；文件分支保持原样，连调用
                 # 顺序都不改（file 的 digest/approval 行为不能因记忆上线变化）。
@@ -1006,6 +1010,7 @@ class Dispatcher:
             with self._log.transaction() as tx:
                 auth = self._authority(request, claim, args=args)
                 target = self._resolve_target(request, auth)
+                self._check_run_execution(request, target)
                 if (
                     not isinstance(
                         target,
@@ -1124,7 +1129,7 @@ class Dispatcher:
 
         # ---- MCP 分支：外部 server 执行，副作用在它那边 ----
         if isinstance(target, _McpTarget):
-            return self._dispatch_mcp(request, dispatch_id, target, seq)
+            return self._dispatch_mcp(request, dispatch_id, target, seq, admitted)
 
         # ---- 委派分支：没有目录、没有租约；spawn 在一个事务里建五件事 ----
         if isinstance(target, _SubtaskTarget):
@@ -1161,6 +1166,7 @@ class Dispatcher:
                     result = self._executor.execute(admitted, permit)
         except (
             DispatchDenied,
+            DiskAdmissionError,
             ToolNotAllowed,
             RunFenced,
             JobLost,
@@ -1200,6 +1206,38 @@ class Dispatcher:
 
 
     # ---- 网络执行 ----
+
+    def _check_tool_identity(self, request: ActionRequest):
+        spec = self.registry.spec(request.tool_id)
+        if spec is None or (
+            request.tool_version != spec.version or request.action != spec.action
+            or request.schema_hash != sha256_hex(canonical_bytes(spec.input_schema))
+            or (request.description_hash
+                and request.description_hash != spec.description_digest())
+        ):
+            raise DispatchDenied("工具身份与当前真实 ToolSpec 不符", "dispatch.not_admitted")
+        return spec
+
+    def _check_run_execution(self, request: ActionRequest, target: _Target) -> None:
+        spec = self._check_tool_identity(request)
+        if spec.side_effect_level == "pure":
+            self._tasks.run_execution_policy(request.run_id)
+            return
+        try:
+            self._tasks.require_effects_allowed(request.run_id)
+            if (request.tool_id == "subtask.cancel" and isinstance(target, _SubtaskTarget)
+                    and self._tasks.get_subtask(request.run_id, target.subtask_id) is not None):
+                return
+            self._tasks.disk_admission.assert_stores(
+                self._log, snapshots=self._snapshots, memory=self._memory,
+                contents=self._contents, data_root=self._data_root,
+            )
+            targets = (target.path, target.path.parent) if isinstance(target, _FileTarget) else ()
+            self._tasks.require_effect_space(
+                request.run_id, targets=targets, data_root=self._data_root,
+            )
+        except (DiskAdmissionError, RunEffectsDisallowed) as exc:
+            raise DispatchDenied(str(exc), exc.rule_id) from exc
 
     def _cancel_requested(self, run_id: str) -> bool:
         """Run 是否已被要求停下（cancel / pause）。
@@ -1318,6 +1356,7 @@ class Dispatcher:
         dispatch_id: str,
         target: _McpTarget,
         intent_seq: int,
+        admitted: AdmittedCall,
     ) -> ToolResult:
         """MCP 分支：已取消不发包；超时/断线/协议失败按 `unknown` 结算。
 
@@ -1391,9 +1430,9 @@ class Dispatcher:
         failpoint("mcp_before_call")
         try:
             boundary_marked = self._mark_mcp_send_boundary(
-                dispatch_id, server=target.server, tool=target.tool
+                dispatch_id, server=target.server, tool=target.tool, admitted=admitted
             )
-        except GuardTimeout as exc:
+        except (GuardTimeout, DispatchDenied, ApprovalError, JobLost, RunFenced) as exc:
             # 拿不到执行守卫 = 没抢到"撤销与发送"的分界线：一个字节都没发。
             # 与文件写分支同一口径（GuardTimeout → 受控拒绝），不能让它变成一次
             # "效果未知"的崩溃——这次调用确实没出去。
@@ -2150,6 +2189,72 @@ class Dispatcher:
         if problems:
             raise AuthorityWriteFailed("；".join(problems))
 
+    def prepare_run(self, task_id: str, execution_policy: RunExecutionPolicyV1) -> None:
+        task = self._tasks.get_task(task_id)
+        if task is None:
+            raise DispatchError(f"task 不存在：{task_id}")
+        self._prepare_new_run(execution_policy, tuple(
+            Path(b.root_path) for b in task.workspaces if b.can_write
+        ))
+
+    def _prepare_new_run(self, execution_policy: RunExecutionPolicyV1,
+                         roots: tuple[Path, ...]) -> None:
+        if execution_policy != PURE_ONLY:
+            self._tasks.disk_admission.assert_stores(
+                self._log, snapshots=self._snapshots, memory=self._memory,
+                contents=self._contents, data_root=self._data_root,
+            )
+        self._tasks.require_new_run(execution_policy, writable_roots=roots)
+        if execution_policy != PURE_ONLY and self._mcp_clients is not None:
+            from .tool_registry import build_registry, set_registry
+
+            if not self._mcp_prepared:
+                self._mcp_clients.start_all()
+                self._mcp_prepared = True
+                self._registry = build_registry(self._mcp_clients)
+                set_registry(self._registry)
+
+    def prepare_pending_mcp(
+        self, run_id: str, claim: JobClaim, request_id: str | None,
+        tool_id: str, args: dict[str, Any],
+    ) -> None:
+        """只为已有的真实待派发 MCP 请求恢复发现；读/模型不以此为前提。"""
+        if not tool_id.startswith("mcp__"):
+            return
+        stored = self.get_request(request_id) if request_id else None
+        if stored is None and self._mcp_prepared:
+            return  # 当前模型刚提出的新调用，随后完整 prepare 判定。
+        if (stored is None or stored.request.run_id != run_id
+                or stored.request.tool_id != tool_id
+                or stored.request.args_hash != sha256_hex(canonical_bytes(args))
+                or stored.args != args):
+            raise DispatchDenied("缺少绑定的待恢复 MCP 请求", "dispatch.not_admitted")
+        # 接管可以更新 owner，但不能改原动作、目标、schema 或资格。
+        request = replace(stored.request, job_id=claim.job_id,
+                          claim_epoch=claim.claim_epoch, owner_instance_id=claim.owner_instance_id)
+        if self._mcp_prepared:
+            self._check_tool_identity(request)
+            return  # 已有客户端按原 prepare 路径记录授权/对象阻断拒绝。
+        auth = self._authority(request, claim, args=args, mcp_discovery=True)
+        if self._cancel_requested(run_id):
+            raise DispatchDenied("Run 已取消或暂停", "dispatch.not_running")
+        self._tasks.disk_admission.assert_stores(
+            self._log, snapshots=self._snapshots, memory=self._memory,
+            contents=self._contents, data_root=self._data_root,
+        )
+        self._tasks.require_effect_space(run_id, targets=(), data_root=self._data_root)
+        if self._mcp_clients is None:
+            raise DispatchDenied("MCP 未配置", "dispatch.mcp_server_unavailable")
+        from .tool_registry import build_registry, set_registry
+
+        self._mcp_clients.start_all()
+        self._mcp_prepared = True
+        self._registry = build_registry(self._mcp_clients)
+        set_registry(self._registry)
+        target = self._resolve_target(request, auth)
+        # 新发现不能静默升级原 ToolSpec，随后仍走原审批/派发核验。
+        self._check_run_execution(request, target)
+
     def open_control_run(
         self,
         *,
@@ -2176,10 +2281,14 @@ class Dispatcher:
         for item in memory_scopes:
             scope = item if isinstance(item, MemoryScope) else parse_memory_uri(item)
             declared.append(scope.to_uri())
-        task = self._tasks.create_task(
-            goal, workspaces, control=True, memory_scopes=declared
-        )
-        run = self._tasks.start_run(task.task_id)
+        bindings = [WorkspaceBinding.of(b) for b in workspaces]
+        self._prepare_new_run(EFFECTS, tuple(Path(b.root_path) for b in bindings if b.can_write))
+        # start_run 的最终空间复测拒绝时，控制 Task 与 task.created 也一起回滚。
+        with self._log.transaction():
+            task = self._tasks.create_task(
+                goal, bindings, control=True, memory_scopes=declared
+            )
+            run = self._tasks.start_run(task.task_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         # **零绑定控制 Run 是合法的**：人直接发起的记忆操作（CLI 的
         # `memory confirm` / `memory forget`，scope=user 时没有任何目录可绑）
@@ -2324,6 +2433,8 @@ class Dispatcher:
                     f"run 不在执行状态，拒绝开始写入：{request.run_id}"
                     f"（state={run.state}）"
                 )
+            auth = self._authority(request, claim, args=self.get_request(request.request_id).args)
+            self._check_run_execution(request, self._resolve_target(request, auth))
             started_at = self._clock()
             with self._log.transaction() as tx:
                 seq = tx.append(
@@ -2396,6 +2507,7 @@ class Dispatcher:
                 raise DispatchDenied("审批动作摘要不匹配", "c4.approval_mismatch")
             if approval.expires_at <= self._clock():
                 raise DispatchDenied("审批已过期", "c4.approval_expired")
+        self._check_run_execution(request, target)
         return auth
 
     def _start_resource_execution(self, request: ActionRequest, dispatch_id: str) -> None:
@@ -2607,6 +2719,7 @@ class Dispatcher:
         claim: JobClaim,
         *,
         args: dict[str, Any] | None = None,
+        mcp_discovery: bool = False,
     ) -> _Authority:
         if claim.run_id != request.run_id:
             raise DispatchDenied(
@@ -2729,7 +2842,9 @@ class Dispatcher:
             if ref.kind == KIND_NETWORK:
                 return self._authority_network(request, task, run, bindings, ref)
             if ref.kind == KIND_MCP:
-                return self._authority_mcp(request, task, run, bindings, ref)
+                return self._authority_mcp(
+                    request, task, run, bindings, ref, discovery=mcp_discovery,
+                )
             if ref.kind == KIND_SUBTASK:
                 return self._authority_subtask(
                     request, task, run, bindings, ref, args or {}
@@ -2839,6 +2954,7 @@ class Dispatcher:
         run: Run,
         bindings: list[WorkspaceBinding],
         ref: ResourceRef,
+        *, discovery: bool = False,
     ) -> _Authority:
         """MCP 资源的授权（**弹批准之前**的五步，见 SPEC §3.4）。
 
@@ -2848,7 +2964,12 @@ class Dispatcher:
         """
         target = ref.mcp_target
         binding = self.registry.mcp_binding(request.tool_id)
-        if binding is None or (binding.server, binding.tool) != (target.server, target.tool):
+        from .tool_registry import tool_id_for_server
+
+        matched = (request.tool_id == tool_id_for_server(target.server, target.tool)
+                   if discovery else binding is not None
+                   and (binding.server, binding.tool) == (target.server, target.tool))
+        if not matched:
             raise DispatchDenied(
                 f"工具与 MCP 资源不匹配：tool_id={request.tool_id} → {ref.uri}"
                 "（工具不在已准入的 MCP 注册表里，或 (server, tool) 与资源两段不一致）",
@@ -2870,6 +2991,9 @@ class Dispatcher:
                 "：等 MCP 专属探针/后端接缝落地",
                 "c4.mcp_isolation_unproven",
             )
+        self._refuse_blocked_mcp_object(target.server, target.tool)
+        if discovery:
+            return _Authority(run, task, bindings, [], [])
         clients = self._mcp_clients
         server = None if clients is None else clients.server(target.server)
         if server is None or not server.is_alive:
@@ -3349,7 +3473,8 @@ class Dispatcher:
             raise DispatchDenied(str(exc), "dispatch.mcp_object_blocked") from exc
 
     def _mark_mcp_send_boundary(
-        self, dispatch_id: str, *, server: str, tool: str
+        self, dispatch_id: str, *, server: str, tool: str,
+        admitted: AdmittedCall | None = None,
     ) -> bool:
         """把这次 MCP 派发从 `intent` 推到 `executing` —— 外发边界。
 
@@ -3378,21 +3503,30 @@ class Dispatcher:
         时、还没人核对）。检查放在守卫内、紧贴状态推进：**撤销**与**恢复侧**的
         阻断提交（恢复侧与运行期 unknown 的 `_commit_mcp_unknown`）共用这把守卫，
         排不进这道缝；`unblock_object` 是人工解除，与 `unblock()` 一样不抢守卫
-         （解除只会放宽，不会漏挡）。仍剩两条窗口：没有 `data_root` 的库调用方
-        没有守卫可抢；提交侧抢守卫超时时照常提交并写 `block_guard="timeout"`
+         （解除只会放宽，不会漏挡）。本入口缺少实际数据根时拒绝外发；提交侧
+        抢守卫超时时照常提交并写 `block_guard="timeout"`
         （见 docs/SPEC §3.4 线性化边界）。命中就抛 `McpObjectBlocked`，由
         `_dispatch_mcp` 按受控拒绝处理（一个字节都没发）。
         """
         keys = mcp_block_keys(server, tool)
-        root = self._data_root
-        if root is None:
-            # 没有数据根就没有撤销入口（`revoke` 同样要求它），也就没有要抢的
-            # 那把锁；库调用方保持原行为，只做状态推进（对象阻断照样复核）。
-            ensure_object_not_blocked(self._log, keys)
-            return self._advance_to_executing(dispatch_id)
-        with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):
-            ensure_object_not_blocked(self._log, keys)
-            return self._advance_to_executing(dispatch_id)
+        # 对象阻断仍先核，缺数据根不再能绕过执行资格/空间与真实票据。
+        ensure_object_not_blocked(self._log, keys)
+        with execution_guard(self._require_data_root(), timeout_ms=self._guard_timeout_ms):
+            with self._log.transaction():
+                ensure_object_not_blocked(self._log, keys)
+                row = self._conn.execute(
+                    "SELECT state FROM dispatches WHERE dispatch_id=?", (dispatch_id,)
+                ).fetchone()
+                if row is None or row["state"] != DISPATCH_INTENT:
+                    return False
+                if admitted is None or admitted.dispatch_id != dispatch_id:
+                    raise DispatchDenied("MCP 外发缺少绑定票据", "dispatch.not_admitted")
+                auth = self._verify_resource_execution(admitted)
+                target = self._resolve_target(admitted.request, auth)
+                if (not isinstance(target, _McpTarget)
+                        or (target.server, target.tool) != (server, tool)):
+                    raise DispatchDenied("MCP 外发目标与真实请求不符", "dispatch.not_admitted")
+                return self._advance_to_executing(dispatch_id)
 
     def _advance_to_executing(self, dispatch_id: str) -> bool:
         with self._log.transaction():

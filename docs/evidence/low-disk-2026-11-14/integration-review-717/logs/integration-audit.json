@@ -1,0 +1,389 @@
+{
+  "candidate": {
+    "count": 717,
+    "mismatch": [],
+    "extra": []
+  },
+  "review_source": {
+    "count": 717,
+    "mismatch": [],
+    "extra": []
+  },
+  "inherited_identities": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/source-hashes.json",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/REPORT.md",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/facts.json",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/hash-index.json",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/source-hashes.json",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/REPORT.md",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/facts.json",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/hash-index.json",
+      "match": true
+    }
+  ],
+  "kernel_inheritance": {
+    "paths": [
+      "schemas/c3/event.json",
+      "schemas/c4/rules.json",
+      "schemas/m2/approval.json",
+      "schemas/m2/grant.json",
+      "schemas/m2/job.json",
+      "schemas/m2/run.json",
+      "schemas/m2/task.json",
+      "src/tianshu/__init__.py",
+      "src/tianshu/__main__.py",
+      "src/tianshu/authority.py",
+      "src/tianshu/backup.py",
+      "src/tianshu/budget.py",
+      "src/tianshu/canonical.py",
+      "src/tianshu/capability.py",
+      "src/tianshu/contents.py",
+      "src/tianshu/context.py",
+      "src/tianshu/crashpoint.py",
+      "src/tianshu/credentials.py",
+      "src/tianshu/daemon.py",
+      "src/tianshu/data_admission.py",
+      "src/tianshu/data_cli.py",
+      "src/tianshu/data_digest.py",
+      "src/tianshu/data_state.py",
+      "src/tianshu/disk_admission.py",
+      "src/tianshu/dispatcher.py",
+      "src/tianshu/errors.py",
+      "src/tianshu/eval/__init__.py",
+      "src/tianshu/eval/cases.py",
+      "src/tianshu/eval/checks.py",
+      "src/tianshu/eval/crash_child.py",
+      "src/tianshu/eval/report.py",
+      "src/tianshu/eval/runner.py",
+      "src/tianshu/eval/tasks.py",
+      "src/tianshu/eval/webfixture.py",
+      "src/tianshu/event_schema.py",
+      "src/tianshu/events.py",
+      "src/tianshu/exec.py",
+      "src/tianshu/exec_backends.py",
+      "src/tianshu/execpolicy.py",
+      "src/tianshu/fsutil.py",
+      "src/tianshu/guard.py",
+      "src/tianshu/host.py",
+      "src/tianshu/ipc.py",
+      "src/tianshu/isolation.py",
+      "src/tianshu/jobs.py",
+      "src/tianshu/leases.py",
+      "src/tianshu/loop.py",
+      "src/tianshu/maintenance.py",
+      "src/tianshu/mcp.py",
+      "src/tianshu/memory.py",
+      "src/tianshu/memory_control.py",
+      "src/tianshu/memory_distill.py",
+      "src/tianshu/memory_exec.py",
+      "src/tianshu/memory_index.py",
+      "src/tianshu/metrics.py",
+      "src/tianshu/migrate.py",
+      "src/tianshu/model.py",
+      "src/tianshu/net.py",
+      "src/tianshu/pathkeys.py",
+      "src/tianshu/permissions.py",
+      "src/tianshu/pricing.py",
+      "src/tianshu/receipt.py",
+      "src/tianshu/recovery.py",
+      "src/tianshu/replay.py",
+      "src/tianshu/resources.py",
+      "src/tianshu/rules.py",
+      "src/tianshu/run_policy.py",
+      "src/tianshu/sandbox.py",
+      "src/tianshu/snapshot.py",
+      "src/tianshu/summaries.py",
+      "src/tianshu/tasks.py",
+      "src/tianshu/tool_registry.py",
+      "src/tianshu/tools.py",
+      "src/tianshu/toolschema.py",
+      "src/tianshu/undo.py",
+      "src/tianshu/undo_journal.py",
+      "src/tianshu/worker.py",
+      "src/tianshu/workspace.py",
+      "tests/conftest.py",
+      "tests/fixtures/data_admission/README.md",
+      "tests/fixtures/data_admission/legacy-completed.json",
+      "tests/fixtures/data_admission/legacy-v2.sql",
+      "tests/fixtures/data_admission/v0.sql",
+      "tests/fixtures/events/legacy_v0.jsonl",
+      "tests/fixtures/events/minimal_v1.json",
+      "tests/fixtures/fake_mcp_server.py",
+      "tests/fixtures/round2_inputs_mcp_peer.py",
+      "tests/httpserver.py",
+      "tests/support.py",
+      "tests/test_acceptance.py",
+      "tests/test_approval_reject.py",
+      "tests/test_authority_block.py",
+      "tests/test_backend_contract.py",
+      "tests/test_backup.py",
+      "tests/test_backup_materials.py",
+      "tests/test_baseline_evidence.py",
+      "tests/test_budget_ledger.py",
+      "tests/test_budget_review.py",
+      "tests/test_canonical.py",
+      "tests/test_capability.py",
+      "tests/test_content_read.py",
+      "tests/test_content_refs.py",
+      "tests/test_context.py",
+      "tests/test_control.py",
+      "tests/test_cost_line.py",
+      "tests/test_crash_consistency.py",
+      "tests/test_credentials.py",
+      "tests/test_daemon.py",
+      "tests/test_data_admission.py",
+      "tests/test_data_binding.py",
+      "tests/test_data_cli.py",
+      "tests/test_data_migration_cli.py",
+      "tests/test_data_state.py",
+      "tests/test_debug_regressions.py",
+      "tests/test_dispatch.py",
+      "tests/test_eval_followup.py",
+      "tests/test_eval_four_dimensions.py",
+      "tests/test_eval_harness.py",
+      "tests/test_eval_negative_controls.py",
+      "tests/test_eval_real_tasks.py",
+      "tests/test_eval_report.py",
+      "tests/test_eval_scoped_checks.py",
+      "tests/test_eval_separation.py",
+      "tests/test_event_schema.py",
+      "tests/test_events.py",
+      "tests/test_evidence_keys.py",
+      "tests/test_exec.py",
+      "tests/test_exec_backends.py",
+      "tests/test_exec_recovery.py",
+      "tests/test_execpolicy.py",
+      "tests/test_failclosed.py",
+      "tests/test_g1_admission.py",
+      "tests/test_g1d_resource_kinds.py",
+      "tests/test_g2_delegation_contract.py",
+      "tests/test_g2_delegation_control.py",
+      "tests/test_g2_delegation_exec.py",
+      "tests/test_g2_delegation_fence.py",
+      "tests/test_g2_delegation_recovery.py",
+      "tests/test_g2_delegation_replay.py",
+      "tests/test_g2_delegation_spawn.py",
+      "tests/test_host.py",
+      "tests/test_host_cleanup.py",
+      "tests/test_host_memory.py",
+      "tests/test_integration_m5.py",
+      "tests/test_ipc.py",
+      "tests/test_ipc_send_close.py",
+      "tests/test_isolation.py",
+      "tests/test_isolation_gate.py",
+      "tests/test_job_claims.py",
+      "tests/test_leases.py",
+      "tests/test_low_disk_admission.py",
+      "tests/test_low_disk_execution.py",
+      "tests/test_low_disk_run_creation.py",
+      "tests/test_m2_acceptance.py",
+      "tests/test_maintenance.py",
+      "tests/test_mcp_cli.py",
+      "tests/test_mcp_client.py",
+      "tests/test_mcp_crash.py",
+      "tests/test_mcp_dispatch.py",
+      "tests/test_mcp_object_block.py",
+      "tests/test_mcp_registry.py",
+      "tests/test_mcp_transport_timeout.py",
+      "tests/test_memory_dispatch.py",
+      "tests/test_memory_distill.py",
+      "tests/test_memory_loop.py",
+      "tests/test_memory_rank.py",
+      "tests/test_memory_store.py",
+      "tests/test_memory_vectors.py",
+      "tests/test_metrics.py",
+      "tests/test_migration.py",
+      "tests/test_model_contract.py",
+      "tests/test_network_fetch.py",
+      "tests/test_network_research_eval.py",
+      "tests/test_outbound_allow.py",
+      "tests/test_permissions.py",
+      "tests/test_powercut_image.py",
+      "tests/test_pricing.py",
+      "tests/test_pytest_ci_shards.py",
+      "tests/test_pytest_with_stacks.py",
+      "tests/test_receipts.py",
+      "tests/test_recovery.py",
+      "tests/test_recovery_atomicity.py",
+      "tests/test_resources.py",
+      "tests/test_round2_auth_execution.py",
+      "tests/test_round2_auth_memory.py",
+      "tests/test_round2_daemon_budget.py",
+      "tests/test_round2_data_integrity.py",
+      "tests/test_round2_inputs_ipc.py",
+      "tests/test_round2_inputs_model_mcp.py",
+      "tests/test_round2_inputs_net.py",
+      "tests/test_round2_summary_provenance.py",
+      "tests/test_rule_ids.py",
+      "tests/test_run_command.py",
+      "tests/test_run_control.py",
+      "tests/test_sandbox_backend.py",
+      "tests/test_schemas.py",
+      "tests/test_slow_subscriber.py",
+      "tests/test_snapshot.py",
+      "tests/test_soak.py",
+      "tests/test_summaries.py",
+      "tests/test_summary_context.py",
+      "tests/test_summary_loop.py",
+      "tests/test_summary_replay.py",
+      "tests/test_takeover.py",
+      "tests/test_tasks.py",
+      "tests/test_transactions.py",
+      "tests/test_undo_journal.py",
+      "tests/test_undo_recovery.py",
+      "tests/test_usage.py",
+      "tests/test_veto_scope.py",
+      "tests/test_windows_compat.py"
+    ],
+    "count": 211,
+    "changed": []
+  },
+  "original_independent_raw_indices": [
+    {
+      "root": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114",
+      "regular_files_checked": 579,
+      "hash_mismatches": []
+    },
+    {
+      "root": "/tmp/low-disk-t2-independent-20261114",
+      "regular_files_checked": 1403,
+      "hash_mismatches": []
+    }
+  ],
+  "public_artifact_index": {
+    "count": 173,
+    "mismatch": [
+      "t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js",
+      "t3/visual-static-demo/dist/assets/index-XPu6LbkB.css",
+      "t3/visual-static-demo/dist/index.html"
+    ],
+    "actual_regular_files_including_index": 171
+  },
+  "public_independent_identity_copies": [
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t1-independent/REPORT.md",
+      "match": true
+    },
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t1-independent/facts.json",
+      "match": true
+    },
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t1-independent/hash-index.json",
+      "match": true
+    },
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t2-independent/REPORT.md",
+      "match": true
+    },
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t2-independent/facts.json",
+      "match": true
+    },
+    {
+      "path": "docs/evidence/low-disk-2026-11-14/inherited/t2-independent/hash-index.json",
+      "match": true
+    }
+  ],
+  "author_vs_complete_identity": {
+    "author_count": 711,
+    "complete_count": 717,
+    "author_mismatch": [],
+    "six_excluded_derived": [
+      "docs/evidence/low-disk-2026-11-14/artifact-index.json",
+      "docs/evidence/low-disk-2026-11-14/t3/final-gates/freeze-postcheck.json",
+      "docs/evidence/low-disk-2026-11-14/t3/final-gates/verify_freeze.py",
+      "docs/evidence/low-disk-2026-11-14/t3/t3-delta-vs-t2.patch",
+      "docs/evidence/low-disk-2026-11-14/t3/t3-source-hashes.json",
+      "docs/evidence/low-disk-2026-11-14/t3/t3-source-summary.json"
+    ]
+  },
+  "contract_compatibility": {
+    "sections_1_through_5_equal": true,
+    "six_acceptance_bullets_equal": true
+  },
+  "public_local_links": [
+    {
+      "source": "docs/LOW-DISK-2026-11-14.md",
+      "target": "evidence/low-disk-2026-11-14/inherited/",
+      "exists": true
+    },
+    {
+      "source": "docs/LOW-DISK-2026-11-14.md",
+      "target": "evidence/low-disk-2026-11-14/t3/raw/",
+      "exists": true
+    },
+    {
+      "source": "docs/LOW-DISK-2026-11-14.md",
+      "target": "evidence/low-disk-2026-11-14/t3/final-gates/",
+      "exists": true
+    },
+    {
+      "source": "docs/LOW-DISK-2026-11-14.md",
+      "target": "evidence/low-disk-2026-11-14/t3/visual-static-demo/",
+      "exists": true
+    },
+    {
+      "source": "docs/LOW-DISK-2026-11-14.md",
+      "target": "evidence/low-disk-2026-11-14/t3/final-gates/results.json",
+      "exists": true
+    },
+    {
+      "source": "docs/low-disk-admission-contract.md",
+      "target": "PRD-v1.md#84-快照保留策略d5-定稿",
+      "exists": true
+    },
+    {
+      "source": "docs/low-disk-admission-contract.md",
+      "target": "LOW-DISK-2026-11-14.md",
+      "exists": true
+    },
+    {
+      "source": "docs/low-disk-admission-contract.md",
+      "target": "PRD-v1.md#84-快照保留策略d5-定稿",
+      "exists": true
+    },
+    {
+      "source": "docs/low-disk-admission-contract.md",
+      "target": "PRD-v1.md#85-数据生命周期备份与隐私新增发布要求",
+      "exists": true
+    },
+    {
+      "source": "docs/low-disk-admission-contract.md",
+      "target": "LOW-DISK-2026-11-14.md",
+      "exists": true
+    }
+  ],
+  "changed_product_additions_stub_scan": [],
+  "python_runtime_dependencies_unchanged": true,
+  "python_lock_unchanged_not_lock_check": true,
+  "public_inherited_probe_availability": {
+    "t1_run_probe_py": false,
+    "t1_c1_probe_py": false,
+    "t2_probe_py": false,
+    "meaning": "Public inherited directories preserve report/facts/hash-index identity copies; complete local raw/probes remain at the original sealed /tmp archives. No public full-archive reproducibility claim is made by this audit."
+  },
+  "scope": "Source/evidence integrity and explicitly identified structural checks only; no T1/T2 suite rerun, CLI/IPC/App matrix, final gates, or native CI."
+}

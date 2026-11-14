@@ -82,6 +82,7 @@ class Env:
             dispatcher=self.stack.dispatcher,
             approvals=self.stack.approvals,
             snapshots=self.stack.snapshots,
+            contents=self.stack.contents,
             model=model,
             limits=limits or Limits(max_turns=8),
             memory=self.stack.memory,

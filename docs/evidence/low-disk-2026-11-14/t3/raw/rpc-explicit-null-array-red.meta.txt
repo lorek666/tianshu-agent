@@ -1,0 +1,5 @@
+phase=rpc-explicit-null-array-red
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+test_sha256=71780d782c93e957566917de2bef3392871d99b02dad2e3be3a9f6974a698e3c
+control_sha256=ac141c723ccb5cbab5880cccf8b2fb3aac38e84b760d20da4378e17a24f25b9e
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py::test_rpc_execution_policy_is_strict_and_controls_low_disk_admission

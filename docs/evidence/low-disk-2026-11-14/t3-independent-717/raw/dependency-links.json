@@ -1,0 +1,22 @@
+{
+  "links": [
+    {
+      "path": "probes/node_modules",
+      "target": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui/node_modules",
+      "handling": "removed after all test commands, recreate to reproduce; target not chmodded"
+    },
+    {
+      "path": "work/ui/node_modules",
+      "target": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui/node_modules",
+      "handling": "removed after all test commands, recreate to reproduce; target not chmodded"
+    }
+  ],
+  "dependency_versions": {
+    "node": "24.22.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "vitest": "3.2.7",
+    "jsdom": "26.1.0"
+  },
+  "note": "Only external dependency libraries reused; product imports came from work/ui/src. Vite cache is under this output runs/vite-cache."
+}

@@ -1,0 +1,17 @@
+{
+  "status": "PASS_T3_AUTHOR_FREEZE_MECHANICAL_CHECK",
+  "source_entries": 711,
+  "source_mismatches": [],
+  "artifact_entries": 173,
+  "artifact_mismatches": [],
+  "patch_check": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "summary_hashes_match": {
+    "source_map": true,
+    "delta_patch": true
+  },
+  "scope": "Mechanical source/evidence hash and patch applicability checks only; not T3 independent review, full suite, or native CI."
+}

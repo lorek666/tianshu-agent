@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py", line 234, in <module>
+    'source_manifest': before, 'scenarios': {name: functions[name]() for name in selected}}
+                                                   ^^^^^^^^^^^^^^^^^
+  File "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py", line 125, in parent_fence
+    assert result.state == 'cancelled' and child_model.calls == 1
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

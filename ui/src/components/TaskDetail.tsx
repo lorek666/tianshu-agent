@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import type { ApprovalView, RunView, TaskView } from "../api/types";
+import {
+  EFFECTS_RUN_POLICY,
+  PURE_ONLY_RUN_POLICY,
+} from "../api/types";
+import type {
+  ApprovalView,
+  RunExecutionPolicyV1,
+  RunView,
+  TaskView,
+} from "../api/types";
 import { formatDuration, formatRelative } from "../lib/format";
 import {
   effectStateLabel,
@@ -22,8 +31,13 @@ export interface TaskDetailProps {
   selectedRunId: string | null;
   busy: string | null;
   now: number;
+  executionPolicy: RunExecutionPolicyV1;
   onSelectRun: (runId: string) => void;
-  onStartRun: (taskId: string) => void;
+  onExecutionPolicyChange: (
+    taskId: string,
+    policy: RunExecutionPolicyV1,
+  ) => void;
+  onStartRun: (taskId: string, policy: RunExecutionPolicyV1) => void;
   onRevise: (taskId: string, goal: string) => Promise<void>;
   onRequestCancel: (run: RunView) => void;
 }
@@ -35,7 +49,9 @@ export function TaskDetail({
   selectedRunId,
   busy,
   now,
+  executionPolicy,
   onSelectRun,
+  onExecutionPolicyChange,
   onStartRun,
   onRevise,
   onRequestCancel,
@@ -86,7 +102,7 @@ export function TaskDetail({
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => onStartRun(task.task_id)}
+              onClick={() => onStartRun(task.task_id, executionPolicy)}
               disabled={starting}
               title="让 Agent 在后台开始一次新的运行"
             >
@@ -172,6 +188,39 @@ export function TaskDetail({
               </span>
             ) : null}
           </div>
+          {activeRun === null ? (
+            <div className="run-mode-picker">
+              <div className="segmented run-mode" role="group" aria-label="运行方式">
+                <button
+                  type="button"
+                  className={`segmented-item${executionPolicy.mode === "effects" ? " is-active" : ""}`}
+                  aria-pressed={executionPolicy.mode === "effects"}
+                  onClick={() =>
+                    onExecutionPolicyChange(task.task_id, EFFECTS_RUN_POLICY)
+                  }
+                  disabled={starting}
+                >
+                  允许工具操作
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-item${executionPolicy.mode === "pure_only" ? " is-active" : ""}`}
+                  aria-pressed={executionPolicy.mode === "pure_only"}
+                  onClick={() =>
+                    onExecutionPolicyChange(task.task_id, PURE_ONLY_RUN_POLICY)
+                  }
+                  disabled={starting}
+                >
+                  仅读取与对话
+                </button>
+              </div>
+              <span className="field-hint">
+                {executionPolicy.mode === "pure_only"
+                  ? "本次运行不写文件、不执行有副作用的工具；下方目录权限不会被修改。"
+                  : "允许工具操作；普通运行会在创建前检查所需磁盘空间。"}
+              </span>
+            </div>
+          ) : null}
         </section>
 
         <section className="detail-block">

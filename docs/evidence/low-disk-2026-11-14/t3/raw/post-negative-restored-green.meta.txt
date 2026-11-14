@@ -1,0 +1,8 @@
+phase=post-negative-restored-green
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+cli_sha256=20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7
+control_sha256=ac141c723ccb5cbab5880cccf8b2fb3aac38e84b760d20da4378e17a24f25b9e
+app_sha256=be6cc9cbac85f2c8514e831dd17ef04f2ca870fda12c421435a3057bdeaea62d
+python_command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py
+ui_command=pnpm --dir ui exec vitest run src/__tests__/run-mode.test.tsx
+typecheck_command=pnpm --dir ui run typecheck

@@ -1,0 +1,733 @@
+{
+  "jobs": [
+    {
+      "id": 132308197087,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezi7e3w",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132308197087",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132308197087",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T03:01:35Z",
+      "started_at": "2026-11-14T03:01:36Z",
+      "completed_at": "2026-11-14T03:01:56Z",
+      "name": "ui · typecheck / test / build",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:01:37Z",
+          "completed_at": "2026-11-14T03:01:38Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:01:38Z",
+          "completed_at": "2026-11-14T03:01:40Z"
+        },
+        {
+          "name": "Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:01:40Z",
+          "completed_at": "2026-11-14T03:01:41Z"
+        },
+        {
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:01:41Z",
+          "completed_at": "2026-11-14T03:01:42Z"
+        },
+        {
+          "name": "安装前端依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:01:42Z",
+          "completed_at": "2026-11-14T03:01:45Z"
+        },
+        {
+          "name": "类型检查",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:01:45Z",
+          "completed_at": "2026-11-14T03:01:46Z"
+        },
+        {
+          "name": "前端单测",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:01:46Z",
+          "completed_at": "2026-11-14T03:01:49Z"
+        },
+        {
+          "name": "构建",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T03:01:49Z",
+          "completed_at": "2026-11-14T03:01:51Z"
+        },
+        {
+          "name": "提交的 dist 必须与源码构建一致",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T03:01:51Z",
+          "completed_at": "2026-11-14T03:01:51Z"
+        },
+        {
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T03:01:51Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        },
+        {
+          "name": "Post Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T03:01:53Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T03:01:53Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T03:01:53Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132308197087",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002031,
+      "runner_name": "GitHub Actions 1000002031",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132308197331,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezi7f0w",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132308197331",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132308197331",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T03:01:35Z",
+      "started_at": "2026-11-14T03:01:37Z",
+      "completed_at": "2026-11-14T03:26:34Z",
+      "name": "windows shard 0 · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:01:38Z",
+          "completed_at": "2026-11-14T03:01:39Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:01:39Z",
+          "completed_at": "2026-11-14T03:01:49Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:01:49Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:01:53Z",
+          "completed_at": "2026-11-14T03:02:04Z"
+        },
+        {
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:02:04Z",
+          "completed_at": "2026-11-14T03:02:05Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:02:05Z",
+          "completed_at": "2026-11-14T03:02:06Z"
+        },
+        {
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:02:06Z",
+          "completed_at": "2026-11-14T03:02:06Z"
+        },
+        {
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T03:02:06Z",
+          "completed_at": "2026-11-14T03:26:29Z"
+        },
+        {
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T03:26:29Z",
+          "completed_at": "2026-11-14T03:26:30Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T03:26:30Z",
+          "completed_at": "2026-11-14T03:26:30Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T03:26:30Z",
+          "completed_at": "2026-11-14T03:26:32Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T03:26:32Z",
+          "completed_at": "2026-11-14T03:26:32Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132308197331",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000002032,
+      "runner_name": "GitHub Actions 1000002032",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132308197359,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezi7f7w",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132308197359",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132308197359",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-14T03:01:35Z",
+      "started_at": "2026-11-14T03:01:37Z",
+      "completed_at": "2026-11-14T03:11:42Z",
+      "name": "windows shard 1 · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:01:37Z",
+          "completed_at": "2026-11-14T03:01:38Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:01:38Z",
+          "completed_at": "2026-11-14T03:01:45Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:01:45Z",
+          "completed_at": "2026-11-14T03:01:48Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:01:48Z",
+          "completed_at": "2026-11-14T03:01:53Z"
+        },
+        {
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:01:53Z",
+          "completed_at": "2026-11-14T03:01:54Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:01:54Z",
+          "completed_at": "2026-11-14T03:01:55Z"
+        },
+        {
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:01:55Z",
+          "completed_at": "2026-11-14T03:01:56Z"
+        },
+        {
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 8,
+          "started_at": "2026-11-14T03:01:56Z",
+          "completed_at": "2026-11-14T03:11:38Z"
+        },
+        {
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T03:11:38Z",
+          "completed_at": "2026-11-14T03:11:39Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 17,
+          "started_at": "2026-11-14T03:11:39Z",
+          "completed_at": "2026-11-14T03:11:39Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T03:11:39Z",
+          "completed_at": "2026-11-14T03:11:41Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T03:11:41Z",
+          "completed_at": "2026-11-14T03:11:41Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132308197359",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000002033,
+      "runner_name": "GitHub Actions 1000002033",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132308197395,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezi7gEw",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132308197395",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132308197395",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T03:01:35Z",
+      "started_at": "2026-11-14T03:01:36Z",
+      "completed_at": "2026-11-14T03:08:20Z",
+      "name": "test (ubuntu-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:01:37Z",
+          "completed_at": "2026-11-14T03:01:38Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:01:38Z",
+          "completed_at": "2026-11-14T03:01:40Z"
+        },
+        {
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:01:40Z",
+          "completed_at": "2026-11-14T03:01:41Z"
+        },
+        {
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:01:41Z",
+          "completed_at": "2026-11-14T03:01:42Z"
+        },
+        {
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:01:42Z",
+          "completed_at": "2026-11-14T03:01:42Z"
+        },
+        {
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:01:42Z",
+          "completed_at": "2026-11-14T03:01:43Z"
+        },
+        {
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:01:43Z",
+          "completed_at": "2026-11-14T03:01:43Z"
+        },
+        {
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T03:01:43Z",
+          "completed_at": "2026-11-14T03:08:18Z"
+        },
+        {
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-11-14T03:08:18Z",
+          "completed_at": "2026-11-14T03:08:18Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T03:08:18Z",
+          "completed_at": "2026-11-14T03:08:18Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T03:08:18Z",
+          "completed_at": "2026-11-14T03:08:18Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132308197395",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002035,
+      "runner_name": "GitHub Actions 1000002035",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132308197396,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezi7gFA",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132308197396",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132308197396",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T03:01:35Z",
+      "started_at": "2026-11-14T03:01:36Z",
+      "completed_at": "2026-11-14T03:13:32Z",
+      "name": "test (macos-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:01:36Z",
+          "completed_at": "2026-11-14T03:01:38Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:01:38Z",
+          "completed_at": "2026-11-14T03:01:40Z"
+        },
+        {
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:01:40Z",
+          "completed_at": "2026-11-14T03:01:42Z"
+        },
+        {
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:01:42Z",
+          "completed_at": "2026-11-14T03:01:44Z"
+        },
+        {
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:01:44Z",
+          "completed_at": "2026-11-14T03:01:45Z"
+        },
+        {
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:01:45Z",
+          "completed_at": "2026-11-14T03:01:46Z"
+        },
+        {
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:01:46Z",
+          "completed_at": "2026-11-14T03:01:46Z"
+        },
+        {
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T03:01:46Z",
+          "completed_at": "2026-11-14T03:13:28Z"
+        },
+        {
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-11-14T03:13:28Z",
+          "completed_at": "2026-11-14T03:13:28Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T03:13:28Z",
+          "completed_at": "2026-11-14T03:13:29Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T03:13:29Z",
+          "completed_at": "2026-11-14T03:13:30Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132308197396",
+      "labels": [
+        "macos-latest"
+      ],
+      "runner_id": 1000002034,
+      "runner_name": "GitHub Actions 1000002034",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132315243664,
+      "run_id": 43549430150,
+      "workflow_name": "CI",
+      "head_branch": "codex/g3-low-disk-admission",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43549430150",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAezppkkA",
+      "head_sha": "96e3e485eb4ecbecadbadb54a60414967ab63649",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132315243664",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43549430150/job/132315243664",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-14T03:26:35Z",
+      "started_at": "2026-11-14T03:26:37Z",
+      "completed_at": "2026-11-14T03:26:51Z",
+      "name": "test (windows-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T03:26:38Z",
+          "completed_at": "2026-11-14T03:26:39Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T03:26:40Z",
+          "completed_at": "2026-11-14T03:26:42Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T03:26:42Z",
+          "completed_at": "2026-11-14T03:26:44Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T03:26:44Z",
+          "completed_at": "2026-11-14T03:26:45Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T03:26:45Z",
+          "completed_at": "2026-11-14T03:26:46Z"
+        },
+        {
+          "name": "下载分片 0",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T03:26:46Z",
+          "completed_at": "2026-11-14T03:26:47Z"
+        },
+        {
+          "name": "下载分片 1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T03:26:47Z",
+          "completed_at": "2026-11-14T03:26:48Z"
+        },
+        {
+          "name": "验证上游结论与完整覆盖",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 8,
+          "started_at": "2026-11-14T03:26:48Z",
+          "completed_at": "2026-11-14T03:26:48Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15,
+          "started_at": "2026-11-14T03:26:48Z",
+          "completed_at": "2026-11-14T03:26:48Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T03:26:48Z",
+          "completed_at": "2026-11-14T03:26:48Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T03:26:48Z",
+          "completed_at": "2026-11-14T03:26:48Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132315243664",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002036,
+      "runner_name": "GitHub Actions 1000002036",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ],
+  "total_count": 6
+}

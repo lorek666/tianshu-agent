@@ -1,0 +1,29 @@
+
+ RUN  v3.2.7 /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui
+
+ ✓ src/lib/__tests__/format.test.ts (8 tests) 2ms
+ ✓ src/api/__tests__/stream.test.ts (3 tests) 5ms
+ ✓ src/lib/__tests__/memoryView.test.ts (6 tests) 4ms
+ ✓ src/lib/__tests__/memoryController.test.ts (8 tests) 6ms
+ ✓ src/lib/__tests__/humanize.test.ts (18 tests) 4ms
+ ✓ src/lib/__tests__/timeline.test.ts (10 tests) 4ms
+ ✓ src/lib/__tests__/memoryController-races.test.ts (7 tests) 2ms
+ ✓ src/components/__tests__/memory-panel.test.tsx (8 tests) 22ms
+ ✓ src/api/__tests__/normalize.test.ts (10 tests) 5ms
+ ✓ src/api/__tests__/sse.test.ts (3 tests) 1ms
+ ✓ src/components/__tests__/approval-card.test.tsx (3 tests) 5ms
+ ✓ src/api/__tests__/host.test.js (3 tests) 218ms
+ ❯ src/__tests__/run-mode.test.tsx (3 tests | 3 failed) 43ms
+   × Run 执行模式的真实 UI 入口 > 新建任务只把纯读策略交给 run.start，启动失败后的详情重试仍保持 pure_only 26ms
+     → expected null not to be null
+   × Run 执行模式的真实 UI 入口 > 已有任务：默认允许工具操作 会原样传到 run.start 13ms
+     → expected [ { task_id: 'task_1' } ] to deeply equal [ { task_id: 'task_1', …(1) } ]
+   × Run 执行模式的真实 UI 入口 > 已有任务：显式仅读取与对话 会原样传到 run.start 4ms
+     → expected null not to be null
+
+ Test Files  1 failed | 12 passed (13)
+      Tests  3 failed | 87 passed (90)
+   Start at  09:21:26
+   Duration  877ms (transform 464ms, setup 0ms, collect 891ms, tests 322ms, environment 258ms, prepare 728ms)
+
+[ELIFECYCLE] Test failed. See above for more details.

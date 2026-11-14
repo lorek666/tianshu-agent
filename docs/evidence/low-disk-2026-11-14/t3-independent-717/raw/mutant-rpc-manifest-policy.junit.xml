@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.871" timestamp="2026-11-14T09:52:15.202682+08:00" hostname="RonfeedeMac-mini.local"><testcase classname="test_entry_independent" name="test_real_ipc_explicit_modes[pure_only]" time="0.717"><failure message="assert False&#10; +  where False = all(&lt;generator object policy_snapshot.&lt;locals&gt;.&lt;genexpr&gt; at 0x108d79080&gt;)">/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:186: in test_real_ipc_explicit_modes
+    s=snapshot(d.root);policy_snapshot(s,mode)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:42: in policy_snapshot
+    assert all(current_registry().spec(t).side_effect_level=='pure' for t in e['payload']['tools'])
+E   assert False
+E    +  where False = all(&lt;generator object policy_snapshot.&lt;locals&gt;.&lt;genexpr&gt; at 0x108d79080&gt;)</failure></testcase></testsuite></testsuites>

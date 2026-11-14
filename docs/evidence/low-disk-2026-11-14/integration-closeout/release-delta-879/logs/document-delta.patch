@@ -1,0 +1,200 @@
+--- 717/.gitignore
++++ 879/.gitignore
+@@ -21,6 +21,8 @@
+ 
+ # 构建产物
+ dist/
++# 保全低盘视觉核验的三份固定 dist 原件，供公开证据索引逐字节核对。
++!docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/
+ build/
+ target/
+ 
+--- 717/docs/KNOWLEDGE.md
++++ 879/docs/KNOWLEDGE.md
+@@ -26,7 +26,11 @@
+ 
+ ## 2. 当前状态（数字会过期，更新时重核）
+ 
+-- **低磁盘 T1/T2 独立通过，T3 作者候选待审（2026-11-14）**：T1 round1 在542源冻结和六文件 round1 delta 上由第二读者独立确认规格/质量窄范围 PASS；T2 在543源冻结上独立确认 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立组合 **80 passed（11.01s）**，9个变异产生10个行为失败、0 setup/import/collection kill，阻断0。T3 作者已接通严格 CLI `--execution-mode`、RPC `run.start.params.execution_policy` 与两条 UI 启动路径，最近 Python 三文件窄回归 **76 passed**、UI 目标 **4 passed**、typecheck/build exit0。T3 尚未独立复审，统一全量、lock、全仓 ruff、完整 UI suite 与原生 CI 均未运行；不能把 T1/T2 的独立 PASS 或 T3 局部绿合并成整功能交付。逐条 LD 映射、真红、负控与未验证范围见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，稳定身份副本见[证据目录](evidence/low-disk-2026-11-14/)。
++- **低磁盘 T3 独立入口验收通过，最终组合待核（2026-11-14）**：第二读者在717项固定源清单 `7acc6843` 上确认 `PASS_T3_FROZEN_ENTRYPOINT_SCOPE` / `PASS_T3_FROZEN_NARROW_DELTA`，独立52项Python（50首轮+2 paused补充）、4项真实App DOM；11个最小接点变异各1个call行为红，0 setup/import/collection kill，行为阻断0。复原5项Python/2项App与27个已有拒绝案例持久材料核对均单列，不重复计数；report/facts/index为 `e1de27bf` / `a07fe5ce` / `537c937f`。整分支读者核211内核路径继承及原T1/T2证据身份，发现公开索引3份视觉dist被忽略的INT-E1，原717报告保持不批准；root以最窄`.gitignore`例外补原字节，另清楚说明作者711核心+6派生=717的历史口径，待新候选独立销账。统一全量、lock、全仓ruff、完整UI与原生CI未运行；详见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
++
++- **既有CLI预算装配缺口未修（2026-11-14，BASE-B1）**：整分支第二读者比较a022/T2/T3，确认`cli._engine`均未传`stack.budget`；真实离线ScriptedModel写出model.intent/result但engine预算为空、账户和预占均0。这是基线既有P2，不是T3新增，单独跟踪；其他入口预算证据不得外推CLI，低盘本片不冒称修复。原探针与源hash在[717整分支复审](evidence/low-disk-2026-11-14/integration-review-717/REPORT.md)。
++
++- **低磁盘 T3 作者候选历史时点（2026-11-14，已由上方独立验收更新）**：T1 round1 在542源冻结和六文件 round1 delta 上由第二读者独立确认规格/质量窄范围 PASS；T2 在543源冻结上独立确认 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立组合 **80 passed（11.01s）**，9个变异产生10个行为失败、0 setup/import/collection kill，阻断0。T3 作者已接通严格 CLI `--execution-mode`、RPC `run.start.params.execution_policy` 与两条 UI 启动路径，最近 Python 三文件窄回归 **76 passed**、UI 目标 **4 passed**、typecheck/build exit0。T3 尚未独立复审，统一全量、lock、全仓 ruff、完整 UI suite 与原生 CI 均未运行；不能把 T1/T2 的独立 PASS 或 T3 局部绿合并成整功能交付。逐条 LD 映射、真红、负控与未验证范围见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，稳定身份副本见[证据目录](evidence/low-disk-2026-11-14/)。
+ 
+ - **低磁盘 T2 作者时点记录，已由上方独立 PASS 替代（2026-11-14）**：以已审 T1 round1 的542源文件为固定输入；普通非 pure 在审批前、消费批准/grant及intent前、TaskStore/File/Memory/network/MCP真实边界现测同一材料上下文。pure_only 的非pure取消仍拒绝；effects/合法v0/v1既有读、普通/摘要脚本模型及停止控制保留原规则。MCP只为真实pending动作按身份/目标/资格/空间惰性恢复发现，发现后核原版本/schema，不把启动作为纯读/模型前提。作者新测试95项的相关分组均通过；16文件联合首轮510通过、3失败、1跳过，3项为审计前移与静态登记缺口，修后相关三文件142通过、MCP/派发三文件64通过，追加schema绑定3通过。8个单门行为负控真红并复原；双真实进程审批屏障、硬退unknown保全、ENOSPC旧Receipt/快照保全有定向原件。该历史时点没有独立T2通过、统一全量、lock、原生CI或产品提交；T3 当时尚未实施。
+ 
+@@ -799,3 +803,5 @@
+ - **2026-11-14 · 低磁盘 T2 作者候选冻结**：以已审542源逐项0差异开始，完成真实ToolSpec资格/实时空间、执行器独立核验与已有Run恢复例外；资格拒绝同步代码/schema/PRD。首红4项与边界12项真实失败保留；固定T1六项继承失败、phase1并发context失败均留原件。恢复矩阵首轮54绿6个epoch观察器错断言、边界首次绿8个lazy表观察器错误、静态格式错误与单门脚本第7项匹配计数2（非kill）均如实保存。最终三项联合红按原审计/静态登记目的窄修；相关142、MCP/派发64、schema绑定3通过，8个单门负控真红后完整复原。双真实进程靠通信屏障，硬退只用TIANSHU_FAILPOINT；无sleep时序冒充、无真实模型/付费。新完整组合及相对T1本片delta/源哈希/原件另冻交第二读者，作者停写；未full/lock/CI、commit/push或T3。
+ 
+ - **2026-11-14 · 低磁盘 T2 独立通过、T3 作者候选冻结**：第二读者在543源冻结上给出 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立80 passed、9变异10个行为失败、0 setup/import/collection kill、阻断0；T2报告/facts/index及T1/T2源映射已复制到仓库内[证据目录](evidence/low-disk-2026-11-14/)。T3接通CLI/RPC/UI同一严格资格，真实CLI与IPC验证默认effects、显式pure_only、坏策略`bad_params`、重开token和workspace writable独立；UI两路径与失败重试保留选择。CLI首红argparse未知参数、RPC首红低盘`internal`、显式null/array红、UI 13文件87P3F、IPC跨线程观察器红均保留。三项最终负控（CLI改effects、RPC绕过解析、UI详情漏传policy）真红后恢复。最终定向门禁Python 76 passed、UI目标4 passed、typecheck/build/install/ruff/compile/stub扫描均exit0，dist从`B-xT4bPb/tHfDYJNM`换为`CIZ6Bgii/XPu6LbkB`且前后清单与SHA留档。T3独立复审、统一全量、lock、全仓ruff、完整UI suite和原生CI未运行；详见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，不commit/push或创建PR。
++
++- **2026-11-14 · 低磁盘T3独立通过与公开证据收口**：亲读T3独立报告并逐hash核1485项加索引自身，52Python/4App与11行为红按实际阶段记录，完整原件1486件保全ignored档案。整分支原717报告明确INT-E1索引缺3视觉dist不批准，root核实系dist忽略规则而非产品产物丢失，只补最窄例外与原字节，不重写旧失败；作者711核心与root717含6派生区别、契约75项为历史时点同步澄清。原a022/T2/T3 CLI预算接线缺口BASE-B1如实披露并单列跟踪，未顺手修预算。当前只改事实文档/证据封装，267产品/测试/锁/dist不变量保持；新候选独立销账、最终组合、正式对象和原生CI另核。
+--- 717/docs/LOW-DISK-2026-11-14.md
++++ 879/docs/LOW-DISK-2026-11-14.md
+@@ -2,8 +2,8 @@
+ 
+ 本文记录 LD-01–06 在当前候选上的证据归属和剩余缺口。它是作者交付记录的汇总入口，
+ 不是独立复审结论。产品基线 HEAD 为
+-`a0223aa269efcdf70df4c4d8c43e5629b4fa0215`，工作树包含已审 T1、已审 T2 和尚未独立
+-复审的 T3 候选；HEAD 本身不能代表未提交候选的完整身份。
++`a0223aa269efcdf70df4c4d8c43e5629b4fa0215`，工作树包含已审 T1/T2/T3 及后续事实文档、
++证据封装修正；HEAD 本身不能代表未提交候选的完整身份。
+ 
+ ## 当前结论
+ 
+@@ -11,7 +11,15 @@
+ |---|---|---|
+ | T1 round1 | 第二读者在 542 源冻结和六文件 round1 delta 上确认规格/质量窄范围 PASS；C1、C2、Q1 已修，范围内阻断 0 | 不覆盖 T2/T3、整功能、统一全量或原生 CI |
+ | T2 | 第二读者在 543 源冻结上确认 `PASS_T2_FROZEN_CONTENT_ONLY` 与 `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`；最终独立组合 80 passed，阻断 0 | 不覆盖 T3、统一全量、原生 CI、真实付费模型或 soak |
+-| T3 作者候选 | CLI、RPC、两条 UI 启动路径和 demo 已接通同一严格策略；Python 三文件窄回归 76 passed、UI 目标测试 4 passed、typecheck/build 通过 | T3 独立复审、统一全量、lock、全仓 ruff、完整 UI suite、原生 CI、正式提交 |
++| T3 独立入口验收 | 第二读者在 717 项固定候选上确认 `PASS_T3_FROZEN_ENTRYPOINT_SCOPE` / `PASS_T3_FROZEN_NARROW_DELTA`；52 项 Python、4 项真实 App DOM，11 个变异各产生 1 个 call 行为红，行为阻断 0 | 后续文档/公开证据 delta 的独立绑定、统一全量、lock、全仓 ruff、完整 UI suite、原生 CI、正式提交 |
++
++T3 独立[报告](evidence/low-disk-2026-11-14/t3-independent-717/REPORT.md)、facts 与原索引
++SHA256 分别为 `e1de27bf1c6ae73718a91ce9bf8568a2a0fca8956db37f6a64401c36428c877d`、
++`a07fe5ce56a24884edcd4ed5756a033194c081e1d833dcbd14cfe79e02ebdeb1`、
++`537c937fe34e0395f5861abc660bb90edc88944f4b1876098adbd1c2138bb757`。
++50 项首轮与 2 项 paused 补充按实际命令分列，不虚构一次 52 项统一命令；复原正控
++Python 5 项、App 2 项另列，不重复计数。27 个既有拒绝案例的只读持久材料核对也不增加
++测试数。完整报告明确保留观察器错误、过滤未执行项目与平台限制。
+ 
+ T1/T2 的稳定身份副本在
+ [`docs/evidence/low-disk-2026-11-14/inherited/`](evidence/low-disk-2026-11-14/inherited/)：
+@@ -61,12 +69,12 @@
+ 
+ | 条目 | 约定归属 | 已有独立证据 | T3 新增证据 | 当前判断与缺口 |
+ |---|---|---|---|---|
+-| LD-01 | T1/T2 | T1 真实 registry/schema 与资格门；T2 独立 80 项覆盖 pure status/result、非 pure 资格、停止控制及 9 个变异产生的 10 个行为失败 | RPC `run.start.payload.tools` 与真实注册表所有 `side_effect_level == "pure"` 工具逐项绑定 | T1/T2 窄范围通过；T3 尚未独立复审，不能把三项局部证据合称 LD-01 全量通过 |
+-| LD-02 | T1/T3 | T1 独立创建侧原子拒绝、真实位置探测、CLI/Control 创建前检查与 2147483647/8/9 阈值材料 | CLI 子进程真实默认 effects/显式 pure_only；真实 IPC + ControlPlane 严格坏策略与重开 token 验证 | 创建侧与入口候选均有证据；T3 entrypoint 独立、统一全量与原生 CI 未过 |
+-| LD-03 | T1/T2/T3 | T1 覆盖 TaskStore/Loop/Control/记忆/undo/子 Run；T2 覆盖 Dispatcher、文件/记忆执行器、网络/MCP 边界与恢复 | 真实 CLI、真实 IPC ControlPlane、UI 新建和详情两条路径 | 三个切片的作者/独立证据来源不同；T3 未独立复审，尚无三片统一全量结论 |
++| LD-01 | T1/T2 | T1 真实 registry/schema 与资格门；T2 独立 80 项覆盖 pure status/result、非 pure 资格、停止控制及 9 个变异产生的 10 个行为失败 | RPC `run.start.payload.tools` 与真实注册表所有 `side_effect_level == "pure"` 工具逐项绑定 | T1/T2 证据精确继承，T3 入口独立通过；最终组合与原生 CI 另核 |
++| LD-02 | T1/T3 | T1 独立创建侧原子拒绝、真实位置探测、CLI/Control 创建前检查与 2147483647/8/9 阈值材料 | 独立真实 CLI/IPC 七值、默认/显式策略、坏对象及重开 token；真实 App 两条路径 | 创建与入口冻结范围独立通过；最终文档证据 delta、统一全量与原生 CI 另核 |
++| LD-03 | T1/T2/T3 | T1 覆盖 TaskStore/Loop/Control/记忆/undo/子 Run；T2 覆盖 Dispatcher、文件/记忆执行器、网络/MCP 边界与恢复 | 独立真实 CLI、daemon IPC、App 新建和详情两条路径、失败重试与跨 Task 隔离及接点负控 | 三片独立内容均按各自身份通过；尚无三片统一全量结论 |
+ | LD-04 | T1 | T1 独立 leaf probe 覆盖 DB、payload、snapshot、memory、workspace、authority、execution.guard，含嵌套父目录与真实执行 cwd；未遗漏单门负控 | 无新增位置算法，T3 只接入口 | **仍非原生跨卷/嵌套挂载通过**：独立证据使用同临时卷受控 probe；Windows/其他设备未验证 |
+-| LD-05 | T2 | T2 独立恢复矩阵覆盖 effects/v0/v1 × low/unknown × resume/reopen/pause/worker/daemon/direct drive，普通模型与摘要调用保留；停止控制、unknown/Receipt 有独立原件 | 策略跨 IPC/UI 重试保真，未改恢复产品路径 | 恢复核心为独立窄范围 PASS；完整 erase/undo 矩阵、T3 集成、全量与 CI 未验证 |
+-| LD-06 | T1/T2 | T1 覆盖 `run.start` v2 写读、历史 v0/v1 与真实 schema；T2 覆盖双子进程屏障、三窗 MCP 硬退、unknown 保留和旧 Receipt/manifest 保全 | RPC 严格对象、未知字段与显式 null/array 拒绝；CLI 已有 Run 控制拒绝模式 | 协议与故障切片有证据；真实物理 ENOSPC/断电、10h soak、T3 独立与原生 CI 未验证 |
++| LD-05 | T2 | T2 独立恢复矩阵覆盖 effects/v0/v1 × low/unknown × resume/reopen/pause/worker/daemon/direct drive，普通模型与摘要调用保留；停止控制、unknown/Receipt 有独立原件 | 独立策略跨 IPC/UI 重试保真、同一 paused Run 拒绝改模式且无 flag 可低盘续跑 | 恢复核心与最小入口回归独立通过；完整 erase/undo 矩阵、统一全量与 CI 未验证 |
++| LD-06 | T1/T2 | T1 覆盖 `run.start` v2 写读、历史 v0/v1 与真实 schema；T2 覆盖双子进程屏障、三窗 MCP 硬退、unknown 保留和旧 Receipt/manifest 保全 | 独立 RPC 严格对象与重开持久资格；CLI 已有 Run 控制拒绝模式，27 个拒绝案例只读核无新 Run/执行事实 | 协议与故障切片有证据；真实物理 ENOSPC/断电、10h soak、统一全量与原生 CI 未验证 |
+ 
+ LD-01–06 都没有被本文统一宣布完成。尤其是 LD-04 的受控 probe 不能升级成真实跨卷结果，
+ LD-05 的恢复矩阵也不能替代完整恢复 apply。
+@@ -127,6 +135,45 @@
+ `t3-source-hashes.json`、`t3-source-summary.json` 与 `t3-delta-vs-t2.patch` 绑定。任何文档
+ 或代码在冻结后变化都必须重做受影响核对，不沿用此处哈希。
+ 
++## 冻结口径与公开证据收口
++
++T3 作者的 `t3-source-hashes.json` 是 **711 项核心源映射**，为避免派生材料自引用，
++排除了以下六件：`artifact-index.json`、`t3/t3-source-hashes.json`、
++`t3/t3-source-summary.json`、`t3/t3-delta-vs-t2.patch`、
++`t3/final-gates/verify_freeze.py`、`t3/final-gates/freeze-postcheck.json`。
++root 审查候选把这六件一并纳入 **717 项可提交源集合**，其清单 SHA256 为
++`7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6`，
++清单与原始事实见 [root-reviewed-717/](evidence/low-disk-2026-11-14/root-reviewed-717/)。
++这两个数字描述的是当时的冻结，不能代表此后的文档、证据补充或最终提交。
++
++整分支第二读者在该 717 候选上发现 **INT-E1**：公开索引列出的三份静态演示 dist
++副本在本地存在、与产品 `ui/dist` 哈希相同，但被全局 `dist/` 忽略规则排除，未进入
++可提交集合。实际审计 exit 1，原 [717 复审报告](evidence/low-disk-2026-11-14/integration-review-717/REPORT.md)
++结论保留为 `NOT_APPROVED_PUBLIC_EVIDENCE_CLOSURE_REQUIRED`。root 后续仅为该证据目录
++增加 `.gitignore` 例外，把原 JS、CSS、HTML 三份字节纳入公开集合；原 173 项索引、
++截图和失败记录均未改写。该修正仍须在新的完整候选上独立销账，不能将原报告改为通过。
++
++公开的 T1/T2 report、facts、原索引是身份副本，并非原独立工作目录的完整公开备份。
++717 整分支复审公开了报告、探针与日志的字节一致子集，`published-subset.json` 明确区分
++已发布材料和仍保存在本地忽略档案中的输入、完整源码副本与测试数据。原始探针脚本以
++`.py.txt` 后缀逐字节归档，历史文件名由该清单映射；不声称所有历史
++独立原件都能仅从本仓库下载取得。
++
++## 本轮另发现的既有缺口
++
++**BASE-B1（P2，未修）：CLI 引擎未装配预算账本。** 第二读者逐字节对比基线
++`a0223aa269efcdf70df4c4d8c43e5629b4fa0215`、T2 与 T3，确认三者的 `cli._engine`
++均未传入 `budget=stack.budget`。真实离线 `ScriptedModel` 的一次 `pure_only` 周期
++写出了 `model.intent/model.result` 并结束，但 `engine._budget is None`，预算账户和预占
++均为 0；这是成功复现缺口，不是预算测试通过。
++
++该缺口在本次低盘改动前已存在，T3 未改预算实现，本片不把它计为新增回归，也不声称
++已经修复。其他入口的预算保留证据不能外推到 CLI；`pure_only` 仍不代表免费或零磁盘写。
++精确三方源比对、离线探针、命令及输出在
++[717 整分支复审 §4](evidence/low-disk-2026-11-14/integration-review-717/REPORT.md)
++及其 `probes/budget_assembly.py.txt`、`logs/budget-assembly.*`；该项单独跟踪，后续修复另做
++独立验收，不用本次低盘检查替代。
++
+ ## 未验证范围
+ 
+ - 真实付费模型、真实模型驱动 UI。
+--- 717/docs/PRD-v1.md
++++ 879/docs/PRD-v1.md
+@@ -684,9 +684,9 @@
+ 
+ 低磁盘 Run 资格的新增事件字段按[低磁盘 Run 准入契约](low-disk-admission-contract.md)
+ 实施：仅 `run.start` 新写采用精确 payload v2，保留旧 v0/v1 的 schema 与读取含义，
+-其他事件不随之升版。T1/T2 的已冻结窄范围已由第二读者独立核验，T3 作者候选也
+-接通了 CLI、RPC 与 UI 入口；逐项证据见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
+-独立 T3、统一全量与原生 CI 仍未运行，因此本段不把候选入口写成整项验收通过。
++其他事件不随之升版。T1/T2/T3 的各自冻结窄范围已由第二读者独立核验，包含真实
++CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
++后续文档证据 delta、统一全量与原生 CI 另核，本段不把候选内容通过写成整项交付。
+ 
+ ### 5.4 C4 Permission / Approval
+ 
+@@ -866,7 +866,7 @@
+ 
+ 三项已在创建与执行侧实现登记。普通非 pure 在审批前、消费批准/grant 与 intent 前、
+ 各执行边界现测；effects/合法 legacy 的读、普通/摘要模型恢复与既有停止控制保留原规则。
+-T1/T2 的冻结范围已由第二读者独立通过；T3 的 CLI/RPC/UI 作者候选证据见
++T1/T2/T3 的各自冻结范围已由第二读者独立通过；CLI/RPC/App 的证据见
+ [低磁盘交付记录](LOW-DISK-2026-11-14.md)。判定条件与例外以
+ [低磁盘 Run 准入契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)为准。
+ 
+@@ -877,7 +877,7 @@
+ | `dispatch.disk_space_unknown` | 无法证明必需位置的空间，区别于真实 0。 | 修复配置、访问权限或探测后重新判定；不盲重试当足量。 |
+ 
+ 这三项已同步代码、schema 与本节清单；当前封闭集数量与 producer 对账由 T2 独立证据
+-覆盖。T3 作者候选尚须独立复审、统一全量与原生 CI，不能用本节登记反推 LD-01–06 全部通过。
++覆盖。后续文档证据 delta、统一全量与原生 CI 仍待，不能用本节登记反推 LD-01–06 全部通过。
+ 
+ #### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
+ 
+@@ -1211,7 +1211,7 @@
+ [低磁盘 Run 准入契约](low-disk-admission-contract.md) 实施。普通入口默认 `effects`，
+ 并提供显式 `pure_only`；已有 Run 的纯读/模型恢复及停止控制按该契约保留原规则。
+ 契约阶段的 LD-01–06 曾全部 `NOT_RUN`；当前 T1/T2 已分别以第二读者原件独立核验，
+-T3 已形成作者候选但有独立复审、统一全量与原生 CI 待办，逐条归属和限制见
++T3 已在固定候选上独立通过真实入口验收，后续文档证据 delta、统一全量及原生 CI 另核；逐条归属和限制见
+ [低磁盘交付记录](LOW-DISK-2026-11-14.md)。容量上限、保留期与 GC 仍另行交付。
+ 
+ **回滚前必须校验**：当前文件哈希仍等于 `after_hash`；不一致则提示冲突并**禁止直接覆盖**用户后来的修改。
+--- 717/docs/low-disk-admission-contract.md
++++ 879/docs/low-disk-admission-contract.md
+@@ -7,8 +7,9 @@
+ （tree `810d5de91e279244559bc55c3e749ddefc0a3c2b`），下列源码链接均指向该版本。
+ 
+ 当前状态以[低磁盘交付记录](LOW-DISK-2026-11-14.md)为准：T1/T2 已在各自冻结内容上
+-独立通过窄范围规格与质量复审，T3 已形成 CLI/RPC/UI 作者候选并有定向正负控；独立 T3、
+-统一全量、原生 CI、真实多卷/用户设备、恢复 apply、容量/GC 与发行仍未验证。
++独立通过窄范围规格与质量复审；T3 也已在 717 项固定候选上独立通过真实 CLI/IPC/App
++入口验收。后续文档与公开证据 delta、统一全量及原生 CI 仍待独立绑定；真实多卷/用户设备、
++恢复 apply、容量/GC 与发行仍未验证。
+ LD-01–06 的验收归属按本文 §6 执行；任何一条只按表中已有证据报告，不因候选接线整体转绿。
+ 
+ ## 1. 目标、既有要求与存在性依据
+@@ -78,7 +79,7 @@
+ 
+ 创建前拒绝沿原入口返回错误，并按当时可用的审计条件处理；不得为承载 rule_id 另造 Run、dispatch 请求或事件。已执行或结果未知的副作用保留原 effect_state，不改为 none_applied。
+ 
+-本补充合入后，产品实现须在交付真实产生路径时，同时登记 `rules.RULE_IDS`、`schemas/c4/rules.json` 与 PRD §5.4.1 当前清单；这是实现已合契约，不再改变上述语义。本次只约定待实施编号，当前可写清单仍为 75 项。
++本补充合入后，产品实现须在交付真实产生路径时，同时登记 `rules.RULE_IDS`、`schemas/c4/rules.json` 与 PRD §5.4.1 当前清单；这是实现已合契约，不再改变上述语义。契约提交阶段只约定待实施编号，当时可写清单为 75 项；实现后的登记与验证状态见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
+ 
+ ## 6. 最小验收（契约阶段全部 NOT_RUN；当前分项状态见交付记录）
+ 
+@@ -95,7 +96,7 @@
+ 
+ 产品实现另走 PR，覆盖事件/错误封闭集与真实 schema、Run 创建层、控制面/worker、
+ Loop/Dispatcher/执行器及快照恢复，并按 LD-01–06 提供真实入口、正负控、恢复和平台证据。
+-T1/T2 已由第二读者在冻结内容上独立复核；T3 当前只有作者候选与定向证据，最终实现仍须
++T1/T2/T3 已由第二读者在各自冻结内容上独立复核；后续事实文档与证据封装另核，最终实现仍须
+ 绑定正式提交 SHA 做受影响独立复审，并通过该提交的原生 CI。逐项当前状态见
+ [低磁盘交付记录](LOW-DISK-2026-11-14.md)：没有完整证据的条目继续保持分项未验证，
+ 不能用“已有候选”替代验收。恢复 apply、容量/GC、真实付费任务、十小时长跑及普通用户

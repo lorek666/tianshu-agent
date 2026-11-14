@@ -1,0 +1,10 @@
+
+ RUN  v3.2.7 /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui
+
+ ✓ src/__tests__/run-mode.test.tsx (3 tests) 51ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  09:25:26
+   Duration  591ms (transform 108ms, setup 0ms, collect 152ms, tests 51ms, environment 234ms, prepare 44ms)
+

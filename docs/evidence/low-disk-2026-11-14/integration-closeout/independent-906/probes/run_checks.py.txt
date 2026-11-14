@@ -1,0 +1,132 @@
+"""Run bounded independent positive checks and targeted isolated negative controls."""
+from pathlib import Path
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+
+OUT = Path('/tmp/low-disk-906-independent-20261114-3m_2fig_')
+WORK = OUT / 'work'
+SOURCE = OUT / 'source'
+OLD = Path('/tmp/low-disk-release-delta-independent-20261114/source')
+PYTHON = '/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python'
+RESULTS = json.loads((OUT / 'logs/check-results.json').read_text()) if (OUT / 'logs/check-results.json').exists() else []
+expected = json.loads((OUT / 'inputs/source-hashes.json').read_text())
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def mapping(root):
+    return {str(p.relative_to(root)): sha(p) for p in root.rglob('*') if p.is_file()}
+
+def run(label, command, *, source=WORK, mutation=False, expected_exit=0, needle=None):
+    (OUT / 'runs' / label).mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    # No real model may be selected by this independent offline review.
+    for key in ['TIANSHU_API_KEY', 'TIANSHU_BASE_URL', 'TIANSHU_MODEL_NAME', 'TIANSHU_EVAL_REAL_MODEL']:
+        env.pop(key, None)
+    env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=f'{source / "src"}:{source / "tests"}',
+               TIANSHU_AUTHORITY_ROOT=str(OUT / 'runs' / label / 'authority'),
+               TIANSHU_SANDBOX_BACKEND='local_fs', REVIEW_LABEL=label,
+               REVIEW_SOURCE=str(source), REVIEW_MUTATION='1' if mutation else '')
+    meta = {'label': label, 'command': command, 'cwd': str(source),
+            'environment_overrides': {k: env[k] for k in ['PYTHONDONTWRITEBYTECODE', 'PYTHONPATH',
+                'TIANSHU_AUTHORITY_ROOT', 'TIANSHU_SANDBOX_BACKEND', 'REVIEW_LABEL', 'REVIEW_SOURCE', 'REVIEW_MUTATION']},
+            'expected_exit': expected_exit, 'expected_output_contains': needle}
+    (OUT / 'logs' / f'{label}.command.json').write_text(json.dumps(meta, indent=2) + '\n')
+    start = time.monotonic()
+    proc = subprocess.run(command, cwd=source, env=env, capture_output=True, text=True, timeout=180)
+    (OUT / 'logs' / f'{label}.stdout.txt').write_text(proc.stdout)
+    (OUT / 'logs' / f'{label}.stderr.txt').write_text(proc.stderr)
+    combined = proc.stdout + proc.stderr
+    meta.update(exit_code=proc.returncode, elapsed_seconds=round(time.monotonic()-start, 3),
+                expected_behavior_observed=(proc.returncode == expected_exit and (needle is None or needle in combined)))
+    RESULTS.append(meta)
+    (OUT / 'logs/check-results.json').write_text(json.dumps(RESULTS, ensure_ascii=False, indent=2) + '\n')
+    print(label, 'exit=', proc.returncode, 'expected=', meta['expected_behavior_observed'], flush=True)
+    if not meta['expected_behavior_observed']:
+        print(combined[-6000:], flush=True)
+        raise AssertionError(f'{label}: wrong behavior; see raw stdout/stderr')
+    return proc
+
+def pytest_command(label, selectors):
+    return [PYTHON, '-B', '-m', 'pytest', '-p', 'no:cacheprovider', '-o', 'addopts=', '-q', '-rs',
+            '--basetemp', str(OUT / 'runs' / label / 'pytest'), *selectors]
+
+assert mapping(WORK) == mapping(SOURCE) == expected
+if sys.argv[1:] in ([], ['positive'], ['selected-only']):
+    if sys.argv[1:] != ['selected-only']:
+        run('positive-paths', [PYTHON, '-B', str(OUT / 'probes/current_path_probe.py')], source=SOURCE,
+            needle='ALL_SELECTED_PROBES_PASSED worker,fence,inner,eval')
+    selectors = [
+        'tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval',
+        'tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace',
+        'tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]',
+        'tests/test_g2_delegation_contract.py::test_tool_id_enum',
+        'tests/test_low_disk_execution.py::test_pure_only_write_proposal_keeps_dispatch_and_result_audit',
+        'tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability',
+    ]
+    run('positive-selected-tests-v2', pytest_command('positive-selected-tests-v2', selectors), needle='7 passed')
+    assert mapping(WORK) == expected and mapping(SOURCE) == expected
+
+if sys.argv[1:] in (['negative'], ['negative-rest']):
+    # Each mutant is isolated to this review's work copy and fully restored in finally.
+    loop = WORK / 'src/tianshu/loop.py'
+    original = loop.read_bytes()
+    if sys.argv[1:] != ['negative-rest']:
+        try:
+            loop.write_bytes((OLD / 'src/tianshu/loop.py').read_bytes())
+            mutation = {'path': str(loop.relative_to(WORK)), 'original_sha256': hashlib.sha256(original).hexdigest(),
+                        'mutated_sha256': sha(loop), 'change': 'restore only the old three-line pure_only proposal pre-filter'}
+            for scenario in ['worker', 'fence']:
+                run(f'negative-old-filter-{scenario}', [PYTHON, '-B', str(OUT / 'probes/current_path_probe.py'), scenario],
+                    mutation=True, expected_exit=1, needle='AssertionError')
+        finally:
+            loop.write_bytes(original)
+        mutation['restored_sha256'] = sha(loop)
+        (OUT / 'logs/negative-old-filter.mutation.json').write_text(json.dumps(mutation, indent=2)+'\n')
+    assert mapping(WORK) == expected
+
+    memory = WORK / 'src/tianshu/memory_exec.py'
+    original = memory.read_bytes()
+    block = '''        if task.depth or run.parent_run_id:
+            raise MemoryDispatchRefused(
+                "只读子任务不能写入记忆", "c4.memory_scope_denied"
+            )
+'''
+    assert original.decode().count(block) == 1
+    try:
+        memory.write_text(original.decode().replace(block, ''))
+        mutation = {'path': str(memory.relative_to(WORK)), 'original_sha256': hashlib.sha256(original).hexdigest(),
+                    'mutated_sha256': sha(memory), 'change': 'remove only the MemoryExecutor._verify child guard'}
+        run('negative-inner-verify', pytest_command('negative-inner-verify', [
+            'tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability']),
+            mutation=True, expected_exit=1, needle='DID NOT RAISE')
+    finally:
+        memory.write_bytes(original)
+    mutation['restored_sha256'] = sha(memory)
+    (OUT / 'logs/negative-inner-verify.mutation.json').write_text(json.dumps(mutation, indent=2)+'\n')
+    assert mapping(WORK) == expected
+
+    fixture_tests = [
+        ('approval', 'tests/test_approval_reject.py', 'test_reject_then_resume_fails_without_a_second_approval'),
+        ('m2', 'tests/test_m2_acceptance.py', 'test_read_a_write_b_and_chat_without_workspace'),
+        ('recovery', 'tests/test_recovery.py', 'test_recover_after_each_failpoint[after_intent-create]'),
+    ]
+    for name, rel, test in fixture_tests:
+        path = WORK / rel
+        original = path.read_bytes()
+        try:
+            path.write_bytes((OLD / rel).read_bytes())
+            mutation = {'path': rel, 'original_sha256': hashlib.sha256(original).hexdigest(),
+                        'mutated_sha256': sha(path), 'change': 'omit only the new same-stack memory and contents constructor wiring'}
+            run(f'negative-fixture-{name}', pytest_command(f'negative-fixture-{name}', [f'{rel}::{test}']),
+                mutation=True, expected_exit=1, needle='1 failed')
+        finally:
+            path.write_bytes(original)
+        mutation['restored_sha256'] = sha(path)
+        (OUT / 'logs' / f'negative-fixture-{name}.mutation.json').write_text(json.dumps(mutation, indent=2)+'\n')
+        assert mapping(WORK) == expected
+    print('ALL_NEGATIVE_CONTROLS_OBSERVED_AND_906_RESTORED', flush=True)

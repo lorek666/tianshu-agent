@@ -1,0 +1,36 @@
+
+ RUN  v3.2.7 /tmp/low-disk-t3-independent-20261114/probes
+
+stdout | app-independent.test.tsx > independent real App DOM policy boundaries > new pure low failure survives dialog close, retry, task switch, and explicit mode change
+{"probe":"real-App-host-rpc","calls":[{"method":"task.create","params":{"goal":"independent new task","workspaces":[{"root_path":"/independent/new-workspace","mode":"writable"}]}},{"method":"run.start","params":{"task_id":"created-1","execution_policy":{"format_version":1,"mode":"pure_only"}}},{"method":"run.start","params":{"task_id":"created-1","execution_policy":{"format_version":1,"mode":"effects"}}}]}
+
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > new task default effects stays independent of readonly workspace; only run.start carries policy
+ × app-independent.test.tsx > independent real App DOM policy boundaries > new pure low failure survives dialog close, retry, task switch, and explicit mode change 38ms
+   → expected { format_version: 1, mode: 'effects' } to deeply equal { Object (format_version, mode) }
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > existing task path sends both default and explicit pure policy using real TaskDetail buttons
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > existing pure unknown failure retries same policy and never contaminates another Task
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  app-independent.test.tsx > independent real App DOM policy boundaries > new pure low failure survives dialog close, retry, task switch, and explicit mode change
+AssertionError: expected { format_version: 1, mode: 'effects' } to deeply equal { Object (format_version, mode) }
+
+- Expected
++ Received
+
+  {
+    "format_version": 1,
+-   "mode": "pure_only",
++   "mode": "effects",
+  }
+
+ ❯ app-independent.test.tsx:71:100
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  09:52:19
+   Duration  426ms (transform 111ms, setup 0ms, collect 154ms, tests 38ms, environment 135ms, prepare 28ms)
+

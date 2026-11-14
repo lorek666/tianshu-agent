@@ -82,7 +82,7 @@ def _schema_doc() -> dict:
 
 
 def _prop(type_name: str, *path: str) -> dict:
-    node = event_schema.schema_for(type_name, event_schema.CURRENT_PAYLOAD_VERSION)
+    node = event_schema.schema_for(type_name, event_schema.current_version(type_name))
     for key in path:
         node = node["properties"][key]
     return node
@@ -138,7 +138,7 @@ def test_unsupported_dialect_is_rejected():
 
 def test_every_type_root_is_closed_object():
     for type_name in EVENT_TYPES:
-        schema = event_schema.schema_for(type_name, event_schema.CURRENT_PAYLOAD_VERSION)
+        schema = event_schema.schema_for(type_name, event_schema.current_version(type_name))
         assert schema["type"] == "object", type_name
         assert schema["additionalProperties"] is False, type_name
         assert schema["required"], f"{type_name} 没有任何必填字段，等于没有契约"
@@ -219,7 +219,7 @@ def test_every_type_has_valid_minimal_payload_and_invalid_extra_key(tmp_path, ty
         (event,) = log.read_run("run_x")
         assert event.seq == seq
         assert event.payload == payload
-        assert event.payload_version == event_schema.CURRENT_PAYLOAD_VERSION
+        assert event.payload_version == event_schema.current_version(event.type)
     finally:
         log.close()
 
@@ -341,11 +341,11 @@ def test_current_writes_record_version_in_side_table(tmp_path):
         payload = event_schema.minimal_payload("run.start")
         seq = log.append("run_x", "run.start", payload)
         (event,) = log.read_run("run_x")
-        assert event.payload_version == event_schema.CURRENT_PAYLOAD_VERSION
+        assert event.payload_version == event_schema.current_version(event.type)
         row = log.conn.execute(
             "SELECT type, version FROM event_versions WHERE seq=?", (seq,)
         ).fetchone()
-        assert (row["type"], row["version"]) == ("run.start", 1)
+        assert (row["type"], row["version"]) == ("run.start", 2)
     finally:
         log.close()
 
@@ -508,7 +508,7 @@ def test_read_after_and_read_types_carry_versions(tmp_path):
                   "args_hash": "x"}
         second = log.append("run_x", "tool.intent", legacy, legacy_write=True)
         after = log.read_after(first - 1)
-        assert [e.payload_version for e in after] == [1, 0]
+        assert [e.payload_version for e in after] == [2, 0]
         types = log.read_types(["tool.intent"])
         assert [e.payload_version for e in types] == [0]
         assert second == types[0].seq
@@ -548,7 +548,7 @@ def test_legacy_fixture_covers_every_type_and_is_readable(tmp_path):
         for row in rows:
             type_name, payload = row["type"], row["payload"]
             assert event_schema.payload_errors(type_name, payload, 0) == [], type_name
-            if event_schema.payload_errors(type_name, payload, 1):
+            if event_schema.payload_errors(type_name, payload):
                 # 真有历史形状差异 → **只有显式请求**才允许按 v0 写入
                 with pytest.raises(event_schema.PayloadContractError):
                     log.append(f"run_{type_name}", type_name, payload)
@@ -573,9 +573,13 @@ def test_minimal_v1_fixture_is_valid_and_round_trips(tmp_path):
     log = _log(tmp_path)
     try:
         for type_name, payload in sorted(doc["events"].items()):
-            event_schema.validate_payload(type_name, payload)
-            assert payload == event_schema.minimal_payload(type_name)
-            log.append("run_x", type_name, payload)
+            event_schema.validate_payload(type_name, payload, 1)
+            if type_name == "run.start":
+                seq = log.append("run_x", type_name, payload, legacy_write=True)
+                log.conn.execute("UPDATE event_versions SET version=1 WHERE seq=?", (seq,))
+            else:
+                assert payload == event_schema.minimal_payload(type_name)
+                log.append("run_x", type_name, payload)
         written = log.read_run("run_x")
     finally:
         log.close()
@@ -608,7 +612,7 @@ def test_replay_still_passes_after_contract_upgrade(tmp_path):
         assert report.ok, report.problems
         assert report.problems == []
         versions = {e.payload_version for e in log.read_run(result.run_id)}
-        assert versions == {1}, "新写入必须全部是当前版本"
+        assert versions == {1, 2}, "仅 run.start 使用 v2，其余新写入为 v1"
     finally:
         log.close()
 
@@ -669,7 +673,7 @@ def test_backup_restore_keeps_payload_versions(tmp_path):
     finally:
         restored.close()
     assert [e.payload_version for e in events] == [
-        event_schema.CURRENT_PAYLOAD_VERSION,
+        event_schema.current_version("run.start"),
         event_schema.LEGACY_PAYLOAD_VERSION,
     ]
     assert events[0].payload == current

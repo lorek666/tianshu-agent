@@ -1,0 +1,18 @@
+{
+  "label": "compile-t3",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "uv",
+    "run",
+    "--frozen",
+    "python",
+    "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_compile.py"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "compile-t3.stdout.txt",
+  "stderr": "compile-t3.stderr.txt"
+}

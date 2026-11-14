@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from support import effects_admission
 
 from tianshu.dispatcher import (
     KIND_ADMITTED,
@@ -107,10 +108,12 @@ def _env(tmp_path: Path) -> Env:
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
     approvals = ApprovalStore(log)
     grants = GrantStore(log)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
     dispatcher = Dispatcher(
         log,
         tasks,
@@ -267,11 +270,16 @@ def test_concurrent_approval_consumes_once(env, tmp_path):
         try:
             leases = LeaseStore(log)
             claims = JobStore(log)
+            snapshots = SnapshotStore(tmp_path / "artifacts")
             tasks = TaskStore(
                 log,
                 leases=leases,
                 claims=claims,
                 data_root=tmp_path / "authority",
+                disk_admission=effects_admission(
+                    log, snapshots=snapshots, memory=None, contents=None,
+                    data_root=tmp_path / "authority",
+                ),
             )
             dispatcher = Dispatcher(
                 log,
@@ -281,7 +289,7 @@ def test_concurrent_approval_consumes_once(env, tmp_path):
                 ApprovalStore(log),
                 grants=GrantStore(log),
                 claims=claims,
-                snapshots=SnapshotStore(tmp_path / "artifacts"),
+                snapshots=snapshots,
                 data_root=tmp_path / "authority",
             )
             results.append(dispatcher.dispatch(request.request_id, claim))

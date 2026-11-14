@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+from support import effects_admission
 
 from tianshu import isolation, tools
 from tianshu.dispatcher import Dispatcher, build_request
@@ -417,10 +418,12 @@ def _make_env(tmp_path: Path, *, exec_backend: ExecBackend | None = None) -> Env
     try:
         leases = LeaseStore(log)
         claims = JobStore(log)
-        tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+        snapshots = SnapshotStore(tmp_path / "artifacts")
+        tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
         approvals = ApprovalStore(log)
         grants = GrantStore(log)
-        snapshots = SnapshotStore(tmp_path / "artifacts")
         dispatcher = Dispatcher(
             log, tasks, leases, PolicyEngine(), approvals,
             grants=grants, claims=claims, snapshots=snapshots,

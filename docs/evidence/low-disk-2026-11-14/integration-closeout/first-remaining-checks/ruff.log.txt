@@ -1,0 +1,120 @@
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/final-gates/check_compile.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+  |
+4 |
+  -
+5 | ROOT = Path(__file__).resolve().parents[5]
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/final-gates/check_stubs.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | import re
+4 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+  |
+5 |
+  -
+6 | ROOT = Path(__file__).resolve().parents[5]
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/final-gates/run_final_gates.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | import json
+4 | | import os
+5 | | import subprocess
+6 | | import sys
+7 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+  |
+8 |
+  -
+9 | ROOT = Path(__file__).resolve().parents[5]
+  |
+
+F401 [*] `sys` imported but unused
+ --> docs/evidence/low-disk-2026-11-14/t3/final-gates/run_final_gates.py:6:8
+  |
+4 | import os
+5 | import subprocess
+6 | import sys
+  |        ^^^
+7 | from pathlib import Path
+  |
+help: Remove unused import: `sys`
+  |
+5 | import subprocess
+  - import sys
+6 | from pathlib import Path
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/final-gates/verify_freeze.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | import hashlib
+4 | | import json
+5 | | import shutil
+6 | | import subprocess
+7 | | import tempfile
+8 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+   |
+9  |
+   -
+10 | ROOT = Path(__file__).resolve().parents[5]
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/freeze_source.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | import hashlib
+4 | | import json
+5 | | import os
+6 | | import shutil
+7 | | import subprocess
+8 | | import tempfile
+9 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+   |
+10 |
+   -
+11 | ROOT = Path(__file__).resolve().parents[4]
+   |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> docs/evidence/low-disk-2026-11-14/t3/seal_evidence.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | import hashlib
+4 | | import json
+5 | | from pathlib import Path
+  | |________________________^
+help: Organize imports
+  |
+6 |
+  -
+7 | ROOT = Path(__file__).resolve().parents[4]
+  |
+
+Found 7 errors.
+[*] 7 fixable with `--fix`.

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit.py", line 59, in <module>
+    assert len(public_index["entries"]) == 173 and not bad
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

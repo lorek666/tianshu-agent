@@ -1,0 +1,7 @@
+phase=python-entrypoints-expanded-red-observer-fixed
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py
+test_sha256=6c09e120ffc088a96685913089e8cdced4598b65f0f491ade3722807c9f8fe95
+cli_sha256=20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7
+control_sha256=3818d94cfa5954c31a81ca624fa9adfc6d78ee41665cda5511493c66ac96dab6

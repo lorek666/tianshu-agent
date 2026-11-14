@@ -648,6 +648,9 @@ def test_message_source_seqs_falls_back_to_events_for_old_cursor(tmp_path):
         dispatcher=stack.dispatcher,
         approvals=stack.approvals,
         snapshots=store,
+
+        memory=stack.memory,
+        contents=stack.contents,
     )
     stored = stack.tasks.load_cursor(result.run_id)
     assert stored is not None

@@ -1,0 +1,67 @@
+/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+## codex/g3-low-disk-admission
+ M README.md
+ M docs/KNOWLEDGE.md
+ M docs/PRD-v1.md
+ M schemas/c3/event.json
+ M schemas/c4/rules.json
+ M src/tianshu/cli.py
+ M src/tianshu/control.py
+ M src/tianshu/daemon.py
+ M src/tianshu/dispatcher.py
+ M src/tianshu/eval/runner.py
+ M src/tianshu/event_schema.py
+ M src/tianshu/loop.py
+ M src/tianshu/memory_exec.py
+ M src/tianshu/rules.py
+ M src/tianshu/tasks.py
+ M src/tianshu/tools.py
+ M tests/support.py
+ M tests/test_backend_contract.py
+ M tests/test_context.py
+ M tests/test_cost_line.py
+ M tests/test_dispatch.py
+ M tests/test_event_schema.py
+ M tests/test_evidence_keys.py
+ M tests/test_exec_backends.py
+ M tests/test_failclosed.py
+ M tests/test_isolation_gate.py
+ M tests/test_job_claims.py
+ M tests/test_mcp_crash.py
+ M tests/test_mcp_dispatch.py
+ M tests/test_mcp_object_block.py
+ M tests/test_memory_dispatch.py
+ M tests/test_memory_loop.py
+ M tests/test_network_fetch.py
+ M tests/test_rule_ids.py
+ M tests/test_run_command.py
+ M tests/test_run_control.py
+ M tests/test_summary_loop.py
+ M tests/test_takeover.py
+ M tests/test_tasks.py
+ M tests/test_transactions.py
+ M tests/test_veto_scope.py
+ M ui/package.json
+ M ui/pnpm-lock.yaml
+ M ui/src/App.tsx
+ M ui/src/api/errors.ts
+ M ui/src/api/types.ts
+ M ui/src/components/NewTaskDialog.tsx
+ M ui/src/components/TaskDetail.tsx
+ M ui/src/demo/host.ts
+ M ui/src/demo/world.ts
+ M ui/src/styles.css
+?? src/tianshu/disk_admission.py
+?? src/tianshu/run_policy.py
+?? tests/test_low_disk_admission.py
+?? tests/test_low_disk_entrypoints.py
+?? tests/test_low_disk_execution.py
+?? tests/test_low_disk_run_creation.py
+?? ui/src/__tests__/
+ui/dist/assets/index-B-xT4bPb.js
+ui/dist/assets/index-tHfDYJNM.css
+ui/dist/index.html
+c3860dcfea8a62fb5f2886b2dfd4bca10bebda1311323b28852c480f1e75fd4e  ui/dist/index.html
+3716887fef9d32499265b361b7c9e19ef0313f25c7120136bd7d242d5f4e805e  ui/dist/assets/index-B-xT4bPb.js
+77dbeffdd1b736a2de3fd3c6a0dee193f52d1a6ad9f0aaa2bfe5020b0df26ad3  ui/dist/assets/index-tHfDYJNM.css

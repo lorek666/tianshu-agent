@@ -1,0 +1,223 @@
+{
+  "status": "PASS_906_INTEGRATION_DELTA_WITH_EXACT_879_INHERITANCE",
+  "date": "2026-11-14",
+  "reviewer_role": "independent second reader; no live product writes",
+  "scope": "7 product/test paths plus two fact documents and historical/public-evidence packaging delta from reviewed 879 to fixed 906",
+  "head_context": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "input": {
+    "source_files": 906,
+    "source_manifest_sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+    "freeze_facts_sha256": "2dfbaf5f718b8bbf303560fc458bd02e422e91e56e66edc8a1625024937f89c9",
+    "delta_patch_sha256": "6bb515f5cb5651edecd1acb607802271a29e75c2017bd75d54890c95bd35bc30",
+    "source_copy": "source/",
+    "isolated_work_copy_restored": true,
+    "prior_manifest_sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441"
+  },
+  "delta": {
+    "changed": 9,
+    "added": 33,
+    "removed": 6,
+    "product_paths": [
+      "src/tianshu/loop.py",
+      "tests/test_approval_reject.py",
+      "tests/test_g2_delegation_contract.py",
+      "tests/test_low_disk_execution.py",
+      "tests/test_m2_acceptance.py",
+      "tests/test_recovery.py",
+      "tests/test_round2_auth_memory.py"
+    ],
+    "only_production_change": "remove the three-line loop pure_only proposal pre-filter",
+    "all_other_src_exact_879": true,
+    "memory_executor_exact_879": true,
+    "ui_exact_879_files": 57,
+    "contract_schema_lock_ci_lint_config_unchanged": true
+  },
+  "findings": [
+    {
+      "id": "INT-LOOP1",
+      "state": "已修",
+      "result": "合法pure_only写提案进入真实Dispatcher拒绝审计；manifest仍纯读；父版本失效恢复cancelled/1 model call"
+    },
+    {
+      "id": "INT-FIXTURE1",
+      "state": "已修",
+      "result": "三旧AgentLoop装配仅补同stack memory/contents；旧断言未放宽，分别正/负控；真实RULE_IDS/schema/PRD均78"
+    },
+    {
+      "id": "TEST-MEM-INNER1",
+      "state": "已修",
+      "result": "修的是测试装配而非既有内层产品门；仅该request绕过上游两门取真实permit并立即还原；直接_verify与execute均真实；移除内层guard两参数DID NOT RAISE"
+    },
+    {
+      "id": "PUB-ARCHIVE1",
+      "state": "已修",
+      "result": "六脚本只改.py.txt后缀且原字节不变；173索引通过显式映射解析；25公开subset逐件匹配原件；旧maps/report不改"
+    },
+    {
+      "id": "BASE-B1",
+      "state": "未修",
+      "result": "继承既有CLI预算边界限制；本片无相关生产变更或新承诺；不因此冒充整支完整批准"
+    }
+  ],
+  "independent_positive": {
+    "custom_real_offline_scenarios": [
+      "worker",
+      "fence",
+      "inner",
+      "RU-D1 repeat1"
+    ],
+    "selected_pytest_passed": 7,
+    "selected_pytest_reported_seconds": 1.02,
+    "ru_d1_checks": 20,
+    "ru_d1_checks_passed": 20,
+    "model": "ScriptedModel only; no paid/remote model",
+    "manifest_every_observed_tool_pure": true,
+    "worker_denial_results": 2,
+    "worker_memory_rows": 0,
+    "worker_file_exists": false,
+    "parent_fence_state": "cancelled",
+    "parent_fence_model_calls": 1,
+    "parent_subtask_summary_or_result_written": false,
+    "inner_real_permit": true,
+    "normal_outer_execution_started": 0
+  },
+  "independent_negative": {
+    "commands": 6,
+    "all_expected_failures_observed": true,
+    "old_loop_filter_restored": [
+      "worker audit failure",
+      "parent fence succeeded/2 model calls regression"
+    ],
+    "inner_guard_removed": "2 real call-phase DID NOT RAISE failures at direct _verify; no actual-write claim",
+    "old_fixture_restored": [
+      "approval call-phase context mismatch",
+      "m2 call-phase context mismatch",
+      "recovery child start context mismatch before requested crashpoint"
+    ],
+    "readonly_checker_control": "synthetic one succeeded/applied child write added to real observation => false; no actual product write",
+    "work_source_after_restore_matches_906": true
+  },
+  "packaging": {
+    "renamed_script_bytes_preserved": 6,
+    "old_script_paths_exist": false,
+    "historical_index_entries_resolved": 173,
+    "other_historical_evidence_unchanged": 327,
+    "public_subset_count": 25,
+    "subset_size_hash_original_verified": 25,
+    "subset_also_bound_by_original_index": 14,
+    "new_local_document_links_resolved": 7,
+    "old_ruff_actual_errors": 7,
+    "old_ruff_script_paths": 6
+  },
+  "external_root_gate_evidence": {
+    "origin": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3",
+    "files": {
+      "deleted-after.json": {
+        "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b",
+        "bytes": 80
+      },
+      "deleted-before.json": {
+        "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b",
+        "bytes": 80
+      },
+      "lock.log": {
+        "sha256": "3811ad9b6f7f6f638c3359b7cc7cd5b798750f8906476cdeebc195a6ccc7fa6d",
+        "bytes": 28
+      },
+      "pytest.log": {
+        "sha256": "214f7559200eb9a8580be2394c1490b67515d381994c07e59a1a26ce62ec86b1",
+        "bytes": 3644
+      },
+      "results.json": {
+        "sha256": "dc40987ad27f772c3c428e3b27ad121f4c9ad47a6515844eab6572923ac21812",
+        "bytes": 2849
+      },
+      "ruff.log": {
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "bytes": 19
+      },
+      "running-results.json": {
+        "sha256": "7261f397140ba6b6cd7e746084569a1d074645caf4ec3338ff4ecca0d26d4cb7",
+        "bytes": 2755
+      },
+      "source-after.json": {
+        "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+        "bytes": 118998
+      },
+      "source-before.json": {
+        "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+        "bytes": 118998
+      },
+      "status-after.txt": {
+        "sha256": "74947fb92285f3dcce0904d267d1a168784f2fada5f9cc40dd77a7fa33a8ce23",
+        "bytes": 2074
+      },
+      "status-before.txt": {
+        "sha256": "74947fb92285f3dcce0904d267d1a168784f2fada5f9cc40dd77a7fa33a8ce23",
+        "bytes": 2074
+      }
+    },
+    "results_sha256": "dc40987ad27f772c3c428e3b27ad121f4c9ad47a6515844eab6572923ac21812",
+    "source_before_after_exact_906": true,
+    "status_and_deleted_before_after_byte_equal": true,
+    "lock_pytest_ruff_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "pytest_summary": "3183 passed, 8 skipped in 509.43s",
+    "independently_rerun_by_this_reviewer": false,
+    "interpretation": "external root-run full-gate evidence; identity and original bytes checked independently"
+  },
+  "inherited_reports": {
+    "original717_status_unchanged": "NOT_APPROVED_PUBLIC_EVIDENCE_CLOSURE_REQUIRED",
+    "original717_report_sha256": "7f27c76e4c0106c5abb77e75d8e624d0ccdeac405bb9c9913299818e6ca2f693",
+    "review879_status_unchanged": "PASS_RELEASE_DOCUMENT_EVIDENCE_DELTA_ONLY_WITH_EXACT_717_INHERITANCE",
+    "review879_report_sha256": "4411995a29050608bffdc77fa9d7581251c73d256f5db6117063862df14c1115"
+  },
+  "observer_errors": [
+    {
+      "attempt": "positive-selected-tests",
+      "classification": "observer/setup error; not product behavior",
+      "actual": "7 ERROR at setup because --basetemp parent directory was absent",
+      "evidence": [
+        "logs/positive-selected-tests.command.json",
+        "logs/positive-selected-tests.stdout.txt",
+        "logs/positive-selected-tests.stderr.txt"
+      ],
+      "correction": "create review-owned run parent before invoking pytest; rerun only the same seven selected tests as v2",
+      "result": "positive-selected-tests-v2: 7 passed in 1.02s"
+    },
+    {
+      "attempt": "run_checks.py negative, before memory mutant",
+      "classification": "observer source-match assertion; no memory mutation or pytest invocation occurred",
+      "actual": "expected two-line raise spelling did not match the four-line source block",
+      "correction": "match exact source bytes; run negative-rest, preserving the already completed worker/fence negatives",
+      "raw_terminal_output_archived_as_file": false
+    },
+    {
+      "attempt": "close_readback.py first pass",
+      "classification": "observer log-shape assertion; no product behavior claim",
+      "actual": "pytest displays the raises-context line for DID NOT RAISE, not the next _verify call line",
+      "evidence": [
+        "logs/close-readback-v1.stderr.txt",
+        "logs/close-readback-v1.stdout.txt"
+      ],
+      "correction": "bind both failure headers to exact source line 265 and independently verify line 266 is the direct _verify call; rerun readback only"
+    }
+  ],
+  "new_deferred_stub_or_skip_patterns_in_product_delta": [],
+  "new_blockers_in_this_narrow_delta": [],
+  "excluded": [
+    "full pytest rerun by reviewer",
+    "complete UI rerun",
+    "author 311-test matrix",
+    "remote or paid models",
+    "native CI",
+    "commit/push",
+    "final-docs changes after the 906 freeze",
+    "final Git-object approval",
+    "BASE-B1 repair"
+  ],
+  "not_final_release_or_native_ci_approval": true
+}

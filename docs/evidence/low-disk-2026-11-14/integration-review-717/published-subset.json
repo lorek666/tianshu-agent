@@ -1,0 +1,187 @@
+{
+  "meaning": "Byte-identical report/probe/log subset; original hash-index also describes retained inputs/source/data not all published here. Not a claim that the complete original review pack is public.",
+  "entries": {
+    "REPORT.md": {
+      "bytes": 12892,
+      "sha256": "7f27c76e4c0106c5abb77e75d8e624d0ccdeac405bb9c9913299818e6ca2f693",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/REPORT.md"
+    },
+    "facts.json": {
+      "bytes": 3139,
+      "sha256": "351e38bc07887ed0a7a4a73add4d1bab01479b669480783a02cac9147fd76a2d",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/facts.json"
+    },
+    "hash-index.json": {
+      "bytes": 219392,
+      "sha256": "7be453886f728e690f33528c67c8b3b3506a3c524a35a0ecf96db942741fc239",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/hash-index.json"
+    },
+    "logs/integration-audit.stdout.txt": {
+      "bytes": 905,
+      "sha256": "80cadfc3770263d508d8d2bb6d8e4317e01abdf13771a71d832dcd9c9443906c",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit.stdout.txt"
+    },
+    "logs/integration-audit-observer-colon.stdout.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-observer-colon.stdout.txt"
+    },
+    "logs/integration-audit-observer-colon.command.json": {
+      "bytes": 535,
+      "sha256": "cf7908e32414a11e2622bda8f9a9f285c8319ff502aad4c39cd39e3de62854ba",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-observer-colon.command.json"
+    },
+    "logs/integration-audit-first-failure.stderr.txt": {
+      "bytes": 270,
+      "sha256": "37e6369bebce7b5b36581b817267eea90dade391ecfd6b6cbd3512a4f794a15b",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-first-failure.stderr.txt"
+    },
+    "logs/integration-audit-first-failure.command.json": {
+      "bytes": 535,
+      "sha256": "295af085dfb7df8cce8dfa358af3bc44db132ed7743065913caf3ca0a0f5d359",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-first-failure.command.json"
+    },
+    "logs/structural-wiring.stdout.txt": {
+      "bytes": 1113,
+      "sha256": "db819aaa5a25ef8e04e40eedc6805be6525259afca372f53ad7a6f212d1c635b",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/structural-wiring.stdout.txt"
+    },
+    "logs/identity-verification.json": {
+      "bytes": 3112,
+      "sha256": "198557fc8b14d1ea61b0af84bc5f0e69776cd1573ffe4bb8db85bdec121326f1",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/identity-verification.json"
+    },
+    "logs/three-way-source.stdout.txt": {
+      "bytes": 167,
+      "sha256": "522ee902f952290a6940eb766c49a2a5b9d73160253646befc5abf78b5200bdb",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/three-way-source.stdout.txt"
+    },
+    "logs/budget-assembly.stdout.txt": {
+      "bytes": 943,
+      "sha256": "968f5df12e0e274cf6c7bbfc01428e91fd0c9b1408fd2abc42ce532f41fd53ab",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/budget-assembly.stdout.txt"
+    },
+    "logs/reviewed-delta.patch": {
+      "bytes": 53621,
+      "sha256": "546a8433140c38765d761da59a6cc264e5d9314f4e7a4f64151b8c9d5f78f8b1",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/reviewed-delta.patch"
+    },
+    "logs/three-way-source.command.json": {
+      "bytes": 464,
+      "sha256": "d54f45643a7c7d80b3cfaf67e02e0bc61f9d1b78142b260f3660c86533eb3146",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/three-way-source.command.json"
+    },
+    "logs/integration-audit-observer-colon.stderr.txt": {
+      "bytes": 253,
+      "sha256": "48e9443f4b9f1e3b1d78e87e1aea39f7732e0d76e2823687ba6f639bf2e3bcb1",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-observer-colon.stderr.txt"
+    },
+    "logs/public-artifact-index-mismatch.json": {
+      "bytes": 858,
+      "sha256": "99dcf4e6f19904713ca07791f21a8d638d394fdcea2eca043351bc49e9583161",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/public-artifact-index-mismatch.json"
+    },
+    "logs/integration-audit.stderr.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit.stderr.txt"
+    },
+    "logs/integration-audit-first-failure.stdout.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit-first-failure.stdout.txt"
+    },
+    "logs/source-postcheck.json": {
+      "bytes": 208,
+      "sha256": "b339f9bbbc69309f3a969112de8629fb283a902bd5fdb05fbafc66d70e2b9f1b",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/source-postcheck.json"
+    },
+    "logs/integration-audit.command.json": {
+      "bytes": 535,
+      "sha256": "e3a44ace0fae5b2cbf21b83234314ef7f2e81fb9f8c4be65b40a3736b7529b38",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit.command.json"
+    },
+    "logs/budget-assembly.stderr.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/budget-assembly.stderr.txt"
+    },
+    "logs/structural-wiring.command.json": {
+      "bytes": 491,
+      "sha256": "4aa496fef51c6cd108c8b801c6c6962ce30fdddf78a580cc2e4b66fd4af6dd17",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/structural-wiring.command.json"
+    },
+    "logs/budget-assembly.command.json": {
+      "bytes": 546,
+      "sha256": "878c6abcb163b9eee439a393e5aabb59f9cd9e46ed944400621a2c017efbce39",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/budget-assembly.command.json"
+    },
+    "logs/budget-assembly-three-way.json": {
+      "bytes": 4770,
+      "sha256": "389418bfdff09c24017e215590b3f9bd1542067e898217aa2beef64d1d8571b3",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/budget-assembly-three-way.json"
+    },
+    "logs/integration-audit.json": {
+      "bytes": 13064,
+      "sha256": "3d8b1c5b2b11401b8c375b7328bf4923f3d9f9030bbd15521a1d354f62cd1c5b",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/integration-audit.json"
+    },
+    "logs/budget-assembly-three-way-reproduced.json": {
+      "bytes": 4771,
+      "sha256": "66cd06cd40a7e362eff4d51217d1ec538788efec461ce76dd2af913f1cac46cf",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/budget-assembly-three-way-reproduced.json"
+    },
+    "logs/structural-wiring.json": {
+      "bytes": 4330,
+      "sha256": "4ecb9d89eaca7ef85d0679202bf6eeace93c65780570007e74106e1e1bb2932b",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/structural-wiring.json"
+    },
+    "logs/structural-wiring.stderr.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/structural-wiring.stderr.txt"
+    },
+    "logs/three-way-source.stderr.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/logs/three-way-source.stderr.txt"
+    },
+    "probes/budget_assembly.py.txt": {
+      "bytes": 3235,
+      "sha256": "6a6f34303111dec7ac07ad5856a0e325d76281a6a11c7b19cb314db5e976fbe0",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/budget_assembly.py",
+      "original_relative_path": "probes/budget_assembly.py"
+    },
+    "probes/integration_audit_first_failure.py.txt": {
+      "bytes": 7640,
+      "sha256": "cafb095fe9160100693e5e790a3c8fd72c4a166fd10902b409b7958b321520d6",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit_first_failure.py",
+      "original_relative_path": "probes/integration_audit_first_failure.py"
+    },
+    "probes/integration_audit.py.txt": {
+      "bytes": 7870,
+      "sha256": "c4ef857d38a7c7ff1a4bdb712d7484907bb8b23c5c2ae14ebbe340ace017c67a",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit.py",
+      "original_relative_path": "probes/integration_audit.py"
+    },
+    "probes/structural_wiring.py.txt": {
+      "bytes": 6161,
+      "sha256": "d465c4611f14b8057d23b1baf778fd8f5e5ca86084a0d54b1ebb8c666a2676af",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/structural_wiring.py",
+      "original_relative_path": "probes/structural_wiring.py"
+    },
+    "probes/integration_audit_observer_colon.py.txt": {
+      "bytes": 7872,
+      "sha256": "47a152652ad037c0f33f71d6e1518271e4ed4cfa58a1a515361e08851f1fe7cd",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit_observer_colon.py",
+      "original_relative_path": "probes/integration_audit_observer_colon.py"
+    },
+    "probes/three_way_source_audit.py.txt": {
+      "bytes": 2259,
+      "sha256": "3527fd87b8c53a900c9fbdfd3b2683dfedd547a59ce8e8316586f5bee65d0efb",
+      "original": "/tmp/low-disk-whole-branch-review-20261114/probes/three_way_source_audit.py",
+      "original_relative_path": "probes/three_way_source_audit.py"
+    }
+  },
+  "raw_script_and_log_policy": "Raw .py and .log are published with an additional .txt suffix, without changing bytes; use original_relative_path to resolve historical report references. They are archival inputs, not package source."
+}

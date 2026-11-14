@@ -1,0 +1,26 @@
+{
+  "status": "PASS_TWO_TEST_DIAGNOSTIC_DELTA_STATIC",
+  "source_files": 1030,
+  "unchanged_manifest_identities": 1028,
+  "changed": [
+    "tests/test_low_disk_run_creation.py",
+    "tests/test_m2_acceptance.py"
+  ],
+  "production_events_worker_and_all_other_paths_unchanged": true,
+  "rejected_shared_lock_not_in_candidate": true,
+  "creation_entire_ast_same_after_only_declared_text_transport_normalization": true,
+  "real_two_process_barrier_competition_and_persistence_assertions_unchanged": true,
+  "heartbeat_entire_ast_same_after_6_to60_and_diagnostic_alias_message_normalization": true,
+  "original_success_error_and_pause_assertions_unchanged": true,
+  "CHILD_TEXT": {
+    "text": true,
+    "encoding": "utf-8",
+    "errors": "replace"
+  },
+  "heartbeat_is_diagnostic_not_fix": true,
+  "failure_message": "f\"iteration={i}, worker.errors={worker.errors}, run.end={env.payloads(run_id, 'run.end')}, events={env.events(run_id)}\"",
+  "failure_reason_path": "AgentLoop error -> _finish(error) -> TaskStore._finish_locked(reason) -> run.end.error; message reads full run.end payload",
+  "events_field_is_type_names_only": true,
+  "reason_not_guaranteed_if_end_event_absent": true,
+  "real_windows_retest_or_new_ci_approval": false
+}

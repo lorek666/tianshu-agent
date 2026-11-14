@@ -1,0 +1,7 @@
+{
+  "status": "VISUAL_STATIC_DEMO_ONLY_PRE_FREEZE_NOT_BACKEND_ACCEPTANCE",
+  "root": "/tmp/tianshu-g3-20261113/low-disk-t3-ui-visual-rcda2qtg",
+  "url": "http://127.0.0.1:57029/?demo=1",
+  "dist_files": 3,
+  "manifest_sha256": "723098ae0f570c67f59164ee0768113169eea442ea45064cfa670ed062de07d7"
+}

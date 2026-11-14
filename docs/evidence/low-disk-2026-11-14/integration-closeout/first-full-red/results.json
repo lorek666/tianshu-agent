@@ -1,0 +1,59 @@
+{
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "source_manifest": "/tmp/tianshu-g3-20261113/low-disk-release-candidate-cxszmop9/source-hashes.json",
+  "manifest_sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+  "source_files": 879,
+  "deleted_paths": [
+    "ui/dist/assets/index-B-xT4bPb.js",
+    "ui/dist/assets/index-tHfDYJNM.css"
+  ],
+  "removed_env_names": [
+    "ANTHROPIC_BASE_URL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "set_env": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "started_at": "2026-11-14T02:03:20.883265+00:00",
+  "commands": [
+    {
+      "label": "lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 0.09,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-final-gates-pu8apzqx/lock.log",
+      "log_sha256": "0cd253495a5288d4ac6891c39de59d0ac1ebccd9533b687e3d5ad3c6136a8ea5",
+      "log_bytes": 28,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "pytest",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 1,
+      "seconds": 496.05,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-final-gates-pu8apzqx/pytest.log",
+      "log_sha256": "de7e3308456792005ceb5f963d0cee7fa080b750f6bc510a06064d1fea372df3",
+      "log_bytes": 106150,
+      "source_stable": true,
+      "git_stable": true
+    }
+  ],
+  "source_drift": [],
+  "completed_at": "2026-11-14T02:11:37.107030+00:00",
+  "passed": false
+}

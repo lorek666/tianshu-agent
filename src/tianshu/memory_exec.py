@@ -27,6 +27,7 @@ import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from .disk_admission import DiskAdmissionError
 from .errors import RunFenced, TianshuError, ToolArgumentError, ToolNotAllowed
 from .events import canonical_bytes, sha256_hex
 from .jobs import JobClaim
@@ -484,8 +485,22 @@ class MemoryExecutor:
         self._verify(admitted, permit)
 
         spec = SPECS[admitted.tool_id]
+        req = admitted.request
+        if (req.tool_version != spec.version or req.action != spec.action
+                or req.schema_hash != sha256_hex(canonical_bytes(spec.input_schema))):
+            raise ToolNotAllowed("执行工具与真实 ToolSpec 不符")
         validate_args(admitted.args, spec.input_schema)
         scope = parse_memory_uri(admitted.target)
+        self._tasks.require_effects_allowed(req.run_id)
+        context = self._tasks.disk_admission.context
+        if (context is None or context.log is not self._log
+                or context.memory is not self._projection):
+            raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "记忆执行器与 Run context 不一致",
+            )
+        self._tasks.require_effect_space(
+            req.run_id, targets=(), data_root=self._tasks.data_root,
+        )
 
         if admitted.tool_id == "memory.propose":
             return self._propose(admitted, scope)

@@ -1,0 +1,12 @@
+from pathlib import Path
+import sys,os,subprocess,json,hashlib,time
+B=Path(__file__).parents[1];W=B/'work';label=sys.argv[1];selectors=sys.argv[2:] or [str(B/'probes/test_entry_independent.py')]
+def mapping():return {str(p.relative_to(W)):hashlib.sha256(p.read_bytes()).hexdigest() for p in W.rglob('*') if p.is_file() and 'node_modules' not in p.parts and '__pycache__' not in p.parts}
+e=os.environ.copy();e.update(PYTHONPATH=str(W/'src'),PYTHONDONTWRITEBYTECODE='1',PYTEST_ADDOPTS='',TIANSHU_AUTHORITY_ROOT=str(B/'runs/parent-authority'))
+for k in list(e):
+ if k.startswith(('OPENAI_','ANTHROPIC_')):e.pop(k)
+cmd=[sys.executable,'-m','pytest','-p','no:cacheprovider','-o','addopts=','-s','-q','--tb=short','--junitxml='+str(B/'raw'/f'{label}.junit.xml'),*selectors]
+meta={'argv':cmd,'cwd':str(W),'python':sys.version,'executable':sys.executable,'source':mapping(),'probes':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (B/'probes').glob('*.py')},'started':time.time()}
+with (B/'raw'/f'{label}.log').open('w') as f:
+ p=subprocess.run(cmd,cwd=W,env=e,stdout=f,stderr=subprocess.STDOUT,timeout=180)
+meta.update(exit=p.returncode,ended=time.time());(B/'raw'/f'{label}.command.json').write_text(json.dumps(meta,indent=2));print(json.dumps({'label':label,'exit':p.returncode}));print('\n'.join((B/'raw'/f'{label}.log').read_text().splitlines()[-28:]));raise SystemExit(p.returncode)

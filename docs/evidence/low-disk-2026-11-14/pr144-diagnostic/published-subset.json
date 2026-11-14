@@ -1,0 +1,178 @@
+{
+  "scope": "Explicit byte-exact public subset, not a complete copy of any original evidence pack.",
+  "excluded": "Temporary databases, snapshots, generated workspaces, source copies, full source maps and full original indexes stay in the sealed ignored archive; their absence here is intentional.",
+  "independent_original_index_sha256": "1e32d498a6edc755e6493baedfe81f3dadff742898febc99b8b561b341c18394",
+  "original_index_not_published_as_a_complete_public_inventory": true,
+  "files": {
+    "independent/REPORT.md": {
+      "sha256": "55e15a3eba65b6e0b7ed0c65925a27291a633bc6e96dbb48b3ea745491fd575a",
+      "bytes": 3899,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/REPORT.md"
+    },
+    "independent/facts.json": {
+      "sha256": "97ae21e2a9834957d29fd44c915e2dffd5a30f24958ffb1f14842771de126684",
+      "bytes": 4633,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/facts.json"
+    },
+    "independent/logs/final-live-readonly-observation.json": {
+      "sha256": "74378634f00b6f1ef7d30c76849a9b2700ccec21a83699aeccfb53c5569e3e5e",
+      "bytes": 250,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/final-live-readonly-observation.json"
+    },
+    "independent/logs/minimal-test-harness.json": {
+      "sha256": "db8b3d11d6568d83d63ca76caf3b0a03fec8cf7efcc1e3552221f1d441de5687",
+      "bytes": 854,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/minimal-test-harness.json"
+    },
+    "independent/logs/native-original-binding.json": {
+      "sha256": "d2f3cfcdec91993d61c46bfdaa816c9e726e55c1eb5b553e281a6f4a57e0644a",
+      "bytes": 431,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/native-original-binding.json"
+    },
+    "independent/logs/native-windows-shard1-failure-excerpt.txt": {
+      "sha256": "72bb043ee9db7397dc1ae055dc0c467300ec38a9ec7a9ae0fe48c6b4df424442",
+      "bytes": 1415,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/native-windows-shard1-failure-excerpt.txt"
+    },
+    "independent/logs/positive-db-observation.json": {
+      "sha256": "611de5abb197465662b86bb0746e3d3b0361b2e231afd8b985b4e2d66c80daab",
+      "bytes": 314,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/positive-db-observation.json"
+    },
+    "independent/logs/removed-pytest-convenience-symlinks.json": {
+      "sha256": "4600a211b65e7e728a9fadb2c2081a8c35238da3141ed165948e4f417ee240a5",
+      "bytes": 1124,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/removed-pytest-convenience-symlinks.json"
+    },
+    "independent/logs/static-results.json": {
+      "sha256": "fbfd15ff49d88bd5b4b66e5f4d5addbca274b6f3791f85daa6fcec7a72ab3dc3",
+      "bytes": 1238,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/static-results.json"
+    },
+    "independent/logs/static.stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/static.stderr.txt"
+    },
+    "independent/logs/static.stdout.txt": {
+      "sha256": "8fe4beb82d7310d9d794354d7a5d8684ca0461be6795224d53915e30067acb97",
+      "bytes": 72,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/logs/static.stdout.txt"
+    },
+    "independent/runs/positive/execution.json": {
+      "sha256": "a4e1ef7a28823b060867233319820199682c48976a80bf26d2d225a27bcb763f",
+      "bytes": 2018,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/execution.json"
+    },
+    "independent/runs/positive/stdout.txt": {
+      "sha256": "8ce35df22afa0df0231b1b950a9959987e910f49bc3e7de0e5414e122e1fd5d5",
+      "bytes": 98,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/stdout.txt"
+    },
+    "independent/runs/positive/stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/stderr.txt"
+    },
+    "independent/runs/positive/pytest-reports.json": {
+      "sha256": "c6c6d43cede5db516c353c202036a44d80e8b60cb2e95be562f934beef2bde3e",
+      "bytes": 1185,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/positive/pytest-reports.json"
+    },
+    "independent/runs/forced-crlf/execution.json": {
+      "sha256": "7bd9a162dc101acc8def2949536b8702e5f0e4ae017a297b1811a91a9b362c9c",
+      "bytes": 2157,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/forced-crlf/execution.json"
+    },
+    "independent/runs/forced-crlf/stdout.txt": {
+      "sha256": "3be62f393f5921607a873beb897436b1f6af7bf8e959115d728ee0ecc5bd3a34",
+      "bytes": 98,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/forced-crlf/stdout.txt"
+    },
+    "independent/runs/forced-crlf/stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/forced-crlf/stderr.txt"
+    },
+    "independent/runs/forced-crlf/pytest-reports.json": {
+      "sha256": "5104001d0462c8330a14cc9e3c71cbc830b9e8f3fac3573421873c62f2f56df8",
+      "bytes": 598,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/forced-crlf/pytest-reports.json"
+    },
+    "independent/runs/bad-ready/execution.json": {
+      "sha256": "29cf19e9fea84f080ca5c12ed69af24d689e2d80fd605ae3b2ea95585e3294dc",
+      "bytes": 2166,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/execution.json"
+    },
+    "independent/runs/bad-ready/stdout.txt": {
+      "sha256": "cc524328c0a0259b23fd9b72b59b507cee0dee3d80c8d9dce506e3eb38841c6c",
+      "bytes": 2444,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/stdout.txt"
+    },
+    "independent/runs/bad-ready/stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/stderr.txt"
+    },
+    "independent/runs/bad-ready/pytest-reports.json": {
+      "sha256": "ab48d42a1723896b039e3ff70f68b1acf2d132fd312326b771d8cbb0b8f9cecc",
+      "bytes": 2881,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/pytest-reports.json"
+    },
+    "independent/runs/diagnostic-reason/execution.json": {
+      "sha256": "5a1021df33e0851778e129038257a91d5f2f725c6dbafe91aae1ab7c49833ca3",
+      "bytes": 1967,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/diagnostic-reason/execution.json"
+    },
+    "independent/runs/diagnostic-reason/stdout.txt": {
+      "sha256": "afb1079afa51a911a5fbb418087a24a6c08b426375bf239bfac88343ce6f07b3",
+      "bytes": 2312,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/diagnostic-reason/stdout.txt"
+    },
+    "independent/runs/diagnostic-reason/stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/diagnostic-reason/stderr.txt"
+    },
+    "independent/runs/diagnostic-reason/pytest-reports.json": {
+      "sha256": "e37f0b3a974711506ae1232b730f313bb804bdacbeb486c6637de4733626187c",
+      "bytes": 2734,
+      "original": "/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/diagnostic-reason/pytest-reports.json"
+    },
+    "local/results.json": {
+      "sha256": "663d894dc8c0b114dcef2d5aa55e1f48fcf66d062d64a090dfba2e4ba6f954bf",
+      "bytes": 1755,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-python-gates-4eq7vvuf/results.json"
+    },
+    "local/lock.log": {
+      "sha256": "f0ecca0dd1a603db93618733dc9fd2db712fcda307bc80afbc8e2d864cc460ac",
+      "bytes": 28,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-python-gates-4eq7vvuf/lock.log"
+    },
+    "local/pytest.log": {
+      "sha256": "3698e43e50b0eebab91c9672e32f4b24be72d781f008bd69cf24ac35b27f3cb1",
+      "bytes": 3644,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-python-gates-4eq7vvuf/pytest.log"
+    },
+    "local/ruff.log": {
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "bytes": 19,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-python-gates-4eq7vvuf/ruff.log"
+    },
+    "first-native-red/run-final.json": {
+      "sha256": "41a7195bcbefc98697fe90ec6302d78736c687bab85aa473dea2db55587c14a9",
+      "bytes": 15080,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-native-ci/run-final.json"
+    },
+    "first-native-red/jobs-final.json": {
+      "sha256": "a5ce23487044cc0466f0ae2692da49397bd2b29886bce2be2d63bf2a85c2b683",
+      "bytes": 24548,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-native-ci/jobs-final.json"
+    },
+    "first-native-red/collection-result.json": {
+      "sha256": "970caf26f1ff3f9d610434832fb294b5f54de4c3b7efbbe518fd1aaf631589b3",
+      "bytes": 439,
+      "original": "/tmp/tianshu-g3-20261113/low-disk-pr144-native-ci/collection-result.json"
+    }
+  }
+}

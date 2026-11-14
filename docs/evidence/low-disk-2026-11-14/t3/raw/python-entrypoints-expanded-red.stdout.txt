@@ -1,0 +1,41 @@
+.........F                                                               [100%]
+=================================== FAILURES ===================================
+_____ test_rpc_execution_policy_is_strict_and_controls_low_disk_admission ______
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2952/test_rpc_execution_policy_is_s0')
+
+    def test_rpc_execution_policy_is_strict_and_controls_low_disk_admission(
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "events.db"
+        data_root = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        rpc_root = _short_root()
+        try:
+            with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+                stack = build_stack(log, data_root=data_root)
+                stack.tasks._disk_admission = DiskAdmission(
+                    stack.tasks.disk_admission.context, probe=lambda _path: 0
+                )
+                task = stack.tasks.create_task("只读检查", [str(workspace)])
+                invalid = [
+                    {"format_version": True, "mode": "effects"},
+                    {"format_version": 1.0, "mode": "effects"},
+                    {"format_version": 2, "mode": "effects"},
+                    {"format_version": 1, "mode": "future"},
+                    {"format_version": 1, "mode": "effects", "approved": True},
+                ]
+    
+                with _control_rpc(stack, rpc_root) as client:
+                    with pytest.raises(ipc.RemoteError) as caught:
+                        client.call("run.start", {"task_id": task.task_id})
+                    assert caught.value.code == "internal"
+>                   assert "dispatch.disk_space_low" in caught.value.message
+E                   AssertionError: assert 'dispatch.disk_space_low' in 'SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 8320983424 and this is thread id 6137737216.'
+E                    +  where 'SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 8320983424 and this is thread id 6137737216.' = RemoteError('internal: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 8320983424 and this is thread id 6137737216.').message
+E                    +    where RemoteError('internal: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 8320983424 and this is thread id 6137737216.') = <ExceptionInfo RemoteError('internal: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 8320983424 and this is thread id 6137737216.') tblen=2>.value
+
+tests/test_low_disk_entrypoints.py:372: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_low_disk_entrypoints.py::test_rpc_execution_policy_is_strict_and_controls_low_disk_admission

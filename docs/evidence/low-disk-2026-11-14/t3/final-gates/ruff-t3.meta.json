@@ -1,0 +1,21 @@
+{
+  "label": "ruff-t3",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "uv",
+    "run",
+    "--frozen",
+    "ruff",
+    "check",
+    "src/tianshu/cli.py",
+    "src/tianshu/control.py",
+    "tests/test_low_disk_entrypoints.py"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "ruff-t3.stdout.txt",
+  "stderr": "ruff-t3.stderr.txt"
+}

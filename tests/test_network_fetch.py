@@ -552,6 +552,7 @@ def test_replay_reports_a_network_result_without_reference(tmp_path):
                 "task_id": "task_synthetic",
                 "goal_revision": 1,
                 "lease_epoch": 1,
+                "execution_policy": {"format_version": 1, "mode": "effects"},
             },
         )
         log.append(

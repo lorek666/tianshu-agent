@@ -1,0 +1,1 @@
+{"source_count": 717, "source_restored": true, "retained_rejections": 27, "metadata_corrections": 4, "kernel_unchanged": 211, "scan_hits": [], "live_recorded_children": [], "work_extras": [], "cache_dirs": []}

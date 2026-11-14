@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.792" timestamp="2026-11-14T09:52:13.140558+08:00" hostname="RonfeedeMac-mini.local"><testcase classname="test_entry_independent" name="test_real_ipc_explicit_modes[pure_only]" time="0.638"><failure message="AssertionError: {'ok': False, 'code': 'internal', 'message': 'internal: dispatch.disk_space_low: /private/tmp/low-disk-t3-independent-20261114/runs/i-ltxbj0qj/events.db: 可用空间低于 2 GiB'}&#10;assert False">/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:183: in test_real_ipc_explicit_modes
+    result=d.start({'format_version':1,'mode':mode});assert result['ok'],result
+                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: {'ok': False, 'code': 'internal', 'message': 'internal: dispatch.disk_space_low: /private/tmp/low-disk-t3-independent-20261114/runs/i-ltxbj0qj/events.db: 可用空间低于 2 GiB'}
+E   assert False</failure></testcase></testsuite></testsuites>

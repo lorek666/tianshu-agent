@@ -98,6 +98,8 @@ class Env:
             dispatcher=self.dispatcher,
             approvals=self.stack.approvals,
             snapshots=self.stack.snapshots,
+            memory=self.stack.memory,
+            contents=self.stack.contents,
             model=model or ScriptedModel(responses or []),
             limits=limits or Limits(8, 20_000),
         )
@@ -526,6 +528,8 @@ def test_approval_survives_takeover_without_reapproval(env):
         dispatcher=takers.dispatcher,
         approvals=takers.approvals,
         snapshots=takers.snapshots,
+        memory=takers.memory,
+        contents=takers.contents,
         model=ScriptedModel([_end()]),
         limits=Limits(8, 20_000),
     )
@@ -851,7 +855,10 @@ sys.exit(main(["run", "--workspace", {str(ws)!r}, "--task", "写报告",
             snapshots=stack.snapshots,
             model=ScriptedModel([_end()]),
             limits=Limits(8, 20_000),
-        )
+
+        memory=stack.memory,
+        contents=stack.contents,
+    )
         # 死掉的 owner 必须能被接手：只按 Run 状态判断的话，崩溃的 Run 停在
         # RUNNING 就永远没人能接。
         first = engine.resume_run(run_id)
@@ -1101,6 +1108,8 @@ def test_foreign_live_owner_blocks_resume_in_any_state(env):
         dispatcher=takers.dispatcher,
         approvals=takers.approvals,
         snapshots=takers.snapshots,
+        memory=takers.memory,
+        contents=takers.contents,
         model=ScriptedModel([_end()]),
         limits=Limits(8, 20_000),
     )

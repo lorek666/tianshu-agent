@@ -1,0 +1,7 @@
+from pathlib import Path
+import sys,os,subprocess,json,hashlib,time
+B=Path(__file__).parents[1];W=B/'work';label=sys.argv[1]
+cmd=['/Users/ronfee/.local/bin/node',str(B/'probes/node_modules/vitest/vitest.mjs'),'run','--config',str(B/'probes/vitest.independent.config.mjs'),'--reporter=verbose',*sys.argv[2:]]
+meta={'argv':cmd,'cwd':str(B/'probes'),'source':{str(p.relative_to(W)):hashlib.sha256(p.read_bytes()).hexdigest() for p in W.rglob('*') if p.is_file() and 'node_modules' not in p.parts and '__pycache__' not in p.parts},'probes':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (B/'probes').glob('*') if p.is_file()},'dependency_reuse':'existing node_modules binaries/dependencies only; product imports are work/ui/src; symlink metadata retained','started':time.time()}
+with (B/'raw'/f'{label}.log').open('w') as f:p=subprocess.run(cmd,cwd=B/'probes',stdout=f,stderr=subprocess.STDOUT,timeout=90)
+meta.update(exit=p.returncode,ended=time.time());(B/'raw'/f'{label}.command.json').write_text(json.dumps(meta,indent=2));print(json.dumps({'label':label,'exit':p.returncode}));print('\n'.join((B/'raw'/f'{label}.log').read_text().splitlines()[-60:]));raise SystemExit(p.returncode)

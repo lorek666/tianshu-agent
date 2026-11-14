@@ -1,0 +1,18 @@
+{
+  "label": "ui-install-final",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "pnpm",
+    "--dir",
+    "ui",
+    "install",
+    "--frozen-lockfile"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "ui-install-final.stdout.txt",
+  "stderr": "ui-install-final.stderr.txt"
+}

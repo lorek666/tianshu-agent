@@ -1,0 +1,25 @@
+{
+  "product_source": "/tmp/tianshu-g3-20261113/low-disk-pr144-diagnostic-freeze-gpdzfziw/candidate-complete/src",
+  "copied_only": {
+    "tests/test_low_disk_run_creation.py": {
+      "sha256": "471dd42e6085100cd4c1a4f8c467d0c0ec99e47e0592282eb35995eca9a7e158",
+      "bytes": 30098
+    },
+    "tests/test_m2_acceptance.py": {
+      "sha256": "0c7614c60d6107c2aa1f1256d4db6d85de827acd15a5e18dbc67bfccb7dba146",
+      "bytes": 53466
+    },
+    "tests/support.py": {
+      "sha256": "aa35c8c8efa81c9023198e4bf33a54c831434a0b215f08d7ab293f6f055de9cd",
+      "bytes": 7913
+    },
+    "tests/conftest.py": {
+      "sha256": "f6bc8e04f8f8def1c1d0a33ab71a703ffeaac3a74850eefcd6d1dec79f72b7c1",
+      "bytes": 2679
+    },
+    "pyproject.toml": {
+      "sha256": "9887b61d3907bf44a14920ea604f6297106fda86281ba101dc370a22ae6969e3",
+      "bytes": 682
+    }
+  }
+}

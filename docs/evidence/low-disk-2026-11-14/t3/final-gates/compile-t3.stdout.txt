@@ -1,0 +1,3 @@
+COMPILE_OK src/tianshu/cli.py
+COMPILE_OK src/tianshu/control.py
+COMPILE_OK tests/test_low_disk_entrypoints.py

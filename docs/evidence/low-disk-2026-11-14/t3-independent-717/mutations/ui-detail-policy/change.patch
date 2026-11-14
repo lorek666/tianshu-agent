@@ -1,0 +1,11 @@
+--- frozen/ui/src/App.tsx
++++ mutant/ui/src/App.tsx
+@@ -582,7 +582,7 @@
+         try {
+           const envelope = await host.rpc<RunEnvelope>(RPC.runStart, {
+             task_id: taskId,
+-            execution_policy: executionPolicy,
++            execution_policy: EFFECTS_RUN_POLICY,
+           });
+           const run = normalizeRun(envelope.run);
+           if (run === null) throw new HostRpcError("bad_response", "守护进程返回的运行数据无法识别");

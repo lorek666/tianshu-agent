@@ -1,0 +1,13 @@
+--- frozen/ui/src/App.tsx
++++ mutant/ui/src/App.tsx
+@@ -534,10 +534,6 @@
+         );
+         selectedTaskRef.current = task.task_id;
+         setSelectedTaskId(task.task_id);
+-        setRunPolicies((previous) => ({
+-          ...previous,
+-          [task.task_id]: input.execution_policy,
+-        }));
+         selectRun(null);
+         showToast("任务已创建，正在启动后台运行", "success");
+ 

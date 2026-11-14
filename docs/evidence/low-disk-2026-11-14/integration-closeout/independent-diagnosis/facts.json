@@ -1,0 +1,60 @@
+{
+  "status": "SEALED_READ_ONLY_DIAGNOSIS_NOT_APPROVAL",
+  "date": "2026-11-14",
+  "reviewer": "/root/review_low_disk_integration",
+  "source_count": 879,
+  "source_manifest_sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+  "source_before_after_exact": true,
+  "first_full": {
+    "pytest_log_sha256": "de7e3308456792005ceb5f963d0cee7fa080b750f6bc510a06064d1fea372df3",
+    "failed": 41,
+    "passed": 3141,
+    "skipped": 8,
+    "source_maps_equal_879": true
+  },
+  "scope_failures": {
+    "test_round2_auth_memory": 12,
+    "test_eval_real_tasks": 4,
+    "test_g2_delegation_fence": 1
+  },
+  "classification": {
+    "worker_auth_and_eval": {
+      "cases": 14,
+      "cause": "pure_only nonpure proposal early filter bypasses original Dispatcher authority and C4 audit path",
+      "old_assertions_should_remain": true
+    },
+    "parent_fence": {
+      "cases": 1,
+      "cause": "same early filter bypasses dispatch-time parent fence/cancellation safe point; extra model call",
+      "observed_child_state": "succeeded",
+      "observed_model_calls": 2,
+      "expected_child_state": "cancelled",
+      "expected_model_calls": 1,
+      "stale_result_backfill_observed": false
+    },
+    "inner_memory_executor": {
+      "cases": 2,
+      "cause": "new upstream authority/policy recheck denies before old inner test expectation",
+      "upstream_hardening_acceptable": true,
+      "independent_inner_guard_still_present": true,
+      "fixture_only_adaptation_recommended": true
+    }
+  },
+  "baseline_AUTH_verify_function_sha256": "d39e4f56704e7bdafba95cc630bdba67151cf8d128801fafa7c780ceb8db5c94",
+  "baseline_AUTH_verify_identical_to_a022": true,
+  "minimal_offline_diagnostic_scenarios": 3,
+  "diagnostic_exit": 0,
+  "probe_script_sha256": "7271461b9aea15a39dcbf3005c168aa9bf0307b5602c827b4c72000b4b7099d8",
+  "new_delta_received_or_approved": false,
+  "recommendation": "Remove only redundant proposal-level pure_only nonpure filter; preserve pure manifest, Dispatcher/leaf policy, AUTH/eval/fence assertions. Adapt two inner-guard fixtures by controlled upstream fault injection and obtain real guard/permit.",
+  "no_full_or_original_file_reruns": true,
+  "no_live_product_or_old_review_writes": true,
+  "no_paid_model_API_CI_or_spawn": true,
+  "diagnosis_sha256": "314314e3444695ed6e3a1368537cc13399f66016fc4291ebff16c824b3797668",
+  "waiting_for": "new frozen author delta and affected-scope independent behavioral verification",
+  "seal": {
+    "files": "0444",
+    "directories": "0555",
+    "self_excluded": "hash-index.json"
+  }
+}

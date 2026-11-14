@@ -1,0 +1,18 @@
+{
+  "label": "stub-scan-t3",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "uv",
+    "run",
+    "--frozen",
+    "python",
+    "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_stubs.py"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "stub-scan-t3.stdout.txt",
+  "stderr": "stub-scan-t3.stderr.txt"
+}

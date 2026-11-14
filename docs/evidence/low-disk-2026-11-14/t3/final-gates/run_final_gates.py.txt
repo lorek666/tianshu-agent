@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[5]
+OUT = Path(__file__).resolve().parent
+PYTHON = "uv run --frozen python"
+PYTEST = (
+    "uv run --frozen pytest -o addopts= -q -rs "
+    "tests/test_low_disk_entrypoints.py tests/test_ipc.py tests/test_control.py"
+)
+
+
+COMMANDS: list[tuple[str, list[str], dict[str, str]]] = [
+    ("diff-check", ["git", "diff", "--check"], {}),
+    (
+        "ruff-t3",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "ruff",
+            "check",
+            "src/tianshu/cli.py",
+            "src/tianshu/control.py",
+            "tests/test_low_disk_entrypoints.py",
+        ],
+        {},
+    ),
+    (
+        "compile-t3",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_compile.py",
+        ],
+        {},
+    ),
+    (
+        "stub-scan-t3",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_stubs.py",
+        ],
+        {},
+    ),
+    (
+        "python-narrow-final",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "pytest",
+            "-o",
+            "addopts=",
+            "-q",
+            "-rs",
+            "tests/test_low_disk_entrypoints.py",
+            "tests/test_ipc.py",
+            "tests/test_control.py",
+        ],
+        {},
+    ),
+    (
+        "ui-install-final",
+        ["pnpm", "--dir", "ui", "install", "--frozen-lockfile"],
+        {},
+    ),
+    (
+        "ui-typecheck-final",
+        ["pnpm", "--dir", "ui", "run", "typecheck"],
+        {},
+    ),
+    (
+        "ui-target-final",
+        [
+            "pnpm",
+            "--dir",
+            "ui",
+            "exec",
+            "vitest",
+            "run",
+            "src/__tests__/run-mode.test.tsx",
+        ],
+        {},
+    ),
+    ("ui-build-final", ["pnpm", "--dir", "ui", "run", "build"], {}),
+    (
+        "post-build-python-final",
+        [
+            "uv",
+            "run",
+            "--frozen",
+            "pytest",
+            "-o",
+            "addopts=",
+            "-q",
+            "-rs",
+            "tests/test_low_disk_entrypoints.py",
+            "tests/test_ipc.py",
+            "tests/test_control.py",
+        ],
+        {},
+    ),
+    (
+        "post-build-ui-typecheck-final",
+        ["pnpm", "--dir", "ui", "run", "typecheck"],
+        {},
+    ),
+    (
+        "post-build-ui-target-final",
+        [
+            "pnpm",
+            "--dir",
+            "ui",
+            "exec",
+            "vitest",
+            "run",
+            "src/__tests__/run-mode.test.tsx",
+        ],
+        {},
+    ),
+]
+
+BASE_ENV = {
+    **os.environ,
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider",
+}
+
+results: list[dict] = []
+for label, argv, overrides in COMMANDS:
+    env = {**BASE_ENV, **overrides}
+    completed = subprocess.run(
+        argv,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    (OUT / f"{label}.stdout.txt").write_text(completed.stdout, encoding="utf-8")
+    (OUT / f"{label}.stderr.txt").write_text(completed.stderr, encoding="utf-8")
+    (OUT / f"{label}.exit-code.txt").write_text(
+        f"{completed.returncode}\n", encoding="utf-8"
+    )
+    metadata = {
+        "label": label,
+        "cwd": str(ROOT),
+        "argv": argv,
+        "exit_code": completed.returncode,
+        "env": {
+            "PYTHONDONTWRITEBYTECODE": env["PYTHONDONTWRITEBYTECODE"],
+            "PYTEST_ADDOPTS": env["PYTEST_ADDOPTS"],
+        },
+        "stdout": f"{label}.stdout.txt",
+        "stderr": f"{label}.stderr.txt",
+    }
+    (OUT / f"{label}.meta.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    results.append(metadata)
+    tail = (completed.stdout + completed.stderr).strip().splitlines()
+    print(f"{label}: exit={completed.returncode} {' | '.join(tail[-2:])}")
+
+(OUT / "results.json").write_text(
+    json.dumps(
+        {
+            "head": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+            ).strip(),
+            "commands": results,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+if any(item["exit_code"] != 0 for item in results):
+    raise SystemExit(1)

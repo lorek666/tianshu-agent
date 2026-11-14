@@ -61,12 +61,14 @@ from .context import (
     context_payload,
 )
 from .crashpoint import failpoint
+from .disk_admission import DiskAdmission, RunStorageContext
 from .dispatcher import (
     APPROVAL_REJECTED,
     DISPATCH_ERROR,
     DISPATCH_EXECUTING,
     DISPATCH_FINISHED,
     DISPATCH_INTENT,
+    DispatchDenied,
     Dispatcher,
     build_request,
 )
@@ -106,6 +108,7 @@ from .resources import (
     ResourceError,
     parse_resource,
 )
+from .run_policy import EFFECTS, PURE_ONLY, RunExecutionPolicyV1
 from .snapshot import SnapshotStore
 from .summaries import (
     MATERIAL_BYTES,
@@ -731,6 +734,16 @@ class AgentLoop:
         self._vetoed_subjects: set[str] = set()
         self._veto_open = False
 
+    def _run_tool_manifest(self, run_id: str) -> list[dict[str, Any]]:
+        manifest = tool_manifest()
+        if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
+            from .tool_registry import current_registry
+
+            manifest = [t for t in manifest if current_registry().spec(
+                t["name"]
+            ).side_effect_level == "pure"]
+        return manifest
+
     # ---------------------------------------------------------------- 启动
 
     def _acquire_leases(
@@ -771,11 +784,18 @@ class AgentLoop:
         *,
         out_name: str | None = None,
         run_id: str | None = None,
+        execution_policy: RunExecutionPolicyV1 = EFFECTS,
     ) -> RunResult:
         """新建一个 Run 并立刻驱动它。"""
         from .tool_registry import current_registry
 
         task = self._task(task_id)
+        if execution_policy != PURE_ONLY:
+            self._tasks.disk_admission.assert_stores(
+                self._log, snapshots=self._snapshots, memory=self._memory,
+                contents=self._contents, data_root=self._tasks.data_root,
+            )
+        self._dispatcher.prepare_run(task_id, execution_policy)
         payload = {
             "task": task.goal,
             "out": out_name or "",
@@ -783,10 +803,14 @@ class AgentLoop:
                 "max_turns": self._limits.max_turns,
                 "max_total_tokens": self._limits.max_total_tokens,
             },
-            "tools": list(current_registry().ids()),
+            "tools": [t for t in current_registry().ids() if execution_policy != PURE_ONLY
+                      or current_registry().spec(t).side_effect_level == "pure"],
         }
-        run = self._tasks.start_run(task.task_id, run_id=run_id, payload=payload)
+        run = self._tasks.start_run(task.task_id, run_id=run_id, payload=payload,
+                                    execution_policy=execution_policy)
         writable = [b.identity() for b in task.workspaces if b.can_write]
+        if execution_policy == PURE_ONLY:
+            writable = []
         if writable:
             self._acquire_leases(writable, run.run_id, task.task_id)
         job = self._claims.enqueue(run.run_id)
@@ -839,6 +863,8 @@ class AgentLoop:
             )
 
         writable = [b.identity() for b in task.workspaces if b.can_write]
+        if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
+            writable = []
         if writable:
             held = set(self._leases.live_paths(run_id))
             missing = [r for r in writable if str(Path(str(r)).resolve()) not in held]
@@ -910,7 +936,8 @@ class AgentLoop:
     # ---------------------------------------------------------------- 驱动
 
     def _drive(self, run_id: str, claim: JobClaim, progress: _Progress) -> RunResult:
-        if self._snapshots is not None and not self._snapshots.has_manifest(run_id):
+        if (self._tasks.run_execution_policy(run_id) != PURE_ONLY
+                and self._snapshots is not None and not self._snapshots.has_manifest(run_id)):
             # 写前清单是"清单缺失 = 异常"这条判据的前提。它必须由**驱动方**建，
             # 而不是由 `start()` 建：worker / resume 启动的 Run 一样会有副作用。
             #
@@ -1701,7 +1728,7 @@ class AgentLoop:
             # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
             progress.model_attempts += 1
             try:
-                resp = self._model.complete(view.messages, tool_manifest())
+                resp = self._model.complete(view.messages, self._run_tool_manifest(run_id))
             except ModelError as exc:
                 # 请求已经发出去了：`requests` 维度已知，token / 金额未知。
                 # 未知维度**不释放占用**——"可能已经计费"不能按零结算。
@@ -2030,6 +2057,21 @@ class AgentLoop:
                 },
                 run_id=run_id,
             )
+            return "done"
+
+        # 已有 MCP 提案按需恢复发现；不能让其成为纯读/模型恢复的前提。
+        from .disk_admission import DiskAdmissionError
+        from .run_policy import RunEffectsDisallowed
+
+        try:
+            self._dispatcher.prepare_pending_mcp(
+                run_id, claim, proposal.get("request_id"), tool_id, args,
+            )
+        except (DiskAdmissionError, RunEffectsDisallowed, DispatchDenied) as exc:
+            self._record_result(run_id, proposal, ToolResult(
+                "rejected", "none_applied", {"error": str(exc), "rule_id": exc.rule_id},
+            ))
+            self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
             return "done"
 
         # 2) 正常路径：目标路径 → 请求 → 判定 → 派发
@@ -3261,8 +3303,15 @@ def build_stack(
     # 两者都没有时不在这里炸——真要用内容引用时 `_persist_spills` 会明确失败。
     blob_dir = getattr(shots, "blob_dir", None) or log.blob_dir
     contents = ContentStore(log, blob_dir=blob_dir)
+    from .authority import authority_root
+
+    disk_admission = DiskAdmission(RunStorageContext.from_stores(
+        log, snapshots=shots, memory=memory, contents=contents,
+        data_root=root, authority_root=authority_root,
+    ))
     tasks = TaskStore(
         log,
+        disk_admission=disk_admission,
         leases=leases,
         claims=claims,
         approvals=approvals,
@@ -3274,8 +3323,8 @@ def build_stack(
         blob_dir=blob_dir,
     )
     summaries = SummaryStore(log, clock=clock or (lambda: int(time.time() * 1000)))
-    # MCP（G2 MCP 阶段）：用户配置的 server 由**装配点**启动一次，发现到的工具
-    # 经准入后进进程级注册表。没有配置（也没有显式注入）时 `clients=None`，
+    # MCP（G2 MCP 阶段）：此处只装配，等新 effects Run 预检通过后启动一次并登记工具。
+    # 没有配置（也没有显式注入）时 `clients=None`，
     # 注册表就是内置 SPECS——工具面与旧版逐字节相同，一个 server 进程都不起。
     if mcp_clients is None and mcp_servers:
         # **显式装配**：`build_stack` 不自己读环境变量。原因：每一条 CLI 命令
@@ -3293,8 +3342,6 @@ def build_stack(
     # "不带 MCP"的 stack 时，后者不能继承前者的动态工具（复审 v5 建议）。
     from .tool_registry import build_registry, set_registry
 
-    if mcp_clients is not None:
-        mcp_clients.start_all()
     set_registry(build_registry(mcp_clients))
     cls = dispatcher_cls or Dispatcher
     dispatcher = cls(

@@ -1,0 +1,42 @@
+[
+  {
+    "path": "runs/negative-inner-verify/pytest/test_memory_executor_rechecks_current",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-inner-verify/pytest/test_memory_executor_rechecks_1"
+  },
+  {
+    "path": "runs/negative-fixture-approval/pytest/test_reject_then_resume_fails_current",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/pytest/test_reject_then_resume_fails_0"
+  },
+  {
+    "path": "runs/negative-fixture-m2/pytest/test_read_a_write_b_and_chat_wcurrent",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-m2/pytest/test_read_a_write_b_and_chat_w0"
+  },
+  {
+    "path": "runs/negative-fixture-recovery/pytest/test_recover_after_each_failpocurrent",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-recovery/pytest/test_recover_after_each_failpo0"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_recover_after_each_failpocurrent",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_recover_after_each_failpo0"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_pure_only_write_proposal_current",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_pure_only_write_proposal_0"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_tool_id_enumcurrent",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_tool_id_enum0"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_memory_executor_rechecks_current",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_memory_executor_rechecks_1"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_read_a_write_b_and_chat_wcurrent",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_read_a_write_b_and_chat_w0"
+  },
+  {
+    "path": "runs/positive-selected-tests-v2/pytest/test_reject_then_resume_fails_current",
+    "target": "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest/test_reject_then_resume_fails_0"
+  }
+]

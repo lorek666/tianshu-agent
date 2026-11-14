@@ -1,0 +1,155 @@
+{
+  "purpose": "Byte-preserved public subset of independent review and gate originals. Full source snapshots and run databases stay in the ignored local evidence archive. Historical index paths remain historical.",
+  "entries": [
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/REPORT.md",
+      "published_relative_path": "release-delta-879/REPORT.md",
+      "bytes": 10138,
+      "sha256": "4411995a29050608bffdc77fa9d7581251c73d256f5db6117063862df14c1115"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/facts.json",
+      "published_relative_path": "release-delta-879/facts.json",
+      "bytes": 8017,
+      "sha256": "2cae5e8ab2c2d229c24da07c3f6a37575d1df817fe51517e9820572761c05038"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/hash-index.json",
+      "published_relative_path": "release-delta-879/hash-index.json",
+      "bytes": 185869,
+      "sha256": "44dde8dcce59be542b70c6850be2ad89a80d6c4054b7e46a67fe03d2a4f3f88c"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/logs/source-delta.json",
+      "published_relative_path": "release-delta-879/logs/source-delta.json",
+      "bytes": 25291,
+      "sha256": "f7d0a72b8ca190564a03399207f4e563a3a349c3316a4f467e68f5bc89a08e07"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/logs/dist-closure.json",
+      "published_relative_path": "release-delta-879/logs/dist-closure.json",
+      "bytes": 919,
+      "sha256": "a8d51540cd4105a8b73a04cb018ec651c8b708780e4676db530f72f69e8e5bf8"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/logs/gitignore-sandbox.json",
+      "published_relative_path": "release-delta-879/logs/gitignore-sandbox.json",
+      "bytes": 3426,
+      "sha256": "65aa926c8b6a2903b8776ca2647c286abcd5a320743c550b41e87a57340ba55b"
+    },
+    {
+      "original": "/tmp/low-disk-release-delta-independent-20261114/logs/document-delta.patch",
+      "published_relative_path": "release-delta-879/logs/document-delta.patch",
+      "bytes": 23837,
+      "sha256": "62e51ff383117b166ce934c8ee1b7ca52eafab7af5d879e75076d659d0098c5f"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-final-gates-pu8apzqx/results.json",
+      "published_relative_path": "first-full-red/results.json",
+      "bytes": 1799,
+      "sha256": "d734d27eccd68723e383c9cc863ada0533e6f187738363af2f08e7d0a9c5aaa7"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-final-gates-pu8apzqx/pytest.log",
+      "published_relative_path": "first-full-red/pytest.log.txt",
+      "bytes": 106150,
+      "sha256": "de7e3308456792005ceb5f963d0cee7fa080b750f6bc510a06064d1fea372df3"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-final-gates-pu8apzqx/lock.log",
+      "published_relative_path": "first-full-red/lock.log.txt",
+      "bytes": 28,
+      "sha256": "0cd253495a5288d4ac6891c39de59d0ac1ebccd9533b687e3d5ad3c6136a8ea5"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/results.json",
+      "published_relative_path": "first-remaining-checks/results.json",
+      "bytes": 3562,
+      "sha256": "5327f6a621c9e99e594ce33ce4c9d2cdc5132b30860545dc4c1aab8f0438761a"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ruff.log",
+      "published_relative_path": "first-remaining-checks/ruff.log.txt",
+      "bytes": 2666,
+      "sha256": "92a112444371ddba956d8d3c6599eecdaa2c0f6cc112d3853241641a77ea532a"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-install.log",
+      "published_relative_path": "first-remaining-checks/ui-install.log.txt",
+      "bytes": 53,
+      "sha256": "6827f173efc753befe830466a914a90abd99f7128a949c73a5a7287e445d8787"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-typecheck.log",
+      "published_relative_path": "first-remaining-checks/ui-typecheck.log.txt",
+      "bytes": 15,
+      "sha256": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-test.log",
+      "published_relative_path": "first-remaining-checks/ui-test.log.txt",
+      "bytes": 1026,
+      "sha256": "d85fd33eeb092fa5587b1e990709afcda6aaa934bbe79ae764741a2773f0aa82"
+    },
+    {
+      "original": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-build.log",
+      "published_relative_path": "first-remaining-checks/ui-build.log.txt",
+      "bytes": 379,
+      "sha256": "e26babe8da1c1f98891dcf7fb50a2c98e52f31870e38dac70313013ff09abd08"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/DIAGNOSIS.md",
+      "published_relative_path": "independent-diagnosis/DIAGNOSIS.md",
+      "bytes": 5828,
+      "sha256": "314314e3444695ed6e3a1368537cc13399f66016fc4291ebff16c824b3797668"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/facts.json",
+      "published_relative_path": "independent-diagnosis/facts.json",
+      "bytes": 2574,
+      "sha256": "6f199befe3ad8af91d0ebc4d18ec36bbfc00d22cdab42849565ab226e8feacc9"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/hash-index.json",
+      "published_relative_path": "independent-diagnosis/hash-index.json",
+      "bytes": 7849,
+      "sha256": "134788ff671479261d8f16905ea367bfe67d359cef2743dc8fa510d2da85f50d"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/probes/current_path_probe.py",
+      "published_relative_path": "independent-diagnosis/probes/current_path_probe.py.txt",
+      "bytes": 9829,
+      "sha256": "7271461b9aea15a39dcbf3005c168aa9bf0307b5602c827b4c72000b4b7099d8"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/logs/current-path.command.json",
+      "published_relative_path": "independent-diagnosis/logs/current-path.command.json",
+      "bytes": 573,
+      "sha256": "91863148fa580729e402b3222d964a67cf794743edae0bbedc53a58d3ab75cdd"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/logs/current-path-results.json",
+      "published_relative_path": "independent-diagnosis/logs/current-path-results.json",
+      "bytes": 3838,
+      "sha256": "df6233a740fcae05383a3c2137fa6dea9c3e8fe1d7f6bd234e46da84aee74cfe"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/logs/current-path.stdout.txt",
+      "published_relative_path": "independent-diagnosis/logs/current-path.stdout.txt",
+      "bytes": 3838,
+      "sha256": "df6233a740fcae05383a3c2137fa6dea9c3e8fe1d7f6bd234e46da84aee74cfe"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/logs/current-path.stderr.txt",
+      "published_relative_path": "independent-diagnosis/logs/current-path.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/logs/auth-baseline-binding.json",
+      "published_relative_path": "independent-diagnosis/logs/auth-baseline-binding.json",
+      "bytes": 1357,
+      "sha256": "508a7ff4ad78ef5699b5b615ba7dc7d27f726151b9743f7ff9bff45f51d8736c"
+    }
+  ]
+}

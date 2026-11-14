@@ -1,0 +1,7 @@
+{
+  "path": "src/tianshu/loop.py",
+  "original_sha256": "40b02ab497f912756f51f742057323afff470c4514fcb35dee120d46577724e3",
+  "mutated_sha256": "5ef3af3af98994f33fa52e4985c169f05dce2aa26430846c05018ca363e31bfd",
+  "change": "restore only the old three-line pure_only proposal pre-filter",
+  "restored_sha256": "40b02ab497f912756f51f742057323afff470c4514fcb35dee120d46577724e3"
+}

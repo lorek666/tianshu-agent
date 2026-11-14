@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+    "-B",
+    "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8/probes/current_path_probe.py"
+  ],
+  "cwd": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8",
+  "exit": 0,
+  "started": "2026-11-14T02:18:02.939905+00:00",
+  "ended": "2026-11-14T02:18:03.452090+00:00",
+  "script_sha256": "7271461b9aea15a39dcbf3005c168aa9bf0307b5602c827b4c72000b4b7099d8",
+  "source": "/tmp/low-disk-release-delta-independent-20261114/source",
+  "offline_scripted_models_only": true
+}

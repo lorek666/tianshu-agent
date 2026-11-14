@@ -625,6 +625,7 @@ engine = AgentLoop(
     limits=Limits(max_turns={rounds} + 3, context_budget_bytes={budget},
                   summary_mode="model"),
     budget=stack.budget, contents=stack.contents, summaries=stack.summaries,
+    memory=stack.memory,
 )
 task = stack.tasks.create_task("长任务", [{ws!r}])
 engine.start(task.task_id, out_name="")

@@ -1,0 +1,7 @@
+{
+  "path": "src/tianshu/memory_exec.py",
+  "original_sha256": "cd9098705587b3117ca7109d245f20f1cc8c3487a2742e75789ed5bcd027a80b",
+  "mutated_sha256": "4101dcaced7d3401e24ed2494ec4a9f4fcd4fd8cb73a02910d492375468bb513",
+  "change": "remove only the MemoryExecutor._verify child guard",
+  "restored_sha256": "cd9098705587b3117ca7109d245f20f1cc8c3487a2742e75789ed5bcd027a80b"
+}

@@ -1,0 +1,54 @@
+{
+  "status": "PASS_EXACT_SOURCE_AND_PACKAGING_BINDING",
+  "source_files": 906,
+  "source_manifest_sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+  "modified": [
+    "docs/KNOWLEDGE.md",
+    "docs/LOW-DISK-2026-11-14.md",
+    "src/tianshu/loop.py",
+    "tests/test_approval_reject.py",
+    "tests/test_g2_delegation_contract.py",
+    "tests/test_low_disk_execution.py",
+    "tests/test_m2_acceptance.py",
+    "tests/test_recovery.py",
+    "tests/test_round2_auth_memory.py"
+  ],
+  "added_count": 33,
+  "removed_count": 6,
+  "product_delta": [
+    "src/tianshu/loop.py",
+    "tests/test_approval_reject.py",
+    "tests/test_g2_delegation_contract.py",
+    "tests/test_low_disk_execution.py",
+    "tests/test_m2_acceptance.py",
+    "tests/test_recovery.py",
+    "tests/test_round2_auth_memory.py"
+  ],
+  "only_production_delta": "remove the three-line loop pure_only proposal pre-filter",
+  "memory_executor_byte_identical_to_879": true,
+  "all_other_src_byte_identical_to_879": true,
+  "ui_files_unchanged": 57,
+  "wiring": {
+    "tests/test_approval_reject.py": {
+      "only_two_same_stack_keywords_added": true,
+      "all_other_ast_unchanged": true
+    },
+    "tests/test_m2_acceptance.py": {
+      "only_two_same_stack_keywords_added": true,
+      "all_other_ast_unchanged": true
+    },
+    "tests/test_recovery.py": {
+      "only_two_same_stack_keywords_added_in_child_script": true,
+      "all_other_bytes_unchanged": true
+    }
+  },
+  "rule_count_code_schema_prd": 78,
+  "archive_renames_byte_preserved": 6,
+  "historical_index_entries_resolved": 173,
+  "historical_other_evidence_files_unchanged": 327,
+  "published_subset_files_exact_originals": 25,
+  "subset_checked_against_original_index": 14,
+  "old_six_script_paths_absent": true,
+  "lock_lint_ci_contract_unchanged": true,
+  "baseline_source_unchanged_after_review": true
+}

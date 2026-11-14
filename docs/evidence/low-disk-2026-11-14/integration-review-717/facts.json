@@ -1,0 +1,91 @@
+{
+  "status": "NOT_APPROVED_PUBLIC_EVIDENCE_CLOSURE_REQUIRED",
+  "date": "2026-11-14",
+  "reviewer": "/root/review_low_disk_integration",
+  "candidate": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/candidate-complete",
+  "baseline_head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "complete_source_count": 717,
+  "complete_source_map_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+  "report_sha256": "7f27c76e4c0106c5abb77e75d8e624d0ccdeac405bb9c9913299818e6ca2f693",
+  "findings": [
+    {
+      "id": "INT-E1",
+      "severity": "P2",
+      "status": "未修",
+      "blocking": true,
+      "description": "公开artifact-index索引173项但固定717集合缺3份静态demo源副本，其他170项hash一致；root待新冻结补件销账。"
+    },
+    {
+      "id": "BASE-B1",
+      "severity": "P2",
+      "status": "未修",
+      "blocking": false,
+      "baseline_preexisting": true,
+      "description": "CLI预算账本装配缺口：a022/T2/T3均未传budget；离线实跑model.intent/result但零账户/预占；不外推其他入口预算证明。"
+    },
+    {
+      "id": "DOC-N1",
+      "severity": "P3",
+      "status": "未修",
+      "blocking": false,
+      "description": "公开说明作者711排除6派生项，root完整717包含；root已接收待事实delta。"
+    }
+  ],
+  "new_functional_blockers_confirmed": 0,
+  "public_evidence_blockers_confirmed": 1,
+  "kernel_paths_inherited": 211,
+  "inherited_input_identities_verified": 8,
+  "original_t1_files_rehashed": 579,
+  "original_t2_files_rehashed": 1403,
+  "public_identity_copies_verified": 6,
+  "public_local_link_targets_existing": 10,
+  "commands": [
+    {
+      "metadata": "logs/integration-audit.command.json",
+      "exit": 1,
+      "meaning": "实际发现公开索引缺3件；不伪装通过"
+    },
+    {
+      "metadata": "logs/structural-wiring.command.json",
+      "exit": 0,
+      "meaning": "AST顺序/真实schema和registry结构核对，不是T3行为矩阵"
+    },
+    {
+      "metadata": "logs/budget-assembly.command.json",
+      "exit": 0,
+      "meaning": "成功复现既有预算装配缺口，不是预算通过"
+    },
+    {
+      "metadata": "logs/three-way-source.command.json",
+      "exit": 0,
+      "meaning": "基线Git对象/T2/T3函数字节与装配比对"
+    }
+  ],
+  "not_run": [
+    "T1/T2 suite rerun",
+    "T3 CLI/IPC/App behavior matrix",
+    "full pytest",
+    "uv lock --check",
+    "whole-repository ruff",
+    "complete UI checks",
+    "native CI",
+    "API",
+    "commit/push",
+    "paid models",
+    "soak"
+  ],
+  "non_promises": [
+    "native cross-volume",
+    "OS filesystem stall bounds",
+    "SLO",
+    "true paid calls",
+    "10h",
+    "restore apply",
+    "capacity/GC",
+    "physical power loss",
+    "whole-volume ENOSPC",
+    "release"
+  ],
+  "observer_error": "一次中文全角冒号定位误用英文冒号导致ValueError；原脚本/输出保留，修观察器后实际最终audit仍因3缺件exit1。",
+  "scope": "整分支冻结内容的跨片接线/质量/契约继承；当前717不予PASS，待独立证据小delta销账；最终CI另核。"
+}

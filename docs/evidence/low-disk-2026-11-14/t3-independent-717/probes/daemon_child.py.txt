@@ -1,0 +1,6 @@
+import os,sys,json
+from pathlib import Path
+from leaf_runtime import Offline,append,CASE
+from tianshu import daemon
+append('child.jsonl',{'pid':os.getpid(),'ppid':os.getppid(),'source':daemon.__file__,'python':sys.version})
+daemon.serve(CASE,model=Offline(),on_ready=lambda:print(json.dumps({'ready':True,'pid':os.getpid()}),flush=True))

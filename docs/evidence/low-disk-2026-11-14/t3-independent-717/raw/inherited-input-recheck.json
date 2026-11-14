@@ -1,0 +1,53 @@
+{
+  "results": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/source-hashes.json",
+      "sha256": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+      "bytes": 62220,
+      "matched": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/REPORT.md",
+      "sha256": "a2ec4da045b9a862744198a5cd002910a145458f9dd4a924a615b0839b7688e0",
+      "bytes": 9212,
+      "matched": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/facts.json",
+      "sha256": "b5f56ebc0f0a7a30467e5bede173de3a3fcd0ebb12e3644e9a05dc73f554a29c",
+      "bytes": 6971,
+      "matched": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/hash-index.json",
+      "sha256": "dfe69bb0625ec4f7d8e89cc9416d12ca45dd33fbbd2387e8598bad8c19bf293b",
+      "bytes": 98300,
+      "matched": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/source-hashes.json",
+      "sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+      "bytes": 62326,
+      "matched": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/REPORT.md",
+      "sha256": "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72",
+      "bytes": 13040,
+      "matched": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/facts.json",
+      "sha256": "8e7b2c12ade690f81e5d00a7768bc3ce91204115c0a67f4affb993e3cf9c35e1",
+      "bytes": 10069,
+      "matched": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/hash-index.json",
+      "sha256": "a5a7c114d417c4753daa41efa60719fbb85fce5e7ef960cf9bf0f4d3a0464ba0",
+      "bytes": 497922,
+      "matched": true
+    }
+  ],
+  "all_matched": true
+}

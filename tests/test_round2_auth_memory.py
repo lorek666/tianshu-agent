@@ -7,7 +7,7 @@ from contextlib import closing
 import pytest
 from support import approve_pending, engine_for, stack_for
 
-from tianshu.dispatcher import build_request
+from tianshu.dispatcher import DispatchDenied, build_request
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import PolicyEngine
@@ -174,7 +174,7 @@ def test_child_read_memory_remains_available(tmp_path):
 
 
 @pytest.mark.parametrize("scope_name", ["user", "task"])
-def test_memory_executor_rechecks_child_capability(tmp_path, scope_name):
+def test_memory_executor_rechecks_child_capability(tmp_path, monkeypatch, scope_name):
     """构造旧版准入曾签出的真实一次性票据，独立执行层仍拒绝子任务。"""
     from tianshu.dispatcher import _Authority
     from tianshu.memory_exec import MemoryDispatchRefused
@@ -220,9 +220,57 @@ def test_memory_executor_rechecks_child_capability(tmp_path, scope_name):
             stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
         admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
         executor = stack.dispatcher._memory_executor_for()
+        with pytest.raises(DispatchDenied, match="只读子任务不能写入记忆"):
+            with stack.dispatcher._begin_memory_execution(request, claim):
+                pytest.fail("正常入口不能为子任务记忆写入签出 permit")
+        assert not any(
+            e.type == "execution.started" for e in log.read_run(run.run_id)
+        )
+
+        upstream_calls = []
+        original_authority = stack.dispatcher._authority
+        original_check_run_execution = stack.dispatcher._check_run_execution
+
+        def bypass_new_authority_gate(
+            candidate, candidate_claim, *, args=None, mcp_discovery=False
+        ):
+            if candidate.request_id != request.request_id:
+                return original_authority(
+                    candidate,
+                    candidate_claim,
+                    args=args,
+                    mcp_discovery=mcp_discovery,
+                )
+            upstream_calls.append("authority")
+            assert candidate_claim == claim
+            return auth
+
+        def bypass_new_execution_gate(candidate, candidate_target):
+            if candidate.request_id != request.request_id:
+                return original_check_run_execution(candidate, candidate_target)
+            upstream_calls.append("check_run_execution")
+            assert candidate_target.uri == scope.to_uri()
+
+        monkeypatch.setattr(stack.dispatcher, "_authority", bypass_new_authority_gate)
+        monkeypatch.setattr(
+            stack.dispatcher, "_check_run_execution", bypass_new_execution_gate
+        )
         with stack.dispatcher._begin_memory_execution(request, claim) as permit:
+            monkeypatch.setattr(stack.dispatcher, "_authority", original_authority)
+            monkeypatch.setattr(
+                stack.dispatcher, "_check_run_execution", original_check_run_execution
+            )
+            # 独立判据先直接打内层复核；随后仍走完整 execute 正控，确认不是
+            # pure_only 的外层资格门替它提供保护。
+            with pytest.raises(MemoryDispatchRefused, match="只读子任务"):
+                executor._verify(admitted, permit)
             with pytest.raises(MemoryDispatchRefused, match="只读子任务"):
                 executor.execute(admitted, permit)
+        assert upstream_calls == ["authority", "check_run_execution"]
+        started = [
+            e for e in log.read_run(run.run_id) if e.type == "execution.started"
+        ]
+        assert len(started) == 1, "真实 execution_guard 必须在执行器复核前签出 permit"
         assert log.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
 
 

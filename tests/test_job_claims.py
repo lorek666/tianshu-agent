@@ -20,7 +20,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from support import CHILD_TEXT
+from support import CHILD_TEXT, effects_admission
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -58,7 +58,15 @@ def env(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     data_root = tmp_path / "data"
-    tasks = TaskStore(log, leases=leases, claims=jobs, data_root=data_root)
+    tasks = TaskStore(
+        log,
+        leases=leases,
+        claims=jobs,
+        data_root=data_root,
+        disk_admission=effects_admission(
+            log, snapshots=None, memory=None, contents=None, data_root=data_root
+        ),
+    )
     yield log, tasks, leases, jobs, ws, data_root
     log.close()
 
@@ -254,7 +262,7 @@ def test_revise_goal_is_blocked_while_execution_in_progress(env):
 
 def test_revise_goal_requires_data_root(env):
     """没配 data_root 时必须拒绝：静默放过等于留一个 TOCTOU 窗口。"""
-    log, _, leases, _, ws, _ = env
+    log, _, leases, _, ws, data_root = env
     tasks = TaskStore(log, leases=leases)
     task = tasks.create_task("x")
     with pytest.raises(TianshuError) as ei:
@@ -290,8 +298,15 @@ def test_cursor_requires_claim_store(env):
     """没有 JobStore 就不许写游标：裸 run_id 写入等于没有 owner 概念。"""
     from tianshu.jobs import JobClaim
 
-    log, _, leases, _, ws, _ = env
-    tasks = TaskStore(log, leases=leases)
+    log, _, leases, _, ws, data_root = env
+    tasks = TaskStore(
+        log,
+        leases=leases,
+        data_root=data_root,
+        disk_admission=effects_admission(
+            log, snapshots=None, memory=None, contents=None, data_root=data_root
+        ),
+    )
     _, run = _run_with_lease(tasks, leases, ws)
 
     with pytest.raises(TianshuError) as ei:
@@ -481,7 +496,13 @@ def test_guard_cannot_be_taken_inside_transaction(env):
 def test_begin_execution_requires_lease_store(tmp_path):
     log = EventLog(tmp_path / "db.sqlite")
     try:
-        tasks = TaskStore(log)
+        tasks = TaskStore(
+            log,
+            data_root=tmp_path,
+            disk_admission=effects_admission(
+                log, snapshots=None, memory=None, contents=None, data_root=tmp_path
+            ),
+        )
         task = tasks.create_task("x")
         run = tasks.start_run(task.task_id)
         with pytest.raises(TianshuError):

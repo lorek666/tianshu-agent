@@ -69,6 +69,8 @@ class Env:
             snapshots=self.stack.snapshots,
             model=ScriptedModel(list(responses)),
             limits=limits or Limits(8, 20_000),
+            memory=self.stack.memory,
+            contents=self.stack.contents,
         )
 
     def reopen(self) -> None:
@@ -712,7 +714,7 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
     醒来：它看到的是"作业已结束"，也可能是"租约不在了"。这两种都是**正常
     结束**，记成 `心跳失效` 会让一次成功的执行以退出码 1 收场。
     """
-    for i in range(6):
+    for i in range(60):
         run_id, _, _ = env.enqueue(root=env.ws, out=f"f{i}.md")
         worker = Worker(
             env.stack,
@@ -720,7 +722,11 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
             heartbeat_interval_ms=1,  # 故意把窗口放大：正常配置下是 5s
         )
         assert worker.run_once() is True
-        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+        run = env.stack.tasks.get_run(run_id)
+        assert run.state == "succeeded", (
+            f"iteration={i}, worker.errors={worker.errors}, "
+            f"run.end={env.payloads(run_id, 'run.end')}, events={env.events(run_id)}"
+        )
         assert worker.errors == [], worker.errors
 
     # 暂停路径也一样：安全点先释放租约，作业随后被挂起

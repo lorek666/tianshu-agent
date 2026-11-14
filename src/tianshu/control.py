@@ -47,6 +47,7 @@ from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .loop import Limits, Stack
 from .permissions import ApprovalError, HumanIdentity
 from .resources import MemoryScope, build_memory_scope
+from .run_policy import EFFECTS, PURE_ONLY, RunExecutionPolicyV1
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
@@ -430,12 +431,23 @@ class ControlPlane:
         仅凭日志重建首轮提示消息。
         """
         task_id = _require_str(params, "task_id")
+        if "execution_policy" not in params:
+            execution_policy = EFFECTS
+        else:
+            try:
+                execution_policy = RunExecutionPolicyV1.of(
+                    params["execution_policy"]
+                )
+            except TianshuError as exc:
+                raise ControlError("bad_params", str(exc)) from exc
         out_name = params.get("out_name")
         if out_name is not None and not isinstance(out_name, str):
             raise ControlError("bad_params", "out_name 必须是字符串")
         task = self._tasks.get_task(task_id)
         if task is None:
             raise ControlError("not_found", f"task 不存在：{task_id}")
+
+        self._stack.dispatcher.prepare_run(task_id, execution_policy)
         payload = {
             "task": task.goal,
             "out": out_name or "",
@@ -443,9 +455,13 @@ class ControlPlane:
                 "max_turns": self._limits.max_turns,
                 "max_total_tokens": self._limits.max_total_tokens,
             },
-            "tools": _exposed_tool_ids(),
+            "tools": _exposed_tool_ids(execution_policy),
         }
-        run = self._tasks.start_run(task.task_id, payload=payload)
+        run = self._tasks.start_run(
+            task.task_id,
+            payload=payload,
+            execution_policy=execution_policy,
+        )
         # 作业进队列；认领者（daemon 驱动线程）负责 created → queued → running。
         if self._claims is None:
             raise ControlError("internal", "Stack 未配置 JobStore，无法入队")
@@ -1104,7 +1120,9 @@ def _undo_change(item: Any) -> dict[str, Any]:
     }
 
 
-def _exposed_tool_ids() -> list[str]:
+def _exposed_tool_ids(
+    execution_policy: RunExecutionPolicyV1 = EFFECTS,
+) -> list[str]:
     """工具清单（与 `AgentLoop.start` 的 payload 一致）。
 
     G2 MCP 阶段起 = 进程级注册表的全部 id（内置 19 + 已准入 MCP 工具）；
@@ -1112,7 +1130,15 @@ def _exposed_tool_ids() -> list[str]:
     """
     from .tool_registry import current_registry
 
-    return list(current_registry().ids())
+    registry = current_registry()
+    ids = list(registry.ids())
+    if execution_policy == PURE_ONLY:
+        return [
+            tool_id
+            for tool_id in ids
+            if registry.spec(tool_id).side_effect_level == "pure"
+        ]
+    return ids
 
 
 def _require_str(params: dict[str, Any], key: str) -> str:

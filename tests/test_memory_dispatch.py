@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+from support import effects_admission
 
 from tianshu.dispatcher import Dispatcher, build_request
 from tianshu.errors import TianshuError, ToolNotAllowed
@@ -119,10 +120,12 @@ def env(tmp_path: Path):
     memory.ensure_schema()
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=memory, contents=None, data_root=data))
     approvals = ApprovalStore(log, clock=lambda: NOW)
     grants = GrantStore(log, clock=lambda: NOW)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
     dispatcher = Dispatcher(
         log,
         tasks,

@@ -1,5 +1,13 @@
 import { useState } from "react";
-import type { CreateTaskInput, WorkspaceMode } from "../api/types";
+import {
+  EFFECTS_RUN_POLICY,
+  PURE_ONLY_RUN_POLICY,
+} from "../api/types";
+import type {
+  CreateTaskInput,
+  RunExecutionPolicyV1,
+  WorkspaceMode,
+} from "../api/types";
 import { Modal } from "./Modal";
 import { IconPlus, IconX } from "./Icons";
 
@@ -20,6 +28,8 @@ const DEFAULT_WORKSPACE: WorkspaceDraft = { root_path: "", mode: "writable" };
 export function NewTaskDialog({ open, busy, onClose, onSubmit }: NewTaskDialogProps) {
   const [goal, setGoal] = useState("");
   const [workspaces, setWorkspaces] = useState<WorkspaceDraft[]>([{ ...DEFAULT_WORKSPACE }]);
+  const [executionPolicy, setExecutionPolicy] =
+    useState<RunExecutionPolicyV1>(EFFECTS_RUN_POLICY);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -54,7 +64,11 @@ export function NewTaskDialog({ open, busy, onClose, onSubmit }: NewTaskDialogPr
     setError(null);
     setSubmitting(true);
     try {
-      await onSubmit({ goal: trimmedGoal, workspaces: validWorkspaces });
+      await onSubmit({
+        goal: trimmedGoal,
+        workspaces: validWorkspaces,
+        execution_policy: executionPolicy,
+      });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "创建任务失败，请重试。");
     } finally {
@@ -105,6 +119,35 @@ export function NewTaskDialog({ open, busy, onClose, onSubmit }: NewTaskDialogPr
           />
           <span className="field-hint">写得具体一点，Agent 更容易做对；之后也可以修改目标。</span>
         </label>
+
+        <div className="field">
+          <span className="field-label">运行方式</span>
+          <div className="segmented run-mode" role="group" aria-label="运行方式">
+            <button
+              type="button"
+              className={`segmented-item${executionPolicy.mode === "effects" ? " is-active" : ""}`}
+              aria-pressed={executionPolicy.mode === "effects"}
+              onClick={() => setExecutionPolicy(EFFECTS_RUN_POLICY)}
+              disabled={pending}
+            >
+              允许工具操作
+            </button>
+            <button
+              type="button"
+              className={`segmented-item${executionPolicy.mode === "pure_only" ? " is-active" : ""}`}
+              aria-pressed={executionPolicy.mode === "pure_only"}
+              onClick={() => setExecutionPolicy(PURE_ONLY_RUN_POLICY)}
+              disabled={pending}
+            >
+              仅读取与对话
+            </button>
+          </div>
+          <span className="field-hint">
+            {executionPolicy.mode === "pure_only"
+              ? "本次运行不写文件、不执行有副作用的工具；目录的可写权限保持不变。"
+              : "允许使用工具修改文件；创建运行前会检查所需磁盘空间。"}
+          </span>
+        </div>
 
         <div className="field">
           <span className="field-label">绑定目录</span>

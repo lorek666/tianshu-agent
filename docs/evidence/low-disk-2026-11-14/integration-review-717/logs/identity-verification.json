@@ -1,0 +1,80 @@
+{
+  "manifest_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+  "listed": 717,
+  "actual": 717,
+  "bad": [],
+  "extra": [],
+  "inherited_inputs": [
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/source-hashes.json",
+      "sha256": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+      "expected": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/REPORT.md",
+      "sha256": "a2ec4da045b9a862744198a5cd002910a145458f9dd4a924a615b0839b7688e0",
+      "expected": "a2ec4da045b9a862744198a5cd002910a145458f9dd4a924a615b0839b7688e0",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/facts.json",
+      "sha256": "b5f56ebc0f0a7a30467e5bede173de3a3fcd0ebb12e3644e9a05dc73f554a29c",
+      "expected": "b5f56ebc0f0a7a30467e5bede173de3a3fcd0ebb12e3644e9a05dc73f554a29c",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/hash-index.json",
+      "sha256": "dfe69bb0625ec4f7d8e89cc9416d12ca45dd33fbbd2387e8598bad8c19bf293b",
+      "expected": "dfe69bb0625ec4f7d8e89cc9416d12ca45dd33fbbd2387e8598bad8c19bf293b",
+      "match": true
+    },
+    {
+      "path": "/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/source-hashes.json",
+      "sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+      "expected": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/REPORT.md",
+      "sha256": "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72",
+      "expected": "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/facts.json",
+      "sha256": "8e7b2c12ade690f81e5d00a7768bc3ce91204115c0a67f4affb993e3cf9c35e1",
+      "expected": "8e7b2c12ade690f81e5d00a7768bc3ce91204115c0a67f4affb993e3cf9c35e1",
+      "match": true
+    },
+    {
+      "path": "/tmp/low-disk-t2-independent-20261114/hash-index.json",
+      "sha256": "a5a7c114d417c4753daa41efa60719fbb85fce5e7ef960cf9bf0f4d3a0464ba0",
+      "expected": "a5a7c114d417c4753daa41efa60719fbb85fce5e7ef960cf9bf0f4d3a0464ba0",
+      "match": true
+    }
+  ],
+  "t2_kernel_count": 71,
+  "t2_kernel_changed": [],
+  "t2_changed": [
+    "README.md",
+    "docs/KNOWLEDGE.md",
+    "docs/PRD-v1.md",
+    "docs/low-disk-admission-contract.md",
+    "src/tianshu/cli.py",
+    "src/tianshu/control.py",
+    "ui/dist/assets/index-B-xT4bPb.js",
+    "ui/dist/assets/index-tHfDYJNM.css",
+    "ui/dist/index.html",
+    "ui/package.json",
+    "ui/pnpm-lock.yaml",
+    "ui/src/App.tsx",
+    "ui/src/api/errors.ts",
+    "ui/src/api/types.ts",
+    "ui/src/components/NewTaskDialog.tsx",
+    "ui/src/components/TaskDetail.tsx",
+    "ui/src/demo/host.ts",
+    "ui/src/demo/world.ts",
+    "ui/src/styles.css"
+  ]
+}

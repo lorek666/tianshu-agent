@@ -1,0 +1,23 @@
+{
+  "exitstatus": 1,
+  "reports": [
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "setup",
+      "outcome": "passed",
+      "longrepr": null
+    },
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "call",
+      "outcome": "failed",
+      "longrepr": "tmp_path = PosixPath('/private/tmp/low-disk-pr144-testdiag-independent-20261114-q3l5y28c/runs/bad-ready/pytest/test_two_real_processes_reopen0')\n\n    def test_two_real_processes_reopen_and_compete(tmp_path):\n        import os\n        import subprocess\n        import sys\n    \n        with closing(EventLog(tmp_path / \"events.db\")) as log:\n            stack = stack_for(log, data_root=tmp_path / \"data\")\n            task = stack.tasks.create_task(\"compete\")\n        code = \"\"\"\n    import json,sys\n    from pathlib import Path\n    from tianshu.events import EventLog\n    from tianshu.loop import build_stack\n    from tianshu.errors import TianshuError\n    root=Path(sys.argv[1])\n    log=EventLog(root/\"events.db\")\n    stack=build_stack(log,data_root=root/\"data\")\n    sys.stdout.buffer.write(bytes([78, 79, 84, 95, 82, 69, 65, 68, 89, 13, 10]));sys.stdout.buffer.flush()\n    assert sys.stdin.readline()==\"GO\\\\n\"\n    try:\n        run=stack.tasks.start_run(sys.argv[2])\n        print(json.dumps({\"run_id\":run.run_id,\"policy\":stack.tasks.run_execution_policy(run.run_id).to_dict()}),flush=True)\n    except TianshuError as exc:\n        print(json.dumps({\"error\":str(exc)}),flush=True)\n    log.close()\n    \"\"\"\n        env = {\n            k: v\n            for k, v in os.environ.items()\n            if not (\n                k.startswith(\"TIANSHU_\") or any(x in k for x in (\"API_KEY\", \"ENDPOINT\", \"BASE_URL\"))\n            )\n        }\n        env[\"TIANSHU_AUTHORITY_ROOT\"] = str(tmp_path / \"authority\")\n        children = [\n            subprocess.Popen(\n                [sys.executable, \"-u\", \"-c\", code, str(tmp_path), task.task_id],\n                stdin=subprocess.PIPE,\n                stdout=subprocess.PIPE,\n                stderr=subprocess.PIPE,\n                **CHILD_TEXT,\n                env=env,\n            )\n            for _ in range(2)\n        ]\n        try:\n            for child in children:\n>               assert child.stdout.readline() == \"READY\\n\"\nE               AssertionError: assert 'NOT_READY\\n' == 'READY\\n'\nE                 \nE                 - READY\nE                 + NOT_READY\nE                 ? ++++\n\ntests/test_low_disk_run_creation.py:583: AssertionError"
+    },
+    {
+      "nodeid": "tests/test_low_disk_run_creation.py::test_two_real_processes_reopen_and_compete",
+      "when": "teardown",
+      "outcome": "passed",
+      "longrepr": null
+    }
+  ]
+}

@@ -1,0 +1,269 @@
+{
+  "approved_t1_complete_snapshot": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/candidate-complete",
+  "approved_t1_source_hashes_sha256": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+  "branch": "codex/g3-low-disk-admission",
+  "complete_patch_sha256": "6123d48778f12d97058cbd3a4c5bba264c643a4d606a88aba7978e86fe9cde72",
+  "complete_snapshot": "/tmp/tianshu-g3-20261113/low-disk-t2-root-handoff-20261114-ok6u7mn9/candidate-complete",
+  "complete_snapshot_manifest_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+  "delta_vs_approved_t1_patch_sha256": "c5b0bbb0da7e6513b2b5b1279173e3e526f7e0d7ce0351f0dcce24732f4be068",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "e54e4594d630f9088c10466e993c3059abeeef2935b4e609ded2b2a8adee4f01",
+      "size": 44936
+    },
+    {
+      "path": "docs/KNOWLEDGE.md",
+      "sha256": "e3191a8e898b4cd1072241b47b10f5bfd0f344e89862f7415828a495f89bc19b",
+      "size": 326589
+    },
+    {
+      "path": "docs/PRD-v1.md",
+      "sha256": "a9486cc6f318911dac8b34e74b2ce780735df8db3154b330443129523a64dbd9",
+      "size": 146422
+    },
+    {
+      "path": "schemas/c3/event.json",
+      "sha256": "6478e9efdc1a07281eccf83b1a315f625af310ae76a8d5046508a595be124a14",
+      "size": 133472
+    },
+    {
+      "path": "schemas/c4/rules.json",
+      "sha256": "45e421b68b9f6c8ffbb1b047443858fa08e8bc1d93361e31eb7b01b214870f79",
+      "size": 17333
+    },
+    {
+      "path": "src/tianshu/cli.py",
+      "sha256": "ad6e5ec78949305d5736239c35c699b8f47f15c10840b5abe0995a3b18e826b3",
+      "size": 90095
+    },
+    {
+      "path": "src/tianshu/control.py",
+      "sha256": "3818d94cfa5954c31a81ca624fa9adfc6d78ee41665cda5511493c66ac96dab6",
+      "size": 52212
+    },
+    {
+      "path": "src/tianshu/daemon.py",
+      "sha256": "29a98743cb9cb35a48368e0980e95cd6d72a554a2981434a7d40fe24418722e1",
+      "size": 70441
+    },
+    {
+      "path": "src/tianshu/disk_admission.py",
+      "sha256": "edf3f0f1460d49d496c53da6c8c4e3d8404d0ba85bff4d4e87af14b4f176eb8f",
+      "size": 5038
+    },
+    {
+      "path": "src/tianshu/dispatcher.py",
+      "sha256": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6",
+      "size": 208447
+    },
+    {
+      "path": "src/tianshu/eval/runner.py",
+      "sha256": "91e558852f36a77dd4ef3de91ba6690a83789402eea65c4c3dab84449ec4f298",
+      "size": 46755
+    },
+    {
+      "path": "src/tianshu/event_schema.py",
+      "sha256": "26770be95c23e9fbfea6748abc2456809a47d48442b26b881e1464ebc2454bf0",
+      "size": 52977
+    },
+    {
+      "path": "src/tianshu/loop.py",
+      "sha256": "5ef3af3af98994f33fa52e4985c169f05dce2aa26430846c05018ca363e31bfd",
+      "size": 155704
+    },
+    {
+      "path": "src/tianshu/memory_exec.py",
+      "sha256": "cd9098705587b3117ca7109d245f20f1cc8c3487a2742e75789ed5bcd027a80b",
+      "size": 51219
+    },
+    {
+      "path": "src/tianshu/rules.py",
+      "sha256": "ca0b9340a6c74005f530ace0d02ebe6894bba277d9d998da7765a00f51b99c40",
+      "size": 14769
+    },
+    {
+      "path": "src/tianshu/run_policy.py",
+      "sha256": "6e6c5a72c744ac706a8de948b2af1fabf2595945cc4178984b8552241e7e8d12",
+      "size": 1265
+    },
+    {
+      "path": "src/tianshu/tasks.py",
+      "sha256": "eb2a3de26ce8fc0526a7cdb92f522c845977e905a315f3d4e9a8dee804a64e63",
+      "size": 129799
+    },
+    {
+      "path": "src/tianshu/tools.py",
+      "sha256": "98ec0177260779e5b70edcb543a6ba669bfa0bd94b597e7507dd0b1026210b89",
+      "size": 69441
+    },
+    {
+      "path": "tests/support.py",
+      "sha256": "aa35c8c8efa81c9023198e4bf33a54c831434a0b215f08d7ab293f6f055de9cd",
+      "size": 7913
+    },
+    {
+      "path": "tests/test_backend_contract.py",
+      "sha256": "72e68ccdd638c0f25ac287fc6cd207c21ce6fed32d2a57f1a37774c338454d03",
+      "size": 30345
+    },
+    {
+      "path": "tests/test_context.py",
+      "sha256": "2fd311b14c92ed8d9c56135d19e42fb843cb9662d823b72037c04459f8698c21",
+      "size": 38090
+    },
+    {
+      "path": "tests/test_cost_line.py",
+      "sha256": "eb54954d15536e6d3a10ed3fc66b8220ea711e1e3748005acbf9a22ddb5a4abe",
+      "size": 17014
+    },
+    {
+      "path": "tests/test_dispatch.py",
+      "sha256": "c9a1a82727e3553e52650c9e5d9a16461e74ba2c00bc0cd3bbd4865ebbcc820d",
+      "size": 35113
+    },
+    {
+      "path": "tests/test_event_schema.py",
+      "sha256": "613b096b0593d663199ad5846baaa16120e74fc9aa4163c8aca0dbeb2942ac49",
+      "size": 29569
+    },
+    {
+      "path": "tests/test_evidence_keys.py",
+      "sha256": "a21b9b944cf40d63889a44807415ce233bf03d38af5bef0d5a40465332133031",
+      "size": 27667
+    },
+    {
+      "path": "tests/test_exec_backends.py",
+      "sha256": "ab1228c59a8aa04bdd5cd328222603cab32983bc24773d8d454e7e698aff5631",
+      "size": 22035
+    },
+    {
+      "path": "tests/test_failclosed.py",
+      "sha256": "c03c5aa92500ea1ce5c9f20f110558a39dabfd877e39ef947e2885020a1d3880",
+      "size": 13891
+    },
+    {
+      "path": "tests/test_isolation_gate.py",
+      "sha256": "e5bea607172d12208aed0050322e9707f0841aa05a42f479e7281f2ac72d107e",
+      "size": 34161
+    },
+    {
+      "path": "tests/test_job_claims.py",
+      "sha256": "82960543edbd96b49d9f76cf759c9757cf1023abb7cc11d9ba1193013f6de916",
+      "size": 28265
+    },
+    {
+      "path": "tests/test_low_disk_admission.py",
+      "sha256": "6aa282156bc5cf158b07b3eb101cd344ac3cf8bdc057749063a0607bd8b84c9a",
+      "size": 8530
+    },
+    {
+      "path": "tests/test_low_disk_execution.py",
+      "sha256": "f7c804eb705e950ce5be9f29daddbf36b7b050a49716799851e24ab561525a23",
+      "size": 32863
+    },
+    {
+      "path": "tests/test_low_disk_run_creation.py",
+      "sha256": "abc25a3b401c3e8104c84dab0901a2a8fa74237d67dac3316ccad5c26c4cca09",
+      "size": 30089
+    },
+    {
+      "path": "tests/test_mcp_crash.py",
+      "sha256": "bfe46f053e0302c166d49fd10082d12e7029f8edaee1dfbf83114dea3f968288",
+      "size": 59807
+    },
+    {
+      "path": "tests/test_mcp_dispatch.py",
+      "sha256": "29c5534597a66bf7417ded926c943e4cdf4f4a77b7dca450d45632bdec48da1f",
+      "size": 15689
+    },
+    {
+      "path": "tests/test_mcp_object_block.py",
+      "sha256": "3f64956c25f982d43ce4d9bc81a68c510aabf9a676b4baf3913415812c927926",
+      "size": 53724
+    },
+    {
+      "path": "tests/test_memory_dispatch.py",
+      "sha256": "4209b5a9beb64746f5430de3b8661e47be702f93e3c352a7827c71a4eb3e0c47",
+      "size": 119805
+    },
+    {
+      "path": "tests/test_memory_loop.py",
+      "sha256": "363b66b8f84cc824fe03ee04c5abb7c0458af7d8d0983152469b2aea027289aa",
+      "size": 42367
+    },
+    {
+      "path": "tests/test_network_fetch.py",
+      "sha256": "724ecb047119e3247e1c13e94788ad9475ea2098ce0aa6ce6717c143a2c390f7",
+      "size": 27107
+    },
+    {
+      "path": "tests/test_rule_ids.py",
+      "sha256": "80864879fd114cefeee600f0d81c383f6faf5a447f2ed69f3dcdcc6e272cee15",
+      "size": 17021
+    },
+    {
+      "path": "tests/test_run_command.py",
+      "sha256": "c56883bdcec79720d1dfbcc66347d483dafc55424567cc0971a947453c215c7e",
+      "size": 16166
+    },
+    {
+      "path": "tests/test_run_control.py",
+      "sha256": "4c166cb492d38f3d0d6f9d28f7ae499b651eb7f5e11564dc0a05a7f366ca21b6",
+      "size": 54463
+    },
+    {
+      "path": "tests/test_summary_loop.py",
+      "sha256": "d07f67308052beb697b72384cea4b45717e16e1d606280a6a2c45f0120d0e142",
+      "size": 28465
+    },
+    {
+      "path": "tests/test_takeover.py",
+      "sha256": "4cc5b5b029e3adf444d8deaabc883dd4267db4ffadfdbc7786738def28de59af",
+      "size": 14380
+    },
+    {
+      "path": "tests/test_tasks.py",
+      "sha256": "91cf767f81177249364865f66748cb0d6b4065afdce45bbb98e0d46b636b1c28",
+      "size": 13155
+    },
+    {
+      "path": "tests/test_transactions.py",
+      "sha256": "271c8022789f4772a4fcc7222f52efb623a295e59ce084db6b42d4fd35af7fba",
+      "size": 4546
+    },
+    {
+      "path": "tests/test_veto_scope.py",
+      "sha256": "1d320480aa6c51a26dd2d3f8e532121e0645bff62e744971114d4b648bd31509",
+      "size": 19976
+    }
+  ],
+  "files_semantics": "cumulative changed or new source paths relative to head; same files entry shape as T1",
+  "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "head_tree": "2d73f9917e9267acee3e18ed53df3fbdbd776fd5",
+  "parent_candidate_manifest": "/tmp/tianshu-g3-20261113/low-disk-t1-author-round1-20261114-dv9t7zv4/candidate-files.json",
+  "parent_candidate_manifest_sha256": "4ac68a766cf941509c4c38436fdf48806692e7401ff9b84e099813868b68bfa5",
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "source_snapshot": "/tmp/tianshu-g3-20261113/low-disk-t2-root-handoff-20261114-ok6u7mn9/candidate",
+  "status": "AUTHOR_CANDIDATE_WAITING_INDEPENDENT_REVIEW",
+  "t2_delta_files": 16,
+  "t2_delta_paths": [
+    "docs/KNOWLEDGE.md",
+    "docs/PRD-v1.md",
+    "schemas/c4/rules.json",
+    "src/tianshu/dispatcher.py",
+    "src/tianshu/loop.py",
+    "src/tianshu/memory_exec.py",
+    "src/tianshu/rules.py",
+    "src/tianshu/run_policy.py",
+    "src/tianshu/tasks.py",
+    "src/tianshu/tools.py",
+    "tests/test_dispatch.py",
+    "tests/test_low_disk_execution.py",
+    "tests/test_mcp_crash.py",
+    "tests/test_mcp_object_block.py",
+    "tests/test_rule_ids.py",
+    "tests/test_summary_loop.py"
+  ],
+  "t2_delta_snapshot": "/tmp/tianshu-g3-20261113/low-disk-t2-root-handoff-20261114-ok6u7mn9/t2-delta"
+}

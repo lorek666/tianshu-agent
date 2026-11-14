@@ -1,0 +1,42 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_cli_run_start_explicit_pure_only_bypasses_low_probe ___________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2957/test_cli_run_start_explicit_pu0')
+
+    def test_cli_run_start_explicit_pure_only_bypasses_low_probe(tmp_path: Path) -> None:
+        db = tmp_path / "events.db"
+        data_root = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+    
+        with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+            stack = build_stack(log, data_root=data_root)
+            task = stack.tasks.create_task("只读检查", [str(workspace)])
+    
+        proc = _cli_child(
+            tmp_path,
+            [
+                "run",
+                "start",
+                "--task-id",
+                task.task_id,
+                "--execution-mode",
+                "pure_only",
+                "--model",
+                "scripted",
+                "--db",
+                str(db),
+                "--data-root",
+                str(data_root),
+            ],
+        )
+>       assert proc.returncode == 0, proc.stderr
+E       AssertionError: 错误：dispatch.disk_space_low: /private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2957/test_cli_run_start_explicit_pu0/events.db: 可用空间低于 2 GiB
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...cx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2957/test_cli_run_start_explicit_pu0/events.db: 可用空间低于 2 GiB\n').returncode
+
+tests/test_low_disk_entrypoints.py:233: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_low_disk_entrypoints.py::test_cli_run_start_explicit_pure_only_bypasses_low_probe

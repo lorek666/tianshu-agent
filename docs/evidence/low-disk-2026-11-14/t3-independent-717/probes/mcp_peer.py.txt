@@ -1,0 +1,6 @@
+from pathlib import Path
+import os,sys,runpy
+marker,fixture=sys.argv[1:3]
+Path(marker).write_text(str(os.getpid()))
+sys.argv=[fixture]
+runpy.run_path(fixture,run_name='__main__')

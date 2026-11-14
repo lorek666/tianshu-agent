@@ -1,0 +1,14 @@
+{"probe": "ipc_ready", "pid": 19594, "parent": 19593, "root": "/tmp/low-disk-t3-independent-20261114/runs/i-eofxltmk", "welcome": {"protocol": 1, "daemon_version": "0.1.0", "instance_id": "daemon_10f2d62dca62", "event_seq_head": 0, "data_root": "/tmp/low-disk-t3-independent-20261114/runs/i-eofxltmk", "started_at": 1794621135506}}
+F
+=================================== FAILURES ===================================
+___________________ test_real_ipc_explicit_modes[pure_only] ____________________
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:186: in test_real_ipc_explicit_modes
+    s=snapshot(d.root);policy_snapshot(s,mode)
+                       ^^^^^^^^^^^^^^^^^^^^^^^
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:42: in policy_snapshot
+    assert all(current_registry().spec(t).side_effect_level=='pure' for t in e['payload']['tools'])
+E   assert False
+E    +  where False = all(<generator object policy_snapshot.<locals>.<genexpr> at 0x108d79080>)
+=========================== short test summary info ============================
+FAILED ../../../../tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py::test_real_ipc_explicit_modes[pure_only]
+1 failed, 51 deselected in 0.87s

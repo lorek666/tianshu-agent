@@ -99,6 +99,8 @@ engine = AgentLoop(
     snapshots=stack.snapshots,
     model=model,
     limits=Limits(8, 20_000),
+    memory=stack.memory,
+    contents=stack.contents,
 )
 task = stack.tasks.create_task("改文件", [str(ws)])
 result = engine.start(task.task_id, out_name={target!r})

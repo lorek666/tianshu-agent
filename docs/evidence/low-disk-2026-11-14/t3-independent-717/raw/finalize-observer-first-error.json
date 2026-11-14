@@ -1,0 +1,9 @@
+{
+  "kind": "post-run observer assertion error; not a product test failure or negative-control kill",
+  "command": "PYTHONDONTWRITEBYTECODE=1 /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python /tmp/low-disk-t3-independent-20261114/probes/finalize_evidence.py",
+  "exit": 1,
+  "output": "Traceback (most recent call last):\n  File \"/tmp/low-disk-t3-independent-20261114/probes/finalize_evidence.py\", line 125, in <module>\n    assert len(kernel) == 211 and all(before[r] == t2[r] for r in kernel)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+  "cause": "The observer selected only src/tianshu runtime paths (71 unchanged after excluding cli/control) while asserting the total src/tests/schemas unchanged count (211).",
+  "correction": "Select src/tests/schemas excluding cli/control; separately label 71 runtime modules, 133 test/fixture files, 7 schemas. Existing product test counts are unaffected.",
+  "prior_writes": "UI filtered/skipped metadata corrected with preserved originals; retained rejection audit and source-after map written. No product writes."
+}

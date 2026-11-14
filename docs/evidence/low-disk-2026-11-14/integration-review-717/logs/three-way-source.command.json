@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "-B",
+    "/tmp/low-disk-whole-branch-review-20261114/probes/three_way_source_audit.py"
+  ],
+  "cwd": "/tmp/low-disk-whole-branch-review-20261114",
+  "exit": 0,
+  "elapsed_seconds": 0.10289263725280762,
+  "probe_sha256": "3527fd87b8c53a900c9fbdfd3b2683dfedd547a59ce8e8316586f5bee65d0efb",
+  "metadata_only_runtime": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]"
+}

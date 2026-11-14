@@ -141,9 +141,28 @@ export interface UndoApplyResult {
   refused?: string | null;
 }
 
+export type RunExecutionMode = "effects" | "pure_only";
+
+export interface RunExecutionPolicyV1 {
+  format_version: 1;
+  mode: RunExecutionMode;
+}
+
+export const EFFECTS_RUN_POLICY = {
+  format_version: 1,
+  mode: "effects",
+} as const satisfies RunExecutionPolicyV1;
+
+export const PURE_ONLY_RUN_POLICY = {
+  format_version: 1,
+  mode: "pure_only",
+} as const satisfies RunExecutionPolicyV1;
+
 export interface CreateTaskInput {
   goal: string;
   workspaces: WorkspaceView[];
+  /** 只随创建后的首次 run.start 发送；不写进 Task 或 workspace 能力。 */
+  execution_policy: RunExecutionPolicyV1;
 }
 
 /** 界面会调用的方法名。字符串常量集中在这里，避免各处手写拼错。 */

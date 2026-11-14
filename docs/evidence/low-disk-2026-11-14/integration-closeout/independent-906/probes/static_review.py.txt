@@ -1,0 +1,167 @@
+"""Independent exact-source, delta and historical publication binding checks."""
+from pathlib import Path
+import ast
+import hashlib
+import json
+import re
+import shutil
+import sys
+
+OUT = Path('/tmp/low-disk-906-independent-20261114-3m_2fig_')
+FREEZE = Path('/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6')
+OLD = Path('/tmp/low-disk-release-delta-independent-20261114/source')
+SRC = FREEZE / 'candidate-complete'
+
+def sha(p):
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def mapping(root):
+    return {str(p.relative_to(root)): sha(p) for p in sorted(root.rglob('*')) if p.is_file()}
+
+def check_record(path, record):
+    assert path.is_file(), str(path)
+    assert path.stat().st_size == record['bytes'], str(path)
+    assert sha(path) == record['sha256'], str(path)
+
+def ast_without_constructor_wiring(text):
+    tree = ast.parse(text)
+    count = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'AgentLoop':
+            added = [kw for kw in node.keywords if kw.arg in {'memory', 'contents'}]
+            for kw in added:
+                assert isinstance(kw.value, ast.Attribute) and kw.value.attr == kw.arg
+                expected = ast.parse('self.stack' if 'self.stack' in text else 'stack').body[0].value
+                assert ast.dump(kw.value.value) == ast.dump(expected)
+            assert {kw.arg for kw in added} == {'memory', 'contents'}
+            count += len(added)
+            node.keywords = [kw for kw in node.keywords if kw.arg not in {'memory', 'contents'}]
+    return ast.dump(tree, include_attributes=False), count
+
+expected = json.loads((FREEZE / 'source-hashes.json').read_text())
+before = mapping(SRC)
+assert len(before) == 906 and before == expected
+assert sha(FREEZE / 'source-hashes.json') == 'df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360'
+assert sha(FREEZE / 'facts.json') == '2dfbaf5f718b8bbf303560fc458bd02e422e91e56e66edc8a1625024937f89c9'
+assert sha(FREEZE / 'delta-vs-reviewed-879.patch') == '6bb515f5cb5651edecd1acb607802271a29e75c2017bd75d54890c95bd35bc30'
+old = mapping(OLD)
+assert len(old) == 879
+changed = sorted(p for p in set(before) & set(old) if before[p] != old[p])
+added = sorted(set(before) - set(old))
+removed = sorted(set(old) - set(before))
+product = [p for p in changed if p.startswith(('src/', 'tests/'))]
+assert product == ['src/tianshu/loop.py', 'tests/test_approval_reject.py', 'tests/test_g2_delegation_contract.py',
+                   'tests/test_low_disk_execution.py', 'tests/test_m2_acceptance.py', 'tests/test_recovery.py',
+                   'tests/test_round2_auth_memory.py']
+assert len(changed) == 9 and len(added) == 33 and len(removed) == 6
+assert not [p for p in added + removed if p.startswith(('src/', 'tests/', 'ui/', 'schemas/'))]
+ui = [p for p in before if p.startswith('ui/')]
+assert len(ui) == 57 and all(before[p] == old[p] for p in ui)
+assert before['src/tianshu/memory_exec.py'] == old['src/tianshu/memory_exec.py']
+assert all(before[p] == old[p] for p in before if p.startswith('src/') and p != 'src/tianshu/loop.py')
+old_loop = (OLD / 'src/tianshu/loop.py').read_text()
+new_loop = (SRC / 'src/tianshu/loop.py').read_text()
+removed_filter = '''            if (ok and self._tasks.run_execution_policy(run_id) == PURE_ONLY
+                    and spec_is_write(call.name)):
+                ok, reason = False, "pure_only Run 不允许有副作用工具"
+'''
+assert old_loop.count(removed_filter) == 1
+assert old_loop.replace(removed_filter, '') == new_loop
+wiring = {}
+for rel in ['tests/test_approval_reject.py', 'tests/test_m2_acceptance.py']:
+    text = (SRC / rel).read_text()
+    normalized, count = ast_without_constructor_wiring(text)
+    assert count == 2 and normalized == ast.dump(ast.parse((OLD / rel).read_text()), include_attributes=False)
+    wiring[rel] = {'only_two_same_stack_keywords_added': True, 'all_other_ast_unchanged': True}
+rel = 'tests/test_recovery.py'
+old_text, new_text = (OLD / rel).read_text(), (SRC / rel).read_text()
+added_wiring = '    memory=stack.memory,\n    contents=stack.contents,\n'
+assert new_text.count(added_wiring) == 1 and new_text.replace(added_wiring, '') == old_text
+wiring[rel] = {'only_two_same_stack_keywords_added_in_child_script': True, 'all_other_bytes_unchanged': True}
+
+E = SRC / 'docs/evidence/low-disk-2026-11-14'
+archive = json.loads((E / 'archived-script-paths.json').read_text())
+index_path = E / 'artifact-index.json'
+assert sha(index_path) == archive['original_artifact_index_sha256'] == '42a9fb2d0d622d9883d4181f1c472d359121c9224de260b8d4cebb5d31cc65dc'
+index = json.loads(index_path.read_text())['entries']
+assert len(index) == 173
+renames = {e['original_relative_path']: e['published_relative_path'] for e in archive['entries']}
+assert len(renames) == 6 and len(set(renames.values())) == 6
+for e in archive['entries']:
+    src, dst = e['original_relative_path'], e['published_relative_path']
+    assert dst == src + '.txt'
+    assert not (E / src).exists()
+    assert (E / dst).resolve().is_relative_to(E.resolve())
+    check_record(E / dst, e)
+    assert (OLD / str((E / src).relative_to(SRC))).read_bytes() == (E / dst).read_bytes()
+for rel, record in index.items():
+    check_record(E / renames.get(rel, rel), record)
+legacy_other = [p for p in old if p.startswith('docs/evidence/low-disk-2026-11-14/') and p not in removed]
+assert all(old[p] == before[p] for p in legacy_other)
+
+closeout = E / 'integration-closeout'
+published = json.loads((closeout / 'published-subset.json').read_text())['entries']
+assert len(published) == 25
+assert len({e['published_relative_path'] for e in published}) == 25
+assert {str(p.relative_to(closeout)) for p in closeout.rglob('*') if p.is_file()} == {'published-subset.json'} | {e['published_relative_path'] for e in published}
+original_roots = [Path('/tmp/low-disk-release-delta-independent-20261114'), Path('/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8')]
+original_indexes = {root: json.loads((root / 'hash-index.json').read_text())['files'] for root in original_roots}
+indexed_subset = 0
+for e in published:
+    dst = closeout / e['published_relative_path']
+    original = Path(e['original'])
+    assert dst.resolve().is_relative_to(closeout.resolve())
+    check_record(dst, e)
+    check_record(original, e)
+    assert dst.read_bytes() == original.read_bytes()
+    for root, records in original_indexes.items():
+        if original.is_relative_to(root) and original.name != 'hash-index.json':
+            check_record(dst, records[str(original.relative_to(root))])
+            indexed_subset += 1
+
+sys.path.insert(0, str(SRC / 'src'))
+from tianshu.rules import RULE_IDS, REJECTION_RULE_IDS
+schema = json.loads((SRC / 'schemas/c4/rules.json').read_text())
+def enums(x):
+    if isinstance(x, dict):
+        if 'enum' in x: yield set(x['enum'])
+        for v in x.values(): yield from enums(v)
+    elif isinstance(x, list):
+        for v in x: yield from enums(v)
+schema_sets = list(enums(schema))
+assert set(RULE_IDS) in schema_sets and len(RULE_IDS) == 78
+prd = (SRC / 'docs/PRD-v1.md').read_text()
+prd_ids = set(re.findall(r'^\| `([^`]+)` \|', prd, re.M)) & set(RULE_IDS)
+assert prd_ids == set(RULE_IDS)
+for rule in ['dispatch.disk_space_low', 'dispatch.disk_space_unknown', 'dispatch.run_effects_disallowed']:
+    assert rule in REJECTION_RULE_IDS
+
+docs = [(SRC / 'docs/KNOWLEDGE.md').read_text(), (SRC / 'docs/LOW-DISK-2026-11-14.md').read_text()]
+assert all('BASE-B1' in d and '未修' in d and '3141' in d and '41' in d for d in docs)
+assert all('879' in d and '91' in d and '13' in d for d in docs)
+for rel in ['pyproject.toml', 'uv.lock', '.gitignore', '.github/workflows/ci.yml', 'docs/PRD-v1.md', 'schemas/c4/rules.json']:
+    assert before[rel] == old[rel]
+
+for name in ['source', 'work']:
+    target = OUT / name
+    if not target.exists() or not any(target.iterdir()):
+        if target.exists(): target.rmdir()
+        shutil.copytree(SRC, target)
+    assert mapping(target) == expected
+    for p in target.rglob('*'):
+        p.chmod(0o755 if p.is_dir() else 0o644)
+    target.chmod(0o755)
+assert mapping(SRC) == before
+result = {'status': 'PASS_EXACT_SOURCE_AND_PACKAGING_BINDING', 'source_files': len(before),
+          'source_manifest_sha256': sha(FREEZE / 'source-hashes.json'), 'modified': changed,
+          'added_count': len(added), 'removed_count': len(removed), 'product_delta': product,
+          'only_production_delta': 'remove the three-line loop pure_only proposal pre-filter',
+          'memory_executor_byte_identical_to_879': True, 'all_other_src_byte_identical_to_879': True,
+          'ui_files_unchanged': len(ui), 'wiring': wiring, 'rule_count_code_schema_prd': 78,
+          'archive_renames_byte_preserved': 6, 'historical_index_entries_resolved': 173,
+          'historical_other_evidence_files_unchanged': len(legacy_other),
+          'published_subset_files_exact_originals': len(published), 'subset_checked_against_original_index': indexed_subset,
+          'old_six_script_paths_absent': True, 'lock_lint_ci_contract_unchanged': True,
+          'baseline_source_unchanged_after_review': True}
+(OUT / 'logs/static-review.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+print(json.dumps(result, ensure_ascii=False, indent=2))

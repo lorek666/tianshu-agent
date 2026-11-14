@@ -684,7 +684,9 @@ Event {
 
 低磁盘 Run 资格的新增事件字段按[低磁盘 Run 准入契约](low-disk-admission-contract.md)
 实施：仅 `run.start` 新写采用精确 payload v2，保留旧 v0/v1 的 schema 与读取含义，
-其他事件不随之升版。该资格字段、读取/回放/重建与真实 schema 对账尚待实施和验收。
+其他事件不随之升版。T1/T2/T3 的各自冻结窄范围已由第二读者独立核验，包含真实
+CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
+修后本机统一门禁已通过；最终文档/对象绑定与原生 CI 另核，不把候选内容通过写成整项交付。
 
 ### 5.4 C4 Permission / Approval
 
@@ -803,6 +805,9 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.guard_timeout` | 租约与作业 | 执行守卫在限定时间内没有完成复核。 | 重试一次；反复超时说明别的进程占着工作区，查 `run status`。 |
 | `dispatch.lease_lost` | 租约与作业 | 派发过程中工作区租约丢失。 | 等占用该目录的 Run 结束，再重试。 |
 | `dispatch.not_admitted` | 准入 | 工具未通过准入白名单。 | 这个工具不在白名单，换一个允许的工具。 |
+| `dispatch.run_effects_disallowed` | 准入 | pure_only Run 请求真实非 pure 工具，包括子任务取消。 | 显式新开 effects Run，不升级原 Run。 |
+| `dispatch.disk_space_low` | 准入 | 创建 effects Run 或普通非 pure 执行所需的实际位置现测 free 低于 2 GiB，含真实 0。 | 清理对应卷或显式新建 pure_only Run；不自动删除材料。 |
+| `dispatch.disk_space_unknown` | 准入 | 创建 effects Run 或普通非 pure 执行的必需空间无法证明，含测量无效、context 缺失或实例不一致。 | 修复配置、权限或探测后重试；不把未知当足量。 |
 | `dispatch.stale_precondition` | 前置条件 | 目标在被批准之后被改动（前置条件失效）。 | 目标在批准后被改过；重新发起并重新审批。 |
 | `c4.create_over_existing` | 目标不合法 | 策略判定：新建动作的目标已存在，应改用覆盖类工具。 | 同上（策略层判定）：改用 `modify_text` 并走审批。 |
 | `dispatch.create_over_existing` | 目标不合法 | 新建动作的目标已存在（新建不允许覆盖）。 | 目标已存在；要覆盖请改用 `modify_text`（删除类，需审批）。 |
@@ -857,17 +862,22 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.unhandled` | 保留未使用 | 保留未使用：策略分类的兜底分支，当前 SUPPORTED_ACTIONS 已全覆盖。 | 保留未使用；真看到它说明策略分类漏了分支，报 bug。 |
 | `dispatch.denied` | 保留未使用 | 保留未使用：DispatchDenied 的默认编号，当前无调用方使用。 | 保留未使用；真看到它说明有调用方漏传编号，报 bug。 |
 
-#### 待实施补充：低磁盘 C4 拒绝编号（2026-11-14）
+#### 低磁盘 C4 拒绝编号（2026-11-14）
 
-以下三项尚未登记到当前可写清单，当前仍为 75 项；判定条件、pure/模型恢复与停止控制例外以[低磁盘 Run 准入契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)为准。
+三项已在创建与执行侧实现登记。普通非 pure 在审批前、消费批准/grant 与 intent 前、
+各执行边界现测；effects/合法 legacy 的读、普通/摘要模型恢复与既有停止控制保留原规则。
+T1/T2/T3 的各自冻结范围已由第二读者独立通过；CLI/RPC/App 的证据见
+[低磁盘交付记录](LOW-DISK-2026-11-14.md)。判定条件与例外以
+[低磁盘 Run 准入契约 §5.1](low-disk-admission-contract.md#51-c4-拒绝编号待实施补充)为准。
 
-| rule_id | 待实施含义 | 用户该怎么做 |
+| rule_id | 含义 | 用户该怎么做 |
 |---|---|---|
 | `dispatch.run_effects_disallowed` | `pure_only` 请求真实非 pure 工具。 | 结束/取消后显式新开 effects Run；不升级原 Run。 |
 | `dispatch.disk_space_low` | 实际位置的有效 free 低于 2 GiB，含真实 0。 | 清理对应卷，或显式新建 pure_only Run；不自动删除、不升级原 Run。 |
 | `dispatch.disk_space_unknown` | 无法证明必需位置的空间，区别于真实 0。 | 修复配置、访问权限或探测后重新判定；不盲重试当足量。 |
 
-产品实现时随真实产生路径同时登记代码、schema 与 §5.4.1 当前清单；本次不作运行时登记或产品通过声明。
+这三项已同步代码、schema 与本节清单；当前封闭集数量与 producer 对账由 T2 独立证据
+覆盖。修后本机统一门禁已通过；最终文档/对象绑定与原生 CI 另核，不能用本节登记反推 LD-01–06 全部通过。
 
 #### 5.4.2 记忆规则编号增量（v1.2 提案，待实现）
 
@@ -1200,7 +1210,9 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 低磁盘保护的执行资格、创建前检查、真实位置探测和已有 Run 执行保护，按
 [低磁盘 Run 准入契约](low-disk-admission-contract.md) 实施。普通入口默认 `effects`，
 并提供显式 `pure_only`；已有 Run 的纯读/模型恢复及停止控制按该契约保留原规则。
-本条细化尚未实现，LD-01–06 产品验收全部 `NOT_RUN`；容量上限、保留期与 GC 另行交付。
+契约阶段的 LD-01–06 曾全部 `NOT_RUN`；当前 T1/T2 已分别以第二读者原件独立核验，
+T3 已在固定候选上独立通过真实入口验收；修后本机统一门禁已通过，最终文档/对象绑定及原生 CI 另核；逐条归属和限制见
+[低磁盘交付记录](LOW-DISK-2026-11-14.md)。容量上限、保留期与 GC 仍另行交付。
 
 **回滚前必须校验**：当前文件哈希仍等于 `after_hash`；不一致则提示冲突并**禁止直接覆盖**用户后来的修改。
 

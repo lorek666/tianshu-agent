@@ -21,6 +21,8 @@ playground/
 
 # 构建产物
 dist/
+# 保全低盘视觉核验的三份固定 dist 原件，供公开证据索引逐字节核对。
+!docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/
 build/
 target/
 

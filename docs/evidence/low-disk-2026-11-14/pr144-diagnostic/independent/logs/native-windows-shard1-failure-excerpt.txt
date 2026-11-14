@@ -1,0 +1,19 @@
+2026-11-14T03:11:38.2679156Z ================================== FAILURES ===================================
+2026-11-14T03:11:38.2680013Z _________________ test_two_real_processes_reopen_and_compete __________________
+2026-11-14T03:11:38.2680881Z tests\test_low_disk_run_creation.py:582: in test_two_real_processes_reopen_and_compete
+2026-11-14T03:11:38.2681631Z     assert child.stdout.readline() == b"READY\n"
+2026-11-14T03:11:38.2682157Z E   AssertionError: assert b'READY\r\n' == b'READY\n'
+2026-11-14T03:11:38.2682610Z E     
+2026-11-14T03:11:38.2682888Z E     At index 5 diff: b'\r' != b'\n'
+2026-11-14T03:11:38.2683258Z E     
+2026-11-14T03:11:38.2683638Z E     Full diff: (-: missing in left side, +: extra in left side)
+2026-11-14T03:11:38.2684168Z E     - (b'READY\n')
+2026-11-14T03:11:38.2684492Z E     + (b'READY\r\n')
+2026-11-14T03:11:38.2684792Z E     ?          ++
+2026-11-14T03:11:38.2685293Z ________ test_normal_finish_and_pause_do_not_report_heartbeat_failure _________
+2026-11-14T03:11:38.2686229Z tests\test_m2_acceptance.py:725: in test_normal_finish_and_pause_do_not_report_heartbeat_failure
+2026-11-14T03:11:38.2687079Z     assert env.stack.tasks.get_run(run_id).state == "succeeded"
+2026-11-14T03:11:38.2687676Z E   AssertionError: assert 'failed' == 'succeeded'
+2026-11-14T03:11:38.2688116Z E     
+2026-11-14T03:11:38.2688368Z E     - succeeded
+2026-11-14T03:11:38.2688655Z E     + failed

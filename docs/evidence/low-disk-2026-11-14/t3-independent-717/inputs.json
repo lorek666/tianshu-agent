@@ -1,0 +1,136 @@
+{
+  "status": "T3_FORMALLY_AUTHORIZED_INDEPENDENT_REVIEW_INPUTS",
+  "source_identity": "717-entry complete frozen content, not historical checkout HEAD",
+  "inputs": [
+    {
+      "copy": "inputs/complete-candidate.patch",
+      "origin": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/complete-candidate.patch",
+      "sha256": "14a63998cd391e4a3334aa74419de0bb6b0cdf6bf60798281d96fe50890ecf2b",
+      "bytes": 9420252,
+      "read_scope": "frozen source identity/delta; root facts retained as input metadata, not independent verdict evidence"
+    },
+    {
+      "copy": "inputs/delta-vs-previous.patch",
+      "origin": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/delta-vs-previous.patch",
+      "sha256": "0ad4c563605d489d73035de7dfe784262dc6be00d4f14f47be05ec897a0e4bce",
+      "bytes": 9281225,
+      "read_scope": "frozen source identity/delta; root facts retained as input metadata, not independent verdict evidence"
+    },
+    {
+      "copy": "inputs/facts.json",
+      "origin": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/facts.json",
+      "sha256": "62c7e4228e3fe91a2178212f6fb42263f194be0e2f63f3726874d57257bee3d5",
+      "bytes": 31471,
+      "read_scope": "frozen source identity/delta; root facts retained as input metadata, not independent verdict evidence"
+    },
+    {
+      "copy": "inputs/inherited-evidence-binding.json",
+      "origin": "/tmp/tianshu-g3-20261113/low-disk-t3-inherited-evidence-binding-20261114.json",
+      "sha256": "3726f2fdd46e70addf113b48ec9b65f70b5a1c4f90e2ccd0aaf92859cf40dba7",
+      "bytes": 2481,
+      "read_scope": "exact inherited identities and scope constraints"
+    },
+    {
+      "copy": "inputs/preparation-PREPARATION.md",
+      "origin": "/tmp/low-disk-t3-independent-preparation-20261114/PREPARATION.md",
+      "sha256": "41fb3b5bcc108a041c655162dc271baa4d66d1816ec403530da920fd055fa13a",
+      "bytes": 12710,
+      "read_scope": "prior PREPARED_ONLY historical preparation and requirement provenance"
+    },
+    {
+      "copy": "inputs/preparation-inputs.json",
+      "origin": "/tmp/low-disk-t3-independent-preparation-20261114/inputs.json",
+      "sha256": "ded9fab9169f058cccf2ded21b440b54742ea6716140984a5bc6eaef3a176aad",
+      "bytes": 11328,
+      "read_scope": "prior PREPARED_ONLY historical preparation and requirement provenance"
+    },
+    {
+      "copy": "inputs/preparation-root-rulings.json",
+      "origin": "/tmp/low-disk-t3-independent-preparation-20261114/root-rulings.json",
+      "sha256": "9bc40dab0b40fe39141fbcd47824a12d4f8f18319bd9f49d0a448f8006daa293",
+      "bytes": 1173,
+      "read_scope": "prior PREPARED_ONLY historical preparation and requirement provenance"
+    },
+    {
+      "copy": "inputs/source-hashes.json",
+      "origin": "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/source-hashes.json",
+      "sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+      "bytes": 87919,
+      "read_scope": "frozen source identity/delta; root facts retained as input metadata, not independent verdict evidence"
+    },
+    {
+      "copy": "inputs/task-3-brief.md",
+      "origin": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.superpowers/sdd/PLAN/task-3-brief.md",
+      "sha256": "0ecebc15cb19c6c4c189855f896e48c0e13a0907f0478fab0d6f6bab9ca27200",
+      "bytes": 3373,
+      "read_scope": "requirements copied through sealed preparation input"
+    },
+    {
+      "copy": "inputs/task-3-context.md",
+      "origin": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.superpowers/sdd/PLAN/task-3-context.md",
+      "sha256": "875cf8b61a2bd8915a19acd57eabea8e178777dc23fd1b73a1f36ffddc079def",
+      "bytes": 3544,
+      "read_scope": "requirements copied through sealed preparation input"
+    }
+  ],
+  "inherited": {
+    "status": "INHERITED_IMMUTABLE_INPUT_IDENTITIES_ONLY_NOT_T3_PASS",
+    "inputs": [
+      {
+        "path": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/source-hashes.json",
+        "sha256": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+        "bytes": 62220
+      },
+      {
+        "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/REPORT.md",
+        "sha256": "a2ec4da045b9a862744198a5cd002910a145458f9dd4a924a615b0839b7688e0",
+        "bytes": 9212
+      },
+      {
+        "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/facts.json",
+        "sha256": "b5f56ebc0f0a7a30467e5bede173de3a3fcd0ebb12e3644e9a05dc73f554a29c",
+        "bytes": 6971
+      },
+      {
+        "path": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114/hash-index.json",
+        "sha256": "dfe69bb0625ec4f7d8e89cc9416d12ca45dd33fbbd2387e8598bad8c19bf293b",
+        "bytes": 98300
+      },
+      {
+        "path": "/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/source-hashes.json",
+        "sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+        "bytes": 62326
+      },
+      {
+        "path": "/tmp/low-disk-t2-independent-20261114/REPORT.md",
+        "sha256": "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72",
+        "bytes": 13040
+      },
+      {
+        "path": "/tmp/low-disk-t2-independent-20261114/facts.json",
+        "sha256": "8e7b2c12ade690f81e5d00a7768bc3ce91204115c0a67f4affb993e3cf9c35e1",
+        "bytes": 10069
+      },
+      {
+        "path": "/tmp/low-disk-t2-independent-20261114/hash-index.json",
+        "sha256": "a5a7c114d417c4753daa41efa60719fbb85fce5e7ef960cf9bf0f4d3a0464ba0",
+        "bytes": 497922
+      }
+    ],
+    "scope": {
+      "T1": "PASS_T1_ROUND1_NARROW_C1_C2_WITH_EXACT_V1_INHERITANCE / PASS_T1_ROUND1_NARROW_SIX_FILE_DELTA_AND_ORIGINAL_TAKEOVER_GUARDS",
+      "T2": "PASS_T2_FROZEN_CONTENT_ONLY / PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE",
+      "T3": "NOT_REVIEWED",
+      "full": "NOT_RUN",
+      "native_ci": "NOT_RUN"
+    },
+    "conditions": [
+      "Final T3 delta must preserve reviewed T1/T2 kernel bytes or receive affected scoped re-review.",
+      "Source-map identity is inherited frozen input, not a current-live source equality claim.",
+      "Controlled disk-probe evidence is not native cross-volume/device evidence or a latency/SLO/deadlock guarantee.",
+      "80 T2 independent passes and original negative controls stay in T2 scope; do not re-count as new T3 outcomes."
+    ]
+  },
+  "independence": "No author report prose/self-review conclusions used; no author suite or inherited full suite rerun.",
+  "authorization_provenance": "root formal authorization continued in this reviewer conversation; constraints transcribed in sealed preparation input"
+}

@@ -59,6 +59,17 @@ def stack_for(
     return build_stack(log, snapshots=snapshots, data_root=data_root)
 
 
+def effects_admission(log, *, snapshots, memory, contents, data_root):
+    """为手装配测试接入它实际使用的材料；不注入空间读数或许可。"""
+    from tianshu.authority import authority_root
+    from tianshu.disk_admission import DiskAdmission, RunStorageContext
+
+    return DiskAdmission(RunStorageContext.from_stores(
+        log, snapshots=snapshots, memory=memory, contents=contents,
+        data_root=data_root, authority_root=authority_root,
+    ))
+
+
 def engine_for(
     stack: Stack, model: Model, *, limits: Limits | None = None
 ) -> AgentLoop:

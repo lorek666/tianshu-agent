@@ -1,0 +1,11 @@
+--- frozen/src/tianshu/control.py
++++ mutant/src/tianshu/control.py
+@@ -460,7 +460,7 @@
+         run = self._tasks.start_run(
+             task.task_id,
+             payload=payload,
+-            execution_policy=execution_policy,
++            execution_policy=EFFECTS,
+         )
+         # 作业进队列；认领者（daemon 驱动线程）负责 created → queued → running。
+         if self._claims is None:

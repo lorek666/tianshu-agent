@@ -1,0 +1,49 @@
+{
+  "status": "PASS_STRUCTURAL_WIRING_ONLY",
+  "registry": {
+    "all": 23,
+    "pure": [
+      "list_files",
+      "memory.get",
+      "memory.search",
+      "read_content",
+      "read_text",
+      "subtask.result",
+      "subtask.status"
+    ],
+    "model_manifest_pure": [
+      "list_files",
+      "memory.get",
+      "memory.search",
+      "read_content",
+      "read_text",
+      "subtask.result",
+      "subtask.status"
+    ],
+    "control_effects": 23,
+    "control_pure": 7
+  },
+  "rule_count": 78,
+  "event_types": 45,
+  "control_order": {
+    "RunExecutionPolicyV1.of": 438,
+    "self._tasks.get_task": 446,
+    "self._stack.dispatcher.prepare_run": 450,
+    "self._tasks.start_run": 460,
+    "self._claims.enqueue": 468
+  },
+  "prepare_order": {
+    "self._typecheck": 819,
+    "self._authority": 825,
+    "self._resolve_target": 826,
+    "self._check_run_execution": 827,
+    "self._policy.classify": 868
+  },
+  "dispatch_order": {
+    "self._authority": 1011,
+    "self._resolve_target": 1012,
+    "self._check_run_execution": 1013,
+    "self._consume_authority": 1060,
+    "tx.append": 1065
+  }
+}

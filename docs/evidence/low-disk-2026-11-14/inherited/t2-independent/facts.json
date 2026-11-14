@@ -1,0 +1,276 @@
+{
+  "status": "INDEPENDENT_REVIEW_COMPLETED_CONTENT_ONLY",
+  "spec_verdict": "PASS_T2_FROZEN_CONTENT_ONLY",
+  "quality_verdict": "PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE",
+  "confirmed_blocking_findings": 0,
+  "partially_fixed_findings": 0,
+  "unfixed_findings": 0,
+  "spec_obligations_closed": 6,
+  "quality_check_groups_passed": 4,
+  "source_freeze": "/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/candidate-complete",
+  "source_mapping_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+  "root_facts_sha256": "99178f32443fb795033e06719ea3026c69e31d85b394e0c0022cfbd953b4b4c9",
+  "delta_sha256": "b4a00f9a852b03abe488c43abb552f5bbda8d7584050ca75bb84b041fe5d4adf",
+  "historical_baseline_head_not_candidate_identity": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "reviewer_checkout_head_not_product_identity": "cefa1e375974d96e2ec25e199f6605f6dcf2239b",
+  "reviewer_checkout_clean": true,
+  "source_verification": {
+    "frozen_source_files": 543,
+    "mapping_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+    "source_before_equals_frozen": true,
+    "source_after_equals_before": true,
+    "work_restored_equals_frozen": true,
+    "frozen_current_all_files_readonly": true,
+    "frozen_initial_modes_recorded": false,
+    "work_cache_count": 0,
+    "previous_source_count": 542,
+    "unchanged_from_T1": 527,
+    "delta_paths": [
+      "docs/KNOWLEDGE.md",
+      "docs/PRD-v1.md",
+      "schemas/c4/rules.json",
+      "src/tianshu/dispatcher.py",
+      "src/tianshu/loop.py",
+      "src/tianshu/memory_exec.py",
+      "src/tianshu/rules.py",
+      "src/tianshu/run_policy.py",
+      "src/tianshu/tasks.py",
+      "src/tianshu/tools.py",
+      "tests/test_dispatch.py",
+      "tests/test_low_disk_execution.py",
+      "tests/test_mcp_crash.py",
+      "tests/test_mcp_object_block.py",
+      "tests/test_rule_ids.py",
+      "tests/test_summary_loop.py"
+    ],
+    "added": [
+      "tests/test_low_disk_execution.py"
+    ],
+    "deleted": [],
+    "stub_scan_additions_only": {
+      "test.skip": [],
+      "test.only": [],
+      "pytest.mark.skip": [],
+      "NotImplemented": [],
+      "continue-on-error": [],
+      "TODO": []
+    },
+    "rule_count": 78,
+    "new_rule_ids": [
+      "dispatch.disk_space_low",
+      "dispatch.disk_space_unknown",
+      "dispatch.run_effects_disallowed"
+    ],
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "reviewer_python_metadata_host": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]"
+  },
+  "runtime": {
+    "probe_runtime": {
+      "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+      "executable": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "platform": "macOS-26.6.2-arm64-arm-64bit"
+    },
+    "metadata_only_python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+    "metadata_only_platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "description": "Products and all pytest/subprocess probes used the Python 3.12.13 executable; python3 3.14 was used only for file/hash/report metadata, never to import or execute product code."
+  },
+  "source_before_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+  "source_after_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+  "work_restored_sha256": "589c6d3a5b7e2a1b2d2c3b47eb3f646aa035ddd03f32cc84e824a0e0b46a4c1a",
+  "final_positive": {
+    "passed": 80,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 11.01,
+    "exit_code": 0,
+    "groups": {
+      "admission_boundaries_pure_audit": 33,
+      "ordinary_and_summary_resume": 36,
+      "real_process_and_crash": 5,
+      "exec_pending_mcp_stop": 6
+    },
+    "raw": "raw/final-positive.log",
+    "not_added_to_earlier_phase_counts": true
+  },
+  "mutations": {
+    "variants": 9,
+    "behavioral_failures": 10,
+    "setup_import_collection_kills": 0,
+    "all_sources_restored": true,
+    "review": "raw/mutations-reviewed.json"
+  },
+  "restored_positive_controls": {
+    "passed": 10,
+    "exit_code": 0,
+    "seconds": 3.36,
+    "raw": "raw/restored-controls-corrected.log",
+    "count_separate": true
+  },
+  "phases": [
+    {
+      "label": "phase1",
+      "exit_code": 1,
+      "tail": "13 failed, 20 passed in 7.17s",
+      "counts_additive": false,
+      "raw": "raw/phase1.log",
+      "command": "raw/phase1.command.json"
+    },
+    {
+      "label": "phase1-repair",
+      "exit_code": 0,
+      "tail": "33 passed in 6.73s",
+      "counts_additive": false,
+      "raw": "raw/phase1-repair.log",
+      "command": "raw/phase1-repair.command.json"
+    },
+    {
+      "label": "resume",
+      "exit_code": 0,
+      "tail": "36 passed in 3.02s",
+      "counts_additive": false,
+      "raw": "raw/resume.log",
+      "command": "raw/resume.command.json"
+    },
+    {
+      "label": "process",
+      "exit_code": 0,
+      "tail": "5 passed in 1.10s",
+      "counts_additive": false,
+      "raw": "raw/process.log",
+      "command": "raw/process.command.json"
+    },
+    {
+      "label": "supplement",
+      "exit_code": 0,
+      "tail": "6 passed in 0.60s",
+      "counts_additive": false,
+      "raw": "raw/supplement.log",
+      "command": "raw/supplement.command.json"
+    },
+    {
+      "label": "final-positive",
+      "exit_code": 0,
+      "tail": "80 passed in 11.01s",
+      "counts_additive": false,
+      "raw": "raw/final-positive.log",
+      "command": "raw/final-positive.command.json"
+    },
+    {
+      "label": "restored-controls",
+      "exit_code": 4,
+      "tail": "no tests ran in 0.00s",
+      "counts_additive": false,
+      "raw": "raw/restored-controls.log",
+      "command": "raw/restored-controls.command.json"
+    },
+    {
+      "label": "restored-controls-corrected",
+      "exit_code": 0,
+      "tail": "10 passed in 3.36s",
+      "counts_additive": false,
+      "raw": "raw/restored-controls-corrected.log",
+      "command": "raw/restored-controls-corrected.command.json"
+    }
+  ],
+  "observer_errors": [
+    {
+      "raw": "raw/phase1.log",
+      "exit": 1,
+      "failed": 13,
+      "passed": 20,
+      "detail": "12 invalid HTTP whitelist URI fixture failures + 1 nonexistent receipts-table observer failure. No product failure/kill."
+    },
+    {
+      "raw": "raw/restored-controls.log",
+      "exit": 4,
+      "detail": "argv missed test_independent.py path; no tests collected; excluded from kills."
+    }
+  ],
+  "probe_strengthening": [
+    {
+      "detail": "Six early create_report admission cases used path instead of true schema name. Corrected before final80. Earlier passes not used as final legal-shape evidence."
+    },
+    {
+      "detail": "Before final80, guard boundary execution.started absence checks were added; final80 includes them."
+    }
+  ],
+  "stage_identity_limit": "Early command JSON lacks full per-stage 543 hashes; source-before/after plus mutation before/restore hashes support byte binding. Per-stage source/probe hashes begin at restored-controls command. Do not present later reconstruction as earlier measurement.",
+  "probe_current_files": [
+    {
+      "path": "probes/common.py",
+      "sha256": "1a2a93f3c784de659ed8f3ea9df080c853ee5325b333e5b288c5a7f1df643eb1"
+    },
+    {
+      "path": "probes/conftest.py",
+      "sha256": "22d162d1041cda5dc6c49bd2b21680593fa1d9cac95163408539ce6e205c681a"
+    },
+    {
+      "path": "probes/mutations.py",
+      "sha256": "9b44e1be7037716e142eac2fdefe2a7855ab8c4915978ee888b8a514d8e97092"
+    },
+    {
+      "path": "probes/process_child.py",
+      "sha256": "a3b5f1ca075b442db4d3d1075a2760aba81c3a731049a15905005ceb212c8f41"
+    },
+    {
+      "path": "probes/run_logged.py",
+      "sha256": "2b2e65814f45fdf721125e918f9d2279d0f956dfd28d322dbfe474362314c10d"
+    },
+    {
+      "path": "probes/test_independent.py",
+      "sha256": "7aaecb2e4315ff662e9e73e20143c62c557c3c8d1e48f1cfb9a46a0a1b3eae43"
+    },
+    {
+      "path": "probes/test_process.py",
+      "sha256": "b31cd0baff65d332725a481160c3ce4f8722a48813230e8f64d624bed0017ff2"
+    },
+    {
+      "path": "probes/test_resume.py",
+      "sha256": "16e37fba1d9cdbf28ba58e36b495c04fb61a07838ce95f449d225936e4f10af4"
+    },
+    {
+      "path": "probes/test_supplement.py",
+      "sha256": "9d3b4caade8de57f96578578c386f182421c0ca086adef4b526f4ac993db4021"
+    }
+  ],
+  "immutable_preparation_preserved": {
+    "PREPARATION.md": "81acf79e0a77f74ba070f1cb546d9d2faec6dc420b26a8760ba3f454b2dbeb01",
+    "facts.json": "a82e2f9a612903b065b3c8ae2d7f9f58788c803eb55ea6a0665df37ce87f886f",
+    "hash-index.json": "9c345c943c73759327024d7ad0f2b137bfa3ae2fb89c74d2ca3dd1f20676fd84"
+  },
+  "author_same_byte_four_file_suite": "NOT_RERUN",
+  "author_report_or_wiring_read": false,
+  "author_claims_used_for_verdict": false,
+  "live_product_read_or_written": false,
+  "allowed_writes": "new /tmp/low-disk-t2-independent-20261114 only",
+  "not_run": [
+    "full",
+    "uv lock --check",
+    "whole-repository ruff",
+    "T3",
+    "UI",
+    "native CI",
+    "API",
+    "commit",
+    "push",
+    "paid model",
+    "real model",
+    "soak"
+  ],
+  "limitations": [
+    "T1 OBSERVED_LOCK_HELD_DURING_CONTROLLED_LEAF does not bound native disk_usage/OS/filesystem blocking or establish SLO/deadlock repair",
+    "Same-temp-volume disk leaf injection is not real multi-volume/nested-mount evidence",
+    "Real nested cwd executed; other platforms/devices not verified",
+    "Daemon/worker real drive methods tested, not full daemon IPC/UI lifecycle",
+    "ENOSPC injected at rejection audit append, not whole disk physically filled",
+    "Threshold is not reservation; arbitrary command/remote MCP external locations unproved",
+    "Complete erase/undo matrix not independently rerun; no new stop exception in code",
+    "No final 16-file joint all-green claim"
+  ],
+  "report_sha256": "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72",
+  "artifact_counts": {
+    "regular_files_including_facts_and_index": 1404,
+    "symlinks": 73
+  },
+  "handoff": "STOP_AFTER_SEAL_WAIT_ROOT_READ_AND_INDEX_VERIFY"
+}

@@ -1,0 +1,7 @@
+{
+  "path": "tests/test_approval_reject.py",
+  "original_sha256": "d7ddbe69df5929f0a4d7dad4ba9a7f2f54ff031980e356882b80400292ddf655",
+  "mutated_sha256": "64b1ca48d0fe77778a75e90438512873d8764b669908290be2fdf91ad48eed5a",
+  "change": "omit only the new same-stack memory and contents constructor wiring",
+  "restored_sha256": "d7ddbe69df5929f0a4d7dad4ba9a7f2f54ff031980e356882b80400292ddf655"
+}

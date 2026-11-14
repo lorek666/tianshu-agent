@@ -230,6 +230,9 @@ def test_unavailable_server_is_rejected_before_approval(tmp_path):
     log, stack, clients = _stack(tmp_path)
     try:
         task = _task(stack, ws=_ws(tmp_path))
+        from tianshu.run_policy import EFFECTS
+
+        stack.dispatcher.prepare_run(task.task_id, EFFECTS)
         clients.close_all()  # server 死了，但注册表里还有它的工具
         engine = engine_for(stack, _script(("mcp__fake__echo", {"message": "hi"})))
         result = engine.start(task.task_id, out_name="out.md")
@@ -283,9 +286,12 @@ def test_cancelled_run_sends_no_mcp_frames(tmp_path):
 def test_manifest_and_run_start_record_mcp_tools(tmp_path):
     _log, stack, clients = _stack(tmp_path)
     try:
+        task = _task(stack, ws=_ws(tmp_path))
+        from tianshu.run_policy import EFFECTS
+
+        stack.dispatcher.prepare_run(task.task_id, EFFECTS)
         ids = {row["name"] for row in tool_manifest()}
         assert {"mcp__fake__echo", "mcp__fake__add"} <= ids
-        task = _task(stack, ws=_ws(tmp_path))
         engine = engine_for(stack, _script())
         result = engine.start(task.task_id, out_name="out.md")
         start = next(
@@ -380,16 +386,16 @@ class _RecordingClients:
 
 
 def test_replay_does_not_construct_or_start_clients(tmp_path):
-    """回放不碰 MCP：装配探针的 `start_all()` 只在 build_stack 里发生一次。"""
+    """回放不碰 MCP：装配探针只在新 effects Run 预检通过后启动一次。"""
     log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     probe = _RecordingClients()
     stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=probe)
     try:
-        assert probe.calls == 1, "装配点应当启动一次"
+        assert probe.calls == 0, "只装配不能启动客户端"
         task = _task(stack, servers=())
         engine = engine_for(stack, _script())
         result = engine.start(task.task_id, out_name="out.md")
-        assert probe.calls == 1, "执行 Run 不该再启动客户端"
+        assert probe.calls == 1, "新 effects Run 预检通过后应当启动一次"
         report = replay(log, result.run_id)
         assert report.ok, report.problems
         assert probe.calls == 1, "回放不该启动/构造 MCP 客户端"

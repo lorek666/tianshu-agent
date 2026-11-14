@@ -1,0 +1,33 @@
+{
+  "status": "OBSERVED_STATIC_DEMO_LAYOUT_ONLY_FINAL_FREEZE_BINDING_PENDING",
+  "date_utc": "2026-11-14T01:35:13.792256+00:00",
+  "dist_manifest": "dist-source-hashes.json",
+  "dist_manifest_sha256": "723098ae0f570c67f59164ee0768113169eea442ea45064cfa670ed062de07d7",
+  "observations": [
+    "新建任务对话框中两种运行方式与目录权限控件分别可见，未观察到截断或重叠。",
+    "已完成任务详情可显式选择仅读取与对话，aria-pressed与说明同步；原绑定目录仍显示可写。",
+    "缩小窗口后测得CSS viewport1422x1000，无document横向溢出；不把CDP请求1280x900当作实际CSS尺寸。"
+  ],
+  "scope": "只访问本机静态副本?demo=1；未连接daemon、执行真实任务、修改真实文件、调用模型或证明低盘后端行为。",
+  "browser_space_id": 2,
+  "browser_space_closed": true,
+  "local_server_stopped_by_root": true,
+  "source_files": {
+    "index.html": "52420ffb1ff112f4c19458e9c45e12effb3ceed2d553e565f6c4c137322c632e",
+    "assets/index-XPu6LbkB.css": "799a089898524ac56f7d6845cccd07ed971161ce87f070237ec69f295e664225",
+    "assets/index-CIZ6Bgii.js": "fe672593496fdb8228021e3457107e032569e903206361c1338f0050e010e533"
+  },
+  "screenshots": [
+    {
+      "path": "existing-task-pure-1280.png",
+      "bytes": 257274,
+      "sha256": "a0f5af83358b545a17a90a4cc52551f03fc19d040fc05cb6fd6d71eaad66cd9b"
+    },
+    {
+      "path": "new-task.png",
+      "bytes": 363728,
+      "sha256": "afc57b605a72cc3740e988bc223045f3c57d1bb6286116905f936ddd9880fc14"
+    }
+  ],
+  "server_observation": "index/js/css200；favicon.ico404未作为T3产品失败或成功证据；操作性HTTP服务器以root中断正常清理，非项目Python运行。"
+}

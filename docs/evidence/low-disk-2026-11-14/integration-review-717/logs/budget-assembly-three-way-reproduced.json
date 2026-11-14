@@ -1,0 +1,90 @@
+{
+  "src/tianshu/cli.py": {
+    "a022": {
+      "_engine": {
+        "sha256": "dec0732c5e566a51af440eef07ed4c34d1881c8e17bb72b14e26e428e5d8533c",
+        "line": 427,
+        "end_line": 442,
+        "source": "def _engine(stack, args: argparse.Namespace) -> AgentLoop:\n    return AgentLoop(\n        tasks=stack.tasks,\n        leases=stack.leases,\n        claims=stack.claims,\n        dispatcher=stack.dispatcher,\n        approvals=stack.approvals,\n        snapshots=stack.snapshots,\n        model=_model_from(args),\n        limits=Limits(args.max_turns, args.max_total_tokens),\n        # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。\n        memory=stack.memory,\n        # 语义摘要记录（PRD §7.1）。摘要开关默认关；开着的时候它必须与主循环\n        # 共用同一个存储，否则\"先落库再引用\"和回放读不到同一份。\n        summaries=stack.summaries,\n    )"
+      }
+    },
+    "T2": {
+      "_engine": {
+        "sha256": "d6d315fd42487592edc72e05e9173bc97341abae9d8cf1c3ac84424fa518d68d",
+        "line": 427,
+        "end_line": 443,
+        "source": "def _engine(stack, args: argparse.Namespace) -> AgentLoop:\n    return AgentLoop(\n        tasks=stack.tasks,\n        leases=stack.leases,\n        claims=stack.claims,\n        dispatcher=stack.dispatcher,\n        approvals=stack.approvals,\n        snapshots=stack.snapshots,\n        contents=stack.contents,\n        model=_model_from(args),\n        limits=Limits(args.max_turns, args.max_total_tokens),\n        # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。\n        memory=stack.memory,\n        # 语义摘要记录（PRD §7.1）。摘要开关默认关；开着的时候它必须与主循环\n        # 共用同一个存储，否则\"先落库再引用\"和回放读不到同一份。\n        summaries=stack.summaries,\n    )"
+      }
+    },
+    "T3": {
+      "_engine": {
+        "sha256": "d6d315fd42487592edc72e05e9173bc97341abae9d8cf1c3ac84424fa518d68d",
+        "line": 440,
+        "end_line": 456,
+        "source": "def _engine(stack, args: argparse.Namespace) -> AgentLoop:\n    return AgentLoop(\n        tasks=stack.tasks,\n        leases=stack.leases,\n        claims=stack.claims,\n        dispatcher=stack.dispatcher,\n        approvals=stack.approvals,\n        snapshots=stack.snapshots,\n        contents=stack.contents,\n        model=_model_from(args),\n        limits=Limits(args.max_turns, args.max_total_tokens),\n        # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。\n        memory=stack.memory,\n        # 语义摘要记录（PRD §7.1）。摘要开关默认关；开着的时候它必须与主循环\n        # 共用同一个存储，否则\"先落库再引用\"和回放读不到同一份。\n        summaries=stack.summaries,\n    )"
+      }
+    }
+  },
+  "src/tianshu/loop.py": {
+    "a022": {
+      "__init__": {
+        "sha256": "11cc658e482f2ea1c6522c2cc48f52a6cbefbab4f5c14824fa20bb041fd5880b",
+        "line": 657,
+        "end_line": 732,
+        "source": null
+      },
+      "_ensure_budget_account": {
+        "sha256": "49b0009e709a9ff352bebedb25d479cec657666010f261e3153f80e67396f7fd",
+        "line": 1193,
+        "end_line": 1208,
+        "source": null
+      },
+      "_reserve_attempt": {
+        "sha256": "51efc6f214e342400b998086234f5d7b6577f55510e89c55b5f4057ce0232e32",
+        "line": 1210,
+        "end_line": 1246,
+        "source": null
+      }
+    },
+    "T2": {
+      "__init__": {
+        "sha256": "11cc658e482f2ea1c6522c2cc48f52a6cbefbab4f5c14824fa20bb041fd5880b",
+        "line": 660,
+        "end_line": 735,
+        "source": null
+      },
+      "_ensure_budget_account": {
+        "sha256": "49b0009e709a9ff352bebedb25d479cec657666010f261e3153f80e67396f7fd",
+        "line": 1220,
+        "end_line": 1235,
+        "source": null
+      },
+      "_reserve_attempt": {
+        "sha256": "51efc6f214e342400b998086234f5d7b6577f55510e89c55b5f4057ce0232e32",
+        "line": 1237,
+        "end_line": 1273,
+        "source": null
+      }
+    },
+    "T3": {
+      "__init__": {
+        "sha256": "11cc658e482f2ea1c6522c2cc48f52a6cbefbab4f5c14824fa20bb041fd5880b",
+        "line": 660,
+        "end_line": 735,
+        "source": null
+      },
+      "_ensure_budget_account": {
+        "sha256": "49b0009e709a9ff352bebedb25d479cec657666010f261e3153f80e67396f7fd",
+        "line": 1220,
+        "end_line": 1235,
+        "source": null
+      },
+      "_reserve_attempt": {
+        "sha256": "51efc6f214e342400b998086234f5d7b6577f55510e89c55b5f4057ce0232e32",
+        "line": 1237,
+        "end_line": 1273,
+        "source": null
+      }
+    }
+  }
+}

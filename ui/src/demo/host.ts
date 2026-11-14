@@ -11,6 +11,7 @@ import type {
   ApprovalView,
   ApprovalsEnvelope,
   EventsResult,
+  RunExecutionPolicyV1,
   RunEnvelope,
   RunsEnvelope,
   StateView,
@@ -39,6 +40,28 @@ function numberParam(params: RpcParams, key: string, fallback: number): number {
 
 function isTerminal(state: string): boolean {
   return ["succeeded", "failed", "cancelled", "fenced"].includes(state);
+}
+
+function runPolicyParam(params: RpcParams): RunExecutionPolicyV1 {
+  const raw = params.execution_policy;
+  if (raw === undefined) {
+    return { format_version: 1, mode: "effects" };
+  }
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    Object.keys(raw).sort().join(",") !== "format_version,mode"
+  ) {
+    throw new HostRpcError("invalid", "execution_policy 必须是精确的 V1 对象");
+  }
+  const record = raw as Record<string, unknown>;
+  if (
+    record.format_version !== 1 ||
+    (record.mode !== "effects" && record.mode !== "pure_only")
+  ) {
+    throw new HostRpcError("invalid", "execution_policy 模式或版本不合法");
+  }
+  return { format_version: 1, mode: record.mode };
 }
 
 export class DemoHostClient implements HostClient {
@@ -89,7 +112,14 @@ export class DemoHostClient implements HostClient {
       }
 
       case "run.start": {
-        const envelope: RunEnvelope = { run: clone(world.startRun(stringParam(params, "task_id"))) };
+        const envelope: RunEnvelope = {
+          run: clone(
+            world.startRun(
+              stringParam(params, "task_id"),
+              runPolicyParam(params),
+            ),
+          ),
+        };
         return envelope as T;
       }
 

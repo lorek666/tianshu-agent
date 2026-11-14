@@ -1,0 +1,29 @@
+{
+  "status": "CONFIRMED_PREEXISTING_CLI_BUDGET_ASSEMBLY_GAP_NOT_NEW_T3_REGRESSION",
+  "runtime": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "module": "/private/tmp/low-disk-whole-branch-review-20261114/source/src/tianshu/cli.py",
+  "source_sha256": "20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7",
+  "baseline_engine_budget_is_none": true,
+  "frozen_engine_budget_is_none": true,
+  "stack_budget_present": true,
+  "run_id": "run_f67b9e628348",
+  "run_state": "succeeded",
+  "event_types": [
+    "run.start",
+    "job.enqueued",
+    "run.state",
+    "job.claimed",
+    "run.state",
+    "run.cursor",
+    "model.intent",
+    "model.result",
+    "run.model_turn",
+    "run.cursor",
+    "job.finished",
+    "run.end",
+    "run.finish"
+  ],
+  "budget_accounts": 0,
+  "budget_reservations": 0,
+  "scope": "One direct CLI-assembled offline engine cycle; no broad budget correctness or CLI/IPC/App matrix claim."
+}

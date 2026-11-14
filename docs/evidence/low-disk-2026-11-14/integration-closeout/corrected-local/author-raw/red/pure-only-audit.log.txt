@@ -1,0 +1,47 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________ test_pure_only_write_proposal_keeps_dispatch_and_result_audit _________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2971/test_pure_only_write_proposal_0')
+
+    def test_pure_only_write_proposal_keeps_dispatch_and_result_audit(tmp_path):
+        """pure_only 的合法提案必须进入派发层拒绝，而不是在模型轮次被静默丢弃。"""
+        from tianshu.loop import Limits
+        from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+    
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        with closing(EventLog(tmp_path / "events.db")) as log:
+            stack = build_stack(log, data_root=tmp_path / "data")
+            task = stack.tasks.create_task("pure-only audit", [str(workspace)])
+            result = engine_for(
+                stack,
+                ScriptedModel(
+                    [
+                        ModelResponse(
+                            "tool_use",
+                            tool_calls=[
+                                ToolCall(
+                                    "write-1",
+                                    "create_report",
+                                    {"name": "must-not-exist.md", "content": "forbidden"},
+                                )
+                            ],
+                        ),
+                        ModelResponse("end_turn", content="proposal refused"),
+                    ]
+                ),
+                limits=Limits(8, 20_000),
+            ).start(task.task_id, execution_policy=PURE_ONLY)
+    
+            events = log.read_run(result.run_id)
+            rejected = [e.payload for e in events if e.type == "dispatch.rejected"]
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(rejected) == len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_low_disk_execution.py:778: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_low_disk_execution.py::test_pure_only_write_proposal_keeps_dispatch_and_result_audit
+1 failed in 0.16s

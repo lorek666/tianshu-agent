@@ -1,0 +1,36 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[5]
+PATHS = [
+    "src/tianshu/cli.py",
+    "src/tianshu/control.py",
+    "tests/test_low_disk_entrypoints.py",
+    "ui/src/App.tsx",
+    "ui/src/api/errors.ts",
+    "ui/src/api/types.ts",
+    "ui/src/components/NewTaskDialog.tsx",
+    "ui/src/components/TaskDetail.tsx",
+    "ui/src/demo/host.ts",
+    "ui/src/demo/world.ts",
+    "ui/src/__tests__/run-mode.test.tsx",
+]
+PATTERN = re.compile(
+    r"(?m)(TODO|test\.skip|\.only|NotImplementedError|continue-on-error)"
+)
+
+
+matches: list[str] = []
+for relative in PATHS:
+    path = ROOT / relative
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if PATTERN.search(line):
+            matches.append(f"{relative}:{number}:{line}")
+
+if matches:
+    print("\n".join(matches))
+    raise SystemExit(1)
+print(f"STUB_SCAN_OK {len(PATHS)} files")
