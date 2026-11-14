@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **控制面响应测试已改为确定性屏障（2026-11-15）**：纯文档恢复契约 PR 的新 head 原生 run43634904064 在 Windows 分片 0 唯一红为 `test_control_plane_stays_responsive_while_driver_runs_long_task`，控制面两 RPC 实测 **0.781s，超过原 0.5s 阈值**；shard1、Ubuntu、macOS、UI 四个 job 成功，shard0 与 Windows required 汇总失败。产品 blob 与已通过的 main `88ec` 相同，原测试的“模型 sleep + 墙钟阈值”对 runner 调度敏感；0.781 秒耗时来源仍未定位，不能据此断定产品阻塞，也不能把本轮通过写成性能根因已修。隔离修复把长模型改为真实 Event 阻塞，只有驱动仍锁在模型调用、控制面 RPC 已完成才通过；2 秒 watchdog 只防止测试死锁，触发即失败。旧候选漏了入口失败清理，独立真进程负控发现后已用外层 `finally` 修复；4aae 候选目标连续 20 次通过，整文件与全量均通过（**3199 passed / 8 skipped，660.48s**，lock/ruff 0）。最终 93c1 仅改 RouteModel 文档字符串并复验目标测试，不冒充新一轮 20 次或 full。该结果不建立新 SLO，也不证明原 0.5 秒数值性能目标或 SQLite 根因。
+
 - **PR149已交付测试诊断，main首次CI仍红（2026-11-14）**：PR首次run43573586653 attempt1六job成功并经独立核验，正常保护合入main `c2cf1c71c65f46dea161e41b140df99d137a5686`。该main自身首次run43576167008 attempt1为独立确认的`FAIL_THIS_MAIN_PUSH_CI_ONLY`：Windows两片各一个call失败，合计2 failed/3167 passed/37 skipped、完整3206节点，汇总正确拒绝；UI/Ubuntu/macOS成功。M2第13轮定位到append_many真实BEGIN SQLITE_BUSY，等待起点已从ring淘汰；MCP原2秒从服务发现起等待整个worker，隔离审批/unknown屏障证明该测试混合计时。最终MCP569b/M2f220两文件已获独立限定内容PASS；启动/accept清理真缺口修后复验，原断言与期限保留。1163固定输入的lock/full/ruff均0，3199 passed/8 skipped、635.00s，前后无漂移。门后只回填事实与证据，正式对象/新原生CI另核；实际Windows锁机制及MCP原卡点仍未知。详见[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)。#145/#147保持开放，恢复B继续暂停；下方“待原生CI”是旧提交前时点。
 
 - **M2测试诊断修后本机通过，原生CI待核（2026-11-14，提交前）**：原9eb完整门3196 passed/8 skipped虽绿，但独立真实路径别名验收FAIL，原件保留；只补两处canonical和真实别名/外部副本回归后，766a源以其余1111文件精确继承获得独立内容窄PASS。最终1112输入lock/full/ruff全0，**3198 passed/8 skipped（546.63s）**，源/HEAD/status稳定；原六assert/60轮、生产/CI/UI不变。旧独立两个真实BEGIN区分与有界语义按同源继承，不冒充重跑；Windows junction分支本机未执行，新原生执行另核。只补失败现场，不宣称#145/#147或b450原红根因已修，恢复B仍暂停。[M2诊断记录](M2-CI-DIAGNOSTICS-2026-11-14.md)绑定旧FAIL、新PASS及完整门原件。
@@ -637,6 +639,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-15 · 控制面测试屏障修复**：恢复 B 纯文档同步 PR 首次原生 CI 暴露 Windows daemon 控制面测试的唯一红点，0.781 秒超过原 0.5 秒阈值，shard0 与 required 汇总失败，另四 job 成功；同产品代码在 main 首轮通过，但 0.781 的来源未定位。第二读者完整核验失败 run 的 3207 节点、两 artifact 与汇总拒绝，确认不是以成功报告硬套。隔离分支只改测试：长任务改为真实 Event 屏障，控制 RPC 必须在屏障未释放时完成；补外层 finally 保证入口/连接失败也释放，独立真进程正控与两项串行负控闭合。4aae 候选目标 20/20、daemon 文件与全量 3199P8S 均通过；最终 93c1 只改注释并复验目标。不将新测试解释成性能 SLO、SQLite 根因或恢复 B 产品验收。
 
 - **2026-11-14 · Windows计时与保留诊断最终候选收口**：MCP真实call_tool入口/退出直接受原2秒约束，独立审批/unknown屏障正控、真实blocking与迟调度负控和前置错传播均按预期；accept旧泄漏及9abd新启动错覆盖的FAIL保留，最终569b真探针销账。M2f220局部保留enter起点、最多4个canonical上层caller与有限runtime，READONLY/180事务ring淘汰/7ms注入和两删功能call红证明诊断，原六assert/60轮/1ms不变。第二读者正式限定内容PASS，76件紧凑包逐hash只读保全；root最终1163源lock/full/ruff均0，3199P8skip635.00s、前后无漂移。旧611.04s门不覆盖清理增量，公开73份原字节子集明确不完整；提交预检为该目录日志补最窄忽略例外，保全15份原日志。正式Git对象与新CI另绑；未改生产/期限/重试/CI门、不关闭145/147、不推进恢复B或触碰凭据与metrics他线。
 
