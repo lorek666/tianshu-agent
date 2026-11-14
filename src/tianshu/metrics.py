@@ -149,7 +149,10 @@ def list_metrics_files(data_root: Path) -> list[tuple[int | None, Path]]:
             if not entry.name.startswith(prefix):
                 continue
             suffix = entry.name[len(prefix):]
-            if not suffix.isdigit():
+            # isdigit() 对全角数字也返回 True（如「１」）——int() 恰好也解析它，
+            # 会把不存在的槽位接进清单、与真实槽位重复读取（复审 P3）。轮转槽
+            # 只认 ASCII 数字。
+            if not (suffix.isascii() and suffix.isdigit()):
                 continue
             if entry.is_file():
                 slots.append(int(suffix))
@@ -270,7 +273,8 @@ def read_metrics(
     """读取 JSONL 指标。`path` 可以是数据根（目录）或文件本身。
 
     - 空行跳过；坏行抛 `ValueError`（带行号）：指标文件损坏不该被当成"没有数据"；
-    - `limit` 只取**最后** N 条（诊断时看最近的）；
+    - `limit` 只取**最后** N 条（诊断时看最近的）；`limit=0` 沿用历史语义返回
+      **全部**（`[-0:]` 即全序列，复审轮如实钉住——改成「0 条」属另一工单）；
     - `include_rotated=True` 时按时间序（最旧在前）把轮转件一并读回，`limit`
       作用在拼接后的全序列上。默认只读当前文件——既有调用方零迁移。
 
@@ -545,6 +549,15 @@ class MetricsRecorder:
                     f"[tianshu-metrics] 指标写入失败（后续静默计数）：{exc}",
                     file=sys.stderr,
                     flush=True,
+                )
+            if rotated is not None and record.get("metric") != METRICS_ROTATED:
+                # 轮转已成功、样本写入失败：轮转事实仍要可观测（复审 P3）——
+                # 该补记自身失败会被本函数的 except 收口，不会外抛。
+                self._record(
+                    METRICS_ROTATED,
+                    rotated["rotated_bytes"],
+                    "event",
+                    {"max_file_bytes": self.max_file_bytes},
                 )
             return
         if rotated is not None and record.get("metric") != METRICS_ROTATED:

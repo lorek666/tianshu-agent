@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import tempfile
@@ -475,6 +476,93 @@ def test_rotation_splits_file_at_threshold(root: Path) -> None:
     assert all(
         name.startswith(metrics_mod.METRICS_FILENAME) for name in entries
     ), f"数据根出现了非指标文件：{entries}"
+
+
+def _json_line_of_exact_len(total: int) -> bytes:
+    """造一条**恰好 total 字节**的合法 JSONL 指标行（含换行）——阈值边界测试用。"""
+    base = {"kind": "probe", "metric": "", "ts": 1, "value": 1}
+    skeleton = json.dumps(base, sort_keys=True, separators=(",", ":")).encode()
+    pad = total - 1 - len(skeleton)  # 减去换行
+    assert pad >= 0, f"total 太小：{total}"
+    obj = {**base, "metric": "x" * pad}
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def test_rotation_threshold_boundary_is_inclusive(root: Path) -> None:
+    """复审 P2：阈值边界是 >=（恰好等于阈值也轮转）——独一钉等号的测试。
+
+    复审变异（>= → >）下既有 22 条全绿；这条垫出「恰好等于阈值」的文件后，
+    同一变异当场红（< 100 字节侧同时钉住不过度轮转）。
+    """
+    target = metrics_mod.metrics_path(root)
+    # 臂 A：文件恰好 100 字节（== 阈值）→ 下一次追加必须轮转。
+    target.write_bytes(_json_line_of_exact_len(100))
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=100, max_rotated_files=50
+    )
+    try:
+        recorder.record("probe", 1.0)
+        assert (root / "metrics.jsonl.1").exists(), (
+            "恰好等于阈值时没有轮转——阈值语义被改成了严格大于"
+        )
+    finally:
+        recorder.close()
+
+    # 臂 B：文件 99 字节（< 阈值）→ 追加不轮转（不过度轮转侧）。
+    root2 = root / "b"
+    root2.mkdir()
+    target2 = metrics_mod.metrics_path(root2)
+    target2.write_bytes(_json_line_of_exact_len(99))
+    recorder2 = metrics_mod.MetricsRecorder(
+        root2, max_file_bytes=100, max_rotated_files=50
+    )
+    try:
+        recorder2.record("probe", 1.0)
+        assert not (root2 / "metrics.jsonl.1").exists(), (
+            "低于阈值却轮转了——阈值语义被改成了更激进的方向"
+        )
+    finally:
+        recorder2.close()
+
+
+def test_fullwidth_digit_suffix_is_not_a_rotation_slot(root: Path) -> None:
+    """复审 P3：全角数字后缀（如「metrics.jsonl.１」）不是轮转槽。
+
+    isdigit() 对全角字符返回 True 且 int() 恰好解析，会把不存在的 .1 槽接进
+    清单、与真实 .1 同槽位重复（include_rotated 把真实文件读两遍）。只认
+    ASCII 数字。
+    """
+    target = metrics_mod.metrics_path(root)
+    real = metrics_mod.rotated_path(target, 1)
+    real.write_text('{"metric":"real","value":1}\n', encoding="utf-8")
+    weird = target.with_name(target.name + "\uff11")  # 全角「１」
+    weird.write_text('{"metric":"weird","value":1}\n', encoding="utf-8")
+
+    files = metrics_mod.list_metrics_files(target)
+    slot_one = [file_path for slot, file_path in files if slot == 1]
+    assert len(slot_one) == 1, f"槽位 1 应只有一个条目：{[(s, str(p)) for s, p in files]}"
+    assert slot_one[0] == real
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    names = [r["metric"] for r in records]
+    assert names.count("real") == 1, f"真实槽位被读了 {names.count('real')} 遍"
+    assert "weird" not in names
+
+
+def test_read_metrics_limit_zero_keeps_historic_semantics(root: Path) -> None:
+    """复审 P3：limit=0 的历史语义如实钉住（[-0:] = 全部）。
+
+    这是拼接路径继承的基线行为（非本 PR 引入）；改成语义化「0 条」属另一
+    工单——本测试防止有人「顺手改掉」而不知调用方依赖。
+    """
+    target = metrics_mod.metrics_path(root)
+    target.write_text(
+        '{"metric":"m","value":1}\n{"metric":"m","value":2}\n',
+        encoding="utf-8",
+    )
+    assert len(metrics_mod.read_metrics(target, limit=0)) == 2
+    # 负数走同一分支豁免：同样返回全部。
+    assert len(metrics_mod.read_metrics(target, limit=-1)) == 2
+    assert len(metrics_mod.read_metrics(target, limit=1)) == 1
 
 
 def test_retention_overwrites_oldest_slot(root: Path) -> None:
