@@ -253,10 +253,10 @@ def test_sql_extraction_never_guesses_or_coerces_storage_class(storage, value, r
 
 def test_closed_sets_match_real_schema_and_normative_source():
     m = api()
-    schema = json.loads(SCHEMA.read_text())
-    prd = (ROOT / "docs/PRD-v1.md").read_text()
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    prd = (ROOT / "docs/PRD-v1.md").read_text(encoding="utf-8")
     assert "[导入、持久隔离与只读复核契约](restore-held-contract.md)" in prd
-    source = (ROOT / "docs/restore-held-contract.md").read_text()
+    source = (ROOT / "docs/restore-held-contract.md").read_text(encoding="utf-8")
     phases = {
         "reserved",
         "stage_owned",
@@ -532,7 +532,7 @@ def samples(tmp_path):
 def test_all_wire_types_are_strict_frozen_dataclasses_and_schema_bound(tmp_path):
     m = api()
     values = samples(tmp_path)
-    schema = json.loads(SCHEMA.read_text())
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     assert schema == m.contract_schema()
     assert "$ref" in schema and schema["$schema"].endswith("2020-12/schema")
     for name, cls in m.CONTRACT_TYPES.items():
@@ -1058,7 +1058,7 @@ def test_sql_signed64_range_rejects_long_canonical_decimal_without_python_digit_
 
 
 def test_schema_references_are_local_real_definitions_and_semantic_branches_are_present():
-    schema = json.loads(SCHEMA.read_text())
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     definitions = schema["$defs"]
 
     def walk(value):
@@ -1082,7 +1082,10 @@ def test_schema_references_are_local_real_definitions_and_semantic_branches_are_
 def test_observation_is_not_a_serializable_head_authority():
     m = api()
     assert "RegistryObservationV1" not in m.CONTRACT_TYPES
-    assert "RegistryObservationV1" not in json.loads(SCHEMA.read_text())["$defs"]
+    assert (
+        "RegistryObservationV1"
+        not in json.loads(SCHEMA.read_text(encoding="utf-8"))["$defs"]
+    )
 
 
 def test_lock_keys_and_native_node_values_are_closed_wire_values_only(tmp_path):
