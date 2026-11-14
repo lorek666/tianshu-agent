@@ -43,8 +43,10 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .errors import CredentialUnsupported, CredentialWriteRefused
@@ -53,6 +55,7 @@ __all__ = [
     "CAPABILITY_CLASSES",
     "ENV_VARS",
     "KEYCHAIN_CAPABILITIES",
+    "KEYCHAIN_CAPABILITIES_MACOS",
     "MASK",
     "CredentialBackendCapabilities",
     "CredentialRef",
@@ -219,6 +222,18 @@ KEYCHAIN_CAPABILITIES = CredentialBackendCapabilities(
     implemented=False,
 )
 
+#: darwin 上的真实现能力（2026-11-14，W1）：SecItem 直调默认 keychain，
+#: set/delete 都落地。平台差异照实声明——非 darwin 仍用上面的未实现声明。
+KEYCHAIN_CAPABILITIES_MACOS = CredentialBackendCapabilities(
+    name="keychain",
+    secure_storage=True,
+    supports_write=True,
+    implemented=True,
+)
+
+#: 生产命名空间：`kSecAttrService`。测试用独立 service 名，不混入这里。
+_KEYCHAIN_SERVICE = "tianshu-agent"
+
 
 # ---------------------------------------------------------------- 协议
 
@@ -291,33 +306,76 @@ class EnvCredentialStore:
 
 
 _KEYCHAIN_REASON = (
-    "OS Keychain 后端在 v1 **未实现**。零依赖约束下只能 ctypes 直调 "
-    "Security.framework / CredReadW，而我们没有平台能真正验证它。"
-    "详见 src/tianshu/credentials.py 模块文档与 PRD §7 F12。"
+    "OS Keychain 后端**仅 macOS 实现**（ctypes 直调 Security.framework 的 "
+    "SecItem，默认/login keychain；防交互挂 kSecUseAuthenticationUIFail）。"
+    "Windows Credential Manager 与 Linux Secret Service 未实现。"
+    "本机探针证明这版 macOS 上文件 keychain 的 SecItem 路由已失效、"
+    "进程内创建也已不可用，所以只支持默认 keychain。"
+    "详见 src/tianshu/keychain_macos.py 模块文档与 "
+    "docs/SPEC-F12-KEYCHAIN-2026-11-14.md。"
 )
 
 
 class KeychainCredentialStore:
-    """OS Keychain 后端——**v1 未实现**，一请求就如实报 unsupported。
+    """OS Keychain 后端。
 
-    为什么这里不是"抛异常然后调用方退回 env"：那会让"以为在 Keychain 里"
-    悄悄变成"其实在环境变量里"。两者的安全属性差一个数量级（见模块文档的
-    威胁模型），静默降级等于把安全承诺换成了安慰剂。
+    **macOS（darwin）**：真实现——`SecItemAdd/CopyMatching/Update/Delete`
+    直调默认（login）keychain，三态语义完整：未配置返回 `None`、后端做不到
+    （含钥匙串锁定）抛 `CredentialUnsupported`，绝不静默回退环境变量。
+    实现细节与探针证据见 `keychain_macos.py` 模块文档。
 
-    `capabilities.implemented is False` 是给调用方**在做事之前**就能问的，
-    不用等抛错。
+    **其他平台**：保持诚实 stub——三方法一请求就报 unsupported，
+    `capabilities.implemented is False` 让调用方在做事之前就能问。
+
+    为什么这里（stub 路径）不是"抛异常然后调用方退回 env"：那会让"以为在
+    Keychain 里"悄悄变成"其实在环境变量里"。两者的安全属性差一个数量级
+    （见模块文档的威胁模型），静默降级等于把安全承诺换成了安慰剂。
+
+    `keychain_path` 参数**本版只接受 None**（默认 keychain）：本机探针证明
+    文件 keychain 的创建与 SecItem 路由都已失效，提供一个"看起来能用其实
+    不路由"的路径参数就是撒谎。
     """
 
-    capabilities = KEYCHAIN_CAPABILITIES
+    def __init__(self, keychain_path: Path | None = None) -> None:
+        if keychain_path is not None:
+            raise ValueError(
+                "keychain_path 本版不支持：文件 keychain 的进程内创建与 SecItem "
+                "路由在现行 macOS 上已失效（探针证据见 keychain_macos.py 文档），"
+                "默认 keychain 是唯一支持的通路。"
+            )
+        if sys.platform == "darwin":
+            from . import keychain_macos
+
+            self._backend = keychain_macos
+            self.capabilities = KEYCHAIN_CAPABILITIES_MACOS
+        else:
+            self._backend = None
+            self.capabilities = KEYCHAIN_CAPABILITIES
 
     def get(self, ref: CredentialRef) -> Secret | None:
-        raise CredentialUnsupported(f"无法读取 {ref}：{_KEYCHAIN_REASON}")
+        if self._backend is None:
+            raise CredentialUnsupported(f"无法读取 {ref}：{_KEYCHAIN_REASON}")
+        raw = self._backend.get_item(_KEYCHAIN_SERVICE, str(ref))
+        if raw is None:
+            return None
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CredentialUnsupported(
+                f"Keychain 条目 {ref} 不是 UTF-8 文本，无法作为凭据返回：{exc}"
+            ) from exc
+        register_secret(text)
+        return Secret(text)
 
     def set(self, ref: CredentialRef, secret: str) -> None:
-        raise CredentialUnsupported(f"无法写入 {ref}：{_KEYCHAIN_REASON}")
+        if self._backend is None:
+            raise CredentialUnsupported(f"无法写入 {ref}：{_KEYCHAIN_REASON}")
+        self._backend.set_item(_KEYCHAIN_SERVICE, str(ref), secret.encode("utf-8"))
 
     def delete(self, ref: CredentialRef) -> None:
-        raise CredentialUnsupported(f"无法删除 {ref}：{_KEYCHAIN_REASON}")
+        if self._backend is None:
+            raise CredentialUnsupported(f"无法删除 {ref}：{_KEYCHAIN_REASON}")
+        self._backend.delete_item(_KEYCHAIN_SERVICE, str(ref))
 
 
 class UnsupportedCredentialStore:
