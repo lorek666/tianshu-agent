@@ -1,0 +1,17 @@
+{
+  "status": "FAIL_T3_AUTHOR_FREEZE_MECHANICAL_CHECK",
+  "source_entries": 710,
+  "source_mismatches": [],
+  "artifact_entries": 170,
+  "artifact_mismatches": [],
+  "patch_check": {
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "error: ui/dist/assets/index-B-xT4bPb.js: No such file or directory\nerror: ui/dist/assets/index-tHfDYJNM.css: No such file or directory\n"
+  },
+  "summary_hashes_match": {
+    "source_map": true,
+    "delta_patch": true
+  },
+  "scope": "Mechanical source/evidence hash and patch applicability checks only; not T3 independent review, full suite, or native CI."
+}

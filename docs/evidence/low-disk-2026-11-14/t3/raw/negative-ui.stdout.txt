@@ -1,0 +1,16 @@
+
+ RUN  v3.2.7 /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui
+
+ ❯ src/__tests__/run-mode.test.tsx (3 tests | 3 failed) 53ms
+   × Run 执行模式的真实 UI 入口 > 新建任务只把纯读策略交给 run.start，启动失败后的详情重试仍保持 pure_only 37ms
+     → expected [ …(2) ] to deeply equal [ …(2) ]
+   × Run 执行模式的真实 UI 入口 > 已有任务：默认允许工具操作 会原样传到 run.start 9ms
+     → expected [ { task_id: 'task_1' } ] to deeply equal [ { task_id: 'task_1', …(1) } ]
+   × Run 执行模式的真实 UI 入口 > 已有任务：显式仅读取与对话 会原样传到 run.start 7ms
+     → expected [ { task_id: 'task_1' } ] to deeply equal [ { task_id: 'task_1', …(1) } ]
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  09:25:01
+   Duration  614ms (transform 105ms, setup 0ms, collect 147ms, tests 53ms, environment 234ms, prepare 34ms)
+

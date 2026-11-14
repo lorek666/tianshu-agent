@@ -1,0 +1,7 @@
+{
+  "path": "tests/test_recovery.py",
+  "original_sha256": "71921aa5560be0f3b9ccaaab94725d988df4e2fef86ba31be1691294f41c8e0e",
+  "mutated_sha256": "32da2c0c9987708cc0ddcf70de1da000f33fd90643f112b1b59b4cf31e68c93d",
+  "change": "omit only the new same-stack memory and contents constructor wiring",
+  "restored_sha256": "71921aa5560be0f3b9ccaaab94725d988df4e2fef86ba31be1691294f41c8e0e"
+}

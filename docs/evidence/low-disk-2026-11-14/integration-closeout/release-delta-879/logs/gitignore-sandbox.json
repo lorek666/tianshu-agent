@@ -1,0 +1,141 @@
+{
+  "product_git_untouched": true,
+  "commands": [
+    {
+      "phase": "before",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 0,
+      "expected": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "before",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-XPu6LbkB.css"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 0,
+      "expected": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "before",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/index.html"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 0,
+      "expected": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "before",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "unrelated/dist/control.js"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 0,
+      "expected": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "after",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 1,
+      "expected": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "after",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-XPu6LbkB.css"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 1,
+      "expected": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "after",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/index.html"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 1,
+      "expected": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "phase": "after",
+      "argv": [
+        "git",
+        "-c",
+        "core.excludesfile=/dev/null",
+        "check-ignore",
+        "-q",
+        "--",
+        "unrelated/dist/control.js"
+      ],
+      "cwd": "/tmp/low-disk-release-delta-independent-20261114/gitignore-nys2v21p",
+      "exit": 0,
+      "expected": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ]
+}

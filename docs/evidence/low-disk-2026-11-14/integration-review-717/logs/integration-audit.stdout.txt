@@ -1,0 +1,33 @@
+{
+  "status": "PUBLIC_EVIDENCE_INDEX_INCOMPLETE",
+  "candidate_files": 717,
+  "kernel_paths_inherited": 211,
+  "original_indices": [
+    {
+      "root": "/tmp/tianshu-g3-20261113/low-disk-t1-independent-round1-20261114",
+      "regular_files_checked": 579,
+      "hash_mismatches": []
+    },
+    {
+      "root": "/tmp/low-disk-t2-independent-20261114",
+      "regular_files_checked": 1403,
+      "hash_mismatches": []
+    }
+  ],
+  "public_artifacts": {
+    "count": 173,
+    "mismatch": [
+      "t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js",
+      "t3/visual-static-demo/dist/assets/index-XPu6LbkB.css",
+      "t3/visual-static-demo/dist/index.html"
+    ],
+    "actual_regular_files_including_index": 171
+  },
+  "local_links": 10,
+  "author_count": 711,
+  "complete_count": 717,
+  "contract_sections_equal": {
+    "sections_1_through_5_equal": true,
+    "six_acceptance_bullets_equal": true
+  }
+}

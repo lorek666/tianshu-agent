@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[5]
+EVIDENCE = ROOT / "docs/evidence/low-disk-2026-11-14"
+T3 = EVIDENCE / "t3"
+SOURCE_MAP = T3 / "t3-source-hashes.json"
+SUMMARY = T3 / "t3-source-summary.json"
+PATCH = T3 / "t3-delta-vs-t2.patch"
+ARTIFACT_INDEX = EVIDENCE / "artifact-index.json"
+BASE_MAP = EVIDENCE / "inherited/source-manifests/t2-source-hashes.json"
+T2_ROOT = Path("/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/candidate-complete")
+OUTPUT = Path(__file__).resolve().parent / "freeze-postcheck.json"
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+source_map = json.loads(SOURCE_MAP.read_text(encoding="utf-8"))
+summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
+base_map = json.loads(BASE_MAP.read_text(encoding="utf-8"))
+source_mismatches = []
+for relative, expected in source_map.items():
+    path = ROOT / relative
+    if not path.is_file():
+        source_mismatches.append({"path": relative, "problem": "missing"})
+    else:
+        actual = sha256(path)
+        if actual != expected:
+            source_mismatches.append(
+                {"path": relative, "expected": expected, "actual": actual}
+            )
+
+artifact_index = json.loads(ARTIFACT_INDEX.read_text(encoding="utf-8"))
+artifact_mismatches = []
+for relative, item in artifact_index["entries"].items():
+    path = EVIDENCE / relative
+    if not path.is_file():
+        artifact_mismatches.append({"path": relative, "problem": "missing"})
+    else:
+        actual = sha256(path)
+        if actual != item["sha256"]:
+            artifact_mismatches.append(
+                {"path": relative, "expected": item["sha256"], "actual": actual}
+            )
+
+patch_check: dict[str, object]
+with tempfile.TemporaryDirectory(prefix="tianshu-t3-patch-check-") as temp:
+    repo = Path(temp) / "repo"
+    repo.mkdir()
+    for relative in base_map:
+        old = T2_ROOT / relative
+        if old.is_file():
+            target = repo / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, target)
+    completed = subprocess.run(
+        ["git", "apply", "--check", str(PATCH)],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    patch_check = {
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+payload = {
+    "status": (
+        "PASS_T3_AUTHOR_FREEZE_MECHANICAL_CHECK"
+        if not source_mismatches
+        and not artifact_mismatches
+        and patch_check["exit_code"] == 0
+        and summary["source_map_sha256"] == sha256(SOURCE_MAP)
+        and summary["delta_patch_sha256"] == sha256(PATCH)
+        else "FAIL_T3_AUTHOR_FREEZE_MECHANICAL_CHECK"
+    ),
+    "source_entries": len(source_map),
+    "source_mismatches": source_mismatches,
+    "artifact_entries": len(artifact_index["entries"]),
+    "artifact_mismatches": artifact_mismatches,
+    "patch_check": patch_check,
+    "summary_hashes_match": {
+        "source_map": summary["source_map_sha256"] == sha256(SOURCE_MAP),
+        "delta_patch": summary["delta_patch_sha256"] == sha256(PATCH),
+    },
+    "scope": (
+        "Mechanical source/evidence hash and patch applicability checks only; "
+        "not T3 independent review, full suite, or native CI."
+    ),
+}
+OUTPUT.write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+print(payload["status"])
+if payload["status"].startswith("FAIL_"):
+    raise SystemExit(1)

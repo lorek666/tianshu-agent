@@ -1,0 +1,10 @@
+F
+=================================== FAILURES ===================================
+_______ test_paused_run_flag_reject_then_original_low_resume[pure_only] ________
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:212: in test_paused_run_flag_reject_then_original_low_resume
+    assert p.returncode==2 and '只适用于' in p.stderr
+E   assert (0 == 2)
+E    +  where 0 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '/tmp/low-disk-t3-...\n    "turns": 2,\n    "messages_verified": 2,\n    "artifact_sha256": null,\n    "problems": []\n  }\n}\n', stderr='').returncode
+=========================== short test summary info ============================
+FAILED ../../../../tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py::test_paused_run_flag_reject_then_original_low_resume[pure_only]
+1 failed, 51 deselected in 0.36s

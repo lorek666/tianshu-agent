@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.768" timestamp="2026-11-14T09:52:16.292523+08:00" hostname="RonfeedeMac-mini.local"><testcase classname="test_entry_independent" name="test_real_ipc_bad_policy[None]" time="0.614"><failure message="AssertionError: {'ok': True, 'result': {'run': {'run_id': 'run_fc2f1d02d247', 'task_id': 'task_62912e52f6e5', 'state': 'created', 'outcome': None, ...}}}&#10;assert (not True)">/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:174: in test_real_ipc_bad_policy
+    try:result=d.start(policy,extra={'mode':'effects'});assert not result['ok'] and result['code']=='bad_params',result
+                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: {'ok': True, 'result': {'run': {'run_id': 'run_fc2f1d02d247', 'task_id': 'task_62912e52f6e5', 'state': 'created', 'outcome': None, ...}}}
+E   assert (not True)</failure></testcase></testsuite></testsuites>

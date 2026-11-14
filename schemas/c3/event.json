@@ -2,7 +2,7 @@
   "$id": "https://tianshu-agent/schemas/c3/event.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（当前版本 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start 当前 v2，其余 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
   "properties": {
     "actor": {
       "additionalProperties": false,
@@ -2189,6 +2189,28 @@
           },
           "subtask_id": {
             "type": "string"
+          },
+          "execution_policy": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1,
+                "description": "项目事件写入另经 RunExecutionPolicyV1 语义校验：仅接受整数 1，不接受浮点数 1.0 或布尔值；标准 JSON Schema integer 本身不区分 1 与 1.0。"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "effects",
+                  "pure_only"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "mode"
+            ]
           }
         },
         "additionalProperties": false,
@@ -2196,7 +2218,8 @@
           "run_id",
           "task_id",
           "goal_revision",
-          "lease_epoch"
+          "lease_epoch",
+          "execution_policy"
         ]
       },
       "run.state": {
@@ -5117,6 +5140,66 @@
         "additionalProperties": false,
         "required": [],
         "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      }
+    },
+    "historicalPayloadV1": {
+      "run.start": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "task": {
+            "type": "string"
+          },
+          "out": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_turns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_total_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "subtask_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "task_id",
+          "goal_revision",
+          "lease_epoch"
+        ]
       }
     }
   }

@@ -1,0 +1,11 @@
+--- frozen/src/tianshu/control.py
++++ mutant/src/tianshu/control.py
+@@ -431,7 +431,7 @@
+         仅凭日志重建首轮提示消息。
+         """
+         task_id = _require_str(params, "task_id")
+-        if "execution_policy" not in params:
++        if not params.get("execution_policy"):
+             execution_policy = EFFECTS
+         else:
+             try:

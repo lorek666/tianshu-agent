@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from support import effects_admission
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -22,7 +23,14 @@ from tianshu.tasks import TaskStore
 def env(tmp_path):
     log = EventLog(tmp_path / "db.sqlite")
     leases = LeaseStore(log)
-    tasks = TaskStore(log, leases=leases)
+    tasks = TaskStore(
+        log,
+        leases=leases,
+        data_root=tmp_path,
+        disk_admission=effects_admission(
+            log, snapshots=None, memory=None, contents=None, data_root=tmp_path
+        ),
+    )
     ws = tmp_path / "ws"
     ws.mkdir()
     yield log, tasks, leases, ws

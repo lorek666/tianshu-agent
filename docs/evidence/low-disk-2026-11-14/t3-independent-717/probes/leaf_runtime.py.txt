@@ -1,0 +1,18 @@
+from pathlib import Path
+import os,json,types,sys
+from tianshu import disk_admission
+from tianshu.model import ScriptedModel,ModelResponse,ToolCall
+CASE=Path(os.environ['T3_CASE'])
+def append(name,value):
+ with (CASE/name).open('a') as f:f.write(json.dumps(value,ensure_ascii=False,default=str)+'\n')
+def probe(path):
+ value=json.loads(os.environ['T3_FREE']);append('disk.jsonl',{'path':str(path),'value':value,'pid':os.getpid()})
+ if value=='raise':raise OSError('independent T3 disk leaf unavailable')
+ return types.SimpleNamespace(free=value,total=1<<40,used=0)
+disk_admission.shutil.disk_usage=probe
+class Offline(ScriptedModel):
+ def __init__(self):
+  super().__init__([ModelResponse(finish_reason='tool_use',tool_calls=[ToolCall('ind-read','read_text',{'path':'note'})]),ModelResponse(finish_reason='end_turn',content='independent T3 conversation complete')])
+ def complete(self,messages,tools):
+  append('model.jsonl',{'pid':os.getpid(),'call':self.calls+1,'tool_names':[x.get('name') for x in tools]})
+  return super().complete(messages,tools)

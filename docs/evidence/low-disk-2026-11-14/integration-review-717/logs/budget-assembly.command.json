@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
+    "-B",
+    "/tmp/low-disk-whole-branch-review-20261114/probes/budget_assembly.py",
+    "/tmp/low-disk-whole-branch-review-20261114/source"
+  ],
+  "cwd": "/tmp/low-disk-whole-branch-review-20261114",
+  "env_set": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "provider_environment_removed": true,
+  "exit": 0,
+  "elapsed_seconds": 0.19544506072998047,
+  "probe_sha256": "6a6f34303111dec7ac07ad5856a0e325d76281a6a11c7b19cb314db5e976fbe0"
+}

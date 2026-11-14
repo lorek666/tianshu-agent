@@ -1,0 +1,45 @@
+--- 879/tests/test_g2_delegation_contract.py
++++ 906/tests/test_g2_delegation_contract.py
+@@ -40,14 +40,15 @@
+ #:
+ #: 规则数说明：D1 分支基线的 `main` 是 59；本分支 +9（§2.7 的 8 条 + §2.3 额外
+ #: 要求的 `dispatch.subtask_rejected`）；合并 `main` 上的 G2 MCP 阶段（+6）之后
+-#: 是 74；对象级阻断工单 +1（`dispatch.mcp_object_blocked`）= 75。D1 自己的增量
+-#: 与规格预估的差异写进 PR body 对账。
++#: 是 74；对象级阻断工单 +1（`dispatch.mcp_object_blocked`）= 75；低磁盘准入
++#: 再显式登记三项空间/资格拒绝 = 78。D1 自己的增量与规格预估的差异写进 PR
++#: body 对账。
+ #:
+ #: 事件类型 43 → 45：对象级阻断新增 `recovery.object_blocked` /
+ #: `recovery.object_unblocked`（MCP 后续工单 §5-8）。
+ EXPECTED_EVENT_TYPES = 45
+ EXPECTED_TOOL_IDS = 23
+-EXPECTED_RULE_IDS = 75
++EXPECTED_RULE_IDS = 78
+ 
+ 
+ def _stack(tmp_path: Path):
+@@ -220,8 +221,9 @@
+     assert set(tool_enum) == set(SPECS)
+     assert len(set(tool_enum)) == len(tool_enum), "工具 id 不能重复"
+ 
+-    # 规则 id 75（D1 +9，合并 MCP 阶段后 74，对象级阻断 +1。规格 §2.7 对本轮
+-    # 增量的预估是 8 条，差的那一条是 §2.3 要求的 `dispatch.subtask_rejected`）。
++    # 规则 id 78（D1 75 + 低磁盘资格/空间未知/空间不足 3 条）。规格 §2.7 对
++    # D1 增量的预估是 8 条，差的那一条是 §2.3 要求的
++    # `dispatch.subtask_rejected`。
+     assert len(RULE_IDS) == EXPECTED_RULE_IDS
+     raw = C4.read_text(encoding="utf-8")
+     doc = json.loads(raw)
+@@ -245,6 +247,11 @@
+     assert "dispatch.parent_fenced" in RULE_IDS
+     assert "dispatch.parent_fenced" not in DECLARED_UNUSED_RULE_IDS
+     assert "dispatch.parent_fenced" in REJECTION_RULE_IDS
++    assert {
++        "dispatch.run_effects_disallowed",
++        "dispatch.disk_space_low",
++        "dispatch.disk_space_unknown",
++    } <= REJECTION_RULE_IDS
+     # `task.created` 的必填键也进 task 契约镜像（M2）。
+     task_doc = json.loads(M2_TASK.read_text(encoding="utf-8"))
+     assert "max_subtasks" in task_doc["properties"]

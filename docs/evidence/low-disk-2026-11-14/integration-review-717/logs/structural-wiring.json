@@ -1,0 +1,143 @@
+{
+  "runtime": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+  "scope": "AST source order and actual registry/schema values only; inherited behavioral proofs are not recounted.",
+  "control_start_order": {
+    "RunExecutionPolicyV1.of": 438,
+    "self._tasks.get_task": 446,
+    "self._stack.dispatcher.prepare_run": 450,
+    "self._tasks.start_run": 460,
+    "self._claims.enqueue": 468
+  },
+  "prepare_guard_order": {
+    "self._typecheck": 819,
+    "self._authority": 825,
+    "self._resolve_target": 826,
+    "self._check_run_execution": 827,
+    "self._policy.classify": 868
+  },
+  "dispatch_guard_order": {
+    "self._authority": 1011,
+    "self._resolve_target": 1012,
+    "self._check_run_execution": 1013,
+    "self._consume_authority": 1060,
+    "tx.append": 1065
+  },
+  "final_creation_gate_order": {
+    "self._log.transaction": 1016,
+    "self.get_task": 1017,
+    "self.require_new_run": 1033,
+    "self._insert_run_locked": 1037
+  },
+  "cli__cmd_run": [
+    {
+      "line": 561,
+      "call": "_engine(stack, args).start",
+      "keywords": {
+        "out_name": "args.out",
+        "execution_policy": "_run_execution_policy(args)"
+      }
+    }
+  ],
+  "cli__run_compat": [
+    {
+      "line": 606,
+      "call": "_engine(stack, args).start",
+      "keywords": {
+        "out_name": "args.out",
+        "execution_policy": "_run_execution_policy(args)"
+      }
+    }
+  ],
+  "actual_registry": {
+    "all": 23,
+    "pure": [
+      "list_files",
+      "memory.get",
+      "memory.search",
+      "read_content",
+      "read_text",
+      "subtask.result",
+      "subtask.status"
+    ],
+    "model_manifest_pure": [
+      "list_files",
+      "memory.get",
+      "memory.search",
+      "read_content",
+      "read_text",
+      "subtask.result",
+      "subtask.status"
+    ],
+    "control_effects": 23,
+    "control_pure": 7
+  },
+  "actual_current_event_versions": {
+    "approval.consumed": 1,
+    "approval.decided": 1,
+    "approval.expired": 1,
+    "approval.requested": 1,
+    "approval.revoked": 1,
+    "approval.superseded": 1,
+    "dispatch.admitted": 1,
+    "dispatch.rejected": 1,
+    "dispatch.requested": 1,
+    "dispatch.revoked": 1,
+    "execution.started": 1,
+    "grant.consumed": 1,
+    "grant.issued": 1,
+    "job.claimed": 1,
+    "job.enqueued": 1,
+    "job.finished": 1,
+    "job.parked": 1,
+    "job.requeued": 1,
+    "model.error": 1,
+    "model.intent": 1,
+    "model.result": 1,
+    "policy.denied": 1,
+    "receipt": 1,
+    "recovery.blocked": 1,
+    "recovery.object_blocked": 1,
+    "recovery.object_unblocked": 1,
+    "recovery.unblocked": 1,
+    "run.control": 1,
+    "run.cursor": 1,
+    "run.effect": 1,
+    "run.end": 1,
+    "run.fenced": 1,
+    "run.finish": 1,
+    "run.model_turn": 1,
+    "run.start": 2,
+    "run.state": 1,
+    "subtask.spawned": 1,
+    "subtask.finished": 1,
+    "task.created": 1,
+    "task.revised": 1,
+    "tool.intent": 1,
+    "tool.not_dispatched": 1,
+    "tool.result": 1,
+    "undo.completed": 1,
+    "undo.failed": 1
+  },
+  "actual_rule_schema_binding": {
+    "count": 78,
+    "matches": true
+  },
+  "ui_source_wiring": {
+    "task_create_policy_absent": true,
+    "failed_start_policy_keyed_by_task_id": true,
+    "default_effects": true,
+    "meaning": "Source structure only; actual DOM/host.rpc behavior belongs to the separate T3 reviewer."
+  },
+  "source_hashes": {
+    "src/tianshu/cli.py": "20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7",
+    "src/tianshu/control.py": "7bef3a8f1feceebba6bc6b1f3758782e68ba99f15648d63a61389b5f6cce5093",
+    "src/tianshu/dispatcher.py": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6",
+    "src/tianshu/tasks.py": "eb2a3de26ce8fc0526a7cdb92f522c845977e905a315f3d4e9a8dee804a64e63",
+    "src/tianshu/loop.py": "5ef3af3af98994f33fa52e4985c169f05dce2aa26430846c05018ca363e31bfd",
+    "src/tianshu/event_schema.py": "26770be95c23e9fbfea6748abc2456809a47d48442b26b881e1464ebc2454bf0",
+    "src/tianshu/run_policy.py": "6e6c5a72c744ac706a8de948b2af1fabf2595945cc4178984b8552241e7e8d12",
+    "src/tianshu/rules.py": "ca0b9340a6c74005f530ace0d02ebe6894bba277d9d998da7765a00f51b99c40",
+    "schemas/c4/rules.json": "45e421b68b9f6c8ffbb1b047443858fa08e8bc1d93361e31eb7b01b214870f79",
+    "ui/src/App.tsx": "be6cc9cbac85f2c8514e831dd17ef04f2ca870fda12c421435a3057bdeaea62d"
+  }
+}

@@ -246,6 +246,9 @@ def test_attempts_persist_across_resume(tmp_path):
         model=_FlakyModel(failures=2, then=_tool_call()),
         limits=_limits(attempts=3),
         sleep=lambda _seconds: None,
+
+        memory=stack.memory,
+        contents=stack.contents,
     )
     waiting = first_engine.start(task.task_id)
     assert waiting.state == "waiting_approval", waiting.error
@@ -269,6 +272,9 @@ def test_attempts_persist_across_resume(tmp_path):
         snapshots=stack.snapshots,
         model=ScriptedModel([ModelResponse("end_turn", content="完成")]),
         limits=_limits(attempts=3),
+
+        memory=stack.memory,
+        contents=stack.contents,
     )
     done = second_engine.resume_run(waiting.run_id)
     log.close()

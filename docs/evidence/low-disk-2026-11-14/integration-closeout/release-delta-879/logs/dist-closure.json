@@ -1,0 +1,25 @@
+{
+  "index_entries": 173,
+  "all_exact": true,
+  "original_index_unchanged": true,
+  "formerly_missing": [
+    {
+      "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js",
+      "product": "ui/dist/assets/index-CIZ6Bgii.js",
+      "sha256": "fe672593496fdb8228021e3457107e032569e903206361c1338f0050e010e533",
+      "bytes": 332572
+    },
+    {
+      "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-XPu6LbkB.css",
+      "product": "ui/dist/assets/index-XPu6LbkB.css",
+      "sha256": "799a089898524ac56f7d6845cccd07ed971161ce87f070237ec69f295e664225",
+      "bytes": 28789
+    },
+    {
+      "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/index.html",
+      "product": "ui/dist/index.html",
+      "sha256": "52420ffb1ff112f4c19458e9c45e12effb3ceed2d553e565f6c4c137322c632e",
+      "bytes": 951
+    }
+  ]
+}

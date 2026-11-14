@@ -1,0 +1,184 @@
+{
+  "status": "SEALED_INDEPENDENT_DOCUMENT_PUBLIC_EVIDENCE_DELTA_REVIEW",
+  "date": "2026-11-14",
+  "timezone": "Asia/Shanghai",
+  "reviewer": "/root/review_low_disk_integration",
+  "verdict": "PASS_RELEASE_DOCUMENT_EVIDENCE_DELTA_ONLY_WITH_EXACT_717_INHERITANCE",
+  "scope": "Only the 879 frozen document/public-evidence delta versus the previously sealed 717 input; no renewed product approval, no final combination or native CI approval.",
+  "input": {
+    "snapshot": "/tmp/tianshu-g3-20261113/low-disk-release-candidate-cxszmop9/candidate-complete",
+    "source_count": 879,
+    "source_manifest_sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+    "parent_facts_sha256": "6b4b5fe6cdb435a14644918c36409d7fee97c1f00cfff0d69e7dba30434f97ea",
+    "delta_patch_sha256": "02fd4a60cfb0f4121088b4a50173845ebd70faebacddbc696ba96b6198d9c0dd",
+    "full_879_source_copy": "source/",
+    "all_source_rehashed_before_and_after": true
+  },
+  "inherited_717": {
+    "manifest_sha256": "7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6",
+    "original_root": "/tmp/low-disk-whole-branch-review-20261114",
+    "report_sha256": "7f27c76e4c0106c5abb77e75d8e624d0ccdeac405bb9c9913299818e6ca2f693",
+    "facts_sha256": "351e38bc07887ed0a7a4a73add4d1bab01479b669480783a02cac9147fd76a2d",
+    "index_sha256": "7be453886f728e690f33528c67c8b3b3506a3c524a35a0ecf96db942741fc239",
+    "original_verdict_unchanged": "NOT_APPROVED_PUBLIC_EVIDENCE_CLOSURE_REQUIRED",
+    "all_1025_indexed_files_plus_index_rehashed": true,
+    "all_file_and_directory_modes_rechecked": true
+  },
+  "t3_independent": {
+    "original_root": "/tmp/low-disk-t3-independent-20261114",
+    "report_sha256": "e1de27bf1c6ae73718a91ce9bf8568a2a0fca8956db37f6a64401c36428c877d",
+    "facts_sha256": "a07fe5ce56a24884edcd4ed5756a033194c081e1d833dcbd14cfe79e02ebdeb1",
+    "index_sha256": "537c937fe34e0395f5861abc660bb90edc88944f4b1876098adbd1c2138bb757",
+    "all_1485_indexed_files_plus_index_rehashed": true,
+    "all_file_and_directory_modes_rechecked": true,
+    "raw_counts_reconciled": true,
+    "new_unique_python": 52,
+    "new_unique_app_dom": 4,
+    "single_combined_56_command": false,
+    "negative_variants": 11,
+    "negative_call_failures": 11,
+    "setup_import_collection_kills": 0,
+    "restored_controls_separate": {
+      "python": 5,
+      "app_dom": 2,
+      "ui_filtered_unexecuted": 2
+    },
+    "retained_rejection_cases_not_additional_tests": 27
+  },
+  "delta": {
+    "modified": [
+      ".gitignore",
+      "docs/KNOWLEDGE.md",
+      "docs/LOW-DISK-2026-11-14.md",
+      "docs/PRD-v1.md",
+      "docs/low-disk-admission-contract.md"
+    ],
+    "added_count": 162,
+    "removed_count": 0,
+    "unchanged_product_test_schema_lock_dist_paths": 267,
+    "invariant_changes": [],
+    "precise_five_file_diff": "logs/document-delta.patch",
+    "precise_diff_sha256": "62e51ff383117b166ce934c8ee1b7ca52eafab7af5d879e75076d659d0098c5f",
+    "all_added_paths": "logs/source-delta.json"
+  },
+  "public_closure": {
+    "old_artifact_index_sha256": "42a9fb2d0d622d9883d4181f1c472d359121c9224de260b8d4cebb5d31cc65dc",
+    "old_artifact_index_unchanged": true,
+    "old_artifact_index_entries_exact": 173,
+    "three_dist": [
+      {
+        "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js",
+        "product": "ui/dist/assets/index-CIZ6Bgii.js",
+        "sha256": "fe672593496fdb8228021e3457107e032569e903206361c1338f0050e010e533",
+        "bytes": 332572
+      },
+      {
+        "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/assets/index-XPu6LbkB.css",
+        "product": "ui/dist/assets/index-XPu6LbkB.css",
+        "sha256": "799a089898524ac56f7d6845cccd07ed971161ce87f070237ec69f295e664225",
+        "bytes": 28789
+      },
+      {
+        "evidence": "docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/index.html",
+        "product": "ui/dist/index.html",
+        "sha256": "52420ffb1ff112f4c19458e9c45e12effb3ceed2d553e565f6c4c137322c632e",
+        "bytes": 951
+      }
+    ],
+    "integration_subset_exact_entries": 35,
+    "t3_subset_exact_entries": 119,
+    "subsets_all_match_original_bytes_sizes_and_original_index": true,
+    "extra_txt_suffix_only_for_py_log": true,
+    "undeclared_public_subset_files": [],
+    "root_717_three_identity_files_match_original": true,
+    "gitignore_isolated_before_after_control_pass": true,
+    "complete_original_review_packs_publicly_available_claimed": false
+  },
+  "findings": [
+    {
+      "id": "INT-E1",
+      "severity": "P2",
+      "status": "已修",
+      "scope": "Only the 879 public-evidence closure. Original 717 failure/report remain immutable.",
+      "evidence": [
+        "logs/dist-closure.json",
+        "logs/gitignore-sandbox.json"
+      ]
+    },
+    {
+      "id": "DOC-N1",
+      "severity": "P3",
+      "status": "已修",
+      "scope": "711 author core + six derived = historical 717; the three omitted dist copies are separate.",
+      "evidence": [
+        "logs/document-observations.json"
+      ]
+    },
+    {
+      "id": "BASE-B1",
+      "severity": "P2",
+      "status": "未修",
+      "introduced_by_this_delta": false,
+      "blocks_this_narrow_delta": false,
+      "scope": "Pre-existing CLI budget wiring gap remains publicly disclosed; other-entry budget checks must not be extrapolated to CLI. No product fix or reproduction in this lane.",
+      "evidence": [
+        "source/docs/LOW-DISK-2026-11-14.md",
+        "source/docs/KNOWLEDGE.md",
+        "source/docs/evidence/low-disk-2026-11-14/integration-review-717/REPORT.md"
+      ]
+    }
+  ],
+  "contract": {
+    "sections_1_to_5_unchanged_except_historical_75_wording": true,
+    "section_6_ld_table_identical": true,
+    "semantic_relaxation": false,
+    "new_local_markdown_link_targets_exist": 10
+  },
+  "audit_runs": [
+    {
+      "command": "logs/audit-1.command.json",
+      "exit": 1,
+      "classification": "Observer-only dictionary-shape assertion; raw and first script retained."
+    },
+    {
+      "command": "logs/audit-2.command.json",
+      "exit": 0,
+      "classification": "Full authorized file/document/evidence audit."
+    }
+  ],
+  "observer_corrections": "logs/audit-observer-correction.json",
+  "other_nonproduct_observation_errors": [
+    "Initial temporary path-inspection command incorrectly assumed source-hashes.json was inside candidate-complete rather than its parent. Read-only FileNotFoundError; corrected after listing exact directory.",
+    "Prior compacted-context temporary inspection treated mutation-results list as dict and later printed excessive map data; neither ran product code."
+  ],
+  "environment": {
+    "observer_python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+    "observer_executable": "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "observer_python_not_product_platform_claim": true
+  },
+  "product_test_or_gate_runs_by_this_lane": 0,
+  "product_or_old_evidence_writes": 0,
+  "root_gate_status_reported_not_reproduced": {
+    "source": "root message 2026-11-14 received during narrow audit",
+    "lock_exit_reported": 0,
+    "full_pytest": "running at message time; early 8F, no final traceback or summary yet",
+    "final_combination_pass_claimed": false,
+    "status_may_change_after_this_report": true
+  },
+  "not_granted": [
+    "final combined functional acceptance",
+    "full pytest/whole ruff/full UI gates approval",
+    "official commit object approval",
+    "native CI approval",
+    "baseline CLI budget fix",
+    "paid model, soak, recovery apply, native cross-volume/user-device support"
+  ],
+  "source_immutability_and_seal": {
+    "source_879_exact_copy_and_original_rehashed_at_end": true,
+    "original_717_and_T3_reports_facts_indexes_rechecked_at_end": true,
+    "files": "0444",
+    "directories": "0555",
+    "index": "all regular files excluding hash-index.json itself; self digest supplied separately"
+  }
+}

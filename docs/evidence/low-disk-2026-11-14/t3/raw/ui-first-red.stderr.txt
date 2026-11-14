@@ -1,0 +1,54 @@
+$ vitest run -- src/__tests__/run-mode.test.tsx
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/run-mode.test.tsx > Run 执行模式的真实 UI 入口 > 新建任务只把纯读策略交给 run.start，启动失败后的详情重试仍保持 pure_only
+AssertionError: expected null not to be null
+ ❯ src/__tests__/run-mode.test.tsx:241:22
+    239| 
+    240|     const pure = buttonByText("仅读取与对话");
+    241|     expect(pure).not.toBeNull();
+       |                      ^
+    242|     await click(pure as HTMLButtonElement);
+    243| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/__tests__/run-mode.test.tsx > Run 执行模式的真实 UI 入口 > 已有任务：默认允许工具操作 会原样传到 run.start
+AssertionError: expected [ { task_id: 'task_1' } ] to deeply equal [ { task_id: 'task_1', …(1) } ]
+
+- Expected
++ Received
+
+  [
+    {
+-     "execution_policy": {
+-       "format_version": 1,
+-       "mode": "effects",
+-     },
+      "task_id": "task_1",
+    },
+  ]
+
+ ❯ src/__tests__/run-mode.test.tsx:298:41
+    296|     await click(start as HTMLButtonElement);
+    297|     await waitFor(() => rpcCalls(host, "run.start").length === 1);
+    298|     expect(rpcCalls(host, "run.start")).toEqual([
+       |                                         ^
+    299|       { task_id: "task_1", execution_policy: policy },
+    300|     ]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  src/__tests__/run-mode.test.tsx > Run 执行模式的真实 UI 入口 > 已有任务：显式仅读取与对话 会原样传到 run.start
+AssertionError: expected null not to be null
+ ❯ src/__tests__/run-mode.test.tsx:291:28
+    289|     if (selection !== null) {
+    290|       const selector = buttonByText(selection);
+    291|       expect(selector).not.toBeNull();
+       |                            ^
+    292|       await click(selector as HTMLButtonElement);
+    293|     }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+

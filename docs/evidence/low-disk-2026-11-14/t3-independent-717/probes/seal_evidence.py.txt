@@ -1,0 +1,219 @@
+"""Verify and seal this review output, without executing product code."""
+from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import hashlib
+import json
+import os
+import stat
+
+B = Path(__file__).parents[1]
+ROOT = Path('/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0')
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write(name, value):
+    (B / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+
+
+before = json.loads((B / 'source-before.json').read_text())
+assert len(before) == 717
+assert before == json.loads((B / 'source-after.json').read_text())
+assert before == json.loads((ROOT / 'source-hashes.json').read_text())
+assert all(sha(B / 'work' / r) == h == sha(ROOT / 'candidate-complete' / r)
+           for r, h in before.items())
+assert sha(ROOT / 'source-hashes.json') == '7acc68435efe4e926dcf303b36f0a89ae0ec478d17c3f5e8a4c80e3a05939db6'
+binding = json.loads((B / 'inputs/inherited-evidence-binding.json').read_text())
+assert all(sha(Path(e['path'])) == e['sha256'] for e in binding['inputs'])
+mutations = json.loads((B / 'raw/mutation-results.json').read_text())
+assert len(mutations) == 11 and all(r['restored'] and r['behavior_kill'] and
+                                  r['call_failures'] == 1 and r['errors'] == 0 for r in mutations)
+assert all(r['source_restored'] == before for r in mutations)
+reject = json.loads((B / 'raw/retained-rejection-audit.json').read_text())
+assert reject['count'] == 27 and all(all(v == 0 for v in r['counts'].values())
+                                   for r in reject['results'])
+source_audit = json.loads((B / 'raw/source-and-quality-audit.json').read_text())
+assert not source_audit['added_lines_placeholder_skip_only_scan']
+processes = json.loads((B / 'raw/process-and-extras-audit.json').read_text())
+assert not processes['still_alive'] and not processes['work_extra_files']
+for pid in processes['recorded_child_peer_pids']:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        continue
+    raise AssertionError('recorded PID alive at seal: ' + str(pid))
+assert not any(p.is_symlink() for p in B.rglob('*'))
+
+preparation = json.loads((B / 'inputs/preparation-inputs.json').read_text())
+original_requirements = {Path(e['original']).name: e['original'] for e in preparation['inputs']}
+input_rows = []
+for p in sorted((B / 'inputs').iterdir()):
+    if p.name in ['source-hashes.json', 'facts.json', 'complete-candidate.patch', 'delta-vs-previous.patch']:
+        origin = str(ROOT / p.name)
+        read_scope = 'frozen source identity/delta; root facts retained as input metadata, not independent verdict evidence'
+    elif p.name in ['task-3-brief.md', 'task-3-context.md']:
+        origin = original_requirements[p.name]
+        read_scope = 'requirements copied through sealed preparation input'
+    elif p.name == 'inherited-evidence-binding.json':
+        origin = '/tmp/tianshu-g3-20261113/low-disk-t3-inherited-evidence-binding-20261114.json'
+        read_scope = 'exact inherited identities and scope constraints'
+    else:
+        names = {'preparation-PREPARATION.md': 'PREPARATION.md',
+                 'preparation-inputs.json': 'inputs.json',
+                 'preparation-root-rulings.json': 'root-rulings.json'}
+        origin = '/tmp/low-disk-t3-independent-preparation-20261114/' + names[p.name]
+        read_scope = 'prior PREPARED_ONLY historical preparation and requirement provenance'
+    input_rows.append({'copy': str(p.relative_to(B)), 'origin': origin,
+                       'sha256': sha(p), 'bytes': p.stat().st_size, 'read_scope': read_scope})
+write('inputs.json', {
+    'status': 'T3_FORMALLY_AUTHORIZED_INDEPENDENT_REVIEW_INPUTS',
+    'source_identity': '717-entry complete frozen content, not historical checkout HEAD',
+    'inputs': input_rows,
+    'inherited': binding,
+    'independence': 'No author report prose/self-review conclusions used; no author suite or inherited full suite rerun.',
+    'authorization_provenance': 'root formal authorization continued in this reviewer conversation; constraints transcribed in sealed preparation input',
+})
+
+phases = []
+for label, result in [
+    ('python-first', {'passed': 50, 'unique': True, 'seconds': 22.74}),
+    ('paused-supplement', {'passed': 2, 'deselected': 50, 'unique': True, 'seconds': 0.96}),
+    ('ui-first', {'passed': 4, 'skipped': 0, 'unique': True}),
+    ('restored-controls', {'passed': 5, 'deselected': 47, 'unique': False}),
+    ('ui-restored-controls', {'passed': 2, 'filtered_unexecuted_reported_as_skipped': 2, 'unique': False}),
+]:
+    command = B / 'raw' / (label + '.command.json')
+    raw = B / 'raw' / (label + '.log')
+    meta = json.loads(command.read_text())
+    assert meta['exit'] == 0 and meta['source'] == before
+    phases.append({'label': label, 'exit': meta['exit'], 'result': result,
+                   'command': str(command.relative_to(B)), 'command_sha256': sha(command),
+                   'raw': str(raw.relative_to(B)), 'raw_sha256': sha(raw), 'argv': meta['argv']})
+
+facts = {
+    'status': 'SEALED_T3_INDEPENDENT_FROZEN_CONTENT_REVIEW',
+    'date': '2026-11-14', 'timezone': 'Asia/Shanghai',
+    'reviewer': '/root/review_admission_contract',
+    'spec_verdict': 'PASS_T3_FROZEN_ENTRYPOINT_SCOPE',
+    'quality_verdict': 'PASS_T3_FROZEN_NARROW_DELTA',
+    'confirmed_behavior_blockers': 0,
+    'reviewed_fixes': '已修（本717项冻结入口范围与精确T1/T2继承条件内）',
+    'final_repository_acceptance': 'NOT_GRANTED; root final object/full gates/native CI remain separate',
+    'source': {
+        'frozen': str(ROOT / 'candidate-complete'), 'mapping': str(ROOT / 'source-hashes.json'),
+        'mapping_sha256': sha(ROOT / 'source-hashes.json'), 'entries': len(before),
+        'actual_all_entries_rehashed_before_and_after': True,
+        'all_entries_match_root_and_restored_work': True,
+        'source_before_sha256': sha(B / 'source-before.json'),
+        'source_after_sha256': sha(B / 'source-after.json'),
+        'diff_vs_t2': source_audit['t2_diff'],
+        'unchanged_runtime_modules_excluding_cli_control': 71,
+        'unchanged_tests_fixtures': 133, 'unchanged_schemas': 7,
+        'unchanged_total_src_tests_schemas_excluding_cli_control': 211,
+        'historical_reviewer_checkout_head_not_candidate_commit': 'cefa1e375974d96e2ec25e199f6605f6dcf2239b',
+    },
+    'environment': json.loads((B / 'raw/environment.json').read_text()),
+    'positive_phases': phases,
+    'unique_positive_counts': {'python': 52, 'app_dom': 4,
+                               'single_combined_56_pass_command': False,
+                               'inherited_or_author_tests_included': False},
+    'negative_controls': {
+        'variants': 11, 'call_behavior_failures': 11, 'setup_import_collection_kills': 0,
+        'all_717_entries_restored_after_each': True,
+        'aggregate': 'raw/mutation-results.json',
+        'labels': [r['label'] for r in mutations],
+        'ui_filter_classification': 'each has 1 selected call failure; 3 name-filtered cases reported skipped; authored_skips=0',
+        'restored_positive_rechecks_in_unique_counts': False,
+    },
+    'retained_rejection_material_audit': {
+        'cases': 27, 'breakdown': reject['classification_counts'], 'is_new_pytest_passes': False,
+        'database_mode': 'sqlite uri mode=ro',
+        'zero_tables': ['runs','jobs','leases','approvals','grants','dispatch_requests','budget_reservations'],
+        'no_new_run_intent_model_manifest': True,
+        'whole_database_zero_writes_claimed': False,
+        'evidence': 'raw/retained-rejection-audit.json',
+    },
+    'quality': {
+        'new_authorization_lease_event_billing_bypass_found': False,
+        'task_workspace_permissions_remain_independent_from_run_policy': True,
+        'runtime_dependencies_added': False, 'only_new_ui_dev_dependency': 'jsdom',
+        'pyproject_and_uv_lock_unchanged': True,
+        'node_20_19_execution': 'NOT_RUN; static engines compatibility only',
+        'added_source_test_lines_placeholder_skip_only_hits': [],
+        'dist_rebuild_consistency': 'NOT_RUN in independent lane; root gate',
+    },
+    'observer_errors_retained': [
+        {'kind':'UI name-filter skipped metadata classification',
+         'evidence':'raw/filter-metadata-correction.json', 'product_failure':False,
+         'originals':'raw/metadata-before-filter-correction'},
+        {'kind':'finalize observer wrong 71-vs-211 path selection assertion',
+         'evidence':'raw/finalize-observer-first-error.json', 'product_failure':False},
+    ],
+    'nonbehavior_document_followup': [{
+        'path':'docs/low-disk-admission-contract.md', 'line':81,
+        'note':'historical 75 rule-count sentence should state contract-stage time explicitly',
+        'owner':'root', 'followup_live_delta_reviewed_in_this_717':'NO',
+        'contract_semantics_relaxed':False,
+    }],
+    'ld_mapping': {'LD-01':['T1','T2'],'LD-02':['T1','T3'],'LD-03':['T1','T2','T3'],
+                   'LD-04':['T1'],'LD-05':['T2'],'LD-06':['T1','T2']},
+    'inherited_binding': {'path':'inputs/inherited-evidence-binding.json',
+                          'sha256':sha(B / 'inputs/inherited-evidence-binding.json'),
+                          'all_8_input_file_hashes_and_sizes_rechecked':True,
+                          'T2_80_passes_counted_as_new_T3':False},
+    'limitations': [
+        'OBSERVED_LOCK_HELD_DURING_CONTROLLED_LEAF is only controlled-leaf lock observation; no native disk_usage time bound, deadlock elimination, or SLO guarantee.',
+        'Same temporary-volume injected leaf is not native cross-volume/nested-mount or Windows/Linux device evidence.',
+        'Threshold is not capacity reservation; pure_only still permits necessary audit writes and model network/billing.',
+        'App HostClient-boundary mock is UI wiring evidence; real backend evidence is independent CLI/native IPC.',
+    ],
+    'not_run_or_not_granted_in_this_lane': [
+        'uv lock --check','full pytest','whole-repository ruff','full UI frozen install/typecheck/test/build',
+        'dist rebuild consistency','official commit/PR','latest main synchronization',
+        'four required native CI checks including Windows two shards and aggregate',
+        'protected merge and new main own CI','paid model','10h soak','recovery apply','capacity GC',
+        'release','other-platform user-device support',
+    ],
+    'process_and_work_integrity': {'all_recorded_child_peer_pids_exited':True,
+                                  'work_extra_files':[], 'pycache_or_pytest_cache_dirs':[],
+                                  'dependency_symlinks_removed_without_chmod_external_target':True,
+                                  'evidence':'raw/process-and-extras-audit.json'},
+    'seal_policy': {'files':'0444','directories':'0555',
+                    'hash_index':'all local regular files excluding hash-index.json itself',
+                    'stop_writing_after_seal':True},
+}
+write('facts.json', facts)
+write('raw/seal-verification.json', {
+    'at': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(),
+    'all_717_work_and_root_frozen_source_hashes_match': True,
+    'all_8_inherited_input_hashes_match': True,
+    'all_5_positive_phase_command_source_maps_and_exit0_verified': True,
+    'all_11_mutation_maps_fully_restored': True,
+    'all_27_retained_rejections_no_new_run_material': True,
+    'all_recorded_child_peer_pids_exited_at_seal': True,
+    'no_symlinks_to_external_directories': True,
+    'report_read_back_nonempty': (B / 'REPORT.md').stat().st_size > 10000,
+})
+
+files = sorted(p for p in B.rglob('*') if p.is_file() and p != B / 'hash-index.json')
+index = {'algorithm':'sha256', 'excludes':['hash-index.json'],
+         'files': {str(p.relative_to(B)): {'sha256':sha(p),'bytes':p.stat().st_size} for p in files}}
+write('hash-index.json', index)
+for r, entry in index['files'].items():
+    assert sha(B / r) == entry['sha256'] and (B / r).stat().st_size == entry['bytes']
+for p in files + [B / 'hash-index.json']:
+    p.chmod(0o444)
+directories = [p for p in B.rglob('*') if p.is_dir()]
+for p in sorted(directories, key=lambda x: len(x.parts), reverse=True) + [B]:
+    p.chmod(0o555)
+assert all(stat.S_IMODE(p.stat().st_mode) == 0o444 for p in files + [B / 'hash-index.json'])
+assert all(stat.S_IMODE(p.stat().st_mode) == 0o555 for p in directories + [B])
+print(json.dumps({'sealed':True, 'file_count_excluding_index':len(files),
+                  'directory_count_including_root':len(directories)+1,
+                  'identities':{name:{'path':str(B / name),'sha256':sha(B / name),
+                                      'bytes':(B / name).stat().st_size}
+                                for name in ['REPORT.md','facts.json','inputs.json','hash-index.json']}},
+                 ensure_ascii=False, indent=2))

@@ -1,0 +1,12 @@
+--- 879/src/tianshu/loop.py
++++ 906/src/tianshu/loop.py
+@@ -1872,9 +1872,6 @@
+         undispatched: list[dict[str, Any]] = []
+         for call in resp.tool_calls:
+             ok, reason = _dispatchable(resp, call)
+-            if (ok and self._tasks.run_execution_policy(run_id) == PURE_ONLY
+-                    and spec_is_write(call.name)):
+-                ok, reason = False, "pure_only Run 不允许有副作用工具"
+             if not ok:
+                 # 验收 A7：不派发，但必须留痕。
+                 # 事件不能让 model.result 落后：replay 是按事件顺序重建消息序列的，

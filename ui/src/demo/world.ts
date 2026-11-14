@@ -9,6 +9,7 @@
 import type {
   ApprovalView,
   EventView,
+  RunExecutionPolicyV1,
   RunView,
   StateView,
   TaskView,
@@ -632,7 +633,7 @@ export class DemoWorld {
     return task;
   }
 
-  startRun(taskId: string): RunView {
+  startRun(taskId: string, executionPolicy: RunExecutionPolicyV1): RunView {
     const task = this.findTask(taskId);
     if (task.active_run_id !== null) {
       throw new HostRpcError("conflict", "这个任务已有正在进行的运行");
@@ -656,7 +657,10 @@ export class DemoWorld {
     this.runs.unshift(run);
     task.active_run_id = run.run_id;
     this.setTaskStatus(task, "queued");
-    this.emit("run.started", run.run_id, task.task_id, { goal_revision: task.goal_revision });
+    this.emit("run.started", run.run_id, task.task_id, {
+      goal_revision: task.goal_revision,
+      execution_policy: clone(executionPolicy),
+    });
 
     window.setTimeout(() => {
       this.setRunState(run, "running");
@@ -670,6 +674,14 @@ export class DemoWorld {
       });
     }, 900);
     window.setTimeout(() => {
+      if (executionPolicy.mode === "pure_only") {
+        this.finishRun(run, task, "succeeded", "none_applied", {
+          nApplied: 0,
+          nUnknown: 0,
+          undoable: false,
+        });
+        return;
+      }
       const path = task.workspaces[0]?.root_path ?? "工作区";
       this.emit("tool.requested", run.run_id, task.task_id, {
         tool: "write_file",

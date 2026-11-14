@@ -1,0 +1,20 @@
+[
+  {
+    "baseline": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+    "path": "src/tianshu/memory_exec.py",
+    "function": "_verify",
+    "baseline_function_sha256": "d39e4f56704e7bdafba95cc630bdba67151cf8d128801fafa7c780ceb8db5c94",
+    "879_function_sha256": "d39e4f56704e7bdafba95cc630bdba67151cf8d128801fafa7c780ceb8db5c94",
+    "identical": true,
+    "diff": ""
+  },
+  {
+    "baseline": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+    "path": "src/tianshu/dispatcher.py",
+    "function": "_begin_memory_execution",
+    "baseline_function_sha256": "01280a6a320cb80aa9fb3f5b6bb87059a4c32edbb526afa575a7ffd9a87cf2cf",
+    "879_function_sha256": "2cb36e6b2d297e5018021a1319caa1b76e95edf0b34afd6ff5c91f2fbac5cf47",
+    "identical": false,
+    "diff": "--- a0223aa269efcdf70df4c4d8c43e5629b4fa0215/_begin_memory_execution\n+++ 879/_begin_memory_execution\n@@ -15,6 +15,8 @@\n                     f\"run 不在执行状态，拒绝开始写入：{request.run_id}\"\n                     f\"（state={run.state}）\"\n                 )\n+            auth = self._authority(request, claim, args=self.get_request(request.request_id).args)\n+            self._check_run_execution(request, self._resolve_target(request, auth))\n             started_at = self._clock()\n             with self._log.transaction() as tx:\n                 seq = tx.append(\n"
+  }
+]

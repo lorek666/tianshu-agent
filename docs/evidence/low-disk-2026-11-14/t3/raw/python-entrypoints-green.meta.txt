@@ -1,0 +1,7 @@
+phase=python-entrypoints-green
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py
+test_sha256=6c09e120ffc088a96685913089e8cdced4598b65f0f491ade3722807c9f8fe95
+cli_sha256=20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7
+control_sha256=ac141c723ccb5cbab5880cccf8b2fb3aac38e84b760d20da4378e17a24f25b9e

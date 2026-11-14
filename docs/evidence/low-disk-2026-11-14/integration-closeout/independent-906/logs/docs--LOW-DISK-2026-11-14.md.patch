@@ -1,0 +1,47 @@
+--- 879/docs/LOW-DISK-2026-11-14.md
++++ 906/docs/LOW-DISK-2026-11-14.md
+@@ -6,6 +6,20 @@
+ 证据封装修正；HEAD 本身不能代表未提交候选的完整身份。
+ 
+ ## 当前结论
++
++首轮统一门禁未通过：879 项固定候选的 lock exit 0，全量 pytest 为
++**41 failed、3141 passed、8 skipped（495.61s）**；源码、HEAD 与工作区状态前后不变。
++同一候选的剩余检查中，完整 UI 为 **13 文件、91 测试通过**，install/typecheck/build
++均 exit 0，三份 dist 字节未变；ruff 的 7 项错误均来自六份历史探针原件。
++失败原件保留，不能用局部独立通过或 UI 通过抵消全量失败。当前在修复集中测试发现的
++旧夹具实例接线与过早提案过滤回归，最终组合和原生 CI 仍待验证。
++
++可直接核对[首轮全量结果](evidence/low-disk-2026-11-14/integration-closeout/first-full-red/results.json)、
++[剩余门禁结果](evidence/low-disk-2026-11-14/integration-closeout/first-remaining-checks/results.json)与
++[独立窄诊断](evidence/low-disk-2026-11-14/integration-closeout/independent-diagnosis/DIAGNOSIS.md)。
++该诊断用三个最小离线场景复现审计/派发前取消问题；父目标失效后收尾仍不回填结果，
++未将发现夸大为已突破这条最终保护。新增外层守卫提前拒绝的两项旧夹具只适配故障注入，
++MemoryExecutor 的原独立只读检查保留。
+ 
+ | 范围 | 当前结论 | 还没有的证据 |
+ |---|---|---|
+@@ -151,7 +165,22 @@
+ 可提交集合。实际审计 exit 1，原 [717 复审报告](evidence/low-disk-2026-11-14/integration-review-717/REPORT.md)
+ 结论保留为 `NOT_APPROVED_PUBLIC_EVIDENCE_CLOSURE_REQUIRED`。root 后续仅为该证据目录
+ 增加 `.gitignore` 例外，把原 JS、CSS、HTML 三份字节纳入公开集合；原 173 项索引、
+-截图和失败记录均未改写。该修正仍须在新的完整候选上独立销账，不能将原报告改为通过。
++截图和失败记录均未改写。第二读者已在历史 879 项候选上确认
++`PASS_RELEASE_DOCUMENT_EVIDENCE_DELTA_ONLY_WITH_EXACT_717_INHERITANCE`：INT-E1 和
++DOC-N1 已修，267 项产品/测试/锁/dist 字节不变。该结论只覆盖当时的文档与公开证据
++增量，不批准首轮失败的最终组合，也不将原 717 报告改为通过。
++原结论见[879 窄增量报告](evidence/low-disk-2026-11-14/integration-closeout/release-delta-879/REPORT.md)。
++
++首轮全仓 ruff 同时识别出六份历史 `.py` 原件的 7 项 I001/F401。它们是已执行探针的
++归档，不是后续维护的产品脚本；为保留实测原字节，当前只将这六份文件移名为 `.py.txt`，
++原 SHA256 和原 `artifact-index.json` 均不变。显式
++[路径映射](evidence/low-disk-2026-11-14/archived-script-paths.json)记录原相对路径与当前
++公开路径；原 173 项均按该映射解析后核对字节，不能再声称六个旧 `.py` 路径仍然存在。
++这属于历史 879 候选之后的封装增量，仍须独立复核；没有新增 lint 排除或忽略规则。
++
++新公开的门禁与独立材料同样只是[逐字节子集](evidence/low-disk-2026-11-14/integration-closeout/published-subset.json)，
++明确列出原件位置、公开相对路径、大小与 SHA256；完整源码快照和测试数据库仍在本地忽略
++档案中保全，不声称旧索引的全部内容都已公开。
+ 
+ 公开的 T1/T2 report、facts、原索引是身份副本，并非原独立工作目录的完整公开备份。
+ 717 整分支复审公开了报告、探针与日志的字节一致子集，`published-subset.json` 明确区分

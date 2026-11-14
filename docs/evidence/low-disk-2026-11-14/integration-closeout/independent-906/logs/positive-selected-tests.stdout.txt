@@ -1,0 +1,101 @@
+EEEEEEE                                                                  [100%]
+==================================== ERRORS ====================================
+__ ERROR at setup of test_reject_then_resume_fails_without_a_second_approval ___
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+_______ ERROR at setup of test_read_a_write_b_and_chat_without_workspace _______
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+___ ERROR at setup of test_recover_after_each_failpoint[after_intent-create] ___
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+_____________________ ERROR at setup of test_tool_id_enum ______________________
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+_ ERROR at setup of test_pure_only_write_proposal_keeps_dispatch_and_result_audit _
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+____ ERROR at setup of test_memory_executor_rechecks_child_capability[user] ____
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+____ ERROR at setup of test_memory_executor_rechecks_child_capability[task] ____
+
+self = PosixPath('/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest')
+mode = 448, parents = False, exist_ok = False
+
+    def mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        """
+        Create a new directory at this given path.
+        """
+        try:
+>           os.mkdir(self, mode)
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest'
+
+/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1311: FileNotFoundError
+7 errors in 0.30s

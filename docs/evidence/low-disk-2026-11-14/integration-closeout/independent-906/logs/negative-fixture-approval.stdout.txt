@@ -1,0 +1,47 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________ test_reject_then_resume_fails_without_a_second_approval ____________
+
+env = Env(root=PosixPath('/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/pytest/test...k-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/pytest/test_reject_then_resume_fails_0/authority')))
+
+    def test_reject_then_resume_fails_without_a_second_approval(env):
+        """拒绝 → resume：Run 以 failed 收束，且**没有第二个 approval.requested**。
+    
+        这是 issue #40 的直接回归：修之前 resume 会再建一张审批，Run 回到
+        `waiting_approval`，用户只能反复点拒绝。
+        """
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:170: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x108bd1940>
+log = <tianshu.events.EventLog object at 0x108bc37d0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x108bd18b0>
+memory = None, contents = None
+data_root = PosixPath('/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/pytest/test_reject_then_resume_fails_0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+1 failed in 0.18s

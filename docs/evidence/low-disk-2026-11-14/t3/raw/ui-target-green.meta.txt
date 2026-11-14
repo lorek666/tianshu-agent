@@ -1,0 +1,10 @@
+phase=ui-target-green
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+command=pnpm --dir ui exec vitest run src/__tests__/run-mode.test.tsx
+node=v24.22.2
+pnpm=11.20.0
+jsdom=26.1.0 (engines: >=18)
+test_sha256=0fa1c83466c979123743f3d56f06b52ded47adaf13fa4da6ce0700aa5a6206be
+app_sha256=be6cc9cbac85f2c8514e831dd17ef04f2ca870fda12c421435a3057bdeaea62d
+types_sha256=807b44a81725a6ccc1b0f5b5b4a7c1b1a349ebe665dfaa30a17855415d244e9f

@@ -1,0 +1,12 @@
+{"probe": "cli", "root": "/tmp/low-disk-t3-independent-20261114/runs/i-ckxv8qme", "entry": "compat", "mode": "pure_only", "free": 0, "exit": 2, "stderr": "错误：dispatch.disk_space_low: /private/tmp/low-disk-t3-independent-20261114/runs/i-ckxv8qme/events.db: 可用空间低于 2 GiB\n", "events": ["task.created"], "peer": false}
+F
+=================================== FAILURES ===================================
+________________ test_cli_both_explicit_modes[pure_only-compat] ________________
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:90: in test_cli_both_explicit_modes
+    assert p.returncode==0;policy_snapshot(s,mode)
+    ^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert 2 == 0
+E    +  where 2 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '/tmp/low-disk-t3-...='错误：dispatch.disk_space_low: /private/tmp/low-disk-t3-independent-20261114/runs/i-ckxv8qme/events.db: 可用空间低于 2 GiB\n').returncode
+=========================== short test summary info ============================
+FAILED ../../../../tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py::test_cli_both_explicit_modes[pure_only-compat]
+1 failed, 51 deselected in 0.34s

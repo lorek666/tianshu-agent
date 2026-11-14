@@ -79,6 +79,13 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--task", default=None, help="兼容入口的目标文本")
     r.add_argument("--out", default=None, help="兼容入口的输出文件名")
     r.add_argument(
+        "--execution-mode",
+        choices=("effects", "pure_only"),
+        default=None,
+        help="新 Run 的执行资格：effects（默认）或 pure_only；"
+        "只适用于 run start 与兼容入口",
+    )
+    r.add_argument(
         "--allow-exec-cmd",
         action="append",
         default=None,
@@ -424,6 +431,12 @@ def _model_from(args: argparse.Namespace) -> Model:
     return OpenAICompatibleModel(name or "gpt-4o-mini", base_url=args.base_url)
 
 
+def _run_execution_policy(args: argparse.Namespace):
+    from .run_policy import EFFECTS, PURE_ONLY
+
+    return PURE_ONLY if args.execution_mode == "pure_only" else EFFECTS
+
+
 def _engine(stack, args: argparse.Namespace) -> AgentLoop:
     return AgentLoop(
         tasks=stack.tasks,
@@ -432,6 +445,7 @@ def _engine(stack, args: argparse.Namespace) -> AgentLoop:
         dispatcher=stack.dispatcher,
         approvals=stack.approvals,
         snapshots=stack.snapshots,
+        contents=stack.contents,
         model=_model_from(args),
         limits=Limits(args.max_turns, args.max_total_tokens),
         # 与 Dispatcher 共用同一个投影实例：同一份 blob 目录、同一个连接。
@@ -525,6 +539,12 @@ def _print_result(result, *, as_json: bool) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    if args.execution_mode is not None and args.action not in (None, "start"):
+        print(
+            "错误：--execution-mode 只适用于新建 Run（run start 或兼容入口）",
+            file=sys.stderr,
+        )
+        return 2
     needs_mcp = args.action in (None, "start", "resume")
     stack = _authority_stack(args.db, args.data_root, mcp=needs_mcp)
     try:
@@ -538,7 +558,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if action == "cancel":
             return _run_cancel(stack, args)
         if action == "start":
-            result = _engine(stack, args).start(args.task_id or "", out_name=args.out)
+            result = _engine(stack, args).start(
+                args.task_id or "",
+                out_name=args.out,
+                execution_policy=_run_execution_policy(args),
+            )
             return _report(stack, result, args)
         # resume
         result = _engine(stack, args).resume_run(args.run_id or "")
@@ -579,7 +603,11 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
         outbound_allow=outbound_allow,
         mcp_servers=mcp_servers,
     )
-    result = _engine(stack, args).start(task.task_id, out_name=args.out)
+    result = _engine(stack, args).start(
+        task.task_id,
+        out_name=args.out,
+        execution_policy=_run_execution_policy(args),
+    )
     return _report(stack, result, args)
 
 

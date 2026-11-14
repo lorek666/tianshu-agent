@@ -6,6 +6,7 @@ import type {
   EventView,
   EventsResult,
   RunEnvelope,
+  RunExecutionPolicyV1,
   RunView,
   StateView,
   TaskEnvelope,
@@ -13,7 +14,7 @@ import type {
   UndoApplyResult,
   UndoPlanResult,
 } from "./api/types";
-import { RPC } from "./api/types";
+import { EFFECTS_RUN_POLICY, RPC } from "./api/types";
 import { createRealHostClient } from "./api/host";
 import type { HostClient } from "./api/host";
 import { createDemoHostClient } from "./demo/host";
@@ -119,6 +120,9 @@ export function App() {
   const [state, setState] = useState<StateView | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runPolicies, setRunPolicies] = useState<
+    Record<string, RunExecutionPolicyV1>
+  >({});
   const [runDetail, setRunDetail] = useState<RunView | null>(null);
   const [timeline, setTimeline] = useState<EventView[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
@@ -530,12 +534,17 @@ export function App() {
         );
         selectedTaskRef.current = task.task_id;
         setSelectedTaskId(task.task_id);
+        setRunPolicies((previous) => ({
+          ...previous,
+          [task.task_id]: input.execution_policy,
+        }));
         selectRun(null);
         showToast("任务已创建，正在启动后台运行", "success");
 
         try {
           const runEnvelope = await host.rpc<RunEnvelope>(RPC.runStart, {
             task_id: task.task_id,
+            execution_policy: input.execution_policy,
           });
           const run = normalizeRun(runEnvelope.run);
           if (run !== null) {
@@ -558,16 +567,23 @@ export function App() {
   );
 
   const handleStartRun = useCallback(
-    (taskId: string): void => {
+    (taskId: string, executionPolicy: RunExecutionPolicyV1): void => {
       const host = hostRef.current;
       if (host === null) {
         setErrorBanner("还没有连接守护进程");
         return;
       }
+      setRunPolicies((previous) => ({
+        ...previous,
+        [taskId]: executionPolicy,
+      }));
       setBusy(`start-run:${taskId}`);
       void (async () => {
         try {
-          const envelope = await host.rpc<RunEnvelope>(RPC.runStart, { task_id: taskId });
+          const envelope = await host.rpc<RunEnvelope>(RPC.runStart, {
+            task_id: taskId,
+            execution_policy: executionPolicy,
+          });
           const run = normalizeRun(envelope.run);
           if (run === null) throw new HostRpcError("bad_response", "守护进程返回的运行数据无法识别");
           selectRun(run);
@@ -582,6 +598,13 @@ export function App() {
       })();
     },
     [refreshRun, refreshSnapshot, selectRun, showToast],
+  );
+
+  const handleExecutionPolicyChange = useCallback(
+    (taskId: string, policy: RunExecutionPolicyV1): void => {
+      setRunPolicies((previous) => ({ ...previous, [taskId]: policy }));
+    },
+    [],
   );
 
   const handleRevise = useCallback(
@@ -886,7 +909,11 @@ export function App() {
               selectedRunId={selectedRunId}
               busy={busy}
               now={now}
+              executionPolicy={
+                runPolicies[selectedTask.task_id] ?? EFFECTS_RUN_POLICY
+              }
               onSelectRun={handleSelectRun}
+              onExecutionPolicyChange={handleExecutionPolicyChange}
               onStartRun={handleStartRun}
               onRevise={handleRevise}
               onRequestCancel={requestCancel}

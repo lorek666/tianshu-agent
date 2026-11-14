@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-11-14T10:41:00.242504+08:00",
+  "scope": "read_only_new_code_placeholder_and_candidate_secret_pattern_preflight",
+  "manifest_sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+  "new_placeholder_patterns": 0,
+  "first_generic_scan": "6 paths matched; initial assertion rejected known baseline fixture strings, not a product test or confirmed credential",
+  "baseline_matches": [
+    {
+      "file": "docs/evidence/data-admission-t3-2026-11-13/independent/evidence-index.json",
+      "kind": "provider-token",
+      "matches": 48,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    },
+    {
+      "file": "docs/evidence/data-admission-t3-2026-11-13/red-test-data-migration-cli.py.txt",
+      "kind": "provider-token",
+      "matches": 1,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    },
+    {
+      "file": "tests/test_credentials.py",
+      "kind": "provider-token",
+      "matches": 1,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    },
+    {
+      "file": "tests/test_data_migration_cli.py",
+      "kind": "provider-token",
+      "matches": 1,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    },
+    {
+      "file": "tests/test_memory_dispatch.py",
+      "kind": "private-key",
+      "matches": 1,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    },
+    {
+      "file": "tests/test_memory_store.py",
+      "kind": "private-key",
+      "matches": 2,
+      "status": "EXACT_BASELINE_TEST_OR_EVIDENCE_FIXTURE_BYTES"
+    }
+  ],
+  "new_secret_pattern_matches": 0,
+  "diff_check_exit": 0,
+  "sensitive_values_printed": false
+}

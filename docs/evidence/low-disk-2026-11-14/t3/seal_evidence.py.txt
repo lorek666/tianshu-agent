@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[4]
+EVIDENCE = ROOT / "docs/evidence/low-disk-2026-11-14"
+INDEX = EVIDENCE / "artifact-index.json"
+
+EXPECTED = {
+    "inherited/t1-independent/REPORT.md": (
+        "a2ec4da045b9a862744198a5cd002910a145458f9dd4a924a615b0839b7688e0"
+    ),
+    "inherited/t1-independent/facts.json": (
+        "b5f56ebc0f0a7a30467e5bede173de3a3fcd0ebb12e3644e9a05dc73f554a29c"
+    ),
+    "inherited/t1-independent/hash-index.json": (
+        "dfe69bb0625ec4f7d8e89cc9416d12ca45dd33fbbd2387e8598bad8c19bf293b"
+    ),
+    "inherited/t2-independent/REPORT.md": (
+        "b41941026f996d45293d672c180747d2c05735771bcb5235d42aaa1e54bd5e72"
+    ),
+    "inherited/t2-independent/facts.json": (
+        "8e7b2c12ade690f81e5d00a7768bc3ce91204115c0a67f4affb993e3cf9c35e1"
+    ),
+    "inherited/t2-independent/hash-index.json": (
+        "a5a7c114d417c4753daa41efa60719fbb85fce5e7ef960cf9bf0f4d3a0464ba0"
+    ),
+    "t3/visual-static-demo/dist-source-hashes.json": (
+        "723098ae0f570c67f59164ee0768113169eea442ea45064cfa670ed062de07d7"
+    ),
+}
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+entries: dict[str, dict[str, int | str]] = {}
+for path in sorted(EVIDENCE.rglob("*")):
+    if not path.is_file() or path == INDEX:
+        continue
+    relative = path.relative_to(EVIDENCE).as_posix()
+    entries[relative] = {
+        "sha256": sha256(path),
+        "bytes": path.stat().st_size,
+        "mode": oct(path.stat().st_mode & 0o777),
+    }
+
+for relative, expected in EXPECTED.items():
+    actual = entries[relative]["sha256"]
+    if actual != expected:
+        raise SystemExit(f"identity mismatch: {relative}: {actual} != {expected}")
+
+payload = {
+    "status": "T3_AUTHOR_EVIDENCE_SEALED_NOT_INDEPENDENT_REVIEW",
+    "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+    "root": "docs/evidence/low-disk-2026-11-14",
+    "entry_count_excluding_this_index": len(entries),
+    "identity_bindings_verified": len(EXPECTED),
+    "entries": entries,
+}
+INDEX.write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+print(
+    f"SEALED {len(entries)} entries; "
+    f"{len(EXPECTED)} inherited/visual identities verified"
+)

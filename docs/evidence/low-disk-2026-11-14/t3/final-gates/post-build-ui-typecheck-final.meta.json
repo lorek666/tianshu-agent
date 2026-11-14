@@ -1,0 +1,18 @@
+{
+  "label": "post-build-ui-typecheck-final",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "pnpm",
+    "--dir",
+    "ui",
+    "run",
+    "typecheck"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "post-build-ui-typecheck-final.stdout.txt",
+  "stderr": "post-build-ui-typecheck-final.stderr.txt"
+}

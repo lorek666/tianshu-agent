@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from support import approve_pending, engine_for, stack_for
+from support import approve_pending, effects_admission, engine_for, stack_for
 
 from tianshu.dispatcher import Dispatcher, build_request
 from tianshu.events import EventLog
@@ -89,10 +89,12 @@ def env(tmp_path):
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
     approvals = ApprovalStore(log)
     grants = GrantStore(log)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
     dispatcher = Dispatcher(
         log,
         tasks,

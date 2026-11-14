@@ -1,0 +1,11 @@
+--- frozen/src/tianshu/cli.py
++++ mutant/src/tianshu/cli.py
+@@ -606,7 +606,7 @@
+     result = _engine(stack, args).start(
+         task.task_id,
+         out_name=args.out,
+-        execution_policy=_run_execution_policy(args),
++        execution_policy=__import__("tianshu.run_policy",fromlist=["EFFECTS"]).EFFECTS,
+     )
+     return _report(stack, result, args)
+ 

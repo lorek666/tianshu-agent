@@ -1,0 +1,1835 @@
+...............FFFFFFFF.....................................s........... [  2%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+..............................F..............F.F.F...................... [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................ss.............................. [ 40%]
+........................................................................ [ 42%]
+.......................................F.......................F........ [ 45%]
+....................................................................s... [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+...................................F.................................... [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+.............................sss........................................ [ 81%]
+........................................................................ [ 83%]
+................................FFFFFFFFFFFFF.F......................... [ 85%]
+..........................................FF.FFFFFFFF.FF................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+.....................s.................................................. [ 97%]
+........................................................................ [ 99%]
+......................                                                   [100%]
+=================================== FAILURES ===================================
+___________ test_reject_then_resume_fails_without_a_second_approval ____________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_reject_.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_reject_then_resume_fails_0/authority')))
+
+    def test_reject_then_resume_fails_without_a_second_approval(env):
+        """拒绝 → resume：Run 以 failed 收束，且**没有第二个 approval.requested**。
+    
+        这是 issue #40 的直接回归：修之前 resume 会再建一张审批，Run 回到
+        `waiting_approval`，用户只能反复点拒绝。
+        """
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:170: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1086a6180>
+log = <tianshu.events.EventLog object at 0x1086a5490>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1086a7530>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_reject_then_resume_fails_0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+_____________ test_rejection_keeps_the_run_out_of_waiting_approval _____________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_rejecti.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_rejection_keeps_the_run_o0/authority')))
+
+    def test_rejection_keeps_the_run_out_of_waiting_approval(env):
+        """Run 不许死在 `waiting_approval` 上：它必须是终态，且只有一条 run.end。"""
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:213: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x108696840>
+log = <tianshu.events.EventLog object at 0x1086a5250>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x108696930>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_rejection_keeps_the_run_o0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+______________ test_veto_is_recorded_as_none_applied_not_unknown _______________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_veto_is.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_veto_is_recorded_as_none_0/authority')))
+
+    def test_veto_is_recorded_as_none_applied_not_unknown(env):
+        """拒绝 ≠ 中断：`unknown/partial` 会让工作区被阻断，拒绝不配这个结论。"""
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:232: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1088fbd10>
+log = <tianshu.events.EventLog object at 0x1086a57c0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1088fab70>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_veto_is_recorded_as_none_0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+______________ test_changed_arguments_may_request_a_new_approval _______________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changed.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changed_arguments_may_req0/authority')))
+
+    def test_changed_arguments_may_request_a_new_approval(env):
+        """模型改了参数：动作内容变了，人可以改主意重新批准，Run 正常做完。
+    
+        脚本：覆盖 note.md 写 A（被拒）→ 改写 B（新审批，批准）→ 结束。
+        """
+        engine = env.engine(
+            [
+                _write_turn([_overwrite("note.md", "第一版\n", "c1")]),
+                # 模型看到 c4.approval_rejected 之后改了内容再发起
+                _write_turn([_overwrite("note.md", "第二版\n", "c2")]),
+                _end(),
+            ]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:260: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1086951c0>
+log = <tianshu.events.EventLog object at 0x108696c60>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1086963c0>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changed_arguments_may_req0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+___________ test_goal_revision_change_invalidates_the_old_rejection ____________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_goal_re.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_goal_revision_change_inva0/authority')))
+
+    def test_goal_revision_change_invalidates_the_old_rejection(env):
+        """改目标（goal_revision/lease_epoch +1）→ 旧否决失效。
+    
+        否决缓存键是动作内容；owner/revision 一旦变化就是另一件事，人可以重新决定，
+        不能拿旧否决把新目标下的动作也一并否掉。
+        """
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:311: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x108694b00>
+log = <tianshu.events.EventLog object at 0x1086940e0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x108697ec0>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_goal_revision_change_inva0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+_____________ test_new_goal_revision_can_request_a_fresh_approval ______________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_new_goa.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_new_goal_revision_can_req0/authority')))
+
+    def test_new_goal_revision_can_request_a_fresh_approval(env):
+        """端到端证明"改目标 → 旧否决失效"：新目标的 Run 可以为同一动作重新发起审批。
+    
+        改目标会让 `goal_revision/lease_epoch` +1 并 fence 旧 Run（PRD §4.3）；新
+        Run 下"同一个动作"是另一件事，不能被旧否决一并否掉。
+        """
+        task = env.task()
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "第一版\n", "c1")]), _end()]
+        )
+>       first = engine.start(task.task_id)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1086a4ad0>
+log = <tianshu.events.EventLog object at 0x108696c30>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1086a7200>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_new_goal_revision_can_req0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+__________ test_changing_only_call_identity_does_not_bypass_the_veto ___________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changin.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changing_only_call_identi0/authority')))
+
+    def test_changing_only_call_identity_does_not_bypass_the_veto(env):
+        """换 call_id / attempt_id / owner / claim_epoch 不算"换了动作"。
+    
+        这些是调用身份：模型重发同一个动作时 call_id 会变，进程接管时 claim_epoch
+        会变。若把它们算进否决键，模型只要重新生成一个 call_id 就能把人的否决变回
+        "待批"——issue #40 的真实复现路径。
+        """
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:375: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1086a52b0>
+log = <tianshu.events.EventLog object at 0x1086a6bd0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1086a4f20>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_changing_only_call_identi0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+____ test_repeating_the_vetoed_action_with_a_new_call_id_terminates_the_run ____
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_repeati.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_repeating_the_vetoed_acti0/authority')))
+
+    def test_repeating_the_vetoed_action_with_a_new_call_id_terminates_the_run(env):
+        """模型换个 call_id 原样重发同一个动作：仍然命中否决，Run 直接 failed。
+    
+        这是真实 provider 的行为（每轮从 `call_0` 重新编号）：如果否决缓存键包含
+        call_id，这里会再建一张审批、Run 回到 waiting——issue #40 原样复现。
+        """
+        engine = env.engine(
+            [
+                _write_turn([_overwrite("note.md", "新内容\n", "c1")]),
+                # 同一个动作、同一份参数，只换了调用编号
+                _write_turn([_overwrite("note.md", "新内容\n", "c9")]),
+                _end(),
+            ]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:411: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x1086a4200>
+log = <tianshu.events.EventLog object at 0x1086a53a0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x1086a5400>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_repeating_the_vetoed_acti0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+_______________ test_real_user_suite_is_green_with_harness_model _______________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_real_user_suite_is_green_0')
+
+    def test_real_user_suite_is_green_with_harness_model(tmp_path):
+        """三类任务（能跑的跑、不能跑的如实登记）在脚本模型下全绿。"""
+        suite = run_real_user_tasks(Path(tmp_path) / "real", repeat=3)
+        report = build_report(suite, REAL_USER_CASES)
+>       assert report["verdict"] == "pass"
+E       AssertionError: assert 'unsafe' == 'pass'
+E         
+E         - pass
+E         + unsafe
+
+tests/test_eval_real_tasks.py:140: AssertionError
+_________ test_delegation_task_spawns_readonly_subtask_and_aggregates __________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_delegation_task_spawns_re0')
+
+    def test_delegation_task_spawns_readonly_subtask_and_aggregates(tmp_path):
+        """D3-c1：父任务真的派子任务、子任务真的读两份文档、父任务汇总并引用。"""
+        task, observations = _task_obs(tmp_path, "RU-D1")
+        for obs in observations:
+            assert obs.unavailable is None
+            assert obs.invalid_reason is None, obs.invalid_reason
+            assert obs.error is None, obs.error
+            assert obs.result is not None and obs.result.outcome == "succeeded"
+            # 派发与收尾：父 Run 侧事件齐全，且只有一个子任务
+            assert obs.count("subtask.spawned") == 1
+            assert [e.payload.get("state") for e in obs.events_of("subtask.finished")] == [
+                "succeeded"
+            ]
+            assert len(obs.subtasks) == 1
+            row = obs.subtasks[0]
+            assert row["subtask_id"] == "docs_reader"
+            assert row["state"] == "succeeded"
+            assert row["child_run_state"] == "succeeded"
+            assert row["result_ref"].startswith("content://sha256:")
+            # 子 Run 真的读了两份本地文档（不是父任务替它读）
+            reads = {
+                (r.get("output") or {}).get("path")
+                for r in obs.subtask_tool_results()
+                if r.get("tool_id") == "read_text" and r.get("status") == "succeeded"
+            }
+            assert {"资料/产品需求.md", "资料/评审纪要.md"} <= reads
+            # 父任务读了子任务结果，且产物逐字引用了摘要 + 两个来源
+            results = [
+                r
+                for r in obs.tool_results()
+                if r.get("tool_id") == "subtask.result" and r.get("status") == "succeeded"
+            ]
+            assert results, "父任务没有调用 subtask.result"
+            output = results[-1]["output"]
+            assert output["done"] is True
+            assert output["summary"] in obs.artifact_text
+            assert "产品需求.md" in obs.artifact_text
+            assert "评审纪要.md" in obs.artifact_text
+            # 事实有据可查：三条结论必须出现在**子 Run 读到的正文**里。只核
+            # "父引用了子摘要"核不到这条——属性报告与脚本是两份预先写好的字面量，
+            # 把夹具改成相反内容时它会照旧绿。
+            child_read = "\n".join(
+                str((r.get("output") or {}).get("content"))
+                for r in obs.subtask_tool_results()
+                if r.get("tool_id") == "read_text" and r.get("status") == "succeeded"
+            )
+            for fact in ("CSV", "3 秒内", "打印延后"):
+                assert fact in child_read, (fact, child_read)
+>           _assert_all_checks_green(obs, task)
+
+tests/test_eval_real_tasks.py:508: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+obs = Observation(case_id='RU-D1', category='real_user:delegation', run_index=0, run_id='run_93c82fe3edc9', out_name='summar...ot_allowed）。', 'error': None, 'created_at': 1794622015590, 'ended_at': 1794622015604, 'child_run_state': 'succeeded'}])
+task = RealUserTask(task_id='RU-D1', version='1.0.0', category='real_user:delegation', title='委派调查：只读子任务读两份资料，父任务汇总并引用来源（含只读边..._not_allowed）。', tool_calls=[], usage={'input_tokens': None, 'output_tokens': None})), fail_with=None)}, followup=None)
+extra = ()
+
+    def _assert_all_checks_green(obs, task, *, extra=()) -> None:
+        """第一条 Run 的判据 + （可选）第二段 followup 的判据全部通过。
+    
+        `extra` 用于 followup 判据：它们读的是 `Observation.followup`，与第一条 Run
+        的判据同一次 `evaluate_checks` 跑（判据只是函数，证据都在同一个 Observation 上）。
+        """
+        results = evaluate_checks(obs, (*task.to_case().checks, *extra))
+>       assert all(result.passed for result in results), [
+            (result.check_id, result.detail) for result in results if not result.passed
+        ]
+E       AssertionError: [('subtask.readonly_boundary', "子 Run 拒绝规则=无，缺规则=['c4.readonly_binding', 'c4.outbound_not_allowed']；已生效结果=0，非纯读成功=无，子 Run run.end 带 applied=0")]
+E       assert False
+E        +  where False = all(<generator object _assert_all_checks_green.<locals>.<genexpr> at 0x108a2f340>)
+
+tests/test_eval_real_tasks.py:455: AssertionError
+_____ test_delegation_child_attempts_are_refused_and_report_says_readonly ______
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_delegation_child_attempts0')
+
+    def test_delegation_child_attempts_are_refused_and_report_says_readonly(tmp_path):
+        """D3-c2：子任务写文件/出网被规则拒绝；父报告如实写"子任务只能读"。"""
+        task, observations = _task_obs(tmp_path, "RU-D1")
+        for obs in observations:
+            rejected = {
+                str(e.payload.get("rule_id"))
+                for e in obs.subtask_events_of("dispatch.rejected")
+            }
+>           assert {"c4.readonly_binding", "c4.outbound_not_allowed"} <= rejected, rejected
+E           AssertionError: set()
+E           assert {'c4.outbound...only_binding'} <= set()
+E             
+E             Extra items in the left set:
+E             'c4.readonly_binding'
+E             'c4.outbound_not_allowed'
+
+tests/test_eval_real_tasks.py:553: AssertionError
+__________________ test_delegation_readonly_negative_control ___________________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_delegation_readonly_negat0')
+
+    def test_delegation_readonly_negative_control(tmp_path):
+        """负控：子 Run 若真的写成功一次，只读边界判据必须红。"""
+        task, observations = _task_obs(tmp_path, "RU-D1")
+        obs = observations[0]
+        check = subtask_readonly_boundary(
+            "c4.readonly_binding", "c4.outbound_not_allowed"
+        )
+>       assert check.fn(obs)[0] is True
+E       assert False is True
+
+tests/test_eval_real_tasks.py:611: AssertionError
+______________________________ test_tool_id_enum _______________________________
+
+    def test_tool_id_enum():
+        """工具 id 23：`SPECS`、事件 schema 的 `_TOOL_ID`、C4 规则表三处一致。
+    
+        `_TOOL_ID` 出现在 `tool.intent` / `tool.result` / `approval.requested` 等
+        payload 里，是**写入前**的封闭枚举：少一个 id 会让新工具的结果写不进日志。
+        """
+        assert len(SPECS) == EXPECTED_TOOL_IDS
+        for tool_id in (
+            "subtask.spawn",
+            "subtask.status",
+            "subtask.result",
+            "subtask.cancel",
+        ):
+            assert tool_id in SPECS
+        tool_enum = event_schema._TOOL_ID["enum"]
+        assert len(tool_enum) == EXPECTED_TOOL_IDS
+        assert set(tool_enum) == set(SPECS)
+        assert len(set(tool_enum)) == len(tool_enum), "工具 id 不能重复"
+    
+        # 规则 id 75（D1 +9，合并 MCP 阶段后 74，对象级阻断 +1。规格 §2.7 对本轮
+        # 增量的预估是 8 条，差的那一条是 §2.3 要求的 `dispatch.subtask_rejected`）。
+>       assert len(RULE_IDS) == EXPECTED_RULE_IDS
+E       AssertionError: assert 78 == 75
+E        +  where 78 = len(frozenset({'c4.action_resource_mismatch', 'c4.approval_expired', 'c4.approval_mismatch', 'c4.approval_rejected', 'c4.approval_run_mismatch', 'c4.approval_state', ...}))
+
+tests/test_g2_delegation_contract.py:225: AssertionError
+_________________ test_parent_revision_change_fences_children __________________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_parent_revision_change_fe0')
+
+    def test_parent_revision_change_fences_children(tmp_path):
+        """父改目标 → 子 Run 派发前被拒 `dispatch.parent_fenced`，结果不回填。
+    
+        为什么 fence 核验必须排在资源解析前面：父目标已经改了，这次调用无论
+        指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。测试让子
+        Run 去写文件——如果 fence 检查排得靠后，这里会先撞上 `c4.readonly_binding`
+        （子任务绑定是只读的），断言就抓不到真正的拒绝原因。
+        """
+        ws = _workspace(tmp_path)
+        log, stack = _stack(tmp_path)
+        try:
+            task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+            _, parent_result = _spawn_then_park(stack, task)
+            parent_run_id = parent_result.run_id
+            (row,) = stack.tasks.list_subtasks(parent_run_id)
+            assert row.parent_goal_revision == 1
+            assert row.parent_lease_epoch == 1
+    
+            revised = stack.tasks.revise_goal(task.task_id, "换成新目标")
+            assert (revised.goal_revision, revised.lease_epoch) == (2, 2)
+            assert stack.tasks.get_run(parent_run_id).state == "fenced"
+            assert stack.claims.job_for_run(parent_run_id).state == "cancelled"
+    
+            child_model = ScriptedModel(
+                [
+                    ModelResponse(
+                        "tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "write-1",
+                                "create_report",
+                                {
+                                    "name": "sub.md",
+                                    "content": "子任务不该写这个文件",
+                                },
+                            )
+                        ],
+                    ),
+                    ModelResponse("end_turn", content="不该走到这里"),
+                ]
+            )
+            child_engine = engine_for(stack, child_model)
+            result = child_engine.resume_run(row.child_run_id)
+>           assert result.state == "cancelled", result
+E           AssertionError: RunResult(run_id='run_3355e0302d8a', outcome='noop', effect_state='none_applied', content='不该走到这里', artifact=None, tur...n_applied=0, n_unknown=0, error=None, state='succeeded', approval_ids=[], task_id='task_4bbda5029ed8', goal_revision=1)
+E           assert 'succeeded' == 'cancelled'
+E             
+E             - cancelled
+E             + succeeded
+
+tests/test_g2_delegation_fence.py:120: AssertionError
+________________ test_read_a_write_b_and_chat_without_workspace ________________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_read_a_...vate/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_read_a_write_b_and_chat_w0/ro'))
+
+    def test_read_a_write_b_and_chat_without_workspace(env):
+        """只读目录写不进去；可写目录写得进去；零目录任务只对话、不碰文件。"""
+        read_only = env.read_only
+        task_a = env.stack.tasks.create_task(
+            "看看只读目录", [{"root_path": str(read_only), "mode": "readonly"}]
+        )
+>       result_a = env.engine([_create("out.md", "x", "c1"), _end()]).start(task_a.task_id)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_m2_acceptance.py:587: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x109302510>
+log = <tianshu.events.EventLog object at 0x1093035f0>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x109301ac0>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_read_a_write_b_and_chat_w0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+____________ test_recover_after_each_failpoint[after_intent-create] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo0')
+fp = 'after_intent', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_intent 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+__________ test_recover_after_each_failpoint[after_intent-overwrite] ___________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo1')
+fp = 'after_intent', kind = 'overwrite'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: overwrite/after_intent 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+____________ test_recover_after_each_failpoint[after_intent-delete] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo2')
+fp = 'after_intent', kind = 'delete'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: delete/after_intent 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+____________ test_recover_after_each_failpoint[after_write-create] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo3')
+fp = 'after_write', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_write 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+___________ test_recover_after_each_failpoint[after_write-overwrite] ___________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo4')
+fp = 'after_write', kind = 'overwrite'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: overwrite/after_write 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+____________ test_recover_after_each_failpoint[after_write-delete] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo5')
+fp = 'after_write', kind = 'delete'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: delete/after_write 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+____________ test_recover_after_each_failpoint[after_result-create] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo6')
+fp = 'after_result', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_result 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+__________ test_recover_after_each_failpoint[after_result-overwrite] ___________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo7')
+fp = 'after_result', kind = 'overwrite'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: overwrite/after_result 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+____________ test_recover_after_each_failpoint[after_result-delete] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo8')
+fp = 'after_result', kind = 'delete'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: delete/after_result 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+___________ test_recover_after_each_failpoint[after_receipt-create] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo9')
+fp = 'after_receipt', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_receipt 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+__________ test_recover_after_each_failpoint[after_receipt-overwrite] __________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo10')
+fp = 'after_receipt', kind = 'overwrite'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: overwrite/after_receipt 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+___________ test_recover_after_each_failpoint[after_receipt-delete] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recover_after_each_failpo11')
+fp = 'after_receipt', kind = 'delete'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: delete/after_receipt 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+_________________________ test_recovery_is_idempotent __________________________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_recovery_is_idempotent0')
+
+    def test_recovery_is_idempotent(tmp_path):
+        """重复恢复不能再补事件，也不能再动文件（覆盖写路径）。"""
+        ws, db = _setup(tmp_path, "overwrite")
+        _spawn(ws, db, "after_write", "overwrite")
+        run_id = _latest_run_id(db)
+    
+        log = EventLog(db)
+        store = SnapshotStore(tmp_path / "artifacts")
+        first = recover_run(log, run_id, ws, store)
+        content1 = (ws / TARGET).read_bytes()
+        n1 = len(log.read_run(run_id))
+        second = recover_run(log, run_id, ws, store)
+        content2 = (ws / TARGET).read_bytes()
+        n2 = len(log.read_run(run_id))
+        log.close()
+    
+>       assert content1 == AFTER_BYTES
+E       AssertionError: assert b'\xe5\x86\x9...xe5\xae\xb9\n' == b'\xe5\x86\x9...xe5\xae\xb9\n'
+E         
+E         At index 4 diff: b'\x89' != b'\x85'
+E         Use -v to get more diff
+
+tests/test_recovery.py:338: AssertionError
+_______________________ test_100_random_fault_injections _______________________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_100_random_fault_injectio0')
+
+    def test_100_random_fault_injections(tmp_path):
+        """随机注入 100 次，验证四条不变量。
+    
+        矩阵是**配平**的：12 个 (写类型, 故障点) 组合各 8 次 = 96，另给
+        delete 的每个故障点补 1 次 = 100（issue #54）；随机（种子固定）只用来
+        打乱执行顺序。纯随机抽样可能恰好漏掉某个组合，那样又回到 中-3 说的
+        窄证据面——覆盖由矩阵保证，不由运气保证。
+    
+        不变量：
+        A. **真实写入目标**的内容必须是「写前」或「写入内容」之一（逐字节，不许
+           半截）；第二次恢复不再改变内容，也不再补事件
+        B. 每个写入 intent 恰好对应一条 tool.result（不丢不重）
+        C. 声称 applied 的，output 的 sha256/after_state 必须与磁盘一致，
+           before_state 必须是写前状态；没执行的那次不许报 applied
+        D. applied 恰好对应一张 receipt（凭据也不能重复发）
+        """
+        rng = random.Random(20261108)
+        cases = [(kind, fp) for kind in KINDS for fp in FAILPOINTS for _ in range(8)]
+        cases += [("delete", fp) for fp in FAILPOINTS]  # 补到 100，删除多一份
+        rng.shuffle(cases)
+    
+        assert len(cases) == 100, "注入总量应当保持 100 次量级"
+        counts = Counter(cases)
+        for kind in KINDS:
+            for fp in FAILPOINTS:
+                assert counts[(kind, fp)] >= 8, f"矩阵漏了 {kind}/{fp}"
+    
+        for i, (kind, fp) in enumerate(cases):
+            case = tmp_path / f"case{i}"
+            case.mkdir()
+            ws, db = _setup(case, kind)
+            before_bytes = None if kind == "create" else BEFORE_BYTES
+            after_bytes = None if kind == "delete" else AFTER_BYTES
+    
+            proc = _spawn(ws, db, fp, kind)
+>           assert proc.returncode == 77, (
+                f"第 {i} 次（{kind}/{fp}）未在故障点退出：rc={proc.returncode}；"
+                f"stderr={proc.stderr}"
+            )
+E           AssertionError: 第 0 次（overwrite/after_result）未在故障点退出：rc=1；stderr=Traceback (most recent call last):
+E               File "<string>", line 30, in <module>
+E               File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E                 self._tasks.disk_admission.assert_stores(
+E               File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E                 raise DiskAdmissionError(
+E             tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E             
+E           assert 1 == 77
+E            +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:418: AssertionError
+___________ test_child_worker_cannot_persist_memory_candidate[user] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_worker_cannot_persi0')
+scope = 'user'
+
+    @pytest.mark.parametrize("scope", ["user", "task"])
+    def test_child_worker_cannot_persist_memory_candidate(tmp_path, scope):
+        """去掉子任务授权限制会落 candidate/applied；空 memory_scopes 不足以拒绝。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            stack.memory.ensure_schema()
+            parent, row = _spawn(stack)
+            args = {"kind": "fact", "content": "CHILD_WRITE_MARKER", "scope": scope}
+            if scope == "task":
+                args["scope_id"] = row.child_task_id
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", "memory.propose", args)]),
+                ModelResponse("end_turn", content="Cannot write"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once() is True
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:59: AssertionError
+___________ test_child_worker_cannot_persist_memory_candidate[task] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_worker_cannot_persi1')
+scope = 'task'
+
+    @pytest.mark.parametrize("scope", ["user", "task"])
+    def test_child_worker_cannot_persist_memory_candidate(tmp_path, scope):
+        """去掉子任务授权限制会落 candidate/applied；空 memory_scopes 不足以拒绝。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            stack.memory.ensure_schema()
+            parent, row = _spawn(stack)
+            args = {"kind": "fact", "content": "CHILD_WRITE_MARKER", "scope": scope}
+            if scope == "task":
+                args["scope_id"] = row.child_task_id
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", "memory.propose", args)]),
+                ModelResponse("end_turn", content="Cannot write"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once() is True
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:59: AssertionError
+__ test_child_memory_writes_never_create_nested_approval[user-memory.confirm] __
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never0')
+tool_id = 'memory.confirm', scope_name = 'user'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+___ test_child_memory_writes_never_create_nested_approval[user-memory.edit] ____
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never1')
+tool_id = 'memory.edit', scope_name = 'user'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+__ test_child_memory_writes_never_create_nested_approval[user-memory.forget] ___
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never2')
+tool_id = 'memory.forget', scope_name = 'user'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+_ test_child_memory_writes_never_create_nested_approval[user-memory.consolidate] _
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never3')
+tool_id = 'memory.consolidate', scope_name = 'user'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+__ test_child_memory_writes_never_create_nested_approval[task-memory.confirm] __
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never4')
+tool_id = 'memory.confirm', scope_name = 'task'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+___ test_child_memory_writes_never_create_nested_approval[task-memory.edit] ____
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never5')
+tool_id = 'memory.edit', scope_name = 'task'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+__ test_child_memory_writes_never_create_nested_approval[task-memory.forget] ___
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never6')
+tool_id = 'memory.forget', scope_name = 'task'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+_ test_child_memory_writes_never_create_nested_approval[task-memory.consolidate] _
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_child_memory_writes_never7')
+tool_id = 'memory.consolidate', scope_name = 'task'
+
+    @pytest.mark.parametrize("tool_id", [
+        "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+    ])
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
+        """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            parent, row = _spawn(stack)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(row.child_task_id)
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "CHILD_CHANGED_MARKER"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+            assert tool_id in {item["name"] for item in tool_manifest()}
+            validate_args(args, SPECS[tool_id].input_schema)
+            model = ScriptedModel([
+                ModelResponse("tool_use", tool_calls=[ToolCall("write", tool_id, args)]),
+                ModelResponse("end_turn", content="Read only"),
+            ])
+            worker = Worker(stack, model=model, heartbeat_interval_ms=None)
+            try:
+                assert worker.run_once()
+            finally:
+                worker.close()
+            assert worker.errors == []
+            events = log.read_run(row.child_run_id)
+            results = [e.payload for e in events if e.type == "tool.result"]
+>           assert len(results) == 1
+E           assert 0 == 1
+E            +  where 0 = len([])
+
+tests/test_round2_auth_memory.py:141: AssertionError
+_____________ test_memory_executor_rechecks_child_capability[user] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_memory_executor_rechecks_0')
+scope_name = 'user'
+
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_memory_executor_rechecks_child_capability(tmp_path, scope_name):
+        """构造旧版准入曾签出的真实一次性票据，独立执行层仍拒绝子任务。"""
+        from tianshu.dispatcher import _Authority
+        from tianshu.memory_exec import MemoryDispatchRefused
+    
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            _, row = _spawn(stack)
+            task = stack.tasks.get_task(row.child_task_id)
+            run = stack.tasks.get_run(row.child_run_id)
+            claim = stack.claims.claim(row.job_id)
+            stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(task.task_id)
+            args = {"kind": "fact", "content": "EXECUTOR_MUST_REFUSE"}
+            request = build_request(
+                task=task, run=run, claim=claim, call_id="write", tool_id="memory.propose",
+                target=scope.to_uri(), args=args,
+            )
+            # 故障注入只绕过上游新只读门：其余 grant/dispatch/claim 均由真实存储
+            # 构造；执行器不能把这些票据当作子任务具有写权限的证据。
+            auth = _Authority(run, task, list(task.workspaces), [], [])
+            target = stack.dispatcher._resolve_target(request, auth)
+            with log.transaction() as tx:
+                stack.dispatcher._store_request(
+                    request, args, "admitted", "legacy admission fixture", "c4.memory_scope"
+                )
+                grant = stack.grants.issue(
+                    subject=f"{run.run_id}#{claim.claim_epoch}", request=request,
+                    issuer="policy:auto",
+                )
+                stack.grants.consume(
+                    grant.grant_id, request_digest=request.digest(), subject=grant.subject
+                )
+                seq = tx.append(run.run_id, "tool.intent", {
+                    "call_id": request.call_id, "tool_id": request.tool_id,
+                    "args": args, "args_hash": request.args_hash,
+                    "request_id": request.request_id,
+                    "request_digest": request.digest(),
+                    "dispatch_id": stack.dispatcher._dispatch_id(request),
+                    "attempt_id": request.attempt_id,
+                    "approval_id": None, "grant_id": grant.grant_id,
+                    "claim_epoch": claim.claim_epoch,
+                }, task_id=task.task_id)
+                stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
+            admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
+            executor = stack.dispatcher._memory_executor_for()
+>           with stack.dispatcher._begin_memory_execution(request, claim) as permit:
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_round2_auth_memory.py:223: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/tianshu/dispatcher.py:2436: in _begin_memory_execution
+    auth = self._authority(request, claim, args=self.get_request(request.request_id).args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.dispatcher.Dispatcher object at 0x1095d3c50>
+request = ActionRequest(request_id='req_d9560ff11c92', task_id='task_05646ecf8e46', run_id='run_97b205e595b3', job_id='job_8364c...on='c4-1', contract_version='1.0', description_hash='108d71617b9488ceb5d1d04850248a2c1feaa36bfe1b8e1229aa4d1adc115452')
+claim = JobClaim(job_id='job_8364c373b453', run_id='run_97b205e595b3', owner_instance_id='0f78ed2d40a54cce9537e520b34b0e87', owner_pid=26097, claim_epoch=1)
+args = {'content': 'EXECUTOR_MUST_REFUSE', 'kind': 'fact'}
+mcp_discovery = False
+
+    def _authority(
+        self,
+        request: ActionRequest,
+        claim: JobClaim,
+        *,
+        args: dict[str, Any] | None = None,
+        mcp_discovery: bool = False,
+    ) -> _Authority:
+        if claim.run_id != request.run_id:
+            raise DispatchDenied(
+                f"claim 属于另一个 Run：claim.run_id={claim.run_id}，"
+                f"request.run_id={request.run_id}",
+                "dispatch.claim_mismatch",
+            )
+        if (
+            claim.owner_instance_id != request.owner_instance_id
+            or claim.claim_epoch != request.claim_epoch
+        ):
+            raise DispatchDenied(
+                "请求绑定的 owner/claim_epoch 与当前 claim 不符",
+                "dispatch.claim_mismatch",
+            )
+        if self._leases.identity.instance_id != claim.owner_instance_id:
+            raise DispatchDenied(
+                "claim 的 owner 不是本进程实例：不能替别的实例派发写入",
+                "dispatch.foreign_instance",
+            )
+        try:
+            self._claims.assert_claim(claim)
+        except JobLost as exc:
+            raise DispatchDenied(f"claim 已失效：{exc}", "dispatch.claim_lost") from exc
+    
+        try:
+            run = self._tasks.assert_current(request.run_id)
+        except RunFenced as exc:
+            raise DispatchDenied(f"Run 不可写：{exc}", "dispatch.run_fenced") from exc
+        if run.task_id != request.task_id:
+            raise DispatchDenied(
+                f"Run 不属于这个 Task：{run.task_id} ≠ {request.task_id}",
+                "dispatch.task_mismatch",
+            )
+        if run.state != RUN_RUNNING:
+            # PAUSED / WAITING_APPROVAL 的 Run 手里可能还拿着有效租约和 claim
+            # （等待审批期间必须续租，否则每轮 TTL 都要重新审批），但它们
+            # 不该执行。这条判断如果只放在主循环里，绕过主循环直接派发就能写。
+            raise DispatchDenied(
+                f"run 不在执行状态，拒绝派发：{request.run_id}（state={run.state}）",
+                "dispatch.not_running",
+            )
+        if (run.goal_revision, run.lease_epoch) != (
+            request.goal_revision,
+            request.lease_epoch,
+        ):
+            raise DispatchDenied(
+                "请求绑定的 revision/epoch 已过期"
+                f"（当前 {run.goal_revision}/{run.lease_epoch}，"
+                f"请求 {request.goal_revision}/{request.lease_epoch}）",
+                "dispatch.stale_revision",
+            )
+    
+        task = self._tasks.get_task(request.task_id)
+        if task is None:
+            raise DispatchDenied(f"task 不存在：{request.task_id}", "dispatch.no_task")
+    
+        # G2 委派 D2（规格 §2.6）：子 Run 每次派发前核验父目标是否还是 spawn
+        # 时那个版本。放在资源解析之前是刻意的——父目标已经改了，这次调用
+        # 无论指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。
+        # 一旦发现不一致：子任务置 `fenced`（结果不回填父 Run，也不写
+        # `subtask.finished`），并给子 Run 留下取消请求，让它在安全点停下。
+        if run.parent_run_id:
+            fence_reason = self._tasks.parent_fence_reason(run.run_id)
+            if fence_reason is not None:
+                self._tasks.fence_child_run(run.run_id, reason=fence_reason)
+                raise DispatchDenied(fence_reason, "dispatch.parent_fenced")
+    
+        if not request.resources:
+            raise DispatchDenied("动作没有声明资源", "c4.no_resource")
+    
+        bindings = list(task.workspaces or [])
+        # POSIX 上 `/a/b://c` 是合法绝对路径；判序必须与 resources.py 一致：
+        # 绝对路径优先判为 file，只有非绝对路径才按 scheme 分流。
+        scheme_resources = [
+            r
+            for r in request.resources
+            if isinstance(r, str) and not os.path.isabs(r) and "://" in r
+        ]
+        if scheme_resources:
+            try:
+                parsed = [parse_resource(r) for r in request.resources]
+            except ResourceError as exc:
+                raise DispatchDenied(
+                    f"资源引用不合法：{exc}", "c4.unsupported"
+                ) from exc
+            if len(parsed) != 1:
+                raise DispatchDenied(
+                    "一次动作只能声明一个带 scheme 的资源", "c4.multi_resource"
+                )
+            ref = parsed[0]
+            if ref.kind == KIND_MEMORY:
+                if request.tool_id not in MEMORY_TOOL_IDS:
+                    raise DispatchDenied(
+                        f"非记忆工具收到记忆资源：{request.tool_id} → "
+                        f"{request.resources[0]!r}",
+                        "dispatch.memory_resource_mismatch",
+                    )
+                if task.depth or run.parent_run_id:
+>                   raise DispatchDenied(
+                        "只读子任务不能写入记忆或发起记忆审批", "c4.memory_scope_denied"
+                    )
+E                   tianshu.dispatcher.DispatchDenied: 只读子任务不能写入记忆或发起记忆审批
+
+src/tianshu/dispatcher.py:2822: DispatchDenied
+_____________ test_memory_executor_rechecks_child_capability[task] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2967/test_memory_executor_rechecks_1')
+scope_name = 'task'
+
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_memory_executor_rechecks_child_capability(tmp_path, scope_name):
+        """构造旧版准入曾签出的真实一次性票据，独立执行层仍拒绝子任务。"""
+        from tianshu.dispatcher import _Authority
+        from tianshu.memory_exec import MemoryDispatchRefused
+    
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            _, row = _spawn(stack)
+            task = stack.tasks.get_task(row.child_task_id)
+            run = stack.tasks.get_run(row.child_run_id)
+            claim = stack.claims.claim(row.job_id)
+            stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(task.task_id)
+            args = {"kind": "fact", "content": "EXECUTOR_MUST_REFUSE"}
+            request = build_request(
+                task=task, run=run, claim=claim, call_id="write", tool_id="memory.propose",
+                target=scope.to_uri(), args=args,
+            )
+            # 故障注入只绕过上游新只读门：其余 grant/dispatch/claim 均由真实存储
+            # 构造；执行器不能把这些票据当作子任务具有写权限的证据。
+            auth = _Authority(run, task, list(task.workspaces), [], [])
+            target = stack.dispatcher._resolve_target(request, auth)
+            with log.transaction() as tx:
+                stack.dispatcher._store_request(
+                    request, args, "admitted", "legacy admission fixture", "c4.memory_scope"
+                )
+                grant = stack.grants.issue(
+                    subject=f"{run.run_id}#{claim.claim_epoch}", request=request,
+                    issuer="policy:auto",
+                )
+                stack.grants.consume(
+                    grant.grant_id, request_digest=request.digest(), subject=grant.subject
+                )
+                seq = tx.append(run.run_id, "tool.intent", {
+                    "call_id": request.call_id, "tool_id": request.tool_id,
+                    "args": args, "args_hash": request.args_hash,
+                    "request_id": request.request_id,
+                    "request_digest": request.digest(),
+                    "dispatch_id": stack.dispatcher._dispatch_id(request),
+                    "attempt_id": request.attempt_id,
+                    "approval_id": None, "grant_id": grant.grant_id,
+                    "claim_epoch": claim.claim_epoch,
+                }, task_id=task.task_id)
+                stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
+            admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
+            executor = stack.dispatcher._memory_executor_for()
+>           with stack.dispatcher._begin_memory_execution(request, claim) as permit:
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_round2_auth_memory.py:223: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/tianshu/dispatcher.py:2436: in _begin_memory_execution
+    auth = self._authority(request, claim, args=self.get_request(request.request_id).args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.dispatcher.Dispatcher object at 0x10951c830>
+request = ActionRequest(request_id='req_6b0764dcabc3', task_id='task_ef1383591525', run_id='run_9ceead7b4163', job_id='job_f4edf...on='c4-1', contract_version='1.0', description_hash='108d71617b9488ceb5d1d04850248a2c1feaa36bfe1b8e1229aa4d1adc115452')
+claim = JobClaim(job_id='job_f4edfc5dd21c', run_id='run_9ceead7b4163', owner_instance_id='0f78ed2d40a54cce9537e520b34b0e87', owner_pid=26097, claim_epoch=1)
+args = {'content': 'EXECUTOR_MUST_REFUSE', 'kind': 'fact'}
+mcp_discovery = False
+
+    def _authority(
+        self,
+        request: ActionRequest,
+        claim: JobClaim,
+        *,
+        args: dict[str, Any] | None = None,
+        mcp_discovery: bool = False,
+    ) -> _Authority:
+        if claim.run_id != request.run_id:
+            raise DispatchDenied(
+                f"claim 属于另一个 Run：claim.run_id={claim.run_id}，"
+                f"request.run_id={request.run_id}",
+                "dispatch.claim_mismatch",
+            )
+        if (
+            claim.owner_instance_id != request.owner_instance_id
+            or claim.claim_epoch != request.claim_epoch
+        ):
+            raise DispatchDenied(
+                "请求绑定的 owner/claim_epoch 与当前 claim 不符",
+                "dispatch.claim_mismatch",
+            )
+        if self._leases.identity.instance_id != claim.owner_instance_id:
+            raise DispatchDenied(
+                "claim 的 owner 不是本进程实例：不能替别的实例派发写入",
+                "dispatch.foreign_instance",
+            )
+        try:
+            self._claims.assert_claim(claim)
+        except JobLost as exc:
+            raise DispatchDenied(f"claim 已失效：{exc}", "dispatch.claim_lost") from exc
+    
+        try:
+            run = self._tasks.assert_current(request.run_id)
+        except RunFenced as exc:
+            raise DispatchDenied(f"Run 不可写：{exc}", "dispatch.run_fenced") from exc
+        if run.task_id != request.task_id:
+            raise DispatchDenied(
+                f"Run 不属于这个 Task：{run.task_id} ≠ {request.task_id}",
+                "dispatch.task_mismatch",
+            )
+        if run.state != RUN_RUNNING:
+            # PAUSED / WAITING_APPROVAL 的 Run 手里可能还拿着有效租约和 claim
+            # （等待审批期间必须续租，否则每轮 TTL 都要重新审批），但它们
+            # 不该执行。这条判断如果只放在主循环里，绕过主循环直接派发就能写。
+            raise DispatchDenied(
+                f"run 不在执行状态，拒绝派发：{request.run_id}（state={run.state}）",
+                "dispatch.not_running",
+            )
+        if (run.goal_revision, run.lease_epoch) != (
+            request.goal_revision,
+            request.lease_epoch,
+        ):
+            raise DispatchDenied(
+                "请求绑定的 revision/epoch 已过期"
+                f"（当前 {run.goal_revision}/{run.lease_epoch}，"
+                f"请求 {request.goal_revision}/{request.lease_epoch}）",
+                "dispatch.stale_revision",
+            )
+    
+        task = self._tasks.get_task(request.task_id)
+        if task is None:
+            raise DispatchDenied(f"task 不存在：{request.task_id}", "dispatch.no_task")
+    
+        # G2 委派 D2（规格 §2.6）：子 Run 每次派发前核验父目标是否还是 spawn
+        # 时那个版本。放在资源解析之前是刻意的——父目标已经改了，这次调用
+        # 无论指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。
+        # 一旦发现不一致：子任务置 `fenced`（结果不回填父 Run，也不写
+        # `subtask.finished`），并给子 Run 留下取消请求，让它在安全点停下。
+        if run.parent_run_id:
+            fence_reason = self._tasks.parent_fence_reason(run.run_id)
+            if fence_reason is not None:
+                self._tasks.fence_child_run(run.run_id, reason=fence_reason)
+                raise DispatchDenied(fence_reason, "dispatch.parent_fenced")
+    
+        if not request.resources:
+            raise DispatchDenied("动作没有声明资源", "c4.no_resource")
+    
+        bindings = list(task.workspaces or [])
+        # POSIX 上 `/a/b://c` 是合法绝对路径；判序必须与 resources.py 一致：
+        # 绝对路径优先判为 file，只有非绝对路径才按 scheme 分流。
+        scheme_resources = [
+            r
+            for r in request.resources
+            if isinstance(r, str) and not os.path.isabs(r) and "://" in r
+        ]
+        if scheme_resources:
+            try:
+                parsed = [parse_resource(r) for r in request.resources]
+            except ResourceError as exc:
+                raise DispatchDenied(
+                    f"资源引用不合法：{exc}", "c4.unsupported"
+                ) from exc
+            if len(parsed) != 1:
+                raise DispatchDenied(
+                    "一次动作只能声明一个带 scheme 的资源", "c4.multi_resource"
+                )
+            ref = parsed[0]
+            if ref.kind == KIND_MEMORY:
+                if request.tool_id not in MEMORY_TOOL_IDS:
+                    raise DispatchDenied(
+                        f"非记忆工具收到记忆资源：{request.tool_id} → "
+                        f"{request.resources[0]!r}",
+                        "dispatch.memory_resource_mismatch",
+                    )
+                if task.depth or run.parent_run_id:
+>                   raise DispatchDenied(
+                        "只读子任务不能写入记忆或发起记忆审批", "c4.memory_scope_denied"
+                    )
+E                   tianshu.dispatcher.DispatchDenied: 只读子任务不能写入记忆或发起记忆审批
+
+src/tianshu/dispatcher.py:2822: DispatchDenied
+=========================== short test summary info ============================
+FAILED tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval
+FAILED tests/test_approval_reject.py::test_rejection_keeps_the_run_out_of_waiting_approval
+FAILED tests/test_approval_reject.py::test_veto_is_recorded_as_none_applied_not_unknown
+FAILED tests/test_approval_reject.py::test_changed_arguments_may_request_a_new_approval
+FAILED tests/test_approval_reject.py::test_goal_revision_change_invalidates_the_old_rejection
+FAILED tests/test_approval_reject.py::test_new_goal_revision_can_request_a_fresh_approval
+FAILED tests/test_approval_reject.py::test_changing_only_call_identity_does_not_bypass_the_veto
+FAILED tests/test_approval_reject.py::test_repeating_the_vetoed_action_with_a_new_call_id_terminates_the_run
+FAILED tests/test_eval_real_tasks.py::test_real_user_suite_is_green_with_harness_model
+FAILED tests/test_eval_real_tasks.py::test_delegation_task_spawns_readonly_subtask_and_aggregates
+FAILED tests/test_eval_real_tasks.py::test_delegation_child_attempts_are_refused_and_report_says_readonly
+FAILED tests/test_eval_real_tasks.py::test_delegation_readonly_negative_control
+FAILED tests/test_g2_delegation_contract.py::test_tool_id_enum - AssertionErr...
+FAILED tests/test_g2_delegation_fence.py::test_parent_revision_change_fences_children
+FAILED tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-overwrite]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-delete]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_write-create]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_write-overwrite]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_write-delete]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_result-create]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_result-overwrite]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_result-delete]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_receipt-create]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_receipt-overwrite]
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_receipt-delete]
+FAILED tests/test_recovery.py::test_recovery_is_idempotent - AssertionError: ...
+FAILED tests/test_recovery.py::test_100_random_fault_injections - AssertionEr...
+FAILED tests/test_round2_auth_memory.py::test_child_worker_cannot_persist_memory_candidate[user]
+FAILED tests/test_round2_auth_memory.py::test_child_worker_cannot_persist_memory_candidate[task]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[user-memory.confirm]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[user-memory.edit]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[user-memory.forget]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[user-memory.consolidate]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[task-memory.confirm]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[task-memory.edit]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[task-memory.forget]
+FAILED tests/test_round2_auth_memory.py::test_child_memory_writes_never_create_nested_approval[task-memory.consolidate]
+FAILED tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability[user]
+FAILED tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability[task]
+41 failed, 3141 passed, 8 skipped in 495.61s (0:08:15)

@@ -1,0 +1,33 @@
+"""Read archived Git objects, T2 and T3 functions; never read live source files."""
+import ast
+import hashlib
+import json
+import subprocess
+from pathlib import Path
+
+OUT = Path(__file__).resolve().parents[1]
+SHA = "a0223aa269efcdf70df4c4d8c43e5629b4fa0215"
+GIT_LOCATION = "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent"
+T2 = Path("/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/candidate-complete")
+T3 = OUT / "source"
+result = {}
+for rel, names in [("src/tianshu/cli.py", ["_engine"]), ("src/tianshu/loop.py", ["__init__", "_reserve_attempt", "_ensure_budget_account"])]:
+    archived = subprocess.check_output(["git", "-C", GIT_LOCATION, "show", f"{SHA}:{rel}"])
+    saved = OUT / "inputs/git-a022" / rel
+    assert saved.read_bytes() == archived
+    result[rel] = {}
+    for label, text in {"a022": archived.decode(), "T2": (T2 / rel).read_text(), "T3": (T3 / rel).read_text()}.items():
+        tree = ast.parse(text)
+        container = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AgentLoop"), tree)
+        result[rel][label] = {}
+        for node in container.body:
+            if isinstance(node, ast.FunctionDef) and node.name in names:
+                block = ast.get_source_segment(text, node)
+                result[rel][label][node.name] = {"sha256": hashlib.sha256(block.encode()).hexdigest(), "line": node.lineno, "end_line": node.end_lineno, "source": block if rel.endswith("cli.py") else None}
+assert result["src/tianshu/cli.py"]["T2"] == result["src/tianshu/cli.py"]["T3"] or result["src/tianshu/cli.py"]["T2"]["_engine"]["sha256"] == result["src/tianshu/cli.py"]["T3"]["_engine"]["sha256"]
+for name in ["__init__", "_reserve_attempt", "_ensure_budget_account"]:
+    assert len({result["src/tianshu/loop.py"][label][name]["sha256"] for label in ["a022", "T2", "T3"]}) == 1
+for label in ["a022", "T2", "T3"]:
+    assert "budget=" not in result["src/tianshu/cli.py"][label]["_engine"]["source"]
+(OUT / "logs/budget-assembly-three-way-reproduced.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+print("CONFIRMED: T2/T3 CLI assembly identical; a022 only lacks later contents wiring; budget keyword absent in all three; constructor/account/reservation helpers identical.")

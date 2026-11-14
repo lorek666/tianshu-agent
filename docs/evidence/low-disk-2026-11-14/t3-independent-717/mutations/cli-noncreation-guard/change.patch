@@ -1,0 +1,15 @@
+--- frozen/src/tianshu/cli.py
++++ mutant/src/tianshu/cli.py
+@@ -539,12 +539,6 @@
+ 
+ 
+ def _cmd_run(args: argparse.Namespace) -> int:
+-    if args.execution_mode is not None and args.action not in (None, "start"):
+-        print(
+-            "错误：--execution-mode 只适用于新建 Run（run start 或兼容入口）",
+-            file=sys.stderr,
+-        )
+-        return 2
+     needs_mcp = args.action in (None, "start", "resume")
+     stack = _authority_stack(args.db, args.data_root, mcp=needs_mcp)
+     try:

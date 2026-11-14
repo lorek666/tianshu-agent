@@ -1,0 +1,5 @@
+negative_control=rpc_policy_parser_bypassed
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+mutated_control_sha256=7b0eba87352aa3654c8119e1f8a7ff4535c76985d6f03e629d2e45684999e008
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py::test_rpc_execution_policy_is_strict_and_controls_low_disk_admission

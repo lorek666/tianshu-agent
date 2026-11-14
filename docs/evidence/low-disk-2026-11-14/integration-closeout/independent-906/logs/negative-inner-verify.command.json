@@ -1,0 +1,30 @@
+{
+  "label": "negative-inner-verify",
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "addopts=",
+    "-q",
+    "-rs",
+    "--basetemp",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-inner-verify/pytest",
+    "tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability"
+  ],
+  "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+    "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-inner-verify/authority",
+    "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    "REVIEW_LABEL": "negative-inner-verify",
+    "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "REVIEW_MUTATION": "1"
+  },
+  "expected_exit": 1,
+  "expected_output_contains": "DID NOT RAISE"
+}

@@ -1,0 +1,30 @@
+{
+  "label": "negative-fixture-m2",
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "addopts=",
+    "-q",
+    "-rs",
+    "--basetemp",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-m2/pytest",
+    "tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace"
+  ],
+  "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+    "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-m2/authority",
+    "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    "REVIEW_LABEL": "negative-fixture-m2",
+    "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "REVIEW_MUTATION": "1"
+  },
+  "expected_exit": 1,
+  "expected_output_contains": "1 failed"
+}

@@ -1,0 +1,28 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_recover_after_each_failpoint[after_intent-create] ____________
+
+tmp_path = PosixPath('/private/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-recovery/pytest/test_recover_after_each_failpo0')
+fp = 'after_intent', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_intent 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/private/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+1 failed in 0.32s

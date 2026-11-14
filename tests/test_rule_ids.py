@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from support import effects_admission
 
 from tianshu.dispatcher import Dispatcher, build_request
 from tianshu.events import EVENT_TYPES, EventLog
@@ -95,7 +96,10 @@ def env(tmp_path):
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
     approvals = ApprovalStore(log)
     grants = GrantStore(log)
     dispatcher = Dispatcher(
@@ -106,7 +110,7 @@ def env(tmp_path):
         approvals,
         grants=grants,
         claims=claims,
-        snapshots=SnapshotStore(tmp_path / "artifacts"),
+        snapshots=snapshots,
         data_root=data,
     )
     e = Env(ws, log, leases, claims, tasks, approvals, grants, dispatcher)
@@ -196,6 +200,7 @@ def test_rejection_and_decision_are_disjoint_and_cover():
 def _producer_hits() -> set[str]:
     """扫源码里以 rule_id 身份出现的字面量（含各类辅助函数的位置参数）。"""
     index = {
+        "DiskAdmissionError": 0,  # (rule_id, reason)，创建前拒绝不另造 Run/事件
         "DispatchDenied": 1,  # (reason, rule_id)
         "PolicyDecision": 2,  # (kind, reason, rule_id)
         "_reject": 3,  # (request, args, reason, rule_id, *, event)
@@ -251,6 +256,12 @@ def _producer_hits() -> set[str]:
                         node.func.value, ast.Dict
                     ):
                         note_dict_values(node.func.value)
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "rule_id"
+                for target in node.targets
+            ):
+                # 固定拒绝异常的类属性也是真实 rule_id（例如 RunEffectsDisallowed）。
+                note(node.value)
             elif isinstance(node, ast.Dict):
                 for key, value in zip(node.keys, node.values, strict=True):
                     if isinstance(key, ast.Constant) and key.value == "rule_id":

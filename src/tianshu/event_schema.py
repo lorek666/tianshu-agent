@@ -12,7 +12,7 @@
 2. **写入前校验**：`EventLog.append` 在落 blob / 写库之前调用
    `detect_version()`，非法 payload 抛 `PayloadContractError`（带类型与失败
    路径），一个字节都不产生。
-3. **精确版本**：每条事件有一个 payload 版本（当前 `CURRENT_PAYLOAD_VERSION=1`），
+3. **精确版本**：每条事件有一个 payload 版本（`run.start` 当前为 2，其余类型为 1），
    存在旁表 `event_versions(seq, type, version)`，与事件行同一事务写入。
    `version=0` 是"冻结前的旧版"：本模块为每种类型保留一份 `LEGACY_SCHEMAS`，
    只放宽（required 清空 + 历史字段并集 + 少量类型放宽），**不按新版默认补值**。
@@ -31,6 +31,7 @@ from typing import Any
 
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
+from .run_policy import RunExecutionPolicyV1
 
 __all__ = [
     "CURRENT_PAYLOAD_VERSION",
@@ -1129,10 +1130,25 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     for name, schema in CURRENT_SCHEMAS.items()
 }
 
+# v0/v1 保持原始解释；仅 run.start 的新写采用 v2。
+RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
+CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
+    {"format_version": {
+        "type": "integer", "const": 1,
+        "description": "项目事件写入另经 RunExecutionPolicyV1 语义校验："
+                       "仅接受整数 1，不接受浮点数 1.0 或布尔值；"
+                       "标准 JSON Schema integer 本身不区分 1 与 1.0。",
+     },
+     "mode": {"type": "string", "enum": ["effects", "pure_only"]}},
+    required=("format_version", "mode"),
+)
+CURRENT_SCHEMAS["run.start"]["required"].append("execution_policy")
+
 _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
     name: frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION})
     for name in CURRENT_SCHEMAS
 }
+_RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
 
 
 # ---------------------------------------------------------------- 注册时校验
@@ -1224,7 +1240,8 @@ def _check_registry_schema(name: str, schema: dict[str, Any], version: int) -> N
 
 
 for _name, _schema in CURRENT_SCHEMAS.items():
-    _check_registry_schema(_name, _schema, CURRENT_PAYLOAD_VERSION)
+    _check_registry_schema(_name, _schema, 2 if _name == "run.start" else CURRENT_PAYLOAD_VERSION)
+_check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
 
@@ -1256,7 +1273,9 @@ def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
 
 
 def current_version(event_type: str) -> int:
-    return CURRENT_PAYLOAD_VERSION if event_type in CURRENT_SCHEMAS else 0
+    if event_type not in CURRENT_SCHEMAS:
+        return 0
+    return 2 if event_type == "run.start" else CURRENT_PAYLOAD_VERSION
 
 
 def known_versions(event_type: str) -> frozenset[int]:
@@ -1268,8 +1287,10 @@ def known_versions(event_type: str) -> frozenset[int]:
 def schema_for(event_type: str, version: int) -> dict[str, Any]:
     if event_type not in CURRENT_SCHEMAS:
         raise UnknownPayloadVersion(f"未知事件类型，没有 payload 契约：{event_type!r}")
-    if version == CURRENT_PAYLOAD_VERSION:
+    if version == current_version(event_type):
         return CURRENT_SCHEMAS[event_type]
+    if event_type == "run.start" and version == 1:
+        return RUN_START_V1_SCHEMA
     if version == LEGACY_PAYLOAD_VERSION:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(
@@ -1354,17 +1375,23 @@ def _check_value(
 
 
 def payload_errors(
-    event_type: str, payload: Any, version: int = CURRENT_PAYLOAD_VERSION
+    event_type: str, payload: Any, version: int | None = None
 ) -> list[str]:
     """返回该 payload 在指定版本下的全部契约错误（空列表 = 合法）。"""
+    version = current_version(event_type) if version is None else version
     schema = schema_for(event_type, version)
     errors: list[str] = []
     _check_value(schema, payload, "$", errors, event_type)
+    if not errors and event_type == "run.start" and version == 2:
+        try:
+            RunExecutionPolicyV1.of(payload["execution_policy"])
+        except TianshuError as exc:
+            errors.append(f"$.execution_policy：{exc}")
     return errors
 
 
 def validate_payload(
-    event_type: str, payload: Any, version: int = CURRENT_PAYLOAD_VERSION
+    event_type: str, payload: Any, version: int | None = None
 ) -> None:
     errors = payload_errors(event_type, payload, version)
     if errors:
@@ -1374,24 +1401,25 @@ def validate_payload(
 def detect_version(
     event_type: str, payload: Any, *, allow_legacy: bool = False
 ) -> int:
-    """写入口的版本判定：**默认只接受当前契约（v1）**。
+    """写入口的版本判定：**默认只接受该类型的当前契约**。
 
-    - `allow_legacy=False`（默认，生产路径）：只按 v1 校验；不合法直接抛
+    - `allow_legacy=False`（默认，生产路径）：只按该类型的 current 校验；不合法直接抛
       `PayloadContractError`。**绝不**自动退回 v0——否则"新写入写漏字段"会被
       静默记成一条冒充旧版的记录，等于给写入校验开免检通道。
-    - `allow_legacy=True`（仅显式请求）：v1 不合法时再按 v0（封闭的历史并集）
+    - `allow_legacy=True`（仅显式请求）：current 不合法时再按 v0（封闭的历史并集）
       校验，通过则返回 0；两边都不合法仍拒绝。只给夹具/历史播种/迁移测试用，
       生产调用点一律不许传。
 
     事件行会用旁表记下实际版本，读取时不会假装它是新版。
     """
-    if not payload_errors(event_type, payload, CURRENT_PAYLOAD_VERSION):
-        return CURRENT_PAYLOAD_VERSION
+    version = current_version(event_type)
+    if not payload_errors(event_type, payload, version):
+        return version
     if allow_legacy and not payload_errors(
         event_type, payload, LEGACY_PAYLOAD_VERSION
     ):
         return LEGACY_PAYLOAD_VERSION
-    first = payload_errors(event_type, payload, CURRENT_PAYLOAD_VERSION)[0]
+    first = payload_errors(event_type, payload, version)[0]
     raise PayloadContractError(
         event_type, first.split("：", 1)[0], first.split("：", 1)[1]
     )
@@ -1447,8 +1475,8 @@ def _sample_for(schema: dict[str, Any]) -> Any:
 
 
 def minimal_payload(event_type: str) -> dict[str, Any]:
-    """构造该类型的最小合法 v1 payload（测试与夹具用，且会被校验兜底）。"""
-    schema = schema_for(event_type, CURRENT_PAYLOAD_VERSION)
+    """构造该类型的最小合法 current payload（测试与夹具用，且会被校验兜底）。"""
+    schema = schema_for(event_type, current_version(event_type))
     payload = _sample_for(schema)
     validate_payload(event_type, payload)
     return payload

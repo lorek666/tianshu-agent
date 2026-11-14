@@ -1,0 +1,102 @@
+"""Read actual schemas/registry plus AST order; this is not behavior testing."""
+import ast
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+OUT = Path(__file__).resolve().parents[1]
+SOURCE = OUT / "source"
+sys.path.insert(0, str(SOURCE / "src"))
+
+from tianshu import control, event_schema, rules
+from tianshu.run_policy import EFFECTS, PURE_ONLY
+from tianshu.tool_registry import current_registry
+from tianshu.tools import tool_manifest
+
+
+def method(path, name, cls=None):
+    text = (SOURCE / path).read_text()
+    tree = ast.parse(text)
+    if cls:
+        tree = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    return node, text
+
+
+def calls(path, name, cls=None):
+    node, text = method(path, name, cls)
+    return [
+        {"line": n.lineno, "call": ast.unparse(n.func), "keywords": {k.arg: ast.unparse(k.value) for k in n.keywords}}
+        for n in sorted(ast.walk(node), key=lambda n: getattr(n, "lineno", 0))
+        if isinstance(n, ast.Call)
+    ]
+
+
+def required_order(items, names):
+    lines = []
+    for name in names:
+        line = next(item["line"] for item in items if item["call"] == name)
+        lines.append(line)
+    assert lines == sorted(lines)
+    return dict(zip(names, lines))
+
+
+out = {"runtime": sys.version, "scope": "AST source order and actual registry/schema values only; inherited behavioral proofs are not recounted."}
+control_start = calls("src/tianshu/control.py", "_run_start", "ControlPlane")
+out["control_start_order"] = required_order(control_start, ["RunExecutionPolicyV1.of", "self._tasks.get_task", "self._stack.dispatcher.prepare_run", "self._tasks.start_run", "self._claims.enqueue"])
+for name in ["self._stack.dispatcher.prepare_run", "self._tasks.start_run"]:
+    call = next(x for x in control_start if x["call"] == name)
+    if name.endswith("start_run"):
+        assert call["keywords"]["execution_policy"] == "execution_policy"
+node, _ = method("src/tianshu/control.py", "_run_start", "ControlPlane")
+pre = next(n for n in ast.walk(node) if isinstance(n, ast.Call) and ast.unparse(n.func) == "self._stack.dispatcher.prepare_run")
+assert ast.unparse(pre.args[1]) == "execution_policy"
+
+prepare = calls("src/tianshu/dispatcher.py", "prepare", "Dispatcher")
+out["prepare_guard_order"] = required_order(prepare, ["self._typecheck", "self._authority", "self._resolve_target", "self._check_run_execution", "self._policy.classify"])
+dispatch = calls("src/tianshu/dispatcher.py", "dispatch", "Dispatcher")
+out["dispatch_guard_order"] = required_order(dispatch, ["self._authority", "self._resolve_target", "self._check_run_execution", "self._consume_authority", "tx.append"])
+start = calls("src/tianshu/tasks.py", "start_run", "TaskStore")
+out["final_creation_gate_order"] = required_order(start, ["self._log.transaction", "self.get_task", "self.require_new_run", "self._insert_run_locked"])
+
+for name in ["_cmd_run", "_run_compat"]:
+    items = calls("src/tianshu/cli.py", name)
+    engines = [x for x in items if x["call"].endswith(".start")]
+    assert len(engines) == 1 and engines[0]["keywords"]["execution_policy"] == "_run_execution_policy(args)"
+    out["cli_" + name] = engines
+
+registry = current_registry()
+ids = set(registry.ids())
+expected_pure = {tool_id for tool_id in ids if registry.spec(tool_id).side_effect_level == "pure"}
+assert set(control._exposed_tool_ids(EFFECTS)) == ids
+assert set(control._exposed_tool_ids(PURE_ONLY)) == expected_pure
+manifest_pure = {t["name"] for t in tool_manifest() if registry.spec(t["name"]).side_effect_level == "pure"}
+assert manifest_pure <= expected_pure
+out["actual_registry"] = {"all": len(ids), "pure": sorted(expected_pure), "model_manifest_pure": sorted(manifest_pure), "control_effects": len(control._exposed_tool_ids(EFFECTS)), "control_pure": len(control._exposed_tool_ids(PURE_ONLY))}
+
+versions = {name: event_schema.current_version(name) for name in event_schema.CURRENT_SCHEMAS}
+assert {name for name, version in versions.items() if version == 2} == {"run.start"}
+assert all(version == 1 for name, version in versions.items() if name != "run.start")
+out["actual_current_event_versions"] = versions
+schema = json.loads((SOURCE / "schemas/c4/rules.json").read_text())
+# Read the real field schema, never a handwritten replacement.
+enum = schema["properties"]["rule_id"]["enum"]
+assert set(enum) == set(rules.RULE_IDS)
+out["actual_rule_schema_binding"] = {"count": len(enum), "matches": True}
+
+app = (SOURCE / "ui/src/App.tsx").read_text()
+create_start = app.index("const handleCreateTask")
+create_end = app.index("const handleStartRun", create_start)
+create_text = app[create_start:create_end]
+task_payload = create_text[create_text.index("RPC.taskCreate"):create_text.index("created = normalizeTask")]
+assert "execution_policy" not in task_payload
+assert "[task.task_id]: input.execution_policy" in create_text
+assert "execution_policy: input.execution_policy" in create_text
+assert "[taskId]: executionPolicy" in app and "runPolicies[selectedTask.task_id] ?? EFFECTS_RUN_POLICY" in app
+out["ui_source_wiring"] = {"task_create_policy_absent": True, "failed_start_policy_keyed_by_task_id": True, "default_effects": True, "meaning": "Source structure only; actual DOM/host.rpc behavior belongs to the separate T3 reviewer."}
+
+for rel in ["src/tianshu/cli.py", "src/tianshu/control.py", "src/tianshu/dispatcher.py", "src/tianshu/tasks.py", "src/tianshu/loop.py", "src/tianshu/event_schema.py", "src/tianshu/run_policy.py", "src/tianshu/rules.py", "schemas/c4/rules.json", "ui/src/App.tsx"]:
+    out.setdefault("source_hashes", {})[rel] = hashlib.sha256((SOURCE / rel).read_bytes()).hexdigest()
+(OUT / "logs/structural-wiring.json").write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n")
+print(json.dumps({"status": "PASS_STRUCTURAL_WIRING_ONLY", "registry": out["actual_registry"], "rule_count": len(enum), "event_types": len(versions), "control_order": out["control_start_order"], "prepare_order": out["prepare_guard_order"], "dispatch_order": out["dispatch_guard_order"]}, ensure_ascii=False, indent=2))

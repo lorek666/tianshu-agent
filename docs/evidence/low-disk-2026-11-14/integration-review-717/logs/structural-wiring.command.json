@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
+    "-B",
+    "/tmp/low-disk-whole-branch-review-20261114/probes/structural_wiring.py"
+  ],
+  "cwd": "/tmp/low-disk-whole-branch-review-20261114",
+  "exit": 0,
+  "elapsed_seconds": 0.22769498825073242,
+  "probe_sha256": "d465c4611f14b8057d23b1baf778fd8f5e5ca86084a0d54b1ebb8c666a2676af",
+  "provider_environment_removed": true,
+  "env_set": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  }
+}

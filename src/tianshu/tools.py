@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import toolschema
 from .crashpoint import failpoint
+from .disk_admission import DiskAdmissionError
 from .errors import (
     OverwriteRefused,
     RunFenced,
@@ -39,6 +40,7 @@ from .errors import (
     ToolNotAllowed,
     ToolSchemaError,
 )
+from .events import canonical_bytes, sha256_hex
 from .exec import RULE_PTY_NOT_ALLOWED
 from .exec_backends import ExecBackend
 from .exec_backends import exec_backend as resolve_exec_backend
@@ -1504,6 +1506,12 @@ class FileExecutor:
         self._verify(admitted, permit)
 
         spec = SPECS[admitted.tool_id]
+        req = admitted.request
+        if (admitted.tool_id != req.tool_id or admitted.action != req.action
+                or req.tool_version != spec.version or req.action != spec.action
+                or req.schema_hash != sha256_hex(canonical_bytes(spec.input_schema))
+                or req.args_hash != sha256_hex(canonical_bytes(admitted.args))):
+            raise ToolNotAllowed("执行工具/参数与真实 ToolSpec 不符")
         validate_args(admitted.args, spec.input_schema)
 
         ws = Workspace(Path(admitted.workspace_root))
@@ -1527,6 +1535,17 @@ class FileExecutor:
         # 路径**再判一次，判完下一句就是改文件，中间不再交给任何回调。
         assert_paths_not_blocked(self._log, [admitted.target])
 
+        self._tasks.require_effects_allowed(req.run_id)
+        context = self._tasks.disk_admission.context
+        if (context is None or context.log is not self._log
+                or context.snapshots is not self._snapshots):
+            raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "文件执行器与 Run context 不一致",
+            )
+        target = Path(admitted.target)
+        self._tasks.require_effect_space(
+            req.run_id, targets=(target, target.parent), data_root=self._data_root,
+        )
         # 已在执行：从这一刻起，这次调用算 in-flight。取消不承诺回滚。
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
         try:

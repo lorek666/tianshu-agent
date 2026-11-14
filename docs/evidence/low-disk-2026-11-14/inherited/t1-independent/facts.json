@@ -1,0 +1,171 @@
+{
+  "reviewer": "/root/review_admission_contract",
+  "date": "2026-11-14",
+  "status": "INDEPENDENT_NARROW_ROUND1_REVIEW_COMPLETE",
+  "candidate": {
+    "root": "/tmp/tianshu-g3-20261113/low-disk-t1-round1-root-20261114-5g28_83k/candidate-complete",
+    "author_head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+    "implementation_commit_sha": null,
+    "full_source_files": 542,
+    "total_candidate_delta_from_H": 40,
+    "round1_delta_files": [
+      "docs/KNOWLEDGE.md",
+      "schemas/c3/event.json",
+      "src/tianshu/dispatcher.py",
+      "src/tianshu/event_schema.py",
+      "tests/test_low_disk_run_creation.py",
+      "tests/test_takeover.py"
+    ],
+    "author_manifest_sha256": "4ac68a766cf941509c4c38436fdf48806692e7401ff9b84e099813868b68bfa5",
+    "root_source_hashes_sha256": "ce2a50155505e3915abf90de6be26e40ba6019e0c9f0b495db9c58df5d96e6f4",
+    "complete_patch_sha256": "ecb4e7b713ff4fd0f78080748bddd5cec0f7f69fc0f06cf0d00ce6e61f1bd6a1",
+    "round1_delta_patch_sha256": "ede3898a6d3b1470c7c545b233ec280cff8586cfce9a34fba50dfe290f9a89a2"
+  },
+  "verdicts": {
+    "spec": "PASS_T1_ROUND1_NARROW_C1_C2_WITH_EXACT_V1_INHERITANCE",
+    "quality": "PASS_T1_ROUND1_NARROW_SIX_FILE_DELTA_AND_ORIGINAL_TAKEOVER_GUARDS",
+    "whole_low_disk_delivery": "NOT_ACCEPTED_T2_T3_FINAL_GATES_CI_PENDING"
+  },
+  "findings": [
+    {
+      "id": "C1",
+      "v1": "未修/FAIL preserved",
+      "round1": "已修",
+      "evidence": "c1-real-controls.log",
+      "cases": 15,
+      "negative_control": "Removing only control creation transaction reproduces six failures for control/remember/undo late_low/late_unknown; 9P6F, then exact restore.",
+      "boundary": "Composes with existing EventLog nested transaction semantics; exceptions must propagate to outer scope to trigger rollback. No savepoint/isolation/whole-control-transaction claim."
+    },
+    {
+      "id": "C2",
+      "v1": "未修/FAIL preserved",
+      "round1": "已修",
+      "evidence": "c2-real-write-read.log",
+      "cases": 13,
+      "negative_control": "Removing new-v2 semantic hook reproduces two float1.0 write-read failures (both modes),11P2F; exact restore.",
+      "boundary": "Strict policy object unchanged; old/current other integer fields retain integral-float JSON Schema semantics. Standard JSON Schema itself does not distinguish 1 from 1.0; mirrored description states the project semantic check."
+    },
+    {
+      "id": "Q1",
+      "v1": "未修/1F5P author raw preserved",
+      "round1": "已修",
+      "evidence": [
+        "takeover-original-tests.log",
+        "takeover-real-trace.log"
+      ],
+      "original_tests_passed": 6,
+      "real_process_traces": 3,
+      "negative_control": "Removing only memory/contents fixture wiring makes original single test fail at rc1 context mismatch rather than expected rc2; restored.",
+      "boundary": "Only fixture instances changed; no old refusal/holder/event/file assertion weakened."
+    }
+  ],
+  "unresolved_blockers_within_narrow_scope": [],
+  "verification": {
+    "c1-real-controls": {
+      "passed": 15,
+      "failed": 0,
+      "log_sha256": "176d63c0bb57b4e089c45b2c04bffd1c222ea713c2193987bd2eae1ea185ebde",
+      "script_sha256_matches": true
+    },
+    "c2-real-write-read": {
+      "passed": 13,
+      "failed": 0,
+      "log_sha256": "f613655175233e2fc697adb0ba9b513a9ba22638f17c8f8af52b18a46e2950db",
+      "script_sha256_matches": true
+    },
+    "takeover-real-trace": {
+      "passed": 3,
+      "failed": 0,
+      "log_sha256": "4ed2a422571f1f9cc2c310835334637e6b9eb0d9722612286b423278e092ecca",
+      "script_sha256_matches": true
+    },
+    "takeover-original-tests": {
+      "passed": 6,
+      "failed": 0,
+      "skip": 0,
+      "scope": "unchanged original assertions in the copied test module"
+    },
+    "independent_negative_controls": {
+      "passed": 3,
+      "failed": 0,
+      "restored": true,
+      "details": [
+        {
+          "name": "negative-c1-remove-transaction",
+          "actual": {
+            "passed": 9,
+            "failed": 6
+          },
+          "failed_cases": [
+            "control_late_low",
+            "control_late_unknown",
+            "memory_late_low",
+            "memory_late_unknown",
+            "undo_late_low",
+            "undo_late_unknown"
+          ]
+        },
+        {
+          "name": "negative-c2-remove-semantic-hook",
+          "actual": {
+            "passed": 11,
+            "failed": 2
+          },
+          "failed_cases": [
+            "real_append_reopen_effects_1.0",
+            "real_append_reopen_pure_only_1.0"
+          ]
+        },
+        {
+          "name": "negative-takeover-remove-instance-wiring",
+          "actual": {
+            "expected_failure_summary_present": true
+          },
+          "failed_cases": []
+        }
+      ]
+    }
+  },
+  "integrity": {
+    "frozen_542_sources_before_after_identical": true,
+    "frozen_directory_extras": 0,
+    "workcopy_542_source_hashes_match_after_mutations": true,
+    "v1_outputs_unchanged": true,
+    "source_git_mutations": false,
+    "product_data_roots": "temporary /tmp only",
+    "python_no_bytecode": true,
+    "pytest_cacheprovider_disabled": true
+  },
+  "inherited_observation": {
+    "id": "OBSERVED_LOCK_HELD_DURING_CONTROLLED_LEAF",
+    "disposition": "unchanged root decision; observation, not a new blocker or repaired SLO",
+    "meaning": "An artificially held probe keeps the creation transaction locked. Not a native disk_usage latency/deadlock/platform-SLO measurement. Filesystem blocking has no proved time bound."
+  },
+  "preexisting_note": {
+    "id": "DOC_EXISTING_COUNT_DRIFT",
+    "status": "未修，既有低优先文档提示，交付前对账仍需处理",
+    "file": "README.md:280",
+    "claimed_top_level_py": 49,
+    "actual_H": 63,
+    "actual_candidate": 65,
+    "byte_unchanged_this_round": true
+  },
+  "not_run": [
+    "author 800/467 broad suites and author 23-mutant reruns",
+    "full/lock/ruff/final implementation commit/PR/native CI",
+    "T2 execution/resume/control-exception closure",
+    "T3 CLI/RPC/UI full mode entrypoints and combined final checks",
+    "native distinct-volume/nested-mount/Windows-Linux platform validation",
+    "actual ENOSPC/crashpoint recovery/physical power loss/soak/paid models"
+  ],
+  "author_evidence_read_this_round": false,
+  "root_input_integrity_fact_only": "Root reported 659 author entries checked; this lane independently verifies the frozen 542 sources/delta and its own executable evidence, not 659 results or author self-review.",
+  "environment": {
+    "python": "3.12.13 (main, Apr 14 2026, 14:33:40) [Clang 22.1.3 ]",
+    "executable": "/Users/ronfee/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "pytest_runtime": "/tmp/tianshu-t1-round1-review-runtime-20261114"
+  },
+  "authorization_boundary": "No T2 implementation authorization is inferred; root decides next stage."
+}

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from support import CHILD_TEXT, write_exact
+from support import CHILD_TEXT, effects_admission, write_exact
 
 from tianshu.dispatcher import (
     KIND_ADMITTED,
@@ -92,10 +92,12 @@ def _env(tmp_path: Path) -> Env:
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
     approvals = ApprovalStore(log)
     grants = GrantStore(log)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
     dispatcher = Dispatcher(
         log,
         tasks,

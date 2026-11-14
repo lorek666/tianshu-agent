@@ -1,0 +1,58 @@
+--- 879/tests/test_low_disk_execution.py
++++ 906/tests/test_low_disk_execution.py
+@@ -742,6 +742,55 @@
+         assert not any(e.type == "execution.started" for e in log.read_run(pure_run.run_id))
+ 
+ 
++def test_pure_only_write_proposal_keeps_dispatch_and_result_audit(tmp_path):
++    """pure_only 的合法提案必须进入派发层拒绝，而不是在模型轮次被静默丢弃。"""
++    from tianshu.loop import Limits
++    from tianshu.model import ModelResponse, ScriptedModel, ToolCall
++
++    workspace = tmp_path / "ws"
++    workspace.mkdir()
++    with closing(EventLog(tmp_path / "events.db")) as log:
++        stack = build_stack(log, data_root=tmp_path / "data")
++        task = stack.tasks.create_task("pure-only audit", [str(workspace)])
++        run, claim = _start(stack, task, "pure_only")
++        # 模拟旧版或伪造调用方已拿到租约：pure_only 资格仍须在派发层独立拒绝。
++        stack.leases.acquire([workspace], run.run_id)
++        model = ScriptedModel(
++            [
++                ModelResponse(
++                    "tool_use",
++                    tool_calls=[
++                        ToolCall(
++                            "write-1",
++                            "create_report",
++                            {"name": "must-not-exist.md", "content": "forbidden"},
++                        )
++                    ],
++                ),
++                ModelResponse("end_turn", content="proposal refused"),
++            ]
++        )
++        result = _drive_route(
++            stack,
++            model,
++            claim,
++            "drive",
++            limits=Limits(8, 20_000),
++        )
++
++        events = log.read_run(result.run_id)
++        rejected = [e.payload for e in events if e.type == "dispatch.rejected"]
++        results = [e.payload for e in events if e.type == "tool.result"]
++        assert len(rejected) == len(results) == 1
++        assert rejected[0]["rule_id"] == "dispatch.run_effects_disallowed"
++        assert results[0]["call_id"] == "write-1"
++        assert results[0]["status"] == "rejected"
++        assert results[0]["effect_state"] == "none_applied"
++        assert results[0]["output"]["rule_id"] == "dispatch.run_effects_disallowed"
++        assert not any(e.type == "tool.not_dispatched" for e in events)
++        assert not (workspace / "must-not-exist.md").exists()
++
++
+ @pytest.mark.parametrize("boundary", ["begin", "memory_begin"])
+ def test_direct_execution_guard_rejects_before_started(tmp_path, boundary):
+     from tianshu.disk_admission import DiskAdmissionError

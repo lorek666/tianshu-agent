@@ -1,0 +1,48 @@
+{
+  "nature": "observer metadata correction only, not a product failure or additional kill",
+  "original_metadata_directory": "/tmp/low-disk-t3-independent-20261114/raw/metadata-before-filter-correction",
+  "corrections": [
+    {
+      "label": "ui-create-policy",
+      "old_skipped": 0,
+      "skipped": 3,
+      "filtered_unexecuted": 3,
+      "authored_skips": 0,
+      "classification": "Vitest -t name-filtered three cases; no authored skip"
+    },
+    {
+      "label": "ui-detail-policy",
+      "old_skipped": 0,
+      "skipped": 3,
+      "filtered_unexecuted": 3,
+      "authored_skips": 0,
+      "classification": "Vitest -t name-filtered three cases; no authored skip"
+    },
+    {
+      "label": "ui-dialog-retry-seed",
+      "old_skipped": 0,
+      "skipped": 3,
+      "filtered_unexecuted": 3,
+      "authored_skips": 0,
+      "classification": "Vitest -t name-filtered three cases; no authored skip"
+    },
+    {
+      "label": "ui-task-key-isolation",
+      "old_skipped": 0,
+      "skipped": 3,
+      "filtered_unexecuted": 3,
+      "authored_skips": 0,
+      "classification": "Vitest -t name-filtered three cases; no authored skip"
+    }
+  ],
+  "full_ui_positive": {
+    "selected": 4,
+    "passed": 4,
+    "skipped": 0
+  },
+  "restored_ui_positive": {
+    "selected": 2,
+    "passed": 2,
+    "filtered_unexecuted_reported_skipped": 2
+  }
+}

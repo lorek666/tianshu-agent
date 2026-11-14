@@ -1,0 +1,238 @@
+{
+  "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "commands": [
+    {
+      "label": "diff-check",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "diff-check.stdout.txt",
+      "stderr": "diff-check.stderr.txt"
+    },
+    {
+      "label": "ruff-t3",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "src/tianshu/cli.py",
+        "src/tianshu/control.py",
+        "tests/test_low_disk_entrypoints.py"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "ruff-t3.stdout.txt",
+      "stderr": "ruff-t3.stderr.txt"
+    },
+    {
+      "label": "compile-t3",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_compile.py"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "compile-t3.stdout.txt",
+      "stderr": "compile-t3.stderr.txt"
+    },
+    {
+      "label": "stub-scan-t3",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "docs/evidence/low-disk-2026-11-14/t3/final-gates/check_stubs.py"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "stub-scan-t3.stdout.txt",
+      "stderr": "stub-scan-t3.stderr.txt"
+    },
+    {
+      "label": "python-narrow-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "-rs",
+        "tests/test_low_disk_entrypoints.py",
+        "tests/test_ipc.py",
+        "tests/test_control.py"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "python-narrow-final.stdout.txt",
+      "stderr": "python-narrow-final.stderr.txt"
+    },
+    {
+      "label": "ui-install-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "ui-install-final.stdout.txt",
+      "stderr": "ui-install-final.stderr.txt"
+    },
+    {
+      "label": "ui-typecheck-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "typecheck"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "ui-typecheck-final.stdout.txt",
+      "stderr": "ui-typecheck-final.stderr.txt"
+    },
+    {
+      "label": "ui-target-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/run-mode.test.tsx"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "ui-target-final.stdout.txt",
+      "stderr": "ui-target-final.stderr.txt"
+    },
+    {
+      "label": "ui-build-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "build"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "ui-build-final.stdout.txt",
+      "stderr": "ui-build-final.stderr.txt"
+    },
+    {
+      "label": "post-build-python-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-o",
+        "addopts=",
+        "-q",
+        "-rs",
+        "tests/test_low_disk_entrypoints.py",
+        "tests/test_ipc.py",
+        "tests/test_control.py"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "post-build-python-final.stdout.txt",
+      "stderr": "post-build-python-final.stderr.txt"
+    },
+    {
+      "label": "post-build-ui-typecheck-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "typecheck"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "post-build-ui-typecheck-final.stdout.txt",
+      "stderr": "post-build-ui-typecheck-final.stderr.txt"
+    },
+    {
+      "label": "post-build-ui-target-final",
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "argv": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/run-mode.test.tsx"
+      ],
+      "exit_code": 0,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider"
+      },
+      "stdout": "post-build-ui-target-final.stdout.txt",
+      "stderr": "post-build-ui-target-final.stderr.txt"
+    }
+  ]
+}

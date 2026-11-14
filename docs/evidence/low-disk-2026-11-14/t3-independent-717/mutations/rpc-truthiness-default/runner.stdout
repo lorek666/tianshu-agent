@@ -1,0 +1,13 @@
+{"label": "mutant-rpc-truthiness-default", "exit": 1}
+{"probe": "ipc_ready", "pid": 19602, "parent": 19597, "root": "/tmp/low-disk-t3-independent-20261114/runs/i-jgafb4lm", "welcome": {"protocol": 1, "daemon_version": "0.1.0", "instance_id": "daemon_bea5041bc748", "event_seq_head": 0, "data_root": "/tmp/low-disk-t3-independent-20261114/runs/i-jgafb4lm", "started_at": 1794621136601}}
+F
+=================================== FAILURES ===================================
+________________________ test_real_ipc_bad_policy[None] ________________________
+/tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py:174: in test_real_ipc_bad_policy
+    try:result=d.start(policy,extra={'mode':'effects'});assert not result['ok'] and result['code']=='bad_params',result
+                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: {'ok': True, 'result': {'run': {'run_id': 'run_fc2f1d02d247', 'task_id': 'task_62912e52f6e5', 'state': 'created', 'outcome': None, ...}}}
+E   assert (not True)
+=========================== short test summary info ============================
+FAILED ../../../../tmp/low-disk-t3-independent-20261114/probes/test_entry_independent.py::test_real_ipc_bad_policy[None]
+1 failed, 51 deselected in 0.77s

@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from support import effects_admission
 
 from tianshu.dispatcher import (
     KIND_WAITING,
@@ -133,10 +134,12 @@ def _env(tmp_path: Path) -> Env:
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data)
+    snapshots = SnapshotStore(tmp_path / "artifacts")
+    tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
+        disk_admission=effects_admission(log, snapshots=snapshots,
+            memory=None, contents=None, data_root=data))
     approvals = ApprovalStore(log)
     grants = GrantStore(log)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
     dispatcher = Dispatcher(
         log,
         tasks,
@@ -338,6 +341,9 @@ def test_a_model_driven_run_never_starts_another_run(tmp_path, monkeypatch):
             ]
         ),
         limits=Limits(4, 20_000),
+
+        memory=stack.memory,
+        contents=stack.contents,
     )
     task = stack.tasks.create_task("试试执行命令", [{"root_path": str(ws)}])
     result = engine.start(task.task_id)

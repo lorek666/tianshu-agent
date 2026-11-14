@@ -1,0 +1,48 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_rpc_execution_policy_is_strict_and_controls_low_disk_admission ______
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2958/test_rpc_execution_policy_is_s0')
+
+    def test_rpc_execution_policy_is_strict_and_controls_low_disk_admission(
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "events.db"
+        data_root = tmp_path / "data"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        rpc_root = _short_root()
+        try:
+            invalid = [
+                {"format_version": True, "mode": "effects"},
+                {"format_version": 1.0, "mode": "effects"},
+                {"format_version": 2, "mode": "effects"},
+                {"format_version": 1, "mode": "future"},
+                {"format_version": 1, "mode": "effects", "approved": True},
+            ]
+    
+            with _control_rpc(rpc_root, db, data_root, workspace) as (client, task_id):
+                with pytest.raises(ipc.RemoteError) as caught:
+                    client.call("run.start", {"task_id": task_id})
+                assert caught.value.code == "internal"
+                assert "dispatch.disk_space_low" in caught.value.message
+    
+                for policy in invalid:
+                    with pytest.raises(ipc.RemoteError) as caught:
+                        client.call(
+                            "run.start",
+                            {
+                                "task_id": task_id,
+                                "execution_policy": policy,
+                            },
+                        )
+>                   assert caught.value.code == "bad_params", caught.value
+E                   AssertionError: RemoteError('internal: dispatch.disk_space_low: /private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2958/test_rpc_execution_policy_is_s0/events.db: 可用空间低于 2 GiB')
+E                   assert 'internal' == 'bad_params'
+E                     
+E                     - bad_params
+E                     + internal
+
+tests/test_low_disk_entrypoints.py:409: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_low_disk_entrypoints.py::test_rpc_execution_policy_is_strict_and_controls_low_disk_admission

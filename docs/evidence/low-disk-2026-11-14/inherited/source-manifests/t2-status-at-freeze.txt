@@ -1,0 +1,47 @@
+## codex/g3-low-disk-admission
+ M README.md
+ M docs/KNOWLEDGE.md
+ M docs/PRD-v1.md
+ M schemas/c3/event.json
+ M schemas/c4/rules.json
+ M src/tianshu/cli.py
+ M src/tianshu/control.py
+ M src/tianshu/daemon.py
+ M src/tianshu/dispatcher.py
+ M src/tianshu/eval/runner.py
+ M src/tianshu/event_schema.py
+ M src/tianshu/loop.py
+ M src/tianshu/memory_exec.py
+ M src/tianshu/rules.py
+ M src/tianshu/tasks.py
+ M src/tianshu/tools.py
+ M tests/support.py
+ M tests/test_backend_contract.py
+ M tests/test_context.py
+ M tests/test_cost_line.py
+ M tests/test_dispatch.py
+ M tests/test_event_schema.py
+ M tests/test_evidence_keys.py
+ M tests/test_exec_backends.py
+ M tests/test_failclosed.py
+ M tests/test_isolation_gate.py
+ M tests/test_job_claims.py
+ M tests/test_mcp_crash.py
+ M tests/test_mcp_dispatch.py
+ M tests/test_mcp_object_block.py
+ M tests/test_memory_dispatch.py
+ M tests/test_memory_loop.py
+ M tests/test_network_fetch.py
+ M tests/test_rule_ids.py
+ M tests/test_run_command.py
+ M tests/test_run_control.py
+ M tests/test_summary_loop.py
+ M tests/test_takeover.py
+ M tests/test_tasks.py
+ M tests/test_transactions.py
+ M tests/test_veto_scope.py
+?? src/tianshu/disk_admission.py
+?? src/tianshu/run_policy.py
+?? tests/test_low_disk_admission.py
+?? tests/test_low_disk_execution.py
+?? tests/test_low_disk_run_creation.py

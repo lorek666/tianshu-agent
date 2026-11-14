@@ -1,0 +1,69 @@
+"""Narrow integration observation, not a CLI/IPC entrypoint behavior matrix."""
+import ast
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(SOURCE / "src"))
+os.environ["TIANSHU_AUTHORITY_ROOT"] = str(ROOT / "data/budget-authority")
+
+from tianshu import cli
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.model import ModelResponse, ScriptedModel
+from tianshu.run_policy import PURE_ONLY
+
+data = ROOT / "data/budget-assembly"
+data.mkdir(parents=True, exist_ok=False)
+log = EventLog(data / "events.db")
+stack = build_stack(log, data_root=data)
+args = SimpleNamespace(model="scripted", out=None, max_turns=2, max_total_tokens=10000)
+engine = cli._engine(stack, args)
+assert stack.budget is not None
+assert engine._budget is None
+
+# Re-evaluate only the archived baseline assembly function with the same real
+# AgentLoop constructor. Its constructor and budget methods are byte-identical.
+baseline = (ROOT / "inputs/git-a022/src/tianshu/cli.py").read_text()
+node = next(n for n in ast.parse(baseline).body if isinstance(n, ast.FunctionDef) and n.name == "_engine")
+ns = dict(cli.__dict__)
+exec(compile(ast.Module(body=[node], type_ignores=[]), "archived-a022-cli-_engine", "exec"), ns)
+baseline_engine = ns["_engine"](stack, args)
+assert baseline_engine._budget is None
+assert baseline_engine._reserve_attempt("not-a-run", "not-a-request", 1, None) is None
+assert engine._reserve_attempt("not-a-run", "not-a-request", 1, None) is None
+
+# One actual offline model cycle establishes observable semantics of the final
+# assembly. No real provider, MCP, child process, network, or paid endpoint.
+engine._model = ScriptedModel([ModelResponse(finish_reason="end_turn", content="offline proof")])
+task = stack.tasks.create_task("offline budget assembly observation", [])
+result = engine.start(task.task_id, execution_policy=PURE_ONLY)
+events = log.read_run(result.run_id)
+types = [e.type for e in events]
+assert "model.intent" in types and "model.result" in types
+assert stack.budget.account(f"run:{result.run_id}") is None
+account_count = log.conn.execute("SELECT COUNT(*) FROM budget_accounts").fetchone()[0]
+reservation_count = log.conn.execute("SELECT COUNT(*) FROM budget_reservations").fetchone()[0]
+assert account_count == reservation_count == 0
+output = {
+    "status": "CONFIRMED_PREEXISTING_CLI_BUDGET_ASSEMBLY_GAP_NOT_NEW_T3_REGRESSION",
+    "runtime": sys.version,
+    "module": cli.__file__,
+    "source_sha256": hashlib.sha256((SOURCE / "src/tianshu/cli.py").read_bytes()).hexdigest(),
+    "baseline_engine_budget_is_none": baseline_engine._budget is None,
+    "frozen_engine_budget_is_none": engine._budget is None,
+    "stack_budget_present": stack.budget is not None,
+    "run_id": result.run_id,
+    "run_state": result.state,
+    "event_types": types,
+    "budget_accounts": account_count,
+    "budget_reservations": reservation_count,
+    "scope": "One direct CLI-assembled offline engine cycle; no broad budget correctness or CLI/IPC/App matrix claim.",
+}
+log.close()
+print(json.dumps(output, ensure_ascii=False, indent=2))

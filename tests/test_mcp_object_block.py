@@ -62,6 +62,7 @@ from tianshu.resources import (
     mcp_object_key,
     mcp_server_key,
 )
+from tianshu.run_policy import EFFECTS
 from tianshu.snapshot import SnapshotStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
@@ -1087,6 +1088,7 @@ def test_server_dead_at_dispatch_is_unknown_without_object_block(tmp_path):
     log, stack, ws, _data, call_log = _stack_with_server(tmp_path)
     try:
         task = stack.tasks.create_task("发包前 server 死掉", [str(ws)], mcp_servers=["fake"])
+        stack.dispatcher.prepare_run(task.task_id, EFFECTS)
         real_server = stack.dispatcher._mcp_clients.server("fake")
         wrapper = DeadAtDispatch(real_server)
         stack.dispatcher._mcp_clients.server = lambda name: wrapper  # type: ignore[method-assign]

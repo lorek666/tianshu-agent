@@ -55,8 +55,15 @@ const CODE_MESSAGES: Record<string, string> = {
 export function humanizeHostError(error: unknown): string {
   if (isHostRpcError(error)) {
     const known = CODE_MESSAGES[error.code];
-    if (known !== undefined) return known;
     const message = error.message.trim();
+    if (
+      error.code === "internal" &&
+      (message.startsWith("dispatch.disk_space_low:") ||
+        message.startsWith("dispatch.disk_space_unknown:"))
+    ) {
+      return truncate(message, 140);
+    }
+    if (known !== undefined) return known;
     return message === "" ? "操作失败，请重试" : `操作失败：${truncate(message, 140)}`;
   }
   if (error instanceof Error) {

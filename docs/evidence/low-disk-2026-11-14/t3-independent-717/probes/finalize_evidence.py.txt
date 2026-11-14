@@ -1,0 +1,210 @@
+"""Read retained evidence only; do not execute product or add test passes."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+
+B = Path(__file__).parents[1]
+W = B / 'work'
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write(name, value):
+    (B / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+
+
+# Retain the erroneous observer metadata before correcting its classification.
+backup = B / 'raw' / 'metadata-before-filter-correction'
+backup.mkdir(exist_ok=True)
+aggregate_path = B / 'raw' / 'mutation-results.json'
+if not (backup / 'mutation-results.json').exists():
+    shutil.copyfile(aggregate_path, backup / 'mutation-results.json')
+aggregate = json.loads((backup / 'mutation-results.json').read_text())
+corrections = []
+for record in aggregate:
+    if record['kind'] != 'ui':
+        record['authored_skips'] = 0
+        record['filtered_unexecuted'] = 0
+        continue
+    label = record['label']
+    path = B / 'mutations' / label / 'record.json'
+    if not (backup / (label + '.record.json')).exists():
+        shutil.copyfile(path, backup / (label + '.record.json'))
+    raw = (B / 'raw' / ('mutant-' + label + '.log')).read_text()
+    assert re.search(r'Tests\s+1 failed \| 3 skipped \(4\)', raw), label
+    correction = {
+        'label': label,
+        'old_skipped': record['skipped'],
+        'skipped': 3,
+        'filtered_unexecuted': 3,
+        'authored_skips': 0,
+        'classification': 'Vitest -t name-filtered three cases; no authored skip',
+    }
+    record.update({k: v for k, v in correction.items() if k not in ['label', 'old_skipped']})
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+    corrections.append(correction)
+aggregate_path.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2) + '\n')
+write('raw/filter-metadata-correction.json', {
+    'nature': 'observer metadata correction only, not a product failure or additional kill',
+    'original_metadata_directory': str(backup),
+    'corrections': corrections,
+    'full_ui_positive': {'selected': 4, 'passed': 4, 'skipped': 0},
+    'restored_ui_positive': {'selected': 2, 'passed': 2, 'filtered_unexecuted_reported_skipped': 2},
+})
+
+# Audit only retained first-round rejection databases, opened read-only.
+rows = []
+for line in (B / 'raw' / 'python-first.log').read_text().splitlines():
+    line = line.lstrip('.')
+    if line.startswith('{'):
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+rejections = [r for r in rows if (
+    r['probe'] == 'cli' and r['exit'] == 2
+) or (
+    r['probe'] in ['ipc_threshold', 'ipc_bad'] and not r['result']['ok']
+)]
+assert len(rejections) == 27
+retained = []
+empty_tables = ['runs', 'jobs', 'leases', 'approvals', 'grants',
+                'dispatch_requests', 'budget_reservations']
+for row in rejections:
+    root = Path(row['root'])
+    db = root / 'events.db'
+    c = sqlite3.connect(db.as_uri() + '?mode=ro', uri=True)
+    try:
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert all(t in tables for t in empty_tables)
+        counts = {t: c.execute('SELECT count(*) FROM ' + t).fetchone()[0] for t in empty_tables}
+        events = [r[0] for r in c.execute('SELECT type FROM events ORDER BY seq')]
+        assert all(v == 0 for v in counts.values()), (root, counts)
+        assert not set(events).intersection(['run.start', 'model.intent', 'approval.requested',
+                                             'tool.intent', 'execution.started']), (root, events)
+    finally:
+        c.close()
+    manifests = [str(p.relative_to(root)) for p in root.rglob('manifests/*.json')]
+    model = (root / 'model.jsonl').exists()
+    assert not manifests and not model
+    retained.append({
+        'probe': row['probe'], 'root': str(root), 'database_sha256': digest(db),
+        'counts': counts, 'event_types': events, 'manifests': manifests,
+        'model_log_exists': model,
+        'authority_database_files': [str(p.relative_to(root)) for p in (root / 'authority').rglob('*.db')],
+    })
+write('raw/retained-rejection-audit.json', {
+    'kind': 'post-run retained material audit, not additional pytest passes',
+    'database_open_mode': 'sqlite uri mode=ro', 'count': len(retained),
+    'classification_counts': {n: sum(r['probe'] == n for r in retained)
+                              for n in ['cli', 'ipc_threshold', 'ipc_bad']},
+    'results': retained,
+})
+
+before = json.loads((B / 'source-before.json').read_text())
+supplied = json.loads((B / 'inputs' / 'source-hashes.json').read_text())
+after = {r: digest(W / r) for r in before}
+frozen = Path('/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/candidate-complete')
+frozen_actual = {r: digest(frozen / r) for r in before}
+assert after == before == supplied == frozen_actual
+write('source-after.json', after)
+t2_path = Path('/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/source-hashes.json')
+t2 = json.loads(t2_path.read_text())
+common = set(t2) & set(before)
+changed = sorted(r for r in common if t2[r] != before[r])
+added = sorted(set(before) - set(t2))
+removed = sorted(set(t2) - set(before))
+kernel = sorted(r for r in t2 if r.startswith(('src/', 'tests/', 'schemas/')) and r not in
+                ['src/tianshu/cli.py', 'src/tianshu/control.py'])
+assert len(kernel) == 211 and all(before[r] == t2[r] for r in kernel)
+patterns = re.compile(r'\bTODO\b|\bNotImplemented(?:Error)?\b|\bcontinue-on-error\b|\bpytest\.mark\.skip(?:if)?\b|\b(?:it|test|describe)\.(?:skip|only)\s*\(|\btest\.only\b')
+hits = []
+code_changed = []
+t2_root = t2_path.parent / 'candidate-complete'
+for r in sorted(set(changed + added)):
+    if not r.startswith(('src/', 'tests/', 'ui/src/')) or Path(r).suffix not in ['.py', '.ts', '.tsx']:
+        continue
+    code_changed.append(r)
+    old = (t2_root / r).read_text().splitlines() if r in t2 else []
+    new = (W / r).read_text().splitlines()
+    matcher = difflib.SequenceMatcher(a=old, b=new)
+    for tag, _a, _b, c0, d0 in matcher.get_opcodes():
+        if tag not in ['insert', 'replace']:
+            continue
+        for i in range(c0, d0):
+            if patterns.search(new[i]):
+                hits.append({'path': r, 'line': i + 1, 'text': new[i]})
+write('raw/source-and-quality-audit.json', {
+    'source_entries': len(before), 'source_after_equals_before_and_root_map': True,
+    'frozen_original_equals_before': True,
+    't2_diff': {'unchanged': len(common) - len(changed), 'changed': changed,
+                'added_count': len(added), 'removed': removed},
+    'unchanged_kernel_count_excluding_cli_control': len(kernel),
+    'unchanged_kernel_scope': '71 runtime modules + 133 test/fixture files + 7 schemas',
+    'unchanged_kernel_paths': kernel,
+    'added_changed_code_paths_scanned': code_changed,
+    'added_lines_placeholder_skip_only_scan': hits,
+    'dependency_constraints': {
+        'pyproject_unchanged': before.get('pyproject.toml') == t2.get('pyproject.toml'),
+        'uv_lock_unchanged': before.get('uv.lock') == t2.get('uv.lock'),
+        'node_execution': 'v24.22.2',
+        'node_20_19_execution': 'NOT_RUN; static engine compatibility only',
+    },
+})
+
+binding = json.loads((B / 'inputs' / 'inherited-evidence-binding.json').read_text())
+checked = []
+for entry in binding['inputs']:
+    p = Path(entry['path'])
+    actual = digest(p)
+    assert actual == entry['sha256'] and p.stat().st_size == entry['bytes']
+    checked.append({**entry, 'matched': True})
+write('raw/inherited-input-recheck.json', {'results': checked, 'all_matched': True})
+
+links = []
+for p in [B / 'probes' / 'node_modules', W / 'ui' / 'node_modules']:
+    assert p.is_symlink()
+    links.append({'path': str(p.relative_to(B)), 'target': str(p.readlink()),
+                  'handling': 'removed after all test commands, recreate to reproduce; target not chmodded'})
+    p.unlink()
+write('raw/dependency-links.json', {'links': links,
+    'dependency_versions': {'node': '24.22.2', 'react': '19.3.1', 'react-dom': '19.3.1',
+                            'vitest': '3.2.7', 'jsdom': '26.1.0'},
+    'note': 'Only external dependency libraries reused; product imports came from work/ui/src. Vite cache is under this output runs/vite-cache.'})
+
+pids = set()
+for p in (B / 'runs').rglob('child.jsonl'):
+    pids.update(json.loads(line)['pid'] for line in p.read_text().splitlines())
+for p in (B / 'runs').rglob('peer.started'):
+    pids.add(int(p.read_text()))
+living = []
+for pid in sorted(pids):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        continue
+    living.append(pid)
+details = subprocess.run(['ps', '-p', ','.join(map(str, living)), '-o', 'pid=,ppid=,command='],
+                         capture_output=True, text=True).stdout if living else ''
+assert not living, details
+extras = [str(p.relative_to(W)) for p in W.rglob('*') if p.is_file() and str(p.relative_to(W)) not in before]
+cache_dirs = [str(p.relative_to(B)) for p in B.rglob('*') if p.is_dir() and
+              p.name in ['__pycache__', '.pytest_cache']]
+write('raw/process-and-extras-audit.json', {
+    'recorded_child_peer_pids': sorted(pids), 'still_alive': living,
+    'work_extra_files': extras, 'pycache_or_pytest_cache_directories': cache_dirs,
+    'expected_owned_vite_cache': 'runs/vite-cache',
+})
+print(json.dumps({'source_count': len(after), 'source_restored': True,
+                  'retained_rejections': len(retained), 'metadata_corrections': len(corrections),
+                  'kernel_unchanged': len(kernel), 'scan_hits': hits,
+                  'live_recorded_children': living, 'work_extras': extras,
+                  'cache_dirs': cache_dirs}, ensure_ascii=False))

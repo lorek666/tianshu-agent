@@ -1,0 +1,117 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+___________ test_reject_then_resume_fails_without_a_second_approval ____________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_reject_.../folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_reject_then_resume_fails_0/authority')))
+
+    def test_reject_then_resume_fails_without_a_second_approval(env):
+        """拒绝 → resume：Run 以 failed 收束，且**没有第二个 approval.requested**。
+    
+        这是 issue #40 的直接回归：修之前 resume 会再建一张审批，Run 回到
+        `waiting_approval`，用户只能反复点拒绝。
+        """
+        engine = env.engine(
+            [_write_turn([_overwrite("note.md", "新内容\n", "c1")]), _end()]
+        )
+>       waiting = engine.start(env.task().task_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_approval_reject.py:170: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x105b0b590>
+log = <tianshu.events.EventLog object at 0x10b481640>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x10b461cd0>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_reject_then_resume_fails_0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+____________ test_recover_after_each_failpoint[after_intent-create] ____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_recover_after_each_failpo0')
+fp = 'after_intent', kind = 'create'
+
+    @pytest.mark.parametrize("kind", KINDS)
+    @pytest.mark.parametrize("fp", FAILPOINTS)
+    def test_recover_after_each_failpoint(tmp_path, fp, kind):
+        ws, db = _setup(tmp_path, kind)
+        proc = _spawn(ws, db, fp, kind)
+>       assert proc.returncode == 77, (
+            f"{kind}/{fp} 应当在故障点退出，实际 {proc.returncode}；stderr={proc.stderr}"
+        )
+E       AssertionError: create/after_intent 应当在故障点退出，实际 1；stderr=Traceback (most recent call last):
+E           File "<string>", line 30, in <module>
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/loop.py", line 794, in start
+E             self._tasks.disk_admission.assert_stores(
+E           File "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/src/tianshu/disk_admission.py", line 106, in assert_stores
+E             raise DiskAdmissionError(
+E         tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+E         
+E       assert 1 == 77
+E        +  where 1 = CompletedProcess(args=['/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python', '-c', '\nimport sy...iskAdmissionError(\ntianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致\n').returncode
+
+tests/test_recovery.py:278: AssertionError
+________________ test_read_a_write_b_and_chat_without_workspace ________________
+
+env = Env(root=PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_read_a_...vate/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_read_a_write_b_and_chat_w0/ro'))
+
+    def test_read_a_write_b_and_chat_without_workspace(env):
+        """只读目录写不进去；可写目录写得进去；零目录任务只对话、不碰文件。"""
+        read_only = env.read_only
+        task_a = env.stack.tasks.create_task(
+            "看看只读目录", [{"root_path": str(read_only), "mode": "readonly"}]
+        )
+>       result_a = env.engine([_create("out.md", "x", "c1"), _end()]).start(task_a.task_id)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_m2_acceptance.py:587: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/tianshu/loop.py:794: in start
+    self._tasks.disk_admission.assert_stores(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tianshu.disk_admission.DiskAdmission object at 0x10b45e360>
+log = <tianshu.events.EventLog object at 0x10554aa80>
+snapshots = <tianshu.snapshot.SnapshotStore object at 0x10b45ddf0>
+memory = None, contents = None
+data_root = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2970/test_read_a_write_b_and_chat_w0/authority')
+
+    def assert_stores(self, log, *, snapshots, memory, contents, data_root) -> None:
+        context = self.context
+        if context is None or (
+            context.log is not log
+            or context.snapshots is not snapshots
+            or context.memory is not memory
+            or context.contents is not contents
+            or (Path(data_root).resolve() if data_root is not None else None)
+            != (context.data_root.resolve() if context.data_root is not None else None)
+        ):
+>           raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "实际存储实例与 Run context 不一致"
+            )
+E           tianshu.disk_admission.DiskAdmissionError: dispatch.disk_space_unknown: 实际存储实例与 Run context 不一致
+
+src/tianshu/disk_admission.py:106: DiskAdmissionError
+=========================== short test summary info ============================
+FAILED tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval
+FAILED tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]
+FAILED tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace
+3 failed in 2.52s

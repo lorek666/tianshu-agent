@@ -1,0 +1,281 @@
+[
+  {
+    "label": "positive-paths",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/source/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-paths/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "positive-paths",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source",
+      "REVIEW_MUTATION": ""
+    },
+    "expected_exit": 0,
+    "expected_output_contains": "ALL_SELECTED_PROBES_PASSED worker,fence,inner,eval",
+    "exit_code": 0,
+    "elapsed_seconds": 0.547,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "positive-selected-tests",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/pytest",
+      "tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval",
+      "tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace",
+      "tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]",
+      "tests/test_g2_delegation_contract.py::test_tool_id_enum",
+      "tests/test_low_disk_execution.py::test_pure_only_write_proposal_keeps_dispatch_and_result_audit",
+      "tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "positive-selected-tests",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": ""
+    },
+    "expected_exit": 0,
+    "expected_output_contains": "7 passed",
+    "exit_code": 1,
+    "elapsed_seconds": 0.405,
+    "expected_behavior_observed": false
+  },
+  {
+    "label": "positive-selected-tests-v2",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest",
+      "tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval",
+      "tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace",
+      "tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]",
+      "tests/test_g2_delegation_contract.py::test_tool_id_enum",
+      "tests/test_low_disk_execution.py::test_pure_only_write_proposal_keeps_dispatch_and_result_audit",
+      "tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "positive-selected-tests-v2",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": ""
+    },
+    "expected_exit": 0,
+    "expected_output_contains": "7 passed",
+    "exit_code": 0,
+    "elapsed_seconds": 1.131,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-old-filter-worker",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py",
+      "worker"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-old-filter-worker/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-old-filter-worker",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "AssertionError",
+    "exit_code": 1,
+    "elapsed_seconds": 0.267,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-old-filter-fence",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py",
+      "fence"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-old-filter-fence/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-old-filter-fence",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "AssertionError",
+    "exit_code": 1,
+    "elapsed_seconds": 0.26,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-inner-verify",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-inner-verify/pytest",
+      "tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-inner-verify/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-inner-verify",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "DID NOT RAISE",
+    "exit_code": 1,
+    "elapsed_seconds": 0.304,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-fixture-approval",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/pytest",
+      "tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-approval/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-fixture-approval",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "1 failed",
+    "exit_code": 1,
+    "elapsed_seconds": 0.264,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-fixture-m2",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-m2/pytest",
+      "tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-m2/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-fixture-m2",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "1 failed",
+    "exit_code": 1,
+    "elapsed_seconds": 0.301,
+    "expected_behavior_observed": true
+  },
+  {
+    "label": "negative-fixture-recovery",
+    "command": [
+      "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/.venv/bin/python",
+      "-B",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-o",
+      "addopts=",
+      "-q",
+      "-rs",
+      "--basetemp",
+      "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-recovery/pytest",
+      "tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]"
+    ],
+    "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "environment_overrides": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+      "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/negative-fixture-recovery/authority",
+      "TIANSHU_SANDBOX_BACKEND": "local_fs",
+      "REVIEW_LABEL": "negative-fixture-recovery",
+      "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+      "REVIEW_MUTATION": "1"
+    },
+    "expected_exit": 1,
+    "expected_output_contains": "1 failed",
+    "exit_code": 1,
+    "elapsed_seconds": 0.401,
+    "expected_behavior_observed": true
+  }
+]

@@ -8,6 +8,7 @@ Run 收尾必须交还租约（否则下一个 Run 被自己挡住）。
 from __future__ import annotations
 
 import pytest
+from support import effects_admission
 
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
@@ -21,7 +22,14 @@ def env(tmp_path):
     log = EventLog(tmp_path / "db.sqlite")
     leases = LeaseStore(log)
     # data_root 必填：目标变更与"开始执行"必须抢同一把本机守卫
-    store = TaskStore(log, leases=leases, data_root=tmp_path / "data")
+    store = TaskStore(
+        log,
+        leases=leases,
+        data_root=tmp_path / "data",
+        disk_admission=effects_admission(
+            log, snapshots=None, memory=None, contents=None, data_root=tmp_path / "data"
+        ),
+    )
     ws = tmp_path / "ws"
     ws.mkdir()
     yield log, store, leases, ws

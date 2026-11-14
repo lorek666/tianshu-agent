@@ -1,0 +1,126 @@
+"""Independent bounded source/evidence audit; no author runner is executed."""
+import ast
+import difflib
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+OUT = Path(__file__).resolve().parents[1]
+CANDIDATE = Path(sys.argv[1]).resolve()
+SOURCE = OUT / "source"
+T2 = Path("/tmp/tianshu-g3-20261113/low-disk-t2-root-ldhq_5tt/candidate-complete")
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read_json(path):
+    return json.loads(path.read_text())
+
+
+results = {}
+manifest = read_json(OUT / "inputs/source-hashes.json")
+for name, root in [("candidate", CANDIDATE), ("review_source", SOURCE)]:
+    paths = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+    bad = [p for p, h in manifest.items() if not (root / p).is_file() or sha(root / p) != h]
+    results[name] = {"count": len(paths), "mismatch": bad, "extra": sorted(paths - set(manifest))}
+    assert len(paths) == len(manifest) == 717 and not bad and paths == set(manifest)
+
+binding = read_json(OUT / "inputs/low-disk-t3-inherited-evidence-binding-20261114.json")
+results["inherited_identities"] = [{"path": item["path"], "match": sha(Path(item["path"])) == item["sha256"]} for item in binding["inputs"]]
+assert all(x["match"] for x in results["inherited_identities"])
+old = read_json(Path(binding["inputs"][4]["path"]))
+kernel = [p for p in old if p.startswith(("src/tianshu/", "schemas/", "tests/")) and p not in ("src/tianshu/cli.py", "src/tianshu/control.py")]
+results["kernel_inheritance"] = {"paths": kernel, "count": len(kernel), "changed": [p for p in kernel if manifest.get(p) != old[p]]}
+assert len(kernel) == 211 and not results["kernel_inheritance"]["changed"]
+
+index_results = []
+for ix in [1, 5]:
+    report = Path(binding["inputs"][ix]["path"])
+    root = report.parent
+    index = read_json(root / "hash-index.json")
+    files = index["files"]
+    if isinstance(files, dict):
+        entries = [{"path": p, **m} for p, m in files.items()]
+    else:
+        entries = files
+    bad = [e["path"] for e in entries if not (root / e["path"]).is_file() or sha(root / e["path"]) != e["sha256"]]
+    index_results.append({"root": str(root), "regular_files_checked": len(entries), "hash_mismatches": bad})
+    assert not bad
+results["original_independent_raw_indices"] = index_results
+
+public = SOURCE / "docs/evidence/low-disk-2026-11-14"
+public_index = read_json(public / "artifact-index.json")
+bad = [p for p, e in public_index["entries"].items() if not (public / p).is_file() or sha(public / p) != e["sha256"]]
+results["public_artifact_index"] = {"count": len(public_index["entries"]), "mismatch": bad, "actual_regular_files_including_index": sum(p.is_file() for p in public.rglob("*"))}
+assert len(public_index["entries"]) == 173
+public_index_mismatches = list(bad)
+copies = []
+for label, indices in [("t1", [1, 2, 3]), ("t2", [5, 6, 7])]:
+    for ix in indices:
+        original = Path(binding["inputs"][ix]["path"])
+        copy = public / f"inherited/{label}-independent" / original.name
+        copies.append({"path": str(copy.relative_to(SOURCE)), "match": sha(copy) == sha(original)})
+assert all(x["match"] for x in copies)
+results["public_independent_identity_copies"] = copies
+
+author = read_json(public / "t3/t3-source-hashes.json")
+excluded = sorted(set(manifest) - set(author))
+results["author_vs_complete_identity"] = {"author_count": len(author), "complete_count": len(manifest), "author_mismatch": [p for p, h in author.items() if manifest.get(p) != h], "six_excluded_derived": excluded}
+assert len(author) == 711 and len(excluded) == 6 and not results["author_vs_complete_identity"]["author_mismatch"]
+
+# Normative sections are byte-for-byte inherited; status text is intentionally
+# outside these slices and receives a separate human diff review.
+contract = "docs/low-disk-admission-contract.md"
+a = (T2 / contract).read_text()
+b = (SOURCE / contract).read_text()
+norm_a = a[a.index("## 1."):a.index("## 6.")]
+norm_b = b[b.index("## 1."):b.index("## 6.")]
+ld_a = a[a.index("- LD-01"):a.index("## 7.")]
+ld_b = b[b.index("- LD-01"):b.index("## 7.")]
+results["contract_compatibility"] = {"sections_1_through_5_equal": norm_a == norm_b, "six_acceptance_bullets_equal": ld_a == ld_b}
+assert norm_a == norm_b and ld_a == ld_b
+diff = []
+for rel in ["docs/PRD-v1.md", contract, "README.md", "docs/KNOWLEDGE.md", "src/tianshu/cli.py", "src/tianshu/control.py", "ui/src/App.tsx", "ui/src/api/types.ts", "ui/src/api/errors.ts", "ui/src/components/NewTaskDialog.tsx", "ui/src/components/TaskDetail.tsx", "ui/src/demo/host.ts", "ui/src/demo/world.ts", "ui/package.json"]:
+    diff.extend(difflib.unified_diff((T2 / rel).read_text().splitlines(True), (SOURCE / rel).read_text().splitlines(True), fromfile="T2/" + rel, tofile="T3/" + rel))
+(OUT / "logs/reviewed-delta.patch").write_text("".join(diff))
+
+links = []
+for rel in ["docs/LOW-DISK-2026-11-14.md", "docs/low-disk-admission-contract.md"]:
+    path = SOURCE / rel
+    for target in re.findall(r"\]\(([^\s)]+)\)", path.read_text()):
+        if "://" in target or target.startswith("#"):
+            continue
+        file_target = target.split("#", 1)[0]
+        links.append({"source": rel, "target": target, "exists": (path.parent / file_target).exists()})
+results["public_local_links"] = links
+assert all(x["exists"] for x in links)
+
+stub_hits = []
+for rel in ["src/tianshu/cli.py", "src/tianshu/control.py", "ui/src/App.tsx", "ui/src/api/errors.ts", "ui/src/api/types.ts", "ui/src/components/NewTaskDialog.tsx", "ui/src/components/TaskDetail.tsx", "ui/src/demo/host.ts", "ui/src/demo/world.ts"]:
+    delta = difflib.unified_diff((T2 / rel).read_text().splitlines(), (SOURCE / rel).read_text().splitlines())
+    for line in delta:
+        if line.startswith("+") and not line.startswith("+++") and re.search(r"\bTODO\b|test\.skip|\.only\s*\(|NotImplementedError|continue-on-error|type:\s*ignore", line):
+            stub_hits.append({"path": rel, "line": line})
+results["changed_product_additions_stub_scan"] = stub_hits
+assert not stub_hits
+results["python_runtime_dependencies_unchanged"] = manifest["pyproject.toml"] == old["pyproject.toml"]
+results["python_lock_unchanged_not_lock_check"] = manifest["uv.lock"] == old["uv.lock"]
+assert results["python_runtime_dependencies_unchanged"] and results["python_lock_unchanged_not_lock_check"]
+
+# Report availability accurately: public copies are identities, not the full
+# local independent probe/raw archives named inside the inherited reports.
+results["public_inherited_probe_availability"] = {
+    "t1_run_probe_py": (public / "inherited/t1-independent/run_probe.py").exists(),
+    "t1_c1_probe_py": (public / "inherited/t1-independent/c1_real_controls.py").exists(),
+    "t2_probe_py": (public / "inherited/t2-independent/probes/test_independent.py").exists(),
+    "meaning": "Public inherited directories preserve report/facts/hash-index identity copies; complete local raw/probes remain at the original sealed /tmp archives. No public full-archive reproducibility claim is made by this audit.",
+}
+results["scope"] = "Source/evidence integrity and explicitly identified structural checks only; no T1/T2 suite rerun, CLI/IPC/App matrix, final gates, or native CI."
+(OUT / "logs/integration-audit.json").write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n")
+print(json.dumps({"status": "PUBLIC_EVIDENCE_INDEX_INCOMPLETE" if public_index_mismatches else "PASS_BOUNDED_IDENTITY_AND_STRUCTURAL_AUDIT", "candidate_files": len(manifest), "kernel_paths_inherited": len(kernel), "original_indices": index_results, "public_artifacts": results["public_artifact_index"], "local_links": len(links), "author_count": len(author), "complete_count": len(manifest), "contract_sections_equal": results["contract_compatibility"]}, ensure_ascii=False, indent=2))
+if public_index_mismatches:
+    raise SystemExit(1)

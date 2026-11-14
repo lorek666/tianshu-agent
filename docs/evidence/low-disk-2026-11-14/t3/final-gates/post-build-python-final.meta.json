@@ -1,0 +1,24 @@
+{
+  "label": "post-build-python-final",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "uv",
+    "run",
+    "--frozen",
+    "pytest",
+    "-o",
+    "addopts=",
+    "-q",
+    "-rs",
+    "tests/test_low_disk_entrypoints.py",
+    "tests/test_ipc.py",
+    "tests/test_control.py"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "post-build-python-final.stdout.txt",
+  "stderr": "post-build-python-final.stderr.txt"
+}

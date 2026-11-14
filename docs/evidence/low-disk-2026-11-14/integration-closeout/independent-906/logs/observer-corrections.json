@@ -1,0 +1,31 @@
+[
+  {
+    "attempt": "positive-selected-tests",
+    "classification": "observer/setup error; not product behavior",
+    "actual": "7 ERROR at setup because --basetemp parent directory was absent",
+    "evidence": [
+      "logs/positive-selected-tests.command.json",
+      "logs/positive-selected-tests.stdout.txt",
+      "logs/positive-selected-tests.stderr.txt"
+    ],
+    "correction": "create review-owned run parent before invoking pytest; rerun only the same seven selected tests as v2",
+    "result": "positive-selected-tests-v2: 7 passed in 1.02s"
+  },
+  {
+    "attempt": "run_checks.py negative, before memory mutant",
+    "classification": "observer source-match assertion; no memory mutation or pytest invocation occurred",
+    "actual": "expected two-line raise spelling did not match the four-line source block",
+    "correction": "match exact source bytes; run negative-rest, preserving the already completed worker/fence negatives",
+    "raw_terminal_output_archived_as_file": false
+  },
+  {
+    "attempt": "close_readback.py first pass",
+    "classification": "observer log-shape assertion; no product behavior claim",
+    "actual": "pytest displays the raises-context line for DID NOT RAISE, not the next _verify call line",
+    "evidence": [
+      "logs/close-readback-v1.stderr.txt",
+      "logs/close-readback-v1.stdout.txt"
+    ],
+    "correction": "bind both failure headers to exact source line 265 and independently verify line 266 is the direct _verify call; rerun readback only"
+  }
+]

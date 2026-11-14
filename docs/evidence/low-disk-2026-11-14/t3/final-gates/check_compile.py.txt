@@ -1,0 +1,17 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[5]
+PATHS = [
+    "src/tianshu/cli.py",
+    "src/tianshu/control.py",
+    "tests/test_low_disk_entrypoints.py",
+]
+
+
+for relative in PATHS:
+    path = ROOT / relative
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    print(f"COMPILE_OK {relative}")

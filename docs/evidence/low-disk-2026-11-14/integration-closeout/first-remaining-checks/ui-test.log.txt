@@ -1,0 +1,23 @@
+$ vitest run
+
+ RUN  v3.2.7 /Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui
+
+ ✓ src/lib/__tests__/memoryView.test.ts (6 tests) 2ms
+ ✓ src/lib/__tests__/memoryController.test.ts (8 tests) 3ms
+ ✓ src/lib/__tests__/timeline.test.ts (10 tests) 4ms
+ ✓ src/api/__tests__/stream.test.ts (3 tests) 12ms
+ ✓ src/lib/__tests__/humanize.test.ts (18 tests) 4ms
+ ✓ src/api/__tests__/normalize.test.ts (10 tests) 5ms
+ ✓ src/components/__tests__/memory-panel.test.tsx (8 tests) 18ms
+ ✓ src/components/__tests__/approval-card.test.tsx (3 tests) 5ms
+ ✓ src/lib/__tests__/format.test.ts (8 tests) 2ms
+ ✓ src/api/__tests__/sse.test.ts (3 tests) 1ms
+ ✓ src/lib/__tests__/memoryController-races.test.ts (7 tests) 2ms
+ ✓ src/api/__tests__/host.test.js (3 tests) 223ms
+ ✓ src/__tests__/run-mode.test.tsx (4 tests) 52ms
+
+ Test Files  13 passed (13)
+      Tests  91 passed (91)
+   Start at  10:13:06
+   Duration  863ms (transform 403ms, setup 0ms, collect 769ms, tests 334ms, environment 286ms, prepare 655ms)
+

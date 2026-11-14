@@ -1,0 +1,2 @@
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+command=pnpm --dir ui run typecheck

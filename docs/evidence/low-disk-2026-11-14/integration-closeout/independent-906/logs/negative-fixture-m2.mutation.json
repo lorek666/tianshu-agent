@@ -1,0 +1,7 @@
+{
+  "path": "tests/test_m2_acceptance.py",
+  "original_sha256": "ad1626e5594e3822d69ded69e39335556daf5e39372498a91526073393ae7c5e",
+  "mutated_sha256": "f9cd395db74f130d77cbc1b2655a37f4528d6d428275c2df48daae16236e8d9b",
+  "change": "omit only the new same-stack memory and contents constructor wiring",
+  "restored_sha256": "ad1626e5594e3822d69ded69e39335556daf5e39372498a91526073393ae7c5e"
+}

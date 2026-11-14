@@ -1,0 +1,11 @@
+--- frozen/src/tianshu/control.py
++++ mutant/src/tianshu/control.py
+@@ -447,7 +447,7 @@
+         if task is None:
+             raise ControlError("not_found", f"task 不存在：{task_id}")
+ 
+-        self._stack.dispatcher.prepare_run(task_id, execution_policy)
++        self._stack.dispatcher.prepare_run(task_id, EFFECTS)
+         payload = {
+             "task": task.goal,
+             "out": out_name or "",

@@ -1,0 +1,62 @@
+from pathlib import Path
+import sys,os,json,hashlib,subprocess,difflib,xml.etree.ElementTree as ET
+B=Path(__file__).parents[1];W=B/'work';baseline=json.loads((B/'source-before.json').read_text());results=[]
+def h(b):return hashlib.sha256(b).hexdigest()
+def mapping():return {r:h((W/r).read_bytes()) for r in baseline}
+def region_replace(text,start,end,old,new):
+ a=text.index(start);b=text.index(end,a) if end else len(text);part=text[a:b];assert part.count(old)==1,(start,old,part.count(old));return text[:a]+part.replace(old,new)+text[b:]
+cli='src/tianshu/cli.py';control='src/tianshu/control.py';app='ui/src/App.tsx'
+variants=[
+ ('cli-start-policy',cli,lambda s:region_replace(s,'def _cmd_run','def _run_compat','execution_policy=_run_execution_policy(args)','execution_policy=__import__("tianshu.run_policy",fromlist=["EFFECTS"]).EFFECTS'),'py','test_cli_both_explicit_modes and pure_only and start'),
+ ('cli-compat-policy',cli,lambda s:region_replace(s,'def _run_compat','def _report','execution_policy=_run_execution_policy(args)','execution_policy=__import__("tianshu.run_policy",fromlist=["EFFECTS"]).EFFECTS'),'py','test_cli_both_explicit_modes and pure_only and compat'),
+ ('cli-noncreation-guard',cli,lambda s:s.replace('''    if args.execution_mode is not None and args.action not in (None, "start"):
+        print(
+            "错误：--execution-mode 只适用于新建 Run（run start 或兼容入口）",
+            file=sys.stderr,
+        )
+        return 2
+''','',1),'py','test_paused_run_flag_reject_then_original_low_resume and pure_only'),
+ ('rpc-prepare-policy',control,lambda s:s.replace('self._stack.dispatcher.prepare_run(task_id, execution_policy)','self._stack.dispatcher.prepare_run(task_id, EFFECTS)',1),'py','test_real_ipc_explicit_modes and pure_only'),
+ ('rpc-persist-policy',control,lambda s:s.replace('execution_policy=execution_policy,','execution_policy=EFFECTS,',1),'py','test_real_ipc_explicit_modes and pure_only'),
+ ('rpc-manifest-policy',control,lambda s:s.replace('"tools": _exposed_tool_ids(execution_policy),','"tools": _exposed_tool_ids(),',1),'py','test_real_ipc_explicit_modes and pure_only'),
+ ('rpc-truthiness-default',control,lambda s:s.replace('if "execution_policy" not in params:','if not params.get("execution_policy"):',1),'py','test_real_ipc_bad_policy and None'),
+ ('ui-create-policy',app,lambda s:s.replace('execution_policy: input.execution_policy,','execution_policy: EFFECTS_RUN_POLICY,',1),'ui','new pure low failure'),
+ ('ui-detail-policy',app,lambda s:s.replace('execution_policy: executionPolicy,','execution_policy: EFFECTS_RUN_POLICY,',1),'ui','existing task path sends both'),
+ ('ui-dialog-retry-seed',app,lambda s:s.replace('''        setRunPolicies((previous) => ({
+          ...previous,
+          [task.task_id]: input.execution_policy,
+        }));
+''','',1),'ui','new pure low failure'),
+ ('ui-task-key-isolation',app,lambda s:s.replace('runPolicies[selectedTask.task_id] ?? EFFECTS_RUN_POLICY','Object.values(runPolicies).at(-1) ?? EFFECTS_RUN_POLICY',1),'ui','new pure low failure'),
+]
+for label,rel,change,kind,selector in variants:
+ assert mapping()==baseline,'unrestored before '+label
+ p=W/rel;original=p.read_bytes();changed=change(original.decode()).encode();assert changed!=original,label
+ folder=B/'mutations'/label;folder.mkdir()
+ patch=''.join(difflib.unified_diff(original.decode().splitlines(True),changed.decode().splitlines(True),fromfile='frozen/'+rel,tofile='mutant/'+rel))
+ (folder/'change.patch').write_text(patch)
+ record={'label':label,'file':rel,'original_sha256':h(original),'mutant_sha256':h(changed),'selector':selector,'kind':kind,'source_before':mapping()}
+ try:
+  p.write_bytes(changed);record['source_mutated']=mapping()
+  runner='run_python.py' if kind=='py' else 'run_ui.py'
+  args=[sys.executable,str(B/'probes'/runner),'mutant-'+label]
+  if kind=='py':args +=[str(B/'probes/test_entry_independent.py'),'-k',selector]
+  else:args +=['-t',selector]
+  execution=subprocess.run(args,capture_output=True,text=True,env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'},timeout=100)
+  (folder/'runner.stdout').write_text(execution.stdout);(folder/'runner.stderr').write_text(execution.stderr)
+  record['runner_exit']=execution.returncode
+  raw=(B/'raw'/('mutant-'+label+'.log')).read_text()
+  if kind=='py':
+   xml=ET.parse(B/'raw'/('mutant-'+label+'.junit.xml')).getroot();tests=xml.findall('.//testcase');record['call_failures']=sum(len(t.findall('failure')) for t in tests);record['errors']=sum(len(t.findall('error')) for t in tests);record['selected']=len(tests);record['skipped']=sum(len(t.findall('skipped')) for t in tests)
+   assert execution.returncode==1 and record['call_failures']==1 and record['errors']==0 and record['selected']==1,record
+  else:
+   assert execution.returncode==1 and '1 failed' in raw and 'Test Files' in raw and 'Failed Suites' not in raw and 'AssertionError' in raw,record
+   record.update(call_failures=1,errors=0,selected=1,skipped=3,filtered_unexecuted=3,authored_skips=0,classification='Vitest -t name-filtered three cases; no authored skip')
+  record['behavior_kill']=True
+ finally:
+  p.write_bytes(original);record['source_restored']=mapping();record['restored']=record['source_restored']==baseline
+  (folder/'record.json').write_text(json.dumps(record,indent=2))
+  results.append(record);(B/'raw/mutation-results.json').write_text(json.dumps(results,indent=2))
+ print(json.dumps({'mutation':label,'exit':record.get('runner_exit'),'call_failures':record.get('call_failures'),'restored':record['restored']}),flush=True)
+ assert record['restored']
+print(json.dumps({'variants':len(results),'behavior_failures':sum(r['call_failures'] for r in results),'restored_all':mapping()==baseline}),flush=True)

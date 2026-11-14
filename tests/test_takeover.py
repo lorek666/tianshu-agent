@@ -335,6 +335,7 @@ engine = AgentLoop(
     tasks=stack.tasks, leases=stack.leases, claims=stack.claims,
     dispatcher=stack.dispatcher, approvals=stack.approvals,
     snapshots=stack.snapshots, model=ScriptedModel([]),
+    memory=stack.memory, contents=stack.contents,
     limits=Limits(2, 1000),
 )
 try:

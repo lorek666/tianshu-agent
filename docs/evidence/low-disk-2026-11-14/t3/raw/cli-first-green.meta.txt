@@ -1,0 +1,5 @@
+phase=cli-first-green
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+cli_sha256=20dd92e27c794dd363eeb7aafdfd8935468fe641ef5ad9bff68ff3c51ed3abb7
+test_sha256=d3d5c93de71d96b5c21fd267e6c44317cc45934f531ab79f48b29432d9fad90f

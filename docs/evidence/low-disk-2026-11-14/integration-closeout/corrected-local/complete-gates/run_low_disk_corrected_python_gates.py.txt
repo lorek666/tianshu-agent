@@ -1,0 +1,109 @@
+"""Run corrected Python gates and bind unchanged UI to the actual full UI run."""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument("source_manifest", type=Path)
+parser.add_argument("manifest_sha256")
+parser.add_argument("--execute-reviewed-final", action="store_true", required=True)
+args = parser.parse_args()
+root = Path("/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent")
+out = Path(tempfile.mkdtemp(prefix="low-disk-corrected-python-gates-", dir="/tmp/tianshu-g3-20261113"))
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def git(*argv):
+    return subprocess.check_output(["git", "--no-optional-locks", *argv], cwd=root)
+
+
+def git_names(*argv):
+    return {name.decode() for name in git(*argv).split(b"\0") if name}
+
+
+def dump(name, value):
+    (out / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def snapshot():
+    tracked = git_names("ls-tree", "-rz", "--name-only", "HEAD")
+    deleted = git_names("diff", "--diff-filter=D", "--name-only", "-z", "HEAD")
+    new = git_names("ls-files", "--others", "--exclude-standard", "-z")
+    paths = sorted((tracked - deleted) | new)
+    result = {}
+    for name in paths:
+        path = root / name
+        assert path.is_file() and not path.is_symlink(), name
+        result[name] = sha(path.read_bytes())
+    return result, sorted(deleted)
+
+
+manifest_raw = args.source_manifest.read_bytes()
+assert sha(manifest_raw) == args.manifest_sha256
+approved = json.loads(manifest_raw)
+assert git("branch", "--show-current").decode().strip() == "codex/g3-low-disk-admission"
+assert git("diff", "--cached") == b""
+before, deleted_before = snapshot()
+assert before == approved, "Current source set or bytes differ from reviewed manifest"
+ui_parent = json.loads(Path("/tmp/tianshu-g3-20261113/low-disk-release-candidate-cxszmop9/source-hashes.json").read_bytes())
+ui_current = {name: digest for name, digest in before.items() if name.startswith("ui/")}
+assert ui_current == {name: digest for name, digest in ui_parent.items() if name.startswith("ui/")}, "UI source/test/lock/dist changed since complete UI gate"
+ui_results_path = Path("/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/results.json")
+ui_results_raw = ui_results_path.read_bytes()
+ui_results = json.loads(ui_results_raw)
+assert ui_results["manifest_sha256"] == "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441"
+ui_entries = [entry for entry in ui_results["commands"] if entry["label"].startswith("ui-")]
+assert len(ui_entries) == 4
+for entry in ui_entries:
+    assert entry["exit"] == 0 and entry["source_stable"] and entry["git_stable"]
+    assert sha(Path(entry["log"]).read_bytes()) == entry["log_sha256"]
+head = git("rev-parse", "HEAD").decode().strip()
+status = git("status", "--short", "--branch")
+(out / "status-before.txt").write_bytes(status)
+dump("source-before.json", before)
+dump("deleted-before.json", deleted_before)
+env = os.environ.copy()
+removed = sorted(name for name in env if name.startswith("TIANSHU_") or name.endswith(("BASE_URL", "API_KEY")) or name in {"PYTHONPATH", "PYTEST_ADDOPTS"})
+for name in removed:
+    env.pop(name)
+env["PYTHONDONTWRITEBYTECODE"] = "1"
+commands = [
+    ("lock", ["uv", "lock", "--check"]),
+    ("pytest", ["uv", "run", "--frozen", "pytest"]),
+    ("ruff", ["uv", "run", "--frozen", "ruff", "check", "."]),
+]
+facts = {"root": str(root), "head": head, "source_manifest": str(args.source_manifest), "manifest_sha256": args.manifest_sha256, "source_files": len(before), "deleted_paths": deleted_before, "removed_env_names": removed, "set_env": {"PYTHONDONTWRITEBYTECODE": "1"}, "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "commands": []}
+facts["scope"] = "corrected_python_gates_and_exact_unchanged_ui_inheritance"
+facts["ui_inheritance"] = {"results": str(ui_results_path), "results_sha256": sha(ui_results_raw), "source_files": len(ui_current), "unchanged_from_manifest": ui_results["manifest_sha256"], "complete_ui_tests": "13 files / 91 tests", "rerun_in_this_command": False}
+print(json.dumps({"output": str(out), "source_files": len(before)}, ensure_ascii=False), flush=True)
+for label, argv in commands:
+    start = time.monotonic()
+    log = out / (label + ".log")
+    with log.open("wb") as stream:
+        result = subprocess.run(argv, cwd=root, stdout=stream, stderr=subprocess.STDOUT, env=env)
+    current, current_deleted = snapshot()
+    entry = {"label": label, "command": argv, "cwd": str(root), "exit": result.returncode, "seconds": round(time.monotonic() - start, 2), "log": str(log), "log_sha256": sha(log.read_bytes()), "log_bytes": log.stat().st_size, "source_stable": current == before and current_deleted == deleted_before, "git_stable": git("rev-parse", "HEAD").decode().strip() == head and git("status", "--short", "--branch") == status}
+    facts["commands"].append(entry)
+    dump("running-results.json", facts)
+    print(json.dumps(entry, ensure_ascii=False), flush=True)
+    if result.returncode or not entry["source_stable"] or not entry["git_stable"]:
+        break
+after, deleted_after = snapshot()
+dump("source-after.json", after)
+dump("deleted-after.json", deleted_after)
+(out / "status-after.txt").write_bytes(git("status", "--short", "--branch"))
+facts["source_drift"] = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+facts["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+facts["passed"] = len(facts["commands"]) == len(commands) and all(entry["exit"] == 0 and entry["source_stable"] and entry["git_stable"] for entry in facts["commands"])
+dump("results.json", facts)
+print(json.dumps({"passed": facts["passed"], "source_drift": facts["source_drift"], "output": str(out)}, ensure_ascii=False), flush=True)
+raise SystemExit(0 if facts["passed"] else 1)

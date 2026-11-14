@@ -1,0 +1,178 @@
+"""Three minimal offline diagnostics on the unchanged sealed 879 input."""
+from pathlib import Path
+from contextlib import closing, ExitStack
+from unittest.mock import patch
+import hashlib
+import json
+import os
+import sys
+
+OUT = Path('/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8')
+SOURCE = Path('/tmp/low-disk-release-delta-independent-20261114/source')
+sys.path[:0] = [str(SOURCE / 'src'), str(SOURCE / 'tests')]
+os.environ['TIANSHU_AUTHORITY_ROOT'] = str(OUT / 'runs/authority')
+os.environ['TIANSHU_SANDBOX_BACKEND'] = 'local_fs'
+
+from support import stack_for, engine_for, approve_pending
+from tianshu.dispatcher import build_request, _Authority, DispatchDenied
+from tianshu.events import EventLog
+from tianshu.memory_exec import MemoryDispatchRefused
+from tianshu.model import ScriptedModel, ModelResponse, ToolCall
+from tianshu.resources import MemoryScope
+from tianshu.tasks import RUN_RUNNING
+from tianshu.worker import Worker
+
+
+def mapping():
+    return {str(p.relative_to(SOURCE)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in SOURCE.rglob('*') if p.is_file()}
+
+
+def spawn(stack, base):
+    ws = base / 'ws'
+    ws.mkdir(parents=True)
+    (ws / 'doc.md').write_text('offline child source\n')
+    task = stack.tasks.create_task('Parent', [str(ws)], max_subtasks=2)
+    model = ScriptedModel([
+        ModelResponse('tool_use', tool_calls=[ToolCall('spawn', 'subtask.spawn', {
+            'subtask_id': 'reader', 'goal': 'Read only',
+        })]), ModelResponse('end_turn', content='Wait'),
+    ])
+    engine = engine_for(stack, model)
+    parent = engine.start(task.task_id)
+    assert parent.state == 'waiting_approval'
+    approve_pending(stack, parent.run_id)
+    parent = engine.resume_run(parent.run_id)
+    row, = stack.tasks.list_subtasks(parent.run_id)
+    return task, parent, row
+
+
+def brief_events(log, run_id):
+    return [{'seq': e.seq, 'type': e.type, 'payload': e.payload}
+            for e in log.read_run(run_id)
+            if e.type in {'tool.not_dispatched', 'tool.result', 'dispatch.rejected',
+                          'approval.requested', 'tool.intent', 'execution.started',
+                          'run.end', 'run.fenced', 'subtask.finished'}]
+
+
+def child_proposals():
+    base = OUT / 'runs/worker'
+    base.mkdir(parents=True)
+    with closing(EventLog(base / 'events.db', blob_dir=base / 'blobs')) as log:
+        stack = stack_for(log, data_root=base / 'data')
+        stack.memory.ensure_schema()
+        task, parent, row = spawn(stack, base)
+        child_model = ScriptedModel([
+            ModelResponse('tool_use', tool_calls=[
+                ToolCall('write-memory', 'memory.propose', {'kind': 'fact', 'content': 'CHILD_MARKER', 'scope': 'user'}),
+                ToolCall('write-file', 'create_report', {'name': 'child.md', 'content': 'CHILD_MARKER'}),
+            ]), ModelResponse('end_turn', content='Read only'),
+        ])
+        worker = Worker(stack, model=child_model, heartbeat_interval_ms=None)
+        try:
+            assert worker.run_once()
+        finally:
+            worker.close()
+        events = brief_events(log, row.child_run_id)
+        assert worker.errors == []
+        assert [e['payload']['call_id'] for e in events if e['type'] == 'tool.not_dispatched'] == ['write-memory', 'write-file']
+        assert not [e for e in events if e['type'] in {'tool.result', 'tool.intent', 'approval.requested', 'dispatch.rejected'}]
+        assert log.conn.execute('SELECT COUNT(*) FROM memories').fetchone()[0] == 0
+        return {'child_policy': str(stack.tasks.run_execution_policy(row.child_run_id)),
+                'worker_errors': [], 'model_calls': child_model.calls,
+                'child_state': stack.tasks.get_run(row.child_run_id).state,
+                'memory_rows': 0, 'file_exists': (base / 'ws/child.md').exists(), 'events': events}
+
+
+def parent_fence():
+    base = OUT / 'runs/parent-fence'
+    base.mkdir(parents=True)
+    with closing(EventLog(base / 'events.db', blob_dir=base / 'blobs')) as log:
+        stack = stack_for(log, data_root=base / 'data')
+        task, parent, row = spawn(stack, base)
+        stack.tasks.revise_goal(task.task_id, 'New parent goal')
+        child_model = ScriptedModel([
+            ModelResponse('tool_use', tool_calls=[ToolCall('write', 'create_report', {
+                'name': 'child.md', 'content': 'No stale execution',
+            })]), ModelResponse('end_turn', content='Stale answer'),
+        ])
+        result = engine_for(stack, child_model).resume_run(row.child_run_id)
+        events = brief_events(log, row.child_run_id)
+        assert result.state == 'succeeded' and child_model.calls == 2
+        assert not [e for e in events if e['type'] == 'dispatch.rejected']
+        updated = stack.tasks.get_subtask(parent.run_id, 'reader')
+        assert updated.state == 'fenced' and updated.summary is None and updated.result_ref is None
+        assert not [e for e in log.read_run(parent.run_id) if e.type == 'subtask.finished']
+        return {'child_state': result.state, 'model_calls': child_model.calls,
+                'expected_old_guard_path': 'cancelled, one model call, dispatch.parent_fenced',
+                'subtask_state': updated.state, 'summary': updated.summary, 'result_ref': updated.result_ref,
+                'parent_subtask_finished': 0, 'file_exists': (base / 'ws/child.md').exists(), 'events': events}
+
+
+def independent_inner_guard():
+    base = OUT / 'runs/inner-guard'
+    base.mkdir(parents=True)
+    with closing(EventLog(base / 'events.db', blob_dir=base / 'blobs')) as log:
+        stack = stack_for(log, data_root=base / 'data')
+        stack.memory.ensure_schema()
+        _, _, row = spawn(stack, base)
+        task = stack.tasks.get_task(row.child_task_id)
+        run = stack.tasks.get_run(row.child_run_id)
+        claim = stack.claims.claim(row.job_id)
+        stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+        args = {'kind': 'fact', 'content': 'INNER_GUARD_MUST_REFUSE'}
+        request = build_request(task=task, run=run, claim=claim, call_id='legacy-write',
+                                tool_id='memory.propose', target=MemoryScope.user().to_uri(), args=args)
+        auth = _Authority(run, task, list(task.workspaces), [], [])
+        target = stack.dispatcher._resolve_target(request, auth)
+        with log.transaction() as tx:
+            stack.dispatcher._store_request(request, args, 'admitted', 'diagnostic legacy admission', 'c4.memory_scope')
+            grant = stack.grants.issue(subject=f'{run.run_id}#{claim.claim_epoch}', request=request, issuer='policy:auto')
+            stack.grants.consume(grant.grant_id, request_digest=request.digest(), subject=grant.subject)
+            seq = tx.append(run.run_id, 'tool.intent', {
+                'call_id': request.call_id, 'tool_id': request.tool_id, 'args': args,
+                'args_hash': request.args_hash, 'request_id': request.request_id,
+                'request_digest': request.digest(), 'dispatch_id': stack.dispatcher._dispatch_id(request),
+                'attempt_id': request.attempt_id, 'approval_id': None, 'grant_id': grant.grant_id,
+                'claim_epoch': claim.claim_epoch,
+            }, task_id=task.task_id)
+            stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
+        admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
+        try:
+            with stack.dispatcher._begin_memory_execution(request, claim):
+                raise AssertionError('normal outer guard unexpectedly admitted child')
+        except DispatchDenied as exc:
+            outer = {'type': type(exc).__name__, 'rule_id': exc.rule_id, 'reason': str(exc)}
+            assert exc.rule_id == 'c4.memory_scope_denied'
+        before = len([e for e in log.read_run(run.run_id) if e.type == 'execution.started'])
+        assert before == 0
+        with ExitStack() as held:
+            # Fault injection deliberately bypasses only the upstream authority and
+            # policy checks, while obtaining a real permit under the real guard.
+            with patch.object(stack.dispatcher, '_authority', return_value=auth), \
+                 patch.object(stack.dispatcher, '_check_run_execution', return_value=None):
+                permit = held.enter_context(stack.dispatcher._begin_memory_execution(request, claim))
+            try:
+                stack.dispatcher._memory_executor_for().execute(admitted, permit)
+                raise AssertionError('independent MemoryExecutor child check failed')
+            except MemoryDispatchRefused as exc:
+                inner = {'type': type(exc).__name__, 'rule_id': exc.rule_id, 'reason': str(exc)}
+                assert exc.rule_id == 'c4.memory_scope_denied'
+        assert log.conn.execute('SELECT COUNT(*) FROM memories').fetchone()[0] == 0
+        return {'normal_outer_guard': outer, 'normal_outer_execution_started': before,
+                'injected_upstream_methods_only': ['Dispatcher._authority', 'Dispatcher._check_run_execution'],
+                'permit_obtained_from_real_context': True, 'permit_seq': permit.seq,
+                'inner_guard': inner, 'memory_rows': 0,
+                'events': brief_events(log, row.child_run_id)}
+
+
+before = mapping()
+expected = json.loads((SOURCE.parent / 'inputs/source-hashes.json').read_text())
+assert before == expected and len(before) == 879
+results = {'scope': 'diagnosis only; no approval or new delta',
+           'worker_proposal_path': child_proposals(),
+           'parent_fence_path': parent_fence(),
+           'independent_inner_guard': independent_inner_guard()}
+assert mapping() == before
+(OUT / 'logs/current-path-results.json').write_text(json.dumps(results, ensure_ascii=False, indent=2) + '\n')
+print(json.dumps(results, ensure_ascii=False, indent=2))

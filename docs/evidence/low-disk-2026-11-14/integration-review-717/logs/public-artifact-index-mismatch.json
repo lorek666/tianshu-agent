@@ -1,0 +1,27 @@
+{
+  "index_sha256": "42a9fb2d0d622d9883d4181f1c472d359121c9224de260b8d4cebb5d31cc65dc",
+  "entries": 173,
+  "mismatches": [
+    {
+      "path": "t3/visual-static-demo/dist/assets/index-CIZ6Bgii.js",
+      "expected": "fe672593496fdb8228021e3457107e032569e903206361c1338f0050e010e533",
+      "actual": null,
+      "expected_bytes": 332572,
+      "actual_bytes": null
+    },
+    {
+      "path": "t3/visual-static-demo/dist/assets/index-XPu6LbkB.css",
+      "expected": "799a089898524ac56f7d6845cccd07ed971161ce87f070237ec69f295e664225",
+      "actual": null,
+      "expected_bytes": 28789,
+      "actual_bytes": null
+    },
+    {
+      "path": "t3/visual-static-demo/dist/index.html",
+      "expected": "52420ffb1ff112f4c19458e9c45e12effb3ceed2d553e565f6c4c137322c632e",
+      "actual": null,
+      "expected_bytes": 951,
+      "actual_bytes": null
+    }
+  ]
+}

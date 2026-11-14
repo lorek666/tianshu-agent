@@ -1,0 +1,222 @@
+{
+  "status": "SEALED_DIAGNOSIS_ONLY",
+  "root": "/tmp/low-disk-auth-eval-diagnosis-20261114-010jawy8",
+  "self_excluded": "hash-index.json",
+  "files": {
+    "DIAGNOSIS.md": {
+      "sha256": "314314e3444695ed6e3a1368537cc13399f66016fc4291ebff16c824b3797668",
+      "bytes": 5828,
+      "mode": "0444"
+    },
+    "facts.json": {
+      "sha256": "6f199befe3ad8af91d0ebc4d18ec36bbfc00d22cdab42849565ab226e8feacc9",
+      "bytes": 2574,
+      "mode": "0444"
+    },
+    "inputs/879-source-hashes.json": {
+      "sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+      "bytes": 114481,
+      "mode": "0444"
+    },
+    "inputs/baseline-dispatcher-_begin_memory_execution.py.txt": {
+      "sha256": "01280a6a320cb80aa9fb3f5b6bb87059a4c32edbb526afa575a7ffd9a87cf2cf",
+      "bytes": 1819,
+      "mode": "0444"
+    },
+    "inputs/baseline-memory_exec-_verify.py.txt": {
+      "sha256": "d39e4f56704e7bdafba95cc630bdba67151cf8d128801fafa7c780ceb8db5c94",
+      "bytes": 13110,
+      "mode": "0444"
+    },
+    "inputs/full-results.json": {
+      "sha256": "d734d27eccd68723e383c9cc863ada0533e6f187738363af2f08e7d0a9c5aaa7",
+      "bytes": 1799,
+      "mode": "0444"
+    },
+    "inputs/pytest.log": {
+      "sha256": "de7e3308456792005ceb5f963d0cee7fa080b750f6bc510a06064d1fea372df3",
+      "bytes": 106150,
+      "mode": "0444"
+    },
+    "inputs/results.json": {
+      "sha256": "d734d27eccd68723e383c9cc863ada0533e6f187738363af2f08e7d0a9c5aaa7",
+      "bytes": 1799,
+      "mode": "0444"
+    },
+    "inputs/selected-failures.json": {
+      "sha256": "596e959d4fbe9818b20b270c9fcbe5634a9cbf710b856bb7fb150d16c86a286c",
+      "bytes": 38034,
+      "mode": "0444"
+    },
+    "inputs/source-after.json": {
+      "sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+      "bytes": 114481,
+      "mode": "0444"
+    },
+    "inputs/source-before.json": {
+      "sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+      "bytes": 114481,
+      "mode": "0444"
+    },
+    "inputs/source/docs/DEBUG-ROUND2-2026-11-13.md": {
+      "sha256": "004bb69f2be3fc9e3014e2c91aa2f3c5d7dab1df3ea5ec24a27d2a0bb6b2af0a",
+      "bytes": 13942,
+      "mode": "0444"
+    },
+    "inputs/source/docs/low-disk-admission-contract.md": {
+      "sha256": "bae89865903b4582b9163225c905a966a469674787baa3d1cabc199f1e3cfc68",
+      "bytes": 23429,
+      "mode": "0444"
+    },
+    "inputs/source/src/tianshu/dispatcher.py": {
+      "sha256": "8275b6c3add3da53180ce4429eeae17c5dc71322d51ea1f51c7b2407d68e7af6",
+      "bytes": 208447,
+      "mode": "0444"
+    },
+    "inputs/source/src/tianshu/eval/checks.py": {
+      "sha256": "a05f8ea4745c2bc6e52cf00dba9bc990616ab8bcf5f2b1f7f79a5b5ad9789991",
+      "bytes": 82701,
+      "mode": "0444"
+    },
+    "inputs/source/src/tianshu/eval/tasks.py": {
+      "sha256": "be5426afcc340edd83093873a05ae3cb378ec6708ca0c2ffac174472415c53a7",
+      "bytes": 47270,
+      "mode": "0444"
+    },
+    "inputs/source/src/tianshu/loop.py": {
+      "sha256": "5ef3af3af98994f33fa52e4985c169f05dce2aa26430846c05018ca363e31bfd",
+      "bytes": 155704,
+      "mode": "0444"
+    },
+    "inputs/source/src/tianshu/memory_exec.py": {
+      "sha256": "cd9098705587b3117ca7109d245f20f1cc8c3487a2742e75789ed5bcd027a80b",
+      "bytes": 51219,
+      "mode": "0444"
+    },
+    "inputs/source/tests/support.py": {
+      "sha256": "aa35c8c8efa81c9023198e4bf33a54c831434a0b215f08d7ab293f6f055de9cd",
+      "bytes": 7913,
+      "mode": "0444"
+    },
+    "inputs/source/tests/test_eval_real_tasks.py": {
+      "sha256": "d2d17210668cd3d14c7b6dc334778345c4bdd7f92c7c8135c867ff2fda8b7c7e",
+      "bytes": 38566,
+      "mode": "0444"
+    },
+    "inputs/source/tests/test_g2_delegation_fence.py": {
+      "sha256": "34c3fb366ca538a4581bf57952f8d46a4eb4a06447bb056907b4cc6444c2c3fd",
+      "bytes": 10173,
+      "mode": "0444"
+    },
+    "inputs/source/tests/test_round2_auth_memory.py": {
+      "sha256": "fcb8e319a13726dee48799672aeb863fd054b1b50796bb62f629a3337cfe91e5",
+      "bytes": 11814,
+      "mode": "0444"
+    },
+    "logs/auth-baseline-binding.json": {
+      "sha256": "508a7ff4ad78ef5699b5b615ba7dc7d27f726151b9743f7ff9bff45f51d8736c",
+      "bytes": 1357,
+      "mode": "0444"
+    },
+    "logs/baseline-dispatcher-_begin_memory_execution.patch": {
+      "sha256": "88d61efae5132c7fb8b3da7dd37a5206a8277bce6768407121212895b77e113a",
+      "bytes": 581,
+      "mode": "0444"
+    },
+    "logs/baseline-memory_exec-_verify.patch": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0444"
+    },
+    "logs/current-path-results.json": {
+      "sha256": "df6233a740fcae05383a3c2137fa6dea9c3e8fe1d7f6bd234e46da84aee74cfe",
+      "bytes": 3838,
+      "mode": "0444"
+    },
+    "logs/current-path.command.json": {
+      "sha256": "91863148fa580729e402b3222d964a67cf794743edae0bbedc53a58d3ab75cdd",
+      "bytes": 573,
+      "mode": "0444"
+    },
+    "logs/current-path.stderr.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0444"
+    },
+    "logs/current-path.stdout.txt": {
+      "sha256": "df6233a740fcae05383a3c2137fa6dea9c3e8fe1d7f6bd234e46da84aee74cfe",
+      "bytes": 3838,
+      "mode": "0444"
+    },
+    "probes/current_path_probe.py": {
+      "sha256": "7271461b9aea15a39dcbf3005c168aa9bf0307b5602c827b4c72000b4b7099d8",
+      "bytes": 9829,
+      "mode": "0444"
+    },
+    "runs/inner-guard/data/artifacts/snapshots/run_85f987c6ac97.json": {
+      "sha256": "bd3333783319aedd6bbc271e5839ce320ad1f87ed0cb5c65efa692982eb6b52e",
+      "bytes": 35,
+      "mode": "0444"
+    },
+    "runs/inner-guard/data/execution.guard": {
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "bytes": 1,
+      "mode": "0444"
+    },
+    "runs/inner-guard/events.db": {
+      "sha256": "72d54e31470553b9b75e54939c763c7ed4c90eaca33bf4ba7d9528ea9ae24763",
+      "bytes": 360448,
+      "mode": "0444"
+    },
+    "runs/inner-guard/ws/doc.md": {
+      "sha256": "d400ab1c154e53e6833004775ded54ed13c3315fd917682cb27f44ef86564b53",
+      "bytes": 21,
+      "mode": "0444"
+    },
+    "runs/parent-fence/data/artifacts/snapshots/run_bd8163571970.json": {
+      "sha256": "bd3333783319aedd6bbc271e5839ce320ad1f87ed0cb5c65efa692982eb6b52e",
+      "bytes": 35,
+      "mode": "0444"
+    },
+    "runs/parent-fence/data/execution.guard": {
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "bytes": 1,
+      "mode": "0444"
+    },
+    "runs/parent-fence/events.db": {
+      "sha256": "6c1d0cad3edfab1cf464a3e165bf1f662b95ab9b0a82d938461f2b5d88c60c9b",
+      "bytes": 311296,
+      "mode": "0444"
+    },
+    "runs/parent-fence/ws/doc.md": {
+      "sha256": "d400ab1c154e53e6833004775ded54ed13c3315fd917682cb27f44ef86564b53",
+      "bytes": 21,
+      "mode": "0444"
+    },
+    "runs/worker/data/artifacts/blobs/8ac767353080eae75227c457c3e6dc0a438f6d0c2593940355842685e3a548e3": {
+      "sha256": "8ac767353080eae75227c457c3e6dc0a438f6d0c2593940355842685e3a548e3",
+      "bytes": 9,
+      "mode": "0444"
+    },
+    "runs/worker/data/artifacts/snapshots/run_bf1af1f6e7f1.json": {
+      "sha256": "bd3333783319aedd6bbc271e5839ce320ad1f87ed0cb5c65efa692982eb6b52e",
+      "bytes": 35,
+      "mode": "0444"
+    },
+    "runs/worker/data/execution.guard": {
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "bytes": 1,
+      "mode": "0444"
+    },
+    "runs/worker/events.db": {
+      "sha256": "f00615b9cfaf9aeb15bbf8aef183ad4f220768cce5bbd44dc5d5c2620fda5fad",
+      "bytes": 364544,
+      "mode": "0444"
+    },
+    "runs/worker/ws/doc.md": {
+      "sha256": "d400ab1c154e53e6833004775ded54ed13c3315fd917682cb27f44ef86564b53",
+      "bytes": 21,
+      "mode": "0444"
+    }
+  }
+}

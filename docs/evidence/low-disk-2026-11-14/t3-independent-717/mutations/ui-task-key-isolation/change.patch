@@ -1,0 +1,11 @@
+--- frozen/ui/src/App.tsx
++++ mutant/ui/src/App.tsx
+@@ -910,7 +910,7 @@
+               busy={busy}
+               now={now}
+               executionPolicy={
+-                runPolicies[selectedTask.task_id] ?? EFFECTS_RUN_POLICY
++                Object.values(runPolicies).at(-1) ?? EFFECTS_RUN_POLICY
+               }
+               onSelectRun={handleSelectRun}
+               onExecutionPolicyChange={handleExecutionPolicyChange}

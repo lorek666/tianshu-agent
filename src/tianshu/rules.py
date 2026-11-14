@@ -82,6 +82,9 @@ RULE_IDS: frozenset[str] = frozenset(
         "dispatch.call_id_reused",
         # ---- 准入：工具本身不在白名单里 ----
         "dispatch.not_admitted",
+        "dispatch.run_effects_disallowed",
+        "dispatch.disk_space_low",
+        "dispatch.disk_space_unknown",
         # ---- 前置条件：目标在被批准之后变了 ----
         "dispatch.stale_precondition",
         # ---- 目标不合法：覆盖/删除/新建作用在不该作用的路径上 ----
@@ -250,7 +253,9 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
             "dispatch.call_id_reused",
         }
     ),
-    "准入": frozenset({"dispatch.not_admitted"}),
+    "准入": frozenset({"dispatch.not_admitted", "dispatch.run_effects_disallowed",
+                       "dispatch.disk_space_low",
+                       "dispatch.disk_space_unknown"}),
     "资源种类": frozenset(
         {
             "c4.action_resource_mismatch",

@@ -1,0 +1,11 @@
+--- frozen/ui/src/App.tsx
++++ mutant/ui/src/App.tsx
+@@ -544,7 +544,7 @@
+         try {
+           const runEnvelope = await host.rpc<RunEnvelope>(RPC.runStart, {
+             task_id: task.task_id,
+-            execution_policy: input.execution_policy,
++            execution_policy: EFFECTS_RUN_POLICY,
+           });
+           const run = normalizeRun(runEnvelope.run);
+           if (run !== null) {

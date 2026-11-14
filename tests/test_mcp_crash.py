@@ -999,7 +999,7 @@ def test_refused_send_boundary_does_not_call_server(tmp_path, monkeypatch):
         )
         engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
 
-        def refuse(dispatch_id: str, *, server: str, tool: str) -> bool:
+        def refuse(dispatch_id: str, *, server: str, tool: str, admitted=None) -> bool:
             log.conn.execute(
                 "UPDATE dispatches SET state='revoked' WHERE dispatch_id=?",
                 (dispatch_id,),
@@ -1433,7 +1433,7 @@ def test_guard_timeout_before_send_is_a_controlled_rejection(tmp_path, monkeypat
         )
         engine = engine_for(stack, ScriptedModel([_tool_call(), _end()]))
 
-        def timeout(dispatch_id: str, *, server: str, tool: str) -> bool:
+        def timeout(dispatch_id: str, *, server: str, tool: str, admitted=None) -> bool:
             raise GuardTimeout("5000ms 内没拿到执行守卫")
 
         monkeypatch.setattr(stack.dispatcher, "_mark_mcp_send_boundary", timeout)

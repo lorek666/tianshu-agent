@@ -1,0 +1,5 @@
+negative_control=cli_explicit_pure_becomes_effects
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+mutated_cli_sha256=8806fab0e2295e1354db253dc297ebcc171178d97fe9324e71e2f531d8b36035
+command=uv run --frozen pytest -q tests/test_low_disk_entrypoints.py::test_cli_run_start_explicit_pure_only_bypasses_low_probe

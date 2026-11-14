@@ -1,0 +1,42 @@
+{
+  "purpose": "Historical script bytes are archival text, not maintained executable project source. Paths only changed; original bytes and indexes remain immutable.",
+  "original_artifact_index_sha256": "42a9fb2d0d622d9883d4181f1c472d359121c9224de260b8d4cebb5d31cc65dc",
+  "entries": [
+    {
+      "original_relative_path": "t3/final-gates/check_compile.py",
+      "published_relative_path": "t3/final-gates/check_compile.py.txt",
+      "bytes": 369,
+      "sha256": "d48a9b8eac0c2e47d409457a348bce4a4e98fe36f80e3f82f29d84dd7b440d44"
+    },
+    {
+      "original_relative_path": "t3/final-gates/check_stubs.py",
+      "published_relative_path": "t3/final-gates/check_stubs.py.txt",
+      "bytes": 942,
+      "sha256": "e9218309e1ff066279281f50819006d9e151253c1f150a0fc5a18bf1b94755ec"
+    },
+    {
+      "original_relative_path": "t3/final-gates/run_final_gates.py",
+      "published_relative_path": "t3/final-gates/run_final_gates.py.txt",
+      "bytes": 4604,
+      "sha256": "3dc05db6b76bd3062bb7bb8113b6b0c688a095b3bc30d60d55676f9c921ae2fc"
+    },
+    {
+      "original_relative_path": "t3/final-gates/verify_freeze.py",
+      "published_relative_path": "t3/final-gates/verify_freeze.py.txt",
+      "bytes": 3789,
+      "sha256": "c8769258fd30d75ac026588e63509ed47647603ba7d3725ccc4e0d5901d48ad8"
+    },
+    {
+      "original_relative_path": "t3/freeze_source.py",
+      "published_relative_path": "t3/freeze_source.py.txt",
+      "bytes": 6343,
+      "sha256": "cc3ec862b8de314f71c0b656e60b959de2eec202a4e0414c5479c88e24f499e4"
+    },
+    {
+      "original_relative_path": "t3/seal_evidence.py",
+      "published_relative_path": "t3/seal_evidence.py.txt",
+      "bytes": 2450,
+      "sha256": "fbc3b38a8ed118109007f2f01ec93a3d34cee8ab19bc92ca6d126d93ac11e654"
+    }
+  ]
+}

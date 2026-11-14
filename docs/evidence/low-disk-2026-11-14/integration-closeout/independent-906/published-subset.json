@@ -1,0 +1,434 @@
+{
+  "scope": "Byte-identical selected independent report, metadata, probes and logs. Complete input/source/work snapshots and runtime test databases are retained in the local ignored archive; the original hash-index covers those unpublished files too. Historical .py paths are mapped to .py.txt, without changing bytes.",
+  "files": 61,
+  "bytes": 591051,
+  "entries": [
+    {
+      "original_relative_path": "REPORT.md",
+      "published_relative_path": "REPORT.md",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/REPORT.md",
+      "sha256": "016f4c2f709da334f155c9d2da2db0f62d3980c976d3e43aa1a7751ab9cb4501",
+      "bytes": 10479
+    },
+    {
+      "original_relative_path": "facts.json",
+      "published_relative_path": "facts.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/facts.json",
+      "sha256": "3ef68826d46bc203c87dca5e3b4138a764ddceaf984e21e85ef9ad6a7303f442",
+      "bytes": 9088
+    },
+    {
+      "original_relative_path": "hash-index.json",
+      "published_relative_path": "hash-index.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/hash-index.json",
+      "sha256": "b5825b37654f25c5b1e76a59745fb7d6f78316d5e7743092dc402d429a9300d9",
+      "bytes": 400311
+    },
+    {
+      "original_relative_path": "logs/check-results.json",
+      "published_relative_path": "logs/check-results.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/check-results.json",
+      "sha256": "e97964b8f838846397511bf0d7477359447b5261dfaf313134656e7a90410b5e",
+      "bytes": 11575
+    },
+    {
+      "original_relative_path": "logs/close-readback-v1.stderr.txt",
+      "published_relative_path": "logs/close-readback-v1.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/close-readback-v1.stderr.txt",
+      "sha256": "695b0ba4a06ae0c0329e896636e017bdc6209e2098f0147640b766876d707870",
+      "bytes": 268
+    },
+    {
+      "original_relative_path": "logs/close-readback-v1.stdout.txt",
+      "published_relative_path": "logs/close-readback-v1.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/close-readback-v1.stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/close-readback.json",
+      "published_relative_path": "logs/close-readback.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/close-readback.json",
+      "sha256": "36e6d58b2cee637fd02374f7b5761e28f02bc82a3183d97684f2177ab6cdcd80",
+      "bytes": 4292
+    },
+    {
+      "original_relative_path": "logs/close-readback.stderr.txt",
+      "published_relative_path": "logs/close-readback.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/close-readback.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/close-readback.stdout.txt",
+      "published_relative_path": "logs/close-readback.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/close-readback.stdout.txt",
+      "sha256": "256d788d162370b70f05d8d1df330630824d87de33e95ff64e3a33376a10e6cf",
+      "bytes": 879
+    },
+    {
+      "original_relative_path": "logs/docs--KNOWLEDGE.md.patch",
+      "published_relative_path": "logs/docs--KNOWLEDGE.md.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/docs--KNOWLEDGE.md.patch",
+      "sha256": "c87518c1ce665ee61cd433d197d525fb73f47ba24d6b0254788f25efa32a92b2",
+      "bytes": 4553
+    },
+    {
+      "original_relative_path": "logs/docs--LOW-DISK-2026-11-14.md.patch",
+      "published_relative_path": "logs/docs--LOW-DISK-2026-11-14.md.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/docs--LOW-DISK-2026-11-14.md.patch",
+      "sha256": "95a30ea51b727126019469912520c26a707f7766b15c7b08a4c7ad8d8576fcd7",
+      "bytes": 3656
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-approval.command.json",
+      "published_relative_path": "logs/negative-fixture-approval.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-approval.command.json",
+      "sha256": "53c169d6eadd76aed8267f7674beac27c8e51c92baa3199dcd208ae441670604",
+      "bytes": 1127
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-approval.mutation.json",
+      "published_relative_path": "logs/negative-fixture-approval.mutation.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-approval.mutation.json",
+      "sha256": "a47aef4acdd7da2ca281de5ace91d350d39ffbe4fb9d5781acd8385af9b8f11d",
+      "bytes": 395
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-approval.stderr.txt",
+      "published_relative_path": "logs/negative-fixture-approval.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-approval.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-approval.stdout.txt",
+      "published_relative_path": "logs/negative-fixture-approval.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-approval.stdout.txt",
+      "sha256": "b94837c12e7c19dce4ab9e694636f834b3ee4ff0f37980941143e6718c975eb4",
+      "bytes": 2564
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-m2.command.json",
+      "published_relative_path": "logs/negative-fixture-m2.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-m2.command.json",
+      "sha256": "780263d6756de30214da3b19fcc0f98db12a3e707e093216ec0e4a1ca67894b6",
+      "bytes": 1092
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-m2.mutation.json",
+      "published_relative_path": "logs/negative-fixture-m2.mutation.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-m2.mutation.json",
+      "sha256": "018eb69c6426b90242923dd55777067accb5baed2a4115088e328207de9c3a09",
+      "bytes": 393
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-m2.stderr.txt",
+      "published_relative_path": "logs/negative-fixture-m2.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-m2.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-m2.stdout.txt",
+      "published_relative_path": "logs/negative-fixture-m2.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-m2.stdout.txt",
+      "sha256": "ae68fb291bffd7ffed3ccfbee52d25b9806f0a03b42b3245169326aa80f574fc",
+      "bytes": 2525
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-recovery.command.json",
+      "published_relative_path": "logs/negative-fixture-recovery.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-recovery.command.json",
+      "sha256": "2e2437e1cf2cde5bc06e290ae8bd48cc5ab683f230400fd05b2f435f89a65a28",
+      "bytes": 1119
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-recovery.mutation.json",
+      "published_relative_path": "logs/negative-fixture-recovery.mutation.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-recovery.mutation.json",
+      "sha256": "be626db8b6a5f07f2737ce40943271ad10f2eaad162ed1f1f2ad92707faa4ca1",
+      "bytes": 388
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-recovery.stderr.txt",
+      "published_relative_path": "logs/negative-fixture-recovery.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-recovery.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/negative-fixture-recovery.stdout.txt",
+      "published_relative_path": "logs/negative-fixture-recovery.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-fixture-recovery.stdout.txt",
+      "sha256": "f5ba26ec0fd92e4c5e9efd6ff9b1dff2735ba90b4e40e6005a189ed4c273f626",
+      "bytes": 1865
+    },
+    {
+      "original_relative_path": "logs/negative-inner-verify.command.json",
+      "published_relative_path": "logs/negative-inner-verify.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-inner-verify.command.json",
+      "sha256": "3957ab76db71ad50a735dd31450e1a875eb8e45575d58efeb976701fad5e3ff2",
+      "bytes": 1110
+    },
+    {
+      "original_relative_path": "logs/negative-inner-verify.mutation.json",
+      "published_relative_path": "logs/negative-inner-verify.mutation.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-inner-verify.mutation.json",
+      "sha256": "8445ff931db5840ed519423e6882948fc4f39e0b4612ac8167a0a8398fbc993a",
+      "bytes": 375
+    },
+    {
+      "original_relative_path": "logs/negative-inner-verify.stderr.txt",
+      "published_relative_path": "logs/negative-inner-verify.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-inner-verify.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/negative-inner-verify.stdout.txt",
+      "published_relative_path": "logs/negative-inner-verify.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-inner-verify.stdout.txt",
+      "sha256": "19b3c4d0e92da5f8695c21dd7dba2bb916409c2f893c6da04602b964c1627eb8",
+      "bytes": 11555
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-fence.command.json",
+      "published_relative_path": "logs/negative-old-filter-fence.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-fence.command.json",
+      "sha256": "822c5bbbec0faa90a447b874d744ab173a98bb50b6d69c11aac7db69c6c9861b",
+      "bytes": 920
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-fence.stderr.txt",
+      "published_relative_path": "logs/negative-old-filter-fence.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-fence.stderr.txt",
+      "sha256": "b93bbefa04434d04de4cd3ef5ce3a62c8c2c68224abca2dedf2847c531770b97",
+      "bytes": 565
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-fence.stdout.txt",
+      "published_relative_path": "logs/negative-old-filter-fence.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-fence.stdout.txt",
+      "sha256": "09cced8975101663fd00453ceb99185fbacd554c24e09aa5360d67f3830ffd69",
+      "bytes": 443
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-worker.command.json",
+      "published_relative_path": "logs/negative-old-filter-worker.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-worker.command.json",
+      "sha256": "a0e9725ba87fda1bd5e6f71c0f54f269e3892600a373455a74a2a410d961bcd4",
+      "bytes": 924
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-worker.stderr.txt",
+      "published_relative_path": "logs/negative-old-filter-worker.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-worker.stderr.txt",
+      "sha256": "384557cff3d228ed3c2247dbbb3869f1700406324044457acf139d8d9c370ccc",
+      "bytes": 527
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter-worker.stdout.txt",
+      "published_relative_path": "logs/negative-old-filter-worker.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter-worker.stdout.txt",
+      "sha256": "fbcc4ad606d2ce69fa5bf79ee2ef9d30ef503e5bf574a3f69b894b8855868fef",
+      "bytes": 605
+    },
+    {
+      "original_relative_path": "logs/negative-old-filter.mutation.json",
+      "published_relative_path": "logs/negative-old-filter.mutation.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/negative-old-filter.mutation.json",
+      "sha256": "78ce2d478c8e20f03188a9f9477a9a8795cb0a33882fc2bdcdc69bdd34fa7e61",
+      "bytes": 379
+    },
+    {
+      "original_relative_path": "logs/observer-corrections.json",
+      "published_relative_path": "logs/observer-corrections.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/observer-corrections.json",
+      "sha256": "3e5068553385178c766f2628cccba4edb511a93a84c29528f9e78d8e1939ea0b",
+      "bytes": 1510
+    },
+    {
+      "original_relative_path": "logs/positive-paths.command.json",
+      "published_relative_path": "logs/positive-paths.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-paths.command.json",
+      "sha256": "bec458efc3ccd4dab8497a0ea67e39b5845c8ca0e8b5a04626b164332a770e39",
+      "bytes": 917
+    },
+    {
+      "original_relative_path": "logs/positive-paths.stderr.txt",
+      "published_relative_path": "logs/positive-paths.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-paths.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/positive-paths.stdout.txt",
+      "published_relative_path": "logs/positive-paths.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-paths.stdout.txt",
+      "sha256": "420199dd106eef8783090a5d372522b746701e6368e5c0cbbd371d01b14f7ec0",
+      "bytes": 29505
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests-v2.command.json",
+      "published_relative_path": "logs/positive-selected-tests-v2.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests-v2.command.json",
+      "sha256": "cef11bf19512cd9c60ce20c0ffd5b0c50147650ef304e790359150e53694a800",
+      "bytes": 1553
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests-v2.stderr.txt",
+      "published_relative_path": "logs/positive-selected-tests-v2.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests-v2.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests-v2.stdout.txt",
+      "published_relative_path": "logs/positive-selected-tests-v2.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests-v2.stdout.txt",
+      "sha256": "7cbd3cc6c4248d4b310209e74942fee77a2200d36969992e73cbb745bfd179e0",
+      "bytes": 98
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests.command.json",
+      "published_relative_path": "logs/positive-selected-tests.command.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests.command.json",
+      "sha256": "cf8d8302c428610213210b0130de6b0cb7f5b1263bcaf91568e9da379d33258a",
+      "bytes": 1541
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests.stderr.txt",
+      "published_relative_path": "logs/positive-selected-tests.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/positive-selected-tests.stdout.txt",
+      "published_relative_path": "logs/positive-selected-tests.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/positive-selected-tests.stdout.txt",
+      "sha256": "5f193d0357b90bd6196b634d6c9ee921aad360fa718d661327c3a85fa3ec0a0e",
+      "bytes": 5047
+    },
+    {
+      "original_relative_path": "logs/pytest-convenience-symlinks-removed.json",
+      "published_relative_path": "logs/pytest-convenience-symlinks-removed.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/pytest-convenience-symlinks-removed.json",
+      "sha256": "5bd8476efaee6856d82185aec972af65480f8409b41ee3e5af6e506d5981d382",
+      "bytes": 2389
+    },
+    {
+      "original_relative_path": "logs/source-delta.json",
+      "published_relative_path": "logs/source-delta.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/source-delta.json",
+      "sha256": "92fdf6f6d6934891ddb3b2f569d28b8794898c6b36cba055932070bc594b0cf9",
+      "bytes": 3934
+    },
+    {
+      "original_relative_path": "logs/src--tianshu--loop.py.patch",
+      "published_relative_path": "logs/src--tianshu--loop.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/src--tianshu--loop.py.patch",
+      "sha256": "7227854dcafbbbd81621e1d893bb833aa5bc5b3c0a4a4254db332359770ef920",
+      "bytes": 621
+    },
+    {
+      "original_relative_path": "logs/static-review.json",
+      "published_relative_path": "logs/static-review.json",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/static-review.json",
+      "sha256": "fa7b7ef5cb4788c0575ef4c428bab7ab2700dc220aa73c5503f321a6df791b45",
+      "bytes": 1869
+    },
+    {
+      "original_relative_path": "logs/static-review.stderr.txt",
+      "published_relative_path": "logs/static-review.stderr.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/static-review.stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "original_relative_path": "logs/static-review.stdout.txt",
+      "published_relative_path": "logs/static-review.stdout.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/static-review.stdout.txt",
+      "sha256": "fa7b7ef5cb4788c0575ef4c428bab7ab2700dc220aa73c5503f321a6df791b45",
+      "bytes": 1869
+    },
+    {
+      "original_relative_path": "logs/tests--test_approval_reject.py.patch",
+      "published_relative_path": "logs/tests--test_approval_reject.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_approval_reject.py.patch",
+      "sha256": "68735a0340643764579280e5c53e2fe2126eabe8220b551026bd1ae60f4633a2",
+      "bytes": 403
+    },
+    {
+      "original_relative_path": "logs/tests--test_g2_delegation_contract.py.patch",
+      "published_relative_path": "logs/tests--test_g2_delegation_contract.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_g2_delegation_contract.py.patch",
+      "sha256": "d2e8c433f88de67ac0b57ee774f134641144a643c9199815f0cbff81d5dea4cf",
+      "bytes": 2176
+    },
+    {
+      "original_relative_path": "logs/tests--test_low_disk_execution.py.patch",
+      "published_relative_path": "logs/tests--test_low_disk_execution.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_low_disk_execution.py.patch",
+      "sha256": "72fa8f6ff27f7ad67246e74837d4814949f359bef416dbd500e4b15d1d9b03b9",
+      "bytes": 2575
+    },
+    {
+      "original_relative_path": "logs/tests--test_m2_acceptance.py.patch",
+      "published_relative_path": "logs/tests--test_m2_acceptance.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_m2_acceptance.py.patch",
+      "sha256": "935e3346a7c073f2fc9242ab50c424fe6254332dec15b1637a366e8bae799cb4",
+      "bytes": 361
+    },
+    {
+      "original_relative_path": "logs/tests--test_recovery.py.patch",
+      "published_relative_path": "logs/tests--test_recovery.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_recovery.py.patch",
+      "sha256": "6748affd19189af9d55d4ed95bd14645052e5d71d93ad19f72844a490376b1c1",
+      "bytes": 334
+    },
+    {
+      "original_relative_path": "logs/tests--test_round2_auth_memory.py.patch",
+      "published_relative_path": "logs/tests--test_round2_auth_memory.py.patch",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/logs/tests--test_round2_auth_memory.py.patch",
+      "sha256": "4f87438c6a2b9439d31635217a0df6cf543278c6b95580ddb75b053eada35c3d",
+      "bytes": 3870
+    },
+    {
+      "original_relative_path": "probes/close_readback.py",
+      "published_relative_path": "probes/close_readback.py.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/close_readback.py",
+      "sha256": "6a504fc59c9a5f04ab482d6c3cf78fb595dac0d666bb7a1e64e3452b66b24f9e",
+      "bytes": 5855
+    },
+    {
+      "original_relative_path": "probes/current_path_probe.py",
+      "published_relative_path": "probes/current_path_probe.py.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py",
+      "sha256": "ac4ee4f6d1e686258fe3f8d0f96c2f5c77e26f031e0df1aebac08515ad986792",
+      "bytes": 13476
+    },
+    {
+      "original_relative_path": "probes/make_report_and_seal.py",
+      "published_relative_path": "probes/make_report_and_seal.py.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/make_report_and_seal.py",
+      "sha256": "5bdd1bb7dd7b74cbc41cb6d25d8ad67f6f7a9bab6b2093c2fd627d509c659e1c",
+      "bytes": 20177
+    },
+    {
+      "original_relative_path": "probes/run_checks.py",
+      "published_relative_path": "probes/run_checks.py.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/run_checks.py",
+      "sha256": "9b57f8b4fd6b28dcdafc3fbbc216d13720f045b6ce8fe2e0ba7da44655e2826e",
+      "bytes": 7686
+    },
+    {
+      "original_relative_path": "probes/static_review.py",
+      "published_relative_path": "probes/static_review.py.txt",
+      "original_path": "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/static_review.py",
+      "sha256": "e74291c79c3e2056b73a5c7ba7b759899e4e5a5a2b76f200cd76b321e3627623",
+      "bytes": 9313
+    }
+  ]
+}

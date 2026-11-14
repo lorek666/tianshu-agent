@@ -1,0 +1,39 @@
+
+ RUN  v3.2.7 /tmp/low-disk-t3-independent-20261114/probes
+
+stdout | app-independent.test.tsx > independent real App DOM policy boundaries > existing task path sends both default and explicit pure policy using real TaskDetail buttons
+{"probe":"real-App-host-rpc","calls":[{"method":"run.start","params":{"task_id":"task-A","execution_policy":{"format_version":1,"mode":"effects"}}},{"method":"run.status","params":{"run_id":"run-1"}},{"method":"events.run","params":{"run_id":"run-1","after_seq":0,"limit":200}},{"method":"run.start","params":{"task_id":"task-A","execution_policy":{"format_version":1,"mode":"effects"}}},{"method":"run.status","params":{"run_id":"run-2"}},{"method":"events.run","params":{"run_id":"run-2","after_seq":0,"limit":200}}]}
+
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > new task default effects stays independent of readonly workspace; only run.start carries policy
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > new pure low failure survives dialog close, retry, task switch, and explicit mode change
+ × app-independent.test.tsx > independent real App DOM policy boundaries > existing task path sends both default and explicit pure policy using real TaskDetail buttons 34ms
+   → expected { task_id: 'task-A', …(1) } to deeply equal { task_id: 'task-A', …(1) }
+ ↓ app-independent.test.tsx > independent real App DOM policy boundaries > existing pure unknown failure retries same policy and never contaminates another Task
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  app-independent.test.tsx > independent real App DOM policy boundaries > existing task path sends both default and explicit pure policy using real TaskDetail buttons
+AssertionError: expected { task_id: 'task-A', …(1) } to deeply equal { task_id: 'task-A', …(1) }
+
+- Expected
++ Received
+
+  {
+    "execution_policy": {
+      "format_version": 1,
+-     "mode": "pure_only",
++     "mode": "effects",
+    },
+    "task_id": "task-A",
+  }
+
+ ❯ app-independent.test.tsx:81:72
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 skipped (4)
+   Start at  09:52:18
+   Duration  389ms (transform 102ms, setup 0ms, collect 142ms, tests 34ms, environment 124ms, prepare 25ms)
+

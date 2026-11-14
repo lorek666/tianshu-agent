@@ -1,0 +1,1 @@
+uv run --frozen python docs/evidence/low-disk-2026-11-14/t3/freeze_source.py

@@ -1,0 +1,11 @@
+--- frozen/src/tianshu/control.py
++++ mutant/src/tianshu/control.py
+@@ -455,7 +455,7 @@
+                 "max_turns": self._limits.max_turns,
+                 "max_total_tokens": self._limits.max_total_tokens,
+             },
+-            "tools": _exposed_tool_ids(execution_policy),
++            "tools": _exposed_tool_ids(),
+         }
+         run = self._tasks.start_run(
+             task.task_id,

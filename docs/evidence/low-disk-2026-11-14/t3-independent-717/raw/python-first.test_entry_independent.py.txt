@@ -1,0 +1,190 @@
+from pathlib import Path
+import os,sys,json,sqlite3,subprocess,select,time,tempfile,hashlib
+import pytest
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu import ipc
+from tianshu.tool_registry import current_registry
+BASE=Path(__file__).parents[1];WORK=BASE/'work';PROBES=BASE/'probes';RUNS=BASE/'runs'
+MIN=2147483648
+OMIT=object()
+def emit(label,**kw):print(json.dumps({'probe':label,**kw},ensure_ascii=False,default=str),flush=True)
+def case_root():return Path(tempfile.mkdtemp(prefix='i-',dir=RUNS))
+def env(root,free):
+ e=os.environ.copy()
+ for k in list(e):
+  if k.startswith(('TIANSHU_','OPENAI_','ANTHROPIC_')):e.pop(k)
+ e.update(PYTHONPATH=str(WORK/'src'),PYTHONDONTWRITEBYTECODE='1',T3_CASE=str(root),T3_FREE=json.dumps(free),TIANSHU_AUTHORITY_ROOT=str(root/'authority'),TIANSHU_DATA_ROOT=str(root),PYTEST_ADDOPTS='')
+ return e
+def snapshot(root):
+ db=root/'events.db'
+ if not db.exists():return {'tables':{},'events':[],'versions':[],'manifests':[]}
+ c=sqlite3.connect(db.as_uri()+'?mode=ro',uri=True);c.row_factory=sqlite3.Row
+ try:
+  names={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+  tables={n:[dict(x) for x in c.execute('SELECT * FROM '+n)] for n in ['tasks','runs','jobs','leases','approvals','grants'] if n in names}
+  events=[dict(x) for x in c.execute('SELECT seq,type,run_id,task_id,payload FROM events ORDER BY seq')]
+  for e in events:e['payload']=json.loads(e['payload']) if e['payload'] is not None else None
+  versions=[dict(x) for x in c.execute('SELECT * FROM event_versions ORDER BY seq')]
+  return {'tables':tables,'events':events,'versions':versions,'manifests':[str(p.relative_to(root)) for p in root.rglob('manifests/*.json')]}
+ finally:c.close()
+def no_new_run(s):
+ assert not s['tables'].get('runs') and not s['tables'].get('jobs') and not s['tables'].get('approvals')
+ assert not s['manifests']
+ assert not any(e['type'] in ['run.start','model.intent','approval.requested','tool.intent','execution.started'] for e in s['events'])
+def policy_snapshot(s,mode):
+ starts=[e for e in s['events'] if e['type']=='run.start'];assert len(starts)==1
+ e=starts[0];assert e['payload']['execution_policy']=={'format_version':1,'mode':mode}
+ assert next(x['version'] for x in s['versions'] if x['seq']==e['seq'])==2
+ assert len(s['tables']['runs'])==1 and len(s['tables']['jobs'])==1
+ if mode=='pure_only':
+  assert not s['manifests']
+  assert all(current_registry().spec(t).side_effect_level=='pure' for t in e['payload']['tools'])
+ return e
+
+def cli_run(root,free,entry='start',mode=OMIT,workspace_mode='writable',mcp=False,extra=None):
+ ws=root/'workspace';ws.mkdir(exist_ok=True);(ws/'note').write_text('immutable input for independent T3')
+ e=env(root,free);before=None;taskid=None
+ if entry=='start':
+  old=os.environ.get('TIANSHU_AUTHORITY_ROOT');os.environ['TIANSHU_AUTHORITY_ROOT']=e['TIANSHU_AUTHORITY_ROOT']
+  log=EventLog(root/'events.db',blob_dir=root/'blobs');s=build_stack(log,data_root=root)
+  try:taskid=s.tasks.create_task('independent CLI task',[{'root_path':str(ws),'mode':workspace_mode}]).task_id
+  finally:
+   log.close()
+   if old is None:os.environ.pop('TIANSHU_AUTHORITY_ROOT')
+   else:os.environ['TIANSHU_AUTHORITY_ROOT']=old
+  before=snapshot(root)
+  args=['run','start','--task-id',taskid]
+ else:args=['run','--task','independent compat task','--workspace',str(ws)]
+ if mode is not OMIT:args+=['--execution-mode',mode]
+ args+=['--db',str(root/'events.db'),'--data-root',str(root),'--json']
+ if extra:args+=extra
+ if mcp:
+  config={'servers':{'ind':{'command':[sys.executable,str(PROBES/'mcp_peer.py'),str(root/'peer.started'),str(WORK/'tests/fixtures/fake_mcp_server.py')]}}}
+  (root/'mcp.json').write_text(json.dumps(config));e['TIANSHU_MCP_CONFIG']=str(root/'mcp.json')
+ command=[sys.executable,str(PROBES/'cli_child.py'),*args]
+ p=subprocess.run(command,cwd=WORK,env=e,text=True,capture_output=True,timeout=25)
+ (root/'cli.stdout').write_text(p.stdout);(root/'cli.stderr').write_text(p.stderr)
+ (root/'command.json').write_text(json.dumps({'argv':command,'cwd':str(WORK),'exit':p.returncode,'env_keys':['PYTHONPATH','PYTHONDONTWRITEBYTECODE','T3_CASE','T3_FREE','TIANSHU_AUTHORITY_ROOT','TIANSHU_DATA_ROOT'],'python':sys.executable},indent=2))
+ after=snapshot(root);(root/'snapshot.json').write_text(json.dumps(after,indent=2))
+ emit('cli',root=root,entry=entry,mode='OMITTED' if mode is OMIT else mode,free=free,exit=p.returncode,stderr=p.stderr,events=[e['type'] for e in after['events']],peer=(root/'peer.started').exists())
+ if before:
+  created_before=[x for x in before['events'] if x['type']=='task.created'];created_after=[x for x in after['events'] if x['type']=='task.created'];assert created_after==created_before
+ assert (ws/'note').read_text()=='immutable input for independent T3'
+ return p,after
+
+@pytest.mark.parametrize('free',[MIN-1,MIN,MIN+1,0,True,-1,'raise'])
+def test_cli_real_start_threshold(free):
+ root=case_root();p,s=cli_run(root,free)
+ if type(free)is int and free>=MIN:
+  assert p.returncode==0;pstart=policy_snapshot(s,'effects');assert (root/'model.jsonl').exists()
+ else:
+  assert p.returncode==2;no_new_run(s)
+  assert ('dispatch.disk_space_low' if type(free)is int and free>=0 else 'dispatch.disk_space_unknown') in p.stderr
+  assert not (root/'model.jsonl').exists()
+
+@pytest.mark.parametrize('entry',['start','compat'])
+@pytest.mark.parametrize('mode',['effects','pure_only'])
+def test_cli_both_explicit_modes(entry,mode):
+ root=case_root();p,s=cli_run(root,0 if mode=='pure_only' else MIN,entry,mode)
+ assert p.returncode==0;policy_snapshot(s,mode)
+ calls=[json.loads(x) for x in (root/'model.jsonl').read_text().splitlines()];assert len(calls)==2
+ assert sum(e['type']=='model.intent' for e in s['events'])==len(calls)
+ assert any(e['type']=='tool.result' for e in s['events'])
+ assert not any(e['type']=='execution.started' for e in s['events'])
+ task=next(e['payload'] for e in s['events'] if e['type']=='task.created')
+ assert task['workspaces'][0]['mode']=='writable'
+ # Reopen through the real persisted policy reader, without an in-memory permit.
+ log=EventLog(root/'events.db',blob_dir=root/'blobs');stack=build_stack(log,data_root=root)
+ try:assert stack.tasks.run_execution_policy(s['tables']['runs'][0]['run_id']).mode==mode
+ finally:log.close()
+
+@pytest.mark.parametrize('entry,mode,free,expect_peer',[('compat',None,0,False),('start','effects',0,False),('compat','effects',0,False),('start','pure_only',0,False),('compat','pure_only',0,False),('start','effects',MIN,True)])
+def test_cli_mcp_start_boundary(entry,mode,free,expect_peer):
+ root=case_root();p,s=cli_run(root,free,entry,OMIT if mode is None else mode,mcp=True)
+ assert (root/'peer.started').exists()==expect_peer
+ if mode!='pure_only' and free==0:assert p.returncode==2;no_new_run(s)
+ else:assert p.returncode==0;policy_snapshot(s,mode)
+
+@pytest.mark.parametrize('mode',['effects','pure_only'])
+def test_cli_readonly_independent(mode):
+ root=case_root();p,s=cli_run(root,MIN,'start',mode,workspace_mode='readonly')
+ assert p.returncode==0;policy_snapshot(s,mode)
+ task=next(e['payload'] for e in s['events'] if e['type']=='task.created');assert task['workspaces'][0]['mode']=='readonly'
+
+@pytest.mark.parametrize('action',['resume','status','pause','cancel'])
+@pytest.mark.parametrize('flag',['effects','pure_only'])
+def test_noncreation_mode_exit2(action,flag):
+ root=case_root();p,s=cli_run(root,MIN,'start','pure_only');assert p.returncode==0
+ before=snapshot(root)
+ argv=['run',action,'--run-id',s['tables']['runs'][0]['run_id'],'--execution-mode',flag,'--db',str(root/'events.db'),'--data-root',str(root)]
+ p=subprocess.run([sys.executable,str(PROBES/'cli_child.py'),*argv],cwd=WORK,env=env(root,0),capture_output=True,text=True,timeout=15)
+ (root/('noncreation-'+action+'-'+flag+'.json')).write_text(json.dumps({'argv':argv,'exit':p.returncode,'stdout':p.stdout,'stderr':p.stderr},ensure_ascii=False,indent=2))
+ assert p.returncode==2 and '只适用于' in p.stderr
+ assert snapshot(root)==before
+ emit('noncreation',root=root,action=action,flag=flag,exit=p.returncode,unchanged=True)
+
+class Daemon:
+ def __init__(self,free):
+  self.root=case_root();(self.root/'workspace').mkdir();(self.root/'workspace/note').write_text('IPC original')
+  self.err=(self.root/'daemon.stderr').open('w');self.p=subprocess.Popen([sys.executable,str(PROBES/'daemon_child.py')],cwd=WORK,env=env(self.root,free),stdout=subprocess.PIPE,stderr=self.err,text=True)
+  ready,_,_=select.select([self.p.stdout],[],[],12)
+  assert ready,'daemon readiness timed out'
+  self.ready=self.p.stdout.readline();assert json.loads(self.ready)['ready'],self.ready
+  self.c=ipc.Client(self.root,timeout=5);self.welcome=self.c.connect()
+  self.task=self.c.call('task.create',{'goal':'independent real IPC','workspaces':[{'root_path':str(self.root/'workspace'),'mode':'writable'}]})['task']
+  emit('ipc_ready',pid=self.p.pid,parent=os.getpid(),root=self.root,welcome=self.welcome)
+ def close(self):
+  try:self.c.call('shutdown',{'reason':'independent T3 complete'})
+  finally:self.c.close()
+  stdout,_=self.p.communicate(timeout=12);self.err.close();assert self.p.returncode==0
+  (self.root/'daemon.stdout').write_text(self.ready+stdout)
+ def start(self,policy=OMIT,extra=None):
+  params={'task_id':self.task['task_id']}
+  if policy is not OMIT:params['execution_policy']=policy
+  if extra:params.update(extra)
+  try:r=self.c.call('run.start',params);return {'ok':True,'result':r}
+  except ipc.RemoteError as e:return {'ok':False,'code':e.code,'message':str(e)}
+ def settled(self,rid):
+  deadline=time.monotonic()+8
+  while time.monotonic()<deadline:
+   r=self.c.call('run.status',{'run_id':rid})['run']
+   if r['state'] in ['succeeded','failed','cancelled','completed','fenced','waiting_approval','paused']:return r
+  raise AssertionError('run did not settle')
+
+@pytest.mark.parametrize('free',[MIN-1,MIN,MIN+1,0,True,-1,'raise'])
+def test_real_ipc_default_threshold(free):
+ d=Daemon(free)
+ try:
+  result=d.start()
+  if type(free)is int and free>=MIN:
+   assert result['ok'];assert result['result']['run']['state']=='created';d.settled(result['result']['run']['run_id'])
+  else:
+   assert not result['ok'] and result['code']=='internal',result
+   assert ('dispatch.disk_space_low' if type(free)is int and free>=0 else 'dispatch.disk_space_unknown') in result['message']
+ finally:d.close()
+ s=snapshot(d.root);(d.root/'snapshot.json').write_text(json.dumps(s,indent=2));emit('ipc_threshold',free=free,result=result,root=d.root)
+ if result['ok']:policy_snapshot(s,'effects')
+ else:no_new_run(s);assert not (d.root/'model.jsonl').exists()
+
+BAD=[None,False,True,'pure_only',[],{}, {'format_version':1},{'mode':'pure_only'},{'format_version':True,'mode':'pure_only'},{'format_version':1.0,'mode':'pure_only'},{'format_version':2,'mode':'pure_only'},{'format_version':1,'mode':False},{'format_version':1,'mode':'bad'},{'format_version':1,'mode':'pure_only','extra':0}]
+@pytest.mark.parametrize('policy',BAD)
+def test_real_ipc_bad_policy(policy):
+ d=Daemon(MIN)
+ try:result=d.start(policy,extra={'mode':'effects'});assert not result['ok'] and result['code']=='bad_params',result
+ finally:d.close()
+ s=snapshot(d.root);no_new_run(s);emit('ipc_bad',policy=policy,result=result,root=d.root)
+ assert not (d.root/'model.jsonl').exists()
+
+@pytest.mark.parametrize('mode',['effects','pure_only'])
+def test_real_ipc_explicit_modes(mode):
+ d=Daemon(0 if mode=='pure_only' else MIN)
+ try:
+  result=d.start({'format_version':1,'mode':mode});assert result['ok'],result
+  settled=d.settled(result['result']['run']['run_id']);assert settled['outcome']=='succeeded',settled
+ finally:d.close()
+ s=snapshot(d.root);policy_snapshot(s,mode)
+ assert sum(e['type']=='model.intent' for e in s['events'])==2
+ task=next(e['payload'] for e in s['events'] if e['type']=='task.created');assert task['workspaces'][0]['mode']=='writable' and 'execution_policy' not in task
+ assert (d.root/'workspace/note').read_text()=='IPC original'
+ emit('ipc_explicit',mode=mode,root=d.root,result=result,settled=settled)

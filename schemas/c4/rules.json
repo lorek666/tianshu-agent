@@ -54,6 +54,8 @@
         "dispatch.claim_mismatch",
         "dispatch.create_over_existing",
         "dispatch.denied",
+        "dispatch.disk_space_low",
+        "dispatch.disk_space_unknown",
         "dispatch.foreign_instance",
         "dispatch.guard_timeout",
         "dispatch.lease_lost",
@@ -73,6 +75,7 @@
         "dispatch.parent_fenced",
         "dispatch.refused",
         "dispatch.resource_kind_unsupported",
+        "dispatch.run_effects_disallowed",
         "dispatch.run_fenced",
         "dispatch.stale_precondition",
         "dispatch.stale_revision",
@@ -166,7 +169,10 @@
     "dispatch.subtask_rejected": "工具与资源种类不匹配：非子任务工具收到 subtask:// 资源，或子任务工具收到别的资源（不回退成文件动作）。",
     "dispatch.target_is_directory": "目标是目录，而该动作只作用于文件。",
     "dispatch.task_mismatch": "请求的 task_id 与该 Run 实际所属的 Task 不符。",
-    "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。"
+    "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。",
+    "dispatch.run_effects_disallowed": "pure_only Run 请求真实非 pure 工具；只能显式新开 effects Run，不升级原 Run。",
+    "dispatch.disk_space_low": "实际必需位置的当前用户可用空间低于 2 GiB（含真实 0）；清理对应卷或显式新建 pure_only Run。",
+    "dispatch.disk_space_unknown": "测量失败、无效或必需 context/实例不完整，无法证明空间；修复配置或探测后重试。"
   },
   "x-rule-groups": {
     "身份失配": [

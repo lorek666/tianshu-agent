@@ -1,0 +1,198 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_____________ test_memory_executor_rechecks_child_capability[user] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2984/test_memory_executor_rechecks_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x109b0aff0>
+scope_name = 'user'
+
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_memory_executor_rechecks_child_capability(tmp_path, monkeypatch, scope_name):
+        """构造旧版准入曾签出的真实一次性票据，独立执行层仍拒绝子任务。"""
+        from tianshu.dispatcher import _Authority
+        from tianshu.memory_exec import MemoryDispatchRefused
+    
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            _, row = _spawn(stack)
+            task = stack.tasks.get_task(row.child_task_id)
+            run = stack.tasks.get_run(row.child_run_id)
+            claim = stack.claims.claim(row.job_id)
+            stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(task.task_id)
+            args = {"kind": "fact", "content": "EXECUTOR_MUST_REFUSE"}
+            request = build_request(
+                task=task, run=run, claim=claim, call_id="write", tool_id="memory.propose",
+                target=scope.to_uri(), args=args,
+            )
+            # 故障注入只绕过上游新只读门：其余 grant/dispatch/claim 均由真实存储
+            # 构造；执行器不能把这些票据当作子任务具有写权限的证据。
+            auth = _Authority(run, task, list(task.workspaces), [], [])
+            target = stack.dispatcher._resolve_target(request, auth)
+            with log.transaction() as tx:
+                stack.dispatcher._store_request(
+                    request, args, "admitted", "legacy admission fixture", "c4.memory_scope"
+                )
+                grant = stack.grants.issue(
+                    subject=f"{run.run_id}#{claim.claim_epoch}", request=request,
+                    issuer="policy:auto",
+                )
+                stack.grants.consume(
+                    grant.grant_id, request_digest=request.digest(), subject=grant.subject
+                )
+                seq = tx.append(run.run_id, "tool.intent", {
+                    "call_id": request.call_id, "tool_id": request.tool_id,
+                    "args": args, "args_hash": request.args_hash,
+                    "request_id": request.request_id,
+                    "request_digest": request.digest(),
+                    "dispatch_id": stack.dispatcher._dispatch_id(request),
+                    "attempt_id": request.attempt_id,
+                    "approval_id": None, "grant_id": grant.grant_id,
+                    "claim_epoch": claim.claim_epoch,
+                }, task_id=task.task_id)
+                stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
+            admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
+            executor = stack.dispatcher._memory_executor_for()
+            with pytest.raises(DispatchDenied, match="只读子任务不能写入记忆"):
+                with stack.dispatcher._begin_memory_execution(request, claim):
+                    pytest.fail("正常入口不能为子任务记忆写入签出 permit")
+            assert not any(
+                e.type == "execution.started" for e in log.read_run(run.run_id)
+            )
+    
+            upstream_calls = []
+            original_authority = stack.dispatcher._authority
+            original_check_run_execution = stack.dispatcher._check_run_execution
+    
+            def bypass_new_authority_gate(
+                candidate, candidate_claim, *, args=None, mcp_discovery=False
+            ):
+                if candidate.request_id != request.request_id:
+                    return original_authority(
+                        candidate,
+                        candidate_claim,
+                        args=args,
+                        mcp_discovery=mcp_discovery,
+                    )
+                upstream_calls.append("authority")
+                assert candidate_claim == claim
+                return auth
+    
+            def bypass_new_execution_gate(candidate, candidate_target):
+                if candidate.request_id != request.request_id:
+                    return original_check_run_execution(candidate, candidate_target)
+                upstream_calls.append("check_run_execution")
+                assert candidate_target.uri == scope.to_uri()
+    
+            monkeypatch.setattr(stack.dispatcher, "_authority", bypass_new_authority_gate)
+            monkeypatch.setattr(
+                stack.dispatcher, "_check_run_execution", bypass_new_execution_gate
+            )
+            with stack.dispatcher._begin_memory_execution(request, claim) as permit:
+                # 独立判据先直接打内层复核；随后仍走完整 execute 正控，确认不是
+                # pure_only 的外层资格门替它提供保护。
+>               with pytest.raises(MemoryDispatchRefused, match="只读子任务"):
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               Failed: DID NOT RAISE MemoryDispatchRefused
+
+tests/test_round2_auth_memory.py:261: Failed
+_____________ test_memory_executor_rechecks_child_capability[task] _____________
+
+tmp_path = PosixPath('/private/var/folders/6k/4ycx25jj6_v8n_y3b2_p38780000gn/T/pytest-of-ronfee/pytest-2984/test_memory_executor_rechecks_1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x109b43e30>
+scope_name = 'task'
+
+    @pytest.mark.parametrize("scope_name", ["user", "task"])
+    def test_memory_executor_rechecks_child_capability(tmp_path, monkeypatch, scope_name):
+        """构造旧版准入曾签出的真实一次性票据，独立执行层仍拒绝子任务。"""
+        from tianshu.dispatcher import _Authority
+        from tianshu.memory_exec import MemoryDispatchRefused
+    
+        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+            stack = stack_for(log, data_root=tmp_path / "data")
+            _, row = _spawn(stack)
+            task = stack.tasks.get_task(row.child_task_id)
+            run = stack.tasks.get_run(row.child_run_id)
+            claim = stack.claims.claim(row.job_id)
+            stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+            scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(task.task_id)
+            args = {"kind": "fact", "content": "EXECUTOR_MUST_REFUSE"}
+            request = build_request(
+                task=task, run=run, claim=claim, call_id="write", tool_id="memory.propose",
+                target=scope.to_uri(), args=args,
+            )
+            # 故障注入只绕过上游新只读门：其余 grant/dispatch/claim 均由真实存储
+            # 构造；执行器不能把这些票据当作子任务具有写权限的证据。
+            auth = _Authority(run, task, list(task.workspaces), [], [])
+            target = stack.dispatcher._resolve_target(request, auth)
+            with log.transaction() as tx:
+                stack.dispatcher._store_request(
+                    request, args, "admitted", "legacy admission fixture", "c4.memory_scope"
+                )
+                grant = stack.grants.issue(
+                    subject=f"{run.run_id}#{claim.claim_epoch}", request=request,
+                    issuer="policy:auto",
+                )
+                stack.grants.consume(
+                    grant.grant_id, request_digest=request.digest(), subject=grant.subject
+                )
+                seq = tx.append(run.run_id, "tool.intent", {
+                    "call_id": request.call_id, "tool_id": request.tool_id,
+                    "args": args, "args_hash": request.args_hash,
+                    "request_id": request.request_id,
+                    "request_digest": request.digest(),
+                    "dispatch_id": stack.dispatcher._dispatch_id(request),
+                    "attempt_id": request.attempt_id,
+                    "approval_id": None, "grant_id": grant.grant_id,
+                    "claim_epoch": claim.claim_epoch,
+                }, task_id=task.task_id)
+                stack.dispatcher._insert_dispatch(request, auth, target, seq, None, grant.grant_id)
+            admitted = stack.dispatcher._admitted(request, claim, target, seq, None, grant.grant_id)
+            executor = stack.dispatcher._memory_executor_for()
+            with pytest.raises(DispatchDenied, match="只读子任务不能写入记忆"):
+                with stack.dispatcher._begin_memory_execution(request, claim):
+                    pytest.fail("正常入口不能为子任务记忆写入签出 permit")
+            assert not any(
+                e.type == "execution.started" for e in log.read_run(run.run_id)
+            )
+    
+            upstream_calls = []
+            original_authority = stack.dispatcher._authority
+            original_check_run_execution = stack.dispatcher._check_run_execution
+    
+            def bypass_new_authority_gate(
+                candidate, candidate_claim, *, args=None, mcp_discovery=False
+            ):
+                if candidate.request_id != request.request_id:
+                    return original_authority(
+                        candidate,
+                        candidate_claim,
+                        args=args,
+                        mcp_discovery=mcp_discovery,
+                    )
+                upstream_calls.append("authority")
+                assert candidate_claim == claim
+                return auth
+    
+            def bypass_new_execution_gate(candidate, candidate_target):
+                if candidate.request_id != request.request_id:
+                    return original_check_run_execution(candidate, candidate_target)
+                upstream_calls.append("check_run_execution")
+                assert candidate_target.uri == scope.to_uri()
+    
+            monkeypatch.setattr(stack.dispatcher, "_authority", bypass_new_authority_gate)
+            monkeypatch.setattr(
+                stack.dispatcher, "_check_run_execution", bypass_new_execution_gate
+            )
+            with stack.dispatcher._begin_memory_execution(request, claim) as permit:
+                # 独立判据先直接打内层复核；随后仍走完整 execute 正控，确认不是
+                # pure_only 的外层资格门替它提供保护。
+>               with pytest.raises(MemoryDispatchRefused, match="只读子任务"):
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               Failed: DID NOT RAISE MemoryDispatchRefused
+
+tests/test_round2_auth_memory.py:261: Failed
+=========================== short test summary info ============================
+FAILED tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability[user]
+FAILED tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability[task]
+2 failed in 0.13s

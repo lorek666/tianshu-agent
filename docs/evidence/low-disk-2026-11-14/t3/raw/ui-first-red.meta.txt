@@ -1,0 +1,10 @@
+phase=ui-first-red
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+command=pnpm --dir ui run test -- src/__tests__/run-mode.test.tsx
+node=v24.22.2
+pnpm=11.20.0
+jsdom_version=jsdom@26.1.0
+test_sha256=0fa1c83466c979123743f3d56f06b52ded47adaf13fa4da6ce0700aa5a6206be
+app_sha256=625b967f534754583b5e0a62ce5399d4bf814c96d2dd2fbb4fec67931153f037
+types_sha256=fa3d8fb62491ba9509a77cc7a797935362798abad3a832a385fb8928ac9a61bb

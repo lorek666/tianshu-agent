@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "-B",
+    "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit.py",
+    "/tmp/tianshu-g3-20261113/low-disk-t3-root-mwb0fwy0/candidate-complete"
+  ],
+  "cwd": "/tmp/low-disk-whole-branch-review-20261114",
+  "exit": 1,
+  "elapsed_seconds": 0.6463277339935303,
+  "probe_sha256": "47a152652ad037c0f33f71d6e1518271e4ed4cfa58a1a515361e08851f1fe7cd",
+  "metadata_only_runtime": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]"
+}

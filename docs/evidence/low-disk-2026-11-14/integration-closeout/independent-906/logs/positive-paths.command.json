@@ -1,0 +1,20 @@
+{
+  "label": "positive-paths",
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/probes/current_path_probe.py"
+  ],
+  "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source",
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/source/tests",
+    "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-paths/authority",
+    "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    "REVIEW_LABEL": "positive-paths",
+    "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/source",
+    "REVIEW_MUTATION": ""
+  },
+  "expected_exit": 0,
+  "expected_output_contains": "ALL_SELECTED_PROBES_PASSED worker,fence,inner,eval"
+}

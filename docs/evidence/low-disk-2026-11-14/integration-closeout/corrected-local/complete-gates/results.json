@@ -1,0 +1,87 @@
+{
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "source_manifest": "/tmp/tianshu-g3-20261113/low-disk-integration-fix-root-d2v3tbh6/source-hashes.json",
+  "manifest_sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+  "source_files": 906,
+  "deleted_paths": [
+    "ui/dist/assets/index-B-xT4bPb.js",
+    "ui/dist/assets/index-tHfDYJNM.css"
+  ],
+  "removed_env_names": [
+    "ANTHROPIC_BASE_URL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "set_env": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "started_at": "2026-11-14T02:36:39.253120+00:00",
+  "commands": [
+    {
+      "label": "lock",
+      "command": [
+        "uv",
+        "lock",
+        "--check"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 0.08,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/lock.log",
+      "log_sha256": "3811ad9b6f7f6f638c3359b7cc7cd5b798750f8906476cdeebc195a6ccc7fa6d",
+      "log_bytes": 28,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "pytest",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 509.86,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/pytest.log",
+      "log_sha256": "214f7559200eb9a8580be2394c1490b67515d381994c07e59a1a26ce62ec86b1",
+      "log_bytes": 3644,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 0.14,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3/ruff.log",
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "log_bytes": 19,
+      "source_stable": true,
+      "git_stable": true
+    }
+  ],
+  "scope": "corrected_python_gates_and_exact_unchanged_ui_inheritance",
+  "ui_inheritance": {
+    "results": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/results.json",
+    "results_sha256": "5327f6a621c9e99e594ce33ce4c9d2cdc5132b30860545dc4c1aab8f0438761a",
+    "source_files": 57,
+    "unchanged_from_manifest": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+    "complete_ui_tests": "13 files / 91 tests",
+    "rerun_in_this_command": false
+  },
+  "source_drift": [],
+  "completed_at": "2026-11-14T02:45:09.453238+00:00",
+  "passed": true
+}

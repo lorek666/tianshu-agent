@@ -1,0 +1,118 @@
+{
+  "root": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "head": "a0223aa269efcdf70df4c4d8c43e5629b4fa0215",
+  "source_manifest": "/tmp/tianshu-g3-20261113/low-disk-release-candidate-cxszmop9/source-hashes.json",
+  "manifest_sha256": "edcef0a5cd71a1320338d20590a3e74c0540cbcc6505fa585754fb6427947441",
+  "scope": "remaining_checks_only_not_a_full_gate_pass",
+  "source_files": 879,
+  "deleted_paths": [
+    "ui/dist/assets/index-B-xT4bPb.js",
+    "ui/dist/assets/index-tHfDYJNM.css"
+  ],
+  "removed_env_names": [
+    "ANTHROPIC_BASE_URL",
+    "TIANSHU_DATAHUB_API_KEY",
+    "TIANSHU_INDEVS_API_KEY",
+    "TIANSHU_INDEVS_PROXY_URL"
+  ],
+  "set_env": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "started_at": "2026-11-14T02:13:04.255215+00:00",
+  "commands": [
+    {
+      "label": "ruff",
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "."
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 1,
+      "seconds": 0.17,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ruff.log",
+      "log_sha256": "92a112444371ddba956d8d3c6599eecdaa2c0f6cc112d3853241641a77ea532a",
+      "log_bytes": 2666,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "ui-install",
+      "command": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 0.26,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-install.log",
+      "log_sha256": "6827f173efc753befe830466a914a90abd99f7128a949c73a5a7287e445d8787",
+      "log_bytes": 53,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "ui-typecheck",
+      "command": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "typecheck"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 1.07,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-typecheck.log",
+      "log_sha256": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92",
+      "log_bytes": 15,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "ui-test",
+      "command": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "test"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 1.41,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-test.log",
+      "log_sha256": "d85fd33eeb092fa5587b1e990709afcda6aaa934bbe79ae764741a2773f0aa82",
+      "log_bytes": 1026,
+      "source_stable": true,
+      "git_stable": true
+    },
+    {
+      "label": "ui-build",
+      "command": [
+        "pnpm",
+        "--dir",
+        "ui",
+        "run",
+        "build"
+      ],
+      "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+      "exit": 0,
+      "seconds": 1.47,
+      "log": "/tmp/tianshu-g3-20261113/low-disk-first-full-remaining-checks-2fp4adxp/ui-build.log",
+      "log_sha256": "e26babe8da1c1f98891dcf7fb50a2c98e52f31870e38dac70313013ff09abd08",
+      "log_bytes": 379,
+      "source_stable": true,
+      "git_stable": true
+    }
+  ],
+  "source_drift": [],
+  "completed_at": "2026-11-14T02:13:08.808209+00:00",
+  "passed": false
+}

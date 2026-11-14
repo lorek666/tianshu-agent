@@ -1,0 +1,14 @@
+{
+  "status": "PASS_FINAL_READBACK",
+  "all_three_source_maps_equal_906": true,
+  "work_mutations_fully_restored": true,
+  "negative_phases": {
+    "negative-old-filter-worker": "behavior observed; old filter suppresses dispatcher denial audit",
+    "negative-old-filter-fence": "behavior observed; old filter suppresses dispatcher denial audit",
+    "negative-inner-verify": "two call-phase DID NOT RAISE failures at direct _verify; does not claim actual write",
+    "negative-fixture-approval": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced",
+    "negative-fixture-m2": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced",
+    "negative-fixture-recovery": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced"
+  },
+  "native_ci_or_final_commit_approval": false
+}

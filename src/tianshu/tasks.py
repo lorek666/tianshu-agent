@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .contents import REF_PREFIX
+from .disk_admission import DiskAdmission, DiskAdmissionError
 from .errors import RunFenced, TianshuError
 from .events import EventLog, canonical_bytes, sha256_hex
 from .execpolicy import ExecPolicy
@@ -51,6 +52,7 @@ from .fsutil import atomic_write_bytes
 from .guard import assert_paths_not_blocked
 from .jobs import JOB_PENDING, JOB_WAITING, JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
+from .run_policy import EFFECTS, PURE_ONLY, RunEffectsDisallowed, RunExecutionPolicyV1
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
@@ -524,6 +526,7 @@ class TaskStore:
         budget: Any | None = None,
         contents: Any | None = None,
         blob_dir: Path | None = None,
+        disk_admission: DiskAdmission | None = None,
     ) -> None:
         if log.in_transaction:
             # executescript 会先隐式 COMMIT 掉外层事务，构造 store 就等于把半份
@@ -585,8 +588,27 @@ class TaskStore:
         # 整个权限层。传进来就作废，没传就只做 fencing（授权那边仍然会自动
         # 失败——旧 epoch 的请求过不了 _authority）。
         self._approvals = approvals
+        self._disk_admission = disk_admission or DiskAdmission(None)
         self._data_root = data_root
         self._guard_timeout_ms = guard_timeout_ms
+
+    @property
+    def disk_admission(self) -> DiskAdmission:
+        return self._disk_admission
+
+    def require_new_run(
+        self, policy: RunExecutionPolicyV1, *, writable_roots: tuple[Path, ...]
+    ) -> None:
+        context = self._disk_admission.context
+        if policy != PURE_ONLY and context is not None and (
+            context.log is not self._log or context.data_root != self._data_root
+            or context.contents is not self._contents
+        ):
+            from .disk_admission import DiskAdmissionError
+            raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "TaskStore 与 context 的实际材料不一致"
+            )
+        self._disk_admission.require_new_run(policy, writable_roots=writable_roots)
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -982,6 +1004,7 @@ class TaskStore:
         *,
         run_id: str | None = None,
         payload: dict[str, Any] | None = None,
+        execution_policy: RunExecutionPolicyV1 = EFFECTS,
     ) -> Run:
         """开一次执行。
 
@@ -1006,6 +1029,10 @@ class TaskStore:
                         f"（state={active.state}），请先收尾或取消"
                     )
 
+            # 在创建事务内使用本次读取的绑定，不拿预检时的旧 workspace 作证。
+            self.require_new_run(execution_policy, writable_roots=tuple(
+                Path(b.root_path) for b in task.workspaces if b.can_write
+            ))
             now = _now()
             self._insert_run_locked(
                 tx,
@@ -1013,8 +1040,51 @@ class TaskStore:
                 run_id=run_id,
                 now=now,
                 payload=payload,
+                execution_policy=execution_policy,
             )
         return self.get_run(run_id)  # type: ignore[return-value]
+
+    def run_execution_policy(self, run_id: str) -> RunExecutionPolicyV1 | None:
+        from .event_schema import validate_payload
+
+        starts = [e for e in self._log.read_run(run_id) if e.type == RUN_START]
+        if len(starts) != 1:
+            raise TianshuError(f"run {run_id} 的 run.start 必须唯一")
+        event = starts[0]
+        validate_payload(RUN_START, event.payload, event.payload_version)
+        if event.payload_version in (0, 1):
+            return None
+        return RunExecutionPolicyV1.of(event.payload["execution_policy"])
+
+    def require_effects_allowed(self, run_id: str) -> None:
+        if self.run_execution_policy(run_id) == PURE_ONLY:
+            raise RunEffectsDisallowed("此 Run 仅允许 pure 工具；请显式新开 effects Run")
+
+    def require_effect_space(
+        self, run_id: str, *, targets: tuple[Path, ...], data_root: Path | None
+    ) -> None:
+        self.require_effects_allowed(run_id)
+        context = self._disk_admission.context
+        actual_root = data_root if data_root is not None else self._data_root
+        if context is None or (
+            context.log is not self._log or context.contents is not self._contents
+            or context.data_root is None or actual_root is None
+            or self._data_root is None
+            or context.data_root.resolve() != Path(actual_root).resolve()
+            or context.data_root.resolve() != Path(self._data_root).resolve()
+        ):
+            raise DiskAdmissionError(
+                "dispatch.disk_space_unknown", "执行实例与 Run context 的实际材料不一致"
+            )
+        run = self.assert_current(run_id)
+        task = self.get_task(run.task_id)
+        if task is None:
+            raise TianshuError(f"task 不存在：{run.task_id}")
+        self._disk_admission.require_effect_space(
+            writable_roots=tuple(Path(binding.root_path) for binding in task.workspaces
+                                 if binding.can_write),
+            targets=targets,
+        )
 
     def _insert_run_locked(
         self,
@@ -1023,6 +1093,7 @@ class TaskStore:
         task: Task,
         run_id: str,
         now: int,
+        execution_policy: RunExecutionPolicyV1,
         payload: dict[str, Any] | None = None,
         parent_run_id: str | None = None,
         subtask_id: str | None = None,
@@ -1056,6 +1127,7 @@ class TaskStore:
             "task_id": task.task_id,
             "goal_revision": task.goal_revision,
             "lease_epoch": task.lease_epoch,
+            "execution_policy": execution_policy.to_dict(),
         }
         if subtask_id is not None:
             start["parent_run_id"] = parent_run_id
@@ -1144,7 +1216,7 @@ class TaskStore:
         但它们**不该执行**。把这条判断放在执行入口，而不是指望调用方自觉。
 
         尚未包含审批/grant 核验——那是 PR-B 的派发层。这里覆盖的是
-        revision/epoch/租约/状态四件事，缺一项就拒绝。
+        revision/epoch/租约/状态以及固定 Run 资格与当前必需位置空间，缺一项就拒绝。
         """
         resources = list(resources or [])
         if not resources:
@@ -1160,6 +1232,11 @@ class TaskStore:
                     f"run 不在执行状态，拒绝开始写入：{run_id}（state={run.state}）"
                 )
             self._leases.assert_held(resources, run_id)
+            paths = tuple(Path(r.path if isinstance(r, ResourceIdentity) else r)
+                          for r in resources)
+            self.require_effect_space(
+                run_id, targets=paths + tuple(p.parent for p in paths), data_root=data_root,
+            )
             if resources:
                 # 守卫内续一次租：接下来的写入不该因为"复核花了几秒"而掉出 TTL
                 self._leases.renew(resources, run_id)
@@ -1987,6 +2064,7 @@ class TaskStore:
                 task=child_task,
                 run_id=child_run_id,
                 now=now,
+                execution_policy=PURE_ONLY,
                 # `task` 必须进 run.start：`replay` 用它重建首条用户消息。
                 # 子 Run 少了它，回放会拿空字符串去比 messages_hash，必然红。
                 payload={"task": goal},

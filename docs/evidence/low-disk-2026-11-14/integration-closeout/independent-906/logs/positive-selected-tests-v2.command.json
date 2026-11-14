@@ -1,0 +1,35 @@
+{
+  "label": "positive-selected-tests-v2",
+  "command": [
+    "/Users/ronfee/.codex/worktrees/g3-data-admission/\u5929\u67a2Agent/.venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "addopts=",
+    "-q",
+    "-rs",
+    "--basetemp",
+    "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/pytest",
+    "tests/test_approval_reject.py::test_reject_then_resume_fails_without_a_second_approval",
+    "tests/test_m2_acceptance.py::test_read_a_write_b_and_chat_without_workspace",
+    "tests/test_recovery.py::test_recover_after_each_failpoint[after_intent-create]",
+    "tests/test_g2_delegation_contract.py::test_tool_id_enum",
+    "tests/test_low_disk_execution.py::test_pure_only_write_proposal_keeps_dispatch_and_result_audit",
+    "tests/test_round2_auth_memory.py::test_memory_executor_rechecks_child_capability"
+  ],
+  "cwd": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+  "environment_overrides": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work/src:/tmp/low-disk-906-independent-20261114-3m_2fig_/work/tests",
+    "TIANSHU_AUTHORITY_ROOT": "/tmp/low-disk-906-independent-20261114-3m_2fig_/runs/positive-selected-tests-v2/authority",
+    "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    "REVIEW_LABEL": "positive-selected-tests-v2",
+    "REVIEW_SOURCE": "/tmp/low-disk-906-independent-20261114-3m_2fig_/work",
+    "REVIEW_MUTATION": ""
+  },
+  "expected_exit": 0,
+  "expected_output_contains": "7 passed"
+}

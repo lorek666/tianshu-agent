@@ -1,0 +1,18 @@
+{
+  "label": "ui-build-final",
+  "cwd": "/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent",
+  "argv": [
+    "pnpm",
+    "--dir",
+    "ui",
+    "run",
+    "build"
+  ],
+  "exit_code": 0,
+  "env": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_ADDOPTS": "-p no:cacheprovider"
+  },
+  "stdout": "ui-build-final.stdout.txt",
+  "stderr": "ui-build-final.stderr.txt"
+}

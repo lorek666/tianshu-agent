@@ -1258,6 +1258,7 @@ class _Daemon:
             dispatcher=self.driver_stack.dispatcher,
             approvals=self.driver_stack.approvals,
             snapshots=self.driver_stack.snapshots,
+            contents=self.driver_stack.contents,
             model=self.model,
             limits=self.limits,
             # 同 Worker：驱动循环必须复用装配里的投影，否则守护进程会开

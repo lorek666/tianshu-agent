@@ -1,0 +1,111 @@
+{
+  "status": "PASS_FINAL_READBACK",
+  "all_three_source_maps_equal_906": true,
+  "work_mutations_fully_restored": true,
+  "negative_phases": {
+    "negative-old-filter-worker": "behavior observed; old filter suppresses dispatcher denial audit",
+    "negative-old-filter-fence": "behavior observed; old filter suppresses dispatcher denial audit",
+    "negative-inner-verify": "two call-phase DID NOT RAISE failures at direct _verify; does not claim actual write",
+    "negative-fixture-approval": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced",
+    "negative-fixture-m2": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced",
+    "negative-fixture-recovery": "call-phase real start refused mismatched stores; old omitted-wiring fixture reproduced"
+  },
+  "new_local_document_links_resolved": [
+    {
+      "document": "docs/KNOWLEDGE.md",
+      "link": "LOW-DISK-2026-11-14.md",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/integration-closeout/first-full-red/results.json",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/integration-closeout/first-remaining-checks/results.json",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/integration-closeout/independent-diagnosis/DIAGNOSIS.md",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/integration-closeout/release-delta-879/REPORT.md",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/archived-script-paths.json",
+      "exists": true
+    },
+    {
+      "document": "docs/LOW-DISK-2026-11-14.md",
+      "link": "evidence/low-disk-2026-11-14/integration-closeout/published-subset.json",
+      "exists": true
+    }
+  ],
+  "external_corrected_gates": {
+    "origin": "/tmp/tianshu-g3-20261113/low-disk-corrected-python-gates-qil3l7i3",
+    "files": {
+      "deleted-after.json": {
+        "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b",
+        "bytes": 80
+      },
+      "deleted-before.json": {
+        "sha256": "50cd582e2e0c3aa1e7742cccb0721c7cd57426c5fb37d032e6791cc9f5a3a92b",
+        "bytes": 80
+      },
+      "lock.log": {
+        "sha256": "3811ad9b6f7f6f638c3359b7cc7cd5b798750f8906476cdeebc195a6ccc7fa6d",
+        "bytes": 28
+      },
+      "pytest.log": {
+        "sha256": "214f7559200eb9a8580be2394c1490b67515d381994c07e59a1a26ce62ec86b1",
+        "bytes": 3644
+      },
+      "results.json": {
+        "sha256": "dc40987ad27f772c3c428e3b27ad121f4c9ad47a6515844eab6572923ac21812",
+        "bytes": 2849
+      },
+      "ruff.log": {
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "bytes": 19
+      },
+      "running-results.json": {
+        "sha256": "7261f397140ba6b6cd7e746084569a1d074645caf4ec3338ff4ecca0d26d4cb7",
+        "bytes": 2755
+      },
+      "source-after.json": {
+        "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+        "bytes": 118998
+      },
+      "source-before.json": {
+        "sha256": "df72efbd9d5b078067861c9c20169d499e7fa4b1f1472a76d925d4d84e8fa360",
+        "bytes": 118998
+      },
+      "status-after.txt": {
+        "sha256": "74947fb92285f3dcce0904d267d1a168784f2fada5f9cc40dd77a7fa33a8ce23",
+        "bytes": 2074
+      },
+      "status-before.txt": {
+        "sha256": "74947fb92285f3dcce0904d267d1a168784f2fada5f9cc40dd77a7fa33a8ce23",
+        "bytes": 2074
+      }
+    },
+    "results_sha256": "dc40987ad27f772c3c428e3b27ad121f4c9ad47a6515844eab6572923ac21812",
+    "source_before_after_exact_906": true,
+    "status_and_deleted_before_after_byte_equal": true,
+    "lock_pytest_ruff_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "pytest_summary": "3183 passed, 8 skipped in 509.43s",
+    "independently_rerun_by_this_reviewer": false,
+    "interpretation": "external root-run full-gate evidence; identity and original bytes checked independently"
+  },
+  "native_ci_or_final_commit_approval": false
+}

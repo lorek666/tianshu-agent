@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/tmp/low-disk-whole-branch-review-20261114/probes/integration_audit.py", line 82, in <module>
+    ld_a = a[a.index("- LD-01:"):a.index("## 7.")]
+             ~~~~~~~^^^^^^^^^^^^
+ValueError: substring not found

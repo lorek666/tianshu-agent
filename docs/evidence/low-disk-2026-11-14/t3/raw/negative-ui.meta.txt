@@ -1,0 +1,5 @@
+negative_control=ui_detail_policy_removed_from_run_start
+cwd=/Users/ronfee/.codex/worktrees/g3-data-admission/天枢Agent/ui/ui
+head=a0223aa269efcdf70df4c4d8c43e5629b4fa0215
+mutated_app_sha256=289d125c7c343e08e35dedb0021b901c19f5e22a219bbaeb411ebf09fb74e2a0
+command=pnpm --dir ui exec vitest run src/__tests__/run-mode.test.tsx

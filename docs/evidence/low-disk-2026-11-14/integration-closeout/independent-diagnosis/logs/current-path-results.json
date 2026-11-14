@@ -1,0 +1,139 @@
+{
+  "scope": "diagnosis only; no approval or new delta",
+  "worker_proposal_path": {
+    "child_policy": "RunExecutionPolicyV1(format_version=1, mode='pure_only')",
+    "worker_errors": [],
+    "model_calls": 2,
+    "child_state": "succeeded",
+    "memory_rows": 0,
+    "file_exists": false,
+    "events": [
+      {
+        "seq": 42,
+        "type": "tool.not_dispatched",
+        "payload": {
+          "call_id": "write-memory",
+          "reason": "pure_only Run 不允许有副作用工具",
+          "tool_id": "memory.propose"
+        }
+      },
+      {
+        "seq": 43,
+        "type": "tool.not_dispatched",
+        "payload": {
+          "call_id": "write-file",
+          "reason": "pure_only Run 不允许有副作用工具",
+          "tool_id": "create_report"
+        }
+      },
+      {
+        "seq": 51,
+        "type": "run.end",
+        "payload": {
+          "artifact": null,
+          "budget_enforced": false,
+          "effect_state": "none_applied",
+          "error": null,
+          "outcome": "noop",
+          "receipt_ids": [],
+          "tokens": 0,
+          "tokens_unknown_calls": 2,
+          "turns": 2,
+          "unbilled_model_intents": 0
+        }
+      }
+    ]
+  },
+  "parent_fence_path": {
+    "child_state": "succeeded",
+    "model_calls": 2,
+    "expected_old_guard_path": "cancelled, one model call, dispatch.parent_fenced",
+    "subtask_state": "fenced",
+    "summary": null,
+    "result_ref": null,
+    "parent_subtask_finished": 0,
+    "file_exists": false,
+    "events": [
+      {
+        "seq": 45,
+        "type": "tool.not_dispatched",
+        "payload": {
+          "call_id": "write",
+          "reason": "pure_only Run 不允许有副作用工具",
+          "tool_id": "create_report"
+        }
+      },
+      {
+        "seq": 53,
+        "type": "run.end",
+        "payload": {
+          "artifact": null,
+          "budget_enforced": false,
+          "effect_state": "none_applied",
+          "error": null,
+          "outcome": "noop",
+          "receipt_ids": [],
+          "tokens": 0,
+          "tokens_unknown_calls": 2,
+          "turns": 2,
+          "unbilled_model_intents": 0
+        }
+      }
+    ]
+  },
+  "independent_inner_guard": {
+    "normal_outer_guard": {
+      "type": "DispatchDenied",
+      "rule_id": "c4.memory_scope_denied",
+      "reason": "只读子任务不能写入记忆或发起记忆审批"
+    },
+    "normal_outer_execution_started": 0,
+    "injected_upstream_methods_only": [
+      "Dispatcher._authority",
+      "Dispatcher._check_run_execution"
+    ],
+    "permit_obtained_from_real_context": true,
+    "permit_seq": 43,
+    "inner_guard": {
+      "type": "MemoryDispatchRefused",
+      "rule_id": "c4.memory_scope_denied",
+      "reason": "只读子任务不能写入记忆"
+    },
+    "memory_rows": 0,
+    "events": [
+      {
+        "seq": 42,
+        "type": "tool.intent",
+        "payload": {
+          "approval_id": null,
+          "args": {
+            "content": "INNER_GUARD_MUST_REFUSE",
+            "kind": "fact"
+          },
+          "args_hash": "dda13c5d17b69f8b9a0d2ff53313a73c410e80d18529e62e248ac9392ae8fb21",
+          "attempt_id": 1,
+          "call_id": "legacy-write",
+          "claim_epoch": 1,
+          "dispatch_id": "disp_9b3974e9ec028d01",
+          "grant_id": "grant_9ce6df8841f7",
+          "request_digest": "adae4ed30154114a8e83b3b29f60d6b183eb2e6b3fb43dbf75922465f8505ebe",
+          "request_id": "req_6787d96465b2",
+          "tool_id": "memory.propose"
+        }
+      },
+      {
+        "seq": 43,
+        "type": "execution.started",
+        "payload": {
+          "goal_revision": 1,
+          "lease_epoch": 1,
+          "resources": [
+            "memory://user/local"
+          ],
+          "run_id": "run_0a5ad9361e42",
+          "task_id": "task_b790068f7448"
+        }
+      }
+    ]
+  }
+}
