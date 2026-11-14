@@ -90,13 +90,19 @@ class SlowModel:
 class RouteModel:
     """按任务目标分发脚本（每个目标一份响应队列），用来让两条 Run 交替推进。
 
-    单线程驱动意味着模型调用是串行的，但**控制面不该等它**：这里给"长任务"
-    设一个明显的模型延迟，再在延迟窗口里从另一条连接审批/查询，用延迟上界
-    证明主循环没有被驱动线程拖住。
+    单线程驱动意味着模型调用是串行的，但**控制面不该等它**：这里可用真实
+    Event 把"长任务"锁在模型调用中，再从另一条连接审批/查询，以屏障尚未释放
+    却已完成控制调用证明主循环没有被驱动线程拖住。
     """
 
-    def __init__(self, routes: dict[str, list[tuple[float, ModelResponse]]]) -> None:
+    def __init__(
+        self,
+        routes: dict[str, list[tuple[float, ModelResponse]]],
+        *,
+        blocking_routes: dict[str, tuple[threading.Event, threading.Event]] | None = None,
+    ) -> None:
         self._routes = {key: list(items) for key, items in routes.items()}
+        self._blocking_routes = dict(blocking_routes or {})
         self.calls = 0
 
     def complete(self, messages, tools):  # noqa: ANN001, ANN201
@@ -108,6 +114,12 @@ class RouteModel:
                 break
         for key, items in self._routes.items():
             if key in goal:
+                barrier = self._blocking_routes.get(key)
+                if barrier is not None:
+                    entered, release = barrier
+                    entered.set()
+                    if not release.wait(30.0):
+                        raise TimeoutError(f"test model route {key!r} was not released")
                 if not items:
                     return ModelResponse(finish_reason="end_turn", content="")
                 delay, response = items.pop(0)
@@ -513,13 +525,15 @@ def test_control_plane_stays_responsive_while_driver_runs_long_task(
     """一个 Run 在跑长任务时，另一条连接仍能查询与审批（PRD §4.2 的并发口径）。
 
     驱动线程是单线程，但**控制面不排在它后面**：两者各持一条 SQLite 连接，
-    只靠事务串行化。这里用"长任务 1 秒模型延迟 + 控制面响应 <0.5s"把这件事
-    钉死——如果哪天有人在主循环里等驱动，延迟断言会立刻红。
+    只靠事务串行化。长任务的模型调用被真实屏障挡住，控制面必须在屏障仍锁住
+    驱动线程时完成；如果哪天有人在主循环里等驱动，调用只能等超时释放后才返回。
     """
     workspace = root / "ws"
     workspace.mkdir()
     note = workspace / "note.md"
     write_exact(note, "旧内容\n")
+    long_entered = threading.Event()
+    long_release = threading.Event()
     model = RouteModel(
         {
             "要审批": [
@@ -539,13 +553,15 @@ def test_control_plane_stays_responsive_while_driver_runs_long_task(
                 (0.0, ModelResponse(finish_reason="end_turn", content="改好了")),
             ],
             "长任务": [
-                (1.0, ModelResponse(finish_reason="end_turn", content="慢但完成了"))
+                (0.0, ModelResponse(finish_reason="end_turn", content="慢但完成了"))
             ],
-        }
+        },
+        blocking_routes={"长任务": (long_entered, long_release)},
     )
-    start_daemon(model)
-    client = _connect(root)
+    client = None
     try:
+        start_daemon(model)
+        client = _connect(root)
         short = client.call(
             "task.create",
             {
@@ -572,14 +588,25 @@ def test_control_plane_stays_responsive_while_driver_runs_long_task(
         )["task"]
         long_run = client.call("run.start", {"task_id": long["task_id"]})["run"]
 
-        # 驱动线程此刻正阻塞在 1s 的模型调用里；控制面必须照常作答。
-        started = time.monotonic()
-        state = client.call("state", {})
-        decided = client.call(
-            "approvals.decide", {"approval_id": approval_id, "decision": "approve"}
-        )
-        elapsed = time.monotonic() - started
-        assert elapsed < 0.5, f"控制面被驱动线程拖住了（{elapsed:.2f}s）"
+        # 驱动线程仍锁在模型屏障里；控制面必须自行完成任务，不能靠模型超时解锁。
+        assert long_entered.wait(5.0), "长任务没有进入模型调用"
+        timeout_fired = threading.Event()
+
+        def release_after_timeout() -> None:
+            timeout_fired.set()
+            long_release.set()
+
+        watchdog = threading.Timer(2.0, release_after_timeout)
+        watchdog.start()
+        try:
+            state = client.call("state", {})
+            decided = client.call(
+                "approvals.decide", {"approval_id": approval_id, "decision": "approve"}
+            )
+        finally:
+            watchdog.cancel()
+            long_release.set()
+        assert not timeout_fired.is_set(), "控制面被驱动线程拖住，只能等模型屏障超时"
         assert decided["resumed"] is True
         run_ids = {run["run_id"] for run in state["runs"]}
         assert {short_run["run_id"], long_run["run_id"]} <= run_ids
@@ -589,7 +616,9 @@ def test_control_plane_stays_responsive_while_driver_runs_long_task(
         assert _wait_terminal(client, short_run["run_id"])["state"] == "succeeded"
         assert note.read_bytes() == "新内容\n".encode()
     finally:
-        client.close()
+        long_release.set()
+        if client is not None:
+            client.close()
 
 
 # --------------------------------------------------------------------------- 订阅与游标
