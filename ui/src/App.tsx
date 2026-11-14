@@ -925,6 +925,8 @@ export function App() {
               run={selectedRun}
               task={selectedTask}
               entries={timelineEntries}
+              events={timeline}
+              runs={taskRuns}
               hasMore={timelineHasMore}
               cost={costSummary}
               streamStatus={streamStatus}
