@@ -22,12 +22,15 @@
   等于绕过批准。同源换路径允许（仍在同一台服务器上），跨源/换端口/换 transport
   一律拒绝；需要跨源时让模型重新发起动作、重新拿批准。
 - **不信任 `Content-Length`**：只数实际读到的字节。声明可以是假的，读到的不能。
-- **只自动重试「可证明没发出去」的失败**（2026-11-14，SPEC-G2-NET-RESILIENCE）：
-  连接阶段失败（`net.connect` / `net.connect_timeout`——TCP 从未建立，零字节
-  到达对端）按 `NetLimits.connect_attempts` 重试；TLS 之后的一切失败（读断、
-  超时、协议错、任何 HTTP 响应含 5xx）**绝不自动重试**——服务器已经见过这次
-  请求，重发是第二个 GET，必须由模型重新发起、重新拿批准。这条边界被
-  服务器端命中数测试钉住。
+- **只自动重试「可证明没发出请求」的失败**（2026-11-14，SPEC-G2-NET-RESILIENCE；
+  2026-11-15 复审收紧重定向边界）：连接阶段失败（`net.connect` /
+  `net.connect_timeout`——**应用层请求字节为零**；TLS 握手字节可能已到对端，
+  如实）**且该次尝试未跟随任何重定向**时按 `NetLimits.connect_attempts` 重试。
+  已跟随重定向（服务器已见过至少一个 GET）、TLS 之后的一切失败（读断、超时、
+  协议错、任何 HTTP 响应含 5xx）**绝不自动重试**——重发是第二个 GET，必须由
+  模型重新发起、重新拿批准。这条边界被服务器端连接数测试钉住。另如实记录：
+  `net.connect_timeout` 实际几乎不可达——连接超时 = 整个剩余期限，首试烧尽后
+  deadline 检查会拒绝第二次尝试（per-attempt 预算切分见 SPEC 未决）。
 - **进程级速率下限**：相邻两次 `fetch` 开始时刻至少隔 `min_interval_s`
   （默认 1.0s，`0` 显式关闭；等待分片并随时可取消，等待不计入抓取 deadline）。
 - **不做内容判级**：不判断"这是不是私有材料"；审批展示完整 URL，由人判断。
@@ -43,6 +46,7 @@
 from __future__ import annotations
 
 import http.client
+import math
 import os
 import socket
 import ssl
@@ -78,8 +82,10 @@ NET_MIN_INTERVAL_S = 1.0
 ENV_NET_CONNECT_ATTEMPTS = "TIANSHU_NET_CONNECT_ATTEMPTS"
 ENV_NET_MIN_INTERVAL_S = "TIANSHU_NET_MIN_INTERVAL_S"
 
-#: 可自动重试的失败分类。**只有这两类**发生在 `conn.connect()` 里、TCP 连接
-#: 从未建立——零字节到达对端，重发不构成第二次外发请求（不需要重新审批）。
+#: 可自动重试的失败分类。**只有这两类**发生在 `conn.connect()` 里、应用层
+#: 请求字节为零（TLS 握手字节除外，如实）；且**只有该次尝试未跟随任何重定向**
+#: 才真的重试——已消费重定向 = 服务器已见过请求，重发是第二个 GET（见
+#: fetch() 与模块 docstring，2026-11-15 复审修复）。
 _RETRYABLE_REASONS = frozenset({"net.connect", "net.connect_timeout"})
 
 #: 需要跟随的重定向状态码。304 不是重定向（没有 Location 也合法）。
@@ -174,10 +180,11 @@ class NetLimits:
         if (
             not isinstance(self.min_interval_s, (int, float))
             or isinstance(self.min_interval_s, bool)
+            or not math.isfinite(self.min_interval_s)
             or self.min_interval_s < 0
         ):
             raise NetError(
-                f"min_interval_s 必须是 >= 0 的数值：{self.min_interval_s!r}",
+                f"min_interval_s 必须是 >= 0 的有限数值：{self.min_interval_s!r}",
                 reason="net.limits",
             )
 
@@ -339,9 +346,10 @@ def fetch(
 ) -> Fetched:
     """GET 一个网络目标。阻塞式；所有失败都以 `NetError` / `NetCancelled` 抛出。
 
-    连接阶段失败（`net.connect` / `net.connect_timeout`）按
-    `NetLimits.connect_attempts` 自动重试——TCP 从未建立，重发不构成第二次
-    外发请求；其余失败原样抛出（服务器已见过请求，重试必须重新批准）。
+    连接阶段失败（`net.connect` / `net.connect_timeout`）且该次尝试**未跟随
+    任何重定向**时按 `NetLimits.connect_attempts` 自动重试——应用层请求字节
+    为零（TLS 握手字节除外），重发不构成第二次外发请求；已跟随重定向后
+    （服务器已见过至少一个 GET）或其余失败原样抛出——重试必须重新批准。
     重试共享同一个绝对期限，每次尝试前查取消。
     """
     global _LAST_FETCH_START
@@ -355,6 +363,11 @@ def fetch(
     deadline = started + limits.timeout_ms / 1000.0
     # visited 跨尝试保留：重定向防环不因重试而重置。
     visited: set[str] = {target.to_uri()}
+    # 复审修复（2026-11-15）：跨整个 fetch 的「本链已跟随重定向」记录——
+    # 只要任何一跳已把 GET 发给服务器，就绝不自动重试（重发 = 第二个 GET，
+    # 无重新批准）。否则「重定向后第二跳连接失败」会被误重试成第二个 GET，
+    # 且因 visited 保留被误报成 redirect_loop。
+    redirects_followed: list[str] = []
     # 最后一次连接阶段失败的原始错误：deadline 烧尽时重抛它，保住如实分类。
     last_connect_error: NetError | None = None
     for attempt in range(1, limits.connect_attempts + 1):
@@ -370,10 +383,15 @@ def fetch(
                 raise last_connect_error
         try:
             return _fetch_once(
-                target, limits, cancel, deadline, visited, attempt, started
+                target, limits, cancel, deadline, visited, attempt, started,
+                redirects_followed,
             )
         except NetError as exc:
-            if exc.reason not in _RETRYABLE_REASONS or attempt >= limits.connect_attempts:
+            if (
+                exc.reason not in _RETRYABLE_REASONS
+                or attempt >= limits.connect_attempts
+                or redirects_followed
+            ):
                 raise
             last_connect_error = exc
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")  # pragma: no cover
@@ -387,6 +405,7 @@ def _fetch_once(
     visited: set[str],
     attempt: int,
     fetch_started: float,
+    redirects_followed: list[str],
 ) -> Fetched:
     """单次尝试：完整的重定向跟随 + 有界读取。失败以 `NetError` / `NetCancelled` 抛出。"""
     current = target
@@ -464,6 +483,8 @@ def _fetch_once(
                     )
                 visited.add(nxt.to_uri())
                 redirects.append(nxt.to_uri())
+                # 每消费一跳就登记：这一链的 GET 已经发给服务器了。
+                redirects_followed.append(nxt.to_uri())
                 current = nxt
                 if hop == limits.max_redirects:
                     raise NetError(

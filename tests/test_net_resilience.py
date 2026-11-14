@@ -2,10 +2,11 @@
 
 核心语义（被本文件钉住，拆掉就红）：
 
-1. **重试边界 = 「可证明零字节到达对端」**：只有连接阶段失败（`net.connect` /
-   `net.connect_timeout`）可自动重试——TCP 从未建立，重发不构成第二次外发
-   请求，因此不需要重新审批。服务器见过请求之后的一切失败**绝不重试**
-   （用服务器端连接数证明，NC3 的锚点）。
+1. **重试边界 = 「可证明没发出请求」**：只有连接阶段失败（`net.connect` /
+   `net.connect_timeout`）**且该次尝试未跟随任何重定向**才可自动重试——
+   应用层请求字节为零（TLS 握手字节除外，如实），重发不构成第二次外发请求，
+   因此不需要重新审批。服务器见过请求（读过响应、跟随过重定向）之后的一切
+   失败**绝不重试**（用服务器端连接数证明，NC3 与复审新增测试的锚点）。
 2. **进程级速率下限**：相邻两次 fetch 开始至少隔 `min_interval_s`，等待分片
    且随时可取消，等待不计入抓取 deadline。
 
@@ -14,6 +15,8 @@
 - NC2 拆掉等待 → `test_rate_limit_*` 红；
 - NC3 把 `net.read`/`net.protocol` 加进可重试集 → `test_send_phase_failure_is_never_retried` 红
   （服务器连接数从 1 变 2——这条钉住的是授权边界本体）。
+- NC-D（复审 2026-11-15）拆掉 fetch() 的 `redirects_followed` 守卫 →
+  `test_no_retry_after_redirects_consumed` 红（第二个 GET 发生 + 误报）。
 """
 
 from __future__ import annotations
@@ -172,6 +175,42 @@ def test_connect_attempts_one_means_no_retry(tmp_path) -> None:
         sock.close()
 
 
+def test_no_retry_after_redirects_consumed(
+    monkeypatch: pytest.MonkeyPatch, rate_limit_off
+) -> None:
+    """复审 P1：重定向已消费（服务器见过至少一个 GET）后，连接失败绝不重试。
+
+    修复前：重定向后第二跳连接失败被当作可重试 → 自动重发第二个 GET
+    （复审探针实测：服务器收到 ['/a','/a']），且因 visited 跨尝试保留被
+    误报成 `net.redirect_loop`。修复后：第一链以原始 `net.connect` 终止，
+    服务器只见过一个 GET。变异牙：拆掉 fetch() 的 `redirects_followed`
+    守卫 → 本测试红（第二个 GET 发生）。
+    """
+    fixture = NetFixture().redirect("/a", "/b").route("/b", body="好的").start()
+    try:
+        target = canonical_target(f"network://http/127.0.0.1:{fixture.port}/a")
+        calls = {"n": 0}
+        real_connect = net_mod._connect
+
+        def refused_second_hop(target_obj, timeout_s):  # noqa: ANN001 - 同 _connect 签名
+            calls["n"] += 1
+            if calls["n"] == 2:
+                # 第一跳（302）之后的同源第二跳：连接阶段失败（TCP 未建立）。
+                raise NetError("模拟重定向后第二跳连接被拒", reason="net.connect")
+            return real_connect(target_obj, timeout_s)
+
+        monkeypatch.setattr(net_mod, "_connect", refused_second_hop)
+        with pytest.raises(NetError) as excinfo:
+            fetch(target, limits=NetLimits(min_interval_s=0))
+        # 原始连接失败分类如实上报——不是 redirect_loop 误报。
+        assert excinfo.value.reason == "net.connect"
+        # 服务器只见过一个 GET（第一跳 /a）：没有第二个未经批准的请求。
+        assert fixture.paths().count("/a") == 1
+        assert fixture.paths().count("/b") == 0
+    finally:
+        fixture.stop()
+
+
 def test_send_phase_failure_is_never_retried(rate_limit_off) -> None:
     """NC3 锚点：请求已发出（服务器 accept 过）之后的失败绝不自动重试。
 
@@ -308,12 +347,22 @@ def test_env_overrides_and_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_limits_validation() -> None:
-    """connect_attempts < 1 / min_interval_s < 0 → NetError(net.limits)。"""
+    """connect_attempts < 1 / min_interval_s < 0 或非有限值 → NetError(net.limits)。
+
+    复审 P2：inf/nan 此前被接受——min_interval_s=inf 会让速率等待死循环
+    并持住进程锁（其余 fetch 全部阻塞），必须在构造期拒掉。
+    """
     with pytest.raises(NetError) as excinfo:
         NetLimits(connect_attempts=0)
     assert excinfo.value.reason == "net.limits"
     with pytest.raises(NetError) as excinfo:
         NetLimits(min_interval_s=-0.1)
+    assert excinfo.value.reason == "net.limits"
+    with pytest.raises(NetError) as excinfo:
+        NetLimits(min_interval_s=float("inf"))
+    assert excinfo.value.reason == "net.limits"
+    with pytest.raises(NetError) as excinfo:
+        NetLimits(min_interval_s=float("nan"))
     assert excinfo.value.reason == "net.limits"
 
 
