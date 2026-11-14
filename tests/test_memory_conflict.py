@@ -272,9 +272,10 @@ def test_cross_kind_pairs_are_not_flagged() -> None:
             _source("mem_b", "报告用英文写", 2, kind="preference"),
         ]
     )
-    assert page is not None or True, "跨 kind 是否成页取决于聚类，这里只钉标注行为"
-    if page is not None:
-        assert _annotation_lines(page.content) == []
+    # 当前夹具下跨 kind 也应成页（复审：原 `or True` 是恒真死代码）——
+    # J6 钉的是「成页也无标注」，不是「不成页」。
+    assert page is not None, "当前夹具下应成页；不成页说明聚类行为变了"
+    assert _annotation_lines(page.content) == []
 
 
 def test_conflict_page_is_still_byte_deterministic() -> None:
