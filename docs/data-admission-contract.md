@@ -164,8 +164,8 @@ current_step=null，数字/时间/备份记录类型合法，实际 DB=v2 且两
 整批复核不是“后续删除记录完整”的证明，不提供 unknown 重试授权；
 仍保持 `later_forget_delete_history=completeness_unproven`，明确告知恢复点之后的遗忘/
 擦除/删除可能无法取得。逐条激活、跨路径恢复、物理擦除历史事件都不属于该最小形状。
-隔离权威记录的具体字段、原子发布边界与复核动作须在其契约中定义后实施，
+隔离权威记录、原子发布、同批续做/清理与专用复核按[受管导入 B 契约](restore-held-contract.md)实施；该契约当前只有文字复审，全部产品验收 `NOT_RUN`。
 不能仅 UPDATE `memories.status`，也不能把一个可丢失的投影当作持久隔离。
 
-下一步：按 §5 编写失败用例，再实现 §4 的准入前缀与 §3 的受绑定离线迁移；
-本文件的存在不改变当前 `restore-plan` 的只读、`apply_supported=false` 行为。
+§3–§5 的准入与受绑定离线迁移已随 PR #136 交付；当前下一片是上列 B 契约的产品实现。
+契约文字不改变当前 `restore-plan` 的只读、`apply_supported=false` 行为。
