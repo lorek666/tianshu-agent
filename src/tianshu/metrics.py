@@ -22,6 +22,14 @@ PRD §10.6 明确：数值冻结留给发布候选。本模块提供 `SLO_THRESH
 - 采样来自守护进程的多个线程（主循环记取消计时、发送线程/看门狗记慢订阅者、
   采样线程记资源）。追加走一把进程内锁 + `O_APPEND` 单行写入；一行一个 JSON
   对象，崩溃最多留下半行，读取侧对空行/坏行有明确处理。
+- **按大小轮转**：当前文件达到 `max_file_bytes`（默认 16 MiB）就在追加前轮转成
+  `metrics.jsonl.<槽位>`，链式 `os.replace` 保留最近 `max_rotated_files`（默认 4）
+  份，最旧一份被下一轮覆盖——不需要 DELETE，没有「删除失败多留一份」的分支。
+  轮转失败（Windows 上读者持句柄等）**降级为继续追加当前文件**：样本永不因
+  轮转而丢，文件可能暂时超过阈值，下一轮重试。每次成功轮转记一条
+  `metrics_rotated` 事件（`value` = 被轮转文件的字节数）。总磁盘上界
+  `(N+1) × max_file_bytes + 每行余量`，读回全部历史用
+  `read_metrics(..., include_rotated=True)`（时间序，最旧在前）。
 - 产品代码禁止文本模式文件 IO（仓库纪律），这里只用 `os.open/os.write` 写字节。
 
 ## 字段口径（`docs/runtime-metrics.md` 有实测值与未冻结说明）
@@ -52,12 +60,28 @@ from typing import Any
 
 METRICS_FILENAME = "metrics.jsonl"
 
+#: 轮转事件：每次成功轮转在指标流里记一条（kind=event），`value` 是被轮转文件
+#: 的字节数（stat 不到记 null）。轮转事件的追加自身不再产生新事件——否则
+#: 极小阈值下（阈值小于一行）会无限递归。
+METRICS_ROTATED = "metrics_rotated"
+
+#: 轮转默认值：单片 16 MiB、保留 4 份。按默认 5s 采样 ≈ 3–5 MB/天估算，
+#: 单片约 3–4 天，总上界 5 × 16 MiB = 80 MiB（估算值，不是实测承诺）。
+DEFAULT_MAX_FILE_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_ROTATED_FILES = 4
+
 #: 环境变量：`TIANSHU_METRICS=0` 关闭采样（默认开启）。注意这是**本地开关**，
 #: 不是遥测开关——本项目没有遥测（D7：诊断包只本地导出）。
 ENV_METRICS = "TIANSHU_METRICS"
 
 #: 环境变量：采样间隔（秒），默认 5s。测试把它调小以取得确定性样本。
 ENV_METRICS_INTERVAL = "TIANSHU_METRICS_INTERVAL_S"
+
+#: 环境变量：轮转阈值（字节）。`0` 显式禁用轮转；非法/负值回落默认。
+ENV_METRICS_MAX_FILE_BYTES = "TIANSHU_METRICS_MAX_FILE_BYTES"
+
+#: 环境变量：轮转保留份数。非法/<1 回落默认。
+ENV_METRICS_MAX_ROTATED_FILES = "TIANSHU_METRICS_MAX_ROTATED_FILES"
 
 DEFAULT_SAMPLE_INTERVAL_S = 5.0
 
@@ -100,6 +124,43 @@ _RESERVED_KEYS = frozenset({"ts", "metric", "value", "pid", "instance_id", "kind
 
 def metrics_path(data_root: Path) -> Path:
     return Path(data_root) / METRICS_FILENAME
+
+
+def rotated_path(path: Path, slot: int) -> Path:
+    """第 `slot` 号轮转件：`metrics.jsonl.1` 最新、编号越大越旧。"""
+    return Path(path).parent / f"{Path(path).name}.{slot}"
+
+
+def list_metrics_files(data_root: Path) -> list[tuple[int | None, Path]]:
+    """数据根里的指标文件清单，**时间序（最旧在前）**。
+
+    返回 `(槽位, 路径)`：槽位 `None` 是当前文件（排在最后）；轮转件按槽位号
+    降序（号越大越旧）。只有纯数字后缀才算轮转件——`metrics.jsonl.tmp`、
+    `metrics.jsonl.backup` 这类用户手放的东西不进清单，也不该被当指标读。
+    槽位允许有空洞（轮转链在 Windows 上失败一步就停），不依赖连续编号。
+    """
+    target = Path(data_root)
+    if target.is_dir():
+        target = metrics_path(target)
+    prefix = target.name + "."
+    slots: list[int] = []
+    try:
+        for entry in target.parent.iterdir():
+            if not entry.name.startswith(prefix):
+                continue
+            suffix = entry.name[len(prefix):]
+            if not suffix.isdigit():
+                continue
+            if entry.is_file():
+                slots.append(int(suffix))
+    except OSError:  # pragma: no cover - 数据根不可读：至少还能读当前文件
+        pass
+    files: list[tuple[int | None, Path]] = [
+        (slot, rotated_path(target, slot)) for slot in sorted(slots, reverse=True)
+    ]
+    if target.exists():
+        files.append((None, target))
+    return files
 
 
 def _now_ms() -> int:
@@ -168,26 +229,8 @@ def slo_report() -> dict[str, Any]:
     }
 
 
-def read_metrics(path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
-    """读取 JSONL 指标。`path` 可以是数据根（目录）或文件本身。
-
-    - 空行跳过；坏行抛 `ValueError`（带行号）：指标文件损坏不该被当成"没有数据"；
-    - `limit` 只取**最后** N 条（诊断时看最近的）。
-
-    **并发写入语义**：`MetricsRecorder` 是一行一次追加，但"一次 `os.write` 在读者
-    眼里是否原子"并没有保证（实测：CI ubuntu 上 `test_slow_subscriber_...` 一边
-    采样一边轮询，读到的最后一行断在 `{"instance_id":"daemon_...",` 第 37 个字符，
-    整条测试因为 `JSONDecodeError` 红）。所以文件末尾**没有 `\n` 收尾**的那一段
-    是"可能还在写"的记录：
-
-    - 能解析 → 照常收（有的工具写完最后一条就不补换行，别白丢数据）；
-    - 不能解析 → 跳过它（`tail -f` 语义），等下一次读，**不当损坏**。
-
-    已由 `\n` 收尾的行没有这个豁免：解析不了就是损坏，照抛（那才是有用的告警）。
-    """
-    target = Path(path)
-    if target.is_dir():
-        target = metrics_path(target)
+def _read_one_file(target: Path) -> list[dict[str, Any]]:
+    """读单个 JSONL 指标文件；坏行抛带行号的 `ValueError`，尾巴宽容见 read_metrics。"""
     if not target.exists():
         return []
     raw = target.read_bytes()
@@ -218,6 +261,42 @@ def read_metrics(path: Path, *, limit: int | None = None) -> list[dict[str, Any]
         if not isinstance(record, dict):
             raise ValueError(f"指标文件第 {lineno} 行不是 JSON 对象")
         records.append(record)
+    return records
+
+
+def read_metrics(
+    path: Path, *, limit: int | None = None, include_rotated: bool = False
+) -> list[dict[str, Any]]:
+    """读取 JSONL 指标。`path` 可以是数据根（目录）或文件本身。
+
+    - 空行跳过；坏行抛 `ValueError`（带行号）：指标文件损坏不该被当成"没有数据"；
+    - `limit` 只取**最后** N 条（诊断时看最近的）；
+    - `include_rotated=True` 时按时间序（最旧在前）把轮转件一并读回，`limit`
+      作用在拼接后的全序列上。默认只读当前文件——既有调用方零迁移。
+
+    **并发写入语义**：`MetricsRecorder` 是一行一次追加，但"一次 `os.write` 在读者
+    眼里是否原子"并没有保证（实测：CI ubuntu 上 `test_slow_subscriber_...` 一边
+    采样一边轮询，读到的最后一行断在 `{"instance_id":"daemon_...",` 第 37 个字符，
+    整条测试因为 `JSONDecodeError` 红）。所以文件末尾**没有 `\n` 收尾**的那一段
+    是"可能还在写"的记录：
+
+    - 能解析 → 照常收（有的工具写完最后一条就不补换行，别白丢数据）；
+    - 不能解析 → 跳过它（`tail -f` 语义），等下一次读，**不当损坏**。
+
+    已由 `\n` 收尾的行没有这个豁免：解析不了就是损坏，照抛（那才是有用的告警）。
+    """
+    target = Path(path)
+    if target.is_dir():
+        target = metrics_path(target)
+    if include_rotated:
+        records = [
+            record for _slot, file_path in list_metrics_files(target)
+            for record in _read_one_file(file_path)
+        ]
+    else:
+        if not target.exists():
+            return []
+        records = _read_one_file(target)
     if limit is not None and limit >= 0:
         records = records[-limit:]
     return records
@@ -252,6 +331,31 @@ def _env_interval() -> float:
     except ValueError:
         return DEFAULT_SAMPLE_INTERVAL_S
     return value if value > 0 else DEFAULT_SAMPLE_INTERVAL_S
+
+
+def _env_max_file_bytes() -> int:
+    """轮转阈值：`0` 是显式禁用，非法/负值回落默认（沿用 env 容错惯例）。"""
+    raw = os.environ.get(ENV_METRICS_MAX_FILE_BYTES)
+    if not raw:
+        return DEFAULT_MAX_FILE_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_FILE_BYTES
+    if value == 0:
+        return 0
+    return value if value > 0 else DEFAULT_MAX_FILE_BYTES
+
+
+def _env_max_rotated_files() -> int:
+    raw = os.environ.get(ENV_METRICS_MAX_ROTATED_FILES)
+    if not raw:
+        return DEFAULT_MAX_ROTATED_FILES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_ROTATED_FILES
+    return value if value >= 1 else DEFAULT_MAX_ROTATED_FILES
 
 
 def _rss_mib() -> float | None:
@@ -298,6 +402,11 @@ def _disk_bytes(data_root: Path, *, max_entries: int = MAX_DISK_ENTRIES) -> int 
 class MetricsRecorder:
     """把采样追加到 `<data_root>/metrics.jsonl` 的进程内采样器。
 
+    轮转：当前文件达到 `max_file_bytes` 就在追加前轮转成 `metrics.jsonl.<槽位>`
+    （`_rotate_locked`），保留 `max_rotated_files` 份，最旧被覆盖；`0` 显式禁用。
+    轮转失败**降级为继续追加当前文件**——样本永不因轮转而丢，只累加
+    `rotation_errors` 并在 stderr 提示一次。
+
     失败容忍：写失败只累加 `write_errors` 并在 stderr 提示一次，**不抛出**——
     指标是诊断能力，不能反过来把主业务弄崩。写失败时文件缺数据，读取侧会看到
     空/少样本（测试用负控覆盖这一点）。
@@ -311,6 +420,8 @@ class MetricsRecorder:
         interval_s: float | None = None,
         instance_id: str = "",
         pid: int | None = None,
+        max_file_bytes: int | None = None,
+        max_rotated_files: int | None = None,
     ) -> None:
         self.data_root = Path(data_root)
         self.enabled = _env_enabled() if enabled is None else bool(enabled)
@@ -318,11 +429,26 @@ class MetricsRecorder:
         self.instance_id = instance_id
         self.pid = os.getpid() if pid is None else int(pid)
         self.path = metrics_path(self.data_root)
+        # None＝跟随环境/默认；0＝显式禁用轮转；负数是手误，fail fast。
+        self.max_file_bytes = (
+            _env_max_file_bytes() if max_file_bytes is None else int(max_file_bytes)
+        )
+        if self.max_file_bytes < 0:
+            raise ValueError(f"max_file_bytes 不能为负：{self.max_file_bytes}")
+        self.max_rotated_files = (
+            _env_max_rotated_files()
+            if max_rotated_files is None
+            else int(max_rotated_files)
+        )
+        if self.max_rotated_files < 1:
+            raise ValueError(f"max_rotated_files 必须 >= 1：{self.max_rotated_files}")
         self._lock = threading.Lock()
         self._sampler: threading.Thread | None = None
         self._sampler_stop = threading.Event()
         self._write_errors = 0
         self._logged_error = False
+        self._rotation_errors = 0
+        self._logged_rotation_error = False
         self._disk_baseline: int | None = None
         self._last_wall: float | None = None
         self._last_cpu: float | None = None
@@ -336,6 +462,50 @@ class MetricsRecorder:
     def write_errors(self) -> int:
         return self._write_errors
 
+    @property
+    def rotation_errors(self) -> int:
+        """轮转失败次数（失败样本照常写入当前文件，这里只是可见性计数）。"""
+        return self._rotation_errors
+
+    def _rotate_locked(self) -> dict[str, Any] | None:
+        """锁内轮转：链式 `os.replace`，最旧槽位被覆盖（＝保留策略，无 DELETE）。
+
+        任何一步失败即停止本轮（Windows 上读者持句柄会 PermissionError）：
+        返回 None，样本照常追加当前文件——**样本不丢**优先于**文件不超限**。
+        槽位可能有空洞，读取侧按存在的编号处理，不依赖连续。
+        """
+        base = self.path
+        try:
+            rotated_bytes: int | None = os.stat(base).st_size
+        except OSError:
+            rotated_bytes = None
+        for i in range(self.max_rotated_files - 1, 0, -1):
+            src = rotated_path(base, i)
+            if not src.exists():
+                continue
+            try:
+                os.replace(src, rotated_path(base, i + 1))
+            except OSError as exc:
+                self._note_rotation_failure(exc)
+                return None
+        try:
+            os.replace(base, rotated_path(base, 1))
+        except OSError as exc:
+            self._note_rotation_failure(exc)
+            return None
+        return {"rotated_bytes": rotated_bytes}
+
+    def _note_rotation_failure(self, exc: OSError) -> None:
+        self._rotation_errors += 1
+        if not self._logged_rotation_error:
+            self._logged_rotation_error = True
+            print(
+                f"[tianshu-metrics] 指标轮转失败（样本照常写入当前文件，"
+                f"后续静默计数）：{exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     def _append(self, record: dict[str, Any]) -> None:
         if not self.enabled:
             return
@@ -345,8 +515,16 @@ class MetricsRecorder:
             ).encode("utf-8")
             + b"\n"
         )
+        rotated: dict[str, Any] | None = None
         try:
             with self._lock:
+                if self.max_file_bytes > 0:
+                    try:
+                        size = os.stat(self.path).st_size
+                    except OSError:
+                        size = 0  # 测不到大小就不轮转，样本照常追加
+                    if size >= self.max_file_bytes:
+                        rotated = self._rotate_locked()
                 fd = os.open(
                     self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
                 )
@@ -368,6 +546,16 @@ class MetricsRecorder:
                     file=sys.stderr,
                     flush=True,
                 )
+            return
+        if rotated is not None and record.get("metric") != METRICS_ROTATED:
+            # 锁外补记轮转事件；该事件的追加仍可触发轮转，但不再嵌套新事件
+            # （record.get("metric") 判断就是抑制点）——否则极小阈值下无限递归。
+            self._record(
+                METRICS_ROTATED,
+                rotated["rotated_bytes"],
+                "event",
+                {"max_file_bytes": self.max_file_bytes},
+            )
 
     def _record(
         self,
@@ -497,22 +685,29 @@ class MetricsRecorder:
 __all__ = [
     "CANCEL_ACK_MS",
     "CPU_PCT",
+    "DEFAULT_MAX_FILE_BYTES",
+    "DEFAULT_MAX_ROTATED_FILES",
     "DEFAULT_SAMPLE_INTERVAL_S",
     "DISK_GROWTH",
     "ENV_METRICS",
     "ENV_METRICS_INTERVAL",
+    "ENV_METRICS_MAX_FILE_BYTES",
+    "ENV_METRICS_MAX_ROTATED_FILES",
     "EVENT_SEQ_HEAD",
     "METRICS_FILENAME",
+    "METRICS_ROTATED",
     "MetricsRecorder",
     "REQUIRED_METRICS",
     "RESTART_RECOVER_MS",
     "RSS_MIB",
     "SLOW_SUBSCRIBER_DROPPED",
     "STARTUP_READY_MS",
+    "list_metrics_files",
     "metric_values",
     "metrics_path",
     "percentile",
     "read_metrics",
+    "rotated_path",
     "slo_report",
     "summarize",
 ]
