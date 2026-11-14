@@ -7,6 +7,30 @@
 
 ## 原生 CI 的实际结果
 
+PR #153 首次 [run43586138334 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43586138334/attempts/1)
+六 job 全 success。独立结论
+`PASS_PR153_ATTEMPT1_NATIVE_WITH_RETAINED_WATCHDOG_EVIDENCE` 核验实际 checkout
+`5315d9d…` 的 tree/parents、两份 artifact、3207 节点和 9588 阶段；Windows
+合计 **3170 passed / 37 skipped**，48 个聚焦节点三阶段均通过。PR 的 3 次
+watchdog 分别对应 M2 COMMIT、eval COMMIT 与 recovery 子进程，之后均 PASSED。
+
+保护合并后的 main 为
+`88ec0ab640302f81602db93e69502f5ba5d84cb5`，tree 仍为
+`b9f05920d21b39c072633fd44299e4786da59f51`，有序 parents 为
+`c2cf1c71…` / `da47a3b6…`。main 自身首次
+[push run43588389290 attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43588389290/attempts/1)
+六 job 全 success；独立结论 `PASS_MAIN_88EC_ATTEMPT1_NATIVE_WITH_RETAINED_TIMING_EVIDENCE`
+另行核验完整的 3207 节点、两 artifact 与真实 checkout，Windows 合计仍为
+**3170 passed / 37 skipped**。main 的 3 次长等待都在分片 1，相关用例随后全阶段
+通过；没有把 PR 那次的 M2 堆栈借给 main 结果。
+
+两次运行的 Ubuntu、macOS、UI 分别通过。PR 的 Ubuntu 为 3194/13（465.42s）、
+macOS 3199/8（810.95s）；main 自身为 3194/13（385.14s）、3199/8（802.51s）。
+Windows 两片在 PR 为 654.15s / 920.13s，在 main 为 652.66s / 1020.40s。
+两份独立报告分别绑定各自 run、attempt、artifact digest、真实 checkout 与完整阶段，
+不能用一次绿色覆盖另一次。Windows runner 是 Server 2025 x86_64 / Python 3.12.16，
+不外推 Windows 10/11、ARM64 或桌面体验。
+
 M2 诊断 [PR #149](https://github.com/lorek666/tianshu-agent/pull/149) 的首次
 [run43573586653 / attempt1](https://github.com/lorek666/tianshu-agent/actions/runs/43573586653)
 六个 job 成功，独立结论为
@@ -114,12 +138,13 @@ root在最终569b/f220冻结上完成提交前门禁：`uv lock --check`、
 前后完全相同；[结果](evidence/windows-ci-timing-2026-11-14/final-gates/results.json)、
 [日志](evidence/windows-ci-timing-2026-11-14/final-gates/pytest.log)及输入清单均公开。
 此前3d69候选的3199/8、611.04s完整门为历史证据，不覆盖后续清理修补。
-UI源码、测试与dist无变化，本机未重复运行UI；新原生CI仍须执行全部job。
+UI源码、测试与dist无变化，本机未重复运行UI；该提交之后的 PR 与 main 原生 CI
+均已执行全部六个 job。
 
-本文为提交前验收记录。门后只回填事实文档与原字节证据，并在`.gitignore`为本证据目录
-的固定日志增加最窄例外，避免15份原日志被全局`*.log`漏掉；最终Git对象须独立绑定。
-正式提交与新原生CI以本轮PR正文及对应run为准。当前不能宣称Windows已修或根因已建立。
-#145、#147 继续开放；恢复B本地对象保存，契约推送及产品实施继续暂停。
+本文的前半部分保留提交前验收时点。门后只回填事实文档与原字节证据，并在`.gitignore`
+为本证据目录的固定日志增加最窄例外，避免15份原日志被全局`*.log`漏掉；正式对象已由
+第二读者逐件绑定。PR 与 main 首次原生 CI 均独立通过，但仍不能宣称 Windows 已修或
+根因已建立；#145、#147 继续开放，恢复 B 产品尚未实施。
 原件保存在忽略的本地档案；[公开子集索引](evidence/windows-ci-timing-2026-11-14/subset-index.json)
 明确列出73份原字节材料及来源，不冒称完整封存包；独立报告描述的是本地76件包，
 并非公开子集。脚本按原字节移名`.py.txt`，原文件名和路径由索引映射。关键入口为

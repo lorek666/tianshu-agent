@@ -21,7 +21,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 
 `migrate` 必须同时给出 `--data-root` 与既有的 `--backup`，不会自动生成备份；成功退出 `0`，拒绝或执行失败退出 `2`，四个原故障注入点退出 `77`。JSON 失败含 `operation="migrate"`、`ok=false`、`code` 与 `error`；六类 code 为 `incompatible`、`migration_incomplete`、`progress_corrupt`、`backup_mismatch`、`maintenance_busy`、`migration_failed`。成功含 `ok=true`、`code=null` 和迁移库报告。JSON 及迁移文本统一脱敏；内部编程异常不伪装成这六类业务失败。
 
-新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。迁移不启停服务、不执行恢复。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口仍须等记忆隔离等后续契约实现与验收。
+新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。迁移不启停服务、不执行恢复。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口仍须等[受管导入 B 契约](restore-held-contract.md)的产品实现与验收；当前契约文字通过不增加 CLI/API，所有 B 产品验收仍为 `NOT_RUN`。
 
 第二轮修复还要求Receipt的blob引用独立完整，受控文件Receipt有一致写前快照；快照/undo使用各自原生解析器。
 `verify` 拒绝非法清单整数与未来/负数真实DB版本；`restore-plan` 对全部事件做精确payload版本校验，并将runs全集身份/最终状态与事件对账。
@@ -37,7 +37,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 | `verify_backup` 校验哈希/引用/事件 seq 连续/清单可解析/版本兼容 | **已实现 + 有测试** | §3 |
 | `data restore-plan` 只读报告原路径、干净目标、版本与未决项 | **本轮新增；不执行恢复** | `tests/test_data_cli.py` |
 | 低层 `restore_backup` 只恢复干净根；失败保留原数据 | **原 W4 库函数；不是新 CLI 的恢复许可** | §4；未补齐后续删除历史与记忆隔离 |
-| 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2 库 + T3 CLI 本机候选；T3 独立待验** | §5、T2/T3 事实记录 |
+| 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2/T3 已随 PR #136 交付；仅迁移机制，非恢复 apply** | §5、T2/T3 事实记录 |
 | 迁移不 UPDATE/DELETE 历史事件；append-only 触发器保留 | **已实现 + 有测试** | §5 |
 | 保留期声明 + 引用保护（被引用 blob 永不进清理候选） | **已实现 + 有测试** | §6 |
 | **换路径恢复（重定位）** | **未实现** | §4.2：事件 `payload_ref` / 快照 `blob_ref` 是绝对路径；`events.py`/`snapshot.py` 不在本工作流所有权 |

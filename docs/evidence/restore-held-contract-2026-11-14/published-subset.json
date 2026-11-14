@@ -1,0 +1,52 @@
+{
+  "kind": "EXPLICIT_CONTRACT_TEXT_PUBLIC_SUBSET",
+  "status": "TEXT_REVIEW_ONLY_ALL_PRODUCT_NOT_RUN",
+  "entries": {
+    "draft-v1.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-9413-20261114-n8ng4o8l/DRAFT.md",
+      "sha256": "325a537637a5abecc3c9889bc10a24456065d426a782219174182f53688a922d",
+      "bytes": 21959
+    },
+    "draft-v2.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/DRAFT.md",
+      "sha256": "76364357e1ca99b2f3c845efb41356d5cde00a6d241c916cfeeb3ae9f052f57e",
+      "bytes": 30724
+    },
+    "draft-v3.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/DRAFT.md",
+      "sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+      "bytes": 32025
+    },
+    "draft-v3-inputs.json": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/inputs.json",
+      "sha256": "b7c2ceb9e0840dbdefcecc4e950d9d0443286795fc9fbc99fb4fd60fcfda33c4",
+      "bytes": 4842
+    },
+    "review-v1.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-9413-20261114-4mn8p0qc/REPORT.md",
+      "sha256": "d4a31e439333bab08833ffa1508d542e19f11211ce815cb50425ae4d90e1ec29",
+      "bytes": 5899
+    },
+    "review-v2.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v2-9413-20261114-tdirwihn/REPORT.md",
+      "sha256": "fe876e4466c6de738a4a448f89e894ab98373319ab7a054f2312f487e939def8",
+      "bytes": 5092
+    },
+    "review-v3.md": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v3-9413-20261114-phcp8cgr/REPORT.md",
+      "sha256": "27eb7a99f2f49407a3b521d16e7b74b2ac7246a41abb562af5588d86b2493528",
+      "bytes": 2469
+    },
+    "review-v3-facts.json": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v3-9413-20261114-phcp8cgr/facts.json",
+      "sha256": "716ca8150e8dcb14a3024578e9ddd2567f9fba7d63909a19e6a3fd5dc369cf9f",
+      "bytes": 5319
+    },
+    "review-v3-index.json": {
+      "source": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v3-9413-20261114-phcp8cgr/index.json",
+      "sha256": "fa38aaf43238fc8e91c118370650871a1936198761df2549e87aff18204c72da",
+      "bytes": 2903
+    }
+  },
+  "excluded": "Preparation/full source copies, author intermediate deltas/inputs, and ignored operational archives are not published here. This is not the complete original review package."
+}

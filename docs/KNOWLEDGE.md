@@ -26,7 +26,9 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **Windows 计时/锁等待诊断 PR #153 已交付，main 自身首次 CI 独立通过（2026-11-14）**：PR head `da47a3b6dbc38f0e0634af101c7089bf511c48e3` 的首次 run43586138334 attempt1 六 job 成功；独立结论 `PASS_PR153_ATTEMPT1_NATIVE_WITH_RETAINED_WATCHDOG_EVIDENCE`。正常保护 merge 为 main `88ec0ab640302f81602db93e69502f5ba5d84cb5`（tree `b9f05920d21b39c072633fd44299e4786da59f51`，parents `c2cf…` / `da47…`）。main 自身首次 push run43588389290 attempt1 六 job 成功，独立结论 `PASS_MAIN_88EC_ATTEMPT1_NATIVE_WITH_RETAINED_TIMING_EVIDENCE`：两片完整覆盖 3207 节点、9588 阶段，**3170 passed / 37 skipped**；Ubuntu 3194/13、macOS 3199/8、UI 13 文件/91 测试。PR 和 main 各保留 3 次成功节点的 watchdog 长等待，未把绿色或长等待误写成生产根因已修复。原 c2cf 两红、实际 SQLite 锁机制及原 MCP 卡点仍未知；#145/#147 保持开放。本片只交付测试计时、异常清理和失败现场，恢复 B 产品仍未实施。
 - **控制面响应测试已改为确定性屏障（2026-11-15）**：纯文档恢复契约 PR 的新 head 原生 run43634904064 在 Windows 分片 0 唯一红为 `test_control_plane_stays_responsive_while_driver_runs_long_task`，控制面两 RPC 实测 **0.781s，超过原 0.5s 阈值**；shard1、Ubuntu、macOS、UI 四个 job 成功，shard0 与 Windows required 汇总失败。产品 blob 与已通过的 main `88ec` 相同，原测试的“模型 sleep + 墙钟阈值”对 runner 调度敏感；0.781 秒耗时来源仍未定位，不能据此断定产品阻塞，也不能把本轮通过写成性能根因已修。隔离修复把长模型改为真实 Event 阻塞，只有驱动仍锁在模型调用、控制面 RPC 已完成才通过；2 秒 watchdog 只防止测试死锁，触发即失败。旧候选漏了入口失败清理，独立真进程负控发现后已用外层 `finally` 修复；4aae 候选目标连续 20 次通过，整文件与全量均通过（**3199 passed / 8 skipped，660.48s**，lock/ruff 0）。最终 93c1 仅改 RouteModel 文档字符串并复验目标测试，不冒充新一轮 20 次或 full。该结果不建立新 SLO，也不证明原 0.5 秒数值性能目标或 SQLite 根因。
+- **控制面屏障修复已保护合入 main `f307bf16`；main 自身 CI 待独立绑定（2026-11-15）**：PR #158 head `6f40591989901784ac925b2a6639fb5e5ebfc380` 的原生 run43638768307 attempt1 六 job 全绿，并经第二读者独立确认 Windows 完整覆盖 3207 节点、3170 passed / 37 skipped。正常保护 merge 后 main 为 `f307bf16e0c5bb4b9eeac5c9c6e58353fb5411eb`（tree `ef15f0654d7a5b54e7e4c17f9170edad03c9a93a`）。main 自身首次 push run43641339063 attempt1 的原始六 job 均成功，Windows 两片完整覆盖同为 3207 节点；但正式第二读者封装多次遇到上游 token 401，尚不能宣称这次 main push CI 已独立通过。该边界不降低 PR #158 已完成的独立 PR 核验，也不关闭 #145/#147。
 
 - **PR149已交付测试诊断，main首次CI仍红（2026-11-14）**：PR首次run43573586653 attempt1六job成功并经独立核验，正常保护合入main `c2cf1c71c65f46dea161e41b140df99d137a5686`。该main自身首次run43576167008 attempt1为独立确认的`FAIL_THIS_MAIN_PUSH_CI_ONLY`：Windows两片各一个call失败，合计2 failed/3167 passed/37 skipped、完整3206节点，汇总正确拒绝；UI/Ubuntu/macOS成功。M2第13轮定位到append_many真实BEGIN SQLITE_BUSY，等待起点已从ring淘汰；MCP原2秒从服务发现起等待整个worker，隔离审批/unknown屏障证明该测试混合计时。最终MCP569b/M2f220两文件已获独立限定内容PASS；启动/accept清理真缺口修后复验，原断言与期限保留。1163固定输入的lock/full/ruff均0，3199 passed/8 skipped、635.00s，前后无漂移。门后只回填事实与证据，正式对象/新原生CI另核；实际Windows锁机制及MCP原卡点仍未知。详见[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)。#145/#147保持开放，恢复B继续暂停；下方“待原生CI”是旧提交前时点。
 
@@ -38,7 +40,18 @@
 
 - **审批删除根因未定，失败诊断已补（2026-11-14，提交前记录）**：PR #146 head `3e9da0bd63399fc86488018605138b54b22fb427` 首次 run43559488826 attempt1 的 Windows 片0在 Run succeeded 后 old.txt 仍在处失败；原红、未合状态及 issue #147 保留，不归因 flaky/基线或与 #145 同因。固定77源的50次本机未复现不抵消原红。本片保留原13assert/时限，仅补 failure-only 真实链与采集保护；最终源 `f138d6c1` 通过独立短关键字段 delta 验收，本机 lock/full/ruff 全0，3186 passed/8 skipped（544.97s），1080项前后稳定。旧截断与 resource 遗漏的 PARTIAL、观察器过强及人工中断门均保留；正式 Git 对象与原生 CI 需另行绑定，不能外推本记录。[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)给出原件与字符/分页/脱敏边界；恢复B仍未实现。
 
-- **低磁盘PR #144 首轮原生CI失败，测试诊断增量待云端（2026-11-14）**：旧head `96e3e485eb4ecbecadbadb54a60414967ab63649` 的run43549430150 attempt1已结束，Ubuntu/macOS/UI/Windows片0成功，Windows片1两项失败且required汇总失败。当前仅修两测试的CRLF文本协议与60次收尾失败诊断，生产/CI不变；心跳根因仍未复现、未修复。1030源清单 `2922a345` 的本机lock/full/全仓ruff通过（3183 passed / 8 skipped，513.63s），执行前后源与Git状态稳定。两测试已独立窄审通过，含强制真实子进程CRLF正控、坏READY及reason注入call真红；不等于Windows通过或心跳已修。原首红与新公开子集、独立身份见[低磁盘交付记录](LOW-DISK-2026-11-14.md)；下方旧“原生CI待核”为历史时点。
+- **恢复 B 同步候选本机通过，main 自身 CI 新红阻断推进（2026-11-14）**：1127 文件冻结候选 `2df18981` 的 lock/full/全仓 ruff 均 exit0，**3186 passed / 8 skipped（524.89s）**，源码、HEAD 与 Git 状态前后不变；同步文稿独立结论 `PASS_SYNC_DOC_DELTA_ONLY`，相对 main b450 仍仅原32文稿，全部产品与测试等 main。随后 main 自身 push run43567298082 attempt1 终态 **failure**：Windows 片1及 required 汇总失败，其余四 job 成功；实际 checkout 为 `b450c339d546ae2007ed9754e70de0108c4b86c4`。唯一失败为 `test_normal_finish_and_pause_do_not_report_heartbeat_failure` 的 call，第55轮 `OperationalError: database is locked`，Run 为 queued、无 run.end；本机绿与 PR148 绿均不能覆盖它。完整六job日志和两份分片原件已收齐，独立终态核验与根因调查仍待；不预判与 #145/#147 同因。恢复契约推送暂停，B 产品仍未授权/全部 NOT_RUN。下方“仍待终态”是同步开始时的历史观察。
+
+- **恢复 B 契约 PR #146 同步诊断基线（2026-11-14）**：审批失败诊断 PR #148 已正常保护合入 main `b450c339d546ae2007ed9754e70de0108c4b86c4`；其 PR 原生 run43565231609 attempt1 六 job 成功且经第二读者独立核验，main 自身 push run43567298082 仍待终态与独立核验。本分支只同步该基线并合成知识库双方事实，恢复契约正文与产品实现不改；原 #146 head `3e9da0bd63399fc86488018605138b54b22fb427` 的 run43559488826 首红保留，issue #147 根因仍未建立，#145 仍未修。新组合须另跑本机门禁并绑定新提交与原生 CI，不能借诊断 PR 绿代替恢复契约 PR 通过；B 产品仍全部 `NOT_RUN`。
+
+- **低磁盘 PR #144 已交付，main 自身 CI 独立核验通过（2026-11-14）**：正式 head `9413c7ca66af56fce8ac1664e989cf8cd6fc9808` 正常保护合并为 main `8f2a508e68f27efc4100b7466fcd79043341f7fa`（tree `73558d71cbce08e8d5a86aa8fce26cd89f476d3b`）。PR原生run43553215035及main自身push run43555557537均attempt1、六job/四required成功；新main70steps与两份Windows有序3191节点全覆盖经第二读者核验。main结果Ubuntu3178 passed/13 skipped、macOS3183/8、Windows合3154/37、UI13文件91测试；一次watchdog后对应测试PASS。**issue #145仍open，旧Run failed根因未知未修，不能排除PR回归**；root明确接纳内部研发风险交付，不冒称读者无条件批准。实际runner与警告/限制、原失败见[低磁盘记录](LOW-DISK-2026-11-14.md)。
+
+- **恢复 B 仅契约文字准备完成，产品未实现（2026-11-14）**：[受管导入、持久隔离与只读复核契约](restore-held-contract.md)保留合法v1 held导入与任意全空骨架，明确final namespace操作独占、stage_owned、publish_intent、abort_intent及删除目录屏障先于aborted。v3独立结论 `PASS_FOR_PURE_DOCS_PR_TEXT_ONLY`，原四项/容量和两处delta按精确原件继承；全部B产品验收/断点仍NOT_RUN。当前整理纯docs(contract) PR，不启用apply/review/resume/abort；解除及完整旧Run恢复留C，不能将文字/低磁盘CI当恢复服务通过。
+
+- **本次纯契约候选本机门禁（2026-11-14）**：正式32文稿冻结经独立窄集成复审，结论 `CONTENT_READY_PENDING_FINAL_COMMIT_AND_GATES`，不等于产品验收。首轮lock0/full1/ruff0，唯一失败为官方端点计价测试继承 `ANTHROPIC_BASE_URL` 后得到非官方身份；完整 **1 failed / 3182 passed / 8 skipped（511.32s）** 原件保留。受控非官方覆盖1F、无覆盖1P及固定源码因果链经第二读者核验，测试的环境依赖未修。清除继承的模型/凭据配置后，同一候选lock/full/ruff均exit0，**3183 passed / 8 skipped（514.95s）**，1092份文件、HEAD与状态前后不变；随后只回填本条及会话日志。正式SHA与本PR原生CI另行绑定，B产品仍全部NOT_RUN，未运行付费模型或soak。
+
+- **历史：低磁盘PR #144 首轮原生CI失败，测试诊断增量待云端（2026-11-14，当时时点）**：旧head `96e3e485eb4ecbecadbadb54a60414967ab63649` 的run43549430150 attempt1已结束，Ubuntu/macOS/UI/Windows片0成功，Windows片1两项失败且required汇总失败。当前仅修两测试的CRLF文本协议与60次收尾失败诊断，生产/CI不变；心跳根因仍未复现、未修复。1030源清单 `2922a345` 的本机lock/full/全仓ruff通过（3183 passed / 8 skipped，513.63s），执行前后源与Git状态稳定。两测试已独立窄审通过，含强制真实子进程CRLF正控、坏READY及reason注入call真红；不等于Windows通过或心跳已修。原首红与新公开子集、独立身份见[低磁盘交付记录](LOW-DISK-2026-11-14.md)；下方旧“原生CI待核”为历史时点。
+- **审批删除根因未定，失败诊断已补（2026-11-14，提交前记录）**：PR #146 head `3e9da0bd63399fc86488018605138b54b22fb427` 首次 run43559488826 attempt1 的 Windows 片0在 Run succeeded 后 old.txt 仍在处失败；原红、未合状态及 issue #147 保留，不归因 flaky/基线或与 #145 同因。固定77源的50次本机未复现不抵消原红。本片保留原13assert/时限，仅补 failure-only 真实链与采集保护；最终源 `f138d6c1` 通过独立短关键字段 delta 验收，本机 lock/full/ruff 全0，3186 passed/8 skipped（544.97s），1080项前后稳定。旧截断与 resource 遗漏的 PARTIAL、观察器过强及人工中断门均保留；正式 Git 对象与原生 CI 需另行绑定，不能外推本记录。[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)给出原件与字符/分页/脱敏边界；恢复B仍未实现。
 
 - **低磁盘修后完整本机门禁通过（2026-11-14）**：906项固定源清单 `df72efbd` 上lock/full/全仓ruff均exit0，**3183 passed / 8 skipped（509.43s）**，源码、HEAD与状态无漂移；57份UI源码/测试/锁/dist精确继承879候选完整13文件91测试和install/typecheck/build通过结果，未重复未变UI。七文件修正保留原AUTH/eval/fence与硬退断言，修复过早提案过滤和旧夹具实际实例；六份历史脚本仅移名文本，原件/索引不改。906七文件窄增量已独立PASS（报告`016f4c2f`，四项已修、无新增窄范围阻断，BASE-B1仍未修）；最终事实封装/正式SHA和原生CI仍待，旧首红完整保留。[交付记录](LOW-DISK-2026-11-14.md)给出原件与范围。
 
@@ -499,6 +512,12 @@
 
 - **当前数据生命周期边界（2026-11-14，本次提交前）**：低磁盘 PR #144 已合 main8f2a，PR及main自身首次六job CI均已独立核验通过；issue #145 的旧Run failed原因未知，未关闭。恢复B纯契约PR #146首次CI另有审批后删除未发生失败，issue #147根因未建立，原红仍阻断该提交合并。本片只补有界失败诊断，短关键字段独立验收与最终本机门已通过，不把它们当作新原生CI或根因修复；后续绑定详见[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)。恢复apply/review/resume/abort、解除与完整旧Run恢复均未实现；旧作者时点保留历史含义，当前以精确提交及交付记录为准。
 
+- **main b450 自身 CI 未通过（2026-11-14）**：run43567298082 的 Windows 片1在正常收尾测试第55轮出现 database is locked，Run 留 queued、无 run.end，required 汇总失败。原生首红保留，完整终态独立核验与根因待查，不能用 PR148 的绿色或本机3186项通过销账；暂不推进恢复契约推送或 B 产品，也不宣称已证明与旧 #145/#147 同因。
+
+- **当前低磁盘边界（2026-11-14）**：PR144及main8f2a自身原生CI已通过并独立绑定，精确结果见§2。issue #145旧Windows正常收尾Run failed原因未知/未修，不能排除PR回归；root已显式接纳内部研发风险，绿色不等于长期稳定或无条件整PR批准。BASE-B1既有CLI预算装配缺口未修。恢复B当前只有[契约文字](restore-held-contract.md)，全部产品验收NOT_RUN；C解除/完整旧Run恢复、容量上限/GC、真实付费任务、10h soak及普通用户发行仍待。逐位置空间探测不是配额；Windows Server CI不代表Windows10/11、ARM64或桌面实测。以下作者/失败记录均为其历史时点，不覆盖本条。
+
+- **审批诊断提交前的数据生命周期边界（2026-11-14，历史记录）**：低磁盘 PR #144 已合 main8f2a，PR及main自身首次六job CI均已独立核验通过；issue #145 的旧Run failed原因未知，未关闭。恢复B纯契约PR #146首次CI另有审批后删除未发生失败，issue #147根因未建立，原红仍阻断该提交合并。本片只补有界失败诊断，短关键字段独立验收与最终本机门已通过，不把它们当作新原生CI或根因修复；后续绑定详见[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)。恢复apply/review/resume/abort、解除与完整旧Run恢复均未实现；旧作者时点保留历史含义，当前以精确提交及交付记录为准。
+
 - **T1装配/恢复继承缺口已在T2独立范围内修复（2026-11-14）**：固定已审T1源上的六个受影响测试原样复现失败：4个跨进程pending MCP恢复缺发现注册表、dead-at-dispatch夹具启动前取server、摘要硬退子进程漏传真实memory。T2只补pending MCP按需准备和两个夹具实际实例；原硬退/unknown/对象阻断断言保持。另原并发审批用例固定T1通过，新增执行上下文门后测试两线程手装配缺context，最薄补同连接Snapshot/authority/guard后通过，未放宽生产校验、竞争和一次消费断言。上述不撤销T1此前已审范围；T2 的完整冻结内容与窄 delta 已由第二读者独立 PASS，但仍不扩大为 T3/整功能通过。
 
 - **低磁盘 T1 C2 尚未独立销账（2026-11-14）**：旧候选的新 policy 写读类型不闭合；round1 只收紧新 `run.start` v2 的严格对象语义，保留历史 v0/v1 schema、其他事件和字段的 JSON Schema integer 语义。不能放宽对象 `.of` 或把已写坏资格补为 effects/pure_only；本轮作者467项联合通过与负控不替代独立复核，旧800项结果也不补证该缺口。
@@ -640,7 +659,9 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-14 · Windows 计时/锁等待诊断保护合并与 main 首绿**：正式 da47 先由第二读者完成测试内容、事实文稿/公开子集和正式 Git 对象三层窄绑定；本机 1163 输入上 lock/full/ruff 全 0，3199 passed/8 skipped、635.00s。PR153 首次六 job 全绿后独立核对两份原生 artifact、真实 checkout/tree/parents、3207 节点与 9588 阶段，确认 48 个聚焦节点全过并保留 3 次 watchdog；正常保护合并为 main88ec，tree 不变。main 自身首次 push CI 另跑并独立重算同一完整 collection，六 job 全绿；其 3 次长等待均只在片 1，测试随后全阶段通过。原 c2cf 双红、未知锁/MCP 机制和 #145/#147 不销账，恢复 B 仍未实现。
 - **2026-11-15 · 控制面测试屏障修复**：恢复 B 纯文档同步 PR 首次原生 CI 暴露 Windows daemon 控制面测试的唯一红点，0.781 秒超过原 0.5 秒阈值，shard0 与 required 汇总失败，另四 job 成功；同产品代码在 main 首轮通过，但 0.781 的来源未定位。第二读者完整核验失败 run 的 3207 节点、两 artifact 与汇总拒绝，确认不是以成功报告硬套。隔离分支只改测试：长任务改为真实 Event 屏障，控制 RPC 必须在屏障未释放时完成；补外层 finally 保证入口/连接失败也释放，独立真进程正控与两项串行负控闭合。4aae 候选目标 20/20、daemon 文件与全量 3199P8S 均通过；最终 93c1 只改注释并复验目标。不将新测试解释成性能 SLO、SQLite 根因或恢复 B 产品验收。
+- **2026-11-15 · PR158 合并与恢复 B 同步续做**：PR158 原生六 job 先完成独立验收，再正常保护合入 main `f307bf16`；main 自身首次 push 原始六 job 成功，但第二读者连续因上游 token 401 中断，故保留“原始成功、独立未完成”而不伪称 PASS。随后将纯文档恢复契约 PR #146 普通 merge 到该 main，仅保留 KNOWLEDGE 双方历史并补本次事实；产品、测试、schema、UI、CI 与依赖不新增变更。
 
 - **2026-11-14 · Windows计时与保留诊断最终候选收口**：MCP真实call_tool入口/退出直接受原2秒约束，独立审批/unknown屏障正控、真实blocking与迟调度负控和前置错传播均按预期；accept旧泄漏及9abd新启动错覆盖的FAIL保留，最终569b真探针销账。M2f220局部保留enter起点、最多4个canonical上层caller与有限runtime，READONLY/180事务ring淘汰/7ms注入和两删功能call红证明诊断，原六assert/60轮/1ms不变。第二读者正式限定内容PASS，76件紧凑包逐hash只读保全；root最终1163源lock/full/ruff均0，3199P8skip635.00s、前后无漂移。旧611.04s门不覆盖清理增量，公开73份原字节子集明确不完整；提交预检为该目录日志补最窄忽略例外，保全15份原日志。正式Git对象与新CI另绑；未改生产/期限/重试/CI门、不关闭145/147、不推进恢复B或触碰凭据与metrics他线。
 
@@ -812,6 +833,14 @@
 - **2026-11-14 · 低磁盘修后完整本机门禁与证据保全**：root核作者七路径交接后接管live，恢复memory_exec相对879多出的无关EOF换行，冻结906源 `df72efbd`；首轮41失败的窄修保留原授权/审计/父版本与硬退断言。lock/full/全仓ruff均exit0，3183passed8skipped、509.43s，前后源码/HEAD/status不变；完整UI以57项精确不变继承原13文件91测试和类型/构建通过，未重复跑。六原脚本.py.txt与173映射原字节、首红/观察器错误/负控均保全，作者311联合不与独立或全量相加。泛凭据模式首扫命中六既有测试/证据fixture，逐字节与HEAD相同，属观察器误报、未新增凭据且不打印值。906窄增量随后独立PASS（`016f4c2f` / facts`3ef68826` / index`b5825b37`），root亲读并核1944+索引、73.2MB原件ignored保全；7精准测试和4真实离线路径通过，六负控按行为真红，BASE-B1未修。最终事实/正式对象与原生CI仍待；未扩大为G3整批完成。
 
 - **2026-11-14 · 最终对象事实计数修正**：第二读者核首轮41条FAILED汇总发现，现行低盘文稿把“23项存储实例接线+1项规则计数”误写为24项夹具。root亲读原日志确认approval8、m2 1、recovery14，共23；现只校正文稿并保留该发现，原9a69对象不能冒称全部事实准确。产品、测试、锁、UI和3183passed8skipped的906完整门原件不变，新正式对象仍须独立窄绑定。
+
+- **2026-11-14 · 低磁盘交付收口与恢复B契约**：PR144正常保护合main8f2a，PR run43553215035与main自身push43555557537 attempt1六job/四required均成功；main原件及精确对象由第二读者独立确认，root亲读并核12报告文件/59输入，完整日志和产物保留ignored。旧normal-finish失败以issue145保留unknown/unfixed，root明确承担内部研发风险，未改生产猜根因或销账。B三版草案完成独立文字迭代：修先删后锁、token空窗、E/P/S/D映射、合法v1兼容及清理目录屏障先于aborted；v3仅可提交纯docs契约，产品/43验收/断点仍NOT_RUN。此处不称G3整批完成，不运行付费模型或10h soak。
+
+- **2026-11-14 · 恢复B正式文稿与本机验证**：32文稿/公开子集经独立窄集成确认，§1–8精确继承已审v3，产品零delta。首轮全量1F3182P8skip因继承非官方端点，原红与受控对照、独立因果诊断均保全；没有把环境前提失败说成产品已修。清除模型/凭据配置后同源lock/full/ruff全0，3183P8skip、514.95s，1092文件和Git状态稳定；本次仅回填事实，不重复未变UI。正式提交/新原生CI待绑定，实施计划独立审另列接口衔接修订，B产品/断点仍NOT_RUN；issue145及BASE-B1未修边界不变。
+
+- **2026-11-14 · 恢复 B 契约同步诊断基线**：PR148 正常保护合入 main b450，PR 原生 CI 经独立核验；main 自身 push run43567298082 仍待终态。恢复契约分支通过普通 merge 同步，知识库唯一冲突合成双方事实，契约正文、原件与全部产品保持；原146首次CI失败、issues145/147及旧PARTIAL记录不覆盖。新组合的本机门禁、正式对象与原生CI另核，本条不授权恢复B产品实施。
+
+- **2026-11-14 · 新组合本机全门与 main 自身失败分开记账**：1127文件/manifest2df18981的lock/full/ruff均0，3186 passed/8 skipped、524.89s，前后身份与Git状态稳定；文稿同步独立PASS只覆盖32文稿及继承身份。main b450自身run43567298082首次终态failure，Windows片1正常收尾测试第55轮database is locked、queued无run.end；六job和两份artifact完整保全，独立终态与根因另查，不重跑覆盖、不猜同因。恢复契约推送暂停，仅回填知识库事实，其他1126文件不改；B产品未授权。
 
 ## 9. 权威文档索引
 

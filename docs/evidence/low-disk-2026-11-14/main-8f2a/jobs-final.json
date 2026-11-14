@@ -1,0 +1,733 @@
+{
+  "jobs": [
+    {
+      "id": 132327500933,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez1VshQ",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132327500933",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132327500933",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:13:32Z",
+      "started_at": "2026-11-14T04:13:34Z",
+      "completed_at": "2026-11-14T04:21:07Z",
+      "name": "test (ubuntu-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:13:34Z",
+          "completed_at": "2026-11-14T04:13:35Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:13:35Z",
+          "completed_at": "2026-11-14T04:13:36Z"
+        },
+        {
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:13:36Z",
+          "completed_at": "2026-11-14T04:13:38Z"
+        },
+        {
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:13:38Z",
+          "completed_at": "2026-11-14T04:13:38Z"
+        },
+        {
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:13:38Z",
+          "completed_at": "2026-11-14T04:13:38Z"
+        },
+        {
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:13:38Z",
+          "completed_at": "2026-11-14T04:13:39Z"
+        },
+        {
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:13:39Z",
+          "completed_at": "2026-11-14T04:13:39Z"
+        },
+        {
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:13:39Z",
+          "completed_at": "2026-11-14T04:21:06Z"
+        },
+        {
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-11-14T04:21:06Z",
+          "completed_at": "2026-11-14T04:21:06Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T04:21:06Z",
+          "completed_at": "2026-11-14T04:21:06Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:21:06Z",
+          "completed_at": "2026-11-14T04:21:06Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132327500933",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002045,
+      "runner_name": "GitHub Actions 1000002045",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132327501025,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez1Vs4Q",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132327501025",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132327501025",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:13:32Z",
+      "started_at": "2026-11-14T04:13:34Z",
+      "completed_at": "2026-11-14T04:22:21Z",
+      "name": "windows shard 1 · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:13:34Z",
+          "completed_at": "2026-11-14T04:13:35Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:13:35Z",
+          "completed_at": "2026-11-14T04:13:40Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:13:40Z",
+          "completed_at": "2026-11-14T04:13:43Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:13:43Z",
+          "completed_at": "2026-11-14T04:13:47Z"
+        },
+        {
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:13:47Z",
+          "completed_at": "2026-11-14T04:13:48Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:13:48Z",
+          "completed_at": "2026-11-14T04:13:49Z"
+        },
+        {
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:13:49Z",
+          "completed_at": "2026-11-14T04:13:49Z"
+        },
+        {
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:13:49Z",
+          "completed_at": "2026-11-14T04:22:16Z"
+        },
+        {
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T04:22:16Z",
+          "completed_at": "2026-11-14T04:22:18Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:22:18Z",
+          "completed_at": "2026-11-14T04:22:18Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T04:22:18Z",
+          "completed_at": "2026-11-14T04:22:19Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T04:22:19Z",
+          "completed_at": "2026-11-14T04:22:19Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132327501025",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000002043,
+      "runner_name": "GitHub Actions 1000002043",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132327501132,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez1VtTA",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132327501132",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132327501132",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:13:32Z",
+      "started_at": "2026-11-14T04:13:34Z",
+      "completed_at": "2026-11-14T04:27:18Z",
+      "name": "windows shard 0 · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:13:35Z",
+          "completed_at": "2026-11-14T04:13:36Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:13:36Z",
+          "completed_at": "2026-11-14T04:13:50Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:13:50Z",
+          "completed_at": "2026-11-14T04:13:53Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:13:53Z",
+          "completed_at": "2026-11-14T04:13:57Z"
+        },
+        {
+          "name": "Run uv lock --check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:13:57Z",
+          "completed_at": "2026-11-14T04:13:58Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:13:58Z",
+          "completed_at": "2026-11-14T04:13:59Z"
+        },
+        {
+          "name": "Run uv run --frozen ruff check .",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:13:59Z",
+          "completed_at": "2026-11-14T04:14:00Z"
+        },
+        {
+          "name": "Pytest Windows 分片",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:14:00Z",
+          "completed_at": "2026-11-14T04:27:13Z"
+        },
+        {
+          "name": "上传本分片原始报告",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T04:27:13Z",
+          "completed_at": "2026-11-14T04:27:14Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:27:14Z",
+          "completed_at": "2026-11-14T04:27:15Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T04:27:15Z",
+          "completed_at": "2026-11-14T04:27:17Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T04:27:17Z",
+          "completed_at": "2026-11-14T04:27:17Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132327501132",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000002044,
+      "runner_name": "GitHub Actions 1000002044",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132327501172,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez1VtdA",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132327501172",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132327501172",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:13:32Z",
+      "started_at": "2026-11-14T04:13:34Z",
+      "completed_at": "2026-11-14T04:13:56Z",
+      "name": "ui · typecheck / test / build",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:13:34Z",
+          "completed_at": "2026-11-14T04:13:35Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:13:35Z",
+          "completed_at": "2026-11-14T04:13:37Z"
+        },
+        {
+          "name": "Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:13:37Z",
+          "completed_at": "2026-11-14T04:13:38Z"
+        },
+        {
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:13:38Z",
+          "completed_at": "2026-11-14T04:13:39Z"
+        },
+        {
+          "name": "安装前端依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:13:39Z",
+          "completed_at": "2026-11-14T04:13:42Z"
+        },
+        {
+          "name": "类型检查",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:13:42Z",
+          "completed_at": "2026-11-14T04:13:45Z"
+        },
+        {
+          "name": "前端单测",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:13:45Z",
+          "completed_at": "2026-11-14T04:13:49Z"
+        },
+        {
+          "name": "构建",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:13:49Z",
+          "completed_at": "2026-11-14T04:13:53Z"
+        },
+        {
+          "name": "提交的 dist 必须与源码构建一致",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-14T04:13:53Z",
+          "completed_at": "2026-11-14T04:13:53Z"
+        },
+        {
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T04:13:53Z",
+          "completed_at": "2026-11-14T04:13:54Z"
+        },
+        {
+          "name": "Post Run pnpm/action-setup@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:13:54Z",
+          "completed_at": "2026-11-14T04:13:55Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-11-14T04:13:55Z",
+          "completed_at": "2026-11-14T04:13:55Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-11-14T04:13:55Z",
+          "completed_at": "2026-11-14T04:13:55Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132327501172",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002046,
+      "runner_name": "GitHub Actions 1000002046",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132327501220,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez1VtpA",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132327501220",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132327501220",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:13:32Z",
+      "started_at": "2026-11-14T04:13:34Z",
+      "completed_at": "2026-11-14T04:26:35Z",
+      "name": "test (macos-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:13:34Z",
+          "completed_at": "2026-11-14T04:13:35Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:13:35Z",
+          "completed_at": "2026-11-14T04:13:38Z"
+        },
+        {
+          "name": "安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:13:38Z",
+          "completed_at": "2026-11-14T04:13:41Z"
+        },
+        {
+          "name": "安装 Python 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:13:41Z",
+          "completed_at": "2026-11-14T04:13:43Z"
+        },
+        {
+          "name": "锁文件漂移门禁",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:13:43Z",
+          "completed_at": "2026-11-14T04:13:43Z"
+        },
+        {
+          "name": "同步依赖（只读锁文件）",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:13:43Z",
+          "completed_at": "2026-11-14T04:13:44Z"
+        },
+        {
+          "name": "Ruff",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:13:44Z",
+          "completed_at": "2026-11-14T04:13:44Z"
+        },
+        {
+          "name": "Pytest",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:13:44Z",
+          "completed_at": "2026-11-14T04:26:30Z"
+        },
+        {
+          "name": "Post 安装 uv",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-11-14T04:26:30Z",
+          "completed_at": "2026-11-14T04:26:31Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T04:26:31Z",
+          "completed_at": "2026-11-14T04:26:32Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:26:32Z",
+          "completed_at": "2026-11-14T04:26:34Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132327501220",
+      "labels": [
+        "macos-latest"
+      ],
+      "runner_id": 1000002047,
+      "runner_name": "GitHub Actions 1000002047",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 132331156479,
+      "run_id": 43555557537,
+      "workflow_name": "CI",
+      "head_branch": "main",
+      "run_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/runs/43555557537",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVnCdCs8AAAAez40z_w",
+      "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/jobs/132331156479",
+      "html_url": "https://github.com/lorek666/tianshu-agent/actions/runs/43555557537/job/132331156479",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-14T04:27:18Z",
+      "started_at": "2026-11-14T04:27:20Z",
+      "completed_at": "2026-11-14T04:27:29Z",
+      "name": "test (windows-latest) · py3.12",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-14T04:27:21Z",
+          "completed_at": "2026-11-14T04:27:21Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-14T04:27:21Z",
+          "completed_at": "2026-11-14T04:27:23Z"
+        },
+        {
+          "name": "Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-14T04:27:23Z",
+          "completed_at": "2026-11-14T04:27:24Z"
+        },
+        {
+          "name": "Run uv python install 3.12",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-14T04:27:24Z",
+          "completed_at": "2026-11-14T04:27:25Z"
+        },
+        {
+          "name": "Run uv sync --frozen",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-14T04:27:25Z",
+          "completed_at": "2026-11-14T04:27:26Z"
+        },
+        {
+          "name": "下载分片 0",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-14T04:27:26Z",
+          "completed_at": "2026-11-14T04:27:26Z"
+        },
+        {
+          "name": "下载分片 1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-14T04:27:26Z",
+          "completed_at": "2026-11-14T04:27:27Z"
+        },
+        {
+          "name": "验证上游结论与完整覆盖",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-14T04:27:27Z",
+          "completed_at": "2026-11-14T04:27:27Z"
+        },
+        {
+          "name": "Post Run astral-sh/setup-uv@v5",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15,
+          "started_at": "2026-11-14T04:27:27Z",
+          "completed_at": "2026-11-14T04:27:28Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16,
+          "started_at": "2026-11-14T04:27:28Z",
+          "completed_at": "2026-11-14T04:27:28Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-11-14T04:27:28Z",
+          "completed_at": "2026-11-14T04:27:28Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/lorek666/tianshu-agent/check-runs/132331156479",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002048,
+      "runner_name": "GitHub Actions 1000002048",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ],
+  "total_count": 6
+}

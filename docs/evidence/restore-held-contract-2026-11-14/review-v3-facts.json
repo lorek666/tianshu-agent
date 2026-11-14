@@ -1,0 +1,148 @@
+{
+  "kind": "INDEPENDENT_NARROW_DELTA_RE_REVIEW",
+  "date": "2026-11-14",
+  "reviewer": "/root/review_admission_contract",
+  "verdict": "PASS_FOR_PURE_DOCS_PR_TEXT_ONLY",
+  "formal_pure_docs_pr_ready": true,
+  "product_approved": false,
+  "fixed_commit": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+  "fixed_tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+  "draft_sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+  "draft_line_count": 143,
+  "inputs": [
+    {
+      "role": "draft_v3",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/DRAFT.md",
+      "sha256": "777e1576b6d9836a513a6e03737a6d032c07d9260bbbcaf40a6c622302fd8a30",
+      "bytes": 32025,
+      "lines": 143
+    },
+    {
+      "role": "draft_v3_inputs_hash_only",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v3-9413-20261114-afv9lqwh/inputs.json",
+      "sha256": "b7c2ceb9e0840dbdefcecc4e950d9d0443286795fc9fbc99fb4fd60fcfda33c4",
+      "bytes": 4842,
+      "lines": 123
+    },
+    {
+      "role": "draft_v2",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-draft-v2-9413-20261114-hovulxa_/DRAFT.md",
+      "sha256": "76364357e1ca99b2f3c845efb41356d5cde00a6d241c916cfeeb3ae9f052f57e",
+      "bytes": 30724,
+      "lines": 143
+    },
+    {
+      "role": "v2_independent_report",
+      "path": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v2-9413-20261114-tdirwihn/REPORT.md",
+      "sha256": "fe876e4466c6de738a4a448f89e894ab98373319ab7a054f2312f487e939def8",
+      "bytes": 5092,
+      "lines": 27
+    }
+  ],
+  "independent_diff": {
+    "changed_lines": [
+      1,
+      4,
+      114,
+      115,
+      116,
+      135,
+      140,
+      143
+    ],
+    "other_lines_identical": true,
+    "method": "direct line-by-line comparison, no author DELTA read"
+  },
+  "inherited_text_findings": {
+    "source_report": "/tmp/tianshu-g3-20261113/restore-b-contract-independent-v2-9413-20261114-tdirwihn/REPORT.md",
+    "source_sha256": "fe876e4466c6de738a4a448f89e894ab98373319ab7a054f2312f487e939def8",
+    "B-R1": "已修（文字层，精确继承）",
+    "B-R2": "已修（文字层，精确继承）",
+    "B-R3": "已修（文字层，精确继承）",
+    "B-R4": "已修（文字层，精确继承）",
+    "CAPACITY": "已修（文字层，精确继承）",
+    "re_reviewed": false,
+    "product_inference": false
+  },
+  "reviewed_findings": [
+    {
+      "id": "N1",
+      "classification": "已修（文字层）",
+      "lines": [
+        114,
+        115,
+        116,
+        135
+      ],
+      "satisfied": [
+        "affected-directory persistence after unlink/rmdir before upper deletion",
+        "stable P persistence after final S removal before aborted",
+        "all barriers and no-residual/identity checks required before aborted even across registry volume",
+        "flush failure/crash retains abort_intent",
+        "same CleanupPlan only for remaining/legal-reappeared nodes and redoing barriers",
+        "P barrier required even when S already absent",
+        "unsupported semantics returns durability_unavailable; no finalization",
+        "new failpoints explicitly NOT_RUN"
+      ],
+      "original_counterexample": "explicitly prohibited by new required order"
+    },
+    {
+      "id": "DOC1",
+      "classification": "已修（文字层）",
+      "lines": [
+        4
+      ],
+      "satisfied": [
+        "local main and cached origin/main distinguished",
+        "object/tree identity not treated as real-time remote or CI proof"
+      ],
+      "git_observations": [
+        {
+          "ref": "refs/heads/main",
+          "commit": "016910970d381a66ab12a94a5c88080a8cbf7437",
+          "tree": "810d5de91e279244559bc55c3e749ddefc0a3c2b",
+          "method": "local read-only ref/object lookup; no fetch/API/CI"
+        },
+        {
+          "ref": "refs/remotes/origin/main",
+          "commit": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+          "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+          "method": "local read-only ref/object lookup; no fetch/API/CI"
+        },
+        {
+          "ref": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+          "commit": "9413c7ca66af56fce8ac1664e989cf8cd6fc9808",
+          "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+          "method": "local read-only ref/object lookup; no fetch/API/CI"
+        },
+        {
+          "ref": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+          "commit": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+          "tree": "73558d71cbce08e8d5a86aa8fce26cd89f476d3b",
+          "method": "local read-only ref/object lookup; no fetch/API/CI"
+        }
+      ]
+    }
+  ],
+  "new_blockers": [],
+  "execution": {
+    "live_product": "NOT_RUN",
+    "tests": "NOT_RUN",
+    "B_acceptance": "NOT_RUN",
+    "old_43_and_10": "NOT_RUN",
+    "probes": "NOT_RUN",
+    "API_models_paid": "NOT_RUN",
+    "CI": "NOT_QUERIED",
+    "new_source_reads": false,
+    "repo_writes": false,
+    "input_writes": false,
+    "author_DELTA_self_read": false
+  },
+  "limits": [
+    "text readiness for pure docs(contract) PR only",
+    "not implementation authorization",
+    "not product/platform/restore-service acceptance",
+    "CI not used as B evidence",
+    "substantive landing changes require affected-delta review binding"
+  ]
+}

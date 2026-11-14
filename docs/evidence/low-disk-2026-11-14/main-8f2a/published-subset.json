@@ -1,0 +1,66 @@
+{
+  "kind": "EXPLICIT_MAIN_CI_PUBLIC_SUBSET",
+  "entries": {
+    "REPORT.md": {
+      "source": "/tmp/low-disk-main-8f2a-native-independent-20261114-iv_wwmfk/REPORT.md",
+      "sha256": "8b330c9d350ab097383a8c1c53fc7d266fa2cb2ed0dca9c1c4b0955cceca1a36",
+      "bytes": 7246
+    },
+    "facts.json": {
+      "source": "/tmp/low-disk-main-8f2a-native-independent-20261114-iv_wwmfk/facts.json",
+      "sha256": "fcc8be62d547163c99ee735a916faaa7e85bbd70de8482c98420fc8ae22dd814",
+      "bytes": 4101
+    },
+    "independent-index.json": {
+      "source": "/tmp/low-disk-main-8f2a-native-independent-20261114-iv_wwmfk/index.json",
+      "sha256": "bdfccadcffdfecad9d843a9ade73efc8e04c9eaf9ffe35b5072186840a287f70",
+      "bytes": 1892
+    },
+    "run-final.json": {
+      "source": "/tmp/tianshu-g3-20261113/low-disk-main-8f2a-native-ci/run-final.json",
+      "sha256": "4c07fab4edb543c0c4c80c894d5de324ab2b3bab81b6db4a08b8a31c79c7e826",
+      "bytes": 14464
+    },
+    "jobs-final.json": {
+      "source": "/tmp/tianshu-g3-20261113/low-disk-main-8f2a-native-ci/jobs-final.json",
+      "sha256": "73ac08ad081f9fafbfd1cedbfa828f0d9cda866eb1ae4ebfa3d5da6b46e6ef46",
+      "bytes": 24410
+    },
+    "artifacts-final.json": {
+      "source": "/tmp/tianshu-g3-20261113/low-disk-main-8f2a-native-ci/artifacts-final.json",
+      "sha256": "443414c128f9f51517ad2f990904653b2f8053476e51e98202762871c9a6ca10",
+      "bytes": 1776
+    },
+    "main-git-commit.json": {
+      "source": "/tmp/tianshu-g3-20261113/low-disk-main-8f2a-native-ci/head-git-commit.json",
+      "sha256": "c633740d1e93cf87621eecc6d4d8e4a475558ec5a6d3d9e62a6f566e1d70d010",
+      "bytes": 3981
+    },
+    "checks.json": {
+      "source": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/checks.json",
+      "sha256": "9de0a977f14d1e45804a2990133d3f7459b2ca9f8da02d1222d55e4115254616",
+      "bytes": 18556
+    },
+    "protection.json": {
+      "source": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/protection.json",
+      "sha256": "523290b37f7e102126f4f900174395a4fda64135613c4c3e8c5225ce6af7fe27",
+      "bytes": 1600
+    },
+    "main-ref.json": {
+      "source": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/main.json",
+      "sha256": "06ea93ba8c52839f863a9deaa69007b553b998074ca7912b0f70c1a12e9e8e4e",
+      "bytes": 342
+    },
+    "pr144.json": {
+      "source": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/pr144.json",
+      "sha256": "ffd6c44ed1e03ab73024c98489893dde77392393e7f9f28f094ab2a4997d2b26",
+      "bytes": 24710
+    },
+    "issue145.json": {
+      "source": "/tmp/tianshu-g3-20261113/main-8f2a-closeout-0ap253ev/issue145.json",
+      "sha256": "db076ae936482223d069b673ad8e38bb6dc18e26d8f5ef0ac29d768785b39e5d",
+      "bytes": 4251
+    }
+  },
+  "excluded": "Six full job logs, two ZIP artifacts, all polling snapshots, probes and remaining original reviewer inputs remain in the indexed ignored archive. This directory is not the complete raw evidence package."
+}

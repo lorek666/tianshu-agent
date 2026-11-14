@@ -1,0 +1,45 @@
+{
+  "artifacts": [
+    {
+      "id": 14098322729,
+      "node_id": "MDg6QXJ0aWZhY3QxNDA5ODMyMjcyOQ==",
+      "name": "windows-pytest-43555557537-1-1",
+      "size_in_bytes": 133349,
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/artifacts/14098322729",
+      "archive_download_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/artifacts/14098322729/zip",
+      "expired": false,
+      "digest": "sha256:2da4cda0ae666125e36fe041010405b225c23c9e43867243fc9b90ea878c9487",
+      "created_at": "2026-11-14T04:22:17Z",
+      "updated_at": "2026-11-14T04:22:17Z",
+      "expires_at": "2027-02-12T04:13:32Z",
+      "workflow_run": {
+        "id": 43555557537,
+        "repository_id": 1450220810,
+        "head_repository_id": 1450220810,
+        "head_branch": "main",
+        "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa"
+      }
+    },
+    {
+      "id": 14098252539,
+      "node_id": "MDg6QXJ0aWZhY3QxNDA5ODI1MjUzOQ==",
+      "name": "windows-pytest-43555557537-1-0",
+      "size_in_bytes": 130616,
+      "url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/artifacts/14098252539",
+      "archive_download_url": "https://api.github.com/repos/lorek666/tianshu-agent/actions/artifacts/14098252539/zip",
+      "expired": false,
+      "digest": "sha256:4b1f7b4d2cac5a962d6f4f8d580cf90284e7686c89341d7065fd01321297c164",
+      "created_at": "2026-11-14T04:27:14Z",
+      "updated_at": "2026-11-14T04:27:14Z",
+      "expires_at": "2027-02-12T04:13:32Z",
+      "workflow_run": {
+        "id": 43555557537,
+        "repository_id": 1450220810,
+        "head_repository_id": 1450220810,
+        "head_branch": "main",
+        "head_sha": "8f2a508e68f27efc4100b7466fcd79043341f7fa"
+      }
+    }
+  ],
+  "total_count": 2
+}

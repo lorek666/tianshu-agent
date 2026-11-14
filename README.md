@@ -263,7 +263,7 @@ uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root
 uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /absolute/backups/backup-1 --json
 ```
 
-备份包含 `events.db`、`artifacts/`、根 `blobs/` 与 `memory_blobs/`，不含工作区文件、IPC 密钥和日志。实际 EventLog 打开前检查版本与迁移进度；显式 `migrate` 只处理标准 `ROOT/events.db`，要求备份与升级前完整一致点绑定，支持严格续做。现有 0→2 只改变迁移机制，不代表全产品格式已冻结。`restore-plan` 检查通过退出 `3`，只报告条件与未决项；**不会恢复或激活旧记忆**。恢复隔离、实际恢复、容量保护与自动清理仍待后续交付。材料布局、协作锁边界与退出码见 [备份指南](docs/backup-restore.md)，本切片验证范围见 [数据准入记录](docs/DATA-ADMISSION-2026-11-13.md)。
+备份包含 `events.db`、`artifacts/`、根 `blobs/` 与 `memory_blobs/`，不含工作区文件、IPC 密钥和日志。实际 EventLog 打开前检查版本与迁移进度；显式 `migrate` 只处理标准 `ROOT/events.db`，要求备份与升级前完整一致点绑定，支持严格续做。现有 0→2 只改变迁移机制，不代表全产品格式已冻结。`restore-plan` 检查通过退出 `3`，只报告条件与未决项；**不会恢复或激活旧记忆**。恢复隔离与实际恢复按[受管导入契约](docs/restore-held-contract.md)推进，产品尚未实现；容量上限与自动清理仍待交付。低磁盘 Run 资格与执行门已随 PR #144 合入，证据及 issue #145 未修可靠性边界见[低磁盘记录](docs/LOW-DISK-2026-11-14.md)。材料布局、协作锁边界与退出码见 [备份指南](docs/backup-restore.md)，本切片验证范围见 [数据准入记录](docs/DATA-ADMISSION-2026-11-13.md)。
 
 **M5 起有两套落点，别混：**
 
