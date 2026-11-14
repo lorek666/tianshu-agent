@@ -3241,21 +3241,27 @@ class Stack:
 def _embedding_provider_from_env() -> object | None:
     """`TIANSHU_EMBEDDING_PROVIDER` → provider 实例。
 
-    目前只接受 `hash`（**确定性哈希基线，无语义能力**，只用于验证接线与离线
-    评测）。外部 embedding provider 需要额外的**数据外发许可**与配置（F10 §10），
-    代码里还没有接；未知名字直接报错，不静默降级成"没有 provider"。
+    `hash`：确定性哈希基线（无语义能力，只用于验证接线与离线评测）。
+    `openai`：外部 OpenAI 兼容端点（配置四件套见 `embedding_openai.from_env`）。
+    **外发边界**（SPEC-N2-EMBEDDING-PROVIDER §2.3）：外部 provider 的网络调用
+    只允许发生在人显式发起的控制面动作里；模型工具的检索路径被 `retrieve()`
+    的外发 gate（默认 False）挡住，永不外发。未知名字直接报错，不静默降级。
     """
     name = os.environ.get("TIANSHU_EMBEDDING_PROVIDER", "").strip()
     if not name:
         return None
-    if name != "hash":
-        raise TianshuError(
-            f"未知的向量 provider：{name!r}（当前只支持 hash 基线；"
-            "外部 provider 需要数据外发许可，尚未接线）"
-        )
-    from .memory_index import HashEmbeddingProvider
+    if name == "hash":
+        from .memory_index import HashEmbeddingProvider
 
-    return HashEmbeddingProvider()
+        return HashEmbeddingProvider()
+    if name == "openai":
+        from .embedding_openai import from_env
+
+        return from_env()
+    raise TianshuError(
+        f"未知的向量 provider：{name!r}（支持 hash 基线与 openai 兼容端点；"
+        "外部端点需要完整配置四件套，且只允许控制面动作触发外发）"
+    )
 
 
 def build_stack(

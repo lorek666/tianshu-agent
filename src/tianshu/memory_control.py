@@ -150,6 +150,9 @@ def search_memories(
         limit=effective,
         max_bytes=MAX_RECALL_BYTES,
         priority=None,
+        # 控制面显式动作（人在面板里敲检索词）：允许 embedding 外发（若配置了
+        # 外部 provider）——与 CLI search 同口径（W6 外发 gate）。
+        allow_embedding_outbound=True,
     )
     items: list[dict[str, Any]] = []
     for item in outcome.items:
