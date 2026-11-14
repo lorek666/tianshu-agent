@@ -1,0 +1,325 @@
+{
+  "controlled_injection": {
+    "normal_verifications": 1,
+    "injections": 1
+  },
+  "root_exists_during_call_report": true,
+  "old_exists_during_call_report": true,
+  "runs": [
+    [
+      "run_ab6940660d07",
+      "succeeded",
+      "succeeded",
+      "none_applied"
+    ]
+  ],
+  "events": [
+    {
+      "seq": 1,
+      "type": "task.created",
+      "payload": {
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 2,
+      "type": "run.start",
+      "payload": {
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 3,
+      "type": "job.enqueued",
+      "payload": {
+        "job_id": "job_e692533273df"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "job.claimed",
+      "payload": {
+        "claim_epoch": 1,
+        "job_id": "job_e692533273df",
+        "owner_pid": 72535
+      }
+    },
+    {
+      "seq": 5,
+      "type": "run.state",
+      "payload": {
+        "claim_epoch": 1,
+        "from": "created",
+        "reason": "resumed",
+        "to": "running"
+      }
+    },
+    {
+      "seq": 6,
+      "type": "model.intent",
+      "payload": {
+        "request_id": "req_run_ab6940660d07_1"
+      }
+    },
+    {
+      "seq": 7,
+      "type": "model.result",
+      "payload": {
+        "request_id": "req_run_ab6940660d07_1"
+      }
+    },
+    {
+      "seq": 8,
+      "type": "run.model_turn",
+      "payload": {
+        "claim_epoch": 1
+      }
+    },
+    {
+      "seq": 9,
+      "type": "run.cursor",
+      "payload": {
+        "claim_epoch": 1,
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 10,
+      "type": "approval.requested",
+      "payload": {
+        "action": "delete",
+        "approval_id": "appr_80cb0670c72c",
+        "reason": "删除需要审批",
+        "request_id": "req_21d1c77e0a7d",
+        "rule_id": "c4.delete"
+      }
+    },
+    {
+      "seq": 11,
+      "type": "dispatch.requested",
+      "payload": {
+        "action": "delete",
+        "approval_id": "appr_80cb0670c72c",
+        "decision": "approve",
+        "request_id": "req_21d1c77e0a7d",
+        "rule_id": "c4.delete"
+      }
+    },
+    {
+      "seq": 12,
+      "type": "run.cursor",
+      "payload": {
+        "claim_epoch": 1,
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 13,
+      "type": "run.state",
+      "payload": {
+        "claim_epoch": 1,
+        "from": "running",
+        "reason": "approval_pending",
+        "to": "waiting_approval"
+      }
+    },
+    {
+      "seq": 14,
+      "type": "job.parked",
+      "payload": {
+        "claim_epoch": 1,
+        "job_id": "job_e692533273df",
+        "owner_pid": 72535,
+        "reason": "waiting_approval"
+      }
+    },
+    {
+      "seq": 15,
+      "type": "approval.decided",
+      "payload": {
+        "approval_id": "appr_80cb0670c72c",
+        "decision": "approved"
+      }
+    },
+    {
+      "seq": 16,
+      "type": "job.claimed",
+      "payload": {
+        "claim_epoch": 2,
+        "job_id": "job_e692533273df",
+        "owner_pid": 72535
+      }
+    },
+    {
+      "seq": 17,
+      "type": "run.state",
+      "payload": {
+        "claim_epoch": 2,
+        "from": "waiting_approval",
+        "reason": "resumed",
+        "to": "running"
+      }
+    },
+    {
+      "seq": 18,
+      "type": "dispatch.requested",
+      "payload": {
+        "action": "delete",
+        "approval_id": "appr_80cb0670c72c",
+        "decision": "approve",
+        "request_id": "req_88f02abbe12e",
+        "rule_id": "c4.delete"
+      }
+    },
+    {
+      "seq": 19,
+      "type": "approval.consumed",
+      "payload": {
+        "approval_id": "appr_80cb0670c72c"
+      }
+    },
+    {
+      "seq": 20,
+      "type": "grant.issued",
+      "payload": {
+        "action": "delete",
+        "grant_id": "grant_9e64cc3a1a91"
+      }
+    },
+    {
+      "seq": 21,
+      "type": "grant.consumed",
+      "payload": {
+        "grant_id": "grant_9e64cc3a1a91"
+      }
+    },
+    {
+      "seq": 22,
+      "type": "tool.intent",
+      "payload": {
+        "approval_id": "appr_80cb0670c72c",
+        "call_id": "c1",
+        "claim_epoch": 2,
+        "dispatch_id": "disp_3c01761ffaab8686",
+        "grant_id": "grant_9e64cc3a1a91",
+        "request_id": "req_88f02abbe12e",
+        "tool_id": "delete_file"
+      }
+    },
+    {
+      "seq": 23,
+      "type": "dispatch.admitted",
+      "payload": {
+        "approval_id": "appr_80cb0670c72c",
+        "call_id": "c1",
+        "grant_id": "grant_9e64cc3a1a91",
+        "intent_seq": 22,
+        "request_id": "req_88f02abbe12e"
+      }
+    },
+    {
+      "seq": 24,
+      "type": "execution.started",
+      "payload": {
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 25,
+      "type": "dispatch.rejected",
+      "payload": {
+        "call_id": "c1",
+        "dispatch_id": "disp_3c01761ffaab8686",
+        "reason": "ToolNotAllowed: issue147 controlled refusal after normal verification",
+        "request_id": "req_88f02abbe12e",
+        "rule_id": "dispatch.not_admitted"
+      }
+    },
+    {
+      "seq": 26,
+      "type": "tool.result",
+      "payload": {
+        "call_id": "c1",
+        "effect_state": "none_applied",
+        "status": "rejected",
+        "tool_id": "delete_file",
+        "output": {
+          "error": "ToolNotAllowed: issue147 controlled refusal after normal verification",
+          "request_id": "req_88f02abbe12e",
+          "rule_id": "dispatch.not_admitted"
+        }
+      }
+    },
+    {
+      "seq": 27,
+      "type": "run.effect",
+      "payload": {
+        "effect_state": "none_applied"
+      }
+    },
+    {
+      "seq": 28,
+      "type": "run.cursor",
+      "payload": {
+        "claim_epoch": 2,
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 29,
+      "type": "model.intent",
+      "payload": {
+        "request_id": "req_run_ab6940660d07_2"
+      }
+    },
+    {
+      "seq": 30,
+      "type": "model.result",
+      "payload": {
+        "request_id": "req_run_ab6940660d07_2"
+      }
+    },
+    {
+      "seq": 31,
+      "type": "run.model_turn",
+      "payload": {
+        "claim_epoch": 2
+      }
+    },
+    {
+      "seq": 32,
+      "type": "run.cursor",
+      "payload": {
+        "claim_epoch": 2,
+        "lease_epoch": 1
+      }
+    },
+    {
+      "seq": 33,
+      "type": "job.finished",
+      "payload": {
+        "claim_epoch": 2,
+        "job_id": "job_e692533273df",
+        "outcome": "succeeded",
+        "owner_pid": 72535
+      }
+    },
+    {
+      "seq": 34,
+      "type": "run.end",
+      "payload": {
+        "effect_state": "none_applied",
+        "error": null,
+        "outcome": "noop"
+      }
+    },
+    {
+      "seq": 35,
+      "type": "run.finish",
+      "payload": {
+        "effect_state": "none_applied",
+        "outcome": "succeeded"
+      }
+    }
+  ]
+}

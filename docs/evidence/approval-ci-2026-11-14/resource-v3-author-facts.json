@@ -1,0 +1,16 @@
+{
+  "head": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "checked_files": 1080,
+  "changed_files": [
+    "tests/test_integration_m5.py"
+  ],
+  "changed_functions": [
+    "_note_approval_failure",
+    "test_approval_failure_diagnostics_keep_critical_fields"
+  ],
+  "before_sha256": "f198cef96da3a3d24e933151f6cf76e99dcb6644a91ab1e2ab26849775141ca4",
+  "final_sha256": "f138d6c13e3ed2966870626effed5488c776bfd66052c3a8800396b35203f01a",
+  "windows_root_cause": "NOT_ESTABLISHED",
+  "red": "1 failed, 1 passed in 0.12s; long_chain=True resource missing",
+  "scope": "two parameterized regressions, target Ruff, diff check only; no full, lock, broad Ruff, refusal replay, docs, commit or push"
+}

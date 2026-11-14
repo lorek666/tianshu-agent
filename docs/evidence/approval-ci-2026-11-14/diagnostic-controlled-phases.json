@@ -1,0 +1,20 @@
+[
+  {
+    "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+    "phase": "setup",
+    "failed": false,
+    "exception": null
+  },
+  {
+    "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+    "phase": "call",
+    "failed": true,
+    "exception": "AssertionError"
+  },
+  {
+    "nodeid": "tests/test_integration_m5.py::test_approval_is_decided_through_ipc_and_run_continues",
+    "phase": "teardown",
+    "failed": false,
+    "exception": null
+  }
+]

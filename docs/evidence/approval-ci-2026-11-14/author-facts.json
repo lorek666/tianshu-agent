@@ -1,0 +1,24 @@
+{
+  "head_before": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "head_after": "8f2a508e68f27efc4100b7466fcd79043341f7fa",
+  "status_after": "## codex/windows-approval-diagnostics...origin/main\n M tests/test_integration_m5.py\n",
+  "tracked_files_checked": 1066,
+  "changed_files": [
+    "tests/test_integration_m5.py"
+  ],
+  "original_assert_count": 13,
+  "original_assert_AST_preserved": true,
+  "original_try_body_AST_preserved": true,
+  "original_finally_AST_preserved": true,
+  "test_original_sha256": "90bacf76c02db4f77ee4092a3b76f01a839ad62c4a7f67d981d8744fc1746d9d",
+  "test_final_sha256": "fa9921084936dd0cb9374418e1cf9601a7c4789f5b54fae462baf275326c6fc7",
+  "controlled_reds": {
+    "baseline_call_failed": true,
+    "diagnostic_call_failed": true,
+    "setup_teardown_passed": true,
+    "same_original_assertion": "assert not (ws / \"old.txt\").exists()",
+    "normal_verify_then_one_ToolNotAllowed": true,
+    "not_windows_reproduction": true
+  },
+  "validation_scope": "author-only; full file and target ruff; not full suite, lock check, Windows, CI or independent approval"
+}
