@@ -3243,9 +3243,10 @@ def _embedding_provider_from_env() -> object | None:
 
     `hash`：确定性哈希基线（无语义能力，只用于验证接线与离线评测）。
     `openai`：外部 OpenAI 兼容端点（配置四件套见 `embedding_openai.from_env`）。
-    **外发边界**（SPEC-N2-EMBEDDING-PROVIDER §2.3）：外部 provider 的网络调用
-    只允许发生在人显式发起的控制面动作里；模型工具的检索路径被 `retrieve()`
-    的外发 gate（默认 False）挡住，永不外发。未知名字直接报错，不静默降级。
+    **外发边界**（SPEC-N2-EMBEDDING-PROVIDER §2.3）：检索路径的网络调用只允许
+    发生在人显式发起的控制面动作里；模型工具的检索被 `retrieve()` 的外发
+    gate（默认 False）挡住，永不外发。写入激活（记忆 apply 的 upsert→embed）
+    是 gate 之外的外发面，授权语义见 SPEC §2.3。未知名字直接报错，不静默降级。
     """
     name = os.environ.get("TIANSHU_EMBEDDING_PROVIDER", "").strip()
     if not name:
@@ -3260,7 +3261,7 @@ def _embedding_provider_from_env() -> object | None:
         return from_env()
     raise TianshuError(
         f"未知的向量 provider：{name!r}（支持 hash 基线与 openai 兼容端点；"
-        "外部端点需要完整配置四件套，且只允许控制面动作触发外发）"
+        "外部端点需要完整配置四件套，检索外发仅限控制面动作）"
     )
 
 

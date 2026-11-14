@@ -2144,7 +2144,9 @@ class MemoryProjection:
         外发 gate：`allow_embedding_outbound` 默认 **False**——模型工具的检索
         永不触发 embedding 的网络外发；只有人显式发起的控制面动作（CLI search /
         面板 RPC）才传 True。`sends_data_off_device=False` 的本机 provider
-        （如 hash 基线）不受此门影响。
+        （如 hash 基线）不受此门影响。本门只管**检索**：写入激活（confirm/edit/
+        remember apply 的向量 upsert）也会把正文送端点，外发授权来源是批准
+        该记忆动作的人（SPEC-N2 §2.3 边界表）。
         """
         self.ensure_schema()
         text = _require_str(query, "query", allow_empty=True)

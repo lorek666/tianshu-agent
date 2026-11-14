@@ -1351,9 +1351,11 @@ M1 补齐了"可查看"：控制面第 9 个记忆方法 `memory.search` + React
 字段**；正文纯文本；UI 不做乐观更新，冲突只刷新重读）。
 **仍不成立**：两段都是**脚本模型**，不是真实模型分数，也不是召回质量证明；内置
 embedding 只有 `HashEmbeddingProvider`（**无语义能力**）；外部 OpenAI 兼容 embedding
-provider 已接线（2026-11-14，W6）：环境变量四件套配置 + **外发 gate**——模型工具的
-检索永不外发（自动降级 FTS-only 并标注原因），网络调用只允许发生在人显式发起的
-控制面动作（rebuild / CLI search / 面板 RPC）；真 provider 的实测检索分数仍没有
+provider 已接线（2026-11-14，W6）：环境变量四件套配置 + **检索外发 gate**——模型工具的
+检索永不外发（自动降级 FTS-only 并标注原因），检索路径的网络调用只发生在人显式发起的
+控制面动作（rebuild / CLI search / 面板 RPC）；**写入激活**（confirm/edit/remember 的
+apply 向量 upsert）也会把记忆正文送端点，外发授权来源是批准该记忆动作的人
+（2026-11-15 复审补记，见 SPEC-N2 §2.3）；真 provider 的实测检索分数仍没有
 （需要真实端点凭据）；第二段没有并发、没有 daemon 重启、不超过两段；诱饵只覆盖
 `workspace` 作用域；
 记忆与委派的交叉（子任务里读记忆）没有评测；Windows 未验证。见 [memory-g2.md](memory-g2.md)

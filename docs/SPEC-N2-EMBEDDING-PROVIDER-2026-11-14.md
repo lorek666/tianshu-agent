@@ -17,8 +17,10 @@
 - 装配只认 hash：`loop.py:_embedding_provider_from_env()` 对其它名字直接报错
   「外部 provider 需要数据外发许可，尚未接线」；`build_stack(embedding_provider=)`
   注入点已在；`tianshu memory rebuild-vectors` 是唯一的显式构建入口（CLI）。
-- `retrieve()` 三个调用点：`loop.py:2288`（模型工具 `memory.search`）、
-  `memory_control.py:147`（面板 RPC）、`cli.py:1578`（CLI search）。
+- `retrieve()` 调用点：`loop.py:2288`（模型工具 `memory.search`）、
+  `memory_control.py:147`（面板 RPC）、`cli.py:1578`（CLI search）、
+  `scripts/eval_memory_scale.py`（离线评测，显式 True——复审轮修复：漏传会让
+  hybrid 行被 gate 静默降级成 FTS-only，产出假数字）。
   CLI 与主循环**共用同一个投影实例**——不能靠实例区分外发面，gate 必须落
   在调用点上。
 - 评测现状：`scripts/eval_memory_retrieval.py` 22 query / 25 记忆，
@@ -69,17 +71,21 @@
 | `rebuild-vectors` | **全部**记忆正文 | 人敲 CLI 命令（唯一入口） | 显式 env 配置 + 显式命令 = 双显式 |
 | 控制面检索（CLI search / 面板 RPC） | **query 文本** | 人在终端/UI 敲检索词 | 同上 |
 | **模型工具 `memory.search`** | （若无 gate：query 文本） | 模型决定 | **`retrieve()` 默认拒绝：不外发** |
+| 写入激活（confirm/edit/remember 的 apply → `_index_upsert`→embed） | **该条记忆正文** | 人批准的记忆动作（Run 内 confirm/edit 需人批；`user_explicit` 候选 confirm 免审批，但内容来自人的 promote） | 检索 gate **不覆盖**此面；外发授权 = 批准该记忆动作的人（复审轮 2026-11-15 补记；是否纳入同一 gate 见 §6 未决） |
 
 - 实现：`MemoryProjection.retrieve(..., allow_embedding_outbound: bool = False)`
   ——默认 **False**（安全默认，靠调用点显式打开）。`False` 且 provider
   `sends_data_off_device=True` → 不调 `index.search()`，走既有降级分支，
   `degraded` 原因写明「外部 embedding provider 的网络外发未被本次调用允许」。
-- 三个调用点：模型工具**不传**（恒 False）；面板 RPC 与 CLI search 传 True
-  （人显式动作，与 rebuild 同级）。
-- 一句话边界：**外部 embedding 的网络调用只发生在人显式发起的控制面动作里；
-  模型 Run 的检索永不触发外发**——这条是执行侧结构保证（调用点默认值），
-  不是提示词、不是黑名单。模型想要语义检索 → 将来把 embedding origin 纳入
-  `outbound_allow` 体系（W9 评估，本 SPEC 不做）。
+- 调用点口径：模型工具**不传**（恒 False）；面板 RPC、CLI search 与离线评测
+  传 True（人显式动作，与 rebuild 同级）。
+- 一句话边界：**检索路径的网络调用只发生在人显式发起的控制面动作里；模型
+  Run 的检索永不触发外发**——这条是执行侧结构保证（调用点默认值），
+  不是提示词、不是黑名单。**写入激活（confirm/edit/remember apply 的向量
+  upsert）是检索 gate 之外的外发面**：它发生在人批准的记忆动作里，授权
+  来源是批准者本人；不存在「模型自选内容、零审批」的外发路径（复审轮
+  2026-11-15 补记——初版边界表漏了整个写入面）。模型想要语义检索 → 将来
+  把 embedding origin 纳入 `outbound_allow` 体系（W9 评估，本 SPEC 不做）。
 - 与红线 4 的关系：授权（这里是外发许可）只在执行侧判定；模型工具路径的
   gate 不读模型输出、不接受工具参数控制，判据用端点请求计数钉死（§3 #6）。
 
@@ -107,7 +113,7 @@
 | 5 | hash 不受 gate 影响 | 模型工具路径 + hash provider → 语义路照常（hash 本机计算，不外发） |
 | 6 | **模型检索零外发** | 外部 provider + 可用索引 + 模型工具路径 → `semantic=False`、`degraded` 写明外发不允许、**端点请求计数 = 0** |
 | 7 | 控制面显式外发 | 同配置 CLI search → 语义路真的跑、端点恰好收到 `ceil(N/64)` 次请求 |
-| 8 | rebuild 即外发（显式） | `rebuild-vectors`（CLI）→ 全部正文发送、meta 写入 openai model_id、成功后 `availability()=True` |
+| 8 | rebuild 即外发（显式） | rebuild → 全部正文发送、meta 写入 openai model_id、成功后 `availability()=True`。口径注（复审轮）：测试直接驱动 `projection.rebuild_vectors()`（CLI 壳未在外部 provider 下端到端） |
 | 9 | 评测脚本小规模跑通 | fake provider 注入 + N=50 → `--json` 输出各 N×k 组合的 Recall/MRR，数字与手算一致 |
 | 10 | 既有全绿 | 全量门禁不变（conftest 已把限速钉 0；embedding 测试全部走 loopback 夹具） |
 
@@ -122,7 +128,8 @@
 ## 5. 文档对账
 
 - PRD §1351（「embedding 只有 Hash…」）与 §1397（「真 embedding provider
-  仍不成立」）：改为已交付 + 新边界（模型检索不外发、控制面显式外发）。
+  仍不成立」）：改为已交付 + 新边界（模型检索不外发、控制面显式外发；
+  复审轮 2026-11-15 补写入激活面）。
 - KNOWLEDGE §7 N2 行划线更新 + §8 会话日志。
 - `memory_index.py` docstring：协议描述补 `sends_data_off_device`。
 - 新 `docs/memory-scale-eval.md`：评测方法 + 实测数字 + 「不是语义能力证明」。
@@ -139,6 +146,20 @@
 - 代理/TLS 定制/批量 embedding 缓存：不做（显式配置端点足矣，缓存属于索引
   一致性话题）。
 - Windows：`http.client` 标准库跨平台；测试全走 loopback，CI 会实测。
+- **写入激活要不要纳入同一 gate**（复审轮登记）：写入外发的授权语义目前
+  是「批准该记忆动作的人」；若要与检索 gate 同口径（`allow_embedding_outbound`），
+  需要改 confirm/edit/remember 的 apply 行为——产品行为变更，不在本 PR 夹带，
+  另立工单裁决。
+- **`http://` 端点明文传密钥**（复审轮登记）：base_url 接受 http（Authorization
+  裸传）与任意主机（含内网）——该值只能由运营者经环境变量配置，不构成新增
+  攻击面；后果如实写明，非 loopback 的 http 是否告警另议。
+- **dispatcher `_fail_unknown` 不脱敏**（复审轮登记）：任何工具的失败串都会
+  原样进 tool.result 事件——本 PR 的 embedding 通道已在 `EmbeddingError`
+  构造期掩码（含密钥注册），但其他工具通道的同类风险是系统性话题，另议。
+- **控制面接线无端到端测试**（复审轮登记）：删掉 cli.py / memory_control.py
+  的 `allow_embedding_outbound=True` 现有测试不红（影响方向是「少外发」，
+  只造成外部 provider 下控制面检索静默 FTS-only 的功能回归）；补端到端用例
+  另议。
 
 ## 7. 高危判定
 
@@ -153,10 +174,16 @@
   **6 passed**（#5–#8 + 回滚 + 安全默认 + 评测脚本判据 #9）。记忆域全文件
   **252 passed**。closed 端口在本机表现为连接超时（与 W2 同一平台差异），
   network/timeout 断言按集合口径写。
+  **复审轮新增 3 条**（2026-11-15）：provider 错误串掩码（无形态 key 钉
+  注册路径）、评测 retrieve 显式外发参数、hybrid 降级拒印；定向合计
+  **14 + 8 passed**。
 - 负控三条实跑红还原：**NC1** 拆外发 gate（判定恒 True）→ 零外发/安全默认
-  2 红；**NC2** 拆 dim 校验 → 维度不符测试 1 红（变异把 `if` 块拆坏过一次，
-  语法错误不是有效负控，修正为 `pass` 后红）；**NC3** 拆脚本 hybrid 的
-  rebuild → 评测判据 1 红（MRR 差异消失即红——固定 seed 的 0.767 vs 0.975）。
+  2 红；**NC2** 拆 dim 校验 → 维度不符测试 **2 红**（复审独立复现；变异把
+  `if` 块拆坏过一次，语法错误不是有效负控，修正为 `pass` 后红）；**NC3** 拆
+  脚本 hybrid 的 rebuild → 评测判据 1 红（MRR 差异消失即红——固定 seed 的
+  0.767 vs 0.975）。**复审追加变异**：安全默认翻转（`getattr` 缺省
+  True→False）在修复前 **19 条全绿（没牙）**——根因是「安全默认」测试误用
+  `setattr` 赋属性而非剥属性；修复后该变异即红。
 - 千条级评测（`--json` 实跑）：N=1000 FTS-only Recall@5 **0.650**
   （lexical 0.4 / mixed 0.9），hybrid-hash **1.000**；k∈{30,60,100} MRR
   逐位相同（不敏感）。完整表与读法见 [memory-scale-eval.md](memory-scale-eval.md)。

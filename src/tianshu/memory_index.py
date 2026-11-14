@@ -19,8 +19,9 @@
 - 外部 provider（`embedding_openai.OpenAICompatibleEmbeddingProvider`）需要
   用户显式配置环境变量四件套才装配；**外发 gate**：`retrieve()` 默认不允许
   外发——模型工具的检索永不触发端点请求（自动降级 FTS-only 并如实标注），
-  网络调用只允许发生在人显式发起的控制面动作里（rebuild / CLI search /
-  面板 RPC，见 SPEC-N2-EMBEDDING-PROVIDER §2.3）。
+  检索路径的网络调用只发生在人显式发起的控制面动作里（rebuild / CLI search /
+  面板 RPC）；**写入激活**（confirm/edit/remember apply 的 upsert→embed）
+  不在检索 gate 内，外发授权语义见 SPEC-N2-EMBEDDING-PROVIDER §2.3 边界表。
 
 ## 不混空间
 
