@@ -48,6 +48,8 @@ export interface BudgetView {
   outputTokens: number;
   /** 没有可用 usage 的 `model.result` 次数（用量未知，不当 0）。 */
   unknownUsageAttempts: number;
+  /** usage 显式可读的 `model.result` 次数（含 {0,0}——「有记录」与「>0」分开，复审 P3）。 */
+  explicitUsageResults: number;
   /** 费用（已知/未知分列，复用 summarizeCost 口径）。 */
   cost: CostSummary;
   /** 预算/委派限额的拒绝记录（C4 编号封闭集内），按 seq 升序。 */
@@ -69,8 +71,8 @@ function readRunLimits(event: EventView): RunLimitView | null {
 /** 一条 `model.result` 的 usage 是否给出了可用 token 数。 */
 function hasExplicitUsage(event: EventView): boolean {
   const payload = asRecord(event?.payload);
+  // asRecord 对缺失/非记录返回 {}（永不 null）；可读出任一 token 数才算显式用量。
   const usage = asRecord(payload.usage);
-  if (usage === null) return false;
   return readNumber(usage, "input_tokens", "inputTokens") !== null ||
     readNumber(usage, "output_tokens", "outputTokens") !== null;
 }
@@ -88,6 +90,7 @@ export function buildBudgetView(events: EventView[]): BudgetView | null {
     inputTokens: 0,
     outputTokens: 0,
     unknownUsageAttempts: 0,
+    explicitUsageResults: 0,
     cost: { totalMicros: 0, knownCalls: 0, unknownCalls: 0, calls: 0 },
     refusals: [],
   };
@@ -107,6 +110,8 @@ export function buildBudgetView(events: EventView[]): BudgetView | null {
     if (type === "model.result") {
       view.results += 1;
       if (hasExplicitUsage(event)) {
+        // 显式用量（含 {0,0}）：是「有记录」，与「数值 >0」分开——复审 P3。
+        view.explicitUsageResults += 1;
         const usage = asRecord(asRecord(event?.payload).usage);
         const input = readNumber(usage, "input_tokens", "inputTokens");
         const output = readNumber(usage, "output_tokens", "outputTokens");

@@ -23,10 +23,13 @@ function event(
   };
 }
 
-function run(runId: string, state: string): RunView {
+function run(runId: string, state: string, taskId: string = "task_parent"): RunView {
   return {
     run_id: runId,
-    task_id: "task_parent",
+    /* 子 Run 的 task_id 是子 Task id（tasks.py 的 _insert_run_locked 用子任务
+       建_run）——夹具如实造形（复审 P1：旧夹具伪造父 task_id 掩盖了 App 层
+       传父任务过滤 runs 导致子运行回填不可达的缺陷）。 */
+    task_id: taskId,
     state,
     outcome: null,
     effect_state: "none_applied",
@@ -106,6 +109,21 @@ describe("预算面板渲染", () => {
     );
     expect(html).toBe("");
   });
+
+  it("显式 usage {0,0} 是「有记录」：显示已知 0 而非无记录（复审 P3）", () => {
+    const html = renderToStaticMarkup(
+      <BudgetPanel
+        events={[
+          event("model.result", { cost: 0, usage: { input_tokens: 0, output_tokens: 0 } }, 1),
+        ]}
+      />,
+    );
+    // 精确钉住 Token 格的渲染（「用量未知」是常驻副标题子串，不能整页 not.toContain）。
+    expect(html).toContain(
+      '<span class="summary-label">Token</span><strong class="num">0</strong>',
+    );
+    expect(html).not.toContain("无记录");
+  });
 });
 
 describe("子任务面板渲染", () => {
@@ -113,7 +131,7 @@ describe("子任务面板渲染", () => {
     const html = renderToStaticMarkup(
       <SubtaskPanel
         events={[event("subtask.spawned", SPAWNED, 1)]}
-        runs={[run("run_child_1", "running")]}
+        runs={[run("run_child_1", "running", "task_child_1")]}
       />,
     );
     expect(html).toContain("子任务");
@@ -136,7 +154,7 @@ describe("子任务面板渲染", () => {
             2,
           ),
         ]}
-        runs={[run("run_child_1", "failed")]}
+        runs={[run("run_child_1", "failed", "task_child_1")]}
       />,
     );
     expect(html).toContain("失败");

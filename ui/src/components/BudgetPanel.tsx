@@ -23,7 +23,9 @@ export function BudgetPanel({ events }: { events: EventView[] }) {
 
 export function BudgetPanelView({ view }: { view: BudgetView }) {
   const totalTokens =
-    view.inputTokens + view.outputTokens > 0 || view.unknownUsageAttempts > 0
+    view.inputTokens + view.outputTokens > 0 ||
+    view.unknownUsageAttempts > 0 ||
+    view.explicitUsageResults > 0
       ? { known: view.inputTokens + view.outputTokens, unknown: view.unknownUsageAttempts }
       : null;
   return (
@@ -50,8 +52,9 @@ export function BudgetPanelView({ view }: { view: BudgetView }) {
           <strong className="num">
             {totalTokens === null
               ? "无记录"
-              : totalTokens.known > 0
-                ? formatInt(totalTokens.known)
+              : totalTokens.known > 0 || totalTokens.unknown === 0
+                ? /* 显式 {0,0} 是「有记录且已知 0」，与「用量未知」分开（复审 P3） */
+                  formatInt(totalTokens.known)
                 : "用量未知"}
           </strong>
         </div>

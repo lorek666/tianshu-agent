@@ -799,6 +799,7 @@ export function App() {
 
   const tasks = state?.tasks ?? [];
   const approvals = state?.approvals ?? [];
+  const allRuns = state?.runs ?? [];
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? null;
   const taskRuns = useMemo(
     () => (selectedTask === null || state === null ? [] : runsForTask(state, selectedTask.task_id)),
@@ -926,7 +927,9 @@ export function App() {
               task={selectedTask}
               entries={timelineEntries}
               events={timeline}
-              runs={taskRuns}
+              /* 子 Run 的 task_id 是子 Task id（不在父任务的 taskRuns 里）——
+                 子运行状态回填需要全量 runs（SPEC §2.3 的原设计；复审 P1 修复）。 */
+              runs={allRuns}
               hasMore={timelineHasMore}
               cost={costSummary}
               streamStatus={streamStatus}
