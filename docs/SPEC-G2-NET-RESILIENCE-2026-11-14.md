@@ -128,3 +128,24 @@
 - 测试基建：conftest 增 autouse 夹具把 `TIANSHU_NET_MIN_INTERVAL_S` 钉 0
   （限速是进程级状态，不钉会让全套测试互相等待）；限速判据显式 setenv 打开。
 - 全量与 CI 绑定对应 PR SHA，不在本文重复记录。
+
+## 9. CI 首轮红与修复（2026-11-14，随修复提交补记）
+
+- CI 首轮：ubuntu / windows-shard1 / UI 绿；**macOS、windows-shard0 红**，
+  全部集中在 RU-W1 断网评测（`network_failed_honestly`：期望
+  `net.connect*`，实测 `net.timeout`）；本机全量 3209 passed 绿——flaky 竞态。
+- **根因**：closed 端口的第一次连接尝试等满 socket 超时（= 整次 deadline，
+  实测 10.00s）；重试的第二次尝试开头 `_remaining(deadline)` 在 deadline
+  已尽时抛 `net.timeout`——把「连接阶段失败、0 字节已知」顶成「连接建立
+  后的失败、用量未知」，失败分类与字节账本口径一起错档。本机侥幸绿是因为
+  第二次尝试的 `_remaining` 与 socket 超时毫秒级竞争赢了（elapsed=10.00s
+  仍报 connect_timeout）；CI 调度稍异就输。
+- **修复**：重试循环在进入下一次尝试前检查 deadline——已烧尽则重抛最后一次
+  连接失败的**原始错误**（`last_connect_error`），不再进 `_fetch_once`。
+  语义：deadline 是总预算，用尽即尝试用尽，最终失败 = 最后一次真实尝试的
+  原始分类；假重试（0 预算的第二次尝试）一并消失。
+- 判据：`test_deadline_exhausted_keeps_connect_classification`（fake conn
+  烧满 deadline + `sleep(+0.1s)` **确定性**触发，calls==1、reason==
+  `net.connect_timeout`）；负控：拆掉 deadline 检查 → 该测试红（还原后绿）。
+- 教训追加到 NC 清单：**重试机器自己抛的超时不得覆盖被重试动作的原始分类**；
+  且「本机绿」不排除毫秒竞态——CI 红才是竞态的如实暴露。
