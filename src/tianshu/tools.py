@@ -1116,14 +1116,17 @@ SPECS: dict[str, ToolSpec] = {
 
     "subtask.spawn": ToolSpec(
         tool_id="subtask.spawn",
-        version="1.0",
+        version="2.0",
         description=(
-            "派生一个**只读**子任务并排队。subtask_id 是父作用域内的稳定 slug"
-            "（字母数字与 _.:-），goal ≤ 2 KiB。子任务只能做纯读：写文件/出网/"
-            "执行命令/调用 MCP/再委派一律被拒，不会弹嵌套审批。"
+            "派生一个子任务并排队。subtask_id 是父作用域内的稳定 slug"
+            "（字母数字与 _.:-），goal ≤ 2 KiB。默认只读（write 缺省 false）："
+            "子任务只能做纯读，写文件/出网/执行命令/调用 MCP/再委派一律被拒。"
+            "write=true 显式声明文件写：子任务只在父任务自己可写的目录里获得"
+            "写权限（父只读的目录仍然只读），出网/MCP/执行命令/记忆写入/再委派"
+            "依旧被拒；子任务里的每一次写动作仍走既有审批，需人工逐次批准。"
             "max_turns 1–8（默认 8）、max_tokens 256–8000（默认 2000），"
             "越界拒绝、不夹取。任务必须先用 --max-subtasks 声明委派能力，"
-            "且必须人工批准。批准后子任务状态是 queued——本版本只排队，不执行。"
+            "且 spawn 必须人工批准。批准后子任务状态是 queued，由 worker 执行。"
         ),
         input_schema={
             "type": "object",
@@ -1135,6 +1138,10 @@ SPECS: dict[str, ToolSpec] = {
                     "pattern": "^[A-Za-z0-9_.:-]+$",
                 },
                 "goal": {"type": "string", "minLength": 1, "maxLength": 2048},
+                # W10：写声明。false/缺省 = 旧行为（全只读）；true 只放开
+                # "父任务自己可写的绑定目录内的文件写"，且子 Run 每个写动作
+                # 仍要人工批准。不是授权升级：上限恒为父绑定。
+                "write": {"type": "boolean"},
                 # 范围**不写进 schema**：越界必须由派发层给出
                 # `dispatch.subtask_limit`（D1-c6），而不是在准入阶段变成
                 # "参数不合法"——用户需要知道"被限额拒绝"这件事。
