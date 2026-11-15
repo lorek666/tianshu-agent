@@ -81,13 +81,16 @@ class Scheduler:
 仿 `data_cli.py` 先例（独立模块 `add_parser` + `run`，cli.py 注册/分发各一处）：
 
 ```
-tianshu schedule create --goal TEXT --workspace PATH [--workspace mode=ro:PATH ...]
+tianshu schedule create --goal TEXT --workspace PATH [--readonly PATH ...]
                         --interval-seconds N [--allow-exec-cmd PATH ...]
-                        [--require-isolation BOUNDARY ...] [--data-root DIR] [--json]
-tianshu schedule list   [--data-root DIR] [--json]
-tianshu schedule show SCHEDULE_ID [--data-root DIR] [--json]
-tianshu schedule enable SCHEDULE_ID  / disable SCHEDULE_ID / remove SCHEDULE_ID [--data-root DIR]
+                        [--require-isolation BOUNDARY ...] [--db PATH] [--json]
+tianshu schedule list   [--db PATH] [--json]
+tianshu schedule show SCHEDULE_ID [--db PATH] [--json]
+tianshu schedule enable SCHEDULE_ID  / disable SCHEDULE_ID / remove SCHEDULE_ID [--db PATH]
 ```
+
+（修正说明：管理面只读写事件库里的 schedules 表，不需要 authority 数据根，
+故没有 `--data-root`；与 `task` 子命令一致只有 `--db`，默认 `.tianshu/events.db`。）
 
 - 语义与 `task create` / `run --task --workspace` 同口径：`--allow-exec-cmd` 绝对路径列表（布尔拒绝）、`--require-isolation` 必须伴随 `--allow-exec-cmd`（control.py `_exec_policy` 的同一规则，就地复刻并注明来源）。
 - CLI 直接开 `EventLog(root/"events.db", blob_dir=root/"artifacts"/"blobs")` 构造 Scheduler 操作，用完关闭。daemon 运行中亦可管理（WAL 下短写事务并发安全，与审批落定同性质）。
