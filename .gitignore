@@ -38,3 +38,7 @@ target/
 !docs/evidence/windows-ci-timing-2026-11-14/**/*.log
 crash-*.txt
 data/
+
+# 版本化 schema 是源码，不是运行时数据。
+!schemas/data/
+!schemas/data/restore-v1.json

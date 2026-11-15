@@ -7,11 +7,17 @@
 负控（PRD 要求"把采样写空 / 谎填 0 必须红"）对应两条锚点：
 - `test_unknown_is_null_not_zero`：unknown 被写成 0 就红；
 - `test_startup_ready_ms_is_positive`：真实启动耗时被写 0 就红。
+
+轮转（2026-11-14，SPEC-METRICS-ROTATION）另有三条负控锚点：
+- `test_rotation_splits_file_at_threshold`：拆掉"超阈值先轮转"就红（NC1）；
+- `test_rotation_failure_keeps_the_sample`：轮转失败丢弃样本就红（NC2）；
+- `test_rotation_emits_observable_event_without_recursion`：摘掉事件级联抑制就红（NC3）。
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import tempfile
@@ -435,3 +441,305 @@ def test_read_metrics_still_rejects_corrupt_complete_line(root: Path) -> None:
     path.write_bytes(b'{"metric": "a"}\nnot-json\n')
     with pytest.raises(ValueError, match="第 2 行"):
         metrics_mod.read_metrics(path)
+
+
+# --------------------------------------------------------------------------- 轮转与保留
+
+
+def test_rotation_splits_file_at_threshold(root: Path) -> None:
+    """超阈值先轮转再追加：当前文件重新开始，旧内容进 `.1`，无丢失、按时间序。"""
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=600, max_rotated_files=50
+    )
+    for seq in range(12):
+        recorder.record("m", 1.0, seq=seq)
+    recorder.close()
+
+    # 12 行 ≈ 1KB > 600B：必然至少一次轮转；保留份数足够大，不该有样本被覆盖丢掉。
+    slots = [slot for slot, _ in metrics_mod.list_metrics_files(root)]
+    rotated = [slot for slot in slots if slot is not None]
+    assert rotated, "超过阈值没有轮转（负控锚点：拆掉大小检查这条就红）"
+    assert rotated == list(range(len(rotated), 0, -1)), (
+        f"轮转槽位应连续且最新在前：{rotated}"
+    )
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    samples = [r for r in records if r["metric"] == "m"]
+    assert [r["seq"] for r in samples] == list(range(12)), "轮转不得丢失或重排样本"
+    notes = [r for r in records if r["metric"] == metrics_mod.METRICS_ROTATED]
+    assert notes, "轮转必须在指标流里可观测"
+    for note in notes:
+        assert note["kind"] == "event"
+        assert note["max_file_bytes"] == 600
+        assert note["value"] is not None and note["value"] > 0
+    # 轮转后的数据根条目仍全部以 metrics.jsonl 为前缀（D7 本地边界不因轮转放宽）
+    entries = [entry.name for entry in root.iterdir()]
+    assert all(
+        name.startswith(metrics_mod.METRICS_FILENAME) for name in entries
+    ), f"数据根出现了非指标文件：{entries}"
+
+
+def _json_line_of_exact_len(total: int) -> bytes:
+    """造一条**恰好 total 字节**的合法 JSONL 指标行（含换行）——阈值边界测试用。"""
+    base = {"kind": "probe", "metric": "", "ts": 1, "value": 1}
+    skeleton = json.dumps(base, sort_keys=True, separators=(",", ":")).encode()
+    pad = total - 1 - len(skeleton)  # 减去换行
+    assert pad >= 0, f"total 太小：{total}"
+    obj = {**base, "metric": "x" * pad}
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def test_rotation_threshold_boundary_is_inclusive(root: Path) -> None:
+    """复审 P2：阈值边界是 >=（恰好等于阈值也轮转）——独一钉等号的测试。
+
+    复审变异（>= → >）下既有 22 条全绿；这条垫出「恰好等于阈值」的文件后，
+    同一变异当场红（< 100 字节侧同时钉住不过度轮转）。
+    """
+    target = metrics_mod.metrics_path(root)
+    # 臂 A：文件恰好 100 字节（== 阈值）→ 下一次追加必须轮转。
+    target.write_bytes(_json_line_of_exact_len(100))
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=100, max_rotated_files=50
+    )
+    try:
+        recorder.record("probe", 1.0)
+        assert (root / "metrics.jsonl.1").exists(), (
+            "恰好等于阈值时没有轮转——阈值语义被改成了严格大于"
+        )
+    finally:
+        recorder.close()
+
+    # 臂 B：文件 99 字节（< 阈值）→ 追加不轮转（不过度轮转侧）。
+    root2 = root / "b"
+    root2.mkdir()
+    target2 = metrics_mod.metrics_path(root2)
+    target2.write_bytes(_json_line_of_exact_len(99))
+    recorder2 = metrics_mod.MetricsRecorder(
+        root2, max_file_bytes=100, max_rotated_files=50
+    )
+    try:
+        recorder2.record("probe", 1.0)
+        assert not (root2 / "metrics.jsonl.1").exists(), (
+            "低于阈值却轮转了——阈值语义被改成了更激进的方向"
+        )
+    finally:
+        recorder2.close()
+
+
+def test_fullwidth_digit_suffix_is_not_a_rotation_slot(root: Path) -> None:
+    """复审 P3：全角数字后缀（如「metrics.jsonl.１」）不是轮转槽。
+
+    isdigit() 对全角字符返回 True 且 int() 恰好解析，会把不存在的 .1 槽接进
+    清单、与真实 .1 同槽位重复（include_rotated 把真实文件读两遍）。只认
+    ASCII 数字。
+    """
+    target = metrics_mod.metrics_path(root)
+    real = metrics_mod.rotated_path(target, 1)
+    real.write_text('{"metric":"real","value":1}\n', encoding="utf-8")
+    weird = target.with_name(target.name + "\uff11")  # 全角「１」
+    weird.write_text('{"metric":"weird","value":1}\n', encoding="utf-8")
+
+    files = metrics_mod.list_metrics_files(target)
+    slot_one = [file_path for slot, file_path in files if slot == 1]
+    assert len(slot_one) == 1, f"槽位 1 应只有一个条目：{[(s, str(p)) for s, p in files]}"
+    assert slot_one[0] == real
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    names = [r["metric"] for r in records]
+    assert names.count("real") == 1, f"真实槽位被读了 {names.count('real')} 遍"
+    assert "weird" not in names
+
+
+def test_read_metrics_limit_zero_keeps_historic_semantics(root: Path) -> None:
+    """复审 P3：limit=0 的历史语义如实钉住（[-0:] = 全部）。
+
+    这是拼接路径继承的基线行为（非本 PR 引入）；改成语义化「0 条」属另一
+    工单——本测试防止有人「顺手改掉」而不知调用方依赖。
+    """
+    target = metrics_mod.metrics_path(root)
+    target.write_text(
+        '{"metric":"m","value":1}\n{"metric":"m","value":2}\n',
+        encoding="utf-8",
+    )
+    assert len(metrics_mod.read_metrics(target, limit=0)) == 2
+    # 负数走同一分支豁免：同样返回全部。
+    assert len(metrics_mod.read_metrics(target, limit=-1)) == 2
+    assert len(metrics_mod.read_metrics(target, limit=1)) == 1
+
+
+def test_retention_overwrites_oldest_slot(root: Path) -> None:
+    """保留上界：槽位不超过 max_rotated_files，最旧样本被链式覆盖而不是无限堆积。"""
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=600, max_rotated_files=2
+    )
+    for seq in range(30):
+        recorder.record("m", 1.0, seq=seq)
+    recorder.close()
+
+    slots = [slot for slot, _ in metrics_mod.list_metrics_files(root) if slot is not None]
+    assert slots and max(slots) <= 2, f"槽位超出保留上界：{slots}"
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    seqs = [r["seq"] for r in records if r["metric"] == "m"]
+    # 30 行 ≥ 3 次轮转：最早一份（槽位 2 被覆盖）一定被换出。
+    assert seqs and seqs == sorted(seqs), f"保留内容必须仍按时间序：{seqs}"
+    assert seqs[0] >= 1, f"最旧样本未被覆盖，保留策略没生效：{seqs[:5]}"
+    assert len(seqs) < 30, "保留策略没有丢弃任何旧数据"
+
+
+def test_rotation_failure_keeps_the_sample(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """轮转失败降级为继续追加当前文件：**样本不丢**优先于**文件不超限**。
+
+    Windows 上读者持句柄会让 `os.replace` 拿到 PermissionError——注入同一失败
+    （确定性替身），断言样本照常落盘、失败计数可见、恢复后下一轮继续轮转。
+    """
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=60, max_rotated_files=4
+    )
+
+    def _boom(src, dst):  # noqa: ANN001 - 签名与 os.replace 一致
+        raise PermissionError(13, "模拟读者持句柄")
+
+    monkeypatch.setattr(metrics_mod.os, "replace", _boom)
+    for seq in range(3):
+        recorder.record("m", 1.0, seq=seq)
+    assert recorder.rotation_errors >= 1, "轮转失败没有被计数"
+
+    monkeypatch.undo()
+    recorder.record("m", 1.0, seq=3)
+    recorder.close()
+
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    seqs = [r["seq"] for r in records if r["metric"] == "m"]
+    assert seqs == [0, 1, 2, 3], f"轮转失败期间样本被丢弃了：{seqs}"
+    slots = [slot for slot, _ in metrics_mod.list_metrics_files(root) if slot is not None]
+    assert slots, "失败恢复后没有继续轮转"
+
+
+def test_rotation_emits_observable_event_without_recursion(root: Path) -> None:
+    """阈值小于一行：每次追加都轮转。事件不得级联事件，否则无限递归。
+
+    轮转事件的追加自身也会触发轮转，但不得再产生新事件——这是 `_append` 里
+    `record.get("metric") != METRICS_ROTATED` 抑制点的负控锚点（NC3）。
+    """
+    recorder = metrics_mod.MetricsRecorder(
+        root, max_file_bytes=10, max_rotated_files=50
+    )
+    for seq in range(3):
+        recorder.record("m", 1.0, seq=seq)
+    recorder.close()
+
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    samples = [r for r in records if r["metric"] == "m"]
+    assert [r["seq"] for r in samples] == [0, 1, 2]
+    notes = [r for r in records if r["metric"] == metrics_mod.METRICS_ROTATED]
+    assert notes, "轮转事件完全不可观测"
+    assert len(notes) <= len(samples), (
+        f"轮转事件发生了级联（{len(notes)} 条事件 > {len(samples)} 次普通追加）"
+    )
+
+
+def test_include_rotated_reads_chronologically(root: Path) -> None:
+    """`include_rotated=True` 按时间序（最旧在前）拼接：`.2 → .1 → base`。"""
+    base = metrics_mod.metrics_path(root)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    metrics_mod.rotated_path(base, 1).write_bytes(
+        b'{"metric":"m","seq":10}\n{"metric":"m","seq":11}\n'
+    )
+    metrics_mod.rotated_path(base, 2).write_bytes(b'{"metric":"m","seq":0}\n')
+    base.write_bytes(b'{"metric":"m","seq":12}\n')
+
+    records = metrics_mod.read_metrics(root, include_rotated=True)
+    assert [r["seq"] for r in records] == [0, 10, 11, 12]
+    assert [r["seq"] for r in metrics_mod.read_metrics(root)] == [12], (
+        "默认行为必须是只读当前文件（既有调用方零迁移）"
+    )
+    limited = metrics_mod.read_metrics(root, include_rotated=True, limit=2)
+    assert [r["seq"] for r in limited] == [11, 12], "limit 应作用于拼接后的全序列"
+
+
+def test_list_metrics_files_orders_and_ignores_foreign_suffix(root: Path) -> None:
+    """清单只收纯数字槽位；非数字后缀与目录不进清单；空洞槽位按存在序。"""
+    base = metrics_mod.metrics_path(root)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    metrics_mod.rotated_path(base, 1).write_bytes(b'{"metric":"a"}\n')
+    metrics_mod.rotated_path(base, 3).write_bytes(b'{"metric":"c"}\n')
+    (base.parent / "metrics.jsonl.tmp").write_bytes(b"{}\n")
+    (base.parent / "metrics.jsonl.backup").write_bytes(b"{}\n")
+    (base.parent / "metrics.jsonl.5").mkdir()
+
+    # 当前文件还不存在：清单里没有槽位 None 的条目，轮转件照常列出（异常但可用）。
+    assert [(slot, path.name) for slot, path in metrics_mod.list_metrics_files(root)] == [
+        (3, "metrics.jsonl.3"),
+        (1, "metrics.jsonl.1"),
+    ]
+
+    base.write_bytes(b'{"metric":"b"}\n')
+    files = metrics_mod.list_metrics_files(root)
+    assert [(slot, path.name) for slot, path in files] == [
+        (3, "metrics.jsonl.3"),
+        (1, "metrics.jsonl.1"),
+        (None, "metrics.jsonl"),
+    ]
+
+
+def test_rotation_params_validation(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """构造侧 fail fast（负值 ValueError）；env 侧沿用模块容错：非法/负值回落默认。"""
+    with pytest.raises(ValueError):
+        metrics_mod.MetricsRecorder(root, max_file_bytes=-1)
+    with pytest.raises(ValueError):
+        metrics_mod.MetricsRecorder(root, max_rotated_files=0)
+
+    recorder = metrics_mod.MetricsRecorder(root)
+    assert recorder.max_file_bytes == metrics_mod.DEFAULT_MAX_FILE_BYTES
+    assert recorder.max_rotated_files == metrics_mod.DEFAULT_MAX_ROTATED_FILES
+    recorder.close()
+
+    monkeypatch.setenv(metrics_mod.ENV_METRICS_MAX_FILE_BYTES, "-5")
+    monkeypatch.setenv(metrics_mod.ENV_METRICS_MAX_ROTATED_FILES, "not-a-number")
+    tolerant = metrics_mod.MetricsRecorder(root)
+    assert tolerant.max_file_bytes == metrics_mod.DEFAULT_MAX_FILE_BYTES
+    assert tolerant.max_rotated_files == metrics_mod.DEFAULT_MAX_ROTATED_FILES
+    tolerant.close()
+
+    monkeypatch.setenv(metrics_mod.ENV_METRICS_MAX_FILE_BYTES, "4096")
+    monkeypatch.setenv(metrics_mod.ENV_METRICS_MAX_ROTATED_FILES, "2")
+    configured = metrics_mod.MetricsRecorder(root)
+    assert configured.max_file_bytes == 4096
+    assert configured.max_rotated_files == 2
+    configured.close()
+
+
+def test_zero_disables_rotation(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """逃生门：`max_file_bytes=0`（构造或 env）显式禁用轮转，行为可断言。"""
+    manual_root = root / "manual"
+    manual = metrics_mod.MetricsRecorder(manual_root, max_file_bytes=0)
+    assert manual.max_file_bytes == 0
+    for seq in range(8):
+        manual.record("m", 1.0, seq=seq)
+    manual.close()
+
+    monkeypatch.setenv(metrics_mod.ENV_METRICS_MAX_FILE_BYTES, "0")
+    via_env_root = root / "via-env"
+    via_env = metrics_mod.MetricsRecorder(via_env_root)
+    assert via_env.max_file_bytes == 0
+    for seq in range(8):
+        via_env.record("m", 1.0, seq=seq)
+    via_env.close()
+
+    for data_root in (manual_root, via_env_root):
+        slots = [
+            slot
+            for slot, _ in metrics_mod.list_metrics_files(data_root)
+            if slot is not None
+        ]
+        assert slots == [], f"禁用轮转后仍产生了轮转件：{data_root}"
+        seqs = [
+            r["seq"]
+            for r in metrics_mod.read_metrics(data_root)
+            if r["metric"] == "m"
+        ]
+        assert seqs == list(range(8)), f"禁用轮转后样本丢失：{data_root}"
