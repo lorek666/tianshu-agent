@@ -251,8 +251,10 @@ E  AssertionError: stop 计时必须覆盖到安全点（负控：谎填 0 会�
   （macOS `task_info`），本轮不做。
 - **`disk_growth` 的 unknown 边界**：数据根条目 >50,000 时记 `null`，不提供
   精确值。
-- **指标文件没有轮转**：默认 5s 采样约 17k 条/天（约数 MB/天），
-  保留策略属于发布候选决策，本轮不假设。
+- **指标文件没有轮转**：~~默认 5s 采样约 17k 条/天（约数 MB/天），
+  保留策略属于发布候选决策，本轮不假设。~~ **已交付（2026-11-14，见 §10）**：
+  按大小轮转 + 保留 4 份已落地为默认行为；仍未做的是发布候选层面的保留期决策
+  （当前 80 MiB 上界是默认参数，不是冻结的保留期政策）。
 - **慢订阅者的宽限窗口内仍会重复读日志**：floor 游标被最慢的订阅者钉住时，
   主循环每轮从该游标重新读 `PUSH_BATCH=256` 条事件并逐条构造帧（不写 socket）。
   有界但不免费；本轮没有做"按连接维护独立读游标"的优化，压测时 CPU 的短时
@@ -308,3 +310,42 @@ uv run --frozen python scripts/baseline_evidence.py \
 lock/full/ruff 已通过；正式提交绑定及新原生 CI 仍待核，后续结果见
 `codex/g3-baseline-evidence` 对应 PR。未新增十小时实跑、静默机测量或用户 Windows
 设备证据。
+
+---
+
+## 10. 指标文件轮转与保留（2026-11-14，`feat/metrics-rotation`）
+
+`metrics.jsonl` 原先只增不减（§7 旧条目）。本轮把「按大小轮转 + 保留上限」
+落地为**默认行为**，方案与判据见
+[SPEC-METRICS-ROTATION-2026-11-14](SPEC-METRICS-ROTATION-2026-11-14.md)。
+
+**行为**（全部收在 `metrics.py` 内部，`daemon.py` 未改）：
+
+- 追加前在锁内 `os.stat` 当前文件；达到 `max_file_bytes` 先轮转再写——单文件
+  不超过 `max_file_bytes + 一行`。轮转是编号槽位链式 `os.replace`
+  （`metrics.jsonl.1` 最新、编号越大越旧），最旧一份被下一轮覆盖，**没有
+  DELETE**，没有「删除失败多留一份」的分支。
+- 默认 16 MiB × 4 份（总上界 ≈ 80 MiB）。这是**估算默认值**（按 5s 采样
+  ≈ 3–5 MB/天推算），不是冻结的保留期政策；可用
+  `TIANSHU_METRICS_MAX_FILE_BYTES` / `TIANSHU_METRICS_MAX_ROTATED_FILES`
+  覆盖，构造参数 `0` 显式禁用轮转（逃生门，行为有测试断言）。
+- **样本永不因轮转而丢**：轮转失败（Windows 上读者持句柄会
+  `PermissionError`）降级为继续追加当前文件，`rotation_errors` 计数 + stderr
+  提示一次；当前文件可能暂时超过阈值，下一轮重试。槽位允许有空洞，读取侧
+  按存在的编号处理。
+- 每次成功轮转在指标流里记一条 `metrics_rotated` 事件（`value` = 被轮转文件
+  字节数）；轮转事件的追加自身不再级联产生新事件（否则阈值小于一行时会无限
+  递归，负控 NC3 以 `RecursionError` 证实）。
+- 读取面：`read_metrics(..., include_rotated=True)` 按时间序（最旧在前）读回
+  全部历史，`limit` 作用于拼接后全序列；`list_metrics_files()` 给出有序清单。
+  **默认只读当前文件，既有调用方零迁移。**只有纯数字后缀算轮转件，
+  `metrics.jsonl.tmp` / `.backup` 这类手放文件不进清单。
+- 跨进程并发写入方（理论上 daemon 是唯一写入方）不加锁：`os.replace` 原子，
+  输者按失败降级继续追加——指标是 best-effort 诊断面，不给它上事件日志级的
+  一致性语义。
+
+**验证**（本机 macOS arm64，2026-11-14）：`tests/test_metrics.py` 定向
+**22 passed**（新增 8 条轮转/保留/读取/校验判据，既有 14 条不变全绿）；
+负控三条实跑红——NC1 拆掉大小检查 → 轮转/保留 2 条红；NC2 轮转失败改为丢样本
+→ 容忍用例红；NC3 摘掉事件级联抑制 → `RecursionError` 红；均已还原。
+全量门禁与 CI 结果绑定对应 PR SHA，不在本文重复记录。
