@@ -259,7 +259,10 @@ pub fn build_orphan_daemon_shutdown_command(
         .arg(data_root)
         .arg(expected_sha256)
         .env("PYTHONPATH", app_dir)
-        .env("PYTHONDONTWRITEBYTECODE", "1");
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        // stderr is a pipe here. Pin UTF-8 instead of allowing the Windows
+        // locale code page to turn diagnostic text into a different failure.
+        .env("PYTHONIOENCODING", "utf-8");
     command
 }
 

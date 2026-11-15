@@ -242,4 +242,7 @@ fn orphan_daemon_shutdown_command_is_constant_and_argv_bound() {
     assert!(command.get_envs().any(|(name, value)| {
         name == "PYTHONDONTWRITEBYTECODE" && value == Some(std::ffi::OsStr::new("1"))
     }));
+    assert!(command.get_envs().any(|(name, value)| {
+        name == "PYTHONIOENCODING" && value == Some(std::ffi::OsStr::new("utf-8"))
+    }));
 }

@@ -87,11 +87,13 @@ def host_lock_path(data_root: Path) -> Path:
 
 @contextmanager
 def _host_info_guard(data_root: Path):
-    """只串行化 Host 元数据，不占业务执行锁，不在锁内等待 HTTP/Daemon。
+    """只串行化 Host 元数据，不占业务执行锁，也不等待 Daemon 退出。
 
     复用现有 OS 互斥及其 5 秒等待上限，路径在 run/ 下，与业务数据根的
     execution.guard 分开。所有读者关闭文件后才释放，Windows 删除时不会
-    撞到本项目另一个仍打开的读句柄；条件删除与接管也处于同一临界区。
+    撞到本项目另一个仍打开的读句柄；条件删除、发布与接管处于同一临界区。
+    有界退出请求可在锁内发送并确认，但得到响应后立即释放，随后在锁外等待
+    daemon.lock 消失。
     """
     try:
         with execution_guard(ipc.run_dir(data_root)):
@@ -192,7 +194,7 @@ def stop_daemon_if_unowned(
 
     返回值是给桌面壳 parse 的稳定退出码：
 
-    - 0：Daemon 已停止，或在等待期间自行退出/被替换；
+    - 0：Daemon 锁已消失；实例换为另一摘要时返回 4；
     - 3：已有新 Host 发布实例，保留 Daemon；
     - 4：Daemon 实例已变更，保留新实例；
     - 1：读取/停止失败或超时，调用方必须保留窗口。
