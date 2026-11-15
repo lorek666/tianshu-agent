@@ -27,6 +27,15 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域；同产品代码在 #157 CI ubuntu 绿、本机 3 连绿、attempt2 全绿——runner timing flake）。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
+- **可安装发行版 PR #162 第三轮 Windows MCP setup 红已定位并修（2026-11-15，最终云端门禁待回填）**：
+  rebase 后 run `43687249112` 的 Ubuntu、macOS、Windows 分片 1 与 UI 成功；Windows
+  分片 0 唯一失败为 `test_stalled_send_is_unknown_and_replay_does_not_retry`：测试先用
+  固定 5 秒等待控制 socket，早于同一配置允许的 10 秒 MCP 握手预算，超时后又用清理断言
+  掩盖 worker 原始结果。`c4627c3` 先等待真实 `call_tool` 入口，再与已建立的控制连接
+  rendezvous；setup watchdog 从配置的握手预算派生，产品 200ms transport 期限、真实子
+  进程、unknown/无 Receipt/两次 replay 断言均不变。确定性对照对旧/新测试注入同一 6 秒
+  `build_stack` 延迟：旧版 `TimeoutError`，新版通过；MCP 相关测试 **202 passed**，全量
+  **3461 passed / 11 skipped（639.23s）**。最终 head 云端 required 与独立复审仍未完成。
 - **可安装发行版 PR #162 第二轮 Windows 红已定位并修（2026-11-15，最终云端门禁待回填）**：
   首轮 Ubuntu 修复后的 run `43684083160` 中 Ubuntu、macOS、Windows 分片 1 与 UI 成功；
   Windows 分片 0 唯一失败为网络期限 Timer 先触发 `shutdown()`、后续时钟检查尚未看到
@@ -992,3 +1001,11 @@
   分支普通 rebase 到 main `c8b53bb` 后，最终代码通过 lock、全仓 ruff 与完整
   `3461 passed / 11 skipped`（668.23s）。当前 head 云矩阵、独立复审和 main 发布工作流
   仍待，未把任何旧 SHA 的绿色或本机全量扩展成最终验收。
+
+- **2026-11-15 · PR #162 第三轮 Windows MCP setup 红与本机重门**：rebase 后精确 run
+  `43687249112` 保留 Windows 分片 0 单红。测试在 `call_tool` 前用固定 5 秒等待控制
+  socket，而 MCP 配置允许 10 秒握手；超时清理又先于真实 worker 结果断言，掩盖了 setup
+  阶段。改为先等待真实 transport 入口并以配置握手上限加清理预算作为 watchdog，再
+  rendezvous socket；同一 6 秒注入下旧测试红、新测试绿。MCP 相关 `202 passed`，完整
+  `3461 passed / 11 skipped`（639.23s）。最终 head 原生矩阵与独立复审仍待，不把测试
+  修复扩展为 MCP 生产期限或 Windows 设备支持已变。
