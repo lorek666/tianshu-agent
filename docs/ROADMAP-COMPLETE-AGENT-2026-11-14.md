@@ -24,7 +24,7 @@
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | #141 落地后开工 | 未开始 |
 | W13 | 桌面外壳：Tauri + 托盘 + 安装包 | M5-D1/D2/D5 | IPC/UI 契约不动 | 新增 shell/ 目录 | **Rust 工具链待装；签名/公证需 Apple 账号** | 未开始 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义 | exec*/isolation | 平台方案选型待拍板 | 未开始 |
-| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估 | 与 G3 后续重叠 | 落点 `maintenance.py`/`data_cli.py` 已随 #161 落地解锁；**拍板流程=先测量后拍板**（2026-11-15），v1 只读保留期审计命令待开工 | **SPEC 已并入 main**（#164，`9466df0`；[CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)） |
+| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估 | 与 G3 后续重叠 | **v1 只读保留期审计命令已交付（feat/retention-audit，零删除）**；三项拍板=先测量后拍板（数值待实测） | **v1 已实现**（SPEC 见 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)） |
 
 ## 外部阻塞清单（做了做不了 / 需要拍板，不许冒充已解决）
 

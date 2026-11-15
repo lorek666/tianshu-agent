@@ -412,3 +412,80 @@ def test_restore_apply_is_not_exposed_and_migrate_requires_backup(tmp_path):
     result = _cli("migrate", "--data-root", tmp_path)
     assert result.returncode == 2
     assert "--backup" in result.stderr and "invalid choice" not in result.stderr
+
+
+def test_retention_audit_cli_reports_counts_and_refuses_missing_root(tmp_path):
+    result = _cli("retention-audit", "--data-root", tmp_path / "missing")
+    assert result.returncode == 2
+    assert "events.db" in result.stderr
+    root, _ = _make_root(tmp_path)
+    result = _cli("retention-audit", "--data-root", root, "--json")
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert report["operation"] == "retention-audit"
+    assert report["tables"]["events"]["row_count"] == 2
+    assert report["tables"]["runs"]["present"] is False
+    assert report["tables"]["schedules"]["present"] is False
+    assert report["unknown_tables"] == []
+    assert report["candidates"]["jobs_terminal_rows"] is None
+    assert "cleanup_plan" in report and "candidates" in report["cleanup_plan"]
+    assert report["growth"]["events"]["rows_per_day"] is None  # 跨度不足不外推
+    text = _cli("retention-audit", "--data-root", root)
+    assert text.returncode == 0
+    assert "保留期审计" in text.stdout
+
+
+def test_retention_audit_cli_is_read_only(tmp_path):
+    root, _ = _make_root(tmp_path)
+    db = root / "events.db"
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    result = _cli("retention-audit", "--data-root", root, "--json")
+    assert result.returncode == 0
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+
+
+def test_retention_audit_growth_math_and_unknown_tables(tmp_path):
+    from tianshu.data_cli import _audit_growth
+
+    # 投影数学直接单测：5 天 10 行 → 2 行/天；窗口不足 1 天不外推。
+    out = _audit_growth({"events": (10, 0, 86_400_000 * 5)})
+    assert out["events"]["rows_per_day"] == 2.0
+    assert out["events"]["projection_30d"] == 70
+    assert out["events"]["projection_90d"] == 190
+    out = _audit_growth({"events": (2, 100, 102)})
+    assert out["events"]["rows_per_day"] is None
+    assert out["events"]["projection_30d"] is None
+
+    root, _ = _make_root(tmp_path)
+    extra = sqlite3.connect(root / "events.db")
+    extra.execute("CREATE TABLE future_table (x INTEGER)")
+    extra.commit()
+    extra.close()
+    result = _cli("retention-audit", "--data-root", root, "--json")
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    assert "future_table" in report["unknown_tables"]
+
+
+def test_retention_audit_candidates_follow_authoritative_constants(tmp_path):
+    from tianshu.jobs import TERMINAL_JOB_STATES
+    from tianshu.permissions import APPROVAL_STATES
+    from tianshu.tasks import NON_TERMINAL_STATES
+
+    root, _ = _make_root(tmp_path, projections=True)
+    result = _cli("retention-audit", "--data-root", root, "--json")
+    assert result.returncode == 0
+    report = json.loads(result.stdout)
+    runs = report["tables"]["runs"]
+    assert runs["present"] is True
+    assert report["candidates"]["non_terminal_runs"] == sum(
+        runs["state_histogram"].get(s, 0) for s in NON_TERMINAL_STATES
+    )
+    jobs = report["tables"]["jobs"]
+    if jobs["state_histogram"] is not None:
+        assert report["candidates"]["jobs_terminal_rows"] == sum(
+            jobs["state_histogram"].get(s, 0) for s in TERMINAL_JOB_STATES
+        )
+    assert report["candidates"]["budget_reservations_settled_known_rows"] >= 0
+    hist = report["tables"]["approvals"]["state_histogram"]
+    assert hist and set(hist) <= set(APPROVAL_STATES)

@@ -195,7 +195,7 @@ uv run tianshu run --workspace /tmp/ws --task "..." \
 | `host` | 桌面外壳：`run`（默认）/ `stop` / `status`，把 UI 桥到本地 IPC |
 | `replay` | 从事件日志回放并校验（**审计，不调模型**） |
 | `evaluate` | 在干净 fixture 上换模型跑固定 case（**换模，与 replay 是两件事**） |
-| `data` | 显式数据根的离线 `backup`、独立 `verify`、备份绑定的 `migrate` 与只读 `restore-plan`；尚不执行恢复 |
+| `data` | 显式数据根的离线 `backup`、独立 `verify`、备份绑定的 `migrate` 与只读 `restore-plan`、只读 `retention-audit`（保留期审计：只测量，零删除）；尚不执行恢复 |
 
 ```bash
 # 建任务（目录可重复；--readonly 指定只读目录；不传目录 = 纯对话任务）
