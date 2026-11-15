@@ -21,6 +21,8 @@ from tianshu import data_cli, migrate
 from tianshu.backup import create_backup, verify_backup
 from tianshu.data_state import AdmissionRefused
 from tianshu.events import EventLog
+from tianshu.maintenance import MaintenanceBusy
+from tianshu.restore_access import acquire_restore_database_access
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -198,11 +200,11 @@ from tianshu.cli import main
 original = migrate.acquire_database_access
 @contextmanager
 def pause_with_actual_lock(db, *, exclusive):
-    with original(db, exclusive=exclusive):
+    with original(db, exclusive=exclusive) as access:
         print(json.dumps({"ready": "exclusive", "pid": os.getpid()}), flush=True)
         if sys.stdin.readline().strip() != "release":
             raise RuntimeError("exclusive barrier not released")
-        yield
+        yield access
 migrate.acquire_database_access = pause_with_actual_lock
 raise SystemExit(main(["data", "migrate", "--data-root", sys.argv[1],
                        "--backup", sys.argv[2], "--json"]))
@@ -413,6 +415,48 @@ else:
         assert json.loads(stdout)["ok"] is True
     with closing(EventLog(root / "events.db", blob_dir=probe)):
         assert probe.is_dir()
+
+
+def test_migration_keeps_exclusive_access_when_sqlite_close_fails(
+    tmp_path, monkeypatch
+):
+    root, saved = _root(tmp_path)
+    db = root / "events.db"
+    original_connect = migrate._connect
+
+    class CloseFailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.fail_close = True
+
+        def execute(self, *args, **kwargs):
+            return self.connection.execute(*args, **kwargs)
+
+        def close(self):
+            if self.fail_close:
+                raise sqlite3.ProgrammingError("injected migration close failure")
+            return self.connection.close()
+
+    def connect(path):
+        return CloseFailingConnection(original_connect(path))
+
+    monkeypatch.setattr(migrate, "_connect", connect)
+    with pytest.raises(migrate.MigrationFailed, match="ProgrammingError"):
+        migrate.migrate(root, backup=saved)
+
+    access, retained = migrate._RETAINED_CLOSE_FAILURES.pop()
+    try:
+        with pytest.raises(MaintenanceBusy):
+            acquire_restore_database_access(db, exclusive=True)
+        retained.fail_close = False
+        retained.close()
+        access.close()
+    finally:
+        retained.fail_close = False
+        retained.connection.close()
+
+    with acquire_restore_database_access(db, exclusive=True):
+        pass
 
 
 @pytest.mark.parametrize(

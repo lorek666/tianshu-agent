@@ -15,11 +15,11 @@ from .backup import BackupError, BackupRefused, create_backup, verify_backup
 from .credentials import redact
 from .data_state import AdmissionRefused
 from .errors import TianshuError
-from .maintenance import acquire_database_access
 from .migrate import SCHEMA_VERSION
 from .migrate import migrate as run_migration
 from .pathkeys import overlap_key
 from .permissions import APPROVAL_STATES
+from .restore_access import acquire_restore_database_access
 from .tasks import NON_TERMINAL_STATES, RUN_STATES
 
 
@@ -52,7 +52,7 @@ def _backup(data_root: Path, dest: Path) -> dict[str, Any]:
     if db.resolve().parent != root:
         raise BackupRefused(f"数据根的 events.db 指向根外，不支持此布局：{db}")
     target = dest.resolve()
-    with acquire_database_access(db, exclusive=True):
+    with acquire_restore_database_access(db, exclusive=True):
         manifest = create_backup(root, target)
         verification = verify_backup(target)
         verification.require_ok()

@@ -13,7 +13,7 @@ import stat
 import sys
 import time
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -47,8 +47,14 @@ from .data_state import (
 from .data_state import STATE_FORMAT as STATE_FORMAT
 from .data_state import STATE_FORMAT_VERSION as STATE_FORMAT_VERSION
 from .fsutil import atomic_write_bytes
-from .maintenance import MaintenanceBusy, MaintenanceError, acquire_database_access
+from .maintenance import MaintenanceBusy, MaintenanceError
 from .pathkeys import overlap_key
+from .platform_identity import observe_entity
+from .restore_access import (
+    RestoreDatabaseAccess,
+    acquire_restore_database_access,
+    verify_sqlite_main,
+)
 
 STATE_NAME = "events.db.migration.json"
 MigrationError = AdmissionRefused
@@ -447,9 +453,72 @@ def _check_bound(conn, source, root, saved, manifest, raw_hash, state):
     _reachable_mechanism(conn, source, state.from_version)
 
 
-def _run_locked(root, db, backup):
-    root, db = _layout(root)
-    with closing(_connect(db)) as conn:
+def acquire_database_access(
+    db_path: Path, *, exclusive: bool = False
+) -> RestoreDatabaseAccess:
+    return acquire_restore_database_access(
+        db_path,
+        exclusive=exclusive,
+        prewrite_guard=lambda: check_new_file_evidence(db_path),
+    )
+
+
+_RETAINED_CLOSE_FAILURES: list[tuple[RestoreDatabaseAccess, object]] = []
+
+
+def _release_migration_access(access: RestoreDatabaseAccess) -> None:
+    try:
+        access.close()
+    except BaseException:
+        _RETAINED_CLOSE_FAILURES.append((access, object()))
+        raise
+
+
+@contextmanager
+def _migration_connection(
+    db: Path,
+    access: RestoreDatabaseAccess,
+    *,
+    release_access: bool,
+):
+    try:
+        conn = _connect(db)
+    except BaseException:
+        if release_access:
+            _release_migration_access(access)
+        raise
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except BaseException:
+            if release_access:
+                _RETAINED_CLOSE_FAILURES.append((access, conn))
+            raise
+        if release_access:
+            _release_migration_access(access)
+
+
+def _run_locked(
+    root,
+    db,
+    backup,
+    access: RestoreDatabaseAccess,
+    *,
+    release_access: bool,
+):
+    try:
+        root, db = _layout(root)
+    except BaseException:
+        if release_access:
+            _release_migration_access(access)
+        raise
+    with _migration_connection(db, access, release_access=release_access) as conn:
+        expected_identity = getattr(access, "identity", None)
+        if expected_identity is None:
+            expected_identity = observe_entity(db, "file")
+        verify_sqlite_main(conn, db, expected_identity)
         _plan(conn.execute("PRAGMA user_version").fetchone()[0])
         snapshot = inspect_connection(conn, db)
         state = snapshot.progress
@@ -557,13 +626,36 @@ def _run_locked(root, db, backup):
 def migrate(data_root: Path, *, backup: Path) -> MigrationReport:
     try:
         root, db = _layout(data_root)
-        with acquire_database_access(db, exclusive=True):
+        locked_access = acquire_database_access(db, exclusive=True)
+        if isinstance(locked_access, RestoreDatabaseAccess):
+            writers = writers_active(root)
+            if writers is not False:
+                _release_migration_access(locked_access)
+                raise MigrationRefused(
+                    "写者仍活跃" if writers else "无法判定写者状态", "maintenance_busy"
+                )
+            return _run_locked(
+                root,
+                db,
+                backup,
+                locked_access,
+                release_access=True,
+            )
+        with locked_access as access:
+            if access is None:
+                access = locked_access
             writers = writers_active(root)
             if writers is not False:
                 raise MigrationRefused(
                     "写者仍活跃" if writers else "无法判定写者状态", "maintenance_busy"
                 )
-            return _run_locked(root, db, backup)
+            return _run_locked(
+                root,
+                db,
+                backup,
+                access,
+                release_access=False,
+            )
     except MaintenanceBusy as exc:
         raise AdmissionRefused("maintenance_busy", "实际数据库存在合作式连接") from exc
     except MaintenanceError as exc:
