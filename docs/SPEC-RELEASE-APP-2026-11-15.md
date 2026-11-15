@@ -7,31 +7,30 @@
 > 发行候选提交的绿色证据。
 >
 > 前端 PR #155 已合并为 `d37a84c490b7e6588b4e122e5591ccb989530b8e`，当前分支的
-> `ui/` 树与该分支逐字节一致；桌面壳加载的是同一份 `ui/dist`，不存在待手工接入的
-> 第二套前端。旧候选 `aa6b65f` / `820a7cd` 的真实自有 Host 冷启动暴露了一个此前
-> 生命周期探针未覆盖的真实缺陷：Host、Daemon、`host.lock` 与 `/health` 均正常，但
-> Release WebView 稳定为白屏。产品修复提交为
-> `58d0bdb0c9648a870368c1aa7723c4fc0c450f8b`，把 `navigate` 和失败页 `eval` 排入
-> Tauri 事件循环。该提交的 macos-arm64 产物已重新通过校验、运行时烟测、篡改负控、
-> 全新安装、真实冷启动显示“已连接”、关窗保活、重开同一 Host 和 `Cmd+Q` 三层进程
-> 全退。其后的 `b46f015` 精确 CI 又在 Windows shard 1 抓到既有原子写入路径的
-> `WinError 5`：审批并发控制本身通过，获胜写入在 `os.replace` 发布 `note.md` 时遇到
-> 瞬时的目标占用。代码修复 `bb0ce76` 只对 Windows access/sharing/lock violation
-> 做 8 次、约 1.27 秒总退避；其他权限错误立即失败，持续占用在界满后仍报错。第二读者
-> 对 `5873720/tree f16f930` 的独立复审为 `PARTIAL`：独立构建、验签、安装、普通自有
-> Host 生命周期和 W3/W5 兼容通过，但附着既有 Host 后显式退出只关闭桌面壳，遗留
-> Host/Daemon。后续修复统一 owned/attached 退出的鉴权 shutdown 与有界清理路径；第二
-> 读者对 `7b4cc7a/tree 251537b` 的复审仍为 **`PARTIAL`**，并新增一条 HIGH：
-> `host.lock` 的“旧锁消失、新锁尚未发布”空窗中，退出路径会误杀新 Host 已接管的
-> Daemon。修复提交 `0942ee5` 在有界接管窗口内持续观察，清理前进入 Host 元数据跨进程
-> 守卫、重新确认无 Host，并只停止锁 SHA 与退出前快照完全一致的 Daemon；新 Host 或
-> 新 Daemon 实例出现时返回保留。真实竞态回归旧实现红、修复后绿；代码收口 `77e1181`
-> 固定 Windows stderr 为 UTF-8。精确该代码树的完整 Python 本机门为 3543P/12S
-> （656.70s），Rust 27 tests，UI 124 tests，lock、Ruff、actionlint、shellcheck 与
-> diff check 通过。最终
-> docs-only SHA 仍须重新绑定云 CI；精确 macos-arm64 产物、锁空窗与普通
-> attach→quit 探针、第二读者 PASS 另绑，不得继承 `5873720`、`7b4cc7a` 或任何更早
-> 对象的绿色。状态仍是 L1 候选，不得合并为已验收发行版。
+> `ui/` 树与该分支逐字节一致；桌面壳加载同一份 `ui/dist`。产品修复
+> `58d0bdb` 把 `navigate` 与失败页 `eval` 排入 Tauri 事件循环，解决 Release
+> WebView 冷启动白屏；`bb0ce76` 对 Windows 原子替换的瞬时 5/32/33 占用做 8 次、
+> 约 1.27 秒有界重试，其他权限错误与界满后的持续占用仍失败。
+>
+> 生命周期复审链必须按精确对象记账：`5873720/tree f16f930` 为 `PARTIAL`（attached
+> 退出遗留 Host/Daemon）；`7b4cc7a/tree 251537b` 为 `PARTIAL`（`host.lock` 空窗中
+> 旧退出路径误杀新 Host 复用的 Daemon）；`3863887/tree 7d6de1b` 为 `UNFIXED`
+> （owned Host 崩溃不恢复；owned/attached 崩溃后退出遗留 Daemon、`host.lock`、
+> `daemon.lock` 与 `agent.sock`）。`6dfa605` 为 owned/attached Host 加入最多 3 次
+> 有界退避恢复，并只在已退出 child 的 PID/`started_at` 匹配时清理 Host；停止
+> Daemon 前进入 Host 元数据跨进程守卫，只在 Daemon 锁 SHA 未变化时动作。`df1aacd`
+> 再修 supervisor 发现新 endpoint 时丢掉仍存活 owned `Child` 句柄的竞态，只有
+> `try_wait()` 确认旧 child 退出后才允许接管。定向结果 Rust 32 tests、Python
+> Host/M5 27P/1S（唯一 skip 为 Windows 专用句柄）。
+>
+> 精确 `df1aacd` 的 macos-arm64 作者态产物通过 verify/runtime smoke、原生原始/
+> listed-tamper/unlisted-hook 负控、fresh install、两路真实 owned/attached Host
+> SIGKILL 恢复与退出清理、普通 GUI、attach→quit 和 takeover safe/race。随后
+> `eaa9da0` 修复 Python verifier 未校验 source bundle 完整文件集合的缺口：旧实现
+> 接受直接加入的 `bundle/app/sitecustomize.py`，新回归 RED→GREEN，真实 634 文件
+> bundle 仍通过。当前这些只是作者侧候选证据；docs-only 最终 SHA、该 SHA 的六项云
+> CI、最终产物/安装/GUI 复验和全新独立 PASS 尚未绑定，旧绿色一律不得继承。状态仍是
+> L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -310,6 +309,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   缺文件、额外禁止文件、commit 非 40 位。
 - `tests/test_release_build.py`：锁定 Python 版本目标、解包路径穿越、错误 SHA、复制 UI
   dist、排除 `.venv`/数据库/凭据。
+- `tests/test_release_verify.py`：短身份/版本/target 漂移、清单与 bundle 字节、归档
+  source 集合、source bundle 完整文件集合、平台架构、归档 manifest 漂移、伪 NSIS
+  payload 与逃逸链接；未列 `sitecustomize.py` 在 source 和 archive 两层都必须拒绝。
 - `tests/test_release_install.py`：macOS canonical 前缀、原生 verifier 前置顺序、合法/错误
   SHA、tar 逃逸拒绝、程序/数据根重叠、安装烟测、失败恢复旧程序、卸载保留数据与
   `--purge-data` 二次确认。升级回退先由这里的安装器烟测覆盖；跨 schema 数据升级仍须等
@@ -322,6 +324,10 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   启动失败结构体。
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
+- owned/attached Host 最多 3 次有界退避恢复；辅助清理只接受已退出且 PID/
+  `started_at` 匹配的 Host，并在元数据守卫内按 Daemon 锁 SHA 条件停止。supervisor
+  发现新 endpoint 时必须先用 `try_wait()` 确认旧 owned child 已退出，不能因新锁出现
+  而丢掉仍存活的子句柄。
 - `旧 Host 退出 → host.lock 空窗 → 新 Host 发布 → 复用 Daemon` 的真实进程回归：
   退出探针不得停止新 Host 或其 Daemon；同时覆盖 Host 已发布、Daemon 实例已变更两个
   保留分支。普通“新锁已经存在”的探针不能替代这个窗口。
@@ -343,7 +349,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 6. 删除旧版本后新版本启动失败 → 回退测试必须红。
 7. 让 token 进入日志 → 脱敏/安全测试必须红。
 8. UI dist 被手改但未重建 → release build 必须红。
-9. manifest 未列出 `sitecustomize.py` → App 启动和安装前必须红。
+9. manifest 未列出 `sitecustomize.py` → source bundle、归档、App 启动和安装前验证
+   都必须红；不能只让原生壳拒绝而 Python verifier 放行。
 10. Host 附着端口开放但 PID/token 身份不符 → 必须拒绝附着。
 11. Host 崩溃后退出壳 → Daemon 必须被请求关闭并等锁消失，不能留孤儿。
 12. 短 `release.json` commit/version/target 漂移，即使重新计算 manifest/archive SHA →
@@ -355,6 +362,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
     修复后必须显示加载页并进入“已连接”，不能只用窗口/进程断言。
 17. 在 `host.lock` 空窗后让新 Host 发布并复用旧 Daemon → 旧退出路径若误杀新实例必须
     红；修复后必须以元数据守卫内的二次确认和 Daemon 锁 SHA 保留新实例。
+18. Host 已发布新 endpoint、但 supervisor 旧的 owned `Child` 仍存活时 → 旧实现不得
+    丢掉 child 并重走 spawn/attach；修复后必须保留子句柄直到 `try_wait()` 证明退出。
 
 ### 9.4 平台证据矩阵
 
@@ -466,13 +475,16 @@ pub fn verify_resource_manifest(
 
 - [ ] 对最终提交重跑 release manifest/build/install/verify 定向测试；未列文件、已列
   篡改、摘要、架构、tar 逃逸、短身份/归档 manifest 漂移和伪 NSIS payload 负控均绑定
-  最终 SHA。`def12d27` 的上一轮结果只保留为其历史证据。
+  最终 SHA。`eaa9da0` 已有 source bundle 未列 hook 的 RED→GREEN，`df1aacd` 已有
+  精确作者态产物与全部生命周期探针；它们都必须由最终 docs-only SHA 重建并重跑。
+  `def12d27` 的上一轮结果只保留为其历史证据。
 - [x] 对 `58d0bdb` 的 macos-arm64 安装产物验证 Tauri 壳真实启动 bundled Python 与
   Host/Daemon；冷启动 WebView 显示“已连接”，关窗后三层进程继续，LaunchServices
   重开保持同一 Host，`Cmd+Q` 无孤儿。完整脚本化审批链仍须在最终 docs-only SHA 重建后
   复验，不能把旧产物结果冒充新 SHA。
-- [ ] 对最终产物验证 macOS arm64 安装、Host 崩溃后退出、重装回退与卸载；数据保留
-      和 purge 二次确认明确。
+- [ ] 对最终产物验证 macOS arm64 安装、owned/attached Host 崩溃恢复后退出、重装回退
+      与卸载；数据保留和 purge 二次确认明确。`df1aacd` 已提供作者态正向证据，不能
+      代替最终 SHA。
 - [ ] macOS x64、Windows x64、Windows arm64 的每项证据标为 `verified` / `runner-only` /
       `unknown`，不混写。
 - [x] 产物只含允许文件；无 `.venv`、tests、数据库、日志、密钥、refs、`.omc`。
@@ -481,7 +493,8 @@ pub fn verify_resource_manifest(
 - [x] 安装器烟测失败时恢复旧程序；数据恢复尚未交付，安装/升级不调用低层 restore。
 - [ ] 最终提交的 `uv lock --check`、ruff、完整 pytest、UI
       typecheck/test/build/dist、Cargo 测试和 release verifier 全绿；负控原件保留。
-- [ ] 独立复审读取正式 SHA、原始日志、安装/升级探针，而非作者自述。
+- [ ] 独立复审读取正式 SHA、原始日志、安装/升级探针，而非作者自述；旧
+      `3863887`/`5873720`/`7b4cc7a` 的 `UNFIXED`/`PARTIAL` 不得继承为 PASS。
 - [x] 文档明确“L1/L2 内测”与“G3 正式发布”的差异，不把本规格的实现说成所有 G3 已完成。
 
 ## 13. 未决与阻塞依赖

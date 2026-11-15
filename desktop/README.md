@@ -5,6 +5,11 @@
 同一套鉴权停止路径。任务、审批、事件、工具执行与恢复仍在现有 Python
 Host/Daemon 中。Rust 没有替换 Host，也没有形成新的授权边界。
 
+自有或附着的 Host 意外退出时，壳会做最多 3 次有界退避恢复。supervisor 发现已有
+新 endpoint 时，仍会先确认旧 owned child 已经退出，避免把活子进程的句柄丢掉。
+显式退出只清理 PID/`started_at` 已匹配且确实退出的 Host；停止 Daemon 前在 Host
+元数据跨进程守卫内复核锁 SHA，新 Host 或新 Daemon 实例已经接管时保留现场。
+
 ## 资源布局
 
 发布构建先生成以下 bundle，再由 Tauri 打包：
@@ -22,6 +27,8 @@ bundle/
 `scripts/package_app.py` 把同一 bundle 映射到 app 的
 `Contents/Resources/{python,app,ui,release.json,release-manifest.json}`。启动和安装前
 壳校验 target、版本、commit、每个文件 SHA 与完整文件集合；未列 Python 文件同样拒绝。
+`scripts/verify_release.py` 也对 source bundle 做同样的完整文件集合校验，不能只依赖
+归档层或原生壳兜底。
 随后以 argv 启动：
 
 ```text
@@ -48,8 +55,13 @@ Rust 测试覆盖 Host 元数据解析、平台数据根、argv 构造和发行�
 2. 关闭窗口，确认壳、Host、Daemon 都继续运行。
 3. 重新激活 app，确认同一窗口恢复并仍连接原 Host。
 4. 托盘“退出并停止服务”或自定义 `Cmd+Q` 菜单，确认壳、Host、Daemon 全部退出。
-5. 杀掉 Host 后再从托盘退出，确认 Daemon 被有界关闭且无孤儿。
-6. 卸载默认保留数据根；只有 `--purge-data --confirm-data-root DIR` 才删除测试数据。
+5. 分别用自有 Host 和预先启动的外部 Host 验证：SIGKILL Host 后有界恢复、新 Host
+   PID 与锁一致、Daemon 身份保持、窗口仍显示“已连接”；恢复后再显式退出，确认
+   三层全退且 `host.lock`、`daemon.lock`、`agent.sock` 消失。
+6. 杀掉 Host 后立即退出，确认仅清理已确认退出的旧快照；若新 Host 已发布或 Daemon
+   已换实例，必须保留现场。
+7. 复跑 takeover 空窗竞态：旧 Host 退出后、新 Host 发布锁前不得误杀新实例。
+8. 卸载默认保留数据根；只有 `--purge-data --confirm-data-root DIR` 才删除测试数据。
 
 ## 构建与安装
 

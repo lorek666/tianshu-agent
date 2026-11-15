@@ -28,20 +28,30 @@
 
 - **当前远端 main 为 `e242257`（2026-11-16）**：#140 文档对账经正常保护合并；
   该 main 在 `702ba40` 之后只改文档、`.gitignore` 与 `AGENTS.md`。发布分支已普通
-  merge 到该 main；独立第二读者对 `7b4cc7a/tree 251537b` 的结论是
-  **`PARTIAL`，不可合并**。它确认发布构建、验签、安装回滚、W3/W5 兼容、普通
-  自有 Host 生命周期和先前 attach→quit 修复均通过，但新构造的 `host.lock` 发布空窗
-  竞态命中 **HIGH**：旧 Host 锁消失后、新 Host 发布新锁前，退出路径曾误杀新 Host
-  复用的 Daemon。修复提交 `0942ee5` 在旧锁消失后观察有界接管窗口，清理前重新确认
-  没有 Host，并只在 Host 元数据跨进程守卫内停止锁 SHA 仍与退出前快照完全一致的
-  Daemon；新 Host 已发布或 Daemon 已换实例时保留现场。后续代码收口 `77e1181` 固定
-  Windows stderr 为 UTF-8，并让守卫注释准确区分“同步确认退出请求”和“锁外等待”。
-  新增真实竞态回归在旧实现上确定性红、修复后绿；Rust 现为 **27 tests**，相关 Python
-  Host/M5 测试为 **26 passed / 1 skipped**。`77e1181` 的完整 Python 本机门为
-  **3543 passed / 12 skipped（656.70s）**，lock 与全仓 Ruff 通过。上述数字是最终
-  docs-only 提交前一刻的作者侧证据；最终 docs-only 提交仍须绑定自己的云 CI，重建
-  macos-arm64 Tauri 安装包并复跑锁空窗竞态与普通 attach→quit；最终第二读者必须
-  对精确 SHA/tree 重新给出 PASS，旧 `7b4cc7a` 的 `PARTIAL` 不得被本次修复声明覆盖。
+  merge 到该 main。独立第二读者对 `3863887/tree 7d6de1b` 的结论是 **`UNFIXED`，
+  不可合并**：运行期 Host 崩溃不会自动恢复，且崩溃后显式退出会在 owned/attached
+  两条路径遗留 Daemon、`host.lock`、`daemon.lock` 与 `agent.sock`。`6dfa605` 对
+  owned/attached Host 都加入最多 3 次有界退避恢复；Python 退出辅助入口只清理已退出
+  且 PID/`started_at` 匹配的 Host，并只在 Daemon 锁 SHA 未变化时停止 Daemon。
+  `df1aacd` 再修 supervisor 发现新 endpoint 时可能丢掉仍存活 owned `Child` 句柄的
+  竞态：只有 `try_wait()` 确认旧 child 已退出才允许接管。该竞态回归在旧实现稳定红、
+  修复后绿。当前 Cargo 为 **32 tests**（12 lib + 11 lifecycle + 9 release），相关
+  `tests/test_host_cleanup.py` 为 **27 passed / 1 skipped**（skip 仅 Windows 专用
+  句柄测试）。
+
+  `df1aacd/tree 3081ada` 的精确 macos-arm64 作者态产物已通过 verify/runtime smoke、
+  原生 `--verify-bundle` 原始/listed-tamper/unlisted-hook 负控、全新安装、两路真实
+  owned/attached Host SIGKILL 恢复及退出清理、普通 GUI 生命周期、attach→quit 和
+  takeover safe/race 探针。两路崩溃探针都确认新 Host PID 与锁一致、`started_at`
+  变化、`/health` 与 `/session` 为 200、Daemon 身份保持、AX 恢复“已连接”；退出后
+  desktop/当前 Host/Daemon 全退，三个运行锁/socket 消失，`execution.guard` 与
+  `ipc.key` 保留。随后 `eaa9da0` 补上 Python `verify_release.py` 对 source bundle
+  的完整文件集合校验：旧实现接受直接加入 `bundle/app/sitecustomize.py` 的 hook，
+  新回归稳定红后转绿；真实 634 文件 bundle 的 verify/runtime smoke 仍通过。
+  上述仍是 **作者侧候选证据，不是最终 PASS**：docs-only 最终 SHA、该 SHA 的六项云
+  CI、最终产物/安装/GUI 复验和全新第二读者独立 PASS 都还没有绑定，PR 不得合并。
+  旧 `5873720` 的 PartIAL、`7b4cc7a` 的 PARTIAL 与 `3863887` 的 UNFIXED 均只保留为
+  历史复审事实，不得被新修复冒领。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
   `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
   分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
@@ -731,6 +741,13 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **可安装发行版仍是 L1 作者候选，不是 G3**：`3863887` 的独立复审为 `UNFIXED`
+  （两条 HIGH），`5873720` 与 `7b4cc7a` 为 `PARTIAL`；当前后续提交针对这些发现补了
+  Host 崩溃恢复、owned/attached 退出清理、supervisor child-handle 竞态与 source
+  bundle 完整性校验，但还没有任一独立读者对最终精确 SHA 给出 PASS。最终 docs-only
+  SHA 的 required CI、macOS arm64 产物/安装/GUI、合并后 main 自身 CI 与四目标 release
+  workflow 都仍待执行。未签名、未验证的设备平台、自动更新、恢复 B/C、SLO、长稳和
+  issue #145 同样保持未完成；当前不得宣称 L2 或 G3 已发布。
 - **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
 - **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。
 - **Windows 原生结果待回填**：`scripts/restore_t1_windows_probe.py` 和 Windows 测试必须在 GitHub 原生 runner 实际通过并产生 artifact；在 run/SHA/artifact 绑定前，Windows T1 行为保持 `NOT_RUN`。Windows Server CI也不代表 Windows 10/11 用户设备或 ARM64。
@@ -1314,6 +1331,28 @@
 - **2026-11-15 · W3 state 响应 8MiB 上界交付（`feat/state-response-bound`，基线 main@0c5bb71）**：先复核登记项并写复现测试在基线代码实跑变红——50×~313KB goal 的对抗数据集让 `state` 响应 14.4MB（`ProtocolError: 消息 14419496 字节，超过上限 8388608`），且查明真实断连路径：daemon 发送线程 `_send_loop` 把编码超限的 `ProtocolError` 当 `send_error` 静默 drop 整条连接（端到端复现 `ConnectionClosed: 对端在消息结束前关闭`，不是超时）；`_approval_context` 每次 `read_types(["approval.requested"])` 全表扫 + 逐条 SHA256 验签的失控也被 spy 用例实证（300 张历史审批在库即红）。修复：`_state` 改 4 MiB（帧上限一半）预算内按 tasks→runs→approvals 份额两趟装填，放不下按条停并置 `tasks_truncated`/`runs_truncated`/`approvals_truncated`（加字段不升版本，契约行走 `docs(contract)` 单独 commit）；单条目超预算 fail loud 抛 `internal`（不静默丢条目、不截断 goal 文本）；`_approval_context` 改按 pending 集合所在 Run `read_run(verify=False)` 有界读（与 `_run_view` 同口径，读取量与全局历史解耦；decide 响应的 rule_id 有专门测试钉住不退化）。负控 2 条实跑红→还原绿（NC1 拆装填守卫→对抗用例红；NC2 拆有界读→spy 红；还原以 SHA256 比对字节一致）。修复后 test_control 33 passed、test_daemon+slow_subscriber+integration_m5 42 passed；本机门禁 `uv lock --check` / `ruff check .` / 全量 `uv run --frozen pytest` 均 exit 0（3400 passed / 11 skipped / 739.34s，macOS arm64），设计取舍与不变量论证在 [SPEC-STATE-RESPONSE-BOUND-2026-11-15.md](SPEC-STATE-RESPONSE-BOUND-2026-11-15.md)。未决：`task.list`/`approvals.list` 无体积预算（同对抗 goal 仍可撑大其响应帧），登记为后续工单候选；本机为 macOS arm64，Windows/Linux 以 CI 为准。过程事故记录：在本仓库误用 `git stash`（push 因 pathspec 失败后 pop 弹出他人旧 stash 导致 KNOWLEDGE.md 冲突），已恢复 HEAD 版本、stash 条目原样保留无丢失——**共享仓库一律不用 stash，改用 /tmp 文件交换法做变异还原**。
 
 - **2026-11-16 · 文档对账批次 A 重验轮（PR #140 rebase 到 main@702ba40 后逐项对照）**：原轮（2026-11-14）26 项普通文档修复因列车阻塞滞留，本轮逐项对照现 main 重验——**24 项保留**（其中引用与事实全部重证：#40/#53/#54/#50 已 CLOSED、#55 仍 OPEN；`recover` 未核实效果实测 `cli.py` 返回 1；`run.end` required 集合含 tokens/turns/budget_enforced；PRD F14 在 §7；M4 §7.4/`test_slow_subscriber.py`/`SEND_QUEUE_MAX=1024`/`WINDOWS-CI-2026-11-13.md` 等引用全存在）、**1 项升级执行**（§8 错位日志归位从 5 条扩到 9 条——main 其后又积压 4 条：低磁盘 T2/T3 三条与 PR #144，全部归位到各自日期区）、**1 项销**（backup-restore §0 T3 行已被后续 PR 超越：现文已写「三片均已独立验收」「T2/T3 已随 PR #136 交付」，原漂移不存在）。**数字类修复按现 main 重测**：63→**73** 模块（+10：scheduler/schedule_cli/restore×3/embedding_openai/keychain_macos/run_policy/disk_admission/platform_identity）、117→**133** 测试文件（+16）；23 ToolSpec（19 可见）/`SUITE_VERSION=m4.6` 经 AST/代码实测在现 main 仍真。**重验轮新抓漂移并顺手修**：F12 Keychain 四处「v1 未实现」旧口径（README×2 + 本文 §7/已知限制×2）——`keychain_macos.py` 已随 W1 落地并经 #151 独立复审，全部改为 macOS 已落地/其余平台如实 unsupported；README 架构树按现 main 补全 34 个缺失模块（PR 原 24 + 其后新增 10），头部保持「数量以实测为准」不写死计数。SPEC 文档补 §2 重验记录。仅改文档，不改代码/测试/CI。
+
+- **2026-11-16 · PR #162 崩溃恢复/退出清理与 source bundle 封闭修复**：独立读者对
+  `3863887/tree 7d6de1b` 判 `UNFIXED`，两条 HIGH 分别是 owned Host 崩溃后不自动
+  恢复，以及 owned/attached 崩溃后退出遗留 Daemon 与运行锁/socket。`6dfa605` 新增
+  owned/attached 最多 3 次有界退避恢复、基于已退出 child 的 PID/`started_at` 清理，
+  以及在 Host 元数据跨进程守卫内按 Daemon 锁 SHA 条件停止；`df1aacd` 再修 supervisor
+  将仍存活 owned `Child` 句柄丢掉后错误接管新 endpoint 的竞态。定向结果 27P/1S
+  （唯一 skip 为 Windows 专用句柄）、Cargo 32P，fmt/clippy 通过。精确 `df1aacd`
+  macos-arm64 产物归档 SHA256
+  `4448f7dbbea0e1b12ae133c22ef0e48eb10ceb486768013d46cc5a8520618001`、
+  manifest `8c04b09f0a84e2feb59918b5bb90e4ba8aeb2f3929fc7e889432b92ce5dc9722`；
+  verify/runtime smoke、原生篡改/未列 hook 负控、安装、两路崩溃恢复、普通 GUI、
+  attach→quit 与 takeover safe/race 均通过，证据在
+  `.omc/artifacts/release-app-final-df1aacd-2026-11-16/`。
+
+  随后发现 Python `verify_release.py` 对传入 source bundle 只验清单声明字节，直接加入
+  `bundle/app/sitecustomize.py` 仍 exit 0；归档层与原生壳虽已拒绝，但独立 Python
+  verifier 应同样封闭。`eaa9da0` 新增完整 source 文件集合校验和回归：旧实现
+  `DID NOT RAISE VerifyError`，修复后 1P，`test_release_verify.py` 16P；真实 634
+  文件 bundle 的 verify/runtime smoke 仍 pass。Ruff 与 diff check 通过。当前仍须从
+  docs-only 最终 SHA 重建产物并重跑两路崩溃/GUI/takeover，绑定该 SHA 六项 CI，
+  再由全新第二读者 PASS；在此之前不得普通合并或启动精确 main 的 release workflow。
 
 ## 9. 权威文档索引
 
