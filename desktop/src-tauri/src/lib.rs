@@ -443,15 +443,30 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 child,
                 owns_host,
             }));
-            window.navigate(url)?;
+            // `setup` runs before Tauri starts the event loop. Host startup can
+            // block here while the child process becomes healthy, so queue the
+            // navigation until the runtime can process it. Calling `navigate`
+            // directly from this blocking setup leaves the release WebView blank
+            // on a cold start even though the Host is healthy.
+            let navigation_window = window.clone();
+            window.run_on_main_thread(move || {
+                if let Err(error) = navigation_window.navigate(url) {
+                    eprintln!("天枢桌面页面导航失败：{error}");
+                }
+            })?;
         }
         Err(error) => {
             eprintln!("天枢桌面启动失败：{error}");
             window.set_title("天枢 Agent · 启动失败")?;
             let detail = serde_json::to_string(&error)?;
-            window.eval(format!(
-                "document.getElementById('detail').textContent = {detail};"
-            ))?;
+            let error_window = window.clone();
+            window.run_on_main_thread(move || {
+                if let Err(error) = error_window.eval(format!(
+                    "document.getElementById('detail').textContent = {detail};"
+                )) {
+                    eprintln!("天枢桌面启动失败页更新失败：{error}");
+                }
+            })?;
         }
     }
     install_tray(app.handle())?;
