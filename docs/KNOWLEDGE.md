@@ -27,6 +27,21 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域；同产品代码在 #157 CI ubuntu 绿、本机 3 连绿、attempt2 全绿——runner timing flake）。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
+- **可安装发行版 PR #162 第四轮作者复审修复（2026-11-15，代码 `3c0687d`，独立复审与最终云门待回填）**：
+  在 `7707597` 上确认 7 项发布/生命周期缺口并先取得原实现红：release
+  dispatch 接受旧 main 祖先；失败 Host 启动遗留新 Daemon；`/shutdown` ACK 后 Host
+  在清理 Daemon 前退出会留下孤儿；runtime lock 的 target 可绑定错误 triple；macOS
+  verifier 不检查 bundled Python 架构；Host 子进程已退出仍轮询到 30 秒超时；一次快照
+  遗漏 Host 被杀后才发布锁的 detached Daemon。修复要求 dispatch 与 fetch 后当前
+  `origin/main` 精确相等并先解引用 tag；lock 校验四目标 native triple；归档校验
+  `python/bin/python3` 架构；桌面退出所有 owned-Host 路径都完成 Daemon 清理；启动
+  失败只清理相对启动前快照新建/变化的锁，并在 5 秒有界窗口捕获延迟发布，既有 Daemon
+  负控保持字节不变。真实 Unix 子进程 + 真实 HTTP ACK 探针旧实现红、修后绿；本机统一门为
+  Python **3465 passed / 11 skipped（721.19s）**、UI 16 文件 **124 tests**、Rust
+  **18 tests**、lock/Ruff/typecheck/build/dist/Cargo fmt/clippy/actionlint/shellcheck
+  全 0。Windows 真子进程生命周期测试仍需原生 runner 执行；本会话被明确禁止启动/调用
+  子代理，因此这条只记作者侧修复，不冒充 required 独立复审 PASS，也不宣称 G3、四目标
+  用户设备安装或 main release workflow 已完成。
 - **可安装发行版 PR #162 第三轮 Windows MCP setup 红已定位并修（2026-11-15，最终云端门禁待回填）**：
   rebase 后 run `43687249112` 的 Ubuntu、macOS、Windows 分片 1 与 UI 成功；Windows
   分片 0 唯一失败为 `test_stalled_send_is_unknown_and_replay_does_not_retry`：测试先用
@@ -1009,3 +1024,11 @@
   rendezvous socket；同一 6 秒注入下旧测试红、新测试绿。MCP 相关 `202 passed`，完整
   `3461 passed / 11 skipped`（639.23s）。最终 head 原生矩阵与独立复审仍待，不把测试
   修复扩展为 MCP 生产期限或 Windows 设备支持已变。
+
+- **2026-11-15 · PR #162 第四轮发布/生命周期复审作者修复**：从 `7707597` 继续，先以
+  可复现探针确认旧 main 祖先可进入 release、启动失败/ACK 后崩溃窗口遗留 Daemon、
+  runtime lock 错 triple、macOS Python 架构漏检、Host 已退出仍等 30 秒、延迟 Daemon
+  锁逃过一次性清理七项。提交 `3c0687d` 后统一本机门为 Python 3465P/11S、UI 124
+  tests、Rust 18 tests，lock/Ruff/typecheck/build/dist/fmt/clippy/actionlint/shellcheck
+  全 0。精确新 head 的云端矩阵、真实产物/GUI 和独立第二读者仍未完成；由于本会话禁止
+  子代理，作者不能自批独立复审，PR 保持未合并。
