@@ -26,11 +26,15 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
-- **当前远端 main 为 `61f985e`（2026-11-15）**：恢复 B T1 平台基础经 PR #161
-  正常保护合并；`codex/release-app` 已普通合并该 main 为 `ca8f32d`。这次同步保留
-  最新 `Content-Length` 正文完整性修复、T1 平台身份/锁/registry 与 release-app 的
-  PR #162 修复记录。最终候选、独立复审、required checks、产物与发布工作流仍须绑定
-  合并后的新对象重新取证，不能继承旧 head 的绿色。
+- **当前远端 main 为 `c637b52`（2026-11-15）**：恢复 B T1、W3 有界状态响应和
+  W5 调度器已正常保护合并。`codex/release-app` 已普通合并该 main，代码候选
+  `3073602`（tree `d8c55fb`）的本机与精确 PR CI 全绿：Ubuntu
+  **3514P32S（525.33s）**、macOS **3534P12S（803.83s）**、Windows
+  **3490P56S**（3546 节点，shard 0 1756P17S、shard 1 1734P39S）、UI 16 文件
+  **124 tests**；精确 macos-arm64 产物、篡改负控、全新安装和真实 GUI 生命周期
+  也通过。独立第二读者 PASS 仍是合并硬门；当前 docs-only 收口 head 必须另跑自己的
+  CI 和重建产物。CI 只有 action runner 的 Node 20/未来 Ubuntu 26 迁移提示，不影响
+  本次结果，待后续维护批次升级 action 版本。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
   `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
   分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
@@ -69,7 +73,12 @@
   macOS 3516P12S、Windows 1726P38S + 1746P18S（汇总 3472P56S / 3528 节点）、UI
   全步骤成功；精确 macos-arm64 产物、冷启动可见 UI、关窗/重开/显式退出也通过。
   若之后还有 docs-only 提交，新 head 的 CI/产物必须另行绑定；独立复审仍另绑。
-- **W5 调度器已交付分支 `feat/scheduler-tasks`（2026-11-15，PR 待合）**：基线 main@0c5bb71；本机门禁 lock/ruff 0、全量 3408P/11S（686.57s）= 基线 3395P/11S + 13 条新调度器测试；负控 NC1/NC2 实跑红→还原留证。v1 边界如实：interval 调度、只走 CLI、无 cron/无 RPC/无 UI/零新事件族（C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md）；CI 与合并状态以 PR 为准，未合不算已合。
+- **W5 调度器已交付并入 main `c637b52`（2026-11-15，PR #167）**：基线
+  main@0c5bb71；本机门禁 lock/ruff 0、全量 3408P/11S（686.57s）= 基线
+  3395P/11S + 13 条新调度器测试；负控 NC1/NC2 实跑红→还原留证。v1 边界如实：
+  interval 调度、只走 CLI、无 cron/无 RPC/无 UI/零新事件族（C3 评估见
+  CONTRACT-W5-SCHEDULER-2026-11-15.md）。PR 项自身 CI 曾出现触发异常并留有记录；
+  merge commit `c637b52` 进入本发布候选后又由精确 run `43729859260` 覆盖验证。
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
 - **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
@@ -860,6 +869,25 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-15 · PR #162 同步 W3/W5 并完成精确 CI、产物与 GUI 复验**：远端 main
+  在收尾期间连续推进到 `c7f31f7`（W3）与 `c637b52`（W5）；两次都用普通 merge
+  同步，`KNOWLEDGE` 冲突保留双方事实，另只删除 main 带入的 `scheduler.py` 行尾空白。
+  最终代码候选 `3073602`（tree `d8c55fb`）定向交集 260P1S、完整 Python
+  3534P12S（692.71s）、UI 124 tests、Rust 24 tests、lock/Ruff/typecheck/build/
+  dist/Cargo fmt/clippy/actionlint/shellcheck/diff 全 0。精确 PR run
+  `43729859260` 六项全绿：Ubuntu 3514P32S（525.33s）、macOS 3534P12S
+  （803.83s）、Windows shard 0 1756P17S、shard 1 1734P39S，汇总 3490P56S 并核验
+  3546 nodes；UI 23s。精确 macos-arm64 archive SHA256
+  `86efe6573b204eda1608754f0c023ec0b37a5d2734febb69a6b238bfdc3c2115`、
+  manifest `48822d8fadb2e375a8dc93457c20aa5a8cd9ce606f02b9923d3aec74d8bcd738`，
+  通过 verify/runtime smoke/篡改 `host.py` 精确拒绝/全新安装。真实 App 冷启动显示
+  React UI 与“已连接”，`/health` 和 `/state` 使用同一隔离数据根；关窗后
+  `desktop 37550 → Host 37578 → Daemon 37585` 保持不变，重开复用同一进程链，
+  菜单“退出天枢 Agent”后三层全退，`host.lock`/`daemon.lock`/`agent.sock` 清理且
+  包内字节码为 0。证据在
+  `.omc/artifacts/release-app-final-3073602-2026-11-15/`。本会话不能调用独立复审，
+  不把作者侧结果冒充第二读者 PASS；独立 PASS 前仍不合并、不跑依赖 merge SHA 的四
+  目标发布。
 - **2026-11-15 · PR #162 Windows 修复精确 CI 与产物闭环**：`5e89de5` 的 PR run
   `43714752198`（attempt 1）六 job 全绿：Ubuntu 3496P32S/529.73s、macOS
   3516P12S/755.22s、Windows shard 0 1726P38S/704.93s、shard 1
