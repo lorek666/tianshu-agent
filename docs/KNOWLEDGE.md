@@ -28,12 +28,20 @@
 
 - **当前远端 main 为 `702ba40`（2026-11-15）**：W3 有界状态响应、W5 调度器、
   W3/W5/W15 文档收口、W15 v1 只读审计（PR #169）和 #141 全仓文档对账已正常
-  合并。独立第二读者对发布候选 `5873720` 给出
+  合并。发布分支以普通 merge 提交 `3f5e2b1`（tree `2ab00890`）接入该 main；
+  `src/tianshu/data_cli.py` 的血统直接来自 main，`KNOWLEDGE.md` 两处同锚追加冲突
+  保留双方事实。独立第二读者对发布候选 `5873720` 给出
   `PARTIAL`：发布构建、验签、安装回滚、W3/W5 兼容和大部分生命周期通过，但附着
   既有 Host 后显式退出只关闭桌面壳，Host/Daemon 与运行期锁继续存活。当前修复把
   附着退出接到同一 token 鉴权 `/shutdown`，按 PID 有界等待原 Host 消失，并在 Host
-  退出后只清理未变更的 Daemon 实例；Rust 真 HTTP 红测已转绿。新 head 的完整本机
-  门、精确 CI、重建产物、安装态 attach→quit 探针和独立复审仍须重新绑定。
+  退出后只清理未变更的 Daemon 实例；Rust 真 HTTP 红测已转绿。同步后的本机门为
+  Python **3538 passed / 12 skipped（697.14s）**、UI 16 文件 124 tests、Rust
+  **26 tests**，lock/Ruff/typecheck/build/dist/Cargo fmt/clippy/actionlint/shellcheck/
+  diff 全 0。精确 PR run `43747490300` 绑定 PR head `3f5e2b1`，其中 GitHub 合成
+  merge `ec106a89` 的 parents 为 `702ba40 + 3f5e2b1` 且 tree 与 head 相同；六 job
+  全绿：Ubuntu 3518P32S、macOS 3538P12S、Windows shard 0 1756P19S、shard 1
+  1738P37S（汇总 3494P56S / 3550 nodes）、UI 124 tests。最终 docs-only SHA 仍须
+  各自重跑云 CI；精确 macos-arm64 产物、安装态 attach→quit 和第二读者 PASS 仍须另绑。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
   `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
   分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
@@ -874,6 +882,20 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-16 · PR #162 同步 main `702ba40` 并完成精确云门**：从独立复审
+  `PARTIAL@5873720` 的诊断修复提交 `187a579` 普通合并最新 main `702ba40`，合并
+  提交 `3f5e2b1`（tree `2ab00890`）。唯一冲突仍是 `KNOWLEDGE.md` 两处同锚追加：
+  解析器保留 HEAD/main 双方，并把当前状态从 `1a8aebb` 更新为 `702ba40`；W15 v1
+  审计（PR #169）改记已并入 main，已合并的 #141 从“仍 OPEN”改为实际，`#140` 保留。
+  合并前用 stage1+双方相对 base 的唯一行多重集证明零事实丢失，冲突标记和
+  `git diff --check` 均为 0。合并后独占本机门为 lock/Ruff/W15 定向 31P、完整
+  Python **3538P12S/697.14s**、UI 124 tests、Rust 26 tests 及全部静态门 0。PR run
+  `43747490300` 绑 `3f5e2b1`，GitHub 合成 merge `ec106a89` 的 tree 与候选相同，
+  六 job 全绿；Ubuntu 3518P32S、macOS 3538P12S、Windows 1756P19S+1738P37S
+  （3494P56S / 3550 nodes）、UI 124 tests。原件在
+  `.omc/artifacts/release-app-sync-702ba40-3f5e2b1-2026-11-16/`。本日志之后只做
+  docs-only 最终 SHA、精确 macos-arm64 产物、安装态 attach→quit 与独立复审；旧 SHA
+  绿色不冒充新 SHA。
 - **2026-11-16 · 独立复审发现附着 Host 退出遗留服务并修复**：第二读者绑定
   `5873720/tree f16f930` 复审为 `PARTIAL`；它独立构造的 macos-arm64 产物、篡改
   负控、安装、冷启动、普通自有 Host 生命周期及 W3/W5 兼容均通过，但安装态复现
