@@ -67,8 +67,16 @@
   `host.lock`/`daemon.lock`/`agent.sock` 均删除。`execution.guard` 与 `ipc.key` 是持久
   文件，不能误记成锁残留。测试环境同时注册了同 bundle id 的旧 debug App，按显示名绑定
   会被 LaunchServices 启动到旧 App；最终 GUI 证据改为按完整正式 App 路径绑定，这只作为
-  测试隔离边界，不冒充生产缺陷。最终 docs-only HEAD 的精确云 CI、重建产物与独立复审仍
-  必须在合并前单独绑定。
+  测试隔离边界，不冒充生产缺陷。最终 docs-only HEAD
+  `aa6b65f0d2e389180e9b6990ad02796b50acafe0`（tree
+  `b28d084d95f30044641eea2b85f1f923419c1086`）已由 PR run
+  `43701648845` 单独验证：Ubuntu **3494P32S（482.62s）**、macOS
+  **3514P12S（902.75s）**、Windows 两片合计 **3470P56S**（3526 节点，汇总器核验完整
+  覆盖）、UI 全步骤成功；六 job 全绿。该 SHA 的 macos-arm64 archive SHA256 为
+  `efc39081a544c87a98e630494fdbfa366fe225cc630b601d82a980e175d56967`，manifest
+  SHA256 为 `fafb51b6226c2b86da06935cd02f1913a18e4bab8fc56f1220e9ece872867705`，
+  runtime smoke、篡改/未列文件负控、安装/卸载及真实 GUI 生命周期均通过。当前唯一未完成的
+  合并前门禁是独立第二读者复审；不能由作者上下文代替。
 - **可安装发行版 PR #162 第四轮作者复审修复（2026-11-15，代码 `3c0687d`，独立复审与最终云门待回填）**：
   在 `7707597` 上确认 7 项发布/生命周期缺口并先取得原实现红：release
   dispatch 接受旧 main 祖先；失败 Host 启动遗留新 Daemon；`/shutdown` ACK 后 Host
@@ -1115,5 +1123,12 @@
   runtime lock 错 triple、macOS Python 架构漏检、Host 已退出仍等 30 秒、延迟 Daemon
   锁逃过一次性清理七项。提交 `3c0687d` 后统一本机门为 Python 3465P/11S、UI 124
   tests、Rust 18 tests，lock/Ruff/typecheck/build/dist/fmt/clippy/actionlint/shellcheck
-  全 0。精确新 head 的云端矩阵、真实产物/GUI 和独立第二读者仍未完成；由于本会话禁止
-  子代理，作者不能自批独立复审，PR 保持未合并。
+  全 0。随后又确认 `host.lock` 截断发布竞态（R3-08）并在 `719de9a`/`8058926` 修复；
+  同步 main `61f985e` 后，最终代码对象 `1b0c99d` 的独立本机全门为
+  3514P12S（704.08s），UI 124 tests、Rust 24 tests，其余静态门全 0。精确 docs-only
+  candidate `aa6b65f` 的 PR run `43701648845` 六 job 全绿：Ubuntu 3494P32S、
+  macOS 3514P12S、Windows 3470P56S/3526 节点、UI 成功；GitHub Actions 仅保留
+  Node 20 action 弃用和 Windows PATH 提示，无产品或测试失败。同一 SHA 的
+  macos-arm64 产物通过 runtime smoke、manifest/篡改负控、安装/卸载/重装/保留数据以及
+  真实 App 启动、关窗、重开、显式退出。由于本会话禁止启动/调用子代理，独立第二读者
+  PASS 仍不存在；PR 保持未合并，不把作者侧作者门禁和本机自查当成独立批准。
