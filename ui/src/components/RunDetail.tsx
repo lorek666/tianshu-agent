@@ -1,7 +1,9 @@
-import type { RunView, TaskView } from "../api/types";
+import type { EventView, RunView, TaskView } from "../api/types";
 import type { StreamStatus } from "../api/stream";
 import type { CostSummary } from "../lib/timeline";
 import type { TimelineEntry } from "../lib/humanize";
+import { BudgetPanel } from "./BudgetPanel";
+import { SubtaskPanel } from "./SubtaskPanel";
 import {
   controlLabel,
   effectStateLabel,
@@ -20,6 +22,10 @@ export interface RunDetailProps {
   run: RunView;
   task: TaskView;
   entries: TimelineEntry[];
+  /** 选中 Run 的已加载事件（上限 2000 条）；预算/子任务面板从这里推导，不发新请求。 */
+  events: EventView[];
+  /** 本任务的全部 Run（子任务面板用它回填子 Run 状态）。 */
+  runs: RunView[];
   hasMore: boolean;
   cost: CostSummary;
   streamStatus: StreamStatus;
@@ -36,6 +42,8 @@ export function RunDetail({
   run,
   task,
   entries,
+  events,
+  runs,
   hasMore,
   cost,
   streamStatus,
@@ -163,6 +171,9 @@ export function RunDetail({
             <div className="cost-note">实际成本不足 1 美分，按两位小数显示为 $0.00；悬停可看精确值。</div>
           ) : null}
         </div>
+
+        <BudgetPanel events={events} />
+        <SubtaskPanel events={events} runs={runs} />
 
         <RunTimeline entries={entries} hasMore={hasMore} live={streamStatus === "live"} />
       </div>
