@@ -46,6 +46,7 @@
 | 🛠️ | **执行工具** | `run_command` 走 argv 不经 shell、默认全拒、需审批、有超时与输出截断 |
 | 🌐 | **受控出网** | `network.fetch` 只支持 GET；**任务级外发白名单**（未声明 = 一条包都不发）+ 逐次人工批准；同源重定向、1 MiB 响应上限、10s 硬超时、字节账本、有界摘要 + `content://` 引用；回放不联网 |
 | 🧩 | **受控子代理** | 父任务声明 `--max-subtasks N` 后可用 `subtask.spawn` 派**只读**子任务（写文件/出网/exec/MCP/记忆写/再委派都是拒绝，不弹嵌套审批）；子 Run 由既有 Worker 驱动，父 Run 在等子任务时挂起作业、子任务收尾的同一事务里唤醒；父取消传播、父改目标 fence（`dispatch.parent_fenced`）；结果以 ≤4 KiB 摘要 + `content://` 引用回填，回放不重跑。**评测**：`RU-D1@1.0.0` 在脚本模型下真的派一个只读子任务 → 父任务逐字汇总并引用两个本地文档；写/外发被规则拒绝、子任务失败时父报告写「没有取得 / 输出不可用」。**没有跨机器调度、取消不退款、不是真实模型分数**（见下方诚实清单） |
+| ⏰ | **定时任务（v1 最小调度器）** | `tianshu schedule create/list/show/enable/disable/remove`（interval 调度，**无 cron**）+ daemon 到期自动触发：走与 `task.create`/`run.start` 完全相同的存储路径创建任务并入队 Run（事件流只出现既有事件族），由既有 Worker 认领驱动；停机期间落下的到期**补发一次并从当前时间重排**；触发记账与建任务同事务，失败回滚并记 `last_error`。Run 内副作用照走执行侧授权（调度器不是授权输入）。**没有 RPC 接口、没有 UI 页面、没有 schedule 生命周期事件**（C3 评估见 docs/CONTRACT-W5-SCHEDULER-2026-11-15.md）；平台以 CI 矩阵为准 |
 | 🔌 | **受控 MCP** | MCP server 走 stdio 客户端；**用户配置（`TIANSHU_MCP_CONFIG`）× 任务级 server 白名单（`--allow-mcp-server`）× 逐次人工批准** 三道门；server 的 `inputSchema` 必须过封闭方言准入（认不出就拒该工具，不静默丢），工具版本绑定原始 schema + 归一 schema + 描述，改了就得重新批准；超时/断线按 `unknown` 结算；`tianshu mcp list` 如实列 server 状态、准入/被拒工具与原因。**未沙箱、未验证真实第三方 server**（见下方诚实清单） |
 | 🧾 | **记忆看得见** | 控制面 `memory.search` + React 记忆面板：列出 / 检索 / 确认 / 忘记 / 擦除；条目带六项判据 + 语义能力标注（`semantic` / `degraded` / `fused`）+ `score`；正文纯文本、不做乐观更新、冲突只刷新重读。**评测**：`RU-M1@1.0.0` 跨任务召回（两段 Run；脚本模型） |
 | 💰 | **成本可见** | 整数微美元记账；价格未知记 `None` 并单独计数，**不伪装成 0** |
