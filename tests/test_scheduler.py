@@ -407,6 +407,10 @@ def test_daemon_fires_due_schedule_and_worker_drives_it(tmp_path: Path) -> None:
         assert _wait_until(_task_event) is not None, "daemon 没有触发到期的 schedule"
 
         def _terminal_run() -> object:
+            # 谓词必须等到它声称等到的东西：**终态** Run。不过滤 state 时，
+            # Run 一存在（created）谓词就为真，快机器上 worker 常在一个轮询
+            # 间隔内跑完才碰巧绿——Windows CI attempt1（run43693131633）慢
+            # runner 第一拍抓到 'created' 实红。谓词等终态，断言才名副其实。
             return _fetchone(
                 db,
                 """
@@ -414,6 +418,7 @@ def test_daemon_fires_due_schedule_and_worker_drives_it(tmp_path: Path) -> None:
                 JOIN events e ON e.task_id = r.task_id
                 WHERE e.type = 'task.created'
                   AND e.payload LIKE '%调度出来的任务%'
+                  AND r.state IN ('succeeded', 'failed')
                 """,
             )
 
