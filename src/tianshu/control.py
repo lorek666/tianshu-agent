@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
@@ -44,6 +45,7 @@ from typing import Any
 from . import memory_control
 from .errors import RunFenced, TianshuError, ToolArgumentError, WorkspaceViolation
 from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
+from .ipc import MAX_MESSAGE_BYTES
 from .loop import Limits, Stack
 from .permissions import ApprovalError, HumanIdentity
 from .resources import MemoryScope, build_memory_scope
@@ -63,6 +65,25 @@ DAEMON_VERSION = "0.1.0"
 #: `state` / `task.list` 一次最多返回多少任务。首屏不该把十年历史全塞过去。
 DEFAULT_TASK_LIMIT = 50
 MAX_TASK_LIMIT = 200
+
+#: `state` 响应（result 部分）的组装预算。IPC 单帧上限是 8MiB
+#: （`ipc.MAX_MESSAGE_BYTES`），而 daemon 的发送线程编码超限帧时会直接把整条
+#: 连接 drop 掉（`daemon._send_loop` → `drop("send_error")`），客户端看到的
+#: 是断连而不是报错——所以预算必须在控制面组装时就守住，不能指望传输层兜底。
+#: 取帧上限的一半：外层信封、节名与数组语法只占几百字节，2× 余量足以盖住
+#: "逐条估算与真实整帧编码"的差异。
+STATE_RESULT_BUDGET_BYTES = MAX_MESSAGE_BYTES // 2
+
+#: state 三节的预算份额。tasks 的 goal 是唯一无界的自由文本，占一半；runs /
+#: approvals 视图字段天生有界，各 1/4。第一趟按份额装填，没用完的份额顺延给
+#: 后面的节；第二趟把全部剩余预算按原顺序再分给第一趟被截断的节（见
+#: docs/SPEC-STATE-RESPONSE-BOUND-2026-11-15.md 的装填算法与不变量）。
+_STATE_SECTION_SHARES: dict[str, float] = {
+    "tasks": 0.5,
+    "runs": 0.25,
+    "approvals": 0.25,
+}
+_STATE_SECTION_NOUNS = {"tasks": "任务", "runs": "运行", "approvals": "审批"}
 
 #: `state.runs` 里保留的终态 Run 数量（§3.4：非终态 + 最近 20 个终态）。
 RECENT_TERMINAL_RUNS = 20
@@ -183,6 +204,55 @@ def approval_view(
         "created_at": int(approval.created_at),
         "expires_at": int(approval.expires_at),
     }
+
+
+def _json_encoded_size(view: dict[str, Any]) -> int:
+    """视图序列化后的字节数。
+
+    参数必须与 `ipc.encode` 逐字一致（`ensure_ascii=False`、紧凑分隔符）——
+    差一个参数，预算估算就失真。这里只做"这条视图多大"的度量，真正的帧
+    上限检查仍在 `ipc.encode`。
+    """
+    return len(
+        json.dumps(view, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _fit_within_budget(
+    views: list[dict[str, Any]],
+    *,
+    allowance: int,
+    budget: int,
+    noun: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """按预算装填一节视图。返回（保留的条目, 已消费条数, 花费字节）。
+
+    两条硬规则（§3.4 state 行、SPEC-STATE-RESPONSE-BOUND）：
+
+    - **单条视图超过整份响应预算 → ControlError("internal")。** 它永远塞不进
+      任何 state 响应：静默丢条目等于 UI 谎报"这个任务不存在"，把 goal 文本
+      截断又是偷改字段语义——两条路都不走，只剩明确报错。
+    - **放不下的条目就地停下**（已消费 < 总数即为截断，由调用方置
+      `*_truncated` 标记）。条数收紧，条目文本一字不动。
+
+    `allowance` 是本节可花的额度（份额 + 前面节没用完的顺延）；`budget` 是
+    整份响应预算，只用于 fail-loud 判定。
+    """
+    kept: list[dict[str, Any]] = []
+    spent = 0
+    for index, view in enumerate(views):
+        size = _json_encoded_size(view)
+        if size > budget:
+            raise ControlError(
+                "internal",
+                f"state 响应单条{noun}序列化后 {size} 字节，超过响应预算 {budget} 字节；"
+                "不截断文本就无法返回，请缩小该条目的内容",
+            )
+        if spent + size > allowance:
+            return kept, index, spent
+        kept.append(view)
+        spent += size
+    return kept, len(views), spent
 
 
 class ControlPlane:
@@ -310,14 +380,58 @@ class ControlPlane:
 
     def _state(self, params: dict[str, Any]) -> dict[str, Any]:
         # 不用 params：首屏永远按默认条数返回。UI 要更多自己调 task.list。
-        tasks = self._list_tasks(DEFAULT_TASK_LIMIT)
-        runs = self._list_recent_runs()
+        # 响应必须装得进一帧 IPC（8MiB）：goal 是无界自由文本，50 个大 goal
+        # 的任务就能把响应顶过帧上限，发送线程会直接 drop 连接（实测
+        # `ConnectionClosed: 对端在消息结束前关闭`）。所以按预算装填：
+        # 放不下就少放并置 `*_truncated` 标记，单条超预算则 fail loud。
+        sections: list[tuple[str, list[dict[str, Any]]]] = [
+            ("tasks", [task_view(task) for task in self._list_tasks(DEFAULT_TASK_LIMIT)]),
+            ("runs", [self._run_view(run) for run in self._list_recent_runs()]),
+            ("approvals", self._list_approvals(None)),
+        ]
+        budget = STATE_RESULT_BUDGET_BYTES
+        kept_sections: dict[str, list[dict[str, Any]]] = {}
+        truncated: dict[str, bool] = {}
+        donated = 0
+        unfinished: list[tuple[str, list[dict[str, Any]], int]] = []
+        for name, views in sections:
+            allowance = int(budget * _STATE_SECTION_SHARES[name]) + donated
+            kept, consumed, spent = _fit_within_budget(
+                views, allowance=allowance, budget=budget, noun=_STATE_SECTION_NOUNS[name]
+            )
+            kept_sections[name] = kept
+            truncated[name] = consumed < len(views)
+            donated += allowance - spent
+            if consumed < len(views):
+                unfinished.append((name, views, consumed))
+        # 第二趟：第一趟没用完的预算按原顺序再分给被截断的节。典型受益场景：
+        # tasks 只有一条大 goal、runs/approvals 全空——份额装不下它，但整份
+        # 响应其实装得下，不该为了份额把它藏起来。
+        leftover = donated
+        for name, views, start in unfinished:
+            if leftover <= 0:
+                break
+            kept, consumed, spent = _fit_within_budget(
+                views[start:],
+                allowance=leftover,
+                budget=budget,
+                noun=_STATE_SECTION_NOUNS[name],
+            )
+            kept_sections[name].extend(kept)
+            truncated[name] = start + consumed < len(views)
+            leftover -= spent
         return {
-            "tasks": [task_view(task) for task in tasks],
-            "runs": [self._run_view(run) for run in runs],
-            "approvals": self._list_approvals(None),
+            "tasks": kept_sections["tasks"],
+            "runs": kept_sections["runs"],
+            "approvals": kept_sections["approvals"],
             "event_seq_head": self.event_seq_head(),
             "daemon": self._daemon_view(),
+            # 截断标记是给 UI 的"列表不完整"信号（契约：加字段不升版本，
+            # 旧客户端忽略不认识的键）；要更多走 task.list / run.list /
+            # approvals.list，它们有自己的条数上限。
+            "tasks_truncated": truncated["tasks"],
+            "runs_truncated": truncated["runs"],
+            "approvals_truncated": truncated["approvals"],
         }
 
     def _daemon_view(self) -> dict[str, Any]:
@@ -581,9 +695,13 @@ class ControlPlane:
     def _list_approvals(self, run_id: str | None) -> list[dict[str, Any]]:
         """过期的先清再列（批了也不会执行的不该留在队列里，§3.4）。"""
         self._approvals.expire_due()
-        context = self._approval_context()
+        pending = self._approvals.pending(run_id=run_id)
+        context = self._approval_context(
+            {approval.approval_id for approval in pending},
+            {approval.run_id for approval in pending},
+        )
         views = []
-        for approval in self._approvals.pending(run_id=run_id):
+        for approval in pending:
             rule_id, isolation = context.get(approval.approval_id, ("", None))
             views.append(
                 approval_view(approval, rule_id=rule_id, isolation=isolation)
@@ -592,24 +710,39 @@ class ControlPlane:
 
     def _approval_context(
         self,
+        approval_ids: set[str],
+        run_ids: set[str],
     ) -> dict[str, tuple[str, dict[str, Any] | None]]:
-        """`Approval` 投影没有 `rule_id` / `isolation`，它们只在
-        `approval.requested` 事件里。
+        """按需读这些审批自己的 `approval.requested` 事件，补 rule_id / isolation。
 
-        视图要按契约给出这两项（UI 拿去映射人话），所以从事件读一次；
-        同一张审批只会被请求一次（`ApprovalStore.request` 幂等），字典不会歧义。
+        `Approval` 投影没有这两项，它们只在 `approval.requested` 事件里；视图
+        要按契约给出（UI 拿去映射人话）。旧实现 `read_types([...])` 每次全表
+        扫**整份**事件日志——连早已决定的审批也重读、逐条 SHA256 验签，state /
+        approvals.list 的内存与 CPU 随全部历史线性涨。现在只读**目标审批所在
+        Run** 的事件（`read_run(verify=False)`，与 `_run_view` 的效果计数同一
+        读取口径）：state 本来就要逐 Run 读事件，这里不引入任何"Run 之外"的
+        读取量。
+
+        不变量：读取量 = Σ(目标审批所在 Run 的事件数)，与事件日志总长度、
+        历史审批总数无关。同一张审批只被请求一次（`ApprovalStore.request`
+        幂等），同一 Run 内按 approval_id 取第一条匹配，字典不会歧义。
         """
         mapping: dict[str, tuple[str, dict[str, Any] | None]] = {}
-        for event in self._log.read_types(["approval.requested"]):
-            approval_id = event.payload.get("approval_id")
-            if not isinstance(approval_id, str) or approval_id in mapping:
-                continue
-            rule_id = event.payload.get("rule_id")
-            isolation = event.payload.get("isolation")
-            mapping[approval_id] = (
-                rule_id if isinstance(rule_id, str) else "",
-                isolation if isinstance(isolation, dict) else None,
-            )
+        for run_id in sorted(run_ids):
+            for event in self._log.read_run(run_id, verify=False):
+                if event.type != "approval.requested":
+                    continue
+                approval_id = event.payload.get("approval_id")
+                if not isinstance(approval_id, str) or approval_id not in approval_ids:
+                    continue
+                if approval_id in mapping:
+                    continue
+                rule_id = event.payload.get("rule_id")
+                isolation = event.payload.get("isolation")
+                mapping[approval_id] = (
+                    rule_id if isinstance(rule_id, str) else "",
+                    isolation if isinstance(isolation, dict) else None,
+                )
         return mapping
 
     def _approvals_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -646,9 +779,11 @@ class ControlPlane:
             actor=HumanIdentity.local_cli(),
         )
         resumed = self._enqueue_resume(approval.run_id)
-        rule_id, isolation = self._approval_context().get(
-            approval.approval_id, ("", None)
-        )
+        # 决定后的审批已不是 pending，上下文要显式点名这一张（读它自己 Run 的
+        # 事件），否则响应视图里的 rule_id / isolation 会退化成空值。
+        rule_id, isolation = self._approval_context(
+            {approval.approval_id}, {approval.run_id}
+        ).get(approval.approval_id, ("", None))
         return {
             "approval": approval_view(
                 approval, rule_id=rule_id, isolation=isolation

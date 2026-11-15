@@ -125,7 +125,7 @@ M5 不重新发明一套。
 | 方法 | 参数 | 结果 | 说明 |
 |---|---|---|---|
 | `hello` | 见上 | `welcome` | 必调，且必须是第一条 |
-| `state` | — | `{tasks, runs, approvals, event_seq_head, daemon}` | 首屏；`runs` = 全部非终态 + 最近 20 个终态/fence。`daemon = {daemon_version, instance_id, pid, data_root, started_at}` |
+| `state` | — | `{tasks, runs, approvals, event_seq_head, daemon, tasks_truncated, runs_truncated, approvals_truncated}` | 首屏；`runs` = 全部非终态 + 最近 20 个终态/fence。`daemon = {daemon_version, instance_id, pid, data_root, started_at}`。三个 `*_truncated` 截断标记（2026-11-15 W3 起新增；加字段不升版本，旧 daemon 不发、旧客户端忽略）：响应对应预算装填（帧上限 8MiB 的一半，tasks/runs/approvals 按份额顺序装填），某节放不下就按条停并置标记，**条目文本不截断**；单条目自身超预算抛 `internal`（设计与不变量见 SPEC-STATE-RESPONSE-BOUND-2026-11-15.md） |
 | `task.list` | `{limit?}` | `{tasks}` | 按更新时间倒序 |
 | `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?}` | `{task}` | 建任务不建 Run |
 | `task.revise` | `{task_id, goal}` | `{task}` | 改目标 → `goal_revision+1`，旧 Run 被 fence |

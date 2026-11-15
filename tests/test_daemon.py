@@ -1260,3 +1260,38 @@ def test_client_disconnect_does_not_spin_a_cpu_core(root) -> None:
         f"客户端断开后 daemon 在 1.5s 内吃了 {delta:.2f}s CPU——读线程在空转"
     )
 
+
+
+# ------------------------------------------------------------------ state 响应预算（W3）
+
+
+def test_state_rpc_survives_adversarial_task_goals(root, start_daemon) -> None:
+    """端到端：50 个 ~313KB goal 的任务，state RPC 必须能回来（带截断标记）。
+
+    修复前：daemon 组装 >8MiB 的响应，发送线程 `_send_loop` 里 `encode()` 抛
+    ProtocolError，被当作 `send_error` 静默 drop 整条连接——客户端拿到的是
+    EOF 断连（ConnectionClosed"对端在消息结束前关闭"），重试也永远同样失败。
+    UI 首屏的 state 永久坏。
+    """
+    ws = root / "ws"
+    ws.mkdir()
+    start_daemon(ScriptedModel([]))
+    client = _connect(root)
+    try:
+        goal = "重写季度报告：" + "这是很长的目标描述文本。" * 8000  # ≈ 313KB
+        for _ in range(50):
+            client.call(
+                "task.create",
+                {
+                    "goal": goal,
+                    "workspaces": [{"root_path": str(ws), "mode": "writable"}],
+                },
+            )
+        state = client.call("state", {}, timeout=20)
+        assert state["tasks_truncated"] is True
+        assert 0 < len(state["tasks"]) < 50
+        assert state["runs_truncated"] is False
+        # 条数收紧 ≠ 文本截断：保留下来的 goal 逐字完整。
+        assert all(item["goal"] == goal for item in state["tasks"])
+    finally:
+        client.close()
