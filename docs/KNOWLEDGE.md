@@ -41,11 +41,34 @@
   `JSONDecodeError`。`719de9a` 改用同目录临时文件、fsync、`os.replace` 与目录
   fsync 原子发布，外部读者只能看到完整旧锁或完整新锁，回归为
   `tests/test_host.py::test_host_metadata_publication_is_atomic_for_external_readers`
-  旧实现 exit 1、修复后 exit 0，Host 定向套件 58 passed / 1 skipped。该证据不等于
-  最终新 head 的真实产物已经复验。`0f8649c` 的受控 loopback 模型 GUI 链还分别证明了
+  旧实现 exit 1、修复后 exit 0；main `61f985e` 合并后的 Host 聚合套件为
+  **76 passed / 1 skipped**。该证据不等于最终新 head 的真实产物已经复验。
+  `0f8649c` 的受控 loopback 模型 GUI 链还分别证明了
   拒绝审批不执行、批准后文件与 Receipt 闭合、等待审批时取消不执行；关窗后三层进程
   继续、重开连接同一 Host、`Cmd+Q` 后 Host/Daemon/壳退出且无 socket/锁残留。上述 GUI
   事实是旧 head 证据，最终 App 必须重建后重跑。
+- **PR #162 同步 main `61f985e` 后的独占本机门（2026-11-15，作者侧候选）**：
+  `ca8f32d` 合并最新 main，`719de9a` 修 `host.lock` 原子发布，`8058926` 把回归改为
+  spawn 子进程发布、父进程直接读。最终代码树在确认全用户 `restore-gate` 空闲后独占运行
+  lock、全仓 Ruff 与完整 pytest，结果为 **3514 passed / 12 skipped / 704.08s**，
+  lock/Ruff 均 0；Host 聚合 **76 passed / 1 skipped**，UI 16 文件 **124 tests**，
+  typecheck/build/`ui/dist` 一致，Rust **24 tests**、fmt、Clippy `-D warnings`、
+  actionlint、shellcheck 与 `git diff --check` 均通过。先前两次全量与另一在途会话的完整
+  pytest 重叠，被用户级全局 `restore-gate` 分别打断为
+  `maintenance_busy`；失败日志保留在 ignored `.omc/artifacts/`，不能算产品红，也不能用
+  后来绿色覆盖竞争事实。代码对象 `1b0c99d` 的后续云 CI run `43699772460` 六个 job
+  全绿；该结论只绑定这个代码对象，后续 docs-only 提交仍须有自己的精确 SHA CI。同一代码
+  对象的 macos-arm64 产物 archive SHA256 为
+  `3e798305decff899e5d8d074ca26cd461945f44f8924f94d76c2439556963733`，
+  manifest SHA256 为
+  `1f2e998e3cbf45b3a14c3a8165d69b64acd74b8ad4fc54901fa9023bdce6916b`。
+  在该安装产物的真实 Tauri 窗口中，关窗后三层 PID 与 Host 端口保持不变；按完整 App
+  路径重开后仍连接同一端口与隔离数据根；`super+q` 退出后三层进程全部消失、
+  `host.lock`/`daemon.lock`/`agent.sock` 均删除。`execution.guard` 与 `ipc.key` 是持久
+  文件，不能误记成锁残留。测试环境同时注册了同 bundle id 的旧 debug App，按显示名绑定
+  会被 LaunchServices 启动到旧 App；最终 GUI 证据改为按完整正式 App 路径绑定，这只作为
+  测试隔离边界，不冒充生产缺陷。最终 docs-only HEAD 的精确云 CI、重建产物与独立复审仍
+  必须在合并前单独绑定。
 - **可安装发行版 PR #162 第四轮作者复审修复（2026-11-15，代码 `3c0687d`，独立复审与最终云门待回填）**：
   在 `7707597` 上确认 7 项发布/生命周期缺口并先取得原实现红：release
   dispatch 接受旧 main 祖先；失败 Host 启动遗留新 Daemon；`/shutdown` ACK 后 Host
@@ -486,6 +509,11 @@
   侧互斥；直接截断再写会让另一个进程把短暂中间态当成永久损坏。发布锁文件应写
   同目录临时文件、fsync 后原子替换，再 fsync 父目录；回归必须让外部读者停在
   “已截断但未写完”的旧窗口，而不是只反复启动碰运气。
+- **同一用户不能并行跑两个含 `EventLog` 的完整套件**：T1 的 restore gate 是用户级固定
+  锁，不是按测试临时目录隔离。第二套件会在迁移/备份独占窗口得到
+  `maintenance_busy`，即使两套测试的数据根不同。门禁必须先核对 `pytest` 与
+  `eval.crash_child` 均退出，再取得一次独占 gate 作为空闲探针；失败原件保留，不能把
+  并发污染写成产品回归。
 - **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
 - **读者不能用 `BEGIN IMMEDIATE` 冒充共享锁**：它会把两个普通连接串行化。registry observation 使用 shared namespace/entity + `BEGIN` 只读快照，写者使用外部 exclusive 锁；这样既保留并发，也让已接线 writer 立即互斥。
 - **Windows 没有可移植的目录 `fsync` 等价物**：`FlushFileBuffers` 对普通目录句柄不能当成无条件成功。目录发布另行使用 write-through rename，并把物理断电级 durability 保持 `NOT_RUN`。
@@ -780,9 +808,13 @@
   历史，无 skip、门禁或产品契约变更。真实安装态 App 在 `0f8649c` 上暴露启动期
   `host.lock` 半写读取；spawn 子进程发布、父进程直接读的确定性旧实现探针稳定
   截断为 `{"pid` 并抛 `JSONDecodeError`，`719de9a` 改为临时文件 + fsync +
-  原子替换 + 目录 fsync。
+  原子替换 + 目录 fsync。`8058926` 随后把回归升级为真实 spawn 子进程中的阻塞发布者；
+  main `61f985e` 合并后的独占门为 **3514P12S、704.08s**，Host 76P1S、UI 124 tests、
+  Rust 24 tests，其余静态门全 0。
   受控本地 OpenAI-compatible 服务在旧真实产物上完成拒绝、批准、取消三闭环，并验证
-  关窗保活、重开同 Host、`Cmd+Q` 无壳/Host/Daemon 残留。当前只冻结作者侧证据；
+  关窗保活、重开同 Host、`Cmd+Q` 无壳/Host/Daemon 残留。收口时发现另一个在途会话
+  也启动了完整 pytest；两个全量因用户级 restore gate 互相触发 `maintenance_busy`，
+  相关红日志均保留，待所有测试进程退出后独占门真实通过。当前只冻结作者侧证据；
   独立复审因本会话禁止启动子代理而不能由作者代替，最终新 head 的完整门、云 CI、
   产物和 GUI 复验另绑。
 - **2026-11-15 · Ubuntu CI 暴露短正文静默成功并修复**：T1 最终候选的 Ubuntu job 在 `test_send_phase_failure_is_never_retried` 实测 `DID NOT RAISE NetError`；Mac、两片 Windows、Windows 汇总和 UI 均绿，证明失败不是 T1 平台回归。根因是 `http.client` 对带 `Content-Length` 的半截响应是否抛 `IncompleteRead` 取决于平台/EOF 时机，`fetch()` 未自行核对已读长度。修复在正文读取后显式比较 `HTTPResponse.length` 与收集字节，短正文报 `net.read`；半响应夹具先读完请求，避免把 TCP RST 混成协议测试。新增假连接回归覆盖“客户端静默 EOF”，`test_net_resilience.py` 为 14 passed；最终全量 3443P12S、645.06s，lock/ruff 0。
