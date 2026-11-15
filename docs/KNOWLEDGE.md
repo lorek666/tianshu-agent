@@ -27,6 +27,18 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域；同产品代码在 #157 CI ubuntu 绿、本机 3 连绿、attempt2 全绿——runner timing flake）。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
+- **可安装发行版 PR #162 第二轮 Windows 红已定位并修（2026-11-15，最终云端门禁待回填）**：
+  首轮 Ubuntu 修复后的 run `43684083160` 中 Ubuntu、macOS、Windows 分片 1 与 UI 成功；
+  Windows 分片 0 唯一失败为网络期限 Timer 先触发 `shutdown()`、后续时钟检查尚未看到
+  到期时把中断错分为 `net.read`（期望 `net.timeout`）。原 job
+  `132720749135` 与 `test_network_deadline_interrupts_slow_progress_before_peer_finishes[body]`
+  原始栈保留。新增真实 HTTP + 受控 Timer 回归在旧实现上确定性得到 `net.read`，修后只在
+  Timer 实际中断路径把 `OSError` / `HTTPException` 归为 `net.timeout`，真实读错、协议错误
+  和取消分类不变；网络六文件 **84 passed**。分支已普通 rebase 到最新 main
+  `c8b53bb2e00c7be20e980fec3994019c64674420`，该组合 lock/全仓 ruff exit 0、完整
+  **3461 passed / 11 skipped（668.23s）**。当前 head 的原生四项 required、独立复审及
+  main 四目标 release 仍未完成；首轮 `d26ad98`、第二轮旧 head `06fb772` 与 rebase 后新
+  head 是三个独立证据对象，不得互相冒充。
 - **可安装发行版 PR #162 首轮原生 CI 红已定位并修（2026-11-15，当前 head 门禁待回填）**：
   `d26ad98` 的 PR run `43681913168` 中 macOS、两个 Windows 分片与 UI 均成功；Ubuntu
   唯一失败为新增测试 `test_cross_os_target_is_rejected` 在 Linux 上先调用只支持
@@ -972,3 +984,11 @@
   宿主模拟后目标 `9 passed`，本机 lock/全仓 ruff exit 0、完整 `3447 passed / 11 skipped`
   （693.91s）。当前 PR head 原生 required checks、独立复审和 main 四目标 release 仍未
   完成，因此只记为“已定位并修复首红”，不记为发布验收或 G3。
+
+- **2026-11-15 · PR #162 第二轮 Windows 网络分类红与本机重门**：首轮修复后的精确 run
+  `43684083160` 保留 Windows 分片 0 单红，原因是期限 Timer 的 `shutdown()` 被后续 IO
+  异常路径在时钟检查尚未越过 deadline 时错分为 `net.read`。新真实 HTTP 回归先在旧实现
+  确定性红，再仅在 Timer 中断路径保留 `net.timeout`；六个网络相关文件 `84 passed`。
+  分支普通 rebase 到 main `c8b53bb` 后，最终代码通过 lock、全仓 ruff 与完整
+  `3461 passed / 11 skipped`（668.23s）。当前 head 云矩阵、独立复审和 main 发布工作流
+  仍待，未把任何旧 SHA 的绿色或本机全量扩展成最终验收。
