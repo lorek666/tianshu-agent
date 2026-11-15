@@ -374,6 +374,10 @@ def _build_parser() -> argparse.ArgumentParser:
     from .data_cli import add_parser
 
     add_parser(sub)
+
+    from .schedule_cli import add_parser as add_schedule_parser
+
+    add_schedule_parser(sub)
     return p
 
 
@@ -2115,6 +2119,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_replay(args)
         if args.cmd == "data":
             from .data_cli import run
+
+            return run(args)
+        if args.cmd == "schedule":
+            from .schedule_cli import run
 
             return run(args)
         return _cmd_evaluate(args)

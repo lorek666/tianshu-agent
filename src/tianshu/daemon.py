@@ -73,6 +73,7 @@ from .leases import DEFAULT_TTL_MS, HEARTBEAT_MS, LeaseStore, ProcessIdentity
 from .loop import AgentLoop, Limits, Stack, build_stack
 from .model import Model
 from .recovery import recover_run
+from .scheduler import Scheduler
 from .tasks import (
     RUN_CANCELLING,
     RUN_FENCED,
@@ -1251,6 +1252,18 @@ class _Daemon:
     def _driver_loop(self) -> None:
         assert self.driver_stack is not None and self.driver_log is not None
         worker = Worker(self.driver_stack, model=self.model, limits=self.limits)
+        # 调度器（W5）与 Worker 在同一处装配、同属驱动线程：driver_log 这条
+        # 连接按纪律只由驱动线程使用，若在 _setup（serve 线程）里构造，
+        # 建表的 executescript 就会从错误的线程碰它。触发走与
+        # task.create/run.start 相同的存储路径，详见 scheduler.py 模块注释。
+        scheduler = Scheduler(
+            self.driver_log,
+            tasks=self.driver_stack.tasks,
+            dispatcher=self.driver_stack.dispatcher,
+            claims=self.driver_stack.claims,
+            limits=self.limits,
+            note=_log,
+        )
         engine = AgentLoop(
             tasks=self.driver_stack.tasks,
             leases=self.driver_stack.leases,
@@ -1283,6 +1296,17 @@ class _Daemon:
                         break
                     self._resume_one(engine, run_id)
                     worked = True
+                # 到期的定时任务：建任务并入队 Run（与 task.create/run.start
+                # 同路径，事件流只出现既有事件族）。tick 内部按条隔离异常；
+                # 这里再兜一层防 tick 框架本身故障。调度器故障不计入
+                # consecutive_failures——那是驱动循环自身的健康指标，混入
+                # 调度器故障会让一条坏 schedule 停掉整个 daemon。
+                try:
+                    fired = scheduler.tick()
+                    if fired:
+                        worked = True
+                except Exception as exc:  # noqa: BLE001 - 调度器故障不带走驱动循环
+                    _log(f"调度器 tick 异常：{type(exc).__name__}: {exc}")
                 try:
                     worked = worker.run_once() or worked
                     consecutive_failures = 0
