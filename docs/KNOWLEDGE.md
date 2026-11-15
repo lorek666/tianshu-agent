@@ -106,7 +106,7 @@
 
 - **第二批基线证据收集器历史 v1 作者候选（2026-11-13）**：本条保留当时自验，BE-01 已否定其早期 collector 漂移覆盖，后续候选见上条。`scripts/baseline_evidence.py` 只收集显式已有 C5 报告与可选指标，保全私有字节原件，摘要严格限字段；输入、收集器或 Git 可见漂移及发布前失败不出完成收据。执行/批准固定 `NOT_EXECUTED_BY_TOOL` / `NOT_EVALUATED`，不运行模型或 soak、不升级历史结论。新工具定向 **54 passed**，报告/指标关联 **101 passed**，窄 ruff 通过；独立复审、最终组合全量与当前提交 CI 尚待完成，不能称第二批或 G3 整批完成。入口与边界见 [真实任务台账 §7](real-user-tasks.md#7-显式收集已有报告开发工具2026-11-13) 和 [指标指南 §9](runtime-metrics.md#9-将显式指标文件与已有报告一同保全开发工具2026-11-13)。
 
-- **第二轮debug修复候选（2026-11-13）**：从真实main `cefa1e375974d96e2ec25e199f6605f6dcf2239b` 重新复现19项（6P1/11P2/2P3），授权、审批resume预算、两provider/MCP/网络/IPC、备份预演、记忆UI与摘要来源已完成最小修复及独立内容复审。DATA05已由cefa迁移修复销账。二审发现摘要REAL被int截断残留，补严格整数后原探针拒绝；首全量1failed/2836passed/8skipped为AST误把HTTP opener.open当文件IO，已窄修并经独立负控，最终完整门禁lock/ruff/full均exit0，2845passed/8skipped、500.10s，277个非docs对象前后无漂移；UI类型/87tests/build及dist一致。正式四required另核。只同步main `c1bad0a` 的工程教训文档，不覆盖另一会话。完整范围、红绿原件、边界与最终版本记录见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)及对应PR；本条候选快照不预先宣称合并或Windows原生通过。
+- **第二轮debug修复候选（2026-11-13）**：从真实main `cefa1e375974d96e2ec25e199f6605f6dcf2239b` 重新复现19项（6P1/11P2/2P3），授权、审批resume预算、两provider/MCP/网络/IPC、备份预演、记忆UI与摘要来源已完成最小修复及独立内容复审。DATA05已由cefa迁移修复销账。二审发现摘要REAL被int截断残留，补严格整数后原探针拒绝；首全量1failed/2836passed/8skipped为AST误把HTTP opener.open当文件IO，已窄修并经独立负控，最终完整门禁lock/ruff/full均exit0，2845passed/8skipped、500.10s，277个非docs对象前后无漂移；UI类型/87tests/build及dist一致。正式四required另核。只同步main `c1bad0a` 的工程教训文档，不覆盖另一会话。完整范围、红绿原件、边界与最终版本记录见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)及对应PR；本条候选快照不预先宣称合并或Windows原生通过。**2026-11-14 对账**：该候选已作为 PR #139 正常合入 main（`0169109`，2026-11-14，四 required 以该 PR 的 CI 为准）。
 
 - **G3 数据准入与迁移提交前本机快照（2026-11-13）**：T1 最终585、T2、T3精确内容已分别通过独立第二读者，未决0；普通merge同步实际main0df，保留双方知识库历史，已审产品/测试不变。最终组合 lock/full/ruff 均exit0，**2672 passed / 8 skipped，433.15s**，267个非docs冻结对象前后无漂移。T2独立81+298+2，12变异11真实kill、M05保留守卫拒绝不记kill；T3独立35/0skip、两个窄CLI变异真实kill，首30/5为观察器顺序问题且原件保留。README/指南已补实际版本准入与显式migrate，作者历史候选原件不回写为新批准。本条提交前快照时正式提交、四required与新main自身CI仍待核；后续完整SHA、当前检查与合并事实以 `codex/g3-data-admission` 对应实现PR正文和后续独立原件为准，不回写本条历史时点。不能称G3整批完成；下方均为各自历史时点。见[集成记录](DATA-ADMISSION-2026-11-13.md)。
 
@@ -190,7 +190,7 @@
 - **测试（G2 网络阶段）**：**1869 passed, 7 skipped**（**`main @ b60f976`** 实测，2026-11-11，341.71s，macOS arm64 本机；已含 G2 网络阶段 #110/#112 与并行 F2 工作流 #108）。构成：§7.1 轮的 1790 → +79 = #110 **+41**（`test_outbound_allow.py` 18 + `test_network_fetch.py` 23）+ #112 **+13**（`test_network_research_eval.py` 11 + 真实任务判据净增 2）+ 并行 #108 **+25**。负控本轮 **18/18** 实测红（白名单 5 + 执行器 8 + 联网评测 5）。`ruff check .` → `All checks passed!`。耗时从 180s 涨到 342s 主要来自联网评测任务（每套真实用户任务要起本机来源服务、跑 7 case × 3 次）。**下面几条是历史记录，保留原样**。
 - **测试（历史）**：**1641 passed, 7 skipped**（`feat/memory-retrieval`（N2，含两轮复审整改）分支实测，2026-11-11，已并入 main 的 #89/#91/#92；N2 起点基线为 `main @ 8f2440a` 的 1581 passed / 7 skipped，本分支 +36，其余来自 main）。
 - **测试（main 历史记录）**：**1536 passed, 7 skipped**（`main @ ec7d7ae`（收尾轮 #88 合入）实测，2026-11-11，158.55s，macOS arm64 本机；CI 同刻 macOS job 也是 1536 / 7，ubuntu 是 1535 / 8（多 1 条 skip = `test_ipc.py` 里 AF_UNIX backlog 的 macOS 专属用例）。相对 #85 合入时的 **1529**（`feat/memory-erasure` 合入 #84 后实测）再 +7：Windows 运行时兼容（`perf_counter` 启动计时 / Windows pid 存活判定）+1、IPC 握手期 EOF 类型化 +3、指标并发读取尾巴 +3；1529 的构成是 N4 自身 +8，其余来自 main 的 #79/#82/#84；`main` 上一次提交态基线 1316 passed / 6 skipped，macOS 本机实测，收尾轮 `43d04ef`，115.97s；上一轮 DEBUG-M0M1 复核轮为 1080 passed / 3 skipped；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **63** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮按 CI 重核过**（收尾轮）：`main @ ec7d7ae` 的 `windows-latest` 实测 **5 failed / 1509 passed / 29 skipped**（939.99s；修复前 35 failed → #87 后 8 → #88 合入前 6），5 条失败逐条登记在 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md) §3；另有一次 Windows job 因命名管道阻塞在 25 分钟上限被取消（同一棵树在 main 上 15:39 跑完），也如实记在那里。仍然**没有 Windows 实机**，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
-- **代码规模**：`src/tianshu/*.py` **58** 个模块（2026-11-12 实测 `ls src/tianshu/*.py | wc -l`；上一版写 54 是漏计 MCP 阶段与并行工作流新增的 4 个）。模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **93** 个（2026-11-12 实测 `ls tests/test_*.py | wc -l`；上一版写 92 漏计 1 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
+- **代码规模**：`src/tianshu/*.py` **73** 个模块（2026-11-16 实测 `ls src/tianshu/*.py | wc -l`；上一版写 63 是 2026-11-14 时点数，其后 W5 调度（scheduler/schedule_cli）、W4 恢复B（restore_access/restore_contract/restore_registry）、W6 embedding（embedding_openai）、F12 Keychain（keychain_macos）、run_policy/disk_admission/platform_identity 再新增 10 个。）模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **133** 个（2026-11-16 实测 `ls tests/test_*.py | wc -l`；上一版写 117 是 2026-11-14 时点数，其后调度/embedding/恢复B×4/低盘×4/net_resilience/memory_conflict/memory_outbound_gate/g2_delegation_write/baseline_evidence/pytest_ci_shards 再新增 16 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
 - **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；这条绿色属于当时修复分支；其后 PR #130 已合入 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941`，该 main 的 [run 43298476414](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项全绿。两份结果分别绑定各自 SHA，**均不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。2026-11-13 经 GitHub API 写入并回读确认，required status checks 为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build` 四项，均绑定 GitHub Actions（app_id=15368）；批准人数仍为 0。设置已在远端生效，文档随 PR #130 交付。
 - **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60` 输出逐例、短错误栈、耗时与Python线程定时栈，其余平台保留 `uv run --frozen pytest -o addopts="" -q -rs`。原生fatal handler保留，C扩展长期独占GIL时不能保证60秒栈；25分钟上限不替代这个诊断缺口。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
@@ -209,10 +209,11 @@
   | ID | 名称 | 当前状态（只写可核实的） |
   |---|---|---|
   | C1 | Model I/O | 两个线上协议各一个 adapter；结束原因是封闭集，越界抛 `ModelError` |
-  | C2 | Tool | **19 个 `ToolSpec`、15 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
+  | C2 | Tool | **23 个 `ToolSpec`、19 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
   | C3 | Event | **已封闭**：45 个事件类型，写入侧拒未登记类型，且逐类型 payload 有 v1 契约（`event_schema.py` + `schemas/c3/event.json`）；声明了但从未发射的类型 **0** 个 |
   | C4 | Permission/Approval | **rule id 已封闭**：低磁盘 T1/T2 已登记并独立核验两项空间拒绝与资格拒绝；T3 作者候选的入口证据仍待独立复审、统一全量与原生 CI。当前代码/schema/PRD 清单共 78 项，写入前校验。非拒绝判定 10 个（`c4.auto` / `c4.overwrite` / `c4.delete` / `c4.exec` / `c4.mcp_call` / `c4.memory_scope` / `c4.outbound` / `c4.outside_workspace` / `c4.subtask_spawn` / `c4.subtask_cancel`）+ 保留未使用 3 个（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`）；`c4.approval_rejected` 是 issue #40「否决即终局」新增的拒绝原因；记忆组 6 条（N1 起）见 PRD §5.4.1。审批/凭据见 PRD §5.4 |
   | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离，评测套件 `m4.4` |
+  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离，评测套件 `m4.6`（判据按目标作用域化后逐版本不可比，见 [M4-verification.md](M4-verification.md) §7.4） |
 - **封闭集落在三处**：代码里的集合（`events.EVENT_TYPES` / `rules.RULE_IDS`）、`schemas/` 下的 enum（`schemas/c3/event.json`、`schemas/c4/rules.json`，共 7 个 schema 文件）、PRD 对应小节；测试把前两者绑在一起，改一处忘另一处会红。
 - **两个「未」不是一回事**：C3 的「声明未发射」是 **0**（没有登记了却不发射的事件类型）；C4 的「保留未使用」是 **3**（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`，防御性兜底或历史归档，登记为合法但没有产生路径）。别把这两个数字混着写。
 - **十一条红线**（与功能冲突时以红线为准，每条能被一条测试打红）：
@@ -244,9 +245,9 @@
     [F2-sandbox-policy.md](F2-sandbox-policy.md)
   - **F5 上下文编译** → `context.py`（纯函数、按字节预算、丢弃只记账不摘要）
   - **F9a 模型准入** → `capability.py`（能力声明与准入，只用于路由，不用于授权）
-  - **F12 凭据** → `credentials.py`（分域查找 + 全链路脱敏；**Keychain 后端 v1 未实现**，如实报 `unsupported`）
+  - **F12 凭据** → `credentials.py`（分域查找 + 全链路脱敏；Keychain 后端 **macOS 已落地**——`keychain_macos.py` SecItem 直调、仅 darwin 加载，W1 交付并经 #151 独立复审；其余平台仍如实报 `unsupported`）
   - **F13 成本** → `pricing.py`（整数微美元；未知价格记 `None` 并单独计数）
-  - **F14 界面部分** → `ui/`（React + TS）：机器枚举 → 人话的映射在 `src/lib/humanize.ts`；`digest` / 请求 id / 枚举值不进视图，内部细节放折叠区（PRD §14）
+  - **F14 界面部分** → `ui/`（React + TS）：机器枚举 → 人话的映射在 `src/lib/humanize.ts`；`digest` / 请求 id / 枚举值不进视图，内部细节放折叠区（PRD §7 功能表 F14 行）
   - 其余 P0 功能落在：`events` / `recovery`（事件与恢复）、`tools`（工具系统）、`permissions`（授权审批）、`tasks` / `jobs` / `leases`（任务与运行）、`snapshot` / `receipt`（产物与回滚）、`undo`（撤销）
   - **F10 记忆**属 v1.1，v1 不做（PRD §2.2 / §7）
 
@@ -609,14 +610,14 @@
 
 **F12 凭据**
 
-- **Keychain 未实现**：零依赖下只能 ctypes 调 `Security.framework` / `CredReadW`，无平台可验证。v1 交付的是接缝 + 全链路脱敏 + 明确报 `unsupported`。**不得声称"密钥存在系统钥匙串里"。**
+- **Keychain 仅 macOS**：W1 起 darwin 上 `keychain_macos.py` SecItem 直调已落地（CI 与本机真实通过）；其余平台零依赖下调 `CredReadW` 等无平台可验证，仍如实报 `unsupported`。**不得对未实现平台声称"密钥存在系统钥匙串里"。**
 - 真实模型 key 只从环境变量读，永不进库；用过的中转 key 应自行作废。
 
 **M0–M5 复审留账（[DEBUG-M0M5.md](DEBUG-M0M5.md)，2026-11-10；修复记录见该文档末尾）**
 
 - **M2 静态疑点 → issue #53**：否决缓存只按 `run_id` 生效（同一 Task 新 Run 是否忘掉否决，取决于 `run start` 是否只由人/控制面触发，未逐条验证）；`revoke_consumed` 的判定依赖 dispatcher 状态核验，未逐条探针验证。**两条都未复现**，不许当成已确认漏洞，也不许当成已解决。
 - **M1 `delete_file` 注入矩阵 → issue #54**：本轮（PR 修法）把 "kill×100" 的证据面从只覆盖 create 扩到 create + 覆盖写；删除类动作的恢复判据是 `absent`、撤销按 preimage 重建，另开一组断言跟进。
-- **M4 未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时）：2026-11-10 真实模型轮已销账三条，**只剩 Windows 实机一条**。
+- **M4 未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时）：2026-11-10 真实模型轮已销账三条，**只剩 Windows 实机一条**（2026-11-10 时点口径。**2026-11-14 对账**：2026-11-11 判据升 m4.5 后，真实换模复跑重新成为未决项——现剩 Windows 实机 + m4.5 真实复跑两条，见下文 issue #55 行与 issue 本体评论）。
 - **按已知限制接受**：`create_report` 先 `exists` 检查再 `os.replace`，对**外部进程**仍有覆盖 TOCTOU；lease 只防受控 run，PRD 非目标本就包含"防本机用户"。登记是为了下次读到的人不至于以为没考虑过。
 - **中-5 是误报**（`prepare` 当场拒绝目录外目标），处理方式是一条钉住测试，不是产品代码改动。
 
@@ -640,7 +641,7 @@
 - **未验证**：Windows 实机（只有 CI `windows-latest`；命名管道的杀软 / ACL / 长路径差异没覆盖）· 真实模型（无 API key，演示与验收用 `scripted` 模型，不代表真实模型能力）· Tauri/WebView2 外壳与托盘（M5 根本没做）· 同一毫秒的并发审批压测（只验证了先后顺序）。
 - **Daemon 生命周期不写事件日志**：`shutdown(reason)` 只进 `logs/daemon.log`。C3 是封闭集合且每条事件挂 `run_id`，新增 `daemon.*` 族是契约变更，代价大于收益。
 - **陈旧锁判定有 2 秒宽限窗**：第一个 Daemon 在「拿到锁 → bind」之间超过 2s（超大库恢复扫描）时，第二个实例理论上可能误判陈旧并接管。跨平台读取进程启动时间没有 stdlib 方案，属单独工单。
-- **推送在主循环里同步发送**：一个不读数据的订阅者理论上能拖慢 RPC 响应；M5 用"本地 socket + 每批 256 条"把风险压在可接受范围，没做独立发送线程 + 非阻塞写。
+- **推送在主循环里同步发送**：一个不读数据的订阅者理论上能拖慢 RPC 响应；M5 用"本地 socket + 每批 256 条"把风险压在可接受范围，没做独立发送线程 + 非阻塞写。**2026-11-14 对账**：本条已被 PR #81 取代——独立发送线程与有界队列已交付（`daemon.py` `SEND_QUEUE_MAX=1024`；慢订阅者/队列溢出/重连负控 `tests/test_slow_subscriber.py`），与本文 §2/§5/§7 其他提及处一致。
 - **驱动线程卡死 >5 秒时刻意不跨线程关连接**：关闭正被别的线程使用的 SQLite 连接只会得到没人看得到的 `ProgrammingError`，还可能截断写入；保留连接交给进程退出回收（测试钉住"shutdown 仍返回、锁已释放、没有 ProgrammingError"）。
 - **`approvals.decide` 的 `reason` 被忽略**：审批记录没有自由文本字段，要存就得改 `schemas/m2/approval.json`（契约变更）；当前只用于 UI 展示。
 - **不是可双击安装的 App**：无外壳、托盘、开机自启、安装包、签名、公证、自动更新（M5-D1/D2/D5）。
@@ -673,7 +674,7 @@
 
 **实现上的疤**
 
-- `run.end` 不携带成本汇总（成本在 `run status` 里看；约 6 行改动挂账）。
+- `run.end` 不带**货币成本**汇总（`cost_total_micros`；成本经游标账本在 `run status` 里看，CLI 收尾从 `ledger` 读钱）；token/turns/`budget_enforced` 汇总已是 `run.end` 的 required 字段（`tasks.py:_run_end_payload`、`event_schema.py`）——货币成本汇总本身仍挂账（约 6 行改动）。
 - `check_exec()` 仍是低层 API，`spawn` 已不再调用它。
 - 多工作区相对路径解析仍绑定到第一个可写工作区。
 - 契约未全冻结：`schemas/` 下现有 `c3/event.json`、`c4/rules.json`、`m2/{approval,grant,job,run,task}.json` 与恢复 B T0 的 `data/restore-v1.json`；C1/C2/C5 **没有**字段级 schema——补齐并加契约测试之前，别宣布冻结。`data/restore-v1.json` 是源码 schema，`data/` 的运行时忽略规则必须保留其明确例外。
@@ -887,6 +888,16 @@
 
 - **2026-11-13 · 工程管理与调试教训归纳（只读复盘后回填）**：本次由另一会话只读复核 `3648d79..cefa1e3`（#130–#136 共 7 个 PR、确认 18 项缺陷 8/8/2/0），把不针对单一缺陷、可迁移到后续开发的经验补进 §5：证据产能比与可生成物、Windows 23/25 分钟的门禁余量、实验分支不合 main、跨平台默认值、第二读者换上下文。本条是**归纳**，不新增缺陷结论、不重跑测试、不改变任何提交或 CI 口径；具体证据仍以各 PR 正文、`DEBUG-SYSTEMATIC/IO/BUDGET/RECOVERY-2026-11-13.md`、`WINDOWS-CI-2026-11-13.md` 与 §2/§7 为准。未触碰其他工作树与未提交内容。
 
+- 2026-11-13 · T1正式交权后整合最新已审9129095，使用独立临时stash保全11文件并快进，只合并知识库状态；产品/测试按交接摘要不变。第二读者内容未决0，开始最终组合门禁；T2/T3尚未实施。
+
+- 2026-11-13 · T1整合main #133首轮全量4红2562绿8跳过，定位到新恢复夹具在初次建库前注入坏材料；按契约保留拒绝，只授权测试顺序适配与独立负控。原件归档，不称产品已验收。
+
+- 2026-11-13 · T1夹具顺序修后新组合全量2566 passed/8 skipped435.78s，lock/ruff0，264项冻结无漂移；独立历史非原子恢复负控仍两项真红。固定本机候选与原件，最终SHA/原生CI另绑，T2继续按分段授权推进。
+
+- 2026-11-13 · PR134最终b5四required真实全绿，独立原始CI核对及当前head/base/保护guard均无阻断，正常合入main69119f0且tree完全相同。契约分支仅吸收该合并事实和CI证据，不夹T1产品；后续另开纯docs契约PR。
+
+- 2026-11-13 · T2/T3独立验收收口，root接管冻结候选后普通merge同步main0df，只融合知识库与三份上游CI证据。T1九项+恢复fixture、T2四项、T3三项精确继承；README与指南窄改当前迁移事实。最终集中lock/full/ruff exit0，2672 passed/8 skipped（433.15s），267非docs对象无漂移；正式SHA、新实现PR四required及新main自身CI待核，不借旧绿色。独立原始失败、探针修正和非kill均保留，实际restore/容量/GC及第二至四批仍未交付。
+
 - **2026-11-14 · 低磁盘修后完整本机门禁与证据保全**：root核作者七路径交接后接管live，恢复memory_exec相对879多出的无关EOF换行，冻结906源 `df72efbd`；首轮41失败的窄修保留原授权/审计/父版本与硬退断言。lock/full/全仓ruff均exit0，3183passed8skipped、509.43s，前后源码/HEAD/status不变；完整UI以57项精确不变继承原13文件91测试和类型/构建通过，未重复跑。六原脚本.py.txt与173映射原字节、首红/观察器错误/负控均保全，作者311联合不与独立或全量相加。泛凭据模式首扫命中六既有测试/证据fixture，逐字节与HEAD相同，属观察器误报、未新增凭据且不打印值。906窄增量随后独立PASS（`016f4c2f` / facts`3ef68826` / index`b5825b37`），root亲读并核1944+索引、73.2MB原件ignored保全；7精准测试和4真实离线路径通过，六负控按行为真红，BASE-B1未修。最终事实/正式对象与原生CI仍待；未扩大为G3整批完成。
 
 - **2026-11-14 · 最终对象事实计数修正**：第二读者核首轮41条FAILED汇总发现，现行低盘文稿把“23项存储实例接线+1项规则计数”误写为24项夹具。root亲读原日志确认approval8、m2 1、recovery14，共23；现只校正文稿并保留该发现，原9a69对象不能冒称全部事实准确。产品、测试、锁、UI和3183passed8skipped的906完整门原件不变，新正式对象仍须独立窄绑定。
@@ -899,7 +910,17 @@
 
 - **2026-11-14 · 新组合本机全门与 main 自身失败分开记账**：1127文件/manifest2df18981的lock/full/ruff均0，3186 passed/8 skipped、524.89s，前后身份与Git状态稳定；文稿同步独立PASS只覆盖32文稿及继承身份。main b450自身run43567298082首次终态failure，Windows片1正常收尾测试第55轮database is locked、queued无run.end；六job和两份artifact完整保全，独立终态与根因另查，不重跑覆盖、不猜同因。恢复契约推送暂停，仅回填知识库事实，其他1126文件不改；B产品未授权。
 
+- **2026-11-14 · 低磁盘 T2 作者候选冻结**：以已审542源逐项0差异开始，完成真实ToolSpec资格/实时空间、执行器独立核验与已有Run恢复例外；资格拒绝同步代码/schema/PRD。首红4项与边界12项真实失败保留；固定T1六项继承失败、phase1并发context失败均留原件。恢复矩阵首轮54绿6个epoch观察器错断言、边界首次绿8个lazy表观察器错误、静态格式错误与单门脚本第7项匹配计数2（非kill）均如实保存。最终三项联合红按原审计/静态登记目的窄修；相关142、MCP/派发64、schema绑定3通过，8个单门负控真红后完整复原。双真实进程靠通信屏障，硬退只用TIANSHU_FAILPOINT；无sleep时序冒充、无真实模型/付费。新完整组合及相对T1本片delta/源哈希/原件另冻交第二读者，作者停写；未full/lock/CI、commit/push或T3。
+
+- **2026-11-14 · 低磁盘 T2 独立通过、T3 作者候选冻结**：第二读者在543源冻结上给出 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立80 passed、9变异10个行为失败、0 setup/import/collection kill、阻断0；T2报告/facts/index及T1/T2源映射已复制到仓库内[证据目录](evidence/low-disk-2026-11-14/)。T3接通CLI/RPC/UI同一严格资格，真实CLI与IPC验证默认effects、显式pure_only、坏策略`bad_params`、重开token和workspace writable独立；UI两路径与失败重试保留选择。CLI首红argparse未知参数、RPC首红低盘`internal`、显式null/array红、UI 13文件87P3F、IPC跨线程观察器红均保留。三项最终负控（CLI改effects、RPC绕过解析、UI详情漏传policy）真红后恢复。最终定向门禁Python 76 passed、UI目标4 passed、typecheck/build/install/ruff/compile/stub扫描均exit0，dist从`B-xT4bPb/tHfDYJNM`换为`CIZ6Bgii/XPu6LbkB`且前后清单与SHA留档。T3独立复审、统一全量、lock、全仓ruff、完整UI suite和原生CI未运行；详见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，不commit/push或创建PR。
+
+- **2026-11-14 · 低磁盘T3独立通过与公开证据收口**：亲读T3独立报告并逐hash核1485项加索引自身，52Python/4App与11行为红按实际阶段记录，完整原件1486件保全ignored档案。整分支原717报告明确INT-E1索引缺3视觉dist不批准，root核实系dist忽略规则而非产品产物丢失，只补最窄例外与原字节，不重写旧失败；作者711核心与root717含6派生区别、契约75项为历史时点同步澄清。原a022/T2/T3 CLI预算接线缺口BASE-B1如实披露并单列跟踪，未顺手修预算。当前只改事实文档/证据封装，267产品/测试/锁/dist不变量保持；新候选独立销账、最终组合、正式对象和原生CI另核。
+
+- **2026-11-14 · PR #144 首次Windows红与两测试诊断候选**：原run43549430150六job/两artifact和完整失败原件保全；Windows片1的READY CRLF比较与正常收尾Run failed保持真实失败，未rerun/取消/放宽required。拒绝无根因证据的共享锁提案并恢复生产字节，仅复用CHILD_TEXT修协议、将原心跳收尾断言扩至60次并显示真实run.end。新1030源2922a345上lock/full/ruff通过，3183 passed/8 skipped（513.63s），前后无漂移。第二读者在固定副本确认原断言未减、真实CRLF正控及坏READY/reason两call负控；完整182件独立包和9件本机门原件逐hash保全ignored，公开只发明确34原件子集及两份导航清单。心跳根因未复现/未修，Windows和新正式对象尚待，不合并旧红、不外推设备平台；本次只更新两测试和事实证据。
+
 - **2026-11-15 · W3 state 响应 8MiB 上界交付（`feat/state-response-bound`，基线 main@0c5bb71）**：先复核登记项并写复现测试在基线代码实跑变红——50×~313KB goal 的对抗数据集让 `state` 响应 14.4MB（`ProtocolError: 消息 14419496 字节，超过上限 8388608`），且查明真实断连路径：daemon 发送线程 `_send_loop` 把编码超限的 `ProtocolError` 当 `send_error` 静默 drop 整条连接（端到端复现 `ConnectionClosed: 对端在消息结束前关闭`，不是超时）；`_approval_context` 每次 `read_types(["approval.requested"])` 全表扫 + 逐条 SHA256 验签的失控也被 spy 用例实证（300 张历史审批在库即红）。修复：`_state` 改 4 MiB（帧上限一半）预算内按 tasks→runs→approvals 份额两趟装填，放不下按条停并置 `tasks_truncated`/`runs_truncated`/`approvals_truncated`（加字段不升版本，契约行走 `docs(contract)` 单独 commit）；单条目超预算 fail loud 抛 `internal`（不静默丢条目、不截断 goal 文本）；`_approval_context` 改按 pending 集合所在 Run `read_run(verify=False)` 有界读（与 `_run_view` 同口径，读取量与全局历史解耦；decide 响应的 rule_id 有专门测试钉住不退化）。负控 2 条实跑红→还原绿（NC1 拆装填守卫→对抗用例红；NC2 拆有界读→spy 红；还原以 SHA256 比对字节一致）。修复后 test_control 33 passed、test_daemon+slow_subscriber+integration_m5 42 passed；本机门禁 `uv lock --check` / `ruff check .` / 全量 `uv run --frozen pytest` 均 exit 0（3400 passed / 11 skipped / 739.34s，macOS arm64），设计取舍与不变量论证在 [SPEC-STATE-RESPONSE-BOUND-2026-11-15.md](SPEC-STATE-RESPONSE-BOUND-2026-11-15.md)。未决：`task.list`/`approvals.list` 无体积预算（同对抗 goal 仍可撑大其响应帧），登记为后续工单候选；本机为 macOS arm64，Windows/Linux 以 CI 为准。过程事故记录：在本仓库误用 `git stash`（push 因 pathspec 失败后 pop 弹出他人旧 stash 导致 KNOWLEDGE.md 冲突），已恢复 HEAD 版本、stash 条目原样保留无丢失——**共享仓库一律不用 stash，改用 /tmp 文件交换法做变异还原**。
+
+- **2026-11-16 · 文档对账批次 A 重验轮（PR #140 rebase 到 main@702ba40 后逐项对照）**：原轮（2026-11-14）26 项普通文档修复因列车阻塞滞留，本轮逐项对照现 main 重验——**24 项保留**（其中引用与事实全部重证：#40/#53/#54/#50 已 CLOSED、#55 仍 OPEN；`recover` 未核实效果实测 `cli.py` 返回 1；`run.end` required 集合含 tokens/turns/budget_enforced；PRD F14 在 §7；M4 §7.4/`test_slow_subscriber.py`/`SEND_QUEUE_MAX=1024`/`WINDOWS-CI-2026-11-13.md` 等引用全存在）、**1 项升级执行**（§8 错位日志归位从 5 条扩到 9 条——main 其后又积压 4 条：低磁盘 T2/T3 三条与 PR #144，全部归位到各自日期区）、**1 项销**（backup-restore §0 T3 行已被后续 PR 超越：现文已写「三片均已独立验收」「T2/T3 已随 PR #136 交付」，原漂移不存在）。**数字类修复按现 main 重测**：63→**73** 模块（+10：scheduler/schedule_cli/restore×3/embedding_openai/keychain_macos/run_policy/disk_admission/platform_identity）、117→**133** 测试文件（+16）；23 ToolSpec（19 可见）/`SUITE_VERSION=m4.6` 经 AST/代码实测在现 main 仍真。**重验轮新抓漂移并顺手修**：F12 Keychain 四处「v1 未实现」旧口径（README×2 + 本文 §7/已知限制×2）——`keychain_macos.py` 已随 W1 落地并经 #151 独立复审，全部改为 macOS 已落地/其余平台如实 unsupported；README 架构树按现 main 补全 34 个缺失模块（PR 原 24 + 其后新增 10），头部保持「数量以实测为准」不写死计数。SPEC 文档补 §2 重验记录。仅改文档，不改代码/测试/CI。
 
 ## 9. 权威文档索引
 
@@ -922,20 +943,3 @@
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — 分支、提交、独立复审规范
 - [../AGENTS.md](../AGENTS.md) — AI 开发强制指令
 
-- 2026-11-13 · T1正式交权后整合最新已审9129095，使用独立临时stash保全11文件并快进，只合并知识库状态；产品/测试按交接摘要不变。第二读者内容未决0，开始最终组合门禁；T2/T3尚未实施。
-
-- 2026-11-13 · T1整合main #133首轮全量4红2562绿8跳过，定位到新恢复夹具在初次建库前注入坏材料；按契约保留拒绝，只授权测试顺序适配与独立负控。原件归档，不称产品已验收。
-
-- 2026-11-13 · T1夹具顺序修后新组合全量2566 passed/8 skipped435.78s，lock/ruff0，264项冻结无漂移；独立历史非原子恢复负控仍两项真红。固定本机候选与原件，最终SHA/原生CI另绑，T2继续按分段授权推进。
-
-- 2026-11-13 · PR134最终b5四required真实全绿，独立原始CI核对及当前head/base/保护guard均无阻断，正常合入main69119f0且tree完全相同。契约分支仅吸收该合并事实和CI证据，不夹T1产品；后续另开纯docs契约PR。
-
-- 2026-11-13 · T2/T3独立验收收口，root接管冻结候选后普通merge同步main0df，只融合知识库与三份上游CI证据。T1九项+恢复fixture、T2四项、T3三项精确继承；README与指南窄改当前迁移事实。最终集中lock/full/ruff exit0，2672 passed/8 skipped（433.15s），267非docs对象无漂移；正式SHA、新实现PR四required及新main自身CI待核，不借旧绿色。独立原始失败、探针修正和非kill均保留，实际restore/容量/GC及第二至四批仍未交付。
-
-- **2026-11-14 · 低磁盘 T2 作者候选冻结**：以已审542源逐项0差异开始，完成真实ToolSpec资格/实时空间、执行器独立核验与已有Run恢复例外；资格拒绝同步代码/schema/PRD。首红4项与边界12项真实失败保留；固定T1六项继承失败、phase1并发context失败均留原件。恢复矩阵首轮54绿6个epoch观察器错断言、边界首次绿8个lazy表观察器错误、静态格式错误与单门脚本第7项匹配计数2（非kill）均如实保存。最终三项联合红按原审计/静态登记目的窄修；相关142、MCP/派发64、schema绑定3通过，8个单门负控真红后完整复原。双真实进程靠通信屏障，硬退只用TIANSHU_FAILPOINT；无sleep时序冒充、无真实模型/付费。新完整组合及相对T1本片delta/源哈希/原件另冻交第二读者，作者停写；未full/lock/CI、commit/push或T3。
-
-- **2026-11-14 · 低磁盘 T2 独立通过、T3 作者候选冻结**：第二读者在543源冻结上给出 `PASS_T2_FROZEN_CONTENT_ONLY` / `PASS_T2_NARROW_DELTA_AND_INDEPENDENT_EVIDENCE`，最终独立80 passed、9变异10个行为失败、0 setup/import/collection kill、阻断0；T2报告/facts/index及T1/T2源映射已复制到仓库内[证据目录](evidence/low-disk-2026-11-14/)。T3接通CLI/RPC/UI同一严格资格，真实CLI与IPC验证默认effects、显式pure_only、坏策略`bad_params`、重开token和workspace writable独立；UI两路径与失败重试保留选择。CLI首红argparse未知参数、RPC首红低盘`internal`、显式null/array红、UI 13文件87P3F、IPC跨线程观察器红均保留。三项最终负控（CLI改effects、RPC绕过解析、UI详情漏传policy）真红后恢复。最终定向门禁Python 76 passed、UI目标4 passed、typecheck/build/install/ruff/compile/stub扫描均exit0，dist从`B-xT4bPb/tHfDYJNM`换为`CIZ6Bgii/XPu6LbkB`且前后清单与SHA留档。T3独立复审、统一全量、lock、全仓ruff、完整UI suite和原生CI未运行；详见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，不commit/push或创建PR。
-
-- **2026-11-14 · 低磁盘T3独立通过与公开证据收口**：亲读T3独立报告并逐hash核1485项加索引自身，52Python/4App与11行为红按实际阶段记录，完整原件1486件保全ignored档案。整分支原717报告明确INT-E1索引缺3视觉dist不批准，root核实系dist忽略规则而非产品产物丢失，只补最窄例外与原字节，不重写旧失败；作者711核心与root717含6派生区别、契约75项为历史时点同步澄清。原a022/T2/T3 CLI预算接线缺口BASE-B1如实披露并单列跟踪，未顺手修预算。当前只改事实文档/证据封装，267产品/测试/锁/dist不变量保持；新候选独立销账、最终组合、正式对象和原生CI另核。
-
-- **2026-11-14 · PR #144 首次Windows红与两测试诊断候选**：原run43549430150六job/两artifact和完整失败原件保全；Windows片1的READY CRLF比较与正常收尾Run failed保持真实失败，未rerun/取消/放宽required。拒绝无根因证据的共享锁提案并恢复生产字节，仅复用CHILD_TEXT修协议、将原心跳收尾断言扩至60次并显示真实run.end。新1030源2922a345上lock/full/ruff通过，3183 passed/8 skipped（513.63s），前后无漂移。第二读者在固定副本确认原断言未减、真实CRLF正控及坏READY/reason两call负控；完整182件独立包和9件本机门原件逐hash保全ignored，公开只发明确34原件子集及两份导航清单。心跳根因未复现/未修，Windows和新正式对象尚待，不合并旧红、不外推设备平台；本次只更新两测试和事实证据。
