@@ -3,7 +3,7 @@
 > 状态：**L1 本机实现候选；尚未完成四目标与独立验收，不得据此宣称 G3 正式发布。**
 >
 > 起草基线：`main @ 595be35c037cef35da7f166a5db2a624f2b733a9`。候选现已普通合并当前
-> `main @ 61f985e96ac4ce86aa9f77301d9c0df0f867e1df`；任何基线或旧候选 CI 都不是新
+> `main @ 1a8aebbba7fba503e77ce772ac5696d60485b90f`；任何基线或旧候选 CI 都不是新
 > 发行候选提交的绿色证据。
 >
 > 前端 PR #155 已合并为 `d37a84c490b7e6588b4e122e5591ccb989530b8e`，当前分支的
@@ -17,12 +17,12 @@
 > 全退。其后的 `b46f015` 精确 CI 又在 Windows shard 1 抓到既有原子写入路径的
 > `WinError 5`：审批并发控制本身通过，获胜写入在 `os.replace` 发布 `note.md` 时遇到
 > 瞬时的目标占用。代码修复 `bb0ce76` 只对 Windows access/sharing/lock violation
-> 做 8 次、约 1.27 秒总退避；其他权限错误立即失败，持续占用在界满后仍报错。当前
-> 作者对象 `5e89de5`（tree `d41ab57`）的 PR run `43714752198` 六 job 全绿，Windows
-> 两片合计 3472P/56S 并核验 3528 节点；精确 macos-arm64 产物、冷启动可见 UI、
-> 关窗/重开/显式退出也已通过。若之后还有 docs-only 提交，该新 head 必须单独重跑 CI，
-> 不得继承 `5e89de5` 的绿色。独立第二读者复审仍未完成，因此状态仍是 L1 候选，不得
-> 合并为已验收发行版。
+> 做 8 次、约 1.27 秒总退避；其他权限错误立即失败，持续占用在界满后仍报错。第二读者
+> 对 `5873720/tree f16f930` 的独立复审为 `PARTIAL`：独立构建、验签、安装、普通自有
+> Host 生命周期和 W3/W5 兼容通过，但附着既有 Host 后显式退出只关闭桌面壳，遗留
+> Host/Daemon。当前修复统一 owned/attached 退出的鉴权 shutdown 与有界清理路径；新
+> head 必须重新跑完整门禁、精确 CI、重建产物、安装态 attach→quit 探针和第二读者复审，
+> 不得继承 `5873720` 或更早对象的绿色。状态仍是 L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -344,7 +344,7 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 | macOS arm64 | GitHub/本机构建 | 本机干净用户目录 | 本机临时数据根 | 本规格内可做 |
 | macOS x64 | GitHub/兼容构建 | 需要 x64 用户设备或 runner | 需要用户设备 | 未取得前 `unknown` |
 | Windows x64 | Windows runner | 需要 Windows 10/11 x64 设备 | 需要设备 | runner 通过也只是 `runner-only` |
-| Windows arm64 | 交叉构建/arm runner | 需要 Windows arm64 设备 | 需要设备 | 未取得前 `unknown` |
+| Windows arm64 | 原生 ARM64 runner | 需要 Windows arm64 设备 | 需要设备 | 未取得前 `unknown` |
 
 “CI 绿”“文件存在”“跨编译成功”都不能填成用户设备已验证。
 

@@ -35,6 +35,7 @@ struct RuntimeState {
     endpoint: HostEndpoint,
     child: Option<Child>,
     owns_host: bool,
+    stopped: bool,
 }
 
 impl RuntimeState {
@@ -42,14 +43,53 @@ impl RuntimeState {
         self.child = None;
         let result = stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root);
         if result.is_ok() {
-            self.owns_host = false;
+            self.stopped = true;
         }
         result
     }
 
+    fn stop_attached_host(&mut self) -> Result<(), String> {
+        let daemon_before = read_daemon_lock_snapshot(&self.data_root)?;
+        request_host_shutdown(&self.endpoint)?;
+        let started = Instant::now();
+        loop {
+            match read_host_endpoint(&self.data_root) {
+                Err(HostInfoError::NotReady) => break,
+                Ok(endpoint) if endpoint.pid == self.endpoint.pid => {
+                    if started.elapsed() >= SHUTDOWN_TIMEOUT {
+                        return Err(format!(
+                            "Host 未在 {} 秒内退出，服务仍保留",
+                            SHUTDOWN_TIMEOUT.as_secs()
+                        ));
+                    }
+                    thread::sleep(STARTUP_POLL);
+                }
+                Ok(_) => {
+                    return Err("Host 退出期间实例已变更，拒绝停止新实例的服务".to_string());
+                }
+                Err(error) => {
+                    return Err(format!("等待附着 Host 退出失败：{error}"));
+                }
+            }
+        }
+
+        let daemon_after = read_daemon_lock_snapshot(&self.data_root)?;
+        if let Some(current) = daemon_after {
+            if daemon_before.as_ref() != Some(&current) {
+                return Err("Host 退出期间 Daemon 实例已变更，拒绝停止新实例".to_string());
+            }
+            stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root)?;
+        }
+        self.stopped = true;
+        Ok(())
+    }
+
     fn stop_host(&mut self) -> Result<(), String> {
-        if !self.owns_host {
+        if self.stopped {
             return Ok(());
+        }
+        if !self.owns_host {
+            return self.stop_attached_host();
         }
         if self.child.is_none() {
             return self.finish_owned_host_exit();
@@ -442,6 +482,7 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 endpoint,
                 child,
                 owns_host,
+                stopped: false,
             }));
             // `setup` runs before Tauri starts the event loop. Host startup can
             // block here while the child process becomes healthy, so queue the
@@ -589,6 +630,148 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn shutdown_server_removing(
+        paths: Vec<PathBuf>,
+    ) -> (
+        u16,
+        std::sync::mpsc::Receiver<String>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 1024];
+                let count = stream.read(&mut chunk).unwrap();
+                raw.extend_from_slice(&chunk[..count]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"ok":true,"shutting_down":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            for path in paths {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => panic!("cleanup failed: {error}"),
+                }
+            }
+            sender
+                .send(String::from_utf8(raw).unwrap())
+                .expect("request");
+        });
+        (port, receiver, server)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_host_exit_requests_shutdown_and_clears_service_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let host_lock = run_dir.join("host.lock");
+        let daemon_lock = run_dir.join("daemon.lock");
+        let daemon_snapshot = br#"{"pid":42,"started_at":1,"instance_id":"daemon_attached"}"#;
+        fs::write(&daemon_lock, daemon_snapshot).unwrap();
+        let (port, request, server) =
+            shutdown_server_removing(vec![host_lock.clone(), daemon_lock.clone()]);
+        let endpoint = HostEndpoint {
+            pid: 41,
+            port,
+            token: "secret_secret_secret".to_string(),
+        };
+        fs::write(
+            &host_lock,
+            format!(
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+            ),
+        )
+        .unwrap();
+        let mut state = RuntimeState {
+            python: root.join("fake-python.sh"),
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint,
+            child: None,
+            owns_host: false,
+            stopped: false,
+        };
+
+        let result = state.stop_host();
+        let request = request.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert!(request.starts_with("POST /shutdown HTTP/1.1\r\n"));
+        assert!(request.contains("X-Tianshu-Token: secret_secret_secret\r\n"));
+        assert!(!host_lock.exists(), "附着 Host 退出后遗留了 host.lock");
+        assert!(!daemon_lock.exists(), "附着 Host 退出后遗留了 daemon.lock");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_host_exit_bounds_daemon_cleanup_after_host_ack() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let host_lock = run_dir.join("host.lock");
+        let daemon_lock = run_dir.join("daemon.lock");
+        fs::write(
+            &daemon_lock,
+            br#"{"pid":42,"started_at":1,"instance_id":"daemon_attached"}"#,
+        )
+        .unwrap();
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then\n  rm -f {}\n  exit 0\nfi\nexit 2\n",
+                shell_quote(&daemon_lock),
+            ),
+        );
+        let (port, request, server) = shutdown_server_removing(vec![host_lock.clone()]);
+        fs::write(
+            &host_lock,
+            format!(
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+            ),
+        )
+        .unwrap();
+        let mut state = RuntimeState {
+            python,
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: HostEndpoint {
+                pid: 41,
+                port,
+                token: "secret_secret_secret".to_string(),
+            },
+            child: None,
+            owns_host: false,
+            stopped: false,
+        };
+
+        let result = state.stop_host();
+        request.recv_timeout(Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert!(!host_lock.exists());
+        assert!(!daemon_lock.exists(), "ACK 后 Host 退出时遗留了 Daemon");
+        assert!(state.stopped);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn owned_host_exit_after_ack_still_stops_its_daemon() {
         let directory = tempfile::tempdir().unwrap();
@@ -625,6 +808,7 @@ mod tests {
             },
             child: Some(child),
             owns_host: true,
+            stopped: false,
         };
 
         let result = state.stop_host();
@@ -633,7 +817,7 @@ mod tests {
 
         assert!(result.is_ok(), "{result:?}");
         assert!(!daemon_lock.exists(), "ACK 后 Host 退出时遗留了 Daemon 锁");
-        assert!(!state.owns_host);
+        assert!(state.stopped);
         assert!(state.child.is_none());
     }
 

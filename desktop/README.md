@@ -1,8 +1,9 @@
 # Tianshu Agent 桌面壳
 
-这是一个 Tauri 2 薄壳。它只管理窗口、托盘、单实例和由它拥有的 Python Host
-子进程；任务、审批、事件、工具执行与恢复仍在现有 Python Host/Daemon 中。Rust
-没有替换 Host，也没有形成新的授权边界。
+这是一个 Tauri 2 薄壳。它管理窗口、托盘和单实例，并在用户显式退出时协调当前
+数据根的 Python Host/Daemon；无论 Host 由本壳启动还是由第二实例附着，退出都走
+同一套鉴权停止路径。任务、审批、事件、工具执行与恢复仍在现有 Python
+Host/Daemon 中。Rust 没有替换 Host，也没有形成新的授权边界。
 
 ## 资源布局
 
@@ -116,9 +117,9 @@ OS/架构的 runner 上构建；结果作为 draft GitHub Release 上传，必�
 | target | 本轮可以证明 | 仍不能证明 |
 |---|---|---|
 | macOS arm64 | 本机构建、安装、真实窗口、关闭/重开/退出、卸载 | 其他 macOS 版本与权限状态 |
-| macOS x64 | runner 交叉构建、bundle manifest/字节/Mach-O 架构校验；只有宿主匹配时才跑 runtime smoke | Intel 用户设备安装与升级 |
-| Windows x64 | runner 构建与 PE/manifest 校验；宿主匹配时跑 locked Python import smoke | Windows 10/11 用户设备、SmartScreen、安装升级 |
-| Windows arm64 | runner 交叉构建、PE/manifest 校验；不把无法执行冒充 runtime smoke | Windows ARM64 用户设备 |
+| macOS x64 | 原生 Intel runner 构建、bundle manifest/字节/Mach-O 架构校验与 runtime smoke | Intel 用户设备安装与升级 |
+| Windows x64 | 原生 x64 runner 构建、PE/manifest 校验与 locked Python import smoke | Windows 10/11 用户设备、SmartScreen、安装升级 |
+| Windows arm64 | 原生 ARM64 runner 构建、PE/manifest 校验与 locked Python import smoke | Windows ARM64 用户设备 |
 
 CI runner 结果不是用户设备实测。当前产物未签名，也没有 Tauri 自动更新；
 G3 的恢复 B/C、SLO、长稳、Keychain 实机与本表设备证据仍保持未完成。
