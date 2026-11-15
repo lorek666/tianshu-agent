@@ -530,6 +530,23 @@ fn show_recovery_failure(app: &tauri::AppHandle, attempts: u8, error: &str) {
     });
 }
 
+fn adopt_discovered_host(state: &mut RuntimeState, discovered: HostEndpoint) -> bool {
+    if let Some(child) = state.child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => return false,
+            Err(error) => {
+                eprintln!("检查旧 Host 子进程状态失败：{error}");
+                return false;
+            }
+        }
+    }
+    state.endpoint = discovered;
+    state.child = None;
+    state.owns_host = false;
+    true
+}
+
 fn spawn_host_supervisor(app: tauri::AppHandle, paths: StartupPaths) -> std::io::Result<()> {
     thread::Builder::new()
         .name("host-supervisor".to_string())
@@ -553,10 +570,8 @@ fn spawn_host_supervisor(app: tauri::AppHandle, paths: StartupPaths) -> std::io:
                 if let Ok(discovered) = read_host_endpoint(&state.data_root)
                     && discovered != state.endpoint
                     && verify_host(&discovered).is_ok()
+                    && adopt_discovered_host(&mut state, discovered)
                 {
-                    state.endpoint = discovered;
-                    state.child = None;
-                    state.owns_host = false;
                     healthy = true;
                 }
                 if let Some(child) = state.child.as_mut() {
@@ -863,6 +878,63 @@ mod tests {
             .note_healthy(started + HOST_STABLE_RESET + HOST_STABLE_RESET + Duration::from_secs(1));
         assert_eq!(policy.attempts, 0);
         assert!(policy.take_attempt());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovered_host_does_not_drop_a_live_owned_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let child = Command::new("sleep").arg("2").spawn().unwrap();
+        let child_pid = child.id();
+        let original = HostEndpoint {
+            pid: child_pid,
+            port: 59123,
+            token: "secret_secret_secret".to_string(),
+            started_at: 1,
+        };
+        let discovered = HostEndpoint {
+            pid: child_pid.saturating_add(1),
+            port: 59124,
+            token: "takeover_token_123".to_string(),
+            started_at: 2,
+        };
+        let mut state = RuntimeState {
+            python: root.join("fake-python.sh"),
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: original.clone(),
+            child: Some(child),
+            owns_host: true,
+            stopped: false,
+        };
+
+        let first_adopted = adopt_discovered_host(&mut state, discovered.clone());
+        let first_endpoint = state.endpoint.clone();
+        let first_owns_host = state.owns_host;
+        let first_child_present = state.child.is_some();
+
+        if let Some(mut child) = state.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        } else {
+            let _ = Command::new("kill").arg(child_pid.to_string()).status();
+        }
+        let mut exited_child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        exited_child.wait().unwrap();
+        state.child = Some(exited_child);
+        state.endpoint = original.clone();
+        state.owns_host = true;
+        let second_adopted = adopt_discovered_host(&mut state, discovered.clone());
+
+        assert!(!first_adopted, "活着的 owned child 被新 endpoint 顶掉");
+        assert_eq!(first_endpoint, original);
+        assert!(first_owns_host);
+        assert!(first_child_present, "新 endpoint 让 App 丢失了子进程句柄");
+        assert!(second_adopted, "旧 child 已退出后仍未接管新 Host");
+        assert_eq!(state.endpoint, discovered);
+        assert!(state.child.is_none());
+        assert!(!state.owns_host);
     }
 
     #[cfg(unix)]
