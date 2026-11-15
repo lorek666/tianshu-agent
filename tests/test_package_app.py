@@ -137,10 +137,10 @@ def test_macos_release_artifact_is_checksum_bound_and_contains_app(tmp_path):
     assert "Tianshu Agent.app/Contents/Resources/release.json" in names
 
 
-def test_cross_os_target_is_rejected(tmp_path):
+def test_cross_os_target_is_rejected(tmp_path, monkeypatch):
     module = _load_module()
-    host_os = module.native_target().split("-", 1)[0]
-    foreign = "windows-x64" if host_os == "macos" else "macos-arm64"
+    monkeypatch.setattr(module, "native_target", lambda: "macos-arm64")
+    foreign = "windows-x64"
 
     with pytest.raises(module.PackageError, match="操作系统不一致"):
         module.package_app(
