@@ -27,6 +27,15 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域；同产品代码在 #157 CI ubuntu 绿、本机 3 连绿、attempt2 全绿——runner timing flake）。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
+- **可安装发行版 PR #162 首轮原生 CI 红已定位并修（2026-11-15，当前 head 门禁待回填）**：
+  `d26ad98` 的 PR run `43681913168` 中 macOS、两个 Windows 分片与 UI 均成功；Ubuntu
+  唯一失败为新增测试 `test_cross_os_target_is_rejected` 在 Linux 上先调用只支持
+  macOS/Windows 的 `native_target()`，尚未进入被测的跨 OS 拒绝分支。原日志保留为真负控；
+  `9a79b82` 只把该测试改为确定性模拟 `macos-arm64` 宿主，不增加 skip、不放宽产品校验。
+  修复文件定向 **9 passed**；隔离模型/私有端点、failpoint 与 opt-in 开关后的本机完整门为
+  lock/全仓 ruff exit 0、**3447 passed / 11 skipped（693.91s）**。当前 PR head 的四个
+  required checks、最终独立复审和精确 main 四目标 release workflow 仍待结果，不能把
+  `d26ad98` 首轮五项结果或本机全量冒充最终提交通过。
 - **可安装发行版 L1 加固候选（2026-11-15，最终门禁与复审待回填）**：从 main
   `595be35c037cef35da7f166a5db2a624f2b733a9` 新建 `codex/release-app`，现以普通 rebase
   接到最新 main `134e9f04605547e58523ed7184200eccd9e9fea9`。历史作者提交 `def12d27`
@@ -956,3 +965,10 @@
 - **2026-11-14 · 低磁盘T3独立通过与公开证据收口**：亲读T3独立报告并逐hash核1485项加索引自身，52Python/4App与11行为红按实际阶段记录，完整原件1486件保全ignored档案。整分支原717报告明确INT-E1索引缺3视觉dist不批准，root核实系dist忽略规则而非产品产物丢失，只补最窄例外与原字节，不重写旧失败；作者711核心与root717含6派生区别、契约75项为历史时点同步澄清。原a022/T2/T3 CLI预算接线缺口BASE-B1如实披露并单列跟踪，未顺手修预算。当前只改事实文档/证据封装，267产品/测试/锁/dist不变量保持；新候选独立销账、最终组合、正式对象和原生CI另核。
 
 - **2026-11-14 · PR #144 首次Windows红与两测试诊断候选**：原run43549430150六job/两artifact和完整失败原件保全；Windows片1的READY CRLF比较与正常收尾Run failed保持真实失败，未rerun/取消/放宽required。拒绝无根因证据的共享锁提案并恢复生产字节，仅复用CHILD_TEXT修协议、将原心跳收尾断言扩至60次并显示真实run.end。新1030源2922a345上lock/full/ruff通过，3183 passed/8 skipped（513.63s），前后无漂移。第二读者在固定副本确认原断言未减、真实CRLF正控及坏READY/reason两call负控；完整182件独立包和9件本机门原件逐hash保全ignored，公开只发明确34原件子集及两份导航清单。心跳根因未复现/未修，Windows和新正式对象尚待，不合并旧红、不外推设备平台；本次只更新两测试和事实证据。
+
+- **2026-11-15 · PR #162 首轮 CI 红定位与本机重门**：`d26ad98` 的精确 run
+  `43681913168` 保留为 Ubuntu 单红：测试在 Linux 调用仅支持 macOS/Windows 的宿主探测，
+  未覆盖目标拒绝逻辑；macOS、Windows 两分片、Windows 汇总与 UI 同时真实成功。只修测试
+  宿主模拟后目标 `9 passed`，本机 lock/全仓 ruff exit 0、完整 `3447 passed / 11 skipped`
+  （693.91s）。当前 PR head 原生 required checks、独立复审和 main 四目标 release 仍未
+  完成，因此只记为“已定位并修复首红”，不记为发布验收或 G3。
