@@ -416,6 +416,7 @@ def _fetch_once(
         remaining = _remaining(deadline)
         conn = _connect(current, remaining)
         timer: threading.Timer | None = None
+        deadline_interrupted = threading.Event()
         try:
             # 显式连接：把"连不上 / TLS 握手失败"（确定一个请求字节都没发）与
             # "读到一半断了"（用量未知）分开。账本结算要靠这个区分。
@@ -439,7 +440,11 @@ def _fetch_once(
             sock = conn.sock
             remaining = _remaining(deadline)
 
-            def interrupt_read(sock: socket.socket | None = sock) -> None:
+            def interrupt_read(
+                sock: socket.socket | None = sock,
+                interrupted: threading.Event = deadline_interrupted,
+            ) -> None:
+                interrupted.set()
                 if sock is not None:
                     try:
                         # 只打断底层 fd；不在另一线程改 SSLSocket._sslobj。
@@ -536,6 +541,11 @@ def _fetch_once(
         except ssl.SSLError as exc:
             raise NetError(f"TLS 失败：{exc}", reason="net.tls") from exc
         except OSError as exc:
+            if deadline_interrupted.is_set():
+                raise NetError(
+                    f"抓取超时（{limits.timeout_ms}ms 上限）：{exc}",
+                    reason="net.timeout",
+                ) from exc
             _remaining(deadline)
             # 连接已经建立之后的 IO 失败：可能已经读到了一部分字节，用量未知。
             raise NetError(
@@ -543,6 +553,11 @@ def _fetch_once(
                 reason="net.read",
             ) from exc
         except http.client.HTTPException as exc:
+            if deadline_interrupted.is_set():
+                raise NetError(
+                    f"抓取超时（{limits.timeout_ms}ms 上限）：{exc}",
+                    reason="net.timeout",
+                ) from exc
             _remaining(deadline)
             raise NetError(
                 f"HTTP 协议错误：{type(exc).__name__}: {exc}",

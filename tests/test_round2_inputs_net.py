@@ -65,6 +65,53 @@ def test_network_deadline_interrupts_slow_progress_before_peer_finishes(phase):
             assert finished.wait(2)
 
 
+def test_deadline_interrupt_is_timeout_when_clock_check_has_not_expired(monkeypatch):
+    stop = threading.Event()
+
+    class Peer(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "32")
+            self.end_headers()
+            stop.wait(2)
+
+    class ImmediateTimer:
+        def __init__(self, _interval, function):
+            self.function = function
+            self.daemon = False
+            self.thread = threading.Thread(target=function)
+
+        def start(self):
+            self.thread.daemon = self.daemon
+            self.thread.start()
+
+        def cancel(self):
+            pass
+
+        def join(self):
+            self.thread.join(2)
+            assert not self.thread.is_alive()
+
+    monkeypatch.setattr(net.threading, "Timer", ImmediateTimer)
+    with _server(Peer) as server:
+        target = NetworkTarget.parse(
+            f"network://http/127.0.0.1:{server.server_port}/slow"
+        )
+        try:
+            with pytest.raises(net.NetError) as exc:
+                net.fetch(
+                    target,
+                    limits=net.NetLimits(timeout_ms=10_000, max_bytes=100),
+                )
+        finally:
+            stop.set()
+
+    assert exc.value.reason == "net.timeout"
+
+
 @pytest.mark.parametrize("location,expected_path", [
     ("?second=2", "/dir/page?second=2"),
     ("next?second=2", "/dir/next?second=2"),
