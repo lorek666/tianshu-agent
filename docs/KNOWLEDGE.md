@@ -26,15 +26,13 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
-- **当前远端 main 为 `c637b52`（2026-11-15）**：恢复 B T1、W3 有界状态响应和
-  W5 调度器已正常保护合并。`codex/release-app` 已普通合并该 main，代码候选
-  `3073602`（tree `d8c55fb`）的本机与精确 PR CI 全绿：Ubuntu
-  **3514P32S（525.33s）**、macOS **3534P12S（803.83s）**、Windows
-  **3490P56S**（3546 节点，shard 0 1756P17S、shard 1 1734P39S）、UI 16 文件
-  **124 tests**；精确 macos-arm64 产物、篡改负控、全新安装和真实 GUI 生命周期
-  也通过。独立第二读者 PASS 仍是合并硬门；当前 docs-only 收口 head 必须另跑自己的
-  CI 和重建产物。CI 只有 action runner 的 Node 20/未来 Ubuntu 26 迁移提示，不影响
-  本次结果，待后续维护批次升级 action 版本。
+- **当前远端 main 为 `1a8aebb`（2026-11-15）**：W3 有界状态响应、W5 调度器和
+  W3/W5/W15 文档收口已正常合并。独立第二读者对发布候选 `5873720` 给出
+  `PARTIAL`：发布构建、验签、安装回滚、W3/W5 兼容和大部分生命周期通过，但附着
+  既有 Host 后显式退出只关闭桌面壳，Host/Daemon 与运行期锁继续存活。当前修复把
+  附着退出接到同一 token 鉴权 `/shutdown`，按 PID 有界等待原 Host 消失，并在 Host
+  退出后只清理未变更的 Daemon 实例；Rust 真 HTTP 红测已转绿。新 head 的完整本机
+  门、精确 CI、重建产物、安装态 attach→quit 探针和独立复审仍须重新绑定。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
   `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
   分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
@@ -79,6 +77,9 @@
   interval 调度、只走 CLI、无 cron/无 RPC/无 UI/零新事件族（C3 评估见
   CONTRACT-W5-SCHEDULER-2026-11-15.md）。PR 项自身 CI 曾出现触发异常并留有记录；
   merge commit `c637b52` 进入本发布候选后又由精确 run `43729859260` 覆盖验证。
+- **第三批 W3/W5/W15 三 PR 已全部并入 main `c637b52`（2026-11-15）**：#164（W15 docs-only）→`9466df0`、#166（W3 state 8MiB 上界）→`c7f31f7`（run 43721830851）、#167（W5 调度器）→`c637b52`（run 43724954970），均六项 CI 全绿；KNOWLEDGE.md 冲突按 difflib entries 并集法 + 行多重集证明解决。相关 worktree 与本地分支已删。**W15 三项拍板定为「先测量后拍板」（2026-11-15 维护者委托）**：先交付 v1 只读保留期审计命令（零删除，CONTRACT-W15 §3.3 划界）再逐项拍板，本片不拍死数值与红线修订。全量套件现级 **3461 passed / 12 skipped**（649.56s，macOS arm64；以 CI 为准）。
+
+- **W5 调度器已并入 main `c637b52`（2026-11-15，PR #167，CI run 43724954970 六项全绿）**：基线 main@0c5bb71；本机门禁 lock/ruff 0、全量 3408P/11S（686.57s）= 基线 3395P/11S + 13 条新调度器测试；负控 NC1/NC2 实跑红→还原留证（attempt1 Windows shard0 红 = 新测试终态谓词真缺陷，已修）。v1 边界如实：interval 调度、只走 CLI、无 cron/无 RPC/无 UI/零新事件族（C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md）。
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
 - **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
@@ -869,6 +870,19 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-16 · 独立复审发现附着 Host 退出遗留服务并修复**：第二读者绑定
+  `5873720/tree f16f930` 复审为 `PARTIAL`；它独立构造的 macos-arm64 产物、篡改
+  负控、安装、冷启动、普通自有 Host 生命周期及 W3/W5 兼容均通过，但安装态复现
+  `owns_host=false` 时 App 菜单退出只结束 desktop，Host/Daemon、`host.lock`、
+  `daemon.lock`、`agent.sock` 全部残留。先用真实 loopback HTTP 回归锁定原缺陷：
+  与会话前实现相比，退出后 2 秒内没有发出 `POST /shutdown`，测试稳定超时。修复在
+  `desktop/src-tauri/src/lib.rs` 保留“本壳拥有”和“附着”两种启动来源，但显式退出
+  统一请求鉴权 shutdown；随后按 PID 等待原 `host.lock` 消失，若 Host ACK 后 Daemon
+  仍未清理，则只对启动前快照未变化的 Daemon 执行同包 Python 有界停止，并拒绝误杀
+  退出期间接管的新实例。新增两条真实 HTTP/子进程回归覆盖完整清理和 ACK 后孤儿 Daemon
+  收尾。复审另指出旧 main 基线与桌面 README 将原生 Intel/ARM64 runner 写成“交叉
+  构建”，已同步修正。候选已普通合并最新 `main@1a8aebb`，`KNOWLEDGE` 冲突保留双方
+  历史；最终新 SHA 的云 CI、产物与安装态 attach→quit 证据待回填。
 - **2026-11-15 · PR #162 同步 W3/W5 并完成精确 CI、产物与 GUI 复验**：远端 main
   在收尾期间连续推进到 `c7f31f7`（W3）与 `c637b52`（W5）；两次都用普通 merge
   同步，`KNOWLEDGE` 冲突保留双方事实，另只删除 main 带入的 `scheduler.py` 行尾空白。
@@ -946,6 +960,8 @@
   相关红日志均保留，待所有测试进程退出后独占门真实通过。当前只冻结作者侧证据；
   独立复审因本会话禁止启动子代理而不能由作者代替，最终新 head 的完整门、云 CI、
   产物和 GUI 复验另绑。
+- **2026-11-15 · 第三批 W3/W5/W15 合并列车 + worktree 清理（维护者拍板「合并进 main 后删掉」，并把 W15 拍板流程委托为「先测量后拍板」）**：严格列车逐条执行「rebase 就最新 main → KNOWLEDGE 行多重集终验 → 本地门禁（lock/ruff/全量）→ CI 六项全绿 → 保护 merge commit」：#164（W15 docs-only）→`9466df0`（原 CI 绿，免 rebase）；#166（W3 8MiB 上界）rebase 到 `9466df0` 自动合并（多重集 PASS，门禁 3448P/12S/662.78s）→ run 43721830851 六项绿 → `c7f31f7`；#167（W5 调度器）rebase 到 `c7f31f7` 遇 KNOWLEDGE.md 唯一冲突（README/ROADMAP 自动合并）——**difflib entries 并集法（replace 感知，main 先/branch 后同锚排序）proof PASS（933 = 929+929−925 行，零丢失零重复）**，门禁 3461P/12S/649.56s（= main 级 3448 + 13 条调度新测试，账目吻合）→ run 43724954970 六项绿 → `c637b52`。删除清单：w7/w8/w10/w10-review（上批已合并，删前逐一核对分支尖 = 已合并 PR head）+ w3/w5/w15（合并后删）；六个本地分支全部 `git branch -d` 自然可删——**前提是本地 main 先 `pull --ff-only` 到最新（分支须是 HEAD 祖先），否则 -d 被拒**；远端分支 GitHub 合并时已自动删除。**W15 三项拍板（事件日志 archive-then-truncate = 红线 1 修订、summary_versions FAILED 行豁免触发器 = 契约变更、jobs/budget_reservations 终态行保留期数值）不拍死任何数值**：维护者委托后定为「先测量后拍板」——先交付 v1 只读保留期审计命令（CONTRACT-W15 §3.3 划界，零删除），用实测数字支撑逐项拍板。本片顺带修正路线图状态账：W1/W2/W6/W7/W8/W10 六行仍写「实现完成见 PR」或「未开始」（实际均已合并），一并销账。#140/#141（文档对账）仍 OPEN，与后续 PR 按 modify-modify 并集法处理；F10 等 §7 旧条目的「PR 待合」漂移属 #140 范围，本片不扩 scope。
+
 - **2026-11-15 · W15 保留期/GC 契约评估（docs-only）**：路线图 W15 解锁后开工，交付 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)——逐面盘点 13 张表/文件的增长驱动 × 删除不变量 × 恢复/审计角色。**结论：没有任何一张表今天就安全可删**：`summary_versions` 有 BEFORE DELETE 触发器（summaries.py:128）且回放三道校验依赖；`dispatches` 的 `boundary_protocol`/`intent_seq` 是 `none_applied` 判定组成部分（红线 2）；`dispatch_requests` 隐私已用终态脱敏而非删除解决；红线 1/5/11 直接覆盖 events/预算面。三个「点名的增长面」实际无 GC 缺口：leases release 即删行自清理、migration_log 行数=版本数、metrics 已被 #150 轮转；无界增长的现实风险上限由 DiskAdmission 门槛兜住（如实拒绝而非静默膨胀）。**v1 建议 = 只读保留期审计命令**（data_cli 子命令：逐表行数/最老行年龄/终态占比/增长投影/cleanup_plan 现状，零删除），实现落点 maintenance.py/data_cli.py 被 #161 占用等落地后另立 PR。**拍板项三项**：事件日志 archive-then-truncate（= 红线 1 修订）、summary_versions FAILED 行豁免触发器（= 契约变更 docs(contract) 先行）、jobs/budget_reservations 终态行保留期数值。
 
 - **2026-11-15 · W5 调度器实现（SPEC → 实现 → 负控 → 门禁，基线 main@0c5bb71）**：交付确定性最小调度器——`src/tianshu/scheduler.py`（schedules 表按 budget.py:84/dispatcher.py 先例建在事件库同一条连接上）、`src/tianshu/schedule_cli.py` + cli.py 两处钩子（管理面只走 CLI，无 RPC/无 UI/无 cron，均如实写明）、daemon.py `_driver_loop` 装配点 + tick 调用（Scheduler 与 Worker 同在驱动线程装配，遵守 driver_log 连接线程纪律；调度器故障不带走驱动循环、不计入 consecutive_failures）。触发 = 与 `task.create`/`run.start` 完全同路径（create_task → prepare_run → start_run → enqueue，Run 由 worker 认领），**零新事件族**；追赶 = 补发一次并从当前时间重排；幂等机制如实记录为「同事务记账 + 单写者」——**核对发现事件层 `idem_key` 无 UNIQUE、`EventLog.append` 不去重、task 创建路径不使用它**（正控测试 §4.3 的诚实结论）。授权面论证：调度器不是授权输入，只建任务入队不执行副作用，Run 内动作照走执行侧判定（红线 2/4/6）。文档四件套：SPEC-W5（接口/语义/测试清单）、CONTRACT-W5（C3 评估：v1 不新增事件族的四条理由 + v2 五类 schedule.* 事件 payload 草案 + 三处同改清单，单独 commit 不夹带代码）、ROADMAP W5 行 → 实现完成、README 特性表新增一行。测试 13 条全注入时钟（FakeClock），daemon 集成用有界轮询非 sleep 猜测。负控两条实跑红→还原：NC1 拆到期检查 = 9 failed/4 passed；NC2 拆同事务记账 = 6 failed/7 passed，关键红证据 `['run_9eba…'] == []`（interval 内第二次 tick 双发）。本机门禁：`uv lock --check` 0、全仓 ruff 0、全量 **3408 passed / 11 skipped（686.57s）**（基线 3395P/11S + 13 条新测试，正好吻合）；跑前抢 `/tmp/tianshu-suite-lock`、df 5.3GiB 达标、文件重定向 + 显式退出码。CI 结果以 PR 为准。

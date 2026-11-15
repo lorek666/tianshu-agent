@@ -10,21 +10,21 @@
 
 | # | 工作流 | 缺口出处 | 契约影响 | 冲突面 | 外部阻塞 | 状态 |
 |---|---|---|---|---|---|---|
-| W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **实现完成，门禁/CI 见 PR** |
-| W2 | net.py 速率限制/重试 | §7 G2 网络 | 无 | tools.py 接线（中） | 无 | 未开始 |
-| W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎，加字段不升版本） | control.py（已交付，见 SPEC-STATE-RESPONSE-BOUND-2026-11-15） | 无 | **实现完成，门禁/CI 见 PR** |
+| W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **已并入 main**（#151，`595be35`） |
+| W2 | net.py 速率限制/重试 | §7 G2 网络 | 无 | tools.py 接线（中） | 无 | **已并入 main**（#152，`7f4c07d`，run43668070804） |
+| W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎，加字段不升版本） | control.py（已交付，见 SPEC-STATE-RESPONSE-BOUND-2026-11-15） | 无 | **已并入 main `c637b52`**（#166，run 43721830851） |
 | W4 | 流式输出 | capability 声明 | **C1 + 事件面，docs(contract) 先行** | model.py / loop.py（热） | 无 | 未开始 |
-| W5 | 调度/定时任务 | 全库 0 匹配 | 无（v1 零新事件族；C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md） | daemon.py（_driver_loop 已接线：装配点 + tick 调用） | 无 | **实现完成，门禁/CI 见 PR** |
-| W6 | 记忆语义层：真 embedding provider + 检索评测 | §7 N2/N3 | provider 接缝已在 | memory_index.py（冷） | 无 | 未开始 |
-| W7 | 记忆 L2/L3 生成式合成 + 冲突消解 | §7 N3 | 另立契约（N3 教训） | memory_distill.py（冷） | 无 | 未开始 |
-| W8 | 预算账本 UI + 子任务 UI | §7 挂账④⑤ | 无 | ui/src（冷） | 无 | 未开始 |
+| W5 | 调度/定时任务 | 全库 0 匹配 | 无（v1 零新事件族；C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md） | daemon.py（_driver_loop 已接线：装配点 + tick 调用） | 无 | **已并入 main `c637b52`**（#167，run 43724954970） |
+| W6 | 记忆语义层：真 embedding provider + 检索评测 | §7 N2/N3 | provider 接缝已在 | memory_index.py（冷） | 无 | **已并入 main**（#154，`24eabc4`，run43670453171） |
+| W7 | 记忆 L2/L3 生成式合成 + 冲突消解 | §7 N3 | 另立契约（N3 教训） | memory_distill.py（冷） | 无 | **已并入 main**（#157，`c8b53bb`，run43681412578） |
+| W8 | 预算账本 UI + 子任务 UI | §7 挂账④⑤ | 无 | ui/src（冷） | 无 | **已并入 main**（#155，`d37a84c`，run43676855243） |
 | W9 | 网络深度：分页读取 / DNS 二次校验 / 搜索 API | §7 G2 | 工具 schema 评估 | net.py / tools.py | 搜索 API 选型待拍板 | 未开始 |
-| W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | 未开始 |
+| W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | **已并入 main**（#156，`134e9f0`，run43679118848） |
 | W11 | 巨石模块拆分（dispatcher/loop/tasks/memory/cli） | 工程债 | 无（纯重构，契约不动） | **热文件，全部在途 PR 落地后** | 无 | 未开始 |
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | #141 落地后开工 | 未开始 |
 | W13 | 桌面外壳：Tauri + 托盘 + 安装包 | M5-D1/D2/D5 | IPC/UI 契约不动 | 新增 shell/ 目录 | **Rust 工具链待装；签名/公证需 Apple 账号** | 未开始 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义 | exec*/isolation | 平台方案选型待拍板 | 未开始 |
-| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估 | 与 G3 后续重叠 | 实现落点 `maintenance.py`/`data_cli.py` 等 **#161 落地**；三项拍板见 CONTRACT-W15 | **SPEC**（docs-only 契约评估，见 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)） |
+| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估 | 与 G3 后续重叠 | 落点 `maintenance.py`/`data_cli.py` 已随 #161 落地解锁；**拍板流程=先测量后拍板**（2026-11-15），v1 只读保留期审计命令待开工 | **SPEC 已并入 main**（#164，`9466df0`；[CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)） |
 
 ## 外部阻塞清单（做了做不了 / 需要拍板，不许冒充已解决）
 
