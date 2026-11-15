@@ -270,6 +270,25 @@ def test_verify_release_rejects_unlisted_archive_import_hook(tmp_path):
         )
 
 
+def test_verify_release_rejects_unlisted_source_bundle_import_hook(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_unlisted_source_test")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    (bundle / "app" / "sitecustomize.py").write_text(
+        "raise SystemExit(9)\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(verify.VerifyError, match="bundle 文件集合.*未列文件"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target="macos-arm64",
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
 def test_verify_release_rejects_release_identity_drift_from_manifest(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_identity_test")
     release_manifest = _load(RELEASE_SCRIPT, "release_manifest_identity_drift")

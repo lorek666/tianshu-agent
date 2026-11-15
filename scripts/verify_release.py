@@ -82,6 +82,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _verify_bundle_file_set(bundle_dir: Path, manifest: dict[str, Any]) -> None:
+    actual = {
+        path.relative_to(bundle_dir).as_posix()
+        for path in bundle_dir.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    expected = set(manifest["files"]) | {"release-manifest.json"}
+    unlisted = actual - expected
+    missing = expected - actual
+    if unlisted or missing:
+        raise VerifyError(
+            "bundle 文件集合与 manifest 不一致："
+            f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing)}"
+        )
+
+
 def _member_path(member: tarfile.TarInfo) -> PurePosixPath:
     path = PurePosixPath(member.name)
     lowered = {part.lower() for part in path.parts}
@@ -484,6 +500,7 @@ def verify_release(
         manifest = read_manifest(manifest_path, base_dir=bundle_dir)
     except ReleaseManifestError as exc:
         raise VerifyError(str(exc)) from exc
+    _verify_bundle_file_set(bundle_dir, manifest)
     expected_identity = {
         "target": target,
         "version": version,
