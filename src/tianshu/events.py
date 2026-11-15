@@ -25,7 +25,8 @@ from .data_admission import check_connection, check_new_file_evidence
 from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
-from .maintenance import DatabaseAccess, MaintenanceConnection, acquire_database_access
+from .maintenance import DatabaseAccess, MaintenanceConnection
+from .restore_access import acquire_restore_database_access, verify_sqlite_main
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -293,7 +294,10 @@ class EventLog:
         心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
         那条），所以关掉这个检查是安全的。除此之外不要传它。
         """
-        access = acquire_database_access(db_path)
+        access = acquire_restore_database_access(
+            db_path,
+            prewrite_guard=lambda: check_new_file_evidence(db_path),
+        )
         try:
             self._open_database(db_path, blob_dir, cross_thread, access)
         except BaseException:
@@ -332,6 +336,7 @@ class EventLog:
         )
         self._conn.database_access = access
         self._conn.row_factory = sqlite3.Row
+        verify_sqlite_main(self._conn, db_path, access.identity)
         # 先读 schema、再设 journal_mode。
         #
         # 顺序是契约：`SELECT sqlite_master` 会触发 WAL 回放——"库里到底有没有

@@ -79,6 +79,14 @@ def _half_response_server() -> tuple[socket.socket, int, list[int], threading.Th
                 return
             accepts.append(1)
             try:
+                request = bytearray()
+                while b"\r\n\r\n" not in request and len(request) < 65536:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    request.extend(chunk)
+                if b"\r\n\r\n" not in request:
+                    continue
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhalf")
                 conn.close()
             except OSError:  # pragma: no cover - 客户端先行断开
@@ -230,6 +238,45 @@ def test_send_phase_failure_is_never_retried(rate_limit_off) -> None:
         )
     finally:
         server.close()
+
+
+def test_short_content_length_eof_is_never_accepted(
+    monkeypatch: pytest.MonkeyPatch, rate_limit_off
+) -> None:
+    class ShortResponse:
+        status = 200
+        length = 100
+
+        def __init__(self) -> None:
+            self.chunks = [b"half", b""]
+
+        def getheader(self, name, default=""):
+            return default
+
+        def read(self, _amount):
+            return self.chunks.pop(0)
+
+    class SilentConnection:
+        sock = None
+
+        def connect(self) -> None:
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> ShortResponse:
+            return ShortResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(net_mod, "_connect", lambda *_args: SilentConnection())
+    target = canonical_target("network://http/example.invalid/x")
+    with pytest.raises(NetError) as excinfo:
+        fetch(target, limits=NetLimits(connect_attempts=3, min_interval_s=0))
+    assert excinfo.value.reason == "net.read"
+    assert "Content-Length" in str(excinfo.value)
 
 
 def test_retry_respects_cancel(tmp_path) -> None:
