@@ -2,8 +2,8 @@
 
 > 状态：**L1 本机实现候选；尚未完成四目标与独立验收，不得据此宣称 G3 正式发布。**
 >
-> 基线：`main @ 595be35c037cef35da7f166a5db2a624f2b733a9`。该提交在落笔时的 main
-> push CI 后来完成 run43666925065 attempt1 六 job 全绿；本规格不把该基线 CI 当作后续
+> 起草基线：`main @ 595be35c037cef35da7f166a5db2a624f2b733a9`。候选现已普通 rebase 到
+> `main @ 134e9f04605547e58523ed7184200eccd9e9fea9`；任何基线或旧候选 CI 都不是新
 > 发行候选提交的绿色证据。
 
 ## 0. 问题、权威输入与判定口径
@@ -205,7 +205,11 @@ Agent”。
 }
 ```
 
-7. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
+7. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
+   `release-manifest.json` 的 version/commit/target 一致；macOS 归档和 Windows NSIS
+   解包资源中的短清单、完整 manifest 必须分别与已验证 bundle 字节相同。Windows 还必须
+   由 7-Zip 实际解出唯一资源根，不得以“外层 PE 合法”代替 payload 证据。
+8. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
    target、`runtime_smoke`、`device_verification` 和 `signed=false`。三份文件职责不得混写；
    未知字段拒绝、未知 target 拒绝、未知 schema 拒绝。
 
@@ -222,8 +226,9 @@ Agent”。
 
 1. 输入 commit 必须是 `origin/main` 当前祖先且为该 tag 指向的完整 SHA。
 2. 查询该 SHA 的四项 required 和 main push CI；不绿即停止。
-3. 四目标各自由匹配 OS/arch runner 或已声明的跨编译路径构建；跨编译目标必须另有对应
-   runner 的 import/runtime smoke，不能只靠文件存在。
+3. 四目标各自由匹配 OS/arch 的原生 runner 构建并执行 import/runtime smoke；assembler
+   只接受 `runtime_smoke.status=pass` 且 `host_target` 与 target 完全一致，跨目标结果
+   不得进入候选。
 4. 运行 release verifier，生成 SHA256 与 manifest，上传 GitHub Release draft。
 5. 人工检查 draft 后才发布；工作流不在未审材料下自动 public release。
 6. 任何 required check、版本、commit、哈希、许可或广告来源失败均不得发布。
@@ -302,6 +307,11 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 9. manifest 未列出 `sitecustomize.py` → App 启动和安装前必须红。
 10. Host 附着端口开放但 PID/token 身份不符 → 必须拒绝附着。
 11. Host 崩溃后退出壳 → Daemon 必须被请求关闭并等锁消失，不能留孤儿。
+12. 短 `release.json` commit/version/target 漂移，即使重新计算 manifest/archive SHA →
+    release verifier 必须红。
+13. 归档或 NSIS payload 的完整 manifest 与 bundle 字节不一致 → verifier 必须红。
+14. Windows 只给合成 PE header 或合法 PE 外壳但没有可解析 NSIS payload → verifier 必须红。
+15. 四目标 runtime smoke 非 `pass` 或 `host_target` 不匹配 → assembler 必须红。
 
 ### 9.4 平台证据矩阵
 
@@ -403,11 +413,14 @@ pub fn verify_resource_manifest(
 
 ## 12. 验收清单
 
-- [ ] 对最终提交重跑 release manifest/build/install/verify 定向测试；篡改资源、摘要、
-  架构、tar 逃逸与原 `port=0` 启动窗口均须绑定新 SHA。
-- [ ] 对最终产物验证 Tauri 壳真实启动 bundled Python 与 Host/Daemon，UI 可操作；关闭窗口
-      任务继续，Finder 重开，显式退出无孤儿进程。
-- [ ] 对最终产物验证 macOS arm64 安装、启动、停止、卸载；数据保留明确。
+- [ ] 对最终提交重跑 release manifest/build/install/verify 定向测试；未列文件、已列
+  篡改、摘要、架构、tar 逃逸、短身份/归档 manifest 漂移和伪 NSIS payload 负控均绑定
+  最终 SHA。`def12d27` 的上一轮结果只保留为其历史证据。
+- [ ] 对最终产物验证 Tauri 壳真实启动 bundled Python 与 Host/Daemon；真实 WebView
+  创建并完成脚本化任务，关窗后继续，LaunchServices 重开保留结果，Cmd+Q 无孤儿。
+  `def12d27` 的真实生命周期结果不自动继承到 rebase 后的新 SHA。
+- [ ] 对最终产物验证 macOS arm64 安装、Host 崩溃后退出、重装回退与卸载；数据保留
+      和 purge 二次确认明确。
 - [ ] macOS x64、Windows x64、Windows arm64 的每项证据标为 `verified` / `runner-only` /
       `unknown`，不混写。
 - [x] 产物只含允许文件；无 `.venv`、tests、数据库、日志、密钥、refs、`.omc`。

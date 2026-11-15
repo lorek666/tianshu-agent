@@ -27,16 +27,28 @@
 ## 2. 当前状态（数字会过期，更新时重核）
 
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域；同产品代码在 #157 CI ubuntu 绿、本机 3 连绿、attempt2 全绿——runner timing flake）。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
-- **可安装发行版 L1 实现候选（2026-11-15，未独立验收）**：从 main
-  `595be35c037cef35da7f166a5db2a624f2b733a9`（该 SHA 自身 push CI
-  run43666925065 attempt1 六 job 全绿）新建 `codex/release-app`。候选把“浏览器工具 /
-  可安装内测壳 / 可追溯发行 / G3 正式发布”分层，已实现 release manifest 与锁定
-  python-build-standalone 3.12.16、Tauri 2 薄壳、单实例/托盘、关闭窗口保活、显式退出
-  失败保留进程、启动时校验 bundle 每个文件 SHA、macOS 安装/卸载及失败烟测回退、四目标
-  draft-release workflow。macOS arm64 已在临时干净数据根完成真实安装、WebView 连接、
-  `/health`、关窗保活、重开、退出无孤儿与卸载；篡改 bundle 后启动失败且 Host 未启动。
-  本记录不是最终提交、四目标、独立复审或 G3 证据；完整状态仍以本文件后段最终门禁结果与
-  PR/CI 记录为准。
+- **可安装发行版 L1 加固候选（2026-11-15，最终门禁与复审待回填）**：从 main
+  `595be35c037cef35da7f166a5db2a624f2b733a9` 新建 `codex/release-app`，现以普通 rebase
+  接到最新 main `134e9f04605547e58523ed7184200eccd9e9fea9`。历史作者提交 `def12d27`
+  按完整文件集合校验
+  bundle/归档，拒绝未列 `sitecustomize.py`、已列文件篡改、链接逃逸、错误 Windows
+  Python 架构和未绑定源构建；release 编译禁用资源 override；Host 附着核对
+  `/health` PID 与 token 保护 `/session`，退出直接调用 `POST /shutdown`，Host 崩溃时通过
+  同包 Python 收尾 Daemon。macOS 安装器在替换旧 app 前调用原生 `--verify-bundle`，
+  purge 要求逐字匹配 `--confirm-data-root`。macOS arm64 真实产物绑定上述 SHA，SHA256
+  `634dc6ed00d505f579ef6cabb5f7bd155d3a1652454b490279a32f500e1c9497`；在隔离前缀/数据根
+  完成 WebView、真实 `/health`/`/session`、单实例、脚本化任务执行、关窗保活、LaunchServices
+  重开、Cmd+Q、Host `SIGKILL` 后退出无孤儿、陈旧锁重启、重装回退、篡改失败页、卸载保留与
+  purge 二次确认。作者全门为本机 `3389 passed / 11 skipped / 589.67s`，UI 13 文件
+  91 tests/type/build/dist，Cargo 19 tests/fmt/clippy，lock/ruff/shellcheck/actionlint 全 0。
+  独立复审确认上述指定项已修，但把该提交判为部分修：短 `release.json` 未严格解析、归档
+  manifest 未字节绑定、四目标仍复用非匹配架构 runner、Windows 只验外层 PE。rebase 后
+  代码提交 `cc05c3e` 已补封闭身份、bundle/归档/NSIS
+  payload 三向字节绑定、Windows 7-Zip 实解唯一资源根、原生 smoke 强制和
+  `macos-26-intel` / `windows-11-arm` runner；release 定向 64 passed，lock/ruff/actionlint/
+  shellcheck 通过。这是新代码候选，尚不能继承 `def12d27` 的最终产物或全门结论。
+  这不是 G3：最新 SHA 的完整本机门、真实产物、四目标 workflow、独立复审/CI，
+  macOS x64/Windows 用户设备、签名/公证、自动更新、真实设备升级/SLO 仍未完成。
 - **Windows 计时/锁等待诊断 PR #153 已交付，main 自身首次 CI 独立通过（2026-11-14）**：PR head `da47a3b6dbc38f0e0634af101c7089bf511c48e3` 的首次 run43586138334 attempt1 六 job 成功；独立结论 `PASS_PR153_ATTEMPT1_NATIVE_WITH_RETAINED_WATCHDOG_EVIDENCE`。正常保护 merge 为 main `88ec0ab640302f81602db93e69502f5ba5d84cb5`（tree `b9f05920d21b39c072633fd44299e4786da59f51`，parents `c2cf…` / `da47…`）。main 自身首次 push run43588389290 attempt1 六 job 成功，独立结论 `PASS_MAIN_88EC_ATTEMPT1_NATIVE_WITH_RETAINED_TIMING_EVIDENCE`：两片完整覆盖 3207 节点、9588 阶段，**3170 passed / 37 skipped**；Ubuntu 3194/13、macOS 3199/8、UI 13 文件/91 测试。PR 和 main 各保留 3 次成功节点的 watchdog 长等待，未把绿色或长等待误写成生产根因已修复。原 c2cf 两红、实际 SQLite 锁机制及原 MCP 卡点仍未知；#145/#147 保持开放。本片只交付测试计时、异常清理和失败现场，恢复 B 产品仍未实施。
 - **控制面响应测试已改为确定性屏障（2026-11-15）**：纯文档恢复契约 PR 的新 head 原生 run43634904064 在 Windows 分片 0 唯一红为 `test_control_plane_stays_responsive_while_driver_runs_long_task`，控制面两 RPC 实测 **0.781s，超过原 0.5s 阈值**；shard1、Ubuntu、macOS、UI 四个 job 成功，shard0 与 Windows required 汇总失败。产品 blob 与已通过的 main `88ec` 相同，原测试的“模型 sleep + 墙钟阈值”对 runner 调度敏感；0.781 秒耗时来源仍未定位，不能据此断定产品阻塞，也不能把本轮通过写成性能根因已修。隔离修复把长模型改为真实 Event 阻塞，只有驱动仍锁在模型调用、控制面 RPC 已完成才通过；2 秒 watchdog 只防止测试死锁，触发即失败。旧候选漏了入口失败清理，独立真进程负控发现后已用外层 `finally` 修复；4aae 候选目标连续 20 次通过，整文件与全量均通过（**3199 passed / 8 skipped，660.48s**，lock/ruff 0）。最终 93c1 仅改 RouteModel 文档字符串并复验目标测试，不冒充新一轮 20 次或 full。该结果不建立新 SLO，也不证明原 0.5 秒数值性能目标或 SQLite 根因。
 - **控制面屏障修复与恢复 B 文档契约已进入 main `925ca8f2`（2026-11-15）**：PR #158 head `6f40591989901784ac925b2a6639fb5e5ebfc380` 的原生 run43638768307 attempt1 六 job 全绿并经第二读者确认；正常保护 merge 为 main `f307bf16e0c5bb4b9eeac5c9c6e58353fb5411eb`。随后恢复 B 文档契约 PR #146 head `6a5d2130e6162a82d2d0ec27da193ad1033db0ea`（tree `4e5599b777e1879ac294c60ae6021ec308dfbc2a`）以普通 merge 同步到该 main，相对 base 仅 33 份 README/docs/证据改变，产品、测试、schema、UI、CI 与依赖零 delta；本机 lock/full/ruff 全 0，3199 passed / 8 skipped（578.91s）。PR 原生 run43644560048 六 job 全绿：Ubuntu 3194/13、macOS 3199/8、Windows 合 3170/37，两片覆盖 3207 节点与 9588 阶段，原失败控制面测试三阶段通过。保护合并后 main 为 `925ca8f2e94541b5e07c6510e827f6a7381cb2e6`（tree 与 PR head 相同）；main 自身 push run43646899748 六 job 全绿，Windows 合仍为 1590P14S + 1580P23S、3207 节点/9588 阶段，控制面目标通过并保留 1 次 watchdog 后正常 PASS。两次精确对象的最后第二读者签发均因复审服务 upstream 401 未完成，不能伪造独立 PASS；#145/#147 仍开放。
@@ -678,6 +690,28 @@
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
 - **2026-11-15 · W 系列七 PR 合并收口**：维护者拍板合并七条 W 系列 PR（#150 指标轮转 / #151 keychain / #152 网络重试 / #154 embedding 外发 gate / #155 预算子任务 UI / #156 子代理写深度 / #157 记忆冲突消解）。strict 保护下逐条执行「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」，全程零强推；main 推进 `02ac07e→2530a15→595be35→7f4c07d→24eabc4→d37a84c→134e9f0→c8b53bb`。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）。modify-modify 解法 = **difflib 提取双方相对共同祖先的插入段机械求并集**（两侧文本零改写、位置互不重叠才可行；#155 曾因解决器按追加处理把 G2 行复制成两份，行多重集核查抓出后修复——**冲突解决器的「theirs-then-ours」只对纯追加冲突合法**）；F10 行 main 侧等于祖先版故直接取分支版。环境教训两条：**两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并等对方套件结束再跑；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。CI flake 记录两条（均 attempt2 全绿）：#151 attempt1 Windows shard1 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态（新 flake 家族成员）；#154 attempt1 shard0 = `test_data_binding` 在案家族。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s），合并后 main 终态以收口分支复跑为准。W3/W5/W15 已由 #146/#159 落地解锁，W4/W12 等 #141（仍 OPEN）；#140/#141 与本轮改动在 KNOWLEDGE/PRD 相交，后续合并按同法处理。收口轮：Mimosa deep 重扫合并后 main（scan-2026-11-15T05-50-03.471Z-aeada98bbc47，seal sha256:fe541aaa…ba8ad）31 findings 与上轮 seal 27a03f47 签名逐条一致 0 增 0 删；收口 PR #163 attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried`（同代码 #157 CI 绿 + 本机 3 连绿 + attempt2 全绿，timing flake）。
+- **2026-11-15 · 可安装 App 第二轮复审缺口修复**：把 `codex/release-app` 普通 rebase 到
+  `origin/main@134e9f0`，保留五提交历史。复审绑定 `def12d27` 的结论为部分修，新增阻断
+  不是应用已可绕过 Rust 校验，而是发布门禁会接受错误候选：短 `release.json` 与完整
+  manifest/请求身份未三向校验、归档内 manifest 未绑定、非原生 runner 可生成
+  `not_run_cross_target`、Windows 合成 PE 可冒充 NSIS。代码提交 `cc05c3e` 增加封闭短身份
+  解析和字节一致要求；Windows 通过 7-Zip 实解，要求唯一 `release.json` 资源根，完整
+  manifest、managed 文件集合和 Python PE 均与 bundle 绑定；assembler 只接受原生 `pass`，
+  matrix 使用 `macos-26-intel`、`windows-11-arm` 等匹配架构 runner。负控先红后绿，
+  release 定向 64 passed。该记录不替代最终 SHA 的真实产物、全门、Windows 原生 release
+  workflow、两份独立复审或用户设备证据。
+
+- **2026-11-15 · 可安装 App 复审阻断修复与真实闭环**：对 `bef1a3a` 的两份独立复审
+  结论逐项销账，作者提交 `def12d27` 修复完整文件集合、来源洁净绑定、Windows NSIS/Python
+  架构分离、workflow 输入注入、Host 身份与直接退出、资源 override、孤儿 Daemon、安装前
+  原生 verifier、目录重叠与 purge 二次确认。定向负控和全门通过（3389P/11S、589.67s；
+  UI 13/91；Cargo 19；其它静态门 0）。真实 macOS arm64 产物 SHA256
+  `634dc6ed...` 在隔离数据根完成 WebView 任务、关窗/重开、Cmd+Q、Host `SIGKILL` 后无孤儿、
+  陈旧锁恢复和篡改失败页；pre-existing debug App 的默认用户数据流未被停掉或清理。
+  **踩了**：完整文件集合会与 Python 首次导入生成的 `__pycache__` 冲突，正确修法是把所有
+  bundled Python 入口固定禁写字节码，而不是放行未列文件；LaunchServices 重开需要处理
+  `Resumed`，默认 macOS Quit 预定义菜单会绕过普通退出闭包，必须换成自定义菜单项。
+  独立复审与 PR/原生 CI 另绑，未把作者结果当成批准。
 - **2026-11-15 · 可安装 App L1 候选与启动/安装安全闭环**：基线 `main@595be35`，隔离分支 `codex/release-app`。先落 [SPEC-RELEASE-APP](SPEC-RELEASE-APP-2026-11-15.md)，实现 release manifest、锁定 python-build-standalone 3.12.16、Tauri 2 薄壳、单实例/托盘、启动时逐文件 SHA 校验、macOS 安装/卸载与启动烟测失败回退、四目标 draft-release workflow。真实调试发现 `/tmp` symlink 导致 Tauri `resource_dir=UnknownPath`、误把数据根指针文件当目录；前者由安装 prefix canonicalize 修复，后者由测试夹具纠正。release 模式 macOS arm64 已真实安装并验证 WebView/`/health`、关窗保活、重开、`Cmd+Q` 无壳/Host/Daemon 残留、卸载保留与显式清理临时数据；篡改一个 Python 文件后 App 显示 startup failure 且 Host 未启动。完整门禁：lock/ruff 0，Python **3377 passed / 11 skipped / 558.70s**，UI 13 文件 91 tests/type/build/dist 0，Cargo 14 tests/clippy 0；首次全量唯一失败已确认由宿主 `ANTHROPIC_BASE_URL` 污染造成，测试子进程隔离后目标测试与全量通过。仍未取得最终提交独立复审、四目标原生 workflow、设备安装/升级/回退、签名/自动更新或 G3。
 
 - **2026-11-14 · Windows 计时/锁等待诊断保护合并与 main 首绿**：正式 da47 先由第二读者完成测试内容、事实文稿/公开子集和正式 Git 对象三层窄绑定；本机 1163 输入上 lock/full/ruff 全 0，3199 passed/8 skipped、635.00s。PR153 首次六 job 全绿后独立核对两份原生 artifact、真实 checkout/tree/parents、3207 节点与 9588 阶段，确认 48 个聚焦节点全过并保留 3 次 watchdog；正常保护合并为 main88ec，tree 不变。main 自身首次 push CI 另跑并独立重算同一完整 collection，六 job 全绿；其 3 次长等待均只在片 1，测试随后全阶段通过。原 c2cf 双红、未知锁/MCP 机制和 #145/#147 不销账，恢复 B 仍未实现。
