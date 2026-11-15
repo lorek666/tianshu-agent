@@ -3,8 +3,9 @@
 **状态：`CANDIDATE_PENDING_FINAL_GATES_AND_INDEPENDENT_REVIEW`。**
 
 本记录只覆盖 T1 平台基础，不把内部实现写成可执行的完整恢复产品。基线为
-`origin/main@2530a1575695baf75391a917a15a61dd2ffaa363`，分支
-`codex/restore-t1-platform`。最终提交 SHA/tree 必须在候选冻结后回填。
+`origin/main@2530a1575695baf75391a917a15a61dd2ffaa363`，最终组合同步
+`origin/main@d37a84c`；分支 `codex/restore-t1-platform`。最终提交 SHA/tree
+必须在候选冻结后回填。
 
 ## 实现范围
 
@@ -46,8 +47,8 @@
 
 ## 门禁状态
 
-最终冻结源码的 macOS arm64 完整本机门禁为 **3376 passed / 9 skipped
-（589.68s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
+同步最新 main 后，最终冻结源码的 macOS arm64 完整本机门禁为 **3416 passed /
+12 skipped（677.98s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
 165 passed / 1 skipped**；
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。
