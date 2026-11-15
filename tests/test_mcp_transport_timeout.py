@@ -56,6 +56,7 @@ def _server_config(tmp_path: Path, *, stalled: bool = True):
             command=(sys.executable, str(script)),
             call_timeout_ms=200,
         )
+        control.settimeout(config.handshake_timeout_ms / 1000 + 1)
         yield config, control
 
 
@@ -172,11 +173,15 @@ def test_stalled_send_is_unknown_and_replay_does_not_retry(tmp_path, monkeypatch
         peer = None
         try:
             worker.start()
-            peer, _ = control.accept()
-            assert peer.recv(5) == b"ready"
-            assert call_ready.wait(5), "MCP 调用未进入，前置阶段未完成"
+            setup_budget_s = config.handshake_timeout_ms / 1000 + 1
+            assert call_ready.wait(setup_budget_s), (
+                "MCP resume worker did not reach call_tool within the handshake "
+                f"allowance + cleanup budget ({setup_budget_s:.1f}s): {outcome!r}"
+            )
             assert "error" not in outcome, outcome
             assert "start_ns" in call_times, "worker 结束却未进入 MCP 调用"
+            peer, _ = control.accept()
+            assert peer.recv(5) == b"ready"
             returned = done.wait(2)
         finally:
             if peer is not None:
