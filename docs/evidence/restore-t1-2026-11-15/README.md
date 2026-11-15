@@ -52,7 +52,7 @@
 ## 门禁状态
 
 同步最新 main `c8b53bb` 后，当前合并树 `9cb6b94` 的 macOS arm64 完整本机门禁为
-**3442 passed / 12 skipped（663.25s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
+**3443 passed / 12 skipped（645.06s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
 165 passed / 1 skipped**；
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。

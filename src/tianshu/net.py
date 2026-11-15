@@ -466,6 +466,11 @@ def _fetch_once(
             _remaining(deadline)
             status = response.status
             content_type = response.getheader("Content-Type", "") or ""
+            # ``http.client`` normally raises IncompleteRead when a known-length body
+            # ends early, but that behaviour depends on read size and EOF timing.
+            # Capture the normalized remaining length so bounded reads cannot turn a
+            # short response into a successful fetch on another Python/platform.
+            expected_body_length = getattr(response, "length", None)
 
             if status in _REDIRECT_CODES:
                 location = response.getheader("Location")
@@ -513,6 +518,16 @@ def _fetch_once(
                     del body[limits.max_bytes :]
                     truncated = True
                     break
+            if (
+                expected_body_length is not None
+                and not truncated
+                and len(body) != expected_body_length
+            ):
+                raise NetError(
+                    "HTTP 正文不完整：实际读取 "
+                    f"{len(body)} 字节，Content-Length 声明 {expected_body_length} 字节",
+                    reason="net.read",
+                )
             elapsed_ms = int((time.monotonic() - fetch_started) * 1000)
             return Fetched(
                 uri=current.to_uri(),
