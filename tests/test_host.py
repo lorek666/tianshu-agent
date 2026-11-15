@@ -354,6 +354,62 @@ def test_stale_host_lock_is_replaced(root: Path) -> None:
         host.clear_host_info(root, pid=info.pid)
 
 
+def test_host_metadata_publication_is_atomic_for_external_readers(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """桌面壳不持有 Python 的元数据互斥，不能让它读到锁的半截 JSON。
+
+    原实现直接 `Path.write_bytes()`，会先截断现锁再写。Tauri 启动时恰好并发
+    读取，就可能把一次短暂发布读成“Host 元数据不合法”，直接进启动失败页。
+    这里同时截住旧实现的截断写和新实现的 rename，使新实现下锁在发布前仍完整
+    保留旧字节，旧实现下则稳定暴露半截 JSON。
+    """
+    old = host.HostInfo(pid=4242, port=1, token="old_token", started_at=1, ui_dir="ui")
+    new = host.HostInfo(pid=4343, port=2, token="new_token", started_at=2, ui_dir="ui")
+    host.write_host_info(root, old)
+    path = host.host_lock_path(root)
+
+    partial_write = threading.Event()
+    blocked_replace = threading.Event()
+    release = threading.Event()
+    original_write_bytes = Path.write_bytes
+    original_replace = os.replace
+
+    def intercept_write_bytes(self: Path, data: bytes) -> int:
+        if self != path:
+            return original_write_bytes(self, data)
+        with self.open("wb") as handle:
+            handle.write(data[:5])
+            handle.flush()
+            partial_write.set()
+            assert release.wait(5), "测试未释放半截写"
+            handle.write(data[5:])
+        return len(data)
+
+    def intercept_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        if Path(dst) != path:
+            original_replace(src, dst)
+            return
+        blocked_replace.set()
+        assert release.wait(5), "测试未释放原子替换"
+        original_replace(src, dst)
+
+    monkeypatch.setattr(Path, "write_bytes", intercept_write_bytes)
+    monkeypatch.setattr(os, "replace", intercept_replace)
+    writer = threading.Thread(target=host.write_host_info, args=(root, new))
+    writer.start()
+    try:
+        assert partial_write.wait(2) or blocked_replace.wait(2)
+        published = json.loads(path.read_bytes())
+        assert published["pid"] == old.pid
+        assert published["token"] == old.token
+    finally:
+        release.set()
+        writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert host.read_host_info(root) == new
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

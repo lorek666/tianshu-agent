@@ -51,6 +51,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ipc
 from .errors import TianshuError
+from .fsutil import atomic_write_bytes
 from .leases import GuardTimeout, execution_guard
 
 HOST_LOCK_NAME = "host.lock"
@@ -155,7 +156,10 @@ def _write_host_info(
         "started_at": info.started_at,
         "ui_dir": info.ui_dir,
     }
-    path.write_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    # 桌面壳校验 host.lock 时不持有 Python 侧元数据互斥；直接 write_bytes 会
+    # 先截断再写，启动期的并发读者可能把半截 JSON 误判成永久损坏。原子发布
+    # 让外部读者只能看到完整旧锁或完整新锁。
+    atomic_write_bytes(path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     if os.name != "nt":
         try:
             os.chmod(path, 0o600)
