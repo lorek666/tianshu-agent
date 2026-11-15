@@ -4,8 +4,12 @@
 
 本记录只覆盖 T1 平台基础，不把内部实现写成可执行的完整恢复产品。基线为
 `origin/main@2530a1575695baf75391a917a15a61dd2ffaa363`，最终组合同步
-`origin/main@d37a84c`；分支 `codex/restore-t1-platform`。最终提交 SHA/tree
-必须在候选冻结后回填。
+`origin/main@134e9f04605547e58523ed7184200eccd9e9fea9`（tree
+`5ca4c38f7d43c6abcd997675acc24bbe21220e4d`）；分支
+`codex/restore-t1-platform`。当前已核验合并树为
+`91bd929a1bc2360c5271b480d4c276b1d858f9ea`（tree
+`507914573fb57733cf5ae1af76feeb9cc997496f`）。最终 PR 提交 SHA/tree
+在事实文档提交、推送和第二读者复审后回填。
 
 ## 实现范围
 
@@ -47,8 +51,8 @@
 
 ## 门禁状态
 
-同步最新 main 后，最终冻结源码的 macOS arm64 完整本机门禁为 **3416 passed /
-12 skipped（677.98s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
+同步最新 main `134e9f0` 后，当前合并树 `91bd929` 的 macOS arm64 完整本机门禁为
+**3429 passed / 12 skipped（655.50s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
 165 passed / 1 skipped**；
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。
@@ -62,7 +66,8 @@ run/job/artifact/SHA。没有这些原生结果时，Windows 行保持 `NOT_RUN`
 独立第二读者第一轮在未提交工作树上用真实子进程发现并复现了
 `absent→reserved` 准入竞态和迁移 SQLite close 失败提前释放 access；两项修复
 后第二轮结论为 `PASS（限 macOS 定向复审范围）`，EventLog/registry/migration
-定向 **78 passed / 1 skipped**。最终提交 SHA/tree 的第二读者签发仍为 `PENDING`。
+定向 **78 passed / 1 skipped**。对象 `3435598` 的 T1 内容与行为已获第二读者
+`PASS`；最终 PR 提交 SHA/tree 的再次签发仍为 `PENDING`。
 
 ## 明确未完成
 
