@@ -10,7 +10,7 @@
   `prepare_run` → `start_run` → `enqueue`，事件流出现的是既有封闭集
   （`task.created`、`run.start`…），v1 不新增事件族。
 - **幂等不靠事件层 `idem_key`**（核对结论：`events.idem_key` 无 UNIQUE、
-  `EventLog.append` 不去重、task 创建路径不使用它）。v1 的触发幂等 = 
+  `EventLog.append` 不去重、task 创建路径不使用它）。v1 的触发幂等 =
   「记账与建任务同事务」+「单写者」（daemon 锁保证同数据根单实例、tick
   只被驱动线程调用）。这就是 schedules 表必须建在事件库同一条连接上的
   结构性理由：一旦挪到第二个数据库文件，「建任务」与「记账」就回到两个
