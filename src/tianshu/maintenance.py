@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .errors import TianshuError
 from .pathkeys import overlap_key
+from .restore_contract import EntityIdentityV1, LockKeyV1, domain_digest
 
 
 class MaintenanceError(TianshuError):
@@ -30,29 +31,65 @@ class MaintenanceBusy(MaintenanceError):
 
 
 class DatabaseAccess:
-    """一个独立的 OS 锁句柄；关闭幂等，不删除共享的锁文件。"""
+    """一组按取得顺序持有的 OS 锁句柄。
+
+    单项构造保持历史兼容；复合 access 从尾部释放，因此 gate→namespace→entity
+    会按 entity→namespace→gate 收尾。任一释放失败时停在该项，前面的下层锁
+    继续持有，调用者可以在原线程重试。
+    """
 
     def __init__(
         self,
         file: io.FileIO | None = None,
         unlock: Callable[[], None] | None = None,
+        *,
+        kind: str | None = None,
+        exclusive: bool = False,
+        operation: bool = False,
     ) -> None:
-        self._file = file
-        self._unlock = unlock
+        if kind not in (None, "gate", "namespace", "entity"):
+            raise ValueError(f"未知DatabaseAccess类型：{kind!r}")
+        self._parts: list[tuple[io.FileIO, Callable[[], None] | None]] = []
+        self._children: list[DatabaseAccess] = []
+        self.kind = kind
+        self.exclusive = exclusive
+        self.operation = operation
+        if file is not None:
+            self._parts.append((file, unlock))
 
     def close(self) -> None:
-        if self._file is None:
-            return
-        try:
-            if self._unlock is not None:
-                self._unlock()
-                self._unlock = None
-            # POSIX 只关自己的 fd，不显式 LOCK_UN：fork 后子进程关闭继承的
-            # fd，不能撤掉仍由父进程持有的同一 open-file-description 锁。
-            self._file.close()
-        except OSError as exc:
-            raise MaintenanceError(f"释放数据库维护准入失败：{exc}") from exc
-        self._file = None
+        while self._children:
+            self._children[-1].close()
+            self._children.pop()
+        while self._parts:
+            file, unlock = self._parts[-1]
+            try:
+                if unlock is not None:
+                    unlock()
+                    self._parts[-1] = (file, None)
+                # POSIX 只关自己的 fd，不显式 LOCK_UN：fork 后子进程关闭继承的
+                # fd，不能撤掉仍由父进程持有的同一 open-file-description 锁。
+                file.close()
+            except OSError as exc:
+                raise MaintenanceError(f"释放数据库维护准入失败：{exc}") from exc
+            self._parts.pop()
+
+    @property
+    def active(self) -> bool:
+        return bool(self._children or self._parts)
+
+    @property
+    def authorizes_registry_write(self) -> bool:
+        """初始化gate或已成形的批次操作独占可提交registry短事务。"""
+
+        return self.active and (
+            self.operation or (self.kind == "gate" and self.exclusive)
+        )
+
+    def _add_child(self, other: DatabaseAccess) -> None:
+        if not isinstance(other, DatabaseAccess):
+            raise TypeError("只能组合DatabaseAccess")
+        self._children.append(other)
 
     def __enter__(self) -> DatabaseAccess:
         return self
@@ -129,6 +166,16 @@ def database_lock_path(db_path: Path) -> Path | None:
         raise MaintenanceError(f"无法确定数据库维护身份：{db_path}（{exc}）") from exc
 
 
+def _restore_gate_lock_path() -> Path:
+    return _lock_root() / "restore-gate-v1.lock"
+
+
+def entity_lock_path(identity: EntityIdentityV1) -> Path:
+    key = LockKeyV1("entity", identity)
+    digest = domain_digest("lock", key)
+    return _lock_root() / f"restore-entity-{digest}.lock"
+
+
 def _lock_windows(file: io.FileIO, *, exclusive: bool) -> Callable[[], None]:
     # LockFileEx 不带 EXCLUSIVE flag 才是真共享；msvcrt.locking 仅有独占锁，
     # 不能用于多个普通连接同时运行的准入契约。偏移/长度均为第一个字节。
@@ -187,6 +234,22 @@ def acquire_database_access(
     lock_path = database_lock_path(db_path)
     if lock_path is None:
         return DatabaseAccess()
+    return _acquire_lock_file(
+        lock_path,
+        exclusive=exclusive,
+        display=str(db_path),
+        kind="namespace",
+    )
+
+
+def _acquire_lock_file(
+    lock_path: Path,
+    *,
+    exclusive: bool,
+    display: str,
+    kind: str,
+) -> DatabaseAccess:
+    """打开固定外置锁文件并非阻塞取得 OS 锁。"""
     _prepare_lock_directory(lock_path.parent)
     file = None
     try:
@@ -218,11 +281,51 @@ def acquire_database_access(
         )
         if busy:
             raise MaintenanceBusy(
-                f"数据库正在使用中，暂不能进入{'独占维护' if exclusive else '普通访问'}："
-                f"{db_path}。请先关闭其他天枢进程或等待维护完成。"
+                f"共享资源正在使用中，暂不能进入"
+                f"{'独占' if exclusive else '共享'}访问：{display}"
             ) from exc
         raise MaintenanceError(f"取得数据库维护准入失败：{lock_path}（{exc}）") from exc
     except BaseException:
         file.close()
         raise
-    return DatabaseAccess(file, unlock)
+    return DatabaseAccess(file, unlock, kind=kind, exclusive=exclusive)
+
+
+def acquire_restore_gate(*, exclusive: bool = False) -> DatabaseAccess:
+    """取得恢复全局 gate；供新资源取得顺序的最外层使用。"""
+
+    return _acquire_lock_file(
+        _restore_gate_lock_path(),
+        exclusive=exclusive,
+        display="restore gate",
+        kind="gate",
+    )
+
+
+def acquire_entity_access(
+    identity: EntityIdentityV1,
+    *,
+    exclusive: bool = False,
+) -> DatabaseAccess:
+    """按真实实体身份取得共享/独占锁；硬链接别名使用同一把锁。"""
+
+    if not isinstance(identity, EntityIdentityV1):
+        raise TypeError("实体锁需要EntityIdentityV1")
+    return _acquire_lock_file(
+        entity_lock_path(identity),
+        exclusive=exclusive,
+        display=f"entity {identity.to_bytes().hex()}",
+        kind="entity",
+    )
+
+
+def compose_access(
+    *accesses: DatabaseAccess,
+    operation: bool = False,
+) -> DatabaseAccess:
+    """按参数顺序合并锁；close 从最后一项开始逆序释放。"""
+
+    result = DatabaseAccess(operation=operation)
+    for access in accesses:
+        result._add_child(access)
+    return result

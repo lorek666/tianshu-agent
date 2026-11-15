@@ -107,6 +107,13 @@ jobs:
       - run: uv lock --check
       - run: uv sync --frozen
       - run: uv run --frozen ruff check .
+      - name: 恢复 T1 Windows 原生句柄探针
+        if: matrix.shard == 0
+        env:
+          RESTORE_T1_PROBE_REPORT: ${{ runner.temp }}/windows-ci/restore-t1-windows.json
+        run: >-
+          uv run --frozen python scripts/restore_t1_windows_probe.py
+          --output "$RESTORE_T1_PROBE_REPORT"
       - name: Pytest Windows 分片
         env:
           PYTEST_ADDOPTS: ""
@@ -125,6 +132,13 @@ jobs:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-ci/shard.json
           if-no-files-found: error
+      - name: 上传恢复 T1 Windows 原生证据
+        if: always() && matrix.shard == 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-t1-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-ci/restore-t1-windows.json
+          if-no-files-found: warn
 
   windows_summary:
     # 名称保留为原 required check；此 job 在 Ubuntu 核验两个 Windows job。
