@@ -20,11 +20,12 @@ import queue
 import pytest
 from support import stack_for
 
+from tianshu import ipc
 from tianshu.control import ControlError, ControlPlane
 from tianshu.events import EventLog
 from tianshu.loop import Limits
 from tianshu.model import ScriptedModel
-from tianshu.permissions import ActionRequest, PolicyDecision
+from tianshu.permissions import ActionRequest, HumanIdentity, PolicyDecision
 from tianshu.tasks import RUN_RUNNING
 
 #: 契约里逐字列出的字段集合。改视图必须同时改契约文档与这里。
@@ -71,7 +72,18 @@ APPROVAL_FIELDS = {
     "expires_at",
 }
 EVENT_FIELDS = {"seq", "type", "run_id", "task_id", "ts", "actor_kind", "payload"}
-STATE_FIELDS = {"tasks", "runs", "approvals", "event_seq_head", "daemon"}
+STATE_FIELDS = {
+    "tasks",
+    "runs",
+    "approvals",
+    "event_seq_head",
+    "daemon",
+    # W3：预算装填的截断标记。加字段不升协议版本（ipc.py：旧客户端忽略
+    # 不认识的键）；contract 见 docs/M5-desktop.md §3.4 state 行。
+    "tasks_truncated",
+    "runs_truncated",
+    "approvals_truncated",
+}
 
 
 class Env:
@@ -81,7 +93,10 @@ class Env:
         self.root = tmp_path
         self.ws = tmp_path / "ws"
         self.ws.mkdir()
-        self.log = EventLog(tmp_path / "events.db")
+        # 与 daemon 的真实装配同形（daemon.py：events.db + artifacts/blobs）：
+        # >256KB 的事件 payload 落 blob 目录。没有 blob_dir 时大 goal 在
+        # task.create 就被拒，复现不了"daemon 里大 goal 撑爆 state 响应"的链路。
+        self.log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
         self.stack = stack_for(self.log, data_root=tmp_path)
         self.resume: queue.Queue[str] = queue.Queue()
         self.plane = ControlPlane(
@@ -315,6 +330,103 @@ def test_state_runs_are_non_terminal_plus_recent_terminal(env: Env) -> None:
     ids = [item["run_id"] for item in state["runs"]]
     # 非终态在前（按开始顺序），终态在后。
     assert ids == [second["run_id"], first["run_id"]]
+
+
+# ------------------------------------------------------------------ state 响应预算（W3）
+
+
+def _fat_goal(blocks: int) -> str:
+    """构造约 39B × blocks 字节（UTF-8）的对抗 goal 文本。"""
+    return "重写季度报告：" + "这是很长的目标描述文本。" * blocks
+
+
+def test_state_response_with_adversarial_goals_stays_within_ipc_frame(env: Env) -> None:
+    """对抗数据集：50 个 ~313KB goal 的任务，state 响应必须还能装进单帧。
+
+    修复前：`_state()` 无预算组装，结果 dict 组装成功，但 daemon 发送侧
+    `ipc.encode()` 抛 ProtocolError——连接上这条请求永远得不到响应，state RPC
+    每次都失败，UI 首屏直接坏。修复后：预算内装填 + `*_truncated` 截断标记。
+    """
+    goal = _fat_goal(8000)  # ≈ 313KB
+    for _ in range(50):
+        env.create_task(goal)
+    state = env.plane.handle("state", {})
+    # 修复前在这里抛 ProtocolError：组装出来的响应根本发不出去。
+    raw = ipc.encode(ipc.ok("t1", state))
+    assert len(raw) <= ipc.MAX_MESSAGE_BYTES
+    assert set(state) == STATE_FIELDS
+    assert 0 < len(state["tasks"]) < 50
+    assert state["tasks_truncated"] is True
+    assert state["runs_truncated"] is False
+    assert state["approvals_truncated"] is False
+    # 条数收紧 ≠ 文本截断：保留下来的 goal 必须逐字完整（截断文本 = 改字段语义）。
+    assert all(item["goal"] == goal for item in state["tasks"])
+
+
+def test_state_single_item_over_budget_fails_loud(env: Env) -> None:
+    """单条 goal 自身超过整份响应预算：类型化 ControlError，不静默装假。
+
+    静默丢条目 = UI 谎报"这个任务不存在"；截断 goal 文本 = 偷改字段语义。
+    两条路都不许走，剩下的只有明确报错。
+    """
+    env.create_task(_fat_goal(130000))  # ≈ 5MB > 响应预算（8MiB 的一半）
+    with pytest.raises(ControlError) as excinfo:
+        env.plane.handle("state", {})
+    assert excinfo.value.code == "internal"
+    assert "预算" in excinfo.value.message
+
+
+def test_state_approval_context_does_not_rescan_full_history(env: Env, monkeypatch) -> None:
+    """历史里 300 张已决定的审批 + 1 张 pending：state 不得全表扫 approval.requested。
+
+    修复前 `_approval_context()` 每次都 `read_types(["approval.requested"])` 读
+    全部历史（还带 SHA256 逐条验签），内存与 CPU 随事件日志历史线性涨。修复后
+    只按 pending 集合读各自 Run 的事件——state 本来就要逐 Run 读事件
+    （`_run_view` 的效果计数），不再引入任何"Run 之外"的读取量。
+    """
+    old_task = env.create_task("历史任务")
+    old_run = env.start_run(old_task["task_id"])
+    for i in range(300):
+        approval_id = env.approval(
+            old_run["run_id"], call_id=f"history_{i}", args_hash=f"hash-{i}"
+        )
+        env.stack.approvals.decide(
+            approval_id, decision="approved", actor=HumanIdentity.local_cli()
+        )
+    fresh_task = env.create_task("当前任务")
+    fresh_run = env.start_run(fresh_task["task_id"])
+    pending_id = env.approval(fresh_run["run_id"], call_id="current")
+
+    calls: list[list[str]] = []
+    original = EventLog.read_types
+
+    def spy(log: EventLog, types) -> list:  # noqa: ANN001 - 与被包装方法同形
+        calls.append(list(types))
+        return original(log, types)
+
+    monkeypatch.setattr(EventLog, "read_types", spy)
+
+    state = env.plane.handle("state", {})
+    assert calls == [], f"state 不得全表扫 approval.requested，实际调用了 {calls}"
+    assert [v["approval_id"] for v in state["approvals"]] == [pending_id]
+    # 省读不许退化契约字段：rule_id / isolation 仍要从审批自己的事件补齐。
+    assert state["approvals"][0]["rule_id"] == "c4.overwrite"
+    assert state["approvals"][0]["isolation"] is None
+
+
+def test_approvals_decide_view_keeps_rule_id(env: Env) -> None:
+    """decide 响应里的审批视图也带 rule_id：上下文读取改为按需后不许退化。
+
+    决定后的审批已不是 pending，靠的是"按需读这张审批自己 Run 的事件"，
+    这条钉住该行为不被顺手改坏。
+    """
+    task = env.create_task()
+    run = env.start_run(task["task_id"])
+    approval_id = env.approval(run["run_id"])
+    decided = env.plane.handle(
+        "approvals.decide", {"approval_id": approval_id, "decision": "approve"}
+    )
+    assert decided["approval"]["rule_id"] == "c4.overwrite"
 
 
 # --------------------------------------------------------------------------- events

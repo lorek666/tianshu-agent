@@ -12,7 +12,7 @@
 |---|---|---|---|---|---|---|
 | W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **实现完成，门禁/CI 见 PR** |
 | W2 | net.py 速率限制/重试 | §7 G2 网络 | 无 | tools.py 接线（中） | 无 | 未开始 |
-| W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎） | control.py——**#146 落地后开工** | 无 | 未开始 |
+| W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎，加字段不升版本） | control.py（已交付，见 SPEC-STATE-RESPONSE-BOUND-2026-11-15） | 无 | **实现完成，门禁/CI 见 PR** |
 | W4 | 流式输出 | capability 声明 | **C1 + 事件面，docs(contract) 先行** | model.py / loop.py（热） | 无 | 未开始 |
 | W5 | 调度/定时任务 | 全库 0 匹配 | 新事件族？C3 评估 | daemon.py（#146 后续会碰） | 无 | 未开始 |
 | W6 | 记忆语义层：真 embedding provider + 检索评测 | §7 N2/N3 | provider 接缝已在 | memory_index.py（冷） | 无 | 未开始 |
