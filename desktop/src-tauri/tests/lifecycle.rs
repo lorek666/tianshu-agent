@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use tianshu_desktop::lifecycle::{
     DefaultDataRootInput, HostEndpoint, HostInfoError, build_host_command,
-    build_orphan_daemon_shutdown_command, default_data_root, parse_host_endpoint,
-    request_host_shutdown, verify_host, wait_for_host,
+    build_host_exit_daemon_shutdown_command, build_orphan_daemon_shutdown_command,
+    default_data_root, parse_host_endpoint, request_host_shutdown, verify_host, wait_for_host,
 };
 
 fn windows_env() -> DefaultDataRootInput {
@@ -64,6 +64,7 @@ fn host_endpoint_accepts_real_metadata_without_exposing_token() {
             pid: 42,
             port: 59123,
             token: "secret_secret_secret".to_string(),
+            started_at: 1,
         }
     );
     assert_eq!(endpoint.url(), "http://127.0.0.1:59123/");
@@ -156,6 +157,7 @@ fn readiness_wait_does_not_treat_existing_file_as_ready() {
                     pid: 42,
                     port: 59123,
                     token: "secret_secret_secret".to_string(),
+                    started_at: 1,
                 })
             }
         },
@@ -205,6 +207,7 @@ fn host_identity_and_shutdown_use_authenticated_local_http() {
         pid: 42,
         port,
         token: "secret_secret_secret".to_string(),
+        started_at: 1,
     };
 
     verify_host(&endpoint).unwrap();
@@ -242,6 +245,38 @@ fn orphan_daemon_shutdown_command_is_constant_and_argv_bound() {
     assert!(command.get_envs().any(|(name, value)| {
         name == "PYTHONDONTWRITEBYTECODE" && value == Some(std::ffi::OsStr::new("1"))
     }));
+    assert!(command.get_envs().any(|(name, value)| {
+        name == "PYTHONIOENCODING" && value == Some(std::ffi::OsStr::new("utf-8"))
+    }));
+}
+
+#[test]
+fn host_exit_daemon_shutdown_command_binds_stale_host_without_token() {
+    let python = Path::new("/Applications/Tianshu Agent.app/Contents/Resources/python/bin/python3");
+    let app = Path::new("/Applications/Tianshu Agent.app/Contents/Resources/app");
+    let data = Path::new("/Users/alice/Library/Application Support/AgentOS");
+    let expected_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    let command =
+        build_host_exit_daemon_shutdown_command(python, app, data, Some(expected_sha256), 42, 7);
+
+    assert_eq!(command.get_program(), python);
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(args[0], "-c");
+    assert!(
+        args[1]
+            .to_string_lossy()
+            .contains("stop_daemon_after_host_exit")
+    );
+    assert_eq!(Path::new(args[2]), data);
+    assert_eq!(args[3], expected_sha256);
+    assert_eq!(args[4], "42");
+    assert_eq!(args[5], "7");
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.to_string_lossy().contains("secret"))
+    );
     assert!(command.get_envs().any(|(name, value)| {
         name == "PYTHONIOENCODING" && value == Some(std::ffi::OsStr::new("utf-8"))
     }));

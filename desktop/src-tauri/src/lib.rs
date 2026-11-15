@@ -16,14 +16,23 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 use crate::lifecycle::{
     DefaultDataRootInput, HostEndpoint, HostInfoError, build_host_command,
-    build_orphan_daemon_shutdown_command, default_data_root, parse_host_endpoint,
-    request_host_shutdown, verify_host, wait_for_host,
+    build_host_exit_daemon_shutdown_command, build_orphan_daemon_shutdown_command,
+    default_data_root, parse_host_endpoint, request_host_shutdown, verify_host, wait_for_host,
 };
 use crate::release::{ReleaseIdentity, current_target, verify_resource_manifest};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_POLL: Duration = Duration::from_millis(100);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const HOST_WATCH_POLL: Duration = Duration::from_millis(500);
+const HOST_DOWN_CONFIRMATIONS: u8 = 2;
+const MAX_HOST_RESTARTS: u8 = 3;
+const HOST_RESTART_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
+const HOST_STABLE_RESET: Duration = Duration::from_secs(60);
 // A new Host publishes port 0 before it finishes binding and then replaces that
 // record with the listening endpoint. Keep a bounded handoff window after the
 // old metadata disappears so Daemon fallback cleanup cannot race that takeover.
@@ -47,11 +56,13 @@ impl RuntimeState {
     fn finish_owned_host_exit(&mut self) -> Result<(), String> {
         self.child = None;
         let daemon = read_daemon_lock_snapshot(&self.data_root)?;
-        let result = stop_orphan_daemon(
+        let result = stop_daemon_after_host_exit(
             &self.python,
             &self.app_dir,
             &self.data_root,
             daemon.as_deref(),
+            self.endpoint.pid,
+            self.endpoint.started_at,
         );
         if result.is_ok() {
             self.stopped = true;
@@ -61,7 +72,32 @@ impl RuntimeState {
 
     fn stop_attached_host(&mut self) -> Result<(), String> {
         let daemon_before = read_daemon_lock_snapshot(&self.data_root)?;
-        request_host_shutdown(&self.endpoint)?;
+        if let Err(request_error) = request_host_shutdown(&self.endpoint) {
+            if verify_host(&self.endpoint).is_ok() {
+                return Err(format!(
+                    "直接请求 Host 退出失败，但 Host 仍可连接：{request_error}"
+                ));
+            }
+            thread::sleep(ATTACHED_HOST_HANDOFF_SETTLE);
+            match read_host_endpoint(&self.data_root) {
+                Ok(current) if current != self.endpoint => {
+                    return Err("Host 退出期间实例已变更，拒绝停止新实例的服务".to_string());
+                }
+                Err(HostInfoError::NotReady) => {}
+                Ok(_) => {}
+                Err(error) => return Err(format!("确认附着 Host 退出失败：{error}")),
+            }
+            stop_daemon_after_host_exit(
+                &self.python,
+                &self.app_dir,
+                &self.data_root,
+                daemon_before.as_deref(),
+                self.endpoint.pid,
+                self.endpoint.started_at,
+            )?;
+            self.stopped = true;
+            return Ok(());
+        }
         let started = Instant::now();
         loop {
             match read_host_endpoint(&self.data_root) {
@@ -163,6 +199,7 @@ impl RuntimeState {
     }
 }
 
+#[derive(Clone)]
 struct StartupPaths {
     python: PathBuf,
     app_dir: PathBuf,
@@ -323,6 +360,42 @@ fn stop_orphan_daemon(
     }
 }
 
+fn stop_daemon_after_host_exit(
+    python: &Path,
+    app_dir: &Path,
+    data_root: &Path,
+    expected_snapshot: Option<&[u8]>,
+    expected_host_pid: u32,
+    expected_host_started_at: u64,
+) -> Result<(), String> {
+    let expected_sha256 =
+        expected_snapshot.map(|snapshot| format!("{:x}", Sha256::digest(snapshot)));
+    let output = build_host_exit_daemon_shutdown_command(
+        python,
+        app_dir,
+        data_root,
+        expected_sha256.as_deref(),
+        expected_host_pid,
+        expected_host_started_at,
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|error| format!("清理已退出 Host 的服务失败：{error}"))?;
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(3) => Err("Host 在 Daemon 清理期间已接管，保留新实例服务".to_string()),
+        Some(4) => Err("Daemon 实例已变更，保留新实例服务".to_string()),
+        _ if detail.is_empty() => Err(format!("已退出 Host 的服务清理返回失败：{}", output.status)),
+        _ => Err(format!(
+            "已退出 Host 的服务清理返回失败：{}；{detail}",
+            output.status
+        )),
+    }
+}
+
 fn stop_daemon_started_by_failed_host(
     paths: &StartupPaths,
     before: &Option<Vec<u8>>,
@@ -396,6 +469,144 @@ fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), St
             }
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct HostRestartPolicy {
+    attempts: u8,
+    healthy_since: Option<Instant>,
+}
+
+impl HostRestartPolicy {
+    fn note_healthy(&mut self, now: Instant) {
+        match self.healthy_since {
+            None => self.healthy_since = Some(now),
+            Some(started) if now.duration_since(started) >= HOST_STABLE_RESET => {
+                self.attempts = 0;
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn note_unhealthy(&mut self) {
+        self.healthy_since = None;
+    }
+
+    fn take_attempt(&mut self) -> bool {
+        if self.attempts >= MAX_HOST_RESTARTS {
+            return false;
+        }
+        self.attempts += 1;
+        true
+    }
+}
+
+fn navigate_to_recovered_host(app: &tauri::AppHandle, endpoint: &HostEndpoint) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(url) = tauri::Url::parse(&endpoint.url()) else {
+        return;
+    };
+    let navigation_window = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Err(error) = navigation_window.set_title("天枢 Agent") {
+            eprintln!("恢复后更新窗口标题失败：{error}");
+        }
+        if let Err(error) = navigation_window.navigate(url) {
+            eprintln!("恢复后页面导航失败：{error}");
+        }
+    });
+}
+
+fn show_recovery_failure(app: &tauri::AppHandle, attempts: u8, error: &str) {
+    eprintln!("Host 自动恢复第 {attempts}/{MAX_HOST_RESTARTS} 次失败：{error}");
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let title_window = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let _ = title_window.set_title("天枢 Agent · Host 恢复失败");
+    });
+}
+
+fn spawn_host_supervisor(app: tauri::AppHandle, paths: StartupPaths) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name("host-supervisor".to_string())
+        .spawn(move || {
+            let mut policy = HostRestartPolicy::default();
+            let mut unhealthy_observations = 0_u8;
+            loop {
+                thread::sleep(HOST_WATCH_POLL);
+                let Some(state) = app.try_state::<Mutex<RuntimeState>>() else {
+                    return;
+                };
+                let Ok(mut state) = state.lock() else {
+                    eprintln!("Host supervisor 无法取得运行时状态锁");
+                    return;
+                };
+                if state.stopped {
+                    return;
+                }
+
+                let mut healthy = verify_host(&state.endpoint).is_ok();
+                if let Ok(discovered) = read_host_endpoint(&state.data_root)
+                    && discovered != state.endpoint
+                    && verify_host(&discovered).is_ok()
+                {
+                    state.endpoint = discovered;
+                    state.child = None;
+                    state.owns_host = false;
+                    healthy = true;
+                }
+                if let Some(child) = state.child.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(_)) => {
+                            state.child = None;
+                            healthy = false;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("检查 Host 子进程状态失败：{error}");
+                            healthy = false;
+                        }
+                    }
+                }
+
+                if healthy {
+                    unhealthy_observations = 0;
+                    policy.note_healthy(Instant::now());
+                    continue;
+                }
+
+                policy.note_unhealthy();
+                // A live owned child that merely fails a health probe is not a
+                // crash. Keep observing it instead of starting a second Host.
+                if state.child.is_some() {
+                    continue;
+                }
+                unhealthy_observations = unhealthy_observations.saturating_add(1);
+                if unhealthy_observations < HOST_DOWN_CONFIRMATIONS || !policy.take_attempt() {
+                    continue;
+                }
+
+                let backoff_index = usize::from(policy.attempts.saturating_sub(1));
+                thread::sleep(HOST_RESTART_BACKOFF[backoff_index]);
+                match ensure_host(&paths) {
+                    Ok((endpoint, child)) => {
+                        state.endpoint = endpoint.clone();
+                        state.owns_host = child.is_some();
+                        state.child = child;
+                        state.stopped = false;
+                        unhealthy_observations = 0;
+                        policy.note_healthy(Instant::now());
+                        navigate_to_recovered_host(&app, &endpoint);
+                    }
+                    Err(error) => show_recovery_failure(&app, policy.attempts, &error),
+                }
+            }
+        })
+        .map(|_| ())
 }
 
 fn show_window(app: &tauri::AppHandle) {
@@ -523,6 +734,7 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Ok((paths, endpoint, child)) => {
             let url = tauri::Url::parse(&endpoint.url())?;
             let owns_host = child.is_some();
+            let supervisor_paths = paths.clone();
             app.manage(Mutex::new(RuntimeState {
                 python: paths.python,
                 app_dir: paths.app_dir,
@@ -543,6 +755,7 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("天枢桌面页面导航失败：{error}");
                 }
             })?;
+            spawn_host_supervisor(app.handle().clone(), supervisor_paths)?;
         }
         Err(error) => {
             eprintln!("天枢桌面启动失败：{error}");
@@ -631,6 +844,26 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn host_restart_policy_is_bounded_and_resets_after_stability() {
+        let started = Instant::now();
+        let mut policy = HostRestartPolicy::default();
+        policy.note_healthy(started);
+        policy.note_unhealthy();
+
+        assert!(policy.take_attempt());
+        assert!(policy.take_attempt());
+        assert!(policy.take_attempt());
+        assert!(!policy.take_attempt());
+        assert_eq!(policy.attempts, MAX_HOST_RESTARTS);
+
+        policy.note_healthy(started + HOST_STABLE_RESET);
+        policy
+            .note_healthy(started + HOST_STABLE_RESET + HOST_STABLE_RESET + Duration::from_secs(1));
+        assert_eq!(policy.attempts, 0);
+        assert!(policy.take_attempt());
+    }
 
     #[cfg(unix)]
     fn write_executable(path: &Path, body: &str) {
@@ -736,6 +969,7 @@ mod tests {
             pid: 41,
             port,
             token: "secret_secret_secret".to_string(),
+            started_at: 1,
         };
         fs::write(
             &host_lock,
@@ -803,6 +1037,7 @@ mod tests {
                 pid: 41,
                 port,
                 token: "secret_secret_secret".to_string(),
+                started_at: 1,
             },
             child: None,
             owns_host: false,
@@ -817,6 +1052,57 @@ mod tests {
         assert!(!host_lock.exists());
         assert!(!daemon_lock.exists(), "ACK 后 Host 退出时遗留了 Daemon");
         assert!(state.stopped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_host_crash_then_quit_uses_dead_host_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let host_lock = run_dir.join("host.lock");
+        let daemon_lock = run_dir.join("daemon.lock");
+        fs::write(
+            &daemon_lock,
+            br#"{"pid":42,"started_at":1,"instance_id":"daemon_attached"}"#,
+        )
+        .unwrap();
+        fs::write(
+            &host_lock,
+            r#"{"pid":999999,"port":59123,"token":"secret_secret_secret","started_at":7,"ui_dir":""}"#,
+        )
+        .unwrap();
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ] && [ \"$5\" = \"999999\" ] && [ \"$6\" = \"7\" ]; then\n  rm -f {} {}\n  exit 0\nfi\nexit 7\n",
+                shell_quote(&host_lock),
+                shell_quote(&daemon_lock),
+            ),
+        );
+        let mut state = RuntimeState {
+            python,
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: HostEndpoint {
+                pid: 999_999,
+                port: 59_123,
+                token: "secret_secret_secret".to_string(),
+                started_at: 7,
+            },
+            child: None,
+            owns_host: false,
+            stopped: false,
+        };
+
+        let result = state.stop_host();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert!(state.stopped);
+        assert!(!host_lock.exists());
+        assert!(!daemon_lock.exists());
     }
 
     #[cfg(unix)]
@@ -885,6 +1171,7 @@ mod tests {
                 pid: 41,
                 port,
                 token: "secret_secret_secret".to_string(),
+                started_at: 1,
             },
             child: None,
             owns_host: false,
@@ -940,6 +1227,7 @@ mod tests {
                 pid: child.id(),
                 port,
                 token: "secret_secret_secret".to_string(),
+                started_at: 1,
             },
             child: Some(child),
             owns_host: true,
@@ -954,6 +1242,72 @@ mod tests {
         assert!(!daemon_lock.exists(), "ACK 后 Host 退出时遗留了 Daemon 锁");
         assert!(state.stopped);
         assert!(state.child.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_host_crash_cleanup_binds_exact_stale_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let host_lock = run_dir.join("host.lock");
+        let daemon_lock = run_dir.join("daemon.lock");
+        fs::write(
+            &daemon_lock,
+            br#"{"pid":42,"started_at":1,"instance_id":"daemon_owned"}"#,
+        )
+        .unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let host_pid = child.id();
+        let exited = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            assert!(
+                exited.elapsed() < Duration::from_secs(2),
+                "fake Host did not exit"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        fs::write(
+            &host_lock,
+            format!(
+                r#"{{"pid":{host_pid},"port":59123,"token":"secret_secret_secret","started_at":7,"ui_dir":""}}"#
+            ),
+        )
+        .unwrap();
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ] && [ \"$5\" = \"{host_pid}\" ] && [ \"$6\" = \"7\" ]; then\n  rm -f {} {}\n  exit 0\nfi\nexit 7\n",
+                shell_quote(&host_lock),
+                shell_quote(&daemon_lock),
+            ),
+        );
+        let mut state = RuntimeState {
+            python,
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: HostEndpoint {
+                pid: host_pid,
+                port: 59123,
+                token: "secret_secret_secret".to_string(),
+                started_at: 7,
+            },
+            child: Some(child),
+            owns_host: true,
+            stopped: false,
+        };
+
+        let result = state.stop_host();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert!(state.stopped);
+        assert!(!host_lock.exists());
+        assert!(!daemon_lock.exists());
     }
 
     #[cfg(unix)]

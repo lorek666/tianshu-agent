@@ -678,3 +678,181 @@ def test_stop_unowned_daemon_preserves_a_changed_instance(
     assert result == 4
     assert not called
     assert lock.read_bytes() == new
+
+
+def test_stop_daemon_after_host_exit_clears_matching_stale_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 0
+    assert called
+    assert not host.host_lock_path(tmp_path).exists()
+    assert not lock.exists()
+
+
+def test_stop_daemon_after_host_exit_preserves_a_new_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    replacement = host.HostInfo(
+        pid=os.getpid(),
+        port=2,
+        token="replacement_token_123",
+        started_at=8,
+    )
+    host.write_host_info(tmp_path, replacement)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 3
+    assert not called
+    assert host.read_host_info(tmp_path) == replacement
+    assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_preserves_a_live_matching_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    live = host.HostInfo(
+        pid=os.getpid(),
+        port=1,
+        token="live_host_token_1234",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, live)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        live.pid,
+        live.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 1
+    assert not called
+    assert host.read_host_info(tmp_path) == live
+    assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_preserves_a_changed_daemon(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert host.read_host_info(tmp_path) == stale
+    assert lock.read_bytes() == new
+
+
+def test_stop_daemon_after_host_exit_clears_stale_host_without_daemon(
+    tmp_path: Path,
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        None,
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 0
+    assert not host.host_lock_path(tmp_path).exists()

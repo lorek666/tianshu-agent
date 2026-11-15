@@ -52,7 +52,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import ipc
 from .errors import TianshuError
 from .fsutil import atomic_write_bytes
-from .leases import GuardTimeout, execution_guard
+from .leases import GuardTimeout, execution_guard, pid_alive
 
 HOST_LOCK_NAME = "host.lock"
 MAX_RPC_BODY = 1 * 1024 * 1024
@@ -190,7 +190,7 @@ def stop_daemon_if_unowned(
     *,
     timeout: float = 4.0,
 ) -> int:
-    """在 Host 元数据守卫内，只停止退出前快照对应的无主 Daemon。
+    """在 Host 元数据守卫内，只停止明确无主的 Daemon。
 
     返回值是给桌面壳 parse 的稳定退出码：
 
@@ -199,13 +199,61 @@ def stop_daemon_if_unowned(
     - 4：Daemon 实例已变更，保留新实例；
     - 1：读取/停止失败或超时，调用方必须保留窗口。
 
-    核验“没有 Host”和发出 Daemon 退出请求必须在同一跨进程临界区。否则新
-    Host 可以在两步之间发布并复用 Daemon，桌面壳随后会把新实例的服务误杀。
+    这里拒绝任何可读 Host 锁。已知旧 Host 已退出的桌面退出路径应改用
+    :func:`stop_daemon_after_host_exit`，后者只在身份匹配且 PID 已死时条件
+    清理陈旧锁。
     """
+    return _stop_daemon_after_host_observation(
+        data_root,
+        expected_sha256,
+        expected_host_identity=None,
+        timeout=timeout,
+    )
+
+
+def stop_daemon_after_host_exit(
+    data_root: Path,
+    expected_sha256: str | None,
+    expected_host_pid: int,
+    expected_host_started_at: int,
+    *,
+    timeout: float = 4.0,
+) -> int:
+    """清理已确认退出的指定 Host 留下的陈旧元数据和孤儿 Daemon。
+
+    该入口只允许由已观察 Host 进程退出的桌面壳调用。它在同一 Host 元数据
+    守卫内确认锁仍属于预期实例、确认 PID 已死、删除陈旧锁，再按退出前
+    Daemon 锁 SHA 发送退出请求。新 Host 已发布、Daemon 实例变化或进程仍
+    存活时必须保留现场并返回非零。
+
+    ``expected_sha256=None`` 表示退出前没有 Daemon 锁；若守卫内看到了新出现
+    的 Daemon，同样拒绝猜测并可重试。
+    """
+    if expected_host_pid <= 0 or expected_host_started_at <= 0:
+        print("期望的 Host 实例身份不合法", file=sys.stderr)
+        return 1
+    return _stop_daemon_after_host_observation(
+        data_root,
+        expected_sha256,
+        expected_host_identity=(expected_host_pid, expected_host_started_at),
+        timeout=timeout,
+    )
+
+
+def _stop_daemon_after_host_observation(
+    data_root: Path,
+    expected_sha256: str | None,
+    *,
+    expected_host_identity: tuple[int, int] | None,
+    timeout: float,
+) -> int:
     from . import daemon
 
-    expected = expected_sha256.lower()
-    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+    expected = expected_sha256.lower() if expected_sha256 is not None else None
+    if expected is not None and (
+        len(expected) != 64
+        or any(char not in "0123456789abcdef" for char in expected)
+    ):
         print("期望的 Daemon 锁摘要不合法", file=sys.stderr)
         return 1
 
@@ -213,21 +261,47 @@ def stop_daemon_if_unowned(
     lock_path = daemon.lock_path(root)
     try:
         with _host_info_guard(root):
-            if _read_host_info(root) is not None:
-                print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
-                return 3
+            current_host = _read_host_info(root)
+            if current_host is not None:
+                if expected_host_identity is None:
+                    print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
+                    return 3
+                if (
+                    current_host.pid,
+                    current_host.started_at,
+                ) != expected_host_identity:
+                    print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
+                    return 3
+                if pid_alive(current_host.pid):
+                    print("Host 进程仍存活，保留 Daemon", file=sys.stderr)
+                    return 1
 
             try:
                 snapshot = lock_path.read_bytes()
             except FileNotFoundError:
+                if current_host is not None:
+                    try:
+                        host_lock_path(root).unlink()
+                    except OSError as exc:
+                        print(f"清理陈旧 Host 锁失败：{exc}", file=sys.stderr)
+                        return 1
                 return 0
             except OSError as exc:
                 print(f"读取 Daemon 锁失败：{exc}", file=sys.stderr)
+                return 1
+            if expected is None:
+                print("缺少退出前 Daemon 锁快照，拒绝停止新出现的实例", file=sys.stderr)
                 return 1
             if _sha256_hex(snapshot) != expected:
                 print("Daemon 实例已变更，拒绝停止新实例", file=sys.stderr)
                 return 4
 
+            if current_host is not None:
+                try:
+                    host_lock_path(root).unlink()
+                except OSError as exc:
+                    print(f"清理陈旧 Host 锁失败：{exc}", file=sys.stderr)
+                    return 1
             stop_timeout = max(0.1, float(timeout))
             requested = daemon.request_shutdown(
                 root, reason="desktop_exit", timeout=stop_timeout
@@ -245,7 +319,7 @@ def stop_daemon_if_unowned(
         except OSError as exc:
             print(f"等待 Daemon 退出时读取锁失败：{exc}", file=sys.stderr)
             return 1
-        if _sha256_hex(current) != expected:
+        if expected is None or _sha256_hex(current) != expected:
             print("Daemon 退出期间实例已变更，保留新实例", file=sys.stderr)
             return 4
         if time.monotonic() >= deadline:

@@ -12,6 +12,7 @@ pub struct HostEndpoint {
     pub pid: u32,
     pub port: u16,
     pub token: String,
+    pub started_at: u64,
 }
 
 impl fmt::Debug for HostEndpoint {
@@ -21,6 +22,7 @@ impl fmt::Debug for HostEndpoint {
             .field("pid", &self.pid)
             .field("port", &self.port)
             .field("token", &"<redacted>")
+            .field("started_at", &self.started_at)
             .finish()
     }
 }
@@ -106,6 +108,7 @@ pub fn parse_host_endpoint(raw: &[u8]) -> Result<HostEndpoint, HostInfoError> {
         pid: parsed.pid,
         port: parsed.port,
         token: parsed.token,
+        started_at: parsed.started_at,
     })
 }
 
@@ -262,6 +265,34 @@ pub fn build_orphan_daemon_shutdown_command(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         // stderr is a pipe here. Pin UTF-8 instead of allowing the Windows
         // locale code page to turn diagnostic text into a different failure.
+        .env("PYTHONIOENCODING", "utf-8");
+    command
+}
+
+pub fn build_host_exit_daemon_shutdown_command(
+    python: &Path,
+    app_dir: &Path,
+    data_root: &Path,
+    expected_sha256: Option<&str>,
+    expected_host_pid: u32,
+    expected_host_started_at: u64,
+) -> Command {
+    let mut command = Command::new(python);
+    command
+        .arg("-c")
+        .arg(
+            "import sys; from pathlib import Path; \
+             from tianshu.host import stop_daemon_after_host_exit; \
+             raise SystemExit(stop_daemon_after_host_exit(\
+             Path(sys.argv[1]), None if not sys.argv[2] else sys.argv[2], \
+             int(sys.argv[3]), int(sys.argv[4]), timeout=4))",
+        )
+        .arg(data_root)
+        .arg(expected_sha256.unwrap_or(""))
+        .arg(expected_host_pid.to_string())
+        .arg(expected_host_started_at.to_string())
+        .env("PYTHONPATH", app_dir)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONIOENCODING", "utf-8");
     command
 }
