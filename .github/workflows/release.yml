@@ -109,13 +109,13 @@ jobs:
           - os: macos-latest
             target: macos-arm64
             triple: aarch64-apple-darwin
-          - os: macos-latest
+          - os: macos-26-intel
             target: macos-x64
             triple: x86_64-apple-darwin
           - os: windows-latest
             target: windows-x64
             triple: x86_64-pc-windows-msvc
-          - os: windows-latest
+          - os: windows-11-arm
             target: windows-arm64
             triple: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}

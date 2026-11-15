@@ -145,13 +145,17 @@ def package_app(
 ) -> Path:
     if target not in TARGET_TRIPLE:
         raise PackageError(f"未知 target：{target}")
-    if target.split("-", 1)[0] != native_target().split("-", 1)[0]:
+    native = native_target()
+    if target.split("-", 1)[0] != native.split("-", 1)[0]:
         raise PackageError(
-            f"target {target} 与宿主 {native_target()} 操作系统不一致；"
+            f"target {target} 与宿主 {native} 操作系统不一致；"
             "四目标发行必须在匹配 OS 的 runner 构建"
         )
-    if target_triple is None and target != native_target():
-        raise PackageError(f"跨架构 target {target} 必须显式提供 --target-triple")
+    if target != native:
+        raise PackageError(
+            f"target {target} 与原生 target {native} 不一致；"
+            "发行构建和 runtime smoke 必须在匹配架构的原生 runner 完成"
+        )
     if target_triple is not None and target_triple != TARGET_TRIPLE[target]:
         raise PackageError(f"target {target} 的 Rust triple 必须是 {TARGET_TRIPLE[target]}")
     repo_root = Path(repo_root).resolve()

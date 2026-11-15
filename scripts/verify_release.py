@@ -7,11 +7,13 @@ import os
 import platform
 import posixpath
 import re
+import shutil
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -36,10 +38,40 @@ FORBIDDEN_PARTS = frozenset(
 )
 FORBIDDEN_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3", ".log", ".key"})
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+RELEASE_IDENTITY_FIELDS = frozenset(
+    {"schema", "product", "version", "commit", "target"}
+)
 
 
 class VerifyError(ValueError):
     """发行产物、清单或来源字节不一致。"""
+
+
+def _read_release_identity(data: bytes, label: str) -> dict[str, Any]:
+    try:
+        identity = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise VerifyError(f"{label} 不是合法 JSON：{exc}") from exc
+    if not isinstance(identity, dict):
+        raise VerifyError(f"{label} 根必须是 object")
+    missing = RELEASE_IDENTITY_FIELDS - set(identity)
+    unknown = set(identity) - RELEASE_IDENTITY_FIELDS
+    if missing or unknown:
+        raise VerifyError(
+            f"{label} 字段必须封闭：缺少={sorted(missing)}，未知={sorted(unknown)}"
+        )
+    if identity.get("schema") != 1 or identity.get("product") != "tianshu-agent":
+        raise VerifyError(f"{label} 的 schema 或 product 不合法")
+    version = identity.get("version")
+    if not isinstance(version, str) or re.fullmatch(r"0\.[0-9]+\.[0-9]+", version) is None:
+        raise VerifyError(f"{label} 的 version 不合法")
+    commit = identity.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise VerifyError(f"{label} 的 commit 必须是 40 位小写十六进制 SHA")
+    target = identity.get("target")
+    if target not in TARGETS:
+        raise VerifyError(f"{label} 的 target 不合法：{target!r}")
+    return identity
 
 
 def _sha256(path: Path) -> str:
@@ -142,6 +174,7 @@ def _verify_macos_archive(
     *,
     artifact: Path,
     manifest: dict[str, Any],
+    manifest_bytes: bytes,
     bundle_dir: Path,
 ) -> None:
     with tarfile.open(artifact, "r:gz") as archive:
@@ -169,8 +202,16 @@ def _verify_macos_archive(
             members,
             f"{prefix}Resources/release.json",
         )
+        _read_release_identity(release_bytes, "macOS 归档 release.json")
         if release_bytes != (bundle_dir / "release.json").read_bytes():
             raise VerifyError("归档 release.json 与已验证 bundle 字节不一致")
+        archived_manifest = _read_archive_path(
+            archive,
+            members,
+            f"{prefix}Resources/release-manifest.json",
+        )
+        if archived_manifest != manifest_bytes:
+            raise VerifyError("归档 release-manifest.json 与已验证 bundle 字节不一致")
         ui_bytes = _read_archive_path(
             archive,
             members,
@@ -239,11 +280,129 @@ def _verify_macos_archive(
 def _verify_windows_artifact(
     *,
     artifact: Path,
-    manifest: dict[str, Any],
+    bundle_dir: Path,
+    target: str,
+    extractor: Callable[[Path, Path], None] | None = None,
 ) -> None:
-    machine = _expect_pe(artifact.read_bytes(), artifact.name)
+    installer = artifact.read_bytes()
+    machine = _expect_pe(installer, artifact.name)
     if machine not in {0x014C, 0x8664, 0xAA64}:
         raise VerifyError(f"{artifact.name} 不是可识别的 NSIS PE 安装器")
+    if b"NullsoftInst" not in installer:
+        raise VerifyError(f"{artifact.name} 缺少 NSIS 安装器标识")
+
+    with tempfile.TemporaryDirectory(prefix="tianshu-nsis-payload.") as temporary:
+        destination = Path(temporary)
+        (extractor or _extract_nsis_payload)(artifact, destination)
+        _validate_extracted_tree(destination)
+        release_paths = sorted(
+            path for path in destination.rglob("release.json") if path.is_file()
+        )
+        if len(release_paths) != 1:
+            raise VerifyError(
+                "NSIS 安装器必须包含唯一 release.json 资源根："
+                f"{[str(path.relative_to(destination)) for path in release_paths]}"
+            )
+        payload_root = release_paths[0].parent
+        payload_release = release_paths[0].read_bytes()
+        identity = _read_release_identity(payload_release, "NSIS payload release.json")
+        if identity["target"] != target:
+            raise VerifyError(
+                f"NSIS payload target 不匹配：期望 {target!r}，实际 {identity['target']!r}"
+            )
+        if payload_release != (bundle_dir / "release.json").read_bytes():
+            raise VerifyError("NSIS payload release.json 与已验证 bundle 字节不一致")
+
+        payload_manifest_path = payload_root / "release-manifest.json"
+        bundle_manifest_path = bundle_dir / "release-manifest.json"
+        if not payload_manifest_path.is_file():
+            raise VerifyError("NSIS payload 缺少 release-manifest.json")
+        if payload_manifest_path.read_bytes() != bundle_manifest_path.read_bytes():
+            raise VerifyError("NSIS payload release-manifest.json 与已验证 bundle 字节不一致")
+        try:
+            payload_manifest = read_manifest(payload_manifest_path, base_dir=payload_root)
+        except ReleaseManifestError as exc:
+            raise VerifyError(f"NSIS payload release-manifest 不合法：{exc}") from exc
+        if (
+            payload_manifest["target"] != identity["target"]
+            or payload_manifest["version"] != identity["version"]
+            or payload_manifest["commit"] != identity["commit"]
+        ):
+            raise VerifyError("NSIS payload release.json 与 release-manifest 身份不一致")
+
+        required_files = set(payload_manifest["files"])
+        allowed_files = required_files | {
+            "release-manifest.json",
+            "icon.ico",
+            "icon.icns",
+        }
+        managed_prefixes = {"app", "python", "ui", "licenses"}
+        actual_files = {
+            path.relative_to(payload_root).as_posix()
+            for path in payload_root.rglob("*")
+            if path.is_file()
+        }
+        unlisted = {
+            relative
+            for relative in actual_files - allowed_files
+            if relative.split("/", 1)[0] in managed_prefixes
+        }
+        missing = required_files - actual_files
+        if unlisted or missing:
+            raise VerifyError(
+                "NSIS payload 文件集合与 manifest 不一致："
+                f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing)}"
+            )
+        python = payload_root / "python" / "python.exe"
+        if not python.is_file():
+            raise VerifyError("NSIS payload 缺少 python/python.exe")
+        _expect_arch(python.read_bytes(), target, "NSIS payload python.exe")
+
+
+def _validate_extracted_tree(root: Path) -> None:
+    resolved_root = root.resolve()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise VerifyError(f"NSIS 解包结果包含符号链接：{path}")
+        if not (path.is_file() or path.is_dir()):
+            raise VerifyError(f"NSIS 解包结果包含特殊文件：{path}")
+        try:
+            path.resolve().relative_to(resolved_root)
+        except ValueError as exc:
+            raise VerifyError(f"NSIS 解包路径逃出临时目录：{path}") from exc
+
+
+def _seven_zip_command() -> str:
+    candidates = (
+        shutil.which("7z"),
+        shutil.which("7zz"),
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise VerifyError("Windows NSIS payload 验证需要 7-Zip（7z/7zz）")
+
+
+def _extract_nsis_payload(artifact: Path, destination: Path) -> None:
+    command = [
+        _seven_zip_command(),
+        "x",
+        "-y",
+        f"-o{destination}",
+        str(artifact),
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[-2000:]
+        raise VerifyError(f"NSIS payload 解包失败：{detail}")
 
 
 def _verify_windows_bundle(bundle_dir: Path, target: str) -> None:
@@ -266,10 +425,9 @@ def host_target() -> str | None:
 def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
     current = host_target()
     if current != target:
-        return {
-            "status": "not_run_cross_target",
-            "host_target": current,
-        }
+        raise VerifyError(
+            f"runtime smoke 必须在原生 target {target} 运行，当前宿主为 {current!r}"
+        )
     python = (
         bundle_dir / "python" / "python.exe"
         if target.startswith("windows")
@@ -330,8 +488,21 @@ def verify_release(
             raise VerifyError(
                 f"发布清单 {field} 不匹配：期望 {value!r}，实际 {manifest.get(field)!r}"
             )
+    release_path = bundle_dir / "release.json"
+    try:
+        release_bytes = release_path.read_bytes()
+    except OSError as exc:
+        raise VerifyError(f"无法读取 bundle release.json：{exc}") from exc
+    release_identity = _read_release_identity(release_bytes, "bundle release.json")
+    for field, value in expected_identity.items():
+        if release_identity.get(field) != value:
+            raise VerifyError(
+                f"release.json {field} 不匹配：期望 {value!r}，"
+                f"实际 {release_identity.get(field)!r}"
+            )
+    manifest_bytes = manifest_path.read_bytes()
     copied_manifest = artifact_dir / "release-manifest.json"
-    if not copied_manifest.is_file() or copied_manifest.read_bytes() != manifest_path.read_bytes():
+    if not copied_manifest.is_file() or copied_manifest.read_bytes() != manifest_bytes:
         raise VerifyError("发行目录 release-manifest.json 与 bundle 字节不一致")
 
     stem = f"Tianshu-Agent-{version}-{target}"
@@ -355,10 +526,15 @@ def verify_release(
         _verify_macos_archive(
             artifact=artifact,
             manifest=manifest,
+            manifest_bytes=manifest_bytes,
             bundle_dir=bundle_dir,
         )
     else:
-        _verify_windows_artifact(artifact=artifact, manifest=manifest)
+        _verify_windows_artifact(
+            artifact=artifact,
+            bundle_dir=bundle_dir,
+            target=target,
+        )
         _verify_windows_bundle(bundle_dir, target)
     smoke = (
         _runtime_smoke(bundle_dir, target)

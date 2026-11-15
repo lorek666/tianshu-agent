@@ -57,7 +57,11 @@ def _artifacts(root: Path) -> None:
                     "manifest_sha256": hashlib.sha256(
                         manifest_path.read_bytes()
                     ).hexdigest(),
-                    "runtime_smoke": {"status": "not_run_cross_target"},
+                    "runtime_smoke": {
+                        "status": "pass",
+                        "host_target": target,
+                        "version": "0.1.0",
+                    },
                 }
             ),
             encoding="utf-8",
@@ -135,6 +139,28 @@ def test_assemble_release_rejects_report_not_bound_to_manifest_bytes(tmp_path):
     report.write_text(json.dumps(data), encoding="utf-8")
 
     with pytest.raises(module.AssembleError, match="验证报告"):
+        module.assemble_release(
+            artifacts_root=artifacts,
+            out_dir=tmp_path / "release",
+            version="0.1.0",
+            commit=COMMIT,
+            build_run_url="https://github.com/example/actions/runs/1",
+        )
+
+
+def test_assemble_release_rejects_cross_target_runtime_smoke(tmp_path):
+    module = _load()
+    artifacts = tmp_path / "artifacts"
+    _artifacts(artifacts)
+    report = artifacts / "macos-x64" / "release-verification.json"
+    data = json.loads(report.read_text(encoding="utf-8"))
+    data["runtime_smoke"] = {
+        "status": "not_run_cross_target",
+        "host_target": "macos-arm64",
+    }
+    report.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(module.AssembleError, match="runtime smoke"):
         module.assemble_release(
             artifacts_root=artifacts,
             out_dir=tmp_path / "release",

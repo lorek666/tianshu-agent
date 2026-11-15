@@ -39,6 +39,16 @@ def _pe(machine: int) -> bytes:
     return bytes(data)
 
 
+def _release_identity(target: str = "macos-arm64") -> dict:
+    return {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": COMMIT,
+        "target": target,
+    }
+
+
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     release_manifest = _load(RELEASE_SCRIPT, "release_manifest_verify_fixture")
     bundle = tmp_path / "bundle"
@@ -55,13 +65,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     license_file.write_text("Apache License 2.0\n", encoding="utf-8")
     python.write_bytes(_macho(0x0100000C))
     (ui / "index.html").write_text("<!doctype html>", encoding="utf-8")
-    release = {
-        "schema": 1,
-        "product": "tianshu-agent",
-        "version": "0.1.0",
-        "commit": COMMIT,
-        "target": "macos-arm64",
-    }
+    release = _release_identity()
     release_bytes = (json.dumps(release, indent=2) + "\n").encode()
     (bundle / "release.json").write_bytes(release_bytes)
     files = {}
@@ -98,6 +102,45 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         target="macos-arm64",
     )
     return bundle, artifact.parent, artifact
+
+
+def _windows_fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_windows_fixture")
+    bundle = tmp_path / "bundle"
+    app = bundle / "app" / "tianshu"
+    python = bundle / "python" / "python.exe"
+    ui = bundle / "ui" / "dist"
+    licenses = bundle / "licenses"
+    app.mkdir(parents=True)
+    python.parent.mkdir(parents=True)
+    ui.mkdir(parents=True)
+    licenses.mkdir(parents=True)
+    (app / "__init__.py").write_text("", encoding="utf-8")
+    (app / "host.py").write_text("VERSION = 'verified'\n", encoding="utf-8")
+    python.write_bytes(_pe(0x8664))
+    (ui / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (licenses / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
+    release = _release_identity("windows-x64")
+    (bundle / "release.json").write_text(
+        json.dumps(release, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    files = {}
+    for path in sorted(bundle.rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(bundle).as_posix()
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {
+        **release,
+        "python": "3.12.16",
+        "python_build_release": "20261110",
+        "ui_dist_sha256": files["ui/dist/index.html"],
+        "files": files,
+    }
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+    return bundle, installer, manifest
 
 
 def _rewrite_archive(
@@ -226,26 +269,182 @@ def test_verify_release_rejects_unlisted_archive_import_hook(tmp_path):
         )
 
 
-def test_windows_verifier_accepts_nsis_x86_stub_and_checks_bundle_python(
-    tmp_path,
-):
+def test_verify_release_rejects_release_identity_drift_from_manifest(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_identity_test")
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_identity_drift")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    release = _release_identity()
+    release["commit"] = "0" * 40
+    (bundle / "release.json").write_text(
+        json.dumps(release, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    manifest = json.loads(
+        (bundle / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    manifest["files"]["release.json"] = hashlib.sha256(
+        (bundle / "release.json").read_bytes()
+    ).hexdigest()
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    (artifact_dir / "release-manifest.json").write_bytes(
+        (bundle / "release-manifest.json").read_bytes()
+    )
+
+    with pytest.raises(verify.VerifyError, match="release.json"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target="macos-arm64",
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_non_closed_release_identity(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_identity_fields_test")
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_identity_fields")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    release = {**_release_identity(), "source": "unbound"}
+    (bundle / "release.json").write_text(
+        json.dumps(release, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    manifest = json.loads(
+        (bundle / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    manifest["files"]["release.json"] = hashlib.sha256(
+        (bundle / "release.json").read_bytes()
+    ).hexdigest()
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    (artifact_dir / "release-manifest.json").write_bytes(
+        (bundle / "release-manifest.json").read_bytes()
+    )
+
+    with pytest.raises(verify.VerifyError, match="字段必须封闭"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target="macos-arm64",
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_archived_manifest_drift(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_manifest_drift_test")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+
+    def mutate(app: Path) -> None:
+        manifest_path = app / "Contents" / "Resources" / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = "0.1.1"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    _rewrite_archive(artifact_dir, artifact, mutate)
+
+    with pytest.raises(verify.VerifyError, match="release-manifest.*不一致"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target="macos-arm64",
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_runtime_smoke_rejects_non_native_target(tmp_path, monkeypatch):
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_native_test")
+    monkeypatch.setattr(verify, "host_target", lambda: "macos-arm64")
+
+    with pytest.raises(verify.VerifyError, match="原生 target"):
+        verify._runtime_smoke(tmp_path, "macos-x64")
+
+
+def test_windows_verifier_extracts_and_binds_exact_payload(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_test")
-    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-arm64-setup.exe"
-    installer.write_bytes(_pe(0x014C))
-    bundle = tmp_path / "bundle"
-    python = bundle / "python" / "python.exe"
-    python.parent.mkdir(parents=True)
-    python.write_bytes(_pe(0xAA64))
+    bundle, installer, _manifest = _windows_fixture(tmp_path)
+
+    def extract(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
 
     verify._verify_windows_artifact(
         artifact=installer,
-        manifest={"target": "windows-arm64"},
+        bundle_dir=bundle,
+        target="windows-x64",
+        extractor=extract,
     )
-    verify._verify_windows_bundle(bundle, "windows-arm64")
+    verify._verify_windows_bundle(bundle, "windows-x64")
 
+    python = bundle / "python" / "python.exe"
     python.write_bytes(_pe(0x8664))
     with pytest.raises(verify.VerifyError, match="PE 架构"):
-        verify._verify_windows_bundle(bundle, "windows-arm64")
+        bad_bundle = tmp_path / "bad-bundle"
+        shutil.copytree(bundle, bad_bundle)
+        (bad_bundle / "python" / "python.exe").write_bytes(_pe(0xAA64))
+        verify._verify_windows_bundle(bad_bundle, "windows-x64")
+
+
+def test_windows_verifier_rejects_pe_without_nsis_payload(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_synthetic_test")
+    _bundle, installer, _manifest = _windows_fixture(tmp_path)
+    installer.write_bytes(_pe(0x014C))
+
+    def extract(_artifact: Path, _destination: Path) -> None:
+        raise AssertionError("缺少 NSIS 标识时不得调用解包器")
+
+    with pytest.raises(verify.VerifyError, match="NSIS"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=tmp_path / "bundle",
+            target="windows-x64",
+            extractor=extract,
+        )
+
+
+def test_windows_verifier_rejects_payload_manifest_drift(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_manifest_drift")
+    bundle, installer, _manifest = _windows_fixture(tmp_path)
+
+    def extract(artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        manifest_path = destination / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["version"] = "0.1.1"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(verify.VerifyError, match="release-manifest.*不一致"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extract,
+        )
+
+
+def test_windows_verifier_rejects_unlisted_python_payload(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_extra_payload")
+    bundle, installer, _manifest = _windows_fixture(tmp_path)
+
+    def extract(artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        (destination / "app" / "sitecustomize.py").write_text(
+            "raise SystemExit(9)\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(verify.VerifyError, match="未列文件"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extract,
+        )
 
 
 def test_archive_link_targets_are_confined_to_archive():

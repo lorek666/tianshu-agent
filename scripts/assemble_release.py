@@ -105,11 +105,12 @@ def assemble_release(
         ):
             raise AssembleError(f"{target} 的验证报告与产物身份不一致")
         runtime_smoke = verification.get("runtime_smoke")
-        if not isinstance(runtime_smoke, dict) or runtime_smoke.get("status") not in {
-            "pass",
-            "not_run_cross_target",
-        }:
-            raise AssembleError(f"{target} 的 runtime smoke 状态不合法")
+        if (
+            not isinstance(runtime_smoke, dict)
+            or runtime_smoke.get("status") != "pass"
+            or runtime_smoke.get("host_target") != target
+        ):
+            raise AssembleError(f"{target} 的 runtime smoke 未在原生 target 通过")
         shutil.copyfile(artifact, out_dir / artifact.name)
         shutil.copyfile(checksum, out_dir / checksum.name)
         shutil.copyfile(

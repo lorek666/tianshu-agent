@@ -149,3 +149,16 @@ def test_cross_os_target_is_rejected(tmp_path):
             bundle_dir=tmp_path / "bundle",
             target_triple=module.TARGET_TRIPLE[foreign],
         )
+
+
+def test_cross_arch_target_is_rejected_even_on_matching_os(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "macos-arm64")
+
+    with pytest.raises(module.PackageError, match="原生 target"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="macos-x64",
+            bundle_dir=tmp_path / "bundle",
+            target_triple="x86_64-apple-darwin",
+        )
