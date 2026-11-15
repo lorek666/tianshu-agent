@@ -4,11 +4,11 @@
 
 本记录只覆盖 T1 平台基础，不把内部实现写成可执行的完整恢复产品。基线为
 `origin/main@2530a1575695baf75391a917a15a61dd2ffaa363`，最终组合同步
-`origin/main@134e9f04605547e58523ed7184200eccd9e9fea9`（tree
-`5ca4c38f7d43c6abcd997675acc24bbe21220e4d`）；分支
+`origin/main@c8b53bb2e00c7be20e980fec3994019c64674420`（tree
+`977331a3a74bde8300a4536e01c775e5935ac50b`）；分支
 `codex/restore-t1-platform`。当前已核验合并树为
-`91bd929a1bc2360c5271b480d4c276b1d858f9ea`（tree
-`507914573fb57733cf5ae1af76feeb9cc997496f`）。最终 PR 提交 SHA/tree
+`9cb6b947b28de13d3d999339e2c737abb94b35a5`（tree
+`4be8c4ee1a7577ec837511f7f33171b4fd70044e`）。最终 PR 提交 SHA/tree
 在事实文档提交、推送和第二读者复审后回填。
 
 ## 实现范围
@@ -51,8 +51,8 @@
 
 ## 门禁状态
 
-同步最新 main `134e9f0` 后，当前合并树 `91bd929` 的 macOS arm64 完整本机门禁为
-**3429 passed / 12 skipped（658.22s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
+同步最新 main `c8b53bb` 后，当前合并树 `9cb6b94` 的 macOS arm64 完整本机门禁为
+**3442 passed / 12 skipped（663.25s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
 165 passed / 1 skipped**；
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。
