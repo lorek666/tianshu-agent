@@ -65,3 +65,15 @@ def _pin_tool_registry():
         yield
     finally:
         reset_registry()
+
+
+@pytest.fixture(autouse=True)
+def _net_rate_limit_off(monkeypatch):
+    """网络速率下限在测试里默认关掉（TIANSHU_NET_MIN_INTERVAL_S=0）。
+
+    限速是**进程级**状态：不关的话，同进程里先后跑的两个 fetch 用例会互相
+    等待默认 1.0s，拖慢全套并让墙钟类判据互相串味。限速自身的判据在
+    test_net_resilience.py 里显式 setenv 打开并自证（显式 NetLimits 构造
+    参数优先于 env）。
+    """
+    monkeypatch.setenv("TIANSHU_NET_MIN_INTERVAL_S", "0")

@@ -388,3 +388,77 @@ describe("事件 → 时间线句子", () => {
     expect(detail.payload.path).toBe("x");
   });
 });
+describe("子任务与预算拒绝事件的人话（W8）", () => {
+  it("subtask.spawned 给出限额摘要，不显示机器枚举", () => {
+    const entry = humanizeEvent(
+      event("subtask.spawned", {
+        subtask_id: "st_1",
+        child_task_id: "task_child",
+        child_run_id: "run_child",
+        job_id: "job_child",
+        goal_digest: "a".repeat(64),
+        limits: { max_turns: 2, max_tokens: 3000, deadline_ms: 300_000 },
+      }),
+    );
+    expect(entry.sentence).toContain("派发了子任务");
+    expect(entry.sentence).toContain("轮次 ≤ 2");
+    expect(entry.sentence).toContain("token ≤ 3000");
+    expect(entry.sentence).not.toContain("st_1");
+    expect(entry.sentence).not.toContain("goal_digest");
+  });
+
+  it("subtask.finished 按状态机给不同结论，用量缺失时不显示 0", () => {
+    const done = humanizeEvent(
+      event("subtask.finished", {
+        subtask_id: "st_1",
+        state: "succeeded",
+        usage: { turns: 2, tokens: 1842 },
+      }),
+    );
+    expect(done.sentence).toContain("子任务完成");
+    expect(done.sentence).toContain("token 1842");
+
+    const failed = humanizeEvent(
+      event("subtask.finished", { subtask_id: "st_1", state: "failed" }),
+    );
+    expect(failed.sentence).toContain("子任务失败");
+    expect(failed.sentence).not.toContain("token 0");
+    expect(failed.sentence).not.toContain("轮次 0");
+  });
+
+  it("subtask.finished 的 7 态枚举都有人话兜底，未知值不显示原文", () => {
+    for (const state of [
+      "queued",
+      "running",
+      "cancelling",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "fenced",
+    ]) {
+      const entry = humanizeEvent(
+        event("subtask.finished", { subtask_id: "st_1", state }),
+      );
+      expect(entry.sentence).not.toBe("发生了一个操作");
+      expect(entry.sentence).not.toContain(state);
+    }
+    const unknownState = humanizeEvent(
+      event("subtask.finished", { subtask_id: "st_1", state: "some_future_state" }),
+    );
+    expect(unknownState.sentence).toContain("状态未知");
+    expect(unknownState.sentence).not.toContain("some_future_state");
+  });
+
+  it("dispatch.budget_refused / dispatch.subtask_limit 进入 C4 中文映射", () => {
+    expect(actionLabel("dispatch.budget_refused")).toBe("预算额度不足，请求没有发出");
+    expect(actionLabel("dispatch.subtask_limit")).toBe("委派限额不满足");
+    const denied = humanizeEvent(
+      event("policy.denied", {
+        rule_id: "dispatch.budget_refused",
+        reason: "额度耗尽",
+      }),
+    );
+    expect(denied.sentence).toContain("未获放行");
+    expect(denied.sentence).toContain("预算额度不足");
+  });
+});
