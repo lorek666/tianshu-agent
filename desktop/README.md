@@ -107,9 +107,9 @@ sh scripts/uninstall_macos.sh \
 ## 发行工作流
 
 `.github/workflows/release.yml` 只在手动触发或 `v*` tag 时运行。它要求输入
-commit 是 `origin/main` 祖先，并核验该精确 commit 的现有 CI 四个 required
-job 全绿。四个 target 在匹配 OS 的 runner 上构建；结果作为 draft GitHub
-Release 上传，必须人工检查后发布。
+commit 与 fetch 后的当前 `origin/main` 完全相同（annotated tag 先解引用），
+并核验该精确 commit 的现有 CI 四个 required job 全绿。四个 target 在匹配
+OS/架构的 runner 上构建；结果作为 draft GitHub Release 上传，必须人工检查后发布。
 
 当前证据边界：
 

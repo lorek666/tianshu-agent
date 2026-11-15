@@ -21,3 +21,16 @@ def test_release_matrix_uses_native_architecture_runners():
         )
         assert pair.search(workflow)
     assert "not_run_cross_target" not in workflow
+
+
+def test_release_dispatch_requires_exact_current_main():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'test "$commit" = "$(git rev-parse origin/main)"' in workflow
+    assert "git merge-base --is-ancestor" not in workflow
+
+
+def test_release_tag_is_dereferenced_before_identity_check():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'commit="$(git rev-parse "${GITHUB_REF}^{commit}")"' in workflow

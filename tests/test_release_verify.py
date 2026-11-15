@@ -54,7 +54,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     bundle = tmp_path / "bundle"
     app = bundle / "app" / "tianshu"
     license_file = bundle / "licenses" / "LICENSE"
-    python = bundle / "python" / "bin" / "python3.12"
+    python = bundle / "python" / "bin" / "python3"
     ui = bundle / "ui" / "dist"
     app.mkdir(parents=True)
     license_file.parent.mkdir(parents=True)
@@ -64,6 +64,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     (app / "host.py").write_text("VERSION = 'verified'\n", encoding="utf-8")
     license_file.write_text("Apache License 2.0\n", encoding="utf-8")
     python.write_bytes(_macho(0x0100000C))
+    (python.parent / "python3.12").write_bytes(_macho(0x0100000C))
     (ui / "index.html").write_text("<!doctype html>", encoding="utf-8")
     release = _release_identity()
     release_bytes = (json.dumps(release, indent=2) + "\n").encode()
@@ -348,6 +349,40 @@ def test_verify_release_rejects_archived_manifest_drift(tmp_path):
     _rewrite_archive(artifact_dir, artifact, mutate)
 
     with pytest.raises(verify.VerifyError, match="release-manifest.*不一致"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target="macos-arm64",
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_macos_python_arch_mismatch(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_python_arch_test")
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_python_arch")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    bundled_python = bundle / "python" / "bin" / "python3"
+    bundled_python.write_bytes(_macho(0x01000007))
+    manifest_path = bundle / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["python/bin/python3"] = hashlib.sha256(
+        bundled_python.read_bytes()
+    ).hexdigest()
+    release_manifest.write_manifest(manifest_path, manifest)
+    (artifact_dir / "release-manifest.json").write_bytes(manifest_path.read_bytes())
+
+    def mutate(app: Path) -> None:
+        (app / "Contents" / "Resources" / "python" / "bin" / "python3").write_bytes(
+            bundled_python.read_bytes()
+        )
+        archived_manifest = app / "Contents" / "Resources" / "release-manifest.json"
+        archived_manifest.write_bytes(manifest_path.read_bytes())
+
+    _rewrite_archive(artifact_dir, artifact, mutate)
+
+    with pytest.raises(verify.VerifyError, match="python3.*CPU 架构"):
         verify.verify_release(
             artifact_dir=artifact_dir,
             bundle_dir=bundle,

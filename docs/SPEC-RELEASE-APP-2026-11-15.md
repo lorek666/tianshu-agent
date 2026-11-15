@@ -224,7 +224,8 @@ Agent”。
 
 新增 `.github/workflows/release.yml`，只在 `workflow_dispatch` 与严格 `v*` tag 触发：
 
-1. 输入 commit 必须是 `origin/main` 当前祖先且为该 tag 指向的完整 SHA。
+1. 手动输入的完整 commit 必须等于 fetch 后的当前 `origin/main`；tag 先解引用到
+   其 commit，再执行同一精确相等检查。旧 main 祖先不能作为本次候选。
 2. 查询该 SHA 的四项 required 和 main push CI；不绿即停止。
 3. 四目标各自由匹配 OS/arch 的原生 runner 构建并执行 import/runtime smoke；assembler
    只接受 `runtime_smoke.status=pass` 且 `host_target` 与 target 完全一致，跨目标结果

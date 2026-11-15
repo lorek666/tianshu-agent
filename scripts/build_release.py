@@ -22,7 +22,13 @@ from release_manifest import (  # noqa: E402
     write_manifest,
 )
 
-TARGETS = frozenset({"macos-arm64", "macos-x64", "windows-x64", "windows-arm64"})
+TARGET_TRIPLES = {
+    "macos-arm64": "aarch64-apple-darwin",
+    "macos-x64": "x86_64-apple-darwin",
+    "windows-x64": "x86_64-pc-windows-msvc",
+    "windows-arm64": "aarch64-pc-windows-msvc",
+}
+TARGETS = frozenset(TARGET_TRIPLES)
 
 
 class BuildError(ValueError):
@@ -85,6 +91,11 @@ def load_runtime_lock(path: Path) -> dict[str, Any]:
         for field in ("triple", "asset", "sha256"):
             if not isinstance(entry.get(field), str) or not entry[field]:
                 raise BuildError(f"{target}.{field} 必须是非空字符串")
+        expected_triple = TARGET_TRIPLES[target]
+        if entry["triple"] != expected_triple:
+            raise BuildError(
+                f"{target}.triple 必须是 {expected_triple}，实际为 {entry['triple']}"
+            )
         digest = entry["sha256"]
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise BuildError(f"{target}.sha256 不合法")

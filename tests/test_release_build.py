@@ -146,6 +146,30 @@ def test_runtime_lock_has_all_four_desktop_targets():
         assert hashlib.sha256(b"not-the-asset").hexdigest() != target["sha256"]
 
 
+def test_runtime_lock_binds_each_target_to_its_native_triple(tmp_path):
+    module = _load_module()
+    lock = json.loads(
+        (ROOT / "release" / "python-runtime.lock.json").read_text(encoding="utf-8")
+    )
+    native = {
+        "macos-arm64": "aarch64-apple-darwin",
+        "macos-x64": "x86_64-apple-darwin",
+        "windows-x64": "x86_64-pc-windows-msvc",
+        "windows-arm64": "aarch64-pc-windows-msvc",
+    }
+
+    for target, triple in native.items():
+        wrong = next(value for value in native.values() if value != triple)
+        lock["targets"][target]["triple"] = wrong
+        broken = tmp_path / f"{target}.json"
+        broken.write_text(json.dumps(lock), encoding="utf-8")
+        try:
+            with pytest.raises(module.BuildError, match=rf"{target}\.triple"):
+                module.load_runtime_lock(broken)
+        finally:
+            lock["targets"][target]["triple"] = triple
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args],

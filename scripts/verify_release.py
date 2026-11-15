@@ -275,6 +275,12 @@ def _verify_macos_archive(
 
         desktop = _read_archive_path(archive, members, f"{prefix}MacOS/tianshu-desktop")
         _expect_arch(desktop, manifest["target"], "tianshu-desktop")
+        python = _read_archive_path(
+            archive,
+            members,
+            f"{prefix}Resources/python/bin/python3",
+        )
+        _expect_arch(python, manifest["target"], "python3")
 
 
 def _verify_windows_artifact(

@@ -36,6 +36,7 @@ pub enum HostInfoError {
     MissingLocalAppData,
     InvalidEndpoint,
     NotReady,
+    ChildExited,
     Timeout,
 }
 
@@ -45,6 +46,7 @@ impl fmt::Display for HostInfoError {
             Self::MissingLocalAppData => formatter.write_str("LOCALAPPDATA 未设置"),
             Self::InvalidEndpoint => formatter.write_str("Host 元数据不合法"),
             Self::NotReady => formatter.write_str("Host 尚未就绪"),
+            Self::ChildExited => formatter.write_str("Host 子进程在就绪前退出"),
             Self::Timeout => formatter.write_str("等待 Host 就绪超时"),
         }
     }
