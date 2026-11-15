@@ -128,7 +128,7 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 ## 8. 发布
 
 - 当前仍处内部研发阶段，版本号使用 `v0.x.y`；M0–M5 功能验收完成不等于面向普通用户的发布验收完成。
-- tag 触发构建 —— **尚无此工作流**：`.github/workflows/` 目前只有 `ci.yml`，触发条件是 `push: branches: [main]` 与 `pull_request`，**没有 `tags:` 触发**。发布流程要等真正开始发版时再落地，别按这条假设「打个 tag 就自动出包」
+- `.github/workflows/release.yml` 只在手动触发或 `v0.x.y` tag 时生成 draft release。它先要求输入 commit 是 `origin/main` 祖先，并核验该精确 commit 的现有四项 required job 全绿；随后在 macOS/Windows runner 构建四目标产物、运行 manifest/架构/摘要校验并以 draft 上传。该 workflow **不是**现有 required check，也**不会**自动公开 release；人工检查后仍须按本节门禁决定是否发布。
 - CHANGELOG 在 `1.0` 之前手写即可
 
 面向普通用户发布前，必须逐项补齐以下验收并记录证据；下列内容是发布条件，**不是现有能力**：

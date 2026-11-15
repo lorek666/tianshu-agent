@@ -27,11 +27,11 @@
 - **默认可撤销**：写前快照 + 可独立核对的凭据（Receipt），改坏了能撤销，撤销本身也走审批。
 - **崩溃可恢复**：中断后能判定「已生效 / 未生效 / 未知」，**未知绝不盲目重放**。
 
-> **当前形态：M5 桌面闭环已完成。** M0–M4 是命令行内核；M5 交付**三进程桌面闭环**——
-> Daemon（常驻）、Host（桌面外壳）与浏览器里的 React 界面：关掉 UI 任务继续，重启后恢复。
-> 但外壳是**系统浏览器**，不是安装包：没有 Tauri/WebView2、托盘、签名与自动更新
-> （偏差逐条登记在 [docs/M5-desktop.md](docs/M5-desktop.md) §2）。
-> 现阶段仍请把它当作**给开发者用的工具**——别把本文的愿景当成已交付的成品 App。
+> **当前形态：M5 三进程内核已稳定，另有未签名 L1 桌面内测壳。** M0–M4 是命令行内核；
+> M5 交付 Daemon、Python Host 与 React UI 的进程闭环。新的 Tauri 薄壳复用同一 Host，
+> 提供真实 WebView、托盘、单实例、项目内锁定的 Python 3.12 与 UI。它仍是
+> **L1 内测候选**：没有 OS 签名、公证、自动更新、四目标用户设备升级/回退证据，
+> 也没有补齐恢复 B/C、SLO 与十小时长稳，因此不能称 G3 正式发布或普通用户成品。
 
 ## 特性
 
@@ -50,7 +50,7 @@
 | 🧾 | **记忆看得见** | 控制面 `memory.search` + React 记忆面板：列出 / 检索 / 确认 / 忘记 / 擦除；条目带六项判据 + 语义能力标注（`semantic` / `degraded` / `fused`）+ `score`；正文纯文本、不做乐观更新、冲突只刷新重读。**评测**：`RU-M1@1.0.0` 跨任务召回（两段 Run；脚本模型） |
 | 💰 | **成本可见** | 整数微美元记账；价格未知记 `None` 并单独计数，**不伪装成 0** |
 | 🔌 | **模型可替换** | OpenAI-compatible 与 Anthropic 两套协议，换 provider 主循环零改动 |
-| 🖥️ | **桌面闭环** | 关掉 UI / 刷新页面任务照跑；重启后 Daemon 恢复扫描并续跑（判据：关 UI 后任务继续、重启后恢复） |
+| 🖥️ | **桌面闭环** | 关掉 UI / 刷新页面任务照跑；Tauri 薄壳关闭窗口只隐藏，托盘退出才停服务；重启后 Daemon 恢复扫描并续跑 |
 | 🧭 | **审批 UI** | 覆盖 / 删除 / 执行命令在界面上点「允许 / 拒绝」，决定经 IPC 落库；**否决即终局**，不再重复问同一个动作 |
 | 🪶 | **零第三方运行时依赖** | 纯 Python 标准库；dev 依赖只有 pytest + ruff；UI 构建产物已提交，运行时不需要 Node |
 
@@ -61,7 +61,7 @@
 - **`Workspace` 是路径边界，不是安全边界。** `LocalExecBackend().capabilities.isolation == "none"`，**从未交付过物理沙箱**。它防的是模型越权与失控 worker，不防本机用户，也不防恶意代码。
 - **密钥没有存进系统钥匙串。** v1 的 Keychain 后端**未实现**（零依赖下只能 ctypes 直调平台 C API，而我们没有平台能真验证），请求它会如实抛 `CredentialUnsupported`；已交付的是凭据接缝 + 全链路脱敏。
 - **Windows 没有用户设备实测。** Windows 已是四项 required checks 之一；基准 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 [main CI](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项通过。该次 runner 为 Windows Server 2025；不能把 `windows-latest` 永久等同于某一系统版本，也不代表 Windows 10/11、ARM64 或安装体验。历史认证问题已定位为密钥文本模式写入并修复；本轮另定位了输出管道收尾阻塞，修复与实际耗时见 [系统 debug 记录](docs/DEBUG-IO-2026-11-13.md)。平台跳过原因以该次 CI 的 `-rs` 日志为准。
-- **M5 交付的是进程闭环，不是可安装的 App。** 外壳是系统浏览器：没有 Tauri/WebView2、系统托盘、开机自启、安装包、签名、公证与自动更新。关掉浏览器标签只是**少一个订阅者**，Host 一直活到 `tianshu host stop`（或被杀）。
+- **当前 App 是未签名内测壳，不是 G3 正式发行版。** Tauri 只管理窗口、托盘、单实例和 Python Host 生命周期；Host/授权/恢复仍是原 Python 实现。已取得 macOS arm64 本机构建、安装、启动、关闭/重开、退出与卸载证据；macOS x64、Windows x64/arm64 仍只有 runner 构建边界，Windows 10/11 与 ARM64 用户设备、SmartScreen、Gatekeeper、升级/回退均未实测。没有自动更新或 OS 代码签名。
 - **F10 记忆：L1 + 生命周期（N1）+ 检索质量（N2）+ 擦除（N4）+ 恢复/审计（N5）+ L2/L3 蒸馏（N3）已落地；控制面 UI/Host 端点（N6）也已交付——**React 记忆面板**（列出/检索/确认/忘记/擦除）+ 第 9 个记忆 RPC `memory.search`。** 已落地：事件日志上的可重建投影（`memory.py`；schema **v3**，`memories` 带 `layer` / `erased_at`）、10 个 `memory.*` 工具（**7 个模型可见**；`memory.propose` 升 2.0，可写 `user` / **本任务** `task` 作用域；`memory.remember` / `memory.promote` / `memory.erase` 是控制面专属、`exposed=False`，不进模型清单；`memory.edit` 一次审批保留旧版）、`memory://` 资源种类、C4 审批与 Receipt、CLI 控制面（`list|search|get|confirm|forget|remember|edit|promote|erase`，`--task-id` 可替旧 task 作用域签字且不绑它的目录）、`origin` 两档（`user_explicit` 由 `remember` 产生，`user_confirmed` 由人批准 `confirm` 升级）。**N2 检索质量**：作用域优先级（当前 task 0 / 本 Run 的 workspace 1 / user 2；优先级是**上下文**的函数、不是 `allowed` 的函数，同一上下文逐位可复现）；向量索引 `memory_index.py`（`EmbeddingProvider` 接缝 + `memory_vectors` 表）；`retrieve()` 取 **FTS 候选 ∪ 语义候选**（语义命中 FTS 没召回的行也并进来）并按 `bm25` 名次 + 语义名次做 RRF，输出带 `semantic` / `degraded` / `fused`，条目带 `score_kind`。**能力边界（自报）**：内置只有确定性 `HashEmbeddingProvider`（**无语义能力**，评测写明不是语义能力证明）；未配置 provider / 索引未完整构建 / 换 provider 未 `rebuild_vectors()` → 一律 FTS-only 并说明原因（`availability()` 校验 `built` 标记与向量覆盖，空索引不会装成可用）。生产入口：`build_stack(embedding_provider=...)` 或环境变量 `TIANSHU_EMBEDDING_PROVIDER=hash`，并用 `tianshu memory rebuild-vectors` 显式建一次索引（只装配 provider 不会构建向量；只接受 hash 基线，外部 provider 需数据外发许可，尚未接线）。评测见 [docs/memory-retrieval-eval.md](docs/memory-retrieval-eval.md)（22 query / 25 记忆：FTS MRR 0.864 → hybrid 0.955，Recall@5 两者饱和为 1.000）。**CLI breaking**：`memory search --json` 从裸数组改成 `{items, semantic, degraded, fused}`（为携带能力标注）。**N3 L2/L3 蒸馏（只做确定性合成）**：`memory.consolidate`（1.0 / create / 模型可见，args 仅 `{scope, scope_id}`）把同作用域 `active` 的 L1 聚成 **L2 场景页**（token 重叠系数 0.34 聚簇 → 引用式拼装，每行带 `[memory_id@revision]`，`evidence` 每条 `{memory_id, revision, quote}` 且 `proof_count == len(evidence)`）与 **L3 偏好页**（user 作用域里人给的 `preference` 按 4 KiB 预算整行打包，放不下标"预算已满"）；两次合成**逐字节相同**、改一条源只动它那一块；结果写 `candidate`，人 `confirm` 才进召回；新页只取代同层的**候选**旧页（旧正文与它当时的 evidence 仍可按 id 查到），**人确认过的页不因合成退役**——合成是模型可见、免审批的工具，不能撤销人的召回授权。**新鲜度**：`source_refs` 带 `seq:<basis_seq>`，作用域里出现更新的 L1 后旧页 `stale=true` 并排在新鲜 L1 之后（降权不短路；`search()` 与 `retrieve()` 的三条路径共用同一排序键）；没有 `seq:` 的旧行 `stale` 是 **`None`**（不可判定，输出里省略该字段），不谎报新鲜。workspace / 他人 task 的 consolidate **无条件拒**，task 只能写自己。**N6 控制面端点（Host/IPC 一侧）**：daemon 的 `ControlPlane` 有 8 个记忆 RPC——`memory.list` / `memory.get` / `memory.remember` / `memory.confirm` / `memory.edit` / `memory.forget` / `memory.promote` / `memory.erase`；`host.py` 把浏览器 `POST /rpc` 原样代理给 daemon（有真 Host + token 回归用例）。**⚠ 这些端点不是授权边界**：v1 没有进程级沙箱，`run_command` 能以同 uid 起子进程，同 uid 进程能读 IPC 凭据、跑 CLI 并自己落审批——所以它们交付的是"人机界面与 CLI 共用一套实现 + 写操作都走 dispatcher"，**不是**"模型不可能写记忆"；跨本地用户的保护只有 POSIX 的文件权限（Windows 命名管道 ACL 未加固、未验证）。**记忆面板已交付**（`ui/src/components/MemoryPanel.tsx`）：列表/检索/确认/忘记/擦除，正文纯文本、不做乐观更新、冲突只刷新重读；端点这层仍然**不是**授权边界（见上两句）。CLI 与 RPC 共用同一份实现 `memory_control.py`（写操作永远走 dispatcher：intent/result + 一次性审批 + 执行侧二次核验），视图统一给六项判据（`scope` / `origin` / `revision` / `status` / `source_refs` / `proof_count`）；身份口径按事实写：**端点权限只在跨本地用户这层有意义**（POSIX 0700/0600；Windows ACL 未加固），**不新造身份令牌**；模型工具面与这条控制面是两条路（`memory.list` 不是工具，其余同名工具走主循环的 `allowed` 过滤），但**同 uid 的 `run_command` 仍可达**——见上一条。**评测**：真实用户任务 `RU-M1@1.0.0`——第一段人记一条写作偏好，第二段新任务召回并真的按偏好产出，同时不召回别的项目目录的诱饵记忆、产物里也不出现诱饵正文；忘记之后召回为空（失败路径 `RU-M1-F` 不进公开分母）。**两段都是脚本模型**，不是真实模型分数、也不是召回质量证明。**未实现**：LLM 蒸馏（生成式合成无法机械核对，明确延后）、L2/L3 vs L1 的检索质量评测（**不做"比 L1 更好用"的宣称**）、冲突消解（矛盾的 L1 在页里并列、不裁决）、真 embedding provider、reranker。**崩溃恢复**：`recovery.recover_run` 有记忆专用分支，判据分三层——投影/事件层（与 `tool.result` 同事务，"有 intent 无 result"⇔这一层一定没生效）、正文 blob 层（提交前已落盘，恢复按引用计数清孤儿副本）、`memory.erase` 例外（先删文件、后提交，删文件不可逆：文件还在才算没生效，文件已没报 unknown，不冒充"没写"）。记忆写不阻断目录（没有 preimage），`dispatches` 行会一并推进到 `error`。**脱敏**：`tool.intent` 对带正文的记忆写（propose / remember / edit）只留 `content_sha256` + `content_bytes`；`dispatch_requests.args_payload` 在请求进入终态（成功 / 拒绝 / 执行中途未知）后脱敏，老库里的终态行打开时补扫，执行期仍保留完整参数（`args_hash` 绑定 + 执行器取参）。**残留**：停在 waiting/admitted 的请求仍带正文；payload 损坏的行不补扫（fail-open，反查口径是 `args_redacted=0`）；模型工具调用里的正文另存于 `model.result` / `run_turns`（replay 必需，物理擦除见 F10 §10）；擦除崩溃按文件是否还在分层：还在 ⇒ 确未生效，已没 ⇒ unknown 待人工核对；`assess_run` 对擦除一律保守判 unknown；正文目录不是 DB 旁默认值时，库调用方要传 `recover_run(memory=...)` 或 `blob_dir=...`（`memory` 优先；CLI/daemon 已传）；文件写请求的审计不受影响。`memory.erase` 会删正文副本与索引（引用计数为 0 才删，事件日志里的历史读快照保留）；workspace 的 propose 是**无条件**拒绝的（即便同一 Task 上后开的模型 Run 继承了控制面标记也一样），共享只能由人 `memory.promote` 进入。逐条状态见 [docs/F10-memory-design.md](docs/F10-memory-design.md) §13/§14；剩余施工规格见 [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md)——那是**待实施**方案，不是已完成。
 - **MCP 只做到「stdio + tools + 假 server」。** G2 MCP 阶段交付了 stdio 客户端、动态工具准入（server 的 `inputSchema` 必须过封闭方言，认不出就拒该工具）、派发链路（任务级 server 白名单 + 每次人工批准）、`receipt(backend="mcp")` 与 `tianshu mcp list` 诊断。**但**：真实第三方 server **没验证过**（本机 web provider 不可用，协议形状按 MCP 2025-06-18 的已知口径实现并与自写假 server 对齐——自测通过不是兼容性证据）；**没有沙箱**，server 以当前用户权限运行，三道门只防"模型自作主张"、不防恶意 server；MCP 进程**不经过** `exec_backends`（长连接 vs 一次性 `spawn`），所以任务的 `isolation_requires` 对 MCP **一律拒绝**（`c4.mcp_isolation_unproven`）；只做 stdio，HTTP/SSE / OAuth / resources / prompts / sampling 全没做；大结果**不落内容引用**（客户端按 `max_result_bytes` 截断并报字节）；没有 MCP 预算维度；UI 没有 MCP 面板。细节与逐条边界见 [docs/mcp-g2.md](docs/mcp-g2.md) 与 [docs/MCP-ACCEPTANCE-2026-11-12.md](docs/MCP-ACCEPTANCE-2026-11-12.md)。
 - **子代理：D1 + D2 + D3，只读、单机、不退款。** `task.created.max_subtasks`（0–4）+ `subtasks` 实体与父子链 + `subtask.spawn/status/result/cancel` 四个工具 + 数量/局部限额 + `subtasks` 维度预算预占（D1）；子 Run 由**既有 Worker** 驱动、父 Run 在等子任务时挂起作业（Run 保持 running）、子任务收尾的同一事务里写行/写父 Run 事件/结算预算/唤醒父作业、父取消传播、父改目标 fence（`dispatch.parent_fenced`）、结果以 ≤4 KiB 摘要 + `content://` 引用回填、回放不重跑（D2）。**仍不成立**：子任务只能做纯读（写文件/出网/exec/MCP/记忆写/再委派都是拒绝，不弹嵌套审批）；深度固定 1、每父 Run 未完成上限 2、每根任务累计上限 4；子任务与父任务共用同一台机器/同一个 Worker 池（**没有跨机器调度**），`wake` 只保证可被重新认领、**不保证立刻被认领**；**取消不退款**（已发生费用照实计），读不到子 Run 最后一轮输出时 `summary` 为空并说明「输出不可用」，**不编造**；没有子任务 UI 页面（CLI `run status` 与事件里有）；**D3 评测只覆盖脚本模型**（父/子两套脚本，不是真实模型分数），公开委派任务只有 `RU-D1@1.0.0` 一条 + 测试内失败路径 `RU-D1-F`，不是所有委派场景；Windows 未验证。见 [resource-kinds.md](docs/resource-kinds.md) §8、[real-user-tasks.md](docs/real-user-tasks.md) 与 [SPEC-G2-DELEGATION-2026-11-11.md](docs/SPEC-G2-DELEGATION-2026-11-11.md)。
@@ -349,6 +349,7 @@ UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直�
 | **M3** 可替换 | 第二个 chat provider + 第二个沙箱后端 | ✅ 完成 |
 | **M4** 可评估 | 20 条 case + `replay`/`evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
+| **R1–R3（候选）** | Tauri 薄壳、锁定 Python/UI bundle、安装/卸载、四目标发布构建 | 🟡 本机 L1 已验；四目标用户设备与独立发布验收未完成 |
 
 **M5 实测**：全量 **1316 passed, 6 skipped**（macOS 本机，2026-11-11 收尾轮 `43d04ef`）；三进程真进程链路跑通——
 `tianshu host run` → `tianshu host stop` 后 Host 与 Daemon 都退出（`ipc.probe == False`，不留孤儿），
@@ -367,8 +368,8 @@ probe 版本/timeout；未隔离执行在审批卡片、时间线、`tool.result
 [docs/F2-ACCEPTANCE-2026-11-11.md](docs/F2-ACCEPTANCE-2026-11-11.md) 与
 [docs/F2-sandbox-policy.md](docs/F2-sandbox-policy.md)。
 
-**M5 明确未验证的**（写成「通过」就是假话）：**Windows 实机**（只有 CI `windows-latest`，命名管道的杀软/ACL/长路径差异未覆盖）·
-**真实模型驱动 UI**（CLI / `evaluate` 已用真实模型跑过：deepseek-v4.1-flash 18/20、glm-5.2 15/20，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1；UI 仍未接过真实模型）· Tauri/WebView2 外壳与托盘（M5 没做）· 同毫秒并发审批压测。
+**当前仍未验证的**（写成「通过」就是假话）：**Windows 实机**（只有 CI `windows-latest`，命名管道的杀软/ACL/长路径差异与安装体验未覆盖）·
+**真实模型驱动 UI**（CLI / `evaluate` 已用真实模型跑过：deepseek-v4.1-flash 18/20、glm-5.2 15/20，见 [docs/M4-verification.md](docs/M4-verification.md) §7.1；UI 仍未接过真实模型）· macOS x64 与 Windows ARM64 用户设备安装/升级 · Tauri 自动更新 · 同毫秒并发审批压测。
 完整清单见 [docs/M5-verification.md](docs/M5-verification.md)。
 
 **M4 实测**：`SUITE_VERSION = m4.4`，20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
@@ -422,6 +423,8 @@ uv run --frozen ruff check .      # lint
 | [docs/PRD-v1.md](docs/PRD-v1.md) | **产品需求与架构**：范围、五道契约、十一条红线、里程碑（唯一权威版本） |
 | [docs/TECH-ARCH.md](docs/TECH-ARCH.md) | **技术架构**：选型、进程模型、打包、平台差异 |
 | [docs/M5-desktop.md](docs/M5-desktop.md) | **M5 桌面闭环**：三进程拓扑、IPC 契约、恢复语义、偏差登记（§2）、已知限制（§10） |
+| [docs/SPEC-RELEASE-APP-2026-11-15.md](docs/SPEC-RELEASE-APP-2026-11-15.md) | **可安装发行版 L1/L2/G3 分层规格**：Tauri 薄壳、锁定 runtime、四目标资产、升级/回退与证据矩阵 |
+| [desktop/README.md](desktop/README.md) | **桌面壳施工与验收**：资源布局、本机生命周期、安装/卸载、release workflow 与平台边界 |
 | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) | **项目知识库**：当前状态、关键决策、踩坑教训、已知限制 |
 | [docs/F10-memory-design.md](docs/F10-memory-design.md) | **F10 记忆设计（v1.1）**：记忆作为事件日志的可重建投影、L0–L3 分层、作用域与装备、写入分级审批；**§6.1 资源种类（`memory://`）**、**§13 契约增量的实际状态**、**§14 判据↔真实测试** |
 | [docs/SPEC-RESIDUALS-MEMORY.md](docs/SPEC-RESIDUALS-MEMORY.md) | **剩余记忆工作量施工规格**：§13 #18–#27 逐条现状（代码事实）、N1–N6 六个工作流的判据与负控口径（N1/N2/N3/N4/N5 已落地，含 §2.3/§3.4/§4.4/§5.4/§6.4 落地记录；**只剩 N6**）、契约增量清单、明确不做 |
