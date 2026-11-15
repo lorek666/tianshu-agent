@@ -39,6 +39,7 @@ StablePlacement记录canonical路径段、**final父目录及其向上的稳定O
 普通打开与reservation都重开核稳定祖先/P：沿共享既有目录身份映射剩余段，判相等/祖先/后代；root不存在也按“稳定祖先实体＋后缀”识别同一位置。published按稳定P＋final名字及S识别别名/后代；不能把E变化当成任意祖先置换，也不能因此跳过P/祖先检查。别名不能唯一对应、真正稳定祖先置换或身份不可取得即拒绝/过期。
 所有未aborted批次的final root和本批staging范围均保留，互相包含/相同、普通main落入任一范围或实体等于held DB都拒绝；`aborted`只解除已证明无恢复根的预约，不许可任何残留origin。普通custom.db/后代DB与标准main同受范围裁决。
 恢复main及材料要求真实普通文件、无symlink/junction且main硬链接数为1；其OS实体身份从不截断句柄取得，POSIX至少设备＋inode、Windows至少卷＋file identity，路径hash不是身份。stage_owned先固定S；sealed及intent在rename前绑定同一S/D为**未来final**，不把E当final。empty分支P4只允许rmdir原E后stage(S)→final(S)；absent分支final原本缺失，直接同映射。intent后可见状态只准“S/D仍在stage且final为原缺/空，或S/D已在final且stage名缺失”；P/稳定祖先不变，其他实体、两份矛盾或S/D丢失均不授权。published后E仅留历史；同卷rename不能保持S/D即不支持apply。
+普通`EventLog`活跃时，POSIX允许测试制造路径/祖先替换并必须由实体核验拒绝；Windows可能由SQLite打开句柄直接拒绝文件或含文件的父目录rename。两平台都不得把rename失败当成普通错误吞掉：Windows原路径必须仍在且连续access仍有效；若OS允许替换，则必须走同一实体不匹配拒绝。
 
 ## 4. 组合access与写前线性化
 

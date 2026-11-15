@@ -29,6 +29,14 @@ def _expect_busy(action) -> bool:
     return False
 
 
+def _expect_permission_error(action) -> bool:
+    try:
+        action()
+    except PermissionError:
+        return True
+    return False
+
+
 def run_probe() -> dict[str, object]:
     if os.name != "nt":
         raise SystemExit("restore T1 Windows probe must run on Windows")
@@ -89,6 +97,8 @@ def run_probe() -> dict[str, object]:
         alias.unlink()
         log = EventLog(database)
         connected_alias = root / "connected-alias.db"
+        live_database_rename = root / "live-database-renamed.db"
+        live_ancestor_rename = root / "live-data-renamed"
         try:
             os.link(database, connected_alias)
             eventlog_alias_blocked = _expect_busy(
@@ -96,6 +106,18 @@ def run_probe() -> dict[str, object]:
                     observe_entity(connected_alias, "file"), exclusive=True
                 )
             )
+            eventlog_database_rename_blocked = _expect_permission_error(
+                lambda: database.rename(live_database_rename)
+            )
+            eventlog_ancestor_rename_blocked = _expect_permission_error(
+                lambda: database.parent.rename(live_ancestor_rename)
+            )
+            assert eventlog_database_rename_blocked is True
+            assert eventlog_ancestor_rename_blocked is True
+            assert database.is_file()
+            assert database.parent.is_dir()
+            assert not live_database_rename.exists()
+            assert not live_ancestor_rename.exists()
         finally:
             log.close()
 
@@ -120,6 +142,8 @@ def run_probe() -> dict[str, object]:
             "exclusive_blocked_by_shared": exclusive_blocked,
             "exclusive_blocked_until_all_shared_close": exclusive_still_blocked,
             "eventlog_hardlink_exclusive_blocked": eventlog_alias_blocked,
+            "eventlog_database_rename_blocked": eventlog_database_rename_blocked,
+            "eventlog_ancestor_rename_blocked": eventlog_ancestor_rename_blocked,
             "registry_present": registry_observation.present,
             "registry_registry_id": registry_observation.meta.registry_id,
             "registry_publish_api": "MoveFileExW(MOVEFILE_WRITE_THROUGH)",
@@ -135,6 +159,8 @@ def run_probe() -> dict[str, object]:
         assert result["exclusive_blocked_by_shared"] is True
         assert result["exclusive_blocked_until_all_shared_close"] is True
         assert result["eventlog_hardlink_exclusive_blocked"] is True
+        assert result["eventlog_database_rename_blocked"] is True
+        assert result["eventlog_ancestor_rename_blocked"] is True
         assert result["registry_present"] is True
         return result
 

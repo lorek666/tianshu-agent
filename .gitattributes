@@ -1,0 +1,3 @@
+# The restore registry binds its Python schema constant to this file byte-for-byte.
+# Keep the checked-out bytes canonical on Windows as well as POSIX.
+schemas/data/restore-registry-v1.sql text eol=lf

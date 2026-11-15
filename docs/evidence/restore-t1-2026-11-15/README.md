@@ -45,14 +45,14 @@
 | 四个初始化 failpoint 前后可解释现场 | `tests/test_restore_registry.py` |
 | SQL schema 文件与 Python 常量逐字节绑定 | `tests/test_restore_registry.py` |
 | EventLog 阻挡迁移，迁移保留既有 barrier/失败夹具 | `tests/test_data_migration_cli.py`、`tests/test_migration.py` |
-| Windows `FileIdInfo`/硬链接/rename/锁/registry artifact | `scripts/restore_t1_windows_probe.py` |
+| Windows `FileIdInfo`/硬链接/rename/锁/registry artifact；EventLog 活跃时文件与父目录替换由 OS 拒绝 | `scripts/restore_t1_windows_probe.py` |
 | gate 外 absent 后出现 reservation 必须先重观并拒绝普通 anchor | `tests/test_restore_eventlog_access.py` |
 | 迁移 SQLite close 失败必须继续持独占 access | `tests/test_data_migration_cli.py` |
 
 ## 门禁状态
 
 同步最新 main `134e9f0` 后，当前合并树 `91bd929` 的 macOS arm64 完整本机门禁为
-**3429 passed / 12 skipped（655.50s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
+**3429 passed / 12 skipped（658.22s）**，lock 与全仓 Ruff 均通过。T1 四个核心文件为 **166 collected /
 165 passed / 1 skipped**；
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。

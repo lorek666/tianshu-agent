@@ -224,7 +224,7 @@ def test_sqlite_main_path_and_entity_are_verified_before_admission(
         pass
 
 
-def test_database_path_replacement_is_detected_while_access_is_live(
+def test_database_path_replacement_is_detected_or_blocked_while_access_is_live(
     tmp_path, registry
 ):
     db = tmp_path / "data/events.db"
@@ -232,25 +232,43 @@ def test_database_path_replacement_is_detected_while_access_is_live(
     access = log.conn.database_access
     try:
         moved = tmp_path / "moved.db"
-        db.rename(moved)
-        db.write_bytes(b"replacement")
-        with pytest.raises(Exception, match="已经不匹配"):
+        try:
+            db.rename(moved)
+        except PermissionError as exc:
+            assert os.name == "nt", exc
+            assert db.is_file()
+            assert not moved.exists()
             access.verify()
+        else:
+            db.write_bytes(b"replacement")
+            with pytest.raises(Exception, match="已经不匹配"):
+                access.verify()
     finally:
         log.close()
 
 
-def test_ancestor_replacement_is_detected_while_access_is_live(tmp_path, registry):
+def test_ancestor_replacement_is_detected_or_blocked_while_access_is_live(
+    tmp_path, registry
+):
     parent = tmp_path / "data"
     db = parent / "events.db"
     log = EventLog(db)
     access = log.conn.database_access
     try:
-        parent.rename(tmp_path / "old-data")
-        parent.mkdir()
-        db.write_bytes(b"replacement")
-        with pytest.raises(Exception, match="已经不匹配"):
+        old_parent = tmp_path / "old-data"
+        try:
+            parent.rename(old_parent)
+        except PermissionError as exc:
+            assert os.name == "nt", exc
+            assert parent.is_dir()
+            assert db.is_file()
+            assert not old_parent.exists()
             access.verify()
+        else:
+            parent.mkdir()
+            db.write_bytes(b"replacement")
+            with pytest.raises(Exception, match="已经不匹配"):
+                access.verify()
     finally:
         log.close()
 
