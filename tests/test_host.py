@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -23,6 +24,8 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
@@ -354,24 +357,13 @@ def test_stale_host_lock_is_replaced(root: Path) -> None:
         host.clear_host_info(root, pid=info.pid)
 
 
-def test_host_metadata_publication_is_atomic_for_external_readers(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+def _blocked_host_metadata_publisher(
+    root: str,
+    control: Connection,
 ) -> None:
-    """桌面壳不持有 Python 的元数据互斥，不能让它读到锁的半截 JSON。
-
-    原实现直接 `Path.write_bytes()`，会先截断现锁再写。Tauri 启动时恰好并发
-    读取，就可能把一次短暂发布读成“Host 元数据不合法”，直接进启动失败页。
-    这里同时截住旧实现的截断写和新实现的 rename，使新实现下锁在发布前仍完整
-    保留旧字节，旧实现下则稳定暴露半截 JSON。
-    """
-    old = host.HostInfo(pid=4242, port=1, token="old_token", started_at=1, ui_dir="ui")
+    data_root = Path(root)
+    path = host.host_lock_path(data_root)
     new = host.HostInfo(pid=4343, port=2, token="new_token", started_at=2, ui_dir="ui")
-    host.write_host_info(root, old)
-    path = host.host_lock_path(root)
-
-    partial_write = threading.Event()
-    blocked_replace = threading.Event()
-    release = threading.Event()
     original_write_bytes = Path.write_bytes
     original_replace = os.replace
 
@@ -381,8 +373,9 @@ def test_host_metadata_publication_is_atomic_for_external_readers(
         with self.open("wb") as handle:
             handle.write(data[:5])
             handle.flush()
-            partial_write.set()
-            assert release.wait(5), "测试未释放半截写"
+            control.send(("blocked", "partial_write", os.getpid()))
+            if control.recv() != "release":
+                raise AssertionError("测试未释放半截写")
             handle.write(data[5:])
         return len(data)
 
@@ -390,23 +383,66 @@ def test_host_metadata_publication_is_atomic_for_external_readers(
         if Path(dst) != path:
             original_replace(src, dst)
             return
-        blocked_replace.set()
-        assert release.wait(5), "测试未释放原子替换"
+        control.send(("blocked", "atomic_replace", os.getpid()))
+        if control.recv() != "release":
+            raise AssertionError("测试未释放原子替换")
         original_replace(src, dst)
 
-    monkeypatch.setattr(Path, "write_bytes", intercept_write_bytes)
-    monkeypatch.setattr(os, "replace", intercept_replace)
-    writer = threading.Thread(target=host.write_host_info, args=(root, new))
-    writer.start()
+    Path.write_bytes = intercept_write_bytes
+    os.replace = intercept_replace
     try:
-        assert partial_write.wait(2) or blocked_replace.wait(2)
+        host.write_host_info(data_root, new)
+        control.send(("done", None, os.getpid()))
+    except BaseException:
+        control.send(("error", traceback.format_exc(), os.getpid()))
+        raise
+    finally:
+        Path.write_bytes = original_write_bytes
+        os.replace = original_replace
+        control.close()
+
+
+def test_host_metadata_publication_is_atomic_for_external_readers(root: Path) -> None:
+    """桌面壳不持有 Python 的元数据互斥，不能让它读到锁的半截 JSON。
+
+    原实现直接 `Path.write_bytes()`，会先截断现锁再写。Tauri 启动时恰好并发
+    读取，就可能把一次短暂发布读成“Host 元数据不合法”，直接进启动失败页。
+    发布者放在 spawn 子进程，父进程像 Tauri 壳一样绕过 Python 互斥直接读。子进程
+    同时截住旧实现的截断写和新实现的 rename，使新实现下锁在发布前仍完整保留旧
+    字节，旧实现下则稳定暴露半截 JSON。
+    """
+    old = host.HostInfo(pid=4242, port=1, token="old_token", started_at=1, ui_dir="ui")
+    new = host.HostInfo(pid=4343, port=2, token="new_token", started_at=2, ui_dir="ui")
+    host.write_host_info(root, old)
+    path = host.host_lock_path(root)
+
+    context = multiprocessing.get_context("spawn")
+    parent_control, child_control = context.Pipe()
+    writer = context.Process(
+        target=_blocked_host_metadata_publisher,
+        args=(str(root), child_control),
+    )
+    writer.start()
+    child_control.close()
+    released = False
+    try:
+        assert parent_control.poll(5), "publisher did not reach publication barrier"
+        ready = parent_control.recv()
+        assert ready[0] == "blocked", ready
+        assert ready[1] in {"partial_write", "atomic_replace"}, ready
+        assert ready[2] != os.getpid(), "publisher must be a real child process"
         published = json.loads(path.read_bytes())
         assert published["pid"] == old.pid
         assert published["token"] == old.token
     finally:
-        release.set()
-        writer.join(timeout=5)
-    assert not writer.is_alive()
+        if writer.is_alive():
+            parent_control.send("release")
+            released = True
+        writer.join(timeout=10)
+        parent_control.close()
+    assert not writer.is_alive(), "publisher did not exit"
+    assert writer.exitcode == 0, writer.exitcode
+    assert released
     assert host.read_host_info(root) == new
 
 
