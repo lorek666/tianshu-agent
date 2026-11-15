@@ -1,8 +1,7 @@
 # 受管备份导入、持久隔离与只读复核 · B 契约
 
-**契约文字已独立复核，产品尚未实现。** 2026-11-14；全部 B 验收与断点仍为 **NOT_RUN**。
-代码基线为 main `8f2a508e68f27efc4100b7466fcd79043341f7fa`，tree `73558d71cbce08e8d5a86aa8fce26cd89f476d3b`；与文字审阅固定的 `9413c7ca66af56fce8ac1664e989cf8cd6fc9808` 同 tree。
-[v3 独立文字复审](evidence/restore-held-contract-2026-11-14/review-v3.md)结论仅为 `PASS_FOR_PURE_DOCS_PR_TEXT_ONLY`。§1–§8 保留已审 v3 规范正文；原草案、前两轮未通过报告和逐字节映射见[证据子集](evidence/restore-held-contract-2026-11-14/README.md)。本契约不启用新的 CLI/API。
+**全文仍是 B 产品契约；T1 基础设施进入候选实现，完整 B 产品尚未实现。** 2026-11-15 从 main `2530a1575695baf75391a917a15a61dd2ffaa363` 重新绑定。T1 候选已实现真实平台实体身份、非阻塞共享/独占实体锁、固定 Home restore registry，以及 `EventLog`/迁移/离线备份的连接期连续 access；本机 lock/full/ruff 已通过，独立定向复审也已修复两轮反例。原生 Windows CI 和最终提交 SHA/tree 的独立复审仍为 `PENDING`，不能提前写成产品 PASS。B01–B09 与完整 apply/review/resume/abort 继续为 **NOT_RUN**。
+原 v3 文字复审基于 main `8f2a508…`（tree `73558d7…`）与固定 `9413c7c…` 同 tree；结论仅为 `PASS_FOR_PURE_DOCS_PR_TEXT_ONLY`。T0 v2 已作为内部契约合入 main，原草案与复审原件见[证据子集](evidence/restore-held-contract-2026-11-14/README.md)，T1 新证据见[本日记录](evidence/restore-t1-2026-11-15/README.md)。本契约不启用新的 CLI/API。
 
 ## 1. 用户结果与现行差异
 
@@ -43,7 +42,7 @@ StablePlacement记录canonical路径段、**final父目录及其向上的稳定O
 
 ## 4. 组合access与写前线性化
 
-现有`DatabaseAccess`只按canonical路径hash加锁，**尚未提供实体身份锁**。本提案保留其namespace句柄，并增加OS文件身份键的shared/exclusive锁，组成同一连接持有的CompositeDatabaseAccess；不能把现有实现称作已闭合。
+原 `DatabaseAccess` 只按 canonical 路径 hash 加锁。T1 候选保留该 namespace 句柄，并增加来自真实、持续打开句柄的 OS 实体身份键 shared/exclusive 锁，组合 access 由真实 SQLite 连接持有；路径 hash 不再承担实体身份。实现和边界绑定到[本日 T1 证据](evidence/restore-t1-2026-11-15/README.md)，最终 SHA 与原生 CI 签发前不把候选写成已验收。
 新取资源的唯一共持顺序：**restore gate → canonical namespace access → entity access（实体存在时）→ registry短读/事务**。全为非阻塞协作锁；registry busy_timeout=0。取锁忙、观察过期、取消/异常保留持久阶段后释放本次资源返回失败/busy，不持锁sleep，不采用旧3次/250ms政策。gate释放后已持namespace/entity者可以继续取其后的registry锁；**不能持namespace/entity反向重拿gate**。
 registry完整只读快照先在gate外完成并结束读事务，输出内部Observation（权威实体/完整已验证head/Scope决定）；不存在权威用明确absent-directory令牌。gate内只核同实体/meta/head及origin与祖先观察；过期回报busy，调用者重新完整观察，不用head代替全链。
 
@@ -118,7 +117,13 @@ reserved以前失败只有无目标写或私有权威初始化残留；reserved�
 平台适配必须显式核registry初始化/事务提交、token/origin原子写、文件/目录持久化和同卷rename语义；现有可能吞fsync错误的helper不能直接充当证明。能力不足返回durability_unavailable并保全，不能静默跳过后报durable。
 本契约要求的是声明OS/文件系统原语保证下的崩溃可解释性；真实os._exit(77)只证明进程硬退，物理断电、外部设备缓存失效另需证据。原生runner证据按实际系统/架构绑定，不外推用户Windows10/11、ARM64、桌面或全文件系统支持。
 
-## 8. 独立验收草案（全部NOT_RUN）
+## 8. 独立验收
+
+### 8.1 T1 基础设施候选
+
+本日候选覆盖平台身份、gate/namespace/entity 非阻塞锁、registry 完整链与 CAS、普通连接连续持锁、迁移/备份独占和 close 失败保锁。真实双进程、硬链接、祖先替换、SQLite `main` 核对、初始化 failpoint 与 schema 绑定已有本地测试；Windows 原生 API 与最终提交级结果必须以 GitHub 原生 CI 和独立复审回填。T1 通过不解除下表 B 产品义务。
+
+### 8.2 完整 B 产品（全部NOT_RUN）
 
 | B项 | 真实行为/必红负控 | 旧RA映射及变更 |
 |---|---|---|

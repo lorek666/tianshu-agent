@@ -30,6 +30,7 @@
 - **控制面响应测试已改为确定性屏障（2026-11-15）**：纯文档恢复契约 PR 的新 head 原生 run43634904064 在 Windows 分片 0 唯一红为 `test_control_plane_stays_responsive_while_driver_runs_long_task`，控制面两 RPC 实测 **0.781s，超过原 0.5s 阈值**；shard1、Ubuntu、macOS、UI 四个 job 成功，shard0 与 Windows required 汇总失败。产品 blob 与已通过的 main `88ec` 相同，原测试的“模型 sleep + 墙钟阈值”对 runner 调度敏感；0.781 秒耗时来源仍未定位，不能据此断定产品阻塞，也不能把本轮通过写成性能根因已修。隔离修复把长模型改为真实 Event 阻塞，只有驱动仍锁在模型调用、控制面 RPC 已完成才通过；2 秒 watchdog 只防止测试死锁，触发即失败。旧候选漏了入口失败清理，独立真进程负控发现后已用外层 `finally` 修复；4aae 候选目标连续 20 次通过，整文件与全量均通过（**3199 passed / 8 skipped，660.48s**，lock/ruff 0）。最终 93c1 仅改 RouteModel 文档字符串并复验目标测试，不冒充新一轮 20 次或 full。该结果不建立新 SLO，也不证明原 0.5 秒数值性能目标或 SQLite 根因。
 - **控制面屏障修复与恢复 B 文档契约已进入 main `925ca8f2`（2026-11-15）**：PR #158 head `6f40591989901784ac925b2a6639fb5e5ebfc380` 的原生 run43638768307 attempt1 六 job 全绿并经第二读者确认；正常保护 merge 为 main `f307bf16e0c5bb4b9eeac5c9c6e58353fb5411eb`。随后恢复 B 文档契约 PR #146 head `6a5d2130e6162a82d2d0ec27da193ad1033db0ea`（tree `4e5599b777e1879ac294c60ae6021ec308dfbc2a`）以普通 merge 同步到该 main，相对 base 仅 33 份 README/docs/证据改变，产品、测试、schema、UI、CI 与依赖零 delta；本机 lock/full/ruff 全 0，3199 passed / 8 skipped（578.91s）。PR 原生 run43644560048 六 job 全绿：Ubuntu 3194/13、macOS 3199/8、Windows 合 3170/37，两片覆盖 3207 节点与 9588 阶段，原失败控制面测试三阶段通过。保护合并后 main 为 `925ca8f2e94541b5e07c6510e827f6a7381cb2e6`（tree 与 PR head 相同）；main 自身 push run43646899748 六 job 全绿，Windows 合仍为 1590P14S + 1580P23S、3207 节点/9588 阶段，控制面目标通过并保留 1 次 watchdog 后正常 PASS。两次精确对象的最后第二读者签发均因复审服务 upstream 401 未完成，不能伪造独立 PASS；#145/#147 仍开放。
 - **恢复 B T0 v2 内部契约实现已并入 main `139653c5`（2026-11-15）**：在 main `925ca8f2` 上接入独立候选的 `restore_contract.py` `f4fb10af…`、`tests/test_restore_contract.py` `7017cd67…`、`schemas/data/restore-v1.json` `0f55065b…`。接入时发现通用 `data/` 忽略规则会把新 schema 静默排除出 Git，已用仅限 `schemas/data/` 的 `.gitignore` 例外修复。本机目标回归 **119 passed**；lock/full/ruff 全 0，**3318 passed / 8 skipped（542.29s）**，原 3199 项保留、新增正好 119 项，前后已跟踪文件不变。PR #159 首跑 run43649748068 的 Windows shard 0 唯一失败，是测试读取中文规范依赖默认编码：`PRD-v1.md` 在 cp1252 下触发 `UnicodeDecodeError`；全部 5 处 `read_text()` 随后显式指定 UTF-8，测试 blob 更新为 `0ba84f9a…`，源码与 schema 保持独立候选字节。修复后 PR run43651290917 六 job 全绿：Ubuntu 3313/13、macOS 3318/8、Windows 1649P15S + 1640P22S，覆盖 3326 节点/9945 阶段，首红测试与控制面测试三阶段均 PASS。正常保护合并后 main 为 `139653c5b92bd9f6c9af181d828ffd035567a79c`（tree `77489c4b…`，与 PR head 相同）；main 自身 push run43652961032 六 job 全绿，Windows 合 3289P37S、3326 节点/9945 阶段，shard0 保留 3 次 watchdog 后 PASS。该片只是严格 parser/validator/schema 内部接口，不接 CLI、不执行复制/删除/review、不改 EventLog；B01–B09、T1–T6、产品恢复仍 `NOT_RUN`。精确新对象的最后第二读者签发仍因 upstream 401 未完成，不伪造 PASS。
+- **恢复 B T1 平台基础候选已实现，原生 CI 待回填（2026-11-15）**：从 main `2530a157` 新增原生实体身份、gate/namespace/entity 非阻塞锁、固定 Home registry、`EventLog` 连接期连续锁，并把迁移/离线备份纳入 namespace+entity 独占。独立复审抓到并修复 absent→reserved 准入竞态及迁移 SQLite close 失败提前释放 access；T0+T1 定向收集 **166** 项，macOS 本机为 **165 passed / 1 skipped**（Windows known-folder 用例）。清除继承模型端点覆盖后的最终本机 lock/full/ruff 全 0，**3376 passed / 9 skipped（589.68s）**；第二轮独立定向复审 PASS，PR 原生 CI、Windows handle artifact 和最终提交 SHA/tree 复审仍 `PENDING`。完整 apply/review/resume/abort、B01–B09 与三材料独立入口闭包仍 `NOT_RUN`，T1 候选不能冒充完整 B 产品。
 
 - **PR149已交付测试诊断，main首次CI仍红（2026-11-14）**：PR首次run43573586653 attempt1六job成功并经独立核验，正常保护合入main `c2cf1c71c65f46dea161e41b140df99d137a5686`。该main自身首次run43576167008 attempt1为独立确认的`FAIL_THIS_MAIN_PUSH_CI_ONLY`：Windows两片各一个call失败，合计2 failed/3167 passed/37 skipped、完整3206节点，汇总正确拒绝；UI/Ubuntu/macOS成功。M2第13轮定位到append_many真实BEGIN SQLITE_BUSY，等待起点已从ring淘汰；MCP原2秒从服务发现起等待整个worker，隔离审批/unknown屏障证明该测试混合计时。最终MCP569b/M2f220两文件已获独立限定内容PASS；启动/accept清理真缺口修后复验，原断言与期限保留。1163固定输入的lock/full/ruff均0，3199 passed/8 skipped、635.00s，前后无漂移。门后只回填事实与证据，正式对象/新原生CI另核；实际Windows锁机制及MCP原卡点仍未知。详见[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)。#145/#147保持开放，恢复B继续暂停；下方“待原生CI”是旧提交前时点。
 
@@ -381,8 +382,20 @@
 - **同名不同路**：`memory.get` / `edit` / `forget` 既是模型工具也是 RPC 方法，但两条路身份与过滤完全不同（模型按 `allowed` 装备、人在本机全作用域）——所以测试断言里必须写清走的是哪条路。
 - **规格清单也会漏**：§7.2 列的 6 个方法没有 `memory.confirm`，缺它就没有"人确认候选才召回"的入口；落地时按"判据优先于清单"补齐并记进 §7.4。
 
+### 恢复 B T1 平台准入的实现决策（2026-11-15）
+
+- **路径 hash 只保留为 namespace，不再冒充实体身份**：POSIX 实体键来自持续打开句柄的 `device+inode`；Windows 来自 `GetFileInformationByHandleEx(FileIdInfo)` 的卷序列号+128-bit file ID。硬链接别名会争同一 entity lock。
+- **gate 与业务锁分层**：gate 只保护 anchor/身份固定窗口；namespace/entity shared access 交给真实连接，所有锁非阻塞。registry observation 也持 shared namespace/entity，因此多个普通连接可并行，写者独占时立即 busy。
+- **registry 读取是完整快照，head 不是授权**：固定真实 Home 下只追加 registry 每次读取规范 meta、全事件链和 head，调用 T0 `validate_event_chain()`；写入只 INSERT event，并在同一事务用旧 head CAS 前进。
+- **SQLite close 决定 access 寿命**：`MaintenanceConnection.close()` 先让 SQLite 真正关闭，再释放实体句柄和外部锁；跨线程 close 失败时连接仍可写，后续锁必须继续持有。
+- **Windows 目录发布不伪造 fsync**：registry 目录用 `MoveFileExW(MOVEFILE_WRITE_THROUGH)` 发布；Windows 目录的物理断电 durability 仍不是已证明事实。CI 另有原生 probe artifact，直接记录 file ID、硬链接、持句柄 rename、锁和 registry 结果。
+
 ## 5. 踩坑教训（别再踩）
 
+- **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
+- **读者不能用 `BEGIN IMMEDIATE` 冒充共享锁**：它会把两个普通连接串行化。registry observation 使用 shared namespace/entity + `BEGIN` 只读快照，写者使用外部 exclusive 锁；这样既保留并发，也让已接线 writer 立即互斥。
+- **Windows 没有可移植的目录 `fsync` 等价物**：`FlushFileBuffers` 对普通目录句柄不能当成无条件成功。目录发布另行使用 write-through rename，并把物理断电级 durability 保持 `NOT_RUN`。
+- **平台身份必须来自句柄而不是两次 `stat`**：路径可能在检查与加锁之间被替换。最终 entity identity、硬链接数和后续 `verify_path()` 都以真实打开句柄/重开实体为准。
 - **终止测试必须绑定实际执行者（2026-11-14）**：Windows 的 venv `python.exe` 可另起真实解释器，`Popen.pid` 与屏障内 `os.getpid()` 不一定相等；只等启动器退出不能证明 worker 已死。`communicate()` 会关闭 stdin，使仍在屏障读取的 worker 遇到 EOF 并进入错误分支。硬终止测试须让屏障同时报告 PID、严格匹配被终止的进程，并在关闭管道前确认其退出。文本 stderr 的系统换行与二进制屏障协议分别精确断言，不用 strip 或吞异常把失败改绿。诊断清理自身的 WinError 5 与产品失败分开保留；本次七例诊断整体仍失败，其中四个 venv 清理错误不因两个直接解释器对照通过而消失。
 
 - **测试入口也必须匹配生产初始化（2026-11-13）**：Windows上stdout重定向到DEVNULL仍可能以cp1252编码；测试用`python -c`直调Host、遗漏真实`cli.main`已有的`_force_utf8_streams`，中文print会在发布ready后异常、清元数据，表现为EOF/错误接管。用同一源码、同一cp1252环境、只补真实入口初始化的正负控定位，不能全局开UTF8掩盖差异。stderr保留原始bytes并按子进程实际UTF-8解码；失败收尾不能提前kill截断traceback或误杀Windows launcher而留下实际worker。只在最终runner证明Windows收尾，不拿Mac PID相同的情况代言。
@@ -505,6 +518,9 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
+- **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。
+- **Windows 原生结果待回填**：`scripts/restore_t1_windows_probe.py` 和 Windows 测试必须在 GitHub 原生 runner 实际通过并产生 artifact；在 run/SHA/artifact 绑定前，Windows T1 行为保持 `NOT_RUN`。Windows Server CI也不代表 Windows 10/11 用户设备或 ARM64。
 - **c2cf双红与诊断边界（2026-11-14）**：M2活跃renew context的32ms/63ms观测差不证明单次5秒持锁，run.end的none_applied也不证明execution.started后文件未动；不按无证据假设修改锁策略。MCP此次CI在returned断言停止，后续unknown/replay断言未执行；本机真实屏障只证明原测试能混入审批和落盘等待，不定位原Windows卡点。最终测试计时/清理和M2起点/调用链诊断已独立限定PASS、本机完整门通过；实际Windows与正式对象仍另验，不借PR149绿色销账。READONLY和注入7ms仅验诊断；[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)保留范围。
 
 - **M2诊断验证边界（2026-11-14）**：766a候选已在本机真实POSIX别名输入修复诊断caller丢失，并独立核根外同内容副本仍external；Windows junction分支本机未执行。诊断成功静默、失败附note，但包装及resolve有非零时序成本；它只观察已装配本进程context，不是OS锁owner、外部写者或精确COMMIT起点。新完整本机门不覆盖原Windows根因，正式对象/原生CI另核。
@@ -660,6 +676,7 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-15 · 恢复 B T1 平台基础候选**：从最新 main `2530a157` 调整到 `codex/restore-t1-platform`，新增真实实体身份、非阻塞 shared/exclusive entity access、固定 Home 只追加 registry、EventLog 连续复合锁，并把迁移/离线备份改为 namespace+entity 独占。负控覆盖真双进程共享/独占与硬退、硬链接、路径/祖先替换、SQLite `main`、registry CAS 竞争/初始化竞争/四 failpoint/schema 篡改、SQLite/实体句柄 close 失败保锁。独立第二读者用真子进程发现 gate 外 absent 快照与迁移 close 失败释放 access 两项缺陷；修复后新增竞态和公开 migrate close-failure 回归，第二轮定向复审 PASS。T0+T1 定向 166 项（macOS 165P1S）；最终本机 lock/full/ruff 为 3376P9S、589.68s、全 0。原生 Windows/最终提交 SHA 复审仍见 §2 的待回填状态。
 - **2026-11-14 · Windows 计时/锁等待诊断保护合并与 main 首绿**：正式 da47 先由第二读者完成测试内容、事实文稿/公开子集和正式 Git 对象三层窄绑定；本机 1163 输入上 lock/full/ruff 全 0，3199 passed/8 skipped、635.00s。PR153 首次六 job 全绿后独立核对两份原生 artifact、真实 checkout/tree/parents、3207 节点与 9588 阶段，确认 48 个聚焦节点全过并保留 3 次 watchdog；正常保护合并为 main88ec，tree 不变。main 自身首次 push CI 另跑并独立重算同一完整 collection，六 job 全绿；其 3 次长等待均只在片 1，测试随后全阶段通过。原 c2cf 双红、未知锁/MCP 机制和 #145/#147 不销账，恢复 B 仍未实现。
 - **2026-11-15 · 控制面测试屏障修复**：恢复 B 纯文档同步 PR 首次原生 CI 暴露 Windows daemon 控制面测试的唯一红点，0.781 秒超过原 0.5 秒阈值，shard0 与 required 汇总失败，另四 job 成功；同产品代码在 main 首轮通过，但 0.781 的来源未定位。第二读者完整核验失败 run 的 3207 节点、两 artifact 与汇总拒绝，确认不是以成功报告硬套。隔离分支只改测试：长任务改为真实 Event 屏障，控制 RPC 必须在屏障未释放时完成；补外层 finally 保证入口/连接失败也释放，独立真进程正控与两项串行负控闭合。4aae 候选目标 20/20、daemon 文件与全量 3199P8S 均通过；最终 93c1 只改注释并复验目标。不将新测试解释成性能 SLO、SQLite 根因或恢复 B 产品验收。
 - **2026-11-15 · PR158 合并与恢复 B 同步续做**：PR158 原生六 job 先完成独立验收，再正常保护合入 main `f307bf16`；main 自身首次 push 原始六 job 成功，但第二读者连续因上游 token 401 中断，故保留“原始成功、独立未完成”而不伪称 PASS。随后将纯文档恢复契约 PR #146 普通 merge 到该 main，仅保留 KNOWLEDGE 双方历史并补本次事实；产品、测试、schema、UI、CI 与依赖不新增变更。
