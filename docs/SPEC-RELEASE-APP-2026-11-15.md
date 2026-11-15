@@ -25,8 +25,10 @@
 > `host.lock` 的“旧锁消失、新锁尚未发布”空窗中，退出路径会误杀新 Host 已接管的
 > Daemon。修复提交 `0942ee5` 在有界接管窗口内持续观察，清理前进入 Host 元数据跨进程
 > 守卫、重新确认无 Host，并只停止锁 SHA 与退出前快照完全一致的 Daemon；新 Host 或
-> 新 Daemon 实例出现时返回保留。真实竞态回归旧实现红、修复后绿；修复提交上的完整
-> Python 本机门为 3543P/12S，Rust 27 tests，lock、Ruff 与 diff check 通过。最终
+> 新 Daemon 实例出现时返回保留。真实竞态回归旧实现红、修复后绿；代码收口 `77e1181`
+> 固定 Windows stderr 为 UTF-8。精确该代码树的完整 Python 本机门为 3543P/12S
+> （656.70s），Rust 27 tests，UI 124 tests，lock、Ruff、actionlint、shellcheck 与
+> diff check 通过。最终
 > docs-only SHA 仍须重新绑定云 CI；精确 macos-arm64 产物、锁空窗与普通
 > attach→quit 探针、第二读者 PASS 另绑，不得继承 `5873720`、`7b4cc7a` 或任何更早
 > 对象的绿色。状态仍是 L1 候选，不得合并为已验收发行版。
@@ -323,6 +325,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 - `旧 Host 退出 → host.lock 空窗 → 新 Host 发布 → 复用 Daemon` 的真实进程回归：
   退出探针不得停止新 Host 或其 Daemon；同时覆盖 Host 已发布、Daemon 实例已变更两个
   保留分支。普通“新锁已经存在”的探针不能替代这个窗口。
+- 退出辅助 Python 子进程的 stderr 必须显式 UTF-8，接管/失败诊断不能因 Windows
+  locale code page 变成另一退出码。
 - Tauri `setup` 冷启动回归必须同时证明 Host 身份可读且 WebView 实际渲染目标 UI；
   只有窗口存在、进程存活或 `/health=200` 不能证明用户看得到页面。
 - token 不出现在 argv、URL、Tauri log、release manifest。

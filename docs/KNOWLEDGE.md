@@ -34,11 +34,12 @@
   竞态命中 **HIGH**：旧 Host 锁消失后、新 Host 发布新锁前，退出路径曾误杀新 Host
   复用的 Daemon。修复提交 `0942ee5` 在旧锁消失后观察有界接管窗口，清理前重新确认
   没有 Host，并只在 Host 元数据跨进程守卫内停止锁 SHA 仍与退出前快照完全一致的
-  Daemon；新 Host 已发布或 Daemon 已换实例时保留现场。新增真实竞态回归在旧实现上
-  确定性红、修复后绿；Rust 现为 **27 tests**，相关 Python Host/M5 测试为
-  **26 passed / 1 skipped**。修复提交上的完整 Python 本机门为
-  **3543 passed / 12 skipped（662.96s）**，lock 与全仓 Ruff 通过。上述数字是作者侧
-  修复前证据；最终 docs-only 提交仍须重跑适用门禁、绑定自己的云 CI，重建
+  Daemon；新 Host 已发布或 Daemon 已换实例时保留现场。后续代码收口 `77e1181` 固定
+  Windows stderr 为 UTF-8，并让守卫注释准确区分“同步确认退出请求”和“锁外等待”。
+  新增真实竞态回归在旧实现上确定性红、修复后绿；Rust 现为 **27 tests**，相关 Python
+  Host/M5 测试为 **26 passed / 1 skipped**。`77e1181` 的完整 Python 本机门为
+  **3543 passed / 12 skipped（656.70s）**，lock 与全仓 Ruff 通过。上述数字是最终
+  docs-only 提交前一刻的作者侧证据；最终 docs-only 提交仍须绑定自己的云 CI，重建
   macos-arm64 Tauri 安装包并复跑锁空窗竞态与普通 attach→quit；最终第二读者必须
   对精确 SHA/tree 重新给出 PASS，旧 `7b4cc7a` 的 `PARTIAL` 不得被本次修复声明覆盖。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
@@ -889,6 +890,14 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-16 · PR #162 锁空窗修复最终本机门**：代码收口 `77e1181` 增加
+  `PYTHONIOENCODING=utf-8`，避免 Windows 重定向 stderr 把接管诊断变成另一条失败码；
+  `stop_daemon_if_unowned` 与 Host 元数据守卫的注释同步为“锁内确认请求、锁外等待
+  锁消失”。精确该代码树的门为完整 Python **3543P12S/656.70s**、相关 Host/M5
+  **76P1S**、Rust **27 tests**；UI 16 文件 **124 tests**、typecheck/build 与
+  `ui/dist` 重建对账通过，lock/Ruff/actionlint/shellcheck/diff-check 全 0。随后只回填
+  本知识与发行规格，形成最终 docs-only SHA；其云 CI、精确 Tauri 包、锁空窗与普通
+  attach→quit 探针及新的第二读者 PASS 仍须分别绑定，未以本机门代替。
 - **2026-11-16 · PR #162 修复 host.lock 空窗接管误杀并同步最新 main**：独立第二读者
   对 `7b4cc7a/tree 251537b` 维持 `PARTIAL`，新增复现证明旧 Host 锁消失后、新 Host
   发布锁前存在 HIGH 竞态：桌面退出会误杀新 Host 已复用的 Daemon。修复提交
