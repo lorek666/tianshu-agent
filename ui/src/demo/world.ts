@@ -214,8 +214,10 @@ export class DemoWorld {
     };
 
     const seeds: EventSeed[] = [
-      // 已完成的翻译运行（展示：成本累计 / applied / 可撤销）
-      seed("run.started", RUN_TRANSLATED, TASK_TRANSLATED, now - 62 * minutes),
+      // 已完成的翻译运行（展示：成本累计 / applied / 可撤销 / 预算与子任务面板）
+      seed("run.started", RUN_TRANSLATED, TASK_TRANSLATED, now - 62 * minutes, {
+        limits: { max_turns: 12, max_total_tokens: 40_000 },
+      }),
       seed("model.intent", RUN_TRANSLATED, TASK_TRANSLATED, now - 62 * minutes + 10 * seconds, {
         text: "我先读一下 README，找出英文段落。",
       }),
@@ -236,7 +238,23 @@ export class DemoWorld {
       seed("model.result", RUN_TRANSLATED, TASK_TRANSLATED, now - 62 * minutes + 40 * seconds, {
         text: "第 3、5、7 节是英文，我翻译后写入 README.zh.md。",
         cost: 0.0412,
+        usage: { input_tokens: 2_180, output_tokens: 640 },
       }),
+      // 演示一次委派：长文摘要交给子任务（只读），完成后回填用量。
+      seed(
+        "subtask.spawned",
+        RUN_TRANSLATED,
+        TASK_TRANSLATED,
+        now - 62 * minutes + 42 * seconds,
+        {
+          subtask_id: "st_summary_1",
+          child_task_id: "task_demo_summary",
+          child_run_id: "run_demo_summary",
+          job_id: "job_demo_summary",
+          goal_digest: "demo5ummaryface42",
+          limits: { max_turns: 2, max_tokens: 3_000, deadline_ms: 300_000 },
+        },
+      ),
       seed(
         "tool.requested",
         RUN_TRANSLATED,
@@ -258,9 +276,21 @@ export class DemoWorld {
         now - 62 * minutes + 59 * seconds,
         { path: "~/Projects/tianshu-agent/README.zh.md" },
       ),
+      seed(
+        "subtask.finished",
+        RUN_TRANSLATED,
+        TASK_TRANSLATED,
+        now - 61 * minutes + 5 * seconds,
+        {
+          subtask_id: "st_summary_1",
+          state: "succeeded",
+          usage: { turns: 2, tokens: 1_842 },
+        },
+      ),
       seed("model.result", RUN_TRANSLATED, TASK_TRANSLATED, now - 61 * minutes + 10 * seconds, {
         text: "已写入 README.zh.md，翻译完成。",
         cost: 0.0286,
+        usage: { input_tokens: 2_640, output_tokens: 890 },
       }),
       seed("run.state_changed", RUN_TRANSLATED, TASK_TRANSLATED, now - 61 * minutes + 15 * seconds, {
         to: "succeeded",
@@ -295,7 +325,19 @@ export class DemoWorld {
       seed("model.result", RUN_SCREENSHOTS, TASK_SCREENSHOTS, now - 31 * minutes + 20 * seconds, {
         text: "发现 4 张相似图片，计划删除其中 2 张重复的。",
         cost: 0.0121,
+        usage: { input_tokens: 1_320, output_tokens: 210 },
       }),
+      // 演示预算拒绝：清理任务后续想再委派一次时额度被拒（事件口径照契约）。
+      seed(
+        "policy.denied",
+        RUN_SCREENSHOTS,
+        TASK_SCREENSHOTS,
+        now - 31 * minutes + 26 * seconds,
+        {
+          rule_id: "dispatch.subtask_limit",
+          reason: "根任务累计子任务数已达上限 4，拒绝新的委派请求",
+        },
+      ),
       seed(
         "tool.requested",
         RUN_SCREENSHOTS,
@@ -660,6 +702,9 @@ export class DemoWorld {
     this.emit("run.started", run.run_id, task.task_id, {
       goal_revision: task.goal_revision,
       execution_policy: clone(executionPolicy),
+      // 演示：真实后端把 Run 限额写进 run.start 事件（control.py 的 payload）；
+      // 这里用同样的字段名让预算面板在演示模式有东西可看。
+      limits: { max_turns: 8, max_total_tokens: 12_000 },
     });
 
     window.setTimeout(() => {
@@ -671,6 +716,17 @@ export class DemoWorld {
       this.emit("model.result", run.run_id, task.task_id, {
         text: "目录已确认，生成了处理计划。",
         cost: 0.0051,
+        usage: { input_tokens: 540, output_tokens: 122 },
+      });
+      // 演示一次委派：子任务目标正文不进父事件（契约只有 goal_digest），
+      // 限额三项与 finished.usage 的字段名照 event_schema 的契约写。
+      this.emit("subtask.spawned", run.run_id, task.task_id, {
+        subtask_id: "st_demo_read_1",
+        child_task_id: "task_demo_child_1",
+        child_run_id: "run_demo_child_1",
+        job_id: "job_demo_child_1",
+        goal_digest: "demo00feedface42",
+        limits: { max_turns: 2, max_tokens: 3_000, deadline_ms: 300_000 },
       });
     }, 900);
     window.setTimeout(() => {
@@ -698,6 +754,12 @@ export class DemoWorld {
       this.emit("model.result", run.run_id, task.task_id, {
         text: "试运行完成，已写入一条记录。",
         cost: 0.0038,
+        usage: { input_tokens: 610, output_tokens: 96 },
+      });
+      this.emit("subtask.finished", run.run_id, task.task_id, {
+        subtask_id: "st_demo_read_1",
+        state: "succeeded",
+        usage: { turns: 2, tokens: 1_842 },
       });
       this.plans[run.run_id] = [
         {

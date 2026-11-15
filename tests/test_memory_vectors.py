@@ -350,6 +350,8 @@ class _ScriptedProvider:
 
     model_id = "scripted-4"
     dim = 4
+    # 能力自报（W6 外发 gate）：本机查表，零网络外发。
+    sends_data_off_device = False
 
     def __init__(self, table: dict[str, tuple[float, float, float, float]]) -> None:
         self._table = table
