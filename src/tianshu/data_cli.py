@@ -1,4 +1,4 @@
-"""显式数据根的离线备份、独立验证、迁移与只读恢复预演。"""
+"""显式数据根的离线备份、独立验证、迁移、只读恢复预演与只读保留期审计。"""
 
 from __future__ import annotations
 
@@ -11,10 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from . import event_schema
-from .backup import BackupError, BackupRefused, create_backup, verify_backup
+from .backup import (
+    BackupError,
+    BackupRefused,
+    cleanup_plan,
+    create_backup,
+    verify_backup,
+)
+from .budget import SETTLED
 from .credentials import redact
 from .data_state import AdmissionRefused
 from .errors import TianshuError
+from .jobs import TERMINAL_JOB_STATES
 from .migrate import SCHEMA_VERSION
 from .migrate import migrate as run_migration
 from .pathkeys import overlap_key
@@ -24,7 +32,9 @@ from .tasks import NON_TERMINAL_STATES, RUN_STATES
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser("data", help="数据维护：离线备份 / 验证 / 迁移 / 只读恢复预演")
+    parser = subparsers.add_parser(
+        "data", help="数据维护：离线备份 / 验证 / 迁移 / 只读恢复预演 / 只读保留期审计",
+    )
     commands = parser.add_subparsers(dest="data_action", required=True)
     backup = commands.add_parser("backup", help="所有天枢连接关闭后，生成完整备份")
     backup.add_argument("--data-root", type=Path, required=True)
@@ -41,6 +51,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     migration.add_argument("--data-root", type=Path, required=True)
     migration.add_argument("--backup", type=Path, required=True)
     migration.add_argument("--json", action="store_true")
+    audit = commands.add_parser(
+        "retention-audit",
+        help="只读保留期审计：逐表行数/年龄/终态占比/增长投影/cleanup_plan 现状；零删除",
+    )
+    audit.add_argument("--data-root", type=Path, required=True)
+    audit.add_argument("--json", action="store_true")
 
 
 def _backup(data_root: Path, dest: Path) -> dict[str, Any]:
@@ -280,6 +296,390 @@ def _restore_plan(backup: Path, data_root: Path) -> dict[str, Any]:
     return report
 
 
+class RetentionAuditRefused(TianshuError):
+    """保留期审计拒绝；只读审计不做任何补救，拒绝即如实报告。"""
+
+
+# CONTRACT-W15 §2 的逐面保护角色：如实展示每张表为什么不在候选集里。
+# 表/列名与角色全是模块级封闭常量；SQL 全部为静态字面量，值一律参数绑定。
+# ts = 毫秒时间戳列（None = 不报年龄）；state = 状态列（None = 不报直方图）。
+_AUDIT_TABLES: dict[str, dict[str, Any]] = {
+    "events": {"ts": "ts", "state": None, "protection": "红线 1 append-only，禁删"},
+    "event_versions": {"ts": None, "state": None, "protection": "与 events 同事务写入的版本旁表"},
+    "runs": {"ts": "created_at", "state": "state", "protection": "非终态行禁删（红线 2/6）"},
+    "approvals": {
+        "ts": "created_at", "state": "state",
+        "protection": "一次性审批凭据（digest 绑定）",
+    },
+    "dispatches": {
+        "ts": "created_at", "state": "state",
+        "protection": "红线 2/6 恢复语义（boundary_protocol/intent_seq"
+        " 是 none_applied 判定组成部分）",
+    },
+    "dispatch_requests": {
+        "ts": "created_at", "state": "state",
+        "protection": "终态脱敏（args_redacted）；审计证据（digest/reason/rule_id）",
+    },
+    "dispatch_meta": {"ts": None, "state": None, "protection": "派发元数据"},
+    "summary_materials": {"ts": "created_at", "state": None, "protection": "回放三道校验依赖"},
+    "summary_sources": {"ts": None, "state": None, "protection": "回放依赖（内容寻址共享）"},
+    "summary_versions": {
+        "ts": "created_at", "state": "status",
+        "protection": "BEFORE DELETE 触发器 + 回放三道校验依赖",
+    },
+    "budget_accounts": {"ts": None, "state": None, "protection": "计费事实（聚合行）"},
+    "budget_limits": {"ts": None, "state": None, "protection": "计费事实"},
+    "budget_counters": {
+        "ts": None, "state": None,
+        "protection": "计费事实（reserved/settled 计数）",
+    },
+    "budget_reservations": {
+        "ts": "created_at", "state": "state",
+        "protection": "known 三态不合并（红线 5/11），未决行禁删",
+    },
+    "jobs": {
+        "ts": "created_at", "state": "state",
+        "protection": "outcome/output_ref 与 Receipt 关联",
+    },
+    "leases": {
+        "ts": "acquired_at", "state": None,
+        "protection": "release 即删行自清理（无增长问题）",
+    },
+    "memories": {
+        "ts": "created_at", "state": "status",
+        "protection": "用户数据；擦除只走显式 memory.erase",
+    },
+    "memory_meta": {"ts": None, "state": None, "protection": "记忆投影元数据"},
+    "memory_vectors": {"ts": None, "state": None, "protection": "派生索引（rebuild 可重建）"},
+    "content_objects": {
+        "ts": "created_at", "state": None,
+        "protection": "引用计数保护（cleanup_plan）",
+    },
+    "content_grants": {
+        "ts": "created_at", "state": None, "protection": "按任务授权",
+    },
+    "migration_log": {
+        "ts": "applied_at", "state": None,
+        "protection": "append-only 迁移审计（行数=版本数）",
+    },
+    "schedules": {
+        "ts": "created_at", "state": None,
+        "protection": "W5 调度定义（enabled 由 CLI 管理）",
+    },
+}
+
+# 增长投影只对 W15 §3.2 点名的增长面 + runs/summary_versions 两个记录面做。
+_AUDIT_GROWTH_TABLES = (
+    "events", "dispatches", "dispatch_requests", "budget_reservations",
+    "runs", "summary_versions",
+)
+_FTS_SHADOW_SUFFIXES = {"data", "idx", "docsize", "config"}
+
+
+def _audit_basics(conn: sqlite3.Connection, name: str) -> tuple[int, int | None, int | None]:
+    """COUNT + MIN/MAX 时间列；SQL 全部字面量，标识符不进任何拼接。"""
+    if name == "events":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi FROM events",
+        ).fetchone()
+    elif name == "event_versions":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM event_versions",
+        ).fetchone()
+    elif name == "runs":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo, MAX(created_at) AS hi FROM runs",
+        ).fetchone()
+    elif name == "approvals":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo, MAX(created_at) AS hi FROM approvals",
+        ).fetchone()
+    elif name == "dispatches":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM dispatches",
+        ).fetchone()
+    elif name == "dispatch_requests":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM dispatch_requests",
+        ).fetchone()
+    elif name == "dispatch_meta":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM dispatch_meta",
+        ).fetchone()
+    elif name == "summary_materials":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM summary_materials",
+        ).fetchone()
+    elif name == "summary_sources":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM summary_sources",
+        ).fetchone()
+    elif name == "summary_versions":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM summary_versions",
+        ).fetchone()
+    elif name == "budget_accounts":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM budget_accounts",
+        ).fetchone()
+    elif name == "budget_limits":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM budget_limits",
+        ).fetchone()
+    elif name == "budget_counters":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM budget_counters",
+        ).fetchone()
+    elif name == "budget_reservations":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM budget_reservations",
+        ).fetchone()
+    elif name == "jobs":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM jobs",
+        ).fetchone()
+    elif name == "leases":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(acquired_at) AS lo,"
+            " MAX(acquired_at) AS hi FROM leases",
+        ).fetchone()
+    elif name == "memories":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM memories",
+        ).fetchone()
+    elif name == "memory_meta":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM memory_meta",
+        ).fetchone()
+    elif name == "memory_vectors":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM memory_vectors",
+        ).fetchone()
+    elif name == "content_objects":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM content_objects",
+        ).fetchone()
+    elif name == "content_grants":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM content_grants",
+        ).fetchone()
+    elif name == "migration_log":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(applied_at) AS lo,"
+            " MAX(applied_at) AS hi FROM migration_log",
+        ).fetchone()
+    elif name == "schedules":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM schedules",
+        ).fetchone()
+    else:
+        raise RetentionAuditRefused("未登记的表没有审计 SQL：" + name)
+    return int(row["n"]), row["lo"], row["hi"]
+
+
+def _audit_histogram(conn: sqlite3.Connection, name: str) -> dict[str, int] | None:
+    """状态直方图（单行字面量 SQL）；未登记状态列的表返回 None。"""
+    hist: dict[str, int] | None = None
+    if name == "runs":
+        rows = conn.execute("SELECT state AS s, COUNT(*) AS n FROM runs GROUP BY state").fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "approvals":
+        rows = conn.execute(
+            "SELECT state AS s, COUNT(*) AS n FROM approvals GROUP BY state",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "dispatches":
+        rows = conn.execute(
+            "SELECT state AS s, COUNT(*) AS n FROM dispatches GROUP BY state",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "dispatch_requests":
+        rows = conn.execute(
+            "SELECT state AS s, COUNT(*) AS n FROM dispatch_requests GROUP BY state",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "summary_versions":
+        rows = conn.execute(
+            "SELECT status AS s, COUNT(*) AS n FROM summary_versions GROUP BY status",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "budget_reservations":
+        rows = conn.execute(
+            "SELECT state AS s, COUNT(*) AS n FROM budget_reservations GROUP BY state",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "jobs":
+        rows = conn.execute("SELECT state AS s, COUNT(*) AS n FROM jobs GROUP BY state").fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    elif name == "memories":
+        rows = conn.execute(
+            "SELECT status AS s, COUNT(*) AS n FROM memories GROUP BY status",
+        ).fetchall()
+        hist = {r["s"]: r["n"] for r in rows}
+    return hist
+
+
+def _connect_audit_readonly(db: Path) -> sqlite3.Connection:
+    # 只读 URI 连接：SQLite 在连接层拒绝一切写语句；不加维护锁、不阻断写入。
+    conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _absent_row(spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "present": False, "row_count": None, "oldest_age_days": None,
+        "newest_age_days": None, "state_histogram": None,
+        "protection": spec["protection"],
+    }
+
+
+def _age_days(ts: int, now_ms: int) -> float:
+    return round((now_ms - ts) / 86_400_000, 2)
+
+
+def _audit_table(
+    conn: sqlite3.Connection, name: str, now_ms: int,
+) -> tuple[dict[str, Any], int, int | None, int | None]:
+    """返回（报告行, 行数, 最老/最新毫秒时间戳）；时间戳供增长投影复用。"""
+    n, lo, hi = _audit_basics(conn, name)
+    out: dict[str, Any] = {}
+    out["present"] = True
+    out["row_count"] = n
+    out["oldest_age_days"] = None
+    out["newest_age_days"] = None
+    out["state_histogram"] = None
+    out["protection"] = _AUDIT_TABLES[name]["protection"]
+    if lo is not None:
+        out["oldest_age_days"] = _age_days(int(lo), now_ms)
+    if hi is not None:
+        out["newest_age_days"] = _age_days(int(hi), now_ms)
+    if n:
+        out["state_histogram"] = _audit_histogram(conn, name)
+    return out, n, lo, hi
+
+
+def _audit_growth(
+    basics: dict[str, tuple[int, int | None, int | None]],
+) -> dict[str, Any]:
+    """增长投影：按表内历史平均速率直线外推；跨度不足或行数不足则不外推。"""
+    out: dict[str, Any] = {}
+    for name in _AUDIT_GROWTH_TABLES:
+        entry: dict[str, Any] = {}
+        entry["rows_per_day"] = None
+        entry["projection_30d"] = None
+        entry["projection_90d"] = None
+        n, lo, hi = basics.get(name, (0, None, None))
+        # 观测窗口不足 1 天不外推：几毫秒的跨度会外推出垃圾速率。
+        if n and lo is not None and hi is not None and (hi - lo) >= 86_400_000:
+            span_days = (hi - lo) / 86_400_000
+            rate = n / span_days
+            entry["rows_per_day"] = round(rate, 2)
+            entry["projection_30d"] = int(n + rate * 30)
+            entry["projection_90d"] = int(n + rate * 90)
+        out[name] = entry
+    return out
+
+
+def _audit_candidates(conn: sqlite3.Connection, report_tables: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    out["criteria_note"] = (
+        "候选测量≠可删判定；完整标准见 CONTRACT-W15 §3.3："
+        "终态 + Receipt 对账通过 + 无恢复依赖 + 不在触发器/红线保护集"
+        " +（若做归档）归档校验通过。"
+    )
+    out["jobs_terminal_rows"] = None
+    out["budget_reservations_settled_known_rows"] = None
+    out["non_terminal_runs"] = None
+    jobs = report_tables.get("jobs")
+    if jobs and jobs.get("present") and jobs.get("state_histogram") is not None:
+        hist = jobs["state_histogram"]
+        out["jobs_terminal_rows"] = sum(hist.get(s, 0) for s in TERMINAL_JOB_STATES)
+    budget = report_tables.get("budget_reservations")
+    if budget and budget.get("present"):
+        rows = conn.execute(
+            "SELECT state AS s, known AS k, COUNT(*) AS n"
+            " FROM budget_reservations GROUP BY state, known",
+        ).fetchall()
+        out["budget_reservations_settled_known_rows"] = sum(
+            r["n"] for r in rows if r["s"] == SETTLED and r["k"] == 1
+        )
+    runs = report_tables.get("runs")
+    if runs and runs.get("present") and runs.get("state_histogram") is not None:
+        hist = runs["state_histogram"]
+        out["non_terminal_runs"] = sum(hist.get(s, 0) for s in NON_TERMINAL_STATES)
+    return out
+
+
+def _retention_audit(data_root: Path) -> dict[str, Any]:
+    root = data_root.resolve()
+    db = root / "events.db"
+    # 与 backup 同款前置校验：不能把不存在的根变成新实例。
+    if not root.is_dir() or not db.is_file():
+        raise RetentionAuditRefused("数据根不存在、不是目录或没有 events.db：" + str(root))
+    if db.resolve().parent != root:
+        raise RetentionAuditRefused("数据根的 events.db 指向根外，不支持此布局：" + str(db))
+    now_ms = int(time.time() * 1000)
+    try:
+        conn = _connect_audit_readonly(db)
+    except sqlite3.Error as exc:
+        raise RetentionAuditRefused("无法以只读方式打开 events.db：" + str(exc)) from exc
+    try:
+        tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            ).fetchall()
+        }
+        known = {t for t in tables if not t.startswith("sqlite_")}
+        shadow = {
+            t for t in known - set(_AUDIT_TABLES)
+            if "_" in t and t.rsplit("_", 1)[0] in _AUDIT_TABLES
+            and t.rsplit("_", 1)[1] in _FTS_SHADOW_SUFFIXES
+        }
+        unknown = sorted(known - set(_AUDIT_TABLES) - shadow)
+        report_tables: dict[str, Any] = {}
+        basics: dict[str, tuple[int, int | None, int | None]] = {}
+        for name in _AUDIT_TABLES:
+            if name in tables:
+                row_out, n, lo, hi = _audit_table(conn, name, now_ms)
+                report_tables[name] = row_out
+                basics[name] = (n, lo, hi)
+            else:
+                report_tables[name] = _absent_row(_AUDIT_TABLES[name])
+        report = {}
+        report["operation"] = "retention-audit"
+        report["ok"] = True
+        report["data_root"] = str(root)
+        report["schema_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
+        report["tables"] = report_tables
+        report["unknown_tables"] = unknown
+        report["growth"] = _audit_growth(basics)
+        report["candidates"] = _audit_candidates(conn, report_tables)
+        report["notes"] = [
+            "只读点读快照：mode=ro 连接，不加锁、不阻断写入，零删除。",
+            "增长投影按表内历史平均速率直线外推（观测窗口 ≥1 天才外推），不是承诺。",
+            "候选测量回答『有多少行满足终态条件』；可删判定还需 Receipt 对账"
+            "与恢复依赖核验（CONTRACT-W15 §3.3）。",
+        ]
+    finally:
+        conn.close()
+    try:
+        report["cleanup_plan"] = cleanup_plan(root)
+    except (BackupError, TianshuError, OSError) as exc:
+        report["cleanup_plan"] = {"dry_run": True, "error": "无法生成候选清单：" + str(exc)}
+    return report
+
+
 def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
     if as_json:
         print(redact(json.dumps(report, ensure_ascii=False, indent=2)))
@@ -291,6 +691,31 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
         print("备份校验通过" if report["ok"] else "备份校验失败")
     elif operation == "migrate":
         print(redact(report["message"] if report["ok"] else report["error"]))
+    elif operation == "retention-audit":
+        print("保留期审计（只读快照，零删除）：" + str(report["data_root"]))
+        print("结构版本：" + str(report["schema_version"]))
+        for name in _AUDIT_GROWTH_TABLES:
+            t = report["tables"].get(name, {})
+            g = report["growth"][name]
+            count = t.get("row_count")
+            line = str(name) + "：" + (str(count) + " 行" if count is not None else "缺表")
+            if g["rows_per_day"] is not None:
+                line += "，≈" + str(g["rows_per_day"]) + " 行/天"
+                line += "，30 天投影 ≈" + str(g["projection_30d"])
+            print(line)
+        c = report["candidates"]
+        print("jobs 终态行（候选测量）：" + str(c["jobs_terminal_rows"]))
+        print("budget_reservations settled+known（候选测量）："
+              + str(c["budget_reservations_settled_known_rows"]))
+        print("非终态 Run（禁删）：" + str(c["non_terminal_runs"]))
+        cp = report["cleanup_plan"]
+        if "error" in cp:
+            print("cleanup_plan：" + cp["error"])
+        else:
+            print("cleanup_plan 候选 blob：" + str(len(cp["candidates"]))
+                  + "（受保护 " + str(cp["protected_count"]) + "）")
+        if report["unknown_tables"]:
+            print("未识别表：" + ", ".join(report["unknown_tables"]))
     else:
         print("恢复预演通过，仍需人工复核；未执行恢复" if report["ok"] else "恢复预演未通过")
         print(f"备份：{report['backup']}")
@@ -342,6 +767,9 @@ def run(args: argparse.Namespace) -> int:
                 **migration.to_dict(), "message": migration.to_text(),
             }
             code = 0
+    elif args.data_action == "retention-audit":
+        report = _retention_audit(args.data_root)
+        code = 0
     else:
         report = _restore_plan(args.backup, args.data_root)
         code = 3 if report["ok"] else 2

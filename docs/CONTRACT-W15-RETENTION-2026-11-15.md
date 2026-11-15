@@ -48,3 +48,11 @@
 - **#161（restore T1）**：占用 `maintenance.py` / `events.py` / `data_cli.py`——本片 v1 测量命令的实现落点，等其落地。
 - **W5（调度器，本轮并行）**：若落地，「定时清扫」是其潜在调用方，但清扫本体在本片拍板前不存在——无依赖关系。
 - **#140/#141（文档对账）**：与 KNOWLEDGE/PRD 相交，合并时按 modify-modify 并集法处理（W 系列合并轮同法）。
+- **v1 审计命令（本片 §5）**：已在 `feat/retention-audit` 交付并单独 docs(contract) 记录；W5 调度器是未来「定时清扫」的潜在调用方，清扫本体在三项拍板前不存在。
+
+## 5. v1 落地记录（2026-11-15，docs(contract) 单独提交）
+
+- **原方案（§3.3）→ 落地**：`data_cli` 子命令 `retention-audit`（`tianshu data retention-audit --data-root`）按本片划界交付——逐表面测量、增长投影、候选测量、cleanup_plan 现状，**零删除不变量成立**（mode=ro 连接 + 测试钉住 events.db 字节哈希不变）。实现与测试在 `feat(data)` commit，不夹带本文件以外的契约陈述。
+- **拍板流程变更**：三项拍板（§3.4）由维护者 2026-11-15 委托定为「**先测量后拍板**」——先以审计命令取得逐表面实测数字，再逐项拍板；本片不因此改写 §3.4 的「不拍板就不做」边界，三项数值/红线修订仍留维护者。
+- **实现中的边界澄清**（不改变上文契约）：增长投影仅在观测窗口 ≥1 天时外推（不足则如实返回 null）；候选测量的终态判定只用代码权威常量（jobs `TERMINAL_JOB_STATES`、runs `NON_TERMINAL_STATES`、budget `SETTLED`+known）在 Python 侧解释，dispatch 面只报直方图不猜终态语义——与 §1.2/§1.3 的「三态不合并」一致。
+- **影响哪些代码**：`src/tianshu/data_cli.py`（只读审计路径）、`tests/test_data_cli.py`（+4 条）；schema、RPC、事件、UI 零变更。
