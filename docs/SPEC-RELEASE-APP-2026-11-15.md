@@ -3,7 +3,7 @@
 > 状态：**L1 本机实现候选；尚未完成四目标与独立验收，不得据此宣称 G3 正式发布。**
 >
 > 起草基线：`main @ 595be35c037cef35da7f166a5db2a624f2b733a9`。候选现已普通合并当前
-> `main @ 702ba40283faf031acbbd6760d27e630925dd61c`；任何基线或旧候选 CI 都不是新
+> `main @ e242257984d2ebd1443e60c81e7d2c97b287122a`；任何基线或旧候选 CI 都不是新
 > 发行候选提交的绿色证据。
 >
 > 前端 PR #155 已合并为 `d37a84c490b7e6588b4e122e5591ccb989530b8e`，当前分支的
@@ -20,13 +20,16 @@
 > 做 8 次、约 1.27 秒总退避；其他权限错误立即失败，持续占用在界满后仍报错。第二读者
 > 对 `5873720/tree f16f930` 的独立复审为 `PARTIAL`：独立构建、验签、安装、普通自有
 > Host 生命周期和 W3/W5 兼容通过，但附着既有 Host 后显式退出只关闭桌面壳，遗留
-> Host/Daemon。当前修复统一 owned/attached 退出的鉴权 shutdown 与有界清理路径；新
-> 普通合并提交 `3f5e2b1`（tree `2ab00890`）的本机门为 Python 3538P/12S、UI 124
-> tests、Rust 26 tests，静态门全 0；精确 PR run `43747490300` 六 job 全绿，GitHub
-> 合成 merge `ec106a89` 与 PR head 的 tree 逐字节相同。最终 docs-only SHA 仍须重新
-> 绑定云 CI；精确 macos-arm64 产物、安装态 attach→quit 探针和第二读者复审另绑，
-> 不得继承 `5873720`、`3f5e2b1` 或更早对象的绿色。状态仍是 L1 候选，不得合并为已验收
-> 发行版。
+> Host/Daemon。后续修复统一 owned/attached 退出的鉴权 shutdown 与有界清理路径；第二
+> 读者对 `7b4cc7a/tree 251537b` 的复审仍为 **`PARTIAL`**，并新增一条 HIGH：
+> `host.lock` 的“旧锁消失、新锁尚未发布”空窗中，退出路径会误杀新 Host 已接管的
+> Daemon。修复提交 `0942ee5` 在有界接管窗口内持续观察，清理前进入 Host 元数据跨进程
+> 守卫、重新确认无 Host，并只停止锁 SHA 与退出前快照完全一致的 Daemon；新 Host 或
+> 新 Daemon 实例出现时返回保留。真实竞态回归旧实现红、修复后绿；修复提交上的完整
+> Python 本机门为 3543P/12S，Rust 27 tests，lock、Ruff 与 diff check 通过。最终
+> docs-only SHA 仍须重新绑定云 CI；精确 macos-arm64 产物、锁空窗与普通
+> attach→quit 探针、第二读者 PASS 另绑，不得继承 `5873720`、`7b4cc7a` 或任何更早
+> 对象的绿色。状态仍是 L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -86,7 +89,7 @@ release workflow；macOS arm64 已做本机真实安装生命周期。它们仍�
 | 能力 | 当前事实 | 本规格完成后 | 仍不能证明 |
 |---|---|---|---|
 | UI | React/Vite SPA；PR #155 的预算/子任务前端已合并且与当前 `ui/` 树一致；Host 在回环端口提供 `ui/dist` | 同一 `ui/dist` 被 Tauri WebView 加载，冷启动等待事件循环后再导航 | 所有 GPU/WebView 版本一致 |
-| Host | Python 单实例、监督 Daemon、回环 HTTP/SSE、token | Tauri 启动/附着同一 Host，并管理退出 | Rust Host 已替换 Python Host |
+| Host | Python 单实例、监督 Daemon、回环 HTTP/SSE、token | Tauri 启动/附着同一 Host，并管理退出；清理前在元数据守卫内复核 Host 与 Daemon 实例 | Rust Host 已替换 Python Host |
 | 安装 | 当前需 clone + `uv sync` | 未签名安装脚本/安装器携带运行时 | 所有用户机器无 SmartScreen/Gatekeeper 差异 |
 | 更新 | 无 tag workflow、无更新清单 | 版本清单、覆盖升级、失败回退 | Tauri 自动更新已交付 |
 | 平台 | macOS arm64 本机；三平台 CI | 四目标产物及明确证据矩阵 | 未取得的用户设备实测 |
@@ -151,7 +154,10 @@ Tianshu Agent.app / TianshuAgent.exe
 - 托盘或 macOS `Cmd+Q`：读取已核验的 Host 元数据，直接向 token 保护的 `POST /shutdown`
   发出请求，有界等待 Host/Daemon 收尾；失败保留进程和日志，报出 PID/数据根，不把窗口
   关闭当作进程已退出。若 Host 已崩溃但 Daemon 仍存活，退出门必须通过同包 Python 请求
-  Daemon 关闭，并等锁消失后才允许壳退出。
+  Daemon 关闭，并等锁消失后才允许壳退出。旧 Host 锁消失后须覆盖新 Host 发布新锁的
+  接管窗口；停止 Daemon 前进入 Host 元数据跨进程守卫，确认仍无 Host，并且 Daemon 锁
+  SHA 与退出前快照完全相同。新 Host 已发布或 Daemon 已换实例时必须保留，不得因一次
+  旧锁缺失就清理。
 - 系统注销/关机：壳先请求优雅停止；超出期限只能终止自身拥有的子进程，并写明终止不等于
   业务副作用已回滚。
 - 壳崩溃：不删除 `host.lock`、不发送伪造结果；下次启动按现有 Host/Daemon 存活探测接管或
@@ -314,6 +320,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   启动失败结构体。
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
+- `旧 Host 退出 → host.lock 空窗 → 新 Host 发布 → 复用 Daemon` 的真实进程回归：
+  退出探针不得停止新 Host 或其 Daemon；同时覆盖 Host 已发布、Daemon 实例已变更两个
+  保留分支。普通“新锁已经存在”的探针不能替代这个窗口。
 - Tauri `setup` 冷启动回归必须同时证明 Host 身份可读且 WebView 实际渲染目标 UI；
   只有窗口存在、进程存活或 `/health=200` 不能证明用户看得到页面。
 - token 不出现在 argv、URL、Tauri log、release manifest。
@@ -340,6 +349,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 15. 四目标 runtime smoke 非 `pass` 或 `host_target` 不匹配 → assembler 必须红。
 16. 在 Tauri `setup` 内等待 Host 后直接 `navigate` → 真实 Release WebView 冷启动白屏；
     修复后必须显示加载页并进入“已连接”，不能只用窗口/进程断言。
+17. 在 `host.lock` 空窗后让新 Host 发布并复用旧 Daemon → 旧退出路径若误杀新实例必须
+    红；修复后必须以元数据守卫内的二次确认和 Daemon 锁 SHA 保留新实例。
 
 ### 9.4 平台证据矩阵
 
@@ -372,7 +383,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 本轮候选当前只可宣称：
 
 - macOS arm64：真实 release-mode 构建、安装、WebView 连接、关窗保活、重开、显式退出、
-  卸载保留数据与显式清理临时数据；篡改 bundle 字节后被启动校验拒绝。
+  卸载保留数据与显式清理临时数据；篡改 bundle 字节后被启动校验拒绝。`0942ee5`
+  已提供锁空窗竞态的作者侧红绿回归；最终安装产品的锁空窗与普通 attach→quit 仍需
+  在精确 docs-only SHA 上复验。
 - 前端 PR #155 已完整进入当前发行分支；本机 16 文件 124 tests、typecheck/build 与
   `ui/dist` 对账通过。`58d0bdb` 的安装态冷启动实际显示 Host 提供的同一前端，不再把
   “进程起来但页面白屏”记成 GUI 通过。

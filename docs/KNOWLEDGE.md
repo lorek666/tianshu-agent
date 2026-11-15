@@ -26,22 +26,21 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
-- **当前远端 main 为 `702ba40`（2026-11-15）**：W3 有界状态响应、W5 调度器、
-  W3/W5/W15 文档收口、W15 v1 只读审计（PR #169）和 #141 全仓文档对账已正常
-  合并。发布分支以普通 merge 提交 `3f5e2b1`（tree `2ab00890`）接入该 main；
-  `src/tianshu/data_cli.py` 的血统直接来自 main，`KNOWLEDGE.md` 两处同锚追加冲突
-  保留双方事实。独立第二读者对发布候选 `5873720` 给出
-  `PARTIAL`：发布构建、验签、安装回滚、W3/W5 兼容和大部分生命周期通过，但附着
-  既有 Host 后显式退出只关闭桌面壳，Host/Daemon 与运行期锁继续存活。当前修复把
-  附着退出接到同一 token 鉴权 `/shutdown`，按 PID 有界等待原 Host 消失，并在 Host
-  退出后只清理未变更的 Daemon 实例；Rust 真 HTTP 红测已转绿。同步后的本机门为
-  Python **3538 passed / 12 skipped（697.14s）**、UI 16 文件 124 tests、Rust
-  **26 tests**，lock/Ruff/typecheck/build/dist/Cargo fmt/clippy/actionlint/shellcheck/
-  diff 全 0。精确 PR run `43747490300` 绑定 PR head `3f5e2b1`，其中 GitHub 合成
-  merge `ec106a89` 的 parents 为 `702ba40 + 3f5e2b1` 且 tree 与 head 相同；六 job
-  全绿：Ubuntu 3518P32S、macOS 3538P12S、Windows shard 0 1756P19S、shard 1
-  1738P37S（汇总 3494P56S / 3550 nodes）、UI 124 tests。最终 docs-only SHA 仍须
-  各自重跑云 CI；精确 macos-arm64 产物、安装态 attach→quit 和第二读者 PASS 仍须另绑。
+- **当前远端 main 为 `e242257`（2026-11-16）**：#140 文档对账经正常保护合并；
+  该 main 在 `702ba40` 之后只改文档、`.gitignore` 与 `AGENTS.md`。发布分支已普通
+  merge 到该 main；独立第二读者对 `7b4cc7a/tree 251537b` 的结论是
+  **`PARTIAL`，不可合并**。它确认发布构建、验签、安装回滚、W3/W5 兼容、普通
+  自有 Host 生命周期和先前 attach→quit 修复均通过，但新构造的 `host.lock` 发布空窗
+  竞态命中 **HIGH**：旧 Host 锁消失后、新 Host 发布新锁前，退出路径曾误杀新 Host
+  复用的 Daemon。修复提交 `0942ee5` 在旧锁消失后观察有界接管窗口，清理前重新确认
+  没有 Host，并只在 Host 元数据跨进程守卫内停止锁 SHA 仍与退出前快照完全一致的
+  Daemon；新 Host 已发布或 Daemon 已换实例时保留现场。新增真实竞态回归在旧实现上
+  确定性红、修复后绿；Rust 现为 **27 tests**，相关 Python Host/M5 测试为
+  **26 passed / 1 skipped**。修复提交上的完整 Python 本机门为
+  **3543 passed / 12 skipped（662.96s）**，lock 与全仓 Ruff 通过。上述数字是作者侧
+  修复前证据；最终 docs-only 提交仍须重跑适用门禁、绑定自己的云 CI，重建
+  macos-arm64 Tauri 安装包并复跑锁空窗竞态与普通 attach→quit；最终第二读者必须
+  对精确 SHA/tree 重新给出 PASS，旧 `7b4cc7a` 的 `PARTIAL` 不得被本次修复声明覆盖。
 - **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
   `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
   分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
@@ -93,7 +92,7 @@
 
 - **W5 调度器已并入 main `c637b52`（2026-11-15，PR #167，CI run 43724954970 六项全绿）**：基线 main@0c5bb71；本机门禁 lock/ruff 0、全量 3408P/11S（686.57s）= 基线 3395P/11S + 13 条新调度器测试；负控 NC1/NC2 实跑红→还原留证（attempt1 Windows shard0 红 = 新测试终态谓词真缺陷，已修）。v1 边界如实：interval 调度、只走 CLI、无 cron/无 RPC/无 UI/零新事件族（C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md）。
 
-- **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；#141 已并入 main `702ba40`，#140 仍 OPEN**；本轮七 PR 与 #141 在 KNOWLEDGE/PRD 相交，合并按同法处理。
+- **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；#141 已并入 main `702ba40`，#140 已由 `e242257` 正常保护合并**；本轮七 PR 与两份文档对账在 KNOWLEDGE/PRD 相交，合并按同法处理。
 - **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
   `0f8649c` 的安装态 App 再次启动时，Host 与 Daemon 已实际启动且 `/health` 可用，
   Tauri 壳却偶发显示“Host 元数据不合法”并进入失败页。根因是 Python Host 用
@@ -576,6 +575,13 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **“锁曾消失”不能授权清理，清理前必须在同一互斥下重新证明无人接管**：Host 发布
+  `host.lock` 是旧文件消失、新文件原子出现之间的可观察空窗。退出路径若只在旧 Host
+  消失后读取一次 Daemon 锁，就会把新 Host 已接管的同一 Daemon 当成旧实例误杀。
+  条件删除必须先进入 Host 元数据跨进程守卫，确认仍无 Host，再把 Daemon 当前锁 SHA
+  与退出前快照逐字节比较；新 Host 或新 Daemon 实例一出现就返回“保留”并释放守卫，
+  等待 Daemon 退出也不能长期占用守卫。回归必须真实制造 `旧 Host 退出 → 空窗 →
+  新 Host 发布 → 复用 Daemon` 的顺序，普通“新锁已经存在”的保护不能覆盖该窗口。
 - **Tauri `setup` 不是事件循环中的普通异步上下文**：`setup` 会在事件循环启动前执行，
   Host 冷启动又可能同步阻塞；此时直接 `WebviewWindow::navigate` 可能只投递消息而没有
   消费者，留下“Host 健康、窗口存在、页面全白”的假通过。导航和失败页写入应通过
@@ -883,6 +889,19 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-16 · PR #162 修复 host.lock 空窗接管误杀并同步最新 main**：独立第二读者
+  对 `7b4cc7a/tree 251537b` 维持 `PARTIAL`，新增复现证明旧 Host 锁消失后、新 Host
+  发布锁前存在 HIGH 竞态：桌面退出会误杀新 Host 已复用的 Daemon。修复提交
+  `0942ee5` 增加有界接管窗口；清理前进入 Host 元数据跨进程守卫并重新确认无 Host，
+  只停止锁 SHA 与退出前快照相同的 Daemon，新 Host 返回 3、Daemon 换实例返回 4，
+  均保留现场。三个真实分支测试与两条真实 Daemon/M5 集成测试覆盖“无 Host 可清理、
+  新 Host 保留、实例变更保留”；真实竞态回归在旧实现上为 `Ok(())` 误通过、修复后
+  绿。修复提交上的本机门为完整 Python **3543P12S/662.96s**、相关 Host/M5
+  **26P1S**、Rust **27 tests**，lock、Ruff、`git diff --check` 均 0。之后普通 merge
+  最新 `main@e242257`，唯一冲突 `KNOWLEDGE.md` 以行多重集保留原冲突区块 60/60 行
+  和分支四条 PR #162 日志，无冲突标记。该合并后只新增本条 tracked 文档对账；最终
+  docs-only SHA 的精确 CI、Tauri 安装包、锁空窗/普通 attach→quit 探针与新的独立
+  PASS 尚未产生，因此 PR 保持未合并，release workflow 不启动。
 - **2026-11-15 · PR #162 首轮 CI 红定位与本机重门**：`d26ad98` 的精确 run
   `43681913168` 保留为 Ubuntu 单红：测试在 Linux 调用仅支持 macOS/Windows 的宿主探测，
   未覆盖目标拒绝逻辑；macOS、Windows 两分片、Windows 汇总与 UI 同时真实成功。只修测试
