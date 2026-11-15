@@ -6,10 +6,16 @@
 > `main @ 61f985e96ac4ce86aa9f77301d9c0df0f867e1df`；任何基线或旧候选 CI 都不是新
 > 发行候选提交的绿色证据。
 >
-> 当前精确作者候选为 `aa6b65f0d2e389180e9b6990ad02796b50acafe0`（tree
-> `b28d084d95f30044641eea2b85f1f923419c1086`）。该对象的 PR run
-> `43701648845` 六 job 与 macos-arm64 本机产物/GUI 生命周期已通过；独立第二读者复审
-> 仍未完成，因此状态仍是 L1 候选，不得合并为已验收发行版。
+> 前端 PR #155 已合并为 `d37a84c490b7e6588b4e122e5591ccb989530b8e`，当前分支的
+> `ui/` 树与该分支逐字节一致；桌面壳加载的是同一份 `ui/dist`，不存在待手工接入的
+> 第二套前端。旧候选 `aa6b65f` / `820a7cd` 的真实自有 Host 冷启动暴露了一个此前
+> 生命周期探针未覆盖的真实缺陷：Host、Daemon、`host.lock` 与 `/health` 均正常，但
+> Release WebView 稳定为白屏。产品修复提交为
+> `58d0bdb0c9648a870368c1aa7723c4fc0c450f8b`，把 `navigate` 和失败页 `eval` 排入
+> Tauri 事件循环。该提交的 macos-arm64 产物已重新通过校验、运行时烟测、篡改负控、
+> 全新安装、真实冷启动显示“已连接”、关窗保活、重开同一 Host 和 `Cmd+Q` 三层进程
+> 全退。文档证据提交及其精确 SHA CI、最终产物另行绑定；独立第二读者复审仍未完成，
+> 因此状态仍是 L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -68,7 +74,7 @@ release workflow；macOS arm64 已做本机真实安装生命周期。它们仍�
 
 | 能力 | 当前事实 | 本规格完成后 | 仍不能证明 |
 |---|---|---|---|
-| UI | React/Vite SPA；Host 在回环端口提供 `ui/dist` | 同一 `ui/dist` 被 Tauri WebView 加载 | 所有 GPU/WebView 版本一致 |
+| UI | React/Vite SPA；PR #155 的预算/子任务前端已合并且与当前 `ui/` 树一致；Host 在回环端口提供 `ui/dist` | 同一 `ui/dist` 被 Tauri WebView 加载，冷启动等待事件循环后再导航 | 所有 GPU/WebView 版本一致 |
 | Host | Python 单实例、监督 Daemon、回环 HTTP/SSE、token | Tauri 启动/附着同一 Host，并管理退出 | Rust Host 已替换 Python Host |
 | 安装 | 当前需 clone + `uv sync` | 未签名安装脚本/安装器携带运行时 | 所有用户机器无 SmartScreen/Gatekeeper 差异 |
 | 更新 | 无 tag workflow、无更新清单 | 版本清单、覆盖升级、失败回退 | Tauri 自动更新已交付 |
@@ -122,8 +128,9 @@ Tianshu Agent.app / TianshuAgent.exe
    字符串；默认监护 Daemon。
 4. 在有界期限内等待 Host `/health` 和 `host.lock` 同时可读；健康响应 PID、锁文件 PID
    和 token 保护的 `/session` 响应必须一致。只读取已有 Host 元数据，不在日志中打印 token。
-5. Tauri WebView 导航到 `host.lock` 中的 `url`。加载失败时显示结构化启动错误，不允许空白页
-   冒充可用。
+5. Tauri WebView 导航到 `host.lock` 中的 `url`。`setup` 在事件循环启动前执行，导航必须
+   排入运行时的主线程消息队列；不能在同步等待 Host 的 `setup` 内直接调用
+   `navigate`。加载失败时同样排队显示结构化启动错误，不允许空白页冒充可用。
 6. 已有同数据根的可兼容 Host 时，壳只打开窗口附着，不启动第二个 Daemon；版本不兼容时
    明确拒绝并给出退出旧实例的说明。
 
@@ -296,6 +303,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   启动失败结构体。
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
+- Tauri `setup` 冷启动回归必须同时证明 Host 身份可读且 WebView 实际渲染目标 UI；
+  只有窗口存在、进程存活或 `/health=200` 不能证明用户看得到页面。
 - token 不出现在 argv、URL、Tauri log、release manifest。
 
 ### 9.3 负控
@@ -318,6 +327,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 13. 归档或 NSIS payload 的完整 manifest 与 bundle 字节不一致 → verifier 必须红。
 14. Windows 只给合成 PE header 或合法 PE 外壳但没有可解析 NSIS payload → verifier 必须红。
 15. 四目标 runtime smoke 非 `pass` 或 `host_target` 不匹配 → assembler 必须红。
+16. 在 Tauri `setup` 内等待 Host 后直接 `navigate` → 真实 Release WebView 冷启动白屏；
+    修复后必须显示加载页并进入“已连接”，不能只用窗口/进程断言。
 
 ### 9.4 平台证据矩阵
 
@@ -351,6 +362,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 
 - macOS arm64：真实 release-mode 构建、安装、WebView 连接、关窗保活、重开、显式退出、
   卸载保留数据与显式清理临时数据；篡改 bundle 字节后被启动校验拒绝。
+- 前端 PR #155 已完整进入当前发行分支；本机 16 文件 124 tests、typecheck/build 与
+  `ui/dist` 对账通过。`58d0bdb` 的安装态冷启动实际显示 Host 提供的同一前端，不再把
+  “进程起来但页面白屏”记成 GUI 通过。
 - macOS x64、Windows x64、Windows arm64：代码与 workflow 已具备对应 target 构建入口，
   但用户设备、安装、升级、回退与系统警告仍为 `unknown`；后续原生 workflow 通过也只能
   记为 runner 证据。
@@ -422,9 +436,10 @@ pub fn verify_resource_manifest(
 - [ ] 对最终提交重跑 release manifest/build/install/verify 定向测试；未列文件、已列
   篡改、摘要、架构、tar 逃逸、短身份/归档 manifest 漂移和伪 NSIS payload 负控均绑定
   最终 SHA。`def12d27` 的上一轮结果只保留为其历史证据。
-- [ ] 对最终产物验证 Tauri 壳真实启动 bundled Python 与 Host/Daemon；真实 WebView
-  创建并完成脚本化任务，关窗后继续，LaunchServices 重开保留结果，Cmd+Q 无孤儿。
-  `def12d27` 的真实生命周期结果不自动继承到 rebase 后的新 SHA。
+- [x] 对 `58d0bdb` 的 macos-arm64 安装产物验证 Tauri 壳真实启动 bundled Python 与
+  Host/Daemon；冷启动 WebView 显示“已连接”，关窗后三层进程继续，LaunchServices
+  重开保持同一 Host，`Cmd+Q` 无孤儿。完整脚本化审批链仍须在最终 docs-only SHA 重建后
+  复验，不能把旧产物结果冒充新 SHA。
 - [ ] 对最终产物验证 macOS arm64 安装、Host 崩溃后退出、重装回退与卸载；数据保留
       和 purge 二次确认明确。
 - [ ] macOS x64、Windows x64、Windows arm64 的每项证据标为 `verified` / `runner-only` /

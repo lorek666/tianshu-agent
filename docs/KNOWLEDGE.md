@@ -31,6 +31,25 @@
   最新 `Content-Length` 正文完整性修复、T1 平台身份/锁/registry 与 release-app 的
   PR #162 修复记录。最终候选、独立复审、required checks、产物与发布工作流仍须绑定
   合并后的新对象重新取证，不能继承旧 head 的绿色。
+- **PR #155 前端已完整接入；真实冷启动白屏由 Tauri 导航时序修复（2026-11-15）**：
+  `feat/budget-subtask-ui` 的合并提交 `d37a84c` 已是当前分支祖先，当前 `ui/` 树与该
+  分支逐字节一致；PR run `43676855243` 的 Ubuntu/macOS/Windows 两分片/Windows
+  汇总/UI 六项全绿，当前 UI 为 16 文件 **124 tests**，typecheck、build 与
+  `ui/dist` 对账均通过。因此问题不在“前端分支未接入”，而在 `aa6b65f`/`820a7cd`
+  的真实 Release WebView：Host、Daemon、`host.lock` 和 `/health=200` 都正常，自有
+  Host 冷启动仍稳定白屏。Tauri `setup` 在事件循环启动前执行，旧代码同步等待 Host
+  后直接 `navigate`，该消息没有可处理的运行时事件循环。`58d0bdb` 把成功导航与失败页
+  `eval` 都排到 `run_on_main_thread`，其余 Host/安全/生命周期逻辑不变。真实安装态
+  macos-arm64 冷启动已显示“已连接”；HTTP 提供的 JS/CSS 与安装资源字节一致，
+  `index.html` 仅按设计注入 token。该提交的归档 SHA256 为
+  `4870e473c23d05e7d2b996a7837140794c31cdd4ba88425fe2025c4ac55cd24f`、
+  manifest SHA256 为
+  `37aa9fd8db453b5e1b7981f45b5d8affbcc14558db5334a274bccdcb5d026c81`；
+  runtime smoke 通过，篡改 `app/tianshu/host.py` 被精确拒绝；真实进程链
+  `49833 → 49838 → 49840` 在关窗、重开后保持不变，`Cmd+Q` 后三层全退且
+  `host.lock`/`daemon.lock`/`agent.sock` 消失。旧 `820a7cd` 的仅窗口/进程生命周期
+  结论不能替代页面内容证据；最终 docs-only SHA 仍须重建产物、跑精确 CI 并取得独立
+  第二读者 PASS。
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
 - **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
   `0f8649c` 的安装态 App 再次启动时，Host 与 Daemon 已实际启动且 `/health` 可用，
@@ -513,6 +532,11 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **Tauri `setup` 不是事件循环中的普通异步上下文**：`setup` 会在事件循环启动前执行，
+  Host 冷启动又可能同步阻塞；此时直接 `WebviewWindow::navigate` 可能只投递消息而没有
+  消费者，留下“Host 健康、窗口存在、页面全白”的假通过。导航和失败页写入应通过
+  `run_on_main_thread` 排入事实上的主线程事件队列。GUI 验收必须截取并检查真实页面内容；
+  只测窗口数、PID、端口或 `/health` 不能证明用户看见了 UI。
 - **跨进程共享的元数据文件必须原子发布**：Host 与 Tauri 壳没有共用 Python
   侧互斥；直接截断再写会让另一个进程把短暂中间态当成永久损坏。发布锁文件应写
   同目录临时文件、fsync 后原子替换，再 fsync 父目录；回归必须让外部读者停在
@@ -809,6 +833,23 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-15 · PR #155 前端核对与 Release WebView 冷启动白屏修复**：先刷新远端并
+  核对 PR/分支历史，确认 `feat/budget-subtask-ui` 已由 PR #155 合并为 `d37a84c`，
+  当前 `codex/release-app` 已包含其提交且 `ui/` 树逐字节相同；UI install/typecheck/
+  **124 tests**/build/dist 全绿，不是待接入分支。继续检查真实安装产物时发现
+  `aa6b65f`/`820a7cd` 的所有权 Host 冷启动会稳定显示纯白页，而 Host/Daemon、
+  `host.lock` 和 `/health` 都正常。根因是 Tauri `setup` 在事件循环前阻塞等待 Host
+  后直接 `navigate`；旧 GUI 探针只验证了窗口与进程，没有验证页面内容，因而漏报。
+  提交 `58d0bdb` 只把成功导航和启动错误渲染排入 `run_on_main_thread`，不改 Host、
+  授权、事件或生命周期语义。空闲重跑此前受 GUI 负载影响的 Rust 时序测试为 0.63s，
+  全套 Rust **24 tests**、fmt、clippy 与静态门通过；UI 再次 124 tests 通过。从
+  `58d0bdb` 重建的 macos-arm64 产物通过 verify/runtime smoke，篡改负控精确拒绝。
+  全新安装冷启动实际显示 React UI 和“已连接”，HTTP JS/CSS 与包内字节一致；
+  关窗后三层 PID 不变，重开恢复同一 Host，真实 `Cmd+Q` 后三层全退且三把运行期锁/
+  socket 清理。原件索引为 `.omc/artifacts/release-app-frontend-58d0bdb-2026-11-15/INDEX.sha256`
+  （SHA256 `1cc81d9e3cfe10e5dc0dfd8a9315de58237a8c3a4913ec909e8506e08c39adf6`）。
+  本条只完成作者侧修复与新产物证据；docs-only 最终 SHA、精确云 CI、四目标 workflow
+  和独立复审仍另绑，PR #162 保持未合并。
 - **2026-11-15 · PR #162 同步最新 main、真实 GUI 缺陷修复与目标模式收口**：
   fetch 后确认远端 main 已由 `0c5bb71` 前进到 `61f985e`；在保留
   `backup/codex-release-app-before-main61` 的同时普通合并为 `ca8f32d`，只发生
