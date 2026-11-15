@@ -26,7 +26,26 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **当前远端 main 为 `61f985e`（2026-11-15）**：恢复 B T1 平台基础经 PR #161
+  正常保护合并；`codex/release-app` 已普通合并该 main 为 `ca8f32d`。这次同步保留
+  最新 `Content-Length` 正文完整性修复、T1 平台身份/锁/registry 与 release-app 的
+  PR #162 修复记录。最终候选、独立复审、required checks、产物与发布工作流仍须绑定
+  合并后的新对象重新取证，不能继承旧 head 的绿色。
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
+- **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
+  `0f8649c` 的安装态 App 再次启动时，Host 与 Daemon 已实际启动且 `/health` 可用，
+  Tauri 壳却偶发显示“Host 元数据不合法”并进入失败页。根因是 Python Host 用
+  `Path.write_bytes()` 发布 `host.lock`：外部桌面壳不持有 Python 侧元数据互斥，
+  可能在旧文件已截断、新 JSON 尚未写完时读到半截内容。确定性探针用 spawn 子进程
+  发布、父进程绕过 Python 互斥直接读；原实现截断到 `{"pid` 后稳定得到
+  `JSONDecodeError`。`719de9a` 改用同目录临时文件、fsync、`os.replace` 与目录
+  fsync 原子发布，外部读者只能看到完整旧锁或完整新锁，回归为
+  `tests/test_host.py::test_host_metadata_publication_is_atomic_for_external_readers`
+  旧实现 exit 1、修复后 exit 0，Host 定向套件 58 passed / 1 skipped。该证据不等于
+  最终新 head 的真实产物已经复验。`0f8649c` 的受控 loopback 模型 GUI 链还分别证明了
+  拒绝审批不执行、批准后文件与 Receipt 闭合、等待审批时取消不执行；关窗后三层进程
+  继续、重开连接同一 Host、`Cmd+Q` 后 Host/Daemon/壳退出且无 socket/锁残留。上述 GUI
+  事实是旧 head 证据，最终 App 必须重建后重跑。
 - **可安装发行版 PR #162 第四轮作者复审修复（2026-11-15，代码 `3c0687d`，独立复审与最终云门待回填）**：
   在 `7707597` 上确认 7 项发布/生命周期缺口并先取得原实现红：release
   dispatch 接受旧 main 祖先；失败 Host 启动遗留新 Daemon；`/shutdown` ACK 后 Host
@@ -463,6 +482,10 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **跨进程共享的元数据文件必须原子发布**：Host 与 Tauri 壳没有共用 Python
+  侧互斥；直接截断再写会让另一个进程把短暂中间态当成永久损坏。发布锁文件应写
+  同目录临时文件、fsync 后原子替换，再 fsync 父目录；回归必须让外部读者停在
+  “已截断但未写完”的旧窗口，而不是只反复启动碰运气。
 - **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
 - **读者不能用 `BEGIN IMMEDIATE` 冒充共享锁**：它会把两个普通连接串行化。registry observation 使用 shared namespace/entity + `BEGIN` 只读快照，写者使用外部 exclusive 锁；这样既保留并发，也让已接线 writer 立即互斥。
 - **Windows 没有可移植的目录 `fsync` 等价物**：`FlushFileBuffers` 对普通目录句柄不能当成无条件成功。目录发布另行使用 write-through rename，并把物理断电级 durability 保持 `NOT_RUN`。
@@ -750,6 +773,18 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-15 · PR #162 同步最新 main、真实 GUI 缺陷修复与目标模式收口**：
+  fetch 后确认远端 main 已由 `0c5bb71` 前进到 `61f985e`；在保留
+  `backup/codex-release-app-before-main61` 的同时普通合并为 `ca8f32d`，只发生
+  `docs/KNOWLEDGE.md` 冲突，机械保留 main 的网络/T1/W 系列事实与 release-app
+  历史，无 skip、门禁或产品契约变更。真实安装态 App 在 `0f8649c` 上暴露启动期
+  `host.lock` 半写读取；spawn 子进程发布、父进程直接读的确定性旧实现探针稳定
+  截断为 `{"pid` 并抛 `JSONDecodeError`，`719de9a` 改为临时文件 + fsync +
+  原子替换 + 目录 fsync。
+  受控本地 OpenAI-compatible 服务在旧真实产物上完成拒绝、批准、取消三闭环，并验证
+  关窗保活、重开同 Host、`Cmd+Q` 无壳/Host/Daemon 残留。当前只冻结作者侧证据；
+  独立复审因本会话禁止启动子代理而不能由作者代替，最终新 head 的完整门、云 CI、
+  产物和 GUI 复验另绑。
 - **2026-11-15 · Ubuntu CI 暴露短正文静默成功并修复**：T1 最终候选的 Ubuntu job 在 `test_send_phase_failure_is_never_retried` 实测 `DID NOT RAISE NetError`；Mac、两片 Windows、Windows 汇总和 UI 均绿，证明失败不是 T1 平台回归。根因是 `http.client` 对带 `Content-Length` 的半截响应是否抛 `IncompleteRead` 取决于平台/EOF 时机，`fetch()` 未自行核对已读长度。修复在正文读取后显式比较 `HTTPResponse.length` 与收集字节，短正文报 `net.read`；半响应夹具先读完请求，避免把 TCP RST 混成协议测试。新增假连接回归覆盖“客户端静默 EOF”，`test_net_resilience.py` 为 14 passed；最终全量 3443P12S、645.06s，lock/ruff 0。
 - **2026-11-15 · W 系列七 PR 合并收口**：维护者拍板合并七条 W 系列 PR（#150 指标轮转 / #151 keychain / #152 网络重试 / #154 embedding 外发 gate / #155 预算子任务 UI / #156 子代理写深度 / #157 记忆冲突消解）。strict 保护下逐条执行「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」，全程零强推；main 推进 `02ac07e→2530a15→595be35→7f4c07d→24eabc4→d37a84c→134e9f0→c8b53bb`。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）。modify-modify 解法 = **difflib 提取双方相对共同祖先的插入段机械求并集**（两侧文本零改写、位置互不重叠才可行；#155 曾因解决器按追加处理把 G2 行复制成两份，行多重集核查抓出后修复——**冲突解决器的「theirs-then-ours」只对纯追加冲突合法**）；F10 行 main 侧等于祖先版故直接取分支版。环境教训两条：**两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并等对方套件结束再跑；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。CI flake 记录两条（均 attempt2 全绿）：#151 attempt1 Windows shard1 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态（新 flake 家族成员）；#154 attempt1 shard0 = `test_data_binding` 在案家族。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s），合并后 main 终态以收口分支复跑为准。W3/W5/W15 已由 #146/#159 落地解锁，W4/W12 等 #141（仍 OPEN）；#140/#141 与本轮改动在 KNOWLEDGE/PRD 相交，后续合并按同法处理。收口轮：Mimosa deep 重扫合并后 main（scan-2026-11-15T05-50-03.471Z-aeada98bbc47，seal sha256:fe541aaa…ba8ad）31 findings 与上轮 seal 27a03f47 签名逐条一致 0 增 0 删；收口 PR #163 attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried`；后续恢复 T1 新 run 仍复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未自行核对 `Content-Length` 的真实完整性缺陷并修复（见下一条）。#163 attempt2 绿不能改写首红，现不以 timing flake 结案。
 - **2026-11-15 · 恢复 B T1 平台基础候选**：从最新 main `2530a157` 调整到 `codex/restore-t1-platform`，新增真实实体身份、非阻塞 shared/exclusive entity access、固定 Home 只追加 registry、EventLog 连续复合锁，并把迁移/离线备份改为 namespace+entity 独占。负控覆盖真双进程共享/独占与硬退、硬链接、路径/祖先替换、SQLite `main`、registry CAS 竞争/初始化竞争/四 failpoint/schema 篡改、SQLite/实体句柄 close 失败保锁。独立第二读者用真子进程发现 gate 外 absent 快照与迁移 close 失败释放 access 两项缺陷；修复后新增竞态和公开 migrate close-failure 回归，第二轮定向复审 PASS。T0+T1 定向 166 项（macOS 165P1S）；同步 main `0c5bb71` 后的代码对象 `32f003d` 本机 lock/full/ruff 为 3443P12S、645.06s、全 0。PR run43688229712 attempt3 六 job 全绿：Ubuntu 3433P22S、macOS 3443P12S、Windows 1699P28S+1710P18S（3455节点）、Windows汇总与UI通过；attempt1 的 #145 flake 与 attempt2 artifact 缺片原件保留。独立导出复验 104P1S PASS；Windows artifact `restore-t1-windows-43688229712-3` 状态 PASS。
