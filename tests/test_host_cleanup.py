@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import socket
@@ -591,3 +592,89 @@ def test_missing_host_info_cleanup_remains_idempotent(tmp_path: Path) -> None:
     host.clear_host_info(tmp_path)
     assert host.stop_host(tmp_path) == 0
     assert not host.host_lock_path(tmp_path).exists()
+
+
+def test_stop_unowned_daemon_preserves_a_new_host(tmp_path: Path, monkeypatch) -> None:
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(snapshot)
+    replacement = host.HostInfo(
+        pid=os.getpid(),
+        port=1,
+        token="replacement_token_123",
+        started_at=2,
+    )
+    host.write_host_info(tmp_path, replacement)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_if_unowned(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        timeout=0.2,
+    )
+
+    assert result == 3
+    assert not called
+    assert lock.read_bytes() == snapshot
+    assert host.read_host_info(tmp_path) == replacement
+
+
+def test_stop_unowned_daemon_stops_only_the_expected_instance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(snapshot)
+
+    def request_shutdown(*_args, **_kwargs):
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    assert (
+        host.stop_daemon_if_unowned(
+            tmp_path,
+            hashlib.sha256(snapshot).hexdigest(),
+            timeout=0.2,
+        )
+        == 0
+    )
+    assert not lock.exists()
+
+
+def test_stop_unowned_daemon_preserves_a_changed_instance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_if_unowned(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert lock.read_bytes() == new

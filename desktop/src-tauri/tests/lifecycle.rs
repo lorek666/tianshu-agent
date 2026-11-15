@@ -224,14 +224,16 @@ fn orphan_daemon_shutdown_command_is_constant_and_argv_bound() {
     let python = Path::new("/Applications/Tianshu Agent.app/Contents/Resources/python/bin/python3");
     let app = Path::new("/Applications/Tianshu Agent.app/Contents/Resources/app");
     let data = Path::new("/Users/alice/Library/Application Support/AgentOS");
+    let expected_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    let command = build_orphan_daemon_shutdown_command(python, app, data);
+    let command = build_orphan_daemon_shutdown_command(python, app, data, expected_sha256);
 
     assert_eq!(command.get_program(), python);
     let args: Vec<_> = command.get_args().collect();
     assert_eq!(args[0], "-c");
-    assert!(args[1].to_string_lossy().contains("request_shutdown"));
+    assert!(args[1].to_string_lossy().contains("stop_daemon_if_unowned"));
     assert_eq!(Path::new(args[2]), data);
+    assert_eq!(args[3], expected_sha256);
     assert!(
         command
             .get_envs()

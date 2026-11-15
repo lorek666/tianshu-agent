@@ -246,16 +246,18 @@ pub fn build_orphan_daemon_shutdown_command(
     python: &Path,
     app_dir: &Path,
     data_root: &Path,
+    expected_sha256: &str,
 ) -> Command {
     let mut command = Command::new(python);
     command
         .arg("-c")
         .arg(
             "import sys; from pathlib import Path; \
-             from tianshu.daemon import request_shutdown; \
-             raise SystemExit(0 if request_shutdown(Path(sys.argv[1]), timeout=5) else 1)",
+             from tianshu.host import stop_daemon_if_unowned; \
+             raise SystemExit(stop_daemon_if_unowned(Path(sys.argv[1]), sys.argv[2], timeout=4))",
         )
         .arg(data_root)
+        .arg(expected_sha256)
         .env("PYTHONPATH", app_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1");
     command

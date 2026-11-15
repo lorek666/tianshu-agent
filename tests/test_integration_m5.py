@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -994,3 +995,52 @@ def test_host_stop_stops_daemon_too(root: Path) -> None:
         except (ipc.IpcError, OSError):
             pass
         host.clear_host_info(root)
+
+
+def test_stop_unowned_daemon_stops_a_real_daemon_without_host(root: Path) -> None:
+    harness = DaemonHarness(root, FakeModel([]))
+    with harness:
+        lock_path = ipc.run_dir(root) / "daemon.lock"
+        snapshot = lock_path.read_bytes()
+        assert host.read_host_info(root) is None
+
+        result = host.stop_daemon_if_unowned(
+            root,
+            hashlib.sha256(snapshot).hexdigest(),
+            timeout=5,
+        )
+
+        assert result == 0
+        assert not ipc.probe(root, timeout=0.5)
+        assert not lock_path.exists()
+    assert not harness.errors
+
+
+def test_stop_unowned_daemon_preserves_real_daemon_during_host_takeover(
+    root: Path,
+) -> None:
+    harness = DaemonHarness(root, FakeModel([]))
+    with harness:
+        lock_path = ipc.run_dir(root) / "daemon.lock"
+        snapshot = lock_path.read_bytes()
+        replacement = host.HostInfo(
+            pid=os.getpid(),
+            port=1,
+            token="replacement_token_123",
+            started_at=int(time.time() * 1000),
+        )
+        host.write_host_info(root, replacement)
+        try:
+            result = host.stop_daemon_if_unowned(
+                root,
+                hashlib.sha256(snapshot).hexdigest(),
+                timeout=0.5,
+            )
+
+            assert result == 3
+            assert ipc.probe(root, timeout=0.5)
+            assert lock_path.read_bytes() == snapshot
+            assert host.read_host_info(root) == replacement
+        finally:
+            host.clear_host_info(root, expected=replacement)
+    assert not harness.errors

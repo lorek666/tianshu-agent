@@ -182,6 +182,83 @@ def clear_host_info(
         host_lock_path(data_root).unlink(missing_ok=True)
 
 
+def stop_daemon_if_unowned(
+    data_root: Path,
+    expected_sha256: str,
+    *,
+    timeout: float = 4.0,
+) -> int:
+    """在 Host 元数据守卫内，只停止退出前快照对应的无主 Daemon。
+
+    返回值是给桌面壳 parse 的稳定退出码：
+
+    - 0：Daemon 已停止，或在等待期间自行退出/被替换；
+    - 3：已有新 Host 发布实例，保留 Daemon；
+    - 4：Daemon 实例已变更，保留新实例；
+    - 1：读取/停止失败或超时，调用方必须保留窗口。
+
+    核验“没有 Host”和发出 Daemon 退出请求必须在同一跨进程临界区。否则新
+    Host 可以在两步之间发布并复用 Daemon，桌面壳随后会把新实例的服务误杀。
+    """
+    from . import daemon
+
+    expected = expected_sha256.lower()
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+        print("期望的 Daemon 锁摘要不合法", file=sys.stderr)
+        return 1
+
+    root = Path(data_root)
+    lock_path = daemon.lock_path(root)
+    try:
+        with _host_info_guard(root):
+            if _read_host_info(root) is not None:
+                print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
+                return 3
+
+            try:
+                snapshot = lock_path.read_bytes()
+            except FileNotFoundError:
+                return 0
+            except OSError as exc:
+                print(f"读取 Daemon 锁失败：{exc}", file=sys.stderr)
+                return 1
+            if _sha256_hex(snapshot) != expected:
+                print("Daemon 实例已变更，拒绝停止新实例", file=sys.stderr)
+                return 4
+
+            stop_timeout = max(0.1, float(timeout))
+            requested = daemon.request_shutdown(
+                root, reason="desktop_exit", timeout=stop_timeout
+            )
+    except HostError as exc:
+        print(f"无法取得 Host 元数据守卫：{exc}", file=sys.stderr)
+        return 1
+
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    while True:
+        try:
+            current = lock_path.read_bytes()
+        except FileNotFoundError:
+            return 0
+        except OSError as exc:
+            print(f"等待 Daemon 退出时读取锁失败：{exc}", file=sys.stderr)
+            return 1
+        if _sha256_hex(current) != expected:
+            print("Daemon 退出期间实例已变更，保留新实例", file=sys.stderr)
+            return 4
+        if time.monotonic() >= deadline:
+            detail = "退出请求未送达" if not requested else "退出请求超时"
+            print(f"{detail}，Daemon 仍占用原实例锁", file=sys.stderr)
+            return 1
+        time.sleep(0.05)
+
+
+def _sha256_hex(payload: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _http_alive(info: HostInfo, *, timeout: float = 0.4) -> bool:
     """真连一次 HTTP。只看 PID 活着会被 PID 复用骗过去。"""
     try:

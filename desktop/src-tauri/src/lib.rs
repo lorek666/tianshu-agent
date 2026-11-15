@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use tauri::menu::{Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -23,6 +24,10 @@ use crate::release::{ReleaseIdentity, current_target, verify_resource_manifest};
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_POLL: Duration = Duration::from_millis(100);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+// A new Host publishes port 0 before it finishes binding and then replaces that
+// record with the listening endpoint. Keep a bounded handoff window after the
+// old metadata disappears so Daemon fallback cleanup cannot race that takeover.
+const ATTACHED_HOST_HANDOFF_SETTLE: Duration = Duration::from_secs(2);
 // Detached Daemon startup can outlive the Host process that requested it. The
 // Python lock has a 2 s stale-lock grace window; allow process import/startup
 // beyond that without introducing an unbounded retry.
@@ -41,7 +46,13 @@ struct RuntimeState {
 impl RuntimeState {
     fn finish_owned_host_exit(&mut self) -> Result<(), String> {
         self.child = None;
-        let result = stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root);
+        let daemon = read_daemon_lock_snapshot(&self.data_root)?;
+        let result = stop_orphan_daemon(
+            &self.python,
+            &self.app_dir,
+            &self.data_root,
+            daemon.as_deref(),
+        );
         if result.is_ok() {
             self.stopped = true;
         }
@@ -54,7 +65,24 @@ impl RuntimeState {
         let started = Instant::now();
         loop {
             match read_host_endpoint(&self.data_root) {
-                Err(HostInfoError::NotReady) => break,
+                Err(HostInfoError::NotReady) => {
+                    let absent_since = Instant::now();
+                    while absent_since.elapsed() < ATTACHED_HOST_HANDOFF_SETTLE {
+                        thread::sleep(STARTUP_POLL);
+                        match read_host_endpoint(&self.data_root) {
+                            Err(HostInfoError::NotReady) => {}
+                            Ok(_) => {
+                                return Err(
+                                    "Host 退出期间实例已变更，拒绝停止新实例的服务".to_string()
+                                );
+                            }
+                            Err(error) => {
+                                return Err(format!("等待附着 Host 退出失败：{error}"));
+                            }
+                        }
+                    }
+                    break;
+                }
                 Ok(endpoint) if endpoint.pid == self.endpoint.pid => {
                     if started.elapsed() >= SHUTDOWN_TIMEOUT {
                         return Err(format!(
@@ -78,7 +106,14 @@ impl RuntimeState {
             if daemon_before.as_ref() != Some(&current) {
                 return Err("Host 退出期间 Daemon 实例已变更，拒绝停止新实例".to_string());
             }
-            stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root)?;
+            match read_host_endpoint(&self.data_root) {
+                Err(HostInfoError::NotReady) => {}
+                Ok(_) => {
+                    return Err("Host 退出期间实例已变更，拒绝停止新实例的服务".to_string());
+                }
+                Err(error) => return Err(format!("确认附着 Host 退出失败：{error}")),
+            }
+            stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root, Some(&current))?;
         }
         self.stopped = true;
         Ok(())
@@ -256,28 +291,36 @@ fn read_daemon_lock_snapshot(data_root: &Path) -> Result<Option<Vec<u8>>, String
     }
 }
 
-fn stop_orphan_daemon(python: &Path, app_dir: &Path, data_root: &Path) -> Result<(), String> {
+fn stop_orphan_daemon(
+    python: &Path,
+    app_dir: &Path,
+    data_root: &Path,
+    expected_snapshot: Option<&[u8]>,
+) -> Result<(), String> {
     let daemon_lock = daemon_lock_path(data_root);
     if !daemon_lock.exists() {
         return Ok(());
     }
-    let status = build_orphan_daemon_shutdown_command(python, app_dir, data_root)
+    let expected = expected_snapshot
+        .ok_or_else(|| "缺少退出前 Daemon 锁快照，拒绝停止未知实例".to_string())?;
+    let expected_sha256 = format!("{:x}", Sha256::digest(expected));
+    let output = build_orphan_daemon_shutdown_command(python, app_dir, data_root, &expected_sha256)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .map_err(|error| format!("请求孤儿 Daemon 退出失败：{error}"))?;
-    if !status.success() {
-        return Err(format!("孤儿 Daemon 退出请求返回失败：{status}"));
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(3) => Err("Host 在 Daemon 清理期间已接管，保留新实例服务".to_string()),
+        Some(4) => Err("Daemon 实例已变更，保留新实例服务".to_string()),
+        _ if detail.is_empty() => Err(format!("孤儿 Daemon 退出请求返回失败：{}", output.status)),
+        _ => Err(format!(
+            "孤儿 Daemon 退出请求返回失败：{}；{detail}",
+            output.status
+        )),
     }
-    let started = Instant::now();
-    while started.elapsed() < SHUTDOWN_TIMEOUT {
-        if !daemon_lock.exists() {
-            return Ok(());
-        }
-        thread::sleep(STARTUP_POLL);
-    }
-    Err("Daemon 未在超时内退出，拒绝留下孤儿进程".to_string())
 }
 
 fn stop_daemon_started_by_failed_host(
@@ -290,7 +333,12 @@ fn stop_daemon_started_by_failed_host(
         if let Some(current) = after
             && before.as_ref() != Some(&current)
         {
-            return stop_orphan_daemon(&paths.python, &paths.app_dir, &paths.data_root);
+            return stop_orphan_daemon(
+                &paths.python,
+                &paths.app_dir,
+                &paths.data_root,
+                Some(&current),
+            );
         }
         if started.elapsed() >= FAILED_HOST_DAEMON_SETTLE_TIMEOUT {
             return Ok(());
@@ -769,6 +817,93 @@ mod tests {
         assert!(!host_lock.exists());
         assert!(!daemon_lock.exists(), "ACK 后 Host 退出时遗留了 Daemon");
         assert!(state.stopped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_host_exit_preserves_takeover_published_after_lock_gap() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let host_lock = run_dir.join("host.lock");
+        let daemon_lock = run_dir.join("daemon.lock");
+        let daemon_snapshot = br#"{"pid":42,"started_at":1,"instance_id":"daemon_attached"}"#;
+        fs::write(&daemon_lock, daemon_snapshot).unwrap();
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then\n  rm -f {}\n  exit 0\nfi\nexit 2\n",
+                shell_quote(&daemon_lock),
+            ),
+        );
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_lock_for_server = host_lock.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 1024];
+                let count = stream.read(&mut chunk).unwrap();
+                raw.extend_from_slice(&chunk[..count]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"ok":true,"shutting_down":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            drop(stream);
+            fs::remove_file(&host_lock_for_server).unwrap();
+            thread::sleep(Duration::from_millis(60));
+            fs::write(
+                &host_lock_for_server,
+                format!(
+                    r#"{{"pid":43,"port":{port},"token":"takeover_token_123","started_at":2,"ui_dir":""}}"#
+                ),
+            )
+            .unwrap();
+        });
+        fs::write(
+            &host_lock,
+            format!(
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+            ),
+        )
+        .unwrap();
+        let mut state = RuntimeState {
+            python,
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: HostEndpoint {
+                pid: 41,
+                port,
+                token: "secret_secret_secret".to_string(),
+            },
+            child: None,
+            owns_host: false,
+            stopped: false,
+        };
+
+        let result = state.stop_host();
+        server.join().unwrap();
+
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("实例已变更")),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(&daemon_lock).unwrap(), daemon_snapshot);
+        let replacement = fs::read(&host_lock).unwrap();
+        assert!(replacement.windows(3).any(|window| window == b"43,"));
+        assert!(!state.stopped);
     }
 
     #[cfg(unix)]
