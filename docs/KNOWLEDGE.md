@@ -50,6 +50,22 @@
   `host.lock`/`daemon.lock`/`agent.sock` 消失。旧 `820a7cd` 的仅窗口/进程生命周期
   结论不能替代页面内容证据；最终 docs-only SHA 仍须重建产物、跑精确 CI 并取得独立
   第二读者 PASS。
+- **PR #162 Windows 原子替换瞬时占用已做有界修复（2026-11-15，代码 `bb0ce76`）**：
+  `b46f015` 的精确 PR run `43708266691` 中 Ubuntu、macOS、Windows shard 0 和 UI
+  成功；Windows shard 1 唯一失败为 `test_concurrent_approval_consumes_once`。
+  审批并发控制本身只产生一个执行者，另一派发已以 `state=executing` 被拒；获胜的
+  `modify_text` 在 Windows 把 `.note.md.*.tmp` 原子替换为 `note.md` 时收到
+  `WinError 5 Access is denied`，因此效果按既有保守口径记为 `unknown`。读取句柄在
+  `write_bytes_atomic()` 前已经关闭，派发事务使用 `BEGIN IMMEDIATE` 串行化，且该
+  测试与 `fsutil` 替换路径都不是 release-app 本次新增；剩余根因边界是 Windows
+  短暂占用目标文件，项目已有 `metrics.py` 记录同一 `os.replace` 句柄占用语义。
+  `bb0ce76` 仅对 `PermissionError.winerror in {5, 32, 33}` 做 8 次、总退避约
+  1.27 秒的重试，其他权限错误立即抛出，持续占用在界满后保留原异常并附诊断 note，
+  临时文件仍由 finally 清理。新增测试先证明旧实现遇到两次瞬时 `WinError 5` 直接失败，
+  修复后第三次成功；持续占用测试证明 8 次后仍失败、目标字节不变且无 tmp 残留。
+  目标 24 项与崩溃一致性测试通过；清理本机 `ANTHROPIC_BASE_URL` 中转污染后完整
+  Python 套件为 **3516 passed / 12 skipped / 640.36s**。最终 docs-only SHA、精确
+  云 CI、arm64 重建产物及独立复审仍另绑。
 - **W 系列七 PR 已全部合并，main `c8b53bb`（2026-11-15）**：维护者拍板后按「并入最新 main → 双向 diff/行多重集终验 → 本地门禁 → CI 六项全绿 → 保护合并」逐条收口，全程零强推：#150→`2530a15`（run43661642024）、#151→`595be35`（attempt1 Windows shard1 红 = `test_concurrent_approval_consume` 的 `os.replace` WinError 5 文件锁竞态，与凭据域无关，attempt2 全绿）、#152→`7f4c07d`（run43668070804）、#154→`24eabc4`（attempt1 shard0 红 = `test_data_binding` 在案 flake 家族，attempt2 全绿 run43670453171）、#155→`d37a84c`（run43676855243）、#156→`134e9f0`（run43679118848）、#157→`c8b53bb`（run43681412578）。冲突三次 modify-modify（#155/#156 的 §7 G2 行、#157 的 §7 F10 L2/L3 行）+ 两次 §8 同锚追加（#152/#154）+ 两次自动合并（#150/#151）：modify-modify 用 difflib 提取双方相对祖先的插入段机械求并集（位置互不重叠才可行），G2 行终版 = 956 base + 415 main + 61 W10 = 1432 字符。合并轮教训：**冲突解决器「theirs-then-ours」只对纯追加冲突合法——modify-modify 按追加处理会整行重复**（#155 实犯，行多重集核查抓出后修复）；**同一 §7 状态行会被多个在途 PR 各自销账**（G2 行被 #152/#155/#156 三方叠改、F10 行被 #157 叠改）；**本机两个会话的全量套件并行 + 遗留临时目录把临时卷打到 98% 满，DiskAdmission 空间门槛让 110 个测试拒绝启动 Run（"缺少完整 Run storage context"）**——清理遗留临时目录并错开对方会话后复跑全绿；**后台 pytest 管道 `| tail` 吞 summary 且管道退出码取 tail 的**——用文件重定向 + 显式退出码。各 merge tip 本机全量门禁：3329P/8S → 3334P/11S → 3347P/11S → 3369P/11S → 3369P/11S → 3382P/11S → 3395P/11S（711.25s）。收口 PR #163（纯文档 +3 行）attempt1 ubuntu 红 = `test_send_phase_failure_is_never_retried` 首现 CI 红点（#152 net 韧性测试域）；恢复 T1 后续候选再次复现 `DID NOT RAISE NetError`，已定位为 `fetch()` 未核对 `Content-Length` 的真实完整性缺陷并修复，现不以 runner timing flake 结案。**W3/W5/W15 已由 #146/#159 落地解锁；W4/W12 等 #141（仍 OPEN）**；#140/#141 与本轮七 PR 的 KNOWLEDGE/PRD 相交，合并时按同法处理冲突。
 - **PR #162 真实 GUI 发现 `host.lock` 发布竞态，代码 `719de9a` 已最小修复（作者侧证据，最终产物复审待回填）**：
   `0f8649c` 的安装态 App 再次启动时，Host 与 Daemon 已实际启动且 `/health` 可用，
@@ -537,6 +553,12 @@
   消费者，留下“Host 健康、窗口存在、页面全白”的假通过。导航和失败页写入应通过
   `run_on_main_thread` 排入事实上的主线程事件队列。GUI 验收必须截取并检查真实页面内容；
   只测窗口数、PID、端口或 `/health` 不能证明用户看见了 UI。
+- **Windows 的 `os.replace` 瞬时共享冲突要在原子发布层有界处理**：目标文件被另一个
+  句柄短暂打开时，即使源临时文件已完整写入并关闭，Windows 仍可能给
+  `ERROR_ACCESS_DENIED` / sharing/lock violation。只能重试这一小组 Windows 错误并设置
+  总时间上界；普通权限错误立即失败，持续占用最终仍须报错。测试必须同时证明“瞬时失败
+  后成功”和“持续失败仍在界满后失败、旧文件与临时文件状态可判定”，不能用重跑 CI
+  掩盖。
 - **跨进程共享的元数据文件必须原子发布**：Host 与 Tauri 壳没有共用 Python
   侧互斥；直接截断再写会让另一个进程把短暂中间态当成永久损坏。发布锁文件应写
   同目录临时文件、fsync 后原子替换，再 fsync 父目录；回归必须让外部读者停在
@@ -833,6 +855,18 @@
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
 
+- **2026-11-15 · PR #162 Windows 原子替换瞬时占用修复**：`b46f015` 的精确 CI 中
+  Windows shard 1 仅 `test_concurrent_approval_consumes_once` 失败：审批只放行一个
+  执行者，但获胜 `modify_text` 的 `os.replace(note.md)` 遇到 `WinError 5`，结果按
+  事实记为 `unknown`。检查读取生命周期、`BEGIN IMMEDIATE` 派发和 `fsutil` 后，确认
+  不是双重执行、未关闭的本进程读句柄或 b46 新增回归；根因边界是 Windows 原子替换时
+  目标被短暂占用。按 TDD 先写瞬时两次失败、第三次成功的测试并看旧实现红，再在
+  `bb0ce76` 中只对 WinError 5/32/33 做 8 次有界退避，其他权限错误立即抛出，持续
+  占用最终失败并附诊断 note。目标 24 项、Ruff 与崩溃测试通过；本机完整套件首轮
+  3515P 唯一失败已由全局 `ANTHROPIC_BASE_URL` 中转污染单测复现，保留原失败后在移除
+  该变量的环境重跑为 **3516P12S（640.36s）**。旧 Windows 红日志、RED/GREEN 与全量
+  原件在 `.omc/artifacts/windows-atomic-replace-retry-2026-11-15/`；最终云矩阵、重建
+  产物和独立复审仍另绑。
 - **2026-11-15 · PR #155 前端核对与 Release WebView 冷启动白屏修复**：先刷新远端并
   核对 PR/分支历史，确认 `feat/budget-subtask-ui` 已由 PR #155 合并为 `d37a84c`，
   当前 `codex/release-app` 已包含其提交且 `ui/` 树逐字节相同；UI install/typecheck/

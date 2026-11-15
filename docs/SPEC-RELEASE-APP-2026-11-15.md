@@ -14,8 +14,12 @@
 > `58d0bdb0c9648a870368c1aa7723c4fc0c450f8b`，把 `navigate` 和失败页 `eval` 排入
 > Tauri 事件循环。该提交的 macos-arm64 产物已重新通过校验、运行时烟测、篡改负控、
 > 全新安装、真实冷启动显示“已连接”、关窗保活、重开同一 Host 和 `Cmd+Q` 三层进程
-> 全退。文档证据提交及其精确 SHA CI、最终产物另行绑定；独立第二读者复审仍未完成，
-> 因此状态仍是 L1 候选，不得合并为已验收发行版。
+> 全退。其后的 `b46f015` 精确 CI 又在 Windows shard 1 抓到既有原子写入路径的
+> `WinError 5`：审批并发控制本身通过，获胜写入在 `os.replace` 发布 `note.md` 时遇到
+> 瞬时的目标占用。代码修复 `bb0ce76` 只对 Windows access/sharing/lock violation
+> 做 8 次、约 1.27 秒总退避；其他权限错误立即失败，持续占用在界满后仍报错。最终
+> docs-only SHA、CI 与重建产物仍须另行绑定；独立第二读者复审仍未完成，因此状态仍是
+> L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -365,6 +369,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 - 前端 PR #155 已完整进入当前发行分支；本机 16 文件 124 tests、typecheck/build 与
   `ui/dist` 对账通过。`58d0bdb` 的安装态冷启动实际显示 Host 提供的同一前端，不再把
   “进程起来但页面白屏”记成 GUI 通过。
+- Windows 原子替换对 `ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION` /
+  `ERROR_LOCK_VIOLATION` 使用有界重试；瞬时占用恢复后写入成功，永久占用仍非零失败且
+  不残留临时文件。CI runner 结果仍不等于 Windows 10/11 用户设备验证。
 - macOS x64、Windows x64、Windows arm64：代码与 workflow 已具备对应 target 构建入口，
   但用户设备、安装、升级、回退与系统警告仍为 `unknown`；后续原生 workflow 通过也只能
   记为 runner 证据。
