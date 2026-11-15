@@ -15,7 +15,7 @@
 | Agent 运行时 | Python 3.12 | 生态最全；3.12 而非 3.14，wheel 覆盖最稳 | 3.13+：部分 C 扩展无轮子 |
 | Python 分发 | **python-build-standalone**（Astral 构建）+ 预解析 venv，作为 resource 打包 | 可复现、可逐文件签名、无 PyInstaller bootloader 黑盒 | PyInstaller：启动慢、Windows 杀软误报高；Nuitka：构建慢、调试难 |
 | IPC | **本地 socket + 长度前缀帧**（macOS: Unix domain socket；Windows: Named Pipe） | **不起 TCP 端口 = 不触发 Windows 防火墙弹窗**；无端口冲突 | localhost HTTP：Windows 每次弹防火墙 |
-| 本地存储 | SQLite（WAL）+ 文件级 Event Store | 单用户场景足够 | 嵌入式 KV：查询能力不足 |
+| 本地存储 | SQLite（WAL）append-only 单提交点（事件表 + 同库投影） | 单用户场景足够；事务与回放简单（PRD §5.3 已修正早期「一事件一文件」草案，2026-11-14 对账） | 嵌入式 KV：查询能力不足 |
 | 密钥 | macOS Keychain / Windows DPAPI | 系统托管，开源后不落明文 | config 文件：开源即泄密 |
 | 遥测 | 本地 OTel 导出，无强制上报 | 桌面产品 + 开源 | SaaS 后端：违反"无闭源运行时依赖" |
 | 更新 | Tauri updater + Ed25519 签名清单 | 内置、跨平台 | 自建更新服务：维护成本 |
@@ -82,10 +82,10 @@ resources/
     bin/python3            # python-build-standalone
     lib/python3.12/...
   site-packages/           # 预解析、预编译的 wheel
-  agentos_daemon/          # 我们的包
+  tianshu/                 # 我们的包（旧名 agentos_daemon 从未存在，2026-11-14 对账修正）
 ```
 
-启动方式：`resources/python/bin/python3 -m agentos_daemon --socket <path>`，`PYTHONHOME`/`PYTHONPATH` 显式指定，**不读用户环境变量**（避免被系统 Python 污染）。
+启动方式：`resources/python/bin/python3 -m tianshu daemon --data-root <path>`，`PYTHONHOME`/`PYTHONPATH` 显式指定，**不读用户环境变量**（避免被系统 Python 污染）。**现状注（2026-11-14）**：`--socket` 资源化打包形态是 §3 的打包目标设计、尚未交付；当前交付是 `python -m tianshu daemon`（`cli.py`）+ Host 自动拉起。
 
 ### 3.2 三条必须遵守的规则
 
@@ -149,16 +149,16 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 | 能力 | macOS | Windows | v1 |
 |---|---|---|---|
 | 进程创建 | `posix_spawn` | `CreateProcess`（需 `CREATE_SUSPENDED` + Job Object 关联） | ✅ |
-| 终端 PTY | `forkpty` | **ConPTY**（1809+，`CreatePseudoConsole`） | ✅ |
+| 终端 PTY | `forkpty` | ConPTY（1809+，`CreatePseudoConsole`） | 仅 POSIX ✅（Windows PTY 请求一律 `PolicyUnsupported`：标准库无 ConPTY，v1 未实现） |
 | 信号 | POSIX 信号 | 无。用 `GenerateConsoleCtrlEvent` / Job Object 整体终止 | ✅ |
 | 文件监视 | FSEvents | `ReadDirectoryChangesW` | ✅ |
-| 沙箱 | Seatbelt profile + TCC | **AppContainer / restricted token + Job Object** | ✅（分级） |
+| 沙箱 | Seatbelt profile + TCC | **AppContainer / restricted token + Job Object** | 仅 L1/L2 ✅（工作区阻断 + 执行侧策略；Seatbelt/AppContainer 等强隔离后端未实现，一律 `unsupported`，见 §6 与 F2-ACCEPTANCE） |
 | 屏幕截取 | ScreenCaptureKit（需 TCC 屏幕录制） | Windows.Graphics.Capture | macOS only |
 | 输入注入 | CGEvent（需 TCC 辅助功能） | `SendInput`（**必须在交互会话**，不能在 Session 0） | macOS only |
 | 无障碍树 | AXUIElement | UI Automation (UIA) | macOS only |
-| 密钥 | Keychain Services | DPAPI（`CryptProtectData`，per-user） | ✅ |
+| 密钥 | Keychain Services | DPAPI（`CryptProtectData`，per-user） | ❌ v1 未实现（零依赖下需 ctypes 直调、无可测平台；请求一律 `CredentialUnsupported`，已交付的是凭据接缝 + 全链路脱敏） |
 | 托盘 | NSStatusItem | Shell_NotifyIcon | ✅ |
-| 签名 | Developer ID + notarytool | Authenticode（EV / Azure Trusted Signing） | ✅ |
+| 签名 | Developer ID + notarytool | Authenticode（EV / Azure Trusted Signing） | ❌ 不做（与 §8.2「不支付 Apple 开发者成本」决定一致；本表此前误标 ✅，2026-11-14 修正） |
 
 ---
 
@@ -335,7 +335,7 @@ for target in [mac-arm64, mac-x64, win-x64, win-arm64]:
 
 1. **`--only-binary :all:`**：禁止任何目标尝试源码编译，缺失即失败
 2. **哈希锁定**（`uv.lock` / `requirements.lock` with hashes）：构建可复现
-3. **原生运行验证**：`--python-platform` 只影响解析，不证明能 import。四个目标要在对应架构的真机/CI runner 上各跑一次 `python -c "import agentos_daemon"`
+3. **原生运行验证**：`--python-platform` 只影响解析，不证明能 import。四个目标要在对应架构的真机/CI runner 上各跑一次 `python -c "import tianshu"`（**现状注（2026-11-14）**：当前 CI 为 ubuntu/macos/windows × py3.12 三平台矩阵 + UI；win-arm64 / mac-x64 原生冒烟未进 CI，四目标证据是 PRD §11.1 G3 发布前要求，差距已在 AGENTS.md / KNOWLEDGE.md 登记）
 4. **失败时的处理顺序**：先看是否有可用版本 → 再看是否可源码构建 → 最后才做功能降级。**降级必须记录在案，不能静默**
 
 **当前已知风险项（v1 需要注意，但不是禁令）**：
@@ -366,12 +366,12 @@ for target in [mac-arm64, mac-x64, win-x64, win-arm64]:
 
 ```
 AgentOS/
-  events/            # 一事件一文件（OpenHands 式）
+  events.db          # SQLite WAL append-only 单提交点（2026-11-14 对账：修正早期「一事件一文件」草案，与 PRD §5.3 / events.py 一致）
   artifacts/blobs/<sha256>
-  snapshots/<run_id>/  # 可回滚快照
-  memory/sqlite.db
+  artifacts/snapshots/<run_id>/  # 可回滚快照
+  memory_blobs/      # 记忆正文（记忆表与事件同库；正文落库旁目录）
   run/agent.sock|pipe
-  daemon.lock
+  run/daemon.lock
   logs/
 ```
 
@@ -427,7 +427,7 @@ AgentOS/
 
 **定稿口径：**
 
-- 四个目标**全部进 CI**，任一失败即阻断发布——不设"实验性目标"
+- 四个目标**全部进 CI**，任一失败即阻断发布（**现状注（2026-11-14）**：当前 required 为三平台 Python 矩阵 + UI 四项；win-arm64 / mac-x64 原生冒烟未进 CI，属 G3 发布前差距，不以目标口径冒充现状）——不设"实验性目标"
 - 允许的降级粒度是**按功能**，不是按架构：某个依赖在 arm64 无解时，该功能在 arm64 上降级并在 UI/README 如实标注
 - 禁止的降级是**静默**：不允许"构建过了但少个能力"而不声明
 - M0 不为四条流水线扩容，四目标并行构建的工时上限按 3 天计
