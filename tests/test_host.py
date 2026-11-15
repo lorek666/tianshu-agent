@@ -452,6 +452,18 @@ def test_wrong_token_is_rejected(root: Path, fake_daemon) -> None:
         bridge.stop()
 
 
+def test_session_proves_token_and_host_pid_without_touching_daemon(root: Path) -> None:
+    bridge, port = _start_bridge(root)
+    try:
+        status, payload = _http(port, "GET", "/session")
+        assert status == 401
+        status, payload = _http(port, "GET", "/session", token="tok")
+        assert status == 200
+        assert json.loads(payload) == {"ok": True, "pid": os.getpid()}
+    finally:
+        bridge.stop()
+
+
 def test_foreign_host_header_is_rejected(root: Path, fake_daemon) -> None:
     """DNS 重绑定：`evil.example` 解析到 127.0.0.1 时，Host 头会是 evil.example。"""
     bridge, port = _start_bridge(root)

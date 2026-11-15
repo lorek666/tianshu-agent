@@ -188,3 +188,86 @@ fn resource_manifest_rejects_identity_mismatch_and_path_escape() {
     let error = verify_resource_manifest(root, &identity).unwrap_err();
     assert!(error.to_string().contains("不安全路径"));
 }
+
+#[test]
+fn resource_manifest_rejects_unlisted_python_import_hook() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let identity_bytes = br#"{
+      "schema": 1,
+      "product": "tianshu-agent",
+      "version": "0.1.0",
+      "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
+      "target": "macos-arm64"
+    }"#;
+    fs::write(root.join("release.json"), identity_bytes).unwrap();
+    let ui = root.join("ui/dist/index.html");
+    fs::create_dir_all(ui.parent().unwrap()).unwrap();
+    fs::write(&ui, b"<!doctype html>").unwrap();
+    let identity = ReleaseIdentity::parse(identity_bytes, "macos-arm64").unwrap();
+    let manifest = json!({
+      "schema": 1,
+      "product": "tianshu-agent",
+      "version": "0.1.0",
+      "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
+      "target": "macos-arm64",
+      "python": "3.12.16",
+      "python_build_release": "20261110",
+      "ui_dist_sha256": sha256(b"<!doctype html>"),
+      "files": {
+        "release.json": sha256(identity_bytes),
+        "ui/dist/index.html": sha256(b"<!doctype html>")
+      }
+    });
+    fs::write(
+        root.join("release-manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("sitecustomize.py"), b"raise SystemExit(9)").unwrap();
+
+    let error = verify_resource_manifest(root, &identity).unwrap_err();
+
+    assert!(error.to_string().contains("未列文件"));
+    assert!(error.to_string().contains("sitecustomize.py"));
+}
+
+#[test]
+fn resource_manifest_allows_only_tauri_generated_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let identity_bytes = br#"{
+      "schema": 1,
+      "product": "tianshu-agent",
+      "version": "0.1.0",
+      "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
+      "target": "macos-arm64"
+    }"#;
+    fs::write(root.join("release.json"), identity_bytes).unwrap();
+    let ui = root.join("ui/dist/index.html");
+    fs::create_dir_all(ui.parent().unwrap()).unwrap();
+    fs::write(&ui, b"<!doctype html>").unwrap();
+    fs::write(root.join("icon.icns"), b"generated").unwrap();
+    let identity = ReleaseIdentity::parse(identity_bytes, "macos-arm64").unwrap();
+    let manifest = json!({
+      "schema": 1,
+      "product": "tianshu-agent",
+      "version": "0.1.0",
+      "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
+      "target": "macos-arm64",
+      "python": "3.12.16",
+      "python_build_release": "20261110",
+      "ui_dist_sha256": sha256(b"<!doctype html>"),
+      "files": {
+        "release.json": sha256(identity_bytes),
+        "ui/dist/index.html": sha256(b"<!doctype html>")
+      }
+    });
+    fs::write(
+        root.join("release-manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    verify_resource_manifest(root, &identity).unwrap();
+}

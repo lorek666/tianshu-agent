@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -34,6 +35,36 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_source_identity(repo_root: Path, commit: str) -> None:
+    repo_root = Path(repo_root).resolve()
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise BuildError(f"无法确认发行源身份：{exc}") from exc
+    if head != commit:
+        raise BuildError(f"源 HEAD {head} 与发行 commit {commit} 不一致")
+    if status:
+        raise BuildError("发行构建要求干净工作树")
 
 
 def load_runtime_lock(path: Path) -> dict[str, Any]:
@@ -180,6 +211,7 @@ def prepare_bundle(
     python_build_release: str,
     out_dir: Path,
     runtime_sha256: str | None = None,
+    allow_unbound_source: bool = False,
 ) -> Path:
     if target not in TARGETS:
         raise BuildError(f"未知 target：{target}")
@@ -188,6 +220,8 @@ def prepare_bundle(
     actual = _sha256(runtime_archive)
     if actual != expected:
         raise BuildError(f"Python runtime SHA256 不匹配：期望 {expected}，实际 {actual}")
+    if not allow_unbound_source:
+        verify_source_identity(Path(repo_root), commit)
 
     out_dir = Path(out_dir)
     if out_dir.exists():
@@ -276,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache" / "tianshu")
     args = parser.parse_args(argv)
     lock = load_runtime_lock(args.runtime_lock)
+    verify_source_identity(args.repo_root, args.commit)
     entry = lock["targets"][args.target]
     runtime = args.runtime_archive or download_runtime(
         args.runtime_lock, args.target, args.cache_dir

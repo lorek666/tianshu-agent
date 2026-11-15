@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -72,6 +73,7 @@ def test_prepare_bundle_contains_only_app_runtime_and_ui(tmp_path):
         python_version="3.12.16",
         python_build_release="20261110",
         out_dir=output,
+        allow_unbound_source=True,
     )
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -109,6 +111,7 @@ def test_prepare_bundle_rejects_archive_hash_mismatch(tmp_path):
             python_build_release="20261110",
             runtime_sha256="0" * 64,
             out_dir=tmp_path / "bundle",
+            allow_unbound_source=True,
         )
 
 
@@ -141,3 +144,31 @@ def test_runtime_lock_has_all_four_desktop_targets():
     }
     for target in lock["targets"].values():
         assert hashlib.sha256(b"not-the-asset").hexdigest() != target["sha256"]
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_source_identity_requires_exact_clean_head(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "release-test@example.invalid")
+    _git(repo, "config", "user.name", "Release Test")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "fixture")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    module.verify_source_identity(repo, head)
+
+    with pytest.raises(module.BuildError, match="不一致"):
+        module.verify_source_identity(repo, "0" * 40)
+    (repo / "dirty.txt").write_text("dirty", encoding="utf-8")
+    with pytest.raises(module.BuildError, match="干净工作树"):
+        module.verify_source_identity(repo, head)

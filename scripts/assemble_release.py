@@ -5,9 +5,19 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from release_manifest import (  # noqa: E402
+    ReleaseManifestError,
+    validate_manifest_document,
+)
 
 TARGETS = ("macos-arm64", "macos-x64", "windows-x64", "windows-arm64")
 
@@ -69,7 +79,13 @@ def assemble_release(
         actual = _sha256(artifact)
         if len(fields) != 2 or fields[0] != actual or fields[1] != artifact.name:
             raise AssembleError(f"{target} 的 SHA256 与产物不一致")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        try:
+            manifest = validate_manifest_document(
+                json.loads(manifest_bytes.decode("utf-8"))
+            )
+        except (UnicodeDecodeError, ValueError, ReleaseManifestError) as exc:
+            raise AssembleError(f"{target} 发布清单不合法：{exc}") from exc
         expected = {"target": target, "version": version, "commit": commit}
         for field, value in expected.items():
             if manifest.get(field) != value:
@@ -78,12 +94,14 @@ def assemble_release(
                     f"期望 {value!r}，实际 {manifest.get(field)!r}"
                 )
         verification = json.loads(verification_path.read_text(encoding="utf-8"))
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         if (
             verification.get("target") != target
             or verification.get("version") != version
             or verification.get("commit") != commit
             or verification.get("sha256") != actual
             or verification.get("artifact") != artifact.name
+            or verification.get("manifest_sha256") != manifest_sha256
         ):
             raise AssembleError(f"{target} 的验证报告与产物身份不一致")
         runtime_smoke = verification.get("runtime_smoke")

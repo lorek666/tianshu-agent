@@ -27,16 +27,28 @@ def _archive(
     *,
     unsafe_name: str | None = None,
     python_exit: int = 0,
+    verifier_exit: int = 0,
 ) -> tuple[Path, Path]:
     base.mkdir(parents=True, exist_ok=True)
     app = base / "payload" / "Tianshu Agent.app"
     resources = app / "Contents" / "Resources"
     python = resources / "python" / "bin" / "python3"
     ui = resources / "ui" / "dist" / "index.html"
+    desktop = app / "Contents" / "MacOS" / "tianshu-desktop"
     python.parent.mkdir(parents=True)
     ui.parent.mkdir(parents=True)
+    desktop.parent.mkdir(parents=True)
     python.write_text(f"#!/bin/sh\nexit {python_exit}\n", encoding="utf-8")
     python.chmod(0o755)
+    desktop.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1-}" = "--verify-bundle" ]; then\n'
+        f"  exit {verifier_exit}\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    desktop.chmod(0o755)
     ui.write_text("<!doctype html>", encoding="utf-8")
     (resources / "release.json").write_text(
         json.dumps(
@@ -147,6 +159,51 @@ def test_install_rejects_archive_path_traversal(tmp_path):
     assert not (prefix / "Tianshu Agent.app").exists()
 
 
+def test_install_runs_bundle_verifier_before_replacing_existing_app(tmp_path):
+    archive, checksum = _archive(tmp_path, verifier_exit=1)
+    prefix = tmp_path / "Applications"
+    existing = prefix / "Tianshu Agent.app"
+    existing.mkdir(parents=True)
+    marker = existing / "keep"
+    marker.write_text("old", encoding="utf-8")
+
+    result = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+    )
+
+    assert result.returncode == 2
+    assert "资源清单校验失败" in result.stderr
+    assert marker.read_text(encoding="utf-8") == "old"
+
+
+def test_install_rejects_overlapping_program_and_data_roots(tmp_path):
+    archive, checksum = _archive(tmp_path)
+    prefix = tmp_path / "Applications"
+    data_root = prefix / "AgentOS"
+
+    result = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+        "--data-root",
+        data_root,
+    )
+
+    assert result.returncode == 2
+    assert "数据根不能位于安装目录内" in result.stderr
+    assert not (prefix / "Tianshu Agent.app").exists()
+
+
 def test_uninstall_removes_program_and_preserves_data_by_default(tmp_path):
     archive, checksum = _archive(tmp_path)
     prefix = tmp_path / "Applications"
@@ -203,12 +260,47 @@ def test_uninstall_purges_only_explicit_temporary_data_root(tmp_path):
         "--data-root",
         data_root,
         "--purge-data",
+        "--confirm-data-root",
+        data_root,
     )
 
     assert result.returncode == 0, result.stderr
     assert not (prefix / "Tianshu Agent.app").exists()
     assert not data_root.exists()
     assert "已按显式请求删除用户数据" in result.stdout
+
+
+def test_uninstall_purge_requires_exact_secondary_confirmation(tmp_path):
+    archive, checksum = _archive(tmp_path)
+    prefix = tmp_path / "Applications"
+    data_root = tmp_path / "AgentOS"
+    data_root.mkdir()
+    marker = data_root / "events.db"
+    marker.write_bytes(b"data")
+    installed = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    result = _run(
+        UNINSTALL,
+        "--prefix",
+        prefix,
+        "--data-root",
+        data_root,
+        "--purge-data",
+    )
+
+    assert result.returncode == 2
+    assert marker.read_bytes() == b"data"
+    assert "confirm-data-root" in result.stderr
+    assert (prefix / "Tianshu Agent.app").is_dir()
 
 
 def test_reinstall_replaces_old_version_after_smoke(tmp_path):

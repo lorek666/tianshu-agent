@@ -82,7 +82,9 @@ Tianshu Agent.app / TianshuAgent.exe
        ├─ python/           pinned CPython 3.12 standalone
        ├─ app/              tianshu package
        ├─ ui/dist/          exact committed bundle
-       └─ release.json      version, commit, target, hashes
+       ├─ release.json      short identity: version, commit, target
+       └─ release-manifest.json
+                            internal file set + SHA256
               │
               └─ spawn: bundled python -m tianshu host run
                          │
@@ -106,14 +108,15 @@ Tianshu Agent.app / TianshuAgent.exe
 新增 Rust 侧模块 `desktop/src-tauri/src/lifecycle.rs`，只依赖已启动的 Host 元数据和
 现有 CLI：
 
-1. 解析资源目录，校验同目录 `release.json` 的 `commit`、`target` 和自身版本。
+1. 解析资源目录，校验同目录 `release.json` 的 `commit`、`target` 和自身版本；再按
+   `release-manifest.json` 校验每个文件、完整文件集合和禁止的未列文件。
 2. 选择用户覆盖的 `TIANSHU_DATA_ROOT`，否则使用 Python `ipc.default_data_root()` 同一
    平台规则；程序资源目录永不作为数据根。
 3. 以无 shell 的 argv 启动 bundled Python：
    `python -m tianshu host run --port 0`。不得把密钥、prompt 或业务参数写进 shell
    字符串；默认监护 Daemon。
-4. 在有界期限内等待 Host `/health` 和 `host.lock` 同时可读；只读取已有 Host 元数据，
-   不在日志中打印 token。
+4. 在有界期限内等待 Host `/health` 和 `host.lock` 同时可读；健康响应 PID、锁文件 PID
+   和 token 保护的 `/session` 响应必须一致。只读取已有 Host 元数据，不在日志中打印 token。
 5. Tauri WebView 导航到 `host.lock` 中的 `url`。加载失败时显示结构化启动错误，不允许空白页
    冒充可用。
 6. 已有同数据根的可兼容 Host 时，壳只打开窗口附着，不启动第二个 Daemon；版本不兼容时
@@ -122,8 +125,10 @@ Tianshu Agent.app / TianshuAgent.exe
 ### 3.3 关闭与退出语义
 
 - 点击窗口关闭：隐藏窗口，Host/Daemon 继续；托盘菜单可“打开”或“退出”。
-- 托盘“退出”：调用 `tianshu host stop`，有界等待 Host/Daemon 收尾；失败保留进程和日志，
-  报出 PID/数据根，不把窗口关闭当作进程已退出。
+- 托盘或 macOS `Cmd+Q`：读取已核验的 Host 元数据，直接向 token 保护的 `POST /shutdown`
+  发出请求，有界等待 Host/Daemon 收尾；失败保留进程和日志，报出 PID/数据根，不把窗口
+  关闭当作进程已退出。若 Host 已崩溃但 Daemon 仍存活，退出门必须通过同包 Python 请求
+  Daemon 关闭，并等锁消失后才允许壳退出。
 - 系统注销/关机：壳先请求优雅停止；超出期限只能终止自身拥有的子进程，并写明终止不等于
   业务副作用已回滚。
 - 壳崩溃：不删除 `host.lock`、不发送伪造结果；下次启动按现有 Host/Daemon 存活探测接管或
@@ -142,12 +147,15 @@ Agent”。
 - `install-macos.sh` / `uninstall-macos.sh`
 - `release-manifest.json`
 
-安装脚本必须支持 `--archive PATH --sha256 PATH --prefix DIR`，默认安装到
+安装脚本必须支持 `--archive PATH --sha256 PATH --prefix DIR [--data-root DIR]`，默认安装到
 `~/Applications/Tianshu Agent.app`。脚本不接受未校验的远端 URL，不在一个未被审阅的
-`curl | bash` 管道中执行。文档分别给出下载、校验、安装命令；安装完成前不改用户数据。
+`curl | bash` 管道中执行。移动任何现有 app 之前，脚本调用同包原生
+`tianshu-desktop --verify-bundle` 校验完整 manifest，并拒绝程序目录与数据根互相包含。
+文档分别给出下载、校验、安装命令；安装完成前不改用户数据。
 
 卸载默认只删程序，保留
-`~/Library/Application Support/AgentOS/`；`--purge-data` 必须单独显式请求并先展示数据根。
+`~/Library/Application Support/AgentOS/`；`--purge-data` 必须同时给出逐字匹配的
+`--confirm-data-root DIR`，并且拒绝根目录、家目录、系统公共目录及与程序目录重叠的数据根。
 
 ### 4.2 Windows
 
@@ -169,7 +177,19 @@ Agent”。
    `.omc`、用户数据库或真实凭据。
 4. UI 只使用已经通过 typecheck/test/build 的 `ui/dist`；构建发布物后再次执行
    `git diff --exit-code -- ui/dist`。
-5. 包内 `release.json` 至少包含：
+5. 包内 `release.json` 只保留短身份，必须包含：
+
+```json
+{
+  "schema": 1,
+  "product": "tianshu-agent",
+  "version": "0.1.0",
+  "commit": "<40-hex-main-sha>",
+  "target": "macos-arm64"
+}
+```
+
+6. 包内 `release-manifest.json` 绑定身份和每个内部文件的 SHA256：
 
 ```json
 {
@@ -185,8 +205,9 @@ Agent”。
 }
 ```
 
-6. 发布清单 `release-manifest.json` 额外记录所有资产的 SHA256、大小、构建运行 URL、源提交、
-   支持平台/架构和 `signed=false`。未知字段拒绝、未知 target 拒绝、未知 schema 拒绝。
+7. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
+   target、`runtime_smoke`、`device_verification` 和 `signed=false`。三份文件职责不得混写；
+   未知字段拒绝、未知 target 拒绝、未知 schema 拒绝。
 
 ## 6. 可复现构建与发布流程
 
@@ -233,13 +254,14 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 
 | 风险 | 必须行为 |
 |---|---|
-| 资源目录被替换 | 启动前按 `release.json` 校验关键文件；失败拒绝启动并给出修复路径 |
+| 资源目录被替换 | 启动和安装前按 manifest 校验完整文件集合；未列 `sitecustomize.py`、被改字节或逃逸链接均拒绝 |
+| 运行时篡改自身资源 | bundled Python 的所有入口固定 `PYTHONDONTWRITEBYTECODE=1`；Host 环境由 Daemon 继承，`__pycache__` 不得使下一次启动绕过或破坏完整文件集合 |
 | 伪造更新包 | 校验版本、target、commit、SHA256；未来 updater 另验 Ed25519 |
 | 日志泄露 token | Tauri/Host/日志均不打印 token；测试扫描 stdout/stderr |
 | 壳与 CLI 启双重 Daemon | 复用 Host 单实例和 daemon 锁；双进程屏障测试 |
 | 关闭窗口误杀任务 | 关闭只隐藏；显式退出才 stop；崩溃恢复走既有语义 |
 | 升级卡在半写 | 原子安装、旧版本保留、启动 smoke 后才切默认入口 |
-| 用户数据被卸装 | uninstall 默认不删数据；purge 需要显式参数与二次确认 |
+| 用户数据被卸装 | uninstall 默认不删数据；purge 需要显式参数、逐字匹配的 `--confirm-data-root` 与路径重叠检查 |
 | 路径含空格/Unicode | 全 argv 传递，不拼 shell；macOS/Windows 路径测试 |
 | 平台未测 | `release-manifest.json` 状态必须 `verified`/`runner-only`/`unknown` |
 
@@ -251,14 +273,16 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   缺文件、额外禁止文件、commit 非 40 位。
 - `tests/test_release_build.py`：锁定 Python 版本目标、解包路径穿越、错误 SHA、复制 UI
   dist、排除 `.venv`/数据库/凭据。
-- `tests/test_release_install.py`：macOS canonical 前缀、合法/错误 SHA、tar 逃逸拒绝、
-  安装烟测、失败恢复旧程序、卸载保留数据与 `--purge-data` 明确路径。升级回退先由这里的
-  安装器烟测覆盖；跨 schema 数据升级仍须等恢复 B/C，不能由该测试冒充。
+- `tests/test_release_install.py`：macOS canonical 前缀、原生 verifier 前置顺序、合法/错误
+  SHA、tar 逃逸拒绝、程序/数据根重叠、安装烟测、失败恢复旧程序、卸载保留数据与
+  `--purge-data` 二次确认。升级回退先由这里的安装器烟测覆盖；跨 schema 数据升级仍须等
+  恢复 B/C，不能由该测试冒充。
 
 ### 9.2 Rust/Tauri 测试
 
-- `desktop/src-tauri` 使用 `cargo test` 覆盖目标解析、路径规范化、单实例、子进程 argv、
-  Host readiness、窗口关闭隐藏、显式退出、启动失败结构体。
+- `desktop/src-tauri` 使用 `cargo test` 覆盖目标解析、路径规范化、完整资源集合、Host
+  `/health` + `/session` 身份、token 保护的 shutdown、孤儿 Daemon argv、子进程 argv 和
+  启动失败结构体。
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
 - token 不出现在 argv、URL、Tauri log、release manifest。
@@ -275,6 +299,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 6. 删除旧版本后新版本启动失败 → 回退测试必须红。
 7. 让 token 进入日志 → 脱敏/安全测试必须红。
 8. UI dist 被手改但未重建 → release build 必须红。
+9. manifest 未列出 `sitecustomize.py` → App 启动和安装前必须红。
+10. Host 附着端口开放但 PID/token 身份不符 → 必须拒绝附着。
+11. Host 崩溃后退出壳 → Daemon 必须被请求关闭并等锁消失，不能留孤儿。
 
 ### 9.4 平台证据矩阵
 
@@ -376,20 +403,19 @@ pub fn verify_resource_manifest(
 
 ## 12. 验收清单
 
-- [x] 从基线定向范围运行 release manifest/build/install/verify 测试；篡改资源、摘要、
-  架构、tar 逃逸与原 `port=0` 启动窗口均有真实红/负控。
-- [x] Tauri 壳真实启动 bundled Python 与 Host/Daemon，UI 可操作；关闭窗口任务继续，
-      托盘可重开，显式退出无孤儿进程。
-- [x] 本机 macOS arm64 安装、启动、停止、卸载；数据保留明确。
+- [ ] 对最终提交重跑 release manifest/build/install/verify 定向测试；篡改资源、摘要、
+  架构、tar 逃逸与原 `port=0` 启动窗口均须绑定新 SHA。
+- [ ] 对最终产物验证 Tauri 壳真实启动 bundled Python 与 Host/Daemon，UI 可操作；关闭窗口
+      任务继续，Finder 重开，显式退出无孤儿进程。
+- [ ] 对最终产物验证 macOS arm64 安装、启动、停止、卸载；数据保留明确。
 - [ ] macOS x64、Windows x64、Windows arm64 的每项证据标为 `verified` / `runner-only` /
       `unknown`，不混写。
 - [x] 产物只含允许文件；无 `.venv`、tests、数据库、日志、密钥、refs、`.omc`。
 - [ ] `release.json` 与 `release-manifest.json` 绑定最终合并 SHA；当前本机产物只绑定
   基线 SHA，不能把未提交工作树的字节冒充该 SHA。
 - [x] 安装器烟测失败时恢复旧程序；数据恢复尚未交付，安装/升级不调用低层 restore。
-- [x] `uv lock --check`、ruff、完整 pytest（3377 passed / 11 skipped）、UI
-      typecheck/test/build/dist、Cargo 测试和
-      release verifier 全绿；负控原件保留。
+- [ ] 最终提交的 `uv lock --check`、ruff、完整 pytest、UI
+      typecheck/test/build/dist、Cargo 测试和 release verifier 全绿；负控原件保留。
 - [ ] 独立复审读取正式 SHA、原始日志、安装/升级探针，而非作者自述。
 - [x] 文档明确“L1/L2 内测”与“G3 正式发布”的差异，不把本规格的实现说成所有 G3 已完成。
 

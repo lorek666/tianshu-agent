@@ -19,14 +19,17 @@ bundle/
 ```
 
 `scripts/package_app.py` 把同一 bundle 映射到 app 的
-`Contents/Resources/{python,app,ui,release.json}`。启动时壳校验 target、版本与
-commit，再以 argv 启动：
+`Contents/Resources/{python,app,ui,release.json,release-manifest.json}`。启动和安装前
+壳校验 target、版本、commit、每个文件 SHA 与完整文件集合；未列 Python 文件同样拒绝。
+随后以 argv 启动：
 
 ```text
 python -m tianshu host run --port 0 --ui-dir ... --data-root ...
 ```
 
 token 由 Host 注入真实 UI，壳不把 token 写入 URL、命令行或持久配置。
+bundled Python 的安装烟测、Host、Daemon 与孤儿收尾入口都固定
+`PYTHONDONTWRITEBYTECODE=1`；否则首次导入生成的 `__pycache__` 会成为下一次启动时的未列文件。
 
 ## 本机检查
 
@@ -43,8 +46,9 @@ Rust 测试覆盖 Host 元数据解析、平台数据根、argv 构造和发行�
    返回 200。
 2. 关闭窗口，确认壳、Host、Daemon 都继续运行。
 3. 重新激活 app，确认同一窗口恢复并仍连接原 Host。
-4. 托盘“退出并停止服务”或 `Cmd+Q`，确认壳、Host、Daemon 全部退出。
-5. 卸载默认保留数据根；只有显式 `--purge-data` 才删除测试数据。
+4. 托盘“退出并停止服务”或自定义 `Cmd+Q` 菜单，确认壳、Host、Daemon 全部退出。
+5. 杀掉 Host 后再从托盘退出，确认 Daemon 被有界关闭且无孤儿。
+6. 卸载默认保留数据根；只有 `--purge-data --confirm-data-root DIR` 才删除测试数据。
 
 ## 构建与安装
 
@@ -79,7 +83,8 @@ sh scripts/install_macos.sh \
   --prefix /private/tmp/tianshu-applications
 ```
 
-脚本先校验 SHA256、tar 路径与链接，再把安装前缀解析成真实路径。macOS 上的
+脚本先校验 SHA256、tar 路径与链接，再调用同包原生 verifier 校验完整 manifest，并把
+安装前缀解析成真实路径。macOS 上的
 Tauri 启动路径检查会拒绝经过符号链接的可执行文件；解析前缀是为了让
 `/tmp/...` 这类系统别名也能得到可启动的 app。
 
@@ -89,8 +94,15 @@ Tauri 启动路径检查会拒绝经过符号链接的可执行文件；解析�
 sh scripts/uninstall_macos.sh --prefix /private/tmp/tianshu-applications
 ```
 
-默认只删除程序。测试临时数据时，才可额外传
-`--data-root /private/tmp/tianshu-test-data --purge-data`。
+默认只删除程序。测试临时数据时，才可额外传逐字匹配的二次确认：
+
+```bash
+sh scripts/uninstall_macos.sh \
+  --prefix /private/tmp/tianshu-applications \
+  --data-root /private/tmp/tianshu-test-data \
+  --purge-data \
+  --confirm-data-root /private/tmp/tianshu-test-data
+```
 
 ## 发行工作流
 

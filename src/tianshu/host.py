@@ -473,6 +473,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 return self._json(HTTPStatus.OK, {"ok": True, "pid": os.getpid()})
+            if path == "/session":
+                if not self._authorized():
+                    return
+                return self._json(HTTPStatus.OK, {"ok": True, "pid": os.getpid()})
             if path == "/state":
                 if not self._authorized():
                     return

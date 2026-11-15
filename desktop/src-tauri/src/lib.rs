@@ -1,21 +1,22 @@
 pub mod lifecycle;
 pub mod release;
 
+#[cfg(debug_assertions)]
 use std::ffi::OsStr;
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuBuilder, MenuItem, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use crate::lifecycle::{
-    DefaultDataRootInput, HostEndpoint, HostInfoError, build_host_command, default_data_root,
-    parse_host_endpoint, wait_for_host,
+    DefaultDataRootInput, HostEndpoint, HostInfoError, build_host_command,
+    build_orphan_daemon_shutdown_command, default_data_root, parse_host_endpoint,
+    request_host_shutdown, verify_host, wait_for_host,
 };
 use crate::release::{ReleaseIdentity, current_target, verify_resource_manifest};
 
@@ -27,6 +28,7 @@ struct RuntimeState {
     python: PathBuf,
     app_dir: PathBuf,
     data_root: PathBuf,
+    endpoint: HostEndpoint,
     child: Option<Child>,
     owns_host: bool,
 }
@@ -36,11 +38,22 @@ impl RuntimeState {
         if !self.owns_host {
             return Ok(());
         }
-        let status = stop_host_command(&self.python, &self.app_dir, &self.data_root)
-            .status()
-            .map_err(|error| format!("调用 host stop 失败：{error}"))?;
-        if !status.success() {
-            return Err(format!("host stop 返回失败：{status}"));
+        if let Some(child) = self.child.as_mut()
+            && let Ok(Some(_)) = child.try_wait()
+        {
+            self.child = None;
+            self.owns_host = false;
+            return stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root);
+        }
+        if let Err(error) = request_host_shutdown(&self.endpoint) {
+            if let Some(child) = self.child.as_mut()
+                && let Ok(Some(_)) = child.try_wait()
+            {
+                self.child = None;
+                self.owns_host = false;
+                return stop_orphan_daemon(&self.python, &self.app_dir, &self.data_root);
+            }
+            return Err(format!("直接请求 Host 退出失败：{error}"));
         }
         let child = self
             .child
@@ -78,6 +91,7 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+#[cfg(debug_assertions)]
 fn resource_env_path(name: &str) -> Option<PathBuf> {
     if std::env::var_os("TIANSHU_DESKTOP_ALLOW_RESOURCE_OVERRIDE").as_deref()
         != Some(OsStr::new("1"))
@@ -85,6 +99,14 @@ fn resource_env_path(name: &str) -> Option<PathBuf> {
         return None;
     }
     env_path(name)
+}
+
+#[cfg(not(debug_assertions))]
+fn resource_env_path(_name: &str) -> Option<PathBuf> {
+    // Production bundles must use Tauri's canonical resource directory. An
+    // environment switch here would let an unverified tree bypass manifest
+    // validation while still presenting itself as the signed application.
+    None
 }
 
 fn platform_data_root() -> Result<PathBuf, String> {
@@ -156,6 +178,13 @@ fn startup_paths(resource_dir: &Path, package_version: &str) -> Result<StartupPa
     })
 }
 
+pub fn verify_bundle(resource_dir: &Path) -> Result<(), String> {
+    let target = current_target().map_err(|error| error.to_string())?;
+    let identity = ReleaseIdentity::read(&resource_dir.join("release.json"), target)
+        .map_err(|error| error.to_string())?;
+    verify_resource_manifest(resource_dir, &identity).map_err(|error| error.to_string())
+}
+
 fn host_info_path(data_root: &Path) -> PathBuf {
     data_root.join("run").join("host.lock")
 }
@@ -165,30 +194,33 @@ fn read_host_endpoint(data_root: &Path) -> Result<HostEndpoint, HostInfoError> {
     parse_host_endpoint(&raw)
 }
 
-fn host_alive(endpoint: HostEndpoint) -> bool {
-    let address = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
-    TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
-}
-
-fn stop_host_command(python: &Path, app_dir: &Path, data_root: &Path) -> Command {
-    let mut command = Command::new(python);
-    command
-        .arg("-m")
-        .arg("tianshu")
-        .arg("host")
-        .arg("stop")
-        .arg("--data-root")
-        .arg(data_root)
-        .env("PYTHONPATH", app_dir)
+fn stop_orphan_daemon(python: &Path, app_dir: &Path, data_root: &Path) -> Result<(), String> {
+    let daemon_lock = data_root.join("run").join("daemon.lock");
+    if !daemon_lock.exists() {
+        return Ok(());
+    }
+    let status = build_orphan_daemon_shutdown_command(python, app_dir, data_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("请求孤儿 Daemon 退出失败：{error}"))?;
+    if !status.success() {
+        return Err(format!("孤儿 Daemon 退出请求返回失败：{status}"));
+    }
+    let started = Instant::now();
+    while started.elapsed() < SHUTDOWN_TIMEOUT {
+        if !daemon_lock.exists() {
+            return Ok(());
+        }
+        thread::sleep(STARTUP_POLL);
+    }
+    Err("Daemon 未在超时内退出，拒绝留下孤儿进程".to_string())
 }
 
 fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), String> {
     if let Ok(endpoint) = read_host_endpoint(&paths.data_root)
-        && host_alive(endpoint)
+        && verify_host(&endpoint).is_ok()
     {
         return Ok((endpoint, None));
     }
@@ -214,7 +246,7 @@ fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), St
                 return Err(HostInfoError::NotReady);
             }
             let endpoint = read_host_endpoint(&paths.data_root)?;
-            if !host_alive(endpoint) {
+            if verify_host(&endpoint).is_err() {
                 return Err(HostInfoError::NotReady);
             }
             Ok(endpoint)
@@ -250,6 +282,55 @@ fn show_quit_error(app: &tauri::AppHandle, error: &str) {
     eprintln!("天枢桌面服务退出失败，保留进程：{error}");
 }
 
+fn request_quit(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<Mutex<RuntimeState>>() {
+        match state.lock() {
+            Ok(mut state) => {
+                if let Err(error) = state.stop_host() {
+                    show_quit_error(app, &error);
+                    return;
+                }
+            }
+            Err(error) => {
+                show_quit_error(app, &format!("运行时状态锁损坏：{error}"));
+                return;
+            }
+        }
+    }
+    app.exit(0);
+}
+
+#[cfg(target_os = "macos")]
+fn install_application_menu(app: &tauri::App) -> tauri::Result<()> {
+    let quit = MenuItem::with_id(app, "app-quit", "退出天枢 Agent", true, Some("CmdOrCtrl+Q"))?;
+    let application = SubmenuBuilder::new(app, "天枢 Agent")
+        .about(None)
+        .separator()
+        .item(&quit)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .build()?;
+    let edit = SubmenuBuilder::new(app, "编辑")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .item(&application)
+        .item(&edit)
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "打开天枢 Agent", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出并停止服务", true, None::<&str>)?;
@@ -260,16 +341,7 @@ fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
-            "quit" => {
-                if let Some(state) = app.try_state::<Mutex<RuntimeState>>()
-                    && let Ok(mut state) = state.lock()
-                    && let Err(error) = state.stop_host()
-                {
-                    show_quit_error(app, &error);
-                    return;
-                }
-                app.exit(0);
-            }
+            "quit" => request_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -294,6 +366,8 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .get_webview_window("main")
         .ok_or("Tauri main window missing")?;
     let package_version = app.package_info().version.to_string();
+    #[cfg(target_os = "macos")]
+    install_application_menu(app)?;
     let resource_dir = match resource_env_path("TIANSHU_DESKTOP_RESOURCE_DIR")
         .or_else(|| app.path().resource_dir().ok())
     {
@@ -320,6 +394,7 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 python: paths.python,
                 app_dir: paths.app_dir,
                 data_root: paths.data_root,
+                endpoint,
                 child,
                 owns_host,
             }));
@@ -339,10 +414,15 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_window(app);
         }))
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "app-quit" {
+                request_quit(app);
+            }
+        })
         .setup(initialise)
         .on_window_event(|window, event| {
             if window.label() == "main"
@@ -351,26 +431,33 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
-        })
+        });
+    #[cfg(target_os = "macos")]
+    let builder = builder.enable_macos_default_menu(false);
+    let app = builder
         .build(tauri::generate_context!())
         .expect("failed to build Tianshu desktop app");
 
     app.run(|app, event| match event {
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => show_window(app),
+        RunEvent::Resumed => show_window(app),
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { .. } => show_window(app),
         RunEvent::ExitRequested { api, .. } => {
-            if let Some(state) = app.try_state::<Mutex<RuntimeState>>() {
-                match state.lock() {
-                    Ok(mut state) => {
-                        if let Err(error) = state.stop_host() {
-                            api.prevent_exit();
-                            show_quit_error(app, &error);
-                        }
-                    }
-                    Err(error) => {
+            let Some(state) = app.try_state::<Mutex<RuntimeState>>() else {
+                return;
+            };
+            match state.lock() {
+                Ok(mut state) => {
+                    if let Err(error) = state.stop_host() {
                         api.prevent_exit();
-                        show_quit_error(app, &format!("运行时状态锁损坏：{error}"));
+                        show_quit_error(app, &error);
                     }
+                }
+                Err(error) => {
+                    api.prevent_exit();
+                    show_quit_error(app, &format!("运行时状态锁损坏：{error}"));
                 }
             }
         }

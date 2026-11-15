@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
+use std::path::PathBuf;
 use std::path::{Component, Path};
 
 use serde::Deserialize;
@@ -185,6 +187,56 @@ fn verify_file(root: &Path, relative: &str, expected: &str) -> Result<(), Releas
     Ok(())
 }
 
+fn collect_resource_files(
+    root: &Path,
+    current: &Path,
+    files: &mut BTreeMap<String, PathBuf>,
+) -> Result<(), ReleaseManifestError> {
+    let directory = root.join(current);
+    let entries = fs::read_dir(&directory).map_err(|error| {
+        ReleaseManifestError(format!("无法读取资源目录 {}：{error}", directory.display()))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            ReleaseManifestError(format!("无法读取资源目录 {}：{error}", directory.display()))
+        })?;
+        let relative = current.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|error| {
+            ReleaseManifestError(format!(
+                "无法取得资源类型 {}：{error}",
+                entry.path().display()
+            ))
+        })?;
+        if file_type.is_symlink() {
+            let canonical = entry.path().canonicalize().map_err(|error| {
+                ReleaseManifestError(format!(
+                    "无法解析资源链接 {}：{error}",
+                    entry.path().display()
+                ))
+            })?;
+            if !canonical.starts_with(root) || !canonical.is_file() {
+                return Err(ReleaseManifestError(format!(
+                    "资源链接逃出资源目录或指向非文件：{}",
+                    entry.path().display()
+                )));
+            }
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            files.insert(relative, canonical);
+        } else if file_type.is_dir() {
+            collect_resource_files(root, &relative, files)?;
+        } else if file_type.is_file() {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            files.insert(relative, entry.path());
+        } else {
+            return Err(ReleaseManifestError(format!(
+                "资源目录包含特殊文件：{}",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_resource_manifest(
     resource_dir: &Path,
     identity: &ReleaseIdentity,
@@ -226,6 +278,27 @@ pub fn verify_resource_manifest(
     })?;
     for (relative, digest) in &manifest.files {
         verify_file(&root, relative, digest)?;
+    }
+
+    let mut actual = BTreeMap::new();
+    collect_resource_files(&root, Path::new(""), &mut actual)?;
+    let expected: std::collections::BTreeSet<_> = manifest.files.keys().cloned().collect();
+    // Tauri may add its generated window/tray icon and this manifest beside the
+    // explicitly bundled resources. These metadata files cannot carry Python
+    // import hooks or executable payloads of their own.
+    let mut allowed = expected.clone();
+    allowed.extend(
+        ["release-manifest.json", "icon.icns", "icon.ico"]
+            .into_iter()
+            .map(str::to_owned),
+    );
+    let actual_paths: std::collections::BTreeSet<_> = actual.keys().cloned().collect();
+    let unlisted: Vec<_> = actual_paths.difference(&allowed).cloned().collect();
+    let missing: Vec<_> = expected.difference(&actual_paths).cloned().collect();
+    if !unlisted.is_empty() || !missing.is_empty() {
+        return Err(ReleaseManifestError(format!(
+            "资源文件集合与 release-manifest 不一致；未列文件={unlisted:?}，缺失文件={missing:?}"
+        )));
     }
     Ok(())
 }

@@ -4,6 +4,7 @@ set -eu
 archive=
 checksum_file=
 prefix="${HOME}/Applications"
+data_root="${HOME}/Library/Application Support/AgentOS"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -17,6 +18,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --prefix)
       prefix=$2
+      shift 2
+      ;;
+    --data-root)
+      data_root=$2
       shift 2
       ;;
     *)
@@ -92,7 +97,9 @@ fi
 release_json="$source_app/Contents/Resources/release.json"
 python_bin="$source_app/Contents/Resources/python/bin/python3"
 ui_index="$source_app/Contents/Resources/ui/dist/index.html"
-if [ ! -f "$release_json" ] || [ ! -x "$python_bin" ] || [ ! -f "$ui_index" ]; then
+desktop_bin="$source_app/Contents/MacOS/tianshu-desktop"
+if [ ! -f "$release_json" ] || [ ! -x "$python_bin" ] \
+  || [ ! -f "$ui_index" ] || [ ! -x "$desktop_bin" ]; then
   echo "安装包缺少受版本约束的应用资源" >&2
   exit 2
 fi
@@ -133,11 +140,41 @@ if ! grep -q "\"target\"[[:space:]]*:[[:space:]]*\"$release_target\"" "$release_
   exit 2
 fi
 
+canonicalize_path() {
+  path=$1
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    (cd "$path" && pwd -P)
+    return
+  fi
+  parent=$(dirname "$path")
+  base=$(basename "$path")
+  mkdir -p "$parent"
+  parent=$(cd "$parent" && pwd -P)
+  printf '%s/%s\n' "$parent" "$base"
+}
+
+# Tauri rejects a macOS executable path that crosses a symlink. Resolve both
+# roots before moving the app and refuse overlapping program/data trees, so a
+# rollback or future uninstall cannot delete the other tree.
+prefix=$(canonicalize_path "$prefix")
+data_root=$(canonicalize_path "$data_root")
+case "$prefix/" in "$data_root/"*)
+  echo "安装目录不能位于数据根内" >&2
+  exit 2
+  ;;
+esac
+case "$data_root/" in "$prefix/"*)
+  echo "数据根不能位于安装目录内" >&2
+  exit 2
+  ;;
+esac
+
+if ! "$desktop_bin" --verify-bundle "$source_app/Contents/Resources"; then
+  echo "新版本资源清单校验失败，拒绝替换现有程序" >&2
+  exit 2
+fi
+
 mkdir -p "$prefix"
-# Tauri rejects a macOS executable path that crosses a symlink. Resolve the
-# install prefix before moving the app so callers may pass /tmp or a linked
-# Applications directory without creating an app that cannot start.
-prefix=$(cd "$prefix" && pwd -P)
 target="$prefix/Tianshu Agent.app"
 if [ -e "$target" ]; then
   backup="${target}.previous-$(date +%Y%m%d%H%M%S)"
@@ -147,7 +184,7 @@ if ! mv "$source_app" "$target"; then
   echo "安装失败；旧版本保持不变" >&2
   exit 1
 fi
-if ! env PYTHONPATH="$target/Contents/Resources/app" \
+if ! env PYTHONPATH="$target/Contents/Resources/app" PYTHONDONTWRITEBYTECODE=1 \
   "$target/Contents/Resources/python/bin/python3" \
   -c 'import tianshu, tianshu.host, tianshu.daemon'; then
   rm -rf "$target"

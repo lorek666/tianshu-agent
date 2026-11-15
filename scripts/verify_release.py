@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
 import struct
 import subprocess
@@ -63,7 +64,15 @@ def _member_path(member: tarfile.TarInfo) -> PurePosixPath:
         raise VerifyError(f"归档包含不安全路径：{member.name!r}")
     if member.issym() or member.islnk():
         target = PurePosixPath(member.linkname)
-        if target.is_absolute() or ".." in target.parts or "\\" in member.linkname:
+        if target.is_absolute() or "\\" in member.linkname:
+            raise VerifyError(f"归档包含逃逸链接：{member.name!r}")
+        base = path.parent if member.issym() else PurePosixPath()
+        resolved = PurePosixPath(posixpath.normpath(str(base / target)))
+        if (
+            not resolved.parts
+            or ".." in resolved.parts
+            or resolved.parts[0] != path.parts[0]
+        ):
             raise VerifyError(f"归档包含逃逸链接：{member.name!r}")
     elif not (member.isfile() or member.isdir()):
         raise VerifyError(f"归档包含特殊文件：{member.name!r}")
@@ -77,6 +86,41 @@ def _read_member(archive: tarfile.TarFile, name: str) -> bytes:
     return stream.read()
 
 
+def _read_archive_path(
+    archive: tarfile.TarFile,
+    members: dict[str, tarfile.TarInfo],
+    name: str,
+) -> bytes:
+    seen: set[str] = set()
+    current = name
+    while True:
+        if current in seen:
+            raise VerifyError(f"归档链接循环：{name}")
+        seen.add(current)
+        member = members.get(current)
+        if member is None:
+            raise VerifyError(f"归档缺少文件：{current}")
+        if member.isfile():
+            return _read_member(archive, current)
+        if member.issym():
+            target = PurePosixPath(current).parent / member.linkname
+            current = posixpath.normpath(target.as_posix())
+            continue
+        if member.islnk():
+            current = member.linkname
+            continue
+        raise VerifyError(f"归档路径不是可读取文件：{current}")
+
+
+def _expect_pe(data: bytes, label: str) -> int:
+    if len(data) < 64 or data[:2] != b"MZ":
+        raise VerifyError(f"{label} 不是 PE 文件")
+    offset = struct.unpack("<I", data[0x3C:0x40])[0]
+    if offset + 6 > len(data) or data[offset : offset + 4] != b"PE\0\0":
+        raise VerifyError(f"{label} 缺少 PE header")
+    return struct.unpack("<H", data[offset + 4 : offset + 6])[0]
+
+
 def _expect_arch(data: bytes, target: str, label: str) -> None:
     if target.startswith("macos"):
         expected_magic = b"\xcf\xfa\xed\xfe"
@@ -88,12 +132,7 @@ def _expect_arch(data: bytes, target: str, label: str) -> None:
             raise VerifyError(f"{label} CPU 架构与 target {target} 不匹配")
         return
 
-    if len(data) < 64 or data[:2] != b"MZ":
-        raise VerifyError(f"{label} 不是 PE 文件")
-    offset = struct.unpack("<I", data[0x3C:0x40])[0]
-    if offset + 6 > len(data) or data[offset : offset + 4] != b"PE\0\0":
-        raise VerifyError(f"{label} 缺少 PE header")
-    machine = struct.unpack("<H", data[offset + 4 : offset + 6])[0]
+    machine = _expect_pe(data, label)
     expected = 0xAA64 if target.endswith("arm64") else 0x8664
     if machine != expected:
         raise VerifyError(f"{label} PE 架构与 target {target} 不匹配")
@@ -116,6 +155,7 @@ def _verify_macos_archive(
         prefix = "Tianshu Agent.app/Contents/"
         required = {
             f"{prefix}MacOS/tianshu-desktop",
+            f"{prefix}Info.plist",
             f"{prefix}Resources/licenses/LICENSE",
             f"{prefix}Resources/release.json",
             f"{prefix}Resources/ui/dist/index.html",
@@ -124,19 +164,76 @@ def _verify_macos_archive(
         if missing:
             raise VerifyError(f"macOS 归档缺少应用文件：{sorted(missing)}")
 
-        release_bytes = _read_member(archive, f"{prefix}Resources/release.json")
+        release_bytes = _read_archive_path(
+            archive,
+            members,
+            f"{prefix}Resources/release.json",
+        )
         if release_bytes != (bundle_dir / "release.json").read_bytes():
             raise VerifyError("归档 release.json 与已验证 bundle 字节不一致")
-        ui_bytes = _read_member(archive, f"{prefix}Resources/ui/dist/index.html")
+        ui_bytes = _read_archive_path(
+            archive,
+            members,
+            f"{prefix}Resources/ui/dist/index.html",
+        )
         if ui_bytes != (bundle_dir / "ui" / "dist" / "index.html").read_bytes():
             raise VerifyError("归档 UI 与已验证 bundle 字节不一致")
 
-        desktop = _read_member(archive, f"{prefix}MacOS/tianshu-desktop")
+        for relative, expected in manifest["files"].items():
+            member_name = f"{prefix}Resources/{relative}"
+            actual = hashlib.sha256(
+                _read_archive_path(archive, members, member_name)
+            ).hexdigest()
+            if actual != expected:
+                raise VerifyError(f"归档文件 SHA256 不匹配：{relative}")
+
+        resource_prefix = PurePosixPath(f"{prefix}Resources")
+        actual_resources = {
+            path.relative_to(resource_prefix).as_posix()
+            for name in members
+            if not members[name].isdir()
+            and (path := PurePosixPath(name)).is_relative_to(resource_prefix)
+        }
+        expected_resources = set(manifest["files"]) | {
+            "release-manifest.json",
+            "icon.icns",
+            "icon.ico",
+        }
+        unlisted = actual_resources - expected_resources
+        missing_payload = set(manifest["files"]) - actual_resources
+        if unlisted or missing_payload:
+            raise VerifyError(
+                "macOS 归档资源集合与 manifest 不一致："
+                f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing_payload)}"
+            )
+
+        contents_prefix = PurePosixPath(prefix.rstrip("/"))
+        actual_contents = {
+            path.relative_to(contents_prefix).as_posix()
+            for name in members
+            if not members[name].isdir()
+            and (path := PurePosixPath(name)).is_relative_to(contents_prefix)
+        }
+        expected_contents = {
+            "Info.plist",
+            "MacOS/tianshu-desktop",
+            "Resources/release-manifest.json",
+        } | {f"Resources/{relative}" for relative in manifest["files"]}
+        allowed_contents = expected_contents | {
+            "Resources/icon.icns",
+            "Resources/icon.ico",
+        }
+        unexpected_bundle_files = actual_contents - allowed_contents
+        missing_bundle_files = expected_contents - actual_contents
+        if unexpected_bundle_files or missing_bundle_files:
+            raise VerifyError(
+                "macOS 应用文件集合不完整："
+                f"未列文件={sorted(unexpected_bundle_files)}，"
+                f"缺失文件={sorted(missing_bundle_files)}"
+            )
+
+        desktop = _read_archive_path(archive, members, f"{prefix}MacOS/tianshu-desktop")
         _expect_arch(desktop, manifest["target"], "tianshu-desktop")
-        python_name = f"{prefix}Resources/python/bin/python3.12"
-        if python_name not in members:
-            raise VerifyError("macOS 归档缺少锁定 CPython 可执行文件")
-        _expect_arch(_read_member(archive, python_name), manifest["target"], "python3.12")
 
 
 def _verify_windows_artifact(
@@ -144,7 +241,16 @@ def _verify_windows_artifact(
     artifact: Path,
     manifest: dict[str, Any],
 ) -> None:
-    _expect_arch(artifact.read_bytes(), manifest["target"], artifact.name)
+    machine = _expect_pe(artifact.read_bytes(), artifact.name)
+    if machine not in {0x014C, 0x8664, 0xAA64}:
+        raise VerifyError(f"{artifact.name} 不是可识别的 NSIS PE 安装器")
+
+
+def _verify_windows_bundle(bundle_dir: Path, target: str) -> None:
+    python = bundle_dir / "python" / "python.exe"
+    if not python.is_file():
+        raise VerifyError("Windows bundle 缺少 python.exe")
+    _expect_arch(python.read_bytes(), target, "python.exe")
 
 
 def host_target() -> str | None:
@@ -173,6 +279,7 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
         raise VerifyError(f"bundle 缺少可执行的 Python：{python}")
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(bundle_dir / "app")
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
         [
             str(python),
@@ -252,6 +359,7 @@ def verify_release(
         )
     else:
         _verify_windows_artifact(artifact=artifact, manifest=manifest)
+        _verify_windows_bundle(bundle_dir, target)
     smoke = (
         _runtime_smoke(bundle_dir, target)
         if run_smoke
@@ -264,6 +372,7 @@ def verify_release(
         "artifact": artifact.name,
         "sha256": actual,
         "size": artifact.stat().st_size,
+        "manifest_sha256": _sha256(manifest_path),
         "runtime_smoke": smoke,
     }
 

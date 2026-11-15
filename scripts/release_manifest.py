@@ -57,9 +57,8 @@ def _validate_relative_path(raw: str) -> None:
     _expect(not path.name.startswith(".env"), f"发行物包含环境文件：{raw!r}")
 
 
-def validate_manifest(data: object, *, base_dir: Path) -> None:
-    """按真实 schema、路径规则和磁盘字节校验一个发布清单。"""
-
+def validate_manifest_document(data: object) -> dict[str, Any]:
+    """按真实 schema 与封闭字段规则校验发布清单的 JSON 形状。"""
     schema = _schema()
     _expect(isinstance(data, dict), "发布清单根必须是 object")
     assert isinstance(data, dict)
@@ -100,18 +99,26 @@ def validate_manifest(data: object, *, base_dir: Path) -> None:
         and _SHA256_RE.fullmatch(data["ui_dist_sha256"]) is not None,
         "ui_dist_sha256 必须是 64 位小写十六进制 SHA",
     )
-
-    files = data["files"]
-    _expect(isinstance(files, dict) and files, "files 必须是非空 object")
-    assert isinstance(files, dict)
-    root = Path(base_dir).resolve()
-    ui_hashes: set[str] = set()
-    for raw, digest in files.items():
+    _expect(isinstance(data["files"], dict) and data["files"], "files 必须是非空 object")
+    assert isinstance(data["files"], dict)
+    for raw, digest in data["files"].items():
         _validate_relative_path(raw)
         _expect(
             isinstance(digest, str) and _SHA256_RE.fullmatch(digest) is not None,
             f"{raw} 的 SHA256 不合法",
         )
+    return data
+
+
+def validate_manifest(data: object, *, base_dir: Path) -> None:
+    """按真实 schema、路径规则和磁盘字节校验一个发布清单。"""
+
+    data = validate_manifest_document(data)
+    files = data["files"]
+    assert isinstance(files, dict)
+    root = Path(base_dir).resolve()
+    ui_hashes: set[str] = set()
+    for raw, digest in files.items():
         target = (root / raw).resolve()
         try:
             target.relative_to(root)
