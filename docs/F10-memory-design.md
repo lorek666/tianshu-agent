@@ -86,7 +86,7 @@ Memory {
   scope: user | workspace | task,
   scope_id,
   kind: preference | fact | decision | procedure,
-  layer: l1 | l2 | l3,    # 资产层（v1.2 契约；代码未落地）
+  layer: l1 | l2 | l3,    # 资产层（v1.2 契约；N3 已落库，投影 schema v3）
   content_ref,            # 正文走内容寻址；事件里只存引用
   source_refs[],          # 引用：事件 seq / ArtifactRef / memory_id
   evidence[],             # 支撑证据：源 memory_id + 原文引文（L2 必填）
@@ -101,14 +101,14 @@ Memory {
 
 - **kind**：`preference`（偏好）/ `fact`（事实）/ `decision`（决策）/ `procedure`（可执行流程，对应 Skill）。
 - **origin**：`user_explicit`（用户明说「记住」）/ `user_confirmed`（用户确认过候选）/ `inferred`（模型推断）。**只有前两者自动激活**；`inferred` 永远是 `candidate`。
-  **迁移规则（v1.2 契约，代码未落地）**：`memory.confirm` 被人批准后必须把 `inferred`
+  **迁移规则（v1.2 契约，N1 已落地）**：`memory.confirm` 被人批准后必须把 `inferred`
   **升级**为 `user_confirmed`（只升级、不降级）；出处是审批记录，不是模型参数。
   `user_explicit` 只能由控制面 `memory.remember` 创建产生。**origin 描述的是
   "这一版正文"的来源，不是记忆的终身属性**：控制面 `memory.edit`（人自己写的新正文）
   → `user_explicit`；模型写、人批准 → `user_confirmed`；`memory.promote` 搬同一段正文，
   来源**随行**（不降档）。旧版 origin 留在旧行。
 - **status**：`candidate → active → superseded | forgotten`。
-- **layer**（v1.2 契约，代码未落地）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3`
+- **layer**（v1.2 契约，N3 已落库）：资产层 `l1` 原子事实 / `l2` 带证据的信念 / `l3`
   偏好页面；L2/L3 是可重建的合成层（§4）。`layer` 与 `kind` 正交：`kind` 说"是什么"，
   `layer` 说"多粗"。
 - **erased_at**（N4 已落库）：`status=forgotten` 只停召回、正文仍在本机；
