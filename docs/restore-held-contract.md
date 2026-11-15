@@ -1,6 +1,6 @@
 # 受管备份导入、持久隔离与只读复核 · B 契约
 
-**全文仍是 B 产品契约；T1 基础设施进入候选实现，完整 B 产品尚未实现。** 2026-11-15 从 main `2530a1575695baf75391a917a15a61dd2ffaa363` 重新绑定，当前组合同步 main `c8b53bb2e00c7be20e980fec3994019c64674420`。T1 候选已实现真实平台实体身份、非阻塞共享/独占实体锁、固定 Home restore registry，以及 `EventLog`/迁移/离线备份的连接期连续 access；合并树 `9cb6b947b28de13d3d999339e2c737abb94b35a5` 的本机 lock/full/ruff 已通过（3443P/12S），独立定向复审也已修复两轮反例。原生 Windows CI 和最终 PR SHA/tree 的独立复审仍为 `PENDING`，不能提前写成产品 PASS。B01–B09 与完整 apply/review/resume/abort 继续为 **NOT_RUN**。
+**全文仍是 B 产品契约；T1 基础设施进入候选实现，完整 B 产品尚未实现。** 2026-11-15 从 main `2530a1575695baf75391a917a15a61dd2ffaa363` 重新绑定，当前组合同步 main `0c5bb71e0fdc264f36a71778ebb3dd35172521d0`。T1 候选已实现真实平台实体身份、非阻塞共享/独占实体锁、固定 Home restore registry，以及 `EventLog`/迁移/离线备份的连接期连续 access；代码对象 `32f003d32f7e20d25936c45da684a2c2d756dc4b` 的本机 lock/full/ruff 与 GitHub run 43688229712 attempt3 六 job 已通过（本机 3443P/12S；Windows 3409P46S/3455 节点），独立定向复审为重放两项反例后的 PASS。Windows 原生 probe 仍由对应 artifact 单独签发；#145 heartbeat flake 保持开放。B01–B09 与完整 apply/review/resume/abort 继续为 **NOT_RUN**。
 原 v3 文字复审基于 main `8f2a508…`（tree `73558d7…`）与固定 `9413c7c…` 同 tree；结论仅为 `PASS_FOR_PURE_DOCS_PR_TEXT_ONLY`。T0 v2 已作为内部契约合入 main，原草案与复审原件见[证据子集](evidence/restore-held-contract-2026-11-14/README.md)，T1 新证据见[本日记录](evidence/restore-t1-2026-11-15/README.md)。本契约不启用新的 CLI/API。
 
 ## 1. 用户结果与现行差异

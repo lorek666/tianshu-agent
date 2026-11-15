@@ -1,15 +1,15 @@
 # 恢复 B · T1 平台基础候选证据
 
-**状态：`CANDIDATE_PENDING_FINAL_GATES_AND_INDEPENDENT_REVIEW`。**
+**状态：`CANDIDATE_CODE_AND_NATIVE_GATES_PASS`。**
 
 本记录只覆盖 T1 平台基础，不把内部实现写成可执行的完整恢复产品。基线为
 `origin/main@2530a1575695baf75391a917a15a61dd2ffaa363`，最终组合同步
-`origin/main@c8b53bb2e00c7be20e980fec3994019c64674420`（tree
-`977331a3a74bde8300a4536e01c775e5935ac50b`）；分支
-`codex/restore-t1-platform`。当前已核验合并树为
-`9cb6b947b28de13d3d999339e2c737abb94b35a5`（tree
-`4be8c4ee1a7577ec837511f7f33171b4fd70044e`）。最终 PR 提交 SHA/tree
-在事实文档提交、推送和第二读者复审后回填。
+`origin/main@0c5bb71e0fdc264f36a71778ebb3dd35172521d0`（tree
+`08bc99ccf9ff2f003fb072e9f1b7424131990c12`）；分支
+`codex/restore-t1-platform`。已通过原生 CI 与第二读者行为复审的代码对象为
+`32f003d32f7e20d25936c45da684a2c2d756dc4b`（tree
+`0c56c28955a4f163fd82d1868123183afa9ad677`）。后续事实文档 rebind
+只允许 docs-only delta；最终 PR merge SHA 与对应文档提交 CI 记录在 PR 正文。
 
 ## 实现范围
 
@@ -57,17 +57,35 @@
 T0、T1、迁移、数据绑定和离线备份相关回归为 **313 collected / 312 passed / 1
 skipped**。UI 未改动，CI 的现有 UI required check 仍会按仓库规则执行。
 
+PR run
+[`43688229712`](https://github.com/lorek666/tianshu-agent/actions/runs/43688229712)
+attempt 3 的六 job 全绿：Ubuntu **3433 passed / 22 skipped（424.66s）**、
+macOS **3443 / 12（1030.80s）**、Windows 两片 **1699P28S + 1710P18S**
+（合 3409P46S，完整覆盖 3455 个节点），Windows 汇总成功；UI 16 文件 /
+124 测试、typecheck、build 与 dist 一致。attempt 1 的 Windows shard 1
+重现已登记且仍开放的 #145 heartbeat `SQLITE_BUSY` flake；attempt 2 仅重跑失败
+job 时，因 artifact 名包含 run attempt、缺少同 attempt 的 shard 0 而由汇总
+正确拒绝；attempt 3 全量重跑后六 job 全绿。该历史不把 #145 写成已修。
+
 Windows 原生 runner 除完整测试外，还运行
 `scripts/restore_t1_windows_probe.py` 并上传独立 JSON artifact。该探针必须实际
 通过 128-bit file ID、持句柄 rename、硬链接、目录句柄、共享/独占锁、
-EventLog 连续锁与 registry 初始化；在对应 GitHub Actions run 完成后回填
-run/job/artifact/SHA。没有这些原生结果时，Windows 行保持 `NOT_RUN`。
+EventLog 连续锁与 registry 初始化。最终 artifact 为
+`restore-t1-windows-43688229712-3`（ZIP digest
+`sha256:35ca8a15fc2d43debb95e5136712f6f23aa8ca978947f5e584e8211d1084a241`）；
+其 `restore-t1-windows.json` SHA256
+`7745eafa64f07704840ed9b6fa497f7c80f14568616fa801af7c5b7dc2184fd4`，
+运行于 Windows Server 2025 / AMD64，状态 `PASS`，FileId 为 16 字节，
+硬链接身份相同，替换后身份改变，EventLog 活跃时文件与父目录 rename 均被拒绝。
 
 独立第二读者第一轮在未提交工作树上用真实子进程发现并复现了
 `absent→reserved` 准入竞态和迁移 SQLite close 失败提前释放 access；两项修复
 后第二轮结论为 `PASS（限 macOS 定向复审范围）`，EventLog/registry/migration
 定向 **78 passed / 1 skipped**。对象 `3435598` 的 T1 内容与行为已获第二读者
-`PASS`；最终 PR 提交 SHA/tree 的再次签发仍为 `PENDING`。
+`PASS`。最终代码对象 `32f003d` 的第二读者在独立导出上覆盖 net 与 T1 六个
+定向文件，得到 **104 passed / 1 skipped**，并重放 absent→reserved 和迁移
+close-failure 两项反例，结论为 `PASS（macOS 本地独立复审范围）`；Windows
+原生行为由上述 PR artifact 单独签发。
 
 ## 明确未完成
 
