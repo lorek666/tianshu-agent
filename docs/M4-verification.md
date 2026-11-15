@@ -57,7 +57,7 @@
 | 离线基线全绿 | `--repeat 3`：60/60 次运行、20/20 case 全绿、安全门槛通过 | 通过（实测 4.0 秒，186 次脚本模型调用，含 9 次真实子进程硬退） |
 | **真实换模有可比分数与失败归因**（退出判据） | 同一 suite m4.4 / repeat 3 / 完备选择下跑两家真实模型；`compare_reports` 守卫 `comparable=true`，逐 case 报退化与归因 | **已验**：见 §7.1（deepseek 18/20、glm 15/20；跨模型对比给出 E4/M1/M3/P2 的退化与归因） |
 | 工程门禁 | `uv run pytest` **1077 passed / 3 skipped**（2026-11-10 真实模型轮之后的全量；M4.1 分支 tip 是 951，M4 合并时 941）；`ruff check` 通过 | 通过 |
-| 跨平台 | CI 矩阵 `macos-latest / ubuntu-latest` 全绿；`windows-latest` 仍在跑但偶发挂住（issue #50），不挡合并 | macOS/Linux 已覆盖；Windows 非本机人工复验 |
+| 跨平台 | CI 矩阵 `macos-latest / ubuntu-latest` 全绿；`windows-latest` 仍在跑但偶发挂住（issue #50），不挡合并（**2026-11-14 历史注**：本表为 2026-11-10 时点；PR #130 后 Windows 已修绿并列为 required 四检查之一，#50 根因 2026-11-13 定位为 authkey 文件缺 `O_BINARY`，见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)） | macOS/Linux 已覆盖；Windows 非本机人工复验 |
 
 ## 2. case 集
 
@@ -180,7 +180,7 @@ R1/R2/R3 不是"在同一个进程里假装崩溃"：
 
 | 项 | 状态 | 为什么 / 依据 |
 |---|---|---|
-| **真实换模**（两个不同真实模型的分数与退化归因） | **已验（2026-11-10）** | §7.1：deepseek-v4.1-flash **18/20 case、54/60 run**；glm-5.2 **15/20 case、50/60 run**；`compare_reports` 守卫 `comparable=true`，跨模型对比逐条给出退化 case 与归因 |
+| **真实换模**（两个不同真实模型的分数与退化归因） | **已验（2026-11-10，m4.4 套件；m4.5 起判据不可比，见 §7.4）** | §7.1：deepseek-v4.1-flash **18/20 case、54/60 run**；glm-5.2 **15/20 case、50/60 run**；`compare_reports` 守卫 `comparable=true`，跨模型对比逐条给出退化 case 与归因 |
 | 真超时（长任务/网络延迟）下的恢复 | **已验（2026-11-10）** | §7.2：黑洞端点真挂住 3 次尝试，3m01.6s 后 run failed、`effect=none_applied`、replay 通过 |
 | memfs 后端下评测 | **已验 = 明确拒绝（2026-11-10）** | §7.3：不加守卫会得到 1/20 + `verdict=unsafe` 的假分数；现在开跑前 fail closed（`require_local_backend`），带两条回归测试 |
 | **真实模型非确定性** | **已验（3 次采样）** | 同一 case 在 3 次里出现 1/3、2/3、3/3 的差别（glm 的 E4/M1/M3 都是 1/3，P2 是 2/3）；报告只报逐次观测，不做统计推断 |
