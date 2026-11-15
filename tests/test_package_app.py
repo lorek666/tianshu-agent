@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import tarfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "package_app.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("package_app_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_resource_config_maps_only_verified_bundle_inputs(tmp_path):
+    module = _load_module()
+
+    config = module.resource_config(tmp_path)
+
+    assert config == {
+        "bundle": {
+            "resources": {
+                str(tmp_path / "python"): "python",
+                str(tmp_path / "app"): "app",
+                str(tmp_path / "licenses"): "licenses",
+                str(tmp_path / "ui" / "dist"): "ui/dist",
+                str(tmp_path / "release.json"): "release.json",
+                str(tmp_path / "release-manifest.json"): "release-manifest.json",
+            }
+        }
+    }
+
+
+def test_tauri_config_overrides_bundle_version(tmp_path):
+    module = _load_module()
+
+    config = module.tauri_config(tmp_path, "0.2.3")
+
+    assert config["version"] == "0.2.3"
+    assert config["bundle"] == module.resource_config(tmp_path)["bundle"]
+
+
+def test_tauri_config_rejects_future_major_version(tmp_path):
+    module = _load_module()
+
+    with pytest.raises(module.PackageError, match="0.x.y"):
+        module.tauri_config(tmp_path, "1.0.0")
+
+
+def test_macos_bundle_path_is_target_specific(tmp_path):
+    module = _load_module()
+
+    assert module.bundle_path(tmp_path, "macos-arm64", debug=False) == (
+        tmp_path
+        / "desktop"
+        / "src-tauri"
+        / "target"
+        / "release"
+        / "bundle"
+        / "macos"
+        / "Tianshu Agent.app"
+    )
+
+
+def test_windows_bundle_path_requires_setup_executable(tmp_path):
+    module = _load_module()
+
+    path = module.bundle_path(tmp_path, "windows-x64", debug=True)
+
+    assert path.parent.name == "nsis"
+    assert path.suffix == ".exe"
+
+
+def test_cross_arch_bundle_uses_explicit_rust_target_path(tmp_path):
+    module = _load_module()
+
+    path = module.bundle_path(
+        tmp_path,
+        "macos-x64",
+        debug=False,
+        target_triple="x86_64-apple-darwin",
+    )
+
+    assert path == (
+        tmp_path
+        / "desktop"
+        / "src-tauri"
+        / "target"
+        / "x86_64-apple-darwin"
+        / "release"
+        / "bundle"
+        / "macos"
+        / "Tianshu Agent.app"
+    )
+
+
+def test_macos_release_artifact_is_checksum_bound_and_contains_app(tmp_path):
+    module = _load_module()
+    app = tmp_path / "built" / "Tianshu Agent.app"
+    binary = app / "Contents" / "MacOS" / "tianshu-desktop"
+    resources = app / "Contents" / "Resources"
+    binary.parent.mkdir(parents=True)
+    resources.mkdir(parents=True)
+    binary.write_bytes(b"binary")
+    (resources / "release.json").write_text("{}", encoding="utf-8")
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "release-manifest.json").write_text(
+        json.dumps({"version": "0.1.0"}),
+        encoding="utf-8",
+    )
+
+    artifact = module.release_artifact(
+        bundled=app,
+        bundle_dir=bundle_dir,
+        out_dir=tmp_path / "out",
+        version="0.1.0",
+        target="macos-arm64",
+    )
+
+    assert artifact.name == "Tianshu-Agent-0.1.0-macos-arm64.app.tar.gz"
+    checksum = artifact.with_name("Tianshu-Agent-0.1.0-macos-arm64.sha256")
+    digest, filename = checksum.read_text(encoding="ascii").split()
+    assert filename == artifact.name
+    assert digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    with tarfile.open(artifact, "r:gz") as archive:
+        names = set(archive.getnames())
+    assert "Tianshu Agent.app/Contents/MacOS/tianshu-desktop" in names
+    assert "Tianshu Agent.app/Contents/Resources/release.json" in names
+
+
+def test_cross_os_target_is_rejected(tmp_path):
+    module = _load_module()
+    host_os = module.native_target().split("-", 1)[0]
+    foreign = "windows-x64" if host_os == "macos" else "macos-arm64"
+
+    with pytest.raises(module.PackageError, match="操作系统不一致"):
+        module.package_app(
+            repo_root=tmp_path,
+            target=foreign,
+            bundle_dir=tmp_path / "bundle",
+            target_triple=module.TARGET_TRIPLE[foreign],
+        )

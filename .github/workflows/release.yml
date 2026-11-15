@@ -1,0 +1,274 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "0.x.y release version"
+        required: true
+        type: string
+      commit:
+        description: "Full main commit SHA"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    name: release preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and bind identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            commit="${GITHUB_SHA}"
+          else
+            version="${{ inputs.version }}"
+            commit="${{ inputs.commit }}"
+          fi
+          [[ "$version" =~ ^0\.[0-9]+\.[0-9]+$ ]]
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${commit}^{commit}"
+          git merge-base --is-ancestor "$commit" origin/main
+          {
+            echo "version=$version"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require successful push CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow ci.yml \
+            --event push \
+            --commit "$COMMIT" \
+            --limit 20 \
+            --json databaseId,headSha,status,conclusion \
+            | jq -r --arg sha "$COMMIT" '
+                [.[] | select(.headSha == $sha and .status == "completed")]
+                | sort_by(.databaseId)
+                | last
+                | select(.conclusion == "success")
+                | .databaseId // empty
+              ')
+          test -n "$run_id"
+          gh run view "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json jobs \
+            > "$RUNNER_TEMP/ci-jobs.json"
+          jq -e '
+            [.jobs[].name] as $names
+            | [
+                "test (ubuntu-latest) · py3.12",
+                "test (macos-latest) · py3.12",
+                "test (windows-latest) · py3.12",
+                "ui · typecheck / test / build"
+              ]
+            | all(. as $required | $names | index($required) != null)
+          ' "$RUNNER_TEMP/ci-jobs.json"
+          jq -e 'all(.jobs[]; .conclusion == "success")' "$RUNNER_TEMP/ci-jobs.json"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: preflight
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: macos-arm64
+            triple: aarch64-apple-darwin
+          - os: macos-latest
+            target: macos-x64
+            triple: x86_64-apple-darwin
+          - os: windows-latest
+            target: windows-x64
+            triple: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: windows-arm64
+            triple: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.preflight.outputs.commit }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install Rust target
+        run: rustup target add "${{ matrix.triple }}"
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Prepare locked bundle
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv sync --frozen
+          uv run --frozen python scripts/build_release.py \
+            --target "$TARGET" \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --out "$RUNNER_TEMP/bundle-$TARGET" \
+            --cache-dir "$RUNNER_TEMP/python-runtime"
+
+      - name: Build and package Tauri app
+        env:
+          TARGET: ${{ matrix.target }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          uv run --frozen python scripts/package_app.py \
+            --target "$TARGET" \
+            --target-triple "$TRIPLE" \
+            --bundle-dir "$RUNNER_TEMP/bundle-$TARGET" \
+            --out-dir "$RUNNER_TEMP/release-$TARGET"
+
+      - name: Verify release bytes and target
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          uv run --frozen python scripts/verify_release.py \
+            --artifact-dir "$RUNNER_TEMP/release-$TARGET" \
+            --bundle-dir "$RUNNER_TEMP/bundle-$TARGET" \
+            --target "$TARGET" \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --report "$RUNNER_TEMP/release-$TARGET/release-verification.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 7
+
+  draft_release:
+    name: assemble draft release
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Download macOS arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos-arm64
+          path: ${{ runner.temp }}/artifacts/macos-arm64
+
+      - name: Download macOS x64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos-x64
+          path: ${{ runner.temp }}/artifacts/macos-x64
+
+      - name: Download Windows x64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-x64
+          path: ${{ runner.temp }}/artifacts/windows-x64
+
+      - name: Download Windows arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-windows-arm64
+          path: ${{ runner.temp }}/artifacts/windows-arm64
+
+      - name: Assemble four-target candidate
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv sync --frozen
+          uv run --frozen python scripts/assemble_release.py \
+            --artifacts-root "$RUNNER_TEMP/artifacts" \
+            --out-dir "$RUNNER_TEMP/release" \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --build-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Upload complete candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-${{ needs.preflight.outputs.version }}-${{ needs.preflight.outputs.commit }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: >-
+          gh release create "v$VERSION"
+          "$RUNNER_TEMP"/release/*
+          --repo "$GITHUB_REPOSITORY"
+          --target "$COMMIT"
+          --draft
+          --title "Tianshu Agent v$VERSION"
+          --notes "Unsigned runner-built release candidate. Device installation, upgrade, rollback, SmartScreen, and macOS Gatekeeper results remain unverified until recorded."
