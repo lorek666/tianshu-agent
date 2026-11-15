@@ -193,10 +193,11 @@ except Exception as exc:  # noqa: BLE001 - 调度器故障不带走驱动循环
 
 ## 7. 验收清单
 
-- [ ] `uv lock --check` 0 退出
-- [ ] `uv run --frozen ruff check .` 0 退出
-- [ ] 全量 `uv run --frozen pytest` 绿（数字记 PR body；跑前抢 `/tmp/tianshu-suite-lock`、确认 `df -h` ≥ 3GiB）
-- [ ] NC1/NC2 红输出摘录进 PR body
-- [ ] ROADMAP W5 行状态更新（如实档位）；KNOWLEDGE.md §8 追加；README 若提及则如实写「无 cron / 无 RPC / 无 UI」
-- [ ] 契约分析文档独立 commit，不夹带代码
-- [ ] `git status` 每次提交后干净；无 `git add -A`/`- .`
+- [x] `uv lock --check` 0 退出
+- [x] `uv run --frozen ruff check .` 0 退出
+- [x] 全量 `uv run --frozen pytest` 绿（**3408 passed / 11 skipped（686.57s）**，macOS arm64；跑前抢 `/tmp/tianshu-suite-lock`、df ≥ 3GiB）
+- [x] NC1/NC2 红输出摘录进 PR body（NC1 拆到期检查 9F/4P；NC2 拆同事务记账 6F/7P，主会话独立重放 NC2 亲证红→还原绿）
+- [x] ROADMAP W5 行状态更新（如实档位）；KNOWLEDGE.md §8 追加（纯追加）；README 如实写「无 cron / 无 RPC / 无 UI」
+- [x] 契约分析文档独立 commit，不夹带代码（`0eaed32`）
+- [x] `git status` 每次提交后干净；无 `git add -A`/`- .`
+- [x] CI：attempt1（run43693131633）Windows shard 0 红 = 新测试 `_terminal_run` 谓词未过滤终态（快机器碰巧绿、慢 runner 抓到 `created`）——谓词补 `AND r.state IN ('succeeded','failed')`（`28fff94`），同 shard 其余 12 条调度测试全过证接线无 Windows 缺陷；修复后 push 遇 **GitHub 侧 PR 事件异常**（synchronize×2 与 reopened PR 的 opened 事件均零 runs，与 #154 同族），重开 [PR #167](https://github.com/lorek666/tianshu-agent/pull/167) 等待触发，终态以 Actions 为准。
