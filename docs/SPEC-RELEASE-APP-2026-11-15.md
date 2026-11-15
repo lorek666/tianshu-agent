@@ -23,14 +23,19 @@
 > `try_wait()` 确认旧 child 退出后才允许接管。定向结果 Rust 32 tests、Python
 > Host/M5 27P/1S（唯一 skip 为 Windows 专用句柄）。
 >
-> 精确 `df1aacd` 的 macos-arm64 作者态产物通过 verify/runtime smoke、原生原始/
-> listed-tamper/unlisted-hook 负控、fresh install、两路真实 owned/attached Host
-> SIGKILL 恢复与退出清理、普通 GUI、attach→quit 和 takeover safe/race。随后
-> `eaa9da0` 修复 Python verifier 未校验 source bundle 完整文件集合的缺口：旧实现
-> 接受直接加入的 `bundle/app/sitecustomize.py`，新回归 RED→GREEN，真实 634 文件
-> bundle 仍通过。当前这些只是作者侧候选证据；docs-only 最终 SHA、该 SHA 的六项云
-> CI、最终产物/安装/GUI 复验和全新独立 PASS 尚未绑定，旧绿色一律不得继承。状态仍是
-> L1 候选，不得合并为已验收发行版。
+> 精确 `aaaffb4/tree b5d03d6` 的 macos-arm64 作者态产物（archive
+> `4b419aa85cd9745d63fe2def02c91a4da03fcb17a01a3948e34a2349af440562`、
+> manifest `b18bbcadd205deda2f8a0375b2c7b27a5ce1145dfe8eae1e3c4ed3714de93a75`）
+> 通过 verify/runtime smoke、原生原始/listed-tamper/unlisted-hook 负控、source
+> bundle 未列 hook 负控、fresh install（包内 `.pyc/__pycache__=0`）、两路真实
+> owned/attached Host SIGKILL 恢复与退出清理、普通 GUI、attach→quit 和 takeover
+> safe/race。`eaa9da0` 修复 Python verifier 未校验 source bundle 完整文件集合的
+> 缺口：旧实现接受直接加入的 `bundle/app/sitecustomize.py`，新回归 RED→GREEN，
+> 真实 634 文件 bundle 仍通过。该候选本机 lock/Ruff/diff、完整 Python
+> **3549P/12S（678.43s，exit 0）**、UI 124 tests、Rust 32 tests、fmt/clippy、
+> actionlint 与 shellcheck 全绿。当前这些仍是作者侧候选证据；docs-only 最终 SHA、
+> 该 SHA 的六项云 CI、最终产物/安装/GUI 复验和全新独立 PASS 尚未绑定，旧绿色一律
+> 不得继承。状态仍是 L1 候选，不得合并为已验收发行版。
 
 ## 0. 问题、权威输入与判定口径
 

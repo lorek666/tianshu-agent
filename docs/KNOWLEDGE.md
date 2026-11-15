@@ -39,15 +39,21 @@
   `tests/test_host_cleanup.py` 为 **27 passed / 1 skipped**（skip 仅 Windows 专用
   句柄测试）。
 
-  `df1aacd/tree 3081ada` 的精确 macos-arm64 作者态产物已通过 verify/runtime smoke、
-  原生 `--verify-bundle` 原始/listed-tamper/unlisted-hook 负控、全新安装、两路真实
-  owned/attached Host SIGKILL 恢复及退出清理、普通 GUI 生命周期、attach→quit 和
-  takeover safe/race 探针。两路崩溃探针都确认新 Host PID 与锁一致、`started_at`
-  变化、`/health` 与 `/session` 为 200、Daemon 身份保持、AX 恢复“已连接”；退出后
-  desktop/当前 Host/Daemon 全退，三个运行锁/socket 消失，`execution.guard` 与
-  `ipc.key` 保留。随后 `eaa9da0` 补上 Python `verify_release.py` 对 source bundle
-  的完整文件集合校验：旧实现接受直接加入 `bundle/app/sitecustomize.py` 的 hook，
-  新回归稳定红后转绿；真实 634 文件 bundle 的 verify/runtime smoke 仍通过。
+  `aaaffb4/tree b5d03d6` 的精确 macos-arm64 作者态产物
+  （archive SHA256 `4b419aa85cd9745d63fe2def02c91a4da03fcb17a01a3948e34a2349af440562`，
+  manifest `b18bbcadd205deda2f8a0375b2c7b27a5ce1145dfe8eae1e3c4ed3714de93a75`）
+  已通过 verify/runtime smoke、原生 `--verify-bundle` 原始/listed-tamper/
+  unlisted-hook 负控、新 source-bundle 未列 hook 负控、全新安装（包内
+  `.pyc/__pycache__=0`）、两路真实 owned/attached Host SIGKILL 恢复及退出清理、
+  普通 GUI 生命周期、attach→quit 和 takeover safe/race 探针。两路崩溃探针都确认
+  新 Host PID 与锁一致、`started_at` 变化、`/health` 与 `/session` 为 200、
+  Daemon 身份保持、AX 恢复“已连接”；退出后 desktop/当前 Host/Daemon 全退，
+  三个运行锁/socket 消失，`execution.guard` 与 `ipc.key` 保留。`eaa9da0` 补上的
+  Python source bundle 完整集合校验让攻击副本精确报未列
+  `app/sitecustomize.py` 并 exit 1。该候选本机 lock/Ruff/diff、完整 Python
+  **3549P/12S（678.43s，exit 0）**、UI 124 tests、Rust 32 tests、fmt/clippy、
+  actionlint 与 shellcheck 全部通过；第一次全量日志也为 3549P/12S，外层 zsh 写
+  `status` 只读变量导致的包装器错误已保原件并用 `gate_rc` 重跑。
   上述仍是 **作者侧候选证据，不是最终 PASS**：docs-only 最终 SHA、该 SHA 的六项云
   CI、最终产物/安装/GUI 复验和全新第二读者独立 PASS 都还没有绑定，PR 不得合并。
   旧 `5873720` 的 PartIAL、`7b4cc7a` 的 PARTIAL 与 `3863887` 的 UNFIXED 均只保留为
