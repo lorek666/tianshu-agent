@@ -1581,6 +1581,9 @@ def _cmd_memory(args: argparse.Namespace) -> int:
                 limit=min(max(args.limit, 1), MAX_RECALL_ITEMS),
                 max_bytes=MAX_RECALL_BYTES,
                 priority=priority,
+                # 控制面显式动作（人敲命令）：允许 embedding 外发（若配置了
+                # 外部 provider）——与面板 RPC 同口径（W6 外发 gate）。
+                allow_embedding_outbound=True,
             )
             recalled = outcome.items
             if args.json:

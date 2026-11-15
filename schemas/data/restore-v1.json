@@ -1,0 +1,3518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tianshu:restore:v1",
+  "title": "Managed held restore v1",
+  "description": "Exact required nullable fields; no quotas. The strict Python codec additionally enforces canonical bytes, exact integer types (rejecting 1.0/bool), signed64 SQL integer strings, UUID/base64 canonicality, current-OS NativePath recomputation, collection order, complete hashes, phase/reference/cleanup and disclosure invariants. Backup extension dictionaries retain the actual BackupManifest shape. No serializable RegistryObservation or execution authority is defined.",
+  "$ref": "#/$defs/RestoreWireV1",
+  "$defs": {
+    "Phase": {
+      "type": "string",
+      "enum": [
+        "reserved",
+        "stage_owned",
+        "sealed_hold",
+        "publish_intent",
+        "published_hold",
+        "abort_intent",
+        "aborted"
+      ]
+    },
+    "ErrorCategory": {
+      "type": "string",
+      "enum": [
+        "held",
+        "record_corrupt",
+        "binding_mismatch",
+        "incompatible",
+        "capacity_unavailable",
+        "durability_unavailable",
+        "maintenance_busy",
+        "restore_failed"
+      ]
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        }
+      ]
+    },
+    "EntityIdentityV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PosixEntityIdentityV1"
+        },
+        {
+          "$ref": "#/$defs/WindowsEntityIdentityV1"
+        }
+      ]
+    },
+    "OriginalTargetV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AbsentTargetV1"
+        },
+        {
+          "$ref": "#/$defs/EmptyTargetV1"
+        }
+      ]
+    },
+    "RestorePayloadV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ReservedV1"
+        },
+        {
+          "$ref": "#/$defs/StageOwnedV1"
+        },
+        {
+          "$ref": "#/$defs/SealedHoldV1"
+        },
+        {
+          "$ref": "#/$defs/PublishIntentV1"
+        },
+        {
+          "$ref": "#/$defs/PublishedHoldV1"
+        },
+        {
+          "$ref": "#/$defs/AbortIntentV1"
+        },
+        {
+          "$ref": "#/$defs/AbortedV1"
+        }
+      ]
+    },
+    "NativePathV1": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": [
+            "posix",
+            "windows"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "comparison_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "os",
+        "text",
+        "segments",
+        "comparison_key"
+      ],
+      "additionalProperties": false
+    },
+    "PosixEntityIdentityV1": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": [
+            "posix"
+          ]
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "os",
+        "device",
+        "inode"
+      ],
+      "additionalProperties": false
+    },
+    "WindowsEntityIdentityV1": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": [
+            "windows"
+          ]
+        },
+        "volume_serial": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file_id_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      },
+      "required": [
+        "os",
+        "volume_serial",
+        "file_id_hex"
+      ],
+      "additionalProperties": false
+    },
+    "DirRefV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        }
+      },
+      "required": [
+        "path",
+        "identity"
+      ],
+      "additionalProperties": false
+    },
+    "EntityRefV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        }
+      },
+      "required": [
+        "path",
+        "identity"
+      ],
+      "additionalProperties": false
+    },
+    "FileSnapshotV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "identity",
+        "size",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "StablePlacementV1": {
+      "type": "object",
+      "properties": {
+        "canonical_root": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "final_name": {
+          "type": "string",
+          "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+        },
+        "existing_ancestors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirRefV1"
+          }
+        },
+        "pending_parent_suffix": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        }
+      },
+      "required": [
+        "canonical_root",
+        "final_name",
+        "existing_ancestors",
+        "pending_parent_suffix"
+      ],
+      "additionalProperties": false
+    },
+    "AbsentTargetV1": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "absent"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "EmptyTargetV1": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "empty"
+          ]
+        },
+        "directory": {
+          "$ref": "#/$defs/DirRefV1"
+        }
+      },
+      "required": [
+        "kind",
+        "directory"
+      ],
+      "additionalProperties": false
+    },
+    "CopyFileV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          },
+          "minItems": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "CopyInventoryV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "directories": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+            },
+            "minItems": 1
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CopyFileV1"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "directories",
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "ManifestRefV1": {
+      "type": "object",
+      "properties": {
+        "saved_bytes_b64": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "saved_bytes_b64",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "DependencyRefV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "PlanInputsV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "backup_root": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "manifest": {
+          "$ref": "#/$defs/ManifestRefV1"
+        },
+        "copy_inventory": {
+          "$ref": "#/$defs/CopyInventoryV1"
+        },
+        "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "saved_source_path": {
+          "type": "string"
+        },
+        "source_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "placement": {
+          "$ref": "#/$defs/StablePlacementV1"
+        },
+        "original_target": {
+          "$ref": "#/$defs/OriginalTargetV1"
+        },
+        "registry_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registry_head_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dependency_identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DependencyRefV1"
+          }
+        },
+        "layout_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "scope_mapping_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "backup_root",
+        "manifest",
+        "copy_inventory",
+        "inventory_sha256",
+        "saved_source_path",
+        "source_aliases",
+        "placement",
+        "original_target",
+        "registry_id",
+        "registry_head_sha256",
+        "dependency_identities",
+        "layout_version",
+        "scope_mapping_version"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "registry_id": {
+              "type": "null"
+            },
+            "registry_head_sha256": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "registry_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "registry_head_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "RegistryMetaV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "home": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "authority_directory": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "registry_database": {
+          "$ref": "#/$defs/EntityRefV1"
+        }
+      },
+      "required": [
+        "version",
+        "registry_id",
+        "home",
+        "authority_directory",
+        "registry_database"
+      ],
+      "additionalProperties": false
+    },
+    "ControlLayoutV1": {
+      "type": "object",
+      "properties": {
+        "formal": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        },
+        "temporary": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        }
+      },
+      "required": [
+        "formal",
+        "temporary"
+      ],
+      "additionalProperties": false
+    },
+    "TokenV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "reserved_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "stage": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "parent": {
+          "$ref": "#/$defs/DirRefV1"
+        }
+      },
+      "required": [
+        "version",
+        "registry_id",
+        "batch_id",
+        "reserved_sha256",
+        "stage",
+        "parent"
+      ],
+      "additionalProperties": false
+    },
+    "OriginV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "sealed_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "version",
+        "registry_id",
+        "batch_id",
+        "sealed_sha256",
+        "binding_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "SqlValueV1": {
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "null"
+            }
+          ],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:0|-[1-9][0-9]*|[1-9][0-9]*)$"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "real"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "text"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "blob"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "ColumnV1": {
+      "type": "object",
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "declared_type": {
+          "type": "string"
+        },
+        "not_null": {
+          "type": "boolean"
+        },
+        "default_value": {
+          "$ref": "#/$defs/SqlValueV1"
+        },
+        "primary_key_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ordinal",
+        "name",
+        "declared_type",
+        "not_null",
+        "default_value",
+        "primary_key_ordinal"
+      ],
+      "additionalProperties": false
+    },
+    "ColumnRefV1": {
+      "type": "object",
+      "properties": {
+        "relation": {
+          "type": "string"
+        },
+        "column": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "relation",
+        "column"
+      ],
+      "additionalProperties": false
+    },
+    "RelationDigestV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnV1"
+          }
+        },
+        "definition": {
+          "$ref": "#/$defs/SqlValueV1"
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "definition",
+        "row_count",
+        "rows_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "FamilyCoverageV1": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnRefV1"
+          }
+        },
+        "material_paths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+            }
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "family",
+        "relations",
+        "columns",
+        "material_paths",
+        "checks"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeManifestV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "mapping_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RelationDigestV1"
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FamilyCoverageV1"
+          }
+        },
+        "materials": {
+          "$ref": "#/$defs/CopyInventoryV1"
+        }
+      },
+      "required": [
+        "version",
+        "mapping_version",
+        "schema_sha256",
+        "relations",
+        "coverage",
+        "materials"
+      ],
+      "additionalProperties": false
+    },
+    "DatabaseBytesV1": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "size",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "BindingV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "final_root": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "final_database": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "root_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "database_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "saved_source_path": {
+          "type": "string"
+        },
+        "source_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "manifest": {
+          "$ref": "#/$defs/ManifestRefV1"
+        },
+        "copy_inventory": {
+          "$ref": "#/$defs/CopyInventoryV1"
+        },
+        "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "database_bytes": {
+          "$ref": "#/$defs/DatabaseBytesV1"
+        },
+        "sqlite_scope": {
+          "$ref": "#/$defs/ScopeManifestV1"
+        },
+        "scope_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "dependency_identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DependencyRefV1"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "registry_id",
+        "batch_id",
+        "final_root",
+        "final_database",
+        "root_identity",
+        "database_identity",
+        "saved_source_path",
+        "source_aliases",
+        "manifest",
+        "copy_inventory",
+        "inventory_sha256",
+        "database_bytes",
+        "sqlite_scope",
+        "scope_sha256",
+        "dependency_identities"
+      ],
+      "additionalProperties": false
+    },
+    "CleanupFileV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          },
+          "minItems": 1
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "copy_entry": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "control_formal": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "control_expected_bytes_b64": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "identity",
+        "size",
+        "sha256",
+        "copy_entry",
+        "control_formal",
+        "control_expected_bytes_b64"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "copy_entry": {
+              "type": "array",
+              "minItems": 1
+            },
+            "control_formal": {
+              "type": "null"
+            },
+            "control_expected_bytes_b64": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "copy_entry": {
+              "type": "null"
+            },
+            "control_formal": {
+              "enum": [
+                [
+                  ".restore-token.json"
+                ],
+                [
+                  ".restore-origin.json"
+                ]
+              ]
+            },
+            "control_expected_bytes_b64": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+            }
+          }
+        }
+      ]
+    },
+    "CleanupDirectoryV1": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "original_direct_children": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        }
+      },
+      "required": [
+        "path",
+        "identity",
+        "original_direct_children"
+      ],
+      "additionalProperties": false
+    },
+    "CleanupPlanV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "stage_observation": {
+          "type": "string",
+          "enum": [
+            "absent_before_stage_owned",
+            "present"
+          ]
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_parent_chain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirRefV1"
+          },
+          "minItems": 1
+        },
+        "missing_parent_suffix": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleanupFileV1"
+          }
+        },
+        "directories_postorder": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CleanupDirectoryV1"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "stage_observation",
+        "stage",
+        "parent",
+        "observed_parent_chain",
+        "missing_parent_suffix",
+        "files",
+        "directories_postorder"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "stage_observation": {
+                "const": "absent_before_stage_owned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "stage": {
+                "type": "null"
+              },
+              "files": {
+                "maxItems": 0
+              },
+              "directories_postorder": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "stage": {
+                "$ref": "#/$defs/DirRefV1"
+              },
+              "parent": {
+                "$ref": "#/$defs/DirRefV1"
+              },
+              "missing_parent_suffix": {
+                "maxItems": 0
+              },
+              "directories_postorder": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "missing_parent_suffix": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parent": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "parent": {
+                "$ref": "#/$defs/DirRefV1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DirectoryBarrierV1": {
+      "type": "object",
+      "properties": {
+        "directory_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "after_removed_path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+          }
+        }
+      },
+      "required": [
+        "directory_identity",
+        "after_removed_path"
+      ],
+      "additionalProperties": false
+    },
+    "ReservedV1": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/PlanInputsV1"
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "copy_inventory": {
+          "$ref": "#/$defs/CopyInventoryV1"
+        },
+        "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "placement": {
+          "$ref": "#/$defs/StablePlacementV1"
+        },
+        "original_target": {
+          "$ref": "#/$defs/OriginalTargetV1"
+        },
+        "stage_name": {
+          "type": "string",
+          "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+        }
+      },
+      "required": [
+        "plan",
+        "plan_sha256",
+        "copy_inventory",
+        "inventory_sha256",
+        "placement",
+        "original_target",
+        "stage_name"
+      ],
+      "additionalProperties": false
+    },
+    "StageOwnedV1": {
+      "type": "object",
+      "properties": {
+        "reserved_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "stage": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "parent": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "created_parent_chain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirRefV1"
+          }
+        },
+        "token_layout": {
+          "const": {
+            "formal": [
+              ".restore-token.json"
+            ],
+            "temporary": [
+              ".restore-token.json.tmp"
+            ]
+          }
+        },
+        "token_bytes_b64": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+        },
+        "token_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "origin_layout": {
+          "const": {
+            "formal": [
+              ".restore-origin.json"
+            ],
+            "temporary": [
+              ".restore-origin.json.tmp"
+            ]
+          }
+        }
+      },
+      "required": [
+        "reserved_sha256",
+        "stage",
+        "parent",
+        "created_parent_chain",
+        "token_layout",
+        "token_bytes_b64",
+        "token_sha256",
+        "origin_layout"
+      ],
+      "additionalProperties": false
+    },
+    "SealedHoldV1": {
+      "type": "object",
+      "properties": {
+        "stage_owned_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "future_root_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "future_database_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "stage_owned_sha256",
+        "future_root_identity",
+        "future_database_identity",
+        "binding",
+        "binding_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "PublishIntentV1": {
+      "type": "object",
+      "properties": {
+        "sealed_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "placement": {
+          "$ref": "#/$defs/StablePlacementV1"
+        },
+        "original_target": {
+          "$ref": "#/$defs/OriginalTargetV1"
+        },
+        "future_root_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "future_database_identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "origin_bytes_b64": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+        },
+        "origin_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "sealed_sha256",
+        "binding_sha256",
+        "placement",
+        "original_target",
+        "future_root_identity",
+        "future_database_identity",
+        "origin_bytes_b64",
+        "origin_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "PublishedHoldV1": {
+      "type": "object",
+      "properties": {
+        "publish_intent_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "final_root": {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        "final_database": {
+          "$ref": "#/$defs/EntityRefV1"
+        },
+        "stage_absent": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "origin_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "publish_intent_sha256",
+        "binding_sha256",
+        "final_root",
+        "final_database",
+        "stage_absent",
+        "origin_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "AbortIntentV1": {
+      "type": "object",
+      "properties": {
+        "from_event_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "from_kind": {
+          "type": "string",
+          "enum": [
+            "reserved",
+            "stage_owned",
+            "sealed_hold"
+          ]
+        },
+        "never_publish_intent": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "cleanup_plan": {
+          "$ref": "#/$defs/CleanupPlanV1"
+        },
+        "cleanup_plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "from_event_sha256",
+        "from_kind",
+        "never_publish_intent",
+        "cleanup_plan",
+        "cleanup_plan_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "AbortedV1": {
+      "type": "object",
+      "properties": {
+        "abort_intent_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "cleanup_plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "accounted_paths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+            }
+          }
+        },
+        "directory_barriers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirectoryBarrierV1"
+          }
+        },
+        "stable_parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "absence_anchor_barrier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage_absent": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "original_target": {
+          "$ref": "#/$defs/OriginalTargetV1"
+        }
+      },
+      "required": [
+        "abort_intent_sha256",
+        "cleanup_plan_sha256",
+        "accounted_paths",
+        "directory_barriers",
+        "stable_parent",
+        "absence_anchor_barrier",
+        "stage_absent",
+        "original_target"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreEventV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "registry_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "previous_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/Phase"
+        },
+        "payload": {
+          "$ref": "#/$defs/RestorePayloadV1"
+        }
+      },
+      "required": [
+        "version",
+        "registry_id",
+        "sequence",
+        "batch_id",
+        "previous_sha256",
+        "kind",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "reserved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/ReservedV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "stage_owned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/StageOwnedV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sealed_hold"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/SealedHoldV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "publish_intent"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/PublishIntentV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "published_hold"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/PublishedHoldV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "abort_intent"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AbortIntentV1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "aborted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AbortedV1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CapacityCheckV1": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "observed_entity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        },
+        "available_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_known_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "metadata_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "location",
+        "observed_entity",
+        "available_bytes",
+        "required_known_bytes",
+        "metadata_only"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyIntentV1": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "call_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "tool_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "run_id",
+        "call_id",
+        "seq",
+        "tool_id"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyApprovalV1": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved"
+          ]
+        },
+        "resources": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "approval_id",
+        "run_id",
+        "action",
+        "state",
+        "resources",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyRunV1": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "cancelling",
+            "created",
+            "paused",
+            "queued",
+            "reconciling",
+            "running",
+            "waiting_approval"
+          ]
+        }
+      },
+      "required": [
+        "run_id",
+        "task_id",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyLeaseV1": {
+      "type": "object",
+      "properties": {
+        "resource_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_pid": {
+          "type": "integer"
+        },
+        "owner_instance_id": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "resource_key",
+        "run_id",
+        "owner_pid",
+        "owner_instance_id",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectionTablesV1": {
+      "type": "object",
+      "properties": {
+        "approvals": {
+          "type": "string",
+          "enum": [
+            "present",
+            "absent"
+          ]
+        },
+        "runs": {
+          "type": "string",
+          "enum": [
+            "present",
+            "absent"
+          ]
+        },
+        "leases": {
+          "type": "string",
+          "enum": [
+            "present",
+            "absent"
+          ]
+        }
+      },
+      "required": [
+        "approvals",
+        "runs",
+        "leases"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyReconciliation": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "pending_intents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LegacyIntentV1"
+          }
+        },
+        "pending_approvals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LegacyApprovalV1"
+          }
+        },
+        "non_terminal_runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LegacyRunV1"
+          }
+        },
+        "live_leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LegacyLeaseV1"
+          }
+        },
+        "projection_tables": {
+          "$ref": "#/$defs/ProjectionTablesV1"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "reconciliation_scope": {
+          "type": "string",
+          "enum": [
+            "legacy_summary_only"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "pending_intents",
+        "pending_approvals",
+        "non_terminal_runs",
+        "live_leases",
+        "projection_tables",
+        "complete",
+        "reconciliation_scope"
+      ],
+      "additionalProperties": false
+    },
+    "RestorePlanV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "inputs": {
+          "$ref": "#/$defs/PlanInputsV1"
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "apply_supported": {
+          "type": "boolean"
+        },
+        "capacity_checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapacityCheckV1"
+          }
+        },
+        "verification": {
+          "$ref": "#/$defs/BackupVerification"
+        },
+        "legacy_reconciliation": {
+          "$ref": "#/$defs/LegacyReconciliation"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "inputs",
+        "plan_sha256",
+        "apply_supported",
+        "capacity_checks",
+        "verification",
+        "legacy_reconciliation",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreActionResultV1": {
+      "type": "object",
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "phase": {
+          "enum": [
+            "published_hold",
+            "aborted"
+          ]
+        },
+        "held": {
+          "type": "boolean"
+        },
+        "data_root": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "binding_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "files_restored": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_restored": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_command": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "batch_id",
+        "phase",
+        "held",
+        "data_root",
+        "plan_sha256",
+        "binding_sha256",
+        "event_sha256",
+        "files_restored",
+        "bytes_restored",
+        "review_command"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "published_hold"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "held": {
+                "const": true
+              },
+              "binding_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "held": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RestoreCauseV1": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreFailureV1": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ErrorCategory"
+        },
+        "message": {
+          "type": "string"
+        },
+        "batch_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Phase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retained_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NativePathV1"
+          }
+        },
+        "next_commands": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestoreCauseV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "category",
+        "message",
+        "batch_id",
+        "phase",
+        "plan_sha256",
+        "retained_paths",
+        "next_commands",
+        "cause"
+      ],
+      "additionalProperties": false
+    },
+    "CheckV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "NamedValueV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/SqlValueV1"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "SourceRefV1": {
+      "type": "object",
+      "properties": {
+        "relation": {
+          "type": "string"
+        },
+        "key": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SqlValueV1"
+          }
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "material_path": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "relation",
+        "key",
+        "column",
+        "material_path"
+      ],
+      "additionalProperties": false
+    },
+    "BodySelectorV1": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "key": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SqlValueV1"
+          }
+        },
+        "field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "key",
+        "field"
+      ],
+      "additionalProperties": false
+    },
+    "BodyViewV1": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "selector": {
+          "type": "string",
+          "pattern": "^v1:[A-Za-z0-9_-]+$"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bytes_b64": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "field",
+        "size",
+        "sha256",
+        "selector",
+        "text",
+        "bytes_b64"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewObjectV1": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "key": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SqlValueV1"
+          }
+        },
+        "status": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedValueV1"
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceRefV1"
+          }
+        },
+        "bodies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BodyViewV1"
+          }
+        }
+      },
+      "required": [
+        "family",
+        "key",
+        "status",
+        "sources",
+        "bodies"
+      ],
+      "additionalProperties": false
+    },
+    "LaterChangeV1": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "key": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SqlValueV1"
+          }
+        },
+        "before_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "family",
+        "key",
+        "before_sha256",
+        "after_sha256",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreReviewV1": {
+      "type": "object",
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "published_hold"
+          ]
+        },
+        "held": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "data_root": {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "scope_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "review_complete": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckV1"
+          }
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReviewObjectV1"
+          }
+        },
+        "known_later_changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LaterChangeV1"
+          }
+        },
+        "unverifiable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "later_forget_delete_history": {
+          "type": "string",
+          "enum": [
+            "completeness_unproven"
+          ]
+        },
+        "body_scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^v1:[A-Za-z0-9_-]+$"
+          }
+        }
+      },
+      "required": [
+        "batch_id",
+        "phase",
+        "held",
+        "data_root",
+        "binding_sha256",
+        "scope_sha256",
+        "review_complete",
+        "checks",
+        "objects",
+        "known_later_changes",
+        "unverifiable",
+        "later_forget_delete_history",
+        "body_scopes"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "review_complete": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "unverifiable": {
+                "maxItems": 0
+              },
+              "checks": {
+                "items": {
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RestoreResponseV1": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "restore-apply",
+            "restore-resume",
+            "restore-abort",
+            "restore-review"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestoreActionResultV1"
+            },
+            {
+              "$ref": "#/$defs/RestoreReviewV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestoreFailureV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "operation",
+        "ok",
+        "result",
+        "error"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "ok": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "type": "null"
+              },
+              "result": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RestoreReviewV1"
+                  },
+                  {
+                    "$ref": "#/$defs/RestoreActionResultV1"
+                  }
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "error": {
+                "$ref": "#/$defs/RestoreFailureV1"
+              },
+              "result": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/$defs/RestoreReviewV1"
+                      },
+                      {
+                        "properties": {
+                          "review_complete": {
+                            "const": false
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "operation": {
+                "const": "restore-review"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/RestoreReviewV1"
+                  },
+                  {
+                    "properties": {
+                      "review_complete": {
+                        "const": true
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "enum": [
+                  "restore-apply",
+                  "restore-resume",
+                  "restore-abort"
+                ]
+              }
+            }
+          },
+          "then": {
+            "if": {
+              "properties": {
+                "ok": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "result": {
+                  "$ref": "#/$defs/RestoreActionResultV1"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "result": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "operation": {
+                "const": "restore-apply"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "properties": {
+                  "phase": {
+                    "const": "published_hold"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "operation": {
+                "const": "restore-abort"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "properties": {
+                  "phase": {
+                    "const": "aborted"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SqlRelationV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnV1"
+          }
+        },
+        "definition": {
+          "$ref": "#/$defs/SqlValueV1"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SqlValueV1"
+            }
+          }
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "definition",
+        "rows"
+      ],
+      "additionalProperties": false
+    },
+    "SqlRelationRefV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ColumnV1"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "columns"
+      ],
+      "additionalProperties": false
+    },
+    "SqlSchemaV1": {
+      "type": "object",
+      "properties": {
+        "user_version": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/SqlValueV1"
+            },
+            {
+              "prefixItems": [
+                {
+                  "const": "integer"
+                }
+              ]
+            }
+          ]
+        },
+        "sqlite_schema_rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "prefixItems": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SqlValueV1"
+                  },
+                  {
+                    "prefixItems": [
+                      {
+                        "enum": [
+                          "text"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SqlValueV1"
+                  },
+                  {
+                    "prefixItems": [
+                      {
+                        "enum": [
+                          "text"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SqlValueV1"
+                  },
+                  {
+                    "prefixItems": [
+                      {
+                        "enum": [
+                          "text"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SqlValueV1"
+                  },
+                  {
+                    "prefixItems": [
+                      {
+                        "enum": [
+                          "integer"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/SqlValueV1"
+                  },
+                  {
+                    "prefixItems": [
+                      {
+                        "enum": [
+                          "text",
+                          "null"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SqlRelationRefV1"
+          }
+        }
+      },
+      "required": [
+        "user_version",
+        "sqlite_schema_rows",
+        "relations"
+      ],
+      "additionalProperties": false
+    },
+    "NodeInfoV1": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "file",
+            "directory"
+          ]
+        },
+        "link_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identity": {
+          "$ref": "#/$defs/EntityIdentityV1"
+        }
+      },
+      "required": [
+        "kind",
+        "link_count",
+        "size",
+        "identity"
+      ],
+      "additionalProperties": false
+    },
+    "ChildEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^(?!\\.{1,2}$)(?![A-Za-z]:)[^/\\\\\\u0000]+$"
+        },
+        "info": {
+          "$ref": "#/$defs/NodeInfoV1"
+        }
+      },
+      "required": [
+        "name",
+        "info"
+      ],
+      "additionalProperties": false
+    },
+    "LockKeyV1": {
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "gate"
+            }
+          ],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "namespace"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "entity"
+            },
+            {
+              "$ref": "#/$defs/EntityIdentityV1"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "BackupVerification": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackupManifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remediation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "files_checked": {
+          "type": "integer"
+        },
+        "bytes_checked": {
+          "type": "integer"
+        },
+        "db_user_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ok",
+        "manifest",
+        "problems",
+        "remediation",
+        "files_checked",
+        "bytes_checked",
+        "db_user_version"
+      ],
+      "additionalProperties": false
+    },
+    "BackupManifest": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        },
+        "format_version": {
+          "type": "integer"
+        },
+        "app_version": {
+          "type": "string"
+        },
+        "db_user_version": {
+          "type": "integer"
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "source_name": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackupFile"
+          }
+        },
+        "event_count": {
+          "type": "integer"
+        },
+        "event_seq_head": {
+          "type": "integer"
+        },
+        "run_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        "writer": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        "restore_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "format",
+        "format_version",
+        "app_version",
+        "db_user_version",
+        "created_at_ms",
+        "source_name",
+        "source_path",
+        "files",
+        "event_count",
+        "event_seq_head",
+        "run_ids",
+        "references",
+        "writer",
+        "excluded",
+        "retention",
+        "restore_notes",
+        "source_aliases"
+      ],
+      "additionalProperties": false
+    },
+    "BackupFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "category": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size",
+        "category"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreWireV1": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NativePathV1"
+        },
+        {
+          "$ref": "#/$defs/PosixEntityIdentityV1"
+        },
+        {
+          "$ref": "#/$defs/WindowsEntityIdentityV1"
+        },
+        {
+          "$ref": "#/$defs/DirRefV1"
+        },
+        {
+          "$ref": "#/$defs/EntityRefV1"
+        },
+        {
+          "$ref": "#/$defs/FileSnapshotV1"
+        },
+        {
+          "$ref": "#/$defs/StablePlacementV1"
+        },
+        {
+          "$ref": "#/$defs/AbsentTargetV1"
+        },
+        {
+          "$ref": "#/$defs/EmptyTargetV1"
+        },
+        {
+          "$ref": "#/$defs/CopyFileV1"
+        },
+        {
+          "$ref": "#/$defs/CopyInventoryV1"
+        },
+        {
+          "$ref": "#/$defs/ManifestRefV1"
+        },
+        {
+          "$ref": "#/$defs/DependencyRefV1"
+        },
+        {
+          "$ref": "#/$defs/PlanInputsV1"
+        },
+        {
+          "$ref": "#/$defs/RegistryMetaV1"
+        },
+        {
+          "$ref": "#/$defs/ControlLayoutV1"
+        },
+        {
+          "$ref": "#/$defs/TokenV1"
+        },
+        {
+          "$ref": "#/$defs/OriginV1"
+        },
+        {
+          "$ref": "#/$defs/SqlValueV1"
+        },
+        {
+          "$ref": "#/$defs/ColumnV1"
+        },
+        {
+          "$ref": "#/$defs/ColumnRefV1"
+        },
+        {
+          "$ref": "#/$defs/RelationDigestV1"
+        },
+        {
+          "$ref": "#/$defs/FamilyCoverageV1"
+        },
+        {
+          "$ref": "#/$defs/ScopeManifestV1"
+        },
+        {
+          "$ref": "#/$defs/DatabaseBytesV1"
+        },
+        {
+          "$ref": "#/$defs/BindingV1"
+        },
+        {
+          "$ref": "#/$defs/CleanupFileV1"
+        },
+        {
+          "$ref": "#/$defs/CleanupDirectoryV1"
+        },
+        {
+          "$ref": "#/$defs/CleanupPlanV1"
+        },
+        {
+          "$ref": "#/$defs/DirectoryBarrierV1"
+        },
+        {
+          "$ref": "#/$defs/ReservedV1"
+        },
+        {
+          "$ref": "#/$defs/StageOwnedV1"
+        },
+        {
+          "$ref": "#/$defs/SealedHoldV1"
+        },
+        {
+          "$ref": "#/$defs/PublishIntentV1"
+        },
+        {
+          "$ref": "#/$defs/PublishedHoldV1"
+        },
+        {
+          "$ref": "#/$defs/AbortIntentV1"
+        },
+        {
+          "$ref": "#/$defs/AbortedV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreEventV1"
+        },
+        {
+          "$ref": "#/$defs/CapacityCheckV1"
+        },
+        {
+          "$ref": "#/$defs/LegacyIntentV1"
+        },
+        {
+          "$ref": "#/$defs/LegacyApprovalV1"
+        },
+        {
+          "$ref": "#/$defs/LegacyRunV1"
+        },
+        {
+          "$ref": "#/$defs/LegacyLeaseV1"
+        },
+        {
+          "$ref": "#/$defs/ProjectionTablesV1"
+        },
+        {
+          "$ref": "#/$defs/LegacyReconciliation"
+        },
+        {
+          "$ref": "#/$defs/RestorePlanV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreActionResultV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreCauseV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreFailureV1"
+        },
+        {
+          "$ref": "#/$defs/CheckV1"
+        },
+        {
+          "$ref": "#/$defs/NamedValueV1"
+        },
+        {
+          "$ref": "#/$defs/SourceRefV1"
+        },
+        {
+          "$ref": "#/$defs/BodySelectorV1"
+        },
+        {
+          "$ref": "#/$defs/BodyViewV1"
+        },
+        {
+          "$ref": "#/$defs/ReviewObjectV1"
+        },
+        {
+          "$ref": "#/$defs/LaterChangeV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreReviewV1"
+        },
+        {
+          "$ref": "#/$defs/RestoreResponseV1"
+        },
+        {
+          "$ref": "#/$defs/SqlRelationV1"
+        },
+        {
+          "$ref": "#/$defs/SqlRelationRefV1"
+        },
+        {
+          "$ref": "#/$defs/SqlSchemaV1"
+        },
+        {
+          "$ref": "#/$defs/NodeInfoV1"
+        },
+        {
+          "$ref": "#/$defs/ChildEntry"
+        },
+        {
+          "$ref": "#/$defs/LockKeyV1"
+        }
+      ]
+    }
+  }
+}
