@@ -1,6 +1,7 @@
 # 天枢 Agent 可安装发行版施工规格
 
-> 状态：**R0 规格与清单基础候选。R1–R3 尚未按切片合入；不宣称已交付安装版或 G3。**
+> 状态：**R1 Tauri 壳源码候选。R0 的规格/schema/validator 为前置；R2 锁定 runtime、
+> R3 安装/发布 workflow 尚未合入。不宣称已交付 L1 安装版、四目标支持或 G3。**
 >
 > 起草基线 `595be35`；本次拆分基线 `e242257984d2ebd1443e60c81e7d2c97b287122a`。
 > 原 PR #162 的 `7d121ad564d07375c8777f51ad3b7330dd632125 / tree 922a259db4453ec9e78f5e32910e499ad300c2be`
@@ -8,9 +9,10 @@
 
 ## 0. 问题、权威输入与判定口径
 
-当前 main 具有 React UI、Python Host/Daemon 与系统浏览器。本轮 R0 只交付规格、
-发布清单 schema、标准库校验器和真实字节测试。Tauri、锁定运行时、安装器和发布 workflow
-分别留给 R1–R3；原大分支实现保留供逐片迁入，不能以文件已存在代替独立验收。
+当前 main 具有 React UI、Python Host/Daemon 与系统浏览器。R0 交付规格、发布清单
+schema、标准库校验器和真实字节测试；R1 候选只增加 Tauri 壳、Host 生命周期和原生
+manifest 启动校验。锁定运行时、安装器和发布 workflow 分别留给 R2/R3；不能以文件已存在
+代替独立验收。
 
 - 权威要求：`docs/PRD-v1.md` §11.1 G3、§13 T1、§10.6；`docs/TECH-ARCH.md` §8；
   `CONTRIBUTING.md` §8；现有偏差见 `docs/M5-desktop.md` §2。
@@ -301,7 +303,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
 - owned/attached Host 最多 3 次有界退避恢复；辅助清理只接受已退出且 PID/
-  `started_at` 匹配的 Host，并在元数据守卫内按 Daemon 锁 SHA 条件停止。supervisor
+  `started_at` 匹配的 Host，并在元数据守卫内按 Daemon 锁 SHA 与
+  `instance_id` 条件停止。`instance_id` 必须在该次 shutdown 的同一条已握手
+  连接内核对；身份缺失或不符时 fail-closed。supervisor
   发现新 endpoint 时必须先用 `try_wait()` 确认旧 owned child 已退出，不能因新锁出现
   而丢掉仍存活的子句柄。
 - `旧 Host 退出 → host.lock 空窗 → 新 Host 发布 → 复用 Daemon` 的真实进程回归：
@@ -337,7 +341,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 16. 在 Tauri `setup` 内等待 Host 后直接 `navigate` → 真实 Release WebView 冷启动白屏；
     修复后必须显示加载页并进入“已连接”，不能只用窗口/进程断言。
 17. 在 `host.lock` 空窗后让新 Host 发布并复用旧 Daemon → 旧退出路径若误杀新实例必须
-    红；修复后必须以元数据守卫内的二次确认和 Daemon 锁 SHA 保留新实例。
+    红；修复后必须以元数据守卫内的二次确认、Daemon 锁 SHA 和同连接
+    `instance_id` 核对保留新实例。
 18. Host 已发布新 endpoint、但 supervisor 旧的 owned `Child` 仍存活时 → 旧实现不得
     丢掉 child 并重走 spawn/attach；修复后必须保留子句柄直到 `try_wait()` 证明退出。
 

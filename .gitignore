@@ -25,6 +25,7 @@ dist/
 !docs/evidence/low-disk-2026-11-14/t3/visual-static-demo/dist/
 build/
 target/
+desktop/src-tauri/gen/
 
 # macOS
 .DS_Store

@@ -27,7 +27,10 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 def _cli(*args: object, failpoint: str | None = None) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("TIANSHU_")}
-    env["PYTHONPATH"] = SRC
+    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if test_lock_root:
+        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+    env["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
     if failpoint is not None:
         env["TIANSHU_FAILPOINT"] = failpoint
     return subprocess.run(

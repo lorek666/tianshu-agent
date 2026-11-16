@@ -656,7 +656,14 @@ def clean_child_env():
             token in key.upper() for token in ("API_KEY", "API_TOKEN", "BASE_URL", "ENDPOINT")
         ) or key.upper().endswith(("_KEY", "_TOKEN")))
     }
-    env["PYTHONPATH"] = str(SCRIPT.parents[1] / "src")
+    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if test_lock_root:
+        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+    env["PYTHONPATH"] = (
+        str(SCRIPT.parents[1] / "src")
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", "")
+    )
     return env
 
 

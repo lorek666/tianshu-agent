@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from support import CHILD_TEXT
 
+from tianshu import maintenance
 from tianshu.events import EventLog
 from tianshu.leases import (
     ExecutionGuard,
@@ -35,6 +36,14 @@ from tianshu.leases import (
 from tianshu.workspace import ResourceIdentity, Workspace, overlap_key
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_maintenance_lock_root(tmp_path, monkeypatch):
+    """租约测试只争用本用例的锁根，不与其他工作树的全量测试互锁。"""
+    lock_root = tmp_path / "maintenance-lock-root"
+    monkeypatch.setattr(maintenance, "_lock_root", lambda: lock_root)
+    return lock_root
 
 
 @pytest.fixture()
@@ -390,9 +399,11 @@ _RACE_CHILD = textwrap.dedent(
     import sys
     from pathlib import Path
     sys.path.insert(0, {src!r})
+    from tianshu import maintenance
     from tianshu.events import EventLog
     from tianshu.leases import LeaseConflict, LeaseStore
 
+    maintenance._lock_root = lambda: Path({lock_root!r})
     db, workspace, run_id, go = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
     log = EventLog(Path(db))
     store = LeaseStore(log)
@@ -408,7 +419,7 @@ _RACE_CHILD = textwrap.dedent(
 )
 
 
-def test_two_processes_one_resource(tmp_path):
+def test_two_processes_one_resource(tmp_path, _isolated_maintenance_lock_root):
     """两个真进程抢同一目录：只允许一个拿到，另一个必须看到冲突。"""
     log = EventLog(tmp_path / "db.sqlite")
     log.close()
@@ -417,7 +428,12 @@ def test_two_processes_one_resource(tmp_path):
 
     children = [
         subprocess.Popen(
-            [sys.executable, "-c", _RACE_CHILD.format(src=SRC),
+            [
+                sys.executable,
+                "-c",
+                _RACE_CHILD.format(
+                    src=SRC, lock_root=str(_isolated_maintenance_lock_root)
+                ),
              str(tmp_path / "db.sqlite"), str(ws), f"run_{i}", str(go)],
             stdout=subprocess.PIPE, **CHILD_TEXT,
         )
@@ -440,9 +456,11 @@ _HOLDER_CHILD = textwrap.dedent(
     import sys
     from pathlib import Path
     sys.path.insert(0, {src!r})
+    from tianshu import maintenance
     from tianshu.events import EventLog
     from tianshu.leases import LeaseConflict, LeaseStore
 
+    maintenance._lock_root = lambda: Path({lock_root!r})
     db, workspace, run_id = sys.argv[1], sys.argv[2], sys.argv[3]
     log = EventLog(Path(db))
     store = LeaseStore(log)
@@ -454,12 +472,19 @@ _HOLDER_CHILD = textwrap.dedent(
 )
 
 
-def test_live_process_blocks_another_process(env, tmp_path):
+def test_live_process_blocks_another_process(
+    env, tmp_path, _isolated_maintenance_lock_root
+):
     """另一个活进程持有时，本进程必须冲突；它退出后才能拿到。"""
     _, s = env
     ws = _dir(tmp_path, "ws")
     child = subprocess.Popen(
-        [sys.executable, "-c", _HOLDER_CHILD.format(src=SRC),
+        [
+            sys.executable,
+            "-c",
+            _HOLDER_CHILD.format(
+                src=SRC, lock_root=str(_isolated_maintenance_lock_root)
+            ),
          str(tmp_path / "db.sqlite"), str(ws), "run_live"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, **CHILD_TEXT,
     )

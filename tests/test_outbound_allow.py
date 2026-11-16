@@ -428,7 +428,10 @@ def test_declared_origin_still_requires_per_request_approval(tmp_path):
 
 def _cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["PYTHONPATH"] = f"{REPO / 'src'}{os.pathsep}{REPO / 'tests'}"
+    env["PYTHONPATH"] = (
+        f"{REPO / 'src'}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"
+        f"{os.pathsep}{REPO / 'tests'}"
+    )
     env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, "-m", "tianshu", *args, "--db", str(tmp_path / "e.db"),
