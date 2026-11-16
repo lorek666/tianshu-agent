@@ -61,6 +61,7 @@ def test_release_dispatch_requires_exact_current_main():
     workflow = _workflow()
 
     assert 'test "$commit" = "$(git rev-parse origin/main)"' in workflow
+    assert 'test "$GITHUB_REF" = "refs/heads/main"' in workflow
     assert "git merge-base --is-ancestor" not in workflow
 
 
@@ -129,6 +130,18 @@ def test_release_uses_real_tauri_nsis_output_and_draft_only_write_permission():
     assert "gh release create" in workflow
     assert "--draft" in workflow
     assert '--target "$COMMIT"' in workflow
+
+
+def test_release_checks_ui_dist_after_tauri_packaging():
+    workflow = _workflow()
+    package = workflow.index(
+        "uv run --frozen python scripts/package_app.py"
+    )
+    ui_check = workflow.index("git diff --exit-code -- ui/dist")
+    verify = workflow.index(
+        "uv run --frozen python scripts/verify_release.py"
+    )
+    assert package < ui_check < verify
 
 
 def test_release_creates_new_draft_without_reuse_or_overwrite_path():

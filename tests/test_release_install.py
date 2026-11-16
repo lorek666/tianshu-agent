@@ -31,6 +31,7 @@ def _archive(
     base: Path,
     *,
     unsafe_name: str | None = None,
+    special_name: str | None = None,
     python_exit: int = 0,
     verifier_exit: int = 0,
     smoke_old_marker: Path | None = None,
@@ -112,17 +113,26 @@ def _archive(
             info = tarfile.TarInfo(unsafe_name)
             info.size = len(payload)
             stream.addfile(info, io.BytesIO(payload))
+        if special_name is not None:
+            info = tarfile.TarInfo(special_name)
+            info.type = tarfile.FIFOTYPE
+            stream.addfile(info)
     checksum = base / "Tianshu-Agent-0.1.0-macos-arm64.sha256"
     checksum.write_text(f"{_sha(archive)}  {archive.name}\n", encoding="ascii")
     return archive, checksum
 
 
-def _run(script: Path, *args: object) -> subprocess.CompletedProcess[str]:
+def _run(
+    script: Path,
+    *args: object,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["sh", str(script), *(str(arg) for arg in args)],
         check=False,
         text=True,
         capture_output=True,
+        env=env,
     )
 
 
@@ -423,6 +433,95 @@ def test_uninstall_purge_requires_exact_secondary_confirmation(tmp_path):
     assert marker.read_bytes() == b"data"
     assert "confirm-data-root" in result.stderr
     assert (prefix / "Tianshu Agent.app").is_dir()
+
+
+def test_uninstall_purge_rejects_system_and_public_directory_roots(tmp_path):
+    probe = tmp_path / "probe"
+    home = probe / "home"
+    install_prefix = probe / "Applications"
+    fake_bin = probe / "bin"
+    for directory in (
+        home / "Applications",
+        home / "Desktop",
+        home / "Documents",
+        home / "Downloads",
+        home / "Library",
+        home / "Movies",
+        home / "Music",
+        home / "Pictures",
+        home / "Public",
+        fake_bin,
+        install_prefix,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    rm_log = probe / "rm.log"
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$RELEASE_RM_LOG"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["RELEASE_RM_LOG"] = str(rm_log)
+    roots = [
+        Path("/Applications"),
+        Path("/Library"),
+        Path("/System"),
+        Path("/Users/Shared"),
+        Path("/private/etc"),
+        home / "Applications",
+        home / "Desktop",
+        home / "Documents",
+        home / "Downloads",
+        home / "Library",
+        home / "Movies",
+        home / "Music",
+        home / "Pictures",
+        home / "Public",
+    ]
+
+    for data_root in roots:
+        result = _run(
+            UNINSTALL,
+            "--prefix",
+            install_prefix,
+            "--data-root",
+            data_root,
+            "--purge-data",
+            "--confirm-data-root",
+            data_root,
+            env=env,
+        )
+        assert result.returncode == 2, (data_root, result.stderr)
+        assert "不安全的数据根" in result.stderr
+
+    assert not rm_log.exists()
+
+
+def test_install_rejects_special_file_member_before_extraction(tmp_path):
+    archive, checksum = _archive(
+        tmp_path,
+        special_name="Tianshu Agent.app/Contents/Resources/unsafe.fifo",
+    )
+    prefix = tmp_path / "Applications"
+
+    result = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+    )
+
+    assert result.returncode == 2
+    assert "特殊文件" in result.stderr
+    assert not (prefix / "Tianshu Agent.app").exists()
 
 
 def test_reinstall_replaces_old_version_after_smoke(tmp_path):

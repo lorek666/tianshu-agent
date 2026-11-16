@@ -26,6 +26,11 @@ class PackageError(RuntimeError):
     """Tauri 发行壳未按声明构建。"""
 
 
+def _is_link(path: Path) -> bool:
+    junction_check = getattr(path, "is_junction", None)
+    return path.is_symlink() or (junction_check is not None and junction_check())
+
+
 def _lstat(path: Path, label: str) -> os.stat_result | None:
     try:
         return path.lstat()
@@ -35,40 +40,87 @@ def _lstat(path: Path, label: str) -> os.stat_result | None:
         raise PackageError(f"{label} 无法检查：{exc}") from exc
 
 
-def _require_regular_file(path: Path, label: str) -> None:
-    metadata = _lstat(path, label)
+def _validate_path_chain(path: Path, label: str) -> Path:
+    absolute = Path(os.path.abspath(Path(path).expanduser()))
+    current = Path(absolute.anchor)
+    relative_parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in relative_parts:
+        current /= part
+        metadata = _lstat(current, label)
+        if metadata is None:
+            break
+        if _is_link(current):
+            if current == absolute:
+                raise PackageError(f"{label}不能是符号链接：{current}")
+            raise PackageError(f"{label}路径不得经过符号链接：{current}")
+        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
+            raise PackageError(f"{label}路径祖先必须是普通目录：{current}")
+    return absolute
+
+
+def _validated_directory(path: Path, label: str) -> Path:
+    absolute = _validate_path_chain(path, label)
+    metadata = _lstat(absolute, label)
     if metadata is None:
-        raise PackageError(f"{label} 不存在：{path}")
-    if stat.S_ISLNK(metadata.st_mode):
-        raise PackageError(f"{label} 不能是符号链接：{path}")
+        raise PackageError(f"{label} 不存在：{absolute}")
+    if _is_link(absolute) or not stat.S_ISDIR(metadata.st_mode):
+        raise PackageError(f"{label} 必须是普通目录：{absolute}")
+    return absolute.resolve(strict=True)
+
+
+def _require_regular_file(path: Path, label: str) -> None:
+    absolute = _validate_path_chain(path, label)
+    metadata = _lstat(absolute, label)
+    if metadata is None:
+        raise PackageError(f"{label} 不存在：{absolute}")
+    if _is_link(absolute):
+        raise PackageError(f"{label} 不能是符号链接：{absolute}")
     if not stat.S_ISREG(metadata.st_mode):
-        raise PackageError(f"{label} 必须是普通文件：{path}")
+        raise PackageError(f"{label} 必须是普通文件：{absolute}")
+
+
+def _validate_resource_tree(root: Path, label: str) -> None:
+    root = _validated_directory(root, label)
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        metadata = _lstat(path, label)
+        assert metadata is not None
+        if _is_link(path):
+            raise PackageError(f"{label} 包含符号链接：{relative}")
+        if not (
+            stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+        ):
+            raise PackageError(f"{label} 包含特殊文件：{relative}")
 
 
 def _prepare_output_directory(path: Path) -> Path:
-    requested = Path(path).expanduser()
+    requested = _validate_path_chain(path, "发行输出目录")
     metadata = _lstat(requested, "发行输出目录")
     if metadata is not None:
-        if stat.S_ISLNK(metadata.st_mode):
+        if _is_link(requested):
             raise PackageError(f"发行输出目录不能是符号链接：{requested}")
         if not stat.S_ISDIR(metadata.st_mode):
             raise PackageError(f"发行输出目录必须是普通目录：{requested}")
     requested.mkdir(parents=True, exist_ok=True)
+    requested = _validate_path_chain(requested, "发行输出目录")
     metadata = _lstat(requested, "发行输出目录")
     assert metadata is not None
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+    if _is_link(requested) or not stat.S_ISDIR(metadata.st_mode):
         raise PackageError(f"发行输出目录必须是普通目录：{requested}")
     return requested.resolve(strict=True)
 
 
 def _require_safe_output_path(path: Path) -> None:
-    metadata = _lstat(path, "发行输出路径")
+    absolute = _validate_path_chain(path, "发行输出路径")
+    metadata = _lstat(absolute, "发行输出路径")
     if metadata is None:
         return
-    if stat.S_ISLNK(metadata.st_mode):
-        raise PackageError(f"发行输出路径不能是符号链接：{path}")
+    if _is_link(absolute):
+        raise PackageError(f"发行输出路径不能是符号链接：{absolute}")
     if not stat.S_ISREG(metadata.st_mode):
-        raise PackageError(f"发行输出路径必须是普通文件：{path}")
+        raise PackageError(f"发行输出路径必须是普通文件：{absolute}")
+    if metadata.st_nlink > 1:
+        raise PackageError(f"发行输出路径不能是硬链接：{absolute}")
 
 
 def resource_config(bundle_dir: Path) -> dict:
@@ -142,6 +194,8 @@ def _sha256(path: Path) -> str:
 
 
 def _write_macos_archive(app: Path, destination: Path) -> None:
+    app = _validated_directory(app, "Tauri macOS 发行物")
+    _validate_resource_tree(app, "Tauri macOS 发行物")
     with tarfile.open(destination, "w:gz", compresslevel=9) as archive:
         for path in sorted(app.rglob("*")):
             arcname = Path("Tianshu Agent.app") / path.relative_to(app)
@@ -169,15 +223,18 @@ def release_artifact(
         raise PackageError(f"未知 target：{target}")
     if re.fullmatch(r"0\.[0-9]+\.[0-9]+", version) is None:
         raise PackageError("version 必须匹配 0.x.y")
-    bundle_metadata = _lstat(Path(bundled), "Tauri 发行物")
+    bundled = _validate_path_chain(bundled, "Tauri 发行物")
+    bundle_metadata = _lstat(bundled, "Tauri 发行物")
     if bundle_metadata is None:
         raise PackageError(f"Tauri 发行物不存在：{bundled}")
-    if stat.S_ISLNK(bundle_metadata.st_mode):
+    if _is_link(bundled):
         raise PackageError(f"Tauri 发行物不能是符号链接：{bundled}")
     if target.startswith("macos") and not stat.S_ISDIR(bundle_metadata.st_mode):
         raise PackageError(f"Tauri macOS 发行物不存在或不是目录：{bundled}")
     if not target.startswith("macos") and not stat.S_ISREG(bundle_metadata.st_mode):
         raise PackageError(f"Tauri Windows 发行物不存在或不是文件：{bundled}")
+    if target.startswith("macos"):
+        _validate_resource_tree(bundled, "Tauri macOS 发行物")
     out_dir = _prepare_output_directory(Path(out_dir))
     if target.startswith("macos"):
         destination = out_dir / f"Tianshu-Agent-{version}-{target}.app.tar.gz"
@@ -185,7 +242,8 @@ def release_artifact(
         destination = out_dir / f"Tianshu-Agent-{version}-{target}-setup.exe"
     checksum = out_dir / f"Tianshu-Agent-{version}-{target}.sha256"
     manifest_output = out_dir / "release-manifest.json"
-    source_manifest = Path(bundle_dir) / "release-manifest.json"
+    bundle_dir = _validated_directory(bundle_dir, "发布 bundle")
+    source_manifest = bundle_dir / "release-manifest.json"
     _require_regular_file(source_manifest, "bundle release-manifest.json")
     for output in (destination, checksum, manifest_output):
         _require_safe_output_path(output)
@@ -222,24 +280,27 @@ def package_app(
         )
     if target_triple is not None and target_triple != TARGET_TRIPLE[target]:
         raise PackageError(f"target {target} 的 Rust triple 必须是 {TARGET_TRIPLE[target]}")
-    repo_root = Path(repo_root).resolve()
-    bundle_dir = Path(bundle_dir).resolve()
+    repo_root = _validated_directory(repo_root, "发布源仓库")
+    bundle_dir = _validated_directory(bundle_dir, "发布 bundle")
     manifest = bundle_dir / "release-manifest.json"
-    if not manifest.is_file():
-        raise PackageError(f"发布清单不存在：{manifest}")
+    _require_regular_file(manifest, "发布清单")
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
     version = manifest_data.get("version")
     if not isinstance(version, str):
         raise PackageError("发布清单缺少 version")
-    for required in (
-        bundle_dir / "python",
-        bundle_dir / "app" / "tianshu",
-        bundle_dir / "licenses" / "LICENSE",
-        bundle_dir / "ui" / "dist" / "index.html",
-        bundle_dir / "release.json",
+    for directory, label in (
+        (bundle_dir / "python", "Tauri Python runtime 资源"),
+        (bundle_dir / "app" / "tianshu", "Tauri app 资源"),
+        (bundle_dir / "licenses", "Tauri license 资源"),
+        (bundle_dir / "ui" / "dist", "Tauri UI 资源"),
     ):
-        if not required.exists():
-            raise PackageError(f"Tauri 资源输入不存在：{required}")
+        _validate_resource_tree(directory, label)
+    _require_regular_file(bundle_dir / "licenses" / "LICENSE", "Tauri LICENSE")
+    _require_regular_file(
+        bundle_dir / "ui" / "dist" / "index.html",
+        "Tauri UI index",
+    )
+    _require_regular_file(bundle_dir / "release.json", "Tauri release.json")
 
     bundles = "app" if target.startswith("macos") else "nsis"
     command = [
@@ -267,9 +328,19 @@ def package_app(
         target_triple=target_triple,
         version=version,
     )
-    expected_exists = (
-        expected.is_dir() if target.startswith("macos") else expected.is_file()
-    )
+    if target.startswith("macos"):
+        try:
+            expected = _validated_directory(expected, "Tauri macOS 发行物")
+            _validate_resource_tree(expected, "Tauri macOS 发行物")
+            expected_exists = True
+        except PackageError:
+            expected_exists = False
+    else:
+        try:
+            _require_regular_file(expected, "Tauri Windows 发行物")
+            expected_exists = True
+        except PackageError:
+            expected_exists = False
     if not expected_exists:
         pattern = "*.app" if target.startswith("macos") else "*-setup.exe"
         present = sorted(expected.parent.glob(pattern))

@@ -555,6 +555,25 @@ def test_archive_rejects_file_at_macos_app_root(tmp_path):
         )
 
 
+def test_archive_rejects_unexpected_empty_directory_at_macos_app_root(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_macos_root_empty_dir")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    root_extra = tarfile.TarInfo(f"{APP_ROOT}/root-empty")
+    root_extra.type = tarfile.DIRTYPE
+    root_extra.mode = 0o755
+    _append_tar_member(artifact, root_extra)
+
+    with pytest.raises(verify.VerifyError, match="应用.*集合"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
 @pytest.mark.parametrize(
     "relative",
     [

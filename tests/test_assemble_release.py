@@ -98,6 +98,38 @@ def test_assemble_release_indexes_exact_four_targets(tmp_path):
     ) == ["install-macos.sh", "uninstall-macos.sh"]
 
 
+def test_assemble_release_index_binds_every_final_asset(tmp_path):
+    module = _load()
+    artifacts = tmp_path / "artifacts"
+    _artifacts(artifacts)
+
+    path = module.assemble_release(
+        artifacts_root=artifacts,
+        out_dir=tmp_path / "release",
+        version="0.1.0",
+        commit=COMMIT,
+        build_run_url=BUILD_RUN_URL,
+    )
+
+    index = json.loads(path.read_text(encoding="utf-8"))
+    records = {record["name"]: record for record in index["assets"]}
+    final_names = {
+        item.name for item in path.parent.iterdir() if item.name != path.name
+    }
+    assert set(records) == final_names
+    assert len(records) == 14
+    for name, record in records.items():
+        asset = path.parent / name
+        assert record["sha256"] == hashlib.sha256(asset.read_bytes()).hexdigest()
+        assert record["size"] == asset.stat().st_size
+        assert record["kind"] in {
+            "artifact",
+            "checksum",
+            "manifest",
+            "helper-script",
+        }
+
+
 def test_assemble_release_preserves_executable_script_mode(tmp_path):
     module = _load()
     artifacts = tmp_path / "artifacts"
@@ -136,6 +168,7 @@ def test_assemble_release_index_binds_helper_script_bytes(tmp_path):
     for script in module.HELPER_SCRIPTS:
         copied = path.parent / script
         assert by_name[script] == {
+            "kind": "helper-script",
             "name": script,
             "sha256": hashlib.sha256(copied.read_bytes()).hexdigest(),
             "size": copied.stat().st_size,
@@ -332,6 +365,28 @@ def test_assemble_release_rejects_symlinked_artifacts_root(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_assemble_release_rejects_symlinked_artifacts_ancestor(tmp_path):
+    module = _load()
+    real_parent = tmp_path / "real-parent"
+    real_artifacts = real_parent / "artifacts"
+    _artifacts(real_artifacts)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_parent, target_is_directory=True)
+    out_dir = tmp_path / "release"
+
+    with pytest.raises(module.AssembleError, match="artifacts_root.*链接"):
+        module.assemble_release(
+            artifacts_root=alias / "artifacts",
+            out_dir=out_dir,
+            version="0.1.0",
+            commit=COMMIT,
+            build_run_url=BUILD_RUN_URL,
+        )
+
+    assert not out_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
 def test_assemble_release_rejects_symlinked_target_dir(tmp_path):
     module = _load()
     artifacts = tmp_path / "artifacts"
@@ -419,3 +474,51 @@ def test_assemble_release_rejects_symlinked_out_dir(tmp_path):
         )
 
     assert not any(external.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_assemble_release_rejects_symlinked_out_ancestor(tmp_path):
+    module = _load()
+    artifacts = tmp_path / "artifacts"
+    _artifacts(artifacts)
+    external = tmp_path / "external-release"
+    external.mkdir()
+    alias = tmp_path / "release-alias"
+    alias.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(module.AssembleError, match="out_dir.*链接"):
+        module.assemble_release(
+            artifacts_root=artifacts,
+            out_dir=alias / "release",
+            version="0.1.0",
+            commit=COMMIT,
+            build_run_url=BUILD_RUN_URL,
+        )
+
+    assert not (external / "release").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 硬链接负控")
+def test_assemble_release_rejects_hardlinked_output_file(tmp_path):
+    module = _load()
+    artifacts = tmp_path / "artifacts"
+    _artifacts(artifacts)
+    out_dir = tmp_path / "release"
+    out_dir.mkdir()
+    external = tmp_path / "outside-sentinel"
+    external.write_bytes(b"sentinel")
+    destination = out_dir / "Tianshu-Agent-0.1.0-macos-arm64.app.tar.gz"
+    os.link(external, destination)
+
+    with pytest.raises(module.AssembleError, match="硬链接"):
+        module.assemble_release(
+            artifacts_root=artifacts,
+            out_dir=out_dir,
+            version="0.1.0",
+            commit=COMMIT,
+            build_run_url=BUILD_RUN_URL,
+        )
+
+    assert external.read_bytes() == b"sentinel"
+    assert destination.read_bytes() == b"sentinel"
+    assert set(out_dir.iterdir()) == {destination}

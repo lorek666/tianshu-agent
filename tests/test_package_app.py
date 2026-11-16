@@ -22,6 +22,47 @@ def _load_module():
     return module
 
 
+def _package_bundle(tmp_path: Path) -> Path:
+    bundle_dir = tmp_path / "bundle"
+    (bundle_dir / "python").mkdir(parents=True)
+    (bundle_dir / "app" / "tianshu").mkdir(parents=True)
+    (bundle_dir / "licenses").mkdir()
+    (bundle_dir / "ui" / "dist").mkdir(parents=True)
+    (bundle_dir / "licenses" / "LICENSE").write_text("license", encoding="utf-8")
+    (bundle_dir / "ui" / "dist" / "index.html").write_text(
+        "<!doctype html>", encoding="utf-8"
+    )
+    (bundle_dir / "release.json").write_text("{}", encoding="utf-8")
+    (bundle_dir / "release-manifest.json").write_text(
+        json.dumps({"version": "0.1.0"}),
+        encoding="utf-8",
+    )
+    return bundle_dir
+
+
+def _expected_macos_app(tmp_path: Path) -> Path:
+    triple = module_target_triple()
+    app = (
+        tmp_path
+        / "desktop"
+        / "src-tauri"
+        / "target"
+        / triple
+        / "release"
+        / "bundle"
+        / "macos"
+        / "Tianshu Agent.app"
+    )
+    binary = app / "Contents" / "MacOS" / "tianshu-desktop"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"binary")
+    return app
+
+
+def module_target_triple() -> str:
+    return "aarch64-apple-darwin"
+
+
 def _mac_release_inputs(tmp_path: Path) -> tuple[Path, Path]:
     app = tmp_path / "built" / "Tianshu Agent.app"
     binary = app / "Contents" / "MacOS" / "tianshu-desktop"
@@ -193,6 +234,28 @@ def test_release_artifact_rejects_version_path_traversal(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_release_artifact_rejects_symlinked_output_ancestor(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    ancestor = tmp_path / "alias"
+    ancestor.symlink_to(external, target_is_directory=True)
+    nested_out = ancestor / "nested"
+
+    with pytest.raises(module.PackageError, match="输出目录路径.*链接"):
+        module.release_artifact(
+            bundled=app,
+            bundle_dir=bundle_dir,
+            out_dir=nested_out,
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert not (external / "nested").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
 def test_release_artifact_rejects_symlinked_output_directory(tmp_path):
     module = _load_module()
     app, bundle_dir = _mac_release_inputs(tmp_path)
@@ -236,6 +299,30 @@ def test_release_artifact_rejects_symlinked_destination_without_writing(tmp_path
     assert external.read_bytes() == b"keep"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 硬链接负控")
+def test_release_artifact_rejects_hardlinked_output_file(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    external = tmp_path / "outside-sentinel"
+    external.write_bytes(b"sentinel")
+    destination = out_dir / "Tianshu-Agent-0.1.0-macos-arm64.app.tar.gz"
+    os.link(external, destination)
+
+    with pytest.raises(module.PackageError, match="硬链接"):
+        module.release_artifact(
+            bundled=app,
+            bundle_dir=bundle_dir,
+            out_dir=out_dir,
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert external.read_bytes() == b"sentinel"
+    assert destination.read_bytes() == b"sentinel"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
 def test_release_artifact_rejects_symlinked_tauri_bundle(tmp_path):
     module = _load_module()
@@ -246,6 +333,27 @@ def test_release_artifact_rejects_symlinked_tauri_bundle(tmp_path):
     with pytest.raises(module.PackageError, match="发行物不能是符号链接"):
         module.release_artifact(
             bundled=app_link,
+            bundle_dir=bundle_dir,
+            out_dir=tmp_path / "out",
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_release_artifact_rejects_symlink_inside_macos_app(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    nested = app / "Contents" / "Resources" / "escape.txt"
+    external = tmp_path / "outside-secret"
+    external.write_text("must not be archived", encoding="utf-8")
+    nested.symlink_to(external)
+
+    with pytest.raises(module.PackageError, match="符号链接"):
+        module.release_artifact(
+            bundled=app,
             bundle_dir=bundle_dir,
             out_dir=tmp_path / "out",
             version="0.1.0",
@@ -267,6 +375,91 @@ def test_cross_os_target_is_rejected(tmp_path, monkeypatch):
             bundle_dir=tmp_path / "bundle",
             target_triple=module.TARGET_TRIPLE[foreign],
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_package_app_rejects_symlinked_bundle_root(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "macos-arm64")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+    )
+    real_bundle = _package_bundle(tmp_path)
+    _expected_macos_app(tmp_path)
+    bundle_link = tmp_path / "bundle-link"
+    bundle_link.symlink_to(real_bundle, target_is_directory=True)
+
+    with pytest.raises(module.PackageError, match="bundle.*符号链接|路径.*链接"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="macos-arm64",
+            bundle_dir=bundle_link,
+            target_triple=module_target_triple(),
+            out_dir=tmp_path / "out",
+        )
+
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_package_app_rejects_symlink_inside_required_source_tree(
+    tmp_path, monkeypatch
+):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "macos-arm64")
+    calls: list[object] = []
+
+    def unexpected_run(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(module.subprocess, "run", unexpected_run)
+    bundle_dir = _package_bundle(tmp_path)
+    _expected_macos_app(tmp_path)
+    external = tmp_path / "outside-secret"
+    external.write_text("must not be packaged", encoding="utf-8")
+    (bundle_dir / "app" / "tianshu" / "escape.py").symlink_to(external)
+
+    with pytest.raises(module.PackageError, match="符号链接|链接"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="macos-arm64",
+            bundle_dir=bundle_dir,
+            target_triple=module_target_triple(),
+            out_dir=tmp_path / "out",
+        )
+
+    assert calls == []
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO 负控")
+def test_package_app_rejects_nonregular_required_source(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "macos-arm64")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+    )
+    bundle_dir = _package_bundle(tmp_path)
+    _expected_macos_app(tmp_path)
+    license_path = bundle_dir / "licenses" / "LICENSE"
+    license_path.unlink()
+    os.mkfifo(license_path)
+
+    with pytest.raises(module.PackageError, match="普通文件|特殊文件"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="macos-arm64",
+            bundle_dir=bundle_dir,
+            target_triple=module_target_triple(),
+            out_dir=tmp_path / "out",
+        )
+
+    assert not (tmp_path / "out").exists()
 
 
 def test_cross_arch_target_is_rejected_even_on_matching_os(tmp_path, monkeypatch):

@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 if os.name == "nt":
@@ -451,7 +451,10 @@ def _validate_input_path(relative: str) -> None:
     for part in path.parts:
         if part.endswith((".", " ")):
             raise BuildError(f"构建输入路径不得以点或空格结尾：{relative!r}")
-        if _WINDOWS_RESERVED_NAME_RE.fullmatch(part):
+        if (
+            PureWindowsPath(part).is_reserved()
+            or _WINDOWS_RESERVED_NAME_RE.fullmatch(part)
+        ):
             raise BuildError(f"构建输入路径不得使用 Windows 保留设备名：{relative!r}")
     lowered_parts = {part.lower() for part in path.parts}
     if lowered_parts & _FORBIDDEN_INPUT_PARTS:

@@ -101,6 +101,12 @@ if ! tar -tvzf "$archive" | awk '
   echo "安装包包含不安全链接，拒绝安装" >&2
   exit 2
 fi
+if ! tar -tvzf "$archive" | awk '
+  substr($0, 1, 1) !~ /^[-d]$/ { exit 1 }
+'; then
+  echo "安装包包含特殊文件，拒绝安装" >&2
+  exit 2
+fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/tianshu-install.XXXXXX")
 backup=

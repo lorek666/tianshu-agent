@@ -547,23 +547,38 @@ def _verify_macos_archive(
         actual_app = {
             path.relative_to(app_prefix).as_posix()
             for name in members
-            if not members[name].isdir()
-            and (path := PurePosixPath(name)).is_relative_to(app_prefix)
+            if (path := PurePosixPath(name)).is_relative_to(app_prefix)
         }
-        expected_app = {
+        expected_app_files = {
             "Contents/Info.plist",
             "Contents/MacOS/tianshu-desktop",
             "Contents/Resources/release-manifest.json",
         } | {f"Contents/Resources/{relative}" for relative in files}
-        allowed_app = expected_app | {
+        allowed_app_files = expected_app_files | {
             f"Contents/Resources/{name}" for name in ALLOWED_RESOURCE_ICONS
         }
+        expected_app_directories: set[str] = set()
+        for relative in expected_app_files:
+            expected_app_directories.update(
+                parent.as_posix()
+                for parent in PurePosixPath(relative).parents
+                if parent.as_posix() != "."
+            )
+        allowed_app_directories: set[str] = set()
+        for relative in allowed_app_files:
+            allowed_app_directories.update(
+                parent.as_posix()
+                for parent in PurePosixPath(relative).parents
+                if parent.as_posix() != "."
+            )
+        expected_app = expected_app_files | expected_app_directories
+        allowed_app = allowed_app_files | allowed_app_directories
         unexpected = actual_app - allowed_app
         absent = expected_app - actual_app
         if unexpected or absent:
             raise VerifyError(
                 "macOS 应用文件集合不完整："
-                f"未列文件={sorted(unexpected)}，缺失文件={sorted(absent)}"
+                f"未列条目={sorted(unexpected)}，缺失条目={sorted(absent)}"
             )
 
         contents_prefix = PurePosixPath(MACOS_CONTENTS)

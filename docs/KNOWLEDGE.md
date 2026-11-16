@@ -18,13 +18,15 @@
 ## 1. 项目是什么
 
 - **目标**：面向普通用户的桌面 Agent OS——模型自选、在用户指定目录读写、完成长任务；把「AI 可能失控」当一等工程问题。
-- **当前形态**：**M0–M5 已完成，R1 Tauri 壳与 R3 发布/安装源码候选仍未合入。** M0–M4 是命令行内核；M5 历史基线交付 Daemon + Python Host + 系统浏览器里的 React UI。R1 分支新增未签名 Tauri/WebView2 薄壳、托盘、单实例与 Host 生命周期；R3 分支新增 four-target draft workflow、macOS 安装/卸载脚本、assembler/package 入口与测试。锁定 Python runtime、build/verify 入口仍由 R2 提供，签名和自动更新也尚未实现。**当前仍没有可双击安装并宣称四目标可用的成品 App，不能把源码候选当成正式发布。**
+- **当前形态**：**M0–M5 已完成，R1–R3 本地组合候选已收敛但仍未合入。** M0–M4 是命令行内核；M5 历史基线交付 Daemon + Python Host + 系统浏览器里的 React UI。组合候选包含未签名 Tauri/WebView2 薄壳、托盘、单实例与 Host 生命周期、锁定 Python runtime、四目标 build/verify、macOS 安装/卸载、assembler 与 draft release workflow；签名和自动更新尚未实现。**最终组合提交仍需第二读者 PASS 与精确 SHA CI，因此当前仍没有可双击安装并宣称四目标可用的成品 App，不能把源码候选当成正式发布。**
 - **核心承诺**：事件可重放、执行侧授权、覆盖/删除需审批、默认可撤销、崩溃可恢复。
 - **非目标（v1）**：图片/视频生成、多租户、防本机用户篡改（只防模型越权与失控 worker）。
 - **技术栈**：Python 3.12（`requires-python = ">=3.12,<3.13"`）、`uv`、**零第三方运行时依赖**（`dependencies = []`）；dev 依赖只有 `pytest>=8.0` 与 `ruff>=0.6`。UI 是 Vite + React + TS，但只有**开发/构建**时需要 Node，运行时加载已提交的 `ui/dist`。
 - **版本 / 许可**：`0.1.0`；Apache License 2.0（`LICENSE` 已被 git 跟踪）。
 
 ## 2. 当前状态（数字会过期，更新时重核）
+
+- **R1–R3 最终集成候选完成第二轮窄修，待最终提交复审（2026-11-16）**：`codex/release-final-integration` 已把 R1 桌面/Host/IO、R2 runtime build/verify 与 R3 assembler/installer/package/workflow 组合到基线 main `32ba798bb77527351ebae996a0e22b062df2f491`。上一审查对象 `87f66ee/tree 98336ac` 的独立结论为 R2 `PARTIAL`、最终 verifier/install `FAIL`、R3 `FAIL`：Windows 保留设备名空格变体仍进入 staging；bundle 根、资源树、输出祖先或已构建 App 的链接/FIFO 可写穿，并接受 macOS App 根额外空目录；`--purge-data` 放行系统/家目录公共根；`release-index.json` 只绑定 14 个最终资产中的 6 个。作者先保留原实现真红（保留名 `4 failed / 6 passed`、打包边界 `5 failed`、R3 P1/P2 五项 `5 failed`），再做最小修复并加入定向回归；另行以当前实现确认 hard-link 输出目标会把目录外 sentinel 改写为归档字节，以及 assembler 祖先 symlink 可把 15 个文件写到目录外，新增负控并使 package/assembler 只接受硬链接计数为 1 的已有普通文件、逐级检查 artifacts/out 路径链。卸载 purge 的删除也改为持住 canonical parent 后删单个相对条目，缩小 ancestor symlink 检查到执行的竞态。发行域联合 `251 passed`，lock、全仓 Ruff、actionlint、shellcheck、diff-check 均 exit 0；第二读者绑定新的最终 SHA 尚待完成。上一对象的独立 PASS 不能继承到这个仍未提交的组合。
 
 - **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
 
@@ -571,7 +573,8 @@
 
 ## 7. 已知限制 / 未决问题
 
-- **R3 仍被 R2 前置阻塞（2026-11-16）**：当前基线没有 `scripts/build_release.py`、`scripts/verify_release.py` 与 `src/tianshu/release_smoke.py`，因此 `release.yml` 的真实 dispatch 必然在 bundle/verify/smoke 入口失败。R3 不创建 stub，也不把静态检查或本机 fixture 写成 workflow 已执行。四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。作者侧对照全量的 4 项 `/private/tmp` 低磁盘红不证明也不否证 R3 业务；最终合并候选的全量、原生 CI 与四目标 workflow 由 integration 组合后另行绑定提交。
+- **R3 代码前置已在本地组合候选汇合（2026-11-16）**：`scripts/build_release.py`、`scripts/verify_release.py`、`src/tianshu/release_smoke.py`、`scripts/package_app.py` 与 `release.yml` 已在 `codex/release-final-integration` 组合出现，因此“当前基线缺少 R2 入口”的旧阻塞已不再成立。组合候选仍不得当作 workflow 已执行：四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。最终组合提交的全仓门禁、原生 CI、独立复审与四目标 workflow 尚待绑定。
+- **打包封闭检查与最终 provenance 边界（2026-11-16）**：`package_app.py` 会拒绝源仓库、bundle、输出祖先及四棵资源树中的 symbolic link/非普通文件，并在 Tauri 完成后再次验证 App/安装器；`verify_release.py` 同时比较 macOS App 根文件和目录集合。检查到实际读取/归档之间仍存在同 uid 写者可竞争的理论 TOCTOU（未实现 fd-relative/openat）；最终 verifier 不接收原始 runtime archive，不能独立重算其字节 provenance。该残留必须保留，不能因为本机负控变绿写成物理封闭。
 - **Host 存活探测仍可能受 PID 复用影响（2026-11-16）**：`host.lock` 缺失后的 Daemon 保护分支使用 `pid_alive` 判断快照 PID；当前没有把应用启动墙钟 `HostInfo.started_at` 当成操作系统进程启动时间，也没有扩大 schema。PID 被无关进程复用时，桌面壳可能保守地拒绝清理 Daemon，用户可退出旧进程/释放错误占用后重试；该分支不会误停 Daemon，但“存活”判断本身不是强 OS 身份。
 - **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
 - **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。

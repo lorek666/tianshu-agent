@@ -35,6 +35,11 @@ class AssembleError(ValueError):
     """四目标产物不完整或彼此身份不一致。"""
 
 
+def _is_link(path: Path) -> bool:
+    junction_check = getattr(path, "is_junction", None)
+    return path.is_symlink() or (junction_check is not None and junction_check())
+
+
 def _lstat(path: Path, label: str) -> os.stat_result | None:
     try:
         return path.lstat()
@@ -44,47 +49,73 @@ def _lstat(path: Path, label: str) -> os.stat_result | None:
         raise AssembleError(f"{label} 无法检查：{exc}") from exc
 
 
+def _validate_path_chain(path: Path, label: str) -> Path:
+    absolute = Path(os.path.abspath(Path(path).expanduser()))
+    current = Path(absolute.anchor)
+    relative_parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in relative_parts:
+        current /= part
+        metadata = _lstat(current, label)
+        if metadata is None:
+            break
+        if _is_link(current):
+            raise AssembleError(f"{label}路径不得经过符号链接：{current}")
+        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
+            raise AssembleError(f"{label}路径祖先必须是普通目录：{current}")
+    return absolute
+
+
 def _require_input_directory(path: Path, label: str) -> Path:
-    metadata = _lstat(path, label)
+    absolute = _validate_path_chain(path, label)
+    metadata = _lstat(absolute, label)
     if metadata is None:
         raise AssembleError(f"{label} 目录缺失")
-    if stat.S_ISLNK(metadata.st_mode):
+    if _is_link(absolute):
         raise AssembleError(f"{label} 不能是符号链接")
     if not stat.S_ISDIR(metadata.st_mode):
         raise AssembleError(f"{label} 必须是普通目录")
-    return path.resolve(strict=True)
+    return absolute.resolve(strict=True)
 
 
 def _require_regular_input(path: Path, label: str) -> None:
-    metadata = _lstat(path, label)
+    absolute = _validate_path_chain(path, label)
+    metadata = _lstat(absolute, label)
     if metadata is None:
         raise AssembleError(f"{label} 缺失")
-    if stat.S_ISLNK(metadata.st_mode):
+    if _is_link(absolute):
         raise AssembleError(f"{label} 不能是符号链接")
     if not stat.S_ISREG(metadata.st_mode):
         raise AssembleError(f"{label} 必须是普通文件")
 
 
 def _prepare_output_directory(path: Path) -> Path:
-    metadata = _lstat(path, "out_dir")
+    requested = _validate_path_chain(path, "out_dir")
+    metadata = _lstat(requested, "out_dir")
     if metadata is not None:
-        if stat.S_ISLNK(metadata.st_mode):
+        if _is_link(requested):
             raise AssembleError("out_dir 不能是符号链接")
         if not stat.S_ISDIR(metadata.st_mode):
             raise AssembleError("out_dir 必须是普通目录")
-    resolved = path.resolve()
-    resolved.mkdir(parents=True, exist_ok=True)
-    return resolved
+    requested.mkdir(parents=True, exist_ok=True)
+    requested = _validate_path_chain(requested, "out_dir")
+    metadata = _lstat(requested, "out_dir")
+    assert metadata is not None
+    if _is_link(requested) or not stat.S_ISDIR(metadata.st_mode):
+        raise AssembleError("out_dir 必须是普通目录")
+    return requested.resolve(strict=True)
 
 
 def _require_safe_output_path(path: Path) -> None:
-    metadata = _lstat(path, "输出路径")
+    absolute = _validate_path_chain(path, "输出路径")
+    metadata = _lstat(absolute, "输出路径")
     if metadata is None:
         return
-    if stat.S_ISLNK(metadata.st_mode):
-        raise AssembleError(f"输出路径不能是符号链接：{path}")
+    if _is_link(absolute):
+        raise AssembleError(f"输出路径不能是符号链接：{absolute}")
     if not stat.S_ISREG(metadata.st_mode):
-        raise AssembleError(f"输出路径必须是普通文件：{path}")
+        raise AssembleError(f"输出路径必须是普通文件：{absolute}")
+    if metadata.st_nlink > 1:
+        raise AssembleError(f"输出路径不能是硬链接：{absolute}")
 
 
 def _validate_identity(version: str, commit: str, build_run_url: str) -> None:
@@ -150,6 +181,7 @@ def assemble_release(
     artifacts_root = _require_input_directory(Path(artifacts_root), "artifacts_root")
     out_dir = _prepare_output_directory(Path(out_dir))
     records: list[dict[str, Any]] = []
+    assets: list[dict[str, Any]] = []
     for target in TARGETS:
         target_dir = _require_input_directory(artifacts_root / target, target)
         suffix = ".app.tar.gz" if target.startswith("macos") else "-setup.exe"
@@ -222,12 +254,36 @@ def assemble_release(
             manifest_path,
             manifest_output,
         )
+        artifact_asset = {
+            "kind": "artifact",
+            "target": target,
+            "name": artifact_output.name,
+            "sha256": actual,
+            "size": artifact_output.stat().st_size,
+        }
+        checksum_asset = {
+            "kind": "checksum",
+            "target": target,
+            "name": checksum_output.name,
+            "sha256": _sha256(checksum_output),
+            "size": checksum_output.stat().st_size,
+        }
+        manifest_asset = {
+            "kind": "manifest",
+            "target": target,
+            "name": manifest_output.name,
+            "sha256": _sha256(manifest_output),
+            "size": manifest_output.stat().st_size,
+        }
+        assets.extend((artifact_asset, checksum_asset, manifest_asset))
         records.append(
             {
                 "target": target,
                 "artifact": artifact.name,
                 "sha256": actual,
                 "size": artifact.stat().st_size,
+                "checksum": checksum_asset,
+                "manifest": manifest_asset,
                 "device_verification": "unknown",
                 "runtime_smoke": runtime_smoke,
             }
@@ -243,13 +299,14 @@ def assemble_release(
         _require_safe_output_path(copied)
         shutil.copy2(source, copied)
         copied.chmod(source.stat().st_mode & 0o777 if os.name == "posix" else 0o755)
-        helper_scripts.append(
-            {
-                "name": script,
-                "sha256": _sha256(copied),
-                "size": copied.stat().st_size,
-            }
-        )
+        helper_record = {
+            "kind": "helper-script",
+            "name": script,
+            "sha256": _sha256(copied),
+            "size": copied.stat().st_size,
+        }
+        helper_scripts.append(helper_record)
+        assets.append(helper_record)
     index = {
         "schema": 1,
         "product": "tianshu-agent",
@@ -259,6 +316,7 @@ def assemble_release(
         "signed": False,
         "artifacts": records,
         "helper_scripts": helper_scripts,
+        "assets": assets,
     }
     path = out_dir / "release-index.json"
     _write_index(path, index)
