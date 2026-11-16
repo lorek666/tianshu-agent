@@ -154,7 +154,8 @@ def test_cleanup_accepts_owned_daemon_exit_after_duplicate_shutdown_miss(
             "-c",
             (
                 "import sys; "
-                "print('ready', flush=True); "
+                "sys.stdout.buffer.write(b'ready'); "
+                "sys.stdout.buffer.flush(); "
                 "sys.stdin.buffer.read(1); "
                 "raise SystemExit(int(sys.argv[1]))"
             ),
@@ -165,7 +166,7 @@ def test_cleanup_accepts_owned_daemon_exit_after_duplicate_shutdown_miss(
         stderr=subprocess.DEVNULL,
     )
     assert process.stdout is not None
-    assert process.stdout.readline() == b"ready\n"
+    assert process.stdout.read(5) == b"ready"
     process.stdout.close()
 
     def request_shutdown(*_args, **_kwargs):
@@ -251,7 +252,8 @@ def test_cleanup_requires_owned_host_to_exit_zero(
             "-c",
             (
                 "import sys; "
-                "print('ready', flush=True); "
+                "sys.stdout.buffer.write(b'ready'); "
+                "sys.stdout.buffer.flush(); "
                 "sys.stdin.buffer.read(1); "
                 "raise SystemExit(int(sys.argv[1]))"
             ),
@@ -262,7 +264,7 @@ def test_cleanup_requires_owned_host_to_exit_zero(
         stderr=subprocess.DEVNULL,
     )
     assert process.stdout is not None
-    assert process.stdout.readline() == b"ready\n"
+    assert process.stdout.read(5) == b"ready"
     process.stdout.close()
 
     def request_json(*_args, **_kwargs):
