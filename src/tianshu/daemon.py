@@ -91,6 +91,8 @@ LOCK_NAME = "daemon.lock"
 #: 这段窗口里我们**不**接管，只是等；锁创建者的 `started_at` 一旦超过它，
 #: 就说明它没能活到 bind（崩溃/被拖住），可以接管。
 LOCK_GRACE_MS = 2_000
+LOCK_DELETE_RETRY_BUDGET_S = 0.5
+LOCK_DELETE_RETRY_INTERVAL_S = 0.02
 
 #: 抢锁的最多尝试次数（含等宽限窗与陈旧接管）。防止两个进程互相删对方锁时
 #: 无限打转——宁可明确失败，也不在启动路径上永远转。
@@ -246,10 +248,24 @@ def _unlink_lock(lock: DaemonLock) -> None:
     payload = _read_lock(lock.path)
     if payload is not None and payload.get("instance_id") != lock.instance_id:
         return
-    try:
-        lock.path.unlink()
-    except OSError:
-        pass
+    deadline = time.monotonic() + LOCK_DELETE_RETRY_BUDGET_S
+    while True:
+        try:
+            lock.path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            # Windows readers briefly hold a non-delete-sharing handle while
+            # Host polls the lock. Retry this platform-specific contention for
+            # a bounded window; POSIX permission errors are not transient.
+            if os.name != "nt" or time.monotonic() >= deadline:
+                _log(f"删除 Daemon 锁失败：{exc}")
+                return
+            time.sleep(LOCK_DELETE_RETRY_INTERVAL_S)
+        except OSError as exc:
+            _log(f"删除 Daemon 锁失败：{exc}")
+            return
 
 
 def acquire_lock(data_root: Path) -> DaemonLock:

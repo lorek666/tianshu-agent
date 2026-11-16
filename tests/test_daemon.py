@@ -964,6 +964,40 @@ def test_shutdown_rejects_a_stale_instance_without_stopping_the_live_daemon(
     assert not daemon.lock_path(root).exists()
 
 
+def test_unlink_lock_retries_transient_windows_read_contention(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_contention",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_contention", 1)
+    original_unlink = Path.unlink
+    attempts = 0
+
+    def transiently_busy(path, *args, **kwargs):
+        nonlocal attempts
+        if path == lock_path and attempts < 2:
+            attempts += 1
+            raise PermissionError(13, "file is busy", str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", transiently_busy)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._unlink_lock(lock)
+
+    assert attempts == 2
+    assert not lock_path.exists()
+
+
 def test_request_shutdown_without_daemon_returns_false(root) -> None:
     assert daemon.request_shutdown(root, timeout=0.5) is False
 

@@ -21,6 +21,13 @@ release 元数据 SHA256 分别为
 `29225ff79e75b41c04f4b8d284c6ce5b8ccd248e8622a9a52894fa4bfffb0b69`
 （run JSON）。
 
+在修复候选的 PR CI [`43954550295`](
+https://github.com/lorek666/tianshu-agent/actions/runs/43954550295) 中，Windows
+shard 0 又暴露一个独立竞态：
+`test_stop_unowned_daemon_stops_a_real_daemon_without_host` 收到 shutdown、Daemon
+已进入退出，但 5 秒后原锁仍在。失败日志 SHA256 为
+`5ad1d18fb177ac72b1a87771f1e784e8d0e967fe5c3945de49e7065188744dc1`。
+
 ## 根因
 
 ### CRLF checksum
@@ -47,6 +54,14 @@ LF 格式。macOS 使用 LF，因此同一实现对 mac 绿、Windows 红。
 
 现有 verifier 的 PE 架构封闭检查是正确的，不能为这个多余文件放宽。
 
+### Windows 锁删除与 Host 轮询竞态
+
+Host 停止孤立 Daemon 时每 50ms 读取 `daemon.lock` 等待删除。Windows 普通文件
+读取持有非 delete-sharing 句柄；Daemon 在同一窗口调用 `Path.unlink()` 会得到
+`PermissionError`（共享冲突）。原 `_unlink_lock()` 将该异常静默吞掉，锁因此
+永久残留，进程虽已退出却让 Host 报超时。POSIX 允许删除已打开文件，所以该问题
+只在 Windows 泄露。
+
 ## 不变量
 
 - 四目标 checksum 文件必须始终是 ASCII、恰好一行、以 LF 结束，不能随宿主
@@ -57,6 +72,9 @@ LF 格式。macOS 使用 LF，因此同一实现对 mac 绿、Windows 红。
 - Windows ARM64 bundle 只删除锁定的上游归档中已确认未被任何保留文件引用的
   `vcruntime140_1.dll`；其他 ARM64 runtime 文件保持不变。
 - `python.exe`、`python312.dll`、`vcruntime140.dll` 必须保留。
+- Windows 的短暂 lock-read 共享冲突可有不超过 0.5 秒、20ms 间隔的有界重试；
+  POSIX `PermissionError` 和超时后的 Windows 错误必须记录为删除失败，不能静默
+  当作已释放。
 - 不放宽 PE 架构断言、不按扩展名整体删除 DLL、不切换 runtime、不忽略该文件。
 - Python 3.12、四目标 lock、零第三方运行时依赖和现有 Tauri/NSIS 契约不变。
 
@@ -70,10 +88,12 @@ LF 格式。macOS 使用 LF，因此同一实现对 mac 绿、Windows 红。
    `python/vcruntime140_1.dll`，同时保留 `vcruntime140.dll`；对
    `windows-x64` 保留两者。测试必须检查真实文件存在性，不能只检查 manifest。
 4. verifier 的现有 PE 架构负控继续通过，修复不得放宽。
-5. 相关 package/build/verifier 测试、全仓 lock/Ruff、全量 pytest 在新提交上通过。
-6. 新 PR 精确 SHA 的 Ubuntu、macOS、Windows 两分片、Windows 汇总、Windows
+5. `_unlink_lock()` 注入前两次 Windows `PermissionError` 时必须重试并最终删除，
+   持久错误必须有界且留日志；真实 Host/Daemon shutdown 仍须在 Windows CI 通过。
+6. 相关 package/build/verifier/daemon 测试、全仓 lock/Ruff、全量 pytest 在新提交上通过。
+7. 新 PR 精确 SHA 的 Ubuntu、macOS、Windows 两分片、Windows 汇总、Windows
    Rust 与 UI required checks 全绿，并进行独立第二读者复审。
-7. 合并后在精确 main 重跑四目标 release；四个 target 都必须产出 artifact、
+8. 合并后在精确 main 重跑四目标 release；四个 target 都必须产出 artifact、
    通过 verifier 并由 assembler 汇总，Draft Release 才能运行。
 
 ## 范围外
