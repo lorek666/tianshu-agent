@@ -730,6 +730,11 @@ def _commit_with_extra_paths(
     parent: str,
     paths: dict[str, bytes],
 ) -> str:
+    if any("\\" in relative for relative in paths):
+        assert len(paths) == 1
+        ((relative, body),) = paths.items()
+        return _commit_with_raw_backslash_path(repo, parent, relative, body)
+
     index = repo / ".git" / "review-extra-index"
     environment = dict(os.environ)
     environment["GIT_INDEX_FILE"] = str(index)
@@ -768,6 +773,117 @@ def _commit_with_extra_paths(
         "-p",
         parent,
         input_bytes=b"windows unsafe source path fixture\n",
+    ).decode("ascii")
+
+
+def _git_raw(repo: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _git_tree_entries(
+    repo: Path,
+    treeish: str,
+) -> list[tuple[bytes, bytes, bytes, bytes]]:
+    """Read a real Git tree without asking Windows to reinterpret entry names."""
+
+    raw = _git_raw(repo, "ls-tree", "-z", treeish)
+    entries: list[tuple[bytes, bytes, bytes, bytes]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, name = record.split(b"\t", 1)
+        mode, kind, object_id = metadata.split(b" ", 2)
+        entries.append((mode, kind, object_id, name))
+    return entries
+
+
+def _write_raw_git_tree(
+    repo: Path,
+    entries: list[tuple[bytes, bytes, bytes, bytes]],
+) -> bytes:
+    """Write canonical raw tree bytes so backslashes remain filename bytes."""
+
+    ordered = sorted(
+        entries,
+        key=lambda entry: entry[3] + (b"/" if entry[1] == b"tree" else b""),
+    )
+    payload = b"".join(
+        (b"40000" if mode == b"040000" else mode)
+        + b" "
+        + name
+        + b"\0"
+        + bytes.fromhex(object_id.decode("ascii"))
+        for mode, _kind, object_id, name in ordered
+    )
+    return _git_with_input(
+        repo,
+        "hash-object",
+        "-w",
+        "-t",
+        "tree",
+        "--stdin",
+        input_bytes=payload,
+    )
+
+
+def _replace_tree_entry(
+    entries: list[tuple[bytes, bytes, bytes, bytes]],
+    name: bytes,
+    object_id: bytes,
+) -> list[tuple[bytes, bytes, bytes, bytes]]:
+    matches = [(index, entry) for index, entry in enumerate(entries) if entry[3] == name]
+    assert len(matches) == 1
+    index, (mode, kind, _old_object_id, _) = matches[0]
+    updated = list(entries)
+    updated[index] = (mode, kind, object_id, name)
+    return updated
+
+
+def _commit_with_raw_backslash_path(
+    repo: Path,
+    parent: str,
+    relative: str,
+    body: bytes,
+) -> str:
+    prefix = "src/tianshu/"
+    assert relative.startswith(prefix)
+    entry_name = relative.removeprefix(prefix).encode("utf-8")
+    assert "\\" in relative.removeprefix(prefix)
+    blob_oid = _git_with_input(
+        repo,
+        "hash-object",
+        "-w",
+        "--stdin",
+        input_bytes=body,
+    )
+
+    root_entries = _git_tree_entries(repo, parent)
+    src_entry = next(entry for entry in root_entries if entry[3] == b"src")
+    src_entries = _git_tree_entries(repo, src_entry[2].decode("ascii"))
+    tianshu_entry = next(entry for entry in src_entries if entry[3] == b"tianshu")
+    tianshu_entries = _git_tree_entries(repo, tianshu_entry[2].decode("ascii"))
+    tianshu_entries.append((b"100644", b"blob", blob_oid, entry_name))
+
+    tianshu_oid = _write_raw_git_tree(repo, tianshu_entries)
+    src_oid = _write_raw_git_tree(
+        repo,
+        _replace_tree_entry(src_entries, b"tianshu", tianshu_oid),
+    )
+    root_oid = _write_raw_git_tree(
+        repo,
+        _replace_tree_entry(root_entries, b"src", src_oid),
+    )
+    return _git_with_input(
+        repo,
+        "commit-tree",
+        root_oid.decode("ascii"),
+        "-p",
+        parent,
+        input_bytes=b"windows raw backslash source path fixture\n",
     ).decode("ascii")
 
 
@@ -1070,6 +1186,16 @@ def test_git_tree_rejects_windows_unsafe_source_paths(tmp_path, relative, case):
     repo = _repo_fixture(tmp_path)
     parent = _commit_fixture(repo)
     commit = _commit_with_extra_paths(repo, parent, {relative: b"unsafe source path\n"})
+    tree_paths = _git_raw(
+        repo,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "--full-tree",
+        commit,
+    ).split(b"\0")
+    assert relative.encode("utf-8") in tree_paths
     destination = tmp_path / "stage" / "app"
     destination.mkdir(parents=True)
 
