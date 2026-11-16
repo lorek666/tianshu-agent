@@ -1,6 +1,6 @@
 # 天枢 Agent 可安装发行版施工规格
 
-> 状态：**R1 Tauri 壳源码候选。R0 的规格/schema/validator 为前置；R2 锁定 runtime、
+> 状态：**R2 build 为作者候选，独立复审已判定 PARTIAL 后完成窄修，尚待新提交复审；
 > R3 安装/发布 workflow 尚未合入。不宣称已交付 L1 安装版、四目标支持或 G3。**
 >
 > 起草基线 `595be35`；本次拆分基线 `e242257984d2ebd1443e60c81e7d2c97b287122a`。
@@ -180,9 +180,12 @@ Agent”。
    构建失败。
 3. 安装包只包含 `src/tianshu` 和运行所需资源；不包含 `.venv`、tests、refs、logs、
    `.omc`、用户数据库或真实凭据。
-4. UI 只使用已经通过 typecheck/test/build 的 `ui/dist`；构建发布物后再次执行
+4. Git source 路径按 Windows 的封闭语义校验：拒绝反斜杠、盘符/ADS 冒号、控制字符、
+   尾点、尾空格与保留设备名；映射到 staging 的相对路径还要做 canonical containment。
+   此保证不替代 Windows 原生写盘测试。
+5. UI 只使用已经通过 typecheck/test/build 的 `ui/dist`；构建发布物后再次执行
    `git diff --exit-code -- ui/dist`。
-5. 包内 `release.json` 只保留短身份，必须包含：
+6. 包内 `release.json` 只保留短身份，必须包含：
 
 ```json
 {
@@ -194,7 +197,7 @@ Agent”。
 }
 ```
 
-6. 包内 `release-manifest.json` 绑定身份和每个内部文件的 SHA256：
+7. 包内 `release-manifest.json` 绑定身份和每个内部文件的 SHA256：
 
 ```json
 {
@@ -210,11 +213,11 @@ Agent”。
 }
 ```
 
-7. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
+8. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
    `release-manifest.json` 的 version/commit/target 一致；macOS 归档和 Windows NSIS
    解包资源中的短清单、完整 manifest 必须分别与已验证 bundle 字节相同。Windows 还必须
    由 7-Zip 实际解出唯一资源根，不得以“外层 PE 合法”代替 payload 证据。
-8. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
+9. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
    target、`runtime_smoke`、`device_verification` 和 `signed=false`。三份文件职责不得混写；
    未知字段拒绝、未知 target 拒绝、未知 schema 拒绝。
 
@@ -231,12 +234,21 @@ Agent”。
 
 `build_release.py` 的正式入口从发行 commit 内读取唯一的
 `release/python-runtime.lock.json`，不存在可供用户替换的 `--runtime-lock` 参数；所有 Git
-读操作均禁用 replacement objects。已有输出目录的发布是一笔同父目录 rename 事务：先持久化
-恢复记录，再依次移动旧 output、staging；进程在任一步硬退后，下一次构建启动会按现场完成
-发布或恢复旧 output，并清理对应 staging/backup。该协议不宣称跨平台物理原子目录替换，也不
-宣称断电级 durability；正常运行完成退出 `0`，输入/布局/恢复失败退出 `1`，命令行参数错误
-退出 `2`，仅测试故障注入 `TIANSHU_FAILPOINT=release.publish.{old_moved,new_moved}` 硬退
-`77`。Windows 原生路径仍须由对应 CI/用户设备验证，不能以 macOS 本机结果代替。
+读操作均禁用 replacement objects。runtime cache 在创建前和创建后逐级检查祖先，拒绝
+symbolic link、Windows junction 与非目录祖先。每次构建先在独占 output publish lock 内写入
+staging ownership 记录，再创建 `.bundle.build-<token>`；从 staging 创建、复制、清单校验到
+发布全程持锁，恢复只清理 ownership token 与记录完全匹配的 staging，无法证明归属的
+`.bundle.build-*` 目录保留并阻断误删。已有输出目录的发布随后先持久化 rename 恢复记录，再
+依次移动旧 output、staging；进程在任一步硬退后，下一次构建启动会按现场完成发布或恢复旧
+output，并清理对应 staging/backup。
+
+该协议不宣称跨平台物理原子目录替换，也不宣称断电级 durability；正常运行完成退出 `0`，
+输入/布局/恢复失败退出 `1`，命令行参数错误退出 `2`，仅测试故障注入
+`TIANSHU_FAILPOINT=release.publish.{old_moved,new_moved}` 硬退 `77`。cache 祖先检查与随后
+的 mkdir/write 之间仍有理论 TOCTOU，未实现 fd-relative/openat/no-follow；Windows 原生
+directory lock/rename、symbolic link/junction、ADS/设备名写盘仍须由对应 CI/用户设备验证，
+不能以 macOS 上的 `ntpath` 语义测试或 POSIX link 测试代替。`.bundle.publish.lock` 是有意的
+持久锁锚点；输出 parent 必须在不跟踪的构建目录中，否则该 sibling 文件会进入工作树状态。
 
 新增 `.github/workflows/release.yml`，只在 `workflow_dispatch` 与严格 `v*` tag 触发：
 
