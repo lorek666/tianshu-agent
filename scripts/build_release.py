@@ -587,7 +587,7 @@ def _remove_python_caches(root: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _prune_runtime(root: Path) -> None:
+def _prune_runtime(root: Path, target: str) -> None:
     runtime = root / "python"
     for relative in (
         "include",
@@ -613,6 +613,21 @@ def _prune_runtime(root: Path) -> None:
             raise BuildError(f"待裁剪运行时路径是链接：{relative}")
         if path.is_dir():
             shutil.rmtree(path)
+    if target == "windows-arm64":
+        # The pinned upstream archive carries this x64 DLL, but no retained PE
+        # imports it. Keep the native vcruntime140.dll and remove the unneeded
+        # wrong-architecture file rather than weakening the verifier.
+        mismatched = runtime / "vcruntime140_1.dll"
+        if _is_link(mismatched):
+            raise BuildError(
+                f"待裁剪运行时路径是链接：{mismatched.relative_to(runtime)}"
+            )
+        if mismatched.is_dir():
+            raise BuildError(
+                f"待裁剪运行时路径必须是普通文件："
+                f"{mismatched.relative_to(runtime)}"
+            )
+        mismatched.unlink(missing_ok=True)
     for pattern in (
         "bin/2to3*",
         "bin/idle*",
@@ -1096,7 +1111,7 @@ def prepare_bundle(
                 materialize_internal_links=True,
                 expected_sha256=expected_sha256,
             )
-            _prune_runtime(staging)
+            _prune_runtime(staging, target)
             _remove_python_caches(staging)
             entry = _python_entry(staging, target)
             if _is_link(entry) or not entry.is_file():

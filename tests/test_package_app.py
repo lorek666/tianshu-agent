@@ -221,6 +221,42 @@ def test_macos_release_artifact_is_checksum_bound_and_contains_app(tmp_path):
     assert "Tianshu Agent.app/Contents/Resources/release.json" in names
 
 
+def test_release_checksum_uses_lf_bytes_when_text_mode_would_add_crlf(
+    tmp_path, monkeypatch
+):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    original_write_text = Path.write_text
+
+    def windows_text_mode(path, data, *args, **kwargs):
+        kwargs["newline"] = ""
+        return original_write_text(
+            path,
+            data.replace("\n", "\r\n"),
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(Path, "write_text", windows_text_mode)
+
+    artifact = module.release_artifact(
+        bundled=app,
+        bundle_dir=bundle_dir,
+        out_dir=tmp_path / "out",
+        version="0.1.0",
+        target="macos-arm64",
+    )
+
+    checksum = artifact.with_name("Tianshu-Agent-0.1.0-macos-arm64.sha256")
+    payload = checksum.read_bytes()
+    assert payload.endswith(b"\n")
+    assert payload.count(b"\n") == 1
+    assert b"\r" not in payload
+    digest, filename = payload.decode("ascii").rstrip("\n").split("  ")
+    assert digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert filename == artifact.name
+
+
 def test_release_artifact_rejects_version_path_traversal(tmp_path):
     module = _load_module()
     app, bundle_dir = _mac_release_inputs(tmp_path)

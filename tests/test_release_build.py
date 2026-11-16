@@ -144,6 +144,28 @@ def test_prepare_bundle_contains_only_app_runtime_and_ui(tmp_path):
     assert not (output / ".venv").exists()
 
 
+def test_prune_runtime_drops_unreferenced_x64_vcruntime_from_arm64_only(tmp_path):
+    module = _load_module()
+    roots = {}
+    for target in ("windows-arm64", "windows-x64"):
+        root = tmp_path / target
+        runtime = root / "python"
+        runtime.mkdir(parents=True)
+        (runtime / "vcruntime140.dll").write_bytes(b"native-runtime")
+        (runtime / "vcruntime140_1.dll").write_bytes(b"upstream-extra")
+        roots[target] = root
+
+    module._prune_runtime(roots["windows-arm64"], "windows-arm64")
+    module._prune_runtime(roots["windows-x64"], "windows-x64")
+
+    arm = roots["windows-arm64"] / "python"
+    x64 = roots["windows-x64"] / "python"
+    assert (arm / "vcruntime140.dll").is_file()
+    assert not (arm / "vcruntime140_1.dll").exists()
+    assert (x64 / "vcruntime140.dll").is_file()
+    assert (x64 / "vcruntime140_1.dll").is_file()
+
+
 @pytest.mark.parametrize("target", sorted(EXPECTED_RUNTIME))
 def test_prepare_bundle_supports_each_pinned_target_entrypoint(tmp_path, target):
     module = _load_module()
