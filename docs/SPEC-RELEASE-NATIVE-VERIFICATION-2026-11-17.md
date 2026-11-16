@@ -75,6 +75,8 @@ Host 停止孤立 Daemon 时每 50ms 读取 `daemon.lock` 等待删除。Windows
 - Windows 的短暂 lock-read 共享冲突可有不超过 0.5 秒、20ms 间隔的有界重试；
   POSIX `PermissionError` 和超时后的 Windows 错误必须记录为删除失败，不能静默
   当作已释放。
+- 每次重试删除前都必须重新读取锁并匹配原 `instance_id`；身份已替换时必须保留
+  新锁，不能沿用第一次读取的身份结果。最后一次 sleep 必须裁剪到剩余预算。
 - 不放宽 PE 架构断言、不按扩展名整体删除 DLL、不切换 runtime、不忽略该文件。
 - Python 3.12、四目标 lock、零第三方运行时依赖和现有 Tauri/NSIS 契约不变。
 
@@ -89,7 +91,8 @@ Host 停止孤立 Daemon 时每 50ms 读取 `daemon.lock` 等待删除。Windows
    `windows-x64` 保留两者。测试必须检查真实文件存在性，不能只检查 manifest。
 4. verifier 的现有 PE 架构负控继续通过，修复不得放宽。
 5. `_unlink_lock()` 注入前两次 Windows `PermissionError` 时必须重试并最终删除，
-   持久错误必须有界且留日志；真实 Host/Daemon shutdown 仍须在 Windows CI 通过。
+   持久错误必须有界且留日志；重试中锁被新实例替换时不得删除新锁；POSIX
+   `PermissionError` 只尝试一次；真实 Host/Daemon shutdown 仍须在 Windows CI 通过。
 6. 相关 package/build/verifier/daemon 测试、全仓 lock/Ruff、全量 pytest 在新提交上通过。
 7. 新 PR 精确 SHA 的 Ubuntu、macOS、Windows 两分片、Windows 汇总、Windows
    Rust 与 UI required checks 全绿，并进行独立第二读者复审。

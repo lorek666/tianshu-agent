@@ -245,11 +245,11 @@ def _unlink_lock(lock: DaemonLock) -> None:
     另一个 daemon 接管后会把锁写成它自己的；无条件删文件等于把别人的单实例
     保护拆掉——下一次就有两个实例同时 bind。
     """
-    payload = _read_lock(lock.path)
-    if payload is not None and payload.get("instance_id") != lock.instance_id:
-        return
     deadline = time.monotonic() + LOCK_DELETE_RETRY_BUDGET_S
     while True:
+        payload = _read_lock(lock.path)
+        if payload is None or payload.get("instance_id") != lock.instance_id:
+            return
         try:
             lock.path.unlink()
             return
@@ -259,10 +259,11 @@ def _unlink_lock(lock: DaemonLock) -> None:
             # Windows readers briefly hold a non-delete-sharing handle while
             # Host polls the lock. Retry this platform-specific contention for
             # a bounded window; POSIX permission errors are not transient.
-            if os.name != "nt" or time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if os.name != "nt" or remaining <= 0:
                 _log(f"删除 Daemon 锁失败：{exc}")
                 return
-            time.sleep(LOCK_DELETE_RETRY_INTERVAL_S)
+            time.sleep(min(LOCK_DELETE_RETRY_INTERVAL_S, remaining))
         except OSError as exc:
             _log(f"删除 Daemon 锁失败：{exc}")
             return

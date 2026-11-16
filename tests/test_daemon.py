@@ -998,6 +998,111 @@ def test_unlink_lock_retries_transient_windows_read_contention(
     assert not lock_path.exists()
 
 
+def test_unlink_lock_rechecks_identity_before_each_retry(root, monkeypatch) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    old_payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_old",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    new_payload = {**old_payload, "instance_id": "daemon_new", "started_at": 2}
+    lock_path.write_text(json.dumps(old_payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_old", 1)
+    original_unlink = Path.unlink
+    unlink_attempts = 0
+
+    def replace_then_report_busy(path, *args, **kwargs):
+        nonlocal unlink_attempts
+        if path == lock_path and unlink_attempts == 0:
+            unlink_attempts += 1
+            lock_path.write_text(json.dumps(new_payload), encoding="utf-8")
+            raise PermissionError(13, "file is busy", str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", replace_then_report_busy)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._unlink_lock(lock)
+
+    assert unlink_attempts == 1
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["instance_id"] == "daemon_new"
+
+
+def test_unlink_lock_persistent_windows_contention_uses_exact_budget(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_persistent",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_persistent", 1)
+    now = [0.0]
+    sleeps = []
+    attempts = 0
+
+    def always_busy(_path, *_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(13, "file is busy", str(lock_path))
+
+    def advance(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", always_busy)
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(module.time, "sleep", advance)
+
+    module._unlink_lock(lock)
+
+    assert attempts >= 2
+    assert now[0] <= daemon.LOCK_DELETE_RETRY_BUDGET_S
+    assert max(sleeps) <= daemon.LOCK_DELETE_RETRY_INTERVAL_S
+    assert sum(sleeps) == pytest.approx(daemon.LOCK_DELETE_RETRY_BUDGET_S)
+    assert lock_path.exists()
+
+
+def test_unlink_lock_does_not_retry_posix_permission_error(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_posix",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_posix", 1)
+    attempts = 0
+
+    def denied(_path, *_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(13, "permission denied", str(lock_path))
+
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(Path, "unlink", denied)
+
+    module._unlink_lock(lock)
+
+    assert attempts == 1
+    assert lock_path.exists()
+
+
 def test_request_shutdown_without_daemon_returns_false(root) -> None:
     assert daemon.request_shutdown(root, timeout=0.5) is False
 
