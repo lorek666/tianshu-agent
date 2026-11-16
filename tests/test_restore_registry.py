@@ -192,6 +192,43 @@ def test_append_rejects_duplicate_kind_and_noncanonical_event(tmp_path):
         gate.close()
 
 
+def test_append_reports_commit_without_reobserving_after_unlock(tmp_path, monkeypatch):
+    """提交后的返回观察必须来自本事务，不能再去抢一次共享锁。
+
+    并发写入方在 append 提交后可能仍持命名空间独占锁；若 append 末尾重新
+    ``observe()``，共享锁争用会被报成 Busy——已提交却报 busy 是假阴性
+    （issue #171：两个进程同时 append 同一 head，双方都 busy，但事件已落盘）。
+    这里把 ``observe`` 钉成必然 Busy：修复前 append 会传播 Busy，修复后正常
+    返回本事务构造的新观察。
+    """
+    registry = _registry(tmp_path)
+    before = registry.initialize(registry_id=UUID)
+    event = samples(tmp_path)["e1"]
+
+    def busy_observe(_self):
+        raise RestoreRegistryBusy("registry维护锁正在使用中")
+
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        monkeypatch.setattr(RestoreRegistry, "observe", busy_observe)
+        after = registry.append_event(event, expected=before, operation_access=gate)
+    finally:
+        gate.close()
+
+    assert after.present is True
+    assert after.head_sequence == before.head_sequence + 1
+    assert after.events[-1] == event
+    assert after.meta == before.meta and after.meta_bytes == before.meta_bytes
+    assert after.home_identity == before.home_identity
+    # 幂等重复追加仍返回同一观察，且同样不依赖 observe。
+    again_gate = acquire_restore_gate(exclusive=True)
+    try:
+        again = registry.append_event(event, expected=after, operation_access=again_gate)
+    finally:
+        again_gate.close()
+    assert again == after
+
+
 def test_partial_authority_is_closed_not_reinitialized(tmp_path):
     registry = _registry(tmp_path)
     registry.initialize(registry_id=UUID)
