@@ -951,6 +951,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
     fn test_release_identity() -> ReleaseIdentity {
         ReleaseIdentity {
             version: "0.1.0".to_string(),
@@ -959,6 +960,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn test_release_payload() -> String {
         let release = test_release_identity();
         format!(
@@ -967,6 +969,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     fn test_host_release_identity() -> crate::lifecycle::HostReleaseIdentity {
         let release = test_release_identity();
         crate::lifecycle::HostReleaseIdentity {
