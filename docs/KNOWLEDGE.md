@@ -28,7 +28,7 @@
 
 - **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
 
-- **R2 build 六项复审修复为作者候选（2026-11-16，`codex/release-r2-build`）**：基线为旧 R1 派生的 `9ad9e282d7720deb30b53728684cdf2c0f6e818f`。原实现在 replacement blob ref 下仍把恶意字节打包、正式 CLI 任意 `--runtime-lock` 以 exit 0 接受 fake archive、发布第一段 rename 后硬退留下无 output 现场、显式 output/cache symlink 会写入目标、`ss.py`/`ß.py` Git tree 冲突未拒绝；新增真临时 Git/tree、子进程 crashpoint 与链接负控，旧实现 5 failed，独立 P1-3 探针子进程 exit 77 后 `output_after_crash=False` 且 restart 后 backup/staging 仍在。修复后定向 `7 passed`、`tests/test_release_build.py` `48 passed`，发布使用 commit-bound lock、禁用 replacement refs、casefold 唯一集和可自动恢复的 rename journal；这不是独立复审或跨平台通过，Windows/macOS x64 仍待原生验证。
+- **R2 build 复审窄修为新作者候选（2026-11-16，`codex/release-r2-build`）**：基线为旧 R1 派生的 `9ad9e282d7720deb30b53728684cdf2c0f6e818f`。`31e84475b07a144556d881fa1dc8cde6917d968c` 已修 commit-bound lock、replacement refs、显式 output/cache 叶链接、casefold 冲突与两个 rename failpoint；独立复审仍判 PARTIAL，指出 Git source 的 Windows 危险路径未拒绝、cache 祖先 symlink 可写穿、journal 前硬退会留下 staging。作者先用真实 Git tree、POSIX symlink 祖先和真 child `os._exit(77)` 建立 `8 failed / 48 deselected` 红证据，再修：source component 拒绝反斜杠、冒号/ADS、控制字符、尾点/尾空格与保留设备名，并在映射到 staging 后复验 containment；cache 创建前后逐级拒绝链接/特殊祖先；staging ownership 在目录创建前 fsync，恢复只删 token 匹配目录，未知 `.bundle.build-*` 保留；整个 staging→publish 生命周期持 output lock。当前 `tests/test_release_build.py` **56 passed**，build+manifest 定向 **100 passed**。这只是 mac arm64 本机作者门禁，Windows 原生路径/锁/rename、macOS x64、Windows x64/arm64、cache TOCTOU 与断电 durability 仍未验证，新提交也尚未独立复审。
 
 - **R0 仍有复审硬门，R1 作者候选已提交并完成真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿、`CLEAN`，但当前 0 review / 0 comment，缺独立第二读者 PASS，因此未合并。R1 从该候选派生，PR [#174](https://github.com/lorek666/tianshu-agent/pull/174) 的原候选 `c409c37f2d456907ba33f53e686d2d301baadbb3` 已推送，包含 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。`c409c37` 的 run `43803289526` 首次原生 CI 中 Ubuntu、macOS（含 3529P/12S）、UI 与两个 Windows Python 分片通过，但 Windows Rust Clippy 把仅 macOS/Unix 使用的导入判为 unused；Windows required 汇总按设计拒绝，未发现第二个独立业务失败。作者已把菜单导入改为 macOS 条件导入、Unix 测试辅助导入改为 `cfg(unix)`，本地 Rust 39 tests 与 macOS Clippy 转绿；替换提交的精确 CI 结果以 PR 最新 check 为准。会话外独立复审仍是合并硬门，不能把本机全量、macOS GUI 或旧提交绿色当成已交付；Windows/Linux 用户设备验证仍未完成。
 
@@ -670,7 +670,7 @@
 - **驱动线程卡死 >5 秒时刻意不跨线程关连接**：关闭正被别的线程使用的 SQLite 连接只会得到没人看得到的 `ProgrammingError`，还可能截断写入；保留连接交给进程退出回收（测试钉住"shutdown 仍返回、锁已释放、没有 ProgrammingError"）。
 - **`approvals.decide` 的 `reason` 被忽略**：审批记录没有自由文本字段，要存就得改 `schemas/m2/approval.json`（契约变更）；当前只用于 UI 展示。
 - **R1 源码候选不是可安装 App**：已有未签名 Tauri 薄壳、托盘和单实例代码，尚未合入 main；锁定 Python runtime、开机自启、安装包、签名、公证、自动更新仍属于 R2/R3 或未实现范围。
-- **R2 build 恢复协议尚未跨平台实机验收**：macOS arm64 本机已覆盖 fake-runtime bundle、两个硬退 failpoint 与重启幂等；这不证明 Windows directory lock/rename、macOS x64、Windows x64/arm64 或断电级 durability。构建发布目录不宣称跨平台物理原子替换。
+- **R2 build 恢复协议尚未跨平台实机验收**：macOS arm64 本机已覆盖 fake-runtime bundle、两个 rename failpoint、journal 前真 child 硬退及重启幂等；Git source 的 Windows 危险 component 只用 `ntpath` 归一化验证，cache 祖先只验证 POSIX symlink。这不证明 Windows 原生 directory lock/rename、symlink/junction、ADS/设备名写盘、macOS x64、Windows x64/arm64 或断电级 durability。`_validate_directory_chain()` 的检查与随后 mkdir/write 仍存在理论 TOCTOU；发布目录替换也仍是两段 rename，读者可能观察到短暂无 output。`.bundle.publish.lock` 成功后会持续存在，是锁锚点，输出 parent 必须放在不被 Git 跟踪的构建目录。构建不宣称跨平台物理原子替换。
 
 **平台**
 
@@ -710,6 +710,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-16 · R2 build 复审 PARTIAL 三项窄修（作者候选）**：针对独立复审 `31e8447`，先新增真实 Git tree 六个 Windows 危险路径、cache 祖先 symlink 与 journal 前 child `os._exit(77)` 回归；旧实现实跑 `8 failed / 48 deselected`，原红日志与退出码保留在 ignored `.omc/artifacts/release-r2-review-fixes-20261116/`。实现随后收闭 source Windows 语义与 staging containment，逐级检查 cache 祖先，以 ownership journal 先于 staging mkdir 并只清理匹配目录，未知构建目录保留，且从 staging 创建到发布全程持 output lock。修复后发行构建文件 `56 passed`，build+manifest 定向 `100 passed`，lock/Ruff/`git diff --check` 均 0。该轮没有跑独立 full；R2+R3 最终组合 full、新提交独立复审和 Windows/macOS x64 原生验证仍待，不能把本轮作者绿写成 PASS。
 
 - **2026-11-16 · PR #162 五阻断续修与 R0 拆分**：从 main `e2422579` 建立独立 R0 工作树，只迁入 spec/schema/manifest/测试；原始 `7d121ad` 与失败复审保留。三项产品修复在原分支分别实施，之后依次从已合 main 派生 R1/R2，PR #162 最终仅交 R3；每片新门禁与独立复审均需重绑，未提前宣称修复或发布通过。
 

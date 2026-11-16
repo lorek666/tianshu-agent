@@ -49,6 +49,11 @@ RUNTIME_LOCK_PATH = PurePosixPath("release/python-runtime.lock.json")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^0\.[0-9]+\.[0-9]+$")
+_CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f]")
+_WINDOWS_RESERVED_NAME_RE = re.compile(
+    r"^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$",
+    re.IGNORECASE,
+)
 _FORBIDDEN_INPUT_PARTS = frozenset(
     {
         ".git",
@@ -106,6 +111,36 @@ class BuildError(ValueError):
 def _is_link(path: Path) -> bool:
     junction_check = getattr(path, "is_junction", None)
     return path.is_symlink() or (junction_check is not None and junction_check())
+
+
+def _validate_directory_chain(path: Path, label: str) -> Path:
+    absolute = Path(os.path.abspath(Path(path).expanduser()))
+    current = Path(absolute.anchor)
+    relative_parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in relative_parts:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            raise BuildError(f"无法检查{label}路径祖先：{current}：{exc}") from exc
+        if _is_link(current):
+            raise BuildError(f"{label}路径不得经过链接：{current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise BuildError(f"{label}路径祖先必须是普通目录：{current}")
+    return absolute
+
+
+def _validated_staging_destination(root: Path, relative: str) -> Path:
+    _validate_input_path(relative)
+    resolved_root = Path(root).resolve()
+    target = resolved_root.joinpath(*PurePosixPath(relative).parts)
+    try:
+        target.resolve(strict=False).relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise BuildError(f"构建输入映射后逃出 staging：{relative!r}") from exc
+    return target
 
 
 def _sha256(path: Path) -> str:
@@ -404,9 +439,20 @@ def safe_extract_tar(
 
 
 def _validate_input_path(relative: str) -> None:
+    if "\\" in relative:
+        raise BuildError(f"构建输入路径不得包含 Windows 反斜杠：{relative!r}")
+    if ":" in relative:
+        raise BuildError(f"构建输入路径不得包含 Windows 盘符或 ADS 冒号：{relative!r}")
+    if _CONTROL_CHARACTER_RE.search(relative):
+        raise BuildError(f"构建输入路径不得包含控制字符：{relative!r}")
     path = PurePosixPath(relative)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise BuildError(f"构建输入路径不合法：{relative!r}")
+    for part in path.parts:
+        if part.endswith((".", " ")):
+            raise BuildError(f"构建输入路径不得以点或空格结尾：{relative!r}")
+        if _WINDOWS_RESERVED_NAME_RE.fullmatch(part):
+            raise BuildError(f"构建输入路径不得使用 Windows 保留设备名：{relative!r}")
     lowered_parts = {part.lower() for part in path.parts}
     if lowered_parts & _FORBIDDEN_INPUT_PARTS:
         raise BuildError(f"构建输入包含禁止目录：{relative!r}")
@@ -470,9 +516,7 @@ def _commit_file_specs(
         folded = path.casefold()
         previous = seen_casefold.get(folded)
         if previous is not None:
-            raise BuildError(
-                f"Git 文件清单包含大小写冲突路径：{previous!r} 与 {path!r}"
-            )
+            raise BuildError(f"Git 文件清单包含大小写冲突路径：{previous!r} 与 {path!r}")
         seen_casefold[folded] = path
         if mode not in {0o100644, 0o100755} or kind != b"blob":
             raise BuildError(f"构建输入必须是普通 Git blob：{path}")
@@ -502,7 +546,7 @@ def _copy_tracked_inputs(repo_root: Path, commit: str, destination: Path) -> Non
             output_relative = "app/tianshu/" + relative.removeprefix("src/tianshu/")
         else:
             output_relative = relative
-        target = destination.joinpath(*PurePosixPath(output_relative).parts)
+        target = _validated_staging_destination(destination, output_relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             with target.open("xb") as stream:
@@ -519,7 +563,7 @@ def _copy_unbound_input(source: Path, destination: Path) -> None:
         if _is_ignored_cache_entry(path):
             continue
         relative = path.relative_to(source).as_posix()
-        target = destination.joinpath(*PurePosixPath(relative).parts)
+        target = _validated_staging_destination(destination, relative)
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
             continue
@@ -635,6 +679,10 @@ def _publish_marker_path(output: Path) -> Path:
 
 def _publish_lock_path(output: Path) -> Path:
     return output.with_name(f".{output.name}.publish.lock")
+
+
+def _staging_owner_path(output: Path, token: str) -> Path:
+    return output.with_name(f".{output.name}.staging-{token}.json")
 
 
 @contextmanager
@@ -779,6 +827,99 @@ def _remove_publish_marker(marker: Path) -> None:
     marker.unlink(missing_ok=True)
 
 
+def _write_staging_owner(output: Path, staging: Path, token: str) -> Path:
+    marker = _staging_owner_path(output, token)
+    payload = {
+        "schema": 1,
+        "output": output.name,
+        "staging": staging.name,
+        "token": token,
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.staging-intent-",
+        dir=output.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(marker)
+    except OSError as exc:
+        raise BuildError(f"无法持久化 staging 所有权记录：{exc}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    return marker
+
+
+def _read_staging_owner(marker: Path, output: Path) -> Path:
+    if _is_link(marker) or not marker.is_file():
+        raise BuildError(f"staging 所有权记录必须是普通文件：{marker}")
+    try:
+        data = json.loads(
+            marker.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, ValueError) as exc:
+        raise BuildError(f"staging 所有权记录无效：{exc}") from exc
+    if not isinstance(data, dict) or set(data) != {"schema", "output", "staging", "token"}:
+        raise BuildError("staging 所有权记录字段必须封闭")
+    if type(data["schema"]) is not int or data["schema"] != 1:
+        raise BuildError("不支持的 staging 所有权记录 schema")
+    if data["output"] != output.name:
+        raise BuildError("staging 所有权记录与输出目录不匹配")
+    token = data["token"]
+    if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        raise BuildError("staging 所有权 token 不合法")
+    expected_marker = _staging_owner_path(output, token).name
+    expected_staging = f".{output.name}.build-{token}"
+    if marker.name != expected_marker or data["staging"] != expected_staging:
+        raise BuildError("staging 所有权记录路径不合法")
+    return output.parent / expected_staging
+
+
+def _remove_staging_owner(marker: Path) -> None:
+    if _is_link(marker):
+        raise BuildError(f"staging 所有权记录不得是链接：{marker}")
+    marker.unlink(missing_ok=True)
+
+
+def _recover_owned_staging(output: Path) -> None:
+    prefix = f".{output.name}.staging-"
+    try:
+        candidates = sorted(
+            path for path in output.parent.iterdir() if path.name.startswith(prefix)
+        )
+    except OSError as exc:
+        raise BuildError(f"无法扫描 staging 所有权记录：{exc}") from exc
+    for marker in candidates:
+        staging = _read_staging_owner(marker, output)
+        if _is_link(staging):
+            raise BuildError(f"staging 所有权目标不得是链接：{staging}")
+        if staging.exists() and not staging.is_dir():
+            raise BuildError(f"staging 所有权目标必须是普通目录：{staging}")
+        if staging.exists():
+            shutil.rmtree(staging)
+        _remove_staging_owner(marker)
+
+
+def _create_owned_staging(output: Path) -> tuple[Path, Path]:
+    token = uuid.uuid4().hex
+    staging = output.with_name(f".{output.name}.build-{token}")
+    marker = _write_staging_owner(output, staging, token)
+    try:
+        staging.mkdir(mode=0o700)
+    except OSError as exc:
+        try:
+            _remove_staging_owner(marker)
+        except BuildError as cleanup_exc:
+            raise BuildError(f"无法创建 staging 且所有权记录清理失败：{cleanup_exc}") from exc
+        raise BuildError(f"无法创建 staging：{exc}") from exc
+    return staging, marker
+
+
 def _recover_publish_transaction_locked(output: Path, marker: Path) -> None:
     staging, backup = _read_publish_marker(marker, output)
     output_exists = output.exists() or _is_link(output)
@@ -842,46 +983,50 @@ def _validated_output(repo_root: Path, out_dir: Path) -> Path:
         if output == protected.resolve() or output.is_relative_to(protected.resolve()):
             raise BuildError(f"输出目录不得覆盖构建输入：{protected}")
     _recover_publish_transaction(output)
-    if output.exists():
-        if _is_link(output) or not output.is_dir():
-            raise BuildError(f"输出路径已存在且不是普通目录：{output}")
-        if any(output.iterdir()):
-            _validate_existing_release_directory(output)
+    _validate_output_directory_for_build(output)
     return output
 
 
-def _publish_staged_directory(staging: Path, output: Path) -> None:
+def _validate_output_directory_for_build(output: Path) -> None:
+    if output.exists() or _is_link(output):
+        _require_plain_directory(output, "output")
+        if any(output.iterdir()):
+            _validate_existing_release_directory(output)
+
+
+def _publish_staged_directory_locked(staging: Path, output: Path) -> None:
     _require_plain_directory(staging, "staging")
     marker = _publish_marker_path(output)
     backup = output.with_name(f".{output.name}.backup-{uuid.uuid4().hex}")
-    with _publish_lock(output):
-        if marker.exists() or _is_link(marker):
-            _recover_publish_transaction_locked(output, marker)
+    if marker.exists() or _is_link(marker):
+        _recover_publish_transaction_locked(output, marker)
+    _validate_output_directory_for_build(output)
+    _write_publish_marker(
+        marker,
+        output=output,
+        staging=staging,
+        backup=backup,
+    )
+    try:
         if output.exists():
-            _require_plain_directory(output, "output")
-            if any(output.iterdir()):
-                _validate_existing_release_directory(output)
-        _write_publish_marker(
-            marker,
-            output=output,
-            staging=staging,
-            backup=backup,
-        )
+            output.replace(backup)
+        _release_failpoint("release.publish.old_moved")
+        staging.replace(output)
+        _release_failpoint("release.publish.new_moved")
+        _validate_existing_release_directory(output)
+        _remove_publish_temporary(backup, "backup")
+        _remove_publish_marker(marker)
+    except BaseException as exc:
         try:
-            if output.exists():
-                output.replace(backup)
-            _release_failpoint("release.publish.old_moved")
-            staging.replace(output)
-            _release_failpoint("release.publish.new_moved")
-            _validate_existing_release_directory(output)
-            _remove_publish_temporary(backup, "backup")
-            _remove_publish_marker(marker)
-        except BaseException as exc:
-            try:
-                _recover_publish_transaction_locked(output, marker)
-            except BaseException as recovery_exc:
-                exc.add_note(f"发布事务恢复失败：{recovery_exc}")
-            raise
+            _recover_publish_transaction_locked(output, marker)
+        except BaseException as recovery_exc:
+            exc.add_note(f"发布事务恢复失败：{recovery_exc}")
+        raise
+
+
+def _publish_staged_directory(staging: Path, output: Path) -> None:
+    with _publish_lock(output):
+        _publish_staged_directory_locked(staging, output)
 
 
 def prepare_bundle(
@@ -937,81 +1082,84 @@ def prepare_bundle(
 
     output = _validated_output(repo_root, out_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.build-", dir=output.parent))
-    try:
-        _extract_verified_members(
-            runtime_archive,
-            staging,
-            materialize_internal_links=True,
-            expected_sha256=expected_sha256,
-        )
-        _prune_runtime(staging)
-        _remove_python_caches(staging)
-        entry = _python_entry(staging, target)
-        if _is_link(entry) or not entry.is_file():
-            raise BuildError("Python runtime 归档缺少目标解释器普通文件")
-
-        if allow_unbound_source:
-            _copy_unbound_input(repo_root / "src" / "tianshu", staging / "app" / "tianshu")
-            _copy_unbound_input(repo_root / "ui" / "dist", staging / "ui" / "dist")
-            license_path = repo_root / "LICENSE"
-            if _is_link(license_path) or not license_path.is_file():
-                raise BuildError("构建输入缺少普通 LICENSE 文件")
-            licenses = staging / "licenses"
-            licenses.mkdir()
-            shutil.copyfile(license_path, licenses / "LICENSE")
-        else:
-            _copy_tracked_inputs(repo_root, commit, staging)
-
-        identity = {
-            "schema": 1,
-            "product": "tianshu-agent",
-            "version": version,
-            "commit": commit,
-            "target": target,
-        }
-        release_path = staging / "release.json"
-        release_path.write_text(
-            json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        release_path.chmod(0o644)
-        files = _collect_files(staging)
-        ui_relative = "ui/dist/index.html"
-        if ui_relative not in files:
-            raise BuildError("UI bundle 缺少 ui/dist/index.html")
-        manifest = {
-            **identity,
-            "python": python_version,
-            "python_build_release": python_build_release,
-            "ui_dist_sha256": files[ui_relative],
-            "files": files,
-        }
-        manifest_path = staging / "release-manifest.json"
-        write_manifest(manifest_path, manifest)
+    with _publish_lock(output):
+        _recover_owned_staging(output)
+        _validate_output_directory_for_build(output)
+        staging, staging_owner = _create_owned_staging(output)
         try:
-            validate_manifest(manifest, base_dir=staging)
-        except ReleaseManifestError as exc:
-            raise BuildError(str(exc)) from exc
-        _publish_staged_directory(staging, output)
-        return output / "release-manifest.json"
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+            _extract_verified_members(
+                runtime_archive,
+                staging,
+                materialize_internal_links=True,
+                expected_sha256=expected_sha256,
+            )
+            _prune_runtime(staging)
+            _remove_python_caches(staging)
+            entry = _python_entry(staging, target)
+            if _is_link(entry) or not entry.is_file():
+                raise BuildError("Python runtime 归档缺少目标解释器普通文件")
+
+            if allow_unbound_source:
+                _copy_unbound_input(repo_root / "src" / "tianshu", staging / "app" / "tianshu")
+                _copy_unbound_input(repo_root / "ui" / "dist", staging / "ui" / "dist")
+                license_path = repo_root / "LICENSE"
+                if _is_link(license_path) or not license_path.is_file():
+                    raise BuildError("构建输入缺少普通 LICENSE 文件")
+                licenses = staging / "licenses"
+                licenses.mkdir()
+                shutil.copyfile(license_path, licenses / "LICENSE")
+            else:
+                _copy_tracked_inputs(repo_root, commit, staging)
+
+            identity = {
+                "schema": 1,
+                "product": "tianshu-agent",
+                "version": version,
+                "commit": commit,
+                "target": target,
+            }
+            release_path = staging / "release.json"
+            release_path.write_text(
+                json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            release_path.chmod(0o644)
+            files = _collect_files(staging)
+            ui_relative = "ui/dist/index.html"
+            if ui_relative not in files:
+                raise BuildError("UI bundle 缺少 ui/dist/index.html")
+            manifest = {
+                **identity,
+                "python": python_version,
+                "python_build_release": python_build_release,
+                "ui_dist_sha256": files[ui_relative],
+                "files": files,
+            }
+            manifest_path = staging / "release-manifest.json"
+            write_manifest(manifest_path, manifest)
+            try:
+                validate_manifest(manifest, base_dir=staging)
+            except ReleaseManifestError as exc:
+                raise BuildError(str(exc)) from exc
+            _publish_staged_directory_locked(staging, output)
+            return output / "release-manifest.json"
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+            _remove_staging_owner(staging_owner)
 
 
 def _download_runtime_from_lock(lock: dict[str, Any], target: str, cache_dir: Path) -> Path:
     if target not in TARGETS:
         raise BuildError(f"未知 target：{target}")
     entry = lock["targets"][target]
-    cache_dir = Path(cache_dir).expanduser()
-    if _is_link(cache_dir):
-        raise BuildError(f"runtime 缓存目录不得是链接：{cache_dir}")
+    cache_dir = _validate_directory_chain(cache_dir, "runtime 缓存")
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise BuildError(f"无法创建 runtime 缓存目录：{exc}") from exc
+    cache_dir = _validate_directory_chain(cache_dir, "runtime 缓存")
     if _is_link(cache_dir) or not cache_dir.is_dir():
         raise BuildError(f"runtime 缓存目录必须是普通目录：{cache_dir}")
     destination = cache_dir / entry["asset"]

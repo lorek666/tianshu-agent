@@ -4,11 +4,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import ntpath
 import os
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -724,6 +725,43 @@ def _git_with_input(repo: Path, *args: str, input_bytes: bytes, env: dict[str, s
     ).stdout.strip()
 
 
+def _commit_with_extra_paths(
+    repo: Path,
+    parent: str,
+    paths: dict[str, bytes],
+) -> str:
+    index = repo / ".git" / "review-extra-index"
+    environment = dict(os.environ)
+    environment["GIT_INDEX_FILE"] = str(index)
+    _git_with_input(repo, "read-tree", parent, input_bytes=b"", env=environment)
+    index_lines = []
+    for relative, body in paths.items():
+        oid = _git_with_input(
+            repo,
+            "hash-object",
+            "-w",
+            "--stdin",
+            input_bytes=body,
+        ).decode("ascii")
+        index_lines.append(f"100644 {oid}\t{relative}\n".encode())
+    _git_with_input(
+        repo,
+        "update-index",
+        "--index-info",
+        input_bytes=b"".join(index_lines),
+        env=environment,
+    )
+    tree = _git_with_input(repo, "write-tree", input_bytes=b"", env=environment).decode("ascii")
+    return _git_with_input(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        parent,
+        input_bytes=b"windows unsafe source path fixture\n",
+    ).decode("ascii")
+
+
 def _runtime_lock_for_archive(archive: Path, *, target: str = "macos-arm64") -> dict:
     lock = json.loads((ROOT / "release" / "python-runtime.lock.json").read_text(encoding="utf-8"))
     lock["targets"][target]["sha256"] = _sha256(archive)
@@ -779,15 +817,13 @@ def test_replacement_refs_cannot_change_bundled_source_bytes(tmp_path):
     repo = _repo_fixture(tmp_path)
     commit = _commit_fixture(repo)
     original_oid = _git(repo, "rev-parse", f"{commit}:src/tianshu/__init__.py")
-    replacement_oid = (
-        _git_with_input(
-            repo,
-            "hash-object",
-            "-w",
-            "--stdin",
-            input_bytes=b"raise RuntimeError('replacement blob must never ship')\n",
-        ).decode("ascii")
-    )
+    replacement_oid = _git_with_input(
+        repo,
+        "hash-object",
+        "-w",
+        "--stdin",
+        input_bytes=b"raise RuntimeError('replacement blob must never ship')\n",
+    ).decode("ascii")
     _git(repo, "replace", original_oid, replacement_oid)
     assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
 
@@ -805,9 +841,7 @@ def test_replacement_refs_cannot_change_bundled_source_bytes(tmp_path):
         runtime_sha256=_sha256(archive),
     )
 
-    assert (output / "app" / "tianshu" / "__init__.py").read_bytes() == (
-        b"__version__ = '0.1.0'\n"
-    )
+    assert (output / "app" / "tianshu" / "__init__.py").read_bytes() == (b"__version__ = '0.1.0'\n")
 
 
 def test_cli_rejects_arbitrary_runtime_lock_path(tmp_path):
@@ -987,13 +1021,12 @@ def test_git_tree_rejects_casefold_colliding_source_paths(tmp_path):
         "update-index",
         "--index-info",
         input_bytes=(
-            f"100644 {ss_oid}\tsrc/tianshu/ss.py\n"
-            f"100644 {sharp_s_oid}\tsrc/tianshu/\u00df.py\n"
+            f"100644 {ss_oid}\tsrc/tianshu/ss.py\n100644 {sharp_s_oid}\tsrc/tianshu/\u00df.py\n"
         ).encode(),
         env=environment,
     )
-    casefold_tree = (
-        _git_with_input(repo, "write-tree", input_bytes=b"", env=environment).decode("ascii")
+    casefold_tree = _git_with_input(repo, "write-tree", input_bytes=b"", env=environment).decode(
+        "ascii"
     )
     casefold_commit = _git_with_input(
         repo,
@@ -1006,3 +1039,126 @@ def test_git_tree_rejects_casefold_colliding_source_paths(tmp_path):
 
     with pytest.raises(module.BuildError, match="大小写|casefold|冲突"):
         module._commit_file_specs(repo, casefold_commit)
+
+
+@pytest.mark.parametrize(
+    ("relative", "case"),
+    [
+        ("src/tianshu/a\\..\\..\\..\\..\\review-escape.py", "backslash-traversal"),
+        ("src/tianshu/file:stream", "alternate-data-stream"),
+        ("src/tianshu/NUL", "reserved-device"),
+        ("src/tianshu/trailing.", "trailing-dot"),
+        ("src/tianshu/trailing ", "trailing-space"),
+        ("src/tianshu/control\x01name", "control-character"),
+    ],
+)
+def test_git_tree_rejects_windows_unsafe_source_paths(tmp_path, relative, case):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    parent = _commit_fixture(repo)
+    commit = _commit_with_extra_paths(repo, parent, {relative: b"unsafe source path\n"})
+    destination = tmp_path / "stage" / "app"
+    destination.mkdir(parents=True)
+
+    if case == "backslash-traversal":
+        windows_stage = ntpath.join("C:\\release-stage", "app", "tianshu")
+        windows_target = ntpath.normpath(
+            ntpath.join(
+                windows_stage,
+                *PurePosixPath(relative.removeprefix("src/tianshu/")).parts,
+            )
+        )
+        assert ntpath.relpath(windows_target, windows_stage).startswith("..\\")
+
+    with pytest.raises(module.BuildError, match="路径|Windows|反斜杠|保留|控制|尾"):
+        module._copy_tracked_inputs(repo, commit, destination)
+
+    assert not any(destination.iterdir())
+
+
+def test_download_runtime_rejects_symlink_ancestor_without_external_write(tmp_path, monkeypatch):
+    module = _load_module()
+    body = b"synthetic runtime bytes"
+    cache_root = tmp_path / "cache-root"
+    cache_root.mkdir()
+    target = tmp_path / "external-target"
+    target.mkdir()
+    sentinel = target / "keep.bin"
+    sentinel.write_bytes(b"do not write through this link")
+    alias = cache_root / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    cache = alias / "nested"
+    lock = json.loads((ROOT / "release" / "python-runtime.lock.json").read_text(encoding="utf-8"))
+    lock["targets"]["macos-arm64"]["sha256"] = hashlib.sha256(body).hexdigest()
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(body),
+    )
+
+    with pytest.raises(module.BuildError, match="链接|祖先|普通目录"):
+        module.download_runtime(lock_path, "macos-arm64", cache)
+
+    assert sentinel.read_bytes() == b"do not write through this link"
+    assert not (target / "nested").exists()
+
+
+def test_prejournal_crash_staging_is_cleaned_without_touching_unknown_directory(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
+    _write_fixed_runtime_lock(repo, _runtime_lock_for_archive(archive))
+    commit = _commit_fixture(repo)
+    output = tmp_path / "bundle"
+    module.prepare_bundle(
+        repo_root=repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit=commit,
+        runtime_archive=archive,
+        python_version="3.12.16",
+        python_build_release="20261110",
+        out_dir=output,
+        runtime_sha256=_sha256(archive),
+    )
+    command = _cli_build_command(
+        repo,
+        target="macos-arm64",
+        version="0.2.0",
+        commit=commit,
+        archive=archive,
+        output=output,
+    )
+    child_code = """
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("release_build_crash_before_journal", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module._extract_verified_members = lambda *args, **kwargs: os._exit(77)
+raise SystemExit(module.main(json.loads(sys.argv[2])))
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", child_code, str(SCRIPT), json.dumps(command[2:])],
+        capture_output=True,
+        text=True,
+    )
+
+    assert crashed.returncode == 77
+    stale_staging = {path for path in tmp_path.glob(".bundle.build-*") if path.is_dir()}
+    assert len(stale_staging) == 1
+    assert not (tmp_path / ".bundle.publish.json").exists()
+
+    foreign = tmp_path / ".bundle.build-unowned"
+    foreign.mkdir()
+    sentinel = foreign / "keep.txt"
+    sentinel.write_text("not owned by the release builder", encoding="utf-8")
+
+    restarted = subprocess.run(command, capture_output=True, text=True)
+
+    assert restarted.returncode == 0, restarted.stderr
+    assert all(not path.exists() for path in stale_staging)
+    assert sentinel.read_text(encoding="utf-8") == "not owned by the release builder"
+    assert not list(tmp_path.glob(".bundle.staging-*.json"))
+    assert json.loads((output / "release.json").read_text(encoding="utf-8"))["version"] == "0.2.0"
