@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -645,6 +647,30 @@ def test_prepare_refuses_to_replace_unrelated_existing_directory(tmp_path):
     assert note.read_text(encoding="utf-8") == "unrelated user data"
 
 
+def test_prepare_replaces_existing_empty_output_directory(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
+    output = tmp_path / "bundle"
+    output.mkdir()
+
+    manifest_path = module.prepare_bundle(
+        repo_root=repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit="595be35c037cef35da7f166a5db2a624f2b733a9",
+        runtime_archive=archive,
+        python_version="3.12.16",
+        python_build_release="20261110",
+        out_dir=output,
+        runtime_sha256=_sha256(archive),
+        allow_unbound_source=True,
+    )
+
+    assert manifest_path.is_file()
+    assert json.loads((output / "release.json").read_text(encoding="utf-8"))["version"] == "0.1.0"
+
+
 def test_prepare_bundle_manifest_matches_exact_identity_and_real_file_bytes(tmp_path):
     module = _load_module()
     repo = _repo_fixture(tmp_path)
@@ -686,3 +712,297 @@ def test_prepare_bundle_manifest_matches_exact_identity_and_real_file_bytes(tmp_
     assert manifest["python_build_release"] == "20261110"
     module.validate_manifest(manifest, base_dir=output)
     assert not any(path.is_symlink() for path in output.rglob("*"))
+
+
+def _git_with_input(repo: Path, *args: str, input_bytes: bytes, env: dict[str, str] | None = None):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        input=input_bytes,
+        capture_output=True,
+        env=env,
+    ).stdout.strip()
+
+
+def _runtime_lock_for_archive(archive: Path, *, target: str = "macos-arm64") -> dict:
+    lock = json.loads((ROOT / "release" / "python-runtime.lock.json").read_text(encoding="utf-8"))
+    lock["targets"][target]["sha256"] = _sha256(archive)
+    return lock
+
+
+def _write_fixed_runtime_lock(repo: Path, lock: dict) -> None:
+    release_dir = repo / "release"
+    release_dir.mkdir()
+    (release_dir / "python-runtime.lock.json").write_text(
+        json.dumps(lock, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _cli_build_command(
+    repo: Path,
+    *,
+    target: str,
+    version: str,
+    commit: str,
+    archive: Path,
+    output: Path,
+) -> list[str]:
+    return [
+        sys.executable,
+        str(SCRIPT),
+        "--repo-root",
+        str(repo),
+        "--target",
+        target,
+        "--version",
+        version,
+        "--commit",
+        commit,
+        "--runtime-archive",
+        str(archive),
+        "--out",
+        str(output),
+    ]
+
+
+def _tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): _sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_replacement_refs_cannot_change_bundled_source_bytes(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    commit = _commit_fixture(repo)
+    original_oid = _git(repo, "rev-parse", f"{commit}:src/tianshu/__init__.py")
+    replacement_oid = (
+        _git_with_input(
+            repo,
+            "hash-object",
+            "-w",
+            "--stdin",
+            input_bytes=b"raise RuntimeError('replacement blob must never ship')\n",
+        ).decode("ascii")
+    )
+    _git(repo, "replace", original_oid, replacement_oid)
+    assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+    archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
+    output = tmp_path / "bundle"
+    module.prepare_bundle(
+        repo_root=repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit=commit,
+        runtime_archive=archive,
+        python_version="3.12.16",
+        python_build_release="20261110",
+        out_dir=output,
+        runtime_sha256=_sha256(archive),
+    )
+
+    assert (output / "app" / "tianshu" / "__init__.py").read_bytes() == (
+        b"__version__ = '0.1.0'\n"
+    )
+
+
+def test_cli_rejects_arbitrary_runtime_lock_path(tmp_path):
+    repo = _repo_fixture(tmp_path)
+    commit = _commit_fixture(repo)
+    archive = _runtime_archive(tmp_path / "fake-runtime.tar.gz", target="macos-arm64")
+    arbitrary_lock = tmp_path / "arbitrary-runtime-lock.json"
+    arbitrary_lock.write_text(
+        json.dumps(_runtime_lock_for_archive(archive), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    output = tmp_path / "bundle"
+    command = _cli_build_command(
+        repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit=commit,
+        archive=archive,
+        output=output,
+    )
+    command.extend(["--runtime-lock", str(arbitrary_lock)])
+
+    result = subprocess.run(command, capture_output=True, text=True)
+
+    assert result.returncode == 2
+    assert "runtime-lock" in result.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "failpoint",
+    ["release.publish.old_moved", "release.publish.new_moved"],
+)
+def test_publish_crash_is_recovered_and_restart_is_idempotent(tmp_path, failpoint):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
+    _write_fixed_runtime_lock(repo, _runtime_lock_for_archive(archive))
+    commit = _commit_fixture(repo)
+    output = tmp_path / "bundle"
+    module.prepare_bundle(
+        repo_root=repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit=commit,
+        runtime_archive=archive,
+        python_version="3.12.16",
+        python_build_release="20261110",
+        out_dir=output,
+        runtime_sha256=_sha256(archive),
+    )
+
+    command = _cli_build_command(
+        repo,
+        target="macos-arm64",
+        version="0.2.0",
+        commit=commit,
+        archive=archive,
+        output=output,
+    )
+    environment = dict(os.environ)
+    environment["TIANSHU_FAILPOINT"] = failpoint
+    crashed = subprocess.run(command, capture_output=True, text=True, env=environment)
+
+    assert crashed.returncode == 77
+    marker = tmp_path / ".bundle.publish.json"
+    assert marker.is_file()
+    if failpoint == "release.publish.old_moved":
+        assert not output.exists()
+    else:
+        assert output.is_dir()
+
+    recovered = subprocess.run(command, capture_output=True, text=True)
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads((output / "release.json").read_text(encoding="utf-8"))["version"] == "0.2.0"
+    first_tree = _tree_hashes(output)
+    assert not marker.exists()
+    assert not list(tmp_path.glob(".bundle.backup-*"))
+    assert not list(tmp_path.glob(".bundle.build-*"))
+
+    repeated = subprocess.run(command, capture_output=True, text=True)
+    assert repeated.returncode == 0, repeated.stderr
+    assert _tree_hashes(output) == first_tree
+    assert not marker.exists()
+
+
+def test_output_symlink_is_rejected_before_resolving_to_target(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
+    target = tmp_path / "bundle-target"
+    module.prepare_bundle(
+        repo_root=repo,
+        target="macos-arm64",
+        version="0.1.0",
+        commit="595be35c037cef35da7f166a5db2a624f2b733a9",
+        runtime_archive=archive,
+        python_version="3.12.16",
+        python_build_release="20261110",
+        out_dir=target,
+        runtime_sha256=_sha256(archive),
+        allow_unbound_source=True,
+    )
+    alias = tmp_path / "bundle-alias"
+    alias.symlink_to(target, target_is_directory=True)
+    before = _tree_hashes(target)
+
+    with pytest.raises(module.BuildError, match="链接|symbolic"):
+        module.prepare_bundle(
+            repo_root=repo,
+            target="macos-arm64",
+            version="0.2.0",
+            commit="595be35c037cef35da7f166a5db2a624f2b733a9",
+            runtime_archive=archive,
+            python_version="3.12.16",
+            python_build_release="20261110",
+            out_dir=alias,
+            runtime_sha256=_sha256(archive),
+            allow_unbound_source=True,
+        )
+
+    assert _tree_hashes(target) == before
+
+
+def test_download_runtime_rejects_symlink_cache_before_writing(tmp_path, monkeypatch):
+    module = _load_module()
+    body = b"synthetic runtime bytes"
+    archive_name = EXPECTED_RUNTIME["macos-arm64"]["asset"]
+    target = tmp_path / "cache-target"
+    target.mkdir()
+    sentinel = target / "keep.bin"
+    sentinel.write_bytes(b"do not move this target")
+    cache = tmp_path / "cache"
+    cache.symlink_to(target, target_is_directory=True)
+    lock = json.loads((ROOT / "release" / "python-runtime.lock.json").read_text(encoding="utf-8"))
+    lock["targets"]["macos-arm64"]["sha256"] = hashlib.sha256(body).hexdigest()
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(body),
+    )
+
+    with pytest.raises(module.BuildError, match="链接|symbolic"):
+        module.download_runtime(lock_path, "macos-arm64", cache)
+
+    assert sentinel.read_bytes() == b"do not move this target"
+    assert not (target / archive_name).exists()
+    assert sorted(path.name for path in target.iterdir()) == ["keep.bin"]
+
+
+def test_git_tree_rejects_casefold_colliding_source_paths(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    commit = _commit_fixture(repo)
+    ss_oid = _git_with_input(
+        repo,
+        "hash-object",
+        "-w",
+        "--stdin",
+        input_bytes=b"print('ss')\n",
+    ).decode("ascii")
+    sharp_s_oid = _git_with_input(
+        repo,
+        "hash-object",
+        "-w",
+        "--stdin",
+        input_bytes=b"print('sharp s')\n",
+    ).decode("ascii")
+    index = repo / ".git" / "casefold-index"
+    environment = dict(os.environ)
+    environment["GIT_INDEX_FILE"] = str(index)
+    _git_with_input(repo, "read-tree", commit, input_bytes=b"", env=environment)
+    _git_with_input(
+        repo,
+        "update-index",
+        "--index-info",
+        input_bytes=(
+            f"100644 {ss_oid}\tsrc/tianshu/ss.py\n"
+            f"100644 {sharp_s_oid}\tsrc/tianshu/\u00df.py\n"
+        ).encode(),
+        env=environment,
+    )
+    casefold_tree = (
+        _git_with_input(repo, "write-tree", input_bytes=b"", env=environment).decode("ascii")
+    )
+    casefold_commit = _git_with_input(
+        repo,
+        "commit-tree",
+        casefold_tree,
+        "-p",
+        commit,
+        input_bytes=b"casefold tree fixture\n",
+    ).decode("ascii")
+
+    with pytest.raises(module.BuildError, match="大小写|casefold|冲突"):
+        module._commit_file_specs(repo, casefold_commit)

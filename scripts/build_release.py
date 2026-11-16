@@ -14,8 +14,15 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -38,6 +45,7 @@ TARGETS = frozenset(TARGET_TRIPLES)
 EXPECTED_PYTHON = "3.12.16"
 EXPECTED_RELEASE = "20261110"
 RUNTIME_SOURCE = "https://github.com/astral-sh/python-build-standalone"
+RUNTIME_LOCK_PATH = PurePosixPath("release/python-runtime.lock.json")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^0\.[0-9]+\.[0-9]+$")
@@ -95,6 +103,11 @@ class BuildError(ValueError):
     """发行构建输入或中间产物不满足约束。"""
 
 
+def _is_link(path: Path) -> bool:
+    junction_check = getattr(path, "is_junction", None)
+    return path.is_symlink() or (junction_check is not None and junction_check())
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -104,11 +117,14 @@ def _sha256(path: Path) -> str:
 
 
 def _run_git_bytes(repo_root: Path, *args: str) -> bytes:
+    environment = dict(os.environ)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_root), *args],
+            ["git", "--no-replace-objects", "-C", str(repo_root), *args],
             check=False,
             capture_output=True,
+            env=environment,
         )
     except OSError as exc:
         raise BuildError(f"无法运行 Git 校验发行源：{exc}") from exc
@@ -154,14 +170,14 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def load_runtime_lock(path: Path) -> dict[str, Any]:
+def _parse_runtime_lock(raw: bytes, *, source: str) -> dict[str, Any]:
     try:
         data = json.loads(
-            Path(path).read_text(encoding="utf-8"),
+            raw,
             object_pairs_hook=_reject_duplicate_keys,
         )
     except (OSError, ValueError) as exc:
-        raise BuildError(f"无法读取 Python runtime lock：{exc}") from exc
+        raise BuildError(f"无法解析 Python runtime lock {source}：{exc}") from exc
     if not isinstance(data, dict):
         raise BuildError("Python runtime lock 根必须是 object")
     if set(data) != {"schema", "release", "python", "source", "targets"}:
@@ -205,6 +221,43 @@ def load_runtime_lock(path: Path) -> dict[str, Any]:
         if _SHA256_RE.fullmatch(entry["sha256"]) is None:
             raise BuildError(f"{target}.sha256 不合法")
     return data
+
+
+def load_runtime_lock(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise BuildError(f"无法读取 Python runtime lock：{exc}") from exc
+    return _parse_runtime_lock(raw, source=str(path))
+
+
+def load_committed_runtime_lock(repo_root: Path, commit: str) -> dict[str, Any]:
+    path = RUNTIME_LOCK_PATH.as_posix()
+    raw = _run_git_bytes(
+        repo_root,
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        path,
+    )
+    records = [record for record in raw.split(b"\0") if record]
+    if len(records) != 1:
+        raise BuildError(f"发行 commit 必须精确包含唯一 {path}")
+    try:
+        metadata, raw_path = records[0].split(b"\t", 1)
+        mode_text, kind, object_id = metadata.split(b" ", 2)
+        listed_path = raw_path.decode("utf-8", errors="strict")
+        mode = int(mode_text, 8)
+        oid = object_id.decode("ascii", errors="strict")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise BuildError(f"{path} Git 清单格式不合法") from exc
+    if listed_path != path or mode != 0o100644 or kind != b"blob":
+        raise BuildError(f"{path} 必须是发行 commit 内唯一的普通 Git blob")
+    lock_bytes = _run_git_bytes(repo_root, "cat-file", "blob", oid)
+    return _parse_runtime_lock(lock_bytes, source=f"{commit}:{path}")
 
 
 def _validate_member_name(name: str) -> PurePosixPath:
@@ -310,9 +363,9 @@ def _extract_verified_members(
         for name, linkname in aliases:
             alias = _validated_destination(destination, name)
             source = _validated_destination(destination, linkname)
-            if source.is_symlink() or not source.is_file():
+            if _is_link(source) or not source.is_file():
                 raise BuildError(f"运行时归档链接目标必须是内部普通文件：{name!r} -> {linkname!r}")
-            if alias.exists() or alias.is_symlink():
+            if alias.exists() or _is_link(alias):
                 raise BuildError(f"运行时归档链接与文件冲突：{name!r}")
             alias.parent.mkdir(parents=True, mode=0o755, exist_ok=True)
             shutil.copyfile(source, alias)
@@ -327,9 +380,9 @@ def safe_extract_tar(
 ) -> None:
     archive = Path(archive)
     destination = Path(destination)
-    if archive.is_symlink() or not archive.is_file():
+    if _is_link(archive) or not archive.is_file():
         raise BuildError(f"Python runtime 归档必须是普通文件：{archive}")
-    if destination.exists() or destination.is_symlink():
+    if destination.exists() or _is_link(destination):
         raise BuildError(f"运行时解包目标必须不存在：{destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(
@@ -371,13 +424,13 @@ def _is_ignored_cache_entry(path: Path) -> bool:
 
 
 def _reject_unsafe_worktree_entries(root: Path) -> None:
-    if root.is_symlink() or not root.is_dir():
+    if _is_link(root) or not root.is_dir():
         raise BuildError(f"构建输入目录不存在或是链接：{root}")
     for path in sorted(root.rglob("*")):
         if _is_ignored_cache_entry(path):
             continue
         relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
+        if _is_link(path):
             raise BuildError(f"构建输入包含链接：{relative!r}")
         mode = path.lstat().st_mode
         if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
@@ -402,7 +455,7 @@ def _commit_file_specs(
         "LICENSE",
     )
     specs: list[tuple[str, str, int]] = []
-    seen: set[str] = set()
+    seen_casefold: dict[str, str] = {}
     for record in raw.split(b"\0"):
         if not record:
             continue
@@ -414,9 +467,13 @@ def _commit_file_specs(
             oid = object_id.decode("ascii", errors="strict")
         except (ValueError, UnicodeDecodeError) as exc:
             raise BuildError("Git 文件清单格式不合法") from exc
-        if path in seen:
-            raise BuildError(f"Git 文件清单包含重复路径：{path}")
-        seen.add(path)
+        folded = path.casefold()
+        previous = seen_casefold.get(folded)
+        if previous is not None:
+            raise BuildError(
+                f"Git 文件清单包含大小写冲突路径：{previous!r} 与 {path!r}"
+            )
+        seen_casefold[folded] = path
         if mode not in {0o100644, 0o100755} or kind != b"blob":
             raise BuildError(f"构建输入必须是普通 Git blob：{path}")
         if not (
@@ -505,7 +562,7 @@ def _prune_runtime(root: Path) -> None:
         "Lib/turtledemo",
     ):
         path = runtime / relative
-        if path.is_symlink():
+        if _is_link(path):
             raise BuildError(f"待裁剪运行时路径是链接：{relative}")
         if path.is_dir():
             shutil.rmtree(path)
@@ -518,7 +575,7 @@ def _prune_runtime(root: Path) -> None:
         "Scripts/*",
     ):
         for path in runtime.glob(pattern):
-            if path.is_symlink():
+            if _is_link(path):
                 raise BuildError(f"待裁剪运行时路径是链接：{path.relative_to(runtime)}")
             if path.is_dir():
                 shutil.rmtree(path)
@@ -553,7 +610,7 @@ def _archive_python_entry_is_executable(archive: Path, target: str) -> bool:
 def _assert_regular_tree(root: Path) -> None:
     for path in root.rglob("*"):
         relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
+        if _is_link(path):
             raise BuildError(f"发行物包含链接：{relative}")
         mode = path.lstat().st_mode
         if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
@@ -572,49 +629,259 @@ def _collect_files(root: Path) -> dict[str, str]:
     return files
 
 
+def _publish_marker_path(output: Path) -> Path:
+    return output.with_name(f".{output.name}.publish.json")
+
+
+def _publish_lock_path(output: Path) -> Path:
+    return output.with_name(f".{output.name}.publish.lock")
+
+
+@contextmanager
+def _publish_lock(output: Path):
+    lock_path = _publish_lock_path(output)
+    if _is_link(lock_path):
+        raise BuildError(f"发布目录锁不得是链接：{lock_path}")
+    flags = os.O_CREAT | os.O_RDWR
+    if os.name != "nt":
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise BuildError(f"无法打开发布目录锁：{exc}") from exc
+    locked = False
+    try:
+        if os.name == "nt":
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise BuildError(f"另一个发布进程正在使用输出目录：{output}") from exc
+        else:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise BuildError(f"另一个发布进程正在使用输出目录：{output}") from exc
+        locked = True
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _write_publish_marker(
+    marker: Path,
+    *,
+    output: Path,
+    staging: Path,
+    backup: Path,
+) -> None:
+    payload = {
+        "schema": 1,
+        "output": output.name,
+        "staging": staging.name,
+        "backup": backup.name,
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.publish-intent-",
+        dir=output.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(marker)
+    except OSError as exc:
+        raise BuildError(f"无法持久化发布恢复记录：{exc}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_publish_marker(marker: Path, output: Path) -> tuple[Path, Path]:
+    if _is_link(marker) or not marker.is_file():
+        raise BuildError(f"发布恢复记录必须是普通文件：{marker}")
+    try:
+        data = json.loads(
+            marker.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, ValueError) as exc:
+        raise BuildError(f"发布恢复记录无效：{exc}") from exc
+    if not isinstance(data, dict) or set(data) != {"schema", "output", "staging", "backup"}:
+        raise BuildError("发布恢复记录字段必须封闭")
+    if type(data["schema"]) is not int or data["schema"] != 1:
+        raise BuildError("不支持的发布恢复记录 schema")
+    if data["output"] != output.name:
+        raise BuildError("发布恢复记录与输出目录不匹配")
+    for field, prefix in (
+        ("staging", f".{output.name}.build-"),
+        ("backup", f".{output.name}.backup-"),
+    ):
+        name = data[field]
+        if (
+            not isinstance(name, str)
+            or Path(name).name != name
+            or not name.startswith(prefix)
+            or len(name) == len(prefix)
+        ):
+            raise BuildError(f"发布恢复记录的 {field} 路径不合法")
+    staging = output.parent / data["staging"]
+    backup = output.parent / data["backup"]
+    if staging == backup:
+        raise BuildError("发布恢复记录的 staging/backup 不得相同")
+    return staging, backup
+
+
+def _require_plain_directory(path: Path, label: str) -> None:
+    if _is_link(path) or not path.is_dir():
+        raise BuildError(f"发布恢复的 {label} 必须是普通目录：{path}")
+
+
+def _validate_existing_release_directory(output: Path) -> None:
+    manifest_path = output / "release-manifest.json"
+    if _is_link(manifest_path) or not manifest_path.is_file():
+        raise BuildError("已有输出目录必须包含普通 release-manifest.json")
+    _assert_regular_tree(output)
+    try:
+        previous = read_manifest(manifest_path, base_dir=output)
+    except ReleaseManifestError as exc:
+        raise BuildError(f"已有输出 manifest 无效：{exc}") from exc
+    actual_files = {
+        path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()
+    }
+    expected_files = set(previous["files"]) | {"release-manifest.json"}
+    if actual_files != expected_files:
+        raise BuildError("已有输出文件集合与 manifest 不一致")
+
+
+def _remove_publish_temporary(path: Path, label: str) -> None:
+    if _is_link(path):
+        raise BuildError(f"发布恢复的 {label} 不得是链接：{path}")
+    if path.exists():
+        if not path.is_dir():
+            raise BuildError(f"发布恢复的 {label} 必须是普通目录：{path}")
+        shutil.rmtree(path)
+
+
+def _remove_publish_marker(marker: Path) -> None:
+    if _is_link(marker):
+        raise BuildError(f"发布恢复记录不得是链接：{marker}")
+    marker.unlink(missing_ok=True)
+
+
+def _recover_publish_transaction_locked(output: Path, marker: Path) -> None:
+    staging, backup = _read_publish_marker(marker, output)
+    output_exists = output.exists() or _is_link(output)
+    staging_exists = staging.exists() or _is_link(staging)
+    backup_exists = backup.exists() or _is_link(backup)
+    if output_exists:
+        _require_plain_directory(output, "output")
+    if staging_exists:
+        _require_plain_directory(staging, "staging")
+    if backup_exists:
+        _require_plain_directory(backup, "backup")
+
+    if output_exists:
+        if staging_exists and backup_exists:
+            raise BuildError("发布恢复现场同时存在 output/staging/backup，拒绝猜测")
+        if staging_exists:
+            _remove_publish_temporary(staging, "staging")
+        else:
+            _validate_existing_release_directory(output)
+        _remove_publish_temporary(backup, "backup")
+        _remove_publish_marker(marker)
+        return
+
+    if backup_exists:
+        if staging_exists:
+            staging.replace(output)
+        else:
+            backup.replace(output)
+        _validate_existing_release_directory(output)
+        _remove_publish_temporary(backup, "backup")
+        _remove_publish_marker(marker)
+        return
+
+    _remove_publish_temporary(staging, "staging")
+    _remove_publish_marker(marker)
+
+
+def _recover_publish_transaction(output: Path) -> None:
+    marker = _publish_marker_path(output)
+    if not marker.exists() and not _is_link(marker):
+        return
+    with _publish_lock(output):
+        if marker.exists() or _is_link(marker):
+            _recover_publish_transaction_locked(output, marker)
+
+
+def _release_failpoint(name: str) -> None:
+    if os.environ.get("TIANSHU_FAILPOINT") == name:
+        os._exit(77)
+
+
 def _validated_output(repo_root: Path, out_dir: Path) -> Path:
     repo_root = repo_root.resolve()
-    output = Path(out_dir).expanduser().resolve()
+    requested = Path(out_dir).expanduser()
+    if _is_link(requested):
+        raise BuildError(f"显式输出目录不得是链接：{requested}")
+    output = requested.resolve()
     if output == repo_root or repo_root.is_relative_to(output):
         raise BuildError("输出目录不得等于或包含发布源仓库")
     for protected in (repo_root / "src" / "tianshu", repo_root / "ui" / "dist"):
         if output == protected.resolve() or output.is_relative_to(protected.resolve()):
             raise BuildError(f"输出目录不得覆盖构建输入：{protected}")
+    _recover_publish_transaction(output)
     if output.exists():
-        if output.is_symlink() or not output.is_dir():
+        if _is_link(output) or not output.is_dir():
             raise BuildError(f"输出路径已存在且不是普通目录：{output}")
         if any(output.iterdir()):
-            manifest_path = output / "release-manifest.json"
-            if not manifest_path.is_file() or manifest_path.is_symlink():
-                raise BuildError("已有非空输出目录必须包含有效 release-manifest.json")
-            _assert_regular_tree(output)
-            try:
-                previous = read_manifest(manifest_path, base_dir=output)
-            except ReleaseManifestError as exc:
-                raise BuildError(f"旧输出 manifest 无效，拒绝覆盖：{exc}") from exc
-            actual_files = {
-                path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()
-            }
-            expected_files = set(previous["files"]) | {"release-manifest.json"}
-            if actual_files != expected_files:
-                raise BuildError("旧输出文件集合与 manifest 不一致，拒绝覆盖")
+            _validate_existing_release_directory(output)
     return output
 
 
 def _publish_staged_directory(staging: Path, output: Path) -> None:
-    backup: Path | None = None
-    if output.exists():
-        backup = Path(tempfile.mkdtemp(prefix=f".{output.name}.backup-", dir=output.parent))
-        backup.rmdir()
-        output.replace(backup)
-    try:
-        staging.replace(output)
-    except BaseException:
-        if backup is not None and backup.exists() and not output.exists():
-            backup.replace(output)
-        raise
-    if backup is not None and backup.exists():
-        shutil.rmtree(backup)
+    _require_plain_directory(staging, "staging")
+    marker = _publish_marker_path(output)
+    backup = output.with_name(f".{output.name}.backup-{uuid.uuid4().hex}")
+    with _publish_lock(output):
+        if marker.exists() or _is_link(marker):
+            _recover_publish_transaction_locked(output, marker)
+        if output.exists():
+            _require_plain_directory(output, "output")
+            if any(output.iterdir()):
+                _validate_existing_release_directory(output)
+        _write_publish_marker(
+            marker,
+            output=output,
+            staging=staging,
+            backup=backup,
+        )
+        try:
+            if output.exists():
+                output.replace(backup)
+            _release_failpoint("release.publish.old_moved")
+            staging.replace(output)
+            _release_failpoint("release.publish.new_moved")
+            _validate_existing_release_directory(output)
+            _remove_publish_temporary(backup, "backup")
+            _remove_publish_marker(marker)
+        except BaseException as exc:
+            try:
+                _recover_publish_transaction_locked(output, marker)
+            except BaseException as recovery_exc:
+                exc.add_note(f"发布事务恢复失败：{recovery_exc}")
+            raise
 
 
 def prepare_bundle(
@@ -643,7 +910,7 @@ def prepare_bundle(
 
     repo_root = Path(repo_root).resolve()
     runtime_archive = Path(runtime_archive)
-    if runtime_archive.is_symlink() or not runtime_archive.is_file():
+    if _is_link(runtime_archive) or not runtime_archive.is_file():
         raise BuildError(f"Python runtime 归档必须是普通文件：{runtime_archive}")
     try:
         actual_sha256 = _sha256(runtime_archive)
@@ -681,14 +948,14 @@ def prepare_bundle(
         _prune_runtime(staging)
         _remove_python_caches(staging)
         entry = _python_entry(staging, target)
-        if entry.is_symlink() or not entry.is_file():
+        if _is_link(entry) or not entry.is_file():
             raise BuildError("Python runtime 归档缺少目标解释器普通文件")
 
         if allow_unbound_source:
             _copy_unbound_input(repo_root / "src" / "tianshu", staging / "app" / "tianshu")
             _copy_unbound_input(repo_root / "ui" / "dist", staging / "ui" / "dist")
             license_path = repo_root / "LICENSE"
-            if license_path.is_symlink() or not license_path.is_file():
+            if _is_link(license_path) or not license_path.is_file():
                 raise BuildError("构建输入缺少普通 LICENSE 文件")
             licenses = staging / "licenses"
             licenses.mkdir()
@@ -734,15 +1001,21 @@ def prepare_bundle(
             shutil.rmtree(staging)
 
 
-def download_runtime(lock_path: Path, target: str, cache_dir: Path) -> Path:
-    lock = load_runtime_lock(lock_path)
+def _download_runtime_from_lock(lock: dict[str, Any], target: str, cache_dir: Path) -> Path:
     if target not in TARGETS:
         raise BuildError(f"未知 target：{target}")
     entry = lock["targets"][target]
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(cache_dir).expanduser()
+    if _is_link(cache_dir):
+        raise BuildError(f"runtime 缓存目录不得是链接：{cache_dir}")
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BuildError(f"无法创建 runtime 缓存目录：{exc}") from exc
+    if _is_link(cache_dir) or not cache_dir.is_dir():
+        raise BuildError(f"runtime 缓存目录必须是普通目录：{cache_dir}")
     destination = cache_dir / entry["asset"]
-    if destination.is_symlink():
+    if _is_link(destination):
         raise BuildError(f"runtime 缓存不得是链接：{destination}")
     if destination.is_file():
         try:
@@ -777,6 +1050,10 @@ def download_runtime(lock_path: Path, target: str, cache_dir: Path) -> Path:
     return destination
 
 
+def download_runtime(lock_path: Path, target: str, cache_dir: Path) -> Path:
+    return _download_runtime_from_lock(load_runtime_lock(lock_path), target, cache_dir)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -785,18 +1062,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--runtime-archive", type=Path)
-    parser.add_argument(
-        "--runtime-lock",
-        type=Path,
-        default=Path(__file__).resolve().parents[1] / "release" / "python-runtime.lock.json",
-    )
     parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache" / "tianshu")
     args = parser.parse_args(argv)
-    lock = load_runtime_lock(args.runtime_lock)
     verify_source_identity(args.repo_root, args.commit)
+    lock = load_committed_runtime_lock(args.repo_root, args.commit)
     entry = lock["targets"][args.target]
-    runtime = args.runtime_archive or download_runtime(
-        args.runtime_lock, args.target, args.cache_dir
+    runtime = args.runtime_archive or _download_runtime_from_lock(
+        lock,
+        args.target,
+        args.cache_dir,
     )
     manifest = prepare_bundle(
         repo_root=args.repo_root,
@@ -814,4 +1088,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except BuildError as exc:
+        print(f"发行构建失败：{exc}", file=sys.stderr)
+        raise SystemExit(1) from None

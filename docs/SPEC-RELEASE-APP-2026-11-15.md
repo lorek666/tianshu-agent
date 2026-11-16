@@ -229,6 +229,15 @@ Agent”。
   smoke 使用独立临时数据根，校验 Host `/health` 与鉴权 `/session` 的 PID 身份，等待
   Daemon IPC 健康；成功或失败后都须清理本次拥有的子进程。import 成功不能单独得到 pass。
 
+`build_release.py` 的正式入口从发行 commit 内读取唯一的
+`release/python-runtime.lock.json`，不存在可供用户替换的 `--runtime-lock` 参数；所有 Git
+读操作均禁用 replacement objects。已有输出目录的发布是一笔同父目录 rename 事务：先持久化
+恢复记录，再依次移动旧 output、staging；进程在任一步硬退后，下一次构建启动会按现场完成
+发布或恢复旧 output，并清理对应 staging/backup。该协议不宣称跨平台物理原子目录替换，也不
+宣称断电级 durability；正常运行完成退出 `0`，输入/布局/恢复失败退出 `1`，命令行参数错误
+退出 `2`，仅测试故障注入 `TIANSHU_FAILPOINT=release.publish.{old_moved,new_moved}` 硬退
+`77`。Windows 原生路径仍须由对应 CI/用户设备验证，不能以 macOS 本机结果代替。
+
 新增 `.github/workflows/release.yml`，只在 `workflow_dispatch` 与严格 `v*` tag 触发：
 
 1. 手动输入的完整 commit 必须等于 fetch 后的当前 `origin/main`；tag 先解引用到
