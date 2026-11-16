@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 from support import CHILD_TEXT
 
-from tianshu import migrate
+from tianshu import maintenance, migrate
 from tianshu.backup import create_backup
 from tianshu.events import EventLog
 from tianshu.migrate import (
@@ -50,6 +50,14 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
 # ---------------------------------------------------------------- 夹具
+
+
+@pytest.fixture(autouse=True)
+def _isolated_maintenance_lock_root(tmp_path, monkeypatch):
+    """迁移测试只争用本用例的锁根，不碰同 uid 的全局恢复门。"""
+    lock_root = tmp_path / "maintenance-lock-root"
+    monkeypatch.setattr(maintenance, "_lock_root", lambda: lock_root)
+    return lock_root
 
 
 def _make_root(tmp_path: Path) -> Path:
@@ -107,6 +115,8 @@ def _migration_subprocess(
         "import sys\n"
         f"sys.path.insert(0, {SRC!r})\n"
         "from pathlib import Path\n"
+        "from tianshu import maintenance\n"
+        f"maintenance._lock_root = lambda: Path({str(maintenance._lock_root())!r})\n"
         "from tianshu.migrate import migrate\n"
         f"migrate(Path({str(root)!r}), backup=Path({str(backup)!r}))\n"
     )

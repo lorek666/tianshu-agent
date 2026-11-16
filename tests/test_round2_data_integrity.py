@@ -112,7 +112,11 @@ def _cli(*args: object) -> subprocess.CompletedProcess[str]:
     # 保留 pytest 注入的临时 authority 根；所有调用只接触本测试的临时数据。
     env = dict(os.environ)
     # 子进程跟随实际被测包；把新版测试用于历史源码负控时也不能偷偷跑新CLI。
-    env["PYTHONPATH"] = str(Path(backup.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = (
+        str(Path(backup.__file__).resolve().parents[1])
+        + os.pathsep
+        + env.get("PYTHONPATH", "")
+    )
     return subprocess.run(
         [sys.executable, "-m", "tianshu", "data", *(str(arg) for arg in args), "--json"],
         env=env, capture_output=True, timeout=30, **CHILD_TEXT,

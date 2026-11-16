@@ -94,6 +94,18 @@ Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/te
 
 改动 UI 源码时，还须运行 `pnpm --dir ui install --frozen-lockfile`、`pnpm --dir ui run typecheck`、`pnpm --dir ui run test` 和 `pnpm --dir ui run build`，将对应 `ui/dist` 产物一并提交。CI 会重建并检查产物是否漂移。
 
+改动 `desktop/src-tauri/` 时，还须在该目录运行以下命令；`rust-toolchain.toml`
+固定 Rust 工具链并声明 rustfmt/clippy：
+
+```bash
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+macOS 检查并入现有 macOS required job；Windows 原生检查作为独立 job，由现有
+Windows required 汇总 job 绑定其 `success`。不新增 required check 名称。
+
 **锁文件漂移只能靠 `uv lock --check` 查**：锁文件过期时它会 exit 1 并报 `The lockfile at uv.lock needs to be updated`；同样条件下 `uv sync --frozen` 仍然 exit 0——「用了锁文件」不等于「校验过锁文件」，别拿 `sync --frozen` 当漂移门禁。这也是 CI 里先跑 `uv lock --check` 的原因。
 
 ## 6. PR 要求
@@ -109,8 +121,8 @@ Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/te
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint |
-| `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖 |
+| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint；R1 桌面壳的 Rust fmt/test/clippy |
+| `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 
 required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更新该配置。改检查名称或矩阵时必须同步核对远端配置。Windows CI 的通过范围以具体 run 的系统版本和架构为准，不代表已验证 Windows 10/11、ARM64 或桌面安装体验。
@@ -128,7 +140,8 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 ## 8. 发布
 
 - 当前仍处内部研发阶段，版本号使用 `v0.x.y`；M0–M5 功能验收完成不等于面向普通用户的发布验收完成。
-- tag 触发构建 —— **尚无此工作流**：`.github/workflows/` 目前只有 `ci.yml`，触发条件是 `push: branches: [main]` 与 `pull_request`，**没有 `tags:` 触发**。发布流程要等真正开始发版时再落地，别按这条假设「打个 tag 就自动出包」
+- `.github/workflows/release.yml` 只接受与当前 `origin/main` 精确相同的手动 commit，或先解引用到 commit 的 `v0.x.y` annotated tag；随后要求该 SHA 最新一次 main push CI 的所有 job 为 `success` 才构建四个原生 target。四份 artifact 必须由 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target`，最后只创建 draft Release。工作流不是现有 required check，不自动公开 Release。
+- macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`；禁止另加下划线别名。`release-index.json` 必须绑定两份脚本的 SHA256 与大小。正式候选还须记录精确组合 SHA 的 CI、真实 workflow dispatch、四目标 artifact 下载/汇总；设备安装、升级/回退、Gatekeeper/SmartScreen 与物理断电各自另验。
 - CHANGELOG 在 `1.0` 之前手写即可
 
 面向普通用户发布前，必须逐项补齐以下验收并记录证据；下列内容是发布条件，**不是现有能力**：

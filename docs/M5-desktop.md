@@ -7,6 +7,12 @@
 > 每一条都在 §2 的表格里，理由和替换时机都写清楚；能力没做的写在 §9。
 >
 > 验收证据见 `docs/M5-verification.md`（实际跑过的命令与输出，不是设计意图）。
+>
+> **后续状态（2026-11-16）**：发行工单的 R1 分支新增未签名 Tauri 2 薄壳源码，复用本文的
+> Host/HTTP/SSE/IPC/Daemon 语义。下文 D1/D5 与 §9 保留 M5 当时的真实基线；
+> 锁定 Python runtime、安装器、release workflow、签名、自动更新、四目标用户设备
+> 安装/升级/回退和 G3 仍没有完成。当前设计见
+> [SPEC-RELEASE-APP-2026-11-15.md](SPEC-RELEASE-APP-2026-11-15.md)。
 
 ---
 
@@ -112,7 +118,10 @@ M5 不重新发明一套。
 `protocol_mismatch` 并断开，不做"尽力兼容"。加字段不升版本，改语义才升。
 
 未完成 `hello` 的连接只能调 `hello`，其它方法一律 `protocol_mismatch`。
-`probe()` 的探活连接在握手前就断开，服务端把这种情况当"可重试"，不记错误。
+`probe()` 的探活连接在握手前就断开，服务端把这种情况当"可重试"，不当作致命
+退出。Host 每 0.5 秒探活一次，若逐条记录握手失败会持续填满 `daemon.log`；
+因此连续失败只在第 1/2/4/8/… 次采样并附累计次数，任何一次认证成功的连接都会
+清零。真实 Daemon 子进程探活回归与 R1 WebView 生命周期探针均验证了这一口径。
 
 ### 3.4 方法表（v1）
 
@@ -192,6 +201,11 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 的收尾窗口里被打崩（macOS CI 实测）。现在 `connect()` 把握手期 EOF 映射成
 `ConnectionClosed`；**不重试**是刻意的：重试只会把"已经走了"拖成整个 timeout。
 
+退出请求还要绑定实例：调用方先冻结 `daemon.lock` 的 `instance_id`，再在
+**发起 shutdown 的同一条已握手连接**上核对 `hello.welcome.instance_id`。
+旧实例 A 退出、新实例 B 复用同一端点时，B 的握手身份不同，请求必须拒绝；
+不能先连一次确认、再用另一条连接发送，那个空隙仍允许请求落到 B。
+
 由此推出两条写法的约束：
 
 - **服务端读线程**：`recv()` 返回 `None` 时必须再看 `conn.eof`，为真就结束这条
@@ -214,7 +228,10 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 
 ### 4.1 启动
 
-1. `tianshu host` 拿 Host 单例锁（`run/host.lock`，PID + 启动时间）。
+1. `tianshu host` 拿 Host 单例锁（`run/host.lock`，PID、启动时间、token 与发行
+   `version/commit/target` 身份）。桌面壳启动的 Host 还必须把同一发行身份同时写进
+   `host.lock` 和鉴权 `/session` 响应；旧锁或旧 Host 缺失身份、身份不匹配，或锁与
+   `/session` 不一致时，壳必须拒绝附着并提示退出旧实例。
 2. 探测 Daemon：`ipc.probe(data_root)` 为真 → 复用；否则 `spawn`
    `python -m tianshu daemon --data-root ...`，等端点就绪（上限 15s）。
 3. Daemon 启动顺序：Daemon 锁 → **恢复扫描** → `ipc.Server.start()` → accept 循环
@@ -244,7 +261,7 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 | 场景 | 行为 |
 |---|---|
 | 关浏览器 / 刷新 | 无影响 |
-| `tianshu host stop` | CLI `POST /shutdown`（**只接受 POST + token**，GET 回 405）→ Host 先让 Daemon 走 `shutdown{reason:"user"}`：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出（等 5s，超时杀进程树）；**Daemon 收掉之后**才关 UI 桥、清 `host.lock`、放主线程退出 |
+| `tianshu host stop` | CLI `POST /shutdown`（**只接受 POST + token**，GET 回 405）→ Host 用已冻结的 Daemon `instance_id` 在同一条握手连接上绑定身份，再让 Daemon 走 `shutdown{reason:"user"}`：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出（等 5s；超时只终止发请求时已核实的同一实例）；**Daemon 收掉之后**才关 UI 桥、清 `host.lock`、放主线程退出 |
 | Host 被杀 | Daemon 是独立进程，继续跑到下一次显式 shutdown（这正是"关 UI 任务继续"） |
 | Daemon 崩溃 | Host 监护：指数退避重启（1s/2s/4s/8s，上限 30s），重启时走 §4.1 的恢复扫描 |
 | 机器重启 | 下次启动时锁文件是陈旧的（连不上端点），Daemon 接管并恢复 |
@@ -257,6 +274,14 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
   描述符协议绑定，调用时多塞一个 handler 实例，`TypeError` 让清理静默不执行；
 - 主线程必须等"Daemon 已收掉"才退出：先放主线程，进程结束会把清理线程一起带走，
   `stop` 报"Host 已退出"，Daemon 却留成孤儿继续接活。
+- 退出请求必须与实例身份在同一连接内绑定：`tests/test_daemon.py` 的真实 Daemon
+  回归证明错误 `expected_instance_id` 返回拒绝且进程/锁不变；
+  `tests/test_host.py` 证明 supervisor 遇到替代实例或缺失身份时既不发送未绑定
+  shutdown，也不按当前锁 PID 杀新实例。
+- 附着 Host 的关闭请求同样要先核对当前 bundle、`host.lock` 与鉴权 `/session` 的发行
+  身份；缺失或不符时 fail-closed，诊断只报 PID 和 `data_root`，不报 token。若退出清理
+  快照中的 Host PID 仍存活但 `host.lock` 已消失，不能把"锁不存在"当成 Host 已死：
+  `_stop_daemon_after_host_observation` 必须保留 Daemon，等待用户退出旧实例后重试。
 
 ### 4.4 单实例
 
@@ -333,8 +358,10 @@ M5 只做"按顺序调用"，不新增判定。
 
 ## 9. M5 明确不做（写在这里，避免下一版读成"应该是做了"）
 
-- Tauri / WebView2 外壳、系统托盘、开机自启、单实例 `open` 事件转发（D1/D2/D5）
-- 安装包、签名、公证、自动更新（TECH-ARCH §8）
+- 本历史里程碑不做 Tauri / WebView2、托盘、开机自启、安装、签名、公证与自动更新。
+  后续发行工单的 R1 候选补入未签名 Tauri 薄壳、托盘与单实例 `open` 转发；
+  R2 的锁定运行时、R3 的安装/卸载与四目标 release workflow 尚未合入。这不代表
+  §9 当时遗漏被追溯改写，也不等于 L1/L2/G3 或四目标支持已完成。
 - OS Keychain（F12 仍是环境变量后端，请求 Keychain 报 `unsupported`）
 - Computer Use（macOS 优先，v1 未实现）
 - E2 生成作业（只保留类型定义）

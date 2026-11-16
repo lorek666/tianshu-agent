@@ -17,6 +17,7 @@ from support import CHILD_TEXT
 
 from tianshu import memory_control
 from tianshu.backup import create_backup
+from tianshu.disk_admission import DiskAdmission
 from tianshu.events import EventLog
 from tianshu.loop import build_stack
 from tianshu.permissions import ActionRequest, PolicyEngine
@@ -27,7 +28,10 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 def _cli(*args: object, failpoint: str | None = None) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("TIANSHU_")}
-    env["PYTHONPATH"] = SRC
+    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if test_lock_root:
+        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+    env["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
     if failpoint is not None:
         env["TIANSHU_FAILPOINT"] = failpoint
     return subprocess.run(
@@ -43,6 +47,10 @@ def _make_root(tmp_path: Path, *, projections: bool = False) -> tuple[Path, str]
     try:
         if projections:
             stack = build_stack(log, data_root=root)
+            stack.tasks._disk_admission = DiskAdmission(
+                stack.tasks.disk_admission.context,
+                probe=lambda _path: 1 << 62,
+            )
             workspace = tmp_path / "workspace"
             workspace.mkdir()
             target = workspace / "existing.txt"

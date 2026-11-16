@@ -1,6 +1,9 @@
 # 天枢 Agent 可安装发行版施工规格
 
-> 状态：**R0 规格与清单基础候选。R1–R3 尚未按切片合入；不宣称已交付安装版或 G3。**
+> 状态：**R1–R3 已在本地组合候选中收敛；R2/R3 第二轮独立复审指出的 Windows
+> 保留设备名、打包来源/输出封闭与 macOS App 根目录集合缺口已做窄修，尚待绑定最终
+> 组合提交的第二读者结论和精确 SHA CI。尚未合入 main，不宣称已交付 L1 安装版、
+> 四目标支持或 G3。**
 >
 > 起草基线 `595be35`；本次拆分基线 `e242257984d2ebd1443e60c81e7d2c97b287122a`。
 > 原 PR #162 的 `7d121ad564d07375c8777f51ad3b7330dd632125 / tree 922a259db4453ec9e78f5e32910e499ad300c2be`
@@ -8,9 +11,10 @@
 
 ## 0. 问题、权威输入与判定口径
 
-当前 main 具有 React UI、Python Host/Daemon 与系统浏览器。本轮 R0 只交付规格、
-发布清单 schema、标准库校验器和真实字节测试。Tauri、锁定运行时、安装器和发布 workflow
-分别留给 R1–R3；原大分支实现保留供逐片迁入，不能以文件已存在代替独立验收。
+当前 main 具有 React UI、Python Host/Daemon 与系统浏览器。R0 交付规格、发布清单
+schema、标准库校验器和真实字节测试；R1 候选只增加 Tauri 壳、Host 生命周期和原生
+manifest 启动校验。锁定运行时、安装器和发布 workflow 分别留给 R2/R3；不能以文件已存在
+代替独立验收。
 
 - 权威要求：`docs/PRD-v1.md` §11.1 G3、§13 T1、§10.6；`docs/TECH-ARCH.md` §8；
   `CONTRIBUTING.md` §8；现有偏差见 `docs/M5-desktop.md` §2。
@@ -178,9 +182,13 @@ Agent”。
    构建失败。
 3. 安装包只包含 `src/tianshu` 和运行所需资源；不包含 `.venv`、tests、refs、logs、
    `.omc`、用户数据库或真实凭据。
-4. UI 只使用已经通过 typecheck/test/build 的 `ui/dist`；构建发布物后再次执行
+4. Git source 路径按 Windows 的封闭语义校验：拒绝反斜杠、盘符/ADS 冒号、控制字符、
+   尾点、尾空格与保留设备名。保留名检查须覆盖 `NUL .txt`、`CON .js`、`COM1 .txt`、
+   `AUX  .x` 这类设备名后带空格的变体；映射到 staging 的相对路径还要做 canonical
+   containment。此保证不替代 Windows 原生写盘测试。
+5. UI 只使用已经通过 typecheck/test/build 的 `ui/dist`；构建发布物后再次执行
    `git diff --exit-code -- ui/dist`。
-5. 包内 `release.json` 只保留短身份，必须包含：
+6. 包内 `release.json` 只保留短身份，必须包含：
 
 ```json
 {
@@ -192,7 +200,7 @@ Agent”。
 }
 ```
 
-6. 包内 `release-manifest.json` 绑定身份和每个内部文件的 SHA256：
+7. 包内 `release-manifest.json` 绑定身份和每个内部文件的 SHA256：
 
 ```json
 {
@@ -208,13 +216,15 @@ Agent”。
 }
 ```
 
-7. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
+8. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
    `release-manifest.json` 的 version/commit/target 一致；macOS 归档和 Windows NSIS
    解包资源中的短清单、完整 manifest 必须分别与已验证 bundle 字节相同。Windows 还必须
    由 7-Zip 实际解出唯一资源根，不得以“外层 PE 合法”代替 payload 证据。
-8. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
-   target、`runtime_smoke`、`device_verification` 和 `signed=false`。三份文件职责不得混写；
-   未知字段拒绝、未知 target 拒绝、未知 schema 拒绝。
+9. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
+   target、`runtime_smoke`、`device_verification` 和 `signed=false`。`assets` 必须逐一
+   绑定最终目录内除索引自身外的所有文件：四个发行物、四个 `.sha256`、四份 per-target
+   manifest 和两个辅助脚本；缺一即失败。三份文件职责不得混写；未知字段拒绝、未知 target
+   拒绝、未知 schema 拒绝。
 
 ## 6. 可复现构建与发布流程
 
@@ -227,6 +237,39 @@ Agent”。
   smoke 使用独立临时数据根，校验 Host `/health` 与鉴权 `/session` 的 PID 身份，等待
   Daemon IPC 健康；成功或失败后都须清理本次拥有的子进程。import 成功不能单独得到 pass。
 
+`build_release.py` 的正式入口从发行 commit 内读取唯一的
+`release/python-runtime.lock.json`，不存在可供用户替换的 `--runtime-lock` 参数；所有 Git
+读操作均禁用 replacement objects。runtime cache 在创建前和创建后逐级检查祖先，拒绝
+symbolic link、Windows junction 与非目录祖先。每次构建先在独占 output publish lock 内写入
+staging ownership 记录，再创建 `.bundle.build-<token>`；从 staging 创建、复制、清单校验到
+发布全程持锁，恢复只清理 ownership token 与记录完全匹配的 staging，无法证明归属的
+`.bundle.build-*` 目录保留并阻断误删。已有输出目录的发布随后先持久化 rename 恢复记录，再
+依次移动旧 output、staging；进程在任一步硬退后，下一次构建启动会按现场完成发布或恢复旧
+output，并清理对应 staging/backup。
+
+该协议不宣称跨平台物理原子目录替换，也不宣称断电级 durability；正常运行完成退出 `0`，
+输入/布局/恢复失败退出 `1`，命令行参数错误退出 `2`，仅测试故障注入
+`TIANSHU_FAILPOINT=release.publish.{old_moved,new_moved}` 硬退 `77`。cache 祖先检查与随后
+的 mkdir/write 之间仍有理论 TOCTOU，未实现 fd-relative/openat/no-follow；Windows 原生
+directory lock/rename、symbolic link/junction、ADS/设备名写盘仍须由对应 CI/用户设备验证，
+不能以 macOS 上的 `ntpath` 语义测试或 POSIX link 测试代替。`.bundle.publish.lock` 是有意的
+持久锁锚点；输出 parent 必须在不跟踪的构建目录中，否则该 sibling 文件会进入工作树状态。
+
+`package_app.py` 在启动 Tauri 前验证源仓库、bundle 和输出路径链，拒绝 symbolic link、
+Windows junction 或非目录祖先；`python`、`app/tianshu`、`licenses`、`ui/dist` 四棵资源树
+只允许普通文件与目录，并逐一验证短清单、完整 manifest、LICENSE 和 UI 入口为普通文件。
+Tauri 完成后再次验证声明路径上的 `.app` 或安装器；macOS 归档入口递归拒绝来源树中的
+symbolic link 和 FIFO 等特殊文件。package 与 assembler 对已有输出还要求是硬链接计数为 1
+的普通文件，避免预置 hard link 把归档、checksum 或 manifest 写入目录外 inode。
+assembler 同时逐级拒绝 artifacts/out 路径中的 symbolic link/junction；卸载 purge 先持住
+canonical parent，再对单个相对条目执行 `rm`，使并发替换祖先 symlink 不能把删除重定向到
+另一棵树。
+macOS release verifier 同时比较 `.app` 根下的文件与目录集合，除平台图标可作为允许但
+非必需项外，额外空目录同样拒绝。上述检查仍是
+检查到读取/归档之间的有界防护：本地恶意同 uid 写者可竞争替换输入，尚未实现
+fd-relative/openat；最终 verifier 只接收已解包 bundle 和归档，不能独立重算原始 runtime
+archive 的字节 provenance，后者由构建入口的 lock SHA 校验及 archive 校验覆盖。
+
 新增 `.github/workflows/release.yml`，只在 `workflow_dispatch` 与严格 `v*` tag 触发：
 
 1. 手动输入的完整 commit 必须等于 fetch 后的当前 `origin/main`；tag 先解引用到
@@ -238,6 +281,10 @@ Agent”。
 4. 运行 release verifier，生成 SHA256 与 manifest，上传 GitHub Release draft。
 5. 人工检查 draft 后才发布；工作流不在未审材料下自动 public release。
 6. 任何 required check、版本、commit、哈希、许可或广告来源失败均不得发布。
+7. `workflow_dispatch` 的 GITHUB_REF 必须是 `refs/heads/main`，避免从非 main ref
+   执行不同 workflow 定义；tag 触发仍按 annotated tag 解引用规则绑定 main commit。
+8. Tauri 打包后、最终 verifier 前必须执行 `git diff --exit-code -- ui/dist`，证明发布壳
+   没有改动已提交前端产物。
 
 当前 CI required checks 名称和分支保护不在本规格中修改。新增 release workflow 先为非
 required 的发布门禁；若未来把它设为 required，必须单独同步远端保护配置与 CONTRIBUTING。
@@ -284,14 +331,17 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   缺少已列文件、已列禁止路径（含 canonical 后目标）、数据库旁文件、精确 UI 路径、commit 非 40 位。
   此 API 只校验清单引用的文件；完整文件集合和未列导入 hook 拒绝属于 R1 原生启动及 R2 release verifier。
 - `tests/test_release_build.py`：锁定 Python 版本目标、解包路径穿越、错误 SHA、复制 UI
-  dist、排除 `.venv`/数据库/凭据。
+  dist、排除 `.venv`/数据库/凭据；真实 Git tree 拒绝保留设备名的无空格与前导空格变体。
 - `tests/test_release_verify.py`：短身份/版本/target 漂移、清单与 bundle 字节、归档
   source 集合、source bundle 完整文件集合、平台架构、归档 manifest 漂移、伪 NSIS
-  payload 与逃逸链接；未列 `sitecustomize.py` 在 source 和 archive 两层都必须拒绝。
+  payload 与逃逸链接、macOS `.app` 根额外文件/目录；未列 `sitecustomize.py` 在 source
+  和 archive 两层都必须拒绝。
+- `tests/test_package_app.py`：bundle 根、资源树、输出祖先和已构建 `.app` 内的 symbolic
+  link，FIFO 必需资源，以及输出目录/文件叶链接负控；断言失败发生在 Tauri 或输出创建前。
 - `tests/test_release_install.py`：macOS canonical 前缀、原生 verifier 前置顺序、合法/错误
   SHA、tar 逃逸拒绝、程序/数据根重叠、安装烟测、失败恢复旧程序、卸载保留数据与
-  `--purge-data` 二次确认。升级回退先由这里的安装器烟测覆盖；跨 schema 数据升级仍须等
-  恢复 B/C，不能由该测试冒充。
+  `--purge-data` 二次确认、系统/家目录公共根拒绝、tar 特殊文件拒绝。升级回退先由这里
+  的安装器烟测覆盖；跨 schema 数据升级仍须等恢复 B/C，不能由该测试冒充。
 
 ### 9.2 Rust/Tauri 测试
 
@@ -301,7 +351,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 - 用真实 bundled Python fixture 与临时数据根跑子进程；不能用 mock child 声称跨进程。
 - 壳启动的 Host 崩溃时 UI 显示错误，自动重启次数有界；停止后无孤儿进程。
 - owned/attached Host 最多 3 次有界退避恢复；辅助清理只接受已退出且 PID/
-  `started_at` 匹配的 Host，并在元数据守卫内按 Daemon 锁 SHA 条件停止。supervisor
+  `started_at` 匹配的 Host，并在元数据守卫内按 Daemon 锁 SHA 与
+  `instance_id` 条件停止。`instance_id` 必须在该次 shutdown 的同一条已握手
+  连接内核对；身份缺失或不符时 fail-closed。supervisor
   发现新 endpoint 时必须先用 `try_wait()` 确认旧 owned child 已退出，不能因新锁出现
   而丢掉仍存活的子句柄。
 - `旧 Host 退出 → host.lock 空窗 → 新 Host 发布 → 复用 Daemon` 的真实进程回归：
@@ -337,13 +389,28 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 16. 在 Tauri `setup` 内等待 Host 后直接 `navigate` → 真实 Release WebView 冷启动白屏；
     修复后必须显示加载页并进入“已连接”，不能只用窗口/进程断言。
 17. 在 `host.lock` 空窗后让新 Host 发布并复用旧 Daemon → 旧退出路径若误杀新实例必须
-    红；修复后必须以元数据守卫内的二次确认和 Daemon 锁 SHA 保留新实例。
+    红；修复后必须以元数据守卫内的二次确认、Daemon 锁 SHA 和同连接
+    `instance_id` 核对保留新实例。
 18. Host 已发布新 endpoint、但 supervisor 旧的 owned `Child` 仍存活时 → 旧实现不得
     丢掉 child 并重走 spawn/attach；修复后必须保留子句柄直到 `try_wait()` 证明退出。
 
 19. bundle、manifest、archive 和 checksum 全部自洽，但 Host 入口必然崩溃而 import 正常 → runtime smoke 必须红。
 20. 系统退出超时 → 只终止本壳确实拥有的 child；普通退出和 attached/新实例不得误杀。
 21. macOS 换装在原子切换前后以真进程 SIGKILL → 正式入口和旧版本字节可恢复；trap 回滚不能替代此证据。
+22. Windows 保留设备名后带空格（`NUL .txt` 等）进入真实 Git tree → 构建必须拒绝。
+23. bundle 根、四棵资源树、输出祖先或已构建 `.app` 内放入 symbolic link/FIFO → 打包必须
+    在 Tauri 或写出目标前拒绝，目标目录外不得出现字节。
+24. macOS `.app` 根加入未声明空目录 → release verifier 必须拒绝；平台图标只能是允许但
+    非必需的例外。
+25. `--purge-data` 指向 `/Applications`、`/Library`、`/System`、`/Users/Shared`、
+    `/private/etc` 或家目录公共目录 → 卸载必须在调用 `rm -rf` 前拒绝；canonical 确认值
+    相同也不能放行。
+26. 最终目录放入四个 checksum 与四份 per-target manifest，但索引漏绑任一文件 →
+    assembler 的完整资产集合断言必须红。
+27. 安装归档含 FIFO 等特殊成员、workflow 从非 main ref 触发，或 Tauri 打包后修改
+    `ui/dist` → 对应入口必须拒绝。
+28. 归档目标、checksum、manifest 或 assembler 输出被预置为指向目录外的 hard link →
+    写出前必须拒绝，外部 inode 字节保持不变。
 
 ### 9.4 平台证据矩阵
 

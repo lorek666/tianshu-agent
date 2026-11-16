@@ -566,6 +566,9 @@ log.close()
             k.startswith("TIANSHU_") or any(x in k for x in ("API_KEY", "ENDPOINT", "BASE_URL"))
         )
     }
+    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if test_lock_root:
+        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
     env["TIANSHU_AUTHORITY_ROOT"] = str(tmp_path / "authority")
     children = [
         subprocess.Popen(

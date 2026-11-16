@@ -6,6 +6,11 @@
 os.replace 在同一文件系统内是原子的：要么看到旧文件，要么看到新文件，
 不会看到一半。
 
+Windows may report a transient access/sharing violation when another
+process briefly holds the destination open. Only those Windows errors are
+retried with a bounded backoff; every other replacement error is raised
+immediately, and a persistent sharing error is raised after the bound.
+
 **覆盖已有文件时保留原 mode。** `mkstemp` 建出来的临时文件是 0600，
 `os.replace` 保留的是临时文件的 mode——不显式还原的话，覆盖一个 0644 的
 用户文件会把它悄悄变成 0600。新建文件仍然维持 0600（私有），这是刻意的：
@@ -30,9 +35,12 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 from .crashpoint import failpoint
+
+_WINDOWS_REPLACE_RETRY_DELAYS = (0.0, 0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64)
 
 
 def _existing_mode(target: Path) -> int | None:
@@ -61,13 +69,33 @@ def atomic_write_bytes(target: Path, data: bytes) -> None:
             # 用 os.chmod 而不是 os.fchmod：后者在 Windows 上不存在，
             # 而这个文件要在四个目标平台上都能跑。
             os.chmod(tmp, mode)
-        os.replace(tmp, target)
+        _replace_with_retry(tmp, target)
         failpoint("after-rename", path=target)
         _fsync_dir(target.parent)
         failpoint("after-dir-fsync", path=target)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """Retry only Windows sharing failures while another handle is closing."""
+    for attempt, delay in enumerate(_WINDOWS_REPLACE_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            retryable = getattr(exc, "winerror", None) in {5, 32, 33}
+            if not retryable:
+                raise
+            if attempt == len(_WINDOWS_REPLACE_RETRY_DELAYS) - 1:
+                exc.add_note(
+                    "Windows atomic replace remained blocked after "
+                    f"{len(_WINDOWS_REPLACE_RETRY_DELAYS)} bounded attempts"
+                )
+                raise
 
 
 def _fsync_dir(path: Path) -> None:
