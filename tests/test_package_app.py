@@ -475,6 +475,112 @@ def test_cross_arch_target_is_rejected_even_on_matching_os(tmp_path, monkeypatch
         )
 
 
+@pytest.mark.parametrize(
+    ("host_os", "expected_launcher"),
+    [("posix", "pnpm"), ("nt", "pnpm.cmd")],
+)
+def test_package_app_uses_the_platform_pnpm_launcher(
+    tmp_path, monkeypatch, host_os, expected_launcher
+):
+    module = _load_module()
+    commands = []
+    resolved = f"/tools/{expected_launcher}"
+    monkeypatch.setattr(
+        module.shutil,
+        "which",
+        lambda launcher: resolved if launcher == expected_launcher else None,
+    )
+    assert module.resolve_pnpm(host_os) == resolved
+    monkeypatch.setattr(module, "native_target", lambda: "windows-x64")
+    monkeypatch.setattr(module, "resolve_pnpm", lambda: resolved)
+    (tmp_path / "desktop").mkdir()
+
+    def failed_run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(module.subprocess, "run", failed_run)
+    bundle_dir = _package_bundle(tmp_path)
+
+    with pytest.raises(module.PackageError, match="Tauri build 失败"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="windows-x64",
+            bundle_dir=bundle_dir,
+            target_triple=module.TARGET_TRIPLE["windows-x64"],
+        )
+
+    assert commands[0][0] == resolved
+
+
+def test_resolve_pnpm_reports_a_missing_launcher(monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module.shutil, "which", lambda _launcher: None)
+
+    with pytest.raises(module.PackageError, match=r"pnpm 启动器：pnpm\.cmd"):
+        module.resolve_pnpm("nt")
+
+
+def test_resolve_pnpm_returns_an_absolute_executable_for_relative_path(
+    tmp_path, monkeypatch
+):
+    module = _load_module()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    launcher = tools / module.pnpm_launcher()
+    if os.name == "nt":
+        launcher.write_text("@echo off\r\n", encoding="ascii")
+    else:
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+        launcher.chmod(0o755)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", f"tools{os.pathsep}{os.environ.get('PATH', '')}")
+
+    resolved = module.resolve_pnpm()
+
+    assert Path(resolved).is_absolute()
+    assert Path(resolved).resolve() == launcher.resolve()
+
+
+def test_package_app_rejects_a_missing_desktop_before_launcher(tmp_path, monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "windows-x64")
+    bundle_dir = _package_bundle(tmp_path)
+
+    with pytest.raises(module.PackageError, match="desktop 发布目录"):
+        module.package_app(
+            repo_root=tmp_path,
+            target="windows-x64",
+            bundle_dir=bundle_dir,
+            target_triple=module.TARGET_TRIPLE["windows-x64"],
+        )
+
+
+@pytest.mark.parametrize("missing_path", ["/other/pnpm.cmd", None])
+def test_package_app_does_not_hide_unrelated_file_not_found(
+    tmp_path, monkeypatch, missing_path
+):
+    module = _load_module()
+    monkeypatch.setattr(module, "native_target", lambda: "windows-x64")
+    monkeypatch.setattr(module, "resolve_pnpm", lambda: "/tools/pnpm.cmd")
+    (tmp_path / "desktop").mkdir()
+
+    def unrelated_run(command, **_kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified", missing_path)
+
+    monkeypatch.setattr(module.subprocess, "run", unrelated_run)
+    bundle_dir = _package_bundle(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        module.package_app(
+            repo_root=tmp_path,
+            target="windows-x64",
+            bundle_dir=bundle_dir,
+            target_triple=module.TARGET_TRIPLE["windows-x64"],
+        )
+
+
 def test_macos_package_accepts_real_app_directory_and_writes_archive(
     tmp_path, monkeypatch
 ):

@@ -165,6 +165,20 @@ def native_target() -> str:
     raise PackageError(f"不支持的宿主平台：{sys.platform}/{machine}")
 
 
+def pnpm_launcher(platform_name: str | None = None) -> str:
+    """Return the executable name used by pnpm on the target host."""
+    host = os.name if platform_name is None else platform_name
+    return "pnpm.cmd" if host == "nt" else "pnpm"
+
+
+def resolve_pnpm(platform_name: str | None = None) -> str:
+    launcher = pnpm_launcher(platform_name)
+    resolved = shutil.which(launcher)
+    if resolved is None:
+        raise PackageError(f"找不到 pnpm 启动器：{launcher}")
+    return os.path.abspath(resolved)
+
+
 def native_triple() -> str:
     target = native_target()
     return TARGET_TRIPLE[target]
@@ -302,9 +316,10 @@ def package_app(
     )
     _require_regular_file(bundle_dir / "release.json", "Tauri release.json")
 
+    desktop = _validated_directory(repo_root / "desktop", "desktop 发布目录")
     bundles = "app" if target.startswith("macos") else "nsis"
     command = [
-        "pnpm",
+        resolve_pnpm(),
         "dlx",
         TAURI_CLI,
         "build",
@@ -317,7 +332,7 @@ def package_app(
         command.extend(["--target", target_triple])
     if debug:
         command.append("--debug")
-    result = subprocess.run(command, cwd=repo_root / "desktop")
+    result = subprocess.run(command, cwd=desktop)
     if result.returncode != 0:
         raise PackageError(f"Tauri build 失败，exit={result.returncode}")
 
