@@ -9,6 +9,7 @@ import shutil
 import struct
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -722,6 +723,41 @@ def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatc
 
     assert result["runtime_smoke"]["status"] == "pass"
     assert not marker.exists()
+
+
+def test_runtime_smoke_timeout_reaps_real_process_tree(tmp_path, monkeypatch):
+    from tianshu.leases import pid_alive
+
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_timeout_tree")
+    bundle = _make_bundle(tmp_path)
+    package = bundle / "app" / "tianshu"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    child_pid_file = tmp_path / "runtime-smoke-child.pid"
+    (package / "release_smoke.py").write_text(
+        "import os\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"with open({str(child_pid_file)!r}, 'w', encoding='ascii') as stream:\n"
+        "    stream.write(str(child.pid))\n"
+        "    stream.flush()\n"
+        "    os.fsync(stream.fileno())\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify, "_bundle_python", lambda _bundle, _target: Path(sys.executable))
+    monkeypatch.setattr(verify, "RUNTIME_SMOKE_TIMEOUT_S", 2.0)
+
+    with pytest.raises(verify.VerifyError, match="超时.*回收进程树"):
+        verify._runtime_smoke(bundle, TARGET)
+
+    child_pid = int(child_pid_file.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 5.0
+    while pid_alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not pid_alive(child_pid)
 
 
 def test_windows_bundle_rejects_wrong_pe_architecture(tmp_path):

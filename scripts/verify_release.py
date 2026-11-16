@@ -8,6 +8,7 @@ import platform
 import posixpath
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -51,6 +52,9 @@ NATIVE_SUFFIXES = frozenset({".dll", ".dylib", ".exe", ".pyd", ".so"})
 MACOS_PYTHON_EXECUTABLES = frozenset(
     {"python/bin/python", "python/bin/python3", "python/bin/python3.12"}
 )
+RUNTIME_SMOKE_TIMEOUT_S = 120.0
+RUNTIME_SMOKE_TERM_TIMEOUT_S = 5.0
+RUNTIME_SMOKE_TASKKILL_TIMEOUT_S = 10.0
 
 
 class VerifyError(ValueError):
@@ -766,6 +770,43 @@ def _bundle_python(bundle_dir: Path, target: str) -> Path:
     return bundle_dir / "python" / "bin" / "python3"
 
 
+def _terminate_runtime_smoke_tree(process: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                timeout=RUNTIME_SMOKE_TASKKILL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise VerifyError(
+                f"bundle Python 超时后无法回收 Windows 进程树："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        process.wait(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+        if result.returncode != 0:
+            raise VerifyError(
+                f"bundle Python 超时后 taskkill 返回 {result.returncode}："
+                f"{(result.stderr or result.stdout or b'').decode(errors='replace')[-1000:]}"
+            )
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+
+
 def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
     current = host_target()
     if current != target:
@@ -800,23 +841,47 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
         "--expected-version",
         identity["version"],
     ]
+    popen_options: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=bundle_dir,
             stdin=subprocess.DEVNULL,
-            check=False,
-            capture_output=True,
-            timeout=120,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=environment,
+            **popen_options,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise VerifyError(
             f"bundle Python 启动烟测失败：{type(exc).__name__}: {exc}"
         ) from exc
-    stdout = result.stdout.decode("utf-8", errors="replace")
-    stderr = result.stderr.decode("utf-8", errors="replace")
-    if result.returncode != 0:
+    try:
+        stdout_bytes, stderr_bytes = process.communicate(
+            timeout=RUNTIME_SMOKE_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired as exc:
+        try:
+            _terminate_runtime_smoke_tree(process)
+            process.communicate(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired, VerifyError) as cleanup_exc:
+            process.kill()
+            process.communicate(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+            raise VerifyError(
+                f"bundle Python 启动烟测超时，且进程树回收失败："
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            ) from exc
+        raise VerifyError(
+            f"bundle Python 启动烟测超时：{RUNTIME_SMOKE_TIMEOUT_S:.3f}s；"
+            "已回收进程树"
+        ) from exc
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    if process.returncode != 0:
         detail = (stderr or stdout).strip()[-4000:]
         raise VerifyError(f"bundle Python 启动烟测失败：{detail}")
     try:
