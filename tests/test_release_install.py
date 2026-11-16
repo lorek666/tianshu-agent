@@ -607,14 +607,14 @@ def test_uninstall_purge_rejects_case_equivalent_filesystem_roots(tmp_path):
     assert not rm_log.exists()
 
 
-def test_uninstall_rejects_case_equivalent_overlapping_roots(tmp_path):
+def test_uninstall_handles_case_differing_overlap_by_filesystem_identity(tmp_path):
     prefix = tmp_path / "Applications"
     data_root = tmp_path / "applications" / "AgentOS"
+    prefix.mkdir()
     data_root.mkdir(parents=True)
     marker = data_root / "keep"
     marker.write_bytes(b"data")
-    if not os.path.samefile(prefix, data_root.parent):
-        pytest.skip("test volume is case-sensitive; no filesystem alias can be formed")
+    same_filesystem_object = os.path.samefile(prefix, data_root.parent)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -645,10 +645,15 @@ def test_uninstall_rejects_case_equivalent_overlapping_roots(tmp_path):
         env=env,
     )
 
-    assert result.returncode == 2
-    assert "数据根位于程序目录内" in result.stderr
+    if same_filesystem_object:
+        assert result.returncode == 2
+        assert "数据根位于程序目录内" in result.stderr
+        assert not rm_log.exists()
+    else:
+        assert result.returncode == 0
+        assert "已按显式请求删除用户数据" in result.stdout
+        assert rm_log.read_text(encoding="utf-8").strip() == "-rf -- AgentOS"
     assert marker.read_bytes() == b"data"
-    assert not rm_log.exists()
 
 
 def test_install_rejects_special_file_member_before_extraction(tmp_path):
