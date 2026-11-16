@@ -14,11 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "package_app.py"
 
 
-def _load_module():
+def _load_module(*, stub_pnpm: bool = True):
     spec = importlib.util.spec_from_file_location("package_app_under_test", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if stub_pnpm:
+        module.resolve_pnpm = lambda platform_name=None: (
+            f"/tools/{module.pnpm_launcher(platform_name)}"
+        )
     return module
 
 
@@ -482,7 +486,7 @@ def test_cross_arch_target_is_rejected_even_on_matching_os(tmp_path, monkeypatch
 def test_package_app_uses_the_platform_pnpm_launcher(
     tmp_path, monkeypatch, host_os, expected_launcher
 ):
-    module = _load_module()
+    module = _load_module(stub_pnpm=False)
     commands = []
     resolved = f"/tools/{expected_launcher}"
     monkeypatch.setattr(
@@ -514,7 +518,7 @@ def test_package_app_uses_the_platform_pnpm_launcher(
 
 
 def test_resolve_pnpm_reports_a_missing_launcher(monkeypatch):
-    module = _load_module()
+    module = _load_module(stub_pnpm=False)
     monkeypatch.setattr(module.shutil, "which", lambda _launcher: None)
 
     with pytest.raises(module.PackageError, match=r"pnpm 启动器：pnpm\.cmd"):
@@ -524,7 +528,7 @@ def test_resolve_pnpm_reports_a_missing_launcher(monkeypatch):
 def test_resolve_pnpm_returns_an_absolute_executable_for_relative_path(
     tmp_path, monkeypatch
 ):
-    module = _load_module()
+    module = _load_module(stub_pnpm=False)
     tools = tmp_path / "tools"
     tools.mkdir()
     launcher = tools / module.pnpm_launcher()
