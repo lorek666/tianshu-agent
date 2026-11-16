@@ -274,14 +274,15 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 | 升级卡在半写 | 原子安装、旧版本保留、启动 smoke 后才切默认入口；SIGKILL 前后正式入口都必须存在或能确定性恢复 |
 | 用户数据被卸装 | uninstall 默认不删数据；purge 需要显式参数、与 canonical 数据根逐字匹配的 `--confirm-data-root` 与路径重叠检查 |
 | 路径含空格/Unicode | 全 argv 传递，不拼 shell；macOS/Windows 路径测试 |
-| 平台未测 | `release-manifest.json` 状态必须 `verified`/`runner-only`/`unknown` |
+| 平台未测 | `release-index.json` 的设备证据状态必须 `verified`/`runner-only`/`unknown` |
 
 ## 9. 测试与负控
 
 ### 9.1 Python 契约测试
 
-- `tests/test_release_manifest.py`：schema、未来版本、负数/布尔数字、未知 target、SHA 不符、
-  缺文件、额外禁止文件、commit 非 40 位。
+- `tests/test_release_manifest.py`（R0）：真实 schema 约束与漂移、未来版本、布尔数字、未知 target、SHA 不符、
+  缺少已列文件、已列禁止路径（含 canonical 后目标）、数据库旁文件、精确 UI 路径、commit 非 40 位。
+  此 API 只校验清单引用的文件；完整文件集合和未列导入 hook 拒绝属于 R1 原生启动及 R2 release verifier。
 - `tests/test_release_build.py`：锁定 Python 版本目标、解包路径穿越、错误 SHA、复制 UI
   dist、排除 `.venv`/数据库/凭据。
 - `tests/test_release_verify.py`：短身份/版本/target 漂移、清单与 bundle 字节、归档
@@ -374,7 +375,7 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 
 本轮按以下边界推进，后续片从前一片保护合入后的 main 派生：
 
-- R0：仅 spec/schema、`release_manifest.py` 与真实文件字节校验测试；不包含桌面或安装产品。
+- R0：仅 spec/schema、`release_manifest.py` 与真实文件字节校验测试；不包含桌面或安装产品。清单只校验已列引用；完整文件集合由 R1/R2 的运行入口另验。
 - R1：桌面壳、Host/Daemon 生命周期、启动与原子 metadata 发布所需的最小 IO 修复；独立记录真实窗口、关闭/重开、owned/attached、takeover 和系统退出组件探针。
 - R2：锁定运行时、构建/打包/验证入口；runtime smoke 必须真实启动 sidecar 与 Host。自洽入口崩溃负控不可省。
 - R3：macOS 安装/卸载、NSIS、assembler 和四目标 draft workflow；原 PR #162 保留作此片。必须验证崩溃原子换装，再重建精确候选产物。
