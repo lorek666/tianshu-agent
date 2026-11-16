@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
+
 - **W15 v1 只读保留期审计命令已交付分支 `feat/retention-audit`（2026-11-15，PR 待合）**：`tianshu data retention-audit --data-root` ——逐表行数/最老行年龄/状态直方图、增长投影（观测窗口 ≥1 天才外推，几毫秒跨度会外推出垃圾速率——测试实抓后修）、可清理候选测量（jobs 终态行、budget_reservations settled+known；终态判定只用 tasks/jobs/budget 权威常量在 Python 侧解释，不猜 dispatch 面语义）、cleanup_plan 现状。**零删除**：mode=ro 连接不加锁不阻断写入，测试钉住 events.db 字节哈希前后不变。SQL 全部单行字面量（标识符不进拼接，值一律参数绑定）；33 测试文件级 +4。实现过程记一笔：Mimosa hook 三次拦截动态 SQL（execute 变量/跨行拼接），按其建议改全静态结构后反而更符合封闭集纪律。三项拍板仍留实测数据。
 
 - **第三批 W3/W5/W15 三 PR 已全部并入 main `c637b52`（2026-11-15）**：#164（W15 docs-only）→`9466df0`、#166（W3 state 8MiB 上界）→`c7f31f7`（run 43721830851）、#167（W5 调度器）→`c637b52`（run 43724954970），均六项 CI 全绿；KNOWLEDGE.md 冲突按 difflib entries 并集法 + 行多重集证明解决。相关 worktree 与本地分支已删。**W15 三项拍板定为「先测量后拍板」（2026-11-15 维护者委托）**：先交付 v1 只读保留期审计命令（零删除，CONTRACT-W15 §3.3 划界）再逐项拍板，本片不拍死数值与红线修订。全量套件现级 **3461 passed / 12 skipped**（649.56s，macOS arm64；以 CI 为准）。
@@ -684,6 +686,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-16 · PR #162 五阻断续修与 R0 拆分**：从 main `e2422579` 建立独立 R0 工作树，只迁入 spec/schema/manifest/测试；原始 `7d121ad` 与失败复审保留。三项产品修复在原分支分别实施，之后依次从已合 main 派生 R1/R2，PR #162 最终仅交 R3；每片新门禁与独立复审均需重绑，未提前宣称修复或发布通过。
 
 - **2026-11-15 · W15 v1 只读保留期审计命令（`feat/retention-audit`，基线 main@1a8aebb）**：按维护者委托「先测量后拍板」落地 CONTRACT-W15 §3.3 的 v1——`data_cli.py` 新增 `retention-audit` 子命令（+508 行含测试）：逐表面 `COUNT+MIN/MAX`（23 表全字面量 SQL 分派）、8 个状态面直方图、增长投影（basics 复用，窗口 ≥1 天才外推）、候选测量（jobs/budget_reservations/runs 三个低风险面，终态判定全在 Python 侧用 `TERMINAL_JOB_STATES`/`NON_TERMINAL_STATES`/`SETTLED` 权威常量算，不对 dispatch 面猜语义）、`cleanup_plan(data_root)` 现状直连。**零删除不变量**：`mode=ro` URI 连接（SQLite 连接层拒写）+ 测试钉 events.db SHA256 前后不变；不加维护锁不阻断写入（点读快照如实写进 notes）。测试 4 条新增（拒绝路径+计数/只读哈希/投影数学+未知表/候选常量一致性），`test_data_cli.py` 31 passed。**过程记录**：(a) 每表 SQL 无法参数化标识符，初版 f-string 拼接被 Mimosa hook 判「SQL 注入」拦截三次——按其建议改全静态字面量分派后，注入面反而归零（表名封闭集 + 字面量 + 值绑定）；(b) 夹具上 2ms 事件跨度外推出 86,400,000 行/天的垃圾速率，测试实抓 → 修为观测窗口 ≥1 天才外推；(c) 大段 Edit/Write 内容连续发生拼写损坏 6 次（占位符垃圾/键位突变），全部靠「每段落盘立即 py_compile+AST 校验」抓回——**长代码块一律 ≤25 行分段 + 逐段验证**。CI 环境：#168 attempt1 与 #141 attempt1 的 Windows shard1 先后红在 `test_round2_inputs_net.py::test_network_deadline_interrupts_slow_progress_before_peer_finishes`（`[headers]`/`[body]` 两个参数、同签名 `'net.read' != 'net.timeout'`，WinError 10053 连接被宿主中止）——两树产品代码与绿 main 零 delta，初步定性 runner 负载敏感，**按 #163 先例不以 timing flake 结案**；另 #168 attempt2 用 `--failed` 部分重跑被汇总 job 的分片校验按设计拒绝（missing/extra shard artifacts，attempt 内必须成套）——**部分重跑不能出可验证绿，须整跑重跑**（#168 attempt3 整跑全绿后合并 1a8aebb）。三项拍板继续留实测数据。
 
