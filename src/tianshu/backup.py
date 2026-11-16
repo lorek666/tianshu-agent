@@ -1064,6 +1064,9 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
         # 真正要跨"事件库 + 材料"严格一致，必须停写者；本模块不停止写者，
         # 而是用在线备份 API + 上述顺序把窗口压小，并在文档里如实写清边界。
         _db_snapshot(data_root / "events.db", tmp / "events.db")
+        # 新创建 SQLite 文件的长度可能到首次 fsync 才定稿（Windows CI 已观测）。
+        # manifest 必须绑定定稿后的字节，不能绑定后续校验看到的 pre-fsync 长度/哈希。
+        _fsync_file(tmp / "events.db")
         failpoint("backup-after-db")
         files: list[BackupFile] = []
         with (tmp / "events.db").open("rb") as fh:

@@ -196,6 +196,37 @@ def test_create_backup_is_a_consistent_self_describing_point(tmp_path):
     assert on_disk["source_path"] == str(root.resolve())
 
 
+def test_backup_manifest_hashes_events_db_after_file_finalization(tmp_path, monkeypatch):
+    """Windows CI 暴露：新 SQLite 文件可能在首次 fsync 时才定稿。"""
+
+    root = _make_data_root(tmp_path)
+    dest = tmp_path / "backup"
+    real_fsync_file = backup._fsync_file
+    finalized: set[Path] = set()
+
+    def finalize_on_first_fsync(path):
+        real_fsync_file(path)
+        if path.name == "events.db" and path not in finalized:
+            finalized.add(path)
+            with path.open("r+b") as stream:
+                size = path.stat().st_size
+                assert size > 0 and size % 4096 == 0
+                stream.truncate(size - 1)
+                stream.flush()
+                os.fsync(stream.fileno())
+
+    monkeypatch.setattr(backup, "_fsync_file", finalize_on_first_fsync)
+
+    manifest = create_backup(root, dest)
+    verification = verify_backup(dest)
+
+    db_file = dest / "events.db"
+    recorded = next(item for item in manifest.files if item.path == "events.db")
+    assert verification.ok, verification.problems
+    assert recorded.size == db_file.stat().st_size
+    assert recorded.sha256 == hashlib.sha256(db_file.read_bytes()).hexdigest()
+
+
 def test_backup_excludes_secrets_run_dir_and_logs(tmp_path):
     root = _make_data_root(tmp_path)
     (root / "run").mkdir(parents=True)
