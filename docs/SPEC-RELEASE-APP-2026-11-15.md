@@ -236,6 +236,10 @@ Agent”。
   真实 bundled sidecar 与 Host 可启动的最小 smoke，不允许用 `|| true` 吞失败。
   smoke 使用独立临时数据根，校验 Host `/health` 与鉴权 `/session` 的 PID 身份，等待
   Daemon IPC 健康；成功或失败后都须清理本次拥有的子进程。import 成功不能单独得到 pass。
+  Host shutdown 会先停止 owned Daemon；Host 退出后的第二次 Daemon shutdown 可能命中
+  已移除端点并返回 `False`。该竞态只有在本次 owned Daemon 随后以状态 `0` 退出，且
+  `host.lock`、`daemon.lock`、`agent.sock` 全部不存在时才可判为 clean；非零退出、
+  超时后强制终止或任何残留端点仍必须失败。
 
 `build_release.py` 的正式入口从发行 commit 内读取唯一的
 `release/python-runtime.lock.json`，不存在可供用户替换的 `--runtime-lock` 参数；所有 Git
@@ -336,6 +340,8 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
   source 集合、source bundle 完整文件集合、平台架构、归档 manifest 漂移、伪 NSIS
   payload 与逃逸链接、macOS `.app` 根额外文件/目录；未列 `sitecustomize.py` 在 source
   和 archive 两层都必须拒绝。
+- `tests/test_release_smoke.py`：用真实 owned 子进程覆盖 Host 已先关闭 Daemon 后重复
+  shutdown 落空；状态 `0` 且端点归零的路径通过，非零退出负控仍报不干净。
 - `tests/test_package_app.py`：bundle 根、资源树、输出祖先和已构建 `.app` 内的 symbolic
   link，FIFO 必需资源，以及输出目录/文件叶链接负控；断言失败发生在 Tauri 或输出创建前。
 - `tests/test_release_install.py`：macOS canonical 前缀、原生 verifier 前置顺序、合法/错误

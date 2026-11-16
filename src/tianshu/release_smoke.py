@@ -279,21 +279,27 @@ def _cleanup(
                 if isinstance(daemon_identity, dict)
                 else None
             )
-            requested = False
             if expected_instance_id is not None:
                 try:
-                    requested = request_shutdown(
+                    request_shutdown(
                         data_root,
                         reason="release_smoke",
                         expected_instance_id=expected_instance_id,
                         timeout=3.0,
                     )
                 except (OSError, ipc.IpcError):
-                    requested = False
-            clean = requested and clean
+                    pass
             if not _wait_process(daemon_process, FORCE_STOP_TIMEOUT_S):
                 clean = False
                 _terminate_owned(daemon_process)
+        # Host shutdown may stop the owned Daemon before this cleanup runs. A
+        # duplicate request can then miss the already-removed endpoint; the
+        # request result is not authoritative. Accept a missed or acknowledged
+        # request only after the exact child exits successfully. Check status
+        # outside the live-process branch so a child that already exited
+        # non-zero cannot pass by having removed its endpoint first.
+        if daemon_process.returncode != 0:
+            clean = False
 
     leftover = [
         name

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import platform
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -129,6 +131,85 @@ def test_release_smoke_isolates_bundled_package_from_caller_cwd(
 
     assert result["status"] == "pass"
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_clean"),
+    [
+        (0, True),
+        (7, False),
+    ],
+)
+@pytest.mark.parametrize("request_result", [False, True])
+def test_cleanup_accepts_owned_daemon_exit_after_duplicate_shutdown_miss(
+    tmp_path,
+    monkeypatch,
+    returncode,
+    expected_clean,
+    request_result,
+):
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('ready', flush=True); "
+                "sys.stdin.buffer.read(1); "
+                "raise SystemExit(int(sys.argv[1]))"
+            ),
+            str(returncode),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline() == b"ready\n"
+    process.stdout.close()
+
+    def request_shutdown(*_args, **_kwargs):
+        assert process.stdin is not None
+        process.stdin.write(b"x")
+        process.stdin.flush()
+        process.stdin.close()
+        return request_result
+
+    monkeypatch.setattr(release_smoke, "request_shutdown", request_shutdown)
+    try:
+        clean = release_smoke._cleanup(
+            data_root=tmp_path,
+            daemon_process=process,
+            daemon_identity={"instance_id": "daemon_0123456789ab"},
+            host_process=None,
+            host_endpoint=None,
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert clean is expected_clean
+
+
+def test_cleanup_rejects_owned_daemon_that_already_exited_nonzero(tmp_path):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "raise SystemExit(7)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait()
+
+    clean = release_smoke._cleanup(
+        data_root=tmp_path,
+        daemon_process=process,
+        daemon_identity={"instance_id": "daemon_0123456789ab"},
+        host_process=None,
+        host_endpoint=None,
+    )
+
+    assert clean is False
 
 
 def test_host_probe_rejects_missing_and_wrong_tokens(monkeypatch):
