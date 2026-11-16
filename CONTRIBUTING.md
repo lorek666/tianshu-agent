@@ -140,7 +140,8 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 ## 8. 发布
 
 - 当前仍处内部研发阶段，版本号使用 `v0.x.y`；M0–M5 功能验收完成不等于面向普通用户的发布验收完成。
-- tag 触发构建 —— **尚无此工作流**：`.github/workflows/` 目前只有 `ci.yml`，触发条件是 `push: branches: [main]` 与 `pull_request`，**没有 `tags:` 触发**。发布流程要等真正开始发版时再落地，别按这条假设「打个 tag 就自动出包」
+- `.github/workflows/release.yml` 只接受与当前 `origin/main` 精确相同的手动 commit，或先解引用到 commit 的 `v0.x.y` annotated tag；随后要求该 SHA 最新一次 main push CI 的所有 job 为 `success` 才构建四个原生 target。四份 artifact 必须由 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target`，最后只创建 draft Release。工作流不是现有 required check，不自动公开 Release。
+- macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`；禁止另加下划线别名。`release-index.json` 必须绑定两份脚本的 SHA256 与大小。正式候选还须记录精确组合 SHA 的 CI、真实 workflow dispatch、四目标 artifact 下载/汇总；设备安装、升级/回退、Gatekeeper/SmartScreen 与物理断电各自另验。
 - CHANGELOG 在 `1.0` 之前手写即可
 
 面向普通用户发布前，必须逐项补齐以下验收并记录证据；下列内容是发布条件，**不是现有能力**：
