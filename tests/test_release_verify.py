@@ -175,9 +175,8 @@ def _build_artifact(tmp_path: Path, bundle: Path, target: str = TARGET) -> tuple
     (artifact_dir / "release-manifest.json").write_bytes(
         (bundle / "release-manifest.json").read_bytes()
     )
-    (artifact_dir / f"Tianshu-Agent-0.1.0-{target}.sha256").write_text(
-        f"{_sha(artifact.read_bytes())}  {artifact.name}\n",
-        encoding="ascii",
+    (artifact_dir / f"Tianshu-Agent-0.1.0-{target}.sha256").write_bytes(
+        f"{_sha(artifact.read_bytes())}  {artifact.name}\n".encode("ascii"),
     )
     return artifact.parent, artifact
 
@@ -192,9 +191,8 @@ def _rewrite_checksum(artifact: Path) -> None:
     checksum = artifact.with_name(
         artifact.name.removesuffix(".app.tar.gz") + ".sha256"
     )
-    checksum.write_text(
-        f"{_sha(artifact.read_bytes())}  {artifact.name}\n",
-        encoding="ascii",
+    checksum.write_bytes(
+        f"{_sha(artifact.read_bytes())}  {artifact.name}\n".encode("ascii"),
     )
 
 
@@ -363,7 +361,7 @@ def test_verify_release_rejects_tampered_checksum(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_checksum")
     bundle, artifact_dir, artifact = _fixture(tmp_path)
     checksum = artifact_dir / f"Tianshu-Agent-0.1.0-{TARGET}.sha256"
-    checksum.write_text(f"{'0' * 64}  {artifact.name}\n", encoding="ascii")
+    checksum.write_bytes(f"{'0' * 64}  {artifact.name}\n".encode("ascii"))
 
     with pytest.raises(verify.VerifyError, match="SHA256 不匹配"):
         verify.verify_release(

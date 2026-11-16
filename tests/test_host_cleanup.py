@@ -311,7 +311,7 @@ def _ready_sleep_process() -> subprocess.Popen[bytes]:
         stderr=subprocess.PIPE,
     )
     assert proc.stdout is not None
-    assert proc.stdout.readline() == b"ready\n"
+    assert proc.stdout.readline() in {b"ready\n", b"ready\r\n"}
     return proc
 
 

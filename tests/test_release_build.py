@@ -746,12 +746,21 @@ def _commit_with_extra_paths(
         index_lines.append(f"100644 {oid}\t{relative}\n".encode())
     _git_with_input(
         repo,
+        "-c",
+        "core.protectNTFS=false",
         "update-index",
         "--index-info",
         input_bytes=b"".join(index_lines),
         env=environment,
     )
-    tree = _git_with_input(repo, "write-tree", input_bytes=b"", env=environment).decode("ascii")
+    tree = _git_with_input(
+        repo,
+        "-c",
+        "core.protectNTFS=false",
+        "write-tree",
+        input_bytes=b"",
+        env=environment,
+    ).decode("ascii")
     return _git_with_input(
         repo,
         "commit-tree",
