@@ -201,7 +201,7 @@ def test_backup_manifest_hashes_events_db_after_file_finalization(tmp_path, monk
 
     root = _make_data_root(tmp_path)
     dest = tmp_path / "backup"
-    real_fsync_file = backup._fsync_file
+    real_fsync_file = backup._fsync_file_required
     finalized: set[Path] = set()
 
     def finalize_on_first_fsync(path):
@@ -215,7 +215,7 @@ def test_backup_manifest_hashes_events_db_after_file_finalization(tmp_path, monk
                 stream.flush()
                 os.fsync(stream.fileno())
 
-    monkeypatch.setattr(backup, "_fsync_file", finalize_on_first_fsync)
+    monkeypatch.setattr(backup, "_fsync_file_required", finalize_on_first_fsync)
 
     manifest = create_backup(root, dest)
     verification = verify_backup(dest)
@@ -225,6 +225,22 @@ def test_backup_manifest_hashes_events_db_after_file_finalization(tmp_path, monk
     assert verification.ok, verification.problems
     assert recorded.size == db_file.stat().st_size
     assert recorded.sha256 == hashlib.sha256(db_file.read_bytes()).hexdigest()
+
+
+def test_backup_refuses_when_database_finalization_fsync_fails(tmp_path, monkeypatch):
+    root = _make_data_root(tmp_path)
+    dest = tmp_path / "backup"
+
+    def fail_required_fsync(path):
+        raise backup.BackupError(f"forced first fsync failure: {path}")
+
+    monkeypatch.setattr(backup, "_fsync_file_required", fail_required_fsync)
+
+    with pytest.raises(backup.BackupError, match="forced first fsync failure"):
+        create_backup(root, dest)
+
+    assert not dest.exists()
+    assert list(tmp_path.glob(".backup.partial-*")) == []
 
 
 def test_backup_excludes_secrets_run_dir_and_logs(tmp_path):

@@ -435,6 +435,23 @@ def _fsync_file(path: Path) -> None:
         os.close(fd)
 
 
+def _fsync_file_required(path: Path) -> None:
+    """要求文件内容与长度已经 fsync；失败时拒绝发布后续 manifest。"""
+
+    flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        raise BackupError(f"无法打开待定稿文件 {path}：{exc}") from exc
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise BackupError(f"无法 fsync 待定稿文件 {path}：{exc}") from exc
+    finally:
+        os.close(fd)
+
+
 def _fsync_dir(path: Path) -> None:
     """fsync 目录项（Windows 不支持目录 open，静默跳过）。"""
     try:
@@ -1065,8 +1082,9 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
         # 而是用在线备份 API + 上述顺序把窗口压小，并在文档里如实写清边界。
         _db_snapshot(data_root / "events.db", tmp / "events.db")
         # 新创建 SQLite 文件的长度可能到首次 fsync 才定稿（Windows CI 已观测）。
-        # manifest 必须绑定定稿后的字节，不能绑定后续校验看到的 pre-fsync 长度/哈希。
-        _fsync_file(tmp / "events.db")
+        # 这不是可降级的持久化建议：失败就中止，避免后续第二次 fsync 改变长度
+        # 而 manifest 仍绑定旧字节。
+        _fsync_file_required(tmp / "events.db")
         failpoint("backup-after-db")
         files: list[BackupFile] = []
         with (tmp / "events.db").open("rb") as fh:
