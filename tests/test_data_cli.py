@@ -17,6 +17,7 @@ from support import CHILD_TEXT
 
 from tianshu import memory_control
 from tianshu.backup import create_backup
+from tianshu.disk_admission import DiskAdmission
 from tianshu.events import EventLog
 from tianshu.loop import build_stack
 from tianshu.permissions import ActionRequest, PolicyEngine
@@ -46,6 +47,10 @@ def _make_root(tmp_path: Path, *, projections: bool = False) -> tuple[Path, str]
     try:
         if projections:
             stack = build_stack(log, data_root=root)
+            stack.tasks._disk_admission = DiskAdmission(
+                stack.tasks.disk_admission.context,
+                probe=lambda _path: 1 << 62,
+            )
             workspace = tmp_path / "workspace"
             workspace.mkdir()
             target = workspace / "existing.txt"
