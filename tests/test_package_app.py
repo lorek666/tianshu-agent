@@ -488,7 +488,7 @@ def test_package_app_uses_the_platform_pnpm_launcher(
 ):
     module = _load_module(stub_pnpm=False)
     commands = []
-    resolved = f"/tools/{expected_launcher}"
+    resolved = str(tmp_path / expected_launcher)
     monkeypatch.setattr(
         module.shutil,
         "which",
