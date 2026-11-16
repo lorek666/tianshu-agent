@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import platform
 import shutil
 import struct
@@ -21,6 +22,22 @@ COMMIT = "595be35c037cef35da7f166a5db2a624f2b733a9"
 TARGET = "macos-arm64"
 APP_ROOT = "Tianshu Agent.app"
 RESOURCE_PREFIX = f"{APP_ROOT}/Contents/Resources"
+NATIVE_TARGET: str | None
+_system = platform.system().lower()
+_machine = platform.machine().lower()
+if _system == "darwin" and _machine in {"arm64", "aarch64"}:
+    NATIVE_TARGET = "macos-arm64"
+elif _system == "darwin" and _machine in {"x86_64", "amd64"}:
+    NATIVE_TARGET = "macos-x64"
+elif _system == "windows" and _machine in {"arm64", "aarch64"}:
+    NATIVE_TARGET = "windows-arm64"
+elif _system == "windows" and _machine in {"x86_64", "amd64"}:
+    NATIVE_TARGET = "windows-x64"
+else:
+    NATIVE_TARGET = None
+NATIVE_RUNTIME_REASON = (
+    "发行 bundle 的 runtime smoke 只适用于受支持的 macOS/Windows 原生宿主"
+)
 
 
 def _load(path: Path, name: str):
@@ -95,6 +112,16 @@ def _write_manifest(bundle: Path) -> dict:
         "ui_dist_sha256": files[ui_path],
         "files": files,
     }
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    return manifest
+
+
+def _update_manifest(bundle: Path, **updates) -> dict:
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_fixture_verify_update")
+    manifest = json.loads(
+        (bundle / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    manifest.update(updates)
     release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
     return manifest
 
@@ -511,6 +538,23 @@ def test_archive_rejects_duplicate_member_names(tmp_path):
         )
 
 
+def test_archive_rejects_file_at_macos_app_root(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_macos_root_extra")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    root_extra = tarfile.TarInfo(f"{APP_ROOT}/root-extra.txt")
+    _append_tar_member(artifact, root_extra, b"unlisted app-root file")
+
+    with pytest.raises(verify.VerifyError, match="应用文件集合"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
 @pytest.mark.parametrize(
     "relative",
     [
@@ -593,14 +637,43 @@ def test_runtime_smoke_rejects_non_native_target(tmp_path, monkeypatch):
         verify._runtime_smoke(tmp_path, "macos-x64")
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("python", "3.12.99", "Python 版本"),
+        ("python_build_release", "19000101", "build release"),
+    ],
+)
+def test_runtime_smoke_binds_manifest_to_trusted_runtime_lock(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+    message,
+):
+    verify = _load(VERIFY_SCRIPT, f"verify_release_runtime_lock_{field}")
+    bundle = _make_bundle(tmp_path)
+    _update_manifest(bundle, **{field: value})
+    monkeypatch.setattr(verify, "host_target", lambda: TARGET)
+    monkeypatch.setattr(
+        verify,
+        "_bundle_python",
+        lambda _bundle, _target: Path(sys.executable),
+    )
+
+    with pytest.raises(verify.VerifyError, match=message):
+        verify._runtime_smoke(bundle, TARGET)
+
+
 def _runtime_fixture(
     tmp_path: Path,
     monkeypatch,
     verify,
     *,
     broken_entrypoint: str | None = None,
-) -> tuple[Path, Path, Path, Path]:
-    bundle = _make_bundle(tmp_path)
+) -> tuple[Path, Path]:
+    assert NATIVE_TARGET is not None
+    bundle = _make_bundle(tmp_path, target=NATIVE_TARGET)
     shutil.rmtree(bundle / "app" / "tianshu")
     shutil.copytree(
         ROOT / "src" / "tianshu",
@@ -631,36 +704,40 @@ def _runtime_fixture(
                 "    raise RuntimeError('host startup intentionally broken')\n"
             )
     _write_manifest(bundle)
-    artifact_dir, artifact = _build_artifact(tmp_path, bundle)
-    monkeypatch.setattr(verify, "host_target", lambda: TARGET)
+    _update_manifest(
+        bundle,
+        python=platform.python_version(),
+        python_build_release="test-runtime-release",
+    )
+    monkeypatch.setattr(verify, "host_target", lambda: NATIVE_TARGET)
+    monkeypatch.setattr(
+        verify,
+        "_load_trusted_runtime_lock",
+        lambda: {
+            "python": platform.python_version(),
+            "release": "test-runtime-release",
+            "targets": {NATIVE_TARGET: {}},
+        },
+    )
     monkeypatch.setattr(
         verify,
         "_bundle_python",
         lambda _bundle, _target: Path(sys.executable),
     )
-    return bundle, artifact_dir, artifact, daemon_pid_file
+    return bundle, daemon_pid_file
 
 
+@pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
 def test_verify_runtime_smoke_launches_real_host_daemon_and_checks_token(tmp_path, monkeypatch):
     from tianshu.leases import pid_alive
 
     verify = _load(VERIFY_SCRIPT, "verify_release_runtime_positive")
-    bundle, artifact_dir, _artifact, daemon_pid_file = _runtime_fixture(
-        tmp_path, monkeypatch, verify
-    )
+    bundle, daemon_pid_file = _runtime_fixture(tmp_path, monkeypatch, verify)
 
-    result = verify.verify_release(
-        artifact_dir=artifact_dir,
-        bundle_dir=bundle,
-        target=TARGET,
-        version="0.1.0",
-        commit=COMMIT,
-        run_smoke=True,
-    )
+    smoke = verify._runtime_smoke(bundle, NATIVE_TARGET)
 
-    smoke = result["runtime_smoke"]
     assert smoke["status"] == "pass"
-    assert smoke["host_target"] == TARGET
+    assert smoke["host_target"] == NATIVE_TARGET
     assert smoke["host_pid"] != smoke["daemon_pid"]
     assert "session_token_required" in smoke["checks"]
     daemon_pid = int(daemon_pid_file.read_text(encoding="ascii"))
@@ -669,6 +746,7 @@ def test_verify_runtime_smoke_launches_real_host_daemon_and_checks_token(tmp_pat
     assert not pid_alive(smoke["daemon_pid"])
 
 
+@pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
 @pytest.mark.parametrize("entrypoint", ["host", "daemon"])
 def test_self_consistent_crashing_entrypoint_still_fails_and_reaps_owned_children(
     tmp_path, monkeypatch, entrypoint
@@ -676,29 +754,21 @@ def test_self_consistent_crashing_entrypoint_still_fails_and_reaps_owned_childre
     from tianshu.leases import pid_alive
 
     verify = _load(VERIFY_SCRIPT, f"verify_release_runtime_crash_{entrypoint}")
-    bundle, artifact_dir, _artifact, daemon_pid_file = _runtime_fixture(
+    bundle, daemon_pid_file = _runtime_fixture(
         tmp_path, monkeypatch, verify, broken_entrypoint=entrypoint
     )
 
     with pytest.raises(verify.VerifyError, match="启动烟测失败"):
-        verify.verify_release(
-            artifact_dir=artifact_dir,
-            bundle_dir=bundle,
-            target=TARGET,
-            version="0.1.0",
-            commit=COMMIT,
-            run_smoke=True,
-        )
+        verify._runtime_smoke(bundle, NATIVE_TARGET)
 
     if daemon_pid_file.exists():
         assert not pid_alive(int(daemon_pid_file.read_text(encoding="ascii")))
 
 
+@pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
 def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatch):
     verify = _load(VERIFY_SCRIPT, "verify_release_runtime_cwd_shadow")
-    bundle, artifact_dir, _artifact, _daemon_pid_file = _runtime_fixture(
-        tmp_path, monkeypatch, verify
-    )
+    bundle, _daemon_pid_file = _runtime_fixture(tmp_path, monkeypatch, verify)
     caller = tmp_path / "caller"
     shadow = caller / "tianshu"
     shadow.mkdir(parents=True)
@@ -712,46 +782,80 @@ def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatc
     )
     monkeypatch.chdir(caller)
 
-    result = verify.verify_release(
-        artifact_dir=artifact_dir,
-        bundle_dir=bundle,
-        target=TARGET,
-        version="0.1.0",
-        commit=COMMIT,
-        run_smoke=True,
-    )
+    result = verify._runtime_smoke(bundle, NATIVE_TARGET)
 
-    assert result["runtime_smoke"]["status"] == "pass"
+    assert result["status"] == "pass"
     assert not marker.exists()
 
 
-def test_runtime_smoke_timeout_reaps_real_process_tree(tmp_path, monkeypatch):
+@pytest.mark.skipif(
+    NATIVE_TARGET is None or os.name == "nt",
+    reason="POSIX process-group SIGKILL fallback probe",
+)
+def test_runtime_smoke_timeout_reaps_sigterm_ignoring_grandchild(
+    tmp_path,
+    monkeypatch,
+):
     from tianshu.leases import pid_alive
 
     verify = _load(VERIFY_SCRIPT, "verify_release_runtime_timeout_tree")
-    bundle = _make_bundle(tmp_path)
+    bundle = _make_bundle(tmp_path, target=NATIVE_TARGET)
     package = bundle / "app" / "tianshu"
     package.mkdir(exist_ok=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
+    grandchild_ready_file = tmp_path / "runtime-smoke-grandchild.ready"
     child_pid_file = tmp_path / "runtime-smoke-child.pid"
     (package / "release_smoke.py").write_text(
-        "import os\n"
-        "import subprocess\n"
-        "import sys\n"
-        "import time\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-        f"with open({str(child_pid_file)!r}, 'w', encoding='ascii') as stream:\n"
-        "    stream.write(str(child.pid))\n"
-        "    stream.flush()\n"
-        "    os.fsync(stream.fileno())\n"
-        "time.sleep(120)\n",
+        f"""import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ready = Path({str(grandchild_ready_file)!r})
+ready.unlink(missing_ok=True)
+code = '''import signal
+import time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path({str(grandchild_ready_file)!r}).write_text("ready", encoding="ascii")
+time.sleep(120)
+'''
+child = subprocess.Popen([sys.executable, "-c", code])
+deadline = time.monotonic() + 10
+while not ready.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if not ready.exists():
+    raise RuntimeError("grandchild did not install SIGTERM handler")
+with open({str(child_pid_file)!r}, "w", encoding="ascii") as stream:
+    stream.write(str(child.pid))
+    stream.flush()
+    os.fsync(stream.fileno())
+time.sleep(120)
+""",
         encoding="utf-8",
+    )
+    _write_manifest(bundle)
+    _update_manifest(
+        bundle,
+        python=platform.python_version(),
+        python_build_release="test-runtime-release",
+    )
+    monkeypatch.setattr(verify, "host_target", lambda: NATIVE_TARGET)
+    monkeypatch.setattr(
+        verify,
+        "_load_trusted_runtime_lock",
+        lambda: {
+            "python": platform.python_version(),
+            "release": "test-runtime-release",
+            "targets": {NATIVE_TARGET: {}},
+        },
     )
     monkeypatch.setattr(verify, "_bundle_python", lambda _bundle, _target: Path(sys.executable))
     monkeypatch.setattr(verify, "RUNTIME_SMOKE_TIMEOUT_S", 2.0)
 
     with pytest.raises(verify.VerifyError, match="超时.*回收进程树"):
-        verify._runtime_smoke(bundle, TARGET)
+        verify._runtime_smoke(bundle, NATIVE_TARGET)
 
     child_pid = int(child_pid_file.read_text(encoding="ascii"))
     deadline = time.monotonic() + 5.0
@@ -774,7 +878,7 @@ def test_windows_bundle_rejects_wrong_pe_architecture(tmp_path):
 def test_synthetic_pe_without_nsis_payload_is_rejected_before_extraction(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_synthetic")
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x014C))
+    installer.write_bytes(_pe(0x8664))
 
     def extractor(_artifact: Path, _destination: Path) -> None:
         raise AssertionError("没有 NSIS 标识时不得调用解包器")
@@ -788,11 +892,29 @@ def test_synthetic_pe_without_nsis_payload_is_rejected_before_extraction(tmp_pat
         )
 
 
+def test_windows_outer_installer_pe_architecture_must_match_target(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_outer_arch")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, _destination: Path) -> None:
+        raise AssertionError("x86 外层 PE 必须在解包前被拒绝")
+
+    with pytest.raises(verify.VerifyError, match="PE 架构"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
 def test_windows_nsis_payload_must_have_unique_exact_resource_root(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination, dirs_exist_ok=True)
@@ -813,7 +935,7 @@ def test_windows_nsis_payload_rejects_marker_without_resources(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_empty_payload")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         (destination / "$PLUGINSDIR").mkdir()
@@ -832,7 +954,7 @@ def test_windows_nsis_payload_accepts_exact_nested_resource_root(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload_positive")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         payload = destination / "$PLUGINSDIR" / "app"
@@ -888,7 +1010,7 @@ def test_windows_nsis_payload_rejects_root_sitecustomize(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_sitecustomize")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination, dirs_exist_ok=True)

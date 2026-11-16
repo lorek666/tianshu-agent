@@ -12,6 +12,7 @@ import argparse
 import http.client
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -22,13 +23,17 @@ from typing import Any
 
 from . import __version__, ipc
 from .daemon import request_shutdown
-from .host import HostError, read_host_info
+from .host import HostError, HostReleaseIdentity, read_host_info
 
 STARTUP_TIMEOUT_S = 30.0
 SHUTDOWN_TIMEOUT_S = 10.0
 FORCE_STOP_TIMEOUT_S = 5.0
 POLL_INTERVAL_S = 0.05
 INSTANCE_RE = re.compile(r"^daemon_[0-9a-f]{12}$")
+VERSION_RE = re.compile(r"^0\.[0-9]+\.[0-9]+$")
+PYTHON_VERSION_RE = re.compile(r"^3\.12\.[0-9]+$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+TARGETS = frozenset({"macos-arm64", "macos-x64", "windows-x64", "windows-arm64"})
 SMOKE_WRONG_TOKEN = "release-smoke-invalid-token"
 
 
@@ -102,6 +107,7 @@ def _read_daemon_identity(process: subprocess.Popen[bytes], data_root: Path) -> 
 def _host_endpoint(
     process: subprocess.Popen[bytes],
     data_root: Path,
+    expected_release: HostReleaseIdentity,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + STARTUP_TIMEOUT_S
     while time.monotonic() < deadline:
@@ -118,6 +124,10 @@ def _host_endpoint(
                 and info.started_at > 0
                 and re.fullmatch(r"[A-Za-z0-9_-]{16,256}", info.token) is not None
             ):
+                if info.release != expected_release:
+                    raise ReleaseSmokeError(
+                        "Host lock 发行身份与 bundle release.json 不一致"
+                    )
                 health = _request_json(info.port, "GET", "/health", token=None)
                 if health.get("ok") is not True or health.get("pid") != process.pid:
                     raise ReleaseSmokeError("Host /health PID 与 owned child 不一致")
@@ -150,6 +160,10 @@ def _host_endpoint(
                 )
                 if session.get("ok") is not True or session.get("pid") != process.pid:
                     raise ReleaseSmokeError("Host /session PID 与 owned child 不一致")
+                if session.get("release") != expected_release.payload():
+                    raise ReleaseSmokeError(
+                        "Host /session 发行身份与 bundle release.json 不一致"
+                    )
 
                 state = _request_json(
                     info.port,
@@ -286,8 +300,6 @@ def _log_tail(log: Any) -> str:
 
 
 def host_target() -> str | None:
-    import platform
-
     system = platform.system().lower()
     machine = platform.machine().lower()
     if system not in {"darwin", "windows"}:
@@ -302,14 +314,50 @@ def host_target() -> str | None:
     return f"{platform_name}-{architecture}"
 
 
-def run_smoke(*, ui_dir: Path, expected_version: str | None = None) -> dict[str, Any]:
+def _expected_release(
+    *,
+    version: str,
+    commit: str,
+    target: str,
+) -> HostReleaseIdentity:
+    if VERSION_RE.fullmatch(version) is None:
+        raise ReleaseSmokeError("expected release version 必须匹配 0.x.y")
+    if COMMIT_RE.fullmatch(commit) is None:
+        raise ReleaseSmokeError("expected release commit 必须是 40 位小写十六进制")
+    if target not in TARGETS:
+        raise ReleaseSmokeError("expected release target 不受支持")
+    return HostReleaseIdentity(version=version, commit=commit, target=target)
+
+
+def run_smoke(
+    *,
+    ui_dir: Path,
+    expected_version: str,
+    expected_commit: str,
+    expected_target: str,
+    expected_python: str,
+) -> dict[str, Any]:
     ui_dir = Path(ui_dir).resolve()
     if not (ui_dir / "index.html").is_file():
         raise ReleaseSmokeError(f"UI 目录缺少 index.html：{ui_dir}")
-    if expected_version is not None and __version__ != expected_version:
+    if __version__ != expected_version:
         raise ReleaseSmokeError(
             f"包内版本 {__version__!r} 与发行版本 {expected_version!r} 不一致"
         )
+    if PYTHON_VERSION_RE.fullmatch(expected_python) is None:
+        raise ReleaseSmokeError("expected Python version 必须是 3.12.x")
+    actual_python = platform.python_version()
+    if platform.python_implementation() != "CPython" or actual_python != expected_python:
+        raise ReleaseSmokeError(
+            "bundled Python 运行时身份不匹配："
+            f"期望 CPython {expected_python}，实际 "
+            f"{platform.python_implementation()} {actual_python}"
+        )
+    release = _expected_release(
+        version=expected_version,
+        commit=expected_commit,
+        target=expected_target,
+    )
 
     app_dir = Path(__file__).resolve().parent.parent
     environment = os.environ.copy()
@@ -366,6 +414,12 @@ def run_smoke(*, ui_dir: Path, expected_version: str | None = None) -> dict[str,
                         str(ui_dir),
                         "--data-root",
                         str(data_root),
+                        "--release-version",
+                        release.version,
+                        "--release-commit",
+                        release.commit,
+                        "--release-target",
+                        release.target,
                     ],
                     cwd=app_dir,
                     stdin=subprocess.DEVNULL,
@@ -373,7 +427,7 @@ def run_smoke(*, ui_dir: Path, expected_version: str | None = None) -> dict[str,
                     stderr=log,
                     env=environment,
                 )
-                host_endpoint = _host_endpoint(host_process, data_root)
+                host_endpoint = _host_endpoint(host_process, data_root, release)
                 current_daemon = json.loads(
                     (data_root / "run" / "daemon.lock").read_bytes()
                 )
@@ -406,10 +460,17 @@ def run_smoke(*, ui_dir: Path, expected_version: str | None = None) -> dict[str,
         "host_pid": host_process.pid,
         "daemon_pid": daemon_process.pid,
         "daemon_instance_id": daemon_identity["instance_id"],
+        "release": release.payload(),
+        "python_runtime": {
+            "implementation": platform.python_implementation(),
+            "version": actual_python,
+        },
         "checks": [
             "import",
             "daemon_ipc",
             "daemon_identity",
+            "release_identity",
+            "python_runtime",
             "health",
             "session_token_required",
             "session",
@@ -422,10 +483,19 @@ def run_smoke(*, ui_dir: Path, expected_version: str | None = None) -> dict[str,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ui-dir", type=Path, required=True)
-    parser.add_argument("--expected-version", default=None)
+    parser.add_argument("--expected-version", required=True)
+    parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-target", required=True)
+    parser.add_argument("--expected-python", required=True)
     args = parser.parse_args(argv)
     try:
-        result = run_smoke(ui_dir=args.ui_dir, expected_version=args.expected_version)
+        result = run_smoke(
+            ui_dir=args.ui_dir,
+            expected_version=args.expected_version,
+            expected_commit=args.expected_commit,
+            expected_target=args.expected_target,
+            expected_python=args.expected_python,
+        )
     except ReleaseSmokeError as exc:
         print(f"发行运行时烟测失败：{exc}", file=sys.stderr)
         return 1

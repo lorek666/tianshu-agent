@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -22,6 +23,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from build_release import BuildError, load_runtime_lock  # noqa: E402
 from release_manifest import ReleaseManifestError, read_manifest  # noqa: E402
 
 TARGETS = frozenset({"macos-arm64", "macos-x64", "windows-x64", "windows-arm64"})
@@ -55,6 +57,7 @@ MACOS_PYTHON_EXECUTABLES = frozenset(
 RUNTIME_SMOKE_TIMEOUT_S = 120.0
 RUNTIME_SMOKE_TERM_TIMEOUT_S = 5.0
 RUNTIME_SMOKE_TASKKILL_TIMEOUT_S = 10.0
+RUNTIME_LOCK_PATH = SCRIPTS_DIR.parent / "release" / "python-runtime.lock.json"
 
 
 class VerifyError(ValueError):
@@ -540,6 +543,29 @@ def _verify_macos_archive(
                 f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing_payload)}"
             )
 
+        app_prefix = PurePosixPath(MACOS_ROOT)
+        actual_app = {
+            path.relative_to(app_prefix).as_posix()
+            for name in members
+            if not members[name].isdir()
+            and (path := PurePosixPath(name)).is_relative_to(app_prefix)
+        }
+        expected_app = {
+            "Contents/Info.plist",
+            "Contents/MacOS/tianshu-desktop",
+            "Contents/Resources/release-manifest.json",
+        } | {f"Contents/Resources/{relative}" for relative in files}
+        allowed_app = expected_app | {
+            f"Contents/Resources/{name}" for name in ALLOWED_RESOURCE_ICONS
+        }
+        unexpected = actual_app - allowed_app
+        absent = expected_app - actual_app
+        if unexpected or absent:
+            raise VerifyError(
+                "macOS 应用文件集合不完整："
+                f"未列文件={sorted(unexpected)}，缺失文件={sorted(absent)}"
+            )
+
         contents_prefix = PurePosixPath(MACOS_CONTENTS)
         actual_contents = {
             path.relative_to(contents_prefix).as_posix()
@@ -673,7 +699,7 @@ def _verify_windows_artifact(
     extractor: Callable[[Path, Path], None] | None = None,
 ) -> None:
     header = _native_header(artifact)
-    _expect_pe(header, artifact.name)
+    _expect_arch(header, target, artifact.name)
     if not _contains_nsis_marker(artifact):
         raise VerifyError(f"{artifact.name} 缺少 NSIS 安装器标识")
 
@@ -770,6 +796,31 @@ def _bundle_python(bundle_dir: Path, target: str) -> Path:
     return bundle_dir / "python" / "bin" / "python3"
 
 
+def _posix_process_group_exists(group_id: int) -> bool:
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_posix_process_group(
+    process: subprocess.Popen[bytes],
+    timeout: float,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        process.poll()
+        if process.returncode is not None and not _posix_process_group_exists(process.pid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
 def _terminate_runtime_smoke_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "nt":
         try:
@@ -796,15 +847,22 @@ def _terminate_runtime_smoke_tree(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
-    try:
         process.wait(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+        return
+    if not _wait_posix_process_group(process, RUNTIME_SMOKE_TERM_TIMEOUT_S):
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
-        process.wait(timeout=RUNTIME_SMOKE_TERM_TIMEOUT_S)
+            pass
+        if not _wait_posix_process_group(process, RUNTIME_SMOKE_TERM_TIMEOUT_S):
+            raise VerifyError("bundle Python 超时后进程组在 SIGKILL 后仍未消失")
+
+
+def _load_trusted_runtime_lock() -> dict[str, Any]:
+    try:
+        return load_runtime_lock(RUNTIME_LOCK_PATH)
+    except BuildError as exc:
+        raise VerifyError(f"可信 Python runtime lock 不合法：{exc}") from exc
 
 
 def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
@@ -831,6 +889,26 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["PYTHONUTF8"] = "1"
+    try:
+        manifest = read_manifest(
+            bundle_dir / "release-manifest.json",
+            base_dir=bundle_dir,
+        )
+    except ReleaseManifestError as exc:
+        raise VerifyError(f"runtime smoke 发布清单不合法：{exc}") from exc
+    runtime_lock = _load_trusted_runtime_lock()
+    if manifest["python"] != runtime_lock["python"]:
+        raise VerifyError(
+            "runtime smoke Python 版本未绑定可信 runtime lock："
+            f"清单={manifest['python']}，lock={runtime_lock['python']}"
+        )
+    if manifest["python_build_release"] != runtime_lock["release"]:
+        raise VerifyError(
+            "runtime smoke Python build release 未绑定可信 runtime lock："
+            f"清单={manifest['python_build_release']}，lock={runtime_lock['release']}"
+        )
+    if target not in runtime_lock["targets"]:
+        raise VerifyError(f"可信 runtime lock 缺少 target：{target}")
     command = [
         str(python),
         "-P",
@@ -840,6 +918,12 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
         str(bundle_dir / "ui" / "dist"),
         "--expected-version",
         identity["version"],
+        "--expected-commit",
+        identity["commit"],
+        "--expected-target",
+        identity["target"],
+        "--expected-python",
+        manifest["python"],
     ]
     popen_options: dict[str, Any] = {}
     if os.name == "nt":
@@ -897,6 +981,15 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
         )
     if smoke.get("version") != identity["version"]:
         raise VerifyError("runtime smoke 模块版本与发行身份不一致")
+    if smoke.get("release") != identity:
+        raise VerifyError("runtime smoke Host 发行身份与 release.json 不一致")
+    python_runtime = smoke.get("python_runtime")
+    if (
+        not isinstance(python_runtime, dict)
+        or python_runtime.get("implementation") != "CPython"
+        or python_runtime.get("version") != manifest["python"]
+    ):
+        raise VerifyError("runtime smoke Python 身份与发布清单不一致")
     if (
         type(smoke.get("host_pid")) is not int
         or type(smoke.get("daemon_pid")) is not int
@@ -908,6 +1001,8 @@ def _runtime_smoke(bundle_dir: Path, target: str) -> dict[str, Any]:
         "import",
         "daemon_ipc",
         "daemon_identity",
+        "release_identity",
+        "python_runtime",
         "health",
         "session_token_required",
         "session",
