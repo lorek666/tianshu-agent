@@ -82,7 +82,14 @@ class FakeModel:
 
 
 def _short_root(prefix: str) -> Path:
-    base = None if os.name == "nt" else "/tmp"
+    # The production admission gate correctly refuses a root with less than
+    # 2 GiB free. Keep the default CI location, while allowing a local full-suite
+    # run to move only test data to another mounted volume instead of weakening
+    # that gate or skipping the affected cases.
+    if os.name == "nt":
+        base = None
+    else:
+        base = os.environ.get("TIANSHU_TEST_TMP_ROOT", "/tmp")
     return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
 
 

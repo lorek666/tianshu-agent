@@ -72,6 +72,33 @@ class HostError(TianshuError):
 # --------------------------------------------------------------------------- 锁
 
 
+@dataclass(frozen=True)
+class HostReleaseIdentity:
+    """桌面壳与 Host 共用的发行身份；只用于兼容性判定，不是授权凭据。"""
+
+    version: str
+    commit: str
+    target: str
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"0\.\d+\.\d+", self.version) is None
+            or re.fullmatch(r"[0-9a-f]{40}", self.commit) is None
+            or self.target
+            not in {"macos-arm64", "macos-x64", "windows-x64", "windows-arm64"}
+        ):
+            raise ValueError("Host 发行身份不合法")
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "product": "tianshu-agent",
+            "version": self.version,
+            "commit": self.commit,
+            "target": self.target,
+        }
+
+
 @dataclass
 class HostInfo:
     pid: int
@@ -79,6 +106,7 @@ class HostInfo:
     token: str
     started_at: int
     ui_dir: str = ""
+    release: HostReleaseIdentity | None = None
 
 
 def host_lock_path(data_root: Path) -> Path:
@@ -117,12 +145,32 @@ def _read_host_info(data_root: Path) -> HostInfo | None:
     except (ValueError, UnicodeDecodeError) as exc:
         raise HostError("Host 元数据损坏，无法确认实例状态") from exc
     try:
+        release = None
+        if "release" in raw:
+            raw_release = raw["release"]
+            if not isinstance(raw_release, dict):
+                raise TypeError
+            expected = {"schema", "product", "version", "commit", "target"}
+            if set(raw_release) != expected:
+                raise ValueError
+            if (
+                type(raw_release["schema"]) is not int
+                or raw_release["schema"] != 1
+                or raw_release["product"] != "tianshu-agent"
+            ):
+                raise ValueError
+            release = HostReleaseIdentity(
+                version=raw_release["version"],
+                commit=raw_release["commit"],
+                target=raw_release["target"],
+            )
         return HostInfo(
             pid=int(raw["pid"]),
             port=int(raw["port"]),
             token=str(raw["token"]),
             started_at=int(raw.get("started_at") or 0),
             ui_dir=str(raw.get("ui_dir") or ""),
+            release=release,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HostError("Host 元数据损坏，无法确认实例状态") from exc
@@ -158,6 +206,8 @@ def _write_host_info(
         "started_at": info.started_at,
         "ui_dir": info.ui_dir,
     }
+    if info.release is not None:
+        payload["release"] = info.release.payload()
     # 桌面壳校验 host.lock 时不持有 Python 侧元数据互斥；直接 write_bytes 会
     # 先截断再写，启动期的并发读者可能把半截 JSON 误判成永久损坏。原子发布
     # 让外部读者只能看到完整旧锁或完整新锁。
@@ -262,6 +312,17 @@ def _stop_daemon_after_host_observation(
     try:
         with _host_info_guard(root):
             current_host = _read_host_info(root)
+            if (
+                current_host is None
+                and expected_host_identity is not None
+                and pid_alive(expected_host_identity[0])
+            ):
+                print(
+                    f"Host PID {expected_host_identity[0]} 仍存活但 host.lock 缺失，"
+                    f"保留 Daemon；data_root={root}",
+                    file=sys.stderr,
+                )
+                return 1
             if current_host is not None:
                 if expected_host_identity is None:
                     print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
@@ -405,7 +466,12 @@ def _http_get(port: int, path: str, *, timeout: float = 1.0) -> tuple[int, dict[
     return status, headers, body
 
 
-def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
+def acquire_host_info(
+    data_root: Path,
+    *,
+    ui_dir: Path,
+    release: HostReleaseIdentity | None = None,
+) -> HostInfo:
     """写锁前先确认没有活着的 Host；有就抛 `HostError`（附 URL，调用方直接复用）。"""
     existing = read_host_info(data_root)
     if existing is not None and _http_alive(existing):
@@ -416,6 +482,7 @@ def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
         token=secrets.token_urlsafe(24),
         started_at=int(time.time() * 1000),
         ui_dir=str(ui_dir),
+        release=release,
     )
     with _host_info_guard(data_root):
         # 健康检查期间可能已被另一进程接管，不能用旧结果覆盖新快照。
@@ -642,6 +709,7 @@ class BridgeConfig:
     host: str = "127.0.0.1"
     port: int = 0
     serve_forever: bool = True
+    release: HostReleaseIdentity | None = None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -669,7 +737,10 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/session":
                 if not self._authorized():
                     return
-                return self._json(HTTPStatus.OK, {"ok": True, "pid": os.getpid()})
+                payload: dict[str, Any] = {"ok": True, "pid": os.getpid()}
+                if self.config.release is not None:
+                    payload["release"] = self.config.release.payload()
+                return self._json(HTTPStatus.OK, payload)
             if path == "/state":
                 if not self._authorized():
                     return
@@ -1049,6 +1120,7 @@ def run_host(
     *,
     ui_dir: Path,
     daemon_command: list[str],
+    release: HostReleaseIdentity | None = None,
     port: int = 0,
     open_browser: bool = False,
     supervise: bool = True,
@@ -1062,7 +1134,7 @@ def run_host(
     if "--data-root" not in daemon_command:
         daemon_command += ["--data-root", str(data_root)]
     try:
-        info = acquire_host_info(data_root, ui_dir=ui_dir)
+        info = acquire_host_info(data_root, ui_dir=ui_dir, release=release)
     except HostError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1075,7 +1147,13 @@ def run_host(
         except HostError as exc:
             print(f"启动守护进程失败：{exc}", file=sys.stderr)
             return 1
-        config = BridgeConfig(data_root=data_root, ui_dir=ui_dir, token=info.token, port=port)
+        config = BridgeConfig(
+            data_root=data_root,
+            ui_dir=ui_dir,
+            token=info.token,
+            port=port,
+            release=info.release,
+        )
         bridge = UiBridge(config)
         info.port = bridge.port
 
@@ -1202,6 +1280,7 @@ __all__ = [
     "DaemonSupervisor",
     "HostError",
     "HostInfo",
+    "HostReleaseIdentity",
     "UiBridge",
     "acquire_host_info",
     "clear_host_info",

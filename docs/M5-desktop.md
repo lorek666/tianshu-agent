@@ -228,7 +228,10 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 
 ### 4.1 启动
 
-1. `tianshu host` 拿 Host 单例锁（`run/host.lock`，PID + 启动时间）。
+1. `tianshu host` 拿 Host 单例锁（`run/host.lock`，PID、启动时间、token 与发行
+   `version/commit/target` 身份）。桌面壳启动的 Host 还必须把同一发行身份同时写进
+   `host.lock` 和鉴权 `/session` 响应；旧锁或旧 Host 缺失身份、身份不匹配，或锁与
+   `/session` 不一致时，壳必须拒绝附着并提示退出旧实例。
 2. 探测 Daemon：`ipc.probe(data_root)` 为真 → 复用；否则 `spawn`
    `python -m tianshu daemon --data-root ...`，等端点就绪（上限 15s）。
 3. Daemon 启动顺序：Daemon 锁 → **恢复扫描** → `ipc.Server.start()` → accept 循环
@@ -275,6 +278,10 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
   回归证明错误 `expected_instance_id` 返回拒绝且进程/锁不变；
   `tests/test_host.py` 证明 supervisor 遇到替代实例或缺失身份时既不发送未绑定
   shutdown，也不按当前锁 PID 杀新实例。
+- 附着 Host 的关闭请求同样要先核对当前 bundle、`host.lock` 与鉴权 `/session` 的发行
+  身份；缺失或不符时 fail-closed，诊断只报 PID 和 `data_root`，不报 token。若退出清理
+  快照中的 Host PID 仍存活但 `host.lock` 已消失，不能把"锁不存在"当成 Host 已死：
+  `_stop_daemon_after_host_observation` 必须保留 Daemon，等待用户退出旧实例后重试。
 
 ### 4.4 单实例
 

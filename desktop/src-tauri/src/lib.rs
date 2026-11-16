@@ -17,9 +17,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use crate::lifecycle::{
-    DefaultDataRootInput, HostEndpoint, HostInfoError, build_host_command,
-    build_host_exit_daemon_shutdown_command, build_orphan_daemon_shutdown_command,
-    default_data_root, parse_host_endpoint, request_host_shutdown, verify_host, wait_for_host,
+    DefaultDataRootInput, HostEndpoint, HostInfoError, HostVerificationErrorKind,
+    build_host_command, build_host_exit_daemon_shutdown_command,
+    build_orphan_daemon_shutdown_command, default_data_root, parse_host_endpoint,
+    request_host_shutdown, verify_host, verify_host_detailed, wait_for_host,
 };
 use crate::release::{ReleaseIdentity, current_target, verify_resource_manifest};
 
@@ -52,6 +53,7 @@ struct RuntimeState {
     child: Option<Child>,
     owns_host: bool,
     stopped: bool,
+    release_identity: ReleaseIdentity,
 }
 
 impl RuntimeState {
@@ -73,9 +75,16 @@ impl RuntimeState {
     }
 
     fn stop_attached_host(&mut self) -> Result<(), String> {
+        match verify_host_detailed(&self.endpoint, &self.release_identity, &self.data_root) {
+            Ok(()) => {}
+            Err(error) if error.kind == HostVerificationErrorKind::IdentityMismatch => {
+                return Err(format!("退出前 Host 身份校验失败：{error}"));
+            }
+            Err(_) => {}
+        }
         let daemon_before = read_daemon_lock_snapshot(&self.data_root)?;
         if let Err(request_error) = request_host_shutdown(&self.endpoint) {
-            if verify_host(&self.endpoint).is_ok() {
+            if verify_host(&self.endpoint, &self.release_identity, &self.data_root).is_ok() {
                 return Err(format!(
                     "直接请求 Host 退出失败，但 Host 仍可连接：{request_error}"
                 ));
@@ -249,6 +258,7 @@ struct StartupPaths {
     app_dir: PathBuf,
     ui_dir: PathBuf,
     data_root: PathBuf,
+    release_identity: ReleaseIdentity,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -341,6 +351,7 @@ fn startup_paths(resource_dir: &Path, package_version: &str) -> Result<StartupPa
         app_dir,
         ui_dir,
         data_root: platform_data_root()?,
+        release_identity: identity,
     })
 }
 
@@ -465,10 +476,14 @@ fn stop_daemon_started_by_failed_host(
 }
 
 fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), String> {
-    if let Ok(endpoint) = read_host_endpoint(&paths.data_root)
-        && verify_host(&endpoint).is_ok()
-    {
-        return Ok((endpoint, None));
+    if let Ok(endpoint) = read_host_endpoint(&paths.data_root) {
+        match verify_host_detailed(&endpoint, &paths.release_identity, &paths.data_root) {
+            Ok(()) => return Ok((endpoint, None)),
+            Err(error) if error.kind == HostVerificationErrorKind::IdentityMismatch => {
+                return Err(error.to_string());
+            }
+            Err(_) => {}
+        }
     }
 
     let daemon_before = read_daemon_lock_snapshot(&paths.data_root)?;
@@ -477,6 +492,7 @@ fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), St
         &paths.app_dir,
         &paths.ui_dir,
         &paths.data_root,
+        &paths.release_identity,
     )
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -493,8 +509,12 @@ fn ensure_host(paths: &StartupPaths) -> Result<(HostEndpoint, Option<Child>), St
                 return Err(HostInfoError::ChildExited);
             }
             let endpoint = read_host_endpoint(&paths.data_root)?;
-            if verify_host(&endpoint).is_err() {
-                return Err(HostInfoError::NotReady);
+            match verify_host_detailed(&endpoint, &paths.release_identity, &paths.data_root) {
+                Ok(()) => {}
+                Err(error) if error.kind == HostVerificationErrorKind::IdentityMismatch => {
+                    return Err(HostInfoError::Rejected(error.to_string()));
+                }
+                Err(_) => return Err(HostInfoError::NotReady),
             }
             Ok(endpoint)
         },
@@ -574,7 +594,12 @@ fn show_recovery_failure(app: &tauri::AppHandle, attempts: u8, error: &str) {
     });
 }
 
-fn adopt_discovered_host(state: &mut RuntimeState, discovered: HostEndpoint) -> bool {
+fn adopt_discovered_host(
+    state: &mut RuntimeState,
+    discovered: HostEndpoint,
+    identity: &ReleaseIdentity,
+    data_root: &Path,
+) -> bool {
     if let Some(child) = state.child.as_mut() {
         match child.try_wait() {
             Ok(Some(_)) => {}
@@ -584,6 +609,9 @@ fn adopt_discovered_host(state: &mut RuntimeState, discovered: HostEndpoint) -> 
                 return false;
             }
         }
+    }
+    if verify_host(&discovered, identity, data_root).is_err() {
+        return false;
     }
     state.endpoint = discovered;
     state.child = None;
@@ -610,11 +638,17 @@ fn spawn_host_supervisor(app: tauri::AppHandle, paths: StartupPaths) -> std::io:
                     return;
                 }
 
-                let mut healthy = verify_host(&state.endpoint).is_ok();
+                let mut healthy =
+                    verify_host(&state.endpoint, &state.release_identity, &state.data_root).is_ok();
+                let data_root = state.data_root.clone();
                 if let Ok(discovered) = read_host_endpoint(&state.data_root)
                     && discovered != state.endpoint
-                    && verify_host(&discovered).is_ok()
-                    && adopt_discovered_host(&mut state, discovered)
+                    && adopt_discovered_host(
+                        &mut state,
+                        discovered,
+                        &paths.release_identity,
+                        &data_root,
+                    )
                 {
                     healthy = true;
                 }
@@ -802,6 +836,7 @@ fn initialise(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 child,
                 owns_host,
                 stopped: false,
+                release_identity: paths.release_identity,
             }));
             // `setup` runs before Tauri starts the event loop. Host startup can
             // block here while the child process becomes healthy, so queue the
@@ -916,6 +951,31 @@ mod tests {
 
     use super::*;
 
+    fn test_release_identity() -> ReleaseIdentity {
+        ReleaseIdentity {
+            version: "0.1.0".to_string(),
+            commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            target: "macos-arm64".to_string(),
+        }
+    }
+
+    fn test_release_payload() -> String {
+        let release = test_release_identity();
+        format!(
+            r#"{{"schema":1,"product":"tianshu-agent","version":"{}","commit":"{}","target":"{}"}}"#,
+            release.version, release.commit, release.target
+        )
+    }
+
+    fn test_host_release_identity() -> crate::lifecycle::HostReleaseIdentity {
+        let release = test_release_identity();
+        crate::lifecycle::HostReleaseIdentity {
+            version: release.version,
+            commit: release.commit,
+            target: release.target,
+        }
+    }
+
     #[test]
     fn host_restart_policy_is_bounded_and_resets_after_stability() {
         let started = Instant::now();
@@ -943,17 +1003,57 @@ mod tests {
         let root = directory.path();
         let child = Command::new("sleep").arg("2").spawn().unwrap();
         let child_pid = child.id();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let discovered_port = listener.local_addr().unwrap().port();
+        let discovered_pid = child_pid.saturating_add(1);
+        let release = test_release_identity();
+        let release_body = format!(
+            r#"{{"schema":1,"product":"tianshu-agent","version":"{}","commit":"{}","target":"{}"}}"#,
+            release.version, release.commit, release.target
+        );
+        let server = thread::spawn(move || {
+            for body in [
+                format!(r#"{{"ok":true,"pid":{discovered_pid}}}"#),
+                format!(r#"{{"ok":true,"pid":{discovered_pid},"release":{release_body}}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
         let original = HostEndpoint {
             pid: child_pid,
             port: 59123,
             token: "secret_secret_secret".to_string(),
             started_at: 1,
+            release: Some(crate::lifecycle::HostReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            }),
         };
         let discovered = HostEndpoint {
-            pid: child_pid.saturating_add(1),
-            port: 59124,
+            pid: discovered_pid,
+            port: discovered_port,
             token: "takeover_token_123".to_string(),
             started_at: 2,
+            release: Some(crate::lifecycle::HostReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            }),
         };
         let mut state = RuntimeState {
             python: root.join("fake-python.sh"),
@@ -963,9 +1063,11 @@ mod tests {
             child: Some(child),
             owns_host: true,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
-        let first_adopted = adopt_discovered_host(&mut state, discovered.clone());
+        let identity = test_release_identity();
+        let first_adopted = adopt_discovered_host(&mut state, discovered.clone(), &identity, root);
         let first_endpoint = state.endpoint.clone();
         let first_owns_host = state.owns_host;
         let first_child_present = state.child.is_some();
@@ -981,7 +1083,8 @@ mod tests {
         state.child = Some(exited_child);
         state.endpoint = original.clone();
         state.owns_host = true;
-        let second_adopted = adopt_discovered_host(&mut state, discovered.clone());
+        let second_adopted = adopt_discovered_host(&mut state, discovered.clone(), &identity, root);
+        server.join().unwrap();
 
         assert!(!first_adopted, "活着的 owned child 被新 endpoint 顶掉");
         assert_eq!(first_endpoint, original);
@@ -991,6 +1094,72 @@ mod tests {
         assert_eq!(state.endpoint, discovered);
         assert!(state.child.is_none());
         assert!(!state.owns_host);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovered_host_with_session_identity_drift_is_not_adopted() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let discovered_pid = std::process::id();
+        let server = thread::spawn(move || {
+            for body in [
+                format!(r#"{{"ok":true,"pid":{discovered_pid}}}"#),
+                format!(
+                    r#"{{"ok":true,"pid":{discovered_pid},"release":{{"schema":1,"product":"tianshu-agent","version":"0.1.0","commit":"1123456789abcdef0123456789abcdef01234567","target":"macos-arm64"}}}}"#
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let original = HostEndpoint {
+            pid: discovered_pid.saturating_sub(1),
+            port: 59_123,
+            token: "original_token_1234".to_string(),
+            started_at: 1,
+            release: Some(test_host_release_identity()),
+        };
+        let discovered = HostEndpoint {
+            pid: discovered_pid,
+            port,
+            token: "takeover_token_1234".to_string(),
+            started_at: 2,
+            release: Some(test_host_release_identity()),
+        };
+        let mut state = RuntimeState {
+            python: root.join("fake-python.sh"),
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: original.clone(),
+            child: None,
+            owns_host: true,
+            stopped: false,
+            release_identity: test_release_identity(),
+        };
+
+        let adopted = adopt_discovered_host(&mut state, discovered, &test_release_identity(), root);
+        server.join().unwrap();
+
+        assert!(!adopted);
+        assert_eq!(state.endpoint, original);
+        assert!(state.owns_host);
+        assert!(state.child.is_none());
     }
 
     #[cfg(unix)]
@@ -1081,6 +1250,60 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn verified_shutdown_server_removing(
+        paths: Vec<PathBuf>,
+        pid: u32,
+    ) -> (
+        u16,
+        std::sync::mpsc::Receiver<String>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = match index {
+                    0 => format!(r#"{{"ok":true,"pid":{pid}}}"#),
+                    1 => format!(
+                        r#"{{"ok":true,"pid":{pid},"release":{}}}"#,
+                        test_release_payload()
+                    ),
+                    _ => r#"{"ok":true,"shutting_down":true}"#.to_string(),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                sender
+                    .send(String::from_utf8(raw).unwrap())
+                    .expect("request");
+                if index == 2 {
+                    for path in &paths {
+                        match fs::remove_file(path) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => panic!("cleanup failed: {error}"),
+                        }
+                    }
+                }
+            }
+        });
+        (port, receiver, server)
+    }
+
+    #[cfg(unix)]
     fn stubborn_host_state(
         root: &Path,
     ) -> (
@@ -1105,10 +1328,12 @@ mod tests {
                 port,
                 token: "secret_secret_secret".to_string(),
                 started_at: 1,
+                release: None,
             },
             child: Some(child),
             owns_host: true,
             stopped: false,
+            release_identity: test_release_identity(),
         };
         (state, request, server)
     }
@@ -1161,20 +1386,42 @@ mod tests {
     fn system_exit_timeout_preserves_an_attached_process() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        let (mut state, request, server) = stubborn_host_state(root);
-        let mut attached = state.child.take().unwrap();
-        state.owns_host = false;
+        let mut attached = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
         let run_dir = root.join("run");
         fs::create_dir_all(&run_dir).unwrap();
         let host_lock = run_dir.join("host.lock");
+        let (port, request, server) = verified_shutdown_server_removing(Vec::new(), attached.id());
         let metadata = format!(
-            r#"{{"pid":{},"port":{},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#,
-            state.endpoint.pid, state.endpoint.port,
+            r#"{{"pid":{},"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":"","release":{}}}"#,
+            attached.id(),
+            test_release_payload()
         );
         fs::write(&host_lock, metadata.as_bytes()).unwrap();
+        let mut state = RuntimeState {
+            python: root.join("fake-python.sh"),
+            app_dir: root.join("app"),
+            data_root: root.to_path_buf(),
+            endpoint: HostEndpoint {
+                pid: attached.id(),
+                port,
+                token: "secret_secret_secret".to_string(),
+                started_at: 1,
+                release: Some(test_host_release_identity()),
+            },
+            child: None,
+            owns_host: false,
+            stopped: false,
+            release_identity: test_release_identity(),
+        };
 
         let result = state.stop_host_on_exit();
-        request.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..3 {
+            request.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
         server.join().unwrap();
         let child_alive = attached.try_wait().unwrap().is_none();
         let _ = attached.kill();
@@ -1205,10 +1452,12 @@ mod tests {
                 port: 1,
                 token: "secret_secret_secret".to_string(),
                 started_at: 1,
+                release: None,
             },
             child: Some(child),
             owns_host: true,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host_on_exit();
@@ -1275,17 +1524,19 @@ mod tests {
         let daemon_snapshot = br#"{"pid":42,"started_at":1,"instance_id":"daemon_attached"}"#;
         fs::write(&daemon_lock, daemon_snapshot).unwrap();
         let (port, request, server) =
-            shutdown_server_removing(vec![host_lock.clone(), daemon_lock.clone()]);
+            verified_shutdown_server_removing(vec![host_lock.clone(), daemon_lock.clone()], 41);
         let endpoint = HostEndpoint {
             pid: 41,
             port,
             token: "secret_secret_secret".to_string(),
             started_at: 1,
+            release: Some(test_host_release_identity()),
         };
         fs::write(
             &host_lock,
             format!(
-                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":"","release":{}}}"#,
+                test_release_payload()
             ),
         )
         .unwrap();
@@ -1297,15 +1548,20 @@ mod tests {
             child: None,
             owns_host: false,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
-        let request = request.recv_timeout(Duration::from_secs(2)).unwrap();
+        let requests: Vec<_> = (0..3)
+            .map(|_| request.recv_timeout(Duration::from_secs(2)).unwrap())
+            .collect();
         server.join().unwrap();
 
         assert!(result.is_ok(), "{result:?}");
-        assert!(request.starts_with("POST /shutdown HTTP/1.1\r\n"));
-        assert!(request.contains("X-Tianshu-Token: secret_secret_secret\r\n"));
+        assert!(requests[0].starts_with("GET /health HTTP/1.1\r\n"));
+        assert!(requests[1].starts_with("GET /session HTTP/1.1\r\n"));
+        assert!(requests[2].starts_with("POST /shutdown HTTP/1.1\r\n"));
+        assert!(requests[2].contains("X-Tianshu-Token: secret_secret_secret\r\n"));
         assert!(!host_lock.exists(), "附着 Host 退出后遗留了 host.lock");
         assert!(!daemon_lock.exists(), "附着 Host 退出后遗留了 daemon.lock");
     }
@@ -1332,11 +1588,13 @@ mod tests {
                 shell_quote(&daemon_lock),
             ),
         );
-        let (port, request, server) = shutdown_server_removing(vec![host_lock.clone()]);
+        let (port, request, server) =
+            verified_shutdown_server_removing(vec![host_lock.clone()], 41);
         fs::write(
             &host_lock,
             format!(
-                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":"","release":{}}}"#,
+                test_release_payload()
             ),
         )
         .unwrap();
@@ -1349,14 +1607,18 @@ mod tests {
                 port,
                 token: "secret_secret_secret".to_string(),
                 started_at: 1,
+                release: Some(test_host_release_identity()),
             },
             child: None,
             owns_host: false,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
-        request.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..3 {
+            request.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
         server.join().unwrap();
 
         assert!(result.is_ok(), "{result:?}");
@@ -1402,10 +1664,12 @@ mod tests {
                 port: 59_123,
                 token: "secret_secret_secret".to_string(),
                 started_at: 7,
+                release: None,
             },
             child: None,
             owns_host: false,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
@@ -1440,37 +1704,49 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let host_lock_for_server = host_lock.clone();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut raw = Vec::new();
-            loop {
-                let mut chunk = [0_u8; 1024];
-                let count = stream.read(&mut chunk).unwrap();
-                raw.extend_from_slice(&chunk[..count]);
-                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = match index {
+                    0 => r#"{"ok":true,"pid":41}"#.to_string(),
+                    1 => format!(
+                        r#"{{"ok":true,"pid":41,"release":{}}}"#,
+                        test_release_payload()
+                    ),
+                    _ => r#"{"ok":true,"shutting_down":true}"#.to_string(),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                if index == 2 {
+                    drop(stream);
+                    fs::remove_file(&host_lock_for_server).unwrap();
+                    thread::sleep(Duration::from_millis(60));
+                    fs::write(
+                        &host_lock_for_server,
+                        format!(
+                            r#"{{"pid":43,"port":{port},"token":"takeover_token_123","started_at":2,"ui_dir":""}}"#
+                        ),
+                    )
+                    .unwrap();
                 }
             }
-            let body = r#"{"ok":true,"shutting_down":true}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-            drop(stream);
-            fs::remove_file(&host_lock_for_server).unwrap();
-            thread::sleep(Duration::from_millis(60));
-            fs::write(
-                &host_lock_for_server,
-                format!(
-                    r#"{{"pid":43,"port":{port},"token":"takeover_token_123","started_at":2,"ui_dir":""}}"#
-                ),
-            )
-            .unwrap();
         });
         fs::write(
             &host_lock,
             format!(
-                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+                r#"{{"pid":41,"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":"","release":{}}}"#,
+                test_release_payload()
             ),
         )
         .unwrap();
@@ -1483,10 +1759,12 @@ mod tests {
                 port,
                 token: "secret_secret_secret".to_string(),
                 started_at: 1,
+                release: Some(test_host_release_identity()),
             },
             child: None,
             owns_host: false,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
@@ -1539,10 +1817,12 @@ mod tests {
                 port,
                 token: "secret_secret_secret".to_string(),
                 started_at: 1,
+                release: None,
             },
             child: Some(child),
             owns_host: true,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
@@ -1607,10 +1887,12 @@ mod tests {
                 port: 59123,
                 token: "secret_secret_secret".to_string(),
                 started_at: 7,
+                release: None,
             },
             child: Some(child),
             owns_host: true,
             stopped: false,
+            release_identity: test_release_identity(),
         };
 
         let result = state.stop_host();
@@ -1619,6 +1901,140 @@ mod tests {
         assert!(state.stopped);
         assert!(!host_lock.exists());
         assert!(!daemon_lock.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_host_without_release_identity_is_rejected_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_pid = std::process::id();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 1024];
+                let count = stream.read(&mut chunk).unwrap();
+                raw.extend_from_slice(&chunk[..count]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = format!(r#"{{"ok":true,"pid":{host_pid}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        fs::write(
+            run_dir.join("host.lock"),
+            format!(
+                r#"{{"pid":{host_pid},"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":""}}"#
+            ),
+        )
+        .unwrap();
+        let spawned = root.join("spawned");
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!("#!/bin/sh\ntouch {}\nexit 1\n", shell_quote(&spawned)),
+        );
+        let paths = StartupPaths {
+            python,
+            app_dir: root.join("app"),
+            ui_dir: root.join("ui"),
+            data_root: root.to_path_buf(),
+            release_identity: ReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            },
+        };
+
+        let error = ensure_host(&paths).unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("缺少发行身份"), "{error}");
+        assert!(error.contains("退出旧实例"), "{error}");
+        assert!(error.contains(&format!("PID={host_pid}")), "{error}");
+        assert!(error.contains(&root.display().to_string()), "{error}");
+        assert!(!error.contains("secret_secret_secret"), "{error}");
+        assert!(
+            !spawned.exists(),
+            "已确认的旧 Host 被附着后仍启动了第二个 Host"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_session_without_release_identity_is_rejected_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_pid = std::process::id();
+        let server = thread::spawn(move || {
+            for body in [
+                format!(r#"{{"ok":true,"pid":{host_pid}}}"#),
+                format!(r#"{{"ok":true,"pid":{host_pid}}}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        fs::write(
+            run_dir.join("host.lock"),
+            format!(
+                r#"{{"pid":{host_pid},"port":{port},"token":"secret_secret_secret","started_at":1,"ui_dir":"","release":{}}}"#,
+                test_release_payload()
+            ),
+        )
+        .unwrap();
+        let spawned = root.join("spawned");
+        let python = root.join("fake-python.sh");
+        write_executable(
+            &python,
+            &format!("#!/bin/sh\ntouch {}\nexit 1\n", shell_quote(&spawned)),
+        );
+        let paths = StartupPaths {
+            python,
+            app_dir: root.join("app"),
+            ui_dir: root.join("ui"),
+            data_root: root.to_path_buf(),
+            release_identity: test_release_identity(),
+        };
+
+        let error = ensure_host(&paths).unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("/session 缺少发行身份"), "{error}");
+        assert!(error.contains(&format!("PID={host_pid}")), "{error}");
+        assert!(error.contains(&root.display().to_string()), "{error}");
+        assert!(!error.contains("secret_secret_secret"), "{error}");
+        assert!(
+            !spawned.exists(),
+            "已确认的旧 Host session 缺身份时仍启动了第二个 Host"
+        );
     }
 
     #[cfg(unix)]
@@ -1644,6 +2060,11 @@ mod tests {
             app_dir: root.join("app"),
             ui_dir: root.join("ui"),
             data_root: root.to_path_buf(),
+            release_identity: ReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            },
         };
 
         assert!(ensure_host(&paths).is_err());
@@ -1679,6 +2100,11 @@ mod tests {
             app_dir: root.join("app"),
             ui_dir: root.join("ui"),
             data_root: root.to_path_buf(),
+            release_identity: ReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            },
         };
 
         assert!(ensure_host(&paths).is_err());
@@ -1708,6 +2134,11 @@ mod tests {
             app_dir: root.join("app"),
             ui_dir: root.join("ui"),
             data_root: root.to_path_buf(),
+            release_identity: ReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            },
         };
         let started = Instant::now();
 
@@ -1746,6 +2177,11 @@ mod tests {
             app_dir: root.join("app"),
             ui_dir: root.join("ui"),
             data_root: root.to_path_buf(),
+            release_identity: ReleaseIdentity {
+                version: "0.1.0".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                target: "macos-arm64".to_string(),
+            },
         };
 
         assert!(ensure_host(&paths).is_err());

@@ -7,12 +7,22 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::release::ReleaseIdentity;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostReleaseIdentity {
+    pub version: String,
+    pub commit: String,
+    pub target: String,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HostEndpoint {
     pub pid: u32,
     pub port: u16,
     pub token: String,
     pub started_at: u64,
+    pub release: Option<HostReleaseIdentity>,
 }
 
 impl fmt::Debug for HostEndpoint {
@@ -23,6 +33,7 @@ impl fmt::Debug for HostEndpoint {
             .field("port", &self.port)
             .field("token", &"<redacted>")
             .field("started_at", &self.started_at)
+            .field("release", &self.release)
             .finish()
     }
 }
@@ -39,6 +50,7 @@ pub enum HostInfoError {
     InvalidEndpoint,
     NotReady,
     ChildExited,
+    Rejected(String),
     Timeout,
 }
 
@@ -49,6 +61,7 @@ impl fmt::Display for HostInfoError {
             Self::InvalidEndpoint => formatter.write_str("Host 元数据不合法"),
             Self::NotReady => formatter.write_str("Host 尚未就绪"),
             Self::ChildExited => formatter.write_str("Host 子进程在就绪前退出"),
+            Self::Rejected(detail) => formatter.write_str(detail),
             Self::Timeout => formatter.write_str("等待 Host 就绪超时"),
         }
     }
@@ -86,6 +99,17 @@ struct RawHostInfo {
     started_at: u64,
     #[serde(rename = "ui_dir")]
     _ui_dir: String,
+    release: Option<RawHostRelease>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHostRelease {
+    schema: u32,
+    product: String,
+    version: String,
+    commit: String,
+    target: String,
 }
 
 fn valid_token(value: &str) -> bool {
@@ -93,6 +117,45 @@ fn valid_token(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn valid_release_version(value: &str) -> bool {
+    let parts: Vec<_> = value.split('.').collect();
+    parts.len() == 3
+        && parts[0] == "0"
+        && parts[1..]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn valid_release_commit(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_release_target(value: &str) -> bool {
+    matches!(
+        value,
+        "macos-arm64" | "macos-x64" | "windows-x64" | "windows-arm64"
+    )
+}
+
+fn parse_host_release(release: RawHostRelease) -> Result<HostReleaseIdentity, HostInfoError> {
+    if release.schema != 1
+        || release.product != "tianshu-agent"
+        || !valid_release_version(&release.version)
+        || !valid_release_commit(&release.commit)
+        || !valid_release_target(&release.target)
+    {
+        return Err(HostInfoError::InvalidEndpoint);
+    }
+    Ok(HostReleaseIdentity {
+        version: release.version,
+        commit: release.commit,
+        target: release.target,
+    })
 }
 
 pub fn parse_host_endpoint(raw: &[u8]) -> Result<HostEndpoint, HostInfoError> {
@@ -104,12 +167,40 @@ pub fn parse_host_endpoint(raw: &[u8]) -> Result<HostEndpoint, HostInfoError> {
     if parsed.port == 0 {
         return Err(HostInfoError::NotReady);
     }
+    let release = parsed.release.map(parse_host_release).transpose()?;
     Ok(HostEndpoint {
         pid: parsed.pid,
         port: parsed.port,
         token: parsed.token,
         started_at: parsed.started_at,
+        release,
     })
+}
+
+pub fn verify_host_release(
+    endpoint: &HostEndpoint,
+    expected: &ReleaseIdentity,
+) -> Result<(), String> {
+    let Some(actual) = endpoint.release.as_ref() else {
+        return Err(
+            "已有 Host 缺少发行身份，无法确认它与当前发行物兼容；请退出旧实例后重试".to_string(),
+        );
+    };
+    if actual.version != expected.version
+        || actual.commit != expected.commit
+        || actual.target != expected.target
+    {
+        return Err(format!(
+            "已有 Host 发行身份 {}@{}/{} 与当前桌面壳 {}@{}/{} 不兼容；请退出旧实例后重试",
+            actual.version,
+            actual.commit,
+            actual.target,
+            expected.version,
+            expected.commit,
+            expected.target
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -124,11 +215,52 @@ struct HealthResponse {
 struct SessionResponse {
     ok: bool,
     pid: u32,
+    release: Option<RawHostRelease>,
 }
 
 struct HttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostVerificationErrorKind {
+    Unavailable,
+    IdentityMismatch,
+}
+
+#[derive(Debug)]
+pub(crate) struct HostVerificationError {
+    pub kind: HostVerificationErrorKind,
+    detail: String,
+}
+
+impl fmt::Display for HostVerificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+fn host_verification_error(
+    endpoint: &HostEndpoint,
+    data_root: &Path,
+    kind: HostVerificationErrorKind,
+    detail: impl Into<String>,
+) -> HostVerificationError {
+    let guidance = match kind {
+        HostVerificationErrorKind::Unavailable => "",
+        HostVerificationErrorKind::IdentityMismatch => "；请退出旧实例后重试",
+    };
+    HostVerificationError {
+        kind,
+        detail: format!(
+            "Host 身份校验失败：PID={}，data_root={}；{}{}",
+            endpoint.pid,
+            data_root.display(),
+            detail.into(),
+            guidance
+        ),
+    }
 }
 
 fn http_request(
@@ -180,27 +312,135 @@ fn http_request(
     })
 }
 
-pub fn verify_host(endpoint: &HostEndpoint) -> Result<(), String> {
-    let health = http_request(endpoint, "GET", "/health", None)?;
+pub(crate) fn verify_host_detailed(
+    endpoint: &HostEndpoint,
+    expected: &ReleaseIdentity,
+    data_root: &Path,
+) -> Result<(), HostVerificationError> {
+    let health = http_request(endpoint, "GET", "/health", None).map_err(|detail| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::Unavailable,
+            detail,
+        )
+    })?;
     if health.status != 200 {
-        return Err(format!("Host /health 返回 HTTP {}", health.status));
+        return Err(host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::Unavailable,
+            format!("Host /health 返回 HTTP {}", health.status),
+        ));
     }
-    let health: HealthResponse = serde_json::from_slice(&health.body)
-        .map_err(|error| format!("Host /health 响应不合法：{error}"))?;
+    let health: HealthResponse = serde_json::from_slice(&health.body).map_err(|error| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::Unavailable,
+            format!("Host /health 响应不合法：{error}"),
+        )
+    })?;
     if !health.ok || health.pid != endpoint.pid {
-        return Err("Host /health PID 与锁文件不一致".to_string());
+        return Err(host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::Unavailable,
+            "Host /health PID 与锁文件不一致",
+        ));
     }
 
-    let session = http_request(endpoint, "GET", "/session", Some(endpoint.token.as_str()))?;
+    verify_host_release(endpoint, expected).map_err(|detail| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            detail,
+        )
+    })?;
+
+    let session = http_request(endpoint, "GET", "/session", Some(endpoint.token.as_str()))
+        .map_err(|detail| {
+            host_verification_error(
+                endpoint,
+                data_root,
+                HostVerificationErrorKind::Unavailable,
+                detail,
+            )
+        })?;
     if session.status != 200 {
-        return Err(format!("Host /session 返回 HTTP {}", session.status));
+        return Err(host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            format!("Host /session 返回 HTTP {}", session.status),
+        ));
     }
-    let session: SessionResponse = serde_json::from_slice(&session.body)
-        .map_err(|error| format!("Host /session 响应不合法：{error}"))?;
+    let session: SessionResponse = serde_json::from_slice(&session.body).map_err(|error| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            format!("Host /session 响应不合法：{error}"),
+        )
+    })?;
     if !session.ok || session.pid != endpoint.pid {
-        return Err("Host token 或 PID 身份核验失败".to_string());
+        return Err(host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            "Host token 或 PID 身份核验失败",
+        ));
+    }
+    let session_release = session.release.ok_or_else(|| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            "Host /session 缺少发行身份",
+        )
+    })?;
+    let session_release = parse_host_release(session_release).map_err(|_| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            "Host /session 发行身份不合法",
+        )
+    })?;
+    let lock_release = endpoint.release.as_ref().ok_or_else(|| {
+        host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            "host.lock 缺少发行身份",
+        )
+    })?;
+    if &session_release != lock_release {
+        return Err(host_verification_error(
+            endpoint,
+            data_root,
+            HostVerificationErrorKind::IdentityMismatch,
+            format!(
+                "host.lock 发行身份 {}@{}/{} 与已认证 /session 身份 {}@{}/{} 不一致",
+                lock_release.version,
+                lock_release.commit,
+                lock_release.target,
+                session_release.version,
+                session_release.commit,
+                session_release.target
+            ),
+        ));
     }
     Ok(())
+}
+
+pub fn verify_host(
+    endpoint: &HostEndpoint,
+    expected: &ReleaseIdentity,
+    data_root: &Path,
+) -> Result<(), String> {
+    verify_host_detailed(endpoint, expected, data_root).map_err(|error| error.to_string())
 }
 
 pub fn request_host_shutdown(endpoint: &HostEndpoint) -> Result<(), String> {
@@ -227,6 +467,7 @@ pub fn build_host_command(
     app_dir: &Path,
     ui_dir: &Path,
     data_root: &Path,
+    release: &ReleaseIdentity,
 ) -> Command {
     let mut command = Command::new(python);
     command
@@ -241,6 +482,12 @@ pub fn build_host_command(
         .arg(ui_dir)
         .arg("--data-root")
         .arg(data_root)
+        .arg("--release-version")
+        .arg(&release.version)
+        .arg("--release-commit")
+        .arg(&release.commit)
+        .arg("--release-target")
+        .arg(&release.target)
         .env("PYTHONPATH", app_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONIOENCODING", "utf-8");

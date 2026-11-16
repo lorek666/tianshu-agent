@@ -344,6 +344,21 @@ def _build_parser() -> argparse.ArgumentParser:
     h.add_argument("--base-url", default=None)
     h.add_argument("--max-turns", type=int, default=8)
     h.add_argument("--max-total-tokens", type=int, default=20_000)
+    h.add_argument(
+        "--release-version",
+        default=None,
+        help="打包桌面壳传入的发行版本；与另两个 release 参数必须同时提供",
+    )
+    h.add_argument(
+        "--release-commit",
+        default=None,
+        help="打包桌面壳传入的 40 位源码提交",
+    )
+    h.add_argument(
+        "--release-target",
+        default=None,
+        help="打包桌面壳传入的四目标之一",
+    )
     h.add_argument("--json", action="store_true")
 
     ev = sub.add_parser(
@@ -1382,7 +1397,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
 
 def _cmd_host(args: argparse.Namespace) -> int:
-    from .host import read_host_info, run_host, stop_host
+    from .host import HostReleaseIdentity, read_host_info, run_host, stop_host
     from .ipc import default_data_root
 
     data_root = Path(args.data_root or default_data_root())
@@ -1407,6 +1422,20 @@ def _cmd_host(args: argparse.Namespace) -> int:
     ui_dir = args.ui_dir
     if ui_dir is None:
         ui_dir = Path(__file__).resolve().parents[2] / "ui" / "dist"
+    release_values = (args.release_version, args.release_commit, args.release_target)
+    release = None
+    if any(value is not None for value in release_values):
+        if not all(value is not None for value in release_values):
+            print(
+                "错误：--release-version、--release-commit、--release-target 必须同时提供",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            release = HostReleaseIdentity(*release_values)
+        except ValueError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 2
     command = [
         sys.executable, "-m", "tianshu", "daemon",
         "--data-root", str(data_root),
@@ -1425,6 +1454,7 @@ def _cmd_host(args: argparse.Namespace) -> int:
         data_root,
         ui_dir=ui_dir,
         daemon_command=command,
+        release=release,
         port=args.port,
         open_browser=args.open,
         supervise=not args.no_supervise,

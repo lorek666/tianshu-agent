@@ -28,7 +28,24 @@
 
 - **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
 
-- **R0 仍有复审硬门，R1 作者候选已提交并完成真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿、`CLEAN`，但当前 0 review / 0 comment，缺独立第二读者 PASS，因此未合并。R1 从该候选派生，PR [#174](https://github.com/lorek666/tianshu-agent/pull/174) 的原候选 `c409c37f2d456907ba33f53e686d2d301baadbb3` 已推送，包含 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。`c409c37` 的 run `43803289526` 首次原生 CI 中 Ubuntu、macOS（含 3529P/12S）、UI 与两个 Windows Python 分片通过，但 Windows Rust Clippy 把仅 macOS/Unix 使用的导入判为 unused；Windows required 汇总按设计拒绝，未发现第二个独立业务失败。作者已把菜单导入改为 macOS 条件导入、Unix 测试辅助导入改为 `cfg(unix)`，本地 Rust 39 tests 与 macOS Clippy 转绿；替换提交的精确 CI 结果以 PR 最新 check 为准。会话外独立复审仍是合并硬门，不能把本机全量、macOS GUI 或旧提交绿色当成已交付；Windows/Linux 用户设备验证仍未完成。
+- **R1 复审 P1 整改候选已完成作者门禁（2026-11-16，待第二读者）**：基于 HEAD
+  `f4198453b6e06d2b9134c83e88040d09274209bf` 的未提交工作树（8 个代码/测试文件加
+  2 份文档），P1-1 把 bundle
+  的五字段 release 身份经 Host CLI 同时写入 `host.lock` 与鉴权 `/session`，桌面壳的
+  初始附着、新 Host readiness、supervisor 接管和退出前校验都要求
+  `version/commit/target` 与当前 bundle 精确一致，并要求锁与 session 一致；缺失、漂移
+  或旧锁一律 fail-closed，避免把同 PID 的旧发行实例当成当前实例，也避免在旧实例仍占用
+  数据根时另起 Host。P1-2 修复 `host.lock` 消失但快照内 Host PID 仍存活时误停 Daemon：
+  该分支返回非零、保留 Daemon，且不调用 `request_shutdown`、不改 `daemon.lock`。原实现
+  红证据为 Python exit 1（session 身份缺失，真实存活 Host 仍进入清理）与 Rust exit 101
+  （三项生命周期断言红）；修后 Rust `46 passed`（20 lib + 15 lifecycle + 11 release），
+  `cargo fmt --check`/Clippy exit 0，三个指定 Python 文件 `94 passed / 1 skipped`，定向
+  Ruff exit 0。首次 Python 复跑 6 红均为系统临时卷可用空间低于产品 2 GiB 门禁；只把
+  pytest `TMPDIR` 与测试数据根改到 `/Volumes/Date` 后原断言通过，未放宽产品门禁。该结果
+  只是作者候选，尚不能声称独立复审、committed SHA、PR 原生 CI、Windows/Linux 用户设备
+  或正式发布通过。
+
+- **R0 已独立复审并通过保护合并，R1 作者候选已完成真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿；第二读者独立复审明确 `PASS`，只覆盖规格、release schema、标准库 manifest 与真实字节测试的 R0 边界。随后按分支保护以 merge commit `32ba798bb77527351ebae996a0e22b062df2f491` 合并；该 main 自身 push run `43811854640` 六项 job 全绿。R1 从 R0 派生，PR [#174](https://github.com/lorek666/tianshu-agent/pull/174) 的后续候选包含 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。`c409c37` 的 run `43803289526` 首次原生 CI 中 Ubuntu、macOS（含 3529P/12S）、UI 与两个 Windows Python 分片通过，但 Windows Rust Clippy 把仅 macOS/Unix 使用的导入判为 unused；Windows required 汇总按设计拒绝，未发现第二个独立业务失败。作者已把菜单导入改为 macOS 条件导入、Unix 测试辅助导入改为 `cfg(unix)`，本地 Rust 39 tests 与 macOS Clippy 转绿；替换提交的精确 CI 结果以 PR 最新 check 为准。会话外独立复审仍是 R1 合并硬门，不能把 R0 PASS、本机全量、macOS GUI 或旧提交绿色当成 R1–R3 已交付；Windows/Linux 用户设备验证仍未完成。
 
 - **W15 v1 只读保留期审计命令已交付分支 `feat/retention-audit`（2026-11-15，PR 待合）**：`tianshu data retention-audit --data-root` ——逐表行数/最老行年龄/状态直方图、增长投影（观测窗口 ≥1 天才外推，几毫秒跨度会外推出垃圾速率——测试实抓后修）、可清理候选测量（jobs 终态行、budget_reservations settled+known；终态判定只用 tasks/jobs/budget 权威常量在 Python 侧解释，不猜 dispatch 面语义）、cleanup_plan 现状。**零删除**：mode=ro 连接不加锁不阻断写入，测试钉住 events.db 字节哈希前后不变。SQL 全部单行字面量（标识符不进拼接，值一律参数绑定）；33 测试文件级 +4。实现过程记一笔：Mimosa hook 三次拦截动态 SQL（execute 变量/跨行拼接），按其建议改全静态结构后反而更符合封闭集纪律。三项拍板仍留实测数据。
 
@@ -406,9 +423,11 @@
 
 - **实例核验必须在发起 shutdown 的同一条握手连接内完成**：不能先另开连接核对 `daemon.lock` / welcome，再换连接发退出；旧实例 A 在两个动作之间退出时，第二条连接可命中新实例 B。现在 `request_shutdown(expected_instance_id=...)` 从冻结锁取得身份，在同一已连接会话的 `hello.welcome.instance_id` 核对后才发送请求；不符或缺失一律 fail-closed。
 - **超时清理同样绑定实例**：Host supervisor 只终止发起请求时已核实、且超时后锁字节仍完全相同的 PID；锁已换实例时保留现场。桌面辅助清理要求 `daemon.lock` 同时含合法 PID 与非空 `instance_id`，不能从一个坏锁猜目标。
+- **Host 兼容性是发行身份加认证会话，不是“端口有人”**：桌面壳把 bundle 的 `version/commit/target` 传给 Host，并同时核验 `host.lock`、鉴权 `/session` 和当前 bundle。任一缺失或不一致都在附着、readiness、supervisor 接管或退出前 fail-closed；错误给 PID 与 `data_root`，不输出 token。
 
 ## 5. 踩坑教训（别再踩）
 
+- **锁文件消失不等于已核对进程死亡（2026-11-16）**：Host 退出清理持有的是旧 PID/`started_at` 与 Daemon 锁快照；`host.lock` 暂时缺失既可能是旧 Host 已退出，也可能是它尚未完成清理或新实例接入窗口。快照内 Host PID 仍存活时必须保留 Daemon，不能把一次缺文件观察当作 Daemon 的死亡证明。
 - **同一实例的退出请求也要防检查后替换（2026-11-16）**：真实 Daemon 探针证明旧实现会忽略额外 `expected_instance_id` 并把错误身份的 shutdown 当正常请求；仅比较调用前锁 SHA 不足以防止“SHA 检查 → RPC”之间的实例替换。复核维度必须放在同一 IPC 会话内，不能用两次连接拼接。
 - **用户级 restore gate 不适合由每个普通测试争用（2026-11-16）**：两个独立工作树并行跑全量时，固定用户级 gate 会让恢复/迁移 crashpoint 子进程把 `MaintenanceBusy` 当作 1 而非预期 77。`test_recovery.py` / `test_migration.py` 已在本用例临时锁根中运行并显式注入子进程；仍须为真正测全局锁语义的用例保留生产路径，不能全局替换锁根掩盖它。
 - **平台条件代码的导入也属于门禁（2026-11-16）**：macOS 菜单构建器与 Unix 测试辅助必须各自使用与其调用点一致的 `cfg`。本机 macOS Clippy 不能发现 Windows 侧 unused import；恰好由原生 Windows Rust job 以 `-D warnings` 抓住，修复方式是按目标裁剪导入，不用 `allow`。
@@ -538,6 +557,7 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **Host 存活探测仍可能受 PID 复用影响（2026-11-16）**：`host.lock` 缺失后的 Daemon 保护分支使用 `pid_alive` 判断快照 PID；当前没有把应用启动墙钟 `HostInfo.started_at` 当成操作系统进程启动时间，也没有扩大 schema。PID 被无关进程复用时，桌面壳可能保守地拒绝清理 Daemon，用户可退出旧进程/释放错误占用后重试；该分支不会误停 Daemon，但“存活”判断本身不是强 OS 身份。
 - **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
 - **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。
 - **Windows 原生结果待回填**：`scripts/restore_t1_windows_probe.py` 和 Windows 测试必须在 GitHub 原生 runner 实际通过并产生 artifact；在 run/SHA/artifact 绑定前，Windows T1 行为保持 `NOT_RUN`。Windows Server CI也不代表 Windows 10/11 用户设备或 ARM64。
@@ -696,6 +716,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-16 · R1 复审 P1 身份与退出清理整改（作者候选，待第二读者）**：基于 `f4198453` 的未提交工作树（8 个代码/测试文件加 2 份文档），新增 Host 五字段 release 身份并贯穿 CLI、`host.lock`、鉴权 `/session` 与 Tauri 初始附着/readiness/supervisor/退出校验；缺少身份、bundle 漂移或 lock/session 漂移均 fail-closed，错误只报 PID 与 `data_root`。另修 `host.lock` 缺失但快照 Host PID 仍存活时误停 Daemon，增加真实子进程、已退出进程、实例变化三类条件回归。原实现红证据保存在 `.omc/artifacts/release-r1-review-fixes-20261116/red-*.log`（Python exit 1、Rust exit 101）；修后最终作者门禁为 `cargo test --locked` 46 passed、`cargo fmt --check` 0、Clippy 0、指定 Python 94 passed / 1 skipped、定向 Ruff 0。Python 首轮复跑 6 红全部是 `/tmp` 与 pytest tmp 所在卷低于 2 GiB，重定向到 `/Volumes/Date` 后通过，门禁未改。未 commit/push，未取得 PR 原生 CI 或第二读者 PASS；残余边界是 `pid_alive` 仍可能受 PID 复用影响，只会保守保留 Daemon，不能在该分支误停。
 
 - **2026-11-16 · PR #162 五阻断续修与 R0 拆分**：从 main `e2422579` 建立独立 R0 工作树，只迁入 spec/schema/manifest/测试；原始 `7d121ad` 与失败复审保留。三项产品修复在原分支分别实施，之后依次从已合 main 派生 R1/R2，PR #162 最终仅交 R3；每片新门禁与独立复审均需重绑，未提前宣称修复或发布通过。
 

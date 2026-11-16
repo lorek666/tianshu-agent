@@ -298,6 +298,34 @@ def _seed(root: Path, *, pid: int = 424242) -> host.HostInfo:
     return info
 
 
+def _ready_sleep_process() -> subprocess.Popen[bytes]:
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; "
+            "sys.stdout.write('ready\\n'); sys.stdout.flush(); "
+            "time.sleep(60)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline() == b"ready\n"
+    return proc
+
+
+def _exited_process() -> subprocess.Popen[bytes]:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    proc.communicate(timeout=5)
+    assert proc.returncode == 0
+    return proc
+
+
 @pytest.mark.parametrize("same_pid", [False, True], ids=["new-pid", "reused-pid"])
 def test_stale_stop_preserves_replacement_process_info(tmp_path: Path, same_pid: bool) -> None:
     """stop 旧快照不能清掉另一真实进程的新 token，包括 PID 被复用的形状。"""
@@ -845,6 +873,100 @@ def test_stop_daemon_after_host_exit_preserves_a_live_matching_host(
     assert not called
     assert host.read_host_info(tmp_path) == live
     assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_preserves_live_host_when_lock_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _ready_sleep_process()
+    try:
+        snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+        lock = ipc.run_dir(tmp_path) / "daemon.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_bytes(snapshot)
+
+        def request_shutdown(*_args, **_kwargs):
+            raise AssertionError("Host 仍存活时不得请求停止 Daemon")
+
+        monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+        result = host.stop_daemon_after_host_exit(
+            tmp_path,
+            hashlib.sha256(snapshot).hexdigest(),
+            child.pid,
+            7,
+            timeout=0.2,
+        )
+
+        assert child.poll() is None
+        assert result == 1
+        assert not host.host_lock_path(tmp_path).exists()
+        assert lock.read_bytes() == snapshot
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_stop_daemon_after_host_exit_cleans_after_dead_host_without_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _exited_process()
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        child.pid,
+        7,
+        timeout=0.2,
+    )
+
+    assert result == 0
+    assert called
+    assert not lock.exists()
+
+
+def test_stop_daemon_after_host_exit_rejects_changed_instance_without_host_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _exited_process()
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        child.pid,
+        7,
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert lock.read_bytes() == new
 
 
 def test_stop_daemon_after_host_exit_preserves_a_changed_daemon(

@@ -176,10 +176,21 @@ def _ui_dir(root: Path, *, index_html: str | None = None) -> Path:
     return ui
 
 
-def _start_bridge(root: Path, *, token: str = "tok") -> tuple[host.UiBridge, int]:
-    config = host.BridgeConfig(
-        data_root=root, ui_dir=_ui_dir(root), token=token, port=0
-    )
+def _start_bridge(
+    root: Path,
+    *,
+    token: str = "tok",
+    release: host.HostReleaseIdentity | None = None,
+) -> tuple[host.UiBridge, int]:
+    config_options = {
+        "data_root": root,
+        "ui_dir": _ui_dir(root),
+        "token": token,
+        "port": 0,
+    }
+    if release is not None:
+        config_options["release"] = release
+    config = host.BridgeConfig(**config_options)
     bridge = host.UiBridge(config)
     bridge.serve_background()
     return bridge, bridge.port
@@ -341,6 +352,98 @@ def test_second_host_instance_is_refused_with_url(root: Path) -> None:
     finally:
         host.clear_host_info(root, pid=os.getpid())
     assert f"127.0.0.1:{port}" in str(excinfo.value)
+
+
+def test_host_release_identity_round_trips_in_lock(root: Path) -> None:
+    release = host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
+    info = host.HostInfo(
+        pid=os.getpid(),
+        port=0,
+        token="release_token_1234",
+        started_at=1,
+        ui_dir=str(root / "ui"),
+        release=release,
+    )
+
+    host.write_host_info(root, info)
+
+    assert host.read_host_info(root) == info
+    payload = json.loads(host.host_lock_path(root).read_text(encoding="utf-8"))
+    assert payload["release"] == {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "target": "macos-arm64",
+    }
+
+
+def test_host_release_identity_lock_rejects_malformed_shape(root: Path) -> None:
+    path = host.host_lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "port": 1,
+                "token": "release_token_1234",
+                "started_at": 1,
+                "ui_dir": str(root / "ui"),
+                "release": {
+                    "schema": 1,
+                    "product": "tianshu-agent",
+                    "version": "0.1.0",
+                    "commit": "0123456789abcdef0123456789abcdef01234567",
+                    "target": "macos-arm64",
+                    "extra": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(host.HostError, match="Host 元数据损坏"):
+        host.read_host_info(root)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("schema", 2), ("product", "other-product")],
+    ids=["schema", "product"],
+)
+def test_host_release_identity_lock_rejects_wrong_schema_or_product(
+    root: Path, field: str, value: object
+) -> None:
+    release: dict[str, object] = {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "target": "macos-arm64",
+    }
+    release[field] = value
+    path = host.host_lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "port": 1,
+                "token": "release_token_1234",
+                "started_at": 1,
+                "ui_dir": str(root / "ui"),
+                "release": release,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(host.HostError, match="Host 元数据损坏"):
+        host.read_host_info(root)
 
 
 def test_stale_host_lock_is_replaced(root: Path) -> None:
@@ -552,6 +655,45 @@ def test_session_proves_token_and_host_pid_without_touching_daemon(root: Path) -
         status, payload = _http(port, "GET", "/session", token="tok")
         assert status == 200
         assert json.loads(payload) == {"ok": True, "pid": os.getpid()}
+    finally:
+        bridge.stop()
+
+
+def test_session_release_identity_matches_the_host_lock(root: Path) -> None:
+    release = host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
+    info = host.HostInfo(
+        pid=os.getpid(),
+        port=0,
+        token="tok",
+        started_at=1,
+        ui_dir=str(root / "ui"),
+        release=release,
+    )
+    bridge = host.UiBridge(
+        host.BridgeConfig(
+            data_root=root,
+            ui_dir=_ui_dir(root),
+            token=info.token,
+            port=0,
+            release=info.release,
+        )
+    )
+    info.port = bridge.port
+    host.write_host_info(root, info)
+    bridge.serve_background()
+    try:
+        status, payload = _http(bridge.port, "GET", "/session", token=info.token)
+        assert status == 200, payload
+        lock_payload = json.loads(host.host_lock_path(root).read_text(encoding="utf-8"))
+        assert json.loads(payload) == {
+            "ok": True,
+            "pid": os.getpid(),
+            "release": lock_payload["release"],
+        }
     finally:
         bridge.stop()
 
@@ -803,6 +945,37 @@ def test_cli_host_status_reports_not_running(root: Path, capsys) -> None:
 def test_cli_host_stop_is_noop_when_not_running(root: Path, capsys) -> None:
     assert cli.main(["host", "stop", "--data-root", str(root)]) == 0
     assert "Host" in capsys.readouterr().out
+
+
+def test_cli_host_forwards_release_identity(monkeypatch, root: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_host(data_root: Path, **kwargs):
+        captured["data_root"] = data_root
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(host, "run_host", fake_run_host)
+    code = cli.main(
+        [
+            "host",
+            "--data-root",
+            str(root),
+            "--release-version",
+            "0.1.0",
+            "--release-commit",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--release-target",
+            "macos-arm64",
+        ]
+    )
+
+    assert code == 0
+    assert captured["release"] == host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
 
 
 def test_cli_host_status_reports_running_host(root: Path) -> None:
