@@ -1,0 +1,869 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import json
+import platform
+import shutil
+import struct
+import sys
+import tarfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+RELEASE_SCRIPT = ROOT / "scripts" / "release_manifest.py"
+VERIFY_SCRIPT = ROOT / "scripts" / "verify_release.py"
+COMMIT = "595be35c037cef35da7f166a5db2a624f2b733a9"
+TARGET = "macos-arm64"
+APP_ROOT = "Tianshu Agent.app"
+RESOURCE_PREFIX = f"{APP_ROOT}/Contents/Resources"
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _write_macos_archive(app: Path, destination: Path) -> None:
+    with tarfile.open(destination, "w:gz") as archive:
+        for path in sorted(app.rglob("*")):
+            archive.add(
+                path,
+                arcname=(Path(APP_ROOT) / path.relative_to(app)).as_posix(),
+                recursive=False,
+            )
+
+
+def _macho(cpu_type: int = 0x0100000C) -> bytes:
+    return b"\xcf\xfa\xed\xfe" + struct.pack("<I", cpu_type) + b"\0" * 64
+
+
+def _pe(machine: int) -> bytes:
+    data = bytearray(256)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 64)
+    data[64:68] = b"PE\0\0"
+    struct.pack_into("<H", data, 68, machine)
+    return bytes(data)
+
+
+def _release_identity(
+    *,
+    version: str = "0.1.0",
+    commit: str = COMMIT,
+    target: str = TARGET,
+) -> dict:
+    return {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": version,
+        "commit": commit,
+        "target": target,
+    }
+
+
+def _collect_files(bundle: Path) -> dict[str, str]:
+    return {
+        path.relative_to(bundle).as_posix(): _sha(path.read_bytes())
+        for path in sorted(bundle.rglob("*"))
+        if path.is_file() and path.name != "release-manifest.json"
+    }
+
+
+def _write_manifest(bundle: Path) -> dict:
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_fixture_verify")
+    identity = json.loads((bundle / "release.json").read_text(encoding="utf-8"))
+    files = _collect_files(bundle)
+    ui_path = "ui/dist/index.html"
+    assert ui_path in files
+    manifest = {
+        **identity,
+        "python": "3.12.16",
+        "python_build_release": "20261110",
+        "ui_dist_sha256": files[ui_path],
+        "files": files,
+    }
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    return manifest
+
+
+def _make_bundle(tmp_path: Path, *, target: str = TARGET) -> Path:
+    bundle = tmp_path / "bundle"
+    package = bundle / "app" / "tianshu"
+    python_bin = bundle / "python" / "bin"
+    ui_dist = bundle / "ui" / "dist"
+    licenses = bundle / "licenses"
+    package.mkdir(parents=True)
+    python_bin.mkdir(parents=True)
+    (ui_dist / "assets").mkdir(parents=True)
+    licenses.mkdir()
+    (package / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+    (package / "__main__.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    cpu = 0x0100000C if target.endswith("arm64") else 0x01000007
+    runtime = _macho(cpu)
+    (python_bin / "python3").write_bytes(runtime)
+    (python_bin / "python").write_bytes(runtime)
+    (python_bin / "python3.12").write_bytes(runtime)
+    (ui_dist / "index.html").write_text("<!doctype html><title>Tianshu</title>\n", encoding="utf-8")
+    (ui_dist / "assets" / "app.js").write_text("export const ready = true;\n", encoding="utf-8")
+    (licenses / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
+    (bundle / "release.json").write_text(
+        json.dumps(_release_identity(target=target), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _write_manifest(bundle)
+    return bundle
+
+
+def _build_artifact(tmp_path: Path, bundle: Path, target: str = TARGET) -> tuple[Path, Path]:
+    built = tmp_path / "built" / f"{APP_ROOT}"
+    binary = built / "Contents" / "MacOS" / "tianshu-desktop"
+    resources = built / "Contents" / "Resources"
+    binary.parent.mkdir(parents=True)
+    resources.parent.mkdir(parents=True, exist_ok=True)
+    cpu = 0x0100000C if target.endswith("arm64") else 0x01000007
+    binary.write_bytes(_macho(cpu))
+    (built / "Contents" / "Info.plist").write_text(
+        '<?xml version="1.0"?><plist><dict/></plist>\n',
+        encoding="utf-8",
+    )
+    shutil.copytree(bundle, resources)
+    (resources / "icon.icns").write_bytes(b"tauri-generated-icon")
+    artifact_dir = tmp_path / "out"
+    artifact_dir.mkdir(parents=True)
+    artifact = artifact_dir / f"Tianshu-Agent-0.1.0-{target}.app.tar.gz"
+    _write_macos_archive(built, artifact)
+    (artifact_dir / "release-manifest.json").write_bytes(
+        (bundle / "release-manifest.json").read_bytes()
+    )
+    (artifact_dir / f"Tianshu-Agent-0.1.0-{target}.sha256").write_text(
+        f"{_sha(artifact.read_bytes())}  {artifact.name}\n",
+        encoding="ascii",
+    )
+    return artifact.parent, artifact
+
+
+def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    bundle = _make_bundle(tmp_path)
+    artifact_dir, artifact = _build_artifact(tmp_path, bundle)
+    return bundle, artifact_dir, artifact
+
+
+def _rewrite_checksum(artifact: Path) -> None:
+    checksum = artifact.with_name(
+        artifact.name.removesuffix(".app.tar.gz") + ".sha256"
+    )
+    checksum.write_text(
+        f"{_sha(artifact.read_bytes())}  {artifact.name}\n",
+        encoding="ascii",
+    )
+
+
+def _replace_tar_member(artifact: Path, name: str, data: bytes) -> None:
+    temporary = artifact.with_suffix(".tmp")
+    with tarfile.open(artifact, "r:gz") as source, tarfile.open(
+        temporary, "w:gz"
+    ) as destination:
+        replaced = False
+        for member in source.getmembers():
+            stream = source.extractfile(member) if member.isfile() else None
+            if member.name == name:
+                member.size = len(data)
+                stream = io.BytesIO(data)
+                replaced = True
+            destination.addfile(member, stream)
+        assert replaced
+    temporary.replace(artifact)
+    _rewrite_checksum(artifact)
+
+
+def _append_tar_member(artifact: Path, member: tarfile.TarInfo, data: bytes | None = None) -> None:
+    temporary = artifact.with_suffix(".tmp")
+    with tarfile.open(artifact, "r:gz") as source, tarfile.open(
+        temporary, "w:gz"
+    ) as destination:
+        for existing in source.getmembers():
+            stream = source.extractfile(existing) if existing.isfile() else None
+            destination.addfile(existing, stream)
+        if data is not None:
+            member.size = len(data)
+        destination.addfile(member, io.BytesIO(data) if data is not None else None)
+    temporary.replace(artifact)
+    _rewrite_checksum(artifact)
+
+
+def _windows_bundle(tmp_path: Path) -> Path:
+    bundle = tmp_path / "windows-bundle"
+    package = bundle / "app" / "tianshu"
+    python_dir = bundle / "python"
+    ui_dist = bundle / "ui" / "dist"
+    licenses = bundle / "licenses"
+    package.mkdir(parents=True)
+    python_dir.mkdir()
+    ui_dist.mkdir(parents=True)
+    licenses.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__main__.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (python_dir / "python.exe").write_bytes(_pe(0x8664))
+    (ui_dist / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+    (licenses / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
+    (bundle / "release.json").write_text(
+        json.dumps(_release_identity(target="windows-x64"), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _write_manifest(bundle)
+    return bundle
+
+
+def test_verify_release_accepts_exact_manifest_bytes_and_archive(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_under_test")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+
+    result = verify.verify_release(
+        artifact_dir=artifact_dir,
+        bundle_dir=bundle,
+        target=TARGET,
+        version="0.1.0",
+        commit=COMMIT,
+        run_smoke=False,
+    )
+
+    assert result["artifact"] == artifact.name
+    assert result["sha256"] == _sha(artifact.read_bytes())
+    assert result["runtime_smoke"] == {"status": "not_run_by_caller"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema", 2, "schema"),
+        ("product", "other", "product"),
+        ("version", "1.0.0", "version"),
+        ("commit", "A" * 40, "commit"),
+        ("target", "linux-x64", "target"),
+    ],
+)
+def test_verify_release_rejects_non_closed_short_identity(
+    tmp_path, field, value, message
+):
+    verify = _load(VERIFY_SCRIPT, f"verify_release_short_{field}")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    release = json.loads((bundle / "release.json").read_text(encoding="utf-8"))
+    release[field] = value
+    (bundle / "release.json").write_text(json.dumps(release), encoding="utf-8")
+
+    with pytest.raises(verify.VerifyError, match=message):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_short_identity_drift_even_when_all_hashes_rebind(
+    tmp_path,
+):
+    verify = _load(VERIFY_SCRIPT, "verify_release_self_consistent_drift")
+    bundle = _make_bundle(tmp_path)
+    release = json.loads((bundle / "release.json").read_text(encoding="utf-8"))
+    release["commit"] = "0" * 40
+    (bundle / "release.json").write_text(json.dumps(release), encoding="utf-8")
+    _write_manifest(bundle)
+    artifact_dir, artifact = _build_artifact(tmp_path / "rebuilt", bundle)
+
+    with pytest.raises(verify.VerifyError, match="commit.*期望"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+    assert artifact.is_file()
+
+
+def test_verify_release_rejects_unknown_short_identity_field(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_extra_identity")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    release = {**_release_identity(), "source": "unbound"}
+    (bundle / "release.json").write_text(json.dumps(release), encoding="utf-8")
+
+    with pytest.raises(verify.VerifyError, match="字段必须封闭"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_manifest_file_not_byte_identical_to_bundle(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_manifest_bytes")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    copied = artifact_dir / "release-manifest.json"
+    copied.write_bytes(copied.read_bytes() + b" ")
+
+    with pytest.raises(verify.VerifyError, match="release-manifest.json.*字节不一致"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_tampered_checksum(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_checksum")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    checksum = artifact_dir / f"Tianshu-Agent-0.1.0-{TARGET}.sha256"
+    checksum.write_text(f"{'0' * 64}  {artifact.name}\n", encoding="ascii")
+
+    with pytest.raises(verify.VerifyError, match="SHA256 不匹配"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_unlisted_artifact_directory_file(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_artifact_extra")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    (artifact_dir / "events.db").write_bytes(b"user data")
+
+    with pytest.raises(verify.VerifyError, match="发行目录文件集合"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_artifact_directory_subdirectory(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_artifact_subdirectory")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    (artifact_dir / "logs").mkdir()
+
+    with pytest.raises(verify.VerifyError, match="发行目录文件集合"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_source_bundle_rejects_unlisted_sitecustomize(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_source_sitecustomize")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    (bundle / "app" / "sitecustomize.py").write_text(
+        "raise SystemExit(91)\n", encoding="utf-8"
+    )
+
+    with pytest.raises(verify.VerifyError, match="bundle 文件集合.*未列文件"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_archive_rejects_unlisted_sitecustomize(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_archive_sitecustomize")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    member = tarfile.TarInfo(f"{RESOURCE_PREFIX}/app/sitecustomize.py")
+    _append_tar_member(artifact, member, b"raise SystemExit(91)\n")
+
+    with pytest.raises(verify.VerifyError, match="资源集合.*未列文件"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        ".env",
+        ".env.production",
+        ".tianshu/events.db",
+        "logs/release.log",
+        "tests/test_secret.py",
+        ".omc/state.json",
+        "__pycache__/host.cpython-312.pyc",
+    ],
+)
+def test_source_bundle_rejects_forbidden_files_even_if_relisted(tmp_path, relative):
+    verify = _load(VERIFY_SCRIPT, f"verify_release_forbidden_{relative}")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    path = bundle / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"forbidden")
+    _write_manifest(bundle)
+    (artifact_dir / "release-manifest.json").write_bytes(
+        (bundle / "release-manifest.json").read_bytes()
+    )
+
+    with pytest.raises(verify.VerifyError, match="禁止|环境"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_archive_manifest_drift_even_with_new_archive_sha(
+    tmp_path,
+):
+    verify = _load(VERIFY_SCRIPT, "verify_release_archive_manifest_drift")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    manifest_path = f"{RESOURCE_PREFIX}/release-manifest.json"
+    manifest = json.loads((bundle / "release-manifest.json").read_text(encoding="utf-8"))
+    manifest["version"] = "0.1.1"
+    _replace_tar_member(
+        artifact,
+        manifest_path,
+        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+    )
+
+    with pytest.raises(verify.VerifyError, match="release-manifest.json.*字节不一致"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_archive_rejects_escaping_symlink(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_archive_escape_link")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    link = tarfile.TarInfo(f"{RESOURCE_PREFIX}/app/escape.py")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "../../../../../../etc/passwd"
+    _append_tar_member(artifact, link)
+
+    with pytest.raises(verify.VerifyError, match="逃逸链接"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_archive_rejects_duplicate_member_names(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_duplicate_member")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    duplicate = tarfile.TarInfo(f"{RESOURCE_PREFIX}/ui/dist/index.html")
+    _append_tar_member(artifact, duplicate, b"second index bytes")
+
+    with pytest.raises(verify.VerifyError, match="重复"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "python/bin/python",
+        "python/bin/python3",
+        "python/bin/python3.12",
+    ],
+)
+def test_verify_release_rejects_wrong_runtime_architecture(tmp_path, relative):
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_arch")
+    bundle, artifact_dir, _artifact = _fixture(tmp_path)
+    runtime = bundle / relative
+    runtime.write_bytes(_macho(0x01000007))
+    _write_manifest(bundle)
+    (artifact_dir / "release-manifest.json").write_bytes(
+        (bundle / "release-manifest.json").read_bytes()
+    )
+
+    name = Path(relative).name
+    with pytest.raises(verify.VerifyError, match=f"{name}.*架构"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_rejects_wrong_desktop_architecture_in_archive(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_desktop_arch")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    _replace_tar_member(
+        artifact,
+        f"{APP_ROOT}/Contents/MacOS/tianshu-desktop",
+        _macho(0x01000007),
+    )
+
+    with pytest.raises(verify.VerifyError, match="tianshu-desktop.*架构"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+
+
+def test_verify_release_requires_exact_ui_dist_index_identity(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_ui_identity")
+    release_manifest = _load(RELEASE_SCRIPT, "release_manifest_ui_identity")
+    bundle, _artifact_dir, _artifact = _fixture(tmp_path)
+    copied = bundle / "ui" / "copied.html"
+    copied.write_bytes((bundle / "ui" / "dist" / "index.html").read_bytes())
+    manifest = json.loads((bundle / "release-manifest.json").read_text(encoding="utf-8"))
+    manifest["ui_dist_sha256"] = _sha(copied.read_bytes())
+    manifest["files"]["ui/copied.html"] = _sha(copied.read_bytes())
+    release_manifest.write_manifest(bundle / "release-manifest.json", manifest)
+    rebuilt_dir, rebuilt = _build_artifact(tmp_path / "ui-rebuilt", bundle)
+
+    with pytest.raises(verify.VerifyError, match="ui/dist/index.html"):
+        verify.verify_release(
+            artifact_dir=rebuilt_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=False,
+        )
+    assert rebuilt.is_file()
+
+
+def test_runtime_smoke_rejects_non_native_target(tmp_path, monkeypatch):
+    verify = _load(VERIFY_SCRIPT, "verify_release_non_native")
+    monkeypatch.setattr(verify, "host_target", lambda: "macos-arm64")
+
+    with pytest.raises(verify.VerifyError, match="原生 target"):
+        verify._runtime_smoke(tmp_path, "macos-x64")
+
+
+def _runtime_fixture(
+    tmp_path: Path,
+    monkeypatch,
+    verify,
+    *,
+    broken_entrypoint: str | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    bundle = _make_bundle(tmp_path)
+    shutil.rmtree(bundle / "app" / "tianshu")
+    shutil.copytree(
+        ROOT / "src" / "tianshu",
+        bundle / "app" / "tianshu",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    daemon_pid_file = tmp_path / "daemon-entered.pid"
+    daemon_module = bundle / "app" / "tianshu" / "daemon.py"
+    with daemon_module.open("a", encoding="utf-8") as stream:
+        stream.write(
+            "\n\n_smoke_original_serve = serve\n"
+            "def serve(*args, **kwargs):\n"
+            "    from pathlib import Path\n"
+            f"    Path({str(daemon_pid_file)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+            "    return _smoke_original_serve(*args, **kwargs)\n"
+        )
+    if broken_entrypoint == "daemon":
+        with daemon_module.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n\ndef serve(*args, **kwargs):\n"
+                "    raise RuntimeError('daemon startup intentionally broken')\n"
+            )
+    elif broken_entrypoint == "host":
+        host_module = bundle / "app" / "tianshu" / "host.py"
+        with host_module.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n\ndef run_host(*args, **kwargs):\n"
+                "    raise RuntimeError('host startup intentionally broken')\n"
+            )
+    _write_manifest(bundle)
+    artifact_dir, artifact = _build_artifact(tmp_path, bundle)
+    monkeypatch.setattr(verify, "host_target", lambda: TARGET)
+    monkeypatch.setattr(
+        verify,
+        "_bundle_python",
+        lambda _bundle, _target: Path(sys.executable),
+    )
+    return bundle, artifact_dir, artifact, daemon_pid_file
+
+
+def test_verify_runtime_smoke_launches_real_host_daemon_and_checks_token(tmp_path, monkeypatch):
+    from tianshu.leases import pid_alive
+
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_positive")
+    bundle, artifact_dir, _artifact, daemon_pid_file = _runtime_fixture(
+        tmp_path, monkeypatch, verify
+    )
+
+    result = verify.verify_release(
+        artifact_dir=artifact_dir,
+        bundle_dir=bundle,
+        target=TARGET,
+        version="0.1.0",
+        commit=COMMIT,
+        run_smoke=True,
+    )
+
+    smoke = result["runtime_smoke"]
+    assert smoke["status"] == "pass"
+    assert smoke["host_target"] == TARGET
+    assert smoke["host_pid"] != smoke["daemon_pid"]
+    assert "session_token_required" in smoke["checks"]
+    daemon_pid = int(daemon_pid_file.read_text(encoding="ascii"))
+    assert daemon_pid == smoke["daemon_pid"]
+    assert not pid_alive(smoke["host_pid"])
+    assert not pid_alive(smoke["daemon_pid"])
+
+
+@pytest.mark.parametrize("entrypoint", ["host", "daemon"])
+def test_self_consistent_crashing_entrypoint_still_fails_and_reaps_owned_children(
+    tmp_path, monkeypatch, entrypoint
+):
+    from tianshu.leases import pid_alive
+
+    verify = _load(VERIFY_SCRIPT, f"verify_release_runtime_crash_{entrypoint}")
+    bundle, artifact_dir, _artifact, daemon_pid_file = _runtime_fixture(
+        tmp_path, monkeypatch, verify, broken_entrypoint=entrypoint
+    )
+
+    with pytest.raises(verify.VerifyError, match="启动烟测失败"):
+        verify.verify_release(
+            artifact_dir=artifact_dir,
+            bundle_dir=bundle,
+            target=TARGET,
+            version="0.1.0",
+            commit=COMMIT,
+            run_smoke=True,
+        )
+
+    if daemon_pid_file.exists():
+        assert not pid_alive(int(daemon_pid_file.read_text(encoding="ascii")))
+
+
+def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatch):
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_cwd_shadow")
+    bundle, artifact_dir, _artifact, _daemon_pid_file = _runtime_fixture(
+        tmp_path, monkeypatch, verify
+    )
+    caller = tmp_path / "caller"
+    shadow = caller / "tianshu"
+    shadow.mkdir(parents=True)
+    marker = caller / "shadow-executed"
+    (shadow / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+    (shadow / "__main__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('shadow', encoding='ascii')\n"
+        "raise SystemExit(23)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(caller)
+
+    result = verify.verify_release(
+        artifact_dir=artifact_dir,
+        bundle_dir=bundle,
+        target=TARGET,
+        version="0.1.0",
+        commit=COMMIT,
+        run_smoke=True,
+    )
+
+    assert result["runtime_smoke"]["status"] == "pass"
+    assert not marker.exists()
+
+
+def test_windows_bundle_rejects_wrong_pe_architecture(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_arch")
+    bundle = _windows_bundle(tmp_path)
+    verify._verify_windows_bundle(bundle, "windows-x64")
+    (bundle / "python" / "python.exe").write_bytes(_pe(0xAA64))
+    _write_manifest(bundle)
+
+    with pytest.raises(verify.VerifyError, match="PE 架构"):
+        verify._verify_windows_bundle(bundle, "windows-x64")
+
+
+def test_synthetic_pe_without_nsis_payload_is_rejected_before_extraction(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_synthetic")
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C))
+
+    def extractor(_artifact: Path, _destination: Path) -> None:
+        raise AssertionError("没有 NSIS 标识时不得调用解包器")
+
+    with pytest.raises(verify.VerifyError, match="NSIS"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=_windows_bundle(tmp_path),
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_nsis_payload_must_have_unique_exact_resource_root(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        extra = destination / "nested"
+        extra.mkdir()
+        (extra / "release.json").write_bytes((bundle / "release.json").read_bytes())
+
+    with pytest.raises(verify.VerifyError, match="唯一 release.json"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_nsis_payload_rejects_marker_without_resources(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_empty_payload")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        (destination / "$PLUGINSDIR").mkdir()
+        (destination / "$PLUGINSDIR" / "plugin.dll").write_bytes(b"not a payload")
+
+    with pytest.raises(verify.VerifyError, match="唯一 release.json"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_nsis_payload_accepts_exact_nested_resource_root(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload_positive")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        payload = destination / "$PLUGINSDIR" / "app"
+        shutil.copytree(bundle, payload)
+        (destination / "$PLUGINSDIR" / "installer.dll").write_bytes(b"installer")
+
+    verify._verify_windows_artifact(
+        artifact=installer,
+        bundle_dir=bundle,
+        target="windows-x64",
+        extractor=extractor,
+    )
+
+
+def test_windows_nsis_extracted_tree_rejects_casefold_duplicates(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_casefold")
+
+    with pytest.raises(verify.VerifyError, match="大小写重复"):
+        verify._validate_casefold_paths(
+            ["python/bin/tool", "python/bin/Tool"],
+            "NSIS 解包结果",
+        )
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "expected"),
+    [
+        ("Darwin", "arm64", "macos-arm64"),
+        ("Darwin", "x86_64", "macos-x64"),
+        ("Windows", "AMD64", "windows-x64"),
+        ("Windows", "aarch64", "windows-arm64"),
+        ("Linux", "x86_64", None),
+        ("Windows", "i386", None),
+    ],
+)
+def test_host_target_accepts_only_declared_platform_architectures(
+    monkeypatch,
+    system,
+    machine,
+    expected,
+):
+    verify = _load(
+        VERIFY_SCRIPT,
+        f"verify_release_host_target_{system}_{machine}".lower(),
+    )
+    monkeypatch.setattr(platform, "system", lambda: system)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+
+    assert verify.host_target() == expected
+
+
+def test_windows_nsis_payload_rejects_root_sitecustomize(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_sitecustomize")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        (destination / "sitecustomize.py").write_text(
+            "raise SystemExit(91)\n", encoding="utf-8"
+        )
+
+    with pytest.raises(verify.VerifyError, match="未列文件"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
