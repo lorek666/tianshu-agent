@@ -27,6 +27,24 @@ def _run_smoke():
     )
 
 
+def test_runtime_python_prefers_existing_base_executable(monkeypatch, tmp_path):
+    base_executable = tmp_path / "base-python"
+    base_executable.write_bytes(b"")
+    monkeypatch.setattr(release_smoke.sys, "_base_executable", str(base_executable))
+
+    assert release_smoke._runtime_python_executable() == str(base_executable)
+
+
+def test_runtime_python_falls_back_when_base_executable_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        release_smoke.sys,
+        "_base_executable",
+        str(tmp_path / "missing-python"),
+    )
+
+    assert release_smoke._runtime_python_executable() == release_smoke.sys.executable
+
+
 @pytest.mark.skipif(
     HOST_TARGET is None,
     reason="打包 sidecar 运行时只支持 macOS/Windows 原生目标",

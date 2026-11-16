@@ -279,6 +279,79 @@ def test_short_content_length_eof_is_never_accepted(
     assert "Content-Length" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(
+            lambda: OSError(10060, "Windows socket operation timed out"),
+            id="windows-oserror",
+        ),
+        pytest.param(lambda: net_mod.ssl.SSLError("deadline shutdown"), id="ssl"),
+        pytest.param(
+            lambda: net_mod.http.client.IncompleteRead(b""),
+            id="http-incomplete",
+        ),
+    ],
+)
+def test_deadline_timer_shutdown_failures_are_classified_as_timeout(
+    monkeypatch, failure
+) -> None:
+    """Platform-specific shutdown errors still mean the absolute deadline fired."""
+
+    class ManualTimer:
+        current = None
+
+        def __init__(self, _interval, function):
+            self.function = function
+            self.daemon = False
+            type(self).current = self
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+        def join(self):
+            pass
+
+    class TimedResponse:
+        status = 200
+        length = None
+
+        def getheader(self, _name, default=""):
+            return default
+
+        def read(self, _amount):
+            assert ManualTimer.current is not None
+            ManualTimer.current.function()
+            raise failure()
+
+    class TimedConnection:
+        sock = None
+
+        def connect(self) -> None:
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> TimedResponse:
+            return TimedResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(net_mod.threading, "Timer", ManualTimer)
+    monkeypatch.setattr(net_mod, "_connect", lambda *_args: TimedConnection())
+    target = canonical_target("network://http/example.invalid/x")
+
+    with pytest.raises(NetError) as excinfo:
+        fetch(target, limits=NetLimits(connect_attempts=1, min_interval_s=0))
+
+    assert excinfo.value.reason == "net.timeout"
+
+
 def test_retry_respects_cancel(tmp_path) -> None:
     """首次连接失败后 Run 被取消 → NetCancelled，第二次尝试不发生。"""
     port, sock = closed_port()

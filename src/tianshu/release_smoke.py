@@ -41,6 +41,21 @@ class ReleaseSmokeError(RuntimeError):
     """Bundled entry points failed at runtime."""
 
 
+def _runtime_python_executable() -> str:
+    """Return the interpreter process that should own Host/Daemon children.
+
+    uv-created Windows venvs expose a launcher as ``sys.executable`` while the
+    interpreter that runs Python has a different PID.  Using the real base
+    executable keeps Popen's PID bound to the process that publishes
+    ``daemon.lock``.  Standalone runtimes normally report the same path in both
+    attributes, so this also remains the direct bundled interpreter there.
+    """
+    base_executable = getattr(sys, "_base_executable", None)
+    if isinstance(base_executable, str) and Path(base_executable).is_file():
+        return base_executable
+    return sys.executable
+
+
 def _request_json(
     port: int,
     method: str,
@@ -367,6 +382,7 @@ def run_smoke(
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["PYTHONUTF8"] = "1"
+    runtime_python = _runtime_python_executable()
 
     daemon_process: subprocess.Popen[bytes] | None = None
     daemon_identity: dict[str, Any] | None = None
@@ -383,7 +399,7 @@ def run_smoke(
             try:
                 daemon_process = subprocess.Popen(
                     [
-                        sys.executable,
+                        runtime_python,
                         "-P",
                         "-m",
                         "tianshu",
@@ -401,7 +417,7 @@ def run_smoke(
 
                 host_process = subprocess.Popen(
                     [
-                        sys.executable,
+                        runtime_python,
                         "-P",
                         "-m",
                         "tianshu",
