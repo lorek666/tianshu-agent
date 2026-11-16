@@ -265,7 +265,9 @@ def release_artifact(
         _write_macos_archive(bundled, destination)
     else:
         shutil.copyfile(bundled, destination)
-    checksum.write_text(f"{_sha256(destination)}  {destination.name}\n", encoding="ascii")
+    checksum.write_bytes(
+        f"{_sha256(destination)}  {destination.name}\n".encode("ascii")
+    )
     shutil.copyfile(source_manifest, manifest_output)
     return destination
 
