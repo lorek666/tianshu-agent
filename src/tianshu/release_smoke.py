@@ -256,21 +256,27 @@ def _cleanup(
     host_endpoint: dict[str, Any] | None,
 ) -> bool:
     clean = True
-    if host_process is not None and host_process.poll() is None:
-        endpoint = host_endpoint or _endpoint_for_owned_host(host_process, data_root)
-        if endpoint is not None:
-            try:
-                _request_json(
-                    endpoint["port"],
-                    "POST",
-                    "/shutdown",
-                    token=endpoint["token"],
-                )
-            except ReleaseSmokeError:
+    if host_process is not None:
+        if host_process.poll() is None:
+            endpoint = host_endpoint or _endpoint_for_owned_host(host_process, data_root)
+            if endpoint is not None:
+                try:
+                    _request_json(
+                        endpoint["port"],
+                        "POST",
+                        "/shutdown",
+                        token=endpoint["token"],
+                    )
+                except ReleaseSmokeError:
+                    clean = False
+            if not _wait_process(host_process, SHUTDOWN_TIMEOUT_S):
                 clean = False
-        if not _wait_process(host_process, SHUTDOWN_TIMEOUT_S):
+                _terminate_owned(host_process)
+        # A Host that already exited, or exited while waiting for shutdown,
+        # must still prove a successful status. `None` means exit is not proven
+        # and is also not clean.
+        if host_process.returncode != 0:
             clean = False
-            _terminate_owned(host_process)
 
     if daemon_process is not None:
         if daemon_process.poll() is None:

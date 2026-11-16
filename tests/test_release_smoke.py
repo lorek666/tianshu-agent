@@ -212,6 +212,88 @@ def test_cleanup_rejects_owned_daemon_that_already_exited_nonzero(tmp_path):
     assert clean is False
 
 
+def test_cleanup_rejects_owned_host_that_already_exited_nonzero(tmp_path):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "raise SystemExit(7)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait()
+
+    clean = release_smoke._cleanup(
+        data_root=tmp_path,
+        daemon_process=None,
+        daemon_identity=None,
+        host_process=process,
+        host_endpoint=None,
+    )
+
+    assert clean is False
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_clean"),
+    [
+        (0, True),
+        (7, False),
+    ],
+)
+def test_cleanup_requires_owned_host_to_exit_zero(
+    tmp_path,
+    monkeypatch,
+    returncode,
+    expected_clean,
+):
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('ready', flush=True); "
+                "sys.stdin.buffer.read(1); "
+                "raise SystemExit(int(sys.argv[1]))"
+            ),
+            str(returncode),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline() == b"ready\n"
+    process.stdout.close()
+
+    def request_json(*_args, **_kwargs):
+        assert process.stdin is not None
+        process.stdin.write(b"x")
+        process.stdin.flush()
+        process.stdin.close()
+        return {"ok": True, "shutting_down": True}
+
+    monkeypatch.setattr(release_smoke, "_request_json", request_json)
+    try:
+        clean = release_smoke._cleanup(
+            data_root=tmp_path,
+            daemon_process=None,
+            daemon_identity=None,
+            host_process=process,
+            host_endpoint={
+                "pid": process.pid,
+                "port": 43210,
+                "token": "host_token_0123456789abcdef",
+                "started_at": 1,
+            },
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert clean is expected_clean
+
+
 def test_host_probe_rejects_missing_and_wrong_tokens(monkeypatch):
     pid = 4242
     good = "good_token_0123456789abcdef"
