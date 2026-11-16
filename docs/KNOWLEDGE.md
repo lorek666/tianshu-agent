@@ -18,7 +18,7 @@
 ## 1. 项目是什么
 
 - **目标**：面向普通用户的桌面 Agent OS——模型自选、在用户指定目录读写、完成长任务；把「AI 可能失控」当一等工程问题。
-- **当前形态**：**M0–M5 已完成**。M0–M4 是命令行内核；M5 交付三进程桌面闭环（Daemon + Host + 浏览器里的 React UI），但**外壳是系统浏览器**，没有 Tauri/WebView2、托盘、安装包与签名（偏差见 [M5-desktop.md](M5-desktop.md) §2）。**别把它当成可双击安装的 App，也别把 README 的愿景当成已实现的能力。**
+- **当前形态**：**M0–M5 已完成，R1 Tauri 壳仍是未合入的源码候选**。M0–M4 是命令行内核；M5 历史基线交付 Daemon + Python Host + 系统浏览器里的 React UI。R1 分支新增未签名 Tauri/WebView2 薄壳、托盘、单实例与 Host 生命周期，但锁定 Python runtime、安装/升级/回退、签名和自动更新属于 R2/R3，尚未合入。**当前仍没有可双击安装并宣称四目标可用的成品 App，不能把源码候选当成正式发布。**
 - **核心承诺**：事件可重放、执行侧授权、覆盖/删除需审批、默认可撤销、崩溃可恢复。
 - **非目标（v1）**：图片/视频生成、多租户、防本机用户篡改（只防模型越权与失控 worker）。
 - **技术栈**：Python 3.12（`requires-python = ">=3.12,<3.13"`）、`uv`、**零第三方运行时依赖**（`dependencies = []`）；dev 依赖只有 `pytest>=8.0` 与 `ruff>=0.6`。UI 是 Vite + React + TS，但只有**开发/构建**时需要 Node，运行时加载已提交的 `ui/dist`。
@@ -28,7 +28,7 @@
 
 - **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
 
-- **R0 仍有复审硬门，R1 作者候选完成本机门禁与真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿、`CLEAN`，但当前 0 review / 0 comment，缺独立第二读者 PASS，因此未合并。R1 从该候选派生在隔离工作树暂存 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定；尚无正式 commit/PR。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。commit、精确 CI 与会话外独立复审仍待，不能把本机全量或 macOS GUI 绿当成已交付；Windows/Linux 用户设备验证仍未完成。
+- **R0 仍有复审硬门，R1 作者候选已提交并完成真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿、`CLEAN`，但当前 0 review / 0 comment，缺独立第二读者 PASS，因此未合并。R1 从该候选派生，PR [#174](https://github.com/lorek666/tianshu-agent/pull/174) 的原候选 `c409c37f2d456907ba33f53e686d2d301baadbb3` 已推送，包含 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。`c409c37` 的 run `43803289526` 首次原生 CI 中 Ubuntu、macOS（含 3529P/12S）、UI 与两个 Windows Python 分片通过，但 Windows Rust Clippy 把仅 macOS/Unix 使用的导入判为 unused；Windows required 汇总按设计拒绝，未发现第二个独立业务失败。作者已把菜单导入改为 macOS 条件导入、Unix 测试辅助导入改为 `cfg(unix)`，本地 Rust 39 tests 与 macOS Clippy 转绿；替换提交的精确 CI 结果以 PR 最新 check 为准。会话外独立复审仍是合并硬门，不能把本机全量、macOS GUI 或旧提交绿色当成已交付；Windows/Linux 用户设备验证仍未完成。
 
 - **W15 v1 只读保留期审计命令已交付分支 `feat/retention-audit`（2026-11-15，PR 待合）**：`tianshu data retention-audit --data-root` ——逐表行数/最老行年龄/状态直方图、增长投影（观测窗口 ≥1 天才外推，几毫秒跨度会外推出垃圾速率——测试实抓后修）、可清理候选测量（jobs 终态行、budget_reservations settled+known；终态判定只用 tasks/jobs/budget 权威常量在 Python 侧解释，不猜 dispatch 面语义）、cleanup_plan 现状。**零删除**：mode=ro 连接不加锁不阻断写入，测试钉住 events.db 字节哈希前后不变。SQL 全部单行字面量（标识符不进拼接，值一律参数绑定）；33 测试文件级 +4。实现过程记一笔：Mimosa hook 三次拦截动态 SQL（execute 变量/跨行拼接），按其建议改全静态结构后反而更符合封闭集纪律。三项拍板仍留实测数据。
 
@@ -411,6 +411,7 @@
 
 - **同一实例的退出请求也要防检查后替换（2026-11-16）**：真实 Daemon 探针证明旧实现会忽略额外 `expected_instance_id` 并把错误身份的 shutdown 当正常请求；仅比较调用前锁 SHA 不足以防止“SHA 检查 → RPC”之间的实例替换。复核维度必须放在同一 IPC 会话内，不能用两次连接拼接。
 - **用户级 restore gate 不适合由每个普通测试争用（2026-11-16）**：两个独立工作树并行跑全量时，固定用户级 gate 会让恢复/迁移 crashpoint 子进程把 `MaintenanceBusy` 当作 1 而非预期 77。`test_recovery.py` / `test_migration.py` 已在本用例临时锁根中运行并显式注入子进程；仍须为真正测全局锁语义的用例保留生产路径，不能全局替换锁根掩盖它。
+- **平台条件代码的导入也属于门禁（2026-11-16）**：macOS 菜单构建器与 Unix 测试辅助必须各自使用与其调用点一致的 `cfg`。本机 macOS Clippy 不能发现 Windows 侧 unused import；恰好由原生 Windows Rust job 以 `-D warnings` 抓住，修复方式是按目标裁剪导入，不用 `allow`。
 - **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
 - **读者不能用 `BEGIN IMMEDIATE` 冒充共享锁**：它会把两个普通连接串行化。registry observation 使用 shared namespace/entity + `BEGIN` 只读快照，写者使用外部 exclusive 锁；这样既保留并发，也让已接线 writer 立即互斥。
 - **Windows 没有可移植的目录 `fsync` 等价物**：`FlushFileBuffers` 对普通目录句柄不能当成无条件成功。目录发布另行使用 write-through rename，并把物理断电级 durability 保持 `NOT_RUN`。
@@ -647,15 +648,15 @@
 - 真超时：**已覆盖**（黑洞端点真等满 60s×3，`3m01.6s` 后 failed）。
 - **m4.5 真实模型复跑：未完成（外部阻塞）**。判据已按目标作用域化（#57）并通过 scripted 基线与确定性单测；但要产出两份真实报告需要可用模型中转站，当时该 key 的所有模型一律 `503 model_not_found / auto groups is not enabled`（`/v1/models` 为空，换域名/模型 id 相同）。文档写"未完成"，没有拿 scripted 冒充，也没有为了绿放松安全判据。
 
-**M5 桌面闭环未验证 / 已知限制（详见 [M5-desktop.md](M5-desktop.md) §10 与 [M5-verification.md](M5-verification.md)）**
+**桌面闭环的当前未验证项 / 已知限制（M5 历史边界见 [M5-desktop.md](M5-desktop.md) §2/§10 与 [M5-verification.md](M5-verification.md)）**
 
-- **未验证**：Windows 实机（只有 CI `windows-latest`；命名管道的杀软 / ACL / 长路径差异没覆盖）· 真实模型（无 API key，演示与验收用 `scripted` 模型，不代表真实模型能力）· Tauri/WebView2 外壳与托盘（M5 根本没做）· 同一毫秒的并发审批压测（只验证了先后顺序）。
+- **未验证**：Windows/Linux 桌面用户设备（R1 只有 Windows Rust CI，不能替代 WebView2、命名管道、杀软/ACL、长路径用户环境实测）· macOS x64 与 Windows ARM64 · 真实模型驱动 UI（演示与验收仍用 `scripted` 模型）· R1 安装/升级/回退、签名、公证与自动更新 · 同一毫秒的并发审批压测（只验证了先后顺序）。macOS arm64 的 R1 Tauri debug App + 真实 Host/Daemon/WebView 生命周期已实测，但它不是安装产物，也不是正式发布验收。
 - **Daemon 生命周期不写事件日志**：`shutdown(reason)` 只进 `logs/daemon.log`。C3 是封闭集合且每条事件挂 `run_id`，新增 `daemon.*` 族是契约变更，代价大于收益。
 - **陈旧锁判定有 2 秒宽限窗**：第一个 Daemon 在「拿到锁 → bind」之间超过 2s（超大库恢复扫描）时，第二个实例理论上可能误判陈旧并接管。跨平台读取进程启动时间没有 stdlib 方案，属单独工单。
 - **推送在主循环里同步发送**：一个不读数据的订阅者理论上能拖慢 RPC 响应；M5 用"本地 socket + 每批 256 条"把风险压在可接受范围，没做独立发送线程 + 非阻塞写。**2026-11-14 对账**：本条已被 PR #81 取代——独立发送线程与有界队列已交付（`daemon.py` `SEND_QUEUE_MAX=1024`；慢订阅者/队列溢出/重连负控 `tests/test_slow_subscriber.py`），与本文 §2/§5/§7 其他提及处一致。
 - **驱动线程卡死 >5 秒时刻意不跨线程关连接**：关闭正被别的线程使用的 SQLite 连接只会得到没人看得到的 `ProgrammingError`，还可能截断写入；保留连接交给进程退出回收（测试钉住"shutdown 仍返回、锁已释放、没有 ProgrammingError"）。
 - **`approvals.decide` 的 `reason` 被忽略**：审批记录没有自由文本字段，要存就得改 `schemas/m2/approval.json`（契约变更）；当前只用于 UI 展示。
-- **不是可双击安装的 App**：无外壳、托盘、开机自启、安装包、签名、公证、自动更新（M5-D1/D2/D5）。
+- **R1 源码候选不是可安装 App**：已有未签名 Tauri 薄壳、托盘和单实例代码，尚未合入 main；锁定 Python runtime、开机自启、安装包、签名、公证、自动更新仍属于 R2/R3 或未实现范围。
 
 **平台**
 
@@ -699,6 +700,8 @@
 - **2026-11-16 · PR #162 五阻断续修与 R0 拆分**：从 main `e2422579` 建立独立 R0 工作树，只迁入 spec/schema/manifest/测试；原始 `7d121ad` 与失败复审保留。三项产品修复在原分支分别实施，之后依次从已合 main 派生 R1/R2，PR #162 最终仅交 R3；每片新门禁与独立复审均需重绑，未提前宣称修复或发布通过。
 
 - **2026-11-16 · R1 Daemon 探活日志洪泛修复与真实 GUI 生命周期**：真实 arm64 Tauri debug App + 真实 Host/Daemon/WebView 运行 51 秒时保全 717 条 `Broken pipe` 握手失败日志；根因是 Host 0.5 秒 `probe()` 与 accept 循环逐条 `_log` 叠加，不属于正常排障噪声。先在旧实现上加入真实 Daemon 子进程回归并实测红，再最小改为连续失败第 1/2/4/8/… 次采样、累计次数入日志、认证成功清零；`tests/test_daemon.py` 27 passed，最终全量为 `3529 passed / 12 skipped / exit 0`（664.48s）。修正 GUI 探针：窗口存在性/隐蔽性改用 CoreGraphics，关窗和退出改用 AXCloseButton/AXMenuItem 的真实 AXAction；最终冷启动三项 HTTP 200 且 UI 显示已连接，关窗后三进程与锁保持，重开复用同一 PID/端口，菜单退出后三进程、Host/Daemon 锁与 socket 消失，guard/key 按契约保留。修复后实跑日志仅 896B/6 条采样记录；该结果只覆盖 macOS arm64 本机真实 WebView，Windows/Linux GUI 与用户设备仍未验证。
+
+- **2026-11-16 · R1 首次原生 CI 的 Windows 条件编译门禁红与最小修复**：PR #174 的 `c409c37` 在 run `43803289526` 中由 Ubuntu、macOS、UI 和两个 Windows Python 分片取得成功；macOS Python 为 3529 passed / 12 skipped，Windows 两分片分别耗时 15m22s / 17m24s，汇总核对 3541 个收集节点。唯一原始失败是 Windows Rust Clippy：macOS 菜单 `MenuBuilder`/`SubmenuBuilder` 与 Unix 测试辅助在 Windows 下 unused，`-D warnings` 按预期使 job 红；required Windows 汇总随后因 `needs.desktop_windows.result=failure` 拒绝，不是第二个独立缺陷。修复只给对应导入加目标条件，不在坏实现上添加 `allow`；本机 `cargo test --locked` 39 passed、macOS `cargo clippy --locked --all-targets -- -D warnings` 与 `cargo fmt --check` 通过。交叉 Clippy 探针缺 macOS 上的 MinGW windres，不能充当 Windows 结论；最终权威结果必须取替换提交的 GitHub Windows runner。
 
 - **2026-11-15 · W15 v1 只读保留期审计命令（`feat/retention-audit`，基线 main@1a8aebb）**：按维护者委托「先测量后拍板」落地 CONTRACT-W15 §3.3 的 v1——`data_cli.py` 新增 `retention-audit` 子命令（+508 行含测试）：逐表面 `COUNT+MIN/MAX`（23 表全字面量 SQL 分派）、8 个状态面直方图、增长投影（basics 复用，窗口 ≥1 天才外推）、候选测量（jobs/budget_reservations/runs 三个低风险面，终态判定全在 Python 侧用 `TERMINAL_JOB_STATES`/`NON_TERMINAL_STATES`/`SETTLED` 权威常量算，不对 dispatch 面猜语义）、`cleanup_plan(data_root)` 现状直连。**零删除不变量**：`mode=ro` URI 连接（SQLite 连接层拒写）+ 测试钉 events.db SHA256 前后不变；不加维护锁不阻断写入（点读快照如实写进 notes）。测试 4 条新增（拒绝路径+计数/只读哈希/投影数学+未知表/候选常量一致性），`test_data_cli.py` 31 passed。**过程记录**：(a) 每表 SQL 无法参数化标识符，初版 f-string 拼接被 Mimosa hook 判「SQL 注入」拦截三次——按其建议改全静态字面量分派后，注入面反而归零（表名封闭集 + 字面量 + 值绑定）；(b) 夹具上 2ms 事件跨度外推出 86,400,000 行/天的垃圾速率，测试实抓 → 修为观测窗口 ≥1 天才外推；(c) 大段 Edit/Write 内容连续发生拼写损坏 6 次（占位符垃圾/键位突变），全部靠「每段落盘立即 py_compile+AST 校验」抓回——**长代码块一律 ≤25 行分段 + 逐段验证**。CI 环境：#168 attempt1 与 #141 attempt1 的 Windows shard1 先后红在 `test_round2_inputs_net.py::test_network_deadline_interrupts_slow_progress_before_peer_finishes`（`[headers]`/`[body]` 两个参数、同签名 `'net.read' != 'net.timeout'`，WinError 10053 连接被宿主中止）——两树产品代码与绿 main 零 delta，初步定性 runner 负载敏感，**按 #163 先例不以 timing flake 结案**；另 #168 attempt2 用 `--failed` 部分重跑被汇总 job 的分片校验按设计拒绝（missing/extra shard artifacts，attempt 内必须成套）——**部分重跑不能出可验证绿，须整跑重跑**（#168 attempt3 整跑全绿后合并 1a8aebb）。三项拍板继续留实测数据。
 

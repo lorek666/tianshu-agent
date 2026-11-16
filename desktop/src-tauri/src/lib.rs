@@ -10,7 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
-use tauri::menu::{Menu, MenuBuilder, MenuItem, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItem};
+#[cfg(target_os = "macos")]
+use tauri::menu::{MenuBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
 
@@ -900,10 +902,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::io::{Read, Write};
+    #[cfg(unix)]
     use std::net::TcpListener;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
+    #[cfg(unix)]
     use std::thread;
     use std::time::{Duration, Instant};
 
