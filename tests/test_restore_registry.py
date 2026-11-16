@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -227,6 +228,32 @@ def test_append_reports_commit_without_reobserving_after_unlock(tmp_path, monkey
     finally:
         again_gate.close()
     assert again == after
+
+
+def test_append_rejects_observation_meta_inconsistent_with_its_bytes(tmp_path):
+    """返回观察复用 expected.meta，因此必须核对 meta 与自身 meta_bytes 一致。
+
+    手工构造的 observation（同 registry_id、同 meta_bytes，但 meta 值不同）
+    不能借 append 的成功返回把伪造 meta 带出去。
+    """
+    registry = _registry(tmp_path)
+    before = registry.initialize(registry_id=UUID)
+    identity = before.meta.home.identity
+    if identity.os == "posix":
+        forged_identity = replace(identity, device=identity.device + 1)
+    else:
+        forged_identity = replace(identity, file_id_hex="0" * len(identity.file_id_hex))
+    forged_meta = replace(before.meta, home=replace(before.meta.home, identity=forged_identity))
+    forged = replace(before, meta=forged_meta)
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        with pytest.raises(RestoreRegistryBusy, match="meta与观察字节不符"):
+            registry.append_event(
+                samples(tmp_path)["e1"], expected=forged, operation_access=gate
+            )
+    finally:
+        gate.close()
+    assert registry.observe() == before
 
 
 def test_partial_authority_is_closed_not_reinitialized(tmp_path):
