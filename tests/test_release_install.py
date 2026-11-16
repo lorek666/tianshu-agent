@@ -499,6 +499,155 @@ def test_uninstall_purge_rejects_system_and_public_directory_roots(tmp_path):
         assert result.returncode == 2, (data_root, result.stderr)
         assert "不安全的数据根" in result.stderr
 
+    empty = _run(
+        UNINSTALL,
+        "--prefix",
+        install_prefix,
+        "--data-root",
+        "",
+        "--purge-data",
+        "--confirm-data-root",
+        "",
+        env=env,
+    )
+    assert empty.returncode == 2
+    assert "不安全的数据根" in empty.stderr
+    assert not rm_log.exists()
+
+
+def test_uninstall_purge_rejects_case_equivalent_filesystem_roots(tmp_path):
+    """Canonical safety checks must follow the filesystem, not just spelling.
+
+    The default macOS system volume and APFS data volumes are commonly
+    case-insensitive, so paths such as ``/applications`` resolve to the same
+    protected inode as ``/Applications``. A lexical prefix check is therefore
+    insufficient even though both paths are absolute and symlink-resolved.
+    """
+    probe = tmp_path / "probe"
+    home = probe / "home"
+    install_prefix = probe / "Applications"
+    fake_bin = probe / "bin"
+    for directory in (
+        home / "Applications",
+        home / "Desktop",
+        home / "Documents",
+        home / "Library",
+        fake_bin,
+        install_prefix,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    rm_log = probe / "rm.log"
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$RELEASE_RM_LOG"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["RELEASE_RM_LOG"] = str(rm_log)
+
+    exact_aliases = [
+        (Path("/applications"), Path("/Applications")),
+        (Path("/library"), Path("/Library")),
+        (Path("/SYSTEM"), Path("/System")),
+        (Path("/users/shared"), Path("/Users/Shared")),
+        (Path("/PRIVATE"), Path("/private")),
+        (Path("/PRIVATE/TMP"), Path("/private/tmp")),
+        (Path("/VOLUMES"), Path("/Volumes")),
+        (Path("/USERS"), Path("/Users")),
+        (home / "documents", home / "Documents"),
+        (home / "desktop", home / "Desktop"),
+    ]
+    cases = [
+        case
+        for case, canonical in exact_aliases
+        if case.exists() and canonical.exists() and os.path.samefile(case, canonical)
+    ]
+    descendant_aliases = [
+        (Path("/applications/AgentOS-probe"), Path("/Applications")),
+        (Path("/library/AgentOS-probe"), Path("/Library")),
+        (Path("/SYSTEM/Library/AgentOS-probe"), Path("/System")),
+        (Path("/users/shared/AgentOS-probe"), Path("/Users/Shared")),
+        (Path("/PRIVATE/etc/AgentOS-probe"), Path("/private/etc")),
+        (home / "documents" / "AgentOS-probe", home / "Documents"),
+        (home / "desktop" / "AgentOS-probe", home / "Desktop"),
+    ]
+    for case, canonical_parent in descendant_aliases:
+        alias_parent = case.parent
+        if (
+            alias_parent.exists()
+            and canonical_parent.exists()
+            and os.path.samefile(alias_parent, canonical_parent)
+        ):
+            cases.append(case)
+    assert cases, "the test volume must expose at least one case-insensitive protected root"
+
+    for data_root in cases:
+        result = _run(
+            UNINSTALL,
+            "--prefix",
+            install_prefix,
+            "--data-root",
+            data_root,
+            "--purge-data",
+            "--confirm-data-root",
+            data_root,
+            env=env,
+        )
+        assert result.returncode == 2, (data_root, result.stdout, result.stderr)
+        assert (
+            "不安全的数据根" in result.stderr
+            or "程序目录位于数据根内" in result.stderr
+        )
+
+    assert not rm_log.exists()
+
+
+def test_uninstall_rejects_case_equivalent_overlapping_roots(tmp_path):
+    prefix = tmp_path / "Applications"
+    data_root = tmp_path / "applications" / "AgentOS"
+    data_root.mkdir(parents=True)
+    marker = data_root / "keep"
+    marker.write_bytes(b"data")
+    if not os.path.samefile(prefix, data_root.parent):
+        pytest.skip("test volume is case-sensitive; no filesystem alias can be formed")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    rm_log = tmp_path / "rm.log"
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$RELEASE_RM_LOG"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "home")
+    (tmp_path / "home").mkdir()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["RELEASE_RM_LOG"] = str(rm_log)
+
+    result = _run(
+        UNINSTALL,
+        "--prefix",
+        prefix,
+        "--data-root",
+        data_root,
+        "--purge-data",
+        "--confirm-data-root",
+        data_root,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert "数据根位于程序目录内" in result.stderr
+    assert marker.read_bytes() == b"data"
     assert not rm_log.exists()
 
 

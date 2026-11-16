@@ -33,18 +33,65 @@ done
 
 canonicalize_path() {
   path=$1
-  if [ -e "$path" ] || [ -L "$path" ]; then
-    (cd "$path" && pwd -P)
+  if [ -z "$path" ]; then
+    printf '\n'
     return
   fi
-  parent=$(dirname "$path")
-  base=$(basename "$path")
-  if [ ! -d "$parent" ]; then
-    printf '%s/%s\n' "$parent" "$base"
-    return
+  suffix=
+  while [ ! -e "$path" ] && [ ! -L "$path" ] && [ "$path" != "/" ]; do
+    suffix="/$(basename "$path")${suffix}"
+    path=$(dirname "$path")
+  done
+  if [ -d "$path" ]; then
+    resolved=$(cd "$path" && pwd -P)
+  else
+    resolved=$path
   fi
-  parent=$(cd "$parent" && pwd -P)
-  printf '%s/%s\n' "$parent" "$base"
+  if [ "$resolved" = "/" ]; then
+    if [ -n "$suffix" ]; then
+      printf '/%s\n' "${suffix#/}"
+    else
+      printf '/\n'
+    fi
+  else
+    printf '%s%s\n' "$resolved" "$suffix"
+  fi
+}
+
+path_identity() {
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    return 1
+  fi
+  /usr/bin/stat -f '%d:%i' "$1" 2>/dev/null
+}
+
+same_path_object() {
+  candidate_identity=$(path_identity "$1") || return 1
+  protected_identity=$(path_identity "$2") || return 1
+  [ "$candidate_identity" = "$protected_identity" ]
+}
+
+path_is_same_or_descendant() {
+  candidate=$1
+  protected=$2
+  protected_identity=$(path_identity "$protected") || return 1
+  current=$candidate
+  while :; do
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      current_identity=$(path_identity "$current") || return 1
+      if [ "$current_identity" = "$protected_identity" ]; then
+        return 0
+      fi
+    fi
+    if [ "$current" = "/" ]; then
+      return 1
+    fi
+    parent=$(dirname "$current")
+    if [ "$parent" = "$current" ]; then
+      return 1
+    fi
+    current=$parent
+  done
 }
 
 remove_tree() {
@@ -67,45 +114,36 @@ remove_tree() {
 prefix=$(canonicalize_path "$prefix")
 data_root=$(canonicalize_path "$data_root")
 home_root=$(cd "$HOME" && pwd -P)
-case "$prefix/" in "$data_root/"*)
+if path_is_same_or_descendant "$prefix" "$data_root"; then
   echo "拒绝卸载：程序目录位于数据根内" >&2
   exit 2
-  ;;
-esac
-case "$data_root/" in "$prefix/"*)
+fi
+if path_is_same_or_descendant "$data_root" "$prefix"; then
   echo "拒绝卸载：数据根位于程序目录内" >&2
   exit 2
-  ;;
-esac
+fi
 
 if [ "$purge_data" -eq 1 ]; then
   reject_unsafe_root() {
     echo "拒绝清空不安全的数据根：$data_root" >&2
     exit 2
   }
-  same_or_descendant() {
-    candidate=$1
-    protected=$2
-    case "$candidate/" in
-      "$protected/"*) return 0 ;;
-      *) return 1 ;;
-    esac
-  }
-  same_or_ancestor() {
-    candidate=$1
-    protected=$2
-    case "$protected/" in
-      "$candidate/"*) return 0 ;;
-      *) return 1 ;;
-    esac
-  }
-
-  case "$data_root" in
-    ""|"/"|"/Users"|"/Volumes"|"/private"|"/tmp"|"/private/tmp")
+  if [ -z "$data_root" ]; then
+    reject_unsafe_root
+  fi
+  for unsafe_path in \
+    "/" \
+    "/Users" \
+    "/Volumes" \
+    "/private" \
+    "/tmp" \
+    "/private/tmp"
+  do
+    if same_path_object "$data_root" "$unsafe_path"; then
       reject_unsafe_root
-      ;;
-  esac
-  if same_or_ancestor "$data_root" "$home_root"; then
+    fi
+  done
+  if path_is_same_or_descendant "$home_root" "$data_root"; then
     reject_unsafe_root
   fi
   for protected_root in \
@@ -115,7 +153,7 @@ if [ "$purge_data" -eq 1 ]; then
     "/Users/Shared" \
     "/private/etc"
   do
-    if same_or_descendant "$data_root" "$protected_root"; then
+    if path_is_same_or_descendant "$data_root" "$protected_root"; then
       reject_unsafe_root
     fi
   done
@@ -129,7 +167,7 @@ if [ "$purge_data" -eq 1 ]; then
     "$home_root/Pictures" \
     "$home_root/Public"
   do
-    if same_or_descendant "$data_root" "$protected_root"; then
+    if path_is_same_or_descendant "$data_root" "$protected_root"; then
       reject_unsafe_root
     fi
   done
@@ -138,7 +176,7 @@ if [ "$purge_data" -eq 1 ]; then
     "$home_root/Library" \
     "$home_root/Library/Application Support"
   do
-    if [ "$data_root" = "$protected_root" ]; then
+    if same_path_object "$data_root" "$protected_root"; then
       reject_unsafe_root
     fi
   done
