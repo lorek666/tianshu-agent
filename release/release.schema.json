@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lorek666/tianshu-agent/release/release.schema.json",
+  "title": "Tianshu Agent release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "product",
+    "version",
+    "commit",
+    "target",
+    "python",
+    "python_build_release",
+    "ui_dist_sha256",
+    "files"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "product": {
+      "const": "tianshu-agent"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^0\\.[0-9]+\\.[0-9]+$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "macos-arm64",
+        "macos-x64",
+        "windows-x64",
+        "windows-arm64"
+      ]
+    },
+    "python": {
+      "type": "string",
+      "pattern": "^3\\.12\\.[0-9]+$"
+    },
+    "python_build_release": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ui_dist_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    }
+  }
+}
