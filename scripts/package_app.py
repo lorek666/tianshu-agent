@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -22,6 +24,51 @@ TARGET_TRIPLE = {
 
 class PackageError(RuntimeError):
     """Tauri 发行壳未按声明构建。"""
+
+
+def _lstat(path: Path, label: str) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PackageError(f"{label} 无法检查：{exc}") from exc
+
+
+def _require_regular_file(path: Path, label: str) -> None:
+    metadata = _lstat(path, label)
+    if metadata is None:
+        raise PackageError(f"{label} 不存在：{path}")
+    if stat.S_ISLNK(metadata.st_mode):
+        raise PackageError(f"{label} 不能是符号链接：{path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PackageError(f"{label} 必须是普通文件：{path}")
+
+
+def _prepare_output_directory(path: Path) -> Path:
+    requested = Path(path).expanduser()
+    metadata = _lstat(requested, "发行输出目录")
+    if metadata is not None:
+        if stat.S_ISLNK(metadata.st_mode):
+            raise PackageError(f"发行输出目录不能是符号链接：{requested}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PackageError(f"发行输出目录必须是普通目录：{requested}")
+    requested.mkdir(parents=True, exist_ok=True)
+    metadata = _lstat(requested, "发行输出目录")
+    assert metadata is not None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise PackageError(f"发行输出目录必须是普通目录：{requested}")
+    return requested.resolve(strict=True)
+
+
+def _require_safe_output_path(path: Path) -> None:
+    metadata = _lstat(path, "发行输出路径")
+    if metadata is None:
+        return
+    if stat.S_ISLNK(metadata.st_mode):
+        raise PackageError(f"发行输出路径不能是符号链接：{path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PackageError(f"发行输出路径必须是普通文件：{path}")
 
 
 def resource_config(bundle_dir: Path) -> dict:
@@ -118,23 +165,36 @@ def release_artifact(
     version: str,
     target: str,
 ) -> Path:
-    if target.startswith("macos") and not bundled.is_dir():
-        raise PackageError(f"Tauri macOS 发行物不存在或不是目录：{bundled}")
-    if not target.startswith("macos") and not bundled.is_file():
-        raise PackageError(f"Tauri Windows 发行物不存在或不是文件：{bundled}")
-    if not bundled.exists():
+    if target not in TARGET_TRIPLE:
+        raise PackageError(f"未知 target：{target}")
+    if re.fullmatch(r"0\.[0-9]+\.[0-9]+", version) is None:
+        raise PackageError("version 必须匹配 0.x.y")
+    bundle_metadata = _lstat(Path(bundled), "Tauri 发行物")
+    if bundle_metadata is None:
         raise PackageError(f"Tauri 发行物不存在：{bundled}")
-    out_dir = Path(out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if stat.S_ISLNK(bundle_metadata.st_mode):
+        raise PackageError(f"Tauri 发行物不能是符号链接：{bundled}")
+    if target.startswith("macos") and not stat.S_ISDIR(bundle_metadata.st_mode):
+        raise PackageError(f"Tauri macOS 发行物不存在或不是目录：{bundled}")
+    if not target.startswith("macos") and not stat.S_ISREG(bundle_metadata.st_mode):
+        raise PackageError(f"Tauri Windows 发行物不存在或不是文件：{bundled}")
+    out_dir = _prepare_output_directory(Path(out_dir))
     if target.startswith("macos"):
         destination = out_dir / f"Tianshu-Agent-{version}-{target}.app.tar.gz"
-        _write_macos_archive(bundled, destination)
     else:
         destination = out_dir / f"Tianshu-Agent-{version}-{target}-setup.exe"
-        shutil.copyfile(bundled, destination)
     checksum = out_dir / f"Tianshu-Agent-{version}-{target}.sha256"
+    manifest_output = out_dir / "release-manifest.json"
+    source_manifest = Path(bundle_dir) / "release-manifest.json"
+    _require_regular_file(source_manifest, "bundle release-manifest.json")
+    for output in (destination, checksum, manifest_output):
+        _require_safe_output_path(output)
+    if target.startswith("macos"):
+        _write_macos_archive(bundled, destination)
+    else:
+        shutil.copyfile(bundled, destination)
     checksum.write_text(f"{_sha256(destination)}  {destination.name}\n", encoding="ascii")
-    shutil.copyfile(bundle_dir / "release-manifest.json", out_dir / "release-manifest.json")
+    shutil.copyfile(source_manifest, manifest_output)
     return destination
 
 

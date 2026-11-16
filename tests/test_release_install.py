@@ -34,6 +34,8 @@ def _archive(
     python_exit: int = 0,
     verifier_exit: int = 0,
     smoke_old_marker: Path | None = None,
+    smoke_args_file: Path | None = None,
+    manifest_fields: dict[str, object] | None = None,
 ) -> tuple[Path, Path]:
     base.mkdir(parents=True, exist_ok=True)
     app = base / "payload" / "Tianshu Agent.app"
@@ -51,12 +53,18 @@ def _archive(
         if smoke_old_marker is not None
         else ""
     )
+    smoke_capture = (
+        f"  printf '%s\\n' \"$@\" > {shlex.quote(str(smoke_args_file))}\n"
+        if smoke_args_file is not None
+        else ""
+    )
     python.write_text(
         "#!/bin/sh\n"
         'if [ "${1-}" = "-P" ] && '
         '[ "${2-}" = "-m" ] && '
         '[ "${3-}" = "tianshu.release_smoke" ]; then\n'
         f"{smoke_check}"
+        f"{smoke_capture}"
         f"  exit {python_exit}\n"
         "fi\n"
         f"exec {shlex.quote(sys.executable)} \"$@\"\n",
@@ -73,16 +81,27 @@ def _archive(
     )
     desktop.chmod(0o755)
     ui.write_text("<!doctype html>", encoding="utf-8")
+    identity = {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
+        "target": "macos-arm64",
+    }
+    manifest = {
+        **identity,
+        "python": "3.12.16",
+        "python_build_release": "20261110",
+        "ui_dist_sha256": "0" * 64,
+        "files": {"ui/dist/index.html": "0" * 64},
+        **(manifest_fields or {}),
+    }
     (resources / "release.json").write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "product": "tianshu-agent",
-                "version": "0.1.0",
-                "commit": "595be35c037cef35da7f166a5db2a624f2b733a9",
-                "target": "macos-arm64",
-            }
-        ),
+        json.dumps(identity),
+        encoding="utf-8",
+    )
+    (resources / "release-manifest.json").write_text(
+        json.dumps(manifest),
         encoding="utf-8",
     )
     archive = base / "Tianshu-Agent-0.1.0-macos-arm64.tar.gz"
@@ -181,6 +200,65 @@ def test_install_rejects_checksum_bound_to_another_archive_name(tmp_path):
 
     assert result.returncode == 2
     assert "SHA256 文件名不匹配" in result.stderr
+    assert not (prefix / "Tianshu Agent.app").exists()
+
+
+def test_install_runtime_smoke_receives_complete_release_identity(tmp_path):
+    smoke_args_file = tmp_path / "smoke-args.txt"
+    archive, checksum = _archive(tmp_path, smoke_args_file=smoke_args_file)
+    prefix = tmp_path / "Applications"
+
+    result = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = smoke_args_file.read_text(encoding="utf-8").splitlines()
+    assert arguments[:3] == ["-P", "-m", "tianshu.release_smoke"]
+    assert arguments[3:4] == ["--ui-dir"]
+    assert arguments[4].startswith(
+        str(prefix / "Tianshu Agent.app.previous-")
+    )
+    assert arguments[4].endswith(
+        "/Tianshu Agent.app/Contents/Resources/ui/dist"
+    )
+    assert arguments[5:] == [
+        "--expected-version",
+        "0.1.0",
+        "--expected-commit",
+        "595be35c037cef35da7f166a5db2a624f2b733a9",
+        "--expected-target",
+        "macos-arm64",
+        "--expected-python",
+        "3.12.16",
+    ]
+
+
+def test_install_rejects_manifest_identity_drift_before_smoke_or_publish(tmp_path):
+    archive, checksum = _archive(
+        tmp_path,
+        manifest_fields={"commit": "0" * 40},
+    )
+    prefix = tmp_path / "Applications"
+
+    result = _run(
+        INSTALL,
+        "--archive",
+        archive,
+        "--sha256",
+        checksum,
+        "--prefix",
+        prefix,
+    )
+
+    assert result.returncode == 2
+    assert "release-manifest.json 发行身份" in result.stderr
     assert not (prefix / "Tianshu Agent.app").exists()
 
 

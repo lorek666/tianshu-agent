@@ -120,11 +120,13 @@ if [ ! -d "$source_app" ]; then
   exit 2
 fi
 release_json="$source_app/Contents/Resources/release.json"
+release_manifest="$source_app/Contents/Resources/release-manifest.json"
 python_bin="$source_app/Contents/Resources/python/bin/python3"
 ui_index="$source_app/Contents/Resources/ui/dist/index.html"
 desktop_bin="$source_app/Contents/MacOS/tianshu-desktop"
 if [ ! -f "$release_json" ] || [ ! -x "$python_bin" ] \
-  || [ ! -f "$ui_index" ] || [ ! -x "$desktop_bin" ]; then
+  || [ ! -f "$release_manifest" ] || [ ! -f "$ui_index" ] \
+  || [ ! -x "$desktop_bin" ]; then
   echo "安装包缺少受版本约束的应用资源" >&2
   exit 2
 fi
@@ -164,6 +166,23 @@ if ! grep -q "\"target\"[[:space:]]*:[[:space:]]*\"$release_target\"" "$release_
   echo "安装包 target 不是 macOS" >&2
   exit 2
 fi
+manifest_version=$(plutil -extract version raw -o - "$release_manifest")
+manifest_commit=$(plutil -extract commit raw -o - "$release_manifest")
+manifest_target=$(plutil -extract target raw -o - "$release_manifest")
+python_version=$(plutil -extract python raw -o - "$release_manifest")
+if [ "$manifest_version" != "$release_version" ] \
+  || [ "$manifest_commit" != "$release_commit" ] \
+  || [ "$manifest_target" != "$release_target" ]; then
+  echo "release-manifest.json 发行身份与 release.json 不一致" >&2
+  exit 2
+fi
+case "$python_version" in
+  3.12.*) ;;
+  *)
+    echo "release-manifest.json Python 版本必须是 3.12.x" >&2
+    exit 2
+    ;;
+esac
 
 canonicalize_path() {
   path=$1
@@ -224,7 +243,10 @@ if ! env PYTHONPATH="$staged_app/Contents/Resources/app" PYTHONDONTWRITEBYTECODE
   -P \
   -m tianshu.release_smoke \
   --ui-dir "$staged_app/Contents/Resources/ui/dist" \
-  --expected-version "$release_version"; then
+  --expected-version "$release_version" \
+  --expected-commit "$release_commit" \
+  --expected-target "$release_target" \
+  --expected-python "$python_version"; then
   echo "新版本启动烟测失败；旧版本保持不变，无需恢复旧版本" >&2
   exit 1
 fi

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -19,6 +20,23 @@ def _load_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _mac_release_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    app = tmp_path / "built" / "Tianshu Agent.app"
+    binary = app / "Contents" / "MacOS" / "tianshu-desktop"
+    resources = app / "Contents" / "Resources"
+    binary.parent.mkdir(parents=True)
+    resources.mkdir(parents=True)
+    binary.write_bytes(b"binary")
+    (resources / "release.json").write_text("{}", encoding="utf-8")
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "release-manifest.json").write_text(
+        json.dumps({"version": "0.1.0"}),
+        encoding="utf-8",
+    )
+    return app, bundle_dir
 
 
 def test_resource_config_maps_only_verified_bundle_inputs(tmp_path):
@@ -137,19 +155,7 @@ def test_cross_arch_bundle_uses_explicit_rust_target_path(tmp_path):
 
 def test_macos_release_artifact_is_checksum_bound_and_contains_app(tmp_path):
     module = _load_module()
-    app = tmp_path / "built" / "Tianshu Agent.app"
-    binary = app / "Contents" / "MacOS" / "tianshu-desktop"
-    resources = app / "Contents" / "Resources"
-    binary.parent.mkdir(parents=True)
-    resources.mkdir(parents=True)
-    binary.write_bytes(b"binary")
-    (resources / "release.json").write_text("{}", encoding="utf-8")
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
-    (bundle_dir / "release-manifest.json").write_text(
-        json.dumps({"version": "0.1.0"}),
-        encoding="utf-8",
-    )
+    app, bundle_dir = _mac_release_inputs(tmp_path)
 
     artifact = module.release_artifact(
         bundled=app,
@@ -168,6 +174,85 @@ def test_macos_release_artifact_is_checksum_bound_and_contains_app(tmp_path):
         names = set(archive.getnames())
     assert "Tianshu Agent.app/Contents/MacOS/tianshu-desktop" in names
     assert "Tianshu Agent.app/Contents/Resources/release.json" in names
+
+
+def test_release_artifact_rejects_version_path_traversal(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+
+    with pytest.raises(module.PackageError, match="version"):
+        module.release_artifact(
+            bundled=app,
+            bundle_dir=bundle_dir,
+            out_dir=tmp_path / "out",
+            version="../../escape",
+            target="macos-arm64",
+        )
+
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_release_artifact_rejects_symlinked_output_directory(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    out_link = tmp_path / "out"
+    out_link.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(module.PackageError, match="输出目录不能是符号链接"):
+        module.release_artifact(
+            bundled=app,
+            bundle_dir=bundle_dir,
+            out_dir=out_link,
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert not any(external.iterdir())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_release_artifact_rejects_symlinked_destination_without_writing(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    destination = out_dir / "Tianshu-Agent-0.1.0-macos-arm64.app.tar.gz"
+    external = tmp_path / "external.tar.gz"
+    external.write_bytes(b"keep")
+    destination.symlink_to(external)
+
+    with pytest.raises(module.PackageError, match="输出路径不能是符号链接"):
+        module.release_artifact(
+            bundled=app,
+            bundle_dir=bundle_dir,
+            out_dir=out_dir,
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert external.read_bytes() == b"keep"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 符号链接负控")
+def test_release_artifact_rejects_symlinked_tauri_bundle(tmp_path):
+    module = _load_module()
+    app, bundle_dir = _mac_release_inputs(tmp_path)
+    app_link = tmp_path / "Tianshu Agent.app.link"
+    app_link.symlink_to(app, target_is_directory=True)
+
+    with pytest.raises(module.PackageError, match="发行物不能是符号链接"):
+        module.release_artifact(
+            bundled=app_link,
+            bundle_dir=bundle_dir,
+            out_dir=tmp_path / "out",
+            version="0.1.0",
+            target="macos-arm64",
+        )
+
+    assert not (tmp_path / "out").exists()
 
 
 def test_cross_os_target_is_rejected(tmp_path, monkeypatch):
