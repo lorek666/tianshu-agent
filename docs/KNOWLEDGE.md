@@ -26,6 +26,25 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **`1f9062c` 的唯一四目标 release run 暴露 NSIS 解包封闭集缺陷（2026-11-17）**：
+  version `0.1.0` 的 dispatch
+  [44101101232](https://github.com/lorek666/tianshu-agent/actions/runs/44101101232)
+  绑定 merge/main `1f9062c5cbf0b966021319ea2dbba95680f21103`。`release preflight`
+  与 macOS x64 success；Windows x64/ARM64 的构建、提交 UI 一致性和真实 7-Zip
+  解包均完成，但 `Verify release bytes and target` 把 Tauri NSIS 固定生成的
+  `$PLUGINSDIR/{NSISdl,StartMenu,System,nsDialogs,nsis_tauri_utils}.dll`、
+  `$PLUGINSDIR/modern-wizard.bmp`、`tianshu-desktop.exe` 与 `uninstall.exe`
+  误判为 payload 未列文件。失败发生在唯一 `release.json` 资源根和 manifest
+  校验之后，未列文件八项、缺失 payload 文件零项；原 run 与两份 job 日志保留在
+  ignored `closeout/release-44101101232/red-windows-{x64,arm64}/`。当前修复只改
+  `scripts/verify_release.py` 与其测试：把上述八个安装器文件定义成逐项必需且
+  唯一的固定布局，整个解包目录继续封闭；`tianshu-desktop.exe` 按 target 校验，
+  NSIS 插件与 `uninstall.exe` 固定校验 x86 PE。根资源目录正控、外层任意额外
+  文件、缺失固定文件及桌面 exe 错架构均已有回归，release verifier 文件
+  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。完整本机
+  全量、独立复审、精确 PR CI、保护合并、修后 main CI 和第二次唯一 release
+  run 尚未完成，故当前 release 仍为 `NOT_RUN`，旧 Windows 红不得覆盖。
+
 - **main `7bb4548` 的网络超时测试红已定位为阶段混计（2026-11-17）**：PR
   [#184](https://github.com/lorek666/tianshu-agent/pull/184) 精确候选
   `ea08a466d4e98f3ecb20fb2f608d4f79746fcbae` / tree
@@ -1249,6 +1268,15 @@
   日志 SHA256 `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`。
   原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
   唯一原生 CI、保护合并和修后 release/实际资产核验。
+
+- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红与最小修复候选**：
+  `1f9062c` 的四目标 release run `44101101232` 在 Windows x64/ARM64 打包和
+  真实 7-Zip 解包后同一位置失败。成功解出的安装器固定文件被当作未列入
+  bundle manifest 的 payload；唯一 release.json、manifest 身份及既定 payload
+  未报告缺失。作者修复把八个 NSIS 安装器文件从无界例外改成逐项必有的固定
+  集合，并新增整个解包目录封闭校验、`tianshu-desktop.exe` target 架构及 x86
+  NSIS 组件校验。原 run 不取消、不覆盖；当前仅作者定向绿，完整全量、独立
+  复审和新的原生 release 仍需后续绑定。
 
 ## 9. 权威文档索引
 
