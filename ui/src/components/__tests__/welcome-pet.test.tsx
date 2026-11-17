@@ -123,7 +123,7 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 describe("主界面中央空状态欢迎页与动态宠物", () => {
-  it("空任务列表时在中央欢迎页展示动态宠物，并在宠物下方显示欢迎用户文案且不含 Nova 字样", async () => {
+  it("空任务列表时在中央欢迎页展示动态宠物、欢迎使用天枢标题与一体化输入框，且不含冗余问候或 Nova 字样", async () => {
     const host = new EmptyFakeHost();
     mocked.host = host;
     await act(async () => root?.render(<App />));
@@ -134,25 +134,19 @@ describe("主界面中央空状态欢迎页与动态宠物", () => {
 
     const pet = center?.querySelector('[data-testid="welcome-pet"]');
     const welcomeHeading = center?.querySelector(".welcome-title");
-    const welcomeHint = center?.querySelector(".welcome-hint");
+    const composer = center?.querySelector(".composer-shell");
     expect(pet).not.toBeNull();
-    expect(welcomeHeading?.textContent).toContain("欢迎");
-    expect(welcomeHint?.textContent).toContain("欢迎");
+    expect(welcomeHeading?.textContent?.trim()).toBe("欢迎使用天枢");
+    expect(composer).not.toBeNull();
 
     // 宠物位于欢迎文案上方（DOM 顺序在标题之前）
     const relation = pet!.compareDocumentPosition(welcomeHeading!);
     expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // 严格遵守命名要求：界面与属性均不出现 Nova / NOVA 字样，也不暴露机器枚举
+    // 严格遵守命名要求与精简要求：界面与属性均不出现 Nova / NOVA 字样，不含「你好，欢迎回来」与「回车发送」
     expect(container?.innerHTML).not.toMatch(/nova/i);
-
-    // 点击欢迎区「新建任务」按钮可正常拉起新建任务弹窗
-    const actionBtn = center?.querySelector("button");
-    expect(actionBtn?.textContent?.trim()).toBe("新建任务");
-    await act(async () => {
-      actionBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => container?.querySelector('[role="dialog"]') !== null);
+    expect(container?.textContent).not.toContain("你好，欢迎回来");
+    expect(container?.textContent).not.toContain("回车发送");
   });
 
   it("七种姿态渲染各自的立体特征部件，且多实例同屏无 SVG defs ID 冲突", () => {

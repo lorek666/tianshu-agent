@@ -1,6 +1,5 @@
 import { useId, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
-import { IconPlus } from "./Icons";
 
 export type WelcomePetStatus =
   | "welcome"
@@ -14,8 +13,12 @@ export type WelcomePetStatus =
 export interface WelcomePetProps {
   /** 当前展示姿态；缺省为首屏欢迎姿态。 */
   status?: WelcomePetStatus;
-  /** 是否开启鼠标眼神跟随与点击切换互动姿态。 */
+  /** 是否开启点击切换互动姿态。 */
   interactive?: boolean;
+  /** 是否开启鼠标 2.5D 眼神跟随视差（默认开启）。 */
+  parallaxEnabled?: boolean;
+  /** 是否减少持续浮动与闪烁动效。 */
+  reducedMotion?: boolean;
   /** 是否渲染底部水晶悬浮台。 */
   showPedestal?: boolean;
   /** 舞台宽高像素尺寸。 */
@@ -132,6 +135,8 @@ function poseForStatus(status: WelcomePetStatus): PoseSpec {
 export function WelcomePet({
   status = "welcome",
   interactive = false,
+  parallaxEnabled = true,
+  reducedMotion = false,
   showPedestal = true,
   size = 268,
 }: WelcomePetProps) {
@@ -159,12 +164,13 @@ export function WelcomePet({
   const eyeNeon = "#22ccff";
   const eyeHot = "#c4f9ff";
 
+  const effectiveGaze = parallaxEnabled && !reducedMotion ? gaze : { x: 0, y: 0 };
   const pose = poseForStatus(activeStatus);
-  const vx = pose.headTurn * 11 + gaze.x * 4.2;
-  const bx = pose.headTurn * 9 + gaze.x * 3.2;
-  const ex = pose.headTurn * 5 + gaze.x * 8.0;
-  const vy = gaze.y * 2.6;
-  const ey = 2 + gaze.y * 5.2;
+  const vx = pose.headTurn * 11 + effectiveGaze.x * 4.2;
+  const bx = pose.headTurn * 9 + effectiveGaze.x * 3.2;
+  const ex = pose.headTurn * 5 + effectiveGaze.x * 8.0;
+  const vy = effectiveGaze.y * 2.6;
+  const ey = 2 + effectiveGaze.y * 5.2;
 
   const leftEarRx = Math.max(7.5, 11.5 + pose.headTurn * 5.5);
   const rightEarRx = Math.max(7.5, 11.5 - pose.headTurn * 5.5);
@@ -172,7 +178,7 @@ export function WelcomePet({
   const rightRingRx = Math.max(4.8, 7.8 - pose.headTurn * 4.2);
 
   const handleMouseMove = (event: MouseEvent<HTMLDivElement>) => {
-    if (!interactive) return;
+    if (!interactive || !parallaxEnabled || reducedMotion) return;
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     const nx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -184,7 +190,7 @@ export function WelcomePet({
   };
 
   const handleMouseLeave = () => {
-    if (!interactive) return;
+    if (!interactive || !parallaxEnabled) return;
     setGaze({ x: 0, y: 0 });
   };
 
@@ -471,10 +477,12 @@ export function WelcomePet({
 
   return (
     <div
-      className={`welcome-pet-stage${interactive ? " is-interactive" : ""}`}
+      className={`welcome-pet-stage${interactive ? " is-interactive" : ""}${reducedMotion ? " is-reduced-motion" : ""}`}
       style={{ width: size, height: size }}
       data-testid="welcome-pet"
       data-pet-interactive={interactive ? "true" : "false"}
+      data-pet-parallax={parallaxEnabled && !reducedMotion ? "true" : "false"}
+      data-pet-reduced-motion={reducedMotion ? "true" : "false"}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onClick={interactive ? handleCycle : undefined}
@@ -989,41 +997,6 @@ export function WelcomePet({
           </g>
         ) : null}
       </svg>
-    </div>
-  );
-}
-
-export interface WelcomeEmptyHeroProps {
-  connectionAlert: boolean;
-  creatingTask: boolean;
-  onNewTask: () => void;
-}
-
-/** 主界面中央空状态欢迎舞台：上方悬浮动态宠物，下方显示欢迎用户引导与新建任务入口。 */
-export function WelcomeEmptyHero({
-  connectionAlert,
-  creatingTask,
-  onNewTask,
-}: WelcomeEmptyHeroProps) {
-  const petStatus: WelcomePetStatus = connectionAlert
-    ? "error"
-    : creatingTask
-      ? "thinking"
-      : "welcome";
-
-  return (
-    <div className="welcome-hero">
-      <WelcomePet status={petStatus} interactive size={264} />
-      <h2 className="welcome-title">欢迎使用天枢</h2>
-      <p className="welcome-hint">
-        你好，欢迎回来！用一句话说明你想完成的目标，并指定允许读写的目录；涉及覆盖或删除的操作会单独请求你批准。
-      </p>
-      <div className="welcome-action">
-        <button type="button" className="btn btn-primary" onClick={onNewTask}>
-          <IconPlus size={14} />
-          新建任务
-        </button>
-      </div>
     </div>
   );
 }

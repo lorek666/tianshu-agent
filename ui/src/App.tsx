@@ -28,25 +28,21 @@ import {
 import { HostRpcError, humanizeHostError } from "./api/errors";
 import { startEventStream } from "./api/stream";
 import type { StreamStatus } from "./api/stream";
-import { reduceEventTimeline } from "./lib/humanize";
-import { isOpenApproval } from "./lib/humanize";
-import { mergeEvents, maxSeqOf, summarizeCost } from "./lib/timeline";
-import { shortenPath } from "./lib/format";
-import { AppHeader, streamStatusText } from "./components/AppHeader";
+import { isOpenApproval, reduceEventTimeline } from "./lib/humanize";
+import { maxSeqOf, mergeEvents, summarizeCost } from "./lib/timeline";
 import { ConnectionScreen } from "./components/ConnectionScreen";
-import { TaskList } from "./components/TaskList";
-import { TaskDetail } from "./components/TaskDetail";
-import { RunDetail } from "./components/RunDetail";
-import { ApprovalPanel } from "./components/ApprovalPanel";
-import { NewTaskDialog } from "./components/NewTaskDialog";
 import { MemoryDialog } from "./components/MemoryDialog";
 import { createMemoryApi } from "./api/memory";
 import type { MemoryApi } from "./api/memory";
 import { UndoDialog } from "./components/UndoDialog";
 import type { UndoPlanState } from "./components/UndoDialog";
 import { Modal } from "./components/Modal";
-import { Spinner } from "./components/StatusPill";
-import { WelcomeEmptyHero } from "./components/WelcomePet";
+import { Sidebar, basenameOfPath } from "./components/Sidebar";
+import type { ProjectWorkspace } from "./components/Sidebar";
+import { WelcomeComposer } from "./components/WelcomeComposer";
+import { TaskWorkspaceView } from "./components/TaskWorkspaceView";
+import { SettingsDialog } from "./components/SettingsDialog";
+import type { SettingsTab, UiPreferences } from "./components/SettingsDialog";
 import { IconAlert, IconX } from "./components/Icons";
 
 type Phase = "booting" | "no-token" | "unreachable" | "ready";
@@ -73,6 +69,15 @@ const REFRESH_DEBOUNCE_MS = 300;
 const EVENT_PAGE_LIMIT = 200;
 const EVENT_PAGE_LOOPS = 10;
 
+const INITIAL_PREFERENCES: UiPreferences = {
+  theme: "light",
+  enablePet: true,
+  enableParallax: true,
+  reduceMotion: false,
+  defaultPolicy: EFFECTS_RUN_POLICY,
+  previewPose: "welcome",
+};
+
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -80,6 +85,27 @@ function useNow(intervalMs: number): number {
     return () => window.clearInterval(timer);
   }, [intervalMs]);
   return now;
+}
+
+function useSystemDarkScheme(): boolean {
+  const [systemDark, setSystemDark] = useState<boolean>(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const listener = (event: MediaQueryListEvent) => setSystemDark(event.matches);
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
+  }, []);
+
+  return systemDark;
 }
 
 function runsForTask(state: StateView, taskId: string): RunView[] {
@@ -111,9 +137,25 @@ function pickInitialTask(state: StateView): TaskView | null {
 
 export function App() {
   const demoMode = useMemo(() => isDemoRequested(), []);
-  // 记忆面板的 RPC 面：Host 装配好（phase=ready）之后才建一次，避免拿空 client。
   const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
   const now = useNow(10_000);
+  const systemDark = useSystemDarkScheme();
+
+  const [preferences, setPreferences] = useState<UiPreferences>(INITIAL_PREFERENCES);
+  const effectiveTheme: "light" | "dark" =
+    preferences.theme === "system" ? (systemDark ? "dark" : "light") : preferences.theme;
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+  }, [effectiveTheme]);
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [composingNewTask, setComposingNewTask] = useState(false);
+  const [activeProject, setActiveProject] = useState<ProjectWorkspace | null>(null);
+  const [pinnedProjects, setPinnedProjects] = useState<ProjectWorkspace[]>([]);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("models");
 
   const [phase, setPhase] = useState<Phase>("booting");
   const [bootError, setBootError] = useState<string | null>(null);
@@ -121,21 +163,17 @@ export function App() {
   const [state, setState] = useState<StateView | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [runPolicies, setRunPolicies] = useState<
-    Record<string, RunExecutionPolicyV1>
-  >({});
+  const [runPolicies, setRunPolicies] = useState<Record<string, RunExecutionPolicyV1>>({});
   const [runDetail, setRunDetail] = useState<RunView | null>(null);
   const [timeline, setTimeline] = useState<EventView[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [streamDetail, setStreamDetail] = useState<string | null>(null);
-  /** 手动重试事件流：自增后 effect 重建 stream（自动重连已在上限处停止）。 */
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [connectionLost, setConnectionLost] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
-  const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [undoPlan, setUndoPlan] = useState<UndoPlanState | null>(null);
@@ -143,6 +181,7 @@ export function App() {
 
   const hostRef = useRef<HostClient | null>(null);
   const stateRef = useRef<StateView | null>(null);
+  const composingNewTaskRef = useRef(false);
   const selectedTaskRef = useRef<string | null>(null);
   const selectedRunRef = useRef<string | null>(null);
   const runDetailRef = useRef<RunView | null>(null);
@@ -159,6 +198,10 @@ export function App() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    composingNewTaskRef.current = composingNewTask;
+  }, [composingNewTask]);
 
   useEffect(() => {
     selectedTaskRef.current = selectedTaskId;
@@ -185,7 +228,15 @@ export function App() {
     [],
   );
 
-  /** 切换 Run：清空该 Run 的时间线，立刻用已知快照占位，随后由 effect 拉取完整详情。 */
+  const updatePreferences = useCallback((patch: Partial<UiPreferences>) => {
+    setPreferences((previous) => ({ ...previous, ...patch }));
+  }, []);
+
+  const openSettingsAt = useCallback((tab: SettingsTab = "models") => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
+
   const selectRun = useCallback((run: RunView | null) => {
     selectedRunRef.current = run?.run_id ?? null;
     setSelectedRunId(run?.run_id ?? null);
@@ -207,6 +258,11 @@ export function App() {
         if (connectionLostRef.current) {
           connectionLostRef.current = false;
           setConnectionLost(false);
+        }
+
+        // 用户主动停留在新建任务欢迎界面时，轮询不应强行跳回旧会话
+        if (composingNewTaskRef.current) {
+          return;
         }
 
         const currentTaskId = selectedTaskRef.current;
@@ -370,7 +426,9 @@ export function App() {
           if (attempt === connectAttemptRef.current) setPhase("no-token");
           return;
         }
-        const host: HostClient = demoMode ? createDemoHostClient() : createRealHostClient(token ?? "");
+        const host: HostClient = demoMode
+          ? createDemoHostClient()
+          : createRealHostClient(token ?? "");
         const next = await host.getState();
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = host;
@@ -379,6 +437,8 @@ export function App() {
         stateRef.current = next;
 
         const task = pickInitialTask(next);
+        composingNewTaskRef.current = task === null;
+        setComposingNewTask(task === null);
         selectedTaskRef.current = task?.task_id ?? null;
         setSelectedTaskId(task?.task_id ?? null);
         selectRun(pickRunForTask(next, task));
@@ -470,13 +530,53 @@ export function App() {
     return host;
   }, []);
 
+  const handleNewFreeTask = useCallback(() => {
+    composingNewTaskRef.current = true;
+    setComposingNewTask(true);
+    setActiveProject(null);
+    selectedTaskRef.current = null;
+    setSelectedTaskId(null);
+    selectRun(null);
+  }, [selectRun]);
+
+  const handleSelectProject = useCallback(
+    (project: ProjectWorkspace) => {
+      composingNewTaskRef.current = true;
+      setComposingNewTask(true);
+      setActiveProject(project);
+      selectedTaskRef.current = null;
+      setSelectedTaskId(null);
+      selectRun(null);
+    },
+    [selectRun],
+  );
+
+  const handleAddProject = useCallback(
+    (rootPath: string) => {
+      const project: ProjectWorkspace = {
+        root_path: rootPath,
+        mode: "writable",
+        name: basenameOfPath(rootPath),
+      };
+      setPinnedProjects((previous) => {
+        if (previous.some((item) => item.root_path === rootPath)) return previous;
+        return [project, ...previous];
+      });
+      handleSelectProject(project);
+    },
+    [handleSelectProject],
+  );
+
   const handleSelectTask = useCallback(
     (taskId: string) => {
-      if (selectedTaskRef.current === taskId) return;
+      if (!composingNewTaskRef.current && selectedTaskRef.current === taskId) return;
       const current = stateRef.current;
       if (current === null) return;
       const task = current.tasks.find((item) => item.task_id === taskId);
       if (task === undefined) return;
+      composingNewTaskRef.current = false;
+      setComposingNewTask(false);
+      setActiveProject(null);
       selectedTaskRef.current = taskId;
       setSelectedTaskId(taskId);
       selectRun(pickRunForTask(current, task));
@@ -524,7 +624,9 @@ export function App() {
           throw new Error("任务创建成功，但守护进程返回的数据无法识别。");
         }
         const task = created;
-        setNewTaskOpen(false);
+        composingNewTaskRef.current = false;
+        setComposingNewTask(false);
+        setActiveProject(null);
         setState((previous) =>
           previous === null
             ? previous
@@ -586,7 +688,9 @@ export function App() {
             execution_policy: executionPolicy,
           });
           const run = normalizeRun(envelope.run);
-          if (run === null) throw new HostRpcError("bad_response", "守护进程返回的运行数据无法识别");
+          if (run === null) {
+            throw new HostRpcError("bad_response", "守护进程返回的运行数据无法识别");
+          }
           selectRun(run);
           showToast("运行已在后台开始；关掉界面它也会继续", "success");
           await refreshSnapshot(host);
@@ -615,7 +719,10 @@ export function App() {
       try {
         let updated: TaskView | null;
         try {
-          const envelope = await host.rpc<TaskEnvelope>(RPC.taskRevise, { task_id: taskId, goal });
+          const envelope = await host.rpc<TaskEnvelope>(RPC.taskRevise, {
+            task_id: taskId,
+            goal,
+          });
           updated = normalizeTask(envelope.task);
         } catch (error) {
           throw new Error(humanizeHostError(error));
@@ -644,6 +751,28 @@ export function App() {
     [refreshSelectedRun, refreshSnapshot, requireHost, showToast],
   );
 
+  const handleFollowUpSubmit = useCallback(
+    async (
+      task: TaskView,
+      followUpText: string,
+      policy: RunExecutionPolicyV1,
+    ): Promise<void> => {
+      const wasIdle = task.active_run_id === null;
+      const nextGoal = `${task.goal}\n\n补充要求：${followUpText}`;
+      try {
+        await handleRevise(task.task_id, nextGoal);
+        if (wasIdle) {
+          handleStartRun(task.task_id, policy);
+        }
+      } catch (error) {
+        setErrorBanner(
+          error instanceof Error ? error.message : "提交补充要求失败，请重试。",
+        );
+      }
+    },
+    [handleRevise, handleStartRun],
+  );
+
   const handleControl = useCallback(
     (action: "pause" | "resume" | "cancel", run: RunView): void => {
       const host = hostRef.current;
@@ -655,7 +784,11 @@ export function App() {
       void (async () => {
         try {
           const method =
-            action === "pause" ? RPC.runPause : action === "resume" ? RPC.runResume : RPC.runCancel;
+            action === "pause"
+              ? RPC.runPause
+              : action === "resume"
+                ? RPC.runResume
+                : RPC.runCancel;
           const envelope = await host.rpc<RunEnvelope>(method, { run_id: run.run_id });
           const updated = normalizeRun(envelope.run);
           if (updated !== null && selectedRunRef.current === updated.run_id) {
@@ -686,7 +819,7 @@ export function App() {
     (run: RunView): void => {
       setConfirm({
         title: "取消这次运行？",
-        body: "取消后，已经生效的修改不会被自动回滚。运行停止后，可以在「运行详情」里撤销这次修改。",
+        body: "取消后，已经生效的修改不会被自动回滚。运行停止后，可以在右上角点「撤销这次修改」。",
         confirmText: "取消运行",
         danger: true,
         onConfirm: () => {
@@ -713,10 +846,10 @@ export function App() {
             decision,
           };
           if (reason !== undefined && reason !== "") params.reason = reason;
-          const result = await host.rpc<ApprovalDecisionResult>(RPC.approvalsDecide, params);
-          // 不做乐观更新：审批可能被并发处理（你点允许时别的窗口已经拒绝）。
-          // 卡片等下一帧 /state 或服务端推送的 approval 事件再更新；这里只负责
-          // 把“已处理”的结果告诉用户并立刻拉一次权威状态。
+          const result = await host.rpc<ApprovalDecisionResult>(
+            RPC.approvalsDecide,
+            params,
+          );
           showToast(
             decision === "approve"
               ? result.resumed
@@ -726,12 +859,15 @@ export function App() {
             decision === "approve" ? "success" : "warn",
           );
           await refreshSnapshot(host);
-          if (selectedRunRef.current === approval.run_id) await refreshRun(host, approval.run_id);
+          if (selectedRunRef.current === approval.run_id) {
+            await refreshRun(host, approval.run_id);
+          }
         } catch (error) {
           setErrorBanner(humanizeHostError(error));
-          // 并发拒绝/过期时服务端状态已经变了：立刻同步一次，别让旧卡片继续挂着。
           await refreshSnapshot(host);
-          if (selectedRunRef.current === approval.run_id) await refreshRun(host, approval.run_id);
+          if (selectedRunRef.current === approval.run_id) {
+            await refreshRun(host, approval.run_id);
+          }
         } finally {
           setBusy(null);
         }
@@ -750,7 +886,9 @@ export function App() {
     setUndoError(null);
     void (async () => {
       try {
-        const result = await host.rpc<UndoPlanResult>(RPC.undoPlan, { run_id: run.run_id });
+        const result = await host.rpc<UndoPlanResult>(RPC.undoPlan, {
+          run_id: run.run_id,
+        });
         setUndoPlan({ runId: run.run_id, changes: normalizeUndoChanges(result) });
       } catch (error) {
         setErrorBanner(humanizeHostError(error));
@@ -772,15 +910,23 @@ export function App() {
     setUndoError(null);
     void (async () => {
       try {
-        const result = await host.rpc<UndoApplyResult>(RPC.undoApply, { run_id: plan.runId });
+        const result = await host.rpc<UndoApplyResult>(RPC.undoApply, {
+          run_id: plan.runId,
+        });
         setUndoPlan(null);
-        if (result.refused !== undefined && result.refused !== null && result.refused !== "") {
+        if (
+          result.refused !== undefined &&
+          result.refused !== null &&
+          result.refused !== ""
+        ) {
           setErrorBanner(`撤销没有完全执行：${result.refused}`);
         } else {
           showToast(`已撤销 ${result.applied} 处修改`, "success");
         }
         await refreshSnapshot(host);
-        if (selectedRunRef.current === plan.runId) await refreshRun(host, plan.runId);
+        if (selectedRunRef.current === plan.runId) {
+          await refreshRun(host, plan.runId);
+        }
       } catch (error) {
         setUndoError(humanizeHostError(error));
       } finally {
@@ -798,19 +944,72 @@ export function App() {
     }
   }, [refreshSelectedRun, refreshSnapshot]);
 
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const handleGlobalShortcuts = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        handleNewFreeTask();
+      } else if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault();
+        openSettingsAt("models");
+      }
+    };
+    window.addEventListener("keydown", handleGlobalShortcuts);
+    return () => window.removeEventListener("keydown", handleGlobalShortcuts);
+  }, [phase, handleNewFreeTask, openSettingsAt]);
+
   const tasks = state?.tasks ?? [];
   const approvals = state?.approvals ?? [];
   const allRuns = state?.runs ?? [];
-  const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? null;
+  const selectedTask = composingNewTask
+    ? null
+    : tasks.find((task) => task.task_id === selectedTaskId) ?? null;
+
+  const projects = useMemo<ProjectWorkspace[]>(() => {
+    const seen = new Set<string>();
+    const list: ProjectWorkspace[] = [];
+    for (const pinned of pinnedProjects) {
+      if (!seen.has(pinned.root_path)) {
+        seen.add(pinned.root_path);
+        list.push(pinned);
+      }
+    }
+    for (const task of tasks) {
+      for (const ws of task.workspaces) {
+        const rootPath = ws.root_path.trim();
+        if (rootPath !== "" && !seen.has(rootPath)) {
+          seen.add(rootPath);
+          list.push({
+            root_path: rootPath,
+            mode: ws.mode === "readonly" ? "readonly" : "writable",
+            name: basenameOfPath(rootPath),
+          });
+        }
+      }
+    }
+    return list;
+  }, [pinnedProjects, tasks]);
+
+  const openApprovals = useMemo(
+    () => approvals.filter((approval) => isOpenApproval(approval.state)),
+    [approvals],
+  );
+
   const taskRuns = useMemo(
-    () => (selectedTask === null || state === null ? [] : runsForTask(state, selectedTask.task_id)),
+    () =>
+      selectedTask === null || state === null
+        ? []
+        : runsForTask(state, selectedTask.task_id),
     [selectedTask, state],
   );
+
   const selectedRun = useMemo(() => {
-    if (selectedRunId === null) return null;
+    if (selectedRunId === null || selectedTask === null) return null;
     if (runDetail !== null && runDetail.run_id === selectedRunId) return runDetail;
     return state?.runs.find((run) => run.run_id === selectedRunId) ?? null;
-  }, [selectedRunId, runDetail, state]);
+  }, [selectedRunId, selectedTask, runDetail, state]);
+
   const timelineEntries = useMemo(() => reduceEventTimeline(timeline), [timeline]);
   const costSummary = useMemo(() => summarizeCost(timeline), [timeline]);
   const daemon = state?.daemon ?? EMPTY_DAEMON;
@@ -827,18 +1026,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
-      <AppHeader
-        daemon={daemon}
-        streamStatus={streamStatus}
-        streamDetail={streamDetail}
-        demo={demoMode}
-        connectionLost={connectionLost}
-        now={now}
-        onRefresh={handleRefresh}
-        onOpenMemory={() => setMemoryOpen(true)}
-      />
-
+    <div className="app-shell" data-theme={effectiveTheme}>
       {demoMode ? (
         <div className="demo-strip">
           <span className="demo-strip-text">
@@ -879,124 +1067,119 @@ export function App() {
         </div>
       ) : null}
 
-      <div className="app-main">
-        <TaskList
+      <div className="ts-workspace-layout">
+        <Sidebar
           tasks={tasks}
-          runs={state?.runs ?? []}
+          runs={allRuns}
           approvals={approvals}
-          selectedTaskId={selectedTaskId}
+          projects={projects}
+          selectedTaskId={selectedTask?.task_id ?? null}
+          composingNewTask={selectedTask === null}
+          activeProjectPath={activeProject?.root_path ?? null}
+          collapsed={sidebarCollapsed}
+          effectiveTheme={effectiveTheme}
+          daemon={daemon}
+          streamStatus={streamStatus}
+          streamDetail={streamDetail}
+          connectionLost={connectionLost}
+          demo={demoMode}
           now={now}
+          onToggleCollapse={() => setSidebarCollapsed((previous) => !previous)}
+          onNewFreeTask={handleNewFreeTask}
+          onSelectProject={handleSelectProject}
+          onAddProject={handleAddProject}
           onSelectTask={handleSelectTask}
-          onNewTask={() => setNewTaskOpen(true)}
+          onOpenMemory={() => setMemoryOpen(true)}
+          onToggleTheme={() =>
+            updatePreferences({
+              theme: effectiveTheme === "light" ? "dark" : "light",
+            })
+          }
+          onOpenSettings={() => openSettingsAt("models")}
         />
 
-        <div className={`center-stack${selectedRun === null ? " is-single" : ""}`}>
+        <main className="ts-canvas">
           {selectedTask === null ? (
-            <section className="pane center-empty">
-              <WelcomeEmptyHero
-                connectionAlert={connectionLost || streamStatus === "disconnected"}
-                creatingTask={newTaskOpen || busy === "create-task"}
-                onNewTask={() => setNewTaskOpen(true)}
-              />
-            </section>
+            <WelcomeComposer
+              activeProject={activeProject}
+              projects={projects}
+              defaultPolicy={preferences.defaultPolicy}
+              enablePet={preferences.enablePet}
+              enableParallax={preferences.enableParallax}
+              reduceMotion={preferences.reduceMotion}
+              previewPose={preferences.previewPose}
+              connectionLost={connectionLost}
+              streamStatus={streamStatus}
+              streamDetail={streamDetail}
+              openApprovalsCount={openApprovals.length}
+              busy={busy === "create-task"}
+              onJumpToPendingApproval={() => {
+                const target = openApprovals[0];
+                if (target !== undefined) handleSelectTask(target.task_id);
+              }}
+              onRefresh={handleRefresh}
+              onOpenModelSettings={() => openSettingsAt("models")}
+              onSubmit={handleCreateTask}
+            />
           ) : (
-            <TaskDetail
+            <TaskWorkspaceView
               task={selectedTask}
-              runs={taskRuns}
+              taskRuns={taskRuns}
+              allRuns={allRuns}
               approvals={approvals}
+              selectedRun={selectedRun}
               selectedRunId={selectedRunId}
+              entries={timelineEntries}
+              events={timeline}
+              hasMore={timelineHasMore}
+              cost={costSummary}
+              streamStatus={streamStatus}
+              connectionLost={connectionLost}
+              eventSeqHead={state?.event_seq_head ?? 0}
               busy={busy}
               now={now}
               executionPolicy={
-                runPolicies[selectedTask.task_id] ?? EFFECTS_RUN_POLICY
+                runPolicies[selectedTask.task_id] ?? preferences.defaultPolicy
               }
+              enablePet={preferences.enablePet}
+              reduceMotion={preferences.reduceMotion}
               onSelectRun={handleSelectRun}
               onExecutionPolicyChange={handleExecutionPolicyChange}
               onStartRun={handleStartRun}
               onRevise={handleRevise}
+              onFollowUpSubmit={handleFollowUpSubmit}
+              onPause={(run) => handleControl("pause", run)}
+              onResume={(run) => handleControl("resume", run)}
               onRequestCancel={requestCancel}
-            />
-          )}
-
-          {selectedTask !== null && selectedRun !== null ? (
-            <RunDetail
-              run={selectedRun}
-              task={selectedTask}
-              entries={timelineEntries}
-              events={timeline}
-              /* 子 Run 的 task_id 是子 Task id（不在父任务的 taskRuns 里）——
-                 子运行状态回填需要全量 runs（SPEC §2.3 的原设计；复审 P1 修复）。 */
-              runs={allRuns}
-              hasMore={timelineHasMore}
-              cost={costSummary}
-              streamStatus={streamStatus}
-              busy={busy}
-              now={now}
-              onPause={() => handleControl("pause", selectedRun)}
-              onResume={() => handleControl("resume", selectedRun)}
-              onCancel={() => requestCancel(selectedRun)}
-              onUndo={() => handleOpenUndo(selectedRun)}
+              onUndo={handleOpenUndo}
+              onDecideApproval={handleDecide}
+              onJumpToTask={handleSelectTask}
+              onOpenModelSettings={() => openSettingsAt("models")}
               onRefresh={handleRefresh}
             />
-          ) : selectedTask !== null && selectedRunId !== null ? (
-            <section className="pane run-pane">
-              <div className="pane-loading">
-                <Spinner label="正在读取运行详情…" />
-              </div>
-            </section>
-          ) : null}
-        </div>
-
-        <ApprovalPanel
-          approvals={approvals}
-          tasks={tasks}
-          busy={busy}
-          now={now}
-          onDecide={handleDecide}
-        />
+          )}
+        </main>
       </div>
 
-      <footer className="status-bar">
-        <span
-          className={`status-dot tone-${
-            connectionLost || streamStatus === "disconnected"
-              ? "danger"
-              : streamStatus === "live"
-                ? "success"
-                : "warn"
-          }`}
-        />
-        <span>
-          {connectionLost ? "与守护进程的连接已断开，正在重试…" : streamStatusText(streamStatus, streamDetail)}
-        </span>
-        <span className="status-sep">·</span>
-        <span>
-          事件已同步至 <span className="num">#{state?.event_seq_head ?? 0}</span>
-        </span>
-        <span className="status-sep">·</span>
-        <span>每 3 秒自动刷新</span>
-        <span className="status-spacer" />
-        {daemon.data_root !== null ? (
-          <span className="status-path" title={daemon.data_root}>
-            数据目录：{shortenPath(daemon.data_root, 52)}
-          </span>
-        ) : null}
-        <button type="button" className="link-btn" onClick={handleRefresh}>
-          立即刷新
-        </button>
-      </footer>
+      <SettingsDialog
+        open={settingsOpen}
+        initialTab={settingsTab}
+        preferences={preferences}
+        daemon={daemon}
+        streamStatus={streamStatus}
+        streamDetail={streamDetail}
+        connectionLost={connectionLost}
+        eventSeqHead={state?.event_seq_head ?? 0}
+        now={now}
+        onUpdatePreferences={updatePreferences}
+        onOpenMemory={() => setMemoryOpen(true)}
+        onRefresh={handleRefresh}
+        onReconnectStream={handleRetryConnection}
+        onClose={() => setSettingsOpen(false)}
+      />
 
       {memoryOpen && memoryApi !== null ? (
         <MemoryDialog open api={memoryApi} onClose={() => setMemoryOpen(false)} />
-      ) : null}
-
-      {newTaskOpen ? (
-        <NewTaskDialog
-          open
-          busy={busy === "create-task"}
-          onClose={() => setNewTaskOpen(false)}
-          onSubmit={handleCreateTask}
-        />
       ) : null}
 
       {confirm !== null ? (
@@ -1007,7 +1190,11 @@ export function App() {
             <>
               <span className="modal-foot-hint">运行状态以守护进程为准。</span>
               <span className="modal-foot-actions">
-                <button type="button" className="btn btn-ghost" onClick={() => setConfirm(null)}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setConfirm(null)}
+                >
                   先不
                 </button>
                 <button
