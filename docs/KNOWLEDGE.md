@@ -41,9 +41,25 @@
   唯一的固定布局，整个解包目录继续封闭；`tianshu-desktop.exe` 按 target 校验，
   NSIS 插件与 `uninstall.exe` 固定校验 x86 PE。根资源目录正控、外层任意额外
   文件、缺失固定文件及桌面 exe 错架构均已有回归，release verifier 文件
-  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。完整本机
-  全量、独立复审、精确 PR CI、保护合并、修后 main CI 和第二次唯一 release
-  run 尚未完成，故当前 release 仍为 `NOT_RUN`，旧 Windows 红不得覆盖。
+  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。唯一本机
+  全量为 **3801 passed / 12 skipped / 672.05s / exit 0**；第二读者对
+  `8a17e6a42e6966af8b71bcc353734c241725389c` / tree
+  `2034c53e264e9e03d168c4687bf312144d6602d4` 的六项验收全 `fixed / PASS`，
+  独立探针 28 项通过，报告 SHA256
+  `a65971ea5e119bf5a33321352cc7f4cd5ed6e2b138e4dc8e0f23501f89826af5`。
+  PR [#186](https://github.com/lorek666/tianshu-agent/pull/186) 候选 run
+  [44107070041](https://github.com/lorek666/tianshu-agent/actions/runs/44107070041)
+  七 job 全绿；Ubuntu `3762 passed / 51 skipped`、macOS
+  `3801 passed / 12 skipped`、Windows 两分片 `1845 / 1882 passed`。该候选按
+  strict/enforce-admins 保护规则合并为
+  `4e15bf90059a46feacc511b39f8461953b1ad8d0`，tree 仍为
+  `2034c53e264e9e03d168c4687bf312144d6602d4`。merge 自身 main push run
+  [44114368712](https://github.com/lorek666/tianshu-agent/actions/runs/44114368712)
+  的 Ubuntu、Windows 两分片、Windows required 汇总、UI 与 Windows Rust
+  success，唯一 macOS job 在 15 分钟处 `cancelled`；其 job API 明确
+  `runner_name=""`、`steps=[]`，日志 HTTP 404，说明尚未执行任何代码步骤。
+  该 run 保留为真实基础设施取消，不重跑、不冒充绿色；第二次 release 必须绑定
+  后续正常 main CI 的完整 SHA，当前 release/实际 artifact 仍为 `NOT_RUN`。
 
 - **main `7bb4548` 的网络超时测试红已定位为阶段混计（2026-11-17）**：PR
   [#184](https://github.com/lorek666/tianshu-agent/pull/184) 精确候选
@@ -1269,14 +1285,20 @@
   原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
   唯一原生 CI、保护合并和修后 release/实际资产核验。
 
-- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红与最小修复候选**：
+- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红、修复复审与保护合并**：
   `1f9062c` 的四目标 release run `44101101232` 在 Windows x64/ARM64 打包和
   真实 7-Zip 解包后同一位置失败。成功解出的安装器固定文件被当作未列入
   bundle manifest 的 payload；唯一 release.json、manifest 身份及既定 payload
   未报告缺失。作者修复把八个 NSIS 安装器文件从无界例外改成逐项必有的固定
   集合，并新增整个解包目录封闭校验、`tianshu-desktop.exe` target 架构及 x86
-  NSIS 组件校验。原 run 不取消、不覆盖；当前仅作者定向绿，完整全量、独立
-  复审和新的原生 release 仍需后续绑定。
+  NSIS 组件校验。新回归在旧 main 上 `4 failed`、候选上 `4 passed`；唯一本机
+  全量 `3801 passed / 12 skipped / 672.05s / exit 0`，第二读者对精确
+  `8a17e6a/tree 2034c53e` 给出 `fixed / PASS`。候选 CI `44107070041`
+  七项全绿后以 `4e15bf9` 保护合并，merge tree 与候选相同。merge 自身
+  的 main CI `44114368712` 因 macOS runner 未分配而取消；Windows shard1
+  继续运行并成功，且 macOS job 无 runner、无 step、无日志，不能归因于本修复。
+  原 release 红、失败 macOS job 与其余 success 原件均保留；下一步用新的
+  docs/main SHA 触发唯一替换 release，不重跑旧的失败或取消 run。
 
 ## 9. 权威文档索引
 
