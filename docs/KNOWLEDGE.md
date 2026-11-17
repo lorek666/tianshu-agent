@@ -26,6 +26,8 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **UI 主界面中央空状态欢迎页已接入 2.5D 矢量动态吉祥物（2026-11-18，分支 `feat/welcome-pet`）**：基于 `main` `4e15bf90059a46feacc511b39f8461953b1ad8d0` 新增纯本地 React + 分层 SVG + CSS 组件 `ui/src/components/WelcomePet.tsx` 并接入 `ui/src/App.tsx` 的 `.center-empty` 空任务欢迎区，零新增 npm 依赖、无外链资源、无第三方原图品牌字样。上方悬浮 2.5D 高光吉祥物（含水晶悬浮台、3D 变宽流光星环、鼠标眼神视差跟随、轻触切换 6 种互动表情、创建任务时思考态、与守护进程断连时自动切为异常提醒态并随恢复复位），下方显示「欢迎使用天枢」及用户引导与新建任务入口。UI 检查通过：`pnpm --dir ui run typecheck` exit 0，Vitest **17 files / 128 passed**（较基线 +1 文件 / +4 用例），`pnpm --dir ui run build` 产物 `ui/dist/` 已同步更新且二次构建 `git diff --exit-code -- ui/dist` 一致；真实 `tianshu host run` 浏览器实机渲染与交互已核验。本机 `uv lock --check`、全仓 Ruff 与唯一全量 `uv run --frozen pytest`（**3801 passed / 12 skipped / 666.87s / exit 0**）通过；远端 PR 四项 required CI 待推送后另核，不以本机绿替代云端门禁。
+
 - **`1f9062c` 的唯一四目标 release run 暴露 NSIS 解包封闭集缺陷（2026-11-17）**：
   version `0.1.0` 的 dispatch
   [44101101232](https://github.com/lorek666/tianshu-agent/actions/runs/44101101232)
@@ -618,6 +620,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **SVG 元素的坐标 `transform` 属性与 CSS `@keyframes` 动画 `transform` 不能挂在同一节点（2026-11-18）**：浏览器在应用 CSS `transform` 关键帧时会直接覆盖同一 `<g>` 节点上的 SVG `transform="translate(...) rotate(...)"` 属性，导致悬浮全息屏、星芒等配件被拉回 `(0, 0)` 原点，或关节旋转基准丢失。所有带定位/旋转的 SVG 部件必须拆成外层定位 `<g transform="...">` 与内层纯动画 `<g class="...">` 两层嵌套；同屏多实例 SVG `<defs>` 渐变与滤镜 ID 须经 `useId()` 隔离，并用静态标记单测钉住全体 `id` 无重复。
+
 - **测试必须隔离所测阶段，并验证异常在真实派发与清理之后仍是原对象（2026-11-17）**：
   前置装配、进程启动/发现、真实 send 和结果核对必须有清楚的观察边界，不能把准备
   阶段混入 transport 期限，也不能用加时、重试或假 transport 取代真实背压。真实
@@ -935,6 +939,8 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-18 · 主界面中央空状态欢迎页接入 2.5D 矢量动态吉祥物**：在独立工作树 `/Volumes/Date/tianshu-wt/welcome-pet`（分支 `feat/welcome-pet`，基线 `main` `4e15bf90`）将经用户视觉审核确认的纯矢量 2.5D 高光吉祥物落地为 `ui/src/components/WelcomePet.tsx`，挂载于 `App.tsx` 的 `.center-empty` 空状态欢迎区，在吉祥物下方展示「欢迎使用天枢」及欢迎引导与新建任务按钮，并移除原参考稿品牌名。实现保持零新增依赖与纯本地离线资源，支持 `prefers-reduced-motion` 降级、鼠标 2.5D 眼神视差、点击切换互动姿态及守护进程断连异常态联动。先在未接线 `App.tsx` 上取得定向 Vitest 红证，接线后 UI `typecheck`、**17 文件 / 128 passed**、`build` 与 `ui/dist` 一致性检查全绿，真 `tianshu host run` 页面渲染与弹窗交互验证通过；本机 `uv lock --check`、全仓 Ruff、Host/M5/manifest 定向 `107 passed` 与唯一全量 `uv run --frozen pytest` **3801 passed / 12 skipped / 666.87s / exit 0** 均通过。远端 PR required CI 尚未运行。
 
 - **2026-11-17 · main 网络超时测试把端到端链耗时冒充抓取期限**：exact main
   `7bb4548` 的 push run `44086800492` 在 Windows shard0 保留唯一真实红：100ms

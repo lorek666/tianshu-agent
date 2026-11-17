@@ -45,7 +45,8 @@ import type { MemoryApi } from "./api/memory";
 import { UndoDialog } from "./components/UndoDialog";
 import type { UndoPlanState } from "./components/UndoDialog";
 import { Modal } from "./components/Modal";
-import { EmptyState, Spinner } from "./components/StatusPill";
+import { Spinner } from "./components/StatusPill";
+import { WelcomeEmptyHero } from "./components/WelcomePet";
 import { IconAlert, IconX } from "./components/Icons";
 
 type Phase = "booting" | "no-token" | "unreachable" | "ready";
@@ -892,14 +893,10 @@ export function App() {
         <div className={`center-stack${selectedRun === null ? " is-single" : ""}`}>
           {selectedTask === null ? (
             <section className="pane center-empty">
-              <EmptyState
-                title="选择一个任务"
-                hint="从左侧选择任务查看目标、目录和运行历史；有需要你确认的操作时，右侧会出现审批卡片。"
-                action={
-                  <button type="button" className="btn btn-primary btn-sm" onClick={() => setNewTaskOpen(true)}>
-                    新建任务
-                  </button>
-                }
+              <WelcomeEmptyHero
+                connectionAlert={connectionLost || streamStatus === "disconnected"}
+                creatingTask={newTaskOpen || busy === "create-task"}
+                onNewTask={() => setNewTaskOpen(true)}
               />
             </section>
           ) : (
