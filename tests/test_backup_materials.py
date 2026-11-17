@@ -15,6 +15,7 @@ import pytest
 from tianshu import backup, memory_control
 from tianshu.backup import BackupInvalid, BackupRefused, create_backup, verify_backup
 from tianshu.contents import ContentStore
+from tianshu.disk_admission import DiskAdmission
 from tianshu.events import EventLog
 from tianshu.loop import build_stack
 from tianshu.resources import MemoryScope
@@ -36,6 +37,10 @@ def _make_root(
     log = EventLog(root / "events.db", blob_dir=root / payload_dir)
     try:
         stack = build_stack(log, data_root=root)
+        stack.tasks._disk_admission = DiskAdmission(
+            stack.tasks.disk_admission.context,
+            probe=lambda _path: 1 << 62,
+        )
         log.append(
             "r_materials", "tool.result",
             {"call_id": "c_read", "tool_id": "read_text", "status": "succeeded",

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from support import CHILD_TEXT
 
-from tianshu import ipc
+from tianshu import ipc, maintenance
 from tianshu.control import ControlError, ControlPlane
 from tianshu.disk_admission import DiskAdmission
 from tianshu.events import EventLog
@@ -27,15 +27,18 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 CHILD = """
 import sys
+from pathlib import Path
 
 sys.path.insert(0, __SRC__)
 
 import tianshu.cli as cli
 import tianshu.loop as loop
+from tianshu import maintenance
 from tianshu.disk_admission import DiskAdmission as CandidateDiskAdmission
 from tianshu.model import ModelResponse, ScriptedModel
 
 
+maintenance._lock_root = lambda: Path(__LOCK_ROOT__)
 loop.DiskAdmission = lambda context: CandidateDiskAdmission(
     context,
     probe=lambda _path: 0,
@@ -47,6 +50,14 @@ raise SystemExit(cli.main(sys.argv[1:]))
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolated_maintenance_lock_root(tmp_path, monkeypatch):
+    """入口测试只争用本用例的锁根，不与其他工作树的全量测试互锁。"""
+    lock_root = tmp_path / "maintenance-lock-root"
+    monkeypatch.setattr(maintenance, "_lock_root", lambda: lock_root)
+    return lock_root
+
+
 def _cli_child(tmp_path: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
     env = {
         key: value
@@ -55,7 +66,14 @@ def _cli_child(tmp_path: Path, argv: list[str]) -> subprocess.CompletedProcess[s
     }
     env["TIANSHU_AUTHORITY_ROOT"] = str(tmp_path / "authority")
     return subprocess.run(
-        [sys.executable, "-c", CHILD.replace("__SRC__", repr(str(SRC))), *argv],
+        [
+            sys.executable,
+            "-c",
+            CHILD.replace("__SRC__", repr(str(SRC))).replace(
+                "__LOCK_ROOT__", repr(str(tmp_path / "maintenance-lock-root"))
+            ),
+            *argv,
+        ],
         cwd=tmp_path,
         env=env,
         timeout=30,

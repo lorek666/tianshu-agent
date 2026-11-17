@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 from support import CHILD_TEXT, write_exact
 
+from tianshu import maintenance
 from tianshu.events import EventLog
 from tianshu.recovery import blocked_workspaces, recover_run
 from tianshu.snapshot import ABSENT, SnapshotStore
@@ -63,6 +64,14 @@ AFTER_SHA = hashlib.sha256(AFTER_BYTES).hexdigest()
 AFTER_STATE = {"create": AFTER_SHA, "overwrite": AFTER_SHA, "delete": ABSENT}
 
 
+@pytest.fixture(autouse=True)
+def _isolated_maintenance_lock_root(tmp_path, monkeypatch):
+    """恢复测试只争用本用例的锁根，不与其他工作树的全量测试互锁。"""
+    lock_root = tmp_path / "maintenance-lock-root"
+    monkeypatch.setattr(maintenance, "_lock_root", lambda: lock_root)
+    return lock_root
+
+
 # 子进程入口：直接用公开 API 装配一次 run，在指定故障点硬退。
 #
 # 为什么不走 `tianshu.cli main(["run", ...])`：cli 的 scripted 模型只会
@@ -75,6 +84,8 @@ AFTER_STATE = {"create": AFTER_SHA, "overwrite": AFTER_SHA, "delete": ABSENT}
 _CHILD = """
 import sys, pathlib
 sys.path.insert(0, {src!r})
+from tianshu import maintenance
+maintenance._lock_root = lambda: pathlib.Path({lock_root!r})
 from tianshu.events import EventLog
 from tianshu.loop import AgentLoop, Limits, build_stack
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
@@ -125,6 +136,7 @@ def _spawn(ws: Path, db: Path, failpoint: str | None, kind: str):
         args = {"path": TARGET}
     code = _CHILD.format(
         src=src,
+        lock_root=str(db.parent / "maintenance-lock-root"),
         ws=str(ws),
         db=str(db),
         tool_id=WRITE_TOOL[kind],

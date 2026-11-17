@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import socket
@@ -215,7 +216,14 @@ def _peer(root: Path, mode: str):
             k: v for k, v in os.environ.items()
             if not k.startswith(("TIANSHU_", "OPENAI_", "ANTHROPIC_"))
         }
-        env["PYTHONPATH"] = str(Path(host.__file__).resolve().parents[1])
+        test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+        if test_lock_root:
+            env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+        env["PYTHONPATH"] = (
+            str(Path(host.__file__).resolve().parents[1])
+            + os.pathsep
+            + os.environ.get("PYTHONPATH", "")
+        )
         proc = subprocess.Popen(
             [sys.executable, "-c", _CHILD, str(root), mode, str(listener.getsockname()[1])],
             stdout=subprocess.DEVNULL,
@@ -288,6 +296,34 @@ def _seed(root: Path, *, pid: int = 424242) -> host.HostInfo:
     info = host.HostInfo(pid=pid, port=0, token="old", started_at=1)
     host.write_host_info(root, info)
     return info
+
+
+def _ready_sleep_process() -> subprocess.Popen[bytes]:
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; "
+            "sys.stdout.write('ready\\n'); sys.stdout.flush(); "
+            "time.sleep(60)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline() in {b"ready\n", b"ready\r\n"}
+    return proc
+
+
+def _exited_process() -> subprocess.Popen[bytes]:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    proc.communicate(timeout=5)
+    assert proc.returncode == 0
+    return proc
 
 
 @pytest.mark.parametrize("same_pid", [False, True], ids=["new-pid", "reused-pid"])
@@ -460,7 +496,14 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                         k: v for k, v in os.environ.items()
                         if not k.startswith(("TIANSHU_", "OPENAI_", "ANTHROPIC_"))
                     }
-                    env["PYTHONPATH"] = str(Path(host.__file__).resolve().parents[1])
+                    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+                    if test_lock_root:
+                        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+                    env["PYTHONPATH"] = (
+                        str(Path(host.__file__).resolve().parents[1])
+                        + os.pathsep
+                        + os.environ.get("PYTHONPATH", "")
+                    )
                     stopper = subprocess.run(
                         [sys.executable, "-m", "tianshu", "host", "stop", "--data-root", str(root)],
                         capture_output=True, env=env, timeout=20,
@@ -590,4 +633,398 @@ def test_missing_host_info_cleanup_remains_idempotent(tmp_path: Path) -> None:
     host.clear_host_info(tmp_path)
     host.clear_host_info(tmp_path)
     assert host.stop_host(tmp_path) == 0
+    assert not host.host_lock_path(tmp_path).exists()
+
+
+def test_stop_unowned_daemon_preserves_a_new_host(tmp_path: Path, monkeypatch) -> None:
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(snapshot)
+    replacement = host.HostInfo(
+        pid=os.getpid(),
+        port=1,
+        token="replacement_token_123",
+        started_at=2,
+    )
+    host.write_host_info(tmp_path, replacement)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_if_unowned(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        timeout=0.2,
+    )
+
+    assert result == 3
+    assert not called
+    assert lock.read_bytes() == snapshot
+    assert host.read_host_info(tmp_path) == replacement
+
+
+def test_stop_unowned_daemon_stops_only_the_expected_instance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(snapshot)
+
+    requested: dict[str, object] = {}
+
+    def request_shutdown(*_args, **kwargs):
+        requested.update(kwargs)
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    assert (
+        host.stop_daemon_if_unowned(
+            tmp_path,
+            hashlib.sha256(snapshot).hexdigest(),
+            timeout=0.2,
+        )
+        == 0
+    )
+    assert requested["expected_instance_id"] == "daemon_old"
+    assert not lock.exists()
+
+
+def test_stop_unowned_daemon_preserves_a_changed_instance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_if_unowned(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert lock.read_bytes() == new
+
+
+def test_stop_unowned_daemon_rejects_a_lock_without_instance_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    snapshot = b'{"pid":42,"started_at":1}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_if_unowned(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        timeout=0.2,
+    )
+
+    assert result == 1
+    assert not called
+    assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_clears_matching_stale_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.write_bytes(snapshot)
+    called = False
+
+    requested: dict[str, object] = {}
+
+    def request_shutdown(*_args, **kwargs):
+        nonlocal called
+        called = True
+        requested.update(kwargs)
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 0
+    assert called
+    assert requested["expected_instance_id"] == "daemon_old"
+    assert not host.host_lock_path(tmp_path).exists()
+    assert not lock.exists()
+
+
+def test_stop_daemon_after_host_exit_preserves_a_new_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    replacement = host.HostInfo(
+        pid=os.getpid(),
+        port=2,
+        token="replacement_token_123",
+        started_at=8,
+    )
+    host.write_host_info(tmp_path, replacement)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 3
+    assert not called
+    assert host.read_host_info(tmp_path) == replacement
+    assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_preserves_a_live_matching_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    live = host.HostInfo(
+        pid=os.getpid(),
+        port=1,
+        token="live_host_token_1234",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, live)
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        live.pid,
+        live.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 1
+    assert not called
+    assert host.read_host_info(tmp_path) == live
+    assert lock.read_bytes() == snapshot
+
+
+def test_stop_daemon_after_host_exit_preserves_live_host_when_lock_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _ready_sleep_process()
+    try:
+        snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+        lock = ipc.run_dir(tmp_path) / "daemon.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_bytes(snapshot)
+
+        def request_shutdown(*_args, **_kwargs):
+            raise AssertionError("Host 仍存活时不得请求停止 Daemon")
+
+        monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+        result = host.stop_daemon_after_host_exit(
+            tmp_path,
+            hashlib.sha256(snapshot).hexdigest(),
+            child.pid,
+            7,
+            timeout=0.2,
+        )
+
+        assert child.poll() is None
+        assert result == 1
+        assert not host.host_lock_path(tmp_path).exists()
+        assert lock.read_bytes() == snapshot
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_stop_daemon_after_host_exit_cleans_after_dead_host_without_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _exited_process()
+    snapshot = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(snapshot)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        lock.unlink()
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(snapshot).hexdigest(),
+        child.pid,
+        7,
+        timeout=0.2,
+    )
+
+    assert result == 0
+    assert called
+    assert not lock.exists()
+
+
+def test_stop_daemon_after_host_exit_rejects_changed_instance_without_host_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = _exited_process()
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        child.pid,
+        7,
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert lock.read_bytes() == new
+
+
+def test_stop_daemon_after_host_exit_preserves_a_changed_daemon(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+    old = b'{"pid":42,"started_at":1,"instance_id":"daemon_old"}'
+    new = b'{"pid":43,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(new)
+    called = False
+
+    def request_shutdown(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        hashlib.sha256(old).hexdigest(),
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 4
+    assert not called
+    assert host.read_host_info(tmp_path) == stale
+    assert lock.read_bytes() == new
+
+
+def test_stop_daemon_after_host_exit_clears_stale_host_without_daemon(
+    tmp_path: Path,
+) -> None:
+    stale = host.HostInfo(
+        pid=999_999,
+        port=1,
+        token="stale_host_token_123",
+        started_at=7,
+    )
+    host.write_host_info(tmp_path, stale)
+
+    result = host.stop_daemon_after_host_exit(
+        tmp_path,
+        None,
+        stale.pid,
+        stale.started_at,
+        timeout=0.2,
+    )
+
+    assert result == 0
     assert not host.host_lock_path(tmp_path).exists()

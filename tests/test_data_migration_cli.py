@@ -33,7 +33,10 @@ def _env(*, failpoint=None):
         for k, v in os.environ.items()
         if not k.startswith("TIANSHU_") and not k.endswith(("BASE_URL", "API_KEY"))
     }
-    env["PYTHONPATH"] = SRC
+    test_lock_root = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if test_lock_root:
+        env["TIANSHU_TEST_LOCK_ROOT"] = test_lock_root
+    env["PYTHONPATH"] = SRC + os.pathsep + env.get("PYTHONPATH", "")
     if "TIANSHU_AUTHORITY_ROOT" in os.environ:
         env["TIANSHU_AUTHORITY_ROOT"] = os.environ["TIANSHU_AUTHORITY_ROOT"]
     if failpoint:

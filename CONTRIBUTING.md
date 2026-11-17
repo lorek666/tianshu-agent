@@ -30,6 +30,13 @@ codex/<scope>     Codex 工作分支，改动类型由提交与 PR 标题说明
 
 **每张工单一个分支 + 一个 PR，自己开自己合**。不是为了凑人数，是为了让每个改动有独立的 CI 记录和可回滚边界。
 
+共享同一根因或同一发布门禁的多个症状，先在一个集成分支汇总为一个交付批次，不按每条 CI
+报错拆成多个追尾 PR。代码 PR 默认先开 **draft**：draft 期间的同步推送只记录进度，不启动
+完整 runner 矩阵；完成代码、测试和证据冻结后才标记 ready-for-review，该事件为最终门禁
+信号。GitHub 对 `pull_request` 事件的 `GITHUB_SHA` 是 PR 合成 merge commit，不等于 PR
+head SHA；证据必须同时记录 `head.sha`、`head tree`、`base.sha` 和 event `GITHUB_SHA`，
+不能把三者混写。最终检查后 head 或 base 发生变化，必须重新绑定新对象，不能沿用旧绿。
+
 只有一位维护者时，GitHub required approving reviews 保持 **0**；高危改动仍必须满足 §7 的独立复审要求，不要求为此再建一个批准账号。`CODEOWNERS`、issue assignee 和 GitHub milestones 按需要启用：当前责任人统一为维护者，里程碑与验收依据沿用 `docs/`，下一步与阻塞记录在 `docs/KNOWLEDGE.md`，不重复维护同一份状态。
 
 `main` 已开分支保护：不走 PR 合不了、`strict`（分支必须与 main 同步）、`enforce_admins`（这道门禁对仓库所有者同样生效）、禁止强推与删除。门禁是机械的，不靠自觉，也不再留"文档错字可直接推"的口子。
@@ -80,7 +87,13 @@ uv run --frozen pytest
 uv run --frozen ruff check .
 ```
 
-以上是当前提交前检查；CI 使用同一锁文件和测试套件，并附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows 在两个独立 `windows-latest` runner 上使用原包装器和分片插件，每片执行以下命令（`INDEX` 为 0 或 1，`REPORT` 为 runner 临时目录下的绝对路径）。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
+以上是最终候选项提交前检查。开发迭代先跑能真实区分坏实现与正确实现的定向红/绿测试；
+全量 pytest 只在代码冻结后运行一次。修复失败后代码树发生变化，属于新候选，必须重跑受影响
+范围及最终全量；同一代码树不因无关文档整理重复跑全量。CI 使用同一锁文件和测试套件，并
+附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows
+在两个独立 `windows-latest` runner 上使用原包装器和分片插件，每片执行以下命令（`INDEX`
+为 0 或 1，`REPORT` 为 runner 临时目录下的绝对路径）。完整命令以
+`.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
 
 ```bash
 uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=2 --ci-shard-report=REPORT -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
@@ -92,7 +105,37 @@ Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证�
 
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
+候选冻结按以下顺序执行，避免“改一处、提交一次、跑整套、再改一处”：
+
+1. 在 ignored `.omc/artifacts/` 累积问题台账、红/绿日志和候选 SHA；过程变化不持续写进
+   `docs/KNOWLEDGE.md`。
+2. 定向红测证明旧实现失败，最小修复后定向转绿。
+3. 记录产品代码、测试和待提交文档的冻结状态，并让第二读者先做设计/实现预审；只有 P0/P1
+   或直接阻断当前发布契约的已确认 P2 可重新打开代码修改，其余问题登记后延后。
+4. 同步最新 `origin/main`，解决冲突后再做最终全量、静态检查和独立复审绑定。
+5. 一次性更新本会话的 `docs/KNOWLEDGE.md` §8 记录和受影响文档。
+6. 推送 draft PR，记录并核对 head SHA/tree 与复审对象一致；标记 ready-for-review 后，
+   为该次 event 记录 head/base、合成 merge `GITHUB_SHA` 和一次完整 required CI。
+7. CI 绿且复审 PASS 后按保护规则合并。若 head 变化、base 前进或最终检查后又产生实质提交，
+   重新绑定新对象；不以旧绿、旧复审或部分重跑冒充新候选。
+
+“仅文档变化”可以复用上一候选对产品探针的结论，但复审报告必须用提交/diff 证明产品代码未变，
+并审查文档增量；云端 required checks 仍绑定最终提交。路径级“文档 PR 跳过 Python”属于门禁
+语义变更，不能用普通 bugfix 顺手放宽，须另行取证和决策。
+
 改动 UI 源码时，还须运行 `pnpm --dir ui install --frozen-lockfile`、`pnpm --dir ui run typecheck`、`pnpm --dir ui run test` 和 `pnpm --dir ui run build`，将对应 `ui/dist` 产物一并提交。CI 会重建并检查产物是否漂移。
+
+改动 `desktop/src-tauri/` 时，还须在该目录运行以下命令；`rust-toolchain.toml`
+固定 Rust 工具链并声明 rustfmt/clippy：
+
+```bash
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+macOS 检查并入现有 macOS required job；Windows 原生检查作为独立 job，由现有
+Windows required 汇总 job 绑定其 `success`。不新增 required check 名称。
 
 **锁文件漂移只能靠 `uv lock --check` 查**：锁文件过期时它会 exit 1 并报 `The lockfile at uv.lock needs to be updated`；同样条件下 `uv sync --frozen` 仍然 exit 0——「用了锁文件」不等于「校验过锁文件」，别拿 `sync --frozen` 当漂移门禁。这也是 CI 里先跑 `uv lock --check` 的原因。
 
@@ -109,8 +152,8 @@ Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/te
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint |
-| `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖 |
+| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint；R1 桌面壳的 Rust fmt/test/clippy |
+| `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 
 required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更新该配置。改检查名称或矩阵时必须同步核对远端配置。Windows CI 的通过范围以具体 run 的系统版本和架构为准，不代表已验证 Windows 10/11、ARM64 或桌面安装体验。
@@ -128,7 +171,8 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 ## 8. 发布
 
 - 当前仍处内部研发阶段，版本号使用 `v0.x.y`；M0–M5 功能验收完成不等于面向普通用户的发布验收完成。
-- tag 触发构建 —— **尚无此工作流**：`.github/workflows/` 目前只有 `ci.yml`，触发条件是 `push: branches: [main]` 与 `pull_request`，**没有 `tags:` 触发**。发布流程要等真正开始发版时再落地，别按这条假设「打个 tag 就自动出包」
+- `.github/workflows/release.yml` 只接受与当前 `origin/main` 精确相同的手动 commit，或先解引用到 commit 的 `v0.x.y` annotated tag；随后要求该 SHA 最新一次 main push CI 的所有 job 为 `success` 才构建四个原生 target。四份 artifact 必须由 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target`，最后只创建 draft Release。工作流不是现有 required check，不自动公开 Release。
+- macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`；禁止另加下划线别名。`release-index.json` 必须绑定两份脚本的 SHA256 与大小。正式候选还须记录精确组合 SHA 的 CI、真实 workflow dispatch、四目标 artifact 下载/汇总；设备安装、升级/回退、Gatekeeper/SmartScreen 与物理断电各自另验。
 - CHANGELOG 在 `1.0` 之前手写即可
 
 面向普通用户发布前，必须逐项补齐以下验收并记录证据；下列内容是发布条件，**不是现有能力**：

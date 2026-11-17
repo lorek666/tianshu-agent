@@ -35,11 +35,13 @@ from tianshu.maintenance import (
     database_lock_path,
 )
 
+PRODUCTION_LOCK_ROOT = maintenance._lock_root
+
 
 @pytest.fixture(autouse=True)
 def isolated_lock_root(tmp_path, monkeypatch):
     """测试只在临时目录写锁；子进程显式注入同一个根，不改产品选根规则。"""
-    original = getattr(maintenance, "_lock_root", None)
+    original = PRODUCTION_LOCK_ROOT
     root = tmp_path / "system-lock-root"
     monkeypatch.setattr(maintenance, "_lock_root", lambda: root, raising=False)
     return root, original

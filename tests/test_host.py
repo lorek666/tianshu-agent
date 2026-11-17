@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -23,6 +24,8 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
@@ -173,10 +176,21 @@ def _ui_dir(root: Path, *, index_html: str | None = None) -> Path:
     return ui
 
 
-def _start_bridge(root: Path, *, token: str = "tok") -> tuple[host.UiBridge, int]:
-    config = host.BridgeConfig(
-        data_root=root, ui_dir=_ui_dir(root), token=token, port=0
-    )
+def _start_bridge(
+    root: Path,
+    *,
+    token: str = "tok",
+    release: host.HostReleaseIdentity | None = None,
+) -> tuple[host.UiBridge, int]:
+    config_options = {
+        "data_root": root,
+        "ui_dir": _ui_dir(root),
+        "token": token,
+        "port": 0,
+    }
+    if release is not None:
+        config_options["release"] = release
+    config = host.BridgeConfig(**config_options)
     bridge = host.UiBridge(config)
     bridge.serve_background()
     return bridge, bridge.port
@@ -340,6 +354,98 @@ def test_second_host_instance_is_refused_with_url(root: Path) -> None:
     assert f"127.0.0.1:{port}" in str(excinfo.value)
 
 
+def test_host_release_identity_round_trips_in_lock(root: Path) -> None:
+    release = host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
+    info = host.HostInfo(
+        pid=os.getpid(),
+        port=0,
+        token="release_token_1234",
+        started_at=1,
+        ui_dir=str(root / "ui"),
+        release=release,
+    )
+
+    host.write_host_info(root, info)
+
+    assert host.read_host_info(root) == info
+    payload = json.loads(host.host_lock_path(root).read_text(encoding="utf-8"))
+    assert payload["release"] == {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "target": "macos-arm64",
+    }
+
+
+def test_host_release_identity_lock_rejects_malformed_shape(root: Path) -> None:
+    path = host.host_lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "port": 1,
+                "token": "release_token_1234",
+                "started_at": 1,
+                "ui_dir": str(root / "ui"),
+                "release": {
+                    "schema": 1,
+                    "product": "tianshu-agent",
+                    "version": "0.1.0",
+                    "commit": "0123456789abcdef0123456789abcdef01234567",
+                    "target": "macos-arm64",
+                    "extra": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(host.HostError, match="Host 元数据损坏"):
+        host.read_host_info(root)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("schema", 2), ("product", "other-product")],
+    ids=["schema", "product"],
+)
+def test_host_release_identity_lock_rejects_wrong_schema_or_product(
+    root: Path, field: str, value: object
+) -> None:
+    release: dict[str, object] = {
+        "schema": 1,
+        "product": "tianshu-agent",
+        "version": "0.1.0",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "target": "macos-arm64",
+    }
+    release[field] = value
+    path = host.host_lock_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "port": 1,
+                "token": "release_token_1234",
+                "started_at": 1,
+                "ui_dir": str(root / "ui"),
+                "release": release,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(host.HostError, match="Host 元数据损坏"):
+        host.read_host_info(root)
+
+
 def test_stale_host_lock_is_replaced(root: Path) -> None:
     # 端口上没人应答 = 陈旧锁；不能因为一个残留文件就永远打不开 App。
     dead_port = _free_port()
@@ -352,6 +458,95 @@ def test_stale_host_lock_is_replaced(root: Path) -> None:
         assert host.read_host_info(root).token == info.token
     finally:
         host.clear_host_info(root, pid=info.pid)
+
+
+def _blocked_host_metadata_publisher(
+    root: str,
+    control: Connection,
+) -> None:
+    data_root = Path(root)
+    path = host.host_lock_path(data_root)
+    new = host.HostInfo(pid=4343, port=2, token="new_token", started_at=2, ui_dir="ui")
+    original_write_bytes = Path.write_bytes
+    original_replace = os.replace
+
+    def intercept_write_bytes(self: Path, data: bytes) -> int:
+        if self != path:
+            return original_write_bytes(self, data)
+        with self.open("wb") as handle:
+            handle.write(data[:5])
+            handle.flush()
+            control.send(("blocked", "partial_write", os.getpid()))
+            if control.recv() != "release":
+                raise AssertionError("测试未释放半截写")
+            handle.write(data[5:])
+        return len(data)
+
+    def intercept_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        if Path(dst) != path:
+            original_replace(src, dst)
+            return
+        control.send(("blocked", "atomic_replace", os.getpid()))
+        if control.recv() != "release":
+            raise AssertionError("测试未释放原子替换")
+        original_replace(src, dst)
+
+    Path.write_bytes = intercept_write_bytes
+    os.replace = intercept_replace
+    try:
+        host.write_host_info(data_root, new)
+        control.send(("done", None, os.getpid()))
+    except BaseException:
+        control.send(("error", traceback.format_exc(), os.getpid()))
+        raise
+    finally:
+        Path.write_bytes = original_write_bytes
+        os.replace = original_replace
+        control.close()
+
+
+def test_host_metadata_publication_is_atomic_for_external_readers(root: Path) -> None:
+    """桌面壳不持有 Python 的元数据互斥，不能让它读到锁的半截 JSON。
+
+    原实现直接 `Path.write_bytes()`，会先截断现锁再写。Tauri 启动时恰好并发
+    读取，就可能把一次短暂发布读成“Host 元数据不合法”，直接进启动失败页。
+    发布者放在 spawn 子进程，父进程像 Tauri 壳一样绕过 Python 互斥直接读。子进程
+    同时截住旧实现的截断写和新实现的 rename，使新实现下锁在发布前仍完整保留旧
+    字节，旧实现下则稳定暴露半截 JSON。
+    """
+    old = host.HostInfo(pid=4242, port=1, token="old_token", started_at=1, ui_dir="ui")
+    new = host.HostInfo(pid=4343, port=2, token="new_token", started_at=2, ui_dir="ui")
+    host.write_host_info(root, old)
+    path = host.host_lock_path(root)
+
+    context = multiprocessing.get_context("spawn")
+    parent_control, child_control = context.Pipe()
+    writer = context.Process(
+        target=_blocked_host_metadata_publisher,
+        args=(str(root), child_control),
+    )
+    writer.start()
+    child_control.close()
+    released = False
+    try:
+        assert parent_control.poll(5), "publisher did not reach publication barrier"
+        ready = parent_control.recv()
+        assert ready[0] == "blocked", ready
+        assert ready[1] in {"partial_write", "atomic_replace"}, ready
+        assert ready[2] != os.getpid(), "publisher must be a real child process"
+        published = json.loads(path.read_bytes())
+        assert published["pid"] == old.pid
+        assert published["token"] == old.token
+    finally:
+        if writer.is_alive():
+            parent_control.send("release")
+            released = True
+        writer.join(timeout=10)
+        parent_control.close()
+    assert not writer.is_alive(), "publisher did not exit"
+    assert writer.exitcode == 0, writer.exitcode
+    assert released
+    assert host.read_host_info(root) == new
 
 
 def _free_port() -> int:
@@ -448,6 +643,57 @@ def test_wrong_token_is_rejected(root: Path, fake_daemon) -> None:
     try:
         status, payload = _http(port, "GET", "/state", token="wrong")
         assert status == 401
+    finally:
+        bridge.stop()
+
+
+def test_session_proves_token_and_host_pid_without_touching_daemon(root: Path) -> None:
+    bridge, port = _start_bridge(root)
+    try:
+        status, payload = _http(port, "GET", "/session")
+        assert status == 401
+        status, payload = _http(port, "GET", "/session", token="tok")
+        assert status == 200
+        assert json.loads(payload) == {"ok": True, "pid": os.getpid()}
+    finally:
+        bridge.stop()
+
+
+def test_session_release_identity_matches_the_host_lock(root: Path) -> None:
+    release = host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
+    info = host.HostInfo(
+        pid=os.getpid(),
+        port=0,
+        token="tok",
+        started_at=1,
+        ui_dir=str(root / "ui"),
+        release=release,
+    )
+    bridge = host.UiBridge(
+        host.BridgeConfig(
+            data_root=root,
+            ui_dir=_ui_dir(root),
+            token=info.token,
+            port=0,
+            release=info.release,
+        )
+    )
+    info.port = bridge.port
+    host.write_host_info(root, info)
+    bridge.serve_background()
+    try:
+        status, payload = _http(bridge.port, "GET", "/session", token=info.token)
+        assert status == 200, payload
+        lock_payload = json.loads(host.host_lock_path(root).read_text(encoding="utf-8"))
+        assert json.loads(payload) == {
+            "ok": True,
+            "pid": os.getpid(),
+            "release": lock_payload["release"],
+        }
     finally:
         bridge.stop()
 
@@ -611,9 +857,71 @@ def test_supervisor_reuses_already_running_daemon(root: Path, fake_daemon) -> No
 
 
 def test_supervisor_shutdown_asks_daemon_to_exit(root: Path, fake_daemon) -> None:
+    lock = ipc.run_dir(root) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(
+        b'{"pid":999999,"started_at":1,"instance_id":"fake-instance"}'
+    )
     supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
-    supervisor.stop(reason="user", timeout=2)
+    supervisor.stop(reason="user", timeout=0.2)
     assert fake_daemon.shutdown_reason == "user"
+
+
+def test_supervisor_does_not_stop_a_replacement_daemon(root: Path, fake_daemon) -> None:
+    stale = b'{"pid":42,"started_at":1,"instance_id":"daemon_stale"}'
+    lock = ipc.run_dir(root) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(stale)
+    supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
+
+    supervisor._shutdown_daemon(reason="user", timeout=0.2)
+
+    assert fake_daemon.shutdown_reason == ""
+    assert lock.read_bytes() == stale
+
+
+def test_supervisor_timeout_does_not_kill_a_daemon_that_replaced_the_lock(
+    root: Path, fake_daemon, monkeypatch
+) -> None:
+    old = b'{"pid":4242,"started_at":1,"instance_id":"fake-instance"}'
+    new = b'{"pid":4343,"started_at":2,"instance_id":"daemon_new"}'
+    lock = ipc.run_dir(root) / "daemon.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(old)
+    replaced = False
+
+    def probe_after_replacement(*_args, **_kwargs):
+        nonlocal replaced
+        if not replaced:
+            lock.write_bytes(new)
+            replaced = True
+        return True
+
+    terminated: list[int] = []
+    monkeypatch.setattr(ipc, "probe", probe_after_replacement)
+    monkeypatch.setattr(
+        host.DaemonSupervisor,
+        "_terminate",
+        staticmethod(terminated.append),
+    )
+    supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
+
+    supervisor._shutdown_daemon(reason="user", timeout=0.05)
+
+    assert fake_daemon.shutdown_reason == "user"
+    assert replaced
+    assert terminated == []
+    assert lock.read_bytes() == new
+
+
+def test_supervisor_without_daemon_identity_does_not_stop_an_unknown_instance(
+    root: Path, fake_daemon
+) -> None:
+    supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
+
+    supervisor._shutdown_daemon(reason="user", timeout=0.2)
+
+    assert fake_daemon.shutdown_reason == ""
 
 
 def test_supervisor_reports_failed_spawn(root: Path) -> None:
@@ -637,6 +945,37 @@ def test_cli_host_status_reports_not_running(root: Path, capsys) -> None:
 def test_cli_host_stop_is_noop_when_not_running(root: Path, capsys) -> None:
     assert cli.main(["host", "stop", "--data-root", str(root)]) == 0
     assert "Host" in capsys.readouterr().out
+
+
+def test_cli_host_forwards_release_identity(monkeypatch, root: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_host(data_root: Path, **kwargs):
+        captured["data_root"] = data_root
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(host, "run_host", fake_run_host)
+    code = cli.main(
+        [
+            "host",
+            "--data-root",
+            str(root),
+            "--release-version",
+            "0.1.0",
+            "--release-commit",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--release-target",
+            "macos-arm64",
+        ]
+    )
+
+    assert code == 0
+    assert captured["release"] == host.HostReleaseIdentity(
+        version="0.1.0",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        target="macos-arm64",
+    )
 
 
 def test_cli_host_status_reports_running_host(root: Path) -> None:

@@ -91,6 +91,8 @@ LOCK_NAME = "daemon.lock"
 #: 这段窗口里我们**不**接管，只是等；锁创建者的 `started_at` 一旦超过它，
 #: 就说明它没能活到 bind（崩溃/被拖住），可以接管。
 LOCK_GRACE_MS = 2_000
+LOCK_DELETE_RETRY_BUDGET_S = 0.5
+LOCK_DELETE_RETRY_INTERVAL_S = 0.02
 
 #: 抢锁的最多尝试次数（含等宽限窗与陈旧接管）。防止两个进程互相删对方锁时
 #: 无限打转——宁可明确失败，也不在启动路径上永远转。
@@ -160,6 +162,11 @@ def _log(message: str) -> None:
     新增一个会让 schema 校验和回放同时变红。
     """
     print(f"[tianshu-daemon] {message}", file=sys.stderr, flush=True)
+
+
+def _should_log_accept_failure(count: int) -> bool:
+    """握手失败只在 1/2/4/8/... 次采样，保留趋势而不制造日志洪泛。"""
+    return count > 0 and count & (count - 1) == 0
 
 
 def lock_path(data_root: Path) -> Path:
@@ -238,13 +245,28 @@ def _unlink_lock(lock: DaemonLock) -> None:
     另一个 daemon 接管后会把锁写成它自己的；无条件删文件等于把别人的单实例
     保护拆掉——下一次就有两个实例同时 bind。
     """
-    payload = _read_lock(lock.path)
-    if payload is not None and payload.get("instance_id") != lock.instance_id:
-        return
-    try:
-        lock.path.unlink()
-    except OSError:
-        pass
+    deadline = time.monotonic() + LOCK_DELETE_RETRY_BUDGET_S
+    while True:
+        payload = _read_lock(lock.path)
+        if payload is None or payload.get("instance_id") != lock.instance_id:
+            return
+        try:
+            lock.path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            # Windows readers briefly hold a non-delete-sharing handle while
+            # Host polls the lock. Retry this platform-specific contention for
+            # a bounded window; POSIX permission errors are not transient.
+            remaining = deadline - time.monotonic()
+            if os.name != "nt" or remaining <= 0:
+                _log(f"删除 Daemon 锁失败：{exc}")
+                return
+            time.sleep(min(LOCK_DELETE_RETRY_INTERVAL_S, remaining))
+        except OSError as exc:
+            _log(f"删除 Daemon 锁失败：{exc}")
+            return
 
 
 def acquire_lock(data_root: Path) -> DaemonLock:
@@ -566,6 +588,8 @@ class _Daemon:
         #: `run.cancel` 之后等待终态的计时表：run_id -> 收到取消的时刻。
         self._cancel_watch: dict[str, float] = {}
         self._conn_counter = 0
+        #: 连续握手失败次数。成功认证一次即清零；日志只在 2 的幂次采样。
+        self._accept_failure_count = 0
 
         self.lock: DaemonLock | None = None
         self.server: ipc.Server | None = None
@@ -899,13 +923,19 @@ class _Daemon:
                         return
                     # 认证失败 / 握手前断开（`ipc.probe()` 的探活连接就是这样）
                     # 都是"这条连接不算数"，不是"服务端该关"。
-                    _log(f"接受连接失败（继续监听）：{exc}")
+                    self._accept_failure_count += 1
+                    if _should_log_accept_failure(self._accept_failure_count):
+                        _log(
+                            "握手失败，继续监听"
+                            f"（累计 {self._accept_failure_count} 次）：{exc}"
+                        )
                     continue
                 except (ipc.IpcError, OSError) as exc:
                     if self.stop.is_set():
                         return
                     self._fail_accept(f"监听端点不可用：{type(exc).__name__}: {exc}")
                     return
+                self._accept_failure_count = 0
                 if self.stop.is_set():
                     # 退出路径上 close() 会"敲一下"唤醒挂起的 accept（Windows）；
                     # 这条连接只用于唤醒，不能当正式客户端处理。
@@ -1587,15 +1617,38 @@ def serve(
 
 
 def request_shutdown(
-    data_root: Path, *, reason: str = "user", timeout: float = 5.0
+    data_root: Path,
+    *,
+    reason: str = "user",
+    expected_instance_id: str | None = None,
+    timeout: float = 5.0,
 ) -> bool:
-    """请守护进程退出。返回是否把请求送到了（`False` = 连不上/没答）。"""
+    """请守护进程退出。返回是否把请求送到了（`False` = 连不上/身份不符/没答）。
+
+    退出请求必须绑定调用方先前观察到的实例。检查使用本次已建立连接的
+    `hello` 回执，而不是先另连一次再发请求：连接一旦属于实例 A，后续帧就
+    不可能因为 A 退出而转而写入新实例 B；B 抢到端点时只会在握手回执中
+    暴露不同 `instance_id`，这里随即拒绝。
+    """
+    if expected_instance_id is not None and (
+        not isinstance(expected_instance_id, str) or not expected_instance_id
+    ):
+        _log("拒绝退出：期望的 Daemon 实例身份不合法")
+        return False
     budget = max(0.1, float(timeout))
     deadline = time.monotonic() + budget
     client = ipc.Client(Path(data_root), timeout=budget)
     try:
         remaining = max(0.05, deadline - time.monotonic())
         client.connect(timeout=remaining)
+        if expected_instance_id is not None:
+            observed = client.welcome.get("instance_id")
+            if observed != expected_instance_id:
+                _log(
+                    "拒绝退出：Daemon 实例已变更"
+                    f"（期望 {expected_instance_id}，实际 {observed}）"
+                )
+                return False
         remaining = max(0.05, deadline - time.monotonic())
         client.call("shutdown", {"reason": reason}, timeout=remaining)
         return True

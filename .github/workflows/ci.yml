@@ -3,7 +3,8 @@ name: CI
 # Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
 # uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
 # 长等待诊断参数，并在两个独立 Windows runner 按文件分片。
-# UI 另有类型、测试、构建与 dist 一致性检查。
+# UI 另有类型、测试、构建与 dist 一致性检查；macOS required job 与 Windows
+# required 汇总还会覆盖 R1 Tauri 壳的 fmt/test/clippy。
 # 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
 #
 # 为什么只有 3.12：pyproject.toml 的 requires-python 是 ">=3.12,<3.13"，
@@ -12,6 +13,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Iterative work stays in draft PRs. Marking ready is the final candidate
+    # freeze signal; only then does this workflow allocate the full runner
+    # matrix. A later push still gets its own exact-SHA run.
+    types: [opened, reopened, synchronize, ready_for_review]
 
 # PR：按分支分组，连推时取消上一轮——省 runner，也不会有过期的绿色。
 # main：按 commit 分组，每个 commit 都要拿到自己的结论。
@@ -30,6 +35,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}) · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     # 每个平台的上限。默认是 360 分钟：一个挂住的测试会把 runner 占 6 小时，
     # 而"超时"和"挂住"对排查是两件完全不同的事——超时至少会带着已经跑过的
     # 输出结束。（实测踩过：windows job 卡在 Pytest 里 20 分钟没动静。）
@@ -51,6 +57,21 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+
+      - name: Rust fmt（macOS）
+        if: matrix.os == 'macos-latest'
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: Rust tests（macOS）
+        if: matrix.os == 'macos-latest'
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Rust clippy（macOS）
+        if: matrix.os == 'macos-latest'
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: 安装 uv
         uses: astral-sh/setup-uv@v5
@@ -87,6 +108,7 @@ jobs:
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
     runs-on: windows-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -140,13 +162,33 @@ jobs:
           path: ${{ runner.temp }}/windows-ci/restore-t1-windows.json
           if-no-files-found: warn
 
+  desktop_windows:
+    name: desktop rust checks · windows
+    runs-on: windows-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Rust fmt
+        run: cargo fmt --check
+      - name: Rust tests
+        run: cargo test --locked
+      - name: Rust clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
   windows_summary:
     # 名称保留为原 required check；此 job 在 Ubuntu 核验两个 Windows job。
     name: test (windows-latest) · py3.12
     runs-on: ubuntu-latest
-    needs: windows_shards
+    needs: [windows_shards, desktop_windows]
     # 上游失败也必须进入汇总，不能让 required 因依赖失败而 skip 成 success。
-    if: always()
+    if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
     timeout-minutes: 25
     defaults:
       run:
@@ -175,12 +217,18 @@ jobs:
         env:
           SHARD_REPORTS: ${{ runner.temp }}/windows-ci-shards
           UPSTREAM_RESULT: ${{ needs.windows_shards.result }}
+          UPSTREAM_DESKTOP_RESULT: ${{ needs.desktop_windows.result }}
         # JSON 的 session exit 不能替代 wrapper 最终退出或上传/取消的 job 结论。
         run: >-
           uv run --frozen python scripts/pytest_ci_shards.py verify
           --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
           --run-attempt "$GITHUB_RUN_ATTEMPT" --count 2 --indices 0 1
           --needs-result "$UPSTREAM_RESULT"
+      - name: 验证 Windows 桌面壳门禁
+        if: always()
+        env:
+          UPSTREAM_DESKTOP_RESULT: ${{ needs.desktop_windows.result }}
+        run: test "$UPSTREAM_DESKTOP_RESULT" = success
 
   # UI 是 M5 才进仓库的：React + TS，构建产物（ui/dist）提交进仓库，因为
   # Host 运行时直接加载它——用户机器上不需要 Node。既然产物是"源码的一部分"，
@@ -192,6 +240,7 @@ jobs:
   ui:
     name: ui · typecheck / test / build
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash

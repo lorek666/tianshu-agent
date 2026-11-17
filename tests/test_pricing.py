@@ -292,13 +292,19 @@ def test_format_cost_separates_known_from_unknown():
 
 
 def test_official_endpoint_is_priced():
-    model = OpenAICompatibleModel("gpt-4o-mini", api_key="k")
+    model = OpenAICompatibleModel(
+        "gpt-4o-mini", base_url="https://api.openai.com/v1", api_key="k"
+    )
     identity = identity_of(model)
     assert identity == ModelIdentity(
         adapter="openai-compatible", vendor="openai", model="gpt-4o-mini"
     )
 
-    claude = AnthropicMessagesModel("claude-sonnet-4-5", api_key="k")
+    claude = AnthropicMessagesModel(
+        "claude-sonnet-4-5",
+        base_url="https://api.anthropic.com/v1",
+        api_key="k",
+    )
     assert identity_of(claude) == ModelIdentity(
         adapter="anthropic", vendor="anthropic", model="claude-sonnet-4-5"
     )

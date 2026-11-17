@@ -51,7 +51,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ipc
 from .errors import TianshuError
-from .leases import GuardTimeout, execution_guard
+from .fsutil import atomic_write_bytes
+from .leases import GuardTimeout, execution_guard, pid_alive
 
 HOST_LOCK_NAME = "host.lock"
 MAX_RPC_BODY = 1 * 1024 * 1024
@@ -71,6 +72,33 @@ class HostError(TianshuError):
 # --------------------------------------------------------------------------- 锁
 
 
+@dataclass(frozen=True)
+class HostReleaseIdentity:
+    """桌面壳与 Host 共用的发行身份；只用于兼容性判定，不是授权凭据。"""
+
+    version: str
+    commit: str
+    target: str
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"0\.\d+\.\d+", self.version) is None
+            or re.fullmatch(r"[0-9a-f]{40}", self.commit) is None
+            or self.target
+            not in {"macos-arm64", "macos-x64", "windows-x64", "windows-arm64"}
+        ):
+            raise ValueError("Host 发行身份不合法")
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "product": "tianshu-agent",
+            "version": self.version,
+            "commit": self.commit,
+            "target": self.target,
+        }
+
+
 @dataclass
 class HostInfo:
     pid: int
@@ -78,6 +106,7 @@ class HostInfo:
     token: str
     started_at: int
     ui_dir: str = ""
+    release: HostReleaseIdentity | None = None
 
 
 def host_lock_path(data_root: Path) -> Path:
@@ -86,11 +115,13 @@ def host_lock_path(data_root: Path) -> Path:
 
 @contextmanager
 def _host_info_guard(data_root: Path):
-    """只串行化 Host 元数据，不占业务执行锁，不在锁内等待 HTTP/Daemon。
+    """只串行化 Host 元数据，不占业务执行锁，也不等待 Daemon 退出。
 
     复用现有 OS 互斥及其 5 秒等待上限，路径在 run/ 下，与业务数据根的
     execution.guard 分开。所有读者关闭文件后才释放，Windows 删除时不会
-    撞到本项目另一个仍打开的读句柄；条件删除与接管也处于同一临界区。
+    撞到本项目另一个仍打开的读句柄；条件删除、发布与接管处于同一临界区。
+    有界退出请求可在锁内发送并确认，但得到响应后立即释放，随后在锁外等待
+    daemon.lock 消失。
     """
     try:
         with execution_guard(ipc.run_dir(data_root)):
@@ -114,12 +145,32 @@ def _read_host_info(data_root: Path) -> HostInfo | None:
     except (ValueError, UnicodeDecodeError) as exc:
         raise HostError("Host 元数据损坏，无法确认实例状态") from exc
     try:
+        release = None
+        if "release" in raw:
+            raw_release = raw["release"]
+            if not isinstance(raw_release, dict):
+                raise TypeError
+            expected = {"schema", "product", "version", "commit", "target"}
+            if set(raw_release) != expected:
+                raise ValueError
+            if (
+                type(raw_release["schema"]) is not int
+                or raw_release["schema"] != 1
+                or raw_release["product"] != "tianshu-agent"
+            ):
+                raise ValueError
+            release = HostReleaseIdentity(
+                version=raw_release["version"],
+                commit=raw_release["commit"],
+                target=raw_release["target"],
+            )
         return HostInfo(
             pid=int(raw["pid"]),
             port=int(raw["port"]),
             token=str(raw["token"]),
             started_at=int(raw.get("started_at") or 0),
             ui_dir=str(raw.get("ui_dir") or ""),
+            release=release,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HostError("Host 元数据损坏，无法确认实例状态") from exc
@@ -155,7 +206,12 @@ def _write_host_info(
         "started_at": info.started_at,
         "ui_dir": info.ui_dir,
     }
-    path.write_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    if info.release is not None:
+        payload["release"] = info.release.payload()
+    # 桌面壳校验 host.lock 时不持有 Python 侧元数据互斥；直接 write_bytes 会
+    # 先截断再写，启动期的并发读者可能把半截 JSON 误判成永久损坏。原子发布
+    # 让外部读者只能看到完整旧锁或完整新锁。
+    atomic_write_bytes(path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
     if os.name != "nt":
         try:
             os.chmod(path, 0o600)
@@ -176,6 +232,197 @@ def clear_host_info(
         if expected is not None and not _same_host_instance(current, expected):
             return
         host_lock_path(data_root).unlink(missing_ok=True)
+
+
+def stop_daemon_if_unowned(
+    data_root: Path,
+    expected_sha256: str,
+    *,
+    timeout: float = 4.0,
+) -> int:
+    """在 Host 元数据守卫内，只停止明确无主的 Daemon。
+
+    返回值是给桌面壳 parse 的稳定退出码：
+
+    - 0：Daemon 锁已消失；实例换为另一摘要时返回 4；
+    - 3：已有新 Host 发布实例，保留 Daemon；
+    - 4：Daemon 实例已变更，保留新实例；
+    - 1：读取/停止失败或超时，调用方必须保留窗口。
+
+    这里拒绝任何可读 Host 锁。已知旧 Host 已退出的桌面退出路径应改用
+    :func:`stop_daemon_after_host_exit`，后者只在身份匹配且 PID 已死时条件
+    清理陈旧锁。
+    """
+    return _stop_daemon_after_host_observation(
+        data_root,
+        expected_sha256,
+        expected_host_identity=None,
+        timeout=timeout,
+    )
+
+
+def stop_daemon_after_host_exit(
+    data_root: Path,
+    expected_sha256: str | None,
+    expected_host_pid: int,
+    expected_host_started_at: int,
+    *,
+    timeout: float = 4.0,
+) -> int:
+    """清理已确认退出的指定 Host 留下的陈旧元数据和孤儿 Daemon。
+
+    该入口只允许由已观察 Host 进程退出的桌面壳调用。它在同一 Host 元数据
+    守卫内确认锁仍属于预期实例、确认 PID 已死、删除陈旧锁，再按退出前
+    Daemon 锁 SHA 发送退出请求。新 Host 已发布、Daemon 实例变化或进程仍
+    存活时必须保留现场并返回非零。
+
+    ``expected_sha256=None`` 表示退出前没有 Daemon 锁；若守卫内看到了新出现
+    的 Daemon，同样拒绝猜测并可重试。
+    """
+    if expected_host_pid <= 0 or expected_host_started_at <= 0:
+        print("期望的 Host 实例身份不合法", file=sys.stderr)
+        return 1
+    return _stop_daemon_after_host_observation(
+        data_root,
+        expected_sha256,
+        expected_host_identity=(expected_host_pid, expected_host_started_at),
+        timeout=timeout,
+    )
+
+
+def _stop_daemon_after_host_observation(
+    data_root: Path,
+    expected_sha256: str | None,
+    *,
+    expected_host_identity: tuple[int, int] | None,
+    timeout: float,
+) -> int:
+    from . import daemon
+
+    expected = expected_sha256.lower() if expected_sha256 is not None else None
+    if expected is not None and (
+        len(expected) != 64
+        or any(char not in "0123456789abcdef" for char in expected)
+    ):
+        print("期望的 Daemon 锁摘要不合法", file=sys.stderr)
+        return 1
+
+    root = Path(data_root)
+    lock_path = daemon.lock_path(root)
+    try:
+        with _host_info_guard(root):
+            current_host = _read_host_info(root)
+            if (
+                current_host is None
+                and expected_host_identity is not None
+                and pid_alive(expected_host_identity[0])
+            ):
+                print(
+                    f"Host PID {expected_host_identity[0]} 仍存活但 host.lock 缺失，"
+                    f"保留 Daemon；data_root={root}",
+                    file=sys.stderr,
+                )
+                return 1
+            if current_host is not None:
+                if expected_host_identity is None:
+                    print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
+                    return 3
+                if (
+                    current_host.pid,
+                    current_host.started_at,
+                ) != expected_host_identity:
+                    print("Host 已由新实例接管，保留 Daemon", file=sys.stderr)
+                    return 3
+                if pid_alive(current_host.pid):
+                    print("Host 进程仍存活，保留 Daemon", file=sys.stderr)
+                    return 1
+
+            try:
+                snapshot = lock_path.read_bytes()
+            except FileNotFoundError:
+                if current_host is not None:
+                    try:
+                        host_lock_path(root).unlink()
+                    except OSError as exc:
+                        print(f"清理陈旧 Host 锁失败：{exc}", file=sys.stderr)
+                        return 1
+                return 0
+            except OSError as exc:
+                print(f"读取 Daemon 锁失败：{exc}", file=sys.stderr)
+                return 1
+            if expected is None:
+                print("缺少退出前 Daemon 锁快照，拒绝停止新出现的实例", file=sys.stderr)
+                return 1
+            if _sha256_hex(snapshot) != expected:
+                print("Daemon 实例已变更，拒绝停止新实例", file=sys.stderr)
+                return 4
+
+            identity = _daemon_lock_identity(snapshot)
+            if identity is None:
+                print("Daemon 锁缺少可信实例身份，拒绝停止", file=sys.stderr)
+                return 1
+
+            if current_host is not None:
+                try:
+                    host_lock_path(root).unlink()
+                except OSError as exc:
+                    print(f"清理陈旧 Host 锁失败：{exc}", file=sys.stderr)
+                    return 1
+            stop_timeout = max(0.1, float(timeout))
+            requested = daemon.request_shutdown(
+                root,
+                reason="desktop_exit",
+                expected_instance_id=identity[1],
+                timeout=stop_timeout,
+            )
+    except HostError as exc:
+        print(f"无法取得 Host 元数据守卫：{exc}", file=sys.stderr)
+        return 1
+
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    while True:
+        try:
+            current = lock_path.read_bytes()
+        except FileNotFoundError:
+            return 0
+        except OSError as exc:
+            print(f"等待 Daemon 退出时读取锁失败：{exc}", file=sys.stderr)
+            return 1
+        if expected is None or _sha256_hex(current) != expected:
+            print("Daemon 退出期间实例已变更，保留新实例", file=sys.stderr)
+            return 4
+        if time.monotonic() >= deadline:
+            detail = "退出请求未送达" if not requested else "退出请求超时"
+            print(f"{detail}，Daemon 仍占用原实例锁", file=sys.stderr)
+            return 1
+        time.sleep(0.05)
+
+
+def _sha256_hex(payload: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _daemon_lock_identity(snapshot: bytes) -> tuple[int, str] | None:
+    """从已冻结的 daemon.lock 字节解析 PID 与实例身份；坏数据一律拒绝。"""
+    try:
+        payload = json.loads(snapshot.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    pid = payload.get("pid")
+    instance_id = payload.get("instance_id")
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(instance_id, str)
+        or not instance_id
+    ):
+        return None
+    return pid, instance_id
 
 
 def _http_alive(info: HostInfo, *, timeout: float = 0.4) -> bool:
@@ -219,7 +466,12 @@ def _http_get(port: int, path: str, *, timeout: float = 1.0) -> tuple[int, dict[
     return status, headers, body
 
 
-def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
+def acquire_host_info(
+    data_root: Path,
+    *,
+    ui_dir: Path,
+    release: HostReleaseIdentity | None = None,
+) -> HostInfo:
     """写锁前先确认没有活着的 Host；有就抛 `HostError`（附 URL，调用方直接复用）。"""
     existing = read_host_info(data_root)
     if existing is not None and _http_alive(existing):
@@ -230,6 +482,7 @@ def acquire_host_info(data_root: Path, *, ui_dir: Path) -> HostInfo:
         token=secrets.token_urlsafe(24),
         started_at=int(time.time() * 1000),
         ui_dir=str(ui_dir),
+        release=release,
     )
     with _host_info_guard(data_root):
         # 健康检查期间可能已被另一进程接管，不能用旧结果覆盖新快照。
@@ -379,20 +632,38 @@ class DaemonSupervisor:
         )
 
     def _shutdown_daemon(self, *, reason: str, timeout: float) -> None:
+        lock_path = ipc.run_dir(self.data_root) / "daemon.lock"
         try:
-            with ipc.Client(self.data_root, timeout=timeout) as client:
-                client.call("shutdown", {"reason": reason}, timeout=timeout)
-        except (ipc.IpcError, OSError):
-            return  # 本来就没起来/已经退了
+            snapshot = lock_path.read_bytes()
+        except OSError:
+            snapshot = None
+        identity = _daemon_lock_identity(snapshot) if snapshot is not None else None
+        if identity is None:
+            return
+        expected_instance_id = identity[1]
+        from . import daemon as daemon_rpc
+
+        if not daemon_rpc.request_shutdown(
+            self.data_root,
+            reason=reason,
+            expected_instance_id=expected_instance_id,
+            timeout=timeout,
+        ):
+            return
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not ipc.probe(self.data_root, timeout=0.2):
                 return
             time.sleep(0.05)
-        # 超时：按 daemon.lock 里的 pid 收掉进程树（Host 是监护人，这是它该做的）。
-        pid = _daemon_pid(self.data_root)
-        if pid is not None:
-            self._terminate(pid)
+        # 超时只终止发起请求时已核实的同一实例；新实例出现时绝不能拿当前
+        # daemon.lock 的 PID 去杀它。
+        try:
+            current = lock_path.read_bytes()
+        except OSError:
+            return
+        if current != snapshot:
+            return
+        self._terminate(identity[0])
 
     @staticmethod
     def _terminate(pid: int) -> None:
@@ -427,17 +698,6 @@ class DaemonSupervisor:
                 self._log_file = None
 
 
-def _daemon_pid(data_root: Path) -> int | None:
-    path = ipc.run_dir(data_root) / "daemon.lock"
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_bytes().decode("utf-8"))
-        return int(raw["pid"])
-    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError):
-        return None
-
-
 # --------------------------------------------------------------------------- UI 桥
 
 
@@ -449,6 +709,7 @@ class BridgeConfig:
     host: str = "127.0.0.1"
     port: int = 0
     serve_forever: bool = True
+    release: HostReleaseIdentity | None = None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -473,6 +734,13 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 return self._json(HTTPStatus.OK, {"ok": True, "pid": os.getpid()})
+            if path == "/session":
+                if not self._authorized():
+                    return
+                payload: dict[str, Any] = {"ok": True, "pid": os.getpid()}
+                if self.config.release is not None:
+                    payload["release"] = self.config.release.payload()
+                return self._json(HTTPStatus.OK, payload)
             if path == "/state":
                 if not self._authorized():
                     return
@@ -852,6 +1120,7 @@ def run_host(
     *,
     ui_dir: Path,
     daemon_command: list[str],
+    release: HostReleaseIdentity | None = None,
     port: int = 0,
     open_browser: bool = False,
     supervise: bool = True,
@@ -865,7 +1134,7 @@ def run_host(
     if "--data-root" not in daemon_command:
         daemon_command += ["--data-root", str(data_root)]
     try:
-        info = acquire_host_info(data_root, ui_dir=ui_dir)
+        info = acquire_host_info(data_root, ui_dir=ui_dir, release=release)
     except HostError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -878,7 +1147,13 @@ def run_host(
         except HostError as exc:
             print(f"启动守护进程失败：{exc}", file=sys.stderr)
             return 1
-        config = BridgeConfig(data_root=data_root, ui_dir=ui_dir, token=info.token, port=port)
+        config = BridgeConfig(
+            data_root=data_root,
+            ui_dir=ui_dir,
+            token=info.token,
+            port=port,
+            release=info.release,
+        )
         bridge = UiBridge(config)
         info.port = bridge.port
 
@@ -1005,6 +1280,7 @@ __all__ = [
     "DaemonSupervisor",
     "HostError",
     "HostInfo",
+    "HostReleaseIdentity",
     "UiBridge",
     "acquire_host_info",
     "clear_host_info",

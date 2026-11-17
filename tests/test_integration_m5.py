@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -81,7 +82,14 @@ class FakeModel:
 
 
 def _short_root(prefix: str) -> Path:
-    base = None if os.name == "nt" else "/tmp"
+    # The production admission gate correctly refuses a root with less than
+    # 2 GiB free. Keep the default CI location, while allowing a local full-suite
+    # run to move only test data to another mounted volume instead of weakening
+    # that gate or skipping the affected cases.
+    if os.name == "nt":
+        base = None
+    else:
+        base = os.environ.get("TIANSHU_TEST_TMP_ROOT", "/tmp")
     return Path(tempfile.mkdtemp(prefix=prefix, dir=base))
 
 
@@ -713,7 +721,12 @@ def test_crashed_daemon_recovers_run_without_duplicate_side_effects(root: Path) 
         ),
         encoding="utf-8",
     )
-    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src")
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", ""),
+    }
     # 日志写文件，不用 `stderr=subprocess.PIPE`：管道没人读，daemon 写满 64KB
     # 缓冲区就会阻塞在 write 上——表现是"端点永远不出现"，一个跟被测语义毫无关系
     # 的死锁（慢 runner 上更容易踩到）。写文件既能避免死锁，失败时还能把尾巴带进
@@ -940,7 +953,9 @@ def test_host_stop_stops_daemon_too(root: Path) -> None:
     ws.mkdir()
     env = {
         **os.environ,
-        "PYTHONPATH": str(REPO_ROOT / "src"),
+        "PYTHONPATH": str(REPO_ROOT / "src")
+        + os.pathsep
+        + os.environ.get("PYTHONPATH", ""),
         "TIANSHU_SANDBOX_BACKEND": "local_fs",
     }
     proc = subprocess.Popen(  # noqa: S603 - 测试自己拼的命令，没有外部输入
@@ -994,3 +1009,52 @@ def test_host_stop_stops_daemon_too(root: Path) -> None:
         except (ipc.IpcError, OSError):
             pass
         host.clear_host_info(root)
+
+
+def test_stop_unowned_daemon_stops_a_real_daemon_without_host(root: Path) -> None:
+    harness = DaemonHarness(root, FakeModel([]))
+    with harness:
+        lock_path = ipc.run_dir(root) / "daemon.lock"
+        snapshot = lock_path.read_bytes()
+        assert host.read_host_info(root) is None
+
+        result = host.stop_daemon_if_unowned(
+            root,
+            hashlib.sha256(snapshot).hexdigest(),
+            timeout=5,
+        )
+
+        assert result == 0
+        assert not ipc.probe(root, timeout=0.5)
+        assert not lock_path.exists()
+    assert not harness.errors
+
+
+def test_stop_unowned_daemon_preserves_real_daemon_during_host_takeover(
+    root: Path,
+) -> None:
+    harness = DaemonHarness(root, FakeModel([]))
+    with harness:
+        lock_path = ipc.run_dir(root) / "daemon.lock"
+        snapshot = lock_path.read_bytes()
+        replacement = host.HostInfo(
+            pid=os.getpid(),
+            port=1,
+            token="replacement_token_123",
+            started_at=int(time.time() * 1000),
+        )
+        host.write_host_info(root, replacement)
+        try:
+            result = host.stop_daemon_if_unowned(
+                root,
+                hashlib.sha256(snapshot).hexdigest(),
+                timeout=0.5,
+            )
+
+            assert result == 3
+            assert ipc.probe(root, timeout=0.5)
+            assert lock_path.read_bytes() == snapshot
+            assert host.read_host_info(root) == replacement
+        finally:
+            host.clear_host_info(root, expected=replacement)
+    assert not harness.errors

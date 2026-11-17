@@ -18,13 +18,218 @@
 ## 1. 项目是什么
 
 - **目标**：面向普通用户的桌面 Agent OS——模型自选、在用户指定目录读写、完成长任务；把「AI 可能失控」当一等工程问题。
-- **当前形态**：**M0–M5 已完成**。M0–M4 是命令行内核；M5 交付三进程桌面闭环（Daemon + Host + 浏览器里的 React UI），但**外壳是系统浏览器**，没有 Tauri/WebView2、托盘、安装包与签名（偏差见 [M5-desktop.md](M5-desktop.md) §2）。**别把它当成可双击安装的 App，也别把 README 的愿景当成已实现的能力。**
+- **当前形态**：**M0–M5 已完成，R1–R3 组合候选已由 PR [#175](https://github.com/lorek666/tianshu-agent/pull/175) 按保护规则合并到 main。最终候选 `343ebf0e7c1f40dcc276ed3dd247f3a8eec002d0/tree 94f8e34fa306030a5f172f7838bec62f012e3805` 的 run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 六项 job 与 Windows required 汇总全部 success；merge commit `219d17ab5ed1744f841039879c1f6b9e12d91f07` 自身的 push run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 七项 job 也全部 success，远端候选分支已删除。** M0–M4 是命令行内核；M5 历史基线交付 Daemon + Python Host + 系统浏览器里的 React UI。组合候选包含未签名 Tauri/WebView2 薄壳、托盘、单实例与 Host 生命周期、锁定 Python runtime、四目标 build/verify、macOS 安装/卸载、assembler 与 draft release workflow；签名和自动更新尚未实现。**备份定稿高危缺陷已由 strict-database-fsync 修复并经第二读者 PASS；旧候选 `bede8e3`、`a55e752`、`1a619af` 的三轮原生 CI 红作为历史证据保留，没有用重试或旧绿覆盖。当前仍没有可双击安装并宣称四目标可用的正式成品；用户设备验证、签名/公证/自动更新和 TOCTOU/provenance 边界不能因 CI 绿而扩大。**
 - **核心承诺**：事件可重放、执行侧授权、覆盖/删除需审批、默认可撤销、崩溃可恢复。
 - **非目标（v1）**：图片/视频生成、多租户、防本机用户篡改（只防模型越权与失控 worker）。
 - **技术栈**：Python 3.12（`requires-python = ">=3.12,<3.13"`）、`uv`、**零第三方运行时依赖**（`dependencies = []`）；dev 依赖只有 `pytest>=8.0` 与 `ruff>=0.6`。UI 是 Vite + React + TS，但只有**开发/构建**时需要 Node，运行时加载已提交的 `ui/dist`。
 - **版本 / 许可**：`0.1.0`；Apache License 2.0（`LICENSE` 已被 git 跟踪）。
 
 ## 2. 当前状态（数字会过期，更新时重核）
+
+- **`1f9062c` 的唯一四目标 release run 暴露 NSIS 解包封闭集缺陷（2026-11-17）**：
+  version `0.1.0` 的 dispatch
+  [44101101232](https://github.com/lorek666/tianshu-agent/actions/runs/44101101232)
+  绑定 merge/main `1f9062c5cbf0b966021319ea2dbba95680f21103`。`release preflight`
+  与 macOS x64 success；Windows x64/ARM64 的构建、提交 UI 一致性和真实 7-Zip
+  解包均完成，但 `Verify release bytes and target` 把 Tauri NSIS 固定生成的
+  `$PLUGINSDIR/{NSISdl,StartMenu,System,nsDialogs,nsis_tauri_utils}.dll`、
+  `$PLUGINSDIR/modern-wizard.bmp`、`tianshu-desktop.exe` 与 `uninstall.exe`
+  误判为 payload 未列文件。失败发生在唯一 `release.json` 资源根和 manifest
+  校验之后，未列文件八项、缺失 payload 文件零项；原 run 与两份 job 日志保留在
+  ignored `closeout/release-44101101232/red-windows-{x64,arm64}/`。当前修复只改
+  `scripts/verify_release.py` 与其测试：把上述八个安装器文件定义成逐项必需且
+  唯一的固定布局，整个解包目录继续封闭；`tianshu-desktop.exe` 按 target 校验，
+  NSIS 插件与 `uninstall.exe` 固定校验 x86 PE。根资源目录正控、外层任意额外
+  文件、缺失固定文件及桌面 exe 错架构均已有回归，release verifier 文件
+  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。完整本机
+  全量、独立复审、精确 PR CI、保护合并、修后 main CI 和第二次唯一 release
+  run 尚未完成，故当前 release 仍为 `NOT_RUN`，旧 Windows 红不得覆盖。
+
+- **main `7bb4548` 的网络超时测试红已定位为阶段混计（2026-11-17）**：PR
+  [#184](https://github.com/lorek666/tianshu-agent/pull/184) 精确候选
+  `ea08a466d4e98f3ecb20fb2f608d4f79746fcbae` / tree
+  `6d0baa7faec705f14ee6f93cd748a1164786868b` 的七项 CI 全绿，并经保护规则合并为
+  `7bb4548eb9f2a6035f53f5e456047fb3e5628ea2`。该 merge 自身 main push run
+  [44086800492](https://github.com/lorek666/tianshu-agent/actions/runs/44086800492)
+  的 UI、Ubuntu、macOS、Windows shard1 与 Windows Rust success；Windows shard0 与
+  required 汇总 failure，唯一失败为
+  `tests/test_network_fetch.py::test_timeout_is_bounded_and_reported`。服务端按 100ms
+  期限中止后实际出现预期的 `ConnectionAbortedError [WinError 10053]`，端到端结果也已
+  正确记为 `net.timeout`；失败仅是旧测试把审批、事件持久化与收尾算进网络期限，测得
+  `3.51s >= 3.0s`，该用例 call 在 durations 中为 `9.31s`。原始红及日志不得因重跑或
+  本机绿而删除。
+
+  当前修复只改测试：先用真实 `fetch()` 对 2s 慢响应施加 250ms 硬期限并断言
+  `net.timeout` 与抓取本身 `<2s`，再走真实审批/派发链断言 `tool.result` 精确为
+  `net.timeout` 且错误语义包含“超时”。候选测试在本机目标为 `1 passed / 0.91s`，
+  网络文件为 `24 passed / 21.53s`；负控把实际期限改成 30s 后目标按预期
+  `DID NOT RAISE NetError`。生产 `src/tianshu/net.py`、TTL、授权、重试与 workflow
+  均未改。独立复审、新提交的七项原生 CI、保护合并、该 merge 自身的 main push CI、
+  四目标 release dispatch 与实际 artifact 验证均尚未完成，修后
+  release/实际 artifact 仍为 `NOT_RUN`。
+
+- **Windows release 的 NSIS 修复已保护合并，但 merge 自身 main CI 红（2026-11-17）**：exact main
+  `1a386c449ee143885c663e12bbf5f4d9a6571d45` 的 release run
+  [#44007384652](https://github.com/lorek666/tianshu-agent/actions/runs/44007384652) 中，
+  macOS ARM64/x64 全绿；Windows x64/ARM64 的 Tauri/NSIS 构建、提交 UI 一致性与
+  payload 打包均已完成，但 verifier 在 7-Zip 解包前把外层 NSIS PE machine 错当成目标
+  payload 架构，分别以“PE 架构与 target windows-x64 / windows-arm64 不匹配”失败。
+  项目固定的 `@tauri-apps/cli@2.12.4` 对应 Tauri `993038c49185307dfc895ab7657d77ca0d5ed7c7`；
+  其 NSIS 3.13 归档 SHA1 为 `DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E`，归档中全部
+  PE stub（包括 LZMA/LZMA-solid）都是 x86 `0x014C`。修复只把外层检查改为“必须是这一
+  被固定的 Tauri NSIS x86 引导器”，完整保留 NSIS 标识、7-Zip 唯一资源根、byte-exact
+  manifest/release.json、封闭文件集和所有原生 payload（包括 `python.exe`）逐项架构绑定。
+  旧实现上 x64/ARM64 真 payload 回归为 `2 failed`；修复后 release verifier 文件与五行
+  发行链联合定向均 exit 0，本机隔离全量为 **3788 passed / 12 skipped / 685.71s /
+  exit 0**。完整日志 SHA256 `05c647aa…`，原始失败日志、上游源码/NSIS bytes 与红绿证据在
+  ignored `.omc/artifacts/release-verifier-20261117/`。PR
+  [#181](https://github.com/lorek666/tianshu-agent/pull/181) 的精确候选
+  `954b21deb341cc6efaf9b80155224ae73cb7e26b` / tree
+  `9ef727e7502c8ae913f7570bad938510c5d316c3` 经独立 NSIS `fixed / PASS`，报告 SHA256
+  `63326f19a994412456d2d4af0b51d9c42eb68a2caf56795ddebbe4db76ad9222`；candidate
+  run [44014922842](https://github.com/lorek666/tianshu-agent/actions/runs/44014922842)
+  七 job success 后，按保护规则合并为 `cbf8d89073d2060a821743f372d4d7ec87887b8f`
+  （tree 相同）。该 merge 自身 push run
+  [44017623346](https://github.com/lorek666/tianshu-agent/actions/runs/44017623346)
+  attempt1 为 `completed / failure`：Ubuntu **3749 passed / 51 skipped / 529.97s**；
+  macOS **3788 passed / 12 skipped / 947.45s**；Windows shard0
+  **1881 passed / 19 skipped / 1900 deselected / 1438.20s**；Windows shard1
+  **1 failed / 1832 passed / 67 skipped / 1900 deselected / 804.30s**，唯一失败为
+  `test_stalled_send_is_unknown_and_replay_does_not_retry`。UI 和 Windows Rust
+  success，Windows required 汇总按设计 failure。原始完整日志 SHA256
+  `18b4ee725611117507c7a6257fe7486331d37a61195f3ef722c895df10fc1880`。旧 PASS 与
+  candidate 绿不覆盖 main 红；修后 release 和实际 artifact 对账仍为 `NOT_RUN`，
+  不能把本机绿或旧 release 的 macOS 两项成功写成四目标发布已完成。
+
+- **MCP 测试阶段候选 v1 FAIL 保留，v2 代码独立预审限定 PASS（2026-11-17）**：独立
+  机制诊断用 Event 屏障在真实 `build_stack` 入口、尚无 MCP server 时复现前置
+  accept/join 错误，并保留真实 blocking-pipe 的 send 负控；只证明测试混合计时和
+  失败清理的结构缺口，**actual Windows blocked stage: `NOT_ESTABLISHED`**，不称
+  flake、不宣称生产无 bug。机制报告 SHA256
+  `02278596da327ac5501be493e4d685d780e12d30f99a0ee8c835f573643519fa`。v1 预审确认
+  直接验收 P2：向 `observer.start()` 注入的原 `RuntimeError` 被真实 dispatch
+  结算，随后外层 join 未启动线程抛新异常，掩盖首错；v1 FAIL 报告 SHA256
+  `1afb485fcf9ed2b1fccc54ab7e214978a3cfcfdaeae696c5617ef8780687b9fa`，21 项索引
+  SHA256 `4c4bb648716c2250948235dace94553dbc1d0a63724f8799676c4f74f0f89721`，原件
+  保留。v2 测试代码仅改 `tests/test_mcp_transport_timeout.py`，文件 SHA256
+  `1e0a37be15ff3f9550ca8fb584c2e6cedc4314d3d987417c33ead156d41863ab`；第二读者
+  对绑定测试代码裁为**限定 PASS**，确认 v1 P2 已修：独立文件正控 8 passed；observer
+  构造、未启动即 start 抛错、真实启动后再抛错各有无 cleanup 错误六路，以及五个
+  前置入口各有无 cleanup 错误十路，均保留原异常对象，资源在探针外层兜底前由测试
+  自身收敛。真实 blocking-pipe 仍在调用期限断言真红，旧主体加四个新增回归也真红；
+  慢 setup 由 Event 等待旧 accept5+join5 自行失败后才放行，新测试仍以原 200ms
+  配置、1MB 参数和两次 replay 通过。v2 报告 SHA256
+  `711a85e86a21129bc8c6f9ba5857895faf006b77458dc5a29e9ce8927ec36278`，28 项索引
+  SHA256 `fcd8dec89b7352eb2a5bd065f9fda8a7ea68de4cd8cae025873eba9eca815436`。
+  绑定该测试代码的本机 macOS arm64 唯一全量 `uv run --frozen pytest` 已完成：
+  **3792 passed / 12 skipped / 682.66s**，pytest 与外层编排退出码均为 0，测试文件
+  前后 SHA256 一致；全量日志 SHA256
+  `3a24514f85303b273d5e854fa8286818712764cbe5dbb9d5b5b115a92076445e`。
+  `uv lock --check`、全仓 Ruff 与 diff-check 均 exit0。原始记录保全在 ignored
+  `.omc/artifacts/release-verifier-20261117/closeout/` 下的
+  `mcp-independent-diagnosis/`、`mcp-independent-review/` 和 `mcp-final-checks/`。
+  本条记录时尚未生成完整新提交 SHA/tree，KNOWLEDGE 增量的独立复审和新原生 CI
+  也尚未完成；测试代码预审与本机全量不能替代这些门禁，更不能倒推原 Windows 根因
+  已确定。修后 release/实际 artifact 对账仍为 `NOT_RUN`。
+
+- **MCP 修复合并后的 main CI 又暴露 TTL/写锁等待缺陷（2026-11-17）**：PR #182 的
+  冻结 head `b48353745fe5776ffd836d16efd4f19da5acc066` / tree
+  `6fc2372995f4fc1a5f1137584ee19a4a7c54dc89` 在最终独立复审限定 PASS 后，候选 run
+  [44026612992](https://github.com/lorek666/tianshu-agent/actions/runs/44026612992)
+  attempt1 的七个 job 全部 success。按保护规则正常合并为
+  `acf81642ef3afd4c27616decc661f7f90d33daa1`（tree 相同，parents 为
+  `cbf8d890…`/`b4835374…`）；该 merge 自身 main push run
+  [44029185313](https://github.com/lorek666/tianshu-agent/actions/runs/44029185313)
+  attempt1 为 `completed / failure`：Ubuntu、macOS、UI、Windows shard1 与 Windows
+  Rust success；Windows shard0 **1 failed / 1876 passed / 25 skipped / 1902
+  deselected / 1072.71s**，Windows required 汇总按设计 failure。唯一失败为
+  `test_heartbeat_loop_renews_while_the_host_thread_blocks`：首探针得到
+  `beats=36`、`deadline_slack=[384]`，但真实另一连接仍认领为 epoch 2，随后旧
+  worker 的结算被 fence 拒绝。原始 shard 只有阶段 outcome，没有 SQL/事件时间线；
+  **实际 Windows 现场卡点仍为 `NOT_ESTABLISHED`**，不能仅凭该红判成 flake、生产
+  无 bug 或已找到现场根因。独立锁探针另行证明生产路径存在可复现缺陷：claim、
+  enqueue-and-claim、heartbeat 与 lease renew 都在等待 `BEGIN IMMEDIATE` 前采样
+  时钟，锁等待跨过 TTL 时成功写入的 deadline/expires 仍可能已经过期。修复候选把
+  四处 TTL 采样移到取得写锁之后，并以真实子进程持锁、线程事件屏障和注入逻辑钟做
+  claim/heartbeat/lease/enqueue-and-claim 四路回归；精确旧 main 为 `4 failed`，
+  修复树为 `4 passed`。相关作业、M2 与租约联合定向为 **117 passed**，原 Windows
+  失败用例在新实现下单跑通过；两份原始日志在 ignored
+  `closeout/heartbeat-lock-fix/focused-joint.log` 与 `windows-target.log`。本机唯一
+  最终全量为 **3796 passed / 12 skipped / 658.28s / exit0**，五文件运行前后哈希不变。全量日志 SHA256
+  `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`，lock、
+  全仓 Ruff 与 diff-check 均 exit0。该段记录时生产修复已提交为本分支候选，但独立
+  复审和精确新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
+
+- **main `66dd2630` 的 M2 正常收尾红已定位为测试自造写者饥饿（2026-11-17）**：
+  PR #183 merge 自身的 [main push run
+  44043320529](https://github.com/lorek666/tianshu-agent/actions/runs/44043320529)
+  attempt1 中，Windows shard1 有 2 failed；失败为
+  `test_normal_finish_and_pause_do_not_report_heartbeat_failure` 和
+  `test_worker_diagnostics_success_is_silent_and_restores_methods`。独立诊断绑定
+  merge `66dd2630a7e4e7d3350420e841f529ac1db3c403` / tree
+  `b32914f047ce9967124eb9f4e931840849eed8fc`，结论为
+  **ESTABLISHED：测试夹具造成 SQLite 写者饥饿；生产默认心跳缺陷未建立**。两个用例都
+  把生产 `HEARTBEAT_MS=5000` 改成 `1ms`；主线程分别在 `leases.acquire` 和
+  `confirm_control` 等满 5.172s / 5.296s 后 `SQLITE_BUSY`。第一现场保留窗口内 6 个
+  heartbeat 写事务连续取得锁，最大间隙仅 16ms，诊断环另丢弃 4767 个事务事件。
+  旧暂停分支还在 Run=`queued` 时请求暂停，实际未启动心跳，因此没有覆盖它声称的
+  “claim 尚在、lease 已释放”窗口。原 Windows 现场三份时间线报告共存于 ignored
+  `closeout/heartbeat-main-ci/diagnosis/`；主报告 SHA256
+  `e1acb66756e45f972f4535197a6ae352cfa8caab12ce30208dfbf8a2291eacde`。
+  当前修复只改测试：用 Event 把第一拍心跳卡在真实收尾点，finish 分支在其看到
+  `job=done` 后放行，pause 分支在第一次真实模型调用后请求暂停，待
+  `lease=[]` 而 `job=claimed` 时放行心跳，再允许 `park`；两路均断言恰好一次迟到心跳、
+  Run/Job 终态与 `worker.errors=[]`。测试文件 SHA256
+  `4b825386d91700b36c8632a8c3e3a9f5ba00335477763e8fbc914789b6b3ea0f`；
+  本机目标 `3 passed`、M2 文件 `44 passed`、作业+M2 联合 `88 passed`、目标连续
+  `20/20` 次全绿；把正常心跳改成失败的反向控制为 `2 failed`。生产心跳、TTL、
+  `busy_timeout`、重试和业务断言均未改。提交前本机唯一全量为
+  **3797 passed / 12 skipped / 670.85s / exit0**，日志 SHA256
+  `6e76497a98cf4dbfac2fbc7266fd6261c0f18ac2a129fd743ac2a0e5866740bd`；
+  代码/测试输入与运行后哈希一致，全仓 Ruff、lock 与 diff-check 均 exit 0。
+  该段记录时独立复审、提交、PR/main 原生 Windows CI 均未完成；默认 5000ms 下新失败
+  和 release/实际 artifact 仍为 `NOT_RUN`，旧 #145 现场也不能仅凭本轮新时间线被
+  追溯宣称同因。
+
+- **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
+  每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
+  完整矩阵；`ready_for_review` 是最终候选信号。回归从真实 workflow 枚举所有 job，并
+  钉住新增未门禁 job、`ready_for_review` 缺失、Windows summary `always()`、固定
+  concurrency group 的退化。最终代码树全量 pytest 为 **3775 passed / 12 skipped /
+  696.48s / exit 0**；精确提交的独立复审与 PR required CI 以 PR 证据为准。
+
+- **Windows main CI 的 release runtime smoke 清理误报已修（2026-11-17，修复候选 `acd37e4`）**：main `3f5509ea1cc66a662e40f763e5ace177fdf0cb23` 的 run [43967457729](https://github.com/lorek666/tianshu-agent/actions/runs/43967457729) 中，Windows shard 0 的 `test_verify_runtime_smoke_launches_real_host_daemon_and_checks_token` 失败。实际顺序是 Host shutdown 先停止 owned Daemon；Host 退出后 smoke 的第二次直接 shutdown 命中已移除端点，`request_shutdown()` 返回 `False` 并记录 `WinError 2`，但同一 owned Daemon 随后以状态 `0` 退出且锁与 IPC 端点全部消失。旧 `_cleanup()` 把这次重复请求失败永久当成残留，导致真实收敛被误报。首轮修复后独立复审又抓出同类 P1：cleanup 未检查 owned Host 自身退出码，Host 在 cleanup 前或等待中非零退出仍可能得到 pass；`1b30135` 一并改为要求本次观察到的 owned Host 与 Daemon 分别以状态 `0` 退出，且无 `host.lock`/`daemon.lock`/`agent.sock` 才可通过，非零、未证实退出、超时后强制终止或任何残留仍失败。真实子进程矩阵覆盖重复请求 `False/True`、Host/Daemon 退出 `0/7`，以及 Host/Daemon 在进入 cleanup 前已非零退出的旁路：原实现 `5 failed / 3 passed`，修复后 `8 passed`；release smoke/verify/Host cleanup 联合定向为 `113 passed / 1 skipped`，唯一跳过是既有 Windows-only `FILE_SHARE_READ` 句柄负控。前一候选 `9f2c765` 的 Windows CI 又暴露 6 个新增测试夹具红：`print("ready")` 在 Windows 产生 `b"ready\r\n"`，而屏障期待 `b"ready\n"`；`acd37e4` 改为子进程直接写固定 5 字节 `b"ready"`，不使用 strip/contains 放宽，新夹具本机 `29 passed`。精确 PR head、独立复审与四平台 CI 在合并前另绑定，不能把本机 macOS 结果或 runner 结果扩大为 Windows 10/11、ARM64 用户设备实测。
+
+- **R1–R3 发布候选最终 CI、独立复审与保护合并完成（2026-11-16）**：最终代码与文档对象 `343ebf0e7c1f40dcc276ed3dd247f3a8eec002d0/tree 94f8e34fa306030a5f172f7838bec62f012e3805` 的 PR run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 全绿：Ubuntu `3715 passed / 51 skipped / 441.31s`，macOS `3754 passed / 12 skipped / 966.01s`，Windows shard0 `1846 passed / 37 skipped / 1092.28s`，shard1 `1834 passed / 49 skipped / 904.48s`；两个分片合计覆盖 `3766/3766` 节点，无 failed。UI typecheck/test/build、Windows Rust 与 `test (windows-latest) · py3.12` required 汇总均 success。四项 required check 精确为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build`。独立复审对 `ded5e97/tree 53315dc` 的 strict SQLite 定稿修复给出 PASS（`4ab41890…`），对最终 `343ebf0` docs-only delta 给出 PASS（`48300766…`）；作者与复审者分离，报告绑定完整 SHA。PR #175 在 base main `32ba798b`、strict + enforce-admins、禁强推/禁删除的保护下以 merge commit `219d17ab` 合并，远端候选分支随后删除。merge 后 main push run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 七项 job 全部 success：Ubuntu `3715 passed / 51 skipped / 556.06s`，macOS `3754 passed / 12 skipped / 1047.86s`，Windows shard0 `1846 passed / 37 skipped / 1112.01s`，shard1 `1834 passed / 49 skipped / 869.36s`，仍覆盖 `3766/3766` 且无 failed。合并与 main push 证明 required 门禁通过，但不外推为 Windows 10/11、ARM64 或用户设备实测；TOCTOU、runtime archive provenance、签名/公证/自动更新与正式安装升级/回退仍未解决。
+
+- **R1–R3 最终集成代码候选已通过独立复审，旧 CI 的 Windows 红已转作者修复（2026-11-16，合并前历史记录）**：`codex/release-final-integration` 以 main `32ba798bb77527351ebae996a0e22b062df2f491` 为基线。历史独立 FAIL 对象 `87f66ee/tree 98336ac` 暴露并已修复：Windows 保留设备名空格变体、bundle/资源树/output 的链接或 FIFO、macOS App 根额外空目录、不安全 purge 根、`release-index.json` 漏绑 8 个最终资产、workflow main-ref/UI dist 顺序及 installer 特殊成员；原实现真红和修复后负控均保留在 ignored 证据。后续 R3 在 `03d7bb0` 又独立发现大小写不敏感 APFS 上的 P1：`/applications`、`/library`、`/SYSTEM`、`/users/shared`、`/PRIVATE` 等与受保护公共根同 inode，旧字符串比较会进入 `rm`；`e920c0a` 改为 device/inode 的同一对象/祖先判定并覆盖双向 prefix/data-root 重叠，`7600355` 再把测试改为大小写不敏感/敏感卷均确定执行、无 skip/xfail。R2 build、verifier/install 对 `03d7bb0` 的适用范围均为独立 PASS；R3 第二读者对 `7600355/tree f005c21` 独立 PASS。PR [#175](https://github.com/lorek666/tianshu-agent/pull/175) 的旧候选 `bede8e3/tree 9a64600` 在 run [43864730556](https://github.com/lorek666/tianshu-agent/actions/runs/43864730556) 中 Ubuntu、macOS、UI、Windows Rust 四项 success；Windows Python shard0 为 **11 failed / 1840 passed / 29 skipped / 1879 deselected / 1024.40s**，shard1 为 **14 failed / 1808 passed / 57 skipped / 1880 deselected / 983.54s**，required 汇总按设计红。25 个失败归结为四簇：10 个文本模式换行 fixture（9 个 checksum fixture + 1 个 Host `ready\r\n` fixture）被写成 CRLF；4 个 runtime smoke 把 uv launcher PID 当作实际解释器/PID owner；10 个 unsafe Git-path fixture 因 Windows 默认 `core.protectNTFS=true` 没有真正生成危险 tree；1 个网络 deadline 将 timer 触发的 socket shutdown `OSError` 错分为 `net.read`。`0bdcf7b` 让 smoke 优先使用实际存在的 `sys._base_executable` 启动 Host/Daemon，并只在 deadline event 已触发时把 `OSError`/`SSLError`/HTTP incomplete 保留为 `net.timeout`；`74105f6` 精确接受 Windows `ready\r\n`、让 test-only Git fixture 写入全部危险路径、用字节写入保留校验文件字面 LF，生产安全和业务断言未放宽。最终代码对象为 `74105f670934c4e4df22aee052164638d963770c/tree 4bae38634aa30cd99b85df3fc68c26db5d97b89b`；第二读者独立 PASS，报告 SHA256 `438d6f34b4566261a9d90619e1611005badeea95be030f218ca6d23e635415f8`，并用真实 launcher-child、真实 Git tree 的 10/10 危险路径及三路注入 deadline 验证关键修复。作者侧联合定向 `312 passed / 1 skipped / 95.33s`，复审五文件 `182 passed / 1 skipped / 74.20s`；修复后隔离环境全量 pytest 为 **3752 passed / 12 skipped / 685.27s / exit 0**，lock、全仓 Ruff、diff-check 通过。UI typecheck+124 tests+build+dist 一致及 Rust fmt+46 tests+clippy 来自不含本增量的已审对象，当前增量未改 UI/Rust。`a55e752` 的 run [43872902357](https://github.com/lorek666/tianshu-agent/actions/runs/43872902357) 中 UI、Ubuntu、macOS、Windows Rust 与 shard0 均 success；macOS 为 `3752 passed / 12 skipped / 902.68s`，Ubuntu 为 `3713 passed / 51 skipped / 499.89s`，shard0 为 `1845 passed / 37 skipped`。shard1 只有 `1 failed / 1832 passed / 49 skipped`，唯一失败是 backslash-traversal fixture 的 `DID NOT RAISE`：Windows Git 在 `update-index` 路径解析层把反斜杠当分隔符，raw path 未进入真实 tree；其余 9 个 Windows 危险路径参数均 PASS。`3b37f8f` 只用真实 Git raw tree object 重建目标子树，并在调用生产入口前断言 `ls-tree -z` 能读回精确反斜杠 filename；生产 `scripts/build_release.py` blob 与 `a55e752` 相同，没有弱化断言。第二读者独立 PASS，报告 SHA256 `6aa442f537b3af7cb05dfc3659a296ac05c6eae5b1e231938c35d2d894994418`，真实探针证明确切新增 entry、parent tree 不变、`git fsck --strict` 通过、生产在 blob 读取和 staging 写入前拒绝，缺少 entry 的负控不会误报红。修复后最终本机全量 pytest 正体为 **3752 passed / 12 skipped / 698.50s**；外层 zsh 在采集 rc 时误用只读变量 `status` 使 wrapper 返回 1，未记录 pytest 的 shell rc，因此不以 wrapper 1 冒充测试失败或 shell 0，最终原生结果仍以新 CI 为准。该段保留合并前的待绑定状态；后续精确 run、独立复审和 merge 结果见本节首条。
+
+- **第三轮 Windows CI 暴露 SQLite 备份定稿缺陷并完成 strict-fsync 修复（2026-11-16，合并前历史记录）**：`1a619af` 的最终 run [43879733601](https://github.com/lorek666/tianshu-agent/actions/runs/43879733601) 中 UI、Ubuntu、macOS、Windows Rust 与 Windows shard1 均 success；shard0 为 `1 failed / 1844 passed / 37 skipped / 1155.46s`，required 汇总红。唯一失败 `test_fresh_noop_compares_full_mechanism_audit_and_definitions[definition]` 在 `saved_for()` 的即时 `verify_backup()` 拒绝了一个刚由 `create_backup()` 返回成功的备份：manifest 记录 `events.db` 368640 字节，实际 368639。根因是 SQLite snapshot 在 manifest hash 后、首次 tree fsync 前还没定稿；Windows CI 证明后续 fsync 可改变最终逻辑长度。首修 `2876bca` 把 DB fsync 提前到 hash 前，但第二读者判 PARTIAL/FAIL：公共 `_fsync_file()` 会吞 Windows open/fsync 错误，首次失败后仍可能在 `_fsync_tree()` 第二次成功时改变长度并发布无效备份；原 residual probe 在 `2876bca` 仍得到清单 24576/实际 24575。最终 `ded5e97` 增加不可降级的 `_fsync_file_required()`：DB 定稿 open/fsync 任一失败即抛 `BackupError`，在 hash、manifest 和发布前清理临时目录；其余材料 `_fsync_file()` 的既有可降级边界保持不变。确定性正控在旧顺序稳定红为 24576/24575，修复后 manifest size/hash 与最终文件一致；strict-failure 负控证明 dest 不存在且 `.partial` 清理。第二读者对 `ded5e97/tree 53315dc` 独立 PASS，报告 SHA256 `4ab418908c8d8cff47131be96b4b36c96c465c041ac6a663320bb7adeef58e34`；上一份 FAIL 报告 SHA256 为 `08fc9dd75fdceef812067631adbd6675e0b2f71a35f243d226f8e4bf6efa859b`，结论已明确由“部分修”改为“已修”。相关三文件 `159 passed`；修复后最终本机全量 `3754 passed / 12 skipped / 662.69s / exit 0`（日志 SHA256 `fec7a34c60fad5331116ad785a22c5c06eee4a0437adb64249cb35e9f0abb20b`）。该段保留修复当时的状态；最终 docs-only SHA 与云端 required CI 的关闭记录见本节首条。Windows failpoint/真实掉电、TOCTOU 与用户设备边界不因本修扩大。
+
+- **发布链按 R0–R3 重新拆分（2026-11-16，R0 候选）**：PR #162 原候选 `7d121ad/tree 922a259` 的独立结论为 REQUEST_CHANGES：runtime smoke 仅 import、系统退出超时留 owned child、macOS 两次 mv 存在崩溃空窗，另有单 PR 越过切片与正文过期两项阻断。本片只迁入 [发行规格](SPEC-RELEASE-APP-2026-11-15.md)、真实 release schema 与标准库 manifest 校验/测试。桌面、构建、安装和 workflow 均待各片独立验收；旧证据不冒充新 PASS，原 PR 保留作最后 R3。
+
+- **R3 发布/安装作者候选已完成作者门禁（2026-11-16，待第二读者）**：从 HEAD `886c6e0a1ce06d43d105e0d8f08f8534399445a9` 新增 `.github/workflows/release.yml`、`scripts/package_app.py`、`scripts/assemble_release.py`、`scripts/install-macos.sh`、`scripts/uninstall-macos.sh` 与四个测试文件，由当前本地分支提交承载。workflow 只接受当前 `origin/main` 精确 commit 或 annotated `v0.x.y` tag；对同一 SHA 先按 `databaseId` 取字面最新 run，再要求它 `completed` 且 `success`，最新失败/运行中不会回退到旧绿。assembler 严格校验 version、commit、GitHub Actions run URL、四目标身份和 `runtime_smoke`，并在创建输出前拒绝 artifacts 根、target 目录与必需输入的符号链接/特殊文件。作者侧四文件定向为 **56 passed**，六个 Python 文件 Ruff、`actionlint`、`shellcheck` 与 `git diff --check` 均为 exit 0；真实红证和绿色日志保存在 `.omc/artifacts/r3-release-author-20261116/`。偏离默认临时卷的对照全量为 **4 failed / 3589 passed / 12 skipped / 639.84s**，4 项全部是测试显式使用 `/private/tmp` 时触发既有“可用空间低于 2 GiB”门禁的环境连锁红（`test_backup_accepts_actual_mac_tmp_alias_with_either_input_spelling` 两项与 `test_data_cli_preserves_historical_tmp_alias_after_source_disappears` 两项），不是 R3 业务通过；协调者已停止重复全量，最终 integration 只跑一次组合全量。作者只提交本地分支，不 push、不建 PR，也没有独立复审、CI 或真实 release workflow 结果。
+- **R2 build 复审窄修为新作者候选（2026-11-16，`codex/release-r2-build`）**：基线为旧 R1 派生的 `9ad9e282d7720deb30b53728684cdf2c0f6e818f`。`31e84475b07a144556d881fa1dc8cde6917d968c` 已修 commit-bound lock、replacement refs、显式 output/cache 叶链接、casefold 冲突与两个 rename failpoint；独立复审仍判 PARTIAL，指出 Git source 的 Windows 危险路径未拒绝、cache 祖先 symlink 可写穿、journal 前硬退会留下 staging。作者先用真实 Git tree、POSIX symlink 祖先和真 child `os._exit(77)` 建立 `8 failed / 48 deselected` 红证据，再修：source component 拒绝反斜杠、冒号/ADS、控制字符、尾点/尾空格与保留设备名，并在映射到 staging 后复验 containment；cache 创建前后逐级拒绝链接/特殊祖先；staging ownership 在目录创建前 fsync，恢复只删 token 匹配目录，未知 `.bundle.build-*` 保留；整个 staging→publish 生命周期持 output lock。当前 `tests/test_release_build.py` **56 passed**，build+manifest 定向 **100 passed**。这只是 mac arm64 本机作者门禁，Windows 原生路径/锁/rename、macOS x64、Windows x64/arm64、cache TOCTOU 与断电 durability 仍未验证，新提交也尚未独立复审。
+
+- **R1 复审 P1 整改候选已完成作者门禁（2026-11-16，待第二读者）**：基于 HEAD
+  `f4198453b6e06d2b9134c83e88040d09274209bf` 的未提交工作树（8 个代码/测试文件加
+  2 份文档），P1-1 把 bundle
+  的五字段 release 身份经 Host CLI 同时写入 `host.lock` 与鉴权 `/session`，桌面壳的
+  初始附着、新 Host readiness、supervisor 接管和退出前校验都要求
+  `version/commit/target` 与当前 bundle 精确一致，并要求锁与 session 一致；缺失、漂移
+  或旧锁一律 fail-closed，避免把同 PID 的旧发行实例当成当前实例，也避免在旧实例仍占用
+  数据根时另起 Host。P1-2 修复 `host.lock` 消失但快照内 Host PID 仍存活时误停 Daemon：
+  该分支返回非零、保留 Daemon，且不调用 `request_shutdown`、不改 `daemon.lock`。原实现
+  红证据为 Python exit 1（session 身份缺失，真实存活 Host 仍进入清理）与 Rust exit 101
+  （三项生命周期断言红）；修后 Rust `46 passed`（20 lib + 15 lifecycle + 11 release），
+  `cargo fmt --check`/Clippy exit 0，三个指定 Python 文件 `94 passed / 1 skipped`，定向
+  Ruff exit 0。首次 Python 复跑 6 红均为系统临时卷可用空间低于产品 2 GiB 门禁；只把
+  pytest `TMPDIR` 与测试数据根改到 `/Volumes/Date` 后原断言通过，未放宽产品门禁。该结果
+  只是作者候选，尚不能声称独立复审、committed SHA、PR 原生 CI、Windows/Linux 用户设备
+  或正式发布通过。
+
+- **R0 已独立复审并通过保护合并，R1 作者候选已完成真实 GUI 探针（2026-11-16）**：R0 候选 `c379e61643dff4a2cb6b878f5f2d5fe43be65d6f` 的 PR [#170](https://github.com/lorek666/tianshu-agent/pull/170) 在 run `43784454192` 六项 CI 全绿；第二读者独立复审明确 `PASS`，只覆盖规格、release schema、标准库 manifest 与真实字节测试的 R0 边界。随后按分支保护以 merge commit `32ba798bb77527351ebae996a0e22b062df2f491` 合并；该 main 自身 push run `43811854640` 六项 job 全绿。R1 从 R0 派生，PR [#174](https://github.com/lorek666/tianshu-agent/pull/174) 的后续候选包含 Tauri 壳、Python `-P` 启动、完整/大小写不敏感资源拒绝、Windows Rust 门禁和 Host/Daemon 退出实例绑定。R1 发现并修复 P1：未绑定身份的 `shutdown` 会误停替代 Daemon；真实 Daemon 原红探针退出 1，修后错误身份被拒、正确身份正常退出。全量 pytest 首轮 4 红均由另一工作树占用用户级 restore gate 导致；恢复/迁移测试改用每用例锁根后，普通并发环境与持续独占生产 restore gate 的两次 P2 前全量均为 `3528 passed / 12 skipped / exit 0`（675.18s / 678.98s）。随后真实 R1 WebView 暴露 P2：Host 每 0.5s 探活必然使 Daemon 记一次握手失败，51 秒日志即达 119 行，继续采样时为 717 行/约 74KB；修复改为第 1/2/4/8/… 次采样并附累计次数、认证成功清零。真实 Daemon 子进程回归在原实现上红，修后 `tests/test_daemon.py` `27 passed`；最终 GUI 生命周期另证冷启动可见并显示已连接、关窗保活、重开复用同一 Desktop/Host/Daemon/PID 与端口、AX 菜单退出清理三进程和锁/socket，修复后该轮 `daemon.log` 仅 896B/6 条采样日志。P2 后的最终全量在独占套件锁、清理模型/端点环境后为 `3529 passed / 12 skipped / exit 0`（664.48s）。`c409c37` 的 run `43803289526` 首次原生 CI 中 Ubuntu、macOS（含 3529P/12S）、UI 与两个 Windows Python 分片通过，但 Windows Rust Clippy 把仅 macOS/Unix 使用的导入判为 unused；Windows required 汇总按设计拒绝，未发现第二个独立业务失败。作者已把菜单导入改为 macOS 条件导入、Unix 测试辅助导入改为 `cfg(unix)`，本地 Rust 39 tests 与 macOS Clippy 转绿；替换提交的精确 CI 结果以 PR 最新 check 为准。会话外独立复审仍是 R1 合并硬门，不能把 R0 PASS、本机全量、macOS GUI 或旧提交绿色当成 R1–R3 已交付；Windows/Linux 用户设备验证仍未完成。
+- **R2 build 六项复审修复为作者候选（2026-11-16，`codex/release-r2-build`）**：基线为旧 R1 派生的 `9ad9e282d7720deb30b53728684cdf2c0f6e818f`。原实现在 replacement blob ref 下仍把恶意字节打包、正式 CLI 任意 `--runtime-lock` 以 exit 0 接受 fake archive、发布第一段 rename 后硬退留下无 output 现场、显式 output/cache symlink 会写入目标、`ss.py`/`ß.py` Git tree 冲突未拒绝；新增真临时 Git/tree、子进程 crashpoint 与链接负控，旧实现 5 failed，独立 P1-3 探针子进程 exit 77 后 `output_after_crash=False` 且 restart 后 backup/staging 仍在。修复后定向 `7 passed`、`tests/test_release_build.py` `48 passed`，发布使用 commit-bound lock、禁用 replacement refs、casefold 唯一集和可自动恢复的 rename journal；这不是独立复审或跨平台通过，Windows/macOS x64 仍待原生验证。
 
 - **W15 v1 只读保留期审计命令已交付分支 `feat/retention-audit`（2026-11-15，PR 待合）**：`tianshu data retention-audit --data-root` ——逐表行数/最老行年龄/状态直方图、增长投影（观测窗口 ≥1 天才外推，几毫秒跨度会外推出垃圾速率——测试实抓后修）、可清理候选测量（jobs 终态行、budget_reservations settled+known；终态判定只用 tasks/jobs/budget 权威常量在 Python 侧解释，不猜 dispatch 面语义）、cleanup_plan 现状。**零删除**：mode=ro 连接不加锁不阻断写入，测试钉住 events.db 字节哈希前后不变。SQL 全部单行字面量（标识符不进拼接，值一律参数绑定）；33 测试文件级 +4。实现过程记一笔：Mimosa hook 三次拦截动态 SQL（execute 变量/跨行拼接），按其建议改全静态结构后反而更符合封闭集纪律。三项拍板仍留实测数据。
 
@@ -190,7 +395,7 @@
 - **测试（G2 网络阶段）**：**1869 passed, 7 skipped**（**`main @ b60f976`** 实测，2026-11-11，341.71s，macOS arm64 本机；已含 G2 网络阶段 #110/#112 与并行 F2 工作流 #108）。构成：§7.1 轮的 1790 → +79 = #110 **+41**（`test_outbound_allow.py` 18 + `test_network_fetch.py` 23）+ #112 **+13**（`test_network_research_eval.py` 11 + 真实任务判据净增 2）+ 并行 #108 **+25**。负控本轮 **18/18** 实测红（白名单 5 + 执行器 8 + 联网评测 5）。`ruff check .` → `All checks passed!`。耗时从 180s 涨到 342s 主要来自联网评测任务（每套真实用户任务要起本机来源服务、跑 7 case × 3 次）。**下面几条是历史记录，保留原样**。
 - **测试（历史）**：**1641 passed, 7 skipped**（`feat/memory-retrieval`（N2，含两轮复审整改）分支实测，2026-11-11，已并入 main 的 #89/#91/#92；N2 起点基线为 `main @ 8f2440a` 的 1581 passed / 7 skipped，本分支 +36，其余来自 main）。
 - **测试（main 历史记录）**：**1536 passed, 7 skipped**（`main @ ec7d7ae`（收尾轮 #88 合入）实测，2026-11-11，158.55s，macOS arm64 本机；CI 同刻 macOS job 也是 1536 / 7，ubuntu 是 1535 / 8（多 1 条 skip = `test_ipc.py` 里 AF_UNIX backlog 的 macOS 专属用例）。相对 #85 合入时的 **1529**（`feat/memory-erasure` 合入 #84 后实测）再 +7：Windows 运行时兼容（`perf_counter` 启动计时 / Windows pid 存活判定）+1、IPC 握手期 EOF 类型化 +3、指标并发读取尾巴 +3；1529 的构成是 N4 自身 +8，其余来自 main 的 #79/#82/#84；`main` 上一次提交态基线 1316 passed / 6 skipped，macOS 本机实测，收尾轮 `43d04ef`，115.97s；上一轮 DEBUG-M0M1 复核轮为 1080 passed / 3 skipped；F10 分支 `feat/memory` **合入 `main` 的 #62 / #65 / #66 / #67 并完成复审整改后实测 1243 passed, 3 skipped**（105.91s；其中 140 条来自本特性的四个记忆测试文件，其余来自 main 的新增测试）。未注明「分支实测」的数字一律指 `main` 提交态基线。以下为历史上各轮实测的原始记录：macOS 本机实测，2026-11-10，DEBUG-M0M1 复核轮（分支 `fix/m0m1-corrupt-manifest`）：`uv run --python 3.12 pytest -o addopts="" -q` → `1080 passed, 3 skipped in 105.86s`；上一轮真实模型轮 `test/m4-real-model` 为 `1077 passed, 3 skipped in 101.01s`；`uv run --python 3.12 ruff check .` → `All checks passed!`）；测试文件 **63** 个 `tests/test_*.py`。基线 1061 →（复审轮 +13 → 1074）→（真实模型轮 +3 → 1077）→（DEBUG-M0M1 复核轮 +3 → **1080**），无新增 skip。真实模型轮新增 3 条：eval 拒绝 memfs 两条（库 + CLI）、replay 按路径核产物一条；DEBUG-M0M1 复核轮新增 3 条：坏快照清单的恢复（写工具 unknown+阻断）、只读调用不被误伤（none_applied、不阻断）、撤销拒绝（拒绝+零修改）。M5 新增 6 个测试文件：`test_ipc` / `test_host` / `test_control` / `test_daemon` / `test_integration_m5`，以及 issue #40 修复带的 `test_approval_reject`；五个 M5 文件共 **110** 条（ipc 26 / host 28 / control 27 / daemon 19 / integration_m5 10），`test_approval_reject` 9 条（均实测 `--collect-only`）。**Windows 的数字本轮按 CI 重核过**（收尾轮）：`main @ ec7d7ae` 的 `windows-latest` 实测 **5 failed / 1509 passed / 29 skipped**（939.99s；修复前 35 failed → #87 后 8 → #88 合入前 6），5 条失败逐条登记在 [PRD-REVIEW-DELIVERY-2026-11-11.md](PRD-REVIEW-DELIVERY-2026-11-11.md) §3；另有一次 Windows job 因命名管道阻塞在 25 分钟上限被取消（同一棵树在 main 上 15:39 跑完），也如实记在那里。仍然**没有 Windows 实机**，别把 macOS 数字写成三平台通用。注意 `pyproject.toml` 的 addopts 已带 `-q`：直接 `uv run pytest` 会正常打印汇总；但**再在命令行补一个 `-q`**（叠成 `-qq`）汇总行就没了，那时要 `-o addopts="" -q` 才行。三种情况都实测过。
-- **代码规模**：`src/tianshu/*.py` **73** 个模块（2026-11-16 实测 `ls src/tianshu/*.py | wc -l`；上一版写 63 是 2026-11-14 时点数，其后 W5 调度（scheduler/schedule_cli）、W4 恢复B（restore_access/restore_contract/restore_registry）、W6 embedding（embedding_openai）、F12 Keychain（keychain_macos）、run_policy/disk_admission/platform_identity 再新增 10 个。）模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **133** 个（2026-11-16 实测 `ls tests/test_*.py | wc -l`；上一版写 117 是 2026-11-14 时点数，其后调度/embedding/恢复B×4/低盘×4/net_resilience/memory_conflict/memory_outbound_gate/g2_delegation_write/baseline_evidence/pytest_ci_shards 再新增 16 个。**D3 本轮没有新增测试文件**，只在 `test_eval_real_tasks.py` / `test_eval_negative_controls.py` 内增项）。
+- **代码规模**：`src/tianshu/*.py` **73** 个模块（2026-11-16 实测 `ls src/tianshu/*.py | wc -l`；上一版写 63 是 2026-11-14 时点数，其后 W5 调度（scheduler/schedule_cli）、W4 恢复B（restore_access/restore_contract/restore_registry）、W6 embedding（embedding_openai）、F12 Keychain（keychain_macos）、run_policy/disk_admission/platform_identity 再新增 10 个。）模块来源：M5 新增 `ipc` / `host` / `daemon` / `control`，并把撤销从 `cli` 提成库 `undo`；工程评审收尾轮加了 `metrics` / `isolation` / `backup` / `migrate` / `event_schema`；G1 轮次加 `toolschema` / `budget`；G1 收口轮加 `contents`；§7.1 轮加 `summaries`；G2 网络阶段加 `net`；G2 MCP 阶段加 `mcp` / `tool_registry`；并行 F2 工作流加 1 个。另有子包 `eval/`（**8** 个 .py，G2 网络阶段加 `webfixture`）；`tests/test_*.py` **139** 个（2026-11-16 R3 作者工作树实测 `ls tests/test_*.py | wc -l`；已跟踪基线为 135，本片新增 `test_assemble_release.py` / `test_package_app.py` / `test_release_install.py` / `test_release_workflow.py` 四个。旧记录 133 在本片落地前已落后于基线 2 个文件，不能继续引用）。
 - **平台（2026-11-13 修复分支实测）**：`codex/fix-windows-ci@4bb1781`（已整合 `main@3648d79`）的 [CI run 43283015540](https://github.com/lorek666/tianshu-agent/actions/runs/43283015540) 四个 job 全 success：Windows **2127 passed / 30 skipped**（1393.12s）、macOS **2150 / 7**（569.34s）、Ubuntu **2149 / 8**（269.43s，3 warnings）、UI 通过。Windows runner 为 **Windows Server 2025**，不是用户设备实测。历史 Windows 长期失败及 `main@2100fde` 超时记录仍保留；这条绿色属于当时修复分支；其后 PR #130 已合入 `main@ccff93e79cfeb93e47e5a35012fd92fae366e941`，该 main 的 [run 43298476414](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项全绿。两份结果分别绑定各自 SHA，**均不证明长期无偶发问题**。原因及证据见 [WINDOWS-CI-2026-11-13.md](WINDOWS-CI-2026-11-13.md)。
 - **门禁**：`main` 已开分支保护——必须走 PR、`strict`（分支须与 main 同步）、`enforce_admins`（所有者也绕不过）、禁强推与删除。2026-11-13 经 GitHub API 写入并回读确认，required status checks 为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build` 四项，均绑定 GitHub Actions（app_id=15368）；批准人数仍为 0。设置已在远端生效，文档随 PR #130 交付。
 - **CI 步骤**：锁文件检查 → frozen 安装 → Ruff → pytest；Windows 使用 `uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60` 输出逐例、短错误栈、耗时与Python线程定时栈，其余平台保留 `uv run --frozen pytest -o addopts="" -q -rs`。原生fatal handler保留，C扩展长期独占GIL时不能保证60秒栈；25分钟上限不替代这个诊断缺口。权限 `contents: read`，`fail-fast: false`，不使用 `continue-on-error`。
@@ -398,8 +603,44 @@
 - **SQLite close 决定 access 寿命**：`MaintenanceConnection.close()` 先让 SQLite 真正关闭，再释放实体句柄和外部锁；跨线程 close 失败时连接仍可写，后续锁必须继续持有。
 - **Windows 目录发布不伪造 fsync**：registry 目录用 `MoveFileExW(MOVEFILE_WRITE_THROUGH)` 发布；Windows 目录的物理断电 durability 仍不是已证明事实。CI 另有原生 probe artifact，直接记录 file ID、硬链接、持句柄 rename、锁和 registry 结果。
 
+### 桌面退出实例绑定（2026-11-16，R1）
+
+- **实例核验必须在发起 shutdown 的同一条握手连接内完成**：不能先另开连接核对 `daemon.lock` / welcome，再换连接发退出；旧实例 A 在两个动作之间退出时，第二条连接可命中新实例 B。现在 `request_shutdown(expected_instance_id=...)` 从冻结锁取得身份，在同一已连接会话的 `hello.welcome.instance_id` 核对后才发送请求；不符或缺失一律 fail-closed。
+- **超时清理同样绑定实例**：Host supervisor 只终止发起请求时已核实、且超时后锁字节仍完全相同的 PID；锁已换实例时保留现场。桌面辅助清理要求 `daemon.lock` 同时含合法 PID 与非空 `instance_id`，不能从一个坏锁猜目标。
+- **Host 兼容性是发行身份加认证会话，不是“端口有人”**：桌面壳把 bundle 的 `version/commit/target` 传给 Host，并同时核验 `host.lock`、鉴权 `/session` 和当前 bundle。任一缺失或不一致都在附着、readiness、supervisor 接管或退出前 fail-closed；错误给 PID 与 `data_root`，不输出 token。
+
+### R2 build 源绑定与发布恢复（2026-11-16）
+
+- **runtime lock 是源码身份，不是调用参数**：正式 CLI 只从目标 commit 的固定路径 `release/python-runtime.lock.json` 读取 lock，并在后续下载中继续使用该已解析对象；不再暴露任意路径覆盖。
+- **Git 读操作必须同时关闭 replacement refs**：`GIT_NO_REPLACE_OBJECTS=1` 与 `git --no-replace-objects` 同时使用，防止 replacement blob 在不改 HEAD/status 的情况下替换打包字节。
+- **目录发布采用可恢复 rename journal，不冒充跨平台原子 swap**：先持久化 output/staging/backup 身份，再移动目录；启动时按现场完成新发布或恢复旧 output。失败仍非零，Windows/macOS x64 的真实 rename 行为须原生验证。
+- **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
+
 ## 5. 踩坑教训（别再踩）
 
+- **测试必须隔离所测阶段，并验证异常在真实派发与清理之后仍是原对象（2026-11-17）**：
+  前置装配、进程启动/发现、真实 send 和结果核对必须有清楚的观察边界，不能把准备
+  阶段混入 transport 期限，也不能用加时、重试或假 transport 取代真实背压。真实
+  dispatch 可能捕获并结算观测回调的异常；测试必须独立保留首错，按实际启动状态
+  清理 observer/child，避免 join 未启动线程或 cleanup 再次掩盖首错。修复须保留原
+  deadline、returned/duration、unknown、无 Receipt 与 replay 判据，并用真实
+  blocking-pipe 和异常注入验证。受控结构复现与现场根因分别记账；新本机或 CI 绿
+  不能倒推未取得的 Windows 卡点，也不能覆盖 §2 的 v1 FAIL。详细证据见 §2 绑定报告。
+
+- **完整 PR 矩阵应在候选冻结后启动（2026-11-17）**：draft 期间每次 `synchronize`
+  都跑七作业矩阵会把正常迭代变成反复取消/重跑；现在 job-level gate 让 draft 不分配
+  runner，ready-for-review 才启动。回归必须从 YAML 动态枚举 job，否则以后新增 job
+  可绕过草稿门禁；main push 还必须钉住 concurrency group 含 `github.sha`，只检查
+  `cancel-in-progress` 不足以保护逐 SHA 结论。PR event 的 `GITHUB_SHA` 是合成 merge
+  commit，证据须同时记录 head SHA/tree、base SHA 与 event SHA，不能缩写成一个“同一
+  SHA”。
+- **锁文件消失不等于已核对进程死亡（2026-11-16）**：Host 退出清理持有的是旧 PID/`started_at` 与 Daemon 锁快照；`host.lock` 暂时缺失既可能是旧 Host 已退出，也可能是它尚未完成清理或新实例接入窗口。快照内 Host PID 仍存活时必须保留 Daemon，不能把一次缺文件观察当作 Daemon 的死亡证明。
+- **`git status` 干净不等于对象字节干净（2026-11-16）**：blob replacement ref 可让 `rev-parse`/`status` 保持原身份与 clean，同时 `cat-file` 返回恶意内容；发行构建必须对每条 Git 读命令统一关闭 replacement objects，并保留真实 replacement-ref 回归。
+- **两段目录 rename 需要可恢复凭证（2026-11-16）**：旧 output 移走与 staging 发布之间硬退会留下可见空窗和永久 staging/backup；不能只靠 `except` 回滚（`os._exit` 不执行），必须在破坏性第一步之前持久化恢复记录，并让下一次启动自动续做或恢复。
+- **符号链接负控必须比较目标前后字节（2026-11-16）**：只断言“函数拒绝链接”不足以证明旧实现对目标无写入；测试须先构造真实 symlink，再核目标文件哈希/文件集合不变。Git tree 大小写冲突也要直接在 tree object 上构造，不能依赖当前文件系统能否同时落两个文件。
+- **同一实例的退出请求也要防检查后替换（2026-11-16）**：真实 Daemon 探针证明旧实现会忽略额外 `expected_instance_id` 并把错误身份的 shutdown 当正常请求；仅比较调用前锁 SHA 不足以防止“SHA 检查 → RPC”之间的实例替换。复核维度必须放在同一 IPC 会话内，不能用两次连接拼接。
+- **用户级 restore gate 不适合由每个普通测试争用（2026-11-16）**：两个独立工作树并行跑全量时，固定用户级 gate 会让恢复/迁移 crashpoint 子进程把 `MaintenanceBusy` 当作 1 而非预期 77。`test_recovery.py` / `test_migration.py` 已在本用例临时锁根中运行并显式注入子进程；仍须为真正测全局锁语义的用例保留生产路径，不能全局替换锁根掩盖它。
+- **平台条件代码的导入也属于门禁（2026-11-16）**：macOS 菜单构建器与 Unix 测试辅助必须各自使用与其调用点一致的 `cfg`。本机 macOS Clippy 不能发现 Windows 侧 unused import；恰好由原生 Windows Rust job 以 `-D warnings` 抓住，修复方式是按目标裁剪导入，不用 `allow`。
 - **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
 - **读者不能用 `BEGIN IMMEDIATE` 冒充共享锁**：它会把两个普通连接串行化。registry observation 使用 shared namespace/entity + `BEGIN` 只读快照，写者使用外部 exclusive 锁；这样既保留并发，也让已接线 writer 立即互斥。
 - **Windows 没有可移植的目录 `fsync` 等价物**：`FlushFileBuffers` 对普通目录句柄不能当成无条件成功。目录发布另行使用 write-through rename，并把物理断电级 durability 保持 `NOT_RUN`。
@@ -526,9 +767,12 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **R3 代码前置已在本地组合候选汇合并完成精确 required CI（2026-11-16）**：`scripts/build_release.py`、`scripts/verify_release.py`、`src/tianshu/release_smoke.py`、`scripts/package_app.py` 与 `release.yml` 已在 `codex/release-final-integration` 组合出现，因此“当前基线缺少 R2 入口”的旧阻塞已不再成立；组合候选已由 PR #175 合并，最终对象 `343ebf0/tree 94f8e34f` 的 required CI 已由 run `43889749967` 七 job 全绿绑定。组合代码不得当作 release workflow 已执行：四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。三轮原生 CI 已证明 GitHub Ubuntu、macOS、Windows Rust 与 UI job 可运行；旧候选 25 项红、`a55e752` 的 raw-tree 夹具红和 `1a619af` 的 SQLite 定稿红均已定位，`ded5e97` 已完成备份恢复高危复审。四目标 release workflow 仍待实际执行与绑定。
+- **打包封闭检查与最终 provenance 边界（2026-11-16）**：`package_app.py` 会拒绝源仓库、bundle、输出祖先及四棵资源树中的 symbolic link/非普通文件，并在 Tauri 完成后再次验证 App/安装器；`verify_release.py` 同时比较 macOS App 根文件和目录集合。检查到实际读取/归档之间仍存在同 uid 写者可竞争的理论 TOCTOU（未实现 fd-relative/openat）；最终 verifier 不接收原始 runtime archive，不能独立重算其字节 provenance。该残留必须保留，不能因为本机负控变绿写成物理封闭。
+- **Host 存活探测仍可能受 PID 复用影响（2026-11-16）**：`host.lock` 缺失后的 Daemon 保护分支使用 `pid_alive` 判断快照 PID；当前没有把应用启动墙钟 `HostInfo.started_at` 当成操作系统进程启动时间，也没有扩大 schema。PID 被无关进程复用时，桌面壳可能保守地拒绝清理 Daemon，用户可退出旧进程/释放错误占用后重试；该分支不会误停 Daemon，但“存活”判断本身不是强 OS 身份。
 - **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
 - **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。
-- **Windows 原生结果待回填**：`scripts/restore_t1_windows_probe.py` 和 Windows 测试必须在 GitHub 原生 runner 实际通过并产生 artifact；在 run/SHA/artifact 绑定前，Windows T1 行为保持 `NOT_RUN`。Windows Server CI也不代表 Windows 10/11 用户设备或 ARM64。
+- **Windows T1 原生结果已绑定，但仅覆盖 Windows Server runner**：PR run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 的 artifact `restore-t1-windows.json`（zip SHA256 `c6e7aa68abedc002009d88ac70b0f70a019cd01948807854b838fb80c0ac201d`）绑定 `343ebf0` 并返回 `status: PASS`；merge 后 main run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 的同名 artifact 绑定 `219d17ab`、返回同样 `status: PASS`，原始 JSON SHA256 为 `e293d8969a7eeb3a6bace8f177ce7fd00ac3ee3235a9ff09657c4967269124a2`。两者证明 `GetFileInformationByHandleEx(FileIdInfo)`、共享/排他锁、hardlink、rename 与 registry `MoveFileExW(MOVEFILE_WRITE_THROUGH)` 探针在 Windows Server 2025 AMD64 runner 上通过；SQLite VFS 句柄仍为 `NOT_EXPOSED_BY_STDLIB`，目录掉电持久性仍为 `NOT_PROVEN`。该结果不代表 Windows 10/11 用户设备、ARM64 或物理断电。
 - **c2cf双红与诊断边界（2026-11-14）**：M2活跃renew context的32ms/63ms观测差不证明单次5秒持锁，run.end的none_applied也不证明execution.started后文件未动；不按无证据假设修改锁策略。MCP此次CI在returned断言停止，后续unknown/replay断言未执行；本机真实屏障只证明原测试能混入审批和落盘等待，不定位原Windows卡点。最终测试计时/清理和M2起点/调用链诊断已独立限定PASS、本机完整门通过；实际Windows与正式对象仍另验，不借PR149绿色销账。READONLY和注入7ms仅验诊断；[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)保留范围。
 
 - **M2诊断验证边界（2026-11-14）**：766a候选已在本机真实POSIX别名输入修复诊断caller丢失，并独立核根外同内容副本仍external；Windows junction分支本机未执行。诊断成功静默、失败附note，但包装及resolve有非零时序成本；它只观察已装配本进程context，不是OS锁owner、外部写者或精确COMMIT起点。新完整本机门不覆盖原Windows根因，正式对象/原生CI另核。
@@ -617,6 +861,12 @@
 
 - **M2 静态疑点 → issue #53**：否决缓存只按 `run_id` 生效（同一 Task 新 Run 是否忘掉否决，取决于 `run start` 是否只由人/控制面触发，未逐条验证）；`revoke_consumed` 的判定依赖 dispatcher 状态核验，未逐条探针验证。**两条都未复现**，不许当成已确认漏洞，也不许当成已解决。
 - **M1 `delete_file` 注入矩阵 → issue #54**：本轮（PR 修法）把 "kill×100" 的证据面从只覆盖 create 扩到 create + 覆盖写；删除类动作的恢复判据是 `absent`、撤销按 preimage 重建，另开一组断言跟进。
+- **SQLite TTL 必须从真正取得写锁后起算**：claim、heartbeat、enqueue-and-claim 与
+  lease renew 若在 `BEGIN IMMEDIATE` 之前采样时钟，锁等待时间不计入新的 deadline /
+  expires；另一进程持锁超过 TTL 时，续期即使返回成功，也可能刚提交就过期并允许
+  接管。确定性证据必须用真实子进程持写锁，并用事件屏障在锁等待中推进注入时钟。
+  旧实现四路均写成 `1000/1400`，修复后四路为 `2000/2400`。这条不能与原始 Windows
+  失败现场自动等同：现场没有 SQL 时间线，只能记为可复现机制与候选修复。
 - **M4 未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时）：2026-11-10 真实模型轮已销账三条，**只剩 Windows 实机一条**（2026-11-10 时点口径。**2026-11-14 对账**：2026-11-11 判据升 m4.5 后，真实换模复跑重新成为未决项——现剩 Windows 实机 + m4.5 真实复跑两条，见下文 issue #55 行与 issue 本体评论）。
 - **按已知限制接受**：`create_report` 先 `exists` 检查再 `os.replace`，对**外部进程**仍有覆盖 TOCTOU；lease 只防受控 run，PRD 非目标本就包含"防本机用户"。登记是为了下次读到的人不至于以为没考虑过。
 - **中-5 是误报**（`prepare` 当场拒绝目录外目标），处理方式是一条钉住测试，不是产品代码改动。
@@ -636,15 +886,16 @@
 - 真超时：**已覆盖**（黑洞端点真等满 60s×3，`3m01.6s` 后 failed）。
 - **m4.5 真实模型复跑：未完成（外部阻塞）**。判据已按目标作用域化（#57）并通过 scripted 基线与确定性单测；但要产出两份真实报告需要可用模型中转站，当时该 key 的所有模型一律 `503 model_not_found / auto groups is not enabled`（`/v1/models` 为空，换域名/模型 id 相同）。文档写"未完成"，没有拿 scripted 冒充，也没有为了绿放松安全判据。
 
-**M5 桌面闭环未验证 / 已知限制（详见 [M5-desktop.md](M5-desktop.md) §10 与 [M5-verification.md](M5-verification.md)）**
+**桌面闭环的当前未验证项 / 已知限制（M5 历史边界见 [M5-desktop.md](M5-desktop.md) §2/§10 与 [M5-verification.md](M5-verification.md)）**
 
-- **未验证**：Windows 实机（只有 CI `windows-latest`；命名管道的杀软 / ACL / 长路径差异没覆盖）· 真实模型（无 API key，演示与验收用 `scripted` 模型，不代表真实模型能力）· Tauri/WebView2 外壳与托盘（M5 根本没做）· 同一毫秒的并发审批压测（只验证了先后顺序）。
+- **未验证**：Windows/Linux 桌面用户设备（R1 只有 Windows Rust CI，不能替代 WebView2、命名管道、杀软/ACL、长路径用户环境实测）· macOS x64 与 Windows ARM64 · 真实模型驱动 UI（演示与验收仍用 `scripted` 模型）· R1 安装/升级/回退、签名、公证与自动更新 · 同一毫秒的并发审批压测（只验证了先后顺序）。macOS arm64 的 R1 Tauri debug App + 真实 Host/Daemon/WebView 生命周期已实测，但它不是安装产物，也不是正式发布验收。
 - **Daemon 生命周期不写事件日志**：`shutdown(reason)` 只进 `logs/daemon.log`。C3 是封闭集合且每条事件挂 `run_id`，新增 `daemon.*` 族是契约变更，代价大于收益。
 - **陈旧锁判定有 2 秒宽限窗**：第一个 Daemon 在「拿到锁 → bind」之间超过 2s（超大库恢复扫描）时，第二个实例理论上可能误判陈旧并接管。跨平台读取进程启动时间没有 stdlib 方案，属单独工单。
 - **推送在主循环里同步发送**：一个不读数据的订阅者理论上能拖慢 RPC 响应；M5 用"本地 socket + 每批 256 条"把风险压在可接受范围，没做独立发送线程 + 非阻塞写。**2026-11-14 对账**：本条已被 PR #81 取代——独立发送线程与有界队列已交付（`daemon.py` `SEND_QUEUE_MAX=1024`；慢订阅者/队列溢出/重连负控 `tests/test_slow_subscriber.py`），与本文 §2/§5/§7 其他提及处一致。
 - **驱动线程卡死 >5 秒时刻意不跨线程关连接**：关闭正被别的线程使用的 SQLite 连接只会得到没人看得到的 `ProgrammingError`，还可能截断写入；保留连接交给进程退出回收（测试钉住"shutdown 仍返回、锁已释放、没有 ProgrammingError"）。
 - **`approvals.decide` 的 `reason` 被忽略**：审批记录没有自由文本字段，要存就得改 `schemas/m2/approval.json`（契约变更）；当前只用于 UI 展示。
-- **不是可双击安装的 App**：无外壳、托盘、开机自启、安装包、签名、公证、自动更新（M5-D1/D2/D5）。
+- **R1 源码候选不是可安装 App**：已有未签名 Tauri 薄壳、托盘和单实例代码，尚未合入 main；锁定 Python runtime、开机自启、安装包、签名、公证、自动更新仍属于 R2/R3 或未实现范围。
+- **R2 build 恢复协议尚未跨平台实机验收**：macOS arm64 本机已覆盖 fake-runtime bundle、两个 rename failpoint、journal 前真 child 硬退及重启幂等；Git source 的 Windows 危险 component 只用 `ntpath` 归一化验证，cache 祖先只验证 POSIX symlink。这不证明 Windows 原生 directory lock/rename、symlink/junction、ADS/设备名写盘、macOS x64、Windows x64/arm64 或断电级 durability。`_validate_directory_chain()` 的检查与随后 mkdir/write 仍存在理论 TOCTOU；发布目录替换也仍是两段 rename，读者可能观察到短暂无 output。`.bundle.publish.lock` 成功后会持续存在，是锁锚点，输出 parent 必须放在不被 Git 跟踪的构建目录。构建不宣称跨平台物理原子替换。
 
 **平台**
 
@@ -684,6 +935,64 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-17 · main 网络超时测试把端到端链耗时冒充抓取期限**：exact main
+  `7bb4548` 的 push run `44086800492` 在 Windows shard0 保留唯一真实红：100ms
+  网络期限已正确触发、服务端随后出现预期的 WinError 10053、工具结果也已记为
+  `net.timeout`，但旧测试要求包含审批与事件落盘的整个 `_drive()` 在 3s 内完成，
+  实际为 `3.51s`。修复按阶段拆分证据：2s 慢响应与 250ms 真实 `fetch()` 证明硬期限和
+  异常分类，真实端到端派发单独证明 `net.timeout` 被持久化；原集合式 reason 断言同时
+  收紧为精确值。目标 `1 passed`、网络文件 `24 passed`，30s 期限负控真实变红；生产
+  网络代码、TTL、授权、重试和 workflow 均无 diff。原始 run、main 红和修复报告保留在
+  ignored `.omc/artifacts/release-verifier-20261117/closeout/`。独立复审与新原生 CI
+  完成前不宣称已修，release 继续 `NOT_RUN`。
+
+- **2026-11-17 · M2 正常收尾红从测试自饥饿定位到确定性屏障**：main `66dd2630` 的
+  Windows shard1 两红均由 1ms 心跳测试持续抢写锁触发；主写事务等满 5 秒，生产默认
+  是 5000ms。旧暂停路径在 `queued` 阶段就停下，未覆盖目标窗口。测试改为
+  finish/release 后精确放行一次真实心跳，并补上“多次概率抽样换成单次 Event 校验”；
+  反向控制证明错误心跳结果是 2 failed，定向 3 passed；本机唯一全量 3797 passed /
+  12 skipped / 670.85s / exit0。当前尚未获得独立复审与原生 Windows CI，release 仍为
+  `NOT_RUN`。
+
+- **2026-11-17 · Windows NSIS 外层 PE 误判与 payload 架构证据闭环**：exact main
+  `1a386c4` 的 release run `44007384652` 在 Windows 两项完成 Tauri/NSIS 打包后失败，
+  原因不是安装器或 payload 架构错误，而是旧 verifier 要求外层 NSIS 引导器等于应用
+  payload target。Tauri 2.12.4 的上游 bundler 源码与受控 NSIS 3.13 归档证明其所有可执行
+  stub 都是 x86 `0x014C`；因此外层只证明“这是符合固定构建器产生形态的引导器”，目标
+  身份必须由解包 payload 证明。回归先在未修改的 `1a386c4` 上让 x64/ARM64 两条正控
+  真实失败，再收紧外层为唯一 x86 形态，同时保留并对未知、x64、ARM64 非 Tauri 外层做
+  负控；正确 x86 外层不能掩盖错误 x64 payload。release verifier 文件、workflow/smoke/package/
+  assemble 联合定向、lock、全仓 Ruff、UI typecheck/124 tests/build/committed-dist 和
+  本机唯一全量均 exit 0（3788 passed / 12 skipped / 685.71s）。原始 run 日志、Tauri
+  commit/source hash、NSIS zip/stub hash、旧实现红日志及全部绿色日志保存在 ignored
+  `.omc/artifacts/release-verifier-20261117/`。独立复审、精确候选 CI 和新的四目标 release
+  run 尚未发生；旧 run 没有上传 Windows artifact，不能用它证明 payload 内容正确。
+
+- **2026-11-17 · CI 候选冻结与重复矩阵治理**：旧 workflow 在 draft PR 的每次同步
+  推送都启动完整矩阵；当前分支先以真实 workflow 回归在旧 YAML 上得到 `5 failed`，
+  再给全部 runner job 加非 draft 门禁并加入 `ready_for_review`。独立复审在
+  `36e6bcd/tree 72f85b8` 判 PARTIAL，指出硬编码 job 集、未保护 main concurrency
+  group，以及 PR head/event merge SHA 混写；窄修后测试从 `6 passed` 扩为 `18 passed`
+  （含 release workflow），新增 rogue job 与固定 group 负控都会真红。最终代码树在
+  `/Volumes/Date` 临时根、隔离模型/API 环境后全量为 **3775 passed / 12 skipped /
+  696.48s / exit 0**；仍以新提交独立复审和 PR required CI 为合并门，不把本机 green
+  当成云端或发布验证。
+
+- **2026-11-16 · R3 发布/安装作者候选与输入封闭负控**：从基线 HEAD `886c6e0a` 新增独立 R3 workflow、package/assemble 入口、macOS 安装/卸载脚本及四份测试。先保留真实红证：安装 checksum 只读第一列时接受错误文件名；assembler 允许 `../../` version、无效 commit、任意 HTTPS URL、符号链接根/target/输入/输出与 FIFO；workflow 未要求 annotated tag；`package_app.py` 把真实 macOS `.app` 目录误当成文件。修后 targeted **56 passed**，Ruff/actionlint/shellcheck 与 `git diff --check` exit 0。workflow 最新 run 选择按协调者要求固定为 `sort_by | last | select(completed) | select(success)`，负控证明“先 select(success) 再 last”会红。偏离默认临时卷的对照全量为 **4 failed / 3589 passed / 12 skipped / 639.84s**，4 项只证明 `/private/tmp` 显式别名用例在低于 2 GiB 时被既有准入拒绝，不能冒充 R3 业务通过；按协调者新策略未等待或重启第二轮全量，最终 integration 只跑一次组合全量。当前不创建 R2 stub；真实 dispatch、四目标 artifact、draft/install/device/power-loss 证据均未成立，独立复审与原生 CI 另绑提交。
+
+- **2026-11-16 · R1 复审 P1 身份与退出清理整改（作者候选，待第二读者）**：基于 `f4198453` 的未提交工作树（8 个代码/测试文件加 2 份文档），新增 Host 五字段 release 身份并贯穿 CLI、`host.lock`、鉴权 `/session` 与 Tauri 初始附着/readiness/supervisor/退出校验；缺少身份、bundle 漂移或 lock/session 漂移均 fail-closed，错误只报 PID 与 `data_root`。另修 `host.lock` 缺失但快照 Host PID 仍存活时误停 Daemon，增加真实子进程、已退出进程、实例变化三类条件回归。原实现红证据保存在 `.omc/artifacts/release-r1-review-fixes-20261116/red-*.log`（Python exit 1、Rust exit 101）；修后最终作者门禁为 `cargo test --locked` 46 passed、`cargo fmt --check` 0、Clippy 0、指定 Python 94 passed / 1 skipped、定向 Ruff 0。Python 首轮复跑 6 红全部是 `/tmp` 与 pytest tmp 所在卷低于 2 GiB，重定向到 `/Volumes/Date` 后通过，门禁未改。未 commit/push，未取得 PR 原生 CI 或第二读者 PASS；残余边界是 `pid_alive` 仍可能受 PID 复用影响，只会保守保留 Daemon，不能在该分支误停。
+- **2026-11-16 · R2 build 复审 PARTIAL 三项窄修（作者候选）**：针对独立复审 `31e8447`，先新增真实 Git tree 六个 Windows 危险路径、cache 祖先 symlink 与 journal 前 child `os._exit(77)` 回归；旧实现实跑 `8 failed / 48 deselected`，原红日志与退出码保留在 ignored `.omc/artifacts/release-r2-review-fixes-20261116/`。实现随后收闭 source Windows 语义与 staging containment，逐级检查 cache 祖先，以 ownership journal 先于 staging mkdir 并只清理匹配目录，未知构建目录保留，且从 staging 创建到发布全程持 output lock。修复后发行构建文件 `56 passed`，build+manifest 定向 `100 passed`，lock/Ruff/`git diff --check` 均 0。该轮没有跑独立 full；R2+R3 最终组合 full、新提交独立复审和 Windows/macOS x64 原生验证仍待，不能把本轮作者绿写成 PASS。
+
+- **2026-11-16 · PR #162 五阻断续修与 R0 拆分**：从 main `e2422579` 建立独立 R0 工作树，只迁入 spec/schema/manifest/测试；原始 `7d121ad` 与失败复审保留。三项产品修复在原分支分别实施，之后依次从已合 main 派生 R1/R2，PR #162 最终仅交 R3；每片新门禁与独立复审均需重绑，未提前宣称修复或发布通过。
+
+- **2026-11-16 · R2 build 六项复审修复（作者候选）**：在固定工作树只改 `build_release.py`、`test_release_build.py`、发行规格与本知识库。旧实现的红证据已留：5 个真实 Git/link/CLI 测试全失败，P1-3 子进程在移动旧 output 后 `os._exit(77)`，留下 `output=False`、backup/staging 双残留；修复后定向 7 passed、发行构建测试文件 48 passed，覆盖 replacement blob、任意 lock 参数、两个发布 failpoint 恢复与重复构建、已有空输出、output/cache symlink 目标和 `ss.py`/`ß.py` tree 冲突。正式入口改为 commit-bound runtime lock，所有 Git 读禁用 replacement refs；目录发布采用持久化 journal 恢复，明确不宣称跨平台物理原子性。Windows/macOS x64 原生构建与断电 durability 未验证，独立第二读者尚未签发，结论仅为作者候选。
+
+- **2026-11-16 · R2 final 作者门禁现场**：最终代码后的 `uv lock --check`、全仓 Ruff、`git diff --check` 与发行构建文件 `48 passed` 均为 0；attempted standalone full pytest 在系统卷只剩约 1.8 GiB、低于项目自身 2 GiB 磁盘准入线时中断，已跑部分为 `161 failed / 1391 passed / 6 skipped`，失败链主线是 `dispatch.disk_space_low`，因此保留原件但明确标为环境红，不能作为产品或修复的失败归因。按用户“修复完成后只统一跑一次 combined full”的新要求，R2 不再并发或补跑独立 full；R2+R3 的最终组合 full 才承担最终全量门禁。
+
+- **2026-11-16 · R1 Daemon 探活日志洪泛修复与真实 GUI 生命周期**：真实 arm64 Tauri debug App + 真实 Host/Daemon/WebView 运行 51 秒时保全 717 条 `Broken pipe` 握手失败日志；根因是 Host 0.5 秒 `probe()` 与 accept 循环逐条 `_log` 叠加，不属于正常排障噪声。先在旧实现上加入真实 Daemon 子进程回归并实测红，再最小改为连续失败第 1/2/4/8/… 次采样、累计次数入日志、认证成功清零；`tests/test_daemon.py` 27 passed，最终全量为 `3529 passed / 12 skipped / exit 0`（664.48s）。修正 GUI 探针：窗口存在性/隐蔽性改用 CoreGraphics，关窗和退出改用 AXCloseButton/AXMenuItem 的真实 AXAction；最终冷启动三项 HTTP 200 且 UI 显示已连接，关窗后三进程与锁保持，重开复用同一 PID/端口，菜单退出后三进程、Host/Daemon 锁与 socket 消失，guard/key 按契约保留。修复后实跑日志仅 896B/6 条采样记录；该结果只覆盖 macOS arm64 本机真实 WebView，Windows/Linux GUI 与用户设备仍未验证。
+
+- **2026-11-16 · R1 首次原生 CI 的 Windows 条件编译门禁红与最小修复**：PR #174 的 `c409c37` 在 run `43803289526` 中由 Ubuntu、macOS、UI 和两个 Windows Python 分片取得成功；macOS Python 为 3529 passed / 12 skipped，Windows 两分片分别耗时 15m22s / 17m24s，汇总核对 3541 个收集节点。唯一原始失败是 Windows Rust Clippy：macOS 菜单 `MenuBuilder`/`SubmenuBuilder` 与 Unix 测试辅助在 Windows 下 unused，`-D warnings` 按预期使 job 红；required Windows 汇总随后因 `needs.desktop_windows.result=failure` 拒绝，不是第二个独立缺陷。修复只给对应导入加目标条件，不在坏实现上添加 `allow`；本机 `cargo test --locked` 39 passed、macOS `cargo clippy --locked --all-targets -- -D warnings` 与 `cargo fmt --check` 通过。交叉 Clippy 探针缺 macOS 上的 MinGW windres，不能充当 Windows 结论；最终权威结果必须取替换提交的 GitHub Windows runner。
 
 - **2026-11-15 · W15 v1 只读保留期审计命令（`feat/retention-audit`，基线 main@1a8aebb）**：按维护者委托「先测量后拍板」落地 CONTRACT-W15 §3.3 的 v1——`data_cli.py` 新增 `retention-audit` 子命令（+508 行含测试）：逐表面 `COUNT+MIN/MAX`（23 表全字面量 SQL 分派）、8 个状态面直方图、增长投影（basics 复用，窗口 ≥1 天才外推）、候选测量（jobs/budget_reservations/runs 三个低风险面，终态判定全在 Python 侧用 `TERMINAL_JOB_STATES`/`NON_TERMINAL_STATES`/`SETTLED` 权威常量算，不对 dispatch 面猜语义）、`cleanup_plan(data_root)` 现状直连。**零删除不变量**：`mode=ro` URI 连接（SQLite 连接层拒写）+ 测试钉 events.db SHA256 前后不变；不加维护锁不阻断写入（点读快照如实写进 notes）。测试 4 条新增（拒绝路径+计数/只读哈希/投影数学+未知表/候选常量一致性），`test_data_cli.py` 31 passed。**过程记录**：(a) 每表 SQL 无法参数化标识符，初版 f-string 拼接被 Mimosa hook 判「SQL 注入」拦截三次——按其建议改全静态字面量分派后，注入面反而归零（表名封闭集 + 字面量 + 值绑定）；(b) 夹具上 2ms 事件跨度外推出 86,400,000 行/天的垃圾速率，测试实抓 → 修为观测窗口 ≥1 天才外推；(c) 大段 Edit/Write 内容连续发生拼写损坏 6 次（占位符垃圾/键位突变），全部靠「每段落盘立即 py_compile+AST 校验」抓回——**长代码块一律 ≤25 行分段 + 逐段验证**。CI 环境：#168 attempt1 与 #141 attempt1 的 Windows shard1 先后红在 `test_round2_inputs_net.py::test_network_deadline_interrupts_slow_progress_before_peer_finishes`（`[headers]`/`[body]` 两个参数、同签名 `'net.read' != 'net.timeout'`，WinError 10053 连接被宿主中止）——两树产品代码与绿 main 零 delta，初步定性 runner 负载敏感，**按 #163 先例不以 timing flake 结案**；另 #168 attempt2 用 `--failed` 部分重跑被汇总 job 的分片校验按设计拒绝（missing/extra shard artifacts，attempt 内必须成套）——**部分重跑不能出可验证绿，须整跑重跑**（#168 attempt3 整跑全绿后合并 1a8aebb）。三项拍板继续留实测数据。
 
@@ -922,8 +1231,54 @@
 
 - **2026-11-16 · 文档对账批次 A 重验轮（PR #140 rebase 到 main@702ba40 后逐项对照）**：原轮（2026-11-14）26 项普通文档修复因列车阻塞滞留，本轮逐项对照现 main 重验——**24 项保留**（其中引用与事实全部重证：#40/#53/#54/#50 已 CLOSED、#55 仍 OPEN；`recover` 未核实效果实测 `cli.py` 返回 1；`run.end` required 集合含 tokens/turns/budget_enforced；PRD F14 在 §7；M4 §7.4/`test_slow_subscriber.py`/`SEND_QUEUE_MAX=1024`/`WINDOWS-CI-2026-11-13.md` 等引用全存在）、**1 项升级执行**（§8 错位日志归位从 5 条扩到 9 条——main 其后又积压 4 条：低磁盘 T2/T3 三条与 PR #144，全部归位到各自日期区）、**1 项销**（backup-restore §0 T3 行已被后续 PR 超越：现文已写「三片均已独立验收」「T2/T3 已随 PR #136 交付」，原漂移不存在）。**数字类修复按现 main 重测**：63→**73** 模块（+10：scheduler/schedule_cli/restore×3/embedding_openai/keychain_macos/run_policy/disk_admission/platform_identity）、117→**133** 测试文件（+16）；23 ToolSpec（19 可见）/`SUITE_VERSION=m4.6` 经 AST/代码实测在现 main 仍真。**重验轮新抓漂移并顺手修**：F12 Keychain 四处「v1 未实现」旧口径（README×2 + 本文 §7/已知限制×2）——`keychain_macos.py` 已随 W1 落地并经 #151 独立复审，全部改为 macOS 已落地/其余平台如实 unsupported；README 架构树按现 main 补全 34 个缺失模块（PR 原 24 + 其后新增 10），头部保持「数量以实测为准」不写死计数。SPEC 文档补 §2 重验记录。仅改文档，不改代码/测试/CI。
 
-- **2026-11-16 · 两个 CI 时序 red 的定位（#171 已修 / #172 已登记）**：昨日收口的两个偶发红本机复现并定位。(a) **issue #171 `restore_registry.append_event` 提交成功后仍报 Busy**：`append_event` 在 COMMIT、释放命名空间独占锁**之后**才 `return self.observe()`；并发写入方此时持独占锁，`observe()` 的共享锁争用被映射成 `RestoreRegistryBusy("registry维护锁正在使用中")`——已提交却报 busy；对方进入 `BEGIN IMMEDIATE` 见 head 已推进也报 busy，于是 `busy,busy` 但事件已落盘。本机复现：8×`yes` 满载下 pytest 循环第 1 次即红（空载 25/25 绿）；逐轮新建 registry 的探针 120 轮分布 `busy,committed` 65 / `busy,busy` 3，三次 busy,busy 均 `head_sequence_after=1`（事件确已入库）。修复：结果观察在**持锁事务内**构造（meta/identities 取自 `expected`，events = `expected.events + (event,)`，head = 事件自身），提交后不再 `observe()`；重复追加分支仍返回 `expected`（幂等）。回归测试 `test_append_reports_commit_without_reobserving_after_unlock` 把 `observe` 钉成必然 Busy——旧代码红、新代码绿（红绿验证在 main 临时 worktree 用同文探针实跑确认）；修复后负载探针 120/120 `busy,committed`。门禁：lock/ruff 0，**c138bed 上全量 3466 passed / 12 skipped**（1611.32s，本机有并行任务、耗时高于常态）；26b69e3 增量（3 行 meta 自洽核对 + 注释 + 1 条测试）后本机重复全量均被另一会话的全局 restore gate 持有打断，改以 CI 六项全绿为准（同一诊断在无并发会话时 `test_event_schema.py` 84 passed）。**独立复审（第二读者，独立 worktree + 自造探针，不读作者结论）：已修，7 条判据全 PASS**；增量 `26b69e3`（meta 自洽核对）复审：**已修，判据 1–7 无回退**，并用 5 种伪造手法（home device+1 / database inode+1 / identity 互换 / 重复分支伪造 meta / 非规范 meta_bytes）独立验证伪造 meta 稳定被拒（其中非规范 meta_bytes 由「成功返回」变为 Corrupt，属增量新增的 fail-closed 检测）。另据复审建议补两项硬化——`_revalidate_in_transaction` 增加「`expected.meta` 与自身 `meta_bytes` 重新解析结果一致」核对（手工伪造 observation 也不能借成功返回带出伪造 meta，新增 1 条测试），并在结果构造处注明取舍：**提交后不再整库复检**，既有行若被非协作写入方改成非规范字节，本调用不当场发现、下一次 `observe()` 仍稳定报 Corrupt。**过程教训（两次环境假红，均已取证）**：本机全量门禁依赖**全局** restore gate（`/tmp/tianshu-maintenance-<uid>/restore-gate-v1.lock`，锁根是 OS 用户级固定路径，不按会话/数据根切换）——另一会话（`release-r1-desktop-stage` worktree）在本轮两次门禁期间并发运行自己的套件并反复以 `acquire_restore_gate(exclusive=True)` 持锁，导致本分支全量先后出现 **118 红 / 21 红**，签名全是 `MaintenanceBusy: ... restore gate`；另有一次 **1300 failed + 623 errors** 同样源于他方 pytest 持续持锁。取证：`ps` 抓到该 worktree 的 `uv run ... acquire_restore_gate ... sleep(150)` 与 `pytest` 进程；同一棵树在无并发会话时单文件 `test_event_schema.py` 84 passed、全量早前 3466 passed。**教训**：全量门禁前须确认无其他会话在跑套件（`/tmp/tianshu-suite-lock` 只是本会话约定，不被他人遵守）；自留自旋/`yes` 负载进程也会推高 load 并污染时序，必须显式 PID 并确认 `pgrep` 归零。(b) **issue #172 net 期限打断被分类成 `net.read`**：`net.py` 读循环 `break` 后**先做 Content-Length 长度校验、未先复查期限**，而 Windows 上 timer 的 `shutdown(SHUT_RDWR)` 可能让挂起读返回干净 EOF → 被判成「正文不完整 → net.read」（`[body]` 形态）；`[headers]` 形态涉及 `RemoteDisconnected`/10053 的路径顺序，**本机 macOS 无法验证**，只登记定位假设与取证方案（Windows 高负载重复 + 打印异常类型/期限），未盲改网络执行器。
 - **2026-11-16 · 文档对账批次 A（#140）重验轮并入 main `e242257`**：26 项按现 main 逐项重验（24 保留 / 1 升级：§8 错位日志 5→9 条归位 / 1 销：backup-restore T3 行已被后续 PR 超越），数字重测 73 模块 / 133 测试文件，README 树补 34 缺失模块；重验轮新抓 F12 Keychain 四处「v1 未实现」假话（`keychain_macos.py` 已随 W1 落地并经 #151 复审）并全部修正为「macOS 已落地 / 其余平台如实 unsupported」。CI attempt1 macOS 红在 `test_restore_registry.py:446`（即上条 #171），整跑重跑 attempt2 六项全绿后合入。详见 [SPEC-DOC-RECONCILIATION-2026-11-14.md](SPEC-DOC-RECONCILIATION-2026-11-14.md) §7。
+
+- **2026-11-16 · R1 桌面暂存片与 Daemon 退出实例绑定**：从 R0 `c379e61` 隔离暂存 Tauri/托盘/单实例/`-P` sidecar、资源完整集合拒绝、macOS/Windows Rust 门禁与 Host/Daemon 生命周期修复。审计先用真实 Daemon 证明 P1：错误 `expected_instance_id` 被忽略后仍退出 1；最小修复在发起 shutdown 的同一 hello 连接内核对冻结实例身份，错误身份保留进程与锁，正确身份正常退出。另修 supervisor 超时误按当前锁 PID 杀替换实例，并新增无身份 fail-closed 回归。首轮全量 `3519P/12S/4F/847.76s` 的 4 红全部来自另一工作树占用用户级 restore gate；恢复/迁移测试隔离锁根后在主动占住生产 gate 时 `16 passed`，Host/Daemon 关联 `92 passed/1 skipped`。最终普通并发环境全量 `3528P/12S/675.18s`，随后在无其他 pytest、生产 restore gate 全程独占的条件下复跑 `3528P/12S/678.98s`，两轮均 exit 0；UI frozen install/typecheck/124 tests/build/dist、Rust fmt/test/clippy、lock/全仓 Ruff/actionlint/diff 均通过。另对账并修正 R1 开发文档的资源覆盖前提（仅 debug、需显式 allow 开关，release 忽略覆盖）。commit、PR、精确四平台 CI、真实 R1 WebView 生命周期与独立复审尚未发生，不能把暂存工作树当成已交付。
+
+- **2026-11-16 · R1–R3 最终集成本地复审与全量门禁**：在 `codex/release-final-integration` 完成组合修复和独立复审。R2 build 对 `03d7bb0/tree a69ad2a` PASS；verifier/install 对 `03d7bb0` PASS；R3 首轮在 `03d7bb0` 发现大小写不敏感 APFS 的公共根绕过（`/applications` 等进入 `rm`），`e920c0a` 用 device/inode 判定同对象和祖先并覆盖 prefix/data-root 大小写重叠，`7600355` 修复回归测试在大小写敏感卷的 `samefile`/skip 门禁问题。最终 R3 复审绑定 `7600355/tree f005c21` PASS，`tests/test_release_install.py` 22 passed、八个发行域测试 253 passed、独立卸载探针 36 cases 零失败。唯一一次最终本机全量为 `3747 passed / 12 skipped / 670.37s`，跳过均为既有平台/能力边界；UI 124 passed、typecheck/build/dist 一致，Rust 46 passed/fmt/clippy，lock/全仓 Ruff/actionlint/shellcheck/diff-check exit 0。复现原件、报告和日志保留在 `.omc/artifacts/final-integration-20261116/` 与 `.omc/artifacts/final-second-reader-7600355/`。尚未 push/PR/CI/合并；TOCTOU、runtime archive provenance、签名/公证/更新和未实测平台继续公开，不把本地证据冒充 GitHub required checks 或正式发布。
+
+- **2026-11-16 · PR #175 旧 Windows CI 红转作者修复与最终独立复审**：`bede8e3` 的 run `43864730556` 保留为真实旧红：Ubuntu、macOS、UI、Windows Rust success，Windows Python shard0 `11 failed / 1840 passed / 29 skipped`、shard1 `14 failed / 1808 passed / 57 skipped`，required 汇总 failure。25 项没有通过重试或放宽门禁消失，归为四簇后分别修复：Windows 文本模式改变 fixture 字节（9 个 checksum + 1 个 Host `ready\r\n`）、uv launcher PID 与真实 interpreter PID 分离、Git `core.protectNTFS` 让危险路径 fixture 未真正落树、deadline timer 触发的 Windows socket shutdown 被误分 `net.read`。`0bdcf7b` 修两项生产行为，`74105f6` 修三项测试真实性；复审者对 `74105f6/tree 4bae386` PASS，报告 `438d6f34…`，亲自运行真实 launcher-child、10/10 unsafe Git tree 与三类 deadline 探针，并确认没有把 CRLF、NTFS 或异常分类断言弱化成 strip/contains/任意异常。修复后联合定向 `312 passed / 1 skipped / 95.33s`，最终隔离全量 `3752 passed / 12 skipped / 685.27s / exit 0`，lock、全仓 Ruff、diff-check exit 0。改为 `docs-only` 冻结后必须重绑最终 SHA；在终态 SHA 的六项 CI job 与四项 required check 全绿前，Windows required 仍是“修复已复审、原生验证待跑”，旧 job 的四项 success 不能补证新 SHA。
+
+- **2026-11-16 · docs-only 复审纠正事实归因**：`56c04268` 的文档重绑复审判 FAIL，抓到“10 个 CRLF 失败”被误写成全部为 checksum fixture；原始日志精确组成是 9 个 checksum fixture 加 1 个 Host `ready\r\n` fixture。代码对象 `74105f6` 的前一独立 PASS 与修复结论不受影响，但终态文档必须保留这次纠正。当前提交只修事实表述，不改代码、测试或门禁；新的 docs-only SHA 仍需再次独立重绑。
+
+- **2026-11-16 · 最终 SHA 前的 Windows raw-tree 夹具红与窄修**：`a55e752` 的 run `43872902357` 以 `3b37f8f` 之前代码执行，Ubuntu、macOS、UI、Windows Rust、Windows shard0 success；shard1 唯一失败为 `test_git_tree_rejects_windows_unsafe_source_paths[backslash-traversal]` 的 `DID NOT RAISE BuildError`，同一参数组另外 9 项 PASS，required 汇总按设计红。根因不是生产漏检，而是 Windows Git 在 `update-index` 输入解析时归一化反斜杠，合成 tree 里没有该 entry。`3b37f8f/tree 34d90dc` 用真实 Git raw tree objects 重建 `src/tianshu`，先断言精确 path 可由 `ls-tree -z` 读回，再调用未改的生产入口；独立复审 PASS，报告 `6aa442f5…`，正控证明生产在 blob read/staging write 前拒绝，负控证明缺少 entry 时测试会暴露假绿。完整 release-build 文件 `60 passed`；最终本机全量 pytest 正体 `3752 passed / 12 skipped / 698.50s`。本机 wrapper 在 pytest 完成后因 zsh 只读变量 `status` 返回 1，没有采到 pytest shell rc，该包装故障必须单独保留，不能用 wrapper 状态替代测试结论；Windows 原生仍待新的最终 SHA CI。
+
+- **2026-11-16 · 第三轮 Windows CI：SQLite 备份定稿红、复审 FAIL 与 strict-fsync 收口**：`1a619af`/run `43879733601` 除 Windows shard0 外其余五项 success；shard0 唯一红是刚创建备份的 `events.db` manifest 368640 对实际 368639。`2876bca` 先把 fsync 前移并在本机用 24576/24575 正控复现旧序错误，但独立复审发现 permissive fsync 会吞首次 Windows 失败，第二次 tree fsync 仍可发布长度漂移文件，这是备份路径的 P1 残留。`ded5e97` 为数据库定稿另建 strict helper，open/fsync 失败立即中止并清理；原 residual probe 由发布无效备份改为 exit 1，late-finalization 正控的 size/hash/`verify_backup()` 一致。第二读者最终 PASS `ded5e97/tree 53315dc`，报告 `4ab41890…`；前一份 FAIL `08fc9dd7…` 保留。三文件 `159 passed`，修复后隔离全量 `3754 passed / 12 skipped / 662.69s / exit 0`，lock/Ruff/diff-check 通过。尚未对 `ded5e97` 的 docs 冻结终态跑新的 required CI；不把本机或第三轮部分绿写成最终 Windows PASS。
+
+- **2026-11-16 · PR #175 精确门禁通过、保护合并与 main push 验证**：最终对象 `343ebf0e7c1f40dcc276ed3dd247f3a8eec002d0/tree 94f8e34fa306030a5f172f7838bec62f012e3805` 的 PR run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 七个 job 全部 success。Ubuntu 为 `3715 passed / 51 skipped / 441.31s`，macOS 为 `3754 passed / 12 skipped / 966.01s`，Windows shard0/shard1 分别 `1846`/`1834 passed`、`37`/`49 skipped`，合计 `3766/3766` 节点且无 failed；UI、Windows Rust 和 Windows required 汇总同时 success。`ded5e97` strict-fsync 高危修复与 `343ebf0` docs-only delta 均由不同上下文第二读者独立 PASS，后者报告 SHA256 为 `483007664dc29c526cdc1d2fa96e912603002c0fee09ecbcd9ed68f57e118515`。PR 在 strict、enforce-admins、禁强推/禁删除保护下以 merge commit `219d17ab5ed1744f841039879c1f6b9e12d91f07` 合并，候选远端分支已删除。该 merge commit 自身的 main push run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 七项 job 全绿，Ubuntu/macOS/Windows 两分片分别 `3715/3754/1846/1834 passed`，Windows 仍覆盖 `3766/3766`；完整日志 SHA256 为 `872ed9aada8921b2acf58c7e19c322c0a477b26f39f49f61c12b69308ff2d0b3`。该记录只关闭 PR head 的 required 门禁、合并状态与 main push 验证，不把 GitHub runner 结果外推为用户设备实测，也不关闭已声明的 TOCTOU、provenance、签名/公证/更新、安装升级/回退等边界。
+
+- **2026-11-17 · release runtime smoke 二次 shutdown 竞态、Host 状态旁路与 Windows 屏障**：Windows main CI 的唯一新红定位到 Host 已先停 Daemon 后的重复 shutdown。显式区分“请求送达”与“owned 进程及端点最终收敛”，不把一次 `False` 当作永久残留；独立复审随后证明 Host 自身异常退出仍可被旧 clean 检查漏掉，因此最终同时要求 owned Host 和 Daemon 都以状态 `0` 结束。真实子进程矩阵覆盖请求 `False/True` × Daemon 退出 `0/7`，以及 Host 在 cleanup 前或等待期间非零退出；原实现 `5 failed / 3 passed`，修复 `8 passed`。首次 FINAL Windows CI 又在断言前因测试屏障 LF/CRLF 差异红了 6 项；`acd37e4` 改用无换行的固定 5 字节真实子进程屏障，生产逻辑和状态断言不变。失败 job 原始日志、红绿测试日志、规格与哈希保存在 ignored `.omc/artifacts/release-smoke-cleanup-20261117/`，首轮 PARTIAL 与 Host 修复后的 PASS 报告均保留。本条不声明新的最终 Windows CI 已通过，也不改变既有实例绑定与 fail-closed 清理边界。
+
+- **2026-11-17 · NSIS 合并后 main 红与 MCP 测试阶段候选复审**：保全 PR #181 的
+  独立 PASS、候选 CI、保护 merge 及 main 自身失败，区分旧范围通过与新增阻断。
+  第二读者确认测试前置计时/清理结构缺口，并以真实 observer 启动异常证明 v1 未保留
+  首错，裁为 FAIL；原件与索引冻结。独立作者只改测试后的 v2 取得测试代码范围限定
+  PASS，唯一本机全量、lock、全仓 Ruff 与 diff-check 已通过；精确对象、结果数字和
+  报告 hash 统一见 §2。完整新提交、KNOWLEDGE 增量独立复审和新原生 CI 尚未完成，
+  Windows 原现场卡点仍未确定，修后 release/实际 artifact 对账仍为 `NOT_RUN`。
+
+- **2026-11-17 · PR #182 合并后 main 红与 TTL 锁等待修复**：PR #182 精确候选及
+  保护 merge 的 tree 相同，候选七 job 全绿；merge 自身 main run `44029185313`
+  在 Windows shard0 的首探针断言出现 epoch 2 接管，其余 job 成功。原始 shard 没有
+  SQL/事件时间线，因此只记录实际失败与 `NOT_ESTABLISHED`，不猜成 flake。独立真实
+  子进程持锁探针证明生产代码在 `BEGIN IMMEDIATE` 前采样 TTL 起点；修复把 claim、
+  enqueue-and-claim、heartbeat、lease renew 的时间采样移入写锁事务，并新增四路
+  注入钟/真进程/事件屏障回归。精确旧 main `4 failed`，修复树 `4 passed`；作业/M2/
+  租约联合定向 `117 passed`，原 Windows 失败用例在新树上单跑通过，原始日志均保存在
+  ignored `heartbeat-lock-fix/`。最终本机全量为
+  `3796 passed / 12 skipped / 658.28s / exit0`，前后五文件哈希不变；
+  日志 SHA256 `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`。
+  原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
+  唯一原生 CI、保护合并和修后 release/实际资产核验。
+
+- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红与最小修复候选**：
+  `1f9062c` 的四目标 release run `44101101232` 在 Windows x64/ARM64 打包和
+  真实 7-Zip 解包后同一位置失败。成功解出的安装器固定文件被当作未列入
+  bundle manifest 的 payload；唯一 release.json、manifest 身份及既定 payload
+  未报告缺失。作者修复把八个 NSIS 安装器文件从无界例外改成逐项必有的固定
+  集合，并新增整个解包目录封闭校验、`tianshu-desktop.exe` target 架构及 x86
+  NSIS 组件校验。原 run 不取消、不覆盖；当前仅作者定向绿，完整全量、独立
+  复审和新的原生 release 仍需后续绑定。
 
 ## 9. 权威文档索引
 

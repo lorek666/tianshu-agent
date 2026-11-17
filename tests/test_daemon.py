@@ -933,6 +933,176 @@ def test_shutdown_finishes_quickly_and_leaves_clean_state(root, start_daemon) ->
     assert again.stop_and_wait(timeout=5.0)
 
 
+def test_shutdown_rejects_a_stale_instance_without_stopping_the_live_daemon(
+    root, start_daemon
+) -> None:
+    """实例身份必须在线路内核对，旧实例的退出请求不能命中新实例。"""
+    harness = start_daemon(ScriptedModel([]))
+    snapshot_bytes = daemon.lock_path(root).read_bytes()
+    snapshot = json.loads(snapshot_bytes.decode("utf-8"))
+    actual_instance_id = snapshot["instance_id"]
+
+    assert (
+        daemon.request_shutdown(
+            root,
+            reason="stale-instance-probe",
+            expected_instance_id=f"{actual_instance_id}-stale",
+            timeout=1.0,
+        )
+        is False
+    )
+    assert harness.thread.is_alive(), "错误实例的退出请求误停了当前 Daemon"
+    assert daemon.lock_path(root).read_bytes() == snapshot_bytes
+
+    assert daemon.request_shutdown(
+        root,
+        reason="current-instance",
+        expected_instance_id=actual_instance_id,
+        timeout=5.0,
+    )
+    assert harness.thread.join(5.0) is None
+    assert not daemon.lock_path(root).exists()
+
+
+def test_unlink_lock_retries_transient_windows_read_contention(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_contention",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_contention", 1)
+    original_unlink = Path.unlink
+    attempts = 0
+
+    def transiently_busy(path, *args, **kwargs):
+        nonlocal attempts
+        if path == lock_path and attempts < 2:
+            attempts += 1
+            raise PermissionError(13, "file is busy", str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", transiently_busy)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._unlink_lock(lock)
+
+    assert attempts == 2
+    assert not lock_path.exists()
+
+
+def test_unlink_lock_rechecks_identity_before_each_retry(root, monkeypatch) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    old_payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_old",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    new_payload = {**old_payload, "instance_id": "daemon_new", "started_at": 2}
+    lock_path.write_text(json.dumps(old_payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_old", 1)
+    original_unlink = Path.unlink
+    unlink_attempts = 0
+
+    def replace_then_report_busy(path, *args, **kwargs):
+        nonlocal unlink_attempts
+        if path == lock_path and unlink_attempts == 0:
+            unlink_attempts += 1
+            lock_path.write_text(json.dumps(new_payload), encoding="utf-8")
+            raise PermissionError(13, "file is busy", str(path))
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", replace_then_report_busy)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    module._unlink_lock(lock)
+
+    assert unlink_attempts == 1
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["instance_id"] == "daemon_new"
+
+
+def test_unlink_lock_persistent_windows_contention_uses_exact_budget(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_persistent",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_persistent", 1)
+    now = [0.0]
+    sleeps = []
+    attempts = 0
+
+    def always_busy(_path, *_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(13, "file is busy", str(lock_path))
+
+    def advance(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(Path, "unlink", always_busy)
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(module.time, "sleep", advance)
+
+    module._unlink_lock(lock)
+
+    assert attempts >= 2
+    assert now[0] <= daemon.LOCK_DELETE_RETRY_BUDGET_S
+    assert max(sleeps) <= daemon.LOCK_DELETE_RETRY_INTERVAL_S
+    assert sum(sleeps) == pytest.approx(daemon.LOCK_DELETE_RETRY_BUDGET_S)
+    assert lock_path.exists()
+
+
+def test_unlink_lock_does_not_retry_posix_permission_error(
+    root, monkeypatch
+) -> None:
+    module = sys.modules["tianshu.daemon"]
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_posix",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_posix", 1)
+    attempts = 0
+
+    def denied(_path, *_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(13, "permission denied", str(lock_path))
+
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(Path, "unlink", denied)
+
+    module._unlink_lock(lock)
+
+    assert attempts == 1
+    assert lock_path.exists()
+
+
 def test_request_shutdown_without_daemon_returns_false(root) -> None:
     assert daemon.request_shutdown(root, timeout=0.5) is False
 
@@ -1011,6 +1181,9 @@ def test_sigterm_exits_zero_and_releases_lock(root) -> None:
     )
     env = dict(os.environ)
     env["TIANSHU_SANDBOX_BACKEND"] = "local_fs"
+    # This child calls daemon.serve() directly, outside the CLI's UTF-8 stream
+    # bootstrap. Redirected Windows pipes otherwise use the ANSI code page.
+    env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.Popen(  # noqa: S603 - 测试自己拼的命令，没有外部输入
         [sys.executable, "-c", code],
         stdout=subprocess.PIPE,
@@ -1164,6 +1337,73 @@ def test_handshake_failures_on_accept_are_retryable(
     assert calls["n"] >= 2, "应当先失败两次再恢复正常"
 
 
+def test_probe_handshake_failure_logs_are_sampled_and_reset(root) -> None:
+    """Host 的周期探活不能把握手失败写成无限日志洪泛。
+
+    真实 Host 每 0.5s 调一次 `ipc.probe()`；探活只 connect 后立即 close，
+    Daemon 的握手必然看到 EOF/Broken pipe。这里用真实 Daemon 子进程和真实
+    探活连接证明：失败日志按 1/2/4/8/16/32 次采样，完成一次认证握手后计数
+    清零；三次新失败只再记 1/2 两次。
+    """
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = (
+        f"import sys; sys.path.insert(0, {src!r})\n"
+        "from pathlib import Path\n"
+        "from tianshu import daemon\n"
+        "from tianshu.model import ScriptedModel\n"
+        f"daemon.serve(Path({str(root)!r}), model=ScriptedModel([]),"
+        " on_ready=lambda: print('READY', flush=True))\n"
+    )
+    env = dict(os.environ)
+    env["TIANSHU_SANDBOX_BACKEND"] = "local_fs"
+    # daemon.serve() is called directly here, outside the CLI stream bootstrap.
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.Popen(  # noqa: S603 - 测试自己拼的命令，没有外部输入
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    try:
+        assert proc.stdout is not None
+        line = proc.stdout.readline()
+        assert "READY" in line, f"子进程没有报就绪：{line!r}"
+
+        for _ in range(32):
+            assert ipc.probe(root) is True
+        barrier = _connect(root)
+        try:
+            assert barrier.call("state", {})["event_seq_head"] >= 0
+        finally:
+            barrier.close()
+
+        for _ in range(3):
+            assert ipc.probe(root) is True
+        assert daemon.request_shutdown(root, reason="log-sampling-test", timeout=5.0)
+        assert proc.wait(timeout=5.0) == 0
+        assert proc.stderr is not None
+        stderr = proc.stderr.read()
+    finally:
+        if proc.poll() is None:  # pragma: no cover - 只在测试失败时走到
+            proc.kill()
+            proc.wait(timeout=5.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+
+    samples: list[int] = []
+    for line in stderr.splitlines():
+        marker = "握手失败，继续监听（累计 "
+        if marker not in line:
+            continue
+        samples.append(int(line.split(marker, 1)[1].split(" 次", 1)[0]))
+    assert samples == [1, 2, 4, 8, 16, 32, 1, 2]
+
+
 def test_stop_event_shuts_down_without_rpc(root) -> None:
     """`stop_event` 是第三条入口（Host/测试用），必须和信号/RPC 统一到同一路径。"""
     harness = Harness(root, ScriptedModel([]))
@@ -1240,7 +1480,11 @@ def test_client_disconnect_does_not_spin_a_cpu_core(root) -> None:
         ),
     )
     src = str(Path(__file__).resolve().parents[1] / "src")
-    env = {**os.environ, "PYTHONPATH": src, "TIANSHU_SANDBOX_BACKEND": "local_fs"}
+    env = {
+        **os.environ,
+        "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "TIANSHU_SANDBOX_BACKEND": "local_fs",
+    }
     proc = subprocess.run(  # noqa: S603 - 测试自己拼的命令，没有外部输入
         [sys.executable, str(script), str(root)],
         capture_output=True,

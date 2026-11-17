@@ -40,6 +40,7 @@ from tianshu.errors import TianshuError
 from tianshu.events import EventLog
 from tianshu.jobs import JOB_WAITING, JobStore
 from tianshu.leases import (
+    HEARTBEAT_MS,
     ProcessIdentity,
     execution_guard,
     pid_alive,
@@ -877,7 +878,7 @@ class _WorkerDiagnostics:
 
 def _diagnose_worker_failure(test):
     @wraps(test)
-    def diagnosed(env):
+    def diagnosed(env, *args, **kwargs):
         diagnostics = _WorkerDiagnostics(env.db)
         try:
             clock = time.get_clock_info("monotonic")
@@ -910,7 +911,7 @@ def _diagnose_worker_failure(test):
                 patch.object(worker_module._SideChannel, "beat", beat), \
                 patch.object(EventLog, "transaction", transaction):
             try:
-                return test(env)
+                return test(env, *args, **kwargs)
             except Exception as error:
                 diagnostics.capture("test", error)
                 try:
@@ -971,7 +972,7 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     # TTL 与心跳间隔的比例就是"调度抖动余量"：150/40 只有 3.75 个心跳周期，
     # Windows runner 上任何一次 ~100ms 的停顿（杀毒扫描、桌面合成、CI agent
     # 抢占）都会让心跳晚于 TTL，测试就红——那是 runner 的抖动，不是心跳没工作。
-    # 400/40 = 10 个周期，仍然远小于生产默认（30s TTL / 5s 间隔 = 750 个周期），
+    # 400/40 = 10 个周期，比生产默认（30s TTL / 5s 间隔 = 6 个周期）更保守，
     # 也仍然满足"阻塞 4×TTL 时没有心跳就一定能被抢走"这个反例。
     ttl, interval = 400, 40
     probe = _ProbeModel(ttl / 1000 * 4, env)
@@ -1011,40 +1012,128 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     assert worker2.errors, "被抢走之后必须留下痕迹，不能静默成功"
 
 
+@pytest.mark.parametrize("completion", ["finish", "pause"])
 @_diagnose_worker_failure
-def test_normal_finish_and_pause_do_not_report_heartbeat_failure(env):
+def test_normal_finish_and_pause_do_not_report_heartbeat_failure(
+    env, completion
+):
     """正常收尾/暂停时心跳线程晚一步看到"作业已结束""租约已释放"，不算失败。
 
     收尾顺序是"先 `claims.finish`，再释放租约"。心跳线程可能刚好在这两步之间
     醒来：它看到的是"作业已结束"，也可能是"租约不在了"。这两种都是**正常
     结束**，记成 `心跳失效` 会让一次成功的执行以退出码 1 收场。
+
+    这里用 Event 把第一拍心跳精确卡在目标窗口之后再放行。不能用 1ms 间隔反复
+    抽样：Windows 上一次提交可能比 1ms 还久，后台线程会在提交后立刻再次抢写锁，
+    把测试自己变成持续写者，主线程最终可能等满 busy_timeout。
     """
-    for i in range(60):
-        run_id, _, _ = env.enqueue(root=env.ws, out=f"f{i}.md")
-        worker = Worker(
+    run_id, _, job_id = env.enqueue(root=env.ws, out=f"{completion}.md")
+    release_beat = threading.Event()
+    beat_entered = threading.Event()
+    beat_completed = threading.Event()
+    observed = []
+
+    with ExitStack() as stack:
+        original_beat = worker_module._SideChannel.beat
+
+        def delayed_beat(channel, claim, **kwargs):
+            beat_entered.set()
+            try:
+                assert release_beat.wait(15), "主线程没有进入目标收尾窗口"
+                job = channel._claims.get(claim.job_id)
+                observed.append((
+                    job.state if job is not None else None,
+                    channel._leases.live_paths(claim.run_id),
+                ))
+                return original_beat(channel, claim, **kwargs)
+            finally:
+                beat_completed.set()
+
+        stack.enter_context(patch.object(
+            worker_module._SideChannel, "beat", delayed_beat
+        ))
+
+        original_engine = Worker._engine
+
+        def engine_after_beat_started(worker, claim):
+            assert beat_entered.wait(15), "心跳线程没有启动第一拍"
+            return original_engine(worker, claim)
+
+        stack.enter_context(patch.object(
+            Worker, "_engine", engine_after_beat_started
+        ))
+
+        if completion == "finish":
+            original_finish = env.stack.claims.finish
+
+            def finish_then_release_beat(claim, *, outcome):
+                result = original_finish(claim, outcome=outcome)
+                release_beat.set()
+                return result
+
+            stack.enter_context(patch.object(
+                env.stack.claims, "finish", finish_then_release_beat
+            ))
+        else:
+            original_release = env.stack.leases.release_run
+
+            def release_then_signal(run_id, *, instance_id=None):
+                result = original_release(run_id, instance_id=instance_id)
+                release_beat.set()
+                return result
+
+            stack.enter_context(patch.object(
+                env.stack.leases, "release_run", release_then_signal
+            ))
+            original_park = env.stack.claims.park
+
+            def park_after_delayed_beat(claim, *, reason):
+                assert beat_completed.wait(15), "迟到的心跳没有完成"
+                return original_park(claim, reason=reason)
+
+            stack.enter_context(patch.object(
+                env.stack.claims, "park", park_after_delayed_beat
+            ))
+
+        responses = [
+            _create(f"{completion}.md", "x", "c1"),
+            _end(),
+        ]
+        if completion == "pause":
+            class PauseAfterFirstModel(ScriptedModel):
+                def complete(self, messages, tools):
+                    response = super().complete(messages, tools)
+                    env.stack.tasks.request_pause(run_id)
+                    return response
+
+            model = PauseAfterFirstModel(responses)
+        else:
+            model = ScriptedModel(responses)
+
+        with Worker(
             env.stack,
-            model=ScriptedModel([_create(f"f{i}.md", "x", "c1"), _end()]),
-            heartbeat_interval_ms=1,  # 故意把窗口放大：正常配置下是 5s
-        )
-        assert worker.run_once() is True
-        run = env.stack.tasks.get_run(run_id)
-        assert run.state == "succeeded", (
-            f"iteration={i}, worker.errors={worker.errors}, "
-            f"run.end={env.payloads(run_id, 'run.end')}, events={env.events(run_id)}"
-        )
+            model=model,
+            heartbeat_interval_ms=HEARTBEAT_MS,
+        ) as worker:
+            assert worker.run_once() is True
+
+        assert release_beat.is_set()
+        assert beat_completed.is_set()
+        assert len(observed) == 1, observed
         assert worker.errors == [], worker.errors
 
-    # 暂停路径也一样：安全点先释放租约，作业随后被挂起
-    paused_id, _, _ = env.enqueue(root=env.ws, out="pz.md")
-    env.stack.tasks.request_pause(paused_id)
-    worker = Worker(
-        env.stack,
-        model=ScriptedModel([_create("pz.md", "x", "c1")]),
-        heartbeat_interval_ms=1,
-    )
-    assert worker.run_once() is True
-    assert env.stack.tasks.get_run(paused_id).state == "paused"
-    assert worker.errors == [], worker.errors
+    job = env.stack.claims.get(job_id)
+    if completion == "finish":
+        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+        assert job is not None and job.state == "done"
+        assert observed[0][0] == "done"
+        assert env.payloads(run_id, "run.end")
+        assert worker.beats == 0
+    else:
+        assert env.stack.tasks.get_run(run_id).state == "paused"
+        assert job is not None and job.state == JOB_WAITING
+        assert observed[0] == ("claimed", [])
+        assert worker.beats == 1
 
 
 def test_worker_diagnostics_success_is_silent_and_restores_methods(env, capsys):
@@ -1056,15 +1145,12 @@ def test_worker_diagnostics_success_is_silent_and_restores_methods(env, capsys):
     @_diagnose_worker_failure
     def exercise(env):
         run_id, _, _ = env.enqueue(root=env.ws, out="diagnostic.md")
-        worker = Worker(env.stack, model=ScriptedModel([
+        with Worker(env.stack, model=ScriptedModel([
             _create("diagnostic.md", "x", "c1"), _end(),
-        ]), heartbeat_interval_ms=1)
-        try:
+        ]), heartbeat_interval_ms=HEARTBEAT_MS) as worker:
             assert worker.run_once() is True
             assert env.stack.tasks.get_run(run_id).state == "succeeded"
             assert worker.errors == []
-        finally:
-            worker.close()
         return marker
 
     assert exercise(env) is marker

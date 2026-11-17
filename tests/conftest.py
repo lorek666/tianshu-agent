@@ -17,14 +17,20 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
-from tianshu import sandbox
+from tianshu import maintenance, sandbox
 
 #: 用户级权威根的环境变量名。测试里必须钉死到 tmp_path：默认实现是
 #: `~/.tianshu/authority`，不钉的话跑一次测试就会往开发者真实家目录写阻断
 #: 记录，用例之间还会互相串味（A 用例挡住的目录在 B 用例里仍然挡着）。
 AUTHORITY_ROOT_ENV = "TIANSHU_AUTHORITY_ROOT"
+TEST_LOCK_ROOT_ENV = "TIANSHU_TEST_LOCK_ROOT"
+TEST_STARTUP_DIR = Path(__file__).resolve().parent / "_startup"
+SOURCE_DIR = Path(__file__).resolve().parents[1] / "src"
 
 
 @pytest.fixture(autouse=True)
@@ -77,3 +83,40 @@ def _net_rate_limit_off(monkeypatch):
     参数优先于 env）。
     """
     monkeypatch.setenv("TIANSHU_NET_MIN_INTERVAL_S", "0")
+
+
+@pytest.fixture(autouse=True)
+def _pin_maintenance_lock_root(tmp_path_factory):
+    """普通测试只使用用例私有的维护锁根。
+
+    restore gate 是用户级生产锁：两个独立工作树并行跑全量时会按设计互斥。
+    普通测试不应把这种跨套件争用误报成产品失败；专门验证 OS 用户级锁身份的
+    模块在导入时冻结生产函数，并在用例内显式恢复它。
+    """
+    # 独立于当前用例的 `tmp_path`：部分测试会快照该目录并断言失败路径不产生
+    # 任何文件，测试自身的锁文件不能混入被测目录。
+    lock_root = tmp_path_factory.mktemp("maintenance-lock-root")
+    original_lock_root = maintenance._lock_root
+    previous_test_root = os.environ.get(TEST_LOCK_ROOT_ENV)
+    previous_pythonpath = os.environ.get("PYTHONPATH")
+    maintenance._lock_root = lambda: lock_root
+    os.environ[TEST_LOCK_ROOT_ENV] = str(lock_root)
+    existing = previous_pythonpath
+    startup_paths = [str(TEST_STARTUP_DIR), str(SOURCE_DIR)]
+    if existing:
+        startup_paths.append(existing)
+    os.environ["PYTHONPATH"] = os.pathsep.join(startup_paths)
+    try:
+        yield
+    finally:
+        # 这是测试套件的基础隔离，不能被测试内部的 `monkeypatch.undo()` 一并
+        # 撤销；否则同一用例在 undo 之后又会撞到生产用户级 gate。
+        maintenance._lock_root = original_lock_root
+        if previous_test_root is None:
+            os.environ.pop(TEST_LOCK_ROOT_ENV, None)
+        else:
+            os.environ[TEST_LOCK_ROOT_ENV] = previous_test_root
+        if previous_pythonpath is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = previous_pythonpath

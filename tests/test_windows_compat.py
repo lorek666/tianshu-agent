@@ -251,7 +251,7 @@ def _run_cli(argv: list[str], *, codepage: str):
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = codepage
     env.pop("TIANSHU_TEST_MODEL", None)
-    env["PYTHONPATH"] = str(SRC)
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.run(
         [sys.executable, "-m", "tianshu", *argv],
         capture_output=True,
