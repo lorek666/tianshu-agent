@@ -256,21 +256,27 @@ def _cleanup(
     host_endpoint: dict[str, Any] | None,
 ) -> bool:
     clean = True
-    if host_process is not None and host_process.poll() is None:
-        endpoint = host_endpoint or _endpoint_for_owned_host(host_process, data_root)
-        if endpoint is not None:
-            try:
-                _request_json(
-                    endpoint["port"],
-                    "POST",
-                    "/shutdown",
-                    token=endpoint["token"],
-                )
-            except ReleaseSmokeError:
+    if host_process is not None:
+        if host_process.poll() is None:
+            endpoint = host_endpoint or _endpoint_for_owned_host(host_process, data_root)
+            if endpoint is not None:
+                try:
+                    _request_json(
+                        endpoint["port"],
+                        "POST",
+                        "/shutdown",
+                        token=endpoint["token"],
+                    )
+                except ReleaseSmokeError:
+                    clean = False
+            if not _wait_process(host_process, SHUTDOWN_TIMEOUT_S):
                 clean = False
-        if not _wait_process(host_process, SHUTDOWN_TIMEOUT_S):
+                _terminate_owned(host_process)
+        # A Host that already exited, or exited while waiting for shutdown,
+        # must still prove a successful status. `None` means exit is not proven
+        # and is also not clean.
+        if host_process.returncode != 0:
             clean = False
-            _terminate_owned(host_process)
 
     if daemon_process is not None:
         if daemon_process.poll() is None:
@@ -279,21 +285,27 @@ def _cleanup(
                 if isinstance(daemon_identity, dict)
                 else None
             )
-            requested = False
             if expected_instance_id is not None:
                 try:
-                    requested = request_shutdown(
+                    request_shutdown(
                         data_root,
                         reason="release_smoke",
                         expected_instance_id=expected_instance_id,
                         timeout=3.0,
                     )
                 except (OSError, ipc.IpcError):
-                    requested = False
-            clean = requested and clean
+                    pass
             if not _wait_process(daemon_process, FORCE_STOP_TIMEOUT_S):
                 clean = False
                 _terminate_owned(daemon_process)
+        # Host shutdown may stop the owned Daemon before this cleanup runs. A
+        # duplicate request can then miss the already-removed endpoint; the
+        # request result is not authoritative. Accept a missed or acknowledged
+        # request only after the exact child exits successfully. Check status
+        # outside the live-process branch so a child that already exited
+        # non-zero cannot pass by having removed its endpoint first.
+        if daemon_process.returncode != 0:
+            clean = False
 
     leftover = [
         name
