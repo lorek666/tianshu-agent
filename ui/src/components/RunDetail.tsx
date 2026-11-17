@@ -1,4 +1,4 @@
-import type { EventView, RunView, TaskView } from "../api/types";
+import type { EventView, RunView, StreamingPreview, TaskView } from "../api/types";
 import type { StreamStatus } from "../api/stream";
 import type { CostSummary } from "../lib/timeline";
 import type { TimelineEntry } from "../lib/humanize";
@@ -29,6 +29,7 @@ export interface RunDetailProps {
   hasMore: boolean;
   cost: CostSummary;
   streamStatus: StreamStatus;
+  streamingPreview?: StreamingPreview | null;
   busy: string | null;
   now: number;
   onPause: () => void;
@@ -47,6 +48,7 @@ export function RunDetail({
   hasMore,
   cost,
   streamStatus,
+  streamingPreview = null,
   busy,
   now,
   onPause,
@@ -175,7 +177,12 @@ export function RunDetail({
         <BudgetPanel events={events} />
         <SubtaskPanel events={events} runs={runs} />
 
-        <RunTimeline entries={entries} hasMore={hasMore} live={streamStatus === "live"} />
+        <RunTimeline
+          entries={entries}
+          hasMore={hasMore}
+          live={streamStatus === "live"}
+          streamingPreview={streamingPreview}
+        />
       </div>
     </section>
   );

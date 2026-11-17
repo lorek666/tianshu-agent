@@ -574,7 +574,7 @@ def test_minimal_v1_fixture_is_valid_and_round_trips(tmp_path):
     try:
         for type_name, payload in sorted(doc["events"].items()):
             event_schema.validate_payload(type_name, payload, 1)
-            if type_name == "run.start":
+            if type_name in ("run.start", "run.end"):
                 seq = log.append("run_x", type_name, payload, legacy_write=True)
                 log.conn.execute("UPDATE event_versions SET version=1 WHERE seq=?", (seq,))
             else:

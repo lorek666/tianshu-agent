@@ -13,7 +13,7 @@
 | W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **已并入 main**（#151，`595be35`） |
 | W2 | net.py 速率限制/重试 | §7 G2 网络 | 无 | tools.py 接线（中） | 无 | **已并入 main**（#152，`7f4c07d`，run43668070804） |
 | W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎，加字段不升版本） | control.py（已交付，见 SPEC-STATE-RESPONSE-BOUND-2026-11-15） | 无 | **已并入 main `c637b52`**（#166，run 43721830851） |
-| W4 | 流式输出 | capability 声明 | **C1 + 事件面，docs(contract) 先行** | model.py / loop.py（热） | 无 | 未开始 |
+| W4 | 流式输出 | capability 声明 | **C1 + 事件面，docs(contract) 先行** | model.py / loop.py（热） | 无 | **契约已并入 main（#190）；实现与端到端测试已就绪待合入** |
 | W5 | 调度/定时任务 | 全库 0 匹配 | 无（v1 零新事件族；C3 评估见 CONTRACT-W5-SCHEDULER-2026-11-15.md） | daemon.py（_driver_loop 已接线：装配点 + tick 调用） | 无 | **已并入 main `c637b52`**（#167，run 43724954970） |
 | W6 | 记忆语义层：真 embedding provider + 检索评测 | §7 N2/N3 | provider 接缝已在 | memory_index.py（冷） | 无 | **已并入 main**（#154，`24eabc4`，run43670453171） |
 | W7 | 记忆 L2/L3 生成式合成 + 冲突消解 | §7 N3 | 另立契约（N3 教训） | memory_distill.py（冷） | 无 | **已并入 main**（#157，`c8b53bb`，run43681412578） |
@@ -21,7 +21,7 @@
 | W9 | 网络深度：分页读取 / DNS 二次校验 / 搜索 API | §7 G2 | 工具 schema 评估 | net.py / tools.py | 搜索 API 选型待拍板 | 未开始 |
 | W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | **已并入 main**（#156，`134e9f0`，run43679118848） |
 | W11 | 巨石模块拆分（dispatcher/loop/tasks/memory/cli） | 工程债 | 无（纯重构，契约不动） | **热文件，全部在途 PR 落地后** | 无 | 未开始 |
-| W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | #141 落地后开工 | 未开始 |
+| W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | #141 落地后开工 | **Schema 契约已并入 main（#190）；双向绑定测试与 `run.end` v2 已就绪待合入** |
 | W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5 | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；四目标 release 实跑与真机安装待验 | **R0–R3 代码已并入 main**（#170 / #174 / #175 / #186）；四目标 release 实跑与真机验收待完成 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义 | exec*/isolation | 平台方案选型待拍板 | 未开始 |
 | W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估 | 与 G3 后续重叠 | 三项删除/归档策略待实测后拍板 | **v1 只读审计已并入 main**（#169，`7f88994`）；删除/归档下半场未开始（见 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md)） |

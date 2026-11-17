@@ -29,8 +29,8 @@
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
 - **当前主要未完成项（距离 PRD §11.1 G3 正式发布）**：
   - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
-  - **普通用户首日开箱体验**：首日图形化设置面板（`SettingsDialog` 五标签：模型热切换与 macOS Keychain 密钥写入、定时任务管理、账户/任务预算账本与对账视图、MCP 只读状态、默认脱敏诊断包导出）及 CLI `--desktop` 数据目录桥接已落地；**W4 模型流式输出**仍待落地。
-  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO、W12 C1/C2/C5 字段级 Schema 冻结仍待完成。
+  - **普通用户首日开箱体验**：首日图形化设置面板（`SettingsDialog` 五标签：模型热切换与 macOS Keychain 密钥写入、定时任务管理、账户/任务预算账本与对账视图、MCP 只读状态、默认脱敏诊断包导出）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测。
+  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、以及 **W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**均已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO 仍待完成。
   - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147)）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
@@ -554,10 +554,10 @@
 
 **实现上的疤**
 
-- `run.end` 不带**货币成本**汇总（`cost_total_micros`；成本经游标账本在 `run status` 里看，CLI 收尾从 `ledger` 读钱）；token/turns/`budget_enforced` 汇总已是 `run.end` 的 required 字段（`tasks.py:_run_end_payload`、`event_schema.py`）——货币成本汇总本身仍挂账（约 6 行改动）。
+- ~~`run.end` 不带**货币成本**汇总~~：**已修（2026-11-18）**：`run.end` 升为精确 payload `v2`，新增 `cost_total_micros`（已知计价填整数微美元，单价全未知填 `null` 绝不冒充 `0`）与 `cost_unknown_calls`，保留历史 `v0/v1` 只读解释。
 - `check_exec()` 仍是低层 API，`spawn` 已不再调用它。
 - 多工作区相对路径解析仍绑定到第一个可写工作区。
-- 契约未全冻结：`schemas/` 下现有 `c3/event.json`、`c4/rules.json`、`m2/{approval,grant,job,run,task}.json` 与恢复 B T0 的 `data/restore-v1.json`；C1/C2/C5 **没有**字段级 schema——补齐并加契约测试之前，别宣布冻结。`data/restore-v1.json` 是源码 schema，`data/` 的运行时忽略规则必须保留其明确例外。
+- **五道契约 Schema 已齐备**：`schemas/` 下现含 `c1/model.json`、`c2/tool.json`、`c3/event.json`、`c4/rules.json`、`c5/eval.json`、`m2/{approval,grant,job,run,task}.json` 与 `data/restore-v1.json`，并由 `tests/test_c1_c2_c5_schemas.py`、`tests/test_event_schema.py`、`tests/test_rule_ids.py` 对真实代码对象做正负控双向绑定校验（注：PRD §5 完整冻结条件还包含真实第二家线上 provider 实跑验证，在 #55 真实模型复跑完成前不在文档中夸大跨线上服务商实测范围）。`data/restore-v1.json` 是源码 schema，`data/` 的运行时忽略规则必须保留其明确例外。
 
 **本地环境提醒（非项目事实，只对所有者本机成立）**
 

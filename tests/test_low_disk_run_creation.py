@@ -19,7 +19,11 @@ def test_run_start_v2_only(tmp_path):
     from tianshu.run_policy import EFFECTS
 
     assert event_schema.current_version("run.start") == 2
-    assert all(event_schema.current_version(t) == 1 for t in EVENT_TYPES - {"run.start"})
+    assert event_schema.current_version("run.end") == 2
+    assert all(
+        event_schema.current_version(t) == 1
+        for t in EVENT_TYPES - {"run.start", "run.end"}
+    )
     assert event_schema.known_versions("run.start") == frozenset({0, 1, 2})
     history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_text())
     # 历史 schema 仍不认识新增字段；新写不能假装 v1。

@@ -5,10 +5,12 @@ import type {
   CreateTaskInput,
   EventView,
   EventsResult,
+  ModelStreamEvent,
   RunEnvelope,
   RunExecutionPolicyV1,
   RunView,
   StateView,
+  StreamingPreview,
   TaskEnvelope,
   TaskView,
   UndoApplyResult,
@@ -130,6 +132,7 @@ export function App() {
   const [runDetail, setRunDetail] = useState<RunView | null>(null);
   const [timeline, setTimeline] = useState<EventView[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
+  const [streamingPreviews, setStreamingPreviews] = useState<Record<string, StreamingPreview>>({});
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [streamDetail, setStreamDetail] = useState<string | null>(null);
   /** 手动重试事件流：自增后 effect 重建 stream（自动重连已在上限处停止）。 */
@@ -342,8 +345,54 @@ export function App() {
     }, REFRESH_DEBOUNCE_MS);
   }, [refreshSnapshot, refreshSelectedRun]);
 
+  const receiveModelStream = useCallback((stream: ModelStreamEvent): void => {
+    setStreamingPreviews((previous) => {
+      if (stream.done) {
+        if (!(stream.run_id in previous)) return previous;
+        const next = { ...previous };
+        delete next[stream.run_id];
+        return next;
+      }
+      if (stream.delta === null) return previous;
+      const cur = previous[stream.run_id];
+      const sameTurn = cur !== undefined && cur.turnIndex === stream.turn_index;
+      const baseText = sameTurn ? cur.text : "";
+      const baseTools = sameTurn ? cur.toolNames : [];
+      const nextText =
+        stream.delta.kind === "text" ? baseText + stream.delta.text : baseText;
+      const nextTools =
+        stream.delta.kind === "tool_call_start" &&
+        stream.delta.tool_name &&
+        !baseTools.includes(stream.delta.tool_name)
+          ? [...baseTools, stream.delta.tool_name]
+          : baseTools;
+      return {
+        ...previous,
+        [stream.run_id]: {
+          turnIndex: stream.turn_index,
+          text: nextText,
+          toolNames: nextTools,
+        },
+      };
+    });
+  }, []);
+
   const receiveEvent = useCallback(
     (event: EventView): void => {
+      if (
+        event.run_id !== null &&
+        (event.type === "model.result" ||
+          event.type === "model.error" ||
+          event.type === "run.end")
+      ) {
+        const settledRunId = event.run_id;
+        setStreamingPreviews((previous) => {
+          if (!(settledRunId in previous)) return previous;
+          const next = { ...previous };
+          delete next[settledRunId];
+          return next;
+        });
+      }
       const runId = selectedRunRef.current;
       if (event.run_id !== null && event.run_id === runId) {
         timelineRunRef.current = event.run_id;
@@ -432,6 +481,7 @@ export function App() {
       host,
       initialSeq: () => Math.max(1, (stateRef.current?.event_seq_head ?? 0) + 1),
       onEvent: receiveEvent,
+      onModelStream: receiveModelStream,
       onStatus: (status, detail) => {
         setStreamStatus(status);
         setStreamDetail(detail ?? null);
@@ -941,6 +991,7 @@ export function App() {
               hasMore={timelineHasMore}
               cost={costSummary}
               streamStatus={streamStatus}
+              streamingPreview={streamingPreviews[selectedRun.run_id] ?? null}
               busy={busy}
               now={now}
               onPause={() => handleControl("pause", selectedRun)}

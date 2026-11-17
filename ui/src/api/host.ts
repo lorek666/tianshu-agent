@@ -9,7 +9,7 @@
  * 不写 localStorage/sessionStorage、不进 URL、不打日志。
  */
 
-import type { EventView, StateView } from "./types";
+import type { EventView, ModelStreamEvent, StateView } from "./types";
 import { normalizeEvent, normalizeState } from "./normalize";
 import { errorFromEnvelope, HostRpcError } from "./errors";
 import { createSseParser } from "./sse";
@@ -23,6 +23,8 @@ export interface RequestOptions {
 
 export interface EventStreamCallbacks {
   onEvent: (event: EventView) => void;
+  /** W4 瞬态模型流式增量（不推进事件 seq 游标）。 */
+  onModelStream?: (stream: ModelStreamEvent) => void;
   /** 收到响应头、开始读流时触发（用于把状态从「连接中」切到「已连接」）。 */
   onOpen?: () => void;
   /** 单个 SSE 帧解析失败；不应中断整条流。 */
@@ -221,6 +223,31 @@ class RealHostClient implements HostClient {
         parsed = JSON.parse(data) as unknown;
       } catch (error) {
         callbacks.onParseError?.(error);
+        return;
+      }
+      if (event === "model_stream") {
+        const rec = asNullableRecord(parsed);
+        if (rec !== null && typeof rec.run_id === "string") {
+          const rawDelta = asNullableRecord(rec.delta);
+          const delta =
+            rawDelta !== null &&
+            (rawDelta.kind === "text" || rawDelta.kind === "tool_call_start")
+              ? {
+                  schema_version: "1.0" as const,
+                  kind: rawDelta.kind as "text" | "tool_call_start",
+                  text: typeof rawDelta.text === "string" ? rawDelta.text : "",
+                  tool_name: typeof rawDelta.tool_name === "string" ? rawDelta.tool_name : "",
+                }
+              : null;
+          callbacks.onModelStream?.({
+            kind: "model_stream",
+            run_id: rec.run_id,
+            task_id: typeof rec.task_id === "string" ? rec.task_id : "",
+            turn_index: typeof rec.turn_index === "number" ? rec.turn_index : 1,
+            delta,
+            done: Boolean(rec.done),
+          });
+        }
         return;
       }
       const normalized = normalizeEvent(parsed);
