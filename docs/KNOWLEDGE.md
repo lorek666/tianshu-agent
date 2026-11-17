@@ -118,6 +118,37 @@
   全仓 Ruff 与 diff-check 均 exit0。该段记录时生产修复已提交为本分支候选，但独立
   复审和精确新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
 
+- **main `66dd2630` 的 M2 正常收尾红已定位为测试自造写者饥饿（2026-11-17）**：
+  PR #183 merge 自身的 [main push run
+  44043320529](https://github.com/lorek666/tianshu-agent/actions/runs/44043320529)
+  attempt1 中，Windows shard1 有 2 failed；失败为
+  `test_normal_finish_and_pause_do_not_report_heartbeat_failure` 和
+  `test_worker_diagnostics_success_is_silent_and_restores_methods`。独立诊断绑定
+  merge `66dd2630a7e4e7d3350420e841f529ac1db3c403` / tree
+  `b32914f047ce9967124eb9f4e931840849eed8fc`，结论为
+  **ESTABLISHED：测试夹具造成 SQLite 写者饥饿；生产默认心跳缺陷未建立**。两个用例都
+  把生产 `HEARTBEAT_MS=5000` 改成 `1ms`；主线程分别在 `leases.acquire` 和
+  `confirm_control` 等满 5.172s / 5.296s 后 `SQLITE_BUSY`。第一现场保留窗口内 6 个
+  heartbeat 写事务连续取得锁，最大间隙仅 16ms，诊断环另丢弃 4767 个事务事件。
+  旧暂停分支还在 Run=`queued` 时请求暂停，实际未启动心跳，因此没有覆盖它声称的
+  “claim 尚在、lease 已释放”窗口。原 Windows 现场三份时间线报告共存于 ignored
+  `closeout/heartbeat-main-ci/diagnosis/`；主报告 SHA256
+  `e1acb66756e45f972f4535197a6ae352cfa8caab12ce30208dfbf8a2291eacde`。
+  当前修复只改测试：用 Event 把第一拍心跳卡在真实收尾点，finish 分支在其看到
+  `job=done` 后放行，pause 分支在第一次真实模型调用后请求暂停，待
+  `lease=[]` 而 `job=claimed` 时放行心跳，再允许 `park`；两路均断言恰好一次迟到心跳、
+  Run/Job 终态与 `worker.errors=[]`。测试文件 SHA256
+  `4b825386d91700b36c8632a8c3e3a9f5ba00335477763e8fbc914789b6b3ea0f`；
+  本机目标 `3 passed`、M2 文件 `44 passed`、作业+M2 联合 `88 passed`、目标连续
+  `20/20` 次全绿；把正常心跳改成失败的反向控制为 `2 failed`。生产心跳、TTL、
+  `busy_timeout`、重试和业务断言均未改。提交前本机唯一全量为
+  **3797 passed / 12 skipped / 670.85s / exit0**，日志 SHA256
+  `6e76497a98cf4dbfac2fbc7266fd6261c0f18ac2a129fd743ac2a0e5866740bd`；
+  代码/测试输入与运行后哈希一致，全仓 Ruff、lock 与 diff-check 均 exit 0。
+  该段记录时独立复审、提交、PR/main 原生 Windows CI 均未完成；默认 5000ms 下新失败
+  和 release/实际 artifact 仍为 `NOT_RUN`，旧 #145 现场也不能仅凭本轮新时间线被
+  追溯宣称同因。
+
 - **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
   每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
   完整矩阵；`ready_for_review` 是最终候选信号。回归从真实 workflow 枚举所有 job，并
@@ -862,6 +893,14 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-17 · M2 正常收尾红从测试自饥饿定位到确定性屏障**：main `66dd2630` 的
+  Windows shard1 两红均由 1ms 心跳测试持续抢写锁触发；主写事务等满 5 秒，生产默认
+  是 5000ms。旧暂停路径在 `queued` 阶段就停下，未覆盖目标窗口。测试改为
+  finish/release 后精确放行一次真实心跳，并补上“多次概率抽样换成单次 Event 校验”；
+  反向控制证明错误心跳结果是 2 failed，定向 3 passed；本机唯一全量 3797 passed /
+  12 skipped / 670.85s / exit0。当前尚未获得独立复审与原生 Windows CI，release 仍为
+  `NOT_RUN`。
 
 - **2026-11-17 · Windows NSIS 外层 PE 误判与 payload 架构证据闭环**：exact main
   `1a386c4` 的 release run `44007384652` 在 Windows 两项完成 Tauri/NSIS 打包后失败，
