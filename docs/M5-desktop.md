@@ -142,6 +142,14 @@ M5 不重新发明一套。
 | `subscribe` | `{since_seq}` | `{subscribed:true, from_seq}` | 之后服务端先补历史再推增量 |
 | `undo.plan` | `{run_id}` | `{changes:[{path, kind, reason?}]}` | 只读 |
 | `undo.apply` | `{run_id}` | `{applied: bool, refused?: [str]}` | 走既有"还原也经审批"的派发路径；前置拒绝抛 `refused`（含原因列表），执行期异常抛 `undo_failed`，不吞 |
+| `settings.get` | — | `{model, credentials}` | 首日配置只读视图；`credentials` 只返回各后端布尔 `configured` 与可写能力，**绝不回显任何密钥字符** |
+| `model.configure` | `{mode, model_name?, base_url?, credential_backend?}` | `{model, credentials}` | 原子写入 `<data_root>/model_config.json`（`0o600`，不含密钥）并热切换当前运行模型槽位 |
+| `credential.set` / `credential.delete` | `{provider, secret?, backend?}` | `{credentials}` | 对接系统钥匙串（macOS Keychain）；只读 `env` 或平台未实现时明确返回 `unsupported`，不静默降级 |
+| `schedule.list` / `schedule.create` / `schedule.set_enabled` / `schedule.remove` | 对应 schedule 参数 | `{schedules}` / `{schedule}` / `{removed}` | 与 `tianshu schedule` 共用同一 `Scheduler` 存储；触发仍由 Daemon 驱动线程同事务执行 |
+| `budget.view` | `{run_id?}` | `{dimensions, run_account, accounts, unsettled_count}` | 暴露账户级上限、已结算用量与未决预占笔数（未知用量保持占位不记零） |
+| `mcp.list` | — | `{configured, reason?, servers, tools, rejected_tools}` | 与 `tianshu mcp list` 同口径只读探查 MCP server 与准入结论 |
+| `diagnostics.preview` | `{sections?}` | `{manifest}` | 只读生成本地默认脱敏诊断包内容清单（不落盘；控制面强制 `redact_sensitive=true`） |
+| `diagnostics.export` | `{out_dir, sections?}` | `{ok, archive_path, manifest}` | 在本地 `out_dir`（禁止位于 `data_root` 内，`O_EXCL` 防覆盖）写出默认脱敏 `.zip` 诊断包；控制面拒绝关闭脱敏 |
 | `shutdown` | `{reason}` | `{ok}` | Host 显式退出时调。`reason` **进 Daemon 日志（stderr），不进事件日志**：事件日志是 run 作用域的（每条事件挂 `run_id`），而 C3 是封闭集合，为一个进程生命周期事件新增类型会同时改 schema 与回放口径，代价大于收益（见 §10 第 1 条） |
 
 **视图**（字段是契约，UI 直接消费）：
