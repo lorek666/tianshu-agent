@@ -111,8 +111,11 @@
   四处 TTL 采样移到取得写锁之后，并以真实子进程持锁、线程事件屏障和注入逻辑钟做
   claim/heartbeat/lease/enqueue-and-claim 四路回归；精确旧 main 为 `4 failed`，
   修复树为 `4 passed`。相关作业、M2 与租约联合定向为 **117 passed / 21.90s**，原
-  Windows 失败用例在新实现下单跑通过。该段记录时生产修复尚未提交、独立复审和精确
-  新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
+  Windows 失败用例在新实现下单跑通过；本机唯一最终全量为 **3796 passed / 12
+  skipped / 658.28s / exit0**，五文件运行前后哈希不变。全量日志 SHA256
+  `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`，lock、
+  全仓 Ruff 与 diff-check 均 exit0。该段记录时生产修复已提交为本分支候选，但独立
+  复审和精确新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
 
 - **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
   每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
@@ -1166,8 +1169,10 @@
   子进程持锁探针证明生产代码在 `BEGIN IMMEDIATE` 前采样 TTL 起点；修复把 claim、
   enqueue-and-claim、heartbeat、lease renew 的时间采样移入写锁事务，并新增四路
   注入钟/真进程/事件屏障回归。精确旧 main `4 failed`，修复树 `4 passed`；作业/M2/
-  租约联合定向 `117 passed / 21.90s`，原 Windows 失败用例在新树上单跑通过。原测试
-  里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需完整新提交、独立复审、
+  租约联合定向 `117 passed / 21.90s`，原 Windows 失败用例在新树上单跑通过。最终
+  本机全量为 `3796 passed / 12 skipped / 658.28s / exit0`，前后五文件哈希不变；
+  日志 SHA256 `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`。
+  原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
   唯一原生 CI、保护合并和修后 release/实际资产核验。
 
 ## 9. 权威文档索引
