@@ -615,10 +615,10 @@ class LeaseStore:
         ttl_ms: int = DEFAULT_TTL_MS,
     ) -> int:
         """续租。只续本实例持有的；有一个没续到就算心跳失败（抛错）。"""
-        now = self._clock()
-        expires = now + ttl_ms
         n = 0
         with self._log.transaction():
+            now = self._clock()
+            expires = now + ttl_ms
             for resource in resources:
                 cur = self._conn.execute(
                     "UPDATE leases SET expires_at=?"

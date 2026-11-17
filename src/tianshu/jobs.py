@@ -364,8 +364,11 @@ class JobStore:
         游标上写。所以"能不能接管"必须在**持有写锁的事务里**重新判一次，
         而不是由调用方在事务外先看一眼。
         """
-        now = self._clock()
         with self._log.transaction() as tx:
+            # deadline 必须以真正拿到写锁的时刻为起点。锁等待期间时间仍会流逝；
+            # 在 BEGIN 前采样会把等待时间排除在新 deadline 之外，使一次成功的
+            # 认领/心跳刚提交就可能已经过期。
+            now = self._clock()
             return self._claim_in_tx(
                 tx, job_id, now=now, ttl_ms=ttl_ms, take_over_live=take_over_live
             )
@@ -456,9 +459,9 @@ class JobStore:
 
         语义与分别调用一致：`run_id` 上已有未完成作业时拒绝（与 `enqueue` 同）。
         """
-        now = self._clock()
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         with self._log.transaction() as tx:
+            now = self._clock()
             existing = self._conn.execute(
                 "SELECT job_id FROM jobs WHERE run_id=?"
                 " AND state IN ('pending','claimed','waiting')",
@@ -490,9 +493,9 @@ class JobStore:
 
     def heartbeat(self, claim: JobClaim, *, ttl_ms: int = DEFAULT_TTL_MS) -> None:
         """续 deadline。只对当前 owner 生效，否则抛 JobLost。"""
-        now = self._clock()
-        deadline = now + ttl_ms
         with self._log.transaction():
+            now = self._clock()
+            deadline = now + ttl_ms
             cur = self._conn.execute(
                 "UPDATE jobs SET heartbeat_at=?, deadline_at=?"
                 " WHERE job_id=? AND owner_instance_id=? AND claim_epoch=?"

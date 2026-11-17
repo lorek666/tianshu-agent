@@ -12,11 +12,14 @@ PR #7 把计划 Task 2 只做了一半：租约有了，但 **"谁在跑这个 R
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -48,6 +51,91 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 def _now_ms() -> int:
     return int(__import__("time").time() * 1000)
+
+
+_WRITE_LOCK_CHILD = r"""
+import sys
+from pathlib import Path
+
+src, db = sys.argv[1:]
+sys.path.insert(0, src)
+
+from tianshu.events import EventLog
+
+log = EventLog(Path(db))
+try:
+    log.conn.execute("BEGIN IMMEDIATE")
+    print("locked", flush=True)
+    sys.stdin.read(1)
+    log.conn.execute("ROLLBACK")
+finally:
+    log.close()
+"""
+
+
+def _capture_call(errors: list[BaseException], action: Callable[[], object]) -> None:
+    try:
+        action()
+    except BaseException as exc:  # noqa: BLE001 - 线程异常必须传回测试线程
+        errors.append(exc)
+
+
+def _run_after_write_lock_wait(
+    *,
+    db: Path,
+    log: EventLog,
+    monkeypatch,
+    clock: dict[str, int],
+    time_after_wait: int,
+    action: Callable[[], object],
+) -> None:
+    """让真实子进程持写锁，确认 action 等锁后再用推进过的时钟采样。"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", _WRITE_LOCK_CHILD, SRC, str(db)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **CHILD_TEXT,
+    )
+    errors: list[BaseException] = []
+    transaction_reached = threading.Event()
+    worker = threading.Thread(
+        target=lambda: _capture_call(errors, action),
+        name="job-deadline-lock-test",
+    )
+    original_transaction = EventLog.transaction
+
+    @contextlib.contextmanager
+    def observed_transaction(event_log):
+        if event_log is log and threading.current_thread() is worker:
+            transaction_reached.set()
+        with original_transaction(event_log) as tx:
+            yield tx
+
+    try:
+        assert child.stdout is not None
+        assert child.stdin is not None
+        assert child.stdout.readline().strip() == "locked"
+        with monkeypatch.context() as patch:
+            patch.setattr(EventLog, "transaction", observed_transaction)
+            worker.start()
+            assert transaction_reached.wait(15), "被测调用没有尝试进入写事务"
+            clock["now"] = time_after_wait
+            child.stdin.write("x")
+            child.stdin.flush()
+            worker.join(15)
+            assert not worker.is_alive(), "写锁释放后被测调用仍未完成"
+        child.wait(timeout=15)
+        assert child.returncode == 0, child.stderr.read()
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+        child.stdin.close()
+        child.stdout.close()
+        if child.stderr is not None:
+            child.stderr.close()
+    assert errors == [], errors
 
 
 @pytest.fixture()
@@ -195,6 +283,92 @@ def test_heartbeat_requires_current_owner(env):
 
     jobs.heartbeat(job_claim)
     assert jobs.get(job.job_id).deadline_at is not None
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("claim", "heartbeat", "lease_renew", "enqueue_and_claim"),
+)
+def test_ttl_deadlines_start_after_write_lock_wait(
+    tmp_path, monkeypatch, operation
+):
+    """TTL 不能从等待写锁之前起算，否则成功续期也可能刚落库就过期。"""
+    clock = {"now": 1_000}
+    log = EventLog(tmp_path / "db.sqlite")
+    leases = LeaseStore(log, clock=lambda: clock["now"])
+    jobs = JobStore(log, clock=lambda: clock["now"])
+    thread_log = EventLog(tmp_path / "db.sqlite", cross_thread=True)
+    thread_leases = LeaseStore(
+        thread_log, identity=leases.identity, clock=lambda: clock["now"]
+    )
+    thread_jobs = JobStore(
+        thread_log, identity=jobs.identity, clock=lambda: clock["now"]
+    )
+    try:
+        if operation == "claim":
+            job = jobs.enqueue("run_claim")
+            _run_after_write_lock_wait(
+                db=tmp_path / "db.sqlite",
+                log=thread_log,
+                monkeypatch=monkeypatch,
+                clock=clock,
+                time_after_wait=2_000,
+                action=lambda: thread_jobs.claim(job.job_id, ttl_ms=400),
+            )
+            result = jobs.get(job.job_id)
+            assert result is not None
+            assert (result.claimed_at, result.deadline_at) == (2_000, 2_400)
+        elif operation == "heartbeat":
+            job = jobs.enqueue("run_heartbeat")
+            claim = jobs.claim(job.job_id, ttl_ms=400)
+            _run_after_write_lock_wait(
+                db=tmp_path / "db.sqlite",
+                log=thread_log,
+                monkeypatch=monkeypatch,
+                clock=clock,
+                time_after_wait=2_000,
+                action=lambda: thread_jobs.heartbeat(claim, ttl_ms=400),
+            )
+            result = jobs.get(job.job_id)
+            assert result is not None
+            assert (result.heartbeat_at, result.deadline_at) == (2_000, 2_400)
+        elif operation == "lease_renew":
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            leases.acquire([ws], "run_lease", ttl_ms=400)
+            _run_after_write_lock_wait(
+                db=tmp_path / "db.sqlite",
+                log=thread_log,
+                monkeypatch=monkeypatch,
+                clock=clock,
+                time_after_wait=2_000,
+                action=lambda: thread_leases.renew(
+                    [ws], "run_lease", ttl_ms=400
+                ),
+            )
+            result = leases.holder(ws)
+            assert result is not None
+            assert result.expires_at == 2_400
+        else:
+            result = []
+            _run_after_write_lock_wait(
+                db=tmp_path / "db.sqlite",
+                log=thread_log,
+                monkeypatch=monkeypatch,
+                clock=clock,
+                time_after_wait=2_000,
+                action=lambda: result.append(
+                    thread_jobs.enqueue_and_claim(
+                        "run_enqueue_and_claim", ttl_ms=400
+                    )
+                ),
+            )
+            assert len(result) == 1
+            enqueued, _ = result[0]
+            assert (enqueued.created_at, enqueued.deadline_at) == (2_000, 2_400)
+    finally:
+        thread_log.close()
+        log.close()
 
 
 def test_requeue_returns_to_pending_and_next_claim_bumps_epoch(env):
