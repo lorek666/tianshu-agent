@@ -26,6 +26,13 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
+  每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
+  完整矩阵；`ready_for_review` 是最终候选信号。回归从真实 workflow 枚举所有 job，并
+  钉住新增未门禁 job、`ready_for_review` 缺失、Windows summary `always()`、固定
+  concurrency group 的退化。最终代码树全量 pytest 为 **3775 passed / 12 skipped /
+  696.48s / exit 0**；精确提交的独立复审与 PR required CI 以 PR 证据为准。
+
 - **R1–R3 发布候选最终 CI、独立复审与保护合并完成（2026-11-16）**：最终代码与文档对象 `343ebf0e7c1f40dcc276ed3dd247f3a8eec002d0/tree 94f8e34fa306030a5f172f7838bec62f012e3805` 的 PR run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 全绿：Ubuntu `3715 passed / 51 skipped / 441.31s`，macOS `3754 passed / 12 skipped / 966.01s`，Windows shard0 `1846 passed / 37 skipped / 1092.28s`，shard1 `1834 passed / 49 skipped / 904.48s`；两个分片合计覆盖 `3766/3766` 节点，无 failed。UI typecheck/test/build、Windows Rust 与 `test (windows-latest) · py3.12` required 汇总均 success。四项 required check 精确为 `test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build`。独立复审对 `ded5e97/tree 53315dc` 的 strict SQLite 定稿修复给出 PASS（`4ab41890…`），对最终 `343ebf0` docs-only delta 给出 PASS（`48300766…`）；作者与复审者分离，报告绑定完整 SHA。PR #175 在 base main `32ba798b`、strict + enforce-admins、禁强推/禁删除的保护下以 merge commit `219d17ab` 合并，远端候选分支随后删除。merge 后 main push run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 七项 job 全部 success：Ubuntu `3715 passed / 51 skipped / 556.06s`，macOS `3754 passed / 12 skipped / 1047.86s`，Windows shard0 `1846 passed / 37 skipped / 1112.01s`，shard1 `1834 passed / 49 skipped / 869.36s`，仍覆盖 `3766/3766` 且无 failed。合并与 main push 证明 required 门禁通过，但不外推为 Windows 10/11、ARM64 或用户设备实测；TOCTOU、runtime archive provenance、签名/公证/自动更新与正式安装升级/回退仍未解决。
 
 - **R1–R3 最终集成代码候选已通过独立复审，旧 CI 的 Windows 红已转作者修复（2026-11-16，合并前历史记录）**：`codex/release-final-integration` 以 main `32ba798bb77527351ebae996a0e22b062df2f491` 为基线。历史独立 FAIL 对象 `87f66ee/tree 98336ac` 暴露并已修复：Windows 保留设备名空格变体、bundle/资源树/output 的链接或 FIFO、macOS App 根额外空目录、不安全 purge 根、`release-index.json` 漏绑 8 个最终资产、workflow main-ref/UI dist 顺序及 installer 特殊成员；原实现真红和修复后负控均保留在 ignored 证据。后续 R3 在 `03d7bb0` 又独立发现大小写不敏感 APFS 上的 P1：`/applications`、`/library`、`/SYSTEM`、`/users/shared`、`/PRIVATE` 等与受保护公共根同 inode，旧字符串比较会进入 `rm`；`e920c0a` 改为 device/inode 的同一对象/祖先判定并覆盖双向 prefix/data-root 重叠，`7600355` 再把测试改为大小写不敏感/敏感卷均确定执行、无 skip/xfail。R2 build、verifier/install 对 `03d7bb0` 的适用范围均为独立 PASS；R3 第二读者对 `7600355/tree f005c21` 独立 PASS。PR [#175](https://github.com/lorek666/tianshu-agent/pull/175) 的旧候选 `bede8e3/tree 9a64600` 在 run [43864730556](https://github.com/lorek666/tianshu-agent/actions/runs/43864730556) 中 Ubuntu、macOS、UI、Windows Rust 四项 success；Windows Python shard0 为 **11 failed / 1840 passed / 29 skipped / 1879 deselected / 1024.40s**，shard1 为 **14 failed / 1808 passed / 57 skipped / 1880 deselected / 983.54s**，required 汇总按设计红。25 个失败归结为四簇：10 个文本模式换行 fixture（9 个 checksum fixture + 1 个 Host `ready\r\n` fixture）被写成 CRLF；4 个 runtime smoke 把 uv launcher PID 当作实际解释器/PID owner；10 个 unsafe Git-path fixture 因 Windows 默认 `core.protectNTFS=true` 没有真正生成危险 tree；1 个网络 deadline 将 timer 触发的 socket shutdown `OSError` 错分为 `net.read`。`0bdcf7b` 让 smoke 优先使用实际存在的 `sys._base_executable` 启动 Host/Daemon，并只在 deadline event 已触发时把 `OSError`/`SSLError`/HTTP incomplete 保留为 `net.timeout`；`74105f6` 精确接受 Windows `ready\r\n`、让 test-only Git fixture 写入全部危险路径、用字节写入保留校验文件字面 LF，生产安全和业务断言未放宽。最终代码对象为 `74105f670934c4e4df22aee052164638d963770c/tree 4bae38634aa30cd99b85df3fc68c26db5d97b89b`；第二读者独立 PASS，报告 SHA256 `438d6f34b4566261a9d90619e1611005badeea95be030f218ca6d23e635415f8`，并用真实 launcher-child、真实 Git tree 的 10/10 危险路径及三路注入 deadline 验证关键修复。作者侧联合定向 `312 passed / 1 skipped / 95.33s`，复审五文件 `182 passed / 1 skipped / 74.20s`；修复后隔离环境全量 pytest 为 **3752 passed / 12 skipped / 685.27s / exit 0**，lock、全仓 Ruff、diff-check 通过。UI typecheck+124 tests+build+dist 一致及 Rust fmt+46 tests+clippy 来自不含本增量的已审对象，当前增量未改 UI/Rust。`a55e752` 的 run [43872902357](https://github.com/lorek666/tianshu-agent/actions/runs/43872902357) 中 UI、Ubuntu、macOS、Windows Rust 与 shard0 均 success；macOS 为 `3752 passed / 12 skipped / 902.68s`，Ubuntu 为 `3713 passed / 51 skipped / 499.89s`，shard0 为 `1845 passed / 37 skipped`。shard1 只有 `1 failed / 1832 passed / 49 skipped`，唯一失败是 backslash-traversal fixture 的 `DID NOT RAISE`：Windows Git 在 `update-index` 路径解析层把反斜杠当分隔符，raw path 未进入真实 tree；其余 9 个 Windows 危险路径参数均 PASS。`3b37f8f` 只用真实 Git raw tree object 重建目标子树，并在调用生产入口前断言 `ls-tree -z` 能读回精确反斜杠 filename；生产 `scripts/build_release.py` blob 与 `a55e752` 相同，没有弱化断言。第二读者独立 PASS，报告 SHA256 `6aa442f537b3af7cb05dfc3659a296ac05c6eae5b1e231938c35d2d894994418`，真实探针证明确切新增 entry、parent tree 不变、`git fsck --strict` 通过、生产在 blob 读取和 staging 写入前拒绝，缺少 entry 的负控不会误报红。修复后最终本机全量 pytest 正体为 **3752 passed / 12 skipped / 698.50s**；外层 zsh 在采集 rc 时误用只读变量 `status` 使 wrapper 返回 1，未记录 pytest 的 shell rc，因此不以 wrapper 1 冒充测试失败或 shell 0，最终原生结果仍以新 CI 为准。该段保留合并前的待绑定状态；后续精确 run、独立复审和 merge 结果见本节首条。
@@ -444,6 +451,13 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **完整 PR 矩阵应在候选冻结后启动（2026-11-17）**：draft 期间每次 `synchronize`
+  都跑七作业矩阵会把正常迭代变成反复取消/重跑；现在 job-level gate 让 draft 不分配
+  runner，ready-for-review 才启动。回归必须从 YAML 动态枚举 job，否则以后新增 job
+  可绕过草稿门禁；main push 还必须钉住 concurrency group 含 `github.sha`，只检查
+  `cancel-in-progress` 不足以保护逐 SHA 结论。PR event 的 `GITHUB_SHA` 是合成 merge
+  commit，证据须同时记录 head SHA/tree、base SHA 与 event SHA，不能缩写成一个“同一
+  SHA”。
 - **锁文件消失不等于已核对进程死亡（2026-11-16）**：Host 退出清理持有的是旧 PID/`started_at` 与 Daemon 锁快照；`host.lock` 暂时缺失既可能是旧 Host 已退出，也可能是它尚未完成清理或新实例接入窗口。快照内 Host PID 仍存活时必须保留 Daemon，不能把一次缺文件观察当作 Daemon 的死亡证明。
 - **`git status` 干净不等于对象字节干净（2026-11-16）**：blob replacement ref 可让 `rev-parse`/`status` 保持原身份与 clean，同时 `cat-file` 返回恶意内容；发行构建必须对每条 Git 读命令统一关闭 replacement objects，并保留真实 replacement-ref 回归。
 - **两段目录 rename 需要可恢复凭证（2026-11-16）**：旧 output 移走与 staging 发布之间硬退会留下可见空窗和永久 staging/backup；不能只靠 `except` 回滚（`os._exit` 不执行），必须在破坏性第一步之前持久化恢复记录，并让下一次启动自动续做或恢复。
@@ -739,6 +753,16 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-17 · CI 候选冻结与重复矩阵治理**：旧 workflow 在 draft PR 的每次同步
+  推送都启动完整矩阵；当前分支先以真实 workflow 回归在旧 YAML 上得到 `5 failed`，
+  再给全部 runner job 加非 draft 门禁并加入 `ready_for_review`。独立复审在
+  `36e6bcd/tree 72f85b8` 判 PARTIAL，指出硬编码 job 集、未保护 main concurrency
+  group，以及 PR head/event merge SHA 混写；窄修后测试从 `6 passed` 扩为 `18 passed`
+  （含 release workflow），新增 rogue job 与固定 group 负控都会真红。最终代码树在
+  `/Volumes/Date` 临时根、隔离模型/API 环境后全量为 **3775 passed / 12 skipped /
+  696.48s / exit 0**；仍以新提交独立复审和 PR required CI 为合并门，不把本机 green
+  当成云端或发布验证。
 
 - **2026-11-16 · R3 发布/安装作者候选与输入封闭负控**：从基线 HEAD `886c6e0a` 新增独立 R3 workflow、package/assemble 入口、macOS 安装/卸载脚本及四份测试。先保留真实红证：安装 checksum 只读第一列时接受错误文件名；assembler 允许 `../../` version、无效 commit、任意 HTTPS URL、符号链接根/target/输入/输出与 FIFO；workflow 未要求 annotated tag；`package_app.py` 把真实 macOS `.app` 目录误当成文件。修后 targeted **56 passed**，Ruff/actionlint/shellcheck 与 `git diff --check` exit 0。workflow 最新 run 选择按协调者要求固定为 `sort_by | last | select(completed) | select(success)`，负控证明“先 select(success) 再 last”会红。偏离默认临时卷的对照全量为 **4 failed / 3589 passed / 12 skipped / 639.84s**，4 项只证明 `/private/tmp` 显式别名用例在低于 2 GiB 时被既有准入拒绝，不能冒充 R3 业务通过；按协调者新策略未等待或重启第二轮全量，最终 integration 只跑一次组合全量。当前不创建 R2 stub；真实 dispatch、四目标 artifact、draft/install/device/power-loss 证据均未成立，独立复审与原生 CI 另绑提交。
 
