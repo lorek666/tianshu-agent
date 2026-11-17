@@ -13,6 +13,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Iterative work stays in draft PRs. Marking ready is the final candidate
+    # freeze signal; only then does this workflow allocate the full runner
+    # matrix. A later push still gets its own exact-SHA run.
+    types: [opened, reopened, synchronize, ready_for_review]
 
 # PR：按分支分组，连推时取消上一轮——省 runner，也不会有过期的绿色。
 # main：按 commit 分组，每个 commit 都要拿到自己的结论。
@@ -31,6 +35,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}) · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     # 每个平台的上限。默认是 360 分钟：一个挂住的测试会把 runner 占 6 小时，
     # 而"超时"和"挂住"对排查是两件完全不同的事——超时至少会带着已经跑过的
     # 输出结束。（实测踩过：windows job 卡在 Pytest 里 20 分钟没动静。）
@@ -103,6 +108,7 @@ jobs:
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
     runs-on: windows-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -159,6 +165,7 @@ jobs:
   desktop_windows:
     name: desktop rust checks · windows
     runs-on: windows-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     timeout-minutes: 20
     defaults:
       run:
@@ -181,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [windows_shards, desktop_windows]
     # 上游失败也必须进入汇总，不能让 required 因依赖失败而 skip 成 success。
-    if: always()
+    if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
     timeout-minutes: 25
     defaults:
       run:
@@ -233,6 +240,7 @@ jobs:
   ui:
     name: ui · typecheck / test / build
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     defaults:
       run:
         shell: bash

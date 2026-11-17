@@ -2,9 +2,19 @@
 
 <!-- 说明为什么需要这次改动，以及改动后的行为。契约变更须单独 PR，不夹带实现代码。 -->
 
+## 候选冻结
+
+<!-- 保持 draft 直到代码、测试和证据稳定；不要用中间提交反复占用完整 runner 矩阵。 -->
+
+- [ ] 开发迭代期间 PR 为 draft，定向红/绿证据已冻结
+- [ ] 已同步最新 `origin/main`，并记录候选 head/tree
+- [ ] 全量本地门禁只对最终代码树运行一次
+- [ ] 最终复审记录 head SHA/tree 与 base SHA
+- [ ] required CI 记录 head/base 和 event merge SHA
+
 ## 验证证据
 
-<!-- 写明实际被测的完整提交 SHA、命令/结果与 CI 链接。未运行或未完成就如实写明，不把旧提交的绿色作为最新提交的结论。 -->
+<!-- 写明实际被测的完整提交 SHA、命令/结果与 CI 链接。pull_request 的 GITHUB_SHA 是合成 merge commit；同时记录 PR head SHA/tree、base SHA 与 event GITHUB_SHA。未运行或未完成就如实写明，不把旧提交的绿色作为最新提交的结论。 -->
 
 ## 独立复审
 
