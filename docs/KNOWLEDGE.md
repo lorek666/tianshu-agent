@@ -110,9 +110,10 @@
   时钟，锁等待跨过 TTL 时成功写入的 deadline/expires 仍可能已经过期。修复候选把
   四处 TTL 采样移到取得写锁之后，并以真实子进程持锁、线程事件屏障和注入逻辑钟做
   claim/heartbeat/lease/enqueue-and-claim 四路回归；精确旧 main 为 `4 failed`，
-  修复树为 `4 passed`。相关作业、M2 与租约联合定向为 **117 passed / 21.90s**，原
-  Windows 失败用例在新实现下单跑通过；本机唯一最终全量为 **3796 passed / 12
-  skipped / 658.28s / exit0**，五文件运行前后哈希不变。全量日志 SHA256
+  修复树为 `4 passed`。相关作业、M2 与租约联合定向为 **117 passed**，原 Windows
+  失败用例在新实现下单跑通过；两份原始日志在 ignored
+  `closeout/heartbeat-lock-fix/focused-joint.log` 与 `windows-target.log`。本机唯一
+  最终全量为 **3796 passed / 12 skipped / 658.28s / exit0**，五文件运行前后哈希不变。全量日志 SHA256
   `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`，lock、
   全仓 Ruff 与 diff-check 均 exit0。该段记录时生产修复已提交为本分支候选，但独立
   复审和精确新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
@@ -1169,8 +1170,9 @@
   子进程持锁探针证明生产代码在 `BEGIN IMMEDIATE` 前采样 TTL 起点；修复把 claim、
   enqueue-and-claim、heartbeat、lease renew 的时间采样移入写锁事务，并新增四路
   注入钟/真进程/事件屏障回归。精确旧 main `4 failed`，修复树 `4 passed`；作业/M2/
-  租约联合定向 `117 passed / 21.90s`，原 Windows 失败用例在新树上单跑通过。最终
-  本机全量为 `3796 passed / 12 skipped / 658.28s / exit0`，前后五文件哈希不变；
+  租约联合定向 `117 passed`，原 Windows 失败用例在新树上单跑通过，原始日志均保存在
+  ignored `heartbeat-lock-fix/`。最终本机全量为
+  `3796 passed / 12 skipped / 658.28s / exit0`，前后五文件哈希不变；
   日志 SHA256 `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`。
   原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
   唯一原生 CI、保护合并和修后 release/实际资产核验。
