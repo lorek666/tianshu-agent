@@ -323,11 +323,11 @@ Run   { run_id, task_id, goal_revision, lease_epoch, state, outcome?, effect_sta
 
 | ID | 名称 | v1 状态 |
 |---|---|---|
-| C1 | Model I/O | **原则已定**｜待补字段级可校验 schema 后冻结 |
-| C2 | Tool | **原则已定**｜待补字段级可校验 schema 后冻结 |
-| C3 | Event | 已定义｜随 §5.3 定稿冻结 |
-| C4 | Permission / Approval | 已定义｜随 §5.4 定稿冻结 |
-| C5 | Eval | 原则已定 |
+| C1 | Model I/O | **已定义**｜字段级 schema `schemas/c1/model.json`（含 W4 流式增量） |
+| C2 | Tool | **已定义**｜字段级 schema `schemas/c2/tool.json` |
+| C3 | Event | 已定义｜随 §5.3 定稿冻结（`schemas/c3/event.json`） |
+| C4 | Permission / Approval | 已定义｜随 §5.4 定稿冻结（`schemas/c4/rules.json`） |
+| C5 | Eval | **已定义**｜字段级 schema `schemas/c5/eval.json` |
 
 **冻结条件（不是"写完了"就算冻结）**：字段级 JSON Schema 可校验 + 契约测试全绿 + 第二家 provider 接入验证过。缺任一条只能标"原则已定"——提前宣布冻结会让实现方误以为边界不会变。
 
@@ -379,6 +379,12 @@ M3 加第二个 provider（Anthropic Messages API）时才被迫写清这件事�
   **绝不兜底成 `end_turn`**——那会把一次异常收尾记成成功
 - `usage`：缺字段是 `null`；`cache_read_input_tokens` / `cache_creation_input_tokens`
   只在 provider 上报时出现，且**不并入** `input_tokens`（否则同一批 token 计两次费）
+
+**W4 流式增量补充（2026-11-18，详见 [CONTRACT-W4-W12-2026-11-18.md](CONTRACT-W4-W12-2026-11-18.md)）**
+
+- 支持流式的 adapter 可提供可选 `stream_complete(messages, tools, on_delta) -> ModelResponse`，增量块采用版本化契约对象 `ModelStreamDelta{schema_version="1.0", kind="text"|"tool_call_start", text, tool_name}`（机器副本见 `schemas/c1/model.json` `$defs.modelStreamDelta`）。
+- **流式增量不是持久化事实源**：不逐片写入 SQLite `events` 表；唯一持久化事实源仍是流正常收束后的 `model.result` 事件。流中途断连或协议错误一律抛 `ModelError`，不得将残缺增量伪造为 `end_turn`；工具调用绝不在流式增量阶段提前派发。
+- 桌面控制面仅通过有界订阅队列推送瞬态通知 `kind="model_stream"` 供在线 UI 实时预览；`replay` 只读 `model.result`，不触发流式。
 
 
 ### 5.2 C2 Tool
@@ -689,6 +695,8 @@ Event {
 其他事件不随之升版。T1/T2/T3 的各自冻结窄范围已由第二读者独立核验，包含真实
 CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DISK-2026-11-14.md)。
 低磁盘切片已随 PR #144 合入；该 PR 及 main `8f2a508e68f27efc4100b7466fcd79043341f7fa` 自身原生 CI 均通过并独立核验。issue #145 的旧正常收尾失败原因未知未修，不借本次绿关闭可靠性风险。
+
+`run.end` 货币成本汇总按 [CONTRACT-W4-W12-2026-11-18.md](CONTRACT-W4-W12-2026-11-18.md) §3 升为精确 payload `v2`：新增 `cost_total_micros`（`integer|null`，未知单价不伪装成 `0`）与 `cost_unknown_calls`（`integer >= 0`），保留历史 `v0/v1` 的 schema 与只读解释不变。
 
 ### 5.4 C4 Permission / Approval
 

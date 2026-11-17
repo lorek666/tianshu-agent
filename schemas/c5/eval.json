@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tianshu C5 Eval Report Contract (v1)",
+  "description": "C5 可复现评测报告与对比报告字段级契约（PRD §5 / §10，tianshu.eval.v1 & tianshu.eval.compare.v1）。",
+  "type": "object",
+  "$defs": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "unsafe", "unknown"]
+    },
+    "dimensionName": {
+      "type": "string",
+      "enum": ["safety", "completion", "reliability", "efficiency"]
+    },
+    "attributionLayer": {
+      "type": "string",
+      "enum": [
+        "harness",
+        "model",
+        "tool",
+        "policy",
+        "approval",
+        "recovery",
+        "limit",
+        "artifact"
+      ]
+    },
+    "evalReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "suite_version",
+        "selection",
+        "generated_at",
+        "model",
+        "repeat",
+        "elapsed_ms",
+        "workspace_retained",
+        "safety_gate",
+        "columns",
+        "dimensions",
+        "validity",
+        "overall",
+        "scope",
+        "categories",
+        "attribution",
+        "verdict",
+        "cases"
+      ],
+      "properties": {
+        "schema": { "type": "string", "const": "tianshu.eval.v1" },
+        "suite_version": { "type": "string" },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["complete", "requested", "case_count"],
+          "properties": {
+            "complete": { "type": "boolean" },
+            "requested": { "type": ["array", "null"], "items": { "type": "string" } },
+            "case_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "generated_at": { "type": "string" },
+        "model": { "type": "object" },
+        "repeat": { "type": "integer", "minimum": 3 },
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "workspace_retained": { "type": "boolean" },
+        "safety_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["passed", "rule", "violations"],
+          "properties": {
+            "passed": { "type": "boolean" },
+            "rule": { "type": "string" },
+            "violations": { "type": "array", "items": { "type": "object" } }
+          }
+        },
+        "columns": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["completion", "safety"],
+          "properties": {
+            "completion": { "type": "object" },
+            "safety": { "type": "object" }
+          }
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["safety", "completion", "reliability", "efficiency"],
+          "properties": {
+            "safety": { "type": "object" },
+            "completion": { "type": "object" },
+            "reliability": { "type": "object" },
+            "efficiency": { "type": "object" }
+          }
+        },
+        "validity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["samples", "valid", "invalid", "invalid_samples", "rule"],
+          "properties": {
+            "samples": { "type": "integer", "minimum": 0 },
+            "valid": { "type": "integer", "minimum": 0 },
+            "invalid": { "type": "integer", "minimum": 0 },
+            "invalid_samples": { "type": "array", "items": { "type": "object" } },
+            "rule": { "type": "string" }
+          }
+        },
+        "overall": { "type": "object" },
+        "scope": { "type": "object" },
+        "categories": { "type": "object" },
+        "attribution": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "fail", "unsafe", "unknown"]
+        },
+        "cases": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "compareReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "comparable",
+        "guards",
+        "baseline",
+        "candidate",
+        "summary",
+        "cases"
+      ],
+      "properties": {
+        "schema": { "type": "string", "const": "tianshu.eval.compare.v1" },
+        "comparable": { "type": "boolean" },
+        "guards": { "type": "array", "items": { "type": "string" } },
+        "baseline": { "type": "object" },
+        "candidate": { "type": "object" },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "baseline_case_pass_rate",
+            "candidate_case_pass_rate",
+            "delta",
+            "baseline_safety_gate_passed",
+            "candidate_safety_gate_passed",
+            "candidate_security_failure",
+            "regressions",
+            "improvements"
+          ],
+          "properties": {
+            "baseline_case_pass_rate": { "type": ["number", "null"] },
+            "candidate_case_pass_rate": { "type": ["number", "null"] },
+            "delta": { "type": "number" },
+            "baseline_safety_gate_passed": { "type": "boolean" },
+            "candidate_safety_gate_passed": { "type": "boolean" },
+            "candidate_security_failure": { "type": "boolean" },
+            "regressions": { "type": "array", "items": { "type": "object" } },
+            "improvements": { "type": "array", "items": { "type": "object" } }
+          }
+        },
+        "cases": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}
