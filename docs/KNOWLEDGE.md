@@ -26,6 +26,29 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **main `7bb4548` 的网络超时测试红已定位为阶段混计（2026-11-17）**：PR
+  [#184](https://github.com/lorek666/tianshu-agent/pull/184) 精确候选
+  `ea08a466d4e98f3ecb20fb2f608d4f79746fcbae` / tree
+  `6d0baa7faec705f14ee6f93cd748a1164786868b` 的七项 CI 全绿，并经保护规则合并为
+  `7bb4548eb9f2a6035f53f5e456047fb3e5628ea2`。该 merge 自身 main push run
+  [44086800492](https://github.com/lorek666/tianshu-agent/actions/runs/44086800492)
+  的 UI、Ubuntu、macOS、Windows shard1 与 Windows Rust success；Windows shard0 与
+  required 汇总 failure，唯一失败为
+  `tests/test_network_fetch.py::test_timeout_is_bounded_and_reported`。服务端按 100ms
+  期限中止后实际出现预期的 `ConnectionAbortedError [WinError 10053]`，端到端结果也已
+  正确记为 `net.timeout`；失败仅是旧测试把审批、事件持久化与收尾算进网络期限，测得
+  `3.51s >= 3.0s`，该用例 call 在 durations 中为 `9.31s`。原始红及日志不得因重跑或
+  本机绿而删除。
+
+  当前修复只改测试：先用真实 `fetch()` 对 2s 慢响应施加 250ms 硬期限并断言
+  `net.timeout` 与抓取本身 `<2s`，再走真实审批/派发链断言 `tool.result` 精确为
+  `net.timeout` 且错误语义包含“超时”。候选测试在本机目标为 `1 passed / 0.91s`，
+  网络文件为 `24 passed / 21.53s`；负控把实际期限改成 30s 后目标按预期
+  `DID NOT RAISE NetError`。生产 `src/tianshu/net.py`、TTL、授权、重试与 workflow
+  均未改。独立复审、新提交的七项原生 CI、保护合并、该 merge 自身的 main push CI、
+  四目标 release dispatch 与实际 artifact 验证均尚未完成，修后
+  release/实际 artifact 仍为 `NOT_RUN`。
+
 - **Windows release 的 NSIS 修复已保护合并，但 merge 自身 main CI 红（2026-11-17）**：exact main
   `1a386c449ee143885c663e12bbf5f4d9a6571d45` 的 release run
   [#44007384652](https://github.com/lorek666/tianshu-agent/actions/runs/44007384652) 中，
@@ -893,6 +916,17 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-17 · main 网络超时测试把端到端链耗时冒充抓取期限**：exact main
+  `7bb4548` 的 push run `44086800492` 在 Windows shard0 保留唯一真实红：100ms
+  网络期限已正确触发、服务端随后出现预期的 WinError 10053、工具结果也已记为
+  `net.timeout`，但旧测试要求包含审批与事件落盘的整个 `_drive()` 在 3s 内完成，
+  实际为 `3.51s`。修复按阶段拆分证据：2s 慢响应与 250ms 真实 `fetch()` 证明硬期限和
+  异常分类，真实端到端派发单独证明 `net.timeout` 被持久化；原集合式 reason 断言同时
+  收紧为精确值。目标 `1 passed`、网络文件 `24 passed`，30s 期限负控真实变红；生产
+  网络代码、TTL、授权、重试和 workflow 均无 diff。原始 run、main 红和修复报告保留在
+  ignored `.omc/artifacts/release-verifier-20261117/closeout/`。独立复审与新原生 CI
+  完成前不宣称已修，release 继续 `NOT_RUN`。
 
 - **2026-11-17 · M2 正常收尾红从测试自饥饿定位到确定性屏障**：main `66dd2630` 的
   Windows shard1 两红均由 1ms 心跳测试持续抢写锁触发；主写事务等满 5 秒，生产默认

@@ -297,18 +297,27 @@ def test_connection_refused_is_an_honest_failure(tmp_path):
 
 
 def test_timeout_is_bounded_and_reported(tmp_path):
-    fixture = NetFixture().route("/slow", body="终于", delay_ms=400).start()
-    limits = NetLimits(timeout_ms=100)
+    fixture = NetFixture().route("/slow", body="终于", delay_ms=2_000).start()
+    limits = NetLimits(timeout_ms=250)
     log, stack, _ = _stack(tmp_path, net_limits=limits)
     try:
-        task = _task(stack, allow=(fixture.origin_uri,), ws=_ws(tmp_path))
+        target = canonical_target(fixture.url("/slow"))
         started = time.monotonic()
-        result = _drive(stack, engine_for(stack, _script(fixture.url("/slow"))), task)
+        with pytest.raises(NetError) as excinfo:
+            fetch(target, limits=limits)
         elapsed = time.monotonic() - started
+        assert excinfo.value.reason == "net.timeout"
+        assert elapsed < 2.0, (
+            f"抓取硬期限没有生效：{elapsed:.2f}s；"
+            f"期限 {limits.timeout_ms}ms"
+        )
+
+        task = _task(stack, allow=(fixture.origin_uri,), ws=_ws(tmp_path))
+        result = _drive(stack, engine_for(stack, _script(fixture.url("/slow"))), task)
         payload = _results(log, result.run_id)["c1"]
         assert payload["status"] == "failed", payload
-        assert payload["output"]["reason"] in {"net.timeout", "net.connect_timeout"}
-        assert elapsed < 3.0, f"超时上限没有生效：{elapsed:.2f}s"
+        assert payload["output"]["reason"] == "net.timeout"
+        assert "超时" in payload["output"]["error"]
     finally:
         log.close()
         fixture.stop()
