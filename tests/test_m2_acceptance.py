@@ -971,7 +971,7 @@ def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
     # TTL 与心跳间隔的比例就是"调度抖动余量"：150/40 只有 3.75 个心跳周期，
     # Windows runner 上任何一次 ~100ms 的停顿（杀毒扫描、桌面合成、CI agent
     # 抢占）都会让心跳晚于 TTL，测试就红——那是 runner 的抖动，不是心跳没工作。
-    # 400/40 = 10 个周期，仍然远小于生产默认（30s TTL / 5s 间隔 = 750 个周期），
+    # 400/40 = 10 个周期，比生产默认（30s TTL / 5s 间隔 = 6 个周期）更保守，
     # 也仍然满足"阻塞 4×TTL 时没有心跳就一定能被抢走"这个反例。
     ttl, interval = 400, 40
     probe = _ProbeModel(ttl / 1000 * 4, env)

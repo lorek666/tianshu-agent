@@ -90,6 +90,34 @@
   也尚未完成；测试代码预审与本机全量不能替代这些门禁，更不能倒推原 Windows 根因
   已确定。修后 release/实际 artifact 对账仍为 `NOT_RUN`。
 
+- **MCP 修复合并后的 main CI 又暴露 TTL/写锁等待缺陷（2026-11-17）**：PR #182 的
+  冻结 head `b48353745fe5776ffd836d16efd4f19da5acc066` / tree
+  `6fc2372995f4fc1a5f1137584ee19a4a7c54dc89` 在最终独立复审限定 PASS 后，候选 run
+  [44026612992](https://github.com/lorek666/tianshu-agent/actions/runs/44026612992)
+  attempt1 的七个 job 全部 success。按保护规则正常合并为
+  `acf81642ef3afd4c27616decc661f7f90d33daa1`（tree 相同，parents 为
+  `cbf8d890…`/`b4835374…`）；该 merge 自身 main push run
+  [44029185313](https://github.com/lorek666/tianshu-agent/actions/runs/44029185313)
+  attempt1 为 `completed / failure`：Ubuntu、macOS、UI、Windows shard1 与 Windows
+  Rust success；Windows shard0 **1 failed / 1876 passed / 25 skipped / 1902
+  deselected / 1072.71s**，Windows required 汇总按设计 failure。唯一失败为
+  `test_heartbeat_loop_renews_while_the_host_thread_blocks`：首探针得到
+  `beats=36`、`deadline_slack=[384]`，但真实另一连接仍认领为 epoch 2，随后旧
+  worker 的结算被 fence 拒绝。原始 shard 只有阶段 outcome，没有 SQL/事件时间线；
+  **实际 Windows 现场卡点仍为 `NOT_ESTABLISHED`**，不能仅凭该红判成 flake、生产
+  无 bug 或已找到现场根因。独立锁探针另行证明生产路径存在可复现缺陷：claim、
+  enqueue-and-claim、heartbeat 与 lease renew 都在等待 `BEGIN IMMEDIATE` 前采样
+  时钟，锁等待跨过 TTL 时成功写入的 deadline/expires 仍可能已经过期。修复候选把
+  四处 TTL 采样移到取得写锁之后，并以真实子进程持锁、线程事件屏障和注入逻辑钟做
+  claim/heartbeat/lease/enqueue-and-claim 四路回归；精确旧 main 为 `4 failed`，
+  修复树为 `4 passed`。相关作业、M2 与租约联合定向为 **117 passed**，原 Windows
+  失败用例在新实现下单跑通过；两份原始日志在 ignored
+  `closeout/heartbeat-lock-fix/focused-joint.log` 与 `windows-target.log`。本机唯一
+  最终全量为 **3796 passed / 12 skipped / 658.28s / exit0**，五文件运行前后哈希不变。全量日志 SHA256
+  `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`，lock、
+  全仓 Ruff 与 diff-check 均 exit0。该段记录时生产修复已提交为本分支候选，但独立
+  复审和精确新原生 CI 均未完成；修后 release/实际 artifact 仍为 `NOT_RUN`。
+
 - **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
   每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
   完整矩阵；`ready_for_review` 是最终候选信号。回归从真实 workflow 枚举所有 job，并
@@ -760,6 +788,12 @@
 
 - **M2 静态疑点 → issue #53**：否决缓存只按 `run_id` 生效（同一 Task 新 Run 是否忘掉否决，取决于 `run start` 是否只由人/控制面触发，未逐条验证）；`revoke_consumed` 的判定依赖 dispatcher 状态核验，未逐条探针验证。**两条都未复现**，不许当成已确认漏洞，也不许当成已解决。
 - **M1 `delete_file` 注入矩阵 → issue #54**：本轮（PR 修法）把 "kill×100" 的证据面从只覆盖 create 扩到 create + 覆盖写；删除类动作的恢复判据是 `absent`、撤销按 preimage 重建，另开一组断言跟进。
+- **SQLite TTL 必须从真正取得写锁后起算**：claim、heartbeat、enqueue-and-claim 与
+  lease renew 若在 `BEGIN IMMEDIATE` 之前采样时钟，锁等待时间不计入新的 deadline /
+  expires；另一进程持锁超过 TTL 时，续期即使返回成功，也可能刚提交就过期并允许
+  接管。确定性证据必须用真实子进程持写锁，并用事件屏障在锁等待中推进注入时钟。
+  旧实现四路均写成 `1000/1400`，修复后四路为 `2000/2400`。这条不能与原始 Windows
+  失败现场自动等同：现场没有 SQL 时间线，只能记为可复现机制与候选修复。
 - **M4 未验证项 → issue #55**（真实换模对比 / Windows `evaluate` / memfs 评测路径 / 真超时）：2026-11-10 真实模型轮已销账三条，**只剩 Windows 实机一条**（2026-11-10 时点口径。**2026-11-14 对账**：2026-11-11 判据升 m4.5 后，真实换模复跑重新成为未决项——现剩 Windows 实机 + m4.5 真实复跑两条，见下文 issue #55 行与 issue 本体评论）。
 - **按已知限制接受**：`create_report` 先 `exists` 检查再 `os.replace`，对**外部进程**仍有覆盖 TOCTOU；lease 只防受控 run，PRD 非目标本就包含"防本机用户"。登记是为了下次读到的人不至于以为没考虑过。
 - **中-5 是误报**（`prepare` 当场拒绝目录外目标），处理方式是一条钉住测试，不是产品代码改动。
@@ -1128,6 +1162,20 @@
   PASS，唯一本机全量、lock、全仓 Ruff 与 diff-check 已通过；精确对象、结果数字和
   报告 hash 统一见 §2。完整新提交、KNOWLEDGE 增量独立复审和新原生 CI 尚未完成，
   Windows 原现场卡点仍未确定，修后 release/实际 artifact 对账仍为 `NOT_RUN`。
+
+- **2026-11-17 · PR #182 合并后 main 红与 TTL 锁等待修复**：PR #182 精确候选及
+  保护 merge 的 tree 相同，候选七 job 全绿；merge 自身 main run `44029185313`
+  在 Windows shard0 的首探针断言出现 epoch 2 接管，其余 job 成功。原始 shard 没有
+  SQL/事件时间线，因此只记录实际失败与 `NOT_ESTABLISHED`，不猜成 flake。独立真实
+  子进程持锁探针证明生产代码在 `BEGIN IMMEDIATE` 前采样 TTL 起点；修复把 claim、
+  enqueue-and-claim、heartbeat、lease renew 的时间采样移入写锁事务，并新增四路
+  注入钟/真进程/事件屏障回归。精确旧 main `4 failed`，修复树 `4 passed`；作业/M2/
+  租约联合定向 `117 passed`，原 Windows 失败用例在新树上单跑通过，原始日志均保存在
+  ignored `heartbeat-lock-fix/`。最终本机全量为
+  `3796 passed / 12 skipped / 658.28s / exit0`，前后五文件哈希不变；
+  日志 SHA256 `c07aa3616636b9e3fd2af471db4a658874b94a35cb7ac65aeb03396996573375`。
+  原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
+  唯一原生 CI、保护合并和修后 release/实际资产核验。
 
 ## 9. 权威文档索引
 
