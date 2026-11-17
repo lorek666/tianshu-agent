@@ -56,6 +56,21 @@ MACOS_PYTHON_EXECUTABLES = frozenset(
 )
 # Tauri 2.12.4 ships NSIS 3.13 x86 stubs for every Windows payload architecture.
 WINDOWS_NSIS_BOOTSTRAP_MACHINE = 0x014C
+WINDOWS_NSIS_APP_EXECUTABLE = "tianshu-desktop.exe"
+WINDOWS_NSIS_X86_SUPPORT_FILES = frozenset(
+    {
+        "$PLUGINSDIR/NSISdl.dll",
+        "$PLUGINSDIR/StartMenu.dll",
+        "$PLUGINSDIR/System.dll",
+        "$PLUGINSDIR/nsDialogs.dll",
+        "$PLUGINSDIR/nsis_tauri_utils.dll",
+        "uninstall.exe",
+    }
+)
+WINDOWS_NSIS_SUPPORT_FILES = WINDOWS_NSIS_X86_SUPPORT_FILES | {
+    WINDOWS_NSIS_APP_EXECUTABLE,
+    "$PLUGINSDIR/modern-wizard.bmp",
+}
 RUNTIME_SMOKE_TIMEOUT_S = 120.0
 RUNTIME_SMOKE_TERM_TIMEOUT_S = 5.0
 RUNTIME_SMOKE_TASKKILL_TIMEOUT_S = 10.0
@@ -779,12 +794,15 @@ def _verify_windows_artifact(
 
         files = payload_manifest["files"]
         _verify_required_layout(payload_root, target, files)
-        allowed_files = set(files) | {"release-manifest.json", *ALLOWED_RESOURCE_ICONS}
+        required_files = set(files) | {"release-manifest.json"}
+        allowed_files = required_files | ALLOWED_RESOURCE_ICONS
         actual_files = {
             path.relative_to(payload_root).as_posix()
             for path in payload_root.rglob("*")
             if path.is_file()
         }
+        if payload_root == destination:
+            actual_files.difference_update(WINDOWS_NSIS_SUPPORT_FILES)
         unlisted = actual_files - allowed_files
         missing = set(files) - actual_files
         if unlisted or missing:
@@ -792,6 +810,44 @@ def _verify_windows_artifact(
                 "NSIS payload 文件集合与 manifest 不一致："
                 f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing)}"
             )
+
+        payload_prefix = PurePosixPath(payload_root.relative_to(destination).as_posix())
+        required_extracted_files = {
+            (payload_prefix / PurePosixPath(relative)).as_posix()
+            for relative in required_files
+        } | WINDOWS_NSIS_SUPPORT_FILES
+        allowed_extracted_files = {
+            (payload_prefix / PurePosixPath(relative)).as_posix()
+            for relative in allowed_files
+        } | WINDOWS_NSIS_SUPPORT_FILES
+        actual_extracted_files = {
+            path.relative_to(destination).as_posix()
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
+        unlisted = actual_extracted_files - allowed_extracted_files
+        missing = required_extracted_files - actual_extracted_files
+        if unlisted or missing:
+            raise VerifyError(
+                "NSIS 解包文件集合与 Tauri 固定布局不一致："
+                f"未列文件={sorted(unlisted)}，缺失文件={sorted(missing)}"
+            )
+
+        _expect_arch(
+            _native_header(destination / WINDOWS_NSIS_APP_EXECUTABLE),
+            target,
+            f"NSIS payload {WINDOWS_NSIS_APP_EXECUTABLE}",
+        )
+        for relative in sorted(WINDOWS_NSIS_X86_SUPPORT_FILES):
+            machine = _expect_pe(
+                _native_header(destination / relative),
+                f"NSIS installer {relative}",
+            )
+            _failure(
+                machine == WINDOWS_NSIS_BOOTSTRAP_MACHINE,
+                f"NSIS installer {relative} 不是固定的 x86 组件：0x{machine:04X}",
+            )
+
         _expect_arch(
             _native_header(payload_root / "python" / "python.exe"),
             target,

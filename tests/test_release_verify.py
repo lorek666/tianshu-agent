@@ -253,6 +253,23 @@ def _windows_bundle(tmp_path: Path, *, target: str = "windows-x64") -> Path:
     return bundle
 
 
+def _add_nsis_support_files(destination: Path, *, target: str) -> None:
+    machine = 0xAA64 if target.endswith("arm64") else 0x8664
+    (destination / "tianshu-desktop.exe").write_bytes(_pe(machine))
+    plugins = destination / "$PLUGINSDIR"
+    plugins.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "NSISdl.dll",
+        "StartMenu.dll",
+        "System.dll",
+        "nsDialogs.dll",
+        "nsis_tauri_utils.dll",
+    ):
+        (plugins / name).write_bytes(_pe(0x014C))
+    (plugins / "modern-wizard.bmp").write_bytes(b"fixed wizard bitmap")
+    (destination / "uninstall.exe").write_bytes(_pe(0x014C))
+
+
 def test_verify_release_accepts_exact_manifest_bytes_and_archive(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_under_test")
     bundle, artifact_dir, artifact = _fixture(tmp_path)
@@ -919,6 +936,7 @@ def test_windows_nsis_accepts_x86_bootstrap_with_exact_payload(tmp_path, target)
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination / "$PLUGINSDIR" / "app")
+        _add_nsis_support_files(destination, target=target)
 
     verify._verify_windows_artifact(
         artifact=installer,
@@ -960,6 +978,7 @@ def test_windows_x86_bootstrap_does_not_replace_payload_architecture_check(tmp_p
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination / "$PLUGINSDIR" / "app")
+        _add_nsis_support_files(destination, target="windows-x64")
 
     with pytest.raises(verify.VerifyError, match="python.exe PE 架构"):
         verify._verify_windows_artifact(
@@ -1019,7 +1038,7 @@ def test_windows_nsis_payload_accepts_exact_nested_resource_root(tmp_path):
     def extractor(_artifact: Path, destination: Path) -> None:
         payload = destination / "$PLUGINSDIR" / "app"
         shutil.copytree(bundle, payload)
-        (destination / "$PLUGINSDIR" / "installer.dll").write_bytes(b"installer")
+        _add_nsis_support_files(destination, target="windows-x64")
 
     verify._verify_windows_artifact(
         artifact=installer,
@@ -1027,6 +1046,85 @@ def test_windows_nsis_payload_accepts_exact_nested_resource_root(tmp_path):
         target="windows-x64",
         extractor=extractor,
     )
+
+
+def test_windows_nsis_accepts_root_payload_with_fixed_installer_files(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_root_payload_positive")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        _add_nsis_support_files(destination, target="windows-x64")
+
+    verify._verify_windows_artifact(
+        artifact=installer,
+        bundle_dir=bundle,
+        target="windows-x64",
+        extractor=extractor,
+    )
+
+
+def test_windows_nsis_rejects_unexpected_file_outside_payload_root(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_outer_extra")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        payload = destination / "$PLUGINSDIR" / "app"
+        shutil.copytree(bundle, payload)
+        _add_nsis_support_files(destination, target="windows-x64")
+        (destination / "$PLUGINSDIR" / "unexpected.dll").write_bytes(_pe(0x014C))
+
+    with pytest.raises(verify.VerifyError, match="固定布局.*unexpected"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_nsis_rejects_missing_fixed_installer_file(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_outer_missing")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        _add_nsis_support_files(destination, target="windows-x64")
+        (destination / "uninstall.exe").unlink()
+
+    with pytest.raises(verify.VerifyError, match="固定布局.*uninstall.exe"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_nsis_rejects_wrong_desktop_executable_architecture(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_desktop_arch")
+    bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination, dirs_exist_ok=True)
+        _add_nsis_support_files(destination, target="windows-x64")
+        (destination / "tianshu-desktop.exe").write_bytes(_pe(0xAA64))
+
+    with pytest.raises(verify.VerifyError, match="tianshu-desktop.exe PE 架构"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
 
 
 def test_windows_nsis_extracted_tree_rejects_casefold_duplicates(tmp_path):
