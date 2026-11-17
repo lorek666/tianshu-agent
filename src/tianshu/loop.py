@@ -61,6 +61,7 @@ from .context import (
     context_payload,
 )
 from .crashpoint import failpoint
+from .credentials import redact
 from .disk_admission import DiskAdmission, RunStorageContext
 from .dispatcher import (
     APPROVAL_REJECTED,
@@ -674,6 +675,8 @@ class AgentLoop:
         budget: BudgetLedger | None = None,
         contents: ContentStore | None = None,
         summaries: SummaryStore | None = None,
+        on_model_delta: Callable[[str, str, int, dict[str, Any] | None, bool], None]
+        | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -682,6 +685,7 @@ class AgentLoop:
         self._approvals = approvals
         self._snapshots = snapshots
         self._model = model
+        self._on_model_delta = on_model_delta
         #: 记忆投影（F10）。传 None 时在**第一次真的用到记忆**时才打开：
         #: 不碰记忆的 Run 不该为它建表、也不该因为投影模块有问题而跑不起来。
         #: 一旦记忆工具被调用，缺投影就是明确失败，不会静默当成"没有记忆"。
@@ -1734,9 +1738,44 @@ class AgentLoop:
             # 上下文编译失败都不算"打过一次"。加在这里，超时/传输失败/重试
             # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
             progress.model_attempts += 1
+            run_row = self._tasks.get_run(run_id)
+            task_id_for_stream = run_row.task_id if run_row is not None else ""
+            turn_idx = progress.turns + 1
+            streamer = (
+                getattr(self._model, "stream_complete", None)
+                if self._on_model_delta is not None
+                else None
+            )
+
+            def _emit_delta(
+                delta_obj: Any,
+                _tid: str = task_id_for_stream,
+                _tidx: int = turn_idx,
+            ) -> None:
+                if self._on_model_delta is None:
+                    return
+                payload = (
+                    delta_obj.to_payload()
+                    if hasattr(delta_obj, "to_payload")
+                    else dict(delta_obj)
+                )
+                self._on_model_delta(run_id, _tid, _tidx, payload, False)
+
+            def _emit_done(
+                _tid: str = task_id_for_stream,
+                _tidx: int = turn_idx,
+            ) -> None:
+                if self._on_model_delta is not None:
+                    self._on_model_delta(run_id, _tid, _tidx, None, True)
+
             try:
-                resp = self._model.complete(view.messages, self._run_tool_manifest(run_id))
+                manifest = self._run_tool_manifest(run_id)
+                if callable(streamer):
+                    resp = streamer(view.messages, manifest, _emit_delta)
+                else:
+                    resp = self._model.complete(view.messages, manifest)
             except ModelError as exc:
+                _emit_done()
                 # 请求已经发出去了：`requests` 维度已知，token / 金额未知。
                 # 未知维度**不释放占用**——"可能已经计费"不能按零结算。
                 self._settle_attempt(reservation, None)
@@ -1757,19 +1796,23 @@ class AgentLoop:
                         f"模型调用异常（attempt {attempt}/{attempts}，不可重试）：{exc}"
                     )
             except Exception as exc:  # noqa: BLE001 - 非 ModelError 不重试
+                _emit_done()
                 self._settle_attempt(reservation, None)
+                safe_repr = redact(repr(exc))
+                safe_msg = redact(str(exc))
                 self._log.append(
                     run_id,
                     "model.error",
                     {
                         "request_id": request_id,
                         "attempt": attempt,
-                        "error": repr(exc),
+                        "error": safe_repr,
                     },
                     actor_kind="core",
                 )
-                return None, f"模型调用异常（attempt {attempt}/{attempts}）：{exc}"
+                return None, f"模型调用异常（attempt {attempt}/{attempts}）：{safe_msg}"
             else:
+                _emit_done()
                 # 成功拿到回执：按 provider 的最终 usage 结算（PRD §5.7 第二阶段）。
                 self._settle_attempt(reservation, resp)
                 return resp, ""

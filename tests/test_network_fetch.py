@@ -603,6 +603,8 @@ def test_replay_reports_a_network_result_without_reference(tmp_path):
                 "receipt_ids": [],
                 "tokens": 0,
                 "tokens_unknown_calls": 0,
+                "cost_total_micros": 0,
+                "cost_unknown_calls": 0,
                 "turns": 0,
                 "unbilled_model_intents": 0,
                 "budget_enforced": False,

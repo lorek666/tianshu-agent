@@ -45,6 +45,7 @@ from .model import (
     AnthropicMessagesModel,
     ModelIdentity,
     ModelResponse,
+    ModelStreamDelta,
     OpenAICompatibleModel,
     ToolCall,
     identity_of,
@@ -95,7 +96,7 @@ class _StatelessScriptedModel:
             model="scripted",
             supports_tool_calling=True,
             supports_parallel_tool_calls=True,
-            supports_streaming=False,
+            supports_streaming=True,
             declared_by="ScriptedModel（脚本替身）",
         )
 
@@ -120,6 +121,22 @@ class _StatelessScriptedModel:
             content="已完成目录检查（演示脚本模型）。",
             usage={"input_tokens": 24, "output_tokens": 12},
         )
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_delta: Any,
+    ) -> ModelResponse:
+        resp = self.complete(messages, tools)
+        for tc in resp.tool_calls:
+            on_delta(ModelStreamDelta(kind="tool_call_start", tool_name=tc.name))
+        if resp.content:
+            mid = max(1, len(resp.content) // 2)
+            for part in (resp.content[:mid], resp.content[mid:]):
+                if part:
+                    on_delta(ModelStreamDelta(kind="text", text=part))
+        return resp
 
 
 _STATELESS_SCRIPTED = _StatelessScriptedModel()
@@ -348,6 +365,18 @@ class RuntimeModelSlot:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> Any:
         return self._resolve_active_model().complete(messages, tools)
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_delta: Any,
+    ) -> Any:
+        active = self._resolve_active_model()
+        streamer = getattr(active, "stream_complete", None)
+        if callable(streamer):
+            return streamer(messages, tools, on_delta)
+        return active.complete(messages, tools)
 
     def capability_profile(self) -> Any:
         """准入阶段只读取适配器静态能力，不要求此时 API Key 已就绪（避免吞掉 auth 错误）。"""

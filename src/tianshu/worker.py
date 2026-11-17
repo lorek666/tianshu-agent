@@ -219,6 +219,7 @@ class Worker:
     heartbeat_interval_ms: int | None = HEARTBEAT_MS
     claims: JobStore | None = None
     engine_factory: Callable[[JobClaim], AgentLoop] | None = None
+    on_model_delta: Callable[..., None] | None = None
     beats: int = 0
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -378,6 +379,7 @@ class Worker:
             budget=getattr(self.stack, "budget", None),
             # 内容引用（截断溢出 / 子任务结果）同样要与装配共用一份。
             contents=getattr(self.stack, "contents", None),
+            on_model_delta=self.on_model_delta,
         )
 
     def _side_channel(self) -> _SideChannel:

@@ -43,6 +43,28 @@ export interface RunView {
   undoable: boolean;
 }
 
+export interface ModelStreamDeltaView {
+  schema_version: "1.0";
+  kind: "text" | "tool_call_start";
+  text: string;
+  tool_name: string;
+}
+
+export interface ModelStreamEvent {
+  kind: "model_stream";
+  run_id: string;
+  task_id: string;
+  turn_index: number;
+  delta: ModelStreamDeltaView | null;
+  done: boolean;
+}
+
+export interface StreamingPreview {
+  turnIndex: number;
+  text: string;
+  toolNames: string[];
+}
+
 export interface IsolationView {
   backend: string;
   declared: string;
