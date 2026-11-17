@@ -26,6 +26,24 @@
 
 ## 2. 当前状态（数字会过期，更新时重核）
 
+- **Windows 四目标 release 的外层 PE 误判已修（2026-11-17，作者候选）**：exact main
+  `1a386c449ee143885c663e12bbf5f4d9a6571d45` 的 release run
+  [#44007384652](https://github.com/lorek666/tianshu-agent/actions/runs/44007384652) 中，
+  macOS ARM64/x64 全绿；Windows x64/ARM64 的 Tauri/NSIS 构建、提交 UI 一致性与
+  payload 打包均已完成，但 verifier 在 7-Zip 解包前把外层 NSIS PE machine 错当成目标
+  payload 架构，分别以“PE 架构与 target windows-x64 / windows-arm64 不匹配”失败。
+  项目固定的 `@tauri-apps/cli@2.12.4` 对应 Tauri `993038c49185307dfc895ab7657d77ca0d5ed7c7`；
+  其 NSIS 3.13 归档 SHA1 为 `DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E`，归档中全部
+  PE stub（包括 LZMA/LZMA-solid）都是 x86 `0x014C`。修复只把外层检查改为“必须是这一
+  被固定的 Tauri NSIS x86 引导器”，完整保留 NSIS 标识、7-Zip 唯一资源根、byte-exact
+  manifest/release.json、封闭文件集和所有原生 payload（包括 `python.exe`）逐项架构绑定。
+  旧实现上 x64/ARM64 真 payload 回归为 `2 failed`；修复后 release verifier 文件与五行
+  发行链联合定向均 exit 0，本机隔离全量为 **3788 passed / 12 skipped / 685.71s /
+  exit 0**。完整日志 SHA256 `05c647aa…`，原始失败日志、上游源码/NSIS bytes 与红绿证据在
+  ignored `.omc/artifacts/release-verifier-20261117/`。当前只证明作者候选；独立第二读者、
+  精确 SHA CI 和修后四目标 release 重跑仍必须另行通过，不能把本机绿或那次失败 run 的
+  macOS 两项成功写成四目标发布已完成。
+
 - **CI 候选冻结门禁已实现（2026-11-17）**：`.github/workflows/ci.yml` 保持 main push
   每个 SHA 独立运行、四个 required 名称和 25 分钟边界不变，只在 PR 非 draft 时启动
   完整矩阵；`ready_for_review` 是最终候选信号。回归从真实 workflow 枚举所有 job，并
@@ -755,6 +773,20 @@
 - 本仓库位于外置卷 `/Volumes/Date`：**务必经常 `git commit`、尽早 push**（卷拔掉就没了）。`refs/`（参考仓库，约 762MB）已在 `.gitignore` 里，**不要入库**。
 
 ## 8. 会话更新日志（AI 每次追加，勿删历史）
+
+- **2026-11-17 · Windows NSIS 外层 PE 误判与 payload 架构证据闭环**：exact main
+  `1a386c4` 的 release run `44007384652` 在 Windows 两项完成 Tauri/NSIS 打包后失败，
+  原因不是安装器或 payload 架构错误，而是旧 verifier 要求外层 NSIS 引导器等于应用
+  payload target。Tauri 2.12.4 的上游 bundler 源码与受控 NSIS 3.13 归档证明其所有可执行
+  stub 都是 x86 `0x014C`；因此外层只证明“这是符合固定构建器产生形态的引导器”，目标
+  身份必须由解包 payload 证明。回归先在未修改的 `1a386c4` 上让 x64/ARM64 两条正控
+  真实失败，再收紧外层为唯一 x86 形态，同时保留并对未知、x64、ARM64 非 Tauri 外层做
+  负控；正确 x86 外层不能掩盖错误 x64 payload。release verifier 文件、workflow/smoke/package/
+  assemble 联合定向、lock、全仓 Ruff、UI typecheck/124 tests/build/committed-dist 和
+  本机唯一全量均 exit 0（3788 passed / 12 skipped / 685.71s）。原始 run 日志、Tauri
+  commit/source hash、NSIS zip/stub hash、旧实现红日志及全部绿色日志保存在 ignored
+  `.omc/artifacts/release-verifier-20261117/`。独立复审、精确候选 CI 和新的四目标 release
+  run 尚未发生；旧 run 没有上传 Windows artifact，不能用它证明 payload 内容正确。
 
 - **2026-11-17 · CI 候选冻结与重复矩阵治理**：旧 workflow 在 draft PR 的每次同步
   推送都启动完整矩阵；当前分支先以真实 workflow 回归在旧 YAML 上得到 `5 failed`，

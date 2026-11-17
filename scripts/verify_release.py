@@ -54,6 +54,8 @@ NATIVE_SUFFIXES = frozenset({".dll", ".dylib", ".exe", ".pyd", ".so"})
 MACOS_PYTHON_EXECUTABLES = frozenset(
     {"python/bin/python", "python/bin/python3", "python/bin/python3.12"}
 )
+# Tauri 2.12.4 ships NSIS 3.13 x86 stubs for every Windows payload architecture.
+WINDOWS_NSIS_BOOTSTRAP_MACHINE = 0x014C
 RUNTIME_SMOKE_TIMEOUT_S = 120.0
 RUNTIME_SMOKE_TERM_TIMEOUT_S = 5.0
 RUNTIME_SMOKE_TASKKILL_TIMEOUT_S = 10.0
@@ -260,6 +262,14 @@ def _expect_arch(data: bytes, target: str, label: str) -> None:
     _failure(
         machine == expected,
         f"{label} PE 架构与 target {target} 不匹配",
+    )
+
+
+def _expect_windows_nsis_bootstrap(data: bytes, label: str) -> None:
+    machine = _expect_pe(data, label)
+    _failure(
+        machine == WINDOWS_NSIS_BOOTSTRAP_MACHINE,
+        f"{label} 外层 PE 不是 Tauri NSIS x86 引导器：0x{machine:04X}",
     )
 
 
@@ -714,7 +724,7 @@ def _verify_windows_artifact(
     extractor: Callable[[Path, Path], None] | None = None,
 ) -> None:
     header = _native_header(artifact)
-    _expect_arch(header, target, artifact.name)
+    _expect_windows_nsis_bootstrap(header, artifact.name)
     if not _contains_nsis_marker(artifact):
         raise VerifyError(f"{artifact.name} 缺少 NSIS 安装器标识")
 

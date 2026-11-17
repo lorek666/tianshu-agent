@@ -219,7 +219,9 @@ Agent”。
 8. Python release verifier 必须严格解析封闭五字段 `release.json`，要求它与请求身份及
    `release-manifest.json` 的 version/commit/target 一致；macOS 归档和 Windows NSIS
    解包资源中的短清单、完整 manifest 必须分别与已验证 bundle 字节相同。Windows 还必须
-   由 7-Zip 实际解出唯一资源根，不得以“外层 PE 合法”代替 payload 证据。
+   由 7-Zip 实际解出唯一资源根，不得以“外层 PE 合法”代替 payload 证据。项目钉住的
+   Tauri 2.12.4 / NSIS 3.13 外层是 x86 引导器；该机器类型不能替代目标身份，目标架构
+   必须由解包后每个声明的原生 payload 文件（包括 bundled Python）逐项证明。
 9. 汇总层 `release-index.json` 记录每个最终资产的 SHA256、大小、构建运行 URL、源提交、
    target、`runtime_smoke`、`device_verification` 和 `signed=false`。`assets` 必须逐一
    绑定最终目录内除索引自身外的所有文件：四个发行物、四个 `.sha256`、四份 per-target
