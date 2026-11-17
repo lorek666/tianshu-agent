@@ -42,6 +42,9 @@ import { NewTaskDialog } from "./components/NewTaskDialog";
 import { MemoryDialog } from "./components/MemoryDialog";
 import { createMemoryApi } from "./api/memory";
 import type { MemoryApi } from "./api/memory";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { createSettingsApi } from "./api/settings";
+import type { SettingsApi } from "./api/settings";
 import { UndoDialog } from "./components/UndoDialog";
 import type { UndoPlanState } from "./components/UndoDialog";
 import { Modal } from "./components/Modal";
@@ -112,6 +115,7 @@ export function App() {
   const demoMode = useMemo(() => isDemoRequested(), []);
   // 记忆面板的 RPC 面：Host 装配好（phase=ready）之后才建一次，避免拿空 client。
   const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
+  const [settingsApi, setSettingsApi] = useState<SettingsApi | null>(null);
   const now = useNow(10_000);
 
   const [phase, setPhase] = useState<Phase>("booting");
@@ -136,6 +140,7 @@ export function App() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [undoPlan, setUndoPlan] = useState<UndoPlanState | null>(null);
   const [undoError, setUndoError] = useState<string | null>(null);
@@ -374,6 +379,7 @@ export function App() {
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = host;
         setMemoryApi((previous) => previous ?? createMemoryApi(host));
+        setSettingsApi((previous) => previous ?? createSettingsApi(host));
         setState(next);
         stateRef.current = next;
 
@@ -392,6 +398,7 @@ export function App() {
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = null;
         setMemoryApi(null);
+        setSettingsApi(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
       } finally {
@@ -836,6 +843,7 @@ export function App() {
         now={now}
         onRefresh={handleRefresh}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       {demoMode ? (
@@ -991,6 +999,15 @@ export function App() {
 
       {memoryOpen && memoryApi !== null ? (
         <MemoryDialog open api={memoryApi} onClose={() => setMemoryOpen(false)} />
+      ) : null}
+
+      {settingsOpen && settingsApi !== null ? (
+        <SettingsDialog
+          open
+          api={settingsApi}
+          onClose={() => setSettingsOpen(false)}
+          onSettingsSaved={(summary) => showToast(`模型已切换为：${summary}`, "success")}
+        />
       ) : null}
 
       {newTaskOpen ? (

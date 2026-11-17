@@ -74,6 +74,7 @@ from .loop import AgentLoop, Limits, Stack, build_stack
 from .model import Model
 from .recovery import recover_run
 from .scheduler import Scheduler
+from .settings_control import RuntimeModelSlot
 from .tasks import (
     RUN_CANCELLING,
     RUN_FENCED,
@@ -571,6 +572,11 @@ class _Daemon:
     ) -> None:
         self.root = Path(data_root)
         self.model = model
+        self._model_slot = (
+            model
+            if isinstance(model, RuntimeModelSlot)
+            else RuntimeModelSlot(model, data_root=self.root)
+        )
         self.limits = limits or Limits()
         self.driver_interval_s = max(0.005, float(driver_interval_s))
         self.stop = stop_event
@@ -685,6 +691,8 @@ class _Daemon:
             model=self.model,
             limits=self.limits,
             resume_requests=self.resume_requests,
+            model_slot=self._model_slot,
+            mcp_configs=self._mcp_servers,
         )
         assert self.lock is not None
         self.plane.instance_id = self.lock.instance_id
@@ -1281,7 +1289,7 @@ class _Daemon:
 
     def _driver_loop(self) -> None:
         assert self.driver_stack is not None and self.driver_log is not None
-        worker = Worker(self.driver_stack, model=self.model, limits=self.limits)
+        worker = Worker(self.driver_stack, model=self._model_slot, limits=self.limits)
         # 调度器（W5）与 Worker 在同一处装配、同属驱动线程：driver_log 这条
         # 连接按纪律只由驱动线程使用，若在 _setup（serve 线程）里构造，
         # 建表的 executescript 就会从错误的线程碰它。触发走与
@@ -1302,7 +1310,7 @@ class _Daemon:
             approvals=self.driver_stack.approvals,
             snapshots=self.driver_stack.snapshots,
             contents=self.driver_stack.contents,
-            model=self.model,
+            model=self._model_slot,
             limits=self.limits,
             # 同 Worker：驱动循环必须复用装配里的投影，否则守护进程会开
             # 第二个记忆投影（详见 worker.py 同处注释）。

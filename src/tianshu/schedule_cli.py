@@ -1,8 +1,7 @@
 """`tianshu schedule` 子命令：定时任务的管理面 CLI（W5）。
 
 仿 `data_cli.py` 先例：独立模块 `add_parser` + `run`，在 `cli.py` 两处接线
-（注册 + 分发）。v1 只有 CLI——不加 RPC 方法（那要动 M5-desktop.md 契约表），
-UI 可观测性留未决。
+（注册 + 分发）。桌面端控制面亦通过 `schedule.*` RPC 共用同一套 `Scheduler`。
 
 **只有管理面，没有触发面**：触发（tick）只发生在 daemon 驱动线程里
 （`daemon._driver_loop` 装配 Scheduler 后每个节拍调用）。CLI 在 daemon
@@ -33,8 +32,7 @@ from .scheduler import Scheduler
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "schedule",
-        help="定时任务：到点由 daemon 自动创建任务并入队 Run"
-             "（interval 调度；v1 无 cron / 无 RPC / 无 UI）",
+        help="定时任务：到点由 daemon 自动创建任务并入队 Run（interval 调度，无 cron）",
     )
     commands = parser.add_subparsers(dest="schedule_action", required=True)
 
@@ -62,6 +60,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="要求实测证明的隔离边界（需同时给 --allow-exec-cmd；可重复）",
     )
     create.add_argument("--db", type=Path, default=None, help=argparse.SUPPRESS)
+    create.add_argument(
+        "--desktop",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="使用桌面端默认数据目录",
+    )
     create.add_argument("--json", action="store_true")
 
     for action, help_text, with_id in (
@@ -75,6 +79,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         if with_id:
             cmd.add_argument("schedule_id", metavar="SCHEDULE_ID")
         cmd.add_argument("--db", type=Path, default=None, help=argparse.SUPPRESS)
+        cmd.add_argument(
+            "--desktop",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="使用桌面端默认数据目录",
+        )
         cmd.add_argument("--json", action="store_true")
 
 

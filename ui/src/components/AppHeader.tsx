@@ -13,6 +13,8 @@ export interface AppHeaderProps {
   onRefresh: () => void;
   /** 打开记忆面板（G2 记忆阶段 M1）：人查看/确认/忘记 Agent 记住了什么。 */
   onOpenMemory: () => void;
+  /** 打开设置与运行管理面板（模型与钥匙串凭据、定时任务、账户预算、MCP 状态）。 */
+  onOpenSettings?: () => void;
 }
 
 export function streamStatusText(status: StreamStatus, detail: string | null): string {
@@ -43,6 +45,7 @@ export function AppHeader({
   now,
   onRefresh,
   onOpenMemory,
+  onOpenSettings,
 }: AppHeaderProps) {
   const versionText = daemon.version !== null ? `v${daemon.version}` : "版本未知";
   const startedText =
@@ -88,6 +91,16 @@ export function AppHeader({
         >
           记忆
         </button>
+        {onOpenSettings !== undefined ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={onOpenSettings}
+            title="配置模型与系统钥匙串 API Key、管理定时任务、查看预算与 MCP"
+          >
+            设置
+          </button>
+        ) : null}
         <button type="button" className="icon-btn" onClick={onRefresh} title="刷新任务与运行状态" aria-label="刷新">
           <IconRefresh size={15} />
         </button>

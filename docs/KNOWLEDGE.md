@@ -29,8 +29,8 @@
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
 - **当前主要未完成项（距离 PRD §11.1 G3 正式发布）**：
   - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
-  - **普通用户首日开箱体验**：控制面与桌面 UI 仍待补齐 GUI 配 API Key（`credential.*`）、账户级预算视图、定时任务管理（`schedule.*`）、MCP 状态查看及 W4 模型流式输出；CLI 与桌面端默认数据目录待打通提示。
-  - **G3 数据与合规门禁**：恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO、F15 CI 依赖许可证扫描与 SBOM、D7/F14 默认脱敏本地诊断包导出、W12 C1/C2/C5 字段级 Schema 冻结。
+  - **普通用户首日开箱体验**：首日图形化设置面板（`SettingsDialog` 五标签：模型热切换与 macOS Keychain 密钥写入、定时任务管理、账户/任务预算账本与对账视图、MCP 只读状态、默认脱敏诊断包导出）及 CLI `--desktop` 数据目录桥接已落地；**W4 模型流式输出**仍待落地。
+  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO、W12 C1/C2/C5 字段级 Schema 冻结仍待完成。
   - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147)）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
@@ -482,8 +482,8 @@
 
 **F12 凭据**
 
-- **Keychain 仅 macOS**：W1 起 darwin 上 `keychain_macos.py` SecItem 直调已落地（CI 与本机真实通过）；其余平台零依赖下调 `CredReadW` 等无平台可验证，仍如实报 `unsupported`。**不得对未实现平台声称"密钥存在系统钥匙串里"。**
-- 真实模型 key 只从环境变量读，永不进库；用过的中转 key 应自行作废。
+- **Keychain 仅 macOS**：W1 起 darwin 上 `keychain_macos.py` SecItem 直调已落地（CI 与本机真实通过）；桌面控制面 `credential.set / delete` 仅在可写凭据后端（如 macOS Keychain）可用、永不回显密钥值，其余平台或只读 `env` 后端如实报 `unsupported`。**不得对未实现平台声称"密钥存在系统钥匙串里"。**
+- 真实模型 key 只从环境变量或系统钥匙串读，永不进 SQLite / JSON 配置 / 事件日志；用过的中转 key 应自行作废。
 
 **M0–M5 复审留账（[DEBUG-M0M5.md](DEBUG-M0M5.md)，2026-11-10；修复记录见该文档末尾）**
 
@@ -537,13 +537,14 @@
 
 - **两套落点并存，别混写**：
   - `daemon` / `host`：默认平台标准目录（`ipc.default_data_root()`，`TIANSHU_DATA_ROOT` 覆盖）——macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`；目录内含 `events.db`、`artifacts/{blobs,snapshots}`、`run/`、`logs/daemon.log`。
-  - 内核子命令（`run` / `task` / `approvals` / `undo` / …）：**仍是当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB` 相对路径，靠 `.gitignore` 排除），`--db` 可改。
-  - 因此"运行时数据放系统标准位置"这句话**只对桌面入口成立**；写文档时必须带主语，别再写成全局结论。
+  - 内核子命令（`run` / `task` / `approvals` / `undo` / `schedule` …）：**默认仍是当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB` 相对路径，靠 `.gitignore` 排除），可用 `--db` 指定路径，或传 `--desktop`（/ `TIANSHU_USE_DESKTOP_DB=1`）直接桥接到桌面端 `ipc.default_data_root() / "events.db"`（禁止与显式 `--db` 混用）；当工作目录不存在 `.tianshu/events.db` 而桌面库已存在时，交互终端 stderr 会打印单行提示。
+  - 因此"运行时数据默认放系统标准位置"这句话**仍只对桌面入口成立**；写文档时必须带主语，别写成无条件全局结论。
 
 **仍开着的问题**
 
-- **issue #27**：PRD §4.1 关键字段列与实现双向漂移 11 处，需逐条决定收敛方向。
-- **issue #40**：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
+- ~~**issue #27**~~：**已收敛关闭**（2026-11-10 对账销账）。
+- ~~**issue #40**~~：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
+- **issue #145 / #147**：Windows CI 正常收尾偶发 `database is locked` 与审批后删除未发生，已补诊断日志，根因仍标 `NOT_ESTABLISHED`。
 
 - **issue #55**（M4 未验证项）：四条里三条销账（真实换模 m4.4 跑过、memfs 评测改为明确拒绝、真超时黑洞端点跑满）。**m4.5 真实模型复跑被中转站阻塞**（所有模型 `503 / auto groups is not enabled`，见 [M4-verification.md](M4-verification.md) §7.4），**Windows 实机复验仍未做**（需要 Windows 实机），issue 保持打开。
 - ~~**issue #57**~~：**已修（2026-11-11，PR #68）**：`Check.kind`（completion/safety）+ 8 条作用域化判据 + 完成度/安全分栏 + `SUITE_VERSION` m4.5。真实模型报告未复跑（同上一条阻塞）。

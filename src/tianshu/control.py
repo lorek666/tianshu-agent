@@ -38,12 +38,19 @@ import json
 import os
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import memory_control
-from .errors import RunFenced, TianshuError, ToolArgumentError, WorkspaceViolation
+from . import memory_control, settings_control
+from .credentials import redact
+from .errors import (
+    CredentialUnsupported,
+    RunFenced,
+    TianshuError,
+    ToolArgumentError,
+    WorkspaceViolation,
+)
 from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .ipc import MAX_MESSAGE_BYTES
 from .loop import Limits, Stack
@@ -269,9 +276,26 @@ class ControlPlane:
         model: Any,
         limits: Limits | None = None,
         resume_requests: queue.Queue[str] | None = None,
+        model_slot: settings_control.RuntimeModelSlot | None = None,
+        credential_stores: Mapping[str, Any] | None = None,
+        mcp_configs: Mapping[str, Any] | None = None,
     ) -> None:
         self._stack = stack
         self._model = model
+        self._model_slot = (
+            model_slot
+            if model_slot is not None
+            else (
+                model
+                if isinstance(model, settings_control.RuntimeModelSlot)
+                else settings_control.RuntimeModelSlot(
+                    model,
+                    data_root=getattr(stack, "data_root", None),
+                    stores=credential_stores,
+                )
+            )
+        )
+        self._mcp_configs = mcp_configs
         self._limits = limits or Limits()
         self._tasks = stack.tasks
         self._claims = stack.claims
@@ -322,6 +346,19 @@ class ControlPlane:
             # 审批 + Receipt），不是"直接 unlink"。UI 的"删除"要分两档：
             # `memory.forget` = 停召回（tombstone），`memory.erase` = 删正文副本与索引。
             "memory.erase": self._memory_erase,
+            # 首日配置、凭据状态、定时任务、账户预算与 MCP 状态（GUI 控制面）
+            "settings.get": self._settings_get,
+            "model.configure": self._model_configure,
+            "credential.set": self._credential_set,
+            "credential.delete": self._credential_delete,
+            "schedule.list": self._schedule_list,
+            "schedule.create": self._schedule_create,
+            "schedule.set_enabled": self._schedule_set_enabled,
+            "schedule.remove": self._schedule_remove,
+            "budget.view": self._budget_view,
+            "mcp.list": self._mcp_list,
+            "diagnostics.preview": self._diagnostics_preview,
+            "diagnostics.export": self._diagnostics_export,
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -362,19 +399,21 @@ class ControlPlane:
             return handler(params)
         except ControlError:
             raise
+        except CredentialUnsupported as exc:
+            raise ControlError("unsupported", redact(str(exc))) from exc
         except RunFenced as exc:
             # 状态不允许（已被 fence / 已终结 / 有别的活跃 Run）→ conflict。
-            raise ControlError("conflict", str(exc)) from exc
+            raise ControlError("conflict", redact(str(exc))) from exc
         except ApprovalError as exc:
             raise self._approval_error(exc) from exc
         except (WorkspaceViolation, ToolArgumentError, ValueError, TypeError) as exc:
-            raise ControlError("bad_params", str(exc)) from exc
+            raise ControlError("bad_params", redact(str(exc))) from exc
         except KeyError as exc:
-            raise ControlError("bad_params", f"缺少参数：{exc}") from exc
+            raise ControlError("bad_params", redact(f"缺少参数：{exc}")) from exc
         except TianshuError as exc:
             raise self._generic_error(exc) from exc
         except OSError as exc:
-            raise ControlError("internal", f"I/O 失败：{exc}") from exc
+            raise ControlError("internal", redact(f"I/O 失败：{exc}")) from exc
 
     # ------------------------------------------------------------------ state
 
@@ -1177,11 +1216,50 @@ class ControlPlane:
         except TianshuError:  # pragma: no cover - 读失败不改变已发生的写入
             return None
 
+    # ------------------------------------------------- settings / schedule / budget / mcp
+
+    def _settings_get(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.settings_view(self._model_slot)
+
+    def _model_configure(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._model_slot.configure(params)
+        return settings_control.settings_view(self._model_slot)
+
+    def _credential_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.credential_set(self._model_slot, params, ControlError)
+
+    def _credential_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.credential_delete(self._model_slot, params, ControlError)
+
+    def _schedule_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.schedule_list(self._stack)
+
+    def _schedule_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.schedule_create(self._stack, params, ControlError)
+
+    def _schedule_set_enabled(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.schedule_set_enabled(self._stack, params, ControlError)
+
+    def _schedule_remove(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.schedule_remove(self._stack, params, ControlError)
+
+    def _budget_view(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.budget_view(self._stack, params, ControlError)
+
+    def _mcp_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.mcp_list_view(self._mcp_configs)
+
+    def _diagnostics_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.diagnostics_preview(self._stack, params, ControlError)
+
+    def _diagnostics_export(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.diagnostics_export(self._stack, params, ControlError)
+
     # ------------------------------------------------------------------ 错误映射
 
     @staticmethod
     def _approval_error(exc: ApprovalError) -> ControlError:
-        message = str(exc)
+        message = redact(str(exc))
         if "不存在" in message:
             return ControlError("not_found", message)
         return ControlError("conflict", message)
@@ -1194,7 +1272,7 @@ class ControlPlane:
         "不存在" → not_found；参数不合法 → bad_params；状态不允许 → conflict；
         其余 → internal（那是我们的 bug，不该让 UI 当业务错误处理）。
         """
-        message = str(exc)
+        message = redact(str(exc))
         if "不存在" in message:
             return ControlError("not_found", message)
         if any(marker in message for marker in ("不能为空", "不合法", "非法", "必须")):
