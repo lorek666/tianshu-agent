@@ -229,7 +229,7 @@ def _append_tar_member(artifact: Path, member: tarfile.TarInfo, data: bytes | No
     _rewrite_checksum(artifact)
 
 
-def _windows_bundle(tmp_path: Path) -> Path:
+def _windows_bundle(tmp_path: Path, *, target: str = "windows-x64") -> Path:
     bundle = tmp_path / "windows-bundle"
     package = bundle / "app" / "tianshu"
     python_dir = bundle / "python"
@@ -241,11 +241,12 @@ def _windows_bundle(tmp_path: Path) -> Path:
     licenses.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "__main__.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
-    (python_dir / "python.exe").write_bytes(_pe(0x8664))
+    machine = 0xAA64 if target.endswith("arm64") else 0x8664
+    (python_dir / "python.exe").write_bytes(_pe(machine))
     (ui_dist / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
     (licenses / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
     (bundle / "release.json").write_text(
-        json.dumps(_release_identity(target="windows-x64"), indent=2) + "\n",
+        json.dumps(_release_identity(target=target), indent=2) + "\n",
         encoding="utf-8",
     )
     _write_manifest(bundle)
@@ -895,7 +896,7 @@ def test_windows_bundle_rejects_wrong_pe_architecture(tmp_path):
 def test_synthetic_pe_without_nsis_payload_is_rejected_before_extraction(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_synthetic")
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x8664))
+    installer.write_bytes(_pe(0x014C))
 
     def extractor(_artifact: Path, _destination: Path) -> None:
         raise AssertionError("没有 NSIS 标识时不得调用解包器")
@@ -909,16 +910,58 @@ def test_synthetic_pe_without_nsis_payload_is_rejected_before_extraction(tmp_pat
         )
 
 
-def test_windows_outer_installer_pe_architecture_must_match_target(tmp_path):
-    verify = _load(VERIFY_SCRIPT, "verify_release_windows_outer_arch")
+@pytest.mark.parametrize("target", ["windows-x64", "windows-arm64"])
+def test_windows_nsis_accepts_x86_bootstrap_with_exact_payload(tmp_path, target):
+    verify = _load(VERIFY_SCRIPT, f"verify_release_windows_bootstrap_{target}")
+    bundle = _windows_bundle(tmp_path, target=target)
+    installer = tmp_path / f"Tianshu-Agent-0.1.0-{target}-setup.exe"
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination / "$PLUGINSDIR" / "app")
+
+    verify._verify_windows_artifact(
+        artifact=installer,
+        bundle_dir=bundle,
+        target=target,
+        extractor=extractor,
+    )
+
+
+@pytest.mark.parametrize("machine", [0x0200, 0x8664, 0xAA64])
+def test_windows_nsis_rejects_non_tauri_outer_bootstrap_architecture(tmp_path, machine):
+    verify = _load(
+        VERIFY_SCRIPT,
+        f"verify_release_windows_outer_non_tauri_{machine:04x}",
+    )
     bundle = _windows_bundle(tmp_path)
+    installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
+    installer.write_bytes(_pe(machine) + b"\0NullsoftInst\0")
+
+    def extractor(_artifact: Path, _destination: Path) -> None:
+        raise AssertionError("非 Tauri NSIS 外层 PE 必须在解包前被拒绝")
+
+    with pytest.raises(verify.VerifyError, match="x86 引导器"):
+        verify._verify_windows_artifact(
+            artifact=installer,
+            bundle_dir=bundle,
+            target="windows-x64",
+            extractor=extractor,
+        )
+
+
+def test_windows_x86_bootstrap_does_not_replace_payload_architecture_check(tmp_path):
+    verify = _load(VERIFY_SCRIPT, "verify_release_windows_outer_payload_negative")
+    bundle = _windows_bundle(tmp_path, target="windows-x64")
+    (bundle / "python" / "python.exe").write_bytes(_pe(0xAA64))
+    _write_manifest(bundle)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
     installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
 
-    def extractor(_artifact: Path, _destination: Path) -> None:
-        raise AssertionError("x86 外层 PE 必须在解包前被拒绝")
+    def extractor(_artifact: Path, destination: Path) -> None:
+        shutil.copytree(bundle, destination / "$PLUGINSDIR" / "app")
 
-    with pytest.raises(verify.VerifyError, match="PE 架构"):
+    with pytest.raises(verify.VerifyError, match="python.exe PE 架构"):
         verify._verify_windows_artifact(
             artifact=installer,
             bundle_dir=bundle,
@@ -931,7 +974,7 @@ def test_windows_nsis_payload_must_have_unique_exact_resource_root(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination, dirs_exist_ok=True)
@@ -952,7 +995,7 @@ def test_windows_nsis_payload_rejects_marker_without_resources(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_empty_payload")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         (destination / "$PLUGINSDIR").mkdir()
@@ -971,7 +1014,7 @@ def test_windows_nsis_payload_accepts_exact_nested_resource_root(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_payload_positive")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         payload = destination / "$PLUGINSDIR" / "app"
@@ -1027,7 +1070,7 @@ def test_windows_nsis_payload_rejects_root_sitecustomize(tmp_path):
     verify = _load(VERIFY_SCRIPT, "verify_release_windows_sitecustomize")
     bundle = _windows_bundle(tmp_path)
     installer = tmp_path / "Tianshu-Agent-0.1.0-windows-x64-setup.exe"
-    installer.write_bytes(_pe(0x8664) + b"\0NullsoftInst\0")
+    installer.write_bytes(_pe(0x014C) + b"\0NullsoftInst\0")
 
     def extractor(_artifact: Path, destination: Path) -> None:
         shutil.copytree(bundle, destination, dirs_exist_ok=True)
