@@ -58,6 +58,36 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     audit.add_argument("--data-root", type=Path, required=True)
     audit.add_argument("--json", action="store_true")
 
+    diag = commands.add_parser(
+        "export-diagnostics",
+        help="本地默认脱敏诊断包导出与内容清单预览（D7/F14：仅本地导出，绝不上传）",
+    )
+    diag.add_argument("--data-root", type=Path, required=True)
+    diag.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="导出 zip 的本地目录；与 --preview 二选一",
+    )
+    diag.add_argument(
+        "--preview",
+        action="store_true",
+        help="只读显示诊断包内容清单与条数估算，不写出任何文件",
+    )
+    diag.add_argument(
+        "--section",
+        action="append",
+        default=None,
+        dest="sections",
+        help="要包含的分节（可重复；默认全选）",
+    )
+    diag.add_argument(
+        "--no-redact",
+        action="store_true",
+        help="显式关闭路径与任务文本脱敏（默认开启脱敏，公开贴 issue 请勿加此项）",
+    )
+    diag.add_argument("--json", action="store_true")
+
 
 def _backup(data_root: Path, dest: Path) -> dict[str, Any]:
     root = data_root.resolve()
@@ -716,6 +746,19 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
                   + "（受保护 " + str(cp["protected_count"]) + "）")
         if report["unknown_tables"]:
             print("未识别表：" + ", ".join(report["unknown_tables"]))
+    elif operation == "export-diagnostics":
+        manifest = report["manifest"]
+        if report.get("preview_only"):
+            print("诊断包内容预览（未写出文件，本地默认脱敏）：")
+        else:
+            print(f"已导出本地诊断包：{report['archive_path']}")
+        print(f"默认脱敏：{'开启' if manifest['redacted'] else '已显式关闭（请勿公开贴出）'}")
+        for item in manifest["sections"]:
+            mark = "✓" if item["included"] else "×"
+            print(
+                f"  [{mark}] {item['section']}: {item['record_count']} 条"
+                f"（约 {item['estimated_bytes']}B）— {item['description']}"
+            )
     else:
         print("恢复预演通过，仍需人工复核；未执行恢复" if report["ok"] else "恢复预演未通过")
         print(f"备份：{report['backup']}")
@@ -769,6 +812,35 @@ def run(args: argparse.Namespace) -> int:
             code = 0
     elif args.data_action == "retention-audit":
         report = _retention_audit(args.data_root)
+        code = 0
+    elif args.data_action == "export-diagnostics":
+        from .diagnostics_export import export_diagnostics, preview_diagnostics
+
+        redact_flag = not bool(getattr(args, "no_redact", False))
+        if args.preview:
+            manifest = preview_diagnostics(
+                args.data_root, sections=args.sections, redact_sensitive=redact_flag
+            )
+            report = {
+                "operation": "export-diagnostics",
+                "ok": True,
+                "preview_only": True,
+                "manifest": manifest,
+            }
+        else:
+            if args.out_dir is None:
+                raise TianshuError("导出诊断包必须指定 --out-dir（或传 --preview 仅预览清单）")
+            exported = export_diagnostics(
+                args.data_root,
+                args.out_dir,
+                sections=args.sections,
+                redact_sensitive=redact_flag,
+            )
+            report = {
+                "operation": "export-diagnostics",
+                "preview_only": False,
+                **exported,
+            }
         code = 0
     else:
         report = _restore_plan(args.backup, args.data_root)

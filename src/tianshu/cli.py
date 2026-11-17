@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from datetime import UTC
 from pathlib import Path
 
@@ -58,6 +59,13 @@ MODEL_PROVIDERS = ("openai", "anthropic")
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tianshu", description="天枢 Agent")
+    p.add_argument(
+        "--desktop",
+        action="store_true",
+        default=False,
+        help="指向桌面端默认数据目录（ipc.default_data_root()/events.db），"
+        "替代当前目录下的 .tianshu/events.db",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser(
@@ -132,6 +140,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--data-root", type=Path, default=None,
                    help="authority 数据根（默认与 --db 同目录）")
     r.add_argument("--db", type=Path, default=DEFAULT_DB)
+    r.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                   help="使用桌面端默认数据目录")
     r.add_argument("--json", action="store_true", help="输出 JSON 而不是人话")
 
     m = sub.add_parser(
@@ -151,6 +161,8 @@ def _build_parser() -> argparse.ArgumentParser:
     t.add_argument("--readonly", type=Path, default=None, action="append")
     t.add_argument("--data-root", type=Path, default=None)
     t.add_argument("--db", type=Path, default=DEFAULT_DB)
+    t.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                   help="使用桌面端默认数据目录")
     t.add_argument("--json", action="store_true")
     t.add_argument(
         "--allow-exec-cmd",
@@ -204,6 +216,8 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--max-total-tokens", type=int, default=20_000)
     w.add_argument("--data-root", type=Path, default=None)
     w.add_argument("--db", type=Path, default=DEFAULT_DB)
+    w.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                   help="使用桌面端默认数据目录")
     w.add_argument("--json", action="store_true")
 
     rc = sub.add_parser("recover", help="核对并补全一次被打断的 run")
@@ -212,6 +226,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--data-root", type=Path, default=None,
                     help="authority 数据根（快照清单在这里；默认与 --db 同目录）")
     rc.add_argument("--db", type=Path, default=DEFAULT_DB)
+    rc.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                    help="使用桌面端默认数据目录")
     rc.add_argument("--json", action="store_true")
 
     u = sub.add_parser("undo", help="撤销某次 run 的文件变更（需 human 批准）")
@@ -224,6 +240,8 @@ def _build_parser() -> argparse.ArgumentParser:
     u.add_argument("--db", type=Path, default=DEFAULT_DB)
     u.add_argument("--data-root", type=Path, default=None,
                    help="authority 数据根（默认与 --db 同目录）")
+    u.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                   help="使用桌面端默认数据目录")
     u.add_argument("--approve", action="store_true",
                    help="以本地人工身份批准本次撤销的具体动作并执行")
     u.add_argument("--json", action="store_true")
@@ -236,6 +254,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--run-id", default=None, help="只看某个 Run 的待批请求")
     ap.add_argument("--data-root", type=Path, default=None)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                    help="使用桌面端默认数据目录")
     ap.add_argument("--json", action="store_true")
 
     mem = sub.add_parser(
@@ -302,11 +322,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mem.add_argument("--data-root", type=Path, default=None)
     mem.add_argument("--db", type=Path, default=DEFAULT_DB)
+    mem.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                     help="使用桌面端默认数据目录")
     mem.add_argument("--json", action="store_true")
 
     v = sub.add_parser("replay", help="从事件日志回放并校验")
     v.add_argument("--run-id", required=True)
     v.add_argument("--db", type=Path, default=DEFAULT_DB)
+    v.add_argument("--desktop", action="store_true", default=argparse.SUPPRESS,
+                   help="使用桌面端默认数据目录")
     v.add_argument("--json", action="store_true")
 
     d = sub.add_parser(
@@ -2120,11 +2144,67 @@ def _force_utf8_streams() -> None:
             continue
 
 
+def _apply_desktop_db_bridge(
+    args: argparse.Namespace, raw_argv: Sequence[str]
+) -> None:
+    """打通内核 CLI 与桌面端默认数据根，且不改变既有 DEFAULT_DB 契约。"""
+    from . import ipc
+
+    explicit_db = any(
+        tok == "--db" or tok.startswith("--db=") for tok in raw_argv
+    )
+    explicit_data_root = any(
+        tok == "--data-root" or tok.startswith("--data-root=")
+        for tok in raw_argv
+    ) or (getattr(args, "data_root", None) is not None)
+    use_desktop = bool(getattr(args, "desktop", False)) or (
+        os.environ.get("TIANSHU_USE_DESKTOP_DB") == "1"
+    )
+    has_db = hasattr(args, "db")
+    current_db = getattr(args, "db", None)
+    if use_desktop and has_db:
+        if explicit_db or explicit_data_root or (
+            current_db is not None and current_db != DEFAULT_DB
+        ):
+            raise TianshuError(
+                "--desktop（或 TIANSHU_USE_DESKTOP_DB=1）不能与显式 --db 或 --data-root 同时指定"
+            )
+        desktop_root = ipc.default_data_root()
+        args.db = desktop_root / "events.db"
+        if hasattr(args, "data_root"):
+            args.data_root = desktop_root
+        return
+
+    # 交互式终端提示：当前目录尚无 .tianshu/events.db，而桌面端数据根已有库时提示 --desktop
+    interactive = (
+        getattr(sys.stderr, "isatty", lambda: False)()
+        or os.environ.get("TIANSHU_FORCE_CLI_HINT") == "1"
+    )
+    if (
+        interactive
+        and has_db
+        and not explicit_db
+        and not explicit_data_root
+        and not getattr(args, "json", False)
+        and (current_db is None or current_db == DEFAULT_DB)
+        and not DEFAULT_DB.exists()
+    ):
+        desktop_db = ipc.default_data_root() / "events.db"
+        if desktop_db.is_file():
+            print(
+                f"提示：当前目录未找到 {DEFAULT_DB}；"
+                f"若要查看/操作桌面端数据，请加 --desktop（{desktop_db}）",
+                file=sys.stderr,
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     # 必须在解析参数之前：`--help` 本身也是中文。
     _force_utf8_streams()
-    args = _build_parser().parse_args(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    args = _build_parser().parse_args(effective_argv)
     try:
+        _apply_desktop_db_bridge(args, effective_argv)
         if args.cmd == "run":
             return _cmd_run(args)
         if args.cmd == "task":

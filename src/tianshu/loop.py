@@ -714,8 +714,8 @@ class AgentLoop:
         # 重试退避的等待函数。生产是 `time.sleep`；测试注入一个不睡觉的记录器，
         # 否则"退避序列是不是 500/1000/2000"就只能靠真实等待来验证。
         self._sleep = sleep or time.sleep
-        # F9a 准入结果按 Run 缓存：一次判定，不是每轮重复判定。
-        self._admission: dict[str, CapabilityProfile] = {}
+        # F9a 准入结果按 (Run, 模型槽位版本) 缓存：同一模型配置每个 Run 只判定一次。
+        self._admission: dict[str, tuple[int, CapabilityProfile]] = {}
         # 每个 Run 上一次**成功**调用的 token 用量。重试前用它投影"再试一次大概
         # 要花多少"，这是唯一能提前发现"再试就超预算"的信号（失败调用不产生用量）。
         self._last_usage: dict[str, int] = {}
@@ -1191,7 +1191,9 @@ class AgentLoop:
         为什么缓存而不是每轮重判：判定结果是"这个模型是什么"，不会在 run 中途变。
         每轮重判除了白花时间，还会让错误信息重复出现在日志里。
         """
-        if run_id in self._admission:
+        cur_rev = int(getattr(self._model, "config_revision", 0))
+        cached = self._admission.get(run_id)
+        if cached is not None and cached[0] == cur_rev:
             return None
         try:
             profile = admit_model(
@@ -1209,7 +1211,7 @@ class AgentLoop:
                 actor_kind="core",
             )
             return reason
-        self._admission[run_id] = profile
+        self._admission[run_id] = (cur_rev, profile)
         return None
 
     # ---------------------------------------------------------------- 预算账本
@@ -1246,9 +1248,12 @@ class AgentLoop:
         if self._limits.budget_bound == BOUND_UPPER:
             output_bound = declared_output_tokens(self._model)
             if output_bound is None:
+                model_cls = getattr(
+                    self._model, "adapter_name", lambda: type(self._model).__name__
+                )()
                 raise BudgetConfigError(
                     "硬上限模式（budget_bound='upper'）需要 adapter 声明输出上界，"
-                    f"而 {type(self._model).__name__} 没有声明 `output_tokens`；"
+                    f"而 {model_cls} 没有声明 `output_tokens`；"
                     "拿默认输出预留冒充上界等于把估算写成保证，所以拒绝进入该模式"
                 )
             need = upper_need(
@@ -1334,7 +1339,9 @@ class AgentLoop:
         """摘要记录里的模型身份：`adapter:vendor:model`（缺项留空）。"""
         identity = identity_of(self._model)
         if identity is None:
-            return type(self._model).__name__
+            return getattr(
+                self._model, "adapter_name", lambda: type(self._model).__name__
+            )()
         return ":".join(
             part
             for part in (identity.adapter, identity.vendor or "", identity.model or "")

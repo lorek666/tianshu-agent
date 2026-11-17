@@ -190,6 +190,19 @@ export const RPC = {
   memoryConfirm: "memory.confirm",
   memoryForget: "memory.forget",
   memoryErase: "memory.erase",
+  // 首日设置、凭据状态、定时任务、账户预算与 MCP 状态（GUI 控制面）
+  settingsGet: "settings.get",
+  modelConfigure: "model.configure",
+  credentialSet: "credential.set",
+  credentialDelete: "credential.delete",
+  scheduleList: "schedule.list",
+  scheduleCreate: "schedule.create",
+  scheduleSetEnabled: "schedule.set_enabled",
+  scheduleRemove: "schedule.remove",
+  budgetView: "budget.view",
+  mcpList: "mcp.list",
+  diagnosticsPreview: "diagnostics.preview",
+  diagnosticsExport: "diagnostics.export",
 } as const;
 // ---------------------------------------------------------------- 记忆（M1）
 

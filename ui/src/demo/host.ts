@@ -232,6 +232,118 @@ export class DemoHostClient implements HostClient {
         return result as T;
       }
 
+      case "settings.get":
+      case "model.configure": {
+        const mode = typeof params.mode === "string" ? params.mode : "scripted";
+        const modelName = typeof params.model_name === "string" ? params.model_name : "";
+        return {
+          model: {
+            mode,
+            model_name: modelName,
+            base_url: typeof params.base_url === "string" ? params.base_url : "",
+            credential_backend:
+              typeof params.credential_backend === "string" ? params.credential_backend : "keychain",
+            summary: mode === "scripted" ? "演示脚本模型（离线）" : `${mode} · ${modelName}`,
+          },
+          credentials: [
+            {
+              provider: "openai",
+              capability_class: "llm",
+              backend: "keychain",
+              active_backend: true,
+              implemented: true,
+              secure_storage: true,
+              writable: true,
+              configured: false,
+              env_var: null,
+              error: null,
+            },
+          ],
+        } as T;
+      }
+
+      case "credential.set":
+      case "credential.delete":
+        return {
+          credentials: [
+            {
+              provider: "openai",
+              capability_class: "llm",
+              backend: "keychain",
+              active_backend: true,
+              implemented: true,
+              secure_storage: true,
+              writable: true,
+              configured: method === "credential.set",
+              env_var: null,
+              error: null,
+            },
+          ],
+        } as T;
+
+      case "schedule.list":
+        return { schedules: [] } as T;
+
+      case "schedule.create":
+        return {
+          schedule: {
+            schedule_id: "sched_demo",
+            goal: stringParam(params, "goal"),
+            workspaces: [],
+            interval_seconds: numberParam(params, "interval_seconds", 3600),
+            next_fire_at: Date.now() + 3_600_000,
+            enabled: true,
+            created_at: Date.now(),
+            last_fired_at: null,
+            last_error: "",
+          },
+        } as T;
+
+      case "schedule.set_enabled":
+        return { schedule: null } as T;
+
+      case "schedule.remove":
+        return { removed: stringParam(params, "schedule_id") } as T;
+
+      case "budget.view":
+        return { dimensions: ["tokens", "micros", "requests"], accounts: [], unsettled_count: 0 } as T;
+
+      case "mcp.list":
+        return {
+          configured: false,
+          reason: "演示模式下不启动外部 MCP 进程。",
+          servers: [],
+          tools: [],
+          rejected_tools: [],
+        } as T;
+
+      case "diagnostics.preview":
+        return {
+          manifest: {
+            redacted: true,
+            local_only: true,
+            sections: [
+              {
+                section: "system",
+                included: true,
+                description: "系统平台摘要",
+                record_count: 1,
+                estimated_bytes: 120,
+              },
+            ],
+          },
+        } as T;
+
+      case "diagnostics.export":
+        return {
+          archive_path: "/tmp/tianshu-diagnostics-demo.zip",
+          manifest: {
+            redacted: true,
+            local_only: true,
+            sections: [],
+          },
+        } as T;
+
       default:
         throw new HostRpcError("not_found", `演示模式没有实现方法：${method}`);
     }
