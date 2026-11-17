@@ -236,7 +236,11 @@ def canonical_target(raw: object) -> NetworkTarget:
     return ref.network_target
 
 
-def _remaining(deadline: float) -> float:
+def _remaining(
+    deadline: float, interrupted: threading.Event | None = None
+) -> float:
+    if interrupted is not None and interrupted.is_set():
+        raise NetError("抓取超时：超过本次抓取的硬上限", reason="net.timeout")
     left = deadline - time.monotonic()
     if left <= 0:
         raise NetError("抓取超时：超过本次抓取的硬上限", reason="net.timeout")
@@ -410,13 +414,16 @@ def _fetch_once(
     """单次尝试：完整的重定向跟随 + 有界读取。失败以 `NetError` / `NetCancelled` 抛出。"""
     current = target
     redirects: list[str] = []
+    # deadline 是整次 fetch 共享的绝对期限，中断标记必须跨重定向跳保留：
+    # 若第 0 跳在解析 Location 或 finally 收尾时已触发 Timer，不得在进入
+    # 第 1 跳时被重置为 False 而多发未授权的下一跳请求或误报 connect_timeout。
+    deadline_interrupted = threading.Event()
 
     for hop in range(limits.max_redirects + 1):
         _check_cancel(cancel)
-        remaining = _remaining(deadline)
+        remaining = _remaining(deadline, deadline_interrupted)
         conn = _connect(current, remaining)
         timer: threading.Timer | None = None
-        deadline_interrupted = threading.Event()
         try:
             # 显式连接：把"连不上 / TLS 握手失败"（确定一个请求字节都没发）与
             # "读到一半断了"（用量未知）分开。账本结算要靠这个区分。
@@ -438,7 +445,7 @@ def _fetch_once(
             # 超时无法约束滴流。保留实际 socket（getresponse 后 conn.sock 可能
             # 已移交给 response），在同一绝对期限到达时中断头/正文的阻塞读。
             sock = conn.sock
-            remaining = _remaining(deadline)
+            remaining = _remaining(deadline, deadline_interrupted)
 
             def interrupt_read(
                 sock: socket.socket | None = sock,
@@ -466,9 +473,9 @@ def _fetch_once(
                     "Connection": "close",
                 },
             )
-            _remaining(deadline)
+            _remaining(deadline, deadline_interrupted)
             response = conn.getresponse()
-            _remaining(deadline)
+            _remaining(deadline, deadline_interrupted)
             status = response.status
             content_type = response.getheader("Content-Type", "") or ""
             # ``http.client`` normally raises IncompleteRead when a known-length body
@@ -507,7 +514,7 @@ def _fetch_once(
             truncated = False
             while True:
                 _check_cancel(cancel)
-                remaining = _remaining(deadline)
+                remaining = _remaining(deadline, deadline_interrupted)
                 if conn.sock is not None:
                     conn.sock.settimeout(remaining)
                 want = min(NET_CHUNK, limits.max_bytes - len(body) + 1)
@@ -515,7 +522,7 @@ def _fetch_once(
                     truncated = True
                     break
                 chunk = response.read(want)
-                _remaining(deadline)
+                _remaining(deadline, deadline_interrupted)
                 if not chunk:
                     break
                 body.extend(chunk)
