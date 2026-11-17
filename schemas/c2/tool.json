@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tianshu C2 Tool Contract (v1)",
+  "description": "C2 工具定义与模型可见清单字段级契约（PRD §5.2）：覆盖 ToolSpec 与 tool_manifest() 输出。",
+  "type": "object",
+  "$defs": {
+    "sideEffectLevel": {
+      "type": "string",
+      "enum": ["pure", "idempotent", "non_idempotent"]
+    },
+    "execModel": {
+      "type": "string",
+      "enum": ["E1", "E3"]
+    },
+    "actionKind": {
+      "type": "string",
+      "enum": [
+        "create",
+        "delegate",
+        "delete",
+        "exec",
+        "fetch",
+        "overwrite",
+        "read"
+      ]
+    },
+    "toolSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_id",
+        "version",
+        "description",
+        "input_schema",
+        "side_effect_level",
+        "exec_model",
+        "action",
+        "exposed",
+        "path_arg",
+        "path_default"
+      ],
+      "properties": {
+        "tool_id": { "type": "string", "pattern": "^[a-z][a-z0-9_.]*$" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "description": { "type": "string" },
+        "input_schema": {
+          "type": "object",
+          "required": ["type", "properties", "additionalProperties"],
+          "properties": {
+            "type": { "type": "string", "const": "object" },
+            "properties": { "type": "object" },
+            "required": { "type": "array", "items": { "type": "string" } },
+            "additionalProperties": { "type": "boolean", "const": false }
+          }
+        },
+        "side_effect_level": {
+          "type": "string",
+          "enum": ["pure", "idempotent", "non_idempotent"]
+        },
+        "exec_model": {
+          "type": "string",
+          "enum": ["E1", "E3"]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "delegate",
+            "delete",
+            "exec",
+            "fetch",
+            "overwrite",
+            "read"
+          ]
+        },
+        "exposed": { "type": "boolean" },
+        "path_arg": { "type": "string" },
+        "path_default": { "type": "string" }
+      }
+    },
+    "manifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_.]*$" },
+        "description": { "type": "string" },
+        "input_schema": {
+          "type": "object",
+          "required": ["type", "properties", "additionalProperties"],
+          "properties": {
+            "type": { "type": "string", "const": "object" },
+            "properties": { "type": "object" },
+            "required": { "type": "array", "items": { "type": "string" } },
+            "additionalProperties": { "type": "boolean", "const": false }
+          }
+        }
+      }
+    }
+  }
+}

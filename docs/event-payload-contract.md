@@ -80,7 +80,7 @@
 | `run.control` | v1 | `run_id`, `task_id`, `action` | 无已知形状差异（G2 委派 D2 起可选 `reason`：`subtask_cancel_requested` / `parent_cancelled` / `parent_fenced`） |
 | `run.cursor` | v1 | `run_id`, `goal_revision`, `lease_epoch`, `claim_epoch`, `completed_call_ids`, `pending_proposals`, `payload_hash` | 无已知形状差异 |
 | `run.effect` | v1 | `run_id`, `task_id`, `effect_state`, `n_applied`, `n_unknown` | 无已知形状差异 |
-| `run.end` | v1 | `outcome`, `effect_state`, `artifact`, `error`, `receipt_ids`, `tokens`, `tokens_unknown_calls`, `turns`, `unbilled_model_intents`, `budget_enforced` | 无已知形状差异 |
+| `run.end` | v2（兼容读 v0/v1） | `outcome`, `effect_state`, `artifact`, `error`, `receipt_ids`, `tokens`, `tokens_unknown_calls`, `turns`, `unbilled_model_intents`, `budget_enforced`, `cost_total_micros`, `cost_unknown_calls` | v2 新增货币成本汇总两字段（未知价格记 `null` 不冒充 `0`）；历史 v0/v1 保留原 schema 只读解释 |
 | `run.fenced` | v1 | `run_id`, `task_id`, `reason` | 无已知形状差异 |
 | `run.finish` | v1 | `run_id`, `task_id`, `outcome`, `effect_state` | 无已知形状差异 |
 | `run.model_turn` | v1 | `run_id`, `turn_id`, `seq`, `claim_epoch`, `finish_reason`, `usage`, `payload_hash` | 历史形状差异（v0 放宽） |
