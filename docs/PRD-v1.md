@@ -563,6 +563,8 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 - **已实现并有判据（G2 MCP 阶段）**：MCP stdio 客户端 + 动态工具准入 + 派发链路
   （PR #116–#119，见 [mcp-g2.md](mcp-g2.md)）。真实第三方 server 未验证、进程无沙箱，
   隔离门禁未覆盖（`c4.mcp_isolation_unproven` 明确拒绝声称隔离）。
+- **W9 v2.0 契约已冻结（2026-11-18，待实现 PR 接线，见 [network-g2.md](network-g2.md) §4.1 / §7.1 与 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3）**：
+  遵循红线 8 将 `network.fetch`（`1.0` → `2.0`，增可选 `offset >= 0`、`length` `1..65536`、`max_bytes` `1..1048576` 及输出 `offset`/`next_offset`/`page_bytes`）与 `read_content`（`1.0` → `2.0`，增可选 `encoding ∈ {"utf-8", "utf-8-replace", "latin-1", "base64"}`）同步升版；并在初始连接与每一跳重定向前强制单次 DNS 解析 + 非全局地址拦截（`net.private_address_blocked`，记已知 `0` 字节）+ Socket 字面量 IP 钉死直连（完整保留原 `Host` 请求头、TLS SNI `server_hostname` 与 X.509 主机名核验）。
 
 
 ### 5.3 C3 Event
@@ -1060,7 +1062,7 @@ D1 接上排队面、D2 接上收尾：spawn 在父账户 `subtasks` 维度真�
 | ID | 功能 | 关键要求 | 来源依据 |
 |---|---|---|---|
 | **F1** | 执行原语 | `spawn(argv, cwd, env, policy) → handle`，含 PTY、stdio 流、信号、退出码。argv 数组，禁 shell 拼接；env 白名单。PTY 仅 POSIX：Windows 上 `run_command` 的 pty 请求返回 `unsupported`（无 ConPTY），不得用管道假装 | PRD v1 |
-| **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽。**落地**：注册表 `exec_backends.py`（未实现后端一律 `unsupported`）、实测门 `isolation.require_isolation_requirements`、审批前视图 `ApprovalView.isolation`；边界与证据见 `docs/F2-sandbox-policy.md` | PRD v1 |
+| **F2** | 沙箱与 policy | 后端可插拔：P0 交付策略引擎与后端接缝，隔离按 TECH-ARCH §6 如实分级——macOS 只承诺 L1（文件代理）+ L2（进程树），L3 标 `unsupported`；不把 Seatbelt / Landlock / 容器写成 v1 必须交付。policy 声明式、默认全拒绝、`deny` 优先。后端执行不了必须返回 `unsupported`，禁静默放宽。**落地**：注册表 `exec_backends.py`（未实现后端一律 `unsupported`）、实测门 `isolation.require_isolation_requirements`、审批前视图 `ApprovalView.isolation`；边界与证据见 `docs/F2-sandbox-policy.md`。**W14 契约增补（2026-11-18 冻结，待实现 PR 接线，见 `docs/F2-sandbox-policy.md` §8）**：保持 `DEFAULT_EXEC_BACKEND = "local"`，新增 `TIANSHU_EXEC_BACKEND=seatbelt\|landlock\|auto`（macOS Darwin SBPL `seatbelt`；Linux `x86_64`/`aarch64` `landlock` ABI >= 4 为含 TCP 隔离的 `app_container`、ABI 1..3 为仅 FS 的 `process_tree`、`< 5.13` 报 `unsupported`；任何配置绝不静默回落 `local`）、后端强制凭据环境清洗与 OS 凭据库封锁、`PROBE_VERSION = "v2"`，以及当 `backend.capabilities.isolation != "none"` 时在审批前实测填充 `ApprovalView.isolation` | PRD v1 |
 | **F3** | 事件日志与恢复 | 见 §5.3。恢复扫描"有 intent 无 result"的调用，按 `side_effect_level` 处置 | OpenHands EventLog |
 | **F4** | 工具系统 | 注册表 + C2 envelope + transport adapter（进程内/HTTP/gRPC/MCP）。MCP 只是 adapter 之一 | PRD v1 + MCP SDK |
 | **F5** | 上下文编译 | `compile(events, budget) → view` 纯函数；分区预算；压缩产物带 `source_seqs` 与 `budget_version`；工具输出超 8 KiB 落盘。非确定性摘要**先持久化再编译**（已交付，默认关），见 §7.1 | PRD v1 + §7.1 |
@@ -1225,7 +1227,10 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 并提供显式 `pure_only`；已有 Run 的纯读/模型恢复及停止控制按该契约保留原规则。
 契约阶段的 LD-01–06 曾全部 `NOT_RUN`；当前 T1/T2 已分别以第二读者原件独立核验，
 T3 已独立通过真实入口验收；PR #144 及合并后 main8f2a 自身 CI 已通过并独立绑定，issue #145 的未知原因失败仍保留未修；逐条归属和限制见
-[低磁盘交付记录](LOW-DISK-2026-11-14.md)。容量上限、保留期与 GC 仍另行交付。
+[低磁盘交付记录](LOW-DISK-2026-11-14.md)。保守离线安全 GC 按
+[W15 保留期/GC 契约 §6](CONTRACT-W15-RETENTION-2026-11-15.md#6-v2-保守离线安全-gc-契约2026-11-18-拍板冻结待实现-pr-接线)
+冻结（2026-11-18，待实现 PR 接线）：`tianshu data gc --data-root ROOT [--older-than-days 90] [--dry-run | --approve] [--json]`
+默认只读预演退 `3`，`--approve` 持离线独占锁并在锁内复核无存活服务与 `collect_references(root)`（`ReferenceUnknown` 零删退 `2`），**豁免 2 GiB 新 Run 门槛**以便低盘回收；严格对 `events`、`summary_*`、`dispatches`/`dispatch_requests`、非空快照、`protected_blobs`、`budget_counters` 及未决/未知 `budget_reservations` 执行 **0 删除**，仅清理孤儿 blob、超期无凭据空终态快照、超期无活跃派发终态 `jobs` 与超期 `settled & known=1` 终态 `budget_reservations` 并执行 `PRAGMA wal_checkpoint(TRUNCATE)`。快照 5 GiB 自动回收仍另行交付。
 
 **回滚前必须校验**：当前文件哈希仍等于 `after_hash`；不一致则提示冲突并**禁止直接覆盖**用户后来的修改。
 
@@ -1237,11 +1242,11 @@ T3 已独立通过真实入口验收；PR #144 及合并后 main8f2a 自身 CI �
 
 - **快照不等于备份**。本地备份须覆盖同一一致点的事件库、必要投影、写前快照、内容 blob 与版本清单，并记录引用 / 哈希清单；不能仅复制正在写入的数据库文件就宣称可恢复。备份不自动上传（D7 不变），凭据按独立安全机制管理。
 - 恢复必须在干净数据根演练：核对哈希、引用完整性、未决操作、审批与租约，再恢复服务。缺 blob、坏 manifest、空间不足或版本不兼容时保留原数据并明确拒绝，不生成看似正常的空历史。升级回退遵守 §5.3.5。
-- 事件、原始材料、诊断 trace、快照和检索索引分别声明保留期、磁盘额度与清理责任。索引可重建；被有效审计、未决操作或保留快照引用的材料不能直接清理。事件表保持 append-only，归档 / GC 须有独立设计与断电恢复测试。
+- 事件、原始材料、诊断 trace、快照和检索索引分别声明保留期、磁盘额度与清理责任。索引可重建；被有效审计、未决操作或保留快照引用的材料不能直接清理。事件表保持 append-only，归档 / GC 须有独立设计与断电恢复测试（保守离线安全 GC 规格见 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md) §6）。
 - **逻辑忘记与物理删除分开**：tombstone 只阻止后续检索 / 使用，不会擦除历史事件、产物或备份。当前不可变事件若包含原文，就不能承诺逐条物理擦除。对敏感正文外置、加密与密钥销毁等方案，先确定保留的最小审计元数据、历史回放的缺失语义及备份处理，再改契约实现；不得为删除而悄改历史事件。
 - 用户执行删除前看到影响范围、仍保留的材料及原因；恢复旧备份时必须核对可获得的后续忘记 / 删除记录。无法证明这些记录完整时，不自动激活恢复出的记忆，先隔离待用户复核，不声称能从旧备份推断后来的删除。不可证明擦除的介质或副本明确说明范围，不承诺不可验证的彻底删除。
 
-受管恢复按[导入、持久隔离与只读复核契约](restore-held-contract.md)分片交付：B 只导入到持久 held，专用只读复核、同批续做和合法未发布清理；显式解除与完整旧 Run 恢复留 C。该契约的全部产品验收仍为 `NOT_RUN`，现有 `restore-plan` 不执行恢复，不能将契约文字或低层复制函数视为恢复服务已交付。
+受管恢复按[导入、持久隔离与只读复核契约](restore-held-contract.md)与[受管恢复解除与服务恢复 · C 契约](restore-release-contract.md)分片交付：B 只导入到持久 held，专用只读复核、同批续做和合法未发布清理；C（2026-11-18 契约冻结，`schemas/data/restore-v2.json` + `schemas/data/restore-registry-v2.sql`，待实现 PR 接线）通过 `RestoreRegistry` v2（`USER_VERSION = 2` 增补 `release_intent` 与 `released`，磁盘 `.restore-origin.json` 保持一次写入不可变）定义 `tianshu data restore-release --data-root ROOT [--batch ID] --expect-review REVIEW_SHA256 --acknowledge-unproven-later-history [--json]`，强制核验 `review_complete == True` 与 `(S, D, P)` 实体及 `BindingV1`，单事务 append-only 收口非终态 `runs`（`fenced`）、陈旧审批与存活租约并保留 `unknown` 派发零重放（覆盖 `FP-RELEASE-INTENT` / `FP-RELEASE-RECONCILE` / `FP-RELEASED`），同时确立**解除后数据库准入规则**：持有绑定 `(S, D)` 实体的有效 `ReleasedV1` 证明的 `v2` 数据库免 `.migration.json` 直接放行，而 `v1` 数据库在 `released` 后仍必须先显式执行 `tianshu data migrate` 方可由普通 `EventLog` 打开。上述 B/C 产品验收在实现落地前仍为 `NOT_RUN`，现有 `restore-plan` 不执行恢复，不能将契约文字或低层复制函数视为恢复服务已交付。
 
 验收须覆盖：备份中断、一致点恢复、损坏 / 缺失内容、磁盘满、迁移中断，以及忘记后恢复旧备份。未交付的生命周期能力在界面与发布说明中标注，不以事件不可变替代隐私产品设计。
 

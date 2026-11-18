@@ -159,3 +159,37 @@ NtResumeProcess / 枚举线程 ResumeThread → 恢复
 
 后续工单应包含：完整 `CreateProcess`（或私有 handle 路线）+ Job 事件观察 +
 Windows 实机验收，而不是直接复用本轮代码。
+
+---
+
+## 8 W14 双系统进程级沙箱契约（2026-11-18 冻结，待实现 PR 接线）
+
+> 上文 §1–§7 保留 2026-11-11 F2 首轮交付时的历史事实与 `local` 基线证据。本节以独立 `docs(contract)` 冻结 W14 双系统进程级沙箱契约（总览见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §4）；在实现 PR 合并前，线上代码仍仅注册 `local`。
+
+### 8.1 默认值、配置入口与零静默回落规则
+
+- **内核默认值不变**：`exec_backends.DEFAULT_EXEC_BACKEND = "local"` 保持不变（未设置或为空时仍走 `LOCAL_EXEC_BACKEND`，不破坏既有默认任务与单测语义）。
+- **显式后端选择**：`TIANSHU_EXEC_BACKEND` 支持 `"local"` | `"seatbelt"` | `"landlock"` | `"auto"`：
+  - `"seatbelt"`：仅在 macOS（Darwin）可用；非 Darwin 或系统 Seatbelt 能力不可用时一律抛 `PolicyUnsupported(backend="seatbelt", feature="exec_backend")`。
+  - `"landlock"`：仅在 Linux `x86_64` / `aarch64` 且内核启用 Landlock（Linux >= 5.13，ABI >= 1）时可用；内核 `< 5.13`（`ENOSYS` / `EOPNOTSUPP`）、Landlock 未启用或非已验证架构一律抛 `PolicyUnsupported(backend="landlock", feature="exec_backend")`。
+  - `"auto"`：显式自动原生沙箱模式——Darwin 解析为 `"seatbelt"`，Linux（`x86_64`/`aarch64`）解析为 `"landlock"`，Windows 或其他无已实现原生沙箱的平台直接抛 `PolicyUnsupported(backend="auto", feature="exec_backend")`。
+  - **铁律**：任何非 `"local"` 配置在目标沙箱不可用时**严禁静默降级回 `local`**。
+
+### 8.2 macOS `seatbelt` 与 Linux `landlock` 分级能力契约
+
+| 后端注册名 | 平台 / 内核条件 | `capabilities.isolation` | 四边界强制机制 |
+|---|---|---|---|
+| `seatbelt` | macOS Darwin（SBPL） | `app_container` | ① `files_authority`：默认拒写，仅放行 canonical `policy.cwd_roots` 与每进程私有临时区；显式拒读写工作区外用户敏感路径、`data_root`（含 `events.db*`、`artifacts/`、`blobs/`、`memory_blobs/`、`run/ipc.key` 与 IPC socket）、`~/.tianshu/` 及维护锁目录；② `network`：`(deny network*)` 阻断全部 TCP/UDP/UNIX 网络（含 loopback）；③ `credentials`：后端环境清洗 + SBPL 阻断 `~/Library/Keychains/**`、`~/.ssh/**`、`~/.aws/**` 及 `com.apple.securityd` 等钥匙串 Mach 服务；④ `process_tree`：POSIX 新会话进程组杀树 |
+| `landlock` | Linux `x86_64`/`aarch64`，ABI >= 4（Linux >= 6.7） | `app_container` | 子进程 `execve` 前 `prctl(PR_SET_NO_NEW_PRIVS, 1)` + Landlock ruleset：① `files_authority`：仅对系统运行库只读与 canonical `policy.cwd_roots`（加私有临时目录）赋 `LANDLOCK_PATH_BENEATH` 规则，天然隔绝工作区外目录、`data_root`、`~/.tianshu/` 与维护锁目录；② `network`：启用 `LANDLOCK_ACCESS_NET_BIND_TCP \| LANDLOCK_ACCESS_NET_CONNECT_TCP` 零放行规则阻断全部 TCP 连接与监听；③ `credentials`：后端环境清洗 + VFS 层隔绝 `~/.local/share/keyrings`、`~/.ssh`、`/run/user/<uid>` 等凭据套接字；④ `process_tree`：POSIX 进程组杀树 |
+| `landlock` | Linux `x86_64`/`aarch64`，ABI 1..3（Linux 5.13..6.6） | `process_tree`（仅文件系统与进程树，无内核 TCP 隔离） | 启用上述 `files_authority`、`credentials` 与 `process_tree`，`supports_network_isolation = False`；`_EXPECTED_ISOLATION["landlock"]` 允许 `{"app_container", "process_tree"}` 以如实反映内核 ABI，请求 `network` 边界的任务由隔离门诚实拒绝（`IsolationRefused`） |
+| `landlock` | Linux `< 5.13` 或 Landlock 禁用 / 其他架构 | — | 构造/解析期直接抛 `PolicyUnsupported` |
+
+### 8.3 后端强制凭据清洗、`PROBE_VERSION = "v2"` 与审批前实测视图
+
+1. **后端强制凭据环境清洗 + OS 凭据库封锁**：
+   - 无论 `ExecPolicy.env_allowlist` 如何填写，`seatbelt` 与 `landlock` 在 `spawn()` 内部强制剥离宿主敏感变量（`TIANSHU_*` 内部变量与隔离探针哨兵、`*_API_KEY`、`*_SECRET*`、`*_TOKEN*`、`*_PASSWORD*`、`SSH_AUTH_SOCK`、`GPG_AGENT_INFO`、`DBUS_SESSION_BUS_ADDRESS`、`SECURITYSESSIONID` 等），并在各自 OS 沙箱规则中封锁系统钥匙串/密钥环目录与 IPC 服务。
+2. **`PROBE_VERSION = "v2"`**：
+   - `isolation.PROBE_VERSION` 从 `"v1"` 升至 `"v2"`，使探针缓存自动失效旧版报告，并同步核验权威数据根、宿主环境哨兵及 OS 凭据库封锁效果。
+3. **非 `none` 后端的审批前实测 `ApprovalView.isolation`**：
+   - 当 `backend.capabilities.isolation != "none"` 且存在 `data_root` 时，即使 `policy.isolation_requires` 为空，`dispatcher._precheck_exec`（审批创建前）与 `tools._run_command`（实际执行）也必须运行 `probe_backend_cached(backend, workspace=probe_workspace, data_root=data_root)`，将绑定本次现场的实测报告写入 `ApprovalView.isolation`（`unverified=False`，如实呈现 `measured`、`boundaries`、`enforced_boundaries`，并在自述与实测不符时立即标出 `contradicted=True`）。
+   - 当 `backend.capabilities.isolation == "none"` 且 `policy.isolation_requires` 为空时（默认 `local` 路径），继续保持零探针子进程开销（`report=None`, `unverified=True`, `level="none"`）。
