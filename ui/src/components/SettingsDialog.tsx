@@ -1,15 +1,27 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { humanizeHostError } from "../api/errors";
+import type {
+  BudgetOverviewView,
+  CredentialStatusView,
+  DiagnosticManifestView,
+  McpOverviewView,
+  ScheduleView,
+  SettingsApi,
+  SettingsView,
+} from "../api/settings";
+import type { StreamStatus } from "../api/stream";
 import {
   EFFECTS_RUN_POLICY,
   PURE_ONLY_RUN_POLICY,
 } from "../api/types";
 import type { DaemonView, RunExecutionPolicyV1 } from "../api/types";
-import type { StreamStatus } from "../api/stream";
-import { formatRelative } from "../lib/format";
+import { formatInt, formatRelative, formatUsdExact } from "../lib/format";
 import { streamStatusText } from "./AppHeader";
 import {
   IconBrain,
   IconChart,
+  IconClock,
+  IconCpu,
   IconMoon,
   IconRefresh,
   IconShield,
@@ -24,9 +36,11 @@ export type ThemeChoice = "light" | "dark" | "system";
 export type SettingsTab =
   | "models"
   | "security"
+  | "schedule"
   | "budget"
+  | "mcp"
   | "memory"
-  | "data"
+  | "diagnostics"
   | "appearance";
 
 export interface UiPreferences {
@@ -40,20 +54,37 @@ export interface UiPreferences {
 
 export interface SettingsDialogProps {
   open: boolean;
+  api?: SettingsApi | null;
   initialTab?: SettingsTab;
-  preferences: UiPreferences;
-  daemon: DaemonView;
-  streamStatus: StreamStatus;
-  streamDetail: string | null;
-  connectionLost: boolean;
-  eventSeqHead: number;
-  now: number;
-  onUpdatePreferences: (patch: Partial<UiPreferences>) => void;
-  onOpenMemory: () => void;
-  onRefresh: () => void;
-  onReconnectStream: () => void;
+  preferences?: UiPreferences;
+  daemon?: DaemonView;
+  streamStatus?: StreamStatus;
+  streamDetail?: string | null;
+  connectionLost?: boolean;
+  eventSeqHead?: number;
+  now?: number;
+  onUpdatePreferences?: (patch: Partial<UiPreferences>) => void;
+  onOpenMemory?: () => void;
+  onRefresh?: () => void;
+  onReconnectStream?: () => void;
+  onSettingsSaved?: (summary: string, settings?: SettingsView) => void;
   onClose: () => void;
 }
+
+const DEFAULT_PREFERENCES: UiPreferences = {
+  theme: "light",
+  enablePet: true,
+  enableParallax: true,
+  reduceMotion: false,
+  defaultPolicy: EFFECTS_RUN_POLICY,
+  previewPose: "welcome",
+};
+
+const EMPTY_DAEMON: DaemonView = {
+  version: null,
+  started_at: null,
+  data_root: null,
+};
 
 const POSE_OPTIONS: ReadonlyArray<{ key: WelcomePetStatus; label: string }> = [
   { key: "welcome", label: "欢迎" },
@@ -67,21 +98,48 @@ const POSE_OPTIONS: ReadonlyArray<{ key: WelcomePetStatus; label: string }> = [
 
 export function SettingsDialog({
   open,
+  api = null,
   initialTab = "models",
-  preferences,
-  daemon,
-  streamStatus,
-  streamDetail,
-  connectionLost,
-  eventSeqHead,
-  now,
+  preferences = DEFAULT_PREFERENCES,
+  daemon = EMPTY_DAEMON,
+  streamStatus = "connecting",
+  streamDetail = null,
+  connectionLost = false,
+  eventSeqHead = 0,
+  now = Date.now(),
   onUpdatePreferences,
   onOpenMemory,
   onRefresh,
   onReconnectStream,
+  onSettingsSaved,
   onClose,
 }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Model & Credentials state (real backend RPCs; secret input cleared immediately on save)
+  const [mode, setMode] = useState("scripted");
+  const [modelName, setModelName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [credBackend, setCredBackend] = useState("keychain");
+  const [credentials, setCredentials] = useState<CredentialStatusView[]>([]);
+  const [keyProvider, setKeyProvider] = useState<"openai" | "anthropic">("openai");
+  const [keySecret, setKeySecret] = useState("");
+
+  // Schedule state
+  const [schedules, setSchedules] = useState<ScheduleView[]>([]);
+  const [schedGoal, setSchedGoal] = useState("");
+  const [schedWorkspace, setSchedWorkspace] = useState("");
+  const [schedInterval, setSchedInterval] = useState("3600");
+
+  // Budget, MCP & Diagnostics state
+  const [budget, setBudget] = useState<BudgetOverviewView | null>(null);
+  const [mcp, setMcp] = useState<McpOverviewView | null>(null);
+  const [diagManifest, setDiagManifest] = useState<DiagnosticManifestView | null>(null);
+  const [diagSelected, setDiagSelected] = useState<Record<string, boolean>>({});
+  const [diagOutDir, setDiagOutDir] = useState("");
 
   useEffect(() => {
     if (open) setActiveTab(initialTab);
@@ -96,6 +154,74 @@ export function SettingsDialog({
     return () => window.removeEventListener("keydown", handleEsc);
   }, [open, onClose]);
 
+  const loadBackendTab = useCallback(
+    async (target: SettingsTab, cancelled: { current: boolean }) => {
+      if (
+        api === null ||
+        (target !== "models" &&
+          target !== "schedule" &&
+          target !== "budget" &&
+          target !== "mcp" &&
+          target !== "diagnostics")
+      ) {
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        if (target === "models") {
+          const s = await api.getSettings();
+          if (cancelled.current) return;
+          setMode(s.model.mode);
+          setModelName(s.model.model_name);
+          setBaseUrl(s.model.base_url);
+          setCredBackend(s.model.credential_backend);
+          setCredentials(s.credentials);
+        } else if (target === "schedule") {
+          const list = await api.listSchedules();
+          if (!cancelled.current) setSchedules(list);
+        } else if (target === "budget") {
+          const overview = await api.getBudgetOverview();
+          if (!cancelled.current) setBudget(overview);
+        } else if (target === "mcp") {
+          const overview = await api.getMcpOverview();
+          if (!cancelled.current) setMcp(overview);
+        } else if (target === "diagnostics") {
+          const manifest = await api.previewDiagnostics();
+          if (cancelled.current) return;
+          setDiagManifest(manifest);
+          setDiagSelected((prev) => {
+            if (Object.keys(prev).length > 0) return prev;
+            const next: Record<string, boolean> = {};
+            for (const item of manifest.sections) {
+              next[item.section] = item.included;
+            }
+            return next;
+          });
+        }
+      } catch (caught) {
+        if (!cancelled.current) setError(humanizeHostError(caught));
+      } finally {
+        if (!cancelled.current) setBusy(false);
+      }
+    },
+    [api],
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setKeySecret("");
+      setError(null);
+      setNotice(null);
+      return;
+    }
+    const cancelled = { current: false };
+    void loadBackendTab(activeTab, cancelled);
+    return () => {
+      cancelled.current = true;
+    };
+  }, [open, activeTab, loadBackendTab]);
+
   if (!open) return null;
 
   const isHealthy =
@@ -105,12 +231,176 @@ export function SettingsDialog({
       streamStatus === "reconnecting" ||
       streamStatus === "polling");
 
+  const handleSaveModel = async (): Promise<void> => {
+    if (api === null) return;
+    if (mode === "anthropic" && modelName.trim() === "") {
+      setError("Anthropic 模式必须显式填写模型名称（例如 claude-sonnet-4-5）。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await api.configureModel({
+        mode,
+        model_name: mode === "scripted" ? "" : modelName.trim(),
+        base_url: baseUrl.trim(),
+        credential_backend: credBackend,
+      });
+      setMode(updated.model.mode);
+      setModelName(updated.model.model_name);
+      setBaseUrl(updated.model.base_url);
+      setCredBackend(updated.model.credential_backend);
+      setCredentials(updated.credentials);
+      setNotice(`已保存并切换当前模型：${updated.model.summary}`);
+      onSettingsSaved?.(updated.model.summary, updated);
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveKey = async (): Promise<void> => {
+    if (api === null) return;
+    if (keySecret.trim() === "") {
+      setError("请输入要存入系统钥匙串的 API Key。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await api.setCredential(keyProvider, keySecret.trim(), "keychain");
+      setKeySecret("");
+      setCredentials(next);
+      setNotice(`已将 ${keyProvider} 密钥安全写入系统钥匙串（界面不回显明文）。`);
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteKey = async (provider: string): Promise<void> => {
+    if (api === null) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const next = await api.deleteCredential(provider, "keychain");
+      setCredentials(next);
+      setNotice(`已从系统钥匙串移除 ${provider} 密钥。`);
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateSchedule = async (): Promise<void> => {
+    if (api === null) return;
+    const interval = Number.parseInt(schedInterval, 10);
+    if (schedGoal.trim() === "") {
+      setError("请填写定时任务的目标描述。");
+      return;
+    }
+    if (!Number.isFinite(interval) || interval < 1) {
+      setError("触发间隔必须是大于等于 1 的整数秒。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.createSchedule({
+        goal: schedGoal.trim(),
+        workspace: schedWorkspace.trim(),
+        interval_seconds: interval,
+      });
+      setSchedGoal("");
+      setSchedWorkspace("");
+      setSchedules(await api.listSchedules());
+      setNotice("定时任务已创建，守护进程到期会自动创建任务并入队运行。");
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleSchedule = async (item: ScheduleView): Promise<void> => {
+    if (api === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setScheduleEnabled(item.schedule_id, !item.enabled);
+      setSchedules(await api.listSchedules());
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRemoveSchedule = async (scheduleId: string): Promise<void> => {
+    if (api === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.removeSchedule(scheduleId);
+      setSchedules(await api.listSchedules());
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExportDiagnostics = async (): Promise<void> => {
+    if (api === null) return;
+    const chosen = Object.entries(diagSelected)
+      .filter(([, on]) => on)
+      .map(([k]) => k);
+    if (diagOutDir.trim() === "") {
+      setError("请填写诊断包的本地导出目录路径。");
+      return;
+    }
+    if (chosen.length === 0) {
+      setError("请至少勾选一项要导出的诊断内容。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await api.exportDiagnostics(diagOutDir.trim(), chosen);
+      setDiagManifest(res.manifest);
+      setNotice(`已导出默认脱敏诊断包至本地：${res.archive_path}`);
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const keychainItems = credentials.filter((c) => c.backend === "keychain");
+  const envItems = credentials.filter((c) => c.backend === "env");
+  const keychainWritable = keychainItems.some((c) => c.writable);
+
+  const selectTab = (next: SettingsTab): void => {
+    setError(null);
+    setNotice(null);
+    setActiveTab(next);
+  };
+
   const closeButton = (
     <button
       type="button"
       className="chip-btn"
       data-testid="close-settings-btn"
       onClick={onClose}
+      disabled={busy}
     >
       完成
     </button>
@@ -122,30 +412,34 @@ export function SettingsDialog({
       role="dialog"
       aria-modal="true"
       aria-label="系统设置"
-      onClick={onClose}
+      onClick={busy ? undefined : onClose}
     >
       <div
         className="settings-dialog"
         onClick={(event) => event.stopPropagation()}
       >
-        <nav className="settings-nav" aria-label="设置分类">
-          <div className="settings-nav-title">设置中心</div>
+        <nav className="settings-nav" role="tablist" aria-label="设置分类">
+          <div className="settings-nav-title">设置与运行管理</div>
 
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "models"}
             className={`settings-tab-btn${activeTab === "models" ? " is-active" : ""}`}
             data-settings-tab="models"
-            onClick={() => setActiveTab("models")}
+            onClick={() => selectTab("models")}
           >
             <IconSparkle size={15} />
-            <span>模型与服务商</span>
+            <span>模型与密钥</span>
           </button>
 
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "security"}
             className={`settings-tab-btn${activeTab === "security" ? " is-active" : ""}`}
             data-settings-tab="security"
-            onClick={() => setActiveTab("security")}
+            onClick={() => selectTab("security")}
           >
             <IconShield size={15} />
             <span>安全与执行授权</span>
@@ -153,19 +447,47 @@ export function SettingsDialog({
 
           <button
             type="button"
-            className={`settings-tab-btn${activeTab === "budget" ? " is-active" : ""}`}
-            data-settings-tab="budget"
-            onClick={() => setActiveTab("budget")}
+            role="tab"
+            aria-selected={activeTab === "schedule"}
+            className={`settings-tab-btn${activeTab === "schedule" ? " is-active" : ""}`}
+            data-settings-tab="schedule"
+            onClick={() => selectTab("schedule")}
           >
-            <IconChart size={15} />
-            <span>预算与限额护栏</span>
+            <IconClock size={15} />
+            <span>定时任务</span>
           </button>
 
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "budget"}
+            className={`settings-tab-btn${activeTab === "budget" ? " is-active" : ""}`}
+            data-settings-tab="budget"
+            onClick={() => selectTab("budget")}
+          >
+            <IconChart size={15} />
+            <span>预算账本</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "mcp"}
+            className={`settings-tab-btn${activeTab === "mcp" ? " is-active" : ""}`}
+            data-settings-tab="mcp"
+            onClick={() => selectTab("mcp")}
+          >
+            <IconCpu size={15} />
+            <span>MCP 服务</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "memory"}
             className={`settings-tab-btn${activeTab === "memory" ? " is-active" : ""}`}
             data-settings-tab="memory"
-            onClick={() => setActiveTab("memory")}
+            onClick={() => selectTab("memory")}
           >
             <IconBrain size={15} />
             <span>记忆与上下文</span>
@@ -173,19 +495,23 @@ export function SettingsDialog({
 
           <button
             type="button"
-            className={`settings-tab-btn${activeTab === "data" ? " is-active" : ""}`}
-            data-settings-tab="data"
-            onClick={() => setActiveTab("data")}
+            role="tab"
+            aria-selected={activeTab === "diagnostics"}
+            className={`settings-tab-btn${activeTab === "diagnostics" ? " is-active" : ""}`}
+            data-settings-tab="diagnostics"
+            onClick={() => selectTab("diagnostics")}
           >
             <IconRefresh size={15} />
-            <span>数据备份与服务</span>
+            <span>诊断与数据服务</span>
           </button>
 
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === "appearance"}
             className={`settings-tab-btn${activeTab === "appearance" ? " is-active" : ""}`}
             data-settings-tab="appearance"
-            onClick={() => setActiveTab("appearance")}
+            onClick={() => selectTab("appearance")}
           >
             <IconSun size={15} />
             <span>外观与伴侣动效</span>
@@ -193,47 +519,182 @@ export function SettingsDialog({
         </nav>
 
         <div className="settings-body">
+          {error !== null ? (
+            <p className="banner banner-danger settings-feedback" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {notice !== null ? (
+            <p className="banner settings-feedback" role="status">
+              {notice}
+            </p>
+          ) : null}
+
           {activeTab === "models" ? (
             <>
               <div className="settings-head">
                 <div>
-                  <h2>模型与服务商</h2>
-                  <p>查看本机守护进程的模型托管架构与连接凭据安全边界</p>
+                  <h2>模型与密钥</h2>
+                  <p>热切换本机守护进程模型协议与 Model ID，并将 API Key 安全写入系统钥匙串</p>
                 </div>
                 {closeButton}
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-title">当前模型路由方式</div>
-                  <div className="setting-desc">
-                    由本机守护进程（Agent Daemon）在启动时加载原生模型适配器（OpenAI / Anthropic / 自定义兼容端点）
-                  </div>
-                </div>
-                <span className="pill pill-info">守护进程托管</span>
-              </div>
+              {api === null ? (
+                <p className="field-hint">尚未连接守护进程设置接口。</p>
+              ) : (
+                <>
+                  <div className="setting-card">
+                    <div className="field">
+                      <span className="field-label">模型协议</span>
+                      <select
+                        className="input"
+                        aria-label="模型协议"
+                        value={mode}
+                        onChange={(e) => setMode(e.target.value)}
+                        disabled={busy}
+                      >
+                        <option value="scripted">离线演示脚本模型（不联网、不计费）</option>
+                        <option value="openai">OpenAI 兼容协议（OpenAI / DeepSeek / Moonshot / 本地服务）</option>
+                        <option value="anthropic">Anthropic Messages 协议（Claude）</option>
+                      </select>
+                    </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-title">API 密钥安全隔离</div>
-                  <div className="setting-desc">
-                    真实模型密钥仅由守护进程从运行环境读取，绝不进入浏览器存储，也绝不写入只追加事件日志
-                  </div>
-                </div>
-                <span className="pill pill-success">零前端驻留</span>
-              </div>
+                    {mode !== "scripted" ? (
+                      <>
+                        <label className="field">
+                          <span className="field-label">模型名称（Model ID）</span>
+                          <input
+                            className="input"
+                            type="text"
+                            value={modelName}
+                            placeholder={
+                              mode === "anthropic" ? "必填，例如 claude-sonnet-4-5" : "默认 gpt-4o-mini"
+                            }
+                            onChange={(e) => setModelName(e.target.value)}
+                            disabled={busy}
+                          />
+                        </label>
 
-              <div className="setting-row setting-row-stack">
-                <div>
-                  <div className="setting-title">启动环境变量参考</div>
-                  <div className="setting-desc">
-                    配置环境变量后重启守护进程即可切换服务商或自定义推理网关；运行时动态切模 RPC 待后续接入
+                        <label className="field">
+                          <span className="field-label">自定义端点 Base URL（可选）</span>
+                          <input
+                            className="input"
+                            type="text"
+                            value={baseUrl}
+                            placeholder="留空使用官方默认端点，例如 https://api.openai.com/v1"
+                            onChange={(e) => setBaseUrl(e.target.value)}
+                            disabled={busy}
+                          />
+                        </label>
+
+                        <label className="field">
+                          <span className="field-label">凭据读取来源</span>
+                          <select
+                            className="input"
+                            aria-label="凭据读取来源"
+                            value={credBackend}
+                            onChange={(e) => setCredBackend(e.target.value)}
+                            disabled={busy}
+                          >
+                            <option value="keychain">系统钥匙串（macOS Keychain，推荐安全存储）</option>
+                            <option value="env">进程环境变量（开发调试用）</option>
+                          </select>
+                        </label>
+                      </>
+                    ) : null}
+
+                    <div className="setting-card-foot">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => void handleSaveModel()}
+                        disabled={busy}
+                      >
+                        保存模型设置
+                      </button>
+                      <span className="pill pill-success">零前端驻留</span>
+                    </div>
                   </div>
-                </div>
-                <pre className="settings-code-block mono">
-                  {`OPENAI_API_KEY / OPENAI_BASE_URL\nANTHROPIC_API_KEY`}
-                </pre>
-              </div>
+
+                  <section className="setting-card" aria-label="系统钥匙串凭据管理">
+                    <div className="setting-title">系统钥匙串（Keychain）API Key</div>
+                    <p className="field-hint">
+                      密钥只写入操作系统钥匙串，永不写入配置文件或事件日志，保存后界面绝不回显明文。
+                    </p>
+                    <div className="setting-cred-list">
+                      {keychainItems.map((item) => (
+                        <div key={`${item.backend}-${item.provider}`} className="setting-cred-row">
+                          <span>
+                            <strong>{item.provider}</strong>：
+                            {item.implemented
+                              ? item.configured
+                                ? "已配置（安全存储）"
+                                : "未配置"
+                              : `当前平台不支持（${item.error ?? "未实现"}）`}
+                          </span>
+                          {item.writable && item.configured ? (
+                            <button
+                              type="button"
+                              className="chip-btn"
+                              onClick={() => void handleDeleteKey(item.provider)}
+                              disabled={busy}
+                            >
+                              清除 {item.provider} 密钥
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+
+                    {keychainWritable ? (
+                      <div className="setting-inline-form">
+                        <select
+                          className="input setting-provider-select"
+                          aria-label="密钥厂商"
+                          value={keyProvider}
+                          onChange={(e) =>
+                            setKeyProvider(e.target.value as "openai" | "anthropic")
+                          }
+                          disabled={busy}
+                        >
+                          <option value="openai">openai</option>
+                          <option value="anthropic">anthropic</option>
+                        </select>
+                        <input
+                          className="input setting-grow-input"
+                          type="password"
+                          aria-label="API Key 明文输入"
+                          value={keySecret}
+                          placeholder="粘贴 sk-... 后保存到系统钥匙串"
+                          onChange={(e) => setKeySecret(e.target.value)}
+                          disabled={busy}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          onClick={() => void handleSaveKey()}
+                          disabled={busy}
+                        >
+                          存入钥匙串
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {envItems.length > 0 ? (
+                      <p className="field-hint">
+                        环境变量状态：
+                        {envItems
+                          .map(
+                            (c) =>
+                              `${c.provider}（${c.env_var ?? "-"}：${c.configured ? "已检测" : "未设置"}）`,
+                          )
+                          .join(" · ")}
+                      </p>
+                    ) : null}
+                  </section>
+                </>
+              )}
             </>
           ) : null}
 
@@ -251,7 +712,7 @@ export function SettingsDialog({
                 <div>
                   <div className="setting-title">新建对话默认执行模式</div>
                   <div className="setting-desc">
-                    控制新建任务时输入框左下角默认选中的运行策略（自动审批与完全访问待后端授权契约接入）
+                    控制新建任务时输入框默认选中的运行策略（自动审批与完全访问待后端授权契约接入）
                   </div>
                 </div>
                 <select
@@ -259,7 +720,7 @@ export function SettingsDialog({
                   aria-label="新建对话默认执行模式"
                   value={preferences.defaultPolicy.mode}
                   onChange={(event) =>
-                    onUpdatePreferences({
+                    onUpdatePreferences?.({
                       defaultPolicy:
                         event.target.value === "pure_only"
                           ? PURE_ONLY_RUN_POLICY
@@ -300,45 +761,206 @@ export function SettingsDialog({
             </>
           ) : null}
 
-          {activeTab === "budget" ? (
+          {activeTab === "schedule" ? (
             <>
               <div className="settings-head">
                 <div>
-                  <h2>预算与限额护栏</h2>
-                  <p>防止长任务与子任务失控消耗，未知用量与未知费用绝不按 0 混算</p>
+                  <h2>定时任务</h2>
+                  <p>按固定秒级间隔自动创建任务并入队运行，仍严格遵循执行侧审批与工作区边界</p>
                 </div>
                 {closeButton}
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-title">父子任务共享预占账本</div>
-                  <div className="setting-desc">
-                    每次模型请求前先原子预占额度，完成后按实际账单结算；子任务额度从父运行预算中统一扣减
+              {api === null ? (
+                <p className="field-hint">尚未连接守护进程设置接口。</p>
+              ) : (
+                <>
+                  <div className="setting-card">
+                    <label className="field">
+                      <span className="field-label">新建定时任务目标</span>
+                      <input
+                        className="input"
+                        type="text"
+                        value={schedGoal}
+                        placeholder="例如：每日汇总收件目录里的日报并输出摘要"
+                        onChange={(e) => setSchedGoal(e.target.value)}
+                        disabled={busy}
+                      />
+                    </label>
+                    <div className="setting-inline-form">
+                      <input
+                        className="input setting-grow-input"
+                        type="text"
+                        aria-label="定时任务工作目录"
+                        value={schedWorkspace}
+                        placeholder="可选：可写工作目录绝对路径（留空为纯对话任务）"
+                        onChange={(e) => setSchedWorkspace(e.target.value)}
+                        disabled={busy}
+                      />
+                      <input
+                        className="input setting-interval-input"
+                        type="number"
+                        min={1}
+                        aria-label="触发间隔秒数"
+                        value={schedInterval}
+                        onChange={(e) => setSchedInterval(e.target.value)}
+                        disabled={busy}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => void handleCreateSchedule()}
+                        disabled={busy}
+                      >
+                        新建定时任务
+                      </button>
+                    </div>
                   </div>
+
+                  <div className="setting-list">
+                    {schedules.length === 0 ? (
+                      <p className="field-hint">当前暂无定时任务。</p>
+                    ) : (
+                      schedules.map((item) => (
+                        <div key={item.schedule_id} className="setting-list-item">
+                          <div className="setting-list-head">
+                            <strong>{item.goal}</strong>
+                            <span className="pill">
+                              {item.enabled ? "已启用" : "已停用"} · 每 {item.interval_seconds}s
+                            </span>
+                          </div>
+                          {item.last_error !== "" ? (
+                            <p className="field-hint text-danger">上次触发异常：{item.last_error}</p>
+                          ) : null}
+                          <div className="setting-inline-actions">
+                            <button
+                              type="button"
+                              className="chip-btn"
+                              onClick={() => void handleToggleSchedule(item)}
+                              disabled={busy}
+                            >
+                              {item.enabled ? "停用" : "启用"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-danger btn-sm"
+                              onClick={() => void handleRemoveSchedule(item.schedule_id)}
+                              disabled={busy}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </>
+          ) : null}
+
+          {activeTab === "budget" ? (
+            <>
+              <div className="settings-head">
+                <div>
+                  <h2>预算账本</h2>
+                  <p>父子任务共享原子预占与按实结算，未知用量与未知费用绝不按 0 混算</p>
                 </div>
-                <span className="pill pill-success">已启用</span>
+                {closeButton}
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-title">单次运行用量与成本审阅</div>
-                  <div className="setting-desc">
-                    在任意会话右上角打开「运行洞察」即可查看该次运行的轮次上限、Token 明细、已知/未知成本及超限拒绝记录
+              {api === null ? (
+                <p className="field-hint">尚未连接守护进程设置接口。</p>
+              ) : budget === null ? (
+                <p className="field-hint">正在读取预算账本…</p>
+              ) : (
+                <>
+                  <div className="setting-row">
+                    <div>
+                      <div className="setting-title">全局未决 / 待核对预占笔数</div>
+                      <div className="setting-desc">
+                        未知用量保持占位直至核清，不伪装为 0；单次运行的明细费用也可在会话右上角「运行洞察」查看
+                      </div>
+                    </div>
+                    <span className="pill pill-info num">{budget.unsettled_count} 笔</span>
                   </div>
+
+                  {budget.accounts.length === 0 ? (
+                    <p className="field-hint">当前尚无账户级预算记录（首次运行预占后自动建立）。</p>
+                  ) : (
+                    <div className="setting-list">
+                      {budget.accounts.map((acc) => (
+                        <div key={acc.account_id} className="setting-list-item">
+                          <div className="setting-list-head">
+                            <strong>{acc.account_id}</strong>
+                            <span className={`pill ${acc.overrun ? "pill-danger" : "pill-info"}`}>
+                              口径：{acc.bound || "estimate"}
+                              {acc.overrun ? " · 已超上界" : ""}
+                              {acc.cancelled ? " · 已取消" : ""}
+                            </span>
+                          </div>
+                          <p className="field-hint num">
+                            已结算 Tokens：{formatInt(acc.settled["tokens"] ?? 0)} · 已结算金额：
+                            {formatUsdExact(acc.settled["micros"] ?? 0)} · 预占中 Tokens：
+                            {formatInt(acc.reserved["tokens"] ?? 0)} · 未知预占笔数：
+                            {acc.unknown_reservations}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : null}
+
+          {activeTab === "mcp" ? (
+            <>
+              <div className="settings-head">
+                <div>
+                  <h2>MCP 服务</h2>
+                  <p>只读查看受控 stdio MCP 服务状态、准入工具与被拒工具诊断</p>
                 </div>
-                <span className="pill pill-info">运行洞察可见</span>
+                {closeButton}
               </div>
 
-              <div className="setting-row">
-                <div>
-                  <div className="setting-title">账户级在线限额调整</div>
-                  <div className="setting-desc">
-                    控制面目前尚未开放账户级账本只读与修改 RPC，界面不展示虚构的全局余额滑块
+              {api === null ? (
+                <p className="field-hint">尚未连接守护进程设置接口。</p>
+              ) : mcp === null ? (
+                <p className="field-hint">正在检查 MCP 配置…</p>
+              ) : !mcp.configured ? (
+                <div className="setting-row">
+                  <div>
+                    <div className="setting-title">外部 MCP 工具扩展</div>
+                    <div className="setting-desc">{mcp.reason ?? "尚未配置 MCP server。"}</div>
                   </div>
+                  <span className="pill">未配置</span>
                 </div>
-                <span className="pill">待控制面接入</span>
-              </div>
+              ) : (
+                <>
+                  <p className="field-hint">
+                    已配置 {mcp.servers.length} 个 MCP 服务，准入工具 {mcp.tools.length} 个，拒绝工具{" "}
+                    {mcp.rejected_tools.length} 个。
+                  </p>
+                  <div className="setting-list">
+                    {mcp.servers.map((srv) => (
+                      <div key={srv.name} className="setting-list-item">
+                        <div className="setting-list-head">
+                          <strong>{srv.name}</strong>
+                          <span className="pill pill-info">
+                            {srv.status} · 工具 {srv.tools.length} 个
+                          </span>
+                        </div>
+                        {srv.diagnostics.map((d, idx) => (
+                          <p key={idx} className="field-hint">
+                            诊断：{d}
+                          </p>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           ) : null}
 
@@ -374,7 +996,7 @@ export function SettingsDialog({
                   className="chip-btn is-active"
                   onClick={() => {
                     onClose();
-                    onOpenMemory();
+                    onOpenMemory?.();
                   }}
                 >
                   打开记忆库
@@ -383,12 +1005,12 @@ export function SettingsDialog({
             </>
           ) : null}
 
-          {activeTab === "data" ? (
+          {activeTab === "diagnostics" ? (
             <>
               <div className="settings-head">
                 <div>
-                  <h2>数据备份与服务</h2>
-                  <p>本地守护进程运行状态、事件同步水位与在线一致性备份</p>
+                  <h2>诊断与数据服务</h2>
+                  <p>守护进程健康水位、默认脱敏诊断包本地导出与在线一致性备份</p>
                 </div>
                 {closeButton}
               </div>
@@ -418,28 +1040,93 @@ export function SettingsDialog({
                   </div>
                 </div>
                 <div className="setting-inline-actions">
-                  <button type="button" className="chip-btn" onClick={onRefresh}>
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    onClick={() => onRefresh?.()}
+                    disabled={onRefresh === undefined}
+                  >
                     立即同步
                   </button>
                   <button
                     type="button"
                     className="chip-btn is-active"
-                    onClick={onReconnectStream}
+                    onClick={() => onReconnectStream?.()}
+                    disabled={onReconnectStream === undefined}
                   >
                     重连事件流
                   </button>
                 </div>
               </div>
 
+              <div className="setting-card">
+                <div className="setting-title">默认脱敏诊断包导出（仅限本地）</div>
+                <p className="field-hint">
+                  诊断包只在本地写出 .zip 文件，<strong>绝不自动联网上传</strong>。默认自动对凭据、本机路径与任务目标打码，仅保留事件结构、时序与错误码。
+                </p>
+                {api === null ? (
+                  <p className="field-hint">尚未连接守护进程设置接口。</p>
+                ) : diagManifest === null ? (
+                  <p className="field-hint">正在生成诊断包内容预览清单…</p>
+                ) : (
+                  <>
+                    <div className="setting-diag-list">
+                      {diagManifest.sections.map((sec) => {
+                        const checked = diagSelected[sec.section] !== false;
+                        return (
+                          <label key={sec.section} className="setting-diag-row">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setDiagSelected((prev) => ({
+                                  ...prev,
+                                  [sec.section]: e.target.checked,
+                                }))
+                              }
+                              disabled={busy}
+                            />
+                            <span>
+                              <strong>{sec.section}</strong>（{sec.record_count} 条，约{" "}
+                              {formatInt(sec.estimated_bytes)} B）— {sec.description}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    <div className="setting-inline-form">
+                      <input
+                        className="input setting-grow-input"
+                        type="text"
+                        aria-label="诊断包本地导出目录"
+                        value={diagOutDir}
+                        placeholder="输入本地导出目录绝对路径，例如 ~/Desktop"
+                        onChange={(e) => setDiagOutDir(e.target.value)}
+                        disabled={busy}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => void handleExportDiagnostics()}
+                        disabled={busy}
+                      >
+                        导出脱敏诊断包到本地
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
               <div className="setting-row setting-row-stack">
                 <div>
-                  <div className="setting-title">在线一致性备份与校验命令</div>
+                  <div className="setting-title">在线一致性备份与校验 CLI 命令</div>
                   <div className="setting-desc">
-                    在终端可执行在线一致性快照备份、SHA-256 清单核验与保留期只读审计（事件日志永不删除或覆写）
+                    事件日志永不删除或覆写；可在终端执行在线快照备份、清单 SHA-256 核验与保留期审计
                   </div>
                 </div>
                 <pre className="settings-code-block mono">
-                  {`tianshu backup create <输出目录>\ntianshu backup verify <备份包路径>\ntianshu retention status`}
+                  {`tianshu backup create <输出目录>\ntianshu backup verify <备份包路径>\ntianshu data retention-audit`}
                 </pre>
               </div>
             </>
@@ -458,16 +1145,14 @@ export function SettingsDialog({
               <div className="setting-row">
                 <div>
                   <div className="setting-title">界面外观主题</div>
-                  <div className="setting-desc">
-                    实时切换清透浅色、深邃暗色或跟随操作系统外观
-                  </div>
+                  <div className="setting-desc">实时切换清透浅色、深邃暗色或跟随操作系统外观</div>
                 </div>
                 <div className="setting-inline-actions">
                   <button
                     type="button"
                     className={`chip-btn${preferences.theme === "light" ? " is-active" : ""}`}
                     data-theme-choice="light"
-                    onClick={() => onUpdatePreferences({ theme: "light" })}
+                    onClick={() => onUpdatePreferences?.({ theme: "light" })}
                   >
                     <IconSun size={13} />
                     <span>浅色模式</span>
@@ -476,7 +1161,7 @@ export function SettingsDialog({
                     type="button"
                     className={`chip-btn${preferences.theme === "dark" ? " is-active" : ""}`}
                     data-theme-choice="dark"
-                    onClick={() => onUpdatePreferences({ theme: "dark" })}
+                    onClick={() => onUpdatePreferences?.({ theme: "dark" })}
                   >
                     <IconMoon size={13} />
                     <span>深色模式</span>
@@ -485,7 +1170,7 @@ export function SettingsDialog({
                     type="button"
                     className={`chip-btn${preferences.theme === "system" ? " is-active" : ""}`}
                     data-theme-choice="system"
-                    onClick={() => onUpdatePreferences({ theme: "system" })}
+                    onClick={() => onUpdatePreferences?.({ theme: "system" })}
                   >
                     <span>跟随系统</span>
                   </button>
@@ -495,9 +1180,7 @@ export function SettingsDialog({
               <div className="setting-row">
                 <div>
                   <div className="setting-title">在欢迎主页展示动态伴侣</div>
-                  <div className="setting-desc">
-                    新建对话欢迎页与运行洞察面板展示立体矢量伴侣形象
-                  </div>
+                  <div className="setting-desc">新建对话欢迎页与运行洞察面板展示立体矢量伴侣形象</div>
                 </div>
                 <button
                   type="button"
@@ -507,7 +1190,7 @@ export function SettingsDialog({
                   data-testid="switch-enable-pet"
                   className={`ts-switch${preferences.enablePet ? " is-on" : ""}`}
                   onClick={() =>
-                    onUpdatePreferences({ enablePet: !preferences.enablePet })
+                    onUpdatePreferences?.({ enablePet: !preferences.enablePet })
                   }
                 >
                   <span className="ts-switch-knob" />
@@ -529,7 +1212,7 @@ export function SettingsDialog({
                   data-testid="switch-pet-parallax"
                   className={`ts-switch${preferences.enableParallax ? " is-on" : ""}`}
                   onClick={() =>
-                    onUpdatePreferences({
+                    onUpdatePreferences?.({
                       enableParallax: !preferences.enableParallax,
                     })
                   }
@@ -553,7 +1236,7 @@ export function SettingsDialog({
                   data-testid="switch-reduce-motion"
                   className={`ts-switch${preferences.reduceMotion ? " is-on" : ""}`}
                   onClick={() =>
-                    onUpdatePreferences({ reduceMotion: !preferences.reduceMotion })
+                    onUpdatePreferences?.({ reduceMotion: !preferences.reduceMotion })
                   }
                 >
                   <span className="ts-switch-knob" />
@@ -580,7 +1263,7 @@ export function SettingsDialog({
                       key={item.key}
                       type="button"
                       className={`chip-btn${preferences.previewPose === item.key ? " is-active" : ""}`}
-                      onClick={() => onUpdatePreferences({ previewPose: item.key })}
+                      onClick={() => onUpdatePreferences?.({ previewPose: item.key })}
                     >
                       {item.label}
                     </button>

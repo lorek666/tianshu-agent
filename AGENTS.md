@@ -12,15 +12,20 @@
 
 ## 二、每次开发后（必做）
 
-4. **更新 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)**：状态变了 → 更新 §2/§7（数字重新核实）；新决策/新教训 → 追加 §4/§5；**在 §8 会话日志追加一条**（日期 · 做了什么 · 发现/决定了什么），不可省。
-5. **文档与代码对账**：README / PRD / 复审报告里任何「已实现什么 / 多少测试 / 覆盖哪些平台」的陈述，必须与当前代码和 CI 一致；改代码就同步改文档，不留假话与悬空引用。
+4. **按职责更新知识库与变更碎片（不造单文件冲突、不手写静态计数）**：
+   - 有新架构决策、踩坑教训或能力边界变化 → 更新 [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) §2/§4/§5/§7；
+   - Tier 1 高危改动或跨模块重要演进 → 在 [`docs/changelog/`](docs/changelog/README.md) 下新增独立文件 `YYYY-MM-DD-<scope>.md`（**不再往单一 `KNOWLEDGE.md` 追加会话流水**）；Tier 2/3 改动直接写入 Commit / PR 正文；
+   - **不在文档中手写测试总条数或模块总数**，统一以实时测试收集与 CI 日志为准。
+5. **文档与代码对账**：README / PRD / ROADMAP / 复审报告里任何「已实现什么 / 覆盖哪些平台」的陈述，必须与当前代码和 CI 一致；改代码就同步改文档与关联 Issue，不留假话与悬空引用。
 
-## 三、流程门禁（机械，不可绕过）
+## 三、流程门禁（机械强制 + 风险分级）
 
 - **`main` 分支保护**：必须走 PR、CI 检查绿（`strict`）、`enforce_admins`（所有者也绕不过）、禁强推/删除。**本地绿不算数，不要尝试直推 main。** required 检查为 ubuntu、macOS、Windows Python 三项与 UI 一项，准确名称及范围见 CONTRIBUTING §6；改检查名称时同步核对远端分支保护。
-- **提交前**：跑 `uv lock --check` + `uv run --frozen pytest` + `uv run --frozen ruff check .`。CI 的 lock/ruff 命令相同；pytest 在 Ubuntu/macOS 增加 `-o addopts="" -q -rs`；Windows 在两个独立 runner 使用原 `scripts/pytest_with_stacks.py` 包装器与分片插件，准确命令见 CONTRIBUTING §5 / `.github/workflows/ci.yml`，用于汇总、跳过原因与长等待诊断。包装器保留原生fatal handler，以Python线程替代有frame竞态的原生定时转储；诊断失败必须非零，不能提高25分钟job上限掩盖问题。C扩展长期独占GIL时不能保证60秒栈，须如实保留该诊断边界。UI 改动另跑 CONTRIBUTING §5 的前端检查并提交构建产物。
-- **高危改动必须独立复审**：碰授权 / 租约 / 并发写 / 事件日志 / 计费，须由「第二读者」（另一会话或人）复审，不读作者自查结论，只按计划验收项逐条对照，并给出**可复现探针证据**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决。
-- **复审与 CI 绑定版本**：记录完整提交 SHA、范围、复现命令、关键输出与未决项；后续实质改动重审受影响范围，不把旧提交的结论冒充最新提交已通过。单维护者的 GitHub 批准人数可以为 0，但不能省略高危独立复审。
+- **按风险分三级执行本地门禁与复审（Tiered Review）**：
+  - **Tier 1（高危核心改动）**：碰执行侧授权（`permissions`/`dispatcher`/`guard`）、事件日志（`events`）、租约与并发写（`leases`/`jobs`/`restore_registry`）、崩溃恢复与备份（`recovery`/`snapshot`/`backup`）、共享计费（`budget`）、网络/执行隔离边界（`net`/`exec*`）、安装/卸载脚本 —— 必须完成 **定向红绿与负控 + 本机全量 `uv run --frozen pytest` + `uv lock --check` + `ruff` + 独立第二读者（另一会话或子代理）探针复审**。复审结论分「已修 / 部分修 / 未修」，后两者不得当作已解决；**复审绑定非文档代码树（code/test tree）**，后续纯文档回填只需核对代码树零变化，免除重跑本机全量与重绑复审 SHA 循环。
+  - **Tier 2（常规功能 / 控制面扩展 / UI 面板 / 普通测试修复）**：完成 **定向红绿测试 + 受影响域回归 + `uv lock --check` + `uv run --frozen ruff check .`**（涉及 UI 或 `desktop/src-tauri` 另跑 CONTRIBUTING §5 对应前端/Rust 检查并提交 `ui/dist`）+ GitHub required CI，免除独立第二读者探针仪式。
+  - **Tier 3（纯文档 / 台账对账 / 注释微调）**：完成 **`uv lock --check` + `uv run --frozen ruff check .` + 链接与事实核对** + GitHub required CI，免除本机全量 `pytest` 与独立复审。
+- **CI 分片与诊断边界不可弱化**：Ubuntu/macOS 跑 `-o addopts="" -q -rs`；Windows 在两个独立 runner 使用 `scripts/pytest_with_stacks.py` 与分片插件（准确命令见 CONTRIBUTING §5 / `.github/workflows/ci.yml`），保留原生 fatal handler 并以 Python 线程采样长等待栈；诊断失败必须非零，不得提高 25 分钟上限掩盖问题；C 扩展长期独占 GIL 时无法保证 60 秒出栈，须如实保留该边界。
 - **契约变更单独提交**：`docs(contract):` 单独 commit / 单独 PR，body 写「原方案 → 新方案 → 为什么 → 影响哪些代码」，不夹带代码。
 - **红就是红，不装作绿**：不用 `continue-on-error` 掩盖失败、不用 `type: ignore` 压契约越界。**失败要么修掉，要么如实摘除并记 issue**；摘除必须在配置里留下指向该 issue 的注释，不许让失败悄悄消失。历史上 Windows 曾因首跑 12 项失败被摘出 CI 矩阵（issue #21），后来逐项修好、issue 关闭、job 加回矩阵——这条规则的价值不在于"永远摘除"，而在于**摘除必须留痕、修好后必须归位**。
 
@@ -70,7 +75,8 @@
 ## 九、提交与仓库卫生
 
 - **Conventional Commits**，新写提交的 body 写「为什么这么改」；Git 自动生成的同步 merge commit 可保留默认消息。squash 最终正文须保留原因、验证与未决项；不为补格式重写已共享历史。Codex 分支使用 `codex/<scope>`，其他分支规范见 CONTRIBUTING §2。
-- **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从环境变量读；用过的中转 key 应自行作废。
+- **单会话独占 Worktree 与测试全局隔离**：多会话并发开发时严禁共用同一工作树，必须遵循「一会话一分支一独立 worktree」，合并后即删 worktree 与本地分支；共享仓库严禁使用 `git stash`。测试默认使用临时数据根、隔离维护锁根与独立凭据服务名，严禁抢占宿主机用户级全局锁或读写宿主机真实生产凭据。
+- **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从系统钥匙串（macOS Keychain）或环境变量读；用过的中转 key 应自行作废。
 - **不提交** `refs/`（762MB 参考仓库）、`playground/`、本地数据 / 日志 / 快照（`.tianshu/`）。
 - **单用户假设（D2）**：不引入多租户 / 多用户设计；租约只防「同用户双实例」。
 - **运行时数据目录按入口区分**：内核 CLI 的 `--db` 默认是**当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`）；`daemon` / `host` 已通过 `ipc.default_data_root()` 使用平台标准目录（macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`，缺省 `~/.local/share/AgentOS`），可由 `--data-root` / `TIANSHU_DATA_ROOT` 覆盖。两者都不是可提交的项目源码；测试必须使用临时数据根。

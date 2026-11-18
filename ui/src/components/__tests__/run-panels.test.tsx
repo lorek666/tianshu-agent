@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EventView, RunView } from "../../api/types";
 import { BudgetPanel } from "../BudgetPanel";
+import { RunTimeline } from "../RunTimeline";
 import { SubtaskPanel } from "../SubtaskPanel";
 
 function event(
@@ -169,5 +170,26 @@ describe("子任务面板渲染", () => {
       <SubtaskPanel events={[event("model.result", {}, 1)]} runs={[]} />,
     );
     expect(html).toBe("");
+  });
+});
+
+describe("RunTimeline W4 流式预览", () => {
+  it("展示正在输出的流式增量文本与工具名，并转义 HTML", () => {
+    const html = renderToStaticMarkup(
+      <RunTimeline
+        entries={[]}
+        hasMore={false}
+        live={true}
+        streamingPreview={{
+          turnIndex: 2,
+          text: "实时内容 <script>evil()</script>",
+          toolNames: ["read_text"],
+        }}
+      />,
+    );
+    expect(html).toContain("第 2 轮");
+    expect(html).toContain("准备调用工具：read_text");
+    expect(html).toContain("&lt;script&gt;evil()");
+    expect(html).not.toContain("<script>");
   });
 });

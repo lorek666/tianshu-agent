@@ -8,9 +8,11 @@ import type {
   EventView,
   RunExecutionPolicyV1,
   RunView,
+  StreamingPreview,
   TaskView,
 } from "../api/types";
 import type { StreamStatus } from "../api/stream";
+import type { ModelConfigView, SettingsApi, SettingsView } from "../api/settings";
 import type { TimelineEntry } from "../lib/humanize";
 import type { CostSummary } from "../lib/timeline";
 import {
@@ -69,6 +71,7 @@ export interface TaskWorkspaceViewProps {
   hasMore: boolean;
   cost: CostSummary;
   streamStatus: StreamStatus;
+  streamingPreview?: StreamingPreview | null;
   connectionLost: boolean;
   eventSeqHead: number;
   busy: string | null;
@@ -76,6 +79,9 @@ export interface TaskWorkspaceViewProps {
   executionPolicy: RunExecutionPolicyV1;
   enablePet: boolean;
   reduceMotion: boolean;
+  modelConfig?: ModelConfigView | null;
+  settingsApi?: SettingsApi | null;
+  onModelUpdated?: (settings: SettingsView) => void;
   onSelectRun: (runId: string) => void;
   onExecutionPolicyChange: (taskId: string, policy: RunExecutionPolicyV1) => void;
   onStartRun: (taskId: string, policy: RunExecutionPolicyV1) => void;
@@ -133,6 +139,7 @@ export function TaskWorkspaceView({
   hasMore,
   cost,
   streamStatus,
+  streamingPreview = null,
   connectionLost,
   eventSeqHead,
   busy,
@@ -140,6 +147,9 @@ export function TaskWorkspaceView({
   executionPolicy,
   enablePet,
   reduceMotion,
+  modelConfig = null,
+  settingsApi = null,
+  onModelUpdated,
   onSelectRun,
   onExecutionPolicyChange,
   onStartRun,
@@ -530,6 +540,7 @@ export function TaskWorkspaceView({
                   entries={entries}
                   hasMore={hasMore}
                   live={streamStatus === "live"}
+                  streamingPreview={streamingPreview}
                 />
               </section>
             ) : selectedRunId !== null ? (
@@ -569,7 +580,10 @@ export function TaskWorkspaceView({
 
             <ModelStatusControl
               testId="followup-model-btn"
+              model={modelConfig}
+              settingsApi={settingsApi}
               disabled={followUpSubmitting}
+              onModelUpdated={onModelUpdated}
               onOpenModelSettings={onOpenModelSettings}
             />
 

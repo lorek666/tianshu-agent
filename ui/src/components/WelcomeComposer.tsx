@@ -11,6 +11,7 @@ import type {
   WorkspaceView,
 } from "../api/types";
 import type { StreamStatus } from "../api/stream";
+import type { ModelConfigView, SettingsApi, SettingsView } from "../api/settings";
 import { workspaceModeLabel } from "../lib/humanize";
 import { streamStatusText } from "./AppHeader";
 import {
@@ -42,6 +43,9 @@ export interface WelcomeComposerProps {
   streamDetail: string | null;
   openApprovalsCount: number;
   busy: boolean;
+  modelConfig?: ModelConfigView | null;
+  settingsApi?: SettingsApi | null;
+  onModelUpdated?: (settings: SettingsView) => void;
   onJumpToPendingApproval: () => void;
   onRefresh: () => void;
   onOpenModelSettings: () => void;
@@ -68,6 +72,9 @@ export function WelcomeComposer({
   streamDetail,
   openApprovalsCount,
   busy,
+  modelConfig = null,
+  settingsApi = null,
+  onModelUpdated,
   onJumpToPendingApproval,
   onRefresh,
   onOpenModelSettings,
@@ -579,7 +586,10 @@ export function WelcomeComposer({
             <div className="composer-right-controls">
               <ModelStatusControl
                 testId="composer-model-btn"
+                model={modelConfig}
+                settingsApi={settingsApi}
                 disabled={pending}
+                onModelUpdated={onModelUpdated}
                 onOpenModelSettings={onOpenModelSettings}
               />
 

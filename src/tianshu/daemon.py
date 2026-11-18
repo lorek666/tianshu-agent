@@ -74,6 +74,7 @@ from .loop import AgentLoop, Limits, Stack, build_stack
 from .model import Model
 from .recovery import recover_run
 from .scheduler import Scheduler
+from .settings_control import RuntimeModelSlot
 from .tasks import (
     RUN_CANCELLING,
     RUN_FENCED,
@@ -354,6 +355,7 @@ class _ClientConnection:
         "raw",
         "name",
         "subscribed",
+        "include_model_stream",
         "last_sent_seq",
         "hello",
         "closed",
@@ -378,6 +380,7 @@ class _ClientConnection:
         self.raw = raw
         self.name = name or f"conn-{id(self):x}"
         self.subscribed = False
+        self.include_model_stream = False
         self.last_sent_seq = 0
         self.hello = False
         self.closed = False
@@ -571,6 +574,11 @@ class _Daemon:
     ) -> None:
         self.root = Path(data_root)
         self.model = model
+        self._model_slot = (
+            model
+            if isinstance(model, RuntimeModelSlot)
+            else RuntimeModelSlot(model, data_root=self.root)
+        )
         self.limits = limits or Limits()
         self.driver_interval_s = max(0.005, float(driver_interval_s))
         self.stop = stop_event
@@ -685,6 +693,8 @@ class _Daemon:
             model=self.model,
             limits=self.limits,
             resume_requests=self.resume_requests,
+            model_slot=self._model_slot,
+            mcp_configs=self._mcp_servers,
         )
         assert self.lock is not None
         self.plane.instance_id = self.lock.instance_id
@@ -1176,6 +1186,10 @@ class _Daemon:
         if isinstance(since, bool) or not isinstance(since, int):
             conn.send(ipc.fail(request_id, "bad_params", "since_seq 必须是整数"))
             return
+        include_stream = params.get("include_model_stream", False)
+        if not isinstance(include_stream, bool):
+            conn.send(ipc.fail(request_id, "bad_params", "include_model_stream 必须是布尔值"))
+            return
         if since < 0:
             since = 0
         # 先回响应（客户端据此知道 from_seq），推送只会排在它后面（同一发送队列，
@@ -1183,6 +1197,7 @@ class _Daemon:
         if not conn.send(ipc.ok(request_id, {"subscribed": True, "from_seq": since})):
             return
         conn.subscribed = True
+        conn.include_model_stream = include_stream
         conn.last_sent_seq = since - 1
 
     def _push_events(self) -> None:
@@ -1279,9 +1294,37 @@ class _Daemon:
 
     # ------------------------------------------------------------------ 驱动
 
+    def _broadcast_model_stream(
+        self,
+        run_id: str,
+        task_id: str,
+        turn_index: int,
+        delta: dict[str, Any] | None,
+        done: bool,
+    ) -> None:
+        """向在线订阅者广播 W4 瞬态模型流增量（受有界队列高水位保护，慢订阅者跳过不阻塞）。"""
+        with self._conns_lock:
+            subscribers = [
+                conn
+                for conn in self._conns
+                if conn.subscribed and conn.include_model_stream and not conn.closed
+            ]
+        if not subscribers:
+            return
+        frame = ipc.stream_push(run_id, task_id, turn_index, delta, done=done)
+        for conn in subscribers:
+            if conn.closed or conn.pending() >= conn.high_watermark:
+                continue
+            conn.send(frame)
+
     def _driver_loop(self) -> None:
         assert self.driver_stack is not None and self.driver_log is not None
-        worker = Worker(self.driver_stack, model=self.model, limits=self.limits)
+        worker = Worker(
+            self.driver_stack,
+            model=self._model_slot,
+            limits=self.limits,
+            on_model_delta=self._broadcast_model_stream,
+        )
         # 调度器（W5）与 Worker 在同一处装配、同属驱动线程：driver_log 这条
         # 连接按纪律只由驱动线程使用，若在 _setup（serve 线程）里构造，
         # 建表的 executescript 就会从错误的线程碰它。触发走与
@@ -1302,7 +1345,7 @@ class _Daemon:
             approvals=self.driver_stack.approvals,
             snapshots=self.driver_stack.snapshots,
             contents=self.driver_stack.contents,
-            model=self.model,
+            model=self._model_slot,
             limits=self.limits,
             # 同 Worker：驱动循环必须复用装配里的投影，否则守护进程会开
             # 第二个记忆投影（详见 worker.py 同处注释）。
@@ -1312,6 +1355,7 @@ class _Daemon:
             # 审批/显式续跑与普通 Worker 共用预算：人工等待不重置限额，
             # 未设限时也必须记录续跑的真实模型调用。
             budget=self.driver_stack.budget,
+            on_model_delta=self._broadcast_model_stream,
         )
         consecutive_failures = 0
         try:

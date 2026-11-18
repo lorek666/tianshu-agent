@@ -104,8 +104,37 @@ function makeState(
 class RedesignFakeHost implements HostClient {
   readonly mode = "host" as const;
   readonly state: StateView;
+  streamCallbacks: EventStreamCallbacks | null = null;
+  modelConfig = {
+    mode: "scripted",
+    model_name: "",
+    base_url: "",
+    credential_backend: "keychain",
+    summary: "演示脚本模型（离线）",
+  };
 
   readonly rpc = vi.fn(async (method: string, params: RpcParams = {}) => {
+    if (method === "settings.get") {
+      return {
+        model: { ...this.modelConfig },
+        credentials: [],
+      };
+    }
+    if (method === "model.configure") {
+      const nextMode = String(params.mode ?? "scripted");
+      const nextName = String(params.model_name ?? "");
+      this.modelConfig = {
+        mode: nextMode,
+        model_name: nextName,
+        base_url: String(params.base_url ?? ""),
+        credential_backend: String(params.credential_backend ?? "keychain"),
+        summary: nextMode === "scripted" ? "演示脚本模型（离线）" : `${nextMode} · ${nextName}`,
+      };
+      return {
+        model: { ...this.modelConfig },
+        credentials: [],
+      };
+    }
     if (method === "task.create") {
       const id = `task_new_${this.state.tasks.length + 1}`;
       const created = makeTask({
@@ -171,6 +200,7 @@ class RedesignFakeHost implements HostClient {
     callbacks: EventStreamCallbacks,
     signal: AbortSignal,
   ): Promise<void> {
+    this.streamCallbacks = callbacks;
     callbacks.onOpen?.();
     return new Promise<void>((resolve) => {
       if (signal.aborted) {
@@ -420,7 +450,7 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
     );
   });
 
-  it("设置中心包含完整 6 大分栏，且浅深主题、动态伴侣显示与眼神跟随开关实时生效", async () => {
+  it("设置中心包含完整 8 大分栏，且浅深主题、动态伴侣显示与眼神跟随开关实时生效", async () => {
     const host = new RedesignFakeHost(makeState());
     mocked.host = host;
     await act(async () => root?.render(<App />));
@@ -433,11 +463,13 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
     expect(dialog).not.toBeNull();
 
     for (const tabLabel of [
-      "模型与服务商",
+      "模型与密钥",
       "安全与执行授权",
-      "预算与限额护栏",
+      "定时任务",
+      "预算账本",
+      "MCP 服务",
       "记忆与上下文",
-      "数据备份与服务",
+      "诊断与数据服务",
       "外观与伴侣动效",
     ]) {
       expect(dialog?.textContent).toContain(tabLabel);
@@ -484,5 +516,75 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
       container!.querySelector<HTMLButtonElement>('[data-testid="close-settings-btn"]')!,
     );
     expect(container?.querySelector('.welcome-view [data-testid="welcome-pet"]')).toBeNull();
+  });
+
+  it("发送按钮左侧模型选择器调用真实 model.configure 热切换，会话流支持 W4 实时流式预览", async () => {
+    const host = new RedesignFakeHost(makeState([makeTask()], [makeRun({ state: "running" })]));
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="followup-model-btn"]') !== null);
+
+    const modelBtn = container!.querySelector<HTMLButtonElement>(
+      '[data-testid="followup-model-btn"]',
+    )!;
+    expect(modelBtn.textContent).toContain("演示脚本模型");
+    await click(modelBtn);
+
+    const openaiBtn = container?.querySelector<HTMLButtonElement>('[data-model-mode="openai"]');
+    expect(openaiBtn).not.toBeNull();
+    await click(openaiBtn!);
+
+    const modelInput = container?.querySelector<HTMLInputElement>(
+      '[data-testid="followup-model-btn-model-input"]',
+    );
+    expect(modelInput).not.toBeNull();
+    await inputValue(modelInput!, "gpt-4o");
+
+    await click(
+      container!.querySelector<HTMLButtonElement>('[data-testid="quick-model-apply-btn"]')!,
+    );
+    await waitFor(() => rpcCalls(host, "model.configure").length === 1);
+    expect(rpcCalls(host, "model.configure")[0]).toEqual({
+      mode: "openai",
+      model_name: "gpt-4o",
+      base_url: "",
+      credential_backend: "keychain",
+    });
+    expect(
+      container?.querySelector('[data-testid="followup-model-btn"]')?.textContent,
+    ).toContain("gpt-4o");
+
+    // W4 实时流式增量进入会话时间线，收到 run.end 后自动收口
+    expect(host.streamCallbacks).not.toBeNull();
+    await act(async () => {
+      host.streamCallbacks?.onModelStream?.({
+        kind: "model_stream",
+        run_id: "run_alpha",
+        task_id: "task_alpha",
+        turn_index: 1,
+        delta: {
+          schema_version: "1.0",
+          kind: "text",
+          text: "正在流式分析认证模块…",
+          tool_name: "",
+        },
+        done: false,
+      });
+    });
+    expect(container?.querySelector(".streaming-item")?.textContent).toContain(
+      "正在流式分析认证模块…",
+    );
+
+    await act(async () => {
+      host.streamCallbacks?.onModelStream?.({
+        kind: "model_stream",
+        run_id: "run_alpha",
+        task_id: "task_alpha",
+        turn_index: 1,
+        delta: null,
+        done: true,
+      });
+    });
+    expect(container?.querySelector(".streaming-item")).toBeNull();
   });
 });

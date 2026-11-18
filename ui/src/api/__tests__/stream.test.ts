@@ -99,4 +99,43 @@ describe("事件流重连策略", () => {
     expect(calls[1]?.[0]).toBe(7);
     expect(statuses).not.toContain("disconnected");
   });
+
+  it("瞬态 model_stream 增量正常回调且不推进持久化 seq 游标", async () => {
+    const receivedStreams: string[] = [];
+    let attempt = 0;
+    const host: HostClient = {
+      mode: "host",
+      rpc: vi.fn(),
+      getState: vi.fn(),
+      openEvents: vi.fn(async (_since, callbacks) => {
+        attempt += 1;
+        callbacks.onOpen?.();
+        if (attempt === 1) {
+          callbacks.onModelStream?.({
+            kind: "model_stream",
+            run_id: "run_1",
+            task_id: "task_1",
+            turn_index: 1,
+            delta: { schema_version: "1.0", kind: "text", text: "增量片段", tool_name: "" },
+            done: false,
+          });
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 60_000));
+      }),
+    };
+    const handle = startEventStream({
+      host,
+      initialSeq: () => 5,
+      onEvent: () => undefined,
+      onModelStream: (s) => receivedStreams.push(s.delta?.text ?? ""),
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    handle.stop();
+
+    expect(receivedStreams).toEqual(["增量片段"]);
+    const calls = (host.openEvents as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls[0]?.[0]).toBe(5);
+    expect(calls[1]?.[0]).toBe(5);
+  });
 });

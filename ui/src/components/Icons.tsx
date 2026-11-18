@@ -258,3 +258,17 @@ export function IconEdit({ size = 14, className }: IconProps) {
     </svg>
   );
 }
+
+export function IconCpu({ size = 15, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="1.65" />
+      <path
+        d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"
+        stroke="currentColor"
+        strokeWidth="1.65"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

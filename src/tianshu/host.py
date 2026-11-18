@@ -937,7 +937,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._write_comment("daemon_unavailable")
             return
         try:
-            client.subscribe(max(0, since_seq))
+            client.subscribe(max(0, since_seq), include_model_stream=True)
             idle = 0.0
             while True:
                 try:
@@ -957,6 +957,11 @@ class _Handler(BaseHTTPRequestHandler):
                         idle = 0.0
                     continue
                 idle = 0.0
+                if message.get("push") == "model_stream":
+                    stream_payload = message.get("stream")
+                    if isinstance(stream_payload, dict):
+                        self._write_named_frame("model_stream", stream_payload)
+                    continue
                 event = message.get("event")
                 if not isinstance(event, dict):
                     continue
@@ -967,8 +972,11 @@ class _Handler(BaseHTTPRequestHandler):
             client.close()
 
     def _write_frame(self, event: dict[str, Any]) -> None:
-        data = json.dumps(event, ensure_ascii=False)
-        self.wfile.write(f"event: event\ndata: {data}\n\n".encode())
+        self._write_named_frame("event", event)
+
+    def _write_named_frame(self, event_name: str, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False)
+        self.wfile.write(f"event: {event_name}\ndata: {data}\n\n".encode())
         self.wfile.flush()
 
     def _write_comment(self, text: str) -> None:

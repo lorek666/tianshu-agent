@@ -3815,6 +3815,7 @@ pre,
   display: flex;
   flex-direction: column;
   gap: 3px;
+  overflow-y: auto;
 }
 
 .settings-nav-title {
@@ -3990,6 +3991,117 @@ pre,
   gap: 5px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.settings-feedback {
+  margin: 0;
+}
+
+.setting-card {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 14px 16px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.setting-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setting-cred-list,
+.setting-list,
+.setting-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-cred-row,
+.setting-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.setting-list-item {
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setting-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.setting-grow-input {
+  flex: 1;
+  min-width: 190px;
+}
+
+.setting-provider-select {
+  width: 128px;
+}
+
+.setting-interval-input {
+  width: 110px;
+}
+
+.setting-diag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.setting-diag-row input {
+  margin-top: 3px;
+}
+
+.model-mode-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.model-quick-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.model-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.model-popover-error {
+  margin-top: 6px;
+}
+
+.streaming-item .payload-json {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 @media (max-width: 960px) {

@@ -61,6 +61,7 @@ from .context import (
     context_payload,
 )
 from .crashpoint import failpoint
+from .credentials import redact
 from .disk_admission import DiskAdmission, RunStorageContext
 from .dispatcher import (
     APPROVAL_REJECTED,
@@ -674,6 +675,8 @@ class AgentLoop:
         budget: BudgetLedger | None = None,
         contents: ContentStore | None = None,
         summaries: SummaryStore | None = None,
+        on_model_delta: Callable[[str, str, int, dict[str, Any] | None, bool], None]
+        | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
@@ -682,6 +685,7 @@ class AgentLoop:
         self._approvals = approvals
         self._snapshots = snapshots
         self._model = model
+        self._on_model_delta = on_model_delta
         #: 记忆投影（F10）。传 None 时在**第一次真的用到记忆**时才打开：
         #: 不碰记忆的 Run 不该为它建表、也不该因为投影模块有问题而跑不起来。
         #: 一旦记忆工具被调用，缺投影就是明确失败，不会静默当成"没有记忆"。
@@ -714,8 +718,8 @@ class AgentLoop:
         # 重试退避的等待函数。生产是 `time.sleep`；测试注入一个不睡觉的记录器，
         # 否则"退避序列是不是 500/1000/2000"就只能靠真实等待来验证。
         self._sleep = sleep or time.sleep
-        # F9a 准入结果按 Run 缓存：一次判定，不是每轮重复判定。
-        self._admission: dict[str, CapabilityProfile] = {}
+        # F9a 准入结果按 (Run, 模型槽位版本) 缓存：同一模型配置每个 Run 只判定一次。
+        self._admission: dict[str, tuple[int, CapabilityProfile]] = {}
         # 每个 Run 上一次**成功**调用的 token 用量。重试前用它投影"再试一次大概
         # 要花多少"，这是唯一能提前发现"再试就超预算"的信号（失败调用不产生用量）。
         self._last_usage: dict[str, int] = {}
@@ -1191,7 +1195,9 @@ class AgentLoop:
         为什么缓存而不是每轮重判：判定结果是"这个模型是什么"，不会在 run 中途变。
         每轮重判除了白花时间，还会让错误信息重复出现在日志里。
         """
-        if run_id in self._admission:
+        cur_rev = int(getattr(self._model, "config_revision", 0))
+        cached = self._admission.get(run_id)
+        if cached is not None and cached[0] == cur_rev:
             return None
         try:
             profile = admit_model(
@@ -1209,7 +1215,7 @@ class AgentLoop:
                 actor_kind="core",
             )
             return reason
-        self._admission[run_id] = profile
+        self._admission[run_id] = (cur_rev, profile)
         return None
 
     # ---------------------------------------------------------------- 预算账本
@@ -1246,9 +1252,12 @@ class AgentLoop:
         if self._limits.budget_bound == BOUND_UPPER:
             output_bound = declared_output_tokens(self._model)
             if output_bound is None:
+                model_cls = getattr(
+                    self._model, "adapter_name", lambda: type(self._model).__name__
+                )()
                 raise BudgetConfigError(
                     "硬上限模式（budget_bound='upper'）需要 adapter 声明输出上界，"
-                    f"而 {type(self._model).__name__} 没有声明 `output_tokens`；"
+                    f"而 {model_cls} 没有声明 `output_tokens`；"
                     "拿默认输出预留冒充上界等于把估算写成保证，所以拒绝进入该模式"
                 )
             need = upper_need(
@@ -1334,7 +1343,9 @@ class AgentLoop:
         """摘要记录里的模型身份：`adapter:vendor:model`（缺项留空）。"""
         identity = identity_of(self._model)
         if identity is None:
-            return type(self._model).__name__
+            return getattr(
+                self._model, "adapter_name", lambda: type(self._model).__name__
+            )()
         return ":".join(
             part
             for part in (identity.adapter, identity.vendor or "", identity.model or "")
@@ -1727,9 +1738,44 @@ class AgentLoop:
             # 上下文编译失败都不算"打过一次"。加在这里，超时/传输失败/重试
             # 都会被如实计入（issue #58：失败也是一种发生过的事实）。
             progress.model_attempts += 1
+            run_row = self._tasks.get_run(run_id)
+            task_id_for_stream = run_row.task_id if run_row is not None else ""
+            turn_idx = progress.turns + 1
+            streamer = (
+                getattr(self._model, "stream_complete", None)
+                if self._on_model_delta is not None
+                else None
+            )
+
+            def _emit_delta(
+                delta_obj: Any,
+                _tid: str = task_id_for_stream,
+                _tidx: int = turn_idx,
+            ) -> None:
+                if self._on_model_delta is None:
+                    return
+                payload = (
+                    delta_obj.to_payload()
+                    if hasattr(delta_obj, "to_payload")
+                    else dict(delta_obj)
+                )
+                self._on_model_delta(run_id, _tid, _tidx, payload, False)
+
+            def _emit_done(
+                _tid: str = task_id_for_stream,
+                _tidx: int = turn_idx,
+            ) -> None:
+                if self._on_model_delta is not None:
+                    self._on_model_delta(run_id, _tid, _tidx, None, True)
+
             try:
-                resp = self._model.complete(view.messages, self._run_tool_manifest(run_id))
+                manifest = self._run_tool_manifest(run_id)
+                if callable(streamer):
+                    resp = streamer(view.messages, manifest, _emit_delta)
+                else:
+                    resp = self._model.complete(view.messages, manifest)
             except ModelError as exc:
+                _emit_done()
                 # 请求已经发出去了：`requests` 维度已知，token / 金额未知。
                 # 未知维度**不释放占用**——"可能已经计费"不能按零结算。
                 self._settle_attempt(reservation, None)
@@ -1750,19 +1796,23 @@ class AgentLoop:
                         f"模型调用异常（attempt {attempt}/{attempts}，不可重试）：{exc}"
                     )
             except Exception as exc:  # noqa: BLE001 - 非 ModelError 不重试
+                _emit_done()
                 self._settle_attempt(reservation, None)
+                safe_repr = redact(repr(exc))
+                safe_msg = redact(str(exc))
                 self._log.append(
                     run_id,
                     "model.error",
                     {
                         "request_id": request_id,
                         "attempt": attempt,
-                        "error": repr(exc),
+                        "error": safe_repr,
                     },
                     actor_kind="core",
                 )
-                return None, f"模型调用异常（attempt {attempt}/{attempts}）：{exc}"
+                return None, f"模型调用异常（attempt {attempt}/{attempts}）：{safe_msg}"
             else:
+                _emit_done()
                 # 成功拿到回执：按 provider 的最终 usage 结算（PRD §5.7 第二阶段）。
                 self._settle_attempt(reservation, resp)
                 return resp, ""

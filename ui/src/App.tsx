@@ -5,10 +5,12 @@ import type {
   CreateTaskInput,
   EventView,
   EventsResult,
+  ModelStreamEvent,
   RunEnvelope,
   RunExecutionPolicyV1,
   RunView,
   StateView,
+  StreamingPreview,
   TaskEnvelope,
   TaskView,
   UndoApplyResult,
@@ -34,6 +36,10 @@ import { ConnectionScreen } from "./components/ConnectionScreen";
 import { MemoryDialog } from "./components/MemoryDialog";
 import { createMemoryApi } from "./api/memory";
 import type { MemoryApi } from "./api/memory";
+import { SettingsDialog } from "./components/SettingsDialog";
+import type { SettingsTab, UiPreferences } from "./components/SettingsDialog";
+import { createSettingsApi } from "./api/settings";
+import type { SettingsApi, SettingsView } from "./api/settings";
 import { UndoDialog } from "./components/UndoDialog";
 import type { UndoPlanState } from "./components/UndoDialog";
 import { Modal } from "./components/Modal";
@@ -41,8 +47,6 @@ import { Sidebar, basenameOfPath } from "./components/Sidebar";
 import type { ProjectWorkspace } from "./components/Sidebar";
 import { WelcomeComposer } from "./components/WelcomeComposer";
 import { TaskWorkspaceView } from "./components/TaskWorkspaceView";
-import { SettingsDialog } from "./components/SettingsDialog";
-import type { SettingsTab, UiPreferences } from "./components/SettingsDialog";
 import { IconAlert, IconX } from "./components/Icons";
 
 type Phase = "booting" | "no-token" | "unreachable" | "ready";
@@ -138,6 +142,7 @@ function pickInitialTask(state: StateView): TaskView | null {
 export function App() {
   const demoMode = useMemo(() => isDemoRequested(), []);
   const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
+  const [settingsApi, setSettingsApi] = useState<SettingsApi | null>(null);
   const now = useNow(10_000);
   const systemDark = useSystemDarkScheme();
 
@@ -156,6 +161,7 @@ export function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("models");
+  const [modelSettings, setModelSettings] = useState<SettingsView | null>(null);
 
   const [phase, setPhase] = useState<Phase>("booting");
   const [bootError, setBootError] = useState<string | null>(null);
@@ -167,6 +173,7 @@ export function App() {
   const [runDetail, setRunDetail] = useState<RunView | null>(null);
   const [timeline, setTimeline] = useState<EventView[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
+  const [streamingPreviews, setStreamingPreviews] = useState<Record<string, StreamingPreview>>({});
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [streamDetail, setStreamDetail] = useState<string | null>(null);
   const [streamEpoch, setStreamEpoch] = useState(0);
@@ -231,6 +238,14 @@ export function App() {
   const updatePreferences = useCallback((patch: Partial<UiPreferences>) => {
     setPreferences((previous) => ({ ...previous, ...patch }));
   }, []);
+
+  const handleModelUpdated = useCallback(
+    (updated: SettingsView) => {
+      setModelSettings(updated);
+      showToast(`模型已切换为：${updated.model.summary}`, "success");
+    },
+    [showToast],
+  );
 
   const openSettingsAt = useCallback((tab: SettingsTab = "models") => {
     setSettingsTab(tab);
@@ -394,8 +409,54 @@ export function App() {
     }, REFRESH_DEBOUNCE_MS);
   }, [refreshSnapshot, refreshSelectedRun]);
 
+  const receiveModelStream = useCallback((stream: ModelStreamEvent): void => {
+    setStreamingPreviews((previous) => {
+      if (stream.done) {
+        if (!(stream.run_id in previous)) return previous;
+        const next = { ...previous };
+        delete next[stream.run_id];
+        return next;
+      }
+      if (stream.delta === null) return previous;
+      const cur = previous[stream.run_id];
+      const sameTurn = cur !== undefined && cur.turnIndex === stream.turn_index;
+      const baseText = sameTurn ? cur.text : "";
+      const baseTools = sameTurn ? cur.toolNames : [];
+      const nextText =
+        stream.delta.kind === "text" ? baseText + stream.delta.text : baseText;
+      const nextTools =
+        stream.delta.kind === "tool_call_start" &&
+        stream.delta.tool_name &&
+        !baseTools.includes(stream.delta.tool_name)
+          ? [...baseTools, stream.delta.tool_name]
+          : baseTools;
+      return {
+        ...previous,
+        [stream.run_id]: {
+          turnIndex: stream.turn_index,
+          text: nextText,
+          toolNames: nextTools,
+        },
+      };
+    });
+  }, []);
+
   const receiveEvent = useCallback(
     (event: EventView): void => {
+      if (
+        event.run_id !== null &&
+        (event.type === "model.result" ||
+          event.type === "model.error" ||
+          event.type === "run.end")
+      ) {
+        const settledRunId = event.run_id;
+        setStreamingPreviews((previous) => {
+          if (!(settledRunId in previous)) return previous;
+          const next = { ...previous };
+          delete next[settledRunId];
+          return next;
+        });
+      }
       const runId = selectedRunRef.current;
       if (event.run_id !== null && event.run_id === runId) {
         timelineRunRef.current = event.run_id;
@@ -431,8 +492,18 @@ export function App() {
           : createRealHostClient(token ?? "");
         const next = await host.getState();
         if (attempt !== connectAttemptRef.current) return;
+        const nextSettingsApi = createSettingsApi(host);
+        let initialSettings: SettingsView | null = null;
+        try {
+          initialSettings = await nextSettingsApi.getSettings();
+        } catch {
+          initialSettings = null;
+        }
+        if (attempt !== connectAttemptRef.current) return;
         hostRef.current = host;
         setMemoryApi((previous) => previous ?? createMemoryApi(host));
+        setSettingsApi((previous) => previous ?? nextSettingsApi);
+        setModelSettings(initialSettings);
         setState(next);
         stateRef.current = next;
 
@@ -453,6 +524,8 @@ export function App() {
         if (attempt !== connectAttemptRef.current) return;
         hostRef.current = null;
         setMemoryApi(null);
+        setSettingsApi(null);
+        setModelSettings(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
       } finally {
@@ -486,6 +559,7 @@ export function App() {
       host,
       initialSeq: () => Math.max(1, (stateRef.current?.event_seq_head ?? 0) + 1),
       onEvent: receiveEvent,
+      onModelStream: receiveModelStream,
       onStatus: (status, detail) => {
         setStreamStatus(status);
         setStreamDetail(detail ?? null);
@@ -1113,6 +1187,9 @@ export function App() {
               streamDetail={streamDetail}
               openApprovalsCount={openApprovals.length}
               busy={busy === "create-task"}
+              modelConfig={modelSettings?.model ?? null}
+              settingsApi={settingsApi}
+              onModelUpdated={handleModelUpdated}
               onJumpToPendingApproval={() => {
                 const target = openApprovals[0];
                 if (target !== undefined) handleSelectTask(target.task_id);
@@ -1134,6 +1211,9 @@ export function App() {
               hasMore={timelineHasMore}
               cost={costSummary}
               streamStatus={streamStatus}
+              streamingPreview={
+                selectedRun !== null ? (streamingPreviews[selectedRun.run_id] ?? null) : null
+              }
               connectionLost={connectionLost}
               eventSeqHead={state?.event_seq_head ?? 0}
               busy={busy}
@@ -1143,6 +1223,9 @@ export function App() {
               }
               enablePet={preferences.enablePet}
               reduceMotion={preferences.reduceMotion}
+              modelConfig={modelSettings?.model ?? null}
+              settingsApi={settingsApi}
+              onModelUpdated={handleModelUpdated}
               onSelectRun={handleSelectRun}
               onExecutionPolicyChange={handleExecutionPolicyChange}
               onStartRun={handleStartRun}
@@ -1163,6 +1246,7 @@ export function App() {
 
       <SettingsDialog
         open={settingsOpen}
+        api={settingsApi}
         initialTab={settingsTab}
         preferences={preferences}
         daemon={daemon}
@@ -1175,6 +1259,12 @@ export function App() {
         onOpenMemory={() => setMemoryOpen(true)}
         onRefresh={handleRefresh}
         onReconnectStream={handleRetryConnection}
+        onSettingsSaved={(_summary, updated) => {
+          if (updated !== undefined) {
+            setModelSettings(updated);
+          }
+          showToast(`模型已切换为：${_summary}`, "success");
+        }}
         onClose={() => setSettingsOpen(false)}
       />
 

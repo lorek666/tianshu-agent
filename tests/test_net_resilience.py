@@ -352,6 +352,169 @@ def test_deadline_timer_shutdown_failures_are_classified_as_timeout(
     assert excinfo.value.reason == "net.timeout"
 
 
+@pytest.mark.parametrize(
+    "fire_point",
+    [
+        pytest.param("getresponse_302_no_location", id="headers-truncated-302"),
+        pytest.param("redirect_location_header", id="cross-hop-after-location"),
+        pytest.param("hop0_close", id="cross-hop-in-finally"),
+    ],
+)
+def test_deadline_timer_header_and_redirect_boundaries_classify_as_timeout(
+    monkeypatch, fire_point: str
+) -> None:
+    """复审硬化（Issue #172）：头截断与跨跳 Timer 提前唤醒均判 net.timeout，且绝不多发下一跳。"""
+    hops_seen: list[int] = []
+
+    class ManualTimer:
+        timers: list[ManualTimer] = []
+
+        def __init__(self, _interval, function):
+            self.function = function
+            self.daemon = False
+            type(self).timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+        def join(self):
+            pass
+
+    ManualTimer.timers = []
+
+    class RedirectResponse:
+        status = 302
+        length = 0
+
+        def getheader(self, name, default=""):
+            if fire_point == "getresponse_302_no_location":
+                return default
+            if name.lower() == "location":
+                if fire_point == "redirect_location_header":
+                    ManualTimer.timers[-1].function()
+                return "/hop2"
+            return default
+
+        def read(self, _amount):
+            return b""
+
+    class HopConnection:
+        sock = None
+
+        def __init__(self, hop_idx: int) -> None:
+            self._hop_idx = hop_idx
+
+        def connect(self) -> None:
+            if self._hop_idx >= 1:
+                raise TimeoutError("should never connect hop 1 after deadline fired")
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> RedirectResponse:
+            if fire_point == "getresponse_302_no_location":
+                ManualTimer.timers[-1].function()
+            return RedirectResponse()
+
+        def close(self) -> None:
+            if self._hop_idx == 0 and fire_point == "hop0_close":
+                ManualTimer.timers[0].function()
+
+    def make_conn(*_args):
+        idx = len(hops_seen)
+        hops_seen.append(idx)
+        return HopConnection(idx)
+
+    monkeypatch.setattr(net_mod.threading, "Timer", ManualTimer)
+    monkeypatch.setattr(net_mod, "_connect", make_conn)
+    target = canonical_target("network://http/example.invalid/x")
+
+    with pytest.raises(NetError) as excinfo:
+        fetch(target, limits=NetLimits(connect_attempts=1, min_interval_s=0))
+
+    assert excinfo.value.reason == "net.timeout"
+    assert hops_seen == [0], "deadline 触发后不得建立第 1 跳连接"
+
+
+@pytest.mark.parametrize(
+    "declared_length",
+    [
+        pytest.param(32, id="content-length-short-eof"),
+        pytest.param(None, id="unbounded-clean-eof"),
+    ],
+)
+def test_deadline_timer_clean_eof_is_classified_as_timeout(
+    monkeypatch, declared_length: int | None
+) -> None:
+    """Issue #172：Timer 触发 shutdown 使 read() 返 b""（早于 monotonic 越界）仍判 net.timeout。
+
+    修复前：
+    - 有 Content-Length（32）时被末尾长度校验误判为 `net.read`；
+    - 无 Content-Length（None）时甚至静默返回残缺 `Fetched(status=200, truncated=False)`。
+    """
+
+    class ManualTimer:
+        current = None
+
+        def __init__(self, _interval, function):
+            self.function = function
+            self.daemon = False
+            type(self).current = self
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+        def join(self):
+            pass
+
+    class EofOnShutdownResponse:
+        status = 200
+        length = declared_length
+
+        def __init__(self) -> None:
+            self._chunks = [b"half"]
+
+        def getheader(self, _name, default=""):
+            return default
+
+        def read(self, _amount):
+            if self._chunks:
+                return self._chunks.pop(0)
+            assert ManualTimer.current is not None
+            ManualTimer.current.function()
+            return b""
+
+    class TimedConnection:
+        sock = None
+
+        def connect(self) -> None:
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> EofOnShutdownResponse:
+            return EofOnShutdownResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(net_mod.threading, "Timer", ManualTimer)
+    monkeypatch.setattr(net_mod, "_connect", lambda *_args: TimedConnection())
+    target = canonical_target("network://http/example.invalid/x")
+
+    with pytest.raises(NetError) as excinfo:
+        fetch(target, limits=NetLimits(connect_attempts=1, min_interval_s=0))
+
+    assert excinfo.value.reason == "net.timeout"
+
+
 def test_retry_respects_cancel(tmp_path) -> None:
     """首次连接失败后 Run 被取消 → NetCancelled，第二次尝试不发生。"""
     port, sock = closed_port()
