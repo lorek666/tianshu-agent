@@ -339,11 +339,17 @@
   原测试里“默认 750 周期”的错误算术同步改为默认 6 周期。下一步仍需独立复审、
   唯一原生 CI、保护合并和修后 release/实际资产核验。
 
-- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红与最小修复候选**：
+- **2026-11-17 · 唯一 release run 的 Windows NSIS 封闭集红、修复复审与保护合并**：
   `1f9062c` 的四目标 release run `44101101232` 在 Windows x64/ARM64 打包和
   真实 7-Zip 解包后同一位置失败。成功解出的安装器固定文件被当作未列入
   bundle manifest 的 payload；唯一 release.json、manifest 身份及既定 payload
   未报告缺失。作者修复把八个 NSIS 安装器文件从无界例外改成逐项必有的固定
   集合，并新增整个解包目录封闭校验、`tianshu-desktop.exe` target 架构及 x86
-  NSIS 组件校验。原 run 不取消、不覆盖；当前仅作者定向绿，完整全量、独立
-  复审和新的原生 release 仍需后续绑定。
+  NSIS 组件校验。新回归在旧 main 上 `4 failed`、候选上 `4 passed`；唯一本机
+  全量 `3801 passed / 12 skipped / 672.05s / exit 0`，第二读者对精确
+  `8a17e6a/tree 2034c53e` 给出 `fixed / PASS`。候选 CI `44107070041`
+  七项全绿后以 `4e15bf9` 保护合并，merge tree 与候选相同。merge 自身
+  的 main CI `44114368712` 因 macOS runner 未分配而取消；Windows shard1
+  继续运行并成功，且 macOS job 无 runner、无 step、无日志，不能归因于本修复。
+  原 release 红、失败 macOS job 与其余 success 原件均保留；下一步用新的
+  docs/main SHA 触发唯一替换 release，不重跑旧的失败或取消 run。
