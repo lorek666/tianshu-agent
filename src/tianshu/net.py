@@ -38,22 +38,31 @@
 ## 诚实边界
 
 - 取消只能阻止**新**请求 / 新读；已经写进内核发送缓冲的 TCP 字节无法撤回。
-- 没有 DNS rebinding 防护、没有"解析后二次校验"：白名单显式声明源，解析到私有
-  地址也会照发。这是登记过的缺口，不假装已经解决。
-- 二进制正文只给有损摘要（UTF-8 `errors="replace"`），原始字节原样进内容引用。
+- **连接期单次 DNS 解析 + Socket IP 钉死**（W9 v2.0）：域名目标在每跳连接前仅执行
+  一次 `getaddrinfo`，拦截全部非全局单播地址（`net.private_address_blocked`），
+  并直接向校验通过的数值 `sockaddr` 建立 TCP 套接字（保留原 `Host` 头、TLS SNI
+  与 X.509 主机名核验），消除检查与连接二次解析的 DNS Rebinding TOCTOU 窗口；
+  操作系统 `getaddrinfo` 系统调用本身仍无法被 Python 线程定时器中途异步打断。
+- 二进制或超长正文在内联 `summary` 中给有界 UTF-8 预览，完整已读字节落入内容引用，
+  可通过 `read_content`（`2.0` 支持 `base64` / `latin-1` / `utf-8-replace`）无损分页读取。
 """
 
 from __future__ import annotations
 
+import codecs
+import errno
 import http.client
+import ipaddress
 import math
 import os
 import socket
 import ssl
+import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from .errors import TianshuError
@@ -252,17 +261,380 @@ def _check_cancel(cancel: Callable[[], bool] | None) -> None:
         raise NetCancelled("Run 已取消：不再发新的网络请求")
 
 
-def _connect(target: NetworkTarget, timeout_s: float) -> http.client.HTTPConnection:
-    if target.transport == "https":
-        conn: http.client.HTTPConnection = http.client.HTTPSConnection(
-            target.host,
-            target.port,
-            timeout=timeout_s,
-            context=ssl.create_default_context(),
+_BROADCAST_IPV4 = ipaddress.IPv4Address("255.255.255.255")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_SIIT_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+
+#: Python 3.12 标准库 `is_global` 尚未覆盖或口径偏宽的 IANA 特殊保留非全局地址段。
+_SPECIAL_NON_GLOBAL_IPV4: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("192.88.99.0/24"),  # RFC 7526 6to4 Relay Anycast
+)
+_SPECIAL_NON_GLOBAL_IPV6: tuple[ipaddress.IPv6Network, ...] = (
+    _NAT64_WELL_KNOWN,                        # RFC 6052 Well-Known NAT64
+    _NAT64_LOCAL,                             # RFC 8215 Local-Use NAT64
+    ipaddress.IPv6Network("100::/64"),        # RFC 6666 Discard-Only
+    ipaddress.IPv6Network("2001:20::/28"),    # RFC 7343 ORCHIDv2
+    ipaddress.IPv6Network("2001:db8::/32"),   # RFC 3849 Documentation
+    ipaddress.IPv6Network("3fff::/20"),       # RFC 9637 Documentation
+    ipaddress.IPv6Network("5f00::/16"),       # RFC 9602 SRv6 SIDs
+    ipaddress.IPv6Network("fec0::/10"),       # RFC 3879 Site-Local
+)
+
+
+@dataclass(frozen=True)
+class _PinnedEndpoint:
+    """已完成单次解析与安全校验、可直接 `socket.connect` 的数值端点。"""
+
+    family: int
+    socktype: int
+    proto: int
+    sockaddr: tuple[Any, ...]
+
+
+def _parse_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    candidate = (
+        host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    )
+    if "%" in candidate:
+        candidate = candidate.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+
+
+def _embedded_ipv4s(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> tuple[ipaddress.IPv4Address, ...]:
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return ()
+    embedded: list[ipaddress.IPv4Address] = []
+    if ip.ipv4_mapped is not None:
+        embedded.append(ip.ipv4_mapped)
+    if ip.sixtofour is not None:
+        embedded.append(ip.sixtofour)
+    if ip.teredo is not None:
+        embedded.extend(ip.teredo)
+    packed = ip.packed
+    if ip in _NAT64_WELL_KNOWN or ip in _SIIT_TRANSLATED:
+        embedded.append(ipaddress.IPv4Address(packed[12:16]))
+    elif ip in _NAT64_LOCAL:
+        # RFC 8215 + RFC 6052 §2.2：本地 NAT64 前缀可按 /96、/64、/56、/48 四种字节位嵌入 IPv4。
+        candidates = (
+            packed[12:16],
+            packed[9:13],
+            packed[7:8] + packed[9:12],
+            packed[6:8] + packed[9:11],
+        )
+        non_zero = [
+            ipaddress.IPv4Address(raw) for raw in candidates if raw != b"\x00\x00\x00\x00"
+        ]
+        if non_zero:
+            embedded.extend(non_zero)
+        else:
+            embedded.append(ipaddress.IPv4Address("0.0.0.0"))
+    elif ip in _IPV4_COMPATIBLE and int(ip) > 1:
+        # 已废弃的 `::/96` IPv4 兼容形式（排除 `::` 未指定与 `::1` 回环）。
+        embedded.append(ipaddress.IPv4Address(packed[12:16]))
+    return tuple(embedded)
+
+
+def _validate_literal_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, raw_host: str
+) -> None:
+    """字面量 IP：放行白名单批准的回环/私网，恒拒未指定/多播/站点本地/链路本地元数据。"""
+    if "%" in raw_host:
+        raise NetError(
+            f"禁止连接带作用域标识的链路本地字面量地址：{raw_host}",
+            reason="net.private_address_blocked",
+        )
+    for cand in (ip, *_embedded_ipv4s(ip)):
+        if (
+            cand.is_unspecified
+            or cand.is_multicast
+            or cand.is_link_local
+            or bool(getattr(cand, "is_site_local", False))
+            or cand == _BROADCAST_IPV4
+        ):
+            raise NetError(
+                f"禁止连接非单播或链路本地元数据地址：{raw_host}",
+                reason="net.private_address_blocked",
+            )
+
+
+def _is_disallowed_resolved_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    if (
+        not ip.is_global
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+        or bool(getattr(ip, "is_site_local", False))
+    ):
+        return True
+    if isinstance(ip, ipaddress.IPv4Address):
+        return any(ip in net for net in _SPECIAL_NON_GLOBAL_IPV4)
+    return any(ip in net for net in _SPECIAL_NON_GLOBAL_IPV6)
+
+
+def _validate_resolved_ip(
+    addr_str: str, *, host: str = ""
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """域名解析结果校验：任意非全局单播或内嵌非全局地址一律 fail-closed。"""
+    clean = addr_str.split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(clean)
+    except ValueError as exc:
+        raise NetError(
+            f"DNS 解析返回非法地址 {addr_str!r}（主机 {host!r}）",
+            reason="net.private_address_blocked",
+        ) from exc
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        checks: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...] = (
+            ip.ipv4_mapped,
         )
     else:
-        conn = http.client.HTTPConnection(
-            target.host, target.port, timeout=timeout_s
+        checks = (ip, *_embedded_ipv4s(ip))
+    if "%" in addr_str or any(_is_disallowed_resolved_ip(cand) for cand in checks):
+        label = f"{host} -> {addr_str}" if host else addr_str
+        raise NetError(
+            f"域名解析命中非全局/私有地址，拒绝建立连接：{label}",
+            reason="net.private_address_blocked",
+        )
+    return ip
+
+
+def _resolve_host(host: str, port: int) -> list[tuple[Any, ...]]:
+    """可注入的单次主机解析入口（每跳最多调用一次）。"""
+    return list(
+        socket.getaddrinfo(
+            host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+        )
+    )
+
+
+def _resolve_and_pin(
+    target: NetworkTarget,
+    *,
+    resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
+) -> tuple[_PinnedEndpoint, ...]:
+    """区分字面量 IP 与域名：单次解析、全记录集 fail-closed 校验并产出钉死端点。"""
+    port = (
+        target.port
+        if target.port is not None
+        else (443 if target.transport == "https" else 80)
+    )
+    literal_ip = _parse_ip_literal(target.host)
+    if literal_ip is not None:
+        _validate_literal_ip(literal_ip, raw_host=target.host)
+        if isinstance(literal_ip, ipaddress.IPv4Address):
+            return (
+                _PinnedEndpoint(
+                    socket.AF_INET, socket.SOCK_STREAM, 0, (str(literal_ip), port)
+                ),
+            )
+        return (
+            _PinnedEndpoint(
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                0,
+                (str(literal_ip), port, 0, 0),
+            ),
+        )
+
+    resolve_fn = _resolve_host if resolver is None else resolver
+    try:
+        infos = resolve_fn(target.host, port)
+    except NetError:
+        raise
+    except TimeoutError as exc:
+        raise NetError(
+            f"DNS 解析超时：{target.host}: {exc}",
+            reason="net.connect_timeout",
+        ) from exc
+    except OSError as exc:
+        raise NetError(
+            f"DNS 解析失败：{target.host}: {type(exc).__name__}: {exc}",
+            reason="net.connect",
+        ) from exc
+
+    if not infos:
+        raise NetError(
+            f"DNS 解析未返回任何可用地址：{target.host}",
+            reason="net.connect",
+        )
+
+    # 先对整个 RRset 全量校验：哪怕排在后面的某条记录是内网/回环，也必须在打开
+    # 任何 socket 之前整体拒绝（fail-closed）。
+    endpoints: list[_PinnedEndpoint] = []
+    for entry in infos:
+        if not isinstance(entry, tuple) or len(entry) < 5:
+            raise NetError(
+                f"DNS 解析记录格式不合法：{entry!r}", reason="net.connect"
+            )
+        af, socktype, proto, _canonname, sockaddr = entry[:5]
+        if (
+            not isinstance(sockaddr, tuple)
+            or len(sockaddr) < 2
+            or not isinstance(sockaddr[0], str)
+        ):
+            raise NetError(
+                f"DNS sockaddr 格式不合法：{sockaddr!r}", reason="net.connect"
+            )
+        validated_ip = _validate_resolved_ip(sockaddr[0], host=target.host)
+        pinned_sockaddr = (str(validated_ip), int(sockaddr[1]), *sockaddr[2:])
+        endpoints.append(
+            _PinnedEndpoint(
+                family=int(af),
+                socktype=int(socktype) if socktype else socket.SOCK_STREAM,
+                proto=int(proto),
+                sockaddr=pinned_sockaddr,
+            )
+        )
+    return tuple(endpoints)
+
+
+def _connect_pinned_endpoints(
+    endpoints: tuple[_PinnedEndpoint, ...],
+    timeout: float | None,
+    *,
+    deadline: float | None = None,
+) -> socket.socket:
+    if not endpoints:
+        raise OSError("没有可用的已校验网络端点")
+    last_exc: BaseException | None = None
+    for ep in endpoints:
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("连接超时：超过本次抓取的硬上限")
+            effective_timeout: float | None = (
+                left if timeout is None else min(timeout, left)
+            )
+        else:
+            effective_timeout = timeout
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(ep.family, ep.socktype, ep.proto)
+            if effective_timeout is not None:
+                sock.settimeout(effective_timeout)
+            sock.connect(ep.sockaddr)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError as exc:
+                if exc.errno != errno.ENOPROTOOPT:
+                    raise
+            return sock
+        except BaseException as exc:
+            last_exc = exc
+            if sock is not None:
+                sock.close()
+            if not isinstance(exc, OSError):
+                raise
+    assert last_exc is not None
+    raise last_exc
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """直接向已校验数值 `sockaddr` 发起连接，保留原始 `Host` 请求头且绝不二次解析 DNS。"""
+
+    def __init__(
+        self,
+        host: str,
+        port: int | None,
+        *,
+        endpoints: tuple[_PinnedEndpoint, ...],
+        timeout: float,
+        deadline: float | None = None,
+    ) -> None:
+        init_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        super().__init__(init_host, port, timeout=timeout)
+        self._endpoints = endpoints
+        self._deadline = deadline
+
+    def connect(self) -> None:
+        sys.audit("http.client.connect", self, self.host, self.port)
+        self.sock = _connect_pinned_endpoints(
+            self._endpoints, self.timeout, deadline=self._deadline
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """直接向已校验数值 `sockaddr` 发起连接，并用原始域名完成 TLS SNI 与 X.509 核验。"""
+
+    def __init__(
+        self,
+        host: str,
+        port: int | None,
+        *,
+        endpoints: tuple[_PinnedEndpoint, ...],
+        timeout: float,
+        context: ssl.SSLContext | None = None,
+        deadline: float | None = None,
+    ) -> None:
+        init_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        if context is None:
+            context = ssl.create_default_context()
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        super().__init__(init_host, port, timeout=timeout, context=context)
+        self._endpoints = endpoints
+        self._deadline = deadline
+
+    def connect(self) -> None:
+        sys.audit("http.client.connect", self, self.host, self.port)
+        raw_sock = _connect_pinned_endpoints(
+            self._endpoints, self.timeout, deadline=self._deadline
+        )
+        try:
+            if self._tunnel_host:
+                self.sock = raw_sock
+                self._tunnel()
+                server_hostname = self._tunnel_host
+            else:
+                server_hostname = self.host
+            self.sock = self._context.wrap_socket(
+                raw_sock, server_hostname=server_hostname
+            )
+        except BaseException:
+            raw_sock.close()
+            raise
+
+
+def _connect(
+    target: NetworkTarget,
+    timeout_s: float,
+    *,
+    resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
+) -> http.client.HTTPConnection:
+    endpoints = _resolve_and_pin(target, resolver=resolver)
+    deadline = time.monotonic() + timeout_s
+    if target.transport == "https":
+        conn: http.client.HTTPConnection = _PinnedHTTPSConnection(
+            target.host,
+            target.port,
+            endpoints=endpoints,
+            timeout=timeout_s,
+            context=ssl.create_default_context(),
+            deadline=deadline,
+        )
+    else:
+        conn = _PinnedHTTPConnection(
+            target.host,
+            target.port,
+            endpoints=endpoints,
+            timeout=timeout_s,
+            deadline=deadline,
         )
     return conn
 
@@ -347,6 +719,7 @@ def fetch(
     *,
     limits: NetLimits | None = None,
     cancel: Callable[[], bool] | None = None,
+    resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
 ) -> Fetched:
     """GET 一个网络目标。阻塞式；所有失败都以 `NetError` / `NetCancelled` 抛出。
 
@@ -387,8 +760,15 @@ def fetch(
                 raise last_connect_error
         try:
             return _fetch_once(
-                target, limits, cancel, deadline, visited, attempt, started,
+                target,
+                limits,
+                cancel,
+                deadline,
+                visited,
+                attempt,
+                started,
                 redirects_followed,
+                resolver=resolver,
             )
         except NetError as exc:
             if (
@@ -410,6 +790,8 @@ def _fetch_once(
     attempt: int,
     fetch_started: float,
     redirects_followed: list[str],
+    *,
+    resolver: Callable[[str, int], list[tuple[Any, ...]]] | None = None,
 ) -> Fetched:
     """单次尝试：完整的重定向跟随 + 有界读取。失败以 `NetError` / `NetCancelled` 抛出。"""
     current = target
@@ -422,7 +804,11 @@ def _fetch_once(
     for hop in range(limits.max_redirects + 1):
         _check_cancel(cancel)
         remaining = _remaining(deadline, deadline_interrupted)
-        conn = _connect(current, remaining)
+        conn = (
+            _connect(current, remaining)
+            if resolver is None
+            else _connect(current, remaining, resolver=resolver)
+        )
         timer: threading.Timer | None = None
         try:
             # 显式连接：把"连不上 / TLS 握手失败"（确定一个请求字节都没发）与
@@ -599,6 +985,61 @@ def _fetch_once(
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")
 
 
+def _first_utf8_unit(lookahead: bytes) -> tuple[str, int]:
+    """返回起始处首个 UTF-8 原子单元 `(char, width)`（遵守 Unicode §3.9 maximal subpart）。"""
+    try:
+        decoded = lookahead.decode("utf-8", "strict")
+        ch = decoded[0]
+        return ch, len(ch.encode("utf-8"))
+    except UnicodeDecodeError as exc:
+        if exc.start > 0:
+            ch = lookahead[: exc.start].decode("utf-8", "strict")[0]
+            return ch, len(ch.encode("utf-8"))
+        return "\ufffd", exc.end
+
+
+def summary_page(
+    fetched: Fetched,
+    *,
+    offset: int = 0,
+    length: int = NET_SUMMARY_BYTES,
+) -> tuple[str, int, int | None, bool]:
+    """计算已抓取字节的内联预览页 `(summary, page_bytes, next_offset, truncated)`。
+
+    - 文本按 UTF-8 字符边界安全回退，绝不切碎多字节字符或 maximal subpart；
+    - `page_bytes` 为本页覆盖的底层原始字节长度；
+    - 当 `offset + page_bytes < len(fetched.body)` 时返回严格前进的 `next_offset > offset`，
+      供 `read_content` 无网续读；若 `length < 4` 不足以容纳单个多字节 UTF-8 序列则抛 `NetError`。
+    """
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise NetError(f"offset 必须是非负整数：{offset!r}", reason="net.limits")
+    if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
+        raise NetError(f"摘要上限必须是正整数：{length!r}", reason="net.limits")
+    body = fetched.body
+    total = len(body)
+    if offset >= total:
+        return "", 0, None, bool(fetched.truncated or total > 0)
+    window = body[offset : offset + length]
+    final = offset + len(window) >= total
+    text, page_bytes = codecs.utf_8_decode(window, "replace", final)
+    if len(window) > 0 and page_bytes <= 0:
+        unit_char, unit_width = _first_utf8_unit(body[offset : offset + 4])
+        if unit_width > length:
+            raise NetError(
+                f"内联摘要 length={length} 过小，不足以容纳单个多字节 UTF-8 序列"
+                f"（offset={offset}，需 >= {unit_width}；"
+                "请设 length >= 4 或改用 read_content base64）",
+                reason="net.limits",
+            )
+        text = unit_char
+        page_bytes = unit_width
+    next_offset: int | None = (
+        None if offset + page_bytes >= total else offset + page_bytes
+    )
+    clipped = bool(fetched.truncated or page_bytes < total)
+    return text, page_bytes, next_offset, clipped
+
+
 def summary_text(
     fetched: Fetched, *, limit_bytes: int = NET_SUMMARY_BYTES
 ) -> tuple[str, bool]:
@@ -607,17 +1048,10 @@ def summary_text(
     返回 `(文本, 是否被截断)`。二进制内容也走这条路：`errors="replace"` 之后
     看起来是乱码，但**原始字节**在内容引用里，这是摘要不是原文。
     """
-    if limit_bytes <= 0:
-        raise NetError(f"摘要上限必须是正整数：{limit_bytes!r}", reason="net.limits")
-    text = fetched.body.decode("utf-8", "replace")
-    encoded = text.encode("utf-8")
-    if len(encoded) <= limit_bytes:
-        return text, fetched.truncated
-    clipped = encoded[:limit_bytes]
-    # 不要切在多字节字符中间：退到最近的 UTF-8 起始字节。
-    while clipped and (clipped[-1] & 0xC0) == 0x80:
-        clipped = clipped[:-1]
-    return clipped.decode("utf-8", "ignore"), True
+    text, _page_bytes, _next_offset, clipped = summary_page(
+        fetched, offset=0, length=limit_bytes
+    )
+    return text, clipped
 
 
 __all__ = [
@@ -637,5 +1071,6 @@ __all__ = [
     "NetLimits",
     "canonical_target",
     "fetch",
+    "summary_page",
     "summary_text",
 ]

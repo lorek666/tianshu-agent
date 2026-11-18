@@ -18,7 +18,7 @@
 | W6 | 记忆语义层：真 embedding provider + 检索评测 | §7 N2/N3 | provider 接缝已在 | memory_index.py（冷） | 无 | **已并入 main**（#154，`24eabc4`，run43670453171） |
 | W7 | 记忆 L2/L3 生成式合成 + 冲突消解 | §7 N3 | 另立契约（N3 教训） | memory_distill.py（冷） | 无 | **已并入 main**（#157，`c8b53bb`，run43681412578） |
 | W8 | 预算账本 UI + 子任务 UI | §7 挂账④⑤ | 无 | ui/src（冷） | 无 | **已并入 main**（#155，`d37a84c`，run43676855243） |
-| W9 | 网络深度：分页读取 / DNS 二次校验 / 搜索 API | §7 G2 | 工具 schema 评估 | net.py / tools.py | 拍板已锁定：DNS 二次校验 + 分页读取 | 实现准备中 |
+| W9 | 网络深度：分页读取 / DNS 二次校验 / 搜索 API | §7 G2 | C2 `network.fetch` & `read_content` 升 `2.0`（#194 已冻结） | net.py / tools.py / contents.py / dispatcher.py | 拍板已锁定：v1 不强绑外部搜索 API | **门禁绿**（连接期防 DNS 重绑钉死 + `v2.0` 分页与多编码已通过第二读者 7/7 复审） |
 | W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | **已并入 main**（#156，`134e9f0`，run43679118848） |
 | W11 | 巨石模块拆分（dispatcher/loop/tasks/memory/cli） | 工程债 | 无（纯重构，契约不动） | **热文件，按依赖分层推进** | 无 | 实现中 |
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | 无 | **已并入 main**（契约 #190 `beedf51` / 绑定与 `run.end` v2 #191 `e18624c`，run 44173429146） |
