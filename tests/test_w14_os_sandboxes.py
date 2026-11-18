@@ -357,9 +357,15 @@ def test_sbpl_profile_builder_escapes_quotes_rejects_control_chars_and_blocks_br
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
 
-    ws = tmp_path / 'ws_"quoted"'
+    if os.name == "nt":
+        # Windows NTFS 文件名禁含双引号 `"`，用空格括号合法目录并直接校验引号转义函数
+        ws = tmp_path / "ws_space (paren)"
+    else:
+        ws = tmp_path / 'ws_"quoted"'
     ws.mkdir()
     pol = _policy(ws)
+
+    assert _escape_sbpl_path('/tmp/ws_"quoted"\\sub').endswith(r'ws_\"quoted\"\\sub')
 
     profile = _build_sbpl_profile(pol, argv0=PY, pty=True)
     assert "(version 1)" in profile
@@ -367,7 +373,10 @@ def test_sbpl_profile_builder_escapes_quotes_rejects_control_chars_and_blocks_br
     assert "(deny network*)" in profile
     assert '(global-name "com.apple.securityd")' in profile
     assert "(allow pseudo-tty)" in profile
-    assert r'ws_\"quoted\"' in profile
+    if os.name == "nt":
+        assert "ws_space (paren)" in profile
+    else:
+        assert r'ws_\"quoted\"' in profile
 
     # 绝不允许宽泛放行 /Users、/Volumes、/tmp、/private/tmp 或 /private/var/folders
     for forbidden in (

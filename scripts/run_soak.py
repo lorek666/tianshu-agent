@@ -1472,7 +1472,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_stdio_utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = _build_parser().parse_args(argv)
     if args._child_role:
         return _run_child_role(args)

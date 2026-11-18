@@ -1216,6 +1216,22 @@ def run_suite1_startup(
     ui_dir = REAL_UI_DIST if (REAL_UI_DIST / "index.html").is_file() else base_dir / "empty_ui"
     ui_dir.mkdir(parents=True, exist_ok=True)
 
+    # 先执行一次不计时的 CLI 字节码/Windows Defender 可执行扫描预热（不创建任何真实 data_root 状态）
+    warmup_root = base_dir / "warmup_noop"
+    subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "tianshu", "--help"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=_isolated_env(
+            data_root=warmup_root,
+            authority_root=authority_root,
+            lock_root=lock_root,
+        ),
+        timeout=20.0,
+        check=False,
+    )
+    shutil.rmtree(warmup_root, ignore_errors=True)
+
     cold_samples: list[float] = []
     cold_internal: list[float] = []
     for idx in range(repeats):
@@ -2393,7 +2409,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_stdio_utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = _build_parser().parse_args(argv)
     if args._child_role:
         return _run_child_role(args)

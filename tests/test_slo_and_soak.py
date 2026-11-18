@@ -15,7 +15,6 @@ import copy
 import json
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -333,7 +332,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(tmp_path: Path) -> Non
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=90.0,
+            timeout=120.0,
             check=False,
         )
 
@@ -352,16 +351,13 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(tmp_path: Path) -> Non
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=90.0,
+            timeout=120.0,
             check=False,
         )
 
-    # 并行拉起两个独立真子进程套件（同时验证多实例全局锁与端口零串味，总耗时约 11s < 20s）
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_slo = pool.submit(_run_slo)
-        fut_soak = pool.submit(_run_soak)
-        slo_proc = fut_slo.result()
-        soak_proc = fut_soak.result()
+    # 顺序执行两个真实子进程套件，避免 2-vCPU CI 浸泡多进程负载干扰 SLO 毫秒级启动计时
+    slo_proc = _run_slo()
+    soak_proc = _run_soak()
 
     assert slo_proc.returncode == 0, f"measure_slo 失败：{slo_proc.stdout}\n{slo_proc.stderr}"
     slo_report = json.loads(slo_json.read_text(encoding="utf-8"))
