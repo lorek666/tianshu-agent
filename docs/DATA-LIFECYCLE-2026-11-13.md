@@ -116,3 +116,15 @@ UI install/typecheck/**80 tests**/build 均退出 0，提交的 dist 重建后�
 5. Windows 原生锁行为要等本次提交的 Windows runner；runner 结果不等于 Windows 10/11、ARM64 或用户设备安装体验。未运行 10 小时稳定性、真实模型评测、凭据/安装升级回退，不能将本切片登记成整个 G3 或后续批次完成。
 
 本轮避开另一个 debug 会话负责的 I/O、预算、模型、恢复、Host/IPC、UI 和 CI 修改；不接管其 PR #131–#133，不用其历史绿色为本轮作证。
+
+### 3.1 Phase 2 恢复解除与离线安全 GC 契约冻结说明（2026-11-18）
+
+> 上文 §1–§3 保留 2026-11-13 首片交付时的历史事实与边界。2026-11-18 独立契约批次（[CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md)）在不改动既有历史证据的前提下冻结以下两项后续实现契约（待紧随的实现 PR 落地代码与正负控证据）：
+
+1. **Restore C · 受管恢复解除与服务恢复（[restore-release-contract.md](restore-release-contract.md)）**：
+   - 在 [受管导入 B 契约](restore-held-contract.md) 基础上，通过 `RestoreRegistry` v2（`USER_VERSION = 2`，增补 `release_intent` 与 `released`，保持 `.restore-origin.json` 一次写入不可变）定义 `tianshu data restore-release --data-root ROOT [--batch ID] --expect-review REVIEW_SHA256 --acknowledge-unproven-later-history [--json]`。
+   - 强制核验 `review_complete == True` 与 `(S, D, P)` 实体身份及 `BindingV1`，以单事务 append-only 事件确定性收口导入的非终态 `runs`（`fenced`）、陈旧审批（`expired`）与存活 `leases`，原样保留 `unknown` 派发绝不重放。
+   - 明确**解除后数据库准入规则**：经有效 `(S, D)` 实体绑定 `ReleasedV1` 证明解除的 `v2` 数据库，由 `check_connection` / `acquire_restore_database_access` 直接放行（无需备份原本排除的 `.migration.json`）；而 `v1` 中间态数据库在 `released` 后仍必须先备份并显式运行 `tianshu data migrate` 方可由普通 `EventLog` 打开。
+2. **W15 v2 · 保守离线安全 GC（[CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md) §6）**：
+   - 在线 GC 仍明确不做；新增纯离线维护命令 `tianshu data gc --data-root ROOT [--older-than-days 90] [--dry-run | --approve] [--json]`（默认预演退 `3`；`--approve` 持独占 `acquire_restore_database_access`、核验无存活 `daemon`/`host`/`worker`、锁内重跑 `collect_references` 遇 `ReferenceUnknown` 零删退 `2`，且豁免 2 GiB 新 Run 空间门槛）。
+   - 严格保证 `events`、三张 `summary_*`、`dispatches`/`dispatch_requests`、非空快照、`protected_blobs`、`budget_counters` 及未决/未知 `budget_reservations` **0 删除**；仅清理 `artifacts/blobs` 与 `blobs` 孤儿文件、超期无凭据空终态快照清单、超期终态无活跃派发 `jobs` 行及超期 `settled & known=1` 终态 `budget_reservations` 行，最后执行 `PRAGMA wal_checkpoint(TRUNCATE)`。

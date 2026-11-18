@@ -87,10 +87,37 @@ unknown），所以取消按 `failed` 记，语义放在 `output.reason`。
   然后才写 `tool.result`。顺序反了会承诺一份不存在的内容；
 - 返回给模型的是**有界摘要**（≤ 4 KiB，UTF-8 有损解码）+ 元数据 + 引用，不是
   整页正文；`read_content` 可以按页读回原文（二进制正文没有文本分页读取工具，
-  见 §7）；
+  见 §7；**2026-11-18 W9 v2.0 契约已冻结分页与 `base64` 读取扩展，见 §4.1，待实现 PR 接线**）；
 - 字节账本：发送前按 `bytes = max_bytes` 预占（**可验证上界**：本次最多读这么多），
   读完后按实际字节结算、释放差额。额度不够时在 `prepare()` 就拒绝
   （`dispatch.budget_refused`），**一个请求都不发**。
+
+### 4.1 W9 v2.0 网络分页与内容编码契约（2026-11-18 冻结，待实现 PR 接线）
+
+> 原方案 → 新方案 → 为什么改 → 影响模块见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3。本节为纯 `docs(contract)` 规格冻结；实现 PR 落地前线上代码仍为 `1.0`。
+
+按红线 8（工具 schema 变化即视为新工具，旧版本批准摘要不自动跨版本复用），两项工具同步升版至 **`2.0`**：
+
+1. **`network.fetch`（`version: "1.0"` → `"2.0"`）**：
+   - `input_schema`（`additionalProperties: false`，`required: ["url"]`）在 `url` 之外新增三个可选整数参数：
+     - `offset`: `integer`（`minimum: 0`，缺省 `0`）——本次返回内联预览页在已抓取响应体内的起始字节偏移；
+     - `length`: `integer`（`minimum: 1, maximum: 65536`，缺省 `limits.summary_bytes` 即 `4096`）——本次内联预览页的最大字节长度；
+     - `max_bytes`: `integer`（`minimum: 1, maximum: 1048576`）——本次抓取最多读取的响应体字节上限；执行侧取 `effective_max_bytes = min(max_bytes, limits.max_bytes)`（未传时为 `limits.max_bytes`），并在 `prepare()` 额度预检与 `dispatch()` 字节账本预占中统一使用该有效可验证上界。
+   - 完整已读响应字节（`<= effective_max_bytes`）依旧先原子落盘并登记本任务 `content://sha256:<hex>` 授权，再写 `tool.result`。
+   - 成功返回 `output` 在保留原有字段（`url`、`status`、`content_type`、`bytes`、`truncated`、`redirects`、`elapsed_ms`、`ref`、`summary`、可选 `binary`）基础上，新增三个分页字段：
+     - `offset`: `integer >= 0`（本页起始字节偏移）；
+     - `page_bytes`: `integer >= 0`（本页 `summary` 实际覆盖的原始字节数；文本按 UTF-8 字符边界安全回退，绝不切半个多字节字符）；
+     - `next_offset`: `integer | null`（当 `offset + page_bytes < bytes` 时为下一页起始字节偏移，模型可直接传给 `read_content(ref=..., offset=next_offset)` 离线续读而无需重复发包；已达响应末尾时为 `null`）。
+2. **`read_content`（`version: "1.0"` → `"2.0"`）**：
+   - `input_schema`（`additionalProperties: false`，`required: ["ref"]`）新增可选参数：
+     - `encoding`: `string`，封闭枚举 `["utf-8", "utf-8-replace", "latin-1", "base64"]`（缺省 `"utf-8"`，与 `1.0` 行为完全一致）。
+   - 语义与校验：
+     - 所有模式一律先执行 `(digest, task_id)` 任务可见范围校验与整文件 `sha256` 复核（`ContentNotVisible` / `ContentMissing` / `ContentDigestMismatch` 口径不变）；
+     - `"utf-8"`：严格 UTF-8 解码，分页不切半个多字节字符，遇到非法 UTF-8 字节明确报错；
+     - `"utf-8-replace"`：在字符边界回退不完整尾部前导序列后，将其余非法字节替换为 `U+FFFD`；
+     - `"latin-1"`：对 `[offset : offset + length]` 原始字节做 ISO-8859-1 单字节无损文本映射；
+     - `"base64"`：对 `[offset : offset + length]` 原始字节（单页最多 `65536` 原始字节）输出标准 RFC 4648 带 padding Base64 字符串，供二进制内容引用无损分页读取；
+     - 返回 `output` 新增 `encoding` 字段回显本次生效编码，且 `bytes` 恒表示本页消费的底层原始字节长度（当 `next_offset != null` 时满足 `offset + bytes == next_offset`）。
 
 ## 5 回放不联网
 
@@ -139,12 +166,26 @@ unknown），所以取消按 `failed` 记，语义放在 `output.reason`。
 | 代理 / Cookie / 凭据转发 | 未做，且**不读代理环境变量**（见 §3.1） |
 | 跨源重定向 | 恒拒；需要时由模型重新发起并重新批准 |
 | 频率 / 速率限制 | **已交付进程级下限（2026-11-14）**：相邻两次 fetch 开始至少隔 `min_interval_s`（默认 1.0s，`0` 显式关闭，env 可覆盖）；等待分片且随时可取消、不计入抓取 deadline。per-target 限速 / 令牌桶 / 并发上限仍不做 |
-| DNS rebinding / 解析后二次校验 | **未做**：白名单显式声明源，但解析到私有地址会照发（SSRF 面未完全解决） |
-| 每 Run 的抓取配置 | 超时 / 上限 / 跳数是进程级常量 + 测试注入；没接 CLI / 任务声明 |
-| 二进制正文 | 原始字节在引用里，但没有文本分页读取工具；摘要是有损解码 |
+| DNS rebinding / 解析后二次校验 | **未做**：白名单显式声明源，但解析到私有地址会照发（SSRF 面未完全解决；**2026-11-18 W9 v2.0 已冻结连接期单次解析与 IP 钉死契约，见 §7.1，待实现 PR 接线**） |
+| 每 Run 的抓取配置 | 超时 / 上限 / 跳数是进程级常量 + 测试注入；没接 CLI / 任务声明（**2026-11-18 W9 v2.0 已冻结请求级 `max_bytes` 上界收紧参数，见 §4.1**） |
+| 二进制正文 | 原始字节在引用里，但没有文本分页读取工具；摘要是有损解码（**2026-11-18 W9 v2.0 已冻结 `read_content` `2.0` 的 `base64`/`latin-1`/`utf-8-replace` 编码分页契约，见 §4.1**） |
 | 内容分级 | 未做：没有"私有材料"标记与外发表，审批展示完整 URL 由人判断 |
 | 保留期 / GC | 未做：抓回来的内容只写不删 |
 | MCP / 记忆执行器 / 子代理 | **本轮不做**（G2 后续阶段） |
+
+### 7.1 W9 v2.0 连接期单次 DNS 解析与 Socket IP 钉死契约（2026-11-18 冻结，待实现 PR 接线）
+
+为关闭「域名白名单放行后 DNS 解析到回环/私网/云元数据 IP 或二次解析重绑（DNS Rebinding TOCTOU）」风险，抓取执行器在初始请求与**每一跳重定向**建立连接前强制执行以下协议：
+
+1. **单次解析与非全局地址拦截（`net.private_address_blocked`）**：
+   - 当 `target.host` 为域名（非字面量 IP）时，仅调用一次可注入解析器（默认 `socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)`）。对返回的全部候选地址先解包 IPv4-mapped IPv6（`::ffff:x.x.x.x`），只要存在任意非全局单播地址（`not ip.is_global`，含回环 `127.0.0.0/8`/`::1`、RFC 1918 私网 `10/8`·`172.16/12`·`192.168/16`、RFC 6598 CGNAT `100.64.0.0/10`、链路本地及云元数据 `169.254.0.0/16`/`fe80::/10`、唯一本地 `fc00::/7`、多播、未指定 `0.0.0.0`/`::` 与保留地址），在发起任何 `socket.connect()` 之前立即抛 `NetError(..., reason="net.private_address_blocked")`。
+   - 当 `target.host` 本身是任务 `outbound_allow` 显式声明并经人工批准的规范字面量 IP（例如本机测试夹具 `127.0.0.1:<port>`）时，不触发 DNS 解析（无重绑窗口），但对未指定（`0.0.0.0`/`::`）、多播与链路本地云元数据段（`169.254.0.0/16`/`fe80::/10`）仍恒定拦截并报 `net.private_address_blocked`。
+   - 派发层将 `net.private_address_blocked` 记为 `status="failed"`、`effect_state="none_applied"`、`output.reason="net.private_address_blocked"`，字节账本按**已知 `0` 字节**结算并释放预占（确证未建立连接、未发送字节）。
+2. **连接期 Socket IP 钉死 + HTTP `Host` / TLS SNI / X.509 身份保持**：
+   - TCP 套接字必须直接向上述单次解析校验通过的 `(family, socktype, proto, sockaddr)` 字面量 IP 元组发起 `connect()`，**严禁将 `target.host` 再次交给 `http.client` 默认 `connect()` 触发第二次 `getaddrinfo()`**。
+   - HTTP 请求头 `Host` 仍携带原规范 `target.host`（非默认端口含 `:port`），不得被替换成钉死的字面量 IP。
+   - HTTPS 连接在已连上的套接字上通过默认安全上下文执行 `ssl_context.wrap_socket(sock, server_hostname=target.host)`，完整保留原域名的 TLS SNI `server_hostname` 与标准 X.509 证书链及主机名校验。
+   - 因每跳使用独立连接，**每一次同源 301/302/303/307/308 重定向跳**都必须重新执行上述「单次解析 → 非全局 IP 拦截 → Socket IP 钉死 → `Host` 头与 TLS SNI / X.509 主机名核验」全流程，阻断「首跳公网 IP、次跳 302 同源重绑到内网/回环」攻击。
 
 ## 第二轮debug补充（2026-11-13）
 
