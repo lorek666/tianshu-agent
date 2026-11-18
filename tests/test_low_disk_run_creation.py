@@ -708,3 +708,210 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 assert clients.ready_names() == ("fake",)
         finally:
             clients.close_all()
+
+
+def test_create_subtask_write_requires_complete_context_on_bare_taskstore(tmp_path):
+    """LD-03 / B-F1：裸 TaskStore 缺存储上下文时，write=False 可过，write=True 必须拒绝。"""
+    from tianshu.disk_admission import DiskAdmissionError
+    from tianshu.jobs import JobStore
+    from tianshu.run_policy import PURE_ONLY
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        claims = JobStore(log)
+        store = TaskStore(log, claims=claims)
+        parent_task = store.create_task("parent", [str(workspace)], max_subtasks=2)
+        parent_run = store.start_run(parent_task.task_id, execution_policy=PURE_ONLY)
+
+        reader = store.create_subtask(
+            parent_task, parent_run, subtask_id="reader", goal="pure child", write=False
+        )
+        assert store.run_execution_policy(reader.child_run_id) == PURE_ONLY
+
+        tables = ("tasks", "runs", "jobs", "subtasks", "events", "event_versions")
+        before = {
+            table: [tuple(row) for row in log.conn.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        }
+        with pytest.raises(DiskAdmissionError) as caught:
+            store.create_subtask(
+                parent_task, parent_run, subtask_id="writer", goal="writable child", write=True
+            )
+        assert caught.value.rule_id == "dispatch.disk_space_unknown"
+        assert {
+            table: [tuple(row) for row in log.conn.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        } == before
+        assert not any(
+            event.type == "subtask.spawned" for event in log.read_run(parent_run.run_id)
+        )
+
+
+@pytest.mark.parametrize("low_target", ["all", "child_workspace"])
+def test_create_subtask_write_enforces_low_disk_before_transaction_and_materials(
+    tmp_path, low_target
+):
+    """LD-03 / B-F1：create_subtask(write=True) 在开启写事务前执行 require_new_run，低盘零残留。"""
+    from tianshu.disk_admission import MIN_FREE_BYTES, DiskAdmission, DiskAdmissionError
+    from tianshu.run_policy import EFFECTS, PURE_ONLY
+    from tianshu.workspace import WorkspaceBinding
+
+    workspace = tmp_path / "writable-ws"
+    workspace.mkdir()
+    readonly_ws = tmp_path / "readonly-ws"
+    readonly_ws.mkdir()
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        stack = stack_for(log, data_root=tmp_path / "data")
+        parent_task = stack.tasks.create_task("parent", [str(workspace)], max_subtasks=3)
+        parent_run = stack.tasks.start_run(parent_task.task_id)
+        ro_parent = stack.tasks.create_task(
+            "ro-parent",
+            [WorkspaceBinding(str(readonly_ws), "readonly", "none")],
+            max_subtasks=2,
+        )
+        ro_parent_run = stack.tasks.start_run(ro_parent.task_id)
+
+        observed_tx: list[bool] = []
+        ws_resolved = workspace.resolve()
+
+        def probe(path: Path) -> int:
+            observed_tx.append(log.in_transaction)
+            if low_target == "all":
+                return 0
+            resolved = path.resolve()
+            if resolved == ws_resolved or ws_resolved in resolved.parents:
+                return 0
+            return MIN_FREE_BYTES
+
+        stack.tasks._disk_admission = DiskAdmission(
+            stack.tasks.disk_admission.context, probe=probe
+        )
+
+        # 1) write=False（PURE_ONLY）在 free==0 下照常成功
+        reader = stack.tasks.create_subtask(
+            parent_task, parent_run, subtask_id="reader", goal="read child", write=False
+        )
+        assert stack.tasks.run_execution_policy(reader.child_run_id) == PURE_ONLY
+        assert observed_tx == []
+
+        # 2) 父全只读 + write=True 如实降级为 PURE_ONLY，不触发无意义拒绝
+        degraded = stack.tasks.create_subtask(
+            ro_parent, ro_parent_run, subtask_id="ro-writer", goal="ro child", write=True
+        )
+        assert stack.tasks.run_execution_policy(degraded.child_run_id) == PURE_ONLY
+        assert observed_tx == []
+
+        # 3) 父可写 + write=True（EFFECTS）在进入 SQLite 写事务前拒绝，零材料写入
+        tables = (
+            "tasks",
+            "runs",
+            "jobs",
+            "subtasks",
+            "events",
+            "event_versions",
+            "budget_accounts",
+            "budget_reservations",
+        )
+        before_rows = {
+            table: [tuple(row) for row in log.conn.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        }
+        with pytest.raises(DiskAdmissionError) as caught:
+            stack.tasks.create_subtask(
+                parent_task, parent_run, subtask_id="writer", goal="write child", write=True
+            )
+        assert caught.value.rule_id == "dispatch.disk_space_low"
+        assert observed_tx and all(in_tx is False for in_tx in observed_tx)
+        assert {
+            table: [tuple(row) for row in log.conn.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        } == before_rows
+        assert list(stack.snapshots.manifest_dir.iterdir()) == []
+        assert not any(
+            event.type == "subtask.spawned" for event in log.read_run(parent_run.run_id)
+        )
+
+        # 4) 正控：空间恢复至阈值后，同一调用成功创建 EFFECTS 子 Run
+        stack.tasks._disk_admission = DiskAdmission(
+            stack.tasks.disk_admission.context, probe=lambda _p: MIN_FREE_BYTES
+        )
+        writer = stack.tasks.create_subtask(
+            parent_task, parent_run, subtask_id="writer", goal="write child", write=True
+        )
+        assert stack.tasks.run_execution_policy(writer.child_run_id) == EFFECTS
+
+
+def test_dispatcher_write_subtask_spawn_late_low_disk_aborts_cleanly(tmp_path):
+    """LD-03 / B-F1：守卫内 create_subtask(write=True) 低盘时整笔回滚并记 rejected。"""
+    from tianshu.disk_admission import MIN_FREE_BYTES, DiskAdmission
+    from tianshu.dispatcher import build_request
+    from tianshu.permissions import HumanIdentity
+    from tianshu.tasks import RUN_RUNNING
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        stack = stack_for(log, data_root=tmp_path / "data")
+        parent_task = stack.tasks.create_task("parent", [str(workspace)], max_subtasks=2)
+        parent_run = stack.tasks.start_run(parent_task.task_id)
+        stack.budget.create_account(
+            f"run:{parent_run.run_id}",
+            limits={"subtasks": 2, "tokens": 10_000, "requests": 8},
+            run_id=parent_run.run_id,
+        )
+        job = stack.claims.enqueue(parent_run.run_id)
+        claim = stack.claims.claim(job.job_id)
+        stack.tasks.transition(parent_run.run_id, RUN_RUNNING, claim=claim)
+
+        args = {"subtask_id": "writer", "goal": "write child", "write": True}
+        request = build_request(
+            task=parent_task,
+            run=parent_run,
+            claim=claim,
+            call_id="spawn-late-low",
+            tool_id="subtask.spawn",
+            target="subtask://writer",
+            args=args,
+        )
+        decision = stack.dispatcher.prepare(request, claim, args=args)
+        assert decision.is_waiting
+        stack.approvals.decide(
+            decision.approval_id, decision="approved", actor=HumanIdentity.local_cli()
+        )
+        decision = stack.dispatcher.prepare(request, claim, args=args)
+        assert decision.is_admitted
+
+        # 让 phase-1 与 _verify_resource_execution 通过，恰好在 create_subtask 的创建门跌到 0
+        original_verify = stack.dispatcher._verify_resource_execution
+
+        def verify_then_drop(admitted):
+            auth = original_verify(admitted)
+            stack.tasks._disk_admission = DiskAdmission(
+                stack.tasks.disk_admission.context, probe=lambda _p: 0
+            )
+            return auth
+
+        stack.dispatcher._verify_resource_execution = verify_then_drop
+        stack.tasks._disk_admission = DiskAdmission(
+            stack.tasks.disk_admission.context, probe=lambda _p: MIN_FREE_BYTES
+        )
+
+        result = stack.dispatcher.dispatch(decision.request_id, claim)
+        assert result.status == "rejected", result.output
+        assert result.effect_state == "none_applied"
+        assert result.output["rule_id"] == "dispatch.disk_space_low"
+        assert stack.tasks.list_subtasks(parent_run.run_id) == []
+        assert log.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+        assert log.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert log.conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+        assert (
+            log.conn.execute("SELECT COUNT(*) FROM budget_reservations").fetchone()[0] == 0
+        )
+        assert stack.budget.account(f"run:{parent_run.run_id}") is not None
+        assert log.conn.execute("SELECT COUNT(*) FROM budget_accounts").fetchone()[0] == 1
+        assert list(stack.snapshots.manifest_dir.iterdir()) == []
+        run_events = [e.type for e in log.read_run(parent_run.run_id)]
+        assert "subtask.spawned" not in run_events
+        assert "execution.started" not in run_events
+        assert "dispatch.rejected" in run_events

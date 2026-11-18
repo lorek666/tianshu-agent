@@ -461,3 +461,61 @@ def test_rpc_execution_policy_is_strict_and_controls_low_disk_admission(
             assert stored is not None and stored.workspaces[0].can_write is True
     finally:
         shutil.rmtree(rpc_root, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "dir_name",
+    ["不能删的账单", "必须保留的合同", "不存在的旧归档", "非法样本目录"],
+)
+@pytest.mark.parametrize(
+    ("probe_mode", "expected_rule"),
+    [("low", "dispatch.disk_space_low"), ("unknown", "dispatch.disk_space_unknown")],
+)
+def test_rpc_low_disk_with_sensitive_workspace_words_never_misclassifies_code(
+    tmp_path: Path, dir_name: str, probe_mode: str, expected_rule: str
+) -> None:
+    """B-F2：路径含「不能/必须/不存在/非法」时，DiskAdmissionError 仍保持 internal + rule_id。"""
+    db = tmp_path / "events.db"
+    data_root = tmp_path / "data"
+    workspace = tmp_path / dir_name
+    workspace.mkdir()
+
+    def probe(_path: Path) -> int:
+        if probe_mode == "low":
+            return 0
+        raise OSError("挂载点不可访问：不能读取或目标不存在")
+
+    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+        stack = build_stack(log, data_root=data_root)
+        stack.tasks._disk_admission = DiskAdmission(
+            stack.tasks.disk_admission.context, probe=probe
+        )
+        task = stack.tasks.create_task("整理账单", [str(workspace)])
+        plane = ControlPlane(stack, model=ScriptedModel([]))
+        with pytest.raises(ControlError) as caught:
+            plane.handle("run.start", {"task_id": task.task_id})
+        assert caught.value.code == "internal"
+        assert caught.value.details == {"rule_id": expected_rule}
+        assert expected_rule in caught.value.message
+        assert stack.tasks.list_runs(task.task_id) == []
+
+
+def test_rpc_run_effects_disallowed_preserves_internal_code_and_rule_id(
+    tmp_path: Path,
+) -> None:
+    """B-F2：RunEffectsDisallowed 穿过 ControlPlane.handle 保持 internal + rule_id。"""
+    from tianshu.run_policy import RunEffectsDisallowed
+
+    db = tmp_path / "events.db"
+    data_root = tmp_path / "data"
+    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+        stack = build_stack(log, data_root=data_root)
+        plane = ControlPlane(stack, model=ScriptedModel([]))
+        plane._methods["probe.pure_gate"] = lambda _params: (_ for _ in ()).throw(
+            RunEffectsDisallowed("不能在 pure_only 运行中执行修改操作，必须显式新开 effects Run")
+        )
+        with pytest.raises(ControlError) as caught:
+            plane.handle("probe.pure_gate", {})
+        assert caught.value.code == "internal"
+        assert caught.value.details == {"rule_id": "dispatch.run_effects_disallowed"}
+        assert caught.value.message.startswith("dispatch.run_effects_disallowed:")

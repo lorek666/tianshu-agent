@@ -493,6 +493,7 @@ def test_approval_is_decided_through_ipc_and_run_continues(root: Path) -> None:
 
             run = _wait_run(client, run_id)
             assert run["state"] == "succeeded", run
+            assert run["effect_state"] == "applied", run
             assert not (ws / "old.txt").exists()
             types = [
                 event["type"] for event in client.call("events.run", {"run_id": run_id})["events"]
@@ -655,6 +656,7 @@ def test_pending_approval_survives_restart_and_stays_waiting(root: Path) -> None
             )
             run = _wait_run(client, run_id)
             assert run["state"] == "succeeded", run
+            assert run["effect_state"] == "applied", run
             assert not (ws / "old.txt").exists()
         finally:
             client.close()

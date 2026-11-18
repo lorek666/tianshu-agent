@@ -892,22 +892,42 @@ def _pid_alive(pid: int) -> bool | None:
         return not proc.stdout.strip().upper().startswith("Z")
     if sys.platform.startswith("win"):
         try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            handle = kernel32.OpenProcess(0x1000, False, pid)
-            if not handle:
-                return None
-            try:
-                code = ctypes.c_ulong()
-                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                    return None
-                return code.value == 259  # STILL_ACTIVE
-            finally:
-                kernel32.CloseHandle(handle)
+            return _win_process_active(pid)
         except Exception:  # noqa: BLE001 - Windows API 不可用：判不了
             return None
     return None
+
+
+def _open_kernel32() -> Any:  # pragma: no cover - 仅 Windows 默认入口
+    import ctypes
+
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _win_process_active(pid: int) -> bool | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _open_kernel32()
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return None
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _wait_pid_gone(pid: int, grace_ms: int) -> bool | None:

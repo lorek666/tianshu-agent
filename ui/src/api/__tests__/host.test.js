@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRealHostClient } from "../host";
-import { HostRpcError } from "../errors";
+import { HostRpcError, humanizeHostError } from "../errors";
 
 // Node HTTP 夹具使用 JavaScript；浏览器包无需新增 Node 类型依赖。
 const servers = [];
@@ -67,5 +67,31 @@ describe("真实 Host HTTP 响应读取", () => {
     });
     await expect(createRealHostClient("fixture-only", origin).rpc("approvals.decide"))
       .rejects.toMatchObject({ code: "conflict", httpStatus: 409 });
+  });
+
+  it("HTTP 500 错误保留 details.rule_id 并经 humanizeHostError 输出人话（B-F2）", async () => {
+    const origin = await localHost((response) => {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: false,
+          error: {
+            code: "internal",
+            message: "dispatch.disk_space_low: /Users/alice/不能删的账单: 可用空间低于 2 GiB",
+            details: { rule_id: "dispatch.disk_space_low" },
+          },
+        }),
+      );
+    });
+    const caught = await createRealHostClient("fixture-only", origin)
+      .rpc("run.start", { task_id: "task_1" })
+      .catch((error) => error);
+    expect(caught).toBeInstanceOf(HostRpcError);
+    expect(caught.code).toBe("internal");
+    expect(caught.details).toEqual({ rule_id: "dispatch.disk_space_low" });
+    const text = humanizeHostError(caught);
+    expect(text).toContain("磁盘可用空间不足（需至少 2 GiB");
+    expect(text).toContain("/Users/alice/不能删的账单");
+    expect(text).not.toContain("dispatch.disk_space_low");
   });
 });

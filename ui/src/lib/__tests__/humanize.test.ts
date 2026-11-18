@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HostRpcError, errorFromEnvelope, humanizeHostError } from "../../api/errors";
 import type { ApprovalView, EventView } from "../../api/types";
 import {
   actionLabel,
@@ -460,5 +461,142 @@ describe("子任务与预算拒绝事件的人话（W8）", () => {
     );
     expect(denied.sentence).toContain("未获放行");
     expect(denied.sentence).toContain("预算额度不足");
+  });
+
+  it("低磁盘与纯读资格三条 C4 规则在时间线与 RPC 错误中均转为中文人话，不泄露机器枚举（B-F2 / F14）", () => {
+    const expectedLabels: Array<[string, string]> = [
+      ["dispatch.disk_space_low", "磁盘可用空间不足（需至少 2 GiB），操作未执行"],
+      ["dispatch.disk_space_unknown", "无法核实磁盘可用空间，操作未执行"],
+      [
+        "dispatch.run_effects_disallowed",
+        "当前运行处于「仅读取与对话」模式，不允许修改或外部操作",
+      ],
+    ];
+    for (const [ruleId, label] of expectedLabels) {
+      expect(actionLabel(ruleId)).toBe(label);
+      for (const eventType of ["dispatch.rejected", "policy.denied"] as const) {
+        const entry = humanizeEvent(
+          event(eventType, {
+            rule_id: ruleId,
+            reason: `${ruleId}: /Users/alice/不能删的账单: raw`,
+          }),
+        );
+        expect(entry.sentence).toBe(`未获放行：${label}`);
+        expect(entry.sentence).not.toContain(ruleId);
+        expect(entry.tone).toBe("danger");
+      }
+
+      const rejectedResult = humanizeEvent(
+        event(
+          "tool.result",
+          {
+            call_id: `call_${ruleId}`,
+            tool_id:
+              ruleId === "dispatch.disk_space_low"
+                ? "modify_text"
+                : ruleId === "dispatch.disk_space_unknown"
+                  ? "memory.propose"
+                  : "create_report",
+            status: "rejected",
+            effect_state: "none_applied",
+            output: {
+              error:
+                ruleId === "dispatch.disk_space_low"
+                  ? "DiskAdmissionError: dispatch.disk_space_low: /Users/alice/不能删的账单/events.db: 可用空间低于 2 GiB"
+                  : ruleId === "dispatch.disk_space_unknown"
+                    ? "DispatchDenied: dispatch.disk_space_unknown: 无法证明必需位置的空间：PermissionError"
+                    : "此 Run 仅允许 pure 工具；请显式新开 effects Run",
+              request_id: "req_real_shape_1",
+              rule_id: ruleId,
+            },
+          },
+          { actor_kind: "tool" },
+        ),
+      );
+      expect(rejectedResult.sentence).toContain(label);
+      expect(rejectedResult.sentence).not.toContain(ruleId);
+      expect(rejectedResult.sentence).not.toContain("DiskAdmissionError");
+      expect(rejectedResult.sentence).not.toContain("DispatchDenied");
+      expect(rejectedResult.sentence).not.toContain("RunEffectsDisallowed");
+      expect(rejectedResult.sentence).not.toContain("PermissionError");
+      expect(rejectedResult.sentence).not.toContain("pure");
+      expect(rejectedResult.sentence).not.toContain("effects Run");
+    }
+
+    const phase2PureDisallowed = humanizeEvent(
+      event(
+        "tool.result",
+        {
+          call_id: "call_guard_pure",
+          tool_id: "modify_text",
+          status: "rejected",
+          effect_state: "none_applied",
+          output: {
+            error: "RunEffectsDisallowed: 此 Run 仅允许 pure 工具；请显式新开 effects Run",
+            request_id: "req_real_shape_2",
+            rule_id: "dispatch.run_effects_disallowed",
+          },
+        },
+        { actor_kind: "tool" },
+      ),
+    );
+    expect(phase2PureDisallowed.sentence).toBe(
+      "未完成：修改（当前运行处于「仅读取与对话」模式，不允许修改或外部操作）",
+    );
+
+    const lowWithSensitivePath = humanizeHostError(
+      new HostRpcError(
+        "internal",
+        "dispatch.disk_space_low: /Users/alice/不能删的账单: 可用空间低于 2 GiB",
+        { details: { rule_id: "dispatch.disk_space_low" } },
+      ),
+    );
+    expect(lowWithSensitivePath).toContain("磁盘可用空间不足（需至少 2 GiB");
+    expect(lowWithSensitivePath).toContain("/Users/alice/不能删的账单");
+    expect(lowWithSensitivePath).not.toContain("dispatch.disk_space_low");
+    expect(lowWithSensitivePath).not.toContain("状态冲突");
+
+    const unknownSpace = humanizeHostError(
+      new HostRpcError(
+        "internal",
+        "dispatch.disk_space_unknown: 无法证明必需位置的空间：PermissionError",
+      ),
+    );
+    expect(unknownSpace).toContain("无法核实磁盘可用空间");
+    expect(unknownSpace).not.toContain("dispatch.disk_space_unknown");
+
+    const effectsDisallowed = humanizeHostError(
+      new HostRpcError(
+        "internal",
+        "dispatch.run_effects_disallowed: 此 Run 仅允许 pure 工具；请显式新开 effects Run",
+        { details: { rule_id: "dispatch.run_effects_disallowed" } },
+      ),
+    );
+    expect(effectsDisallowed).toContain("仅读取与对话");
+    expect(effectsDisallowed).not.toContain("dispatch.run_effects_disallowed");
+
+    const undoLowDisk = humanizeHostError(
+      new HostRpcError(
+        "undo_failed",
+        "撤销执行失败：DiskAdmissionError: dispatch.disk_space_low: /Users/alice/不能删的账单: 可用空间低于 2 GiB",
+      ),
+    );
+    expect(undoLowDisk).toContain("磁盘可用空间不足");
+    expect(undoLowDisk).not.toContain("dispatch.disk_space_low");
+    expect(undoLowDisk).not.toContain("DiskAdmissionError");
+
+    const parsed = errorFromEnvelope({
+      ok: false,
+      error: {
+        code: "internal",
+        message: "dispatch.disk_space_low: /Users/alice/不能删的账单: 可用空间低于 2 GiB",
+        details: { rule_id: "dispatch.disk_space_low" },
+      },
+    });
+    expect(parsed).toEqual({
+      code: "internal",
+      message: "dispatch.disk_space_low: /Users/alice/不能删的账单: 可用空间低于 2 GiB",
+      details: { rule_id: "dispatch.disk_space_low" },
+    });
   });
 });
