@@ -1189,8 +1189,11 @@ def test_worker_diagnostics_capture_native_error_before_worker_swallows_it(env):
 
 def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(env, monkeypatch):
     """真实结果提交的 BEGIN 拒绝后，起点/上层栈不靠已淘汰的 ring 恢复。"""
+    from tianshu.dispatcher import Dispatcher
+
     original_transaction = EventLog.transaction
-    original_append_many = EventLog.append_many
+    original_commit = Dispatcher._commit_result
+    original_fail_unknown = Dispatcher._fail_unknown
     clock = {"now": 1_000}
     starts = []
     failure = AssertionError("original assertion")
@@ -1203,19 +1206,29 @@ def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(en
         with original_transaction(log) as tx:
             yield tx
 
-    def read_only_result(log, items):
-        if log is not env.log or items[0]["type"] != "tool.result":
-            return original_append_many(log, items)
-        # 只在真实派发结果进入真实 BEGIN 时拒写；不伪造 SQLite 异常。
-        log.conn.execute("PRAGMA query_only=ON")
+    def read_only_commit(dispatcher, *args, **kwargs):
+        if dispatcher._log is not env.log:
+            return original_commit(dispatcher, *args, **kwargs)
+        # 只在真实派发结果单事务进入真实 BEGIN 时拒写；不伪造 SQLite 异常。
+        env.log.conn.execute("PRAGMA query_only=ON")
         try:
-            return original_append_many(log, items)
+            return original_commit(dispatcher, *args, **kwargs)
         finally:
-            log.conn.execute("PRAGMA query_only=OFF")
+            env.log.conn.execute("PRAGMA query_only=OFF")
+
+    def read_only_fail_unknown(dispatcher, *args, **kwargs):
+        if dispatcher._log is not env.log:
+            return original_fail_unknown(dispatcher, *args, **kwargs)
+        env.log.conn.execute("PRAGMA query_only=ON")
+        try:
+            return original_fail_unknown(dispatcher, *args, **kwargs)
+        finally:
+            env.log.conn.execute("PRAGMA query_only=OFF")
 
     monkeypatch.setattr(time, "monotonic_ns", lambda: clock["now"])
     monkeypatch.setattr(EventLog, "transaction", native_transaction)
-    monkeypatch.setattr(EventLog, "append_many", read_only_result)
+    monkeypatch.setattr(Dispatcher, "_commit_result", read_only_commit)
+    monkeypatch.setattr(Dispatcher, "_fail_unknown", read_only_fail_unknown)
     original = (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction)
 
     @_diagnose_worker_failure
@@ -1252,7 +1265,7 @@ def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(en
     chain = [json.loads(line.removeprefix("transaction.call_chain: "))
              for line in notes.splitlines() if line.startswith("transaction.call_chain: ")]
     assert [frame["function"] for frame in chain[:2]] == [
-        "append_many", "_commit_result",
+        "_commit_result", "dispatch",
     ]
     assert 2 <= len(chain) <= 4
     assert all(frame["file"].startswith("src/") for frame in chain)

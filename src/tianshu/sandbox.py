@@ -35,6 +35,7 @@ per-run 的灵活性留给 M5 的 Host。
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -105,33 +106,36 @@ class LocalBackend:
     name = "local_fs"
 
     def require_root(self, root: Path) -> None:
-        if not root.is_dir():
+        if not retry_windows_sharing(root.is_dir, label="is_dir"):
             raise WorkspaceViolation(f"workspace 不存在或不是目录：{root}")
 
     def exists(self, p: Path) -> bool:
-        return p.exists()
+        return retry_windows_sharing(p.exists, label="exists")
 
     def is_file(self, p: Path) -> bool:
-        return p.is_file()
+        return retry_windows_sharing(p.is_file, label="is_file")
 
     def is_dir(self, p: Path) -> bool:
-        return p.is_dir()
+        return retry_windows_sharing(p.is_dir, label="is_dir")
 
     def size(self, p: Path) -> int:
-        st = p.stat()
-        if p.is_dir():
-            raise IsADirectoryError(str(p))
-        return st.st_size
+        def _size() -> int:
+            st = p.stat()
+            if stat.S_ISDIR(st.st_mode):
+                raise IsADirectoryError(str(p))
+            return st.st_size
+
+        return retry_windows_sharing(_size, label="size")
 
     def list_dir(self, p: Path) -> list[tuple[str, bool, int]]:
         out: list[tuple[str, bool, int]] = []
-        for child in p.iterdir():
+        for child in retry_windows_sharing(lambda: list(p.iterdir()), label="iterdir"):
             try:
-                st = child.stat()
+                st = retry_windows_sharing(child.stat, label="stat")
             except OSError:
                 # 读不到 size 的条目跳过：这一点与 M2 的行为一致。
                 continue
-            is_dir = child.is_dir()
+            is_dir = stat.S_ISDIR(st.st_mode)
             # 目录项的 size 固定为 0（见 FileBackend.list_dir 的约定）。
             out.append((child.name, is_dir, 0 if is_dir else st.st_size))
         return out

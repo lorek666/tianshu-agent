@@ -941,3 +941,320 @@ def test_147_64bit_windows_handle_high_bit_not_sign_extended(
         ("GetExitCodeProcess", 0x80000124),
         ("CloseHandle", 0x80000124),
     ]
+
+
+# =========================================================================
+# 5. 第二读者复审补强：单事务结果提交、绕过 _absorb 保底、stat 原语共享锁重试
+# =========================================================================
+
+
+def test_145_commit_result_and_fail_unknown_are_atomic_single_transactions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_commit_result` 与 `_fail_unknown` 各自只开 1 个外层写事务，中途失败整笔回滚。"""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        stack = stack_for(log, data_root=data_root)
+        outer_tx = 0
+        real_tx = log.transaction
+
+        @contextlib.contextmanager
+        def count_tx():
+            nonlocal outer_tx
+            if not log.in_transaction:
+                outer_tx += 1
+            with real_tx() as tx:
+                yield tx
+
+        monkeypatch.setattr(log, "transaction", count_tx)
+
+        # 1) 正常派发结果提交：_commit_result 只用 1 次外层事务同时写事件与推进 dispatches
+        run_ok, _ = _enqueue_create_run(stack, ws, out_name="ok.md")
+        real_commit = stack.dispatcher._commit_result
+        commit_tx_counts: list[int] = []
+
+        def spy_commit(*args: Any, **kwargs: Any) -> None:
+            before = outer_tx
+            real_commit(*args, **kwargs)
+            commit_tx_counts.append(outer_tx - before)
+
+        monkeypatch.setattr(stack.dispatcher, "_commit_result", spy_commit)
+        with Worker(
+            stack,
+            model=ScriptedModel(
+                [
+                    ModelResponse(
+                        "tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c_ok",
+                                "create_report",
+                                {"name": "ok.md", "content": "atomic\n"},
+                            )
+                        ],
+                    ),
+                    ModelResponse("end_turn", content="done"),
+                ]
+            ),
+            heartbeat_interval_ms=None,
+        ) as worker:
+            assert worker.run_once() is True
+
+        assert commit_tx_counts == [1]
+        row_ok = stack.dispatcher.dispatch_record(run_ok, "c_ok")
+        assert row_ok is not None and row_ok.state == "done"
+
+        # 2) 原子回滚验证：若 _set_request_state 在 _commit_result 与 _fail_unknown 末尾抛错，
+        #    先前 append_many 写入的 tool.result / receipt / recovery.blocked 必须一并回滚！
+        monkeypatch.setattr(stack.dispatcher, "_commit_result", real_commit)
+        real_set_state = stack.dispatcher._set_request_state
+
+        def fail_terminal_request_state(
+            request_id: str, state: str, **kwargs: Any
+        ) -> None:
+            if state in ("done", "rejected"):
+                raise sqlite3.OperationalError("simulated mid-commit failure")
+            real_set_state(request_id, state, **kwargs)
+
+        run_rb, _ = _enqueue_create_run(stack, ws, out_name="rb.md")
+        monkeypatch.setattr(
+            stack.dispatcher, "_set_request_state", fail_terminal_request_state
+        )
+        with Worker(
+            stack,
+            model=ScriptedModel(
+                [
+                    ModelResponse(
+                        "tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c_rb",
+                                "create_report",
+                                {"name": "rb.md", "content": "rollback\n"},
+                            )
+                        ],
+                    )
+                ]
+            ),
+            heartbeat_interval_ms=None,
+        ) as worker:
+            assert worker.run_once() is True
+
+        events_rb = [e.type for e in log.read_run(run_rb)]
+        assert "tool.intent" in events_rb
+        assert "tool.result" not in events_rb, "单事务回滚后不许残留孤立 tool.result"
+        assert "receipt" not in events_rb
+        assert "recovery.blocked" not in events_rb
+        row_rb = stack.dispatcher.dispatch_record(run_rb, "c_rb")
+        assert row_rb is not None and row_rb.state == "executing"
+        run_state_rb = stack.tasks.get_run(run_rb)
+        assert run_state_rb is not None and run_state_rb.state == "reconciling"
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("scenario", ["applied_bypassed", "unknown_blocked_bypassed"])
+def test_145_finish_never_loses_persisted_effect_or_active_block_when_absorb_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """即使派发落库后异常跳过 `_absorb` / `_advance` 尾部，`_finish` 仍按持久事件守住红线。"""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        stack = stack_for(log, data_root=data_root)
+        run_id, job_id = _enqueue_create_run(stack, ws, out_name="bypassed.md")
+
+        if scenario == "applied_bypassed":
+            real_dispatch = stack.dispatcher.dispatch
+
+            def commit_then_raise_in_loop(request_id: str, claim: Any):
+                res = real_dispatch(request_id, claim)
+
+                def explode_record(*_a: Any, **_kw: Any):
+                    raise RuntimeError("loop crashed before _absorb")
+
+                monkeypatch.setattr(stack.dispatcher, "dispatch_record", explode_record)
+                return res
+
+            monkeypatch.setattr(stack.dispatcher, "dispatch", commit_then_raise_in_loop)
+        else:
+            real_commit = stack.dispatcher._commit_result
+            real_note_effect = stack.tasks.note_effect
+            failed_once = False
+
+            def fail_commit(*_a: Any, **_kw: Any) -> None:
+                raise sqlite3.OperationalError("database is locked")
+
+            def fail_first_note_effect(*args: Any, **kwargs: Any):
+                nonlocal failed_once
+                if not failed_once:
+                    failed_once = True
+                    raise RuntimeError("note_effect interrupted before reconciling")
+                return real_note_effect(*args, **kwargs)
+
+            monkeypatch.setattr(stack.dispatcher, "_commit_result", fail_commit)
+            monkeypatch.setattr(stack.tasks, "note_effect", fail_first_note_effect)
+            assert real_commit is not None
+
+        with Worker(
+            stack,
+            model=ScriptedModel(
+                [
+                    ModelResponse(
+                        "tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "c1",
+                                "create_report",
+                                {"name": "bypassed.md", "content": "persisted\n"},
+                            )
+                        ],
+                    ),
+                    ModelResponse("end_turn", content="done"),
+                ]
+            ),
+            heartbeat_interval_ms=None,
+        ) as worker:
+            assert worker.run_once() is True
+
+        run = stack.tasks.get_run(run_id)
+        assert run is not None
+        if scenario == "applied_bypassed":
+            assert run.state == "failed"
+            assert run.effect_state == "applied", (
+                "已落库 tool.result(applied) 时，绕过 _absorb 绝不能写成 none_applied"
+            )
+            end_events = [
+                e.payload for e in log.read_run(run_id) if e.type == "run.end"
+            ]
+            assert len(end_events) == 1
+            assert end_events[0]["effect_state"] == "applied"
+            assert len(end_events[0]["receipt_ids"]) == 1
+        else:
+            assert run.state == "reconciling", run
+            assert run.effect_state == "unknown", run
+            assert "run.end" not in [e.type for e in log.read_run(run_id)]
+            assert str(ws.resolve()) in blocked_workspaces(log)
+            assert stack.leases.is_held_by(ws, run_id) is True
+            job = stack.claims.get(job_id)
+            assert job is not None and job.state == "waiting"
+    finally:
+        log.close()
+
+
+def test_147_stat_primitives_retry_transient_winerror_32_and_post_approval_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`LocalBackend.exists/is_file/is_dir/size/require_root` 对瞬态 winerror=32/5 有界重试。"""
+    backend = LocalBackend()
+    delays: list[float] = []
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "old.txt"
+    write_exact(target, "账单内容\n")
+    expected_bytes = len("账单内容\n".encode())
+
+    real_path_stat = Path.stat
+    active_target: Path | None = None
+    stat_calls = 0
+
+    def transient_path_stat(self_path: Path, *args: Any, **kwargs: Any):
+        nonlocal stat_calls
+        import sys
+
+        caller = sys._getframe(1).f_code.co_name
+        if (
+            active_target is not None
+            and self_path == active_target
+            and caller in ("exists", "is_file", "is_dir", "_size")
+        ):
+            stat_calls += 1
+            if stat_calls in (1, 2):
+                err = PermissionError(
+                    errno.EACCES, "Windows sharing violation", str(self_path)
+                )
+                err.winerror = 32 if stat_calls == 1 else 5
+                raise err
+        return real_path_stat(self_path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", transient_path_stat)
+
+    for op_name, fn, expected in (
+        ("exists", lambda: backend.exists(target), True),
+        ("is_file", lambda: backend.is_file(target), True),
+        ("is_dir", lambda: backend.is_dir(target), False),
+        ("size", lambda: backend.size(target), expected_bytes),
+    ):
+        active_target = target
+        stat_calls = 0
+        delays.clear()
+        assert fn() == expected, op_name
+        assert stat_calls == 3, op_name
+        assert delays == [0.01, 0.02], op_name
+
+    active_target = ws
+    stat_calls = 0
+    delays.clear()
+    backend.require_root(ws)
+    assert stat_calls == 3
+    assert delays == [0.01, 0.02]
+    active_target = None
+
+    # FileNotFoundError 零次重试（exists 返回 False，size 立即抛 FileNotFoundError）
+    missing = ws / "missing.txt"
+    delays.clear()
+    assert backend.exists(missing) is False
+    with pytest.raises(FileNotFoundError):
+        backend.size(missing)
+    assert delays == []
+
+    # 端到端：审批通过后 resume_run 删除 old.txt 期间 Path.stat 连续抛瞬态 winerror=32，
+    # 无论落在 prepare/preconditions 的 exists/is_dir 还是执行侧核验，均能重试成功并产凭据。
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        stack = stack_for(log, data_root=data_root)
+        model = _EndTurnFallbackModel(
+            [
+                ModelResponse(
+                    "tool_use",
+                    tool_calls=[ToolCall("c1", "delete_file", {"path": "old.txt"})],
+                )
+            ]
+        )
+        engine = engine_for(stack, model, limits=Limits(4, 10_000))
+        task = stack.tasks.create_task("删掉旧账单", [str(ws)])
+        waiting = engine.start(task.task_id, out_name="summary.md")
+        assert waiting.state == "waiting_approval"
+        assert approve_pending(stack, waiting.run_id)
+
+        active_target = target
+        stat_calls = 0
+        delays.clear()
+        resumed = engine.resume_run(waiting.run_id)
+        active_target = None
+
+        assert stat_calls >= 3
+        assert delays == [0.01, 0.02]
+        assert resumed.state == "succeeded"
+        run = stack.tasks.get_run(waiting.run_id)
+        assert run is not None
+        assert run.state == "succeeded"
+        assert run.effect_state == "applied"
+        assert not target.exists()
+        assert len(receipts_of(log, waiting.run_id)) == 1
+    finally:
+        active_target = None
+        log.close()

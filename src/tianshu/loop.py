@@ -85,6 +85,7 @@ from .errors import (
 from .events import Event, EventLog, canonical_bytes, sha256_hex
 from .execpolicy import ExecPolicy
 from .fsutil import atomic_write_bytes
+from .guard import scan_blocked
 from .jobs import (
     JOB_CLAIMED,
     JOB_PENDING,
@@ -3053,17 +3054,47 @@ class AgentLoop:
         ).fetchone()
         return row is not None
 
-    def _has_unsettled_dispatch(self, run_id: str) -> bool:
+    def _sync_persisted_effects(
+        self, events: list[Event], progress: _Progress
+    ) -> str:
+        """按已落库 tool.result 对齐 progress 计数，防止绕过 _absorb 误报 none_applied。"""
+        n_applied = 0
+        n_unknown = 0
+        has_partial = False
+        has_unknown = False
+        for ev in events:
+            if ev.type != "tool.result":
+                continue
+            state = ev.payload.get("effect_state")
+            if state == "applied":
+                n_applied += 1
+            elif state == "partial":
+                n_unknown += 1
+                has_partial = True
+            elif state == "unknown":
+                n_unknown += 1
+                has_unknown = True
+        progress.n_applied = max(progress.n_applied, n_applied)
+        progress.n_unknown = max(progress.n_unknown, n_unknown)
+        if progress.n_applied == 0 and has_partial and not has_unknown:
+            return "partial"
+        return progress.effect_state
+
+    def _has_unsettled_dispatch(
+        self, run_id: str, events: list[Event] | None = None
+    ) -> bool:
         """是否存在已落 intent 但尚未结算 tool.result 的副作用派发（#145）。"""
-        events = self._log.read_run(run_id, verify=False)
+        run_events = (
+            self._log.read_run(run_id, verify=False) if events is None else events
+        )
         intents = {
             e.payload.get("call_id")
-            for e in events
+            for e in run_events
             if e.type == "tool.intent" and e.payload.get("call_id")
         }
         results = {
             e.payload.get("call_id")
-            for e in events
+            for e in run_events
             if e.type == "tool.result" and e.payload.get("call_id")
         }
         if intents - results:
@@ -3073,6 +3104,22 @@ class AgentLoop:
             (run_id, DISPATCH_INTENT, DISPATCH_EXECUTING),
         ).fetchall()
         return any(row["call_id"] not in results for row in rows)
+
+    def _has_active_own_workspace_block(self, events: list[Event]) -> bool:
+        """本 Run 是否发出了尚未解除的本地目录阻断（`recovery.blocked`）。"""
+        own_workspaces = {
+            ev.payload.get("workspace")
+            for ev in events
+            if ev.type == "recovery.blocked"
+            and isinstance(ev.payload.get("workspace"), str)
+            and ev.payload.get("workspace")
+        }
+        if not own_workspaces:
+            return False
+        scan = scan_blocked(self._log)
+        if scan.malformed:
+            return True
+        return bool(own_workspaces & scan.blocked)
 
     def _finish(
         self,
@@ -3088,11 +3135,15 @@ class AgentLoop:
         顺序不能反：先写 Run 成功、再发现 claim 已被接管，就会留下一条
         "旧 owner 宣告成功"的记录，而这正是 fencing 要禁止的事。
         """
-        if self._has_unsettled_dispatch(run_id):
-            # `_commit_result` 与 `_fail_unknown` 均因锁忙等原因未能落库时，
-            # 磁盘可能已改动而 tool.result 缺失：绝不能标终态 none_applied 或释放
-            # 目录租约（红线 2/5/11）。转入 reconciling 保留租约交给 recover 对账；
-            # 若 transition 仍遇 OperationalError，则让异常上抛由 Worker 挂起作业。
+        events = self._log.read_run(run_id, verify=False)
+        effect = self._sync_persisted_effects(events, progress)
+        if self._has_unsettled_dispatch(
+            run_id, events
+        ) or self._has_active_own_workspace_block(events):
+            # 存在未结算 intent，或 `_fail_unknown` 已落库本地目录阻断但尚未转入
+            # reconciling 就被异常打断：绝不能写终态 run.end 或释放目录租约（红线
+            # 2/5/11）。转入 reconciling 保留租约交给 recover/人工核查；若此处仍遇
+            # OperationalError，则让异常上抛由 Worker 挂起作业。
             reconcile_error = (
                 "存在未完成的派发（intent 已提交、结果未知），"
                 "请先 recover 核查再 resume"
@@ -3100,9 +3151,28 @@ class AgentLoop:
             if error:
                 reconcile_error = f"{reconcile_error}（{error}）"
             try:
-                self._tasks.transition(
-                    run_id, RUN_RECONCILING, claim=claim, reason="inflight_dispatch"
-                )
+                if effect != "none_applied":
+                    with self._log.transaction():
+                        self._tasks.note_effect(
+                            run_id,
+                            effect_state=effect,
+                            n_applied=progress.n_applied,
+                            n_unknown=progress.n_unknown,
+                            claim=claim,
+                        )
+                        self._tasks.transition(
+                            run_id,
+                            RUN_RECONCILING,
+                            claim=claim,
+                            reason="inflight_dispatch",
+                        )
+                else:
+                    self._tasks.transition(
+                        run_id,
+                        RUN_RECONCILING,
+                        claim=claim,
+                        reason="inflight_dispatch",
+                    )
             except (JobLost, RunFenced) as exc:
                 return self._result(
                     run_id, progress, state=self._state_of(run_id), error=str(exc)
@@ -3121,7 +3191,6 @@ class AgentLoop:
                 error=f"收尾被拒绝（claim 已失效）：{exc}",
             )
 
-        effect = progress.effect_state
         try:
             with self._log.transaction() as tx:
                 # `run.end` 由这里写（终态事件只有这一个写者，CLI 直接取消
