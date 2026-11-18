@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -316,10 +317,32 @@ def test_urllib_transport_maps_incomplete_read_and_bad_status_line_with_redactio
     srv1.listen(1)
     port1 = srv1.getsockname()[1]
 
+    def _drain_http_request(conn: socket.socket) -> None:
+        """读完完整 HTTP 请求头与请求体，避免 Windows close() 因未读缓冲发 TCP RST。"""
+        conn.settimeout(3.0)
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+        head, rest = buf.split(b"\r\n\r\n", 1)
+        content_len = 0
+        for raw_line in head.split(b"\r\n")[1:]:
+            if raw_line.lower().startswith(b"content-length:"):
+                content_len = int(raw_line.split(b":", 1)[1].strip())
+                break
+        remaining = content_len - len(rest)
+        while remaining > 0:
+            chunk = conn.recv(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def _serve_truncated_chunked() -> None:
         conn, _ = srv1.accept()
         try:
-            conn.recv(4096)
+            _drain_http_request(conn)
             first_chunk = b'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
             head = (
                 b"HTTP/1.1 200 OK\r\n"
@@ -330,6 +353,8 @@ def test_urllib_transport_maps_incomplete_read_and_bad_status_line_with_redactio
                 + b"\r\nff\r\ndata: {\"incomplete"
             )
             conn.sendall(head)
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_WR)
         finally:
             conn.close()
             srv1.close()
@@ -358,8 +383,13 @@ def test_urllib_transport_maps_incomplete_read_and_bad_status_line_with_redactio
     def _serve_bad_status() -> None:
         conn, _ = srv2.accept()
         try:
-            conn.recv(4096)
+            _drain_http_request(conn)
             conn.sendall(f"Bearer {secret}\r\n".encode())
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_WR)
+                conn.settimeout(0.5)
+                while conn.recv(1024):
+                    pass
         finally:
             conn.close()
             srv2.close()
