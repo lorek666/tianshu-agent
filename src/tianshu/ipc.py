@@ -585,7 +585,18 @@ class Server:
             # 默认的 1 填满，随后所有 connect 都会在 macOS 上被拒（#63）。
             backlog=LISTEN_BACKLOG,
         )
-        if os.name != "nt":
+        if os.name == "nt":
+            # CPython PipeListener.__init__ 忽略 backlog 参数、仅预建 1 个管道句柄；
+            # 当 Host 探活与并发 RPC/订阅同时到达时，第 2 个客户端会触发 ERROR_PIPE_BUSY
+            # 并落入 PipeClient 的 WaitNamedPipe(1000ms) 阻塞。预建多实例对齐排队容量，
+            # 关闭时 PipeListener._finalize_pipe_listener 会遍历 _handle_queue 逐一释放。
+            inner = getattr(self._listener, "_listener", None)
+            queue = getattr(inner, "_handle_queue", None)
+            new_handle = getattr(inner, "_new_handle", None)
+            if isinstance(queue, list) and callable(new_handle):
+                while len(queue) < min(LISTEN_BACKLOG, 16):
+                    queue.append(new_handle())
+        else:
             _chmod_private(Path(self.endpoint), 0o600)
 
     def accept(self) -> ServerConnection:
@@ -656,13 +667,21 @@ class Server:
             conn.close()
         self._accepted.clear()
         if self._listener is not None:
-            # 关 listener 之前先叫醒可能正阻塞在 accept() 的线程（见 _wake_accept）。
-            self._wake_accept()
-        if self._listener is not None:
-            try:
-                self._listener.close()
-            finally:
-                self._listener = None
+            if os.name == "nt":
+                # Windows 下先关闭 _handle_queue 中尚未进入 ConnectNamedPipe 的备用句柄，
+                # 只留下正阻塞在 accept() 中的唯一管道实例供 _wake_accept() 精准敲醒。
+                try:
+                    self._listener.close()
+                finally:
+                    self._listener = None
+                self._wake_accept()
+            else:
+                # POSIX 必须在关 listener 之前先 connect 唤醒阻塞中的 accept()。
+                self._wake_accept()
+                try:
+                    self._listener.close()
+                finally:
+                    self._listener = None
         if os.name != "nt":
             try:
                 Path(self.endpoint).unlink(missing_ok=True)

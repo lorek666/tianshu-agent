@@ -28,29 +28,101 @@ Run 还有第二个维度：**状态**。非终态（`queued` / `running` /
 先拿事务再等守卫，就会和"先拿守卫再等事务"的另一条路径互相卡死。
 所以凡是需要守卫的方法（`begin_execution` / `revise_task`）都显式拒绝在
 已打开的事务里被调用，而不是靠调用方自觉。
+
+## 内部模块拆分（零契约变更）
+
+- `_tasks_types.py`：封闭常量集、建表 Schema、值对象与行映射
+- `_tasks_subtasks.py`：`_SubtaskStoreMixin`（子任务委派、取消传播、唤醒与恢复）
+- `_tasks_cursor_rebuild.py`：`_TaskCursorRebuildMixin`（游标、模型回合、终态结算与投影重建）
+- 本模块：保留 `TaskStore` 核心入口，并重导出全部公开及测试依赖符号。
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-import re
 import sqlite3
-import time
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .contents import REF_PREFIX
+from ._tasks_cursor_rebuild import _TaskCursorRebuildMixin
+from ._tasks_subtasks import _SubtaskStoreMixin
+from ._tasks_types import (
+    _MCP_SERVER_RE,
+    CANCEL_REASON,
+    CONTROL_CANCEL,
+    CONTROL_PAUSE,
+    CONTROL_REQUESTS,
+    EFFECT_STATES,
+    EXECUTION_STARTED,
+    NON_TERMINAL_STATES,
+    RUN_CANCELLING,
+    RUN_CONTROL,
+    RUN_CREATED,
+    RUN_CURSOR_SAVED,
+    RUN_EFFECT,
+    RUN_END,
+    RUN_FENCED,
+    RUN_FENCED_EVENT,
+    RUN_FINISH,
+    RUN_MODEL_TURN,
+    RUN_OUTCOMES,
+    RUN_PAUSED,
+    RUN_QUEUED,
+    RUN_RECONCILING,
+    RUN_RUNNING,
+    RUN_START,
+    RUN_STATE,
+    RUN_STATES,
+    RUN_WAITING_APPROVAL,
+    SCHEMA,
+    STOPPED_STATES,
+    SUBTASK_CANCELLED,
+    SUBTASK_CANCELLING,
+    SUBTASK_DEADLINE_MS,
+    SUBTASK_DEFAULT_MAX_TOKENS,
+    SUBTASK_DEFAULT_MAX_TURNS,
+    SUBTASK_FAILED,
+    SUBTASK_FENCED,
+    SUBTASK_GOAL_MAX_BYTES,
+    SUBTASK_MAX_DEPTH,
+    SUBTASK_MAX_PER_ROOT_TASK,
+    SUBTASK_MAX_UNFINISHED_PER_RUN,
+    SUBTASK_QUEUED,
+    SUBTASK_RUNNING,
+    SUBTASK_STATES,
+    SUBTASK_SUCCEEDED,
+    SUBTASK_SUMMARY_MAX_BYTES,
+    SUBTASK_TERMINAL_STATES,
+    SUBTASK_TOKENS_RANGE,
+    SUBTASK_TURNS_RANGE,
+    SUBTASK_UNFINISHED_STATES,
+    TASK_CREATED,
+    TASK_REVISED,
+    TASK_SCOPE,
+    TERMINAL_STATES,
+    ExecutionPermit,
+    Run,
+    RunCursor,
+    Subtask,
+    Task,
+    _ensure_column,
+    _now,
+    clean_subtask_limits,
+    row_to_run,
+    row_to_subtask,
+    row_to_task,
+    subtask_budget_attempt,
+    truncate_utf8,
+)
 from .disk_admission import DiskAdmission, DiskAdmissionError
 from .errors import RunFenced, TianshuError
-from .events import EventLog, canonical_bytes, sha256_hex
+from .events import EventLog
 from .execpolicy import ExecPolicy
-from .fsutil import atomic_write_bytes
 from .guard import assert_paths_not_blocked
-from .jobs import JOB_PENDING, JOB_WAITING, JobClaim, JobStore
+from .jobs import JOB_WAITING, JobClaim, JobStore
 from .leases import GUARD_TIMEOUT_MS, LeaseStore, execution_guard
 from .run_policy import EFFECTS, PURE_ONLY, RunEffectsDisallowed, RunExecutionPolicyV1
 from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
@@ -58,462 +130,8 @@ from .workspace import ResourceIdentity, WorkspaceBinding, parse_bindings
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
     from .permissions import ApprovalStore
 
-#: MCP server 名形状：与 `resources.McpTarget` 的资源段**逐字一致**（两处各写
-#: 一份是刻意的：tasks 不该为拿一个正则去 import 解析器；但改一处必须改另一处，
-#: `tests/test_mcp_dispatch.py` 有交叉断言）。
-_MCP_SERVER_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
-    task_id       TEXT PRIMARY KEY,
-    goal          TEXT NOT NULL,
-    goal_revision INTEGER NOT NULL DEFAULT 1,
-    lease_epoch   INTEGER NOT NULL DEFAULT 1,
-    active_run_id TEXT,
-    status        TEXT NOT NULL DEFAULT 'open',
-    workspaces    TEXT NOT NULL DEFAULT '[]',
-    exec_policy   TEXT NOT NULL DEFAULT '',
-    is_control    INTEGER NOT NULL DEFAULT 0,
-    memory_scopes TEXT NOT NULL DEFAULT '[]',
-    outbound_allow TEXT NOT NULL DEFAULT '[]',
-    mcp_servers   TEXT NOT NULL DEFAULT '[]',
-    created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS runs (
-    run_id        TEXT PRIMARY KEY,
-    task_id       TEXT NOT NULL,
-    goal_revision INTEGER NOT NULL,
-    lease_epoch   INTEGER NOT NULL,
-    state         TEXT NOT NULL DEFAULT 'created',
-    outcome       TEXT,
-    effect_state  TEXT,
-    control_requested TEXT,
-    created_at    INTEGER NOT NULL,
-    ended_at      INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, created_at);
-
-CREATE TABLE IF NOT EXISTS run_cursors (
-    run_id        TEXT PRIMARY KEY,
-    task_id       TEXT NOT NULL,
-    goal_revision INTEGER NOT NULL,
-    lease_epoch   INTEGER NOT NULL,
-    claim_epoch   INTEGER NOT NULL,
-    payload       TEXT NOT NULL,
-    updated_at    INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS run_turns (
-    run_id     TEXT NOT NULL,
-    turn_id    TEXT NOT NULL,
-    seq        INTEGER NOT NULL,
-    payload    TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (run_id, turn_id)
-);
-
--- 子任务（G2 委派 D1）：一行 = 一次委派。与事件库同一个 SQLite，
--- 和事件同生共死——父 Run 说"派了"而这张表里没有行，等于在撒谎。
--- 主键是 (parent_run_id, subtask_id)：不同父 Run 可以各有一个同名 slug，
--- 同一父 Run 里重复 spawn 同一 slug 是拒绝（dispatch.subtask_exists）。
-CREATE TABLE IF NOT EXISTS subtasks (
-    subtask_id      TEXT NOT NULL,
-    parent_task_id  TEXT NOT NULL,
-    parent_run_id   TEXT NOT NULL,
-    child_task_id   TEXT NOT NULL,
-    child_run_id    TEXT NOT NULL,
-    job_id          TEXT NOT NULL,
-    goal            TEXT NOT NULL,
-    limits          TEXT NOT NULL,
-    state           TEXT NOT NULL,
-    -- G2 委派 D2：spawn 时抄下父 Run 的 (goal_revision, lease_epoch)。
-    -- 子 Run 每次派发前 / 收尾时核验父任务当前版本是否仍是这两个值：
-    -- 不一致 = 父目标已改，子任务被 fence，结果不能回填父 Run。
-    parent_goal_revision INTEGER NOT NULL DEFAULT 0,
-    parent_lease_epoch   INTEGER NOT NULL DEFAULT 0,
-    result_ref      TEXT,
-    summary         TEXT,
-    error           TEXT,
-    created_at      INTEGER NOT NULL,
-    ended_at        INTEGER,
-    PRIMARY KEY (parent_run_id, subtask_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_subtasks_parent_task ON subtasks(parent_task_id);
-"""
-
-TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
-RUN_OUTCOMES = TERMINAL_STATES
-EFFECT_STATES = {"none_applied", "applied", "partial", "unknown"}
-
-# 非终态也必须落库。把 PAUSED / WAITING_APPROVAL / RECONCILING 都塞进
-# "还没成功"这一句话里，用户就分不清"停下了可以继续"和"正在执行"，
-# CLI/UI 也报不出真实状态。这些名字与 PRD §4.3 的状态机一一对应。
-RUN_CREATED = "created"
-RUN_QUEUED = "queued"
-RUN_RUNNING = "running"
-RUN_WAITING_APPROVAL = "waiting_approval"
-RUN_RECONCILING = "reconciling"
-RUN_PAUSED = "paused"
-RUN_CANCELLING = "cancelling"
-RUN_FENCED = "fenced"
-
-NON_TERMINAL_STATES = {
-    RUN_CREATED,
-    RUN_QUEUED,
-    RUN_RUNNING,
-    RUN_WAITING_APPROVAL,
-    RUN_RECONCILING,
-    RUN_PAUSED,
-    RUN_CANCELLING,
-}
-RUN_STATES = NON_TERMINAL_STATES | TERMINAL_STATES | {RUN_FENCED}
-
-# 控制请求与生效状态是两件事：RUNNING 时只记请求，执行器在安全点确认。
-CONTROL_PAUSE = "pause"
-CONTROL_CANCEL = "cancel"
-CONTROL_REQUESTS = {CONTROL_PAUSE, CONTROL_CANCEL}
-
-# 取消的统一说明。**只保证不再派发新的副作用**，不撤回已经发生的修改；
-# 这句同时写进 run.end 的 error 与 CLI 输出，两边不能各说一套。
-CANCEL_REASON = "取消：已停止派发新的副作用（已发生的修改不撤回）"
-
-# 这些状态里 Run 已经停下或正在停，不能直接当"执行完了"来收尾。
-# `created` / `queued` 例外：从没跑过的 Run 被判定为"无事可做"是合法的。
-STOPPED_STATES = {RUN_PAUSED, RUN_WAITING_APPROVAL, RUN_RECONCILING, RUN_CANCELLING}
-
-TASK_CREATED = "task.created"
-TASK_REVISED = "task.revised"
-EXECUTION_STARTED = "execution.started"
-RUN_CURSOR_SAVED = "run.cursor"
-RUN_MODEL_TURN = "run.model_turn"
-RUN_START = "run.start"
-RUN_FINISH = "run.finish"
-# 事件类型必须与状态常量分开命名：`RUN_FENCED` 是状态 `fenced`，
-# 这个模块里原先又写了一个同名常量 `RUN_FENCED = "run.fenced"`，
-# 后者把前者覆盖掉，于是**所有** `run.state == RUN_FENCED` 判断恒为 False
-# （暂停/取消/fence 收尾全部走错分支，作业还可能被永久挂起）。
-RUN_FENCED_EVENT = "run.fenced"
-RUN_STATE = "run.state"
-RUN_END = "run.end"
-RUN_CONTROL = "run.control"
-RUN_EFFECT = "run.effect"
-
-# Task 级事件不属于某个 Run；用空 run_id 把它们与 run 作用域事件分开。
-TASK_SCOPE = ""
-
-# ---- 子任务（G2 委派 D1） ----
-#
-# 任务级声明 `max_subtasks` 是**能力声明**：0 = 这个任务不能委派（与
-# `outbound_allow` 空 = 一条包都不发同一条纪律）。上限是固定值，不做配置化扩容：
-# 每父 Run 最多 2 个未完成、每根 Task 累计最多 4 个、深度固定 1。
-SUBTASK_MAX_UNFINISHED_PER_RUN = 2
-SUBTASK_MAX_PER_ROOT_TASK = 4
-SUBTASK_MAX_DEPTH = 1
-SUBTASK_TURNS_RANGE = (1, 8)
-SUBTASK_TOKENS_RANGE = (256, 8000)
-SUBTASK_DEFAULT_MAX_TURNS = 8
-SUBTASK_DEFAULT_MAX_TOKENS = 2000
-#: 子任务 deadline 固定 300 秒，**不可由模型抬高**（D1 §2.4）。
-SUBTASK_DEADLINE_MS = 300_000
-#: 子任务目标的有界摘要（D1 §2.1：`goal` ≤ 2 KiB）。
-SUBTASK_GOAL_MAX_BYTES = 2048
-
-SUBTASK_QUEUED = "queued"
-SUBTASK_RUNNING = "running"
-#: D1 只记录**取消请求**：真正停下在 D2。写成 `cancelled` 是在假装撤销已完成。
-SUBTASK_CANCELLING = "cancelling"
-SUBTASK_SUCCEEDED = "succeeded"
-SUBTASK_FAILED = "failed"
-SUBTASK_CANCELLED = "cancelled"
-SUBTASK_FENCED = "fenced"
-
-#: 规格 §2.1 的 DDL 注释列了 6 个状态，§2.6 又要求取消先落 `cancelling`。
-#: 两个口径合起来才是完整封闭集（这一点写进 PR body 对账）。
-SUBTASK_STATES = frozenset(
-    {
-        SUBTASK_QUEUED,
-        SUBTASK_RUNNING,
-        SUBTASK_CANCELLING,
-        SUBTASK_SUCCEEDED,
-        SUBTASK_FAILED,
-        SUBTASK_CANCELLED,
-        SUBTASK_FENCED,
-    }
-)
-#: "未完成"：还占着并发额度、父 Run 必须等它。终态 + fenced 都不算。
-SUBTASK_UNFINISHED_STATES = frozenset(
-    {SUBTASK_QUEUED, SUBTASK_RUNNING, SUBTASK_CANCELLING}
-)
-SUBTASK_TERMINAL_STATES = frozenset(
-    {SUBTASK_SUCCEEDED, SUBTASK_FAILED, SUBTASK_CANCELLED, SUBTASK_FENCED}
-)
-
-
-def subtask_budget_attempt(parent_run_id: str, subtask_id: str) -> str:
-    """子任务在父账户 `subtasks` 维度上的**预占身份**。
-
-    身份必须可重算：D1 只在 spawn 时预占，D2 收尾时要结算同一张预占。把
-    `(父 Run, slug)` 拼成稳定字符串，就不必在 `subtasks` 行里再存一个预算 id
-    （规格 §2.1 的 DDL 没有这一列）。`BudgetLedger.reserve()` 对同一
-    `(account_id, attempt_id)` 幂等，重算不会重复扣。
-    """
-    return f"subtask:{parent_run_id}:{subtask_id}"
-
-
-def clean_subtask_limits(raw: dict[str, Any] | None) -> dict[str, int]:
-    """子任务局部上限：补默认值、**越界拒绝**（绝不静默夹到上限）。
-
-    `deadline_ms` 是固定值，不接受调用方抬高：传进来也和
-    `SUBTASK_DEADLINE_MS` 不同就拒绝。返回值**总是**含三项（含固定的 deadline），
-    因为 `subtasks.limits` 与 `subtask.spawned` 的契约要求三项齐全；派发层据此
-    在 spawn 那一刻把它换算成账户的绝对 deadline（`now + 300s`）。
-    """
-    raw = dict(raw or {})
-    unknown = sorted(set(raw) - {"max_turns", "max_tokens", "deadline_ms"})
-    if unknown:
-        raise TianshuError(f"未知的子任务上限字段：{unknown}")
-    if "deadline_ms" in raw and raw["deadline_ms"] != SUBTASK_DEADLINE_MS:
-        raise TianshuError(
-            f"deadline_ms 固定 {SUBTASK_DEADLINE_MS}，不能由模型抬高："
-            f"{raw['deadline_ms']}"
-        )
-    turns = raw.get("max_turns", SUBTASK_DEFAULT_MAX_TURNS)
-    tokens = raw.get("max_tokens", SUBTASK_DEFAULT_MAX_TOKENS)
-    for name, value in (("max_turns", turns), ("max_tokens", tokens)):
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise TianshuError(f"{name} 必须是整数：{value!r}")
-    low, high = SUBTASK_TURNS_RANGE
-    if not low <= turns <= high:
-        raise TianshuError(
-            f"max_turns 必须在 {low}–{high} 之间：{turns}（超过上限就拒绝，不夹取）"
-        )
-    low, high = SUBTASK_TOKENS_RANGE
-    if not low <= tokens <= high:
-        raise TianshuError(
-            f"max_tokens 必须在 {low}–{high} 之间：{tokens}（超过上限就拒绝，不夹取）"
-        )
-    return {
-        "max_turns": turns,
-        "max_tokens": tokens,
-        "deadline_ms": SUBTASK_DEADLINE_MS,
-    }
-
-
-#: 子任务结果摘要上限（规格 §2.5：≤4 KiB 内联 + 全文引用）。
-SUBTASK_SUMMARY_MAX_BYTES = 4096
-
-
-def truncate_utf8(text: str, limit: int = SUBTASK_SUMMARY_MAX_BYTES) -> str:
-    """按 **UTF-8 字节**截断，且不切出半个字符。
-
-    为什么不是 `text[:limit]`：那是按字符数截的，一个中文占 3 字节，4 KiB
-    的预算会被读成 4096 个汉字（12 KiB）——"有界"就只是句空话。反过来直接
-    `text.encode()[:limit].decode()` 又会在多字节字符中间切断，抛
-    `UnicodeDecodeError` 或产生替换字符。所以按字节切完再 `errors="ignore"`
-    丢掉末尾半个码点。
-    """
-    if len(text.encode("utf-8")) <= limit:
-        return text
-    return text.encode("utf-8")[:limit].decode("utf-8", "ignore")
-
-
-def _ensure_column(
-    conn: sqlite3.Connection, table: str, name: str, ddl: str
-) -> None:
-    """给早期版本的库补列。
-
-    投影表是 `CREATE TABLE IF NOT EXISTS` 建的，已存在的库不会被改写，
-    所以新列必须显式补齐，否则老库读 `control_requested` 直接报错。
-    """
-    have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if name not in have:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-
-
-@dataclass
-class Task:
-    task_id: str
-    goal: str
-    goal_revision: int
-    lease_epoch: int
-    active_run_id: str | None
-    status: str
-    workspaces: list[WorkspaceBinding] = field(default_factory=list)
-    #: 任务级执行策略（F2）。None = 未配置 = run_command 默认全拒。
-    #: 开启 exec 是显式动作：`task create --allow-exec-cmd`。
-    exec_policy: ExecPolicy | None = None
-    #: 控制面 Run（CLI / UI 直接发起）：只有它能用控制面专属工具与记忆作用域。
-    is_control: bool = False
-    #: 控制面声明的记忆作用域（`memory://task/...` 等 URI）；模型不可设置。
-    memory_scopes: tuple[str, ...] = ()
-    #: 任务级外发白名单（PRD §5.2.3 / G2）：允许出网的**源**，形如
-    #: `network://https/example.com`。空 = 这个任务一条包都不发。
-    #:
-    #: 与 `exec_policy` 同一条理由，创建时定死、`task revise` 不可改：
-    #: 扩权必须是新任务，不能让旧 Run 已经批准的请求跟着悄悄扩大范围。
-    outbound_allow: tuple[str, ...] = ()
-    #: 任务级 MCP server 白名单（G2 MCP 阶段）：允许这个任务使用的 server 名。
-    #: 空 = 一个都不许。与 `outbound_allow` 同形：创建时定死、`task revise` 不可改。
-    mcp_servers: tuple[str, ...] = ()
-    #: 父链（G2 委派 D1）。根任务三项都是 None、depth=0；
-    #: 子任务的 depth 恒为 1，并记住是谁派的（事件与投影都要能回答）。
-    parent_task_id: str | None = None
-    parent_run_id: str | None = None
-    subtask_id: str | None = None
-    depth: int = 0
-    #: 任务级委派能力声明：0 = 不能委派（**未声明即无委派能力**）。
-    #: 与 `outbound_allow` 同一条纪律：扩权必须是新任务，运行中不可改。
-    max_subtasks: int = 0
-    created_at: int = 0
-    updated_at: int = 0
-
-
-@dataclass
-class Run:
-    run_id: str
-    task_id: str
-    goal_revision: int
-    lease_epoch: int
-    state: str
-    outcome: str | None = None
-    effect_state: str | None = None
-    control_requested: str | None = None
-    #: 子 Run 的父链（G2 委派 D1）：父 Run + 父作用域内的 slug。
-    parent_run_id: str | None = None
-    subtask_id: str | None = None
-    created_at: int = 0
-    ended_at: int | None = None
-
-
-@dataclass
-class Subtask:
-    """一次委派（`subtasks` 表的一行）。
-
-    `state` 是**子任务**的状态机（queued/running/cancelling/succeeded/failed/
-    cancelled/fenced），不是子 Run 的状态机：两者都给出，不互相冒充。
-    """
-
-    subtask_id: str
-    parent_task_id: str
-    parent_run_id: str
-    child_task_id: str
-    child_run_id: str
-    job_id: str
-    goal: str
-    limits: dict[str, int]
-    state: str
-    #: spawn 时父 Run 绑定的版本（D2 fence 的对照值）。
-    parent_goal_revision: int = 0
-    parent_lease_epoch: int = 0
-    result_ref: str | None = None
-    summary: str | None = None
-    error: str | None = None
-    created_at: int = 0
-    ended_at: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "subtask_id": self.subtask_id,
-            "parent_task_id": self.parent_task_id,
-            "parent_run_id": self.parent_run_id,
-            "child_task_id": self.child_task_id,
-            "child_run_id": self.child_run_id,
-            "job_id": self.job_id,
-            "goal": self.goal,
-            "limits": dict(self.limits),
-            "state": self.state,
-            "parent_goal_revision": self.parent_goal_revision,
-            "parent_lease_epoch": self.parent_lease_epoch,
-            "result_ref": self.result_ref,
-            "summary": self.summary,
-            "error": self.error,
-            "created_at": self.created_at,
-            "ended_at": self.ended_at,
-        }
-
-
-@dataclass
-class RunCursor:
-    """Run 的持久游标：重启后从这里继续，而不是重新问模型"刚才做到哪"。
-
-    字段对应计划 §2.4：已提交的消息、尚未执行完的工具提案、已完成的调用、
-    预算账本、绑定过的审批，以及这份游标签发时的 revision/epoch。
-    最后两项不是装饰：resume 时必须能判断"这份游标还是不是当前目标的"。
-    """
-
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    #: 与 `messages` 平行的 seq 归因（F5 上下文编译的溯源材料）。
-    #:
-    #: 带默认值不是风格问题：F5 之前写下的游标没有这个键，`RunCursor.of` 用
-    #: `known = {... if k in cls.__dataclass_fields__}` 过滤，缺键即空列表——
-    #: 旧游标必须能原样反序列化，否则一次升级就让所有暂停中的 Run 打不开。
-    message_seqs: list[int] = field(default_factory=list)
-    pending_proposals: list[dict[str, Any]] = field(default_factory=list)
-    completed_call_ids: list[str] = field(default_factory=list)
-    approval_ids: list[str] = field(default_factory=list)
-    model_turn: dict[str, Any] | None = None
-    budget_ledger: dict[str, Any] = field(default_factory=dict)
-    resource_epochs: dict[str, int] = field(default_factory=dict)
-    output_ref: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "messages": self.messages,
-            "message_seqs": self.message_seqs,
-            "pending_proposals": self.pending_proposals,
-            "completed_call_ids": self.completed_call_ids,
-            "approval_ids": self.approval_ids,
-            "model_turn": self.model_turn,
-            "budget_ledger": self.budget_ledger,
-            "resource_epochs": self.resource_epochs,
-            "output_ref": self.output_ref,
-        }
-
-    @classmethod
-    def of(cls, raw: dict[str, Any] | None) -> RunCursor:
-        raw = raw or {}
-        known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
-        return cls(**known)
-
-
-@dataclass(frozen=True)
-class ExecutionPermit:
-    """"马上就改文件"的线性化证据。
-
-    只在 `begin_execution` 的 with 块内有效，块结束即失效。拿到它就意味着：
-    在**同一把执行守卫**的保护下，Run 没被 fence、租约还在本实例手上，
-    并且 `execution.started` 已经落库。
-    """
-
-    run_id: str
-    task_id: str
-    goal_revision: int
-    lease_epoch: int
-    resources: tuple[str, ...]
-    seq: int
-    started_at: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "task_id": self.task_id,
-            "goal_revision": self.goal_revision,
-            "lease_epoch": self.lease_epoch,
-            "resources": list(self.resources),
-            "seq": self.seq,
-            "started_at": self.started_at,
-        }
-
-
-def _now() -> int:
-    return int(time.time() * 1000)
-
-
-class TaskStore:
+class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
     def __init__(
         self,
         log: EventLog,
@@ -604,7 +222,6 @@ class TaskStore:
             context.log is not self._log or context.data_root != self._data_root
             or context.contents is not self._contents
         ):
-            from .disk_admission import DiskAdmissionError
             raise DiskAdmissionError(
                 "dispatch.disk_space_unknown", "TaskStore 与 context 的实际材料不一致"
             )
@@ -654,6 +271,18 @@ class TaskStore:
                 "不能在已打开的事务中获取执行守卫（锁序必须是：守卫 → 事务）"
             )
         return execution_guard(root, timeout_ms=self._guard_timeout_ms)
+
+    def _must_task(self, task_id: str) -> Task:
+        loaded = self.get_task(task_id)
+        if loaded is None:  # pragma: no cover - 同一连接刚写入或更新的行
+            raise TianshuError(f"task 投影读取失败：{task_id}")
+        return loaded
+
+    def _must_run(self, run_id: str) -> Run:
+        loaded = self.get_run(run_id)
+        if loaded is None:  # pragma: no cover - 同一连接刚写入或更新的行
+            raise TianshuError(f"run 投影读取失败：{run_id}")
+        return loaded
 
     # ---- Task ----
 
@@ -746,7 +375,7 @@ class TaskStore:
                 depth=depth,
                 actor_kind="human",
             )
-        return self.get_task(task_id)  # type: ignore[return-value]
+        return self._must_task(task_id)
 
     @staticmethod
     def _check_parent_chain(
@@ -916,7 +545,7 @@ class TaskStore:
                 if task.status != "open":
                     raise TianshuError(f"task 已关闭，不能改目标：{task.status}")
                 self._revise_locked(tx, task, goal, parsed)
-        return self.get_task(task_id)  # type: ignore[return-value]
+        return self._must_task(task_id)
 
     def _revise_locked(
         self,
@@ -1042,7 +671,7 @@ class TaskStore:
                 payload=payload,
                 execution_policy=execution_policy,
             )
-        return self.get_run(run_id)  # type: ignore[return-value]
+        return self._must_run(run_id)
 
     def run_execution_policy(self, run_id: str) -> RunExecutionPolicyV1 | None:
         from .event_schema import validate_payload
@@ -1330,7 +959,7 @@ class TaskStore:
                 },
                 task_id=run.task_id,
             )
-        return self.get_run(run_id)  # type: ignore[return-value]
+        return self._must_run(run_id)
 
     def note_effect(
         self,
@@ -1371,7 +1000,7 @@ class TaskStore:
                 },
                 task_id=run.task_id,
             )
-        return self.get_run(run_id)  # type: ignore[return-value]
+        return self._must_run(run_id)
 
     # ---- 用户控制：暂停 / 取消 ----
 
@@ -1464,7 +1093,7 @@ class TaskStore:
                 # resume 必须重新获取租约（拿不到就说明目录被别人用了）。
                 if self._leases is not None:
                     self._leases.release_run(run_id)
-        return self.get_run(run_id)  # type: ignore[return-value]
+        return self._must_run(run_id)
 
     def _control_now(self, run_id: str) -> str | None:
         row = self._conn.execute(
@@ -1518,7 +1147,7 @@ class TaskStore:
                     job = self._claims.job_for_run(run_id)
                     if job is not None and job.state == JOB_WAITING:
                         self._claims.wake(job.job_id, reason="parent_cancelled")
-                return self.get_run(run_id)  # type: ignore[return-value]
+                return self._must_run(run_id)
             tx.append(
                 run_id,
                 RUN_STATE,
@@ -1541,7 +1170,7 @@ class TaskStore:
                 effect_state=run.effect_state or "none_applied",
                 reason=CANCEL_REASON,
             )
-        return self.get_run(run_id)  # type: ignore[return-value]
+        return self._must_run(run_id)
 
     def confirm_control(self, run_id: str, *, claim: JobClaim) -> str | None:
         """安全点：把排队中的控制请求变成状态并清掉请求。
@@ -1623,1390 +1252,33 @@ class TaskStore:
             )
             return CONTROL_CANCEL
 
-    # ---- 游标与模型结果（M2 · Task 5 的存储层） ----
-
-    def _require_claims(self) -> JobStore:
-        if self._claims is None:
-            raise TianshuError(
-                "未配置 JobStore：cursor/模型结果必须绑定有效 claim，"
-                "不能用裸 run_id 写入"
-            )
-        return self._claims
-
-    def _assert_writer(self, run_id: str, claim: JobClaim) -> Run:
-        """写这个 Run 状态的人，必须同时是：还没被 fence 的 Run 的当前 owner。"""
-        if not isinstance(claim, JobClaim):
-            raise TianshuError("必须传 JobClaim；不能用裸 run_id 写 Run 的状态")
-        if claim.run_id != run_id:
-            raise TianshuError(
-                f"claim 与 run 不匹配：claim.run_id={claim.run_id} run_id={run_id}"
-            )
-        self._require_claims().assert_claim(claim)
-        return self.assert_current(run_id)
-
-    def save_cursor(self, run_id: str, cursor: RunCursor, claim: JobClaim) -> RunCursor:
-        """保存游标。写入前核验 claim，写入与事件同一事务。
-
-        投影和事件都带 claim_epoch：事后能看出"这份游标是谁在第几次认领时写的"，
-        重启接管争议才有据可查。
-        """
-        if not isinstance(cursor, RunCursor):
-            raise TianshuError("cursor 必须是 RunCursor")
-        payload = canonical_bytes(cursor.to_dict()).decode("utf-8")
-        now = _now()
-        with self._log.transaction() as tx:
-            run = self._assert_writer(run_id, claim)
-            self._conn.execute(
-                "INSERT INTO run_cursors (run_id, task_id, goal_revision,"
-                " lease_epoch, claim_epoch, payload, updated_at)"
-                " VALUES (?,?,?,?,?,?,?)"
-                " ON CONFLICT(run_id) DO UPDATE SET"
-                " task_id=excluded.task_id, goal_revision=excluded.goal_revision,"
-                " lease_epoch=excluded.lease_epoch, claim_epoch=excluded.claim_epoch,"
-                " payload=excluded.payload, updated_at=excluded.updated_at",
-                (
-                    run_id,
-                    run.task_id,
-                    run.goal_revision,
-                    run.lease_epoch,
-                    claim.claim_epoch,
-                    payload,
-                    now,
-                ),
-            )
-            tx.append(
-                run_id,
-                RUN_CURSOR_SAVED,
-                {
-                    "run_id": run_id,
-                    "claim_epoch": claim.claim_epoch,
-                    "goal_revision": run.goal_revision,
-                    "lease_epoch": run.lease_epoch,
-                    "payload_hash": sha256_hex(canonical_bytes(cursor.to_dict())),
-                    "pending_proposals": len(cursor.pending_proposals),
-                    "completed_call_ids": len(cursor.completed_call_ids),
-                },
-                task_id=run.task_id,
-            )
-        return cursor
-
-    def load_cursor(self, run_id: str) -> tuple[RunCursor, dict[str, Any]] | None:
-        row = self._conn.execute(
-            "SELECT * FROM run_cursors WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        meta = {
-            "task_id": row["task_id"],
-            "goal_revision": row["goal_revision"],
-            "lease_epoch": row["lease_epoch"],
-            "claim_epoch": row["claim_epoch"],
-            "updated_at": row["updated_at"],
-        }
-        return RunCursor.of(json.loads(row["payload"])), meta
-
-    def commit_model_turn(
-        self, run_id: str, turn: dict[str, Any], claim: JobClaim
-    ) -> int:
-        """提交一次模型结果，返回该 Run 内递增的序号。
-
-        重复提交同一个 `turn_id`：payload 相同就直接返回原序号（重启重放安全），
-        不同则报错——同一个 turn_id 出现两种内容，说明状态已经不一致，
-        静默覆盖会把"到底花了多少钱"这条账改掉。
-        """
-        turn_id = turn.get("turn_id")
-        if not turn_id:
-            raise TianshuError("turn 缺少 turn_id")
-        payload = canonical_bytes(turn).decode("utf-8")
-        now = _now()
-        with self._log.transaction() as tx:
-            run = self._assert_writer(run_id, claim)
-            existing = self._conn.execute(
-                "SELECT seq, payload FROM run_turns WHERE run_id=? AND turn_id=?",
-                (run_id, turn_id),
-            ).fetchone()
-            if existing is not None:
-                if existing["payload"] == payload:
-                    return int(existing["seq"])
-                raise TianshuError(
-                    f"turn_id 重复但内容不同：run={run_id} turn={turn_id}"
-                )
-            seq = int(
-                self._conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_turns WHERE run_id=?",
-                    (run_id,),
-                ).fetchone()[0]
-            )
-            self._conn.execute(
-                "INSERT INTO run_turns (run_id, turn_id, seq, payload, created_at)"
-                " VALUES (?,?,?,?,?)",
-                (run_id, turn_id, seq, payload, now),
-            )
-            tx.append(
-                run_id,
-                RUN_MODEL_TURN,
-                {
-                    "run_id": run_id,
-                    "turn_id": turn_id,
-                    "seq": seq,
-                    "claim_epoch": claim.claim_epoch,
-                    "finish_reason": turn.get("finish_reason"),
-                    "usage": turn.get("usage"),
-                    "payload_hash": sha256_hex(canonical_bytes(turn)),
-                },
-                task_id=run.task_id,
-            )
-        return seq
-
-    def list_model_turns(self, run_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT turn_id, seq, payload FROM run_turns WHERE run_id=? ORDER BY seq",
-            (run_id,),
-        ).fetchall()
-        return [
-            {"turn_id": r["turn_id"], "seq": r["seq"], **json.loads(r["payload"])}
-            for r in rows
-        ]
-
-    def finish_run(
-        self,
-        run_id: str,
-        *,
-        outcome: str,
-        effect_state: str,
-        reason: str | None = None,
-        report_outcome: str | None = None,
-    ) -> Run:
-        """收尾。被 fence 的 Run 不许报成功——否则旧目标会"复活"。
-
-        校验与写入放在同一条条件 UPDATE 里，避免「检查完到写入之间被改目标」
-        的竞态。
-
-        已经停下（暂停/等审批/待核查/正在取消）的 Run 不能直接收尾：那些状态
-        要经过 resume 或 cancel 才能变成终态。否则"暂停"可以被一句
-        `finish_run(succeeded)` 悄悄改写成成功，PRD §4.3 的状态机就白写了。
-        """
-        with self._log.transaction() as tx:
-            return self._finish_locked(
-                tx,
-                run_id,
-                outcome=outcome,
-                effect_state=effect_state,
-                reason=reason,
-                report_outcome=report_outcome,
-                require_running=True,
-            )
-
-    def _finish_locked(
-        self,
-        tx,
-        run_id: str,
-        *,
-        outcome: str,
-        effect_state: str,
-        reason: str | None = None,
-        report_outcome: str | None = None,
-        require_running: bool = False,
-    ) -> Run:
-        if outcome not in RUN_OUTCOMES:
-            raise TianshuError(
-                f"未知 outcome：{outcome}（可选 {sorted(RUN_OUTCOMES)}）"
-            )
-        if effect_state not in EFFECT_STATES:
-            raise TianshuError(
-                f"未知 effect_state：{effect_state}（可选 {sorted(EFFECT_STATES)}）"
-            )
-        now = _now()
-        run = self.get_run(run_id)
-        if run is None:
-            raise TianshuError(f"run 不存在：{run_id}")
-        # 父 Run 取消时把"被取消传播覆盖了几个子任务"写进 reason（规格 §2.6）。
-        # 数字从 `subtasks` 同一张表算：`cancelling` = 已请求但执行侧还没确认，
-        # `cancelled` = 已确认。已经成功/失败/被 fence 的子任务不算"被取消"。
-        if outcome == "cancelled" and self._has_subtasks(run_id):
-            cancelled_children = self._count_cancelled_subtasks(run_id)
-            reason = (
-                f"{reason or CANCEL_REASON}；subtasks_cancelled={cancelled_children}"
-            )
-        if require_running and run.state in STOPPED_STATES:
-            raise RunFenced(
-                f"run 停在这些状态里不能直接收尾：{run_id}（state={run.state}）；"
-                "请先 resume 或 cancel"
-            )
-
-        # 公开收尾要求"这个 Run 现在不是在停着的状态里"；把这条也塞进同一条
-        # 条件 UPDATE，否则"检查通过 → 另一个进程把它暂停了 → 仍然收尾成功"
-        # 这个窗口还开着。检查与写入必须在同一条语句里，这是本模块的老规矩。
-        stopped = (
-            " AND state NOT IN ('paused','waiting_approval','reconciling','cancelling')"
-            if require_running
-            else ""
-        )
-        cur = self._conn.execute(
-            "UPDATE runs SET state=?, outcome=?, effect_state=?,"
-            " control_requested=NULL, ended_at=?"
-            " WHERE run_id=?"
-            "   AND state NOT IN ('succeeded','failed','cancelled','fenced')"
-            "   AND goal_revision = (SELECT goal_revision FROM tasks"
-            "                        WHERE task_id = runs.task_id)"
-            "   AND lease_epoch = (SELECT lease_epoch FROM tasks"
-            "                      WHERE task_id = runs.task_id)" + stopped,
-            (outcome, outcome, effect_state, now, run_id),
-        )
-        if cur.rowcount == 0:
-            raise RunFenced(f"run {run_id} 已被 fence 或已终结，不得提交结果")
-
-        self._conn.execute(
-            "UPDATE tasks SET active_run_id=NULL, updated_at=?"
-            " WHERE task_id=? AND active_run_id=?",
-            (now, run.task_id, run_id),
-        )
-        # `run.end` 是"这次执行有结论了"的唯一事件。以前它由主循环单独写，
-        # 于是 CLI 直接取消的 Run 只有 run.finish 没有 run.end——M0 的
-        # S3「run.start → … → run.end」在取消路径上根本不成立，而取消恰恰是
-        # 最需要让用户看见"到底改了什么"的路径。现在所有终态都从这一处写。
-        tx.append(
-            run_id,
-            RUN_END,
-            self._run_end_payload(
-                run_id,
-                outcome=report_outcome or outcome,
-                effect_state=effect_state,
-                reason=reason,
-            ),
-            task_id=run.task_id,
-            actor_kind="core",
-        )
-        tx.append(
-            run_id,
-            RUN_FINISH,
-            {
-                "run_id": run_id,
-                "task_id": run.task_id,
-                "outcome": outcome,
-                "effect_state": effect_state,
-                **({"reason": reason} if reason else {}),
-            },
-            task_id=run.task_id,
-        )
-        # G2 D2：子 Run 的终态写入是 `subtasks` 行 / 父 Run `subtask.finished` /
-        # 预算结算 / 父作业唤醒的**唯一**收尾点，且必须与 run.end 同一事务。
-        # 顺序在这里无关正确性（同一事务），放在 run.end 之后是为了让
-        # "子 Run 先有结论，父 Run 再收到完成事件"的事件次序可读。
-        self._settle_child_subtask_locked(
-            tx,
-            run,
-            pre_state=run.state,
-            outcome=outcome,
-            reason=reason,
-        )
-        # Run 结束即交还工作区，下一个 Run 才拿得到租约
-        if self._leases is not None:
-            self._leases.release_run(run_id)
-        # 取消时作业必须一起收掉：留着 claimed 的作业会让下一个 worker 认领到
-        # 一个已经结束的 Run，然后在一个终态上报"成功"。
-        # 正常收尾则相反——作业要由 owner 用**自己的 claim** 来收，那才是
-        # "我还活着且我还是 owner"的证据；这里替它收等于把这条证据抹掉。
-        if outcome == "cancelled" and self._approvals is not None:
-            # 取消之后旧批准不能再挂在待批队列里：它们属于一个已经结束的 Run，
-            # 批了也不会执行，只会让人以为"还有事情没做完"。
-            self._approvals.supersede_for_run(run_id, reason="run_cancelled")
-        if outcome == "cancelled" and self._claims is not None:
-            job = self._claims.job_for_run(run_id)
-            # `waiting` 也要收：它是"等外面的事件"，而 Run 已经终结，那个事件
-            # 永远不会再让它跑起来——留着就是一条永远不结束的作业。
-            if job is not None and job.state in ("pending", "claimed", "waiting"):
-                self._claims.cancel(job.job_id, reason="run_cancelled")
-        return self.get_run(run_id)  # type: ignore[return-value]
-
-    def _run_end_payload(
-        self,
-        run_id: str,
-        *,
-        outcome: str,
-        effect_state: str,
-        reason: str | None,
-    ) -> dict[str, Any]:
-        """终态结算：全部从事件与游标里读，不接受调用方"报个数"。
-
-        为什么不让主循环传入自己的计数器：CLI 直接取消时没有主循环在场，
-        那条路径就永远写不出结算；两套写法还会让"改了几个文件"的账在两种
-        收尾方式下不一致。统一从事实源汇总，两条路径自动一样。
-        """
-        events = self._log.read_run(run_id)
-        receipts = [
-            e.payload["receipt_id"]
-            for e in events
-            if e.type == "receipt" and e.payload.get("receipt_id")
-        ]
-        artifact: dict[str, Any] | None = None
-        for ev in events:
-            if ev.type != "tool.result":
-                continue
-            if ev.payload.get("tool_id") != "create_report":
-                continue
-            if ev.payload.get("status") != "succeeded":
-                continue
-            out = ev.payload.get("output") or {}
-            if out.get("sha256"):
-                artifact = {
-                    k: out.get(k)
-                    for k in ("path", "sha256", "bytes", "before_state", "after_state")
-                }
-        intent_count = sum(1 for e in events if e.type == "model.intent")
-        result_count = sum(1 for e in events if e.type == "model.result")
-        # 按**事件条数**算，不按 request_id 去重：崩溃后重发的那一轮用的是
-        # 同一个 request_id，去重会把"已经付过一次钱、没记进账"抹成 0。
-        unbilled = max(0, intent_count - result_count)
-        stored = self.load_cursor(run_id)
-        ledger = (stored[0].budget_ledger if stored is not None else {}) or {}
-        unknown_usage = int(ledger.get("unknown_usage_calls", 0) or 0)
-        unknown_cost = int(ledger.get("unknown_cost_calls", 0) or 0)
-        known_cost_sum = int(ledger.get("cost_total_micros", 0) or 0)
-        has_known_price_call = known_cost_sum > 0 or any(
-            isinstance((ev.payload.get("cost") or {}).get("cost"), int)
-            and not isinstance((ev.payload.get("cost") or {}).get("cost"), bool)
-            for ev in events
-            if ev.type == "model.result"
-        )
-        had_any_model_call = result_count > 0 or unknown_cost > 0 or unbilled > 0
-        cost_total_micros: int | None = (
-            known_cost_sum
-            if (has_known_price_call or not had_any_model_call)
-            else None
-        )
-        return {
-            "outcome": outcome,
-            "effect_state": effect_state,
-            "artifact": artifact,
-            "turns": int(ledger.get("turns", 0) or 0),
-            "tokens": int(ledger.get("tokens", 0) or 0),
-            "tokens_unknown_calls": unknown_usage,
-            "cost_total_micros": cost_total_micros,
-            "cost_unknown_calls": unknown_cost,
-            "receipt_ids": receipts,
-            # 预算可信 = 没有任何"可能花了但没记账"的调用
-            "budget_enforced": unknown_usage == 0 and unbilled == 0,
-            "unbilled_model_intents": unbilled,
-            "error": reason,
-        }
-
-    def list_runs(self, task_id: str) -> list[Run]:
-        rows = self._conn.execute(
-            "SELECT * FROM runs WHERE task_id=? ORDER BY created_at", (task_id,)
-        ).fetchall()
-        return [self._row_to_run(r) for r in rows]
-
-    # ---- 子任务（G2 委派 D1） ----
-
-    def create_subtask(
-        self,
-        parent_task: Task,
-        parent_run: Run,
-        *,
-        subtask_id: str,
-        goal: str,
-        limits: dict[str, int] | None = None,
-        write: bool = False,
-    ) -> Subtask:
-        """建一次委派：子 Task + 子 Run + 子 Job + `subtasks` 行，**同一事务**。
-
-        四件事必须同生同死：少建子 Task 就是"父任务说派了、子任务不存在"；
-        少建子 Job 就是"子 Run 永远不会被任何 worker 认领"；少了 `subtasks`
-        行则父任务连自己派过什么都答不出来。父 Run 的 `subtask.spawned`
-        事件由派发层在**同一个事务**里补写（它需要预算预占的结果）。
-
-        子 Task 的字段默认与 W10 之前一致（规格 §2.1）：父任务的全部绑定逐个
-        改写成只读、去重；没有 exec 策略、没有外发白名单、没有记忆作用域、
-        `max_subtasks=0`、`depth=1`；子 Run `pure_only`。写文件/出网/exec/
-        MCP 都是**拒绝**，不是"弹审批"。空 memory_scopes 不会禁止 user/task
-        记忆；派发层和记忆执行器还必须根据 depth/父链独立拒绝所有记忆写入。
-
-        W10（`write=True`，`subtask.spawn` 2.0 显式声明）：子任务可以写**父任务
-        自己就能写**的目录——绑定逐条保留父的 mode（父只读的根仍然只读，授权
-        上限恒为父绑定），子 Run 改为 `effects` 资格。出网/MCP/exec/记忆写/
-        再委派依旧全拒；子 Run 里的每个写动作仍走既有派发审批（与父 Run 完全
-        同构），没有任何"子代理免审通道"。
-        """
-        if not isinstance(write, bool):
-            raise TianshuError("write 必须是布尔值")
-        if self._claims is None:
-            raise TianshuError(
-                "未配置 JobStore：创建子任务必须同时建子作业"
-                "（否则子 Run 永远不会被认领）"
-            )
-        if parent_task.depth != 0:
-            raise TianshuError(
-                f"深度 {parent_task.depth} 的任务不能再委派：{parent_task.task_id}"
-            )
-        if parent_run.task_id != parent_task.task_id:
-            raise TianshuError(
-                f"父 Run 不属于这个父任务：{parent_run.run_id}"
-                f"（run.task_id={parent_run.task_id}）"
-            )
-        goal = (goal or "").strip()
-        if not goal:
-            raise TianshuError("子任务目标不能为空")
-        raw = goal.encode("utf-8")
-        if len(raw) > SUBTASK_GOAL_MAX_BYTES:
-            raise TianshuError(
-                f"子任务目标超过 {SUBTASK_GOAL_MAX_BYTES} 字节：{len(raw)}"
-            )
-        clean = clean_subtask_limits(limits)
-        # 绑定改写：默认全部只读（W10 之前的固定行为）；`write=True` 时逐条
-        # **保留父的 mode**——父可写的根子任务才可写，父只读的根仍然只读。
-        # 授权上限恒为父绑定：子任务永远拿不到父任务没有的目录或模式。
-        # 去重按 (canonical 根, 快照策略) —— 同一个目录的两种写法在
-        # WorkspaceBinding 构造时就归一到同一个根了，这里只需按根去重。
-        rewritten: dict[tuple[str, str], WorkspaceBinding] = {}
-        for binding in parent_task.workspaces:
-            mode = binding.mode if write else "readonly"
-            child_binding = WorkspaceBinding(
-                root_path=binding.root_path,
-                mode=mode,
-                snapshot_policy=binding.snapshot_policy,
-            )
-            rewritten[
-                (child_binding.root_path, child_binding.snapshot_policy)
-            ] = child_binding
-        bindings = list(rewritten.values())
-        # effects 资格只在"实际拿到了可写绑定"时才给：write=true 但父任务全只读
-        # 是**如实降级**（子任务就是只读的），子 Run 仍是 pure_only——不凭空给一个
-        # 没有可写面的 effects 资格。effects 只放开"既有派发审批链路里的文件写"：
-        # pure_only 的子 Run 连写工具都看不见（清单过滤），effects 的每个写动作
-        # 仍要过 prepare 判定 + 人工批准 + 执行侧 digest 复核。
-        write_effective = write and any(b.mode == "writable" for b in bindings)
-        child_policy = EFFECTS if write_effective else PURE_ONLY
-        # 与 start_run 同口径：可写子任务会创建 effects 子 Run（驱动时建快照清单并开放文件写），
-        # 必须在开启 SQLite 写事务与落任何子 Task/Run/Job 行之前过统一准入门；
-        # pure_only 子任务（含 write=True 但父绑定全只读的如实降级）保持无 2 GiB 阈值门。
-        self.require_new_run(
-            child_policy,
-            writable_roots=tuple(
-                Path(b.root_path) for b in bindings if b.can_write
-            ),
-        )
-        now = _now()
-        with self._log.transaction() as tx:
-            child_task_id = self._create_task_locked(
-                tx,
-                goal=goal,
-                bindings=bindings,
-                exec_policy=None,
-                control=False,
-                memory_scopes=[],
-                outbound_allow=(),
-                # 子任务不能调 MCP：白名单为空（write=True 也只放开文件写）。
-                mcp_servers=[],
-                max_subtasks=0,
-                parent_task_id=parent_task.task_id,
-                parent_run_id=parent_run.run_id,
-                subtask_id=subtask_id,
-                depth=SUBTASK_MAX_DEPTH,
-                actor_kind="core",
-            )
-            child_task = self.get_task(child_task_id)
-            if child_task is None:  # pragma: no cover - 同一事务里刚写的行
-                raise TianshuError("子任务创建失败：子 Task 投影不存在")
-            child_run_id = f"run_{uuid.uuid4().hex[:12]}"
-            self._insert_run_locked(
-                tx,
-                task=child_task,
-                run_id=child_run_id,
-                now=now,
-                execution_policy=child_policy,
-                # `task` 必须进 run.start：`replay` 用它重建首条用户消息。
-                # 子 Run 少了它，回放会拿空字符串去比 messages_hash，必然红。
-                payload={"task": goal},
-                parent_run_id=parent_run.run_id,
-                subtask_id=subtask_id,
-            )
-            job = self._claims.enqueue(child_run_id)
-            self._conn.execute(
-                "INSERT INTO subtasks (subtask_id, parent_task_id, parent_run_id,"
-                " child_task_id, child_run_id, job_id, goal, limits, state,"
-                " parent_goal_revision, parent_lease_epoch, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    subtask_id,
-                    parent_task.task_id,
-                    parent_run.run_id,
-                    child_task_id,
-                    child_run_id,
-                    job.job_id,
-                    goal,
-                    json.dumps(clean, ensure_ascii=False, sort_keys=True),
-                    SUBTASK_QUEUED,
-                    # 抄**父 Run 创建时绑定的版本**，不是当时任务的当前值：
-                    # fence 要判的是"父 Run 还能不能代表这个目标"。
-                    parent_run.goal_revision,
-                    parent_run.lease_epoch,
-                    now,
-                ),
-            )
-        return self.get_subtask(parent_run.run_id, subtask_id)  # type: ignore[return-value]
-
-    def get_subtask(self, parent_run_id: str, subtask_id: str) -> Subtask | None:
-        row = self._conn.execute(
-            "SELECT * FROM subtasks WHERE parent_run_id=? AND subtask_id=?",
-            (parent_run_id, subtask_id),
-        ).fetchone()
-        return self._row_to_subtask(row) if row is not None else None
-
-    def list_subtasks(self, parent_run_id: str) -> list[Subtask]:
-        rows = self._conn.execute(
-            "SELECT * FROM subtasks WHERE parent_run_id=? ORDER BY created_at,"
-            " subtask_id",
-            (parent_run_id,),
-        ).fetchall()
-        return [self._row_to_subtask(row) for row in rows]
-
-    def count_unfinished_subtasks(self, parent_run_id: str) -> int:
-        marks = ",".join("?" * len(SUBTASK_UNFINISHED_STATES))
-        row = self._conn.execute(
-            f"SELECT COUNT(*) AS n FROM subtasks WHERE parent_run_id=?"
-            f" AND state IN ({marks})",
-            (parent_run_id, *sorted(SUBTASK_UNFINISHED_STATES)),
-        ).fetchone()
-        return int(row["n"])
-
-    def count_subtasks_for_task(self, parent_task_id: str) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM subtasks WHERE parent_task_id=?",
-            (parent_task_id,),
-        ).fetchone()
-        return int(row["n"])
-
-    def request_subtask_cancel(
-        self, parent_run_id: str, subtask_id: str
-    ) -> Subtask | None:
-        """记录取消请求：状态置 `cancelling` + 子作业与子 Run 取消请求。
-
-        **这里不写 `cancelled`**：真正停下由执行侧在安全点确认（D2）。D1 只
-        记录请求，D2 起子 Run 也会看到 `control_requested=cancel`，但它仍然
-        由 `confirm_control()` 在安全点收尾——不假装撤销已经完成。已终结的
-        子任务原样返回（幂等：不报错，也不假装撤销）。
-        """
-        with self._log.transaction():
-            row = self.get_subtask(parent_run_id, subtask_id)
-            if row is None:
-                return None
-            if row.state in SUBTASK_TERMINAL_STATES:
-                return row
-            if row.state == SUBTASK_CANCELLING:
-                return row
-            self._conn.execute(
-                "UPDATE subtasks SET state=? WHERE parent_run_id=? AND subtask_id=?"
-                " AND state=?",
-                (SUBTASK_CANCELLING, parent_run_id, subtask_id, row.state),
-            )
-            if self._claims is not None:
-                # 只置请求位：`request_cancel` 不写 `cancelled`，作业状态仍是
-                # pending/claimed/waiting，执行侧自己决定何时在安全点收手。
-                self._claims.request_cancel(row.job_id)
-            # D2：子 Run 也要看到取消请求。用 `defer` 变体——子 Run 可能还在
-            # `created`（属于安全状态），就地收尾会违反"取消先落 cancelling、
-            # 由执行侧在安全点确认"的口径。
-            self.request_cancel_deferred(
-                row.child_run_id, reason="subtask_cancel_requested"
-            )
-        return self.get_subtask(parent_run_id, subtask_id)
-
-    # ---- 子任务执行与收尾（G2 委派 D2） ----
-
-    def mark_subtask_running(self, child_run_id: str) -> Subtask | None:
-        """子 Run 真正开始被驱动：`queued → running`。
-
-        只允许从 `queued` 推进：`cancelling` 不能被"我开始了"覆盖（人已经
-        要求停），终态更不能被改写。已经在 `running` 时保持原状（恢复驱动
-        不该产生第二条状态迁移）。
-        """
-        run = self.get_run(child_run_id)
-        if run is None or not run.parent_run_id or not run.subtask_id:
-            return None
-        with self._log.transaction():
-            self._conn.execute(
-                "UPDATE subtasks SET state=? WHERE parent_run_id=? AND subtask_id=?"
-                " AND state=?",
-                (SUBTASK_RUNNING, run.parent_run_id, run.subtask_id, SUBTASK_QUEUED),
-            )
-        return self.get_subtask(run.parent_run_id, run.subtask_id)
-
-    def request_cancel_deferred(self, run_id: str, *, reason: str) -> Run | None:
-        """只记下取消请求，**不**就地收尾（G2 D2 子 Run / 父取消传播用）。
-
-        与 `request_cancel` 的区别只有一处，但很关键：`request_cancel` 对
-        `created/queued/waiting_approval/paused/reconciling` 会**立即**终结
-        Run；子任务的取消口径是"先落 cancelling，由执行侧在安全点确认"，
-        所以这里一律只写请求。真正的终态仍由 `confirm_control()` 写。
-        """
-        with self._log.transaction() as tx:
-            run = self.get_run(run_id)
-            if run is None:
-                return None
-            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
-                return run
-            if run.control_requested == CONTROL_CANCEL:
-                return run
-            tx.append(
-                run_id,
-                RUN_CONTROL,
-                {
-                    "run_id": run_id,
-                    "task_id": run.task_id,
-                    "action": CONTROL_CANCEL,
-                    "applied_immediately": False,
-                    "effect_state": run.effect_state,
-                    "reason": reason,
-                },
-                task_id=run.task_id,
-                actor_kind="core",
-            )
-            self._conn.execute(
-                "UPDATE runs SET control_requested=? WHERE run_id=?"
-                " AND state NOT IN ('succeeded','failed','cancelled','fenced')",
-                (CONTROL_CANCEL, run_id),
-            )
-        return self.get_run(run_id)
-
-    def parent_fence_reason(self, child_run_id: str) -> str | None:
-        """子 Run 的父目标是否还和 spawn 时记录的一致（只读判断）。
-
-        为什么要比 `parent_task` 的当前值而不是 `parent_run` 行上的值：
-        改目标时 `revise_task` 更新的是 **task** 的 revision/epoch，父 Run
-        行上的旧值保持不变（它代表"创建时绑定的版本"）。只看 Run 行会永远
-        看不出目标已改。两个值都比，是为了同时覆盖"父 Run 自己被 fence"。
-        """
-        run = self.get_run(child_run_id)
-        if run is None or not run.parent_run_id or not run.subtask_id:
-            return None
-        row = self.get_subtask(run.parent_run_id, run.subtask_id)
-        if row is None:
-            return f"子任务行缺失：{run.parent_run_id}/{run.subtask_id}"
-        return self._parent_fence_reason_for_row(row)
-
-    def _parent_fence_reason_for_row(self, row: Subtask) -> str | None:
-        parent = self.get_run(row.parent_run_id)
-        if parent is None:
-            return f"父 Run 不存在：{row.parent_run_id}"
-        parent_task = self.get_task(parent.task_id)
-        if parent_task is None:
-            return f"父 Task 不存在：{parent.task_id}"
-        if parent.state == RUN_FENCED:
-            return f"父 Run 已被 fence：{row.parent_run_id}"
-        current = (parent_task.goal_revision, parent_task.lease_epoch)
-        bound = (parent.goal_revision, parent.lease_epoch)
-        recorded = (row.parent_goal_revision, row.parent_lease_epoch)
-        if current != recorded or bound != recorded:
-            return (
-                "父目标已变更（子任务被 fence）：spawn 时 "
-                f"{recorded[0]}/{recorded[1]}，父 Run 绑定 {bound[0]}/{bound[1]}，"
-                f"父 Task 当前 {current[0]}/{current[1]}"
-            )
-        return None
-
-    def fence_child_run(self, child_run_id: str, *, reason: str) -> Subtask | None:
-        """把父目标已变更的子任务置为 `fenced`（D2 §2.6）。
-
-        三条纪律：
-        1. **不写 `subtask.finished`**：fence 的结果不能回填父 Run（写一条
-           "完成"事件会让父 Run 的审计里出现一个不该被采信的结论）。
-        2. 子 Run 只**请求取消**（安全点由执行侧确认），不在这里假装停住。
-        3. 预算不退款：确定没执行过的走 `abandon_unsent`，其余 `settle 1`。
-        """
-        run = self.get_run(child_run_id)
-        if run is None or not run.parent_run_id or not run.subtask_id:
-            return None
-        with self._log.transaction() as tx:
-            row = self.get_subtask(run.parent_run_id, run.subtask_id)
-            if row is None or row.state in SUBTASK_TERMINAL_STATES:
-                return row
-            self._mark_subtask_fenced_locked(tx, row, reason=reason)
-            self.request_cancel_deferred(
-                child_run_id, reason="parent_fenced"
-            )
-            if self._claims is not None:
-                job = self._claims.job_for_run(child_run_id)
-                if job is not None and job.state in ("pending", "claimed", "waiting"):
-                    self._claims.request_cancel(job.job_id)
-            self._maybe_wake_parent(row.parent_run_id)
-        return self.get_subtask(run.parent_run_id, run.subtask_id)
-
-    def _mark_subtask_fenced_locked(self, tx, row: Subtask, *, reason: str) -> None:
-        now = _now()
-        cur = self._conn.execute(
-            "UPDATE subtasks SET state=?, error=?, ended_at=?"
-            " WHERE parent_run_id=? AND subtask_id=?"
-            "   AND state NOT IN (?,?,?,?)",
-            (
-                SUBTASK_FENCED,
-                reason,
-                now,
-                row.parent_run_id,
-                row.subtask_id,
-                SUBTASK_SUCCEEDED,
-                SUBTASK_FAILED,
-                SUBTASK_CANCELLED,
-                SUBTASK_FENCED,
-            ),
-        )
-        if cur.rowcount == 0:
-            return
-        self._settle_subtask_budget(
-            row, state=SUBTASK_FENCED, never_executed=self._subtask_never_executed(row)
-        )
-
-    def _subtask_never_executed(self, row: Subtask) -> bool:
-        """子任务是否**确定**没执行过（只在这个条件下才允许 `abandon_unsent`）。
-
-        判据是三条同时成立：子 Run 仍 `created`、作业从未被认领
-        （`claim_epoch == 0`）、作业仍是 `pending`。任何一条不成立都按"可能
-        执行过"结算——取消不退款，宁可多记一笔，也不把未知洗成零。
-        """
-        if self._claims is None:
-            return False
-        child = self.get_run(row.child_run_id)
-        job = self._claims.get(row.job_id)
-        return (
-            child is not None
-            and child.state == RUN_CREATED
-            and job is not None
-            and int(job.claim_epoch) == 0
-            and job.state == JOB_PENDING
-        )
-
-    def _settle_subtask_budget(
-        self, row: Subtask, *, state: str, never_executed: bool
-    ) -> None:
-        """结算父账户 `subtasks` 维度上的那 1 个预占（幂等）。"""
-        if self._budget is None:
-            return
-        account_id = f"run:{row.parent_run_id}"
-        lookup = getattr(self._budget, "reservation_for", None)
-        if lookup is None:  # pragma: no cover - 单测替身没有账本
-            return
-        reservation = lookup(account_id, subtask_budget_attempt(
-            row.parent_run_id, row.subtask_id
-        ))
-        if reservation is None:
-            return
-        if never_executed:
-            self._budget.abandon_unsent(
-                reservation.reservation_id,
-                reason=f"子任务未开始即终止（{state}）",
-            )
-            return
-        self._budget.settle(
-            reservation.reservation_id,
-            usage={"subtasks": 1},
-            known_dimensions={"subtasks"},
-        )
-
-    def _maybe_wake_parent(self, parent_run_id: str) -> bool:
-        """父 Run 已无未完成子任务、且正停在 `waiting` → 唤醒父作业。
-
-        只在父 Run 仍是 `RUNNING` 时唤醒：`waiting_approval` / `paused` 的
-        父作业是在等人，不是等子任务；把它叫醒只会让 worker 认领后立刻重新
-        park，每轮涨一次 `claim_epoch` 并把用户刚批的审批作废。
-        父 Run 已终态时是 no-op（不能把终态作业拉回队列）。
-        """
-        if self._claims is None:
-            return False
-        if self.count_unfinished_subtasks(parent_run_id) != 0:
-            return False
-        parent = self.get_run(parent_run_id)
-        if parent is None or parent.state != RUN_RUNNING:
-            return False
-        job = self._claims.job_for_run(parent_run_id)
-        if job is None or job.state != JOB_WAITING:
-            return False
-        self._claims.wake(job.job_id, reason="children_finished")
-        return True
-
-    def _child_result(self, row: Subtask) -> tuple[str, str | None, str | None]:
-        """子 Run 最后一轮有界输出 →（summary, result_ref, 错误说明）。
-
-        **不编造**：拿不到输出时 summary 为空并返回一句"输出不可用"，不会拿
-        子任务目标或状态拼一句看起来像结论的话。内容引用先落盘再登记
-        （与网络阶段 `_write_content` 同一纪律：孤儿 blob 无害，日志承诺一份
-        不存在的内容有害）。
-        """
-        text = ""
-        for event in self._log.read_run(row.child_run_id, verify=False):
-            if event.type != "model.result":
-                continue
-            content = event.payload.get("content")
-            if isinstance(content, str) and content.strip():
-                # 取**最后一条非空**输出：后面可能有空 end_turn。
-                text = content
-        if not text:
-            return "", None, "输出不可用（子 Run 没有可读取的最后一轮输出）"
-        summary = truncate_utf8(text)
-        if self._contents is None or self._blob_dir is None:
-            return summary, None, "内容存储未配置，结果没有 content:// 引用"
-        data = text.encode("utf-8")
-        digest = sha256_hex(data)
-        blob = self._blob_dir / digest
-        if not blob.exists():
-            atomic_write_bytes(blob, data)
-        self._contents.record(
-            digest,
-            data,
-            task_id=row.parent_task_id,
-            run_id=row.parent_run_id,
-        )
-        return summary, f"{REF_PREFIX}{digest}", None
-
-    def _usage_for_child(self, child_run_id: str) -> dict[str, int] | None:
-        stored = self.load_cursor(child_run_id)
-        if stored is None:
-            return None
-        ledger = stored[0].budget_ledger or {}
-        usage = {
-            key: int(ledger[key])
-            for key in ("turns", "tokens")
-            if isinstance(ledger.get(key), int)
-            and not isinstance(ledger.get(key), bool)
-        }
-        return usage or None
-
-    def _settle_subtask_row_locked(
-        self,
-        tx,
-        row: Subtask,
-        *,
-        state: str,
-        summary: str,
-        result_ref: str | None,
-        error: str | None,
-        usage: dict[str, int] | None,
-        never_executed: bool,
-        write_event: bool,
-    ) -> bool:
-        """写 `subtasks` 行 + 父 Run 的 `subtask.finished` + 预算结算。
-
-        这三件事必须在**同一个事务**里：只写行不写事件，父 Run 的日志里没有
-        "子任务完成了"的证据；只写事件不写行，`subtask.result` 永远读不到。
-        行是"当前结论"，事件是"当时结论"，两者对不上就只能靠猜。
-        """
-        cur = self._conn.execute(
-            "UPDATE subtasks SET state=?, result_ref=?, summary=?, error=?,"
-            " ended_at=? WHERE parent_run_id=? AND subtask_id=?"
-            "   AND state NOT IN (?,?,?,?)",
-            (
-                state,
-                result_ref,
-                summary,
-                error,
-                _now(),
-                row.parent_run_id,
-                row.subtask_id,
-                SUBTASK_SUCCEEDED,
-                SUBTASK_FAILED,
-                SUBTASK_CANCELLED,
-                SUBTASK_FENCED,
-            ),
-        )
-        if cur.rowcount == 0:
-            return False
-        if write_event:
-            payload: dict[str, Any] = {
-                "subtask_id": row.subtask_id,
-                "state": state,
-            }
-            if result_ref:
-                payload["result_ref"] = result_ref
-            if error:
-                payload["error"] = error
-            if usage:
-                payload["usage"] = usage
-            tx.append(
-                row.parent_run_id,
-                "subtask.finished",
-                payload,
-                task_id=row.parent_task_id,
-                actor_kind="core",
-            )
-        self._settle_subtask_budget(
-            row, state=state, never_executed=never_executed
-        )
-        return True
-
-    def _settle_child_subtask_locked(
-        self,
-        tx,
-        run: Run,
-        *,
-        pre_state: str,
-        outcome: str,
-        reason: str | None,
-    ) -> None:
-        """子 Run 收尾时结算它的 `subtasks` 行（在 `_finish_locked` 同一事务里）。"""
-        if self._claims is None:
-            return
-        parent_run_id = run.parent_run_id
-        subtask_id = run.subtask_id
-        if not parent_run_id or not subtask_id:
-            return
-        row = self.get_subtask(parent_run_id, subtask_id)
-        if row is None or row.state in SUBTASK_TERMINAL_STATES:
-            # 已经被 fence / 父取消传播结算过：不重复写、不重复结算预算。
-            return
-        fence_reason = self._parent_fence_reason_for_row(row)
-        if fence_reason is not None:
-            self._mark_subtask_fenced_locked(tx, row, reason=fence_reason)
-            self._maybe_wake_parent(parent_run_id)
-            return
-        state = {
-            "succeeded": SUBTASK_SUCCEEDED,
-            "failed": SUBTASK_FAILED,
-            "cancelled": SUBTASK_CANCELLED,
-        }.get(outcome)
-        if state is None:  # pragma: no cover - Run outcome 是封闭集
-            return
-        summary, result_ref, note = self._child_result(row)
-        errors = [part for part in (reason, note) if part]
-        error = "；".join(errors) if errors else None
-        usage = self._usage_for_child(run.run_id)
-        never = pre_state == RUN_CREATED and self._subtask_never_executed(row)
-        if self._settle_subtask_row_locked(
-            tx,
-            row,
-            state=state,
-            summary=summary,
-            result_ref=result_ref,
-            error=error,
-            usage=usage,
-            never_executed=never,
-            write_event=True,
-        ):
-            self._maybe_wake_parent(parent_run_id)
-
-    def _propagate_cancel_locked(self, tx, parent_run_id: str) -> int:
-        """父 Run 取消时把取消传给未完成子任务；返回"被要求停"的个数。
-
-        对**确定没执行过**的子任务（子 Run 仍 created、作业从未被认领）当场
-        以 `cancelled` 收尾：它们的作业还没被任何人认领，留着只会产生一条
-        永远没人跑的 `cancelling` 行。其余一律只置 `cancelling` + 子 Run
-        取消请求 + 子作业 `request_cancel`，由执行侧在安全点确认。
-        """
-        rows = [
-            row
-            for row in self.list_subtasks(parent_run_id)
-            if row.state in SUBTASK_UNFINISHED_STATES
-        ]
-        for row in rows:
-            if row.state in SUBTASK_TERMINAL_STATES:
-                continue
-            if self._subtask_never_executed(row):
-                self._settle_subtask_row_locked(
-                    tx,
-                    row,
-                    state=SUBTASK_CANCELLED,
-                    summary="",
-                    result_ref=None,
-                    error="父 Run 取消：子任务未开始，未产生任何输出",
-                    usage=None,
-                    never_executed=True,
-                    write_event=True,
-                )
-                # 子 Run 也要有结论：它从未被驱动，但一条永远 created 的
-                # Run 会让"这次委派去哪了"没有答案。不要求 require_running
-                # （created 本来就不是 running）。
-                self._finish_locked(
-                    tx,
-                    row.child_run_id,
-                    outcome="cancelled",
-                    effect_state="none_applied",
-                    reason="父 Run 取消（子任务未开始）",
-                )
-                continue
-            self._conn.execute(
-                "UPDATE subtasks SET state=? WHERE parent_run_id=? AND subtask_id=?"
-                " AND state IN (?,?,?)",
-                (
-                    SUBTASK_CANCELLING,
-                    row.parent_run_id,
-                    row.subtask_id,
-                    SUBTASK_QUEUED,
-                    SUBTASK_RUNNING,
-                    SUBTASK_CANCELLING,
-                ),
-            )
-            self.request_cancel_deferred(
-                row.child_run_id, reason="parent_cancelled"
-            )
-            if self._claims is not None:
-                self._claims.request_cancel(row.job_id)
-        return len(rows)
-
-    def _count_cancelled_subtasks(self, parent_run_id: str) -> int:
-        """父 Run 取消时"被要求停/已停"的子任务数（写进 run.end 的 reason）。"""
-        marks = (SUBTASK_CANCELLING, SUBTASK_CANCELLED)
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM subtasks WHERE parent_run_id=?"
-            " AND state IN (?,?)",
-            (parent_run_id, *marks),
-        ).fetchone()
-        return int(row["n"])
-
-    def _has_subtasks(self, parent_run_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM subtasks WHERE parent_run_id=? LIMIT 1",
-            (parent_run_id,),
-        ).fetchone()
-        return row is not None
-
-    def wake_stale_parents(self) -> list[str]:
-        """启动恢复：父作业停在 `waiting`、子任务却已经全终结 → 补一次 wake。
-
-        崩溃窗口里"子任务收尾事务"要么全提交（含 wake）要么全回滚（子任务
-        仍未完成），所以正常路径不会留下这种状态。但旧库升级、或将来某个
-        在 wake 之前就退出的实现会留下它。判据只认三件事实：作业 waiting、
-        父 Run 仍 RUNNING、`subtasks` 表里没有未完成行——不按进程退出猜。
-        """
-        if self._claims is None:
-            return []
-        woken: list[str] = []
-        with self._log.transaction():
-            for job in self._claims.list_jobs(state=JOB_WAITING):
-                run = self.get_run(job.run_id)
-                if run is None or run.state != RUN_RUNNING:
-                    continue
-                if not self._has_subtasks(run.run_id):
-                    continue
-                if self.count_unfinished_subtasks(run.run_id) != 0:
-                    continue
-                if self._claims.wake(
-                    job.job_id, reason="stale_parent_recovery"
-                ) is not None:
-                    woken.append(run.run_id)
-        return woken
-
-    def reconcile_finished_subtasks(self) -> list[str]:
-        """启动恢复：子 Run 已终结但 `subtasks` 行还停在未完成 → 以 Run 为准修正。
-
-        证据是子 Run 的终态（`run.finish` 事件 + 投影），不是"进程还活着吗"。
-        已终结的 Run 行不可能再变，按它补写子任务行是安全的；反过来按进程
-        退出猜"它大概没跑完"就会把一次成功说成失败。
-        """
-        if self._claims is None:
-            return []
-        fixed: list[str] = []
-        with self._log.transaction() as tx:
-            rows = self._conn.execute(
-                "SELECT * FROM subtasks WHERE state IN (?,?,?)",
-                (
-                    SUBTASK_QUEUED,
-                    SUBTASK_RUNNING,
-                    SUBTASK_CANCELLING,
-                ),
-            ).fetchall()
-            for raw in rows:
-                row = self._row_to_subtask(raw)
-                child = self.get_run(row.child_run_id)
-                if child is None:
-                    continue
-                # 与执行侧的收尾路径用**同一套** fence 判定：父目标已变的子任务
-                # 只能记 `fenced`（不写 `subtask.finished`），不能因为"是恢复
-                # 路径"就按子 Run 的 outcome 把一份作废的结论写回父 Run。
-                fence_reason = self._parent_fence_reason_for_row(row)
-                if fence_reason is not None:
-                    self._mark_subtask_fenced_locked(
-                        tx, row, reason=f"启动恢复：{fence_reason}"
-                    )
-                    fixed.append(row.subtask_id)
-                    continue
-                if child.state == RUN_FENCED:
-                    self._mark_subtask_fenced_locked(
-                        tx, row, reason="子 Run 已被 fence（启动恢复，以 Run 为准）"
-                    )
-                    fixed.append(row.subtask_id)
-                    continue
-                if child.state not in TERMINAL_STATES:
-                    continue
-                outcome = child.outcome or "failed"
-                state = {
-                    "succeeded": SUBTASK_SUCCEEDED,
-                    "failed": SUBTASK_FAILED,
-                    "cancelled": SUBTASK_CANCELLED,
-                }.get(outcome)
-                if state is None:  # pragma: no cover - 终态 outcome 是封闭集
-                    continue
-                summary, result_ref, note = self._child_result(row)
-                usage = self._usage_for_child(child.run_id)
-                error = note or f"启动恢复：按子 Run 终态 {outcome} 修正"
-                if self._settle_subtask_row_locked(
-                    tx,
-                    row,
-                    state=state,
-                    summary=summary,
-                    result_ref=result_ref,
-                    error=error,
-                    usage=usage,
-                    never_executed=False,
-                    write_event=True,
-                ):
-                    fixed.append(row.subtask_id)
-            for parent_run_id in {
-                self._row_to_subtask(raw).parent_run_id for raw in rows
-            }:
-                self._maybe_wake_parent(parent_run_id)
-        return fixed
-
-    # ---- 投影重建 ----
-
-    def rebuild_from_events(self) -> None:
-        """按事件重建 tasks/runs 投影。事件是事实源，投影是可丢的缓存。
-
-        只对"状态变更都记了事件"的库成立。PR #7 之前建的库只有投影表、
-        没有对应事件，重建会把它们清空——那种库只能当只读历史，不能重建。
-        """
-        events = self._log.read_types(
-            [
-                TASK_CREATED,
-                TASK_REVISED,
-                RUN_START,
-                RUN_FINISH,
-                RUN_FENCED_EVENT,
-                RUN_STATE,
-                RUN_CONTROL,
-                RUN_EFFECT,
-            ]
-        )
-        tasks: dict[str, dict[str, Any]] = {}
-        runs: dict[str, dict[str, Any]] = {}
-
-        for ev in events:
-            p = ev.payload
-            if ev.type == TASK_CREATED:
-                tasks[p["task_id"]] = {
-                    "task_id": p["task_id"],
-                    "goal": p["goal"],
-                    "goal_revision": p["goal_revision"],
-                    "lease_epoch": p["lease_epoch"],
-                    "active_run_id": None,
-                    "status": "open",
-                    "workspaces": json.dumps(
-                        [
-                            b.to_dict()
-                            for b in parse_bindings(p.get("workspaces") or [])
-                        ],
-                        ensure_ascii=False,
-                    ),
-                    "is_control": 1 if p.get("control") else 0,
-                    "memory_scopes": json.dumps(
-                        list(p.get("memory_scopes") or []), ensure_ascii=False
-                    ),
-                    "outbound_allow": json.dumps(
-                        list(p.get("outbound_allow") or []), ensure_ascii=False
-                    ),
-                    "mcp_servers": json.dumps(
-                        list(p.get("mcp_servers") or []), ensure_ascii=False
-                    ),
-                    # 旧事件没有这些键：按"根任务、不能委派"重建（v0 不补值）。
-                    "parent_task_id": p.get("parent_task_id"),
-                    "parent_run_id": p.get("parent_run_id"),
-                    "subtask_id": p.get("subtask_id"),
-                    "depth": int(p.get("depth") or 0),
-                    "max_subtasks": int(p.get("max_subtasks") or 0),
-                    "created_at": ev.ts,
-                    "updated_at": ev.ts,
-                }
-            elif ev.type == TASK_REVISED:
-                t = tasks.get(p["task_id"])
-                if t is None:
-                    continue
-                t.update(
-                    goal=p["goal"],
-                    goal_revision=p["goal_revision"],
-                    lease_epoch=p["lease_epoch"],
-                    active_run_id=None,
-                    updated_at=ev.ts,
-                )
-                if "workspaces" in p:
-                    t["workspaces"] = json.dumps(
-                        [
-                            b.to_dict()
-                            for b in parse_bindings(p.get("workspaces") or [])
-                        ],
-                        ensure_ascii=False,
-                    )
-            elif ev.type == RUN_START:
-                runs[p["run_id"]] = {
-                    "run_id": p["run_id"],
-                    "task_id": p["task_id"],
-                    "goal_revision": p["goal_revision"],
-                    "lease_epoch": p["lease_epoch"],
-                    "state": "created",
-                    "outcome": None,
-                    "effect_state": None,
-                    "control_requested": None,
-                    # 子 Run 的父链（子任务身份在 Run 侧的证据）。
-                    "parent_run_id": p.get("parent_run_id"),
-                    "subtask_id": p.get("subtask_id"),
-                    "created_at": ev.ts,
-                    "ended_at": None,
-                }
-                t = tasks.get(p["task_id"])
-                if t is not None:
-                    t["active_run_id"] = p["run_id"]
-                    t["updated_at"] = ev.ts
-            elif ev.type == RUN_FINISH:
-                r = runs.get(p["run_id"])
-                if r is None:
-                    continue
-                r.update(
-                    state=p["outcome"],
-                    outcome=p["outcome"],
-                    effect_state=p["effect_state"],
-                    # 终态没有"排队的控制请求"这回事：请求要么已被确认，
-                    # 要么随着 Run 结束作废。重建时也得清掉，否则投影里会
-                    # 留一个永不生效的 pause。
-                    control_requested=None,
-                    ended_at=ev.ts,
-                )
-                t = tasks.get(p["task_id"])
-                if t is not None and t["active_run_id"] == p["run_id"]:
-                    t["active_run_id"] = None
-                    t["updated_at"] = ev.ts
-            elif ev.type == RUN_FENCED_EVENT:
-                r = runs.get(p["run_id"])
-                if r is None:
-                    continue
-                r.update(state="fenced", control_requested=None, ended_at=ev.ts)
-                t = tasks.get(r["task_id"])
-                if t is not None and t["active_run_id"] == p["run_id"]:
-                    t["active_run_id"] = None
-                    t["updated_at"] = ev.ts
-            elif ev.type == RUN_STATE:
-                r = runs.get(p["run_id"])
-                if r is None:
-                    continue
-                # 只有**显式标了** control_cleared 的状态迁移才清请求。
-                # 无条件清会把"请求已排队、还没到安全点"这件事抹掉：一个
-                # 运行中的 Run 先被暂停请求、随后因为别的原因过一次状态迁移
-                # （比如转 waiting_approval），重建之后请求就凭空消失了。
-                cleared = p.get("control_cleared") is True
-                r.update(state=p["to"], updated_at=ev.ts)
-                if cleared:
-                    r["control_requested"] = None
-            elif ev.type == RUN_CONTROL:
-                r = runs.get(p["run_id"])
-                if r is None:
-                    continue
-                # `run.control` 不只承载"控制请求"：租约接管的审计
-                # （action=lease_takeover）也用它，但那个动作不改 Run 的控制意图。
-                # 无条件 `control_requested=action` 会把审计动作写进投影，而
-                # run.json 的 control_requested enum 只认 pause/cancel——重建一次
-                # 就写出非法状态。只认真正的控制请求。
-                if p.get("action") not in CONTROL_REQUESTS:
-                    continue
-                r.update(control_requested=p["action"], updated_at=ev.ts)
-            elif ev.type == RUN_EFFECT:
-                r = runs.get(p["run_id"])
-                if r is None:
-                    continue
-                r.update(effect_state=p["effect_state"], updated_at=ev.ts)
-
-        with self._log.transaction():
-            self._conn.execute("DELETE FROM tasks")
-            self._conn.execute("DELETE FROM runs")
-            for t in tasks.values():
-                self._conn.execute(
-                    "INSERT INTO tasks (task_id, goal, goal_revision, lease_epoch,"
-                    " active_run_id, status, workspaces, is_control, memory_scopes,"
-                    " outbound_allow, mcp_servers, parent_task_id, parent_run_id,"
-                    " subtask_id, depth, max_subtasks, created_at, updated_at)"
-                    " VALUES (:task_id,:goal,:goal_revision,:lease_epoch,"
-                    " :active_run_id,:status,:workspaces,:is_control,:memory_scopes,"
-                    " :outbound_allow,:mcp_servers,:parent_task_id,:parent_run_id,"
-                    " :subtask_id,:depth,:max_subtasks,:created_at,:updated_at)",
-                    t,
-                )
-            for r in runs.values():
-                self._conn.execute(
-                    "INSERT INTO runs (run_id, task_id, goal_revision, lease_epoch,"
-                    " state, outcome, effect_state, control_requested,"
-                    " parent_run_id, subtask_id, created_at, ended_at)"
-                    " VALUES (:run_id,:task_id,:goal_revision,:lease_epoch,"
-                    " :state,:outcome,:effect_state,:control_requested,"
-                    " :parent_run_id,:subtask_id,:created_at,:ended_at)",
-                    r,
-                )
 
     # ---- 行映射 ----
 
-    @staticmethod
-    def _row_to_task(row: sqlite3.Row) -> Task:
-        return Task(
-            task_id=row["task_id"],
-            goal=row["goal"],
-            goal_revision=row["goal_revision"],
-            lease_epoch=row["lease_epoch"],
-            active_run_id=row["active_run_id"],
-            status=row["status"],
-            workspaces=parse_bindings(json.loads(row["workspaces"])),
-            exec_policy=ExecPolicy.from_dict(
-                json.loads(row["exec_policy"]) if row["exec_policy"] else None
-            ),
-            is_control=bool(row["is_control"]),
-            memory_scopes=tuple(json.loads(row["memory_scopes"] or "[]")),
-            outbound_allow=tuple(json.loads(row["outbound_allow"] or "[]")),
-            mcp_servers=tuple(json.loads(row["mcp_servers"] or "[]")),
-            parent_task_id=row["parent_task_id"],
-            parent_run_id=row["parent_run_id"],
-            subtask_id=row["subtask_id"],
-            depth=int(row["depth"] or 0),
-            max_subtasks=int(row["max_subtasks"] or 0),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+    _row_to_task = staticmethod(row_to_task)
+    _row_to_run = staticmethod(row_to_run)
+    _row_to_subtask = staticmethod(row_to_subtask)
 
-    @staticmethod
-    def _row_to_run(row: sqlite3.Row) -> Run:
-        keys = row.keys()
-        return Run(
-            run_id=row["run_id"],
-            task_id=row["task_id"],
-            goal_revision=row["goal_revision"],
-            lease_epoch=row["lease_epoch"],
-            state=row["state"],
-            outcome=row["outcome"] if "outcome" in keys else None,
-            effect_state=row["effect_state"] if "effect_state" in keys else None,
-            control_requested=(
-                row["control_requested"] if "control_requested" in keys else None
-            ),
-            parent_run_id=(
-                row["parent_run_id"] if "parent_run_id" in keys else None
-            ),
-            subtask_id=row["subtask_id"] if "subtask_id" in keys else None,
-            created_at=row["created_at"],
-            ended_at=row["ended_at"] if "ended_at" in keys else None,
-        )
 
-    @staticmethod
-    def _row_to_subtask(row: sqlite3.Row) -> Subtask:
-        limits = json.loads(row["limits"] or "{}")
-        return Subtask(
-            subtask_id=row["subtask_id"],
-            parent_task_id=row["parent_task_id"],
-            parent_run_id=row["parent_run_id"],
-            child_task_id=row["child_task_id"],
-            child_run_id=row["child_run_id"],
-            job_id=row["job_id"],
-            goal=row["goal"],
-            limits={k: int(v) for k, v in limits.items()},
-            state=row["state"],
-            parent_goal_revision=int(row["parent_goal_revision"] or 0),
-            parent_lease_epoch=int(row["parent_lease_epoch"] or 0),
-            result_ref=row["result_ref"],
-            summary=row["summary"],
-            error=row["error"],
-            created_at=row["created_at"],
-            ended_at=row["ended_at"],
-        )
-
+# 跨模块/测试重导出兼容符号（保持与拆分前 `tianshu.tasks` 命名空间完全一致）。
+_COMPAT_EXPORTS = (
+    RUN_CURSOR_SAVED,
+    RUN_END,
+    RUN_FINISH,
+    RUN_MODEL_TURN,
+    RUN_QUEUED,
+    STOPPED_STATES,
+    SUBTASK_CANCELLED,
+    SUBTASK_CANCELLING,
+    SUBTASK_FAILED,
+    SUBTASK_FENCED,
+    SUBTASK_QUEUED,
+    SUBTASK_RUNNING,
+    SUBTASK_SUCCEEDED,
+    SUBTASK_SUMMARY_MAX_BYTES,
+    RunCursor,
+    truncate_utf8,
+)
 
 __all__: list[Any] = [
     "TaskStore",
