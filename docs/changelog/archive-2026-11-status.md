@@ -19,9 +19,25 @@
   唯一的固定布局，整个解包目录继续封闭；`tianshu-desktop.exe` 按 target 校验，
   NSIS 插件与 `uninstall.exe` 固定校验 x86 PE。根资源目录正控、外层任意额外
   文件、缺失固定文件及桌面 exe 错架构均已有回归，release verifier 文件
-  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。完整本机
-  全量、独立复审、精确 PR CI、保护合并、修后 main CI 和第二次唯一 release
-  run 尚未完成，故当前 release 仍为 `NOT_RUN`，旧 Windows 红不得覆盖。
+  **62 passed**、相关三文件 **95 passed**，Ruff 与 lock check exit 0。唯一本机
+  全量为 **3801 passed / 12 skipped / 672.05s / exit 0**；第二读者对
+  `8a17e6a42e6966af8b71bcc353734c241725389c` / tree
+  `2034c53e264e9e03d168c4687bf312144d6602d4` 的六项验收全 `fixed / PASS`，
+  独立探针 28 项通过，报告 SHA256
+  `a65971ea5e119bf5a33321352cc7f4cd5ed6e2b138e4dc8e0f23501f89826af5`。
+  PR [#186](https://github.com/lorek666/tianshu-agent/pull/186) 候选 run
+  [44107070041](https://github.com/lorek666/tianshu-agent/actions/runs/44107070041)
+  七 job 全绿；Ubuntu `3762 passed / 51 skipped`、macOS
+  `3801 passed / 12 skipped`、Windows 两分片 `1845 / 1882 passed`。该候选按
+  strict/enforce-admins 保护规则合并为
+  `4e15bf90059a46feacc511b39f8461953b1ad8d0`，tree 仍为
+  `2034c53e264e9e03d168c4687bf312144d6602d4`。merge 自身 main push run
+  [44114368712](https://github.com/lorek666/tianshu-agent/actions/runs/44114368712)
+  的 Ubuntu、Windows 两分片、Windows required 汇总、UI 与 Windows Rust
+  success，唯一 macOS job 在 15 分钟处 `cancelled`；其 job API 明确
+  `runner_name=""`、`steps=[]`，日志 HTTP 404，说明尚未执行任何代码步骤。
+  该 run 保留为真实基础设施取消，不重跑、不冒充绿色；第二次 release 必须绑定
+  后续正常 main CI 的完整 SHA，当前 release/实际 artifact 仍为 `NOT_RUN`。
 
 - **main `7bb4548` 的网络超时测试红已定位为阶段混计（2026-11-17）**：PR
   [#184](https://github.com/lorek666/tianshu-agent/pull/184) 精确候选
