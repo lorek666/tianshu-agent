@@ -474,3 +474,108 @@ M3 起一律抛 `ModelError(kind, status_code, retryable)`；主循环原有的
 - `ContinuationRef` 的签名/thinking 原样往返：两个 provider 都没有 v1 必须
   往返的 opaque 字段，Anthropic 的 `thinking` 块当前**跳过**，不做往返
 - 这不是 OS 级隔离：`Workspace` 是路径边界，不是安全边界
+
+## 13. 源码模块地图
+
+> 从 README 拆出（README 只保留架构要点与指向这里的链接）。
+> 下面只按职责分组；**文件数量以当前目录实测为准**，不在此手写计数。
+> 数据根布局见 §9，进程模型见 §2，IPC 协议见 §4。
+
+**唯一事实源是事件日志**：SQLite WAL、append-only（触发器禁止 `UPDATE` / `DELETE`），Task / Run / Approval / Grant / Lease 都是同库事务更新的**可重建投影**。状态变更必须同事务写事件，否则回放无法解释「为什么这个 Run 被 fence 了」。
+
+**M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
+
+五道版本化契约 + 十一条红线约束全局：**C1** 模型 I/O、**C2** 工具、**C3** 事件（45 个类型的封闭注册表，写入侧拒未登记类型）、**C4** 权限/审批（rule id 封闭注册表，写入前校验；[规则清单](PRD-v1.md#541-拒绝规则编号payloadrule_id)）、**C5** 评测（`SUITE_VERSION = m4.6`）。
+
+```
+src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；数量以当前目录实测为准）
+├─ 事实源与契约 ─────────────────────────────────────────────
+│  events.py        SQLite WAL append-only 事件日志 + 可组合事务
+│  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
+│  rules.py         C4 rule id 封闭注册表（代码 / schema / PRD 同步核对）
+│  event_schema.py  C3 逐类型事件 payload 契约（v1 schema + 版本旁表）
+│  toolschema.py    C2 工具参数封闭 JSON Schema 子集（编译期拒绝）
+│  tool_registry.py 动态工具注册表（内置 SPECS + MCP 运行时准入）
+│  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
+├─ 路径与磁盘 ───────────────────────────────────────────────
+│  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
+│  pathkeys.py      路径键：大小写 / Unicode 规范化与祖先判断
+│  fsutil.py        原子写入：临时文件 → fsync → os.replace → fsync 目录
+│  sandbox.py       存储后端接缝：LocalBackend（真实盘）/ MemBackend（进程内，不是沙箱）
+│  resources.py     资源种类：把「要操作什么」从文件路径解耦（memory:// 等）
+│  authority.py     用户级「权威根」：跨数据根的阻断状态
+│  platform_identity.py 从真实已打开的原生句柄读文件系统实体身份
+├─ 授权与执行 ───────────────────────────────────────────────
+│  permissions.py   C4 动作分类 / 审批 / 一次性 grant
+│  dispatcher.py    唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
+│  execpolicy.py    F2 执行侧命令策略（声明式、默认全拒、deny 优先）
+│  exec_backends.py F2 执行后端注册表（未实现/未知一律 unsupported，绝不回落 local）
+│  isolation.py     F2 四边界实测探针 + 隔离门 + 受信任执行视图
+│  exec.py          F1 执行原语：argv 模式（非 shell）、超时、截断、进程组
+│  tools.py         受限工具 + FileExecutor（自己回库核验票据，不信调用方）
+│  guard.py         工作区阻断检查（未知副作用不得继续写）
+├─ 副作用可撤销 ─────────────────────────────────────────────
+│  snapshot.py      写前快照与冲突安全撤销
+│  receipt.py       操作凭据（能独立核对，不必信调用方）
+│  undo.py          撤销：把一次 Run 的写入还原或删除（本身也走审批/租约/receipt）
+│  undo_journal.py  撤销意图日志：跨多文件撤销的可续做边界
+│  recovery.py      中断核查：applied / none_applied / unknown 三者不合并
+│  crashpoint.py    故障注入点（os._exit 硬退，仅 TIANSHU_FAILPOINT 生效）
+├─ 任务、租约、作业 ─────────────────────────────────────────
+│  tasks.py         Task / Run / RunCursor 状态机，fencing，控制请求
+│  leases.py        跨进程资源租约 + 本机执行守卫（POSIX / Windows）
+│  jobs.py          作业认领与 claim_epoch（旧 worker 不得覆盖新 owner）
+│  run_policy.py    Run 创建前的执行资格固定（不授予工具权限）
+├─ 调度（W5）────────────────────────────────────────────────
+│  scheduler.py     确定性最小调度器：定时任务的到点认领与驱动
+│  schedule_cli.py  `tianshu schedule` 子命令：定时任务管理面
+├─ 记忆（F10）────────────────────────────────────────────────
+│  memory.py        事件日志的可重建投影：L0–L3、作用域、forget=tombstone
+│  memory_index.py  向量索引第二路（FTS ∪ 语义 RRF；Hash 基线 provider）
+│  memory_distill.py L2/L3 确定性合成（场景页 / 偏好页 + freshness）
+│  memory_exec.py   受信任的记忆执行器
+│  memory_control.py 控制面记忆操作（CLI 与 RPC 共用，写走 dispatcher）
+├─ 数据维护与迁移（G3）──────────────────────────────────────
+│  data_admission.py 真实事件库只读准入前缀（版本 / 进度校验）
+│  data_digest.py   迁移一致点算法 v1
+│  data_state.py    迁移进度的严格类型与纯校验
+│  migrate.py       标准根离线迁移（一致点绑定、严格续做）
+│  maintenance.py   数据库维护准入（协作式维护窗口）
+│  backup.py        一致点备份 / 校验 / 干净根恢复 / 保留期与引用保护
+│  data_cli.py      data 子命令：backup / verify / restore-plan / migrate / retention-audit
+│  disk_admission.py Run 创建前的当前空间保护（只读真实位置，不预留容量）
+│  restore_access.py 恢复 T1 普通连接与批次操作的组合访问
+│  restore_contract.py 恢复B v1 纯值契约（codec 分离，不签发操作权威）
+│  restore_registry.py 用户级 restore registry：严格只追加权威与链观察
+├─ 模型层 ───────────────────────────────────────────────────
+│  model.py         C1 接缝：adapter 只做双向翻译，不改写内部形状
+│  capability.py    F9a 能力声明与准入（只用于路由，不用于授权）
+│  credentials.py   F12 凭据分域查找 + 全链路脱敏（Keychain 后端 macOS 已落地）
+│  keychain_macos.py macOS Keychain 直调后端（SecItem，仅 darwin 加载）
+│  embedding_openai.py OpenAI 兼容 embedding 端点适配器（W6，需数据外发许可）
+│  pricing.py       F13 成本账：整数微美元，未知价格记 None 并单独计数
+│  budget.py        共享预算账本（PRD §5.6）：token / 金额预占与结算
+│  context.py       F5 上下文编译：纯函数、按字节预算、丢弃只记账不摘要
+├─ 驱动 ─────────────────────────────────────────────────────
+│  loop.py          E1 主循环（持久游标、暂停 / 取消 / 恢复）+ 栈装配
+│  worker.py        作业循环：认领排队中的 Run（一次性 drain）
+│  replay.py        回放校验：seq / messages_hash / 产物哈希三方核对
+│  metrics.py       本地运行质量指标（PRD §10.6）：进程内采样、写数据根
+│  cli.py           命令行入口（含 daemon / host 两个常驻入口）
+├─ 网络 / MCP / 摘要（G2）────────────────────────────────────
+│  net.py           network.fetch 执行器（GET、同源重定向、1 MiB 上限）
+│  mcp.py           MCP stdio 客户端（三道门、封闭方言准入）
+│  summaries.py     模型语义摘要的记录与材料身份（PRD §7.1）
+│  contents.py      内容引用：大结果的有界摘要 + 可分页读取的引用
+├─ 桌面三进程（M5）─────────────────────────────────────────
+│  ipc.py           本地 IPC：AF_UNIX / 命名管道、版本区间协商、推送游标、断线语义
+│  daemon.py        常驻守护进程：锁、恢复扫描、请求线程、驱动线程、优雅退出
+│  control.py       RPC 方法 → 既有库函数的映射（不自己写文件、不重判策略）
+│  host.py          外壳：单实例、监护 Daemon、UI 的 HTTP/SSE 桥、token 注入
+└─ eval/            M4 评测：20 条 case、干净 fixture、可比分数与失败归因
+```
+
+平台标准数据目录、单实例判据、断线语义与恢复顺序的完整规格见 [M5-desktop.md](M5-desktop.md)；
+产品规格见 [PRD-v1.md](PRD-v1.md)（§5 契约、§6 红线）与 本文件 §1–§12。
+
+UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直接加载，运行时不需要 Node）。
