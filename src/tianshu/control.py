@@ -44,6 +44,7 @@ from typing import Any
 
 from . import memory_control, settings_control
 from .credentials import redact
+from .disk_admission import DiskAdmissionError
 from .errors import (
     CredentialUnsupported,
     RunFenced,
@@ -56,7 +57,7 @@ from .ipc import MAX_MESSAGE_BYTES
 from .loop import Limits, Stack
 from .permissions import ApprovalError, HumanIdentity
 from .resources import MemoryScope, build_memory_scope
-from .run_policy import EFFECTS, PURE_ONLY, RunExecutionPolicyV1
+from .run_policy import EFFECTS, PURE_ONLY, RunEffectsDisallowed, RunExecutionPolicyV1
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
@@ -410,6 +411,17 @@ class ControlPlane:
             raise ControlError("bad_params", redact(str(exc))) from exc
         except KeyError as exc:
             raise ControlError("bad_params", redact(f"缺少参数：{exc}")) from exc
+        except (DiskAdmissionError, RunEffectsDisallowed) as exc:
+            # 显式先于 _generic_error 拦截：消息内常携带用户目录路径或系统异常文本，
+            # 若落入子串匹配会被路径中的「不能 / 必须 / 不存在 / 非法」误判为
+            # conflict / bad_params / not_found。
+            raw = str(exc)
+            prefixed = raw if raw.startswith(f"{exc.rule_id}:") else f"{exc.rule_id}: {raw}"
+            raise ControlError(
+                "internal",
+                redact(prefixed),
+                {"rule_id": exc.rule_id},
+            ) from exc
         except TianshuError as exc:
             raise self._generic_error(exc) from exc
         except OSError as exc:

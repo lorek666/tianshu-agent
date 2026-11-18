@@ -172,6 +172,9 @@ const ACTION_LABELS: Record<string, string> = {
   "dispatch.workspace_blocked": "目录访问被拦截",
   "dispatch.budget_refused": "预算额度不足，请求没有发出",
   "dispatch.subtask_limit": "委派限额不满足",
+  "dispatch.disk_space_low": "磁盘可用空间不足（需至少 2 GiB），操作未执行",
+  "dispatch.disk_space_unknown": "无法核实磁盘可用空间，操作未执行",
+  "dispatch.run_effects_disallowed": "当前运行处于「仅读取与对话」模式，不允许修改或外部操作",
 };
 
 function lookup(table: Record<string, string>, value: string | null | undefined, fallback: string): string {
@@ -687,7 +690,29 @@ export function humanizeEvent(event: EventView): TimelineEntry {
       const action = describeToolAction(payload) ?? "操作";
       const isolation = isolationSuffix(payload);
       if (isFailureResult(payload)) {
-        const reason = readString(payload, "error", "error_message", "reason", "message");
+        const output = readRecord(payload, "output");
+        const directRule =
+          readString(payload, "rule_id") ??
+          (output !== null ? readString(output, "rule_id") : null);
+        const rawReason =
+          readString(payload, "error", "error_message", "reason", "message") ??
+          (output !== null ? readString(output, "error", "error_message", "reason", "message") : null);
+        const prefixRule =
+          rawReason !== null && rawReason.includes(":")
+            ? rawReason.slice(0, rawReason.indexOf(":")).trim()
+            : null;
+        const knownRule = isKnownActionId(directRule)
+          ? directRule
+          : isKnownActionId(prefixRule)
+            ? prefixRule
+            : null;
+        const reason =
+          knownRule !== null &&
+          (rawReason === null ||
+            rawReason === knownRule ||
+            rawReason.startsWith(`${knownRule}:`))
+            ? actionLabel(knownRule)
+            : rawReason;
         const detail = reason !== null ? `（${truncate(reason, 80)}）` : "";
         return toTimelineEntry(
           event,

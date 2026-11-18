@@ -281,7 +281,8 @@ describe("Run 执行模式的真实 UI 入口", () => {
     expect(submit).not.toBeNull();
     await click(submit as HTMLButtonElement);
     await waitFor(() => buttonByText("开始运行") !== null);
-    expect(container?.textContent).toContain("dispatch.disk_space_low");
+    expect(container?.textContent).toContain("磁盘可用空间不足（需至少 2 GiB）");
+    expect(container?.textContent).not.toContain("dispatch.disk_space_low");
 
     const taskCreates = rpcCalls(host, "task.create");
     const firstStarts = rpcCalls(host, "run.start");

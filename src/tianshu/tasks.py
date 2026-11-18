@@ -2073,6 +2073,16 @@ class TaskStore:
         # pure_only 的子 Run 连写工具都看不见（清单过滤），effects 的每个写动作
         # 仍要过 prepare 判定 + 人工批准 + 执行侧 digest 复核。
         write_effective = write and any(b.mode == "writable" for b in bindings)
+        child_policy = EFFECTS if write_effective else PURE_ONLY
+        # 与 start_run 同口径：可写子任务会创建 effects 子 Run（驱动时建快照清单并开放文件写），
+        # 必须在开启 SQLite 写事务与落任何子 Task/Run/Job 行之前过统一准入门；
+        # pure_only 子任务（含 write=True 但父绑定全只读的如实降级）保持无 2 GiB 阈值门。
+        self.require_new_run(
+            child_policy,
+            writable_roots=tuple(
+                Path(b.root_path) for b in bindings if b.can_write
+            ),
+        )
         now = _now()
         with self._log.transaction() as tx:
             child_task_id = self._create_task_locked(
@@ -2101,7 +2111,7 @@ class TaskStore:
                 task=child_task,
                 run_id=child_run_id,
                 now=now,
-                execution_policy=EFFECTS if write_effective else PURE_ONLY,
+                execution_policy=child_policy,
                 # `task` 必须进 run.start：`replay` 用它重建首条用户消息。
                 # 子 Run 少了它，回放会拿空字符串去比 messages_hash，必然红。
                 payload={"task": goal},

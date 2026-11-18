@@ -63,7 +63,9 @@ function unwrapEnvelope(raw: unknown): unknown {
   }
   if (record.ok === false) {
     const fromEnvelope = errorFromEnvelope(record);
-    throw new HostRpcError(fromEnvelope?.code ?? "unknown", fromEnvelope?.message ?? "请求失败");
+    throw new HostRpcError(fromEnvelope?.code ?? "unknown", fromEnvelope?.message ?? "请求失败", {
+      details: fromEnvelope?.details ?? null,
+    });
   }
   if (record.ok === true) return record.result;
   // 宽容：没有 ok 字段时按原始结果返回，避免 Host 侧轻微改形直接白屏。
@@ -140,6 +142,7 @@ class RealHostClient implements HostClient {
       const fromEnvelope = errorFromEnvelope(raw);
       if (fromEnvelope !== null) {
         throw new HostRpcError(fromEnvelope.code, fromEnvelope.message, {
+          details: fromEnvelope.details,
           httpStatus: response.status,
         });
       }
@@ -207,7 +210,7 @@ class RealHostClient implements HostClient {
       throw new HostRpcError(
         fromEnvelope?.code ?? `http_${response.status}`,
         fromEnvelope?.message ?? `事件流请求失败（${httpStatusMessage(response.status)}）`,
-        { httpStatus: response.status },
+        { details: fromEnvelope?.details ?? null, httpStatus: response.status },
       );
     }
     if (response.body === null) {

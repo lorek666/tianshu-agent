@@ -51,18 +51,88 @@ const CODE_MESSAGES: Record<string, string> = {
   http_503: "守护进程暂时不可用",
 };
 
+type AdmissionRuleId =
+  | "dispatch.disk_space_low"
+  | "dispatch.disk_space_unknown"
+  | "dispatch.run_effects_disallowed";
+
+const ADMISSION_RULE_IDS: readonly AdmissionRuleId[] = [
+  "dispatch.disk_space_low",
+  "dispatch.disk_space_unknown",
+  "dispatch.run_effects_disallowed",
+];
+
+function isAdmissionRuleId(value: string | null): value is AdmissionRuleId {
+  return (
+    value !== null &&
+    (ADMISSION_RULE_IDS as readonly string[]).includes(value)
+  );
+}
+
+function detectAdmissionRule(
+  message: string,
+  details: AnyRecord | null,
+): { ruleId: AdmissionRuleId; remainder: string } | null {
+  const detailRule = asString(details?.rule_id);
+  for (const ruleId of ADMISSION_RULE_IDS) {
+    const marker = `${ruleId}:`;
+    const index = message.indexOf(marker);
+    if (index !== -1) {
+      return {
+        ruleId,
+        remainder: message.slice(index + marker.length).trim(),
+      };
+    }
+    if (message === ruleId) {
+      return { ruleId, remainder: "" };
+    }
+  }
+  if (isAdmissionRuleId(detailRule)) {
+    return { ruleId: detailRule, remainder: message };
+  }
+  return null;
+}
+
+function extractLowDiskLocation(remainder: string): string | null {
+  const suffix = ": 可用空间低于 2 GiB";
+  if (remainder.endsWith(suffix)) {
+    const location = remainder.slice(0, -suffix.length).trim();
+    return location === "" ? null : location;
+  }
+  return null;
+}
+
+function humanizeAdmissionError(
+  message: string,
+  details: AnyRecord | null,
+  code: string | null = null,
+): string | null {
+  const detected = detectAdmissionRule(message, details);
+  if (detected === null) return null;
+  const prefix = code === "undo_failed" ? "撤销未执行：" : "";
+  switch (detected.ruleId) {
+    case "dispatch.disk_space_low": {
+      const location = extractLowDiskLocation(detected.remainder);
+      const body =
+        location !== null
+          ? `磁盘可用空间不足（需至少 2 GiB，位置：${truncate(location, 80)}），请清理空间或改用「仅读取与对话」模式`
+          : "磁盘可用空间不足（需至少 2 GiB），请清理空间或改用「仅读取与对话」模式";
+      return `${prefix}${body}`;
+    }
+    case "dispatch.disk_space_unknown":
+      return `${prefix}无法核实磁盘可用空间，操作未执行（请检查目录访问权限或存储配置后重试）`;
+    case "dispatch.run_effects_disallowed":
+      return `${prefix}当前运行处于「仅读取与对话」模式，不允许修改或外部操作（如需写入请新建默认模式运行）`;
+  }
+}
+
 /** 已知错误码 → 中文；未知错误码 → 带原始 message 的中文兜底（不白屏）。 */
 export function humanizeHostError(error: unknown): string {
   if (isHostRpcError(error)) {
-    const known = CODE_MESSAGES[error.code];
     const message = error.message.trim();
-    if (
-      error.code === "internal" &&
-      (message.startsWith("dispatch.disk_space_low:") ||
-        message.startsWith("dispatch.disk_space_unknown:"))
-    ) {
-      return truncate(message, 140);
-    }
+    const admission = humanizeAdmissionError(message, error.details, error.code);
+    if (admission !== null) return admission;
+    const known = CODE_MESSAGES[error.code];
     if (known !== undefined) return known;
     return message === "" ? "操作失败，请重试" : `操作失败：${truncate(message, 140)}`;
   }
@@ -71,17 +141,24 @@ export function humanizeHostError(error: unknown): string {
     if (message === "" || message === "Failed to fetch" || message === "Load failed") {
       return "无法连接守护进程";
     }
+    const admission = humanizeAdmissionError(message, null);
+    if (admission !== null) return admission;
     return `操作失败：${truncate(message, 140)}`;
   }
   return "操作失败，请重试";
 }
 
-/** 从响应体的错误信封里提取 code/message（宽容处理缺失字段）。 */
-export function errorFromEnvelope(raw: unknown): { code: string; message: string } | null {
+/** 从响应体的错误信封里提取 code/message/details（宽容处理缺失字段）。 */
+export function errorFromEnvelope(raw: unknown): {
+  code: string;
+  message: string;
+  details: AnyRecord | null;
+} | null {
   const record = asNullableRecord(raw);
   if (record === null || record.ok !== false) return null;
   const error = asNullableRecord(record.error) ?? {};
   const code = asString(error.code) ?? "unknown";
   const message = asString(error.message) ?? "请求失败";
-  return { code, message };
+  const details = asNullableRecord(error.details);
+  return { code, message, details };
 }
