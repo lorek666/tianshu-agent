@@ -27,8 +27,11 @@ from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
 from .maintenance import DatabaseAccess, MaintenanceConnection
 from .restore_access import (
+    RestoreDatabaseAccess,
     acquire_restore_database_access,
+    ensure_material_write_allowed,
     ensure_path_not_held,
+    register_admitted_eventlog,
     verify_sqlite_main,
 )
 
@@ -386,6 +389,8 @@ class EventLog:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._tx_depth = 0
+        if isinstance(access, RestoreDatabaseAccess):
+            register_admitted_eventlog(db_path, access)
 
     @property
     def db_path(self) -> Path:
@@ -478,6 +483,7 @@ class EventLog:
                 raise EventLogCorrupt(
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
+            ensure_material_write_allowed(self._blob_dir, owner_log=self)
             ref = str(self._blob_dir / digest)
             # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
             if not Path(ref).exists():

@@ -1018,6 +1018,7 @@ def run(args: argparse.Namespace) -> int:
         from .restore_contract import (
             RestoreCauseV1,
             RestoreFailureV1,
+            RestoreFailureV2,
             RestoreResponseV1,
             RestoreResponseV2,
         )
@@ -1063,13 +1064,18 @@ def run(args: argparse.Namespace) -> int:
             return 0
         except restore_manager.RestoreOperationError as exc:
             red_err = _redact_restore_failure(exc.failure)
-            if use_v2 or red_err.phase in ("release_intent", "released"):
+            if use_v2 or isinstance(red_err, RestoreFailureV2):
+                err_v2 = (
+                    red_err
+                    if isinstance(red_err, RestoreFailureV2)
+                    else RestoreFailureV2.from_v1(red_err)
+                )
                 response = RestoreResponseV2(
                     version=2,
                     operation=op,
                     ok=False,
                     result=exc.partial_review if op == "restore-review" else None,
-                    error=red_err,
+                    error=err_v2,
                 )
             else:
                 response = RestoreResponseV1(
@@ -1082,7 +1088,7 @@ def run(args: argparse.Namespace) -> int:
             _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
             return 2
         except (TianshuError, OSError, ValueError) as exc:
-            fallback = RestoreFailureV1(
+            fallback_v1 = RestoreFailureV1(
                 category="restore_failed",
                 message=redact(str(exc)),
                 batch_id=None,
@@ -1093,10 +1099,16 @@ def run(args: argparse.Namespace) -> int:
                 cause=RestoreCauseV1(type(exc).__name__, redact(str(exc))),
             )
             response = (
-                RestoreResponseV2(version=2, operation=op, ok=False, result=None, error=fallback)
+                RestoreResponseV2(
+                    version=2,
+                    operation=op,
+                    ok=False,
+                    result=None,
+                    error=RestoreFailureV2.from_v1(fallback_v1),
+                )
                 if use_v2
                 else RestoreResponseV1(
-                    version=1, operation=op, ok=False, result=None, error=fallback
+                    version=1, operation=op, ok=False, result=None, error=fallback_v1
                 )
             )
             _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
@@ -1109,11 +1121,19 @@ def run(args: argparse.Namespace) -> int:
         report = {"operation": "verify", **verify_backup(args.backup).to_dict()}
         code = 0 if report["ok"] else 1
     elif args.data_action == "migrate":
+        from .restore_access import RestoreScopeBusy
+
         try:
             migration = run_migration(args.data_root, backup=args.backup)
         except AdmissionRefused as exc:
             report = {
                 "operation": "migrate", "ok": False, "code": exc.code,
+                "error": str(exc),
+            }
+            code = 2
+        except RestoreScopeBusy as exc:
+            report = {
+                "operation": "migrate", "ok": False, "code": "held",
                 "error": str(exc),
             }
             code = 2

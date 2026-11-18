@@ -53,6 +53,7 @@ from .platform_identity import observe_entity
 from .restore_access import (
     RestoreDatabaseAccess,
     acquire_restore_database_access,
+    ensure_path_not_held,
     verify_sqlite_main,
 )
 
@@ -252,6 +253,7 @@ def state_path(data_root: Path) -> Path:
 
 
 def _connect(db: Path) -> sqlite3.Connection:
+    ensure_path_not_held(db)
     check_new_file_evidence(db)
     conn = sqlite3.connect(db.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -259,17 +261,23 @@ def _connect(db: Path) -> sqlite3.Connection:
 
 
 def read_schema_version(db: Path) -> int:
-    if not Path(db).is_file():
+    target = Path(db)
+    ensure_path_not_held(target)
+    if not target.is_file():
         raise MigrationRefused("事件库不存在", "incompatible")
     try:
-        with closing(_connect(Path(db))) as conn:
+        with closing(_connect(target)) as conn:
             return conn.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error as exc:
         raise UnsupportedSchemaVersion("无法读取真实机制版本") from exc
 
 
 def read_state(data_root: Path) -> MigrationState | None:
-    db = db_path(data_root).resolve()
+    ensure_path_not_held(data_root)
+    raw_db = db_path(data_root)
+    ensure_path_not_held(raw_db)
+    db = raw_db.resolve()
+    ensure_path_not_held(db)
     if not any(p.exists() or p.is_symlink() for p in associated_state_paths(db)):
         return None
     with closing(_connect(db)) as conn:
@@ -290,6 +298,7 @@ def _plan(current: int) -> list[MigrationStep]:
 
 
 def plan_migrations(data_root: Path) -> list[MigrationStep]:
+    ensure_path_not_held(data_root)
     return _plan(read_schema_version(db_path(data_root)))
 
 
@@ -378,6 +387,7 @@ def _material_point(root: Path, saved: Path, manifest) -> str:
 
 
 def _write_state(root: Path, state: MigrationStateV2) -> MigrationStateV2:
+    ensure_path_not_held(root)
     state = replace(state, updated_at_ms=max(state.updated_at_ms, int(time.time() * 1000)))
     try:
         atomic_write_bytes(state_path(root), encode_state(state))
@@ -624,6 +634,8 @@ def _run_locked(
 
 
 def migrate(data_root: Path, *, backup: Path) -> MigrationReport:
+    ensure_path_not_held(data_root)
+    ensure_path_not_held(db_path(data_root))
     try:
         root, db = _layout(data_root)
         locked_access = acquire_database_access(db, exclusive=True)
@@ -665,6 +677,7 @@ def migrate(data_root: Path, *, backup: Path) -> MigrationReport:
 
 
 def resume_migration(data_root: Path) -> MigrationReport | None:
+    ensure_path_not_held(data_root)
     state = read_state(data_root)
     if state is None:
         return None
@@ -675,6 +688,7 @@ def resume_migration(data_root: Path) -> MigrationReport | None:
 
 def assert_writable(data_root: Path) -> int:
     """保留旧专用严格helper；普通v0连接不使用它。"""
+    ensure_path_not_held(data_root)
     version = read_schema_version(db_path(data_root))
     state = read_state(data_root)
     if state is not None and state.status == "in_progress":

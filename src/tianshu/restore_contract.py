@@ -757,7 +757,7 @@ class RestoreFailureV1(ContractV1):
     category: ErrorCategory
     message: str
     batch_id: UUID | None
-    phase: PhaseV2 | None
+    phase: Phase | None
     plan_sha256: Sha256 | None
     retained_paths: tuple[NativePathV1, ...]
     next_commands: tuple[tuple[str, ...], ...]
@@ -1080,6 +1080,9 @@ class RestoreReviewV2(ContractV1):
             )
             for obj in self.objects
         )
+        static_checks = tuple(
+            c for c in self.checks if not (c.name == "later_backup" and c.passed)
+        )
         return RestoreReviewV1(
             batch_id=self.batch_id,
             phase=self.phase,
@@ -1088,12 +1091,53 @@ class RestoreReviewV2(ContractV1):
             binding_sha256=self.binding_sha256,
             scope_sha256=self.scope_sha256,
             review_complete=self.review_complete,
-            checks=self.checks,
+            checks=static_checks,
             objects=redacted_objs,
-            known_later_changes=self.known_later_changes,
+            known_later_changes=(),
             unverifiable=self.unverifiable,
             later_forget_delete_history=self.later_forget_delete_history,
             body_scopes=(),
+        )
+
+
+@dataclass(frozen=True)
+class RestoreFailureV2(ContractV1):
+    category: ErrorCategory
+    message: str
+    batch_id: UUID | None
+    phase: PhaseV2 | None
+    plan_sha256: Sha256 | None
+    retained_paths: tuple[NativePathV1, ...]
+    next_commands: tuple[tuple[str, ...], ...]
+    cause: RestoreCauseV1 | None
+
+    @classmethod
+    def from_v1(cls, failure: RestoreFailureV1) -> Self:
+        return cls(
+            category=failure.category,
+            message=failure.message,
+            batch_id=failure.batch_id,
+            phase=failure.phase,
+            plan_sha256=failure.plan_sha256,
+            retained_paths=failure.retained_paths,
+            next_commands=failure.next_commands,
+            cause=failure.cause,
+        )
+
+    def to_v1(self) -> RestoreFailureV1:
+        _require(
+            self.phase is None or self.phase in PHASES,
+            f"RestoreFailureV1 不接受 v2 专属阶段：{self.phase!r}",
+        )
+        return RestoreFailureV1(
+            category=self.category,
+            message=self.message,
+            batch_id=self.batch_id,
+            phase=self.phase,
+            plan_sha256=self.plan_sha256,
+            retained_paths=self.retained_paths,
+            next_commands=self.next_commands,
+            cause=self.cause,
         )
 
 
@@ -1132,7 +1176,7 @@ class RestoreResponseV2(ContractV1):
         | RestoreReleaseResultV2
         | None
     )
-    error: RestoreFailureV1 | None
+    error: RestoreFailureV2 | None
 
 
 _PAYLOADS_V2 = {
@@ -1518,7 +1562,7 @@ def _semantics(value: object) -> None:
             "成功phase/held不符",
         )
         _require(not value.held or value.binding_sha256 is not None, "published必须有Binding")
-    elif isinstance(value, RestoreFailureV1):
+    elif isinstance(value, (RestoreFailureV1, RestoreFailureV2)):
         _require(value.phase is None or value.batch_id is not None, "有phase必须有真实batch")
     elif isinstance(value, BodyViewV1):
         _require(
@@ -2035,8 +2079,20 @@ def _schema_type(
     *,
     schema_classes: dict[str, type] = _SCHEMA_CLASSES,
 ) -> dict[str, object]:
-    if annotation in (Phase, PhaseV2):
+    if annotation == Phase:
+        return (
+            {"$ref": "#/$defs/PhaseV1"}
+            if schema_classes is _SCHEMA_CLASSES_V2
+            else {"$ref": "#/$defs/Phase"}
+        )
+    if annotation == PhaseV2:
+        if schema_classes is not _SCHEMA_CLASSES_V2:
+            raise RestoreContractError("PhaseV2 不能进入 v1 schema")
         return {"$ref": "#/$defs/Phase"}
+    if annotation is RestoreFailureV2:
+        if schema_classes is not _SCHEMA_CLASSES_V2:
+            raise RestoreContractError("RestoreFailureV2 不能进入 v1 schema")
+        return {"$ref": "#/$defs/RestoreFailureV1"}
     if annotation == PostReleaseAdmissionStatusV2:
         return {"$ref": "#/$defs/PostReleaseAdmissionStatusV2"}
     if annotation == ErrorCategory:

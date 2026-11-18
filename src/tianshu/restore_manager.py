@@ -116,6 +116,7 @@ from .restore_contract import (
     RestoreEventV1,
     RestoreEventV2,
     RestoreFailureV1,
+    RestoreFailureV2,
     RestorePlanV1,
     RestoreReleaseResultV2,
     RestoreReviewV1,
@@ -158,7 +159,7 @@ class RestoreOperationError(TianshuError):
 
     def __init__(
         self,
-        failure: RestoreFailureV1,
+        failure: RestoreFailureV1 | RestoreFailureV2,
         *,
         partial_review: RestoreReviewV1 | RestoreReviewV2 | None = None,
         raw_cause: BaseException | None = None,
@@ -235,7 +236,12 @@ def _fail(
     partial_review: RestoreReviewV1 | RestoreReviewV2 | None = None,
 ) -> RestoreOperationError:
     actual_phase = phase if batch_id is not None else None
-    failure = RestoreFailureV1(
+    failure_cls = (
+        RestoreFailureV2
+        if actual_phase in ("release_intent", "released")
+        else RestoreFailureV1
+    )
+    failure = failure_cls(
         category=category,
         message=message,
         batch_id=batch_id,
@@ -4098,6 +4104,9 @@ def _compute_review_locked(
         )
         for obj in objects
     )
+    static_checks = tuple(
+        c for c in checks if not (c.name == "later_backup" and c.passed)
+    )
     redacted_v1 = RestoreReviewV1(
         batch_id=resolved_bid,
         phase="published_hold",
@@ -4106,9 +4115,9 @@ def _compute_review_locked(
         binding_sha256=sealed.binding_sha256,
         scope_sha256=sealed.binding.scope_sha256,
         review_complete=review_complete,
-        checks=tuple(checks),
+        checks=static_checks,
         objects=redacted_objs,
-        known_later_changes=tuple(later_changes),
+        known_later_changes=(),
         unverifiable=tuple(unverifiable),
         later_forget_delete_history="completeness_unproven",
         body_scopes=(),

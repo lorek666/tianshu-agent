@@ -316,6 +316,9 @@ class _LoopBookkeepingMixin:
         for digest, data in spills:
             blob = blob_dir / digest
             if not blob.exists():
+                from .restore_access import ensure_material_write_allowed
+
+                ensure_material_write_allowed(blob_dir, owner_log=self._log)
                 atomic_write_bytes(blob, data)
             if self._contents is not None and task_id:
                 # 授权在**落盘时**按当前 Run 的任务写入：内容寻址会去重，可见性

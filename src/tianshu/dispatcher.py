@@ -325,6 +325,8 @@ class Dispatcher(
             exec_backend=self._exec_backend,
             data_root=self._data_root,
         )
+        if snapshots is not None and hasattr(snapshots, "_bind_owner_log"):
+            snapshots._bind_owner_log(log)
 
     # ---- 只读查询 ----
 

@@ -945,6 +945,11 @@ class MemoryExecutor:
         if deleted:
             path = self._projection.blob_path(old.content_ref)
             if path is not None:
+                from .restore_access import ensure_material_write_allowed
+
+                ensure_material_write_allowed(
+                    path.parent, owner_log=self._projection.log
+                )
                 try:
                     deleted_bytes = path.stat().st_size
                     path.unlink()

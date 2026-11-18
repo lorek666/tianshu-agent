@@ -1368,7 +1368,13 @@ def build_stack(
     claims = JobStore(log, **ident, **kwargs)
     approvals = ApprovalStore(log, **kwargs)
     grants = GrantStore(log, **kwargs)
-    shots = snapshots if snapshots is not None else SnapshotStore(root / "artifacts")
+    shots = (
+        snapshots
+        if snapshots is not None
+        else SnapshotStore(root / "artifacts", owner_log=log)
+    )
+    if hasattr(shots, "_bind_owner_log"):
+        shots._bind_owner_log(log)
     budget = BudgetLedger(
         log, clock=clock or (lambda: int(time.time() * 1000))
     )

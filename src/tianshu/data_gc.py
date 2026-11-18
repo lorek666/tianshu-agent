@@ -131,7 +131,6 @@ GC_FAILURE_CODES: frozenset[str] = frozenset(
 
 _UNCONDITIONAL_HELD_MARKERS: tuple[str, ...] = (
     ".restore-origin.json.tmp",
-    ".restore-token.json",
     ".restore-token.json.tmp",
 )
 
@@ -361,6 +360,7 @@ def _filter_released_observation(
             continue
         if tail.kind == "released":
             if verified_released_batch_id is not None and batch_id == verified_released_batch_id:
+                active_events.extend(batch_evs)
                 continue
             tail_payload = tail.payload
             final_root_ref = (
@@ -426,8 +426,59 @@ class _GcRestoreRegistryAdapter:
         self._inner.revalidate(raw)
 
 
-def _check_not_restore_held(root: Path, db: Path) -> None:
-    """拒绝处于未终结恢复范围（held / staging）的数据根。"""
+def _verify_released_token_marker(
+    token_path: Path,
+    observed: RegistryObservation,
+    verified_batch_id: object | None,
+) -> None:
+    """仅当已核验解除批次存在完全匹配的 StageOwnedV1 token 字节时放行，否则以 restore_held 拒绝。"""
+    import base64
+
+    from .restore_contract import StageOwnedV1, TokenV1
+
+    if verified_batch_id is None or not isinstance(observed, PresentRegistryObservation):
+        raise GcRefused("restore_held", "数据根存在未终结恢复控制文件：.restore-token.json")
+    if token_path.is_symlink() or token_path.is_junction():
+        raise GcRefused(
+            "restore_held", "恢复控制文件 .restore-token.json 不能是符号链接或 junction"
+        )
+    try:
+        tok_handle = open_entity(token_path, "file")
+        try:
+            if tok_handle.link_count != 1:
+                raise GcRefused(
+                    "restore_held", "恢复控制文件 .restore-token.json 必须是单硬链接普通文件"
+                )
+            raw_token = token_path.read_bytes()
+        finally:
+            tok_handle.close()
+        token = TokenV1.from_bytes(raw_token)
+    except GcRefused:
+        raise
+    except (NativeEntityError, OSError, RestoreContractError, ValueError) as exc:
+        raise GcRefused(
+            "restore_held", f"数据根存在非法恢复控制文件 .restore-token.json：{exc}"
+        ) from exc
+    if token.registry_id != observed.meta.registry_id or token.batch_id != verified_batch_id:
+        raise GcRefused("restore_held", "恢复控制文件 .restore-token.json 批次不匹配")
+    owned_ev = next(
+        (
+            ev
+            for ev in observed.events
+            if ev.batch_id == verified_batch_id and ev.kind == "stage_owned"
+        ),
+        None,
+    )
+    if (
+        owned_ev is None
+        or type(owned_ev.payload) is not StageOwnedV1
+        or base64.b64encode(raw_token).decode("ascii") != owned_ev.payload.token_bytes_b64
+    ):
+        raise GcRefused("restore_held", "数据根存在未绑定或损坏的 .restore-token.json")
+
+
+def _check_not_restore_held(root: Path, db: Path) -> bool:
+    """拒绝处于未终结恢复范围（held / staging）的数据根；返回是否具备已验证的恢复解除证明。"""
     for marker in _UNCONDITIONAL_HELD_MARKERS:
         marker_path = root / marker
         if marker_path.exists() or marker_path.is_symlink() or marker_path.is_junction():
@@ -458,6 +509,30 @@ def _check_not_restore_held(root: Path, db: Path) -> None:
         verified_batch_id = _verify_committed_origin_released(
             root, root_identity, db_identity, observed
         )
+    elif isinstance(observed, PresentRegistryObservation):
+        for ev in observed.events:
+            if ev.kind != "released":
+                continue
+            payload = ev.payload
+            root_ref = (
+                payload.get("final_root")
+                if isinstance(payload, dict)
+                else getattr(payload, "final_root", None)
+            )
+            db_ref = (
+                payload.get("final_database")
+                if isinstance(payload, dict)
+                else getattr(payload, "final_database", None)
+            )
+            if (
+                _extract_dir_or_entity_identity(root_ref) == root_identity
+                or _extract_dir_or_entity_identity(db_ref) == db_identity
+            ):
+                raise GcRefused("restore_held", "已解除恢复根缺少 .restore-origin.json 见证")
+
+    token_path = root / ".restore-token.json"
+    if token_path.exists() or token_path.is_symlink() or token_path.is_junction():
+        _verify_released_token_marker(token_path, observed, verified_batch_id)
 
     try:
         filtered = _filter_released_observation(
@@ -470,7 +545,9 @@ def _check_not_restore_held(root: Path, db: Path) -> None:
             raise GcRefused("restore_held", "数据根落入尚未终结的恢复批次范围")
     except GcRefused:
         raise
-    except RestoreAccessError as exc:
+    except RestoreScopeBusy as exc:
+        raise GcRefused("restore_held", str(exc)) from exc
+    except (RestoreRegistryError, RestoreAccessError) as exc:
         raise GcRefused("incompatible", f"恢复范围核验失败：{exc}") from exc
 
     try:
@@ -484,6 +561,7 @@ def _check_not_restore_held(root: Path, db: Path) -> None:
         raise
     except OSError as exc:
         raise GcRefused("incompatible", f"无法检查数据根父目录暂存状态：{exc}") from exc
+    return verified_batch_id is not None
 
 
 def _effective_headroom_bytes(
@@ -535,9 +613,14 @@ def _connect_locked_rw(db: Path) -> sqlite3.Connection:
     return conn
 
 
-def _verify_db_admission(conn: sqlite3.Connection, db: Path) -> None:
+def _verify_db_admission(
+    conn: sqlite3.Connection,
+    db: Path,
+    *,
+    released_v2_admitted: bool = False,
+) -> None:
     try:
-        snapshot = check_connection(conn, db)
+        snapshot = check_connection(conn, db, released_v2_admitted=released_v2_admitted)
     except AdmissionRefused as exc:
         raise _map_admission_error(exc) from exc
     if snapshot.is_new:
@@ -1165,12 +1248,12 @@ def run_data_gc(
         cutoff_ms = now_ms - older_than_days * DAY_MS
         root, db = _validate_root_layout(data_root)
         extra_paths.append(str(root))
-        _check_not_restore_held(root, db)
+        released_proof = _check_not_restore_held(root, db)
 
         if not approve:
             try:
                 with closing(_connect_preview_readonly(db)) as conn:
-                    _verify_db_admission(conn, db)
+                    _verify_db_admission(conn, db, released_v2_admitted=released_proof)
                     try:
                         index = collect_references(root)
                     except ReferenceUnknown as exc:
@@ -1226,7 +1309,7 @@ def run_data_gc(
             raise GcRefused("incompatible", f"无法取得离线独占准入：{exc}") from exc
 
         with access_cm as access:
-            _check_not_restore_held(root, db)
+            released_proof = _check_not_restore_held(root, db) or access.has_released_proof
             writers = writers_active(root)
             if writers is not False:
                 reason = "存在活跃的 daemon/host 进程" if writers else "无法判定写者存活状态"
@@ -1246,7 +1329,7 @@ def run_data_gc(
                 # 二次引用核验与候选计算，先行 unlink 孤儿文件释放空间后再按余量决定是否开写连接。
                 with closing(_connect_preview_readonly(db)) as ro_conn:
                     verify_sqlite_main(ro_conn, db, access.identity)
-                    _verify_db_admission(ro_conn, db)
+                    _verify_db_admission(ro_conn, db, released_v2_admitted=released_proof)
                     try:
                         index = collect_references(root)
                     except ReferenceUnknown as exc:
@@ -1276,7 +1359,7 @@ def run_data_gc(
             else:
                 with closing(_connect_locked_rw(db)) as conn:
                     verify_sqlite_main(conn, db, access.identity)
-                    _verify_db_admission(conn, db)
+                    _verify_db_admission(conn, db, released_v2_admitted=released_proof)
                     try:
                         index = collect_references(root)
                     except ReferenceUnknown as exc:

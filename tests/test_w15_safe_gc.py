@@ -908,21 +908,22 @@ def test_reference_unknown_and_in_progress_undo_fail_closed_with_zero_deletions(
         spill_blob.write_bytes(b"tampered bytes causing sha256 mismatch")
         expected_code = "reference_unknown"
     else:
-        jstore = JournalStore(root / "artifacts")
-        jstore.begin(
-            "run_inflight_undo",
-            control_run="run_ctrl_inflight",
-            items=(
-                JournalItem(
-                    root=str(fx["ws"]),
-                    path="note.md",
-                    call_id="c_inflight",
-                    before_state="absent",
-                    expected_after="a" * 64,
-                    action="delete",
+        with closing(EventLog(root / "events.db", blob_dir=root / "blobs")):
+            jstore = JournalStore(root / "artifacts")
+            jstore.begin(
+                "run_inflight_undo",
+                control_run="run_ctrl_inflight",
+                items=(
+                    JournalItem(
+                        root=str(fx["ws"]),
+                        path="note.md",
+                        call_id="c_inflight",
+                        before_state="absent",
+                        expected_after="a" * 64,
+                        action="delete",
+                    ),
                 ),
-            ),
-        )
+            )
         expected_code = "undo_in_progress"
 
     tree_before = _tree_snapshot(root)

@@ -202,6 +202,12 @@ class ContentStore:
             raise ContentError(f"内容必须是字节：{type(data).__name__}")
         if not isinstance(task_id, str) or not task_id:
             raise ContentError("内容授权必须绑定任务（task_id 不能为空）")
+        from .restore_access import ensure_log_write_allowed, ensure_material_write_allowed
+
+        if self._blob_dir is not None:
+            ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
+        else:
+            ensure_log_write_allowed(self._log)
         now = self._clock()
         created = False
         with self._log.transaction():

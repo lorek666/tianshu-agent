@@ -134,16 +134,23 @@ class _ResumePlan:
 
 
 class SnapshotStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, owner_log: Any = None) -> None:
         from .restore_access import ensure_path_not_held
 
         ensure_path_not_held(root)
         self.root = root
+        self._owner_log = owner_log
         self.blob_dir = root / "blobs"
         self.manifest_dir = root / "snapshots"
-        self.journal = undo_journal.JournalStore(root)
+        self.journal = undo_journal.JournalStore(root, owner_log=owner_log)
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    def _bind_owner_log(self, log: Any) -> None:
+        if self._owner_log is None:
+            self._owner_log = log
+        if getattr(self.journal, "_owner_log", None) is None:
+            self.journal._owner_log = log
 
     def manifest_path(self, run_id: str) -> Path:
         return self.manifest_dir / f"{run_id}.json"
@@ -155,14 +162,17 @@ class SnapshotStore:
         而不是「这个 run 什么都没写」——后者会让恢复把有副作用的 intent
         判成 none_applied。
         """
-        path = self.manifest_path(run_id)
-        if path.exists():
-            return
-        payload = json.dumps(
-            {"version": MANIFEST_VERSION, "changes": []},
-            ensure_ascii=False, indent=2,
-        ).encode("utf-8")
-        atomic_write_bytes(path, payload)
+        from .restore_access import ensure_material_write_allowed
+
+        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+            path = self.manifest_path(run_id)
+            if path.exists():
+                return
+            payload = json.dumps(
+                {"version": MANIFEST_VERSION, "changes": []},
+                ensure_ascii=False, indent=2,
+            ).encode("utf-8")
+            atomic_write_bytes(path, payload)
 
     # ---- 证据 ----
 
@@ -181,29 +191,31 @@ class SnapshotStore:
         `root` 是这次写入所属的 workspace 根，**必填**：没有根的写入证据
         既不能撤销也不能定位，宁可在这里炸掉，也不要在撤销时才发现。
         """
+        from .restore_access import ensure_material_write_allowed
+
         resolved_root = _clean_root(root)
         rel = _clean_rel(rel_path)
+        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+            if before is None:
+                change = Change(call_id, resolved_root, rel, ABSENT, expected_after, None)
+            else:
+                digest = hashlib.sha256(before).hexdigest()
+                blob = self.blob_dir / digest
+                if not blob.exists():
+                    atomic_write_bytes(blob, before)  # 内容寻址，同内容只存一份
+                change = Change(
+                    call_id, resolved_root, rel, digest, expected_after, str(blob)
+                )
 
-        if before is None:
-            change = Change(call_id, resolved_root, rel, ABSENT, expected_after, None)
-        else:
-            digest = hashlib.sha256(before).hexdigest()
-            blob = self.blob_dir / digest
-            if not blob.exists():
-                atomic_write_bytes(blob, before)  # 内容寻址，同内容只存一份
-            change = Change(
-                call_id, resolved_root, rel, digest, expected_after, str(blob)
-            )
-
-        entries = [c for c in self.load(run_id) if c.call_id != call_id]
-        entries.append(change)
-        payload = json.dumps(
-            {"version": MANIFEST_VERSION,
-             "changes": [c.to_dict() for c in entries]},
-            ensure_ascii=False, indent=2,
-        ).encode("utf-8")
-        atomic_write_bytes(self.manifest_path(run_id), payload)
-        return change
+            entries = [c for c in self.load(run_id) if c.call_id != call_id]
+            entries.append(change)
+            payload = json.dumps(
+                {"version": MANIFEST_VERSION,
+                 "changes": [c.to_dict() for c in entries]},
+                ensure_ascii=False, indent=2,
+            ).encode("utf-8")
+            atomic_write_bytes(self.manifest_path(run_id), payload)
+            return change
 
     def load(self, run_id: str) -> list[Change]:
         path = self.manifest_path(run_id)
@@ -302,6 +314,10 @@ class SnapshotStore:
                 "直写需显式 allow_direct_write=True"
             )
         guard()
+        from .restore_access import ensure_material_write_allowed
+
+        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+            pass
 
         # 已有 journal：崩溃/中断过的撤销 → 只许续做，不许从头再来。
         journal = self.journal.load(run_id)

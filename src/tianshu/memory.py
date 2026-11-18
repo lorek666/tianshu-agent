@@ -226,6 +226,11 @@ class MemoryProjection(_MemoryApplyMixin):
             self._verify_tokenizer_version()
             return
         outer = self._log.in_transaction
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self._ensure_schema()
             self._require_tokenizer_version()
@@ -347,6 +352,11 @@ class MemoryProjection(_MemoryApplyMixin):
             raise MemoryStoreError(f"{tool_id} 的 output 必须是对象：{output!r}")
 
         seq_value = _require_int(seq, "seq", minimum=1)
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         # 写"新行"的四个工具共用同一套插入代码，差别只在期望的 status / origin /
         # supersedes 形状（见 `_apply_propose` 的 mode）。
         modes = {
@@ -385,6 +395,11 @@ class MemoryProjection(_MemoryApplyMixin):
         没有 intent 记录时（只拿 tool.result 做夹具的库）才用 result 自己的
         seq——这是"日志里确实没有更早来源"的如实回退，不是猜一个号。
         """
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self._ensure_schema()
             # 先写当前分词器版本：重放时 apply_event 的版本校验必须通过；
@@ -587,6 +602,9 @@ class MemoryProjection(_MemoryApplyMixin):
             # 引用照样返回，`apply_event()` 读不到正文时会标成
             # `content_unavailable`，`read_content()` 如实返回 None。
             return ref
+        from .restore_access import ensure_material_write_allowed
+
+        ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
         target = self._blob_dir / ref
         if not target.is_file():
             atomic_write_bytes(target, data)
@@ -742,6 +760,11 @@ class MemoryProjection(_MemoryApplyMixin):
         """用当前 provider 重算全部向量（幂等、可重建）。返回条数。"""
         if self._index is None:
             raise MemoryStoreError("没有配置向量索引：rebuild_vectors() 无事可做")
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self.ensure_schema()
             return int(self._index.rebuild(self))

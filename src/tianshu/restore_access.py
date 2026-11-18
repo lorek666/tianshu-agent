@@ -10,9 +10,12 @@ from __future__ import annotations
 import base64
 import os
 import sqlite3
+import threading
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .errors import TianshuError
 from .maintenance import (
@@ -209,36 +212,17 @@ def _verify_released_batch_live_entities(
     live_root: Path,
 ) -> tuple[EntityIdentityV1, EntityIdentityV1]:
     tail = batch_events[-1]
-    if tail.kind != "released" or type(tail.payload) is not ReleasedV1:
-        raise RestoreRegistryCorrupt("已解除批次缺少合法 ReleasedV1 尾事件")
-    released: ReleasedV1 = tail.payload
-    rel_intent_ev = next((e for e in batch_events if e.kind == "release_intent"), None)
-    intent_ev = next((e for e in batch_events if e.kind == "publish_intent"), None)
-    if (
-        rel_intent_ev is None
-        or type(rel_intent_ev.payload) is not ReleaseIntentV1
-        or intent_ev is None
-        or type(intent_ev.payload) is not PublishIntentV1
-    ):
-        raise RestoreRegistryCorrupt("已解除批次缺少完整 publish_intent / release_intent 链")
+    if tail.kind != "released":
+        raise RestoreRegistryCorrupt("已解除批次缺少合法 released 尾事件")
     try:
         resolved_root = live_root.resolve(strict=True)
         actual_root_id = observe_entity(resolved_root, "directory")
         actual_parent_id = observe_entity(resolved_root.parent, "directory")
     except (NativeEntityError, OSError) as exc:
         raise RestoreRegistryCorrupt(f"已解除恢复根缺失或不可核验：{live_root}") from exc
-    if actual_root_id != released.final_root.identity:
-        raise RestoreRegistryCorrupt(f"已解除恢复根 S 实体身份已被替换：{live_root}")
-    if overlap_key(str(resolved_root)) != released.final_root.path.comparison_key:
-        raise RestoreRegistryCorrupt(f"已解除恢复根路径已偏离绑定最终位置：{live_root}")
-    if actual_parent_id != rel_intent_ev.payload.stable_parent.identity:
-        raise RestoreRegistryCorrupt(f"已解除恢复根稳定父目录 P 身份已变更：{resolved_root.parent}")
 
     origin_path = resolved_root / ".restore-origin.json"
     raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
-    expected_origin = base64.b64decode(intent_ev.payload.origin_bytes_b64)
-    if raw_origin != expected_origin:
-        raise RestoreRegistryCorrupt("已解除恢复根的 .restore-origin.json 字节已被篡改")
 
     db_file = resolved_root / "events.db"
     try:
@@ -253,6 +237,48 @@ def _verify_released_batch_live_entities(
         actual_db_id = db_handle.identity
     finally:
         db_handle.close()
+
+    if type(tail.payload) is not ReleasedV1:
+        sealed_ev = next((e for e in batch_events if e.kind == "sealed_hold"), None)
+        final_root_ref = getattr(tail.payload, "final_root", None)
+        final_db_ref = getattr(tail.payload, "final_database", None)
+        root_ref_id = getattr(final_root_ref, "identity", None)
+        db_ref_id = getattr(final_db_ref, "identity", None)
+        try:
+            origin = OriginV1.from_bytes(raw_origin)
+        except (ValueError, RestoreContractError) as exc:
+            raise RestoreRegistryCorrupt("已解除恢复根的 .restore-origin.json 损坏") from exc
+        if (
+            sealed_ev is None
+            or type(sealed_ev.payload) is not SealedHoldV1
+            or root_ref_id != actual_root_id
+            or db_ref_id != actual_db_id
+            or getattr(tail.payload, "binding_sha256", None) != origin.binding_sha256
+            or getattr(tail.payload, "origin_sha256", None) != domain_digest("origin", origin)
+        ):
+            raise RestoreRegistryCorrupt("已解除恢复批次实体或来源摘要核验失败")
+        return actual_root_id, actual_db_id
+
+    released: ReleasedV1 = tail.payload
+    rel_intent_ev = next((e for e in batch_events if e.kind == "release_intent"), None)
+    intent_ev = next((e for e in batch_events if e.kind == "publish_intent"), None)
+    if (
+        rel_intent_ev is None
+        or type(rel_intent_ev.payload) is not ReleaseIntentV1
+        or intent_ev is None
+        or type(intent_ev.payload) is not PublishIntentV1
+    ):
+        raise RestoreRegistryCorrupt("已解除批次缺少完整 publish_intent / release_intent 链")
+    if actual_root_id != released.final_root.identity:
+        raise RestoreRegistryCorrupt(f"已解除恢复根 S 实体身份已被替换：{live_root}")
+    if overlap_key(str(resolved_root)) != released.final_root.path.comparison_key:
+        raise RestoreRegistryCorrupt(f"已解除恢复根路径已偏离绑定最终位置：{live_root}")
+    if actual_parent_id != rel_intent_ev.payload.stable_parent.identity:
+        raise RestoreRegistryCorrupt(f"已解除恢复根稳定父目录 P 身份已变更：{resolved_root.parent}")
+
+    expected_origin = base64.b64decode(intent_ev.payload.origin_bytes_b64)
+    if raw_origin != expected_origin:
+        raise RestoreRegistryCorrupt("已解除恢复根的 .restore-origin.json 字节已被篡改")
     if actual_db_id != released.final_database.identity:
         raise RestoreRegistryCorrupt(f"已解除主库 D 实体身份已被替换：{db_file}")
     return actual_root_id, actual_db_id
@@ -444,7 +470,7 @@ def _active_scope_blocks(
         if not matched:
             continue
 
-        if tail.kind == "released" and type(tail.payload) is ReleasedV1:
+        if tail.kind == "released":
             _verify_released_batch_live_entities(events, final_root)
             continue
 
@@ -636,6 +662,7 @@ class RestoreDatabaseAccess:
             self.entity.close()
         self.namespace.close()
         self._closed = True
+        unregister_admitted_eventlog(self)
 
 
 def acquire_restore_database_access(
@@ -797,11 +824,287 @@ def verify_sqlite_main(
         raise RestoreAccessError("SQLite database_list.main实体与已锁实体不符")
 
 
+_ACTIVE_EVENTLOG_LOCK = threading.Lock()
+_ACTIVE_EVENTLOG_ACCESSES: weakref.WeakValueDictionary[int, RestoreDatabaseAccess] = (
+    weakref.WeakValueDictionary()
+)
+_STANDARD_EVENTS_MARKERS: tuple[str, ...] = (
+    "events.db",
+    "events.db-wal",
+    "events.db-journal",
+    "events.db-shm",
+    "events.db.migration.json",
+    ".migration.json",
+    ".restore-origin.json",
+    ".restore-origin.json.tmp",
+    ".restore-token.json",
+    ".restore-token.json.tmp",
+)
+_DISALLOWED_CUSTOM_MAIN_NAMES = frozenset({"custom.db", "other.db"})
+
+
+def register_admitted_eventlog(db_path: Path, access: RestoreDatabaseAccess) -> None:
+    """在 EventLog 完成只读准入与 schema 初始化后登记活跃 main 连续 access。"""
+    if str(db_path) == ":memory:" or not access.active:
+        return
+    with _ACTIVE_EVENTLOG_LOCK:
+        _ACTIVE_EVENTLOG_ACCESSES[id(access)] = access
+
+
+def unregister_admitted_eventlog(access: RestoreDatabaseAccess) -> None:
+    with _ACTIVE_EVENTLOG_LOCK:
+        _ACTIVE_EVENTLOG_ACCESSES.pop(id(access), None)
+
+
+def _standard_material_root_and_domain(target: Path) -> tuple[Path, str] | None:
+    for entry in (target, *target.parents):
+        name = entry.name
+        if name == "blobs" and entry.parent.name == "artifacts":
+            continue
+        if name in ("memory_blobs", "artifacts", "blobs"):
+            if entry.parent == entry:
+                return None
+            return entry.parent, name
+    return None
+
+
+def _has_standard_events_db_marker(root: Path) -> bool:
+    for marker in _STANDARD_EVENTS_MARKERS:
+        cand = root / marker
+        try:
+            if cand.is_symlink() or cand.is_junction() or cand.exists():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _active_initialized_accesses_in_root(root: Path) -> list[RestoreDatabaseAccess]:
+    root_key = overlap_key(str(root.resolve(strict=False)))
+    with _ACTIVE_EVENTLOG_LOCK:
+        snapshot = list(_ACTIVE_EVENTLOG_ACCESSES.values())
+    matched: list[RestoreDatabaseAccess] = []
+    for acc in snapshot:
+        if not acc.active or str(acc.path) == ":memory:":
+            continue
+        try:
+            resolved_db = acc.path.resolve(strict=True)
+            if overlap_key(str(resolved_db.parent)) != root_key:
+                continue
+            if resolved_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
+                continue
+            if resolved_db.stat().st_size <= 0:
+                continue
+            acc.verify()
+        except (RestoreAccessError, NativeEntityError, OSError):
+            continue
+        matched.append(acc)
+    return matched
+
+
+def ensure_log_write_allowed(owner_log: Any) -> None:
+    """验证所属 EventLog 未落入隔离范围且仍持有本进程已初始化连续准入 access。"""
+    db_path = getattr(owner_log, "db_path", None)
+    if db_path is None or str(db_path) == ":memory:":
+        return
+    ensure_path_not_held(db_path)
+    conn = getattr(owner_log, "_conn", None)
+    access = getattr(conn, "database_access", None) if conn is not None else None
+    if not isinstance(access, RestoreDatabaseAccess) or not access.active:
+        raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{db_path}")
+    with _ACTIVE_EVENTLOG_LOCK:
+        registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(access)) is access
+    if not registered:
+        raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{db_path}")
+    try:
+        if Path(db_path).resolve(strict=True).stat().st_size <= 0:
+            raise RestoreAccessError(f"所属 EventLog 主库为空/未初始化：{db_path}")
+        access.verify()
+    except (NativeEntityError, OSError) as exc:
+        raise RestoreAccessError(f"所属 EventLog 连续准入核验失败：{db_path}") from exc
+
+
+class _MaterialWriteLease:
+    """独立材料写调用期间持有的连续准入租约；已有活跃 EventLog 时为零开销空租约。"""
+
+    __slots__ = ("_access",)
+
+    def __init__(self, access: RestoreDatabaseAccess | None = None) -> None:
+        self._access = access
+
+    def __enter__(self) -> _MaterialWriteLease:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        acc, self._access = self._access, None
+        if acc is not None:
+            acc.close()
+
+
+_NOOP_MATERIAL_LEASE = _MaterialWriteLease(None)
+
+
+def _acquire_verified_existing_main_access(std_events_db: Path) -> RestoreDatabaseAccess:
+    """独立材料 API 在无进程内活跃 EventLog 时，仅对已存在非空且准入通过的 events.db 取锁。"""
+    from contextlib import closing
+
+    from .data_admission import check_connection, check_new_file_evidence
+    from .data_state import AdmissionRefused
+
+    try:
+        if (
+            std_events_db.is_symlink()
+            or std_events_db.is_junction()
+            or not std_events_db.is_file()
+            or std_events_db.stat().st_size <= 0
+        ):
+            raise RestoreAccessError(
+                f"标准数据根缺少已初始化的非空 events.db：{std_events_db}"
+            )
+    except OSError as exc:
+        raise RestoreAccessError(f"无法检查标准主库状态：{std_events_db}") from exc
+
+    access = acquire_restore_database_access(
+        std_events_db,
+        exclusive=False,
+        prewrite_guard=lambda: check_new_file_evidence(std_events_db),
+    )
+    try:
+        ro_uri = std_events_db.resolve(strict=True).as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(ro_uri, uri=True, timeout=5.0, isolation_level=None)) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            verify_sqlite_main(conn, std_events_db, access.identity)
+            snapshot = check_connection(
+                conn,
+                std_events_db,
+                released_v2_admitted=access.has_released_proof,
+            )
+            if snapshot.is_new:
+                raise RestoreAccessError(f"标准主库尚未初始化事件 schema：{std_events_db}")
+        return access
+    except BaseException as exc:
+        access.close()
+        if isinstance(exc, RestoreAccessError):
+            raise
+        if isinstance(exc, (AdmissionRefused, sqlite3.Error, OSError)):
+            raise RestoreAccessError(
+                f"标准主库未通过只读准入核验（{exc}）：{std_events_db}"
+            ) from exc
+        raise
+
+
+def ensure_material_write_allowed(
+    material_path: Path | str,
+    *,
+    owner_log: Any = None,
+) -> _MaterialWriteLease:
+    """三材料域每个写 API 统一写前守卫：动态重验隔离范围 + 绑定同根已初始化准入 main。"""
+    if str(material_path) == ":memory:":
+        return _NOOP_MATERIAL_LEASE
+    ensure_path_not_held(material_path)
+    if owner_log is not None:
+        ensure_log_write_allowed(owner_log)
+
+    target = _absolute_target(Path(material_path))
+    located = _standard_material_root_and_domain(target)
+    if located is None:
+        return _NOOP_MATERIAL_LEASE
+    standard_root, domain = located
+    ensure_path_not_held(standard_root)
+
+    active_in_root = _active_initialized_accesses_in_root(standard_root)
+    std_events_db = (standard_root / "events.db").resolve(strict=False)
+    std_events_key = overlap_key(str(std_events_db))
+    std_root_key = overlap_key(str(standard_root.resolve(strict=False)))
+    has_std_marker = _has_standard_events_db_marker(standard_root)
+    requires_standard_events_db = domain == "memory_blobs" or has_std_marker
+
+    if requires_standard_events_db:
+        if owner_log is not None:
+            owner_db = getattr(owner_log, "db_path", None)
+            if owner_db is None or str(owner_db) == ":memory:":
+                raise RestoreAccessError(
+                    f"标准数据根材料写入不能使用 :memory: 连接：{target}"
+                )
+            resolved_owner_db = Path(owner_db).resolve(strict=False)
+            if resolved_owner_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
+                raise RestoreAccessError(
+                    f"标准数据根材料写入不能使用 custom.db / other.db 连接（{owner_db}）：{target}"
+                )
+            if domain == "memory_blobs":
+                if overlap_key(str(resolved_owner_db)) != std_events_key:
+                    raise RestoreAccessError(
+                        f"标准根 memory_blobs 写入须绑定同根 events.db（{owner_db}）：{target}"
+                    )
+            elif overlap_key(str(resolved_owner_db.parent)) != std_root_key:
+                # 允许 build_stack(EventLog(a/events.db), data_root=b) 仅当 b 无独立 events.db；
+                # 此处 b 已有标准 events.db 标记，异根连接一律拒绝！
+                raise RestoreAccessError(
+                    f"标准数据根材料写入不能使用异根连接（{owner_db}）：{target}"
+                )
+
+        has_std_main = any(
+            overlap_key(str(acc.path.resolve(strict=False))) == std_events_key
+            for acc in active_in_root
+        )
+        if has_std_main:
+            return _NOOP_MATERIAL_LEASE
+        if owner_log is None and domain == "artifacts":
+            return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
+        if owner_log is not None:
+            # 同目录非 custom 辅助库（如 cli.db）旁侧有 events.db 时同样须先验证主库准入
+            temp_acc = _acquire_verified_existing_main_access(std_events_db)
+            temp_acc.close()
+            return _NOOP_MATERIAL_LEASE
+        raise RestoreAccessError(
+            f"标准数据根材料写入必须绑定已初始化、已准入的 events.db 连续 access：{target}"
+        )
+
+    if owner_log is not None:
+        owner_db = getattr(owner_log, "db_path", None)
+        if owner_db is None or str(owner_db) == ":memory:":
+            raise RestoreAccessError(f"材料目录写入不能使用 :memory: 连接：{target}")
+        resolved_owner_db = Path(owner_db).resolve(strict=False)
+        if resolved_owner_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
+            raise RestoreAccessError(
+                f"材料目录写入不能使用 custom.db / other.db 连接（{owner_db}）：{target}"
+            )
+        owner_blob_dir = getattr(owner_log, "blob_dir", None)
+        explicitly_configured_log_blob_dir = (
+            owner_blob_dir is not None
+            and overlap_key(str(_absolute_target(Path(owner_blob_dir))))
+            == overlap_key(str(target))
+            and not active_in_root
+        )
+        if (
+            domain != "artifacts"
+            and not explicitly_configured_log_blob_dir
+            and overlap_key(str(resolved_owner_db.parent)) != std_root_key
+        ):
+            raise RestoreAccessError(
+                f"材料写入连接（{owner_db}）与目标材料根不属于同一数据根：{target}"
+            )
+        return _NOOP_MATERIAL_LEASE
+
+    if not active_in_root:
+        raise RestoreAccessError(
+            f"标准材料写入被拒绝（缺少同根已初始化、已准入 EventLog 连续 access）：{target}"
+        )
+    return _NOOP_MATERIAL_LEASE
+
+
 __all__ = [
     "RestoreAccessError",
     "RestoreDatabaseAccess",
     "RestoreScopeBusy",
     "acquire_restore_database_access",
+    "ensure_log_write_allowed",
+    "ensure_material_write_allowed",
     "ensure_path_not_held",
+    "register_admitted_eventlog",
+    "unregister_admitted_eventlog",
     "verify_sqlite_main",
 ]
