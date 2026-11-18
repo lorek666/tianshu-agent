@@ -45,6 +45,7 @@ from .exec import RULE_PTY_NOT_ALLOWED
 from .exec_backends import ExecBackend
 from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
+    ISOLATION_NONE,
     ExecPolicy,
     PolicyDenied,
     PolicyUnsupported,
@@ -53,7 +54,11 @@ from .execpolicy import (
     filtered_env,
 )
 from .guard import assert_paths_not_blocked, ensure_not_blocked
-from .isolation import isolation_view, require_isolation_requirements
+from .isolation import (
+    isolation_view,
+    probe_backend_cached,
+    require_isolation_requirements,
+)
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
@@ -601,6 +606,15 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
         isolation_report = require_isolation_requirements(
             policy, backend, workspace=target, data_root=ctx.data_root
         )
+        if (
+            isolation_report is None
+            and not tuple(policy.isolation_requires)
+            and capabilities.isolation != ISOLATION_NONE
+            and ctx.data_root is not None
+        ):
+            isolation_report = probe_backend_cached(
+                backend, workspace=target, data_root=ctx.data_root
+            )
         result = backend.spawn(
             argv,
             cwd=target,

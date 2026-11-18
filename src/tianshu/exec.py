@@ -43,10 +43,12 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
+from .credentials import ENV_VARS as _CREDENTIAL_ENV_VARS
 from .errors import TianshuError
 from .execpolicy import (
     FEATURE_PTY,
@@ -77,6 +79,76 @@ RULE_PTY_NOT_ALLOWED = "f2.pty_not_allowed"
 规则 id 沿用 `f2.` 前缀：它是一条**策略**拒绝（改策略能解决），不是后端
 能力问题（换后端才能解决），UI 要能把两者分开。
 """
+
+_SANDBOX_SCRUB_EXACT: frozenset[str] = frozenset(
+    {
+        "TIANSHU_ISOLATION_SENTINEL",
+        *(name.upper() for name in _CREDENTIAL_ENV_VARS.values()),
+        "API_KEY",
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITLAB_TOKEN",
+        "HF_TOKEN",
+        "NPM_TOKEN",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GPG_AGENT_INFO",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "SECURITYSESSIONID",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    }
+)
+
+_SANDBOX_SCRUB_PREFIXES: tuple[str, ...] = (
+    "TIANSHU_",
+    "AWS_",
+    "OPENAI_",
+    "ANTHROPIC_",
+    "GNOME_KEYRING_",
+)
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """判定环境变量名是否属于必须在进程级沙箱后端强制剥离的敏感/凭据变量。"""
+    upper = name.upper()
+    if upper in _SANDBOX_SCRUB_EXACT:
+        return True
+    if upper.startswith(_SANDBOX_SCRUB_PREFIXES):
+        return True
+    if upper.endswith("_API_KEY") or "_API_KEY_" in upper:
+        return True
+    if "_SECRET" in upper or upper.startswith("SECRET_"):
+        return True
+    if "_TOKEN" in upper or upper.startswith("TOKEN_"):
+        return True
+    if (
+        "_PASSWORD" in upper
+        or upper.startswith("PASSWORD_")
+        or upper.endswith("_PASSWD")
+        or upper.endswith("_PWD")
+    ):
+        return True
+    if "_PRIVATE_KEY" in upper:
+        return True
+    return False
+
+
+def scrub_sandbox_env(env: Mapping[str, str]) -> dict[str, str]:
+    """沙箱后端级凭据环境清洗（独立于 `ExecPolicy.env_allowlist`）。
+
+    即便调用方在 `policy.env_allowlist` 里显式放行了某个密钥名（如隔离探针
+    用于测试继承边界的 `TIANSHU_ISOLATION_SENTINEL` 或误配的 `OPENAI_API_KEY`），
+    `seatbelt` 与 `landlock` 后端在真正 `Popen` 之前仍强制剥离。
+    """
+    return {
+        key: value
+        for key, value in env.items()
+        if not _is_secret_env_name(key)
+    }
 
 
 def local_capabilities() -> ExecBackendCapabilities:
@@ -302,18 +374,21 @@ def _spawn_pipes(
     env: dict[str, str],
     policy: ExecPolicy,
     blob_dir: Path | None,
+    preexec_fn: Callable[[], None] | None = None,
 ) -> ExecResult:
     started = time.monotonic()
-    proc = subprocess.Popen(
-        list(argv),
-        cwd=str(Path(cwd).resolve()),
-        env=dict(env),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=False,
-        start_new_session=(os.name == "posix"),
-    )
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(Path(cwd).resolve()),
+        "env": dict(env),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "shell": False,
+        "start_new_session": (os.name == "posix"),
+    }
+    if preexec_fn is not None:
+        popen_kwargs["preexec_fn"] = preexec_fn
+    proc = subprocess.Popen(list(argv), **popen_kwargs)
     assert proc.stdout is not None and proc.stderr is not None
     # Python 3.12 的 os.set_blocking 也支持 Windows 管道。读端必须可停止：
     # 孙进程可能仍握着写端；跨线程 close 正在 read 的 BufferedReader 会等待
@@ -352,22 +427,25 @@ def _spawn_pty(
     env: dict[str, str],
     policy: ExecPolicy,
     blob_dir: Path | None,
+    preexec_fn: Callable[[], None] | None = None,
 ) -> ExecResult:
     import pty  # 仅 POSIX 存在；Windows 走上面的 PolicyUnsupported 分支
 
     started = time.monotonic()
     master_fd, slave_fd = pty.openpty()
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(Path(cwd).resolve()),
+        "env": dict(env),
+        "stdin": slave_fd,
+        "stdout": slave_fd,
+        "stderr": slave_fd,
+        "shell": False,
+        "start_new_session": True,
+    }
+    if preexec_fn is not None:
+        popen_kwargs["preexec_fn"] = preexec_fn
     try:
-        proc = subprocess.Popen(
-            list(argv),
-            cwd=str(Path(cwd).resolve()),
-            env=dict(env),
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            shell=False,
-            start_new_session=True,
-        )
+        proc = subprocess.Popen(list(argv), **popen_kwargs)
     finally:
         # 父进程必须关掉从端，否则读主端永远等不到 EOF。
         os.close(slave_fd)
@@ -691,5 +769,6 @@ __all__ = [
     "local_capabilities",
     "local_isolation_claims",
     "platform_label",
+    "scrub_sandbox_env",
     "spawn",
 ]

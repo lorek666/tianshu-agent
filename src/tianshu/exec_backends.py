@@ -26,21 +26,26 @@ from __future__ import annotations
 
 import inspect
 import os
+import sys
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .errors import TianshuError
 from .exec import LOCAL_EXEC_BACKEND, ExecResult
+from .exec_landlock import landlock_available, landlock_exec_backend
+from .exec_seatbelt import SEATBELT_EXEC_BACKEND, seatbelt_available
 from .execpolicy import ExecBackendCapabilities, ExecPolicy, PolicyUnsupported
 
 __all__ = [
+    "AUTO_EXEC_BACKEND",
     "DEFAULT_EXEC_BACKEND",
     "EXEC_BACKEND_ENV",
     "UNIMPLEMENTED_EXEC_BACKENDS",
     "ExecBackend",
-    "exec_backend",
     "available_exec_backends",
     "configured_exec_backend_name",
+    "exec_backend",
+    "preferred_exec_backend",
     "register_exec_backend",
     "reset_exec_backends",
 ]
@@ -50,29 +55,33 @@ __all__ = [
 EXEC_BACKEND_ENV = "TIANSHU_EXEC_BACKEND"
 
 DEFAULT_EXEC_BACKEND = "local"
+AUTO_EXEC_BACKEND = "auto"
 
-#: 本实现之外**已知**的名字 → 如实理由。`register_exec_backend()` 注册同名实现后，
-#: 该名字会从这里移除（未来容器后端的接入口）。这里列名字不是"支持"，是
-#: "知道有人会这么配置，且必须能说出为什么没有"。
+#: 本实现之外或非当前平台的**已知**名字 → 如实理由。`register_exec_backend()`
+#: 注册同名真实实现后，该名字会从 `UNIMPLEMENTED_EXEC_BACKENDS` 移除。
 _DEFAULT_UNIMPLEMENTED: dict[str, str] = {
     "app_container": (
         "Windows AppContainer / 受限令牌不在 v1 交付范围（TECH-ARCH §6 L3a）"
     ),
     "seatbelt": (
-        "macOS 的 sandbox-exec 已被 Apple 弃用，第三方 App 只有 App Sandbox 与 TCC，"
-        "v1 不承诺进程级沙箱（TECH-ARCH §6 L3b）"
+        "macOS Darwin Seatbelt（/usr/bin/sandbox-exec）仅在具备该工具的 Darwin 可用；"
+        "当前平台不可用，v1/W14 严禁静默回落到 local"
     ),
-    "landlock": "Linux 专属，v1 的四个构建目标不含 Linux 桌面",
+    "landlock": (
+        "Linux Landlock LSM 仅在 Linux x86_64/aarch64（内核 >= 5.13，ABI >= 1）可用；"
+        "当前平台或内核不可用，v1/W14 严禁静默回落到 local"
+    ),
     "container": "v1 没有容器后端（TECH-ARCH §6 L4 只写作可选、未交付）",
 }
 
 #: 未实现名字 → 注册真实实现时 `capabilities.isolation` 必须落在的集合。
 #: 名字是"能力表上的承诺"：用 local 代理挂 container 的注册名，等于把
-#: "v1 未实现容器"变成一句谎话。
+#: "v1 未实现容器"变成一句谎话。Linux Landlock 在 ABI 1..3（5.13..6.6）无内核
+#: TCP 规则时如实声明 `process_tree`，ABI >= 4（>= 6.7）声明 `app_container`。
 _EXPECTED_ISOLATION = {
     "app_container": {"app_container"},
     "seatbelt": {"app_container"},
-    "landlock": {"app_container"},
+    "landlock": {"process_tree", "app_container"},
     "container": {"container"},
 }
 
@@ -251,23 +260,53 @@ def register_exec_backend(
     return key
 
 
-def reset_exec_backends() -> None:  # pragma: no cover - 只给测试
-    """恢复到初始状态（`local` + 初始未实现清单）。"""
+def _populate_builtin_backends() -> None:
+    """加载本机可用内建后端（`local` 恒在；Darwin 注册 `seatbelt`；Linux 注册 `landlock`）。"""
     _BACKENDS.clear()
     _BACKENDS[DEFAULT_EXEC_BACKEND] = LOCAL_EXEC_BACKEND
     UNIMPLEMENTED_EXEC_BACKENDS.clear()
     UNIMPLEMENTED_EXEC_BACKENDS.update(_DEFAULT_UNIMPLEMENTED)
+    if seatbelt_available():
+        register_exec_backend(SEATBELT_EXEC_BACKEND, name="seatbelt", replace=True)
+    if landlock_available():
+        register_exec_backend(landlock_exec_backend(), name="landlock", replace=True)
+
+
+def reset_exec_backends() -> None:  # pragma: no cover - 只给测试
+    """恢复到当前平台的初始内建状态（`local` + 当前平台已实现沙箱 + 剩余未实现清单）。"""
+    _populate_builtin_backends()
+
+
+def preferred_exec_backend() -> str:
+    """返回平台优先后端名：Darwin 优先 `seatbelt`，Linux 优先 `landlock`，否则 `local`。"""
+    if sys.platform == "darwin" and "seatbelt" in _BACKENDS:
+        return "seatbelt"
+    if sys.platform.startswith("linux") and "landlock" in _BACKENDS:
+        return "landlock"
+    return DEFAULT_EXEC_BACKEND
 
 
 def exec_backend(name: str | None = None) -> ExecBackend:
     """解析执行后端。做不到就 `PolicyUnsupported`，**绝不回落到 local**。
 
-    `name=None` 时读 `TIANSHU_EXEC_BACKEND`（默认 `local`）。显式传名字供装配层
-    与测试使用；模型输出、任务参数、事件里的任何字符串都不应该走到这里。
+    `name=None` 时读 `TIANSHU_EXEC_BACKEND`（默认 `local`）。显式传 `"auto"` 时
+    自动选择当前平台的原生进程沙箱（Darwin → `seatbelt`，Linux ABI>=1 → `landlock`）；
+    若当前平台没有任何原生进程沙箱可用，则直接抛 `PolicyUnsupported(backend="auto")`，
+    严禁静默降级回 `local`。
     """
     resolved = (
         configured_exec_backend_name() if name is None else _clean_name(name)
     )
+    if resolved == AUTO_EXEC_BACKEND:
+        preferred = preferred_exec_backend()
+        if preferred == DEFAULT_EXEC_BACKEND:
+            raise PolicyUnsupported(
+                "当前平台没有可用的原生进程沙箱后端（v1/W14 严禁 auto 静默回落到 local）",
+                backend=AUTO_EXEC_BACKEND,
+                feature="exec_backend",
+            )
+        return _BACKENDS[preferred]
+
     host = _BACKENDS.get(resolved)
     if host is not None:
         return host
@@ -285,3 +324,6 @@ def exec_backend(name: str | None = None) -> ExecBackend:
         backend=resolved,
         feature="exec_backend",
     )
+
+
+_populate_builtin_backends()
