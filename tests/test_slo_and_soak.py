@@ -1,0 +1,430 @@
+"""PRD §10.6 本地运行质量 SLO 门禁与常驻浸泡框架验收测试（G3-B10 / G3-B11）。
+
+覆盖：
+1. `schemas/slo/slo-v1.json` 与 `slo-thresholds-v1.json` 字段级契约与代码侧冻结值双向绑定；
+2. 严格门禁负控（缺指标、样本不足、未知样本、`p95`/`max` 超限、未升版放宽阈值、安全不变量违背、
+   浸泡内存斜率/FD/磁盘/孤儿进程泄漏均必须 fail-closed 非零拒绝）；
+3. 真实子进程快速端到端闭环：`scripts/measure_slo.py --repeats 3 --smoke` +
+   `scripts/run_soak.py --duration-seconds 6 --sample-interval-seconds 1`，断言 PASS、
+   `orphan_pids == []`、D7 本机路径脱敏生效且在预算时间内完成。
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import measure_slo as slo_mod  # noqa: E402
+import run_soak as soak_mod  # noqa: E402
+
+SCHEMA_PATH = REPO_ROOT / "schemas" / "slo" / "slo-v1.json"
+THRESHOLDS_PATH = REPO_ROOT / "schemas" / "slo" / "slo-thresholds-v1.json"
+
+
+def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:
+    metrics = {}
+    for name in slo_mod.REQUIRED_SLO_METRICS:
+        cfg = thresholds["metrics"][name]
+        metrics[name] = {
+            "unit": "ms",
+            "repeats": 10,
+            "unknown_count": 0,
+            "min_ms": 5.0,
+            "p50_ms": 10.0,
+            "p95_ms": round(float(cfg["p95_max"]) * 0.5, 3),
+            "max_ms": round(float(cfg["p95_max"]) * 0.6, 3),
+            "threshold_p95_ms": float(cfg["p95_max"]),
+            "threshold_max_ms": float(cfg["max_ceiling"]),
+            "min_repeats_required": 10,
+            "passed": True,
+        }
+    return {
+        "schema_version": "slo-report-v1",
+        "verdict": "PASS",
+        "gate_mode": "release",
+        "policy_version": int(thresholds["policy_version"]),
+        "thresholds_sha256": sha,
+        "measured_at": "2026-11-18T00:00:00Z",
+        "environment": {
+            "os": "Darwin 25.6.0",
+            "arch": "arm64",
+            "cpu_model": "Apple M4",
+            "memory_gib": 16.0,
+            "python_version": "3.12.13",
+            "redaction": "d7_local_redacted",
+        },
+        "dataset": {
+            "cold_tasks": 0,
+            "cold_events": 0,
+            "warm_tasks": 50,
+            "warm_runs": 50,
+            "warm_events": 550,
+            "warm_db_bytes": 102400,
+            "warm_artifacts_bytes": 20480,
+            "daemon_internal_cold_p50_ms": 5.2,
+            "daemon_internal_warm_p50_ms": 2.4,
+        },
+        "metrics": metrics,
+        "slow_subscriber": {
+            "ipc_non_reading_attached": True,
+            "sse_non_reading_attached": True,
+            "dropped_count": 1,
+            "cursor_reconnect_verified": True,
+            "reconnected_events_count": 25,
+        },
+        "in_flight_effects": {
+            "slow_model_runs": 5,
+            "slow_tool_runs": 5,
+            "in_flight_hold_target_ms": 40.0,
+            "in_flight_applied_effects": 5,
+            "in_flight_receipts_verified": 5,
+            "post_cancel_dispatched_count": 0,
+            "ack_before_inflight_release_all": True,
+            "post_release_halt_p50_ms": 8.0,
+            "post_release_halt_p95_ms": 15.0,
+        },
+        "recovery_audit": {
+            "scenarios_tested": list(slo_mod.CRASH_SCENARIOS),
+            "total_crash_runs": 10,
+            "resumed_to_succeeded": 8,
+            "held_in_reconciling": 2,
+            "blind_retries": 0,
+            "lost_receipts": 0,
+            "leaked_budget_reservations": 0,
+            "preserved_unsettled_reservations": 2,
+            "daemon_internal_recover_p95_ms": 1.2,
+        },
+        "orphan_pids": [],
+        "failures": [],
+    }
+
+
+def test_slo_schema_and_frozen_thresholds_binding() -> None:
+    thresholds, sha, defs = slo_mod.load_and_validate_thresholds(
+        THRESHOLDS_PATH, schema_path=SCHEMA_PATH
+    )
+    assert len(sha) == 64
+    assert set(defs) == {"thresholdsConfig", "sloReport", "soakSample", "soakReport"}
+    assert set(thresholds["metrics"]) == set(slo_mod.REQUIRED_SLO_METRICS)
+
+    # 双向绑定：JSON 文件中的冻结数值必须与代码侧 FROZEN_V1_* 精确一致，改一处忘另一处必须红
+    assert thresholds["policy_version"] == slo_mod.FROZEN_POLICY_VERSION
+    assert thresholds["min_repeats"] == slo_mod.FROZEN_MIN_REPEATS
+    for name, code_limits in slo_mod.FROZEN_V1_METRIC_LIMITS.items():
+        json_limits = thresholds["metrics"][name]
+        assert float(json_limits["p95_max"]) == float(code_limits["p95_max"]), name
+        assert float(json_limits["max_ceiling"]) == float(code_limits["max_ceiling"]), name
+        assert int(json_limits["min_repeats"]) == int(code_limits["min_repeats"]), name
+
+    for key, expected_val in slo_mod.FROZEN_V1_SOAK_LIMITS.items():
+        assert float(thresholds["soak_limits"][key]) == float(expected_val), key
+
+
+def test_slo_gate_negative_controls_reject_missing_exceeded_and_relaxed(
+    tmp_path: Path,
+) -> None:
+    thresholds, sha, defs = slo_mod.load_and_validate_thresholds()
+    baseline = _dummy_valid_slo_report(thresholds, sha)
+    ok_report, ok_code = slo_mod.evaluate_slo_gate(baseline, thresholds, schema_defs=defs)
+    assert ok_code == 0 and ok_report["verdict"] == "PASS"
+
+    # 负控 1：缺失任意必需指标必须失败
+    missing_rep = copy.deepcopy(baseline)
+    del missing_rep["metrics"]["cancel_ack_ms"]
+    evaluated, code = slo_mod.evaluate_slo_gate(missing_rep, thresholds, schema_defs=defs)
+    assert code == 1 and evaluated["verdict"] == "FAIL"
+    assert any("missing_metric" in f for f in evaluated["failures"])
+
+    # 负控 2：正式发布模式下样本数 < min_repeats 或存在 unknown 样本必须失败
+    few_rep = copy.deepcopy(baseline)
+    few_rep["metrics"]["startup_cold_ms"]["repeats"] = 3
+    evaluated, code = slo_mod.evaluate_slo_gate(few_rep, thresholds, smoke=False, schema_defs=defs)
+    assert code == 1 and evaluated["verdict"] == "FAIL"
+    assert any("insufficient_samples" in f for f in evaluated["failures"])
+
+    unk_rep = copy.deepcopy(baseline)
+    unk_rep["metrics"]["approval_rpc_ms"]["unknown_count"] = 1
+    evaluated, code = slo_mod.evaluate_slo_gate(unk_rep, thresholds, schema_defs=defs)
+    assert code == 1 and evaluated["verdict"] == "FAIL"
+    assert any("unknown_samples" in f for f in evaluated["failures"])
+
+    # 负控 3：p95 超出冻结阈值必须失败
+    slow_rep = copy.deepcopy(baseline)
+    slow_rep["metrics"]["cancel_stop_dispatch_ms"]["p95_ms"] = (
+        float(thresholds["metrics"]["cancel_stop_dispatch_ms"]["p95_max"]) + 0.1
+    )
+    evaluated, code = slo_mod.evaluate_slo_gate(slow_rep, thresholds, schema_defs=defs)
+    assert code == 1 and evaluated["verdict"] == "FAIL"
+    assert any("p95_exceeded" in f for f in evaluated["failures"])
+
+    # 负控 4：未升版擅自放宽阈值或减少 min_repeats 必须抛 SloConfigError (exit 2)
+    relaxed = copy.deepcopy(thresholds)
+    relaxed["metrics"]["startup_warm_ms"]["p95_max"] = (
+        float(thresholds["metrics"]["startup_warm_ms"]["p95_max"]) + 10.0
+    )
+    with pytest.raises(slo_mod.SloConfigError, match="threshold_relaxed_without_version_bump"):
+        slo_mod.evaluate_slo_gate(baseline, relaxed, schema_defs=defs)
+
+    relaxed_repeats = copy.deepcopy(thresholds)
+    relaxed_repeats["min_repeats"] = 5
+    with pytest.raises(slo_mod.SloConfigError, match="threshold_relaxed_without_version_bump"):
+        slo_mod.evaluate_slo_gate(baseline, relaxed_repeats, schema_defs=defs)
+
+    # CLI 层面对放宽阈值文件必须返回退出码 2
+    bad_thresholds_file = tmp_path / "relaxed-thresholds.json"
+    bad_thresholds_file.write_text(json.dumps(relaxed), encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "measure_slo.py"),
+            "--repeats",
+            "1",
+            "--smoke",
+            "--thresholds",
+            str(bad_thresholds_file),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15.0,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "threshold_relaxed_without_version_bump" in proc.stderr
+
+    # 负控 5：升了 policy_version 但未同步升 schema_version 必须拒绝
+    mismatched_ver = copy.deepcopy(thresholds)
+    mismatched_ver["policy_version"] = 2
+    with pytest.raises(slo_mod.SloConfigError, match="schema_version"):
+        slo_mod.evaluate_slo_gate(baseline, mismatched_ver, schema_defs=defs)
+
+    # 负控 6：盲目重试 / 丢失回执 / 预算泄漏 / 取消后新派发 / 孤儿进程任一非零必须失败
+    for field_path, bad_val, tag in [
+        (("recovery_audit", "blind_retries"), 1, "blind_retries"),
+        (("recovery_audit", "lost_receipts"), 1, "lost_receipts"),
+        (("recovery_audit", "leaked_budget_reservations"), 1, "leaked_budget_reservations"),
+        (("in_flight_effects", "post_cancel_dispatched_count"), 1, "post_cancel_dispatch"),
+        (("orphan_pids",), [424242], "orphan_processes"),
+    ]:
+        broken = copy.deepcopy(baseline)
+        if len(field_path) == 1:
+            broken[field_path[0]] = bad_val
+        else:
+            broken[field_path[0]][field_path[1]] = bad_val
+        evaluated, code = slo_mod.evaluate_slo_gate(broken, thresholds, schema_defs=defs)
+        assert code == 1 and evaluated["verdict"] == "FAIL", tag
+        assert any(tag in f for f in evaluated["failures"]), tag
+
+
+def test_soak_slope_and_leak_gate_negative_controls() -> None:
+    thresholds, _, defs = slo_mod.load_and_validate_thresholds()
+    # 10 小时线性泄漏序列（每小时涨 50 MiB > 32 MiB/h 上限）
+    leaking_samples = [
+        {"elapsed_s": h * 3600.0, "total_rss_mib": 40.0 + h * 50.0}
+        for h in range(11)
+    ]
+    slope = soak_mod.compute_rss_slope_mib_per_hour(leaking_samples)
+    assert slope is not None and abs(slope - 50.0) < 0.1
+
+    soak_rep = {
+        "schema_version": "soak-report-v1",
+        "verdict": "PASS",
+        "policy_version": 1,
+        "started_at": "2026-11-18T00:00:00Z",
+        "finished_at": "2026-11-18T10:00:00Z",
+        "requested_duration_s": 36000.0,
+        "actual_duration_s": 36000.0,
+        "sample_interval_s": 30.0,
+        "samples_count": 1200,
+        "cycles_completed": 500,
+        "environment": {
+            "os": "Darwin",
+            "arch": "arm64",
+            "cpu_model": "Apple M4",
+            "memory_gib": 16.0,
+            "python_version": "3.12.13",
+            "redaction": "d7_local_redacted",
+        },
+        "workloads": {
+            "idle_windows": 500,
+            "effects_runs": 500,
+            "pure_only_runs": 500,
+            "file_undos": 500,
+            "streamed_turns": 500,
+            "memory_ops": 500,
+            "subscriber_disconnects": 500,
+            "slow_subscriber_drops": 160,
+            "cursor_reconnects": 160,
+            "pause_resume_cycles": 250,
+            "mid_run_cancels": 250,
+            "scheduled_runs_fired": 125,
+            "graceful_restarts": 20,
+            "recovery_scans_verified": 20,
+        },
+        "resources": {
+            "idle_rss_p50_mib": 42.0,
+            "idle_rss_p95_mib": 45.0,
+            "idle_rss_max_mib": 48.0,
+            "active_rss_p50_mib": 60.0,
+            "active_rss_p95_mib": 90.0,
+            "active_rss_max_mib": 110.0,
+            "daemon_cpu_idle_p50_pct": 1.0,
+            "daemon_cpu_active_p95_pct": 35.0,
+            "daemon_open_fds_max": 32,
+            "host_open_fds_max": 24,
+            "runner_open_fds_max": 16,
+            "sqlite_final_mib": 12.5,
+            "blobs_final_mib": 4.2,
+            "disk_growth_final_mib": 16.7,
+            "disk_growth_max_mib": 18.0,
+            "event_seq_head_final": 15000,
+        },
+        "leak_checks": {
+            "rss_slope_mib_per_hour": slope,
+            "rss_net_growth_mib": 500.0,
+            "rss_bounded": True,
+            "fd_growth_delta": 80,
+            "fds_bounded": True,
+            "disk_bounded": True,
+            "endpoint_closed_after_stop": True,
+            "locks_cleared_after_stop": True,
+        },
+        "orphan_pids": [],
+        "failures": [],
+    }
+    evaluated, code = soak_mod.evaluate_soak_gate(soak_rep, thresholds, schema_defs=defs)
+    assert code == 1 and evaluated["verdict"] == "FAIL"
+    assert evaluated["leak_checks"]["rss_bounded"] is False
+    assert evaluated["leak_checks"]["fds_bounded"] is False
+    assert any("rss_slope_leak" in f for f in evaluated["failures"])
+    assert any("fd_growth_leak" in f for f in evaluated["failures"])
+
+
+def test_measure_slo_smoke_and_run_soak_real_subprocesses(tmp_path: Path) -> None:
+    defs = slo_mod.load_slo_schema_defs()
+    slo_json = tmp_path / "slo-smoke.json"
+    slo_md = tmp_path / "slo-smoke.md"
+    soak_dir = tmp_path / "soak-out"
+
+    def _run_slo() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "measure_slo.py"),
+                "--repeats",
+                "3",
+                "--smoke",
+                "--output-json",
+                str(slo_json),
+                "--output-md",
+                str(slo_md),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120.0,
+            check=False,
+        )
+
+    def _run_soak() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "run_soak.py"),
+                "--duration-seconds",
+                "6",
+                "--sample-interval-seconds",
+                "1",
+                "--output-dir",
+                str(soak_dir),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120.0,
+            check=False,
+        )
+
+    # 顺序执行两个真实子进程套件，避免 2-vCPU CI 浸泡多进程负载干扰 SLO 毫秒级启动计时
+    slo_proc = _run_slo()
+    soak_proc = _run_soak()
+
+    assert slo_proc.returncode == 0, f"measure_slo 失败：{slo_proc.stdout}\n{slo_proc.stderr}"
+    slo_report = json.loads(slo_json.read_text(encoding="utf-8"))
+    assert slo_mod.validate_against_def(defs, "sloReport", slo_report) == []
+    assert slo_report["verdict"] == "PASS"
+    assert slo_report["orphan_pids"] == []
+    assert slo_report["failures"] == []
+    for name in slo_mod.REQUIRED_SLO_METRICS:
+        m = slo_report["metrics"][name]
+        assert m["repeats"] >= 3
+        assert m["p50_ms"] > 0 and m["p95_ms"] > 0
+        assert m["passed"] is True
+    assert set(slo_report["recovery_audit"]["scenarios_tested"]) == set(
+        slo_mod.CRASH_SCENARIOS
+    )
+    assert slo_report["recovery_audit"]["blind_retries"] == 0
+    assert slo_report["recovery_audit"]["lost_receipts"] == 0
+    assert slo_report["recovery_audit"]["leaked_budget_reservations"] == 0
+    md_text = slo_md.read_text(encoding="utf-8")
+    assert str(Path.home()) not in slo_json.read_text(encoding="utf-8")
+    assert str(Path.home()) not in md_text
+
+    assert soak_proc.returncode == 0, f"run_soak 失败：{soak_proc.stdout}\n{soak_proc.stderr}"
+
+    soak_report_path = soak_dir / "soak-report.json"
+    samples_path = soak_dir / "samples.jsonl"
+    status_path = soak_dir / "status.json"
+    soak_md_path = soak_dir / "soak-report.md"
+    for p in (soak_report_path, samples_path, status_path, soak_md_path):
+        assert p.is_file(), f"缺少浸泡产物：{p}"
+
+    soak_report = json.loads(soak_report_path.read_text(encoding="utf-8"))
+    assert slo_mod.validate_against_def(defs, "soakReport", soak_report) == []
+    assert soak_report["verdict"] == "PASS"
+    assert soak_report["orphan_pids"] == []
+    assert soak_report["failures"] == []
+
+    sample_lines = [
+        json.loads(line)
+        for line in samples_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(sample_lines) >= 3
+    for s in sample_lines:
+        assert slo_mod.validate_against_def(defs, "soakSample", s) == []
+
+    wk = soak_report["workloads"]
+    for key in (
+        "idle_windows",
+        "effects_runs",
+        "pure_only_runs",
+        "file_undos",
+        "streamed_turns",
+        "memory_ops",
+        "subscriber_disconnects",
+        "slow_subscriber_drops",
+        "cursor_reconnects",
+        "pause_resume_cycles",
+        "mid_run_cancels",
+        "scheduled_runs_fired",
+        "graceful_restarts",
+        "recovery_scans_verified",
+    ):
+        assert wk[key] >= 1, f"浸泡工作负载未覆盖 {key}: {wk}"
+
+    status_doc = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_doc["state"] == "completed"
+    assert status_doc["verdict"] == "PASS"
+    assert str(Path.home()) not in soak_report_path.read_text(encoding="utf-8")
+    assert str(Path.home()) not in soak_md_path.read_text(encoding="utf-8")

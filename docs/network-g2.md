@@ -39,9 +39,10 @@ network://<transport>/<host>[:port]     例：network://https/example.com
 - **创建后不可改**：`task revise` 只改目标与绑定。扩权必须是新任务——和白名单
   同理，`exec_policy` 也是创建时定死的。
 
-## 3 抓取执行器（`network.fetch`）
+## 3 抓取执行器（`network.fetch` `2.0`）
 
-工具参数只有一个 `url`，**只接受规范形** `network://<transport>/<host>[:port]/<path>[?query]`。
+必填目标参数 `url` **只接受规范形** `network://<transport>/<host>[:port]/<path>[?query]`
+（可选分页与上界参数 `offset` / `length` / `max_bytes` 见 §4.1）。
 传 `https://...` 会被拒绝并给出改法：一个目标只有一种写法，否则同一目标会因为两种
 输入得到两个 `args_hash` 和两份审批摘要。
 
@@ -72,8 +73,9 @@ URL 与固定头，没有别的数据。**但这不是"已证明没有别的泄�
 | `output.reason` | 含义 | 字节账本 |
 |---|---|---|
 | `net.connect` / `net.connect_timeout` / `net.tls` | 连接阶段失败 | **0 字节（已知）** |
+| `net.private_address_blocked` | 域名解析命中非全局/私有地址或危险字面量 IP，连接前拦截 | **0 字节（已知）** |
 | `net.timeout` / `net.read` / `net.protocol` / `net.redirect_*` | 连接建立后的失败 | **未知**：预占保留、不记零 |
-| `net.arg_not_canonical` / `net.arg_invalid` / `net.limits` | 参数/上限不合法 | 未预占 |
+| `net.arg_not_canonical` / `net.arg_invalid` / `net.limits` | 参数/上限不合法（若已读取正文后内联摘要参数越界，按实际读取字节结算） | 未预占或已知实际字节 |
 | `net.cancelled` | 取消（可能已发出） | 未知（保留预占） |
 | `net.content_unavailable` | 内容存储不可用（落不了引用） | 已知实际字节 |
 
@@ -85,16 +87,15 @@ unknown），所以取消按 `failed` 记，语义放在 `output.reason`。
 - 抓到的字节先写内容寻址 blob（与快照/事件同一套 `atomic_write_bytes`），再
   `ContentStore.record(task_id=...)` 授权给本任务，返回 `content://sha256:<hex>`；
   然后才写 `tool.result`。顺序反了会承诺一份不存在的内容；
-- 返回给模型的是**有界摘要**（≤ 4 KiB，UTF-8 有损解码）+ 元数据 + 引用，不是
-  整页正文；`read_content` 可以按页读回原文（二进制正文没有文本分页读取工具，
-  见 §7；**2026-11-18 W9 v2.0 契约已冻结分页与 `base64` 读取扩展，见 §4.1，待实现 PR 接线**）；
-- 字节账本：发送前按 `bytes = max_bytes` 预占（**可验证上界**：本次最多读这么多），
+- 返回给模型的是**有界摘要**（默认 ≤ 4 KiB，可由 `offset`/`length` 选择预览窗口，UTF-8 字符边界安全）+ 元数据 + 引用，不是
+  整页正文；`read_content`（`2.0`）可以按 `utf-8` / `utf-8-replace` / `latin-1` / `base64` 分页无损读回原文与二进制内容（见 §4.1）；
+- 字节账本：发送前按 `bytes = effective_max_bytes`（`min(max_bytes, limits.max_bytes)`）预占（**可验证上界**：本次最多读这么多），
   读完后按实际字节结算、释放差额。额度不够时在 `prepare()` 就拒绝
   （`dispatch.budget_refused`），**一个请求都不发**。
 
-### 4.1 W9 v2.0 网络分页与内容编码契约（2026-11-18 冻结，待实现 PR 接线）
+### 4.1 W9 v2.0 网络分页与内容编码契约（2026-11-18 已落地）
 
-> 原方案 → 新方案 → 为什么改 → 影响模块见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3。本节为纯 `docs(contract)` 规格冻结；实现 PR 落地前线上代码仍为 `1.0`。
+> 原方案 → 新方案 → 为什么改 → 影响模块见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3；代码落地见 `src/tianshu/{tools,contents,loop,net,dispatcher}.py` 与 `tests/test_w9_network_depth.py`。
 
 按红线 8（工具 schema 变化即视为新工具，旧版本批准摘要不自动跨版本复用），两项工具同步升版至 **`2.0`**：
 
@@ -166,14 +167,14 @@ unknown），所以取消按 `failed` 记，语义放在 `output.reason`。
 | 代理 / Cookie / 凭据转发 | 未做，且**不读代理环境变量**（见 §3.1） |
 | 跨源重定向 | 恒拒；需要时由模型重新发起并重新批准 |
 | 频率 / 速率限制 | **已交付进程级下限（2026-11-14）**：相邻两次 fetch 开始至少隔 `min_interval_s`（默认 1.0s，`0` 显式关闭，env 可覆盖）；等待分片且随时可取消、不计入抓取 deadline。per-target 限速 / 令牌桶 / 并发上限仍不做 |
-| DNS rebinding / 解析后二次校验 | **未做**：白名单显式声明源，但解析到私有地址会照发（SSRF 面未完全解决；**2026-11-18 W9 v2.0 已冻结连接期单次解析与 IP 钉死契约，见 §7.1，待实现 PR 接线**） |
-| 每 Run 的抓取配置 | 超时 / 上限 / 跳数是进程级常量 + 测试注入；没接 CLI / 任务声明（**2026-11-18 W9 v2.0 已冻结请求级 `max_bytes` 上界收紧参数，见 §4.1**） |
-| 二进制正文 | 原始字节在引用里，但没有文本分页读取工具；摘要是有损解码（**2026-11-18 W9 v2.0 已冻结 `read_content` `2.0` 的 `base64`/`latin-1`/`utf-8-replace` 编码分页契约，见 §4.1**） |
+| DNS rebinding / 解析后二次校验 | **已交付连接期单次解析与 IP 钉死（2026-11-18 W9 `v2.0`，见 §7.1）**：每跳仅解析一次、全 RRset 拦截非全局/私有/特殊保留地址（`net.private_address_blocked`）并直连数值 `sockaddr`，保留原 `Host` 头与 TLS SNI / X.509 主机名核验；操作系统底层 `getaddrinfo` 阻塞本身仍无法被 Python 线程异步打断 |
+| 每 Run 的抓取配置 | 超时 / 跳数是进程级常量 + 测试注入；**2026-11-18 W9 `v2.0` 已交付按请求 `max_bytes` 上界收紧参数与 `offset`/`length` 内联窗口（见 §4.1）** |
+| 二进制正文 | 内联 `summary` 为 UTF-8 预览；**2026-11-18 W9 `v2.0` 已交付 `read_content` `2.0` 的 `base64`/`latin-1`/`utf-8-replace` 编码无损分页读取（见 §4.1）** |
 | 内容分级 | 未做：没有"私有材料"标记与外发表，审批展示完整 URL 由人判断 |
 | 保留期 / GC | 未做：抓回来的内容只写不删 |
 | MCP / 记忆执行器 / 子代理 | **本轮不做**（G2 后续阶段） |
 
-### 7.1 W9 v2.0 连接期单次 DNS 解析与 Socket IP 钉死契约（2026-11-18 冻结，待实现 PR 接线）
+### 7.1 W9 v2.0 连接期单次 DNS 解析与 Socket IP 钉死契约（2026-11-18 已落地）
 
 为关闭「域名白名单放行后 DNS 解析到回环/私网/云元数据 IP 或二次解析重绑（DNS Rebinding TOCTOU）」风险，抓取执行器在初始请求与**每一跳重定向**建立连接前强制执行以下协议：
 

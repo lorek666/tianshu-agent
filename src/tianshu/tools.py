@@ -45,6 +45,7 @@ from .exec import RULE_PTY_NOT_ALLOWED
 from .exec_backends import ExecBackend
 from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
+    ISOLATION_NONE,
     ExecPolicy,
     PolicyDenied,
     PolicyUnsupported,
@@ -53,7 +54,11 @@ from .execpolicy import (
     filtered_env,
 )
 from .guard import assert_paths_not_blocked, ensure_not_blocked
-from .isolation import isolation_view, require_isolation_requirements
+from .isolation import (
+    isolation_view,
+    probe_backend_cached,
+    require_isolation_requirements,
+)
 from .jobs import JobClaim
 from .permissions import (
     ACTION_CREATE,
@@ -601,6 +606,15 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
         isolation_report = require_isolation_requirements(
             policy, backend, workspace=target, data_root=ctx.data_root
         )
+        if (
+            isolation_report is None
+            and not tuple(policy.isolation_requires)
+            and capabilities.isolation != ISOLATION_NONE
+            and ctx.data_root is not None
+        ):
+            isolation_report = probe_backend_cached(
+                backend, workspace=target, data_root=ctx.data_root
+            )
         result = backend.spawn(
             argv,
             cwd=target,
@@ -851,11 +865,13 @@ SPECS: dict[str, ToolSpec] = {
     # resource 决定，memory_id 是参数，不是路径。
     "read_content": ToolSpec(
         tool_id="read_content",
-        version="1.0",
+        version="2.0",
         description=(
             "分页读取一份**本任务可见**的工具输出原文（内容引用）。"
-            "引用来自工具输出被截断时的占位文本（ref: content://sha256:...）。"
-            "一次最多 64 KiB；返回 next_offset 时用同样的 ref 加上它继续读。"
+            "引用来自工具输出被截断或外发抓取返回的 ref: content://sha256:...。"
+            "一次最多 64 KiB 原始字节；返回 next_offset 时用同样的 ref 加上它继续读。"
+            "encoding 默认 utf-8（严格文本、不切碎多字节字符），可选 utf-8-replace"
+            "（容错文本）、latin-1（单字节无损映射）或 base64（二进制无损分页）。"
             "读不到别的任务的内容：可见范围按任务授权，读不到就明确拒绝。"
         ),
         input_schema={
@@ -869,6 +885,10 @@ SPECS: dict[str, ToolSpec] = {
                 },
                 "offset": {"type": "integer", "minimum": 0},
                 "length": {"type": "integer", "minimum": 1, "maximum": 65536},
+                "encoding": {
+                    "type": "string",
+                    "enum": ["utf-8", "utf-8-replace", "latin-1", "base64"],
+                },
             },
             "required": ["ref"],
             "additionalProperties": False,
@@ -1092,19 +1112,24 @@ SPECS: dict[str, ToolSpec] = {
 
     "network.fetch": ToolSpec(
         tool_id="network.fetch",
-        version="1.0",
+        version="2.0",
         description=(
             "抓取一个网络资源（GET）。url 必须写成 network://<transport>/<host>"
             "[:port]/<path> 形式，例如 network://https/example.com/index.html；"
             "不是 https:// URL（一个目标只有一种写法）。"
             "外发有成本、也有外发：任务必须先用 --allow-outbound 声明允许的源，"
-            "且每一次抓取都要人工批准。只读回读到上限为止（超限标 truncated），"
-            "结果以有界摘要 + content:// 引用返回。跨源重定向不会自动跟随。"
+            "且每一次抓取都要人工批准。可选 max_bytes 收紧本次抓取字节上限（不超过系统上限），"
+            "offset / length 控制本次内联 summary 预览页窗口；完整已读字节落入 content:// 引用，"
+            "返回 next_offset 时可直接调 read_content 离线翻页而无需二次联网。"
+            "跨源重定向与域名解析到私有/非全局地址一律拒绝。"
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "offset": {"type": "integer", "minimum": 0},
+                "length": {"type": "integer", "minimum": 1, "maximum": 65536},
+                "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
             },
             "required": ["url"],
             "additionalProperties": False,

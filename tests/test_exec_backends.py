@@ -268,6 +268,21 @@ def test_empty_env_falls_back_to_local(monkeypatch):
     "name", ["app_container", "container", "seatbelt", "landlock"]
 )
 def test_unimplemented_backend_is_unsupported_not_local(name):
+    from tianshu.exec_backends import UNIMPLEMENTED_EXEC_BACKENDS
+    from tianshu.exec_landlock import landlock_available
+    from tianshu.exec_seatbelt import seatbelt_available
+
+    expected_implemented = (
+        (name == "seatbelt" and seatbelt_available())
+        or (name == "landlock" and landlock_available())
+    )
+    if expected_implemented:
+        resolved = exec_backend(name)
+        assert resolved is not LOCAL_EXEC_BACKEND
+        assert resolved.capabilities.name == name
+        assert name not in UNIMPLEMENTED_EXEC_BACKENDS
+        return
+
     with pytest.raises(PolicyUnsupported) as excinfo:
         exec_backend(name)
 

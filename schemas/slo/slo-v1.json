@@ -1,0 +1,601 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu.local/schemas/slo/slo-v1.json",
+  "title": "Tianshu Local Runtime Quality SLO & Soak Contracts (v1)",
+  "description": "PRD §10.6 本地运行质量冻结阈值配置、SLO 测量报告与 ≥10h 常驻浸泡采样/报告的字段级 JSON Schema（2020-12 封闭子集，零外部依赖）。",
+  "$defs": {
+    "thresholdsConfig": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy_version",
+        "frozen_at",
+        "baseline_environment",
+        "dataset_profile",
+        "min_repeats",
+        "metrics",
+        "invariants",
+        "soak_limits"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "pattern": "^slo-thresholds-v[1-9][0-9]*$"
+        },
+        "policy_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frozen_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "baseline_environment": {
+          "type": "object",
+          "required": [
+            "os",
+            "arch",
+            "cpu_model",
+            "memory_gib",
+            "python_version",
+            "filesystem",
+            "quiescent"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "os": { "type": "string" },
+            "arch": { "type": "string" },
+            "cpu_model": { "type": "string" },
+            "memory_gib": { "type": "number", "minimum": 1 },
+            "python_version": { "type": "string" },
+            "filesystem": { "type": "string" },
+            "quiescent": { "type": "boolean" },
+            "note": { "type": "string" }
+          }
+        },
+        "dataset_profile": {
+          "type": "object",
+          "required": [
+            "warm_tasks",
+            "warm_events_min",
+            "slow_subscriber_event_bytes_min"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "warm_tasks": { "type": "integer", "minimum": 1 },
+            "warm_events_min": { "type": "integer", "minimum": 1 },
+            "slow_subscriber_event_bytes_min": { "type": "integer", "minimum": 1024 }
+          }
+        },
+        "min_repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "metrics": {
+          "type": "object",
+          "required": [
+            "startup_cold_ms",
+            "startup_warm_ms",
+            "cancel_ack_ms",
+            "cancel_stop_dispatch_ms",
+            "approval_rpc_ms",
+            "restart_recovery_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "startup_cold_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            },
+            "startup_warm_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            },
+            "cancel_ack_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            },
+            "cancel_stop_dispatch_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            },
+            "approval_rpc_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            },
+            "restart_recovery_ms": {
+              "type": "object",
+              "required": ["unit", "p95_max", "max_ceiling", "min_repeats", "baseline_p50_ms", "baseline_p95_ms", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "unit": { "type": "string", "const": "ms" },
+                "p95_max": { "type": "number", "minimum": 0 },
+                "max_ceiling": { "type": "number", "minimum": 0 },
+                "min_repeats": { "type": "integer", "minimum": 1 },
+                "baseline_p50_ms": { "type": "number", "minimum": 0 },
+                "baseline_p95_ms": { "type": "number", "minimum": 0 },
+                "description": { "type": "string" }
+              }
+            }
+          }
+        },
+        "invariants": {
+          "type": "object",
+          "required": [
+            "zero_blind_retries",
+            "zero_lost_receipts",
+            "zero_leaked_budget_reservations",
+            "zero_post_cancel_dispatches",
+            "zero_orphan_processes"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "zero_blind_retries": { "type": "boolean", "const": true },
+            "zero_lost_receipts": { "type": "boolean", "const": true },
+            "zero_leaked_budget_reservations": { "type": "boolean", "const": true },
+            "zero_post_cancel_dispatches": { "type": "boolean", "const": true },
+            "zero_orphan_processes": { "type": "boolean", "const": true }
+          }
+        },
+        "soak_limits": {
+          "type": "object",
+          "required": [
+            "default_duration_hours",
+            "default_sample_interval_seconds",
+            "rss_idle_max_mib",
+            "rss_active_max_mib",
+            "rss_slope_max_mib_per_hour",
+            "rss_net_growth_max_mib",
+            "open_fds_max",
+            "open_fds_growth_max",
+            "disk_growth_max_mib",
+            "max_orphan_processes"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "default_duration_hours": { "type": "number", "minimum": 1 },
+            "default_sample_interval_seconds": { "type": "number", "minimum": 1 },
+            "rss_idle_max_mib": { "type": "number", "minimum": 1 },
+            "rss_active_max_mib": { "type": "number", "minimum": 1 },
+            "rss_slope_max_mib_per_hour": { "type": "number", "minimum": 0 },
+            "rss_net_growth_max_mib": { "type": "number", "minimum": 1 },
+            "open_fds_max": { "type": "integer", "minimum": 16 },
+            "open_fds_growth_max": { "type": "integer", "minimum": 0 },
+            "disk_growth_max_mib": { "type": "number", "minimum": 1 },
+            "max_orphan_processes": { "type": "integer", "const": 0 }
+          }
+        }
+      }
+    },
+    "sloReport": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "verdict",
+        "gate_mode",
+        "policy_version",
+        "thresholds_sha256",
+        "measured_at",
+        "environment",
+        "dataset",
+        "metrics",
+        "slow_subscriber",
+        "in_flight_effects",
+        "recovery_audit",
+        "orphan_pids",
+        "failures"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "const": "slo-report-v1" },
+        "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "gate_mode": { "type": "string", "enum": ["release", "smoke"] },
+        "policy_version": { "type": "integer", "minimum": 1 },
+        "thresholds_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "measured_at": { "type": "string" },
+        "environment": {
+          "type": "object",
+          "required": ["os", "arch", "cpu_model", "memory_gib", "python_version", "redaction"],
+          "additionalProperties": false,
+          "properties": {
+            "os": { "type": "string" },
+            "arch": { "type": "string" },
+            "cpu_model": { "type": "string" },
+            "memory_gib": { "type": ["number", "null"] },
+            "python_version": { "type": "string" },
+            "redaction": { "type": "string", "const": "d7_local_redacted" }
+          }
+        },
+        "dataset": {
+          "type": "object",
+          "required": [
+            "cold_tasks",
+            "cold_events",
+            "warm_tasks",
+            "warm_runs",
+            "warm_events",
+            "warm_db_bytes",
+            "warm_artifacts_bytes",
+            "daemon_internal_cold_p50_ms",
+            "daemon_internal_warm_p50_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cold_tasks": { "type": "integer", "minimum": 0 },
+            "cold_events": { "type": "integer", "minimum": 0 },
+            "warm_tasks": { "type": "integer", "minimum": 0 },
+            "warm_runs": { "type": "integer", "minimum": 0 },
+            "warm_events": { "type": "integer", "minimum": 0 },
+            "warm_db_bytes": { "type": "integer", "minimum": 0 },
+            "warm_artifacts_bytes": { "type": "integer", "minimum": 0 },
+            "daemon_internal_cold_p50_ms": { "type": ["number", "null"] },
+            "daemon_internal_warm_p50_ms": { "type": ["number", "null"] }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "unit",
+              "repeats",
+              "unknown_count",
+              "min_ms",
+              "p50_ms",
+              "p95_ms",
+              "max_ms",
+              "threshold_p95_ms",
+              "threshold_max_ms",
+              "min_repeats_required",
+              "passed"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "unit": { "type": "string", "const": "ms" },
+              "repeats": { "type": "integer", "minimum": 0 },
+              "unknown_count": { "type": "integer", "minimum": 0 },
+              "min_ms": { "type": ["number", "null"] },
+              "p50_ms": { "type": ["number", "null"] },
+              "p95_ms": { "type": ["number", "null"] },
+              "max_ms": { "type": ["number", "null"] },
+              "threshold_p95_ms": { "type": "number" },
+              "threshold_max_ms": { "type": "number" },
+              "min_repeats_required": { "type": "integer", "minimum": 1 },
+              "passed": { "type": "boolean" }
+            }
+          }
+        },
+        "slow_subscriber": {
+          "type": "object",
+          "required": [
+            "ipc_non_reading_attached",
+            "sse_non_reading_attached",
+            "dropped_count",
+            "cursor_reconnect_verified",
+            "reconnected_events_count"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "ipc_non_reading_attached": { "type": "boolean" },
+            "sse_non_reading_attached": { "type": "boolean" },
+            "dropped_count": { "type": "integer", "minimum": 0 },
+            "cursor_reconnect_verified": { "type": "boolean" },
+            "reconnected_events_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "in_flight_effects": {
+          "type": "object",
+          "required": [
+            "slow_model_runs",
+            "slow_tool_runs",
+            "in_flight_hold_target_ms",
+            "in_flight_applied_effects",
+            "in_flight_receipts_verified",
+            "post_cancel_dispatched_count",
+            "ack_before_inflight_release_all",
+            "post_release_halt_p50_ms",
+            "post_release_halt_p95_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "slow_model_runs": { "type": "integer", "minimum": 0 },
+            "slow_tool_runs": { "type": "integer", "minimum": 0 },
+            "in_flight_hold_target_ms": { "type": "number", "minimum": 0 },
+            "in_flight_applied_effects": { "type": "integer", "minimum": 0 },
+            "in_flight_receipts_verified": { "type": "integer", "minimum": 0 },
+            "post_cancel_dispatched_count": { "type": "integer", "minimum": 0 },
+            "ack_before_inflight_release_all": { "type": "boolean" },
+            "post_release_halt_p50_ms": { "type": ["number", "null"] },
+            "post_release_halt_p95_ms": { "type": ["number", "null"] }
+          }
+        },
+        "recovery_audit": {
+          "type": "object",
+          "required": [
+            "scenarios_tested",
+            "total_crash_runs",
+            "resumed_to_succeeded",
+            "held_in_reconciling",
+            "blind_retries",
+            "lost_receipts",
+            "leaked_budget_reservations",
+            "preserved_unsettled_reservations",
+            "daemon_internal_recover_p95_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "scenarios_tested": { "type": "array", "items": { "type": "string" } },
+            "total_crash_runs": { "type": "integer", "minimum": 0 },
+            "resumed_to_succeeded": { "type": "integer", "minimum": 0 },
+            "held_in_reconciling": { "type": "integer", "minimum": 0 },
+            "blind_retries": { "type": "integer", "minimum": 0 },
+            "lost_receipts": { "type": "integer", "minimum": 0 },
+            "leaked_budget_reservations": { "type": "integer", "minimum": 0 },
+            "preserved_unsettled_reservations": { "type": "integer", "minimum": 0 },
+            "daemon_internal_recover_p95_ms": { "type": ["number", "null"] }
+          }
+        },
+        "orphan_pids": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "failures": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "soakSample": {
+      "type": "object",
+      "required": [
+        "ts_ms",
+        "elapsed_s",
+        "phase",
+        "cycle",
+        "daemon_pid",
+        "host_pid",
+        "daemon_rss_mib",
+        "host_rss_mib",
+        "total_rss_mib",
+        "daemon_cpu_pct",
+        "host_cpu_pct",
+        "daemon_open_fds",
+        "host_open_fds",
+        "runner_open_fds",
+        "sqlite_mib",
+        "blobs_mib",
+        "data_root_mib",
+        "disk_growth_mib",
+        "event_seq_head"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ts_ms": { "type": "integer", "minimum": 0 },
+        "elapsed_s": { "type": "number", "minimum": 0 },
+        "phase": { "type": "string", "enum": ["idle", "active"] },
+        "cycle": { "type": "integer", "minimum": 0 },
+        "daemon_pid": { "type": ["integer", "null"] },
+        "host_pid": { "type": ["integer", "null"] },
+        "daemon_rss_mib": { "type": ["number", "null"] },
+        "host_rss_mib": { "type": ["number", "null"] },
+        "total_rss_mib": { "type": ["number", "null"] },
+        "daemon_cpu_pct": { "type": ["number", "null"] },
+        "host_cpu_pct": { "type": ["number", "null"] },
+        "daemon_open_fds": { "type": ["integer", "null"] },
+        "host_open_fds": { "type": ["integer", "null"] },
+        "runner_open_fds": { "type": ["integer", "null"] },
+        "sqlite_mib": { "type": "number", "minimum": 0 },
+        "blobs_mib": { "type": "number", "minimum": 0 },
+        "data_root_mib": { "type": "number", "minimum": 0 },
+        "disk_growth_mib": { "type": "number" },
+        "event_seq_head": { "type": ["integer", "null"] }
+      }
+    },
+    "soakReport": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "verdict",
+        "policy_version",
+        "started_at",
+        "finished_at",
+        "requested_duration_s",
+        "actual_duration_s",
+        "sample_interval_s",
+        "samples_count",
+        "cycles_completed",
+        "environment",
+        "workloads",
+        "resources",
+        "leak_checks",
+        "orphan_pids",
+        "failures"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "const": "soak-report-v1" },
+        "verdict": { "type": "string", "enum": ["PASS", "FAIL"] },
+        "policy_version": { "type": "integer", "minimum": 1 },
+        "started_at": { "type": "string" },
+        "finished_at": { "type": "string" },
+        "requested_duration_s": { "type": "number", "minimum": 0 },
+        "actual_duration_s": { "type": "number", "minimum": 0 },
+        "sample_interval_s": { "type": "number", "minimum": 0 },
+        "samples_count": { "type": "integer", "minimum": 1 },
+        "cycles_completed": { "type": "integer", "minimum": 1 },
+        "environment": {
+          "type": "object",
+          "required": ["os", "arch", "cpu_model", "memory_gib", "python_version", "redaction"],
+          "additionalProperties": false,
+          "properties": {
+            "os": { "type": "string" },
+            "arch": { "type": "string" },
+            "cpu_model": { "type": "string" },
+            "memory_gib": { "type": ["number", "null"] },
+            "python_version": { "type": "string" },
+            "redaction": { "type": "string", "const": "d7_local_redacted" }
+          }
+        },
+        "workloads": {
+          "type": "object",
+          "required": [
+            "idle_windows",
+            "effects_runs",
+            "pure_only_runs",
+            "file_undos",
+            "streamed_turns",
+            "memory_ops",
+            "subscriber_disconnects",
+            "slow_subscriber_drops",
+            "cursor_reconnects",
+            "pause_resume_cycles",
+            "mid_run_cancels",
+            "scheduled_runs_fired",
+            "graceful_restarts",
+            "recovery_scans_verified"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "idle_windows": { "type": "integer", "minimum": 0 },
+            "effects_runs": { "type": "integer", "minimum": 0 },
+            "pure_only_runs": { "type": "integer", "minimum": 0 },
+            "file_undos": { "type": "integer", "minimum": 0 },
+            "streamed_turns": { "type": "integer", "minimum": 0 },
+            "memory_ops": { "type": "integer", "minimum": 0 },
+            "subscriber_disconnects": { "type": "integer", "minimum": 0 },
+            "slow_subscriber_drops": { "type": "integer", "minimum": 0 },
+            "cursor_reconnects": { "type": "integer", "minimum": 0 },
+            "pause_resume_cycles": { "type": "integer", "minimum": 0 },
+            "mid_run_cancels": { "type": "integer", "minimum": 0 },
+            "scheduled_runs_fired": { "type": "integer", "minimum": 0 },
+            "graceful_restarts": { "type": "integer", "minimum": 0 },
+            "recovery_scans_verified": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "required": [
+            "idle_rss_p50_mib",
+            "idle_rss_p95_mib",
+            "idle_rss_max_mib",
+            "active_rss_p50_mib",
+            "active_rss_p95_mib",
+            "active_rss_max_mib",
+            "daemon_cpu_idle_p50_pct",
+            "daemon_cpu_active_p95_pct",
+            "daemon_open_fds_max",
+            "host_open_fds_max",
+            "runner_open_fds_max",
+            "sqlite_final_mib",
+            "blobs_final_mib",
+            "disk_growth_final_mib",
+            "disk_growth_max_mib",
+            "event_seq_head_final"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "idle_rss_p50_mib": { "type": ["number", "null"] },
+            "idle_rss_p95_mib": { "type": ["number", "null"] },
+            "idle_rss_max_mib": { "type": ["number", "null"] },
+            "active_rss_p50_mib": { "type": ["number", "null"] },
+            "active_rss_p95_mib": { "type": ["number", "null"] },
+            "active_rss_max_mib": { "type": ["number", "null"] },
+            "daemon_cpu_idle_p50_pct": { "type": ["number", "null"] },
+            "daemon_cpu_active_p95_pct": { "type": ["number", "null"] },
+            "daemon_open_fds_max": { "type": ["integer", "null"] },
+            "host_open_fds_max": { "type": ["integer", "null"] },
+            "runner_open_fds_max": { "type": ["integer", "null"] },
+            "sqlite_final_mib": { "type": "number", "minimum": 0 },
+            "blobs_final_mib": { "type": "number", "minimum": 0 },
+            "disk_growth_final_mib": { "type": "number" },
+            "disk_growth_max_mib": { "type": "number" },
+            "event_seq_head_final": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "leak_checks": {
+          "type": "object",
+          "required": [
+            "rss_slope_mib_per_hour",
+            "rss_net_growth_mib",
+            "rss_bounded",
+            "fd_growth_delta",
+            "fds_bounded",
+            "disk_bounded",
+            "endpoint_closed_after_stop",
+            "locks_cleared_after_stop"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rss_slope_mib_per_hour": { "type": ["number", "null"] },
+            "rss_net_growth_mib": { "type": ["number", "null"] },
+            "rss_bounded": { "type": "boolean" },
+            "fd_growth_delta": { "type": ["integer", "null"] },
+            "fds_bounded": { "type": "boolean" },
+            "disk_bounded": { "type": "boolean" },
+            "endpoint_closed_after_stop": { "type": "boolean" },
+            "locks_cleared_after_stop": { "type": "boolean" }
+          }
+        },
+        "orphan_pids": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "failures": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

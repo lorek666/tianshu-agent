@@ -162,9 +162,9 @@ Windows 实机验收，而不是直接复用本轮代码。
 
 ---
 
-## 8 W14 双系统进程级沙箱契约（2026-11-18 冻结，待实现 PR 接线）
+## 8 W14 双系统进程级沙箱契约与实现（2026-11-18）
 
-> 上文 §1–§7 保留 2026-11-11 F2 首轮交付时的历史事实与 `local` 基线证据。本节以独立 `docs(contract)` 冻结 W14 双系统进程级沙箱契约（总览见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §4）；在实现 PR 合并前，线上代码仍仅注册 `local`。
+> 上文 §1–§7 保留 2026-11-11 F2 首轮交付时的历史事实与 `local` 基线证据。本节记录 W14 双系统进程级沙箱契约及代码接线（总览见 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §4，落地于 `exec_seatbelt.py` / `exec_landlock.py` / `exec_backends.py` / `isolation.py` / `dispatcher.py` / `tools.py`）。
 
 ### 8.1 默认值、配置入口与零静默回落规则
 
