@@ -487,19 +487,62 @@ describe("子任务与预算拒绝事件的人话（W8）", () => {
       }
 
       const rejectedResult = humanizeEvent(
-        event("tool.result", {
-          tool: "write_file",
-          path: "/Users/alice/不能删的账单/汇总.md",
-          status: "rejected",
-          output: {
-            rule_id: ruleId,
-            error: `${ruleId}: /Users/alice/不能删的账单: raw`,
+        event(
+          "tool.result",
+          {
+            call_id: `call_${ruleId}`,
+            tool_id:
+              ruleId === "dispatch.disk_space_low"
+                ? "modify_text"
+                : ruleId === "dispatch.disk_space_unknown"
+                  ? "memory.propose"
+                  : "create_report",
+            status: "rejected",
+            effect_state: "none_applied",
+            output: {
+              error:
+                ruleId === "dispatch.disk_space_low"
+                  ? "DiskAdmissionError: dispatch.disk_space_low: /Users/alice/不能删的账单/events.db: 可用空间低于 2 GiB"
+                  : ruleId === "dispatch.disk_space_unknown"
+                    ? "DispatchDenied: dispatch.disk_space_unknown: 无法证明必需位置的空间：PermissionError"
+                    : "此 Run 仅允许 pure 工具；请显式新开 effects Run",
+              request_id: "req_real_shape_1",
+              rule_id: ruleId,
+            },
           },
-        }),
+          { actor_kind: "tool" },
+        ),
       );
       expect(rejectedResult.sentence).toContain(label);
       expect(rejectedResult.sentence).not.toContain(ruleId);
+      expect(rejectedResult.sentence).not.toContain("DiskAdmissionError");
+      expect(rejectedResult.sentence).not.toContain("DispatchDenied");
+      expect(rejectedResult.sentence).not.toContain("RunEffectsDisallowed");
+      expect(rejectedResult.sentence).not.toContain("PermissionError");
+      expect(rejectedResult.sentence).not.toContain("pure");
+      expect(rejectedResult.sentence).not.toContain("effects Run");
     }
+
+    const phase2PureDisallowed = humanizeEvent(
+      event(
+        "tool.result",
+        {
+          call_id: "call_guard_pure",
+          tool_id: "modify_text",
+          status: "rejected",
+          effect_state: "none_applied",
+          output: {
+            error: "RunEffectsDisallowed: 此 Run 仅允许 pure 工具；请显式新开 effects Run",
+            request_id: "req_real_shape_2",
+            rule_id: "dispatch.run_effects_disallowed",
+          },
+        },
+        { actor_kind: "tool" },
+      ),
+    );
+    expect(phase2PureDisallowed.sentence).toBe(
+      "未完成：修改（当前运行处于「仅读取与对话」模式，不允许修改或外部操作）",
+    );
 
     const lowWithSensitivePath = humanizeHostError(
       new HostRpcError(

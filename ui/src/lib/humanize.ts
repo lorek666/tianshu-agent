@@ -457,11 +457,15 @@ export function isolationSuffix(payload: AnyRecord | null | undefined): string {
 const TOOL_VERBS: Record<string, string> = {
   write_file: "修改",
   write_text: "修改",
+  modify_text: "修改",
   edit_file: "修改",
   apply_patch: "修改",
   str_replace: "修改",
   create_file: "新建",
   create_text: "新建",
+  create_report: "新建报告",
+  "memory.propose": "记录记忆",
+  "subtask.spawn": "派发子任务",
   delete_file: "删除",
   remove_file: "删除",
   delete: "删除",
@@ -546,6 +550,25 @@ export function describeToolAction(payload: Record<string, unknown>): string | n
   const text = readString(payload, "text", "summary", "message");
   if (text !== null) return truncate(text, 100);
   if (tool !== null) return verb;
+  return null;
+}
+
+const ADMISSION_RULE_IDS = new Set<string>([
+  "dispatch.disk_space_low",
+  "dispatch.disk_space_unknown",
+  "dispatch.run_effects_disallowed",
+]);
+
+function findKnownRuleInReason(rawReason: string | null): string | null {
+  if (rawReason === null || rawReason === "") return null;
+  for (const ruleId of Object.keys(ACTION_LABELS)) {
+    if (rawReason === ruleId || rawReason.includes(`${ruleId}:`)) {
+      return ruleId;
+    }
+  }
+  if (rawReason.includes("RunEffectsDisallowed")) {
+    return "dispatch.run_effects_disallowed";
+  }
   return null;
 }
 
@@ -697,20 +720,15 @@ export function humanizeEvent(event: EventView): TimelineEntry {
         const rawReason =
           readString(payload, "error", "error_message", "reason", "message") ??
           (output !== null ? readString(output, "error", "error_message", "reason", "message") : null);
-        const prefixRule =
-          rawReason !== null && rawReason.includes(":")
-            ? rawReason.slice(0, rawReason.indexOf(":")).trim()
-            : null;
         const knownRule = isKnownActionId(directRule)
           ? directRule
-          : isKnownActionId(prefixRule)
-            ? prefixRule
-            : null;
+          : findKnownRuleInReason(rawReason);
         const reason =
           knownRule !== null &&
-          (rawReason === null ||
+          (ADMISSION_RULE_IDS.has(knownRule) ||
+            rawReason === null ||
             rawReason === knownRule ||
-            rawReason.startsWith(`${knownRule}:`))
+            rawReason.includes(`${knownRule}:`))
             ? actionLabel(knownRule)
             : rawReason;
         const detail = reason !== null ? `（${truncate(reason, 80)}）` : "";
