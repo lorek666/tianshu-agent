@@ -150,7 +150,7 @@ def test_sql_typed_golden_vectors_preserve_storage_classes(label, payload, canon
 
 def test_domains_are_closed_and_separated():
     m = api()
-    expected = {
+    expected_v1 = {
         "meta",
         "event",
         "plan",
@@ -165,8 +165,13 @@ def test_domains_are_closed_and_separated():
         "origin",
         "lock",
     }
-    assert m.DIGEST_LABELS == expected
-    assert len({m.domain_digest(label, {"version": 1}) for label in expected}) == len(expected)
+    expected_v2 = {*expected_v1, "review", "reconcile"}
+    schema_v2 = json.loads((ROOT / "schemas/data/restore-v2.json").read_bytes().decode("utf-8"))
+    assert m.DIGEST_LABELS_V1 == expected_v1
+    assert m.DIGEST_LABELS == expected_v2 == set(schema_v2["$defs"]["DigestDomainV2"]["enum"])
+    assert schema_v2 == m.contract_schema_v2()
+    digests_v2 = {m.domain_digest(label, {"version": 1}) for label in expected_v2}
+    assert len(digests_v2) == len(expected_v2)
     for invalid in ("unknown", "PLAN", "plan\x00event", True, b"plan"):
         with pytest.raises(ValueError):
             m.domain_digest(invalid, {})

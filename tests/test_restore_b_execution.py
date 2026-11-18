@@ -45,6 +45,7 @@ from tianshu.restore_access import RestoreScopeBusy
 from tianshu.restore_contract import (
     BodySelectorV1,
     RestoreResponseV1,
+    RestoreResponseV2,
     SqlValueV1,
     validate_event_chain,
 )
@@ -91,6 +92,11 @@ def _cli(*args: object, failpoint: str | None = None) -> subprocess.CompletedPro
 def _parse_resp_v1(raw: bytes | str) -> RestoreResponseV1:
     data = raw.rstrip(b"\r\n") if isinstance(raw, bytes) else raw.rstrip("\r\n").encode("utf-8")
     return RestoreResponseV1.from_bytes(data)
+
+
+def _parse_resp_v2(raw: bytes | str) -> RestoreResponseV2:
+    data = raw.rstrip(b"\r\n") if isinstance(raw, bytes) else raw.rstrip("\r\n").encode("utf-8")
+    return RestoreResponseV2.from_bytes(data)
 
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[str, str]]:
@@ -811,10 +817,11 @@ def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup
     )
     assert rev_cli.returncode == 0, rev_cli.stderr
     assert "绝密偏好正文" not in rev_cli.stdout
-    resp = _parse_resp_v1(rev_cli.stdout.encode("utf-8"))
+    resp = _parse_resp_v2(rev_cli.stdout.encode("utf-8"))
     assert resp.ok is True
     rev = resp.result
     assert rev.review_complete is True
+    assert len(rev.review_sha256) == 64
     assert rev.later_forget_delete_history == "completeness_unproven"
     assert any(ch.family == "memories" for ch in rev.known_later_changes)
     for obj in rev.objects:
@@ -839,7 +846,7 @@ def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup
         "--json",
     )
     assert disclosed_cli.returncode == 0, disclosed_cli.stderr
-    disclosed_resp = _parse_resp_v1(disclosed_cli.stdout.encode("utf-8"))
+    disclosed_resp = _parse_resp_v2(disclosed_cli.stdout.encode("utf-8"))
     disclosed_bodies = [
         (obj.family, b.selector, b.text)
         for obj in disclosed_resp.result.objects
@@ -854,7 +861,7 @@ def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup
     bad_b2 = tmp_path / "missing_later_backup"
     bad_cli = _cli("restore-review", "--data-root", root, "--later-backup", bad_b2, "--json")
     assert bad_cli.returncode == 2
-    bad_resp = _parse_resp_v1(bad_cli.stdout.encode("utf-8"))
+    bad_resp = _parse_resp_v2(bad_cli.stdout.encode("utf-8"))
     assert bad_resp.ok is False
     assert bad_resp.result is not None and bad_resp.result.review_complete is False
 

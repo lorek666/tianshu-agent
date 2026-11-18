@@ -33,6 +33,8 @@ from .restore_contract import (
     OriginV1,
     PublishedHoldV1,
     PublishIntentV1,
+    ReleasedV1,
+    ReleaseIntentV1,
     ReservedV1,
     RestoreContractError,
     SealedHoldV1,
@@ -202,6 +204,60 @@ def _placement_matches_target(
     return False
 
 
+def _verify_released_batch_live_entities(
+    batch_events: list,
+    live_root: Path,
+) -> tuple[EntityIdentityV1, EntityIdentityV1]:
+    tail = batch_events[-1]
+    if tail.kind != "released" or type(tail.payload) is not ReleasedV1:
+        raise RestoreRegistryCorrupt("已解除批次缺少合法 ReleasedV1 尾事件")
+    released: ReleasedV1 = tail.payload
+    rel_intent_ev = next((e for e in batch_events if e.kind == "release_intent"), None)
+    intent_ev = next((e for e in batch_events if e.kind == "publish_intent"), None)
+    if (
+        rel_intent_ev is None
+        or type(rel_intent_ev.payload) is not ReleaseIntentV1
+        or intent_ev is None
+        or type(intent_ev.payload) is not PublishIntentV1
+    ):
+        raise RestoreRegistryCorrupt("已解除批次缺少完整 publish_intent / release_intent 链")
+    try:
+        resolved_root = live_root.resolve(strict=True)
+        actual_root_id = observe_entity(resolved_root, "directory")
+        actual_parent_id = observe_entity(resolved_root.parent, "directory")
+    except (NativeEntityError, OSError) as exc:
+        raise RestoreRegistryCorrupt(f"已解除恢复根缺失或不可核验：{live_root}") from exc
+    if actual_root_id != released.final_root.identity:
+        raise RestoreRegistryCorrupt(f"已解除恢复根 S 实体身份已被替换：{live_root}")
+    if overlap_key(str(resolved_root)) != released.final_root.path.comparison_key:
+        raise RestoreRegistryCorrupt(f"已解除恢复根路径已偏离绑定最终位置：{live_root}")
+    if actual_parent_id != rel_intent_ev.payload.stable_parent.identity:
+        raise RestoreRegistryCorrupt(f"已解除恢复根稳定父目录 P 身份已变更：{resolved_root.parent}")
+
+    origin_path = resolved_root / ".restore-origin.json"
+    raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
+    expected_origin = base64.b64decode(intent_ev.payload.origin_bytes_b64)
+    if raw_origin != expected_origin:
+        raise RestoreRegistryCorrupt("已解除恢复根的 .restore-origin.json 字节已被篡改")
+
+    db_file = resolved_root / "events.db"
+    try:
+        db_handle = open_entity(db_file, "file")
+    except NativeEntityError as exc:
+        raise RestoreRegistryCorrupt(
+            f"已解除恢复根的主库 events.db 缺失或被替换：{db_file}"
+        ) from exc
+    try:
+        if db_handle.link_count != 1:
+            raise RestoreRegistryCorrupt(f"已解除主库必须是单硬链接普通文件：{db_file}")
+        actual_db_id = db_handle.identity
+    finally:
+        db_handle.close()
+    if actual_db_id != released.final_database.identity:
+        raise RestoreRegistryCorrupt(f"已解除主库 D 实体身份已被替换：{db_file}")
+    return actual_root_id, actual_db_id
+
+
 def _verify_local_witnesses(
     observation: RegistryObservation,
     target: Path,
@@ -220,7 +276,12 @@ def _verify_local_witnesses(
                 except NativeEntityError as exc:
                     raise RestoreRegistryCorrupt(f"恢复见证目录不可核验：{cand}") from exc
                 for events in histories.values():
-                    if events[-1].kind in ("aborted", "published_hold"):
+                    if events[-1].kind in (
+                        "aborted",
+                        "published_hold",
+                        "release_intent",
+                        "released",
+                    ):
                         continue
                     owned_ev = next((e for e in events if e.kind == "stage_owned"), None)
                     if owned_ev is not None and owned_ev.payload.stage.identity == cand_id:
@@ -281,6 +342,9 @@ def _verify_local_witnesses(
                 ):
                     raise RestoreRegistryCorrupt(".restore-token.json 与 stage_owned 绑定字节不符")
                 _ = token
+            if batch_events[-1].kind == "released":
+                _verify_released_batch_live_entities(batch_events, cand)
+                continue
             raise RestoreScopeBusy(
                 f"数据根处于恢复持久隔离态（batch={origin.batch_id}, "
                 f"phase={batch_events[-1].kind}）：{target}"
@@ -299,7 +363,12 @@ def _verify_local_witnesses(
             if observation.meta.registry_id != token.registry_id:
                 raise RestoreRegistryCorrupt("TokenV1.registry_id 与固定 RestoreRegistry 不符")
             batch_events = histories.get(token.batch_id)
-            if not batch_events or batch_events[-1].kind in ("aborted", "published_hold"):
+            if not batch_events or batch_events[-1].kind in (
+                "aborted",
+                "published_hold",
+                "release_intent",
+                "released",
+            ):
                 raise RestoreRegistryCorrupt(
                     "存在孤立 .restore-token.json（缺少 origin 或批次已终结）"
                 )
@@ -375,11 +444,21 @@ def _active_scope_blocks(
         if not matched:
             continue
 
-        if tail.kind == "published_hold" and type(tail.payload) is PublishedHoldV1:
+        if tail.kind == "released" and type(tail.payload) is ReleasedV1:
+            _verify_released_batch_live_entities(events, final_root)
+            continue
+
+        if tail.kind in ("published_hold", "release_intent"):
             intent_ev = next((e for e in events if e.kind == "publish_intent"), None)
-            if intent_ev is None or type(intent_ev.payload) is not PublishIntentV1:
-                raise RestoreRegistryCorrupt("published_hold 缺少 publish_intent")
-            expected_root_id = tail.payload.final_root.identity
+            pub_ev = next((e for e in events if e.kind == "published_hold"), None)
+            if (
+                intent_ev is None
+                or type(intent_ev.payload) is not PublishIntentV1
+                or pub_ev is None
+                or type(pub_ev.payload) is not PublishedHoldV1
+            ):
+                raise RestoreRegistryCorrupt(f"{tail.kind} 缺少 publish_intent 或 published_hold")
+            expected_root_id = pub_ev.payload.final_root.identity
             live_root = final_root
             if not live_root.exists():
                 for cand in _candidate_directories(target):
@@ -393,19 +472,55 @@ def _active_scope_blocks(
                 actual_root_id = observe_entity(live_root, "directory")
             except NativeEntityError as exc:
                 raise RestoreRegistryCorrupt(
-                    f"registry 记录 published_hold 但数据根缺失或被替换：{live_root}"
+                    f"registry 记录 {tail.kind} 但数据根缺失或被替换：{live_root}"
                 ) from exc
             if actual_root_id != expected_root_id:
-                raise RestoreRegistryCorrupt(f"published_hold 数据根实体身份已被替换：{live_root}")
+                raise RestoreRegistryCorrupt(f"{tail.kind} 数据根实体身份已被替换：{live_root}")
             origin_path = live_root / ".restore-origin.json"
             raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
             expected_origin = base64.b64decode(intent_ev.payload.origin_bytes_b64)
             if raw_origin != expected_origin:
                 raise RestoreRegistryCorrupt(
-                    "published_hold 的 .restore-origin.json 字节与 registry 绑定不符"
+                    f"{tail.kind} 的 .restore-origin.json 字节与 registry 绑定不符"
                 )
         return True
     return False
+
+
+def _has_released_database_proof(
+    observation: RegistryObservation,
+    target: Path,
+    db_identity: EntityIdentityV1 | None,
+) -> bool:
+    if db_identity is None or isinstance(observation, AbsentRegistryObservation):
+        return False
+    origin_path = target.parent / ".restore-origin.json"
+    try:
+        if origin_path.is_symlink() or origin_path.is_junction() or not origin_path.is_file():
+            return False
+    except OSError:
+        return False
+    raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
+    try:
+        origin = OriginV1.from_bytes(raw_origin)
+    except (ValueError, RestoreContractError) as exc:
+        raise RestoreRegistryCorrupt(f".restore-origin.json 损坏：{origin_path}") from exc
+    if observation.meta.registry_id != origin.registry_id:
+        raise RestoreRegistryCorrupt("OriginV1.registry_id 与固定 RestoreRegistry 不符")
+    histories = _batch_histories(observation)
+    batch_events = histories.get(origin.batch_id)
+    if (
+        not batch_events
+        or batch_events[-1].kind != "released"
+        or type(batch_events[-1].payload) is not ReleasedV1
+    ):
+        return False
+    _, verified_db_id = _verify_released_batch_live_entities(batch_events, target.parent)
+    released: ReleasedV1 = batch_events[-1].payload
+    return (
+        verified_db_id == db_identity
+        and overlap_key(str(target.resolve())) == released.final_database.path.comparison_key
+    )
 
 
 def ensure_path_not_held(
@@ -487,6 +602,7 @@ class RestoreDatabaseAccess:
     database_handle: NativeEntityHandle | None
     directory_handles: tuple[NativeEntityHandle, ...]
     registry_observation: RegistryObservation
+    has_released_proof: bool = False
     _closed: bool = False
 
     @property
@@ -616,6 +732,11 @@ def acquire_restore_database_access(
             target,
             database_handle.identity,
         )
+        released_proof = _has_released_database_proof(
+            observed_registry,
+            target,
+            database_handle.identity,
+        )
 
         gate.close()
         gate = None
@@ -627,6 +748,7 @@ def acquire_restore_database_access(
             database_handle,
             directory_handles,
             observed_registry,
+            has_released_proof=released_proof,
         )
     except BaseException:
         for handle in reversed(directory_handles):

@@ -89,6 +89,22 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     abort_cmd.add_argument("--batch", default=None, dest="batch_id")
     abort_cmd.add_argument("--json", action="store_true")
 
+    release_cmd = commands.add_parser(
+        "restore-release",
+        help="完成只读复核并确认后续遗忘/删除历史不可证明完整后，解除恢复隔离并确定性对账",
+    )
+    release_cmd.add_argument("--data-root", type=Path, required=True)
+    release_cmd.add_argument("--batch", default=None, dest="batch_id")
+    release_cmd.add_argument("--expect-review", required=True, dest="expect_review")
+    release_cmd.add_argument(
+        "--acknowledge-unproven-later-history",
+        action="store_true",
+        default=False,
+        dest="acknowledge_unproven_later_history",
+        help="显式确认已知晓备份点之后的 forget/erase/delete 历史不可证明完整",
+    )
+    release_cmd.add_argument("--json", action="store_true")
+
     migration = commands.add_parser("migrate", help="使用已验证备份显式迁移标准数据根")
     migration.add_argument("--data-root", type=Path, required=True)
     migration.add_argument("--backup", type=Path, required=True)
@@ -878,10 +894,24 @@ def _print_restore_response(
                 f"只读恢复复核通过（仍处于隔离态 published_hold）：batch={res['batch_id']}"
             )
             print(f"数据根：{res['data_root']['text']}")
+            if "review_sha256" in res:
+                print(f"Review SHA256：{res['review_sha256']}")
             print(f"Binding SHA256：{res['binding_sha256']}")
             print(f"Scope SHA256：{res['scope_sha256']}")
             print(f"对象总数：{len(res['objects'])}；已知后续变化：{len(res['known_later_changes'])}")
             print(f"后续遗忘/擦除/删除历史：{res['later_forget_delete_history']}")
+        elif op == "restore-release":
+            print(
+                f"restore-release 完成：batch={res['batch_id']} "
+                f"phase={res['phase']} held={res['held']}"
+            )
+            print(f"数据根：{res['data_root']['text']}")
+            print(
+                f"数据库版本：v{res['db_user_version']}；"
+                f"解除后准入：{res['post_release_admission']}"
+            )
+            for cmd in res.get("next_commands", []):
+                print("下一步命令：" + " ".join(cmd))
         else:
             print(
                 f"{op} 完成：batch={res['batch_id']} phase={res['phase']} held={res['held']}"
@@ -899,11 +929,23 @@ def _print_restore_response(
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.data_action in ("restore-apply", "restore-review", "restore-resume", "restore-abort"):
+    if args.data_action in (
+        "restore-apply",
+        "restore-review",
+        "restore-resume",
+        "restore-abort",
+        "restore-release",
+    ):
         from . import restore_manager
-        from .restore_contract import RestoreCauseV1, RestoreFailureV1, RestoreResponseV1
+        from .restore_contract import (
+            RestoreCauseV1,
+            RestoreFailureV1,
+            RestoreResponseV1,
+            RestoreResponseV2,
+        )
 
         op = args.data_action
+        use_v2 = op in ("restore-review", "restore-release")
         has_disclosed = False
         try:
             if op == "restore-apply":
@@ -921,27 +963,44 @@ def run(args: argparse.Namespace) -> int:
                     later_backup=args.later_backup,
                     body_scopes=scopes,
                 )
+            elif op == "restore-release":
+                res = restore_manager.release(
+                    args.data_root,
+                    batch_id=args.batch_id,
+                    expect_review_sha256=args.expect_review,
+                    acknowledge_unproven_later_history=bool(
+                        args.acknowledge_unproven_later_history
+                    ),
+                )
             elif op == "restore-resume":
                 res = restore_manager.resume(args.data_root, batch_id=args.batch_id)
             else:
                 res = restore_manager.abort(args.data_root, batch_id=args.batch_id)
-            response = RestoreResponseV1(
-                version=1,
-                operation=op,
-                ok=True,
-                result=res,
-                error=None,
+            response = (
+                RestoreResponseV2(version=2, operation=op, ok=True, result=res, error=None)
+                if use_v2
+                else RestoreResponseV1(version=1, operation=op, ok=True, result=res, error=None)
             )
             _print_restore_response(response, as_json=args.json, has_disclosed_body=has_disclosed)
             return 0
         except restore_manager.RestoreOperationError as exc:
-            response = RestoreResponseV1(
-                version=1,
-                operation=op,
-                ok=False,
-                result=exc.partial_review if op == "restore-review" else None,
-                error=_redact_restore_failure(exc.failure),
-            )
+            red_err = _redact_restore_failure(exc.failure)
+            if use_v2 or red_err.phase in ("release_intent", "released"):
+                response = RestoreResponseV2(
+                    version=2,
+                    operation=op,
+                    ok=False,
+                    result=exc.partial_review if op == "restore-review" else None,
+                    error=red_err,
+                )
+            else:
+                response = RestoreResponseV1(
+                    version=1,
+                    operation=op,
+                    ok=False,
+                    result=None,
+                    error=red_err,
+                )
             _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
             return 2
         except (TianshuError, OSError, ValueError) as exc:
@@ -955,12 +1014,12 @@ def run(args: argparse.Namespace) -> int:
                 next_commands=(),
                 cause=RestoreCauseV1(type(exc).__name__, redact(str(exc))),
             )
-            response = RestoreResponseV1(
-                version=1,
-                operation=op,
-                ok=False,
-                result=None,
-                error=fallback,
+            response = (
+                RestoreResponseV2(version=2, operation=op, ok=False, result=None, error=fallback)
+                if use_v2
+                else RestoreResponseV1(
+                    version=1, operation=op, ok=False, result=None, error=fallback
+                )
             )
             _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
             return 2

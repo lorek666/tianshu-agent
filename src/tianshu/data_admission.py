@@ -242,12 +242,17 @@ def inspect_connection(conn: sqlite3.Connection, db_path: Path) -> AdmissionSnap
         raise _incompatible(f"实际数据库的只读准入证据不可读（{type(exc).__name__}）") from exc
 
 
-def check_connection(conn: sqlite3.Connection, db_path: Path) -> AdmissionSnapshot:
+def check_connection(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    *,
+    released_v2_admitted: bool = False,
+) -> AdmissionSnapshot:
     snapshot = inspect_connection(conn, db_path)
     if snapshot.progress is not None and snapshot.progress.status == "in_progress":
         raise AdmissionRefused("migration_incomplete", "存在未完成迁移，须显式离线续做")
     if snapshot.mechanism_version == 1:
         raise AdmissionRefused("migration_incomplete", "v1是迁移中间版本")
-    if snapshot.mechanism_version == 2 and snapshot.progress is None:
+    if snapshot.mechanism_version == 2 and snapshot.progress is None and not released_v2_admitted:
         raise AdmissionRefused("migration_incomplete", "v2缺少合法completed进度")
     return snapshot

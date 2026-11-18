@@ -32,12 +32,15 @@ from .restore_contract import (
     NativePathCodecV1,
     RegistryMetaV1,
     RestoreEventV1,
+    RestoreEventV2,
     domain_digest,
     validate_event_chain,
+    validate_event_chain_v2,
 )
 
 APPLICATION_ID = 1414746673
 USER_VERSION = 1
+USER_VERSION_V2 = 2
 
 REGISTRY_SCHEMA = """\
 PRAGMA application_id = 1414746673;
@@ -137,6 +140,87 @@ BEGIN
 END;
 """
 
+_V2_EVENTS_TABLE_DDL = """\
+CREATE TABLE restore_events (
+    sequence        INTEGER PRIMARY KEY CHECK (sequence > 0),
+    registry_id     TEXT NOT NULL,
+    batch_id        TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (
+        kind IN (
+            'reserved',
+            'stage_owned',
+            'sealed_hold',
+            'publish_intent',
+            'published_hold',
+            'abort_intent',
+            'aborted',
+            'release_intent',
+            'released'
+        )
+    ),
+    previous_sha256 TEXT,
+    event_sha256    TEXT NOT NULL UNIQUE,
+    event_bytes     BLOB NOT NULL,
+    UNIQUE (batch_id, kind)
+) STRICT"""
+
+_V2_TRIGGER_DDLS = (
+    """\
+CREATE TRIGGER registry_events_no_update
+BEFORE UPDATE ON restore_events
+BEGIN
+    SELECT RAISE(ABORT, 'restore_events is append-only');
+END""",
+    """\
+CREATE TRIGGER registry_events_no_delete
+BEFORE DELETE ON restore_events
+BEGIN
+    SELECT RAISE(ABORT, 'restore_events is append-only');
+END""",
+    """\
+CREATE TRIGGER registry_events_chain_guard
+BEFORE INSERT ON restore_events
+BEGIN
+    SELECT CASE
+        WHEN NEW.sequence != (SELECT COALESCE(MAX(sequence), 0) + 1 FROM restore_events)
+        THEN RAISE(ABORT, 'restore event sequence is not the exact next value')
+        WHEN NEW.sequence = 1 AND NEW.previous_sha256 IS NOT NULL
+        THEN RAISE(ABORT, 'first restore event must not have a previous hash')
+        WHEN NEW.sequence > 1 AND NOT EXISTS (
+            SELECT 1 FROM restore_events
+            WHERE sequence = NEW.sequence - 1
+              AND event_sha256 = NEW.previous_sha256
+        )
+        THEN RAISE(ABORT, 'restore event previous hash does not match the tail')
+        WHEN NEW.registry_id != (
+            SELECT registry_id FROM registry_meta WHERE singleton = 1
+        )
+        THEN RAISE(ABORT, 'restore event registry id does not match immutable meta')
+    END;
+END""",
+    """\
+CREATE TRIGGER registry_head_advance_guard
+BEFORE UPDATE ON registry_head
+BEGIN
+    SELECT CASE
+        WHEN NEW.sequence != OLD.sequence + 1
+        THEN RAISE(ABORT, 'registry head must advance by one')
+        WHEN NEW.event_sha256 IS NOT (
+            SELECT event_sha256 FROM restore_events WHERE sequence = NEW.sequence
+        )
+        THEN RAISE(ABORT, 'registry head must name the exact event tail')
+    END;
+END""",
+)
+
+REGISTRY_SCHEMA_V2 = (
+    REGISTRY_SCHEMA.replace("PRAGMA user_version = 1;", "PRAGMA user_version = 2;", 1).replace(
+        "'aborted'\n",
+        "'aborted',\n            'release_intent',\n            'released'\n",
+        1,
+    )
+)
+
 class RestoreRegistryError(TianshuError):
     """registry 无法形成可解释的完整事实。"""
 
@@ -172,7 +256,7 @@ class PresentRegistryObservation:
     database_identity: EntityIdentityV1
     meta: RegistryMetaV1
     meta_bytes: bytes
-    events: tuple[RestoreEventV1, ...]
+    events: tuple[RestoreEventV1 | RestoreEventV2, ...]
     head_sequence: int
     head_sha256: str | None
 
@@ -285,11 +369,13 @@ def _connect_write(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _verify_schema(connection: sqlite3.Connection) -> None:
+def _verify_schema(connection: sqlite3.Connection, *, expected_version: int | None = None) -> int:
     application_id = connection.execute("PRAGMA application_id").fetchone()[0]
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if application_id != APPLICATION_ID or user_version != USER_VERSION:
+    if application_id != APPLICATION_ID or user_version not in (USER_VERSION, USER_VERSION_V2):
         raise RestoreRegistryCorrupt("registry application_id/user_version不符")
+    if expected_version is not None and user_version != expected_version:
+        raise RestoreRegistryCorrupt("registry user_version与期望版本不符")
     rows = tuple(
         connection.execute(
             "SELECT name,type,tbl_name,sql FROM sqlite_schema "
@@ -297,16 +383,18 @@ def _verify_schema(connection: sqlite3.Connection) -> None:
         )
     )
     actual = tuple((row["name"], row["type"], row["tbl_name"], row["sql"]) for row in rows)
-    if actual != _expected_schema_rows():
+    if actual != _expected_schema_rows(user_version):
         raise RestoreRegistryCorrupt("registry schema对象集合、所有权或DDL不符")
+    return int(user_version)
 
 
 @cache
-def _expected_schema_rows() -> tuple[tuple[str, str, str, str], ...]:
+def _expected_schema_rows(version: int = USER_VERSION) -> tuple[tuple[str, str, str, str], ...]:
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     try:
-        connection.executescript(REGISTRY_SCHEMA)
+        ddl = REGISTRY_SCHEMA if version == USER_VERSION else REGISTRY_SCHEMA_V2
+        connection.executescript(ddl)
         rows = connection.execute(
             "SELECT name,type,tbl_name,sql FROM sqlite_schema "
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
@@ -314,6 +402,46 @@ def _expected_schema_rows() -> tuple[tuple[str, str, str, str], ...]:
         return tuple((row["name"], row["type"], row["tbl_name"], row["sql"]) for row in rows)
     finally:
         connection.close()
+
+
+def _upgrade_v1_to_v2_in_transaction(connection: sqlite3.Connection) -> None:
+    """在已开启的 BEGIN IMMEDIATE 事务内原地无损将 RestoreRegistry 由 v1 升至 v2。"""
+    _verify_schema(connection, expected_version=USER_VERSION)
+    buffered = list(
+        connection.execute(
+            "SELECT sequence,registry_id,batch_id,kind,previous_sha256,"
+            "event_sha256,event_bytes FROM restore_events ORDER BY sequence ASC"
+        )
+    )
+    for trigger_name in (
+        "registry_head_advance_guard",
+        "registry_events_chain_guard",
+        "registry_events_no_delete",
+        "registry_events_no_update",
+    ):
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+    connection.execute("DROP TABLE restore_events")
+    connection.execute(_V2_EVENTS_TABLE_DDL)
+    for trig_sql in _V2_TRIGGER_DDLS:
+        connection.execute(trig_sql)
+    for row in buffered:
+        connection.execute(
+            "INSERT INTO restore_events("
+            "sequence,registry_id,batch_id,kind,previous_sha256,"
+            "event_sha256,event_bytes"
+            ") VALUES(?,?,?,?,?,?,?)",
+            (
+                row["sequence"],
+                row["registry_id"],
+                row["batch_id"],
+                row["kind"],
+                row["previous_sha256"],
+                row["event_sha256"],
+                row["event_bytes"],
+            ),
+        )
+    connection.execute(f"PRAGMA user_version = {USER_VERSION_V2}")
+    _verify_schema(connection, expected_version=USER_VERSION_V2)
 
 
 def _translate_sqlite(exc: BaseException) -> RestoreRegistryError:
@@ -401,7 +529,7 @@ class RestoreRegistry:
                 raise RestoreRegistryBusy("registry数据库实体在观察期间被替换")
             connection = _connect_readonly(self.path)
             connection.execute("BEGIN")
-            _verify_schema(connection)
+            schema_uv = _verify_schema(connection)
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise RestoreRegistryCorrupt("registry integrity_check未通过")
@@ -431,11 +559,17 @@ class RestoreRegistry:
             event_rows = tuple(
                 connection.execute("SELECT * FROM restore_events ORDER BY sequence")
             )
-            events = []
+            events: list[RestoreEventV1 | RestoreEventV2] = []
             previous = None
             for expected_sequence, event_row in enumerate(event_rows, 1):
                 raw = event_row["event_bytes"]
-                event = RestoreEventV1.from_bytes(raw)
+                if schema_uv == USER_VERSION or event_row["kind"] not in (
+                    "release_intent",
+                    "released",
+                ):
+                    event: RestoreEventV1 | RestoreEventV2 = RestoreEventV1.from_bytes(raw)
+                else:
+                    event = RestoreEventV2.from_bytes(raw)
                 event_sha = domain_digest("event", event)
                 if (
                     event_row["sequence"] != expected_sequence
@@ -449,7 +583,10 @@ class RestoreRegistry:
                     raise RestoreRegistryCorrupt("registry事件行与其规范本体或前驱不符")
                 events.append(event)
                 previous = event_sha
-            validate_event_chain(tuple(events))
+            if schema_uv == USER_VERSION:
+                validate_event_chain(tuple(events))
+            else:
+                validate_event_chain_v2(tuple(events))
 
             head = tuple(connection.execute("SELECT * FROM registry_head"))
             if len(head) != 1:
@@ -667,13 +804,13 @@ class RestoreRegistry:
 
     def append_event(
         self,
-        event: RestoreEventV1,
+        event: RestoreEventV1 | RestoreEventV2,
         *,
         expected: PresentRegistryObservation,
         operation_access: DatabaseAccess | None,
     ) -> PresentRegistryObservation:
-        if type(event) is not RestoreEventV1:
-            raise RestoreRegistryCorrupt("registry只接受RestoreEventV1")
+        if type(event) not in (RestoreEventV1, RestoreEventV2):
+            raise RestoreRegistryCorrupt("registry只接受RestoreEventV1/V2")
         if not isinstance(operation_access, DatabaseAccess) or not operation_access.active:
             raise RestoreRegistryCorrupt("append前没有持续持有的操作独占")
         if not operation_access.authorizes_registry_write:
@@ -709,7 +846,15 @@ class RestoreRegistry:
                 # 重复追加是幂等成功：库内状态与 expected 完全一致。
                 result = expected
             else:
-                validate_event_chain((*expected.events, event))
+                current_uv = connection.execute("PRAGMA user_version").fetchone()[0]
+                if type(event) is RestoreEventV2 and event.kind in ("release_intent", "released"):
+                    if current_uv == USER_VERSION:
+                        _upgrade_v1_to_v2_in_transaction(connection)
+                        current_uv = USER_VERSION_V2
+                if current_uv == USER_VERSION and type(event) is RestoreEventV1:
+                    validate_event_chain((*expected.events, event))
+                else:
+                    validate_event_chain_v2((*expected.events, event))
                 connection.execute(
                     "INSERT INTO restore_events("
                     "sequence,registry_id,batch_id,kind,previous_sha256,"
@@ -875,6 +1020,7 @@ __all__ = [
     "AbsentRegistryObservation",
     "PresentRegistryObservation",
     "REGISTRY_SCHEMA",
+    "REGISTRY_SCHEMA_V2",
     "RegistryObservation",
     "RestoreRegistry",
     "RestoreRegistryBusy",

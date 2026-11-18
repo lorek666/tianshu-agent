@@ -372,7 +372,11 @@ class EventLog:
                 "**不要删除 events.db**：先备份整个数据目录，再用 `tianshu recover`"
                 " 核对，人工确认损失范围后再处理。"
             )
-        check_connection(self._conn, db_path)
+        check_connection(
+            self._conn,
+            db_path,
+            released_v2_admitted=bool(getattr(access, "has_released_proof", False)),
+        )
         if blob_dir is not None:
             blob_dir.mkdir(parents=True, exist_ok=True)
         self._conn.execute("PRAGMA journal_mode=WAL")

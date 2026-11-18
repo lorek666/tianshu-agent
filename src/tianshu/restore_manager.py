@@ -97,19 +97,29 @@ from .restore_contract import (
     OriginalTargetV1,
     OriginV1,
     Phase,
+    PhaseV2,
     PlanInputsV1,
+    PostReleaseAdmissionStatusV2,
     ProjectionTablesV1,
     PublishedHoldV1,
     PublishIntentV1,
+    ReconciledCountsV1,
+    ReconcileIntentDispositionV1,
+    ReconcilePlanV1,
     RelationDigestV1,
+    ReleasedV1,
+    ReleaseIntentV1,
     ReservedV1,
     RestoreActionResultV1,
     RestoreCauseV1,
     RestoreContractError,
     RestoreEventV1,
+    RestoreEventV2,
     RestoreFailureV1,
     RestorePlanV1,
+    RestoreReleaseResultV2,
     RestoreReviewV1,
+    RestoreReviewV2,
     ReviewObjectV1,
     ScopeManifestV1,
     SealedHoldV1,
@@ -150,7 +160,7 @@ class RestoreOperationError(TianshuError):
         self,
         failure: RestoreFailureV1,
         *,
-        partial_review: RestoreReviewV1 | None = None,
+        partial_review: RestoreReviewV1 | RestoreReviewV2 | None = None,
         raw_cause: BaseException | None = None,
     ) -> None:
         super().__init__(failure.message)
@@ -177,8 +187,9 @@ def _next_commands_for_phase(
     phase: str | None,
     *,
     has_abort_intent: bool = False,
+    review_sha256: str | None = None,
 ) -> tuple[tuple[str, ...], ...]:
-    if phase is None or phase == "aborted":
+    if phase is None or phase in ("aborted", "released"):
         return ()
     if has_abort_intent or phase == "abort_intent":
         return (
@@ -194,6 +205,20 @@ def _next_commands_for_phase(
         return (("tianshu", "data", "restore-resume", "--data-root", root_text),)
     if phase == "published_hold":
         return (("tianshu", "data", "restore-review", "--data-root", root_text),)
+    if phase == "release_intent":
+        rev_arg = review_sha256 or "<REVIEW_SHA256>"
+        return (
+            (
+                "tianshu",
+                "data",
+                "restore-release",
+                "--data-root",
+                root_text,
+                "--expect-review",
+                rev_arg,
+                "--acknowledge-unproven-later-history",
+            ),
+        )
     return ()
 
 
@@ -202,12 +227,12 @@ def _fail(
     message: str,
     *,
     batch_id: str | None = None,
-    phase: Phase | None = None,
+    phase: PhaseV2 | None = None,
     plan_sha256: str | None = None,
     retained_paths: tuple[NativePathV1, ...] = (),
     next_commands: tuple[tuple[str, ...], ...] = (),
     cause: BaseException | None = None,
-    partial_review: RestoreReviewV1 | None = None,
+    partial_review: RestoreReviewV1 | RestoreReviewV2 | None = None,
 ) -> RestoreOperationError:
     actual_phase = phase if batch_id is not None else None
     failure = RestoreFailureV1(
@@ -1531,12 +1556,12 @@ def _write_control_file_4window(
 def _append_registry_cas(
     reg: RestoreRegistry,
     obs: PresentRegistryObservation,
-    make_event: Callable[[PresentRegistryObservation], RestoreEventV1],
+    make_event: Callable[[PresentRegistryObservation], RestoreEventV1 | RestoreEventV2],
     op_access: DatabaseAccess,
     *,
     codec: NativePathCodecV1,
     batch_ctx: dict[str, Any],
-) -> tuple[PresentRegistryObservation, RestoreEventV1]:
+) -> tuple[PresentRegistryObservation, RestoreEventV1 | RestoreEventV2]:
     """在持有批次操作独占的前提下提交短事务（若其他根推进了 head 则重观察一次）。"""
     current = obs
     for attempt in range(2):
@@ -2616,7 +2641,8 @@ def _resolve_batch_observation(
     batch_id: str | None,
     *,
     allow_aborted: bool = False,
-) -> tuple[PresentRegistryObservation, str, list[RestoreEventV1]]:
+    allow_released: bool = False,
+) -> tuple[PresentRegistryObservation, str, list[RestoreEventV1 | RestoreEventV2]]:
     codec = NativePathCodecV1()
     canonical_root, _ = _canonical_target_and_placement(data_root, codec)
     try:
@@ -2635,7 +2661,7 @@ def _resolve_batch_observation(
             )
         raise _fail("incompatible", f"找不到目标数据根的恢复批次记录：{canonical_root}")
 
-    histories: dict[str, list[RestoreEventV1]] = {}
+    histories: dict[str, list[RestoreEventV1 | RestoreEventV2]] = {}
     for event in obs.events:
         histories.setdefault(event.batch_id, []).append(event)
 
@@ -2667,16 +2693,42 @@ def _resolve_batch_observation(
                 batch_id=batch_id,
                 phase="aborted",
             )
+        if not allow_released and b_events[-1].kind == "released":
+            raise _fail(
+                "incompatible",
+                f"批次 {batch_id} 已解除隔离（released）",
+                batch_id=batch_id,
+                phase="released",
+            )
         return obs, batch_id, b_events
 
-    active = [bid for bid in matching_batches if histories[bid][-1].kind != "aborted"]
+    active = [
+        bid
+        for bid in matching_batches
+        if histories[bid][-1].kind not in ("aborted", "released")
+    ]
     if len(active) == 1:
         return obs, active[0], histories[active[0]]
     if len(active) > 1:
         raise _fail("record_corrupt", f"同一数据根存在多个未终结恢复批次：{active}")
-    if allow_aborted and matching_batches:
+    if (
+        allow_released
+        and matching_batches
+        and histories[matching_batches[-1]][-1].kind == "released"
+    ):
         last_bid = matching_batches[-1]
         return obs, last_bid, histories[last_bid]
+    if allow_aborted and matching_batches and histories[matching_batches[-1]][-1].kind == "aborted":
+        last_bid = matching_batches[-1]
+        return obs, last_bid, histories[last_bid]
+    if matching_batches and histories[matching_batches[-1]][-1].kind == "released":
+        last_bid = matching_batches[-1]
+        raise _fail(
+            "incompatible",
+            f"数据根 {canonical_root} 的恢复批次 {last_bid} 已解除隔离（released）",
+            batch_id=last_bid,
+            phase="released",
+        )
     raise _fail("incompatible", f"数据根 {canonical_root} 没有活动的恢复批次")
 
 
@@ -3339,9 +3391,14 @@ def abort(
         history = {e.kind: e for e in b_events}
         tail = b_events[-1]
 
-        if "publish_intent" in history or tail.kind in ("publish_intent", "published_hold"):
+        if "publish_intent" in history or tail.kind in (
+            "publish_intent",
+            "published_hold",
+            "release_intent",
+            "released",
+        ):
             raise _fail(
-                "held",
+                "held" if tail.kind != "released" else "incompatible",
                 f"批次 {resolved_bid} 已进入 {tail.kind}，不可逆禁止 abort",
                 batch_id=resolved_bid,
                 phase=tail.kind,
@@ -3410,7 +3467,27 @@ def resume(
     )
     obs, op_access, has_db_entity_lock = _acquire_batch_operation_exclusive(reg, obs, resolved_bid)
     try:
-        history = {e.kind: e for e in obs.events if e.batch_id == resolved_bid}
+        b_events_cur = [e for e in obs.events if e.batch_id == resolved_bid]
+        history = {e.kind: e for e in b_events_cur}
+        tail = b_events_cur[-1]
+        if tail.kind in ("release_intent", "released"):
+            reserved_pl: ReservedV1 = b_events_cur[0].payload
+            f_root = str(Path(reserved_pl.placement.canonical_root.text))
+            rev_sha = (
+                history["release_intent"].payload.review_sha256
+                if "release_intent" in history
+                else None
+            )
+            raise _fail(
+                "held" if tail.kind == "release_intent" else "incompatible",
+                f"批次 {resolved_bid} 已进入 {tail.kind}，请使用 restore-release 收口",
+                batch_id=resolved_bid,
+                phase=tail.kind,
+                plan_sha256=reserved_pl.plan_sha256,
+                next_commands=_next_commands_for_phase(
+                    f_root, tail.kind, review_sha256=rev_sha
+                ),
+            )
         if "abort_intent" in history:
             return _execute_frozen_cleanup(reg, obs, resolved_bid, op_access)
         return _advance_to_published_hold(
@@ -3856,6 +3933,205 @@ def _object_state_digest(obj: ReviewObjectV1) -> str:
     )
 
 
+def _compute_review_locked(
+    resolved_bid: str,
+    reserved: ReservedV1,
+    sealed: SealedHoldV1,
+    expected_origin_bytes: bytes,
+    *,
+    later_backup: Path | None,
+    normalized_scopes: Sequence[str],
+    seen_scopes: set[str],
+) -> RestoreReviewV2:
+    placement = reserved.placement
+    final_root = Path(placement.canonical_root.text)
+    checks: list[CheckV1] = []
+    unverifiable: list[str] = []
+
+    try:
+        _verify_placement_ancestors(
+            placement,
+            batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
+        )
+        checks.append(CheckV1("stable_placement", True, (placement.canonical_root.text,)))
+    except RestoreOperationError as exc:
+        checks.append(CheckV1("stable_placement", False, (exc.failure.message,)))
+        unverifiable.append(exc.failure.message)
+
+    try:
+        _verify_material_tree_matches_binding(
+            final_root,
+            sealed.binding,
+            allow_token=True,
+            require_origin_bytes=expected_origin_bytes,
+            batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
+        )
+        checks.append(
+            CheckV1(
+                "binding_and_materials",
+                True,
+                (sealed.binding_sha256, sealed.binding.scope_sha256),
+            )
+        )
+    except RestoreOperationError as exc:
+        checks.append(CheckV1("binding_and_materials", False, (exc.failure.message,)))
+        unverifiable.append(exc.failure.message)
+
+    try:
+        manifest_raw = base64.b64decode(sealed.binding.manifest.saved_bytes_b64)
+        saved_manifest = BackupManifest.from_dict(json.loads(manifest_raw.decode("utf-8")))
+        _ = _build_legacy_reconciliation_and_semantic_check(
+            final_root,
+            source_root=Path(sealed.binding.saved_source_path),
+            source_aliases=sealed.binding.source_aliases,
+            db_user_version=saved_manifest.db_user_version,
+            batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
+        )
+        checks.append(
+            CheckV1("semantic_closures", True, ("events", "projections", "fts", "summaries"))
+        )
+    except (RestoreOperationError, ValueError, TypeError) as exc:
+        msg = exc.failure.message if isinstance(exc, RestoreOperationError) else str(exc)
+        checks.append(CheckV1("semantic_closures", False, (msg,)))
+        unverifiable.append(msg)
+
+    objects = _scan_review_objects(
+        final_root,
+        source_root=Path(sealed.binding.saved_source_path),
+        source_aliases=sealed.binding.source_aliases,
+        disclosed_scopes=seen_scopes,
+        unverifiable=unverifiable,
+    )
+
+    available_selectors = {b.selector for obj in objects for b in obj.bodies}
+    unknown_scopes = [s for s in normalized_scopes if s not in available_selectors]
+    if unknown_scopes:
+        raise _fail(
+            "incompatible",
+            f"--body-scope 没有匹配本次复核中的任何正文槽位：{unknown_scopes}",
+            batch_id=resolved_bid,
+            phase="published_hold",
+            plan_sha256=reserved.plan_sha256,
+        )
+
+    later_changes: list[LaterChangeV1] = []
+    if later_backup is not None:
+        later_path = Path(later_backup)
+        later_ver = verify_backup(later_path)
+        if not later_ver.ok or later_ver.manifest is None:
+            reason = "；".join(later_ver.problems) if later_ver.problems else "后续备份校验失败"
+            checks.append(CheckV1("later_backup", False, (reason,)))
+            unverifiable.append(f"later_backup: {reason}")
+        else:
+            l_manifest = later_ver.manifest
+            same_src = overlap_key(l_manifest.source_path) == overlap_key(
+                sealed.binding.saved_source_path
+            )
+            if not same_src:
+                reason = (
+                    f"后续备份源路径 {l_manifest.source_path} 与当前恢复源 "
+                    f"{sealed.binding.saved_source_path} 不一致"
+                )
+                checks.append(CheckV1("later_backup", False, (reason,)))
+                unverifiable.append(reason)
+            else:
+                later_unv: list[str] = []
+                later_objs = _scan_review_objects(
+                    later_path.resolve(strict=True),
+                    source_root=Path(l_manifest.source_path),
+                    source_aliases=l_manifest.source_aliases,
+                    disclosed_scopes=set(),
+                    unverifiable=later_unv,
+                )
+                if later_unv:
+                    checks.append(CheckV1("later_backup", False, tuple(later_unv)))
+                    unverifiable.extend(later_unv)
+                else:
+                    checks.append(CheckV1("later_backup", True, (str(later_path.resolve()),)))
+                    cur_map = {(o.family, o.key): o for o in objects}
+                    lat_map = {(o.family, o.key): o for o in later_objs}
+                    all_keys = sorted(
+                        set(cur_map) | set(lat_map),
+                        key=lambda fk: (fk[0].encode("utf-8"), restore_json_v1(fk[1])),
+                    )
+                    for fk in all_keys:
+                        c_obj = cur_map.get(fk)
+                        l_obj = lat_map.get(fk)
+                        c_sha = _object_state_digest(c_obj) if c_obj is not None else None
+                        l_sha = _object_state_digest(l_obj) if l_obj is not None else None
+                        if c_sha == l_sha:
+                            continue
+                        ev_notes: list[str] = []
+                        if c_obj is None:
+                            ev_notes.append("added_in_later_backup")
+                        elif l_obj is None:
+                            ev_notes.append("absent_in_later_backup")
+                        else:
+                            c_stat = {s.name: s.value for s in c_obj.status}
+                            l_stat = {s.name: s.value for s in l_obj.status}
+                            for s_name in sorted(set(c_stat) | set(l_stat)):
+                                if c_stat.get(s_name) != l_stat.get(s_name):
+                                    ev_notes.append(f"field_changed:{s_name}")
+                            if not ev_notes:
+                                ev_notes.append("body_changed")
+                        later_changes.append(
+                            LaterChangeV1(
+                                family=fk[0],
+                                key=fk[1],
+                                before_sha256=c_sha,
+                                after_sha256=l_sha,
+                                evidence=tuple(ev_notes),
+                            )
+                        )
+
+    review_complete = not unverifiable and all(c.passed for c in checks)
+    redacted_objs = tuple(
+        ReviewObjectV1(
+            family=obj.family,
+            key=obj.key,
+            status=obj.status,
+            sources=obj.sources,
+            bodies=tuple(
+                BodyViewV1(b.field, b.size, b.sha256, b.selector, None, None)
+                for b in obj.bodies
+            ),
+        )
+        for obj in objects
+    )
+    redacted_v1 = RestoreReviewV1(
+        batch_id=resolved_bid,
+        phase="published_hold",
+        held=True,
+        data_root=placement.canonical_root,
+        binding_sha256=sealed.binding_sha256,
+        scope_sha256=sealed.binding.scope_sha256,
+        review_complete=review_complete,
+        checks=tuple(checks),
+        objects=redacted_objs,
+        known_later_changes=tuple(later_changes),
+        unverifiable=tuple(unverifiable),
+        later_forget_delete_history="completeness_unproven",
+        body_scopes=(),
+    )
+    review_sha = domain_digest("review", redacted_v1)
+    return RestoreReviewV2(
+        batch_id=resolved_bid,
+        phase="published_hold",
+        held=True,
+        data_root=placement.canonical_root,
+        binding_sha256=sealed.binding_sha256,
+        scope_sha256=sealed.binding.scope_sha256,
+        review_complete=review_complete,
+        checks=tuple(checks),
+        objects=objects,
+        known_later_changes=tuple(later_changes),
+        unverifiable=tuple(unverifiable),
+        later_forget_delete_history="completeness_unproven",
+        body_scopes=tuple(normalized_scopes),
+        review_sha256=review_sha,
+    )
+
+
 def review(
     data_root: Path,
     *,
@@ -3863,7 +4139,7 @@ def review(
     later_backup: Path | None = None,
     body_scopes: Sequence[str] = (),
     registry: RestoreRegistry | None = None,
-) -> RestoreReviewV1:
+) -> RestoreReviewV2:
     """对处于 `published_hold` 的数据根做零副作用只读复核；默认脱敏全部正文。"""
     reg = _registry_or_default(registry)
     obs, resolved_bid, b_events = _resolve_batch_observation(
@@ -3880,7 +4156,7 @@ def review(
 
     if tail.kind != "published_hold":
         raise _fail(
-            "held" if tail.kind != "aborted" else "incompatible",
+            "held" if tail.kind not in ("aborted", "released") else "incompatible",
             f"restore-review 只接受处于 published_hold 的恢复批次（当前为 {tail.kind}）",
             batch_id=resolved_bid,
             phase=tail.kind,
@@ -3894,7 +4170,6 @@ def review(
     published: PublishedHoldV1 = tail.payload
     expected_origin_bytes = base64.b64decode(intent.origin_bytes_b64)
 
-    # 先校验显式选择器格式
     normalized_scopes: list[str] = []
     seen_scopes: set[str] = set()
     for raw_scope in body_scopes:
@@ -3961,169 +4236,20 @@ def review(
         gate.close()
         gate = None
 
-        checks: list[CheckV1] = []
-        unverifiable: list[str] = []
-
-        try:
-            _verify_placement_ancestors(
-                placement,
-                batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
-            )
-            checks.append(CheckV1("stable_placement", True, (placement.canonical_root.text,)))
-        except RestoreOperationError as exc:
-            checks.append(CheckV1("stable_placement", False, (exc.failure.message,)))
-            unverifiable.append(exc.failure.message)
-
-        try:
-            _verify_material_tree_matches_binding(
-                final_root,
-                sealed.binding,
-                allow_token=True,
-                require_origin_bytes=expected_origin_bytes,
-                batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
-            )
-            checks.append(
-                CheckV1(
-                    "binding_and_materials",
-                    True,
-                    (sealed.binding_sha256, sealed.binding.scope_sha256),
-                )
-            )
-        except RestoreOperationError as exc:
-            checks.append(CheckV1("binding_and_materials", False, (exc.failure.message,)))
-            unverifiable.append(exc.failure.message)
-
-        try:
-            manifest_raw = base64.b64decode(sealed.binding.manifest.saved_bytes_b64)
-            saved_manifest = BackupManifest.from_dict(json.loads(manifest_raw.decode("utf-8")))
-            _ = _build_legacy_reconciliation_and_semantic_check(
-                final_root,
-                source_root=Path(sealed.binding.saved_source_path),
-                source_aliases=sealed.binding.source_aliases,
-                db_user_version=saved_manifest.db_user_version,
-                batch_ctx={"batch_id": resolved_bid, "phase": "published_hold"},
-            )
-            checks.append(
-                CheckV1("semantic_closures", True, ("events", "projections", "fts", "summaries"))
-            )
-        except (RestoreOperationError, ValueError, TypeError) as exc:
-            msg = exc.failure.message if isinstance(exc, RestoreOperationError) else str(exc)
-            checks.append(CheckV1("semantic_closures", False, (msg,)))
-            unverifiable.append(msg)
-
-        objects = _scan_review_objects(
-            final_root,
-            source_root=Path(sealed.binding.saved_source_path),
-            source_aliases=sealed.binding.source_aliases,
-            disclosed_scopes=seen_scopes,
-            unverifiable=unverifiable,
+        review_report = _compute_review_locked(
+            resolved_bid,
+            reserved,
+            sealed,
+            expected_origin_bytes,
+            later_backup=later_backup,
+            normalized_scopes=normalized_scopes,
+            seen_scopes=seen_scopes,
         )
-
-        available_selectors = {b.selector for obj in objects for b in obj.bodies}
-        unknown_scopes = (
-            [s for s in normalized_scopes if s not in available_scopes_set]
-            if (available_scopes_set := available_selectors) is not None
-            else []
-        )
-        if unknown_scopes:
-            raise _fail(
-                "incompatible",
-                f"--body-scope 没有匹配本次复核中的任何正文槽位：{unknown_scopes}",
-                batch_id=resolved_bid,
-                phase="published_hold",
-                plan_sha256=reserved.plan_sha256,
-            )
-
-        later_changes: list[LaterChangeV1] = []
-        if later_backup is not None:
-            later_path = Path(later_backup)
-            later_ver = verify_backup(later_path)
-            if not later_ver.ok or later_ver.manifest is None:
-                reason = "；".join(later_ver.problems) if later_ver.problems else "后续备份校验失败"
-                checks.append(CheckV1("later_backup", False, (reason,)))
-                unverifiable.append(f"later_backup: {reason}")
-            else:
-                l_manifest = later_ver.manifest
-                same_src = overlap_key(l_manifest.source_path) == overlap_key(
-                    sealed.binding.saved_source_path
-                )
-                if not same_src:
-                    reason = (
-                        f"后续备份源路径 {l_manifest.source_path} 与当前恢复源 "
-                        f"{sealed.binding.saved_source_path} 不一致"
-                    )
-                    checks.append(CheckV1("later_backup", False, (reason,)))
-                    unverifiable.append(reason)
-                else:
-                    later_unv: list[str] = []
-                    later_objs = _scan_review_objects(
-                        later_path.resolve(strict=True),
-                        source_root=Path(l_manifest.source_path),
-                        source_aliases=l_manifest.source_aliases,
-                        disclosed_scopes=set(),
-                        unverifiable=later_unv,
-                    )
-                    if later_unv:
-                        checks.append(CheckV1("later_backup", False, tuple(later_unv)))
-                        unverifiable.extend(later_unv)
-                    else:
-                        checks.append(CheckV1("later_backup", True, (str(later_path.resolve()),)))
-                        cur_map = {(o.family, o.key): o for o in objects}
-                        lat_map = {(o.family, o.key): o for o in later_objs}
-                        all_keys = sorted(
-                            set(cur_map) | set(lat_map),
-                            key=lambda fk: (fk[0].encode("utf-8"), restore_json_v1(fk[1])),
-                        )
-                        for fk in all_keys:
-                            c_obj = cur_map.get(fk)
-                            l_obj = lat_map.get(fk)
-                            c_sha = _object_state_digest(c_obj) if c_obj is not None else None
-                            l_sha = _object_state_digest(l_obj) if l_obj is not None else None
-                            if c_sha == l_sha:
-                                continue
-                            ev_notes: list[str] = []
-                            if c_obj is None:
-                                ev_notes.append("added_in_later_backup")
-                            elif l_obj is None:
-                                ev_notes.append("absent_in_later_backup")
-                            else:
-                                c_stat = {s.name: s.value for s in c_obj.status}
-                                l_stat = {s.name: s.value for s in l_obj.status}
-                                for s_name in sorted(set(c_stat) | set(l_stat)):
-                                    if c_stat.get(s_name) != l_stat.get(s_name):
-                                        ev_notes.append(f"field_changed:{s_name}")
-                                if not ev_notes:
-                                    ev_notes.append("body_changed")
-                            later_changes.append(
-                                LaterChangeV1(
-                                    family=fk[0],
-                                    key=fk[1],
-                                    before_sha256=c_sha,
-                                    after_sha256=l_sha,
-                                    evidence=tuple(ev_notes),
-                                )
-                            )
-
-        review_complete = not unverifiable and all(c.passed for c in checks)
-        review_report = RestoreReviewV1(
-            batch_id=resolved_bid,
-            phase="published_hold",
-            held=True,
-            data_root=placement.canonical_root,
-            binding_sha256=sealed.binding_sha256,
-            scope_sha256=sealed.binding.scope_sha256,
-            review_complete=review_complete,
-            checks=tuple(checks),
-            objects=objects,
-            known_later_changes=tuple(later_changes),
-            unverifiable=tuple(unverifiable),
-            later_forget_delete_history="completeness_unproven",
-            body_scopes=tuple(normalized_scopes),
-        )
-        if not review_complete:
+        if not review_report.review_complete:
             raise _fail(
                 "incompatible" if later_backup is not None else "binding_mismatch",
-                "只读复核未完整通过：" + ("；".join(unverifiable) or "存在失败检查项"),
+                "只读复核未完整通过："
+                + ("；".join(review_report.unverifiable) or "存在失败检查项"),
                 batch_id=resolved_bid,
                 phase="published_hold",
                 plan_sha256=reserved.plan_sha256,
@@ -4145,6 +4271,1347 @@ def review(
             gate.close()
 
 
+def _dispatch_proven_unsent(conn: sqlite3.Connection, run_id: str, call_id: str) -> bool:
+    tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+    if "dispatches" not in tables:
+        return False
+    cols = {str(r[1]) for r in conn.execute('PRAGMA table_info("dispatches")')}
+    if "boundary_protocol" not in cols:
+        return False
+    rows = conn.execute(
+        "SELECT state, boundary_protocol FROM dispatches WHERE run_id=? AND call_id=?",
+        (run_id, call_id),
+    ).fetchall()
+    if not rows:
+        return False
+    return all(
+        int(r["boundary_protocol"]) >= 1 and str(r["state"]) in ("intent", "rejected", "revoked")
+        for r in rows
+    )
+
+
+def _scan_active_blocks_on_conn(
+    conn: sqlite3.Connection,
+    max_seq: int,
+) -> tuple[set[str], set[str]]:
+    blocked_ws: set[str] = set()
+    blocked_objs: set[str] = set()
+    for row in conn.execute(
+        "SELECT seq, type, payload FROM events "
+        "WHERE seq <= ? AND type IN ("
+        "'recovery.blocked','recovery.unblocked',"
+        "'recovery.object_blocked','recovery.object_unblocked'"
+        ") ORDER BY seq",
+        (max_seq,),
+    ):
+        etype = str(row["type"])
+        raw = row["payload"]
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            continue
+        if etype in ("recovery.blocked", "recovery.unblocked"):
+            ws = parsed.get("workspace")
+            if isinstance(ws, str) and ws:
+                if etype == "recovery.blocked":
+                    blocked_ws.add(ws)
+                else:
+                    blocked_ws.discard(ws)
+        else:
+            obj = parsed.get("object")
+            if isinstance(obj, str) and obj:
+                if etype == "recovery.object_blocked":
+                    blocked_objs.add(obj)
+                else:
+                    blocked_objs.discard(obj)
+    return blocked_ws, blocked_objs
+
+
+def _unknown_call_targets_on_conn(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    task_id: str | None,
+    call_id: str,
+    tool_id: str,
+) -> tuple[list[str], list[str]]:
+    """返回单条未知副作用调用涉及的 `(workspace_roots, mcp_object_keys)`。"""
+    from .memory_exec import MEMORY_ALL_TOOL_IDS
+    from .resources import ResourceError, mcp_object_key, mcp_server_key, parse_mcp_object_key
+    from .tools import NETWORK_TOOL_IDS, SUBTASK_TOOL_IDS
+
+    tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+    ws_roots: list[str] = []
+    obj_keys: list[str] = []
+
+    if tool_id.startswith("mcp__"):
+        if "dispatches" in tables:
+            cols = {str(r[1]) for r in conn.execute('PRAGMA table_info("dispatches")')}
+            if "target" in cols:
+                for row in conn.execute(
+                    "SELECT target FROM dispatches WHERE run_id=? AND call_id=?",
+                    (run_id, call_id),
+                ):
+                    raw_t = str(row["target"] or "")
+                    if not raw_t:
+                        continue
+                    try:
+                        server, tool = parse_mcp_object_key(raw_t)
+                    except ResourceError:
+                        continue
+                    canonical = (
+                        mcp_object_key(server, tool)
+                        if tool is not None
+                        else mcp_server_key(server)
+                    )
+                    if canonical not in obj_keys:
+                        obj_keys.append(canonical)
+        return ws_roots, obj_keys
+
+    if (
+        tool_id in MEMORY_ALL_TOOL_IDS
+        or tool_id in SUBTASK_TOOL_IDS
+        or tool_id in NETWORK_TOOL_IDS
+    ):
+        return ws_roots, obj_keys
+
+    if "dispatches" in tables:
+        cols = {str(r[1]) for r in conn.execute('PRAGMA table_info("dispatches")')}
+        if "workspace_root" in cols and "resource_key" in cols:
+            for row in conn.execute(
+                "SELECT workspace_root, resource_key FROM dispatches WHERE run_id=? AND call_id=?",
+                (run_id, call_id),
+            ):
+                rkey = str(row["resource_key"] or "")
+                wroot = str(row["workspace_root"] or "")
+                if rkey.startswith(("memory:", "network:", "mcp:", "subtask:")) or not wroot:
+                    continue
+                if wroot not in ws_roots:
+                    ws_roots.append(wroot)
+
+    if not ws_roots and task_id and "tasks" in tables:
+        trow = conn.execute(
+            "SELECT workspaces FROM tasks WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if trow is not None and trow["workspaces"]:
+            try:
+                bindings = json.loads(str(trow["workspaces"]))
+                if isinstance(bindings, list):
+                    writable = [
+                        str(b["root_path"])
+                        for b in bindings
+                        if isinstance(b, dict)
+                        and isinstance(b.get("root_path"), str)
+                        and b.get("mode") == "writable"
+                    ]
+                    chosen = writable or [
+                        str(b["root_path"])
+                        for b in bindings
+                        if isinstance(b, dict) and isinstance(b.get("root_path"), str)
+                    ]
+                    for w in chosen:
+                        if w not in ws_roots:
+                            ws_roots.append(w)
+            except (ValueError, TypeError):
+                pass
+    return ws_roots, obj_keys
+
+
+def _plan_release_reconciliation(
+    final_root: Path,
+    binding: BindingV1,
+    *,
+    batch_ctx: dict[str, Any],
+) -> tuple[int, int, ReconcilePlanV1]:
+    db_path = final_root / "events.db"
+    conn = _open_static_readonly_sqlite(db_path, batch_ctx=batch_ctx)
+    try:
+        uv_raw = conn.execute("PRAGMA user_version").fetchone()[0]
+        if type(uv_raw) is not int or uv_raw not in (0, 1, 2):
+            raise _fail(
+                "incompatible",
+                f"不支持的事件库 user_version：{uv_raw!r}",
+                **batch_ctx,
+            )
+        seq_head = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+        max_ts = int(conn.execute("SELECT COALESCE(MAX(ts), 0) FROM events").fetchone()[0])
+        reconciled_at_ms = max(int(time.time() * 1000), max_ts)
+
+        tables = {
+            str(r[0]) for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+        }
+        fenced_runs = (
+            sorted(
+                {
+                    str(r["run_id"])
+                    for r in conn.execute("SELECT run_id, state FROM runs")
+                    if str(r["state"]) in NON_TERMINAL_STATES
+                },
+                key=lambda s: s.encode("utf-8"),
+            )
+            if "runs" in tables
+            else []
+        )
+        expired_approvals = (
+            sorted(
+                {
+                    str(r["approval_id"])
+                    for r in conn.execute("SELECT approval_id, state FROM approvals")
+                    if str(r["state"]) in ("pending", "approved")
+                },
+                key=lambda s: s.encode("utf-8"),
+            )
+            if "approvals" in tables
+            else []
+        )
+        cleared_leases = (
+            sorted(
+                {str(r["resource_key"]) for r in conn.execute("SELECT resource_key FROM leases")},
+                key=lambda s: s.encode("utf-8"),
+            )
+            if "leases" in tables
+            else []
+        )
+        cancelled_jobs = (
+            sorted(
+                {
+                    str(r["job_id"])
+                    for r in conn.execute("SELECT job_id, state FROM jobs")
+                    if str(r["state"]) not in ("done", "cancelled")
+                },
+                key=lambda s: s.encode("utf-8"),
+            )
+            if "jobs" in tables
+            else []
+        )
+
+        source_root = Path(binding.saved_source_path)
+        intents: list[dict[str, Any]] = []
+        last_result: dict[tuple[str, str], int] = {}
+        for row in conn.execute(
+            "SELECT seq, run_id, task_id, type, payload AS payload_inline, "
+            "payload_ref, payload_hash FROM events "
+            "WHERE type IN ('tool.intent', 'tool.result') ORDER BY seq"
+        ):
+            seq = int(row["seq"])
+            etype = str(row["type"])
+            run_id = str(row["run_id"])
+            payload = read_saved_event_payload(
+                final_root,
+                row,
+                source_root=source_root,
+                source_aliases=binding.source_aliases,
+            )
+            call_id = str(payload["call_id"])
+            if etype == "tool.result":
+                last_result[(run_id, call_id)] = seq
+            else:
+                intents.append(
+                    {
+                        "seq": seq,
+                        "run_id": run_id,
+                        "task_id": str(row["task_id"]) if row["task_id"] else None,
+                        "call_id": call_id,
+                        "tool_id": str(payload["tool_id"]),
+                    }
+                )
+
+        active_ws, active_objs = _scan_active_blocks_on_conn(conn, seq_head)
+        active_ws_keys = {overlap_key(w) for w in active_ws}
+        new_blocked_ws: set[str] = set()
+        new_blocked_objs: set[str] = set()
+        dispositions: list[ReconcileIntentDispositionV1] = []
+
+        for item in intents:
+            if last_result.get((item["run_id"], item["call_id"]), 0) >= item["seq"]:
+                continue
+            from .tools import SPECS
+
+            spec = SPECS.get(item["tool_id"])
+            proven_unsent = (
+                (spec is not None and spec.side_effect_level == "pure")
+                or _dispatch_proven_unsent(conn, item["run_id"], item["call_id"])
+            )
+            disp_val = "none_applied" if proven_unsent else "unknown"
+            dispositions.append(
+                ReconcileIntentDispositionV1(
+                    run_id=item["run_id"],
+                    call_id=item["call_id"],
+                    seq=item["seq"],
+                    tool_id=item["tool_id"],
+                    disposition=disp_val,
+                )
+            )
+            if disp_val == "unknown":
+                ws_list, obj_list = _unknown_call_targets_on_conn(
+                    conn,
+                    run_id=item["run_id"],
+                    task_id=item["task_id"],
+                    call_id=item["call_id"],
+                    tool_id=item["tool_id"],
+                )
+                for ws in ws_list:
+                    wkey = overlap_key(ws)
+                    if wkey not in active_ws_keys:
+                        active_ws_keys.add(wkey)
+                        new_blocked_ws.add(ws)
+                for obj in obj_list:
+                    if obj not in active_objs:
+                        active_objs.add(obj)
+                        new_blocked_objs.add(obj)
+
+        sorted_disps = tuple(
+            sorted(
+                dispositions,
+                key=lambda d: (d.seq, d.run_id.encode("utf-8"), d.call_id.encode("utf-8")),
+            )
+        )
+        plan_obj = ReconcilePlanV1(
+            version=1,
+            reconciled_at_ms=reconciled_at_ms,
+            fenced_run_ids=tuple(fenced_runs),
+            expired_approval_ids=tuple(expired_approvals),
+            cleared_lease_keys=tuple(cleared_leases),
+            unresolved_intents=sorted_disps,
+            cancelled_job_ids=tuple(cancelled_jobs),
+            blocked_workspaces=tuple(sorted(new_blocked_ws, key=lambda s: s.encode("utf-8"))),
+            blocked_objects=tuple(sorted(new_blocked_objs, key=lambda s: s.encode("utf-8"))),
+        )
+        return uv_raw, seq_head, plan_obj
+    finally:
+        conn.close()
+
+
+def _build_expected_r2_events(
+    conn: sqlite3.Connection,
+    *,
+    batch_id: str,
+    reconcile_plan: ReconcilePlanV1,
+    pre_seq_head: int,
+) -> list[dict[str, Any]]:
+    """从不可变历史前缀与持久投影键确定性生成阶段 R2 应追加的事件序列。"""
+    from .events import canonical_bytes, sha256_hex
+
+    ts = reconcile_plan.reconciled_at_ms
+    tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+
+    intent_task_map: dict[int, str | None] = {}
+    for row in conn.execute(
+        "SELECT seq, task_id FROM events WHERE seq <= ? AND type='tool.intent'",
+        (pre_seq_head,),
+    ):
+        intent_task_map[int(row["seq"])] = str(row["task_id"]) if row["task_id"] else None
+
+    expected: list[dict[str, Any]] = []
+    ws_attr: dict[str, tuple[str, list[str]]] = {}
+    obj_attr: dict[str, tuple[str, list[str]]] = {}
+
+    # 1) 未决工具意图 -> tool.result
+    for disp in reconcile_plan.unresolved_intents:
+        t_id = intent_task_map.get(disp.seq)
+        if disp.disposition == "none_applied":
+            payload = {
+                "call_id": disp.call_id,
+                "tool_id": disp.tool_id,
+                "status": "failed",
+                "effect_state": "none_applied",
+                "output": {"reason": "restore.reconciled_unsent", "batch_id": batch_id},
+            }
+        else:
+            payload = {
+                "call_id": disp.call_id,
+                "tool_id": disp.tool_id,
+                "status": "unknown",
+                "effect_state": "unknown",
+                "output": {"reason": "restore.reconciled_unknown", "batch_id": batch_id},
+            }
+            ws_list, obj_list = _unknown_call_targets_on_conn(
+                conn,
+                run_id=disp.run_id,
+                task_id=t_id,
+                call_id=disp.call_id,
+                tool_id=disp.tool_id,
+            )
+            for ws in ws_list:
+                prev_run, cids = ws_attr.get(ws, (disp.run_id, []))
+                if disp.call_id not in cids:
+                    cids.append(disp.call_id)
+                ws_attr[ws] = (prev_run, cids)
+            for obj in obj_list:
+                prev_run, cids = obj_attr.get(obj, (disp.run_id, []))
+                if disp.call_id not in cids:
+                    cids.append(disp.call_id)
+                obj_attr[obj] = (prev_run, cids)
+
+        expected.append(
+            {
+                "run_id": disp.run_id,
+                "task_id": t_id,
+                "type": "tool.result",
+                "ts": ts,
+                "actor_kind": "core",
+                "actor_id": "",
+                "payload": payload,
+                "idem_key": disp.call_id,
+            }
+        )
+
+    # 1b) 新增目录与 MCP 对象阻断事件
+    for ws in reconcile_plan.blocked_workspaces:
+        b_run_id, cids = ws_attr.get(ws, ("", []))
+        expected.append(
+            {
+                "run_id": b_run_id,
+                "task_id": None,
+                "type": "recovery.blocked",
+                "ts": ts,
+                "actor_kind": "system",
+                "actor_id": "",
+                "payload": {
+                    "workspace": ws,
+                    "call_ids": sorted(cids),
+                    "reason": "restore.release_reconciled",
+                },
+                "idem_key": None,
+            }
+        )
+
+    for obj in reconcile_plan.blocked_objects:
+        b_run_id, cids = obj_attr.get(obj, ("", []))
+        expected.append(
+            {
+                "run_id": b_run_id,
+                "task_id": None,
+                "type": "recovery.object_blocked",
+                "ts": ts,
+                "actor_kind": "system",
+                "actor_id": "",
+                "payload": {
+                    "object": obj,
+                    "call_ids": sorted(cids),
+                    "reason": "restore.release_reconciled",
+                },
+                "idem_key": None,
+            }
+        )
+
+    # 2) 陈旧审批 -> approval.expired
+    if "approvals" in tables:
+        app_map = {
+            str(r["approval_id"]): (
+                str(r["run_id"]),
+                str(r["task_id"]) if r["task_id"] else None,
+            )
+            for r in conn.execute("SELECT approval_id, run_id, task_id FROM approvals")
+        }
+        for aid in reconcile_plan.expired_approval_ids:
+            a_run_id, a_task_id = app_map[aid]
+            expected.append(
+                {
+                    "run_id": a_run_id,
+                    "task_id": a_task_id,
+                    "type": "approval.expired",
+                    "ts": ts,
+                    "actor_kind": "core",
+                    "actor_id": "",
+                    "payload": {"approval_id": aid, "reason": "restore.release_reconciled"},
+                    "idem_key": None,
+                }
+            )
+
+    # 3) 导入的非终态 runs -> run.fenced
+    if "runs" in tables:
+        run_map = {
+            str(r["run_id"]): str(r["task_id"])
+            for r in conn.execute("SELECT run_id, task_id FROM runs")
+        }
+        for rid in reconcile_plan.fenced_run_ids:
+            r_task_id = run_map[rid]
+            expected.append(
+                {
+                    "run_id": rid,
+                    "task_id": r_task_id,
+                    "type": "run.fenced",
+                    "ts": ts,
+                    "actor_kind": "core",
+                    "actor_id": "",
+                    "payload": {
+                        "run_id": rid,
+                        "task_id": r_task_id,
+                        "reason": "restore.release_reconciled",
+                    },
+                    "idem_key": None,
+                }
+            )
+
+    # 4) 导入的非终态 jobs -> job.finished
+    if "jobs" in tables:
+        job_map = {
+            str(r["job_id"]): r
+            for r in conn.execute(
+                "SELECT job_id, run_id, claim_epoch, owner_pid, owner_instance_id FROM jobs"
+            )
+        }
+        for jid in reconcile_plan.cancelled_job_ids:
+            jrow = job_map[jid]
+            expected.append(
+                {
+                    "run_id": str(jrow["run_id"]),
+                    "task_id": None,
+                    "type": "job.finished",
+                    "ts": ts,
+                    "actor_kind": "core",
+                    "actor_id": "",
+                    "payload": {
+                        "run_id": str(jrow["run_id"]),
+                        "job_id": jid,
+                        "claim_epoch": int(jrow["claim_epoch"] or 0),
+                        "owner_pid": (
+                            int(jrow["owner_pid"]) if jrow["owner_pid"] is not None else None
+                        ),
+                        "owner_instance_id": (
+                            str(jrow["owner_instance_id"])
+                            if jrow["owner_instance_id"] is not None
+                            else None
+                        ),
+                        "outcome": "cancelled",
+                        "by": "restore_release",
+                        "reason": "restore.release_reconciled",
+                    },
+                    "idem_key": None,
+                }
+            )
+
+    for item in expected:
+        ver = event_schema.detect_version(item["type"], item["payload"], allow_legacy=False)
+        raw_bytes = canonical_bytes(item["payload"])
+        item["version"] = ver
+        item["payload_json"] = raw_bytes.decode("utf-8")
+        item["payload_hash"] = sha256_hex(raw_bytes)
+    return expected
+
+
+def _verify_events_prefix_matches_scope(
+    db_path: Path,
+    scope: ScopeManifestV1,
+    pre_seq_head: int,
+    *,
+    batch_ctx: dict[str, Any],
+) -> None:
+    events_rel = next((r for r in scope.relations if r.name == "events"), None)
+    if events_rel is None:
+        raise _fail("record_corrupt", "ScopeManifestV1 缺少 events 表摘要", **batch_ctx)
+    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    conn.text_factory = bytes
+    try:
+        ddl_row = conn.execute(
+            "SELECT typeof(sql), sql, CAST(sql AS BLOB) FROM sqlite_schema "
+            "WHERE type='table' AND name='events'"
+        ).fetchone()
+        if ddl_row is None:
+            raise _fail("record_corrupt", "主库缺少 events 表定义", **batch_ctx)
+        ddl_tag = ddl_row[0].decode("ascii")
+        ddl_val = sql_value_from_sqlite(
+            ddl_tag, ddl_row[1], text_bytes=ddl_row[2] if ddl_tag == "text" else None
+        )
+        select_exprs = []
+        for col in events_rel.columns:
+            col_esc = col.name.replace('"', '""')
+            select_exprs.append(f'typeof("{col_esc}"), "{col_esc}", CAST("{col_esc}" AS BLOB)')
+        typed_rows: list[tuple[SqlValueV1, ...]] = []
+        query = f'SELECT {", ".join(select_exprs)} FROM "events" WHERE seq <= ?'
+        for data_row in conn.execute(query, (pre_seq_head,)):
+            row_vals: list[SqlValueV1] = []
+            for c_idx in range(len(events_rel.columns)):
+                tag = data_row[c_idx * 3].decode("ascii")
+                val = data_row[c_idx * 3 + 1]
+                tbytes = data_row[c_idx * 3 + 2] if tag == "text" else None
+                row_vals.append(sql_value_from_sqlite(tag, val, text_bytes=tbytes))
+            typed_rows.append(tuple(row_vals))
+        sql_rel = make_sql_relation("events", events_rel.columns, ddl_val, tuple(typed_rows))
+        if (
+            len(sql_rel.rows) != events_rel.row_count
+            or domain_digest("sql-relation", sql_rel) != events_rel.rows_sha256
+        ):
+            raise _fail(
+                "record_corrupt",
+                "主库历史事件前缀已偏离封存 BindingV1",
+                **batch_ctx,
+            )
+    finally:
+        conn.close()
+
+
+def _derive_run_effect_state(
+    conn: sqlite3.Connection,
+    run_id: str,
+    final_root: Path,
+    binding: BindingV1,
+) -> str:
+    source_root = Path(binding.saved_source_path)
+    states: list[str] = []
+    for row in conn.execute(
+        "SELECT seq, run_id, type, payload AS payload_inline, payload_ref, payload_hash "
+        "FROM events WHERE run_id=? AND type='tool.result' ORDER BY seq",
+        (run_id,),
+    ):
+        payload = read_saved_event_payload(
+            final_root,
+            row,
+            source_root=source_root,
+            source_aliases=binding.source_aliases,
+        )
+        est = str(payload.get("effect_state", "none_applied"))
+        states.append(est)
+    if "unknown" in states:
+        return "unknown"
+    if "partial" in states:
+        return "partial"
+    if "applied" in states:
+        return "partial" if "none_applied" in states else "applied"
+    return "none_applied"
+
+
+def _budget_account_chain(conn: sqlite3.Connection, account_id: str) -> list[str]:
+    chain: list[str] = []
+    cur: str | None = account_id
+    for _ in range(16):
+        if not cur:
+            break
+        row = conn.execute(
+            "SELECT account_id, parent_id FROM budget_accounts WHERE account_id=?",
+            (cur,),
+        ).fetchone()
+        if row is None:
+            break
+        chain.append(str(row["account_id"]))
+        cur = str(row["parent_id"]) if row["parent_id"] else None
+    return chain
+
+
+def _execute_release_reconciliation(
+    final_root: Path,
+    d_handle: NativeEntityHandle,
+    sealed: SealedHoldV1,
+    rel_intent: ReleaseIntentV1,
+    *,
+    batch_id: str,
+    batch_ctx: dict[str, Any],
+) -> None:
+    """阶段 R2：主库单事务 append-only 对账收口（支持崩溃重入幂等验证）。"""
+    from . import authority
+    from .authority import AuthorityUnavailable, AuthorityWriteFailed
+
+    final_db = final_root / "events.db"
+    pre_seq_head = rel_intent.pre_release_event_seq_head
+    rplan = rel_intent.reconcile_plan
+    ts = rplan.reconciled_at_ms
+
+    # 检查是否存在未提交崩溃残留伴随日志：打开普通读写连接触发 SQLite 原生回滚后重核字节/状态。
+    has_companions = any(
+        final_db.with_name(final_db.name + sfx).exists() for sfx in ("-journal", "-wal", "-shm")
+    )
+    if has_companions:
+        rec_conn = sqlite3.connect(str(final_db), isolation_level=None, timeout=0)
+        try:
+            rec_conn.execute("SELECT COUNT(*) FROM sqlite_schema").fetchone()
+            jmode = str(rec_conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            if jmode == "wal":
+                rec_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                rec_conn.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            rec_conn.close()
+        _fsync_file_path(final_db, batch_ctx=batch_ctx)
+
+    cur_size = final_db.stat().st_size
+    cur_sha = sha256_file(final_db)
+    untouched = (
+        cur_size == sealed.binding.database_bytes.size
+        and cur_sha == sealed.binding.database_bytes.sha256
+    )
+
+    conn = sqlite3.connect(str(final_db), isolation_level=None, timeout=0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=0")
+    conn.execute("PRAGMA synchronous=FULL")
+    try:
+        expected_events = _build_expected_r2_events(
+            conn,
+            batch_id=batch_id,
+            reconcile_plan=rplan,
+            pre_seq_head=pre_seq_head,
+        )
+        cur_max_seq = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+
+        if untouched and cur_max_seq == pre_seq_head:
+            proven_unsent_calls = {
+                (d.run_id, d.call_id)
+                for d in rplan.unresolved_intents
+                if d.disposition == "none_applied"
+            }
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur_uv = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                if cur_uv != rel_intent.pre_release_db_user_version:
+                    raise _fail("binding_mismatch", "对账前主库 user_version 发生漂移", **batch_ctx)
+
+                for ev in expected_events:
+                    cur = conn.execute(
+                        "INSERT INTO events "
+                        "(run_id, task_id, type, ts, actor_kind, actor_id, "
+                        "payload, payload_ref, payload_hash, parent_seq, idem_key) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)",
+                        (
+                            ev["run_id"],
+                            ev["task_id"],
+                            ev["type"],
+                            ev["ts"],
+                            ev["actor_kind"],
+                            ev["actor_id"],
+                            ev["payload_json"],
+                            ev["payload_hash"],
+                            ev["idem_key"],
+                        ),
+                    )
+                    seq_inserted = int(cur.lastrowid)
+                    conn.execute(
+                        "INSERT INTO event_versions (seq, type, version) VALUES (?, ?, ?)",
+                        (seq_inserted, ev["type"], ev["version"]),
+                    )
+
+                tables = {
+                    str(r[0])
+                    for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+                }
+
+                if "dispatches" in tables:
+                    for disp in rplan.unresolved_intents:
+                        reason_val = (
+                            "restore.reconciled_unsent"
+                            if disp.disposition == "none_applied"
+                            else "restore.reconciled_unknown"
+                        )
+                        conn.execute(
+                            "UPDATE dispatches SET state='error', reason=?, updated_at=? "
+                            "WHERE run_id=? AND call_id=? AND state IN ('intent', 'executing')",
+                            (reason_val, ts, disp.run_id, disp.call_id),
+                        )
+                    conn.execute(
+                        "UPDATE dispatches SET state='error', reason='restore.release_reconciled', "
+                        "updated_at=? WHERE state IN ('intent', 'executing')",
+                        (ts,),
+                    )
+
+                if "dispatch_requests" in tables:
+                    conn.execute(
+                        "UPDATE dispatch_requests SET state='rejected', "
+                        "reason='restore.release_reconciled', updated_at=? "
+                        "WHERE state IN ('waiting', 'admitted')",
+                        (ts,),
+                    )
+
+                if "approvals" in tables and rplan.expired_approval_ids:
+                    cols_app = {str(r[1]) for r in conn.execute('PRAGMA table_info("approvals")')}
+                    for aid in rplan.expired_approval_ids:
+                        if "decided_at" in cols_app:
+                            conn.execute(
+                                "UPDATE approvals SET state='expired', decided_at=? "
+                                "WHERE approval_id=? AND state IN ('pending', 'approved')",
+                                (ts, aid),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE approvals SET state='expired' "
+                                "WHERE approval_id=? AND state IN ('pending', 'approved')",
+                                (aid,),
+                            )
+
+                if "grants" in tables:
+                    conn.execute(
+                        "UPDATE grants SET remaining_uses=0, "
+                        "expires_at=CASE WHEN expires_at > ? THEN ? ELSE expires_at END "
+                        "WHERE remaining_uses > 0",
+                        (ts, ts),
+                    )
+
+                if "leases" in tables:
+                    conn.execute("DELETE FROM leases")
+
+                if "runs" in tables and rplan.fenced_run_ids:
+                    for rid in rplan.fenced_run_ids:
+                        eff = _derive_run_effect_state(conn, rid, final_root, sealed.binding)
+                        conn.execute(
+                            "UPDATE runs SET state='fenced', outcome='cancelled', "
+                            "control_requested=NULL, effect_state=?, ended_at=? "
+                            "WHERE run_id=?",
+                            (eff, ts, rid),
+                        )
+                        if "tasks" in tables:
+                            conn.execute(
+                                "UPDATE tasks SET active_run_id=NULL, updated_at=? "
+                                "WHERE active_run_id=?",
+                                (ts, rid),
+                            )
+
+                if "jobs" in tables and rplan.cancelled_job_ids:
+                    for jid in rplan.cancelled_job_ids:
+                        conn.execute(
+                            "UPDATE jobs SET state='cancelled', outcome='cancelled', ended_at=? "
+                            "WHERE job_id=?",
+                            (ts, jid),
+                        )
+
+                if "subtasks" in tables:
+                    conn.execute(
+                        "UPDATE subtasks SET state='fenced', ended_at=?, "
+                        "error='restore.release_reconciled' "
+                        "WHERE state IN ('queued', 'running', 'cancelling')",
+                        (ts,),
+                    )
+
+                if "budget_reservations" in tables:
+                    res_rows = conn.execute(
+                        "SELECT reservation_id, account_id, run_id, call_id, need_json "
+                        "FROM budget_reservations WHERE state IN ('pending', 'reserved') "
+                        "ORDER BY reservation_id"
+                    ).fetchall()
+                    for rrow in res_rows:
+                        res_id = str(rrow["reservation_id"])
+                        acc_id = str(rrow["account_id"])
+                        r_run = str(rrow["run_id"] or "")
+                        r_call = str(rrow["call_id"] or "")
+                        if r_call and (r_run, r_call) in proven_unsent_calls:
+                            try:
+                                need = json.loads(str(rrow["need_json"] or "{}"))
+                            except ValueError:
+                                need = {}
+                            if isinstance(need, dict) and "budget_counters" in tables:
+                                for lvl in _budget_account_chain(conn, acc_id):
+                                    for dim, val in need.items():
+                                        if type(val) is int and val > 0:
+                                            conn.execute(
+                                                "UPDATE budget_counters "
+                                                "SET reserved = MAX(0, reserved - ?) "
+                                                "WHERE account_id=? AND dimension=?",
+                                                (val, lvl, str(dim)),
+                                            )
+                            conn.execute(
+                                "UPDATE budget_reservations SET state='released', known=1, "
+                                "settled_at=?, usage_json=? WHERE reservation_id=?",
+                                (
+                                    ts,
+                                    json.dumps({"reason": "restore.reconciled_unsent"}),
+                                    res_id,
+                                ),
+                            )
+                        else:
+                            # 未知用量保留未决占用，绝不按 0 退款（红线 5/11）。
+                            conn.execute(
+                                "UPDATE budget_reservations SET state='unknown', known=0, "
+                                "settled_at=?, usage_json='{}' WHERE reservation_id=?",
+                                (ts, res_id),
+                            )
+
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+        else:
+            # 中断重入验证：历史前缀逐位匹配封存快照，新增尾部精确等于预期确定性事件。
+            _verify_events_prefix_matches_scope(
+                final_db,
+                sealed.binding.sqlite_scope,
+                pre_seq_head,
+                batch_ctx=batch_ctx,
+            )
+            tail_rows = list(
+                conn.execute(
+                    "SELECT seq, run_id, task_id, type, ts, actor_kind, actor_id, "
+                    "payload_hash, idem_key FROM events WHERE seq > ? ORDER BY seq",
+                    (pre_seq_head,),
+                )
+            )
+            if len(tail_rows) != len(expected_events):
+                raise _fail(
+                    "record_corrupt",
+                    f"release_intent 重入时主库尾部事件条数失配："
+                    f"实际 {len(tail_rows)}，预期 {len(expected_events)}",
+                    **batch_ctx,
+                )
+            for idx, (actual_row, exp_ev) in enumerate(
+                zip(tail_rows, expected_events, strict=True), start=1
+            ):
+                if (
+                    int(actual_row["seq"]) != pre_seq_head + idx
+                    or str(actual_row["run_id"]) != exp_ev["run_id"]
+                    or (
+                        str(actual_row["task_id"])
+                        if actual_row["task_id"] is not None
+                        else None
+                    )
+                    != exp_ev["task_id"]
+                    or str(actual_row["type"]) != exp_ev["type"]
+                    or int(actual_row["ts"]) != exp_ev["ts"]
+                    or str(actual_row["actor_kind"]) != exp_ev["actor_kind"]
+                    or str(actual_row["actor_id"]) != exp_ev["actor_id"]
+                    or str(actual_row["payload_hash"]) != exp_ev["payload_hash"]
+                    or (
+                        str(actual_row["idem_key"])
+                        if actual_row["idem_key"] is not None
+                        else None
+                    )
+                    != exp_ev["idem_key"]
+                ):
+                    raise _fail(
+                        "record_corrupt",
+                        f"release_intent 重入时 seq={actual_row['seq']} 与确定性对账计划不符",
+                        **batch_ctx,
+                    )
+            tables = {
+                str(r[0])
+                for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+            }
+            if "leases" in tables:
+                rem_leases = int(conn.execute("SELECT COUNT(*) FROM leases").fetchone()[0])
+                if rem_leases != 0:
+                    raise _fail("record_corrupt", "重入发现主库残留未清理租约", **batch_ctx)
+
+        all_active_ws, all_active_objs = _scan_active_blocks_on_conn(
+            conn,
+            pre_seq_head + len(expected_events),
+        )
+        jmode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        if jmode == "wal":
+            conn.execute("PRAGMA journal_mode=DELETE")
+    except RestoreOperationError:
+        raise
+    except (sqlite3.Error, TianshuError) as exc:
+        raise _fail(
+            "restore_failed",
+            f"主库对账收口失败：{exc}",
+            cause=exc,
+            **batch_ctx,
+        ) from exc
+    finally:
+        conn.close()
+
+    _fsync_file_path(final_db, batch_ctx=batch_ctx)
+    try:
+        d_handle.verify_path(final_db)
+    except NativeEntityError as exc:
+        raise _fail(
+            "record_corrupt",
+            "对账收口后主库 D 实体身份失配",
+            cause=exc,
+            **batch_ctx,
+        ) from exc
+
+    # 同步登记本机用户级 authority 阻断库（幂等；写失败闭锁报错，绝不宣称解除成功）。
+    try:
+        for ws in sorted(all_active_ws | set(rplan.blocked_workspaces)):
+            authority.register_blocked(ws, reason="restore.release_reconciled")
+        for obj in sorted(all_active_objs | set(rplan.blocked_objects)):
+            authority.register_object_blocked(obj, reason="restore.release_reconciled")
+    except (AuthorityWriteFailed, AuthorityUnavailable) as exc:
+        raise _fail(
+            "durability_unavailable",
+            f"同步本机权威阻断根失败：{exc}",
+            cause=exc,
+            **batch_ctx,
+        ) from exc
+
+    failpoint("FP-RELEASE-RECONCILE", path=final_db)
+
+
+def _make_release_result(
+    batch_id: str,
+    released_ev: RestoreEventV1 | RestoreEventV2,
+    rel_payload: ReleasedV1,
+) -> RestoreReleaseResultV2:
+    uv = rel_payload.post_release_db_user_version
+    adm_map: dict[int, PostReleaseAdmissionStatusV2] = {
+        0: "admitted_v0",
+        1: "requires_explicit_migrate_v1",
+        2: "admitted_v2_released_proof",
+    }
+    root_str = rel_payload.final_root.path.text
+    next_cmds: tuple[tuple[str, ...], ...] = (
+        (
+            ("tianshu", "data", "backup", "--data-root", root_str, "--dest", "<BACKUP_DIR>"),
+            ("tianshu", "data", "migrate", "--data-root", root_str, "--backup", "<BACKUP_DIR>"),
+        )
+        if uv == 1
+        else ()
+    )
+    return RestoreReleaseResultV2(
+        batch_id=batch_id,
+        phase="released",
+        held=False,
+        data_root=rel_payload.final_root.path,
+        binding_sha256=rel_payload.binding_sha256,
+        review_sha256=rel_payload.review_sha256,
+        reconcile_plan_sha256=rel_payload.reconcile_plan_sha256,
+        event_sha256=domain_digest("event", released_ev),
+        db_user_version=uv,
+        migration_required=rel_payload.migration_required,
+        post_release_admission=adm_map[uv],
+        reconciled_counts=rel_payload.reconciled_counts,
+        next_commands=next_cmds,
+    )
+
+
+def release(
+    data_root: Path,
+    *,
+    batch_id: str | None = None,
+    expect_review_sha256: str,
+    acknowledge_unproven_later_history: bool,
+    registry: RestoreRegistry | None = None,
+) -> RestoreReleaseResultV2:
+    """阶段 R0–R3：解除 `published_hold` 持久隔离、执行确定性 append-only 对账并移交准入。"""
+    if acknowledge_unproven_later_history is not True:
+        raise _fail(
+            "incompatible",
+            "解除恢复隔离必须显式传入 --acknowledge-unproven-later-history "
+            "（确认已知晓备份点之后的遗忘/擦除/删除历史不可证明完整）",
+        )
+    if (
+        type(expect_review_sha256) is not str
+        or len(expect_review_sha256) != 64
+        or any(ch not in "0123456789abcdef" for ch in expect_review_sha256)
+    ):
+        raise _fail(
+            "incompatible",
+            f"--expect-review 必须是 64 位小写十六进制 SHA256：{expect_review_sha256!r}",
+        )
+
+    reg = _registry_or_default(registry)
+    obs, resolved_bid, b_events = _resolve_batch_observation(
+        reg,
+        data_root,
+        batch_id,
+        allow_aborted=False,
+        allow_released=True,
+    )
+    reserved: ReservedV1 = b_events[0].payload
+    placement = reserved.placement
+    final_root = Path(placement.canonical_root.text)
+    parent_path = final_root.parent
+    final_db = final_root / "events.db"
+    plan_sha = reserved.plan_sha256
+    tail = b_events[-1]
+
+    if tail.kind not in ("published_hold", "release_intent", "released"):
+        raise _fail(
+            "held" if tail.kind != "aborted" else "incompatible",
+            f"restore-release 只接受 published_hold / release_intent / released 批次"
+            f"（当前为 {tail.kind}）",
+            batch_id=resolved_bid,
+            phase=tail.kind,
+            plan_sha256=plan_sha,
+            next_commands=_next_commands_for_phase(str(final_root), tail.kind),
+        )
+
+    obs, op_access, has_db_entity_lock = _acquire_batch_operation_exclusive(reg, obs, resolved_bid)
+    codec = NativePathCodecV1()
+    p_handle = None
+    s_handle = None
+    d_handle = None
+    try:
+        b_events = [e for e in obs.events if e.batch_id == resolved_bid]
+        history = {e.kind: e for e in b_events}
+        tail = b_events[-1]
+        owned: StageOwnedV1 = history["stage_owned"].payload
+        sealed: SealedHoldV1 = history["sealed_hold"].payload
+        intent: PublishIntentV1 = history["publish_intent"].payload
+        pub_ev = history["published_hold"]
+        pub_payload: PublishedHoldV1 = pub_ev.payload
+        expected_origin_bytes = base64.b64decode(intent.origin_bytes_b64)
+
+        def _rctx(phase_name: PhaseV2, rev_sha: str | None = None) -> dict[str, Any]:
+            return {
+                "batch_id": resolved_bid,
+                "phase": phase_name,
+                "plan_sha256": plan_sha,
+                "retained_paths": (placement.canonical_root,) if final_root.exists() else (),
+                "next_commands": _next_commands_for_phase(
+                    str(final_root), phase_name, review_sha256=rev_sha
+                ),
+            }
+
+        cur_ctx = _rctx(tail.kind, expect_review_sha256)
+
+        from .migrate import writers_active
+
+        if writers_active(final_root) is not False:
+            raise _fail(
+                "maintenance_busy",
+                f"数据根存在活跃或状态不可判定的 daemon/host 写者：{final_root}",
+                **cur_ctx,
+            )
+
+        _verify_placement_ancestors(placement, batch_ctx=cur_ctx)
+        try:
+            p_handle = open_entity(parent_path, "directory")
+            s_handle = open_entity(final_root, "directory")
+            d_handle = open_entity(final_db, "file")
+        except NativeEntityError as exc:
+            raise _fail(
+                "record_corrupt",
+                f"恢复数据根或主库实体缺失/被替换：{exc}",
+                cause=exc,
+                **cur_ctx,
+            ) from exc
+
+        if p_handle.identity != owned.parent.identity:
+            raise _fail("binding_mismatch", "稳定父目录 P 身份已变更", **cur_ctx)
+        if (
+            s_handle.identity != pub_payload.final_root.identity
+            or d_handle.identity != pub_payload.final_database.identity
+            or d_handle.link_count != 1
+        ):
+            raise _fail("binding_mismatch", "恢复根 S 或主库 D 实体身份已被替换", **cur_ctx)
+        if not has_db_entity_lock:
+            try:
+                d_lock = acquire_entity_access(d_handle.identity, exclusive=True)
+            except MaintenanceBusy as exc:
+                raise _fail("maintenance_busy", str(exc), cause=exc, **cur_ctx) from exc
+            op_access._add_child(d_lock)
+            has_db_entity_lock = True
+
+        origin_path = final_root / ".restore-origin.json"
+        try:
+            ohandle = open_entity(origin_path, "file")
+        except NativeEntityError as exc:
+            raise _fail(
+                "record_corrupt",
+                f"缺少 .restore-origin.json：{origin_path}",
+                cause=exc,
+                **cur_ctx,
+            ) from exc
+        try:
+            if ohandle.link_count != 1:
+                raise _fail(
+                    "record_corrupt",
+                    ".restore-origin.json 必须是单硬链接普通文件",
+                    **cur_ctx,
+                )
+            raw_origin = origin_path.read_bytes()
+        finally:
+            ohandle.close()
+        if raw_origin != expected_origin_bytes:
+            raise _fail(
+                "record_corrupt",
+                ".restore-origin.json 字节与已发布事实不符",
+                **cur_ctx,
+            )
+
+        # 幂等重入：若批次已处于 released，核验 review_sha256 一致后直接返回已提交结果。
+        if tail.kind == "released":
+            rel_done: ReleasedV1 = tail.payload
+            if rel_done.review_sha256 != expect_review_sha256:
+                raise _fail(
+                    "binding_mismatch",
+                    f"批次 {resolved_bid} 已解除隔离，传入 --expect-review 与绑定摘要不符",
+                    **cur_ctx,
+                )
+            return _make_release_result(resolved_bid, tail, rel_done)
+
+        # ---------------- R0b + R1: published_hold -> release_intent ----------------
+        if "release_intent" not in history:
+            ctx_ph = _rctx("published_hold")
+            _verify_material_tree_matches_binding(
+                final_root,
+                sealed.binding,
+                allow_token=True,
+                require_origin_bytes=expected_origin_bytes,
+                batch_ctx=ctx_ph,
+            )
+            rev = _compute_review_locked(
+                resolved_bid,
+                reserved,
+                sealed,
+                expected_origin_bytes,
+                later_backup=None,
+                normalized_scopes=(),
+                seen_scopes=set(),
+            )
+            if not rev.review_complete:
+                raise _fail(
+                    "incompatible",
+                    "只读复核未完整通过，拒绝解除隔离："
+                    + ("；".join(rev.unverifiable) or "存在失败检查项"),
+                    **ctx_ph,
+                )
+            if rev.review_sha256 != expect_review_sha256:
+                raise _fail(
+                    "binding_mismatch",
+                    f"只读复核摘要不匹配：当前现场为 {rev.review_sha256}，"
+                    f"传入 --expect-review 为 {expect_review_sha256}",
+                    **ctx_ph,
+                )
+
+            pre_uv, pre_seq_head, reconcile_plan = _plan_release_reconciliation(
+                final_root,
+                sealed.binding,
+                batch_ctx=ctx_ph,
+            )
+            reconcile_sha = domain_digest("reconcile", reconcile_plan)
+            est_reconcile_bytes = (
+                4096
+                + 512
+                * (
+                    len(reconcile_plan.fenced_run_ids)
+                    + len(reconcile_plan.expired_approval_ids)
+                    + len(reconcile_plan.unresolved_intents)
+                    + len(reconcile_plan.cancelled_job_ids)
+                    + len(reconcile_plan.blocked_workspaces)
+                    + len(reconcile_plan.blocked_objects)
+                )
+            )
+            _probe_capacity(
+                final_root,
+                est_reconcile_bytes,
+                metadata_only=False,
+                codec=codec,
+                batch_ctx=ctx_ph,
+            )
+
+            rel_intent_payload = ReleaseIntentV1(
+                published_hold_sha256=domain_digest("event", pub_ev),
+                binding_sha256=pub_payload.binding_sha256,
+                review_sha256=rev.review_sha256,
+                acknowledge_unproven_later_history=True,
+                final_root=pub_payload.final_root,
+                final_database=pub_payload.final_database,
+                stable_parent=owned.parent,
+                origin_sha256=pub_payload.origin_sha256,
+                pre_release_db_user_version=pre_uv,
+                pre_release_event_seq_head=pre_seq_head,
+                reconcile_plan=reconcile_plan,
+                reconcile_plan_sha256=reconcile_sha,
+            )
+            failpoint("FP-RELEASE-INTENT-BEFORE", path=final_root)
+            obs, rel_intent_ev = _append_registry_cas(
+                reg,
+                obs,
+                lambda cur: RestoreEventV2(
+                    2,
+                    cur.meta.registry_id,
+                    cur.next_sequence,
+                    resolved_bid,
+                    cur.head_sha256,
+                    "release_intent",
+                    rel_intent_payload,
+                ),
+                op_access,
+                codec=codec,
+                batch_ctx=ctx_ph,
+            )
+            history["release_intent"] = rel_intent_ev
+            failpoint("FP-RELEASE-INTENT", path=final_root)
+
+        # ---------------- R2 + R3: release_intent -> reconcile -> released ----------------
+        rel_intent_ev = history["release_intent"]
+        rel_intent: ReleaseIntentV1 = rel_intent_ev.payload
+        ctx_ri = _rctx("release_intent", rel_intent.review_sha256)
+        if rel_intent.review_sha256 != expect_review_sha256:
+            raise _fail(
+                "binding_mismatch",
+                f"release_intent 续做传入的 --expect-review "
+                f"与已提交意图 ({rel_intent.review_sha256}) 不符",
+                **ctx_ri,
+            )
+
+        _execute_release_reconciliation(
+            final_root,
+            d_handle,
+            sealed,
+            rel_intent,
+            batch_id=resolved_bid,
+            batch_ctx=ctx_ri,
+        )
+
+        # R3 终态重核（.restore-origin.json 逐字节不变，S/D/P 实体不变）
+        p_handle.verify_path(parent_path)
+        s_handle.verify_path(final_root)
+        d_handle.verify_path(final_db)
+        if origin_path.read_bytes() != expected_origin_bytes:
+            raise _fail("record_corrupt", "R3 核验发现 .restore-origin.json 被改动", **ctx_ri)
+
+        ro_conn = _open_static_readonly_sqlite(final_db, batch_ctx=ctx_ri)
+        try:
+            post_uv = int(ro_conn.execute("PRAGMA user_version").fetchone()[0])
+            post_seq_head = int(
+                ro_conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
+            )
+        finally:
+            ro_conn.close()
+        if post_uv != rel_intent.pre_release_db_user_version:
+            raise _fail("record_corrupt", "对账收口后主库 user_version 发生意外变化", **ctx_ri)
+
+        post_db_bytes = DatabaseBytesV1(final_db.stat().st_size, sha256_file(final_db))
+        rplan = rel_intent.reconcile_plan
+        counts = ReconciledCountsV1(
+            fenced_runs=len(rplan.fenced_run_ids),
+            expired_approvals=len(rplan.expired_approval_ids),
+            cleared_leases=len(rplan.cleared_lease_keys),
+            resolved_none_applied_intents=sum(
+                1 for d in rplan.unresolved_intents if d.disposition == "none_applied"
+            ),
+            preserved_unknown_intents=sum(
+                1 for d in rplan.unresolved_intents if d.disposition == "unknown"
+            ),
+            cancelled_jobs=len(rplan.cancelled_job_ids),
+        )
+        released_payload = ReleasedV1(
+            release_intent_sha256=domain_digest("event", rel_intent_ev),
+            binding_sha256=rel_intent.binding_sha256,
+            review_sha256=rel_intent.review_sha256,
+            reconcile_plan_sha256=rel_intent.reconcile_plan_sha256,
+            final_root=rel_intent.final_root,
+            final_database=rel_intent.final_database,
+            origin_sha256=rel_intent.origin_sha256,
+            post_release_database_bytes=post_db_bytes,
+            post_release_db_user_version=post_uv,
+            post_release_event_seq_head=post_seq_head,
+            reconciled_counts=counts,
+            migration_required=(post_uv == 1),
+        )
+        failpoint("FP-RELEASED-BEFORE", path=final_root)
+        obs, released_ev = _append_registry_cas(
+            reg,
+            obs,
+            lambda cur: RestoreEventV2(
+                2,
+                cur.meta.registry_id,
+                cur.next_sequence,
+                resolved_bid,
+                cur.head_sha256,
+                "released",
+                released_payload,
+            ),
+            op_access,
+            codec=codec,
+            batch_ctx=ctx_ri,
+        )
+        failpoint("FP-RELEASED", path=final_root)
+        return _make_release_result(resolved_bid, released_ev, released_payload)
+    finally:
+        if d_handle is not None:
+            d_handle.close()
+        if s_handle is not None:
+            s_handle.close()
+        if p_handle is not None:
+            p_handle.close()
+        op_access.close()
+
+
 __all__ = [
     "ORIGIN_LAYOUT",
     "TOKEN_LAYOUT",
@@ -4152,6 +5619,7 @@ __all__ = [
     "abort",
     "apply",
     "plan",
+    "release",
     "resume",
     "review",
 ]
