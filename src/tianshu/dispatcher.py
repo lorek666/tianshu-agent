@@ -58,6 +58,7 @@ from .events import EventLog, canonical_bytes, sha256_hex
 from .exec_backends import ExecBackend
 from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
+    ISOLATION_NONE,
     PolicyDenied,
     PolicyUnsupported,
     check_capabilities,
@@ -66,7 +67,11 @@ from .execpolicy import (
 )
 from .fsutil import atomic_write_bytes
 from .guard import ensure_not_blocked, ensure_object_not_blocked
-from .isolation import isolation_view, require_isolation_requirements
+from .isolation import (
+    isolation_view,
+    probe_backend_cached,
+    require_isolation_requirements,
+)
 from .jobs import JobClaim, JobLost, JobStore
 from .leases import (
     GUARD_TIMEOUT_MS,
@@ -2494,6 +2499,17 @@ class Dispatcher:
                 workspace=probe_workspace,
                 data_root=self._data_root,
             )
+            if (
+                report is None
+                and not tuple(policy.isolation_requires)
+                and self._exec_backend.capabilities.isolation != ISOLATION_NONE
+                and self._data_root is not None
+            ):
+                report = probe_backend_cached(
+                    self._exec_backend,
+                    workspace=probe_workspace,
+                    data_root=self._data_root,
+                )
         except PolicyDenied as exc:
             raise DispatchDenied(
                 f"exec 策略拒绝：{exc}", "c4.exec_policy_denied"

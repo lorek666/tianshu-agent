@@ -72,9 +72,11 @@
 - **已实现的功能面**（PRD §7 编号 → 落地模块，模块说明取自代码）：
   - **F1 执行原语** → `exec.py`（argv 模式，非 shell；超时/截断/进程组）
   - **F2 执行策略与沙箱接缝** → `execpolicy.py`（声明式、默认全拒、deny 优先）、
-    `exec_backends.py`（注册表；未实现后端一律 `unsupported`，绝不回落 local）、
-    `exec.py`（本地后端与进程树）、`isolation.py`（四边界实测探针 + 门 +
-    `isolation_view`）。「受信任执行」在**审批前**可见（`ApprovalView.isolation`），
+    `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|landlock|auto` 与 `preferred_exec_backend()`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
+    `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱，`macos-arm64` 四边界实测全 `enforced`）、
+    `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
+    `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v2"` 四边界实测探针 + 门 +
+    `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`），
     执行结果/事件带 `output.isolation`；口径见
     [F2-sandbox-policy.md](F2-sandbox-policy.md)
   - **F5 上下文编译** → `context.py`（纯函数、按字节预算、丢弃只记账不摘要）

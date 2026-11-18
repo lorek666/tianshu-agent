@@ -62,7 +62,7 @@ from .execpolicy import (
 )
 
 #: 探测逻辑版本。缓存键与报告都带它：探针语义变了，旧证据不能继续给新代码用。
-PROBE_VERSION = "v1"
+PROBE_VERSION = "v2"
 
 #: 非杀树探针的子进程超时上限。真实子进程出问题时宁可 unknown，不挂住调用方。
 PROBE_TIMEOUT_MS = 5_000
@@ -791,69 +791,81 @@ time.sleep(120)
 def _probe_process_tree(
     backend: Any, workspace: Path, probe_dir: Path, timeout_ms: int
 ) -> IsolationFinding:
-    pid_file = probe_dir / "grandchild.pid"
-    kill_window = min(PROBE_KILL_WINDOW_MS, timeout_ms)
-    result, _parsed, problem = _run_child(
-        backend,
-        _PROBE_PROCESS_TREE,
-        [pid_file],
-        workspace=workspace,
-        timeout_ms=kill_window,
-        env=_base_env(),
-        env_allowlist=("PATH",),
+    # 真实沙箱会阻断工作区外的 `probe_dir`（位于 `data_root` 下）；因此孙进程
+    # pid 文件必须落在被授权的 `workspace` 内独立临时子目录，并在收尾后清理。
+    _ = probe_dir
+    tree_dir = Path(
+        tempfile.mkdtemp(prefix=".tianshu-tree-probe-", dir=str(workspace))
     )
-    if result is None:
-        return IsolationFinding(
-            ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN, problem
+    pid: int | None = None
+    try:
+        pid_file = tree_dir / "grandchild.pid"
+        kill_window = min(PROBE_KILL_WINDOW_MS, timeout_ms)
+        result, _parsed, problem = _run_child(
+            backend,
+            _PROBE_PROCESS_TREE,
+            [pid_file],
+            workspace=workspace,
+            timeout_ms=kill_window,
+            env=_base_env(),
+            env_allowlist=("PATH",),
         )
-    pid = _read_pid(pid_file)
-    detail = (
-        f"超时={result.timed_out} descendants_may_survive="
-        f"{result.descendants_may_survive} 耗时={result.duration_ms}ms"
-        f" 孙进程pid={pid}"
-    )
-    if not result.timed_out:
+        if result is None:
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN, problem
+            )
+        pid = _read_pid(pid_file)
+        detail = (
+            f"超时={result.timed_out} descendants_may_survive="
+            f"{result.descendants_may_survive} 耗时={result.duration_ms}ms"
+            f" 孙进程pid={pid}"
+        )
+        if not result.timed_out:
+            if pid is not None:
+                _terminate_pid(pid)
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE,
+                BOUNDARY_UNKNOWN,
+                f"探测窗口内子进程没有超时，未进入杀树路径（{detail}）；"
+                "不能据此声明能杀树",
+            )
+        if pid is None:
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE,
+                BOUNDARY_UNKNOWN,
+                f"子进程没有留下孙进程 pid，无法确认树是否终止（{detail}）",
+            )
+        alive = _wait_pid_gone(pid, PROBE_GRACE_MS)
+        if alive is None:
+            _terminate_pid(pid)
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE,
+                BOUNDARY_UNKNOWN,
+                f"无法判定孙进程 {pid} 是否存活（{detail}）",
+            )
+        if alive:
+            _terminate_pid(pid)
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE,
+                BOUNDARY_NOT_ENFORCED,
+                f"超时杀树后孙进程 {pid} 仍存活（{detail}）",
+            )
+        if result.descendants_may_survive:
+            # 看到了这一次死亡，但后端自己说"无法确认树已终止"（Windows 无 Job Object）：
+            # 一次观察不能升级成能力声明。
+            return IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE,
+                BOUNDARY_UNKNOWN,
+                f"孙进程 {pid} 本次已消失，但后端无法确认杀树"
+                f"（descendants_may_survive=True，{detail}）",
+            )
         return IsolationFinding(
             ISOLATION_BOUNDARY_PROCESS_TREE,
-            BOUNDARY_UNKNOWN,
-            f"探测窗口内子进程没有超时，未进入杀树路径（{detail}）；"
-            "不能据此声明能杀树",
+            BOUNDARY_ENFORCED,
+            f"超时后按进程组杀树，孙进程 {pid} 在观察窗口内消失（{detail}）",
         )
-    if pid is None:
-        return IsolationFinding(
-            ISOLATION_BOUNDARY_PROCESS_TREE,
-            BOUNDARY_UNKNOWN,
-            f"子进程没有留下孙进程 pid，无法确认树是否终止（{detail}）",
-        )
-    alive = _wait_pid_gone(pid, PROBE_GRACE_MS)
-    if alive is None:
-        _terminate_pid(pid)
-        return IsolationFinding(
-            ISOLATION_BOUNDARY_PROCESS_TREE,
-            BOUNDARY_UNKNOWN,
-            f"无法判定孙进程 {pid} 是否存活（{detail}）",
-        )
-    if alive:
-        _terminate_pid(pid)
-        return IsolationFinding(
-            ISOLATION_BOUNDARY_PROCESS_TREE,
-            BOUNDARY_NOT_ENFORCED,
-            f"超时杀树后孙进程 {pid} 仍存活（{detail}）",
-        )
-    if result.descendants_may_survive:
-        # 看到了这一次死亡，但后端自己说"无法确认树已终止"（Windows 无 Job Object）：
-        # 一次观察不能升级成能力声明。
-        return IsolationFinding(
-            ISOLATION_BOUNDARY_PROCESS_TREE,
-            BOUNDARY_UNKNOWN,
-            f"孙进程 {pid} 本次已消失，但后端无法确认杀树"
-            f"（descendants_may_survive=True，{detail}）",
-        )
-    return IsolationFinding(
-        ISOLATION_BOUNDARY_PROCESS_TREE,
-        BOUNDARY_ENFORCED,
-        f"超时后按进程组杀树，孙进程 {pid} 在观察窗口内消失（{detail}）",
-    )
+    finally:
+        shutil.rmtree(tree_dir, ignore_errors=True)
 
 
 def _read_pid(pid_file: Path) -> int | None:
