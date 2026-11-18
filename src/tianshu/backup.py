@@ -1660,62 +1660,121 @@ class ReferenceIndex:
         }
 
 
+def _has_sqlite_companions(db: Path) -> bool:
+    for suffix in ("-wal", "-shm", "-journal"):
+        companion = db.with_name(db.name + suffix)
+        if companion.exists() or companion.is_symlink():
+            return True
+    return False
+
+
+def _check_material_layout(data_root: Path, unknown: list[str]) -> None:
+    """检查材料目录链不含符号链接/junction/非目录对象，子项不含符号链接。"""
+    from .platform_identity import NativeEntityError, open_entity
+
+    for rel_dir in (
+        "artifacts",
+        "artifacts/blobs",
+        "artifacts/snapshots",
+        "artifacts/undo",
+        "blobs",
+        "memory_blobs",
+    ):
+        cursor = data_root
+        bad = False
+        for part in rel_dir.split("/"):
+            cursor = cursor / part
+            if cursor.is_symlink() or cursor.is_junction():
+                unknown.append(f"不允许符号链接或 junction 材料目录：{rel_dir}")
+                bad = True
+                break
+        if bad or not cursor.exists():
+            continue
+        try:
+            handle = open_entity(cursor, "directory")
+            handle.close()
+        except NativeEntityError as exc:
+            unknown.append(f"材料目录无法通过实体核验：{rel_dir}（{exc}）")
+            continue
+        if rel_dir in ("artifacts/snapshots", "artifacts/undo"):
+            for entry in sorted(cursor.iterdir()):
+                rel = _rel_posix(entry, data_root)
+                if entry.is_symlink() or entry.is_junction():
+                    unknown.append(f"不允许符号链接材料：{rel}")
+                    continue
+                try:
+                    fh = open_entity(entry, "file")
+                    try:
+                        if fh.link_count != 1:
+                            unknown.append(
+                                f"审计材料硬链接数不为 1：{rel}（link_count={fh.link_count}）"
+                            )
+                    finally:
+                        fh.close()
+                except NativeEntityError as exc:
+                    unknown.append(f"审计材料不是普通单链接文件：{rel}（{exc}）")
+
+
 def collect_references(data_root: Path) -> ReferenceIndex:
     """算出"哪些 blob 被引用、哪些是孤儿、哪些判定不了"。
 
-    判定不了（清单/日志/事件库读不出来，或登记的内容/未擦除记忆正文无法通过
-    哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
+    判定不了（清单/日志/事件库读不出来，目录含符号链接/非普通文件，或已登记材料
+    无法通过哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
     留一份多余 blob 严重得多；本函数不执行删除。
     """
+    from .platform_identity import NativeEntityError, open_entity
+
     data_root = Path(data_root).resolve()
     db = data_root / "events.db"
     if not db.is_file():
         raise ReferenceUnknown(f"数据根里没有事件库，无法判定引用：{data_root}")
     index = ReferenceIndex()
+    _check_material_layout(data_root, index.unknown)
+    if index.unknown:
+        raise ReferenceUnknown("；".join(index.unknown))
+    quiescent = not _has_sqlite_companions(db)
     try:
         db = _checked_file(data_root, "events.db")
         source_aliases: list[str] = []
         payload_refs, payload_problems = _db_references(
-            db, data_root, discover_aliases=source_aliases
+            db, data_root, saved=quiescent, discover_aliases=source_aliases
         )
         receipt_refs, receipt_problems = _receipt_references(
-            data_root, source_root=data_root, discover_aliases=source_aliases,
+            data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
         )
         snapshot_refs, snapshot_problems = _snapshot_references(
             data_root, source_root=data_root, discover_aliases=source_aliases
         )
         undo_refs, undo_problems = _undo_references(data_root)
-        content_refs, memory_refs, projection_problems = _projection_references(db)
+        content_refs, memory_refs, projection_problems = _projection_references(
+            db, saved=quiescent
+        )
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
     for problem in (payload_problems + receipt_problems + snapshot_problems + undo_problems
                     + projection_problems):
         index.unknown.append(problem)
-    for ref in payload_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"事件 seq={ref['seq']}"
-        )
     for ref in snapshot_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"快照清单 {ref['manifest']}"
-        )
         if ref["manifest"] not in index.snapshot_manifests:
             index.snapshot_manifests.append(ref["manifest"])
-    for ref in undo_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"撤销日志 {ref['journal']}"
-        )
-    for ref in receipt_refs + content_refs + memory_refs:
+    all_refs = (
+        payload_refs + snapshot_refs + undo_refs
+        + receipt_refs + content_refs + memory_refs
+    )
+    for ref in all_refs:
         rel = ref["path"]
         index.protected_blobs.setdefault(rel, []).append(_ref_owner(ref))
         try:
-            with _checked_file(data_root, rel).open("rb") as fh:
+            checked = _checked_file(data_root, rel)
+            handle = open_entity(checked, "file")
+            handle.close()
+            with checked.open("rb") as fh:
                 digest, size = _sha256_stream(fh)
             if digest != ref["sha256"]:
                 raise ValueError("内容哈希不符")
             if "size" in ref and size != ref["size"]:
                 raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, NativeEntityError) as exc:
             index.unknown.append(f"引用材料无法核验：{rel}（{exc}）")
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
@@ -1724,17 +1783,33 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         for journal in sorted(journals.glob("*.json")):
             rel = _rel_posix(journal, data_root)
             try:
-                raw = json.loads(journal.read_bytes().decode("utf-8"))
+                raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
                 status = raw.get("status") if isinstance(raw, dict) else None
                 index.undo_journals[rel] = str(status)
             except (OSError, ValueError, UnicodeDecodeError) as exc:
                 index.unknown.append(f"撤销日志读不出来：{rel}（{exc}）")
-    blobs_dir = data_root / "artifacts" / "blobs"
-    if blobs_dir.is_dir():
+    for blob_rel_dir in ("artifacts/blobs", "blobs"):
+        blobs_dir = data_root / blob_rel_dir
+        if not blobs_dir.is_dir():
+            continue
         for blob in sorted(blobs_dir.iterdir()):
-            if not blob.is_file():
-                continue
             rel = _rel_posix(blob, data_root)
+            if blob.is_symlink() or blob.is_junction():
+                index.unknown.append(f"不允许符号链接 blob 材料：{rel}")
+                continue
+            try:
+                handle = open_entity(blob, "file")
+                try:
+                    if handle.link_count != 1:
+                        index.unknown.append(
+                            f"blob 硬链接数不为 1：{rel}（link_count={handle.link_count}）"
+                        )
+                        continue
+                finally:
+                    handle.close()
+            except NativeEntityError as exc:
+                index.unknown.append(f"blob 材料不是普通单链接文件：{rel}（{exc}）")
+                continue
             if rel not in index.protected_blobs:
                 index.orphan_blobs.append(rel)
     if index.unknown:
@@ -1821,16 +1896,21 @@ def usage_report(data_root: Path) -> UsageReport:
 def cleanup_plan(data_root: Path) -> dict[str, Any]:
     """给出"可人工清理"的候选清单——不删除任何东西，也不自动 GC。
 
-    候选范围仅 artifacts/blobs；只有未被清单/事件/撤销/内容对象/未擦除记忆
-    引用的 blob 才是候选。引用或投影材料无法核验时 `collect_references` 抛
-    `ReferenceUnknown`，本函数跟着拒绝，不扩大为自动 GC。
+    候选范围仅 artifacts/blobs 与根 blobs；只有未被清单/事件/凭据/撤销/内容对象/
+    未擦除记忆引用的普通单链接 blob 才是候选。引用或投影材料无法核验时
+    `collect_references` 抛 `ReferenceUnknown`，本函数跟着拒绝。
     """
     index = collect_references(data_root)
     return {
         "data_root": str(Path(data_root).resolve()),
         "dry_run": True,
         "candidates": [
-            {"path": rel, "category": "artifact_blob"}
+            {
+                "path": rel,
+                "category": (
+                    "artifact_blob" if rel.startswith("artifacts/blobs/") else "blob"
+                ),
+            }
             for rel in index.orphan_blobs
         ],
         "protected_count": len(index.protected_blobs),
@@ -1840,7 +1920,7 @@ def cleanup_plan(data_root: Path) -> dict[str, Any]:
         ],
         "retention": RETENTION_POLICY,
         "notes": [
-            "本函数只出候选清单，不删除任何文件；自动 GC 不在本轮范围。",
+            "本函数只出候选清单，不删除任何文件；离线受控清理请用 tianshu data gc。",
             "清单/事件/撤销/内容对象/未擦除记忆引用的材料永远不进候选。",
         ],
     }

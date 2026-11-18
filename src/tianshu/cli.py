@@ -2162,7 +2162,7 @@ def _apply_desktop_db_bridge(
     )
     has_db = hasattr(args, "db")
     current_db = getattr(args, "db", None)
-    if use_desktop and has_db:
+    if use_desktop and (has_db or getattr(args, "cmd", None) == "data"):
         if explicit_db or explicit_data_root or (
             current_db is not None and current_db != DEFAULT_DB
         ):
@@ -2170,7 +2170,8 @@ def _apply_desktop_db_bridge(
                 "--desktop（或 TIANSHU_USE_DESKTOP_DB=1）不能与显式 --db 或 --data-root 同时指定"
             )
         desktop_root = ipc.default_data_root()
-        args.db = desktop_root / "events.db"
+        if has_db:
+            args.db = desktop_root / "events.db"
         if hasattr(args, "data_root"):
             args.data_root = desktop_root
         return

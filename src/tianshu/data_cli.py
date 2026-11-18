@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -33,7 +34,7 @@ from .tasks import NON_TERMINAL_STATES, RUN_STATES
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
-        "data", help="数据维护：离线备份 / 验证 / 迁移 / 只读恢复预演 / 只读保留期审计",
+        "data", help="数据维护：离线备份 / 验证 / 迁移 / 只读恢复预演 / 保留期审计 / 离线安全 GC",
     )
     commands = parser.add_subparsers(dest="data_action", required=True)
     backup = commands.add_parser("backup", help="所有天枢连接关闭后，生成完整备份")
@@ -57,6 +58,42 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     audit.add_argument("--data-root", type=Path, required=True)
     audit.add_argument("--json", action="store_true")
+
+    gc = commands.add_parser(
+        "gc",
+        help="保守离线安全 GC：默认只读预演退 3；"
+        "显式 --approve 持独占锁清理孤儿 blob 与超期终态作业/已结清预占",
+    )
+    gc.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="目标数据根目录（或传 --desktop 指向桌面端默认数据根）",
+    )
+    gc.add_argument(
+        "--older-than-days",
+        type=int,
+        default=90,
+        metavar="N",
+        help="保留期天数（正整数 >= 1，默认 90）",
+    )
+    gc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只读预演候选清单与预计释放量，零文件修改、零 SQL 写语句（默认行为）",
+    )
+    gc.add_argument(
+        "--approve",
+        action="store_true",
+        help="显式批准在离线独占维护锁下执行安全清理（与 --dry-run 互斥）",
+    )
+    gc.add_argument(
+        "--desktop",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="使用桌面端默认数据目录",
+    )
+    gc.add_argument("--json", action="store_true")
 
     diag = commands.add_parser(
         "export-diagnostics",
@@ -746,6 +783,47 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
                   + "（受保护 " + str(cp["protected_count"]) + "）")
         if report["unknown_tables"]:
             print("未识别表：" + ", ".join(report["unknown_tables"]))
+    elif operation == "gc":
+        if not report["ok"]:
+            msg = redact(str(report.get("error") or "离线安全 GC 拒绝"))
+            print(f"错误：{msg}", file=sys.stderr)
+            return
+        cand = report["candidates"]
+        if report["dry_run"]:
+            days = report["older_than_days"]
+            print(f"离线安全 GC 预演（保留期 > {days} 天，零删除）：{report['data_root']}")
+            print(
+                f"  孤儿 blob 候选：{cand['orphan_blobs_count']} 个"
+                f"（{cand['orphan_blobs_bytes']} 字节）"
+            )
+            print(
+                f"  超期空终态快照候选：{cand['empty_snapshots_count']} 个"
+                f"（{cand['empty_snapshots_bytes']} 字节）"
+            )
+            print(f"  超期终态 jobs 行候选：{cand['jobs_count']} 行")
+            print(
+                "  超期 settled+known 预算预占候选："
+                f"{cand['budget_reservations_count']} 行"
+            )
+            print(f"  预计释放文件字节：{cand['reclaimable_file_bytes']}")
+        else:
+            deleted = report["deleted"]
+            days = report["older_than_days"]
+            print(f"离线安全 GC 已完成（保留期 > {days} 天）：{report['data_root']}")
+            print(
+                f"  已清理孤儿 blob：{deleted['orphan_blobs_count']} 个"
+                f"（{deleted['orphan_blobs_bytes']} 字节）"
+            )
+            print(
+                f"  已清理超期空终态快照：{deleted['empty_snapshots_count']} 个"
+                f"（{deleted['empty_snapshots_bytes']} 字节）"
+            )
+            print(f"  已清理超期终态 jobs 行：{deleted['jobs_count']} 行")
+            print(
+                "  已清理超期 settled+known 预算预占："
+                f"{deleted['budget_reservations_count']} 行"
+            )
+            print(f"  已释放文件字节：{deleted['reclaimed_file_bytes']}")
     elif operation == "export-diagnostics":
         manifest = report["manifest"]
         if report.get("preview_only"):
@@ -813,6 +891,15 @@ def run(args: argparse.Namespace) -> int:
     elif args.data_action == "retention-audit":
         report = _retention_audit(args.data_root)
         code = 0
+    elif args.data_action == "gc":
+        from .data_gc import run_data_gc
+
+        report, code = run_data_gc(
+            args.data_root,
+            older_than_days=args.older_than_days,
+            dry_run=bool(args.dry_run),
+            approve=bool(args.approve),
+        )
     elif args.data_action == "export-diagnostics":
         from .diagnostics_export import export_diagnostics, preview_diagnostics
 
