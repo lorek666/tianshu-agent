@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { StreamingPreview } from "../api/types";
 import type { TimelineEntry } from "../lib/humanize";
 import { actorLabel, actionLabel, eventDetail } from "../lib/humanize";
 import { formatClock } from "../lib/format";
@@ -8,6 +9,7 @@ export interface RunTimelineProps {
   entries: TimelineEntry[];
   hasMore: boolean;
   live: boolean;
+  streamingPreview?: StreamingPreview | null;
 }
 
 const PAYLOAD_LIMIT = 6_000;
@@ -23,7 +25,7 @@ function prettyPayload(payload: Record<string, unknown>): string {
   return `${text.slice(0, PAYLOAD_LIMIT)}\n…（payload 过长，已截断）`;
 }
 
-export function RunTimeline({ entries, hasMore, live }: RunTimelineProps) {
+export function RunTimeline({ entries, hasMore, live, streamingPreview = null }: RunTimelineProps) {
   const listRef = useRef<HTMLOListElement>(null);
   const stickToBottom = useRef(true);
 
@@ -32,7 +34,7 @@ export function RunTimeline({ entries, hasMore, live }: RunTimelineProps) {
     if (list !== null && stickToBottom.current) {
       list.scrollTop = list.scrollHeight;
     }
-  }, [entries.length]);
+  }, [entries.length, streamingPreview?.text, streamingPreview?.toolNames.length]);
 
   const handleScroll = (): void => {
     const list = listRef.current;
@@ -52,7 +54,7 @@ export function RunTimeline({ entries, hasMore, live }: RunTimelineProps) {
       {hasMore ? (
         <div className="timeline-note">只保留了最近的事件；更早的事件未加载，不影响当前状态。</div>
       ) : null}
-      {entries.length === 0 ? (
+      {entries.length === 0 && streamingPreview === null ? (
         <EmptyState title="还没有事件" hint="运行推进时，模型调用、文件操作和审批会逐条出现在这里。" />
       ) : (
         <ol className="timeline" ref={listRef} onScroll={handleScroll}>
@@ -94,6 +96,27 @@ export function RunTimeline({ entries, hasMore, live }: RunTimelineProps) {
               </li>
             );
           })}
+          {streamingPreview !== null ? (
+            <li className="timeline-item tone-info streaming-item" role="status" aria-live="polite">
+              <span className="timeline-dot" aria-hidden="true" />
+              <div className="timeline-content">
+                <div className="timeline-line">
+                  <span className="timeline-time num">第 {streamingPreview.turnIndex} 轮</span>
+                  <span className="timeline-text">
+                    模型正在实时输出
+                    {streamingPreview.toolNames.length > 0
+                      ? `（准备调用工具：${streamingPreview.toolNames.join("、")}）`
+                      : "…"}
+                  </span>
+                </div>
+                {streamingPreview.text ? (
+                  <pre className="payload-json" style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>
+                    {streamingPreview.text}
+                  </pre>
+                ) : null}
+              </div>
+            </li>
+          ) : null}
         </ol>
       )}
     </section>

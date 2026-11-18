@@ -1987,6 +1987,17 @@
           },
           "budget_enforced": {
             "type": "boolean"
+          },
+          "cost_total_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cost_unknown_calls": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "additionalProperties": false,
@@ -2000,7 +2011,9 @@
           "tokens_unknown_calls",
           "turns",
           "unbilled_model_intents",
-          "budget_enforced"
+          "budget_enforced",
+          "cost_total_micros",
+          "cost_unknown_calls"
         ]
       },
       "run.fenced": {
@@ -4437,6 +4450,17 @@
               "integer",
               "boolean"
             ]
+          },
+          "cost_total_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cost_unknown_calls": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "additionalProperties": false,

@@ -692,6 +692,8 @@ class RestoreRegistry:
                 if duplicate["event_bytes"] != raw:
                     raise RestoreRegistryCorrupt("同batch/kind已经绑定不同规范字节")
                 connection.execute("COMMIT")
+                # 重复追加是幂等成功：库内状态与 expected 完全一致。
+                result = expected
             else:
                 validate_event_chain((*expected.events, event))
                 connection.execute(
@@ -722,6 +724,27 @@ class RestoreRegistry:
                 if changed != 1:
                     raise RestoreRegistryBusy("registry head CAS失败")
                 connection.execute("COMMIT")
+                # 提交后的状态由本事务决定：命名空间独占锁尚未释放，没有
+                # 其他写入能插进来。**不要**在提交后再 observe()——那要再抢
+                # 一次共享锁，会被并发写入方挡住，把已提交的成功误报成
+                # Busy（issue #171：两个进程同时 append → 双方都 busy，
+                # 但事件其实已经落盘）。取舍：提交后不再整库复检，既有行若
+                # 被非协作写入方改成非规范字节，本调用不再当场发现，下一次
+                # observe() 仍会稳定报 Corrupt。
+                result = PresentRegistryObservation(
+                    True,
+                    self.home,
+                    self.authority_directory,
+                    self.path,
+                    expected.home_identity,
+                    expected.authority_identity,
+                    expected.database_identity,
+                    expected.meta,
+                    expected.meta_bytes,
+                    (*expected.events, event),
+                    event.sequence,
+                    event_sha,
+                )
         except MaintenanceBusy as exc:
             raise RestoreRegistryBusy("registry维护锁正在使用中") from exc
         except NativeEntityError as exc:
@@ -742,7 +765,7 @@ class RestoreRegistry:
                 entity.close()
             if namespace is not None:
                 namespace.close()
-        return self.observe()
+        return result
 
     def _revalidate_in_transaction(
         self,
@@ -760,6 +783,11 @@ class RestoreRegistry:
             or row["meta_sha256"] != _sha256(expected.meta_bytes)
         ):
             raise RestoreRegistryBusy("registry meta在观察后变化")
+        # 返回观察复用 expected.meta：这里补一条「字节→值」的一致性核对，
+        # 使手工构造的 observation 也不能把与自身 meta_bytes 不符的 meta
+        # 带进成功返回（合法路径下二者恒等，此检查不改变正常行为）。
+        if RegistryMetaV1.from_bytes(expected.meta_bytes) != expected.meta:
+            raise RestoreRegistryBusy("registry meta与观察字节不符")
         head = connection.execute("SELECT sequence,event_sha256 FROM registry_head").fetchone()
         if (
             head is None

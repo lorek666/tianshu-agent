@@ -27,10 +27,12 @@ adapter 只能翻译，**不得反向改写内部形状**——一改，replay �
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -133,6 +135,34 @@ class ModelError(TianshuError):
         # 否则事后只能看到一句人话，判断不了"该重试还是该换 key"。
         status = "" if self.status_code is None else f" status={self.status_code}"
         return f"ModelError(kind={self.kind}{status}, retryable={self.retryable}): {self}"
+
+
+@dataclass(frozen=True)
+class ModelStreamDelta:
+    """C1 流式增量契约对象（W4，`schemas/c1/model.json` `$defs.modelStreamDelta`）。
+
+    流式增量只用于控制面/在线 UI 的瞬态预览，不逐片写入 SQLite `events` 表；
+    唯一持久化事实源仍是流正常收束后的 `ModelResponse` / `model.result`。
+    """
+
+    kind: str
+    text: str = ""
+    tool_name: str = ""
+    schema_version: str = "1.0"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0":
+            raise ValueError(f"未知 ModelStreamDelta.schema_version：{self.schema_version!r}")
+        if self.kind not in ("text", "tool_call_start"):
+            raise ValueError(f"未知 ModelStreamDelta.kind：{self.kind!r}")
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "schema_version": self.schema_version,
+            "kind": self.kind,
+            "text": self.text,
+            "tool_name": self.tool_name,
+        }
 
 
 @dataclass
@@ -336,11 +366,21 @@ class UrllibTransport:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError):
                 raise ModelError(f"请求超时：{reason}", kind="timeout") from exc
+            if isinstance(reason, (OSError, http.client.IncompleteRead)):
+                raise ModelError(f"网络错误：{reason}", kind="transport") from exc
+            if isinstance(reason, http.client.HTTPException):
+                raise ModelError(
+                    f"HTTP 协议异常：{type(reason).__name__}: {reason}", kind="protocol"
+                ) from exc
             raise ModelError(f"网络错误：{reason}", kind="transport") from exc
         except TimeoutError as exc:  # socket.timeout 在 3.10+ 就是 TimeoutError
             raise ModelError(f"请求超时：{exc}", kind="timeout") from exc
-        except OSError as exc:
+        except (OSError, http.client.IncompleteRead) as exc:
             raise ModelError(f"网络错误：{exc}", kind="transport") from exc
+        except http.client.HTTPException as exc:
+            raise ModelError(
+                f"HTTP 协议异常：{type(exc).__name__}: {exc}", kind="protocol"
+            ) from exc
 
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -353,6 +393,89 @@ class UrllibTransport:
                 f"响应顶层不是对象：{type(data).__name__}", kind="protocol"
             )
         return data
+
+    def post_stream(
+        self,
+        url: str,
+        *,
+        body: dict[str, Any],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> Iterator[tuple[str, str]]:
+        """发起 SSE POST 流请求，逐帧产出 `(event_name, data_str)`。"""
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                **headers,
+            },
+            method="POST",
+        )
+        try:
+            opener = urllib.request.build_opener(_SameOriginRedirect())
+            with opener.open(req, timeout=timeout) as resp:
+                yield from _iter_sse_frames(resp)
+        except ModelError:
+            raise
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise ModelError.from_http(exc.code, detail) from exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, TimeoutError):
+                raise ModelError(f"请求超时：{reason}", kind="timeout") from exc
+            if isinstance(reason, (OSError, http.client.IncompleteRead)):
+                raise ModelError(f"SSE 网络错误：{reason}", kind="transport") from exc
+            if isinstance(reason, http.client.HTTPException):
+                raise ModelError(
+                    f"SSE HTTP 协议异常：{type(reason).__name__}: {reason}", kind="protocol"
+                ) from exc
+            raise ModelError(f"网络错误：{reason}", kind="transport") from exc
+        except TimeoutError as exc:
+            raise ModelError(f"请求超时：{exc}", kind="timeout") from exc
+        except (OSError, http.client.IncompleteRead) as exc:
+            raise ModelError(f"SSE 网络错误：{exc}", kind="transport") from exc
+        except http.client.HTTPException as exc:
+            raise ModelError(
+                f"SSE HTTP 协议异常：{type(exc).__name__}: {exc}", kind="protocol"
+            ) from exc
+
+
+def _iter_sse_frames(byte_lines: Any) -> Iterator[tuple[str, str]]:
+    """将字节行迭代器解析为标准 SSE `(event, data)` 帧。"""
+    event_name = "message"
+    data_lines: list[str] = []
+    for raw_line in byte_lines:
+        try:
+            line = (
+                raw_line.decode("utf-8")
+                if isinstance(raw_line, (bytes, bytearray))
+                else str(raw_line)
+            )
+        except UnicodeDecodeError as exc:
+            raise ModelError(f"SSE 流包含非法 UTF-8 字节：{exc}", kind="protocol") from exc
+        line = line.rstrip("\r\n")
+        if line == "":
+            if data_lines:
+                yield (event_name, "\n".join(data_lines))
+            event_name = "message"
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        colon = line.find(":")
+        field_name = line if colon == -1 else line[:colon]
+        value = "" if colon == -1 else line[colon + 1 :]
+        if value.startswith(" "):
+            value = value[1:]
+        if field_name == "event":
+            event_name = value
+        elif field_name == "data":
+            data_lines.append(value)
+    if data_lines:
+        yield (event_name, "\n".join(data_lines))
 
 
 # ---------------------------------------------------------------- 离线实现
@@ -384,7 +507,7 @@ class ScriptedModel:
             model="scripted",
             supports_tool_calling=True,
             supports_parallel_tool_calls=True,
-            supports_streaming=False,
+            supports_streaming=True,
             declared_by="ScriptedModel（脚本替身）",
         )
 
@@ -393,6 +516,22 @@ class ScriptedModel:
         if not self._responses:
             return ModelResponse(finish_reason="end_turn", content="")
         return self._responses.pop(0)
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_delta: Callable[[ModelStreamDelta], None],
+    ) -> ModelResponse:
+        resp = self.complete(messages, tools)
+        for tc in resp.tool_calls:
+            on_delta(ModelStreamDelta(kind="tool_call_start", tool_name=tc.name))
+        if resp.content:
+            mid = max(1, len(resp.content) // 2)
+            for part in (resp.content[:mid], resp.content[mid:]):
+                if part:
+                    on_delta(ModelStreamDelta(kind="text", text=part))
+        return resp
 
 
 class RecordedModel:
@@ -454,8 +593,8 @@ class _HttpModel:
     SUPPORTS_TOOL_CALLING = True
     #: 一轮里返回多个工具调用：两边协议都允许，主循环也会逐个派发。
     SUPPORTS_PARALLEL_TOOL_CALLS = True
-    #: 这两个 adapter 只实现了非流式 `complete()`，流式没人消费。
-    SUPPORTS_STREAMING = False
+    #: W4：两个线上 adapter 均支持 SSE `stream_complete()`（无 `post_stream` 替身报 False）。
+    SUPPORTS_STREAMING = True
     #: `thinking` / 扩展思考：不同 provider、不同模型差异太大，一律不声明。
     SUPPORTS_THINKING: bool | None = None
     #: 上下文窗口：窗口在供应商文档里是 token，没有 tokenizer 不换算成字节。
@@ -466,12 +605,15 @@ class _HttpModel:
 
         声明的是**适配器与模型合起来**的能力：运行时能用的就是两者的交集。
         """
+        can_stream = bool(
+            self.SUPPORTS_STREAMING and hasattr(self._transport, "post_stream")
+        )
         return CapabilityProfile(
             provider=self.ADAPTER or type(self).__name__,
             model=self.model,
             supports_tool_calling=self.SUPPORTS_TOOL_CALLING,
             supports_parallel_tool_calls=self.SUPPORTS_PARALLEL_TOOL_CALLS,
-            supports_streaming=self.SUPPORTS_STREAMING,
+            supports_streaming=can_stream,
             supports_thinking=self.SUPPORTS_THINKING,
             context_window_bytes=self.CONTEXT_WINDOW_BYTES,
             # 输出上界只报**实际会发给 provider 的那个数**：AnthropicAdapter 把
@@ -660,6 +802,148 @@ class OpenAICompatibleModel(_HttpModel):
             usage=normalize_usage(data.get("usage")),
         )
 
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_delta: Callable[[ModelStreamDelta], None],
+    ) -> ModelResponse:
+        if not hasattr(self._transport, "post_stream"):
+            return self.complete(messages, tools)
+        url, body, headers = self._request(messages, tools)
+        body = {**body, "stream": True}
+        content_parts: list[str] = []
+        tool_acc: dict[int, dict[str, str]] = {}
+        notified_tools: set[int] = set()
+        raw_finish: Any = None
+        raw_usage: dict[str, Any] | None = None
+
+        for _ev, data_str in self._transport.post_stream(
+            url, body=body, headers=headers, timeout=self.timeout
+        ):
+            stripped = data_str.strip()
+            if not stripped:
+                continue
+            if stripped == "[DONE]":
+                break
+            try:
+                chunk = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ModelError(f"流式 chunk 不是合法 JSON：{exc}", kind="protocol") from exc
+            if not isinstance(chunk, dict):
+                raise ModelError("流式 chunk 顶层不是对象", kind="protocol")
+            if "error" in chunk and chunk["error"] is not None:
+                raise ModelError(f"流式返回错误：{chunk['error']}", kind="protocol")
+            usage_val = chunk.get("usage")
+            if usage_val is not None:
+                if not isinstance(usage_val, dict):
+                    raise ModelError("流式 usage 不是对象", kind="protocol")
+                raw_usage = usage_val
+            choices = chunk.get("choices")
+            if choices is None:
+                continue
+            if not isinstance(choices, list):
+                raise ModelError("流式 choices 不是数组", kind="protocol")
+            if not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise ModelError("流式 choices 元素不是对象", kind="protocol")
+            delta = choice.get("delta")
+            if delta is not None and not isinstance(delta, dict):
+                raise ModelError("流式 delta 不是对象", kind="protocol")
+            if isinstance(delta, dict):
+                piece = delta.get("content")
+                if piece is not None and not isinstance(piece, str):
+                    raise ModelError("流式 delta.content 不是文本", kind="protocol")
+                if piece:
+                    content_parts.append(piece)
+                    on_delta(ModelStreamDelta(kind="text", text=piece))
+                tcs = delta.get("tool_calls")
+                if tcs is not None and not isinstance(tcs, list):
+                    raise ModelError("流式 delta.tool_calls 不是数组", kind="protocol")
+                if isinstance(tcs, list):
+                    for tc in tcs:
+                        if not isinstance(tc, dict):
+                            raise ModelError("流式 tool_calls 元素不是对象", kind="protocol")
+                        idx = _valid_stream_index(tc.get("index"), where="OpenAI tool_calls")
+                        slot = tool_acc.setdefault(
+                            idx, {"id": "", "type": "", "name": "", "arguments": ""}
+                        )
+                        tc_id = tc.get("id")
+                        if tc_id is not None:
+                            if not isinstance(tc_id, str) or not tc_id:
+                                raise ModelError(
+                                    "流式 tool_calls.id 不是非空字符串", kind="protocol"
+                                )
+                            if slot["id"] and slot["id"] != tc_id:
+                                raise ModelError("流式 tool_calls.id 前后冲突", kind="protocol")
+                            slot["id"] = tc_id
+                        tc_type = tc.get("type")
+                        if tc_type is not None:
+                            if not isinstance(tc_type, str) or not tc_type:
+                                raise ModelError(
+                                    "流式 tool_calls.type 不是非空字符串", kind="protocol"
+                                )
+                            slot["type"] = tc_type
+                        fn = tc.get("function")
+                        if fn is not None and not isinstance(fn, dict):
+                            raise ModelError("流式 tool_calls.function 不是对象", kind="protocol")
+                        if isinstance(fn, dict):
+                            fn_name = fn.get("name")
+                            if fn_name is not None:
+                                if not isinstance(fn_name, str):
+                                    raise ModelError(
+                                        "流式 tool_calls.function.name 不是字符串",
+                                        kind="protocol",
+                                    )
+                                if fn_name:
+                                    slot["name"] += fn_name
+                                    if idx not in notified_tools:
+                                        notified_tools.add(idx)
+                                        on_delta(
+                                            ModelStreamDelta(
+                                                kind="tool_call_start", tool_name=slot["name"]
+                                            )
+                                        )
+                            fn_args = fn.get("arguments")
+                            if fn_args is not None:
+                                if not isinstance(fn_args, str):
+                                    raise ModelError(
+                                        "流式 tool_calls.function.arguments 不是字符串",
+                                        kind="protocol",
+                                    )
+                                slot["arguments"] += fn_args
+            if choice.get("finish_reason") is not None:
+                raw_finish = choice.get("finish_reason")
+
+        if raw_finish is None:
+            raise ModelError(
+                "OpenAI 流式响应提前结束：缺少 finish_reason（拒绝伪造 end_turn）",
+                kind="protocol",
+            )
+        assembled_tools = [
+            {
+                "id": slot["id"],
+                "type": slot["type"],
+                "function": {"name": slot["name"], "arguments": slot["arguments"]},
+            }
+            for _, slot in sorted(tool_acc.items())
+        ]
+        synthesized: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "".join(content_parts),
+                        "tool_calls": assembled_tools,
+                    },
+                    "finish_reason": raw_finish,
+                }
+            ],
+            "usage": raw_usage,
+        }
+        return self._parse(synthesized)
+
 
 class AnthropicMessagesModel(_HttpModel):
     """第二个线上协议：Anthropic Messages API。
@@ -777,6 +1061,227 @@ class AnthropicMessagesModel(_HttpModel):
             tool_calls=calls,
             usage=normalize_usage(data.get("usage")),
         )
+
+    def stream_complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        on_delta: Callable[[ModelStreamDelta], None],
+    ) -> ModelResponse:
+        if not hasattr(self._transport, "post_stream"):
+            return self.complete(messages, tools)
+        url, body, headers = self._request(messages, tools)
+        body = {**body, "stream": True}
+        blocks_by_idx: dict[int, dict[str, Any]] = {}
+        stop_reason: Any = None
+        merged_usage: dict[str, Any] = {}
+        saw_stop = False
+
+        for ev_name, data_str in self._transport.post_stream(
+            url, body=body, headers=headers, timeout=self.timeout
+        ):
+            stripped = data_str.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ModelError(f"Anthropic 流式帧不是合法 JSON：{exc}", kind="protocol") from exc
+            if not isinstance(event, dict):
+                raise ModelError("Anthropic 流式帧顶层不是对象", kind="protocol")
+            etype = event.get("type", ev_name)
+            if not isinstance(etype, str) or not etype:
+                raise ModelError("Anthropic 流式帧缺少合法 type", kind="protocol")
+            if etype == "error":
+                raise ModelError(f"Anthropic 流式错误：{event.get('error')}", kind="protocol")
+            if etype == "ping":
+                continue
+            if etype == "message_start":
+                msg = event.get("message")
+                if not isinstance(msg, dict):
+                    raise ModelError("Anthropic message_start.message 不是对象", kind="protocol")
+                usage_val = msg.get("usage")
+                if usage_val is not None:
+                    if not isinstance(usage_val, dict):
+                        raise ModelError("Anthropic message_start.usage 不是对象", kind="protocol")
+                    merged_usage.update(usage_val)
+            elif etype == "content_block_start":
+                idx = _valid_stream_index(
+                    event.get("index"), where="Anthropic content_block_start"
+                )
+                if idx in blocks_by_idx:
+                    raise ModelError(
+                        f"Anthropic 重复的 content_block_start：index={idx}", kind="protocol"
+                    )
+                block = event.get("content_block")
+                if not isinstance(block, dict):
+                    raise ModelError(
+                        "Anthropic content_block_start.content_block 不是对象", kind="protocol"
+                    )
+                btype = block.get("type")
+                if btype == "text":
+                    initial = block.get("text")
+                    if not isinstance(initial, str):
+                        raise ModelError("text 内容块不是文本", kind="protocol")
+                    blocks_by_idx[idx] = {"type": "text", "text": initial, "stopped": False}
+                    if initial:
+                        on_delta(ModelStreamDelta(kind="text", text=initial))
+                elif btype == "tool_use":
+                    cid = block.get("id")
+                    tname = block.get("name")
+                    init_in = block.get("input")
+                    if not isinstance(cid, str) or not cid:
+                        raise ModelError("tool_use id 不是非空字符串", kind="protocol")
+                    if not isinstance(tname, str) or not tname:
+                        raise ModelError("tool_use name 不是非空字符串", kind="protocol")
+                    if not isinstance(init_in, dict):
+                        raise ModelError("tool_use input 不是对象", kind="protocol")
+                    blocks_by_idx[idx] = {
+                        "type": "tool_use",
+                        "id": cid,
+                        "name": tname,
+                        "initial_input": dict(init_in),
+                        "partial_json": "",
+                        "saw_json_delta": False,
+                        "stopped": False,
+                    }
+                    on_delta(ModelStreamDelta(kind="tool_call_start", tool_name=tname))
+                elif btype in ("thinking", "redacted_thinking"):
+                    blocks_by_idx[idx] = {"type": btype, "stopped": False}
+                else:
+                    raise ModelError(f"未知内容块类型：{btype!r}", kind="protocol")
+            elif etype == "content_block_delta":
+                idx = _valid_stream_index(
+                    event.get("index"), where="Anthropic content_block_delta"
+                )
+                if idx not in blocks_by_idx:
+                    raise ModelError(
+                        f"Anthropic content_block_delta 引用未打开的块：index={idx}",
+                        kind="protocol",
+                    )
+                target = blocks_by_idx[idx]
+                if target.get("stopped"):
+                    raise ModelError(
+                        f"Anthropic content_block_delta 晚于 content_block_stop：index={idx}",
+                        kind="protocol",
+                    )
+                delta = event.get("delta")
+                if not isinstance(delta, dict):
+                    raise ModelError(
+                        "Anthropic content_block_delta.delta 不是对象", kind="protocol"
+                    )
+                dtype = delta.get("type")
+                if dtype == "text_delta":
+                    if target.get("type") != "text":
+                        raise ModelError("text_delta 目标内容块不是 text", kind="protocol")
+                    piece = delta.get("text")
+                    if not isinstance(piece, str):
+                        raise ModelError("text_delta.text 不是字符串", kind="protocol")
+                    if piece:
+                        target["text"] = target["text"] + piece
+                        on_delta(ModelStreamDelta(kind="text", text=piece))
+                elif dtype == "input_json_delta":
+                    if target.get("type") != "tool_use":
+                        raise ModelError(
+                            "input_json_delta 目标内容块不是 tool_use", kind="protocol"
+                        )
+                    pjson = delta.get("partial_json")
+                    if not isinstance(pjson, str):
+                        raise ModelError(
+                            "input_json_delta.partial_json 不是字符串", kind="protocol"
+                        )
+                    target["saw_json_delta"] = True
+                    target["partial_json"] = target["partial_json"] + pjson
+                elif dtype in ("thinking_delta", "signature_delta"):
+                    if target.get("type") not in ("thinking", "redacted_thinking"):
+                        raise ModelError(
+                            f"{dtype} 目标内容块不是 thinking", kind="protocol"
+                        )
+                else:
+                    raise ModelError(f"未知 Anthropic delta 类型：{dtype!r}", kind="protocol")
+            elif etype == "content_block_stop":
+                idx = _valid_stream_index(
+                    event.get("index"), where="Anthropic content_block_stop"
+                )
+                if idx not in blocks_by_idx:
+                    raise ModelError(
+                        f"Anthropic content_block_stop 引用未打开的块：index={idx}",
+                        kind="protocol",
+                    )
+                if blocks_by_idx[idx].get("stopped"):
+                    raise ModelError(
+                        f"Anthropic 重复的 content_block_stop：index={idx}", kind="protocol"
+                    )
+                blocks_by_idx[idx]["stopped"] = True
+            elif etype == "message_delta":
+                delta = event.get("delta")
+                if not isinstance(delta, dict):
+                    raise ModelError("Anthropic message_delta.delta 不是对象", kind="protocol")
+                if delta.get("stop_reason") is not None:
+                    stop_reason = delta.get("stop_reason")
+                usage_val = event.get("usage")
+                if usage_val is not None:
+                    if not isinstance(usage_val, dict):
+                        raise ModelError("Anthropic message_delta.usage 不是对象", kind="protocol")
+                    merged_usage.update(usage_val)
+            elif etype == "message_stop":
+                saw_stop = True
+                break
+            else:
+                raise ModelError(f"未知 Anthropic 流式事件类型：{etype!r}", kind="protocol")
+
+        if not saw_stop or stop_reason is None:
+            raise ModelError(
+                "Anthropic 流式响应提前结束：缺少 message_stop 或 stop_reason（拒绝伪造 end_turn）",
+                kind="protocol",
+            )
+        unstopped = [
+            idx for idx, blk in sorted(blocks_by_idx.items()) if not blk.get("stopped")
+        ]
+        if unstopped:
+            raise ModelError(
+                f"Anthropic 流式内容块缺少 content_block_stop：index={unstopped}",
+                kind="protocol",
+            )
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        for _, blk in sorted(blocks_by_idx.items()):
+            btype = blk["type"]
+            if btype == "text":
+                text_parts.append(blk["text"])
+            elif btype == "tool_use":
+                cid = blk["id"]
+                tname = blk["name"]
+                init_in = blk["initial_input"]
+                if blk["saw_json_delta"]:
+                    if init_in:
+                        raise ModelError(
+                            "Anthropic tool_use 同时携带非空初始 input 与 input_json_delta",
+                            kind="protocol",
+                        )
+                    raw_json = blk["partial_json"]
+                    try:
+                        parsed_in: Any = json.loads(raw_json)
+                    except json.JSONDecodeError:
+                        parsed_in = raw_json
+                    if not isinstance(parsed_in, dict):
+                        parsed_in = raw_json
+                else:
+                    parsed_in = dict(init_in)
+                calls.append(ToolCall(call_id=cid, name=tname, arguments=parsed_in))
+        full_content = "".join(text_parts)
+        return ModelResponse(
+            finish_reason=_map_finish(stop_reason, vendor="anthropic", excerpt=full_content),
+            content=full_content,
+            tool_calls=calls,
+            usage=normalize_usage(merged_usage),
+        )
+
+
+def _valid_stream_index(val: Any, *, where: str) -> int:
+    if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+        raise ModelError(f"{where} index 必须是非负整数", kind="protocol")
+    return val
 
 
 def _openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -963,6 +1468,7 @@ __all__ = [
     "ModelError",
     "ModelIdentity",
     "ModelResponse",
+    "ModelStreamDelta",
     "OpenAICompatibleModel",
     "RecordedModel",
     "ScriptedModel",

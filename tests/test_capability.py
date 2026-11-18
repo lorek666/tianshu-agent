@@ -292,12 +292,14 @@ def test_shipped_models_declare_tool_calling():
         assert profile.supports("tool_calling") is True
         assert profile.supports_thinking is None, "thinking 一律不声明，不猜"
 
-    # 两个线上 adapter 只实现非流式；替身没有流式概念，留未声明
+    # W4：两个线上 adapter 与 ScriptedModel 支持流式；RecordedModel 留未声明
     for adapter in (
+        ScriptedModel([]),
         OpenAICompatibleModel("gpt-4o-mini", api_key="k"),
         AnthropicMessagesModel("claude-sonnet-4-5", api_key="k"),
     ):
-        assert admit_model(adapter).supports("streaming") is False
+        assert admit_model(adapter).supports("streaming") is True
+    assert admit_model(RecordedModel([])).supports("streaming") is False
 
 
 def test_output_bound_comes_from_the_capability_declaration():

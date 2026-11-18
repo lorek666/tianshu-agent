@@ -496,6 +496,28 @@ def event_push(
     }
 
 
+def stream_push(
+    run_id: str,
+    task_id: str,
+    turn_index: int,
+    delta: dict[str, Any] | None,
+    *,
+    done: bool = False,
+) -> dict[str, Any]:
+    """W4 瞬态模型流式推送帧：不进 SQLite `events` 表、不推进 `seq` 游标。"""
+    return {
+        "push": "model_stream",
+        "stream": {
+            "kind": "model_stream",
+            "run_id": run_id,
+            "task_id": task_id,
+            "turn_index": turn_index,
+            "delta": delta,
+            "done": done,
+        },
+    }
+
+
 # --------------------------------------------------------------------------- 服务端
 
 
@@ -1016,9 +1038,14 @@ class Client:
 
     # -- 推送 --
 
-    def subscribe(self, since_seq: int = 0) -> dict[str, Any]:
+    def subscribe(
+        self, since_seq: int = 0, *, include_model_stream: bool = False
+    ) -> dict[str, Any]:
         """订阅事件推送；服务端先补 `seq >= since_seq` 的历史，再推增量。"""
-        result = self.call("subscribe", {"since_seq": since_seq})
+        params: dict[str, Any] = {"since_seq": since_seq}
+        if include_model_stream:
+            params["include_model_stream"] = True
+        result = self.call("subscribe", params)
         self._subscribed_from = int(result.get("from_seq", since_seq))
         return result
 

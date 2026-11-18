@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,69 @@ def test_append_rejects_duplicate_kind_and_noncanonical_event(tmp_path):
             registry.append_event(object(), expected=current, operation_access=gate)
     finally:
         gate.close()
+
+
+def test_append_reports_commit_without_reobserving_after_unlock(tmp_path, monkeypatch):
+    """提交后的返回观察必须来自本事务，不能再去抢一次共享锁。
+
+    并发写入方在 append 提交后可能仍持命名空间独占锁；若 append 末尾重新
+    ``observe()``，共享锁争用会被报成 Busy——已提交却报 busy 是假阴性
+    （issue #171：两个进程同时 append 同一 head，双方都 busy，但事件已落盘）。
+    这里把 ``observe`` 钉成必然 Busy：修复前 append 会传播 Busy，修复后正常
+    返回本事务构造的新观察。
+    """
+    registry = _registry(tmp_path)
+    before = registry.initialize(registry_id=UUID)
+    event = samples(tmp_path)["e1"]
+
+    def busy_observe(_self):
+        raise RestoreRegistryBusy("registry维护锁正在使用中")
+
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        monkeypatch.setattr(RestoreRegistry, "observe", busy_observe)
+        after = registry.append_event(event, expected=before, operation_access=gate)
+    finally:
+        gate.close()
+
+    assert after.present is True
+    assert after.head_sequence == before.head_sequence + 1
+    assert after.events[-1] == event
+    assert after.meta == before.meta and after.meta_bytes == before.meta_bytes
+    assert after.home_identity == before.home_identity
+    # 幂等重复追加仍返回同一观察，且同样不依赖 observe。
+    again_gate = acquire_restore_gate(exclusive=True)
+    try:
+        again = registry.append_event(event, expected=after, operation_access=again_gate)
+    finally:
+        again_gate.close()
+    assert again == after
+
+
+def test_append_rejects_observation_meta_inconsistent_with_its_bytes(tmp_path):
+    """返回观察复用 expected.meta，因此必须核对 meta 与自身 meta_bytes 一致。
+
+    手工构造的 observation（同 registry_id、同 meta_bytes，但 meta 值不同）
+    不能借 append 的成功返回把伪造 meta 带出去。
+    """
+    registry = _registry(tmp_path)
+    before = registry.initialize(registry_id=UUID)
+    identity = before.meta.home.identity
+    if identity.os == "posix":
+        forged_identity = replace(identity, device=identity.device + 1)
+    else:
+        forged_identity = replace(identity, file_id_hex="0" * len(identity.file_id_hex))
+    forged_meta = replace(before.meta, home=replace(before.meta.home, identity=forged_identity))
+    forged = replace(before, meta=forged_meta)
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        with pytest.raises(RestoreRegistryBusy, match="meta与观察字节不符"):
+            registry.append_event(
+                samples(tmp_path)["e1"], expected=forged, operation_access=gate
+            )
+    finally:
+        gate.close()
+    assert registry.observe() == before
 
 
 def test_partial_authority_is_closed_not_reinitialized(tmp_path):

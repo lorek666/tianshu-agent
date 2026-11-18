@@ -1130,7 +1130,7 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     for name, schema in CURRENT_SCHEMAS.items()
 }
 
-# v0/v1 保持原始解释；仅 run.start 的新写采用 v2。
+# v0/v1 保持原始解释；run.start 与 run.end 的新写采用 v2。
 RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
 CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
     {"format_version": {
@@ -1144,11 +1144,21 @@ CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
 )
 CURRENT_SCHEMAS["run.start"]["required"].append("execution_policy")
 
+RUN_END_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.end"])
+CURRENT_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0))
+CURRENT_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
+CURRENT_SCHEMAS["run.end"]["required"].extend(
+    ["cost_total_micros", "cost_unknown_calls"]
+)
+LEGACY_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0))
+LEGACY_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
+
 _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
     name: frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION})
     for name in CURRENT_SCHEMAS
 }
 _RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
 
 
 # ---------------------------------------------------------------- 注册时校验
@@ -1240,8 +1250,13 @@ def _check_registry_schema(name: str, schema: dict[str, Any], version: int) -> N
 
 
 for _name, _schema in CURRENT_SCHEMAS.items():
-    _check_registry_schema(_name, _schema, 2 if _name == "run.start" else CURRENT_PAYLOAD_VERSION)
+    _check_registry_schema(
+        _name,
+        _schema,
+        2 if _name in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION,
+    )
 _check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
+_check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
 
@@ -1275,7 +1290,7 @@ def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
 def current_version(event_type: str) -> int:
     if event_type not in CURRENT_SCHEMAS:
         return 0
-    return 2 if event_type == "run.start" else CURRENT_PAYLOAD_VERSION
+    return 2 if event_type in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION
 
 
 def known_versions(event_type: str) -> frozenset[int]:
@@ -1291,6 +1306,8 @@ def schema_for(event_type: str, version: int) -> dict[str, Any]:
         return CURRENT_SCHEMAS[event_type]
     if event_type == "run.start" and version == 1:
         return RUN_START_V1_SCHEMA
+    if event_type == "run.end" and version == 1:
+        return RUN_END_V1_SCHEMA
     if version == LEGACY_PAYLOAD_VERSION:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(

@@ -1958,6 +1958,20 @@ class TaskStore:
         stored = self.load_cursor(run_id)
         ledger = (stored[0].budget_ledger if stored is not None else {}) or {}
         unknown_usage = int(ledger.get("unknown_usage_calls", 0) or 0)
+        unknown_cost = int(ledger.get("unknown_cost_calls", 0) or 0)
+        known_cost_sum = int(ledger.get("cost_total_micros", 0) or 0)
+        has_known_price_call = known_cost_sum > 0 or any(
+            isinstance((ev.payload.get("cost") or {}).get("cost"), int)
+            and not isinstance((ev.payload.get("cost") or {}).get("cost"), bool)
+            for ev in events
+            if ev.type == "model.result"
+        )
+        had_any_model_call = result_count > 0 or unknown_cost > 0 or unbilled > 0
+        cost_total_micros: int | None = (
+            known_cost_sum
+            if (has_known_price_call or not had_any_model_call)
+            else None
+        )
         return {
             "outcome": outcome,
             "effect_state": effect_state,
@@ -1965,6 +1979,8 @@ class TaskStore:
             "turns": int(ledger.get("turns", 0) or 0),
             "tokens": int(ledger.get("tokens", 0) or 0),
             "tokens_unknown_calls": unknown_usage,
+            "cost_total_micros": cost_total_micros,
+            "cost_unknown_calls": unknown_cost,
             "receipt_ids": receipts,
             # 预算可信 = 没有任何"可能花了但没记账"的调用
             "budget_enforced": unknown_usage == 0 and unbilled == 0,

@@ -10,7 +10,7 @@
  *   “连不上”变成一个永远转圈的谎）。
  */
 
-import type { EventView } from "./types";
+import type { EventView, ModelStreamEvent } from "./types";
 import type { HostClient } from "./host";
 
 export type StreamStatus =
@@ -26,6 +26,7 @@ export interface EventStreamOptions {
   /** 每次重连时读取“当前已知的下一 seq”，与内部游标取最大值。 */
   initialSeq: () => number;
   onEvent: (event: EventView) => void;
+  onModelStream?: (stream: ModelStreamEvent) => void;
   onStatus?: (status: StreamStatus, detail?: string) => void;
   /** 流正常结束（服务端关闭）时触发，用于做一次兜底拉取。 */
   onEnd?: () => void;
@@ -89,6 +90,10 @@ export function startEventStream(options: EventStreamOptions): EventStreamHandle
               cursor = Math.max(cursor, event.seq + 1);
               delivered += 1;
               options.onEvent(event);
+            },
+            onModelStream: (stream) => {
+              failures = 0;
+              options.onModelStream?.(stream);
             },
           },
           controller.signal,

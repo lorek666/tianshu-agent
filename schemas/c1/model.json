@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tianshu C1 Model I/O Contract (v1)",
+  "description": "C1 模型接缝字段级契约（PRD §5.1 / §5.5）：规范化消息、ModelResponse、ModelError.kind 与 W4 流式增量 ModelStreamDelta。",
+  "type": "object",
+  "$defs": {
+    "finishReason": {
+      "type": "string",
+      "enum": [
+        "cancelled",
+        "checkpoint",
+        "content_filtered",
+        "end_turn",
+        "guardrail_intervened",
+        "interrupt",
+        "limit_output_tokens",
+        "limit_structured_output_attempts",
+        "limit_total_tokens",
+        "limit_turns",
+        "max_tokens",
+        "stop_sequence",
+        "tool_use"
+      ]
+    },
+    "errorKind": {
+      "type": "string",
+      "enum": [
+        "auth",
+        "http_status",
+        "protocol",
+        "rate_limit",
+        "timeout",
+        "transport"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_tokens", "output_tokens"],
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_read_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_creation_input_tokens": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "name", "arguments"],
+      "properties": {
+        "call_id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": { "type": ["object", "string"] }
+      }
+    },
+    "modelResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finish_reason", "content", "tool_calls", "usage"],
+      "properties": {
+        "finish_reason": {
+          "type": "string",
+          "enum": [
+            "cancelled",
+            "checkpoint",
+            "content_filtered",
+            "end_turn",
+            "guardrail_intervened",
+            "interrupt",
+            "limit_output_tokens",
+            "limit_structured_output_attempts",
+            "limit_total_tokens",
+            "limit_turns",
+            "max_tokens",
+            "stop_sequence",
+            "tool_use"
+          ]
+        },
+        "content": { "type": "string" },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["call_id", "name", "arguments"],
+            "properties": {
+              "call_id": { "type": "string" },
+              "name": { "type": "string" },
+              "arguments": { "type": ["object", "string"] }
+            }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input_tokens", "output_tokens"],
+          "properties": {
+            "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cache_read_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cache_creation_input_tokens": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        }
+      }
+    },
+    "modelStreamDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "text", "tool_name"],
+      "properties": {
+        "schema_version": { "type": "string", "const": "1.0" },
+        "kind": { "type": "string", "enum": ["text", "tool_call_start"] },
+        "text": { "type": "string" },
+        "tool_name": { "type": "string" }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "content"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["system", "user", "assistant", "tool"]
+        },
+        "content": { "type": ["string", "null"] },
+        "name": { "type": "string" },
+        "tool_call_id": { "type": "string" },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "type", "function"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "const": "function" },
+              "function": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "arguments"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "arguments": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -237,25 +237,47 @@ async function mount(initial: StateView, failuresRemaining = 0): Promise<FakeHos
 describe("Run 执行模式的真实 UI 入口", () => {
   it("新建任务只把纯读策略交给 run.start，启动失败后的详情重试仍保持 pure_only", async () => {
     const host = await mount(state(), 1);
-    const newTask = buttonByText("新建任务");
-    expect(newTask).not.toBeNull();
-    await click(newTask as HTMLButtonElement);
-    await waitFor(() => container?.querySelector('[role="dialog"]') !== null);
+    await waitFor(() => container?.querySelector(".composer-shell") !== null);
 
-    const pure = buttonByText("仅读取与对话");
+    // 1. 在欢迎页权限下拉菜单切换为「仅读取与对话」
+    const permBtn = container?.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-perm-btn"]',
+    );
+    expect(permBtn).not.toBeNull();
+    await click(permBtn as HTMLButtonElement);
+    const pure = container?.querySelector<HTMLButtonElement>(
+      '[data-perm-option="pure_only"]',
+    );
     expect(pure).not.toBeNull();
     await click(pure as HTMLButtonElement);
 
-    const goal = container?.querySelector("textarea");
+    // 2. 在欢迎页工作区菜单绑定目录路径
+    const wsBtn = container?.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-ws-btn"]',
+    );
+    expect(wsBtn).not.toBeNull();
+    await click(wsBtn as HTMLButtonElement);
     const workspace = container?.querySelector<HTMLInputElement>(
       'input[aria-label="第 1 个目录路径"]',
     );
-    expect(goal).not.toBeNull();
     expect(workspace).not.toBeNull();
-    await inputValue(goal as HTMLTextAreaElement, "只整理，不写文件");
     await inputValue(workspace as HTMLInputElement, "/tmp/readonly-workspace");
+    const applyWs = container?.querySelector<HTMLButtonElement>(
+      '[data-testid="apply-ws-btn"]',
+    );
+    expect(applyWs).not.toBeNull();
+    await click(applyWs as HTMLButtonElement);
 
-    const submit = buttonByText("创建并开始运行");
+    // 3. 输入目标并直接发送创建任务
+    const goal = container?.querySelector<HTMLTextAreaElement>(
+      '[data-testid="composer-textarea"]',
+    );
+    expect(goal).not.toBeNull();
+    await inputValue(goal as HTMLTextAreaElement, "只整理，不写文件");
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-send-btn"]',
+    );
     expect(submit).not.toBeNull();
     await click(submit as HTMLButtonElement);
     await waitFor(() => buttonByText("开始运行") !== null);
