@@ -94,7 +94,7 @@ from .memory_exec import (
 )
 from .net import NetCancelled, NetError, NetLimits
 from .net import fetch as net_fetch
-from .net import summary_text as net_summary_text
+from .net import summary_page as net_summary_page
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELETE,
@@ -858,7 +858,7 @@ class Dispatcher:
         # 批准——那道批准会白占一次人工决定。
         if isinstance(target, _NetworkTarget):
             try:
-                self._precheck_network_budget(request)
+                self._precheck_network_budget(request, args=args)
             except DispatchDenied as exc:
                 return self._reject(
                     request, args, exc.reason, exc.rule_id, event=DISPATCH_REJECTED
@@ -1253,7 +1253,25 @@ class Dispatcher:
         action = getattr(run, "control_requested", None)
         return action in CONTROL_REQUESTS
 
-    def _precheck_network_budget(self, request: ActionRequest) -> None:
+    def _effective_net_max_bytes(
+        self, args: dict[str, Any] | None = None, *, request_id: str = ""
+    ) -> int:
+        effective_args = args
+        if effective_args is None and request_id:
+            stored = self.get_request(request_id)
+            effective_args = None if stored is None else stored.args
+        raw_max = (
+            None
+            if not isinstance(effective_args, dict)
+            else effective_args.get("max_bytes")
+        )
+        if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max > 0:
+            return min(raw_max, self._net_limits.max_bytes)
+        return self._net_limits.max_bytes
+
+    def _precheck_network_budget(
+        self, request: ActionRequest, *, args: dict[str, Any] | None = None
+    ) -> None:
         """不预占，只回答"这一次抓取的字节上界还放得下吗"。
 
         账本不可用 / 账户不存在（直接调派发的单元测试）时放行：真正的预占在
@@ -1271,7 +1289,7 @@ class Dispatcher:
         used = int((usage.get("reserved") or {}).get("bytes", 0)) + int(
             (usage.get("settled") or {}).get("bytes", 0)
         )
-        need = self._net_limits.max_bytes
+        need = self._effective_net_max_bytes(args, request_id=request.request_id)
         if used + need > limit:
             raise DispatchDenied(
                 f"预算不足：bytes 已用 {used}，本次抓取最多读 {need}，"
@@ -1279,11 +1297,13 @@ class Dispatcher:
                 "dispatch.budget_refused",
             )
 
-    def _reserve_network_bytes(self, request: ActionRequest) -> object | None:
+    def _reserve_network_bytes(
+        self, request: ActionRequest, *, args: dict[str, Any] | None = None
+    ) -> object | None:
         """抓取前按 `bytes` 维度预占。额度不足 / 已取消 / 过 deadline 一律拒发。
 
         预占的是**本次最多读多少**（可验证上界），不是估算；所以一次抓取最多
-        读 `limits.max_bytes`，而账本上限决定能发几次。账户不存在（例如直接调
+        读 `effective_max_bytes`，而账本上限决定能发几次。账户不存在（例如直接调
         派发的单元测试）时不预占，也不伪造一个账户——如实登记为未记账。
         """
         if self._budget is None:
@@ -1292,12 +1312,13 @@ class Dispatcher:
         account = getattr(self._budget, "account", lambda _a: None)(account_id)
         if account is None:
             return None
+        need = self._effective_net_max_bytes(args, request_id=request.request_id)
         return self._budget.reserve(
             account_id,
             attempt_id=f"net:{request.call_id}",
             run_id=request.run_id,
             call_id=request.call_id,
-            need={"bytes": self._net_limits.max_bytes},
+            need={"bytes": need},
         )
 
     def _settle_network_bytes(
@@ -1583,6 +1604,15 @@ class Dispatcher:
             )
             return result
 
+        stored_req = self.get_request(request.request_id)
+        net_args = {} if stored_req is None else dict(stored_req.args)
+        effective_max_bytes = self._effective_net_max_bytes(net_args)
+        call_limits = (
+            self._net_limits
+            if effective_max_bytes == self._net_limits.max_bytes
+            else replace(self._net_limits, max_bytes=effective_max_bytes)
+        )
+
         # 与撤销/改目标共用守卫；取消/暂停与此处共用同库写事务。
         # 所有资格和预算在执行开始标记前复核，提交后才允许请求越界。
         try:
@@ -1591,7 +1621,7 @@ class Dispatcher:
             ):
                 with self._log.transaction():
                     self._verify_resource_execution(admitted)
-                    reservation = self._reserve_network_bytes(request)
+                    reservation = self._reserve_network_bytes(request, args=net_args)
                     self._start_resource_execution(request, dispatch_id)
         except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
             return self._abort_dispatch(request, dispatch_id, exc)
@@ -1608,7 +1638,7 @@ class Dispatcher:
         try:
             fetched = net_fetch(
                 target.target,
-                limits=self._net_limits,
+                limits=call_limits,
                 cancel=lambda: self._cancel_requested(request.run_id),
             )
         except NetCancelled as exc:
@@ -1631,12 +1661,13 @@ class Dispatcher:
                 "none_applied",
                 {"error": str(exc), "reason": exc.reason, "url": target.uri},
             )
-            # 连不上 = 确定一个字节都没读；其余失败（超时 / 读到一半断了）
-            # 用量未知，保留预占。
+            # 连不上 / 连接前私有地址阻断 = 确定一个字节都没读；其余失败
+            # （超时 / 读到一半断了）用量未知，保留预占。
             known_zero = exc.reason in (
                 "net.connect",
                 "net.connect_timeout",
                 "net.tls",
+                "net.private_address_blocked",
                 "net.arg_not_canonical",
                 "net.arg_invalid",
                 "net.limits",
@@ -1665,8 +1696,24 @@ class Dispatcher:
             self._commit_result(request, dispatch_id, result, target, intent_seq)
             return result
 
-        summary, clipped = net_summary_text(
-            fetched, limit_bytes=self._net_limits.summary_bytes
+        raw_offset = net_args.get("offset", 0)
+        page_offset = (
+            raw_offset
+            if isinstance(raw_offset, int)
+            and not isinstance(raw_offset, bool)
+            and raw_offset >= 0
+            else 0
+        )
+        raw_length = net_args.get("length", self._net_limits.summary_bytes)
+        page_length = (
+            raw_length
+            if isinstance(raw_length, int)
+            and not isinstance(raw_length, bool)
+            and raw_length > 0
+            else self._net_limits.summary_bytes
+        )
+        summary, page_bytes, next_offset, clipped = net_summary_page(
+            fetched, offset=page_offset, length=page_length
         )
         output: dict[str, Any] = {
             "url": fetched.uri,
@@ -1678,6 +1725,9 @@ class Dispatcher:
             "elapsed_ms": fetched.elapsed_ms,
             "ref": ref,
             "summary": summary,
+            "offset": page_offset,
+            "page_bytes": page_bytes,
+            "next_offset": next_offset,
         }
         if not fetched.is_text:
             output["binary"] = True

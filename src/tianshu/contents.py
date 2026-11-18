@@ -34,6 +34,8 @@
 
 from __future__ import annotations
 
+import base64
+import codecs
 import hashlib
 import re
 import time
@@ -53,6 +55,14 @@ MAX_PAGE = 65536
 
 #: 默认分页大小（读一屏够模型看一段，又不至于把 8 KiB 的上下文预算一次吃光）。
 DEFAULT_PAGE = 16384
+
+#: W9 v2.0 `read_content` 支持的封闭编码枚举。
+CONTENT_ENCODINGS: tuple[str, ...] = (
+    "utf-8",
+    "utf-8-replace",
+    "latin-1",
+    "base64",
+)
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -124,15 +134,23 @@ class ContentPage:
     offset: int
     next_offset: int | None
     total_size: int
+    raw_bytes: int | None = None
+    encoding: str = "utf-8"
 
     def to_payload(self) -> dict[str, Any]:
+        consumed = (
+            len(self.data.encode("utf-8"))
+            if self.raw_bytes is None
+            else self.raw_bytes
+        )
         return {
             "ref": make_ref(self.digest),
             "digest": self.digest,
             "offset": self.offset,
             "next_offset": self.next_offset,
             "total_size": self.total_size,
-            "bytes": len(self.data.encode("utf-8")),
+            "bytes": consumed,
+            "encoding": self.encoding,
             "data": self.data,
         }
 
@@ -224,6 +242,7 @@ class ContentStore:
         task_id: str,
         offset: int = 0,
         length: int = DEFAULT_PAGE,
+        encoding: str = "utf-8",
     ) -> ContentPage:
         """按任务可见范围读一页。**三步都不可省**：授权 → 对象 → 摘要复核。"""
         digest = parse_ref(ref)
@@ -236,6 +255,10 @@ class ContentStore:
             raise ContentError(f"offset 不能为负：{offset}")
         if length <= 0 or length > MAX_PAGE:
             raise ContentError(f"length 必须在 1..{MAX_PAGE}：{length}")
+        if not isinstance(encoding, str) or encoding not in CONTENT_ENCODINGS:
+            raise ContentError(
+                f"不支持的内容编码：{encoding!r}（允许：{list(CONTENT_ENCODINGS)}）"
+            )
 
         # 1) 授权先判：不可见的内容不该让调用方从错误信息里探出"它存在不存在"。
         if not self.visible(digest, task_id):
@@ -260,23 +283,47 @@ class ContentStore:
         if offset > total:
             raise ContentError(f"offset 越界：{offset} > 内容长度 {total}")
         page = data[offset : offset + length]
-        consumed = len(page)
-        try:
-            text = page.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            # 分页边界可能切在一个多字节字符中间：把这一页收到**字符边界**上，
-            # 让下一次从整字符开始（否则每次分页都会因为半截 UTF-8 而失败）。
-            if not exc.reason.startswith("unexpected end"):
-                raise ContentError(
-                    f"内容不是 UTF-8 文本（offset={offset}）：{exc}"
-                ) from exc
-            consumed = exc.start
-            if consumed <= 0:
-                raise ContentError(
-                    f"分页长度 {length} 切在多字节字符中间（offset={offset}），"
-                    "请增大 length"
-                ) from exc
-            text = page[:consumed].decode("utf-8")
+        if encoding == "utf-8":
+            consumed = len(page)
+            try:
+                text = page.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                # 分页边界可能切在一个多字节字符中间：把这一页收到**字符边界**上，
+                # 让下一次从整字符开始（否则每次分页都会因为半截 UTF-8 而失败）。
+                if not exc.reason.startswith("unexpected end"):
+                    raise ContentError(
+                        f"内容不是 UTF-8 文本（offset={offset}）：{exc}"
+                    ) from exc
+                consumed = exc.start
+                if consumed <= 0:
+                    raise ContentError(
+                        f"分页长度 {length} 切在多字节字符中间（offset={offset}），"
+                        "请增大 length"
+                    ) from exc
+                text = page[:consumed].decode("utf-8")
+        elif encoding == "utf-8-replace":
+            final = offset + len(page) >= total
+            text, consumed = codecs.utf_8_decode(page, "replace", final)
+            if len(page) > 0 and consumed <= 0:
+                lookahead = data[offset : offset + 4]
+                probe_text, _ = codecs.utf_8_decode(
+                    lookahead, "replace", offset + len(lookahead) >= total
+                )
+                if probe_text.startswith("\ufffd"):
+                    text = "\ufffd"
+                    consumed = 1
+                else:
+                    raise ContentError(
+                        f"分页长度 {length} 切在多字节字符中间（offset={offset}），"
+                        "请增大 length"
+                    )
+        elif encoding == "latin-1":
+            consumed = len(page)
+            text = page.decode("latin-1")
+        else:  # encoding == "base64"
+            consumed = len(page)
+            text = base64.b64encode(page).decode("ascii")
+
         next_offset = offset + consumed
         if next_offset >= total:
             next_offset_value: int | None = None
@@ -288,6 +335,26 @@ class ContentStore:
             offset=offset,
             next_offset=next_offset_value,
             total_size=total,
+            raw_bytes=consumed,
+            encoding=encoding,
+        )
+
+    def read_page(
+        self,
+        ref: object,
+        *,
+        task_id: str,
+        offset: int = 0,
+        length: int = DEFAULT_PAGE,
+        encoding: str = "utf-8",
+    ) -> ContentPage:
+        """`read()` 的同义分页入口。"""
+        return self.read(
+            ref,
+            task_id=task_id,
+            offset=offset,
+            length=length,
+            encoding=encoding,
         )
 
     # ------------------------------------------------------------ 内部
@@ -309,6 +376,7 @@ class ContentStore:
 
 
 __all__ = [
+    "CONTENT_ENCODINGS",
     "ContentDigestMismatch",
     "ContentError",
     "ContentMissing",

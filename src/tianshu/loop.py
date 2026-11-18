@@ -2540,6 +2540,7 @@ class AgentLoop:
                 task_id=task.task_id,
                 offset=int(checked.get("offset", 0)),
                 length=int(checked.get("length", DEFAULT_PAGE)),
+                encoding=str(checked.get("encoding", "utf-8")),
             )
             return ToolResult("succeeded", "none_applied", page.to_payload())
         except (ToolArgumentError, TianshuError) as exc:
