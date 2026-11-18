@@ -198,10 +198,41 @@ def renew_claim(
     if job.state != JOB_CLAIMED:
         return False
 
-    # **先核 claim 再续租约**：两条独立的事务，顺序反了就会出现"我已经不是
-    # owner，却把工作区租约又续了 30 秒"——新 owner 之后来 acquire 会撞
-    # LeaseConflict，而被续的那行租约要等 TTL 才失效。claim 的核验是权威判据，
-    # 所以它必须先成功。
+    # **先核 claim 再续租约**：同库时合并为一个写事务，将每次心跳的
+    # `BEGIN IMMEDIATE ... COMMIT`（Windows `FlushFileBuffers`）减半，压缩心跳
+    # 线程与主线程结果提交争写锁的窗口（#145）。租约续期包在 SAVEPOINT 里：
+    # 一旦 `leases.renew` 抛错，只回滚半截租约改动而保留已成功的 claim 心跳，
+    # 与分两次提交时的错误分类语义严格一致。
+    if claims._log is leases._log:
+        lease_error: TianshuError | None = None
+        with claims._log.transaction():
+            try:
+                claims.heartbeat(claim, ttl_ms=ttl_ms)
+            except TianshuError:
+                if not _claim_owned(claims, claim):
+                    return False
+                raise
+            paths = leases.live_paths(claim.run_id)
+            if paths:
+                conn = claims._log.conn
+                conn.execute("SAVEPOINT renew_claim_leases")
+                try:
+                    leases.renew(
+                        [Path(p) for p in paths], claim.run_id, ttl_ms=ttl_ms
+                    )
+                except TianshuError as exc:
+                    conn.execute("ROLLBACK TO SAVEPOINT renew_claim_leases")
+                    conn.execute("RELEASE SAVEPOINT renew_claim_leases")
+                    if not _claim_owned(claims, claim):
+                        return False
+                    if leases.live_paths(claim.run_id):
+                        lease_error = exc
+                else:
+                    conn.execute("RELEASE SAVEPOINT renew_claim_leases")
+        if lease_error is not None:
+            raise lease_error
+        return True
+
     try:
         claims.heartbeat(claim, ttl_ms=ttl_ms)
     except TianshuError:
@@ -214,16 +245,10 @@ def renew_claim(
         try:
             leases.renew([Path(p) for p in paths], claim.run_id, ttl_ms=ttl_ms)
         except TianshuError:
-            # 从"读到有租约"到"去续"之间，本实例可能刚好在收尾/暂停里把租约
-            # 释放了（两个线程看不到彼此的中间状态）。没有租约可续不等于租约
-            # 丢了：真正的判据是执行前的 `assert_covers`。
             if not _claim_owned(claims, claim):
                 return False
             if leases.live_paths(claim.run_id):
                 raise
-            # 剩下一种情况无法与"本实例刚好暂停/收尾释放了租约"区分：租约在
-            # `live_paths` 与 `renew` 之间被别人拿走。这里不猜，交给执行前的
-            # `assert_covers` 兜底——它才是"这条路径归不归我写"的判据。
     return True
 
 

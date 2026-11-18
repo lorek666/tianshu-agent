@@ -1196,7 +1196,25 @@ class Dispatcher:
                     # 补一条 tool.result(unknown)，且**不**再调用 apply_event。
                     return self._fail_unknown(request, dispatch_id, target, exc)
         else:
-            self._commit_result(request, dispatch_id, result, target, seq)
+            try:
+                self._commit_result(request, dispatch_id, result, target, seq)
+            except Exception as exc:  # noqa: BLE001 - 结果提交失败：磁盘可能已改动
+                # 文件/命令副作用已在执行守卫内完成：若 `tool.result` 尚未落库
+                # （如后台心跳短暂持写锁致 SQLITE_BUSY），绝不能让裸异常穿过派发
+                # 边界被主循环按 none_applied 收尾（#145），必须转入 unknown 并阻断。
+                try:
+                    result_logged = (
+                        self._conn.execute(
+                            "SELECT 1 FROM events WHERE run_id=? AND type='tool.result'"
+                            " AND idem_key=? LIMIT 1",
+                            (request.run_id, request.call_id),
+                        ).fetchone()
+                        is not None
+                    )
+                except sqlite3.Error:
+                    result_logged = False
+                if not result_logged:
+                    return self._fail_unknown(request, dispatch_id, target, exc)
         # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
         # M2 把两件事合成一次提交，所以这两个点落在同一处：能证明的仍然是
         # "重放不会补出第二条效果"。

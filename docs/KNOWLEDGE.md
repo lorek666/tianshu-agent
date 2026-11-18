@@ -31,7 +31,7 @@
   - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
   - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、以及 **W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**均已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO 仍待完成。
-  - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147)）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
+  - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 代码根因与确定性屏障回归已落地，见 [2026-11-18-fix-issues-145-147.md](changelog/2026-11-18-fix-issues-145-147.md)，待 PR 合入与原生 Windows required CI 终验销账）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
 ## 3. 架构速览
@@ -246,6 +246,8 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **副作用落盘后的结果提交失败、双阶段锁忙与本地 `unknown` 都不能顺流收束成终态（2026-11-18，#145/#147）**：①文件已在执行守卫内改写后，`_commit_result` 撞 `SQLITE_BUSY` 不能裸穿出派发层，若连 `_fail_unknown` 也撞锁忙、随后在 `_finish` 前锁释放，主循环收尾前必须先查是否存在未配对 `tool.intent` / 在途 `dispatches` 并转入 `reconciling` 保留目录租约，否则会把已改盘的 Run 标成 `none_applied` 并放走租约；②本地目录写落入 `unknown`（已写 `recovery.blocked`）后必须立即停进 `reconciling`，不能像 MCP 对象级阻断那样继续让模型 `end_turn` 报 `succeeded`；③Windows `ctypes` 调 Win32 句柄 API 必须用 `WinDLL(..., use_last_error=True)` 显式声明 `wintypes.HANDLE` 的 `restype`/`argtypes`，未声明原型默认走 32 位 `c_int`，会把 `0x80000124` 这类 bit 31 置位的有效 64 位句柄符号扩展截断成无效句柄；④`identity_key` 对 `os.stat` 只能把 `ENOENT`/`ENOTDIR` 退化为 `path:` 键，吞掉 `PermissionError` 会把短暂共享锁伪装成"目标身份被替换"。
 
 - **SVG 元素的坐标 `transform` 属性与 CSS `@keyframes` 动画 `transform` 不能挂在同一节点（2026-11-18）**：浏览器在应用 CSS `transform` 关键帧时会直接覆盖同一 `<g>` 节点上的 SVG `transform="translate(...) rotate(...)"` 属性，导致悬浮全息屏、星芒等配件被拉回 `(0, 0)` 原点，或关节旋转基准丢失。所有带定位/旋转的 SVG 部件必须拆成外层定位 `<g transform="...">` 与内层纯动画 `<g class="...">` 两层嵌套；同屏多实例 SVG `<defs>` 渐变与滤镜 ID 须经 `useId()` 隔离，并用静态标记单测钉住全体 `id` 无重复。
 

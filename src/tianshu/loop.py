@@ -871,7 +871,7 @@ class AgentLoop:
             writable = []
         if writable:
             held = set(self._leases.live_paths(run_id))
-            missing = [r for r in writable if str(Path(str(r)).resolve()) not in held]
+            missing = [r for r in writable if str(Path(r.path).resolve()) not in held]
             if missing:
                 self._acquire_leases(missing, run_id, task.task_id)
         self._tasks.transition(
@@ -2225,10 +2225,10 @@ class AgentLoop:
         # 其余（拒绝 / 撤销 / 守卫内复核失败）都没有事件，必须由主循环补写——
         # 只补消息不写事件会让下一轮 `messages_hash` 与 replay 重建的序列对不上。
         record = self._dispatcher.dispatch_record(run_id, call_id)
-        recorded = record is not None and record.state in (
-            DISPATCH_FINISHED,
-            DISPATCH_ERROR,
-        )
+        recorded = (
+            record is not None
+            and record.state in (DISPATCH_FINISHED, DISPATCH_ERROR)
+        ) or self._has_tool_result_event(run_id, call_id)
         self._record_result(run_id, proposal, result, append=not recorded)
         self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
         if result.effect_state == "applied":
@@ -2244,6 +2244,14 @@ class AgentLoop:
             n_unknown=progress.n_unknown,
             claim=claim,
         )
+        if isinstance(target, Path) and result.effect_state == "unknown":
+            # 本地工作区写操作落入 unknown 时，派发层已写下 recovery.blocked：
+            # 目录处于未核实阻断态，必须立即进入 reconciling 等人核查（#147），
+            # 绝不能继续下一轮模型调用并被 end_turn 收尾成 succeeded。
+            self._tasks.transition(
+                run_id, RUN_RECONCILING, claim=claim, reason="inflight_dispatch"
+            )
+            return "reconciling"
         return "done"
 
     def _record_read(self, run_id: str, task: Task, proposal) -> ToolResult:
@@ -3037,6 +3045,35 @@ class AgentLoop:
         run = self._tasks.get_run(run_id)
         return run.state if run is not None else RUN_FENCED
 
+    def _has_tool_result_event(self, run_id: str, call_id: str) -> bool:
+        row = self._log.conn.execute(
+            "SELECT 1 FROM events WHERE run_id=? AND type='tool.result'"
+            " AND idem_key=? LIMIT 1",
+            (run_id, call_id),
+        ).fetchone()
+        return row is not None
+
+    def _has_unsettled_dispatch(self, run_id: str) -> bool:
+        """是否存在已落 intent 但尚未结算 tool.result 的副作用派发（#145）。"""
+        events = self._log.read_run(run_id, verify=False)
+        intents = {
+            e.payload.get("call_id")
+            for e in events
+            if e.type == "tool.intent" and e.payload.get("call_id")
+        }
+        results = {
+            e.payload.get("call_id")
+            for e in events
+            if e.type == "tool.result" and e.payload.get("call_id")
+        }
+        if intents - results:
+            return True
+        rows = self._log.conn.execute(
+            "SELECT call_id FROM dispatches WHERE run_id=? AND state IN (?, ?)",
+            (run_id, DISPATCH_INTENT, DISPATCH_EXECUTING),
+        ).fetchall()
+        return any(row["call_id"] not in results for row in rows)
+
     def _finish(
         self,
         run_id: str,
@@ -3051,6 +3088,28 @@ class AgentLoop:
         顺序不能反：先写 Run 成功、再发现 claim 已被接管，就会留下一条
         "旧 owner 宣告成功"的记录，而这正是 fencing 要禁止的事。
         """
+        if self._has_unsettled_dispatch(run_id):
+            # `_commit_result` 与 `_fail_unknown` 均因锁忙等原因未能落库时，
+            # 磁盘可能已改动而 tool.result 缺失：绝不能标终态 none_applied 或释放
+            # 目录租约（红线 2/5/11）。转入 reconciling 保留租约交给 recover 对账；
+            # 若 transition 仍遇 OperationalError，则让异常上抛由 Worker 挂起作业。
+            reconcile_error = (
+                "存在未完成的派发（intent 已提交、结果未知），"
+                "请先 recover 核查再 resume"
+            )
+            if error:
+                reconcile_error = f"{reconcile_error}（{error}）"
+            try:
+                self._tasks.transition(
+                    run_id, RUN_RECONCILING, claim=claim, reason="inflight_dispatch"
+                )
+            except (JobLost, RunFenced) as exc:
+                return self._result(
+                    run_id, progress, state=self._state_of(run_id), error=str(exc)
+                )
+            return self._result(
+                run_id, progress, state=RUN_RECONCILING, error=reconcile_error
+            )
         run_outcome = "succeeded" if outcome == "noop" else outcome
         try:
             self._claims.finish(claim, outcome=run_outcome)

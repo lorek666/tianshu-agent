@@ -1226,7 +1226,9 @@ def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(en
         ]), heartbeat_interval_ms=None)
         try:
             assert worker.run_once() is True
-            assert env.stack.tasks.get_run(run_id).state == "failed"
+            # #145：磁盘已写且结果与 unknown 兜底都未能提交时，Run 必须进入
+            # reconciling 保留租约等 recover 对账，绝不能按 failed/none_applied 释放。
+            assert env.stack.tasks.get_run(run_id).state == "reconciling"
             assert "execution.started" in env.events(run_id)
             assert "tool.result" not in env.events(run_id)
         finally:
@@ -1240,7 +1242,7 @@ def test_worker_diagnostics_enter_timing_and_call_chain_survive_ring_eviction(en
         exercise(env)
     assert caught.value is failure
     assert (Worker._drive, worker_module._SideChannel.beat, EventLog.transaction) == original
-    assert starts == [1_000]
+    assert starts == [1_000, 7_001_000]
     notes = "\n".join(failure.__notes__)
     error = next(json.loads(line.removeprefix("error: ")) for line in notes.splitlines()
                  if line.startswith("error: ") and '"source": "transaction"' in line)

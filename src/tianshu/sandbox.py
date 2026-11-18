@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .errors import TianshuError, WorkspaceViolation
-from .fsutil import atomic_write_bytes
+from .fsutil import atomic_write_bytes, retry_windows_sharing
 from .pathkeys import overlap_key
 
 ENV_VAR = "TIANSHU_SANDBOX_BACKEND"
@@ -138,25 +138,29 @@ class LocalBackend:
 
     def read_bytes(self, p: Path, limit: int | None = None) -> tuple[bytes, int]:
         # 只打开一次，用 fstat 取总大小：避免"先 stat 再 open"之间目标被换掉。
-        with p.open("rb") as fh:
-            total = os.fstat(fh.fileno()).st_size
-            data = fh.read() if limit is None else fh.read(limit)
-        return data, total
+        def _read() -> tuple[bytes, int]:
+            with p.open("rb") as fh:
+                total = os.fstat(fh.fileno()).st_size
+                data = fh.read() if limit is None else fh.read(limit)
+            return data, total
+
+        return retry_windows_sharing(_read, label="read_bytes")
 
     def write_bytes_atomic(self, p: Path, data: bytes) -> None:
         atomic_write_bytes(p, data)
 
     def unlink(self, p: Path) -> None:
-        p.unlink()
+        retry_windows_sharing(p.unlink, label="unlink")
 
     def identity_key(self, p: Path) -> str:
         try:
-            st = os.stat(p)
+            st = retry_windows_sharing(lambda: os.stat(p), label="stat")
             if st.st_ino:
                 return f"{st.st_dev}:{st.st_ino}"
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
-        # 退化：Windows 或用不了 inode 的文件系统
+        # 退化：路径尚不存在，或用不了非零 inode 的文件系统（不能把权限/共享冲突
+        # 吞成 path: 键，否则执行侧二次核对会把短暂锁冲突误判为"身份已改变"）。
         return "path:" + overlap_key(p)
 
 

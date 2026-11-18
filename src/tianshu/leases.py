@@ -132,14 +132,27 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def _win_pid_alive(pid: int) -> bool:  # pragma: no cover - 仅 Windows 可测
+def _open_kernel32() -> Any:  # pragma: no cover - 仅 Windows 默认入口
     import ctypes
 
-    kernel32 = ctypes.windll.kernel32
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _win_pid_alive(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _open_kernel32()
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
     if not handle:
         # 5 = ERROR_ACCESS_DENIED：进程在，但没权限。其余视为已退出。
-        return ctypes.get_last_error() == 5 or kernel32.GetLastError() == 5
+        return ctypes.get_last_error() == 5
     try:
         # WAIT_OBJECT_0(0) = 已退出；WAIT_TIMEOUT(258) = 仍在跑
         return kernel32.WaitForSingleObject(handle, 0) == 0x102
@@ -215,11 +228,24 @@ def _parse_etime_ms(text: str) -> int | None:
     return total * 1000
 
 
-def _win_pid_started_at(pid: int) -> int | None:  # pragma: no cover - 仅 Windows
+def _win_pid_started_at(pid: int) -> int | None:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _open_kernel32()
+    filetime_ptr = ctypes.POINTER(wintypes.FILETIME)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        filetime_ptr,
+        filetime_ptr,
+        filetime_ptr,
+        filetime_ptr,
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
     if not handle:
         return None
