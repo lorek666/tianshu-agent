@@ -135,6 +135,9 @@ class _ResumePlan:
 
 class SnapshotStore:
     def __init__(self, root: Path) -> None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(root)
         self.root = root
         self.blob_dir = root / "blobs"
         self.manifest_dir = root / "snapshots"

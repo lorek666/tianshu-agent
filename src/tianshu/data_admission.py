@@ -36,17 +36,25 @@ def _incompatible(message: str) -> AdmissionRefused:
 
 
 def _has_material(path: Path) -> bool:
-    if path.is_symlink():
+    if path.is_symlink() or path.is_junction():
         return True
     if not path.exists():
         return False
     pending = [path]
     while pending:
         entry = pending.pop()
-        if entry.is_symlink() or not entry.is_dir():
+        if entry.is_symlink() or entry.is_junction() or not entry.is_dir():
             return True
         pending.extend(entry.iterdir())
     return False
+
+
+_RESTORE_WITNESS_NAMES = (
+    ".restore-origin.json",
+    ".restore-origin.json.tmp",
+    ".restore-token.json",
+    ".restore-token.json.tmp",
+)
 
 
 def check_new_file_evidence(db_path: Path) -> None:
@@ -62,12 +70,18 @@ def check_new_file_evidence(db_path: Path) -> None:
         raise _incompatible("无法检查原数据库文件") from exc
     try:
         actual = db_path.resolve()
+        for witness_name in _RESTORE_WITNESS_NAMES:
+            witness = actual.parent / witness_name
+            if witness.is_symlink() or witness.is_junction() or witness.exists():
+                raise _incompatible(f"新空主库旁存在恢复控制见证{witness_name}")
         for path in associated_state_paths(actual):
-            if path.is_symlink() or path.exists():
+            if path.is_symlink() or path.is_junction() or path.exists():
                 raise AdmissionRefused("migration_incomplete", "新空主库旁存在迁移历史")
         for suffix in ("-wal", "-journal", "-shm"):
             path = actual.with_name(actual.name + suffix)
-            if path.is_symlink() or (path.exists() and path.stat().st_size > 0):
+            if path.is_symlink() or path.is_junction() or (
+                path.exists() and path.stat().st_size > 0
+            ):
                 raise _incompatible(f"新空主库旁存在历史{suffix}")
         if actual.name == "events.db":
             for name in ("artifacts", "blobs", "memory_blobs"):

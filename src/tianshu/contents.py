@@ -179,6 +179,10 @@ class ContentStore:
         self._log = log
         self._conn = log._conn
         self._blob_dir = Path(blob_dir) if blob_dir is not None else None
+        if self._blob_dir is not None:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(self._blob_dir)
         self._clock = clock or _now_ms
         self._conn.executescript(SCHEMA)
 

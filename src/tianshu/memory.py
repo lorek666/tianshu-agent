@@ -178,6 +178,10 @@ class MemoryProjection(_MemoryApplyMixin):
             self._blob_dir = None
         else:
             self._blob_dir = log.db_path.parent / "memory_blobs"
+        if self._blob_dir is not None:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(self._blob_dir)
         self._clock = clock
         # 向量索引是**可选的可重建派生数据**（`memory_index.MemoryIndex`），
         # 不传就是 FTS-only。这里用 duck typing 而不是 import：向量模块要 import

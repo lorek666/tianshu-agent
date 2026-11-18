@@ -254,6 +254,9 @@ class JournalStore:
     """`artifacts/undo/<run_id>.json` 的读写。所有写入都是原子的。"""
 
     def __init__(self, artifacts_root: Path) -> None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(artifacts_root)
         self.root = Path(artifacts_root)
         self.dir = self.root / "undo"
 

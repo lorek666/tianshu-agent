@@ -1,12 +1,13 @@
-"""恢复 T1 普通连接和批次操作的组合访问。
+"""恢复 T1/B 普通连接、独立材料入口与批次操作的组合访问与双锚点隔离守卫。
 
-固定顺序是 restore gate → canonical namespace → native entity。gate 只覆盖
-anchor/身份固定窗口；namespace 与 entity access 从 SQLite 打开前一直持续到真实
-close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。
+固定顺序是 restore gate → canonical namespace → native entity → registry 短读/事务。
+gate 只覆盖 anchor/身份固定窗口；namespace 与 entity access 从 SQLite 打开前一直持续到
+真实 close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import sqlite3
 from collections.abc import Callable
@@ -27,12 +28,24 @@ from .platform_identity import (
     observe_entity,
     open_entity,
 )
-from .restore_contract import EntityIdentityV1, ReservedV1, SealedHoldV1
+from .restore_contract import (
+    EntityIdentityV1,
+    OriginV1,
+    PublishedHoldV1,
+    PublishIntentV1,
+    ReservedV1,
+    RestoreContractError,
+    SealedHoldV1,
+    StageOwnedV1,
+    TokenV1,
+    domain_digest,
+)
 from .restore_registry import (
     AbsentRegistryObservation,
     PresentRegistryObservation,
     RegistryObservation,
     RestoreRegistry,
+    RestoreRegistryCorrupt,
 )
 
 
@@ -41,7 +54,7 @@ class RestoreAccessError(TianshuError):
 
 
 class RestoreScopeBusy(RestoreAccessError):
-    """普通数据库落入某个尚未终结的恢复批次范围。"""
+    """普通数据库或材料路径落入某个尚未终结/尚未解除隔离的恢复批次范围。"""
 
 
 def _default_registry() -> RestoreRegistry:
@@ -76,38 +89,345 @@ def _in_scope(target: Path, root: Path) -> bool:
     return False
 
 
+def _read_regular_single_link_bytes(path: Path, label: str) -> tuple[bytes, EntityIdentityV1]:
+    try:
+        handle = open_entity(path, "file")
+    except NativeEntityError as exc:
+        raise RestoreRegistryCorrupt(f"{label}不是普通非链接文件：{path}") from exc
+    try:
+        if handle.link_count != 1:
+            raise RestoreRegistryCorrupt(f"{label}必须是单硬链接普通文件：{path}")
+        identity = handle.identity
+        raw = path.read_bytes()
+        handle.verify_path(path)
+        return raw, identity
+    except OSError as exc:
+        raise RestoreRegistryCorrupt(f"{label}无法读取：{path}") from exc
+    finally:
+        handle.close()
+
+
+def _candidate_directories(target: Path) -> list[Path]:
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    probes = [target]
+    try:
+        resolved = target.resolve(strict=False)
+        if str(resolved) != str(target):
+            probes.append(resolved)
+    except (OSError, RuntimeError):
+        pass
+    for probe in probes:
+        chain = [probe, *probe.parents]
+        for entry in chain:
+            key = overlap_key(str(entry))
+            if key in seen:
+                continue
+            try:
+                if entry.is_symlink() or entry.is_junction() or not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            seen.add(key)
+            ordered.append(entry)
+    return ordered
+
+
+def _live_ancestor_suffixes(
+    target: Path,
+) -> tuple[list[tuple[EntityIdentityV1, tuple[str, ...]]], set[EntityIdentityV1]]:
+    pairs: list[tuple[EntityIdentityV1, tuple[str, ...]]] = []
+    dir_identities: set[EntityIdentityV1] = set()
+    probes = [target]
+    try:
+        resolved = target.resolve(strict=False)
+        if str(resolved) != str(target):
+            probes.append(resolved)
+    except (OSError, RuntimeError):
+        pass
+    for probe in probes:
+        current = probe
+        suffix: list[str] = []
+        while True:
+            try:
+                if not current.is_symlink() and not current.is_junction() and current.is_dir():
+                    ident = observe_entity(current, "directory")
+                    dir_identities.add(ident)
+                    pairs.append((ident, tuple(reversed(suffix))))
+            except (NativeEntityError, OSError):
+                pass
+            if current.parent == current:
+                break
+            suffix.append(current.name)
+            current = current.parent
+    return pairs, dir_identities
+
+
+def _batch_histories(observation: RegistryObservation) -> dict[str, list]:
+    if isinstance(observation, AbsentRegistryObservation):
+        return {}
+    histories: dict[str, list] = {}
+    for event in observation.events:
+        histories.setdefault(event.batch_id, []).append(event)
+    return histories
+
+
+def _placement_matches_target(
+    reserved: ReservedV1,
+    owned: StageOwnedV1 | None,
+    ancestor_suffixes: list[tuple[EntityIdentityV1, tuple[str, ...]]],
+) -> bool:
+    placement = reserved.placement
+    final_root = Path(placement.canonical_root.text)
+    parent_path = final_root.parent
+    ancestors = list(placement.existing_ancestors)
+    if owned is not None:
+        ancestors.extend(owned.created_parent_chain)
+        ancestors.append(owned.parent)
+    for anc_ref in ancestors:
+        anc_path = Path(anc_ref.path.text)
+        try:
+            rel_to_parent = parent_path.relative_to(anc_path).parts
+        except ValueError:
+            continue
+        expected_final = tuple(overlap_key(s) for s in (*rel_to_parent, placement.final_name))
+        expected_stage = tuple(overlap_key(s) for s in (*rel_to_parent, reserved.stage_name))
+        prefix_len = len(expected_final)
+        for ident, suffix in ancestor_suffixes:
+            if ident != anc_ref.identity or len(suffix) < prefix_len:
+                continue
+            actual_prefix = tuple(overlap_key(s) for s in suffix[:prefix_len])
+            if actual_prefix in (expected_final, expected_stage):
+                return True
+    return False
+
+
+def _verify_local_witnesses(
+    observation: RegistryObservation,
+    target: Path,
+    histories: dict[str, list],
+) -> None:
+    for cand in _candidate_directories(target):
+        for tmp_name in (".restore-token.json.tmp", ".restore-origin.json.tmp"):
+            tmp_path = cand / tmp_name
+            try:
+                has_tmp = tmp_path.is_symlink() or tmp_path.is_junction() or tmp_path.exists()
+            except OSError as exc:
+                raise RestoreRegistryCorrupt(f"恢复临时见证状态不可判定：{tmp_path}") from exc
+            if has_tmp:
+                try:
+                    cand_id = observe_entity(cand, "directory")
+                except NativeEntityError as exc:
+                    raise RestoreRegistryCorrupt(f"恢复见证目录不可核验：{cand}") from exc
+                for events in histories.values():
+                    if events[-1].kind in ("aborted", "published_hold"):
+                        continue
+                    owned_ev = next((e for e in events if e.kind == "stage_owned"), None)
+                    if owned_ev is not None and owned_ev.payload.stage.identity == cand_id:
+                        raise RestoreScopeBusy(f"路径处于未完成的恢复暂存范围：{target}")
+                raise RestoreRegistryCorrupt(f"存在未登记或孤立的恢复临时见证：{tmp_path}")
+
+        origin_path = cand / ".restore-origin.json"
+        token_path = cand / ".restore-token.json"
+        try:
+            has_origin = (
+                origin_path.is_symlink() or origin_path.is_junction() or origin_path.exists()
+            )
+            has_token = token_path.is_symlink() or token_path.is_junction() or token_path.exists()
+        except OSError as exc:
+            raise RestoreRegistryCorrupt(f"恢复控制见证状态不可判定：{cand}") from exc
+
+        if has_origin:
+            raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
+            try:
+                origin = OriginV1.from_bytes(raw_origin)
+            except (ValueError, RestoreContractError) as exc:
+                raise RestoreRegistryCorrupt(f".restore-origin.json 损坏：{origin_path}") from exc
+            if isinstance(observation, AbsentRegistryObservation):
+                raise RestoreRegistryCorrupt(
+                    f"存在 .restore-origin.json 但固定 RestoreRegistry 缺失：{origin_path}"
+                )
+            if observation.meta.registry_id != origin.registry_id:
+                raise RestoreRegistryCorrupt("OriginV1.registry_id 与固定 RestoreRegistry 不符")
+            batch_events = histories.get(origin.batch_id)
+            if not batch_events or batch_events[-1].kind == "aborted":
+                raise RestoreRegistryCorrupt("OriginV1 指向缺失或已中止的恢复批次")
+            sealed_ev = next((e for e in batch_events if e.kind == "sealed_hold"), None)
+            if sealed_ev is None or type(sealed_ev.payload) is not SealedHoldV1:
+                raise RestoreRegistryCorrupt("OriginV1 对应批次缺少 sealed_hold")
+            if (
+                domain_digest("event", sealed_ev) != origin.sealed_sha256
+                or sealed_ev.payload.binding_sha256 != origin.binding_sha256
+            ):
+                raise RestoreRegistryCorrupt("OriginV1 摘要与 registry sealed_hold 不符")
+            try:
+                cand_id = observe_entity(cand, "directory")
+            except NativeEntityError as exc:
+                raise RestoreRegistryCorrupt(f"无法核验恢复根实体身份：{cand}") from exc
+            if cand_id != sealed_ev.payload.future_root_identity:
+                raise RestoreRegistryCorrupt("OriginV1 所在目录实体身份与 sealed_hold 不符")
+            if has_token:
+                raw_token, _ = _read_regular_single_link_bytes(token_path, ".restore-token.json")
+                try:
+                    token = TokenV1.from_bytes(raw_token)
+                except (ValueError, RestoreContractError) as exc:
+                    raise RestoreRegistryCorrupt(f".restore-token.json 损坏：{token_path}") from exc
+                owned_ev = next((e for e in batch_events if e.kind == "stage_owned"), None)
+                if (
+                    owned_ev is None
+                    or type(owned_ev.payload) is not StageOwnedV1
+                    or base64.b64encode(raw_token).decode("ascii")
+                    != owned_ev.payload.token_bytes_b64
+                ):
+                    raise RestoreRegistryCorrupt(".restore-token.json 与 stage_owned 绑定字节不符")
+                _ = token
+            raise RestoreScopeBusy(
+                f"数据根处于恢复持久隔离态（batch={origin.batch_id}, "
+                f"phase={batch_events[-1].kind}）：{target}"
+            )
+
+        if has_token:
+            raw_token, _ = _read_regular_single_link_bytes(token_path, ".restore-token.json")
+            try:
+                token = TokenV1.from_bytes(raw_token)
+            except (ValueError, RestoreContractError) as exc:
+                raise RestoreRegistryCorrupt(f".restore-token.json 损坏：{token_path}") from exc
+            if isinstance(observation, AbsentRegistryObservation):
+                raise RestoreRegistryCorrupt(
+                    f"存在 .restore-token.json 但固定 RestoreRegistry 缺失：{token_path}"
+                )
+            if observation.meta.registry_id != token.registry_id:
+                raise RestoreRegistryCorrupt("TokenV1.registry_id 与固定 RestoreRegistry 不符")
+            batch_events = histories.get(token.batch_id)
+            if not batch_events or batch_events[-1].kind in ("aborted", "published_hold"):
+                raise RestoreRegistryCorrupt(
+                    "存在孤立 .restore-token.json（缺少 origin 或批次已终结）"
+                )
+            owned_ev = next((e for e in batch_events if e.kind == "stage_owned"), None)
+            if (
+                owned_ev is None
+                or type(owned_ev.payload) is not StageOwnedV1
+                or base64.b64encode(raw_token).decode("ascii") != owned_ev.payload.token_bytes_b64
+            ):
+                raise RestoreRegistryCorrupt(".restore-token.json 与 stage_owned 绑定字节不符")
+            try:
+                cand_id = observe_entity(cand, "directory")
+            except NativeEntityError as exc:
+                raise RestoreRegistryCorrupt(f"无法核验暂存目录身份：{cand}") from exc
+            if cand_id != owned_ev.payload.stage.identity:
+                raise RestoreRegistryCorrupt(".restore-token.json 所在目录实体与 stage_owned 不符")
+            raise RestoreScopeBusy(
+                f"路径处于恢复暂存范围（batch={token.batch_id}, "
+                f"phase={batch_events[-1].kind}）：{target}"
+            )
+
+
 def _active_scope_blocks(
     observation: RegistryObservation,
     target: Path,
     existing_identity: EntityIdentityV1 | None,
 ) -> bool:
+    histories = _batch_histories(observation)
+    _verify_local_witnesses(observation, target, histories)
     if isinstance(observation, AbsentRegistryObservation):
         return False
-    histories: dict[object, list] = {}
-    for event in observation.events:
-        histories.setdefault(event.batch_id, []).append(event)
+
+    ancestor_suffixes, dir_identities = _live_ancestor_suffixes(target)
+    target_keys = _target_scope_keys(target)
+
     for events in histories.values():
-        if events[-1].kind == "aborted":
+        tail = events[-1]
+        if tail.kind == "aborted":
             continue
-        reserved = next((event for event in events if event.kind == "reserved"), None)
-        if reserved is None or type(reserved.payload) is not ReservedV1:
-            raise RestoreAccessError("registry活动批次缺少reserved本体")
-        final_root = Path(reserved.payload.placement.canonical_root.text)
-        parent = Path(reserved.payload.placement.canonical_root.text).parent
-        stage = parent / reserved.payload.stage_name
-        if _in_scope(target, final_root) or _in_scope(target, stage):
-            return True
-        for event in events:
-            if type(event.payload) is SealedHoldV1:
-                binding = event.payload.binding
-                if overlap_key(binding.final_database.text) in _target_scope_keys(target):
-                    return True
-                if (
-                    existing_identity is not None
-                    and binding.database_identity == existing_identity
-                ):
-                    return True
+        reserved_ev = next((event for event in events if event.kind == "reserved"), None)
+        if reserved_ev is None or type(reserved_ev.payload) is not ReservedV1:
+            raise RestoreRegistryCorrupt("registry活动批次缺少reserved本体")
+        reserved = reserved_ev.payload
+        owned_ev = next((event for event in events if event.kind == "stage_owned"), None)
+        owned = (
+            owned_ev.payload
+            if owned_ev is not None and type(owned_ev.payload) is StageOwnedV1
+            else None
+        )
+        sealed_ev = next((event for event in events if event.kind == "sealed_hold"), None)
+        sealed = (
+            sealed_ev.payload
+            if sealed_ev is not None and type(sealed_ev.payload) is SealedHoldV1
+            else None
+        )
+
+        final_root = Path(reserved.placement.canonical_root.text)
+        stage = final_root.parent / reserved.stage_name
+        matched = (
+            _in_scope(target, final_root)
+            or _in_scope(target, stage)
+            or _placement_matches_target(reserved, owned, ancestor_suffixes)
+        )
+        if not matched and owned is not None and owned.stage.identity in dir_identities:
+            matched = True
+        if not matched and sealed is not None:
+            binding = sealed.binding
+            if overlap_key(binding.final_database.text) in target_keys:
+                matched = True
+            elif existing_identity is not None and binding.database_identity == existing_identity:
+                matched = True
+
+        if not matched:
+            continue
+
+        if tail.kind == "published_hold" and type(tail.payload) is PublishedHoldV1:
+            intent_ev = next((e for e in events if e.kind == "publish_intent"), None)
+            if intent_ev is None or type(intent_ev.payload) is not PublishIntentV1:
+                raise RestoreRegistryCorrupt("published_hold 缺少 publish_intent")
+            expected_root_id = tail.payload.final_root.identity
+            live_root = final_root
+            if not live_root.exists():
+                for cand in _candidate_directories(target):
+                    try:
+                        if observe_entity(cand, "directory") == expected_root_id:
+                            live_root = cand
+                            break
+                    except NativeEntityError:
+                        continue
+            try:
+                actual_root_id = observe_entity(live_root, "directory")
+            except NativeEntityError as exc:
+                raise RestoreRegistryCorrupt(
+                    f"registry 记录 published_hold 但数据根缺失或被替换：{live_root}"
+                ) from exc
+            if actual_root_id != expected_root_id:
+                raise RestoreRegistryCorrupt(f"published_hold 数据根实体身份已被替换：{live_root}")
+            origin_path = live_root / ".restore-origin.json"
+            raw_origin, _ = _read_regular_single_link_bytes(origin_path, ".restore-origin.json")
+            expected_origin = base64.b64decode(intent_ev.payload.origin_bytes_b64)
+            if raw_origin != expected_origin:
+                raise RestoreRegistryCorrupt(
+                    "published_hold 的 .restore-origin.json 字节与 registry 绑定不符"
+                )
+        return True
     return False
+
+
+def ensure_path_not_held(
+    path: Path | str,
+    *,
+    registry: RestoreRegistry | None = None,
+) -> None:
+    """独立材料/后台/维护入口的隔离守卫；不反向抢 restore_gate，遵守全局锁序。"""
+
+    if str(path) == ":memory:":
+        return
+    target = _absolute_target(Path(path))
+    reg = _registry_factory() if registry is None else registry
+    observed = reg.observe()
+    existing_identity: EntityIdentityV1 | None = None
+    try:
+        if not target.is_symlink() and not target.is_junction() and target.is_file():
+            existing_identity = observe_entity(target, "file")
+    except (NativeEntityError, OSError):
+        existing_identity = None
+    if _active_scope_blocks(observed, target, existing_identity):
+        raise RestoreScopeBusy(f"路径落入尚未终结/尚未解除隔离的恢复范围：{target}")
 
 
 def _revalidate_registry_under_gate(
@@ -360,5 +680,6 @@ __all__ = [
     "RestoreDatabaseAccess",
     "RestoreScopeBusy",
     "acquire_restore_database_access",
+    "ensure_path_not_held",
     "verify_sqlite_main",
 ]

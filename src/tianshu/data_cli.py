@@ -47,6 +47,48 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     plan.add_argument("backup", type=Path)
     plan.add_argument("--data-root", type=Path, required=True)
     plan.add_argument("--json", action="store_true")
+
+    apply_cmd = commands.add_parser(
+        "restore-apply",
+        help="按已核验计划执行受管导入并进入 published_hold 持久隔离态",
+    )
+    apply_cmd.add_argument("backup", type=Path)
+    apply_cmd.add_argument("--data-root", type=Path, required=True)
+    apply_cmd.add_argument("--expect-plan", required=True, dest="expect_plan")
+    apply_cmd.add_argument("--json", action="store_true")
+
+    review_cmd = commands.add_parser(
+        "restore-review",
+        help="对处于 published_hold 的数据根执行零副作用只读复核（默认全部正文脱敏）",
+    )
+    review_cmd.add_argument("--data-root", type=Path, required=True)
+    review_cmd.add_argument("--batch", default=None, dest="batch_id")
+    review_cmd.add_argument("--later-backup", type=Path, default=None, dest="later_backup")
+    review_cmd.add_argument(
+        "--body-scope",
+        action="append",
+        default=None,
+        dest="body_scopes",
+        help="显式披露指定 BodySelectorV1 槽位的原文（可重复）",
+    )
+    review_cmd.add_argument("--json", action="store_true")
+
+    resume_cmd = commands.add_parser(
+        "restore-resume",
+        help="续做同一恢复批次（若有 abort_intent 则只续清理，否则推进至 published_hold）",
+    )
+    resume_cmd.add_argument("--data-root", type=Path, required=True)
+    resume_cmd.add_argument("--batch", default=None, dest="batch_id")
+    resume_cmd.add_argument("--json", action="store_true")
+
+    abort_cmd = commands.add_parser(
+        "restore-abort",
+        help="中止尚未进入 publish_intent 的恢复批次并按冻结计划清理暂存目录",
+    )
+    abort_cmd.add_argument("--data-root", type=Path, required=True)
+    abort_cmd.add_argument("--batch", default=None, dest="batch_id")
+    abort_cmd.add_argument("--json", action="store_true")
+
     migration = commands.add_parser("migrate", help="使用已验证备份显式迁移标准数据根")
     migration.add_argument("--data-root", type=Path, required=True)
     migration.add_argument("--backup", type=Path, required=True)
@@ -267,12 +309,17 @@ def _reconciliation(
 
 
 def _restore_plan(backup: Path, data_root: Path) -> dict[str, Any]:
-    backup = backup.resolve()
-    target = data_root.resolve()
-    verification = verify_backup(backup)
+    from . import restore_manager
+    from .restore_contract import NativePathCodecV1
+
+    raw_backup = Path(backup)
+    raw_target = Path(data_root)
+    resolved_backup = raw_backup.resolve()
+    resolved_target = raw_target.resolve()
+    verification = verify_backup(raw_backup)
     report: dict[str, Any] = {
         "operation": "restore-plan", "ok": False, "apply_supported": False,
-        "backup": str(backup), "data_root": str(target), "source_path": None,
+        "backup": str(resolved_backup), "data_root": str(resolved_target), "source_path": None,
         "same_path": False, "target_clean": False,
         "verification": verification.to_dict(), "problems": list(verification.problems),
         "memory_reactivation": "requires_quarantine_and_review",
@@ -289,11 +336,13 @@ def _restore_plan(backup: Path, data_root: Path) -> dict[str, Any]:
         ],
     }
     try:
-        report["target_clean"] = not target.exists() or (
-            target.is_dir() and not any(target.iterdir())
-        )
+        try:
+            restore_manager._inspect_original_target(resolved_target, NativePathCodecV1())
+            report["target_clean"] = not raw_target.is_symlink() and not raw_target.is_junction()
+        except restore_manager.RestoreOperationError:
+            report["target_clean"] = False
         if not report["target_clean"]:
-            report["problems"].append("恢复目标不是干净根：只接受不存在或空目录")
+            report["problems"].append("恢复目标不是干净根：只接受不存在或全空目录骨架")
         manifest = verification.manifest
         if manifest is not None:
             source = Path(manifest.source_path)
@@ -307,22 +356,33 @@ def _restore_plan(backup: Path, data_root: Path) -> dict[str, Any]:
             if not source.is_absolute():
                 report["problems"].append("备份原数据根不是绝对路径，无法判定恢复位置")
             else:
-                # source_path 已在备份创建时 canonicalize；不能再跟随活源链接，
-                # 否则原根被替换成链接会把不同恢复目标误判为同一路径。
-                report["same_path"] = overlap_key(str(source)) == overlap_key(
-                    str(target)
+                allowed = {overlap_key(str(source))} | {
+                    overlap_key(alias)
+                    for alias in manifest.source_aliases
+                    if isinstance(alias, str) and Path(alias).is_absolute()
+                }
+                report["same_path"] = (
+                    not raw_target.is_symlink()
+                    and not raw_target.is_junction()
+                    and overlap_key(str(resolved_target)) in allowed
                 )
                 if not report["same_path"]:
                     report["problems"].append("恢复目标与备份原数据根不同；尚不支持换路径恢复")
             if manifest.db_user_version > SCHEMA_VERSION:
                 report["problems"].append("备份结构版本高于本程序；需要匹配版本的程序")
             if verification.ok and not report["problems"]:
-                report["reconciliation"] = _reconciliation(
-                    backup, source, source_aliases=manifest.source_aliases,
-                )
+                planned = restore_manager.plan(raw_backup, raw_target)
+                report["reconciliation"] = planned.legacy_reconciliation.to_legacy_dict()
+                report["plan_sha256"] = planned.plan_sha256
+                report["plan"] = planned.to_dict()
+                report["apply_supported"] = planned.apply_supported
+    except restore_manager.RestoreOperationError as exc:
+        report["problems"].append(f"无法完成恢复核对：{exc.failure.message}")
     except (BackupError, TianshuError, OSError, ValueError, TypeError, sqlite3.Error) as exc:
         report["problems"].append(f"无法完成恢复核对：{exc}")
     report["ok"] = not report["problems"]
+    if not report["ok"]:
+        report["apply_supported"] = False
     return report
 
 
@@ -652,6 +712,9 @@ def _audit_candidates(conn: sqlite3.Connection, report_tables: dict[str, Any]) -
 
 
 def _retention_audit(data_root: Path) -> dict[str, Any]:
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     root = data_root.resolve()
     db = root / "events.db"
     # 与 backup 同款前置校验：不能把不存在的根变成新实例。
@@ -788,7 +851,120 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
         print(note)
 
 
+def _redact_restore_failure(failure: Any) -> Any:
+    from dataclasses import replace
+
+    redacted_cause = (
+        replace(failure.cause, message=redact(failure.cause.message))
+        if failure.cause is not None
+        else None
+    )
+    return replace(failure, message=redact(failure.message), cause=redacted_cause)
+
+
+def _print_restore_response(
+    response: Any, *, as_json: bool, has_disclosed_body: bool = False
+) -> None:
+    if as_json:
+        _ = has_disclosed_body
+        print(response.to_bytes().decode("ascii"))
+        return
+    payload = response.to_dict()
+    op = payload["operation"]
+    if payload["ok"]:
+        res = payload["result"]
+        if op == "restore-review":
+            print(
+                f"只读恢复复核通过（仍处于隔离态 published_hold）：batch={res['batch_id']}"
+            )
+            print(f"数据根：{res['data_root']['text']}")
+            print(f"Binding SHA256：{res['binding_sha256']}")
+            print(f"Scope SHA256：{res['scope_sha256']}")
+            print(f"对象总数：{len(res['objects'])}；已知后续变化：{len(res['known_later_changes'])}")
+            print(f"后续遗忘/擦除/删除历史：{res['later_forget_delete_history']}")
+        else:
+            print(
+                f"{op} 完成：batch={res['batch_id']} phase={res['phase']} held={res['held']}"
+            )
+            print(f"数据根：{res['data_root']['text']}")
+            if res.get("review_command"):
+                print("下一步复核命令：" + " ".join(res["review_command"]))
+    else:
+        err = payload["error"]
+        print(redact(f"{op} 失败 [{err['category']}]：{err['message']}"))
+        if err.get("batch_id"):
+            print(f"批次：{err['batch_id']}（阶段：{err['phase']}）")
+        for cmd in err.get("next_commands", []):
+            print("建议命令：" + " ".join(cmd))
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.data_action in ("restore-apply", "restore-review", "restore-resume", "restore-abort"):
+        from . import restore_manager
+        from .restore_contract import RestoreCauseV1, RestoreFailureV1, RestoreResponseV1
+
+        op = args.data_action
+        has_disclosed = False
+        try:
+            if op == "restore-apply":
+                res = restore_manager.apply(
+                    args.backup,
+                    args.data_root,
+                    expect_plan_sha256=args.expect_plan,
+                )
+            elif op == "restore-review":
+                scopes = tuple(args.body_scopes or ())
+                has_disclosed = bool(scopes)
+                res = restore_manager.review(
+                    args.data_root,
+                    batch_id=args.batch_id,
+                    later_backup=args.later_backup,
+                    body_scopes=scopes,
+                )
+            elif op == "restore-resume":
+                res = restore_manager.resume(args.data_root, batch_id=args.batch_id)
+            else:
+                res = restore_manager.abort(args.data_root, batch_id=args.batch_id)
+            response = RestoreResponseV1(
+                version=1,
+                operation=op,
+                ok=True,
+                result=res,
+                error=None,
+            )
+            _print_restore_response(response, as_json=args.json, has_disclosed_body=has_disclosed)
+            return 0
+        except restore_manager.RestoreOperationError as exc:
+            response = RestoreResponseV1(
+                version=1,
+                operation=op,
+                ok=False,
+                result=exc.partial_review if op == "restore-review" else None,
+                error=_redact_restore_failure(exc.failure),
+            )
+            _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
+            return 2
+        except (TianshuError, OSError, ValueError) as exc:
+            fallback = RestoreFailureV1(
+                category="restore_failed",
+                message=redact(str(exc)),
+                batch_id=None,
+                phase=None,
+                plan_sha256=None,
+                retained_paths=(),
+                next_commands=(),
+                cause=RestoreCauseV1(type(exc).__name__, redact(str(exc))),
+            )
+            response = RestoreResponseV1(
+                version=1,
+                operation=op,
+                ok=False,
+                result=None,
+                error=fallback,
+            )
+            _print_restore_response(response, as_json=args.json, has_disclosed_body=False)
+            return 2
+
     if args.data_action == "backup":
         report = _backup(args.data_root, args.dest)
         code = 0

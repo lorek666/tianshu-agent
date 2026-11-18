@@ -280,6 +280,9 @@ def acquire_lock(data_root: Path) -> DaemonLock:
     - 新建成功后**再探一次**：极小窗口里别人已经 bind 就退让并复用。
     """
     root = Path(data_root)
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(root)
     run_dir = ipc.run_dir(root)
     run_dir.mkdir(parents=True, exist_ok=True)
     # 先把认证密钥落好：Server 构造时要用它，两个进程同时首次启动由它内部的

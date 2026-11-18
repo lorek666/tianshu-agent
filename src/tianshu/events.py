@@ -26,7 +26,11 @@ from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
 from .maintenance import DatabaseAccess, MaintenanceConnection
-from .restore_access import acquire_restore_database_access, verify_sqlite_main
+from .restore_access import (
+    acquire_restore_database_access,
+    ensure_path_not_held,
+    verify_sqlite_main,
+)
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -294,6 +298,8 @@ class EventLog:
         心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
         那条），所以关掉这个检查是安全的。除此之外不要传它。
         """
+        if blob_dir is not None:
+            ensure_path_not_held(blob_dir)
         access = acquire_restore_database_access(
             db_path,
             prewrite_guard=lambda: check_new_file_evidence(db_path),

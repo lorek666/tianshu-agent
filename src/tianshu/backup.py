@@ -70,7 +70,13 @@ _PARTIAL_TAG = ".partial-"
 
 #: 备份排除的数据根顶层条目（相对 data_root）。
 EXCLUDED_TOP_LEVEL = {"run", "logs"}
-EXCLUDED_FILE_PREFIXES = ("events.db-wal", "events.db-shm", "metrics.jsonl")
+EXCLUDED_FILE_PREFIXES = (
+    "events.db-wal",
+    "events.db-shm",
+    "metrics.jsonl",
+    ".restore-token.json",
+    ".restore-origin.json",
+)
 
 #: 保留期声明（§8.5）。**声明不是自动 GC**：清理必须人工触发，且被引用的
 #: 材料（快照 manifest / 事件 payload_ref / 未完成撤销 journal）永远不可清理。
@@ -1047,6 +1053,10 @@ def inspect_writers(data_root: Path) -> dict[str, Any]:
 
 def create_backup(data_root: Path, dest: Path) -> BackupManifest:
     """在同一一致点导出整个数据根；原子发布到 `dest`，永不覆盖已有备份。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
+    ensure_path_not_held(dest)
     data_root = Path(data_root).resolve()
     dest = Path(dest).resolve()
     if not data_root.is_dir():
@@ -1543,13 +1553,19 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
-    """把校验通过的备份恢复到**干净根**；失败时原目标保持原样。"""
-    dest = Path(dest).resolve()
-    data_root = Path(data_root).resolve()
-    verification = verify_backup(dest)
+    """受管备份导入入口：严格通过 Restore B 受管协议（plan -> apply -> published_hold）落地。
+
+    不再存在绕过 RestoreRegistry 与双锚点见证的直接 copy/rename 旁路；恢复完成后目标根处于
+    `published_hold` 持久隔离态，须经只读复核与显式解除后才允许进入普通业务栈。
+    """
+    raw_dest = Path(dest)
+    raw_target = Path(data_root)
+    resolved_dest = raw_dest.resolve()
+    resolved_target = raw_target.resolve()
+    verification = verify_backup(resolved_dest)
     manifest = verification.require_ok()
 
-    # 结构版本兼容性：备份来自更新版本 → 拒绝（不按猜的语义恢复）。
+    from . import restore_manager
     from .migrate import SCHEMA_VERSION  # 延迟导入，避免 backup ↔ migrate 循环
 
     if manifest.db_user_version > SCHEMA_VERSION:
@@ -1564,51 +1580,36 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
             ],
         )
 
-    if not _target_is_clean(data_root):
+    if not _target_is_clean(resolved_target):
         raise BackupRefused(
-            f"恢复目标不是干净根：{data_root}。只允许恢复到不存在或空目录，"
+            f"恢复目标不是干净根：{resolved_target}。只允许恢复到不存在或空目录，"
             "避免覆盖现有数据；请先人工移走原数据再恢复。"
         )
     source_path = Path(manifest.source_path).resolve()
-    if data_root != source_path:
+    if resolved_target != source_path:
         raise RestoreRefused(
-            f"恢复目标与备份记录的原数据根不一致：目标 {data_root}，"
-            f"备份来自 {source_path}。事件 payload_ref 与快照 blob_ref 都是绝对"
-            "路径，换路径恢复会让引用指向旧位置（读旧数据或读不到）。"
-            "请恢复到原路径；若必须换路径，先恢复到原路径，等支持重定位的版本"
-            "落地后再搬迁（本轮未实现）。"
+            f"恢复目标与备份记录的原数据根不一致：目标 {resolved_target}，"
+            f"备份来自 {source_path}。只能恢复到原数据根（原路径）。"
         )
 
-    parent = data_root.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp = parent / f".{data_root.name}.restore-{uuid.uuid4().hex[:8]}"
-    tmp.mkdir()
-    restored: list[BackupFile] = []
-    total = 0
     try:
-        for entry in manifest.files:
-            rel = _validate_rel(entry.path)
-            src = dest / rel
-            dst = tmp / rel
-            sha, size = _copy_file_verified(src, dst)
-            if sha != entry.sha256 or size != entry.size:
-                raise RestoreFailed(
-                    f"恢复时 {rel} 与清单不符（清单 {entry.sha256[:12]}…/{entry.size}，"
-                    f"实际 {sha[:12]}…/{size}）：中止，原目标未改动"
-                )
-            restored.append(entry)
-            total += size
-        _fsync_tree(tmp)
-        _fsync_dir(tmp)
-        if data_root.exists():
-            data_root.rmdir()  # 已确认是空目录
-        os.replace(tmp, data_root)
-        _fsync_dir(parent)
-    except BaseException:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
+        planned = restore_manager.plan(raw_dest, raw_target)
+        applied = restore_manager.apply(
+            raw_dest,
+            raw_target,
+            expect_plan_sha256=planned.plan_sha256,
+        )
+    except restore_manager.RestoreOperationError as exc:
+        if isinstance(exc.raw_cause, OSError):
+            raise exc.raw_cause from exc
+        if exc.failure.category == "incompatible":
+            raise RestoreRefused(exc.failure.message) from exc
+        raise RestoreFailed(exc.failure.message) from exc
 
-    warnings: list[str] = []
+    warnings: list[str] = [
+        f"备份已导入受管持久隔离态（batch={applied.batch_id}, phase={applied.phase}）；"
+        "请先执行 tianshu data restore-review 只读复核。"
+    ]
     if manifest.db_user_version < SCHEMA_VERSION:
         warnings.append(
             f"备份结构版本 {manifest.db_user_version} 小于当前 {SCHEMA_VERSION}："
@@ -1616,7 +1617,7 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
         )
     if manifest.references.get("missing"):
         warnings.append("备份时已有缺失引用（见 backup.json references.missing）")
-    reconciliation = _reconcile(data_root)
+    reconciliation = planned.legacy_reconciliation.to_legacy_dict()
     if reconciliation["pending_intents"]:
         warnings.append(
             "恢复后仍有未决 intent（有 intent 无 result）：恢复证据在后，需人工核对"
@@ -1628,10 +1629,10 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
         )
     return RestoreReport(
         ok=True,
-        data_root=data_root,
+        data_root=resolved_target,
         manifest=manifest,
-        files_restored=len(restored),
-        bytes_restored=total,
+        files_restored=applied.files_restored,
+        bytes_restored=applied.bytes_restored,
         reconciliation=reconciliation,
         warnings=warnings,
     )
@@ -1667,6 +1668,9 @@ def collect_references(data_root: Path) -> ReferenceIndex:
     哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
     留一份多余 blob 严重得多；本函数不执行删除。
     """
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     data_root = Path(data_root).resolve()
     db = data_root / "events.db"
     if not db.is_file():
@@ -1760,6 +1764,9 @@ class UsageReport:
 
 def usage_report(data_root: Path) -> UsageReport:
     """按保留期声明的类别统计磁盘占用，并对照声明额度。不清理任何东西。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     data_root = Path(data_root).resolve()
     sizes = {
         "event_log": 0,

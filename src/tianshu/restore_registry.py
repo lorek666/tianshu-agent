@@ -562,13 +562,27 @@ class RestoreRegistry:
             return current
         gate = acquire_restore_gate(exclusive=True)
         try:
-            current = self.observe()
-            if current.present:
-                return current
-            selected_id = str(uuid.uuid4()) if registry_id is None else registry_id
-            self._initialize_absent(selected_id)
+            return self.initialize_under_gate(gate, registry_id=registry_id)
         finally:
             gate.close()
+
+    def initialize_under_gate(
+        self,
+        gate: DatabaseAccess,
+        *,
+        registry_id: str | None = None,
+    ) -> PresentRegistryObservation:
+        if (
+            not isinstance(gate, DatabaseAccess)
+            or not gate.active
+            or not gate.authorizes_registry_write
+        ):
+            raise RestoreRegistryBusy("初始化 registry 必须持有活跃的独占 restore gate")
+        current = self.observe()
+        if current.present:
+            return current
+        selected_id = str(uuid.uuid4()) if registry_id is None else registry_id
+        self._initialize_absent(selected_id)
         result = self.observe()
         if not result.present:
             raise RestoreRegistryCorrupt("registry初始化返回后仍不存在")

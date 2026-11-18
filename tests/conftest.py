@@ -22,13 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from tianshu import maintenance, sandbox
+from tianshu import maintenance, restore_registry, sandbox
 
 #: 用户级权威根的环境变量名。测试里必须钉死到 tmp_path：默认实现是
 #: `~/.tianshu/authority`，不钉的话跑一次测试就会往开发者真实家目录写阻断
 #: 记录，用例之间还会互相串味（A 用例挡住的目录在 B 用例里仍然挡着）。
 AUTHORITY_ROOT_ENV = "TIANSHU_AUTHORITY_ROOT"
 TEST_LOCK_ROOT_ENV = "TIANSHU_TEST_LOCK_ROOT"
+TEST_REGISTRY_HOME_ENV = "PYTEST_TIANSHU_REGISTRY_HOME"
 TEST_STARTUP_DIR = Path(__file__).resolve().parent / "_startup"
 SOURCE_DIR = Path(__file__).resolve().parents[1] / "src"
 
@@ -96,11 +97,16 @@ def _pin_maintenance_lock_root(tmp_path_factory):
     # 独立于当前用例的 `tmp_path`：部分测试会快照该目录并断言失败路径不产生
     # 任何文件，测试自身的锁文件不能混入被测目录。
     lock_root = tmp_path_factory.mktemp("maintenance-lock-root")
+    registry_home = tmp_path_factory.mktemp("restore-registry-home")
     original_lock_root = maintenance._lock_root
+    original_user_home = restore_registry._user_home
     previous_test_root = os.environ.get(TEST_LOCK_ROOT_ENV)
+    previous_registry_home = os.environ.get(TEST_REGISTRY_HOME_ENV)
     previous_pythonpath = os.environ.get("PYTHONPATH")
     maintenance._lock_root = lambda: lock_root
+    restore_registry._user_home = lambda: registry_home
     os.environ[TEST_LOCK_ROOT_ENV] = str(lock_root)
+    os.environ[TEST_REGISTRY_HOME_ENV] = str(registry_home)
     existing = previous_pythonpath
     startup_paths = [str(TEST_STARTUP_DIR), str(SOURCE_DIR)]
     if existing:
@@ -112,10 +118,15 @@ def _pin_maintenance_lock_root(tmp_path_factory):
         # 这是测试套件的基础隔离，不能被测试内部的 `monkeypatch.undo()` 一并
         # 撤销；否则同一用例在 undo 之后又会撞到生产用户级 gate。
         maintenance._lock_root = original_lock_root
+        restore_registry._user_home = original_user_home
         if previous_test_root is None:
             os.environ.pop(TEST_LOCK_ROOT_ENV, None)
         else:
             os.environ[TEST_LOCK_ROOT_ENV] = previous_test_root
+        if previous_registry_home is None:
+            os.environ.pop(TEST_REGISTRY_HOME_ENV, None)
+        else:
+            os.environ[TEST_REGISTRY_HOME_ENV] = previous_registry_home
         if previous_pythonpath is None:
             os.environ.pop("PYTHONPATH", None)
         else:

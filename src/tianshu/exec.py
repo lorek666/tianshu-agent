@@ -338,6 +338,10 @@ def spawn(
 
     child_env = filtered_env(policy, env)
     check_spawn(policy, argv, cwd, child_env)
+    if blob_dir is not None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(blob_dir)
 
     if pty:
         # 第一道门：策略许可（"允不允许用 PTY"，不是"这次要不要用"）。

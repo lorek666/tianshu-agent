@@ -644,17 +644,25 @@ def test_backup_restore_keeps_payload_versions(tmp_path):
     备份→恢复→重读证明而不是推断：v1 行恢复后仍是 1，v0 旧行恢复后仍是 0。
     前提：备份必须是一个**完整**的备份文件；正在写入的库直接拷文件不在此列。
     """
+    import sqlite3
+
+    from tianshu import restore_manager
     from tianshu.backup import create_backup, restore_backup, verify_backup
+    from tianshu.loop import build_stack
+    from tianshu.restore_access import RestoreScopeBusy
 
     root = tmp_path / "data"
     root.mkdir()
     log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
     try:
-        current = event_schema.minimal_payload("run.start")
+        stack = build_stack(log, data_root=root)
+        task = stack.tasks.create_task("版本旁表备份验证", [str(tmp_path)])
+        run_record = stack.tasks.start_run(task.task_id)
+        run_id = run_record.run_id
         legacy = {"call_id": "c_old", "tool_id": "rename_everything",
                   "args": {}, "args_hash": "x"}
-        log.append("run_x", "run.start", current)
-        log.append("run_x", "tool.intent", legacy, legacy_write=True)
+        log.append(run_id, "tool.intent", legacy, legacy_write=True)
+        expected_events = [(e.type, e.payload_version, e.payload) for e in log.read_run(run_id)]
     finally:
         log.close()
 
@@ -666,18 +674,24 @@ def test_backup_restore_keeps_payload_versions(tmp_path):
     root.rename(moved)
     report = restore_backup(dest, root)
     assert report.ok
+    with pytest.raises(RestoreScopeBusy):
+        EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    rev = restore_manager.review(root)
+    assert rev.review_complete is True
 
-    restored = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    conn = sqlite3.connect((root / "events.db").resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        events = restored.read_run("run_x")
+        rows = conn.execute(
+            "SELECT e.type, COALESCE(v.version, 0), e.payload FROM events e "
+            "LEFT JOIN event_versions v ON v.seq = e.seq "
+            "WHERE e.run_id = ? ORDER BY e.seq",
+            (run_id,),
+        ).fetchall()
     finally:
-        restored.close()
-    assert [e.payload_version for e in events] == [
-        event_schema.current_version("run.start"),
-        event_schema.LEGACY_PAYLOAD_VERSION,
-    ]
-    assert events[0].payload == current
-    assert events[1].payload == legacy
+        conn.close()
+    assert [(r[0], r[1], json.loads(r[2])) for r in rows] == expected_events
+    assert rows[0][1] == event_schema.current_version("run.start")
+    assert rows[-1][1] == event_schema.LEGACY_PAYLOAD_VERSION
 
 
 # ---------------------------------------------------------------- 旁表事务性
