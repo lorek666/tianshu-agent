@@ -1657,7 +1657,7 @@ def test_missing_manifest_with_an_intent_is_not_rebuilt(env):
     )
     assert proc.returncode == 77
     env.reopen()
-    manifest = env.data / "artifacts" / "snapshots" / f"{run_id}.json"
+    manifest = env.stack.snapshots.manifest_path(run_id)
     assert manifest.exists()
     manifest.unlink()
 

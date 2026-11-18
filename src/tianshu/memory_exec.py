@@ -947,20 +947,20 @@ class MemoryExecutor:
             if path is not None:
                 from .restore_access import ensure_material_write_allowed
 
-                ensure_material_write_allowed(
+                with ensure_material_write_allowed(
                     path.parent, owner_log=self._projection.log
-                )
-                try:
-                    deleted_bytes = path.stat().st_size
-                    path.unlink()
-                except FileNotFoundError:
-                    # 文件已经不在了：幂等对待（正文本来就不可用）。
-                    deleted_bytes = 0
-                except OSError as exc:
-                    # 删文件失败：**不**标 erased_at，让整次擦除如实失败。
-                    raise MemoryDispatchRefused(
-                        f"擦除失败：正文文件删不掉（{exc}）", "dispatch.refused"
-                    ) from exc
+                ):
+                    try:
+                        deleted_bytes = path.stat().st_size
+                        path.unlink()
+                    except FileNotFoundError:
+                        # 文件已经不在了：幂等对待（正文本来就不可用）。
+                        deleted_bytes = 0
+                    except OSError as exc:
+                        # 删文件失败：**不**标 erased_at，让整次擦除如实失败。
+                        raise MemoryDispatchRefused(
+                            f"擦除失败：正文文件删不掉（{exc}）", "dispatch.refused"
+                        ) from exc
 
         self._mark(admitted.request.run_id, admitted.request.call_id, "executing")
         revision = before_revision + 1

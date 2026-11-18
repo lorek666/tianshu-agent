@@ -693,13 +693,9 @@ def acquire_restore_database_access(
     target = _absolute_target(db_path)
     registry = _registry_factory() if registry is None else registry
     observed_registry = registry.observe()
-    existing_handle = None
     existing_identity = None
     if target.exists() or target.is_symlink():
-        existing_handle = open_entity(target, "file")
-        existing_identity = existing_handle.identity
-        existing_handle.close()
-        existing_handle = None
+        existing_identity = observe_entity(target, "file")
     if _active_scope_blocks(observed_registry, target, existing_identity):
         raise RestoreScopeBusy(f"数据库落入尚未终结的恢复范围：{target}")
 
@@ -828,19 +824,39 @@ _ACTIVE_EVENTLOG_LOCK = threading.Lock()
 _ACTIVE_EVENTLOG_ACCESSES: weakref.WeakValueDictionary[int, RestoreDatabaseAccess] = (
     weakref.WeakValueDictionary()
 )
-_STANDARD_EVENTS_MARKERS: tuple[str, ...] = (
-    "events.db",
-    "events.db-wal",
-    "events.db-journal",
-    "events.db-shm",
-    "events.db.migration.json",
-    ".migration.json",
-    ".restore-origin.json",
-    ".restore-origin.json.tmp",
-    ".restore-token.json",
-    ".restore-token.json.tmp",
-)
-_DISALLOWED_CUSTOM_MAIN_NAMES = frozenset({"custom.db", "other.db"})
+
+
+def default_material_paths(
+    db_path: Path | str,
+    data_root: Path | str | None = None,
+) -> tuple[Path, Path | None, Path | None]:
+    """返回 (snapshots_root, event_blob_dir, memory_blob_dir)。
+
+    仅当 db_path 名为 events.db 且 data_root 与 db_path.parent 同根时使用标准
+    artifacts / blobs / memory_blobs 目录；非标准库名或异根 data_root 一律收口至
+    私有非标准目录名，避免触碰任何标准数据根材料空间。
+    """
+    if str(db_path) == ":memory:":
+        root = Path(data_root) if data_root is not None else Path(".")
+        base = root / ".memory.materials"
+        return base / "snapshots_root", None, None
+
+    db = Path(db_path)
+    db_parent = db.parent
+    root = Path(data_root) if data_root is not None else db_parent
+    is_std_db = overlap_key(db.name) == overlap_key("events.db")
+    same_root = overlap_key(str(root.resolve(strict=False))) == overlap_key(
+        str(db_parent.resolve(strict=False))
+    )
+    if is_std_db and same_root:
+        return root / "artifacts", db_parent / "blobs", db_parent / "memory_blobs"
+
+    db_base = db_parent / f".{db.name}.materials"
+    root_base = root / f".{db.name}.materials"
+    ev_blobs = db_parent / "blobs" if is_std_db else db_base / "event_blobs"
+    mem_blobs = db_parent / "memory_blobs" if is_std_db else db_base / "mem_blobs"
+    snap_root = root_base / "snapshots_root"
+    return snap_root, ev_blobs, mem_blobs
 
 
 def register_admitted_eventlog(db_path: Path, access: RestoreDatabaseAccess) -> None:
@@ -868,19 +884,8 @@ def _standard_material_root_and_domain(target: Path) -> tuple[Path, str] | None:
     return None
 
 
-def _has_standard_events_db_marker(root: Path) -> bool:
-    for marker in _STANDARD_EVENTS_MARKERS:
-        cand = root / marker
-        try:
-            if cand.is_symlink() or cand.is_junction() or cand.exists():
-                return True
-        except OSError:
-            return True
-    return False
-
-
 def _active_initialized_accesses_in_root(root: Path) -> list[RestoreDatabaseAccess]:
-    root_key = overlap_key(str(root.resolve(strict=False)))
+    std_events_key = overlap_key(str((root / "events.db").resolve(strict=False)))
     with _ACTIVE_EVENTLOG_LOCK:
         snapshot = list(_ACTIVE_EVENTLOG_ACCESSES.values())
     matched: list[RestoreDatabaseAccess] = []
@@ -889,9 +894,7 @@ def _active_initialized_accesses_in_root(root: Path) -> list[RestoreDatabaseAcce
             continue
         try:
             resolved_db = acc.path.resolve(strict=True)
-            if overlap_key(str(resolved_db.parent)) != root_key:
-                continue
-            if resolved_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
+            if overlap_key(str(resolved_db)) != std_events_key:
                 continue
             if resolved_db.stat().st_size <= 0:
                 continue
@@ -931,6 +934,10 @@ class _MaterialWriteLease:
 
     def __init__(self, access: RestoreDatabaseAccess | None = None) -> None:
         self._access = access
+
+    @property
+    def active(self) -> bool:
+        return self._access is not None and self._access.active
 
     def __enter__(self) -> _MaterialWriteLease:
         return self
@@ -1001,7 +1008,7 @@ def ensure_material_write_allowed(
     *,
     owner_log: Any = None,
 ) -> _MaterialWriteLease:
-    """三材料域每个写 API 统一写前守卫：动态重验隔离范围 + 绑定同根已初始化准入 main。"""
+    """三材料域每个写 API 统一写前守卫：动态重验隔离范围 + 唯一标准主库白名单连续准入。"""
     if str(material_path) == ":memory:":
         return _NOOP_MATERIAL_LEASE
     ensure_path_not_held(material_path)
@@ -1011,89 +1018,43 @@ def ensure_material_write_allowed(
     target = _absolute_target(Path(material_path))
     located = _standard_material_root_and_domain(target)
     if located is None:
+        try:
+            located = _standard_material_root_and_domain(target.resolve(strict=False))
+        except (OSError, RuntimeError) as exc:
+            raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
+    if located is None:
         return _NOOP_MATERIAL_LEASE
     standard_root, domain = located
     ensure_path_not_held(standard_root)
 
-    active_in_root = _active_initialized_accesses_in_root(standard_root)
     std_events_db = (standard_root / "events.db").resolve(strict=False)
     std_events_key = overlap_key(str(std_events_db))
-    std_root_key = overlap_key(str(standard_root.resolve(strict=False)))
-    has_std_marker = _has_standard_events_db_marker(standard_root)
-    requires_standard_events_db = domain == "memory_blobs" or has_std_marker
-
-    if requires_standard_events_db:
-        if owner_log is not None:
-            owner_db = getattr(owner_log, "db_path", None)
-            if owner_db is None or str(owner_db) == ":memory:":
-                raise RestoreAccessError(
-                    f"标准数据根材料写入不能使用 :memory: 连接：{target}"
-                )
-            resolved_owner_db = Path(owner_db).resolve(strict=False)
-            if resolved_owner_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
-                raise RestoreAccessError(
-                    f"标准数据根材料写入不能使用 custom.db / other.db 连接（{owner_db}）：{target}"
-                )
-            if domain == "memory_blobs":
-                if overlap_key(str(resolved_owner_db)) != std_events_key:
-                    raise RestoreAccessError(
-                        f"标准根 memory_blobs 写入须绑定同根 events.db（{owner_db}）：{target}"
-                    )
-            elif overlap_key(str(resolved_owner_db.parent)) != std_root_key:
-                # 允许 build_stack(EventLog(a/events.db), data_root=b) 仅当 b 无独立 events.db；
-                # 此处 b 已有标准 events.db 标记，异根连接一律拒绝！
-                raise RestoreAccessError(
-                    f"标准数据根材料写入不能使用异根连接（{owner_db}）：{target}"
-                )
-
-        has_std_main = any(
-            overlap_key(str(acc.path.resolve(strict=False))) == std_events_key
-            for acc in active_in_root
-        )
-        if has_std_main:
-            return _NOOP_MATERIAL_LEASE
-        if owner_log is None and domain == "artifacts":
-            return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
-        if owner_log is not None:
-            # 同目录非 custom 辅助库（如 cli.db）旁侧有 events.db 时同样须先验证主库准入
-            temp_acc = _acquire_verified_existing_main_access(std_events_db)
-            temp_acc.close()
-            return _NOOP_MATERIAL_LEASE
-        raise RestoreAccessError(
-            f"标准数据根材料写入必须绑定已初始化、已准入的 events.db 连续 access：{target}"
-        )
+    active_in_root = _active_initialized_accesses_in_root(standard_root)
 
     if owner_log is not None:
         owner_db = getattr(owner_log, "db_path", None)
         if owner_db is None or str(owner_db) == ":memory:":
-            raise RestoreAccessError(f"材料目录写入不能使用 :memory: 连接：{target}")
-        resolved_owner_db = Path(owner_db).resolve(strict=False)
-        if resolved_owner_db.name.lower() in _DISALLOWED_CUSTOM_MAIN_NAMES:
             raise RestoreAccessError(
-                f"材料目录写入不能使用 custom.db / other.db 连接（{owner_db}）：{target}"
+                f"标准数据根材料写入不能使用 :memory: 连接：{target}"
             )
-        owner_blob_dir = getattr(owner_log, "blob_dir", None)
-        explicitly_configured_log_blob_dir = (
-            owner_blob_dir is not None
-            and overlap_key(str(_absolute_target(Path(owner_blob_dir))))
-            == overlap_key(str(target))
-            and not active_in_root
-        )
-        if (
-            domain != "artifacts"
-            and not explicitly_configured_log_blob_dir
-            and overlap_key(str(resolved_owner_db.parent)) != std_root_key
-        ):
+        resolved_owner_db = Path(owner_db).resolve(strict=False)
+        if overlap_key(str(resolved_owner_db)) != std_events_key:
             raise RestoreAccessError(
-                f"材料写入连接（{owner_db}）与目标材料根不属于同一数据根：{target}"
+                f"标准数据根材料写入必须绑定同根 events.db（收到 {owner_db}）：{target}"
+            )
+        if not active_in_root:
+            raise RestoreAccessError(
+                f"标准数据根材料写入缺少活跃同根 events.db 连续准入：{target}"
             )
         return _NOOP_MATERIAL_LEASE
 
-    if not active_in_root:
-        raise RestoreAccessError(
-            f"标准材料写入被拒绝（缺少同根已初始化、已准入 EventLog 连续 access）：{target}"
-        )
-    return _NOOP_MATERIAL_LEASE
+    if active_in_root:
+        return _NOOP_MATERIAL_LEASE
+    if domain in ("artifacts", "blobs"):
+        return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
+    raise RestoreAccessError(
+        f"标准数据根材料写入必须绑定已初始化、已准入的 events.db 连续 access：{target}"
+    )
 
 
 __all__ = [
@@ -1101,6 +1062,7 @@ __all__ = [
     "RestoreDatabaseAccess",
     "RestoreScopeBusy",
     "acquire_restore_database_access",
+    "default_material_paths",
     "ensure_log_write_allowed",
     "ensure_material_write_allowed",
     "ensure_path_not_held",

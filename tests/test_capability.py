@@ -136,7 +136,7 @@ def _run(
     limits: Limits | None = None,
     sleep: Sleeper | None = None,
 ):
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     result = run(
         task="整理目录里的笔记",
         workspace_dir=_workspace(tmp_path),

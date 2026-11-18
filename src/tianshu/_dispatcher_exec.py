@@ -192,8 +192,8 @@ class _DispatcherExecMixin:
         if not blob.exists():
             from .restore_access import ensure_material_write_allowed
 
-            ensure_material_write_allowed(blob_dir, owner_log=self._log)
-            atomic_write_bytes(blob, body)
+            with ensure_material_write_allowed(blob_dir, owner_log=self._log):
+                atomic_write_bytes(blob, body)
         self._contents.record(
             digest, body, task_id=request.task_id, run_id=request.run_id
         )

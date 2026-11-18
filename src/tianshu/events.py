@@ -27,7 +27,9 @@ from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
 from .maintenance import DatabaseAccess, MaintenanceConnection
 from .restore_access import (
+    RestoreAccessError,
     RestoreDatabaseAccess,
+    RestoreScopeBusy,
     acquire_restore_database_access,
     ensure_material_write_allowed,
     ensure_path_not_held,
@@ -380,8 +382,6 @@ class EventLog:
             db_path,
             released_v2_admitted=bool(getattr(access, "has_released_proof", False)),
         )
-        if blob_dir is not None:
-            blob_dir.mkdir(parents=True, exist_ok=True)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         # 有界的锁等待：两个进程同时 BEGIN IMMEDIATE 时，后来的那个等一小会
@@ -391,6 +391,14 @@ class EventLog:
         self._tx_depth = 0
         if isinstance(access, RestoreDatabaseAccess):
             register_admitted_eventlog(db_path, access)
+        if blob_dir is not None:
+            try:
+                with ensure_material_write_allowed(blob_dir, owner_log=self):
+                    blob_dir.mkdir(parents=True, exist_ok=True)
+            except RestoreScopeBusy:
+                raise
+            except RestoreAccessError:
+                pass
 
     @property
     def db_path(self) -> Path:
@@ -483,11 +491,11 @@ class EventLog:
                 raise EventLogCorrupt(
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
-            ensure_material_write_allowed(self._blob_dir, owner_log=self)
-            ref = str(self._blob_dir / digest)
-            # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
-            if not Path(ref).exists():
-                atomic_write_bytes(Path(ref), raw)
+            with ensure_material_write_allowed(self._blob_dir, owner_log=self):
+                ref = str(self._blob_dir / digest)
+                # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
+                if not Path(ref).exists():
+                    atomic_write_bytes(Path(ref), raw)
 
         # 事件行与版本旁表必须同生同死：分开提交会留下"没有版本记录的新事件"，
         # 读取时会被当成 version=0，等于把新版语义伪装成旧版。

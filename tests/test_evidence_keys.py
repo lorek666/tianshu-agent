@@ -40,6 +40,7 @@ from tianshu.permissions import (
 )
 from tianshu.receipt import receipts_of, verify_receipts
 from tianshu.recovery import recover_run
+from tianshu.restore_access import default_material_paths
 from tianshu.sandbox import MemBackend
 from tianshu.snapshot import MANIFEST_VERSION, SnapshotStore
 from tianshu.tasks import RUN_RUNNING, TaskStore
@@ -114,7 +115,7 @@ def env(request, tmp_path):
     log = EventLog(tmp_path / "events.db")
     leases = LeaseStore(log)
     claims = JobStore(log)
-    snapshots = SnapshotStore(data / "artifacts")
+    snapshots = SnapshotStore(default_material_paths(log.db_path, data)[0], owner_log=log)
     tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
         disk_admission=effects_admission(log, snapshots=snapshots,
             memory=None, contents=None, data_root=data))
@@ -430,7 +431,7 @@ def test_undo_refuses_when_evidence_root_is_gone(tmp_path):
     """证据里的根不见了：拒绝，而不是换个目录写。"""
     ws = tmp_path / "ws"
     ws.mkdir()
-    log = EventLog(tmp_path / "e.db")
+    log = EventLog(tmp_path / "events.db")
     store = SnapshotStore(tmp_path / "artifacts")
     store.record_preimage(
         "r1", "c1", "a.md", "原".encode(), _sha("新"), root=ws

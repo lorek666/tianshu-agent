@@ -356,9 +356,12 @@ class Dispatcher(
             # 不同（前者将来要能按 F10 §10 物理擦除，后者必须留存供 replay），
             # 共用 `log.blob_dir` 会让按策略清理误伤日志材料。所有装配点都
             # 不传，正文目录才有唯一来源。
+            from .restore_access import default_material_paths
+
             self._memory = MemoryProjection(
                 self._conn,
                 log=self._log,
+                blob_dir=default_material_paths(self._log.db_path)[2],
                 clock=self._clock,
             )
             self._memory.ensure_schema()

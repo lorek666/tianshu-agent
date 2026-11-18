@@ -135,16 +135,32 @@ class _ResumePlan:
 
 class SnapshotStore:
     def __init__(self, root: Path, *, owner_log: Any = None) -> None:
-        from .restore_access import ensure_path_not_held
+        from .pathkeys import overlap_key
+        from .restore_access import (
+            RestoreAccessError,
+            RestoreScopeBusy,
+            ensure_material_write_allowed,
+            ensure_path_not_held,
+        )
 
         ensure_path_not_held(root)
         self.root = root
         self._owner_log = owner_log
-        self.blob_dir = root / "blobs"
+        self.blob_dir = (
+            root / "blobs"
+            if overlap_key(Path(root).name) == overlap_key("artifacts")
+            else root / "preimage_blobs"
+        )
         self.manifest_dir = root / "snapshots"
         self.journal = undo_journal.JournalStore(root, owner_log=owner_log)
-        self.blob_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+                self.blob_dir.mkdir(parents=True, exist_ok=True)
+                self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        except RestoreScopeBusy:
+            raise
+        except RestoreAccessError:
+            pass
 
     def _bind_owner_log(self, log: Any) -> None:
         if self._owner_log is None:
@@ -317,8 +333,21 @@ class SnapshotStore:
         from .restore_access import ensure_material_write_allowed
 
         with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
-            pass
+            return self._undo_locked(
+                run_id,
+                ws,
+                apply=apply,
+                journal_control_run=journal_control_run,
+            )
 
+    def _undo_locked(
+        self,
+        run_id: str,
+        ws: Workspace | None,
+        *,
+        apply: Callable[[Change, bytes | None], None] | None,
+        journal_control_run: str,
+    ) -> UndoReport:
         # 已有 journal：崩溃/中断过的撤销 → 只许续做，不许从头再来。
         journal = self.journal.load(run_id)
         if journal is not None:

@@ -1246,6 +1246,15 @@ def run_data_gc(
 
         now_ms = int(clock())
         cutoff_ms = now_ms - older_than_days * DAY_MS
+        supplied = Path(data_root).absolute()
+        _no_user_links(supplied)
+        try:
+            restore_access.ensure_path_not_held(supplied)
+            restore_access.ensure_path_not_held(supplied / "events.db")
+        except RestoreScopeBusy as exc:
+            raise GcRefused("restore_held", str(exc)) from exc
+        except (RestoreRegistryError, RestoreAccessError):
+            pass
         root, db = _validate_root_layout(data_root)
         extra_paths.append(str(root))
         released_proof = _check_not_restore_held(root, db)

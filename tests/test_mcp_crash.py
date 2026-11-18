@@ -673,7 +673,7 @@ def test_mcp_tool_in_static_specs_is_still_not_treated_as_a_file_tool(
     ws.mkdir()
     data = tmp_path / f"data-{tag}"
     data.mkdir()
-    log = EventLog(tmp_path / f"events-{tag}.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / f"events-{tag}.db", blob_dir=tmp_path / f"blobs-{tag}")
     artifacts = tmp_path / f"artifacts-{tag}"
     artifacts.mkdir()
     store = SnapshotStore(artifacts)
@@ -854,7 +854,7 @@ def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
     ws2.mkdir()
     data2 = tmp_path / "data-mcp"
     data2.mkdir()
-    log2 = EventLog(tmp_path / "events-mcp.db", blob_dir=tmp_path / "blobs")
+    log2 = EventLog(tmp_path / "events-mcp.db", blob_dir=tmp_path / "blobs-mcp")
     artifacts2 = tmp_path / "artifacts-mcp"
     artifacts2.mkdir()
     store2 = SnapshotStore(artifacts2)
@@ -907,7 +907,7 @@ def test_recovery_marks_dispatch_row_terminal_for_file_writes(tmp_path):
         ws.mkdir()
         data = tmp_path / f"data-{tag}"
         data.mkdir()
-        log = EventLog(tmp_path / f"events-{tag}.db", blob_dir=tmp_path / "blobs")
+        log = EventLog(tmp_path / f"events-{tag}.db", blob_dir=tmp_path / f"blobs-{tag}")
         artifacts = tmp_path / f"artifacts-{tag}"
         artifacts.mkdir()
         store = SnapshotStore(artifacts)
@@ -1111,7 +1111,7 @@ def test_mcp_without_a_dispatch_row_stays_conservative(tmp_path):
         ws.mkdir()
         data = tmp_path / f"data-{case}"
         data.mkdir()
-        log = EventLog(tmp_path / f"events-{case}.db", blob_dir=tmp_path / "blobs")
+        log = EventLog(tmp_path / f"events-{case}.db", blob_dir=tmp_path / f"blobs-{case}")
         artifacts = tmp_path / f"artifacts-{case}"
         artifacts.mkdir()
         store = SnapshotStore(artifacts)

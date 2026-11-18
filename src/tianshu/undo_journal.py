@@ -391,7 +391,11 @@ class OutstandingUndo:
         return self.done_count
 
 
-def _artifacts_root(data_root: Path) -> Path:
+def _artifacts_root(data_root: Path, log: Any = None) -> Path:
+    if log is not None and getattr(log, "db_path", None) is not None:
+        from .restore_access import default_material_paths
+
+        return default_material_paths(log.db_path, data_root)[0]
     return Path(data_root) / "artifacts"
 
 
@@ -406,7 +410,7 @@ def outstanding(data_root: Path, *, log: Any = None) -> list[OutstandingUndo]:
     没有 `log` 时无法判断完成事件是否缺失，completed 的不列入 —— 它们对
     「是否还有文件要改」没有影响，不需要阻断。
     """
-    store = JournalStore(_artifacts_root(data_root))
+    store = JournalStore(_artifacts_root(data_root, log), owner_log=log)
     if not store.dir.is_dir():
         return []
     found: list[OutstandingUndo] = []

@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     if case is None:
         sys.stderr.write(f"未知 case id：{case_id}\n")
         return 2
-    log = EventLog(db, blob_dir=db.parent / "blobs")
+    from ..restore_access import default_material_paths
+
+    log = EventLog(db, blob_dir=default_material_paths(db, data_root)[1])
     try:
         run(
             task=case.task,

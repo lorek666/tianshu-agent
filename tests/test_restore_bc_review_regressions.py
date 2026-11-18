@@ -37,17 +37,25 @@ import pytest
 from support import CHILD_TEXT
 
 from tianshu import migrate, restore_manager
+from tianshu import snapshot as snapshot_mod
 from tianshu.backup import create_backup
 from tianshu.contents import ContentStore
 from tianshu.data_gc import DAY_MS
 from tianshu.disk_admission import DiskAdmission
-from tianshu.events import EventLog
-from tianshu.loop import build_stack
+from tianshu.events import MAX_INLINE_BYTES, EventLog
+from tianshu.loop import build_stack, open_memory
+from tianshu.maintenance import MaintenanceBusy, acquire_entity_access
 from tianshu.memory import MemoryProjection
 from tianshu.metrics import MetricsRecorder
 from tianshu.model import ScriptedModel
+from tianshu.platform_identity import observe_entity
 from tianshu.resources import MemoryScope
-from tianshu.restore_access import RestoreAccessError, RestoreScopeBusy
+from tianshu.restore_access import (
+    RestoreAccessError,
+    RestoreScopeBusy,
+    default_material_paths,
+    ensure_material_write_allowed,
+)
 from tianshu.restore_contract import (
     PHASES,
     PHASES_V2,
@@ -847,3 +855,394 @@ def test_w15_safe_gc_refuses_held_roots_and_succeeds_after_v2_restore_release(
     assert app_rep["ok"] is True
     assert app_rep["deleted"]["orphan_blobs_count"] == 1
     assert not (root / orphan_rel).exists()
+
+
+# ================================================================ Round-2 对抗回归
+# [DEFECT-2C-R2] 零黑名单纯结构白名单 + 独立写连续租约保持 + 非标准 DB 默认材料收口
+# [DEFECT-6-GC-RESERVED] reserved（AbsentTargetV1 / EmptyTargetV1）下 data gc 返回 restore_held
+
+
+def test_defect_2c_r2_pure_whitelist_blocks_arbitrary_db_names_and_holds_lease_during_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT-2C-R2：任意非标准库名及异根主库一律拒写标准材料，独立写全程持连续锁。"""
+    ws = (tmp_path / "ws_r2").resolve()
+    ws.mkdir(parents=True)
+    (ws / "sample.txt").write_bytes(b"hello-r2\n")
+    sample_items = (
+        JournalItem(
+            root=str(ws),
+            path="sample.txt",
+            call_id="c_r2",
+            before_state="absent",
+            expected_after="2" * 64,
+            action=ACTION_DELETE,
+        ),
+    )
+    oversized_body = "X" * (MAX_INLINE_BYTES + 4096)
+    oversized_payload = {
+        "call_id": "c_spill",
+        "tool_id": "fs.read",
+        "status": "succeeded",
+        "effect_state": "none_applied",
+        "output": {"content": oversized_body},
+    }
+
+    # 1) 跨根 + 任意非标准库名 aux.db -> 写空目标标准材料目录全部拒绝
+    elsewhere = (tmp_path / "elsewhere_r2").resolve()
+    target_empty = (tmp_path / "target_empty_r2").resolve()
+    target_empty.mkdir(parents=True)
+    aux_elsewhere = EventLog(elsewhere / "aux.db")
+    try:
+        for bad_call in (
+            lambda: SnapshotStore(target_empty / "artifacts", owner_log=aux_elsewhere).init_run(
+                "r_cross_aux"
+            ),
+            lambda: SnapshotStore(target_empty / "artifacts").init_run("r_cross_unbound"),
+            lambda: JournalStore(target_empty / "artifacts", owner_log=aux_elsewhere).begin(
+                "r_cross_j", control_run="ctrl", items=sample_items
+            ),
+            lambda: JournalStore(target_empty / "artifacts").begin(
+                "r_cross_j_u", control_run="ctrl", items=sample_items
+            ),
+            lambda: ContentStore(aux_elsewhere, blob_dir=target_empty / "blobs").record(
+                "3" * 64, b"payload", task_id="t1", run_id="r1"
+            ),
+            lambda: MemoryProjection(
+                aux_elsewhere.conn,
+                log=aux_elsewhere,
+                blob_dir=target_empty / "memory_blobs",
+            ).put_content("跨根 aux.db 企图写标准 memory_blobs"),
+        ):
+            with pytest.raises(RestoreAccessError):
+                bad_call()
+    finally:
+        aux_elsewhere.close()
+
+    spill_cross = EventLog(elsewhere / "alpha_spill.db", blob_dir=target_empty / "blobs")
+    try:
+        with pytest.raises(RestoreAccessError):
+            spill_cross.append(
+                "r_spill_cross",
+                "tool.result",
+                oversized_payload,
+                actor_kind="system",
+                legacy_write=True,
+            )
+    finally:
+        spill_cross.close()
+    assert not [p for p in target_empty.rglob("*") if p.is_file()]
+
+    # 2) 跨根 + 源库名为 events.db，严禁写另一根（含已有已关闭 events.db 的目标根）
+    elsewhere_std = (tmp_path / "elsewhere_std_r2").resolve()
+    r_closed_main = _seed_standard_root(tmp_path, "closed_main_r2")
+    closed_before_files = sorted(
+        str(p.relative_to(r_closed_main)) for p in r_closed_main.rglob("*") if p.is_file()
+    )
+    foreign_main = EventLog(elsewhere_std / "events.db")
+    try:
+        for bad_foreign_call in (
+            lambda: SnapshotStore(
+                r_closed_main / "artifacts", owner_log=foreign_main
+            ).init_run("r_foreign_main"),
+            lambda: JournalStore(r_closed_main / "artifacts", owner_log=foreign_main).begin(
+                "r_foreign_j", control_run="ctrl", items=sample_items
+            ),
+            lambda: ContentStore(foreign_main, blob_dir=r_closed_main / "blobs").record(
+                "4" * 64, b"foreign", task_id="t1", run_id="r1"
+            ),
+            lambda: MemoryProjection(
+                foreign_main.conn,
+                log=foreign_main,
+                blob_dir=r_closed_main / "memory_blobs",
+            ).put_content("异根 events.db 企图写目标根 memory_blobs"),
+        ):
+            with pytest.raises(RestoreAccessError):
+                bad_foreign_call()
+    finally:
+        foreign_main.close()
+
+    elsewhere_std2 = (tmp_path / "elsewhere_std2_r2").resolve()
+    foreign_spill_main = EventLog(
+        elsewhere_std2 / "events.db", blob_dir=r_closed_main / "blobs"
+    )
+    try:
+        with pytest.raises(RestoreAccessError):
+            foreign_spill_main.append(
+                "r_foreign_spill",
+                "tool.result",
+                oversized_payload,
+                actor_kind="system",
+                legacy_write=True,
+            )
+    finally:
+        foreign_spill_main.close()
+    assert (
+        sorted(
+            str(p.relative_to(r_closed_main))
+            for p in r_closed_main.rglob("*")
+            if p.is_file() and p.relative_to(r_closed_main).parts[0] in (
+                "artifacts",
+                "blobs",
+                "memory_blobs",
+            )
+        )
+        == [
+            rel
+            for rel in closed_before_files
+            if Path(rel).parts[0] in ("artifacts", "blobs", "memory_blobs")
+        ]
+    )
+
+    # 3) 同根无 events.db + 持 aux.db / alpha.db -> 标准材料目录全部拒写（含软链别名尝试）
+    same_no_main = (tmp_path / "same_no_main_r2").resolve()
+    aux_same = EventLog(same_no_main / "aux.db")
+    try:
+        for bad_same_call in (
+            lambda: SnapshotStore(same_no_main / "artifacts", owner_log=aux_same).init_run(
+                "r_same_bound"
+            ),
+            lambda: SnapshotStore(same_no_main / "artifacts").init_run("r_same_unbound"),
+            lambda: SnapshotStore(same_no_main / "artifacts").record_preimage(
+                "r_same_pre", "c1", "sample.txt", b"raw", "5" * 64, root=ws
+            ),
+            lambda: JournalStore(same_no_main / "artifacts", owner_log=aux_same).begin(
+                "r_same_jb", control_run="ctrl", items=sample_items
+            ),
+            lambda: JournalStore(same_no_main / "artifacts").begin(
+                "r_same_ju", control_run="ctrl", items=sample_items
+            ),
+            lambda: ContentStore(aux_same, blob_dir=same_no_main / "blobs").record(
+                "5" * 64, b"same", task_id="t1", run_id="r1"
+            ),
+            lambda: MemoryProjection(aux_same.conn, log=aux_same).put_content(
+                "同根无 events.db 持 aux.db 企图写 memory_blobs"
+            ),
+        ):
+            with pytest.raises(RestoreAccessError):
+                bad_same_call()
+    finally:
+        aux_same.close()
+
+    alpha_spill_same = EventLog(same_no_main / "alpha.db", blob_dir=same_no_main / "blobs")
+    try:
+        with pytest.raises(RestoreAccessError):
+            alpha_spill_same.append(
+                "r_same_spill",
+                "tool.result",
+                oversized_payload,
+                actor_kind="system",
+                legacy_write=True,
+            )
+    finally:
+        alpha_spill_same.close()
+
+    # 符号链接指向 <same_no_main>/artifacts 也不得绕过白名单
+    (same_no_main / "artifacts").mkdir(parents=True, exist_ok=True)
+    sneaky_link = tmp_path / "sneaky_artifacts_alias"
+    try:
+        sneaky_link.symlink_to(same_no_main / "artifacts", target_is_directory=True)
+    except OSError:
+        pass
+    else:
+        with pytest.raises(RestoreAccessError):
+            SnapshotStore(sneaky_link).init_run("r_sneaky")
+
+    assert not list((same_no_main / "artifacts").rglob("*.json"))
+    assert not (same_no_main / "blobs").exists()
+    assert not (same_no_main / "memory_blobs").exists()
+
+    # 4) 同根有已关闭 events.db 时，持同目录 aux.db / alpha.db 绑定写标准材料仍一律拒绝
+    aux_in_closed = EventLog(r_closed_main / "aux.db")
+    try:
+        for bad_closed_call in (
+            lambda: SnapshotStore(
+                r_closed_main / "artifacts", owner_log=aux_in_closed
+            ).init_run("r_closed_aux_snap"),
+            lambda: JournalStore(
+                r_closed_main / "artifacts", owner_log=aux_in_closed
+            ).begin("r_closed_aux_j", control_run="ctrl", items=sample_items),
+            lambda: ContentStore(aux_in_closed, blob_dir=r_closed_main / "blobs").record(
+                "6" * 64, b"closed_aux", task_id="t1", run_id="r1"
+            ),
+            lambda: MemoryProjection(aux_in_closed.conn, log=aux_in_closed).put_content(
+                "同根 events.db 已关闭时持 aux.db 企图写 memory_blobs"
+            ),
+        ):
+            with pytest.raises(RestoreAccessError):
+                bad_closed_call()
+    finally:
+        aux_in_closed.close()
+
+    alpha_in_closed = EventLog(r_closed_main / "alpha.db", blob_dir=r_closed_main / "blobs")
+    try:
+        with pytest.raises(RestoreAccessError):
+            alpha_in_closed.append(
+                "r_closed_alpha_spill",
+                "tool.result",
+                oversized_payload,
+                actor_kind="system",
+                legacy_write=True,
+            )
+    finally:
+        alpha_in_closed.close()
+    assert (
+        sorted(
+            str(p.relative_to(r_closed_main))
+            for p in r_closed_main.rglob("*")
+            if p.is_file() and p.relative_to(r_closed_main).parts[0] in (
+                "artifacts",
+                "blobs",
+                "memory_blobs",
+            )
+        )
+        == [
+            rel
+            for rel in closed_before_files
+            if Path(rel).parts[0] in ("artifacts", "blobs", "memory_blobs")
+        ]
+    )
+
+    # 5) 正控 A：独立 SnapshotStore(r_closed_main / "artifacts")（owner_log=None，且同根存在合法
+    #    已初始化 events.db）在写期间真实持有连续 _MaterialWriteLease，绝不提前释放！
+    closed_db_path = r_closed_main / "events.db"
+    with ensure_material_write_allowed(r_closed_main / "artifacts") as lease:
+        assert lease.active is True
+        with pytest.raises(MaintenanceBusy):
+            acquire_entity_access(observe_entity(closed_db_path, "file"), exclusive=True)
+    assert lease.active is False
+    probe_excl = acquire_entity_access(observe_entity(closed_db_path, "file"), exclusive=True)
+    probe_excl.close()
+
+    real_atomic_write = snapshot_mod.atomic_write_bytes
+    observed_locks_during_io: list[bool] = []
+
+    def _assert_locked_during_write(path: Path, data: bytes) -> None:
+        with pytest.raises(MaintenanceBusy):
+            acquire_entity_access(observe_entity(closed_db_path, "file"), exclusive=True)
+        observed_locks_during_io.append(True)
+        real_atomic_write(path, data)
+
+    monkeypatch.setattr(snapshot_mod, "atomic_write_bytes", _assert_locked_during_write)
+    try:
+        standalone_snap = SnapshotStore(r_closed_main / "artifacts")
+        standalone_snap.record_preimage(
+            "r_standalone_locked", "c_locked", "sample.txt", b"hello-r2\n", "7" * 64, root=ws
+        )
+    finally:
+        monkeypatch.setattr(snapshot_mod, "atomic_write_bytes", real_atomic_write)
+    assert len(observed_locks_during_io) >= 2  # blob + manifest 两次落盘均在连续锁保护下完成！
+    post_excl = acquire_entity_access(observe_entity(closed_db_path, "file"), exclusive=True)
+    post_excl.close()
+
+    # 6) 正控 B：非标准库名（aux_cli.db）走默认收口路径，不触碰标准 artifacts / blobs / memory_blobs
+    conv_dir = (tmp_path / "converged_aux_dir").resolve()
+    _, conv_ev_blobs, _ = default_material_paths(conv_dir / "aux_cli.db", conv_dir)
+    aux_conv_log = EventLog(conv_dir / "aux_cli.db", blob_dir=conv_ev_blobs)
+    try:
+        stack = build_stack(aux_conv_log, data_root=conv_dir)
+        mem_conv = open_memory(aux_conv_log)
+        mem_ref = mem_conv.put_content("收口至私有非标准目录的记忆正文")
+        assert (mem_conv.blob_dir / mem_ref).is_file()
+        stack.snapshots.init_run("r_conv_ok")
+        assert stack.snapshots.manifest_path("r_conv_ok").is_file()
+        aux_conv_log.append(
+            "r_conv_ok",
+            "tool.result",
+            oversized_payload,
+            actor_kind="system",
+            legacy_write=True,
+        )
+    finally:
+        aux_conv_log.close()
+
+    cli_conv = _cli(
+        "task",
+        "create",
+        "--goal",
+        "验证 CLI 非标准库名收口",
+        "--db",
+        conv_dir / "cli_aux.db",
+        "--workspace",
+        ws,
+    )
+    assert cli_conv.returncode == 0, cli_conv.stderr
+
+    assert not (conv_dir / "artifacts").exists()
+    assert not (conv_dir / "blobs").exists()
+    assert not (conv_dir / "memory_blobs").exists()
+    assert (conv_dir / ".aux_cli.db.materials").is_dir()
+
+
+def test_defect_6_gc_reserved_returns_restore_held_for_absent_and_empty_targets(
+    tmp_path: Path,
+) -> None:
+    """DEFECT-6-GC-RESERVED：FP-RESERVED 下空/不存在目标跑 data gc 均报 restore_held。"""
+    # 场景 1：AbsentTargetV1（目标根目录尚不存在）
+    absent_root = _seed_standard_root(tmp_path, "gc_reserved_absent")
+    bkp_absent = tmp_path / "bkp_gc_absent"
+    create_backup(absent_root, bkp_absent)
+    shutil.rmtree(absent_root)
+    assert not absent_root.exists()
+
+    plan_absent = restore_manager.plan(bkp_absent, absent_root)
+    crashed_absent = _cli(
+        "data",
+        "restore-apply",
+        bkp_absent,
+        "--data-root",
+        absent_root,
+        "--expect-plan",
+        plan_absent.plan_sha256,
+        failpoint="FP-RESERVED",
+    )
+    assert crashed_absent.returncode == 77
+    assert not absent_root.exists()
+
+    try:
+        for mode_flag in ("--dry-run", "--approve"):
+            proc = _cli("data", "gc", "--data-root", absent_root, mode_flag, "--json")
+            assert proc.returncode == 2, (mode_flag, proc.stdout, proc.stderr)
+            payload = json.loads(proc.stdout)
+            assert payload["ok"] is False
+            assert payload["code"] == "restore_held", payload
+            assert not absent_root.exists()
+    finally:
+        aborted_a = restore_manager.abort(absent_root)
+        assert aborted_a.phase == "aborted"
+
+    # 场景 2：EmptyTargetV1（目标根已存在但仅含空目录骨架、尚无 events.db）
+    empty_root = _seed_standard_root(tmp_path, "gc_reserved_empty")
+    bkp_empty = tmp_path / "bkp_gc_empty"
+    create_backup(empty_root, bkp_empty)
+    shutil.rmtree(empty_root)
+    (empty_root / "skeleton_a" / "skeleton_b").mkdir(parents=True)
+
+    plan_empty = restore_manager.plan(bkp_empty, empty_root)
+    crashed_empty = _cli(
+        "data",
+        "restore-apply",
+        bkp_empty,
+        "--data-root",
+        empty_root,
+        "--expect-plan",
+        plan_empty.plan_sha256,
+        failpoint="FP-RESERVED",
+    )
+    assert crashed_empty.returncode == 77
+    assert empty_root.is_dir()
+    assert not (empty_root / "events.db").exists()
+
+    try:
+        for mode_flag in ("--dry-run", "--approve"):
+            proc = _cli("data", "gc", "--data-root", empty_root, mode_flag, "--json")
+            assert proc.returncode == 2, (mode_flag, proc.stdout, proc.stderr)
+            payload = json.loads(proc.stdout)
+            assert payload["ok"] is False
+            assert payload["code"] == "restore_held", payload
+            assert not (empty_root / "events.db").exists()
+            assert not [p for p in empty_root.rglob("*") if p.is_file()]
+    finally:
+        aborted_b = restore_manager.abort(empty_root)
+        assert aborted_b.phase == "aborted"

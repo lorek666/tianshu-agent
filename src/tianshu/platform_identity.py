@@ -42,14 +42,11 @@ class NativeEntityHandle:
 
     def verify_path(self, path: Path | None = None) -> None:
         candidate = self.path if path is None else Path(path)
-        reopened = open_entity(candidate, self.kind)
-        try:
-            if reopened.identity != self.identity:
-                raise NativeEntityError(
-                    f"路径当前映射的实体已经不匹配已持有句柄：{candidate}"
-                )
-        finally:
-            reopened.close()
+        current_identity = observe_entity(candidate, self.kind)
+        if current_identity != self.identity:
+            raise NativeEntityError(
+                f"路径当前映射的实体已经不匹配已持有句柄：{candidate}"
+            )
 
     def close(self) -> None:
         if os.name == "nt":
@@ -252,13 +249,40 @@ def open_entity(path: Path, kind: EntityKind) -> NativeEntityHandle:
 
 
 def observe_entity(path: Path, kind: EntityKind) -> EntityIdentityV1:
-    """打开真实句柄取得身份后立即关闭。"""
+    """观察真实实体取得身份。
+    
+    在 POSIX 上使用 os.stat 观察，绝不能执行 open() + close()：
+    根据 POSIX advisory locking 标准，进程关闭任何指向某文件的文件描述符时，
+    操作系统内核会静默丢弃该进程在该文件上持有的所有 POSIX 锁（包括 SQLite WAL 锁）。
+    若对正在使用的数据库文件调用 open+close，会导致 SQLite 锁保护瞬间失效并损坏数据库。
+    """
+    if kind not in ("file", "directory"):
+        raise ValueError(f"未知实体类型：{kind!r}")
+    if os.name == "nt":
+        handle = open_entity(path, kind)
+        try:
+            return handle.identity
+        finally:
+            handle.close()
 
-    handle = open_entity(path, kind)
+    supplied = Path(path)
+    _reject_reparse(supplied)
     try:
-        return handle.identity
-    finally:
-        handle.close()
+        canonical = supplied.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise NativeEntityError(f"实体路径不可解析：{supplied}（{exc}）") from exc
+    _reject_reparse(canonical)
+    try:
+        info = os.stat(canonical)
+        expected = stat.S_ISREG(info.st_mode) if kind == "file" else stat.S_ISDIR(info.st_mode)
+        if not expected or stat.S_ISLNK(info.st_mode):
+            raise NativeEntityError(f"路径类型不是普通{kind}：{path}")
+        if info.st_ino == 0:
+            raise NativeEntityError(f"POSIX返回了零inode，不能作为实体身份：{path}")
+        return PosixEntityIdentityV1("posix", info.st_dev, info.st_ino)
+    except OSError as exc:
+        raise NativeEntityError(f"无法读取{kind}身份：{path}（{exc}）") from exc
+
 
 
 __all__ = [

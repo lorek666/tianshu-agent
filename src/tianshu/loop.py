@@ -1368,10 +1368,15 @@ def build_stack(
     claims = JobStore(log, **ident, **kwargs)
     approvals = ApprovalStore(log, **kwargs)
     grants = GrantStore(log, **kwargs)
+    from .restore_access import default_material_paths
+
+    default_snap_root, _default_ev_blobs, _default_mem_blobs = default_material_paths(
+        log.db_path, root
+    )
     shots = (
         snapshots
         if snapshots is not None
-        else SnapshotStore(root / "artifacts", owner_log=log)
+        else SnapshotStore(default_snap_root, owner_log=log)
     )
     if hasattr(shots, "_bind_owner_log"):
         shots._bind_owner_log(log)

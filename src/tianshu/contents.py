@@ -202,31 +202,39 @@ class ContentStore:
             raise ContentError(f"内容必须是字节：{type(data).__name__}")
         if not isinstance(task_id, str) or not task_id:
             raise ContentError("内容授权必须绑定任务（task_id 不能为空）")
-        from .restore_access import ensure_log_write_allowed, ensure_material_write_allowed
+        from .restore_access import (
+            _NOOP_MATERIAL_LEASE,
+            ensure_log_write_allowed,
+            ensure_material_write_allowed,
+        )
 
-        if self._blob_dir is not None:
-            ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
-        else:
+        if self._blob_dir is None:
             ensure_log_write_allowed(self._log)
-        now = self._clock()
-        created = False
-        with self._log.transaction():
-            existing = self._conn.execute(
-                "SELECT digest FROM content_objects WHERE digest = ?", (digest,)
-            ).fetchone()
-            if existing is None:
+        lease = (
+            ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
+            if self._blob_dir is not None
+            else _NOOP_MATERIAL_LEASE
+        )
+        with lease:
+            now = self._clock()
+            created = False
+            with self._log.transaction():
+                existing = self._conn.execute(
+                    "SELECT digest FROM content_objects WHERE digest = ?", (digest,)
+                ).fetchone()
+                if existing is None:
+                    self._conn.execute(
+                        "INSERT INTO content_objects (digest, size, created_at)"
+                        " VALUES (?,?,?)",
+                        (digest, len(data), now),
+                    )
+                    created = True
                 self._conn.execute(
-                    "INSERT INTO content_objects (digest, size, created_at)"
-                    " VALUES (?,?,?)",
-                    (digest, len(data), now),
+                    "INSERT OR IGNORE INTO content_grants (digest, task_id, run_id,"
+                    " created_at) VALUES (?,?,?,?)",
+                    (digest, task_id, run_id, now),
                 )
-                created = True
-            self._conn.execute(
-                "INSERT OR IGNORE INTO content_grants (digest, task_id, run_id,"
-                " created_at) VALUES (?,?,?,?)",
-                (digest, task_id, run_id, now),
-            )
-        return created
+            return created
 
     # ------------------------------------------------------------ 查询
 

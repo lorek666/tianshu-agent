@@ -201,17 +201,31 @@ class RunAssessment:
         }
 
 
-def _read_only_snapshot_store(data_root: Path) -> SnapshotStore:
+def _read_only_snapshot_store(
+    data_root: Path, *, log: EventLog | None = None
+) -> SnapshotStore:
     """只读快照视图：复用 `SnapshotStore` 的解析/校验，但**不走构造函数**。
 
     `SnapshotStore.__init__` 会 `mkdir` 两个目录——对账必须只读，不能在别人的
     数据根上顺手建目录。这里用 `__new__` 挂上同样的三个属性，`load/has_manifest`
     只用 `manifest_dir`，既拿到同一套 `SnapshotCorrupt` 校验，又不落盘。
     """
-    artifacts = Path(data_root) / "artifacts"
+    from .pathkeys import overlap_key
+    from .restore_access import default_material_paths
+
+    artifacts = (
+        default_material_paths(log.db_path, Path(data_root))[0]
+        if log is not None
+        else Path(data_root) / "artifacts"
+    )
     store = SnapshotStore.__new__(SnapshotStore)
     store.root = artifacts
-    store.blob_dir = artifacts / "blobs"
+    store._owner_log = log
+    store.blob_dir = (
+        artifacts / "blobs"
+        if overlap_key(artifacts.name) == overlap_key("artifacts")
+        else artifacts / "preimage_blobs"
+    )
     store.manifest_dir = artifacts / "snapshots"
     return store
 
@@ -271,7 +285,7 @@ def assess_run(
     corrupt = False
     missing_manifest = False
     pending_writes = 0
-    store = _read_only_snapshot_store(root)
+    store = _read_only_snapshot_store(root, log=log if own_log is None else None)
     manifest_checked = False
     manifest_state = "unknown"  # unknown / ok / missing / corrupt
     changes: list[Change] | None = None

@@ -89,8 +89,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    from .restore_access import default_material_paths
+
     db = getattr(args, "db", None) or Path(".tianshu/events.db")
-    log = EventLog(db, blob_dir=db.parent / "blobs")
+    log = EventLog(db, blob_dir=default_material_paths(db)[1])
     try:
         scheduler = Scheduler(log)
         action = args.schedule_action
