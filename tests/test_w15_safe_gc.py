@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -43,31 +44,75 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 from support import CHILD_TEXT, approve_pending, engine_for, stack_for, write_exact
 
-from tianshu import cli, memory_control
+from tianshu import cli, memory_control, restore_access
 from tianshu.backup import collect_references, create_backup, verify_backup
 from tianshu.budget import BudgetLedger
 from tianshu.credentials import register_secret
 from tianshu.data_gc import DAY_MS, run_data_gc
 from tianshu.disk_admission import DiskAdmission, DiskAdmissionError
 from tianshu.events import EventLog
+from tianshu.execpolicy import ExecPolicy
 from tianshu.jobs import JOB_CANCELLED, JOB_DONE
 from tianshu.loop import Limits, build_stack, run
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.platform_identity import open_entity
+from tianshu.receipt import verify_receipts
 from tianshu.replay import replay
 from tianshu.resources import MemoryScope
+from tianshu.restore_contract import (
+    AbsentTargetV1,
+    BindingV1,
+    ColumnRefV1,
+    ColumnV1,
+    CopyFileV1,
+    CopyInventoryV1,
+    DatabaseBytesV1,
+    DirRefV1,
+    EntityRefV1,
+    FamilyCoverageV1,
+    ManifestRefV1,
+    NativePathCodecV1,
+    OriginV1,
+    PlanInputsV1,
+    RegistryMetaV1,
+    RelationDigestV1,
+    ReservedV1,
+    RestoreEventV1,
+    ScopeManifestV1,
+    SealedHoldV1,
+    SqlValueV1,
+    StablePlacementV1,
+    domain_digest,
+)
+from tianshu.restore_registry import PresentRegistryObservation, RestoreRegistry
 from tianshu.snapshot import SnapshotStore
 from tianshu.summaries import MaterialBlock, SummaryStore, build_material
 from tianshu.undo_journal import ACTION_RESTORE, JournalItem, JournalStore
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 STARTUP = str(Path(__file__).resolve().parent / "_startup")
+
+
+@pytest.fixture(autouse=True)
+def _pin_restore_registry_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """将进程内默认恢复注册表隔离到用例私有目录，严禁触碰宿主机 `~/.tianshu`。"""
+    isolated_home = tmp_path / "_isolated_restore_home"
+    isolated_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(
+        restore_access,
+        "_registry_factory",
+        lambda: RestoreRegistry._for_home(isolated_home),
+    )
+    return isolated_home
 
 
 def _subproc_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -1258,3 +1303,576 @@ finally:
     )
     assert code_p == 3
     assert rep_past_boundary["candidates"]["jobs_count"] == 2
+
+
+def test_run_command_stdout_and_stderr_spill_blobs_protected_and_verified(
+    tmp_path: Path,
+) -> None:
+    """Defect #1：run_command 溢出 stdout_ref/stderr_ref 受保护，损坏或缺失必闭锁退 2。"""
+    root = (tmp_path / "exec_root").resolve()
+    ws = (tmp_path / "exec_ws").resolve()
+    ws.mkdir(parents=True)
+
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    snapshots = SnapshotStore(root / "artifacts")
+    try:
+        stack = stack_for(log, snapshots=snapshots, data_root=root)
+        policy = ExecPolicy(
+            argv_allowlist=(sys.executable,),
+            cwd_roots=(ws,),
+            env_allowlist=("PATH",),
+            max_output_bytes=128,
+            timeout_ms=10_000,
+        )
+        task = stack.tasks.create_task(
+            "执行超长标准输出与错误流命令",
+            [{"root_path": str(ws)}],
+            exec_policy=policy,
+        )
+        cmd_code = (
+            "import sys; "
+            "sys.stdout.write('O' * 2048); sys.stdout.flush(); "
+            "sys.stderr.write('E' * 2048); sys.stderr.flush()"
+        )
+        model = ScriptedModel(
+            [
+                ModelResponse(
+                    "tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call_exec_spill",
+                            "run_command",
+                            {"argv": [sys.executable, "-c", cmd_code]},
+                        )
+                    ],
+                ),
+                ModelResponse("end_turn", content="已执行命令"),
+            ]
+        )
+        engine = engine_for(stack, model, limits=Limits(6, 20_000))
+        res = engine.start(task.task_id, out_name="out.md")
+        while res.state == "waiting_approval":
+            assert approve_pending(stack, res.run_id)
+            res = engine.resume_run(res.run_id)
+        assert res.state == "succeeded"
+        run_id = res.run_id
+
+        # 同时覆盖根 blobs/<sha256> 下的流溢出引用解析与核验
+        root_err_bytes = b"R" * 2048
+        root_err_sha = hashlib.sha256(root_err_bytes).hexdigest()
+        (root / "blobs").mkdir(parents=True, exist_ok=True)
+        (root / "blobs" / root_err_sha).write_bytes(root_err_bytes)
+        log.append(
+            run_id,
+            "tool.result",
+            {
+                "call_id": "call_root_blob_stream",
+                "tool_id": "run_command",
+                "status": "succeeded",
+                "effect_state": "none_applied",
+                "output": {
+                    "exit_code": 0,
+                    "signal": None,
+                    "timed_out": False,
+                    "truncated": True,
+                    "stdout": "",
+                    "stderr": "R" * 64,
+                    "stdout_ref": None,
+                    "stderr_ref": root_err_sha,
+                    "stderr_merged": False,
+                    "duration_ms": 5,
+                },
+            },
+            actor_kind="core",
+        )
+
+        assert verify_receipts(log, run_id) == []
+        events = log.read_run(run_id)
+        exec_results = [
+            e.payload["output"]
+            for e in events
+            if e.type == "tool.result" and e.payload.get("call_id") == "call_exec_spill"
+        ]
+        assert len(exec_results) == 1
+        stdout_ref = exec_results[0]["stdout_ref"]
+        stderr_ref = exec_results[0]["stderr_ref"]
+        assert stdout_ref == hashlib.sha256(b"O" * 2048).hexdigest()
+        assert stderr_ref == hashlib.sha256(b"E" * 2048).hexdigest()
+    finally:
+        log.close()
+
+    stdout_blob = root / "artifacts" / "blobs" / stdout_ref
+    stderr_blob = root / "artifacts" / "blobs" / stderr_ref
+    root_stderr_blob = root / "blobs" / root_err_sha
+    assert stdout_blob.read_bytes() == b"O" * 2048
+    assert stderr_blob.read_bytes() == b"E" * 2048
+
+    # 放入真正的未引用孤儿文件，验证引用索引精确保护三个流溢出 blob、只把孤儿列为候选
+    orphan_path = root / "artifacts" / "blobs" / ("9" * 64)
+    orphan_path.write_bytes(b"true-unreferenced-orphan")
+
+    ref_idx = collect_references(root)
+    assert ref_idx.unknown == []
+    assert f"artifacts/blobs/{stdout_ref}" in ref_idx.protected_blobs
+    assert f"artifacts/blobs/{stderr_ref}" in ref_idx.protected_blobs
+    assert f"blobs/{root_err_sha}" in ref_idx.protected_blobs
+
+    future_ms = int(time.time() * 1000) + 10 * DAY_MS
+    ok_rep, ok_code = run_data_gc(
+        root,
+        older_than_days=1,
+        approve=True,
+        clock=lambda: future_ms,
+    )
+    assert ok_code == 0, ok_rep
+    assert ok_rep["deleted"]["orphan_blobs_count"] == 1
+    assert not orphan_path.exists()
+    assert stdout_blob.read_bytes() == b"O" * 2048
+    assert stderr_blob.read_bytes() == b"E" * 2048
+    assert root_stderr_blob.read_bytes() == root_err_bytes
+
+    # GC 后回放、创建备份与独立备份校验全部通过，且备份清单登记 exec_stream_blobs
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as check_log:
+        rep = replay(check_log, run_id)
+        assert rep.ok, rep.problems
+    backup_dir = tmp_path / "exec_stream_backup"
+    manifest = create_backup(root, backup_dir)
+    assert len(manifest.references["exec_stream_blobs"]) == 3
+    v_rep = verify_backup(backup_dir)
+    assert v_rep.ok, v_rep.problems
+
+    # 负控：篡改或删除任一 stdout_ref / stderr_ref 原文时，GC 必以 reference_unknown 退 2 且 0 删除
+    for target_blob, mode in (
+        (stdout_blob, "tamper"),
+        (stdout_blob, "delete"),
+        (stderr_blob, "tamper"),
+        (root_stderr_blob, "delete"),
+    ):
+        saved_bytes = target_blob.read_bytes()
+        orphan_path.write_bytes(b"must-not-be-deleted-when-stream-ref-broken")
+        try:
+            if mode == "tamper":
+                target_blob.write_bytes(b"corrupted-exec-stream-evidence")
+            else:
+                target_blob.unlink()
+            cli_res = _cli(
+                "data", "gc", "--data-root", root, "--older-than-days", "1", "--approve", "--json"
+            )
+            assert cli_res.returncode == 2, (mode, target_blob, cli_res.stdout, cli_res.stderr)
+            err_json = json.loads(cli_res.stdout)
+            assert err_json["ok"] is False
+            assert err_json["code"] == "reference_unknown"
+            assert err_json["deleted"]["orphan_blobs_count"] == 0
+            assert orphan_path.is_file()
+        finally:
+            target_blob.write_bytes(saved_bytes)
+
+
+@dataclass(frozen=True)
+class _ReleasedPayloadStub:
+    final_root: DirRefV1
+    final_database: EntityRefV1
+    binding_sha256: str
+    origin_sha256: str
+
+
+@dataclass(frozen=True)
+class _SyntheticRestoreEvent:
+    version: int
+    registry_id: str
+    sequence: int
+    batch_id: str
+    previous_sha256: str | None
+    kind: str
+    payload: Any
+
+
+def _make_minimal_gc_root(root: Path, orphan_tag: bytes) -> Path:
+    ws = root.parent / f"{root.name}_ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+        log.append(
+            "r_min",
+            "run.start",
+            {
+                "task": "min",
+                "workspace": str(ws),
+                "out": "out.md",
+                "limits": {},
+                "tools": [],
+            },
+            actor_kind="core",
+            legacy_write=True,
+        )
+    orphan = root / "blobs" / hashlib.sha256(orphan_tag).hexdigest()
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(orphan_tag)
+    return orphan
+
+
+def _build_batch_events_for_root(
+    *,
+    registry_id: str,
+    batch_id: str,
+    seq_start: int,
+    prev_sha: str | None,
+    root: Path,
+    backup_dir: Path,
+    released: bool,
+) -> tuple[tuple[Any, ...], OriginV1]:
+    codec = NativePathCodecV1()
+    parent = root.parent.resolve()
+    root_resolved = root.resolve()
+    db_path = root_resolved / "events.db"
+
+    def _dir_ref(p: Path) -> DirRefV1:
+        h = open_entity(p, "directory")
+        try:
+            return DirRefV1(codec.from_path(p.resolve()), h.identity)
+        finally:
+            h.close()
+
+    def _file_ref(p: Path) -> EntityRefV1:
+        h = open_entity(p, "file")
+        try:
+            return EntityRefV1(codec.from_path(p.resolve()), h.identity)
+        finally:
+            h.close()
+
+    p_ref = _dir_ref(parent)
+    s_ref = _dir_ref(root_resolved)
+    d_ref = _file_ref(db_path)
+    b_ref = _dir_ref(backup_dir)
+
+    db_raw = db_path.read_bytes()
+    db_sha = hashlib.sha256(db_raw).hexdigest()
+    inv = CopyInventoryV1(1, (), (CopyFileV1(("events.db",), len(db_raw), db_sha),))
+    inv_sha = domain_digest("inventory", inv)
+    manifest = ManifestRefV1(
+        base64.b64encode(b"{}").decode("ascii"),
+        hashlib.sha256(b"{}").hexdigest(),
+    )
+    target_np = codec.from_path(root_resolved)
+    target_db_np = codec.from_path(db_path)
+    placement = StablePlacementV1(target_np, root_resolved.name, (p_ref,), ())
+    absent = AbsentTargetV1("absent")
+    inputs = PlanInputsV1(
+        1,
+        b_ref,
+        manifest,
+        inv,
+        inv_sha,
+        target_np.text,
+        (),
+        placement,
+        absent,
+        None,
+        None,
+        (),
+        1,
+        1,
+    )
+    col = ColumnV1(0, "seq", "INTEGER", True, SqlValueV1("null", None), 1)
+    rel = RelationDigestV1("events", (col,), SqlValueV1("null", None), 1, "a" * 64)
+    cov = FamilyCoverageV1(
+        "events", ("events",), (ColumnRefV1("events", "seq"),), (("events.db",),), ("all",)
+    )
+    scope = ScopeManifestV1(1, 1, "a" * 64, (rel,), (cov,), inv)
+    binding = BindingV1(
+        1,
+        registry_id,
+        batch_id,
+        target_np,
+        target_db_np,
+        s_ref.identity,
+        d_ref.identity,
+        target_np.text,
+        (),
+        manifest,
+        inv,
+        inv_sha,
+        DatabaseBytesV1(len(db_raw), db_sha),
+        scope,
+        domain_digest("scope", scope),
+        (),
+    )
+    binding_sha = domain_digest("binding", binding)
+    stage_name = f".{root_resolved.name}.restore-{batch_id}"
+    reserved = ReservedV1(
+        inputs,
+        domain_digest("plan", inputs),
+        inv,
+        inv_sha,
+        placement,
+        absent,
+        stage_name,
+    )
+    e_reserved = RestoreEventV1(
+        1, registry_id, seq_start, batch_id, prev_sha, "reserved", reserved
+    )
+    e_reserved_sha = domain_digest("event", e_reserved)
+    sealed = SealedHoldV1(
+        "b" * 64,
+        s_ref.identity,
+        d_ref.identity,
+        binding,
+        binding_sha,
+    )
+    e_sealed = RestoreEventV1(
+        1, registry_id, seq_start + 1, batch_id, e_reserved_sha, "sealed_hold", sealed
+    )
+    e_sealed_sha = domain_digest("event", e_sealed)
+    origin = OriginV1(1, registry_id, batch_id, e_sealed_sha, binding_sha)
+    origin_sha = domain_digest("origin", origin)
+    if not released:
+        e_pub = _SyntheticRestoreEvent(
+            1,
+            registry_id,
+            seq_start + 2,
+            batch_id,
+            e_sealed_sha,
+            "published_hold",
+            {"binding_sha256": binding_sha, "origin_sha256": origin_sha},
+        )
+        return (e_reserved, e_sealed, e_pub), origin
+
+    e_rel = _SyntheticRestoreEvent(
+        1,
+        registry_id,
+        seq_start + 2,
+        batch_id,
+        e_sealed_sha,
+        "released",
+        _ReleasedPayloadStub(
+            final_root=s_ref,
+            final_database=d_ref,
+            binding_sha256=binding_sha,
+            origin_sha256=origin_sha,
+        ),
+    )
+    return (e_reserved, e_sealed, e_rel), origin
+
+
+def test_restore_registry_dynamic_rebind_cross_batch_released_and_control_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defect #2：动态调 _registry_factory()，严绑单批 ReleasedV1 与 (S, D) 实体身份。"""
+    reg_id = "12345678-1234-4234-9234-123456789abc"
+    batch_a = "11111111-2222-4333-8444-555555555555"
+    batch_b = "66666666-7777-4888-9999-aaaaaaaaaaaa"
+    batch_unknown = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+
+    backup_dummy = tmp_path / "dummy_backup"
+    backup_dummy.mkdir()
+    root_a = tmp_path / "root_a"
+    root_b = tmp_path / "root_b"
+    orphan_a = _make_minimal_gc_root(root_a, b"orphan-in-root-a")
+    orphan_b = _make_minimal_gc_root(root_b, b"orphan-in-root-b")
+
+    evs_a, origin_a = _build_batch_events_for_root(
+        registry_id=reg_id,
+        batch_id=batch_a,
+        seq_start=1,
+        prev_sha=None,
+        root=root_a,
+        backup_dir=backup_dummy,
+        released=True,
+    )
+    evs_b, origin_b = _build_batch_events_for_root(
+        registry_id=reg_id,
+        batch_id=batch_b,
+        seq_start=4,
+        prev_sha="c" * 64,
+        root=root_b,
+        backup_dir=backup_dummy,
+        released=False,
+    )
+
+    custom_home = tmp_path / "custom_reg_home"
+    auth_dir = custom_home / ".tianshu" / "restore-registry-v1"
+    auth_dir.mkdir(parents=True)
+    reg_db_file = auth_dir / "registry.db"
+    reg_db_file.write_bytes(b"placeholder")
+
+    codec = NativePathCodecV1()
+
+    def _id_of(p: Path, kind: str):
+        h = open_entity(p, kind)
+        try:
+            return h.identity
+        finally:
+            h.close()
+
+    home_id = _id_of(custom_home, "directory")
+    auth_id = _id_of(auth_dir, "directory")
+    reg_db_id = _id_of(reg_db_file, "file")
+    meta = RegistryMetaV1(
+        1,
+        reg_id,
+        DirRefV1(codec.from_path(custom_home.resolve()), home_id),
+        DirRefV1(codec.from_path(auth_dir.resolve()), auth_id),
+        EntityRefV1(codec.from_path(reg_db_file.resolve()), reg_db_id),
+    )
+
+    obs = PresentRegistryObservation(
+        True,
+        custom_home,
+        auth_dir,
+        reg_db_file,
+        home_id,
+        auth_id,
+        reg_db_id,
+        meta,
+        meta.to_bytes(),
+        (*evs_a, *evs_b),
+        6,
+        "d" * 64,
+    )
+
+    counters = {"observe": 0, "revalidate": 0}
+
+    class _CustomRegistry:
+        def observe(self):
+            counters["observe"] += 1
+            return obs
+
+        def revalidate(self, expected: PresentRegistryObservation) -> None:
+            counters["revalidate"] += 1
+            assert expected.head_sequence == obs.head_sequence
+            assert expected.head_sha256 == obs.head_sha256
+
+    # 在 data_gc 模块早已导入之后重绑 restore_access._registry_factory，证明运行时动态查找
+    monkeypatch.setattr(restore_access, "_registry_factory", lambda: _CustomRegistry())
+
+    # 1. 跨批次负控：虽然同一注册表里 Batch A 已是 released，但 Root B 处于 published_hold，必须拒！
+    (root_b / ".restore-origin.json").write_bytes(origin_b.to_bytes())
+    for kwargs in ({"dry_run": True}, {"approve": True}):
+        rep_b, code_b = run_data_gc(root_b, older_than_days=1, **kwargs)
+        assert code_b == 2, (kwargs, rep_b)
+        assert rep_b["code"] == "restore_held"
+        assert orphan_b.is_file()
+    assert counters["observe"] >= 2
+
+    # 2. 跨根伪造负控：把已 released 的 Root A 的 .restore-origin.json 复制到 Root B（实体不匹配）
+    (root_b / ".restore-origin.json").write_bytes(origin_a.to_bytes())
+    for kwargs in ({"dry_run": True}, {"approve": True}):
+        rep_b2, code_b2 = run_data_gc(root_b, older_than_days=1, **kwargs)
+        assert code_b2 == 2, (kwargs, rep_b2)
+        assert rep_b2["code"] == "restore_held"
+        assert orphan_b.is_file()
+
+    # 3. 未知批次 / 摘要篡改负控：在存在其他 released 批次时，伪造未知 batch_id 依然闭锁拒绝
+    forged_origin = OriginV1(
+        1, reg_id, batch_unknown, origin_a.sealed_sha256, origin_a.binding_sha256
+    )
+    (root_b / ".restore-origin.json").write_bytes(forged_origin.to_bytes())
+    rep_b3, code_b3 = run_data_gc(root_b, older_than_days=1, approve=True)
+    assert code_b3 == 2
+    assert rep_b3["code"] == "restore_held"
+    assert orphan_b.is_file()
+
+    # 4. Root A 写入自身匹配的合法 .restore-origin.json：预演放行退 3！
+    (root_a / ".restore-origin.json").write_bytes(origin_a.to_bytes())
+    rep_a_dry, code_a_dry = run_data_gc(root_a, older_than_days=1, dry_run=True)
+    assert code_a_dry == 3, rep_a_dry
+    assert rep_a_dry["ok"] is True
+    assert rep_a_dry["candidates"]["orphan_blobs_bytes"] == len(b"orphan-in-root-a")
+
+    # 5. 无条件控制标记负控：即便 Root A 已 released，残留临时/token 控制文件也无条件退 2！
+    for marker_name in (
+        ".restore-origin.json.tmp",
+        ".restore-token.json",
+        ".restore-token.json.tmp",
+    ):
+        marker_file = root_a / marker_name
+        marker_file.write_bytes(origin_a.to_bytes())
+        try:
+            for kwargs in ({"dry_run": True}, {"approve": True}):
+                m_rep, m_code = run_data_gc(root_a, older_than_days=1, **kwargs)
+                assert m_code == 2, (marker_name, kwargs, m_rep)
+                assert m_rep["code"] == "restore_held"
+                assert orphan_a.is_file()
+        finally:
+            marker_file.unlink()
+
+    # 6. 缺失见证负控：Root A 的 (S, D) 命中已解除批次，但磁盘 .restore-origin.json 被删，仍拒绝
+    (root_a / ".restore-origin.json").unlink()
+    missing_origin_rep, missing_origin_code = run_data_gc(
+        root_a, older_than_days=1, approve=True
+    )
+    assert missing_origin_code == 2
+    assert missing_origin_rep["code"] == "restore_held"
+    assert orphan_a.is_file()
+
+    # 7. 正控闭环：恢复合法 .restore-origin.json 后，Root A 的 --approve 成功退 0 并回收孤儿文件
+    (root_a / ".restore-origin.json").write_bytes(origin_a.to_bytes())
+    rep_a_exec, code_a_exec = run_data_gc(root_a, older_than_days=1, approve=True)
+    assert code_a_exec == 0, rep_a_exec
+    assert rep_a_exec["ok"] is True
+    assert rep_a_exec["deleted"]["orphan_blobs_count"] == 1
+    assert not orphan_a.exists()
+    assert counters["revalidate"] >= 1
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX RLIMIT_FSIZE 内核文件写入字节上限仅适用于类 Unix 平台",
+)
+def test_kernel_rlimit_fsize_zero_reclaims_orphans_without_creating_shm_or_wal(
+    tmp_path: Path,
+) -> None:
+    """Defect #3：真子进程设 RLIMIT_FSIZE=(0, 0) 零写上限，不产 -shm/-wal 仍退 0 删孤儿。"""
+    fx = _build_rich_fixture(tmp_path)
+    root: Path = fx["root"]
+    db_path = root / "events.db"
+
+    assert not (root / "events.db-wal").exists()
+    assert not (root / "events.db-shm").exists()
+    db_bytes_before = db_path.read_bytes()
+
+    rlimit_child = """
+import resource, sys
+# 保持默认 SIGXFSZ 信号语义：一旦尝试创建 32 KiB events.db-shm 或写任何 >0 字节文件将立即失败/被杀
+resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+from tianshu.cli import main
+raise SystemExit(
+    main(
+        [
+            "data",
+            "gc",
+            "--data-root",
+            sys.argv[1],
+            "--older-than-days",
+            "1",
+            "--approve",
+            "--json",
+        ]
+    )
+)
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", rlimit_child, str(root)],
+        env=_subproc_env(),
+        capture_output=True,
+        timeout=30,
+        **CHILD_TEXT,
+    )
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    rep = json.loads(proc.stdout)
+    assert rep["ok"] is True
+    assert rep["deleted"]["orphan_blobs_count"] == 2
+    assert rep["deleted"]["empty_snapshots_count"] == 1
+    assert rep["deleted"]["jobs_count"] == 0
+    assert rep["deleted"]["budget_reservations_count"] == 0
+    assert rep["db_rows_deferred_low_disk"] is True
+
+    # 两个孤儿 blob 与超期空快照已真实从磁盘删除，events.db 零改动，且全程未产生 -wal / -shm
+    assert not (root / fx["orphan_artifact_rel"]).exists()
+    assert not (root / fx["orphan_root_rel"]).exists()
+    assert not (root / fx["deletable_empty_snap_rel"]).exists()
+    assert not (root / "events.db-wal").exists()
+    assert not (root / "events.db-shm").exists()
+    assert db_path.read_bytes() == db_bytes_before
+    for rel in fx["protected_files"]:
+        assert (root / rel).is_file(), f"受保护材料误删：{rel}"
+

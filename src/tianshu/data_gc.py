@@ -21,16 +21,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import stat
 import sys
 import time
 from collections.abc import Callable, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import restore_access
 from .backup import (
     ReferenceIndex,
     ReferenceUnknown,
@@ -70,12 +72,22 @@ from .platform_identity import NativeEntityError, open_entity
 from .restore_access import (
     RestoreAccessError,
     RestoreScopeBusy,
-    _active_scope_blocks,
-    _registry_factory,
     acquire_restore_database_access,
     verify_sqlite_main,
 )
-from .restore_registry import PresentRegistryObservation, RestoreRegistryError
+from .restore_contract import (
+    EntityIdentityV1,
+    OriginV1,
+    RestoreContractError,
+    SealedHoldV1,
+    domain_digest,
+)
+from .restore_registry import (
+    AbsentRegistryObservation,
+    PresentRegistryObservation,
+    RegistryObservation,
+    RestoreRegistryError,
+)
 from .snapshot import SnapshotStore
 from .tasks import EFFECT_STATES, NON_TERMINAL_STATES, RUN_STATES, SUBTASK_TERMINAL_STATES
 
@@ -117,8 +129,7 @@ GC_FAILURE_CODES: frozenset[str] = frozenset(
     }
 )
 
-_RESTORE_CONTROL_FILES: tuple[str, ...] = (
-    ".restore-origin.json",
+_UNCONDITIONAL_HELD_MARKERS: tuple[str, ...] = (
     ".restore-origin.json.tmp",
     ".restore-token.json",
     ".restore-token.json.tmp",
@@ -239,17 +250,201 @@ def _map_admission_error(exc: AdmissionRefused) -> GcRefused:
     return GcRefused("incompatible", str(exc))
 
 
+def _extract_dir_or_entity_identity(ref_obj: Any) -> EntityIdentityV1 | None:
+    identity = getattr(ref_obj, "identity", None)
+    if isinstance(identity, EntityIdentityV1):
+        return identity
+    if isinstance(ref_obj, dict) and isinstance(ref_obj.get("identity"), dict):
+        try:
+            return EntityIdentityV1.from_dict(ref_obj["identity"])
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _verify_committed_origin_released(
+    root: Path,
+    root_identity: EntityIdentityV1,
+    db_identity: EntityIdentityV1,
+    observed: RegistryObservation,
+) -> object:
+    """严格核验磁盘 `.restore-origin.json`、注册表同批 `ReleasedV1` 与实时 `(S, D)` 实体身份。
+
+    返回已验证解除的 `batch_id`；任何缺失、摘要不符、未解除或实体漂移一律以 `restore_held` 拒绝。
+    """
+    origin_path = root / ".restore-origin.json"
+    if origin_path.is_symlink() or origin_path.is_junction():
+        raise GcRefused("restore_held", "恢复来源标记不能是符号链接或 junction")
+    try:
+        origin_handle = open_entity(origin_path, "file")
+        try:
+            if origin_handle.link_count != 1:
+                raise GcRefused("restore_held", "恢复来源标记必须是单硬链接普通文件")
+            origin_raw = origin_path.read_bytes()
+        finally:
+            origin_handle.close()
+    except GcRefused:
+        raise
+    except (NativeEntityError, OSError) as exc:
+        raise GcRefused("restore_held", f"无法核验恢复来源标记文件：{exc}") from exc
+
+    try:
+        origin = OriginV1.from_bytes(origin_raw)
+    except RestoreContractError as exc:
+        raise GcRefused("restore_held", f"恢复来源标记格式非法：{exc}") from exc
+
+    if not isinstance(observed, PresentRegistryObservation):
+        raise GcRefused("restore_held", "存在恢复来源标记但缺少权威恢复注册表")
+    if observed.meta.registry_id != origin.registry_id:
+        raise GcRefused("restore_held", "恢复来源标记的 registry_id 与当前注册表不匹配")
+
+    batch_events = [ev for ev in observed.events if ev.batch_id == origin.batch_id]
+    if not batch_events:
+        raise GcRefused("restore_held", "恢复注册表中不存在匹配的恢复批次")
+
+    sealed_ev = next((ev for ev in batch_events if ev.kind == "sealed_hold"), None)
+    if (
+        sealed_ev is None
+        or not isinstance(sealed_ev.payload, SealedHoldV1)
+        or domain_digest("event", sealed_ev) != origin.sealed_sha256
+        or sealed_ev.payload.binding_sha256 != origin.binding_sha256
+        or sealed_ev.payload.binding.root_identity != root_identity
+        or sealed_ev.payload.binding.database_identity != db_identity
+    ):
+        raise GcRefused("restore_held", "恢复来源标记与注册表 sealed_hold 绑定摘要或实体不符")
+
+    tail = batch_events[-1]
+    if tail.kind != "released":
+        raise GcRefused("restore_held", f"恢复批次尚未解除隔离（当前阶段：{tail.kind}）")
+
+    origin_sha256 = domain_digest("origin", origin)
+    tail_payload = tail.payload
+    final_root_ref = getattr(tail_payload, "final_root", None)
+    final_db_ref = getattr(tail_payload, "final_database", None)
+    tail_binding_sha = getattr(tail_payload, "binding_sha256", None)
+    tail_origin_sha = getattr(tail_payload, "origin_sha256", None)
+    if isinstance(tail_payload, dict):
+        final_root_ref = tail_payload.get("final_root")
+        final_db_ref = tail_payload.get("final_database")
+        tail_binding_sha = tail_payload.get("binding_sha256")
+        tail_origin_sha = tail_payload.get("origin_sha256")
+
+    final_root_id = _extract_dir_or_entity_identity(final_root_ref)
+    final_db_id = _extract_dir_or_entity_identity(final_db_ref)
+    if (
+        final_root_id != root_identity
+        or final_db_id != db_identity
+        or tail_binding_sha != origin.binding_sha256
+        or tail_origin_sha != origin_sha256
+    ):
+        raise GcRefused("restore_held", "ReleasedV1 绑定的 (S, D) 实体或来源摘要与当前数据根不符")
+    return origin.batch_id
+
+
+def _filter_released_observation(
+    observed: RegistryObservation,
+    root_identity: EntityIdentityV1,
+    db_identity: EntityIdentityV1,
+    *,
+    verified_released_batch_id: object | None,
+) -> RegistryObservation:
+    """剥离已核验通过或属于无关实体的 released 批次；缺失见证的同实体批次保留阻断。"""
+    if isinstance(observed, AbsentRegistryObservation):
+        return observed
+    histories: dict[object, list[Any]] = {}
+    for ev in observed.events:
+        histories.setdefault(ev.batch_id, []).append(ev)
+    active_events: list[Any] = []
+    for batch_id, batch_evs in histories.items():
+        tail = batch_evs[-1]
+        if tail.kind == "aborted":
+            continue
+        if tail.kind == "released":
+            if verified_released_batch_id is not None and batch_id == verified_released_batch_id:
+                continue
+            tail_payload = tail.payload
+            final_root_ref = (
+                tail_payload.get("final_root")
+                if isinstance(tail_payload, dict)
+                else getattr(tail_payload, "final_root", None)
+            )
+            final_db_ref = (
+                tail_payload.get("final_database")
+                if isinstance(tail_payload, dict)
+                else getattr(tail_payload, "final_database", None)
+            )
+            if (
+                _extract_dir_or_entity_identity(final_root_ref) == root_identity
+                or _extract_dir_or_entity_identity(final_db_ref) == db_identity
+            ):
+                # 当前 (S, D) 命中已解除批次但缺少匹配的 .restore-origin.json 见证，保留阻断！
+                active_events.extend(batch_evs)
+            continue
+        active_events.extend(batch_evs)
+    return replace(observed, events=tuple(active_events))
+
+
+class _GcRestoreRegistryAdapter:
+    """将动态 `_registry_factory()` 与经核实的已解除恢复批次桥接到独占准入。"""
+
+    def __init__(self, inner: Any, root: Path, db: Path) -> None:
+        self._inner = inner
+        self._root = root
+        self._db = db
+        self._raw_by_head: dict[tuple[int, str], PresentRegistryObservation] = {}
+
+    def observe(self) -> RegistryObservation:
+        raw = self._inner.observe()
+        if isinstance(raw, AbsentRegistryObservation):
+            return raw
+        root_handle = open_entity(self._root, "directory")
+        try:
+            root_id = root_handle.identity
+        finally:
+            root_handle.close()
+        db_handle = open_entity(self._db, "file")
+        try:
+            db_id = db_handle.identity
+        finally:
+            db_handle.close()
+        verified_batch_id: object | None = None
+        origin_path = self._root / ".restore-origin.json"
+        if origin_path.exists() or origin_path.is_symlink() or origin_path.is_junction():
+            verified_batch_id = _verify_committed_origin_released(
+                self._root, root_id, db_id, raw
+            )
+        self._raw_by_head[(raw.head_sequence, raw.head_sha256)] = raw
+        return _filter_released_observation(
+            raw,
+            root_id,
+            db_id,
+            verified_released_batch_id=verified_batch_id,
+        )
+
+    def revalidate(self, expected: PresentRegistryObservation) -> None:
+        raw = self._raw_by_head.get((expected.head_sequence, expected.head_sha256), expected)
+        self._inner.revalidate(raw)
+
+
 def _check_not_restore_held(root: Path, db: Path) -> None:
     """拒绝处于未终结恢复范围（held / staging）的数据根。"""
+    for marker in _UNCONDITIONAL_HELD_MARKERS:
+        marker_path = root / marker
+        if marker_path.exists() or marker_path.is_symlink() or marker_path.is_junction():
+            raise GcRefused("restore_held", f"数据根存在未终结恢复控制文件：{marker}")
+
     try:
+        root_handle = open_entity(root, "directory")
+        try:
+            root_identity = root_handle.identity
+        finally:
+            root_handle.close()
         db_handle = open_entity(db, "file")
         try:
             db_identity = db_handle.identity
         finally:
             db_handle.close()
-        observed = _registry_factory().observe()
-        if _active_scope_blocks(observed, db, db_identity):
-            raise GcRefused("restore_held", "数据根落入尚未终结的恢复批次范围")
+        observed = restore_access._registry_factory().observe()
     except GcRefused:
         raise
     except RestoreScopeBusy as exc:
@@ -257,21 +452,26 @@ def _check_not_restore_held(root: Path, db: Path) -> None:
     except (RestoreRegistryError, RestoreAccessError, NativeEntityError) as exc:
         raise GcRefused("incompatible", f"恢复范围核验失败：{exc}") from exc
 
-    has_control_marker = any(
-        (root / name).exists() or (root / name).is_symlink()
-        for name in _RESTORE_CONTROL_FILES
-    )
-    if has_control_marker:
-        released = False
-        if isinstance(observed, PresentRegistryObservation):
-            histories: dict[object, list[Any]] = {}
-            for event in observed.events:
-                histories.setdefault(event.batch_id, []).append(event)
-            for events in histories.values():
-                if events and events[-1].kind == "released":
-                    released = True
-        if not released:
-            raise GcRefused("restore_held", "数据根存在未解除的恢复隔离标记（held）")
+    verified_batch_id: object | None = None
+    origin_path = root / ".restore-origin.json"
+    if origin_path.exists() or origin_path.is_symlink() or origin_path.is_junction():
+        verified_batch_id = _verify_committed_origin_released(
+            root, root_identity, db_identity, observed
+        )
+
+    try:
+        filtered = _filter_released_observation(
+            observed,
+            root_identity,
+            db_identity,
+            verified_released_batch_id=verified_batch_id,
+        )
+        if restore_access._active_scope_blocks(filtered, db, db_identity):
+            raise GcRefused("restore_held", "数据根落入尚未终结的恢复批次范围")
+    except GcRefused:
+        raise
+    except RestoreAccessError as exc:
+        raise GcRefused("incompatible", f"恢复范围核验失败：{exc}") from exc
 
     try:
         parent = root.parent
@@ -284,6 +484,28 @@ def _check_not_restore_held(root: Path, db: Path) -> None:
         raise
     except OSError as exc:
         raise GcRefused("incompatible", f"无法检查数据根父目录暂存状态：{exc}") from exc
+
+
+def _effective_headroom_bytes(
+    db: Path, disk_free_probe: Callable[[Path], int]
+) -> int:
+    """测量当前可安全写入 SQLite WAL/SHM 的有效余量（同时遵循内核 RLIMIT_FSIZE 上限）。"""
+    try:
+        available = int(disk_free_probe(db))
+    except Exception:  # noqa: BLE001 - 空间探针异常保守按 0 余量处理，不阻断孤儿文件回收
+        return 0
+    if available <= 0:
+        return 0
+    if os.name != "nt":
+        try:
+            import resource
+
+            soft_limit, _hard_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+            if soft_limit != resource.RLIM_INFINITY and soft_limit >= 0:
+                available = min(available, int(soft_limit))
+        except (ImportError, OSError, ValueError):
+            pass
+    return max(0, available)
 
 
 def _connect_preview_readonly(db: Path) -> sqlite3.Connection:
@@ -984,12 +1206,23 @@ def run_data_gc(
 
         # --approve 离线独占模式：先拿独占维护锁，锁内重核全部不变量与引用索引（防 TOCTOU）。
         try:
-            access_cm = acquire_restore_database_access(db, exclusive=True)
+            access_cm = acquire_restore_database_access(
+                db,
+                exclusive=True,
+                registry=_GcRestoreRegistryAdapter(restore_access._registry_factory(), root, db),
+            )
+        except GcRefused:
+            raise
         except MaintenanceBusy as exc:
             raise GcRefused("maintenance_busy", f"数据库存在活跃连接或维护操作：{exc}") from exc
         except RestoreScopeBusy as exc:
             raise GcRefused("restore_held", str(exc)) from exc
-        except (RestoreAccessError, MaintenanceError, NativeEntityError) as exc:
+        except (
+            RestoreRegistryError,
+            RestoreAccessError,
+            MaintenanceError,
+            NativeEntityError,
+        ) as exc:
             raise GcRefused("incompatible", f"无法取得离线独占准入：{exc}") from exc
 
         with access_cm as access:
@@ -1000,29 +1233,58 @@ def run_data_gc(
                 raise GcRefused("maintenance_busy", reason)
             root, db = _validate_root_layout(root)
 
-            with closing(_connect_locked_rw(db)) as conn:
-                verify_sqlite_main(conn, db, access.identity)
-                _verify_db_admission(conn, db)
-                try:
-                    index = collect_references(root)
-                except ReferenceUnknown as exc:
-                    raise GcRefused("reference_unknown", str(exc)) from exc
-                _check_reference_index_clean(index)
-                candidates = _compute_candidates(conn, root, index, cutoff_ms)
+            initial_free = _effective_headroom_bytes(db, disk_free_probe)
+            deleted_jobs = 0
+            deleted_resv = 0
+            wal_checkpoint: dict[str, int] | None = None
+            db_rows_deferred_low_disk = False
+
+            if initial_free < MIN_DB_GC_HEADROOM_BYTES:
+                # 内核 0 字节文件上限（如 RLIMIT_FSIZE=(0, 0)）或真满盘路径：
+                # 绝不能先开 ?mode=rw（WAL 模式会分配 32 KiB events.db-shm 触发 EFBIG/SIGXFSZ）。
+                # 在独占锁保护下用只读连接（无旁文件时 ?mode=ro&immutable=1）完成全套准入、
+                # 二次引用核验与候选计算，先行 unlink 孤儿文件释放空间后再按余量决定是否开写连接。
+                with closing(_connect_preview_readonly(db)) as ro_conn:
+                    verify_sqlite_main(ro_conn, db, access.identity)
+                    _verify_db_admission(ro_conn, db)
+                    try:
+                        index = collect_references(root)
+                    except ReferenceUnknown as exc:
+                        raise GcRefused("reference_unknown", str(exc)) from exc
+                    _check_reference_index_clean(index)
+                    candidates = _compute_candidates(ro_conn, root, index, cutoff_ms)
 
                 has_db_deletions = bool(candidates.job_ids or candidates.reservation_ids)
-                try:
-                    initial_free = int(disk_free_probe(db))
-                except Exception:  # noqa: BLE001 - 空间探针异常只保守延后 DB 写，不阻断孤儿文件回收
-                    initial_free = 0
+                (
+                    deleted_blobs,
+                    deleted_blob_bytes,
+                    deleted_snaps,
+                    deleted_snap_bytes,
+                ) = _unlink_verified_candidates(
+                    root, index, candidates.orphan_blobs, candidates.empty_snapshots
+                )
+                post_unlink_free = _effective_headroom_bytes(db, disk_free_probe)
+                if post_unlink_free >= MIN_DB_GC_HEADROOM_BYTES:
+                    with closing(_connect_locked_rw(db)) as rw_conn:
+                        verify_sqlite_main(rw_conn, db, access.identity)
+                        deleted_jobs, deleted_resv = _delete_db_candidates_in_tx(
+                            rw_conn, candidates.job_ids, candidates.reservation_ids
+                        )
+                        wal_checkpoint = _checkpoint_truncate(rw_conn)
+                elif has_db_deletions:
+                    db_rows_deferred_low_disk = True
+            else:
+                with closing(_connect_locked_rw(db)) as conn:
+                    verify_sqlite_main(conn, db, access.identity)
+                    _verify_db_admission(conn, db)
+                    try:
+                        index = collect_references(root)
+                    except ReferenceUnknown as exc:
+                        raise GcRefused("reference_unknown", str(exc)) from exc
+                    _check_reference_index_clean(index)
+                    candidates = _compute_candidates(conn, root, index, cutoff_ms)
 
-                deleted_jobs = 0
-                deleted_resv = 0
-                wal_checkpoint: dict[str, int] | None = None
-                db_rows_deferred_low_disk = False
-
-                if initial_free >= MIN_DB_GC_HEADROOM_BYTES:
-                    # 常规及 <2GiB 低盘路径：先单事务提交 DB 行删除（若失败 0 文件已删），
+                    # 常规及 <2GiB（>=256KiB）路径：先单事务提交 DB 行删除（失败时 0 文件已删），
                     # 再 unlink 孤儿文件并 fsync 目录，最后原地截断 WAL。
                     deleted_jobs, deleted_resv = _delete_db_candidates_in_tx(
                         conn, candidates.job_ids, candidates.reservation_ids
@@ -1036,34 +1298,6 @@ def run_data_gc(
                         root, index, candidates.orphan_blobs, candidates.empty_snapshots
                     )
                     wal_checkpoint = _checkpoint_truncate(conn)
-                else:
-                    # 极端 0 字节满盘路径：先 unlink 孤儿文件释放空间（unlink 需 0 剩余字节），
-                    # 再重测空间决定是否具备最小 WAL 页余量执行 DB 行删除与 checkpoint。
-                    (
-                        deleted_blobs,
-                        deleted_blob_bytes,
-                        deleted_snaps,
-                        deleted_snap_bytes,
-                    ) = _unlink_verified_candidates(
-                        root, index, candidates.orphan_blobs, candidates.empty_snapshots
-                    )
-                    try:
-                        post_unlink_free = int(disk_free_probe(db))
-                    except Exception:  # noqa: BLE001
-                        post_unlink_free = 0
-                    if post_unlink_free >= MIN_DB_GC_HEADROOM_BYTES:
-                        deleted_jobs, deleted_resv = _delete_db_candidates_in_tx(
-                            conn, candidates.job_ids, candidates.reservation_ids
-                        )
-                        wal_checkpoint = _checkpoint_truncate(conn)
-                    else:
-                        if has_db_deletions:
-                            db_rows_deferred_low_disk = True
-                        if not _has_sqlite_companions(db):
-                            try:
-                                wal_checkpoint = _checkpoint_truncate(conn)
-                            except sqlite3.Error:
-                                wal_checkpoint = None
 
             _fsync_dir(root)
             deleted = {

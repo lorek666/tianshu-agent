@@ -943,14 +943,29 @@ def _projection_references(
         if has_contents != has_grants:
             problems.append("内容投影不完整：content_objects 与 content_grants 必须同时存在")
         if has_contents:
+            root_dir = db_path.parent
             for digest, size in conn.execute(
                 "SELECT digest, size FROM content_objects ORDER BY digest"
             ):
                 if not _is_digest(digest) or not isinstance(size, int) or size < 0:
                     problems.append(f"content_objects 引用非法：digest={digest!r}, size={size!r}")
                     continue
-                contents.append({"path": f"artifacts/blobs/{digest}",
-                                 "sha256": digest, "size": size, "content_digest": digest})
+                matched_content_rels = [
+                    f"{prefix}/{digest}"
+                    for prefix in ("artifacts/blobs", "blobs")
+                    if (root_dir / prefix / digest).exists()
+                    or (root_dir / prefix / digest).is_symlink()
+                    or (root_dir / prefix / digest).is_junction()
+                ]
+                for content_rel in matched_content_rels or [f"artifacts/blobs/{digest}"]:
+                    contents.append(
+                        {
+                            "path": content_rel,
+                            "sha256": digest,
+                            "size": size,
+                            "content_digest": digest,
+                        }
+                    )
         if has_contents and has_grants:
             for (digest,) in conn.execute(
                 "SELECT DISTINCT g.digest FROM content_grants AS g "
@@ -977,6 +992,119 @@ def _projection_references(
     return contents, memories, problems
 
 
+def _exec_stream_references(
+    data_root: Path,
+    *,
+    source_root: Path,
+    saved: bool = False,
+    source_aliases: Sequence[str] = (),
+    discover_aliases: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """run_command 截断流（stdout_ref / stderr_ref）引用的完整原文 blob。"""
+    refs: list[dict[str, Any]] = []
+    problems: list[str] = []
+    db = _checked_file(data_root, "events.db")
+    conn = _connect_saved_readonly(db) if saved else _connect_readonly(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT seq, run_id, type, payload AS payload_inline, payload_ref, payload_hash"
+            " FROM events WHERE type IN ('tool.result', 'receipt') ORDER BY seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    seen: set[tuple[int, str, str, str]] = set()
+    for row in rows:
+        seq = int(row["seq"])
+        try:
+            aliases = source_aliases if discover_aliases is None else discover_aliases
+            payload = read_saved_event_payload(
+                data_root, row, source_root=source_root, source_aliases=aliases,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("事件 payload 必须是对象")
+            containers: list[dict[str, Any]] = [payload]
+            output = payload.get("output")
+            if isinstance(output, dict):
+                containers.append(output)
+            for stream_key in ("stdout_ref", "stderr_ref"):
+                for container in containers:
+                    raw_ref = container.get(stream_key)
+                    if raw_ref is None:
+                        continue
+                    if not isinstance(raw_ref, str) or not raw_ref:
+                        raise ValueError(f"{stream_key} 必须是非空字符串或 null：{raw_ref!r}")
+                    if _is_digest(raw_ref):
+                        matched_rels: list[str] = []
+                        for prefix in ("artifacts/blobs", "blobs"):
+                            cand_rel = f"{prefix}/{raw_ref}"
+                            cand_path = data_root / cand_rel
+                            if (
+                                cand_path.exists()
+                                or cand_path.is_symlink()
+                                or cand_path.is_junction()
+                            ):
+                                _checked_file(data_root, cand_rel)
+                                matched_rels.append(cand_rel)
+                        if not matched_rels:
+                            # 缺失时同时登记预期引用并记入 problems，保证 GC 与备份校验均闭锁拒绝。
+                            key = (seq, stream_key, f"artifacts/blobs/{raw_ref}", raw_ref)
+                            if key not in seen:
+                                seen.add(key)
+                                refs.append(
+                                    {
+                                        "seq": seq,
+                                        "stream": stream_key,
+                                        "path": f"artifacts/blobs/{raw_ref}",
+                                        "sha256": raw_ref,
+                                    }
+                                )
+                            problems.append(
+                                f"事件 seq={seq} 的 {stream_key} 引用文件缺失：{raw_ref}"
+                            )
+                        else:
+                            for cand_rel in matched_rels:
+                                key = (seq, stream_key, cand_rel, raw_ref)
+                                if key not in seen:
+                                    seen.add(key)
+                                    refs.append(
+                                        {
+                                            "seq": seq,
+                                            "stream": stream_key,
+                                            "path": cand_rel,
+                                            "sha256": raw_ref,
+                                        }
+                                    )
+                    else:
+                        rel = (
+                            _reference_rel_live(
+                                raw_ref, source_root, source_aliases=discover_aliases
+                            )
+                            if discover_aliases is not None
+                            else _reference_rel(
+                                raw_ref, source_root, source_aliases=source_aliases
+                            )
+                        )
+                        digest = PurePosixPath(rel).name
+                        if not _is_digest(digest):
+                            raise ValueError(f"{stream_key} 引用文件名不是 sha256：{raw_ref!r}")
+                        key = (seq, stream_key, rel, digest)
+                        if key not in seen:
+                            seen.add(key)
+                            refs.append(
+                                {
+                                    "seq": seq,
+                                    "stream": stream_key,
+                                    "path": rel,
+                                    "sha256": digest,
+                                }
+                            )
+        except (BackupError, TianshuError, OSError, ValueError, KeyError, TypeError,
+                UnicodeError) as exc:
+            problems.append(f"事件 seq={seq} 的流输出引用无法核验：{exc}")
+    return refs, problems
+
+
 def _material_references(
     data_root: Path, *, source_root: Path,
     source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
@@ -984,6 +1112,10 @@ def _material_references(
     db = _checked_file(data_root, "events.db")
     payload, payload_problems = _db_references(
         db, source_root, saved=True, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
+    exec_streams, exec_problems = _exec_stream_references(
+        data_root, source_root=source_root, saved=True, source_aliases=source_aliases,
         discover_aliases=discover_aliases,
     )
     receipts, receipt_problems = _receipt_references(
@@ -998,13 +1130,14 @@ def _material_references(
     contents, memories, projection_problems = _projection_references(db, saved=True)
     return {
         "event_payload_refs": payload,
+        "exec_stream_blobs": exec_streams,
         "receipt_blobs": receipts,
         "snapshot_blobs": snapshots,
         "undo_journal_blobs": undo,
         "content_blobs": contents,
         "memory_blobs": memories,
-    }, (payload_problems + receipt_problems + snapshot_problems + undo_problems
-        + projection_problems)
+    }, (payload_problems + exec_problems + receipt_problems + snapshot_problems
+        + undo_problems + projection_problems)
 
 
 def inspect_writers(data_root: Path) -> dict[str, Any]:
@@ -1148,6 +1281,8 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
 def _ref_owner(ref: dict[str, Any]) -> str:
     if "receipt_id" in ref:
         return f"Receipt {ref['receipt_id']}（事件 seq={ref['seq']}）"
+    if "stream" in ref:
+        return f"事件 seq={ref['seq']} 的 {ref['stream']}"
     if "manifest" in ref:
         return f"快照清单 {ref['manifest']}"
     if "journal" in ref:
@@ -1319,8 +1454,15 @@ def _check_reference_groups(
     dest: Path, manifest: BackupManifest, references: dict[str, Any], problems: list[str],
 ) -> None:
     declared = {f.path for f in manifest.files}
-    for key in ("event_payload_refs", "receipt_blobs", "snapshot_blobs", "undo_journal_blobs",
-                "content_blobs", "memory_blobs"):
+    for key in (
+        "event_payload_refs",
+        "exec_stream_blobs",
+        "receipt_blobs",
+        "snapshot_blobs",
+        "undo_journal_blobs",
+        "content_blobs",
+        "memory_blobs",
+    ):
         refs = references.get(key, [])
         if not isinstance(refs, list):
             problems.append(f"references.{key} 必须是列表")
@@ -1739,6 +1881,9 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         payload_refs, payload_problems = _db_references(
             db, data_root, saved=quiescent, discover_aliases=source_aliases
         )
+        exec_refs, exec_problems = _exec_stream_references(
+            data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
+        )
         receipt_refs, receipt_problems = _receipt_references(
             data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
         )
@@ -1751,14 +1896,14 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         )
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
-    for problem in (payload_problems + receipt_problems + snapshot_problems + undo_problems
-                    + projection_problems):
+    for problem in (payload_problems + exec_problems + receipt_problems + snapshot_problems
+                    + undo_problems + projection_problems):
         index.unknown.append(problem)
     for ref in snapshot_refs:
         if ref["manifest"] not in index.snapshot_manifests:
             index.snapshot_manifests.append(ref["manifest"])
     all_refs = (
-        payload_refs + snapshot_refs + undo_refs
+        payload_refs + exec_refs + snapshot_refs + undo_refs
         + receipt_refs + content_refs + memory_refs
     )
     for ref in all_refs:
@@ -1767,7 +1912,13 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         try:
             checked = _checked_file(data_root, rel)
             handle = open_entity(checked, "file")
-            handle.close()
+            try:
+                if handle.link_count != 1:
+                    raise ValueError(
+                        f"引用材料硬链接数不为 1（link_count={handle.link_count}）"
+                    )
+            finally:
+                handle.close()
             with checked.open("rb") as fh:
                 digest, size = _sha256_stream(fh)
             if digest != ref["sha256"]:
