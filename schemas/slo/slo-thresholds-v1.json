@@ -1,0 +1,96 @@
+{
+  "schema_version": "slo-thresholds-v1",
+  "policy_version": 1,
+  "frozen_at": "2026-11-18",
+  "baseline_environment": {
+    "os": "macOS 26.6.2 (Darwin 25.6.0)",
+    "arch": "arm64",
+    "cpu_model": "Apple M4",
+    "memory_gib": 16.0,
+    "python_version": "3.12.13",
+    "filesystem": "APFS",
+    "quiescent": false,
+    "note": "本机多工作树并行开发环境下 N=10 实测基线（非独占静默机），冻结阈值按跨平台 CI 2-vCPU runner（含 Windows 进程创建与 WAL fsync 抖动）及普通用户硬件留出合理余量；一经冻结禁止未升版事后放宽。"
+  },
+  "dataset_profile": {
+    "warm_tasks": 50,
+    "warm_events_min": 500,
+    "slow_subscriber_event_bytes_min": 180000
+  },
+  "min_repeats": 10,
+  "metrics": {
+    "startup_cold_ms": {
+      "unit": "ms",
+      "p95_max": 2200.0,
+      "max_ceiling": 4500.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 478.717,
+      "baseline_p95_ms": 497.807,
+      "description": "空数据根拉起真实 Host + Daemon 子进程直至 HTTP /state 与 task.create 可用耗时。"
+    },
+    "startup_warm_ms": {
+      "unit": "ms",
+      "p95_max": 2500.0,
+      "max_ceiling": 5000.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 480.327,
+      "baseline_p95_ms": 503.881,
+      "description": "预置 50 任务 / ≥500 事件数据根拉起真实 Host + Daemon 子进程并完成热启动扫描至 /state + task.create 可用耗时。"
+    },
+    "cancel_ack_ms": {
+      "unit": "ms",
+      "p95_max": 500.0,
+      "max_ceiling": 1200.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 48.761,
+      "baseline_p95_ms": 143.359,
+      "description": "真实不读慢订阅者（IPC + SSE）填满发送通道且慢模型/慢工具阻塞期间，用户发起 run.cancel 至收到控制面 RPC 确认耗时。"
+    },
+    "cancel_stop_dispatch_ms": {
+      "unit": "ms",
+      "p95_max": 1000.0,
+      "max_ceiling": 2500.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 177.602,
+      "baseline_p95_ms": 254.113,
+      "description": "慢订阅者背压下从发起 run.cancel（含受控 40ms 在途慢模型/慢工具窗口）至 AgentLoop 安全点确认取消并阻断后续工具新派发耗时。"
+    },
+    "approval_rpc_ms": {
+      "unit": "ms",
+      "p95_max": 500.0,
+      "max_ceiling": 1200.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 51.199,
+      "baseline_p95_ms": 63.592,
+      "description": "真实不读慢订阅者（IPC + SSE）背压窗口内，用户经 Host HTTP /rpc 执行 approvals.decide 落库并入队唤醒耗时。"
+    },
+    "restart_recovery_ms": {
+      "unit": "ms",
+      "p95_max": 2000.0,
+      "max_ceiling": 4500.0,
+      "min_repeats": 10,
+      "baseline_p50_ms": 263.812,
+      "baseline_p95_ms": 294.63,
+      "description": "四类 os._exit 硬退故障（已批准写 intent 后 / 写盘后 / 未知副作用阻断 / 未决模型与预占账本）重启真实 Daemon 至任务恢复完结或明确落 reconciling 耗时。"
+    }
+  },
+  "invariants": {
+    "zero_blind_retries": true,
+    "zero_lost_receipts": true,
+    "zero_leaked_budget_reservations": true,
+    "zero_post_cancel_dispatches": true,
+    "zero_orphan_processes": true
+  },
+  "soak_limits": {
+    "default_duration_hours": 10.0,
+    "default_sample_interval_seconds": 30.0,
+    "rss_idle_max_mib": 256.0,
+    "rss_active_max_mib": 512.0,
+    "rss_slope_max_mib_per_hour": 32.0,
+    "rss_net_growth_max_mib": 128.0,
+    "open_fds_max": 512,
+    "open_fds_growth_max": 64,
+    "disk_growth_max_mib": 512.0,
+    "max_orphan_processes": 0
+  }
+}
