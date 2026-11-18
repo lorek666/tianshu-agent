@@ -1271,8 +1271,9 @@ class _Daemon:
         for conn in dropped:
             self._record_drop(conn)
             # 发送线程可能还卡在一次写里（abort 已尽量叫醒它）；join 只是尽量，
-            # 不让回收路径无限等待。
-            conn.join_sender(0.2)
+            # 不让回收路径无限等待。Windows 命名管道 close 不中断阻塞 WriteFile，
+            # 用极短等待避免多个慢订阅者回收叠加阻塞主循环控制面请求（PRD §10.6）。
+            conn.join_sender(0.02 if os.name == "nt" else 0.2)
         # 读线程同样要回收：否则每关一次 UI/每刷新一次页面，就多留一个
         # Thread 对象在列表里，长驻进程里是慢性泄漏。
         self._reader_threads = [t for t in self._reader_threads if t.is_alive()]

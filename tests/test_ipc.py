@@ -823,3 +823,42 @@ def test_server_close_unblocks_accept_thread(root: Path) -> None:
     assert exited.wait(5.0), "close() 之后 accept 线程没有退出"
     assert not ipc.probe(root, timeout=0.5), "关闭后端点还能连上（下一个实例会被拒）"
 
+
+def test_windows_pipe_listener_expands_backlog_and_closes_spare_handles_before_wake(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """验证 Windows 命名管道预建多实例排队容量，且 close() 先回收备用句柄再唤醒 accept。"""
+    events: list[str] = []
+
+    class FakePipeInner:
+        def __init__(self) -> None:
+            self._handle_queue: list[str] = ["h0"]
+            self._seq = 0
+
+        def _new_handle(self) -> str:
+            self._seq += 1
+            return f"h{self._seq}"
+
+    class FakeListener:
+        def __init__(self, address: str, *, family: str, authkey: bytes, backlog: int) -> None:
+            assert backlog == ipc.LISTEN_BACKLOG
+            self._listener = FakePipeInner()
+
+        def close(self) -> None:
+            events.append(f"close_listener:{len(self._listener._handle_queue)}")
+            self._listener._handle_queue.clear()
+
+    srv = ipc.Server(root)
+    fake_os = type("FakeOs", (), {**os.__dict__, "name": "nt"})
+    monkeypatch.setattr(ipc, "os", fake_os)
+    monkeypatch.setattr(ipc, "probe", lambda _r, **_kw: False)
+    monkeypatch.setattr(ipc, "Listener", FakeListener)
+    monkeypatch.setattr(ipc.Server, "_wake_accept", lambda _self: events.append("wake_accept"))
+
+    srv.start()
+    assert srv._listener is not None
+    assert len(srv._listener._listener._handle_queue) == min(ipc.LISTEN_BACKLOG, 16)
+    srv.close()
+    assert events == [f"close_listener:{min(ipc.LISTEN_BACKLOG, 16)}", "wake_accept"]
+
+

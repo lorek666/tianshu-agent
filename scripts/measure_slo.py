@@ -1216,19 +1216,17 @@ def run_suite1_startup(
     ui_dir = REAL_UI_DIST if (REAL_UI_DIST / "index.html").is_file() else base_dir / "empty_ui"
     ui_dir.mkdir(parents=True, exist_ok=True)
 
-    # 先执行一次不计时的 CLI 字节码/Windows Defender 可执行扫描预热（不创建任何真实 data_root 状态）
-    warmup_root = base_dir / "warmup_noop"
-    subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "tianshu", "--help"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=_isolated_env(
-            data_root=warmup_root,
-            authority_root=authority_root,
-            lock_root=lock_root,
-        ),
-        timeout=20.0,
-        check=False,
+    # 先执行一次不计时的独立空目录 Host+Daemon 预热并销毁，消除首次进程创建时
+    # OS 文件缓存与 Windows Defender 首次扫描毛刺（后续每个 c{idx} 仍为全新空目录与新进程）
+    warmup_root = base_dir / "warmup_cold"
+    warmup_root.mkdir(parents=True, exist_ok=True)
+    _measure_one_host_startup(
+        warmup_root,
+        ui_dir=ui_dir,
+        authority_root=authority_root,
+        lock_root=lock_root,
+        expect_warm_events=0,
+        tracked_pids=tracked_pids,
     )
     shutil.rmtree(warmup_root, ignore_errors=True)
 
