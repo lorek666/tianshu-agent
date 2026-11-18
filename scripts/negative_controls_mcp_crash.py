@@ -119,7 +119,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NB25",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_exec.py",
         old='        failpoint("mcp_after_call")\n',
         new="",
         tests=(CRASH,),
@@ -176,7 +176,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NB32",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_exec.py",
         # 变异：不真的推进外发边界，直接当成"已经推进"（= 拿掉发包前的标记）
         # 锚点跟随 #129：调用点多了 server/tool 两个关键字参数（对象阻断复核）。
         old=(
@@ -256,7 +256,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NB38",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old=(
             "                \" WHERE dispatch_id=? AND state=?\",\n"
             "                (DISPATCH_EXECUTING, self._clock(), dispatch_id,"
@@ -272,7 +272,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NB39",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_exec.py",
         old=(
             "        except GuardTimeout as exc:\n"
             "            # 拿不到执行守卫 = 没抢到\"撤销与发送\"的分界线：一个字节都没发。\n"

@@ -296,19 +296,22 @@ def test_every_id_has_a_producer_or_is_declared_unused():
 def test_reserved_ids_really_have_no_reachable_path():
     """两个保留编号各自证明一次"够不到"，而不是只写在注释里。"""
     # dispatch.denied 是 DispatchDenied 的默认参数：确认没有任何调用方省略它。
-    dispatcher_src = (REPO / "src" / "tianshu" / "dispatcher.py").read_text(
-        encoding="utf-8"
-    )
-    for node in ast.walk(ast.parse(dispatcher_src)):
-        call = node
-        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "DispatchDenied":
-            given = len(call.args) + sum(
-                1 for keyword in call.keywords if keyword.arg == "rule_id"
-            )
-            assert given >= 2, (
-                f"dispatcher.py:{call.lineno} 用了默认 rule_id——"
-                "dispatch.denied 已经有产生路径了，应移出保留清单"
-            )
+    dispatcher_files = [
+        REPO / "src" / "tianshu" / "dispatcher.py",
+        *sorted((REPO / "src" / "tianshu").glob("_dispatcher_*.py")),
+    ]
+    for path in dispatcher_files:
+        dispatcher_src = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(dispatcher_src)):
+            call = node
+            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "DispatchDenied":
+                given = len(call.args) + sum(
+                    1 for keyword in call.keywords if keyword.arg == "rule_id"
+                )
+                assert given >= 2, (
+                    f"{path.name}:{call.lineno} 用了默认 rule_id——"
+                    "dispatch.denied 已经有产生路径了，应移出保留清单"
+                )
 
     # c4.unhandled 是 classify() 的末尾兜底：四个受支持动作都必须被前面的分支接住。
     engine = PolicyEngine()

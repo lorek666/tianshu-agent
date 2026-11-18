@@ -78,7 +78,7 @@ class Case:
 CASES: tuple[Case, ...] = (
     Case(
         name="NC-O1",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_authority.py",
         old="            self._refuse_blocked_mcp_object(target.server, target.tool)\n",
         new="            pass\n",
         tests=(BEFORE,),
@@ -87,7 +87,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O2",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old="        keys = mcp_block_keys(server, tool)\n"
         "        root = self._data_root",
         new="        keys = ()\n"
@@ -190,7 +190,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O11",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old="                self._log.append(**object_event)\n",
         new="                pass\n",
         tests=(IN_RUN,),
@@ -269,7 +269,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O18",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old=(
             "            # 没有数据根就没有撤销入口（`revoke` 同样要求它），也就没有要抢的\n"
             "            # 那把锁；库调用方保持原行为，只做状态推进（对象阻断照样复核）。\n"
@@ -295,7 +295,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O20",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old=(
             "        try:\n"
             "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
@@ -320,7 +320,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O22",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_exec.py",
         old="                sent=False,\n",
         new="                sent=True,\n",
         tests=(DEAD_AT_DISPATCH,),
@@ -345,7 +345,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O24",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old="        if is_mcp and result.effect_state == \"unknown\":\n",
         new="        if False and is_mcp and result.effect_state == \"unknown\":\n",
         tests=(TIMEOUT_BLOCK,),
@@ -354,7 +354,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O25",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old=(
             "            with execution_guard(Path(root), timeout_ms=self._guard_timeout_ms):\n"
             "                write()\n"
@@ -370,7 +370,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O26",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_ledger.py",
         old=(
             "        except GuardTimeout:\n"
             "            result_event[\"payload\"][\"output\"][\"block_guard\"] = \"timeout\"\n"
@@ -386,7 +386,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="NC-O13",
-        relpath="src/tianshu/dispatcher.py",
+        relpath="src/tianshu/_dispatcher_exec.py",
         old="        except McpObjectBlocked as exc:\n"
         "            # 等批准/等租约期间这个对象被别的 Run 标成阻断：同样一个字节都没发。\n"
         "            # 按受控拒绝结算（`dispatch.mcp_object_blocked`），不能记成 unknown ——\n"
