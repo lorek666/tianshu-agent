@@ -24,7 +24,7 @@
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | 无 | **已并入 main**（契约 #190 `beedf51` / 绑定与 `run.end` v2 #191 `e18624c`，run 44173429146） |
 | W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5 | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；四目标 release 实跑与真机安装待验 | **R0–R3 代码已并入 main**（#170 / #174 / #175 / #186）；四目标 release 实跑与真机验收待完成 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义（#194 已冻结） | exec*/isolation | Windows 原生容器不在 v1 范围（诚实标 unsupported） | **门禁绿**（macOS `seatbelt` + Linux `landlock` 已通过第二读者 8/8 复审，待 PR CI 绿后并入 main） |
-| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估（#194 已冻结） | 与 G3 后续重叠 | 拍板已锁定：保守安全 GC（零删 events/summaries） | **v1 只读审计已并入 main**（#169，`7f88994`）；安全 GC 下半场实现复审中 |
+| W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估（#194 已冻结） | 与 G3 后续重叠 | 契约 §6 已拍板冻结（`e8d136d`） | **v1 只读审计已并入 main**（#169，`7f88994`）；**v2 保守离线安全 GC（`tianshu data gc`）已通过第二读者复审待合入**（见 [CONTRACT-W15-RETENTION-2026-11-15.md](CONTRACT-W15-RETENTION-2026-11-15.md) §6） |
 
 ## 外部阻塞清单（做了做不了 / 需要拍板，不许冒充已解决）
 
