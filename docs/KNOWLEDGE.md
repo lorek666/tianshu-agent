@@ -29,7 +29,7 @@
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
 - **当前主要未完成项（距离 PRD §11.1 G3 正式发布）**：
   - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
-  - **普通用户首日开箱体验**：首日图形化设置面板（`SettingsDialog` 五标签：模型热切换与 macOS Keychain 密钥写入、定时任务管理、账户/任务预算账本与对账视图、MCP 只读状态、默认脱敏诊断包导出）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测。
+  - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
   - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、以及 **W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**均已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO 仍待完成。
   - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147)）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
@@ -246,6 +246,8 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **SVG 元素的坐标 `transform` 属性与 CSS `@keyframes` 动画 `transform` 不能挂在同一节点（2026-11-18）**：浏览器在应用 CSS `transform` 关键帧时会直接覆盖同一 `<g>` 节点上的 SVG `transform="translate(...) rotate(...)"` 属性，导致悬浮全息屏、星芒等配件被拉回 `(0, 0)` 原点，或关节旋转基准丢失。所有带定位/旋转的 SVG 部件必须拆成外层定位 `<g transform="...">` 与内层纯动画 `<g class="...">` 两层嵌套；同屏多实例 SVG `<defs>` 渐变与滤镜 ID 须经 `useId()` 隔离，并用静态标记单测钉住全体 `id` 无重复。
 
 - **测试必须隔离所测阶段，并验证异常在真实派发与清理之后仍是原对象（2026-11-17）**：
   前置装配、进程启动/发现、真实 send 和结果核对必须有清楚的观察边界，不能把准备
