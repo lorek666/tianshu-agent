@@ -1140,7 +1140,14 @@ class Dispatcher:
                     return self._dispatch_subtask(
                         request, dispatch_id, target, seq, args, admitted
                     )
-            except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
+            except (
+                DispatchDenied,
+                DiskAdmissionError,
+                GuardTimeout,
+                ApprovalError,
+                JobLost,
+                RunFenced,
+            ) as exc:
                 return self._abort_dispatch(request, dispatch_id, exc)
 
         # ---- 阶段二：守卫内再核一遍，然后才真正写 ----
