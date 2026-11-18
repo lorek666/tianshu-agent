@@ -548,8 +548,8 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   新请求、回放不联网。因此「无目录联网任务可运行」与「私有内容未经外发许可不发包」
   在**执行面**有了可核对的事实（请求里只有目标 URL 与固定头，没有 Cookie/凭据/代理）。
   仍然不成立的部分逐条登记在 [network-g2.md](network-g2.md) §7：只支持 GET、没有检索
-  API、真实公网研究与真实模型复跑未验证、DNS rebinding 未防护、二进制正文没有文本
-  分页读取。
+  API、真实公网研究与真实模型复跑未验证（DNS rebinding 防护与二进制分页读取已由下方
+  W9 `v2.0` 补齐）。
 - **已实现并有判据（G2 子代理 D1）**：委派的**排队面**——`task.created.max_subtasks`
   （必填能力声明）、`subtasks` 实体与父子链、四个工具（`subtask.spawn/status/result/cancel`）、
   六道授权门（工具归属 / 能力声明 / 深度 / slug 唯一 / 数量与局部上限 / 目标存在）、
@@ -563,8 +563,8 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 - **已实现并有判据（G2 MCP 阶段）**：MCP stdio 客户端 + 动态工具准入 + 派发链路
   （PR #116–#119，见 [mcp-g2.md](mcp-g2.md)）。真实第三方 server 未验证、进程无沙箱，
   隔离门禁未覆盖（`c4.mcp_isolation_unproven` 明确拒绝声称隔离）。
-- **W9 v2.0 契约已冻结（2026-11-18，待实现 PR 接线，见 [network-g2.md](network-g2.md) §4.1 / §7.1 与 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3）**：
-  遵循红线 8 将 `network.fetch`（`1.0` → `2.0`，增可选 `offset >= 0`、`length` `1..65536`、`max_bytes` `1..1048576` 及输出 `offset`/`next_offset`/`page_bytes`）与 `read_content`（`1.0` → `2.0`，增可选 `encoding ∈ {"utf-8", "utf-8-replace", "latin-1", "base64"}`）同步升版；并在初始连接与每一跳重定向前强制单次 DNS 解析 + 非全局地址拦截（`net.private_address_blocked`，记已知 `0` 字节）+ Socket 字面量 IP 钉死直连（完整保留原 `Host` 请求头、TLS SNI `server_hostname` 与 X.509 主机名核验）。
+- **已实现并有判据（W9 v2.0 网络分页与防重绑，2026-11-18，见 [network-g2.md](network-g2.md) §4.1 / §7.1 与 [CONTRACT-PHASE2-G3-2026-11-18.md](CONTRACT-PHASE2-G3-2026-11-18.md) §3）**：
+  遵循红线 8 将 `network.fetch`（`1.0` → `2.0`，增可选 `offset >= 0`、`length` `1..65536`、`max_bytes` `1..1048576` 及输出 `offset`/`next_offset`/`page_bytes`）与 `read_content`（`1.0` → `2.0`，增可选 `encoding ∈ {"utf-8", "utf-8-replace", "latin-1", "base64"}`）同步升版；并在初始连接与每一跳重定向前强制单次 DNS 解析 + 非全局地址拦截（`net.private_address_blocked`，记已知 `0` 字节）+ Socket 字面量 IP 钉死直连（完整保留原 `Host` 请求头、TLS SNI `server_hostname` 与 X.509 主机名核验；判据见 `tests/test_w9_network_depth.py`）。
 
 
 ### 5.3 C3 Event

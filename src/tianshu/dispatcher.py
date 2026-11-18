@@ -1679,23 +1679,7 @@ class Dispatcher:
             self._settle_network_bytes(reservation, None)
             return self._fail_unknown(request, dispatch_id, target, exc)
 
-        # 4) 先落内容引用，再写结果事件。
-        try:
-            ref = self._write_content(request, fetched.body)
-        except Exception as exc:  # noqa: BLE001 - 落盘失败：确定没有事件承诺
-            self._settle_network_bytes(reservation, len(fetched.body))
-            result = ToolResult(
-                "failed",
-                "none_applied",
-                {
-                    "error": f"网络结果无法落盘：{type(exc).__name__}: {exc}",
-                    "url": fetched.uri,
-                    "reason": "net.content_unavailable",
-                },
-            )
-            self._commit_result(request, dispatch_id, result, target, intent_seq)
-            return result
-
+        # 4) 先核验内联分页窗口，再落内容引用、最后写结果事件。
         raw_offset = net_args.get("offset", 0)
         page_offset = (
             raw_offset
@@ -1712,9 +1696,36 @@ class Dispatcher:
             and raw_length > 0
             else self._net_limits.summary_bytes
         )
-        summary, page_bytes, next_offset, clipped = net_summary_page(
-            fetched, offset=page_offset, length=page_length
-        )
+        try:
+            summary, page_bytes, next_offset, clipped = net_summary_page(
+                fetched, offset=page_offset, length=page_length
+            )
+        except NetError as exc:
+            self._settle_network_bytes(reservation, len(fetched.body))
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {"error": str(exc), "reason": exc.reason, "url": fetched.uri},
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+
+        try:
+            ref = self._write_content(request, fetched.body)
+        except Exception as exc:  # noqa: BLE001 - 落盘失败：确定没有事件承诺
+            self._settle_network_bytes(reservation, len(fetched.body))
+            result = ToolResult(
+                "failed",
+                "none_applied",
+                {
+                    "error": f"网络结果无法落盘：{type(exc).__name__}: {exc}",
+                    "url": fetched.uri,
+                    "reason": "net.content_unavailable",
+                },
+            )
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+            return result
+
         output: dict[str, Any] = {
             "url": fetched.uri,
             "status": fetched.status,

@@ -174,16 +174,26 @@ class _AcceptCounter:
         (socket.AF_INET, ["192.168.1.10"]),
         (socket.AF_INET, ["169.254.169.254"]),
         (socket.AF_INET, ["100.64.0.1"]),
+        (socket.AF_INET, ["192.88.99.1"]),
         (socket.AF_INET, ["0.0.0.0"]),
         (socket.AF_INET, ["224.0.0.1"]),
         (socket.AF_INET6, ["::1"]),
         (socket.AF_INET6, ["fc00::1"]),
+        (socket.AF_INET6, ["fec0::1"]),
         (socket.AF_INET6, ["fe80::1"]),
         (socket.AF_INET6, ["fe80::1%lo0"]),
+        (socket.AF_INET6, ["100::1"]),
+        (socket.AF_INET6, ["2001:20::1"]),
+        (socket.AF_INET6, ["2001:db8::1"]),
+        (socket.AF_INET6, ["3fff::1"]),
+        (socket.AF_INET6, ["5f00::1"]),
         (socket.AF_INET6, ["::ffff:127.0.0.1"]),
         (socket.AF_INET6, ["::ffff:169.254.169.254"]),
+        (socket.AF_INET6, ["::ffff:0:127.0.0.1"]),
+        (socket.AF_INET6, ["::127.0.0.1"]),
         (socket.AF_INET6, ["2002:7f00:0001::1"]),
         (socket.AF_INET6, ["64:ff9b::127.0.0.1"]),
+        (socket.AF_INET6, ["64:ff9b:1::1"]),
         # 混合 RRset：第一条是合法公网 IP，第二条是 127.0.0.1 -> 必须整体 fail-closed！
         (socket.AF_INET, ["93.184.216.34", "127.0.0.1"]),
     ],
@@ -601,20 +611,35 @@ def test_literal_loopback_allowlisted_skips_dns_while_metadata_and_unspecified_b
             assert bad_payload["status"] == "failed", bad_payload
             assert bad_payload["output"]["reason"] == "net.private_address_blocked"
 
-        # 3) IPv6 与内嵌映射的危险字面量同样被 `_resolve_and_pin` 阻断
+        # 3) IPv6 站点本地与 NAT64 / SIIT / IPv4-compatible 内嵌云元数据等危险字面量全部阻断
         for ipv6_bad in (
             "::",
+            "fec0::1",
             "fe80::1",
             "fe80::1%lo0",
             "ff02::1",
             "::ffff:169.254.169.254",
             "::ffff:0.0.0.0",
+            "::ffff:0:169.254.169.254",
+            "::169.254.169.254",
             "2002:a9fe:a9fe::1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b:1::169.254.169.254",
+            "64:ff9b:1:fffe::a9fe:a9fe",
+            "64:ff9b:1:fffe:00a9:fea9:fe00:0000",
+            "64:ff9b:1:ffa9:00fe:a9fe:0000:0000",
+            "64:ff9b:1:a9fe:00a9:fe00:0000:0000",
+            "64:ff9b:1::",
         ):
             target = NetworkTarget(transport="http", host=ipv6_bad, port=8080, path="/")
             with pytest.raises(NetError) as excinfo:
                 fetch(target, limits=NetLimits(connect_attempts=1, min_interval_s=0))
-            assert excinfo.value.reason == "net.private_address_blocked"
+            assert excinfo.value.reason == "net.private_address_blocked", ipv6_bad
+
+        # 显式 `::1` 字面量仍被当作合法回环字面量钉死（不会误拆为 IPv4 0.0.0.1）
+        loopback_v6 = NetworkTarget(transport="http", host="::1", port=8080, path="/")
+        pinned_v6 = net_mod._resolve_and_pin(loopback_v6)
+        assert len(pinned_v6) == 1 and pinned_v6[0].sockaddr[:2] == ("::1", 8080)
     finally:
         log.close()
         fixture.stop()
@@ -1083,6 +1108,150 @@ def test_read_content_v2_encodings_reconstruct_exact_binary_and_non_utf8_payload
         for enc in CONTENT_ENCODINGS:
             with pytest.raises(ContentDigestMismatch):
                 stack.contents.read_page(mixed_ref, task_id=task.task_id, encoding=enc)
+    finally:
+        log.close()
+        fixture.stop()
+
+
+def test_utf8_replace_maximal_subpart_and_summary_page_cursor_progress(
+    tmp_path: Path,
+) -> None:
+    """Unicode §3.9 maximal subpart 跨页一致性与 `summary_page`/`read_page` 游标严格前进回归。"""
+    from tianshu.net import Fetched, summary_page
+
+    fixture = NetFixture().route("/cjk", body="中文测试".encode()).start()
+    log, stack = _stack(tmp_path, net_limits=NetLimits(min_interval_s=0))
+    try:
+        task = stack.tasks.create_task("编码边界", outbound_allow=[fixture.origin_uri])
+
+        # 1) 1/2/3 字节残缺前缀与合法 1/2/3/4 字节码点在 plen=1..5 下的跨页往返与边界拒绝
+        corpus: list[tuple[bytes, int]] = [
+            (b"\xffABCDEF", 1),
+            (b"\xc2ABCDEF", 1),
+            (b"\xe4ABCDEF", 1),
+            (b"\xf0ABCDEF", 1),
+            (b"\xed\xa0\x80ABCDEF", 1),
+            (b"\xe4\xb8ABCDEF", 2),        # 2 字节 maximal subpart -> 必须产出单个 U+FFFD
+            (b"X\xe4\xb8ABCDEF", 2),
+            (b"\xe4\xb8\xe4\xb8Z", 2),
+            (b"\xf0\x9fABCDEF", 2),
+            (b"\xf0\x9f\x98ABCDEF", 3),    # 3 字节 maximal subpart -> 必须产出单个 U+FFFD
+            (b"XY\xf0\x9f\x98ABCDEF", 3),
+            ("Aé中🌍Tail".encode(), 4),
+            (b"\xe4\xb8" + "é中🌍".encode() + b"\xf0\x9f\x98Z", 4),
+        ]
+
+        for idx, (raw, min_full_plen) in enumerate(corpus):
+            digest = hashlib.sha256(raw).hexdigest()
+            (stack.snapshots.blob_dir / digest).write_bytes(raw)
+            stack.contents.record(digest, raw, task_id=task.task_id, run_id=f"r_{idx}")
+            ref = make_ref(digest)
+            expected = raw.decode("utf-8", "replace")
+            faked = Fetched(
+                uri="network://http/127.0.0.1:80/x",
+                status=200,
+                content_type="text/plain",
+                body=raw,
+                truncated=False,
+                redirects=(),
+                elapsed_ms=1,
+            )
+
+            for plen in (1, 2, 3, 4, 5):
+                if plen >= min_full_plen:
+                    # read_page 全程严格前进，拼接结果与整段 decode("utf-8", "replace") 逐字一致
+                    parts: list[str] = []
+                    cur: int | None = 0
+                    while cur is not None:
+                        page = stack.contents.read_page(
+                            ref,
+                            task_id=task.task_id,
+                            offset=cur,
+                            length=plen,
+                            encoding="utf-8-replace",
+                        )
+                        pdict = page.to_payload()
+                        assert 0 < pdict["bytes"] <= plen
+                        if page.next_offset is not None:
+                            assert page.next_offset > cur
+                            assert cur + pdict["bytes"] == page.next_offset
+                        parts.append(page.data)
+                        cur = page.next_offset
+                    assert "".join(parts) == expected, (raw, plen)
+
+                    # summary_page 同样严格前进且拼接一致
+                    sparts: list[str] = []
+                    scur: int | None = 0
+                    while scur is not None:
+                        stext, sbytes, snext, _ = summary_page(
+                            faked, offset=scur, length=plen
+                        )
+                        assert 0 < sbytes <= plen
+                        if snext is not None:
+                            assert snext > scur
+                            assert scur + sbytes == snext
+                        sparts.append(stext)
+                        scur = snext
+                    assert "".join(sparts) == expected, (raw, plen)
+                else:
+                    # plen 小于多字节序列宽度时必须抛错，绝不返回停滞游标或拆成多个 U+FFFD
+                    with pytest.raises(ContentError):
+                        cur = 0
+                        while cur is not None:
+                            page = stack.contents.read_page(
+                                ref,
+                                task_id=task.task_id,
+                                offset=cur,
+                                length=plen,
+                                encoding="utf-8-replace",
+                            )
+                            if page.next_offset is not None:
+                                assert page.next_offset > cur
+                            cur = page.next_offset
+
+                    with pytest.raises(NetError) as excinfo:
+                        scur = 0
+                        while scur is not None:
+                            _t, _b, snext, _ = summary_page(
+                                faked, offset=scur, length=plen
+                            )
+                            if snext is not None:
+                                assert snext > scur
+                            scur = snext
+                    assert excinfo.value.reason == "net.limits"
+
+        # 2) 派发端到端：length=1 撞上 3 字节汉字 -> 报 net.limits 失败并结清实际字节
+        run_limits = Limits(
+            max_turns=6, max_total_tokens=20_000, budget_limits={"bytes": 4096}
+        )
+        tiny_model = ScriptedModel(
+            [
+                ModelResponse(
+                    "tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "c_tiny",
+                            "network.fetch",
+                            {
+                                "url": fixture.url("/cjk"),
+                                "max_bytes": 1024,
+                                "offset": 0,
+                                "length": 1,
+                            },
+                        )
+                    ],
+                ),
+                ModelResponse("end_turn", content="done"),
+            ]
+        )
+        tiny_res = _drive(stack, engine_for(stack, tiny_model, limits=run_limits), task)
+        tiny_payload = _tool_results(log, tiny_res.run_id)["c_tiny"]
+        assert tiny_payload["status"] == "failed"
+        assert tiny_payload["output"]["reason"] == "net.limits"
+        assert "ref" not in tiny_payload["output"]
+        usage = stack.budget.usage(f"run:{tiny_res.run_id}")
+        assert usage["settled"]["bytes"] == len("中文测试".encode())
+        assert usage["reserved"].get("bytes", 0) == 0
     finally:
         log.close()
         fixture.stop()

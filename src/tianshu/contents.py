@@ -105,6 +105,19 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _first_utf8_unit(lookahead: bytes) -> tuple[str, int]:
+    """返回起始处首个 UTF-8 原子单元 `(char, width)`（遵守 Unicode §3.9 maximal subpart）。"""
+    try:
+        decoded = lookahead.decode("utf-8", "strict")
+        ch = decoded[0]
+        return ch, len(ch.encode("utf-8"))
+    except UnicodeDecodeError as exc:
+        if exc.start > 0:
+            ch = lookahead[: exc.start].decode("utf-8", "strict")[0]
+            return ch, len(ch.encode("utf-8"))
+        return "\ufffd", exc.end
+
+
 def make_ref(digest: str) -> str:
     if not isinstance(digest, str) or not _DIGEST.match(digest):
         raise ContentError(f"内容摘要必须是 64 位小写十六进制：{digest!r}")
@@ -305,18 +318,14 @@ class ContentStore:
             final = offset + len(page) >= total
             text, consumed = codecs.utf_8_decode(page, "replace", final)
             if len(page) > 0 and consumed <= 0:
-                lookahead = data[offset : offset + 4]
-                probe_text, _ = codecs.utf_8_decode(
-                    lookahead, "replace", offset + len(lookahead) >= total
-                )
-                if probe_text.startswith("\ufffd"):
-                    text = "\ufffd"
-                    consumed = 1
-                else:
+                unit_char, unit_width = _first_utf8_unit(data[offset : offset + 4])
+                if unit_width > length:
                     raise ContentError(
-                        f"分页长度 {length} 切在多字节字符中间（offset={offset}），"
-                        "请增大 length"
+                        f"分页长度 {length} 切在多字节字符中间（offset={offset}，"
+                        f"当前 UTF-8 序列需 {unit_width} 字节），请增大 length（>= 4）"
                     )
+                text = unit_char
+                consumed = unit_width
         elif encoding == "latin-1":
             consumed = len(page)
             text = page.decode("latin-1")

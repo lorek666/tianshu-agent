@@ -20,6 +20,12 @@
    - **`read_content` `2.0`**：新增封闭编码枚举 `encoding ∈ {"utf-8", "utf-8-replace", "latin-1", "base64"}`（默认 `"utf-8"` 与 `1.0` 严格一致）；所有模式先统一执行 `(digest, task_id)` 任务可见范围校验与整文件 `sha256` 复核，输出新增 `encoding` 字段并保证 `bytes` 恒为本页消费的底层原始字节数（`next_offset != null` 时恒满足 `offset + bytes == next_offset`）。
    - **红线 8 跨版本隔离**：旧 `1.0` `ActionRequest` 被当前派发器以 `dispatch.not_admitted` 拒绝，既有 `1.0` 审批记录不会匹配 `2.0` 请求摘要。
 
+## 独立第二读者复审整改记录（Tier 1）
+
+- **Round 1（`c189bcf`，复审会话 `b1f131ac`）**：判据 `1a`、`1c`、`1d`、`2a` 裁决 `PASS`；检出两项边界 `PARTIAL`：
+  1. **1b（Python 3.12 `ipaddress` 特殊地址段与 NAT64/SIIT 内嵌 IPv4 缺口）**：补齐 `is_site_local`（`fec0::/10`）与 `192.88.99.0/24`、`2001:20::/28`、`2001:db8::/32`、`100::/64`、`3fff::/20`、`5f00::/16`、`64:ff9b::/96`、`64:ff9b:1::/48` 显式非全局阻断；扩展 `_embedded_ipv4s` 提取 `64:ff9b::/96`、`64:ff9b:1::/48`（含 RFC 6052 §2.2 `/96`·`/64`·`/56`·`/48` 字节位）、SIIT `::ffff:0:0:0/96` 与废弃 `::/96` 内嵌 IPv4，确保上述形式的 `169.254.169.254` 云元数据字面量在连接前恒定阻断。
+  2. **2b（`utf-8-replace` 跨页 maximal subpart 与 `summary_page` 游标严格前进）**：按 Unicode §3.9 maximal subpart（精确对齐 `UnicodeDecodeError.end`）计算多字节残缺前缀宽度，消除 2/3 字节残缺前缀在页边界被拆成多个 `U+FFFD` 的偏差；当 `length < 4` 不足以容纳单个多字节 UTF-8 序列时明确抛 `ContentError` / `NetError(reason="net.limits")`（派发层结清实际读取字节并记失败），彻底杜绝 `next_offset == offset` 停滞游标；同步对账 `docs/network-g2.md` 与 `docs/PRD-v1.md` §5.2.3 的落地状态表述。
+
 ## 诚实边界
 
 - 搜索/检索 API 选型与真实公网站点/付费模型端到端复跑仍属外部待拍板/待验项，未在本分支宣称闭环。

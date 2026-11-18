@@ -262,6 +262,25 @@ def _check_cancel(cancel: Callable[[], bool] | None) -> None:
 
 
 _BROADCAST_IPV4 = ipaddress.IPv4Address("255.255.255.255")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_SIIT_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+
+#: Python 3.12 标准库 `is_global` 尚未覆盖或口径偏宽的 IANA 特殊保留非全局地址段。
+_SPECIAL_NON_GLOBAL_IPV4: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("192.88.99.0/24"),  # RFC 7526 6to4 Relay Anycast
+)
+_SPECIAL_NON_GLOBAL_IPV6: tuple[ipaddress.IPv6Network, ...] = (
+    _NAT64_WELL_KNOWN,                        # RFC 6052 Well-Known NAT64
+    _NAT64_LOCAL,                             # RFC 8215 Local-Use NAT64
+    ipaddress.IPv6Network("100::/64"),        # RFC 6666 Discard-Only
+    ipaddress.IPv6Network("2001:20::/28"),    # RFC 7343 ORCHIDv2
+    ipaddress.IPv6Network("2001:db8::/32"),   # RFC 3849 Documentation
+    ipaddress.IPv6Network("3fff::/20"),       # RFC 9637 Documentation
+    ipaddress.IPv6Network("5f00::/16"),       # RFC 9602 SRv6 SIDs
+    ipaddress.IPv6Network("fec0::/10"),       # RFC 3879 Site-Local
+)
 
 
 @dataclass(frozen=True)
@@ -300,13 +319,34 @@ def _embedded_ipv4s(
         embedded.append(ip.sixtofour)
     if ip.teredo is not None:
         embedded.extend(ip.teredo)
+    packed = ip.packed
+    if ip in _NAT64_WELL_KNOWN or ip in _SIIT_TRANSLATED:
+        embedded.append(ipaddress.IPv4Address(packed[12:16]))
+    elif ip in _NAT64_LOCAL:
+        # RFC 8215 + RFC 6052 §2.2：本地 NAT64 前缀可按 /96、/64、/56、/48 四种字节位嵌入 IPv4。
+        candidates = (
+            packed[12:16],
+            packed[9:13],
+            packed[7:8] + packed[9:12],
+            packed[6:8] + packed[9:11],
+        )
+        non_zero = [
+            ipaddress.IPv4Address(raw) for raw in candidates if raw != b"\x00\x00\x00\x00"
+        ]
+        if non_zero:
+            embedded.extend(non_zero)
+        else:
+            embedded.append(ipaddress.IPv4Address("0.0.0.0"))
+    elif ip in _IPV4_COMPATIBLE and int(ip) > 1:
+        # 已废弃的 `::/96` IPv4 兼容形式（排除 `::` 未指定与 `::1` 回环）。
+        embedded.append(ipaddress.IPv4Address(packed[12:16]))
     return tuple(embedded)
 
 
 def _validate_literal_ip(
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, raw_host: str
 ) -> None:
-    """字面量 IP 校验：允许任务白名单显式批准的回环/私网，但恒拒未指定/多播/链路本地云元数据。"""
+    """字面量 IP：放行白名单批准的回环/私网，恒拒未指定/多播/站点本地/链路本地元数据。"""
     if "%" in raw_host:
         raise NetError(
             f"禁止连接带作用域标识的链路本地字面量地址：{raw_host}",
@@ -317,6 +357,7 @@ def _validate_literal_ip(
             cand.is_unspecified
             or cand.is_multicast
             or cand.is_link_local
+            or bool(getattr(cand, "is_site_local", False))
             or cand == _BROADCAST_IPV4
         ):
             raise NetError(
@@ -328,7 +369,7 @@ def _validate_literal_ip(
 def _is_disallowed_resolved_ip(
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
 ) -> bool:
-    return (
+    if (
         not ip.is_global
         or ip.is_private
         or ip.is_loopback
@@ -336,7 +377,12 @@ def _is_disallowed_resolved_ip(
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
-    )
+        or bool(getattr(ip, "is_site_local", False))
+    ):
+        return True
+    if isinstance(ip, ipaddress.IPv4Address):
+        return any(ip in net for net in _SPECIAL_NON_GLOBAL_IPV4)
+    return any(ip in net for net in _SPECIAL_NON_GLOBAL_IPV6)
 
 
 def _validate_resolved_ip(
@@ -939,6 +985,19 @@ def _fetch_once(
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")
 
 
+def _first_utf8_unit(lookahead: bytes) -> tuple[str, int]:
+    """返回起始处首个 UTF-8 原子单元 `(char, width)`（遵守 Unicode §3.9 maximal subpart）。"""
+    try:
+        decoded = lookahead.decode("utf-8", "strict")
+        ch = decoded[0]
+        return ch, len(ch.encode("utf-8"))
+    except UnicodeDecodeError as exc:
+        if exc.start > 0:
+            ch = lookahead[: exc.start].decode("utf-8", "strict")[0]
+            return ch, len(ch.encode("utf-8"))
+        return "\ufffd", exc.end
+
+
 def summary_page(
     fetched: Fetched,
     *,
@@ -947,10 +1006,10 @@ def summary_page(
 ) -> tuple[str, int, int | None, bool]:
     """计算已抓取字节的内联预览页 `(summary, page_bytes, next_offset, truncated)`。
 
-    - 文本按 UTF-8 字符边界安全回退，绝不切碎多字节字符；
+    - 文本按 UTF-8 字符边界安全回退，绝不切碎多字节字符或 maximal subpart；
     - `page_bytes` 为本页覆盖的底层原始字节长度；
-    - 当 `offset + page_bytes < len(fetched.body)` 时返回 `next_offset`，供
-      `read_content` 无网续读，已达响应末尾时返回 `None`。
+    - 当 `offset + page_bytes < len(fetched.body)` 时返回严格前进的 `next_offset > offset`，
+      供 `read_content` 无网续读；若 `length < 4` 不足以容纳单个多字节 UTF-8 序列则抛 `NetError`。
     """
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise NetError(f"offset 必须是非负整数：{offset!r}", reason="net.limits")
@@ -964,13 +1023,16 @@ def summary_page(
     final = offset + len(window) >= total
     text, page_bytes = codecs.utf_8_decode(window, "replace", final)
     if len(window) > 0 and page_bytes <= 0:
-        lookahead = body[offset : offset + 4]
-        probe_text, _ = codecs.utf_8_decode(
-            lookahead, "replace", offset + len(lookahead) >= total
-        )
-        if probe_text.startswith("\ufffd"):
-            text = "\ufffd"
-            page_bytes = 1
+        unit_char, unit_width = _first_utf8_unit(body[offset : offset + 4])
+        if unit_width > length:
+            raise NetError(
+                f"内联摘要 length={length} 过小，不足以容纳单个多字节 UTF-8 序列"
+                f"（offset={offset}，需 >= {unit_width}；"
+                "请设 length >= 4 或改用 read_content base64）",
+                reason="net.limits",
+            )
+        text = unit_char
+        page_bytes = unit_width
     next_offset: int | None = (
         None if offset + page_bytes >= total else offset + page_bytes
     )
