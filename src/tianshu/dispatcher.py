@@ -1203,7 +1203,13 @@ class Dispatcher:
                     # 补一条 tool.result(unknown)，且**不**再调用 apply_event。
                     return self._fail_unknown(request, dispatch_id, target, exc)
         else:
-            self._commit_result(request, dispatch_id, result, target, seq)
+            try:
+                self._commit_result(request, dispatch_id, result, target, seq)
+            except Exception as exc:  # noqa: BLE001 - 结果事务已回滚：磁盘可能已改动
+                # `_commit_result` 单事务失败即整笔回滚（事件、凭据、派发状态同生同死），
+                # 但文件/命令副作用已在执行守卫内完成：绝不能让裸异常穿过派发边界被
+                # 主循环按 none_applied 收尾（#145），必须转入 unknown 并阻断工作区。
+                return self._fail_unknown(request, dispatch_id, target, exc)
         # 结果与凭据已经同事务落库。M0 时代"结果后"和"凭据后"是两个故障点，
         # M2 把两件事合成一次提交，所以这两个点落在同一处：能证明的仍然是
         # "重放不会补出第二条效果"。
@@ -1546,7 +1552,10 @@ class Dispatcher:
         # 与 `run_command` 同一口径：完成落地的调用记 applied（它确实执行过），
         # isError 只影响 status；"是否动过、动了什么"我们无法核对，已登记。
         result = ToolResult(status, "applied", output)
-        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        try:
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+        except Exception as exc:  # noqa: BLE001 - 外部调用已完成而结果事务失败：效果未知
+            return self._fail_unknown(request, dispatch_id, target, exc)
         failpoint("after_result")
         return result
 
@@ -1690,7 +1699,10 @@ class Dispatcher:
             output["binary"] = True
         result = ToolResult("succeeded", "none_applied", output)
         self._settle_network_bytes(reservation, len(fetched.body))
-        self._commit_result(request, dispatch_id, result, target, intent_seq)
+        try:
+            self._commit_result(request, dispatch_id, result, target, intent_seq)
+        except Exception as exc:  # noqa: BLE001 - 结果事务失败：按未知收束
+            return self._fail_unknown(request, dispatch_id, target, exc)
         failpoint("after_result")
         return result
 
@@ -4019,8 +4031,8 @@ class Dispatcher:
                 "actor_kind": "system",
             },
         ]
-        self._log.append_many(batch)
         with self._log.transaction():
+            self._log.append_many(batch)
             self._conn.execute(
                 "UPDATE dispatches SET state=?, reason=?, updated_at=?"
                 " WHERE dispatch_id=?",
@@ -4148,8 +4160,8 @@ class Dispatcher:
             batch.append(object_event)
 
             def _write_mcp_unknown() -> None:
-                self._log.append_many(batch)
                 with self._log.transaction():
+                    self._log.append_many(batch)
                     self._conn.execute(
                         "UPDATE dispatches SET state=?, updated_at=?"
                         " WHERE dispatch_id=?",
@@ -4275,9 +4287,9 @@ class Dispatcher:
                 self._set_request_state(request.request_id, STATE_DONE)
             return
 
-        # 文件路径保持原有事务边界：结果+凭据一次提交，派发状态随后推进。
-        self._log.append_many(batch)
+        # 结果、凭据与派发状态同一事务落库：杜绝"事件已写、派发行仍停在 intent"的半提交窗口。
         with self._log.transaction():
+            self._log.append_many(batch)
             self._conn.execute(
                 "UPDATE dispatches SET state=?, updated_at=? WHERE dispatch_id=?",
                 (DISPATCH_FINISHED, self._clock(), dispatch_id),

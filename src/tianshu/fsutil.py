@@ -36,11 +36,45 @@ import os
 import stat
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .crashpoint import failpoint
 
 _WINDOWS_REPLACE_RETRY_DELAYS = (0.0, 0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64)
+_WINDOWS_SHARING_WINERRORS = frozenset({5, 32, 33})
+
+
+def _is_windows_sharing_error(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, OSError)
+        and getattr(exc, "winerror", None) in _WINDOWS_SHARING_WINERRORS
+    )
+
+
+def retry_windows_sharing[T](
+    op: Callable[[], T],
+    *,
+    sleep: Callable[[float], None] | None = None,
+    label: str = "filesystem operation",
+) -> T:
+    """Retry only transient Windows sharing/access violations with bounded backoff."""
+    pause = time.sleep if sleep is None else sleep
+    for attempt, delay in enumerate(_WINDOWS_REPLACE_RETRY_DELAYS):
+        if delay:
+            pause(delay)
+        try:
+            return op()
+        except OSError as exc:
+            if not _is_windows_sharing_error(exc):
+                raise
+            if attempt == len(_WINDOWS_REPLACE_RETRY_DELAYS) - 1:
+                exc.add_note(
+                    f"Windows {label} remained blocked after "
+                    f"{len(_WINDOWS_REPLACE_RETRY_DELAYS)} bounded attempts"
+                )
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _existing_mode(target: Path) -> int | None:
@@ -80,22 +114,7 @@ def atomic_write_bytes(target: Path, data: bytes) -> None:
 
 def _replace_with_retry(source: Path, target: Path) -> None:
     """Retry only Windows sharing failures while another handle is closing."""
-    for attempt, delay in enumerate(_WINDOWS_REPLACE_RETRY_DELAYS):
-        if delay:
-            time.sleep(delay)
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError as exc:
-            retryable = getattr(exc, "winerror", None) in {5, 32, 33}
-            if not retryable:
-                raise
-            if attempt == len(_WINDOWS_REPLACE_RETRY_DELAYS) - 1:
-                exc.add_note(
-                    "Windows atomic replace remained blocked after "
-                    f"{len(_WINDOWS_REPLACE_RETRY_DELAYS)} bounded attempts"
-                )
-                raise
+    retry_windows_sharing(lambda: os.replace(source, target), label="atomic replace")
 
 
 def _fsync_dir(path: Path) -> None:

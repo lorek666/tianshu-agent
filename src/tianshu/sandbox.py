@@ -35,12 +35,13 @@ per-run 的灵活性留给 M5 的 Host。
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .errors import TianshuError, WorkspaceViolation
-from .fsutil import atomic_write_bytes
+from .fsutil import atomic_write_bytes, retry_windows_sharing
 from .pathkeys import overlap_key
 
 ENV_VAR = "TIANSHU_SANDBOX_BACKEND"
@@ -105,58 +106,65 @@ class LocalBackend:
     name = "local_fs"
 
     def require_root(self, root: Path) -> None:
-        if not root.is_dir():
+        if not retry_windows_sharing(root.is_dir, label="is_dir"):
             raise WorkspaceViolation(f"workspace 不存在或不是目录：{root}")
 
     def exists(self, p: Path) -> bool:
-        return p.exists()
+        return retry_windows_sharing(p.exists, label="exists")
 
     def is_file(self, p: Path) -> bool:
-        return p.is_file()
+        return retry_windows_sharing(p.is_file, label="is_file")
 
     def is_dir(self, p: Path) -> bool:
-        return p.is_dir()
+        return retry_windows_sharing(p.is_dir, label="is_dir")
 
     def size(self, p: Path) -> int:
-        st = p.stat()
-        if p.is_dir():
-            raise IsADirectoryError(str(p))
-        return st.st_size
+        def _size() -> int:
+            st = p.stat()
+            if stat.S_ISDIR(st.st_mode):
+                raise IsADirectoryError(str(p))
+            return st.st_size
+
+        return retry_windows_sharing(_size, label="size")
 
     def list_dir(self, p: Path) -> list[tuple[str, bool, int]]:
         out: list[tuple[str, bool, int]] = []
-        for child in p.iterdir():
+        for child in retry_windows_sharing(lambda: list(p.iterdir()), label="iterdir"):
             try:
-                st = child.stat()
+                st = retry_windows_sharing(child.stat, label="stat")
             except OSError:
                 # 读不到 size 的条目跳过：这一点与 M2 的行为一致。
                 continue
-            is_dir = child.is_dir()
+            is_dir = stat.S_ISDIR(st.st_mode)
             # 目录项的 size 固定为 0（见 FileBackend.list_dir 的约定）。
             out.append((child.name, is_dir, 0 if is_dir else st.st_size))
         return out
 
     def read_bytes(self, p: Path, limit: int | None = None) -> tuple[bytes, int]:
         # 只打开一次，用 fstat 取总大小：避免"先 stat 再 open"之间目标被换掉。
-        with p.open("rb") as fh:
-            total = os.fstat(fh.fileno()).st_size
-            data = fh.read() if limit is None else fh.read(limit)
-        return data, total
+        def _read() -> tuple[bytes, int]:
+            with p.open("rb") as fh:
+                total = os.fstat(fh.fileno()).st_size
+                data = fh.read() if limit is None else fh.read(limit)
+            return data, total
+
+        return retry_windows_sharing(_read, label="read_bytes")
 
     def write_bytes_atomic(self, p: Path, data: bytes) -> None:
         atomic_write_bytes(p, data)
 
     def unlink(self, p: Path) -> None:
-        p.unlink()
+        retry_windows_sharing(p.unlink, label="unlink")
 
     def identity_key(self, p: Path) -> str:
         try:
-            st = os.stat(p)
+            st = retry_windows_sharing(lambda: os.stat(p), label="stat")
             if st.st_ino:
                 return f"{st.st_dev}:{st.st_ino}"
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
-        # 退化：Windows 或用不了 inode 的文件系统
+        # 退化：路径尚不存在，或用不了非零 inode 的文件系统（不能把权限/共享冲突
+        # 吞成 path: 键，否则执行侧二次核对会把短暂锁冲突误判为"身份已改变"）。
         return "path:" + overlap_key(p)
 
 

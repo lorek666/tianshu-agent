@@ -1949,7 +1949,10 @@ class TaskStore:
                 continue
             out = ev.payload.get("output") or {}
             if out.get("sha256"):
-                artifact = out
+                artifact = {
+                    k: out.get(k)
+                    for k in ("path", "sha256", "bytes", "before_state", "after_state")
+                }
         intent_count = sum(1 for e in events if e.type == "model.intent")
         result_count = sum(1 for e in events if e.type == "model.result")
         # 按**事件条数**算，不按 request_id 去重：崩溃后重发的那一轮用的是
