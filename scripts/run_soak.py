@@ -1,31 +1,15 @@
 #!/usr/bin/env python3
-"""PRD §10.6 常驻浸泡测试运行器（≥10 小时能力与快速回归，G3-B11）。
+"""PRD §10.6 常驻浸泡诊断（G3-B11）。
 
-用法：
-    # 10 小时完整浸泡（默认 10.0 小时、每 30 秒落盘采样与心跳状态）
-    TIANSHU_SOAK=1 uv run --frozen python scripts/run_soak.py \
-        --output-dir .omc/artifacts/soak-10h
-
-    # 快速多轮确定性验收（例如 15 秒，每 2 秒采样）
+独立运行须使用专用测试 OS 账户或隔离测试机；临时 data root 不隔离用户级维护锁。
     uv run --frozen python scripts/run_soak.py \
-        --duration-seconds 15 \
-        --sample-interval-seconds 2 \
-        --output-dir /tmp/soak-15s
+        --duration-hours 10 --output-dir .omc/artifacts/soak-10h
+    uv run --frozen python scripts/run_soak.py \
+        --verify-only --output-dir .omc/artifacts/soak-10h
 
-核心保证：
-1. 纯 Python 3.12 标准库，零外部依赖、零公网访问；
-2. 实时落盘检查点：追加写 `<output-dir>/samples.jsonl` + 原子刷新 `<output-dir>/status.json`，
-   即使在 10 小时过夜运行中途随时查看也能观测实时进度、工作负载计数与资源趋势；
-3. 全工作负载覆盖：
-   - 空闲窗口（`idle`）与活跃负载（`active`）交替对比；
-   - `effects`（新建/覆盖/审批/F11 `undo.apply` + W4 模型流式增量）与 `pure_only` 只读运行；
-   - F10 记忆写入与检索（`memory.remember` / `memory.search`）；
-   - 订阅者正常断连、慢订阅者背压断连（`slow_subscriber_dropped`）及 `since_seq` 游标续读；
-   - 运行中途用户 `run.pause` / `run.resume` 与 `run.cancel`；
-   - W5 定时调度器（`schedule.create` → `Scheduler.tick()` 自动触发任务）；
-   - 周期性 `Host` + `Daemon` 优雅重启与热启动恢复扫描核验；
-4. 资源与泄漏硬门禁：RSS 内存（空闲/活跃水位、净增量与斜率）、CPU%、打开文件描述符/句柄数、
-   SQLite + `blobs` 磁盘增量，以及最终退出后 **0 残留孤儿进程**；所有落盘报告执行 D7 路径脱敏。
+运行目录必须是新建叶子。脚本模型驱动真实 Host/Daemon，交替记录空闲和执行采样，
+并覆盖审批/撤销、流式输出、记忆、订阅续读、暂停/取消、调度与计划重启。
+`status.json` 完成标记晚于三份最终材料；v1 PASS 或离线校验成功均不是发布裁决。
 """
 
 from __future__ import annotations
@@ -37,6 +21,7 @@ import ctypes
 import datetime as dt
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -54,6 +39,7 @@ for _p in (str(SRC_DIR), str(SCRIPTS_DIR)):
         sys.path.insert(0, _p)
 
 import measure_slo as slo_mod  # noqa: E402
+import soak_observation as obs  # noqa: E402
 
 from tianshu import daemon, host, ipc  # noqa: E402
 from tianshu import metrics as metrics_mod  # noqa: E402
@@ -531,32 +517,34 @@ class _HostCluster:
         self.info: host.HostInfo | None = None
 
     def start(self) -> host.HostInfo:
-        self.proc = subprocess.Popen(  # noqa: S603
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--_child-role",
-                "soak-host",
-                "--data-root",
-                str(self.data_root),
-                "--_ui-dir",
-                str(self.ui_dir),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=self.env,
-        )
-        self.tracked_pids.add(self.proc.pid)
-        proc = self.proc
+        # The parent cannot leave an unread PIPE attached during a ten-hour run.
+        # This private transient log is not one of the D7 export materials.
+        stderr_path = self.data_root.parent / "host-stderr.log"
+        with stderr_path.open("wb") as err_log:
+            proc = subprocess.Popen(  # noqa: S603
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--_child-role",
+                    "soak-host",
+                    "--data-root",
+                    str(self.data_root),
+                    "--_ui-dir",
+                    str(self.ui_dir),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=err_log,
+                env=self.env,
+            )
+        self.proc = proc
+        self.tracked_pids.add(proc.pid)
 
         def _ready() -> host.HostInfo | None:
             if proc.poll() is not None:
-                err = (proc.stderr.read() if proc.stderr else b"").decode(
-                    "utf-8", errors="replace"
-                )
-                raise RuntimeError(
-                    f"soak-host 提前退出 rc={proc.returncode}: {err[-600:]}"
-                )
+                with stderr_path.open("rb") as log:
+                    log.seek(max(0, stderr_path.stat().st_size - 600))
+                    tail = log.read(600).decode("utf-8", errors="replace")
+                raise RuntimeError(f"soak-host 提前退出 rc={proc.returncode}: {tail}")
             try:
                 cand = host.read_host_info(self.data_root)
             except host.HostError:
@@ -588,20 +576,25 @@ class _HostCluster:
             pass
         return d_pid, h_pid
 
-    def stop(self) -> None:
+    def stop(self) -> list[str]:
+        failures = []
         slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
         with contextlib.redirect_stdout(io.StringIO()):
-            host.stop_host(self.data_root, timeout=15.0)
+            rc = host.stop_host(self.data_root, timeout=15.0)
+        if rc != 0:
+            failures.append(f"host_stop_exit:{rc}")
         if self.proc is not None:
             try:
                 self.proc.wait(timeout=15.0)
             except subprocess.TimeoutExpired:
+                failures.append("host_stop_forced_kill")
                 self.proc.kill()
                 self.proc.wait(timeout=5.0)
-            if self.proc.stderr is not None:
-                self.proc.stderr.close()
+            if self.proc.returncode != 0:
+                failures.append(f"host_process_exit:{self.proc.returncode}")
             self.proc = None
         self.info = None
+        return failures
 
 
 def evaluate_soak_gate(
@@ -702,10 +695,11 @@ def render_soak_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# 天枢 Agent · PRD §10.6 常驻浸泡运行报告",
         "",
-        f"- **裁决结论（Verdict）**：**`{report['verdict']}`**",
+        f"- **v1 诊断门禁（非发布验收）**：**`{report['verdict']}`**",
+        "- **G3 发布验收**：`NOT_EVALUATED`；实际观测窗与材料摘要见 `soak-observation.json`。",
         f"- **策略版本**：`slo-thresholds-v{report['policy_version']}`",
         f"- **起止时间（UTC）**：`{report['started_at']}` → `{report['finished_at']}`",
-        f"- **运行时长**：实跑 `{report['actual_duration_s']} s`"
+        f"- **运行器时长（含启动、计划重启和退出）**：`{report['actual_duration_s']} s`"
         f"（目标 `{report['requested_duration_s']} s`，"
         f"采样间隔 `{report['sample_interval_s']} s`，"
         f"共 `{report['samples_count']}` 条样本 / `{report['cycles_completed']}` 轮周期）",
@@ -717,7 +711,7 @@ def render_soak_markdown(report: dict[str, Any]) -> str:
         "| 负载项 | 累计完成次数 |",
         "|---|---:|",
     ]
-    for k, v in wk.items():
+    for k, v in sorted(wk.items()):
         lines.append(f"| `{k}` | {v} |")
     lines.extend(
         [
@@ -772,22 +766,25 @@ def run_soak(
     thresholds_path: Path = slo_mod.DEFAULT_THRESHOLDS_PATH,
     schema_path: Path = slo_mod.DEFAULT_SCHEMA_PATH,
 ) -> tuple[dict[str, Any], int]:
-    thresholds, _sha, defs = slo_mod.load_and_validate_thresholds(
+    thresholds, thresholds_sha, defs = slo_mod.load_and_validate_thresholds(
         thresholds_path, schema_path=schema_path
     )
-    if duration_s <= 0:
-        raise slo_mod.SloConfigError("浸泡时长必须 > 0 秒")
-    if sample_interval_s <= 0:
-        raise slo_mod.SloConfigError("采样间隔必须 > 0 秒")
+    if not 0 < duration_s <= threading.TIMEOUT_MAX:
+        raise slo_mod.SloConfigError("浸泡时长须为平台可表示的正秒数")
+    if not 0 < sample_interval_s <= threading.TIMEOUT_MAX:
+        raise slo_mod.SloConfigError("采样间隔须为平台可表示的正秒数")
+    requested_ns = math.ceil(duration_s * obs.NANOSECONDS)
+    source_start = obs.capture_source(REPO_ROOT)
 
-    output_dir = Path(output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # A fresh leaf is the publication boundary; never truncate a prior run.
+    output_dir = Path(output_dir).absolute()
+    try:
+        output_dir.mkdir(mode=0o700, parents=True)
+    except FileExistsError as exc:
+        raise slo_mod.SloConfigError("浸泡输出目录必须尚不存在") from exc
+    output_dir = output_dir.resolve()
     samples_path = output_dir / "samples.jsonl"
     status_path = output_dir / "status.json"
-    report_json_path = output_dir / "soak-report.json"
-    report_md_path = output_dir / "soak-report.md"
-    # 新一轮浸泡清空旧 samples.jsonl
-    slo_mod._write_bytes_exact(samples_path, b"")  # noqa: SLF001
 
     temp_base = slo_mod._short_temp_dir("tssoak-")  # noqa: SLF001
     data_root = temp_base / "d"
@@ -832,16 +829,27 @@ def run_soak(
     runtime_failures: list[str] = []
 
     started_utc = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    t_start = time.monotonic()
+    t_start_ns = time.monotonic_ns()
+    workload_start_ns = 0
+    excluded_ns = 0
+    restart_intervals_ns: list[list[int]] = []
     disk_baseline_bytes: int | None = None
 
     cluster = _HostCluster(data_root, ui_dir, env, tracked_pids)
 
-    def _take_sample(explicit_phase: str | None = None) -> dict[str, Any]:
-        nonlocal disk_baseline_bytes
+    def _elapsed_ns() -> int:
+        return time.monotonic_ns() - t_start_ns
+
+    def _workload_ns(now_ns: int) -> int:
+        return now_ns - workload_start_ns - excluded_ns
+
+    def _take_sample(explicit_phase: str | None = None, *, first: bool = False) -> int:
+        nonlocal disk_baseline_bytes, workload_start_ns
         with sample_lock:
-            now_mono = time.monotonic()
-            elapsed = round(max(0.0, now_mono - t_start), 3)
+            now_ns = _elapsed_ns()
+            if first:
+                workload_start_ns = now_ns
+            elapsed = round(now_ns / obs.NANOSECONDS, 3)
             cur_phase = explicit_phase or str(phase_box["phase"])
             cur_cycle = int(phase_box["cycle"])
 
@@ -868,8 +876,10 @@ def run_soak(
             seq_head: int | None = None
             try:
                 with ipc.Client(data_root, timeout=1.0) as c:
-                    seq_head = int(c.welcome.get("event_seq_head", 0))
-            except (ipc.IpcError, OSError, ValueError):
+                    head = c.welcome.get("event_seq_head")
+                    if type(head) is int and head >= 0:
+                        seq_head = head
+            except (ipc.IpcError, OSError):
                 seq_head = None
 
             sample = {
@@ -896,8 +906,6 @@ def run_soak(
             s_errs = slo_mod.validate_against_def(defs, "soakSample", sample)
             if s_errs:
                 runtime_failures.append("invalid_soak_sample: " + "; ".join(s_errs))
-            samples.append(sample)
-
             line = (
                 json.dumps(sample, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 + "\n"
@@ -908,30 +916,35 @@ def run_soak(
                 0o600,
             )
             try:
-                os.write(fd, line)
+                view = memoryview(line)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("sample_write_incomplete")
+                    view = view[written:]
             finally:
                 os.close(fd)
+            samples.append(sample)
 
+            workload_ns = _workload_ns(now_ns)
             live_status = {
                 "state": "running",
+                "verdict_scope": obs.VERDICT_SCOPE,
+                "release_acceptance": obs.RELEASE_ACCEPTANCE,
                 "started_at": started_utc,
                 "updated_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "elapsed_s": elapsed,
+                "workload_duration_ns": workload_ns,
                 "requested_duration_s": duration_s,
-                "progress_pct": round(min(100.0, elapsed / duration_s * 100.0), 2),
+                "progress_pct": round(min(100.0, workload_ns / requested_ns * 100.0), 2),
                 "cycle": cur_cycle,
                 "samples_count": len(samples),
                 "workloads": dict(workloads),
                 "latest_sample": sample,
                 "failures_so_far": len(runtime_failures),
             }
-            atomic_write_bytes(
-                status_path,
-                (json.dumps(live_status, ensure_ascii=False, indent=2) + "\n").encode(
-                    "utf-8"
-                ),
-            )
-            return sample
+            atomic_write_bytes(status_path, obs.json_bytes(live_status))
+            return now_ns
 
     sampler_stop = threading.Event()
 
@@ -942,25 +955,32 @@ def run_soak(
             except Exception as exc:  # noqa: BLE001
                 runtime_failures.append(f"sampler_exception: {type(exc).__name__}: {exc}")
 
+    def _start_ready() -> None:
+        cluster.start()  # Includes a real Host health response.
+        with ipc.Client(data_root, timeout=5.0) as client:
+            client.call("state", {})  # Authenticated Daemon RPC, not just a lock file.
+
     sampler_thread: threading.Thread | None = None
     endpoint_closed = False
     locks_cleared = False
 
     try:
-        cluster.start()
-        _take_sample("idle")
-        sampler_thread = threading.Thread(
+        _start_ready()
+        _take_sample("idle", first=True)
+        sampler = threading.Thread(
             target=_sampler_loop, name="soak-resource-sampler", daemon=True
         )
-        sampler_thread.start()
+        sampler.start()
+        sampler_thread = sampler
 
         # 重启节奏：长跑每 30 分钟优雅重启一次，短跑在中点至少触发一次优雅重启
         restart_interval_s = min(1800.0, max(1.5, duration_s * 0.45))
-        next_restart_at = t_start + restart_interval_s
+        restart_interval_ns = math.ceil(restart_interval_s * obs.NANOSECONDS)
+        next_restart_at = workload_start_ns + restart_interval_ns
         idle_sleep_s = min(0.15, sample_interval_s * 0.25) if duration_s < 60.0 else 1.5
 
         cycle = 0
-        while time.monotonic() - t_start < duration_s or cycle == 0:
+        while _workload_ns(_elapsed_ns()) < requested_ns or cycle == 0:
             phase_box["cycle"] = cycle
 
             # --- A. Idle 采样窗口 ---
@@ -1083,7 +1103,7 @@ def run_soak(
                 else:
                     runtime_failures.append(f"cycle_{cycle}_pure_only_failed:{pure_state}")
 
-                remaining_budget = duration_s - (time.monotonic() - t_start)
+                remaining_budget = (requested_ns - _workload_ns(_elapsed_ns())) / obs.NANOSECONDS
 
                 # B4: 慢订阅者断连 + since_seq 游标重连（第 0 轮必做，之后每 3 轮执行）
                 if cycle == 0 or (cycle % 3 == 0 and remaining_budget > 1.2):
@@ -1143,7 +1163,7 @@ def run_soak(
                         reconnect_sub.close()
 
                 # B5: 运行中途用户 pause -> resume -> cancel（第 0 轮必做，后续每 2 轮执行）
-                remaining_budget = duration_s - (time.monotonic() - t_start)
+                remaining_budget = (requested_ns - _workload_ns(_elapsed_ns())) / obs.NANOSECONDS
                 if cycle == 0 or (cycle % 2 == 0 and remaining_budget > 0.6):
                     tag = f"g{cycle}"
                     ctl_dir = data_root / "soak_ctl"
@@ -1192,7 +1212,7 @@ def run_soak(
                     workloads["mid_run_cancels"] += 1
 
                 # B6: W5 调度器定时触发（第 0 轮必做，后续每 4 轮且剩余 >1.5s 时执行）
-                remaining_budget = duration_s - (time.monotonic() - t_start)
+                remaining_budget = (requested_ns - _workload_ns(_elapsed_ns())) / obs.NANOSECONDS
                 if cycle == 0 or (cycle % 4 == 0 and remaining_budget > 1.5):
                     sched = client.call(
                         "schedule.create",
@@ -1220,7 +1240,7 @@ def run_soak(
             _take_sample("active")
 
             # --- C. 周期性优雅重启 Host + Daemon 并核验热启动恢复扫描 ---
-            if time.monotonic() >= next_restart_at or (
+            if _elapsed_ns() >= next_restart_at or (
                 workloads["graceful_restarts"] == 0 and cycle == 0 and duration_s <= 20.0
             ):
                 rec_before = len(
@@ -1231,11 +1251,18 @@ def run_soak(
                         and r.get("cold_start") is False
                     ]
                 )
-                cluster.stop()
-                if ipc.probe(data_root, timeout=0.2):
-                    runtime_failures.append(f"cycle_{cycle}_daemon_alive_after_host_stop")
-                cluster.start()
-                workloads["graceful_restarts"] += 1
+                # No sampler can straddle the planned stop/start boundary.
+                with sample_lock:
+                    phase_box["phase"] = "idle"
+                    restart_started_ns = _elapsed_ns()
+                    runtime_failures.extend(cluster.stop())
+                    if ipc.probe(data_root, timeout=0.2):
+                        runtime_failures.append(f"cycle_{cycle}_daemon_alive_after_host_stop")
+                    _start_ready()
+                    restart_finished_ns = _elapsed_ns()
+                    restart_intervals_ns.append([restart_started_ns, restart_finished_ns])
+                    excluded_ns += restart_finished_ns - restart_started_ns
+                    workloads["graceful_restarts"] += 1
                 rec_after = len(
                     [
                         r
@@ -1248,25 +1275,40 @@ def run_soak(
                     workloads["recovery_scans_verified"] += 1
                 else:
                     runtime_failures.append(f"cycle_{cycle}_missing_warm_recovery_scan")
-                next_restart_at = time.monotonic() + restart_interval_s
+                next_restart_at = _elapsed_ns() + restart_interval_ns
 
             cycle += 1
 
-        phase_box["phase"] = "idle"
-        _take_sample("idle")
-    finally:
+        # The journal has exactly one final boundary, taken before shutdown.
         sampler_stop.set()
-        if sampler_thread is not None:
-            sampler_thread.join(timeout=5.0)
-        cluster.stop()
+        sampler.join(timeout=5.0)
+        if sampler.is_alive():
+            raise RuntimeError("soak_sampler_did_not_stop")
+        workload_end_ns = _take_sample("idle")
+    finally:
+        if not sampler_stop.is_set():
+            sampler_stop.set()
+            if sampler_thread is not None:
+                sampler_thread.join(timeout=5.0)
+        runtime_failures.extend(cluster.stop())
         endpoint_closed = not ipc.probe(data_root, timeout=0.2)
         locks_cleared = (
             not host.host_lock_path(data_root).exists()
             and not daemon.lock_path(data_root).exists()
         )
         orphans = slo_mod._find_orphan_pids(tracked_pids, temp_base)  # noqa: SLF001
+        if (
+            not endpoint_closed or not locks_cleared or orphans
+            or (sampler_thread is not None and sampler_thread.is_alive())
+        ):
+            runtime_failures.append("temporary_soak_root_retained")
+        else:
+            try:
+                shutil.rmtree(temp_base)
+            except OSError:
+                runtime_failures.append("temporary_soak_root_cleanup_failed")
 
-    actual_duration_s = round(time.monotonic() - t_start, 3)
+    actual_duration_s = round(_elapsed_ns() / obs.NANOSECONDS, 3)
     finished_utc = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     idle_rss = [
@@ -1333,7 +1375,7 @@ def run_soak(
         "policy_version": int(thresholds["policy_version"]),
         "started_at": started_utc,
         "finished_at": finished_utc,
-        "requested_duration_s": round(duration_s, 3),
+        "requested_duration_s": round(requested_ns / obs.NANOSECONDS, 3),
         "actual_duration_s": actual_duration_s,
         "sample_interval_s": round(sample_interval_s, 3),
         "samples_count": len(samples),
@@ -1372,43 +1414,64 @@ def run_soak(
         "failures": runtime_failures,
     }
 
-    shutil.rmtree(temp_base, ignore_errors=True)
-
     extra_redact = [str(temp_base), str(output_dir), str(REPO_ROOT), str(Path.home())]
     redacted_report = slo_mod._redact_obj(raw_report, extra_paths=extra_redact)  # noqa: SLF001
     final_report, exit_code = evaluate_soak_gate(
         redacted_report, thresholds, schema_defs=defs
     )
 
-    final_status = {
-        "state": "completed",
-        "verdict": final_report["verdict"],
-        "started_at": started_utc,
-        "finished_at": finished_utc,
-        "actual_duration_s": actual_duration_s,
-        "requested_duration_s": round(duration_s, 3),
-        "progress_pct": 100.0,
-        "cycles_completed": final_report["cycles_completed"],
-        "samples_count": final_report["samples_count"],
-        "workloads": final_report["workloads"],
-        "orphan_pids": final_report["orphan_pids"],
-        "failures": final_report["failures"],
-    }
-    atomic_write_bytes(
-        status_path,
-        (json.dumps(final_status, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-    )
-    slo_mod._write_bytes_exact(  # noqa: SLF001
-        report_json_path,
-        (
-            json.dumps(final_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8"),
-    )
-    slo_mod._write_bytes_exact(  # noqa: SLF001
-        report_md_path,
-        render_soak_markdown(final_report).encode("utf-8"),
+    _publish_completed(
+        output_dir,
+        final_report,
+        window={
+            "start_elapsed_ns": workload_start_ns,
+            "end_elapsed_ns": workload_end_ns,
+            "requested_ns": requested_ns,
+        },
+        restart_intervals_ns=restart_intervals_ns,
+        source_start=source_start,
+        source_end=obs.capture_source(REPO_ROOT),
+        thresholds_sha256=thresholds_sha,
+        schema_defs=defs,
     )
     return final_report, exit_code
+
+
+def _publish_completed(
+    output_dir: Path,
+    report: dict[str, Any],
+    *,
+    window: dict[str, int],
+    restart_intervals_ns: list[list[int]],
+    source_start: dict[str, Any] | None,
+    source_end: dict[str, Any] | None,
+    thresholds_sha256: str,
+    schema_defs: dict[str, Any],
+) -> None:
+    report_bytes = obs.json_bytes(report)
+    markdown_bytes = render_soak_markdown(report).encode("utf-8")
+    observation = obs.build_observation(
+        window=window,
+        restart_intervals_ns=restart_intervals_ns,
+        source_start=source_start,
+        source_end=source_end,
+        thresholds_sha256=thresholds_sha256,
+        policy_version=report["policy_version"],
+        report_bytes=report_bytes,
+        markdown_bytes=markdown_bytes,
+        samples_bytes=(output_dir / "samples.jsonl").read_bytes(),
+        schema_defs=schema_defs,
+    )
+    raw_observation = obs.json_bytes(observation)
+    final_status = {
+        **obs.completion_fields(report),
+        "observation_sha256": obs.sha256_bytes(raw_observation),
+    }
+    # A live reader may see some artifacts before completion. The marker is last.
+    atomic_write_bytes(output_dir / "soak-report.json", report_bytes)
+    atomic_write_bytes(output_dir / "soak-report.md", markdown_bytes)
+    atomic_write_bytes(output_dir / obs.OBSERVATION_NAME, raw_observation)
+    atomic_write_bytes(output_dir / "status.json", obs.json_bytes(final_status))
 
 
 def _resolve_duration_seconds(args: argparse.Namespace) -> float:
@@ -1452,7 +1515,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=REPO_ROOT / ".omc" / "artifacts" / "soak-latest",
-        help="实时 samples.jsonl、status.json 与最终报告输出目录",
+        help="实时检查点与最终报告输出目录（新运行要求目录尚不存在）",
+    )
+    parser.add_argument(
+        "--verify-only", action="store_true",
+        help="仅离线核对 --output-dir 的已完成诊断材料，不启动任何服务",
     )
     parser.add_argument(
         "--thresholds",
@@ -1485,6 +1552,21 @@ def main(argv: list[str] | None = None) -> int:
     if args._child_role:
         return _run_child_role(args)
 
+    if args.verify_only:
+        try:
+            thresholds, digest, defs = slo_mod.load_and_validate_thresholds(
+                args.thresholds, schema_path=args.schema
+            )
+            observation = obs.verify_observation(
+                args.output_dir, thresholds_sha256=digest,
+                policy_version=thresholds["policy_version"], schema_defs=defs,
+            )
+        except (OSError, ValueError, OverflowError, slo_mod.SloConfigError) as exc:
+            print(f"[soak-verify] 诊断材料核对失败：{exc}", file=sys.stderr)
+            return 1
+        print(obs.json_bytes(observation).decode("utf-8"), end="", flush=True)
+        return 0
+
     try:
         duration_s = _resolve_duration_seconds(args)
         report, exit_code = run_soak(
@@ -1502,6 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "verdict": report["verdict"],
+                "verdict_scope": obs.VERDICT_SCOPE,
+                "release_acceptance": obs.RELEASE_ACCEPTANCE,
                 "actual_duration_s": report["actual_duration_s"],
                 "cycles_completed": report["cycles_completed"],
                 "samples_count": report["samples_count"],

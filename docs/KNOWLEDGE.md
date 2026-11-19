@@ -401,6 +401,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **G3 本地浸泡证据不等于发布验收（2026-11-19）**：按单调纳秒记录已就绪后的观测窗，扣除计划重启停机，不以运行器总时长或毫秒舍入的采样时间判定满 10 小时。`completed` 必须在最终材料之后发布；`--verify-only` 只核对字节摘要与记录一致性，不证明执行来源、机器未休眠或全程健康。离线核对和 v1 `PASS` 均不会改变 `release_acceptance = NOT_EVALUATED`。独立运行须用专用测试 OS 账户或隔离测试机，临时数据根不是生产用户级维护锁隔离。见 [SLO 基线与复跑方式](SLO-BASELINE-2026-11-18.md)。
+
 - **R3 代码前置已在本地组合候选汇合并完成精确 required CI（2026-11-16）**：`scripts/build_release.py`、`scripts/verify_release.py`、`src/tianshu/release_smoke.py`、`scripts/package_app.py` 与 `release.yml` 已在 `codex/release-final-integration` 组合出现，因此“当前基线缺少 R2 入口”的旧阻塞已不再成立；组合候选已由 PR #175 合并，最终对象 `343ebf0/tree 94f8e34f` 的 required CI 已由 run `43889749967` 七 job 全绿绑定。组合代码不得当作 release workflow 已执行：四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。三轮原生 CI 已证明 GitHub Ubuntu、macOS、Windows Rust 与 UI job 可运行；旧候选 25 项红、`a55e752` 的 raw-tree 夹具红和 `1a619af` 的 SQLite 定稿红均已定位，`ded5e97` 已完成备份恢复高危复审。四目标 release workflow 仍待实际执行与绑定。
 - **打包封闭检查与最终 provenance 边界（2026-11-16）**：`package_app.py` 会拒绝源仓库、bundle、输出祖先及四棵资源树中的 symbolic link/非普通文件，并在 Tauri 完成后再次验证 App/安装器；`verify_release.py` 同时比较 macOS App 根文件和目录集合。检查到实际读取/归档之间仍存在同 uid 写者可竞争的理论 TOCTOU（未实现 fd-relative/openat）；最终 verifier 不接收原始 runtime archive，不能独立重算其字节 provenance。该残留必须保留，不能因为本机负控变绿写成物理封闭。
 - **Host 存活探测仍可能受 PID 复用影响（2026-11-16）**：`host.lock` 缺失后的 Daemon 保护分支使用 `pid_alive` 判断快照 PID；当前没有把应用启动墙钟 `HostInfo.started_at` 当成操作系统进程启动时间，也没有扩大 schema。PID 被无关进程复用时，桌面壳可能保守地拒绝清理 Daemon，用户可退出旧进程/释放错误占用后重试；该分支不会误停 Daemon，但“存活”判断本身不是强 OS 身份。
