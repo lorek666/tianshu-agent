@@ -12,7 +12,7 @@
 - **策略版本**：`slo-thresholds-v1`（`policy_version = 1`，规范化 JSON SHA256 前缀 `0602a7b1ec84265e…`）
 - **实测时间（UTC）**：`2026-11-18T04:00:58Z`
 - **硬件与系统**：`Apple M4` · `arm64` · `macOS 26.6.2 (Darwin 25.6.0)` · 内存 `16.0 GiB` · `APFS` · Python `3.12.13`
-- **负载声明**：本机多工作树并行开发环境下实测（**非独占静默机**）；全部运行使用独立临时 `TIANSHU_DATA_ROOT`、`TIANSHU_AUTHORITY_ROOT` 与 `TIANSHU_TEST_LOCK_ROOT`，零外部网络连接，所有导出字段遵守 D7 本地默认脱敏（`d7_local_redacted`）。
+- **负载声明**：本机多工作树并行开发环境下实测（**非独占静默机**）；使用独立临时数据根与权威根、脚本模型和本地测试传输，导出字段遵守 D7 本地默认脱敏（`d7_local_redacted`）。临时路径与 `TIANSHU_TEST_LOCK_ROOT` 环境变量本身不隔离生产的用户级维护锁；独立复跑要求专用测试 OS 账户或隔离测试机。
 - **热启动种子库规模**：`50` 任务 / `50` 已完成运行 / `1500` 条哈希链事件 / `events.db` `1,437,696` B（约 `1.37 MiB`）/ `artifacts` `15,600` B。
 
 ### 复现命令
@@ -82,16 +82,21 @@ uv run --frozen python scripts/run_soak.py \
   - 资源水位：空闲总 RSS `p50 = 88.672 MiB`（`max = 99.219 MiB`），活跃总 RSS `p50 = 94.640 MiB`（`max = 100.828 MiB`）；打开 FD 峰值 Daemon `57` / Host `6` / Runner `7`；SQLite `9.03 MiB`；
   - 退出洁净度：`endpoint_closed_after_stop = True`、`locks_cleared_after_stop = True`、**`orphan_pids = []`**。
 
-### 5.2 ≥10 小时正式浸泡运行方式与诚实边界声明
+### 5.2 ≥10 小时浸泡与离线核对（本节不是长跑结果）
+
+在无日常数据与凭据的专用测试 OS 账户或隔离测试机上，从干净的目标候选提交运行。保持机器清醒，记录 OS、硬件、命令与候选 SHA；使用尚不存在的输出目录，避免覆盖已有材料。
 
 ```bash
-TIANSHU_SOAK=1 uv run --frozen python scripts/run_soak.py \
+uv run --frozen python scripts/run_soak.py \
   --duration-hours 10 \
   --sample-interval-seconds 30 \
   --output-dir .omc/artifacts/soak-10h
+
+uv run --frozen python scripts/run_soak.py \
+  --verify-only \
+  --output-dir .omc/artifacts/soak-10h
 ```
 
-- 运行期间可随时读取 `.omc/artifacts/soak-10h/status.json` 与 `samples.jsonl` 观察实时进度、RSS 最小二乘斜率（`MiB/h`）、FD 增量及磁盘增长；结束时自动生成脱敏的 `soak-report.json` 与 `soak-report.md` 并执行 `soak_limits` 门禁。
-- **诚实边界（不伪造长时证据）**：
-  1. 本次提交已完成 `scripts/measure_slo.py`（`N=10` 正式门禁基线）与 `scripts/run_soak.py`（`15s` 与 `6s` 多周期真实子进程验证），**尚未宣称已完成 10 小时墙钟挂机实跑**；G3 正式发版签字前须在目标候选提交上执行完整 10 小时浸泡并归档产物；
-  2. 上述基线仅代表本机 `macOS arm64 (Apple M4)` 非独占开发环境实测值，不替代 `mac-x64`、`win-x64`、`win-arm64` 真实用户设备及真实付费线上模型的验收证据。
+- 运行中，`status.json` 与 `samples.jsonl` 分别提供实时进度和逐点资源观测；最终的 `soak-report.json` 与 `soak-report.md` 汇总趋势、退出洁净度和冻结的 `soak_limits` 诊断门禁。`soak-observation.json` 记录首尾采样、计划重启区间、两相连接采样数、最大采样间隙、Git 首尾快照，以及阈值与材料摘要。工作窗口按单调纳秒计量，排除初始化、计划重启停机和最终退出，不用毫秒舍入的采样时间证明满 10 小时。
+- `status.json` 的 `completed` 晚于三份最终材料写入；失败或中断可能留下部分材料，不能以文件存在代替完成标记。`--verify-only` 不起子进程，只检查完成状态、摘要、阈值配置、采样计数和记录间一致性；自报 Git 身份和摘要不是独立来源证明，也不证明机器未睡眠或全程无采样空洞。
+- **发布边界**：本页原始数据来自 2026-11-18 的单台 `macOS arm64 (Apple M4)` 非独占开发机，短跑仅用于诊断。`PASS` 和离线核对成功均不作发布裁决（`release_acceptance = NOT_EVALUATED`）。正式候选仍需实跑至少 10 小时，另核对两相资源趋势、采样间隙、断连重连、取消、重启和零孤儿；不能用短跑替代长跑、真实模型或 macOS / Windows 用户设备验证。
