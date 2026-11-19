@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from test_restore_contract import UUID, samples
 
-from tianshu import maintenance, restore_access
+from tianshu import maintenance, pathkeys, restore_access
 from tianshu.data_cli import _backup
 from tianshu.events import EventLog
 from tianshu.maintenance import (
@@ -322,6 +322,155 @@ def test_native_handle_close_failure_keeps_entity_access(
     log.close()
     with acquire_entity_access(observe_entity(db, "file"), exclusive=True):
         pass
+
+
+@pytest.mark.parametrize(
+    ("relative", "domain"),
+    [
+        ("ARTIFACTS", "artifacts"),
+        ("MEMORY_BLOBS", "memory_blobs"),
+        ("BLOBS", "blobs"),
+        ("ARTIFACTS/BLOBS", "artifacts"),
+    ],
+)
+def test_case_insensitive_material_aliases_keep_standard_domain(
+    tmp_path, monkeypatch, relative, domain
+):
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    root = tmp_path / "data"
+    target = root.joinpath(*relative.split("/"))
+
+    located = restore_access._standard_material_root_and_domain(target)
+
+    assert located is not None
+    standard_root, actual_domain = located
+    assert pathkeys.overlap_key(str(standard_root)) == pathkeys.overlap_key(str(root))
+    assert actual_domain == domain
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["ARTIFACTS", "MEMORY_BLOBS", "BLOBS", "ARTIFACTS/BLOBS"],
+)
+def test_case_insensitive_material_alias_rejects_foreign_owner(
+    tmp_path, registry, monkeypatch, relative
+):
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    target_root = tmp_path / "target"
+    owner = EventLog(tmp_path / "foreign/events.db")
+    try:
+        target = target_root.joinpath(*relative.split("/"))
+        with pytest.raises(RestoreAccessError, match="同根 events.db"):
+            restore_access.ensure_material_write_allowed(target, owner_log=owner)
+        assert not target_root.exists()
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["ARTIFACTS", "MEMORY_BLOBS", "BLOBS", "ARTIFACTS/BLOBS"],
+)
+def test_case_insensitive_material_alias_requires_admitted_main_for_ownerless_write(
+    tmp_path, registry, monkeypatch, relative
+):
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    root = tmp_path / "data"
+    target = root.joinpath(*relative.split("/"))
+
+    with pytest.raises(RestoreAccessError):
+        restore_access.ensure_material_write_allowed(target)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["ARTIFACTS", "MEMORY_BLOBS", "BLOBS", "ARTIFACTS/BLOBS"],
+)
+def test_case_insensitive_material_alias_accepts_matching_active_owner(
+    tmp_path, registry, monkeypatch, relative
+):
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    root = tmp_path / "data"
+    owner = EventLog(root / "events.db")
+    try:
+        target = root.joinpath(*relative.split("/"))
+        with restore_access.ensure_material_write_allowed(target, owner_log=owner) as lease:
+            assert lease.active
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["owner", "ownerless"])
+def test_standard_material_lease_outlives_normal_log_shutdown(tmp_path, registry, explicit):
+    db = tmp_path / "data/events.db"
+    log = EventLog(db)
+    access = log.conn.database_access
+    assert access is not None and access.entity is not None
+    try:
+        material = db.parent / "memory_blobs"
+        with restore_access.ensure_material_write_allowed(
+            material, owner_log=log if explicit else None
+        ) as lease:
+            assert lease.active
+            log.close()
+            assert access.namespace.active and access.entity.active
+            material.mkdir()
+        assert not access.namespace.active and not access.entity.active
+        assert material.is_dir()
+    finally:
+        log.close()
+
+
+def test_ownerless_material_fallback_is_exclusive_with_active_eventlog(
+    tmp_path, registry, monkeypatch
+):
+    db = tmp_path / "data/events.db"
+    log = EventLog(db)
+    try:
+        # Exercise the race where a close/unregister happens after the active-log
+        # lookup. The fallback must not open another SQLite handle under a shared
+        # namespace/entity lease while this connection is still active.
+        monkeypatch.setattr(
+            restore_access, "_borrow_initialized_access_in_root", lambda _key: None
+        )
+        with pytest.raises(MaintenanceBusy):
+            restore_access.ensure_material_write_allowed(db.parent / "artifacts")
+        assert log.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        log.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-scoped record locks")
+def test_parallel_eventlogs_share_native_main_handle_until_final_close(
+    tmp_path, registry, monkeypatch
+):
+    db = tmp_path / "data/events.db"
+    native_open = restore_access.os.open
+    opened: list[int] = []
+
+    def track_native_main(path, *args, **kwargs):
+        fd = native_open(path, *args, **kwargs)
+        if Path(path) == db.resolve():
+            opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(restore_access.os, "open", track_native_main)
+    first = EventLog(db)
+    try:
+        second = EventLog(db)
+        try:
+            assert len(opened) == 1
+            assert os.fstat(opened[0]).st_ino == db.stat().st_ino
+            first.close()
+            assert os.fstat(opened[0]).st_ino == db.stat().st_ino
+            assert second.conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            second.close()
+        with pytest.raises(OSError):
+            os.fstat(opened[0])
+    finally:
+        first.close()
 
 
 def test_active_reserved_scope_blocks_standard_and_descendant_databases(

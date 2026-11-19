@@ -31,12 +31,15 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from restore_test_support import record_reserved_batch, requires_managed_restore_writes
 from support import CHILD_TEXT
 
-from tianshu import migrate, restore_manager
+from tianshu import backup, migrate, restore_access, restore_manager
 from tianshu import snapshot as snapshot_mod
 from tianshu.backup import create_backup
 from tianshu.contents import ContentStore
@@ -49,6 +52,7 @@ from tianshu.memory import MemoryProjection
 from tianshu.metrics import MetricsRecorder
 from tianshu.model import ScriptedModel
 from tianshu.platform_identity import observe_entity
+from tianshu.recovery import _clean_orphan_blob
 from tianshu.resources import MemoryScope
 from tianshu.restore_access import (
     RestoreAccessError,
@@ -67,6 +71,7 @@ from tianshu.restore_contract import (
     contract_schema,
     contract_schema_v2,
 )
+from tianshu.restore_registry import RestoreRegistry
 from tianshu.settings_control import RuntimeModelSlot
 from tianshu.snapshot import SnapshotStore
 from tianshu.undo_journal import ACTION_DELETE, JournalItem, JournalStore
@@ -106,6 +111,422 @@ def _cli(*args: object, failpoint: str | None = None) -> subprocess.CompletedPro
         timeout=45,
         **CHILD_TEXT,
     )
+
+
+def _legacy_material_fixture(tmp_path, *, db_parent=None):
+    from tianshu.contents import make_ref
+    from tianshu.undo_journal import outstanding
+
+    root = tmp_path / "legacy"
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    db = root / "events.db"
+    log = EventLog(db)
+    try:
+        stack = build_stack(log, data_root=root)
+        legacy = stack.snapshots
+        content = b"retained legacy content"
+        change = legacy.record_preimage(
+            "legacy-run", "call-1", "note.txt", content, "absent", root=ws
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        assert legacy.find("legacy-run", "call-1") == change
+        assert stack.contents.record(digest, content, task_id="legacy-task")
+        assert stack.contents.read(make_ref(digest), task_id="legacy-task").data == (
+            content.decode()
+        )
+        legacy.journal.begin(
+            "legacy-run", control_run="legacy-control",
+            items=(JournalItem(
+                root=str(ws.resolve()), path="created.txt", call_id="call-2",
+                before_state="absent", expected_after="2" * 64, action=ACTION_DELETE,
+            ),),
+        )
+        assert [item.run_id for item in outstanding(root, log=log)] == ["legacy-run"]
+        mem_ref = stack.memory.put_content("retained legacy memory")
+        assert mem_ref
+    finally:
+        log.close()
+    return db, root, ws
+
+
+@pytest.mark.parametrize("separate_root", [False, True], ids=["custom-db", "separate-root"])
+def test_legacy_nonstandard_cli_refuses_without_touching_materials(tmp_path, separate_root):
+    if separate_root:
+        db, root, ws = _legacy_material_fixture(tmp_path)
+        new_parent = tmp_path / "db-location"
+        new_parent.mkdir()
+        db = db.rename(new_parent / "events.db")
+        (root / "memory_blobs").rename(new_parent / "memory_blobs")
+    else:
+        db, root, ws = _legacy_material_fixture(tmp_path)
+        db = db.rename(root / "custom.db")
+
+    def inventory():
+        return {
+            p.relative_to(tmp_path): p.read_bytes() if p.is_file() else None
+            for parent in (root, db.parent, ws)
+            for p in parent.rglob("*")
+        }
+
+    before = inventory()
+    for command in (
+        ("task", "show", "--task-id", "missing-task"),
+        ("recover", "--run-id", "legacy-run", "--workspace", ws),
+    ):
+        result = _cli(*command, "--db", db, "--data-root", root)
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "旧版材料布局" in result.stderr, result.stderr
+        assert "离线备份" in result.stderr
+        assert inventory() == before
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("schedule", "list"),
+        ("replay", "--run-id", "missing"),
+    ],
+    ids=["schedule-list", "missing-run-replay"],
+)
+def test_legacy_nonstandard_read_entrypoints_refuse_before_eventlog(
+    tmp_path, command
+):
+    db, root, ws = _legacy_material_fixture(tmp_path)
+    db = db.rename(root / "custom.db")
+
+    def inventory():
+        return {
+            path.relative_to(tmp_path): path.read_bytes() if path.is_file() else None
+            for parent in {root, db.parent, ws}
+            for path in parent.rglob("*")
+        }
+
+    before = inventory()
+    db_digest = hashlib.sha256(db.read_bytes()).hexdigest()
+    result = _cli(*command, "--db", db)
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "旧版材料布局" in result.stderr, result.stderr
+    assert "离线备份" in result.stderr
+    assert inventory() == before
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == db_digest
+    assert not (root / ".custom.db.materials").exists()
+
+
+def test_legacy_nonstandard_default_readers_do_not_report_empty(tmp_path):
+    from tianshu.undo_journal import outstanding
+
+    db, root, ws = _legacy_material_fixture(tmp_path)
+    db = db.rename(root / "custom.db")
+    log = EventLog(db)
+    try:
+        changes = log.conn.total_changes
+        tables = tuple(log.conn.execute("SELECT name FROM sqlite_master ORDER BY name"))
+        from tianshu.recovery import recover_run
+
+        calls = (
+            lambda: build_stack(log, data_root=root),
+            lambda: open_memory(log, data_root=root),
+            lambda: ContentStore(log, data_root=root),
+            lambda: outstanding(root, log=log),
+            lambda: recover_run(log, "legacy-run", ws, data_root=root),
+        )
+        for call in calls:
+            with pytest.raises(RestoreAccessError, match="旧版材料布局"):
+                call()
+        assert log.conn.total_changes == changes
+        assert tuple(log.conn.execute("SELECT name FROM sqlite_master ORDER BY name")) == tables
+        assert not default_material_paths(db, root)[0].exists()
+    finally:
+        log.close()
+
+
+def test_legacy_empty_nonstandard_scans_only_changed_locations(tmp_path):
+    root = tmp_path / "data"
+    db = tmp_path / "db" / "custom.db"
+    for path in (
+        root / "artifacts/snapshots/empty",
+        root / "artifacts/undo",
+        root / "artifacts/blobs",
+        db.parent / "memory_blobs/empty",
+        db.parent / "blobs",
+    ):
+        path.mkdir(parents=True)
+    (root / "artifacts" / "unrelated").write_bytes(b"not read from a changed material location")
+    (db.parent / "blobs" / "legacy-payload").write_bytes(b"event payload path is durable")
+    result = _cli(
+        "task", "create", "--goal", "smoke", "--workspace", tmp_path / "ws",
+        "--db", db, "--data-root", root,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert default_material_paths(db, root)[0].is_dir()
+
+
+def test_standard_db_with_separate_data_root_uses_private_material_paths(tmp_path):
+    from tianshu.restore_access import preflight_legacy_material_layout
+
+    db_parent = tmp_path / "dbroot"
+    authority_root = tmp_path / "authority-root"
+    db_parent.mkdir()
+    authority_root.mkdir()
+    db = db_parent / "events.db"
+    db.touch()
+
+    old_memory = db_parent / "memory_blobs"
+    old_memory.mkdir()
+    memory_marker = old_memory / "legacy-memory"
+    memory_marker.write_bytes(b"preserve legacy memory")
+    old_event_blobs = db_parent / "blobs"
+    old_event_blobs.mkdir()
+    event_marker = old_event_blobs / "legacy-event-payload"
+    event_marker.write_bytes(b"preserve historical payload")
+
+    snapshots_root, event_blobs, memory_blobs = default_material_paths(
+        db, authority_root
+    )
+    db_materials = db_parent / ".events.db.materials"
+    assert snapshots_root == authority_root / ".events.db.materials" / "snapshots_root"
+    assert event_blobs == db_materials / "event_blobs"
+    assert memory_blobs == db_materials / "mem_blobs"
+
+    with pytest.raises(RestoreAccessError, match="旧版材料布局"):
+        preflight_legacy_material_layout(db, authority_root)
+    assert memory_marker.read_bytes() == b"preserve legacy memory"
+    assert event_marker.read_bytes() == b"preserve historical payload"
+    assert not db_materials.exists()
+
+    memory_marker.unlink()
+    event_marker.unlink()
+    preflight_legacy_material_layout(db, authority_root)
+    log = EventLog(db, blob_dir=event_blobs, data_root=authority_root)
+    try:
+        stack = build_stack(log)
+        assert stack.data_root == authority_root
+        memory_ref = stack.memory.put_content("new private memory")
+        assert memory_ref is not None
+        assert (memory_blobs / memory_ref).is_file()
+
+        event_marker.write_bytes(b"preserve historical payload")
+        oversized_payload = {
+            "call_id": "call_private_blob",
+            "tool_id": "fs.read",
+            "status": "succeeded",
+            "effect_state": "none_applied",
+            "output": {"content": "X" * (MAX_INLINE_BYTES + 1024)},
+        }
+        log.append(
+            "run-private-material-path",
+            "tool.result",
+            oversized_payload,
+            actor_kind="system",
+            legacy_write=True,
+        )
+        payload_ref = log.conn.execute(
+            "SELECT payload_ref FROM events ORDER BY seq DESC LIMIT 1"
+        ).fetchone()[0]
+        assert payload_ref is not None
+        assert Path(payload_ref).parent == event_blobs
+        assert Path(payload_ref).is_file()
+        assert not list(old_memory.iterdir())
+        assert [path.name for path in old_event_blobs.iterdir()] == [event_marker.name]
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("empty_main", [False, True], ids=["missing", "zero-byte"])
+@pytest.mark.parametrize("separate_root", [False, True], ids=["custom-db", "separate-root"])
+def test_legacy_eventlog_refuses_before_initializing_main(tmp_path, empty_main, separate_root):
+    root = tmp_path / "data"
+    db = (
+        tmp_path / "db" / "events.db" if separate_root else root / "custom.db"
+    )
+    marker = root / "artifacts" / "snapshots" / "retained-preimage"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"retained legacy material")
+    if empty_main:
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.touch()
+    _, event_blobs, _ = default_material_paths(db, root)
+    options = {"data_root": root} if separate_root else {}
+
+    before = sorted(tmp_path.rglob("*"))
+    with pytest.raises(RestoreAccessError, match="旧版材料布局"):
+        EventLog(db, blob_dir=event_blobs, **options).close()
+    assert sorted(tmp_path.rglob("*")) == before
+    assert marker.read_bytes() == b"retained legacy material"
+    if empty_main:
+        assert db.read_bytes() == b""
+
+
+def test_legacy_preflight_refuses_dangling_artifacts_parent(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    try:
+        artifacts.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    with pytest.raises(RestoreAccessError, match="旧版材料布局"):
+        restore_access.preflight_legacy_material_layout(tmp_path / "custom.db", tmp_path)
+    assert artifacts.is_symlink()
+    assert not (tmp_path / "missing-target").exists()
+
+
+def test_legacy_preflight_keeps_canonical_same_root_layout(tmp_path):
+    root = tmp_path / "data"
+    material = root / "artifacts" / "snapshots" / "retained-preimage"
+    material.parent.mkdir(parents=True)
+    material.write_bytes(b"material with unchanged location")
+    alias = tmp_path / "data-alias"
+    try:
+        alias.symlink_to(root, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    restore_access.preflight_legacy_material_layout(root / "events.db", alias)
+    assert material.read_bytes() == b"material with unchanged location"
+
+
+def test_legacy_nested_empty_tree_does_not_require_direntry_file_ids(tmp_path, monkeypatch):
+    snapshots = tmp_path / "artifacts" / "snapshots"
+    (snapshots / "empty-child" / "empty-grandchild").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    class EntryWithoutWindowsFileId:
+        def __init__(self, entry):
+            self._entry = entry
+            self.path = entry.path
+            self.name = entry.name
+
+        def stat(self, *, follow_symlinks=True):
+            info = self._entry.stat(follow_symlinks=follow_symlinks)
+            return os.stat_result((info.st_mode, 0, 0, *tuple(info)[3:]))
+
+    @contextmanager
+    def scandir(path):
+        with real_scandir(path) as entries:
+            if Path(path).is_relative_to(snapshots):
+                yield (EntryWithoutWindowsFileId(entry) for entry in entries)
+            else:
+                yield entries
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", scandir)
+        restore_access.preflight_legacy_material_layout(tmp_path / "custom.db", tmp_path)
+
+
+def test_legacy_material_preflight_allows_initially_absent_locations(tmp_path):
+    from tianshu.restore_access import preflight_legacy_material_layout
+
+    db = tmp_path / "custom.db"
+    db.touch()
+    preflight_legacy_material_layout(db, tmp_path)
+
+
+def test_legacy_material_scan_fails_closed_if_missing_root_appears_during_observation(
+    tmp_path, monkeypatch
+):
+    candidate = tmp_path / "artifacts" / "snapshots"
+    original_lstat = restore_access.os.lstat
+    injected = False
+
+    def appear_after_missing_observation(path, *args, **kwargs):
+        nonlocal injected
+        if Path(path) == candidate and not injected:
+            injected = True
+            candidate.mkdir(parents=True)
+            (candidate / "late-material").write_bytes(b"legacy")
+            raise FileNotFoundError(str(path))
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(restore_access.os, "lstat", appear_after_missing_observation)
+    assert restore_access._material_tree_has_entries(candidate)
+    assert injected
+
+
+def test_legacy_material_scan_fails_closed_on_entry_added_after_enumeration(
+    tmp_path, monkeypatch
+):
+    candidate = tmp_path / "artifacts" / "snapshots"
+    candidate.mkdir(parents=True)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False)
+    original_lstat = restore_access.os.lstat
+    observations = 0
+    first_info = None
+
+    def insert_after_enumeration(path, *args, **kwargs):
+        nonlocal first_info, observations
+        if Path(path) == candidate:
+            observations += 1
+            if observations == 1:
+                first_info = original_lstat(path, *args, **kwargs)
+                return first_info
+            if observations == 2:
+                (candidate / "late-material").write_bytes(b"legacy")
+                assert first_info is not None
+                return first_info
+            return original_lstat(path, *args, **kwargs)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(restore_access.os, "lstat", insert_after_enumeration)
+    assert restore_access._material_tree_has_entries(candidate) is True
+    assert observations >= 2
+
+
+def test_legacy_material_scan_fails_closed_on_nested_entry_added_after_descent(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "artifacts" / "snapshots"
+    child = root / "empty-child"
+    child.mkdir(parents=True)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False)
+    original_lstat = restore_access.os.lstat
+    root_observations = 0
+
+    def insert_after_child_descent(path, *args, **kwargs):
+        nonlocal root_observations
+        if Path(path) == root:
+            root_observations += 1
+            if root_observations == 2:
+                (child / "late-material").write_bytes(b"legacy")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(restore_access.os, "lstat", insert_after_child_descent)
+    assert restore_access._material_tree_has_entries(root) is True
+    assert root_observations >= 2
+
+
+@pytest.mark.parametrize("mutation", ["remove", "replace"], ids=["missing", "replaced"])
+def test_legacy_material_scan_fails_closed_on_child_identity_race(
+    tmp_path, monkeypatch, mutation
+):
+    from tianshu.restore_access import preflight_legacy_material_layout
+
+    db = tmp_path / "custom.db"
+    db.touch()
+    snapshots = tmp_path / "artifacts" / "snapshots"
+    child = snapshots / "empty-child"
+    child.mkdir(parents=True)
+    original_scan = restore_access._material_tree_has_entries
+    mutated = False
+
+    def mutate_before_descent(path, *, expected_identity=None):
+        nonlocal mutated
+        if Path(path) == child and not mutated:
+            mutated = True
+            if mutation == "remove":
+                child.rmdir()
+            else:
+                replacement = snapshots / "replacement"
+                replacement.mkdir()
+                child.rename(snapshots / "original")
+                replacement.rename(child)
+        return original_scan(Path(path), expected_identity=expected_identity)
+
+    monkeypatch.setattr(restore_access, "_material_tree_has_entries", mutate_before_descent)
+    with pytest.raises(RestoreAccessError, match="旧版材料布局"):
+        preflight_legacy_material_layout(db, tmp_path)
+    assert mutated
 
 
 def _seed_standard_root(
@@ -272,6 +693,7 @@ def test_defect_1_v1_closed_set_rejects_v2_phases_and_schemas_match_frozen_files
 # ================================================================ DEFECT-2A
 
 
+@requires_managed_restore_writes
 def test_defect_2a_migrate_entrypoints_blocked_before_sqlite_connect_and_preserve_hot_journal(
     tmp_path: Path,
 ) -> None:
@@ -386,6 +808,7 @@ def test_defect_2a_migrate_entrypoints_blocked_before_sqlite_connect_and_preserv
 # ================================================================ DEFECT-2B
 
 
+@requires_managed_restore_writes
 def test_defect_2b_metrics_recorder_and_runtime_model_slot_blocked_on_held_roots(
     tmp_path: Path,
 ) -> None:
@@ -476,6 +899,7 @@ def test_defect_2b_metrics_recorder_and_runtime_model_slot_blocked_on_held_roots
 # ================================================================ DEFECT-2C
 
 
+@requires_managed_restore_writes
 def test_defect_2c_preconstructed_material_stores_blocked_after_reserved_and_published_hold(
     tmp_path: Path,
 ) -> None:
@@ -552,6 +976,55 @@ def test_defect_2c_preconstructed_material_stores_blocked_after_reserved_and_pub
     assert restore_manager.review(root).review_complete is True
 
 
+@requires_managed_restore_writes
+def test_orphan_memory_blob_cleanup_is_blocked_by_restore_hold(tmp_path: Path) -> None:
+    """Restore hold must fence recovery's orphan-memory deletion window."""
+    root = _seed_standard_root(tmp_path, "orphan_cleanup_hold")
+    content_ref = "a" * 64
+    orphan = root / "memory_blobs" / content_ref
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(b"orphan memory bytes")
+
+    backup = tmp_path / "orphan_cleanup_backup"
+    create_backup(root, backup)
+    shutil.rmtree(root)
+
+    planned = restore_manager.plan(backup, root)
+    applied = restore_manager.apply(backup, root, expect_plan_sha256=planned.plan_sha256)
+    assert applied.phase == "published_hold"
+
+    class StubProjection:
+        log = None
+
+        def blob_path(self, _content_ref: str) -> Path:
+            return root / "memory_blobs" / content_ref
+
+        def count_content_ref(self, _content_ref: str, *, exclude_memory_id: str):
+            assert exclude_memory_id == ""
+            return 0, []
+
+    with pytest.raises(RestoreScopeBusy):
+        _clean_orphan_blob(StubProjection(), content_ref)
+    assert orphan.read_bytes() == b"orphan memory bytes"
+
+    review = restore_manager.review(root)
+    released = restore_manager.release(
+        root,
+        expect_review_sha256=review.review_sha256,
+        acknowledge_unproven_later_history=True,
+    )
+    assert released.phase == "released"
+
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        projection = MemoryProjection(log.conn, log=log)
+        projection.ensure_schema()
+        assert _clean_orphan_blob(projection, content_ref) is True
+    finally:
+        log.close()
+    assert not orphan.exists()
+
+
 def test_defect_2c_standard_material_requires_initialized_admitted_events_db_and_rejects_custom_db(
     tmp_path: Path,
 ) -> None:
@@ -619,8 +1092,9 @@ def test_defect_2c_standard_material_requires_initialized_admitted_events_db_and
     same_root = (tmp_path / "same_custom_root").resolve()
     custom_same = EventLog(same_root / "custom.db", blob_dir=same_root / "custom_blobs")
     try:
-        same_mem = MemoryProjection(custom_same.conn, log=custom_same)
-        assert same_mem.blob_dir == same_root / "memory_blobs"
+        same_mem = MemoryProjection(
+            custom_same.conn, log=custom_same, blob_dir=same_root / "memory_blobs"
+        )
         with pytest.raises(RestoreAccessError):
             same_mem.put_content("同目录 custom.db 企图写标准 memory_blobs")
         assert not (same_root / "memory_blobs").exists()
@@ -668,13 +1142,16 @@ def _parse_v2(stdout: str) -> RestoreResponseV2:
 # ================================================================ DEFECT-3
 
 
+@requires_managed_restore_writes
 def test_defect_3_review_with_later_backup_and_body_scope_matches_release_expect_review(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DEFECT-3：带 --later-backup 与 --body-scope 的复核摘要恒定，restore-release 放行。"""
     root = _seed_standard_root(tmp_path, "defect3_root", with_memory="第一版受保护偏好")
     b1 = tmp_path / "backup_b1"
-    create_backup(root, b1)
+    with monkeypatch.context() as patch:
+        patch.setattr(backup, "time", SimpleNamespace(time=lambda: 100))
+        create_backup(root, b1)
 
     # 在活根产生后续历史变化并制作 B2
     log = EventLog(root / "events.db", blob_dir=root / "blobs")
@@ -708,7 +1185,9 @@ def test_defect_3_review_with_later_backup_and_body_scope_matches_release_expect
         log.close()
 
     b2 = tmp_path / "backup_b2"
-    create_backup(root, b2)
+    with monkeypatch.context() as patch:
+        patch.setattr(backup, "time", SimpleNamespace(time=lambda: 200))
+        create_backup(root, b2)
     shutil.rmtree(root)
 
     # 导入 B1 至 published_hold
@@ -789,6 +1268,7 @@ def test_defect_3_review_with_later_backup_and_body_scope_matches_release_expect
 # ================================================================ W15 + Restore B/C 融合
 
 
+@requires_managed_restore_writes
 def test_w15_safe_gc_refuses_held_roots_and_succeeds_after_v2_restore_release(
     tmp_path: Path,
 ) -> None:
@@ -936,6 +1416,10 @@ def test_defect_2c_r2_pure_whitelist_blocks_arbitrary_db_names_and_holds_lease_d
 
     # 2) 跨根 + 源库名为 events.db，严禁写另一根（含已有已关闭 events.db 的目标根）
     elsewhere_std = (tmp_path / "elsewhere_std_r2").resolve()
+    r_closed_main = (tmp_path / "closed_main_r2").resolve()
+    # 初始化辅助库后再写主库材料，以便下方独立验证材料写入门禁。
+    EventLog(r_closed_main / "aux.db").close()
+    EventLog(r_closed_main / "alpha.db").close()
     r_closed_main = _seed_standard_root(tmp_path, "closed_main_r2")
     closed_before_files = sorted(
         str(p.relative_to(r_closed_main)) for p in r_closed_main.rglob("*") if p.is_file()
@@ -1016,9 +1500,9 @@ def test_defect_2c_r2_pure_whitelist_blocks_arbitrary_db_names_and_holds_lease_d
             lambda: ContentStore(aux_same, blob_dir=same_no_main / "blobs").record(
                 "5" * 64, b"same", task_id="t1", run_id="r1"
             ),
-            lambda: MemoryProjection(aux_same.conn, log=aux_same).put_content(
-                "同根无 events.db 持 aux.db 企图写 memory_blobs"
-            ),
+            lambda: MemoryProjection(
+                aux_same.conn, log=aux_same, blob_dir=same_no_main / "memory_blobs"
+            ).put_content("同根无 events.db 持 aux.db 企图写 memory_blobs"),
         ):
             with pytest.raises(RestoreAccessError):
                 bad_same_call()
@@ -1066,9 +1550,9 @@ def test_defect_2c_r2_pure_whitelist_blocks_arbitrary_db_names_and_holds_lease_d
             lambda: ContentStore(aux_in_closed, blob_dir=r_closed_main / "blobs").record(
                 "6" * 64, b"closed_aux", task_id="t1", run_id="r1"
             ),
-            lambda: MemoryProjection(aux_in_closed.conn, log=aux_in_closed).put_content(
-                "同根 events.db 已关闭时持 aux.db 企图写 memory_blobs"
-            ),
+            lambda: MemoryProjection(
+                aux_in_closed.conn, log=aux_in_closed, blob_dir=r_closed_main / "memory_blobs"
+            ).put_content("同根 events.db 已关闭时持 aux.db 企图写 memory_blobs"),
         ):
             with pytest.raises(RestoreAccessError):
                 bad_closed_call()
@@ -1175,74 +1659,29 @@ def test_defect_2c_r2_pure_whitelist_blocks_arbitrary_db_names_and_holds_lease_d
     assert (conv_dir / ".aux_cli.db.materials").is_dir()
 
 
+@pytest.mark.parametrize("target_exists", [False, True], ids=["absent", "empty"])
 def test_defect_6_gc_reserved_returns_restore_held_for_absent_and_empty_targets(
-    tmp_path: Path,
+    tmp_path: Path, target_exists: bool,
 ) -> None:
-    """DEFECT-6-GC-RESERVED：FP-RESERVED 下空/不存在目标跑 data gc 均报 restore_held。"""
-    # 场景 1：AbsentTargetV1（目标根目录尚不存在）
-    absent_root = _seed_standard_root(tmp_path, "gc_reserved_absent")
-    bkp_absent = tmp_path / "bkp_gc_absent"
-    create_backup(absent_root, bkp_absent)
-    shutil.rmtree(absent_root)
-    assert not absent_root.exists()
+    """GC refuses both kinds of clean targets when the native registry has a reservation."""
+    root = _seed_standard_root(tmp_path, "gc_reserved")
+    bkp = tmp_path / "bkp_gc_reserved"
+    create_backup(root, bkp)
+    shutil.rmtree(root)
+    if target_exists:
+        (root / "skeleton_a" / "skeleton_b").mkdir(parents=True)
 
-    plan_absent = restore_manager.plan(bkp_absent, absent_root)
-    crashed_absent = _cli(
-        "data",
-        "restore-apply",
-        bkp_absent,
-        "--data-root",
-        absent_root,
-        "--expect-plan",
-        plan_absent.plan_sha256,
-        failpoint="FP-RESERVED",
-    )
-    assert crashed_absent.returncode == 77
-    assert not absent_root.exists()
-
-    try:
-        for mode_flag in ("--dry-run", "--approve"):
-            proc = _cli("data", "gc", "--data-root", absent_root, mode_flag, "--json")
-            assert proc.returncode == 2, (mode_flag, proc.stdout, proc.stderr)
-            payload = json.loads(proc.stdout)
-            assert payload["ok"] is False
-            assert payload["code"] == "restore_held", payload
-            assert not absent_root.exists()
-    finally:
-        aborted_a = restore_manager.abort(absent_root)
-        assert aborted_a.phase == "aborted"
-
-    # 场景 2：EmptyTargetV1（目标根已存在但仅含空目录骨架、尚无 events.db）
-    empty_root = _seed_standard_root(tmp_path, "gc_reserved_empty")
-    bkp_empty = tmp_path / "bkp_gc_empty"
-    create_backup(empty_root, bkp_empty)
-    shutil.rmtree(empty_root)
-    (empty_root / "skeleton_a" / "skeleton_b").mkdir(parents=True)
-
-    plan_empty = restore_manager.plan(bkp_empty, empty_root)
-    crashed_empty = _cli(
-        "data",
-        "restore-apply",
-        bkp_empty,
-        "--data-root",
-        empty_root,
-        "--expect-plan",
-        plan_empty.plan_sha256,
-        failpoint="FP-RESERVED",
-    )
-    assert crashed_empty.returncode == 77
-    assert empty_root.is_dir()
-    assert not (empty_root / "events.db").exists()
-
-    try:
-        for mode_flag in ("--dry-run", "--approve"):
-            proc = _cli("data", "gc", "--data-root", empty_root, mode_flag, "--json")
-            assert proc.returncode == 2, (mode_flag, proc.stdout, proc.stderr)
-            payload = json.loads(proc.stdout)
-            assert payload["ok"] is False
-            assert payload["code"] == "restore_held", payload
-            assert not (empty_root / "events.db").exists()
-            assert not [p for p in empty_root.rglob("*") if p.is_file()]
-    finally:
-        aborted_b = restore_manager.abort(empty_root)
-        assert aborted_b.phase == "aborted"
+    registry = RestoreRegistry()
+    record_reserved_batch(registry, restore_manager.plan(bkp, root, registry=registry))
+    before = registry.observe()
+    assert before.events[-1].kind == "reserved"
+    skeleton = set(root.rglob("*"))
+    for mode_flag in ("--dry-run", "--approve"):
+        proc = _cli("data", "gc", "--data-root", root, mode_flag, "--json")
+        assert proc.returncode == 2, (mode_flag, proc.stdout, proc.stderr)
+        payload = json.loads(proc.stdout)
+        assert payload["ok"] is False
+        assert payload["code"] == "restore_held", payload
+        assert root.exists() is target_exists
+        assert set(root.rglob("*")) == skeleton
+        assert registry.observe() == before

@@ -246,13 +246,23 @@ def assess_run(
     own_log = None
     if log is None:
         db = root / "events.db"
+        from .restore_access import (
+            default_material_paths,
+            preflight_legacy_material_layout,
+        )
+
+        preflight_legacy_material_layout(db, root)
         if not db.exists():
             raise TianshuError(
                 f"无法对账：数据根里没有事件库（{root}）；"
                 "调用方应传入自己的 EventLog，避免只读对账创建/迁移库文件"
             )
-        log = EventLog(db, blob_dir=root / "blobs")
+        log = EventLog(db, blob_dir=default_material_paths(db, root)[1])
         own_log = log
+    else:
+        from .restore_access import preflight_legacy_material_layout
+
+        preflight_legacy_material_layout(log.db_path, root)
     try:
         events = log.read_run(run_id)
         intents = {
@@ -486,35 +496,35 @@ def recover_run(
     之间还能被插进一条阻断事件，而写入侧看不到它。不给（库调用方保持原样）时
     判定口径不变，只是少了这层跨进程线性化。
 
-    `memory` / `blob_dir` 决定"记忆正文的 blob 去哪找"（擦除结论与孤儿清理都要
-    用它）：`memory` 优先（装配方已经打开的那个投影，CLI 传 `stack.memory`、
-    daemon 传 `control_stack.memory`）；只给 `blob_dir` 时按该目录新建一个投影；
-    两者都不给就按 `MemoryProjection` 的默认规则（DB 旁的 `memory_blobs/`）。
-    正文目录与默认值不同却没传这两个参数时，擦除会被判成"文件已没"、孤儿也清
-    不到——这是调用方的契约责任，不是恢复在猜。
+    `memory` / `blob_dir` / `data_root` 一起决定"记忆正文的 blob 去哪找"（擦除结论
+    与孤儿清理都要用它）：`memory` 优先（装配方已经打开的那个投影，CLI 传
+    `stack.memory`、daemon 传 `control_stack.memory`）；其次使用显式 `blob_dir`；
+    否则由记忆投影按 `data_root` 或 `log.data_root` 对应的默认布局解析。
 
     每次恢复都先做一次**权威根补登记**（issue #61.1）：本数据根日志里当前有效
     的阻断，如果用户级权威根里还没有（旧版本的库、或换过数据根），先补进去。
     补登记失败只在报告里写「跨数据根阻断未生效」，不炸恢复流程。
     """
+    from .restore_access import preflight_legacy_material_layout
+
+    root = log.data_root if data_root is None else Path(data_root)
+    preflight_legacy_material_layout(log.db_path, root)
     migration_problems = mirror_blocks_to_authority(log)
     undo_problems: list[str] = []
     if data_root is None:
         report = _recover_run(
             log, run_id, workspace_dir, snapshots, leases=leases,
-            memory=memory, blob_dir=blob_dir,
+            memory=memory, blob_dir=blob_dir, data_root=root,
         )
     else:
-        with execution_guard(Path(data_root)):
+        with execution_guard(root):
             report = _recover_run(
                 log, run_id, workspace_dir, snapshots, leases=leases,
-                memory=memory, blob_dir=blob_dir,
+                memory=memory, blob_dir=blob_dir, data_root=root,
             )
             # 未完成的撤销也在这个全序里判：它和"恢复判 unknown"是同一类事实
             # （磁盘上有一批文件的最终状态还没结算），写入侧必须同时看到。
-            undo_problems = _block_unfinished_undo(
-                log, Path(data_root), Path(workspace_dir)
-            )
+            undo_problems = _block_unfinished_undo(log, root, Path(workspace_dir))
     report.problems.extend(migration_problems)
     report.problems.extend(undo_problems)
     return report
@@ -529,6 +539,7 @@ def _recover_run(
     leases: LeaseStore | None = None,
     memory: object | None = None,
     blob_dir: Path | None = None,
+    data_root: Path | None = None,
 ) -> RecoveryReport:
     ws = Workspace(workspace_dir)
     events = log.read_run(run_id)
@@ -583,7 +594,7 @@ def _recover_run(
                     # 清单坏了也不该把它们推成 unknown 并挡住目录。
                     _settle_memory_write(
                         log, report, run_id, call_id, tool_id, payload, ev.ts,
-                        memory=memory, blob_dir=blob_dir,
+                        memory=memory, blob_dir=blob_dir, data_root=data_root,
                     )
                     continue
                 if spec is not None and spec.side_effect_level == "pure":
@@ -661,7 +672,7 @@ def _recover_run(
         if tool_id in MEMORY_TOOL_IDS:
             _settle_memory_write(
                 log, report, run_id, call_id, tool_id, payload, ev.ts,
-                memory=memory, blob_dir=blob_dir,
+                memory=memory, blob_dir=blob_dir, data_root=data_root,
             )
             continue
 
@@ -995,13 +1006,14 @@ def _unresolved_roots(
 _ERASE_TOOL_ID = "memory.erase"
 
 
-def _open_memory_projection(log: EventLog, blob_dir: Path | None = None):
+def _open_memory_projection(
+    log: EventLog,
+    blob_dir: Path | None = None,
+    data_root: Path | None = None,
+):
     """恢复用的记忆投影（与事件日志共用同一连接）。打不开就返回 None。
 
-    `blob_dir` 要给装配方自定义的正文目录：恢复按 DB 旁默认目录去找 blob 时，
-    自定义目录下的正文会"找不到"，擦除结论与孤儿清理都会偏。CLI / daemon 直接
-    把 `stack.memory` 传进来就是为了避开这个坑。
-
+    `blob_dir` 要给装配方自定义的正文目录；未给时沿用记忆投影的默认布局。
     延迟 import：`memory` → `resources` 那条链不该在纯文件恢复路径上也被拖进来。
     """
     try:
@@ -1009,7 +1021,7 @@ def _open_memory_projection(log: EventLog, blob_dir: Path | None = None):
     except ImportError:  # pragma: no cover - 装配缺模块
         return None
     try:
-        projection = MemoryProjection(log.conn, log=log, blob_dir=blob_dir)
+        projection = MemoryProjection(log.conn, log=log, blob_dir=blob_dir, data_root=data_root)
         projection.ensure_schema()
     except Exception:  # noqa: BLE001 - 投影坏了：结论只能是"核不了"
         return None
@@ -1024,8 +1036,9 @@ def _clean_orphan_blob(projection: Any, content_ref: str) -> bool:
     指向的字节副本——既不进召回，`memory.erase` 也找不到它。恢复时按引用计数
     为 0 才删，绝不碰别的记忆共享的正文。
 
-    只在 `blob_dir` 真实存在（非纯内存库）时动手；失败一律当成"没清掉"返回
-    False，让报告如实留白，不在这里抛错打断恢复。
+    引用计数检查和删除必须在同一个材料写准入 lease 内完成。恢复持久隔离期间，
+    `ensure_material_write_allowed()` 会动态重验 RestoreRegistry；隔离拒绝必须
+    传播给恢复调用方，不能被下面用于普通 IO 失败的宽泛保护吞掉。
     """
     try:
         path = projection.blob_path(content_ref)
@@ -1033,17 +1046,35 @@ def _clean_orphan_blob(projection: Any, content_ref: str) -> bool:
         return False
     if path is None or not path.is_file():
         return False
+
+    # 读取 owner log 只是为了绑定连续的 EventLog access；没有 owner（例如恢复
+    # 只读投影探针）仍会走标准材料根的结构白名单与隔离守卫。
     try:
-        others, _ = projection.count_content_ref(content_ref, exclude_memory_id="")
-    except Exception:  # noqa: BLE001 - 数不清引用就不删（宁可留字节，不可误删）
+        from .restore_access import ensure_material_write_allowed
+
+        lease = ensure_material_write_allowed(
+            path,
+            owner_log=getattr(projection, "log", None),
+        )
+    except Exception as exc:  # noqa: BLE001 - 隔离拒绝不可被静默降级
+        from .restore_access import RestoreScopeBusy
+
+        if isinstance(exc, RestoreScopeBusy):
+            raise
         return False
-    if others:
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        return False
-    return True
+
+    with lease:
+        try:
+            others, _ = projection.count_content_ref(content_ref, exclude_memory_id="")
+        except Exception:  # noqa: BLE001 - 数不清引用就不删（宁可留字节，不可误删）
+            return False
+        if others:
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return True
 
 
 def _memory_effect(
@@ -1052,6 +1083,7 @@ def _memory_effect(
     *,
     memory: object | None = None,
     blob_dir: Path | None = None,
+    data_root: Path | None = None,
 ) -> tuple[str, dict[str, Any], str | None]:
     """一条"有 intent 无 result"的记忆写，到底能下什么结论。
 
@@ -1073,7 +1105,7 @@ def _memory_effect(
     projection = (
         memory
         if memory is not None
-        else _open_memory_projection(log, blob_dir)
+        else _open_memory_projection(log, blob_dir, data_root)
     )
     tool_id = intent_payload.get("tool_id")
     if projection is None:
@@ -1164,6 +1196,7 @@ def _settle_memory_write(
     *,
     memory: object | None = None,
     blob_dir: Path | None = None,
+    data_root: Path | None = None,
 ) -> None:
     """结算一条被打断的记忆写（含 `dispatches` 表状态推进）。
 
@@ -1172,7 +1205,7 @@ def _settle_memory_write(
     未生效"两种说法。
     """
     bucket_name, extras, problem = _memory_effect(
-        log, intent_payload, memory=memory, blob_dir=blob_dir
+        log, intent_payload, memory=memory, blob_dir=blob_dir, data_root=data_root
     )
     if bucket_name == "none_applied":
         bucket = report.none_applied

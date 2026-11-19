@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 import pytest
+from restore_test_support import requires_managed_restore_writes
 
 from tianshu import event_schema
 from tianshu.errors import TianshuError
@@ -636,14 +637,15 @@ def test_blob_payload_still_round_trips_with_version(tmp_path):
 # ---------------------------------------------------------------- 备份/恢复衔接
 
 
-def test_backup_restore_keeps_payload_versions(tmp_path):
-    """PRD §8.5 的整库在线备份必须把版本旁表一起带上。
-
-    `backup.create_backup()` 用 `sqlite3.Connection.backup()` 复制整个事件库
-    （不是复制正在写入的 db 文件），所以 `event_versions` 天然在其中。这里用
-    备份→恢复→重读证明而不是推断：v1 行恢复后仍是 1，v0 旧行恢复后仍是 0。
-    前提：备份必须是一个**完整**的备份文件；正在写入的库直接拷文件不在此列。
-    """
+@pytest.mark.parametrize(
+    "restore",
+    [
+        pytest.param(False, id="backup"),
+        pytest.param(True, id="restored", marks=requires_managed_restore_writes),
+    ],
+)
+def test_backup_restore_keeps_payload_versions(tmp_path, restore):
+    """Read the version side table in the published backup and in a managed restore."""
     import sqlite3
 
     from tianshu import restore_manager
@@ -670,16 +672,18 @@ def test_backup_restore_keeps_payload_versions(tmp_path):
     create_backup(root, dest)
     assert verify_backup(dest).ok, "备份清单/引用应当完整"
 
-    moved = tmp_path / "moved"
-    root.rename(moved)
-    report = restore_backup(dest, root)
-    assert report.ok
-    with pytest.raises(RestoreScopeBusy):
-        EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
-    rev = restore_manager.review(root)
-    assert rev.review_complete is True
+    db = dest / "events.db"
+    if restore:
+        root.rename(tmp_path / "moved")
+        report = restore_backup(dest, root)
+        assert report.ok
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+        rev = restore_manager.review(root)
+        assert rev.review_complete is True
+        db = root / "events.db"
 
-    conn = sqlite3.connect((root / "events.db").resolve().as_uri() + "?mode=ro", uri=True)
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
     try:
         rows = conn.execute(
             "SELECT e.type, COALESCE(v.version, 0), e.payload FROM events e "

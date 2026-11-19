@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import event_schema
 from .data_state import (
     SCHEMA_VERSION,
+    STANDARD_DB_BASENAME,
     AdmissionRefused,
     LegacyStateV1,
     MigrationState,
@@ -16,6 +19,7 @@ from .data_state import (
     MigrationStateV2,
     associated_state_paths,
     classify_progress,
+    is_standard_db_basename,
     read_state_file,
 )
 from .errors import TianshuError
@@ -57,8 +61,10 @@ _RESTORE_WITNESS_NAMES = (
 )
 
 
-def check_new_file_evidence(db_path: Path) -> None:
-    """SQLite打开前排除孤立旁文件；读取空主库可能丢弃它们。"""
+def check_new_file_evidence(
+    db_path: Path, *, legacy_data_root: Path | None = None
+) -> None:
+    """空主库须无孤立旁证；声明材料根时同时核对旧版布局。"""
     if str(db_path) == ":memory:":
         return
     try:
@@ -83,7 +89,7 @@ def check_new_file_evidence(db_path: Path) -> None:
                 path.exists() and path.stat().st_size > 0
             ):
                 raise _incompatible(f"新空主库旁存在历史{suffix}")
-        if actual.name == "events.db":
+        if is_standard_db_basename(actual.name):
             for name in ("artifacts", "blobs", "memory_blobs"):
                 path = actual.parent / name
                 # SnapshotStore可先建空目录骨架；任何文件/链接仍是历史证据。
@@ -91,6 +97,10 @@ def check_new_file_evidence(db_path: Path) -> None:
                     raise _incompatible(f"新空事件库旁存在历史材料{name}")
     except (OSError, RuntimeError) as exc:
         raise _incompatible("新空库的历史证据不可判定") from exc
+    if legacy_data_root is not None:
+        from .restore_access import preflight_legacy_material_layout
+
+        preflight_legacy_material_layout(db_path, legacy_data_root)
 
 
 def _shape(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> None:
@@ -190,9 +200,31 @@ def _mechanism(conn: sqlite3.Connection, version: int) -> None:
             raise _incompatible("迁移审计note类型不合法")
 
 
+def _legacy_sidecar_matches_alias(db_path: Path, sidecar: Path) -> bool:
+    canonical = db_path.with_name(STANDARD_DB_BASENAME)
+    try:
+        sidecar.lstat()
+        canonical_info = canonical.lstat()
+        actual_info = db_path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise MigrationStateCorrupt("旧版进度无法核对标准事件库实体") from exc
+    return (
+        stat.S_ISREG(canonical_info.st_mode)
+        and stat.S_ISREG(actual_info.st_mode)
+        and actual_info.st_ino != 0
+        and os.path.samestat(canonical_info, actual_info)
+    )
+
+
 def _progress_for(db_path: Path, actual: int) -> MigrationState | None:
     records = []
     for i, path in enumerate(associated_state_paths(db_path)):
+        # 旧版进度不含库身份。折叠库名用于发现证据，信任记录还须核对实际实体。
+        if i == 1 and db_path.name != STANDARD_DB_BASENAME:
+            if not _legacy_sidecar_matches_alias(db_path, path):
+                continue
         state = read_state_file(path)
         if state is None:
             continue

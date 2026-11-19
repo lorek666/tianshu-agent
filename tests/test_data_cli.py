@@ -182,7 +182,7 @@ def test_data_restore_plan_is_readonly_and_never_activates_memory(tmp_path):
     assert result.returncode == 3, result.stderr
     report = json.loads(result.stdout)
     assert report["ok"] is True
-    assert report["apply_supported"] is True
+    assert report["apply_supported"] is (os.name != "nt")
     assert len(report["plan_sha256"]) == 64
     assert report["same_path"] is True
     assert report["target_clean"] is True

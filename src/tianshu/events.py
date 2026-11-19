@@ -296,18 +296,23 @@ class EventLog:
         blob_dir: Path | None = None,
         *,
         cross_thread: bool = False,
+        data_root: Path | None = None,
     ) -> None:
         """`cross_thread=True` 只给"连接建在一个线程、用在同一线程"的通道用。
 
         sqlite3 默认禁止跨线程用同一个连接，因为并发读写连接内部状态会错乱。
         心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
         那条），所以关掉这个检查是安全的。除此之外不要传它。
+        `data_root` 缺省为 DB 父目录；异根装配须在打开新主库前声明实际材料根。
         """
+        self._data_root = db_path.parent if data_root is None else Path(data_root)
         if blob_dir is not None:
             ensure_path_not_held(blob_dir)
         access = acquire_restore_database_access(
             db_path,
-            prewrite_guard=lambda: check_new_file_evidence(db_path),
+            prewrite_guard=lambda: check_new_file_evidence(
+                db_path, legacy_data_root=self._data_root
+            ),
         )
         try:
             self._open_database(db_path, blob_dir, cross_thread, access)
@@ -325,11 +330,11 @@ class EventLog:
         cross_thread: bool,
         access: DatabaseAccess,
     ) -> None:
+        # SQLite打开空主文件前再核孤立历史旁证；准入通过后才建payload目录。
+        check_new_file_evidence(db_path, legacy_data_root=self._data_root)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._blob_dir = blob_dir
-        # SQLite打开空主文件前先排除孤立历史旁证；准入通过后才建payload目录。
-        check_new_file_evidence(db_path)
         # 保留原先是否非空的证据，不把损坏的既有库初始化成空库。
         pre_existing = False
         try:
@@ -404,6 +409,11 @@ class EventLog:
     def db_path(self) -> Path:
         """数据库文件路径。authority 根目录默认取它的父目录。"""
         return self._db_path
+
+    @property
+    def data_root(self) -> Path:
+        """打开主库时声明的默认材料根。"""
+        return self._data_root
 
     @property
     def blob_dir(self) -> Path | None:

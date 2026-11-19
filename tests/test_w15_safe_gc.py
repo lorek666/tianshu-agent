@@ -24,17 +24,18 @@
      与空快照清单；
    - 损坏快照清单、`blobs` 内符号链接、多硬链接 blob、引用材料哈希不符、或存在
      `in_progress` 撤销日志时，`tianshu data gc --approve` 以退出码 `2` 闭锁拒绝，
-     **0 文件删除、0 数据库行删除**；且锁内二次运行 `collect_references` 消除 TOCTOU。
+     **0 文件删除、0 数据库行删除**；锁内重新收集引用，不使用旧预演结果。
 4. 真子进程锁互斥（标准管道屏障，零 `sleep`）：活跃子进程持有 `EventLog`（或 `daemon`）时，
    `tianshu data gc --approve` 以退出码 `2`（`maintenance_busy`）拒绝、0 删除，
    子进程继续正常追加事件。
-5. 低磁盘空间回收证明：当可用空间 `< 2 GiB` 或模拟 `0` 字节（新副作用 Run 以
-   `dispatch.disk_space_low` 拒绝）时，`tianshu data gc --approve` 仍成功退出 `0` 并回收孤儿 blob。
+5. POSIX 低空间静态库仍可回收孤儿；无目录同步平台拒绝含文件候选的整批请求。
+   SQLite-only 路径在空间足够时仍可执行，低于 SQLite 最低余量时延后。
 """
 
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -46,14 +47,15 @@ import tempfile
 import threading
 import time
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from support import CHILD_TEXT, approve_pending, engine_for, stack_for, write_exact
 
-from tianshu import cli, memory_control, restore_access
+from tianshu import cli, data_cli, data_gc, memory_control, restore_access
 from tianshu.backup import collect_references, create_backup, verify_backup
 from tianshu.budget import BudgetLedger
 from tianshu.credentials import register_secret
@@ -100,6 +102,10 @@ from tianshu.undo_journal import ACTION_RESTORE, JournalItem, JournalStore
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 STARTUP = str(Path(__file__).resolve().parent / "_startup")
+requires_gc_file_deletion = pytest.mark.skipif(
+    os.name != "posix",
+    reason="requires actual file unlink/parent fsync; Windows policy tracked in #200",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -724,34 +730,66 @@ def test_preview_modes_exit_3_with_exact_candidates_and_zero_byte_mutation(tmp_p
     assert _tree_snapshot(root) == before_tree
 
 
-def test_approve_reclaims_only_safe_targets_truncates_wal_and_preserves_replay_and_backup(
-    tmp_path: Path,
+def test_approve_gc_does_not_recreate_database_deleted_before_acquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fx = _build_rich_fixture(tmp_path)
     root: Path = fx["root"]
-    db_path = root / "events.db"
+    db = root / "events.db"
+    real_acquire = data_gc.acquire_restore_database_access
+    calls = 0
 
-    # 用真实子进程在 wal_autocheckpoint=0 下追加事件并 os._exit(0)，留下真实未截断的非空 -wal
+    def delete_before_acquire(db_path: Path, **kwargs: Any):
+        nonlocal calls
+        calls += 1
+        assert db_path == db
+        db_path.unlink()
+        return real_acquire(db_path, **kwargs)
+
+    monkeypatch.setattr(data_gc, "acquire_restore_database_access", delete_before_acquire)
+    report, code = run_data_gc(
+        root,
+        older_than_days=90,
+        approve=True,
+        clock=lambda: fx["now_ms"],
+    )
+
+    assert calls == 1
+    assert code == 2
+    assert report["code"] == "incompatible"
+    assert not db.exists()
+    assert report["deleted"]["orphan_blobs_count"] == 0
+    assert report["deleted"]["empty_snapshots_count"] == 0
+    assert (root / fx["orphan_artifact_rel"]).is_file()
+    assert (root / fx["orphan_root_rel"]).is_file()
+
+
+def _leave_committed_wal(root: Path) -> Path:
+    """真实子进程提交未 checkpoint 的事件并硬退，留下 WAL 中的权威材料引用。"""
+    blobs_before = set((root / "blobs").iterdir())
     leave_wal_code = """
 import os, sys
 from pathlib import Path
-from tianshu.events import EventLog
+from tianshu.events import EventLog, MAX_INLINE_BYTES
 
 root = Path(sys.argv[1])
 log = EventLog(root / "events.db", blob_dir=root / "blobs")
 log.conn.execute("PRAGMA wal_autocheckpoint=0")
-log.append(
-    "run_live_running",
-    "tool.result",
-    {
-        "call_id": "call_wal_pad",
-        "tool_id": "read_text",
-        "status": "succeeded",
-        "effect_state": "none_applied",
-        "output": {"content": "W" * 32_768},
-    },
-    actor_kind="core",
-)
+for size in (32_768, MAX_INLINE_BYTES + 1):
+    seq = log.append(
+        "run_live_running",
+        "tool.result",
+        {
+            "call_id": f"call_wal_{size}",
+            "tool_id": "read_text",
+            "status": "succeeded",
+            "effect_state": "none_applied",
+            "output": {"content": "W" * size},
+        },
+        actor_kind="core",
+    )
+ref = log.conn.execute('SELECT payload_ref FROM events WHERE seq = ?', (seq,)).fetchone()[0]
+assert ref is not None and Path(ref).is_file()
 os._exit(0)
 """
     wal_maker = subprocess.run(
@@ -764,7 +802,64 @@ os._exit(0)
     assert wal_maker.returncode == 0, wal_maker.stderr
     wal_path = root / "events.db-wal"
     assert wal_path.exists() and wal_path.stat().st_size > 32_768
+    (wal_blob,) = set((root / "blobs").iterdir()) - blobs_before
+    return wal_blob
 
+
+@pytest.mark.parametrize("has_shm", [False, True], ids=["missing-shm", "existing-shm"])
+@pytest.mark.parametrize("mode", ["preview", "no-headroom", "no-directory-sync"])
+def test_gc_readonly_preflight_refuses_wal_without_mutating_it(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch, has_shm: bool, mode: str,
+) -> None:
+    fx = _gc_effects_fixture
+    root: Path = fx["root"]
+    _leave_committed_wal(root)
+    shm = root / "events.db-shm"
+    assert shm.is_file()
+    if not has_shm:
+        shm.unlink()
+    before = _tree_snapshot(root)
+    before_root_mtime = root.stat().st_mtime_ns
+
+    if mode != "preview":
+        if mode == "no-directory-sync":
+            monkeypatch.setattr(data_gc, "os", SimpleNamespace(name="nt"))
+        report, code = run_data_gc(
+            root, approve=True, clock=lambda: fx["now_ms"],
+            disk_free_probe=lambda _path: 0 if mode == "no-headroom" else 1 << 40,
+        )
+    else:
+        result = _cli("data", "gc", "--data-root", root, "--dry-run", "--json")
+        report, code = json.loads(result.stdout), result.returncode
+
+    assert _tree_snapshot(root) == before
+    assert root.stat().st_mtime_ns == before_root_mtime
+    assert code == 2, report
+    assert report["code"] == "incompatible"
+    assert set(report["deleted"].values()) == {0}
+    assert report["wal_checkpoint"] is None
+
+
+def test_approve_reclaims_only_safe_targets_truncates_wal_and_preserves_replay_and_backup(
+    tmp_path: Path,
+) -> None:
+    fx = _build_rich_fixture(tmp_path)
+    root: Path = fx["root"]
+    db_path = root / "events.db"
+    file_gc = os.name == "posix"
+    if file_gc:
+        wal_blob = _leave_committed_wal(root)
+        # Without the committed WAL, the newly persisted payload has no visible reference.
+        with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro&immutable=1", uri=True)) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM events WHERE payload_ref=?", (str(wal_blob),)
+            ).fetchone() is None
+    else:
+        for rel in (
+            fx["orphan_artifact_rel"], fx["orphan_root_rel"], fx["deletable_empty_snap_rel"],
+        ):
+            (root / rel).unlink()
+    wal_path = root / "events.db-wal"
     protected_before = _protected_tables_snapshot(db_path)
 
     report, code = run_data_gc(
@@ -777,9 +872,9 @@ os._exit(0)
     assert report["ok"] is True
     assert report["dry_run"] is False
     assert report["approved"] is True
-    assert report["deleted"]["orphan_blobs_count"] == 2
-    assert report["deleted"]["orphan_blobs_bytes"] == fx["orphan_bytes_total"]
-    assert report["deleted"]["empty_snapshots_count"] == 1
+    assert report["deleted"]["orphan_blobs_count"] == (2 if file_gc else 0)
+    assert report["deleted"]["orphan_blobs_bytes"] == (fx["orphan_bytes_total"] if file_gc else 0)
+    assert report["deleted"]["empty_snapshots_count"] == int(file_gc)
     assert report["deleted"]["jobs_count"] == 2
     assert report["deleted"]["budget_reservations_count"] == 1
     assert report["wal_checkpoint"] is not None
@@ -793,6 +888,8 @@ os._exit(0)
     assert not (root / fx["deletable_empty_snap_rel"]).exists()
 
     # 2. 全部受保护文件（六类 protected_blobs + 非空快照 + 受保护空快照 + undo 日志）完好无损
+    if file_gc:
+        assert wal_blob.is_file()
     for rel in fx["protected_files"]:
         assert (root / rel).is_file(), f"受保护材料被误删：{rel}"
 
@@ -943,6 +1040,352 @@ def test_reference_unknown_and_in_progress_undo_fail_closed_with_zero_deletions(
     assert _tree_snapshot(root) == tree_before
 
 
+@requires_gc_file_deletion
+@pytest.mark.parametrize("available_bytes", [0, 1 << 40])
+@pytest.mark.parametrize("replace_kind", ["later_blob", "empty_snapshot"])
+def test_approve_preflights_all_candidate_identities_before_any_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_bytes: int,
+    replace_kind: str,
+) -> None:
+    fx = _build_rich_fixture(tmp_path)
+    root: Path = fx["root"]
+    real_compute = data_gc._compute_candidates
+    fault_state: dict[str, Any] = {}
+
+    def replace_later_candidate(conn, candidate_root, index, cutoff_ms):
+        candidates = real_compute(conn, candidate_root, index, cutoff_ms)
+        ordered_blobs = tuple(sorted(candidates.orphan_blobs, key=lambda item: item.path))
+        assert len(ordered_blobs) >= 2
+        snap_rel = fx["deletable_empty_snap_rel"]
+        if replace_kind == "later_blob":
+            target = candidate_root / ordered_blobs[-1].path
+        else:
+            target = candidate_root / snap_rel
+        replacement = target.with_name(target.name + ".replacement")
+        replacement.write_bytes(target.read_bytes())
+        os.replace(replacement, target)
+
+        fault_state["blob_paths"] = {
+            item.path: hashlib.sha256((candidate_root / item.path).read_bytes()).hexdigest()
+            for item in ordered_blobs
+        }
+        snap_rel = fx["deletable_empty_snap_rel"]
+        fault_state["snapshot_sha"] = hashlib.sha256(
+            (candidate_root / snap_rel).read_bytes()
+        ).hexdigest()
+        fault_state["jobs_digest"] = _table_digest(conn, "jobs")
+        fault_state["reservations_digest"] = _table_digest(
+            conn, "budget_reservations"
+        )
+        return replace(candidates, orphan_blobs=ordered_blobs)
+
+    monkeypatch.setattr(data_gc, "_compute_candidates", replace_later_candidate)
+    report, code = run_data_gc(
+        root,
+        older_than_days=90,
+        approve=True,
+        clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: available_bytes,
+    )
+
+    assert code == 2
+    assert report["code"] == "reference_unknown"
+    assert set(report["deleted"].values()) == {0}
+    assert report["wal_checkpoint"] is None
+    assert report["notes"] == []
+    for rel, expected_sha in fault_state["blob_paths"].items():
+        assert hashlib.sha256((root / rel).read_bytes()).hexdigest() == expected_sha
+    snapshot = root / fx["deletable_empty_snap_rel"]
+    assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == fault_state["snapshot_sha"]
+    with closing(sqlite3.connect((root / "events.db").as_uri() + "?mode=ro", uri=True)) as conn:
+        assert _table_digest(conn, "jobs") == fault_state["jobs_digest"]
+        assert _table_digest(conn, "budget_reservations") == fault_state[
+            "reservations_digest"
+        ]
+
+
+@pytest.fixture
+def _gc_effects_fixture(tmp_path: Path) -> dict[str, Any]:
+    fx = _build_rich_fixture(tmp_path)
+    fx["candidate_files"] = {
+        fx["orphan_artifact_rel"], fx["orphan_root_rel"], fx["deletable_empty_snap_rel"],
+    }
+    fx["file_baseline"] = {
+        rel: (fx["root"] / rel).read_bytes()
+        for rel in fx["candidate_files"] | fx["protected_files"]
+    }
+    fx["protected_table_baseline"] = _protected_tables_snapshot(fx["root"] / "events.db")
+    return fx
+
+
+def _remove_file_candidates_from_fixture(fx: dict[str, Any]) -> None:
+    for rel in fx["candidate_files"]:
+        (fx["root"] / rel).unlink()
+        del fx["file_baseline"][rel]
+    fx["candidate_files"].clear()
+
+
+@pytest.mark.parametrize("available_bytes", [0, 1 << 40], ids=["low", "normal"])
+@pytest.mark.parametrize("only_files", ["blobs", "snapshots"])
+def test_gc_requires_directory_sync_before_writes(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch, available_bytes: int, only_files: str,
+) -> None:
+    fx = _gc_effects_fixture
+    root = fx["root"]
+    snapshot_rel = fx["deletable_empty_snap_rel"]
+    for rel in fx["candidate_files"]:
+        if (rel == snapshot_rel) != (only_files == "snapshots"):
+            (root / rel).unlink()
+    before = _tree_snapshot(root)
+    # 只切换产品的平台策略，SQLite、路径及文件操作仍由当前 OS 执行。
+    monkeypatch.setattr(data_gc, "os", SimpleNamespace(name="nt"))
+    preview, preview_code = run_data_gc(root, clock=lambda: fx["now_ms"])
+    assert preview_code == 3, preview
+    candidates = preview["candidates"]
+    assert candidates["orphan_blobs_count"] == (2 if only_files == "blobs" else 0)
+    assert candidates["empty_snapshots_count"] == (1 if only_files == "snapshots" else 0)
+    assert candidates["jobs_count"] == 2
+    assert candidates["budget_reservations_count"] == 1
+
+    real_connect = data_gc._connect_locked_rw
+    writable_opens = []
+
+    def track_write_connection(db: Path) -> sqlite3.Connection:
+        writable_opens.append(db)
+        return real_connect(db)
+
+    monkeypatch.setattr(data_gc, "_connect_locked_rw", track_write_connection)
+    report, code = run_data_gc(
+        root, approve=True, clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: available_bytes,
+    )
+    assert code == 2, report
+    assert report["code"] == "incompatible"
+    assert set(report["deleted"].values()) == {0}
+    assert report["wal_checkpoint"] is None
+    assert writable_opens == []
+    assert _tree_snapshot(root) == before
+
+
+@pytest.mark.parametrize("headroom_ok", [False, True], ids=["deferred", "committed"])
+def test_gc_rows_only_without_directory_sync(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch, headroom_ok: bool,
+) -> None:
+    fx = _gc_effects_fixture
+    root = fx["root"]
+    _remove_file_candidates_from_fixture(fx)
+    before = _tree_snapshot(root)
+    monkeypatch.setattr(data_gc, "os", SimpleNamespace(name="nt"))
+    headroom = data_gc.MIN_DB_GC_HEADROOM_BYTES - int(not headroom_ok)
+
+    report, code = run_data_gc(
+        root, approve=True, clock=lambda: fx["now_ms"], disk_free_probe=lambda _path: headroom,
+    )
+    assert code == 0, report
+    assert report["candidates"]["orphan_blobs_count"] == 0
+    assert report["candidates"]["empty_snapshots_count"] == 0
+    assert report["candidates"]["jobs_count"] == 2
+    assert report["candidates"]["budget_reservations_count"] == 1
+    assert report["deleted"]["reclaimed_file_bytes"] == 0
+    assert report["db_rows_deferred_low_disk"] is not headroom_ok
+    if headroom_ok:
+        assert report["deleted"]["jobs_count"] == 2
+        assert report["deleted"]["budget_reservations_count"] == 1
+        assert report["wal_checkpoint"] == {"busy": 0, "log": 0, "checkpointed": 0}
+    else:
+        assert set(report["deleted"].values()) == {0}
+        assert report["wal_checkpoint"] is None
+        assert _tree_snapshot(root) == before
+
+    db = root / "events.db"
+    with closing(sqlite3.connect(db.as_uri() + "?mode=ro&immutable=1", uri=True)) as conn:
+        jobs = {row[0] for row in conn.execute("SELECT job_id FROM jobs")}
+        reservations = {
+            row[0] for row in conn.execute("SELECT reservation_id FROM budget_reservations")
+        }
+    assert jobs == fx["kept_job_ids"] | (set() if headroom_ok else fx["deletable_job_ids"])
+    pending_reservations = set() if headroom_ok else {fx["deletable_resv_id"]}
+    assert reservations == fx["kept_resv_ids"] | pending_reservations
+    assert _protected_tables_snapshot(db) == fx["protected_table_baseline"]
+
+
+def _assert_gc_failure_effects(
+    fx: dict[str, Any], report: dict[str, Any], code: int, *,
+    removed: set[str], db_committed: bool,
+) -> None:
+    root: Path = fx["root"]
+    for rel, content in fx["file_baseline"].items():
+        if rel in removed:
+            assert not (root / rel).exists()
+        else:
+            assert (root / rel).read_bytes() == content
+    db = root / "events.db"
+    with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as conn:
+        jobs = {row[0] for row in conn.execute("SELECT job_id FROM jobs")}
+        reservations = {
+            row[0] for row in conn.execute("SELECT reservation_id FROM budget_reservations")
+        }
+    assert _protected_tables_snapshot(db) == fx["protected_table_baseline"]
+    assert jobs == fx["kept_job_ids"] | (set() if db_committed else fx["deletable_job_ids"])
+    assert reservations == fx["kept_resv_ids"] | (
+        set() if db_committed else {fx["deletable_resv_id"]}
+    )
+
+    snapshots = removed & {fx["deletable_empty_snap_rel"]}
+    blobs = removed - snapshots
+    blob_bytes = sum(len(fx["file_baseline"][rel]) for rel in blobs)
+    snapshot_bytes = sum(len(fx["file_baseline"][rel]) for rel in snapshots)
+    assert code == 2 and report["ok"] is False, report
+    assert report["code"] == "gc_failed"
+    assert report["deleted"] == {
+        "orphan_blobs_count": len(blobs),
+        "orphan_blobs_bytes": blob_bytes,
+        "empty_snapshots_count": len(snapshots),
+        "empty_snapshots_bytes": snapshot_bytes,
+        "jobs_count": len(fx["deletable_job_ids"]) if db_committed else 0,
+        "budget_reservations_count": int(db_committed),
+        "reclaimed_file_bytes": blob_bytes + snapshot_bytes,
+    }
+    assert report["notes"]
+
+
+@requires_gc_file_deletion
+@pytest.mark.parametrize("available_bytes", [0, 1 << 40])
+def test_gc_effects_survive_later_unlink_error(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch, capsys, available_bytes: int,
+) -> None:
+    fx = _gc_effects_fixture
+    root: Path = fx["root"]
+    earlier = root / fx["orphan_artifact_rel"]
+    later = root / fx["orphan_root_rel"]
+    earlier_parent = earlier.parent.stat()
+    real_unlink = Path.unlink
+    real_fsync = os.fsync
+    operations: list[str] = []
+
+    def fail_later_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path == later:
+            operations.append("later unlink failed")
+            raise OSError(errno.EIO, "injected later unlink failure", str(path))
+        real_unlink(path, missing_ok=missing_ok)
+        if path == earlier:
+            operations.append("earlier unlinked")
+
+    def record_fsync(fd: int) -> None:
+        real_fsync(fd)
+        if os.path.samestat(os.fstat(fd), earlier_parent):
+            operations.append("earlier parent synced")
+
+    monkeypatch.setattr(Path, "unlink", fail_later_unlink)
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    report, code = run_data_gc(
+        root, approve=True, clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: available_bytes,
+    )
+    assert "injected later unlink failure" in report["error"]
+    assert str(root) not in report["error"]
+    _assert_gc_failure_effects(
+        fx, report, code, removed={fx["orphan_artifact_rel"]}, db_committed=bool(available_bytes),
+    )
+    assert operations == ["earlier unlinked", "earlier parent synced", "later unlink failed"]
+    assert report["wal_checkpoint"] is None
+    data_cli._print_report(report, as_json=False)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "已确认删除" in err
+    assert f"孤儿 blob：1 个（{len(fx['file_baseline'][fx['orphan_artifact_rel']])} 字节）" in err
+    assert f"jobs 行：{len(fx['deletable_job_ids']) if available_bytes else 0} 行" in err
+
+
+@requires_gc_file_deletion
+@pytest.mark.parametrize("sync_root", [False, True], ids=["candidate-parent", "data-root"])
+@pytest.mark.parametrize("available_bytes", [0, 1 << 40], ids=["unlink-first", "db-first"])
+def test_gc_effects_survive_directory_fsync_error(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch, sync_root: bool, available_bytes: int,
+) -> None:
+    fx = _gc_effects_fixture
+    root: Path = fx["root"]
+    directory = root if sync_root else (root / fx["orphan_artifact_rel"]).parent
+    directory_stat = directory.stat()
+    real_fsync = os.fsync
+    calls = []
+    removed = fx["candidate_files"] if sync_root else {fx["orphan_artifact_rel"]}
+
+    def fail_directory_fsync(fd: int) -> None:
+        if os.path.samestat(os.fstat(fd), directory_stat):
+            calls.append({rel for rel in fx["candidate_files"] if not (root / rel).exists()})
+            raise OSError(errno.EIO, "injected directory fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    report, code = run_data_gc(
+        root, approve=True, clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: available_bytes,
+    )
+    assert calls == [removed]
+    _assert_gc_failure_effects(
+        fx, report, code, removed=removed, db_committed=bool(available_bytes),
+    )
+    assert "injected directory fsync failure" in report["error"]
+    expected_checkpoint = (
+        {"busy": 0, "log": 0, "checkpointed": 0} if sync_root and available_bytes else None
+    )
+    assert report["wal_checkpoint"] == expected_checkpoint
+
+
+@pytest.mark.parametrize("low_disk", [False, True], ids=["normal", "headroom-recovers"])
+def test_gc_effects_with_db_delete_rollback(_gc_effects_fixture, low_disk: bool) -> None:
+    fx = _gc_effects_fixture
+    if os.name != "posix":
+        _remove_file_candidates_from_fixture(fx)
+    root: Path = fx["root"]
+    with closing(sqlite3.connect(root / "events.db")) as conn:
+        # Real SQLite abort after the preceding jobs DELETE has changed the transaction.
+        conn.execute("""
+            CREATE TRIGGER gc_test_abort_reservation_delete BEFORE DELETE ON budget_reservations
+            WHEN NOT EXISTS (SELECT 1 FROM jobs WHERE job_id = 'job_cancelled_old')
+            BEGIN SELECT RAISE(ABORT, 'injected reservation delete failure'); END
+        """)
+    space_checks = iter((0 if low_disk else 1 << 40, 1 << 40))
+    report, code = run_data_gc(
+        root, approve=True, clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: next(space_checks),
+    )
+    assert "injected reservation delete failure" in report["error"]
+    _assert_gc_failure_effects(
+        fx, report, code, removed=fx["candidate_files"] if low_disk else set(), db_committed=False,
+    )
+    assert report["wal_checkpoint"] is None
+    assert report["db_rows_deferred_low_disk"] is False
+
+
+def test_gc_effects_survive_sqlite_checkpoint_error(
+    _gc_effects_fixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fx = _gc_effects_fixture
+    if os.name != "posix":
+        _remove_file_candidates_from_fixture(fx)
+    connect_rw = data_gc._connect_locked_rw
+
+    def connect_with_checkpoint_failure(db: Path) -> sqlite3.Connection:
+        conn = connect_rw(db)
+        conn.set_authorizer(
+            lambda action, arg, *rest: sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_PRAGMA and arg == "wal_checkpoint" else sqlite3.SQLITE_OK
+        )
+        return conn
+
+    monkeypatch.setattr(data_gc, "_connect_locked_rw", connect_with_checkpoint_failure)
+    report, code = run_data_gc(
+        fx["root"], approve=True, clock=lambda: fx["now_ms"], disk_free_probe=lambda _path: 1 << 40,
+    )
+    assert "not authorized" in report["error"]
+    _assert_gc_failure_effects(fx, report, code, removed=fx["candidate_files"], db_committed=True)
+    assert report["wal_checkpoint"] is None
+
+
 def test_lock_internal_recollect_prevents_preview_to_approve_toctou(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -967,22 +1410,29 @@ def test_lock_internal_recollect_prevents_preview_to_approve_toctou(
         st = build_stack(log, data_root=root)
         st.contents.record(orphan_sha, orphan_bytes, task_id="t_late_bind")
 
-    calls: list[int] = []
+    calls: list[bool] = []
     real_collect = collect_references
 
-    def tracked_collect(target_root: Path):
-        calls.append(1)
-        return real_collect(target_root)
+    def tracked_collect(target_root: Path, *, require_static_db: bool = False):
+        calls.append(require_static_db)
+        index = real_collect(target_root, require_static_db=require_static_db)
+        assert promoted_rel in index.protected_blobs
+        return index
 
     monkeypatch.setattr("tianshu.data_gc.collect_references", tracked_collect)
     approved, a_code = run_data_gc(
-        root, older_than_days=90, approve=True, clock=lambda: fx["now_ms"]
+        root, older_than_days=90, approve=True, clock=lambda: fx["now_ms"],
+        disk_free_probe=lambda _path: 1 << 40,
     )
-    assert a_code == 0
-    assert len(calls) == 1
+    assert calls == [os.name != "posix"]
     # 锁内重算后 promoted_rel 已进入 protected_blobs，绝不能按旧预演清单删除！
     assert (root / promoted_rel).read_bytes() == orphan_bytes
-    assert approved["deleted"]["orphan_blobs_count"] == 1  # 只删了另一个真正的根孤儿
+    if os.name == "posix":
+        assert a_code == 0
+        assert approved["deleted"]["orphan_blobs_count"] == 1
+    else:
+        assert a_code == 2 and approved["code"] == "incompatible"
+        assert set(approved["deleted"].values()) == {0}
 
 
 def test_cli_preconditions_desktop_bridge_held_and_redaction(
@@ -1106,6 +1556,40 @@ def _spawn_barrier_child(code: str, *args: object):
             proc.communicate(timeout=10)
 
 
+@requires_gc_file_deletion
+def test_gc_effects_with_real_busy_checkpoint(_gc_effects_fixture) -> None:
+    fx = _gc_effects_fixture
+    db = fx["root"] / "events.db"
+    # An external read-only SQLite transaction can pin WAL frames without being an EventLog writer.
+    reader = """
+import json, sqlite3, sys
+from pathlib import Path
+db = Path(sys.argv[1])
+conn = sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, isolation_level=None)
+conn.execute('BEGIN')
+assert conn.execute("SELECT 1 FROM jobs WHERE job_id = 'job_cancelled_old'").fetchone() == (1,)
+print(json.dumps({'ready': True}), flush=True)
+assert sys.stdin.readline().strip() == 'release'
+assert conn.execute("SELECT 1 FROM jobs WHERE job_id = 'job_cancelled_old'").fetchone() == (1,)
+conn.close()
+"""
+    with _spawn_barrier_child(reader, db) as (proc, ready, _err_file):
+        assert ready == {"ready": True}
+        report, code = run_data_gc(
+            fx["root"], approve=True, clock=lambda: fx["now_ms"],
+            disk_free_probe=lambda _path: 1 << 40,
+        )
+        # The SQLite return row is real, not an injected busy code.
+        checkpoint = report["wal_checkpoint"]
+        assert checkpoint["busy"] == 1
+        assert checkpoint["log"] > checkpoint["checkpointed"] >= 0
+        assert proc.stdin is not None
+        proc.stdin.write("release\n")
+        proc.stdin.flush()
+        assert proc.wait(timeout=10) == 0
+    _assert_gc_failure_effects(fx, report, code, removed=fx["candidate_files"], db_committed=True)
+
+
 def test_true_subprocess_holding_eventlog_blocks_gc_approve_without_disrupting_writer(
     tmp_path: Path,
 ) -> None:
@@ -1191,14 +1675,23 @@ def test_low_disk_below_2gib_and_zero_bytes_still_reclaims_space(tmp_path: Path)
         clock=lambda: fx["now_ms"],
         disk_free_probe=lambda _p: 0,
     )
-    assert zero_code == 0, zero_rep
-    assert zero_rep["ok"] is True
-    assert zero_rep["deleted"]["orphan_blobs_count"] == 2
-    assert zero_rep["deleted"]["empty_snapshots_count"] == 1
-    assert zero_rep["db_rows_deferred_low_disk"] is True
-    assert zero_rep["deleted"]["jobs_count"] == 0
-    assert not (root / fx["orphan_artifact_rel"]).exists()
-    assert not (root / fx["orphan_root_rel"]).exists()
+    if os.name == "posix":
+        assert zero_code == 0, zero_rep
+        assert zero_rep["ok"] is True
+        assert zero_rep["deleted"]["orphan_blobs_count"] == 2
+        assert zero_rep["deleted"]["empty_snapshots_count"] == 1
+        assert zero_rep["db_rows_deferred_low_disk"] is True
+        assert zero_rep["deleted"]["jobs_count"] == 0
+        assert not (root / fx["orphan_artifact_rel"]).exists()
+        assert not (root / fx["orphan_root_rel"]).exists()
+    else:
+        assert zero_code == 2 and zero_rep["code"] == "incompatible"
+        assert set(zero_rep["deleted"].values()) == {0}
+        # Remove fixture candidates to exercise the native SQLite-only CLI below.
+        for rel in (
+            fx["orphan_artifact_rel"], fx["orphan_root_rel"], fx["deletable_empty_snap_rel"],
+        ):
+            (root / rel).unlink()
 
     # 阶段 2：回收文件后空间回升至 100 MiB（仍 < 2 GiB），再次执行完成剩余 DB 行清理与 WAL 截断
     sub_2gib_code = """
@@ -1425,9 +1918,14 @@ def test_run_command_stdout_and_stderr_spill_blobs_protected_and_verified(
         approve=True,
         clock=lambda: future_ms,
     )
-    assert ok_code == 0, ok_rep
-    assert ok_rep["deleted"]["orphan_blobs_count"] == 1
-    assert not orphan_path.exists()
+    if os.name == "posix":
+        assert ok_code == 0, ok_rep
+        assert ok_rep["deleted"]["orphan_blobs_count"] == 1
+        assert not orphan_path.exists()
+    else:
+        assert ok_code == 2 and ok_rep["code"] == "incompatible"
+        assert set(ok_rep["deleted"].values()) == {0}
+        assert orphan_path.read_bytes() == b"true-unreferenced-orphan"
     assert stdout_blob.read_bytes() == b"O" * 2048
     assert stderr_blob.read_bytes() == b"E" * 2048
     assert root_stderr_blob.read_bytes() == root_err_bytes
@@ -1805,13 +2303,18 @@ def test_restore_registry_dynamic_rebind_cross_batch_released_and_control_marker
     assert missing_origin_rep["code"] == "restore_held"
     assert orphan_a.is_file()
 
-    # 7. 正控闭环：恢复合法 .restore-origin.json 后，Root A 的 --approve 成功退 0 并回收孤儿文件
+    # 7. 合法见证解除隔离；实际文件删除仍取决于平台能否同步目录。
     (root_a / ".restore-origin.json").write_bytes(origin_a.to_bytes())
     rep_a_exec, code_a_exec = run_data_gc(root_a, older_than_days=1, approve=True)
-    assert code_a_exec == 0, rep_a_exec
-    assert rep_a_exec["ok"] is True
-    assert rep_a_exec["deleted"]["orphan_blobs_count"] == 1
-    assert not orphan_a.exists()
+    if os.name == "posix":
+        assert code_a_exec == 0, rep_a_exec
+        assert rep_a_exec["ok"] is True
+        assert rep_a_exec["deleted"]["orphan_blobs_count"] == 1
+        assert not orphan_a.exists()
+    else:
+        assert code_a_exec == 2 and rep_a_exec["code"] == "incompatible"
+        assert set(rep_a_exec["deleted"].values()) == {0}
+        assert orphan_a.read_bytes() == b"orphan-in-root-a"
     assert counters["revalidate"] >= 1
 
 
@@ -1876,4 +2379,3 @@ raise SystemExit(
     assert db_path.read_bytes() == db_bytes_before
     for rel in fx["protected_files"]:
         assert (root / rel).is_file(), f"受保护材料误删：{rel}"
-

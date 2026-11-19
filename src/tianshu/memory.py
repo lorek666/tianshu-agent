@@ -146,6 +146,7 @@ class MemoryProjection(_MemoryApplyMixin):
         *,
         log: EventLog,
         blob_dir: Path | None = None,
+        data_root: Path | None = None,
         clock: Callable[[], int] = _now,
         index: Any | None = None,
     ) -> None:
@@ -158,6 +159,14 @@ class MemoryProjection(_MemoryApplyMixin):
             raise MemoryStoreError("clock 必须是可调用对象")
         self._conn = conn
         self._log = log
+        from .restore_access import (
+            default_material_paths,
+            ensure_path_not_held,
+            preflight_legacy_material_layout,
+        )
+
+        root = log.data_root if data_root is None else data_root
+        preflight_legacy_material_layout(log.db_path, root)
         # 正文**不**放进事件 payload 的 blob 目录（`log.blob_dir`），哪怕那样
         # 只要一个目录更省事。两者的保留策略不同：
         #
@@ -168,19 +177,13 @@ class MemoryProjection(_MemoryApplyMixin):
         # 记忆正文与某个事件 payload 恰好是同一段字节，它们就是**同一个文件**，
         # 将来按策略删记忆正文会把一条必须留存的日志材料一起删掉。
         #
-        # 所以正文固定落在 DB 旁的 `memory_blobs/`，与事件 payload 目录无关。
-        # 显式传 `blob_dir` 仍然优先（测试与将来的迁移入口需要）。
-        if blob_dir is not None:
-            self._blob_dir = Path(blob_dir)
-        elif log.db_path.name == ":memory:":
-            # 纯内存库没有"DB 旁边"可言：正文无处可落，如实退化成不可用，
-            # 由 `content_state` 标注，而不是编一个当前目录下的路径。
-            self._blob_dir = None
-        else:
-            self._blob_dir = log.db_path.parent / "memory_blobs"
+        # 正文目录使用声明布局的默认记忆路径；显式目录仍优先。
+        self._blob_dir = (
+            Path(blob_dir)
+            if blob_dir is not None
+            else default_material_paths(log.db_path, root)[2]
+        )
         if self._blob_dir is not None:
-            from .restore_access import ensure_path_not_held
-
             ensure_path_not_held(self._blob_dir)
         self._clock = clock
         # 向量索引是**可选的可重建派生数据**（`memory_index.MemoryIndex`），

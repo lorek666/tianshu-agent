@@ -43,6 +43,7 @@ from tianshu.permissions import (
 from tianshu.receipt import verify_receipts
 from tianshu.recovery import assess_run, recover_run
 from tianshu.resources import MemoryScope
+from tianshu.restore_access import default_material_paths
 from tianshu.rules import REJECTION_RULE_IDS, RULE_IDS
 from tianshu.snapshot import SnapshotStore
 from tianshu.tasks import RUN_RUNNING, ExecutionPermit, TaskStore
@@ -110,17 +111,19 @@ def env(tmp_path: Path):
     data = tmp_path / "authority"
     data.mkdir()
 
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "event_blobs")
+    db = tmp_path / "events.db"
+    snapshot_root, event_blobs, memory_blobs = default_material_paths(db, data)
+    log = EventLog(db, blob_dir=event_blobs, data_root=data)
     memory = MemoryProjection(
         log.conn,
         log=log,
-        blob_dir=tmp_path / "memory_blobs",
+        blob_dir=memory_blobs,
         clock=lambda: NOW,
     )
     memory.ensure_schema()
     leases = LeaseStore(log)
     claims = JobStore(log)
-    snapshots = SnapshotStore(tmp_path / "artifacts")
+    snapshots = SnapshotStore(snapshot_root)
     tasks = TaskStore(log, leases=leases, claims=claims, data_root=data,
         disk_admission=effects_admission(log, snapshots=snapshots,
             memory=memory, contents=None, data_root=data))
@@ -2334,6 +2337,19 @@ def _inject_pending_erase(env, run, memory_id: str, call_id: str = "inject-erase
         actor_kind="core",
         idem_key=call_id,
     )
+
+
+def test_recover_run_inherits_eventlog_memory_layout(env):
+    _, run, _, output = _proposed(env, content="待擦正文仍在声明的材料目录")
+    blob = env.memory.blob_path(output["content_ref"])
+    assert blob is not None and blob.is_file()
+    _inject_pending_erase(env, run, output["memory_id"])
+
+    report = recover_run(env.log, run.run_id, env.ws_a, env.snapshots, leases=env.leases)
+
+    assert "inject-erase" in report.memory_not_applied
+    assert "inject-erase" not in report.memory_unresolved
+    assert blob.is_file()
 
 
 def test_recover_run_honors_blob_dir_for_a_pending_erasure(env):

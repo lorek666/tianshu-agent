@@ -10,13 +10,15 @@ from __future__ import annotations
 import base64
 import os
 import sqlite3
+import stat
 import threading
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .data_state import is_standard_db_basename
 from .errors import TianshuError
 from .maintenance import (
     DatabaseAccess,
@@ -26,10 +28,13 @@ from .maintenance import (
 )
 from .pathkeys import is_ancestor_or_self, overlap_key
 from .platform_identity import (
+    ManagedMainHandle,
     NativeEntityError,
     NativeEntityHandle,
     observe_entity,
+    observe_entity_with_links,
     open_entity,
+    open_managed_main,
 )
 from .restore_contract import (
     EntityIdentityV1,
@@ -226,17 +231,13 @@ def _verify_released_batch_live_entities(
 
     db_file = resolved_root / "events.db"
     try:
-        db_handle = open_entity(db_file, "file")
+        actual_db_id, link_count = observe_entity_with_links(db_file, "file")
     except NativeEntityError as exc:
         raise RestoreRegistryCorrupt(
             f"已解除恢复根的主库 events.db 缺失或被替换：{db_file}"
         ) from exc
-    try:
-        if db_handle.link_count != 1:
-            raise RestoreRegistryCorrupt(f"已解除主库必须是单硬链接普通文件：{db_file}")
-        actual_db_id = db_handle.identity
-    finally:
-        db_handle.close()
+    if link_count != 1:
+        raise RestoreRegistryCorrupt(f"已解除主库必须是单硬链接普通文件：{db_file}")
 
     if type(tail.payload) is not ReleasedV1:
         sealed_ev = next((e for e in batch_events if e.kind == "sealed_hold"), None)
@@ -625,25 +626,34 @@ class RestoreDatabaseAccess:
     identity: EntityIdentityV1 | None
     namespace: DatabaseAccess
     entity: DatabaseAccess | None
-    database_handle: NativeEntityHandle | None
+    database_handle: ManagedMainHandle | NativeEntityHandle | None
     directory_handles: tuple[NativeEntityHandle, ...]
     registry_observation: RegistryObservation
     has_released_proof: bool = False
-    _closed: bool = False
+    _closed: bool = field(default=False, init=False)
+    _closing: bool = field(default=False, init=False)
+    _borrows: int = field(default=0, init=False)
+    _lifetime: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     @property
     def active(self) -> bool:
-        return not self._closed
+        with self._lifetime:
+            return not self._closed
 
     def __enter__(self) -> RestoreDatabaseAccess:
-        if self._closed:
-            raise RestoreAccessError("access已经关闭")
+        with self._lifetime:
+            if self._closing:
+                raise RestoreAccessError("access已经关闭")
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
     def verify(self) -> None:
+        with self._lifetime:
+            self._verify_locked()
+
+    def _verify_locked(self) -> None:
         if self._closed:
             raise RestoreAccessError("access已经关闭")
         if self.database_handle is not None:
@@ -651,7 +661,37 @@ class RestoreDatabaseAccess:
         for handle in self.directory_handles:
             handle.verify_path()
 
+    def borrow_initialized(self) -> _MaterialWriteLease:
+        with self._lifetime:
+            if self._closing:
+                raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{self.path}")
+            with _ACTIVE_EVENTLOG_LOCK:
+                registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(self)) is self
+            if not registered:
+                raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{self.path}")
+            try:
+                if self.path.stat().st_size <= 0:
+                    raise RestoreAccessError(f"所属 EventLog 主库为空/未初始化：{self.path}")
+                self._verify_locked()
+            except (NativeEntityError, OSError) as exc:
+                raise RestoreAccessError(f"所属 EventLog 连续准入核验失败：{self.path}") from exc
+            self._borrows += 1
+        return _MaterialWriteLease(self, borrowed=True)
+
+    def _release_borrow(self) -> None:
+        with self._lifetime:
+            self._borrows -= 1
+            if self._closing and not self._borrows:
+                self._close_locked()
+
     def close(self) -> None:
+        with self._lifetime:
+            self._closing = True
+            unregister_admitted_eventlog(self)
+            if not self._borrows:
+                self._close_locked()
+
+    def _close_locked(self) -> None:
         if self._closed:
             return
         if self.database_handle is not None:
@@ -662,7 +702,6 @@ class RestoreDatabaseAccess:
             self.entity.close()
         self.namespace.close()
         self._closed = True
-        unregister_admitted_eventlog(self)
 
 
 def acquire_restore_database_access(
@@ -671,6 +710,7 @@ def acquire_restore_database_access(
     exclusive: bool = False,
     prewrite_guard: Callable[[], None] | None = None,
     registry: RestoreRegistry | None = None,
+    allow_create: bool = True,
 ) -> RestoreDatabaseAccess:
     """固定普通连接所需的全部 access；所有锁均非阻塞。"""
 
@@ -718,28 +758,26 @@ def acquire_restore_database_access(
         ancestor_identity = ancestor.identity
         ancestor.close()
 
-        if not target.exists() and not target.is_symlink():
+        missing = not target.exists() and not target.is_symlink()
+        if missing:
+            if not allow_create:
+                raise RestoreAccessError(f"标准数据根缺少已初始化的非空 events.db：{target}")
             if prewrite_guard is not None:
                 prewrite_guard()
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                descriptor = os.open(
-                    target,
-                    os.O_RDWR
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_BINARY", 0),
-                    0o600,
-                )
-            except FileExistsError:
-                # 同一 canonical namespace 的另一个普通写者赢得了 O_EXCL；继续
-                # 打开赢家的真实实体，而不是创建第二份身份。
-                pass
-            else:
-                os.close(descriptor)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if os.name != "posix":
+                try:
+                    descriptor = os.open(
+                        target,
+                        os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                        0o600,
+                    )
+                except FileExistsError:
+                    pass  # Another opener won O_EXCL; open its actual entity.
+                else:
+                    os.close(descriptor)
 
-        database_handle = open_entity(target, "file")
+        database_handle = open_managed_main(target, create=missing)
         if database_handle.link_count != 1:
             raise RestoreAccessError("受管数据库必须是单硬链接普通文件")
         entity = acquire_entity_access(database_handle.identity, exclusive=exclusive)
@@ -826,6 +864,239 @@ _ACTIVE_EVENTLOG_ACCESSES: weakref.WeakValueDictionary[int, RestoreDatabaseAcces
 )
 
 
+def _material_directory_stat_identity(
+    info: os.stat_result,
+) -> tuple[int, int] | None:
+    device = getattr(info, "st_dev", None)
+    inode = getattr(info, "st_ino", None)
+    if not isinstance(device, int) or not isinstance(inode, int) or inode == 0:
+        return None
+    return device, inode
+
+
+def _material_directory_state(
+    info: os.stat_result,
+) -> tuple[tuple[int, int], int | None, int | None, int | None] | None:
+    identity = _material_directory_stat_identity(info)
+    if identity is None:
+        return None
+    return (
+        identity,
+        getattr(info, "st_mtime_ns", None),
+        getattr(info, "st_ctime_ns", None),
+        getattr(info, "st_size", None),
+    )
+
+
+def _material_tree_has_entries(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> bool:
+    """Return true for material, links, unknown nodes, or any uninspectable path.
+
+    Directory stat identities are race detectors only, not authorization identities.
+    An initially absent candidate is empty only if a second observation also finds it
+    absent; a directory observed by its parent must remain the same ordinary directory
+    with unchanged metadata through descent and the end of its scan.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        if expected_identity is not None:
+            return True
+        # An absent legacy root is normally harmless, but it may be created between
+        # the first observation and the scan. Re-observe before treating it as empty.
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+    except OSError:
+        return True
+
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    try:
+        if path.is_junction():
+            return True
+    except (OSError, RuntimeError):
+        return True
+    if not stat.S_ISDIR(info.st_mode):
+        return True
+    identity = _material_directory_stat_identity(info)
+    if identity is None or (
+        expected_identity is not None and identity != expected_identity
+    ):
+        return True
+    directory_state = _material_directory_state(info)
+    if directory_state is None:
+        return True
+
+    try:
+        observed_children: dict[
+            str, tuple[tuple[int, int], int | None, int | None, int | None]
+        ] = {}
+        with os.scandir(path) as entries:
+            for entry in entries:
+                child = Path(entry.path)
+                try:
+                    # Windows DirEntry.stat() can omit the directory identity fields.
+                    child_info = os.lstat(child)
+                except OSError:
+                    return True
+                if stat.S_ISLNK(child_info.st_mode):
+                    return True
+                try:
+                    if child.is_junction():
+                        return True
+                except (OSError, RuntimeError):
+                    return True
+                if not stat.S_ISDIR(child_info.st_mode):
+                    return True
+                child_state = _material_directory_state(child_info)
+                if child_state is None:
+                    return True
+                observed_children[entry.name] = child_state
+                if _material_tree_has_entries(child, expected_identity=child_state[0]):
+                    return True
+
+        try:
+            final_info = os.lstat(path)
+        except OSError:
+            return True
+        final_identity = _material_directory_stat_identity(final_info)
+        final_state = _material_directory_state(final_info)
+        if (
+            stat.S_ISLNK(final_info.st_mode)
+            or not stat.S_ISDIR(final_info.st_mode)
+            or final_identity != identity
+            or final_state != directory_state
+        ):
+            return True
+        try:
+            if path.is_junction():
+                return True
+        except (OSError, RuntimeError):
+            return True
+
+        # A direct child can appear after scandir has reached EOF. Re-list once and
+        # compare directory identities so that such a late mutation is not mistaken
+        # for an empty legacy material tree.
+        final_children: dict[
+            str, tuple[tuple[int, int], int | None, int | None, int | None]
+        ] = {}
+        with os.scandir(path) as entries:
+            for entry in entries:
+                child = Path(entry.path)
+                try:
+                    # Windows DirEntry.stat() can omit the directory identity fields.
+                    child_info = os.lstat(child)
+                except OSError:
+                    return True
+                if stat.S_ISLNK(child_info.st_mode) or not stat.S_ISDIR(
+                    child_info.st_mode
+                ):
+                    return True
+                try:
+                    if child.is_junction():
+                        return True
+                except (OSError, RuntimeError):
+                    return True
+                child_state = _material_directory_state(child_info)
+                if child_state is None:
+                    return True
+                final_children[entry.name] = child_state
+        return final_children != observed_children
+    except (OSError, RuntimeError, RecursionError):
+        return True
+
+
+def _legacy_artifacts_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    identity = _material_directory_stat_identity(info)
+    if not stat.S_ISDIR(info.st_mode) or path.is_junction() or identity is None:
+        raise OSError(f"旧版材料父目录不是可核对的普通目录：{path}")
+    return identity
+
+
+def preflight_legacy_material_layout(
+    db_path: Path | str, data_root: Path | str | None = None
+) -> None:
+    """Refuse layouts whose historical material paths would no longer be read.
+
+    Empty directory skeletons are harmless. This never moves, copies, or cleans up
+    material; unreadable paths and links fail closed because emptiness is unknown.
+    """
+    if str(db_path) == ":memory:":
+        return
+    db = _absolute_target(Path(db_path))
+    try:
+        # Accept aliases of the data root itself, but do not resolve away a link
+        # at a material directory whose interpretation changed.
+        root = db.parent if data_root is None else Path(data_root).resolve(strict=False)
+        current_snapshots, current_event_blobs, current_memory = default_material_paths(
+            db, root
+        )
+    except (OSError, RuntimeError) as exc:
+        raise RestoreAccessError(f"无法判定旧版材料布局路径，拒绝打开 {db}：{exc}") from exc
+    old_artifacts = root / "artifacts"
+    old_memory = db.parent / "memory_blobs"
+
+    current_content_blobs = (
+        current_snapshots / "blobs"
+        if overlap_key(current_snapshots.name) == overlap_key("artifacts")
+        else current_snapshots / "preimage_blobs"
+    )
+    legacy_candidates = [
+        (old_artifacts / "snapshots", current_snapshots / "snapshots"),
+        (old_artifacts / "undo", current_snapshots / "undo"),
+        (old_artifacts / "blobs", current_content_blobs),
+        (old_memory, current_memory),
+    ]
+    # Old separate-root events.db used its DB-parent blobs/; custom names did not.
+    if (
+        is_standard_db_basename(db.name)
+        and overlap_key(str(root)) != overlap_key(str(db.parent))
+    ):
+        legacy_candidates.append((db.parent / "blobs", current_event_blobs))
+    changed = [
+        old for old, current in legacy_candidates
+        if current is not None and overlap_key(str(old)) != overlap_key(str(current))
+    ]
+
+    # Missing children are not evidence of absence under a broken or replaced
+    # parent. Check that parent without enumerating unrelated artifacts entries.
+    artifact_children = [path for path in changed if path.parent == old_artifacts]
+    populated = [
+        path for path in changed
+        if path.parent != old_artifacts and _material_tree_has_entries(path)
+    ]
+    if artifact_children:
+        try:
+            identity = _legacy_artifacts_identity(old_artifacts)
+            if identity is not None:
+                populated.extend(
+                    path for path in artifact_children if _material_tree_has_entries(path)
+                )
+            if _legacy_artifacts_identity(old_artifacts) != identity:
+                populated.append(old_artifacts)
+        except (OSError, RuntimeError):
+            populated.append(old_artifacts)
+    if populated:
+        locations = ", ".join(str(path) for path in populated)
+        raise RestoreAccessError(
+            "检测到旧版材料布局仍有材料或无法确认材料是否存在："
+            f"{locations}。请保留原布局，先做离线备份，再用旧兼容版复核并完成未决事务；"
+            "本版本不会迁移或移动这些材料。"
+        )
+
+
 def default_material_paths(
     db_path: Path | str,
     data_root: Path | str | None = None,
@@ -844,7 +1115,7 @@ def default_material_paths(
     db = Path(db_path)
     db_parent = db.parent
     root = Path(data_root) if data_root is not None else db_parent
-    is_std_db = overlap_key(db.name) == overlap_key("events.db")
+    is_std_db = is_standard_db_basename(db.name)
     same_root = overlap_key(str(root.resolve(strict=False))) == overlap_key(
         str(db_parent.resolve(strict=False))
     )
@@ -853,18 +1124,20 @@ def default_material_paths(
 
     db_base = db_parent / f".{db.name}.materials"
     root_base = root / f".{db.name}.materials"
-    ev_blobs = db_parent / "blobs" if is_std_db else db_base / "event_blobs"
-    mem_blobs = db_parent / "memory_blobs" if is_std_db else db_base / "mem_blobs"
+    ev_blobs = db_base / "event_blobs"
+    mem_blobs = db_base / "mem_blobs"
     snap_root = root_base / "snapshots_root"
     return snap_root, ev_blobs, mem_blobs
 
 
 def register_admitted_eventlog(db_path: Path, access: RestoreDatabaseAccess) -> None:
     """在 EventLog 完成只读准入与 schema 初始化后登记活跃 main 连续 access。"""
-    if str(db_path) == ":memory:" or not access.active:
+    if str(db_path) == ":memory:":
         return
-    with _ACTIVE_EVENTLOG_LOCK:
-        _ACTIVE_EVENTLOG_ACCESSES[id(access)] = access
+    with access._lifetime:
+        if not access._closing:
+            with _ACTIVE_EVENTLOG_LOCK:
+                _ACTIVE_EVENTLOG_ACCESSES[id(access)] = access
 
 
 def unregister_admitted_eventlog(access: RestoreDatabaseAccess) -> None:
@@ -874,66 +1147,67 @@ def unregister_admitted_eventlog(access: RestoreDatabaseAccess) -> None:
 
 def _standard_material_root_and_domain(target: Path) -> tuple[Path, str] | None:
     for entry in (target, *target.parents):
-        name = entry.name
-        if name == "blobs" and entry.parent.name == "artifacts":
+        name_key = overlap_key(entry.name)
+        parent_name_key = overlap_key(entry.parent.name)
+        if name_key == overlap_key("blobs") and parent_name_key == overlap_key("artifacts"):
             continue
-        if name in ("memory_blobs", "artifacts", "blobs"):
+        domains = {
+            overlap_key("memory_blobs"): "memory_blobs",
+            overlap_key("artifacts"): "artifacts",
+            overlap_key("blobs"): "blobs",
+        }
+        domain = domains.get(name_key)
+        if domain is not None:
             if entry.parent == entry:
                 return None
-            return entry.parent, name
+            return entry.parent, domain
     return None
 
 
-def _active_initialized_accesses_in_root(root: Path) -> list[RestoreDatabaseAccess]:
-    std_events_key = overlap_key(str((root / "events.db").resolve(strict=False)))
+def _borrow_initialized_access_in_root(
+    std_events_key: str,
+) -> _MaterialWriteLease | None:
     with _ACTIVE_EVENTLOG_LOCK:
         snapshot = list(_ACTIVE_EVENTLOG_ACCESSES.values())
-    matched: list[RestoreDatabaseAccess] = []
-    for acc in snapshot:
-        if not acc.active or str(acc.path) == ":memory:":
-            continue
+    for access in snapshot:
         try:
-            resolved_db = acc.path.resolve(strict=True)
-            if overlap_key(str(resolved_db)) != std_events_key:
-                continue
-            if resolved_db.stat().st_size <= 0:
-                continue
-            acc.verify()
-        except (RestoreAccessError, NativeEntityError, OSError):
+            if overlap_key(str(access.path.resolve(strict=True))) == std_events_key:
+                return access.borrow_initialized()
+        except (RestoreAccessError, OSError):
             continue
-        matched.append(acc)
-    return matched
+    return None
+
+
+def _owner_material_lease(owner_log: Any) -> _MaterialWriteLease:
+    db_path = getattr(owner_log, "db_path", None)
+    if db_path is None or str(db_path) == ":memory:":
+        return _NOOP_MATERIAL_LEASE
+    ensure_path_not_held(db_path)
+    conn = getattr(owner_log, "_conn", None)
+    access = getattr(conn, "database_access", None)
+    if not isinstance(access, RestoreDatabaseAccess):
+        raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{db_path}")
+    if overlap_key(str(_absolute_target(Path(db_path)))) != overlap_key(str(access.path)):
+        raise RestoreAccessError(f"所属 EventLog 与持续准入的主库路径不符：{db_path}")
+    return access.borrow_initialized()
 
 
 def ensure_log_write_allowed(owner_log: Any) -> None:
-    """验证所属 EventLog 未落入隔离范围且仍持有本进程已初始化连续准入 access。"""
-    db_path = getattr(owner_log, "db_path", None)
-    if db_path is None or str(db_path) == ":memory:":
-        return
-    ensure_path_not_held(db_path)
-    conn = getattr(owner_log, "_conn", None)
-    access = getattr(conn, "database_access", None) if conn is not None else None
-    if not isinstance(access, RestoreDatabaseAccess) or not access.active:
-        raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{db_path}")
-    with _ACTIVE_EVENTLOG_LOCK:
-        registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(access)) is access
-    if not registered:
-        raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{db_path}")
-    try:
-        if Path(db_path).resolve(strict=True).stat().st_size <= 0:
-            raise RestoreAccessError(f"所属 EventLog 主库为空/未初始化：{db_path}")
-        access.verify()
-    except (NativeEntityError, OSError) as exc:
-        raise RestoreAccessError(f"所属 EventLog 连续准入核验失败：{db_path}") from exc
+    """Check the actual owner's initialized access for non-material callers."""
+    with _owner_material_lease(owner_log):
+        pass
 
 
 class _MaterialWriteLease:
-    """独立材料写调用期间持有的连续准入租约；已有活跃 EventLog 时为零开销空租约。"""
+    """Pin an admitted owner or hold independently verified main access."""
 
-    __slots__ = ("_access",)
+    __slots__ = ("_access", "_borrowed")
 
-    def __init__(self, access: RestoreDatabaseAccess | None = None) -> None:
+    def __init__(
+        self, access: RestoreDatabaseAccess | None = None, *, borrowed: bool = False
+    ) -> None:
         self._access = access
+        self._borrowed = borrowed
 
     @property
     def active(self) -> bool:
@@ -948,7 +1222,10 @@ class _MaterialWriteLease:
     def close(self) -> None:
         acc, self._access = self._access, None
         if acc is not None:
-            acc.close()
+            if self._borrowed:
+                acc._release_borrow()
+            else:
+                acc.close()
 
 
 _NOOP_MATERIAL_LEASE = _MaterialWriteLease(None)
@@ -974,10 +1251,14 @@ def _acquire_verified_existing_main_access(std_events_db: Path) -> RestoreDataba
     except OSError as exc:
         raise RestoreAccessError(f"无法检查标准主库状态：{std_events_db}") from exc
 
+    # An ownerless writer may have missed the active EventLog borrow just before
+    # this fallback. Require exclusive admission so that race fails closed
+    # instead of opening a second SQLite handle beside the live connection.
     access = acquire_restore_database_access(
         std_events_db,
-        exclusive=False,
+        exclusive=True,
         prewrite_guard=lambda: check_new_file_evidence(std_events_db),
+        allow_create=False,
     )
     try:
         ro_uri = std_events_db.resolve(strict=True).as_uri() + "?mode=ro"
@@ -1012,8 +1293,6 @@ def ensure_material_write_allowed(
     if str(material_path) == ":memory:":
         return _NOOP_MATERIAL_LEASE
     ensure_path_not_held(material_path)
-    if owner_log is not None:
-        ensure_log_write_allowed(owner_log)
 
     target = _absolute_target(Path(material_path))
     located = _standard_material_root_and_domain(target)
@@ -1023,33 +1302,28 @@ def ensure_material_write_allowed(
         except (OSError, RuntimeError) as exc:
             raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
     if located is None:
-        return _NOOP_MATERIAL_LEASE
+        return _owner_material_lease(owner_log) if owner_log is not None else _NOOP_MATERIAL_LEASE
     standard_root, domain = located
     ensure_path_not_held(standard_root)
 
-    std_events_db = (standard_root / "events.db").resolve(strict=False)
-    std_events_key = overlap_key(str(std_events_db))
-    active_in_root = _active_initialized_accesses_in_root(standard_root)
-
+    std_events_db = standard_root / "events.db"
+    std_events_key = overlap_key(str(_absolute_target(std_events_db)))
     if owner_log is not None:
         owner_db = getattr(owner_log, "db_path", None)
         if owner_db is None or str(owner_db) == ":memory:":
             raise RestoreAccessError(
                 f"标准数据根材料写入不能使用 :memory: 连接：{target}"
             )
-        resolved_owner_db = Path(owner_db).resolve(strict=False)
+        resolved_owner_db = _absolute_target(Path(owner_db))
         if overlap_key(str(resolved_owner_db)) != std_events_key:
             raise RestoreAccessError(
                 f"标准数据根材料写入必须绑定同根 events.db（收到 {owner_db}）：{target}"
             )
-        if not active_in_root:
-            raise RestoreAccessError(
-                f"标准数据根材料写入缺少活跃同根 events.db 连续准入：{target}"
-            )
-        return _NOOP_MATERIAL_LEASE
+        return _owner_material_lease(owner_log)
 
-    if active_in_root:
-        return _NOOP_MATERIAL_LEASE
+    borrowed = _borrow_initialized_access_in_root(std_events_key)
+    if borrowed is not None:
+        return borrowed
     if domain in ("artifacts", "blobs"):
         return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
     raise RestoreAccessError(
@@ -1066,6 +1340,7 @@ __all__ = [
     "ensure_log_write_allowed",
     "ensure_material_write_allowed",
     "ensure_path_not_held",
+    "preflight_legacy_material_layout",
     "register_admitted_eventlog",
     "unregister_admitted_eventlog",
     "verify_sqlite_main",

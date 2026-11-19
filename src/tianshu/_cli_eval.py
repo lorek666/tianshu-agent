@@ -60,9 +60,11 @@ def add_evaluate_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    from .restore_access import default_material_paths
+    from .restore_access import default_material_paths, preflight_legacy_material_layout
 
-    log = EventLog(args.db, blob_dir=default_material_paths(args.db)[1])
+    data_root = args.db.parent
+    preflight_legacy_material_layout(args.db, data_root)
+    log = EventLog(args.db, blob_dir=default_material_paths(args.db, data_root)[1])
     try:
         report = replay(log, args.run_id)
     finally:

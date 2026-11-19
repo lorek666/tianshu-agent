@@ -68,6 +68,7 @@ def open_memory(
     log: EventLog,
     *,
     blob_dir: Path | None = None,
+    data_root: Path | None = None,
     clock: Callable[[], int] | None = None,
     embedding_provider: object | None = None,
 ):
@@ -78,13 +79,6 @@ def open_memory(
     一个要人工裁决的分叉。`log` 也一起传进去，投影要按事件重放（`rebuild`）。
     """
     from .memory import MemoryProjection
-    from .restore_access import default_material_paths
-
-    resolved_blob_dir = (
-        blob_dir
-        if blob_dir is not None
-        else default_material_paths(log.db_path)[2]
-    )
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
@@ -92,7 +86,9 @@ def open_memory(
         from .memory_index import MemoryIndex
 
         kwargs["index"] = MemoryIndex(log.conn, provider=embedding_provider)
-    return MemoryProjection(log.conn, log=log, blob_dir=resolved_blob_dir, **kwargs)
+    return MemoryProjection(
+        log.conn, log=log, blob_dir=blob_dir, data_root=data_root, **kwargs
+    )
 
 
 def _canonical_root(binding: object) -> str:
@@ -124,7 +120,7 @@ class _LoopMemoryMixin:
         `_exec_memory_read`），不会静默当成"这个任务没有记忆"。
         """
         if self._memory is None:
-            self._memory = open_memory(self._log)
+            self._memory = open_memory(self._log, data_root=self._tasks.data_root)
         return self._memory
 
     def _memory_allowed(self, task: Task) -> tuple[MemoryScope, ...]:

@@ -190,11 +190,12 @@ def _authority_stack(
     测试和 CLI 走同一个 `build_stack`，否则"CLI 能用但库函数不行"这类
     绕过点会一直存在。
     """
-    from .restore_access import default_material_paths
+    from .restore_access import default_material_paths, preflight_legacy_material_layout
 
     resolved_root = data_root if data_root is not None else db.parent
+    preflight_legacy_material_layout(db, resolved_root)
     _, ev_blobs, _ = default_material_paths(db, resolved_root)
-    log = EventLog(db, blob_dir=ev_blobs)
+    log = EventLog(db, blob_dir=ev_blobs, data_root=resolved_root)
     configs = _mcp_config() if mcp else {}
     return build_stack(
         log,
@@ -343,11 +344,12 @@ def _cmd_worker(args: argparse.Namespace) -> int:
 
 
 def _cmd_recover(args: argparse.Namespace) -> int:
-    from .restore_access import default_material_paths
+    from .restore_access import default_material_paths, preflight_legacy_material_layout
 
     data_root = args.data_root if args.data_root is not None else args.db.parent
+    preflight_legacy_material_layout(args.db, data_root)
     _, ev_blobs, _ = default_material_paths(args.db, data_root)
-    log = EventLog(args.db, blob_dir=ev_blobs)
+    log = EventLog(args.db, blob_dir=ev_blobs, data_root=data_root)
     stack = build_stack(log, data_root=data_root)
     snapshots, leases = stack.snapshots, stack.leases
     try:

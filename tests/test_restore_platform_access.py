@@ -10,10 +10,12 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from support import CHILD_TEXT
 
+import tianshu.platform_identity as platform_identity
 from tianshu import maintenance
 from tianshu.maintenance import (
     MaintenanceBusy,
@@ -128,6 +130,78 @@ def test_posix_or_windows_file_identity_comes_from_a_real_entity(tmp_path):
         assert identity.os == "posix"
         assert identity.device == stat.st_dev
         assert identity.inode == stat.st_ino
+
+
+@pytest.mark.skipif(os.name != "posix", reason="exercises the POSIX descriptor path")
+def test_posix_identity_query_failure_closes_the_open_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / "events.db"
+    path.write_bytes(b"database")
+    opened = []
+    closed = []
+    real_open = os.open
+    real_close = os.close
+
+    def tracked_open(target, flags, mode=0o777):
+        descriptor = real_open(target, flags, mode)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    def fail_fstat(_descriptor):
+        raise OSError("injected fstat failure")
+
+    os_proxy = SimpleNamespace(**vars(os))
+    os_proxy.open = tracked_open
+    os_proxy.close = tracked_close
+    os_proxy.fstat = fail_fstat
+    monkeypatch.setattr(platform_identity, "os", os_proxy)
+
+    with pytest.raises(NativeEntityError, match="injected fstat failure"):
+        platform_identity._open_posix(path, "file")
+
+    assert len(opened) == 1
+    assert closed == opened
+
+
+@pytest.mark.skipif(os.name != "posix", reason="exercises the POSIX descriptor path")
+def test_posix_identity_query_failure_preserves_error_if_close_fails(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "events.db"
+    path.write_bytes(b"database")
+    opened = []
+    closed = []
+    real_open = os.open
+    real_close = os.close
+
+    def tracked_open(target, flags, mode=0o777):
+        descriptor = real_open(target, flags, mode)
+        opened.append(descriptor)
+        return descriptor
+
+    def close_then_report_error(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+        raise OSError("injected close failure")
+
+    def fail_fstat(_descriptor):
+        raise OSError("injected fstat failure")
+
+    os_proxy = SimpleNamespace(**vars(os))
+    os_proxy.open = tracked_open
+    os_proxy.close = close_then_report_error
+    os_proxy.fstat = fail_fstat
+    monkeypatch.setattr(platform_identity, "os", os_proxy)
+
+    with pytest.raises(NativeEntityError, match="injected fstat failure") as caught:
+        platform_identity._open_posix(path, "file")
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert str(caught.value.__cause__) == "injected fstat failure"
+    assert closed == opened
 
 
 def test_hardlink_aliases_share_the_same_entity_identity_and_lock(tmp_path):

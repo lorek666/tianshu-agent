@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -1276,6 +1277,33 @@ def test_forget_and_content_survive_process_restart(tmp_path: Path) -> None:
         reopened.close()
 
 
+@pytest.mark.parametrize("separate_root", [False, True], ids=["custom-db", "separate-root"])
+def test_nonstandard_memory_defaults_cross_read_after_reopen(tmp_path, separate_root):
+    from tianshu.loop import open_memory
+
+    db = tmp_path / ("events.db" if separate_root else "custom.db")
+    data_root = tmp_path / "authority" if separate_root else None
+    stored = {"m_direct": "recorded directly", "m_factory": "recorded by the factory"}
+    expected = tmp_path / f".{db.name}.materials" / "mem_blobs"
+
+    with closing(EventLog(db, data_root=data_root)) as log:
+        direct = MemoryProjection(log.conn, log=log)
+        _propose(direct, log, "m_direct", stored["m_direct"])
+        assembled = open_memory(log)
+        _propose(assembled, log, "m_factory", stored["m_factory"])
+        assert direct.blob_dir == assembled.blob_dir == expected
+
+    with closing(EventLog(db, data_root=data_root)) as log:
+        direct = MemoryProjection(log.conn, log=log, data_root=data_root)
+        assembled = open_memory(log, data_root=data_root)
+        for reader, memory_id in ((direct, "m_factory"), (assembled, "m_direct")):
+            memory = reader.get(memory_id, allowed=[MemoryScope.user()])
+            assert memory is not None
+            assert reader.read_content(memory) == stored[memory_id]
+            assert (expected / memory.content_ref).is_file()
+    assert not (tmp_path / "memory_blobs").exists()
+
+
 def test_default_blob_dir_is_separate_from_event_payload_store(tmp_path: Path) -> None:
     """正文目录**不**跟随事件 payload 的 `log.blob_dir`，固定落 DB 旁 `memory_blobs/`。
 
@@ -1286,15 +1314,11 @@ def test_default_blob_dir_is_separate_from_event_payload_store(tmp_path: Path) -
 
     `EventLog` **配置了** blob_dir 时也不能跟着走，这条断言就是钉这个。
     """
-    with_blobs = EventLog(tmp_path / "with_blobs.db", blob_dir=tmp_path / "blobs")
-    assert MemoryProjection(with_blobs.conn, log=with_blobs).blob_dir == (
-        tmp_path / "memory_blobs"
-    )
-    with_blobs.close()
-
-    plain = EventLog(tmp_path / "plain.db")
-    assert MemoryProjection(plain.conn, log=plain).blob_dir == (tmp_path / "memory_blobs")
-    plain.close()
+    db = tmp_path / "events.db"
+    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+        assert MemoryProjection(log.conn, log=log).blob_dir == tmp_path / "memory_blobs"
+    with closing(EventLog(db)) as log:
+        assert MemoryProjection(log.conn, log=log).blob_dir == tmp_path / "memory_blobs"
 
 
 def test_explicit_blob_dir_wins(tmp_path: Path) -> None:

@@ -51,7 +51,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .crashpoint import failpoint
@@ -60,6 +60,9 @@ from .errors import TianshuError
 from .fsutil import atomic_write_bytes
 from .snapshot import SnapshotStore
 from .undo_journal import UndoJournal
+
+if TYPE_CHECKING:
+    from .restore_contract import EntityIdentityV1
 
 MANIFEST_NAME = "backup.json"
 FORMAT_NAME = "tianshu-backup"
@@ -1790,6 +1793,11 @@ class ReferenceIndex:
     undo_journals: dict[str, str] = field(default_factory=dict)  # rel → status
     orphan_blobs: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
+    _protected_blob_entities: set[EntityIdentityV1] = field(default_factory=set, repr=False)
+
+    def protects_file(self, rel: str, identity: EntityIdentityV1) -> bool:
+        """Protect the recorded path and any spelling of the verified file."""
+        return rel in self.protected_blobs or identity in self._protected_blob_entities
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1805,9 +1813,11 @@ class ReferenceIndex:
 
 def _has_sqlite_companions(db: Path) -> bool:
     for suffix in ("-wal", "-shm", "-journal"):
-        companion = db.with_name(db.name + suffix)
-        if companion.exists() or companion.is_symlink():
-            return True
+        try:
+            db.with_name(db.name + suffix).lstat()
+        except FileNotFoundError:
+            continue
+        return True
     return False
 
 
@@ -1858,12 +1868,13 @@ def _check_material_layout(data_root: Path, unknown: list[str]) -> None:
                     unknown.append(f"审计材料不是普通单链接文件：{rel}（{exc}）")
 
 
-def collect_references(data_root: Path) -> ReferenceIndex:
+def collect_references(data_root: Path, *, require_static_db: bool = False) -> ReferenceIndex:
     """算出"哪些 blob 被引用、哪些是孤儿、哪些判定不了"。
 
     判定不了（清单/日志/事件库读不出来，目录含符号链接/非普通文件，或已登记材料
     无法通过哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
-    留一份多余 blob 严重得多；本函数不执行删除。
+    留一份多余 blob 严重得多；本函数不执行删除。`require_static_db` 不允许读取可能
+    写入共享内存索引的活库；调用者还须保证主库稳定或在返回结果前复核。
     """
     from .platform_identity import NativeEntityError, open_entity
     from .restore_access import ensure_path_not_held
@@ -1877,9 +1888,11 @@ def collect_references(data_root: Path) -> ReferenceIndex:
     _check_material_layout(data_root, index.unknown)
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
-    quiescent = not _has_sqlite_companions(db)
     try:
         db = _checked_file(data_root, "events.db")
+        quiescent = not _has_sqlite_companions(db)
+        if require_static_db and not quiescent:
+            raise ReferenceUnknown("只读引用核验期间出现 SQLite 旁文件")
         source_aliases: list[str] = []
         payload_refs, payload_problems = _db_references(
             db, data_root, saved=quiescent, discover_aliases=source_aliases
@@ -1920,14 +1933,16 @@ def collect_references(data_root: Path) -> ReferenceIndex:
                     raise ValueError(
                         f"引用材料硬链接数不为 1（link_count={handle.link_count}）"
                     )
+                with checked.open("rb") as fh:
+                    digest, size = _sha256_stream(fh)
+                handle.verify_path(checked)
+                if digest != ref["sha256"]:
+                    raise ValueError("内容哈希不符")
+                if "size" in ref and size != ref["size"]:
+                    raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
+                index._protected_blob_entities.add(handle.identity)
             finally:
                 handle.close()
-            with checked.open("rb") as fh:
-                digest, size = _sha256_stream(fh)
-            if digest != ref["sha256"]:
-                raise ValueError("内容哈希不符")
-            if "size" in ref and size != ref["size"]:
-                raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
         except (OSError, ValueError, NativeEntityError) as exc:
             index.unknown.append(f"引用材料无法核验：{rel}（{exc}）")
     if index.unknown:
@@ -1959,13 +1974,12 @@ def collect_references(data_root: Path) -> ReferenceIndex:
                             f"blob 硬链接数不为 1：{rel}（link_count={handle.link_count}）"
                         )
                         continue
+                    if not index.protects_file(rel, handle.identity):
+                        index.orphan_blobs.append(rel)
                 finally:
                     handle.close()
             except NativeEntityError as exc:
                 index.unknown.append(f"blob 材料不是普通单链接文件：{rel}（{exc}）")
-                continue
-            if rel not in index.protected_blobs:
-                index.orphan_blobs.append(rel)
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
     return index

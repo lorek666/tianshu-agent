@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import stat
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -74,13 +75,16 @@ class NativeEntityHandle:
         self._fd = None
 
 
-def _open_posix(path: Path, kind: EntityKind) -> NativeEntityHandle:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+def _open_posix(path: Path, kind: EntityKind, *, create: bool = False) -> NativeEntityHandle:
+    common = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = common | (os.O_RDWR | os.O_CREAT | os.O_EXCL if create else os.O_RDONLY)
     if kind == "directory":
         flags |= getattr(os, "O_DIRECTORY", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = os.open(path, flags, 0o600)
     except OSError as exc:
+        if create and isinstance(exc, FileExistsError):
+            raise
         raise NativeEntityError(f"无法从真实句柄打开{kind}：{path}（{exc}）") from exc
     try:
         info = os.fstat(descriptor)
@@ -97,9 +101,16 @@ def _open_posix(path: Path, kind: EntityKind) -> NativeEntityHandle:
             _fd=descriptor,
         )
     except OSError as exc:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
         raise NativeEntityError(f"无法读取{kind}句柄身份：{path}（{exc}）") from exc
     except BaseException:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
         raise
 
 
@@ -249,19 +260,18 @@ def open_entity(path: Path, kind: EntityKind) -> NativeEntityHandle:
 
 
 def observe_entity(path: Path, kind: EntityKind) -> EntityIdentityV1:
-    """观察真实实体取得身份。
-    
-    在 POSIX 上使用 os.stat 观察，绝不能执行 open() + close()：
-    根据 POSIX advisory locking 标准，进程关闭任何指向某文件的文件描述符时，
-    操作系统内核会静默丢弃该进程在该文件上持有的所有 POSIX 锁（包括 SQLite WAL 锁）。
-    若对正在使用的数据库文件调用 open+close，会导致 SQLite 锁保护瞬间失效并损坏数据库。
-    """
+    """Observe a path, without opening and closing a possibly live POSIX SQLite file."""
+    return observe_entity_with_links(path, kind)[0]
+
+
+def observe_entity_with_links(path: Path, kind: EntityKind) -> tuple[EntityIdentityV1, int]:
+    """Path observation, not a substitute for a continuously held identity handle."""
     if kind not in ("file", "directory"):
         raise ValueError(f"未知实体类型：{kind!r}")
     if os.name == "nt":
         handle = open_entity(path, kind)
         try:
-            return handle.identity
+            return handle.identity, handle.link_count
         finally:
             handle.close()
 
@@ -273,22 +283,114 @@ def observe_entity(path: Path, kind: EntityKind) -> EntityIdentityV1:
         raise NativeEntityError(f"实体路径不可解析：{supplied}（{exc}）") from exc
     _reject_reparse(canonical)
     try:
-        info = os.stat(canonical)
+        info = os.stat(canonical, follow_symlinks=False)
         expected = stat.S_ISREG(info.st_mode) if kind == "file" else stat.S_ISDIR(info.st_mode)
         if not expected or stat.S_ISLNK(info.st_mode):
             raise NativeEntityError(f"路径类型不是普通{kind}：{path}")
         if info.st_ino == 0:
             raise NativeEntityError(f"POSIX返回了零inode，不能作为实体身份：{path}")
-        return PosixEntityIdentityV1("posix", info.st_dev, info.st_ino)
+        return PosixEntityIdentityV1("posix", info.st_dev, info.st_ino), info.st_nlink
     except OSError as exc:
         raise NativeEntityError(f"无法读取{kind}身份：{path}（{exc}）") from exc
 
 
 
+@dataclass
+class _MainHandleGroup:
+    handles: list[NativeEntityHandle]
+    references: int = 0
+
+
+_MAIN_HANDLE_LOCK = threading.Lock()
+_MAIN_HANDLES: dict[EntityIdentityV1, _MainHandleGroup] = {}
+
+
+@dataclass
+class ManagedMainHandle:
+    """One access's reference to an inode-scoped native main handle."""
+
+    path: Path
+    identity: EntityIdentityV1
+    link_count: int
+    _group: _MainHandleGroup | None = field(repr=False)
+
+    def read_prefix(self, size: int) -> bytes:
+        """Read from the pooled POSIX descriptor without changing its offset."""
+        with _MAIN_HANDLE_LOCK:
+            group = self._group
+            if group is None:
+                raise NativeEntityError(f"实体句柄已经关闭：{self.path}")
+            descriptor = group.handles[0]._fd
+            assert descriptor is not None
+            return os.pread(descriptor, size, 0)
+
+    def verify_path(self, path: Path) -> None:
+        if observe_entity(path, "file") != self.identity:
+            raise NativeEntityError(f"路径当前映射的实体已经不匹配已持有句柄：{path}")
+
+    def close(self) -> None:
+        with _MAIN_HANDLE_LOCK:
+            group = self._group
+            if group is None:
+                return
+            if group.references == 1:
+                while group.handles:
+                    group.handles[-1].close()
+                    group.handles.pop()
+                del _MAIN_HANDLES[self.identity]
+            group.references -= 1
+            self._group = None
+
+
+def open_managed_main(
+    path: Path, *, create: bool = False
+) -> ManagedMainHandle | NativeEntityHandle:
+    """Keep POSIX native main descriptors open until the last managed peer closes.
+
+    SQLite manages its own VFS descriptors. Closing an auxiliary descriptor while
+    any peer is live can clear this process's POSIX record locks on the same inode.
+    A path observation only selects a pool entry; its identity comes from fstat.
+    """
+    if os.name != "posix":
+        return open_entity(path, "file")
+
+    with _MAIN_HANDLE_LOCK:
+        native = None
+        if create:
+            try:
+                native = _open_posix(path, "file", create=True)
+            except FileExistsError:
+                pass  # Another opener won O_EXCL; use the winning entity.
+        if native is None:
+            observed_id = observe_entity(path, "file")
+            group = _MAIN_HANDLES.get(observed_id)
+            if group is not None:
+                held = group.handles[0]
+                assert held._fd is not None
+                info = os.fstat(held._fd)
+                identity = PosixEntityIdentityV1("posix", info.st_dev, info.st_ino)
+                if identity != observed_id:
+                    raise NativeEntityError(f"池中真实句柄与观察实体不匹配：{path}")
+                held.verify_path(path)
+                group.references += 1
+                return ManagedMainHandle(path, identity, info.st_nlink, group)
+            native = open_entity(path, "file")
+
+        # If the path changed after observation and now names an already pooled
+        # inode, retain this extra descriptor as well until the final release.
+        group = _MAIN_HANDLES.setdefault(native.identity, _MainHandleGroup([]))
+        group.handles.append(native)
+        group.references += 1
+        return ManagedMainHandle(path, native.identity, native.link_count, group)
+
+
 __all__ = [
     "EntityKind",
+    "ManagedMainHandle",
     "NativeEntityError",
     "NativeEntityHandle",
     "observe_entity",
+    "observe_entity_with_links",
     "open_entity",
+    "open_managed_main",
 ]

@@ -854,7 +854,7 @@ def test_recovery_does_not_rewrite_terminal_dispatch_rows(tmp_path):
     ws2.mkdir()
     data2 = tmp_path / "data-mcp"
     data2.mkdir()
-    log2 = EventLog(tmp_path / "events-mcp.db", blob_dir=tmp_path / "blobs-mcp")
+    log2 = EventLog(tmp_path / "events-mcp.db", blob_dir=tmp_path / "blobs-mcp", data_root=data2)
     artifacts2 = tmp_path / "artifacts-mcp"
     artifacts2.mkdir()
     store2 = SnapshotStore(artifacts2)

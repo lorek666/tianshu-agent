@@ -12,16 +12,24 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from restore_test_support import requires_managed_restore_writes
 from support import CHILD_TEXT
 
-from tianshu import authority, migrate, restore_manager
-from tianshu.backup import create_backup, sha256_file
+from tianshu import authority, migrate, restore_manager, restore_registry
+from tianshu.backup import create_backup, sha256_file, verify_backup
 from tianshu.budget import BudgetLedger
 from tianshu.data_state import AdmissionRefused
 from tianshu.disk_admission import DiskAdmission
 from tianshu.errors import McpObjectBlocked, WorkspaceBlocked
 from tianshu.events import EventLog, canonical_bytes, sha256_hex
-from tianshu.guard import ensure_not_blocked, ensure_object_not_blocked
+from tianshu.guard import (
+    ensure_not_blocked,
+    ensure_object_not_blocked,
+    scan_blocked,
+    scan_blocked_objects,
+    unblock,
+    unblock_object,
+)
 from tianshu.jobs import JobStore
 from tianshu.leases import LeaseStore
 from tianshu.loop import build_stack
@@ -45,6 +53,9 @@ from tianshu.workspace import WorkspaceBinding
 ROOT = Path(__file__).resolve().parents[1]
 SRC = str(ROOT / "src")
 STARTUP = str(ROOT / "tests" / "_startup")
+
+# Every C scenario begins with a real managed import.
+pytestmark = requires_managed_restore_writes
 
 
 def _child_env(*, failpoint: str | None = None) -> dict[str, str]:
@@ -762,6 +773,161 @@ def test_c04_deterministic_reconciliation_fences_runs_expires_approvals_and_bloc
         log.close()
 
 
+@pytest.mark.parametrize(
+    "history", ["missing", "earlier_unblock", "later_unblock", "already_blocked", "r2_commit_crash"]
+)
+def test_c04_release_blocks_existing_unknown_results_without_rewriting_them(tmp_path, history):
+    root, meta = _seed_dirty_inflight_root(tmp_path)
+    db = root / "events.db"
+    run_id, ws, obj = meta["run_id"], meta["ws"], "mcp://demo/act"
+    log = EventLog(db, blob_dir=root / "blobs")
+    try:
+        if history == "earlier_unblock":
+            unblock(log, ws, reason="checked earlier activity")
+            unblock_object(log, obj, reason="checked earlier activity")
+        for call_id, tool_id in (
+            ("call_exec_unk", "run_command"),
+            ("call_mcp_unk", "mcp__demo__act"),
+        ):
+            log.append(
+                run_id,
+                "tool.result",
+                {
+                    "call_id": call_id,
+                    "tool_id": tool_id,
+                    "status": "unknown",
+                    "effect_state": "unknown",
+                    "output": {"recovered": True, "error": "interrupted old recovery"},
+                },
+                task_id=meta["task_id"],
+                idem_key=call_id,
+            )
+        if history == "later_unblock":
+            unblock(log, ws, reason="checked this unknown outcome")
+            unblock_object(log, obj, reason="checked this unknown outcome")
+        elif history == "already_blocked":
+            log.append(
+                run_id,
+                "recovery.blocked",
+                {
+                    "workspace": ws,
+                    "call_ids": ["call_exec_unk"],
+                    "reason": "old block",
+                },
+                actor_kind="system",
+            )
+            log.append(
+                run_id,
+                "recovery.object_blocked",
+                {
+                    "object": obj,
+                    "call_ids": ["call_mcp_unk"],
+                    "reason": "old block",
+                },
+                actor_kind="system",
+            )
+        pre_head = log.seq_head()
+        events_before = [
+            tuple(row) for row in log.conn.execute("SELECT * FROM events ORDER BY seq")
+        ]
+        versions_before = [
+            tuple(row) for row in log.conn.execute("SELECT * FROM event_versions ORDER BY seq")
+        ]
+    finally:
+        log.close()
+    backup = tmp_path / "backup"
+    create_backup(root, backup)
+    verified = verify_backup(backup)
+    assert verified.ok, verified.problems
+    shutil.rmtree(root)
+    batch = _import_to_published_hold(backup, root)
+    reviewed = _cli("restore-review", "--data-root", root, "--json")
+    assert reviewed.returncode == 0, (reviewed.stdout, reviewed.stderr)
+    review_sha = _parse_resp_v2(reviewed.stdout).result.review_sha256
+    args = (
+        "restore-release",
+        "--data-root",
+        root,
+        "--expect-review",
+        review_sha,
+        "--acknowledge-unproven-later-history",
+        "--json",
+    )
+    assert not authority.is_blocked(ws)
+    assert not authority.is_object_blocked(obj)
+    if history == "r2_commit_crash":
+        fp = "FP-RELEASE-RECONCILE-COMMITTED"
+        crashed = _cli(*args, failpoint=fp)
+        assert crashed.returncode == 77 and f"[failpoint] {fp}\n" in crashed.stderr
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(db, blob_dir=root / "blobs")
+        assert not authority.is_blocked(ws)
+        assert not authority.is_object_blocked(obj)
+        resumed = _cli(*args, failpoint="FP-RELEASE-RECONCILE")
+        assert resumed.returncode == 77 and "[failpoint] FP-RELEASE-RECONCILE\n" in resumed.stderr
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(db, blob_dir=root / "blobs")
+        assert authority.is_blocked(ws)
+        assert authority.is_object_blocked(obj)
+
+    released = _cli(*args)
+    assert released.returncode == 0, (released.stdout, released.stderr)
+    result = _parse_resp_v2(released.stdout).result
+    assert result.phase == "released" and result.batch_id == batch
+    assert result.reconciled_counts.preserved_unknown_intents == 0
+    assert result.reconciled_counts.resolved_none_applied_intents == 1
+    blocked = history != "later_unblock"
+    log = EventLog(db, blob_dir=root / "blobs")
+    try:
+        assert [
+            tuple(row)
+            for row in log.conn.execute(
+                "SELECT * FROM events WHERE seq <= ? ORDER BY seq",
+                (pre_head,),
+            )
+        ] == events_before
+        assert [
+            tuple(row)
+            for row in log.conn.execute(
+                "SELECT * FROM event_versions WHERE seq <= ? ORDER BY seq",
+                (pre_head,),
+            )
+        ] == versions_before
+        results = [e.payload for e in log.read_types(["tool.result"]) if e.seq > pre_head]
+        assert [(p["call_id"], p["effect_state"]) for p in results] == [
+            ("call_unsent", "none_applied")
+        ]
+        for kind, field, target, call in (
+            ("recovery.blocked", "workspace", ws, "call_exec_unk"),
+            ("recovery.object_blocked", "object", obj, "call_mcp_unk"),
+        ):
+            events = log.read_types([kind])
+            assert [(e.run_id, e.payload[field], e.payload["call_ids"]) for e in events] == (
+                [(run_id, target, [call])] if blocked else []
+            )
+        assert scan_blocked(log).blocked == ({ws} if blocked else set())
+        assert scan_blocked_objects(log).blocked == ({obj} if blocked else set())
+        assert authority.is_blocked(ws) == blocked
+        assert authority.is_object_blocked(obj) == blocked
+        post_head = log.seq_head()
+    finally:
+        log.close()
+
+    release_events = [e.kind for e in RestoreRegistry().observe().events if e.batch_id == batch]
+    retried = _cli(*args, failpoint="FP-RELEASE-RECONCILE-COMMITTED")
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    assert _parse_resp_v2(retried.stdout).result == result
+    assert [
+        e.kind for e in RestoreRegistry().observe().events if e.batch_id == batch
+    ] == release_events
+    assert release_events[-2:] == ["release_intent", "released"]
+    log = EventLog(db, blob_dir=root / "blobs")
+    try:
+        assert log.seq_head() == post_head
+    finally:
+        log.close()
+
+
 # ======================================================================== C05
 
 
@@ -770,6 +936,8 @@ def test_c04_deterministic_reconciliation_fences_runs_expires_approvals_and_bloc
     [
         "FP-RELEASE-INTENT-BEFORE",
         "FP-RELEASE-INTENT",
+        "FP-RELEASE-RECONCILE-BEFORE",
+        "FP-RELEASE-RECONCILE-COMMITTED",
         "FP-RELEASE-RECONCILE",
         "FP-RELEASED-BEFORE",
         "FP-RELEASED",
@@ -784,7 +952,7 @@ def test_c05_release_failpoints_exit_77_block_midflight_and_converge_without_dup
     create_backup(root, bdir)
     shutil.rmtree(root)
 
-    _import_to_published_hold(bdir, root)
+    batch_id = _import_to_published_hold(bdir, root)
     rev = restore_manager.review(root)
 
     crashed = _cli(
@@ -797,15 +965,21 @@ def test_c05_release_failpoints_exit_77_block_midflight_and_converge_without_dup
         failpoint=fp,
     )
     assert crashed.returncode == 77, crashed.stderr
+    assert f"[failpoint] {fp}\n" in crashed.stderr
 
+    registry = RestoreRegistry()
+    observed = [event for event in registry.observe().events if event.batch_id == batch_id]
+    if fp == "FP-RELEASE-RECONCILE-BEFORE":
+        assert (root / "events.db-journal").stat().st_size > 0
     if fp != "FP-RELEASED":
-        # 尚未提交 ReleasedV1 时，普通 EventLog 必须继续以 RestoreScopeBusy 阻断！
         with pytest.raises(RestoreScopeBusy):
             EventLog(root / "events.db", blob_dir=root / "blobs")
-        if fp in ("FP-RELEASE-INTENT", "FP-RELEASE-RECONCILE", "FP-RELEASED-BEFORE"):
-            # 进入 release_intent 后，restore-abort 与 restore-resume 也必须拒绝
+        if fp != "FP-RELEASE-INTENT-BEFORE":
+            assert observed[-1].kind == "release_intent"
             assert _cli("restore-abort", "--data-root", root, "--json").returncode == 2
             assert _cli("restore-resume", "--data-root", root, "--json").returncode == 2
+    else:
+        assert observed[-1].kind == "released"
 
     retry = _cli(
         "restore-release",
@@ -820,6 +994,9 @@ def test_c05_release_failpoints_exit_77_block_midflight_and_converge_without_dup
     retry_resp = _parse_resp_v2(retry.stdout.encode("utf-8"))
     assert retry_resp.ok is True
     assert retry_resp.result.phase == "released"
+    released = [event for event in registry.observe().events if event.batch_id == batch_id]
+    assert [event.kind for event in released].count("release_intent") == 1
+    assert [event.kind for event in released].count("released") == 1
 
     # 验证无重复对账事件
     log = EventLog(root / "events.db", blob_dir=root / "blobs")
@@ -836,6 +1013,158 @@ def test_c05_release_failpoints_exit_77_block_midflight_and_converge_without_dup
         assert len(res_evs) == 1
     finally:
         log.close()
+
+
+def test_c05_reentry_after_no_tail_r2_commit_replaces_inherited_proof(tmp_path, monkeypatch):
+    source = _seed_clean_root(tmp_path)
+    bdir = tmp_path / "first_backup"
+    create_backup(source, bdir)
+    shutil.rmtree(source)
+    _import_to_published_hold(bdir, source)
+    first_review = restore_manager.review(source)
+    first_release = restore_manager.release(
+        source, expect_review_sha256=first_review.review_sha256,
+        acknowledge_unproven_later_history=True,
+    )
+    assert first_release.phase == "released"
+    first_registry = RestoreRegistry()
+    first_observation = first_registry.observe()
+
+    # 日常写入使旧批次见证过时；合法备份仍会携带这一行。
+    _seed_clean_root(tmp_path)
+    second_backup = tmp_path / "second_backup"
+    create_backup(source, second_backup)
+    backup_db_uri = (second_backup / "events.db").as_uri() + "?mode=ro&immutable=1"
+    ro_conn = sqlite3.connect(backup_db_uri, uri=True)
+    try:
+        prior_proof = ro_conn.execute(
+            "SELECT release_intent_sha256 FROM _restore_release_r2_proof WHERE singleton=1"
+        ).fetchone()
+        assert prior_proof == (domain_digest("event", first_observation.events[-2]),)
+    finally:
+        ro_conn.close()
+
+    # 模拟原路径的独立安装，新 Home 使用已有 pytest 隔离钩子。
+    # 旧 Home 事实和原导入实体都保留，旧 Home 的实体准入继续适用。
+    source.rename(tmp_path / "first_restore_kept")
+    second_home = tmp_path / "second_home"
+    second_home.mkdir()
+    monkeypatch.setenv("PYTEST_TIANSHU_REGISTRY_HOME", str(second_home))
+    monkeypatch.setattr(restore_registry, "_user_home", lambda: second_home)
+    root = source
+    batch_id = _import_to_published_hold(second_backup, root)
+    review = restore_manager.review(root)
+    args = (
+        "restore-release", "--data-root", root, "--expect-review", review.review_sha256,
+        "--acknowledge-unproven-later-history", "--json",
+    )
+    db = root / "events.db"
+    pre_sha = sha256_file(db)
+    fp = "FP-RELEASE-RECONCILE-COMMITTED"
+    crashed = _cli(*args, failpoint=fp)
+    assert crashed.returncode == 77, (crashed.stdout, crashed.stderr)
+    assert f"[failpoint] {fp}\n" in crashed.stderr
+    assert sha256_file(db) != pre_sha
+    registry = RestoreRegistry()
+    intent = registry.observe().events[-1]
+    assert intent.batch_id == batch_id and intent.kind == "release_intent"
+    with pytest.raises(RestoreScopeBusy):
+        EventLog(db, blob_dir=root / "blobs")
+
+    # 拉起仅在新 R2 写事务提交后触发的同一个故障点。已提交态必须跳过它。
+    retry = _cli(*args, failpoint=fp)
+    assert retry.returncode == 0, (retry.stdout, retry.stderr)
+    assert _parse_resp_v2(retry.stdout).result.phase == "released"
+    history = [event for event in registry.observe().events if event.batch_id == batch_id]
+    assert [event.kind for event in history[-2:]] == ["release_intent", "released"]
+    pre_head = intent.payload.pre_release_event_seq_head
+    assert history[-1].payload.post_release_event_seq_head == pre_head
+    assert first_registry.observe() == first_observation
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["grant", "budget_counter", "tail_event_version", "prefix_version", "missing_proof", "intent"],
+)
+def test_c05_reentry_refuses_third_state_without_writes(tmp_path, drift):
+    root, meta = _seed_dirty_inflight_root(tmp_path)
+    bdir = tmp_path / "backup"
+    create_backup(root, bdir)
+    shutil.rmtree(root)
+    _import_to_published_hold(bdir, root)
+    review = restore_manager.review(root)
+    args = (
+        "restore-release", "--data-root", root, "--expect-review", review.review_sha256,
+        "--acknowledge-unproven-later-history", "--json",
+    )
+    crashed = _cli(*args, failpoint="FP-RELEASE-RECONCILE")
+    assert crashed.returncode == 77, crashed.stderr
+    registry = RestoreRegistry()
+    intent = registry.observe()
+    assert intent.present and intent.events[-1].kind == "release_intent"
+    pre_head = intent.events[-1].payload.pre_release_event_seq_head
+
+    db = root / "events.db"
+    conn = sqlite3.connect(db)
+    try:
+        # 场景损伤限 pytest 临时夹具；不要 UPDATE events 或拆 append-only 触发器。
+        if drift == "grant":
+            cur = conn.execute(
+                "UPDATE grants SET remaining_uses=1 WHERE grant_id=? AND remaining_uses=0",
+                (meta["grant_id"],),
+            )
+        elif drift == "budget_counter":
+            cur = conn.execute(
+                "UPDATE budget_counters SET reserved=reserved-1 "
+                "WHERE account_id=? AND dimension='tokens' AND reserved=500",
+                (meta["account_id"],),
+            )
+        elif drift == "missing_proof":
+            cur = conn.execute("DELETE FROM _restore_release_r2_proof WHERE singleton=1")
+        elif drift == "intent":
+            cur = conn.execute(
+                "UPDATE _restore_release_r2_proof SET release_intent_sha256=? WHERE singleton=1",
+                ("0" * 64,),
+            )
+        else:
+            seq = pre_head + 1 if drift == "tail_event_version" else 1
+            cur = conn.execute("UPDATE event_versions SET version=version+1 WHERE seq=?", (seq,))
+        assert cur.rowcount == 1
+        conn.commit()
+        tail = list(conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (pre_head,)))
+        assert tail
+    finally:
+        conn.close()
+
+    db_sha, registry_sha = sha256_file(db), sha256_file(registry.path)
+    authority_root = Path(os.environ["TIANSHU_AUTHORITY_ROOT"])
+    assert authority_root.is_relative_to(tmp_path)
+    authority_bytes = {p.name: p.read_bytes() for p in authority_root.iterdir() if p.is_file()}
+    assert authority_bytes
+    with pytest.raises(RestoreScopeBusy):
+        EventLog(db, blob_dir=root / "blobs")
+
+    retry = _cli(*args)
+    assert retry.returncode == 2, (retry.stdout, retry.stderr)
+    refused = _parse_resp_v2(retry.stdout)
+    assert not refused.ok
+    expected_category = "binding_mismatch" if drift == "intent" else "record_corrupt"
+    assert refused.error.category == expected_category
+    assert registry.observe() == intent  # 没有 ReleasedV1，也没有新的恢复事实。
+    assert (sha256_file(db), sha256_file(registry.path)) == (db_sha, registry_sha)
+    assert {
+        p.name: p.read_bytes() for p in authority_root.iterdir() if p.is_file()
+    } == authority_bytes
+    with pytest.raises(RestoreScopeBusy):
+        EventLog(db, blob_dir=root / "blobs")
+    ro_conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+    try:
+        current_tail = list(
+            ro_conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (pre_head,))
+        )
+        assert current_tail == tail
+    finally:
+        ro_conn.close()
 
 
 # ======================================================================== C06

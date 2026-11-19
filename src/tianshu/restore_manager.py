@@ -19,12 +19,15 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import _restore_release_proof as release_proof
 from . import backup as backup_mod
 from . import data_admission, event_schema, summaries
 from .backup import (
@@ -142,6 +145,7 @@ from .restore_registry import (
     PresentRegistryObservation,
     RestoreRegistry,
     RestoreRegistryBusy,
+    RestoreRegistryCapacityUnavailable,
     RestoreRegistryCorrupt,
     RestoreRegistryDurabilityUnavailable,
     RestoreRegistryError,
@@ -254,6 +258,55 @@ def _fail(
     return RestoreOperationError(failure, partial_review=partial_review, raw_cause=cause)
 
 
+def _registry_failure(exc: RestoreRegistryError, **batch_ctx: Any) -> RestoreOperationError:
+    category: ErrorCategory
+    if isinstance(exc, RestoreRegistryBusy):
+        category = "maintenance_busy"
+    elif isinstance(exc, RestoreRegistryCapacityUnavailable):
+        category = "capacity_unavailable"
+    elif isinstance(exc, RestoreRegistryDurabilityUnavailable):
+        category = "durability_unavailable"
+    elif isinstance(exc, RestoreRegistryCorrupt):
+        category = "record_corrupt"
+    else:
+        category = "restore_failed"
+    return _fail(category, str(exc), cause=exc, **batch_ctx)
+
+
+def _retained_paths(codec: NativePathCodecV1, *paths: Path) -> tuple[NativePathV1, ...]:
+    retained = []
+    for path in paths:
+        try:
+            path.lstat()
+        except OSError:
+            # Report only entries we can observe without hiding the original failure.
+            continue
+        retained.append(codec.from_path(path))
+    return tuple(retained)
+
+
+def _io_failure(
+    exc: OSError, message: str, *, otherwise: ErrorCategory = "restore_failed", **batch_ctx: Any
+) -> RestoreOperationError:
+    category = "capacity_unavailable" if exc.errno == errno.ENOSPC else otherwise
+    return _fail(category, f"{message}（{exc}）", cause=exc, **batch_ctx)
+
+
+def _managed_restore_writes_supported() -> bool:
+    # Native Windows identity and WRITE_THROUGH rename do not establish an
+    # ordinary-user barrier for existing directory entries and deletions.
+    return os.name == "posix"
+
+
+def _require_managed_restore_writes(**batch_ctx: Any) -> None:
+    if not _managed_restore_writes_supported():
+        raise _fail(
+            "durability_unavailable",
+            "当前平台没有受管恢复所需的目录持久化屏障；请保留现场。",
+            **batch_ctx,
+        )
+
+
 def _registry_or_default(registry: RestoreRegistry | None) -> RestoreRegistry:
     if registry is not None:
         return registry
@@ -314,8 +367,7 @@ def _fsync_dir_handle(
             cause=exc,
             **ctx,
         ) from exc
-    if os.name == "nt":  # pragma: no cover - native Windows
-        return
+    _require_managed_restore_writes(**ctx)
     if handle._fd is None:
         raise _fail(
             "durability_unavailable",
@@ -555,40 +607,36 @@ def _probe_capacity(
     metadata_only: bool,
     codec: NativePathCodecV1,
     batch_ctx: dict[str, Any] | None = None,
+    expected_identity: EntityIdentityV1 | None = None,
 ) -> CapacityCheckV1:
     ctx = batch_ctx or {}
     probe_dir = target_location
-    while True:
-        try:
-            if not probe_dir.is_symlink() and not probe_dir.is_junction() and probe_dir.is_dir():
-                break
-        except OSError as exc:
-            raise _fail(
-                "capacity_unavailable",
-                f"容量探测祖先状态不可判定：{probe_dir}",
-                cause=exc,
-                **ctx,
-            ) from exc
-        if probe_dir.parent == probe_dir:
-            raise _fail(
-                "capacity_unavailable",
-                f"容量探测找不到可用既有目录：{target_location}",
-                **ctx,
-            )
-        probe_dir = probe_dir.parent
-
-    resolved_dir = probe_dir.resolve(strict=True)
     try:
+        while True:
+            try:
+                mode = probe_dir.lstat().st_mode
+            except FileNotFoundError:
+                if probe_dir.parent == probe_dir:
+                    raise
+                probe_dir = probe_dir.parent
+                continue
+            if not stat.S_ISDIR(mode) or probe_dir.is_junction():
+                raise _fail("capacity_unavailable", f"容量探测位置不是普通目录：{probe_dir}", **ctx)
+            break
+
+        resolved_dir = probe_dir.resolve(strict=True)
         observed_id = observe_entity(resolved_dir, "directory")
+        if expected_identity is not None and observed_id != expected_identity:
+            raise _fail("capacity_unavailable", f"容量探测位置实体已变化：{probe_dir}", **ctx)
         available = _disk_usage_probe(resolved_dir)
-    except (NativeEntityError, OSError) as exc:
+    except (NativeEntityError, OSError, RuntimeError) as exc:
         raise _fail(
             "capacity_unavailable",
-            f"磁盘可用容量探测失败：{resolved_dir}（{exc}）",
+            f"磁盘可用容量探测失败：{probe_dir}（{exc}）",
             cause=exc,
             **ctx,
         ) from exc
-    if type(available) is not int or isinstance(available, bool) or available < 0:
+    if type(available) is not int or available < 0:
         raise _fail(
             "capacity_unavailable",
             f"磁盘可用容量探测返回非法数值：{available!r}（{resolved_dir}）",
@@ -1270,6 +1318,34 @@ def _compute_scope_manifest(
         conn.close()
 
 
+def _make_reserved_event(
+    inputs: PlanInputsV1,
+    plan_sha256: str,
+    *,
+    registry_id: str,
+    sequence: int,
+    previous_sha256: str | None,
+    batch_id: str,
+) -> RestoreEventV1:
+    return RestoreEventV1(
+        version=1,
+        registry_id=registry_id,
+        sequence=sequence,
+        batch_id=batch_id,
+        previous_sha256=previous_sha256,
+        kind="reserved",
+        payload=ReservedV1(
+            plan=inputs,
+            plan_sha256=plan_sha256,
+            copy_inventory=inputs.copy_inventory,
+            inventory_sha256=inputs.inventory_sha256,
+            placement=inputs.placement,
+            original_target=inputs.original_target,
+            stage_name=f".{inputs.placement.final_name}.restore-{batch_id}",
+        ),
+    )
+
+
 def plan(
     backup_dir: Path,
     data_root: Path,
@@ -1388,24 +1464,40 @@ def plan(
     )
     plan_sha256 = domain_digest("plan", inputs)
 
-    total_copy_bytes = sum(f.size for f in copy_inventory.files) + 4096
+    # P0 can size the actual known copy inventory and reservation without creating anything.
+    # UUID spellings have fixed canonical width. Meta and token contain not-yet-existing
+    # native identities; size those from the actual staged entities before their first write.
+    sizing_id = str(uuid.UUID(int=0))
+    has_registry = isinstance(reg_obs, PresentRegistryObservation)
+    reservation = _make_reserved_event(
+        inputs,
+        plan_sha256,
+        registry_id=reg_obs.meta.registry_id if has_registry else sizing_id,
+        sequence=reg_obs.next_sequence if has_registry else 1,
+        previous_sha256=reg_head,
+        batch_id=sizing_id,
+    )
+    nearest_parent_identity = placement.existing_ancestors[-1].identity
     cap_staging = _probe_capacity(
         canonical_root.parent,
-        total_copy_bytes,
+        sum(f.size for f in copy_inventory.files),
         metadata_only=False,
         codec=codec,
+        expected_identity=nearest_parent_identity,
     )
     cap_registry = _probe_capacity(
         reg_obs.authority_directory,
-        max(len(inputs.to_bytes()) * 2, 4096),
+        len(reservation.to_bytes()),
         metadata_only=False,
         codec=codec,
+        expected_identity=reg_obs.authority_identity if has_registry else None,
     )
     cap_parent = _probe_capacity(
         canonical_root.parent,
         0,
         metadata_only=True,
         codec=codec,
+        expected_identity=nearest_parent_identity,
     )
 
     notes = [
@@ -1417,11 +1509,15 @@ def plan(
     if manifest.db_user_version < SCHEMA_VERSION:
         notes.append("恢复后仍需显式离线迁移；受管恢复不会自动升级数据库版本。")
 
+    apply_supported = _managed_restore_writes_supported()
+    if not apply_supported:
+        notes.append("当前平台缺少受管恢复所需的目录持久化屏障，仅支持只读预演。")
+
     return RestorePlanV1(
         version=1,
         inputs=inputs,
         plan_sha256=plan_sha256,
-        apply_supported=True,
+        apply_supported=apply_supported,
         capacity_checks=(cap_staging, cap_registry, cap_parent),
         verification=verification,
         legacy_reconciliation=legacy_rec,
@@ -1436,7 +1532,9 @@ def _write_control_file_4window(
     expected_bytes: bytes,
     *,
     prefix_tag: str,
+    codec: NativePathCodecV1,
     batch_ctx: dict[str, Any],
+    pending_copy_bytes: int = 0,
 ) -> None:
     """严格执行 §5.1 四窗口控制见证持久化（支持恢复重入与精确前缀核验）。"""
     formal_path = stage_path / layout.formal[0]
@@ -1470,6 +1568,15 @@ def _write_control_file_4window(
             raise _fail(
                 "record_corrupt", f"正式控制文件字节与已提交事实不符：{formal_path}", **batch_ctx
             )
+        # Reuse only a verified formal control. Fsync is still required, but writes no new payload.
+        _probe_capacity(
+            stage_path,
+            pending_copy_bytes,
+            metadata_only=False,
+            codec=codec,
+            batch_ctx=batch_ctx,
+            expected_identity=stage_handle.identity,
+        )
         _fsync_file_path(formal_path, batch_ctx=batch_ctx)
         _fsync_dir_handle(stage_handle, stage_path, batch_ctx=batch_ctx)
         failpoint(f"FP-{prefix_tag}-DIR-FSYNC", path=stage_path)
@@ -1494,6 +1601,18 @@ def _write_control_file_4window(
             raise _fail(
                 "record_corrupt", f"临时控制文件内容不是预期字节的合法前缀：{tmp_path}", **batch_ctx
             )
+
+    # A legal prefix is rewritten in full. Check combined demand before removing it.
+    _probe_capacity(
+        stage_path,
+        pending_copy_bytes + len(expected_bytes),
+        metadata_only=False,
+        codec=codec,
+        batch_ctx=batch_ctx,
+        expected_identity=stage_handle.identity,
+    )
+
+    if has_tmp:
         try:
             tmp_path.unlink()
         except OSError as exc:
@@ -1578,23 +1697,23 @@ def _append_registry_cas(
             metadata_only=False,
             codec=codec,
             batch_ctx=batch_ctx,
+            expected_identity=current.authority_identity,
         )
         try:
             updated = reg.append_event(event, expected=current, operation_access=op_access)
             return updated, event
         except RestoreRegistryBusy as exc:
             if attempt == 0:
-                refreshed = reg.observe()
+                try:
+                    refreshed = reg.observe()
+                except RestoreRegistryError as read_exc:
+                    raise _registry_failure(read_exc, **batch_ctx) from read_exc
                 if isinstance(refreshed, PresentRegistryObservation):
                     current = refreshed
                     continue
-            raise _fail("maintenance_busy", str(exc), cause=exc, **batch_ctx) from exc
-        except RestoreRegistryDurabilityUnavailable as exc:
-            raise _fail("durability_unavailable", str(exc), cause=exc, **batch_ctx) from exc
-        except RestoreRegistryCorrupt as exc:
-            raise _fail("record_corrupt", str(exc), cause=exc, **batch_ctx) from exc
+            raise _registry_failure(exc, **batch_ctx) from exc
         except RestoreRegistryError as exc:
-            raise _fail("restore_failed", str(exc), cause=exc, **batch_ctx) from exc
+            raise _registry_failure(exc, **batch_ctx) from exc
     raise AssertionError("unreachable")
 
 
@@ -1800,9 +1919,11 @@ def _advance_to_published_hold(
             "batch_id": batch_id,
             "phase": phase_name,
             "plan_sha256": plan_sha256,
-            "retained_paths": tuple(codec.from_path(p) for p in retained if p.exists()),
+            "retained_paths": _retained_paths(codec, *retained),
             "next_commands": _next_commands_for_phase(str(final_root), phase_name),
         }
+
+    _require_managed_restore_writes(**_ctx(tail_kind, (stage_path, final_root)))
 
     # ---------------- P2a: reserved -> stage_owned ----------------
     if "stage_owned" not in history:
@@ -1820,12 +1941,22 @@ def _advance_to_published_hold(
                 cursor = cursor / seg
                 if not cursor.exists():
                     _probe_capacity(
-                        cursor.parent, 0, metadata_only=True, codec=codec, batch_ctx=ctx_r
+                        cursor.parent,
+                        0,
+                        metadata_only=True,
+                        codec=codec,
+                        batch_ctx=ctx_r,
+                        expected_identity=parent_h.identity,
                     )
                     cursor.mkdir(mode=0o700)
-                    _fsync_dir_handle(parent_h, cursor.parent, batch_ctx=ctx_r)
                 seg_id = observe_entity(cursor, "directory")
+                # A prior mkdir can be visible even if its parent barrier failed.
+                _fsync_dir_handle(parent_h, cursor.parent, batch_ctx=ctx_r)
                 created_chain.append(DirRefV1(codec.from_path(cursor), seg_id))
+            except OSError as exc:
+                raise _io_failure(
+                    exc, f"无法准备恢复目标的待建父目录：{cursor}", **ctx_r
+                ) from exc
             finally:
                 parent_h.close()
 
@@ -1845,10 +1976,25 @@ def _advance_to_published_hold(
                         f"stage_owned 提交前发现非空暂存目录，拒绝凭名字认领或删除：{stage_path}",
                         **_ctx("reserved", (stage_path,)),
                     )
+                _probe_capacity(
+                    parent_path,
+                    0,
+                    metadata_only=True,
+                    codec=codec,
+                    batch_ctx=ctx_r,
+                    expected_identity=p_handle.identity,
+                )
                 stage_path.rmdir()
                 _fsync_dir_handle(p_handle, parent_path, batch_ctx=ctx_r)
 
-            _probe_capacity(parent_path, 0, metadata_only=True, codec=codec, batch_ctx=ctx_r)
+            _probe_capacity(
+                parent_path,
+                0,
+                metadata_only=True,
+                codec=codec,
+                batch_ctx=ctx_r,
+                expected_identity=p_handle.identity,
+            )
             stage_path.mkdir(mode=0o700)
             _fsync_dir_handle(p_handle, parent_path, batch_ctx=_ctx("reserved", (stage_path,)))
             failpoint("FP-P2-AFTER-STAGE-MKDIR", path=stage_path)
@@ -1940,22 +2086,6 @@ def _advance_to_published_hold(
                     **ctx_s,
                 )
 
-            _probe_capacity(
-                stage_path,
-                len(token_bytes),
-                metadata_only=False,
-                codec=codec,
-                batch_ctx=ctx_s,
-            )
-            _write_control_file_4window(
-                stage_path,
-                s_handle,
-                TOKEN_LAYOUT,
-                token_bytes,
-                prefix_tag="TOKEN",
-                batch_ctx=ctx_s,
-            )
-
             backup_root = Path(reserved.plan.backup_root.path.text)
             if not backup_root.is_dir():
                 raise _fail("restore_failed", f"封存前原备份目录不可访问：{backup_root}", **ctx_s)
@@ -1967,10 +2097,9 @@ def _advance_to_published_hold(
                     "restore_failed", f"原备份目录无法打开：{backup_root}", cause=exc, **ctx_s
                 ) from exc
 
-            # 检查暂存目录内无未知文件，计算尚需复制字节并校验容量。
+            # 核对已有复制内容，再按完整待写字节检查 token 与 copy 的容量。
             expected_file_map = {f.path: f for f in reserved.copy_inventory.files}
             expected_dir_set = set(reserved.copy_inventory.directories)
-            remaining_bytes = 0
             verified_existing: set[tuple[str, ...]] = set()
 
             stack = [stage_path]
@@ -1978,7 +2107,7 @@ def _advance_to_published_hold(
                 cur = stack.pop()
                 for child in cur.iterdir():
                     rel = child.relative_to(stage_path).parts
-                    if rel == TOKEN_LAYOUT.formal:
+                    if rel in (TOKEN_LAYOUT.formal, TOKEN_LAYOUT.temporary):
                         continue
                     if child.is_symlink() or child.is_junction():
                         raise _fail("record_corrupt", f"暂存目录内发现非法链接：{child}", **ctx_s)
@@ -2001,16 +2130,28 @@ def _advance_to_published_hold(
                             "record_corrupt", f"暂存目录内发现非法特殊节点：{child}", **ctx_s
                         )
 
-            for rel, spec in expected_file_map.items():
-                if rel not in verified_existing:
-                    remaining_bytes += spec.size
+            remaining_bytes = sum(
+                spec.size for rel, spec in expected_file_map.items() if rel not in verified_existing
+            )
+            _write_control_file_4window(
+                stage_path,
+                s_handle,
+                TOKEN_LAYOUT,
+                token_bytes,
+                prefix_tag="TOKEN",
+                codec=codec,
+                batch_ctx=ctx_s,
+                pending_copy_bytes=remaining_bytes,
+            )
 
+            # Token durability and concurrent disk use may have changed available bytes.
             _probe_capacity(
                 stage_path,
-                remaining_bytes + 4096,
+                remaining_bytes,
                 metadata_only=False,
                 codec=codec,
                 batch_ctx=ctx_s,
+                expected_identity=s_handle.identity,
             )
 
             # 创建派生子目录
@@ -2046,7 +2187,12 @@ def _advance_to_published_hold(
                 op_access._add_child(d_lock)
                 has_db_entity_lock = True
 
-            if ("events.db",) not in verified_existing:
+            if ("events.db",) in verified_existing:
+                # A complete copy can precede a failed file barrier. Verify and
+                # flush the existing D without truncating or replacing it.
+                _fsync_file_path(stage_db, batch_ctx=ctx_s)
+                d_handle.verify_path(stage_db)
+            else:
                 rw_fd = os.open(
                     stage_db,
                     os.O_WRONLY
@@ -2073,22 +2219,19 @@ def _advance_to_published_hold(
 
             # 复制并校验其余业务材料文件
             for entry in reserved.copy_inventory.files:
-                if entry.path == ("events.db",) or entry.path in verified_existing:
+                if entry.path == ("events.db",):
+                    continue
+                dst_file = stage_path / Path(*entry.path)
+                if entry.path in verified_existing:
+                    _fsync_file_path(dst_file, batch_ctx=ctx_s)
                     continue
                 src_file = backup_root / Path(*entry.path)
-                dst_file = stage_path / Path(*entry.path)
-                if dst_file.exists():
-                    dst_file.unlink()
                 try:
+                    if dst_file.exists():
+                        dst_file.unlink()
                     sha, sz = backup_mod._copy_file_verified(src_file, dst_file)
                 except OSError as exc:
-                    cat = "capacity_unavailable" if exc.errno == errno.ENOSPC else "restore_failed"
-                    raise _fail(
-                        cat,
-                        f"复制恢复材料失败：{dst_file}（{exc}）",
-                        cause=exc,
-                        **ctx_s,
-                    ) from exc
+                    raise _io_failure(exc, f"复制恢复材料失败：{dst_file}", **ctx_s) from exc
                 if sz != entry.size or sha != entry.sha256:
                     raise _fail("binding_mismatch", f"复制材料与清单不符：{dst_file}", **ctx_s)
 
@@ -2216,19 +2359,13 @@ def _advance_to_published_hold(
                 op_access._add_child(d_lock)
                 has_db_entity_lock = True
 
-            _probe_capacity(
-                stage_path,
-                len(origin_bytes),
-                metadata_only=False,
-                codec=codec,
-                batch_ctx=ctx_sh,
-            )
             _write_control_file_4window(
                 stage_path,
                 s_handle,
                 ORIGIN_LAYOUT,
                 origin_bytes,
                 prefix_tag="MARKER",
+                codec=codec,
                 batch_ctx=ctx_sh,
             )
 
@@ -2244,7 +2381,14 @@ def _advance_to_published_hold(
                 raise _fail(
                     "binding_mismatch", "发布前原目标状态不再匹配预约时的 absent/empty E", **ctx_sh
                 )
-            _probe_capacity(parent_path, 0, metadata_only=True, codec=codec, batch_ctx=ctx_sh)
+            _probe_capacity(
+                parent_path,
+                0,
+                metadata_only=True,
+                codec=codec,
+                batch_ctx=ctx_sh,
+                expected_identity=p_handle.identity,
+            )
 
             intent_payload = PublishIntentV1(
                 sealed_sha256=sealed_sha,
@@ -2285,11 +2429,29 @@ def _advance_to_published_hold(
     # ---------------- P4b + P5: publish_intent -> published_hold ----------------
     intent_ev = history["publish_intent"]
     intent: PublishIntentV1 = intent_ev.payload
-    ctx_pi = _ctx("publish_intent", (stage_path, final_root))
-    _verify_placement_ancestors(placement, batch_ctx=ctx_pi)
+    ctx_pi = _ctx("publish_intent")
 
-    p_handle = open_entity(parent_path, "directory")
+    def publication_failure(
+        category: ErrorCategory, message: str, cause: BaseException | None
+    ) -> RestoreOperationError:
+        return _fail(
+            category,
+            f"发布收尾未完成、仍隔离：{message}",
+            batch_id=batch_id,
+            phase="publish_intent",
+            plan_sha256=plan_sha256,
+            retained_paths=_retained_paths(codec, stage_path, final_root),
+            next_commands=((
+                "tianshu", "data", "restore-resume", "--data-root", str(final_root),
+                "--batch", batch_id,
+            ),),
+            cause=cause,
+        )
+
+    p_handle = None
     try:
+        _verify_placement_ancestors(placement, batch_ctx=ctx_pi)
+        p_handle = open_entity(parent_path, "directory")
         if p_handle.identity != owned.parent.identity:
             raise _fail("binding_mismatch", "发布期间稳定父目录 P 身份不符", **ctx_pi)
 
@@ -2298,8 +2460,9 @@ def _advance_to_published_hold(
 
         if stage_exists:
             s_check = open_entity(stage_path, "directory")
-            d_check = open_entity(stage_path / "events.db", "file")
+            d_check = None
             try:
+                d_check = open_entity(stage_path / "events.db", "file")
                 if (
                     s_check.identity != intent.future_root_identity
                     or d_check.identity != intent.future_database_identity
@@ -2314,7 +2477,8 @@ def _advance_to_published_hold(
                     op_access._add_child(d_lock)
                     has_db_entity_lock = True
             finally:
-                d_check.close()
+                if d_check is not None:
+                    d_check.close()
                 s_check.close()
 
             if final_exists:
@@ -2335,19 +2499,34 @@ def _advance_to_published_hold(
                         "publish_intent 后空目标目录 E 已被替换或变为非空",
                         **ctx_pi,
                     )
-                for sub in empty_subdirs_postorder:
-                    sub.rmdir()
-                final_root.rmdir()
+                _probe_capacity(
+                    parent_path,
+                    0,
+                    metadata_only=True,
+                    codec=codec,
+                    batch_ctx=ctx_pi,
+                    expected_identity=p_handle.identity,
+                )
+                for directory in (*empty_subdirs_postorder, final_root):
+                    try:
+                        directory.rmdir()
+                    except OSError as exc:
+                        raise _io_failure(exc, f"无法移除已核验的空目标目录：{directory}") from exc
                 _fsync_dir_handle(p_handle, parent_path, batch_ctx=ctx_pi)
                 failpoint("FP-AFTER-EMPTY-RMDIR", path=final_root)
 
             # 注意：Windows 下重命名目录前不能持有目录或其内部文件的原生句柄，
             # 但外置锁根下的 namespace + entity 锁全程持续持有不释放！
-            _probe_capacity(parent_path, 0, metadata_only=True, codec=codec, batch_ctx=ctx_pi)
-            _atomic_publish_directory(stage_path, final_root, batch_ctx=ctx_pi)
-            _fsync_dir_handle(
-                p_handle, parent_path, batch_ctx=_ctx("publish_intent", (final_root,))
+            _probe_capacity(
+                parent_path,
+                0,
+                metadata_only=True,
+                codec=codec,
+                batch_ctx=ctx_pi,
+                expected_identity=p_handle.identity,
             )
+            _atomic_publish_directory(stage_path, final_root, batch_ctx=ctx_pi)
+            _fsync_dir_handle(p_handle, parent_path, batch_ctx=ctx_pi)
             failpoint("FP-RENAME", path=final_root)
         else:
             if not final_exists:
@@ -2356,29 +2535,27 @@ def _advance_to_published_hold(
                     "publish_intent 后暂存目录与最终目录同时缺失，无法恢复",
                     **ctx_pi,
                 )
-            _fsync_dir_handle(
-                p_handle, parent_path, batch_ctx=_ctx("publish_intent", (final_root,))
-            )
+            _fsync_dir_handle(p_handle, parent_path, batch_ctx=ctx_pi)
 
         # P5 最终核对（不依赖外部原备份目录是否仍存在）
-        ctx_p5 = _ctx("publish_intent", (final_root,))
         if stage_path.exists() or stage_path.is_symlink() or stage_path.is_junction():
-            raise _fail("record_corrupt", "发布后暂存目录名仍未消失", **ctx_p5)
+            raise _fail("record_corrupt", "发布后暂存目录名仍未消失", **ctx_pi)
 
         final_s = open_entity(final_root, "directory")
-        final_d = open_entity(final_root / "events.db", "file")
+        final_d = None
         try:
+            final_d = open_entity(final_root / "events.db", "file")
             if (
                 final_s.identity != intent.future_root_identity
                 or final_d.identity != intent.future_database_identity
                 or final_d.link_count != 1
             ):
-                raise _fail("record_corrupt", "最终目录或主库实体身份与预绑定的 S/D 不符", **ctx_p5)
+                raise _fail("record_corrupt", "最终目录或主库实体身份与预绑定的 S/D 不符", **ctx_pi)
             if not has_db_entity_lock:
                 try:
                     d_lock = acquire_entity_access(final_d.identity, exclusive=True)
                 except MaintenanceBusy as exc:
-                    raise _fail("maintenance_busy", str(exc), cause=exc, **ctx_p5) from exc
+                    raise _fail("maintenance_busy", str(exc), cause=exc, **ctx_pi) from exc
                 op_access._add_child(d_lock)
                 has_db_entity_lock = True
 
@@ -2387,7 +2564,7 @@ def _advance_to_published_hold(
                 sealed.binding,
                 allow_token=True,
                 require_origin_bytes=origin_bytes,
-                batch_ctx=ctx_p5,
+                batch_ctx=ctx_pi,
             )
 
             published_payload = PublishedHoldV1(
@@ -2413,7 +2590,7 @@ def _advance_to_published_hold(
                 ),
                 op_access,
                 codec=codec,
-                batch_ctx=ctx_p5,
+                batch_ctx=ctx_pi,
             )
             failpoint("FP-PUBLISHED", path=final_root)
             return RestoreActionResultV1(
@@ -2435,10 +2612,19 @@ def _advance_to_published_hold(
                 ),
             )
         finally:
-            final_d.close()
+            if final_d is not None:
+                final_d.close()
             final_s.close()
+    except RestoreOperationError as exc:
+        raise publication_failure(exc.failure.category, exc.failure.message, exc.raw_cause) from exc
+    except NativeEntityError as exc:
+        raise publication_failure("record_corrupt", str(exc), exc) from exc
+    except OSError as exc:
+        category = "capacity_unavailable" if exc.errno == errno.ENOSPC else "restore_failed"
+        raise publication_failure(category, str(exc), exc) from exc
     finally:
-        p_handle.close()
+        if p_handle is not None:
+            p_handle.close()
 
 
 def apply(
@@ -2459,6 +2645,7 @@ def apply(
             plan_sha256=current_plan.plan_sha256,
         )
 
+    _require_managed_restore_writes(plan_sha256=current_plan.plan_sha256)
     codec = NativePathCodecV1()
     placement = current_plan.inputs.placement
     final_root = Path(placement.canonical_root.text)
@@ -2528,14 +2715,26 @@ def apply(
                         "计划记录了既有 RestoreRegistry，但预约时权威缺失",
                         plan_sha256=current_plan.plan_sha256,
                     )
+                init_ctx = {"plan_sha256": current_plan.plan_sha256}
                 _probe_capacity(
-                    reg_obs.authority_directory,
-                    4096,
-                    metadata_only=False,
-                    codec=codec,
-                    batch_ctx={"plan_sha256": current_plan.plan_sha256},
+                    reg.dot_directory, 0, metadata_only=True, codec=codec, batch_ctx=init_ctx,
                 )
-                present_obs = reg.initialize_under_gate(gate)
+
+                def check_meta_capacity(
+                    location: Path, identity: EntityIdentityV1, meta_size: int,
+                ) -> None:
+                    _probe_capacity(
+                        location,
+                        meta_size,
+                        metadata_only=False,
+                        codec=codec,
+                        batch_ctx=init_ctx,
+                        expected_identity=identity,
+                    )
+
+                present_obs = reg.initialize_under_gate(
+                    gate, check_meta_capacity=check_meta_capacity,
+                )
                 failpoint("FP-INIT", path=reg.path)
             else:
                 present_obs = reg_obs
@@ -2551,18 +2750,12 @@ def apply(
                         "RestoreRegistry 头已在预演后推进，请重新执行 restore-plan",
                         plan_sha256=current_plan.plan_sha256,
                     )
-        except RestoreRegistryBusy as exc:
-            raise _fail(
-                "maintenance_busy", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
-        except RestoreRegistryDurabilityUnavailable as exc:
-            raise _fail(
-                "durability_unavailable", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
-        except RestoreRegistryCorrupt as exc:
-            raise _fail(
-                "record_corrupt", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
+                if not present_obs.events:
+                    # A prior try may have published the name but failed its
+                    # parent-directory barrier before the first reservation.
+                    reg.sync_empty_namespace_under_gate(gate, present_obs)
+        except RestoreRegistryError as exc:
+            raise _registry_failure(exc, plan_sha256=current_plan.plan_sha256) from exc
 
         from .restore_access import _active_scope_blocks
 
@@ -2574,31 +2767,23 @@ def apply(
             )
 
         batch_id = str(uuid.uuid4())
-        stage_name = f".{placement.final_name}.restore-{batch_id}"
-        reserved_payload = ReservedV1(
-            plan=current_plan.inputs,
-            plan_sha256=current_plan.plan_sha256,
-            copy_inventory=current_plan.inputs.copy_inventory,
-            inventory_sha256=current_plan.inputs.inventory_sha256,
-            placement=placement,
-            original_target=current_plan.inputs.original_target,
-            stage_name=stage_name,
-        )
-        reserved_event = RestoreEventV1(
-            version=1,
+        reserved_event = _make_reserved_event(
+            current_plan.inputs,
+            current_plan.plan_sha256,
             registry_id=present_obs.meta.registry_id,
             sequence=present_obs.next_sequence,
-            batch_id=batch_id,
             previous_sha256=present_obs.head_sha256,
-            kind="reserved",
-            payload=reserved_payload,
+            batch_id=batch_id,
         )
+        # Bind errors to the attempt without claiming an unconfirmed reservation.
+        reservation_ctx = {"batch_id": batch_id, "plan_sha256": current_plan.plan_sha256}
         _probe_capacity(
             present_obs.authority_directory,
             len(reserved_event.to_bytes()),
             metadata_only=False,
             codec=codec,
-            batch_ctx={"plan_sha256": current_plan.plan_sha256},
+            batch_ctx=reservation_ctx,
+            expected_identity=present_obs.authority_identity,
         )
         try:
             present_obs = reg.append_event(
@@ -2606,18 +2791,8 @@ def apply(
                 expected=present_obs,
                 operation_access=gate,
             )
-        except RestoreRegistryBusy as exc:
-            raise _fail(
-                "maintenance_busy", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
-        except RestoreRegistryDurabilityUnavailable as exc:
-            raise _fail(
-                "durability_unavailable", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
-        except RestoreRegistryCorrupt as exc:
-            raise _fail(
-                "record_corrupt", str(exc), plan_sha256=current_plan.plan_sha256, cause=exc
-            ) from exc
+        except RestoreRegistryError as exc:
+            raise _registry_failure(exc, **reservation_ctx) from exc
 
         op_access = compose_access(namespace, operation=True)
         namespace = None
@@ -3110,11 +3285,12 @@ def _execute_frozen_cleanup(
         "batch_id": batch_id,
         "phase": "abort_intent",
         "plan_sha256": plan_sha,
-        "retained_paths": (codec.from_path(stage_path),) if stage_path.exists() else (),
+        "retained_paths": _retained_paths(codec, stage_path, final_root),
         "next_commands": _next_commands_for_phase(
             str(final_root), "abort_intent", has_abort_intent=True
         ),
     }
+    _require_managed_restore_writes(**ctx_ab)
 
     _verify_placement_ancestors(placement, batch_ctx=ctx_ab)
     cur_target, _ = _inspect_original_target(final_root, codec, batch_ctx=ctx_ab)
@@ -3277,9 +3453,8 @@ def _execute_frozen_cleanup(
                 try:
                     d_path.rmdir()
                 except OSError as exc:
-                    raise _fail(
-                        "restore_failed", f"清理移除空目录失败：{d_path}", cause=exc, **ctx_ab
-                    ) from exc
+                    ctx_ab["retained_paths"] = _retained_paths(codec, stage_path, final_root)
+                    raise _io_failure(exc, f"清理移除空目录失败：{d_path}", **ctx_ab) from exc
                 if not d_spec.path:
                     failpoint("FP-ABORT-AFTER-STAGE-RMDIR", path=parent_path)
             if d_spec.path:
@@ -3302,6 +3477,7 @@ def _execute_frozen_cleanup(
                 barriers.append(DirectoryBarrierV1(parent_dir_id, d_spec.path))
             else:
                 # 即使 S 此前已缺失，也必须重做稳定父 P 的持久化屏障！
+                ctx_ab["retained_paths"] = _retained_paths(codec, stage_path, final_root)
                 _fsync_dir_handle(p_handle, parent_path, batch_ctx=ctx_ab)
                 failpoint("FP-ABORT-AFTER-PARENT-BARRIER", path=parent_path)
                 accounted.append(())
@@ -3415,15 +3591,16 @@ def abort(
                 next_commands=_next_commands_for_phase(str(final_root), tail.kind),
             )
 
+        codec = NativePathCodecV1()
+        ctx_init = {
+            "batch_id": resolved_bid,
+            "phase": tail.kind,
+            "plan_sha256": plan_sha,
+            "retained_paths": _retained_paths(codec, stage_path, final_root),
+            "next_commands": _next_commands_for_phase(str(final_root), tail.kind),
+        }
+        _require_managed_restore_writes(**ctx_init)
         if "abort_intent" not in history:
-            codec = NativePathCodecV1()
-            ctx_init = {
-                "batch_id": resolved_bid,
-                "phase": tail.kind,
-                "plan_sha256": plan_sha,
-                "retained_paths": (codec.from_path(stage_path),) if stage_path.exists() else (),
-                "next_commands": _next_commands_for_phase(str(final_root), tail.kind),
-            }
             cleanup_plan = _build_cleanup_plan(obs, resolved_bid, codec=codec, batch_ctx=ctx_init)
             cleanup_sha = domain_digest("cleanup", cleanup_plan)
             abort_payload = AbortIntentV1(
@@ -3983,6 +4160,7 @@ def _compute_review_locked(
         checks.append(CheckV1("binding_and_materials", False, (exc.failure.message,)))
         unverifiable.append(exc.failure.message)
 
+    saved_manifest: BackupManifest | None = None
     try:
         manifest_raw = base64.b64decode(sealed.binding.manifest.saved_bytes_b64)
         saved_manifest = BackupManifest.from_dict(json.loads(manifest_raw.decode("utf-8")))
@@ -4033,13 +4211,28 @@ def _compute_review_locked(
             same_src = overlap_key(l_manifest.source_path) == overlap_key(
                 sealed.binding.saved_source_path
             )
+            later_problem: str | None = None
             if not same_src:
-                reason = (
+                later_problem = (
                     f"后续备份源路径 {l_manifest.source_path} 与当前恢复源 "
                     f"{sealed.binding.saved_source_path} 不一致"
                 )
-                checks.append(CheckV1("later_backup", False, (reason,)))
-                unverifiable.append(reason)
+            elif saved_manifest is None:
+                later_problem = "无法取得封存的来源备份清单以确认顺序"
+            elif l_manifest.created_at_ms <= saved_manifest.created_at_ms:
+                later_problem = (
+                    f"后续备份创建时间 {l_manifest.created_at_ms} 必须晚于封存来源备份的"
+                    f"创建时间 {saved_manifest.created_at_ms}（毫秒）"
+                )
+            # 同一追加历史的事件序号不能倒退。相同序号仍可能是较晚的快照。
+            elif l_manifest.event_seq_head < saved_manifest.event_seq_head:
+                later_problem = (
+                    f"后续备份事件序号 {l_manifest.event_seq_head} 小于封存来源备份的"
+                    f"事件序号 {saved_manifest.event_seq_head}，无法确认顺序"
+                )
+            if later_problem is not None:
+                checks.append(CheckV1("later_backup", False, (later_problem,)))
+                unverifiable.append(later_problem)
             else:
                 later_unv: list[str] = []
                 later_objs = _scan_review_objects(
@@ -4429,6 +4622,133 @@ def _unknown_call_targets_on_conn(
     return ws_roots, obj_keys
 
 
+@dataclass(frozen=True)
+class _ReleaseToolIntent:
+    seq: int
+    run_id: str
+    task_id: str | None
+    call_id: str
+    tool_id: str
+
+
+@dataclass
+class _ReleaseBlock:
+    target: str
+    run_id: str
+    call_ids: set[str]
+
+
+def _add_release_block_evidence(
+    conn: sqlite3.Connection,
+    ws_attr: dict[str, _ReleaseBlock],
+    obj_attr: dict[str, _ReleaseBlock],
+    *,
+    run_id: str,
+    task_id: str | None,
+    call_id: str,
+    tool_id: str,
+) -> None:
+    workspaces, objects = _unknown_call_targets_on_conn(
+        conn,
+        run_id=run_id,
+        task_id=task_id,
+        call_id=call_id,
+        tool_id=tool_id,
+    )
+    for path in workspaces:
+        ws_attr.setdefault(overlap_key(path), _ReleaseBlock(path, run_id, set())).call_ids.add(
+            call_id
+        )
+    for obj in objects:
+        obj_attr.setdefault(obj, _ReleaseBlock(obj, run_id, set())).call_ids.add(call_id)
+
+
+def _scan_release_tool_history(
+    conn: sqlite3.Connection,
+    final_root: Path,
+    binding: BindingV1,
+    pre_seq_head: int,
+    *,
+    batch_ctx: dict[str, Any],
+) -> tuple[
+    list[_ReleaseToolIntent],
+    dict[tuple[str, str], int],
+    dict[str, _ReleaseBlock],
+    dict[str, _ReleaseBlock],
+]:
+    """A saved unknown result requires a block, not another tool.result."""
+    from .tools import SPECS
+
+    source_root = Path(binding.saved_source_path)
+    intents: list[_ReleaseToolIntent] = []
+    intent_heads: dict[tuple[str, str], _ReleaseToolIntent] = {}
+    result_heads: dict[tuple[str, str], int] = {}
+    ws_attr: dict[str, _ReleaseBlock] = {}
+    obj_attr: dict[str, _ReleaseBlock] = {}
+    for row in conn.execute(
+        "SELECT e.seq, e.run_id, e.task_id, r.task_id AS run_task_id, e.type, "
+        "e.payload AS payload_inline, e.payload_ref, e.payload_hash "
+        "FROM events e LEFT JOIN runs r ON e.run_id = r.run_id WHERE e.seq <= ? AND "
+        "(e.type IN ('tool.intent', 'tool.result') OR (e.actor_kind='human' AND "
+        "e.type IN ('recovery.unblocked', 'recovery.object_unblocked'))) ORDER BY e.seq",
+        (pre_seq_head,),
+    ):
+        seq, etype = int(row["seq"]), str(row["type"])
+        try:
+            payload = read_saved_event_payload(
+                final_root,
+                row,
+                source_root=source_root,
+                source_aliases=binding.source_aliases,
+            )
+        except BackupError as exc:
+            raise _fail(
+                "record_corrupt", f"无法核验已保存的对账事件 seq={seq}", **batch_ctx
+            ) from exc
+        # A later explicit clearance retires evidence for just that target.
+        if etype == "recovery.unblocked":
+            if workspace := payload.get("workspace"):
+                ws_attr.pop(overlap_key(workspace), None)
+            continue
+        if etype == "recovery.object_unblocked":
+            if obj := payload.get("object"):
+                obj_attr.pop(obj, None)
+            continue
+
+        run_id, call_id = str(row["run_id"]), str(payload["call_id"])
+        key = (run_id, call_id)
+        task_id = str(row["task_id"]) if row["task_id"] else None
+        if etype == "tool.intent":
+            intent = _ReleaseToolIntent(seq, run_id, task_id, call_id, str(payload["tool_id"]))
+            intents.append(intent)
+            intent_heads[key] = intent
+            continue
+        result_heads[key] = seq
+        if payload.get("effect_state") != "unknown":
+            continue
+        prior_intent = intent_heads.get(key)
+        tool_id = prior_intent.tool_id if prior_intent is not None else payload.get("tool_id")
+        if not tool_id:
+            raise _fail("record_corrupt", f"unknown 结果 seq={seq} 缺少工具归属", **batch_ctx)
+        spec = SPECS.get(tool_id)
+        if spec is not None and spec.side_effect_level == "pure":
+            continue
+        if prior_intent is not None and prior_intent.task_id:
+            task_id = prior_intent.task_id
+        if task_id is None and row["run_task_id"]:
+            task_id = str(row["run_task_id"])
+        _add_release_block_evidence(
+            conn,
+            ws_attr,
+            obj_attr,
+            run_id=run_id,
+            task_id=task_id,
+            call_id=call_id,
+            tool_id=tool_id,
+        )
+    return intents, result_heads, ws_attr, obj_attr
+
+
 def _plan_release_reconciliation(
     final_root: Path,
     binding: BindingV1,
@@ -4497,80 +4817,41 @@ def _plan_release_reconciliation(
             else []
         )
 
-        source_root = Path(binding.saved_source_path)
-        intents: list[dict[str, Any]] = []
-        last_result: dict[tuple[str, str], int] = {}
-        for row in conn.execute(
-            "SELECT seq, run_id, task_id, type, payload AS payload_inline, "
-            "payload_ref, payload_hash FROM events "
-            "WHERE type IN ('tool.intent', 'tool.result') ORDER BY seq"
-        ):
-            seq = int(row["seq"])
-            etype = str(row["type"])
-            run_id = str(row["run_id"])
-            payload = read_saved_event_payload(
-                final_root,
-                row,
-                source_root=source_root,
-                source_aliases=binding.source_aliases,
-            )
-            call_id = str(payload["call_id"])
-            if etype == "tool.result":
-                last_result[(run_id, call_id)] = seq
-            else:
-                intents.append(
-                    {
-                        "seq": seq,
-                        "run_id": run_id,
-                        "task_id": str(row["task_id"]) if row["task_id"] else None,
-                        "call_id": call_id,
-                        "tool_id": str(payload["tool_id"]),
-                    }
-                )
+        from .tools import SPECS
 
+        intents, last_result, ws_attr, obj_attr = _scan_release_tool_history(
+            conn, final_root, binding, seq_head, batch_ctx=batch_ctx,
+        )
         active_ws, active_objs = _scan_active_blocks_on_conn(conn, seq_head)
         active_ws_keys = {overlap_key(w) for w in active_ws}
-        new_blocked_ws: set[str] = set()
-        new_blocked_objs: set[str] = set()
         dispositions: list[ReconcileIntentDispositionV1] = []
 
         for item in intents:
-            if last_result.get((item["run_id"], item["call_id"]), 0) >= item["seq"]:
+            if last_result.get((item.run_id, item.call_id), 0) >= item.seq:
                 continue
-            from .tools import SPECS
-
-            spec = SPECS.get(item["tool_id"])
+            spec = SPECS.get(item.tool_id)
             proven_unsent = (
                 (spec is not None and spec.side_effect_level == "pure")
-                or _dispatch_proven_unsent(conn, item["run_id"], item["call_id"])
+                or _dispatch_proven_unsent(conn, item.run_id, item.call_id)
             )
             disp_val = "none_applied" if proven_unsent else "unknown"
             dispositions.append(
                 ReconcileIntentDispositionV1(
-                    run_id=item["run_id"],
-                    call_id=item["call_id"],
-                    seq=item["seq"],
-                    tool_id=item["tool_id"],
+                    run_id=item.run_id,
+                    call_id=item.call_id,
+                    seq=item.seq,
+                    tool_id=item.tool_id,
                     disposition=disp_val,
                 )
             )
             if disp_val == "unknown":
-                ws_list, obj_list = _unknown_call_targets_on_conn(
-                    conn,
-                    run_id=item["run_id"],
-                    task_id=item["task_id"],
-                    call_id=item["call_id"],
-                    tool_id=item["tool_id"],
+                _add_release_block_evidence(
+                    conn, ws_attr, obj_attr, run_id=item.run_id, task_id=item.task_id,
+                    call_id=item.call_id, tool_id=item.tool_id,
                 )
-                for ws in ws_list:
-                    wkey = overlap_key(ws)
-                    if wkey not in active_ws_keys:
-                        active_ws_keys.add(wkey)
-                        new_blocked_ws.add(ws)
-                for obj in obj_list:
-                    if obj not in active_objs:
-                        active_objs.add(obj)
-                        new_blocked_objs.add(obj)
+
+        new_blocked_ws = [attr.target for key, attr in ws_attr.items() if key not in active_ws_keys]
+        new_blocked_objs = obj_attr.keys() - active_objs
 
         sorted_disps = tuple(
             sorted(
@@ -4599,24 +4880,17 @@ def _build_expected_r2_events(
     *,
     batch_id: str,
     reconcile_plan: ReconcilePlanV1,
-    pre_seq_head: int,
+    intent_task_map: dict[int, str | None],
+    ws_attr: dict[str, _ReleaseBlock],
+    obj_attr: dict[str, _ReleaseBlock],
+    batch_ctx: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """从不可变历史前缀与持久投影键确定性生成阶段 R2 应追加的事件序列。"""
     from .events import canonical_bytes, sha256_hex
 
     ts = reconcile_plan.reconciled_at_ms
     tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-
-    intent_task_map: dict[int, str | None] = {}
-    for row in conn.execute(
-        "SELECT seq, task_id FROM events WHERE seq <= ? AND type='tool.intent'",
-        (pre_seq_head,),
-    ):
-        intent_task_map[int(row["seq"])] = str(row["task_id"]) if row["task_id"] else None
-
     expected: list[dict[str, Any]] = []
-    ws_attr: dict[str, tuple[str, list[str]]] = {}
-    obj_attr: dict[str, tuple[str, list[str]]] = {}
 
     # 1) 未决工具意图 -> tool.result
     for disp in reconcile_plan.unresolved_intents:
@@ -4637,23 +4911,10 @@ def _build_expected_r2_events(
                 "effect_state": "unknown",
                 "output": {"reason": "restore.reconciled_unknown", "batch_id": batch_id},
             }
-            ws_list, obj_list = _unknown_call_targets_on_conn(
-                conn,
-                run_id=disp.run_id,
-                task_id=t_id,
-                call_id=disp.call_id,
-                tool_id=disp.tool_id,
+            _add_release_block_evidence(
+                conn, ws_attr, obj_attr, run_id=disp.run_id, task_id=t_id,
+                call_id=disp.call_id, tool_id=disp.tool_id,
             )
-            for ws in ws_list:
-                prev_run, cids = ws_attr.get(ws, (disp.run_id, []))
-                if disp.call_id not in cids:
-                    cids.append(disp.call_id)
-                ws_attr[ws] = (prev_run, cids)
-            for obj in obj_list:
-                prev_run, cids = obj_attr.get(obj, (disp.run_id, []))
-                if disp.call_id not in cids:
-                    cids.append(disp.call_id)
-                obj_attr[obj] = (prev_run, cids)
 
         expected.append(
             {
@@ -4670,10 +4931,12 @@ def _build_expected_r2_events(
 
     # 1b) 新增目录与 MCP 对象阻断事件
     for ws in reconcile_plan.blocked_workspaces:
-        b_run_id, cids = ws_attr.get(ws, ("", []))
+        evidence = ws_attr.get(overlap_key(ws))
+        if evidence is None:
+            raise _fail("binding_mismatch", "工作区阻断计划缺少调用归属", **batch_ctx)
         expected.append(
             {
-                "run_id": b_run_id,
+                "run_id": evidence.run_id,
                 "task_id": None,
                 "type": "recovery.blocked",
                 "ts": ts,
@@ -4681,7 +4944,7 @@ def _build_expected_r2_events(
                 "actor_id": "",
                 "payload": {
                     "workspace": ws,
-                    "call_ids": sorted(cids),
+                    "call_ids": sorted(evidence.call_ids),
                     "reason": "restore.release_reconciled",
                 },
                 "idem_key": None,
@@ -4689,10 +4952,12 @@ def _build_expected_r2_events(
         )
 
     for obj in reconcile_plan.blocked_objects:
-        b_run_id, cids = obj_attr.get(obj, ("", []))
+        evidence = obj_attr.get(obj)
+        if evidence is None:
+            raise _fail("binding_mismatch", "MCP 对象阻断计划缺少调用归属", **batch_ctx)
         expected.append(
             {
-                "run_id": b_run_id,
+                "run_id": evidence.run_id,
                 "task_id": None,
                 "type": "recovery.object_blocked",
                 "ts": ts,
@@ -4700,7 +4965,7 @@ def _build_expected_r2_events(
                 "actor_id": "",
                 "payload": {
                     "object": obj,
-                    "call_ids": sorted(cids),
+                    "call_ids": sorted(evidence.call_ids),
                     "reason": "restore.release_reconciled",
                 },
                 "idem_key": None,
@@ -4803,57 +5068,6 @@ def _build_expected_r2_events(
     return expected
 
 
-def _verify_events_prefix_matches_scope(
-    db_path: Path,
-    scope: ScopeManifestV1,
-    pre_seq_head: int,
-    *,
-    batch_ctx: dict[str, Any],
-) -> None:
-    events_rel = next((r for r in scope.relations if r.name == "events"), None)
-    if events_rel is None:
-        raise _fail("record_corrupt", "ScopeManifestV1 缺少 events 表摘要", **batch_ctx)
-    conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
-    conn.text_factory = bytes
-    try:
-        ddl_row = conn.execute(
-            "SELECT typeof(sql), sql, CAST(sql AS BLOB) FROM sqlite_schema "
-            "WHERE type='table' AND name='events'"
-        ).fetchone()
-        if ddl_row is None:
-            raise _fail("record_corrupt", "主库缺少 events 表定义", **batch_ctx)
-        ddl_tag = ddl_row[0].decode("ascii")
-        ddl_val = sql_value_from_sqlite(
-            ddl_tag, ddl_row[1], text_bytes=ddl_row[2] if ddl_tag == "text" else None
-        )
-        select_exprs = []
-        for col in events_rel.columns:
-            col_esc = col.name.replace('"', '""')
-            select_exprs.append(f'typeof("{col_esc}"), "{col_esc}", CAST("{col_esc}" AS BLOB)')
-        typed_rows: list[tuple[SqlValueV1, ...]] = []
-        query = f'SELECT {", ".join(select_exprs)} FROM "events" WHERE seq <= ?'
-        for data_row in conn.execute(query, (pre_seq_head,)):
-            row_vals: list[SqlValueV1] = []
-            for c_idx in range(len(events_rel.columns)):
-                tag = data_row[c_idx * 3].decode("ascii")
-                val = data_row[c_idx * 3 + 1]
-                tbytes = data_row[c_idx * 3 + 2] if tag == "text" else None
-                row_vals.append(sql_value_from_sqlite(tag, val, text_bytes=tbytes))
-            typed_rows.append(tuple(row_vals))
-        sql_rel = make_sql_relation("events", events_rel.columns, ddl_val, tuple(typed_rows))
-        if (
-            len(sql_rel.rows) != events_rel.row_count
-            or domain_digest("sql-relation", sql_rel) != events_rel.rows_sha256
-        ):
-            raise _fail(
-                "record_corrupt",
-                "主库历史事件前缀已偏离封存 BindingV1",
-                **batch_ctx,
-            )
-    finally:
-        conn.close()
-
-
 def _derive_run_effect_state(
     conn: sqlite3.Connection,
     run_id: str,
@@ -4901,16 +5115,63 @@ def _budget_account_chain(conn: sqlite3.Connection, account_id: str) -> list[str
     return chain
 
 
+def _verify_release_proof(
+    conn: sqlite3.Connection, intent_sha: str, batch_ctx: dict[str, Any]
+) -> str:
+    try:
+        return release_proof.verify(conn, intent_sha)
+    except release_proof.ReleaseProofIntentMismatch as exc:
+        raise _fail("binding_mismatch", str(exc), **batch_ctx) from exc
+    except release_proof.ReleaseProofError as exc:
+        raise _fail("record_corrupt", str(exc), **batch_ctx) from exc
+    except (sqlite3.Error, UnicodeError, ValueError) as exc:
+        raise _fail("record_corrupt", "主库 R2 事务见证不可读取", **batch_ctx) from exc
+
+
+def _check_release_tail(
+    conn: sqlite3.Connection,
+    expected_events: list[dict[str, Any]],
+    pre_seq_head: int,
+    *,
+    batch_ctx: dict[str, Any],
+) -> None:
+    rows = conn.execute(
+        "SELECT e.seq, e.run_id, e.task_id, e.type, e.ts, e.actor_kind, e.actor_id, "
+        "e.payload, e.payload_ref, e.payload_hash, e.parent_seq, e.idem_key, v.type, v.version "
+        "FROM events e LEFT JOIN event_versions v ON v.seq=e.seq WHERE e.seq>? ORDER BY e.seq",
+        (pre_seq_head,),
+    )
+    for seq, ev in enumerate(expected_events, start=pre_seq_head + 1):
+        expected = (
+            seq, ev["run_id"], ev["task_id"], ev["type"], ev["ts"], ev["actor_kind"],
+            ev["actor_id"], ev["payload_json"], None, ev["payload_hash"], None, ev["idem_key"],
+            ev["type"], ev["version"],
+        )
+        actual = rows.fetchone()
+        if actual is None or any(
+            type(a) is not type(b) or a != b for a, b in zip(actual, expected, strict=True)
+        ):
+            raise _fail("record_corrupt", f"R2 尾事件 seq={seq} 偏离确定性计划", **batch_ctx)
+    # Also refuse orphan version rows in the tail.
+    if rows.fetchone() is not None or conn.execute(
+        "SELECT 1 FROM event_versions v LEFT JOIN events e ON e.seq=v.seq "
+        "WHERE v.seq>? AND e.seq IS NULL LIMIT 1",
+        (pre_seq_head,),
+    ).fetchone() is not None:
+        raise _fail("record_corrupt", "R2 收口产生额外尾事件或孤立版本行", **batch_ctx)
+
+
 def _execute_release_reconciliation(
     final_root: Path,
     d_handle: NativeEntityHandle,
     sealed: SealedHoldV1,
     rel_intent: ReleaseIntentV1,
     *,
+    intent_sha: str,
     batch_id: str,
     batch_ctx: dict[str, Any],
-) -> None:
-    """阶段 R2：主库单事务 append-only 对账收口（支持崩溃重入幂等验证）。"""
+) -> tuple[str, DatabaseBytesV1]:
+    """阶段 R2：把确定性对账及其完整见证放入同一 SQLite 事务。"""
     from . import authority
     from .authority import AuthorityUnavailable, AuthorityWriteFailed
 
@@ -4919,53 +5180,89 @@ def _execute_release_reconciliation(
     rplan = rel_intent.reconcile_plan
     ts = rplan.reconciled_at_ms
 
-    # 检查是否存在未提交崩溃残留伴随日志：打开普通读写连接触发 SQLite 原生回滚后重核字节/状态。
-    has_companions = any(
-        final_db.with_name(final_db.name + sfx).exists() for sfx in ("-journal", "-wal", "-shm")
-    )
-    if has_companions:
-        rec_conn = sqlite3.connect(str(final_db), isolation_level=None, timeout=0)
+    # Native recovery may roll back a crashed DELETE-mode transaction. Do not
+    # checkpoint committed data (including on close) before reentry verifies it.
+    companions: dict[str, int] = {}
+    for suffix in ("-journal", "-wal", "-shm"):
+        path = final_db.with_name(final_db.name + suffix)
         try:
-            rec_conn.execute("SELECT COUNT(*) FROM sqlite_schema").fetchone()
-            jmode = str(rec_conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-            if jmode == "wal":
-                rec_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                rec_conn.execute("PRAGMA journal_mode=DELETE")
-        finally:
-            rec_conn.close()
-        _fsync_file_path(final_db, batch_ctx=batch_ctx)
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise _fail("record_corrupt", "无法检查主库伴随日志", **batch_ctx) from exc
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_junction():
+            raise _fail("record_corrupt", "主库伴随日志不是单硬链接普通文件", **batch_ctx)
+        companions[suffix] = info.st_size
 
-    cur_size = final_db.stat().st_size
-    cur_sha = sha256_file(final_db)
-    untouched = (
-        cur_size == sealed.binding.database_bytes.size
-        and cur_sha == sealed.binding.database_bytes.sha256
-    )
-
-    conn = sqlite3.connect(str(final_db), isolation_level=None, timeout=0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=0")
-    conn.execute("PRAGMA synchronous=FULL")
+    uri = final_db.resolve().as_uri() + "?mode=rw"
+    conn = None
     try:
-        expected_events = _build_expected_r2_events(
-            conn,
-            batch_id=batch_id,
-            reconcile_plan=rplan,
-            pre_seq_head=pre_seq_head,
+        conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=0)
+        conn.row_factory = sqlite3.Row
+        conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+        conn.execute("PRAGMA busy_timeout=0")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur_max_seq = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
+            jmode = conn.execute("PRAGMA main.journal_mode").fetchone()[0]
+        except sqlite3.Error as exc:
+            code = exc.sqlite_errorcode & 0xff
+            if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise _fail("maintenance_busy", "主库快照被 SQLite 写者占用", **batch_ctx) from exc
+            if code in {sqlite3.SQLITE_ERROR, sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}:
+                raise _fail("record_corrupt", "主库快照或伴随日志损坏", **batch_ctx) from exc
+            raise
+        if type(cur_max_seq) is not int or cur_max_seq < 0:
+            raise _fail("record_corrupt", "主库事件头损坏", **batch_ctx)
+        if jmode != "wal" and companions.keys() & {"-wal", "-shm"}:
+            raise _fail("record_corrupt", "非 WAL 主库存在异常 WAL 伴随文件", **batch_ctx)
+        untouched = (
+            cur_max_seq == pre_seq_head
+            and final_db.stat().st_size == sealed.binding.database_bytes.size
+            and sha256_file(final_db) == sealed.binding.database_bytes.sha256
         )
-        cur_max_seq = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+        if untouched and companions.get("-wal", 0):
+            # Main-file bytes do not cover pending WAL frames. If WAL exists,
+            # prove its committed view still strictly matches the bound main.
+            main_conn = sqlite3.connect(uri.replace("?mode=rw", "?mode=ro&immutable=1"), uri=True)
+            try:
+                main_conn.execute("BEGIN")
+                untouched = release_proof.state_digest(
+                    conn, intent_sha, include_witness=True
+                ) == release_proof.state_digest(main_conn, intent_sha, include_witness=True)
+            finally:
+                main_conn.close()
 
-        if untouched and cur_max_seq == pre_seq_head:
+        if not untouched:
+            # Verify any committed state before examining its historical evidence or writing.
+            state_sha = _verify_release_proof(conn, intent_sha, batch_ctx)
+
+        intents, _, ws_attr, obj_attr = _scan_release_tool_history(
+            conn, final_root, sealed.binding, pre_seq_head, batch_ctx=batch_ctx,
+        )
+        if untouched:
             proven_unsent_calls = {
                 (d.run_id, d.call_id)
                 for d in rplan.unresolved_intents
                 if d.disposition == "none_applied"
             }
-            conn.execute("BEGIN IMMEDIATE")
             try:
                 cur_uv = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 if cur_uv != rel_intent.pre_release_db_user_version:
                     raise _fail("binding_mismatch", "对账前主库 user_version 发生漂移", **batch_ctx)
+                prefix_sha = release_proof.prefix_digest(conn, pre_seq_head)
+                expected_events = _build_expected_r2_events(
+                    conn,
+                    batch_id=batch_id,
+                    reconcile_plan=rplan,
+                    intent_task_map={intent.seq: intent.task_id for intent in intents},
+                    ws_attr=ws_attr,
+                    obj_attr=obj_attr,
+                    batch_ctx=batch_ctx,
+                )
 
                 for ev in expected_events:
                     cur = conn.execute(
@@ -5124,81 +5421,39 @@ def _execute_release_reconciliation(
                                 (ts, res_id),
                             )
 
-                conn.execute("COMMIT")
+                if release_proof.prefix_digest(conn, pre_seq_head) != prefix_sha:
+                    raise _fail("record_corrupt", "R2 不得改变历史事件或版本行", **batch_ctx)
+                _check_release_tail(conn, expected_events, pre_seq_head, batch_ctx=batch_ctx)
+                state_sha = release_proof.record(conn, intent_sha)
             except BaseException:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
                 raise
-        else:
-            # 中断重入验证：历史前缀逐位匹配封存快照，新增尾部精确等于预期确定性事件。
-            _verify_events_prefix_matches_scope(
-                final_db,
-                sealed.binding.sqlite_scope,
-                pre_seq_head,
-                batch_ctx=batch_ctx,
-            )
-            tail_rows = list(
-                conn.execute(
-                    "SELECT seq, run_id, task_id, type, ts, actor_kind, actor_id, "
-                    "payload_hash, idem_key FROM events WHERE seq > ? ORDER BY seq",
-                    (pre_seq_head,),
-                )
-            )
-            if len(tail_rows) != len(expected_events):
-                raise _fail(
-                    "record_corrupt",
-                    f"release_intent 重入时主库尾部事件条数失配："
-                    f"实际 {len(tail_rows)}，预期 {len(expected_events)}",
-                    **batch_ctx,
-                )
-            for idx, (actual_row, exp_ev) in enumerate(
-                zip(tail_rows, expected_events, strict=True), start=1
-            ):
-                if (
-                    int(actual_row["seq"]) != pre_seq_head + idx
-                    or str(actual_row["run_id"]) != exp_ev["run_id"]
-                    or (
-                        str(actual_row["task_id"])
-                        if actual_row["task_id"] is not None
-                        else None
-                    )
-                    != exp_ev["task_id"]
-                    or str(actual_row["type"]) != exp_ev["type"]
-                    or int(actual_row["ts"]) != exp_ev["ts"]
-                    or str(actual_row["actor_kind"]) != exp_ev["actor_kind"]
-                    or str(actual_row["actor_id"]) != exp_ev["actor_id"]
-                    or str(actual_row["payload_hash"]) != exp_ev["payload_hash"]
-                    or (
-                        str(actual_row["idem_key"])
-                        if actual_row["idem_key"] is not None
-                        else None
-                    )
-                    != exp_ev["idem_key"]
-                ):
-                    raise _fail(
-                        "record_corrupt",
-                        f"release_intent 重入时 seq={actual_row['seq']} 与确定性对账计划不符",
-                        **batch_ctx,
-                    )
-            tables = {
-                str(r[0])
-                for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")
-            }
-            if "leases" in tables:
-                rem_leases = int(conn.execute("SELECT COUNT(*) FROM leases").fetchone()[0])
-                if rem_leases != 0:
-                    raise _fail("record_corrupt", "重入发现主库残留未清理租约", **batch_ctx)
+        post_seq_head = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+        all_active_ws, all_active_objs = _scan_active_blocks_on_conn(conn, post_seq_head)
+        if (
+            not ws_attr.keys() <= {overlap_key(ws) for ws in all_active_ws}
+            or not obj_attr.keys() <= all_active_objs
+        ):
+            # An older intent may omit a required block. Keep it held without rewriting its plan.
+            raise _fail("binding_mismatch", "解除计划没有留下必要的 unknown 阻断", **batch_ctx)
+        failpoint("FP-RELEASE-RECONCILE-BEFORE", path=final_db, only_if=untouched)
+        conn.execute("COMMIT")
+        failpoint("FP-RELEASE-RECONCILE-COMMITTED", path=final_db, only_if=untouched)
 
-        all_active_ws, all_active_objs = _scan_active_blocks_on_conn(
-            conn,
-            pre_seq_head + len(expected_events),
-        )
-        jmode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        checkpoint = tuple(conn.execute("PRAGMA main.wal_checkpoint(TRUNCATE)").fetchone())
+        if checkpoint not in {(0, 0, 0), (0, -1, -1)}:
+            raise _fail("durability_unavailable", "R2 WAL 截断未完成", **batch_ctx)
         if jmode == "wal":
-            conn.execute("PRAGMA journal_mode=DELETE")
+            mode = conn.execute("PRAGMA main.journal_mode=DELETE").fetchone()[0]
+            if mode != "delete":
+                raise _fail("durability_unavailable", "R2 主库未回到自包含日志模式", **batch_ctx)
     except RestoreOperationError:
         raise
+    except release_proof.ReleaseProofIntentMismatch as exc:
+        raise _fail("binding_mismatch", str(exc), **batch_ctx) from exc
+    except release_proof.ReleaseProofError as exc:
+        raise _fail("record_corrupt", str(exc), **batch_ctx) from exc
     except (sqlite3.Error, TianshuError) as exc:
         raise _fail(
             "restore_failed",
@@ -5207,7 +5462,8 @@ def _execute_release_reconciliation(
             **batch_ctx,
         ) from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     _fsync_file_path(final_db, batch_ctx=batch_ctx)
     try:
@@ -5219,6 +5475,8 @@ def _execute_release_reconciliation(
             cause=exc,
             **batch_ctx,
         ) from exc
+
+    checkpoint_bytes = DatabaseBytesV1(final_db.stat().st_size, sha256_file(final_db))
 
     # 同步登记本机用户级 authority 阻断库（幂等；写失败闭锁报错，绝不宣称解除成功）。
     try:
@@ -5235,6 +5493,7 @@ def _execute_release_reconciliation(
         ) from exc
 
     failpoint("FP-RELEASE-RECONCILE", path=final_db)
+    return state_sha, checkpoint_bytes
 
 
 def _make_release_result(
@@ -5354,6 +5613,8 @@ def release(
             }
 
         cur_ctx = _rctx(tail.kind, expect_review_sha256)
+        if tail.kind != "released":
+            _require_managed_restore_writes(**cur_ctx)
 
         from .migrate import writers_active
 
@@ -5537,14 +5798,20 @@ def release(
                 **ctx_ri,
             )
 
-        _execute_release_reconciliation(
+        intent_sha = domain_digest("event", rel_intent_ev)
+        expected_state_sha, checkpoint_bytes = _execute_release_reconciliation(
             final_root,
             d_handle,
             sealed,
             rel_intent,
+            intent_sha=intent_sha,
             batch_id=resolved_bid,
             batch_ctx=ctx_ri,
         )
+
+        # A stale rollback journal after a crash must not undo an R2 fact
+        # that R3 has already handed to ordinary admission.
+        _fsync_dir_handle(s_handle, final_root, batch_ctx=ctx_ri)
 
         # R3 终态重核（.restore-origin.json 逐字节不变，S/D/P 实体不变）
         p_handle.verify_path(parent_path)
@@ -5555,6 +5822,9 @@ def release(
 
         ro_conn = _open_static_readonly_sqlite(final_db, batch_ctx=ctx_ri)
         try:
+            ro_conn.execute("BEGIN")
+            if _verify_release_proof(ro_conn, intent_sha, ctx_ri) != expected_state_sha:
+                raise _fail("record_corrupt", "R3 核验发现 R2 事务见证漂移", **ctx_ri)
             post_uv = int(ro_conn.execute("PRAGMA user_version").fetchone()[0])
             post_seq_head = int(
                 ro_conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
@@ -5565,6 +5835,9 @@ def release(
             raise _fail("record_corrupt", "对账收口后主库 user_version 发生意外变化", **ctx_ri)
 
         post_db_bytes = DatabaseBytesV1(final_db.stat().st_size, sha256_file(final_db))
+        d_handle.verify_path(final_db)
+        if post_db_bytes != checkpoint_bytes:
+            raise _fail("binding_mismatch", "R3 主库字节与 R2 持久化检查点不符", **ctx_ri)
         rplan = rel_intent.reconcile_plan
         counts = ReconciledCountsV1(
             fenced_runs=len(rplan.fenced_run_ids),
@@ -5579,7 +5852,7 @@ def release(
             cancelled_jobs=len(rplan.cancelled_job_ids),
         )
         released_payload = ReleasedV1(
-            release_intent_sha256=domain_digest("event", rel_intent_ev),
+            release_intent_sha256=intent_sha,
             binding_sha256=rel_intent.binding_sha256,
             review_sha256=rel_intent.review_sha256,
             reconcile_plan_sha256=rel_intent.reconcile_plan_sha256,

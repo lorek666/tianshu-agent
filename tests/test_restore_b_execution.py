@@ -14,8 +14,10 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from restore_test_support import requires_managed_restore_writes
 from support import CHILD_TEXT
 
 from tianshu import (
@@ -40,13 +42,20 @@ from tianshu.loop import build_stack
 from tianshu.maintenance import acquire_restore_gate
 from tianshu.memory import MemoryProjection
 from tianshu.permissions import ActionRequest, PolicyEngine
+from tianshu.platform_identity import observe_entity
 from tianshu.resources import MemoryScope
 from tianshu.restore_access import RestoreScopeBusy
 from tianshu.restore_contract import (
     BodySelectorV1,
+    DirRefV1,
+    EntityRefV1,
+    NativePathCodecV1,
+    OriginV1,
+    RegistryMetaV1,
     RestoreResponseV1,
     RestoreResponseV2,
     SqlValueV1,
+    domain_digest,
     validate_event_chain,
 )
 from tianshu.restore_registry import RestoreRegistry, RestoreRegistryCorrupt
@@ -332,6 +341,7 @@ def _refresh_backup_db_entry(backup_dir: Path) -> None:
 # ======================================================================== B01
 
 
+@requires_managed_restore_writes
 def test_b01_two_process_barriers_eventlog_vs_apply_and_reserved_vs_eventlog(tmp_path):
     """B01：真实双进程屏障覆盖『普通先 anchor』与『apply 先 reserved』，无第二空历史。"""
     root, _ = _make_rich_root(tmp_path)
@@ -404,6 +414,7 @@ log.close()
 # ======================================================================== B02
 
 
+@requires_managed_restore_writes
 def test_b02_published_hold_blocks_every_public_material_background_and_alias_entrypoint(
     tmp_path,
 ):
@@ -529,9 +540,7 @@ def test_b02_published_hold_blocks_every_public_material_background_and_alias_en
 # ======================================================================== B03
 
 
-def test_b03_arbitrary_deep_empty_skeleton_over_128_dirs_and_pre_anchor_rejection(tmp_path):
-    """B03：支持 >128 任意空目录骨架导入与普通准入；坏旁证在零 anchor 写前拒绝。"""
-    # 1) 普通新库准入：含 160 个空子目录骨架正常通过；含恢复控制见证则在创建 events.db 前拒绝
+def test_b03_empty_skeleton_allows_ordinary_open_but_origin_prevents_creation(tmp_path):
     bad_root = tmp_path / "bad_new"
     bad_root.mkdir()
     (bad_root / ".restore-origin.json").write_bytes(b"{}")
@@ -549,7 +558,9 @@ def test_b03_arbitrary_deep_empty_skeleton_over_128_dirs_and_pre_anchor_rejectio
     log = EventLog(ok_skeleton / "events.db")
     log.close()
 
-    # 2) 受管恢复：目标为 >128 空目录骨架（EmptyTargetV1）可完整导入并发布为 S/D
+
+@pytest.fixture
+def b03_empty_target(tmp_path):
     root, _ = _make_rich_root(tmp_path, name="target_empty_160")
     bdir = tmp_path / "backup_160"
     create_backup(root, bdir)
@@ -562,7 +573,11 @@ def test_b03_arbitrary_deep_empty_skeleton_over_128_dirs_and_pre_anchor_rejectio
     for idx in range(135):
         (root / f"branch_{idx}" / "leaf").mkdir(parents=True)
 
-    # 先放入一个隐藏文件证明深层非空在预约前即被拒绝
+    return bdir, root, deep
+
+
+def test_b03_plan_handles_deep_empty_tree_and_refuses_hidden_file(b03_empty_target):
+    bdir, root, deep = b03_empty_target
     sneaky = deep / "keep.bin"
     sneaky.write_bytes(b"x")
     with pytest.raises(restore_manager.RestoreOperationError) as exc_info:
@@ -573,6 +588,14 @@ def test_b03_arbitrary_deep_empty_skeleton_over_128_dirs_and_pre_anchor_rejectio
 
     planned = restore_manager.plan(bdir, root)
     assert planned.inputs.original_target.kind == "empty"
+    assert not RestoreRegistry().observe().present
+    assert deep.is_dir() and not (root / "events.db").exists()
+
+
+@requires_managed_restore_writes
+def test_b03_apply_replaces_deep_empty_tree(b03_empty_target):
+    bdir, root, _ = b03_empty_target
+    planned = restore_manager.plan(bdir, root)
     res = restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
     assert res.phase == "published_hold"
     assert (root / "events.db").is_file()
@@ -582,6 +605,7 @@ def test_b03_arbitrary_deep_empty_skeleton_over_128_dirs_and_pre_anchor_rejectio
 # ======================================================================== B04
 
 
+@requires_managed_restore_writes
 def test_b04_unrelated_root_advances_during_stage_copy_and_shared_gate_blocks_apply(
     tmp_path, monkeypatch
 ):
@@ -645,6 +669,7 @@ def test_b04_unrelated_root_advances_during_stage_copy_and_shared_gate_blocks_ap
 # ======================================================================== B05
 
 
+@requires_managed_restore_writes
 def test_b05_dual_anchor_single_missing_or_tampered_witness_fails_closed(tmp_path):
     """B05：删 registry 留 origin、删 origin 留 registry、篡改摘要均闭锁为 record_corrupt。"""
     # 正控：无任何见证的纯净 legacy 根正常打开
@@ -689,11 +714,9 @@ def test_b05_dual_anchor_single_missing_or_tampered_witness_fails_closed(tmp_pat
 # ======================================================================== B06
 
 
-@pytest.mark.parametrize("target_uv", [0, 1, 2])
-def test_b06_accepts_valid_v0_v1_v2_without_mutating_version_and_rejects_tampering(
-    tmp_path, target_uv
-):
-    """B06：合法 v0/v1/v2 均原样导入 held（v1 不静默升级）；篡改 FTS/summary/未引用材料均拒绝。"""
+@pytest.fixture(params=[0, 1, 2], ids=["v0", "v1", "v2"])
+def b06_versioned_backup(tmp_path, request):
+    target_uv = request.param
     root, _ = _make_rich_root(tmp_path, name=f"root_v{target_uv}")
     if target_uv in (1, 2):
         pre_backup = tmp_path / f"pre_mig_{target_uv}"
@@ -719,7 +742,19 @@ def test_b06_accepts_valid_v0_v1_v2_without_mutating_version_and_rejects_tamperi
     create_backup(root, bdir)
     assert verify_backup(bdir).db_user_version == target_uv
     shutil.rmtree(root)
+    return bdir, root, target_uv
 
+
+def test_b06_plans_valid_backup_versions_without_writes(b06_versioned_backup):
+    bdir, root, target_uv = b06_versioned_backup
+    planned = restore_manager.plan(bdir, root)
+    assert planned.verification.db_user_version == target_uv
+    assert not root.exists() and not RestoreRegistry().observe().present
+
+
+@requires_managed_restore_writes
+def test_b06_import_keeps_original_db_version(b06_versioned_backup):
+    bdir, root, target_uv = b06_versioned_backup
     planned = restore_manager.plan(bdir, root)
     applied = restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
     assert applied.phase == "published_hold"
@@ -779,11 +814,90 @@ def test_b06_semantic_and_material_tampering_refused_before_reserved(tmp_path, t
 # ======================================================================== B07
 
 
-def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup(tmp_path):
+@pytest.mark.parametrize(
+    ("candidate_task_count", "candidate_seconds", "problem"),
+    [
+        pytest.param(1, 100, "创建时间", id="older"),
+        pytest.param(3, 200, "创建时间", id="equal-time"),
+        pytest.param(1, 300, "事件序号", id="later-time-earlier-event-head"),
+        pytest.param(3, 300, None, id="strictly-newer"),
+        pytest.param(2, 300, None, id="newer-without-new-events"),
+    ],
+)
+@requires_managed_restore_writes
+def test_b07_later_review_requires_newer_backup(
+    tmp_path, monkeypatch, candidate_task_count, candidate_seconds, problem,
+):
+    root = (tmp_path / "data").resolve()
+    original = tmp_path / "original"
+    candidate = tmp_path / "candidate"
+    task_ids = []
+
+    def seal(destination: Path, seconds: int) -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(backup, "time", SimpleNamespace(time=lambda: seconds))
+            create_backup(root, destination)
+
+    for task_count in range(1, max(2, candidate_task_count) + 1):
+        log = EventLog(root / "events.db", blob_dir=root / "blobs")
+        try:
+            stack = build_stack(log, data_root=root)
+            task_ids.append(stack.tasks.create_task(f"B07 task {task_count}").task_id)
+        finally:
+            log.close()
+        if task_count == 2:
+            seal(original, 200)
+        if task_count == candidate_task_count:
+            seal(candidate, candidate_seconds)
+
+    original_manifest = verify_backup(original).require_ok()
+    candidate_manifest = verify_backup(candidate).require_ok()
+    assert original_manifest.source_path == candidate_manifest.source_path == str(root)
+    assert (original_manifest.created_at_ms, original_manifest.event_seq_head) == (200_000, 2)
+    assert (candidate_manifest.created_at_ms, candidate_manifest.event_seq_head) == (
+        candidate_seconds * 1000, candidate_task_count,
+    )
+    shutil.rmtree(root)
+    planned = restore_manager.plan(original, root)
+    restore_manager.apply(original, root, expect_plan_sha256=planned.plan_sha256)
+    shutil.rmtree(original)  # 复核从已封存的 Binding 取得恢复点，不依赖原备份仍可读。
+
+    if problem is not None:
+        with pytest.raises(restore_manager.RestoreOperationError) as exc_info:
+            restore_manager.review(root, later_backup=candidate)
+        assert exc_info.value.failure.category == "incompatible"
+        assert exc_info.value.failure.phase == "published_hold"
+        review = exc_info.value.partial_review
+        assert review is not None and not review.review_complete
+        check, = (c for c in review.checks if c.name == "later_backup")
+        assert not check.passed and any(problem in item for item in check.evidence)
+        assert not review.known_later_changes
+    else:
+        plain = restore_manager.review(root)
+        review = restore_manager.review(root, later_backup=candidate)
+        assert review.review_complete and review.review_sha256 == plain.review_sha256
+        check, = (c for c in review.checks if c.name == "later_backup")
+        assert check.passed
+        if candidate_task_count == 3:
+            change, = (c for c in review.known_later_changes if c.family == "tasks")
+            task_key_b64 = base64.b64encode(task_ids[-1].encode("utf-8")).decode("ascii")
+            assert change.key == (SqlValueV1("text", task_key_b64),)
+            assert change.evidence == ("added_in_later_backup",)
+        else:
+            assert not review.known_later_changes
+    assert review.held and review.later_forget_delete_history == "completeness_unproven"
+
+
+@requires_managed_restore_writes
+def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup(
+    tmp_path, monkeypatch,
+):
     """B07：review 前后全目录与权威零字节变化；默认脱敏、按 selector 披露；后续备份列出遗忘差异。"""
     root, meta = _make_rich_root(tmp_path)
     b1 = tmp_path / "backup_older"
-    create_backup(root, b1)
+    with monkeypatch.context() as patch:
+        patch.setattr(backup, "time", SimpleNamespace(time=lambda: 100))
+        create_backup(root, b1)
 
     # 在活源上执行记忆擦除并生成较新的备份 B2
     log = EventLog(root / "events.db", blob_dir=root / "blobs")
@@ -796,7 +910,9 @@ def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup
     finally:
         log.close()
     b2 = tmp_path / "backup_later"
-    create_backup(root, b2)
+    with monkeypatch.context() as patch:
+        patch.setattr(backup, "time", SimpleNamespace(time=lambda: 200))
+        create_backup(root, b2)
     shutil.rmtree(root)
 
     # 导入旧备份 B1 至 published_hold
@@ -891,6 +1007,7 @@ def test_b07_held_review_is_zero_write_redacts_by_default_and_diffs_later_backup
         "FP-PUBLISHED-BEFORE",
     ],
 )
+@requires_managed_restore_writes
 def test_b08_crashpoints_exit_77_block_eventlog_and_resume_idempotently(tmp_path, fp):
     """B08：17 个窗口 os._exit(77) 硬退 → 普通打开被拒 → resume 幂等至 published_hold。"""
     root, _ = _make_rich_root(tmp_path, name=f"d_{fp.lower().replace('-', '_')}")
@@ -956,6 +1073,7 @@ def test_b08_crashpoints_exit_77_block_eventlog_and_resume_idempotently(tmp_path
         "FP-ABORTED-BEFORE",
     ],
 )
+@requires_managed_restore_writes
 def test_b08_abort_crashpoints_freeze_cleanup_plan_and_converge_via_resume_or_abort(
     tmp_path, abort_fp
 ):
@@ -998,6 +1116,7 @@ def test_b08_abort_crashpoints_freeze_cleanup_plan_and_converge_via_resume_or_ab
     assert _parse_resp_v1(again.stdout.encode("utf-8")).result == parsed.result
 
 
+@requires_managed_restore_writes
 def test_b08_two_process_apply_abort_barrier_and_unknown_stage_file_refusal(tmp_path):
     """B08：两真实进程证明 apply 持操作独占期间 abort 忙退出；未知 stage 文件拒绝清理且不误删。"""
     root, _ = _make_rich_root(tmp_path)
@@ -1069,57 +1188,764 @@ op_access.close()
 # ======================================================================== B09
 
 
-def test_b09_capacity_unavailable_and_dir_fsync_durability_preservation(tmp_path, monkeypatch):
-    """B09：逐位置容量不足/非法探测拒绝；清理目录 fsync 失败保留 abort_intent 绝不伪报 aborted。"""
+@pytest.fixture
+def b09_backup(tmp_path):
     root, _ = _make_rich_root(tmp_path)
     bdir = tmp_path / "backup"
     create_backup(root, bdir)
     shutil.rmtree(root)
+    return bdir, root
 
-    # 1) 容量为 0 或小于已知字节需求时拒绝且零写
+
+def _b09_crash(bdir, root, failpoint):
+    planned = restore_manager.plan(bdir, root)
+    crashed = _cli(
+        "restore-apply", bdir, "--data-root", root,
+        "--expect-plan", planned.plan_sha256, failpoint=failpoint,
+    )
+    assert crashed.returncode == 77, crashed.stderr
+    obs = RestoreRegistry().observe()
+    stage = root.parent / obs.events[0].payload.stage_name
+    return obs, stage
+
+
+def test_b09_plan_counts_copy_and_prepared_reservation_without_padding(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    reg = RestoreRegistry()
+    initial = restore_manager.plan(bdir, root)
+    exact_copy = sum(f.size for f in initial.inputs.copy_inventory.files)
+    registry_bytes = initial.capacity_checks[1].required_known_bytes
+    registry_free = registry_bytes
+    probes = []
+
+    def disk_free(where):
+        probes.append(where)
+        return exact_copy if where == root.parent else registry_free
+
+    monkeypatch.setattr(restore_manager, "_disk_usage_probe", disk_free)
+    planned = restore_manager.plan(bdir, root)
+    assert planned.plan_sha256 == initial.plan_sha256
+    assert probes == [root.parent, reg.home, root.parent]
+    assert [check.required_known_bytes for check in planned.capacity_checks] == [
+        exact_copy, registry_bytes, 0,
+    ]
+    registry_free -= 1
+    with pytest.raises(restore_manager.RestoreOperationError) as short:
+        restore_manager.plan(bdir, root)
+    assert short.value.failure.category == "capacity_unavailable"
+    assert not root.exists() and not reg.dot_directory.exists()
+
+
+@requires_managed_restore_writes
+def test_b09_planned_reservation_size_matches_persisted_event(b09_backup):
+    bdir, root = b09_backup
+    initial = restore_manager.plan(bdir, root)
+    registry_bytes = initial.capacity_checks[1].required_known_bytes
+    obs, _ = _b09_crash(bdir, root, "FP-RESERVED")
+    assert registry_bytes == len(obs.events[0].to_bytes())
+
+
+@requires_managed_restore_writes
+def test_b09_registry_init_probes_actual_meta_before_sqlite_writes(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    reg = RestoreRegistry()
+    planned = restore_manager.plan(bdir, root)
+    codec = NativePathCodecV1()
+    checked = []
+    short = True
+
+    def disk_free(where):
+        if where.parent != reg.dot_directory or where == reg.authority_directory:
+            return 1 << 40
+        candidate_db = where / "registry.db"
+        assert candidate_db.stat().st_size == 0
+        meta = RegistryMetaV1(
+            1, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            DirRefV1(codec.from_path(reg.home), observe_entity(reg.home, "directory")),
+            DirRefV1(codec.from_path(reg.authority_directory), observe_entity(where, "directory")),
+            EntityRefV1(codec.from_path(reg.path), observe_entity(candidate_db, "file")),
+        )
+        checked.append(len(meta.to_bytes()))
+        return checked[-1] - int(short)
+
+    monkeypatch.setattr(restore_manager, "_disk_usage_probe", disk_free)
+    with pytest.raises(restore_manager.RestoreOperationError) as too_small:
+        restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+    assert too_small.value.failure.category == "capacity_unavailable"
+    assert len(checked) == 1
+    assert not reg.observe().present
+    assert not root.exists()
+    assert not list(root.parent.glob(f".{root.name}.restore-*"))
+
+    short = False
+    result = restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+    assert result.phase == "published_hold"
+    assert len(checked) == 2
+    assert checked[-1] == len(reg.observe().meta_bytes)
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["missing", "partial"])
+@requires_managed_restore_writes
+def test_b09_resume_counts_only_unverified_files_at_full_size(b09_backup, monkeypatch, partial):
+    bdir, root = b09_backup
+    obs, stage = _b09_crash(bdir, root, "FP-STAGE")
+    pending = [f for f in obs.events[0].payload.copy_inventory.files if f.path != ("events.db",)]
+    assert (stage / "events.db").read_bytes() == (bdir / "events.db").read_bytes()
+    if partial:
+        spec = max(pending, key=lambda f: f.size)
+        assert spec.size > 2
+        partial_file = stage.joinpath(*spec.path)
+        partial_file.write_bytes(bdir.joinpath(*spec.path).read_bytes()[:spec.size // 2])
+    exact = sum(f.size for f in pending)
+    free = exact - 1
+    monkeypatch.setattr(
+        restore_manager, "_disk_usage_probe", lambda p: free if p == stage else 1 << 40,
+    )
+    before = _tree_snapshot(stage)
+    with pytest.raises(restore_manager.RestoreOperationError) as short:
+        restore_manager.resume(root)
+    assert short.value.failure.category == "capacity_unavailable"
+    assert short.value.failure.phase == "stage_owned"
+    assert RestoreRegistry().observe().head_sha256 == obs.head_sha256
+    assert _tree_snapshot(stage) == before
+    assert not root.exists()
+
+    free = exact
+    assert restore_manager.resume(root).phase == "published_hold"
+    for spec in pending:
+        assert root.joinpath(*spec.path).read_bytes() == bdir.joinpath(*spec.path).read_bytes()
+
+
+@requires_managed_restore_writes
+def test_b09_temp_token_charged_in_full_before_any_copy_writes(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    obs, stage = _b09_crash(bdir, root, "FP-TOKEN-TMP-PARTIAL")
+    assert obs.events[-1].kind == "stage_owned"
+    token = base64.b64decode(obs.events[-1].payload.token_bytes_b64)
+    tmp_token = stage / ".restore-token.json.tmp"
+    assert 0 < tmp_token.stat().st_size < len(token)
+    exact = sum(f.size for f in obs.events[0].payload.copy_inventory.files) + len(token)
+    free = exact - 1
+    monkeypatch.setattr(
+        restore_manager, "_disk_usage_probe", lambda p: free if p == stage else 1 << 40,
+    )
+    before = _tree_snapshot(stage)
+    with pytest.raises(restore_manager.RestoreOperationError) as short:
+        restore_manager.resume(root)
+    assert short.value.failure.category == "capacity_unavailable"
+    assert _tree_snapshot(stage) == before
+    assert RestoreRegistry().observe().head_sha256 == obs.head_sha256
+
+    free = exact
+    assert restore_manager.resume(root).phase == "published_hold"
+    assert (root / ".restore-token.json").read_bytes() == token
+
+
+@pytest.mark.parametrize("formal", [False, True], ids=["partial", "formal"])
+@requires_managed_restore_writes
+def test_b09_origin_only_charges_new_bytes_and_still_probes_capacity(
+    b09_backup, monkeypatch, formal,
+):
+    bdir, root = b09_backup
+    obs, stage = _b09_crash(bdir, root, "FP-MARKER-RENAME" if formal else "FP-MARKER-TMP-PARTIAL")
+    sealed = obs.events[-1]
+    assert sealed.kind == "sealed_hold"
+    origin = OriginV1(
+        1, sealed.registry_id, sealed.batch_id,
+        domain_digest("event", sealed), sealed.payload.binding_sha256,
+    ).to_bytes()
+    if formal:
+        assert (stage / ".restore-origin.json").read_bytes() == origin
+    else:
+        assert 0 < (stage / ".restore-origin.json.tmp").stat().st_size < len(origin)
+    exact = 0 if formal else len(origin)
+    free = None if formal else exact - 1
+    monkeypatch.setattr(
+        restore_manager, "_disk_usage_probe", lambda p: free if p == stage else 1 << 40,
+    )
+    before = _tree_snapshot(stage)
+    with pytest.raises(restore_manager.RestoreOperationError) as short:
+        restore_manager.resume(root)
+    assert short.value.failure.category == "capacity_unavailable"
+    assert RestoreRegistry().observe().head_sha256 == obs.head_sha256
+    assert _tree_snapshot(stage) == before
+
+    free = exact
+    assert restore_manager.resume(root).phase == "published_hold"
+    assert (root / ".restore-origin.json").read_bytes() == origin
+
+
+@requires_managed_restore_writes
+def test_b09_publish_checks_parent_before_removing_original_empty_target(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    (root / "empty" / "skeleton").mkdir(parents=True)
+    obs, stage = _b09_crash(bdir, root, "FP-PUBLISH-INTENT")
+    assert obs.events[-1].kind == "publish_intent"
+    before = _tree_snapshot(root)
+    parent_free = 0
+    monkeypatch.setattr(
+        restore_manager,
+        "_disk_usage_probe",
+        lambda p: parent_free if p == root.parent else 1 << 40,
+    )
+    with pytest.raises(restore_manager.RestoreOperationError) as short:
+        restore_manager.resume(root)
+    assert short.value.failure.category == "capacity_unavailable"
+    assert RestoreRegistry().observe().head_sha256 == obs.head_sha256
+    assert (stage / "events.db").is_file()
+    assert _tree_snapshot(root) == before
+
+    parent_free = 1
+    assert restore_manager.resume(root).phase == "published_hold"
+
+
+def _b09_record_capacity(patch):
+    checked = set()
+    real_probe = restore_manager._disk_usage_probe
+
+    def probe(path):
+        free = real_probe(path)
+        if free > 0:
+            checked.add(path)
+        return free
+
+    patch.setattr(restore_manager, "_disk_usage_probe", probe)
+    return checked
+
+
+def _b09_assert_resumed(root, bdir, before):
+    batch = before.events[0].batch_id
+    result = restore_manager.resume(root, batch_id=batch)
+    assert result.phase == "published_hold" and result.held and result.batch_id == batch
+    committed = RestoreRegistry().observe()
+    assert committed.events[:len(before.events)] == before.events
+    assert [ev.kind for ev in committed.events] == [
+        "reserved", "stage_owned", "sealed_hold", "publish_intent", "published_hold",
+    ]
+    assert all(ev.batch_id == batch for ev in committed.events)
+    for item in before.events[0].payload.copy_inventory.files:
+        assert root.joinpath(*item.path).read_bytes() == bdir.joinpath(*item.path).read_bytes()
+    assert restore_manager.resume(root, batch_id=batch) == result
+    assert RestoreRegistry().observe().head_sha256 == committed.head_sha256
+
+
+@pytest.mark.parametrize("errnum", [errno.ENOSPC, errno.EIO], ids=["disk-full", "io-error"])
+@pytest.mark.parametrize("which", ["copy", "origin"])
+@requires_managed_restore_writes
+def test_b09_post_probe_write_failure_keeps_partial_file(b09_backup, monkeypatch, errnum, which):
+    bdir, root = b09_backup
+    before, stage = _b09_crash(bdir, root, "FP-STAGE-OWNED" if which == "copy" else "FP-SEALED")
+    if which == "copy":
+        path = stage / "events.db"
+        expected = (bdir / "events.db").read_bytes()
+    else:
+        path = stage / ".restore-origin.json.tmp"
+        sealed = before.events[-1]
+        expected = OriginV1(
+            1, sealed.registry_id, sealed.batch_id,
+            domain_digest("event", sealed), sealed.payload.binding_sha256,
+        ).to_bytes()
+    previous_files = _tree_snapshot(stage)
+    assert not path.exists()
+    real_open, real_write = os.open, os.write
+    destination_fd = None
+    written = 0
+    fault = OSError(errnum, "injected post-probe write failure")
+
+    def open_file(name, flags, *args, **kwargs):
+        nonlocal destination_fd
+        fd = real_open(name, flags, *args, **kwargs)
+        if name == path and flags & os.O_WRONLY:
+            destination_fd = fd
+        return fd
+
+    def write(fd, data):
+        nonlocal written
+        if fd != destination_fd:
+            return real_write(fd, data)
+        assert stage in checked
+        if written:
+            raise fault
+        written = real_write(fd, data[:len(data) // 2])
+        assert written > 0
+        return written
+
+    with monkeypatch.context() as patch:
+        checked = _b09_record_capacity(patch)
+        patch.setattr(os, "open", open_file)
+        patch.setattr(os, "write", write)
+        with pytest.raises(restore_manager.RestoreOperationError) as failure:
+            restore_manager.resume(root)
+    assert failure.value.raw_cause is fault
+    result = failure.value.failure
+    expected_category = "capacity_unavailable" if errnum == errno.ENOSPC else "restore_failed"
+    assert result.category == expected_category
+    assert (result.phase, result.batch_id) == (before.events[-1].kind, before.events[0].batch_id)
+    assert [Path(p.text) for p in result.retained_paths] == [stage]
+    assert RestoreRegistry().observe().events == before.events
+    assert path.read_bytes() == expected[:written]
+    assert written < len(expected)
+    assert not root.exists() and not (stage / ".restore-origin.json").exists()
+    after = _tree_snapshot(stage)
+    assert all(after[p] == contents for p, contents in previous_files.items())
+    _b09_assert_resumed(root, bdir, before)
+
+
+@pytest.mark.parametrize(
+    "code", [sqlite3.SQLITE_FULL, sqlite3.SQLITE_IOERR_FSYNC], ids=["full", "fsync"],
+)
+@pytest.mark.parametrize(
+    ("event_kind", "failpoint"),
+    [("reserved", "FP-INIT"), ("publish_intent", "FP-MARKER"), ("published_hold", "FP-RENAME")],
+)
+@requires_managed_restore_writes
+def test_b09_post_probe_registry_commit_failure_retains_prior_facts(
+    b09_backup, monkeypatch, code, event_kind, failpoint,
+):
+    bdir, root = b09_backup
+    reg = RestoreRegistry()
+    planned = restore_manager.plan(bdir, root)
+    crashed = _cli(
+        "restore-apply", bdir, "--data-root", root,
+        "--expect-plan", planned.plan_sha256, failpoint=failpoint,
+    )
+    assert crashed.returncode == 77, crashed.stderr
+    before = reg.observe()
+    stage_glob = f".{root.name}.restore-*"
+    stages = list(root.parent.glob(stage_glob))
+    assert len(stages) == int(event_kind == "publish_intent")
+    before_root = _tree_snapshot(root)
+    before_stages = {stage: _tree_snapshot(stage) for stage in stages}
+    real_connect = sqlite3.connect
+    registry_uri = reg.path.resolve().as_uri()
+    attempted_batches = []
+    fault = sqlite3.OperationalError("injected registry commit failure")
+    fault.sqlite_errorcode = code
+
+    class FailingCommit(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql == "COMMIT":
+                assert reg.authority_directory in checked
+                assert self.in_transaction
+                assert super().execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+                assert super().execute("PRAGMA synchronous").fetchone()[0] == 3  # EXTRA
+                head = super().execute(
+                    "SELECT e.kind, e.batch_id FROM restore_events e JOIN registry_head h "
+                    "ON e.sequence = h.sequence AND e.event_sha256 = h.event_sha256",
+                ).fetchone()
+                assert head[0] == event_kind
+                attempted_batches.append(head[1])
+                raise fault
+            return super().execute(sql, parameters)
+
+    def connect(path, *args, **kwargs):
+        if path == registry_uri:
+            kwargs["factory"] = FailingCommit
+        return real_connect(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        checked = _b09_record_capacity(patch)
+        patch.setattr(sqlite3, "connect", connect)
+        with pytest.raises(restore_manager.RestoreOperationError) as failed:
+            if before.events:
+                restore_manager.resume(root)
+            else:
+                restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+    error = failed.value.failure
+    assert attempted_batches == [error.batch_id]
+    assert error.category == (
+        "capacity_unavailable" if code == sqlite3.SQLITE_FULL else "durability_unavailable"
+    )
+    assert error.phase == (before.events[-1].kind if before.events else None)
+    observed = reg.observe()
+    assert observed.events == before.events and observed.head_sha256 == before.head_sha256
+    assert _tree_snapshot(root) == before_root
+    assert {stage: _tree_snapshot(stage) for stage in stages} == before_stages
+    assert list(root.parent.glob(stage_glob)) == stages
+    if before.events:
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(root / "events.db")
+        if root.exists():
+            assert "仍隔离" in error.message
+            assert [Path(p.text) for p in error.retained_paths] == [root]
+        _b09_assert_resumed(root, bdir, before)
+    else:
+        assert not root.exists() and not stages
+        result = restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+        assert result.phase == "published_hold" and result.batch_id != error.batch_id
+
+
+@pytest.mark.parametrize("errnum", [errno.ENOSPC, errno.EIO], ids=["disk-full", "io-error"])
+@pytest.mark.parametrize("which", ["origin", "publish"])
+@requires_managed_restore_writes
+def test_b09_post_probe_rename_failure_retains_same_stage(b09_backup, monkeypatch, errnum, which):
+    bdir, root = b09_backup
+    if which == "publish":
+        (root / "empty").mkdir(parents=True)
+    before, stage = _b09_crash(
+        bdir, root, "FP-PUBLISH-INTENT" if which == "publish" else "FP-MARKER-TMP-FSYNC",
+    )
+    if which == "publish":
+        src, dst = stage, root
+    else:
+        src, dst = stage / ".restore-origin.json.tmp", stage / ".restore-origin.json"
+    stage_identity = observe_entity(stage, "directory")
+    before_stage = _tree_snapshot(stage)
+    real_replace = os.replace
+    fault = OSError(errnum, "injected post-probe rename failure")
+
+    def replace(source, target, *args, **kwargs):
+        if (source, target) == (src, dst):
+            assert src.parent in checked and not dst.exists()
+            raise fault
+        return real_replace(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        checked = _b09_record_capacity(patch)
+        patch.setattr(os, "replace", replace)
+        with pytest.raises(restore_manager.RestoreOperationError) as failed:
+            restore_manager.resume(root)
+    assert failed.value.raw_cause is fault
+    error = failed.value.failure
+    assert error.category == (
+        "capacity_unavailable" if errnum == errno.ENOSPC
+        else "restore_failed" if which == "publish" else "durability_unavailable"
+    )
+    assert (error.phase, error.batch_id) == (before.events[-1].kind, before.events[0].batch_id)
+    assert RestoreRegistry().observe().events == before.events
+    assert _tree_snapshot(stage) == before_stage and not root.exists()
+    if which == "publish":
+        assert [Path(p.text) for p in error.retained_paths] == [stage]
+        assert "仍隔离" in error.message
+        assert [cmd[2] for cmd in error.next_commands] == ["restore-resume"]
+    _b09_assert_resumed(root, bdir, before)
+    assert observe_entity(root, "directory") == stage_identity
+
+
+@pytest.mark.parametrize("which", ["database", "material"])
+@requires_managed_restore_writes
+def test_b09_post_probe_resume_flushes_complete_copy_before_sealing(b09_backup, monkeypatch, which):
+    bdir, root = b09_backup
+    before, stage = _b09_crash(bdir, root, "FP-STAGE-OWNED")
+    files = before.events[0].payload.copy_inventory.files
+    rel = ("events.db",) if which == "database" else next(
+        spec.path for spec in files if spec.path != ("events.db",)
+    )
+    src, dst = bdir.joinpath(*rel), stage.joinpath(*rel)
+    real_fsync = os.fsync
+    fault = OSError(errno.EIO, "injected fsync failure after writing complete copy")
+    attempts = []
+
+    def fsync(fd):
+        if dst.exists() and os.path.samestat(os.fstat(fd), dst.stat()):
+            assert stage in checked
+            assert dst.read_bytes() == src.read_bytes()
+            attempts.append(observe_entity(dst, "file"))
+            raise fault
+        return real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        checked = _b09_record_capacity(patch)
+        patch.setattr(os, "fsync", fsync)
+        for _ in range(2):
+            with pytest.raises(restore_manager.RestoreOperationError) as failed:
+                restore_manager.resume(root)
+            assert failed.value.raw_cause is fault
+            assert RestoreRegistry().observe().events == before.events
+            assert not root.exists()
+        assert failed.value.failure.category == "durability_unavailable"
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    _b09_assert_resumed(root, bdir, before)
+    assert observe_entity(root.joinpath(*rel), "file") == attempts[0]
+
+
+@requires_managed_restore_writes
+def test_b09_post_probe_pending_parent_barrier_is_retried(tmp_path, monkeypatch):
+    base = tmp_path
+    pending = base / "pending"
+    root, _ = _make_rich_root(pending / "nested")
+    bdir = base / "backup"
+    create_backup(root, bdir)
+    shutil.rmtree(pending)
+    before, _ = _b09_crash(bdir, root, "FP-RESERVED")
+    base_stat = base.stat()
+    real_fsync = os.fsync
+    fault = OSError(errno.EIO, "injected failure to persist pending parent")
+    attempts = []
+
+    def fsync(fd):
+        if os.path.samestat(os.fstat(fd), base_stat):
+            assert pending.is_dir() and not root.parent.exists()
+            attempts.append(observe_entity(pending, "directory"))
+            raise fault
+        return real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fsync)
+        for _ in range(2):
+            with pytest.raises(restore_manager.RestoreOperationError) as failed:
+                restore_manager.resume(root)
+            assert failed.value.raw_cause is fault
+            assert failed.value.failure.category == "durability_unavailable"
+            assert failed.value.failure.phase == "reserved"
+            assert RestoreRegistry().observe().events == before.events
+            assert not root.parent.exists()
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    _b09_assert_resumed(root, bdir, before)
+
+
+@pytest.mark.parametrize("errnum", [errno.ENOSPC, errno.EIO], ids=["disk-full", "io-error"])
+@pytest.mark.parametrize("removed", [False, True], ids=["before-removal", "after-removal"])
+@requires_managed_restore_writes
+def test_b09_post_probe_empty_target_removal_failure_retains_scene(
+    b09_backup, monkeypatch, errnum, removed,
+):
+    bdir, root = b09_backup
+    (root / "empty").mkdir(parents=True)
+    before, stage = _b09_crash(bdir, root, "FP-PUBLISH-INTENT")
+    original_stage = _tree_snapshot(stage)
+    stage_identity = observe_entity(stage, "directory")
+    real_rmdir = os.rmdir
+    fault = OSError(errnum, "injected post-probe rmdir failure")
+
+    def rmdir(path, *args, **kwargs):
+        if path == root:
+            assert root.parent in checked
+            assert not tuple(root.iterdir())
+            if removed:
+                real_rmdir(path, *args, **kwargs)
+            raise fault
+        return real_rmdir(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        checked = _b09_record_capacity(patch)
+        patch.setattr(os, "rmdir", rmdir)
+        with pytest.raises(restore_manager.RestoreOperationError) as failed:
+            restore_manager.resume(root)
+    error = failed.value.failure
+    assert failed.value.raw_cause is fault
+    expected_category = "capacity_unavailable" if errnum == errno.ENOSPC else "restore_failed"
+    assert error.category == expected_category
+    assert error.phase == "publish_intent" and "仍隔离" in error.message
+    assert error.batch_id == before.events[0].batch_id
+    assert [Path(p.text) for p in error.retained_paths] == ([stage] if removed else [stage, root])
+    assert error.next_commands == ((
+        "tianshu", "data", "restore-resume", "--data-root", str(root), "--batch", error.batch_id,
+    ),)
+    assert root.exists() == (not removed) and _tree_snapshot(stage) == original_stage
+    assert RestoreRegistry().observe().events == before.events
+    _b09_assert_resumed(root, bdir, before)
+    assert observe_entity(root, "directory") == stage_identity
+
+
+@requires_managed_restore_writes
+@pytest.mark.parametrize(
+    ("failpoint", "phase", "retains_stage", "retains_final"),
+    [
+        ("FP-STAGE", "stage_owned", True, False),
+        ("FP-PUBLISH-INTENT", "publish_intent", True, False),
+        ("FP-RENAME", "publish_intent", False, True),
+        ("FP-ABORT-INTENT", "abort_intent", True, False),
+        ("FP-ABORT-AFTER-STAGE-RMDIR", "abort_intent", False, False),
+    ],
+)
+def test_b09_existing_held_scene_is_preserved_without_durability(
+    b09_backup, monkeypatch, failpoint, phase, retains_stage, retains_final,
+):
+    # Create real interrupted states on POSIX before simulating loss of capability.
+    bdir, root = b09_backup
+    if phase == "abort_intent":
+        _, stage = _b09_crash(bdir, root, "FP-STAGE")
+        crashed = _cli("restore-abort", "--data-root", root, failpoint=failpoint)
+        assert crashed.returncode == 77, crashed.stderr
+        before = RestoreRegistry().observe()
+    else:
+        before, stage = _b09_crash(bdir, root, failpoint)
+    batch = before.events[-1].batch_id
+    assert before.events[-1].kind == phase
+    assert stage.is_dir() == retains_stage and root.is_dir() == retains_final
+    retained = [path for path in (stage, root) if path.is_dir()]
+    frozen = {path: (_tree_snapshot(path), observe_entity(path, "directory")) for path in retained}
+
+    monkeypatch.setattr(restore_manager, "_managed_restore_writes_supported", lambda: False)
+    commands = [restore_manager.resume]
+    if phase != "publish_intent":
+        commands.append(restore_manager.abort)
+    for command in commands:
+        with pytest.raises(restore_manager.RestoreOperationError) as failed:
+            command(root, batch_id=batch)
+        error = failed.value.failure
+        assert error.category == "durability_unavailable"
+        assert (error.phase, error.batch_id) == (phase, batch)
+        assert [Path(p.text) for p in error.retained_paths] == retained
+        assert RestoreRegistry().observe() == before
+        assert stage.is_dir() == retains_stage and root.is_dir() == retains_final
+        assert {
+            path: (_tree_snapshot(path), observe_entity(path, "directory")) for path in retained
+        } == frozen
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(root / "events.db")
+
+
+@requires_managed_restore_writes
+def test_b09_post_rename_parent_fsync_failure_reports_final_only(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    before, stage = _b09_crash(bdir, root, "FP-PUBLISH-INTENT")
+    original_stage = _tree_snapshot(stage)
+    stage_identity = observe_entity(stage, "directory")
+    real_fsync = os.fsync
+    fault = OSError(errno.EIO, "injected publish parent fsync failure")
+    attempts = []
+
+    def fail_parent_sync(fd):
+        if os.path.samestat(os.fstat(fd), root.parent.stat()):
+            assert not stage.exists()
+            assert observe_entity(root, "directory") == stage_identity
+            attempts.append(fd)
+            raise fault
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_parent_sync)
+        for _ in range(2):
+            with pytest.raises(restore_manager.RestoreOperationError) as failed:
+                restore_manager.resume(root)
+            error = failed.value.failure
+            assert failed.value.raw_cause is fault
+            assert error.category == "durability_unavailable"
+            assert error.phase == "publish_intent" and "仍隔离" in error.message
+            assert error.batch_id == before.events[0].batch_id
+            assert [Path(p.text) for p in error.retained_paths] == [root]
+            assert error.next_commands[0][-2:] == ("--batch", error.batch_id)
+            assert _tree_snapshot(root) == original_stage
+            assert RestoreRegistry().observe().events == before.events
+            with pytest.raises(RestoreScopeBusy):
+                EventLog(root / "events.db")
+    assert len(attempts) == 2
+    _b09_assert_resumed(root, bdir, before)
+
+
+def test_b09_zero_capacity_refuses_plan_without_writes(b09_backup, monkeypatch):
+    bdir, root = b09_backup
     monkeypatch.setattr(restore_manager, "_disk_usage_probe", lambda _p: 0)
     with pytest.raises(restore_manager.RestoreOperationError) as cap_exc:
         restore_manager.plan(bdir, root)
     assert cap_exc.value.failure.category == "capacity_unavailable"
-    assert not root.exists()
+    assert not root.exists() and not RestoreRegistry().observe().present
 
-    monkeypatch.setattr(
-        restore_manager, "_disk_usage_probe", restore_manager._default_disk_free_bytes
-    )
+
+@requires_managed_restore_writes
+def test_b09_abort_retries_parent_fsync_after_stage_is_absent(b09_backup, monkeypatch):
+    bdir, root = b09_backup
+    before, stage = _b09_crash(bdir, root, "FP-STAGE")
+    batch = before.events[0].batch_id
+    real_fsync = os.fsync
+    fault = OSError(errno.EIO, "injected cleanup parent fsync failure")
+    attempts = []
+
+    def fail_parent_sync(fd):
+        if os.path.samestat(os.fstat(fd), root.parent.stat()):
+            assert not stage.exists() and not root.exists()
+            attempts.append(fd)
+            raise fault
+        real_fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_parent_sync)
+        with pytest.raises(restore_manager.RestoreOperationError) as failed:
+            restore_manager.abort(root, batch_id=batch)
+        assert failed.value.raw_cause is fault
+        assert failed.value.failure.category == "durability_unavailable"
+        assert failed.value.failure.phase == "abort_intent"
+        assert failed.value.failure.retained_paths == ()
+        held = RestoreRegistry().observe()
+        assert held.events[:-1] == before.events
+        assert held.events[-1].kind == "abort_intent"
+        assert held.events[-1].batch_id == batch
+        with pytest.raises(RestoreScopeBusy):
+            EventLog(root / "events.db")
+
+        with pytest.raises(restore_manager.RestoreOperationError) as retried:
+            restore_manager.resume(root, batch_id=batch)
+        assert retried.value.raw_cause is fault
+        assert retried.value.failure.phase == "abort_intent"
+        assert RestoreRegistry().observe() == held
+    assert len(attempts) == 2
+    done = restore_manager.abort(root, batch_id=batch)
+    assert done.phase == "aborted" and not done.held and done.batch_id == batch
+    ended = RestoreRegistry().observe()
+    assert ended.events[:-1] == held.events and ended.events[-1].kind == "aborted"
+    assert restore_manager.abort(root, batch_id=batch) == done
+    assert RestoreRegistry().observe() == ended
+
+
+@requires_managed_restore_writes
+@pytest.mark.parametrize("boundary", ["home", "private-authority", "published-authority"])
+def test_b09_registry_namespace_barrier_precedes_first_reservation(
+    b09_backup, monkeypatch, boundary,
+):
+    bdir, root = b09_backup
+    reg = RestoreRegistry()
     planned = restore_manager.plan(bdir, root)
+    real_fsync = os.fsync
+    fault = OSError(errno.EIO, "injected registry directory fsync failure")
+    attempts = []
 
-    # 2) 在 FP-STAGE 中断后进入 abort，模拟目录持久化 fsync 失败 -> 必须停留在 abort_intent
-    crashed = _cli(
-        "restore-apply",
-        bdir,
-        "--data-root",
-        root,
-        "--expect-plan",
-        planned.plan_sha256,
-        failpoint="FP-STAGE",
-    )
-    assert crashed.returncode == 77
+    def fail_registry_sync(fd):
+        if boundary == "home":
+            candidates = (reg.home,)
+        elif boundary == "private-authority":
+            candidates = tuple(reg.dot_directory.glob(".restore-registry-v1.init-*"))
+        else:
+            candidates = (reg.dot_directory,) if reg.authority_directory.is_dir() else ()
+        st = os.fstat(fd)
+        for directory in candidates:
+            if os.path.samestat(st, directory.stat()):
+                assert not root.exists()
+                assert not tuple(root.parent.glob(f".{root.name}.restore-*"))
+                attempts.append(directory)
+                raise fault
+        real_fsync(fd)
 
-    if os.name != "nt":
-        real_fsync = os.fsync
-
-        def fail_dir_fsync(fd: int) -> None:
-            st = os.fstat(fd)
-            if os.path.isdir(root.parent) and st.st_ino == root.parent.stat().st_ino:
-                raise OSError(errno.EIO, "simulated parent dir fsync I/O failure")
-            real_fsync(fd)
-
-        monkeypatch.setattr(os, "fsync", fail_dir_fsync)
-        with pytest.raises(restore_manager.RestoreOperationError) as dur_exc:
-            restore_manager.abort(root)
-        assert dur_exc.value.failure.category == "durability_unavailable"
-
-        # 确认权威链停在 abort_intent 而非 aborted！
-        obs = RestoreRegistry().observe()
-        assert obs.events[-1].kind == "abort_intent"
-
-        # 恢复正常 fsync 后重试，必须重做父目录 P 屏障并完成 aborted
-        monkeypatch.setattr(os, "fsync", real_fsync)
-        done = restore_manager.abort(root)
-        assert done.phase == "aborted"
-        assert RestoreRegistry().observe().events[-1].kind == "aborted"
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_registry_sync)
+        empty_authority = None
+        for _ in range(1 if boundary == "private-authority" else 2):
+            with pytest.raises(restore_manager.RestoreOperationError) as failed:
+                restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+            error = failed.value.failure
+            assert error.category == "durability_unavailable"
+            assert error.phase is None and error.batch_id is None
+            assert error.plan_sha256 == planned.plan_sha256
+            assert failed.value.raw_cause.__cause__ is fault
+            if boundary == "private-authority":
+                # An unpublished authority is forensic evidence, never auto-adopted.
+                assert len(attempts) == 1 and not reg.authority_directory.exists()
+                with pytest.raises(RestoreRegistryCorrupt, match="未发布初始化现场"):
+                    reg.observe()
+                private_authority = attempts[0]
+                retained = _tree_snapshot(private_authority)
+                assert retained
+                with pytest.raises(restore_manager.RestoreOperationError) as refused:
+                    restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+                assert refused.value.failure.category == "record_corrupt"
+                assert _tree_snapshot(private_authority) == retained
+                assert not reg.authority_directory.exists() and not root.exists()
+                return
+            snapshot = reg.observe()
+            if boundary == "published-authority":
+                assert snapshot.present and snapshot.events == ()
+                assert snapshot.head_sha256 is None and snapshot.next_sequence == 1
+                if empty_authority is None:
+                    empty_authority = snapshot
+                assert snapshot == empty_authority
+            else:
+                assert not snapshot.present
+    assert len(attempts) == 2
+    result = restore_manager.apply(bdir, root, expect_plan_sha256=planned.plan_sha256)
+    assert result.phase == "published_hold"
+    observed = reg.observe()
+    if empty_authority is not None:
+        assert observed.meta == empty_authority.meta
+    assert observed.events[0].kind == "reserved" and observed.events[0].sequence == 1
+    assert all(event.batch_id == result.batch_id for event in observed.events)

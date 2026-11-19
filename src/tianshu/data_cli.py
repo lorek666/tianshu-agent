@@ -866,6 +866,20 @@ def _print_report(report: dict[str, Any], *, as_json: bool) -> None:
         if not report["ok"]:
             msg = redact(str(report.get("error") or "离线安全 GC 拒绝"))
             print(f"错误：{msg}", file=sys.stderr)
+            deleted = report["deleted"]
+            if any(deleted.values()):
+                print(
+                    "  已确认删除："
+                    f"孤儿 blob：{deleted['orphan_blobs_count']} 个"
+                    f"（{deleted['orphan_blobs_bytes']} 字节）；"
+                    f"空快照：{deleted['empty_snapshots_count']} 个"
+                    f"（{deleted['empty_snapshots_bytes']} 字节）；"
+                    f"jobs 行：{deleted['jobs_count']} 行；"
+                    f"预算预占：{deleted['budget_reservations_count']} 行。",
+                    file=sys.stderr,
+                )
+            for note in report["notes"]:
+                print(note, file=sys.stderr)
             return
         cand = report["candidates"]
         if report["dry_run"]:

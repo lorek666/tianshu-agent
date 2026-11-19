@@ -1,15 +1,14 @@
 """保守离线安全垃圾回收（W15 v2 · CONTRACT-W15-RETENTION §6）。
 
 严格遵守十一条红线与离线独占契约：
-1. 默认只读预演（未传 `--approve` 或显式 `--dry-run`）：只读 URI 连接 +
-   `PRAGMA query_only=ON`，零文件修改、零 SQL 写语句，退出码 `3`。
+1. 默认只读预演：确认无 SQLite 旁文件后以不可变 URI 查询，预演成功退出 `3`；
+   无法零写入核验时拒绝。
 2. 显式批准（`--approve`）：持 `acquire_restore_database_access(..., exclusive=True)`
-   独占准入、核验无存活 `daemon`/`host`/`worker`、核验非恢复 `held` 隔离态、
-   并在独占锁内**重新运行** `collect_references(root)`（零 TOCTOU）。任何引用
-   无法核验（`ReferenceUnknown`）、存在未完成撤销日志（`in_progress`）或准入不通过，
-   一律 **fail-closed（0 文件删除、0 数据库删除，退出码 `2`）**。
-3. 低磁盘豁免：不套用新副作用 Run 的 2 GiB `DiskAdmission` 门槛，确保 `< 2 GiB`
-   甚至 `0` 剩余字节场景仍能安全清理孤儿 blob 回收空间。
+   协作式独占准入，锁内复查活动写者、恢复隔离、数据库与引用，不复用预演结果。
+   前置核验失败时零删除；执行失败时报告已确认效果。
+3. 不套用新副作用 Run 的 2 GiB 门槛。支持目录同步且能安全只读核验时，
+   可先清理文件，再视余量执行 SQLite 表行清理与 checkpoint。无目录同步的
+   平台先只读核验，存在任一文件候选即整批拒绝。
 4. 绝对禁删面：`events`、`event_versions`、`summary_*`、`dispatches`、
    `dispatch_requests`、`dispatch_meta`、`approvals`、`grants`、`runs`、`tasks`、
    `subtasks`、`memories`、`memory_*`、`content_*`、`budget_accounts`、
@@ -20,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,6 @@ from .backup import (
     ReferenceIndex,
     ReferenceUnknown,
     _checked_file,
-    _fsync_dir,
     _has_sqlite_companions,
     _rel_posix,
     collect_references,
@@ -68,7 +68,13 @@ from .jobs import (
 )
 from .maintenance import MaintenanceBusy, MaintenanceError
 from .migrate import writers_active
-from .platform_identity import NativeEntityError, open_entity
+from .platform_identity import (
+    NativeEntityError,
+    NativeEntityHandle,
+    observe_entity,
+    observe_entity_with_links,
+    open_entity,
+)
 from .restore_access import (
     RestoreAccessError,
     RestoreScopeBusy,
@@ -150,6 +156,8 @@ class OrphanBlobCandidate:
     path: str
     size: int
     category: str
+    # Internal only: never serialize the native identity into the preview report.
+    identity: EntityIdentityV1 = dataclass_field(repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {"path": self.path, "size": self.size, "category": self.category}
@@ -160,6 +168,9 @@ class EmptySnapshotCandidate:
     path: str
     run_id: str
     size: int
+    # Internal only: never serialize the native identity or content digest.
+    identity: EntityIdentityV1 = dataclass_field(repr=False)
+    sha256: str = dataclass_field(repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +201,15 @@ class GcCandidateSet:
     @property
     def reclaimable_file_bytes(self) -> int:
         return self.orphan_blobs_bytes + self.empty_snapshots_bytes
+
+
+@dataclass
+class _PreparedUnlink:
+    target: Path
+    handle: NativeEntityHandle
+    size: int
+    is_blob: bool
+    sha256: str | None = None
 
 
 def _now_ms() -> int:
@@ -397,16 +417,8 @@ class _GcRestoreRegistryAdapter:
         raw = self._inner.observe()
         if isinstance(raw, AbsentRegistryObservation):
             return raw
-        root_handle = open_entity(self._root, "directory")
-        try:
-            root_id = root_handle.identity
-        finally:
-            root_handle.close()
-        db_handle = open_entity(self._db, "file")
-        try:
-            db_id = db_handle.identity
-        finally:
-            db_handle.close()
+        root_id = observe_entity(self._root, "directory")
+        db_id = observe_entity(self._db, "file")
         verified_batch_id: object | None = None
         origin_path = self._root / ".restore-origin.json"
         if origin_path.exists() or origin_path.is_symlink() or origin_path.is_junction():
@@ -485,16 +497,8 @@ def _check_not_restore_held(root: Path, db: Path) -> bool:
             raise GcRefused("restore_held", f"数据根存在未终结恢复控制文件：{marker}")
 
     try:
-        root_handle = open_entity(root, "directory")
-        try:
-            root_identity = root_handle.identity
-        finally:
-            root_handle.close()
-        db_handle = open_entity(db, "file")
-        try:
-            db_identity = db_handle.identity
-        finally:
-            db_handle.close()
+        root_identity = observe_entity(root, "directory")
+        db_identity = observe_entity(db, "file")
         observed = restore_access._registry_factory().observe()
     except GcRefused:
         raise
@@ -586,17 +590,34 @@ def _effective_headroom_bytes(
     return max(0, available)
 
 
+def _static_gc_db_signature(db: Path) -> tuple[int, int, int, int, int]:
+    if _has_sqlite_companions(db):
+        raise GcRefused(
+            "incompatible",
+            "无法零写入核对 SQLite 旁文件（WAL/SHM/回滚日志）；"
+            "请正常关闭使用数据根的进程并完成 SQLite 恢复，不要手动删除旁文件",
+        )
+    info = db.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or db.is_junction():
+        raise GcRefused("incompatible", "只读核验期间主库不再是单硬链接普通文件")
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 def _connect_preview_readonly(db: Path) -> sqlite3.Connection:
-    """只读预演连接：静态关闭库用 immutable=1 防创建旁文件，活 WAL 库用 mode=ro。"""
-    suffix = "?mode=ro" if _has_sqlite_companions(db) else "?mode=ro&immutable=1"
+    """仅在已核对无 SQLite 旁文件时调用。mode=ro 本身仍可能写共享内存索引。"""
     conn = sqlite3.connect(
-        db.resolve().as_uri() + suffix,
+        db.as_uri() + "?mode=ro&immutable=1",
         uri=True,
-        timeout=5.0,
+        timeout=0.0,
         isolation_level=None,
     )
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only=ON")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA temp_store=MEMORY")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -918,10 +939,22 @@ def _select_empty_snapshots(
     for manifest in sorted(snapshots_dir.glob("*.json")):
         rel = _rel_posix(manifest, root)
         checked = _checked_file(root, rel)
-        raw_bytes = checked.read_bytes()
+        handle = open_entity(checked, "file")
+        try:
+            if handle.link_count != 1:
+                raise GcRefused(
+                    "reference_unknown", f"快照候选硬链接数不为 1：{rel}"
+                )
+            identity = handle.identity
+            raw_bytes = checked.read_bytes()
+            handle.verify_path(checked)
+        finally:
+            handle.close()
         changes = SnapshotStore._parse(raw_bytes)
         if changes:
             non_empty_count += 1
+            continue
+        if index.protects_file(rel, identity):
             continue
         raw_obj = json.loads(raw_bytes.decode("utf-8"))
         pinned = isinstance(raw_obj, dict) and bool(raw_obj.get("pinned"))
@@ -953,6 +986,8 @@ def _select_empty_snapshots(
                 path=rel,
                 run_id=run_id,
                 size=len(raw_bytes),
+                identity=identity,
+                sha256=hashlib.sha256(raw_bytes).hexdigest(),
             )
         )
     return tuple(candidates), non_empty_count
@@ -982,8 +1017,6 @@ def _compute_candidates(
 
     orphan_candidates: list[OrphanBlobCandidate] = []
     for rel in index.orphan_blobs:
-        if rel in index.protected_blobs:
-            raise GcRefused("reference_unknown", f"孤儿候选与受保护集合冲突：{rel}")
         checked = _checked_file(root, rel)
         handle = open_entity(checked, "file")
         try:
@@ -992,12 +1025,18 @@ def _compute_candidates(
                     "reference_unknown",
                     f"孤儿候选硬链接数不为 1：{rel}（link_count={handle.link_count}）",
                 )
+            identity = handle.identity
+            if index.protects_file(rel, identity):
+                raise GcRefused("reference_unknown", f"孤儿候选与受保护集合冲突：{rel}")
             size = checked.stat().st_size
+            handle.verify_path(checked)
         finally:
             handle.close()
         category = "artifact_blob" if rel.startswith("artifacts/blobs/") else "blob"
         orphan_candidates.append(
-            OrphanBlobCandidate(path=rel, size=size, category=category)
+            OrphanBlobCandidate(
+                path=rel, size=size, category=category, identity=identity
+            )
         )
 
     empty_snapshots, non_empty_count = _select_empty_snapshots(
@@ -1022,57 +1061,165 @@ def _compute_candidates(
     )
 
 
-def _unlink_verified_candidates(
+def _scan_gc_candidates(
+    conn: sqlite3.Connection,
+    root: Path,
+    db: Path,
+    cutoff_ms: int,
+    *,
+    released_proof: bool,
+    require_static_db: bool = False,
+) -> tuple[ReferenceIndex, GcCandidateSet]:
+    _verify_db_admission(conn, db, released_v2_admitted=released_proof)
+    try:
+        if require_static_db:
+            index = collect_references(root, require_static_db=True)
+        else:
+            index = collect_references(root)
+    except ReferenceUnknown as exc:
+        raise GcRefused("reference_unknown", str(exc)) from exc
+    _check_reference_index_clean(index)
+    return index, _compute_candidates(conn, root, index, cutoff_ms)
+
+
+def _preflight_readonly(
+    root: Path,
+    db: Path,
+    cutoff_ms: int,
+    *,
+    released_proof: bool,
+    db_identity: EntityIdentityV1 | None = None,
+) -> tuple[ReferenceIndex, GcCandidateSet]:
+    before = _static_gc_db_signature(db)
+    with closing(_connect_preview_readonly(db)) as conn:
+        if db_identity is not None:
+            verify_sqlite_main(conn, db, db_identity)
+        result = _scan_gc_candidates(
+            conn, root, db, cutoff_ms, released_proof=released_proof, require_static_db=True,
+        )
+    if _static_gc_db_signature(db) != before:
+        raise GcRefused("maintenance_busy", "主库在只读核验期间发生变化")
+    return result
+
+
+def _close_prepared_unlinks(prepared: Sequence[_PreparedUnlink]) -> None:
+    first_error: BaseException | None = None
+    for item in prepared:
+        try:
+            item.handle.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
+def _verify_prepared_unlink(item: _PreparedUnlink) -> None:
+    try:
+        item.handle.verify_path(item.target)
+        identity, link_count = observe_entity_with_links(item.target, "file")
+        if identity != item.handle.identity or link_count != 1:
+            raise GcRefused(
+                "reference_unknown",
+                f"候选实体身份或硬链接数变化：{item.target}",
+            )
+        actual_size = item.target.stat().st_size
+        item.handle.verify_path(item.target)
+        if actual_size != item.size:
+            raise GcRefused("reference_unknown", f"候选文件大小变化：{item.target}")
+        if not item.is_blob:
+            raw_bytes = item.target.read_bytes()
+            item.handle.verify_path(item.target)
+            identity, link_count = observe_entity_with_links(item.target, "file")
+            if identity != item.handle.identity or link_count != 1:
+                raise GcRefused(
+                    "reference_unknown",
+                    f"快照候选实体身份或硬链接数变化：{item.target}",
+                )
+            if (
+                len(raw_bytes) != item.size
+                or hashlib.sha256(raw_bytes).hexdigest() != item.sha256
+                or SnapshotStore._parse(raw_bytes)
+            ):
+                raise GcRefused(
+                    "reference_unknown", f"空快照内容或大小变化：{item.target}"
+                )
+    except GcRefused:
+        raise
+    except (NativeEntityError, OSError, ValueError) as exc:
+        raise GcRefused("reference_unknown", f"候选文件无法核验：{exc}") from exc
+
+
+def _prepare_unlinks(
     root: Path,
     index: ReferenceIndex,
     orphan_blobs: Sequence[OrphanBlobCandidate],
     empty_snapshots: Sequence[EmptySnapshotCandidate],
-) -> tuple[int, int, int, int]:
-    """逐个重核实体身份与单硬链接后 unlink，最后同步父目录。"""
-    touched_dirs: set[Path] = set()
-    deleted_blobs = 0
-    deleted_blob_bytes = 0
-    for item in orphan_blobs:
-        if item.path in index.protected_blobs:
-            raise GcRefused("reference_unknown", f"拒绝删除受保护 blob：{item.path}")
-        target = _checked_file(root, item.path)
-        handle = open_entity(target, "file")
-        try:
-            if handle.link_count != 1:
-                raise GcRefused(
-                    "reference_unknown", f"删除前核验发现多硬链接文件：{item.path}"
-                )
-            actual_size = target.stat().st_size
-        finally:
-            handle.close()
-        target.unlink()
-        touched_dirs.add(target.parent)
-        deleted_blobs += 1
-        deleted_blob_bytes += actual_size
+) -> list[_PreparedUnlink]:
+    """在任何写入前持有并核验整个文件候选集。"""
+    prepared: list[_PreparedUnlink] = []
+    try:
+        candidates: list[tuple[str, EntityIdentityV1, int, bool, str | None]] = [
+            (item.path, item.identity, item.size, True, None) for item in orphan_blobs
+        ]
+        candidates.extend(
+            (item.path, item.identity, item.size, False, item.sha256)
+            for item in empty_snapshots
+        )
 
-    deleted_snaps = 0
-    deleted_snap_bytes = 0
-    for snap in empty_snapshots:
-        target = _checked_file(root, snap.path)
-        handle = open_entity(target, "file")
-        try:
-            if handle.link_count != 1:
+        for rel, expected_identity, size, is_blob, sha256 in candidates:
+            if index.protects_file(rel, expected_identity):
+                raise GcRefused("reference_unknown", f"拒绝删除受保护材料：{rel}")
+            target = _checked_file(root, rel)
+            handle = open_entity(target, "file")
+            prepared.append(
+                _PreparedUnlink(target, handle, size, is_blob, sha256)
+            )
+            if handle.identity != expected_identity or handle.link_count != 1:
                 raise GcRefused(
-                    "reference_unknown", f"删除前核验发现多硬链接快照：{snap.path}"
+                    "reference_unknown", f"候选实体身份或硬链接数变化：{rel}"
                 )
-            raw_bytes = target.read_bytes()
-        finally:
-            handle.close()
-        if SnapshotStore._parse(raw_bytes):
-            raise GcRefused("reference_unknown", f"删除前核验发现非空快照：{snap.path}")
-        target.unlink()
-        touched_dirs.add(target.parent)
-        deleted_snaps += 1
-        deleted_snap_bytes += len(raw_bytes)
+            _verify_prepared_unlink(prepared[-1])
 
-    for parent in sorted(touched_dirs):
-        _fsync_dir(parent)
-    return deleted_blobs, deleted_blob_bytes, deleted_snaps, deleted_snap_bytes
+        for item in prepared:
+            _verify_prepared_unlink(item)
+        return prepared
+    except GcRefused:
+        _close_prepared_unlinks(prepared)
+        raise
+    except (NativeEntityError, OSError, ValueError) as exc:
+        _close_prepared_unlinks(prepared)
+        raise GcRefused("reference_unknown", f"文件候选集预检失败：{exc}") from exc
+    except BaseException:
+        _close_prepared_unlinks(prepared)
+        raise
+
+
+def _fsync_gc_dir(path: Path) -> None:
+    """同步目录或报告失败；无平台目录屏障时不得进入文件删除路径。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise TianshuError(f"GC 目录同步失败：{path}：{exc}") from exc
+
+
+def _unlink_prepared(
+    prepared: Sequence[_PreparedUnlink],
+    deleted: dict[str, int],
+) -> None:
+    """仅在整批预检通过后逐项 unlink，并同步各项的父目录。"""
+    for item in prepared:
+        _verify_prepared_unlink(item)
+        item.target.unlink()
+        prefix = "orphan_blobs" if item.is_blob else "empty_snapshots"
+        deleted[f"{prefix}_count"] += 1
+        deleted[f"{prefix}_bytes"] += item.size
+        deleted["reclaimed_file_bytes"] += item.size
+        _fsync_gc_dir(item.target.parent)
 
 
 def _delete_db_candidates_in_tx(
@@ -1103,7 +1250,10 @@ def _delete_db_candidates_in_tx(
                 (reservation_id,),
             )
             deleted_resv += cur.rowcount
-        conn.execute("COMMIT")
+        try:
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            raise TianshuError(f"SQLite 行删除 COMMIT 未获确认：{exc}") from exc
     except BaseException:
         if conn.in_transaction:
             conn.rollback()
@@ -1111,10 +1261,10 @@ def _delete_db_candidates_in_tx(
     return deleted_jobs, deleted_resv
 
 
-def _checkpoint_truncate(conn: sqlite3.Connection) -> dict[str, int] | None:
+def _checkpoint_truncate(conn: sqlite3.Connection) -> dict[str, int]:
     row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     if row is None:
-        return None
+        raise sqlite3.OperationalError("WAL checkpoint(TRUNCATE) 未返回结果")
     return {
         "busy": int(row[0]),
         "log": int(row[1]),
@@ -1188,6 +1338,10 @@ def build_gc_error_report(
     dry_run: bool,
     older_than_days: Any,
     extra_paths: Sequence[str] = (),
+    deleted: dict[str, int] | None = None,
+    wal_checkpoint: dict[str, int] | None = None,
+    db_rows_deferred_low_disk: bool = False,
+    notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     paths = tuple(extra_paths) + (str(Path.home()),)
     days_out = older_than_days if type(older_than_days) is int else None
@@ -1200,12 +1354,12 @@ def build_gc_error_report(
         "older_than_days": days_out,
         "candidates": None,
         "protected": None,
-        "deleted": _empty_deleted(),
-        "wal_checkpoint": None,
-        "db_rows_deferred_low_disk": False,
+        "deleted": _empty_deleted() if deleted is None else dict(deleted),
+        "wal_checkpoint": wal_checkpoint,
+        "db_rows_deferred_low_disk": db_rows_deferred_low_disk,
         "code": code,
         "error": _redact_text(message, paths),
-        "notes": [],
+        "notes": [_redact_text(note, paths) for note in notes],
     }
 
 
@@ -1218,7 +1372,7 @@ def run_data_gc(
     clock: Callable[[], int] = _now_ms,
     disk_free_probe: Callable[[Path], int] = free_bytes,
 ) -> tuple[dict[str, Any], int]:
-    """执行离线安全 GC 预演（返回码 3）或批准清理（返回码 0）；拒绝返回码 2。"""
+    """预演返回 3；完成批准清理返回 0；前置拒绝与执行失败均返回 2。"""
     extra_paths: list[str] = [str(Path.home())]
     if data_root is not None:
         extra_paths.append(str(data_root))
@@ -1228,6 +1382,10 @@ def run_data_gc(
             pass
 
     effective_dry_run = True if not approve else False
+    deleted = _empty_deleted()
+    wal_checkpoint: dict[str, int] | None = None
+    db_rows_deferred_low_disk = False
+    execution_started = False
     try:
         if dry_run and approve:
             raise GcRefused(
@@ -1261,14 +1419,9 @@ def run_data_gc(
 
         if not approve:
             try:
-                with closing(_connect_preview_readonly(db)) as conn:
-                    _verify_db_admission(conn, db, released_v2_admitted=released_proof)
-                    try:
-                        index = collect_references(root)
-                    except ReferenceUnknown as exc:
-                        raise GcRefused("reference_unknown", str(exc)) from exc
-                    _check_reference_index_clean(index)
-                    candidates = _compute_candidates(conn, root, index, cutoff_ms)
+                _, candidates = _preflight_readonly(
+                    root, db, cutoff_ms, released_proof=released_proof,
+                )
             except GcRefused:
                 raise
             except (sqlite3.Error, OSError, ValueError, TianshuError) as exc:
@@ -1302,6 +1455,7 @@ def run_data_gc(
                 db,
                 exclusive=True,
                 registry=_GcRestoreRegistryAdapter(restore_access._registry_factory(), root, db),
+                allow_create=False,
             )
         except GcRefused:
             raise
@@ -1326,41 +1480,39 @@ def run_data_gc(
             root, db = _validate_root_layout(root)
 
             initial_free = _effective_headroom_bytes(db, disk_free_probe)
-            deleted_jobs = 0
-            deleted_resv = 0
-            wal_checkpoint: dict[str, int] | None = None
-            db_rows_deferred_low_disk = False
+            file_gc_supported = os.name == "posix"
 
-            if initial_free < MIN_DB_GC_HEADROOM_BYTES:
-                # 内核 0 字节文件上限（如 RLIMIT_FSIZE=(0, 0)）或真满盘路径：
-                # 绝不能先开 ?mode=rw（WAL 模式会分配 32 KiB events.db-shm 触发 EFBIG/SIGXFSZ）。
-                # 在独占锁保护下用只读连接（无旁文件时 ?mode=ro&immutable=1）完成全套准入、
-                # 二次引用核验与候选计算，先行 unlink 孤儿文件释放空间后再按余量决定是否开写连接。
-                with closing(_connect_preview_readonly(db)) as ro_conn:
-                    verify_sqlite_main(ro_conn, db, access.identity)
-                    _verify_db_admission(ro_conn, db, released_v2_admitted=released_proof)
-                    try:
-                        index = collect_references(root)
-                    except ReferenceUnknown as exc:
-                        raise GcRefused("reference_unknown", str(exc)) from exc
-                    _check_reference_index_clean(index)
-                    candidates = _compute_candidates(ro_conn, root, index, cutoff_ms)
+            if initial_free < MIN_DB_GC_HEADROOM_BYTES or not file_gc_supported:
+                # 低余量路径不得先开写连接（SQLite 可能要创建/扩大 WAL/SHM）；
+                # 无目录同步的系统也必须在任何写入前知道是否存在文件候选。
+                index, candidates = _preflight_readonly(
+                    root, db, cutoff_ms, released_proof=released_proof, db_identity=access.identity,
+                )
+                has_file_deletions = bool(candidates.orphan_blobs or candidates.empty_snapshots)
+                if not file_gc_supported and has_file_deletions:
+                    raise GcRefused(
+                        "incompatible", "当前平台不支持 GC 所需的目录持久化；本批次未执行任何删除",
+                    )
 
                 has_db_deletions = bool(candidates.job_ids or candidates.reservation_ids)
-                (
-                    deleted_blobs,
-                    deleted_blob_bytes,
-                    deleted_snaps,
-                    deleted_snap_bytes,
-                ) = _unlink_verified_candidates(
-                    root, index, candidates.orphan_blobs, candidates.empty_snapshots
-                )
+                if file_gc_supported:
+                    prepared = _prepare_unlinks(
+                        root, index, candidates.orphan_blobs, candidates.empty_snapshots
+                    )
+                    try:
+                        execution_started = True
+                        _unlink_prepared(prepared, deleted)
+                    finally:
+                        _close_prepared_unlinks(prepared)
                 post_unlink_free = _effective_headroom_bytes(db, disk_free_probe)
                 if post_unlink_free >= MIN_DB_GC_HEADROOM_BYTES:
                     with closing(_connect_locked_rw(db)) as rw_conn:
                         verify_sqlite_main(rw_conn, db, access.identity)
-                        deleted_jobs, deleted_resv = _delete_db_candidates_in_tx(
-                            rw_conn, candidates.job_ids, candidates.reservation_ids
+                        execution_started = True
+                        deleted["jobs_count"], deleted["budget_reservations_count"] = (
+                            _delete_db_candidates_in_tx(
+                                rw_conn, candidates.job_ids, candidates.reservation_ids
+                            )
                         )
                         wal_checkpoint = _checkpoint_truncate(rw_conn)
                 elif has_db_deletions:
@@ -1368,48 +1520,45 @@ def run_data_gc(
             else:
                 with closing(_connect_locked_rw(db)) as conn:
                     verify_sqlite_main(conn, db, access.identity)
-                    _verify_db_admission(conn, db, released_v2_admitted=released_proof)
-                    try:
-                        index = collect_references(root)
-                    except ReferenceUnknown as exc:
-                        raise GcRefused("reference_unknown", str(exc)) from exc
-                    _check_reference_index_clean(index)
-                    candidates = _compute_candidates(conn, root, index, cutoff_ms)
-
-                    # 常规及 <2GiB（>=256KiB）路径：先单事务提交 DB 行删除（失败时 0 文件已删），
-                    # 再 unlink 孤儿文件并 fsync 目录，最后原地截断 WAL。
-                    deleted_jobs, deleted_resv = _delete_db_candidates_in_tx(
-                        conn, candidates.job_ids, candidates.reservation_ids
+                    index, candidates = _scan_gc_candidates(
+                        conn, root, db, cutoff_ms, released_proof=released_proof,
                     )
-                    (
-                        deleted_blobs,
-                        deleted_blob_bytes,
-                        deleted_snaps,
-                        deleted_snap_bytes,
-                    ) = _unlink_verified_candidates(
+
+                    prepared = _prepare_unlinks(
                         root, index, candidates.orphan_blobs, candidates.empty_snapshots
                     )
-                    wal_checkpoint = _checkpoint_truncate(conn)
+                    # 余量足够时，先单事务提交 DB 行删除（失败时 0 文件已删），
+                    # 再 unlink 孤儿文件并 fsync 目录，最后原地截断 WAL。
+                    try:
+                        for item in prepared:
+                            _verify_prepared_unlink(item)
+                        execution_started = True
+                        deleted["jobs_count"], deleted["budget_reservations_count"] = (
+                            _delete_db_candidates_in_tx(
+                                conn, candidates.job_ids, candidates.reservation_ids
+                            )
+                        )
+                        _unlink_prepared(prepared, deleted)
+                        wal_checkpoint = _checkpoint_truncate(conn)
+                    finally:
+                        _close_prepared_unlinks(prepared)
 
-            _fsync_dir(root)
-            deleted = {
-                "orphan_blobs_count": deleted_blobs,
-                "orphan_blobs_bytes": deleted_blob_bytes,
-                "empty_snapshots_count": deleted_snaps,
-                "empty_snapshots_bytes": deleted_snap_bytes,
-                "jobs_count": deleted_jobs,
-                "budget_reservations_count": deleted_resv,
-                "reclaimed_file_bytes": deleted_blob_bytes + deleted_snap_bytes,
-            }
+            # TRUNCATE 成功返回 (0, 0, 0)；不适用 WAL 时 (-1, -1) 是合法 no-op。
+            if wal_checkpoint is not None and (
+                wal_checkpoint["busy"] != 0
+                or (wal_checkpoint["log"], wal_checkpoint["checkpointed"]) not in {(0, 0), (-1, -1)}
+            ):
+                raise TianshuError(f"WAL checkpoint(TRUNCATE) 未完成：{wal_checkpoint}")
+            if file_gc_supported:
+                _fsync_gc_dir(root)
             notes = [
-                "离线独占安全 GC 已完成；events、summary_*、dispatches、非空快照、"
-                "protected_blobs、budget_counters 及未决/未知预占行保持 0 删除。"
+                "本批次未删除 events、summary_*、dispatches、非空快照、protected_blobs、"
+                "budget_counters 及未决/未知预占行。"
             ]
+            if wal_checkpoint is None:
+                notes.append("可用空间低于 64 KiB 最小日志安全余量，本次未执行 WAL 检查点。")
             if db_rows_deferred_low_disk:
-                notes.append(
-                    "当前磁盘可用空间低于 64 KiB 最小日志安全余量：已完成孤儿文件回收，"
-                    "SQLite 表行清理延后至腾出最小日志空间后再次执行。"
-                )
+                notes.append("SQLite 表行清理延后至腾出最小日志空间后再次执行。")
             return (
                 _build_success_report(
                     dry_run=False,
@@ -1425,25 +1574,30 @@ def run_data_gc(
                 ),
                 0,
             )
-    except GcRefused as exc:
-        return (
-            build_gc_error_report(
-                code=exc.code,
-                message=str(exc),
-                dry_run=effective_dry_run,
-                older_than_days=older_than_days,
-                extra_paths=extra_paths,
-            ),
-            2,
-        )
     except (sqlite3.Error, OSError, ValueError, TianshuError) as exc:
+        # 执行中再次核验失败时，若已有删除，不冒充零删前置拒绝。
+        failure_notes: Sequence[str] = ()
+        if isinstance(exc, GcRefused) and not any(deleted.values()):
+            error_code, message = exc.code, str(exc)
+        else:
+            error_code = "gc_failed"
+            message = f"离线安全 GC 失败：{type(exc).__name__}: {exc}"
+            if execution_started:
+                failure_notes = (
+                    "deleted 仅统计已确认的 SQLite 提交与成功的 unlink；"
+                    "未确认的操作不能视为未发生。文件字节是逻辑长度，不代表实际腾出的空间或掉电持久性。",
+                )
         return (
             build_gc_error_report(
-                code="gc_failed",
-                message=f"离线安全 GC 失败：{type(exc).__name__}: {exc}",
+                code=error_code,
+                message=message,
                 dry_run=effective_dry_run,
                 older_than_days=older_than_days,
                 extra_paths=extra_paths,
+                deleted=deleted,
+                wal_checkpoint=wal_checkpoint,
+                db_rows_deferred_low_disk=db_rows_deferred_low_disk,
+                notes=failure_notes,
             ),
             2,
         )

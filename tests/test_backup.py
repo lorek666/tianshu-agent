@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import pytest
+from restore_test_support import requires_managed_restore_writes
 from support import CHILD_TEXT, write_exact
 
 from tianshu import backup
@@ -268,6 +269,7 @@ def test_backup_excludes_secrets_run_dir_and_logs(tmp_path):
             assert b"secret" * 8 not in path.read_bytes()
 
 
+@requires_managed_restore_writes
 def test_restore_same_path_after_losing_original_data(tmp_path):
     """忘记/丢掉原数据后，从备份恢复回原路径：进入受管 published_hold，只读复核可验外部材料。"""
     from tianshu import restore_manager
@@ -341,6 +343,7 @@ def test_restore_refuses_non_clean_target_and_wrong_path(tmp_path):
     assert "只能恢复到原数据根" in str(excinfo.value) or "原路径" in str(excinfo.value)
 
 
+@requires_managed_restore_writes
 def test_restore_failure_keeps_target_untouched(tmp_path, monkeypatch):
     from tianshu import restore_manager
     from tianshu.loop import build_stack
@@ -606,6 +609,53 @@ def test_reference_protection_only_orphans_are_candidates(tmp_path):
     # 只是候选清单：一个文件都没删
     assert orphan.exists()
     assert index.protected_blobs
+
+
+def test_cleanup_plan_uses_filesystem_identity_for_referenced_names(tmp_path):
+    root = tmp_path / "data"
+    db = root / "events.db"
+    blobs = root / "blobs"
+    content = "x" * 300_000
+    log = EventLog(db, blob_dir=blobs)
+    try:
+        seq = log.append("r1", "tool.result", {
+            "call_id": "read", "tool_id": "read_text", "status": "succeeded",
+            "effect_state": "none_applied", "output": {"content": content},
+        }, actor_kind="core")
+        (ref,) = log.conn.execute(
+            "SELECT payload_ref FROM events WHERE seq=?", (seq,),
+        ).fetchone()
+    finally:
+        log.close()
+
+    recorded = Path(ref)
+    alternate = recorded.with_name(recorded.name.upper())
+    assert alternate.name != recorded.name
+    orphan = blobs / "unused"
+    orphan.write_bytes(b"unreferenced")
+    expected = {f"blobs/{orphan.name}"}
+    if alternate.exists():
+        # Exercise the names as actually stored and looked up on this volume.
+        assert alternate.samefile(recorded)
+        intermediate = recorded.rename(blobs / "temporary-name")
+        intermediate.rename(alternate)
+        assert {path.name for path in blobs.iterdir()} == {alternate.name, orphan.name}
+        assert alternate.samefile(recorded)
+        assert recorded.stat().st_nlink == 1
+    else:
+        # On a case-sensitive volume the other spelling can be a separate file.
+        alternate.write_bytes(recorded.read_bytes())
+        assert not alternate.samefile(recorded)
+        expected.add(f"blobs/{alternate.name}")
+
+    log = EventLog(db, blob_dir=blobs)
+    try:
+        assert log.read_run("r1")[0].payload["output"]["content"] == content
+    finally:
+        log.close()
+    plan = cleanup_plan(root)
+    assert {candidate["path"] for candidate in plan["candidates"]} == expected
+    assert recorded.exists() and alternate.exists() and orphan.exists()
 
 
 def test_reference_protection_refuses_when_evidence_unreadable(tmp_path):

@@ -393,8 +393,9 @@ class OutstandingUndo:
 
 def _artifacts_root(data_root: Path, log: Any = None) -> Path:
     if log is not None and getattr(log, "db_path", None) is not None:
-        from .restore_access import default_material_paths
+        from .restore_access import default_material_paths, preflight_legacy_material_layout
 
+        preflight_legacy_material_layout(log.db_path, data_root)
         return default_material_paths(log.db_path, data_root)[0]
     return Path(data_root) / "artifacts"
 

@@ -30,8 +30,8 @@
 - **当前主要未完成项（距离 PRD §11.1 G3 正式发布）**：
   - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
-  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、**W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**、**W15 v2 保守离线安全 GC（`data_gc.py` / `tianshu data gc`，默认预演退 `3`、`--approve` 独占锁清理孤儿 blob 与超期终态 `jobs` / `settled & known=1` 预占行并豁免 2 GiB 新 Run 门槛）**，以及 **G3-B06 受管恢复 B 完整执行链（`restore-plan/apply/review/resume/abort` P0–P5、双锚点隔离守卫与 B01–B09）与恢复 C 隔离解除及服务恢复（`restore-release` R0–R3、`RestoreRegistry` v1→v2 无损原地升版、确定性 append-only 对账与 `(S, D)` 实体绑定 v2 准入 C01–C06）**均已在本分支落地（待独立复审与主干 CI 门禁合入）；事件归档原库收缩（仍属维护者未拍板红线修订项）、≥10 小时常驻浸泡（soak）与冻结 SLO 实跑仍待完成。
-  - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 代码根因与确定性屏障回归已落地，见 [2026-11-18-fix-issues-145-147.md](changelog/2026-11-18-fix-issues-145-147.md)，待 PR 合入与原生 Windows required CI 终验销账）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
+  - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。验收、合并状态及原生 CI 见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)。当前 G3 仍需候选 SLO 实测和 ≥10 小时常驻浸泡。
+  - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
 ## 3. 架构速览
@@ -234,6 +234,13 @@
 - **SQLite close 决定 access 寿命**：`MaintenanceConnection.close()` 先让 SQLite 真正关闭，再释放实体句柄和外部锁；跨线程 close 失败时连接仍可写，后续锁必须继续持有。
 - **Windows 目录发布不伪造 fsync**：registry 目录用 `MoveFileExW(MOVEFILE_WRITE_THROUGH)` 发布；Windows 目录的物理断电 durability 仍不是已证明事实。CI 另有原生 probe artifact，直接记录 file ID、硬链接、持句柄 rename、锁和 registry 结果。
 
+### 受管恢复 B/C 写入边界（PR #198 候选）
+
+- **权威和数据根分别持久化**。POSIX 的 registry 写连接使用 DELETE 日志模式与 `synchronous=EXTRA`，覆盖提交时回滚日志删除的目录同步。首次预约前须有 Home、临时权威与发布父目录的屏障。发布后中断留下的空权威需要补做目录屏障，未发布的私有残留按现行规则保全。R3 写入 `released` 前须同步完成 R2 的主库及其所在目录。
+- **已发布权威须核验主库格式**。干净关闭的 WAL 库也可能只有 `registry.db`，SQLite 只读连接仍可能建旁文件。观察、重核和追加在现有锁内先核对目录和 DELETE 格式文件头，再连接 SQLite。活跃协作写者优先返回 Busy。详见[注册表日志格式记录](changelog/2026-11-19-restore-registry-journal-format.md)。
+- **已落盘的 `unknown` 仍需核对阻断**。恢复解除保留原有结果，追加缺少的工作区或 MCP 对象阻断。完成权威阻断和 R2 持久化核验后才能解除隔离。详见[恢复 B/C 记录](changelog/2026-11-18-restore-b-and-c.md)。
+- **平台能力写前判断**。Windows T1 原生身份、锁和 SQLite 注册表路径继续保留。受管写入在平台屏障缺失时拒绝，保留已观察到的批次和现场。W15 在 Windows 批准执行和低余量路径先做只读预检，发现 SQLite 旁文件即保留现场并拒绝。在 Windows，任何文件候选会导致整批拒绝。静态库无文件候选时按有效 SQLite 余量清理表行或延后。目录持久化跟踪见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
+
 ### 桌面退出实例绑定（2026-11-16，R1）
 
 - **实例核验必须在发起 shutdown 的同一条握手连接内完成**：不能先另开连接核对 `daemon.lock` / welcome，再换连接发退出；旧实例 A 在两个动作之间退出时，第二条连接可命中新实例 B。现在 `request_shutdown(expected_instance_id=...)` 从冻结锁取得身份，在同一已连接会话的 `hello.welcome.instance_id` 核对后才发送请求；不符或缺失一律 fail-closed。
@@ -249,6 +256,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **用标准库名识别历史材料，用实体身份判定归属**：材料布局、空库准入和旧迁移旁证发现共用 `overlap_key` 的标准库名判据。没有文件身份的旧完成记录遇到别名时，只有两个名字指向同一个普通文件才可采用该记录；v2 旁证仍按实际路径严格绑定。见[标准库名准入回归](changelog/2026-11-19-restore-b03-basename.md)。
+- **后续备份必须能与封存恢复点比较**：同源且通过 `verify` 不等于更新。B 复核要求清单创建时间严格递增、事件序号不倒退；时间来自墙钟，比较不证明完整谱系，也不纳入解除使用的静态复核摘要。见[后续备份顺序校验](changelog/2026-11-19-restore-b07-later-backup-order.md)。
 - **副作用落盘后的结果提交失败、双阶段锁忙与本地 `unknown` 都不能顺流收束成终态（2026-11-18，#145/#147）**：①`_commit_result`、`_fail_unknown` 与 `_write_mcp_unknown` 必须把 `append_many` 与 `UPDATE dispatches` 放进同一外层事务，否则两笔事务之间撞锁会留下半提交状态；若结果提交与 `_fail_unknown` 均撞 `SQLITE_BUSY` 或异常跳过 `_absorb`，主循环 `_finish` 收尾前必须先与已落库 `tool.result` 对齐最高严重度 `effect_state`，并核查未配对 `tool.intent` / 在途 `dispatches` 与本 Run 尚未解除的本地 `recovery.blocked`，命中则转入 `reconciling` 保留目录租约，绝不能误写 `none_applied` 或放走租约；②本地目录写落入 `unknown`（已写 `recovery.blocked`）后必须立即停进 `reconciling`，不能像 MCP 对象级阻断那样继续让模型 `end_turn` 报 `succeeded`；③Windows `ctypes` 调 Win32 句柄 API 必须用 `WinDLL(..., use_last_error=True)` 显式声明 `wintypes.HANDLE` 的 `restype`/`argtypes`，未声明原型默认走 32 位 `c_int`，会把 `0x80000124` 这类 bit 31 置位的有效 64 位句柄符号扩展截断成无效句柄；④CPython `pathlib._ignore_error` 不忽略 `winerror in {5, 32, 33}`，因此 `exists`/`is_file`/`is_dir`/`size` 与 `unlink`/`read_bytes`/`identity_key` 均需接入有界共享锁重试，且 `identity_key` 只能把 `ENOENT`/`ENOTDIR` 退化为 `path:` 键（吞掉 `PermissionError` 会把短暂共享锁伪装成"目标身份被替换"）。
 
 - **SVG 元素的坐标 `transform` 属性与 CSS `@keyframes` 动画 `transform` 不能挂在同一节点（2026-11-18）**：浏览器在应用 CSS `transform` 关键帧时会直接覆盖同一 `<g>` 节点上的 SVG `transform="translate(...) rotate(...)"` 属性，导致悬浮全息屏、星芒等配件被拉回 `(0, 0)` 原点，或关节旋转基准丢失。所有带定位/旋转的 SVG 部件必须拆成外层定位 `<g transform="...">` 与内层纯动画 `<g class="...">` 两层嵌套；同屏多实例 SVG `<defs>` 渐变与滤镜 ID 须经 `useId()` 隔离，并用静态标记单测钉住全体 `id` 无重复。
@@ -274,6 +283,14 @@
 - **两段目录 rename 需要可恢复凭证（2026-11-16）**：旧 output 移走与 staging 发布之间硬退会留下可见空窗和永久 staging/backup；不能只靠 `except` 回滚（`os._exit` 不执行），必须在破坏性第一步之前持久化恢复记录，并让下一次启动自动续做或恢复。
 - **符号链接负控必须比较目标前后字节（2026-11-16）**：只断言“函数拒绝链接”不足以证明旧实现对目标无写入；测试须先构造真实 symlink，再核目标文件哈希/文件集合不变。Git tree 大小写冲突也要直接在 tree object 上构造，不能依赖当前文件系统能否同时落两个文件。
 - **同一实例的退出请求也要防检查后替换（2026-11-16）**：真实 Daemon 探针证明旧实现会忽略额外 `expected_instance_id` 并把错误身份的 shutdown 当正常请求；仅比较调用前锁 SHA 不足以防止“SHA 检查 → RPC”之间的实例替换。复核维度必须放在同一 IPC 会话内，不能用两次连接拼接。
+- **历史材料布局兼容必须先读后写（PR #198 候选）**：旧版非标准 `custom.db` 或异根 `data_root` 可能把快照、撤销 journal、事件 blobs、记忆正文留在当前版本不再读取的位置。`preflight_legacy_material_layout()` 只比较 canonical 旧/新材料路径并只读扫描改变解释的子树：空骨架放行，真实文件/链接或不可判定一律拒绝；CLI authority、`build_stack`、`open_memory`、`MemoryProjection`、undo outstanding 与 recovery assessment/执行在任何 store 写入或把 pending 判为空前触发。不会搬移/双写/自动迁移；用户应保留原布局，离线备份后用旧兼容版复核未决事务。标准同根与 `:memory:` 不受影响。
+
+- **SQLite 主库实体句柄与材料借用分别计寿命（PR #198 候选）**：POSIX 已持有的 SQLite 进程记录锁可能被本进程关闭同 inode 的附加文件描述符清除；普通组合 access 共持由 `fstat` 固定的主库句柄，包含新建 `O_EXCL` fd，最后一份 access 才关闭。仅观察 released/GC 现场时不打开主库 fd。标准材料写入必须借用实际所属 `EventLog` 的活跃 access，ownerless 同根可借用，否则依现有域规则独立只读核验或拒绝；正常关闭使 access 停止新借用，现有借用仍持外部准入至写完。以机制和本机生命周期回归为证，不代表观察到数据损坏。SQLite 读连接由 VFS 自行管理，未承诺覆盖 raw/外部文件访问或 SQLite 内部未完成语句的回收时机。
+
+- **GC 的引用保护跟随文件身份（PR #198 候选）**：同一普通单链接材料在不区分大小写的卷上可以用不同拼写读取。核验引用后记录原生文件身份，同时保留登记路径，扫描候选和写前预检都匹配两者。见 [W15 文件身份记录](changelog/2026-11-19-w15-reference-identity.md)。
+
+- **重入需要重做可见实体的持久化屏障**。文件哈希匹配时要补做文件 `fsync`，已可见的待建祖先要补做各自的父目录 `fsync`，发布重命名或清理暂存目录后仍须同步稳定父目录。故障回包按当前现场列出保留路径。见 [B09 持久化记录](changelog/2026-11-19-restore-b09-durability.md)。
+
 - **用户级 restore gate 不适合由每个普通测试争用（2026-11-16）**：两个独立工作树并行跑全量时，固定用户级 gate 会让恢复/迁移 crashpoint 子进程把 `MaintenanceBusy` 当作 1 而非预期 77。`test_recovery.py` / `test_migration.py` 已在本用例临时锁根中运行并显式注入子进程；仍须为真正测全局锁语义的用例保留生产路径，不能全局替换锁根掩盖它。
 - **平台条件代码的导入也属于门禁（2026-11-16）**：macOS 菜单构建器与 Unix 测试辅助必须各自使用与其调用点一致的 `cfg`。本机 macOS Clippy 不能发现 Windows 侧 unused import；恰好由原生 Windows Rust job 以 `-D warnings` 抓住，修复方式是按目标裁剪导入，不用 `allow`。
 - **`database_list.main` 不是 SQLite 内部 HANDLE**：标准库不能读出 VFS 使用的 OS 句柄。T1 能证明“锁定实体句柄 + main 路径 + 重开实体一致”，不能把这三项写成直接读取 SQLite 内部句柄。
@@ -404,22 +421,16 @@
 - **R3 代码前置已在本地组合候选汇合并完成精确 required CI（2026-11-16）**：`scripts/build_release.py`、`scripts/verify_release.py`、`src/tianshu/release_smoke.py`、`scripts/package_app.py` 与 `release.yml` 已在 `codex/release-final-integration` 组合出现，因此“当前基线缺少 R2 入口”的旧阻塞已不再成立；组合候选已由 PR #175 合并，最终对象 `343ebf0/tree 94f8e34f` 的 required CI 已由 run `43889749967` 七 job 全绿绑定。组合代码不得当作 release workflow 已执行：四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。三轮原生 CI 已证明 GitHub Ubuntu、macOS、Windows Rust 与 UI job 可运行；旧候选 25 项红、`a55e752` 的 raw-tree 夹具红和 `1a619af` 的 SQLite 定稿红均已定位，`ded5e97` 已完成备份恢复高危复审。四目标 release workflow 仍待实际执行与绑定。
 - **打包封闭检查与最终 provenance 边界（2026-11-16）**：`package_app.py` 会拒绝源仓库、bundle、输出祖先及四棵资源树中的 symbolic link/非普通文件，并在 Tauri 完成后再次验证 App/安装器；`verify_release.py` 同时比较 macOS App 根文件和目录集合。检查到实际读取/归档之间仍存在同 uid 写者可竞争的理论 TOCTOU（未实现 fd-relative/openat）；最终 verifier 不接收原始 runtime archive，不能独立重算其字节 provenance。该残留必须保留，不能因为本机负控变绿写成物理封闭。
 - **Host 存活探测仍可能受 PID 复用影响（2026-11-16）**：`host.lock` 缺失后的 Daemon 保护分支使用 `pid_alive` 判断快照 PID；当前没有把应用启动墙钟 `HostInfo.started_at` 当成操作系统进程启动时间，也没有扩大 schema。PID 被无关进程复用时，桌面壳可能保守地拒绝清理 Daemon，用户可退出旧进程/释放错误占用后重试；该分支不会误停 Daemon，但“存活”判断本身不是强 OS 身份。
-- **恢复 B 仍只有 T1 平台基础**：当前没有真实受管 `apply/review/resume/abort` CLI/API、P0–P5 复制/发布/清理链或完整 B01–B09 验收。T1 候选只证明身份、锁、registry 与当前 EventLog/迁移/备份入口的连续 access，不能解除普通业务 held 状态。
-- **T1 入口闭包边界**：EventLog、迁移和离线备份已接 composite access；三材料/其他后台写者的完整入口归属索引仍未全部收口，文档不得把“核心连接已持锁”扩写成“所有旧/raw/material writer 已被约束”。raw SQLite、旧程序和同 uid 直接改文件始终在协作锁声明外。
+- **受管恢复与离线 GC 的状态**：T1 身份锁和准入底座已在主干。受管 `apply/review/resume/abort/release` 和 W15 批准执行在 [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的集成候选中，须以该 PR 的确切提交与验收状态为准。复核只报告可核对的后续变化，无法证明遗忘、擦除与删除历史完整；解除不恢复旧 Run 的自动执行。Windows 有效的受管写入返回 `durability_unavailable`，后续能力见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。设备掉电仍需独立取证。
+- **入口协作边界**：EventLog、迁移、离线备份和 GC 批准接入组合准入；材料写入借用该所有者的实际 access，不能凭另一个已开连接推断授权。旧程序、raw SQLite 和同 uid 直接改文件始终在协作锁声明外。
 - **Windows T1 原生结果已绑定，但仅覆盖 Windows Server runner**：PR run [43889749967](https://github.com/lorek666/tianshu-agent/actions/runs/43889749967) 的 artifact `restore-t1-windows.json`（zip SHA256 `c6e7aa68abedc002009d88ac70b0f70a019cd01948807854b838fb80c0ac201d`）绑定 `343ebf0` 并返回 `status: PASS`；merge 后 main run [43893763334](https://github.com/lorek666/tianshu-agent/actions/runs/43893763334) 的同名 artifact 绑定 `219d17ab`、返回同样 `status: PASS`，原始 JSON SHA256 为 `e293d8969a7eeb3a6bace8f177ce7fd00ac3ee3235a9ff09657c4967269124a2`。两者证明 `GetFileInformationByHandleEx(FileIdInfo)`、共享/排他锁、hardlink、rename 与 registry `MoveFileExW(MOVEFILE_WRITE_THROUGH)` 探针在 Windows Server 2025 AMD64 runner 上通过；SQLite VFS 句柄仍为 `NOT_EXPOSED_BY_STDLIB`，目录掉电持久性仍为 `NOT_PROVEN`。该结果不代表 Windows 10/11 用户设备、ARM64 或物理断电。
 - **c2cf双红与诊断边界（2026-11-14）**：M2活跃renew context的32ms/63ms观测差不证明单次5秒持锁，run.end的none_applied也不证明execution.started后文件未动；不按无证据假设修改锁策略。MCP此次CI在returned断言停止，后续unknown/replay断言未执行；本机真实屏障只证明原测试能混入审批和落盘等待，不定位原Windows卡点。最终测试计时/清理和M2起点/调用链诊断已独立限定PASS、本机完整门通过；实际Windows与正式对象仍另验，不借PR149绿色销账。READONLY和注入7ms仅验诊断；[本轮记录](WINDOWS-CI-TIMING-2026-11-14.md)保留范围。
 
 - **M2诊断验证边界（2026-11-14）**：766a候选已在本机真实POSIX别名输入修复诊断caller丢失，并独立核根外同内容副本仍external；Windows junction分支本机未执行。诊断成功静默、失败附note，但包装及resolve有非零时序成本；它只观察已装配本进程context，不是OS锁owner、外部写者或精确COMMIT起点。新完整本机门不覆盖原Windows根因，正式对象/原生CI另核。
 
-- **正常收尾锁错误未修（2026-11-14）**：main b450原生push CI失败已独立确认；同一queued/五事件指纹可来自两个不同事务BEGIN，当前没有原CI底层帧、SQLite错误码或持锁轨迹，实际根因 `NOT_ESTABLISHED`。本轮测试观测只覆盖已装配的本进程事务，不能排除未观测的外部写者，也不能用本机或PR绿覆盖原main红；恢复B契约推送和产品保持暂停。
+- **2026-11-14 Windows 首红（历史记录）**：[main `b450` 的 push CI](https://github.com/lorek666/tianshu-agent/actions/runs/43567298082) 在正常收尾用例出现 `database is locked`，Run 留在 `queued` 且缺 `run.end`，Windows 汇总失败。同一事件指纹可由不同事务的 `BEGIN` 产生，当时没有原始 SQLite 错误码或持锁轨迹。[审批路径诊断](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)仅覆盖已装配的本进程上下文。历史失败保留，#145/#147 后续销账见 §2。
 
-- **当前数据生命周期边界（2026-11-14，本次提交前）**：低磁盘 PR #144 已合 main8f2a，PR及main自身首次六job CI均已独立核验通过；issue #145 的旧Run failed原因未知，未关闭。恢复B纯契约PR #146首次CI另有审批后删除未发生失败，issue #147根因未建立，原红仍阻断该提交合并。本片只补有界失败诊断，短关键字段独立验收与最终本机门已通过，不把它们当作新原生CI或根因修复；后续绑定详见[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)。恢复apply/review/resume/abort、解除与完整旧Run恢复均未实现；旧作者时点保留历史含义，当前以精确提交及交付记录为准。
-
-- **main b450 自身 CI 未通过（2026-11-14）**：run43567298082 的 Windows 片1在正常收尾测试第55轮出现 database is locked，Run 留 queued、无 run.end，required 汇总失败。原生首红保留，完整终态独立核验与根因待查，不能用 PR148 的绿色或本机3186项通过销账；暂不推进恢复契约推送或 B 产品，也不宣称已证明与旧 #145/#147 同因。
-
-- **当前低磁盘边界（2026-11-14）**：PR144及main8f2a自身原生CI已通过并独立绑定，精确结果见§2。issue #145旧Windows正常收尾Run failed原因未知/未修，不能排除PR回归；root已显式接纳内部研发风险，绿色不等于长期稳定或无条件整PR批准。BASE-B1既有CLI预算装配缺口未修。恢复B当前只有[契约文字](restore-held-contract.md)，全部产品验收NOT_RUN；C解除/完整旧Run恢复、容量上限/GC、真实付费任务、10h soak及普通用户发行仍待。逐位置空间探测不是配额；Windows Server CI不代表Windows10/11、ARM64或桌面实测。以下作者/失败记录均为其历史时点，不覆盖本条。
-
-- **审批诊断提交前的数据生命周期边界（2026-11-14，历史记录）**：低磁盘 PR #144 已合 main8f2a，PR及main自身首次六job CI均已独立核验通过；issue #145 的旧Run failed原因未知，未关闭。恢复B纯契约PR #146首次CI另有审批后删除未发生失败，issue #147根因未建立，原红仍阻断该提交合并。本片只补有界失败诊断，短关键字段独立验收与最终本机门已通过，不把它们当作新原生CI或根因修复；后续绑定详见[诊断记录](APPROVAL-CI-DIAGNOSTICS-2026-11-14.md)。恢复apply/review/resume/abort、解除与完整旧Run恢复均未实现；旧作者时点保留历史含义，当前以精确提交及交付记录为准。
+- **低磁盘边界**：PR #144 及其合并对象 `8f2a` 的首次 CI 结果见[低磁盘记录](LOW-DISK-2026-11-14.md)。逐位置的可用空间探测只做准入，不是磁盘配额；旧低磁盘提交的覆盖范围与本次恢复/GC 候选的验收分别记录。Windows 用户设备证据仍待取得。
 
 - **T1装配/恢复继承缺口已在T2独立范围内修复（2026-11-14）**：固定已审T1源上的六个受影响测试原样复现失败：4个跨进程pending MCP恢复缺发现注册表、dead-at-dispatch夹具启动前取server、摘要硬退子进程漏传真实memory。T2只补pending MCP按需准备和两个夹具实际实例；原硬退/unknown/对象阻断断言保持。另原并发审批用例固定T1通过，新增执行上下文门后测试两线程手装配缺context，最薄补同连接Snapshot/authority/guard后通过，未放宽生产校验、竞争和一次消费断言。上述不撤销T1此前已审范围；T2 的完整冻结内容与窄 delta 已由第二读者独立 PASS，但仍不扩大为 T3/整功能通过。
 
@@ -467,7 +478,7 @@
 - **G2 网络阶段已交付，但边界必须一起读**（2026-11-11，PR #110 / #112；2026-11-18 W9 `v2.0` 补齐防重绑与分页编码）：`outbound_allow` + `network.fetch` + §10.5 联网研究闭环（本机夹具）。**仍不成立**：只支持 GET、**没有检索/搜索 API**（§10.5 的"检索公开来源"在真实意义上未闭环）；**真实公网研究与真实模型复跑未验证**（判据全跑 loopback 夹具）；重定向只许同源；取消只能阻止新请求/新读（在途 TCP 字节无法撤回，系统 `getaddrinfo` 阻塞本身不可被 Python 线程异步打断）；~~响应上限 1 MiB / 摘要 4 KiB，二进制正文只有有损摘要且没有文本分页读取；DNS rebinding / 解析后二次校验未做；每 Run 抓取配置是进程级常量~~**已由 W9 `v2.0` 补齐（2026-11-18，`feat/w9-network-depth`，见 [changelog/2026-11-18-w9-network-depth.md](changelog/2026-11-18-w9-network-depth.md)）：`network.fetch` `2.0` 支持按请求 `max_bytes` 收紧预算预占与内联 `offset`/`length`/`next_offset` 分页预览，`read_content` `2.0` 支持 `utf-8`/`utf-8-replace`/`latin-1`/`base64` 无损分页读取二进制与非 UTF-8 内容，且初始请求与每跳重定向均强制单次 DNS 解析 + 全 RRset 非全局地址拦截（`net.private_address_blocked` 记已知 0 字节）+ `_PinnedHTTP(S)Connection` 数值 `sockaddr` 直连钉死（保留原 `Host` 头、TLS SNI 与 X.509 主机名核验）**；~~无速率限制/重试~~**已交付（2026-11-14，`feat/net-rate-retry`）：连接失败自动重试（只重试 TCP 未建立的 `net.connect`/`net.connect_timeout`，发送后失败绝不重试——服务器端连接数测试钉住授权边界）+ 进程级速率下限（默认 1.0s 可关），见 [SPEC-G2-NET-RESILIENCE](SPEC-G2-NET-RESILIENCE-2026-11-14.md)**；内容分级未实现（审批展示完整 URL 由人判断）；保留期/GC 未做。MCP **已交付**（#116–#119；真实第三方 server 未验证、无沙箱），**记忆阶段也已交付**（#126 `memory.search` + React 面板 = 可查看；#127 `RU-M1@1.0.0` 跨任务召回 = 可证明收益；见 §8 的 2026-11-12 记忆阶段条目）。**子代理 D1 + D2 + D3 已交付**（D1 排队面：`max_subtasks` + `subtasks` 实体/父子链 + 四个工具 + 数量/局部限额 + 预占；D2 执行与收束：Worker 驱动子 Run、父挂起/唤醒、取消传播、父目标 fence、结果回填、回放不重跑；D3 真实用户任务评测：`RU-D1@1.0.0` 只读子任务 + 父任务逐字汇总引用 + 只读边界/失败不编造判据）。D3 是**脚本模型**评测，不是真实模型分数；只覆盖一条公开委派任务 + 一条测试内失败路径。**仍不成立**：~~子任务只读~~（2026-11-14 起默认仍只读、可显式声明文件写，见下方 W10 条目）、深度 1（契约分析已交付，实现待契约 PR）、单机同 Worker 池、取消不退款、读不到输出时摘要为空、~~无 UI 页面~~（**2026-11-14 W8 部分销账**：父 Run 事件面的子任务面板已交付——`subtask.spawned`/`subtask.finished` 合并出限额 / 状态 / 用量，进行中不冒充终态、用量未知不当 0；账户级委派计数视图仍缺 control 端点，见 [SPEC-W8](SPEC-W8-BUDGET-SUBTASK-UI-2026-11-14.md) §6）、Windows 未验证。见 [network-g2.md](network-g2.md) §7 与 [resource-kinds.md](resource-kinds.md) §8。
 - **W10 子代理写权限已交付（脚本模型判据），深度>1 与 fork 只交契约分析**（2026-11-14，`feat/subagent-depth-write`）：`subtask.spawn` 2.0 增可选 `write` 布尔声明（红线 8 版本化，缺省 false 与旧行为逐字节一致，RU-D1@1.0.0 样例不动）。`write=true` 的授权上限**恒为父绑定**：子 Task 逐条保留父绑定 mode（父只读的根仍然只读），子 Run 拿到 `effects` 资格（实际拿到可写绑定才给，父全只读则如实降级回 `pure_only`）；子 Run 里每个写动作仍走既有派发审批链（prepare 判定 → 人批准 → 执行侧重判 + 一次性消费 → intent → 守卫内执行 → result + Receipt），与父 Run 完全同构，无免审通道、无权限继承；出网/MCP/exec/记忆写/再委派依旧按既有编号拒绝。判据 12 条 + 负控 3 条（变异红→还原绿），设计与授权论证见 SPEC-W10-SUBAGENT-DEPTH-2026-11-14.md；**授权面改动，合并前必须独立复审**。深度>1（要改 C4 编号语义 + `task.created.depth` 封闭枚举）与 fork（要往子 Run 事件落继承边界）的契约增量四段式见 CONTRACT-C4-SUBTASK-DEPTH-2026-11-14.md，实现留待契约 PR。已知边界：父挂起等子任务时不释放写租约，可写子 Run 首写前要等父租约 TTL 过期走接管对账（正确性无缺口、有等待）；真实模型复跑与 Windows 未验证。
 - **G3 未做**：无 Windows / mac-x64 / win-arm64 实机；安装/升级/回退、Keychain、平台 SLO、macOS 13+ 最低版本均未验证。历史 G3 收尾轮 Windows CI 为 **5 failed / 1509 passed / 29 skipped**（交付对账 §3），另有 25 分钟超时记录；这些是当时的失败证据。2026-11-13 修复分支的后续结果见 §2 与 [Windows CI 报告](WINDOWS-CI-2026-11-13.md)，不把历史失败当成当前结论；实机、安装与升级验收仍未完成。
-- **数据生命周期**：`data backup` 通过协作式共享/独占锁排斥正常活跃连接；低层在线 `create_backup()` 不自动独占，旧版或同 uid 直接 SQLite 可绕过。完整材料校验与只读 `restore-plan` 已接 CLI，实际恢复/记忆隔离、换路径恢复、全产品版本准入与迁移启动门、低磁盘保护及 GC 未交付。原 `migrate.SCHEMA_VERSION=2` 是迁移机制演示，正常产品库仍为 `user_version=0`，不能据此直接拒写全部现有库。旧备份若缺未擦除记忆或 content/payload 材料会校验失败；不可把校验通过当成备份后删除历史完整的证据。
+- **数据生命周期**：离线备份与 GC 依靠协作式准入，范围为参与协议的进程。恢复 B/C 支持原路径受管导入、持久隔离、脱敏复核和用户显式解除，具体集成证据见 §2。只读计划或验证通过不证明备份之后的删除历史完整。新库仍按 `user_version=0` 创建，`migrate.SCHEMA_VERSION=2` 是显式迁移的机制版本。恢复解除后的 v1 库仍须先备份再迁移。v2 免侧车进度文件须有匹配实时实体的解除证明。全产品格式与自动升级回退矩阵、换路径恢复、用户设备和掉电持久性验收仍待完成。见[备份与恢复指南](backup-restore.md)。
 - **指标**：SLO 阈值未冻结；`rss_mib` 是峰值口径；~~指标文件无轮转~~**指标文件已按大小轮转（2026-11-14，`feat/metrics-rotation`，默认 16 MiB × 4 份、失败降级不丢样本，见 [SPEC-METRICS-ROTATION](SPEC-METRICS-ROTATION-2026-11-14.md) 与 [runtime-metrics.md](runtime-metrics.md) §10；80 MiB 上界是估算默认值不是冻结政策）**；~~`state` 响应可超 IPC 8MiB~~**`state` 响应已按预算装填（2026-11-15，`feat/state-response-bound`：4 MiB 预算内按 tasks→runs→approvals 份额两趟装填 + `tasks_truncated`/`runs_truncated`/`approvals_truncated` 截断标记（加字段不升版本）+ 单条目超预算 fail loud 抛 `internal`，绝不静默截断单条文本；`_approval_context` 改按 pending 集合所在 Run 有界读，state/approvals.list 不再随事件历史全表扫；见 [SPEC-STATE-RESPONSE-BOUND](SPEC-STATE-RESPONSE-BOUND-2026-11-15.md) 与 [M5-desktop.md](M5-desktop.md) §3.4 state 行）**；慢订阅者宽限窗内主循环会从落后游标重读。
 - **事件契约**：`oneOf`/`anyOf`/`$ref`/`format` 注册期拒绝；每工具 output 子契约未做；CLI 未区分版本错误文案；历史上从未出现的旧字段组合读作 v0、写入口不识别。
 - **评测**：真实模型未跑（无凭据），harness 分数不得当真实模型结论；报告没有「四维总分」（设计如此）；撤销的授权派发链路未进评测（只走 `SnapshotStore.undo` 数据安全预检）。
@@ -550,10 +561,10 @@
 
 - ~~**issue #27**~~：**已收敛关闭**（2026-11-10 对账销账）。
 - ~~**issue #40**~~：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
-- **issue #145 / #147**：Windows CI 正常收尾偶发 `database is locked` 与审批后删除未发生，已补诊断日志，根因仍标 `NOT_ESTABLISHED`。
-
-- **issue #55**（M4 未验证项）：四条里三条销账（真实换模 m4.4 跑过、memfs 评测改为明确拒绝、真超时黑洞端点跑满）。**m4.5 真实模型复跑被中转站阻塞**（所有模型 `503 / auto groups is not enabled`，见 [M4-verification.md](M4-verification.md) §7.4），**Windows 实机复验仍未做**（需要 Windows 实机），issue 保持打开。
-- ~~**issue #57**~~：**已修（2026-11-11，PR #68）**：`Check.kind`（completion/safety）+ 8 条作用域化判据 + 完成度/安全分栏 + `SUITE_VERSION` m4.5。真实模型报告未复跑（同上一条阻塞）。
+- **#145 / #147 已关闭**。锁忙与审批后删除的回归修复随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入，见 §2。
+- **#200 继续跟踪 Windows 目录持久化**。在现有屏障能力下，受管恢复写入及含文件候选的 W15 批次会拒绝执行。参见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
+- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。当前 `SUITE_VERSION` 为 `m4.6`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
+- ~~**issue #57**~~ 已随 PR #68 关闭。该轮引入 `Check.kind`（completion/safety）、作用域化的判据和完成度/安全分栏，套件当时升到 `m4.5`。
 - ~~**issue #58**~~：**已修（2026-11-11，PR #67）**：`RunResult.model_attempts`（真发一次请求才 +1，含超时/失败/重试）+ `cli._cost_note` 统一口径；全失败时打印「0 个完成轮次 / 3 次尝试（费用未知）」，不再说"没有模型调用"。
 - ~~**issue #53 / #54**~~：**已销账（2026-11-11）**。疑点 1 不成立（模型无法启动 Run，写成设计前提 + 三层钉子）；疑点 2 三条路径探针成立；delete 注入矩阵补齐并暴露一个真 bug（见 §5）。
 - ~~**issue #61 / #63**~~：**已修**（见上一段与 PR #69/#70）。

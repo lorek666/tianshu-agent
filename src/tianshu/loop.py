@@ -1300,7 +1300,7 @@ class Stack:
         "CLI 用一个投影、主循环用另一个"这种两份状态。
         """
         if self._memory is None:
-            self._memory = open_memory(self.log)
+            self._memory = open_memory(self.log, data_root=self.data_root)
         return self._memory
 
 
@@ -1351,7 +1351,10 @@ def build_stack(
     接管这些行为要么靠推进逻辑时钟验证，要么根本测不了（没人愿意等 30 秒）。
     注入必须**贯穿所有 store**，只换一个就等于一半组件用假时钟、一半用真时钟。
     """
-    root = Path(data_root) if data_root is not None else log.db_path.parent
+    root = log.data_root if data_root is None else Path(data_root)
+    from .restore_access import preflight_legacy_material_layout
+
+    preflight_legacy_material_layout(log.db_path, root)
     # 记忆投影必须与 Dispatcher **共用同一个实例**：两处各自 new 一个，正文
     # blob 目录就可能一个用 DB 旁、一个用事件 blob 目录——写入的正文另一方
     # 读不到，看起来像"记忆随机丢失"。构造本身不建表（省掉无关命令的开销），
@@ -1360,7 +1363,7 @@ def build_stack(
         if embedding_provider is None:
             embedding_provider = _embedding_provider_from_env()
         memory = open_memory(
-            log, clock=clock, embedding_provider=embedding_provider
+            log, data_root=root, clock=clock, embedding_provider=embedding_provider
         )
     kwargs: dict[str, Any] = {} if clock is None else {"clock": clock}
     ident: dict[str, Any] = {} if identity is None else {"identity": identity}
@@ -1386,7 +1389,7 @@ def build_stack(
     # blob 目录与 `_persist_spills` 用同一套：优先快照目录，其次是事件库 blob 目录。
     # 两者都没有时不在这里炸——真要用内容引用时 `_persist_spills` 会明确失败。
     blob_dir = getattr(shots, "blob_dir", None) or log.blob_dir
-    contents = ContentStore(log, blob_dir=blob_dir)
+    contents = ContentStore(log, blob_dir=blob_dir, data_root=root)
     from .authority import authority_root
 
     disk_admission = DiskAdmission(RunStorageContext.from_stores(

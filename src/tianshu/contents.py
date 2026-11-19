@@ -174,8 +174,17 @@ class ContentStore:
     与预算账本同样的理由：不制造第二个事实源；事务与事件同生共死。
     """
 
-    def __init__(self, log: Any, *, blob_dir: Path | str | None = None,
-                 clock: Callable[[], int] | None = None) -> None:
+    def __init__(
+        self,
+        log: Any,
+        *,
+        blob_dir: Path | str | None = None,
+        data_root: Path | None = None,
+        clock: Callable[[], int] | None = None,
+    ) -> None:
+        from .restore_access import preflight_legacy_material_layout
+
+        preflight_legacy_material_layout(log.db_path, data_root)
         self._log = log
         self._conn = log._conn
         self._blob_dir = Path(blob_dir) if blob_dir is not None else None

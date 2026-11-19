@@ -6,10 +6,12 @@ Observation 是进程内事实快照，不是可序列化契约或执行许可�
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import sqlite3
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -24,7 +26,14 @@ from .maintenance import (
     acquire_entity_access,
     acquire_restore_gate,
 )
-from .platform_identity import NativeEntityError, observe_entity
+from .platform_identity import (
+    ManagedMainHandle,
+    NativeEntityError,
+    NativeEntityHandle,
+    observe_entity,
+    observe_entity_with_links,
+    open_managed_main,
+)
 from .restore_contract import (
     DirRefV1,
     EntityIdentityV1,
@@ -233,8 +242,12 @@ class RestoreRegistryBusy(RestoreRegistryError):
     """另一个写者已经改变 head；调用者必须重新完整观察。"""
 
 
+class RestoreRegistryCapacityUnavailable(RestoreRegistryError):
+    """实际写入时 registry 所在位置空间不足。"""
+
+
 class RestoreRegistryDurabilityUnavailable(RestoreRegistryError):
-    """平台无法证明已声明的目录持久化边界。"""
+    """无法确认 registry 的写入或持久化完成。"""
 
 
 @dataclass(frozen=True)
@@ -352,8 +365,12 @@ def _connect_readonly(path: Path) -> sqlite3.Connection:
         isolation_level=None,
     )
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=0")
-    connection.execute("PRAGMA query_only=ON")
+    try:
+        connection.execute("PRAGMA busy_timeout=0")
+        connection.execute("PRAGMA query_only=ON")
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
@@ -365,7 +382,15 @@ def _connect_write(path: Path) -> sqlite3.Connection:
         isolation_level=None,
     )
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=0")
+    try:
+        connection.execute("PRAGMA busy_timeout=0")
+        # EXTRA includes the DELETE-mode journal's directory sync. FULL by
+        # itself does not provide that commit barrier.
+        synchronous = "EXTRA" if os.name == "posix" else "FULL"
+        connection.execute(f"PRAGMA synchronous={synchronous}")
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
@@ -444,10 +469,17 @@ def _upgrade_v1_to_v2_in_transaction(connection: sqlite3.Connection) -> None:
     _verify_schema(connection, expected_version=USER_VERSION_V2)
 
 
-def _translate_sqlite(exc: BaseException) -> RestoreRegistryError:
-    message = str(exc).lower()
-    if "locked" in message or "busy" in message:
+def _translate_sqlite(exc: BaseException, *, writing: bool = False) -> RestoreRegistryError:
+    code = getattr(exc, "sqlite_errorcode", 0) if isinstance(exc, sqlite3.Error) else 0
+    primary = code & 0xFF  # SQLite extended result codes retain the primary code in the low byte.
+    if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
         return RestoreRegistryBusy("registry正在写入，必须立即重新观察")
+    if writing:
+        os_error = exc.errno if isinstance(exc, OSError) else None
+        if primary == sqlite3.SQLITE_FULL or os_error == errno.ENOSPC:
+            return RestoreRegistryCapacityUnavailable(f"registry写入空间不足：{exc}")
+        if primary == sqlite3.SQLITE_IOERR or os_error == errno.EIO:
+            return RestoreRegistryDurabilityUnavailable(f"registry写入的持久性未确认：{exc}")
     return RestoreRegistryCorrupt(f"registry SQLite事实不可信：{type(exc).__name__}: {exc}")
 
 
@@ -472,6 +504,42 @@ class RestoreRegistry:
         self.dot_directory = self.home / ".tianshu"
         self.authority_directory = self.dot_directory / "restore-registry-v1"
         self.path = self.authority_directory / "registry.db"
+
+    def _open_published_main(
+        self, database_identity: EntityIdentityV1
+    ) -> ManagedMainHandle | NativeEntityHandle:
+        """Reject storage that could require recovery before SQLite sees it."""
+        # 调用者持有 namespace/entity 锁，正在提交的协作写者会先报 Busy。
+        try:
+            entries = set(self.authority_directory.iterdir())
+        except OSError as exc:
+            raise RestoreRegistryCorrupt("registry权威目录不可枚举") from exc
+        if entries != {self.path}:
+            raise RestoreRegistryCorrupt("registry目录含未知文件、热journal或初始化残留")
+
+        # POSIX 共享同一主库描述符，直到所有本进程 SQLite 连接关完。
+        handle = open_managed_main(self.path)
+        try:
+            if handle.identity != database_identity:
+                raise RestoreRegistryBusy("registry数据库实体在重核期间被替换")
+            if isinstance(handle, ManagedMainHandle):
+                header = handle.read_prefix(100)
+            else:
+                # Windows 文件属性句柄用于身份核验。关闭额外读取句柄不会释放其他句柄的锁。
+                with self.path.open("rb", buffering=0) as file:
+                    header = file.read(100)
+            handle.verify_path(self.path)
+            # SQLite header 18/19 是写/读格式版本。WAL 干净关闭后也保留 02/02。
+            if (
+                len(header) != 100
+                or header[:16] != b"SQLite format 3\0"
+                or header[18:20] != b"\x01\x01"
+            ):
+                raise RestoreRegistryCorrupt("registry数据库不是受支持的SQLite回滚日志格式")
+            return handle
+        except BaseException:
+            handle.close()
+            raise
 
     def observe(self) -> RegistryObservation:
         home_identity = observe_entity(self.home, "directory")
@@ -508,25 +576,19 @@ class RestoreRegistry:
         _reject_link(self.authority_directory, "权威目录")
         if not self.authority_directory.is_dir():
             raise RestoreRegistryCorrupt("registry权威路径不是目录")
-        try:
-            entries = tuple(self.authority_directory.iterdir())
-        except OSError as exc:
-            raise RestoreRegistryCorrupt("registry权威目录不可枚举") from exc
         if not self.path.is_file() or self.path.is_symlink() or self.path.is_junction():
             raise RestoreRegistryCorrupt("registry目录存在但数据库缺失或不是普通文件")
-        if any(entry != self.path for entry in entries):
-            raise RestoreRegistryCorrupt("registry目录含未知文件、热journal或初始化残留")
 
         authority_identity = observe_entity(self.authority_directory, "directory")
         database_identity = observe_entity(self.path, "file")
         namespace = None
         entity = None
+        main = None
         connection = None
         try:
             namespace = acquire_database_access(self.path)
             entity = acquire_entity_access(database_identity)
-            if observe_entity(self.path, "file") != database_identity:
-                raise RestoreRegistryBusy("registry数据库实体在观察期间被替换")
+            main = self._open_published_main(database_identity)
             connection = _connect_readonly(self.path)
             connection.execute("BEGIN")
             schema_uv = _verify_schema(connection)
@@ -615,6 +677,8 @@ class RestoreRegistry:
             )
         except MaintenanceBusy as exc:
             raise RestoreRegistryBusy("registry维护锁正在使用中") from exc
+        except NativeEntityError as exc:
+            raise RestoreRegistryBusy("registry实体无法重核") from exc
         except RestoreRegistryError:
             raise
         except (sqlite3.Error, ValueError, TypeError, OSError) as exc:
@@ -627,6 +691,8 @@ class RestoreRegistry:
                 except sqlite3.Error:
                     pass
                 connection.close()
+            if main is not None:
+                main.close()
             if entity is not None:
                 entity.close()
             if namespace is not None:
@@ -639,6 +705,7 @@ class RestoreRegistry:
             raise RestoreRegistryCorrupt("gate内重核需要present观察")
         namespace = None
         entity = None
+        main = None
         connection = None
         try:
             if observe_entity(self.home, "directory") != expected.home_identity:
@@ -649,8 +716,7 @@ class RestoreRegistry:
                 raise RestoreRegistryBusy("registry数据库实体在观察后变化")
             namespace = acquire_database_access(self.path)
             entity = acquire_entity_access(expected.database_identity)
-            if observe_entity(self.path, "file") != expected.database_identity:
-                raise RestoreRegistryBusy("registry数据库实体在重核期间被替换")
+            main = self._open_published_main(expected.database_identity)
             connection = _connect_readonly(self.path)
             connection.execute("BEGIN")
             _verify_schema(connection)
@@ -676,6 +742,8 @@ class RestoreRegistry:
             connection.execute("COMMIT")
         except MaintenanceBusy as exc:
             raise RestoreRegistryBusy("registry维护锁正在使用中") from exc
+        except NativeEntityError as exc:
+            raise RestoreRegistryBusy("registry实体无法重核") from exc
         except RestoreRegistryError:
             raise
         except (sqlite3.Error, ValueError, TypeError, OSError) as exc:
@@ -688,6 +756,8 @@ class RestoreRegistry:
                 except sqlite3.Error:
                     pass
                 connection.close()
+            if main is not None:
+                main.close()
             if entity is not None:
                 entity.close()
             if namespace is not None:
@@ -708,6 +778,7 @@ class RestoreRegistry:
         gate: DatabaseAccess,
         *,
         registry_id: str | None = None,
+        check_meta_capacity: Callable[[Path, EntityIdentityV1, int], None] | None = None,
     ) -> PresentRegistryObservation:
         if (
             not isinstance(gate, DatabaseAccess)
@@ -719,13 +790,34 @@ class RestoreRegistry:
         if current.present:
             return current
         selected_id = str(uuid.uuid4()) if registry_id is None else registry_id
-        self._initialize_absent(selected_id)
+        self._initialize_absent(selected_id, check_meta_capacity=check_meta_capacity)
         result = self.observe()
         if not result.present:
             raise RestoreRegistryCorrupt("registry初始化返回后仍不存在")
         return result
 
-    def _initialize_absent(self, registry_id: str) -> None:
+    def sync_empty_namespace_under_gate(
+        self, gate: DatabaseAccess, expected: PresentRegistryObservation
+    ) -> None:
+        """Replay namespace barriers before the first reservation on an empty authority."""
+        if (
+            not isinstance(gate, DatabaseAccess)
+            or not gate.active
+            or not gate.authorizes_registry_write
+        ):
+            raise RestoreRegistryBusy("补做registry目录屏障须持有活跃的独占restore gate")
+        if expected.events or expected.authority_directory != self.authority_directory:
+            raise RestoreRegistryCorrupt("补做首次预约屏障须绑定现有空registry权威")
+        _fsync_directory(self.authority_directory)
+        _fsync_directory(self.dot_directory)
+        _fsync_directory(self.home)
+
+    def _initialize_absent(
+        self,
+        registry_id: str,
+        *,
+        check_meta_capacity: Callable[[Path, EntityIdentityV1, int], None] | None,
+    ) -> None:
         if self.dot_directory.exists():
             _reject_link(self.dot_directory, "父目录")
             if not self.dot_directory.is_dir():
@@ -734,26 +826,29 @@ class RestoreRegistry:
             try:
                 self.dot_directory.mkdir(mode=0o700)
             except OSError as exc:
-                raise RestoreRegistryCorrupt("无法创建registry固定父目录") from exc
-        if os.name != "nt":
+                raise _translate_sqlite(exc, writing=True) from exc
+        if os.name == "posix":
             try:
                 self.dot_directory.chmod(0o700)
             except OSError as exc:
-                raise RestoreRegistryCorrupt("无法收紧registry固定父目录权限") from exc
+                raise _translate_sqlite(exc, writing=True) from exc
+            # Also replay after mkdir succeeded but its barrier did not.
+            _fsync_directory(self.home)
 
         temporary = self.dot_directory / f".restore-registry-v1.init-{uuid.uuid4()}"
         database = temporary / "registry.db"
         connection = None
         try:
             temporary.mkdir(mode=0o700)
-            connection = _connect_write(database)
-            connection.execute("PRAGMA journal_mode=DELETE")
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.executescript(REGISTRY_SCHEMA)
-            if os.name != "nt":
-                database.chmod(0o600)
-            home_identity = observe_entity(self.home, "directory")
             authority_identity = observe_entity(temporary, "directory")
+            # Meta binds real identities. Make only a private zero-byte anchor before sizing it.
+            fd = os.open(
+                database,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            os.close(fd)
+            home_identity = observe_entity(self.home, "directory")
             database_identity = observe_entity(database, "file")
             meta = _meta(
                 registry_id,
@@ -765,6 +860,28 @@ class RestoreRegistry:
                 database_identity=database_identity,
             )
             meta_bytes = meta.to_bytes()
+            if check_meta_capacity is not None:
+                try:
+                    check_meta_capacity(temporary, authority_identity, len(meta_bytes))
+                except Exception as exc:
+                    # Only our just-created, still-empty init directory and anchor may be removed.
+                    if (
+                        observe_entity(temporary, "directory") != authority_identity
+                        or tuple(temporary.iterdir()) != (database,)
+                        or observe_entity_with_links(database, "file") != (database_identity, 1)
+                        or database.stat().st_size != 0
+                    ):
+                        raise RestoreRegistryCorrupt(
+                            "registry容量检查后私有初始化现场不再为空"
+                        ) from exc
+                    database.unlink()
+                    temporary.rmdir()
+                    if os.name == "posix":
+                        _fsync_directory(self.dot_directory)
+                    raise
+            connection = _connect_write(database)
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.executescript(REGISTRY_SCHEMA)
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "INSERT INTO registry_meta(singleton,registry_id,meta_bytes,meta_sha256) "
@@ -782,17 +899,22 @@ class RestoreRegistry:
             connection = None
             failpoint("restore-registry-init-before-file-fsync", path=database)
             _fsync_file(database)
+            if os.name == "posix":
+                _fsync_directory(temporary)
             failpoint("restore-registry-init-before-publish", path=temporary)
             if self.authority_directory.exists() or self.authority_directory.is_symlink():
                 raise RestoreRegistryCorrupt("registry发布前出现竞争权威")
             _publish_directory(temporary, self.authority_directory)
             failpoint("restore-registry-init-after-publish", path=self.authority_directory)
-            _fsync_directory(self.dot_directory)
-            failpoint("restore-registry-init-after-parent-fsync", path=self.dot_directory)
+            # Windows retains the native T1 identity/rename path. The managed
+            # writer excludes this platform before initializing its authority.
+            if os.name == "posix":
+                _fsync_directory(self.dot_directory)
+                failpoint("restore-registry-init-after-parent-fsync", path=self.dot_directory)
         except RestoreRegistryError:
             raise
-        except (sqlite3.Error, ValueError, TypeError, OSError) as exc:
-            raise _translate_sqlite(exc) from exc
+        except (sqlite3.Error, ValueError, TypeError, OSError, NativeEntityError) as exc:
+            raise _translate_sqlite(exc, writing=True) from exc
         finally:
             if connection is not None:
                 try:
@@ -824,14 +946,14 @@ class RestoreRegistry:
 
         namespace = None
         entity = None
+        main = None
         connection = None
         try:
             namespace = acquire_database_access(self.path, exclusive=True)
             entity = acquire_entity_access(expected.database_identity, exclusive=True)
             if observe_entity(self.home, "directory") != expected.home_identity:
                 raise RestoreRegistryBusy("registry Home实体在观察后发生变化")
-            if observe_entity(self.path, "file") != expected.database_identity:
-                raise RestoreRegistryBusy("registry实体在观察后发生变化")
+            main = self._open_published_main(expected.database_identity)
             connection = _connect_write(self.path)
             connection.execute("BEGIN IMMEDIATE")
             self._revalidate_in_transaction(connection, expected)
@@ -911,7 +1033,7 @@ class RestoreRegistry:
         except RestoreRegistryError:
             raise
         except (sqlite3.Error, ValueError, TypeError, OSError) as exc:
-            raise _translate_sqlite(exc) from exc
+            raise _translate_sqlite(exc, writing=True) from exc
         finally:
             if connection is not None:
                 try:
@@ -920,6 +1042,8 @@ class RestoreRegistry:
                 except sqlite3.Error:
                     pass
                 connection.close()
+            if main is not None:
+                main.close()
             if entity is not None:
                 entity.close()
             if namespace is not None:
@@ -998,14 +1122,10 @@ def _publish_directory(temporary: Path, authority: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    """POSIX目录屏障；Windows把物理目录持久性保留为未证明边界。"""
-
-    if os.name == "nt":  # pragma: no cover - native Windows only
-        # Windows没有可由标准句柄证明的目录fsync等价原语。如果发布走
-        # MoveFileExW(MOVEFILE_WRITE_THROUGH)，这里不能再把FlushFileBuffers
-        # 的失败吞掉，也不能宣称掉电级目录持久性已经证明。
-        return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    """Fail closed where this directory barrier is unavailable."""
+    if os.name != "posix":  # pragma: no cover - native Windows only
+        raise RestoreRegistryDurabilityUnavailable(f"当前平台没有registry目录持久化屏障：{path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         descriptor = os.open(path, flags)
         try:
@@ -1024,6 +1144,7 @@ __all__ = [
     "RegistryObservation",
     "RestoreRegistry",
     "RestoreRegistryBusy",
+    "RestoreRegistryCapacityUnavailable",
     "RestoreRegistryCorrupt",
     "RestoreRegistryDurabilityUnavailable",
     "RestoreRegistryError",
