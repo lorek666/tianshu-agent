@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import measure_slo as slo_mod  # noqa: E402
 import run_soak as soak_mod  # noqa: E402
+import soak_observation as obs  # noqa: E402
 
 SCHEMA_PATH = REPO_ROOT / "schemas" / "slo" / "slo-v1.json"
 THRESHOLDS_PATH = REPO_ROOT / "schemas" / "slo" / "slo-thresholds-v1.json"
@@ -310,7 +313,33 @@ def test_soak_slope_and_leak_gate_negative_controls() -> None:
     assert any("fd_growth_leak" in f for f in evaluated["failures"])
 
 
-def test_measure_slo_smoke_and_run_soak_real_subprocesses(tmp_path: Path) -> None:
+def test_soak_workload_clock_rejects_rounded_up_ten_hours() -> None:
+    # Arithmetic fixture only: both spans round to 36000.000 s on disk.
+    ten_hours_ns = 36_000_000_000_000
+    start = 902_000_000
+    stopped, ready = start + 500_000_000, start + 1_250_000_000
+    window = {
+        "start_elapsed_ns": start,
+        "end_elapsed_ns": start + ten_hours_ns + ready - stopped,
+        "requested_ns": ten_hours_ns,
+    }
+    assert obs.measure_workload_window(window, [[stopped, ready]]) == (ten_hours_ns, True)
+    short = {**window, "end_elapsed_ns": window["end_elapsed_ns"] - 1}
+    assert obs.measure_workload_window(short, [[stopped, ready]]) == (ten_hours_ns - 1, False)
+    longer_request = {**window, "requested_ns": ten_hours_ns + 1}
+    assert obs.measure_workload_window(longer_request, [[stopped, ready]]) == (ten_hours_ns, False)
+    assert obs.measure_workload_window(window, []) == (ten_hours_ns + ready - stopped, True)
+    for intervals in ([[stopped, ready], [ready - 1, ready + 1]], [[start - 1, ready]],
+                      [[stopped, stopped]], [[stopped, window["end_elapsed_ns"] + 1]]):
+        with pytest.raises(ValueError, match="invalid_restart_intervals"):
+            obs.measure_workload_window(window, intervals)
+    with pytest.raises(ValueError, match="invalid_workload_window"):
+        obs.measure_workload_window({**window, "requested_ns": True}, [])
+
+
+def test_measure_slo_smoke_and_run_soak_real_subprocesses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     defs = slo_mod.load_slo_schema_defs()
     slo_json = tmp_path / "slo-smoke.json"
     slo_md = tmp_path / "slo-smoke.md"
@@ -423,8 +452,138 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(tmp_path: Path) -> Non
     ):
         assert wk[key] >= 1, f"浸泡工作负载未覆盖 {key}: {wk}"
 
-    status_doc = json.loads(status_path.read_text(encoding="utf-8"))
+    status_doc = json.loads(status_path.read_bytes())
+    console_doc = json.loads(soak_proc.stdout)
     assert status_doc["state"] == "completed"
-    assert status_doc["verdict"] == "PASS"
-    assert str(Path.home()) not in soak_report_path.read_text(encoding="utf-8")
-    assert str(Path.home()) not in soak_md_path.read_text(encoding="utf-8")
+    for report in (status_doc, console_doc):
+        assert report["verdict"] == "PASS"
+        assert report["verdict_scope"] == "soak_v1_diagnostic"
+        assert report["release_acceptance"] == "NOT_EVALUATED"
+    assert "`NOT_EVALUATED`" in soak_md_path.read_text(encoding="utf-8")
+    thresholds, thresholds_sha, _ = slo_mod.load_and_validate_thresholds()
+    observation_path = soak_dir / "soak-observation.json"
+    observation = json.loads(observation_path.read_bytes())
+    window = observation["window"]
+    start, end = window["start_elapsed_ns"], window["end_elapsed_ns"]
+    restarts = observation["restart_intervals_ns"]
+    assert len(restarts) == wk["graceful_restarts"] >= 1
+    assert all(start <= down < up <= end for down, up in restarts)
+    assert all(prev_up <= next_down for (_, prev_up), (next_down, _) in pairwise(restarts))
+    observed_ns = end - start - sum(up - down for down, up in restarts)
+    assert observed_ns == observation["workload_duration_ns"]
+    assert window["requested_ns"] == 6_000_000_000
+    assert 6_000_000_000 <= observed_ns < end - start < 36_000_000_000_000
+    assert start > 0
+    assert sample_lines[0]["elapsed_s"] == round(start / 1e9, 3)
+    assert sample_lines[-1]["elapsed_s"] == round(end / 1e9, 3)
+    assert soak_report["actual_duration_s"] >= sample_lines[-1]["elapsed_s"]
+    assert observation["duration_requirement_met"] is False
+    assert observation["release_acceptance"] == "NOT_EVALUATED"
+    assert "minimum_workload_duration_unmet" in observation["issues"]
+    assert observation["thresholds_sha256"] == thresholds_sha
+    assert observation["samples"]["count"] == len(sample_lines) == soak_report["samples_count"]
+    for phase in ("idle", "active"):
+        phase_rows = [row for row in sample_lines if row["phase"] == phase]
+        assert observation["samples"][f"{phase}_rows"] == len(phase_rows) > 0
+        assert observation["samples"][f"ready_{phase}_rows"] == sum(
+            row["host_pid"] is not None and row["daemon_pid"] is not None
+            and row["event_seq_head"] is not None for row in phase_rows
+        ) > 0
+    observation_digest = hashlib.sha256(observation_path.read_bytes()).hexdigest()
+    assert status_doc["observation_sha256"] == observation_digest
+
+    runner = [sys.executable, str(SCRIPTS_DIR / "run_soak.py"), "--output-dir", str(soak_dir)]
+    originals = {p: p.read_bytes() for p in soak_dir.iterdir()}
+    verification = subprocess.run(
+        [*runner, "--verify-only"], capture_output=True, text=True, encoding="utf-8", timeout=15.0,
+    )
+    assert verification.returncode == 0, verification.stderr
+    assert json.loads(verification.stdout) == observation
+    # Real CLI refusal cannot truncate a prior completed bundle.
+    duplicate = subprocess.run(
+        [*runner, "--duration-seconds", "6"],
+        capture_output=True, text=True, encoding="utf-8", timeout=30.0,
+    )
+    assert duplicate.returncode == 2 and "输出目录必须尚不存在" in duplicate.stderr
+    assert {p: p.read_bytes() for p in soak_dir.iterdir()} == originals
+
+    def verify(directory: Path) -> dict:
+        return obs.verify_observation(
+            directory, thresholds_sha256=thresholds_sha,
+            policy_version=thresholds["policy_version"], schema_defs=defs,
+        )
+
+    sample_rows = originals[samples_path].splitlines(keepends=True)
+    nonfinite_row = json.dumps({**sample_lines[0], "elapsed_s": float("nan")}).encode() + b"\n"
+    for path, changed, error in (
+        (status_path, obs.json_bytes({**status_doc, "release_acceptance": "PASS"}),
+         "observation_status_mismatch"),
+        (status_path, obs.json_bytes({**status_doc, "progress_pct": 99.0}),
+         "observation_status_mismatch"),
+        (status_path, obs.json_bytes({**status_doc, "state": "running"}),
+         "observation_not_completed"),
+        (observation_path, originals[observation_path] + b"\n", "observation_checksum_mismatch"),
+        (soak_report_path, originals[soak_report_path] + b"\n", "observation_material_mismatch"),
+        (soak_md_path, originals[soak_md_path] + b"\n", "observation_material_mismatch"),
+        (samples_path, b" " + originals[samples_path], "observation_material_mismatch"),
+        (samples_path, originals[samples_path][:-1], "incomplete_sample_journal"),
+        (samples_path, b"".join(sample_rows[:-1]), "sample_count_mismatch"),
+        (samples_path, b"{}\n" + b"".join(sample_rows[1:]), "invalid_soak_sample"),
+        (samples_path, nonfinite_row + b"".join(sample_rows[1:]), "invalid_soak_sample"),
+        (samples_path, b"{" + b"".join(sample_rows), "Expecting property name"),
+        (soak_report_path, obs.json_bytes({**soak_report, "verdict": "FAIL"}),
+         "observation_verdict_mismatch"),
+    ):
+        path.write_bytes(changed)
+        try:
+            with pytest.raises(ValueError, match=error):
+                verify(soak_dir)
+        finally:
+            path.write_bytes(originals[path])
+    tighter_thresholds = tmp_path / "tighter-thresholds.json"
+    thresholds["soak_limits"]["open_fds_max"] -= 1
+    tighter_thresholds.write_bytes(obs.json_bytes(thresholds))
+    mismatch = subprocess.run(
+        [*runner, "--verify-only", "--thresholds", str(tighter_thresholds)],
+        capture_output=True, text=True, encoding="utf-8", timeout=15.0,
+    )
+    assert mismatch.returncode == 1 and "observation_thresholds_mismatch" in mismatch.stderr
+
+    # Inject a real publication I/O error on the observation write. The other
+    # final material writes happen, but readiness for offline verification does not.
+    partial = tmp_path / "partial-publication"
+    partial.mkdir()
+    (partial / samples_path.name).write_bytes(originals[samples_path])
+    (partial / status_path.name).write_bytes(b'{"state":"running"}\n')
+    real_write = soak_mod.atomic_write_bytes
+
+    def fail_observation_write(path: Path, data: bytes) -> None:
+        if path.name == observation_path.name:
+            raise OSError("injected observation write failure")
+        real_write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(soak_mod, "atomic_write_bytes", fail_observation_write)
+        with pytest.raises(OSError, match="injected observation write failure"):
+            soak_mod._publish_completed(
+                partial, soak_report, window=window, restart_intervals_ns=restarts,
+                source_start=observation["source_start"], source_end=observation["source_end"],
+                thresholds_sha256=thresholds_sha, schema_defs=defs,
+            )
+    assert (partial / soak_report_path.name).read_bytes() == originals[soak_report_path]
+    assert (partial / soak_md_path.name).read_bytes() == originals[soak_md_path]
+    assert not (partial / observation_path.name).exists()
+    assert json.loads((partial / status_path.name).read_bytes())["state"] == "running"
+    with pytest.raises(ValueError, match="observation_not_completed"):
+        verify(partial)
+    assert verify(soak_dir) == observation
+
+    for dropped in (observation_path, samples_path, soak_report_path, soak_md_path):
+        dropped.unlink()
+        try:
+            with pytest.raises(FileNotFoundError):
+                verify(soak_dir)
+        finally:
+            dropped.write_bytes(originals[dropped])
+    for contents in originals.values():
+        assert str(Path.home()).encode() not in contents

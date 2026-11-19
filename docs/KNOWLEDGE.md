@@ -249,6 +249,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **跨进程短事件排序与本地看门狗耗时要分开（2026-11-19）**：PR [#201](https://github.com/lorek666/tianshu-agent/pull/201) Windows [首轮 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44526542549) 中，真实慢订阅者已断连，但 `monotonic_ns()` 的粒度使断连记账和随后发起的 `state` 同 tick。用于排序和 RPC 耗时的时间戳统一取跨进程 `perf_counter_ns()`；与 Daemon `_sending_since` 相减的发送年龄仍在 Daemon 的 `monotonic()` 时钟域计算。保留真实断连负控及严格顺序，不把开发诊断当发布阈值，见 [取样口径](SLO-STATE-PRESSURE.md)。
+
 - **副作用落盘后的结果提交失败、双阶段锁忙与本地 `unknown` 都不能顺流收束成终态（2026-11-18，#145/#147）**：①`_commit_result`、`_fail_unknown` 与 `_write_mcp_unknown` 必须把 `append_many` 与 `UPDATE dispatches` 放进同一外层事务，否则两笔事务之间撞锁会留下半提交状态；若结果提交与 `_fail_unknown` 均撞 `SQLITE_BUSY` 或异常跳过 `_absorb`，主循环 `_finish` 收尾前必须先与已落库 `tool.result` 对齐最高严重度 `effect_state`，并核查未配对 `tool.intent` / 在途 `dispatches` 与本 Run 尚未解除的本地 `recovery.blocked`，命中则转入 `reconciling` 保留目录租约，绝不能误写 `none_applied` 或放走租约；②本地目录写落入 `unknown`（已写 `recovery.blocked`）后必须立即停进 `reconciling`，不能像 MCP 对象级阻断那样继续让模型 `end_turn` 报 `succeeded`；③Windows `ctypes` 调 Win32 句柄 API 必须用 `WinDLL(..., use_last_error=True)` 显式声明 `wintypes.HANDLE` 的 `restype`/`argtypes`，未声明原型默认走 32 位 `c_int`，会把 `0x80000124` 这类 bit 31 置位的有效 64 位句柄符号扩展截断成无效句柄；④CPython `pathlib._ignore_error` 不忽略 `winerror in {5, 32, 33}`，因此 `exists`/`is_file`/`is_dir`/`size` 与 `unlink`/`read_bytes`/`identity_key` 均需接入有界共享锁重试，且 `identity_key` 只能把 `ENOENT`/`ENOTDIR` 退化为 `path:` 键（吞掉 `PermissionError` 会把短暂共享锁伪装成"目标身份被替换"）。
 
 - **SVG 元素的坐标 `transform` 属性与 CSS `@keyframes` 动画 `transform` 不能挂在同一节点（2026-11-18）**：浏览器在应用 CSS `transform` 关键帧时会直接覆盖同一 `<g>` 节点上的 SVG `transform="translate(...) rotate(...)"` 属性，导致悬浮全息屏、星芒等配件被拉回 `(0, 0)` 原点，或关节旋转基准丢失。所有带定位/旋转的 SVG 部件必须拆成外层定位 `<g transform="...">` 与内层纯动画 `<g class="...">` 两层嵌套；同屏多实例 SVG `<defs>` 渐变与滤镜 ID 须经 `useId()` 隔离，并用静态标记单测钉住全体 `id` 无重复。
@@ -400,6 +402,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **G3 本地浸泡证据不等于发布验收（2026-11-19）**：按单调纳秒记录已就绪后的观测窗，扣除计划重启停机，不以运行器总时长或毫秒舍入的采样时间判定满 10 小时。`completed` 必须在最终材料之后发布；`--verify-only` 只核对字节摘要与记录一致性，不证明执行来源、机器未休眠或全程健康。离线核对和 v1 `PASS` 均不会改变 `release_acceptance = NOT_EVALUATED`。独立运行须用专用测试 OS 账户或隔离测试机，临时数据根不是生产用户级维护锁隔离。见 [SLO 基线与复跑方式](SLO-BASELINE-2026-11-18.md)。
 
 - **R3 代码前置已在本地组合候选汇合并完成精确 required CI（2026-11-16）**：`scripts/build_release.py`、`scripts/verify_release.py`、`src/tianshu/release_smoke.py`、`scripts/package_app.py` 与 `release.yml` 已在 `codex/release-final-integration` 组合出现，因此“当前基线缺少 R2 入口”的旧阻塞已不再成立；组合候选已由 PR #175 合并，最终对象 `343ebf0/tree 94f8e34f` 的 required CI 已由 run `43889749967` 七 job 全绿绑定。组合代码不得当作 release workflow 已执行：四目标原生 artifact、draft Release、NSIS 7-Zip 解包、真实 bundle 安装/升级/回退、Gatekeeper/SmartScreen、Windows 10/11/ARM64、macOS x64 用户设备与物理断电均仍为 `NOT_RUN`。macOS 安装脚本的 crashpoint/原子换装测试只证明本机 injected process-loss 路径，不是设备掉电证据。三轮原生 CI 已证明 GitHub Ubuntu、macOS、Windows Rust 与 UI job 可运行；旧候选 25 项红、`a55e752` 的 raw-tree 夹具红和 `1a619af` 的 SQLite 定稿红均已定位，`ded5e97` 已完成备份恢复高危复审。四目标 release workflow 仍待实际执行与绑定。
 - **打包封闭检查与最终 provenance 边界（2026-11-16）**：`package_app.py` 会拒绝源仓库、bundle、输出祖先及四棵资源树中的 symbolic link/非普通文件，并在 Tauri 完成后再次验证 App/安装器；`verify_release.py` 同时比较 macOS App 根文件和目录集合。检查到实际读取/归档之间仍存在同 uid 写者可竞争的理论 TOCTOU（未实现 fd-relative/openat）；最终 verifier 不接收原始 runtime archive，不能独立重算其字节 provenance。该残留必须保留，不能因为本机负控变绿写成物理封闭。
