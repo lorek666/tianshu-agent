@@ -43,6 +43,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +54,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from tianshu import authority, daemon, event_schema, host, ipc  # noqa: E402
+from tianshu import authority, daemon, event_schema, host, ipc, maintenance  # noqa: E402
 from tianshu import metrics as metrics_mod  # noqa: E402
 from tianshu.budget import BudgetLedger  # noqa: E402
 from tianshu.capability import CapabilityProfile  # noqa: E402
@@ -113,6 +116,13 @@ FROZEN_V1_SOAK_LIMITS: dict[str, float | int] = {
 }
 
 BIG_EVENT_CHARS = 180_000
+SUITE2_SEND_STALL_S = 0.35
+SUITE2_DRIVER_INTERVAL_S = 0.015
+_STATE_PRESSURE_DIR = "state-pressure-dev"
+_STATE_CONTROL_LABEL = "slo-state-pressure/control"
+_STATE_SUBSCRIBER_PREFIX = "slo-state-pressure/subscriber/"
+_STATE_READY_SEND_AGE_NS = 10_000_000
+_STATE_OBSERVATION_WAIT_S = 2.0
 IN_FLIGHT_HOLD_MS = 40.0
 SUMMARY_CONSTRAINT = "硬约束：报告只用中文。"
 SUMMARY_BUDGET_BYTES = 3000
@@ -562,6 +572,171 @@ def _summarize_samples(
     }
 
 
+# --------------------------------------------------------------------------- Suite 2 开发观测
+
+
+def _require_state_pressure_test_isolation(expected_lock_root: Path | None = None) -> None:
+    configured = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
+    if not (os.environ.get("PYTEST_CURRENT_TEST") and configured):
+        raise SloConfigError("state 背压诊断仅能在仓库隔离的 pytest 夹具内运行")
+    lock_root = Path(configured).resolve()
+    if (
+        (expected_lock_root is not None and lock_root != expected_lock_root.resolve())
+        or maintenance._lock_root().resolve() != lock_root  # noqa: SLF001
+    ):
+        raise SloConfigError("state 背压诊断的测试锁根未生效；不启动子进程")
+
+
+class _LabelledSuite2Client(ipc.Client):
+    """仅设置已有 hello.client 观察标签；连接和请求仍走正常认证、协议及调度。"""
+
+    def __init__(self, root: Path, *, timeout: float, label: str) -> None:
+        super().__init__(root, timeout=timeout)
+        self.label = label
+
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        if method == "hello" and params is not None:
+            params = {**params, "client": self.label}
+        return super().call(method, params, timeout=timeout)
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveSend:
+    started_ns: int
+    observed_ns: int
+    sent_frames: int
+
+
+def _active_send(conn: daemon._ClientConnection) -> _ActiveSend | None:
+    with conn._lock:  # noqa: SLF001 - 与真实发送线程同步读取，绝不修改 sender
+        started = conn._sending_since  # noqa: SLF001
+        # 排除 hello/subscribe 回执正写出，观察的必须是订阅之后的推送。
+        if not conn.subscribed or conn.closed or conn.sent_frames < 2 or started is None:
+            return None
+        return _ActiveSend(round(started * 1_000_000_000), time.monotonic_ns(), conn.sent_frames)
+
+
+@dataclass(slots=True)
+class _PressureObservation:
+    conn: daemon._ClientConnection
+    ready: _ActiveSend | None = None
+    dispatch: _ActiveSend | None = None
+    dispatch_ns: int | None = None
+
+
+@contextlib.contextmanager
+def _observe_state_pressure(out_dir: Path) -> Iterator[None]:
+    """只在隔离测试的 Daemon 子进程中观测；原派发、看门狗及断连逻辑照常执行。"""
+    from unittest.mock import patch
+
+    target = daemon._Daemon  # noqa: SLF001
+    handle = target._handle  # noqa: SLF001
+    watchdog = target._check_slow_subscribers  # noqa: SLF001
+    record_drop = target._record_drop  # noqa: SLF001
+    trials: dict[str, _PressureObservation] = {}
+    ambiguous: set[str] = set()
+    active_tag: str | None = None
+    control_conn: daemon._ClientConnection | None = None
+    ambiguous_control = False
+
+    def publish(tag: str, payload: dict[str, Any]) -> None:
+        path = out_dir / f"{tag}.json"
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps({"trial": tag, **payload}), encoding="utf-8")
+        temp.replace(path)
+
+    def subscriber_tag(conn: daemon._ClientConnection) -> str | None:
+        label = conn.raw.client.get("client", "")
+        if not label.startswith(_STATE_SUBSCRIBER_PREFIX):
+            return None
+        tag = label.removeprefix(_STATE_SUBSCRIBER_PREFIX)
+        suffix = tag[2:]
+        if tag[:2] in {"sm", "st", "ov"} and suffix.isascii() and suffix.isdigit():
+            return tag
+        return None
+
+    def observed_handle(
+        instance: daemon._Daemon, conn: daemon._ClientConnection, message: dict[str, Any]
+    ) -> None:
+        nonlocal active_tag, control_conn, ambiguous_control
+        method = message.get("method")
+        if conn is control_conn and method == "state" and active_tag is not None:
+            trial = trials[active_tag]
+            # 试次串行；只在这条专用连接的首条 state 派发时观测，不做文件 I/O。
+            if active_tag not in ambiguous and trial.dispatch_ns is None:
+                trial.dispatch = _active_send(trial.conn)
+                trial.dispatch_ns = (
+                    trial.dispatch.observed_ns if trial.dispatch else time.monotonic_ns()
+                )
+        handle(instance, conn, message)
+        if method == "hello" and conn.hello:
+            if conn.raw.client.get("client") == _STATE_CONTROL_LABEL:
+                if control_conn is None:
+                    control_conn = conn
+                elif conn is not control_conn:
+                    ambiguous_control = True
+        if method == "subscribe" and conn.hello and conn.subscribed:
+            tag = subscriber_tag(conn)
+            if tag is not None:
+                active_tag = tag
+                if tag not in trials:
+                    trials[tag] = _PressureObservation(conn)
+                elif trials[tag].conn is not conn:
+                    ambiguous.add(tag)
+                    publish(tag, {"observation_error": "ambiguous_pressure_subscriber"})
+
+    def observed_watchdog(instance: daemon._Daemon) -> None:
+        watchdog(instance)
+        if active_tag is None or active_tag in ambiguous:
+            return
+        trial = trials[active_tag]
+        if trial.ready is None:
+            sending = _active_send(trial.conn)
+            if (
+                sending is not None
+                and sending.observed_ns - sending.started_ns >= _STATE_READY_SEND_AGE_NS
+            ):
+                trial.ready = sending
+                (out_dir / f"{active_tag}.ready").touch()
+
+    def observed_record_drop(instance: daemon._Daemon, conn: daemon._ClientConnection) -> None:
+        record_drop(instance, conn)
+        tag = subscriber_tag(conn)
+        if tag is None or tag in ambiguous:
+            return
+        trial = trials.get(tag)
+        if trial is None or trial.conn is not conn:
+            return
+        if ambiguous_control:
+            publish(tag, {"observation_error": "ambiguous_state_client"})
+            return
+        ready = trial.ready
+        dispatch = trial.dispatch
+        publish(tag, {
+            "ready_ns": ready.observed_ns if ready else None,
+            "dispatch_ns": trial.dispatch_ns,
+            "send_started_ns": dispatch.started_ns if dispatch else None,
+            # 同一服务端连接、同一 send；不是另一客户端／先前一轮掉线计数。
+            "same_live_send_at_dispatch": bool(
+                ready and dispatch and ready.started_ns == dispatch.started_ns
+                and ready.sent_frames == dispatch.sent_frames
+            ),
+            "sent_frames_at_dispatch": dispatch.sent_frames if dispatch else None,
+            "drop_reason": conn.drop_reason,
+            "drop_ns": time.monotonic_ns(),
+            "sent_frames_at_drop": conn.sent_frames,
+        })
+
+    with (
+        patch.object(target, "_handle", observed_handle),
+        patch.object(target, "_check_slow_subscribers", observed_watchdog),
+        patch.object(target, "_record_drop", observed_record_drop),
+    ):
+        yield
+
+
 # --------------------------------------------------------------------------- 子进程受控角色
 
 
@@ -825,19 +1000,31 @@ def _run_child_role(args: argparse.Namespace) -> int:
 
     if role == "slo-daemon":
         data_root = Path(args.data_root)
+        pressure_dir = data_root / _STATE_PRESSURE_DIR
+        observing_pressure = pressure_dir.is_dir()
+        if observing_pressure:
+            _require_state_pressure_test_isolation(data_root.parent / "locks")
         # 缩短慢订阅者超时阈值以便在基准窗口内确定性观测断连（背压与队列机制完全不变）
-        daemon.SEND_STALL_S = 0.35
-        daemon.SUBSCRIBER_BACKLOG_STALL_S = 0.35
+        daemon.SEND_STALL_S = SUITE2_SEND_STALL_S
+        daemon.SUBSCRIBER_BACKLOG_STALL_S = SUITE2_SEND_STALL_S
         os.environ[metrics_mod.ENV_METRICS_INTERVAL] = "0.1"
-        daemon.serve(
-            data_root,
-            model=_SloSuite2Model(data_root),
-            driver_interval_s=0.015,
+        observe = (
+            _observe_state_pressure(pressure_dir)
+            if observing_pressure
+            else contextlib.nullcontext()
         )
+        with observe:
+            daemon.serve(
+                data_root,
+                model=_SloSuite2Model(data_root),
+                driver_interval_s=SUITE2_DRIVER_INTERVAL_S,
+            )
         return 0
 
     if role == "slo-host":
         data_root = Path(args.data_root)
+        if (data_root / _STATE_PRESSURE_DIR).is_dir():
+            _require_state_pressure_test_isolation(data_root.parent / "locks")
         ui_dir = Path(args._ui_dir)
         cmd = [
             sys.executable,
@@ -1324,6 +1511,127 @@ def _wait_condition(predicate: Any, *, timeout: float = 15.0, interval: float = 
     raise TimeoutError("等待条件超时")
 
 
+def _measure_state_rpc(
+    control: ipc.Client, pressure_dir: Path, tag: str
+) -> tuple[int, int | None]:
+    # 等真实发送信号，不靠固定 sleep 猜背压。即便未就绪/已断开，也留一条可判无效的试次。
+    try:
+        _wait_condition(
+            lambda: (pressure_dir / f"{tag}.ready").is_file()
+            or (pressure_dir / f"{tag}.json").is_file(),
+            timeout=_STATE_OBSERVATION_WAIT_S,
+        )
+    except TimeoutError:
+        pass
+    started_ns = time.monotonic_ns()
+    result = control.call("state", {})
+    ended_ns = time.monotonic_ns()
+    return started_ns, ended_ns if type(result.get("event_seq_head")) is int else None
+
+
+def _read_state_observation(pressure_dir: Path, tag: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads((pressure_dir / f"{tag}.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        value = None
+    if not isinstance(value, dict):
+        return {"trial": tag, "observation_error": "invalid_pressure_observation"}
+    return value
+
+
+def _state_trial(
+    tag: str,
+    started_ns: int | None,
+    ended_ns: int | None,
+    observation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evidence = observation or {}
+    dispatch_ns = evidence.get("dispatch_ns")
+    ready_ns = evidence.get("ready_ns")
+    send_started_ns = evidence.get("send_started_ns")
+    drop_ns = evidence.get("drop_ns")
+    reason = evidence.get("observation_error")
+    same_send = evidence.get("same_live_send_at_dispatch") is True
+    frames = evidence.get("sent_frames_at_dispatch")
+    drop_frames = evidence.get("sent_frames_at_drop")
+    drop_reason = evidence.get("drop_reason")
+
+    if started_ns is None or ended_ns is None or ended_ns <= started_ns:
+        reason = "missing_rpc_timing"
+    elif observation is None:
+        reason = "missing_pressure_observation"
+    elif evidence.get("trial") != tag:
+        reason = "wrong_pressure_trial"
+    elif reason in (
+        "ambiguous_pressure_subscriber", "ambiguous_state_client", "invalid_pressure_observation"
+    ):
+        pass
+    elif type(drop_ns) is int and drop_ns <= started_ns:
+        reason = "no_live_pressure_at_dispatch"
+    elif type(dispatch_ns) is not int:
+        reason = "missing_state_dispatch"
+    elif not started_ns <= dispatch_ns <= ended_ns:
+        reason = "dispatch_outside_rpc"
+    elif (
+        not same_send
+        or type(ready_ns) is not int
+        or type(send_started_ns) is not int
+        or ready_ns - send_started_ns < _STATE_READY_SEND_AGE_NS
+        or not ready_ns <= started_ns < dispatch_ns
+        or (type(drop_ns) is int and drop_ns <= dispatch_ns)
+    ):
+        reason = "no_live_pressure_at_dispatch"
+    elif (
+        type(drop_ns) is not int
+        or drop_reason != "send_stall"
+        or drop_ns - send_started_ns <= SUITE2_SEND_STALL_S * 1_000_000_000
+        or type(frames) is not int
+        or type(drop_frames) is not int
+        or frames < 2
+        or frames != drop_frames
+    ):
+        reason = "no_same_sender_watchdog_drop"
+    else:
+        reason = None
+
+    def offset(value: Any) -> float | None:
+        if type(value) is not int or started_ns is None:
+            return None
+        return round((value - started_ns) / 1_000_000, 6)
+
+    return {
+        "trial": tag,
+        "latency_ms": None if reason == "missing_rpc_timing" else offset(ended_ns),
+        "dispatch_offset_ms": offset(dispatch_ns),
+        "invalid_reason": reason,
+        "pressure": {
+            "same_live_send_at_dispatch": same_send,
+            "ready_offset_ms": offset(ready_ns),
+            "send_started_offset_ms": offset(send_started_ns),
+            "drop_offset_ms": offset(drop_ns),
+            "sent_frames_at_dispatch": frames,
+            "sent_frames_at_drop": drop_frames,
+            "drop_reason": drop_reason,
+        },
+    }
+
+
+def _state_sample_summary(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    qualified = [trial["latency_ms"] for trial in trials if trial["invalid_reason"] is None]
+    invalid = Counter(trial["invalid_reason"] for trial in trials if trial["invalid_reason"])
+    return {
+        "attempted_count": len(trials),
+        "qualified_count": len(qualified),
+        "invalid_count": sum(invalid.values()),
+        "invalid_reasons": dict(invalid),
+        "p50_ms": metrics_mod.percentile(qualified, 50),
+        "p95_ms": metrics_mod.percentile(qualified, 95),
+        "max_ms": max(qualified, default=None),
+    }
+
+
 def run_suite2_cancel_and_approval(
     base_dir: Path,
     *,
@@ -1332,9 +1640,15 @@ def run_suite2_cancel_and_approval(
     authority_root: Path,
     lock_root: Path,
     tracked_pids: set[int],
+    state_trials: list[dict[str, Any]] | None = None,
 ) -> tuple[list[float], list[float], list[float], dict[str, Any], dict[str, Any]]:
     s2_root = base_dir / "s2"
     s2_root.mkdir(parents=True, exist_ok=True)
+    pressure_dir = s2_root / _STATE_PRESSURE_DIR
+    state_timings: dict[str, tuple[int, int | None]] = {}
+    if state_trials is not None:
+        _require_state_pressure_test_isolation()
+        pressure_dir.mkdir()
     ui_dir = REAL_UI_DIST if (REAL_UI_DIST / "index.html").is_file() else base_dir / "empty_ui"
     ui_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1387,7 +1701,11 @@ def run_suite2_cancel_and_approval(
         )
         _record_lock_pids(s2_root, tracked_pids)
 
-        ctrl_ipc = ipc.Client(s2_root, timeout=10.0)
+        ctrl_ipc = (
+            _LabelledSuite2Client(s2_root, timeout=10.0, label=_STATE_CONTROL_LABEL)
+            if state_trials is not None
+            else ipc.Client(s2_root, timeout=10.0)
+        )
         ctrl_ipc.connect()
 
         # 1) 挂载真实不读数据的 IPC 订阅者 + SSE 订阅者，并塞满内核发送缓冲触发慢订阅者断连
@@ -1415,7 +1733,11 @@ def run_suite2_cancel_and_approval(
         cursor_before_workload = int(ctrl_ipc.call("state", {})["event_seq_head"])
 
         def _ensure_live_backpressure(tag: str) -> None:
-            sub = ipc.Client(s2_root, timeout=5.0)
+            sub = (
+                _LabelledSuite2Client(s2_root, timeout=5.0, label=_STATE_SUBSCRIBER_PREFIX + tag)
+                if state_trials is not None
+                else ipc.Client(s2_root, timeout=5.0)
+            )
             sub.connect()
             sub.subscribe(0, include_model_stream=True)
             slow_ipc_clients.append(sub)
@@ -1425,6 +1747,8 @@ def run_suite2_cancel_and_approval(
                 {"goal": ("P" * BIG_EVENT_CHARS) + f":{tag}"},
                 timeout=10.0,
             )
+            if state_trials is not None:
+                state_timings[tag] = _measure_state_rpc(ctrl_ipc, pressure_dir, tag)
 
         slow_model_count = max(1, (repeats + 1) // 2)
         slow_tool_count = max(1, repeats - slow_model_count)
@@ -1720,6 +2044,19 @@ def run_suite2_cancel_and_approval(
             "post_release_halt_p50_ms": None if halt_p50 is None else round(halt_p50, 3),
             "post_release_halt_p95_ms": None if halt_p95 is None else round(halt_p95, 3),
         }
+        if state_trials is not None:
+            # 原有场景先照常跑；在计时窗口之外等这批同源断连证据。
+            try:
+                _wait_condition(
+                    lambda: all((pressure_dir / f"{tag}.json").is_file() for tag in state_timings),
+                    timeout=_STATE_OBSERVATION_WAIT_S,
+                )
+            except TimeoutError:
+                pass
+            state_trials.extend(
+                _state_trial(tag, *timing, _read_state_observation(pressure_dir, tag))
+                for tag, timing in state_timings.items()
+            )
         return (
             cancel_ack_samples,
             cancel_stop_samples,
@@ -1748,6 +2085,65 @@ def run_suite2_cancel_and_approval(
         if proc.stderr is not None:
             proc.stderr.close()
         shutil.rmtree(s2_root, ignore_errors=True)
+
+
+def run_state_pressure_diagnostic(*, repeats: int = 2) -> tuple[dict[str, Any], int]:
+    """隔离 pytest 专用：测量有同源背压证据的 state，不执行、不改变发布门禁。"""
+    _require_state_pressure_test_isolation()
+    if repeats < 1:
+        raise SloConfigError("repeats 必须 >= 1")
+
+    temp_base = _short_temp_dir("tsst-")
+    authority_root = temp_base / "auth"
+    lock_root = temp_base / "locks"
+    tracked_pids: set[int] = set()
+    trials: list[dict[str, Any]] = []
+    try:
+        authority_root.mkdir()
+        lock_root.mkdir()
+        _, _, _, slow_subscriber, _ = run_suite2_cancel_and_approval(
+            temp_base,
+            repeats=repeats,
+            event_bytes_min=BIG_EVENT_CHARS,
+            authority_root=authority_root,
+            lock_root=lock_root,
+            tracked_pids=tracked_pids,
+            state_trials=trials,
+        )
+        orphans = _find_orphan_pids(tracked_pids, temp_base)
+    finally:
+        shutil.rmtree(temp_base, ignore_errors=True)
+
+    samples = _state_sample_summary(trials)
+    report = {
+        "schema_version": "slo-state-pressure-dev-v1",
+        "scope": "diagnostic_pre_threshold",
+        "measured_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "environment": collect_hardware_metadata(),
+        "workload": {
+            "suite": "suite2",
+            "transport": "authenticated_daemon_ipc",
+            "method": "state",
+            "suite2_repeats": repeats,
+            "seed_goal_chars": BIG_EVENT_CHARS,
+            "fixture_send_stall_ms": SUITE2_SEND_STALL_S * 1000,
+            "fixture_driver_interval_ms": SUITE2_DRIVER_INTERVAL_S * 1000,
+            "ready_send_age_ms": _STATE_READY_SEND_AGE_NS / 1_000_000,
+        },
+        "slow_subscriber": slow_subscriber,
+        "state_rpc_ms": samples,
+        "trials": trials,
+        "orphan_process_count": len(orphans),
+    }
+    usable = (
+        samples["qualified_count"] > 0
+        and samples["invalid_count"] == 0
+        and not orphans
+        and slow_subscriber["cursor_reconnect_verified"]
+    )
+    return _redact_obj(report, extra_paths=[str(temp_base), str(REPO_ROOT), str(Path.home())]), (
+        0 if usable else 1
+    )
 
 
 # --------------------------------------------------------------------------- Suite 3: 崩溃重启恢复
