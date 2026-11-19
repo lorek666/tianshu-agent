@@ -526,12 +526,14 @@ src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；
 │  data_state.py    迁移进度的严格类型与纯校验
 │  migrate.py       标准根离线迁移（一致点绑定、严格续做）
 │  maintenance.py   数据库维护准入（协作式维护窗口）
-│  backup.py        一致点备份 / 校验 / 干净根恢复 / 保留期与引用保护
-│  data_cli.py      data 子命令：backup / verify / restore-plan / migrate / retention-audit
+│  backup.py        一致点备份 / 校验 / 材料布局与引用保护
+│  data_cli.py      data 子命令：备份 / 校验 / 迁移 / 受管恢复 / 审计 / GC / 诊断导出
+│  data_gc.py       W15 保守离线清理：只读预演、独占执行与效果记账
 │  disk_admission.py Run 创建前的当前空间保护（只读真实位置，不预留容量）
-│  restore_access.py 恢复 T1 普通连接与批次操作的组合访问
-│  restore_contract.py 恢复B v1 纯值契约（codec 分离，不签发操作权威）
-│  restore_registry.py 用户级 restore registry：严格只追加权威与链观察
+│  restore_access.py 普通连接和恢复批次的组合准入
+│  restore_contract.py 恢复 B/C 的值对象与校验
+│  restore_registry.py 用户级受管恢复权威、只追加状态与链观察
+│  restore_manager.py 受管导入、隔离复核、续做、中止与解除
 ├─ 模型层 ───────────────────────────────────────────────────
 │  model.py         C1 接缝：adapter 只做双向翻译，不改写内部形状
 │  capability.py    F9a 能力声明与准入（只用于路由，不用于授权）

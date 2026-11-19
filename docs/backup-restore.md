@@ -44,7 +44,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 | 实际 EventLog 打开前的版本/进度准入 | **T1 已接线** | §5.5；正常 v0 兼容，不自动迁移 |
 | **首次启动自动建库并迁移** | **未实现** | 新库 `user_version=0`，当前程序不会自动迁移；见 §5.5 |
 | CLI 备份与正常 `EventLog` 连接互斥 | **本轮新增协作准入；不强停进程** | §2.2；直接调用低层在线 API 不自动独占 |
-| Windows 实机 / APFS / 跨机器恢复 | **未验证** | 只有 macOS arm64 本机；换路径/跨机重定位未实现 |
+| Windows 用户设备、物理掉电与跨机器恢复 | **未验证** | 本机 macOS arm64 的文件系统与进程测试只覆盖各自场景。换路径及跨机重定位尚未实现 |
 
 ---
 
