@@ -4495,39 +4495,68 @@ def _dispatch_proven_unsent(conn: sqlite3.Connection, run_id: str, call_id: str)
 def _scan_active_blocks_on_conn(
     conn: sqlite3.Connection,
     max_seq: int,
+    final_root: Path,
+    binding: BindingV1,
+    *,
+    batch_ctx: dict[str, Any],
 ) -> tuple[set[str], set[str]]:
+    from .resources import ResourceError, parse_mcp_object_key
+
     blocked_ws: set[str] = set()
     blocked_objs: set[str] = set()
     for row in conn.execute(
-        "SELECT seq, type, payload FROM events "
+        "SELECT seq, type, payload AS payload_inline, payload_ref, payload_hash FROM events "
         "WHERE seq <= ? AND type IN ("
         "'recovery.blocked','recovery.unblocked',"
         "'recovery.object_blocked','recovery.object_unblocked'"
         ") ORDER BY seq",
         (max_seq,),
     ):
+        seq = int(row["seq"])
         etype = str(row["type"])
-        raw = row["payload"]
-        if not isinstance(raw, str):
-            continue
         try:
-            parsed = json.loads(raw)
-        except ValueError:
-            continue
+            parsed = read_saved_event_payload(
+                final_root,
+                row,
+                source_root=Path(binding.saved_source_path),
+                source_aliases=binding.source_aliases,
+            )
+        except BackupError as exc:
+            raise _fail("record_corrupt", f"无法核验阻断事件 seq={seq}", **batch_ctx) from exc
+        if not isinstance(parsed, dict):
+            raise _fail("record_corrupt", f"阻断事件 seq={seq} 不是对象", **batch_ctx)
         if etype in ("recovery.blocked", "recovery.unblocked"):
             ws = parsed.get("workspace")
-            if isinstance(ws, str) and ws:
-                if etype == "recovery.blocked":
-                    blocked_ws.add(ws)
-                else:
-                    blocked_ws.discard(ws)
+            if not isinstance(ws, str) or not ws:
+                raise _fail(
+                    "record_corrupt",
+                    f"阻断事件 seq={seq} 缺少有效 workspace",
+                    **batch_ctx,
+                )
+            if etype == "recovery.blocked":
+                blocked_ws.add(ws)
+            else:
+                blocked_ws.discard(ws)
         else:
             obj = parsed.get("object")
-            if isinstance(obj, str) and obj:
-                if etype == "recovery.object_blocked":
-                    blocked_objs.add(obj)
-                else:
-                    blocked_objs.discard(obj)
+            if not isinstance(obj, str) or not obj:
+                raise _fail(
+                    "record_corrupt",
+                    f"对象阻断事件 seq={seq} 缺少有效 object",
+                    **batch_ctx,
+                )
+            try:
+                parse_mcp_object_key(obj)
+            except ResourceError as exc:
+                raise _fail(
+                    "record_corrupt",
+                    f"对象阻断事件 seq={seq} 的 object 不可解析",
+                    **batch_ctx,
+                ) from exc
+            if etype == "recovery.object_blocked":
+                blocked_objs.add(obj)
+            else:
+                blocked_objs.discard(obj)
     return blocked_ws, blocked_objs
 
 
@@ -4538,6 +4567,7 @@ def _unknown_call_targets_on_conn(
     task_id: str | None,
     call_id: str,
     tool_id: str,
+    batch_ctx: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     """返回单条未知副作用调用涉及的 `(workspace_roots, mcp_object_keys)`。"""
     from .memory_exec import MEMORY_ALL_TOOL_IDS
@@ -4549,27 +4579,52 @@ def _unknown_call_targets_on_conn(
     obj_keys: list[str] = []
 
     if tool_id.startswith("mcp__"):
-        if "dispatches" in tables:
-            cols = {str(r[1]) for r in conn.execute('PRAGMA table_info("dispatches")')}
-            if "target" in cols:
-                for row in conn.execute(
-                    "SELECT target FROM dispatches WHERE run_id=? AND call_id=?",
-                    (run_id, call_id),
-                ):
-                    raw_t = str(row["target"] or "")
-                    if not raw_t:
-                        continue
-                    try:
-                        server, tool = parse_mcp_object_key(raw_t)
-                    except ResourceError:
-                        continue
-                    canonical = (
-                        mcp_object_key(server, tool)
-                        if tool is not None
-                        else mcp_server_key(server)
-                    )
-                    if canonical not in obj_keys:
-                        obj_keys.append(canonical)
+        if "dispatches" not in tables:
+            raise _fail(
+                "record_corrupt",
+                f"unknown MCP 调用 {call_id} 缺少 dispatch 记录",
+                **batch_ctx,
+            )
+        cols = {str(r[1]) for r in conn.execute('PRAGMA table_info("dispatches")')}
+        if "target" not in cols:
+            raise _fail(
+                "record_corrupt",
+                f"unknown MCP 调用 {call_id} 缺少 dispatch.target",
+                **batch_ctx,
+            )
+        rows = conn.execute(
+            "SELECT target FROM dispatches WHERE run_id=? AND call_id=?",
+            (run_id, call_id),
+        ).fetchall()
+        if not rows:
+            raise _fail(
+                "record_corrupt",
+                f"unknown MCP 调用 {call_id} 缺少 dispatch 目标",
+                **batch_ctx,
+            )
+        for row in rows:
+            raw_t = row["target"]
+            if not isinstance(raw_t, str) or not raw_t:
+                raise _fail(
+                    "record_corrupt",
+                    f"unknown MCP 调用 {call_id} 的 dispatch 目标为空",
+                    **batch_ctx,
+                )
+            try:
+                server, tool = parse_mcp_object_key(raw_t)
+            except ResourceError as exc:
+                raise _fail(
+                    "record_corrupt",
+                    f"unknown MCP 调用 {call_id} 的 dispatch 目标不可解析",
+                    **batch_ctx,
+                ) from exc
+            canonical = (
+                mcp_object_key(server, tool)
+                if tool is not None
+                else mcp_server_key(server)
+            )
+            if canonical not in obj_keys:
+                obj_keys.append(canonical)
         return ws_roots, obj_keys
 
     if (
@@ -4647,6 +4702,7 @@ def _add_release_block_evidence(
     task_id: str | None,
     call_id: str,
     tool_id: str,
+    batch_ctx: dict[str, Any],
 ) -> None:
     workspaces, objects = _unknown_call_targets_on_conn(
         conn,
@@ -4654,6 +4710,7 @@ def _add_release_block_evidence(
         task_id=task_id,
         call_id=call_id,
         tool_id=tool_id,
+        batch_ctx=batch_ctx,
     )
     for path in workspaces:
         ws_attr.setdefault(overlap_key(path), _ReleaseBlock(path, run_id, set())).call_ids.add(
@@ -4661,6 +4718,18 @@ def _add_release_block_evidence(
         )
     for obj in objects:
         obj_attr.setdefault(obj, _ReleaseBlock(obj, run_id, set())).call_ids.add(call_id)
+
+
+def _interpret_tool_result_effect_state(payload: dict[str, Any], payload_version: int) -> str:
+    """Interpret historical result evidence without treating missing proof as safe."""
+    explicit = payload.get("effect_state")
+    if isinstance(explicit, str) and explicit in {"applied", "none_applied", "unknown", "partial"}:
+        return explicit
+    # v0 used status=unknown before effect_state was part of the contract.  A
+    # missing field is not evidence that no side effect happened.
+    if payload_version == 0 and payload.get("status") == "unknown":
+        return "unknown"
+    return "unknown"
 
 
 def _scan_release_tool_history(
@@ -4687,8 +4756,10 @@ def _scan_release_tool_history(
     obj_attr: dict[str, _ReleaseBlock] = {}
     for row in conn.execute(
         "SELECT e.seq, e.run_id, e.task_id, r.task_id AS run_task_id, e.type, "
-        "e.payload AS payload_inline, e.payload_ref, e.payload_hash "
-        "FROM events e LEFT JOIN runs r ON e.run_id = r.run_id WHERE e.seq <= ? AND "
+        "e.payload AS payload_inline, e.payload_ref, e.payload_hash, "
+        "COALESCE(v.version, 0) AS payload_version "
+        "FROM events e LEFT JOIN runs r ON e.run_id = r.run_id "
+        "LEFT JOIN event_versions v ON v.seq = e.seq WHERE e.seq <= ? AND "
         "(e.type IN ('tool.intent', 'tool.result') OR (e.actor_kind='human' AND "
         "e.type IN ('recovery.unblocked', 'recovery.object_unblocked'))) ORDER BY e.seq",
         (pre_seq_head,),
@@ -4724,7 +4795,10 @@ def _scan_release_tool_history(
             intent_heads[key] = intent
             continue
         result_heads[key] = seq
-        if payload.get("effect_state") != "unknown":
+        effect_state = _interpret_tool_result_effect_state(
+            payload, int(row["payload_version"])
+        )
+        if effect_state != "unknown":
             continue
         prior_intent = intent_heads.get(key)
         tool_id = prior_intent.tool_id if prior_intent is not None else payload.get("tool_id")
@@ -4745,6 +4819,7 @@ def _scan_release_tool_history(
             task_id=task_id,
             call_id=call_id,
             tool_id=tool_id,
+            batch_ctx=batch_ctx,
         )
     return intents, result_heads, ws_attr, obj_attr
 
@@ -4822,7 +4897,9 @@ def _plan_release_reconciliation(
         intents, last_result, ws_attr, obj_attr = _scan_release_tool_history(
             conn, final_root, binding, seq_head, batch_ctx=batch_ctx,
         )
-        active_ws, active_objs = _scan_active_blocks_on_conn(conn, seq_head)
+        active_ws, active_objs = _scan_active_blocks_on_conn(
+            conn, seq_head, final_root, binding, batch_ctx=batch_ctx
+        )
         active_ws_keys = {overlap_key(w) for w in active_ws}
         dispositions: list[ReconcileIntentDispositionV1] = []
 
@@ -4847,7 +4924,7 @@ def _plan_release_reconciliation(
             if disp_val == "unknown":
                 _add_release_block_evidence(
                     conn, ws_attr, obj_attr, run_id=item.run_id, task_id=item.task_id,
-                    call_id=item.call_id, tool_id=item.tool_id,
+                    call_id=item.call_id, tool_id=item.tool_id, batch_ctx=batch_ctx,
                 )
 
         new_blocked_ws = [attr.target for key, attr in ws_attr.items() if key not in active_ws_keys]
@@ -4913,7 +4990,7 @@ def _build_expected_r2_events(
             }
             _add_release_block_evidence(
                 conn, ws_attr, obj_attr, run_id=disp.run_id, task_id=t_id,
-                call_id=disp.call_id, tool_id=disp.tool_id,
+                call_id=disp.call_id, tool_id=disp.tool_id, batch_ctx=batch_ctx,
             )
 
         expected.append(
@@ -5077,8 +5154,10 @@ def _derive_run_effect_state(
     source_root = Path(binding.saved_source_path)
     states: list[str] = []
     for row in conn.execute(
-        "SELECT seq, run_id, type, payload AS payload_inline, payload_ref, payload_hash "
-        "FROM events WHERE run_id=? AND type='tool.result' ORDER BY seq",
+        "SELECT e.seq, e.run_id, e.type, e.payload AS payload_inline, e.payload_ref, "
+        "e.payload_hash, COALESCE(v.version, 0) AS payload_version "
+        "FROM events e LEFT JOIN event_versions v ON v.seq = e.seq "
+        "WHERE e.run_id=? AND e.type='tool.result' ORDER BY e.seq",
         (run_id,),
     ):
         payload = read_saved_event_payload(
@@ -5087,7 +5166,9 @@ def _derive_run_effect_state(
             source_root=source_root,
             source_aliases=binding.source_aliases,
         )
-        est = str(payload.get("effect_state", "none_applied"))
+        est = _interpret_tool_result_effect_state(
+            payload, int(row["payload_version"])
+        )
         states.append(est)
     if "unknown" in states:
         return "unknown"
@@ -5430,7 +5511,13 @@ def _execute_release_reconciliation(
                     conn.execute("ROLLBACK")
                 raise
         post_seq_head = int(conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
-        all_active_ws, all_active_objs = _scan_active_blocks_on_conn(conn, post_seq_head)
+        all_active_ws, all_active_objs = _scan_active_blocks_on_conn(
+            conn,
+            post_seq_head,
+            final_root,
+            sealed.binding,
+            batch_ctx=batch_ctx,
+        )
         if (
             not ws_attr.keys() <= {overlap_key(ws) for ws in all_active_ws}
             or not obj_attr.keys() <= all_active_objs

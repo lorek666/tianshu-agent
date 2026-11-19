@@ -28,13 +28,13 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import authority
 from .authority import AuthorityUnavailable, AuthorityWriteFailed
+from .backup import BackupError, read_saved_event_payload
 from .errors import EventLogCorrupt, McpObjectBlocked, WorkspaceBlocked
 from .events import EventLog, sha256_hex
 from .pathkeys import overlap_key
@@ -54,21 +54,36 @@ class BlockScan:
     malformed: tuple[int, ...]
 
 
+def _read_saved_block_payload(log: EventLog, row: object) -> object:
+    """Read inline or spilled block payload from the live log's material root."""
+    material_root = (
+        Path(log.blob_dir).parent if log.blob_dir is not None else Path(log.db_path).parent
+    ).resolve()
+    aliases = (str(log.data_root),) if log.data_root != material_root else ()
+    return read_saved_event_payload(
+        material_root,
+        row,
+        source_root=material_root,
+        source_aliases=aliases,
+    )
+
+
 def scan_blocked(log: EventLog) -> BlockScan:
     """按 seq 顺序回放 blocked / unblocked，后者生效即解除。
 
     解析失败**不跳过**，只记下来交给调用方决定；本函数自己不下"没阻断"的结论。
     """
     rows = log._conn.execute(
-        "SELECT seq, type, payload FROM events "
+        "SELECT seq, type, payload AS payload_inline, payload_ref, payload_hash FROM events "
         "WHERE type IN ('recovery.blocked','recovery.unblocked') ORDER BY seq"
     ).fetchall()
     blocked: set[str] = set()
     malformed: list[int] = []
     for row in rows:
         try:
-            workspace = json.loads(row["payload"])["workspace"]
-        except (TypeError, ValueError, KeyError):
+            payload = _read_saved_block_payload(log, row)
+            workspace = payload["workspace"] if isinstance(payload, dict) else None
+        except (BackupError, TypeError, ValueError, KeyError):
             malformed.append(int(row["seq"]))
             continue
         if not isinstance(workspace, str) or not workspace:
@@ -95,7 +110,7 @@ def scan_blocked_objects(log: EventLog) -> ObjectScan:
     与目录回放同一条纪律：解析失败**不跳过**，只记下来交给调用方决定。
     """
     rows = log._conn.execute(
-        "SELECT seq, type, payload FROM events "
+        "SELECT seq, type, payload AS payload_inline, payload_ref, payload_hash FROM events "
         "WHERE type IN ('recovery.object_blocked','recovery.object_unblocked')"
         " ORDER BY seq"
     ).fetchall()
@@ -103,8 +118,9 @@ def scan_blocked_objects(log: EventLog) -> ObjectScan:
     malformed: list[int] = []
     for row in rows:
         try:
-            obj = json.loads(row["payload"])["object"]
-        except (TypeError, ValueError, KeyError):
+            payload = _read_saved_block_payload(log, row)
+            obj = payload["object"] if isinstance(payload, dict) else None
+        except (BackupError, TypeError, ValueError, KeyError):
             malformed.append(int(row["seq"]))
             continue
         if not isinstance(obj, str) or not obj:

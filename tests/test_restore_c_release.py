@@ -21,7 +21,7 @@ from tianshu.budget import BudgetLedger
 from tianshu.data_state import AdmissionRefused
 from tianshu.disk_admission import DiskAdmission
 from tianshu.errors import McpObjectBlocked, WorkspaceBlocked
-from tianshu.events import EventLog, canonical_bytes, sha256_hex
+from tianshu.events import MAX_INLINE_BYTES, EventLog, canonical_bytes, sha256_hex
 from tianshu.guard import (
     ensure_not_blocked,
     ensure_object_not_blocked,
@@ -772,6 +772,187 @@ def test_c04_deterministic_reconciliation_fences_runs_expires_approvals_and_bloc
     finally:
         log.close()
 
+
+def test_c04_release_reads_spilled_block_and_unblock_history(tmp_path):
+    """外置 payload 也必须参与阻断回放，不能因 payload 列为 NULL 而复活阻断。"""
+    root = _seed_clean_root(tmp_path, name="spilled_blocks")
+    ws = (tmp_path / "ws_spilled_blocks").resolve()
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        run_id = str(
+            log.conn.execute("SELECT run_id FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+        )
+        huge = "x" * (MAX_INLINE_BYTES + 1024)
+        log.append(
+            run_id,
+            "recovery.blocked",
+            {"workspace": str(ws), "call_ids": ["call_spilled"], "reason": huge},
+            actor_kind="system",
+        )
+        log.append(
+            run_id,
+            "recovery.object_blocked",
+            {"object": "mcp://demo/act", "call_ids": ["call_spilled"], "reason": huge},
+            actor_kind="system",
+        )
+        log.append(
+            run_id,
+            "recovery.unblocked",
+            {"workspace": str(ws), "reason": huge},
+            actor_kind="human",
+        )
+        log.append(
+            run_id,
+            "recovery.object_unblocked",
+            {"object": "mcp://demo/act", "reason": huge},
+            actor_kind="human",
+        )
+        rows = log.conn.execute(
+            "SELECT type, payload, payload_ref FROM events "
+            "WHERE type LIKE 'recovery.%' ORDER BY seq"
+        ).fetchall()
+        assert all(row["payload"] is None and row["payload_ref"] for row in rows)
+        assert scan_blocked(log).blocked == frozenset()
+        assert scan_blocked_objects(log).blocked == frozenset()
+    finally:
+        log.close()
+
+    backup = tmp_path / "spilled_backup"
+    create_backup(root, backup)
+    shutil.rmtree(root)
+    _import_to_published_hold(backup, root)
+    review = restore_manager.review(root)
+    released = restore_manager.release(
+        root,
+        expect_review_sha256=review.review_sha256,
+        acknowledge_unproven_later_history=True,
+    )
+    assert released.phase == "released"
+    assert authority.is_blocked(str(ws)) is False
+    assert authority.is_object_blocked("mcp://demo/act") is False
+
+
+def test_c04_release_preserves_legacy_v0_unknown_results(tmp_path):
+    """v0 status=unknown 无 effect_state 时必须保留 unknown 并继续阻断。"""
+    root, meta = _seed_dirty_inflight_root(tmp_path, name="legacy_unknown")
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        for call_id, tool_id in (
+            ("call_exec_unk", "run_command"),
+            ("call_mcp_unk", "mcp__demo__act"),
+        ):
+            log.append(
+                meta["run_id"],
+                "tool.result",
+                {
+                    "call_id": call_id,
+                    "tool_id": tool_id,
+                    "status": "unknown",
+                    "output": {"legacy": True},
+                },
+                task_id=meta["task_id"],
+                legacy_write=True,
+            )
+    finally:
+        log.close()
+
+    backup = tmp_path / "legacy_backup"
+    create_backup(root, backup)
+    shutil.rmtree(root)
+    _import_to_published_hold(backup, root)
+    review = restore_manager.review(root)
+    released = restore_manager.release(
+        root,
+        expect_review_sha256=review.review_sha256,
+        acknowledge_unproven_later_history=True,
+    )
+    assert released.phase == "released"
+    assert released.reconciled_counts.preserved_unknown_intents == 0
+    assert released.reconciled_counts.resolved_none_applied_intents == 1
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        run = build_stack(log, data_root=root).tasks.get_run(meta["run_id"])
+        assert run is not None and run.effect_state == "unknown"
+        results = {
+            e.payload["call_id"]: e.payload
+            for e in log.read_run(meta["run_id"])
+            if e.type == "tool.result"
+        }
+        assert results["call_exec_unk"].get("effect_state") is None
+        assert results["call_mcp_unk"].get("effect_state") is None
+        assert scan_blocked(log).blocked == frozenset({meta["ws"]})
+        assert scan_blocked_objects(log).blocked == frozenset({"mcp://demo/act"})
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("target", [None, "mcp://INVALID/act"])
+def test_c04_release_rejects_unknown_mcp_without_verified_target(tmp_path, target):
+    """未知 MCP 无可验证 target 时不得生成空阻断证据并放行。"""
+    root, _meta = _seed_dirty_inflight_root(tmp_path, name="missing_mcp_target")
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        if target is None:
+            log.conn.execute("DELETE FROM dispatches WHERE call_id='call_mcp_unk'")
+        else:
+            log.conn.execute(
+                "UPDATE dispatches SET target=? WHERE call_id='call_mcp_unk'",
+                (target,),
+            )
+        log.conn.commit()
+    finally:
+        log.close()
+
+    backup = tmp_path / "missing_mcp_target_backup"
+    create_backup(root, backup)
+    shutil.rmtree(root)
+    _import_to_published_hold(backup, root)
+    review = restore_manager.review(root)
+    with pytest.raises(restore_manager.RestoreOperationError) as exc_info:
+        restore_manager.release(
+            root,
+            expect_review_sha256=review.review_sha256,
+            acknowledge_unproven_later_history=True,
+        )
+    assert exc_info.value.failure.category == "record_corrupt"
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        ("recovery.blocked", {"reason": "legacy missing workspace"}),
+        ("recovery.object_blocked", {"object": "mcp://INVALID/act"}),
+    ],
+)
+def test_c04_release_rejects_malformed_active_block_history(tmp_path, event_type, payload):
+    """hash 正确但阻断目标不可判定时，Restore C 必须拒绝收口。"""
+    root = _seed_clean_root(tmp_path, name="malformed_active_block")
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        run_id = str(
+            log.conn.execute("SELECT run_id FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+        )
+        log.append(
+            run_id,
+            event_type,
+            payload,
+            actor_kind="system",
+            legacy_write=True,
+        )
+    finally:
+        log.close()
+
+    backup = tmp_path / "malformed_active_block_backup"
+    create_backup(root, backup)
+    shutil.rmtree(root)
+    _import_to_published_hold(backup, root)
+    review = restore_manager.review(root)
+    with pytest.raises(restore_manager.RestoreOperationError) as exc_info:
+        restore_manager.release(
+            root,
+            expect_review_sha256=review.review_sha256,
+            acknowledge_unproven_later_history=True,
+        )
+    assert exc_info.value.failure.category == "record_corrupt"
 
 @pytest.mark.parametrize(
     "history", ["missing", "earlier_unblock", "later_unblock", "already_blocked", "r2_commit_crash"]

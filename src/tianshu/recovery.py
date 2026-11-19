@@ -872,10 +872,23 @@ def _repair_orphan_recovery_blocks(
     已明确解除对应目标时，不重建它，避免把已完成的人工核查撤销。
     """
     uncertain = [
-        event for event in events
+        event
+        for event in events
         if event.type == "tool.result"
-        and event.payload.get("effect_state") == "unknown"
-        and event.payload.get("output", {}).get("recovered") is True
+        and (
+            (
+                event.payload.get("effect_state") == "unknown"
+                and event.payload.get("output", {}).get("recovered") is True
+            )
+            # v0 recorded an unknown outcome in status before effect_state was
+            # part of the event contract. Treat that historical shape as the
+            # same unresolved recovery evidence; never infer none_applied.
+            or (
+                event.payload_version == 0
+                and event.payload.get("status") == "unknown"
+                and "effect_state" not in event.payload
+            )
+        )
     ]
     if not uncertain:
         return
