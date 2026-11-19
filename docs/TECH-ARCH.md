@@ -1,7 +1,7 @@
 # 技术架构书（TA）— Windows / macOS 桌面 App
 
-> 配套 `PRD-v1.md`。本文只回答"用什么技术、怎么落地、两端差在哪"。
-> 目标平台：macOS 13+（arm64 / x64）、Windows 10 1809+ / 11（x64）。
+> 配套 [PRD-v1.md](PRD-v1.md)。本文包含目标架构与实际接线；设计要求不代表已交付。当前源码地图见 §13，验证状态见 [status.md](status.md)。
+> 目标平台：macOS 13+（arm64 / x64）、Windows 10 1809+ / 11（x64 / arm64）；用户设备范围待正式验收。
 
 ---
 
@@ -38,22 +38,28 @@ Tauri 的真正代价不在体积，在 **Windows 10 的 WebView2 缺失**。20H
 
 ## 2. 进程模型
 
+R0–R3 桌面候选在 M5 拓扑外增加 Tauri 薄壳：
+
+```text
+Tauri 桌面壳（Rust）
+ ├─ 系统 WebView（加载 Host 提供的 React UI）
+ └─ Python Host（单实例、HTTP/SSE 桥、监护 Daemon）
+     └─ Python Daemon（IPC、任务与执行线程）
+         └─ 受控命令子进程（默认 local；可选原生沙箱见 §6）
 ```
-AgentOS.app / AgentOS.exe          ← Tauri 宿主（Rust）
- ├─ WebView 进程（系统托管）
- ├─ Daemon 子进程（Python）
- └─ Worker 子进程（按需，受 Job Object / Seatbelt 约束）
-```
+
+无 Tauri 时，系统浏览器也可连接 Python Host。现行职责见 [M5 桌面规格](M5-desktop.md) 与 [桌面壳说明](../desktop/README.md)。下文涉及自启和系统进程管理的设计项不代表已交付。
 
 ### 2.1 所有权边界（与 PRD §1.2 一致）
 
-| 进程 | 拥有 | 不拥有 |
-|---|---|---|
-| Host (Rust) | OS 权限、Keychain/DPAPI、文件监护、签名验证、进程树管理 | 任务状态、模型调用 |
-| Daemon (Python) | 任务状态、事件日志、上下文、工具路由 | OS 权限、不直接弹系统授权框 |
-| WebView | 交互 | 执行 |
+| 角色 | 已有职责 |
+|---|---|
+| Tauri 薄壳 | 窗口、托盘、单实例、启动或附着 Python Host |
+| Python Host | 提供 UI、转发 IPC、启动和监护 Daemon |
+| Python Daemon | 任务、回放恢复、事件日志、上下文、工具路由 |
+| WebView / 系统浏览器 | 展示状态及收集用户操作；不负责工具执行 |
 
-**Host 是 Daemon 的父进程并负责监护**：Daemon 崩溃 → Host 检测到 → 指数退避重启（1s, 2s, 4s, 8s，上限 30s）→ Daemon 启动时执行崩溃恢复（扫"有 intent 无 result"）。
+Daemon 启动时先扫描未收尾的执行，再对外服务。桌面壳和 Host 的监护分别对应各自管理的子进程。
 
 ### 2.2 单实例
 
@@ -146,55 +152,34 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 
 ## 5. 平台能力矩阵
 
-| 能力 | macOS | Windows | v1 |
+| 能力 | macOS | Windows | 现行范围 |
 |---|---|---|---|
-| 进程创建 | `posix_spawn` | `CreateProcess`（需 `CREATE_SUSPENDED` + Job Object 关联） | ✅ |
-| 终端 PTY | `forkpty` | ConPTY（1809+，`CreatePseudoConsole`） | 仅 POSIX ✅（Windows PTY 请求一律 `PolicyUnsupported`：标准库无 ConPTY，v1 未实现） |
-| 信号 | POSIX 信号 | 无。用 `GenerateConsoleCtrlEvent` / Job Object 整体终止 | ✅ |
-| 文件监视 | FSEvents | `ReadDirectoryChangesW` | ✅ |
-| 沙箱 | Seatbelt profile + TCC | **AppContainer / restricted token + Job Object** | 仅 L1/L2 ✅（工作区阻断 + 执行侧策略；Seatbelt/AppContainer 等强隔离后端未实现，一律 `unsupported`，见 §6 与 F2-ACCEPTANCE） |
-| 屏幕截取 | ScreenCaptureKit（需 TCC 屏幕录制） | Windows.Graphics.Capture | macOS only |
-| 输入注入 | CGEvent（需 TCC 辅助功能） | `SendInput`（**必须在交互会话**，不能在 Session 0） | macOS only |
-| 无障碍树 | AXUIElement | UI Automation (UIA) | macOS only |
-| 密钥 | Keychain Services | DPAPI（`CryptProtectData`，per-user） | ❌ v1 未实现（零依赖下需 ctypes 直调、无可测平台；请求一律 `CredentialUnsupported`，已交付的是凭据接缝 + 全链路脱敏） |
-| 托盘 | NSStatusItem | Shell_NotifyIcon | ✅ |
-| 签名 | Developer ID + notarytool | Authenticode（EV / Azure Trusted Signing） | ❌ 不做（与 §8.2「不支付 Apple 开发者成本」决定一致；本表此前误标 ✅，2026-11-14 修正） |
+| 命令子进程 | `subprocess.Popen` | `subprocess.Popen` | 默认 `local`，不提供 OS 级隔离 |
+| 终端 PTY | POSIX PTY | ConPTY 尚未接入 | Windows 请求 PTY 返回 `PolicyUnsupported` |
+| 超时终止 | 尽力终止 POSIX 进程组 | 终止直接子进程 | Windows 不保证整树退出；Job Object 为后续设计 |
+| 文件监视 | 目标原语 FSEvents | 目标原语 `ReadDirectoryChangesW` | 本表不承诺系统级文件监视已交付 |
+| 沙箱 | Seatbelt（选用 `seatbelt` 后端且系统有可执行的 `sandbox-exec`） | 原生子进程沙箱后端待交付 | W14 同时提供符合内核条件的 Linux Landlock，实测范围见 §6 |
+| 截屏 / 输入 / 无障碍 | 目标原语 ScreenCaptureKit / CGEvent / AXUIElement | 目标原语 Windows.Graphics.Capture / `SendInput` / UIA | 不作为当前桌面候选已交付能力 |
+| 密钥 | W1 已实现 Keychain Services | 系统凭据后端待交付 | 请求当前平台未实现的 `keychain` 后端时返回 `CredentialUnsupported` |
+| 托盘 | Tauri 托盘 | Tauri 托盘 | 源码已接线，用户设备体验待验 |
+| 签名 | Developer ID + notarytool | Authenticode（EV / Azure Trusted Signing） | 当前分发方案不做 OS 签名，见 §8.2 |
 
 ---
 
 ## 6. 沙箱：分级，不追求跨平台等价
 
-**先说清楚一件事**：做不到两端等价的强隔离。macOS 的进程级沙箱（`sandbox-exec`）
-早已弃用，第三方 App 真正可用的只有 App Sandbox（需 App Store / 特定 entitlements）
-与 TCC。Windows 的 AppContainer 能力更强但改造量大。
+平台的系统原语和实测范围各不相同。后端声明用于路由，任务隔离门读取现场绑定的探针报告。历史 F2 探针记录见 [isolation-matrix.md](isolation-matrix.md)，现行 W14 实测见 [交付记录](changelog/2026-11-18-w14-dual-sandboxes.md)。
 
-采用四层防御，逐层加码——**但 v1 只交付前两层**。下表以
-[isolation-matrix.md](isolation-matrix.md) 的实测证据为准；"声明"不是证据：
+| 层 | 机制 | 现行交付范围 |
+|---|---|---|
+| L1 | 文件工具规范化路径后按 allowlist 核对 | 已交付，作用范围为内置文件工具 |
+| L2 | 进程树清理 | POSIX 使用进程组。Windows 整树清理缺少 Job Object 保证 |
+| L3a | Windows AppContainer / restricted token | 待交付。请求 `app_container` 返回 `PolicyUnsupported` |
+| L3b | macOS Seatbelt | W14 可用后端。依赖当前系统提供 `sandbox-exec`，保护范围以探针结果为准 |
+| L3 | Linux Landlock | W14 可用后端。内核可用时施加文件约束，TCP 规则需要 ABI 4 或以上 |
+| L4 | 容器 | 待交付。请求 `container` 返回 `PolicyUnsupported` |
 
-| 层 | 机制 | 跨平台一致 | 作用 | v1 交付状态（2026-11-11 复核） |
-|---|---|---|---|---|
-| L1 | 文件代理：所有路径在 Host 内规范化后匹配 allowlist | ✅ | 防路径逃逸（`..`、符号链接） | ✅ 交付。**只约束内置文件工具，不约束子进程** |
-| L2 | 进程树 | ✅ | 防孤儿进程 | ✅ POSIX（进程组杀树，探针 `process_tree=enforced`）；⛔ Windows（无 Job Object，杀树不可确认） |
-| L3a | Windows AppContainer / restricted token | ❌ | 防越界读 | ⛔ **v1 未实现**（本表曾误写"✅ 交付"） |
-| L3b | macOS Seatbelt / TCC | ❌ | 防越界读 | ⛔ **未实现**，标 `unsupported` |
-| L4 | 容器后端 | ✅ | 高风险任务 | ⛔ **v1 未实现**（本表曾误写"✅ 交付（可选启用）"） |
-
-**上一版的错误已修正。** 原表把 L3a、L4 写成"已交付"，与同文"macOS 只承诺
-L1+L2"以及仓库事实（不存在 `app_container` / `container` 后端）自相矛盾。
-现在的口径：
-
-- 表里只有 L1 / L2 交付；L3 / L4 是**目标分层**，不是能力。
-- `TIANSHU_EXEC_BACKEND=app_container|container|seatbelt|landlock` 在 v1
-  一律 `PolicyUnsupported`（`src/tianshu/exec_backends.py`），**不会**静默回落
-  到本地后端。
-- 未隔离的执行必须在结果 / 事件 / **审批卡片**里如实标「受信任执行」
-  （`ApprovalView.isolation` + `tool.result.output.isolation`）；macOS 上
-  `isolation="none"`，没有"已隔离"可显示。
-- macOS v1 的 L1 / L2 是**产品级**（文件工具经 Host 路径代理、POSIX 杀树），
-  不是"子进程被关在目录里"。任意 shell 执行在 macOS 上仍是受信任执行。
-- 需要强隔离的任务：v1 没有可用后端。实现 AppContainer / Seatbelt / 容器 /
-  Windows Job Object 都是独立工单，不在 v1 范围（Job Object 的选择理由见
-  [F2-sandbox-policy.md](F2-sandbox-policy.md) §7）。
+`exec_backends.py` 的默认后端是 `local`。显式选择 `seatbelt`、`landlock` 或 `auto` 时，平台与原语不可用会返回 `PolicyUnsupported`。`auto` 按当前平台选择可用的原生后端。审批卡片与结果记录使用实际隔离视图，`local` 标为「受信任执行」。
 
 由此推出 PRD §8.1 的 UI 声明：未使用有效隔离的任意代码执行必须标为
 **「受信任执行」**，不得宣称仍受目录 capability 限制。
@@ -216,9 +201,9 @@ APFS 存的名字是分解形式（`ü` = `u` + 组合符）。Python `os.listdi
 - 大小写不敏感但保留大小写；`C:\Foo` 与 `c:\foo` 同一文件
 - **`\\?\` 前缀会绕过路径规范化**，与 L1 的 `..` 检查冲突——必须先用 `Path::canonicalize` 再去前缀
 
-### 7.3 ConPTY 与信号（已定稿为固定两段，不允许"或"）
+### 7.3 ConPTY 与两段终止（目标设计，尚未完整接入）
 
-Windows 没有信号。上一版写成"强杀**或**先发 CTRL_BREAK 再给 5s"，这等于把优雅期变成可选项——而 PRD 的 INV-5（超时结果未知即不可重放）恰恰依赖这段优雅期：进程要有机会在被杀前把 result 写出来。**定稿为固定两段，没有第二种走法：**
+现有 Windows 命令后端从 `exec.py` 终止直接子进程，不保证整树退出。下表为目标方案，不是现行行为。Windows 没有 POSIX 信号。上一版写成「强杀或先发 CTRL_BREAK 再给 5s」，会将优雅期变成可选项。PRD 的 INV-5（超时结果未知即不可重放）要求给进程留下记录 result 的机会，因此目标设计保留固定两段：
 
 | 步骤 | 动作 | 条件 |
 |---|---|---|
@@ -474,3 +459,108 @@ M3 起一律抛 `ModelError(kind, status_code, retryable)`；主循环原有的
 - `ContinuationRef` 的签名/thinking 原样往返：两个 provider 都没有 v1 必须
   往返的 opaque 字段，Anthropic 的 `thinking` 块当前**跳过**，不做往返
 - 这不是 OS 级隔离：`Workspace` 是路径边界，不是安全边界
+
+## 13. 源码模块地图
+
+> 从 README 拆出（README 只保留架构要点与指向这里的链接）。
+> 下面只按职责分组；**文件数量以当前目录实测为准**，不在此手写计数。
+> 数据根布局见 §9，进程模型见 §2，IPC 协议见 §4。
+
+**唯一事实源是事件日志**：SQLite WAL、append-only（触发器禁止 `UPDATE` / `DELETE`），Task / Run / Approval / Grant / Lease 都是同库事务更新的**可重建投影**。状态变更必须同事务写事件，否则回放无法解释「为什么这个 Run 被 fence 了」。
+
+**M5 的三进程**：UI（浏览器里的 React）→ loopback HTTP + SSE → Host（Python：单实例、监护 Daemon、注入 token）→ IPC（macOS/Linux = AF_UNIX，Windows = 命名管道，`multiprocessing.connection` + `authkey`）→ Daemon（任务 / 事件 / 审批 / 驱动线程）。**UI 断开只减少订阅者**；Daemon 重启时先做恢复扫描（有 intent 无 result 的调用交给既有 `recover_run`、重新排队 `queued`/`parked`），再对外服务。
+
+五道版本化契约与十一条红线约束全局。**C1** 模型 I/O，**C2** 工具，**C3** 事件（封闭注册表，写入侧拒未登记类型），**C4** 权限与审批（[封闭规则清单](PRD-v1.md#541-拒绝规则编号payloadrule_id)），**C5** 评测（`SUITE_VERSION = m4.6`）。
+
+```
+src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；数量以当前目录实测为准）
+├─ 事实源与契约 ─────────────────────────────────────────────
+│  events.py        SQLite WAL append-only 事件日志 + 可组合事务
+│  canonical.py     RFC 8785 (JCS) 规范化 + 独立标准向量
+│  rules.py         C4 rule id 封闭注册表（代码 / schema / PRD 同步核对）
+│  event_schema.py  C3 逐类型事件 payload 契约（v1 schema + 版本旁表）
+│  toolschema.py    C2 工具参数封闭 JSON Schema 子集（编译期拒绝）
+│  tool_registry.py 动态工具注册表（内置 SPECS + MCP 运行时准入）
+│  errors.py        区分「模型想错了」与「执行侧跳过了校验」（后者是 bug）
+├─ 路径与磁盘 ───────────────────────────────────────────────
+│  workspace.py     路径规范化 / 资源身份（st_dev:st_ino）/ 0..n 目录绑定
+│  pathkeys.py      路径键：大小写 / Unicode 规范化与祖先判断
+│  fsutil.py        原子写入：临时文件 → fsync → os.replace → fsync 目录
+│  sandbox.py       存储后端接缝：LocalBackend（真实盘）/ MemBackend（进程内，不是沙箱）
+│  resources.py     资源种类：把「要操作什么」从文件路径解耦（memory:// 等）
+│  authority.py     用户级「权威根」：跨数据根的阻断状态
+│  platform_identity.py 从真实已打开的原生句柄读文件系统实体身份
+├─ 授权与执行 ───────────────────────────────────────────────
+│  permissions.py   C4 动作分类 / 审批 / 一次性 grant
+│  dispatcher.py    唯一派发入口：消费审批 + 登记 intent + 守卫内核验后执行
+│  execpolicy.py    F2 执行侧命令策略（声明式、默认全拒、deny 优先）
+│  exec_backends.py F2 执行后端注册表（未实现/未知一律 unsupported，绝不回落 local）
+│  isolation.py     F2 四边界实测探针 + 隔离门 + 受信任执行视图
+│  exec.py          F1 执行原语：argv 模式（非 shell）、超时、截断、进程组
+│  tools.py         受限工具 + FileExecutor（自己回库核验票据，不信调用方）
+│  guard.py         工作区阻断检查（未知副作用不得继续写）
+├─ 副作用可撤销 ─────────────────────────────────────────────
+│  snapshot.py      写前快照与冲突安全撤销
+│  receipt.py       操作凭据（能独立核对，不必信调用方）
+│  undo.py          撤销：把一次 Run 的写入还原或删除（本身也走审批/租约/receipt）
+│  undo_journal.py  撤销意图日志：跨多文件撤销的可续做边界
+│  recovery.py      中断核查：applied / none_applied / unknown 三者不合并
+│  crashpoint.py    故障注入点（os._exit 硬退，仅 TIANSHU_FAILPOINT 生效）
+├─ 任务、租约、作业 ─────────────────────────────────────────
+│  tasks.py         Task / Run / RunCursor 状态机，fencing，控制请求
+│  leases.py        跨进程资源租约 + 本机执行守卫（POSIX / Windows）
+│  jobs.py          作业认领与 claim_epoch（旧 worker 不得覆盖新 owner）
+│  run_policy.py    Run 创建前的执行资格固定（不授予工具权限）
+├─ 调度（W5）────────────────────────────────────────────────
+│  scheduler.py     确定性最小调度器：定时任务的到点认领与驱动
+│  schedule_cli.py  `tianshu schedule` 子命令：定时任务管理面
+├─ 记忆（F10）────────────────────────────────────────────────
+│  memory.py        事件日志的可重建投影：L0–L3、作用域、forget=tombstone
+│  memory_index.py  向量索引第二路（FTS ∪ 语义 RRF；Hash 基线 provider）
+│  memory_distill.py L2/L3 确定性合成（场景页 / 偏好页 + freshness）
+│  memory_exec.py   受信任的记忆执行器
+│  memory_control.py 控制面记忆操作（CLI 与 RPC 共用，写走 dispatcher）
+├─ 数据维护与迁移（G3）──────────────────────────────────────
+│  data_admission.py 真实事件库只读准入前缀（版本 / 进度校验）
+│  data_digest.py   迁移一致点算法 v1
+│  data_state.py    迁移进度的严格类型与纯校验
+│  migrate.py       标准根离线迁移（一致点绑定、严格续做）
+│  maintenance.py   数据库维护准入（协作式维护窗口）
+│  backup.py        一致点备份 / 校验 / 干净根恢复 / 保留期与引用保护
+│  data_cli.py      data 子命令：backup / verify / restore-plan / migrate / retention-audit
+│  disk_admission.py Run 创建前的当前空间保护（只读真实位置，不预留容量）
+│  restore_access.py 恢复 T1 普通连接与批次操作的组合访问
+│  restore_contract.py 恢复B v1 纯值契约（codec 分离，不签发操作权威）
+│  restore_registry.py 用户级 restore registry：严格只追加权威与链观察
+├─ 模型层 ───────────────────────────────────────────────────
+│  model.py         C1 接缝：adapter 只做双向翻译，不改写内部形状
+│  capability.py    F9a 能力声明与准入（只用于路由，不用于授权）
+│  credentials.py   F12 凭据分域查找 + 全链路脱敏（Keychain 后端 macOS 已落地）
+│  keychain_macos.py macOS Keychain 直调后端（SecItem，仅 darwin 加载）
+│  embedding_openai.py OpenAI 兼容 embedding 端点适配器（W6，需数据外发许可）
+│  pricing.py       F13 成本账：整数微美元，未知价格记 None 并单独计数
+│  budget.py        共享预算账本（PRD §5.6）：token / 金额预占与结算
+│  context.py       F5 上下文编译：纯函数、按字节预算、丢弃只记账不摘要
+├─ 驱动 ─────────────────────────────────────────────────────
+│  loop.py          E1 主循环（持久游标、暂停 / 取消 / 恢复）+ 栈装配
+│  worker.py        作业循环：认领排队中的 Run（一次性 drain）
+│  replay.py        回放校验：seq / messages_hash / 产物哈希三方核对
+│  metrics.py       本地运行质量指标（PRD §10.6）：进程内采样、写数据根
+│  cli.py           命令行入口（含 daemon / host 两个常驻入口）
+├─ 网络 / MCP / 摘要（G2）────────────────────────────────────
+│  net.py           network.fetch 执行器（GET、同源重定向、1 MiB 上限）
+│  mcp.py           MCP stdio 客户端（三道门、封闭方言准入）
+│  summaries.py     模型语义摘要的记录与材料身份（PRD §7.1）
+│  contents.py      内容引用：大结果的有界摘要 + 可分页读取的引用
+├─ 桌面三进程（M5）─────────────────────────────────────────
+│  ipc.py           本地 IPC：AF_UNIX / 命名管道、版本区间协商、推送游标、断线语义
+│  daemon.py        常驻守护进程：锁、恢复扫描、请求线程、驱动线程、优雅退出
+│  control.py       RPC 方法 → 既有库函数的映射（不自己写文件、不重判策略）
+│  host.py          外壳：单实例、监护 Daemon、UI 的 HTTP/SSE 桥、token 注入
+└─ eval/            M4 评测：20 条 case、干净 fixture、可比分数与失败归因
+```
+
+平台标准数据目录、单实例判据、断线语义与恢复顺序的完整规格见 [M5-desktop.md](M5-desktop.md)；
+产品规格见 [PRD-v1.md](PRD-v1.md)（§5 契约、§6 红线）与 本文件 §1–§12。
+
+UI 在 `ui/`：Vite + React + TS，构建产物 `ui/dist` 已提交（Host 直接加载，运行时不需要 Node）。
