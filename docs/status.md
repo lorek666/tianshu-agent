@@ -13,10 +13,12 @@ R0–R3 是 Tauri 桌面壳与发行构建链。
 | **M0** 骨架 | EventLog + E1 闭环 + StopReason/Limits | ✅ 完成 |
 | **M1** 副作用 | intent/result + Receipt + 写前快照 + 恢复 | ✅ 完成 |
 | **M2** 权限与任务 | C4 审批状态机（写 / 删分级）+ Task/Run + 作业表租约 | ✅ 完成 |
-| **M3** 可替换 | 第二个 chat provider + 第二个沙箱后端 | ✅ 完成 |
-| **M4** 可评估 | 20 条 case + `replay`/`evaluate` 分离 | ✅ 完成 |
+| **M3** 可替换 | 第二个 chat provider + 内存文件后端（不提供进程隔离） | ✅ 完成 |
+| **M4** 可评估 | 固定案例套件，`replay` 与 `evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
 | **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与四目标发布 workflow | 🟡 **源码已并入 `main`**（PR #170 / #175 / #186；`desktop/src-tauri`、`release.yml` 在库）；**四目标 release 实跑、真机安装/升级/回退与 G3 正式发布门禁未完成**，无签名/公证/自动更新 |
+
+W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。G3 的最终候选 SLO 实测、长时 Soak 和用户设备验收仍待执行。Windows 系统凭据后端尚待交付。
 
 ## M5 桌面闭环实测
 
@@ -30,8 +32,7 @@ M5 收尾轮（macOS 本机，2026-11-11，`43d04ef`）的通过数与完整判�
 
 ## M4 评测口径
 
-**M4 实测**：`SUITE_VERSION = m4.4`（该轮实测时点值；现行 `SUITE_VERSION` 已升 `m4.6`，判据按目标作用域化后逐版本不可比），20 条 case —— 正常成功 8 / 工具错误 4 / 超时恢复 3 / 恶意输入 3 / 审批边界 2，
-每类有下限守卫；安全门槛一票否决，不能被其它分数抵消。
+**历史 M4 实测**使用 `m4.4`。当前套件为 `m4.6`，判据已变更，报告不可直接横比；安全门槛不能被其他分数抵消。各轮结果与真实模型范围见 [评测边界](limitations.md#4-m4-评测的未验证项)。
 M5 同批修掉了 issue #40（**否决即终局**）：`approval="reject"` 的判据改为 `approval.veto_terminates`，
 并保留「无重复审批请求」的机械判据。
 
