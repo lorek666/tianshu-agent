@@ -42,7 +42,7 @@ uv run --frozen ruff check .      # lint
 | `approvals` | 审批队列：`list` / `approve` / `reject` / `revoke` |
 | `undo` | 撤销某次 Run 的文件变更（不带 `--approve` 只预演） |
 | `recover` | 核对并补全一次被打断的 Run |
-| `worker` | 作业循环，**一次性 drain**：队空或撞上被占用的工作区就退出 |
+| `worker` | 作业循环，**一次性 drain**：默认按 64 个作业一批持续运行直到队空；撞上被占用的工作区就退出 |
 | `daemon` | **常驻**守护进程：驱动任务、恢复扫描、IPC 控制面（不是 `worker`） |
 | `host` | 桌面外壳：`run`（默认）/ `stop` / `status`，把 UI 桥到本地 IPC |
 | `replay` | 从事件日志回放并校验（**审计，不调模型**） |
@@ -76,7 +76,8 @@ uv run tianshu undo --run-id run_xxxx --workspace /tmp/ws
 
 # 作业循环：认领排队中的 Run（崩溃、重启后接手；死掉的 owner 立刻可接管）
 uv run tianshu worker --once    # 只跑一个作业
-uv run tianshu worker           # 跑到队空 / 第一次撞上被占用的工作区为止
+uv run tianshu worker           # 默认按 64 个一批跑到队空 / 第一次撞上被占用的工作区为止
+uv run tianshu worker --max-jobs 10  # 只跑这一批最多 10 个作业，idle=false 表示可能还有活
 
 # 桌面：常驻守护进程 + 外壳（详见下文「桌面三进程」）
 uv run tianshu daemon --data-root /tmp/ts-data

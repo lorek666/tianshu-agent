@@ -2003,6 +2003,20 @@ def test_cli_worker_reports_not_idle_when_it_hit_the_job_limit(env):
     assert json.loads(proc.stdout)["idle"] is True, "跑空才算 idle"
 
 
+def test_cli_worker_default_drains_more_than_one_batch(env):
+    """默认 worker 按批次继续跑，不能把 64 个误当成队列已空。"""
+    ids = [env.enqueue(root=env.ws, goal=f"写第 {i} 份")[0] for i in range(65)]
+    proc = _child(["worker", *_cli_args(env), "--json"], timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["run_ids"] == ids
+    assert len(payload["run_ids"]) == 65
+    assert payload["idle"] is True
+    assert payload["contended"] is False
+    for run_id in ids:
+        assert env.stack.tasks.get_run(run_id).state == "succeeded"
+
+
 def test_cli_worker_drains_enqueued_jobs(env):
     """`worker` 命令把排队作业跑完并如实报数；只读目录不能被它写穿。"""
     ids = [env.enqueue(root=env.ws, out=f"r{i}.md")[0] for i in range(3)]
