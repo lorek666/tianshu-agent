@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from threading import Lock
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,8 +41,10 @@ def test_state_diagnostic_uses_live_pressure_in_real_children() -> None:
         assert pressure["drop_reason"] == "send_stall"
         assert pressure["same_live_send_at_dispatch"] is True
         assert pressure["sent_frames_at_drop"] == pressure["sent_frames_at_dispatch"] >= 2
-        assert pressure["send_started_offset_ms"] < pressure["ready_offset_ms"] <= 0
+        assert pressure["ready_offset_ms"] <= 0
         assert pressure["drop_offset_ms"] > trial["dispatch_offset_ms"]
+        assert pressure["send_age_at_ready_ms"] >= 10
+        assert pressure["send_age_at_drop_ms"] > slo.SUITE2_SEND_STALL_S * 1000
     rendered = json.dumps(report, sort_keys=True, ensure_ascii=False)
     assert str(Path.home()) not in rendered
     print(rendered)  # `pytest -s` 可直接留存脱敏的开发证据。
@@ -86,6 +90,39 @@ def test_state_diagnostic_refuses_without_effective_test_lock(lock_root_set, mon
 _RPC_TIMING = (20_000_100, 20_000_300)
 
 
+def test_state_rpc_timing_distinguishes_events_within_one_native_tick(monkeypatch, tmp_path):
+    class Control:
+        def call(self, method, params):
+            assert (method, params) == ("state", {})
+            return {"event_seq_head": 1}
+
+    # 模拟 Windows 3.12：一个粗粒度 tick 内可完成 RPC，不同的 QPC 读数仍能区分先后。
+    fine_ticks = iter(_RPC_TIMING)
+    monkeypatch.setattr(slo, "time", SimpleNamespace(
+        monotonic=lambda: 100.0,
+        monotonic_ns=lambda: 100_000_000_000,
+        perf_counter_ns=lambda: next(fine_ticks),
+    ))
+    (tmp_path / "sm0.ready").touch()
+
+    assert slo._measure_state_rpc(Control(), tmp_path, "sm0") == _RPC_TIMING
+
+
+def test_state_pressure_send_age_stays_in_watchdog_clock_domain(monkeypatch):
+    monkeypatch.setattr(slo, "time", SimpleNamespace(
+        monotonic=lambda: 100.125,
+        monotonic_ns=lambda: 100_125_000_000,
+        perf_counter_ns=lambda: 4_000_000_000,
+    ))
+    conn = SimpleNamespace(
+        _lock=Lock(), _sending_since=100.0, subscribed=True, closed=False, sent_frames=2,
+    )
+    sending = slo._active_send(conn)
+    assert sending is not None
+    assert sending.observed_ns == 4_000_000_000
+    assert sending.age_ns == 125_000_000
+
+
 @pytest.mark.parametrize(
     ("observation_delta", "timing", "reason"),
     [
@@ -96,8 +133,12 @@ _RPC_TIMING = (20_000_100, 20_000_300)
         ({"trial": "sm1"}, _RPC_TIMING, "wrong_pressure_trial"),
         ({"same_live_send_at_dispatch": False}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
         ({"drop_ns": 20_000_150}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
-        ({"send_started_ns": None}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
+        ({"drop_ns": _RPC_TIMING[0]}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
+        ({"send_age_at_ready_ns": None}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
+        ({"send_age_at_ready_ns": 9_999_999}, _RPC_TIMING, "no_live_pressure_at_dispatch"),
         ({"drop_reason": "closed"}, _RPC_TIMING, "no_same_sender_watchdog_drop"),
+        ({"send_age_at_drop_ns": None}, _RPC_TIMING, "no_same_sender_watchdog_drop"),
+        ({"send_age_at_drop_ns": 350_000_000}, _RPC_TIMING, "no_same_sender_watchdog_drop"),
         ({"sent_frames_at_drop": 3}, _RPC_TIMING, "no_same_sender_watchdog_drop"),
         ({"drop_ns": None}, _RPC_TIMING, "no_same_sender_watchdog_drop"),
     ],
@@ -107,8 +148,9 @@ def test_state_trial_rejects_unqualified_measurements(
 ) -> None:
     observation = {
         "trial": "sm0",
-        "send_started_ns": 100_000,
         "ready_ns": 15_000_000,
+        "send_age_at_ready_ns": 15_000_000,
+        "send_age_at_drop_ns": 360_000_000,
         "dispatch_ns": 20_000_200,
         "drop_ns": 360_000_000,
         "same_live_send_at_dispatch": True,

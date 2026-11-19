@@ -604,9 +604,15 @@ class _LabelledSuite2Client(ipc.Client):
 
 @dataclass(frozen=True, slots=True)
 class _ActiveSend:
-    started_ns: int
+    sending_since: float
     observed_ns: int
+    age_ns: int
     sent_frames: int
+
+
+def _send_age_ns(sending_since: float) -> int:
+    # _sending_since 属于 Daemon watchdog 的 monotonic 时钟域，不能与 perf_counter 相减。
+    return round((time.monotonic() - sending_since) * 1_000_000_000)
 
 
 def _active_send(conn: daemon._ClientConnection) -> _ActiveSend | None:
@@ -615,7 +621,7 @@ def _active_send(conn: daemon._ClientConnection) -> _ActiveSend | None:
         # 排除 hello/subscribe 回执正写出，观察的必须是订阅之后的推送。
         if not conn.subscribed or conn.closed or conn.sent_frames < 2 or started is None:
             return None
-        return _ActiveSend(round(started * 1_000_000_000), time.monotonic_ns(), conn.sent_frames)
+        return _ActiveSend(started, time.perf_counter_ns(), _send_age_ns(started), conn.sent_frames)
 
 
 @dataclass(slots=True)
@@ -668,7 +674,7 @@ def _observe_state_pressure(out_dir: Path) -> Iterator[None]:
             if active_tag not in ambiguous and trial.dispatch_ns is None:
                 trial.dispatch = _active_send(trial.conn)
                 trial.dispatch_ns = (
-                    trial.dispatch.observed_ns if trial.dispatch else time.monotonic_ns()
+                    trial.dispatch.observed_ns if trial.dispatch else time.perf_counter_ns()
                 )
         handle(instance, conn, message)
         if method == "hello" and conn.hello:
@@ -694,10 +700,7 @@ def _observe_state_pressure(out_dir: Path) -> Iterator[None]:
         trial = trials[active_tag]
         if trial.ready is None:
             sending = _active_send(trial.conn)
-            if (
-                sending is not None
-                and sending.observed_ns - sending.started_ns >= _STATE_READY_SEND_AGE_NS
-            ):
+            if sending is not None and sending.age_ns >= _STATE_READY_SEND_AGE_NS:
                 trial.ready = sending
                 (out_dir / f"{active_tag}.ready").touch()
 
@@ -714,18 +717,20 @@ def _observe_state_pressure(out_dir: Path) -> Iterator[None]:
             return
         ready = trial.ready
         dispatch = trial.dispatch
+        drop_ns = time.perf_counter_ns()
         publish(tag, {
             "ready_ns": ready.observed_ns if ready else None,
             "dispatch_ns": trial.dispatch_ns,
-            "send_started_ns": dispatch.started_ns if dispatch else None,
+            "send_age_at_ready_ns": ready.age_ns if ready else None,
+            "send_age_at_drop_ns": _send_age_ns(dispatch.sending_since) if dispatch else None,
             # 同一服务端连接、同一 send；不是另一客户端／先前一轮掉线计数。
             "same_live_send_at_dispatch": bool(
-                ready and dispatch and ready.started_ns == dispatch.started_ns
+                ready and dispatch and ready.sending_since == dispatch.sending_since
                 and ready.sent_frames == dispatch.sent_frames
             ),
             "sent_frames_at_dispatch": dispatch.sent_frames if dispatch else None,
             "drop_reason": conn.drop_reason,
-            "drop_ns": time.monotonic_ns(),
+            "drop_ns": drop_ns,
             "sent_frames_at_drop": conn.sent_frames,
         })
 
@@ -1523,9 +1528,10 @@ def _measure_state_rpc(
         )
     except TimeoutError:
         pass
-    started_ns = time.monotonic_ns()
+    # 与 Daemon 观测共享高分辨率时钟；Windows 3.12 的 monotonic 可能合并相邻事件。
+    started_ns = time.perf_counter_ns()
     result = control.call("state", {})
-    ended_ns = time.monotonic_ns()
+    ended_ns = time.perf_counter_ns()
     return started_ns, ended_ns if type(result.get("event_seq_head")) is int else None
 
 
@@ -1550,7 +1556,8 @@ def _state_trial(
     evidence = observation or {}
     dispatch_ns = evidence.get("dispatch_ns")
     ready_ns = evidence.get("ready_ns")
-    send_started_ns = evidence.get("send_started_ns")
+    ready_age_ns = evidence.get("send_age_at_ready_ns")
+    drop_age_ns = evidence.get("send_age_at_drop_ns")
     drop_ns = evidence.get("drop_ns")
     reason = evidence.get("observation_error")
     same_send = evidence.get("same_live_send_at_dispatch") is True
@@ -1577,8 +1584,8 @@ def _state_trial(
     elif (
         not same_send
         or type(ready_ns) is not int
-        or type(send_started_ns) is not int
-        or ready_ns - send_started_ns < _STATE_READY_SEND_AGE_NS
+        or type(ready_age_ns) is not int
+        or ready_age_ns < _STATE_READY_SEND_AGE_NS
         or not ready_ns <= started_ns < dispatch_ns
         or (type(drop_ns) is int and drop_ns <= dispatch_ns)
     ):
@@ -1586,7 +1593,8 @@ def _state_trial(
     elif (
         type(drop_ns) is not int
         or drop_reason != "send_stall"
-        or drop_ns - send_started_ns <= SUITE2_SEND_STALL_S * 1_000_000_000
+        or type(drop_age_ns) is not int
+        or drop_age_ns <= SUITE2_SEND_STALL_S * 1_000_000_000
         or type(frames) is not int
         or type(drop_frames) is not int
         or frames < 2
@@ -1596,10 +1604,13 @@ def _state_trial(
     else:
         reason = None
 
+    def duration_ms(value: Any) -> float | None:
+        return round(value / 1_000_000, 6) if type(value) is int else None
+
     def offset(value: Any) -> float | None:
         if type(value) is not int or started_ns is None:
             return None
-        return round((value - started_ns) / 1_000_000, 6)
+        return duration_ms(value - started_ns)
 
     return {
         "trial": tag,
@@ -1609,8 +1620,9 @@ def _state_trial(
         "pressure": {
             "same_live_send_at_dispatch": same_send,
             "ready_offset_ms": offset(ready_ns),
-            "send_started_offset_ms": offset(send_started_ns),
             "drop_offset_ms": offset(drop_ns),
+            "send_age_at_ready_ms": duration_ms(ready_age_ns),
+            "send_age_at_drop_ms": duration_ms(drop_age_ns),
             "sent_frames_at_dispatch": frames,
             "sent_frames_at_drop": drop_frames,
             "drop_reason": drop_reason,
