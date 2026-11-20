@@ -172,7 +172,8 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 
 - 当前仍处内部研发阶段；首发按 [PRD §11.1](docs/PRD-v1.md) 准备 `v0.x.y` **macOS Apple Silicon 限定预览**，仅分发 `macos-arm64`。未验收的 macOS 版本、Intel Mac、Windows 和 Linux 不列为首发支持；四目标正式发行另验。
 - **不变的工程门禁**：必须走受保护 PR，四项 required 检查全绿。发行只采用当前 `origin/main` 精确提交，且该 SHA 最新一次 main push CI 全部 job 成功。不能用本机验证、较老 CI 或跳过其他平台的 required job 替代。
-- **当前自动化与后续工作**：现有 `.github/workflows/release.yml` 使用手动 commit 或解引用的 `v0.x.y` annotated tag，仍然要求四个原生 target 的 artifact，经 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target` 后只创建 draft Release。它不是 required check。首发预览需要独立的 arm64 构建与汇总路径，沿用相同的提交/CI 绑定、原生 smoke 与产物校验，拒绝混入其他目标，不自动公开发行；本次政策修订没有实现该路径。不要把四目标 draft 原样当成预览发布。
+- **生成预览草稿**：政策及实现通过受保护 PR 合入后，在 GitHub Actions 的 **Release candidate** 上选择 `main`，填写未占用的 `version`（如 `0.1.0`，不带 `v`）和当前主干完整 `commit`，勾选 `macos_arm64_preview`。共享 preflight 绑定该工作流提交和最新成功的同 SHA main push CI；预览只构建、验证、下载和汇总 `macos-arm64`。要求原生 `runtime_smoke.status=pass` 与匹配的 `host_target`，只用索引内的资产和索引自身生成带 Apple Silicon Preview 标记的 prerelease 草稿，不自动公开。这不是 required check。
+- **四目标路径保留**：取消勾选（默认）或推送指向当前主干的 `v0.x.y` annotated tag，仍走四个原生 target。预览版本不能已有同名 Release（含草稿）或 tag；核对版本后再触发，不在两个路径间复用同一个候选。草稿不等于发布，在人工公开前再次核对 tag、源码 SHA、工作流和下载字节。
 - macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`，不另加下划线别名；发行索引须绑定归档、两份脚本的 SHA256 与大小及版本、完整源码 SHA 和构建 run。保存 workflow 运行、制品下载与校验的证据。
 
 **首发验收清单（待在最终候选上执行）：**

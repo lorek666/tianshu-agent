@@ -28,7 +28,7 @@
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
-  - **发行实跑与真机闭环**：尚需接通 `macos-arm64` 单目标 draft 构建与校验，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测的 macOS 版本。现有 `release.yml` 仍只汇总四目标。该四目标发布实跑、Intel Mac 和 Windows 实机、物理断电均不阻塞限定预览；四项 required CI、数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
+  - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。待在合入后的精确主干 SHA 实跑，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
   - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。验收、合并状态及原生 CI 见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)。当前 G3 仍需候选 SLO 实测和 ≥10 小时常驻浸泡。
   - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
@@ -88,6 +88,14 @@
   - **F10 记忆** → `memory.py` / `memory_exec.py` / `memory_index.py` / `memory_distill.py` / `memory_control.py`（L1–L3 可重建投影、检索与面板已落地，详见 [F10-memory-design.md](F10-memory-design.md)）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **限定预览复用发行校验，不建立弱化旁路（2026-11-20）**：手动布尔开关
+  `macos_arm64_preview` 只缩小 build/download/assemble 的目标集合；默认及 annotated tag
+  仍是四目标。预览 assembler 对根目录、单目标文件集和空输出执行写前检查，共用既有
+  SHA256、manifest、report 与原生 smoke 校验；索引不新增 schema，目标由 artifacts 明示。
+  上传只采用索引资产及索引本身。已有 Release（含草稿）不得改写，预览拒绝已有同名 tag；
+  版本级并发只串行化本 workflow，不锁定仓库外部操作者，人工公开前仍须重核 tag 与下载字节。
+  本机/受控传输探针不是 GitHub 发行实跑或用户设备验收。
 
 - **低磁盘 Run 资格决定（2026-11-14，2026-11-18 补齐 W10 子任务与 F14 收口）**：创建前固定 `pure_only/effects`，默认 effects，同时提供真实 CLI/RPC/UI 纯读选择；避免首次副作用时追加资格状态机。代价是选择 effects 后最终只读的新 Run 仍须准入。W10 引入 `create_subtask(..., write=True)` 后，实际获得可写绑定的子任务为 `effects`，在开启 SQLite 写事务前统一执行 `require_new_run`（只读子任务与父全只读降级路径仍为 `pure_only` 无 2 GiB 阈值门）；控制面显式拦截 `DiskAdmissionError` / `RunEffectsDisallowed` 防路径字样误归类，UI 统一映射三项低盘/资格 C4 编号为中文人话（不泄露原始 `rule_id`）。普通/摘要模型及必要内部审计不算本条 C2 业务副作用，仍守预算、取消与持久化；已有 effects/legacy 的读与模型恢复保留原门，新普通非 pure 动作现测空间。字段、停止控制例外及逐事件版本以[独立契约](low-disk-admission-contract.md)为准，收口复审见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)。
 

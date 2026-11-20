@@ -11,12 +11,17 @@ on:
         description: "Full main commit SHA"
         required: true
         type: string
+      macos_arm64_preview:
+        description: "Build only the Apple Silicon Mac preview draft"
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Both entry points can create the same release; serialize by version/tag.
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -30,6 +35,8 @@ jobs:
     outputs:
       version: ${{ steps.identity.outputs.version }}
       commit: ${{ steps.identity.outputs.commit }}
+      preview: ${{ steps.identity.outputs.preview }}
+      matrix: ${{ steps.identity.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,25 +48,52 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_COMMIT: ${{ inputs.commit }}
+          INPUT_PREVIEW: ${{ inputs.macos_arm64_preview }}
         run: |
           set -euo pipefail
           git fetch origin main
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            test "$(git cat-file -t "$GITHUB_REF")" = "tag"
-            version="${GITHUB_REF_NAME#v}"
-            commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
-          else
-            version="${INPUT_VERSION}"
-            commit="${INPUT_COMMIT}"
-            test "$GITHUB_REF" = "refs/heads/main"
-          fi
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              test "$GITHUB_REF_TYPE" = "tag"
+              test "$(git cat-file -t "$GITHUB_REF")" = "tag"
+              version="${GITHUB_REF_NAME#v}"
+              test "$GITHUB_REF" = "refs/tags/v$version"
+              commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
+              preview=false
+              ;;
+            workflow_dispatch)
+              test "$GITHUB_REF" = "refs/heads/main"
+              version="$INPUT_VERSION"
+              commit="$INPUT_COMMIT"
+              preview="$INPUT_PREVIEW"
+              case "$preview" in
+                true|false) ;;
+                *) echo 'macos_arm64_preview must be true or false' >&2; exit 1 ;;
+              esac
+              ;;
+            *) exit 1 ;;
+          esac
           [[ "$version" =~ ^0\.[0-9]+\.[0-9]+$ ]]
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "${commit}^{commit}"
           test "$commit" = "$(git rev-parse origin/main)"
+          test "$commit" = "$GITHUB_WORKFLOW_SHA"
+
+          matrix=(
+            '{"os":"macos-latest","target":"macos-arm64","triple":"aarch64-apple-darwin"}'
+          )
+          if [[ "$preview" == "false" ]]; then
+            matrix+=(
+              '{"os":"macos-26-intel","target":"macos-x64","triple":"x86_64-apple-darwin"}'
+              '{"os":"windows-latest","target":"windows-x64","triple":"x86_64-pc-windows-msvc"}'
+              '{"os":"windows-11-arm","target":"windows-arm64","triple":"aarch64-pc-windows-msvc"}'
+            )
+          fi
           {
             echo "version=$version"
             echo "commit=$commit"
+            echo "preview=$preview"
+            (IFS=,; printf 'matrix={"include":[%s]}\n' "${matrix[*]}")
           } >> "$GITHUB_OUTPUT"
 
       - name: Require successful push CI for this exact commit
@@ -73,6 +107,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --workflow ci.yml \
             --event push \
+            --branch main \
             --commit "$COMMIT" \
             --limit 20 \
             --json databaseId,headSha,status,conclusion \
@@ -107,20 +142,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: macos-arm64
-            triple: aarch64-apple-darwin
-          - os: macos-26-intel
-            target: macos-x64
-            triple: x86_64-apple-darwin
-          - os: windows-latest
-            target: windows-x64
-            triple: x86_64-pc-windows-msvc
-          - os: windows-11-arm
-            target: windows-arm64
-            triple: aarch64-pc-windows-msvc
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -226,43 +248,79 @@ jobs:
           path: ${{ runner.temp }}/artifacts/macos-arm64
 
       - name: Download macOS x64
+        if: needs.preflight.outputs.preview == 'false'
         uses: actions/download-artifact@v4
         with:
           name: release-macos-x64
           path: ${{ runner.temp }}/artifacts/macos-x64
 
       - name: Download Windows x64
+        if: needs.preflight.outputs.preview == 'false'
         uses: actions/download-artifact@v4
         with:
           name: release-windows-x64
           path: ${{ runner.temp }}/artifacts/windows-x64
 
       - name: Download Windows arm64
+        if: needs.preflight.outputs.preview == 'false'
         uses: actions/download-artifact@v4
         with:
           name: release-windows-arm64
           path: ${{ runner.temp }}/artifacts/windows-arm64
 
-      - name: Assemble four-target candidate
+      - name: Assemble candidate
+        id: assemble
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
           COMMIT: ${{ needs.preflight.outputs.commit }}
+          PREVIEW: ${{ needs.preflight.outputs.preview }}
+        shell: bash
         run: |
           set -euo pipefail
+          release_dir="$RUNNER_TEMP/release"
+          test ! -e "$release_dir"
+          test ! -L "$release_dir"
+          args=(
+            --artifacts-root "$RUNNER_TEMP/artifacts"
+            --out-dir "$release_dir"
+            --version "$VERSION"
+            --commit "$COMMIT"
+            --build-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          )
+          if [[ "$PREVIEW" == "true" ]]; then
+            args+=(--macos-arm64-preview)
+          else
+            test "$PREVIEW" = "false"
+          fi
           uv python install 3.12
           uv sync --frozen
-          uv run --frozen python scripts/assemble_release.py \
-            --artifacts-root "$RUNNER_TEMP/artifacts" \
-            --out-dir "$RUNNER_TEMP/release" \
-            --version "$VERSION" \
-            --commit "$COMMIT" \
-            --build-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          uv run --frozen python scripts/assemble_release.py "${args[@]}"
+
+          # Use the index as the asset list, not a directory glob at upload time.
+          assets=$(jq -er '
+            .assets[].name | if type == "string" and test("^[A-Za-z0-9][A-Za-z0-9.-]*$")
+              then . else error("invalid release asset name") end
+          ' "$release_dir/release-index.json")
+          names=$(printf 'release-index.json\n%s\n' "$assets")
+          shopt -s nullglob dotglob
+          entries=("$release_dir"/*)
+          test "$(printf '%s\n' "${entries[@]##*/}" | LC_ALL=C sort)" = "$(LC_ALL=C sort <<< "$names")"
+          {
+            echo 'paths<<RELEASE_PATHS'
+            while IFS= read -r name; do
+              file="$release_dir/$name"
+              test -f "$file"
+              test ! -L "$file"
+              printf '%s\n' "$file"
+            done <<< "$names"
+            echo 'RELEASE_PATHS'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload complete candidate
         uses: actions/upload-artifact@v4
         with:
-          name: release-candidate-${{ needs.preflight.outputs.version }}-${{ needs.preflight.outputs.commit }}
-          path: ${{ runner.temp }}/release
+          name: release-candidate-${{ needs.preflight.outputs.preview == 'true' && 'macos-arm64-preview-' || '' }}${{ needs.preflight.outputs.version }}-${{ needs.preflight.outputs.commit }}
+          path: ${{ steps.assemble.outputs.paths }}
           if-no-files-found: error
           retention-days: 14
 
@@ -271,11 +329,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.preflight.outputs.version }}
           COMMIT: ${{ needs.preflight.outputs.commit }}
-        run: >-
-          gh release create "v$VERSION"
-          "$RUNNER_TEMP"/release/*
-          --repo "$GITHUB_REPOSITORY"
-          --target "$COMMIT"
-          --draft
-          --title "Tianshu Agent v$VERSION"
-          --notes "Unsigned runner-built release candidate. Device installation, upgrade, rollback, SmartScreen, and macOS Gatekeeper results remain unverified until recorded."
+          PREVIEW: ${{ needs.preflight.outputs.preview }}
+          DRAFT_PATHS: ${{ steps.assemble.outputs.paths }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          test -n "$DRAFT_PATHS"
+          files=()
+          while IFS= read -r path; do files+=("$path"); done <<< "$DRAFT_PATHS"
+          args=(--repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft)
+
+          # Includes drafts and prereleases. API errors are not proof of absence.
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -e --arg tag "$tag" '
+                type == "array" and length > 0 and all(.[]; type == "array")
+                and all(.[][]; (.tag_name | type) == "string" and .tag_name != $tag)
+              '
+
+          refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          if [[ "$PREVIEW" == "true" ]]; then
+            # Preview uses a fresh version, never an existing full-release tag.
+            test -z "$refs"
+            args+=(--prerelease --title "Tianshu Agent v$VERSION — Apple Silicon Preview"
+              --notes "Limited macOS Apple Silicon (arm64) preview candidate. Unsigned; user-device installation, upgrade, rollback, and Gatekeeper remain unverified.")
+          else
+            test "$PREVIEW" = "false"
+            if [[ -n "$refs" ]]; then
+              tag_commit=$(awk -v raw="refs/tags/$tag" -v peeled="refs/tags/$tag^{}" '
+                $2 == raw { commit = $1 }
+                $2 == peeled { target = $1 }
+                END { print(target ? target : commit) }
+              ' <<< "$refs")
+              test "$tag_commit" = "$COMMIT"
+              args+=(--verify-tag)
+            else
+              test "$GITHUB_REF_TYPE" != "tag"
+            fi
+            args+=(--title "Tianshu Agent v$VERSION"
+              --notes "Unsigned runner-built release candidate. Device installation, upgrade, rollback, SmartScreen, and macOS Gatekeeper results remain unverified until recorded.")
+          fi
+          gh release create "v$VERSION" "${files[@]}" "${args[@]}"
