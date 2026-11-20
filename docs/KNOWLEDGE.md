@@ -268,6 +268,10 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **pytest 子进程 startup 不应预载进父收集过程（2026-11-20）**：`test_maintenance.py` 在收集期冻结生产锁根 getter，父命令若同时预置 `tests/_startup` 与测试锁根，`sitecustomize` 会先把该 getter 替换成测试 lambda，导致 OS 固定锁身份断言按设计失败。父 pytest 仅以 `src` 为 `PYTHONPATH` 并清除外部测试根/payload 变量；保留原样 `conftest` 在逐例运行时注入子进程 startup 与本用例真实临时根。不要为修运行命令错误而改生产 getter 或放宽身份断言。源码拷贝 smoke 还须让内外层测试启动器使用同一个真实 base interpreter；Windows uv venv launcher 的 `Popen.pid` 不保证等于解释器 PID，不能因此放宽严格凭据断言。
+
+- **父进程设置测试根，不等于子进程已隔离（2026-11-20）**：生产 verifier 与 runtime smoke 分别重设 `PYTHONPATH`，会丢失仅存在于 `tests/_startup` 的维护锁/registry 注入；环境变量仍在不能证明真实子进程未使用日常账号的固定根。源码集成 smoke 现仅在显式测试 fixture 中通过双层专属 proxy 和同 PID launcher 验证原 argv/cwd/包来源、已加载的 startup 来源与实际锁/registry/authority 根，失配在 CLI 前拒绝，凭据绑定父 `Popen.pid`。这不是未改命令的发行包或用户设备 smoke；后者仍须独立 runner/测试 OS 账户，不能 fake HOME 或改生产锁语义。旧全量日志保留真实历史，但缺失隔离证据的部分不作安全隔离证明。见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
+
 - **CLI 默认 worker 必须区分单轮预算与队列耗尽（2026-11-20）**：`Worker.drain()` 的 64 作业上限是防止单次调用无限运行，不代表队列已经清空。CLI 未指定 `--max-jobs` 时按批次继续调用，直到 `exhausted=True`；显式 `--max-jobs N` 仍保持单轮限制，`idle:false` 如实表示仍可能有作业或发生工作区争用。超过 64 个真实排队 Run 的子进程回归测试钉住这两个语义。
 
 - **用标准库名识别历史材料，用实体身份判定归属**：材料布局、空库准入和旧迁移旁证发现共用 `overlap_key` 的标准库名判据。没有文件身份的旧完成记录遇到别名时，只有两个名字指向同一个普通文件才可采用该记录；v2 旁证仍按实际路径严格绑定。见[标准库名准入回归](changelog/2026-11-19-restore-b03-basename.md)。
@@ -434,6 +438,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **非标准材料路径的保留名祖先误识别（2026-11-20，未修）**：标准材料域检测沿祖先识别 `artifacts`、`blobs`、`memory_blobs`。非标准数据库或异根 data_root 所用的私有 materials 布局若又位于这些保留名祖先下，可能被误认为另一个标准材料域，因所有者数据库不匹配而 fail-closed 拒写。默认 `events.db` / AgentOS 布局不受此已复现组合影响；这不是首次 Apple Silicon 限定预览的阻断项，但一般自定义 `--db` 兼容限制仍未修。将 pytest 临时根移出这些祖先只消除了本次测试布局碰撞，不是产品修复，也不构成任意数据库/材料路径均受支持的声明。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
 
 - **开发阶段原生发行 smoke 的测试隔离（2026-11-20）**：`release_smoke.py` 虽创建独立临时数据根，
   生产 `maintenance._lock_root()` 仍绑定 OS 用户身份，`RestoreRegistry` 绑定系统 Home；
