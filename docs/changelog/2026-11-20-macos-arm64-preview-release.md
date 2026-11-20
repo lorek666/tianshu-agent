@@ -1,5 +1,9 @@
 # Apple Silicon 预览发行链（2026-11-20）
 
+> 本文记录原预览实现阶段。组合后的首次 ready CI 红及最小修复，见
+> [后续整合 CI 记录](2026-11-20-integration-ci-repair.md)；其中 macOS CI 拓扑后续改变，
+> 但四个 required 名称与本文生产 release workflow/白名单/profile 均保持不变。
+
 ## 范围与决策
 
 首发政策独立位于 `66c9418a11cfd5d4e9c16a26fb73c89145bd20fd`

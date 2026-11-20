@@ -27,6 +27,7 @@
 - **里程碑与主干进展**：
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
+- **整合候选验证状态（2026-11-20，尚待最终远端门禁）**：原 PR [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的 ready CI [44670311820](https://github.com/lorek666/tianshu-agent/actions/runs/44670311820) attempt 1 真实失败：Windows 具名失败与 macOS 25分钟超时原件保留。最小修复冻结 `7b4d80bf3030219790f35694279b0055830f2846` 已经限定增量独立 PASS、唯一新本地全量 exit0；新 hosted CI 仍须绑定最终提交，不能用旧本地绿/政策 main 绿替代。修复旧材料树迟到内容的真实扫描缺口、测试平台/干净离线前提与 jq 传输边界，并将 macOS 完整 Python/Rust 拆为各25分钟原生作业、由原 required 名严格汇总；详见[首轮 CI 红与修复证据](changelog/2026-11-20-integration-ci-repair.md)。
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
   - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。待在合入后的精确主干 SHA 实跑，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
@@ -268,6 +269,11 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
+- **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。
+- **测试 shell 的工具传输必须匹配生产 runner（2026-11-20）**：生产 Ubuntu asset-list shell 与 Windows Git Bash 的原生 jq 文本输出不同；测试 helper 仅在 Windows 请求 jq `--binary` 提供 LF，不 strip JSON/资产名。使用实际 shell、真实 jq 的受控 CRLF/LF 正负控，原 CR/LF 非法名及额外文件仍拒绝；生产 release workflow/白名单不因此改动。
+- **完整职责拆分不能变成 required 空绿（2026-11-20）**：macOS Rust 与完整 Python 曾共用25分钟触发真实超时；拆为各25分钟原生作业后，原 required 名由 `always()` + 原 draft gate 汇总，显式要求两个上游均 `success`，failure/cancelled/skipped 均拒绝，并绑定同一 exact checkout。保留全部原命令与 release all-jobs-success；拆预算不保证新 runner 一定及时完成。证据见[本轮修复记录](changelog/2026-11-20-integration-ci-repair.md)。
+
 - **pytest 子进程 startup 不应预载进父收集过程（2026-11-20）**：`test_maintenance.py` 在收集期冻结生产锁根 getter，父命令若同时预置 `tests/_startup` 与测试锁根，`sitecustomize` 会先把该 getter 替换成测试 lambda，导致 OS 固定锁身份断言按设计失败。父 pytest 仅以 `src` 为 `PYTHONPATH` 并清除外部测试根/payload 变量；保留原样 `conftest` 在逐例运行时注入子进程 startup 与本用例真实临时根。不要为修运行命令错误而改生产 getter 或放宽身份断言。源码拷贝 smoke 还须让内外层测试启动器使用同一个真实 base interpreter；Windows uv venv launcher 的 `Popen.pid` 不保证等于解释器 PID，不能因此放宽严格凭据断言。
 
 - **父进程设置测试根，不等于子进程已隔离（2026-11-20）**：生产 verifier 与 runtime smoke 分别重设 `PYTHONPATH`，会丢失仅存在于 `tests/_startup` 的维护锁/registry 注入；环境变量仍在不能证明真实子进程未使用日常账号的固定根。源码集成 smoke 现仅在显式测试 fixture 中通过双层专属 proxy 和同 PID launcher 验证原 argv/cwd/包来源、已加载的 startup 来源与实际锁/registry/authority 根，失配在 CLI 前拒绝，凭据绑定父 `Popen.pid`。这不是未改命令的发行包或用户设备 smoke；后者仍须独立 runner/测试 OS 账户，不能 fake HOME 或改生产锁语义。旧全量日志保留真实历史，但缺失隔离证据的部分不作安全隔离证明。见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
@@ -438,6 +444,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
 - **非标准材料路径的保留名祖先误识别（2026-11-20，未修）**：标准材料域检测沿祖先识别 `artifacts`、`blobs`、`memory_blobs`。非标准数据库或异根 data_root 所用的私有 materials 布局若又位于这些保留名祖先下，可能被误认为另一个标准材料域，因所有者数据库不匹配而 fail-closed 拒写。默认 `events.db` / AgentOS 布局不受此已复现组合影响；这不是首次 Apple Silicon 限定预览的阻断项，但一般自定义 `--db` 兼容限制仍未修。将 pytest 临时根移出这些祖先只消除了本次测试布局碰撞，不是产品修复，也不构成任意数据库/材料路径均受支持的声明。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
 
