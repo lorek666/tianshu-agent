@@ -32,7 +32,7 @@ BUILD_RUN_PATH_PATTERN = re.compile(
 
 
 class AssembleError(ValueError):
-    """四目标产物不完整或彼此身份不一致。"""
+    """请求范围内的发行产物不完整或彼此身份不一致。"""
 
 
 def _is_link(path: Path) -> bool:
@@ -88,7 +88,7 @@ def _require_regular_input(path: Path, label: str) -> None:
         raise AssembleError(f"{label} 必须是普通文件")
 
 
-def _prepare_output_directory(path: Path) -> Path:
+def _check_output_directory(path: Path) -> Path:
     requested = _validate_path_chain(path, "out_dir")
     metadata = _lstat(requested, "out_dir")
     if metadata is not None:
@@ -96,6 +96,11 @@ def _prepare_output_directory(path: Path) -> Path:
             raise AssembleError("out_dir 不能是符号链接")
         if not stat.S_ISDIR(metadata.st_mode):
             raise AssembleError("out_dir 必须是普通目录")
+    return requested
+
+
+def _prepare_output_directory(path: Path) -> Path:
+    requested = _check_output_directory(path)
     requested.mkdir(parents=True, exist_ok=True)
     requested = _validate_path_chain(requested, "out_dir")
     metadata = _lstat(requested, "out_dir")
@@ -169,6 +174,91 @@ def _write_index(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def _target_input_paths(
+    target_dir: Path, target: str, version: str
+) -> tuple[Path, Path, Path, Path]:
+    suffix = ".app.tar.gz" if target.startswith("macos") else "-setup.exe"
+    stem = f"Tianshu-Agent-{version}-{target}"
+    return (
+        target_dir / f"{stem}{suffix}",
+        target_dir / f"{stem}.sha256",
+        target_dir / "release-manifest.json",
+        target_dir / "release-verification.json",
+    )
+
+
+def _validate_target_inputs(
+    artifacts_root: Path, target: str, version: str, commit: str
+) -> tuple[Path, Path, Path, str, dict[str, Any]]:
+    target_dir = _require_input_directory(artifacts_root / target, target)
+    artifact, checksum, manifest_path, verification_path = _target_input_paths(
+        target_dir, target, version
+    )
+    _require_regular_input(artifact, f"{target} 产物")
+    _require_regular_input(checksum, f"{target} SHA256")
+    _require_regular_input(manifest_path, f"{target} 发布清单")
+    _require_regular_input(verification_path, f"{target} 验证报告")
+    try:
+        fields = checksum.read_text(encoding="ascii").split()
+    except (OSError, UnicodeError) as exc:
+        raise AssembleError(f"{target} 的 SHA256 文件不可读：{exc}") from exc
+    actual = _sha256(artifact)
+    if len(fields) != 2 or fields[0] != actual or fields[1] != artifact.name:
+        raise AssembleError(f"{target} 的 SHA256 与产物不一致")
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        manifest = validate_manifest_document(json.loads(manifest_bytes.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError, ReleaseManifestError) as exc:
+        raise AssembleError(f"{target} 发布清单不合法：{exc}") from exc
+    expected = {"target": target, "version": version, "commit": commit}
+    for field, value in expected.items():
+        if manifest.get(field) != value:
+            raise AssembleError(
+                f"{target} 发布清单 {field} 不匹配：期望 {value!r}，实际 {manifest.get(field)!r}"
+            )
+    try:
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise AssembleError(f"{target} 的验证报告不可读或不合法：{exc}") from exc
+    if not isinstance(verification, dict):
+        raise AssembleError(f"{target} 的验证报告根必须是 object")
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    if (
+        verification.get("target") != target
+        or verification.get("version") != version
+        or verification.get("commit") != commit
+        or verification.get("sha256") != actual
+        or verification.get("artifact") != artifact.name
+        or verification.get("manifest_sha256") != manifest_sha256
+    ):
+        raise AssembleError(f"{target} 的验证报告与产物身份不一致")
+    runtime_smoke = verification.get("runtime_smoke")
+    if (
+        not isinstance(runtime_smoke, dict)
+        or runtime_smoke.get("status") != "pass"
+        or runtime_smoke.get("host_target") != target
+    ):
+        raise AssembleError(f"{target} 的 runtime smoke 未在原生 target 通过")
+    return artifact, checksum, manifest_path, actual, runtime_smoke
+
+
+def _helper_source(script: str) -> Path:
+    source = Path(__file__).resolve().parent / script
+    _require_regular_input(source, f"辅助脚本 {script}")
+    if os.name == "posix" and source.stat().st_mode & 0o111 == 0:
+        raise AssembleError(f"辅助脚本缺失或不可执行：{source}")
+    return source
+
+
+def _require_exact_entries(directory: Path, expected: set[str]) -> None:
+    actual = {entry.name for entry in directory.iterdir()}
+    if actual != expected:
+        raise AssembleError(
+            f"预览输入目录 {directory} 内容不匹配："
+            f"缺少 {sorted(expected - actual)}，多余 {sorted(actual - expected)}"
+        )
+
+
 def assemble_release(
     *,
     artifacts_root: Path,
@@ -176,72 +266,41 @@ def assemble_release(
     version: str,
     commit: str,
     build_run_url: str,
+    macos_arm64_preview: bool = False,
 ) -> Path:
+    if type(macos_arm64_preview) is not bool:
+        raise AssembleError("macos_arm64_preview 必须是 bool")
     _validate_identity(version, commit, build_run_url)
     artifacts_root = _require_input_directory(Path(artifacts_root), "artifacts_root")
+    targets = ("macos-arm64",) if macos_arm64_preview else TARGETS
+    preview_inputs = None
+    if macos_arm64_preview:
+        # Preview is a closed, single-target input set and never reuses old output.
+        # Validate everything before mkdir/copy; full keeps its legacy write timing.
+        _require_exact_entries(artifacts_root, set(targets))
+        target = targets[0]
+        target_dir = _require_input_directory(artifacts_root / target, target)
+        _require_exact_entries(
+            target_dir,
+            {path.name for path in _target_input_paths(target_dir, target, version)},
+        )
+        preview_inputs = _validate_target_inputs(artifacts_root, target, version, commit)
+        for script in HELPER_SCRIPTS:
+            _helper_source(script)
+        requested = _check_output_directory(Path(out_dir))
+        if requested == artifacts_root or artifacts_root in requested.parents:
+            raise AssembleError("预览 out_dir 不得位于 artifacts_root 内")
+        if requested.exists() and any(requested.iterdir()):
+            raise AssembleError("预览 out_dir 必须为空目录或不存在")
     out_dir = _prepare_output_directory(Path(out_dir))
     records: list[dict[str, Any]] = []
     assets: list[dict[str, Any]] = []
-    for target in TARGETS:
-        target_dir = _require_input_directory(artifacts_root / target, target)
-        suffix = ".app.tar.gz" if target.startswith("macos") else "-setup.exe"
-        stem = f"Tianshu-Agent-{version}-{target}"
-        artifact = target_dir / f"{stem}{suffix}"
-        checksum = target_dir / f"{stem}.sha256"
-        manifest_path = target_dir / "release-manifest.json"
-        verification_path = target_dir / "release-verification.json"
-        _require_regular_input(artifact, f"{target} 产物")
-        _require_regular_input(checksum, f"{target} SHA256")
-        _require_regular_input(manifest_path, f"{target} 发布清单")
-        _require_regular_input(verification_path, f"{target} 验证报告")
-        try:
-            fields = checksum.read_text(encoding="ascii").split()
-        except (OSError, UnicodeError) as exc:
-            raise AssembleError(f"{target} 的 SHA256 文件不可读：{exc}") from exc
-        actual = _sha256(artifact)
-        if len(fields) != 2 or fields[0] != actual or fields[1] != artifact.name:
-            raise AssembleError(f"{target} 的 SHA256 与产物不一致")
-        manifest_bytes = manifest_path.read_bytes()
-        try:
-            manifest = validate_manifest_document(
-                json.loads(manifest_bytes.decode("utf-8"))
-            )
-        except (UnicodeDecodeError, ValueError, ReleaseManifestError) as exc:
-            raise AssembleError(f"{target} 发布清单不合法：{exc}") from exc
-        expected = {"target": target, "version": version, "commit": commit}
-        for field, value in expected.items():
-            if manifest.get(field) != value:
-                raise AssembleError(
-                    f"{target} 发布清单 {field} 不匹配："
-                    f"期望 {value!r}，实际 {manifest.get(field)!r}"
-                )
-        try:
-            verification = json.loads(
-                verification_path.read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise AssembleError(
-                f"{target} 的验证报告不可读或不合法：{exc}"
-            ) from exc
-        if not isinstance(verification, dict):
-            raise AssembleError(f"{target} 的验证报告根必须是 object")
-        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-        if (
-            verification.get("target") != target
-            or verification.get("version") != version
-            or verification.get("commit") != commit
-            or verification.get("sha256") != actual
-            or verification.get("artifact") != artifact.name
-            or verification.get("manifest_sha256") != manifest_sha256
-        ):
-            raise AssembleError(f"{target} 的验证报告与产物身份不一致")
-        runtime_smoke = verification.get("runtime_smoke")
-        if (
-            not isinstance(runtime_smoke, dict)
-            or runtime_smoke.get("status") != "pass"
-            or runtime_smoke.get("host_target") != target
-        ):
-            raise AssembleError(f"{target} 的 runtime smoke 未在原生 target 通过")
+    for target in targets:
+        artifact, checksum, manifest_path, actual, runtime_smoke = (
+            preview_inputs
+            if preview_inputs is not None
+            else _validate_target_inputs(artifacts_root, target, version, commit)
+        )
         artifact_output = out_dir / artifact.name
         checksum_output = out_dir / checksum.name
         manifest_output = out_dir / f"release-manifest-{target}.json"
@@ -291,10 +350,7 @@ def assemble_release(
 
     helper_scripts: list[dict[str, Any]] = []
     for script in HELPER_SCRIPTS:
-        source = Path(__file__).resolve().parent / script
-        _require_regular_input(source, f"辅助脚本 {script}")
-        if os.name == "posix" and source.stat().st_mode & 0o111 == 0:
-            raise AssembleError(f"辅助脚本缺失或不可执行：{source}")
+        source = _helper_source(script)
         copied = out_dir / script
         _require_safe_output_path(copied)
         shutil.copy2(source, copied)
@@ -330,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--build-run-url", required=True)
+    parser.add_argument("--macos-arm64-preview", action="store_true")
     args = parser.parse_args(argv)
     try:
         path = assemble_release(
@@ -338,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             commit=args.commit,
             build_run_url=args.build_run_url,
+            macos_arm64_preview=args.macos_arm64_preview,
         )
     except (AssembleError, OSError) as exc:
         print(f"发行汇总失败：{exc}")
