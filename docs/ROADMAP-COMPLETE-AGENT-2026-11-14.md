@@ -22,13 +22,13 @@
 | W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | **已并入 main**（#156，`134e9f0`，run43679118848） |
 | W11 | 巨石模块拆分（dispatcher/loop/tasks/memory/cli） | 工程债 | 无（纯重构，契约不动） | **热文件，按依赖分层推进** | 无 | **门禁绿**（cli / memory / tasks / loop / dispatcher 全部完成零契约变更扁平拆分与负控校验，待独立复审与 PR CI 绿后并入 main） |
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | 无 | **已并入 main**（契约 #190 `beedf51` / 绑定与 `run.end` v2 #191 `e18624c`，run 44173429146） |
-| W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5 | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；四目标 release 实跑与真机安装待验 | **R0–R3 代码已并入 main**（#170 / #174 / #175 / #186）；四目标 release 实跑与真机验收待完成 |
+| W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5、[PRD §11.1](PRD-v1.md) | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；首发只验 Apple Silicon 实机 | **R0–R3 代码已并入 main**（#170 / #174 / #175 / #186）；`macos-arm64` 单目标发行链与真机验收待做，四目标正式发行另验 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义（#194 已冻结） | exec*/isolation | Windows 原生容器不在 v1 范围（诚实标 unsupported） | **门禁绿**（macOS `seatbelt` + Linux `landlock` 已通过第二读者 8/8 复审，待 PR CI 绿后并入 main） |
 | W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估（#194 已冻结） | 与 G3 后续重叠 | 拍板已锁定：保守安全 GC（零删 events/summaries） | **v1 只读审计已并入 main**（#169，`7f88994`）；安全 GC 下半场实现复审中 |
 
 ## 外部阻塞清单（做了做不了 / 需要拍板，不许冒充已解决）
 
-- **Windows 10/11、ARM64 实机**：CI runner（Server 2025）不等于用户设备；所有平台陈述保持「未验证」。
+- **Intel Mac、Windows 10/11（x64/ARM64）实机**：只阻塞对应目标的支持声明，不阻塞 Apple Silicon 限定预览；CI runner 不替代实机，Windows required CI 仍须通过。
 - **Apple 签名 / 公证**：需要开发者账号与证书；W13 先交付无签名安装脚本（CONTRIBUTING §8 的 T1 既定策略）。
 - **真实模型评测（m4.5 复跑）**：中转站 503 全模型不可用（M4-verification §7.4），等凭据可用。
 - **图像/视频生成**（PRD 非目标）：E2 作业底座已在（jobs.py）；是否进入 v2、走自建还是接服务（可灵/Runway/Veo）+ 计费模式，**待拍板后另立 PRD 增量**，不顺手做。

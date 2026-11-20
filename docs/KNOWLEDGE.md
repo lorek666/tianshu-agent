@@ -27,10 +27,10 @@
 - **里程碑与主干进展**：
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
-- **当前主要未完成项（距离 PRD §11.1 G3 正式发布）**：
-  - **发行实跑与真机闭环**：#186 修复 NSIS 校验后的四目标 `release.yml` 实跑与 draft Release 产物核验；macOS / Windows（x64 / ARM64）真实用户设备安装、升级、回退与 macOS 无签名更新后 TCC 权限提示实测；Windows / Linux 系统钥匙串后端仍为诚实 `unsupported`。
+- **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
+  - **发行实跑与真机闭环**：尚需接通 `macos-arm64` 单目标 draft 构建与校验，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测的 macOS 版本。现有 `release.yml` 仍只汇总四目标。该四目标发布实跑、Intel Mac 和 Windows 实机、物理断电均不阻塞限定预览；四项 required CI、数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
-  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、以及 **W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**均已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、≥10 小时常驻浸泡（soak）与冻结 SLO 仍待完成。
+  - **G3 数据与合规门禁**：F15 CI 依赖许可证合规校验与 CycloneDX 1.5 SBOM 生成（`scripts/check_licenses_and_sbom.py`）、D7/F14 本地默认脱敏诊断包导出与预览清单（`diagnostics_export.py`）、以及 **W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总**均已落地；恢复 B 完整执行链（`apply/review/resume/abort` P0–P5 与 B01–B09）、W15 保留期拍板与真正 GC、最终候选冻结 SLO 实测仍待完成。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
   - **挂账未决工单**：Windows CI 偶发锁/审批根因（[#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 代码根因与确定性屏障回归已落地，见 [2026-11-18-fix-issues-145-147.md](changelog/2026-11-18-fix-issues-145-147.md)，待 PR 合入与原生 Windows required CI 终验销账）及真实付费模型评测复跑（[#55](https://github.com/lorek666/tianshu-agent/issues/55)）。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
@@ -88,6 +88,8 @@
   - **F10 记忆** → `memory.py` / `memory_exec.py` / `memory_index.py` / `memory_distill.py` / `memory_control.py`（L1–L3 可重建投影、检索与面板已落地，详见 [F10-memory-design.md](F10-memory-design.md)）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
 
 - **低磁盘 Run 资格决定（2026-11-14，2026-11-18 补齐 W10 子任务与 F14 收口）**：创建前固定 `pure_only/effects`，默认 effects，同时提供真实 CLI/RPC/UI 纯读选择；避免首次副作用时追加资格状态机。代价是选择 effects 后最终只读的新 Run 仍须准入。W10 引入 `create_subtask(..., write=True)` 后，实际获得可写绑定的子任务为 `effects`，在开启 SQLite 写事务前统一执行 `require_new_run`（只读子任务与父全只读降级路径仍为 `pure_only` 无 2 GiB 阈值门）；控制面显式拦截 `DiskAdmissionError` / `RunEffectsDisallowed` 防路径字样误归类，UI 统一映射三项低盘/资格 C4 编号为中文人话（不泄露原始 `rule_id`）。普通/摘要模型及必要内部审计不算本条 C2 业务副作用，仍守预算、取消与持久化；已有 effects/legacy 的读与模型恢复保留原门，新普通非 pure 动作现测空间。字段、停止控制例外及逐事件版本以[独立契约](low-disk-admission-contract.md)为准，收口复审见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)。
 

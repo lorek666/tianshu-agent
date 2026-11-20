@@ -1,7 +1,7 @@
 # 技术架构书（TA）— Windows / macOS 桌面 App
 
 > 配套 [PRD-v1.md](PRD-v1.md)。本文包含目标架构与实际接线；设计要求不代表已交付。当前源码地图见 §13，验证状态见 [status.md](status.md)。
-> 目标平台：macOS 13+（arm64 / x64）、Windows 10 1809+ / 11（x64 / arm64）；用户设备范围待正式验收。
+> 长期目标：macOS 13+（arm64 / x64）、Windows 10 1809+ / 11（x64 / arm64），不表示这些环境已验收。首发按 [PRD §11.1](PRD-v1.md) 仅准备 `macos-arm64` 限定预览，支持版本以实机验收为准。
 
 ---
 
@@ -320,7 +320,7 @@ for target in [mac-arm64, mac-x64, win-x64, win-arm64]:
 
 1. **`--only-binary :all:`**：禁止任何目标尝试源码编译，缺失即失败
 2. **哈希锁定**（`uv.lock` / `requirements.lock` with hashes）：构建可复现
-3. **原生运行验证**：`--python-platform` 只影响解析，不证明能 import。四个目标要在对应架构的真机/CI runner 上各跑一次 `python -c "import tianshu"`（**现状注（2026-11-14）**：当前 CI 为 ubuntu/macos/windows × py3.12 三平台矩阵 + UI；win-arm64 / mac-x64 原生冒烟未进 CI，四目标证据是 PRD §11.1 G3 发布前要求，差距已在 AGENTS.md / KNOWLEDGE.md 登记）
+3. **原生运行验证**：`--python-platform` 只影响解析，不证明能 import。四目标依赖准入规则保持不变。发行时，每个实际分发的目标都必须在对应架构上验证 native import 和启动 smoke；arm64 限定预览只要求其自身发行证据，四目标正式发行分别验收（[PRD §11.1](PRD-v1.md)）。CI runner 的 smoke 不是用户设备的安装证据。
 4. **失败时的处理顺序**：先看是否有可用版本 → 再看是否可源码构建 → 最后才做功能降级。**降级必须记录在案，不能静默**
 
 **当前已知风险项（v1 需要注意，但不是禁令）**：
