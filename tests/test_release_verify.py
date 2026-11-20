@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 
 import pytest
+from _startup.release_smoke_test_launcher import SmokeTestIsolation
+
+from tianshu import release_smoke
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release_manifest.py"
@@ -706,7 +709,7 @@ def _runtime_fixture(
     verify,
     *,
     broken_entrypoint: str | None = None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, SmokeTestIsolation]:
     assert NATIVE_TARGET is not None
     bundle = _make_bundle(tmp_path, target=NATIVE_TARGET)
     shutil.rmtree(bundle / "app" / "tianshu")
@@ -759,7 +762,17 @@ def _runtime_fixture(
         "_bundle_python",
         lambda _bundle, _target: Path(sys.executable),
     )
-    return bundle, daemon_pid_file
+    # This source-copy fixture is not a native bundle acceptance probe. Guard
+    # both verifier -> smoke and smoke -> real CLI launches with private roots.
+    isolation = SmokeTestIsolation(
+        tmp_path / "smoke-isolation", app_dir=bundle / "app", ui_dir=bundle / "ui" / "dist",
+        release=json.loads((bundle / "release.json").read_text(encoding="utf-8")),
+        python_version=platform.python_version(),
+        runtime_python=release_smoke._runtime_python_executable(),
+    )
+    isolation.bind(monkeypatch)
+    monkeypatch.setattr(verify, "subprocess", isolation.proxy(runtime=True))
+    return bundle, daemon_pid_file, isolation
 
 
 @pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
@@ -767,9 +780,10 @@ def test_verify_runtime_smoke_launches_real_host_daemon_and_checks_token(tmp_pat
     from tianshu.leases import pid_alive
 
     verify = _load(VERIFY_SCRIPT, "verify_release_runtime_positive")
-    bundle, daemon_pid_file = _runtime_fixture(tmp_path, monkeypatch, verify)
+    bundle, daemon_pid_file, isolation = _runtime_fixture(tmp_path, monkeypatch, verify)
 
     smoke = verify._runtime_smoke(bundle, NATIVE_TARGET)
+    isolation.assert_children(smoke, runtime=True)
 
     assert smoke["status"] == "pass"
     assert smoke["host_target"] == NATIVE_TARGET
@@ -789,12 +803,20 @@ def test_self_consistent_crashing_entrypoint_still_fails_and_reaps_owned_childre
     from tianshu.leases import pid_alive
 
     verify = _load(VERIFY_SCRIPT, f"verify_release_runtime_crash_{entrypoint}")
-    bundle, daemon_pid_file = _runtime_fixture(
+    bundle, daemon_pid_file, isolation = _runtime_fixture(
         tmp_path, monkeypatch, verify, broken_entrypoint=entrypoint
     )
 
-    with pytest.raises(verify.VerifyError, match="启动烟测失败"):
+    with pytest.raises(verify.VerifyError, match="启动烟测失败") as caught:
         verify._runtime_smoke(bundle, NATIVE_TARGET)
+    assert f"{entrypoint} startup intentionally broken" in str(caught.value)
+    isolation.assert_receipt("runtime", isolation.runtime_pid)
+    roles = ("daemon", "host") if entrypoint == "host" else ("daemon",)
+    for role in roles:
+        launched_pid = int((isolation.root / f"launched-{role}.pid").read_text(encoding="ascii"))
+        isolation.assert_receipt(role, launched_pid)
+        assert not pid_alive(launched_pid)
+    assert not pid_alive(isolation.runtime_pid)
 
     if daemon_pid_file.exists():
         assert not pid_alive(int(daemon_pid_file.read_text(encoding="ascii")))
@@ -803,7 +825,7 @@ def test_self_consistent_crashing_entrypoint_still_fails_and_reaps_owned_childre
 @pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
 def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatch):
     verify = _load(VERIFY_SCRIPT, "verify_release_runtime_cwd_shadow")
-    bundle, _daemon_pid_file = _runtime_fixture(tmp_path, monkeypatch, verify)
+    bundle, _daemon_pid_file, isolation = _runtime_fixture(tmp_path, monkeypatch, verify)
     caller = tmp_path / "caller"
     shadow = caller / "tianshu"
     shadow.mkdir(parents=True)
@@ -818,6 +840,7 @@ def test_verifier_runtime_ignores_caller_cwd_tianshu_shadow(tmp_path, monkeypatc
     monkeypatch.chdir(caller)
 
     result = verify._runtime_smoke(bundle, NATIVE_TARGET)
+    isolation.assert_children(result, runtime=True)
 
     assert result["status"] == "pass"
     assert not marker.exists()
