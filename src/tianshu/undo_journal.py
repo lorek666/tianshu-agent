@@ -253,9 +253,13 @@ class UndoJournal:
 class JournalStore:
     """`artifacts/undo/<run_id>.json` 的读写。所有写入都是原子的。"""
 
-    def __init__(self, artifacts_root: Path) -> None:
+    def __init__(self, artifacts_root: Path, *, owner_log: Any = None) -> None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(artifacts_root)
         self.root = Path(artifacts_root)
         self.dir = self.root / "undo"
+        self._owner_log = owner_log
 
     def path(self, run_id: str) -> Path:
         return self.dir / f"{run_id}.json"
@@ -274,10 +278,13 @@ class JournalStore:
         return UndoJournal.from_dict(raw, run_id=run_id)
 
     def _save(self, journal: UndoJournal) -> None:
-        payload = json.dumps(
-            journal.to_dict(), ensure_ascii=False, indent=2
-        ).encode("utf-8")
-        atomic_write_bytes(self.path(journal.run_id), payload)
+        from .restore_access import ensure_material_write_allowed
+
+        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+            payload = json.dumps(
+                journal.to_dict(), ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            atomic_write_bytes(self.path(journal.run_id), payload)
 
     def begin(
         self,
@@ -287,19 +294,25 @@ class JournalStore:
         items: tuple[JournalItem, ...],
     ) -> UndoJournal:
         """动手前落盘完整计划。已有 journal 时拒绝（续做走 `load`＋`record_done`）。"""
-        if self.path(run_id).exists():
-            raise UndoJournalConflict(
-                f"{run_id} 已有未清理的 undo journal：拒绝覆盖已有意图日志"
+        from .restore_access import ensure_material_write_allowed
+
+        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+            if self.path(run_id).exists():
+                raise UndoJournalConflict(
+                    f"{run_id} 已有未清理的 undo journal：拒绝覆盖已有意图日志"
+                )
+            journal = UndoJournal(
+                run_id=run_id,
+                control_run=control_run,
+                items=items,
+                done=(),
+                status=STATUS_IN_PROGRESS,
             )
-        journal = UndoJournal(
-            run_id=run_id,
-            control_run=control_run,
-            items=items,
-            done=(),
-            status=STATUS_IN_PROGRESS,
-        )
-        self._save(journal)
-        return journal
+            payload = json.dumps(
+                journal.to_dict(), ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            atomic_write_bytes(self.path(journal.run_id), payload)
+            return journal
 
     def record_done(
         self, journal: UndoJournal, index: int, post_state: str
@@ -378,7 +391,12 @@ class OutstandingUndo:
         return self.done_count
 
 
-def _artifacts_root(data_root: Path) -> Path:
+def _artifacts_root(data_root: Path, log: Any = None) -> Path:
+    if log is not None and getattr(log, "db_path", None) is not None:
+        from .restore_access import default_material_paths, preflight_legacy_material_layout
+
+        preflight_legacy_material_layout(log.db_path, data_root)
+        return default_material_paths(log.db_path, data_root)[0]
     return Path(data_root) / "artifacts"
 
 
@@ -393,7 +411,7 @@ def outstanding(data_root: Path, *, log: Any = None) -> list[OutstandingUndo]:
     没有 `log` 时无法判断完成事件是否缺失，completed 的不列入 —— 它们对
     「是否还有文件要改」没有影响，不需要阻断。
     """
-    store = JournalStore(_artifacts_root(data_root))
+    store = JournalStore(_artifacts_root(data_root, log), owner_log=log)
     if not store.dir.is_dir():
         return []
     found: list[OutstandingUndo] = []

@@ -146,6 +146,7 @@ class MemoryProjection(_MemoryApplyMixin):
         *,
         log: EventLog,
         blob_dir: Path | None = None,
+        data_root: Path | None = None,
         clock: Callable[[], int] = _now,
         index: Any | None = None,
     ) -> None:
@@ -158,6 +159,14 @@ class MemoryProjection(_MemoryApplyMixin):
             raise MemoryStoreError("clock 必须是可调用对象")
         self._conn = conn
         self._log = log
+        from .restore_access import (
+            default_material_paths,
+            ensure_path_not_held,
+            preflight_legacy_material_layout,
+        )
+
+        root = log.data_root if data_root is None else data_root
+        preflight_legacy_material_layout(log.db_path, root)
         # 正文**不**放进事件 payload 的 blob 目录（`log.blob_dir`），哪怕那样
         # 只要一个目录更省事。两者的保留策略不同：
         #
@@ -168,16 +177,14 @@ class MemoryProjection(_MemoryApplyMixin):
         # 记忆正文与某个事件 payload 恰好是同一段字节，它们就是**同一个文件**，
         # 将来按策略删记忆正文会把一条必须留存的日志材料一起删掉。
         #
-        # 所以正文固定落在 DB 旁的 `memory_blobs/`，与事件 payload 目录无关。
-        # 显式传 `blob_dir` 仍然优先（测试与将来的迁移入口需要）。
-        if blob_dir is not None:
-            self._blob_dir = Path(blob_dir)
-        elif log.db_path.name == ":memory:":
-            # 纯内存库没有"DB 旁边"可言：正文无处可落，如实退化成不可用，
-            # 由 `content_state` 标注，而不是编一个当前目录下的路径。
-            self._blob_dir = None
-        else:
-            self._blob_dir = log.db_path.parent / "memory_blobs"
+        # 正文目录使用声明布局的默认记忆路径；显式目录仍优先。
+        self._blob_dir = (
+            Path(blob_dir)
+            if blob_dir is not None
+            else default_material_paths(log.db_path, root)[2]
+        )
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         self._clock = clock
         # 向量索引是**可选的可重建派生数据**（`memory_index.MemoryIndex`），
         # 不传就是 FTS-only。这里用 duck typing 而不是 import：向量模块要 import
@@ -222,6 +229,11 @@ class MemoryProjection(_MemoryApplyMixin):
             self._verify_tokenizer_version()
             return
         outer = self._log.in_transaction
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self._ensure_schema()
             self._require_tokenizer_version()
@@ -343,6 +355,11 @@ class MemoryProjection(_MemoryApplyMixin):
             raise MemoryStoreError(f"{tool_id} 的 output 必须是对象：{output!r}")
 
         seq_value = _require_int(seq, "seq", minimum=1)
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         # 写"新行"的四个工具共用同一套插入代码，差别只在期望的 status / origin /
         # supersedes 形状（见 `_apply_propose` 的 mode）。
         modes = {
@@ -381,6 +398,11 @@ class MemoryProjection(_MemoryApplyMixin):
         没有 intent 记录时（只拿 tool.result 做夹具的库）才用 result 自己的
         seq——这是"日志里确实没有更早来源"的如实回退，不是猜一个号。
         """
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self._ensure_schema()
             # 先写当前分词器版本：重放时 apply_event 的版本校验必须通过；
@@ -583,9 +605,12 @@ class MemoryProjection(_MemoryApplyMixin):
             # 引用照样返回，`apply_event()` 读不到正文时会标成
             # `content_unavailable`，`read_content()` 如实返回 None。
             return ref
-        target = self._blob_dir / ref
-        if not target.is_file():
-            atomic_write_bytes(target, data)
+        from .restore_access import ensure_material_write_allowed
+
+        with ensure_material_write_allowed(self._blob_dir, owner_log=self._log):
+            target = self._blob_dir / ref
+            if not target.is_file():
+                atomic_write_bytes(target, data)
         return ref
 
     def _read_blob(self, content_ref: str) -> str | None:
@@ -738,6 +763,11 @@ class MemoryProjection(_MemoryApplyMixin):
         """用当前 provider 重算全部向量（幂等、可重建）。返回条数。"""
         if self._index is None:
             raise MemoryStoreError("没有配置向量索引：rebuild_vectors() 无事可做")
+        from .restore_access import ensure_log_write_allowed, ensure_path_not_held
+
+        ensure_log_write_allowed(self._log)
+        if self._blob_dir is not None:
+            ensure_path_not_held(self._blob_dir)
         with self._log.transaction():
             self.ensure_schema()
             return int(self._index.rebuild(self))

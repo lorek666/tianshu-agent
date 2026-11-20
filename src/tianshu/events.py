@@ -26,7 +26,16 @@ from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
 from .fsutil import atomic_write_bytes
 from .maintenance import DatabaseAccess, MaintenanceConnection
-from .restore_access import acquire_restore_database_access, verify_sqlite_main
+from .restore_access import (
+    RestoreAccessError,
+    RestoreDatabaseAccess,
+    RestoreScopeBusy,
+    acquire_restore_database_access,
+    ensure_material_write_allowed,
+    ensure_path_not_held,
+    register_admitted_eventlog,
+    verify_sqlite_main,
+)
 
 MAX_INLINE_BYTES = 256 * 1024
 
@@ -287,16 +296,23 @@ class EventLog:
         blob_dir: Path | None = None,
         *,
         cross_thread: bool = False,
+        data_root: Path | None = None,
     ) -> None:
         """`cross_thread=True` 只给"连接建在一个线程、用在同一线程"的通道用。
 
         sqlite3 默认禁止跨线程用同一个连接，因为并发读写连接内部状态会错乱。
         心跳线程的场景是例外：这条连接**只**由心跳线程使用（主线程用自己的
         那条），所以关掉这个检查是安全的。除此之外不要传它。
+        `data_root` 缺省为 DB 父目录；异根装配须在打开新主库前声明实际材料根。
         """
+        self._data_root = db_path.parent if data_root is None else Path(data_root)
+        if blob_dir is not None:
+            ensure_path_not_held(blob_dir)
         access = acquire_restore_database_access(
             db_path,
-            prewrite_guard=lambda: check_new_file_evidence(db_path),
+            prewrite_guard=lambda: check_new_file_evidence(
+                db_path, legacy_data_root=self._data_root
+            ),
         )
         try:
             self._open_database(db_path, blob_dir, cross_thread, access)
@@ -314,11 +330,11 @@ class EventLog:
         cross_thread: bool,
         access: DatabaseAccess,
     ) -> None:
+        # SQLite打开空主文件前再核孤立历史旁证；准入通过后才建payload目录。
+        check_new_file_evidence(db_path, legacy_data_root=self._data_root)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         self._blob_dir = blob_dir
-        # SQLite打开空主文件前先排除孤立历史旁证；准入通过后才建payload目录。
-        check_new_file_evidence(db_path)
         # 保留原先是否非空的证据，不把损坏的既有库初始化成空库。
         pre_existing = False
         try:
@@ -366,9 +382,11 @@ class EventLog:
                 "**不要删除 events.db**：先备份整个数据目录，再用 `tianshu recover`"
                 " 核对，人工确认损失范围后再处理。"
             )
-        check_connection(self._conn, db_path)
-        if blob_dir is not None:
-            blob_dir.mkdir(parents=True, exist_ok=True)
+        check_connection(
+            self._conn,
+            db_path,
+            released_v2_admitted=bool(getattr(access, "has_released_proof", False)),
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         # 有界的锁等待：两个进程同时 BEGIN IMMEDIATE 时，后来的那个等一小会
@@ -376,11 +394,26 @@ class EventLog:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._tx_depth = 0
+        if isinstance(access, RestoreDatabaseAccess):
+            register_admitted_eventlog(db_path, access)
+        if blob_dir is not None:
+            try:
+                with ensure_material_write_allowed(blob_dir, owner_log=self):
+                    blob_dir.mkdir(parents=True, exist_ok=True)
+            except RestoreScopeBusy:
+                raise
+            except RestoreAccessError:
+                pass
 
     @property
     def db_path(self) -> Path:
         """数据库文件路径。authority 根目录默认取它的父目录。"""
         return self._db_path
+
+    @property
+    def data_root(self) -> Path:
+        """打开主库时声明的默认材料根。"""
+        return self._data_root
 
     @property
     def blob_dir(self) -> Path | None:
@@ -468,10 +501,11 @@ class EventLog:
                 raise EventLogCorrupt(
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
-            ref = str(self._blob_dir / digest)
-            # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
-            if not Path(ref).exists():
-                atomic_write_bytes(Path(ref), raw)
+            with ensure_material_write_allowed(self._blob_dir, owner_log=self):
+                ref = str(self._blob_dir / digest)
+                # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
+                if not Path(ref).exists():
+                    atomic_write_bytes(Path(ref), raw)
 
         # 事件行与版本旁表必须同生同死：分开提交会留下"没有版本记录的新事件"，
         # 读取时会被当成 version=0，等于把新版语义伪装成旧版。

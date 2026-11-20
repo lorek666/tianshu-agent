@@ -20,6 +20,8 @@ R0–R3 是 Tauri 桌面壳与发行构建链。
 
 W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。G3 的最终候选 SLO 实测、长时 Soak 和用户设备验收仍待执行。Windows 系统凭据后端尚待交付。
 
+受管恢复 B/C 和 W15 离线 GC 的集成与验收见 [PR #198](https://github.com/lorek666/tianshu-agent/pull/198)。受管写入需要支持目录 `fsync` 的 POSIX 文件系统。Windows 的受管写入及含文件候选的 GC 批次会拒绝执行。操作与平台范围见[备份与恢复指南](backup-restore.md)。
+
 ## M5 桌面闭环实测
 
 **当前测试数字以该次提交的 CI 日志为准**，本文件不手写总条数（AGENTS.md §2）。

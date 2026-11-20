@@ -1226,11 +1226,12 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 [低磁盘 Run 准入契约](low-disk-admission-contract.md) 实施。普通入口默认 `effects`，
 并提供显式 `pure_only`；已有 Run 的纯读/模型恢复及停止控制按该契约保留原规则。
 契约阶段的 LD-01–06 曾全部 `NOT_RUN`；当前 T1/T2 已分别以第二读者原件独立核验，
-T3 已独立通过真实入口验收；PR #144 及合并后 main8f2a 自身 CI 已通过并独立绑定，issue #145 的未知原因失败仍保留未修；逐条归属和限制见
-[低磁盘交付记录](LOW-DISK-2026-11-14.md)。保守离线安全 GC 按
+T3 已独立通过真实入口验收。早期证据见[低磁盘交付记录](LOW-DISK-2026-11-14.md)，后续锁忙回归的修复见 [PR #195](https://github.com/lorek666/tianshu-agent/pull/195) 与已关闭的 [#145](https://github.com/lorek666/tianshu-agent/issues/145)。保守离线安全 GC 按
 [W15 保留期/GC 契约 §6](CONTRACT-W15-RETENTION-2026-11-15.md#6-v2-保守离线安全-gc-契约2026-11-18-拍板冻结待实现-pr-接线)
-冻结（2026-11-18，待实现 PR 接线）：`tianshu data gc --data-root ROOT [--older-than-days 90] [--dry-run | --approve] [--json]`
+冻结（2026-11-18）：`tianshu data gc --data-root ROOT [--older-than-days 90] [--dry-run | --approve] [--json]`
 默认只读预演退 `3`，`--approve` 持离线独占锁并在锁内复核无存活服务与 `collect_references(root)`（`ReferenceUnknown` 零删退 `2`），**豁免 2 GiB 新 Run 门槛**以便低盘回收；严格对 `events`、`summary_*`、`dispatches`/`dispatch_requests`、非空快照、`protected_blobs`、`budget_counters` 及未决/未知 `budget_reservations` 执行 **0 删除**，仅清理孤儿 blob、超期无凭据空终态快照、超期无活跃派发终态 `jobs` 与超期 `settled & known=1` 终态 `budget_reservations` 并执行 `PRAGMA wal_checkpoint(TRUNCATE)`。快照 5 GiB 自动回收仍另行交付。
+
+W15 的 CLI 接线、平台边界与验收进度见 [PR #198](https://github.com/lorek666/tianshu-agent/pull/198) 和[备份与恢复指南](backup-restore.md) §6。
 
 **回滚前必须校验**：当前文件哈希仍等于 `after_hash`；不一致则提示冲突并**禁止直接覆盖**用户后来的修改。
 
@@ -1246,7 +1247,7 @@ T3 已独立通过真实入口验收；PR #144 及合并后 main8f2a 自身 CI �
 - **逻辑忘记与物理删除分开**：tombstone 只阻止后续检索 / 使用，不会擦除历史事件、产物或备份。当前不可变事件若包含原文，就不能承诺逐条物理擦除。对敏感正文外置、加密与密钥销毁等方案，先确定保留的最小审计元数据、历史回放的缺失语义及备份处理，再改契约实现；不得为删除而悄改历史事件。
 - 用户执行删除前看到影响范围、仍保留的材料及原因；恢复旧备份时必须核对可获得的后续忘记 / 删除记录。无法证明这些记录完整时，不自动激活恢复出的记忆，先隔离待用户复核，不声称能从旧备份推断后来的删除。不可证明擦除的介质或副本明确说明范围，不承诺不可验证的彻底删除。
 
-受管恢复按[导入、持久隔离与只读复核契约](restore-held-contract.md)与[受管恢复解除与服务恢复 · C 契约](restore-release-contract.md)分片交付：B 只导入到持久 held，专用只读复核、同批续做和合法未发布清理；C（2026-11-18 契约冻结，`schemas/data/restore-v2.json` + `schemas/data/restore-registry-v2.sql`，待实现 PR 接线）通过 `RestoreRegistry` v2（`USER_VERSION = 2` 增补 `release_intent` 与 `released`，磁盘 `.restore-origin.json` 保持一次写入不可变）定义 `tianshu data restore-release --data-root ROOT [--batch ID] --expect-review REVIEW_SHA256 --acknowledge-unproven-later-history [--json]`，强制核验 `review_complete == True` 与 `(S, D, P)` 实体及 `BindingV1`，单事务 append-only 收口非终态 `runs`（`fenced`）、陈旧审批与存活租约并保留 `unknown` 派发零重放（覆盖 `FP-RELEASE-INTENT` / `FP-RELEASE-RECONCILE` / `FP-RELEASED`），同时确立**解除后数据库准入规则**：持有绑定 `(S, D)` 实体的有效 `ReleasedV1` 证明的 `v2` 数据库免 `.migration.json` 直接放行，而 `v1` 数据库在 `released` 后仍必须先显式执行 `tianshu data migrate` 方可由普通 `EventLog` 打开。上述 B/C 产品验收在实现落地前仍为 `NOT_RUN`，现有 `restore-plan` 不执行恢复，不能将契约文字或低层复制函数视为恢复服务已交付。
+受管恢复按[导入、持久隔离与只读复核契约](restore-held-contract.md)与[受管恢复解除与服务恢复 · C 契约](restore-release-contract.md)分片交付：B 只导入到持久 held，专用只读复核、同批续做和合法未发布清理；C（2026-11-18 契约冻结，`schemas/data/restore-v2.json` + `schemas/data/restore-registry-v2.sql`）通过 `RestoreRegistry` v2（`USER_VERSION = 2` 增补 `release_intent` 与 `released`，磁盘 `.restore-origin.json` 保持一次写入不可变）定义 `tianshu data restore-release --data-root ROOT [--batch ID] --expect-review REVIEW_SHA256 --acknowledge-unproven-later-history [--json]`，强制核验 `review_complete == True` 与 `(S, D, P)` 实体及 `BindingV1`，单事务 append-only 收口非终态 `runs`（`fenced`）、陈旧审批与存活租约并保留 `unknown` 派发零重放（覆盖 `FP-RELEASE-INTENT` / `FP-RELEASE-RECONCILE` / `FP-RELEASED`），同时确立**解除后数据库准入规则**：持有绑定 `(S, D)` 实体的有效 `ReleasedV1` 证明的 `v2` 数据库免 `.migration.json` 直接放行，而 `v1` 数据库在 `released` 后仍必须先显式执行 `tianshu data migrate` 方可由普通 `EventLog` 打开。上述 B/C 的 CLI 接线和产品验收进度见 [PR #198](https://github.com/lorek666/tianshu-agent/pull/198)。`restore-plan` 保持只读。按计划绑定执行的 `restore-apply` 只推进到持久隔离态。当前候选按 B §7 在目录屏障缺失时以 `durability_unavailable` 拒绝受管写入。Windows 的实现范围和缺口见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
 
 验收须覆盖：备份中断、一致点恢复、损坏 / 缺失内容、磁盘满、迁移中断，以及忘记后恢复旧备份。未交付的生命周期能力在界面与发布说明中标注，不以事件不可变替代隐私产品设计。
 

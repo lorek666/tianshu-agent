@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Literal
 
 from .errors import TianshuError
+from .pathkeys import overlap_key
 
 SCHEMA_VERSION = 2
+STANDARD_DB_BASENAME = "events.db"
 STATE_FORMAT = "tianshu-migration"
 STATE_FORMAT_VERSION = 2
 DataFailure = Literal[
@@ -266,6 +268,11 @@ def read_state_file(path: Path) -> MigrationState | None:
         raise MigrationStateCorrupt(f"进度不可读：{path}（{type(exc).__name__}）") from exc
 
 
+def is_standard_db_basename(name: str) -> bool:
+    """按现有路径比较规则识别共享标准材料和旧版旁证的库名。"""
+    return overlap_key(name) == overlap_key(STANDARD_DB_BASENAME)
+
+
 def associated_state_paths(db_path: Path) -> tuple[Path, ...]:
     if str(db_path) == ":memory:":
         return ()
@@ -274,7 +281,9 @@ def associated_state_paths(db_path: Path) -> tuple[Path, ...]:
     except (OSError, RuntimeError) as exc:
         raise MigrationStateCorrupt("数据库实际路径不可确定") from exc
     paths = (actual.with_name(actual.name + ".migration.json"),)
-    return paths + (actual.parent / "migration.json",) if actual.name == "events.db" else paths
+    if is_standard_db_basename(actual.name):
+        return paths + (actual.parent / "migration.json",)
+    return paths
 
 
 def encode_state(state: MigrationStateV2) -> bytes:

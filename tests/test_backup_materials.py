@@ -656,8 +656,29 @@ def test_removing_saved_source_alias_cannot_hide_reference_problem(tmp_path):
 
 
 def test_create_cannot_promote_unrelated_external_blobs_to_source_alias(tmp_path):
+    from tianshu.restore_access import RestoreAccessError
+
     outside = tmp_path / "unrelated" / "blobs"
-    root, _ = _make_root(tmp_path, payload_dir=str(outside))
+    # 1) 写路径层：跨根标准材料目录 blobs 在 EventLog 落盘前即被唯一主库白名单拒绝
+    with pytest.raises(RestoreAccessError):
+        _make_root(tmp_path / "blocked_write_case", payload_dir=str(outside))
+
+    # 2) 备份核验层：即便历史库行里已存有指向外部 .../blobs/<sha> 的 payload_ref，
+    #    create_backup 同样拒绝把它升格为合法 source_alias
+    root, refs = _make_root(tmp_path)
+    outside.mkdir(parents=True, exist_ok=True)
+    moved_blob = outside / refs["payload"]
+    shutil.copy2(root / "blobs" / refs["payload"], moved_blob)
+    with closing(sqlite3.connect(root / "events.db", isolation_level=None)) as conn:
+        trigger_sql = conn.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='events_no_update'"
+        ).fetchone()[0]
+        conn.execute("DROP TRIGGER events_no_update")
+        conn.execute(
+            "UPDATE events SET payload_ref = ? WHERE payload_hash = ?",
+            (str(moved_blob), refs["payload"]),
+        )
+        conn.execute(trigger_sql)
     dest = tmp_path / "backup"
     with pytest.raises(BackupInvalid):
         create_backup(root, dest)

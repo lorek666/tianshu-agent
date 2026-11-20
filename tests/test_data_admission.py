@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tianshu import pathkeys
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
 
@@ -211,12 +212,49 @@ def test_v2_without_progress_refuses_eventlog_and_cli_unchanged(tmp_path):
     assert snapshot(db) == before
 
 
-def test_v2_valid_completed_opens_and_legacy_only_remains_ordinary_compatible(tmp_path):
-    db = make_db(tmp_path, legacy=True)
+def _require_native_case_insensitive_db_alias(tmp_path):
+    probe = tmp_path / "case-probe"
+    probe.touch()
+    alias = probe.with_name("CASE-PROBE")
+    if not (pathkeys.CASE_INSENSITIVE_FS and alias.exists() and probe.samefile(alias)):
+        pytest.skip("requires native case-insensitive basename policy and filesystem lookup")
+    probe.unlink()
+
+
+@pytest.mark.parametrize("name", ["events.db", "EVENTS.DB"])
+def test_v2_valid_completed_opens_and_legacy_only_remains_ordinary_compatible(tmp_path, name):
+    if name != "events.db":
+        _require_native_case_insensitive_db_alias(tmp_path)
+    db = make_db(tmp_path, name=name, legacy=True)
     legacy_state(db)
     before = (tmp_path / "migration.json").read_bytes()
     EventLog(db).close()
     assert (tmp_path / "migration.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["EVENTS.DB", "other.db"])
+def test_folded_db_basename_cannot_borrow_legacy_state_from_a_distinct_main(
+    tmp_path, monkeypatch, name
+):
+    standard = make_db(tmp_path, legacy=True)
+    db = standard.with_name(name)
+    if db.exists():
+        pytest.skip("requires a volume where both database spellings identify distinct files")
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    if name == "other.db":
+        # Exercise a lexical match between real distinct files even on a folding volume.
+        normalize = pathkeys.normalize_name
+        monkeypatch.setattr(
+            pathkeys,
+            "normalize_name",
+            lambda value: "events.db" if value == name else normalize(value),
+        )
+    legacy_state(standard)
+    make_db(tmp_path, name=name, legacy=True)
+    assert not db.samefile(standard)
+    standard_before = snapshot(standard)
+    refuse_unchanged(db, code="migration_incomplete")
+    assert snapshot(standard) == standard_before
 
 
 def test_completed_state_does_not_freeze_later_business_writes(tmp_path):
@@ -251,6 +289,52 @@ def test_zero_main_with_historical_evidence_refused_before_connect(tmp_path, evi
         EventLog(db, blob_dir=tmp_path / "new-payload")
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
     assert not (tmp_path / "new-payload").exists()
+
+
+@pytest.mark.parametrize("case_policy", ["native", "folded"])
+@pytest.mark.parametrize("exists", [False, True], ids=["missing", "zero-byte"])
+@pytest.mark.parametrize(
+    ("evidence", "code"),
+    [("artifacts", "incompatible"), ("migration.json", "migration_incomplete")],
+)
+def test_standard_db_alias_refuses_historical_evidence(
+    tmp_path, monkeypatch, case_policy, exists, evidence, code
+):
+    if case_policy == "folded":
+        monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", True)
+    else:
+        _require_native_case_insensitive_db_alias(tmp_path)
+
+    db = tmp_path / "EVENTS.DB"
+    if exists:
+        db.touch()
+    if evidence == "artifacts":
+        retained = tmp_path / "artifacts" / "snapshots" / "old.json"
+        retained.parent.mkdir(parents=True)
+        retained.write_bytes(b"old history")
+    else:
+        legacy_state(db)
+        retained = tmp_path / evidence
+    before = retained.read_bytes()
+    entries_before = set(tmp_path.rglob("*"))
+    with pytest.raises(TianshuError) as exc:
+        EventLog(db, blob_dir=tmp_path / "new-payload").close()
+    assert exc.value.code == code
+    assert set(tmp_path.rglob("*")) == entries_before
+    if exists:
+        assert db.read_bytes() == b""
+    assert retained.read_bytes() == before
+
+
+def test_case_sensitive_policy_keeps_uppercase_db_custom(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathkeys, "CASE_INSENSITIVE_FS", False)
+    db = tmp_path / "EVENTS.DB"
+    legacy_state(db)
+    log = EventLog(db)
+    try:
+        assert log.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    finally:
+        log.close()
 
 
 @pytest.mark.parametrize("exists", [False, True])

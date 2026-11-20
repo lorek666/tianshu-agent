@@ -31,7 +31,7 @@ def make_ws(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
 
 
 def _run(tmp_path, ws, responses, out=REPORT):
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     result = run(
         task="生成摘要",
         workspace_dir=ws,

@@ -47,7 +47,7 @@ uv run --frozen ruff check .      # lint
 | `host` | 桌面外壳：`run`（默认）/ `stop` / `status`，把 UI 桥到本地 IPC |
 | `replay` | 从事件日志回放并校验（**审计，不调模型**） |
 | `evaluate` | 在干净 fixture 上换模型跑固定 case（**换模，与 replay 是两件事**） |
-| `data` | 显式数据根的离线 `backup`、独立 `verify`、备份绑定的 `migrate` 与只读 `restore-plan`、只读 `retention-audit`（保留期审计：只测量，零删除）、以及 `export-diagnostics`（本地默认脱敏诊断包导出与 `--preview` 清单预览，绝不上传）；尚不执行恢复 |
+| `data` | 离线 `backup`、独立 `verify`、备份绑定的 `migrate`、只读 `restore-plan` 与受管恢复、只读 `retention-audit`、保守离线 `gc`、本地默认脱敏的 `export-diagnostics`（支持 `--preview` 清单预览） |
 
 > **CLI 与桌面端数据目录打通**：内核子命令默认使用当前工作目录下的 `.tianshu/events.db`，桌面 `daemon`/`host` 默认使用系统应用目录（`ipc.default_data_root()`）。传入 `--desktop`（或设 `TIANSHU_USE_DESKTOP_DB=1`）即可让 `task` / `run` / `approvals` / `schedule` 等 CLI 子命令直接操作桌面端默认数据库。
 
@@ -111,17 +111,21 @@ PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被�
 
 ## 数据目录与离线维护
 
-数据维护要求显式指定根，不自动选择 daemon 根或内核 `.tianshu/`：
+先关闭使用该根的 Host、Daemon 和 CLI。使用 `--data-root` 指定要维护的数据根。`data gc` 也接受 `--desktop`，用于选择桌面端默认数据根。
 
 ```bash
-# 先关闭使用该根的 Host、Daemon 和 CLI；活跃连接会使备份退出 2
 uv run --frozen tianshu data backup --data-root /absolute/data-root --dest /absolute/backups/backup-1
 uv run --frozen tianshu data verify /absolute/backups/backup-1 --json
 uv run --frozen tianshu data restore-plan /absolute/backups/backup-1 --data-root /absolute/data-root --json
 uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /absolute/backups/backup-1 --json
+uv run --frozen tianshu data gc --data-root /absolute/data-root --json
 ```
 
-备份保存事件库及已核验材料。工作区文件、IPC 密钥和日志请单独管理。`migrate` 处理标准 `ROOT/events.db`，核验备份与升级前一致点的绑定，并支持同批次续做。`restore-plan` 检查通过时退出 `3` 并报告恢复条件，保持目标及记忆状态原样。各维护子命令、材料布局、协作锁和退出码见 [备份指南](backup-restore.md)。
+- **备份与迁移**。备份保存事件库及已核验材料。请另行保管工作区文件、IPC 密钥和日志。显式 `migrate` 处理标准 `ROOT/events.db`，核验备份与升级前一致点的绑定，支持同进度续做。
+- **受管恢复**。只读 `restore-plan` 检查通过退出 `3`。在支持目录持久化的 POSIX 文件系统上，可按计划用 `restore-apply --expect-plan` 导入原路径并保持隔离。`restore-review` 默认隐藏正文。复核完成后，可用 `restore-release --expect-review` 和对后续删除历史的显式确认解除隔离。解除后的 v1 库仍需显式备份与迁移。
+- **离线清理**。`data gc` 默认预演，成功退出 `3`。发现 SQLite 旁文件时拒绝预演并保留现场。核对候选后，可显式 `--approve` 在独占准入下重新核验。Windows 遇到任一文件候选会拒绝整批。执行失败退出 `2`，`deleted` 和错误信息记录已确认的删除。
+
+受管写入的平台范围、旧材料布局的处置办法、完整命令及退出码见 [备份与恢复指南](backup-restore.md)。
 
 低磁盘 Run 资格与执行门已随 [PR #144](https://github.com/lorek666/tianshu-agent/pull/144) 合入。锁忙和审批后删除回归随 [PR #195](https://github.com/lorek666/tianshu-agent/pull/195) 修复，对应的 #145 和 #147 已关闭。
 

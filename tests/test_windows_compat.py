@@ -61,7 +61,7 @@ def test_product_writes_exact_bytes_and_hashes_the_same_on_both_platforms(tmp_pa
     """
     ws = tmp_path / "ws"
     ws.mkdir()
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     store = SnapshotStore(tmp_path / "artifacts")
     try:
         result = run(
@@ -102,7 +102,7 @@ def test_modify_and_undo_round_trip_keeps_bytes_exact(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     write_exact(ws / "note.md", original)
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     store = SnapshotStore(tmp_path / "artifacts")
     try:
         from support import approve_pending, engine_for, stack_for

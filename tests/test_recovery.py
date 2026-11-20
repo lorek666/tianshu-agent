@@ -355,6 +355,61 @@ def test_recovery_is_idempotent(tmp_path):
     assert first.applied == second.applied or second.applied == []
 
 
+def test_legacy_v0_unknown_result_without_effect_state_stays_blocked(tmp_path):
+    """v0 的 status=unknown 不是 none_applied，恢复必须补齐阻断。"""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "note.md").write_text("旧", encoding="utf-8")
+    log = EventLog(tmp_path / "e.db")
+    run_id = "run_legacy_unknown"
+    log.append(
+        run_id,
+        "run.start",
+        {
+            "task": "t",
+            "workspace": str(ws.resolve()),
+            "out": "x",
+            "limits": {},
+            "tools": [],
+        },
+        actor_kind="core",
+        legacy_write=True,
+    )
+    log.append(
+        run_id,
+        "tool.intent",
+        {
+            "call_id": "legacy-call",
+            "tool_id": "run_command",
+            "args": {"cmd": "echo hi"},
+            "args_hash": hashlib.sha256(b"args").hexdigest(),
+        },
+        actor_kind="core",
+        legacy_write=True,
+    )
+    log.append(
+        run_id,
+        "tool.result",
+        {
+            "call_id": "legacy-call",
+            "tool_id": "run_command",
+            "status": "unknown",
+            "output": {"recovered": True},
+        },
+        actor_kind="core",
+        legacy_write=True,
+    )
+
+    report = recover_run(log, run_id, ws)
+
+    assert report.unresolved == ["legacy-call"]
+    assert report.none_applied == []
+    assert str(ws.resolve()) in report.blocked_workspaces
+    assert str(ws.resolve()) in blocked_workspaces(log)
+    assert [e.type for e in log.read_run(run_id)].count("recovery.blocked") == 1
+    log.close()
+
+
 def test_unknown_blocks_subsequent_writes(tmp_path):
     """核实不了的时候：标 unknown，并阻断同 workspace 的新写入。
 

@@ -33,6 +33,22 @@ Phase = Literal[
     "abort_intent",
     "aborted",
 ]
+PhaseV2 = Literal[
+    "reserved",
+    "stage_owned",
+    "sealed_hold",
+    "publish_intent",
+    "published_hold",
+    "abort_intent",
+    "aborted",
+    "release_intent",
+    "released",
+]
+PostReleaseAdmissionStatusV2 = Literal[
+    "admitted_v0",
+    "admitted_v2_released_proof",
+    "requires_explicit_migrate_v1",
+]
 ErrorCategory = Literal[
     "held",
     "record_corrupt",
@@ -44,8 +60,9 @@ ErrorCategory = Literal[
     "restore_failed",
 ]
 PHASES = frozenset(get_args(Phase))
+PHASES_V2 = frozenset(get_args(PhaseV2))
 ERROR_CATEGORIES = frozenset(get_args(ErrorCategory))
-DIGEST_LABELS = frozenset(
+DIGEST_LABELS_V1 = frozenset(
     {
         "meta",
         "event",
@@ -62,12 +79,14 @@ DIGEST_LABELS = frozenset(
         "lock",
     }
 )
+DIGEST_LABELS = frozenset({*DIGEST_LABELS_V1, "review", "reconcile"})
 CODEC = "restore-json-v1"
 Version = Literal[1]
 Sha256 = Annotated[str, "sha256"]
 UUID = Annotated[str, "uuid"]
 Base64 = Annotated[str, "base64"]
 NonNegative = Annotated[int, "nonnegative"]
+NonNegativeSql = Annotated[int, "nonnegative_sql"]
 SequenceNumber = Annotated[int, "sequence"]
 Name = Annotated[str, "name"]
 NonEmpty = Annotated[str, "nonempty"]
@@ -177,6 +196,8 @@ def _metadata(value: object, tags: tuple[object, ...]) -> None:
             _unbase64(value)
         elif tag == "nonnegative":
             _require(value >= 0, "整数必须非负")
+        elif tag == "nonnegative_sql":
+            _require(0 <= value <= _SQL_MAX, "整数超出SQLite非负范围")
         elif tag == "sequence":
             _require(0 < value <= _SQL_MAX, "sequence超出SQLite正整数范围")
         elif tag == "nonempty":
@@ -949,6 +970,228 @@ CONTRACT_TYPES = {
 }
 
 
+class RestorePayloadV2(ContractV1):
+    """v2 恢复控制载荷超集（兼容 7 项 B 阶段载荷 + release_intent / released）。"""
+
+
+@dataclass(frozen=True)
+class ReconcileIntentDispositionV1(ContractV1):
+    run_id: NonEmpty
+    call_id: NonEmpty
+    seq: SequenceNumber
+    tool_id: NonEmpty
+    disposition: Literal["none_applied", "unknown"]
+
+
+@dataclass(frozen=True)
+class ReconcilePlanV1(ContractV1):
+    version: Version
+    reconciled_at_ms: NonNegative
+    fenced_run_ids: tuple[NonEmpty, ...]
+    expired_approval_ids: tuple[NonEmpty, ...]
+    cleared_lease_keys: tuple[NonEmpty, ...]
+    unresolved_intents: tuple[ReconcileIntentDispositionV1, ...]
+    cancelled_job_ids: tuple[NonEmpty, ...]
+    blocked_workspaces: tuple[NonEmpty, ...]
+    blocked_objects: tuple[NonEmpty, ...]
+
+
+@dataclass(frozen=True)
+class ReconciledCountsV1(ContractV1):
+    fenced_runs: NonNegative
+    expired_approvals: NonNegative
+    cleared_leases: NonNegative
+    resolved_none_applied_intents: NonNegative
+    preserved_unknown_intents: NonNegative
+    cancelled_jobs: NonNegative
+
+
+@dataclass(frozen=True)
+class ReleaseIntentV1(RestorePayloadV2):
+    published_hold_sha256: Sha256
+    binding_sha256: Sha256
+    review_sha256: Sha256
+    acknowledge_unproven_later_history: Literal[True]
+    final_root: DirRefV1
+    final_database: EntityRefV1
+    stable_parent: DirRefV1
+    origin_sha256: Sha256
+    pre_release_db_user_version: Literal[0, 1, 2]
+    pre_release_event_seq_head: NonNegativeSql
+    reconcile_plan: ReconcilePlanV1
+    reconcile_plan_sha256: Sha256
+
+
+@dataclass(frozen=True)
+class ReleasedV1(RestorePayloadV2):
+    release_intent_sha256: Sha256
+    binding_sha256: Sha256
+    review_sha256: Sha256
+    reconcile_plan_sha256: Sha256
+    final_root: DirRefV1
+    final_database: EntityRefV1
+    origin_sha256: Sha256
+    post_release_database_bytes: DatabaseBytesV1
+    post_release_db_user_version: Literal[0, 1, 2]
+    post_release_event_seq_head: NonNegativeSql
+    reconciled_counts: ReconciledCountsV1
+    migration_required: bool
+
+
+@dataclass(frozen=True)
+class RestoreEventV2(ContractV1):
+    version: Literal[1, 2]
+    registry_id: UUID
+    sequence: SequenceNumber
+    batch_id: UUID
+    previous_sha256: Sha256 | None
+    kind: PhaseV2
+    payload: RestorePayloadV2
+
+
+@dataclass(frozen=True)
+class RestoreReviewV2(ContractV1):
+    batch_id: UUID
+    phase: Literal["published_hold"]
+    held: Literal[True]
+    data_root: NativePathV1
+    binding_sha256: Sha256
+    scope_sha256: Sha256
+    review_complete: bool
+    checks: tuple[CheckV1, ...]
+    objects: tuple[ReviewObjectV1, ...]
+    known_later_changes: tuple[LaterChangeV1, ...]
+    unverifiable: tuple[str, ...]
+    later_forget_delete_history: Literal["completeness_unproven"]
+    body_scopes: tuple[str, ...]
+    review_sha256: Sha256
+
+    def to_redacted_v1(self) -> RestoreReviewV1:
+        redacted_objs = tuple(
+            ReviewObjectV1(
+                family=obj.family,
+                key=obj.key,
+                status=obj.status,
+                sources=obj.sources,
+                bodies=tuple(
+                    BodyViewV1(b.field, b.size, b.sha256, b.selector, None, None)
+                    for b in obj.bodies
+                ),
+            )
+            for obj in self.objects
+        )
+        static_checks = tuple(
+            c for c in self.checks if not (c.name == "later_backup" and c.passed)
+        )
+        return RestoreReviewV1(
+            batch_id=self.batch_id,
+            phase=self.phase,
+            held=self.held,
+            data_root=self.data_root,
+            binding_sha256=self.binding_sha256,
+            scope_sha256=self.scope_sha256,
+            review_complete=self.review_complete,
+            checks=static_checks,
+            objects=redacted_objs,
+            known_later_changes=(),
+            unverifiable=self.unverifiable,
+            later_forget_delete_history=self.later_forget_delete_history,
+            body_scopes=(),
+        )
+
+
+@dataclass(frozen=True)
+class RestoreFailureV2(ContractV1):
+    category: ErrorCategory
+    message: str
+    batch_id: UUID | None
+    phase: PhaseV2 | None
+    plan_sha256: Sha256 | None
+    retained_paths: tuple[NativePathV1, ...]
+    next_commands: tuple[tuple[str, ...], ...]
+    cause: RestoreCauseV1 | None
+
+    @classmethod
+    def from_v1(cls, failure: RestoreFailureV1) -> Self:
+        return cls(
+            category=failure.category,
+            message=failure.message,
+            batch_id=failure.batch_id,
+            phase=failure.phase,
+            plan_sha256=failure.plan_sha256,
+            retained_paths=failure.retained_paths,
+            next_commands=failure.next_commands,
+            cause=failure.cause,
+        )
+
+    def to_v1(self) -> RestoreFailureV1:
+        _require(
+            self.phase is None or self.phase in PHASES,
+            f"RestoreFailureV1 不接受 v2 专属阶段：{self.phase!r}",
+        )
+        return RestoreFailureV1(
+            category=self.category,
+            message=self.message,
+            batch_id=self.batch_id,
+            phase=self.phase,
+            plan_sha256=self.plan_sha256,
+            retained_paths=self.retained_paths,
+            next_commands=self.next_commands,
+            cause=self.cause,
+        )
+
+
+@dataclass(frozen=True)
+class RestoreReleaseResultV2(ContractV1):
+    batch_id: UUID
+    phase: Literal["released"]
+    held: Literal[False]
+    data_root: NativePathV1
+    binding_sha256: Sha256
+    review_sha256: Sha256
+    reconcile_plan_sha256: Sha256
+    event_sha256: Sha256
+    db_user_version: Literal[0, 1, 2]
+    migration_required: bool
+    post_release_admission: PostReleaseAdmissionStatusV2
+    reconciled_counts: ReconciledCountsV1
+    next_commands: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class RestoreResponseV2(ContractV1):
+    version: Literal[1, 2]
+    operation: Literal[
+        "restore-apply",
+        "restore-resume",
+        "restore-abort",
+        "restore-review",
+        "restore-release",
+    ]
+    ok: bool
+    result: (
+        RestoreActionResultV1
+        | RestoreReviewV1
+        | RestoreReviewV2
+        | RestoreReleaseResultV2
+        | None
+    )
+    error: RestoreFailureV2 | None
+
+
+_PAYLOADS_V2 = {
+    **_PAYLOADS,
+    "release_intent": ReleaseIntentV1,
+    "released": ReleasedV1,
+}
+_SUM_TYPES[RestorePayloadV2] = tuple(_PAYLOADS_V2.values())
+CONTRACT_TYPES_V2 = {
+    cls.__name__: cls
+    for cls in tuple(globals().values())
+    if isinstance(cls, type) and issubclass(cls, ContractV1) and cls is not ContractV1
+}
+
+
 def _convert(
     annotation: object,
     value: object,
@@ -1013,6 +1256,12 @@ def _convert(
             if annotation is RestoreEventV1 and field.name == "payload":
                 _require(type(value["kind"]) is str and value["kind"] in _PAYLOADS, "未知事件kind")
                 field_type = _PAYLOADS[value["kind"]]
+            elif annotation is RestoreEventV2 and field.name == "payload":
+                _require(
+                    type(value["kind"]) is str and value["kind"] in _PAYLOADS_V2,
+                    "未知v2事件kind",
+                )
+                field_type = _PAYLOADS_V2[value["kind"]]
             values[field.name] = _convert(
                 field_type, value[field.name], decode=True, path_codec=path_codec
             )
@@ -1313,7 +1562,7 @@ def _semantics(value: object) -> None:
             "成功phase/held不符",
         )
         _require(not value.held or value.binding_sha256 is not None, "published必须有Binding")
-    elif isinstance(value, RestoreFailureV1):
+    elif isinstance(value, (RestoreFailureV1, RestoreFailureV2)):
         _require(value.phase is None or value.batch_id is not None, "有phase必须有真实batch")
     elif isinstance(value, BodyViewV1):
         _require(
@@ -1370,6 +1619,58 @@ def _semantics(value: object) -> None:
                 )
     elif isinstance(value, RestoreResponseV1):
         _response(value)
+    elif isinstance(value, ReconcilePlanV1):
+        _ordered_unique(value.fenced_run_ids, _utf8)
+        _ordered_unique(value.expired_approval_ids, _utf8)
+        _ordered_unique(value.cleared_lease_keys, _utf8)
+        _ordered_unique(
+            value.unresolved_intents,
+            lambda item: (item.seq, _utf8(item.run_id), _utf8(item.call_id)),
+        )
+        _ordered_unique(value.cancelled_job_ids, _utf8)
+        _ordered_unique(value.blocked_workspaces, _utf8)
+        _ordered_unique(value.blocked_objects, _utf8)
+    elif isinstance(value, ReleaseIntentV1):
+        _check_digest("reconcile", value.reconcile_plan, value.reconcile_plan_sha256)
+    elif isinstance(value, ReleasedV1):
+        _require(
+            value.migration_required == (value.post_release_db_user_version == 1),
+            "released的migration_required与数据库user_version不符",
+        )
+    elif isinstance(value, RestoreEventV2):
+        _event_envelope_v2(value)
+    elif isinstance(value, RestoreReviewV2):
+        _require(
+            not value.review_complete
+            or (not value.unverifiable and all(c.passed for c in value.checks)),
+            "缺检查/来源不能报告完整review",
+        )
+        available = {b.selector for item in value.objects for b in item.bodies}
+        for scope in value.body_scopes:
+            _require(
+                BodySelectorV1.from_selector(scope).to_selector() in available,
+                "正文scope没有匹配同一scan槽位",
+            )
+        for item in value.objects:
+            for body in item.bodies:
+                _require(
+                    (body.text is None and body.bytes_b64 is None)
+                    or body.selector in value.body_scopes,
+                    "未显式选择正文必须脱敏",
+                )
+        _check_digest("review", value.to_redacted_v1(), value.review_sha256)
+    elif isinstance(value, RestoreReleaseResultV2):
+        expected_adm = {
+            0: (False, "admitted_v0"),
+            1: (True, "requires_explicit_migrate_v1"),
+            2: (False, "admitted_v2_released_proof"),
+        }[value.db_user_version]
+        _require(
+            (value.migration_required, value.post_release_admission) == expected_adm,
+            "RestoreReleaseResultV2准入状态与user_version矛盾",
+        )
+    elif isinstance(value, RestoreResponseV2):
+        _response_v2(value)
     elif isinstance(value, SqlSchemaV1):
         _require(value.user_version.tag == "integer", "user_version必须是SQLite INTEGER")
         _require(
@@ -1773,14 +2074,32 @@ _SCHEMA_CLASSES = {
 }
 
 
-def _schema_type(annotation: object) -> dict[str, object]:
+def _schema_type(
+    annotation: object,
+    *,
+    schema_classes: dict[str, type] = _SCHEMA_CLASSES,
+) -> dict[str, object]:
     if annotation == Phase:
+        return (
+            {"$ref": "#/$defs/PhaseV1"}
+            if schema_classes is _SCHEMA_CLASSES_V2
+            else {"$ref": "#/$defs/Phase"}
+        )
+    if annotation == PhaseV2:
+        if schema_classes is not _SCHEMA_CLASSES_V2:
+            raise RestoreContractError("PhaseV2 不能进入 v1 schema")
         return {"$ref": "#/$defs/Phase"}
+    if annotation is RestoreFailureV2:
+        if schema_classes is not _SCHEMA_CLASSES_V2:
+            raise RestoreContractError("RestoreFailureV2 不能进入 v1 schema")
+        return {"$ref": "#/$defs/RestoreFailureV1"}
+    if annotation == PostReleaseAdmissionStatusV2:
+        return {"$ref": "#/$defs/PostReleaseAdmissionStatusV2"}
     if annotation == ErrorCategory:
         return {"$ref": "#/$defs/ErrorCategory"}
     origin, args = get_origin(annotation), get_args(annotation)
     if origin is Annotated:
-        base = _schema_type(args[0])
+        base = _schema_type(args[0], schema_classes=schema_classes)
         for tag in args[1:]:
             if tag == "sha256":
                 base["pattern"] = "^[0-9a-f]{64}$"
@@ -1792,16 +2111,16 @@ def _schema_type(annotation: object) -> dict[str, object]:
                     "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|"
                     "[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
                 )
-            elif tag in ("nonnegative", "sequence"):
-                base["minimum"] = 0 if tag == "nonnegative" else 1
-                if tag == "sequence":
+            elif tag in ("nonnegative", "nonnegative_sql", "sequence"):
+                base["minimum"] = 0 if tag in ("nonnegative", "nonnegative_sql") else 1
+                if tag in ("sequence", "nonnegative_sql"):
                     base["maximum"] = _SQL_MAX
             elif tag == "nonempty":
                 base["minLength"] = 1
             elif tag == "name":
                 base["pattern"] = r"^(?!\.{1,2}$)(?![A-Za-z]:)[^/\\\u0000]+$"
             elif tag == "relpath":
-                base["items"] = _schema_type(Name)
+                base["items"] = _schema_type(Name, schema_classes=schema_classes)
         return base
     if origin is Literal:
         literal_type = (
@@ -1811,9 +2130,9 @@ def _schema_type(annotation: object) -> dict[str, object]:
         )
         return {"type": literal_type, "enum": list(args)}
     if origin in (Union, types.UnionType):
-        return {"anyOf": [_schema_type(item) for item in args]}
+        return {"anyOf": [_schema_type(item, schema_classes=schema_classes) for item in args]}
     if origin in (tuple, list):
-        return {"type": "array", "items": _schema_type(args[0])}
+        return {"type": "array", "items": _schema_type(args[0], schema_classes=schema_classes)}
     if origin is dict:
         return {"type": "object", "additionalProperties": {"$ref": "#/$defs/JsonValue"}}
     if annotation is Any:
@@ -1822,7 +2141,7 @@ def _schema_type(annotation: object) -> dict[str, object]:
         return {"type": "null"}
     if annotation in (str, int, bool):
         return {"type": {str: "string", int: "integer", bool: "boolean"}[annotation]}
-    if isinstance(annotation, type) and annotation.__name__ in _SCHEMA_CLASSES:
+    if isinstance(annotation, type) and annotation.__name__ in schema_classes:
         return {"$ref": f"#/$defs/{annotation.__name__}"}
     raise RestoreContractError(f"schema未登记类型：{annotation}")
 
@@ -2109,4 +2428,383 @@ def _schema_semantics(definitions: dict[str, object]) -> None:
             _schema_type(SqlValueV1),
             {"prefixItems": [{"const": "integer"}]},
         ]
+    }
+
+
+def _event_envelope_v2(event: RestoreEventV2) -> None:
+    _require(type(event.payload) is _PAYLOADS_V2[event.kind], "v2事件kind/typed payload不符")
+    expected_version = 2 if event.kind in ("release_intent", "released") else 1
+    _require(event.version == expected_version, "v2事件version与kind不符")
+    _require((event.sequence == 1) == (event.previous_sha256 is None), "首事件/previous不符")
+    if event.version == 1:
+        v1_ev = RestoreEventV1(
+            1,
+            event.registry_id,
+            event.sequence,
+            event.batch_id,
+            event.previous_sha256,
+            event.kind,
+            event.payload,
+        )
+        _event_envelope(v1_ev)
+
+
+def _response_v2(value: RestoreResponseV2) -> None:
+    if value.operation == "restore-release":
+        _require(value.version == 2, "restore-release响应必须为version=2")
+    if value.ok:
+        _require(value.error is None and value.result is not None, "成功必须有真实result且无error")
+        if value.operation == "restore-review":
+            _require(
+                type(value.result) in (RestoreReviewV1, RestoreReviewV2)
+                and value.result.review_complete,
+                "成功review必须完整",
+            )
+        elif value.operation == "restore-release":
+            _require(
+                type(value.result) is RestoreReleaseResultV2,
+                "release成功必须返回RestoreReleaseResultV2",
+            )
+        else:
+            _require(type(value.result) is RestoreActionResultV1, "管理动作必须有action结果")
+            if value.operation == "restore-apply":
+                _require(value.result.phase == "published_hold", "apply成功必须published_hold")
+            elif value.operation == "restore-abort":
+                _require(value.result.phase == "aborted", "abort成功必须aborted")
+    else:
+        _require(value.error is not None, "失败必须带类型化原因")
+        if value.operation == "restore-release":
+            _require(value.result is None, "restore-release失败不能附带result")
+        else:
+            _require(
+                value.result is None
+                or (
+                    value.operation == "restore-review"
+                    and type(value.result) in (RestoreReviewV1, RestoreReviewV2)
+                    and not value.result.review_complete
+                ),
+                "失败只能附真实partial review",
+            )
+
+
+def validate_event_chain_v2(
+    events: tuple[RestoreEventV1 | RestoreEventV2, ...],
+) -> None:
+    """验证 9 阶段 RestoreRegistry v1/v2 事件链（含 release_intent → released）。"""
+    _require(type(events) is tuple, "全链必须是不可变事件tuple")
+    previous_hash = None
+    registry_id = events[0].registry_id if events else None
+    batches: dict[str, dict[str, RestoreEventV1 | RestoreEventV2]] = {}
+    for sequence, event in enumerate(events, 1):
+        _require(
+            type(event) in (RestoreEventV1, RestoreEventV2),
+            "全链含非RestoreEventV1/V2",
+        )
+        _validate(event)
+        _require(
+            event.registry_id == registry_id
+            and event.sequence == sequence
+            and event.previous_sha256 == previous_hash,
+            "全局registry/sequence/previous链不符",
+        )
+        history = batches.setdefault(event.batch_id, {})
+        _require(event.kind not in history, "每kind每batch最多一条")
+        predecessor = next(reversed(history.values())) if history else None
+        expected = {
+            "reserved": (None,),
+            "stage_owned": ("reserved",),
+            "sealed_hold": ("stage_owned",),
+            "publish_intent": ("sealed_hold",),
+            "published_hold": ("publish_intent",),
+            "abort_intent": ("reserved", "stage_owned", "sealed_hold"),
+            "aborted": ("abort_intent",),
+            "release_intent": ("published_hold",),
+            "released": ("release_intent",),
+        }[event.kind]
+        _require((predecessor.kind if predecessor else None) in expected, "非法批次前驱")
+        if predecessor is not None:
+            if event.kind in ("release_intent", "released"):
+                _event_references_v2(event, predecessor, history)
+            else:
+                _event_references(event, predecessor, history)
+        history[event.kind] = event
+        previous_hash = domain_digest("event", event)
+
+
+def _event_references_v2(
+    event: RestoreEventV1 | RestoreEventV2,
+    predecessor: RestoreEventV1 | RestoreEventV2,
+    history: dict[str, RestoreEventV1 | RestoreEventV2],
+) -> None:
+    payload, prior = event.payload, predecessor.payload
+    prior_hash = domain_digest("event", predecessor)
+    if isinstance(payload, ReleaseIntentV1):
+        assert isinstance(prior, PublishedHoldV1)
+        owned_payload = history["stage_owned"].payload
+        assert isinstance(owned_payload, StageOwnedV1)
+        _require(
+            payload.published_hold_sha256 == prior_hash
+            and payload.binding_sha256 == prior.binding_sha256
+            and payload.final_root == prior.final_root
+            and payload.final_database == prior.final_database
+            and payload.stable_parent == owned_payload.parent
+            and payload.origin_sha256 == prior.origin_sha256
+            and payload.acknowledge_unproven_later_history is True,
+            "release_intent偏离同批published_hold/S/D/P/origin",
+        )
+    elif isinstance(payload, ReleasedV1):
+        assert isinstance(prior, ReleaseIntentV1)
+        _require(
+            payload.release_intent_sha256 == prior_hash
+            and payload.binding_sha256 == prior.binding_sha256
+            and payload.review_sha256 == prior.review_sha256
+            and payload.reconcile_plan_sha256 == prior.reconcile_plan_sha256
+            and payload.final_root == prior.final_root
+            and payload.final_database == prior.final_database
+            and payload.origin_sha256 == prior.origin_sha256
+            and payload.post_release_db_user_version == prior.pre_release_db_user_version
+            and payload.post_release_event_seq_head >= prior.pre_release_event_seq_head,
+            "released偏离同批release_intent或主库版本/序号倒退",
+        )
+
+
+_SCHEMA_CLASSES_V2 = {
+    **CONTRACT_TYPES_V2,
+    **{cls.__name__: cls for cls in (BackupVerification, BackupManifest, BackupFile)},
+}
+_V2_NEW_TYPES = (
+    ReconcileIntentDispositionV1,
+    ReconcilePlanV1,
+    ReconciledCountsV1,
+    ReleaseIntentV1,
+    ReleasedV1,
+    RestorePayloadV2,
+    RestoreEventV2,
+    RestoreReviewV2,
+    RestoreReleaseResultV2,
+    RestoreResponseV2,
+)
+
+
+def contract_schema_v2() -> dict[str, object]:
+    """生成 schemas/data/restore-v2.json 的完整精确定义以供双向绑定对账。"""
+    base = contract_schema()
+    base_defs: dict[str, Any] = dict(base["$defs"])
+    wire_v1 = base_defs.pop("RestoreWireV1")
+
+    definitions: dict[str, object] = {
+        "PhaseV1": {"type": "string", "enum": list(get_args(Phase))},
+        "Phase": {"type": "string", "enum": list(get_args(PhaseV2))},
+        "DigestDomainV2": {
+            "type": "string",
+            "enum": [
+                "meta",
+                "event",
+                "plan",
+                "inventory",
+                "sql-row",
+                "sql-relation",
+                "sql-schema",
+                "scope",
+                "binding",
+                "cleanup",
+                "token",
+                "origin",
+                "lock",
+                "review",
+                "reconcile",
+            ],
+        },
+    }
+    for k, v in base_defs.items():
+        if k == "Phase":
+            continue
+        definitions[k] = v
+
+    definitions["RestoreEventV1"]["properties"]["kind"] = {"$ref": "#/$defs/PhaseV1"}
+
+    for cls in _V2_NEW_TYPES:
+        name = cls.__name__
+        if cls in _SUM_TYPES:
+            definitions[name] = {
+                "oneOf": [
+                    _schema_type(item, schema_classes=_SCHEMA_CLASSES_V2)
+                    for item in _SUM_TYPES[cls]
+                ]
+            }
+        else:
+            properties = {
+                f.name: _schema_type(_hints(cls)[f.name], schema_classes=_SCHEMA_CLASSES_V2)
+                for f in dataclasses.fields(cls)
+            }
+            entry: dict[str, object] = {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            }
+            if cls is ReleasedV1:
+                entry["allOf"] = [
+                    {
+                        "if": {"properties": {"post_release_db_user_version": {"const": 1}}},
+                        "then": {"properties": {"migration_required": {"const": True}}},
+                        "else": {"properties": {"migration_required": {"const": False}}},
+                    }
+                ]
+            elif cls is RestoreEventV2:
+                all_of: list[dict[str, object]] = []
+                for kind, pcls in _PAYLOADS_V2.items():
+                    if kind in ("release_intent", "released"):
+                        then_props: dict[str, object] = {
+                            "version": {"const": 2},
+                            "payload": _schema_type(pcls, schema_classes=_SCHEMA_CLASSES_V2),
+                        }
+                    else:
+                        then_props = {
+                            "payload": _schema_type(pcls, schema_classes=_SCHEMA_CLASSES_V2),
+                            "version": {"const": 1},
+                        }
+                    all_of.append(
+                        {
+                            "if": {"properties": {"kind": {"const": kind}}},
+                            "then": {"properties": then_props},
+                        }
+                    )
+                entry["allOf"] = all_of
+            elif cls is RestoreReviewV2:
+                entry["properties"]["body_scopes"]["items"]["pattern"] = "^v1:[A-Za-z0-9_-]+$"
+                entry["allOf"] = [
+                    {
+                        "if": {"properties": {"review_complete": {"const": True}}},
+                        "then": {
+                            "properties": {
+                                "unverifiable": {"maxItems": 0},
+                                "checks": {"items": {"properties": {"passed": {"const": True}}}},
+                            }
+                        },
+                    }
+                ]
+            elif cls is RestoreReleaseResultV2:
+                definitions["PostReleaseAdmissionStatusV2"] = {
+                    "type": "string",
+                    "enum": list(get_args(PostReleaseAdmissionStatusV2)),
+                }
+                entry["allOf"] = [
+                    {
+                        "if": {"properties": {"db_user_version": {"const": 0}}},
+                        "then": {
+                            "properties": {
+                                "migration_required": {"const": False},
+                                "post_release_admission": {"const": "admitted_v0"},
+                            }
+                        },
+                    },
+                    {
+                        "if": {"properties": {"db_user_version": {"const": 1}}},
+                        "then": {
+                            "properties": {
+                                "migration_required": {"const": True},
+                                "post_release_admission": {"const": "requires_explicit_migrate_v1"},
+                            }
+                        },
+                    },
+                    {
+                        "if": {"properties": {"db_user_version": {"const": 2}}},
+                        "then": {
+                            "properties": {
+                                "migration_required": {"const": False},
+                                "post_release_admission": {"const": "admitted_v2_released_proof"},
+                            }
+                        },
+                    },
+                ]
+            elif cls is RestoreResponseV2:
+                entry["allOf"] = [
+                    {
+                        "if": {"properties": {"ok": {"const": True}}},
+                        "then": {
+                            "properties": {
+                                "error": {"type": "null"},
+                                "result": {
+                                    "anyOf": [
+                                        {"$ref": "#/$defs/RestoreActionResultV1"},
+                                        {"$ref": "#/$defs/RestoreReviewV1"},
+                                        {"$ref": "#/$defs/RestoreReviewV2"},
+                                        {"$ref": "#/$defs/RestoreReleaseResultV2"},
+                                    ]
+                                },
+                            }
+                        },
+                        "else": {
+                            "properties": {
+                                "error": {"$ref": "#/$defs/RestoreFailureV1"},
+                                "result": {
+                                    "anyOf": [
+                                        {"type": "null"},
+                                        {
+                                            "allOf": [
+                                                {"$ref": "#/$defs/RestoreReviewV1"},
+                                                {
+                                                    "properties": {
+                                                        "review_complete": {"const": False}
+                                                    }
+                                                },
+                                            ]
+                                        },
+                                        {
+                                            "allOf": [
+                                                {"$ref": "#/$defs/RestoreReviewV2"},
+                                                {
+                                                    "properties": {
+                                                        "review_complete": {"const": False}
+                                                    }
+                                                },
+                                            ]
+                                        },
+                                    ]
+                                },
+                            }
+                        },
+                    },
+                    {
+                        "if": {"properties": {"operation": {"const": "restore-release"}}},
+                        "then": {
+                            "properties": {"version": {"const": 2}},
+                            "if": {"properties": {"ok": {"const": True}}},
+                            "then": {
+                                "properties": {"result": {"$ref": "#/$defs/RestoreReleaseResultV2"}}
+                            },
+                            "else": {"properties": {"result": {"type": "null"}}},
+                        },
+                    },
+                ]
+            definitions[name] = entry
+
+    definitions["RestoreWireV1"] = wire_v1
+    definitions["RestoreWireV2"] = {
+        "anyOf": [
+            *wire_v1["anyOf"],
+            *[
+                {"$ref": f"#/$defs/{cls.__name__}"}
+                for cls in _V2_NEW_TYPES
+                if cls not in _SUM_TYPES
+            ],
+        ]
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "tianshu:restore:v2",
+        "title": "Managed held restore and release v2",
+        "description": (
+            "Additive v2 superset of tianshu:restore:v1 for Restore C held release and service "
+            "resumption. Preserves all v1 canonical bytes, domain-separated tianshu.restore.v1 "
+            "digests, and write-once immutable .restore-origin.json (OriginV1). Adds "
+            "release_intent (ReleaseIntentV1) and released (ReleasedV1) registry phases, "
+            "deterministic ReconcilePlanV1, RestoreReviewV2.review_sha256, "
+            "RestoreReleaseResultV2, and Post-Release Database Admission status (v2 admitted "
+            "via (S, D)-bound ReleasedV1 proof without .migration.json; v1 still requires "
+            "explicit tianshu data migrate before normal EventLog open)."
+        ),
+        "$ref": "#/$defs/RestoreWireV2",
+        "$defs": definitions,
     }

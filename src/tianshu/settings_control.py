@@ -227,7 +227,10 @@ class ModelConfig:
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     from .fsutil import atomic_write_bytes
+    from .restore_access import ensure_path_not_held
 
+    ensure_path_not_held(path.parent)
+    ensure_path_not_held(path)
     encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode(
         "utf-8"
     )
@@ -248,6 +251,11 @@ class RuntimeModelSlot:
     ) -> None:
         self._fallback = fallback_model
         self._data_root = Path(data_root) if data_root is not None else None
+        if self._data_root is not None:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(self._data_root)
+            ensure_path_not_held(self._data_root / MODEL_CONFIG_FILE)
         self._lock = threading.Lock()
         self._stores: dict[str, CredentialStore] = (
             dict(stores)
@@ -325,13 +333,18 @@ class RuntimeModelSlot:
         )
 
     def configure(self, raw: Mapping[str, Any]) -> ModelConfig:
+        path = self._config_path()
+        if path is not None:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(path.parent)
+            ensure_path_not_held(path)
         cfg = ModelConfig.of(raw)
         if cfg.mode in KNOWN_PROVIDERS:
             store = self.store_for(cfg.credential_backend)
             if not store.capabilities.implemented:
                 # 提前在配置时拦截当前平台未实现的后端（直接调 get 触发诚实原因）
                 store.get(CredentialRef(cfg.mode, "llm"))
-        path = self._config_path()
         with self._lock:
             if path is not None:
                 _atomic_write_json(path, cfg.to_dict())

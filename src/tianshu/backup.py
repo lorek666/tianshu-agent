@@ -51,7 +51,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .crashpoint import failpoint
@@ -60,6 +60,9 @@ from .errors import TianshuError
 from .fsutil import atomic_write_bytes
 from .snapshot import SnapshotStore
 from .undo_journal import UndoJournal
+
+if TYPE_CHECKING:
+    from .restore_contract import EntityIdentityV1
 
 MANIFEST_NAME = "backup.json"
 FORMAT_NAME = "tianshu-backup"
@@ -70,7 +73,13 @@ _PARTIAL_TAG = ".partial-"
 
 #: 备份排除的数据根顶层条目（相对 data_root）。
 EXCLUDED_TOP_LEVEL = {"run", "logs"}
-EXCLUDED_FILE_PREFIXES = ("events.db-wal", "events.db-shm", "metrics.jsonl")
+EXCLUDED_FILE_PREFIXES = (
+    "events.db-wal",
+    "events.db-shm",
+    "metrics.jsonl",
+    ".restore-token.json",
+    ".restore-origin.json",
+)
 
 #: 保留期声明（§8.5）。**声明不是自动 GC**：清理必须人工触发，且被引用的
 #: 材料（快照 manifest / 事件 payload_ref / 未完成撤销 journal）永远不可清理。
@@ -943,14 +952,29 @@ def _projection_references(
         if has_contents != has_grants:
             problems.append("内容投影不完整：content_objects 与 content_grants 必须同时存在")
         if has_contents:
+            root_dir = db_path.parent
             for digest, size in conn.execute(
                 "SELECT digest, size FROM content_objects ORDER BY digest"
             ):
                 if not _is_digest(digest) or not isinstance(size, int) or size < 0:
                     problems.append(f"content_objects 引用非法：digest={digest!r}, size={size!r}")
                     continue
-                contents.append({"path": f"artifacts/blobs/{digest}",
-                                 "sha256": digest, "size": size, "content_digest": digest})
+                matched_content_rels = [
+                    f"{prefix}/{digest}"
+                    for prefix in ("artifacts/blobs", "blobs")
+                    if (root_dir / prefix / digest).exists()
+                    or (root_dir / prefix / digest).is_symlink()
+                    or (root_dir / prefix / digest).is_junction()
+                ]
+                for content_rel in matched_content_rels or [f"artifacts/blobs/{digest}"]:
+                    contents.append(
+                        {
+                            "path": content_rel,
+                            "sha256": digest,
+                            "size": size,
+                            "content_digest": digest,
+                        }
+                    )
         if has_contents and has_grants:
             for (digest,) in conn.execute(
                 "SELECT DISTINCT g.digest FROM content_grants AS g "
@@ -977,6 +1001,119 @@ def _projection_references(
     return contents, memories, problems
 
 
+def _exec_stream_references(
+    data_root: Path,
+    *,
+    source_root: Path,
+    saved: bool = False,
+    source_aliases: Sequence[str] = (),
+    discover_aliases: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """run_command 截断流（stdout_ref / stderr_ref）引用的完整原文 blob。"""
+    refs: list[dict[str, Any]] = []
+    problems: list[str] = []
+    db = _checked_file(data_root, "events.db")
+    conn = _connect_saved_readonly(db) if saved else _connect_readonly(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT seq, run_id, type, payload AS payload_inline, payload_ref, payload_hash"
+            " FROM events WHERE type IN ('tool.result', 'receipt') ORDER BY seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    seen: set[tuple[int, str, str, str]] = set()
+    for row in rows:
+        seq = int(row["seq"])
+        try:
+            aliases = source_aliases if discover_aliases is None else discover_aliases
+            payload = read_saved_event_payload(
+                data_root, row, source_root=source_root, source_aliases=aliases,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("事件 payload 必须是对象")
+            containers: list[dict[str, Any]] = [payload]
+            output = payload.get("output")
+            if isinstance(output, dict):
+                containers.append(output)
+            for stream_key in ("stdout_ref", "stderr_ref"):
+                for container in containers:
+                    raw_ref = container.get(stream_key)
+                    if raw_ref is None:
+                        continue
+                    if not isinstance(raw_ref, str) or not raw_ref:
+                        raise ValueError(f"{stream_key} 必须是非空字符串或 null：{raw_ref!r}")
+                    if _is_digest(raw_ref):
+                        matched_rels: list[str] = []
+                        for prefix in ("artifacts/blobs", "blobs"):
+                            cand_rel = f"{prefix}/{raw_ref}"
+                            cand_path = data_root / cand_rel
+                            if (
+                                cand_path.exists()
+                                or cand_path.is_symlink()
+                                or cand_path.is_junction()
+                            ):
+                                _checked_file(data_root, cand_rel)
+                                matched_rels.append(cand_rel)
+                        if not matched_rels:
+                            # 缺失时同时登记预期引用并记入 problems，保证 GC 与备份校验均闭锁拒绝。
+                            key = (seq, stream_key, f"artifacts/blobs/{raw_ref}", raw_ref)
+                            if key not in seen:
+                                seen.add(key)
+                                refs.append(
+                                    {
+                                        "seq": seq,
+                                        "stream": stream_key,
+                                        "path": f"artifacts/blobs/{raw_ref}",
+                                        "sha256": raw_ref,
+                                    }
+                                )
+                            problems.append(
+                                f"事件 seq={seq} 的 {stream_key} 引用文件缺失：{raw_ref}"
+                            )
+                        else:
+                            for cand_rel in matched_rels:
+                                key = (seq, stream_key, cand_rel, raw_ref)
+                                if key not in seen:
+                                    seen.add(key)
+                                    refs.append(
+                                        {
+                                            "seq": seq,
+                                            "stream": stream_key,
+                                            "path": cand_rel,
+                                            "sha256": raw_ref,
+                                        }
+                                    )
+                    else:
+                        rel = (
+                            _reference_rel_live(
+                                raw_ref, source_root, source_aliases=discover_aliases
+                            )
+                            if discover_aliases is not None
+                            else _reference_rel(
+                                raw_ref, source_root, source_aliases=source_aliases
+                            )
+                        )
+                        digest = PurePosixPath(rel).name
+                        if not _is_digest(digest):
+                            raise ValueError(f"{stream_key} 引用文件名不是 sha256：{raw_ref!r}")
+                        key = (seq, stream_key, rel, digest)
+                        if key not in seen:
+                            seen.add(key)
+                            refs.append(
+                                {
+                                    "seq": seq,
+                                    "stream": stream_key,
+                                    "path": rel,
+                                    "sha256": digest,
+                                }
+                            )
+        except (BackupError, TianshuError, OSError, ValueError, KeyError, TypeError,
+                UnicodeError) as exc:
+            problems.append(f"事件 seq={seq} 的流输出引用无法核验：{exc}")
+    return refs, problems
+
+
 def _material_references(
     data_root: Path, *, source_root: Path,
     source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
@@ -984,6 +1121,10 @@ def _material_references(
     db = _checked_file(data_root, "events.db")
     payload, payload_problems = _db_references(
         db, source_root, saved=True, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
+    exec_streams, exec_problems = _exec_stream_references(
+        data_root, source_root=source_root, saved=True, source_aliases=source_aliases,
         discover_aliases=discover_aliases,
     )
     receipts, receipt_problems = _receipt_references(
@@ -998,13 +1139,14 @@ def _material_references(
     contents, memories, projection_problems = _projection_references(db, saved=True)
     return {
         "event_payload_refs": payload,
+        "exec_stream_blobs": exec_streams,
         "receipt_blobs": receipts,
         "snapshot_blobs": snapshots,
         "undo_journal_blobs": undo,
         "content_blobs": contents,
         "memory_blobs": memories,
-    }, (payload_problems + receipt_problems + snapshot_problems + undo_problems
-        + projection_problems)
+    }, (payload_problems + exec_problems + receipt_problems + snapshot_problems
+        + undo_problems + projection_problems)
 
 
 def inspect_writers(data_root: Path) -> dict[str, Any]:
@@ -1047,6 +1189,10 @@ def inspect_writers(data_root: Path) -> dict[str, Any]:
 
 def create_backup(data_root: Path, dest: Path) -> BackupManifest:
     """在同一一致点导出整个数据根；原子发布到 `dest`，永不覆盖已有备份。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
+    ensure_path_not_held(dest)
     data_root = Path(data_root).resolve()
     dest = Path(dest).resolve()
     if not data_root.is_dir():
@@ -1148,6 +1294,8 @@ def create_backup(data_root: Path, dest: Path) -> BackupManifest:
 def _ref_owner(ref: dict[str, Any]) -> str:
     if "receipt_id" in ref:
         return f"Receipt {ref['receipt_id']}（事件 seq={ref['seq']}）"
+    if "stream" in ref:
+        return f"事件 seq={ref['seq']} 的 {ref['stream']}"
     if "manifest" in ref:
         return f"快照清单 {ref['manifest']}"
     if "journal" in ref:
@@ -1319,8 +1467,15 @@ def _check_reference_groups(
     dest: Path, manifest: BackupManifest, references: dict[str, Any], problems: list[str],
 ) -> None:
     declared = {f.path for f in manifest.files}
-    for key in ("event_payload_refs", "receipt_blobs", "snapshot_blobs", "undo_journal_blobs",
-                "content_blobs", "memory_blobs"):
+    for key in (
+        "event_payload_refs",
+        "exec_stream_blobs",
+        "receipt_blobs",
+        "snapshot_blobs",
+        "undo_journal_blobs",
+        "content_blobs",
+        "memory_blobs",
+    ):
         refs = references.get(key, [])
         if not isinstance(refs, list):
             problems.append(f"references.{key} 必须是列表")
@@ -1543,13 +1698,19 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
-    """把校验通过的备份恢复到**干净根**；失败时原目标保持原样。"""
-    dest = Path(dest).resolve()
-    data_root = Path(data_root).resolve()
-    verification = verify_backup(dest)
+    """受管备份导入入口：严格通过 Restore B 受管协议（plan -> apply -> published_hold）落地。
+
+    不再存在绕过 RestoreRegistry 与双锚点见证的直接 copy/rename 旁路；恢复完成后目标根处于
+    `published_hold` 持久隔离态，须经只读复核与显式解除后才允许进入普通业务栈。
+    """
+    raw_dest = Path(dest)
+    raw_target = Path(data_root)
+    resolved_dest = raw_dest.resolve()
+    resolved_target = raw_target.resolve()
+    verification = verify_backup(resolved_dest)
     manifest = verification.require_ok()
 
-    # 结构版本兼容性：备份来自更新版本 → 拒绝（不按猜的语义恢复）。
+    from . import restore_manager
     from .migrate import SCHEMA_VERSION  # 延迟导入，避免 backup ↔ migrate 循环
 
     if manifest.db_user_version > SCHEMA_VERSION:
@@ -1564,51 +1725,36 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
             ],
         )
 
-    if not _target_is_clean(data_root):
+    if not _target_is_clean(resolved_target):
         raise BackupRefused(
-            f"恢复目标不是干净根：{data_root}。只允许恢复到不存在或空目录，"
+            f"恢复目标不是干净根：{resolved_target}。只允许恢复到不存在或空目录，"
             "避免覆盖现有数据；请先人工移走原数据再恢复。"
         )
     source_path = Path(manifest.source_path).resolve()
-    if data_root != source_path:
+    if resolved_target != source_path:
         raise RestoreRefused(
-            f"恢复目标与备份记录的原数据根不一致：目标 {data_root}，"
-            f"备份来自 {source_path}。事件 payload_ref 与快照 blob_ref 都是绝对"
-            "路径，换路径恢复会让引用指向旧位置（读旧数据或读不到）。"
-            "请恢复到原路径；若必须换路径，先恢复到原路径，等支持重定位的版本"
-            "落地后再搬迁（本轮未实现）。"
+            f"恢复目标与备份记录的原数据根不一致：目标 {resolved_target}，"
+            f"备份来自 {source_path}。只能恢复到原数据根（原路径）。"
         )
 
-    parent = data_root.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp = parent / f".{data_root.name}.restore-{uuid.uuid4().hex[:8]}"
-    tmp.mkdir()
-    restored: list[BackupFile] = []
-    total = 0
     try:
-        for entry in manifest.files:
-            rel = _validate_rel(entry.path)
-            src = dest / rel
-            dst = tmp / rel
-            sha, size = _copy_file_verified(src, dst)
-            if sha != entry.sha256 or size != entry.size:
-                raise RestoreFailed(
-                    f"恢复时 {rel} 与清单不符（清单 {entry.sha256[:12]}…/{entry.size}，"
-                    f"实际 {sha[:12]}…/{size}）：中止，原目标未改动"
-                )
-            restored.append(entry)
-            total += size
-        _fsync_tree(tmp)
-        _fsync_dir(tmp)
-        if data_root.exists():
-            data_root.rmdir()  # 已确认是空目录
-        os.replace(tmp, data_root)
-        _fsync_dir(parent)
-    except BaseException:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
+        planned = restore_manager.plan(raw_dest, raw_target)
+        applied = restore_manager.apply(
+            raw_dest,
+            raw_target,
+            expect_plan_sha256=planned.plan_sha256,
+        )
+    except restore_manager.RestoreOperationError as exc:
+        if isinstance(exc.raw_cause, OSError):
+            raise exc.raw_cause from exc
+        if exc.failure.category == "incompatible":
+            raise RestoreRefused(exc.failure.message) from exc
+        raise RestoreFailed(exc.failure.message) from exc
 
-    warnings: list[str] = []
+    warnings: list[str] = [
+        f"备份已导入受管持久隔离态（batch={applied.batch_id}, phase={applied.phase}）；"
+        "请先执行 tianshu data restore-review 只读复核。"
+    ]
     if manifest.db_user_version < SCHEMA_VERSION:
         warnings.append(
             f"备份结构版本 {manifest.db_user_version} 小于当前 {SCHEMA_VERSION}："
@@ -1616,7 +1762,7 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
         )
     if manifest.references.get("missing"):
         warnings.append("备份时已有缺失引用（见 backup.json references.missing）")
-    reconciliation = _reconcile(data_root)
+    reconciliation = planned.legacy_reconciliation.to_legacy_dict()
     if reconciliation["pending_intents"]:
         warnings.append(
             "恢复后仍有未决 intent（有 intent 无 result）：恢复证据在后，需人工核对"
@@ -1628,10 +1774,10 @@ def restore_backup(dest: Path, data_root: Path) -> RestoreReport:
         )
     return RestoreReport(
         ok=True,
-        data_root=data_root,
+        data_root=resolved_target,
         manifest=manifest,
-        files_restored=len(restored),
-        bytes_restored=total,
+        files_restored=applied.files_restored,
+        bytes_restored=applied.bytes_restored,
         reconciliation=reconciliation,
         warnings=warnings,
     )
@@ -1647,6 +1793,11 @@ class ReferenceIndex:
     undo_journals: dict[str, str] = field(default_factory=dict)  # rel → status
     orphan_blobs: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
+    _protected_blob_entities: set[EntityIdentityV1] = field(default_factory=set, repr=False)
+
+    def protects_file(self, rel: str, identity: EntityIdentityV1) -> bool:
+        """Protect the recorded path and any spelling of the verified file."""
+        return rel in self.protected_blobs or identity in self._protected_blob_entities
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1660,62 +1811,139 @@ class ReferenceIndex:
         }
 
 
-def collect_references(data_root: Path) -> ReferenceIndex:
+def _has_sqlite_companions(db: Path) -> bool:
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            db.with_name(db.name + suffix).lstat()
+        except FileNotFoundError:
+            continue
+        return True
+    return False
+
+
+def _check_material_layout(data_root: Path, unknown: list[str]) -> None:
+    """检查材料目录链不含符号链接/junction/非目录对象，子项不含符号链接。"""
+    from .platform_identity import NativeEntityError, open_entity
+
+    for rel_dir in (
+        "artifacts",
+        "artifacts/blobs",
+        "artifacts/snapshots",
+        "artifacts/undo",
+        "blobs",
+        "memory_blobs",
+    ):
+        cursor = data_root
+        bad = False
+        for part in rel_dir.split("/"):
+            cursor = cursor / part
+            if cursor.is_symlink() or cursor.is_junction():
+                unknown.append(f"不允许符号链接或 junction 材料目录：{rel_dir}")
+                bad = True
+                break
+        if bad or not cursor.exists():
+            continue
+        try:
+            handle = open_entity(cursor, "directory")
+            handle.close()
+        except NativeEntityError as exc:
+            unknown.append(f"材料目录无法通过实体核验：{rel_dir}（{exc}）")
+            continue
+        if rel_dir in ("artifacts/snapshots", "artifacts/undo"):
+            for entry in sorted(cursor.iterdir()):
+                rel = _rel_posix(entry, data_root)
+                if entry.is_symlink() or entry.is_junction():
+                    unknown.append(f"不允许符号链接材料：{rel}")
+                    continue
+                try:
+                    fh = open_entity(entry, "file")
+                    try:
+                        if fh.link_count != 1:
+                            unknown.append(
+                                f"审计材料硬链接数不为 1：{rel}（link_count={fh.link_count}）"
+                            )
+                    finally:
+                        fh.close()
+                except NativeEntityError as exc:
+                    unknown.append(f"审计材料不是普通单链接文件：{rel}（{exc}）")
+
+
+def collect_references(data_root: Path, *, require_static_db: bool = False) -> ReferenceIndex:
     """算出"哪些 blob 被引用、哪些是孤儿、哪些判定不了"。
 
-    判定不了（清单/日志/事件库读不出来，或登记的内容/未擦除记忆正文无法通过
-    哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
-    留一份多余 blob 严重得多；本函数不执行删除。
+    判定不了（清单/日志/事件库读不出来，目录含符号链接/非普通文件，或已登记材料
+    无法通过哈希与大小核验）必须抛 `ReferenceUnknown`：不给出清理结论。误删证据比
+    留一份多余 blob 严重得多；本函数不执行删除。`require_static_db` 不允许读取可能
+    写入共享内存索引的活库；调用者还须保证主库稳定或在返回结果前复核。
     """
+    from .platform_identity import NativeEntityError, open_entity
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     data_root = Path(data_root).resolve()
     db = data_root / "events.db"
     if not db.is_file():
         raise ReferenceUnknown(f"数据根里没有事件库，无法判定引用：{data_root}")
     index = ReferenceIndex()
+    _check_material_layout(data_root, index.unknown)
+    if index.unknown:
+        raise ReferenceUnknown("；".join(index.unknown))
     try:
         db = _checked_file(data_root, "events.db")
+        quiescent = not _has_sqlite_companions(db)
+        if require_static_db and not quiescent:
+            raise ReferenceUnknown("只读引用核验期间出现 SQLite 旁文件")
         source_aliases: list[str] = []
         payload_refs, payload_problems = _db_references(
-            db, data_root, discover_aliases=source_aliases
+            db, data_root, saved=quiescent, discover_aliases=source_aliases
+        )
+        exec_refs, exec_problems = _exec_stream_references(
+            data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
         )
         receipt_refs, receipt_problems = _receipt_references(
-            data_root, source_root=data_root, discover_aliases=source_aliases,
+            data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
         )
         snapshot_refs, snapshot_problems = _snapshot_references(
             data_root, source_root=data_root, discover_aliases=source_aliases
         )
         undo_refs, undo_problems = _undo_references(data_root)
-        content_refs, memory_refs, projection_problems = _projection_references(db)
+        content_refs, memory_refs, projection_problems = _projection_references(
+            db, saved=quiescent
+        )
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
-    for problem in (payload_problems + receipt_problems + snapshot_problems + undo_problems
-                    + projection_problems):
+    for problem in (payload_problems + exec_problems + receipt_problems + snapshot_problems
+                    + undo_problems + projection_problems):
         index.unknown.append(problem)
-    for ref in payload_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"事件 seq={ref['seq']}"
-        )
     for ref in snapshot_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"快照清单 {ref['manifest']}"
-        )
         if ref["manifest"] not in index.snapshot_manifests:
             index.snapshot_manifests.append(ref["manifest"])
-    for ref in undo_refs:
-        index.protected_blobs.setdefault(ref["path"], []).append(
-            f"撤销日志 {ref['journal']}"
-        )
-    for ref in receipt_refs + content_refs + memory_refs:
+    all_refs = (
+        payload_refs + exec_refs + snapshot_refs + undo_refs
+        + receipt_refs + content_refs + memory_refs
+    )
+    for ref in all_refs:
         rel = ref["path"]
         index.protected_blobs.setdefault(rel, []).append(_ref_owner(ref))
         try:
-            with _checked_file(data_root, rel).open("rb") as fh:
-                digest, size = _sha256_stream(fh)
-            if digest != ref["sha256"]:
-                raise ValueError("内容哈希不符")
-            if "size" in ref and size != ref["size"]:
-                raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
-        except (OSError, ValueError) as exc:
+            checked = _checked_file(data_root, rel)
+            handle = open_entity(checked, "file")
+            try:
+                if handle.link_count != 1:
+                    raise ValueError(
+                        f"引用材料硬链接数不为 1（link_count={handle.link_count}）"
+                    )
+                with checked.open("rb") as fh:
+                    digest, size = _sha256_stream(fh)
+                handle.verify_path(checked)
+                if digest != ref["sha256"]:
+                    raise ValueError("内容哈希不符")
+                if "size" in ref and size != ref["size"]:
+                    raise ValueError(f"大小不符：登记 {ref['size']}，实际 {size}")
+                index._protected_blob_entities.add(handle.identity)
+            finally:
+                handle.close()
+        except (OSError, ValueError, NativeEntityError) as exc:
             index.unknown.append(f"引用材料无法核验：{rel}（{exc}）")
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
@@ -1724,19 +1952,34 @@ def collect_references(data_root: Path) -> ReferenceIndex:
         for journal in sorted(journals.glob("*.json")):
             rel = _rel_posix(journal, data_root)
             try:
-                raw = json.loads(journal.read_bytes().decode("utf-8"))
+                raw = json.loads(_checked_file(data_root, rel).read_bytes().decode("utf-8"))
                 status = raw.get("status") if isinstance(raw, dict) else None
                 index.undo_journals[rel] = str(status)
             except (OSError, ValueError, UnicodeDecodeError) as exc:
                 index.unknown.append(f"撤销日志读不出来：{rel}（{exc}）")
-    blobs_dir = data_root / "artifacts" / "blobs"
-    if blobs_dir.is_dir():
+    for blob_rel_dir in ("artifacts/blobs", "blobs"):
+        blobs_dir = data_root / blob_rel_dir
+        if not blobs_dir.is_dir():
+            continue
         for blob in sorted(blobs_dir.iterdir()):
-            if not blob.is_file():
-                continue
             rel = _rel_posix(blob, data_root)
-            if rel not in index.protected_blobs:
-                index.orphan_blobs.append(rel)
+            if blob.is_symlink() or blob.is_junction():
+                index.unknown.append(f"不允许符号链接 blob 材料：{rel}")
+                continue
+            try:
+                handle = open_entity(blob, "file")
+                try:
+                    if handle.link_count != 1:
+                        index.unknown.append(
+                            f"blob 硬链接数不为 1：{rel}（link_count={handle.link_count}）"
+                        )
+                        continue
+                    if not index.protects_file(rel, handle.identity):
+                        index.orphan_blobs.append(rel)
+                finally:
+                    handle.close()
+            except NativeEntityError as exc:
+                index.unknown.append(f"blob 材料不是普通单链接文件：{rel}（{exc}）")
     if index.unknown:
         raise ReferenceUnknown("；".join(index.unknown))
     return index
@@ -1760,6 +2003,9 @@ class UsageReport:
 
 def usage_report(data_root: Path) -> UsageReport:
     """按保留期声明的类别统计磁盘占用，并对照声明额度。不清理任何东西。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     data_root = Path(data_root).resolve()
     sizes = {
         "event_log": 0,
@@ -1821,16 +2067,21 @@ def usage_report(data_root: Path) -> UsageReport:
 def cleanup_plan(data_root: Path) -> dict[str, Any]:
     """给出"可人工清理"的候选清单——不删除任何东西，也不自动 GC。
 
-    候选范围仅 artifacts/blobs；只有未被清单/事件/撤销/内容对象/未擦除记忆
-    引用的 blob 才是候选。引用或投影材料无法核验时 `collect_references` 抛
-    `ReferenceUnknown`，本函数跟着拒绝，不扩大为自动 GC。
+    候选范围仅 artifacts/blobs 与根 blobs；只有未被清单/事件/凭据/撤销/内容对象/
+    未擦除记忆引用的普通单链接 blob 才是候选。引用或投影材料无法核验时
+    `collect_references` 抛 `ReferenceUnknown`，本函数跟着拒绝。
     """
     index = collect_references(data_root)
     return {
         "data_root": str(Path(data_root).resolve()),
         "dry_run": True,
         "candidates": [
-            {"path": rel, "category": "artifact_blob"}
+            {
+                "path": rel,
+                "category": (
+                    "artifact_blob" if rel.startswith("artifacts/blobs/") else "blob"
+                ),
+            }
             for rel in index.orphan_blobs
         ],
         "protected_count": len(index.protected_blobs),
@@ -1840,7 +2091,7 @@ def cleanup_plan(data_root: Path) -> dict[str, Any]:
         ],
         "retention": RETENTION_POLICY,
         "notes": [
-            "本函数只出候选清单，不删除任何文件；自动 GC 不在本轮范围。",
+            "本函数只出候选清单，不删除任何文件；离线受控清理请用 tianshu data gc。",
             "清单/事件/撤销/内容对象/未擦除记忆引用的材料永远不进候选。",
         ],
     }

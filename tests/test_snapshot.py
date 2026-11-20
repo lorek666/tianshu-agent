@@ -41,7 +41,7 @@ def run_with(tmp_path, ws_dir, store, responses):
     """
     from support import approve_pending, engine_for, stack_for
 
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     model = ScriptedModel(responses)
     limits = Limits(8, 20_000)
     result = run(
