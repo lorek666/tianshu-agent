@@ -153,7 +153,7 @@ def test_smoke_test_adapter_preserves_launch_after_guard(tmp_path, monkeypatch, 
     cwd = isolation.app_dir
     if runtime:
         command = [
-            sys.executable, "-P", "-m", "tianshu.release_smoke",
+            isolation.runtime_python, "-P", "-m", "tianshu.release_smoke",
             "--ui-dir", str(isolation.ui_dir), "--expected-version", "0.1.0",
             "--expected-commit", COMMIT, "--expected-target", HOST_TARGET,
             "--expected-python", PACKAGED_PYTHON,

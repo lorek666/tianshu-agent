@@ -117,7 +117,7 @@ class SmokeTestIsolation:
     def popen_runtime(self, command, **kwargs):
         command = list(command)
         original = [
-            sys.executable, "-P", "-m", "tianshu.release_smoke",
+            self.runtime_python, "-P", "-m", "tianshu.release_smoke",
             "--ui-dir", str(self.ui_dir),
             "--expected-version", self.release["version"],
             "--expected-commit", self.release["commit"],

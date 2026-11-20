@@ -757,10 +757,13 @@ def _runtime_fixture(
             "targets": {NATIVE_TARGET: {}},
         },
     )
+    # uv Windows venv executables can be launcher processes. Keep the outer
+    # test process PID bound to the same real interpreter as the inner smoke.
+    runtime_python = release_smoke._runtime_python_executable()
     monkeypatch.setattr(
         verify,
         "_bundle_python",
-        lambda _bundle, _target: Path(sys.executable),
+        lambda _bundle, _target: Path(runtime_python),
     )
     # This source-copy fixture is not a native bundle acceptance probe. Guard
     # both verifier -> smoke and smoke -> real CLI launches with private roots.
@@ -768,11 +771,49 @@ def _runtime_fixture(
         tmp_path / "smoke-isolation", app_dir=bundle / "app", ui_dir=bundle / "ui" / "dist",
         release=json.loads((bundle / "release.json").read_text(encoding="utf-8")),
         python_version=platform.python_version(),
-        runtime_python=release_smoke._runtime_python_executable(),
+        runtime_python=runtime_python,
     )
     isolation.bind(monkeypatch)
     monkeypatch.setattr(verify, "subprocess", isolation.proxy(runtime=True))
     return bundle, daemon_pid_file, isolation
+
+
+@pytest.mark.parametrize("launcher_drift", [False, True])
+def test_smoke_test_runtime_fixture_selects_base_not_venv_launcher(
+    tmp_path, monkeypatch, launcher_drift,
+):
+    runtime_python = release_smoke._runtime_python_executable()
+    launcher = tmp_path / "venv-launcher"
+    launcher.write_bytes(b"")
+    monkeypatch.setattr(sys, "executable", str(launcher))
+    monkeypatch.setattr(sys, "_base_executable", runtime_python)
+    # This no-CLI probe is platform-independent; target metadata is not run.
+    monkeypatch.setitem(globals(), "NATIVE_TARGET", TARGET)
+    verify = _load(VERIFY_SCRIPT, "verify_release_runtime_launcher_guard")
+    bundle, _, isolation = _runtime_fixture(tmp_path, monkeypatch, verify)
+    assert verify._bundle_python(bundle, TARGET) == Path(runtime_python)
+    assert isolation.runtime_python == runtime_python
+    calls = []
+
+    def record(command, **kwargs):
+        calls.append((command, kwargs))
+        raise RuntimeError("test stopped before any real process")
+
+    isolation.native_popen = record
+    if launcher_drift:
+        monkeypatch.setattr(verify, "_bundle_python", lambda *_args: launcher)
+    expected = "original verifier argv mismatch" if launcher_drift else "test stopped before"
+    with pytest.raises(RuntimeError, match=expected):
+        verify._runtime_smoke(bundle, TARGET)
+    if launcher_drift:
+        assert calls == []
+    else:
+        assert len(calls) == 1
+        command, options = calls[0]
+        assert command[:3] == [runtime_python, "-P", "-m"]
+        assert command[0] != str(launcher)
+        assert options["cwd"] == bundle
+    assert not (isolation.root / "runtime.json").exists()
 
 
 @pytest.mark.skipif(NATIVE_TARGET is None, reason=NATIVE_RUNTIME_REASON)
