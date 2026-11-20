@@ -170,21 +170,18 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 
 ## 8. 发布
 
-- 当前仍处内部研发阶段，版本号使用 `v0.x.y`；M0–M5 功能验收完成不等于面向普通用户的发布验收完成。
-- `.github/workflows/release.yml` 只接受与当前 `origin/main` 精确相同的手动 commit，或先解引用到 commit 的 `v0.x.y` annotated tag；随后要求该 SHA 最新一次 main push CI 的所有 job 为 `success` 才构建四个原生 target。四份 artifact 必须由 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target`，最后只创建 draft Release。工作流不是现有 required check，不自动公开 Release。
-- macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`；禁止另加下划线别名。`release-index.json` 必须绑定两份脚本的 SHA256 与大小。正式候选还须记录精确组合 SHA 的 CI、真实 workflow dispatch、四目标 artifact 下载/汇总；设备安装、升级/回退、Gatekeeper/SmartScreen 与物理断电各自另验。
-- CHANGELOG 在 `1.0` 之前手写即可
+- 当前仍处内部研发阶段；首发按 [PRD §11.1](docs/PRD-v1.md) 准备 `v0.x.y` **macOS Apple Silicon 限定预览**，仅分发 `macos-arm64`。未验收的 macOS 版本、Intel Mac、Windows 和 Linux 不列为首发支持；四目标正式发行另验。
+- **不变的工程门禁**：必须走受保护 PR，四项 required 检查全绿。发行只采用当前 `origin/main` 精确提交，且该 SHA 最新一次 main push CI 全部 job 成功。不能用本机验证、较老 CI 或跳过其他平台的 required job 替代。
+- **当前自动化与后续工作**：现有 `.github/workflows/release.yml` 使用手动 commit 或解引用的 `v0.x.y` annotated tag，仍然要求四个原生 target 的 artifact，经 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target` 后只创建 draft Release。它不是 required check。首发预览需要独立的 arm64 构建与汇总路径，沿用相同的提交/CI 绑定、原生 smoke 与产物校验，拒绝混入其他目标，不自动公开发行；本次政策修订没有实现该路径。不要把四目标 draft 原样当成预览发布。
+- macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`，不另加下划线别名；发行索引须绑定归档、两份脚本的 SHA256 与大小及版本、完整源码 SHA 和构建 run。保存 workflow 运行、制品下载与校验的证据。
 
-面向普通用户发布前，必须逐项补齐以下验收并记录证据；下列内容是发布条件，**不是现有能力**：
+**首发验收清单（待在最终候选上执行）：**
 
-- 按 [PRD §11.1 / §13 T1](docs/PRD-v1.md) 的既定分发策略提供安装产物：不支付 OS 签名成本，macOS 走安装脚本，Windows 容忍 SmartScreen。记录产物校验值、源码提交与版本，验证下载、校验、安装脚本和系统提示的实际体验，并提供如实的操作说明。
-- 建立可重现的发布构建流程，发布只采用已通过门禁的提交，产物与发布记录可追溯。
-- 在声明支持的系统与架构上验证首次安装、启动、核心操作、卸载，以及升级和失败回退；验证用户数据保留、备份与恢复。实测安装和更新后的权限提示，特别是 macOS 辅助功能与屏幕录制权限是否需要重新授予，并按结果提供检查与引导。
-- 提供支持平台清单、安装说明、变更记录和已知限制。未测的平台与桌面体验明确列为未验证，不以 CI runner 结果代替用户环境验收。
+1. 同一台 Apple Silicon 实机即可：干净的标准用户测试账户、隔离数据和工作区。按安装说明校验下载的归档，验证首次安装与启动、Keychain 凭据配置和核心任务；记录实测 macOS 版本、实际 Gatekeeper/系统权限提示及未支持能力。CI runner 的结果不替代本项。
+2. 验证手动升级、失败回退、卸载保留数据与备份恢复。首发没有旧正式包时，用上一受控测试构建和隔离历史数据验升级/回退。签名、公证和自动更新不作为首发条件；不要求未交付功能的辅助功能/录屏重授权实测。物理断电证据独立留待后续，进程中断与恢复验收仍必做。
+3. 在该 Mac 上完成候选 SLO、至少 10 小时浸泡和适用的用户任务验收；记录检查结果、支持范围、安装/升级/回退说明、变更和已知限制。未满足前不公开发行，不宣称跨平台就绪。CHANGELOG 在 `1.0` 之前可手写。
 
-内部研发可继续从源码运行，以上发布准备按实际发版计划推进；未满足前不宣称已有可供普通用户安装的发行版。
-
-签名或公证不作为当前发布的强制条件；未来若改变 T1，须先通过单独的契约 PR 更新决策与验收要求，不能由流程文档自行覆盖。
+本次不改变 T1；未来若改变签名策略，仍须先通过单独的契约 PR。
 
 ## 9. 远端
 

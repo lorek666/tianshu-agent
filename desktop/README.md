@@ -61,6 +61,8 @@ Host 入口以 argv 启动，使用 `python -P -m tianshu host run ...`。`-P` �
 
 ## R3 发行与安装
 
+首发范围按 [PRD §11.1](../docs/PRD-v1.md) 收敛为 `macos-arm64` 限定预览。单目标构建与汇总路径尚未实现；下述是现有四目标候选流程，不是首发支持清单。Windows 下载与安装命令只用于对应目标的后续验收。首发的 Mac 实机验收按 [CONTRIBUTING §8](../CONTRIBUTING.md#8-发布) 执行。
+
 `.github/workflows/release.yml` 只在手动触发或 `v*` tag 时生成 draft GitHub Release。
 它要求手动输入或 annotated tag 解引用后的完整 commit 与 fetch 后的当前 `origin/main`
 精确相同，并要求这个精确 SHA 最新一次 main push CI 的全部 job 为 `success`；随后在
