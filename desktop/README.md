@@ -97,6 +97,26 @@ jq -r '.assets[] | "\(.sha256)  \(.name)"' release-index.json | shasum -a 256 -c
 shasum -a 256 -c Tianshu-Agent-0.1.0-macos-arm64.sha256
 ```
 
+### macOS 资源封套与发布者身份不是同一项
+
+`package_app.py` 在最终 Tauri App 校验后，仅对外层执行免费的 ad-hoc 资源封装：
+`codesign --sign - --timestamp=none`，不使用 `--force` 或递归签名。它接受无签名或
+linker-ad-hoc 主程序，拒绝已有资源封套；其他已有签名由原生工具的 no-force 语义拒绝，
+失败不换参数重试。封装前后只允许主程序字节和精确 `_CodeSignature/CodeResources`
+封套变化，原资源、Info.plist 与原有权限必须保持。
+
+生成路径必须通过原生 `codesign --verify --deep --strict --verbose=4`，真实 tar
+归档再在私有目录受限提取，核对完整文件/目录集合、字节和权限，并对恢复的 App 再做同一
+原生验证，通过后才发布归档及 checksum。直接调用 `release_artifact` 只验证已封装输入，
+不重复签名。失败保留私有 staging/roundtrip 现场并报错，不自动修复或清理 xattr。
+
+静态 verifier 只兼容性地允许这一精确的可选目录及非空普通文件，仍可读取历史未封装
+fixture；这不是 Apple 验签或信任判定。`release-index.json` 的 `signed: false`
+保持表示没有认证发布者证书签名，不表示 Mach-O 中绝无 linker/ad-hoc 签名位。
+没有 Developer ID、公证或 Authenticode，不保证 Gatekeeper/SmartScreen 放行，
+也不替代干净测试账户的原生启动、Keychain 和安装/升级/回退验收。
+旧草稿和资产不得原地重签或覆盖，修复须走新提交和未占用版本的新候选。
+
 macOS 安装脚本只接受本地 archive 与 checksum 文件路径，不执行 `curl | bash`：
 
 ```bash
@@ -147,8 +167,9 @@ if ($actual -ne $expected) { throw "SHA256 mismatch" }
 ```
 
 摘要一致后运行 `Tianshu-Agent-0.1.0-windows-arm64-setup.exe`。安装器按当前用户安装，
-用户数据位于 `%LOCALAPPDATA%\AgentOS`，默认卸载保留。产物未做 Apple/Microsoft 代码
-签名；Gatekeeper、SmartScreen 和真实设备安装、升级、回退及权限提示仍待验收。
+用户数据位于 `%LOCALAPPDATA%\AgentOS`，默认卸载保留。产物未做认证发布者的
+Developer ID / Authenticode 证书签名；macOS 免费资源封套不改变这一点。
+Gatekeeper、SmartScreen 和真实设备安装、升级、回退及权限提示仍待验收。
 
 合入后的精确主干 SHA 尚待实际运行预览 workflow。原生 runner 的构建和 smoke 不替代真实
 用户设备实测；物理断电持久性也未验证，不作为限定预览前置。

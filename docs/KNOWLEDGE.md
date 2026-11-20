@@ -24,6 +24,8 @@
 
 ## 2. 当前状态速览
 
+- **macOS outer 资源封套修复候选（2026-11-20，本地未合入）**：打包末端新增免费 no-force ad-hoc 封套及原生 deep/strict 验证，归档受限往返核对后再原生验证；direct artifact 输入只验证不重签。静态 verifier 精确允许可选封套，历史 unsigned fixture 仍可读。定向红绿与本机 tiny-C 结构实验已执行；独立复审、本轮最终全量和 hosted CI 尚待完成，不是新产品候选的原生验收。旧 `0.1.0` 草稿不可原地修补，详见[局部修复记录](changelog/2026-11-20-outer-bundle-seal.md)。
+
 - **里程碑与主干进展**：
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
@@ -89,6 +91,8 @@
   - **F10 记忆** → `memory.py` / `memory_exec.py` / `memory_index.py` / `memory_distill.py` / `memory_control.py`（L1–L3 可重建投影、检索与面板已落地，详见 [F10-memory-design.md](F10-memory-design.md)）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **结构封套不冒充发布者信任（2026-11-20）**：最终 macOS App 只执行 `codesign --sign - --timestamp=none`，不 force/deep 签名、不清 xattr、不使用证书或修改 Gatekeeper 策略；已有封套拒绝，其他非 linker 签名由 no-force 原生语义拒绝。只允许主程序与精确新封套变化，原资源/Info.plist/权限不变；原生 strict 验证必须覆盖归档恢复副本。此局部修复不改 C1–C5、T1 成本/信任政策、schema、索引 `signed: false` 或原生启动/数据/凭据验收门禁。静态可选封套兼容不等于生成路径可省略原生检查。
 
 - **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
 
@@ -269,6 +273,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **Mach-O code-page 哈希正确不等于 App 资源封套有效（2026-11-20）**：旧预览主程序只有 linker-ad-hoc 签名、没有 CodeResources，静态 manifest/架构检查通过，原生 codesign 仍报资源封套缺失。修复必须在最终 App 而非 staging 上封装，并在真实 tar 恢复后再验；免费 ad-hoc 完整性、认证发布者身份、Gatekeeper 判定和产品运行必须分开记。对已在 App 内的主程序直接签名也可能封装整个 bundle，普通签名拒绝负控须先在独立 standalone 文件上签名后再组装 fresh fixture，不能伪称已经覆盖了 no-force 拒绝。
+
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
 - **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。
 - **测试 shell 的工具传输必须匹配生产 runner（2026-11-20）**：生产 Ubuntu asset-list shell 与 Windows Git Bash 的原生 jq 文本输出不同；测试 helper 仅在 Windows 请求 jq `--binary` 提供 LF，不 strip JSON/资产名。使用实际 shell、真实 jq 的受控 CRLF/LF 正负控，原 CR/LF 非法名及额外文件仍拒绝；生产 release workflow/白名单不因此改动。
@@ -444,6 +450,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **旧预览的原生封套失败仍为失败（2026-11-20）**：旧 `0.1.0` 下载资产在本机 codesign/spctl 均因缺失资源封套失败；后者是操作失败，不能解读成 Gatekeeper 放行或拒绝的有效策略结论。独立实验副本和本轮 tiny-C 结构回归不改写旧资产，也不等于新产品 build、真实安装或原生 runtime 通过。本次 roundtrip 的 fd-relative 无链接提取仅约束私有新目录；源树扫描/归档的同 uid TOCTOU 与原有 runtime provenance 边界仍保留。未做 Intel Mac、其他 macOS 版本或 Windows 用户设备验证。
 
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
