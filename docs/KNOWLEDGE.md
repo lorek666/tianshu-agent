@@ -30,7 +30,7 @@
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
   - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。待在合入后的精确主干 SHA 实跑，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
-  - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。验收、合并状态及原生 CI 见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)。当前 G3 仍需候选 SLO 实测和 ≥10 小时常驻浸泡。
+  - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。旧候选验收与原生 CI 历史见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)，本次组合须绑定新对象验证。当前 G3 仍需候选冻结 SLO 实测。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
   - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
@@ -88,6 +88,8 @@
   - **F10 记忆** → `memory.py` / `memory_exec.py` / `memory_index.py` / `memory_distill.py` / `memory_control.py`（L1–L3 可重建投影、检索与面板已落地，详见 [F10-memory-design.md](F10-memory-design.md)）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
 
 - **限定预览复用发行校验，不建立弱化旁路（2026-11-20）**：手动布尔开关
   `macos_arm64_preview` 只缩小 build/download/assemble 的目标集合；默认及 annotated tag

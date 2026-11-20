@@ -3,6 +3,8 @@
 > 关联工单：`G3-B10`（版本化冻结 SLO 门禁与测量套件）· `G3-B11`（≥10 小时常驻浸泡测试框架）
 > 契约与阈值配置：[schemas/slo/slo-v1.json](../schemas/slo/slo-v1.json) · [schemas/slo/slo-thresholds-v1.json](../schemas/slo/slo-thresholds-v1.json)
 > 测量与浸泡脚本：[scripts/measure_slo.py](../scripts/measure_slo.py) · [scripts/run_soak.py](../scripts/run_soak.py) · [tests/test_slo_and_soak.py](../tests/test_slo_and_soak.py)
+>
+> **现行发布范围（2026-11-20）**：[PRD §10.6 / §11.1](PRD-v1.md) 已取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，无替代时长。以下 soak 命令、既有测试和 `soak_limits` 对该预览仅为可选、非阻断诊断；默认 10 小时仍是工具默认值，不是预览发布门禁。候选 SLO、资源趋势、断连 / 重连、取消、重启、零孤儿检查和其他必过项保持不变；可选诊断发现必过项失败仍阻断。**长时稳定性未验证**，下列历史短跑数据不变，未补造长跑证据；四目标正式发行原长稳要求不变。
 
 ---
 
@@ -66,7 +68,7 @@ uv run --frozen python scripts/measure_slo.py \
 
 ---
 
-## 5. 常驻浸泡运行器验证与 ≥10h 执行说明（`G3-B11`）
+## 5. 常驻浸泡运行器验证与可选诊断说明（`G3-B11`）
 
 ### 5.1 本机确定性多周期实跑证据（15s 快速核验）
 
@@ -82,7 +84,7 @@ uv run --frozen python scripts/run_soak.py \
   - 资源水位：空闲总 RSS `p50 = 88.672 MiB`（`max = 99.219 MiB`），活跃总 RSS `p50 = 94.640 MiB`（`max = 100.828 MiB`）；打开 FD 峰值 Daemon `57` / Host `6` / Runner `7`；SQLite `9.03 MiB`；
   - 退出洁净度：`endpoint_closed_after_stop = True`、`locks_cleared_after_stop = True`、**`orphan_pids = []`**。
 
-### 5.2 ≥10 小时浸泡与离线核对（本节不是长跑结果）
+### 5.2 可选 ≥10 小时诊断与离线核对（不是预览前置条件，也不是长跑结果）
 
 在无日常数据与凭据的专用测试 OS 账户或隔离测试机上，从干净的目标候选提交运行。保持机器清醒，记录 OS、硬件、命令与候选 SHA；使用尚不存在的输出目录，避免覆盖已有材料。
 
@@ -99,4 +101,4 @@ uv run --frozen python scripts/run_soak.py \
 
 - 运行中，`status.json` 与 `samples.jsonl` 分别提供实时进度和逐点资源观测；最终的 `soak-report.json` 与 `soak-report.md` 汇总趋势、退出洁净度和冻结的 `soak_limits` 诊断门禁。`soak-observation.json` 记录首尾采样、计划重启区间、两相连接采样数、最大采样间隙、Git 首尾快照，以及阈值与材料摘要。工作窗口按单调纳秒计量，排除初始化、计划重启停机和最终退出，不用毫秒舍入的采样时间证明满 10 小时。
 - `status.json` 的 `completed` 晚于三份最终材料写入；失败或中断可能留下部分材料，不能以文件存在代替完成标记。`--verify-only` 不起子进程，只检查完成状态、摘要、阈值配置、采样计数和记录间一致性；自报 Git 身份和摘要不是独立来源证明，也不证明机器未睡眠或全程无采样空洞。
-- **发布边界**：本页原始数据来自 2026-11-18 的单台 `macOS arm64 (Apple M4)` 非独占开发机，短跑仅用于诊断。`PASS` 和离线核对成功均不作发布裁决（`release_acceptance = NOT_EVALUATED`）。正式候选仍需实跑至少 10 小时，另核对两相资源趋势、采样间隙、断连重连、取消、重启和零孤儿；不能用短跑替代长跑、真实模型或 macOS / Windows 用户设备验证。
+- **发布边界**：本页原始数据来自 2026-11-18 的单台 `macOS arm64 (Apple M4)` 非独占开发机，短跑仅用于诊断。`PASS` 和离线核对成功均不作发布裁决（`release_acceptance = NOT_EVALUATED`）。首次 `macos-arm64` 限定预览不等待本节长跑完成；长时稳定性仍为未验证，不能把取消时长门禁记成长跑通过，也不能以短跑替代候选 SLO、真实模型或用户设备验收。四目标正式发行候选仍需按 PRD 至少 10 小时实跑，并核对两相资源趋势、采样间隙、断连重连、取消、重启和零孤儿。
