@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -143,7 +144,10 @@ def test_version_concurrency_serializes_tag_and_manual_paths():
     assert "github.ref_name" in match.group(1)
 
 
-def _run_asset_list(root: Path, *, names=None, extra=None, directory=False):
+def _run_asset_list(
+    root: Path, *, names=None, extra=None, directory=False,
+    binary_output=None, native_crlf=False,
+):
     release = root / "release"
     release.mkdir()
     names = names if names is not None else ["install-macos.sh", "archive.app.tar.gz"]
@@ -151,7 +155,7 @@ def _run_asset_list(root: Path, *, names=None, extra=None, directory=False):
         "assets": [{"name": name} for name in names],
     }))
     for name in names:
-        if "/" not in name:
+        if "/" not in name and "\r" not in name and "\n" not in name:
             (release / name).write_text("fixture")
     if extra:
         (release / extra).write_text("unexpected")
@@ -165,12 +169,68 @@ def _run_asset_list(root: Path, *, names=None, extra=None, directory=False):
         **os.environ, "GITHUB_OUTPUT": output.as_posix(),
         "RELEASE_DIR": release.as_posix(),
     }
+    if binary_output is None:
+        # The production shell runs on Ubuntu. Native jq.exe under Git Bash needs
+        # binary output to provide that same LF transport, without altering names.
+        binary_output = os.name == "nt"
+    binary_argument = "--binary " if binary_output else ""
+    jq_wrapper = f'jq() {{ command jq {binary_argument}"$@"; }}\n' if binary_output else ""
+    if native_crlf:
+        real_jq = shutil.which("jq")
+        assert real_jq is not None
+        transport = root / "jq_transport.py"
+        transport.write_text(
+            "import os, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "binary = args[:1] == ['--binary']\n"
+            "if binary: args = args[1:]\n"
+            "if os.name == 'nt': args = ['--binary', *args]\n"
+            "result = subprocess.run([os.environ['TEST_REAL_JQ'], *args], capture_output=True)\n"
+            "output = result.stdout if binary else result.stdout.replace(b'\\n', b'\\r\\n')\n"
+            "os.write(1, output)\n"
+            "os.write(2, result.stderr)\n"
+            "sys.exit(result.returncode)\n",
+            encoding="utf-8",
+        )
+        env.update({
+            "TEST_REAL_JQ": real_jq,
+            "TEST_PYTHON": Path(sys.executable).as_posix(),
+            "TEST_JQ_TRANSPORT": transport.as_posix(),
+        })
+        jq_wrapper = (
+            'jq() { "$TEST_PYTHON" "$TEST_JQ_TRANSPORT" '
+            + binary_argument + '"$@"; }\n'
+        )
     result = subprocess.run(
         [_bash(), "--noprofile", "--norc", "-c",
-         'set -euo pipefail\nrelease_dir="$RELEASE_DIR"\n' + script],
+         'set -euo pipefail\nrelease_dir="$RELEASE_DIR"\n' + jq_wrapper + script],
         env=env, capture_output=True, text=True, timeout=15,
     )
     return result, output, release
+
+
+@pytest.mark.parametrize("binary_output", [False, True])
+def test_asset_list_native_jq_transport_requires_binary_output(tmp_path, binary_output):
+    # Execute the actual workflow shell and jq validator; vary only native newline
+    # transport. This is a portable mechanism probe, not a Windows runner result.
+    result, output, _ = _run_asset_list(
+        tmp_path, binary_output=binary_output, native_crlf=True,
+    )
+    assert (result.returncode == 0) is binary_output
+    assert output.exists() is binary_output
+    if not binary_output:
+        assert result.stderr == ""
+
+
+@pytest.mark.parametrize("names,extra", [
+    (["bad\rname"], None), (["bad\nname"], None), (["ok"], ".hidden"),
+])
+def test_asset_list_binary_transport_does_not_sanitize_invalid_input(tmp_path, names, extra):
+    result, output, _ = _run_asset_list(
+        tmp_path, names=names, extra=extra, binary_output=True, native_crlf=True,
+    )
+    assert result.returncode != 0
+    assert not output.exists()
 
 
 def test_asset_list_emits_exact_indexed_files_and_index(tmp_path):

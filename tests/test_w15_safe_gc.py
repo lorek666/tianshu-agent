@@ -937,6 +937,12 @@ def test_approve_reclaims_only_safe_targets_truncates_wal_and_preserves_replay_a
     verified = verify_backup(backup_dir)
     assert verified.ok, verified.problems
 
+    # Read-only backup inspection can leave SQLite companions. Re-establish the
+    # clean offline precondition through SQLite's normal RW recovery/close.
+    with closing(EventLog(db_path, blob_dir=root / "blobs")):
+        pass
+    assert not any(Path(str(db_path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal"))
+
     # 8. 二次执行 GC 幂等：0 候选、0 删除、退 0
     second_report, second_code = run_data_gc(
         root,
@@ -1939,6 +1945,13 @@ def test_run_command_stdout_and_stderr_spill_blobs_protected_and_verified(
     assert len(manifest.references["exec_stream_blobs"]) == 3
     v_rep = verify_backup(backup_dir)
     assert v_rep.ok, v_rep.problems
+
+    # Restore the clean offline precondition after read-only backup verification;
+    # do not unlink companions or weaken the exact reference_unknown assertions.
+    db_path = root / "events.db"
+    with closing(EventLog(db_path, blob_dir=root / "blobs")):
+        pass
+    assert not any(Path(str(db_path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal"))
 
     # 负控：篡改或删除任一 stdout_ref / stderr_ref 原文时，GC 必以 reference_unknown 退 2 且 0 删除
     for target_blob, mode in (

@@ -33,6 +33,7 @@ from tianshu import backup
 from tianshu.backup import (
     BackupRefused,
     ReferenceUnknown,
+    RestoreFailed,
     RestoreRefused,
     cleanup_plan,
     collect_references,
@@ -540,8 +541,15 @@ def test_verify_reports_missing_referenced_blob(tmp_path):
 # ---------------------------------------------------------------- 恢复后核对
 
 
-def test_restore_reconciliation_reports_pending_work(tmp_path):
+@pytest.mark.parametrize("force_unavailable", [False, True], ids=["native", "unavailable"])
+def test_restore_reconciliation_reports_pending_work(tmp_path, monkeypatch, force_unavailable):
+    from tianshu import restore_manager
     from tianshu.disk_admission import DiskAdmission
+    from tianshu.restore_registry import RestoreRegistry
+
+    if force_unavailable:
+        # Exercise refusal portably, never force unavailable Windows writes on.
+        monkeypatch.setattr(restore_manager, "_managed_restore_writes_supported", lambda: False)
 
     root = _make_data_root(tmp_path)
     log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
@@ -573,6 +581,39 @@ def test_restore_reconciliation_reports_pending_work(tmp_path):
     dest = tmp_path / "backup"
     create_backup(root, dest)
     root.rename(tmp_path / "data.moved")
+
+    # Read-only inspection of the saved backup retains all four pending-work
+    # assertions even when the platform cannot durably publish a managed restore.
+    saved = backup._reconcile(dest)
+    assert [item["call_id"] for item in saved["pending_intents"]] == ["c9"]
+    assert [item["approval_id"] for item in saved["pending_approvals"]] == ["ap1"]
+    assert [item["run_id"] for item in saved["non_terminal_runs"]] == [r_live]
+    assert [item["resource_key"] for item in saved["live_leases"]] == ["k1"]
+    if not restore_manager._managed_restore_writes_supported():
+        def snapshot(directory):
+            return {
+                path.relative_to(directory): (
+                    path.lstat().st_mode, path.lstat().st_ino, path.lstat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in (directory, *directory.rglob("*"))
+            }
+
+        registry = RestoreRegistry()
+        before_data = snapshot(tmp_path)
+        before_registry = snapshot(registry.home)
+        assert not registry.observe().present
+        with pytest.raises(RestoreFailed) as caught:
+            restore_backup(dest, root)
+        cause = caught.value.__cause__
+        assert isinstance(cause, restore_manager.RestoreOperationError)
+        assert cause.failure.category == "durability_unavailable"
+        assert cause.failure.batch_id is None and cause.failure.phase is None
+        assert not root.exists()
+        assert snapshot(tmp_path) == before_data  # no target, stage, or backup mutation
+        assert snapshot(registry.home) == before_registry
+        assert not registry.observe().present
+        return
 
     report = restore_backup(dest, root)
     rec = report.reconciliation

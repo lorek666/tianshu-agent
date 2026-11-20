@@ -134,8 +134,12 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-macOS 检查并入现有 macOS required job；Windows 原生检查作为独立 job，由现有
-Windows required 汇总 job 绑定其 `success`。不新增 required check 名称。
+macOS 的完整 Python 门禁与 Rust fmt/test/clippy 分别在两个 `macos-latest` 原生 job
+执行，各保持25分钟上限；Ubuntu 汇总保留原 macOS required 名，使用 `always()` 并严格要求
+两上游均为 `success`（失败、取消、跳过均拒绝）。两原生 job 绑定同一 `github.sha`，与其他
+runner 使用相同 draft/ready/main-push 门禁；拆分职责不减少测试，也不保证 Python 必在时限内完成。
+Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇总 job 绑定其
+`success`。不新增 required check 名称。
 
 **锁文件漂移只能靠 `uv lock --check` 查**：锁文件过期时它会 exit 1 并报 `The lockfile at uv.lock needs to be updated`；同样条件下 `uv sync --frozen` 仍然 exit 0——「用了锁文件」不等于「校验过锁文件」，别拿 `sync --frozen` 当漂移门禁。这也是 CI 里先跑 `uv lock --check` 的原因。
 
@@ -152,7 +156,7 @@ Windows required 汇总 job 绑定其 `success`。不新增 required check 名�
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint；R1 桌面壳的 Rust fmt/test/clippy |
+| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS job：完整 Python 套件、锁文件/lint/SBOM；R1 桌面壳 Rust fmt/test/clippy，两者必须 success |
 | `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 

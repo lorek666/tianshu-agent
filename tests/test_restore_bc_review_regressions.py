@@ -473,14 +473,16 @@ def test_legacy_material_scan_fails_closed_on_entry_added_after_enumeration(
     assert observations >= 2
 
 
+@pytest.mark.parametrize("pin_child_metadata", [False, True], ids=["native-stat", "stale-stat"])
 def test_legacy_material_scan_fails_closed_on_nested_entry_added_after_descent(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, pin_child_metadata,
 ):
     root = tmp_path / "artifacts" / "snapshots"
     child = root / "empty-child"
     child.mkdir(parents=True)
     monkeypatch.setattr(Path, "is_junction", lambda _path: False)
     original_lstat = restore_access.os.lstat
+    initial_child_info = original_lstat(child)
     root_observations = 0
 
     def insert_after_child_descent(path, *args, **kwargs):
@@ -489,11 +491,71 @@ def test_legacy_material_scan_fails_closed_on_nested_entry_added_after_descent(
             root_observations += 1
             if root_observations == 2:
                 (child / "late-material").write_bytes(b"legacy")
+        if pin_child_metadata and Path(path) == child:
+            # Model delayed directory metadata, not a fake material entry.
+            return initial_child_info
         return original_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(restore_access.os, "lstat", insert_after_child_descent)
     assert restore_access._material_tree_has_entries(root) is True
     assert root_observations >= 2
+    assert (child / "late-material").read_bytes() == b"legacy"
+
+
+@pytest.mark.parametrize("depth", [1, 12])
+def test_empty_legacy_material_skeleton_has_linear_validation_cost(tmp_path, monkeypatch, depth):
+    root = tmp_path / "snapshots"
+    directory = root
+    directories = {root}
+    for _ in range(depth):
+        directory /= "d"
+        directories.add(directory)
+    directory.mkdir(parents=True)
+    original_scandir = restore_access.os.scandir
+    enumerations = {}
+
+    def count_enumerations(path):
+        key = Path(path)
+        enumerations[key] = enumerations.get(key, 0) + 1
+        return original_scandir(path)
+
+    monkeypatch.setattr(restore_access.os, "scandir", count_enumerations)
+    assert restore_access._material_tree_has_entries(root) is False
+    assert set(enumerations) == directories
+    assert all(count <= 3 for count in enumerations.values())
+
+
+@pytest.mark.parametrize("mutation", ["file", "directory", "remove", "replace", "unreadable"])
+def test_legacy_material_final_sweep_rechecks_actual_contents(tmp_path, monkeypatch, mutation):
+    root = tmp_path / "snapshots"
+    child = root / "empty-child"
+    child.mkdir(parents=True)
+    original_scandir = restore_access.os.scandir
+    child_scans = 0
+    mutated = False
+
+    def mutate_before_final_enumeration(path):
+        nonlocal child_scans, mutated
+        if Path(path) == child:
+            child_scans += 1
+            if child_scans == 3:
+                mutated = True
+                if mutation == "file":
+                    (child / "late-material").write_bytes(b"legacy")
+                elif mutation == "directory":
+                    (child / "new-empty-child").mkdir()
+                elif mutation == "remove":
+                    child.rmdir()
+                elif mutation == "replace":
+                    child.rename(root / "original-child")
+                    child.mkdir()
+                else:
+                    raise PermissionError("injected unreadable final directory")
+        return original_scandir(path)
+
+    monkeypatch.setattr(restore_access.os, "scandir", mutate_before_final_enumeration)
+    assert restore_access._material_tree_has_entries(root) is True
+    assert mutated
 
 
 @pytest.mark.parametrize("mutation", ["remove", "replace"], ids=["missing", "replaced"])
@@ -507,10 +569,10 @@ def test_legacy_material_scan_fails_closed_on_child_identity_race(
     snapshots = tmp_path / "artifacts" / "snapshots"
     child = snapshots / "empty-child"
     child.mkdir(parents=True)
-    original_scan = restore_access._material_tree_has_entries
+    original_scan = restore_access._scan_material_tree
     mutated = False
 
-    def mutate_before_descent(path, *, expected_identity=None):
+    def mutate_before_descent(path, *, expected_identity=None, observed_directories):
         nonlocal mutated
         if Path(path) == child and not mutated:
             mutated = True
@@ -521,9 +583,13 @@ def test_legacy_material_scan_fails_closed_on_child_identity_race(
                 replacement.mkdir()
                 child.rename(snapshots / "original")
                 replacement.rename(child)
-        return original_scan(Path(path), expected_identity=expected_identity)
+        return original_scan(
+            Path(path),
+            expected_identity=expected_identity,
+            observed_directories=observed_directories,
+        )
 
-    monkeypatch.setattr(restore_access, "_material_tree_has_entries", mutate_before_descent)
+    monkeypatch.setattr(restore_access, "_scan_material_tree", mutate_before_descent)
     with pytest.raises(RestoreAccessError, match="旧版材料布局"):
         preflight_legacy_material_layout(db, tmp_path)
     assert mutated

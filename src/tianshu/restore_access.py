@@ -888,6 +888,12 @@ def _material_directory_state(
     )
 
 
+type _MaterialDirectoryState = tuple[tuple[int, int], int | None, int | None, int | None]
+type _MaterialDirectoryObservations = dict[
+    Path, tuple[_MaterialDirectoryState, dict[str, _MaterialDirectoryState]]
+]
+
+
 def _material_tree_has_entries(
     path: Path,
     *,
@@ -896,10 +902,63 @@ def _material_tree_has_entries(
     """Return true for material, links, unknown nodes, or any uninspectable path.
 
     Directory stat identities are race detectors only, not authorization identities.
-    An initially absent candidate is empty only if a second observation also finds it
-    absent; a directory observed by its parent must remain the same ordinary directory
-    with unchanged metadata through descent and the end of its scan.
+    Keep the original descent checks, then re-enumerate every observed directory once:
+    delayed directory metadata must not hide material added to an already scanned child.
+    This is bounded cooperative observation, not an atomic filesystem snapshot.
     """
+    observed_directories: _MaterialDirectoryObservations = {}
+    if _scan_material_tree(
+        path,
+        expected_identity=expected_identity,
+        observed_directories=observed_directories,
+    ):
+        return True
+    try:
+        for directory, (directory_state, observed_children) in observed_directories.items():
+            before = os.lstat(directory)
+            if (
+                stat.S_ISLNK(before.st_mode)
+                or not stat.S_ISDIR(before.st_mode)
+                or directory.is_junction()
+                or _material_directory_state(before) != directory_state
+            ):
+                return True
+            final_children: dict[str, _MaterialDirectoryState] = {}
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    child = Path(entry.path)
+                    info = os.lstat(child)
+                    if (
+                        stat.S_ISLNK(info.st_mode)
+                        or not stat.S_ISDIR(info.st_mode)
+                        or child.is_junction()
+                    ):
+                        return True
+                    child_state = _material_directory_state(info)
+                    if child_state is None:
+                        return True
+                    final_children[entry.name] = child_state
+            after = os.lstat(directory)
+            if (
+                final_children != observed_children
+                or stat.S_ISLNK(after.st_mode)
+                or not stat.S_ISDIR(after.st_mode)
+                or directory.is_junction()
+                or _material_directory_state(after) != directory_state
+            ):
+                return True
+    except (OSError, RuntimeError, RecursionError):
+        return True
+    return False
+
+
+def _scan_material_tree(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+    observed_directories: _MaterialDirectoryObservations,
+) -> bool:
+    """Record each clean directory once while retaining the descent race checks."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -960,7 +1019,11 @@ def _material_tree_has_entries(
                 if child_state is None:
                     return True
                 observed_children[entry.name] = child_state
-                if _material_tree_has_entries(child, expected_identity=child_state[0]):
+                if _scan_material_tree(
+                    child,
+                    expected_identity=child_state[0],
+                    observed_directories=observed_directories,
+                ):
                     return True
 
         try:
@@ -1009,7 +1072,10 @@ def _material_tree_has_entries(
                 if child_state is None:
                     return True
                 final_children[entry.name] = child_state
-        return final_children != observed_children
+        if final_children != observed_children:
+            return True
+        observed_directories[path] = (directory_state, observed_children)
+        return False
     except (OSError, RuntimeError, RecursionError):
         return True
 

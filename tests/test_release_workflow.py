@@ -374,6 +374,11 @@ def test_ci_selector_requires_all_required_names_and_all_jobs(tmp_path):
         (complete[:-1], False),
         ([*complete, {"name": "windows-shard", "conclusion": "failure"}], False),
         ([], False),
+        *(
+            ([*complete, {"name": name, "conclusion": conclusion}], False)
+            for name in ("macos python suite · py3.12", "desktop rust checks · macos")
+            for conclusion in ("failure", "cancelled", "skipped")
+        ),
     ]
     path = tmp_path / "jobs.json"
     for jobs, expected in cases:
