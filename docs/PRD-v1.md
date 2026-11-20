@@ -635,7 +635,7 @@ Event {
 | `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
 | `recovery` | 崩溃恢复：阻断与解除阻断（目录与 MCP 对象两种对象模型，见 §5.4.1 的 `dispatch.mcp_object_blocked`） | `recovery.blocked` / `recovery.object_blocked` / `recovery.object_unblocked` / `recovery.unblocked` |
-| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
+| `run` | Run 生命周期：开始、工作流、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` / `run.workflow`（新增契约，交付状态见下文） |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
@@ -699,6 +699,12 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 低磁盘切片已随 PR #144 合入；该 PR 及 main `8f2a508e68f27efc4100b7466fcd79043341f7fa` 自身原生 CI 均通过并独立核验。issue #145 的旧正常收尾失败原因未知未修，不借本次绿关闭可靠性风险。
 
 `run.end` 货币成本汇总按 [CONTRACT-W4-W12-2026-11-18.md](CONTRACT-W4-W12-2026-11-18.md) §3 升为精确 payload `v2`：新增 `cost_total_micros`（`integer|null`，未知单价不伪装成 `0`）与 `cost_unknown_calls`（`integer >= 0`），保留历史 `v0/v1` 的 schema 与只读解释不变。
+
+手动 `/compact` 与计划模式按[工作流契约](compact-plan-contract.md)新增
+`run.workflow` v1，记录封闭的 `plan|compact|execute` 模式与来源快照。
+计划与压缩仍用执行侧 `pure_only`，确认计划另建 `effects` Run；
+既有工具审批不因计划确认而放宽。此处冻结新增契约，代码交付与验证另记，
+历史 `run.start` / `run.end` 版本不变。
 
 ### 5.4 C4 Permission / Approval
 
