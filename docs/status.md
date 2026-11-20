@@ -18,7 +18,7 @@ R0–R3 是 Tauri 桌面壳与发行构建链。
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
 | **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与四目标发布 workflow | 🟡 **源码已并入 `main`**（PR #170 / #175 / #186）；现有 workflow 仍要求四目标。首发 `macos-arm64` 单目标发行链、真实安装/升级/回退与 G3 候选实测待完成 |
 
-W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。G3 的最终候选 SLO 实测、长时 Soak 和用户设备验收仍待执行。Windows 系统凭据后端尚待交付。
+W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。首发 `macos-arm64` 限定预览的最终候选 SLO、资源采样和用户设备验收仍待执行；按 [PRD §10.6 / §11.1](PRD-v1.md)，**已取消强制 ≥10h soak，无替代时长**，现有工具/测试/阈值仅为可选、非阻断诊断，长时稳定性未验证。四目标正式发行的长时 Soak 要求不变；Windows 系统凭据后端尚待交付。
 
 ## M5 桌面闭环实测
 

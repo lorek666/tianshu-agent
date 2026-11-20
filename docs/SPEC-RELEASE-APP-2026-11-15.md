@@ -8,6 +8,8 @@
 > 起草基线 `595be35`；本次拆分基线 `e242257984d2ebd1443e60c81e7d2c97b287122a`。
 > 原 PR #162 的 `7d121ad564d07375c8777f51ad3b7330dd632125 / tree 922a259db4453ec9e78f5e32910e499ad300c2be`
 > 独立复审为 REQUEST_CHANGES。其旧门禁、产物和生命周期结果只属于历史候选，不能作为本轮切片验收。
+>
+> **适用范围更新（2026-11-20）**：下文四目标与十小时长稳要求适用于四目标正式发行。首次 `macos-arm64` 限定预览按 [PRD §10.6 / §11.1](PRD-v1.md) 和 [首发验收清单](../CONTRIBUTING.md#8-发布) 执行：取消强制 soak 门禁且无替代时长，既有工具/测试/阈值仅作可选、非阻断诊断，长时稳定性未验证。候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份与受保护 PR/required CI 不变；可选诊断发现必过项失败仍阻断。本说明不改写下文历史候选证据，也不宣布预览已通过验收。
 
 ## 0. 问题、权威输入与判定口径
 
@@ -446,9 +448,9 @@ release manifest；私钥只存 GitHub protected environment secret。它只证�
 | R4 | 手动升级与回退、平台证据矩阵 | 旧/新版本切换、数据保留、失败回退 |
 | R5 | 自动更新（可选，需独立 spec） | Ed25519 清单签名、断网/篡改/回滚负控 |
 
-正式 G3 只有在以下项目全部关闭后才可另行宣布：恢复 B/C、Keychain 实机、SLO 阈值与
+四目标正式 G3 只有在以下项目全部关闭后才可另行宣布：恢复 B/C、Keychain 实机、SLO 阈值与
 测量、十小时 soak、四目标安装/升级/回退、遗留阻断裁决。当前这些项目不能因 R0–R4 的
-完成自动变成已完成。
+完成自动变成已完成；首次 `macos-arm64` 限定预览的 soak 例外不免除其他适用门禁。
 
 本轮按以下边界推进，后续片从前一片保护合入后的 main 派生：
 
@@ -532,7 +534,7 @@ pub fn verify_resource_manifest(
 - [ ] 新独立第二读者亲跑验收，结论绑定完整 SHA/tree/基线，旧 REQUEST_CHANGES/PARTIAL/UNFIXED 不继承为 PASS。
 - [ ] 每片当前 required checks 全绿才保护合并；main 自身 CI 和最终四目标 release workflow 分别核验。
 - [ ] macOS x64、Windows x64/arm64 的构建/设备证据逐项标为 verified / runner-only / unknown。
-- [ ] L1/L2 内测与 G3 正式发布区分；恢复、SLO、十小时 soak 和用户设备未完成时不代签 G3。
+- [ ] L1/L2 内测与四目标 G3 正式发布区分；恢复、SLO、十小时 soak 和用户设备未完成时不代签四目标 G3。首次 `macos-arm64` 限定预览按现行首发清单验收，不以 soak 时长阻断，并披露长时稳定性未验证。
 
 ## 13. 未决与阻塞依赖
 
@@ -543,7 +545,7 @@ pub fn verify_resource_manifest(
 2. Tauri updater 的密钥托管、轮换与泄漏处置（R5；未实现前只做手动更新）。
 3. macOS TCC 在真实用户设备上的首次授权、覆盖安装后是否重置，以及对应引导文案。
 4. Windows 10/11 x64 与 arm64、macOS x64 的干净机器安装和 SmartScreen/Gatekeeper 实测。
-5. PRD §10.6 的发布候选 SLO、十小时 soak、资源趋势和遗留阻断裁决。
+5. PRD §10.6 的发布候选 SLO、资源采样与遗留阻断裁决仍须验收；十小时 soak 仅作为四目标正式发行前置条件，首次 `macos-arm64` 限定预览为可选、非阻断诊断，无替代时长。
 6. 许可证/依赖清单扫描与第三方 notices；Rust/Tauri 构建依赖必须在 release manifest 和
    CI 文档中显式列出。
 
