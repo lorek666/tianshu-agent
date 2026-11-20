@@ -64,7 +64,7 @@
   11. 任何「崩溃后无法判定状态」的设计视为 bug
 - **模块地图**：按功能分（五大核心模块采用门面 + 同目录 `_<mod>_*.py` 单层扁平 Mixin/类型子模块拆分，保持零契约变更与非递归 AST 扫描守卫覆盖）：事件与状态（`events` / `tasks`+`_tasks_{types,subtasks,cursor_rebuild}` / `jobs` / `leases` / `snapshot` / `recovery` / `replay`）、授权与派发（`permissions` / `rules` / `dispatcher`+`_dispatcher_{types,authority,exec,ledger}` / `guard` / `receipt`）、模型与执行（`model`/`capability`/`context`/`exec`/`exec_backends`/`exec_seatbelt`/`exec_landlock`/`execpolicy`/`credentials`/`pricing`/`sandbox`）、工具与路径（`tools`/`tool_registry`/`toolschema`/`workspace`/`pathkeys`/`fsutil`/`canonical`）、撤销（`undo`/`undo_journal`）、主循环与入口（`loop`+`_loop_{summary,memory,bookkeeping}` / `worker` / `cli`+`_cli_{ops,memory,eval}` / `errors` / `crashpoint`）、**桌面三进程（`ipc` 传输与契约 / `daemon` 常驻与恢复 / `control`+`settings_control` RPC 映射 / `host` 外壳与 UI 桥）**、记忆（`memory`+`_memory_{types,apply}` / `memory_exec` / `memory_index` / `memory_distill` / `memory_control` / `resources`）、运行与维护（`metrics` 运行指标 / `isolation` 隔离探针 / `backup` 备份恢复 / `data_cli` 数据维护入口 / `maintenance` 协作准入 / `migrate` 迁移 / `event_schema` 事件 payload 契约 / `diagnostics_export` 脱敏诊断包 / `scheduler`+`schedule_cli` 定时调度）、评测（`eval/`）。细节见 PRD / TECH-ARCH 与 [M5-desktop.md](M5-desktop.md)。
 - **CLI 子命令**（`tianshu --help`）：`run` / `mcp` / `task` / `worker` / `recover` / `undo` / `approvals`（别名 `approval`）/ `replay` / `daemon` / `host` / `evaluate` / `memory`（别名 `memories`）/ `schedule` / `data`。
-  - `worker` 是**一次性 drain**——队空或撞上被占用的工作区就退出；**常驻进程是 `daemon`**（`host run` 会拉起并监护它）。
+  - `worker` 默认按 `Worker.drain()` 的 64 作业预算分批调用，直到 `exhausted`（队空）或工作区争用停止；显式 `--max-jobs N` 仍只执行一轮。CLI 回归测试必须覆盖超过 64 个排队作业，避免把单轮预算误读为队列清空。
   - `host` 只有 `run` / `stop` / `status` 三个动作（不带动作 = `run`）；`status` 在跑退出 0、没跑退出 1。
   - `replay` 审计不调模型；`evaluate` 换模跑固定 case。
   - 退出码：`0` 成功 / `1` 失败或取消 / `2` 前置条件错 / `3` 需要人决定（等审批、已暂停、待核查、`undo` 未带 `--approve` 的预演）/ **`4` = evaluate 判 unsafe**（安全门槛一票否决）。
@@ -248,6 +248,8 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **CLI 默认 worker 必须区分单轮预算与队列耗尽（2026-11-20）**：`Worker.drain()` 的 64 作业上限是防止单次调用无限运行，不代表队列已经清空。CLI 未指定 `--max-jobs` 时按批次继续调用，直到 `exhausted=True`；显式 `--max-jobs N` 仍保持单轮限制，`idle:false` 如实表示仍可能有作业或发生工作区争用。超过 64 个真实排队 Run 的子进程回归测试钉住这两个语义。
 
 - **跨进程短事件排序与本地看门狗耗时要分开（2026-11-19）**：PR [#201](https://github.com/lorek666/tianshu-agent/pull/201) Windows [首轮 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44526542549) 中，真实慢订阅者已断连，但 `monotonic_ns()` 的粒度使断连记账和随后发起的 `state` 同 tick。用于排序和 RPC 耗时的时间戳统一取跨进程 `perf_counter_ns()`；与 Daemon `_sending_since` 相减的发送年龄仍在 Daemon 的 `monotonic()` 时钟域计算。保留真实断连负控及严格顺序，不把开发诊断当发布阈值，见 [取样口径](SLO-STATE-PRESSURE.md)。
 

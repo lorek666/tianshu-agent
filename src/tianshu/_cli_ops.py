@@ -39,11 +39,16 @@ def add_worker_parser(sub: argparse._SubParsersAction) -> None:
 
     w = sub.add_parser(
         "worker",
-        help="作业循环（一次性 drain）：认领排队中的 Run 并推进到它停下为止；"
+        help="作业循环（有界批次 drain）：认领排队中的 Run 并推进到它停下为止；"
         "队空或撞上被占用的工作区就退出，不是常驻守护进程",
     )
     w.add_argument("--once", action="store_true", help="只跑一个作业就退出")
-    w.add_argument("--max-jobs", type=int, default=64, help="一次最多跑几个作业")
+    w.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="一次最多跑几个作业；不指定时按 64 个一批直到队空",
+    )
     w.add_argument("--model", default="scripted",
                    choices=["scripted", "openai-compatible"])
     w.add_argument("--provider", default=None, choices=list(cli.MODEL_PROVIDERS),
@@ -306,8 +311,23 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 ran = [worker.run_ids[-1]] if worker.run_once() else []
                 idle = not ran
             else:
-                ran = worker.drain(max_jobs=args.max_jobs)
-                # 只有"跑空"才算 idle：跑满 --max-jobs 或撞上被占用的工作区
+                # 未指定 --max-jobs 时，按 Worker 的单轮预算分批跑到队空。
+                # 显式指定时保留“一次最多 N 个”的边界，便于脚本控制批次。
+                ran = []
+                seen: set[str] = set()
+                while True:
+                    batch = (
+                        worker.drain()
+                        if args.max_jobs is None
+                        else worker.drain(max_jobs=args.max_jobs)
+                    )
+                    for run_id in batch:
+                        if run_id not in seen:
+                            seen.add(run_id)
+                            ran.append(run_id)
+                    if args.max_jobs is not None or worker.exhausted or worker.contended:
+                        break
+                # 只有“跑空”才算 idle：显式跑满 --max-jobs 或撞上被占用的工作区
                 # 都说明队里可能还有活，报 idle 是骗人。
                 idle = worker.exhausted
         finally:
