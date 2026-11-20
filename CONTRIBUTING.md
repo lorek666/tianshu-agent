@@ -134,8 +134,12 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-macOS 检查并入现有 macOS required job；Windows 原生检查作为独立 job，由现有
-Windows required 汇总 job 绑定其 `success`。不新增 required check 名称。
+macOS 的完整 Python 门禁与 Rust fmt/test/clippy 分别在两个 `macos-latest` 原生 job
+执行，各保持25分钟上限；Ubuntu 汇总保留原 macOS required 名，使用 `always()` 并严格要求
+两上游均为 `success`（失败、取消、跳过均拒绝）。两原生 job 绑定同一 `github.sha`，与其他
+runner 使用相同 draft/ready/main-push 门禁；拆分职责不减少测试，也不保证 Python 必在时限内完成。
+Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇总 job 绑定其
+`success`。不新增 required check 名称。
 
 **锁文件漂移只能靠 `uv lock --check` 查**：锁文件过期时它会 exit 1 并报 `The lockfile at uv.lock needs to be updated`；同样条件下 `uv sync --frozen` 仍然 exit 0——「用了锁文件」不等于「校验过锁文件」，别拿 `sync --frozen` 当漂移门禁。这也是 CI 里先跑 `uv lock --check` 的原因。
 
@@ -152,7 +156,7 @@ Windows required 汇总 job 绑定其 `success`。不新增 required check 名�
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | macOS Python 套件、锁文件与 lint；R1 桌面壳的 Rust fmt/test/clippy |
+| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS job：完整 Python 套件、锁文件/lint/SBOM；R1 桌面壳 Rust fmt/test/clippy，两者必须 success |
 | `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 
@@ -172,7 +176,8 @@ required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更�
 
 - 当前仍处内部研发阶段；首发按 [PRD §11.1](docs/PRD-v1.md) 准备 `v0.x.y` **macOS Apple Silicon 限定预览**，仅分发 `macos-arm64`。未验收的 macOS 版本、Intel Mac、Windows 和 Linux 不列为首发支持；四目标正式发行另验。
 - **不变的工程门禁**：必须走受保护 PR，四项 required 检查全绿。发行只采用当前 `origin/main` 精确提交，且该 SHA 最新一次 main push CI 全部 job 成功。不能用本机验证、较老 CI 或跳过其他平台的 required job 替代。
-- **当前自动化与后续工作**：现有 `.github/workflows/release.yml` 使用手动 commit 或解引用的 `v0.x.y` annotated tag，仍然要求四个原生 target 的 artifact，经 assembler 校验 `runtime_smoke.status=pass` 与匹配的 `host_target` 后只创建 draft Release。它不是 required check。首发预览需要独立的 arm64 构建与汇总路径，沿用相同的提交/CI 绑定、原生 smoke 与产物校验，拒绝混入其他目标，不自动公开发行；本次政策修订没有实现该路径。不要把四目标 draft 原样当成预览发布。
+- **生成预览草稿**：政策及实现通过受保护 PR 合入后，在 GitHub Actions 的 **Release candidate** 上选择 `main`，填写未占用的 `version`（如 `0.1.0`，不带 `v`）和当前主干完整 `commit`，勾选 `macos_arm64_preview`。共享 preflight 绑定该工作流提交和最新成功的同 SHA main push CI；预览只构建、验证、下载和汇总 `macos-arm64`。要求原生 `runtime_smoke.status=pass` 与匹配的 `host_target`，只用索引内的资产和索引自身生成带 Apple Silicon Preview 标记的 prerelease 草稿，不自动公开。这不是 required check。
+- **四目标路径保留**：取消勾选（默认）或推送指向当前主干的 `v0.x.y` annotated tag，仍走四个原生 target。预览版本不能已有同名 Release（含草稿）或 tag；核对版本后再触发，不在两个路径间复用同一个候选。草稿不等于发布，在人工公开前再次核对 tag、源码 SHA、工作流和下载字节。
 - macOS 辅助脚本固定为 `scripts/install-macos.sh` / `scripts/uninstall-macos.sh`，不另加下划线别名；发行索引须绑定归档、两份脚本的 SHA256 与大小及版本、完整源码 SHA 和构建 run。保存 workflow 运行、制品下载与校验的证据。
 
 **首发验收清单（待在最终候选上执行）：**

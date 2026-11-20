@@ -473,6 +473,9 @@ def acquire_host_info(
     release: HostReleaseIdentity | None = None,
 ) -> HostInfo:
     """写锁前先确认没有活着的 Host；有就抛 `HostError`（附 URL，调用方直接复用）。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     existing = read_host_info(data_root)
     if existing is not None and _http_alive(existing):
         raise HostError(f"Host 已在运行：http://127.0.0.1:{existing.port}/")
@@ -1136,6 +1139,9 @@ def run_host(
 ) -> int:
     """Host 主流程：拿锁 → 拉起 Daemon → 起 UI 桥 → 阻塞。返回退出码。"""
     data_root = Path(data_root)
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     data_root.mkdir(parents=True, exist_ok=True)
     ui_dir = Path(ui_dir).resolve()
     daemon_command = list(daemon_command)

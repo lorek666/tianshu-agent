@@ -124,49 +124,31 @@ def test_env_store_declares_it_is_not_secure_storage():
 
 IS_MACOS = sys.platform == "darwin"
 
-#: 测试专用 keychain service。所有 keychain 测试只在这个命名空间里读写，
-#: 生产 service（`tianshu-agent`）全程只许读不许写——隔离靠夹具结构保证，
-#: 不靠逐个测试自觉（SPEC-F12 §3.4 的承诺，复审轮补齐实现）。
-KEYCHAIN_TEST_SERVICE = "tianshu-agent-selftest"
+
+def _restrict_keychain_service(operation, test_service: str):
+    def guarded(service: str, *args, **kwargs):
+        if service != test_service:
+            pytest.fail("Keychain tests must use their isolated service")
+        return operation(service, *args, **kwargs)
+
+    return guarded
 
 
 @pytest.fixture(autouse=True)
-def _kc_isolated_namespace_and_production_guard(monkeypatch):
-    """两条保证（对本模块全部测试生效）：
-
-    1. **命名空间隔离**：把 `credentials._KEYCHAIN_SERVICE` monkeypatch 成
-       测试 service。三个态（get/set/delete）与模型构造路径都在调用点读这个
-       模块全局，所以一个 patch 全链路生效——复审发现的「三个测试直删生产槽
-       `tianshu-agent/openai/llm`」从此结构性不可能。
-    2. **生产槽只读守卫**：对生产 service 的 `openai/llm` 槽位做进入/退出
-       双读比对。任何测试（现在或将来）绕过隔离直写生产槽，这里立刻红——
-       用户真存过 key 的话，跑一次测试套件就无声销毁它，比任何测试失败都贵。
-    """
-    import tianshu.credentials as creds_mod
-
+def kc_service():
+    """真实 SecItem 只访问当前用例的服务；不读写生产凭据。"""
     if not IS_MACOS:
-        yield
+        yield None
         return
-    from tianshu import keychain_macos as km
+    from tianshu import credentials, keychain_macos
 
-    production_service = creds_mod._KEYCHAIN_SERVICE
-    guard_ref = "openai/llm"
-    try:
-        before = km.get_item(production_service, guard_ref)
-    except CredentialUnsupported:
-        before = None  # 钥匙串锁定等环境原因读不了：守卫降级，不做假断言
-    monkeypatch.setattr(creds_mod, "_KEYCHAIN_SERVICE", KEYCHAIN_TEST_SERVICE)
-    yield
-    try:
-        after = km.get_item(production_service, guard_ref)
-    except CredentialUnsupported:
-        after = before
-    assert before == after, (
-        f"测试触碰了生产凭据槽位 {production_service}/{guard_ref}"
-        # 只报有无、不报内容：守卫的断言消息不许泄密钥载荷。
-        f"（进入前={'有值' if before else '空'} 退出后={'有值' if after else '空'}）"
-        f"——keychain 测试只许写 {KEYCHAIN_TEST_SERVICE} 命名空间"
-    )
+    service = f"tianshu-agent-selftest-{uuid.uuid4().hex}"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(credentials, "_KEYCHAIN_SERVICE", service)
+        for name in ("get_item", "set_item", "delete_item"):
+            operation = getattr(keychain_macos, name)
+            patch.setattr(keychain_macos, name, _restrict_keychain_service(operation, service))
+        yield service
 
 
 def _skip_if_locked(exc: CredentialUnsupported) -> None:
@@ -283,16 +265,29 @@ def test_keychain_domain_isolation(kc_store, kc_refs):
     assert kc_store.get(anthropic_ref) == "sk-anthropic-00000000001"
 
 
-def test_keychain_items_landed_in_expected_namespace(kc_store, kc_refs):
-    """外部观察者视角：条目落在 store 配置的 service 下（测试中=隔离 service），
-    且 `security` 外部观察与库内写入一致；清理复核归零。"""
-    import tianshu.credentials as creds_mod
+@pytest.mark.parametrize(
+    ("operation", "extra"), [("get_item", ()), ("set_item", (b"test",)), ("delete_item", ())],
+)
+def test_keychain_guard_rejects_foreign_service_before_os_access(
+    kc_store, monkeypatch, operation, extra,
+):
+    from tianshu import keychain_macos
 
+    def unexpected_os_access():
+        pytest.fail("A non-test service reached the OS Keychain backend")
+
+    monkeypatch.setattr(keychain_macos, "_bindings", unexpected_os_access)
+    with pytest.raises(pytest.fail.Exception, match="must use their isolated service"):
+        getattr(keychain_macos, operation)("tianshu-agent-selftest-foreign", "test/llm", *extra)
+
+
+def test_keychain_items_landed_in_expected_namespace(kc_store, kc_refs, kc_service):
+    """外部观察者核对条目位于用例分配的 service，不访问其他槽位。"""
     ref = _kc_ref()
     kc_refs.append(ref)
     kc_store.set(ref, FAKE_KEY)
     probe = subprocess.run(
-        ["security", "find-generic-password", "-s", creds_mod._KEYCHAIN_SERVICE, "-a", str(ref)],
+        ["security", "find-generic-password", "-s", kc_service, "-a", str(ref)],
         capture_output=True, text=True, check=False,
     )
     assert probe.returncode == 0, (
@@ -309,8 +304,7 @@ def test_keychain_macos_no_silent_env_fallback(monkeypatch):
     """
     if not IS_MACOS:
         pytest.skip("真后端行为只在 macOS 取证")
-    # 删除发生在隔离命名空间（autouse 夹具已把 service patch 成
-    # tianshu-agent-selftest）：确保测试命名空间里该域未配置，且不碰生产槽。
+    # 确保当前用例的测试服务里该域未配置。
     KeychainCredentialStore().delete(CredentialRef("openai", "llm"))
     monkeypatch.setenv("TIANSHU_API_KEY", FAKE_KEY)
     monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")
@@ -593,7 +587,7 @@ def test_cli_reads_key_through_the_store_not_os_environ(monkeypatch):
     静默成功，这个测试就会红。
     """
     if IS_MACOS:
-        # 隔离命名空间里确保未配置；生产槽由 autouse 守卫看住。
+        # 只在本用例的隔离服务里确保该域未配置。
         KeychainCredentialStore().delete(CredentialRef("openai", "llm"))
     monkeypatch.setenv("TIANSHU_API_KEY", FAKE_KEY)
     monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")

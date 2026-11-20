@@ -456,7 +456,7 @@ def test_r3_undo_appends_audit_event(tmp_path):
     加了才真正删除并留下 undo.completed。
     """
     ws = _ws(tmp_path, {})
-    log = EventLog(tmp_path / "e.db")
+    log = EventLog(tmp_path / "events.db")
     store = SnapshotStore(tmp_path / "artifacts")
     store.init_run("r1")
     store.record_preimage("r1", "c1", "a.md", None, _sha("v1"), root=ws)
@@ -464,7 +464,7 @@ def test_r3_undo_appends_audit_event(tmp_path):
 
     from tianshu.cli import main
 
-    db = str(tmp_path / "e.db")
+    db = str(tmp_path / "events.db")
     assert main(["undo", "--run-id", "r1", "--workspace", str(ws),
                  "--db", db]) == 3
     assert (ws / "a.md").exists(), "未批准时一个字节都不能动"
@@ -509,7 +509,7 @@ def test_r4_blocked_tool_makes_run_fail_not_noop(tmp_path):
 def test_m1_large_payload_is_durable_before_reference_commit(tmp_path):
     from tianshu.events import MAX_INLINE_BYTES
 
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES}, legacy_write=True)
     event = log.read_run("r1")[0]
     assert event.payload["content"] == "x" * MAX_INLINE_BYTES
@@ -528,7 +528,7 @@ def test_light2_missing_payload_blob_is_event_log_corrupt(tmp_path):
     """
     from tianshu.events import MAX_INLINE_BYTES
 
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     seq = log.append("r1", "model.result", {"content": "x" * MAX_INLINE_BYTES}, legacy_write=True)
     refs = [row[0] for row in log._conn.execute(
         "SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL"

@@ -338,6 +338,10 @@ def spawn(
 
     child_env = filtered_env(policy, env)
     check_spawn(policy, argv, cwd, child_env)
+    if blob_dir is not None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(blob_dir)
 
     if pty:
         # 第一道门：策略许可（"允不允许用 PTY"，不是"这次要不要用"）。
@@ -684,6 +688,9 @@ class _StreamCollector:
         if self._blob_dir is None:
             self._spill = tempfile.TemporaryFile()
         else:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(self._blob_dir)
             self._blob_dir.mkdir(parents=True, exist_ok=True)
             fd, name = tempfile.mkstemp(
                 prefix=f".{self._stream_name}.",
@@ -722,6 +729,9 @@ class _StreamCollector:
         self._spill.close()
         self._spill = None
         target = self._blob_dir / digest  # type: ignore[operator]
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(self._blob_dir)
         os.replace(self._spill_path, target)
         self._spill_path = None
         _fsync_dir(target.parent)

@@ -71,7 +71,7 @@ def test_bool_is_not_int():
 def _run(tmp_path: Path, usage: dict):
     ws = make_ws(tmp_path)
     model = ScriptedModel([ModelResponse("end_turn", content="完成", usage=usage)])
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "event_blobs")
     result = run(
         task="t", workspace_dir=ws, out_name="s.md", model=model,
         log=log, limits=Limits(8, 1000),
@@ -88,7 +88,7 @@ def test_unknown_usage_marks_budget_unenforced(tmp_path):
     assert result.unknown_usage_calls == 1
     assert report.ok
     # run.end 必须如实记录预算是否可信
-    end = [e for e in EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    end = [e for e in EventLog(tmp_path / "e.db", blob_dir=tmp_path / "event_blobs")
            .read_run(result.run_id) if e.type == "run.end"][0]
     assert end.payload["budget_enforced"] is False
     assert end.payload["tokens_unknown_calls"] == 1
@@ -107,7 +107,7 @@ def test_budget_exceeded_stops_run(tmp_path):
         ModelResponse("end_turn", content="ok",
                       usage={"input_tokens": 900, "output_tokens": 900}),
     ])
-    log = EventLog(tmp_path / "e2.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "e2.db", blob_dir=tmp_path / "event_blobs2")
     result = run(task="t", workspace_dir=ws, out_name="s.md", model=model,
                  log=log, limits=Limits(8, 1000))
     log.close()

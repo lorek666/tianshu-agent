@@ -26,12 +26,14 @@ import time
 from pathlib import Path
 
 import pytest
+from restore_test_support import requires_managed_restore_writes
 from support import CHILD_TEXT, write_exact
 
 from tianshu import backup
 from tianshu.backup import (
     BackupRefused,
     ReferenceUnknown,
+    RestoreFailed,
     RestoreRefused,
     cleanup_plan,
     collect_references,
@@ -268,9 +270,20 @@ def test_backup_excludes_secrets_run_dir_and_logs(tmp_path):
             assert b"secret" * 8 not in path.read_bytes()
 
 
+@requires_managed_restore_writes
 def test_restore_same_path_after_losing_original_data(tmp_path):
-    """忘记/丢掉原数据后，从备份恢复回原路径：外部 payload 也必须能读。"""
+    """忘记/丢掉原数据后，从备份恢复回原路径：进入受管 published_hold，只读复核可验外部材料。"""
+    from tianshu import restore_manager
+    from tianshu.loop import build_stack
+    from tianshu.restore_access import RestoreScopeBusy
+    from tianshu.restore_contract import BodySelectorV1, SqlValueV1
+
     root = _make_data_root(tmp_path)
+    log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    try:
+        build_stack(log, data_root=root)
+    finally:
+        log.close()
     dest = tmp_path / "backup"
     manifest = create_backup(root, dest)
     moved = tmp_path / "data.moved"
@@ -283,19 +296,32 @@ def test_restore_same_path_after_losing_original_data(tmp_path):
     assert report.bytes_restored == manifest.total_bytes
     assert report.data_root == root.resolve()
     assert report.reconciliation["pending_intents"] == []
-    # 从恢复出来的副本读外部 payload：旧根已 rename，读到的一定是备份副本
-    log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
-    try:
-        events = log.read_run("r1")
-    finally:
-        log.close()
-    big = [e for e in events if e.payload.get("call_id") == "c2"][0]
-    assert len(big.payload["output"]["content"]) == 300_000
-    # 快照 blob 也在：恢复后仍可撤销（备份 ≠ 撤销，但备份让撤销证据活着）
-    store = SnapshotStore(root / "artifacts")
-    change = store.find("r1", "c1")
-    assert change is not None and change.blob_ref
-    assert Path(change.blob_ref).read_bytes() == BEFORE.encode()
+    # Restore B 消除了绕过隔离态的直开旁路：普通 EventLog / SnapshotStore 必须在 held 期拒绝
+    with pytest.raises(RestoreScopeBusy):
+        EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    with pytest.raises(RestoreScopeBusy):
+        SnapshotStore(root / "artifacts")
+    # 专用只读复核验证大外部 payload 与快照写前材料均在备份副本中完好可读
+    sel_event = BodySelectorV1("events", (SqlValueV1("integer", "4"),), "payload").to_selector()
+    sel_snap = BodySelectorV1(
+        "snapshots",
+        (
+            SqlValueV1(
+                "text",
+                __import__("base64").b64encode(b"artifacts/snapshots/r1.json").decode("ascii"),
+            ),
+        ),
+        "json",
+    ).to_selector()
+    rev = restore_manager.review(root, body_scopes=(sel_event, sel_snap))
+    assert rev.review_complete is True
+    ev4 = next(
+        o for o in rev.objects if o.family == "events" and o.key == (SqlValueV1("integer", "4"),)
+    )
+    assert len(json.loads(ev4.bodies[0].text)["output"]["content"]) == 300_000
+    snap_obj = next(o for o in rev.objects if o.family == "snapshots")
+    snap_data = json.loads(snap_obj.bodies[0].text)
+    assert Path(snap_data["changes"][0]["blob_ref"]).read_bytes() == BEFORE.encode()
     assert not moved.exists() or moved.is_dir()  # 旧数据未被触碰
 
 
@@ -318,8 +344,17 @@ def test_restore_refuses_non_clean_target_and_wrong_path(tmp_path):
     assert "只能恢复到原数据根" in str(excinfo.value) or "原路径" in str(excinfo.value)
 
 
+@requires_managed_restore_writes
 def test_restore_failure_keeps_target_untouched(tmp_path, monkeypatch):
+    from tianshu import restore_manager
+    from tianshu.loop import build_stack
+
     root = _make_data_root(tmp_path)
+    log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
+    try:
+        build_stack(log, data_root=root)
+    finally:
+        log.close()
     dest = tmp_path / "backup"
     create_backup(root, dest)
     root.rename(tmp_path / "data.moved")
@@ -336,10 +371,13 @@ def test_restore_failure_keeps_target_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "_copy_file_verified", flaky)
     with pytest.raises(OSError):
         restore_backup(dest, root)
-    # 原目标没被创建/替换；临时目录已清理
+    # 原目标没被创建/替换；受管恢复按 B09 保全暂存现场，随后显式 abort 可完整清零
     assert not root.exists()
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".data.restore-")]
-    assert leftovers == []
+    assert len(leftovers) == 1
+    aborted = restore_manager.abort(root)
+    assert aborted.phase == "aborted"
+    assert [p for p in tmp_path.iterdir() if p.name.startswith(".data.restore-")] == []
 
 
 # ---------------------------------------------------------------- 中断与损坏
@@ -503,40 +541,85 @@ def test_verify_reports_missing_referenced_blob(tmp_path):
 # ---------------------------------------------------------------- 恢复后核对
 
 
-def test_restore_reconciliation_reports_pending_work(tmp_path):
+@pytest.mark.parametrize("force_unavailable", [False, True], ids=["native", "unavailable"])
+def test_restore_reconciliation_reports_pending_work(tmp_path, monkeypatch, force_unavailable):
+    from tianshu import restore_manager
+    from tianshu.disk_admission import DiskAdmission
+    from tianshu.restore_registry import RestoreRegistry
+
+    if force_unavailable:
+        # Exercise refusal portably, never force unavailable Windows writes on.
+        monkeypatch.setattr(restore_manager, "_managed_restore_writes_supported", lambda: False)
+
     root = _make_data_root(tmp_path)
     log = EventLog(root / "events.db", blob_dir=root / "artifacts" / "blobs")
-    build_stack(log, data_root=root)  # 建出投影表（审批/租约/Run）
+    stack = build_stack(log, data_root=root)  # 建出投影表（审批/租约/Run）
+    stack.tasks._disk_admission = DiskAdmission(
+        stack.tasks.disk_admission.context,
+        probe=lambda _path: 1 << 62,
+    )
+    t1 = stack.tasks.create_task("待决核对夹具", [str(tmp_path)])
+    r_live = stack.tasks.start_run(t1.task_id).run_id
     now = int(time.time() * 1000)
     # 未决 intent：有 intent 无 result
-    log.append("r_live", "tool.intent", {
+    log.append(r_live, "tool.intent", {
         "call_id": "c9", "tool_id": "modify_text",
         "args": {"path": "a.txt"}, "args_hash": "0" * 64}, actor_kind="core", legacy_write=True)
     conn = log.conn
     conn.execute(
-        "INSERT INTO runs(run_id, task_id, goal_revision, lease_epoch, state,"
-        " created_at) VALUES ('r_live','t1',1,1,'running',?)", (now,))
-    conn.execute(
         "INSERT INTO approvals(approval_id, request_id, request_digest,"
         " action_digest, task_id, run_id, goal_revision, lease_epoch, action,"
         " resources, state, reason, created_at, expires_at)"
-        " VALUES ('ap1','req1','d1','a1','t1','r_live',1,1,'overwrite',"
-        " '[\"/x\"]','pending','',?,?)", (now, now + 600_000))
+        " VALUES ('ap1','req1','d1','a1',?,?,1,1,'overwrite',"
+        " '[\"/x\"]','pending','',?,?)", (t1.task_id, r_live, now, now + 600_000))
     conn.execute(
         "INSERT INTO leases(resource_key, run_id, owner_pid, owner_instance_id,"
         " canonical_path, path_key, acquired_at, expires_at, wall_acquired_at)"
-        " VALUES ('k1','r_live',?, 'inst', '/x', 'k1', ?, ?, ?)",
-        (os.getpid(), now, now + 600_000, now))
+        " VALUES ('k1',?,?, 'inst', '/x', 'k1', ?, ?, ?)",
+        (r_live, os.getpid(), now, now + 600_000, now))
     log.close()
     dest = tmp_path / "backup"
     create_backup(root, dest)
     root.rename(tmp_path / "data.moved")
 
+    # Read-only inspection of the saved backup retains all four pending-work
+    # assertions even when the platform cannot durably publish a managed restore.
+    saved = backup._reconcile(dest)
+    assert [item["call_id"] for item in saved["pending_intents"]] == ["c9"]
+    assert [item["approval_id"] for item in saved["pending_approvals"]] == ["ap1"]
+    assert [item["run_id"] for item in saved["non_terminal_runs"]] == [r_live]
+    assert [item["resource_key"] for item in saved["live_leases"]] == ["k1"]
+    if not restore_manager._managed_restore_writes_supported():
+        def snapshot(directory):
+            return {
+                path.relative_to(directory): (
+                    path.lstat().st_mode, path.lstat().st_ino, path.lstat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in (directory, *directory.rglob("*"))
+            }
+
+        registry = RestoreRegistry()
+        before_data = snapshot(tmp_path)
+        before_registry = snapshot(registry.home)
+        assert not registry.observe().present
+        with pytest.raises(RestoreFailed) as caught:
+            restore_backup(dest, root)
+        cause = caught.value.__cause__
+        assert isinstance(cause, restore_manager.RestoreOperationError)
+        assert cause.failure.category == "durability_unavailable"
+        assert cause.failure.batch_id is None and cause.failure.phase is None
+        assert not root.exists()
+        assert snapshot(tmp_path) == before_data  # no target, stage, or backup mutation
+        assert snapshot(registry.home) == before_registry
+        assert not registry.observe().present
+        return
+
     report = restore_backup(dest, root)
     rec = report.reconciliation
     assert [item["call_id"] for item in rec["pending_intents"]] == ["c9"]
     assert [item["approval_id"] for item in rec["pending_approvals"]] == ["ap1"]
-    assert [item["run_id"] for item in rec["non_terminal_runs"]] == ["r_live"]
+    assert [item["run_id"] for item in rec["non_terminal_runs"]] == [r_live]
     assert [item["resource_key"] for item in rec["live_leases"]] == ["k1"]
     assert any("未决 intent" in w for w in report.warnings)
     assert any("租约" in w for w in report.warnings)
@@ -567,6 +650,53 @@ def test_reference_protection_only_orphans_are_candidates(tmp_path):
     # 只是候选清单：一个文件都没删
     assert orphan.exists()
     assert index.protected_blobs
+
+
+def test_cleanup_plan_uses_filesystem_identity_for_referenced_names(tmp_path):
+    root = tmp_path / "data"
+    db = root / "events.db"
+    blobs = root / "blobs"
+    content = "x" * 300_000
+    log = EventLog(db, blob_dir=blobs)
+    try:
+        seq = log.append("r1", "tool.result", {
+            "call_id": "read", "tool_id": "read_text", "status": "succeeded",
+            "effect_state": "none_applied", "output": {"content": content},
+        }, actor_kind="core")
+        (ref,) = log.conn.execute(
+            "SELECT payload_ref FROM events WHERE seq=?", (seq,),
+        ).fetchone()
+    finally:
+        log.close()
+
+    recorded = Path(ref)
+    alternate = recorded.with_name(recorded.name.upper())
+    assert alternate.name != recorded.name
+    orphan = blobs / "unused"
+    orphan.write_bytes(b"unreferenced")
+    expected = {f"blobs/{orphan.name}"}
+    if alternate.exists():
+        # Exercise the names as actually stored and looked up on this volume.
+        assert alternate.samefile(recorded)
+        intermediate = recorded.rename(blobs / "temporary-name")
+        intermediate.rename(alternate)
+        assert {path.name for path in blobs.iterdir()} == {alternate.name, orphan.name}
+        assert alternate.samefile(recorded)
+        assert recorded.stat().st_nlink == 1
+    else:
+        # On a case-sensitive volume the other spelling can be a separate file.
+        alternate.write_bytes(recorded.read_bytes())
+        assert not alternate.samefile(recorded)
+        expected.add(f"blobs/{alternate.name}")
+
+    log = EventLog(db, blob_dir=blobs)
+    try:
+        assert log.read_run("r1")[0].payload["output"]["content"] == content
+    finally:
+        log.close()
+    plan = cleanup_plan(root)
+    assert {candidate["path"] for candidate in plan["candidates"]} == expected
+    assert recorded.exists() and alternate.exists() and orphan.exists()
 
 
 def test_reference_protection_refuses_when_evidence_unreadable(tmp_path):

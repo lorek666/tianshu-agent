@@ -360,6 +360,9 @@ def preview_diagnostics(
     redact_sensitive: bool = True,
 ) -> dict[str, Any]:
     """只读生成诊断包内容预览清单，不写任何磁盘文件。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
     selected = _normalize_sections(sections)
     collected = _collect_sections(
         data_root, selected, redact_sensitive=redact_sensitive
@@ -402,6 +405,10 @@ def export_diagnostics(
     redact_sensitive: bool = True,
 ) -> dict[str, Any]:
     """将默认脱敏的诊断包写成 `<out_dir>/tianshu-diagnostics-<ts>.zip`（纯本地，绝不上传）。"""
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(data_root)
+    ensure_path_not_held(out_dir)
     selected = _normalize_sections(sections)
     root_resolved = Path(data_root).expanduser().resolve()
     dest_dir = Path(out_dir).expanduser().resolve()

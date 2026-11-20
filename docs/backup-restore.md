@@ -1,8 +1,8 @@
-# 数据备份、校验、迁移与恢复预演（PRD §8.5）
+# 数据备份、校验、迁移、受管恢复与离线清理（PRD §8.5）
 
-2026-11-13 的数据生命周期首片新增 backup、verify、restore-plan 三个 CLI 入口，记录见 [DATA-LIFECYCLE-2026-11-13.md](DATA-LIFECYCLE-2026-11-13.md)。后续 T1 接入实际 EventLog 准入，T2 收紧迁移绑定，T3 新增第四个入口 `data migrate`；三片精确内容均已独立验收，最终组合门禁及新原生 CI 状态见[集成记录](DATA-ADMISSION-2026-11-13.md)。[T2](DATA-ADMISSION-T2-2026-11-13.md)/[T3](DATA-ADMISSION-T3-2026-11-13.md)作者记录保留其历史冻结时点。原 W4 库函数验收（`feat/backup-restore`，基线 `da84d92`，1347 passed / 6 skipped）保留在 §7–§8，属于 2026-11-11 的历史证据，不代表当前全量测试数。
+备份与显式迁移的早期分片见[数据生命周期](DATA-LIFECYCLE-2026-11-13.md)、[集成记录](DATA-ADMISSION-2026-11-13.md)及 [T2](DATA-ADMISSION-T2-2026-11-13.md)/[T3](DATA-ADMISSION-T3-2026-11-13.md)的冻结记录。§7–§8 保留 2026-11-11 原 W4 实验和负控输出。受管恢复 B/C 与 W15 离线 GC 的集成验证见 [PR #198](https://github.com/lorek666/tianshu-agent/pull/198)。
 
-规格：[PRD §8.5](PRD-v1.md)、[原 W4 规格 §5](SPEC-PRD-REVIEW-2026-11-11.md)。库实现为 `backup.py` / `migrate.py`；新入口为 `data_cli.py`，协作式维护准入为 `maintenance.py`。
+规格见 [PRD §8.5](PRD-v1.md)、[恢复 B](restore-held-contract.md)、[恢复 C](restore-release-contract.md)与 [W15](CONTRACT-W15-RETENTION-2026-11-15.md)。CLI 入口在 `data_cli.py`。库实现分属 `backup.py`、`migrate.py`、`restore_manager.py` 与 `data_gc.py`，协作式准入由 `maintenance.py` 与 `restore_access.py` 负责。
 
 ---
 
@@ -21,11 +21,11 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 
 `migrate` 必须同时给出 `--data-root` 与既有的 `--backup`，不会自动生成备份；成功退出 `0`，拒绝或执行失败退出 `2`，四个原故障注入点退出 `77`。JSON 失败含 `operation="migrate"`、`ok=false`、`code` 与 `error`；六类 code 为 `incompatible`、`migration_incomplete`、`progress_corrupt`、`backup_mismatch`、`maintenance_busy`、`migration_failed`。成功含 `ok=true`、`code=null` 和迁移库报告。JSON 及迁移文本统一脱敏；内部编程异常不伪装成这六类业务失败。
 
-新 CLI 只处理标准 `ROOT/events.db` 和根内材料；根外引用、自定义材料目录不自动映射。迁移不启停服务、不执行恢复。恢复预演不写目标、不启动服务、不激活记忆。报告中的 `apply_supported=false`、`memory_reactivation=requires_quarantine_and_review` 和 `later_forget_delete_history=completeness_unproven` 是执行边界：旧备份无法证明备份之后的忘记、擦除或删除历史完整。实际恢复入口仍须等[受管导入 B 契约](restore-held-contract.md)的产品实现与验收；当前契约文字通过不增加 CLI/API，所有 B 产品验收仍为 `NOT_RUN`。
+备份、迁移与受管恢复处理标准 `ROOT/events.db` 和根内材料。升级前如果曾用自定义数据库名或把 `data_root` 放在数据库目录之外，请保留旧数据库及其材料目录。新版本检查因默认布局调整而受影响的快照、撤销、内容和记忆目录，发现文件、链接或不可判定内容即拒绝。请先制作离线副本，再用兼容旧布局的版本复核未决事务。
 
-第二轮修复还要求Receipt的blob引用独立完整，受控文件Receipt有一致写前快照；快照/undo使用各自原生解析器。
-`verify` 拒绝非法清单整数与未来/负数真实DB版本；`restore-plan` 对全部事件做精确payload版本校验，并将runs全集身份/最终状态与事件对账。
-缺行或矛盾不自动重建、不把未知报告为空；这不等于已实现恢复apply、审批/租约全历史重建或GC。证据见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)。
+`restore-plan` 通过时给出 `plan_sha256` 和 `apply_supported`。实际导入、隔离复核、解除与平台范围见 §4。报告会标明 `later_forget_delete_history=completeness_unproven`，因为备份只记录其一致点以前的历史。空间清理单独走 §6 的显式离线流程。
+
+`verify` 校验 Receipt 的 blob 引用和写前快照。`restore-plan` 对全部事件做 payload 版本校验，核对 Run 全集身份与最终状态。缺行或矛盾时拒绝确定结论。早期校验问题及修复证据见[第二轮总账](DEBUG-ROUND2-2026-11-13.md)。
 
 预演需要 `runs`、`approvals`、`leases` 三张投影及事件版本旁表可读。缺失或损坏时退出 `2`、`ok=false`、`reconciliation.complete=false`，不会将未能核对的状态报告为空。只有事件日志的旧库也不猜测重建成功；须先由匹配版本重建并验证必要投影。
 
@@ -33,18 +33,18 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 |---|---|---|
 | 备份取**一致点**（SQLite 在线备份 API，不复制正在写的库） | **已实现 + 有测试** | §2、`tests/test_backup.py` |
 | `backup.json` 记录版本/每文件 sha256/引用清单/恢复须知/保留期 | **已实现** | §2.4 |
-| 备份原子发布；中断的 `.partial-*` 目录**不会**被 `verify` 当有效备份 | **已实现 + 有测试（含子进程真崩溃）** | §2.5、§7 负控 |
+| 备份原子发布；中断的 `.partial-*` 目录**不会**被 `verify` 当有效备份 | **已实现 + 有测试（含子进程真崩溃）** | §2.3、§7 负控 |
 | `verify_backup` 校验哈希/引用/事件 seq 连续/清单可解析/版本兼容 | **已实现 + 有测试** | §3 |
-| `data restore-plan` 只读报告原路径、干净目标、版本与未决项 | **本轮新增；不执行恢复** | `tests/test_data_cli.py` |
-| 低层 `restore_backup` 只恢复干净根；失败保留原数据 | **原 W4 库函数；不是新 CLI 的恢复许可** | §4；未补齐后续删除历史与记忆隔离 |
+| `data restore-plan` 核验目标、备份、版本及未决项并生成计划摘要 | **只读，成功退出 `3`** | `tests/test_data_cli.py`、`tests/test_restore_b_execution.py` |
+| `data restore-apply/review/resume/abort/release` | **受管导入、持久隔离、复核、续做与显式解除** | §4、[恢复 B](restore-held-contract.md)、[恢复 C](restore-release-contract.md) |
 | 迁移有机制版本号、步骤注册表、严格进度、完整备份绑定与中断续做 | **T2/T3 已随 PR #136 交付；仅迁移机制，非恢复 apply** | §5、T2/T3 事实记录 |
 | 迁移不 UPDATE/DELETE 历史事件；append-only 触发器保留 | **已实现 + 有测试** | §5 |
 | 保留期声明 + 引用保护（被引用 blob 永不进清理候选） | **已实现 + 有测试** | §6 |
-| **换路径恢复（重定位）** | **未实现** | §4.2：事件 `payload_ref` / 快照 `blob_ref` 是绝对路径；`events.py`/`snapshot.py` 不在本工作流所有权 |
+| **换路径恢复（重定位）** | **未实现** | §4.3：事件 `payload_ref` / 快照 `blob_ref` 可能是绝对路径 |
 | 实际 EventLog 打开前的版本/进度准入 | **T1 已接线** | §5.5；正常 v0 兼容，不自动迁移 |
 | **首次启动自动建库并迁移** | **未实现** | 新库 `user_version=0`，当前程序不会自动迁移；见 §5.5 |
 | CLI 备份与正常 `EventLog` 连接互斥 | **本轮新增协作准入；不强停进程** | §2.2；直接调用低层在线 API 不自动独占 |
-| Windows 实机 / APFS / 跨机器恢复 | **未验证** | 只有 macOS arm64 本机；换路径/跨机重定位未实现 |
+| Windows 用户设备、物理掉电与跨机器恢复 | **未验证** | 本机 macOS arm64 的文件系统与进程测试只覆盖各自场景。换路径及跨机重定位尚未实现 |
 
 ---
 
@@ -124,7 +124,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 ```
 
 - 目标已存在 → **拒绝**（本模块永不覆盖备份）。
-- 构建中异常 → 清理临时目录后抛出；`os._exit` 注入（模拟断电）留下带 `.partial`
+- 构建中异常 → 清理临时目录后抛出；`os._exit` 注入的进程硬退留下带 `.partial`
   标记的目录，`verify_backup` 明确拒绝，不会被当成有效备份。
 - `dest` 不允许在数据根里。
 
@@ -172,34 +172,40 @@ message 里带**问题 + 处置建议**。
 
 ---
 
-## 4. 恢复（`backup.restore_backup`）
+## 4. 受管恢复（回到备份记录的原路径）
 
-本节描述原 W4 **低层库函数**，不是面向普通用户的安全恢复闭环；它未证明备份之后的 forget/erase/delete 历史，也不实现恢复记忆隔离。本轮 CLI 只提供 §0 的只读预演，不调用此函数。不要把库测试通过当成可直接激活旧备份的证据。
+### 4.1 从导入到复核
 
-### 4.1 规则
+受管写入需要支持目录 `fsync` 的 POSIX 文件系统。Windows 的计划与符合隔离绑定的复核保持只读，计划返回 `apply_supported=false`。有效的导入、写入型续做、中止和解除返回 `durability_unavailable`（CLI 退出 `2`）。收到该错误时保留原数据根、暂存目录和注册表。Windows 目录持久化缺口见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
 
-1. 先 `verify_backup`；不通过 → `BackupInvalid`（带补救路径）。
-2. 目标必须是**干净根**：不存在或空目录；非空 → `BackupRefused`，不覆盖、不合并。
-3. 逐文件复制，**再校验一次** sha256/size；任何不符 → `RestoreFailed`，清理临时
-   目录，原目标保持原样。
-4. 全部写完 → `fsync` 文件与目录 → 空目录 `rmdir` → `os.replace(临时, 目标)` →
-   fsync 父目录。**原子发布**，不会留下半个数据根。
-5. 恢复后核对并输出报告：未决 `intent`（有 intent 无 result）、待批/已批未消费
-   审批、未终态 Run、仍有效的租约；数据根结构版本低于当前程序时警告"需要迁移"。
+关闭使用该根的服务与 CLI。保留原数据现场和独立备份。目标必须不存在，或仅含全空的目录骨架，且与备份的原数据根一致。`verify` 和 `restore-plan` 检查通过后，核对计划的备份路径、目标路径与未决项，再从预演 JSON 取得 `plan_sha256`。
 
-### 4.2 为什么只能恢复到**原数据根路径**
+```bash
+uv run --frozen tianshu data restore-apply /absolute/backups/backup-1 \
+  --data-root /absolute/data-root --expect-plan "$PLAN_SHA256" --json
+uv run --frozen tianshu data restore-review --data-root /absolute/data-root --json
+```
 
-事件库里的 `payload_ref` 与快照清单里的 `blob_ref` 都是**绝对路径**。恢复到另一个
-路径后，这些引用仍指向旧位置：轻则读到旧数据（假恢复），重则读不到（`EventLogCorrupt`）。
-本轮只给保存备份的读取增加已核对根别名，不重写历史引用，也不迁移恢复后的绝对路径。
-低层恢复仍**强制** `data_root == manifest.source_path`，不同路径直接
-`RestoreRefused` 并说明原因。**换路径重定位 = 未实现**，不要写成已支持。
+`restore-apply` 成功进入 `published_hold`。恢复根继续隔离，普通业务入口和服务仍被拒绝。复核校验绑定、材料及未决历史，默认隐藏正文。可用 `--body-scope` 按报告的选择器披露指定正文，用 `--later-backup` 对照已知后续变化。含正文的报告请只在本地查看。
 
-### 4.3 恢复演练（本机实测）
+导入中断后，用 `restore-resume --data-root ROOT` 续做同批次。进入 `publish_intent` 前也可用 `restore-abort --data-root ROOT` 按冻结计划清理该批次。已有中止意图时，续做只会完成清理。`--batch` 可显式绑定报出的批次。保留恢复标记、注册表与暂存目录，由管理命令核验与推进。
 
-见 §7 的 `test_restore_same_path_after_losing_original_data`：把原数据根 rename 走后，
-用备份恢复到原路径，再从恢复副本读 300KB 外部 payload blob（旧位置已不存在），
-并确认快照 preimage 字节完整 —— 证明恢复出来的是备份副本，不是"碰巧读到了旧文件"。
+### 4.2 复核确认后解除隔离
+
+仅在 `review_complete=true` 且人工核对结果后，从复核 JSON 的 `result.review_sha256` 取得摘要。以下命令明确确认备份点后的遗忘、擦除和删除历史无法证明完整。只有接受该限制时才执行。
+
+```bash
+uv run --frozen tianshu data restore-release --data-root /absolute/data-root \
+  --expect-review "$REVIEW_SHA256" --acknowledge-unproven-later-history --json
+```
+
+解除时追加确定性对账事件，封存旧的非终态 Run，使陈旧审批失效并清理旧授权与租约。未知效果留待人工核查。在支持写入的平台上，若解除中断，以同一复核摘要和确认开关重跑 `restore-release`。父目录持久化失败时，发布和清理仍处于隔离批次中。检查错误报告中的保留路径，使用同一批次续做。除预演外，各恢复管理动作完成退出 `0`，拒绝或操作失败退出 `2`。读取失败响应中的批次、阶段与建议命令以确定是否需要续做。
+
+解除后 v1 库须按返回的下一步命令显式 `data backup` 和 `data migrate`，完成后才可启动服务。已解除的 v2 库只有在结构校验和当前实体的已解除证明均成立时，才可免迁移进度文件。低层 `backup.restore_backup()` 也走受管导入，成功后停在隔离态。
+
+### 4.3 路径与验收范围
+
+事件 `payload_ref` 与快照 `blob_ref` 可能记录绝对路径。恢复使用原路径，校验读取备份时识别已核对并保存的同根别名。跨路径重定位仍未实现。§7–§8 的原 W4 库函数实验属于历史记录。本机故障注入和原生 CI 的取证范围见[集成 PR](https://github.com/lorek666/tianshu-agent/pull/198)与[B09 持久化记录](changelog/2026-11-19-restore-b09-durability.md)。设备掉电持久性仍待实测。
 
 ---
 
@@ -251,12 +257,12 @@ message 里带**问题 + 处置建议**。
 
 T1 已在所有正常 EventLog 的实际连接前缀接入共享准入与只读检查，先检查真实 DB 及其关联进度，再设置 WAL、执行事件 DDL、创建 payload 目录。自定义 DB 检查自身 `<数据库名>.migration.json`，不借旁边标准库作证。
 
-- 真正新空库与合法无进度 v0 保持兼容，不盲标为 v2，也不自动迁移。
-- v1 与任何 `in_progress` 拒绝普通打开；v2 必须有严格合法、与真实 DB/机制对象一致的 completed 证据；无进度不放行。
-- 未来/畸形已登记版本、缺整个事件版本旁表、坏 JSON 或关联记录冲突拒绝。标准库的有限 legacy completed 兼容仅限普通打开，不能转成新续做权。
+- 真正新空库与合法无进度 v0 保持兼容，不盲标为 v2，也不自动迁移。标准库名按路径比较规则查找历史材料及旧进度；即使主库为空或缺失，发现历史证据也拒绝重新初始化。
+- v1 与任何 `in_progress` 拒绝普通打开。v2 必须有合法的 completed 进度；无进度时，只有结构与步骤审计通过且有匹配当前根及主库实体的 `ReleasedV1` 才可打开（§4.2）。
+- 未来/畸形已登记版本、缺整个事件版本旁表、坏 JSON 或关联记录冲突拒绝。标准库的有限 legacy completed 兼容仅限普通打开；别名必须与标准库为同一实体，同名比较不能代替实体核验。新版进度的精确路径绑定不变，旧进度也不能转成新续做权。
 - `migrate.assert_writable()` 保留为旧专用严格 helper，未原样塞入普通启动；它会拒绝正常 v0。T3 的 `data migrate` 仅接 T2 迁移库，不复制版本、摘要或路径算法。
 
-当前 0→2 仍只证明迁移机制，完整产品格式、恢复隔离与自动升级回退矩阵尚未交付。T1 的组合与 T2/T3 的定向、独立和 CI 状态分别见知识库及各片事实记录。
+0→2 仍只证明迁移机制，不代表完整产品格式或自动升级回退矩阵已交付。受管导入、持久隔离与显式解除见 §4；各版本与平台的实际证据见知识库和对应 PR。
 
 ---
 
@@ -268,23 +274,25 @@ T1 已在所有正常 EventLog 的实际连接前缀接入共享准入与只读�
 |---|---|---|---|
 | `event_log` | 永久（唯一事实源） | 无 | 用户显式操作；本模块不提供删除路径 |
 | `snapshot_manifests` | 永久（未撤销/未完成 Run 需要） | 无 | 用户显式操作 |
-| `snapshot_blobs` | 被引用即永久保护 | 2 GiB | 人工清理，本模块只出候选 |
+| `snapshot_blobs` | 被引用即永久保护 | 2 GiB | `data gc --approve` 显式离线回收孤儿，`cleanup_plan()` 只生成候选 |
 | `undo_journals` | 未完成必须保留；完成后可归档 | 64 MiB | 人工清理 |
 | `diagnostic_trace` | 默认 30 天 | 50 MiB | 人工清理，不参与备份 |
 | `indexes` | 可重建；同库派生表随 `events.db` 一并保存 | — | 不单独备份外置索引；重建代替清理 |
 
-引用保护（可测试、**不实现全自动 GC**）：
+`collect_references(data_root)` 汇总事件外置 payload、执行流溢出、Receipt、快照、撤销、内容对象和未擦除记忆引用。受保护材料以登记路径和核验后的原生文件身份共同判定。大小写等不同拼写解析到同一文件时，该文件仍保留。扫描 `artifacts/blobs/` 与根 `blobs/` 下的内容对象，保留 `memory_blobs/`。`cleanup_plan(data_root)` 只生成候选。引用读取或材料完整性无法确认时，清理拒绝。
 
-- `collect_references(data_root)` 汇总事件 `payload_ref`、快照清单的
-  `blob_ref`、撤销日志的 `before_state`、内容对象与未擦除记忆正文引用；返回
-  `protected_blobs` / `orphan_blobs`。投影引用材料还要通过哈希与大小核验。
-- 读不出引用（清单坏、日志坏、事件库坏）→ 抛 `ReferenceUnknown`，**拒绝**给出
-  清理结论（误删证据比留多余 blob 严重）。
-- `cleanup_plan(data_root)` 只返回 `dry_run` 候选清单（未引用的孤儿 blob），
-  不删除任何文件；候选范围仍为 `artifacts/blobs/`，不扩展为根 blobs/记忆 GC。
-  未完成的撤销日志单独列出。该库 API 不持维护独占准入，不承诺在线清理安全；
-  不能直接按旧候选执行删除，执行 GC 仍需独立设计。
-- `usage_report(data_root)` 按声明类别统计占用并对照额度，超额度只点名，不清理。
+```bash
+uv run --frozen tianshu data gc --data-root /absolute/data-root --json
+```
+
+预演成功退出 `3`。确认候选后，关闭使用该根的 Host、Daemon 和 CLI，再对同一根显式添加 `--approve`。批准命令持独占准入并重新核验候选。清理范围为孤儿 blob、符合条件的超期空终态快照、已终态作业，以及已结清且已知费用的过期预占。事件日志、摘要版本、引用材料和未知预占继续保留。默认保留期为 90 天，`--older-than-days N` 可指定正整数天数。
+
+- `0` 表示本次执行完成。启动回收 SQLite 表行和 WAL 检查点需要至少 64 KiB 有效写入余量。POSIX 上，低余量时可先删除文件并同步父目录。若重测仍不足，本次不会做检查点，有待删表行时以 `db_rows_deferred_low_disk=true` 标记，可在腾出空间后重新执行。
+- 预演和只读执行预检发现主库的 `-wal`、`-shm` 或 `-journal` 时返回 `2`，保留现场。请正常关闭使用数据根的进程并完成 SQLite 恢复，避免手动删除旁文件。
+- Windows 的批准执行先只读预检。批次有任何文件候选时返回 `2`，所有文件、表行和 SQLite 检查点都保持原样。静态库只有表行候选时仍可清理或按余量延后。
+- 执行中的 `gc_failed` 也退出 `2`，报告已确认成功的 `unlink`、逻辑字节数、已提交表行及可用的 checkpoint 状态。未确认的效果需要核对现场。逻辑字节数与实际可用空间可能不同。
+
+`usage_report(data_root)` 和 `tianshu data retention-audit` 仅统计和审计。`data gc` 是人工触发的协作式离线清理。详细保护清单与失败边界见 [W15 变更记录](changelog/2026-11-18-w15-safe-gc.md)。
 
 ---
 
@@ -393,7 +401,7 @@ FAILED tests/test_backup.py::test_reference_protection_only_orphans_are_candidat
 
 ## 9. 仍未验证 / 剩余 unknown
 
-1. **换路径恢复（重定位）未实现**：见 §4.2。需要相对化 `payload_ref` / `blob_ref`
+1. **换路径恢复（重定位）未实现**：见 §4.3。需要相对化 `payload_ref` / `blob_ref`
    （`events.py` / `snapshot.py` 属别的工作流）或恢复时重写引用表（不能 UPDATE 历史
    事件，需要新机制）。
 2. **新库不自动迁移，完整产品格式与升级回退矩阵未交付**：实际 EventLog 准入及显式迁移边界见 §5.5。

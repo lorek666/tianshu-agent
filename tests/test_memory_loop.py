@@ -170,13 +170,9 @@ class Env:
 
 @pytest.fixture()
 def env(tmp_path: Path):
-    data_root = tmp_path / "authority"
-    data_root.mkdir()
-    # CLI 的 `_authority_stack()` 与本 fixture 用**同一个数据库路径**：记忆
-    # 正文默认落在 DB 旁的 `memory_blobs/`，所以两个各自 new EventLog 的进程
-    # 看到的是同一批正文，不需要额外对齐 blob 配置。
+    # 这些 CLI 用例只传 --db；fixture 也使用同根标准布局。
     log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
-    stack = build_stack(log, data_root=data_root)
+    stack = build_stack(log)
     yield Env(root=tmp_path, log=log, stack=stack)
     log.close()
 
@@ -920,7 +916,7 @@ def test_cli_search_json_shape_is_documented_and_stable(env: Env, capsys, tmp_pa
             "--db",
             str(env.root / "events.db"),
             "--data-root",
-            str(env.root / "authority"),
+            str(env.stack.data_root),
         ]
     )
     assert rc in (0, 1)

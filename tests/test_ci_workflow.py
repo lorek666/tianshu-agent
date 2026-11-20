@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
+from test_release_workflow import _bash
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -47,6 +51,9 @@ def _assert_ready_pr_guard(workflow: str) -> None:
     job_names = _job_names(workflow)
     assert job_names == [
         "test",
+        "macos_python",
+        "desktop_macos",
+        "macos_summary",
         "windows_shards",
         "desktop_windows",
         "windows_summary",
@@ -55,7 +62,7 @@ def _assert_ready_pr_guard(workflow: str) -> None:
 
     for name in job_names:
         block = _job_block(workflow, name)
-        if name == "windows_summary":
+        if name in {"windows_summary", "macos_summary"}:
             expected = f"if: always() && ({READY_GUARD})"
         else:
             expected = f"if: {READY_GUARD}"
@@ -98,15 +105,83 @@ def test_ready_pr_gate_rejects_a_new_unguarded_runner_job():
         _assert_ready_pr_guard(workflow.rstrip() + rogue)
 
 
-def test_windows_summary_keeps_always_and_draft_gate():
+@pytest.mark.parametrize("summary", ["windows_summary", "macos_summary"])
+def test_required_summaries_keep_always_and_draft_gate(summary):
     workflow = _workflow()
+    block = _job_block(workflow, summary)
     combined = f"if: always() && ({READY_GUARD})"
 
-    with pytest.raises(AssertionError, match="windows_summary"):
-        _assert_ready_pr_guard(workflow.replace(combined, "if: always()"))
+    with pytest.raises(AssertionError, match=summary):
+        _assert_ready_pr_guard(workflow.replace(block, block.replace(combined, "if: always()"), 1))
 
-    with pytest.raises(AssertionError, match="windows_summary"):
-        _assert_ready_pr_guard(workflow.replace(combined, f"if: {READY_GUARD}"))
+    with pytest.raises(AssertionError, match=summary):
+        _assert_ready_pr_guard(
+            workflow.replace(block, block.replace(combined, f"if: {READY_GUARD}"), 1)
+        )
+
+
+def _assert_macos_complete_native_gates(workflow):
+    ubuntu = _job_block(workflow, "test")
+    assert "- ubuntu-latest" in ubuntu
+    assert "- macos-latest" not in ubuntu
+    assert "cargo " not in ubuntu
+    python = _job_block(workflow, "macos_python")
+    desktop = _job_block(workflow, "desktop_macos")
+    for block in (python, desktop):
+        assert "runs-on: macos-latest" in block
+        assert "timeout-minutes: 25" in block
+        assert "ref: ${{ github.sha }}" in block
+    for command in (
+        "uv python install 3.12", "uv lock --check", "uv sync --frozen",
+        "uv run --frozen ruff check .",
+        'scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"',
+        'uv run --frozen pytest -o addopts="" -q -rs',
+    ):
+        assert command in python
+    assert "cargo " not in python
+    assert "working-directory: desktop/src-tauri" in desktop
+    for command in (
+        "cargo fmt --check", "cargo test --locked",
+        "cargo clippy --locked --all-targets -- -D warnings",
+    ):
+        assert command in desktop
+    summary = _job_block(workflow, "macos_summary")
+    assert "timeout-minutes: 25" in summary
+    assert "name: test (macos-latest) · py3.12" in summary
+    assert "needs: [macos_python, desktop_macos]" in summary
+    assert "${{ needs.macos_python.result }}" in summary
+    assert "${{ needs.desktop_macos.result }}" in summary
+
+
+def test_macos_python_and_rust_keep_complete_native_gates_separately():
+    _assert_macos_complete_native_gates(_workflow())
+
+
+@pytest.mark.parametrize("job", ["macos_python", "desktop_macos"])
+@pytest.mark.parametrize("replacement", ["", "          ref: main\n"])
+def test_macos_native_jobs_cannot_lose_exact_checkout(job, replacement):
+    workflow = _workflow()
+    block = _job_block(workflow, job)
+    changed = block.replace("          ref: ${{ github.sha }}\n", replacement, 1)
+    assert changed != block
+    with pytest.raises(AssertionError):
+        _assert_macos_complete_native_gates(workflow.replace(block, changed, 1))
+
+
+@pytest.mark.parametrize("python_result", ["success", "failure", "cancelled", "skipped"])
+@pytest.mark.parametrize("desktop_result", ["success", "failure", "cancelled", "skipped"])
+def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
+    python_result, desktop_result,
+):
+    block = _job_block(_workflow(), "macos_summary")
+    match = re.search(r"(?m)^        run: \|\n((?:          .*\n|\n)+)", block)
+    assert match is not None
+    result = subprocess.run(
+        [_bash(), "--noprofile", "--norc", "-c", "set -euo pipefail\n" + dedent(match[1])],
+        env={**os.environ, "PYTHON_RESULT": python_result, "DESKTOP_RESULT": desktop_result},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert (result.returncode == 0) is (python_result == desktop_result == "success")
 
 
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():

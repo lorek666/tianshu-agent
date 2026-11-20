@@ -57,6 +57,7 @@ from .leases import (
 )
 from .loop import AgentLoop, Limits, RunResult, Stack
 from .model import Model
+from .restore_access import preflight_legacy_material_layout
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
@@ -192,11 +193,13 @@ class _SideChannel:
         db_path,
         identity: ProcessIdentity,
         *,
+        data_root,
         blob_dir=None,
         clock: Callable[[], int] | None = None,
     ) -> None:
-        # 这条连接**只**给心跳线程用；主线程永远不碰它（各自一条连接）。
-        self._log = EventLog(db_path, blob_dir=blob_dir, cross_thread=True)
+        # The owner stack supplies the authority root and authenticated material path.
+        preflight_legacy_material_layout(db_path, data_root)
+        self._log = EventLog(db_path, blob_dir=blob_dir, cross_thread=True, data_root=data_root)
         kwargs = {} if clock is None else {"clock": clock}
         self._leases = LeaseStore(self._log, identity=identity, **kwargs)
         self._claims = JobStore(self._log, identity=identity, **kwargs)
@@ -387,6 +390,7 @@ class Worker:
             self._side = _SideChannel(
                 self.stack.log.db_path,
                 self._claims.identity,
+                data_root=self.stack.data_root,
                 blob_dir=self.stack.log.blob_dir,
             )
         return self._side

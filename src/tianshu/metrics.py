@@ -433,6 +433,10 @@ class MetricsRecorder:
         self.instance_id = instance_id
         self.pid = os.getpid() if pid is None else int(pid)
         self.path = metrics_path(self.data_root)
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(self.data_root)
+        ensure_path_not_held(self.path)
         # None＝跟随环境/默认；0＝显式禁用轮转；负数是手误，fail fast。
         self.max_file_bytes = (
             _env_max_file_bytes() if max_file_bytes is None else int(max_file_bytes)
@@ -511,6 +515,10 @@ class MetricsRecorder:
             )
 
     def _append(self, record: dict[str, Any]) -> None:
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(self.data_root)
+        ensure_path_not_held(self.path)
         if not self.enabled:
             return
         raw = (
@@ -618,6 +626,10 @@ class MetricsRecorder:
         seq_head: Callable[[], int] | None = None,
     ) -> None:
         """启动后台采样（幂等：重复调用不会开第二条线程）。"""
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(self.data_root)
+        ensure_path_not_held(self.path)
         if not self.enabled or self._sampler is not None:
             return
         self._last_wall = time.monotonic()

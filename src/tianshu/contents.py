@@ -174,11 +174,24 @@ class ContentStore:
     与预算账本同样的理由：不制造第二个事实源；事务与事件同生共死。
     """
 
-    def __init__(self, log: Any, *, blob_dir: Path | str | None = None,
-                 clock: Callable[[], int] | None = None) -> None:
+    def __init__(
+        self,
+        log: Any,
+        *,
+        blob_dir: Path | str | None = None,
+        data_root: Path | None = None,
+        clock: Callable[[], int] | None = None,
+    ) -> None:
+        from .restore_access import preflight_legacy_material_layout
+
+        preflight_legacy_material_layout(log.db_path, data_root)
         self._log = log
         self._conn = log._conn
         self._blob_dir = Path(blob_dir) if blob_dir is not None else None
+        if self._blob_dir is not None:
+            from .restore_access import ensure_path_not_held
+
+            ensure_path_not_held(self._blob_dir)
         self._clock = clock or _now_ms
         self._conn.executescript(SCHEMA)
 
@@ -198,25 +211,39 @@ class ContentStore:
             raise ContentError(f"内容必须是字节：{type(data).__name__}")
         if not isinstance(task_id, str) or not task_id:
             raise ContentError("内容授权必须绑定任务（task_id 不能为空）")
-        now = self._clock()
-        created = False
-        with self._log.transaction():
-            existing = self._conn.execute(
-                "SELECT digest FROM content_objects WHERE digest = ?", (digest,)
-            ).fetchone()
-            if existing is None:
+        from .restore_access import (
+            _NOOP_MATERIAL_LEASE,
+            ensure_log_write_allowed,
+            ensure_material_write_allowed,
+        )
+
+        if self._blob_dir is None:
+            ensure_log_write_allowed(self._log)
+        lease = (
+            ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
+            if self._blob_dir is not None
+            else _NOOP_MATERIAL_LEASE
+        )
+        with lease:
+            now = self._clock()
+            created = False
+            with self._log.transaction():
+                existing = self._conn.execute(
+                    "SELECT digest FROM content_objects WHERE digest = ?", (digest,)
+                ).fetchone()
+                if existing is None:
+                    self._conn.execute(
+                        "INSERT INTO content_objects (digest, size, created_at)"
+                        " VALUES (?,?,?)",
+                        (digest, len(data), now),
+                    )
+                    created = True
                 self._conn.execute(
-                    "INSERT INTO content_objects (digest, size, created_at)"
-                    " VALUES (?,?,?)",
-                    (digest, len(data), now),
+                    "INSERT OR IGNORE INTO content_grants (digest, task_id, run_id,"
+                    " created_at) VALUES (?,?,?,?)",
+                    (digest, task_id, run_id, now),
                 )
-                created = True
-            self._conn.execute(
-                "INSERT OR IGNORE INTO content_grants (digest, task_id, run_id,"
-                " created_at) VALUES (?,?,?,?)",
-                (digest, task_id, run_id, now),
-            )
-        return created
+            return created
 
     # ------------------------------------------------------------ 查询
 

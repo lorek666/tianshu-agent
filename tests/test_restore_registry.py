@@ -282,6 +282,48 @@ def test_unknown_or_symlinked_authority_is_closed(tmp_path):
         registry.observe()
 
 
+@pytest.mark.parametrize("operation", ["observe", "revalidate", "append"])
+def test_published_registry_rejects_wal_format_before_sqlite_open(
+    tmp_path, monkeypatch, operation
+):
+    registry = _registry(tmp_path)
+    expected = registry.initialize(registry_id=UUID)
+    connect = sqlite3.connect
+    connection = connect(registry.path)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    finally:
+        connection.close()
+
+    # Closing the last SQLite connection removes the companions, not the WAL header.
+    original = registry.path.read_bytes()
+    assert original[18:20] == b"\x02\x02"
+    assert set(registry.path.parent.iterdir()) == {registry.path}
+    opens = []
+
+    def track_connect(*args, **kwargs):
+        opens.append(args[0])
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", track_connect)
+    with pytest.raises(RestoreRegistryCorrupt):
+        if operation == "observe":
+            registry.observe()
+        elif operation == "revalidate":
+            with acquire_restore_gate():
+                registry.revalidate(expected)
+        else:
+            with acquire_restore_gate(exclusive=True) as gate:
+                registry.append_event(
+                    samples(tmp_path)["e1"], expected=expected, operation_access=gate
+                )
+
+    # A post-call directory snapshot alone would miss transient companion writes.
+    assert not opens
+    assert registry.path.read_bytes() == original
+    assert set(registry.path.parent.iterdir()) == {registry.path}
+
+
 def test_chain_head_event_hash_and_schema_tampering_are_detected(tmp_path):
     registry = _registry(tmp_path)
     before = registry.initialize(registry_id=UUID)
@@ -413,7 +455,11 @@ RestoreRegistry._for_home(Path(sys.argv[1])).initialize(
         text=True,
         encoding="utf-8",
     )
-    assert result.returncode == 77
+    # The write-through rename has an after-publish window on Windows, but there
+    # is no parent-directory fsync and therefore no corresponding checkpoint.
+    hard_exit = os.name != "nt" or failpoint != "restore-registry-init-after-parent-fsync"
+    assert result.returncode == (77 if hard_exit else 0), result.stderr
+    assert (f"[failpoint] {failpoint}" in result.stderr) is hard_exit
     registry = _registry(home)
     if published:
         assert registry.observe().present is True
@@ -614,6 +660,7 @@ entity = acquire_entity_access(observe_entity(path, "file"), exclusive=True)
 connection = sqlite3.connect(path)
 connection.execute("PRAGMA busy_timeout=0")
 connection.execute("BEGIN IMMEDIATE")
+connection.execute("PRAGMA user_version=1")  # Open a real rollback journal under the write locks.
 print(json.dumps({"ready": True}), flush=True)
 if sys.stdin.readline().strip() != "commit":
     raise RuntimeError("registry writer barrier not released")
@@ -633,6 +680,7 @@ namespace.close()
     )
     try:
         assert _read_json(process) == {"ready": True}
+        assert registry.path.with_name("registry.db-journal").is_file()
         with pytest.raises(RestoreRegistryBusy):
             registry.observe()
         assert process.stdin is not None

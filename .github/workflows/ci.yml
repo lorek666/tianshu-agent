@@ -47,7 +47,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
         python:
           - "3.12"
     defaults:
@@ -57,21 +56,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-
-      - name: Rust fmt（macOS）
-        if: matrix.os == 'macos-latest'
-        working-directory: desktop/src-tauri
-        run: cargo fmt --check
-
-      - name: Rust tests（macOS）
-        if: matrix.os == 'macos-latest'
-        working-directory: desktop/src-tauri
-        run: cargo test --locked
-
-      - name: Rust clippy（macOS）
-        if: matrix.os == 'macos-latest'
-        working-directory: desktop/src-tauri
-        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: 安装 uv
         uses: astral-sh/setup-uv@v5
@@ -105,6 +89,69 @@ jobs:
       - name: Pytest
         # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
         run: uv run --frozen pytest -o addopts="" -q -rs
+
+  # macOS 的完整 Python 与 Rust 门禁分别占用原生 runner；不共享25分钟预算，
+  # 不减测、不加时。原 required 名由 always 汇总严格要求两者成功。
+  macos_python:
+    name: macos python suite · py3.12
+    runs-on: macos-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv lock --check
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff check .
+      - name: 开源许可证合规与 SBOM 门禁（F15）
+        run: uv run --frozen python scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"
+      - name: Pytest
+        run: uv run --frozen pytest -o addopts="" -q -rs
+
+  desktop_macos:
+    name: desktop rust checks · macos
+    runs-on: macos-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Rust fmt（macOS）
+        run: cargo fmt --check
+      - name: Rust tests（macOS）
+        run: cargo test --locked
+      - name: Rust clippy（macOS）
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  macos_summary:
+    name: test (macos-latest) · py3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    needs: [macos_python, desktop_macos]
+    steps:
+      - name: Require complete native macOS gates
+        env:
+          PYTHON_RESULT: ${{ needs.macos_python.result }}
+          DESKTOP_RESULT: ${{ needs.desktop_macos.result }}
+        shell: bash
+        run: |
+          test "$PYTHON_RESULT" = success
+          test "$DESKTOP_RESULT" = success
 
   # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
   # node 数只用于确定性平衡，不保证25分钟内完成；不加时或忽略失败。

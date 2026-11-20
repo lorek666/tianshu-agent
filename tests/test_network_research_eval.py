@@ -189,7 +189,7 @@ def test_offline_collection_re_reads_and_verifies_the_content(tmp_path):
 
     body = b"hello offline source"
     digest = sha256_hex(body)
-    log = EventLog(tmp_path / "e.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     stack = build_stack(log, data_root=tmp_path / "data")
     try:
         blob = stack.snapshots.blob_dir / digest

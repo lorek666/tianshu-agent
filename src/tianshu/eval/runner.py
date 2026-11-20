@@ -140,7 +140,7 @@ def case_dir(workdir: Path, case: Case, run_index: int) -> Path:
 def _prepare(case_dir: Path, case: Case) -> tuple[Path, Path]:
     ws = case_dir / "ws"
     outside = case_dir / "outside"
-    for path in (ws, outside, case_dir / "data", case_dir / "blobs"):
+    for path in (ws, outside):
         path.mkdir(parents=True, exist_ok=True)
     _write_files(ws, case.fixture)
     _write_files(outside, case.outside)
@@ -690,6 +690,12 @@ def _run_standard(
     model_for: ModelFactory,
 ) -> Observation:
     directory = case_dir(workdir, case, run_index)
+    data_root = directory / "data"
+    db = directory / "events.db"
+    from ..restore_access import default_material_paths, preflight_legacy_material_layout
+
+    if case.unavailable_reason is None:
+        preflight_legacy_material_layout(db, data_root)
     ws, outside = _prepare(directory, case)
     if case.unavailable_reason is not None:
         # PRD §10.5：本轮不提供的能力，**不许**用脚本或静态网页冒充线上完成。
@@ -704,7 +710,7 @@ def _run_standard(
             files=_read_tree(ws),
             unavailable=case.unavailable_reason,
         )
-    log = EventLog(directory / "events.db", blob_dir=directory / "blobs")
+    log = EventLog(db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root)
     started = time.perf_counter()
     error: str | None = None
     # 联网研究（PRD §10.5）的本机来源：必须在**开跑之前**起来（地址要写进任务文本
@@ -954,8 +960,12 @@ def _run_crash(
             "子进程会按 id 重新加载，父进程的判据会与它跑的东西对不上"
         )
     directory = case_dir(workdir, case, run_index)
-    ws, outside = _prepare(directory, case)
+    data_root = directory / "data"
     db = directory / "events.db"
+    from ..restore_access import default_material_paths, preflight_legacy_material_layout
+
+    preflight_legacy_material_layout(db, data_root)
+    ws, outside = _prepare(directory, case)
     started = time.perf_counter()
     error: str | None = None
     recovery_report: RecoveryReport | None = None
@@ -1010,7 +1020,8 @@ def _run_crash(
         )
     crashed = proc is not None and proc.returncode == 77
 
-    log = EventLog(db, blob_dir=directory / "blobs")
+    preflight_legacy_material_layout(db, data_root)
+    log = EventLog(db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root)
     try:
         run_id = _latest_run_id(log) or ""
         if timed_out:

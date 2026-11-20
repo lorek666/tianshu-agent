@@ -280,6 +280,9 @@ def acquire_lock(data_root: Path) -> DaemonLock:
     - 新建成功后**再探一次**：极小窗口里别人已经 bind 就退让并复用。
     """
     root = Path(data_root)
+    from .restore_access import ensure_path_not_held
+
+    ensure_path_not_held(root)
     run_dir = ipc.run_dir(root)
     run_dir.mkdir(parents=True, exist_ok=True)
     # 先把认证密钥落好：Server 构造时要用它，两个进程同时首次启动由它内部的
@@ -534,6 +537,21 @@ class _ClientConnection:
                 self._sent_frames += 1
 
 
+def _open_event_log(
+    db_path: Path,
+    *,
+    data_root: Path,
+    blob_dir: Path | None = None,
+    cross_thread: bool = False,
+) -> EventLog:
+    from .restore_access import default_material_paths, preflight_legacy_material_layout
+
+    preflight_legacy_material_layout(db_path, data_root)
+    if blob_dir is None:
+        blob_dir = default_material_paths(db_path, data_root)[1]
+    return EventLog(db_path, blob_dir=blob_dir, cross_thread=cross_thread, data_root=data_root)
+
+
 class _DriverSideChannel:
     """驱动线程用来续 claim/租约的第二条连接（与 `Worker` 的 `_SideChannel` 同构）。
 
@@ -542,9 +560,19 @@ class _DriverSideChannel:
     线程续 deadline，默认 30s TTL 会让一个正常的长调用看起来像"已经死了"。
     """
 
-    def __init__(self, log: EventLog, identity: ProcessIdentity) -> None:
-        self._log = EventLog(
-            log.db_path, blob_dir=log.blob_dir, cross_thread=True
+    def __init__(
+        self,
+        log: EventLog,
+        identity: ProcessIdentity,
+        *,
+        data_root: Path,
+        blob_dir: Path | None = None,
+    ) -> None:
+        self._log = _open_event_log(
+            log.db_path,
+            data_root=data_root,
+            blob_dir=log.blob_dir if blob_dir is None else blob_dir,
+            cross_thread=True,
         )
         self._leases = LeaseStore(self._log, identity=identity)
         self._claims = JobStore(self._log, identity=identity)
@@ -644,23 +672,29 @@ class _Daemon:
         # 必须在 EventLog 建库**之前**判断——建完看就永远是"热"的。
         cold_start = not (self.root / "events.db").exists()
         assert self.lock is not None
+        from .restore_access import default_material_paths, preflight_legacy_material_layout
+
+        db_path = self.root / "events.db"
+        preflight_legacy_material_layout(db_path, self.root)
+        _, event_blob_dir, _ = default_material_paths(db_path, self.root)
         self.metrics = metrics.MetricsRecorder(
             self.root, instance_id=self.lock.instance_id
         )
 
         # 两条**各自线程专用**的连接。指向同一个 WAL 库：驱动线程写事件，
         # 控制线程读事件/写审批，各写各的事务。
-        self.control_log = EventLog(
-            self.root / "events.db", blob_dir=self.root / "artifacts" / "blobs"
+        self.control_log = _open_event_log(
+            db_path, data_root=self.root, blob_dir=event_blob_dir
         )
         self.control_stack = build_stack(self.control_log, data_root=self.root)
         # 这一条**必须** cross_thread=True：连接在 serve 线程建、由驱动线程
         # 独占使用（`EventLog` 的开关注释说的正是这个场景）。控制面那条不加：
         # 它建在主线程、用也在主线程，关掉保护等于把真实错误藏起来。
         # 不加这一行，第一条作业就会 ProgrammingError，表现是"任务永远 created"。
-        self.driver_log = EventLog(
-            self.root / "events.db",
-            blob_dir=self.root / "artifacts" / "blobs",
+        self.driver_log = _open_event_log(
+            db_path,
+            data_root=self.root,
+            blob_dir=event_blob_dir,
             cross_thread=True,
         )
         # 驱动栈会真的执行工具 → 只有它需要 MCP。配置来自进程级
@@ -723,9 +757,10 @@ class _Daemon:
         # 采样线程不能借用 control_log 的 SQLite 连接（那条连接建在 serve 线程，
         # 跨线程读会 ProgrammingError，指标只会得到一堆 unknown）。给它一条
         # cross_thread 专用连接，与驱动线程的做法同一条纪律。
-        self.metrics_log = EventLog(
-            self.root / "events.db",
-            blob_dir=self.root / "artifacts" / "blobs",
+        self.metrics_log = _open_event_log(
+            db_path,
+            data_root=self.root,
+            blob_dir=event_blob_dir,
             cross_thread=True,
         )
         self.metrics.start_sampler(seq_head=self.metrics_log.seq_head)
@@ -1454,7 +1489,12 @@ class _Daemon:
         if self.side is None:
             assert self.driver_log is not None and self.driver_stack is not None
             identity = self.driver_stack.claims.identity
-            self.side = _DriverSideChannel(self.driver_log, identity)
+            self.side = _DriverSideChannel(
+                self.driver_log,
+                identity,
+                data_root=self.root,
+                blob_dir=self.driver_log.blob_dir,
+            )
         return self.side
 
     def _settle_job(self, claim: Any) -> None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _startup.release_smoke_test_launcher import ISOLATION_ENV, MODULE_NAME, SmokeTestIsolation
 
 from tianshu import release_smoke
 from tianshu.host import HostInfo, HostReleaseIdentity
@@ -16,6 +19,188 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "595be35c037cef35da7f166a5db2a624f2b733a9"
 HOST_TARGET = release_smoke.host_target()
 PACKAGED_PYTHON = platform.python_version()
+
+
+def _test_isolation(root):
+    return SmokeTestIsolation(
+        root, app_dir=Path(release_smoke.__file__).resolve().parent.parent,
+        ui_dir=ROOT / "ui" / "dist",
+        release={"version": "0.1.0", "commit": COMMIT, "target": HOST_TARGET},
+        python_version=PACKAGED_PYTHON,
+        runtime_python=release_smoke._runtime_python_executable(),
+    )
+
+
+@pytest.fixture
+def isolated_smoke_processes(monkeypatch, tmp_path):
+    """Retain real source services, but prove test roots before CLI startup."""
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    isolation.bind(monkeypatch)
+    # Do not patch shared subprocess.Popen or any production file.
+    monkeypatch.setattr(release_smoke, "subprocess", isolation.proxy())
+    return isolation
+
+
+@pytest.mark.parametrize("field", [
+    "TIANSHU_TEST_LOCK_ROOT", "PYTEST_TIANSHU_REGISTRY_HOME",
+    "TIANSHU_TEST_REGISTRY_HOME", "TIANSHU_AUTHORITY_ROOT", "PYTHONPATH",
+])
+def test_smoke_test_adapter_rejects_drift_before_process_start(tmp_path, field):
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    calls = []
+    isolation.native_popen = lambda *args, **kwargs: calls.append((args, kwargs))
+    environment = {**isolation.environment, "PYTHONPATH": str(isolation.app_dir)}
+    environment[field] = str(tmp_path / "wrong")
+    with pytest.raises(RuntimeError, match="smoke isolation"):
+        isolation.popen(
+            [sys.executable, "-P", "-m", "tianshu", "daemon"],
+            env=environment,
+            cwd=isolation.app_dir,
+        )
+    assert calls == []
+    assert not (isolation.root / "daemon.json").exists()
+
+
+@pytest.mark.parametrize("fault", [
+    "missing_startup_hook", "wrong_lock_root", "wrong_actual_lock_root",
+])
+def test_smoke_test_launcher_rejects_unisolated_child_before_cli(tmp_path, fault):
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    for value in set(isolation.environment.values()):
+        Path(value).mkdir(parents=True)
+    marker = tmp_path / "cli-started"
+    environment = {**os.environ, **isolation.environment}
+    environment[ISOLATION_ENV] = json.dumps(isolation.payload())
+    environment["PYTHONPATH"] = str(isolation.app_dir)
+    if fault != "missing_startup_hook":
+        environment["PYTHONPATH"] = os.pathsep.join((
+            str(isolation.startup), str(isolation.app_dir),
+        ))
+    if fault == "wrong_lock_root":
+        environment["TIANSHU_TEST_LOCK_ROOT"] = str(tmp_path / "wrong-locks")
+    inject = ""
+    if fault == "wrong_actual_lock_root":
+        inject = (
+            "from tianshu import maintenance; "
+            f"maintenance._lock_root=lambda: pathlib.Path({str(tmp_path / 'wrong-locks')!r}); "
+        )
+    # The missing-hook case loads the launcher by path, without ever importing
+    # sitecustomize. A run_module sentinel proves failure is before real CLI.
+    script = (
+        "import pathlib,runpy,sys; "
+        f"{inject}"
+        f"runpy.run_module=lambda *a,**k: pathlib.Path({str(marker)!r}).touch(); "
+        "sys.argv=['launcher','cli','daemon']; "
+        f"runpy.run_path({str(isolation.startup / (MODULE_NAME + '.py'))!r}, "
+        "run_name='__main__')"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", script], env=environment,
+        capture_output=True, timeout=20,
+    )
+    assert completed.returncode != 0
+    assert b"smoke isolation" in completed.stderr
+    assert not marker.exists()
+    assert not (isolation.root / "daemon.json").exists()
+    assert not (tmp_path / "wrong-locks").exists()
+
+
+def _daemon_launch(isolation, tmp_path):
+    data_root = str(tmp_path / "data")
+    environment = {
+        **isolation.environment, "PYTHONPATH": str(isolation.app_dir),
+        "TIANSHU_DATA_ROOT": data_root,
+    }
+    command = [
+        isolation.runtime_python, "-P", "-m", "tianshu", "daemon", "--data-root", data_root,
+    ]
+    return command, environment
+
+
+@pytest.mark.parametrize("fault", ["parent_root", "argv", "cwd"])
+def test_smoke_test_adapter_rejects_actual_launch_drift(tmp_path, monkeypatch, fault):
+    from tianshu import maintenance
+
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    isolation.bind(monkeypatch)
+    calls = []
+    isolation.native_popen = lambda *args, **kwargs: calls.append((args, kwargs))
+    command, environment = _daemon_launch(isolation, tmp_path)
+    cwd = isolation.app_dir
+    if fault == "parent_root":
+        monkeypatch.setattr(maintenance, "_lock_root", lambda: tmp_path / "wrong")
+    elif fault == "argv":
+        command.append("--unexpected")
+    else:
+        cwd = tmp_path
+    with pytest.raises(RuntimeError, match="smoke isolation"):
+        isolation.popen(command, env=environment, cwd=cwd)
+    assert calls == []
+
+
+@pytest.mark.parametrize("runtime", [False, True])
+def test_smoke_test_adapter_preserves_launch_after_guard(tmp_path, monkeypatch, runtime):
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    isolation.bind(monkeypatch)
+    calls = []
+
+    def record(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("TestProcess", (), {"pid": 123})()
+
+    isolation.native_popen = record
+    command, environment = _daemon_launch(isolation, tmp_path)
+    cwd = isolation.app_dir
+    if runtime:
+        command = [
+            isolation.runtime_python, "-P", "-m", "tianshu.release_smoke",
+            "--ui-dir", str(isolation.ui_dir), "--expected-version", "0.1.0",
+            "--expected-commit", COMMIT, "--expected-target", HOST_TARGET,
+            "--expected-python", PACKAGED_PYTHON,
+        ]
+        cwd = isolation.app_dir.parent
+    original = command.copy()
+    launch = isolation.popen_runtime if runtime else isolation.popen
+    launch(command, env=environment, cwd=cwd, start_new_session=True)
+    adapted, options = calls[0]
+    assert command == original
+    assert adapted == [*original[:3], MODULE_NAME, "runtime" if runtime else "cli", *original[4:]]
+    assert options["cwd"] == cwd
+    assert options["start_new_session"] is True
+    assert options["env"]["PYTHONPATH"] == os.pathsep.join((
+        str(isolation.startup), str(isolation.app_dir),
+    ))
+    assert environment["PYTHONPATH"] == str(isolation.app_dir)
+
+
+@pytest.mark.parametrize("service", ["daemon", "host"])
+@pytest.mark.parametrize("fault", ["missing", "wrong_pid"])
+def test_smoke_test_receipt_absence_or_pid_drift_is_not_success(tmp_path, service, fault):
+    isolation = _test_isolation(tmp_path / "smoke-isolation")
+    isolation.root.mkdir()
+    result = {"daemon_pid": 11, "host_pid": 12}
+    for role in ("daemon", "host"):
+        receipt = {
+            "pid": result[f"{role}_pid"], "service": role,
+            "package": str(isolation.app_dir / "tianshu" / "__init__.py"),
+            "roots": {kind: str(isolation.root / kind) for kind in (
+                "locks", "registry", "authority",
+            )},
+        }
+        (isolation.root / f"{role}.json").write_text(json.dumps(receipt), encoding="utf-8")
+        (isolation.root / f"launched-{role}.pid").write_text(
+            str(result[f"{role}_pid"]), encoding="ascii",
+        )
+    isolation.assert_children(result)
+    path = isolation.root / f"{service}.json"
+    if fault == "missing":
+        path.unlink()
+    else:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        receipt["pid"] += 100
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises((AssertionError, FileNotFoundError)):
+        isolation.assert_children(result)
 
 
 def _run_smoke():
@@ -51,8 +236,9 @@ def test_runtime_python_falls_back_when_base_executable_is_missing(monkeypatch, 
     HOST_TARGET is None,
     reason="打包 sidecar 运行时只支持 macOS/Windows 原生目标",
 )
-def test_release_smoke_starts_real_sidecar_host_and_daemon():
+def test_release_smoke_starts_real_sidecar_host_and_daemon(isolated_smoke_processes):
     result = _run_smoke()
+    isolated_smoke_processes.assert_children(result)
 
     assert result["status"] == "pass"
     assert result["mode"] == "owned_daemon_then_attached_host"
@@ -114,6 +300,7 @@ def test_release_smoke_rejects_python_runtime_drift():
 def test_release_smoke_isolates_bundled_package_from_caller_cwd(
     tmp_path,
     monkeypatch,
+    isolated_smoke_processes,
 ):
     shadow = tmp_path / "tianshu"
     shadow.mkdir()
@@ -128,6 +315,7 @@ def test_release_smoke_isolates_bundled_package_from_caller_cwd(
     monkeypatch.chdir(tmp_path)
 
     result = _run_smoke()
+    isolated_smoke_processes.assert_children(result)
 
     assert result["status"] == "pass"
     assert not marker.exists()

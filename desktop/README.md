@@ -1,8 +1,8 @@
 # Tianshu Agent 桌面壳与发行候选
 
-> 状态：**R1+R3 源码候选，尚未通过最终组合候选的完整门禁、真实 release workflow
-> dispatch 或独立复审。** R2 的锁定 Python runtime、build/verify 入口仍由 R2 提供；
-> 本文不把现有源码、局部测试或 CI runner 结果写成用户设备已验证的正式发行版。
+> 状态：R0–R3 四目标构建与安装基线已随 PR #175 / #186 合入；本轮接入单目标预览草稿。
+> 合入后的 release workflow 实跑和最终候选用户设备验收仍待完成。
+> 本文不把源码、局部测试或 CI runner 结果写成用户设备已验证的正式发行版。
 
 壳负责窗口、托盘、单实例和 Python Host/Daemon 生命周期。任务、审批、事件、工具执行、
 授权和恢复仍由现有 Python Host/Daemon 实现；Rust 没有替换 Host，也没有形成新的授权
@@ -61,51 +61,46 @@ Host 入口以 argv 启动，使用 `python -P -m tianshu host run ...`。`-P` �
 
 ## R3 发行与安装
 
-首发范围按 [PRD §11.1](../docs/PRD-v1.md) 收敛为 `macos-arm64` 限定预览。单目标构建与汇总路径尚未实现；下述是现有四目标候选流程，不是首发支持清单。Windows 下载与安装命令只用于对应目标的后续验收。首发的 Mac 实机验收按 [CONTRIBUTING §8](../CONTRIBUTING.md#8-发布) 执行。
+首发按 [PRD §11.1](../docs/PRD-v1.md) 仅准备 `macos-arm64` 限定预览。实现合入后，在
+GitHub Actions 的 **Release candidate** 选择 `main`，填写未占用的 `version`（如 `0.1.0`）与
+当前主干的完整 `commit`，勾选 `macos_arm64_preview`。只构建和汇总 Apple Silicon 产物，
+创建标记为 Apple Silicon Preview 的 prerelease **草稿**；同名 Release（包括草稿）或 tag
+已存在时拒绝。不开启该选项或用 `v0.x.y` annotated tag 触发时，仍走四个原生目标。
 
-`.github/workflows/release.yml` 只在手动触发或 `v*` tag 时生成 draft GitHub Release。
-它要求手动输入或 annotated tag 解引用后的完整 commit 与 fetch 后的当前 `origin/main`
-精确相同，并要求这个精确 SHA 最新一次 main push CI 的全部 job 为 `success`；随后在
-四个原生产物 runner 上构建和 runtime smoke，汇总后仍只创建 draft。任何一层失败都
-停止，不使用 `continue-on-error`、重试或跳过步骤。preflight 先按 run id 取该 SHA
-字面最新对象，再依次要求它已 `completed` 且 `success`；最新 run 失败或仍在运行都不会
-回退到更老的成功 run。
+两条路径共用提交、CI 与原生校验：workflow 的提交和手动输入或 tag 解引用后的完整 SHA
+都须等于当前 `origin/main`，该 SHA 最新一次 main push CI 的四项 required 检查与全部 job
+必须成功。旧绿不替代较新的失败或运行中结果。每个所选目标都需通过发行物校验和匹配宿主的
+runtime smoke。工作流不公开发布；真机条件见 [CONTRIBUTING §8](../CONTRIBUTING.md#8-发布)。
 
-macOS 辅助脚本的规范文件名是 `scripts/install-macos.sh` 和
-`scripts/uninstall-macos.sh`。`release-index.json` 绑定四目标产物，也绑定这两份脚本的
-`name`、`sha256` 与 `size`；汇总时保留脚本 `0755` 权限。不要使用下划线变体，也不提供
-双别名。assembler 在创建输出前严格校验 `0.x.y` version、40 位小写 commit 与
-GitHub Actions HTTPS run URL，并拒绝符号链接或非普通文件的 artifacts 根、target 目录
-及四目标必需输入。
+源码辅助脚本固定为 `scripts/install-macos.sh` 和 `scripts/uninstall-macos.sh`，下载到同一目录下
+不带 `scripts/` 前缀。`release-index.json` 绑定版本、完整提交和 Actions 构建 run，并记录归档、
+checksum、manifest 和两份脚本的文件名、SHA256 与大小。预览拒绝混合目标、额外输入及非空输出；
+工作流只上传索引列出的资产与索引自身。
 
-维护者从 draft release 下载资产时，先完成 GitHub 登录：
+维护者从预览草稿下载资产前先完成 GitHub 登录。以下版本号替换为待验候选，下载到新的空目录：
 
 ```bash
-gh release list --repo lorek666/tianshu-agent
+download_dir=$(mktemp -d /private/tmp/tianshu-draft.XXXXXX)
 gh release download v0.1.0 \
   --repo lorek666/tianshu-agent \
-  --dir /private/tmp/tianshu-draft
-cd /private/tmp/tianshu-draft
+  --dir "$download_dir"
+cd "$download_dir"
 ```
 
-检查 release index 的源码身份、构建 run、签名状态和辅助脚本摘要：
+先将 `version`、`commit`、`build_run_url` 与候选主干 SHA 和该次 Actions run 对账。核对目标
+集合只含 `macos-arm64`，验证索引列出的全部资产，以及归档独立 checksum：
 
 ```bash
-jq '{version, commit, build_run_url, signed, helper_scripts}' release-index.json
-jq -r '.helper_scripts[] | "\(.sha256)  \(.name)"' release-index.json \
-  | shasum -a 256 -c -
-```
-
-再独立核对 macOS 归档本身的 SHA256。该 `.sha256` 文件来自 draft；本地重算必须匹配：
-
-```bash
+jq '{version, commit, build_run_url, signed, artifacts}' release-index.json
+jq -e '[.artifacts[].target] == ["macos-arm64"]' release-index.json
+jq -r '.assets[] | "\(.sha256)  \(.name)"' release-index.json | shasum -a 256 -c -
 shasum -a 256 -c Tianshu-Agent-0.1.0-macos-arm64.sha256
 ```
 
 macOS 安装脚本只接受本地 archive 与 checksum 文件路径，不执行 `curl | bash`：
 
 ```bash
-sh scripts/install-macos.sh \
+sh ./install-macos.sh \
   --archive ./Tianshu-Agent-0.1.0-macos-arm64.app.tar.gz \
   --sha256 ./Tianshu-Agent-0.1.0-macos-arm64.sha256 \
   --prefix "$HOME/Applications"
@@ -117,9 +112,9 @@ sh scripts/install-macos.sh \
 逐字匹配的二次确认：
 
 ```bash
-sh scripts/uninstall-macos.sh --prefix "$HOME/Applications"
+sh ./uninstall-macos.sh --prefix "$HOME/Applications"
 
-sh scripts/uninstall-macos.sh \
+sh ./uninstall-macos.sh \
   --prefix "$HOME/Applications" \
   --data-root /private/tmp/tianshu-test-data \
   --purge-data \
@@ -137,26 +132,26 @@ find "$HOME/Applications" -maxdepth 1 -type d \
 rm -rf "/absolute/path/printed/above"
 ```
 
-Windows 从同一 draft 下载目标架构的 NSIS setup 与对应 `.sha256`，在 PowerShell 中独立
+### Windows 安装（后续四目标流程，不适用于预览）
+
+从对应的四目标草稿下载目标架构的 NSIS setup 与对应 `.sha256`，在 PowerShell 中独立
 重算并比对：
 
 ```powershell
 gh release download v0.1.0 --repo lorek666/tianshu-agent `
   --pattern "*windows-arm64*" --dir "$env:TEMP\tianshu-draft"
-$asset = "$env:TEMP\tianshu-draft\Tianshu-Agent-0.1.0-windows-arm64-setup.exe"
-$actual = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-$expected = (Get-Content "$asset.sha256").Split()[0].ToLower()
+$stem = "$env:TEMP\tianshu-draft\Tianshu-Agent-0.1.0-windows-arm64"
+$actual = (Get-FileHash "$stem-setup.exe" -Algorithm SHA256).Hash.ToLower()
+$expected = (Get-Content "$stem.sha256").Split()[0].ToLower()
 if ($actual -ne $expected) { throw "SHA256 mismatch" }
 ```
 
 摘要一致后运行 `Tianshu-Agent-0.1.0-windows-arm64-setup.exe`。安装器按当前用户安装，
 用户数据位于 `%LOCALAPPDATA%\AgentOS`，默认卸载保留。产物未做 Apple/Microsoft 代码
-签名；Gatekeeper、SmartScreen、Windows 10/11/ARM64 与 macOS x64 的真实设备安装、
-升级、回退和权限提示都仍是 `UNKNOWN`。
+签名；Gatekeeper、SmartScreen 和真实设备安装、升级、回退及权限提示仍待验收。
 
-release workflow 目前没有真实 dispatch 结果。即使未来 workflow 在四个原生 runner 上
-全绿，也只得到 `runner-only` 构建证据，不能替代用户设备实测；物理断电下的持久性同样
-保持 `NOT_RUN`。
+合入后的精确主干 SHA 尚待实际运行预览 workflow。原生 runner 的构建和 smoke 不替代真实
+用户设备实测；物理断电持久性也未验证，不作为限定预览前置。
 
 ## 本机检查
 

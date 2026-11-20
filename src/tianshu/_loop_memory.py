@@ -68,6 +68,7 @@ def open_memory(
     log: EventLog,
     *,
     blob_dir: Path | None = None,
+    data_root: Path | None = None,
     clock: Callable[[], int] | None = None,
     embedding_provider: object | None = None,
 ):
@@ -78,23 +79,16 @@ def open_memory(
     一个要人工裁决的分叉。`log` 也一起传进去，投影要按事件重放（`rebuild`）。
     """
     from .memory import MemoryProjection
-
-    # 不传 blob_dir：正文目录由 MemoryProjection 自己的规则决定（DB 旁的
-    # `memory_blobs/`，**不**跟随事件日志的 `log.blob_dir`——正文将来要能按
-    # F10 §10 物理擦除，事件 payload 必须留存，两者保留策略不同）。**所有**
-    # 装配点都不传同一个显式目录，正文目录才有唯一来源；各自传一个不同目录
-    # 时，写入的正文另一方读不到，看起来像"记忆随机丢失"。
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
     if embedding_provider is not None:
-        # 向量索引是可选派生数据：只有装配方显式给了 provider 才接上，否则
-        # 检索如实降级为 FTS-only（不假装有语义能力）。索引与投影必须共用
-        # 同一个 SQLite 连接——向量写进的是同一个事务。
         from .memory_index import MemoryIndex
 
         kwargs["index"] = MemoryIndex(log.conn, provider=embedding_provider)
-    return MemoryProjection(log.conn, log=log, blob_dir=blob_dir, **kwargs)
+    return MemoryProjection(
+        log.conn, log=log, blob_dir=blob_dir, data_root=data_root, **kwargs
+    )
 
 
 def _canonical_root(binding: object) -> str:
@@ -126,7 +120,7 @@ class _LoopMemoryMixin:
         `_exec_memory_read`），不会静默当成"这个任务没有记忆"。
         """
         if self._memory is None:
-            self._memory = open_memory(self._log)
+            self._memory = open_memory(self._log, data_root=self._tasks.data_root)
         return self._memory
 
     def _memory_allowed(self, task: Task) -> tuple[MemoryScope, ...]:
