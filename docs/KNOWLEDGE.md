@@ -164,6 +164,7 @@
 
 ### M5 实现决策（踩出来的，不是偏好）
 
+- **常驻离线演示不能共享可耗尽的响应列表**：旧启动路径的第二个 Run 显示成功但没有最终回答。Daemon 启动和设置切回 `scripted` 时共用无状态演示模型；每个 Run 按自己的消息历史决定下一步。用真实子进程和 `events.run` 核对两次终态都提交了非空回答。
 - **驱动线程的 SQLite 连接必须 `cross_thread=True`**：连接在 serve 线程建、驱动线程用；默认 `check_same_thread=True` 会抛 `ProgrammingError`，表现是 Run 永远停在 `created`（本分支修过两次：先是连接归线程，再是跨线程复用）。`EventLog(cross_thread=True)` 只给"连接建在一处、只在该线程用"的通道用，不是免检通行证。
 - **SSE 用 `fetch` 读流，不用浏览器 `EventSource`**：契约要求每个请求带 `X-Tianshu-Token`，而 `EventSource` 天生带不了自定义 header，也没有自定义重连游标；用 fetch 流能达到同样的协议与「带 `since_seq` 重连」语义。
 - **token 只进页面 `<meta>` 与请求头，不进 URL**：URL 会进浏览器历史、shell 历史、聊天记录和截图；`UiBridge.url` 刻意不带 token（`src/tianshu/host.py` 的 `url` 属性注释写明了理由）。
