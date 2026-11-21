@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from _startup.release_smoke_test_launcher import SmokeTestIsolation
 
-from tianshu import release_smoke
+from tianshu import __version__, release_smoke
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release_manifest.py"
@@ -741,6 +741,11 @@ def _runtime_fixture(
                 "\n\ndef run_host(*args, **kwargs):\n"
                 "    raise RuntimeError('host startup intentionally broken')\n"
             )
+    # This fixture copies the live package, unlike synthetic historical bundles.
+    (bundle / "release.json").write_text(
+        json.dumps(_release_identity(version=__version__, target=NATIVE_TARGET), indent=2) + "\n",
+        encoding="utf-8",
+    )
     _write_manifest(bundle)
     _update_manifest(
         bundle,
