@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any
 
 from .errors import TianshuError
@@ -28,6 +29,7 @@ def rebuild_responses_progress(events: list[Event]):
     turns: list[tuple[Event, dict[str, Any]]] = []
     result: dict[str, Any] | None = None
     last_cursor: Event | None = None
+    saved_cursor = None
     for ev in events:
         p = ev.payload
         if ev.type == "model.intent":
@@ -94,6 +96,17 @@ def rebuild_responses_progress(events: list[Event]):
         elif ev.type == "approval.requested":
             if p["approval_id"] not in progress.approvals:
                 progress.approvals.append(p["approval_id"])
-        elif ev.type == "run.cursor_saved":
+        elif ev.type == "dispatch.requested" and progress.pending:
+            # Loop 按 pending 顺序准备请求；这里只还原提示身份，执行侧仍须
+            # 重新核验完整动作摘要和 claim，不能把重建值当成授权。
+            progress.pending[0]["request_id"] = p["request_id"]
+            if p["decision"] == "approve":
+                progress.pending[0]["approval_id"] = p.get("approval_id")
+        elif ev.type == "run.cursor":
             last_cursor = ev
-    return progress.to_cursor(), turns, last_cursor or start
+            saved_cursor = deepcopy(progress.to_cursor())
+            if sha256_hex(canonical_bytes(saved_cursor.to_dict())) != p["payload_hash"]:
+                raise TianshuError("Responses 游标不能从持久化事件精确重建")
+    # 游标快照只包含其事件之前的事实，后续 intent 由恢复入口补计；
+    # 未提交游标的工具结果仍由现有派发对账吸收，不能擅自越过保存点。
+    return saved_cursor or progress.to_cursor(), turns, last_cursor or start

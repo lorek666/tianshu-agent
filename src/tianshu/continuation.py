@@ -63,6 +63,21 @@ def _text(value: Any, *, nonempty: bool = False) -> bool:
     return isinstance(value, str) and (not nonempty or bool(value.strip()))
 
 
+def _same_json(left: Any, right: Any) -> bool:
+    """Python 的 True == 1 不构成同一 JSON 提案。"""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_json(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return left == right
+
+
 def project_output(
     items: Any,
 ) -> tuple[str, list[dict[str, Any]], bool, bool, bool]:
@@ -200,7 +215,9 @@ class ContinuationRef:
         content, calls, refusal, complete, visible = project_output(
             self.to_payload()["output_items"]
         )
-        if content != payload.get("content", "") or calls != (payload.get("tool_calls") or []):
+        if content != payload.get("content", "") or not _same_json(
+            calls, payload.get("tool_calls") or [],
+        ):
             raise ValueError("ContinuationRef 与规范化文本/函数提案不一致")
         finish = payload.get("finish_reason")
         if finish == "tool_use" and (not calls or refusal or not complete):

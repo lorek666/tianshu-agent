@@ -295,6 +295,11 @@ class _ResponseStream:
                 or item.get("type") not in ("reasoning", "message", "function_call")
                 or not isinstance(item.get("id"), str) or not item["id"]
                 or any(i["id"] == item["id"] for i in self.items)
+                or ("status" in item and item["status"] not in (
+                    "in_progress", "completed", "incomplete",
+                ))
+                or ("encrypted_content" in item and item["encrypted_content"] is not None
+                    and not isinstance(item["encrypted_content"], str))
             ):
                 raise _protocol()
             self.items.append(item)
@@ -314,6 +319,14 @@ class _ResponseStream:
             for field in ("id", "type", "role", "phase", "call_id", "name"):
                 if field in start and start[field] != item.get(field):
                     raise _protocol()
+            if start.get("encrypted_content") and (
+                start["encrypted_content"] != item.get("encrypted_content")
+            ):
+                raise _protocol()
+            if start.get("status") in ("completed", "incomplete") and (
+                start["status"] != item.get("status")
+            ):
+                raise _protocol()
             self._verify_parts(index, item)
             self.done[index] = item
             return
@@ -332,6 +345,13 @@ class _ResponseStream:
         prefix, _, suffix = kind.rpartition(".")
         if prefix in families and suffix in ("delta", "done"):
             family, index_key, expected, value_key, preview = families[prefix]
+            if expected == "function_call":
+                _, item = self._item(ev, expected)
+                if any(
+                    field in ev and ev[field] != item.get(field)
+                    for field in ("name", "call_id")
+                ):
+                    raise _protocol()
             part = self._part(ev, family, index_key, expected)
             if part.get("closed") or part.get("text_done"):
                 raise _protocol()

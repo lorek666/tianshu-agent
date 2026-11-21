@@ -609,6 +609,12 @@ class _TaskCursorRebuildMixin:
                 )
                 self._rebuild_responses_cursor(r["run_id"])
 
+    def restore_responses_cursor(self, run_id: str) -> tuple[RunCursor, dict[str, Any]] | None:
+        """仅恢复可从事件识别的 Responses 派生行，不追加事实或调用模型。"""
+        with self._log.transaction():
+            self._rebuild_responses_cursor(run_id)
+        return self.load_cursor(run_id)
+
     def _rebuild_responses_cursor(self, run_id: str) -> None:
         from ._responses_rebuild import rebuild_responses_progress
 

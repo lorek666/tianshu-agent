@@ -499,12 +499,20 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
+            stored = self._tasks.restore_responses_cursor(run_id)
+        if stored is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
             out_name = self._tasks.run_payload(run_id).get("out") or None
             progress = _fresh_progress(task.goal, out_name)
         else:
             progress = _Progress.of(stored[0])
+        # intent 可以领先最后一次游标提交；恢复不能把已发送的尝试漏掉。
+        events = self._log.read_run(run_id)
+        saved_seq = max((e.seq for e in events if e.type == "run.cursor"), default=0)
+        progress.model_attempts += sum(
+            e.type == "model.intent" and e.seq > saved_seq for e in events
+        )
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
         return self._drive(run_id, claim, progress)
@@ -790,6 +798,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         task: Task,
         out_name: str | None,
     ) -> tuple[str, str]:
+        # 已持久化终态只需过驱动安全点后收尾，不受下一次生成的配置影响。
+        if progress.model_turn is not None and not progress.pending:
+            return self._model_turn_outcome(progress)
         live = self._model
         snapshot = getattr(live, "snapshot", None)
         if callable(snapshot):
@@ -821,8 +832,6 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         """
         if self._model is None:
             raise TianshuError("未配置模型：主循环无法继续")
-        if progress.model_turn is not None and not progress.pending:
-            return self._model_turn_outcome(progress)
         if progress.turns >= self._limits.max_turns:
             return "stop", f"达到最大轮数 {self._limits.max_turns}（验收 A5）"
 
