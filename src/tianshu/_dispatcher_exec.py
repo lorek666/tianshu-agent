@@ -20,6 +20,7 @@ from ._dispatcher_types import (
     _NetworkTarget,
     _SubtaskTarget,
 )
+from .browser_forms import SUBMIT_TOOL
 from .browser_navigation import BROWSER_TOOL, page_snapshot
 from .contents import make_ref
 from .errors import (
@@ -41,7 +42,14 @@ from .mcp import (
     McpProtocolError,
     McpTimeout,
 )
-from .net import NetCancelled, NetError, NetLimits, require_public_target
+from .net import (
+    FormSubmitError,
+    NetCancelled,
+    NetError,
+    NetLimits,
+    require_public_target,
+    submit_form,
+)
 from .net import summary_page as net_summary_page
 from .permissions import ActionRequest, ApprovalError
 from .resources import MemoryScope, parse_memory_uri
@@ -471,7 +479,7 @@ class _DispatcherExecMixin:
                 self._require_data_root(), timeout_ms=self._guard_timeout_ms
             ):
                 with self._log.transaction():
-                    self._verify_resource_execution(admitted)
+                    auth = self._verify_resource_execution(admitted)
                     reservation = self._reserve_network_bytes(request, args=net_args)
                     self._start_resource_execution(request, dispatch_id)
         except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
@@ -483,6 +491,11 @@ class _DispatcherExecMixin:
                 request,
                 dispatch_id,
                 DispatchDenied(str(exc), "dispatch.budget_refused"),
+            )
+
+        if request.tool_id == SUBMIT_TOOL:
+            return self._send_browser_form(
+                request, dispatch_id, target, intent_seq, auth.form_body, call_limits, reservation,
             )
 
         # 3) 发包。公开工具不继承原有抓取工具的私网字面量例外。
@@ -599,7 +612,7 @@ class _DispatcherExecMixin:
         if hits is not None:
             output["results"] = hits
         if page is not None:
-            output["browser"] = {"links": page["links"]}
+            output["browser"] = {"links": page["links"], "forms": page["forms"]}
             output["summary"] = page["text"]
         if not fetched.is_text:
             output["binary"] = True
@@ -608,6 +621,43 @@ class _DispatcherExecMixin:
         try:
             self._commit_result(request, dispatch_id, result, target, intent_seq)
         except Exception as exc:  # noqa: BLE001 - 结果事务失败：按未知收束
+            return self._fail_unknown(request, dispatch_id, target, exc)
+        failpoint("after_result")
+        return result
+
+    def _send_browser_form(
+        self, request: ActionRequest, dispatch_id: str, target: _NetworkTarget,
+        intent_seq: int, body: bytes | None, limits: NetLimits, reservation: object | None,
+    ) -> ToolResult:
+        failpoint = sys.modules["tianshu.dispatcher"].failpoint
+        try:
+            if body is None:
+                raise DispatchError("表单没有执行侧核验过的正文")
+            failpoint("browser_form.before_send")
+            try:
+                fetched = submit_form(
+                    target.target, body, limits=limits,
+                    cancel=lambda: self._cancel_requested(request.run_id),
+                )
+            except FormSubmitError as exc:
+                self._settle_network_bytes(reservation, None if exc.sent else 0)
+                result = ToolResult(
+                    "failed", "unknown" if exc.sent else "none_applied",
+                    {"error": str(exc), "reason": exc.reason, "url": target.uri},
+                )
+                self._commit_result(request, dispatch_id, result, target, intent_seq)
+                return result
+
+            failpoint("browser_form.after_ack")
+            self._settle_network_bytes(reservation, len(fetched.body))
+            with self._log.transaction():
+                ref = self._write_content(request, fetched.body)
+                result = ToolResult("succeeded", "applied", {
+                    "url": fetched.uri, "status": fetched.status, "method": "POST",
+                    "bytes": len(fetched.body), "ref": ref, "acknowledged": True,
+                })
+                self._commit_result(request, dispatch_id, result, target, intent_seq)
+        except Exception as exc:  # noqa: BLE001 - interrupted request or result commit
             return self._fail_unknown(request, dispatch_id, target, exc)
         failpoint("after_result")
         return result

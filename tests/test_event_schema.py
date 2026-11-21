@@ -193,7 +193,7 @@ def test_code_constants_bound_to_schema_enums():
     assert re.fullmatch(pattern, "mcp__server__tool") is not None
     assert re.fullmatch(pattern, "rename_everything") is not None
     assert re.fullmatch(pattern, "Bad Tool Id!") is None
-    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory", "mcp"}
+    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory", "mcp", "network"}
     exec_policy_fields = set(ExecPolicy.__dataclass_fields__)
     assert set(_prop("task.created", "exec_policy")["properties"]) == exec_policy_fields
     binding = _prop("task.created", "workspaces")["items"]

@@ -1,4 +1,4 @@
-# 受限 HTML 表单提交契约（待实现）
+# 受限 HTML 表单提交契约
 
 `browser.navigate` 2.0 在只读、逐次批准的公开 HTTPS 导航结果中增加可提交表单的描述。`browser.submit` 1.0 只接受同一 Run 成功导航的 `from_call`、从零起的 `form_index`、原样的目标 `url`，以及该表单全部控件的 `fields`。执行侧从当时保存、可见、重新计算摘要的 HTML 中重建表单，并核对目标与字段。网页内容不授予任何权限。
 

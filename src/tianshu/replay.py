@@ -224,7 +224,9 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                 # 不能静默当成普通工具输出继续往下走。
                 if p.get("tool_id") in _SUBTASK_TOOL_IDS:
                     _verify_subtask_result(ev, p, problems)
-                if p.get("tool_id") in ("network.fetch", "network.search", "browser.navigate"):
+                if p.get("tool_id") in (
+                    "network.fetch", "network.search", "browser.navigate", "browser.submit",
+                ):
                     ref = out.get("ref")
                     if not isinstance(ref, str) or not ref.startswith(
                         "content://sha256:"
