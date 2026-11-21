@@ -416,6 +416,8 @@ ToolDefinition {
 - `MCP` 的 `idempotentHint / readOnlyHint` 只是提示，不参与授权或幂等
 - JSON-RPC 协议错误 与 `isError=true` 执行错误分开映射
 
+受限表单提交拟由 `browser.navigate` 2.0 描述同源静态表单、`browser.submit` 1.0 一次性批准并外发；边界见[浏览器表单契约](agent-browser-form-contract.md)。
+
 #### 5.2.1 记忆工具（F10，v1.1）
 
 记忆操作是 C2 工具，不是新机制（设计见 [F10-memory-design.md](F10-memory-design.md) §3.2）。**七个模型可见**工具与文件工具同级登记在 `src/tianshu/tools.py` 的 `SPECS`（记忆段），`tool_manifest()` 把它们一起投影给模型；另有三个控制面专属、`exposed=False` 的 `memory.remember` / `memory.promote` / `memory.erase`（见 §5.2.2），模型清单里没有它们。
@@ -638,6 +640,8 @@ Event {
 
 族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
 
+`receipt.backend` 的现有封闭集是 `local_fs`、`memfs`、`memory`、`mcp`。受限表单拟增 `network`，只用于已确认的 POST；凭据绑定意图、目标、参数摘要、HTTP 状态与正文内容引用。
+
 | 族 | 语义 | 具体类型 |
 |---|---|---|
 | `approval` | 审批：请求、决定、撤销、兑现、过期、被新审批取代（C4） | `approval.consumed` / `approval.decided` / `approval.expired` / `approval.requested` / `approval.revoked` / `approval.superseded` |
@@ -649,7 +653,7 @@ Event {
 | `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
 | `recovery` | 崩溃恢复：阻断与解除阻断（目录与 MCP 对象两种对象模型，见 §5.4.1 的 `dispatch.mcp_object_blocked`） | `recovery.blocked` / `recovery.object_blocked` / `recovery.object_unblocked` / `recovery.unblocked` |
-| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state`。拟增：`run.attachments` / `run.conversation` / `run.guidance_applied` / `run.guidance_requested` / `run.model_route` / `run.workflow` |
+| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state`。拟增：`run.attachments` / `run.conversation` / `run.guidance_applied` / `run.guidance_requested` / `run.model_route` / `run.workflow` / `run.workflow_request` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
@@ -666,7 +670,8 @@ Event {
 **已定义但无发射点**：**当前为空**。曾经唯一的成员 `job.lost` 已连同常量一起删除（理由见 §2.3 第 4 条）。机制保留在 `events.DECLARED_UNEMITTED_EVENT_TYPES`：将来若有"先定义形状、后接发射点"的类型，登记在那里，硬写会被校验拒绝并提示原因；接上发射点时必须在同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
 
 **拟增的 Run 事件**：`run.conversation`、`run.attachments`、`run.guidance_requested`、
-`run.guidance_applied`、`run.model_route`、`run.workflow` 仅使用 payload v1，没有 v0 解释；
+`run.guidance_applied`、`run.model_route`、`run.workflow`、`run.workflow_request`
+仅使用 payload v1，没有 v0 解释；
 生效时须与代码和机器注册表同时登记。`model.result` 仅在使用续接 1.1 时写精确 v3，
 普通结果仍写 v2；`run.model_turn` 不升版。字段和回放语义见
 [桌面会话输入契约](agent-conversation-contract.md)及[工作流契约](compact-plan-contract.md)。
