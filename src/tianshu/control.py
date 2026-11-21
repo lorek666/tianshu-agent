@@ -728,7 +728,13 @@ class ControlPlane:
     ) -> dict[str, Any]:
         import uuid
 
-        from .workflow import prepare_workflow, prior_request, workflow_runs
+        from .workflow import (
+            WORKFLOW_REQUEST,
+            WorkflowRequestConflict,
+            prepare_workflow,
+            prior_request,
+            workflow_runs,
+        )
 
         if mode not in ("execute", "plan", "compact"):
             raise ControlError("bad_params", f"未知运行模式：{mode!r}")
@@ -777,31 +783,45 @@ class ControlPlane:
                 raise ControlError("not_found", f"task 不存在：{task_id}")
             if source_revision is not None and task.goal_revision != source_revision:
                 raise ControlError("conflict", "原目标已变更，请先完成新目标下的一轮运行")
-            prior = prior_request(
-                self._tasks, self._log, task, request_id=request_id, mode=mode,
-                source_run_id=source_run_id, out_name=out_name,
-                execution_policy=execution_policy, confirmed_plan=confirmed_plan,
-            )
+            try:
+                prior = prior_request(
+                    self._tasks, self._log, task, request_id=request_id, mode=mode,
+                    source_run_id=source_run_id, confirmed_plan=confirmed_plan,
+                )
+            except WorkflowRequestConflict as exc:
+                raise ControlError("conflict", str(exc)) from exc
+            workflow = None
+            if prior is None:
+                workflow = prepare_workflow(
+                    self._tasks, self._log, task, mode=mode, request_id=request_id,
+                    source_run_id=source_run_id, confirmed_plan=confirmed_plan,
+                    use_automatic_summary=conversation is None,
+                )
+                if confirmed_plan:
+                    prior = next((
+                        run for run, old in workflow_runs(self._tasks, self._log, task_id)
+                        if old.is_plan_confirmation and old.source_run_id == source_run_id
+                    ), None)
+            request_binding = {
+                "request_id": request_id, "requested_source_run_id": source_run_id,
+            }
             if prior is not None:
                 from .model_route import model_route_fact
 
                 prior_events = self._log.read_run(prior.run_id)
                 old_route = model_route_fact(prior_events)
-                if (list(profile_names or ()) != (old_route or {}).get("requested", [])
+                if (prior_events[0].payload.get("out", "") != (out_name or "")
+                        or self._tasks.run_execution_policy(prior.run_id) != execution_policy
+                        or list(profile_names or ()) != (old_route or {}).get("requested", [])
                         or attachments != (attachments_fact(prior_events) or [])
                         or (conversation or {"turns": []}) !=
                         (conversation_fact(prior_events) or {"turns": []})):
-                    raise ControlError("conflict", "request_id 已用于不同的附件、模型档案或追问")
+                    raise ControlError("conflict", "request_id 与已有工作流的执行参数不一致")
+                if workflow is not None:
+                    tx.append(prior.run_id, WORKFLOW_REQUEST, request_binding,
+                              task_id=task_id, actor_kind="human")
                 return {"run": self._run_view(prior)}
-            workflow = prepare_workflow(
-                self._tasks, self._log, task, mode=mode, request_id=request_id,
-                source_run_id=source_run_id, confirmed_plan=confirmed_plan,
-                use_automatic_summary=conversation is None,
-            )
-            if confirmed_plan:
-                for prior, old in workflow_runs(self._tasks, self._log, task_id):
-                    if old.mode == "execute" and old.source_run_id == source_run_id:
-                        return {"run": self._run_view(prior)}
+            assert workflow is not None
             route = None
             if profile_names is not None:
                 route = self._model_slot.select_model_route(
@@ -828,6 +848,9 @@ class ControlPlane:
                 task_id, payload=payload, execution_policy=execution_policy,
                 workflow=workflow if use_workflow else None,
             )
+            if mode == "compact":
+                tx.append(run.run_id, WORKFLOW_REQUEST, request_binding,
+                          task_id=task_id, actor_kind="human")
             if not task.is_control:
                 tx.append(
                     run.run_id, RUN_CONVERSATION,

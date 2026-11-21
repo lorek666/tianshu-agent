@@ -100,6 +100,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "run.guidance_applied",
         "run.guidance_requested",
         "run.workflow",
+        "run.workflow_request",
         "run.state",
         "run.control",
         "run.cursor",
