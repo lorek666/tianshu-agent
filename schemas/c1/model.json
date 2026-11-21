@@ -115,7 +115,7 @@
           "properties": {
             "schema_version": {
               "type": "string",
-              "const": "1.0"
+              "enum": ["1.0", "1.1"]
             },
             "adapter": {
               "type": "string",
@@ -144,7 +144,8 @@
                     "enum": [
                       "reasoning",
                       "message",
-                      "function_call"
+                      "function_call",
+                      "compaction"
                     ]
                   }
                 }
@@ -198,6 +199,44 @@
             }
           }
         },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "name": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string",
+                "enum": [
+                  "text/plain",
+                  "image/png",
+                  "image/jpeg"
+                ]
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "name",
+              "media_type",
+              "data_base64",
+              "sha256"
+            ]
+          }
+        },
         "continuation": {
           "type": "object",
           "additionalProperties": false,
@@ -211,7 +250,7 @@
           "properties": {
             "schema_version": {
               "type": "string",
-              "const": "1.0"
+              "enum": ["1.0", "1.1"]
             },
             "adapter": {
               "type": "string",
@@ -240,7 +279,8 @@
                     "enum": [
                       "reasoning",
                       "message",
-                      "function_call"
+                      "function_call",
+                      "compaction"
                     ]
                   }
                 }
@@ -263,7 +303,7 @@
       "properties": {
         "schema_version": {
           "type": "string",
-          "const": "1.0"
+          "enum": ["1.0", "1.1"]
         },
         "adapter": {
           "type": "string",
@@ -292,7 +332,8 @@
                 "enum": [
                   "reasoning",
                   "message",
-                  "function_call"
+                  "function_call",
+                  "compaction"
                 ]
               }
             }

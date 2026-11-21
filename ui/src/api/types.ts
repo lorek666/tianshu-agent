@@ -41,6 +41,8 @@ export interface RunView {
   n_applied: number;
   n_unknown: number;
   undoable: boolean;
+  clarification?: { question: string };
+  workflow?: { mode: "execute" | "plan" | "compact"; source_run_id: string | null } | null;
 }
 
 export interface ModelStreamDeltaView {
@@ -180,11 +182,28 @@ export const PURE_ONLY_RUN_POLICY = {
   mode: "pure_only",
 } as const satisfies RunExecutionPolicyV1;
 
-export interface CreateTaskInput {
+export interface RunAttachmentInput {
+  name: string;
+  media_type: "text/plain" | "image/png" | "image/jpeg";
+  data_base64: string;
+}
+
+export interface RunModelSelection {
+  model_profile?: string;
+  fallback_profiles?: string[];
+}
+
+export interface CreateTaskInput extends RunModelSelection {
   goal: string;
   workspaces: WorkspaceView[];
+  outbound_allow?: string[];
+  mcp_servers?: string[];
+  max_subtasks?: number;
+  /** 附件只随首次 run.start 发送。 */
+  attachments?: RunAttachmentInput[];
   /** 只随创建后的首次 run.start 发送；不写进 Task 或 workspace 能力。 */
   execution_policy: RunExecutionPolicyV1;
+  mode?: "execute" | "plan";
 }
 
 /** 界面会调用的方法名。字符串常量集中在这里，避免各处手写拼错。 */
@@ -194,6 +213,11 @@ export const RPC = {
   taskCreate: "task.create",
   taskRevise: "task.revise",
   runStart: "run.start",
+  runFollowUp: "run.follow_up",
+  runAnswerClarification: "run.answer_clarification",
+  runGuide: "run.guide",
+  runCompact: "run.compact",
+  planExecute: "plan.execute",
   runList: "run.list",
   runStatus: "run.status",
   runPause: "run.pause",
@@ -214,6 +238,8 @@ export const RPC = {
   memoryErase: "memory.erase",
   // 首日设置、凭据状态、定时任务、账户预算与 MCP 状态（GUI 控制面）
   settingsGet: "settings.get",
+  modelProfileSet: "model.profiles.set",
+  modelProfileRemove: "model.profiles.remove",
   modelConfigure: "model.configure",
   credentialSet: "credential.set",
   credentialDelete: "credential.delete",

@@ -473,6 +473,10 @@ class _LoopMemoryMixin:
             # MCP 工具的目标不是文件、也不是记忆作用域：一个 `mcp://server/tool`
             # 资源。参数里的内容（server/tool）由注册表决定，模型参数不得改写它。
             return mcp_target.uri
+        if tool_id == "network.search":
+            from .web_search import search_target
+
+            return search_target(args).to_uri()
         if tool_id in NETWORK_TOOL_IDS:
             # 网络目标不是文件：零目录任务也必须能抓取，所以这一支必须在
             # "任务必须绑定目录"之前。参数只接受规范写法，`https://` 会被

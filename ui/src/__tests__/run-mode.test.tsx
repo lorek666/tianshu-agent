@@ -100,7 +100,7 @@ class FakeHost implements HostClient {
       const envelope: TaskEnvelope = { task: structuredClone(created) };
       return envelope;
     }
-    if (method === "run.start") {
+    if (method === "run.start" || method === "run.follow_up") {
       if (this.failuresRemaining > 0) {
         this.failuresRemaining -= 1;
         throw new HostRpcError("internal", "dispatch.disk_space_low: 可用空间低于 2 GiB");
@@ -114,6 +114,23 @@ class FakeHost implements HostClient {
       this.state.runs.unshift(started);
       const envelope: RunEnvelope = { run: structuredClone(started) };
       return envelope;
+    }
+    if (method === "task.revise") {
+      const revised = this.state.tasks.find((item) => item.task_id === params.task_id);
+      if (revised === undefined) throw new Error("找不到待更新任务");
+      revised.goal = String(params.goal);
+      revised.goal_revision += 1;
+      revised.active_run_id = null;
+      return { task: structuredClone(revised) };
+    }
+    if (method === "run.compact") {
+      const compacted: RunView = {
+        ...run(String(params.task_id), this.state.runs.length + 1),
+        state: "succeeded", outcome: "noop",
+        workflow: { mode: "compact", source_run_id: String(params.source_run_id) },
+      };
+      this.state.runs.unshift(compacted);
+      return { run: structuredClone(compacted) };
     }
     if (method === "events.run") {
       return { events: [], seq_head: 1, has_more: false };
@@ -235,6 +252,78 @@ async function mount(initial: StateView, failuresRemaining = 0): Promise<FakeHos
 }
 
 describe("Run 执行模式的真实 UI 入口", () => {
+  it.each([false, true])(
+    "计划模式经过压缩仍继续规划（重新打开页面：%s）",
+    async (reopened) => {
+      const planned: RunView = {
+        ...run("task_1", 1), state: "succeeded", outcome: "noop",
+        workflow: { mode: "plan", source_run_id: null },
+      };
+      const compacted: RunView = {
+        ...run("task_1", 2), state: "succeeded", outcome: "noop",
+        workflow: { mode: "compact", source_run_id: planned.run_id },
+      };
+      const host = await mount(state([task()], reopened ? [compacted, planned] : [planned]));
+      await waitFor(() => container?.querySelector('[data-testid="followup-input"]') !== null);
+      if (!reopened) {
+        await inputValue(container?.querySelector<HTMLInputElement>(
+          '[data-testid="followup-input"]',
+        ) as HTMLInputElement, "/compact");
+        await click(container?.querySelector<HTMLButtonElement>(
+          '[data-testid="followup-send-btn"]',
+        ) as HTMLButtonElement);
+        await waitFor(() => rpcCalls(host, "run.compact").length === 1);
+        await settle();
+      }
+      await inputValue(container?.querySelector<HTMLInputElement>(
+        '[data-testid="followup-input"]',
+      ) as HTMLInputElement, "计划中也列出需要检查的测试文件");
+      await click(container?.querySelector<HTMLButtonElement>(
+        '[data-testid="followup-send-btn"]',
+      ) as HTMLButtonElement);
+      await waitFor(() => rpcCalls(host, "run.follow_up").length === 1);
+      expect(rpcCalls(host, "run.follow_up")[0]?.mode).toBe("plan");
+      expect(rpcCalls(host, "task.revise")).toEqual([]);
+    },
+  );
+
+  it("计划启动失败后的详情重试保留计划模式和请求标识", async () => {
+    const host = await mount(state(), 1);
+    await waitFor(() => container?.querySelector(".composer-shell") !== null);
+    await inputValue(
+      container?.querySelector<HTMLTextAreaElement>(
+        '[data-testid="composer-textarea"]',
+      ) as HTMLTextAreaElement,
+      "/plan 先调查再给出计划",
+    );
+    await click(container?.querySelector<HTMLButtonElement>(
+      '[data-testid="composer-send-btn"]',
+    ) as HTMLButtonElement);
+    await waitFor(() => rpcCalls(host, "run.start").length === 1);
+    await settle();
+    const retry = buttonByText("生成计划");
+    expect(retry).not.toBeNull();
+    await click(retry as HTMLButtonElement);
+    await waitFor(() => rpcCalls(host, "run.start").length === 2);
+    const starts = rpcCalls(host, "run.start");
+    expect(starts[0]?.mode).toBe("plan");
+    expect(starts[1]).toEqual(starts[0]);
+  });
+
+  it.each(["plan", "compact", "confirm"] as const)(
+    "演示模式明确拒绝 %s，不静默启动普通执行",
+    async (mode) => {
+      const world = new DemoWorld(1);
+      const host = new DemoHostClient(world);
+      const before = structuredClone(world.runs);
+      const method = mode === "compact" ? "run.compact"
+        : mode === "confirm" ? "plan.execute" : "run.start";
+      await expect(host.rpc(method, { mode: "plan", task_id: "task_1" }))
+        .rejects.toThrow("需要连接真实守护进程");
+      expect(world.runs).toEqual(before);
+    },
+  );
+
   it("新建任务只把纯读策略交给 run.start，启动失败后的详情重试仍保持 pure_only", async () => {
     const host = await mount(state(), 1);
     await waitFor(() => container?.querySelector(".composer-shell") !== null);
@@ -295,7 +384,8 @@ describe("Run 执行模式的真实 UI 入口", () => {
       },
     ]);
     expect(firstStarts).toEqual([
-      { task_id: "task_created", execution_policy: PURE_ONLY },
+      { task_id: "task_created", execution_policy: PURE_ONLY,
+        mode: "execute", request_id: expect.any(String) },
     ]);
 
     const retry = buttonByText("开始运行");
@@ -303,8 +393,10 @@ describe("Run 执行模式的真实 UI 入口", () => {
     await click(retry as HTMLButtonElement);
     await waitFor(() => rpcCalls(host, "run.start").length === 2);
     expect(rpcCalls(host, "run.start")).toEqual([
-      { task_id: "task_created", execution_policy: PURE_ONLY },
-      { task_id: "task_created", execution_policy: PURE_ONLY },
+      { task_id: "task_created", execution_policy: PURE_ONLY,
+        mode: "execute", request_id: firstStarts[0]?.request_id },
+      { task_id: "task_created", execution_policy: PURE_ONLY,
+        mode: "execute", request_id: firstStarts[0]?.request_id },
     ]);
   });
 
@@ -325,7 +417,8 @@ describe("Run 执行模式的真实 UI 入口", () => {
     await click(start as HTMLButtonElement);
     await waitFor(() => rpcCalls(host, "run.start").length === 1);
     expect(rpcCalls(host, "run.start")).toEqual([
-      { task_id: "task_1", execution_policy: policy },
+      { task_id: "task_1", execution_policy: policy,
+        mode: "execute", request_id: expect.any(String) },
     ]);
   });
 

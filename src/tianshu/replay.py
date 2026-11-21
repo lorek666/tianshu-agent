@@ -34,11 +34,13 @@ from .context import (
     budget_from_payload,
     compile_context,
 )
+from .conversation import GuidanceHistory, checked_conversation, seed_messages
 from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
-from .loop import SYSTEM_PROMPT, message_source_seqs
+from .loop import initial_messages, message_source_seqs
 from .model_messages import assistant_message_from_payload
 from .summaries import MaterialBlock, SummaryMaterialError, SummaryStore, build_material
+from .task_attachments import attachments_fact
 from .tasks import SUBTASK_STATES
 
 #: 回放要校验形状的子任务工具（G2 委派 D2 §2.8）。
@@ -164,15 +166,18 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
     start_text = start.payload.get("task", "")
     out_name = start.payload.get("out", "")
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"{start_text}\n\n输出文件：{out_name}"
-            if out_name
-            else start_text,
-        },
-    ]
+    from .workflow import workflow_for, workflow_messages
+
+    try:
+        workflow = workflow_for(log, run_id)
+        initial = workflow_messages(initial_messages(start_text, out_name), workflow)
+        messages = seed_messages(
+            initial, checked_conversation(log, events), attachments_fact(events),
+            general=workflow is None or (workflow.mode == "execute" and not workflow.source_text),
+        )
+    except TianshuError as exc:
+        problems.append(f"工作流来源无法核验：{exc}")
+        messages = initial_messages(start_text, out_name)
 
     verified = 0
     turns = 0
@@ -186,7 +191,11 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
     # 而 `all_seqs[:len(messages)]` 就是那个前缀。
     all_seqs = message_source_seqs(events)
 
+    guidance = GuidanceHistory()
     for ev in events:
+        message = guidance.consume_event(ev)
+        if message is not None:
+            messages.append(message)
         if ev.type == "model.intent":
             if _verify_model_intent(
                 ev, messages, all_seqs[: len(messages)], problems, summaries, start.task_id
@@ -215,13 +224,13 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
                 # 不能静默当成普通工具输出继续往下走。
                 if p.get("tool_id") in _SUBTASK_TOOL_IDS:
                     _verify_subtask_result(ev, p, problems)
-                if p.get("tool_id") == "network.fetch":
+                if p.get("tool_id") in ("network.fetch", "network.search", "browser.navigate"):
                     ref = out.get("ref")
                     if not isinstance(ref, str) or not ref.startswith(
                         "content://sha256:"
                     ):
                         problems.append(
-                            f"seq={ev.seq} 外发结果缺内容引用（network.fetch "
+                            f"seq={ev.seq} 外发结果缺内容引用（{p.get('tool_id')} "
                             f"call_id={p.get('call_id')}）：回放不重新联网，"
                             "读不到当时抓到的内容"
                         )

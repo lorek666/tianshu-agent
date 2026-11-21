@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 
 from .budget import DIMENSIONS
 from .capability import CapabilityProfile
-from .continuation import responses_endpoint
+from .continuation import responses_endpoint, validate_compact_threshold
 from .credentials import (
     ENV_VARS,
     CredentialRef,
@@ -41,7 +41,7 @@ from .errors import (
     WorkspaceViolation,
 )
 from .execpolicy import ExecPolicy
-from .loop import Stack
+from .loop import Limits, Stack
 from .model import (
     AnthropicMessagesModel,
     ModelIdentity,
@@ -51,16 +51,25 @@ from .model import (
     ToolCall,
     identity_of,
 )
+from .model_route import (
+    MODEL_PROFILE_LIMIT,
+    ModelRouteV1,
+    model_profile_name,
+    model_route_names,
+    validate_profile_config,
+)
 from .openai_responses import OpenAIResponsesModel
-from .scheduler import Scheduler
+from .scheduler import ScheduleInactive, ScheduleMissing, Scheduler
 
 VALID_MODES = ("scripted", "openai", "anthropic", "openai-responses")
 VALID_BACKENDS = ("keychain", "env")
 KNOWN_PROVIDERS = ("openai", "anthropic")
 ALLOWED_MODEL_CONFIG_KEYS = frozenset(
-    {"mode", "model_name", "base_url", "credential_backend"}
+    {"mode", "model_name", "base_url", "credential_backend", "allow_image_attachments",
+     "compact_threshold"}
 )
 MODEL_CONFIG_FILE = "model_config.json"
+MODEL_PROFILES_FILE = "model_profiles.json"
 
 
 def _default_backend_name() -> str:
@@ -174,6 +183,8 @@ class ModelConfig:
     model_name: str = ""
     base_url: str = ""
     credential_backend: str = "env"
+    allow_image_attachments: bool = False
+    compact_threshold: int | None = None
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> ModelConfig:
@@ -215,19 +226,29 @@ class ModelConfig:
         ).strip().lower()
         if backend not in VALID_BACKENDS:
             raise ValueError(f"未知凭据后端（可选：{list(VALID_BACKENDS)}）")
+        allow_images = raw.get("allow_image_attachments", False)
+        if type(allow_images) is not bool or (allow_images and mode != "openai-responses"):
+            raise ValueError("只有 Responses 配置可显式开启图片附件能力")
         return cls(
             mode=mode,
             model_name=model_name,
             base_url=base_url,
             credential_backend=backend,
+            allow_image_attachments=allow_images,
+            compact_threshold=validate_compact_threshold(
+                raw.get("compact_threshold"), responses=mode == "openai-responses",
+            ),
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "model_name": self.model_name,
             "base_url": self.base_url,
             "credential_backend": self.credential_backend,
+            **({"allow_image_attachments": True} if self.allow_image_attachments else {}),
+            **({"compact_threshold": self.compact_threshold}
+               if self.compact_threshold is not None else {}),
         }
 
 
@@ -272,6 +293,7 @@ class RuntimeModelSlot:
             }
         )
         self._config: ModelConfig | None = self._load_saved_config()
+        self._profiles = self._load_model_profiles()
         self._revision: int = 0
 
     @property
@@ -287,16 +309,116 @@ class RuntimeModelSlot:
             frozen._config = self._config
             frozen._revision = self._revision
             frozen._stores = dict(self._stores)
+        frozen._profiles = {}
         frozen._lock = threading.Lock()
         frozen._data_root = None
-        cfg = frozen._config
-        if cfg is not None and cfg.mode != "scripted" and not cfg.base_url:
-            base = (
-                os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com/v1"
-                if cfg.mode == "anthropic"
-                else os.environ.get("TIANSHU_BASE_URL") or "https://api.openai.com/v1"
-            )
-            frozen._config = replace(cfg, base_url=base)
+        if frozen._config is not None:
+            frozen._config = self._freeze_endpoint(frozen._config)
+        return frozen
+
+    @staticmethod
+    def _freeze_endpoint(cfg: ModelConfig) -> ModelConfig:
+        if cfg.mode == "scripted" or cfg.base_url:
+            return cfg
+        base = (
+            os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com/v1"
+            if cfg.mode == "anthropic"
+            else os.environ.get("TIANSHU_BASE_URL") or "https://api.openai.com/v1"
+        )
+        return replace(cfg, base_url=base)
+
+    def _profiles_path(self) -> Path | None:
+        return self._data_root / MODEL_PROFILES_FILE if self._data_root is not None else None
+
+    def _load_model_profiles(self) -> dict[str, ModelConfig]:
+        path = self._profiles_path()
+        if path is None:
+            return {}
+        from .restore_access import ensure_path_not_held
+
+        ensure_path_not_held(path)
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_bytes().decode("utf-8"))
+            if (not isinstance(raw, dict) or set(raw) != {"format_version", "profiles"}
+                    or type(raw["format_version"]) is not int or raw["format_version"] != 1
+                    or not isinstance(raw["profiles"], dict)
+                    or len(raw["profiles"]) > MODEL_PROFILE_LIMIT):
+                raise ValueError
+            return {
+                model_profile_name(name): ModelConfig.of(validate_profile_config(cfg))
+                for name, cfg in raw["profiles"].items()
+            }
+        except (ValueError, RecursionError):
+            raise TianshuError("模型档案文件不符合 v1 格式") from None
+
+    def _save_model_profiles(self, profiles: dict[str, ModelConfig]) -> None:
+        path = self._profiles_path()
+        if path is not None:
+            _atomic_write_json(path, {
+                "format_version": 1,
+                "profiles": {name: cfg.to_dict() for name, cfg in profiles.items()},
+            })
+        self._profiles = profiles
+
+    def model_profiles(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {name: self._profiles[name].to_dict() for name in sorted(self._profiles)}
+
+    def set_model_profile(self, name: str, raw: Mapping[str, Any]) -> None:
+        key = model_profile_name(name)
+        cfg = ModelConfig.of(validate_profile_config(raw))
+        with self._lock:
+            if len(self._profiles) >= MODEL_PROFILE_LIMIT and key not in self._profiles:
+                raise ValueError(f"模型档案最多 {MODEL_PROFILE_LIMIT} 个")
+            self._save_model_profiles({**self._profiles, key: cfg})
+
+    def remove_model_profile(self, name: str) -> None:
+        key = model_profile_name(name)
+        with self._lock:
+            if key not in self._profiles:
+                raise ValueError("模型档案不存在")
+            self._save_model_profiles({k: v for k, v in self._profiles.items() if k != key})
+
+    def select_model_route(
+        self, primary: str, fallbacks: list[str], *, needs_images: bool = False,
+    ) -> ModelRouteV1:
+        """只在开始新 Run 前按本地就绪状态选择，全程不发模型请求。"""
+        if not isinstance(fallbacks, list):
+            raise ValueError("备用模型档案必须是列表")
+        requested = model_route_names([primary, *fallbacks])
+        with self._lock:
+            if any(name not in self._profiles for name in requested):
+                raise ValueError("模型候选档案不存在")
+            configs = {name: self._profiles[name] for name in requested}
+        for name, cfg in configs.items():
+            try:
+                frozen = ModelConfig.of(validate_profile_config(
+                    self._freeze_endpoint(cfg).to_dict()
+                ))
+                if needs_images and not frozen.allow_image_attachments:
+                    continue
+                if frozen.mode != "scripted":
+                    store = self.store_for(frozen.credential_backend)
+                    provider = "openai" if frozen.mode == "openai-responses" else frozen.mode
+                    if (not store.capabilities.implemented
+                            or not store.get(CredentialRef(provider, "llm"))):
+                        continue
+            except (CredentialUnsupported, ValueError):
+                continue
+            return ModelRouteV1(requested, name, **frozen.to_dict())
+        raise ValueError("没有在本地通过端点与凭据预检的模型候选")
+
+    def bind_model_route(self, payload: Mapping[str, Any]) -> RuntimeModelSlot:
+        """从 Run 已记录的配置恢复；即使主模型恢复就绪也不重新选路。"""
+        route = ModelRouteV1.of(payload)
+        config = ModelConfig.of(route.to_payload()["config"])
+        if (config.mode != "scripted" and not config.base_url
+                or config.to_dict() != route.to_payload()["config"]):
+            raise ValueError("Run 模型配置未规范化或端点未固定")
+        frozen = self.snapshot()
+        frozen._config = config
         return frozen
 
     def _config_path(self) -> Path | None:
@@ -388,6 +510,14 @@ class RuntimeModelSlot:
             self._revision += 1
         return cfg
 
+    @property
+    def supports_image_attachments(self) -> bool:
+        with self._lock:
+            cfg = self._config
+        if cfg is None:
+            return getattr(self._fallback, "supports_image_attachments", False) is True
+        return cfg.allow_image_attachments
+
     def _resolve_active_model(self) -> Any:
         with self._lock:
             cfg = self._config
@@ -406,8 +536,13 @@ class RuntimeModelSlot:
                 base_url=cfg.base_url or None,
                 api_key=api_key,
             )
-        adapter = OpenAIResponsesModel if cfg.mode == "openai-responses" else OpenAICompatibleModel
-        return adapter(
+        if cfg.mode == "openai-responses":
+            return OpenAIResponsesModel(
+                cfg.model_name, base_url=cfg.base_url or None, api_key=api_key,
+                allow_image_attachments=cfg.allow_image_attachments,
+                compact_threshold=cfg.compact_threshold,
+            )
+        return OpenAICompatibleModel(
             cfg.model_name or "gpt-4o-mini",
             base_url=cfg.base_url or None,
             api_key=api_key,
@@ -463,6 +598,13 @@ class RuntimeModelSlot:
             output_tokens=None,
             declared_by=f"{adapter.__name__}（adapter 声明）",
         )
+
+    @property
+    def compact_threshold(self) -> int | None:
+        with self._lock:
+            cfg = self._config
+        return (getattr(self._fallback, "compact_threshold", None) if cfg is None
+                else cfg.compact_threshold)
 
     def continuation_scope(self) -> tuple[str, str, str] | None:
         with self._lock:
@@ -561,6 +703,7 @@ def settings_view(slot: RuntimeModelSlot) -> dict[str, Any]:
             "summary": summary,
         },
         "credentials": credential_views(slot),
+        "profiles": slot.model_profiles(),
     }
 
 
@@ -628,8 +771,7 @@ def schedule_create(
     if not isinstance(goal, str) or not goal.strip():
         raise error_cls("bad_params", "goal 必须是非空字符串")
     interval = params.get("interval_seconds")
-    if not isinstance(interval, int) or isinstance(interval, bool) or interval < 1:
-        raise error_cls("bad_params", "interval_seconds 必须是 >= 1 的整数")
+    trigger = params.get("trigger")
     raw_ws = params.get("workspaces")
     if raw_ws is None:
         workspaces: list[Any] = []
@@ -644,7 +786,7 @@ def schedule_create(
     scheduler = Scheduler(stack.log)
     try:
         created = scheduler.create(
-            goal, workspaces, interval_seconds=interval, exec_policy=exec_policy
+            goal, workspaces, interval_seconds=interval, trigger=trigger, exec_policy=exec_policy
         )
     except (WorkspaceViolation, TianshuError) as exc:
         raise error_cls("bad_params", redact(str(exc))) from exc
@@ -680,6 +822,26 @@ def schedule_remove(
     except TianshuError as exc:
         raise error_cls("not_found", redact(str(exc))) from exc
     return {"removed": schedule_id.strip()}
+
+
+def schedule_signal(
+    stack: Stack, params: Mapping[str, Any], error_cls: type[Exception], *, limits: Limits,
+) -> dict[str, Any]:
+    if set(params) != {"schedule_id", "event_id"}:
+        raise error_cls("bad_params", "schedule.signal 只接受 schedule_id 和 event_id")
+    schedule_id = params["schedule_id"]
+    if not isinstance(schedule_id, str) or not schedule_id.strip() or len(schedule_id) > 64:
+        raise error_cls("bad_params", "schedule_id 必须是长度不超过 64 的非空字符串")
+    scheduler = Scheduler(
+        stack.log, tasks=stack.tasks, dispatcher=stack.dispatcher,
+        claims=stack.claims, limits=limits,
+    )
+    try:
+        return scheduler.signal(schedule_id, params["event_id"])
+    except ScheduleMissing as exc:
+        raise error_cls("not_found", str(exc)) from exc
+    except ScheduleInactive as exc:
+        raise error_cls("conflict", str(exc)) from exc
 
 
 def budget_view(

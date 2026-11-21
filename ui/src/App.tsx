@@ -6,8 +6,10 @@ import type {
   EventView,
   EventsResult,
   ModelStreamEvent,
+  RunAttachmentInput,
   RunEnvelope,
   RunExecutionPolicyV1,
+  RunModelSelection,
   RunView,
   StateView,
   StreamingPreview,
@@ -170,6 +172,7 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runPolicies, setRunPolicies] = useState<Record<string, RunExecutionPolicyV1>>({});
+  const [runModes, setRunModes] = useState<Record<string, "execute" | "plan">>({});
   const [runDetail, setRunDetail] = useState<RunView | null>(null);
   const [timeline, setTimeline] = useState<EventView[]>([]);
   const [timelineHasMore, setTimelineHasMore] = useState(false);
@@ -201,6 +204,18 @@ export function App() {
   const connectionLostRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const runFetchRef = useRef<string | null>(null);
+  const unsentAttachments = useRef(new Map<string, {
+    revision: number; files: RunAttachmentInput[]; selection: RunModelSelection;
+  }>());
+  const workflowRequests = useRef(new Map<string, string>());
+
+  const requestIdFor = useCallback((key: string): string => {
+    const existing = workflowRequests.current.get(key);
+    if (existing !== undefined) return existing;
+    const id = crypto.randomUUID();
+    workflowRequests.current.set(key, id);
+    return id;
+  }, []);
 
   useEffect(() => {
     stateRef.current = state;
@@ -682,14 +697,12 @@ export function App() {
   const handleCreateTask = useCallback(
     async (input: CreateTaskInput): Promise<void> => {
       const host = requireHost();
+      const { execution_policy, attachments, model_profile, fallback_profiles, mode, ...taskInput } = input;
       setBusy("create-task");
       try {
         let created: TaskView | null;
         try {
-          const envelope = await host.rpc<TaskEnvelope>(RPC.taskCreate, {
-            goal: input.goal,
-            workspaces: input.workspaces,
-          });
+          const envelope = await host.rpc<TaskEnvelope>(RPC.taskCreate, taskInput);
           created = normalizeTask(envelope.task);
         } catch (error) {
           throw new Error(humanizeHostError(error));
@@ -713,18 +726,35 @@ export function App() {
         setSelectedTaskId(task.task_id);
         setRunPolicies((previous) => ({
           ...previous,
-          [task.task_id]: input.execution_policy,
+          [task.task_id]: execution_policy,
+        }));
+        setRunModes((previous) => ({
+          ...previous,
+          [task.task_id]: mode ?? "execute",
         }));
         selectRun(null);
         showToast("任务已创建，正在启动后台运行", "success");
 
+        if (attachments?.length || model_profile) {
+          unsentAttachments.current.set(task.task_id, {
+            revision: task.goal_revision, files: attachments ?? [],
+            selection: model_profile ? {model_profile, fallback_profiles: fallback_profiles ?? []} : {},
+          });
+        }
         try {
+          const key = `start:${task.task_id}:${task.goal_revision}:${mode ?? "execute"}:${input.execution_policy.mode}`;
           const runEnvelope = await host.rpc<RunEnvelope>(RPC.runStart, {
             task_id: task.task_id,
-            execution_policy: input.execution_policy,
+            execution_policy,
+            ...(attachments?.length ? { attachments } : {}),
+            ...(model_profile ? { model_profile, fallback_profiles: fallback_profiles ?? [] } : {}),
+            mode: mode ?? "execute",
+            request_id: requestIdFor(key),
           });
+          unsentAttachments.current.delete(task.task_id);
           const run = normalizeRun(runEnvelope.run);
           if (run !== null) {
+            workflowRequests.current.delete(key);
             selectRun(run);
             showToast("运行已在后台开始；关掉界面它也会继续", "success");
           }
@@ -740,43 +770,56 @@ export function App() {
         setBusy(null);
       }
     },
-    [refreshRun, refreshSnapshot, requireHost, selectRun, showToast],
+    [refreshRun, refreshSnapshot, requireHost, requestIdFor, selectRun, showToast],
   );
 
   const handleStartRun = useCallback(
-    (taskId: string, executionPolicy: RunExecutionPolicyV1): void => {
+    async (
+      taskId: string, executionPolicy: RunExecutionPolicyV1, mode: "execute" | "plan" = "execute",
+      selection?: RunModelSelection,
+    ): Promise<void> => {
       const host = hostRef.current;
       if (host === null) {
-        setErrorBanner("还没有连接守护进程");
-        return;
+        throw new Error("还没有连接守护进程");
       }
       setRunPolicies((previous) => ({
         ...previous,
         [taskId]: executionPolicy,
       }));
+      setRunModes((previous) => ({ ...previous, [taskId]: mode }));
       setBusy(`start-run:${taskId}`);
-      void (async () => {
+      const revision = stateRef.current?.tasks.find((task) => task.task_id === taskId)?.goal_revision;
+      const key = `start:${taskId}:${revision}:${mode}:${executionPolicy.mode}`;
         try {
+          const draft = unsentAttachments.current.get(taskId);
+          const attachments = draft?.revision === revision ? draft?.files : undefined;
           const envelope = await host.rpc<RunEnvelope>(RPC.runStart, {
             task_id: taskId,
             execution_policy: executionPolicy,
+            ...(draft?.revision === revision ? draft?.selection : {}),
+            ...selection,
+            ...(attachments?.length ? { attachments } : {}),
+            mode,
+            request_id: requestIdFor(key),
           });
+          unsentAttachments.current.delete(taskId);
           const run = normalizeRun(envelope.run);
           if (run === null) {
             throw new HostRpcError("bad_response", "守护进程返回的运行数据无法识别");
           }
+          workflowRequests.current.delete(key);
           selectRun(run);
           showToast("运行已在后台开始；关掉界面它也会继续", "success");
           await refreshSnapshot(host);
           await refreshRun(host, run.run_id);
         } catch (error) {
           setErrorBanner(humanizeHostError(error));
+          throw new Error(humanizeHostError(error));
         } finally {
           setBusy(null);
         }
-      })();
     },
-    [refreshRun, refreshSnapshot, selectRun, showToast],
+    [refreshRun, refreshSnapshot, requestIdFor, selectRun, showToast],
   );
 
   const handleExecutionPolicyChange = useCallback(
@@ -805,6 +848,7 @@ export function App() {
           throw new Error("目标已更新，但守护进程返回的数据无法识别，请刷新后再确认。");
         }
         const nextTask = updated;
+        unsentAttachments.current.delete(taskId);
         setState((previous) =>
           previous === null
             ? previous
@@ -828,23 +872,83 @@ export function App() {
   const handleFollowUpSubmit = useCallback(
     async (
       task: TaskView,
-      followUpText: string,
+      source: RunView,
+      message: string,
       policy: RunExecutionPolicyV1,
+      selection?: RunModelSelection,
+      attachments?: RunAttachmentInput[],
+      mode: "execute" | "plan" = "execute",
     ): Promise<void> => {
-      const wasIdle = task.active_run_id === null;
-      const nextGoal = `${task.goal}\n\n补充要求：${followUpText}`;
+      const host = requireHost();
       try {
-        await handleRevise(task.task_id, nextGoal);
-        if (wasIdle) {
-          handleStartRun(task.task_id, policy);
+        const key = `follow-up:${source.run_id}:${mode}:${policy.mode}:${message}`;
+        const envelope = await host.rpc<RunEnvelope>(
+          source.clarification ? RPC.runAnswerClarification : RPC.runFollowUp, {
+          task_id: task.task_id,
+          source_run_id: source.run_id,
+          mode,
+          request_id: requestIdFor(key),
+          message,
+          execution_policy: policy,
+          ...selection,
+          ...(attachments?.length ? { attachments } : {}),
+        });
+        const run = normalizeRun(envelope.run);
+        if (run === null) throw new Error("无法识别新运行，请刷新。");
+        workflowRequests.current.delete(key);
+        if (run.workflow?.mode === "plan" || mode === "plan") {
+          setRunModes((previous) => ({ ...previous, [task.task_id]: "plan" }));
         }
+        selectRun(run);
+        await refreshSnapshot(host);
+        await refreshRun(host, run.run_id);
       } catch (error) {
-        setErrorBanner(
-          error instanceof Error ? error.message : "提交补充要求失败，请重试。",
-        );
+        throw new Error(humanizeHostError(error));
       }
     },
-    [handleRevise, handleStartRun],
+    [refreshRun, refreshSnapshot, requireHost, requestIdFor, selectRun],
+  );
+
+  const handleGuide = useCallback(async (run: RunView, text: string): Promise<void> => {
+    const host = requireHost();
+    try {
+      await host.rpc(RPC.runGuide, { run_id: run.run_id, text });
+      showToast("补充要求已提交，会在下一次模型调用前读取", "info");
+    } catch (error) {
+      throw new Error(humanizeHostError(error));
+    }
+  }, [requireHost, showToast]);
+  const handleWorkflowCommand = useCallback(
+    async (action: "compact" | "execute", task: TaskView, run: RunView | null): Promise<void> => {
+      const host = requireHost();
+      if (action === "execute" && (run?.workflow?.mode !== "plan" || run.clarification)) {
+        throw new Error("请先选择一份成功完成的计划。");
+      }
+      const key = `${action}:${task.task_id}:${task.goal_revision}:${run?.run_id ?? ""}`;
+      setBusy(`workflow:${action}`);
+      try {
+        const envelope = await host.rpc<RunEnvelope>(
+          action === "compact" ? RPC.runCompact : RPC.planExecute,
+          action === "compact"
+            ? { task_id: task.task_id, ...(run ? {source_run_id: run.run_id} : {}),
+                request_id: requestIdFor(key) }
+            : { plan_run_id: run!.run_id, goal_revision: task.goal_revision,
+                request_id: requestIdFor(key) },
+        );
+        const next = normalizeRun(envelope.run);
+        if (next === null) throw new Error("守护进程返回的运行数据无法识别。");
+        workflowRequests.current.delete(key);
+        selectRun(next);
+        showToast(action === "compact" ? "正在后台压缩上下文" : "已确认计划，执行已入队", "success");
+        await refreshSnapshot(host);
+        await refreshRun(host, next.run_id);
+      } catch (error) {
+        throw new Error(humanizeHostError(error));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refreshRun, refreshSnapshot, requireHost, requestIdFor, selectRun, showToast],
   );
 
   const handleControl = useCallback(
@@ -1196,11 +1300,13 @@ export function App() {
               }}
               onRefresh={handleRefresh}
               onOpenModelSettings={() => openSettingsAt("models")}
+              profiles={modelSettings?.profiles}
               onSubmit={handleCreateTask}
             />
           ) : (
             <TaskWorkspaceView
               task={selectedTask}
+              artifactHost={demoMode ? null : hostRef.current}
               taskRuns={taskRuns}
               allRuns={allRuns}
               approvals={approvals}
@@ -1221,16 +1327,22 @@ export function App() {
               executionPolicy={
                 runPolicies[selectedTask.task_id] ?? preferences.defaultPolicy
               }
+              defaultMode={runModes[selectedTask.task_id]
+                ?? (taskRuns.find((run) => run.workflow?.mode !== "compact")
+                  ?.workflow?.mode === "plan" ? "plan" : "execute")}
               enablePet={preferences.enablePet}
               reduceMotion={preferences.reduceMotion}
               modelConfig={modelSettings?.model ?? null}
               settingsApi={settingsApi}
+              profiles={modelSettings?.profiles}
               onModelUpdated={handleModelUpdated}
               onSelectRun={handleSelectRun}
               onExecutionPolicyChange={handleExecutionPolicyChange}
               onStartRun={handleStartRun}
               onRevise={handleRevise}
               onFollowUpSubmit={handleFollowUpSubmit}
+              onGuide={demoMode ? undefined : handleGuide}
+              onWorkflowCommand={handleWorkflowCommand}
               onPause={(run) => handleControl("pause", run)}
               onResume={(run) => handleControl("resume", run)}
               onRequestCancel={requestCancel}

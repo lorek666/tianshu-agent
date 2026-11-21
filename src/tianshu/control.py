@@ -43,6 +43,18 @@ from pathlib import Path
 from typing import Any
 
 from . import memory_control, settings_control
+from .conversation import (
+    GUIDANCE_EVENTS,
+    GUIDANCE_REQUESTED,
+    MAX_GUIDANCE_REQUESTS,
+    RUN_CONVERSATION,
+    GuidanceHistory,
+    build_follow_up,
+    checked_conversation,
+    clarification_question,
+    conversation_fact,
+    validate_guidance,
+)
 from .credentials import redact
 from .disk_admission import DiskAdmissionError
 from .errors import (
@@ -55,14 +67,21 @@ from .errors import (
 from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .ipc import MAX_MESSAGE_BYTES
 from .loop import Limits, Stack
+from .model_route import RUN_MODEL_ROUTE
 from .permissions import ApprovalError, HumanIdentity
 from .resources import MemoryScope, build_memory_scope
 from .run_policy import EFFECTS, PURE_ONLY, RunEffectsDisallowed, RunExecutionPolicyV1
+from .task_attachments import RUN_ATTACHMENTS, attachments_fact, normalize_attachments
+from .task_files import ArtifactNotFound, list_artifacts, preview_artifact
 from .tasks import (
+    RUN_CREATED,
     RUN_FENCED,
     RUN_PAUSED,
+    RUN_QUEUED,
     RUN_RECONCILING,
+    RUN_RUNNING,
     RUN_WAITING_APPROVAL,
+    SUBTASK_MAX_PER_ROOT_TASK,
     TERMINAL_STATES,
 )
 from .undo import UndoRefused, apply_undo, plan_undo
@@ -181,6 +200,12 @@ def task_view(task: Any) -> dict[str, Any]:
 
 
 def event_view(event: Any) -> dict[str, Any]:
+    payload = event.payload
+    if event.type == RUN_ATTACHMENTS:
+        payload = {"attachments": [
+            {"name": record["name"], "media_type": record["media_type"]}
+            for record in payload["attachments"]
+        ]}
     return {
         "seq": int(event.seq),
         "type": event.type,
@@ -188,7 +213,7 @@ def event_view(event: Any) -> dict[str, Any]:
         "task_id": event.task_id,
         "ts": int(event.ts),
         "actor_kind": event.actor_kind,
-        "payload": event.payload,
+        "payload": payload,
     }
 
 
@@ -320,6 +345,11 @@ class ControlPlane:
             "task.create": self._task_create,
             "task.revise": self._task_revise,
             "run.start": self._run_start,
+            "run.follow_up": self._run_follow_up,
+            "run.answer_clarification": self._run_answer_clarification,
+            "run.guide": self._run_guide,
+            "run.compact": self._run_compact,
+            "plan.execute": self._plan_execute,
             "run.list": self._run_list,
             "run.status": self._run_status,
             "run.pause": self._run_pause,
@@ -328,6 +358,8 @@ class ControlPlane:
             "approvals.list": self._approvals_list,
             "approvals.decide": self._approvals_decide,
             "events.run": self._events_run,
+            "artifact.list": self._artifact_list,
+            "artifact.preview": self._artifact_preview,
             "undo.plan": self._undo_plan,
             "undo.apply": self._undo_apply,
             # 记忆控制面（N6 / F10 §9）：看得见、改得动。**这些方法不是模型工具**，
@@ -350,12 +382,16 @@ class ControlPlane:
             # 首日配置、凭据状态、定时任务、账户预算与 MCP 状态（GUI 控制面）
             "settings.get": self._settings_get,
             "model.configure": self._model_configure,
+            "model.profiles.list": self._model_profiles_list,
+            "model.profiles.set": self._model_profiles_set,
+            "model.profiles.remove": self._model_profiles_remove,
             "credential.set": self._credential_set,
             "credential.delete": self._credential_delete,
             "schedule.list": self._schedule_list,
             "schedule.create": self._schedule_create,
             "schedule.set_enabled": self._schedule_set_enabled,
             "schedule.remove": self._schedule_remove,
+            "schedule.signal": self._schedule_signal,
             "budget.view": self._budget_view,
             "mcp.list": self._mcp_list,
             "diagnostics.preview": self._diagnostics_preview,
@@ -530,7 +566,17 @@ class ControlPlane:
         if not isinstance(workspaces, list):
             raise ControlError("bad_params", "workspaces 必须是列表")
         exec_policy = self._exec_policy(params, workspaces)
-        task = self._tasks.create_task(goal, workspaces, exec_policy=exec_policy)
+        for key in ("outbound_allow", "mcp_servers"):
+            if key in params and not isinstance(params[key], list):
+                raise ControlError("bad_params", f"{key} 必须是字符串数组")
+        task = self._tasks.create_task(
+            goal,
+            workspaces,
+            exec_policy=exec_policy,
+            outbound_allow=params.get("outbound_allow"),
+            mcp_servers=params.get("mcp_servers"),
+            max_subtasks=_opt_int(params, "max_subtasks", 0, 0, SUBTASK_MAX_PER_ROOT_TASK),
+        )
         return {"task": task_view(task)}
 
     @staticmethod
@@ -588,14 +634,111 @@ class ControlPlane:
 
     # ------------------------------------------------------------------ run
 
-    def _run_start(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _run_answer_clarification(self, params: dict[str, Any]) -> dict[str, Any]:
+        _require_str(params, "request_id")
+        return self._run_follow_up(params, answering=True)
+
+    def _run_follow_up(self, params: dict[str, Any], *, answering=False) -> dict[str, Any]:
+        task_id = _require_str(params, "task_id")
+        source_id = _require_str(params, "source_run_id")
+        message = _require_str(params, "message").strip()
+        if not message:
+            raise ControlError("bad_params", "追问内容不能为空")
+        source = self._require_run(source_id)
+        if source.task_id != task_id:
+            raise ControlError("bad_params", "只能引用同一个任务下的运行")
+        task = self._tasks.get_task(task_id)
+        if task is None or task.goal_revision != source.goal_revision:
+            raise ControlError("conflict", "原目标已变更，请先完成新目标下的一轮运行")
+        if source.state != "succeeded":
+            raise ControlError("conflict", "只能追问已经成功结束的运行")
+        events = self._log.read_run(source_id)
+        checked_conversation(self._log, events)
+        question = clarification_question(events)
+        if answering != (question is not None):
+            raise ControlError("conflict", "请选择对应的澄清答复或普通追问入口")
+        conversation = build_follow_up(source_id, events, message)
+        from .workflow import workflow_for
+
+        old = workflow_for(self._log, source_id)
+        if old is not None and old.mode == "plan":
+            params = {**params, "mode": "plan"}
+        return self._run_start(
+            params, conversation=conversation, source_revision=source.goal_revision,
+        )
+
+    def _run_guide(self, params: dict[str, Any]) -> dict[str, Any]:
+        run_id = _require_str(params, "run_id")
+        text = _require_str(params, "text").strip()
+        validate_guidance(text)
+        with self._log.transaction() as tx:
+            run = self._require_run(run_id)
+            task = self._tasks.get_task(run.task_id)
+            if (task is None or task.is_control or task.active_run_id != run_id
+                    or run.state not in (
+                        RUN_CREATED, RUN_QUEUED, RUN_RUNNING, RUN_PAUSED, RUN_WAITING_APPROVAL,
+                    )
+                    or run.control_requested == "cancel"):
+                raise ControlError("conflict", "当前运行不再接受补充要求")
+            history = GuidanceHistory.from_events(
+                self._log.read_run(run_id, event_types=GUIDANCE_EVENTS),
+            )
+            if len(history.requested) >= MAX_GUIDANCE_REQUESTS:
+                raise ControlError("conflict", "本次运行的补充要求已达上限")
+            seq = tx.append(run_id, GUIDANCE_REQUESTED, {"text": text},
+                            task_id=run.task_id, actor_kind="human")
+        return {"request_seq": seq}
+
+    def _run_start(
+        self, params: dict[str, Any], *, conversation: dict[str, Any] | None = None,
+        source_revision: int | None = None,
+    ) -> dict[str, Any]:
         """**只入队，不驱动。** 立即返回 RunView（state=created）。
 
         payload 的形状与 `AgentLoop.start` 逐字一致（`task` / `out` / `limits` /
         `tools`）：`run.start` 事件是回放的输入，少了这些字段，`replay` 就无法
         仅凭日志重建首轮提示消息。
         """
+        mode = params.get("mode", "execute")
+        if mode not in ("plan", "execute") or ("source_run_id" in params and conversation is None):
+            raise ControlError("bad_params", "run.start 仅接受 plan/execute；来源由服务端绑定")
+        return self._queue_workflow(
+            {key: value for key, value in params.items() if key != "source_run_id"},
+            mode=mode, conversation=conversation, source_revision=source_revision,
+        )
+
+    def _run_compact(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._queue_workflow(params, mode="compact")
+
+    def _plan_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        plan = self._require_run(_require_str(params, "plan_run_id"))
+        revision = params.get("goal_revision")
+        task = self._tasks.get_task(plan.task_id)
+        if (type(revision) is not int or task is None
+                or revision != task.goal_revision or revision != plan.goal_revision):
+            raise ControlError("conflict", "目标已改变，请重新生成并确认计划")
+        return self._queue_workflow(
+            {**params, "task_id": plan.task_id, "source_run_id": plan.run_id},
+            mode="execute", confirmed_plan=True, source_revision=revision,
+        )
+
+    def _queue_workflow(
+        self, params: dict[str, Any], *, mode: str, confirmed_plan: bool = False,
+        conversation: dict[str, Any] | None = None, source_revision: int | None = None,
+    ) -> dict[str, Any]:
+        import uuid
+
+        from .workflow import prepare_workflow, prior_request, workflow_runs
+
+        if mode not in ("execute", "plan", "compact"):
+            raise ControlError("bad_params", f"未知运行模式：{mode!r}")
         task_id = _require_str(params, "task_id")
+        request_id = params.get("request_id", uuid.uuid4().hex)
+        source_run_id = params.get("source_run_id")
+        if not isinstance(request_id, str):
+            raise ControlError("bad_params", "request_id 必须为字符串")
+        if source_run_id is not None and not isinstance(source_run_id, str):
+            raise ControlError("bad_params", "source_run_id 必须为字符串")
         if "execution_policy" not in params:
             execution_policy = EFFECTS
         else:
@@ -605,33 +748,118 @@ class ControlPlane:
                 )
             except TianshuError as exc:
                 raise ControlError("bad_params", str(exc)) from exc
+        if mode in ("plan", "compact"):
+            execution_policy = PURE_ONLY
+        if confirmed_plan and execution_policy != EFFECTS:
+            raise ControlError("bad_params", "确认计划必须新建 effects Run，工具审批仍单独进行")
+        attachments = normalize_attachments(params.get("attachments", []))
+        needs_images = any(item["media_type"] != "text/plain" for item in attachments)
+        profile_names = None
+        if "model_profile" in params:
+            profile = _require_str(params, "model_profile")
+            from .model_route import model_route_names
+
+            fallback = params.get("fallback_profiles", [])
+            if not isinstance(fallback, list):
+                raise ControlError("bad_params", "备用模型档案必须是列表")
+            profile_names = model_route_names([profile, *fallback])
+        elif "fallback_profiles" in params:
+            raise ControlError("bad_params", "选择备用档案前必须选择首选档案")
         out_name = params.get("out_name")
         if out_name is not None and not isinstance(out_name, str):
             raise ControlError("bad_params", "out_name 必须是字符串")
-        task = self._tasks.get_task(task_id)
-        if task is None:
-            raise ControlError("not_found", f"task 不存在：{task_id}")
-
-        self._stack.dispatcher.prepare_run(task_id, execution_policy)
-        payload = {
-            "task": task.goal,
-            "out": out_name or "",
-            "limits": {
-                "max_turns": self._limits.max_turns,
-                "max_total_tokens": self._limits.max_total_tokens,
-            },
-            "tools": _exposed_tool_ids(execution_policy),
-        }
-        run = self._tasks.start_run(
-            task.task_id,
-            payload=payload,
-            execution_policy=execution_policy,
-        )
-        # 作业进队列；认领者（daemon 驱动线程）负责 created → queued → running。
         if self._claims is None:
             raise ControlError("internal", "Stack 未配置 JobStore，无法入队")
-        self._claims.enqueue(run.run_id)
+        # 幂等判定、来源绑定、建 Run 与入队共用一个写事务，双客户端不能抢过检查。
+        with self._log.transaction() as tx:
+            task = self._tasks.get_task(task_id)
+            if task is None:
+                raise ControlError("not_found", f"task 不存在：{task_id}")
+            if source_revision is not None and task.goal_revision != source_revision:
+                raise ControlError("conflict", "原目标已变更，请先完成新目标下的一轮运行")
+            prior = prior_request(
+                self._tasks, self._log, task, request_id=request_id, mode=mode,
+                source_run_id=source_run_id, out_name=out_name,
+                execution_policy=execution_policy,
+            )
+            if prior is not None:
+                from .model_route import model_route_fact
+
+                prior_events = self._log.read_run(prior.run_id)
+                old_route = model_route_fact(prior_events)
+                if (list(profile_names or ()) != (old_route or {}).get("requested", [])
+                        or attachments != (attachments_fact(prior_events) or [])
+                        or (conversation or {"turns": []}) !=
+                        (conversation_fact(prior_events) or {"turns": []})):
+                    raise ControlError("conflict", "request_id 已用于不同的附件、模型档案或追问")
+                return {"run": self._run_view(prior)}
+            workflow = prepare_workflow(
+                self._tasks, self._log, task, mode=mode, request_id=request_id,
+                source_run_id=source_run_id, confirmed_plan=confirmed_plan,
+                use_automatic_summary=conversation is None,
+            )
+            if confirmed_plan:
+                for prior, old in workflow_runs(self._tasks, self._log, task_id):
+                    if old.mode == "execute" and old.source_run_id == source_run_id:
+                        return {"run": self._run_view(prior)}
+            route = None
+            if profile_names is not None:
+                route = self._model_slot.select_model_route(
+                    profile_names[0], list(profile_names[1:]), needs_images=needs_images,
+                )
+            elif needs_images and not self._model_slot.supports_image_attachments:
+                raise ControlError("bad_params", "所选模型未开启图片附件能力")
+            self._stack.dispatcher.prepare_run(task_id, execution_policy, discover_mcp=False)
+            payload = {
+                "task": task.goal,
+                "out": out_name or "",
+                "limits": {
+                    "max_turns": self._limits.max_turns,
+                    "max_total_tokens": self._limits.max_total_tokens,
+                },
+                "tools": [] if mode == "compact" else _exposed_tool_ids(execution_policy),
+            }
+            # 旧调用没有续接材料时不产生新事件，保证历史视图与默认路径兼容。
+            use_workflow = (
+                mode != "execute" or workflow.source_text
+                or "mode" in params or "request_id" in params or confirmed_plan
+            )
+            run = self._tasks.start_run(
+                task_id, payload=payload, execution_policy=execution_policy,
+                workflow=workflow if use_workflow else None,
+            )
+            if not task.is_control:
+                tx.append(
+                    run.run_id, RUN_CONVERSATION,
+                    conversation if conversation is not None else {"turns": []},
+                    task_id=task_id, actor_kind="human",
+                )
+            if attachments:
+                tx.append(run.run_id, RUN_ATTACHMENTS, {"attachments": attachments},
+                          task_id=task_id, actor_kind="human")
+            if route is not None:
+                tx.append(run.run_id, RUN_MODEL_ROUTE, route.to_payload(),
+                          task_id=task_id, actor_kind="core")
+            # 认领者（daemon 驱动线程）负责 created → queued → running。
+            self._claims.enqueue(run.run_id)
         return {"run": self._run_view(run)}
+
+    def _artifact_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        run = self._require_run(_require_str(params, "run_id"))
+        artifacts = list_artifacts(self._log, run.run_id)
+        kept, consumed, _ = _fit_within_budget(
+            artifacts, allowance=STATE_RESULT_BUDGET_BYTES,
+            budget=STATE_RESULT_BUDGET_BYTES, noun="运行产物",
+        )
+        return {"artifacts": kept, "truncated": consumed < len(artifacts)}
+
+    def _artifact_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        run = self._require_run(_require_str(params, "run_id"))
+        artifact_id = _require_str(params, "artifact_id")
+        try:
+            return {"artifact": preview_artifact(self._log, run.run_id, artifact_id)}
+        except ArtifactNotFound as exc:
+            raise ControlError("not_found", str(exc)) from exc
 
     def _run_list(self, params: dict[str, Any]) -> dict[str, Any]:
         task_id = _require_str(params, "task_id")
@@ -695,7 +923,10 @@ class ControlPlane:
         return run
 
     def _run_view(self, run: Any) -> dict[str, Any]:
-        counts = _EffectCounts.of(self._log.read_run(run.run_id, verify=False))
+        kinds = ("run.conversation", "run.workflow", "run.end", "tool.intent", "model.result",
+                 "tool.result") if run.state == "succeeded" else ("tool.result",)
+        facts = self._log.read_run(run.run_id, event_types=kinds)
+        counts = _EffectCounts.of(facts)
         undoable = False
         try:
             undoable = bool(self._stack.snapshots.load(run.run_id))
@@ -703,7 +934,7 @@ class ControlPlane:
             # 清单损坏不该让整个首屏打不开：这一条的"能不能撤销"回答不了就
             # 说 false，真正的错误在 `undo.plan` 时会带出来给人看。
             undoable = False
-        return {
+        result = {
             "run_id": run.run_id,
             "task_id": run.task_id,
             "state": run.state,
@@ -721,6 +952,18 @@ class ControlPlane:
             "n_unknown": counts.n_unknown,
             "undoable": undoable,
         }
+        from .workflow import workflow_for
+
+        workflow = workflow_for(self._log, run.run_id)
+        if run.state == "succeeded":
+            question = clarification_question(facts)
+            if question is not None:
+                result["clarification"] = {"question": question}
+        if workflow is not None:
+            result["workflow"] = {
+                "mode": workflow.mode, "source_run_id": workflow.source_run_id,
+            }
+        return result
 
     def _list_recent_runs(self) -> list[Any]:
         """非终态（按开始顺序）+ 最近 20 个终态/被 fence 的（新的在前）。"""
@@ -1233,6 +1476,17 @@ class ControlPlane:
     def _settings_get(self, _params: dict[str, Any]) -> dict[str, Any]:
         return settings_control.settings_view(self._model_slot)
 
+    def _model_profiles_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return {"profiles": self._model_slot.model_profiles()}
+
+    def _model_profiles_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._model_slot.set_model_profile(_require_str(params, "name"), params["config"])
+        return self._model_profiles_list({})
+
+    def _model_profiles_remove(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._model_slot.remove_model_profile(_require_str(params, "name"))
+        return self._model_profiles_list({})
+
     def _model_configure(self, params: dict[str, Any]) -> dict[str, Any]:
         self._model_slot.configure(params)
         return settings_control.settings_view(self._model_slot)
@@ -1248,6 +1502,11 @@ class ControlPlane:
 
     def _schedule_create(self, params: dict[str, Any]) -> dict[str, Any]:
         return settings_control.schedule_create(self._stack, params, ControlError)
+
+    def _schedule_signal(self, params: dict[str, Any]) -> dict[str, Any]:
+        return settings_control.schedule_signal(
+            self._stack, params, ControlError, limits=self._limits,
+        )
 
     def _schedule_set_enabled(self, params: dict[str, Any]) -> dict[str, Any]:
         return settings_control.schedule_set_enabled(self._stack, params, ControlError)

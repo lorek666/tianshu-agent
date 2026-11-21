@@ -255,7 +255,7 @@ def test_parked_cursor_hash_round_trip(tmp_path):
                         payload = {**payload, "reason": "paused"}
                 changed.append(replace(event, payload=payload))
             with pytest.raises(TianshuError, match="游标不能"):
-                rebuild_responses_progress(changed)
+                rebuild_responses_progress(log, changed)
 
 
 @pytest.mark.parametrize("conflict", [False, True])
@@ -357,7 +357,7 @@ def test_direct_resume_parked_when_derived_rows_missing(tmp_path):
         park = select(events, "job.parked")[-1]
         assert park.seq == saved.seq + 1
         preceding = [e for e in events if e.seq < saved.seq]
-        previous_cursor, _, previous = rebuild_responses_progress(preceding)
+        previous_cursor, _, previous = rebuild_responses_progress(log, preceding)
         assert previous_cursor.model_turn["finish_reason"] == "end_turn"
         assert previous.payload["payload_hash"] == digest(previous_cursor)
         original, _ = stack.tasks.load_cursor(rid)

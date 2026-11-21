@@ -178,6 +178,12 @@ def test_diagnostics_preview_and_redacted_local_export(
             [{"root_path": str(ws_dir), "mode": "readonly"}],
             interval_seconds=3600,
         )
+        (ws_dir / "private_inbox_filename.txt").write_text("body", encoding="utf-8")
+        Scheduler(log).create(
+            "收到文件时执行私人任务",
+            [{"root_path": str(ws_dir), "mode": "readonly"}],
+            trigger={"kind": "file_arrival", "directory": str(ws_dir)},
+        )
     finally:
         log.close()
 
@@ -202,6 +208,9 @@ def test_diagnostics_preview_and_redacted_local_export(
         names = set(zf.namelist())
         assert "manifest.json" in names
         assert "metrics.json" not in names  # 未勾选的分节不写出
+        schedules = json.loads(zf.read("schedules.json"))
+        assert {row["trigger"]["kind"] for row in schedules} == {"interval", "file_arrival"}
+        assert all("directory" not in row["trigger"] for row in schedules)
         combined_text = "\n".join(
             zf.read(name).decode("utf-8") for name in sorted(names)
         )
@@ -209,6 +218,9 @@ def test_diagnostics_preview_and_redacted_local_export(
     assert leaked_key not in combined_text
     assert "整理客户张三的绝密合同草稿" not in combined_text
     assert "每天读取客户张三目录" not in combined_text
+    assert "收到文件时执行私人任务" not in combined_text
+    assert "private_inbox_filename.txt" not in combined_text
+    assert "trigger_state" not in combined_text
     assert "/Users/alice/PrivateDoc/contract.md" not in combined_text
     assert "private_client_docs" not in combined_text
     assert "<PATH_REDACTED>" in combined_text

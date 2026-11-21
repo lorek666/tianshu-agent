@@ -95,9 +95,15 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "recovery.object_unblocked",
         # Run 生命周期
         "run.start",
+        "run.attachments",
+        "run.conversation",
+        "run.guidance_applied",
+        "run.guidance_requested",
+        "run.workflow",
         "run.state",
         "run.control",
         "run.cursor",
+        "run.model_route",
         "run.model_turn",
         "run.effect",
         "run.end",
@@ -586,10 +592,17 @@ class EventLog:
             seq: known.get(seq, event_schema.LEGACY_PAYLOAD_VERSION) for seq in seqs
         }
 
-    def read_run(self, run_id: str, *, verify: bool = True) -> list[Event]:
-        rows = self._conn.execute(
-            "SELECT * FROM events WHERE run_id = ? ORDER BY seq", (run_id,)
-        ).fetchall()
+    def read_run(
+        self, run_id: str, *, verify: bool = True, event_types: tuple[str, ...] | None = None,
+    ) -> list[Event]:
+        sql = "SELECT * FROM events WHERE run_id = ?"
+        parameters = (run_id,)
+        if event_types is not None:
+            if not event_types:
+                return []
+            sql += " AND type IN (" + ",".join("?" for _ in event_types) + ")"
+            parameters += event_types
+        rows = self._conn.execute(sql + " ORDER BY seq", parameters).fetchall()
         versions = self._versions_for([int(r["seq"]) for r in rows])
         return [
             self._row_to_event(r, verify=verify, version=versions[int(r["seq"])])

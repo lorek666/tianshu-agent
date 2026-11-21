@@ -3,9 +3,8 @@
 仿 `data_cli.py` 先例：独立模块 `add_parser` + `run`，在 `cli.py` 两处接线
 （注册 + 分发）。桌面端控制面亦通过 `schedule.*` RPC 共用同一套 `Scheduler`。
 
-**只有管理面，没有触发面**：触发（tick）只发生在 daemon 驱动线程里
-（`daemon._driver_loop` 装配 Scheduler 后每个节拍调用）。CLI 在 daemon
-运行期间也可以增删改查——WAL 下短写事务与控制面写审批是同一性质。
+时间和目录轮询只在 daemon 驱动线程里运行。`signal` 通过本机认证连接向
+运行中的 daemon 提交外部事件 ID。CLI 管理命令仍走本地数据库。
 
 exec 策略语义与 `cli.py task create` 同口径（`_exec_policy` 就地复刻并注明
 来源）：`--allow-exec-cmd` 必须是可执行文件绝对路径列表（布尔拒绝），
@@ -32,7 +31,7 @@ from .scheduler import Scheduler
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "schedule",
-        help="定时任务：到点由 daemon 自动创建任务并入队 Run（interval 调度，无 cron）",
+        help="任务触发：固定间隔、日历、目录新增文件或本机事件",
     )
     commands = parser.add_subparsers(dest="schedule_action", required=True)
 
@@ -46,10 +45,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--readonly", type=Path, default=None, action="append",
         help="只读绑定目录（可重复）",
     )
-    create.add_argument(
-        "--interval-seconds", type=int, required=True, metavar="N",
+    triggers = create.add_mutually_exclusive_group(required=True)
+    triggers.add_argument(
+        "--interval-seconds", type=int, metavar="N",
         help="触发间隔（秒，>= 1）；到点补发一次并从当前时间重排",
     )
+    triggers.add_argument("--at", metavar="HH:MM", help="按当地时钟的指定时刻触发")
+    triggers.add_argument("--watch-directory", metavar="ABS_PATH", help="监听只读工作区中的目录")
+    triggers.add_argument("--on-event", action="store_true", help="只响应已认证的本机事件")
+    create.add_argument("--timezone", help="日历时区：UTC、固定偏移或 IANA 名称")
+    create.add_argument("--weekdays", help="日历触发星期，逗号分隔（周一 1；默认每天）")
     create.add_argument(
         "--allow-exec-cmd", action="append", default=None, metavar="ABS_PATH",
         help="任务级 exec 白名单：允许的可执行文件绝对路径（可重复）。"
@@ -68,6 +73,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     create.add_argument("--json", action="store_true")
 
+    signal = commands.add_parser("signal", help="向运行中的本机 daemon 提交去重事件")
+    signal.add_argument("schedule_id", metavar="SCHEDULE_ID")
+    signal.add_argument("event_id", metavar="EVENT_ID")
+    signal.add_argument("--data-root", type=Path, help="daemon 数据目录；默认使用桌面端目录")
+    signal.add_argument("--json", action="store_true")
+
     for action, help_text, with_id in (
         ("list", "列出全部定时任务", False),
         ("show", "查看一条定时任务", True),
@@ -81,14 +92,27 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         cmd.add_argument("--db", type=Path, default=None, help=argparse.SUPPRESS)
         cmd.add_argument(
             "--desktop",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="使用桌面端默认数据目录",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="使用桌面端默认数据目录",
         )
         cmd.add_argument("--json", action="store_true")
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.schedule_action == "signal":
+        from . import ipc
+
+        with ipc.Client(args.data_root or ipc.default_data_root()) as client:
+            result = client.call("schedule.signal", {
+                "schedule_id": args.schedule_id, "event_id": args.event_id,
+            })
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            label = "已入队" if result["accepted"] else "事件已接收过"
+            print(f"{label}：{result['run_id']}")
+        return 0
     from .restore_access import default_material_paths, preflight_legacy_material_layout
 
     db = getattr(args, "db", None) or Path(".tianshu/events.db")
@@ -135,9 +159,29 @@ def _create(scheduler: Scheduler, args: argparse.Namespace) -> int:
     for path in args.readonly or []:
         workspaces.append({"root_path": str(path), "mode": "readonly"})
     exec_policy = _exec_policy(args, workspaces)
+    trigger = None
+    if args.at is not None:
+        try:
+            days = (
+                [int(day) for day in args.weekdays.split(",")]
+                if args.weekdays is not None else list(range(1, 8))
+            )
+        except ValueError as exc:
+            raise TianshuError("--weekdays 需要逗号分隔的星期整数") from exc
+        trigger = {
+            "kind": "calendar", "time": args.at,
+            "timezone": args.timezone if args.timezone is not None else "UTC", "weekdays": days,
+        }
+    elif args.timezone is not None or args.weekdays is not None:
+        raise TianshuError("--timezone / --weekdays 仅适用于 --at")
+    elif args.watch_directory is not None:
+        trigger = {"kind": "file_arrival", "directory": args.watch_directory}
+    elif args.on_event:
+        trigger = {"kind": "event"}
     row = scheduler.create(
         goal, workspaces,
         interval_seconds=args.interval_seconds,
+        trigger=trigger,
         exec_policy=exec_policy,
     )
     return _print_one(row, args)
@@ -197,10 +241,21 @@ def _print_rows(rows: list[dict[str, Any]], args: argparse.Namespace) -> int:
         return 0
     for row in rows:
         state = "启用" if row["enabled"] else "停用"
-        print(
-            f"{row['schedule_id']}  [{state}]  每 {row['interval_seconds']}s"
-            f"  下次 {row['next_fire_at']}"
-        )
+        trigger = row["trigger"]
+        next_label = "下次触发"
+        if trigger["kind"] == "interval":
+            label = f"每 {row['interval_seconds']}s"
+        elif trigger["kind"] == "calendar":
+            days = ",".join(str(day) for day in trigger["weekdays"])
+            label = f"星期 {days} {trigger['time']}（{trigger['timezone']}）"
+        elif trigger["kind"] == "file_arrival":
+            label = f"目录新增文件：{trigger['directory']}"
+            next_label = "下次检查"
+        else:
+            label = "等待本机事件"
+        next_fire = row["next_fire_at"]
+        next_text = f"  {next_label} {next_fire}" if next_fire is not None else ""
+        print(f"{row['schedule_id']}  [{state}]  {label}{next_text}")
         print(f"    goal: {row['goal']}")
         for binding in row["workspaces"]:
             print(

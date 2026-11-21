@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -578,6 +579,10 @@ class Dispatcher(
             approval = None
 
         if approval is None:
+            if isinstance(target, _McpTarget) and self._mcp_clients is not None:
+                config = self._mcp_clients.configs.get(target.server)
+                if config is not None and config.url:
+                    decision = replace(decision, reason=f"{decision.reason} · 端点：{config.url}")
             approval = self._approvals.request(
                 request, decision, isolation=isolation
             )

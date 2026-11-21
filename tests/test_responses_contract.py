@@ -149,7 +149,7 @@ def test_c1_schema_validates_real_ref_and_rejects_adapter_drift():
 
 def test_model_result_v2_preserves_frozen_v0_v1_and_cache_usage():
     assert event_schema.current_version("model.result") == 2
-    assert event_schema.known_versions("model.result") == {0, 1, 2}
+    assert event_schema.known_versions("model.result") == {0, 1, 2, 3}
     p = event_schema.minimal_payload("model.result")
     p.update(model.ModelResponse(
         "tool_use", "先检查", [model.ToolCall("call_1", "list_files", {"path": "."})],

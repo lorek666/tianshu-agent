@@ -322,3 +322,153 @@ def test_default_diagnostic_archive_excludes_continuation(tmp_path):
         assert b"output_items" not in content
     finally:
         log.close()
+
+
+def test_desktop_attachment_and_guidance_rebuild_exact_responses_cursor(tmp_path):
+    from tianshu.control import ControlPlane
+
+    log, stack, task, _ = _stack(tmp_path)
+    try:
+        class GuidedTransport(Transport):
+            def post(self, url, *, body, headers, timeout):
+                if not self.calls:
+                    plane.handle("run.guide", {"run_id": run_id, "text": "补充：用中文回答。"})
+                return super().post(url, body=body, headers=headers, timeout=timeout)
+
+        transport = GuidedTransport(response([message("first")]), response([message("second")]))
+        adapter = model(transport)
+        plane = ControlPlane(stack, model=adapter)
+        run_id = plane.handle("run.start", {
+            "task_id": task.task_id,
+            "attachments": [{
+                "name": "notes.txt", "media_type": "text/plain", "data_base64": "YQ==",
+            }],
+        })["run"]["run_id"]
+        assert engine_for(stack, adapter).resume_run(run_id).terminal
+        first_input = transport.calls[0]["body"]["input"]
+        assert first_input[-1]["content"] == [
+            {"type": "input_text", "text": "检查目录"},
+            {"type": "input_text", "text": '附件（用户提供的资料）："notes.txt"\na'},
+        ]
+        assert transport.calls[1]["body"]["input"][-1] == {
+            "role": "user", "content": "补充：用中文回答。",
+        }
+        before = stack.tasks.load_cursor(run_id)[0].to_dict()
+        with log.transaction():
+            log.conn.execute("DELETE FROM run_cursors WHERE run_id=?", (run_id,))
+            log.conn.execute("DELETE FROM run_turns WHERE run_id=?", (run_id,))
+        rebuilt = stack.tasks.restore_responses_cursor(run_id)
+        assert rebuilt[0].to_dict() == before
+        assert replay(log, run_id).ok
+    finally:
+        log.close()
+
+
+def test_responses_plan_preserves_attachment_and_rebuilds_workflow_cursor(tmp_path):
+    from base64 import b64encode
+
+    from tianshu.control import ControlPlane
+
+    log, stack, task, _ = _stack(tmp_path)
+    transport = Transport(response([reasoning(), message('先检查目录，再报告结果。')]))
+    provider = model(transport)
+    plane = ControlPlane(stack, model=provider)
+    try:
+        run = plane.handle('run.start', {
+            'task_id': task.task_id, 'mode': 'plan', 'request_id': 'plan-1',
+            'attachments': [{'name': 'brief.txt', 'media_type': 'text/plain',
+                             'data_base64': b64encode(b'unique-brief').decode()}],
+        })['run']
+        run_id = run['run_id']
+        assert run['workflow']['mode'] == 'plan'
+        assert engine_for(stack, provider).resume_run(run_id).outcome == 'noop'
+        assert 'unique-brief' in repr(transport.calls[0]['body']['input'])
+        before = stack.tasks.load_cursor(run_id)[0].to_dict()
+        with log.transaction():
+            log.conn.execute('DELETE FROM run_cursors')
+            log.conn.execute('DELETE FROM run_turns')
+        stack.tasks.rebuild_from_events()
+        assert stack.tasks.load_cursor(run_id)[0].to_dict() == before
+        assert replay(log, run_id).ok
+    finally:
+        log.close()
+
+
+def test_responses_compact_new_run_preserves_dialogue_and_excludes_old_reasoning(tmp_path):
+    from tianshu.control import ControlPlane
+
+    log, stack, task, _ = _stack(tmp_path)
+    transport = Transport(
+        response([reasoning(), message('原回答')]),
+        response([reasoning(), message('后续回答')]),
+        response([reasoning(), message('保留已完成的检查；下一步核对目录。')]),
+        response([reasoning(), message('继续完成')]),
+    )
+    provider = model(transport)
+    plane = ControlPlane(stack, model=provider)
+    engine = engine_for(stack, provider)
+    try:
+        first = plane.handle('run.start', {'task_id': task.task_id})['run']['run_id']
+        assert engine.resume_run(first).terminal
+        second = plane.handle('run.follow_up', {
+            'task_id': task.task_id, 'source_run_id': first, 'message': '请保留这句用户约束',
+        })['run']['run_id']
+        assert engine.resume_run(second).terminal
+        compact = plane.handle('run.compact', {
+            'task_id': task.task_id, 'source_run_id': second, 'request_id': 'compact-responses',
+        })['run']['run_id']
+        assert engine.resume_run(compact).outcome == 'noop'
+        compact_body = transport.calls[2]['body']
+        assert '原回答' in repr(compact_body['input'])
+        assert '请保留这句用户约束' in repr(compact_body['input'])
+        assert not compact_body['tools']
+        third = plane.handle('run.start', {'task_id': task.task_id})['run']['run_id']
+        assert engine.resume_run(third).outcome == 'noop'
+        assert '下一步核对目录' in repr(transport.calls[3]['body']['input'])
+        for call in transport.calls[2:]:
+            assert not any(item.get('type') == 'reasoning' for item in call['body']['input'])
+        for run_id in [first, second, compact, third]:
+            assert replay(log, run_id).ok
+    finally:
+        log.close()
+
+
+def test_responses_compacts_committed_prefix_without_orphaning_tool_results(tmp_path):
+    log, stack, task, _ = _stack(tmp_path)
+    compaction = {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque-window"}
+    transport = Transport(
+        response([reasoning(), function()]),
+        response([compaction, function(id="fc_2", call_id="call_2")]),
+        response(),
+    )
+    # This fixture uses HTTP JSON deliberately; SSE framing is covered by adapter tests.
+    class JsonTransport:
+        post = transport.post
+
+    try:
+        result = engine_for(
+            stack, model(JsonTransport(), compact_threshold=2048),
+            limits=Limits(summary_mode="model"),
+        ).start(task.task_id, out_name="")
+        assert result.outcome == "noop", result.error
+        bodies = [call["body"] for call in transport.calls]
+        assert len(bodies) == 3
+        assert all(b["context_management"] == [{"type": "compaction", "compact_threshold": 2048}]
+                   for b in bodies)
+        assert bodies[1]["input"][-1]["call_id"] == "call_1"
+        assert [i.get("type") for i in bodies[2]["input"]] == [
+            None, "compaction", "function_call", "function_call_output",
+        ]
+        assert bodies[2]["input"][1] == compaction
+        assert bodies[2]["input"][-1]["call_id"] == "call_2"
+        events = log.read_run(result.run_id)
+        compacted = next(e for e in events if e.type == "model.result" and e.payload_version == 3)
+        assert compacted.payload["continuation"]["schema_version"] == "1.1"
+        assert replay(log, result.run_id).ok
+        with log.transaction():
+            log.conn.execute("DELETE FROM run_cursors")
+            log.conn.execute("DELETE FROM run_turns")
+        stack.tasks.rebuild_from_events()
+        assert replay(log, result.run_id).ok
+    finally:
+        log.close()

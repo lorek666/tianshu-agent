@@ -2918,6 +2918,236 @@
           "control_run",
           "error"
         ]
+      },
+      "run.attachments": {
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "data_base64": {
+                  "type": "string"
+                },
+                "format_version": {
+                  "const": 1,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "enum": [
+                    "text/plain",
+                    "image/png",
+                    "image/jpeg"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "format_version",
+                "name",
+                "media_type",
+                "data_base64",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "attachments"
+        ],
+        "type": "object"
+      },
+      "run.conversation": {
+        "additionalProperties": false,
+        "properties": {
+          "turns": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "answer": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "source_run_id": {
+                  "type": "string"
+                },
+                "source_seq": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "source_run_id",
+                "source_seq",
+                "answer",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "turns"
+        ],
+        "type": "object"
+      },
+      "run.guidance_applied": {
+        "additionalProperties": false,
+        "properties": {
+          "request_seq": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_seq"
+        ],
+        "type": "object"
+      },
+      "run.guidance_requested": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "run.model_route": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "additionalProperties": false,
+            "properties": {
+              "allow_image_attachments": {
+                "type": "boolean"
+              },
+              "base_url": {
+                "type": "string"
+              },
+              "compact_threshold": {
+                "minimum": 1024,
+                "type": "integer"
+              },
+              "credential_backend": {
+                "enum": [
+                  "keychain",
+                  "env"
+                ],
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "scripted",
+                  "openai",
+                  "anthropic",
+                  "openai-responses"
+                ],
+                "type": "string"
+              },
+              "model_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "model_name",
+              "base_url",
+              "credential_backend"
+            ],
+            "type": "object"
+          },
+          "format_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "requested": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selected": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "requested",
+          "selected",
+          "config"
+        ],
+        "type": "object"
+      },
+      "run.workflow": {
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "plan",
+              "compact",
+              "execute"
+            ],
+            "type": "string"
+          },
+          "request_id": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "type": "string"
+          },
+          "source_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_goal": {
+            "type": "string"
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_seqs": {
+            "items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "source_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "mode",
+          "request_id",
+          "source_run_id",
+          "source_text",
+          "source_seqs",
+          "source_digest",
+          "source_goal"
+        ],
+        "type": "object"
       }
     },
     "legacyPayload": {
@@ -5534,6 +5764,223 @@
         ],
         "type": "object"
       }
+    },
+    "modelResultCompactionPayload": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "finish_reason": {
+          "type": "string",
+          "enum": [
+            "cancelled",
+            "checkpoint",
+            "content_filtered",
+            "end_turn",
+            "guardrail_intervened",
+            "interrupt",
+            "limit_output_tokens",
+            "limit_structured_output_attempts",
+            "limit_total_tokens",
+            "limit_turns",
+            "max_tokens",
+            "stop_sequence",
+            "tool_use"
+          ]
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "call_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "arguments": {}
+            },
+            "additionalProperties": false,
+            "required": [
+              "call_id",
+              "name",
+              "arguments"
+            ]
+          }
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "output_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ]
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "adapter": {
+              "type": "string"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "units": {
+              "type": "object",
+              "properties": {
+                "input_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "output_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "input_tokens",
+                "output_tokens"
+              ]
+            },
+            "unit_price_ver": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cost": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "adapter",
+            "model",
+            "units",
+            "unit_price_ver",
+            "cost",
+            "currency"
+          ]
+        },
+        "continuation": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": {
+              "enum": [
+                "openai-responses"
+              ],
+              "type": "string"
+            },
+            "endpoint": {
+              "pattern": "^https?://[^?#]+/responses$",
+              "type": "string"
+            },
+            "model": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "output_items": {
+              "items": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "reasoning",
+                      "message",
+                      "function_call",
+                      "compaction"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "schema_version": {
+              "const": "1.1",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema_version",
+            "adapter",
+            "endpoint",
+            "model",
+            "output_items"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "content",
+        "finish_reason",
+        "tool_calls",
+        "usage",
+        "cost",
+        "continuation"
+      ]
     }
   }
 }

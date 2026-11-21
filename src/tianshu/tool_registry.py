@@ -97,6 +97,7 @@ class McpToolBinding:
     raw_schema_hash: str
     description_hash: str
     narrowed: tuple[str, ...] = ()
+    remote_identity: str = ""
 
     @property
     def uri(self) -> str:
@@ -162,17 +163,19 @@ def tool_id_for_server(server: str, tool: str) -> str:
 
 def tool_version_for(
     *, server: str, tool: str, raw_schema: dict[str, Any], normalized: dict[str, Any],
-    description: str,
+    description: str, remote_identity: str = "",
 ) -> str:
-    return "mcp1:" + _digest(
-        {
-            "server": server,
-            "tool": tool,
-            "raw_schema": raw_schema,
-            "normalized_schema": normalized,
-            "description": description,
-        }
-    )[:16]
+    payload = {
+        "server": server,
+        "tool": tool,
+        "raw_schema": raw_schema,
+        "normalized_schema": normalized,
+        "description": description,
+    }
+    if remote_identity:
+        payload["remote_identity"] = remote_identity
+        return "mcp1:" + _digest(payload)
+    return "mcp1:" + _digest(payload)[:16]
 
 
 def _bounded_description(server: str, tool: str, raw: str) -> str:
@@ -196,6 +199,8 @@ def _admit_one(
     tool: McpTool,
     *,
     rejected: list[RejectedMcpTool],
+    remote_identity: str = "",
+    remote_url: str = "",
 ) -> AdmittedMcpTool | None:
     """把一个发现到的工具归一/绑定成 `ToolSpec`；任何一步不成立就记拒绝原因。"""
     from .tools import ToolSpec, description_digest, schema_digest
@@ -227,7 +232,9 @@ def _admit_one(
     except ToolSchemaError as exc:
         _reject(rejected, server, tool.name, f"inputSchema 不准入：{exc}")
         return None
-    description = _bounded_description(server, tool.name, tool.description)
+    description = _bounded_description(
+        server, tool.name, f"{remote_url} · {tool.description}" if remote_url else tool.description
+    )
     try:
         compile_schema(normalized, where=tool_id)
     except ToolSchemaError as exc:  # pragma: no cover - 归一函数自己已编译过
@@ -243,11 +250,13 @@ def _admit_one(
             raw_schema=tool.raw.get("inputSchema", {}),
             normalized=normalized,
             description=description,
+            remote_identity=remote_identity,
         ),
         schema_hash=schema_digest(normalized),
         raw_schema_hash=_digest(tool.raw.get("inputSchema", {})),
         description_hash=description_digest(description),
         narrowed=narrowed,
+        remote_identity=remote_identity,
     )
     spec = ToolSpec(
         tool_id=tool_id,
@@ -331,7 +340,11 @@ def admit_mcp_tools(
     for server, tool in candidate:
         if tool_id_for_server(server, tool.name) in colliding:
             continue
-        item = _admit_one(server, tool, rejected=rejected)
+        config = configs.get(server)
+        remote_url = getattr(config, "url", "")
+        item = _admit_one(server, tool, rejected=rejected,
+                          remote_identity=clients.remote_identity(server) if remote_url else "",
+                          remote_url=remote_url)
         if item is None:
             continue
         if len(admitted) >= total_limit:

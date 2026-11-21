@@ -701,7 +701,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 
 #: 有网络执行器的工具。网络不是文件、也不是记忆：它没有本地目录、没有写前
 #: 状态；派发层据此把请求分到 `Dispatcher` 的网络分支（见 `dispatcher.py`）。
-NETWORK_TOOL_IDS: frozenset[str] = frozenset({"network.fetch"})
+NETWORK_TOOL_IDS: frozenset[str] = frozenset({
+    "network.fetch", "network.search", "browser.navigate",
+})
 
 #: 有**委派执行器**的工具（G2 子代理 D1）。
 #:
@@ -1110,6 +1112,45 @@ SPECS: dict[str, ToolSpec] = {
         action=ACTION_DELETE,
     ),
 
+    "browser.navigate": ToolSpec(
+        tool_id="browser.navigate", version="1.0",
+        description=(
+            "只读浏览任务允许的公开 HTTPS 网页。url 使用 network://https/ 规范形。"
+            "跟随网页结果中的同源链接时，提供产出页面的 from_call、链接序号 link_index"
+            "（从 0 开始）和原样 url。每次导航单独审批；不执行脚本、登录或提交表单。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "from_call": {"type": "string", "minLength": 1, "maxLength": 256},
+                "link_index": {"type": "integer", "minimum": 0, "maximum": 23},
+            },
+            "required": ["url"], "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent", exec_model="E3", action=ACTION_FETCH,
+    ),
+    "network.search": ToolSpec(
+        tool_id="network.search",
+        version="1.0",
+        description=(
+            "通过用户指定的 SearXNG JSON 服务查询公开网页。origin 必须是任务允许的 "
+            "network://https/<host>[:port] 源；query 是单行关键词。每次搜索都要人工批准，"
+            "不会访问搜索结果中的链接。没有配置搜索源时先询问用户。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "minLength": 1, "maxLength": 512},
+                "query": {"type": "string", "minLength": 1, "maxLength": 400},
+            },
+            "required": ["origin", "query"],
+            "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent",
+        exec_model="E3",
+        action=ACTION_FETCH,
+    ),
     "network.fetch": ToolSpec(
         tool_id="network.fetch",
         version="2.0",

@@ -1,43 +1,25 @@
-"""确定性最小调度器（W5，路线图「调度/定时任务」）。
+"""Local task triggers: intervals, calendar times, file arrivals and IPC events.
 
-职责边界（SPEC：docs/SPEC-W5-SCHEDULER-2026-11-15.md）：
-
-- **只负责「到点创建任务并入队 Run」**。它自己不执行任何工具、不产出任何
-  副作用——Run 被驱动后的每个动作照旧走派发层 PolicyEngine / 人工审批 /
-  执行侧重判 / Receipt 的既有链（红线 4：授权只在执行侧判定，调度器不是
-  授权输入，只是又一个任务创建者，与 CLI/RPC 的调用者同地位）。
-- **触发路径与 `task.create` + `run.start` 完全同路径**：`create_task` →
-  `prepare_run` → `start_run` → `enqueue`，事件流出现的是既有封闭集
-  （`task.created`、`run.start`…），v1 不新增事件族。
-- **幂等不靠事件层 `idem_key`**（核对结论：`events.idem_key` 无 UNIQUE、
-  `EventLog.append` 不去重、task 创建路径不使用它）。v1 的触发幂等 = 
-  「记账与建任务同事务」+「单写者」（daemon 锁保证同数据根单实例、tick
-  只被驱动线程调用）。这就是 schedules 表必须建在事件库同一条连接上的
-  结构性理由：一旦挪到第二个数据库文件，「建任务」与「记账」就回到两个
-  事务，出现真正的双发窗口——届时必须引入显式 idem_key 去重。
-- **追赶策略**：到期未触发的 schedule（daemon 停机期间落下的）在下一个
-  tick **补发一次并从当前时间重排**——不按落下的 interval 数补跑 N 次
-  （一次性制造 N 个 Run 既烧钱又不可预期）。因此不需要单独的启动钩子：
-  daemon 启动后的第一个 tick 天然就是追赶。
-- **cron 表达式 v1 不做**（要么引第三方依赖、要么自写解析器，都不该由
-  v1 背正确性负担）；RPC / UI 可观测性同样留未决，管理面只走 CLI。
-
-schedules 表是「未来的意图」而非「已发生的事实」：它不是事件投影、不参与
-回放，生命周期 v1 不走事件流（v2 需要 schedule.created/fired/missed 等事件
-的评估见 docs/CONTRACT-W5-SCHEDULER-2026-11-15.md）。
+A trigger only queues a normal task/Run. The scheduler never runs tools or
+supplies approval. Recording the consumed trigger and queuing the Run are
+one event-store transaction, including the persisted directory baseline.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .errors import TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
+from .schedule_triggers import FILE_POLL_MS, calendar_next, scan_directory, validate_trigger
 from .workspace import parse_bindings
 
 #: 触发失败原因在表里的截断长度——这列是给人看的（`schedule list`），不是
@@ -48,27 +30,54 @@ _MAX_ERROR_TEXT = 500
 #:（默认 0.05s），不设下限会让一个手滑的 `--interval-seconds 0` 变成
 #: 每个 tick 发一个任务的 Run 风暴。
 _MIN_INTERVAL_SECONDS = 1
+_MAX_SQLITE_INT = (1 << 63) - 1
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS schedules (
+# New kinds use their own table so a downgrade cannot interpret one as an
+# interval schedule or consume its baseline. Legacy rows need no migration.
+_TABLES = ("schedules", "schedules_triggers_v1")
+_EVENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_COMMON_COLUMNS = """
     schedule_id      TEXT PRIMARY KEY,
     goal             TEXT NOT NULL,
     workspaces_json  TEXT NOT NULL,
     exec_policy_json TEXT,
     interval_seconds INTEGER NOT NULL,
-    next_fire_at     INTEGER NOT NULL,
+    next_fire_at     {next_fire_type},
     enabled          INTEGER NOT NULL DEFAULT 1,
     created_at       INTEGER NOT NULL,
     last_fired_at    INTEGER,
     last_error       TEXT NOT NULL DEFAULT ''
-);
-
+"""
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS schedules ({_COMMON_COLUMNS.format(next_fire_type="INTEGER NOT NULL")});
 CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_fire_at);
+CREATE TABLE IF NOT EXISTS schedules_triggers_v1 (
+    {_COMMON_COLUMNS.format(next_fire_type="INTEGER")},
+    trigger_json TEXT NOT NULL,
+    trigger_state TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_triggers_due
+ON schedules_triggers_v1(enabled, next_fire_at);
+CREATE TABLE IF NOT EXISTS schedule_event_receipts_v1 (
+    schedule_id TEXT NOT NULL,
+    event_digest TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (schedule_id, event_digest)
+);
 """
 
 
+class ScheduleMissing(TianshuError):
+    """The event target does not exist."""
+
+
+class ScheduleInactive(TianshuError):
+    """The schedule is disabled or has another trigger kind."""
+
+
 class Scheduler:
-    """interval 调度器。schedules 表建在事件库同一条连接上（先例：
+    """任务调度器。schedules 表建在事件库同一条连接上（先例：
     `budget.py` / `dispatcher.py` 的模块自建表），因此触发时的「建任务 +
     记账」能与事件同事务提交。
 
@@ -111,7 +120,8 @@ class Scheduler:
         goal: str,
         workspaces: list[str | dict[str, Any]] | None,
         *,
-        interval_seconds: int,
+        interval_seconds: int | None = None,
+        trigger: Any = None,
         exec_policy: ExecPolicy | None = None,
         now: int | None = None,
     ) -> dict[str, Any]:
@@ -121,64 +131,72 @@ class Scheduler:
         """
         if not isinstance(goal, str) or not goal.strip():
             raise TianshuError("goal 不能为空")
-        if (
-            not isinstance(interval_seconds, int)
-            or isinstance(interval_seconds, bool)
-            or interval_seconds < _MIN_INTERVAL_SECONDS
-        ):
-            raise TianshuError(
-                f"interval_seconds 必须是 >= {_MIN_INTERVAL_SECONDS} 的整数"
-            )
+        if trigger is None:
+            if (not isinstance(interval_seconds, int) or isinstance(interval_seconds, bool)
+                    or interval_seconds < _MIN_INTERVAL_SECONDS):
+                raise TianshuError(f"interval_seconds 必须是 >= {_MIN_INTERVAL_SECONDS} 的整数")
+        elif interval_seconds is not None:
+            raise TianshuError("interval_seconds 和 trigger 只能提供一个")
         # 绑定/策略在这里解析一遍：非法输入当场报错（WorkspaceViolation /
         # ValueError 不包装成静默降级）。规范化后的形状落库，触发时再走
         # `create_task` 的正式入口（同一条校验路径跑第二次是纵深，不是冗余）。
         try:
-            parsed = [b.to_dict() for b in parse_bindings(list(workspaces or []))]
+            bindings = parse_bindings(list(workspaces or []))
+            parsed = [b.to_dict() for b in bindings]
         except TypeError as exc:
             # WorkspaceBinding.of 对"缺字段的 dict"抛 TypeError——那是输入形状
             # 错误，在库边界统一成 TianshuError（CLI/调用方按业务错误处理）。
             raise TianshuError(f"workspaces 形状不合法：{exc}") from exc
         policy_dict = exec_policy.to_dict() if exec_policy is not None else None
         now_ms = int(now) if now is not None else self._clock()
+        trigger_config, trigger_state = (
+            (None, None) if trigger is None else validate_trigger(trigger, bindings)
+        )
+        stored_interval = interval_seconds if interval_seconds is not None else 0
+        next_fire = _next_fire(stored_interval, trigger_config or {"kind": "interval"}, now_ms)
+        if next_fire is not None and next_fire > _MAX_SQLITE_INT:
+            raise TianshuError("触发间隔超出可存储范围")
+        workspaces_json = json.dumps(parsed, ensure_ascii=False)
+        policy_json = (
+            json.dumps(policy_dict, ensure_ascii=False) if policy_dict is not None else None
+        )
         schedule_id = f"sched_{uuid.uuid4().hex[:12]}"
         with self._log.transaction():
-            self._conn.execute(
-                """
-                INSERT INTO schedules (
-                    schedule_id, goal, workspaces_json, exec_policy_json,
-                    interval_seconds, next_fire_at, enabled, created_at,
-                    last_fired_at, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, '')
-                """,
-                (
-                    schedule_id,
-                    goal.strip(),
-                    json.dumps(parsed, ensure_ascii=False),
-                    (
-                        json.dumps(policy_dict, ensure_ascii=False)
-                        if policy_dict is not None
-                        else None
-                    ),
-                    interval_seconds,
-                    now_ms + interval_seconds * 1000,
-                    now_ms,
-                ),
-            )
+            common = (schedule_id, goal.strip(), workspaces_json, policy_json,
+                      stored_interval, next_fire, now_ms)
+            if trigger_config is None:
+                self._conn.execute(
+                    """INSERT INTO schedules
+                    (schedule_id, goal, workspaces_json, exec_policy_json, interval_seconds,
+                    next_fire_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""", common,
+                )
+            else:
+                self._conn.execute(
+                    """INSERT INTO schedules_triggers_v1
+                    (schedule_id, goal, workspaces_json, exec_policy_json, interval_seconds,
+                    next_fire_at, created_at, trigger_json, trigger_state)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (*common, json.dumps(trigger_config), json.dumps(trigger_state)),
+                )
         created = self.get(schedule_id)
         assert created is not None  # 刚插入的行必然存在
         return created
 
     def get(self, schedule_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM schedules WHERE schedule_id = ?", (schedule_id,)
-        ).fetchone()
-        return _row_to_view(row) if row is not None else None
+        for table in _TABLES:
+            row = self._conn.execute(
+                f"SELECT * FROM {table} WHERE schedule_id = ?", (schedule_id,)
+            ).fetchone()
+            if row is not None:
+                return _row_to_view(row)
+        return None
 
     def list(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM schedules ORDER BY created_at, schedule_id"
-        ).fetchall()
-        return [_row_to_view(row) for row in rows]
+        return sorted(
+            (_row_to_view(row) for table in _TABLES
+             for row in self._conn.execute(f"SELECT * FROM {table}")),
+            key=lambda row: (row["created_at"], row["schedule_id"]),
+        )
 
     def set_enabled(self, schedule_id: str, enabled: bool) -> dict[str, Any]:
         """启停一条 schedule。disable 保留配置行（不删），re-enable 后从
@@ -186,11 +204,14 @@ class Scheduler:
         后的第一个 tick 追赶补发一次（与 §追赶策略同一语义）。
         """
         with self._log.transaction():
-            cur = self._conn.execute(
-                "UPDATE schedules SET enabled = ? WHERE schedule_id = ?",
-                (1 if enabled else 0, schedule_id),
-            )
-            if cur.rowcount == 0:
+            for table in _TABLES:
+                cur = self._conn.execute(
+                    f"UPDATE {table} SET enabled = ? WHERE schedule_id = ?",
+                    (1 if enabled else 0, schedule_id),
+                )
+                if cur.rowcount:
+                    break
+            else:
                 raise TianshuError(f"没有这个 schedule：{schedule_id}")
         found = self.get(schedule_id)
         assert found is not None  # 刚更新过的行必然存在
@@ -200,13 +221,64 @@ class Scheduler:
         """删除一条 schedule。schedules 不是事件投影，DELETE 在这里合法
         （append-only 纪律约束的是事件表，不是这张意图表）。"""
         with self._log.transaction():
-            cur = self._conn.execute(
-                "DELETE FROM schedules WHERE schedule_id = ?", (schedule_id,)
-            )
-            if cur.rowcount == 0:
-                raise TianshuError(f"没有这个 schedule：{schedule_id}")
+            for table in _TABLES:
+                cur = self._conn.execute(
+                    f"DELETE FROM {table} WHERE schedule_id = ?", (schedule_id,)
+                )
+                if cur.rowcount:
+                    if table == _TABLES[1]:
+                        self._conn.execute(
+                            "DELETE FROM schedule_event_receipts_v1 WHERE schedule_id = ?",
+                            (schedule_id,),
+                        )
+                    return
+            raise TianshuError(f"没有这个 schedule：{schedule_id}")
 
     # ---------------------------------------------------------------- 触发面
+
+    def signal(self, schedule_id: str, event_id: str) -> dict[str, Any]:
+        """Queue a configured task for a signal from the authenticated control plane.
+
+        The event ID only deduplicates traffic. It never supplies task input,
+        paths, capabilities or approval. A repeated ID returns the original Run.
+        """
+        if not isinstance(event_id, str) or _EVENT_ID.fullmatch(event_id) is None:
+            raise ValueError(
+                "event_id 必须以字母或数字开头，且只含 1 至 128 个 ASCII 字母、数字或 ._:-"
+            )
+        digest = hashlib.sha256(event_id.encode("ascii")).hexdigest()
+        with self._log.transaction():
+            row = self._conn.execute(
+                "SELECT * FROM schedules_triggers_v1 WHERE schedule_id = ?", (schedule_id,)
+            ).fetchone()
+            if row is None:
+                legacy = self._conn.execute(
+                    "SELECT 1 FROM schedules WHERE schedule_id = ?", (schedule_id,)
+                ).fetchone()
+                if legacy is not None:
+                    raise ScheduleInactive("此定时任务不接受事件触发")
+                raise ScheduleMissing("找不到指定的定时任务")
+            if not row["enabled"] or _trigger_of(row)["kind"] != "event":
+                raise ScheduleInactive("此定时任务已停用或不接受事件触发")
+            receipt = self._conn.execute(
+                "SELECT run_id FROM schedule_event_receipts_v1"
+                " WHERE schedule_id = ? AND event_digest = ?",
+                (schedule_id, digest),
+            ).fetchone()
+            if receipt is not None:
+                return {"accepted": False, "run_id": receipt["run_id"]}
+            now = self._clock()
+            run_id = self._fire(row)
+            self._conn.execute(
+                "INSERT INTO schedule_event_receipts_v1 VALUES (?, ?, ?, ?)",
+                (schedule_id, digest, run_id, now),
+            )
+            self._conn.execute(
+                "UPDATE schedules_triggers_v1 SET last_fired_at = ?, last_error = ''"
+                " WHERE schedule_id = ?",
+                (now, schedule_id),
+            )
+            return {"accepted": True, "run_id": run_id}
 
     def tick(self) -> list[str]:
         """触发所有到期的 enabled schedule。返回本次触发产生的 run_id 列表。
@@ -216,24 +288,55 @@ class Scheduler:
         """
         now = self._clock()
         fired: list[str] = []
-        for row in self._due_rows(now):
+        for table, row in self._due_rows(now):
             try:
-                fired.append(self._fire(row, now))
+                run_id = self._process(table, row, now)
+                if run_id is not None:
+                    fired.append(run_id)
             except Exception as exc:  # noqa: BLE001 - 单条失败不该带走整批
-                self._record_error(row, now, exc)
+                self._record_error(table, row, now, exc)
         return fired
 
-    def _due_rows(self, now: int) -> list[Any]:
-        return self._conn.execute(
-            """
-            SELECT * FROM schedules
-            WHERE enabled = 1 AND next_fire_at <= ?
-            ORDER BY next_fire_at, schedule_id
-            """,
-            (now,),
-        ).fetchall()
+    def _due_rows(self, now: int) -> list[tuple[str, Any]]:
+        return sorted(
+            ((table, row) for table in _TABLES for row in self._conn.execute(
+                f"SELECT * FROM {table} WHERE enabled = 1 AND next_fire_at <= ?", (now,)
+            )),
+            key=lambda pair: (pair[1]["next_fire_at"], pair[1]["schedule_id"]),
+        )
 
-    def _fire(self, row: Any, now: int) -> str:
+    def _process(self, table: str, row: Any, now: int) -> str | None:
+        trigger = _trigger_of(row)
+        next_fire = _next_fire(row["interval_seconds"], trigger, now)
+        state_json = row["trigger_state"] if table == _TABLES[1] else None
+        should_fire = True
+        if trigger["kind"] == "file_arrival":
+            saved = json.loads(state_json)
+            observed = scan_directory(Path(trigger["directory"]), expected=saved["identity"])
+            should_fire = bool(set(observed["files"]) - set(saved["files"]))
+            state_json = json.dumps(observed)
+        with self._log.transaction():
+            # CLI/RPC may disable or delete the schedule while a directory scan
+            # is in progress. Check the observed row before queueing anything.
+            state_sql, state_params = (
+                (", trigger_state = ?", (state_json,)) if table == _TABLES[1] else ("", ())
+            )
+            consumed = self._conn.execute(
+                f"""UPDATE {table}
+                SET next_fire_at = ?, last_error = ''{state_sql}
+                WHERE schedule_id = ? AND enabled = 1 AND next_fire_at = ?""",
+                (next_fire, *state_params, row["schedule_id"], row["next_fire_at"]),
+            )
+            if not consumed.rowcount or not should_fire:
+                return None
+            run_id = self._fire(row)
+            self._conn.execute(
+                f"UPDATE {table} SET last_fired_at = ? WHERE schedule_id = ?",
+                (now, row["schedule_id"]),
+            )
+            return run_id
+
+    def _fire(self, row: Any) -> str:
         """触发一条 schedule：建任务 + 入队 Run + 记账，**同一个事务**。
 
         事务回滚语义就是崩溃窗口的答案：BEGIN 之后任何一步失败（或进程被
@@ -256,40 +359,28 @@ class Scheduler:
             if raw_policy
             else None
         )
-        with self._log.transaction():
-            task = self._tasks.create_task(
-                row["goal"], workspaces, exec_policy=exec_policy
-            )
-            # 与 control._run_start 逐字同路径（只入队不驱动）：Run 由同一
-            # 驱动循环的 worker.run_once() 认领，租约在 drive 路径获取。
-            self._dispatcher.prepare_run(task.task_id, EFFECTS)
-            payload = {
-                "task": task.goal,
-                "out": "",
-                "limits": {
-                    "max_turns": self._limits.max_turns,
-                    "max_total_tokens": self._limits.max_total_tokens,
-                },
-                "tools": _exposed_tool_ids(EFFECTS),
-            }
-            run = self._tasks.start_run(
-                task.task_id, payload=payload, execution_policy=EFFECTS
-            )
-            self._claims.enqueue(run.run_id)
-            # 记账与效果同事务（承重墙，NC2 拆它必须红）：last_fired_at 落
-            # 定 = 这次到期已被消费；next_fire_at 从 now 重排 = 追赶只补一次。
-            self._conn.execute(
-                """
-                UPDATE schedules
-                SET last_fired_at = ?, next_fire_at = ?, last_error = ''
-                WHERE schedule_id = ?
-                """,
-                (now, now + int(row["interval_seconds"]) * 1000,
-                 row["schedule_id"]),
-            )
+        task = self._tasks.create_task(
+            row["goal"], workspaces, exec_policy=exec_policy
+        )
+        # 与 control._run_start 逐字同路径（只入队不驱动）：Run 由同一
+        # 驱动循环的 worker.run_once() 认领，租约在 drive 路径获取。
+        self._dispatcher.prepare_run(task.task_id, EFFECTS, discover_mcp=False)
+        payload = {
+            "task": task.goal,
+            "out": "",
+            "limits": {
+                "max_turns": self._limits.max_turns,
+                "max_total_tokens": self._limits.max_total_tokens,
+            },
+            "tools": _exposed_tool_ids(EFFECTS),
+        }
+        run = self._tasks.start_run(
+            task.task_id, payload=payload, execution_policy=EFFECTS
+        )
+        self._claims.enqueue(run.run_id)
         return run.run_id
 
-    def _record_error(self, row: Any, now: int, exc: Exception) -> None:
+    def _record_error(self, table: str, row: Any, now: int, exc: Exception) -> None:
         """触发失败：记 `last_error` 并把 next_fire_at 从 now 重排（跳过本次，
         下个 interval 再试）。回滚过的触发什么都没发生，重试是安全的；但
         确定性坏 schedule 不能每个 tick（默认 50ms）刷重试风暴，所以仍然
@@ -297,16 +388,20 @@ class Scheduler:
         的 last_error 列；v1 没有 schedule.missed 事件（契约分析文档论证）。
         """
         reason = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_TEXT]
-        next_fire = now + int(row["interval_seconds"]) * 1000
+        try:
+            next_fire = _next_fire(row["interval_seconds"], _trigger_of(row), now)
+        except (TianshuError, TypeError, ValueError, KeyError):
+            # Persist the error even if timezone data was removed or a row is corrupt.
+            next_fire = now + 60_000
         try:
             with self._log.transaction():
                 self._conn.execute(
-                    """
-                    UPDATE schedules
+                    f"""
+                    UPDATE {table}
                     SET last_error = ?, next_fire_at = ?
-                    WHERE schedule_id = ?
+                    WHERE schedule_id = ? AND enabled = 1 AND next_fire_at = ?
                     """,
-                    (reason, next_fire, row["schedule_id"]),
+                    (reason, next_fire, row["schedule_id"], row["next_fire_at"]),
                 )
         except Exception as record_exc:  # noqa: BLE001 - 不掩盖原始异常
             if self._note is not None:
@@ -321,11 +416,36 @@ class Scheduler:
             )
 
 
+def _trigger_of(row: Any) -> dict[str, Any]:
+    if "trigger_json" not in row.keys():
+        return {"kind": "interval"}
+    trigger = json.loads(row["trigger_json"])
+    if not isinstance(trigger, dict) or trigger.get("kind") not in (
+        "calendar", "file_arrival", "event",
+    ):
+        raise TianshuError("未知持久化触发类型")
+    return trigger
+
+
+def _next_fire(interval: int, trigger: dict[str, Any], now: int) -> int | None:
+    if trigger["kind"] == "interval":
+        return now + interval * 1000
+    if trigger["kind"] == "calendar":
+        return calendar_next(trigger, now)
+    if trigger["kind"] == "file_arrival":
+        return now + FILE_POLL_MS
+    if trigger["kind"] == "event":
+        return None
+    raise TianshuError("未知持久化触发类型")
+
+
 def _row_to_view(row: Any) -> dict[str, Any]:
     """行 → CLI 可见的 dict。JSON 列原样解析；解析失败如实抛错（历史库
     只可能是本模块写入的，坏 JSON 说明库被外部改过，不洗白）。"""
+    trigger = _trigger_of(row)
     return {
         "schedule_id": row["schedule_id"],
+        "trigger": trigger,
         "goal": row["goal"],
         "workspaces": json.loads(row["workspaces_json"]),
         "exec_policy": (
@@ -333,8 +453,8 @@ def _row_to_view(row: Any) -> dict[str, Any]:
             if row["exec_policy_json"]
             else None
         ),
-        "interval_seconds": int(row["interval_seconds"]),
-        "next_fire_at": int(row["next_fire_at"]),
+        "interval_seconds": int(row["interval_seconds"]) if trigger["kind"] == "interval" else None,
+        "next_fire_at": int(row["next_fire_at"]) if row["next_fire_at"] is not None else None,
         "enabled": bool(row["enabled"]),
         "created_at": int(row["created_at"]),
         "last_fired_at": (

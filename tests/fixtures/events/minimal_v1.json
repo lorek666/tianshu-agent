@@ -1,6 +1,16 @@
 {
   "dataset": "minimal-v1",
   "events": {
+    "run.workflow": {
+      "format_version": 1,
+      "mode": "plan",
+      "request_id": "x",
+      "source_run_id": "x",
+      "source_text": "x",
+      "source_seqs": [],
+      "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "source_goal": "x"
+    },
     "approval.consumed": {
       "approval_id": "x",
       "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -211,6 +221,20 @@
       "task_id": "x",
       "action": "pause"
     },
+    "run.attachments": {
+      "attachments": [
+        {
+          "name": "x",
+          "media_type": "text/plain",
+          "data_base64": "",
+          "format_version": 1,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    "run.conversation": {
+      "turns": []
+    },
     "run.cursor": {
       "run_id": "x",
       "goal_revision": 1,
@@ -256,6 +280,19 @@
       "outcome": "succeeded",
       "effect_state": "applied"
     },
+    "run.model_route": {
+      "format_version": 1,
+      "requested": [
+        "x"
+      ],
+      "selected": "x",
+      "config": {
+        "mode": "scripted",
+        "model_name": "",
+        "base_url": "",
+        "credential_backend": "env"
+      }
+    },
     "run.model_turn": {
       "run_id": "x",
       "turn_id": "x",
@@ -267,6 +304,12 @@
         "output_tokens": 0
       },
       "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "run.guidance_applied": {
+      "request_seq": 1
+    },
+    "run.guidance_requested": {
+      "text": "x"
     },
     "run.start": {
       "run_id": "x",

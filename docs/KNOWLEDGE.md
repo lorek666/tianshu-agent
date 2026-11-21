@@ -90,6 +90,8 @@
 
 ## 4. 关键决策（D1–D7）与硬约束
 
+- **本机任务触发（2026-11-21 实现分支）**：间隔沿用原表；日历、目录和本机事件单独持久化，旧程序不会消费。目录仅监听只读工作区中的直属普通文件；事件入口仅接受认证本机客户端提供的任务 ID 和事件 ID。基线或去重记录与入队同事务提交。具体用法、系统时区数据要求及轮询边界见[本机任务触发](changelog/2026-11-21-local-schedule-triggers.md)。
+
 - **Responses 接入（2026-11-20 契约，2026-11-21 实现分支）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与 `ctx-responses-v1` 完整上下文；保留旧模式，凭据复用 openai 域。模型步骤固定配置快照，result/turn/cursor 同事务提交；已提交终态在崩溃或暂停后直接收尾，丢失的 Responses cursor/turn 可从事件重建。实际门禁与未验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)及[续接契约](openai-responses-contract.md)。
 
 - **模型缓存用量逐事件 v2（2026-11-20 契约，2026-11-21 实现分支）**：C1 已允许的可选缓存用量完整保存在 `model.result` / `run.model_turn` 新写精确 payload v2；保留旧 v0/v1 原解释，新 v2 usage 仍封闭，不升级全局版本常量。不沿用发布前 optional 沿 v1 的历史例外，也不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)，验证见[实施记录](changelog/2026-11-21-openai-responses.md)；不改判既有真实评测，不自动重放已持久化模型回合。
@@ -450,6 +452,8 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **产品能力补齐候选（2026-11-21）**：网页导航限于公开 HTML 和本 Run 的同源链接；没有通用浏览器自动化或公网 webhook。HTTPS MCP 只支持固定端点的 JSON/SSE 请求响应，不支持 OAuth 和自动重连。Responses 自动压缩须模型端点显式支持；本地超过预算时若没有可用的已提交压缩边界，会停止而不会裁剪密文。真实模型、真实第三方 MCP 服务和用户设备未验。实施与使用边界见[本轮记录](changelog/2026-11-21-agent-product-capabilities.md)。
 
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 

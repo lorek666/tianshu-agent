@@ -6,15 +6,20 @@ import {
 import type {
   ApprovalView,
   EventView,
+  RunAttachmentInput,
   RunExecutionPolicyV1,
+  RunModelSelection,
   RunView,
   StreamingPreview,
   TaskView,
 } from "../api/types";
+import type { HostClient } from "../api/host";
 import type { StreamStatus } from "../api/stream";
-import type { ModelConfigView, SettingsApi, SettingsView } from "../api/settings";
+import type { ModelConfigView, ModelProfileInput, SettingsApi, SettingsView } from "../api/settings";
+import { encodeAttachments } from "../lib/attachments";
 import type { TimelineEntry } from "../lib/humanize";
 import type { CostSummary } from "../lib/timeline";
+import { parseComposerCommand } from "../lib/commands";
 import {
   formatClock,
   formatDuration,
@@ -37,6 +42,8 @@ import {
   workspaceModeLabel,
 } from "../lib/humanize";
 import { ApprovalCard } from "./ApprovalPanel";
+import { ArtifactPanel } from "./ArtifactPanel";
+import { AttachmentPicker } from "./AttachmentPicker";
 import { BudgetPanel } from "./BudgetPanel";
 import {
   IconAlert,
@@ -52,6 +59,7 @@ import {
   IconUndo,
   IconX,
 } from "./Icons";
+import { ModelRoutePicker } from "./ModelRoutePicker";
 import { ModelStatusControl } from "./ModelStatusControl";
 import { RunTimeline } from "./RunTimeline";
 import { EmptyState, Spinner, StatusPill } from "./StatusPill";
@@ -61,6 +69,8 @@ import type { WelcomePetStatus } from "./WelcomePet";
 
 export interface TaskWorkspaceViewProps {
   task: TaskView;
+  artifactHost?: HostClient | null;
+  profiles?: Record<string, ModelProfileInput>;
   taskRuns: RunView[];
   allRuns: RunView[];
   approvals: ApprovalView[];
@@ -77,6 +87,7 @@ export interface TaskWorkspaceViewProps {
   busy: string | null;
   now: number;
   executionPolicy: RunExecutionPolicyV1;
+  defaultMode?: "execute" | "plan";
   enablePet: boolean;
   reduceMotion: boolean;
   modelConfig?: ModelConfigView | null;
@@ -84,9 +95,19 @@ export interface TaskWorkspaceViewProps {
   onModelUpdated?: (settings: SettingsView) => void;
   onSelectRun: (runId: string) => void;
   onExecutionPolicyChange: (taskId: string, policy: RunExecutionPolicyV1) => void;
-  onStartRun: (taskId: string, policy: RunExecutionPolicyV1) => void;
+  onStartRun: (
+    taskId: string, policy: RunExecutionPolicyV1,
+    mode?: "execute" | "plan", selection?: RunModelSelection,
+  ) => void | Promise<void>;
   onRevise: (taskId: string, goal: string) => Promise<void>;
-  onFollowUpSubmit: (task: TaskView, text: string, policy: RunExecutionPolicyV1) => Promise<void>;
+  onFollowUpSubmit: (
+    task: TaskView, source: RunView, text: string, policy: RunExecutionPolicyV1,
+    selection?: RunModelSelection,
+    attachments?: RunAttachmentInput[],
+    mode?: "execute" | "plan",
+  ) => Promise<void>;
+  onGuide?: (run: RunView, text: string) => Promise<void>;
+  onWorkflowCommand?: (action: "compact" | "execute", task: TaskView, run: RunView | null) => Promise<void>;
   onPause: (run: RunView) => void;
   onResume: (run: RunView) => void;
   onRequestCancel: (run: RunView) => void;
@@ -129,6 +150,8 @@ function deriveCompanionStatus(
 
 export function TaskWorkspaceView({
   task,
+  artifactHost = null,
+  profiles = {},
   taskRuns,
   allRuns,
   approvals,
@@ -145,6 +168,7 @@ export function TaskWorkspaceView({
   busy,
   now,
   executionPolicy,
+  defaultMode = "execute",
   enablePet,
   reduceMotion,
   modelConfig = null,
@@ -155,6 +179,8 @@ export function TaskWorkspaceView({
   onStartRun,
   onRevise,
   onFollowUpSubmit,
+  onGuide,
+  onWorkflowCommand,
   onPause,
   onResume,
   onRequestCancel,
@@ -164,19 +190,32 @@ export function TaskWorkspaceView({
   onOpenModelSettings,
   onRefresh,
 }: TaskWorkspaceViewProps) {
+  const [modelSelection, setModelSelection] = useState<RunModelSelection>({});
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState(false);
   const [draftGoal, setDraftGoal] = useState(task.goal);
   const [reviseError, setReviseError] = useState<string | null>(null);
   const [followUpText, setFollowUpText] = useState("");
+  const [followUpFiles, setFollowUpFiles] = useState<File[]>([]);
+  const [followUpError, setFollowUpError] = useState<string | null>(null);
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">(defaultMode);
+  const [commandError, setCommandError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraftGoal(task.goal);
+    setModelSelection({});
     setEditingGoal(false);
     setReviseError(null);
     setFollowUpText("");
+    setFollowUpError(null);
+    setCommandError(null);
   }, [task.task_id, task.goal_revision, task.goal]);
+
+  useEffect(() => setFollowUpFiles([]), [task.task_id, task.goal_revision, selectedRunId]);
+  useEffect(() => {
+    setInteractionMode(defaultMode);
+  }, [task.task_id, defaultMode]);
 
   const taskApprovals = approvals
     .filter((approval) => approval.task_id === task.task_id && isOpenApproval(approval.state))
@@ -220,17 +259,79 @@ export function TaskWorkspaceView({
     }
   };
 
+  const followUpSource = task.active_run_id === null && selectedRun?.state === "succeeded" &&
+    selectedRun.goal_revision === task.goal_revision ? selectedRun : null;
+  const canAttachImages = modelSelection.model_profile
+    ? [modelSelection.model_profile, ...(modelSelection.fallback_profiles ?? [])]
+      .some((name) => profiles[name]?.allow_image_attachments === true)
+    : modelConfig?.allow_image_attachments === true;
+
+  const guidanceTarget = onGuide && activeRun !== null && selectedRun?.run_id === activeRun.run_id &&
+    activeRun.control_requested !== "cancel" &&
+    ["created", "queued", "running", "paused", "waiting_approval"].includes(activeRun.state)
+    ? activeRun : null;
+  const composerCommand = parseComposerCommand(followUpText);
+  const canSend = followUpSource !== null || guidanceTarget !== null || (
+    onWorkflowCommand !== undefined && (task.active_run_id === null || activeRun === null)
+  );
+  const finalReply = selectedRun?.state === "succeeded" ? [...events].reverse().find((event) =>
+    event.run_id === selectedRun.run_id && event.type === "model.result" &&
+    event.payload.finish_reason === "end_turn" && typeof event.payload.content === "string"
+  )?.payload.content : null;
+
   const submitFollowUp = async (): Promise<void> => {
     const trimmed = followUpText.trim();
     if (trimmed === "" || followUpSubmitting) return;
-    setFollowUpSubmitting(true);
-    try {
-      await onFollowUpSubmit(task, trimmed, executionPolicy);
+    const command = parseComposerCommand(trimmed);
+    setCommandError(null);
+    if (command.kind === "error") {
+      setCommandError(command.text);
+      return;
+    }
+    if (command.kind === "plan" && command.text === "") {
+      setInteractionMode("plan");
       setFollowUpText("");
+      return;
+    }
+    setFollowUpSubmitting(true);
+    setFollowUpError(null);
+    try {
+      if (command.kind === "compact" || command.kind === "execute") {
+        if (onWorkflowCommand === undefined) throw new Error("当前连接不支持此命令。");
+        await onWorkflowCommand(command.kind, task, selectedRun);
+      } else if (guidanceTarget !== null && onGuide !== undefined) {
+        if (command.kind === "plan") throw new Error("请先结束当前运行，再生成计划。");
+        await onGuide(guidanceTarget, command.text);
+      } else if (followUpSource !== null) {
+        const attachments = await encodeAttachments(followUpFiles, canAttachImages);
+        await onFollowUpSubmit(
+          task, followUpSource, command.text, executionPolicy, modelSelection, attachments,
+          command.kind === "plan" ? "plan" : interactionMode,
+        );
+        setFollowUpFiles([]);
+      } else {
+        throw new Error("请选择已完成的运行，或开始新运行。");
+      }
+      setFollowUpText("");
+    } catch (error) {
+      setFollowUpError(error instanceof Error ? error.message : "提交失败，请重试。");
     } finally {
       setFollowUpSubmitting(false);
     }
   };
+
+  const workflowMode = selectedRun?.workflow?.mode;
+  const lastResult = [...events].reverse().find(
+    (event) => event.run_id === selectedRun?.run_id && event.type === "model.result",
+  )?.payload;
+  const workflowText = lastResult?.finish_reason === "end_turn"
+    && !((lastResult.tool_calls as unknown[] | undefined)?.length)
+    && typeof lastResult.content === "string" ? lastResult.content : "";
+  const latestPlan = taskRuns.find((run) => run.workflow?.mode === "plan");
+  const canExecutePlan = workflowMode === "plan" && selectedRun?.state === "succeeded"
+    && selectedRun.goal_revision === task.goal_revision && activeRun === null
+    && (latestPlan === undefined || latestPlan.run_id === selectedRun.run_id)
+    && !selectedRun.clarification && workflowText.trim() !== "" && onWorkflowCommand !== undefined;
 
   const connectionAlert = connectionLost || streamStatus === "disconnected";
   const companionPose = deriveCompanionStatus(
@@ -501,14 +602,21 @@ export function TaskWorkspaceView({
                     </button>
                   </div>
 
+                  <ModelRoutePicker profiles={profiles} selection={modelSelection}
+                    onChange={setModelSelection} disabled={starting || followUpSubmitting} />
                   <button
                     type="button"
                     className="btn btn-primary btn-sm"
-                    onClick={() => onStartRun(task.task_id, executionPolicy)}
+                    onClick={() => {
+                      void Promise.resolve(onStartRun(task.task_id, executionPolicy, interactionMode, modelSelection))
+                        .catch((error: unknown) => setCommandError(
+                          error instanceof Error ? error.message : "启动失败，请重试。",
+                        ));
+                    }}
                     disabled={starting}
                   >
                     <IconPlay size={13} />
-                    {starting ? "正在启动…" : "开始运行"}
+                    {starting ? "正在启动…" : interactionMode === "plan" ? "生成计划" : "开始运行"}
                   </button>
                 </div>
               ) : null}
@@ -533,6 +641,59 @@ export function TaskWorkspaceView({
             {/* 效果状态强提醒（partial / unknown / applied / none_applied） */}
             {selectedRun !== null ? <EffectNotice run={selectedRun} /> : null}
 
+            {workflowMode !== "plan" && workflowMode !== "compact" && !selectedRun?.clarification && typeof finalReply === "string" && finalReply.trim() !== "" ? (
+              <section className="stream-timeline-card" aria-label="运行回答">
+                <h2 className="section-title">运行回答</h2>
+                <div className="run-reply">{finalReply}</div>
+              </section>
+            ) : null}
+
+            {selectedRun !== null && artifactHost !== null ? (
+              <ArtifactPanel
+                host={artifactHost}
+                runId={selectedRun.run_id}
+                revision={events.reduce((seq, event) =>
+                  event.type === "receipt" && event.run_id === selectedRun.run_id &&
+                    ["create_report", "modify_text"].includes(String(event.payload.tool_id))
+                    ? Math.max(seq, event.seq) : seq, 0)}
+              />
+            ) : null}
+
+            {workflowMode === "plan" || workflowMode === "compact" ? (
+              <section className="workflow-result-card" aria-label={workflowMode === "plan" ? "实施计划" : "上下文压缩"}>
+                <strong>{workflowMode === "plan" ? "实施计划" : "上下文压缩"}</strong>
+                {selectedRun?.clarification ? (
+                  <p className="subtle">请先回答下方的问题，再继续生成计划。</p>
+                ) : selectedRun?.state === "succeeded" ? (
+                  <>
+                    <p className="subtle">
+                      {workflowMode === "plan" ? "计划已生成。确认后创建执行运行，具体修改仍须按规则审批。"
+                        : "压缩已完成，后续运行将使用这份摘要继续。原始记录已保留。"}
+                    </p>
+                    {workflowMode === "plan" ? (
+                      <pre className="workflow-result-text">{workflowText || "正在读取正文…"}</pre>
+                    ) : null}
+                    {canExecutePlan ? (
+                      <button type="button" className="btn btn-primary btn-sm"
+                        data-testid="execute-plan-btn" disabled={busy !== null || followUpSubmitting}
+                        onClick={() => {
+                          setCommandError(null);
+                          void onWorkflowCommand!("execute", task, selectedRun).catch((error: unknown) =>
+                            setCommandError(error instanceof Error ? error.message : "确认失败，请重试。"));
+                        }}>
+                        确认计划并执行
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="subtle">
+                    {terminal ? `${workflowMode === "plan" ? "计划" : "压缩"}未完成，请查看下方运行详情。`
+                      : workflowMode === "plan" ? "正在只读调查并生成计划…" : "正在生成交接摘要…"}
+                  </p>
+                )}
+              </section>
+            ) : null}
+
             {/* 运行事件时间线 */}
             {selectedRun !== null ? (
               <section className="stream-timeline-card">
@@ -550,7 +711,7 @@ export function TaskWorkspaceView({
             ) : (
               <EmptyState
                 title="当前还没有运行记录"
-                hint="点击上方「开始运行」，或在下方输入补充要求直接发起新一轮运行。"
+                hint="点击上方「开始运行」，完成后可以追问。"
               />
             )}
           </div>
@@ -558,6 +719,17 @@ export function TaskWorkspaceView({
 
         {/* 会话底部追问输入栏（无「回车发送」提示；发送按钮左侧放置模型状态胶囊） */}
         <div className="followup-bar">
+          {followUpSource?.clarification ? (
+            <p className="field-hint" data-testid="clarification-question">
+              需要澄清：{followUpSource.clarification.question}
+            </p>
+          ) : null}
+          {followUpError !== null ? <p role="alert" className="field-hint text-danger">{followUpError}</p> : null}
+          {followUpSource !== null ? (
+            <AttachmentPicker key={followUpSource.run_id} files={followUpFiles} onChange={setFollowUpFiles}
+              disabled={followUpSubmitting || savingGoal} allowImages={canAttachImages} />
+          ) : null}
+          {commandError !== null ? <p role="alert" className="text-danger">{commandError}</p> : null}
           <form
             className="followup-form"
             onSubmit={(event) => {
@@ -570,13 +742,24 @@ export function TaskWorkspaceView({
               data-testid="followup-input"
               value={followUpText}
               placeholder={
-                activeRun === null
-                  ? "继续追问，或输入补充要求启动新一轮运行…"
-                  : "输入新要求以更新目标（当前运行会安全停止）…"
+                guidanceTarget !== null
+                  ? "发送补充要求，在下一次模型调用前生效…"
+                  : followUpSource === null
+                    ? "选择当前目标下已完成的运行后追问…"
+                    : followUpSource.clarification ? "回答澄清问题…"
+                      : followUpSource.workflow?.mode === "plan" ? "补充要求并重新生成计划…"
+                        : "追问这次运行的结果…"
               }
               onChange={(event) => setFollowUpText(event.target.value)}
-              disabled={followUpSubmitting || savingGoal}
+              disabled={followUpSubmitting || savingGoal || !canSend}
             />
+
+            <select aria-label="任务模式" data-testid="followup-mode-select"
+              className="chip-btn" value={interactionMode} disabled={followUpSubmitting}
+              onChange={(event) => setInteractionMode(event.target.value as "execute" | "plan")}>
+              <option value="execute">执行任务</option>
+              <option value="plan">计划模式</option>
+            </select>
 
             <ModelStatusControl
               testId="followup-model-btn"
@@ -591,7 +774,9 @@ export function TaskWorkspaceView({
               type="submit"
               className="send-btn followup-send"
               data-testid="followup-send-btn"
-              disabled={followUpSubmitting || followUpText.trim() === ""}
+              disabled={followUpSubmitting || !canSend || followUpText.trim() === "" || (
+                !followUpSource && !guidanceTarget && composerCommand.kind === "message"
+              )}
               aria-label="发送补充要求"
               title="发送"
             >
