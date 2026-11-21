@@ -43,9 +43,11 @@ usage 缺失为未知，仅使用最终快照；reasoning token 已计入 output
 
 ## 3. C3 model.result v2 与恢复
 
-新增 `model.result` payload v2，在原字段之外可带上述 continuation；usage 可含已有 C1 缓存字段。
+在已批准的[模型用量 v2 契约](model-usage-v2-contract.md)上，`model.result` payload v2
+额外可带上述 continuation；`model.result` / `run.model_turn` 的 v2 usage 均保留 C1 缓存字段。
 v0/v1 按原 schema 解释，禁止默认补 continuation 或把旧事件升级为 v2。
-事件版本旁表记录精确版本；其他事件无需随之升版。
+`run.model_turn` 事件不新增 continuation，完整续接保存在模型结果、turn 投影与 cursor。
+事件版本旁表记录精确版本；除上述两个已定稿的模型事件外，其他事件不随之升版。
 模型结果、续接、模型 turn 投影与 cursor 必须在既有同一事务提交；崩溃时全有或全无。
 loop、投影重建与 replay 共用 assistant 消息构造，replay 不联网，工具仍在完整结果持久化后派发。
 审批恢复复用保存的提案和续接，不能重新生成已经持久化的模型回合。
