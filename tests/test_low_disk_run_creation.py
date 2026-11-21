@@ -20,9 +20,11 @@ def test_run_start_v2_only(tmp_path):
 
     assert event_schema.current_version("run.start") == 2
     assert event_schema.current_version("run.end") == 2
+    assert event_schema.current_version("model.result") == 2
+    assert event_schema.current_version("run.model_turn") == 2
     assert all(
         event_schema.current_version(t) == 1
-        for t in EVENT_TYPES - {"run.start", "run.end"}
+        for t in EVENT_TYPES - {"run.start", "run.end", "model.result", "run.model_turn"}
     )
     assert event_schema.known_versions("run.start") == frozenset({0, 1, 2})
     history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_text())
