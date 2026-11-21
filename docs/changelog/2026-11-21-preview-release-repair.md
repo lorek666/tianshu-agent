@@ -1,6 +1,6 @@
 # 0.1.1 组合修复：模型用量精确版本与发行身份
 
-日期：2026-11-21。状态：**本地正常同步含 Responses 实现的主干 `f27a1bf`；原精确 `1c63e82` 的 source 全量、静态门禁与复制留证保持其原冻结归属，新组合的独立复核、受影响回归、完整全量与 required CI 尚待完成；产品 App 原生验收和真实模型复评仍待完成**。PR210 首轮 Windows collection RED 保留；这不是发行或真实评测通过声明。
+日期：2026-11-21。状态：**本地已正常合并含 Responses 实现的主干 `f27a1bf`，新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`）自身的限定独立复核、受影响回归、UI 门禁、授权 source 全量与即时复制/静态核验已完成；新 hosted required CI、产品 App 原生验收和真实模型复评仍待完成**。原 `1c63e82` 的绿色证据保持原冻结归属；PR210 首轮 Windows collection RED 保留。这不是发行或真实评测通过声明。
 
 ## 原因与范围
 
@@ -51,10 +51,16 @@ C1 合法缓存用量不能通过 C3 v1 封闭 usage，真实模型响应后会�
 
 ## 主干 Responses 实现推进后的新整合
 
-[PR #209](https://github.com/lorek666/tianshu-agent/pull/209) 已在 `f27a1bfe03140e918cdcaa249d3c5c0863638d28` 合入无状态 Responses 运行时，而非仅文档契约。本地从 `c777514959afb9ceec8b0d2be365005ce8ca80e1` 正常准备合并该主干，保留 `0.1.1` 身份和资源封套修复，并接收 Responses 的模型、上下文、恢复、成本、设置与 UI src/dist。两个模型事件的缓存 v2 与历史 schema 等价，新增 continuation 仅属于 `model.result` v2；不重复扩张版本或污染历史。显式 null 缓存保持未知，回滚结果不发布到已提交内存进度；不能为旧测试假设退回这些生产语义。
+[PR #209](https://github.com/lorek666/tianshu-agent/pull/209) 已在 `f27a1bfe03140e918cdcaa249d3c5c0863638d28` 合入无状态 Responses 运行时，而非仅文档契约。本地从 `c777514959afb9ceec8b0d2be365005ce8ca80e1` 正常合并该主干，形成新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`），保留 `0.1.1` 身份和资源封套修复，并接收 Responses 的模型、上下文、恢复、成本、设置与 UI src/dist。两个模型事件的缓存 v2 与历史 schema 等价，新增 continuation 仅属于 `model.result` v2；不重复扩张版本或污染历史。显式 null 缓存保持未知，回滚结果不发布到已提交内存进度；不能为旧测试假设退回这些生产语义。
 
-新生产/测试/UI 树须取得自己的受影响回归、独立复核、冻结全量及 CI，不能复用前述 `e59415f` 或 `1c63e82` source full。主干 [push CI 44874423859](https://github.com/lorek666/tianshu-agent/actions/runs/44874423859) 的 Windows 分片实际超过 25 分钟上限被取消、严格汇总拒绝，不是主干全绿；末尾输出的测试节点不等于已确认根因。旧 CI/full RED、已知未知费用、独立 DB 守卫阻断与 FFI 拒绝均保留，不因主干代码或有限整合检查改判。Responses 原实施与线上未验证范围见[上游实施记录](2026-11-21-openai-responses.md)。
+新生产/测试/UI 组合已完成自身受影响回归、限定独立整合预审及 `f88e2bd` 提交绑定附录；UI 冻结 install/typecheck/test/build 均 exit0，src/dist 字节与接收的主干一致。精确 clean `f88e2bd` 沿已审 source-only 私有根命令获准执行一次 source 全量，实际 exit0，随即 copy-only collector、lock/Ruff/diff 与外层驱动均 exit0；协调方另核 full 原始结果、辅助 streams/三份 native 矩阵、归档及 source-copy 收据和当前源码字节。原日志 SHA256 为 `c76631831b0191d71fe7c4d9eb6e41fceb6c09c385d23f28d43224ab8a60aa8f`，动态总计和跳过原因以该原件为准；冻结证据索引为 `b93cba3b4e9ddf31929fce6eeadd6987923fa792449bf452b2297eb8b746675e`，按协调记录保存，不复用前述 `e59415f` 或 `1c63e82` 的 source full。
+
+主干 [push CI 44874423859](https://github.com/lorek666/tianshu-agent/actions/runs/44874423859) 的 Windows 分片实际超过 25 分钟上限被取消、严格汇总拒绝，不是主干全绿；末尾输出的测试节点不等于已确认根因。旧 CI/full RED、已知未知费用、独立 DB 守卫阻断与 FFI 拒绝均保留，不因主干代码或有限整合检查改判。Responses 原实施与线上未验证范围见[上游实施记录](2026-11-21-openai-responses.md)。
+
+本地新整合树的真实完整有序收集代入未改的原 partition 函数后，[真实任务文件](../../tests/test_eval_real_tasks.py)已自然分到 Windows 分片 1；保持同文件归属、片内原顺序及互斥全集，因而完全未改 CI。节点分组不是耗时证明，不承诺在原 25 分钟上限内完成，也不补造旧取消任务缺失的报告。
+
+本次 source 全量与即刻捕获沿用默认临时目录和逐例隔离，不预载父 startup、不新增 hook/plugin/CI identity/basetemp。空 key 与 env 后端不等于默认 urllib 代理/重定向零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；导入不等于实际取密钥。collector 正向收据不替代 full 退出码、辅助原件矩阵或当前 PID 活性证明；旧独立 DB/FFI 阻断保持，不扫描旧临时根、查询旧 UNKNOWN 组或重造夹具。
 
 ## 仍待门禁与边界
 
-新 required CI、产品 App build/发行实跑、原生用户验收与真实模型复评仍待完成，不能继承其他 SHA 的绿色结论。原真实首组 unsafe、失败、未知金额及未运行组不改判。旧 `0.1.0` 的原生 RED 不因本地封套结构探针或 source 全量绿变成 PASS；原生启动、Keychain、核心任务、SLO、安装、升级/回退、备份恢复等原门禁保持。[Responses 续接契约](../openai-responses-contract.md)的运行时已由主干 `f27a1bf` 实现，本组合接收该实现但尚待自己的源码与 UI 门禁；官方与网关真实付费 smoke 仍为 NOT_RUN，不能宣称线上兼容或产品发行通过。
+新 required CI、产品 App build/发行实跑、原生用户验收与真实模型复评仍待完成，不能继承其他 SHA 的绿色结论。原真实首组 unsafe、失败、未知金额及未运行组不改判。旧 `0.1.0` 的原生 RED 不因本地封套结构探针或 source 全量绿变成 PASS；原生启动、Keychain、核心任务、SLO、安装、升级/回退、备份恢复等原门禁保持。[Responses 续接契约](../openai-responses-contract.md)的运行时已由主干 `f27a1bf` 实现，本组合自身的 source/UI 门禁已按上述精确冻结完成，但尚未取得新 hosted required CI 或产品 App 验收；官方与网关真实付费 smoke 仍为 NOT_RUN，不能宣称线上兼容或产品发行通过。
