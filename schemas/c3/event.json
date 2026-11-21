@@ -1527,7 +1527,8 @@
               "local_fs",
               "memfs",
               "memory",
-              "mcp"
+              "mcp",
+              "network"
             ]
           },
           "issuer": {
@@ -4372,7 +4373,8 @@
               "local_fs",
               "memfs",
               "memory",
-              "mcp"
+              "mcp",
+              "network"
             ]
           },
           "issuer": {
