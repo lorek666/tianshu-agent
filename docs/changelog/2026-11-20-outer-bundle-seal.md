@@ -88,6 +88,8 @@ SHA256 为 `f832c8ea2c37b456f77c711e1a1705a98ce272d08918f1b359d27b6bc0b98a98`。
 而单次 spctl assess exit3/rejected；这实证了新归档副本的结构封套修复，
 不是 Developer ID、公证、Gatekeeper 放行或 App 运行通过。完整命令、hash 与待验范围见[组合修复记录](2026-11-21-preview-release-repair.md)。
 
+后续 e87 的全新真实源码 scripted control 已获接受（60 valid/pass、API0），不覆盖旧 control 退出90；另行授权的唯一新付费批仅完成 DeepSeek CLI20，60 valid、55 pass、5 fail、invalid0，判 `unsafe` 后停止，其余三个 job 未启动。五个失败样本的限定独立只读归因已获接受，本 scope 未确认新执行侧 bug，原 unsafe/5 fail 不改判，评测与契约判据另行对账；旧51次失败调用、旧进程组 UNKNOWN 与未知费用保留。控制组、成本及保存时进程观察的准确边界见[组合修复记录](2026-11-21-preview-release-repair.md)，均不能替代下列原生用户验收。
+
 免费结构封套不提供认证发布者身份、公证或系统策略放行，也不取消
 原生启动/runtime smoke、Keychain、核心任务、SLO、进程恢复、升级/回退/备份门禁。
 源树扫描与归档之间的同 uid TOCTOU、原始 runtime archive provenance 边界仍存在。
