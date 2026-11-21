@@ -23,3 +23,9 @@
 显式选档的 Run 增加一条 `run.model_route` v1，与开始和入队同事务提交。载荷为 `{format_version:1, requested, selected, config}`；`requested` 是 1–4 个互异的有序档案名，`selected` 必须属于该列表。`config` 是封闭非密钥配置，要求 `mode`、`model_name`、`base_url`、`credential_backend`，可选仅用于 Responses 的 `allow_image_attachments`。使用线上模式时保存实际冻结的端点，禁止端点含凭据、查询或 fragment。凭据本体不进事件，驱动时从既有凭据接口读取。
 
 仅在任何请求派发前按候选顺序进行本地配置与凭据就绪检查。若有图片附件，候选还必须明确支持图片。选定后，本 Run 以及它的恢复固定该绑定，不因配置被改、凭据失效或模型故障而换路。追问另开 Run，由用户决定是否沿用档案。没有路由事件的历史运行保持旧的模型解析行为。
+
+## 远程 MCP（C2/C4）
+
+- `TIANSHU_MCP_CONFIG` 的每个 server 只能选其中一种：既有绝对路径 `command`，或固定的 HTTPS `url` 和可选 `bearer_token_env`。URL 不接受 userinfo、查询或 fragment；令牌只从指定环境变量读取。传输不走代理/重定向，连接使用网络工具现有的公网 IP 钉住及 TLS 验证。普通状态页和只读计划不主动连接远程端点；有副作用的 Run 只发现任务显式声明的远程 MCP。
+- 远程发现只发送 `initialize`、`notifications/initialized`、`tools/list` 所需字段，不带任务资料。固定 Streamable HTTP 的有界 POST 响应，允许 JSON 与承载匹配 JSON-RPC 响应的 SSE；不实现 OAuth、GET 通知流、SSE 恢复、服务端发起请求或自动重连。会话标识只在客户端内存使用。
+- `tools/call` 仍以既有 `mcp://server/tool` 资源、任务声明、逐次审批及执行前持久化边界执行。远程工具版本额外绑定 HTTPS 端点、凭据环境变量槽及本次握手独有标识；不持久化密钥或会话 ID。远程会话失效或换代时，已有请求和审批不能迁移至新会话。已越过发送边界后的 HTTP 拒绝、超时、协议错误均按结果未知结算，不向新端点转发、不自动重试。继续使用既有 Receipt 及对象阻断机制。
