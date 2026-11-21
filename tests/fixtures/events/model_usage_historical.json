@@ -1,0 +1,461 @@
+{
+  "source_commit": "a0732d9881247998df24db7af9f1c7989c1ae7a4",
+  "schemas": {
+    "model.result": {
+      "0": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {}
+              },
+              "additionalProperties": false,
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ]
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adapter": {
+                "type": "string"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": "object",
+                "properties": {
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              },
+              "unit_price_ver": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cost": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "adapter",
+              "model",
+              "units",
+              "unit_price_ver",
+              "cost",
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "1": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use"
+            ]
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {}
+              },
+              "additionalProperties": false,
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ]
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adapter": {
+                "type": "string"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "type": "object",
+                "properties": {
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              },
+              "unit_price_ver": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cost": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "adapter",
+              "model",
+              "units",
+              "unit_price_ver",
+              "cost",
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "content",
+          "finish_reason",
+          "tool_calls",
+          "usage",
+          "cost"
+        ]
+      }
+    },
+    "run.model_turn": {
+      "0": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "1": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use",
+              null
+            ]
+          },
+          "usage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ]
+          },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "turn_id",
+          "seq",
+          "claim_epoch",
+          "finish_reason",
+          "usage",
+          "payload_hash"
+        ]
+      }
+    }
+  },
+  "payloads": {
+    "model.result": {
+      "request_id": "x",
+      "content": "x",
+      "finish_reason": "cancelled",
+      "tool_calls": [],
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "cost": {
+        "provider": "x",
+        "adapter": "x",
+        "model": "x",
+        "units": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        },
+        "unit_price_ver": "x",
+        "cost": 0,
+        "currency": "x"
+      }
+    },
+    "run.model_turn": {
+      "run_id": "x",
+      "turn_id": "x",
+      "seq": 1,
+      "claim_epoch": 0,
+      "finish_reason": "cancelled",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "legacy_all_sha256": "e4100e754b1b3047e675073ef206bd1250e66dc206e4d2ca5ccf7aca5b309022",
+  "unaffected_current_sha256": "c9599ee6dcc929018679cf807ed19283c61ca2b9e7acfc9831e1e4716b0a904b"
+}

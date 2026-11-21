@@ -574,11 +574,28 @@ def _verify_macos_archive(
             for name in members
             if (path := PurePosixPath(name)).is_relative_to(app_prefix)
         }
+        # Historical unsigned/synthetic archives remain statically readable.
+        # New generation requires native codesign checks in package_app.py;
+        # this optional closed pair is not publisher or Apple trust validation.
+        signature_directory = f"{MACOS_CONTENTS}/_CodeSignature"
+        signature_file = f"{signature_directory}/CodeResources"
+        has_envelope = signature_directory in members or signature_file in members
+        if has_envelope:
+            directory = members.get(signature_directory)
+            envelope = members.get(signature_file)
+            _failure(
+                directory is not None and directory.isdir()
+                and envelope is not None and envelope.isfile() and envelope.size > 0,
+                "macOS 资源封套必须是精确目录及非空普通 CodeResources 文件",
+            )
+
         expected_app_files = {
             "Contents/Info.plist",
             "Contents/MacOS/tianshu-desktop",
             "Contents/Resources/release-manifest.json",
         } | {f"Contents/Resources/{relative}" for relative in files}
+        if has_envelope:
+            expected_app_files.add("Contents/_CodeSignature/CodeResources")
         allowed_app_files = expected_app_files | {
             f"Contents/Resources/{name}" for name in ALLOWED_RESOURCE_ICONS
         }
@@ -618,6 +635,8 @@ def _verify_macos_archive(
             "MacOS/tianshu-desktop",
             "Resources/release-manifest.json",
         } | {f"Resources/{relative}" for relative in files}
+        if has_envelope:
+            expected_contents.add("_CodeSignature/CodeResources")
         allowed_contents = expected_contents | {
             f"Resources/{name}" for name in ALLOWED_RESOURCE_ICONS
         }

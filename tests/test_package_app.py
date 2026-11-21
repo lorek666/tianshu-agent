@@ -19,6 +19,12 @@ def _load_module(*, stub_pnpm: bool = True):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # These legacy fixtures contain b"binary", not executable Mach-O code.
+    # Keep their path/build/checksum tests platform-independent; native-command
+    # and restricted-roundtrip boundaries are exercised in test_macos_outer_seal.
+    module._seal_macos_app = lambda app: None
+    module._verify_macos_app = lambda app: None
+    module._verify_macos_roundtrip = lambda app, archive, expected=None: None
     if stub_pnpm:
         module.resolve_pnpm = lambda platform_name=None: (
             f"/tools/{module.pnpm_launcher(platform_name)}"

@@ -20,16 +20,18 @@
 - **核心承诺**：事件可重放、执行侧授权、覆盖/删除需审批、默认可撤销、崩溃可恢复。
 - **非目标（v1）**：图片/视频生成、多租户、防本机用户篡改（只防模型越权与失控 worker）。
 - **技术栈**：Python 3.12（`requires-python = ">=3.12,<3.13"`）、`uv`、**零第三方运行时依赖**（`dependencies = []`）；dev 依赖只有 `pytest>=8.0` 与 `ruff>=0.6`。UI 是 Vite + React + TS，但只有**开发/构建**时需要 Node，运行时加载已提交的 `ui/dist`。
-- **版本 / 许可**：`0.1.0`；Apache License 2.0（`LICENSE` 已被 git 跟踪）。
+- **版本 / 许可**：`0.1.1` 组合修复候选（尚未发布）；Apache License 2.0（`LICENSE` 已被 git 跟踪）。
 
 ## 2. 当前状态速览
+
+- **macOS outer 资源封套修复候选（2026-11-20，本地未合入）**：打包末端新增免费 no-force ad-hoc 封套及原生 deep/strict 验证，归档受限往返核对后再原生验证；direct artifact 输入只验证不重签。静态 verifier 精确允许可选封套，历史 unsigned fixture 仍可读。定向红绿与本机 tiny-C 结构实验已执行；局部 code/test 及文档增量已完成独立预审；原组合候选已完成限定独立整合预审，精确 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）的授权 source 全量、lock/Ruff/diff 与即刻复制留证均 exit0，仅归属该冻结。本地已正常整合含 Responses 实现的主干 `f27a1bf` 为新冻结 `f88e2bd`，自身限定独立复核、受影响回归、UI 门禁、授权 source 全量与即刻复制留证均已完成，不沿用原冻结的绿。新 hosted required CI 和产品原生验收仍待完成，不能将源码/结构夹具证据当作新产品 App 验收。旧 `0.1.0` 草稿不可原地修补，详见[局部修复记录](changelog/2026-11-20-outer-bundle-seal.md)。
 
 - **里程碑与主干进展**：
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
-- **整合候选验证状态（2026-11-20，尚待最终远端门禁）**：原 PR [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的 ready CI [44670311820](https://github.com/lorek666/tianshu-agent/actions/runs/44670311820) attempt 1 真实失败：Windows 具名失败与 macOS 25分钟超时原件保留。最小修复冻结 `7b4d80bf3030219790f35694279b0055830f2846` 已经限定增量独立 PASS、唯一新本地全量 exit0；新 hosted CI 仍须绑定最终提交，不能用旧本地绿/政策 main 绿替代。修复旧材料树迟到内容的真实扫描缺口、测试平台/干净离线前提与 jq 传输边界，并将 macOS 完整 Python/Rust 拆为各25分钟原生作业、由原 required 名严格汇总；详见[首轮 CI 红与修复证据](changelog/2026-11-20-integration-ci-repair.md)。
+- **整合基线与新候选状态（2026-11-21）**：原 PR [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的 ready CI [44670311820](https://github.com/lorek666/tianshu-agent/actions/runs/44670311820) 真实失败原件保留；修复后的精确 head `314e987ea5c8d1179caff6a4bcdf488c055f577f` 已通过新 ready CI [44678467012](https://github.com/lorek666/tianshu-agent/actions/runs/44678467012)，按保护规则合入 `a0732d9881247998df24db7af9f1c7989c1ae7a4`，该 main 的 push CI [44681321379](https://github.com/lorek666/tianshu-agent/actions/runs/44681321379) 也全部成功。旧红不被后续绿覆盖。本地 `0.1.1` 组合候选整合资源封套、模型用量 v2 和统一身份修复；原冻结 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）已完成限定独立整合预审、授权 source 全量与静态/复制证据门禁。本地已正常合并含 PR209 Responses 实现的 `f27a1bfe03140e918cdcaa249d3c5c0863638d28`，形成精确新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`）。该组合自身的限定独立整合复核及提交绑定附录、受影响回归、UI install/typecheck/test/build、授权 source 全量与即时 collector、lock/Ruff/diff 均已完成并核验；全量原始日志 SHA256 为 `c76631831b0191d71fe7c4d9eb6e41fceb6c09c385d23f28d43224ab8a60aa8f`，动态总计及跳过原因以原件为准，不能沿用旧冻结的绿。原 `2b91bfc` 全量 RED、PR210 首轮 Windows collection RED 与各自后续最小修复证据均保留。新 required CI、产品 App 原生验收与真实复评仍待验，不能套用旧绿；详见[本轮记录](changelog/2026-11-21-preview-release-repair.md)及[首轮 CI 红与修复证据](changelog/2026-11-20-integration-ci-repair.md)。
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
-  - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。待在合入后的精确主干 SHA 实跑，并用同一台 Apple Silicon Mac 验收下载、安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
+  - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。精确 a073 已由 [44731411389](https://github.com/lorek666/tianshu-agent/actions/runs/44731411389) 实跑并生成未发布的 `0.1.0` draft；但下载归档 App 的原生 codesign 校验失败，原对象保留、不修补。新候选仍须重新绑定发行与原生验收，并用同一台 Apple Silicon Mac 验收安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
   - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。旧候选验收与原生 CI 历史见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)，本次组合须绑定新对象验证。当前 G3 仍需候选冻结 SLO 实测。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
   - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
@@ -90,9 +92,11 @@
 
 ## 4. 关键决策（D1–D7）与硬约束
 
-- **Responses 接入（2026-11-20 契约，2026-11-21 实现分支）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与 `ctx-responses-v1` 完整上下文；保留旧模式，凭据复用 openai 域。模型步骤固定配置快照，result/turn/cursor 同事务提交；已提交终态在崩溃或暂停后直接收尾，丢失的 Responses cursor/turn 可从事件重建。实际门禁与未验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)及[续接契约](openai-responses-contract.md)。
+- **结构封套不冒充发布者信任（2026-11-20）**：最终 macOS App 只执行 `codesign --sign - --timestamp=none`，不 force/deep 签名、不清 xattr、不使用证书或修改 Gatekeeper 策略；已有封套拒绝，其他非 linker 签名由 no-force 原生语义拒绝。只允许主程序与精确新封套变化，原资源/Info.plist/权限不变；原生 strict 验证必须覆盖归档恢复副本。此局部修复不改 C1–C5、T1 成本/信任政策、schema、索引 `signed: false` 或原生启动/数据/凭据验收门禁。静态可选封套兼容不等于生成路径可省略原生检查。
 
-- **模型缓存用量逐事件 v2（2026-11-20 契约，2026-11-21 实现分支）**：C1 已允许的可选缓存用量完整保存在 `model.result` / `run.model_turn` 新写精确 payload v2；保留旧 v0/v1 原解释，新 v2 usage 仍封闭，不升级全局版本常量。不沿用发布前 optional 沿 v1 的历史例外，也不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)，验证见[实施记录](changelog/2026-11-21-openai-responses.md)；不改判既有真实评测，不自动重放已持久化模型回合。
+- **Responses 接入（2026-11-20 契约，2026-11-21 已入主干）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与 `ctx-responses-v1` 完整上下文；保留旧模式，凭据复用 openai 域。模型步骤固定配置快照，result/turn/cursor 同事务提交；已提交终态在崩溃或暂停后直接收尾，丢失的 Responses cursor/turn 可从事件重建。PR209 已合入 `f27a1bfe03140e918cdcaa249d3c5c0863638d28`；本地新整合 `f88e2bd` 已完成自身限定独立复核、受影响/UI 与 source 全量门禁，但不等于 hosted CI、产品或线上验收通过。实际门禁与未验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)及[续接契约](openai-responses-contract.md)。
+
+- **模型缓存用量逐事件 v2（2026-11-20 契约，2026-11-21 实现）**：C1 已允许的可选缓存用量完整保存在 `model.result` / `run.model_turn` 新写精确 payload v2；保留旧 v0/v1 原解释，新 v2 usage 仍封闭，不升级全局版本常量。不沿用发布前 optional 沿 v1 的历史例外，也不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)，Responses 实现验证见[实施记录](changelog/2026-11-21-openai-responses.md)。原本地组合 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）的 source 全量与静态门禁 exit0，仅归属该冻结；其独立附加 DB 探针在 SQLite 打开前被审阅守卫阻断，不称独立 DB 通过。新整合 `f88e2bd` 已取得自身受影响/UI、限定独立复核及 source 全量证据，不套用旧绿；真实复评仍待验，不改判既有真实评测，不自动重放已持久化模型回合；契约与实现分开 PR。
 
 - **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
 
@@ -273,6 +277,12 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
+
+- **跨平台 fixture 与 metadata 文本必须显式 UTF-8（2026-11-21）**：仓库按 UTF-8 保存的 fixture、schema 与 TOML/JSON/lock 元数据，读取时须显式 `encoding="utf-8"`，不能依赖本机默认编码。PR210 首轮 Windows CI 在 fixture 收集读取处真实失败；只修该 import 还会遗漏后续 schema 与发行身份读取。修复只给两份新增测试的八处读取补编码，不改历史字节或全局 UTF-8/locale。Mac 上精确限定输入路径的 CP1252 对照只是窄路径模拟，不是 Windows 实测，也不代替新候选的 hosted CI；详见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
+
+- **Mach-O code-page 哈希正确不等于 App 资源封套有效（2026-11-20）**：旧预览主程序只有 linker-ad-hoc 签名、没有 CodeResources，静态 manifest/架构检查通过，原生 codesign 仍报资源封套缺失。修复必须在最终 App 而非 staging 上封装，并在真实 tar 恢复后再验；免费 ad-hoc 完整性、认证发布者身份、Gatekeeper 判定和产品运行必须分开记。对已在 App 内的主程序直接签名也可能封装整个 bundle，普通签名拒绝负控须先在独立 standalone 文件上签名后再组装 fresh fixture，不能伪称已经覆盖了 no-force 拒绝。
+
 - **重建必须区分保存点与其后的事实（2026-11-21）**：Responses 的恢复计数由最后保存的游标加其后 `model.intent` 得到；控制面尚未写首个 `run.cursor` 时，以 `run.start` 的初始进度作为保存点，不能先吸收 intent 再让恢复入口重复补计。等待子任务的事务先清空 `model_turn`、保存游标，再追加 `job.parked`；重建需识别相邻、同 Run、同 claim 的 `waiting_children` 事件对后核对原摘要，不能删掉哈希校验。连续真实崩溃、保留/删除/重建投影，以及父任务重复挂起与 Worker 唤醒均须覆盖，见[独立复审原件](evidence/openai-responses-2026-11-21/README.md)。
 
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
@@ -282,7 +292,7 @@
 
 - **pytest 子进程 startup 不应预载进父收集过程（2026-11-20）**：`test_maintenance.py` 在收集期冻结生产锁根 getter，父命令若同时预置 `tests/_startup` 与测试锁根，`sitecustomize` 会先把该 getter 替换成测试 lambda，导致 OS 固定锁身份断言按设计失败。父 pytest 仅以 `src` 为 `PYTHONPATH` 并清除外部测试根/payload 变量；保留原样 `conftest` 在逐例运行时注入子进程 startup 与本用例真实临时根。不要为修运行命令错误而改生产 getter 或放宽身份断言。源码拷贝 smoke 还须让内外层测试启动器使用同一个真实 base interpreter；Windows uv venv launcher 的 `Popen.pid` 不保证等于解释器 PID，不能因此放宽严格凭据断言。
 
-- **父进程设置测试根，不等于子进程已隔离（2026-11-20）**：生产 verifier 与 runtime smoke 分别重设 `PYTHONPATH`，会丢失仅存在于 `tests/_startup` 的维护锁/registry 注入；环境变量仍在不能证明真实子进程未使用日常账号的固定根。源码集成 smoke 现仅在显式测试 fixture 中通过双层专属 proxy 和同 PID launcher 验证原 argv/cwd/包来源、已加载的 startup 来源与实际锁/registry/authority 根，失配在 CLI 前拒绝，凭据绑定父 `Popen.pid`。这不是未改命令的发行包或用户设备 smoke；后者仍须独立 runner/测试 OS 账户，不能 fake HOME 或改生产锁语义。旧全量日志保留真实历史，但缺失隔离证据的部分不作安全隔离证明。见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
+- **父进程设置测试根，不等于子进程已隔离（2026-11-20）**：生产 verifier 与 runtime smoke 分别重设 `PYTHONPATH`，会丢失仅存在于 `tests/_startup` 的维护锁/registry 注入；环境变量仍在不能证明真实子进程未使用日常账号的固定根。源码集成 smoke 现仅在显式测试 fixture 中通过双层专属 proxy 和同 PID launcher 验证原 argv/cwd/包来源、已加载的 startup 来源与实际锁/registry/authority 根，失配在 CLI 前拒绝，凭据绑定父 `Popen.pid`。这不是未改命令的发行包或用户设备 smoke；后者不要求新建或切换 OS 测试账户，但须隔离测试数据和工作区、不触碰现有生产数据或凭据，不能安全隔离的项目仍记为未验证，不能 fake HOME 或改生产锁语义。旧全量日志保留真实历史，但缺失隔离证据的部分不作安全隔离证明。见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
 
 - **CLI 默认 worker 必须区分单轮预算与队列耗尽（2026-11-20）**：`Worker.drain()` 的 64 作业上限是防止单次调用无限运行，不代表队列已经清空。CLI 未指定 `--max-jobs` 时按批次继续调用，直到 `exhausted=True`；显式 `--max-jobs N` 仍保持单轮限制，`idle:false` 如实表示仍可能有作业或发生工作区争用。超过 64 个真实排队 Run 的子进程回归测试钉住这两个语义。
 
@@ -451,6 +461,8 @@
 
 ## 7. 已知限制 / 未决问题
 
+- **旧预览的原生封套失败仍为失败（2026-11-20）**：旧 `0.1.0` 下载资产在本机 codesign/spctl 均因缺失资源封套失败；后者是操作失败，不能解读成 Gatekeeper 放行或拒绝的有效策略结论。独立实验副本和本轮 tiny-C 结构回归不改写旧资产，也不等于新产品 build、真实安装或原生 runtime 通过。本次 roundtrip 的 fd-relative 无链接提取仅约束私有新目录；源树扫描/归档的同 uid TOCTOU 与原有 runtime provenance 边界仍保留。未做 Intel Mac、其他 macOS 版本或 Windows 用户设备验证。
+
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
 - **非标准材料路径的保留名祖先误识别（2026-11-20，未修）**：标准材料域检测沿祖先识别 `artifacts`、`blobs`、`memory_blobs`。非标准数据库或异根 data_root 所用的私有 materials 布局若又位于这些保留名祖先下，可能被误认为另一个标准材料域，因所有者数据库不匹配而 fail-closed 拒写。默认 `events.db` / AgentOS 布局不受此已复现组合影响；这不是首次 Apple Silicon 限定预览的阻断项，但一般自定义 `--db` 兼容限制仍未修。将 pytest 临时根移出这些祖先只消除了本次测试布局碰撞，不是产品修复，也不构成任意数据库/材料路径均受支持的声明。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
@@ -458,8 +470,8 @@
 - **开发阶段原生发行 smoke 的测试隔离（2026-11-20）**：`release_smoke.py` 虽创建独立临时数据根，
   生产 `maintenance._lock_root()` 仍绑定 OS 用户身份，`RestoreRegistry` 绑定系统 Home；
   测试套件的 `TIANSHU_TEST_LOCK_ROOT` / registry 注入只在测试启动钩子中生效，不能据此宣称
-  bundled CLI 已与日常账号隔离。日常账号下只做 build/package 与显式无 smoke 的静态诊断，
-  完整原生 smoke 留给干净标准用户测试账号或独立 runner；不得改 HOME、加启动钩子或伪造 pass。
+  bundled CLI 已与日常账号隔离。不要求新建或切换 OS 测试账户；完整原生 smoke 须隔离测试数据和工作区，
+  不得触碰现有生产数据或凭据，不能安全隔离的项目仍记为未验证；不得改 HOME、加启动钩子或伪造 pass。
 
 - **G3 本地浸泡证据不等于发布验收（2026-11-19）**：按单调纳秒记录已就绪后的观测窗，扣除计划重启停机，不以运行器总时长或毫秒舍入的采样时间判定满 10 小时。`completed` 必须在最终材料之后发布；`--verify-only` 只核对字节摘要与记录一致性，不证明执行来源、机器未休眠或全程健康。离线核对和 v1 `PASS` 均不会改变 `release_acceptance = NOT_EVALUATED`。独立运行须用专用测试 OS 账户或隔离测试机，临时数据根不是生产用户级维护锁隔离。见 [SLO 基线与复跑方式](SLO-BASELINE-2026-11-18.md)。
 
