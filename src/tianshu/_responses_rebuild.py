@@ -29,7 +29,19 @@ def rebuild_responses_progress(events: list[Event]):
     turns: list[tuple[Event, dict[str, Any]]] = []
     result: dict[str, Any] | None = None
     last_cursor: Event | None = None
-    saved_cursor = None
+    # 控制面可能只持久化 run.start、尚未显式保存游标；它也是初始保存点。
+    # 不能把其后的未提交 intent 带入快照，否则 resume 会再补计一次。
+    saved_cursor = deepcopy(progress.to_cursor())
+    # _park_for_children 在同一事务中先清 model_turn、存游标，再写 park。
+    # 用相邻且 claim 相同的已提交事件对解释这个保存点，仍逐一核验原摘要。
+    parked_cursors = {
+        cursor.seq
+        for cursor, park in zip(events, events[1:], strict=False)
+        if cursor.type == "run.cursor" and park.type == "job.parked"
+        and park.payload.get("reason") == "waiting_children"
+        and park.seq == cursor.seq + 1 and park.run_id == cursor.run_id
+        and park.payload["claim_epoch"] == cursor.payload["claim_epoch"]
+    }
     for ev in events:
         p = ev.payload
         if ev.type == "model.intent":
@@ -103,10 +115,12 @@ def rebuild_responses_progress(events: list[Event]):
             if p["decision"] == "approve":
                 progress.pending[0]["approval_id"] = p.get("approval_id")
         elif ev.type == "run.cursor":
+            if ev.seq in parked_cursors:
+                progress.model_turn = None
             last_cursor = ev
             saved_cursor = deepcopy(progress.to_cursor())
             if sha256_hex(canonical_bytes(saved_cursor.to_dict())) != p["payload_hash"]:
                 raise TianshuError("Responses 游标不能从持久化事件精确重建")
     # 游标快照只包含其事件之前的事实，后续 intent 由恢复入口补计；
     # 未提交游标的工具结果仍由现有派发对账吸收，不能擅自越过保存点。
-    return saved_cursor or progress.to_cursor(), turns, last_cursor or start
+    return saved_cursor, turns, last_cursor or start
