@@ -1068,7 +1068,8 @@ class _DispatcherExecMixin:
             raise AuthorityWriteFailed("；".join(problems))
 
     def prepare_run(
-        self, task_id: str, execution_policy: RunExecutionPolicyV1, *, discover_mcp: bool = True,
+        self, task_id: str, execution_policy: RunExecutionPolicyV1, *,
+        discover_mcp: bool = True, discover_remote: bool = True,
     ) -> None:
         task = self._tasks.get_task(task_id)
         if task is None:
@@ -1076,7 +1077,8 @@ class _DispatcherExecMixin:
         isolated = task.exec_policy is not None and task.exec_policy.isolation_requires
         self._prepare_new_run(execution_policy, tuple(
             Path(b.root_path) for b in task.workspaces if b.can_write
-        ), remote_names=() if isolated else task.mcp_servers, discover_mcp=discover_mcp)
+        ), remote_names=() if isolated or not discover_remote else task.mcp_servers,
+            discover_mcp=discover_mcp)
 
     def _prepare_new_run(self, execution_policy: RunExecutionPolicyV1,
                          roots: tuple[Path, ...], *, remote_names: tuple[str, ...] = (),
@@ -1088,16 +1090,45 @@ class _DispatcherExecMixin:
             )
         self._tasks.require_new_run(execution_policy, writable_roots=roots)
         if discover_mcp and execution_policy != PURE_ONLY and self._mcp_clients is not None:
-            from .tool_registry import build_registry, set_registry
+            self._discover_mcp(remote_names)
 
-            initialized = not self._mcp_prepared
-            if initialized:
-                self._mcp_clients.start_all()
-                self._mcp_prepared = True
-            remote_changed = bool(remote_names) and self._mcp_clients.start_remotes(remote_names)
-            if initialized or remote_changed:
-                self._registry = build_registry(self._mcp_clients)
-                set_registry(self._registry)
+    def _discover_mcp(self, remote_names: tuple[str, ...]) -> None:
+        from .tool_registry import build_registry, set_registry
+
+        if self._mcp_clients is None:
+            return
+        initialized = not self._mcp_prepared
+        if initialized:
+            self._mcp_clients.start_all()
+            self._mcp_prepared = True
+        remote_changed = bool(remote_names) and self._mcp_clients.start_remotes(remote_names)
+        if initialized or remote_changed:
+            self._registry = build_registry(self._mcp_clients)
+            set_registry(self._registry)
+
+    def prepare_model_mcp(self, claim: JobClaim, *, queued_desktop: bool) -> None:
+        """Connector discovery is optional; it must not block an existing read or model turn."""
+        if (self._mcp_clients is None
+                or self._tasks.run_execution_policy(claim.run_id) != EFFECTS):
+            return
+        run = self._tasks.assert_current(claim.run_id)
+        task = self._tasks.get_task(run.task_id)
+        if task is None or (task.exec_policy is not None and task.exec_policy.isolation_requires):
+            return
+        configs = self._mcp_clients.configs
+        selected = tuple(name for name in task.mcp_servers if name in configs)
+        remotes = tuple(name for name in selected if configs[name].url)
+        if not remotes and (not queued_desktop or self._mcp_prepared or not selected):
+            return
+        self._claims.assert_claim(claim)
+        if self._cancel_requested(claim.run_id):
+            return
+        self._tasks.disk_admission.assert_stores(
+            self._log, snapshots=self._snapshots, memory=self._memory,
+            contents=self._contents, data_root=self._data_root,
+        )
+        self._tasks.require_effect_space(claim.run_id, targets=(), data_root=self._data_root)
+        self._discover_mcp(remotes)
 
     def prepare_pending_mcp(
         self, run_id: str, claim: JobClaim, request_id: str | None,

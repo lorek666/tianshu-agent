@@ -36,9 +36,19 @@ CONTINUATION_SCHEMA: dict[str, Any] = {
 COMPACTION_REF_VERSION = "1.1"
 COMPACTION_SCHEMA = copy.deepcopy(CONTINUATION_SCHEMA)
 COMPACTION_SCHEMA["properties"]["schema_version"]["const"] = COMPACTION_REF_VERSION
-COMPACTION_SCHEMA["properties"]["output_items"]["items"]["properties"]["type"]["enum"].append(
-    "compaction"
-)
+COMPACTION_SCHEMA["properties"]["output_items"].update({
+    "minItems": 1,
+    "prefixItems": [{
+        "type": "object",
+        "required": ["type", "id", "encrypted_content"],
+        "properties": {
+            "type": {"type": "string", "const": "compaction"},
+            "id": {"type": "string", "pattern": r"\S"},
+            "encrypted_content": {"type": "string", "pattern": r"\S"},
+            "status": {"type": "string", "const": "completed"},
+        },
+    }],
+})
 
 
 def validate_compact_threshold(value: Any, *, responses: bool) -> int | None:

@@ -90,6 +90,9 @@ SUPPORTED_KEYWORDS = frozenset(
         "required",
         "additionalProperties",
         "items",
+        "minItems",
+        "prefixItems",
+        "oneOf",
         "enum",
         "const",
         "minimum",
@@ -1304,6 +1307,15 @@ def _check_schema_node(node: Any, where: str) -> None:
             )
     if "items" in node:
         _check_schema_node(node["items"], f"{where}.items")
+    for key in ("prefixItems", "oneOf"):
+        if key in node:
+            branches = node[key]
+            if not isinstance(branches, list) or not branches:
+                raise UnsupportedSchemaKeyword(f"{where}：{key} 必须是非空 schema 数组")
+            for index, branch in enumerate(branches):
+                _check_schema_node(branch, f"{where}.{key}[{index}]")
+    if "minItems" in node and (type(node["minItems"]) is not int or node["minItems"] < 0):
+        raise UnsupportedSchemaKeyword(f"{where}：minItems 必须是非负整数")
     if "enum" in node:
         if not isinstance(node["enum"], list) or not node["enum"]:
             raise UnsupportedSchemaKeyword(f"{where}：enum 必须是非空数组")
@@ -1447,6 +1459,15 @@ def _type_matches(expected: Any, value: Any) -> bool:
 def _check_value(
     schema: dict[str, Any], value: Any, path: str, errors: list[str], event_type: str
 ) -> None:
+    if "oneOf" in schema:
+        matches = 0
+        for choice in schema["oneOf"]:
+            branch_errors: list[str] = []
+            _check_value(choice, value, path, branch_errors, event_type)
+            matches += not branch_errors
+        if matches != 1:
+            errors.append(f"{path}：必须且只能匹配一个已登记的版本形状")
+            return
     if "type" in schema and not _type_matches(schema["type"], value):
         wanted = schema["type"]
         errors.append(f"{path}：期望类型 {wanted}，实际 {_json_type(value)}")
@@ -1483,9 +1504,15 @@ def _check_value(
             elif isinstance(additional, dict):
                 _check_value(additional, sub, child, errors, event_type)
         return
-    if isinstance(value, list) and "items" in schema:
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            errors.append(f"{path}：数组缺少必需的项")
+            return
+        prefix = schema.get("prefixItems", ())
         for index, item in enumerate(value):
-            _check_value(schema["items"], item, f"{path}[{index}]", errors, event_type)
+            item_schema = prefix[index] if index < len(prefix) else schema.get("items")
+            if item_schema is not None:
+                _check_value(item_schema, item, f"{path}[{index}]", errors, event_type)
 
 
 def payload_errors(

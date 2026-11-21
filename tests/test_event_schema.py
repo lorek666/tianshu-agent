@@ -121,7 +121,7 @@ def test_registry_is_complete_and_bidirectional():
     "keyword_schema",
     [
         {"type": "object", "properties": {"x": {"type": "string", "minLength": 1}}},
-        {"type": "object", "properties": {"x": {"oneOf": [{"type": "string"}]}}},
+        {"type": "object", "properties": {"x": {"oneOf": [{"minLength": 1}]}}},
         {"type": "object", "additionalProperties": False, "patternProperties": {}},
         {"type": "object", "properties": {"x": {"type": "string", "format": "date"}}},
     ],

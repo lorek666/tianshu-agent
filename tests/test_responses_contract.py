@@ -147,6 +147,62 @@ def test_c1_schema_validates_real_ref_and_rejects_adapter_drift():
     assert not errs
 
 
+def test_c1_compaction_does_not_widen_frozen_continuation_v1_0():
+    schema = Path(__file__).resolve().parents[1] / "schemas/c1/model.json"
+    defs = json.loads(schema.read_text(encoding="utf-8"))["$defs"]
+    compressed = ref_payload()
+    compressed["output_items"].insert(0, {
+        "type": "compaction", "id": "compacted", "encrypted_content": "opaque",
+    })
+    with pytest.raises(ValueError):
+        model.ContinuationRef.from_payload(compressed)
+    errors = []
+    event_schema._check_value(defs["continuationRef"], compressed, "$", errors, "probe")
+    assert errors
+    compressed["schema_version"] = "1.1"
+    ref = model.ContinuationRef.from_payload(compressed)
+    response = model.ModelResponse(
+        "tool_use", "先检查",
+        [model.ToolCall("call_1", "list_files", {"path": "."})],
+        continuation=ref,
+    ).to_payload()
+    for node, payload in (
+        (defs["continuationRefV1_1"], ref.to_payload()),
+        (defs["modelResponse"], response),
+    ):
+        errors = []
+        event_schema._check_value(node, payload, "$", errors, "probe")
+        assert not errors
+    response["continuation"]["schema_version"] = "1.0"
+    errors = []
+    event_schema._check_value(defs["modelResponse"], response, "$", errors, "probe")
+    assert errors
+
+
+@pytest.mark.parametrize("edit", ["missing", "late", "repeated", "empty_ciphertext"])
+def test_c1_and_c3_compaction_require_an_encrypted_boundary_first(edit):
+    schema = Path(__file__).resolve().parents[1] / "schemas/c1/model.json"
+    defs = json.loads(schema.read_text(encoding="utf-8"))["$defs"]
+    ref = ref_payload()
+    ref["schema_version"] = "1.1"
+    boundary = {"type": "compaction", "id": "compacted", "encrypted_content": "opaque"}
+    items = ref["output_items"]
+    if edit == "late":
+        items.append(boundary)
+    elif edit == "repeated":
+        items[:0] = [boundary, {**boundary, "id": "second"}]
+    elif edit == "empty_ciphertext":
+        items.insert(0, {**boundary, "encrypted_content": ""})
+    with pytest.raises(ValueError):
+        model.ContinuationRef.from_payload(ref)
+    for node in (defs["continuationRefV1_1"], event_schema.MODEL_RESULT_V3_SCHEMA[
+        "properties"
+    ]["continuation"]):
+        errors = []
+        event_schema._check_value(node, ref, "$", errors, "probe")
+        assert errors
+
+
 def test_model_result_v2_preserves_frozen_v0_v1_and_cache_usage():
     assert event_schema.current_version("model.result") == 2
     assert event_schema.known_versions("model.result") == {0, 1, 2, 3}

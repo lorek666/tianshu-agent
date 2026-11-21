@@ -86,7 +86,7 @@ from .conversation import (
     seed_messages,
 )
 from .crashpoint import failpoint
-from .disk_admission import DiskAdmission, RunStorageContext
+from .disk_admission import DiskAdmission, DiskAdmissionError, RunStorageContext
 from .dispatcher import (
     APPROVAL_REJECTED,
     DISPATCH_ERROR,
@@ -979,12 +979,16 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         # 桌面控制栈只入队；在真实驱动线程首次生成前发现显式选中的 MCP，
         # 不持有入队事务，不给已有提案的 Run 偷换会话。
-        policy = self._tasks.run_execution_policy(run_id)
-        if not progress.model_attempts and task.mcp_servers and policy != PURE_ONLY:
+        if not progress.model_attempts and task.mcp_servers:
+            from .conversation import RUN_CONVERSATION
+
             try:
-                self._dispatcher.prepare_run(task.task_id, policy)
-            except TianshuError as exc:
-                return "stop", f"连接器准入失败：{exc}"
+                self._dispatcher.prepare_model_mcp(claim, queued_desktop=bool(
+                    self._log.read_run(run_id, event_types=(RUN_CONVERSATION,)),
+                ))
+            except DiskAdmissionError:
+                # Do not launch connectors, but let an admitted Run still read or ask its model.
+                pass
 
         # 编译这一步在 intent 之前：intent 声称的是"我要发的到底是什么"，
         # 编译失败（放不下）就不该留下一条指向模型的 intent。

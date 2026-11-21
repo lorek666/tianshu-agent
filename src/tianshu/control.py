@@ -809,7 +809,7 @@ class ControlPlane:
                 )
             elif needs_images and not self._model_slot.supports_image_attachments:
                 raise ControlError("bad_params", "所选模型未开启图片附件能力")
-            self._stack.dispatcher.prepare_run(task_id, execution_policy, discover_mcp=False)
+            self._stack.dispatcher.prepare_run(task_id, execution_policy, discover_remote=False)
             payload = {
                 "task": task.goal,
                 "out": out_name or "",

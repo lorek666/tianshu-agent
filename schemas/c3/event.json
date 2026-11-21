@@ -100,15 +100,21 @@
         "recovery.object_blocked",
         "recovery.object_unblocked",
         "recovery.unblocked",
+        "run.attachments",
         "run.control",
+        "run.conversation",
         "run.cursor",
         "run.effect",
         "run.end",
         "run.fenced",
         "run.finish",
+        "run.guidance_applied",
+        "run.guidance_requested",
+        "run.model_route",
         "run.model_turn",
         "run.start",
         "run.state",
+        "run.workflow",
         "subtask.finished",
         "subtask.spawned",
         "task.created",
@@ -5766,158 +5772,10 @@
       }
     },
     "modelResultCompactionPayload": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "request_id": {
-          "type": "string"
-        },
         "content": {
           "type": "string"
-        },
-        "finish_reason": {
-          "type": "string",
-          "enum": [
-            "cancelled",
-            "checkpoint",
-            "content_filtered",
-            "end_turn",
-            "guardrail_intervened",
-            "interrupt",
-            "limit_output_tokens",
-            "limit_structured_output_attempts",
-            "limit_total_tokens",
-            "limit_turns",
-            "max_tokens",
-            "stop_sequence",
-            "tool_use"
-          ]
-        },
-        "tool_calls": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "call_id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "arguments": {}
-            },
-            "additionalProperties": false,
-            "required": [
-              "call_id",
-              "name",
-              "arguments"
-            ]
-          }
-        },
-        "usage": {
-          "type": "object",
-          "properties": {
-            "input_tokens": {
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "output_tokens": {
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "cache_creation_input_tokens": {
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "cache_read_input_tokens": {
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "input_tokens",
-            "output_tokens"
-          ]
-        },
-        "cost": {
-          "type": "object",
-          "properties": {
-            "provider": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "adapter": {
-              "type": "string"
-            },
-            "model": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "units": {
-              "type": "object",
-              "properties": {
-                "input_tokens": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                },
-                "output_tokens": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ]
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "input_tokens",
-                "output_tokens"
-              ]
-            },
-            "unit_price_ver": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "cost": {
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "currency": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "provider",
-            "adapter",
-            "model",
-            "units",
-            "unit_price_ver",
-            "cost",
-            "currency"
-          ]
         },
         "continuation": {
           "additionalProperties": false,
@@ -5943,8 +5801,7 @@
                     "enum": [
                       "reasoning",
                       "message",
-                      "function_call",
-                      "compaction"
+                      "function_call"
                     ],
                     "type": "string"
                   }
@@ -5954,6 +5811,35 @@
                 ],
                 "type": "object"
               },
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "encrypted_content": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "id": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "status": {
+                      "const": "completed",
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "compaction",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "encrypted_content"
+                  ],
+                  "type": "object"
+                }
+              ],
               "type": "array"
             },
             "schema_version": {
@@ -5969,9 +5855,156 @@
             "output_items"
           ],
           "type": "object"
+        },
+        "cost": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": {
+              "type": "string"
+            },
+            "cost": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit_price_ver": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "units": {
+              "additionalProperties": false,
+              "properties": {
+                "input_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "output_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "input_tokens",
+                "output_tokens"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "adapter",
+            "model",
+            "units",
+            "unit_price_ver",
+            "cost",
+            "currency"
+          ],
+          "type": "object"
+        },
+        "finish_reason": {
+          "enum": [
+            "cancelled",
+            "checkpoint",
+            "content_filtered",
+            "end_turn",
+            "guardrail_intervened",
+            "interrupt",
+            "limit_output_tokens",
+            "limit_structured_output_attempts",
+            "limit_total_tokens",
+            "limit_turns",
+            "max_tokens",
+            "stop_sequence",
+            "tool_use"
+          ],
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": {},
+              "call_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "name",
+              "arguments"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "additionalProperties": false,
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "output_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ],
+          "type": "object"
         }
       },
-      "additionalProperties": false,
       "required": [
         "request_id",
         "content",
@@ -5980,7 +6013,8 @@
         "usage",
         "cost",
         "continuation"
-      ]
+      ],
+      "type": "object"
     }
   }
 }
