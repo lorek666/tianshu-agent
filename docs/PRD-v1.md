@@ -394,7 +394,8 @@ C3 `model.result` v2、`ctx-responses-v1` 保真策略及历史兼容按
 
 **桌面会话输入（待实现）**：`attachments` 仅附于新 Run 的最后一条起始 `user`
 消息。附件字段、适配、持久化和恢复规则见[桌面会话输入契约](agent-conversation-contract.md)。
-历史消息保持原形，已有 Responses opaque 续接作用域保持不变。
+历史消息保持原形，已有 Responses opaque 续接作用域保持不变。同一 Run 的可选自动压缩使用
+`ContinuationRef` 1.1；1.0 仍拒绝压缩项，线上兼容与配置见同一契约。
 
 ### 5.2 C2 Tool
 
@@ -577,7 +578,8 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 
 **公开网页搜索（待实现）**：拟新增 `network.search` 1.0，按[搜索工具契约](agent-web-search-contract.md)
-复用现有 `fetch` 审批与执行链，既有 `network.fetch` 版本保持不变。
+复用现有 `fetch` 审批与执行链，既有 `network.fetch` 版本保持不变。另按[会话契约](agent-conversation-contract.md)
+新增 `browser.navigate` 1.0 的来源校验，以及固定 HTTPS 远程 MCP 的握手和会话绑定。
 
 ### 5.3 C3 Event
 
@@ -647,7 +649,7 @@ Event {
 | `policy` | 策略拒绝：没有进入派发就被 PolicyEngine 否掉 | `policy.denied` |
 | `receipt` | 副作用凭据：与 tool.result 同事务写入（裸类型，历史名字） | `receipt` |
 | `recovery` | 崩溃恢复：阻断与解除阻断（目录与 MCP 对象两种对象模型，见 §5.4.1 的 `dispatch.mcp_object_blocked`） | `recovery.blocked` / `recovery.object_blocked` / `recovery.object_unblocked` / `recovery.unblocked` |
-| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state` |
+| `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state`。拟增：`run.attachments` / `run.conversation` / `run.guidance_applied` / `run.guidance_requested` / `run.model_route` / `run.workflow` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
@@ -664,8 +666,10 @@ Event {
 **已定义但无发射点**：**当前为空**。曾经唯一的成员 `job.lost` 已连同常量一起删除（理由见 §2.3 第 4 条）。机制保留在 `events.DECLARED_UNEMITTED_EVENT_TYPES`：将来若有"先定义形状、后接发射点"的类型，登记在那里，硬写会被校验拒绝并提示原因；接上发射点时必须在同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
 
 **拟增的 Run 事件**：`run.conversation`、`run.attachments`、`run.guidance_requested`、
-`run.guidance_applied`、`run.model_route` 仅使用 payload v1，没有 v0 解释；生效时须与代码和机器注册表同时登记。
-字段、事务与回放语义见[桌面会话输入契约](agent-conversation-contract.md)。
+`run.guidance_applied`、`run.model_route`、`run.workflow` 仅使用 payload v1，没有 v0 解释；
+生效时须与代码和机器注册表同时登记。`model.result` 仅在使用续接 1.1 时写精确 v3，
+普通结果仍写 v2；`run.model_turn` 不升版。字段和回放语义见
+[桌面会话输入契约](agent-conversation-contract.md)及[工作流契约](compact-plan-contract.md)。
 
 #### 5.3.3 `parent_seq`：降级为保留字段
 

@@ -18,9 +18,15 @@
 - 指导在既有工具调用组完成后、下一次模型生成前生效；不会改写已提出或待批的调用，不会自动续跑暂停或待批的 Run，不构成工具授权。Run 终止、达到预算或失去认领权时仍可能存在未消费的指导，界面应区分提交和生效。
 
 
+## 澄清与计划
+
+- 运行成功、没有持久化 `tool.intent`、最终 `end_turn` 无工具提案，且最后输出仅为一行 `TIANSHU_QUESTION: <问题>`（问题最多 4 KiB）时，已启用新会话提示的执行 Run 或计划 Run 可在 RunView 展示澄清问题。普通旧 Run 和压缩 Run 不解释该前缀。
+- `run.answer_clarification(task_id, source_run_id, message, request_id, ...)` 绑定同任务及同目标修订，复用追问事件并另开 Run。来源若为计划，则回复只能继续只读计划；原 Run 不会重新启动。待澄清的计划不能确认执行；只有当前修订最近的已完成计划可确认，确认后另起 effects Run，每项工具权限仍独立判定。
+- `run.workflow` 的持久化字段、计划确认和 `/compact` 交接规则见[工作流契约](compact-plan-contract.md)。源文本和摘要都是材料，不能迁移工具授权。
+
 ## C3：模型路由绑定
 
-显式选档的 Run 增加一条 `run.model_route` v1，与开始和入队同事务提交。载荷为 `{format_version:1, requested, selected, config}`；`requested` 是 1–4 个互异的有序档案名，`selected` 必须属于该列表。`config` 是封闭非密钥配置，要求 `mode`、`model_name`、`base_url`、`credential_backend`，可选仅用于 Responses 的 `allow_image_attachments`。使用线上模式时保存实际冻结的端点，禁止端点含凭据、查询或 fragment。凭据本体不进事件，驱动时从既有凭据接口读取。
+显式选档的 Run 增加一条 `run.model_route` v1，与开始和入队同事务提交。载荷为 `{format_version:1, requested, selected, config}`；`requested` 是 1–4 个互异的有序档案名，`selected` 必须属于该列表。`config` 是封闭非密钥配置，要求 `mode`、`model_name`、`base_url`、`credential_backend`，可选仅用于 Responses 的 `allow_image_attachments`、`compact_threshold`。使用线上模式时保存实际冻结的端点，禁止端点含凭据、查询或 fragment。凭据本体不进事件，驱动时从既有凭据接口读取。
 
 仅在任何请求派发前按候选顺序进行本地配置与凭据就绪检查。若有图片附件，候选还必须明确支持图片。选定后，本 Run 以及它的恢复固定该绑定，不因配置被改、凭据失效或模型故障而换路。追问另开 Run，由用户决定是否沿用档案。没有路由事件的历史运行保持旧的模型解析行为。
 
@@ -33,7 +39,7 @@
 ## Responses 同轮压缩（C1/C3）
 
 - OpenAI Responses 模型可显式配置 `compact_threshold`（令牌，整数 1024–2000000）。默认关闭。开启时在同一个 `POST /responses` 请求中启用 `context_management`；仍 `store=false`、不使用 `previous_response_id`，不另发计费调用。模型档案若被显式选用，阈值随 Run 路由冻结。
-- 已完成的输出回合可在前缀位置携带 `compaction` 加密项。无压缩项时沿用 `ContinuationRef` 1.0 / `model.result` v2；有压缩项时使用 `ContinuationRef` 1.1 / `model.result` v3。仅接受有唯一 ID、非空密文的单一压缩项，位置在本回合任何文本或工具提案之前；未知项或矛盾的流帧拒绝整组。新记录与旧记录按各自精确版本读取。
+- 已完成的输出回合可在前缀位置携带 `compaction` 加密项。无压缩项时沿用 `ContinuationRef` 1.0 / `model.result` v2；有压缩项时使用 `ContinuationRef` 1.1 / `model.result` v3。仅接受有唯一 ID、非空密文的单一压缩项，必须是本回合第一个输出项；未知项或矛盾的流帧拒绝整组。新记录与旧记录按各自精确版本读取。
 - `ctx-responses-compact-v1` 只在已有已提交压缩项时，用最后一个压缩边界替换旧输入前缀，保留系统指令、该回合压缩项及后续本轮输出和实际工具结果。完整事件/游标不删除；回放以相同策略核对消息摘要及来源。没有新边界且超过本地预算时如实停止。密文继续只允许原 adapter、规范端点、模型使用，不进入用户可见文本、明文摘要或其他 Run。
 
 ## 只读网页导航（C2/C4）
