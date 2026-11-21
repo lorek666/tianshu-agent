@@ -29,3 +29,9 @@
 - `TIANSHU_MCP_CONFIG` 的每个 server 只能选其中一种：既有绝对路径 `command`，或固定的 HTTPS `url` 和可选 `bearer_token_env`。URL 不接受 userinfo、查询或 fragment；令牌只从指定环境变量读取。传输不走代理/重定向，连接使用网络工具现有的公网 IP 钉住及 TLS 验证。普通状态页和只读计划不主动连接远程端点；有副作用的 Run 只发现任务显式声明的远程 MCP。
 - 远程发现只发送 `initialize`、`notifications/initialized`、`tools/list` 所需字段，不带任务资料。固定 Streamable HTTP 的有界 POST 响应，允许 JSON 与承载匹配 JSON-RPC 响应的 SSE；不实现 OAuth、GET 通知流、SSE 恢复、服务端发起请求或自动重连。会话标识只在客户端内存使用。
 - `tools/call` 仍以既有 `mcp://server/tool` 资源、任务声明、逐次审批及执行前持久化边界执行。远程工具版本额外绑定 HTTPS 端点、凭据环境变量槽及本次握手独有标识；不持久化密钥或会话 ID。远程会话失效或换代时，已有请求和审批不能迁移至新会话。已越过发送边界后的 HTTP 拒绝、超时、协议错误均按结果未知结算，不向新端点转发、不自动重试。继续使用既有 Receipt 及对象阻断机制。
+
+## Responses 同轮压缩（C1/C3）
+
+- OpenAI Responses 模型可显式配置 `compact_threshold`（令牌，整数 1024–2000000）。默认关闭。开启时在同一个 `POST /responses` 请求中启用 `context_management`；仍 `store=false`、不使用 `previous_response_id`，不另发计费调用。模型档案若被显式选用，阈值随 Run 路由冻结。
+- 已完成的输出回合可在前缀位置携带 `compaction` 加密项。无压缩项时沿用 `ContinuationRef` 1.0 / `model.result` v2；有压缩项时使用 `ContinuationRef` 1.1 / `model.result` v3。仅接受有唯一 ID、非空密文的单一压缩项，位置在本回合任何文本或工具提案之前；未知项或矛盾的流帧拒绝整组。新记录与旧记录按各自精确版本读取。
+- `ctx-responses-compact-v1` 只在已有已提交压缩项时，用最后一个压缩边界替换旧输入前缀，保留系统指令、该回合压缩项及后续本轮输出和实际工具结果。完整事件/游标不删除；回放以相同策略核对消息摘要及来源。没有新边界且超过本地预算时如实停止。密文继续只允许原 adapter、规范端点、模型使用，不进入用户可见文本、明文摘要或其他 Run。
