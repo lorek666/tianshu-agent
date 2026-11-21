@@ -1,6 +1,6 @@
 """Two Windows CI shards: preserve file order and verify complete pytest evidence.
 
-This is development-only CI evidence, not a product contract or a timing model.
+This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
 """
 
@@ -15,6 +15,17 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+# Whole-file weights use ~0.5s per node as a rough proxy. These four files each
+# took over 90s in at least one Windows run (44907705179 and 44911274075).
+# Use the higher observed file time rounded up to 5s, converted to node units.
+# These are fixed scheduling hints, not acceptance limits or runner guarantees.
+_FILE_WEIGHT_FLOORS = {
+    "tests/test_data_binding.py": 230,
+    "tests/test_eval_real_tasks.py": 580,
+    "tests/test_eval_separation.py": 260,
+    "tests/test_recovery.py": 280,
+}
+
 
 def require(condition, message):
     if not condition:
@@ -22,7 +33,7 @@ def require(condition, message):
 
 
 def partition(full, count):
-    """Balance node counts by whole file; retain original collection order."""
+    """Balance estimated work by whole file; retain original collection order."""
     require(type(count) is int and count == 2, "exactly two shards are required")
     require(isinstance(full, list) and full, "empty or invalid full collection")
     for pair in full:
@@ -36,10 +47,12 @@ def partition(full, count):
                 and node.split("::", 1)[0] == file, "invalid collection path")
     require(len({node for node, _ in full}) == len(full), "duplicate node ID")
     sizes, owners, totals = Counter(file for _, file in full), {}, [0] * count
-    for file in sorted(sizes, key=lambda file: (-sizes[file], file)):
+    weights = {file: max(size, _FILE_WEIGHT_FLOORS.get(file, 0))
+               for file, size in sizes.items()}
+    for file in sorted(weights, key=lambda file: (-weights[file], file)):
         index = min(range(count), key=lambda index: (totals[index], index))
         owners[file] = index
-        totals[index] += sizes[file]
+        totals[index] += weights[file]
     groups = [[node for node, file in full if owners[file] == index] for index in range(count)]
     require(all(groups), "empty shard")
     return groups
