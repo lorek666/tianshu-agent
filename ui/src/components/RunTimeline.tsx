@@ -17,7 +17,9 @@ const PAYLOAD_LIMIT = 6_000;
 function prettyPayload(payload: Record<string, unknown>): string {
   let text: string;
   try {
-    text = JSON.stringify(payload, null, 2);
+    const visible = { ...payload };
+    delete visible.continuation;
+    text = JSON.stringify(visible, null, 2);
   } catch {
     text = "（payload 无法序列化）";
   }

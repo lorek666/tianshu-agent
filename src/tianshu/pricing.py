@@ -269,7 +269,7 @@ def estimate_cost(
     # 本表不模拟；只要真的出现了缓存 token，这次调用就报未知。
     for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
         cached = _token_count(usage.get(key))
-        if cached:
+        if key in usage and (cached is None or cached != 0):
             return None
 
     input_micros = _scale(input_tokens, price.input_micros_per_mtok)

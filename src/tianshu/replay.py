@@ -37,6 +37,7 @@ from .context import (
 from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
 from .loop import SYSTEM_PROMPT, message_source_seqs
+from .model_messages import assistant_message_from_payload
 from .summaries import MaterialBlock, SummaryMaterialError, SummaryStore, build_material
 from .tasks import SUBTASK_STATES
 
@@ -195,22 +196,7 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
         elif ev.type == "model.result":
             p = ev.payload
-            assistant: dict[str, Any] = {"role": "assistant", "content": p.get("content", "")}
-            tcs = p.get("tool_calls") or []
-            if tcs:
-                assistant["tool_calls"] = [
-                    {
-                        "id": c["call_id"],
-                        "type": "function",
-                        "function": {
-                            "name": c["name"],
-                            "arguments": json.dumps(
-                                c["arguments"], ensure_ascii=False, sort_keys=True),
-                        },
-                    }
-                    for c in tcs
-                ]
-            messages.append(assistant)
+            messages.append(assistant_message_from_payload(p))
 
         elif ev.type == "tool.result":
             p = ev.payload

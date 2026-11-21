@@ -2,7 +2,7 @@
   "$id": "https://tianshu-agent/schemas/c3/event.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start 当前 v2，其余 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start / run.end / model.result / run.model_turn 当前 v2，其余 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
   "properties": {
     "actor": {
       "additionalProperties": false,
@@ -1274,6 +1274,20 @@
                   "integer",
                   "null"
                 ]
+              },
+              "cache_creation_input_tokens": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_read_input_tokens": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "additionalProperties": false,
@@ -1351,6 +1365,56 @@
               "cost",
               "currency"
             ]
+          },
+          "continuation": {
+            "additionalProperties": false,
+            "properties": {
+              "adapter": {
+                "enum": [
+                  "openai-responses"
+                ],
+                "type": "string"
+              },
+              "endpoint": {
+                "pattern": "^https?://[^?#]+/responses$",
+                "type": "string"
+              },
+              "model": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "output_items": {
+                "items": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "reasoning",
+                        "message",
+                        "function_call"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "schema_version": {
+                "const": "1.0",
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_version",
+              "adapter",
+              "endpoint",
+              "model",
+              "output_items"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -2126,6 +2190,20 @@
                 ]
               },
               "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_creation_input_tokens": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_read_input_tokens": {
+                "minimum": 0,
                 "type": [
                   "integer",
                   "null"
@@ -5224,6 +5302,237 @@
           "goal_revision",
           "lease_epoch"
         ]
+      },
+      "model.result": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "cost": {
+            "additionalProperties": false,
+            "properties": {
+              "adapter": {
+                "type": "string"
+              },
+              "cost": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unit_price_ver": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "units": {
+                "additionalProperties": false,
+                "properties": {
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "input_tokens",
+                  "output_tokens"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "provider",
+              "adapter",
+              "model",
+              "units",
+              "unit_price_ver",
+              "cost",
+              "currency"
+            ],
+            "type": "object"
+          },
+          "finish_reason": {
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use"
+            ],
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "arguments": {},
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "request_id",
+          "content",
+          "finish_reason",
+          "tool_calls",
+          "usage",
+          "cost"
+        ],
+        "type": "object"
+      },
+      "run.model_turn": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "finish_reason": {
+            "enum": [
+              "cancelled",
+              "checkpoint",
+              "content_filtered",
+              "end_turn",
+              "guardrail_intervened",
+              "interrupt",
+              "limit_output_tokens",
+              "limit_structured_output_attempts",
+              "limit_total_tokens",
+              "limit_turns",
+              "max_tokens",
+              "stop_sequence",
+              "tool_use",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "usage": {
+            "additionalProperties": false,
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "run_id",
+          "turn_id",
+          "seq",
+          "claim_epoch",
+          "finish_reason",
+          "usage",
+          "payload_hash"
+        ],
+        "type": "object"
       }
     }
   }

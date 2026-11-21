@@ -601,7 +601,18 @@ class _LoopSummaryMixin:
         attempts = max(1, int(self._limits.max_model_attempts))
         last: ModelError | None = None
 
-        for attempt in range(1, attempts + 1):
+        # 崩溃不清空已发送身份，也不复用 reserve 后 / intent 前遗留的预占。
+        first = 1 + max((
+            ev.payload.get("attempt", 0)
+            for ev in self._log.read_run(run_id)
+            if ev.type == "model.intent" and ev.payload.get("request_id") == request_id
+        ), default=0)
+        if self._budget is not None:
+            while self._budget.reservation_for(
+                self._budget_account_id(run_id), f"{request_id}#{first}"
+            ) is not None:
+                first += 1
+        for attempt in range(first, attempts + 1):
             if attempt > 1:
                 # 预算守卫：重试不能成为绕过 `max_total_tokens` 的后门。
                 #

@@ -29,6 +29,7 @@ import copy
 import re
 from typing import Any
 
+from .continuation import CONTINUATION_SCHEMA, ContinuationRef
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
 from .run_policy import RunExecutionPolicyV1
@@ -1130,7 +1131,19 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     for name, schema in CURRENT_SCHEMAS.items()
 }
 
-# v0/v1 保持原始解释；run.start 与 run.end 的新写采用 v2。
+# 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
+MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
+RUN_MODEL_TURN_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.model_turn"])
+for _model_event in ("model.result", "run.model_turn"):
+    CURRENT_SCHEMAS[_model_event] = copy.deepcopy(CURRENT_SCHEMAS[_model_event])
+    _usage_v2 = CURRENT_SCHEMAS[_model_event]["properties"]["usage"]
+    for _cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        _usage_v2["properties"][_cache_key] = _opt(_i(minimum=0))
+CURRENT_SCHEMAS["model.result"]["properties"]["continuation"] = copy.deepcopy(
+    CONTINUATION_SCHEMA
+)
+
+# v0/v1 保持原始解释；这些事件的新写逐类型采用 v2。
 RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
 CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
     {"format_version": {
@@ -1159,6 +1172,8 @@ _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
 }
 _RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
 _RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["run.model_turn"] = frozenset({0, 1, 2})
 
 
 # ---------------------------------------------------------------- 注册时校验
@@ -1253,10 +1268,13 @@ for _name, _schema in CURRENT_SCHEMAS.items():
     _check_registry_schema(
         _name,
         _schema,
-        2 if _name in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION,
+        2 if _name in ("run.start", "run.end", "model.result", "run.model_turn")
+        else CURRENT_PAYLOAD_VERSION,
     )
 _check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
 _check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
+_check_registry_schema("model.result", MODEL_RESULT_V1_SCHEMA, 1)
+_check_registry_schema("run.model_turn", RUN_MODEL_TURN_V1_SCHEMA, 1)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
 
@@ -1290,7 +1308,9 @@ def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
 def current_version(event_type: str) -> int:
     if event_type not in CURRENT_SCHEMAS:
         return 0
-    return 2 if event_type in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION
+    return 2 if event_type in (
+        "run.start", "run.end", "model.result", "run.model_turn",
+    ) else CURRENT_PAYLOAD_VERSION
 
 
 def known_versions(event_type: str) -> frozenset[int]:
@@ -1308,6 +1328,10 @@ def schema_for(event_type: str, version: int) -> dict[str, Any]:
         return RUN_START_V1_SCHEMA
     if event_type == "run.end" and version == 1:
         return RUN_END_V1_SCHEMA
+    if event_type == "model.result" and version == 1:
+        return MODEL_RESULT_V1_SCHEMA
+    if event_type == "run.model_turn" and version == 1:
+        return RUN_MODEL_TURN_V1_SCHEMA
     if version == LEGACY_PAYLOAD_VERSION:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(
@@ -1404,6 +1428,19 @@ def payload_errors(
             RunExecutionPolicyV1.of(payload["execution_policy"])
         except TianshuError as exc:
             errors.append(f"$.execution_policy：{exc}")
+    if not errors and version == 2 and event_type in ("model.result", "run.model_turn"):
+        # 只补充新 cache 字段的语义，不改变旧 schema/其他事件对整数值 float
+        # 的既有校验。JSON Schema 镜像本身也带 minimum。
+        usage = payload.get("usage") or {}
+        for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and value < 0:
+                errors.append(f"$.usage.{key}：缓存用量不能为负")
+        if event_type == "model.result" and "continuation" in payload:
+            try:
+                ContinuationRef.from_payload(payload["continuation"]).validate_projection(payload)
+            except ValueError:
+                errors.append("$.continuation：续接值或规范化投影不满足契约")
     return errors
 
 

@@ -387,9 +387,10 @@ M3 加第二个 provider（Anthropic Messages API）时才被迫写清这件事�
 - 桌面控制面仅通过有界订阅队列推送瞬态通知 `kind="model_stream"` 供在线 UI 实时预览；`replay` 只读 `model.result`，不触发流式。
 
 
-**Responses 续接扩展（2026-11-20，待实现）**：C1 可选 `ContinuationRef` 1.0、
+**Responses 续接扩展（2026-11-20 批准，2026-11-21 实现分支接入）**：C1 可选 `ContinuationRef` 1.0、
 C3 `model.result` v2、`ctx-responses-v1` 保真策略及历史兼容按
-[OpenAI Responses 续接契约](openai-responses-contract.md) 实施；本次契约冻结不表示代码已交付。
+[OpenAI Responses 续接契约](openai-responses-contract.md) 实施；
+代码与验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)，契约冻结本身不代表交付。
 
 ### 5.2 C2 Tool
 

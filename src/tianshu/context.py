@@ -55,6 +55,7 @@ from .errors import TianshuError
 from .events import canonical_bytes
 
 BUDGET_VERSION = "ctx-v1"
+RESPONSES_BUDGET_VERSION = "ctx-responses-v1"
 
 #: 单条工具输出超过这个字节数就落盘（PRD §7 F5）。
 TOOL_OUTPUT_SPILL_BYTES = 8 * 1024
@@ -97,6 +98,7 @@ class ContextCompileError(TianshuError):
 class ContextBudget:
     max_bytes: int
     spill_threshold: int = TOOL_OUTPUT_SPILL_BYTES
+    version: str = BUDGET_VERSION
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,17 @@ def compile_context(
     逐字节相同。
     """
     _validate(messages, source_seqs, budget)
+    if budget.version == RESPONSES_BUDGET_VERSION:
+        raw = canonical_bytes(messages)
+        if len(raw) > budget.max_bytes:
+            raise ContextOverflow(
+                f"Responses 完整上下文 {len(raw)}B 超出预算 {budget.max_bytes}B；"
+                "续接输入不能裁剪或摘要，请创建新 Run 或调大预算"
+            )
+        return ContextView(
+            messages=messages, digest=hashlib.sha256(raw).hexdigest(),
+            source_seqs=list(source_seqs), dropped_seqs=[],
+        )
     slices = _validate_summaries(summaries, source_seqs)
 
     pinned = _pinned_count(messages)
@@ -304,7 +317,7 @@ def context_payload(
     它不是第二份记忆正文——正文与出处本来就在 `tool.result` 里，这里只记身份。
     """
     payload: dict[str, Any] = {
-        "budget_version": BUDGET_VERSION,
+        "budget_version": budget.version,
         "max_bytes": budget.max_bytes,
         "spill_threshold": budget.spill_threshold,
         "source_seqs": list(view.source_seqs),
@@ -330,7 +343,7 @@ def context_payload(
 def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
     """`context_payload` 的逆运算，给回放用。字段缺失/类型不对一律报错。"""
     version = payload.get("budget_version")
-    if version != BUDGET_VERSION:
+    if version not in (BUDGET_VERSION, RESPONSES_BUDGET_VERSION):
         raise ContextCompileError(
             f"未知的上下文预算版本：{version!r}（本实现只认 {BUDGET_VERSION}）"
         )
@@ -339,7 +352,7 @@ def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
         spill_threshold = int(payload["spill_threshold"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ContextCompileError(f"context 记录缺字段或类型不对：{exc}") from exc
-    return ContextBudget(max_bytes=max_bytes, spill_threshold=spill_threshold)
+    return ContextBudget(max_bytes=max_bytes, spill_threshold=spill_threshold, version=version)
 
 
 # ---------------------------------------------------------------- 内部实现
@@ -348,6 +361,8 @@ def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
 def _validate(
     messages: list[dict[str, Any]], source_seqs: list[int], budget: ContextBudget
 ) -> None:
+    if budget.version not in (BUDGET_VERSION, RESPONSES_BUDGET_VERSION):
+        raise ContextCompileError("未知的上下文预算版本")
     if len(messages) != len(source_seqs):
         raise ContextCompileError(
             f"source_seqs 必须与 messages 平行：{len(messages)} 条消息 vs "

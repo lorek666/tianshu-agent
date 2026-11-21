@@ -17,13 +17,14 @@ import os
 import sys
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from .budget import DIMENSIONS
 from .capability import CapabilityProfile
+from .continuation import responses_endpoint
 from .credentials import (
     ENV_VARS,
     CredentialRef,
@@ -50,9 +51,10 @@ from .model import (
     ToolCall,
     identity_of,
 )
+from .openai_responses import OpenAIResponsesModel
 from .scheduler import Scheduler
 
-VALID_MODES = ("scripted", "openai", "anthropic")
+VALID_MODES = ("scripted", "openai", "anthropic", "openai-responses")
 VALID_BACKENDS = ("keychain", "env")
 KNOWN_PROVIDERS = ("openai", "anthropic")
 ALLOWED_MODEL_CONFIG_KEYS = frozenset(
@@ -196,6 +198,8 @@ class ModelConfig:
             raise ValueError(
                 "anthropic 模式必须显式填写 model_name（例如 claude-sonnet-4-5）"
             )
+        if mode == "openai-responses" and not model_name:
+            raise ValueError("openai-responses 模式必须显式填写 model_name")
         if mode == "openai" and not model_name:
             model_name = "gpt-4o-mini"
         if mode == "scripted":
@@ -204,6 +208,8 @@ class ModelConfig:
         if raw_base_url is not None and not isinstance(raw_base_url, str):
             raise ValueError("base_url 必须是字符串")
         base_url = _validate_base_url(raw_base_url or "")
+        if mode == "openai-responses" and base_url:
+            base_url = responses_endpoint(base_url).removesuffix("/responses")
         backend = str(
             raw.get("credential_backend") or _default_backend_name()
         ).strip().lower()
@@ -273,6 +279,26 @@ class RuntimeModelSlot:
         with self._lock:
             return self._revision
 
+    def snapshot(self) -> RuntimeModelSlot:
+        """固定一次模型步骤的配置；不读配置文件或凭据。"""
+        frozen = object.__new__(RuntimeModelSlot)
+        with self._lock:
+            frozen._fallback = self._fallback
+            frozen._config = self._config
+            frozen._revision = self._revision
+            frozen._stores = dict(self._stores)
+        frozen._lock = threading.Lock()
+        frozen._data_root = None
+        cfg = frozen._config
+        if cfg is not None and cfg.mode != "scripted" and not cfg.base_url:
+            base = (
+                os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com/v1"
+                if cfg.mode == "anthropic"
+                else os.environ.get("TIANSHU_BASE_URL") or "https://api.openai.com/v1"
+            )
+            frozen._config = replace(cfg, base_url=base)
+        return frozen
+
     def _config_path(self) -> Path | None:
         if self._data_root is None:
             return None
@@ -304,6 +330,8 @@ class RuntimeModelSlot:
             return AnthropicMessagesModel.__name__
         if cfg.mode == "openai":
             return OpenAICompatibleModel.__name__
+        if cfg.mode == "openai-responses":
+            return OpenAIResponsesModel.__name__
         return "ScriptedModel"
 
     def current_config(self) -> ModelConfig:
@@ -311,6 +339,12 @@ class RuntimeModelSlot:
             if self._config is not None:
                 return self._config
         ident = identity_of(self._fallback)
+        if ident is not None and ident.adapter == "openai-responses":
+            return ModelConfig(
+                mode="openai-responses", model_name=ident.model,
+                base_url=getattr(self._fallback, "base_url", ""),
+                credential_backend=_default_backend_name(),
+            )
         if ident is not None and ident.adapter == "anthropic":
             return ModelConfig(
                 mode="anthropic",
@@ -340,11 +374,13 @@ class RuntimeModelSlot:
             ensure_path_not_held(path.parent)
             ensure_path_not_held(path)
         cfg = ModelConfig.of(raw)
-        if cfg.mode in KNOWN_PROVIDERS:
+        if cfg.mode != "scripted":
             store = self.store_for(cfg.credential_backend)
             if not store.capabilities.implemented:
                 # 提前在配置时拦截当前平台未实现的后端（直接调 get 触发诚实原因）
-                store.get(CredentialRef(cfg.mode, "llm"))
+                store.get(CredentialRef(
+                    "openai" if cfg.mode == "openai-responses" else cfg.mode, "llm",
+                ))
         with self._lock:
             if path is not None:
                 _atomic_write_json(path, cfg.to_dict())
@@ -360,7 +396,9 @@ class RuntimeModelSlot:
         if cfg.mode == "scripted":
             return _STATELESS_SCRIPTED
         store = self.store_for(cfg.credential_backend)
-        secret = store.get(CredentialRef(cfg.mode, "llm"))
+        secret = store.get(CredentialRef(
+            "openai" if cfg.mode == "openai-responses" else cfg.mode, "llm",
+        ))
         api_key = "" if secret is None else str(secret)
         if cfg.mode == "anthropic":
             return AnthropicMessagesModel(
@@ -368,7 +406,8 @@ class RuntimeModelSlot:
                 base_url=cfg.base_url or None,
                 api_key=api_key,
             )
-        return OpenAICompatibleModel(
+        adapter = OpenAIResponsesModel if cfg.mode == "openai-responses" else OpenAICompatibleModel
+        return adapter(
             cfg.model_name or "gpt-4o-mini",
             base_url=cfg.base_url or None,
             api_key=api_key,
@@ -412,17 +451,31 @@ class RuntimeModelSlot:
                 output_tokens=4096,
                 declared_by=f"{AnthropicMessagesModel.__name__}（adapter 声明）",
             )
+        adapter = OpenAIResponsesModel if cfg.mode == "openai-responses" else OpenAICompatibleModel
         return CapabilityProfile(
-            provider=OpenAICompatibleModel.ADAPTER,
+            provider=adapter.ADAPTER,
             model=cfg.model_name or "gpt-4o-mini",
-            supports_tool_calling=OpenAICompatibleModel.SUPPORTS_TOOL_CALLING,
-            supports_parallel_tool_calls=OpenAICompatibleModel.SUPPORTS_PARALLEL_TOOL_CALLS,
-            supports_streaming=OpenAICompatibleModel.SUPPORTS_STREAMING,
-            supports_thinking=OpenAICompatibleModel.SUPPORTS_THINKING,
-            context_window_bytes=OpenAICompatibleModel.CONTEXT_WINDOW_BYTES,
+            supports_tool_calling=adapter.SUPPORTS_TOOL_CALLING,
+            supports_parallel_tool_calls=adapter.SUPPORTS_PARALLEL_TOOL_CALLS,
+            supports_streaming=adapter.SUPPORTS_STREAMING,
+            supports_thinking=adapter.SUPPORTS_THINKING,
+            context_window_bytes=adapter.CONTEXT_WINDOW_BYTES,
             output_tokens=None,
-            declared_by=f"{OpenAICompatibleModel.__name__}（adapter 声明）",
+            declared_by=f"{adapter.__name__}（adapter 声明）",
         )
+
+    def continuation_scope(self) -> tuple[str, str, str] | None:
+        with self._lock:
+            cfg = self._config
+        if cfg is None:
+            getter = getattr(self._fallback, "continuation_scope", None)
+            return getter() if callable(getter) else None
+        if cfg.mode != "openai-responses":
+            return None
+        endpoint = responses_endpoint(
+            cfg.base_url or os.environ.get("TIANSHU_BASE_URL") or "https://api.openai.com/v1"
+        )
+        return "openai-responses", endpoint, cfg.model_name
 
     def price_identity(self) -> ModelIdentity | None:
         """计价身份只依赖协议、模型名与端点主机，不依赖密钥是否已写入。"""
@@ -449,10 +502,11 @@ class RuntimeModelSlot:
             or os.environ.get("TIANSHU_BASE_URL")
             or "https://api.openai.com/v1"
         )
-        official = _is_official_host(eff_url, OpenAICompatibleModel.OFFICIAL_HOST)
+        adapter = OpenAIResponsesModel if cfg.mode == "openai-responses" else OpenAICompatibleModel
+        official = _is_official_host(eff_url, adapter.OFFICIAL_HOST)
         return ModelIdentity(
-            adapter=OpenAICompatibleModel.ADAPTER,
-            vendor=OpenAICompatibleModel.VENDOR if official else None,
+            adapter=adapter.ADAPTER,
+            vendor=adapter.VENDOR if official else None,
             model=cfg.model_name or "gpt-4o-mini",
         )
 
