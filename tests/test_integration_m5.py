@@ -370,6 +370,53 @@ def test_daemon_runs_task_to_terminal_state(root: Path) -> None:
             client.close()
 
 
+def test_default_daemon_commits_an_answer_for_each_run(root: Path, monkeypatch) -> None:
+    """常驻入口不能让第一条任务耗尽后续任务的回答。"""
+    monkeypatch.delenv("TIANSHU_MCP_CONFIG", raising=False)
+    monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "env")
+    ws = root / "ws"
+    ws.mkdir()
+    log_path = root / "daemon.log"
+    with log_path.open("wb") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "tianshu", "daemon", "--data-root", str(root)],
+            stdout=log,
+            stderr=log,
+        )
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and proc.poll() is None:
+            if ipc.probe(root, timeout=0.2):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"daemon 未就绪（returncode={proc.poll()}）：\n{_tail(log_path)}")
+
+        client = _client(root)
+        try:
+            for index in (1, 2):
+                task_id = _make_task(client, ws, goal=f"检查目录（第 {index} 次）")
+                run_id = _start(client, task_id, out_name=f"summary-{index}.md")
+                assert _wait_run(client, run_id)["state"] == "succeeded"
+                events = client.call("events.run", {"run_id": run_id})["events"]
+                answers = [
+                    event["payload"]["content"] for event in events
+                    if event["type"] == "model.result"
+                    and event["payload"]["finish_reason"] == "end_turn"
+                ]
+                assert len(answers) == 1 and answers[0].strip(), (
+                    f"第 {index} 个 Run 没有已提交的回答：{answers!r}"
+                )
+        finally:
+            client.close()
+        assert daemon.request_shutdown(root, reason="test", timeout=5)
+        assert proc.wait(timeout=10) == 0, _tail(log_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
 def test_approval_failure_diagnostics_preserve_original_error(tmp_path, monkeypatch) -> None:
     client = ipc.Client(tmp_path)
     private = "diagnostic-private-marker"

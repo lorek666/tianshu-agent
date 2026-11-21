@@ -4,8 +4,8 @@
 及权威存储装配 `_authority_stack`。
 
 注意：子进程验收测试（如 `test_low_disk_entrypoints` / `test_m2_acceptance` /
-`test_mcp_crash`）会 monkeypatch `cli._scripted_model`，因此 `_cmd_worker` 与
-`_cmd_daemon` 必须在运行期经 `cli._model_from(args)` 动态取模型，不可在导入期按值绑定。
+`test_mcp_crash`）会 monkeypatch `cli._scripted_model`，因此 `_cmd_worker`
+在运行期经 `cli._model_from(args)` 动态取模型，不在导入期按值绑定。
 """
 
 from __future__ import annotations
@@ -533,11 +533,12 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     from . import cli
     from .daemon import serve
     from .ipc import default_data_root
+    from .settings_control import OFFLINE_DEMO_MODEL
 
     data_root = Path(args.data_root or default_data_root())
     serve(
         data_root,
-        model=cli._model_from(args),
+        model=OFFLINE_DEMO_MODEL if args.model == "scripted" else cli._model_from(args),
         limits=Limits(args.max_turns, args.max_total_tokens),
     )
     return 0

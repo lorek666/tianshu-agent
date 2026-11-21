@@ -95,10 +95,9 @@ def _is_official_host(base_url: str, official_host: str) -> bool:
 class _StatelessScriptedModel:
     """无状态、线程安全、可重复运行的离线演示脚本模型。
 
-    热切回 `mode="scripted"` 时不能每次新建固定序列 `ScriptedModel`（否则每轮都会
-    重复弹出第 0 条工具调用导致死循环），也不能共享可变列表（跑完一次即耗尽且非线程安全）。
-    这里纯按输入 `messages` 的历史轮次决定动作：首轮若存在 `list_files` 工具则列目录，
-    次轮收敛 `end_turn`。
+    Daemon 默认启动和热切回 `mode="scripted"` 时共用此模型。固定响应列表会被
+    第一个 Run 耗尽；这里由输入的历史轮次决定动作，首轮若有 `list_files` 就列目录，
+    随后返回演示回答。
     """
 
     def capability_profile(self) -> CapabilityProfile:
@@ -129,7 +128,7 @@ class _StatelessScriptedModel:
             )
         return ModelResponse(
             finish_reason="end_turn",
-            content="已完成目录检查（演示脚本模型）。",
+            content="离线演示已完成。此模式不调用真实模型。",
             usage={"input_tokens": 24, "output_tokens": 12},
         )
 
@@ -150,7 +149,7 @@ class _StatelessScriptedModel:
         return resp
 
 
-_STATELESS_SCRIPTED = _StatelessScriptedModel()
+OFFLINE_DEMO_MODEL = _StatelessScriptedModel()
 
 
 def _validate_base_url(raw: str) -> str:
@@ -524,7 +523,7 @@ class RuntimeModelSlot:
         if cfg is None:
             return self._fallback
         if cfg.mode == "scripted":
-            return _STATELESS_SCRIPTED
+            return OFFLINE_DEMO_MODEL
         store = self.store_for(cfg.credential_backend)
         secret = store.get(CredentialRef(
             "openai" if cfg.mode == "openai-responses" else cfg.mode, "llm",
@@ -573,7 +572,7 @@ class RuntimeModelSlot:
             getter = getattr(self._fallback, "capability_profile", None)
             return getter() if callable(getter) else None
         if cfg.mode == "scripted":
-            return _STATELESS_SCRIPTED.capability_profile()
+            return OFFLINE_DEMO_MODEL.capability_profile()
         if cfg.mode == "anthropic":
             return CapabilityProfile(
                 provider=AnthropicMessagesModel.ADAPTER,
@@ -626,7 +625,7 @@ class RuntimeModelSlot:
         if cfg is None:
             return identity_of(self._fallback)
         if cfg.mode == "scripted":
-            return _STATELESS_SCRIPTED.price_identity()
+            return OFFLINE_DEMO_MODEL.price_identity()
         if cfg.mode == "anthropic":
             eff_url = (
                 cfg.base_url
