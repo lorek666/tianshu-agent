@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from .contents import ContentStore
 from .context import RUN_START_SEQ
+from .conversation import GUIDANCE_APPLIED, conversation_fact
 from .dispatcher import (
     APPROVAL_REJECTED,
     DISPATCH_EXECUTING,
@@ -226,9 +227,11 @@ def message_source_seqs(events: list[Event]) -> list[int]:
     把它放在这里而不是各自实现两遍，是因为"循环写的归因"和"回放算的归因"一旦
     分叉，replay 报的红就是假的——那种红比不校验更糟。
     """
-    seqs = [RUN_START_SEQ, RUN_START_SEQ]
+    conversation = conversation_fact(events)
+    initial_count = 2 + (2 * len(conversation["turns"]) if conversation else 0)
+    seqs = [RUN_START_SEQ] * initial_count
     for event in events:
-        if event.type in ("model.result", "tool.result", "tool.not_dispatched"):
+        if event.type in ("model.result", "tool.result", "tool.not_dispatched", GUIDANCE_APPLIED):
             seqs.append(event.seq)
     return seqs
 

@@ -51,11 +51,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .continuation import COMPACTION_REF_VERSION, ContinuationRef
+from .conversation import GENERAL_SYSTEM_PROMPT
 from .errors import TianshuError
 from .events import canonical_bytes
 
 BUDGET_VERSION = "ctx-v1"
 RESPONSES_BUDGET_VERSION = "ctx-responses-v1"
+RESPONSES_COMPACT_VERSION = "ctx-responses-compact-v1"
+RESPONSES_CONTEXT_VERSIONS = frozenset({RESPONSES_BUDGET_VERSION, RESPONSES_COMPACT_VERSION})
 
 #: 单条工具输出超过这个字节数就落盘（PRD §7 F5）。
 TOOL_OUTPUT_SPILL_BYTES = 8 * 1024
@@ -158,20 +162,39 @@ def compile_context(
     逐字节相同。
     """
     _validate(messages, source_seqs, budget)
-    if budget.version == RESPONSES_BUDGET_VERSION:
-        raw = canonical_bytes(messages)
+    if budget.version in RESPONSES_CONTEXT_VERSIONS:
+        leading = int(bool(messages and messages[0].get("role") == "system"))
+        boundary = leading
+        if budget.version == RESPONSES_COMPACT_VERSION:
+            for index in range(leading, len(messages)):
+                message = messages[index]
+                ref = message.get("continuation")
+                if not isinstance(ref, dict) or ref.get("schema_version") != COMPACTION_REF_VERSION:
+                    continue
+                try:
+                    if message["role"] != "assistant" or not ContinuationRef(ref).has_compaction:
+                        raise ValueError
+                except ValueError:
+                    raise ContextCompileError("无效的 Responses 压缩边界") from None
+                boundary = index
+        final = messages[:leading] + messages[boundary:] if boundary > leading else messages
+        raw = canonical_bytes(final)
         if len(raw) > budget.max_bytes:
             raise ContextOverflow(
-                f"Responses 完整上下文 {len(raw)}B 超出预算 {budget.max_bytes}B；"
-                "续接输入不能裁剪或摘要，请创建新 Run 或调大预算"
+                f"Responses 续接上下文 {len(raw)}B 超出预算 {budget.max_bytes}B；"
+                "没有足够的已提交压缩空间，请创建新 Run 或调大预算"
             )
         return ContextView(
-            messages=messages, digest=hashlib.sha256(raw).hexdigest(),
-            source_seqs=list(source_seqs), dropped_seqs=[],
+            messages=final, digest=hashlib.sha256(raw).hexdigest(),
+            source_seqs=source_seqs[:leading] + source_seqs[boundary:],
+            dropped_seqs=source_seqs[leading:boundary], compacted=boundary > leading,
         )
     slices = _validate_summaries(summaries, source_seqs)
 
     pinned = _pinned_count(messages)
+    if messages and messages[0].get("content") == GENERAL_SYSTEM_PROMPT:
+        while pinned < len(messages) and source_seqs[pinned] == RUN_START_SEQ:
+            pinned += 1
     pinned_bytes = len(canonical_bytes(messages[:pinned]))
     if pinned_bytes > budget.max_bytes:
         raise ContextOverflow(
@@ -343,7 +366,7 @@ def context_payload(
 def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
     """`context_payload` 的逆运算，给回放用。字段缺失/类型不对一律报错。"""
     version = payload.get("budget_version")
-    if version not in (BUDGET_VERSION, RESPONSES_BUDGET_VERSION):
+    if version not in (BUDGET_VERSION, *RESPONSES_CONTEXT_VERSIONS):
         raise ContextCompileError(
             f"未知的上下文预算版本：{version!r}（本实现只认 {BUDGET_VERSION}）"
         )
@@ -361,7 +384,7 @@ def budget_from_payload(payload: dict[str, Any]) -> ContextBudget:
 def _validate(
     messages: list[dict[str, Any]], source_seqs: list[int], budget: ContextBudget
 ) -> None:
-    if budget.version not in (BUDGET_VERSION, RESPONSES_BUDGET_VERSION):
+    if budget.version not in (BUDGET_VERSION, *RESPONSES_CONTEXT_VERSIONS):
         raise ContextCompileError("未知的上下文预算版本")
     if len(messages) != len(source_seqs):
         raise ContextCompileError(

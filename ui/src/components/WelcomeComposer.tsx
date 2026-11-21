@@ -7,13 +7,16 @@ import {
 import type {
   CreateTaskInput,
   RunExecutionPolicyV1,
+  RunModelSelection,
   WorkspaceMode,
   WorkspaceView,
 } from "../api/types";
 import type { StreamStatus } from "../api/stream";
-import type { ModelConfigView, SettingsApi, SettingsView } from "../api/settings";
+import type { ModelConfigView, ModelProfileInput, SettingsApi, SettingsView } from "../api/settings";
+import { encodeAttachments } from "../lib/attachments";
 import { workspaceModeLabel } from "../lib/humanize";
 import { streamStatusText } from "./AppHeader";
+import { AttachmentPicker } from "./AttachmentPicker";
 import {
   IconCheck,
   IconChevronDown,
@@ -24,7 +27,9 @@ import {
   IconShield,
   IconX,
 } from "./Icons";
+import { ModelRoutePicker } from "./ModelRoutePicker";
 import { ModelStatusControl } from "./ModelStatusControl";
+import { parseComposerCommand } from "../lib/commands";
 import type { ProjectWorkspace } from "./Sidebar";
 import { basenameOfPath } from "./Sidebar";
 import { WelcomePet } from "./WelcomePet";
@@ -43,6 +48,7 @@ export interface WelcomeComposerProps {
   streamDetail: string | null;
   openApprovalsCount: number;
   busy: boolean;
+  profiles?: Record<string, ModelProfileInput>;
   modelConfig?: ModelConfigView | null;
   settingsApi?: SettingsApi | null;
   onModelUpdated?: (settings: SettingsView) => void;
@@ -72,6 +78,7 @@ export function WelcomeComposer({
   streamDetail,
   openApprovalsCount,
   busy,
+  profiles = {},
   modelConfig = null,
   settingsApi = null,
   onModelUpdated,
@@ -80,7 +87,17 @@ export function WelcomeComposer({
   onOpenModelSettings,
   onSubmit,
 }: WelcomeComposerProps) {
+  const [modelSelection, setModelSelection] = useState<RunModelSelection>({});
+  const canAttachImages = modelSelection.model_profile
+    ? [modelSelection.model_profile, ...(modelSelection.fallback_profiles ?? [])]
+      .some((name) => profiles[name]?.allow_image_attachments === true)
+    : modelConfig?.allow_image_attachments === true;
   const [goal, setGoal] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [showTaskTools, setShowTaskTools] = useState(false);
+  const [outboundSources, setOutboundSources] = useState("");
+  const [mcpServers, setMcpServers] = useState("");
+  const [subtaskLimit, setSubtaskLimit] = useState("0");
   const [rows, setRows] = useState<WorkspaceDraftRow[]>(() =>
     activeProject !== null
       ? [{ root_path: activeProject.root_path, mode: activeProject.mode }]
@@ -91,6 +108,7 @@ export function WelcomeComposer({
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">("execute");
 
   const toolbarRef = useRef<HTMLDivElement | null>(null);
 
@@ -104,6 +122,11 @@ export function WelcomeComposer({
     }
     setOpenMenu(null);
     setError(null);
+    setFiles([]);
+    setShowTaskTools(false);
+    setOutboundSources("");
+    setMcpServers("");
+    setSubtaskLimit("0");
   }, [activeProject]);
 
   useEffect(() => {
@@ -181,16 +204,49 @@ export function WelcomeComposer({
       setError("请先描述你想让天枢完成的任务或对话内容。");
       return;
     }
+    const command = parseComposerCommand(trimmedGoal);
+    if (command.kind === "error") {
+      setError(command.text);
+      return;
+    }
+    if (command.kind === "compact" || command.kind === "execute") {
+      setError("请先打开已有任务，再使用压缩或确认执行命令。");
+      return;
+    }
+    if (command.kind === "plan" && command.text === "") {
+      setInteractionMode("plan");
+      setGoal("");
+      setError(null);
+      return;
+    }
+    const sources = outboundSources.trim().split(/\s+/).filter(Boolean);
+    const servers = mcpServers.trim().split(/\s+/).filter(Boolean);
+    const limit = Number(subtaskLimit);
+    if (!Number.isInteger(limit) || limit < 0 || limit > 4) {
+      setError("最多子任务数必须是 0 到 4 的整数。");
+      return;
+    }
     setError(null);
     setOpenMenu(null);
     setSubmitting(true);
     try {
+      const attachments = await encodeAttachments(files, canAttachImages);
       await onSubmit({
-        goal: trimmedGoal,
+        goal: command.text,
         workspaces: committedWorkspaces,
         execution_policy: executionPolicy,
+        ...modelSelection,
+        ...(sources.length ? { outbound_allow: sources } : {}),
+        ...(servers.length ? { mcp_servers: servers } : {}),
+        ...(limit ? { max_subtasks: limit } : {}),
+        ...(attachments.length ? { attachments } : {}),
+        mode: command.kind === "plan" ? "plan" : interactionMode,
       });
       setGoal("");
+      setFiles([]);
+      setOutboundSources("");
+      setMcpServers("");
+      setSubtaskLimit("0");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "创建任务失败，请重试。");
     } finally {
@@ -301,8 +357,44 @@ export function WelcomeComposer({
             disabled={pending}
           />
 
+          <AttachmentPicker files={files} onChange={setFiles} disabled={pending}
+            allowImages={canAttachImages} />
+          <ModelRoutePicker profiles={profiles} selection={modelSelection}
+            onChange={setModelSelection} disabled={pending} />
+
+          {showTaskTools ? (
+            <div className="composer-task-tools" id="composer-task-tools">
+              <label className="field">
+                <span className="field-label">允许访问的网络源</span>
+                <input className="input" data-testid="task-outbound-sources"
+                  placeholder="network://https/example.com"
+                  value={outboundSources} onChange={(e) => setOutboundSources(e.target.value)}
+                  disabled={pending} />
+              </label>
+              <label className="field">
+                <span className="field-label">允许使用的 MCP 服务</span>
+                <input className="input" data-testid="task-mcp-servers"
+                  placeholder="输入已配置的服务名，以空格分隔"
+                  value={mcpServers} onChange={(e) => setMcpServers(e.target.value)}
+                  disabled={pending} />
+              </label>
+              <label className="field">
+                <span className="field-label">最多子任务数（0 表示不允许）</span>
+                <input className="input" data-testid="task-subtask-limit" type="number"
+                  min={0} max={4} step={1} value={subtaskLimit}
+                  onChange={(e) => setSubtaskLimit(e.target.value)} disabled={pending} />
+              </label>
+              <p className="field-hint">这些范围随本任务保存。需要审批的实际操作仍会逐次询问。</p>
+            </div>
+          ) : null}
+
           <div className="composer-toolbar" ref={toolbarRef}>
             <div className="composer-left-controls">
+              <button type="button" className="chip-btn" data-testid="task-tools-toggle"
+                aria-expanded={showTaskTools} aria-controls="composer-task-tools"
+                onClick={() => setShowTaskTools((current) => !current)} disabled={pending}>
+                工具范围
+              </button>
               {/* 1. 工作区选择与留空控件 */}
               <div className="dropdown-anchor">
                 <span className="ws-chip-group">
@@ -584,6 +676,17 @@ export function WelcomeComposer({
 
             {/* 右侧：模型切换器紧邻在蓝色发送按钮正左侧 */}
             <div className="composer-right-controls">
+              <select
+                className="chip-btn"
+                aria-label="任务模式"
+                data-testid="composer-mode-select"
+                value={interactionMode}
+                disabled={pending}
+                onChange={(event) => setInteractionMode(event.target.value === "plan" ? "plan" : "execute")}
+              >
+                <option value="execute">执行任务</option>
+                <option value="plan">计划模式</option>
+              </select>
               <ModelStatusControl
                 testId="composer-model-btn"
                 model={modelConfig}

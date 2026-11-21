@@ -188,6 +188,35 @@ def test_task_create_returns_exact_contract_view(env: Env) -> None:
     assert task["updated_at"] >= task["created_at"]
 
 
+def test_task_create_preserves_explicit_tool_capabilities(env: Env) -> None:
+    task = env.plane.handle("task.create", {
+        "goal": "查找指定站点的资料",
+        "outbound_allow": ["network://https/example.com"],
+        "mcp_servers": ["local-docs"],
+        "max_subtasks": 2,
+    })["task"]
+    saved = env.stack.tasks.get_task(task["task_id"])
+    assert saved.outbound_allow == ("network://https/example.com",)
+    assert saved.mcp_servers == ("local-docs",)
+    assert saved.max_subtasks == 2
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("outbound_allow", "network://https/example.com"),
+    ("mcp_servers", "local-docs"),
+    ("max_subtasks", True),
+    ("max_subtasks", 5),
+    ("outbound_allow", ["network://https/example.com/private"]),
+])
+def test_task_create_rejects_invalid_tool_capability_before_creating_task(
+    env: Env, key: str, value: object,
+) -> None:
+    with pytest.raises(ControlError) as caught:
+        env.plane.handle("task.create", {"goal": "probe", key: value})
+    assert caught.value.code == "bad_params"
+    assert env.plane.handle("task.list", {}) == {"tasks": []}
+
+
 def test_task_list_is_newest_first(env: Env) -> None:
     first = env.create_task("先建的")
     second = env.create_task("后建的")

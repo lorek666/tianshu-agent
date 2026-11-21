@@ -103,54 +103,137 @@
           }
         },
         "continuation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "schema_version",
-            "adapter",
-            "endpoint",
-            "model",
-            "output_items"
-          ],
-          "properties": {
-            "schema_version": {
-              "type": "string",
-              "const": "1.0"
-            },
-            "adapter": {
-              "type": "string",
-              "enum": [
-                "openai-responses"
-              ]
-            },
-            "endpoint": {
-              "type": "string",
-              "pattern": "^https?://[^?#]+/responses$"
-            },
-            "model": {
-              "type": "string",
-              "pattern": "\\S"
-            },
-            "output_items": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": [
-                  "type"
-                ],
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "reasoning",
-                      "message",
-                      "function_call"
-                    ]
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "adapter",
+                "endpoint",
+                "model",
+                "output_items"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "1.0"
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "openai-responses"
+                  ]
+                },
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^https?://[^?#]+/responses$"
+                },
+                "model": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "output_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "reasoning",
+                          "message",
+                          "function_call"
+                        ]
+                      }
+                    }
                   }
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "adapter",
+                "endpoint",
+                "model",
+                "output_items"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "1.1"
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "openai-responses"
+                  ]
+                },
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^https?://[^?#]+/responses$"
+                },
+                "model": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "output_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "reasoning",
+                          "message",
+                          "function_call"
+                        ]
+                      }
+                    }
+                  },
+                  "minItems": 1,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "id",
+                        "encrypted_content"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "compaction"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        "encrypted_content": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "completed"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
             }
-          }
+          ]
         }
       }
     },
@@ -198,55 +281,176 @@
             }
           }
         },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "name": {
+                "type": "string"
+              },
+              "media_type": {
+                "type": "string",
+                "enum": [
+                  "text/plain",
+                  "image/png",
+                  "image/jpeg"
+                ]
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "name",
+              "media_type",
+              "data_base64",
+              "sha256"
+            ]
+          }
+        },
         "continuation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "schema_version",
-            "adapter",
-            "endpoint",
-            "model",
-            "output_items"
-          ],
-          "properties": {
-            "schema_version": {
-              "type": "string",
-              "const": "1.0"
-            },
-            "adapter": {
-              "type": "string",
-              "enum": [
-                "openai-responses"
-              ]
-            },
-            "endpoint": {
-              "type": "string",
-              "pattern": "^https?://[^?#]+/responses$"
-            },
-            "model": {
-              "type": "string",
-              "pattern": "\\S"
-            },
-            "output_items": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": [
-                  "type"
-                ],
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "reasoning",
-                      "message",
-                      "function_call"
-                    ]
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "adapter",
+                "endpoint",
+                "model",
+                "output_items"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "1.0"
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "openai-responses"
+                  ]
+                },
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^https?://[^?#]+/responses$"
+                },
+                "model": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "output_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "reasoning",
+                          "message",
+                          "function_call"
+                        ]
+                      }
+                    }
                   }
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "adapter",
+                "endpoint",
+                "model",
+                "output_items"
+              ],
+              "properties": {
+                "schema_version": {
+                  "type": "string",
+                  "const": "1.1"
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "openai-responses"
+                  ]
+                },
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^https?://[^?#]+/responses$"
+                },
+                "model": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "output_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "reasoning",
+                          "message",
+                          "function_call"
+                        ]
+                      }
+                    }
+                  },
+                  "minItems": 1,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "id",
+                        "encrypted_content"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "compaction"
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        "encrypted_content": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "completed"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
             }
-          }
+          ]
         }
       }
     },
@@ -297,6 +501,85 @@
               }
             }
           }
+        }
+      }
+    },
+    "continuationRefV1_1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "adapter",
+        "endpoint",
+        "model",
+        "output_items"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "1.1"
+        },
+        "adapter": {
+          "type": "string",
+          "enum": [
+            "openai-responses"
+          ]
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^https?://[^?#]+/responses$"
+        },
+        "model": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "output_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "reasoning",
+                  "message",
+                  "function_call"
+                ]
+              }
+            }
+          },
+          "minItems": 1,
+          "prefixItems": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "id",
+                "encrypted_content"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "compaction"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "encrypted_content": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "status": {
+                  "type": "string",
+                  "const": "completed"
+                }
+              }
+            }
+          ]
         }
       }
     }

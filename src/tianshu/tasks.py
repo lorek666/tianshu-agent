@@ -634,6 +634,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
         run_id: str | None = None,
         payload: dict[str, Any] | None = None,
         execution_policy: RunExecutionPolicyV1 = EFFECTS,
+        workflow: Any = None,
     ) -> Run:
         """开一次执行。
 
@@ -642,6 +643,14 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
         提示消息序列，否则"消息哈希对得上"这条验证就没有意义。
         """
         run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
+        if workflow is not None:
+            from .workflow import WorkflowV1
+
+            if not isinstance(workflow, WorkflowV1):
+                raise TianshuError("workflow 必须是 WorkflowV1")
+            WorkflowV1.of(workflow.to_dict())
+            if workflow.mode in ("plan", "compact") and execution_policy != PURE_ONLY:
+                raise TianshuError("计划与压缩 Run 必须采用 pure_only 执行资格")
         with self._log.transaction() as tx:
             task = self.get_task(task_id)
             if task is None:
@@ -671,6 +680,11 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 payload=payload,
                 execution_policy=execution_policy,
             )
+            if workflow is not None:
+                tx.append(
+                    run_id, "run.workflow", workflow.to_dict(),
+                    task_id=task.task_id, actor_kind="human",
+                )
         return self._must_run(run_id)
 
     def run_execution_policy(self, run_id: str) -> RunExecutionPolicyV1 | None:

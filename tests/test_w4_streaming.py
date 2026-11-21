@@ -504,7 +504,7 @@ def test_daemon_and_host_forward_transient_model_stream_over_sse(
     """Daemon → IPC `model_stream` → Host `/events` SSE 端到端推送实时增量。"""
     ws = tmp_path / "ws"
     ws.mkdir()
-    base_dir = None if os.name == "nt" else "/tmp"
+    base_dir = None if os.name == "nt" else os.environ.get("TIANSHU_TEST_TMP_ROOT", "/tmp")
     data_root = Path(tempfile.mkdtemp(prefix="tsw4-", dir=base_dir))
     ui_dir = tmp_path / "ui"
     (ui_dir / "assets").mkdir(parents=True)

@@ -29,10 +29,23 @@ import copy
 import re
 from typing import Any
 
-from .continuation import CONTINUATION_SCHEMA, ContinuationRef
+from .continuation import (
+    COMPACTION_REF_VERSION,
+    COMPACTION_SCHEMA,
+    CONTINUATION_SCHEMA,
+    ContinuationRef,
+)
+from .conversation import validate_guidance, validate_turns
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
+from .model_route import ModelRouteV1
 from .run_policy import RunExecutionPolicyV1
+from .task_attachments import (
+    MEDIA_TYPES,
+    AttachmentError,
+    normalize_attachments,
+    validated_attachments,
+)
 
 __all__ = [
     "CURRENT_PAYLOAD_VERSION",
@@ -77,6 +90,9 @@ SUPPORTED_KEYWORDS = frozenset(
         "required",
         "additionalProperties",
         "items",
+        "minItems",
+        "prefixItems",
+        "oneOf",
         "enum",
         "const",
         "minimum",
@@ -194,6 +210,8 @@ _TOOL_ID = _enum(
     "memory.search",
     "modify_text",
     "network.fetch",
+    "network.search",
+    "browser.navigate",
     "read_content",
     "read_text",
     "restore_file",
@@ -475,6 +493,27 @@ _SUBTASK_USAGE = _obj(
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "run.workflow": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "mode": _enum("plan", "compact", "execute"),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+            "source_text": _s(),
+            "source_seqs": _arr(_i(minimum=1)),
+            "source_digest": _SHA256,
+            "source_goal": _s(),
+        },
+        required=("format_version", "mode", "request_id", "source_run_id",
+                  "source_text", "source_seqs", "source_digest", "source_goal"),
+    ),
+    "run.workflow_request": _obj(
+        {
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}(?![\s\S])"),
+            "requested_source_run_id": _opt(_s(pattern=r"^.+$")),
+        },
+        required=("request_id", "requested_source_run_id"),
+    ),
     "approval.consumed": _obj(
         {
             "approval_id": _s(),
@@ -870,6 +909,16 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         required=("run_id", "task_id", "outcome", "effect_state"),
     ),
+    "run.model_route": _obj(
+        {"format_version": _i(const=1), "requested": _arr(_s()), "selected": _s(),
+         "config": _obj(
+             {"mode": _s(enum=["scripted", "openai", "anthropic", "openai-responses"]),
+              "model_name": _s(), "base_url": _s(),
+              "credential_backend": _s(enum=["keychain", "env"]),
+              "allow_image_attachments": _b(), "compact_threshold": _i(minimum=1024)},
+             required=("mode", "model_name", "base_url", "credential_backend"),
+         )}, required=("format_version", "requested", "selected", "config"),
+    ),
     "run.model_turn": _obj(
         {
             "run_id": _s(),
@@ -889,6 +938,26 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "usage",
             "payload_hash",
         ),
+    ),
+    "run.attachments": _obj(
+        {"attachments": _arr(_obj(
+            {"format_version": _i(const=1), "name": _s(),
+             "media_type": _s(enum=list(MEDIA_TYPES)), "data_base64": _s(), "sha256": _SHA256},
+            required=("format_version", "name", "media_type", "data_base64", "sha256"),
+        ))}, required=("attachments",),
+    ),
+    "run.conversation": _obj(
+        {"turns": _arr(_obj(
+            {"source_run_id": _s(), "source_seq": _i(minimum=1),
+             "answer": _s(), "message": _s()},
+            required=("source_run_id", "source_seq", "answer", "message"),
+        ))}, required=("turns",),
+    ),
+    "run.guidance_applied": _obj(
+        {"request_seq": _i(minimum=1)}, required=("request_seq",),
+    ),
+    "run.guidance_requested": _obj(
+        {"text": _s()}, required=("text",),
     ),
     "run.start": _obj(
         {
@@ -1123,12 +1192,18 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
     return schema
 
 
+V1_ONLY_EVENTS = frozenset({
+    "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
+    "run.model_route", "run.workflow", "run.workflow_request",
+})
+
+
 LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     name: _relax(
         _legacy_schema(schema, LEGACY_EXTRA_PROPERTIES.get(name, {})),
         LEGACY_RELAXATIONS.get(name, {}),
     )
-    for name, schema in CURRENT_SCHEMAS.items()
+    for name, schema in CURRENT_SCHEMAS.items() if name not in V1_ONLY_EVENTS
 }
 
 # 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
@@ -1142,6 +1217,10 @@ for _model_event in ("model.result", "run.model_turn"):
 CURRENT_SCHEMAS["model.result"]["properties"]["continuation"] = copy.deepcopy(
     CONTINUATION_SCHEMA
 )
+
+MODEL_RESULT_V3_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
+MODEL_RESULT_V3_SCHEMA["properties"]["continuation"] = copy.deepcopy(COMPACTION_SCHEMA)
+MODEL_RESULT_V3_SCHEMA["required"].append("continuation")
 
 # v0/v1 保持原始解释；这些事件的新写逐类型采用 v2。
 RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
@@ -1167,12 +1246,13 @@ LEGACY_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0
 LEGACY_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
 
 _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
-    name: frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION})
+    name: (frozenset({CURRENT_PAYLOAD_VERSION}) if name in V1_ONLY_EVENTS
+           else frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION}))
     for name in CURRENT_SCHEMAS
 }
 _RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
 _RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
-_RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2, 3})
 _RECOGNISED_VERSIONS["run.model_turn"] = frozenset({0, 1, 2})
 
 
@@ -1234,6 +1314,15 @@ def _check_schema_node(node: Any, where: str) -> None:
             )
     if "items" in node:
         _check_schema_node(node["items"], f"{where}.items")
+    for key in ("prefixItems", "oneOf"):
+        if key in node:
+            branches = node[key]
+            if not isinstance(branches, list) or not branches:
+                raise UnsupportedSchemaKeyword(f"{where}：{key} 必须是非空 schema 数组")
+            for index, branch in enumerate(branches):
+                _check_schema_node(branch, f"{where}.{key}[{index}]")
+    if "minItems" in node and (type(node["minItems"]) is not int or node["minItems"] < 0):
+        raise UnsupportedSchemaKeyword(f"{where}：minItems 必须是非负整数")
     if "enum" in node:
         if not isinstance(node["enum"], list) or not node["enum"]:
             raise UnsupportedSchemaKeyword(f"{where}：enum 必须是非空数组")
@@ -1274,6 +1363,7 @@ for _name, _schema in CURRENT_SCHEMAS.items():
 _check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
 _check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
 _check_registry_schema("model.result", MODEL_RESULT_V1_SCHEMA, 1)
+_check_registry_schema("model.result", MODEL_RESULT_V3_SCHEMA, 3)
 _check_registry_schema("run.model_turn", RUN_MODEL_TURN_V1_SCHEMA, 1)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
@@ -1330,9 +1420,11 @@ def schema_for(event_type: str, version: int) -> dict[str, Any]:
         return RUN_END_V1_SCHEMA
     if event_type == "model.result" and version == 1:
         return MODEL_RESULT_V1_SCHEMA
+    if event_type == "model.result" and version == 3:
+        return MODEL_RESULT_V3_SCHEMA
     if event_type == "run.model_turn" and version == 1:
         return RUN_MODEL_TURN_V1_SCHEMA
-    if version == LEGACY_PAYLOAD_VERSION:
+    if version == LEGACY_PAYLOAD_VERSION and event_type in LEGACY_SCHEMAS:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(
         f"事件类型 {event_type!r} 的 payload 版本 {version} 本程序不认识"
@@ -1374,6 +1466,15 @@ def _type_matches(expected: Any, value: Any) -> bool:
 def _check_value(
     schema: dict[str, Any], value: Any, path: str, errors: list[str], event_type: str
 ) -> None:
+    if "oneOf" in schema:
+        matches = 0
+        for choice in schema["oneOf"]:
+            branch_errors: list[str] = []
+            _check_value(choice, value, path, branch_errors, event_type)
+            matches += not branch_errors
+        if matches != 1:
+            errors.append(f"{path}：必须且只能匹配一个已登记的版本形状")
+            return
     if "type" in schema and not _type_matches(schema["type"], value):
         wanted = schema["type"]
         errors.append(f"{path}：期望类型 {wanted}，实际 {_json_type(value)}")
@@ -1410,9 +1511,15 @@ def _check_value(
             elif isinstance(additional, dict):
                 _check_value(additional, sub, child, errors, event_type)
         return
-    if isinstance(value, list) and "items" in schema:
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            errors.append(f"{path}：数组缺少必需的项")
+            return
+        prefix = schema.get("prefixItems", ())
         for index, item in enumerate(value):
-            _check_value(schema["items"], item, f"{path}[{index}]", errors, event_type)
+            item_schema = prefix[index] if index < len(prefix) else schema.get("items")
+            if item_schema is not None:
+                _check_value(item_schema, item, f"{path}[{index}]", errors, event_type)
 
 
 def payload_errors(
@@ -1423,12 +1530,33 @@ def payload_errors(
     schema = schema_for(event_type, version)
     errors: list[str] = []
     _check_value(schema, payload, "$", errors, event_type)
+    if not errors and event_type == "run.attachments":
+        try:
+            if not validated_attachments(payload["attachments"]):
+                raise AttachmentError("附件事件不能为空")
+        except AttachmentError as exc:
+            errors.append(f"$.attachments：{exc}")
+    if not errors and event_type == "run.model_route":
+        try:
+            ModelRouteV1.of(payload)
+        except ValueError as exc:
+            errors.append(f"$：{exc}")
+    if not errors and event_type == "run.guidance_requested":
+        try:
+            validate_guidance(payload["text"])
+        except ValueError as exc:
+            errors.append(f"$.text：{exc}")
+    if not errors and event_type == "run.conversation":
+        try:
+            validate_turns(payload["turns"])
+        except ValueError as exc:
+            errors.append(f"$.turns：{exc}")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
         except TianshuError as exc:
             errors.append(f"$.execution_policy：{exc}")
-    if not errors and version == 2 and event_type in ("model.result", "run.model_turn"):
+    if not errors and version in (2, 3) and event_type in ("model.result", "run.model_turn"):
         # 只补充新 cache 字段的语义，不改变旧 schema/其他事件对整数值 float
         # 的既有校验。JSON Schema 镜像本身也带 minimum。
         usage = payload.get("usage") or {}
@@ -1466,10 +1594,15 @@ def detect_version(
 
     事件行会用旁表记下实际版本，读取时不会假装它是新版。
     """
+    if event_type == "model.result" and isinstance(payload, dict):
+        ref = payload.get("continuation")
+        if isinstance(ref, dict) and ref.get("schema_version") == COMPACTION_REF_VERSION:
+            validate_payload(event_type, payload, 3)
+            return 3
     version = current_version(event_type)
     if not payload_errors(event_type, payload, version):
         return version
-    if allow_legacy and not payload_errors(
+    if allow_legacy and event_type in LEGACY_SCHEMAS and not payload_errors(
         event_type, payload, LEGACY_PAYLOAD_VERSION
     ):
         return LEGACY_PAYLOAD_VERSION
@@ -1532,5 +1665,11 @@ def minimal_payload(event_type: str) -> dict[str, Any]:
     """构造该类型的最小合法 current payload（测试与夹具用，且会被校验兜底）。"""
     schema = schema_for(event_type, current_version(event_type))
     payload = _sample_for(schema)
+    if event_type == "run.model_route":
+        payload = ModelRouteV1(("x",), "x", "scripted", "", "", "env").to_payload()
+    if event_type == "run.attachments":
+        payload["attachments"] = normalize_attachments([
+            {"name": "x", "media_type": "text/plain", "data_base64": ""},
+        ])
     validate_payload(event_type, payload)
     return payload

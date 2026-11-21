@@ -509,6 +509,14 @@ _AUDIT_TABLES: dict[str, dict[str, Any]] = {
         "ts": "created_at", "state": None,
         "protection": "W5 调度定义（enabled 由 CLI 管理）",
     },
+    "schedules_triggers_v1": {
+        "ts": "created_at", "state": None,
+        "protection": "日历、本机目录和本机事件触发配置及监听基线",
+    },
+    "schedule_event_receipts_v1": {
+        "ts": "created_at", "state": None,
+        "protection": "事件触发去重记录（随对应调度定义删除）",
+    },
 }
 
 # 增长投影只对 W15 §3.2 点名的增长面 + runs/summary_versions 两个记录面做。
@@ -624,6 +632,16 @@ def _audit_basics(conn: sqlite3.Connection, name: str) -> tuple[int, int | None,
         row = conn.execute(
             "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
             " MAX(created_at) AS hi FROM schedules",
+        ).fetchone()
+    elif name == "schedules_triggers_v1":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM schedules_triggers_v1",
+        ).fetchone()
+    elif name == "schedule_event_receipts_v1":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
+            " MAX(created_at) AS hi FROM schedule_event_receipts_v1",
         ).fetchone()
     else:
         raise RetentionAuditRefused("未登记的表没有审计 SQL：" + name)

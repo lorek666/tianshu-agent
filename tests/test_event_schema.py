@@ -105,6 +105,8 @@ def test_schema_json_mirrors_python_contract():
     assert set(payload) == set(EVENT_TYPES)
     assert payload == event_schema.CURRENT_SCHEMAS
     assert legacy == event_schema.LEGACY_SCHEMAS
+    assert doc["$defs"]["modelResultCompactionPayload"] == event_schema.MODEL_RESULT_V3_SCHEMA
+    assert event_schema.schema_for("model.result", 3) == event_schema.MODEL_RESULT_V3_SCHEMA
 
 
 def test_registry_is_complete_and_bidirectional():
@@ -119,7 +121,7 @@ def test_registry_is_complete_and_bidirectional():
     "keyword_schema",
     [
         {"type": "object", "properties": {"x": {"type": "string", "minLength": 1}}},
-        {"type": "object", "properties": {"x": {"oneOf": [{"type": "string"}]}}},
+        {"type": "object", "properties": {"x": {"oneOf": [{"minLength": 1}]}}},
         {"type": "object", "additionalProperties": False, "patternProperties": {}},
         {"type": "object", "properties": {"x": {"type": "string", "format": "date"}}},
     ],
@@ -206,6 +208,20 @@ def test_code_constants_bound_to_schema_enums():
 
 
 # ---------------------------------------------------------------- 写入前校验
+
+
+@pytest.mark.parametrize("bad_id", ["alias\n", "alias\r", "alias\u2028", "alias ", "a" * 129])
+def test_workflow_request_invalid_identifier_rejected_before_append(tmp_path, bad_id):
+    log = _log(tmp_path)
+    try:
+        with pytest.raises(event_schema.PayloadContractError, match="request_id"):
+            log.append("run_x", "run.workflow_request", {
+                "request_id": bad_id, "requested_source_run_id": None,
+            }, task_id="task_x", actor_kind="human")
+        assert log.seq_head() == 0
+        assert log.conn.execute("SELECT COUNT(*) FROM event_versions").fetchone()[0] == 0
+    finally:
+        log.close()
 
 
 @pytest.mark.parametrize("type_name", sorted(EVENT_TYPES))
@@ -531,8 +547,9 @@ def _fixture_lines() -> list[dict]:
 def test_legacy_fixture_covers_every_type_and_is_readable(tmp_path):
     """45 个类型逐个可读：旧形状按"本来就没有"读取，不按新版补值。"""
     rows = _fixture_lines()
-    assert {r["type"] for r in rows} == set(EVENT_TYPES)
-    assert len(rows) == len(EVENT_TYPES)
+    historical_types = set(EVENT_TYPES) - event_schema.V1_ONLY_EVENTS
+    assert {r["type"] for r in rows} == historical_types
+    assert len(rows) == len(historical_types)
     # 注意：注释里"无已知历史形状差异"也含"历史形状"四个字——只用子串判定会把
     # 45 行全算成 drift，`>= 5` 就永远成立（这条判据自己变成摆设）。必须排除
     # "无已知"，当前真实 drift 是 7 个类型。

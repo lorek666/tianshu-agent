@@ -118,6 +118,7 @@ describe("SettingsApi & SettingsDialog", () => {
     const schedules = await api.listSchedules();
     expect(schedules).toHaveLength(1);
     expect(schedules[0]?.goal).toBe("每日检查");
+    expect(schedules[0]?.trigger).toEqual({ kind: "interval" });
 
     const budget = await api.getBudgetOverview();
     expect(budget.unsettled_count).toBe(1);
@@ -126,6 +127,49 @@ describe("SettingsApi & SettingsDialog", () => {
     const mcp = await api.getMcpOverview();
     expect(mcp.configured).toBe(false);
     expect(calls.length).toBe(5);
+  });
+
+  it("binds a watched directory read-only and preserves the real trigger shape", async () => {
+    const received: Record<string, unknown>[] = [];
+    const api = createSettingsApi({
+      mode: "host",
+      async getState() { throw new Error("unused"); },
+      async openEvents() { return; },
+      async rpc<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+        expect(method).toBe("schedule.create");
+        received.push(params);
+        return { schedule: { ...params, schedule_id: "sched_1", next_fire_at: null } } as T;
+      },
+    });
+    const file = await api.createSchedule({
+      goal: "整理收件目录",
+      workspace: "/tmp/output",
+      trigger: { kind: "file_arrival", directory: "/tmp/inbox" },
+    });
+    expect(received[0]).toEqual({
+      goal: "整理收件目录",
+      workspaces: [
+        { root_path: "/tmp/output", mode: "writable" },
+        { root_path: "/tmp/inbox", mode: "readonly" },
+      ],
+      trigger: { kind: "file_arrival", directory: "/tmp/inbox" },
+    });
+    expect(file?.trigger).toEqual({ kind: "file_arrival", directory: "/tmp/inbox" });
+    expect(file?.interval_seconds).toBeNull();
+    const event = await api.createSchedule({ goal: "本机事件", workspace: "", trigger: { kind: "event" } });
+    expect(received[1]).toEqual({ goal: "本机事件", workspaces: [], trigger: { kind: "event" } });
+    expect(event?.next_fire_at).toBeNull();
+  });
+
+  it("offers four trigger types in the schedule pane", () => {
+    const html = renderToStaticMarkup(
+      <SettingsDialog open initialTab="schedule" api={createSettingsApi(createDemoHostClient())}
+        onClose={() => undefined} />,
+    );
+    expect(html).toContain('<option value="interval"');
+    expect(html).toContain('<option value="calendar"');
+    expect(html).toContain('<option value="file_arrival"');
+    expect(html).toContain('<option value="event"');
   });
 
   it("renders SettingsDialog tabs and AppHeader settings entry cleanly", () => {

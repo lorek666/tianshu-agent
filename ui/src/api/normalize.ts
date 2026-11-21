@@ -48,6 +48,9 @@ export function normalizeRun(raw: unknown): RunView | null {
   const runId = readString(record, "run_id", "id");
   const taskId = readString(record, "task_id");
   if (runId === null || taskId === null) return null;
+  const workflow = asRecord(record.workflow);
+  const workflowMode = workflow.mode;
+  const question = readString(asRecord(record.clarification), "question");
   return {
     run_id: runId,
     task_id: taskId,
@@ -62,6 +65,10 @@ export function normalizeRun(raw: unknown): RunView | null {
     n_applied: asNumber(record.n_applied) ?? 0,
     n_unknown: asNumber(record.n_unknown) ?? 0,
     undoable: asBoolean(record.undoable) ?? false,
+    ...(question ? { clarification: { question } } : {}),
+    ...(workflowMode === "execute" || workflowMode === "plan" || workflowMode === "compact"
+      ? { workflow: { mode: workflowMode, source_run_id: readString(workflow, "source_run_id") } }
+      : {}),
   };
 }
 

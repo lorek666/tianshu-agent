@@ -48,6 +48,7 @@ from .credentials import (
     register_secret,
 )
 from .errors import TianshuError
+from .task_attachments import AttachmentError, plain_messages
 
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
 FinishReason = str
@@ -582,6 +583,13 @@ def _reject_continuation(messages: list[dict[str, Any]]) -> None:
         raise ModelError(str(exc), kind="protocol", retryable=False) from None
 
 
+def _provider_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        return plain_messages(messages)
+    except AttachmentError as exc:
+        raise ModelError(str(exc), kind="protocol", retryable=False) from None
+
+
 def _credential_for(provider: str, capability_class: str = "llm") -> str:
     """经凭据接缝取密钥；未配置返回空串（由 `_HttpModel` 统一报「缺少 API key」）。
 
@@ -746,7 +754,7 @@ class OpenAICompatibleModel(_HttpModel):
         _reject_continuation(messages)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _provider_text_messages(messages),
             "temperature": 0,
         }
         if tools:
@@ -1017,7 +1025,7 @@ class AnthropicMessagesModel(_HttpModel):
 
     def _request(self, messages, tools):
         _reject_continuation(messages)
-        system, converted = to_anthropic_messages(messages)
+        system, converted = to_anthropic_messages(_provider_text_messages(messages))
         body: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,

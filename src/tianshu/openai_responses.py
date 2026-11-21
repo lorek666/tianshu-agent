@@ -9,10 +9,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .continuation import (
+    COMPACTION_REF_VERSION,
     ContinuationRef,
     project_output,
     require_scope,
     responses_endpoint,
+    validate_compact_threshold,
 )
 from .model import (
     ModelError,
@@ -23,6 +25,7 @@ from .model import (
     _credential_for,
     _HttpModel,
 )
+from .task_attachments import AttachmentError, text_attachment, validated_attachments
 
 
 def _protocol() -> ModelError:
@@ -73,6 +76,8 @@ class OpenAIResponsesModel(_HttpModel):
         api_key: str | None = None,
         timeout: float = 60.0,
         transport: Transport | None = None,
+        allow_image_attachments: bool = False,
+        compact_threshold: int | None = None,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("Responses 必须显式指定 model")
@@ -85,6 +90,8 @@ class OpenAIResponsesModel(_HttpModel):
             env_key="TIANSHU_API_KEY", timeout=timeout, transport=transport,
         )
         self._endpoint = endpoint
+        self.compact_threshold = validate_compact_threshold(compact_threshold, responses=True)
+        self.supports_image_attachments = allow_image_attachments is True
 
     def continuation_scope(self) -> tuple[str, str, str]:
         return self.ADAPTER, self._endpoint, self.model
@@ -100,13 +107,31 @@ class OpenAIResponsesModel(_HttpModel):
                     from .model_messages import assistant_message_from_payload
 
                     raw = ref.to_payload()["output_items"]
-                    text, calls, *_ = project_output(raw)
+                    if ref.has_compaction and self.compact_threshold is None:
+                        raise ValueError
+                    text, calls, *_ = project_output(raw, compaction=ref.has_compaction)
                     projected = assistant_message_from_payload({
                         "content": text, "tool_calls": calls, "continuation": ref.to_payload(),
                     })
                     if any(msg.get(k) != projected.get(k) for k in ("content", "tool_calls")):
                         raise ValueError
                     items.extend(raw)
+                elif "attachments" in msg:
+                    if msg.get("role") != "user" or not isinstance(msg.get("content"), str):
+                        raise AttachmentError("附件只能随用户消息发送")
+                    parts = [{"type": "input_text", "text": msg["content"]}]
+                    for attachment, raw in validated_attachments(msg["attachments"]):
+                        mime = attachment["media_type"]
+                        if mime == "text/plain":
+                            parts.append({"type": "input_text",
+                                          "text": text_attachment(attachment["name"], raw)})
+                        elif self.supports_image_attachments:
+                            encoded = attachment["data_base64"]
+                            parts.append({"type": "input_image", "detail": "auto",
+                                          "image_url": f"data:{mime};base64,{encoded}"})
+                        else:
+                            raise AttachmentError("所选模型未开启图片附件能力")
+                    items.append({"role": "user", "content": parts})
                 elif msg.get("role") == "tool":
                     items.append({
                         "type": "function_call_output", "call_id": msg["tool_call_id"],
@@ -119,6 +144,8 @@ class OpenAIResponsesModel(_HttpModel):
                     items.append(copy.deepcopy(msg))
                 else:
                     raise ValueError
+        except AttachmentError as exc:
+            raise ModelError(str(exc), kind="protocol", retryable=False) from None
         except (ValueError, TypeError, KeyError):
             raise ModelError("模型续接作用域或消息不兼容，请创建新 Run", kind="protocol") from None
         body = {
@@ -134,6 +161,10 @@ class OpenAIResponsesModel(_HttpModel):
                 for t in tools
             ],
         }
+        if self.compact_threshold is not None:
+            body["context_management"] = [
+                {"type": "compaction", "compact_threshold": self.compact_threshold}
+            ]
         return self._endpoint, body, {"Authorization": f"Bearer {self.api_key}"}
 
     def _parse(self, data):
@@ -145,7 +176,14 @@ class OpenAIResponsesModel(_HttpModel):
         ):
             raise _protocol()
         try:
-            content, calls, refusal, complete, visible = project_output(data.get("output"))
+            output = data.get("output")
+            has_compaction = isinstance(output, list) and any(
+                isinstance(item, dict) and item.get("type") == "compaction" for item in output
+            )
+            if has_compaction and (self.compact_threshold is None or data["status"] != "completed"):
+                raise _protocol()
+            content, calls, refusal, complete, visible = project_output(output,
+                                                                         compaction=has_compaction)
             if data["status"] == "incomplete":
                 reason = (data.get("incomplete_details") or {}).get("reason")
                 finish = {
@@ -159,7 +197,8 @@ class OpenAIResponsesModel(_HttpModel):
                     raise _protocol()
                 finish = "content_filtered" if refusal else "tool_use" if calls else "end_turn"
             ref = ContinuationRef({
-                "schema_version": "1.0", "adapter": self.ADAPTER,
+                "schema_version": COMPACTION_REF_VERSION if has_compaction else "1.0",
+                "adapter": self.ADAPTER,
                 "endpoint": self._endpoint, "model": self.model,
                 "output_items": data["output"],
             })
@@ -292,7 +331,7 @@ class _ResponseStream:
             if (
                 type(index) is not int or index != len(self.items)
                 or not isinstance(item, dict)
-                or item.get("type") not in ("reasoning", "message", "function_call")
+                or item.get("type") not in ("reasoning", "message", "function_call", "compaction")
                 or not isinstance(item.get("id"), str) or not item["id"]
                 or any(i["id"] == item["id"] for i in self.items)
                 or ("status" in item and item["status"] not in (
@@ -406,6 +445,8 @@ class _ResponseStream:
 
     def _seed_item(self, index: int, item: dict[str, Any]) -> None:
         """added 里已有的正文同样是已观察前缀，不能被 done 静默替换。"""
+        if item["type"] == "compaction":
+            return
         if item["type"] == "function_call":
             fields = [("arguments", "_argument_index", [{"arguments": item.get("arguments")}])]
         else:

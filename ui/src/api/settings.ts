@@ -8,7 +8,16 @@ import type { HostClient } from "./host";
 import { RPC } from "./types";
 import { asArray, asBoolean, asNumber, asRecord, readString } from "../lib/values";
 
-export interface ModelConfigView {
+export interface ModelProfileInput {
+  mode: string;
+  model_name: string;
+  base_url: string;
+  credential_backend: string;
+  allow_image_attachments?: boolean;
+  compact_threshold?: number;
+}
+
+export interface ModelConfigView extends ModelProfileInput {
   mode: "scripted" | "openai" | "anthropic" | string;
   model_name: string;
   base_url: string;
@@ -32,14 +41,27 @@ export interface CredentialStatusView {
 export interface SettingsView {
   model: ModelConfigView;
   credentials: CredentialStatusView[];
+  profiles?: Record<string, ModelProfileInput>;
 }
+
+export type ScheduleTrigger =
+  | { kind: "interval" }
+  | { kind: "calendar"; time: string; timezone: string; weekdays: number[] }
+  | { kind: "file_arrival"; directory: string }
+  | { kind: "event" };
+
+export type ScheduleInput = { goal: string; workspace: string } & (
+  | { interval_seconds: number }
+  | { trigger: Exclude<ScheduleTrigger, { kind: "interval" }> }
+);
 
 export interface ScheduleView {
   schedule_id: string;
   goal: string;
   workspaces: { root_path: string; mode: string }[];
-  interval_seconds: number;
-  next_fire_at: number;
+  trigger: ScheduleTrigger;
+  interval_seconds: number | null;
+  next_fire_at: number | null;
   enabled: boolean;
   created_at: number;
   last_fired_at: number | null;
@@ -101,20 +123,13 @@ export interface DiagnosticExportResult {
 
 export interface SettingsApi {
   getSettings(): Promise<SettingsView>;
-  configureModel(input: {
-    mode: string;
-    model_name: string;
-    base_url: string;
-    credential_backend: string;
-  }): Promise<SettingsView>;
+  configureModel(input: ModelProfileInput): Promise<SettingsView>;
+  saveModelProfile?(name: string, config: ModelProfileInput): Promise<SettingsView>;
+  removeModelProfile?(name: string): Promise<SettingsView>;
   setCredential(provider: string, secret: string, backend: string): Promise<CredentialStatusView[]>;
   deleteCredential(provider: string, backend: string): Promise<CredentialStatusView[]>;
   listSchedules(): Promise<ScheduleView[]>;
-  createSchedule(input: {
-    goal: string;
-    workspace: string;
-    interval_seconds: number;
-  }): Promise<ScheduleView | null>;
+  createSchedule(input: ScheduleInput): Promise<ScheduleView | null>;
   setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView | null>;
   removeSchedule(scheduleId: string): Promise<void>;
   getBudgetOverview(): Promise<BudgetOverviewView>;
@@ -142,31 +157,61 @@ function normalizeCredential(raw: unknown): CredentialStatusView | null {
   };
 }
 
+function normalizeProfile(rec: Record<string, unknown>): ModelProfileInput {
+  const threshold = asNumber(rec["compact_threshold"]);
+  return {
+    mode: readString(rec, "mode") ?? "scripted",
+    model_name: readString(rec, "model_name") ?? "",
+    base_url: readString(rec, "base_url") ?? "",
+    credential_backend: readString(rec, "credential_backend") ?? "env",
+    ...(rec["allow_image_attachments"] === true ? { allow_image_attachments: true } : {}),
+    ...(threshold === null ? {} : { compact_threshold: threshold }),
+  };
+}
+
 export function normalizeSettings(raw: unknown): SettingsView {
   const rec = asRecord(raw);
   const modelRec = asRecord(rec["model"]);
-  const mode = readString(modelRec, "mode") ?? "scripted";
-  const modelName = readString(modelRec, "model_name") ?? "";
+  const model = normalizeProfile(modelRec);
   return {
     model: {
-      mode,
-      model_name: modelName,
-      base_url: readString(modelRec, "base_url") ?? "",
-      credential_backend: readString(modelRec, "credential_backend") ?? "env",
-      summary:
-        readString(modelRec, "summary") ??
-        (mode === "scripted" ? "演示脚本模型（离线）" : `${mode} · ${modelName}`),
+      ...model,
+      summary: readString(modelRec, "summary") ??
+        (model.mode === "scripted" ? "演示脚本模型（离线）" : `${model.mode} · ${model.model_name}`),
     },
+    profiles: Object.fromEntries(Object.entries(asRecord(rec["profiles"]))
+      .map(([name, profile]) => [name, normalizeProfile(asRecord(profile))])),
     credentials: asArray(rec["credentials"])
       .map(normalizeCredential)
       .filter((item): item is CredentialStatusView => item !== null),
   };
 }
 
+function normalizeScheduleTrigger(raw: unknown, interval: number | null): ScheduleTrigger | null {
+  const rec = asRecord(raw);
+  switch (rec["kind"]) {
+    case "interval": return interval === null ? null : { kind: "interval" };
+    case "calendar": {
+      const time = readString(rec, "time");
+      const timezone = readString(rec, "timezone");
+      const weekdays = asArray(rec["weekdays"]).filter((day): day is number => typeof day === "number");
+      return time && timezone && weekdays.length ? { kind: "calendar", time, timezone, weekdays } : null;
+    }
+    case "file_arrival": {
+      const directory = readString(rec, "directory");
+      return directory ? { kind: "file_arrival", directory } : null;
+    }
+    case "event": return { kind: "event" };
+    default: return raw === undefined && interval !== null ? { kind: "interval" } : null;
+  }
+}
+
 function normalizeSchedule(raw: unknown): ScheduleView | null {
   const rec = asRecord(raw);
   const id = readString(rec, "schedule_id");
-  if (id === null) return null;
+  const interval = asNumber(rec["interval_seconds"]);
+  const trigger = normalizeScheduleTrigger(rec["trigger"], interval);
+  if (id === null || trigger === null) return null;
   const workspaces = asArray(rec["workspaces"]).flatMap((ws) => {
     const wrec = asRecord(ws);
     const root = readString(wrec, "root_path");
@@ -177,8 +222,9 @@ function normalizeSchedule(raw: unknown): ScheduleView | null {
     schedule_id: id,
     goal: readString(rec, "goal") ?? "",
     workspaces,
-    interval_seconds: asNumber(rec["interval_seconds"]) ?? 60,
-    next_fire_at: asNumber(rec["next_fire_at"]) ?? 0,
+    trigger,
+    interval_seconds: interval,
+    next_fire_at: asNumber(rec["next_fire_at"]),
     enabled: asBoolean(rec["enabled"]) !== false,
     created_at: asNumber(rec["created_at"]) ?? 0,
     last_fired_at: asNumber(rec["last_fired_at"]),
@@ -224,8 +270,16 @@ export function createSettingsApi(client: HostClient): SettingsApi {
     async getSettings() {
       return normalizeSettings(await client.rpc<unknown>(RPC.settingsGet, {}));
     },
+    async saveModelProfile(name, config) {
+      await client.rpc(RPC.modelProfileSet, { name, config });
+      return normalizeSettings(await client.rpc(RPC.settingsGet, {}));
+    },
+    async removeModelProfile(name) {
+      await client.rpc(RPC.modelProfileRemove, { name });
+      return normalizeSettings(await client.rpc(RPC.settingsGet, {}));
+    },
     async configureModel(input) {
-      return normalizeSettings(await client.rpc<unknown>(RPC.modelConfigure, input));
+      return normalizeSettings(await client.rpc<unknown>(RPC.modelConfigure, { ...input }));
     },
     async setCredential(provider, secret, backend) {
       const raw = asRecord(
@@ -254,11 +308,17 @@ export function createSettingsApi(client: HostClient): SettingsApi {
         input.workspace.trim() === ""
           ? []
           : [{ root_path: input.workspace.trim(), mode: "writable" }];
+      if ("trigger" in input && input.trigger.kind === "file_arrival") {
+        workspaces.push({ root_path: input.trigger.directory, mode: "readonly" });
+      }
+      const triggerInput = "trigger" in input
+        ? { trigger: input.trigger }
+        : { interval_seconds: input.interval_seconds };
       const raw = asRecord(
         await client.rpc<unknown>(RPC.scheduleCreate, {
           goal: input.goal,
           workspaces,
-          interval_seconds: input.interval_seconds,
+          ...triggerInput,
         }),
       );
       return normalizeSchedule(raw["schedule"]);

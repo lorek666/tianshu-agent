@@ -618,7 +618,7 @@ class _TaskCursorRebuildMixin:
     def _rebuild_responses_cursor(self, run_id: str) -> None:
         from ._responses_rebuild import rebuild_responses_progress
 
-        rebuilt = rebuild_responses_progress(self._log.read_run(run_id))
+        rebuilt = rebuild_responses_progress(self._log, self._log.read_run(run_id))
         if rebuilt is None:
             return
         cursor, turns, saved = rebuilt

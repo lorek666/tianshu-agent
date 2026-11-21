@@ -27,6 +27,7 @@ from ._dispatcher_types import (
     _Target,
     resolve_scheme_resource,
 )
+from .browser_navigation import BROWSER_TOOL, verify_navigation
 from .disk_admission import DiskAdmissionError
 from .errors import (
     RunFenced,
@@ -94,6 +95,7 @@ from .tools import (
     AdmittedCall,
     check_request_preconditions,
 )
+from .web_search import SEARCH_TOOL, search_target
 from .workspace import ResourceIdentity, Workspace, WorkspaceBinding, overlap_key
 
 
@@ -667,7 +669,7 @@ class _DispatcherAuthorityMixin:
                     raise DispatchDenied(reason, "c4.memory_scope_denied")
                 return _Authority(run, task, bindings, [], [])
             if ref.kind == KIND_NETWORK:
-                return self._authority_network(request, task, run, bindings, ref)
+                return self._authority_network(request, task, run, bindings, ref, args or {})
             if ref.kind == KIND_MCP:
                 return self._authority_mcp(
                     request, task, run, bindings, ref, discovery=mcp_discovery,
@@ -744,6 +746,7 @@ class _DispatcherAuthorityMixin:
         run: Run,
         bindings: list[WorkspaceBinding],
         ref: ResourceRef,
+        args: dict[str, Any],
     ) -> _Authority:
         """网络资源的授权：任务级白名单 + 工具归属。
 
@@ -758,6 +761,19 @@ class _DispatcherAuthorityMixin:
                 f"非网络工具收到网络资源：{request.tool_id} → {ref.uri}",
                 "dispatch.network_resource_mismatch",
             )
+        if request.tool_id == BROWSER_TOOL:
+            try:
+                verify_navigation(self._log, run.run_id, args, ref.uri)
+            except ToolArgumentError as exc:
+                raise DispatchDenied(str(exc), "dispatch.network_resource_mismatch") from exc
+        if request.tool_id == SEARCH_TOOL:
+            try:
+                expected = search_target(args).to_uri()
+            except ToolArgumentError as exc:
+                raise DispatchDenied(str(exc), "dispatch.network_resource_mismatch") from exc
+            if expected != ref.uri:
+                raise DispatchDenied("搜索词或搜索源与批准目标不一致",
+                                     "dispatch.network_resource_mismatch")
         target = ref.network_target
         declared = tuple(getattr(task, "outbound_allow", ()) or ())
         if not declared:

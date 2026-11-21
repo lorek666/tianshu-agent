@@ -6,26 +6,35 @@ import json
 from copy import deepcopy
 from typing import Any
 
+from .context import RESPONSES_CONTEXT_VERSIONS
+from .conversation import GuidanceHistory, checked_conversation
 from .errors import TianshuError
-from .events import Event, canonical_bytes, sha256_hex
+from .events import Event, EventLog, canonical_bytes, sha256_hex
 from .model_messages import assistant_message_from_payload
+from .task_attachments import attachments_fact
 from .tool_registry import current_registry
 from .tools import SUBTASK_TOOL_IDS
 
 
-def rebuild_responses_progress(events: list[Event]):
+def rebuild_responses_progress(log: EventLog, events: list[Event]):
     # Loop 初始化函数没有 I/O；局部导入避开 TaskStore/Loop 装配环。
     from .loop import _fresh_progress
+    from .workflow import workflow_for
 
     if not any(
         (e.type == "model.result" and "continuation" in e.payload)
         or (e.type == "model.intent" and
-            (e.payload.get("context") or {}).get("budget_version") == "ctx-responses-v1")
+            (e.payload.get("context") or {}).get("budget_version") in RESPONSES_CONTEXT_VERSIONS)
         for e in events
     ):
         return None
     start = next(e for e in events if e.type == "run.start")
-    progress = _fresh_progress(start.payload["task"], start.payload.get("out") or None)
+    workflow = workflow_for(log, start.run_id, events=events)
+    compact = workflow is not None and workflow.mode == "compact"
+    progress = _fresh_progress(
+        start.payload["task"], start.payload.get("out") or None,
+        checked_conversation(log, events), attachments_fact(events), workflow,
+    )
     turns: list[tuple[Event, dict[str, Any]]] = []
     result: dict[str, Any] | None = None
     last_cursor: Event | None = None
@@ -42,7 +51,15 @@ def rebuild_responses_progress(events: list[Event]):
         and park.seq == cursor.seq + 1 and park.run_id == cursor.run_id
         and park.payload["claim_epoch"] == cursor.payload["claim_epoch"]
     }
+    guidance = GuidanceHistory()
     for ev in events:
+        message = guidance.consume_event(ev)
+        if message is not None:
+            if progress.pending:
+                raise TianshuError("补充要求不能插入有未完成工具的模型回合")
+            progress.messages.append(message)
+            progress.message_seqs.append(ev.seq)
+            progress.model_turn = None
         p = ev.payload
         if ev.type == "model.intent":
             progress.model_attempts += 1
@@ -83,7 +100,7 @@ def rebuild_responses_progress(events: list[Event]):
             if sha256_hex(canonical_bytes(turn)) != p["payload_hash"]:
                 raise TianshuError("Responses turn 与持久化模型结果摘要不一致")
             turns.append((ev, turn))
-            if turn["finish_reason"] == "tool_use" and not progress.pending:
+            if turn["finish_reason"] == "tool_use" and not progress.pending and not compact:
                 progress.model_turn = None
         elif ev.type in ("tool.result", "tool.not_dispatched"):
             output = p.get("output", {}) if ev.type == "tool.result" else {

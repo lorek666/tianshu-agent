@@ -164,6 +164,49 @@ def _sanitize_event_payload(
     return safe
 
 
+def _collect_schedules(
+    conn: sqlite3.Connection, tables: set[str], redact_sensitive: bool, extra: Sequence[str],
+) -> list[dict[str, Any]]:
+    columns = (
+        "schedule_id, goal, workspaces_json, interval_seconds, enabled, next_fire_at,"
+        " last_fired_at, last_error, created_at"
+    )
+    rows = []
+    if "schedules" in tables:
+        rows.extend(conn.execute(f"SELECT {columns} FROM schedules"))
+    if "schedules_triggers_v1" in tables:
+        rows.extend(conn.execute(f"SELECT {columns}, trigger_json FROM schedules_triggers_v1"))
+    result = []
+    for row in sorted(rows, key=lambda row: (row["created_at"], row["schedule_id"])):
+        d = dict(row)
+        ws_raw = d.pop("workspaces_json")
+        try:
+            ws_list = json.loads(ws_raw)
+        except json.JSONDecodeError:
+            ws_list = []
+        if "trigger_json" in d:
+            try:
+                trigger = json.loads(d.pop("trigger_json"))
+            except json.JSONDecodeError:
+                trigger = None
+            d["interval_seconds"] = None
+        else:
+            trigger = {"kind": "interval"}
+        if redact_sensitive:
+            kind = trigger.get("kind") if isinstance(trigger, dict) else None
+            allowed_kinds = ("interval", "calendar", "file_arrival", "event")
+            d["trigger"] = {"kind": kind} if kind in allowed_kinds else None
+            d["goal"] = "<GOAL_REDACTED>"
+            d["workspace_count"] = len(ws_list) if isinstance(ws_list, list) else 0
+            if d["last_error"]:
+                d["last_error"] = redact_diagnostic_text(d["last_error"], extra_paths=extra)
+        else:
+            d["trigger"] = trigger
+            d["workspaces"] = ws_list
+        result.append(d)
+    return result
+
+
 def _collect_sections(
     data_root: Path,
     selected: tuple[str, ...],
@@ -248,35 +291,7 @@ def _collect_sections(
                     collected["events_timeline"] = []
 
             if "schedules" in selected:
-                if "schedules" in tables:
-                    rows = conn.execute(
-                        "SELECT schedule_id, goal, workspaces_json, interval_seconds,"
-                        " enabled, next_fire_at, last_fired_at, last_error, created_at"
-                        " FROM schedules ORDER BY created_at ASC"
-                    ).fetchall()
-                    sched_out = []
-                    for row in rows:
-                        d = dict(row)
-                        ws_raw = d.pop("workspaces_json", "[]")
-                        try:
-                            ws_list = json.loads(ws_raw) if ws_raw else []
-                        except json.JSONDecodeError:
-                            ws_list = []
-                        if redact_sensitive:
-                            d["goal"] = "<GOAL_REDACTED>"
-                            d["workspace_count"] = (
-                                len(ws_list) if isinstance(ws_list, list) else 0
-                            )
-                            if d.get("last_error"):
-                                d["last_error"] = redact_diagnostic_text(
-                                    str(d["last_error"]), extra_paths=extra
-                                )
-                        else:
-                            d["workspaces"] = ws_list
-                        sched_out.append(d)
-                    collected["schedules"] = sched_out
-                else:
-                    collected["schedules"] = []
+                collected["schedules"] = _collect_schedules(conn, tables, redact_sensitive, extra)
         finally:
             conn.close()
     else:

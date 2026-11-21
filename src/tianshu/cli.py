@@ -95,16 +95,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser(
         "run",
-        help="跑一次任务；或用子命令控制已有 Run（start/status/pause/resume/cancel）",
+        help="执行、计划、压缩上下文，或查询和控制已有 Run",
     )
     r.add_argument(
         "action", nargs="?", default=None,
-        choices=["start", "status", "pause", "resume", "cancel"],
+        choices=["start", "status", "pause", "resume", "cancel", "plan", "compact", "execute-plan"],
         help="省略时按兼容入口处理：--task/--workspace 建 Task 后立刻 start",
     )
     r.add_argument("--task-id", default=None,
                    help="对已存在的 Task 开一次执行（start）")
-    r.add_argument("--run-id", default=None, help="status/pause/resume/cancel 的目标")
+    r.add_argument("--run-id", default=None, help="目标 Run；compact 来源或 execute-plan 的计划")
+    r.add_argument("--request-id", default=None, help="工作流请求幂等标识；重试同一次请求时复用")
+    r.add_argument("--goal-revision", type=int, default=None,
+                   help="execute-plan 确认时绑定的目标修订")
     r.add_argument("--workspace", type=Path, default=None, action="append",
                    help="可重复；兼容入口与 task create 用")
     r.add_argument("--readonly", type=Path, default=None, action="append",
@@ -160,6 +163,8 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--model-name", default=None,
                    help="模型 id；openai 默认 gpt-4o-mini，anthropic 必须显式给")
     r.add_argument("--base-url", default=None)
+    r.add_argument("--compact-threshold", type=int, default=None,
+                   help="Responses 压缩阈值（令牌）；默认关闭")
     r.add_argument("--max-turns", type=int, default=8)
     r.add_argument("--max-total-tokens", type=int, default=20_000)
     r.add_argument("--data-root", type=Path, default=None,
@@ -281,7 +286,8 @@ def _model_from(args: argparse.Namespace) -> Model:
     if provider == "openai-responses":
         if not name or not name.strip():
             raise TianshuError("openai-responses provider 需要显式 --model-name")
-        return OpenAIResponsesModel(name, base_url=args.base_url)
+        return OpenAIResponsesModel(name, base_url=args.base_url,
+                                    compact_threshold=getattr(args, "compact_threshold", None))
     if provider == "anthropic":
         if not name:
             # 不替用户猜模型 id：猜错的表现是 404，比"必须显式给"难查得多。
@@ -408,7 +414,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    needs_mcp = args.action in (None, "start", "resume")
+    needs_mcp = args.action in (None, "start", "resume", "plan", "execute-plan")
     stack = _authority_stack(args.db, args.data_root, mcp=needs_mcp)
     try:
         action = args.action
@@ -420,6 +426,37 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return _run_pause(stack, args)
         if action == "cancel":
             return _run_cancel(stack, args)
+        if action in ("plan", "compact", "execute-plan"):
+            from .control import ControlPlane
+
+            model = _model_from(args)
+            plane = ControlPlane(
+                stack, model=model, limits=Limits(args.max_turns, args.max_total_tokens),
+            )
+            params = {}
+            if args.request_id is not None:
+                params["request_id"] = args.request_id
+            if action == "execute-plan":
+                method = "plan.execute"
+                params.update(plan_run_id=args.run_id or "", goal_revision=args.goal_revision)
+            else:
+                method = "run.compact" if action == "compact" else "run.start"
+                task_id = args.task_id
+                if action == "plan" and not task_id and args.task:
+                    task_id = stack.tasks.create_task(args.task, _bindings(args)).task_id
+                params["task_id"] = task_id or ""
+                if action == "plan":
+                    params["mode"] = "plan"
+                elif args.run_id:
+                    params["source_run_id"] = args.run_id
+            envelope = plane.handle(method, params)
+            run = envelope["run"]
+            if run["state"] in TERMINAL_STATES:
+                return _run_status(
+                    stack, argparse.Namespace(**{**vars(args), "run_id": run["run_id"]}),
+                )
+            result = _engine(stack, args).resume_run(run["run_id"])
+            return _report(stack, result, args)
         if action == "start":
             result = _engine(stack, args).start(
                 args.task_id or "",
@@ -475,13 +512,28 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
 
 
 def _report(stack, result, args: argparse.Namespace) -> int:
+    from .workflow import final_text, workflow_for
+
+    workflow = workflow_for(stack.log, result.run_id)
+    text = ""
+    if (workflow is not None and workflow.mode in ("plan", "compact")
+            and result.state == "succeeded"):
+        text = final_text(stack.log, stack.tasks.get_run(result.run_id))
     if args.json:
         report = replay(stack.log, result.run_id)
+        workflow_result = {"workflow": {"mode": workflow.mode, "text": text}} if workflow else {}
         print(json.dumps(
-            {"run": result.__dict__, "replay": report.__dict__},
+            {"run": result.__dict__, "replay": report.__dict__, **workflow_result},
             ensure_ascii=False, indent=2, default=str))
         return _exit_code(result) if report.ok else 1
     _print_result(result, as_json=False)
+    if workflow is not None and workflow.mode in ("plan", "compact") and text:
+        print(f"\n{'实施计划' if workflow.mode == 'plan' else '压缩摘要'}：\n{text}\n")
+        if workflow.mode == "plan":
+            revision = stack.tasks.get_run(result.run_id).goal_revision
+            print("确认并执行：tianshu run execute-plan --run-id "
+                  f"{result.run_id} --goal-revision {revision}"
+                  "（沿用相同 --db / --data-root 与模型参数）")
     report = replay(stack.log, result.run_id)
     print(f"replay : {'通过' if report.ok else '失败'}"
           f"  ({report.events} 事件 / {report.messages_verified} 次消息校验)")
