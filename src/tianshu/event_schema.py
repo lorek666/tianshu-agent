@@ -510,7 +510,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "run.workflow_request": _obj(
         {
-            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}(?![\s\S])"),
             "requested_source_run_id": _opt(_s(pattern=r"^.+$")),
         },
         required=("request_id", "requested_source_run_id"),

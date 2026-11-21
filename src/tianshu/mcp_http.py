@@ -35,6 +35,10 @@ from .mcp import (
 from .resources import NetworkTarget, ResourceError
 
 _PROTOCOLS = frozenset({"2025-03-26", "2025-06-18"})
+_CHUNK_SIZE = re.compile(rb"([0-9a-fA-F]{1,16})(?:[ \t]*;[\t -~]*)?\r\n")
+_TRAILER = re.compile(rb"([!#$%&'*+.^_`|~0-9a-zA-Z-]+):[\t\x20-\x7e\x80-\xff]*\r\n")
+_CHUNK_METADATA_BYTES = 65_536
+_CHUNK_LINE_BYTES = 4096
 
 
 def endpoint_for(url: str) -> NetworkTarget:
@@ -101,11 +105,70 @@ def _decode(data: bytes, request_id: int) -> dict[str, Any] | None:
     return payload["result"]
 
 
+def _response_length(response: http.client.HTTPResponse) -> int | None:
+    lengths = response.headers.get_all("Content-Length", [])
+    encodings = response.headers.get_all("Transfer-Encoding", [])
+    if (response.headers.defects or len(lengths) > 1 or len(encodings) > 1
+            or (encodings and (lengths or response.version != 11 or not response.chunked))
+            or (lengths and (response.length is None
+                             or not re.fullmatch(r"[0-9]+", lengths[0].strip(" \t"))))):
+        raise McpProtocolError("远程 MCP HTTP 响应分帧不明确")
+    return response.length if lengths else None
+
+
+def _read_chunked_json(response: http.client.HTTPResponse) -> bytes:
+    # CPython 3.12's chunk reader discards the payload delimiter without checking it
+    # and treats EOF in the trailers as success. JSON needs a complete HTTP message.
+    stream = response.fp
+    if stream is None:
+        raise McpProtocolError("远程 MCP HTTP 响应流已关闭")
+    data = bytearray()
+    overhead = _CHUNK_METADATA_BYTES
+
+    def read_line() -> bytes:
+        nonlocal overhead
+        limit = min(overhead, _CHUNK_LINE_BYTES)
+        line = stream.readline(limit + 1)
+        if not line or len(line) > limit or not line.endswith(b"\r\n"):
+            raise McpProtocolError("远程 MCP 分块响应头不完整或超限")
+        overhead -= len(line)
+        return line
+
+    while True:
+        chunk = _CHUNK_SIZE.fullmatch(read_line())
+        if chunk is None:
+            raise McpProtocolError("远程 MCP 响应的分块长度无效")
+        size = int(chunk[1], 16)
+        if size == 0:
+            break
+        if size > MCP_MAX_MESSAGE_BYTES - len(data) or overhead < 2:
+            raise McpProtocolError("远程 MCP 分块响应超出上限")
+        block = stream.read(size + 2)
+        if len(block) != size + 2 or block[-2:] != b"\r\n":
+            raise McpProtocolError("远程 MCP HTTP 分块不完整")
+        overhead -= 2
+        data.extend(block[:-2])
+
+    while (line := read_line()) != b"\r\n":
+        trailer = _TRAILER.fullmatch(line)
+        if trailer is None or trailer[1].lower() in {b"content-length", b"transfer-encoding"}:
+            raise McpProtocolError("远程 MCP HTTP 尾部字段无效")
+    return bytes(data)
+
+
 def _read_result(response: http.client.HTTPResponse, request_id: int) -> dict[str, Any]:
+    length = _response_length(response)
     content_type = response.headers.get_content_type()
     if content_type == "application/json":
-        data = response.read(MCP_MAX_MESSAGE_BYTES + 1)
-        if len(data) <= MCP_MAX_MESSAGE_BYTES and (result := _decode(data, request_id)) is not None:
+        if response.chunked:
+            data = _read_chunked_json(response)
+        else:
+            if length is None or length > MCP_MAX_MESSAGE_BYTES:
+                raise McpProtocolError("远程 MCP JSON 响应缺少明确的有界长度")
+            data = response.read(length)
+            if len(data) != length:
+                raise McpProtocolError("远程 MCP JSON 响应未读满声明的长度")
+        if (result := _decode(data, request_id)) is not None:
             return result
     elif content_type == "text/event-stream":
         # Stop at the matching result, even if the peer keeps the event stream open.

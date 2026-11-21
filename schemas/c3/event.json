@@ -3161,7 +3161,7 @@
         "additionalProperties": false,
         "properties": {
           "request_id": {
-            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])",
             "type": "string"
           },
           "requested_source_run_id": {
