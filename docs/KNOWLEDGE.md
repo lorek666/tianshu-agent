@@ -273,6 +273,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **重建必须区分保存点与其后的事实（2026-11-21）**：Responses 的恢复计数由最后保存的游标加其后 `model.intent` 得到；控制面尚未写首个 `run.cursor` 时，以 `run.start` 的初始进度作为保存点，不能先吸收 intent 再让恢复入口重复补计。等待子任务的事务先清空 `model_turn`、保存游标，再追加 `job.parked`；重建需识别相邻、同 Run、同 claim 的 `waiting_children` 事件对后核对原摘要，不能删掉哈希校验。连续真实崩溃、保留/删除/重建投影，以及父任务重复挂起与 Worker 唤醒均须覆盖，见[独立复审原件](evidence/openai-responses-2026-11-21/README.md)。
+
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
 - **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。
 - **测试 shell 的工具传输必须匹配生产 runner（2026-11-20）**：生产 Ubuntu asset-list shell 与 Windows Git Bash 的原生 jq 文本输出不同；测试 helper 仅在 Windows 请求 jq `--binary` 提供 LF，不 strip JSON/资产名。使用实际 shell、真实 jq 的受控 CRLF/LF 正负控，原 CR/LF 非法名及额外文件仍拒绝；生产 release workflow/白名单不因此改动。

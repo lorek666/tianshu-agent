@@ -3,7 +3,8 @@
 ## 范围与基线
 
 - 基线：`71eb57e`，包含已合入的独立 Responses 与模型用量 v2 契约。
-- 实现分支：`codex/openai-responses`；本记录不表示已合入 `main` 或已完成线上验收。
+- 实现与合入状态以 [PR #209](https://github.com/lorek666/tianshu-agent/pull/209) 为准；
+  本记录不表示已完成线上验收。
 - Python 3.12、标准库 HTTP/SSE，未新增运行时依赖，不涉及发行流程。
 
 ## 实现
@@ -33,7 +34,30 @@
   删除 cursor/turn 后重建、子进程 crashpoint、缓存用量、事务回滚与诊断脱敏测试。
 - 受影响域回归发现旧测试将当前模型事件版本写死为 v1；仅更新新写入断言，
   历史 v0/v1 schema 摘要和原始 fixture 保持固定。
-- 最终全量、lock/ruff、UI 构建、独立第二读者与 required CI 待冻结后填写。
+- 独立第二读者先后在 `8637a4f`、`6e9bf34` 返回 `blocker`；失败原件保留，
+  两次旧候选全量均被主动中止，未计为通过。
+- 剩余问题是等待子任务的游标/挂起事件顺序，以及首次保存点前崩溃的重复计数；
+  作者移植探针先复现失败，再修复。最终独立复核对
+  `b7c3773a7dcd310aafe765f2c456313a59742a2c`、
+  tree `eed4d8fd25f9b25745cb8a2469fbc794a0faeaab` 给出 `PASS`，
+  详见[三轮独立报告、探针与输出](../evidence/openai-responses-2026-11-21/README.md)。
+- `uv lock --check`、`uv run --frozen ruff check .`、`git diff --check` 通过。
+  UI 的 frozen install、typecheck、test、build 通过，dist 已提交；
+  后续恢复修复没有改变 UI 文件。
+- `b7c3773` 的全量实际退出 1：低磁盘测试仍将两个模型事件写死为 v1，
+  与已合入的用量 v2 契约冲突。定向复现后只修改该测试，明确要求四个指定事件
+  为 v2，其余事件仍为 v1；产品代码及历史 schema 未变，不把这轮红算作通过。
+- 仅测试修正提交 `fccd469325558dae9bc176a88f766b777614f217`、
+  tree `d6eb0cf9757ad07efa36771388b8e654f0c14eba` 已获独立 `PASS`；
+  [附录](../evidence/openai-responses-2026-11-21/TEST-ONLY-ADDENDUM.md)
+  保留定向红绿、错版负控及产品树零差异证明。
+- 最终冻结提交 `fccd469325558dae9bc176a88f766b777614f217` 的
+  `uv run --frozen pytest` 已完整退出 0。产品、测试、schema、UI、构建与 CI
+  路径的 Git tree 清单 SHA-256 为
+  `50ea342cff715e04c4082fe7c4397a60ca9e7381540f429d1e0ec7a27f496b93`；
+  后续收口仅修改文档，不改变该清单，复用上述产品探针与本机全量结论。
+  hosted required CI 与合并状态在 PR 中绑定最终 head/base/merge SHA，
+  本地验证或独立 PASS 均不代替远端门禁。
 
 ## 未验证范围
 
