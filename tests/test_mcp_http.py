@@ -27,6 +27,8 @@ def connector(monkeypatch):
     observed_after_intent = []
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
         def do_POST(self):
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
@@ -34,6 +36,8 @@ def connector(monkeypatch):
             method = body["method"]
             if method == "notifications/initialized":
                 self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 return
             if method == "initialize":
@@ -68,16 +72,41 @@ def connector(monkeypatch):
                     "content": [{"type": "text", "text": body["params"]["arguments"]["message"]}]
                 }
             response = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
-            use_sse = method == "tools/call"
+            framing = behavior.get("framing", "sse") if method == "tools/call" else "fixed"
+            use_sse = framing in {"sse", "sse-open"}
             if use_sse:
                 response = b": heartbeat\r\ndata: " + response + b"\r\n\r\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream" if use_sse else "application/json")
             if method == "initialize":
                 self.send_header("Mcp-Session-Id", "fixture-session")
-            self.send_header("Content-Length", str(len(response)))
+            self.send_header("Connection", "close")
+            if framing.startswith("chunked"):
+                self.send_header("Transfer-Encoding", "chunked")
+                if framing == "chunked-conflict":
+                    self.send_header("Content-Length", str(len(response)))
+                end = b"0\r\n\r\n"
+                if framing == "chunked-trailers":
+                    end = b"0\r\nX-Fixture: trailer\r\n\r\n"
+                elif framing == "chunked-short-trailer":
+                    end = b"0\r\nX-Fixture: trailer\r\n"
+                delimiter = b"xx" if framing == "chunked-bad-delimiter" else b"\r\n"
+                extension = ";fixture=yes" if framing == "chunked-trailers" else ""
+                response = f"{len(response):X}{extension}\r\n".encode() + response + delimiter + end
+            elif framing != "close-delimited":
+                length = len(response)
+                if framing in {"fixed-short", "sse-open"}:
+                    length += 7
+                elif framing == "fixed-oversized":
+                    length += 1_048_576
+                elif framing == "fixed-duplicate":
+                    self.send_header("Content-Length", str(length))
+                self.send_header("Content-Length", str(length))
             self.end_headers()
             self.wfile.write(response)
+            if framing == "sse-open":
+                self.wfile.flush()
+                behavior["released_before_close"] = behavior["close_stream"].wait(timeout=15)
 
         def log_message(self, *_args):
             pass
@@ -121,10 +150,28 @@ def test_rejects_untrusted_endpoint_configuration(url):
         McpServerConfig.from_dict("web", {"url": url})
 
 
-@pytest.mark.parametrize("status", [200, 307])
-def test_remote_tool_requires_approval_and_never_follows_redirect(tmp_path, connector, status):
+@pytest.mark.parametrize(("status", "framing", "expected_effect"), [
+    (307, "sse", "unknown"),
+    (200, "sse", "applied"),
+    (200, "sse-open", "applied"),
+    (200, "fixed", "applied"),
+    (200, "fixed-short", "unknown"),
+    (200, "fixed-oversized", "unknown"),
+    (200, "fixed-duplicate", "unknown"),
+    (200, "close-delimited", "unknown"),
+    (200, "chunked", "applied"),
+    (200, "chunked-trailers", "applied"),
+    (200, "chunked-short-trailer", "unknown"),
+    (200, "chunked-bad-delimiter", "unknown"),
+    (200, "chunked-conflict", "unknown"),
+])
+def test_remote_tool_requires_approval_and_complete_result(
+    tmp_path, connector, status, framing, expected_effect,
+):
     requests, behavior, observed = connector
     behavior["status"] = status
+    behavior["framing"] = framing
+    close_stream = behavior["close_stream"] = threading.Event()
     log = EventLog(tmp_path / "main.db", blob_dir=tmp_path / "blobs")
     clients = McpClients({"web": config()})
     stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=clients)
@@ -179,13 +226,20 @@ def test_remote_tool_requires_approval_and_never_follows_redirect(tmp_path, conn
         assert requests[-1][1]["MCP-Protocol-Version"] == "2025-06-18"
         assert "fixture-token" not in repr(rows)
         result_row = next(e.payload for e in rows if e.type == "tool.result")
-        if status == 200:
+        receipts = [e for e in rows if e.type == "receipt"]
+        assert result_row["effect_state"] == expected_effect
+        if expected_effect == "applied":
+            assert result_row["status"] == "succeeded" and len(receipts) == 1
             assert result_row["output"]["mcp"]["content"] == ["approved arg"]
             assert verify_receipts(log, run_id) == []
         else:
-            assert result_row["effect_state"] == "unknown"
+            assert result_row["status"] == "failed" and not receipts
+        if framing == "sse-open":
+            assert "released_before_close" not in behavior, "SSE waited for the stream to close"
     finally:
+        close_stream.set()
         clients.close_all()
+        log.close()
 
 
 def test_remote_session_generation_cannot_reuse_approval(tmp_path, connector, monkeypatch):
