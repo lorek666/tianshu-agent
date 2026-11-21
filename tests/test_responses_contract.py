@@ -128,7 +128,8 @@ def test_continuation_input_is_detached_and_rejects_unknown_envelope_fields():
 
 def test_c1_schema_validates_real_ref_and_rejects_adapter_drift():
     ref = _ref()
-    doc = json.loads((Path(__file__).resolve().parents[1] / "schemas/c1/model.json").read_text())
+    schema_path = Path(__file__).resolve().parents[1] / "schemas/c1/model.json"
+    doc = json.loads(schema_path.read_text(encoding="utf-8"))
     node = doc["$defs"]["continuationRef"]
     errs = []
     event_schema._check_value(node, ref.to_payload(), "$", errs, "probe")

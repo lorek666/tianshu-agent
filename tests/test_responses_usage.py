@@ -126,7 +126,7 @@ def test_independent_model_turn_commit_preserves_cache_and_exact_version(tmp_pat
 
 def test_c3_json_preserves_both_historical_usage_schemas():
     root = Path(__file__).resolve().parents[1]
-    defs = json.loads((root / "schemas/c3/event.json").read_text())["$defs"]
+    defs = json.loads((root / "schemas/c3/event.json").read_text(encoding="utf-8"))["$defs"]
     for event_type in ("model.result", "run.model_turn"):
         assert defs["payload"][event_type] == event_schema.schema_for(event_type, 2)
         assert defs["historicalPayloadV1"][event_type] == event_schema.schema_for(event_type, 1)

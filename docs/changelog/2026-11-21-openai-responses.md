@@ -51,13 +51,16 @@
   tree `d6eb0cf9757ad07efa36771388b8e654f0c14eba` 已获独立 `PASS`；
   [附录](../evidence/openai-responses-2026-11-21/TEST-ONLY-ADDENDUM.md)
   保留定向红绿、错版负控及产品树零差异证明。
-- 最终冻结提交 `fccd469325558dae9bc176a88f766b777614f217` 的
-  `uv run --frozen pytest` 已完整退出 0。产品、测试、schema、UI、构建与 CI
-  路径的 Git tree 清单 SHA-256 为
-  `50ea342cff715e04c4082fe7c4397a60ca9e7381540f429d1e0ec7a27f496b93`；
-  后续收口仅修改文档，不改变该清单，复用上述产品探针与本机全量结论。
-  hosted required CI 与合并状态在 PR 中绑定最终 head/base/merge SHA，
-  本地验证或独立 PASS 均不代替远端门禁。
+- `fccd469325558dae9bc176a88f766b777614f217` 的 `uv run --frozen pytest` 已完整退出 0。
+  随后的纯文档收口 `445617df2bf7ee5b55a36e7b79537affb0141eeb` 不改变该测试树。
+- `445617d` 的[候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44868392549)
+  实际失败。Linux、macOS、UI 和两个原生 Rust 作业通过；Windows 两个分片各有一条
+  `UnicodeDecodeError`，分别来自 `test_c1_schema_validates_real_ref_and_rejects_adapter_drift`
+  和 `test_c3_json_preserves_both_historical_usage_schemas`。测试用系统默认 CP1252
+  读取 UTF-8 schema，尚未进入断言。用同一组真实 schema 和测试在本机模拟默认 CP1252
+  复现后，只将两处读取显式设为 UTF-8；schema 字节、全部断言与 CI 配置均未改。
+  此模拟通过不代替 Windows 原生门禁。旧候选的失败和新候选的独立核对、本机全量及
+  hosted CI 均在 PR 中按各自的提交记录。
 
 ## 未验证范围
 
