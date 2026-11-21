@@ -355,7 +355,7 @@ M3 加第二个 provider（Anthropic Messages API）时才被迫写清这件事�
 | role | 字段 | 说明 |
 |---|---|---|
 | `system` | `content` | 提示词（Anthropic 要求提到顶层，由 adapter 提出去） |
-| `user` | `content` | 用户输入 |
+| `user` | `content`, 可选 `attachments` | 用户输入；附件仅来自用户选择并提交的字节 |
 | `assistant` | `content`, `tool_calls[{id, type, function{name, arguments}}]` | `arguments` 是 **JSON 字符串** |
 | `tool` | `tool_call_id`, `name`, `content` | 工具结果回灌（Anthropic 要求包成 `tool_result` 并合并进同一条 user 消息） |
 
@@ -391,6 +391,10 @@ M3 加第二个 provider（Anthropic Messages API）时才被迫写清这件事�
 C3 `model.result` v2、`ctx-responses-v1` 保真策略及历史兼容按
 [OpenAI Responses 续接契约](openai-responses-contract.md) 实施；
 代码与验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)，契约冻结本身不代表交付。
+
+**桌面会话输入（待实现）**：`attachments` 仅附于新 Run 的最后一条起始 `user`
+消息。附件字段、适配、持久化和恢复规则见[桌面会话输入契约](agent-conversation-contract.md)。
+历史消息保持原形，已有 Responses opaque 续接作用域保持不变。
 
 ### 5.2 C2 Tool
 
@@ -655,6 +659,10 @@ Event {
 | `audit` | 审计事件 | 未实现：审计目前由凭据（`receipt`）与 append-only 本表承担 |
 
 **已定义但无发射点**：**当前为空**。曾经唯一的成员 `job.lost` 已连同常量一起删除（理由见 §2.3 第 4 条）。机制保留在 `events.DECLARED_UNEMITTED_EVENT_TYPES`：将来若有"先定义形状、后接发射点"的类型，登记在那里，硬写会被校验拒绝并提示原因；接上发射点时必须在同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
+
+**拟增的 Run 事件**：`run.conversation`、`run.attachments`、`run.guidance_requested`、
+`run.guidance_applied` 仅使用 payload v1，没有 v0 解释；生效时须与代码和机器注册表同时登记。
+字段、事务与回放语义见[桌面会话输入契约](agent-conversation-contract.md)。
 
 #### 5.3.3 `parent_seq`：降级为保留字段
 
