@@ -243,7 +243,10 @@ APFS 存的名字是分解形式（`ü` = `u` + 组合符）。Python `os.listdi
 
 ### 8.2 不签名分发（已定：不接受签名成本）
 
-**决定：不做 Apple Developer Program（$99/年），不做 Authenticode 证书。** 产物未签名。
+**决定：不做 Apple Developer Program（$99/年），不做 Authenticode 证书。** 不做认证发布者代码签名。
+macOS 打包路径的免费 outer ad-hoc 资源封套只检查 bundle 结构完整性，不提供发布者身份、
+公证或 Gatekeeper 放行；不改变本节 T1 的成本与信任政策，发行索引仍为 `signed: false`。
+具体生成和归档往返检查见[桌面发行说明](../desktop/README.md#macos-资源封套与发布者身份不是同一项)。
 
 这不是"少一步"，而是把信任问题从"付钱"变成"用户操作"。逐平台说清代价：
 

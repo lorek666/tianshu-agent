@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from _startup.release_smoke_test_launcher import SmokeTestIsolation
 
-from tianshu import release_smoke
+from tianshu import __version__, release_smoke
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = ROOT / "scripts" / "release_manifest.py"
@@ -741,6 +741,11 @@ def _runtime_fixture(
                 "\n\ndef run_host(*args, **kwargs):\n"
                 "    raise RuntimeError('host startup intentionally broken')\n"
             )
+    # This fixture copies the live package, unlike synthetic historical bundles.
+    (bundle / "release.json").write_text(
+        json.dumps(_release_identity(version=__version__, target=NATIVE_TARGET), indent=2) + "\n",
+        encoding="utf-8",
+    )
     _write_manifest(bundle)
     _update_manifest(
         bundle,
@@ -1246,4 +1251,72 @@ def test_windows_nsis_payload_rejects_root_sitecustomize(tmp_path):
             bundle_dir=bundle,
             target="windows-x64",
             extractor=extractor,
+        )
+
+
+@pytest.mark.parametrize("envelope", [False, True])
+def test_static_macos_verifier_allows_only_optional_exact_envelope(tmp_path, envelope):
+    verify = _load(VERIFY_SCRIPT, "verify_optional_envelope")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    if envelope:
+        directory = tarfile.TarInfo(f"{APP_ROOT}/Contents/_CodeSignature")
+        directory.type = tarfile.DIRTYPE
+        _append_tar_member(artifact, directory)
+        _append_tar_member(
+            artifact,
+            tarfile.TarInfo(f"{APP_ROOT}/Contents/_CodeSignature/CodeResources"),
+            b"opaque nonempty resource envelope; static check is not Apple validation",
+        )
+    result = verify.verify_release(
+        artifact_dir=artifact_dir, bundle_dir=bundle, target=TARGET,
+        version="0.1.0", commit=COMMIT, run_smoke=False,
+    )
+    assert result["runtime_smoke"] == {"status": "not_run_by_caller"}
+    assert set(result) == {
+        "target", "version", "commit", "artifact", "sha256", "size",
+        "manifest_sha256", "runtime_smoke",
+    }
+
+
+@pytest.mark.parametrize("defect", [
+    "empty", "missing-file", "missing-dir", "dir-as-file", "file-as-dir",
+    "extra", "extra-dir", "escape", "symlink", "hardlink", "special", "casefold",
+])
+def test_static_macos_verifier_rejects_malformed_envelope(tmp_path, defect):
+    verify = _load(VERIFY_SCRIPT, "verify_malformed_envelope")
+    bundle, artifact_dir, artifact = _fixture(tmp_path)
+    signature = f"{APP_ROOT}/Contents/_CodeSignature"
+    if defect != "missing-dir":
+        directory = tarfile.TarInfo(signature)
+        directory.type = tarfile.REGTYPE if defect == "dir-as-file" else tarfile.DIRTYPE
+        _append_tar_member(artifact, directory, b"bad" if defect == "dir-as-file" else None)
+    if defect != "missing-file":
+        member = tarfile.TarInfo(f"{signature}/CodeResources")
+        data = b"envelope"
+        if defect in {"symlink", "hardlink"}:
+            member.type = tarfile.SYMTYPE if defect == "symlink" else tarfile.LNKTYPE
+            member.linkname = (
+                "../Info.plist" if defect == "symlink"
+                else f"{APP_ROOT}/Contents/Info.plist"
+            )
+            data = None
+        elif defect in {"special", "file-as-dir"}:
+            member.type = tarfile.FIFOTYPE if defect == "special" else tarfile.DIRTYPE
+            data = None
+        elif defect == "empty":
+            data = b""
+        _append_tar_member(artifact, member, data)
+    if defect in {"extra", "casefold", "escape"}:
+        name = {
+            "extra": "extra", "casefold": "coderesources", "escape": "../escape",
+        }[defect]
+        _append_tar_member(artifact, tarfile.TarInfo(f"{signature}/{name}"), b"extra")
+    if defect == "extra-dir":
+        extra_directory = tarfile.TarInfo(f"{signature}/extra")
+        extra_directory.type = tarfile.DIRTYPE
+        _append_tar_member(artifact, extra_directory)
+    with pytest.raises(verify.VerifyError):
+        verify.verify_release(
+            artifact_dir=artifact_dir, bundle_dir=bundle, target=TARGET,
+            version="0.1.0", commit=COMMIT, run_smoke=False,
         )

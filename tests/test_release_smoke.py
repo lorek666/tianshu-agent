@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from _startup.release_smoke_test_launcher import ISOLATION_ENV, MODULE_NAME, SmokeTestIsolation
 
-from tianshu import release_smoke
+from tianshu import __version__, release_smoke
 from tianshu.host import HostInfo, HostReleaseIdentity
 from tianshu.leases import pid_alive
 from tianshu.release_smoke import ReleaseSmokeError, run_smoke
@@ -25,7 +25,7 @@ def _test_isolation(root):
     return SmokeTestIsolation(
         root, app_dir=Path(release_smoke.__file__).resolve().parent.parent,
         ui_dir=ROOT / "ui" / "dist",
-        release={"version": "0.1.0", "commit": COMMIT, "target": HOST_TARGET},
+        release={"version": __version__, "commit": COMMIT, "target": HOST_TARGET},
         python_version=PACKAGED_PYTHON,
         runtime_python=release_smoke._runtime_python_executable(),
     )
@@ -154,7 +154,7 @@ def test_smoke_test_adapter_preserves_launch_after_guard(tmp_path, monkeypatch, 
     if runtime:
         command = [
             isolation.runtime_python, "-P", "-m", "tianshu.release_smoke",
-            "--ui-dir", str(isolation.ui_dir), "--expected-version", "0.1.0",
+            "--ui-dir", str(isolation.ui_dir), "--expected-version", __version__,
             "--expected-commit", COMMIT, "--expected-target", HOST_TARGET,
             "--expected-python", PACKAGED_PYTHON,
         ]
@@ -207,7 +207,7 @@ def _run_smoke():
     assert HOST_TARGET is not None
     return run_smoke(
         ui_dir=ROOT / "ui" / "dist",
-        expected_version="0.1.0",
+        expected_version=__version__,
         expected_commit=COMMIT,
         expected_target=HOST_TARGET,
         expected_python=PACKAGED_PYTHON,
@@ -246,7 +246,7 @@ def test_release_smoke_starts_real_sidecar_host_and_daemon(isolated_smoke_proces
     assert result["release"] == {
         "schema": 1,
         "product": "tianshu-agent",
-        "version": "0.1.0",
+        "version": __version__,
         "commit": COMMIT,
         "target": HOST_TARGET,
     }
@@ -286,7 +286,7 @@ def test_release_smoke_rejects_python_runtime_drift():
     with pytest.raises(ReleaseSmokeError, match="Python 运行时身份不匹配"):
         run_smoke(
             ui_dir=ROOT / "ui" / "dist",
-            expected_version="0.1.0",
+            expected_version=__version__,
             expected_commit=COMMIT,
             expected_target="macos-arm64",
             expected_python="3.12.999",
