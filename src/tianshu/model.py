@@ -535,6 +535,9 @@ class UrllibTransport:
             with self._open(req, timeout) as resp:
                 lines = _complete_sse_lines(resp) if self._strict_framing else resp
                 yield from _iter_sse_frames(lines, strict=self._strict_framing)
+                # HTTPResponse.readline() can reach EOF without checking Content-Length.
+                if not self._strict_framing and resp.length:
+                    raise ModelError("SSE 响应正文截断", kind="transport")
         except ModelError:
             raise
         except urllib.error.URLError as exc:
