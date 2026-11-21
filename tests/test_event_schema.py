@@ -210,6 +210,20 @@ def test_code_constants_bound_to_schema_enums():
 # ---------------------------------------------------------------- 写入前校验
 
 
+@pytest.mark.parametrize("bad_id", ["alias\n", "alias\r", "alias\u2028", "alias ", "a" * 129])
+def test_workflow_request_invalid_identifier_rejected_before_append(tmp_path, bad_id):
+    log = _log(tmp_path)
+    try:
+        with pytest.raises(event_schema.PayloadContractError, match="request_id"):
+            log.append("run_x", "run.workflow_request", {
+                "request_id": bad_id, "requested_source_run_id": None,
+            }, task_id="task_x", actor_kind="human")
+        assert log.seq_head() == 0
+        assert log.conn.execute("SELECT COUNT(*) FROM event_versions").fetchone()[0] == 0
+    finally:
+        log.close()
+
+
 @pytest.mark.parametrize("type_name", sorted(EVENT_TYPES))
 def test_every_type_has_valid_minimal_payload_and_invalid_extra_key(tmp_path, type_name):
     """每个类型至少一正一反例：最小合法 payload 通过；多一个陌生字段被拒。"""
