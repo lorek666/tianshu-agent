@@ -44,7 +44,7 @@
 - **五道契约**（版本化；冻结条件＝字段级 JSON Schema 可校验 + 契约测试全绿 + 第二家 provider 验证过）：
   | ID | 名称 | 当前状态（只写可核实的） |
   |---|---|---|
-  | C1 | Model I/O | 两个线上协议各一个 adapter；结束原因是封闭集，越界抛 `ModelError` |
+  | C1 | Model I/O | Chat Completions / Responses / Anthropic Messages 各有独立 adapter；结束原因是封闭集，越界抛 `ModelError`。Responses 实现分支与验证范围见[实施记录](changelog/2026-11-21-openai-responses.md) |
   | C2 | Tool | **23 个 `ToolSpec`、19 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
   | C3 | Event | **已封闭**：45 个事件类型，写入侧拒未登记类型，且逐类型 payload 有 v1 契约（`event_schema.py` + `schemas/c3/event.json`）；声明了但从未发射的类型 **0** 个 |
   | C4 | Permission/Approval | **rule id 已封闭**：低磁盘 T1–T3 两项空间拒绝与纯读资格拒绝已合入主干，并补齐 W10 可写子任务创建门与控制面/UI F14 人话映射（见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)）。当前代码/schema/PRD 清单共 78 项，写入前校验。非拒绝判定 10 个（`c4.auto` / `c4.overwrite` / `c4.delete` / `c4.exec` / `c4.mcp_call` / `c4.memory_scope` / `c4.outbound` / `c4.outside_workspace` / `c4.subtask_spawn` / `c4.subtask_cancel`）+ 保留未使用 3 个（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`）；`c4.approval_rejected` 是 issue #40「否决即终局」新增的拒绝原因；记忆组 6 条（N1 起）见 PRD §5.4.1。审批/凭据见 PRD §5.4 |
@@ -90,9 +90,9 @@
 
 ## 4. 关键决策（D1–D7）与硬约束
 
-- **Responses 接入决策（2026-11-20，待实现）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与版本化事件/上下文；保留旧模式，凭据复用 openai 域。详见 [续接契约](openai-responses-contract.md)，契约冻结不等于运行时支持。
+- **Responses 接入（2026-11-20 契约，2026-11-21 实现分支）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与 `ctx-responses-v1` 完整上下文；保留旧模式，凭据复用 openai 域。模型步骤固定配置快照，result/turn/cursor 同事务提交；已提交终态在崩溃或暂停后直接收尾，丢失的 Responses cursor/turn 可从事件重建。实际门禁与未验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)及[续接契约](openai-responses-contract.md)。
 
-- **模型缓存用量逐事件 v2（2026-11-20，契约草案待实现）**：C1 已允许的可选缓存用量不能在 C3 提交时被丢弃；本次仅 `model.result` / `run.model_turn` 新写采用精确 payload v2，保留其旧 v0/v1 各自原解释，新 v2 usage 仍封闭，不升级全局版本常量。已有精确草稿/归档对象需要区分，因此本次不沿用发布前 optional 沿 v1 的历史例外，不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)。本项尚未实现或复验，不改判既有真实评测，不自动重放已发送模型调用；契约与实现分开 PR。
+- **模型缓存用量逐事件 v2（2026-11-20 契约，2026-11-21 实现分支）**：C1 已允许的可选缓存用量完整保存在 `model.result` / `run.model_turn` 新写精确 payload v2；保留旧 v0/v1 原解释，新 v2 usage 仍封闭，不升级全局版本常量。不沿用发布前 optional 沿 v1 的历史例外，也不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)，验证见[实施记录](changelog/2026-11-21-openai-responses.md)；不改判既有真实评测，不自动重放已持久化模型回合。
 
 - **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
 
@@ -272,6 +272,8 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **重建必须区分保存点与其后的事实（2026-11-21）**：Responses 的恢复计数由最后保存的游标加其后 `model.intent` 得到；控制面尚未写首个 `run.cursor` 时，以 `run.start` 的初始进度作为保存点，不能先吸收 intent 再让恢复入口重复补计。等待子任务的事务先清空 `model_turn`、保存游标，再追加 `job.parked`；重建需识别相邻、同 Run、同 claim 的 `waiting_children` 事件对后核对原摘要，不能删掉哈希校验。连续真实崩溃、保留/删除/重建投影，以及父任务重复挂起与 Worker 唤醒均须覆盖，见[独立复审原件](evidence/openai-responses-2026-11-21/README.md)。
 
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
 - **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。

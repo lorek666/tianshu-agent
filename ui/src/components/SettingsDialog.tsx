@@ -233,6 +233,10 @@ export function SettingsDialog({
 
   const handleSaveModel = async (): Promise<void> => {
     if (api === null) return;
+    if (mode === "openai-responses" && modelName.trim() === "") {
+      setError("Responses 模式必须显式填写模型名称。");
+      return;
+    }
     if (mode === "anthropic" && modelName.trim() === "") {
       setError("Anthropic 模式必须显式填写模型名称（例如 claude-sonnet-4-5）。");
       return;
@@ -556,6 +560,7 @@ export function SettingsDialog({
                       >
                         <option value="scripted">离线演示脚本模型（不联网、不计费）</option>
                         <option value="openai">OpenAI 兼容协议（OpenAI / DeepSeek / Moonshot / 本地服务）</option>
+                        <option value="openai-responses">OpenAI Responses 协议（文本与函数工具）</option>
                         <option value="anthropic">Anthropic Messages 协议（Claude）</option>
                       </select>
                     </div>
@@ -569,7 +574,8 @@ export function SettingsDialog({
                             type="text"
                             value={modelName}
                             placeholder={
-                              mode === "anthropic" ? "必填，例如 claude-sonnet-4-5" : "默认 gpt-4o-mini"
+                              mode === "anthropic" ? "必填，例如 claude-sonnet-4-5"
+                                : mode === "openai-responses" ? "必填：显式模型 ID" : "默认 gpt-4o-mini"
                             }
                             onChange={(e) => setModelName(e.target.value)}
                             disabled={busy}

@@ -66,6 +66,7 @@ from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .loop import AgentLoop, Limits
 from .model import AnthropicMessagesModel, Model, OpenAICompatibleModel, ScriptedModel
+from .openai_responses import OpenAIResponsesModel
 from .pricing import format_cost
 from .replay import replay
 from .tasks import (
@@ -78,7 +79,7 @@ from .tasks import (
 DEFAULT_DB = Path(".tianshu/events.db")
 
 # 线上协议名。加第三个协议时只改这里 + `_model_from`，不动主循环。
-MODEL_PROVIDERS = ("openai", "anthropic")
+MODEL_PROVIDERS = ("openai", "anthropic", "openai-responses")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -277,6 +278,10 @@ def _model_from(args: argparse.Namespace) -> Model:
         return _scripted_model(getattr(args, "out", None) or "summary.md")
     provider = _provider_of(args)
     name = args.model_name
+    if provider == "openai-responses":
+        if not name or not name.strip():
+            raise TianshuError("openai-responses provider 需要显式 --model-name")
+        return OpenAIResponsesModel(name, base_url=args.base_url)
     if provider == "anthropic":
         if not name:
             # 不替用户猜模型 id：猜错的表现是 404，比"必须显式给"难查得多。

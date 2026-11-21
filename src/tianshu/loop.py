@@ -35,6 +35,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,8 @@ from .context import (
     ContextOverflow,
     compile_context,
 )
+from .continuation import require_scope
+from .crashpoint import failpoint
 from .disk_admission import DiskAdmission, RunStorageContext
 from .dispatcher import (
     APPROVAL_REJECTED,
@@ -496,12 +499,20 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
+            stored = self._tasks.restore_responses_cursor(run_id)
+        if stored is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
             out_name = self._tasks.run_payload(run_id).get("out") or None
             progress = _fresh_progress(task.goal, out_name)
         else:
             progress = _Progress.of(stored[0])
+        # intent 可以领先最后一次游标提交；恢复不能把已发送的尝试漏掉。
+        events = self._log.read_run(run_id)
+        saved_seq = max((e.seq for e in events if e.type == "run.cursor"), default=0)
+        progress.model_attempts += sum(
+            e.type == "model.intent" and e.seq > saved_seq for e in events
+        )
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
         return self._drive(run_id, claim, progress)
@@ -699,6 +710,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                     return None
                 # 游标与 park 同一事务：崩溃后不会出现"作业 waiting、游标却
                 # 还停在更早的轮次"这种要靠猜补的状态。
+                progress.model_turn = None
                 self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
                 self._claims.park(claim, reason="waiting_children")
         except JobLost as exc:
@@ -786,6 +798,33 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         task: Task,
         out_name: str | None,
     ) -> tuple[str, str]:
+        # 已持久化终态只需过驱动安全点后收尾，不受下一次生成的配置影响。
+        if progress.model_turn is not None and not progress.pending:
+            return self._model_turn_outcome(progress)
+        live = self._model
+        snapshot = getattr(live, "snapshot", None)
+        if callable(snapshot):
+            self._model = snapshot()
+        try:
+            scope_getter = getattr(self._model, "continuation_scope", None)
+            scope = scope_getter() if callable(scope_getter) else None
+            try:
+                require_scope(progress.messages, scope)
+            except ValueError as exc:
+                return "stop", str(exc)
+            return self._model_step_frozen(run_id, claim, progress, task, out_name, scope)
+        finally:
+            self._model = live
+
+    def _model_step_frozen(
+        self,
+        run_id: str,
+        claim: JobClaim,
+        progress: _Progress,
+        task: Task,
+        out_name: str | None,
+        scope: tuple[str, str, str] | None,
+    ) -> tuple[str, str]:
         """问一次模型。
 
         返回 stop（带错误立刻终结）/ end（模型说完了，交给调用方过安全点再收尾）
@@ -807,7 +846,10 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         # 编译这一步在 intent 之前：intent 声称的是"我要发的到底是什么"，
         # 编译失败（放不下）就不该留下一条指向模型的 intent。
-        budget = ContextBudget(max_bytes=self._limits.context_budget_bytes)
+        budget = ContextBudget(
+            max_bytes=self._limits.context_budget_bytes,
+            version="ctx-responses-v1" if scope is not None else "ctx-v1",
+        )
         try:
             view = compile_context(
                 progress.messages,
@@ -844,6 +886,10 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         if resp is None:
             return "stop", stop_reason
 
+        # 回执、turn、cursor 提交前只改分离副本。事务失败时不能把回滚结果
+        # 留在内存里，随后又由 _finish 写回游标。
+        committed_progress = progress
+        progress = deepcopy(progress)
         inp = resp.usage.get("input_tokens")
         outp = resp.usage.get("output_tokens")
         if inp is None or outp is None:
@@ -947,16 +993,12 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         turn = {
             "turn_id": f"t{hop}",
             "request_id": request_id,
-            "content": resp.content,
-            "finish_reason": resp.finish_reason,
-            "usage": resp.usage,
-            "tool_calls": [
-                {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
-                for c in resp.tool_calls
-            ],
+            **resp.to_payload(),
         }
         progress.pending = proposals
-        progress.model_turn = None if not proposals else turn
+        # terminal 也保留证人：COMMIT 后、Run 收尾前崩溃 / 暂停无需再生成。
+        terminal = resp.finish_reason != "tool_use" or not resp.tool_calls
+        progress.model_turn = turn if proposals or terminal else None
 
         # 一次提交：model.result 事件 + run_turns 投影 + 游标。
         # 三者同生同死，才不会出现"记了钱但不知道做到哪"。
@@ -989,18 +1031,28 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             progress.message_seqs.extend(seqs)
             self._tasks.commit_model_turn(run_id, turn, claim)
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
+            failpoint("model-result-before-commit")
+        committed_progress.__dict__.update(progress.__dict__)
+        failpoint("model-result-after-commit")
 
+        return self._model_turn_outcome(progress, turn)
+
+    def _model_turn_outcome(
+        self, progress: _Progress, turn: dict[str, Any] | None = None,
+    ) -> tuple[str, str]:
+        turn = progress.model_turn if turn is None else turn
+        assert turn is not None
         if progress.tokens > self._limits.max_total_tokens:
             return "stop", (
                 f"token 预算耗尽（{progress.tokens} > {self._limits.max_total_tokens}）"
             )
 
-        if resp.finish_reason != "tool_use" or not resp.tool_calls:
-            if resp.finish_reason == "end_turn":
+        if turn["finish_reason"] != "tool_use" or not turn.get("tool_calls"):
+            if turn["finish_reason"] == "end_turn":
                 return "end", "succeeded" if self._artifact else "noop"
             # 截断、未知结束原因和错误都不是"没有工作要做"的成功 noop。
             return "stop", (
-                f"模型调用未正常结束：{resp.finish_reason}：" + resp.content[:200]
+                f"模型调用未正常结束：{turn['finish_reason']}：" + turn["content"][:200]
             )
 
         return "continue", ""

@@ -575,7 +575,7 @@ def test_minimal_v1_fixture_is_valid_and_round_trips(tmp_path):
     try:
         for type_name, payload in sorted(doc["events"].items()):
             event_schema.validate_payload(type_name, payload, 1)
-            if type_name in ("run.start", "run.end"):
+            if type_name in ("run.start", "run.end", "model.result", "run.model_turn"):
                 seq = log.append("run_x", type_name, payload, legacy_write=True)
                 log.conn.execute("UPDATE event_versions SET version=1 WHERE seq=?", (seq,))
             else:
@@ -613,7 +613,7 @@ def test_replay_still_passes_after_contract_upgrade(tmp_path):
         assert report.ok, report.problems
         assert report.problems == []
         versions = {e.payload_version for e in log.read_run(result.run_id)}
-        assert versions == {1, 2}, "仅 run.start 使用 v2，其余新写入为 v1"
+        assert versions == {1, 2}, "run.start/run.end/model.result/run.model_turn 使用各自 v2"
     finally:
         log.close()
 
@@ -628,7 +628,7 @@ def test_blob_payload_still_round_trips_with_version(tmp_path):
         (event,) = log.read_run("run_x")
         assert event.seq == seq
         assert event.payload == payload
-        assert event.payload_version == 1
+        assert event.payload_version == 2
         assert event.payload["content"].startswith("x" * 16)
     finally:
         log.close()

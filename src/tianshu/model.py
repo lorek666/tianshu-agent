@@ -38,6 +38,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from .capability import CapabilityProfile
+from .continuation import ContinuationRef, require_scope
 from .credentials import (
     MASK,
     CredentialRef,
@@ -178,6 +179,7 @@ class ModelResponse:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int | None] = field(default_factory=dict)
+    continuation: ContinuationRef | None = None
 
     def __post_init__(self) -> None:
         # 越界值在这里就炸，而不是等它沉进事件日志、几个月后有人在
@@ -188,9 +190,11 @@ class ModelResponse:
                 "（传输/HTTP 类错误请抛 ModelError，不要塞进结束原因）"
             )
         self.usage = normalize_usage(self.usage)
+        if self.continuation is not None:
+            self.to_payload()
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "finish_reason": self.finish_reason,
             "content": self.content,
             "tool_calls": [
@@ -199,6 +203,10 @@ class ModelResponse:
             ],
             "usage": self.usage,
         }
+        if self.continuation is not None:
+            self.continuation.validate_projection(payload)
+            payload["continuation"] = self.continuation.to_payload()
+        return payload
 
     @classmethod
     def from_payload(cls, p: dict[str, Any]) -> ModelResponse:
@@ -218,6 +226,8 @@ class ModelResponse:
                 for c in p.get("tool_calls", [])
             ],
             usage=p.get("usage", {}),
+            continuation=ContinuationRef.from_payload(p["continuation"])
+            if "continuation" in p else None,
         )
 
 
@@ -259,6 +269,8 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
             out[dst] = v
     for src, dst in _USAGE_OPTIONAL.items():
         v = raw.get(src)
+        if src in raw and v is None:
+            out[dst] = None
         if isinstance(v, int) and not isinstance(v, bool):
             if v < 0:
                 raise ModelError(f"usage.{src} 必须是非负整数", kind="protocol")
@@ -563,6 +575,13 @@ class RecordedModel:
 # ---------------------------------------------------------------- 线上实现
 
 
+def _reject_continuation(messages: list[dict[str, Any]]) -> None:
+    try:
+        require_scope(messages, None)
+    except ValueError as exc:
+        raise ModelError(str(exc), kind="protocol", retryable=False) from None
+
+
 def _credential_for(provider: str, capability_class: str = "llm") -> str:
     """经凭据接缝取密钥；未配置返回空串（由 `_HttpModel` 统一报「缺少 API key」）。
 
@@ -724,6 +743,7 @@ class OpenAICompatibleModel(_HttpModel):
         )
 
     def _request(self, messages, tools):
+        _reject_continuation(messages)
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -996,6 +1016,7 @@ class AnthropicMessagesModel(_HttpModel):
         self.max_tokens = max_tokens
 
     def _request(self, messages, tools):
+        _reject_continuation(messages)
         system, converted = to_anthropic_messages(messages)
         body: dict[str, Any] = {
             "model": self.model,

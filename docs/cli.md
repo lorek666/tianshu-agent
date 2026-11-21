@@ -142,7 +142,8 @@ uv run --frozen tianshu data gc --data-root /absolute/data-root --json
 
 ## 接真实模型
 
-两套线上协议，主循环一行都不用改（契约测试见 `tests/test_model_contract.py`）：
+Chat Completions、Responses 与 Anthropic Messages 各有独立 adapter，共用中立模型契约
+（离线契约测试见 `tests/test_model_contract.py`、`tests/test_responses_conformance.py`）：
 
 ```bash
 # 1) OpenAI-compatible：OpenAI / DeepSeek / Moonshot / vLLM / Ollama 都走这条
@@ -156,10 +157,27 @@ export ANTHROPIC_API_KEY=sk-ant-...
 uv run tianshu run --workspace /tmp/ws --task "..." \
   --out summary.md --model openai-compatible --provider anthropic \
   --model-name claude-sonnet-4-5
+
+# 3) OpenAI Responses：复用 TIANSHU_API_KEY / openai Keychain 凭据域
+# 下面会请求真实服务并可能计费；model ID 按服务实际提供的值填写。
+uv run --frozen tianshu run --workspace /tmp/ws --task "阅读目录并生成摘要" \
+  --out summary.md --model openai-compatible --provider openai-responses \
+  --model-name YOUR_EXPLICIT_MODEL_ID
 ```
 
 `--provider` 不写时读 `TIANSHU_PROVIDER`，再默认 `openai`。
-`--model-name` 对 anthropic **必须显式给**——不替你猜模型 id，猜错的表现是 404。
+`--model-name` 对 `anthropic` 和 `openai-responses` **必须显式给**。
+`run` / `worker` / `daemon` / `host` / `evaluate` 均支持新 provider；保留旧的
+`--model openai-compatible` 在线入口选择器。桌面设置与发送栏快速切模也可选择 Responses。
+
+Responses 仅支持公开 HTTP/SSE 的文本、函数工具和不透明加密 reasoning；
+不支持多模态、供应商内置工具、后台任务或 WebSocket。请求发送 `store:false`，
+使用完整历史与加密输出续接，不依赖 `previous_response_id` 或托管 conversation。
+base URL 填到 `/v1` 一层，adapter 添加 `/responses`；URL 不允许凭据、查询参数或 fragment。
+改协议、端点或 model 后，已有续接链会拒绝下一次模型调用，需创建新 Run。
+完整上下文超预算时明确失败，不自动摘要或截断有效链；旧配置不自动迁移。
+网关价格或缓存计价无法核实时，成本显示未知。官方与网关真实付费 smoke 均为 `NOT_RUN`，
+本机回环 HTTP/SSE 与离线夹具不证明任意网关兼容。详见 [续接契约](openai-responses-contract.md)。
 
 > 密钥从环境变量或（macOS 下启用 `TIANSHU_CREDENTIAL_BACKEND=keychain` 时）系统钥匙串读取，桌面端「设置 → 模型与密钥」通过 `credential.set` 写入钥匙串时密钥值**永不落 SQLite / JSON 配置、永不进事件日志、永不在 RPC 响应回显**。用过的中转 key 请自行作废轮换。
 

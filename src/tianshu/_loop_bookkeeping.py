@@ -32,6 +32,7 @@ from .jobs import (
     JobUnavailable,
 )
 from .model import ModelResponse, ToolCall
+from .model_messages import assistant_message_from_payload
 from .permissions import ApprovalStore
 from .snapshot import SnapshotStore
 from .summaries import SummaryStore
@@ -211,22 +212,7 @@ def _tool_message(call_id: str, tool_id: str, result: ToolResult) -> dict[str, A
 
 
 def _assistant_message(resp: ModelResponse) -> dict[str, Any]:
-    msg: dict[str, Any] = {"role": "assistant", "content": resp.content}
-    if resp.tool_calls:
-        msg["tool_calls"] = [
-            {
-                "id": c.call_id,
-                "type": "function",
-                "function": {
-                    "name": c.name,
-                    "arguments": json.dumps(
-                        c.arguments, ensure_ascii=False, sort_keys=True
-                    ),
-                },
-            }
-            for c in resp.tool_calls
-        ]
-    return msg
+    return assistant_message_from_payload(resp.to_payload())
 
 
 
