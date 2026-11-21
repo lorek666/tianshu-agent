@@ -661,7 +661,7 @@ Event {
 **已定义但无发射点**：**当前为空**。曾经唯一的成员 `job.lost` 已连同常量一起删除（理由见 §2.3 第 4 条）。机制保留在 `events.DECLARED_UNEMITTED_EVENT_TYPES`：将来若有"先定义形状、后接发射点"的类型，登记在那里，硬写会被校验拒绝并提示原因；接上发射点时必须在同一次改动里把它移进 `EVENT_TYPES` + schema `enum` + 本表——校验会先拒绝它，这是刻意的：注册表不能悄悄变长。
 
 **拟增的 Run 事件**：`run.conversation`、`run.attachments`、`run.guidance_requested`、
-`run.guidance_applied` 仅使用 payload v1，没有 v0 解释；生效时须与代码和机器注册表同时登记。
+`run.guidance_applied`、`run.model_route` 仅使用 payload v1，没有 v0 解释；生效时须与代码和机器注册表同时登记。
 字段、事务与回放语义见[桌面会话输入契约](agent-conversation-contract.md)。
 
 #### 5.3.3 `parent_seq`：降级为保留字段

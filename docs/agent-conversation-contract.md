@@ -14,5 +14,12 @@
 
 - `run.conversation`：`{turns:[{source_run_id, source_seq, answer, message}]}`，`source_seq` 是源 Run 的最终成功 `model.result` seq。空数组选择通用的桌面任务提示。每次追问保留选定分支的已提交文本问答，按原顺序放在新 Run 的任务陈述之后。总量超过 64 KiB 时显式拒绝。源必须是同任务、同目标修订的成功 Run；不得转移工具结果、授权、续接密文或模型身份。
 - `run.attachments`：`{attachments}`，记录上面定义的附件，每个 Run 最多一条，仅用户提交非空附件时产生。会话起点和附件事实与 Run 创建及入队同事务提交。快照和回放以已提交事件为源，不再打开原始文件，也不从 UI 导出的视图补内容。桌面事件视图只公开附件名称、格式等元数据，不公开编码字节。
-- `run.guidance_requested`：`{text}`，单条 UTF-8 最多 4 KiB；用户请求按事件 seq 排序。`run.guidance_applied`：`{request_seq}`，引用同 Run 的请求并至多消费一次，与引入该指令的游标同事务提交。回放按 applied 事件的位置插入用户消息，待消费请求不是模型输入。
+- `run.guidance_requested`：`{text}`，单条 UTF-8 最多 4 KiB，每个 Run 最多 16 条；用户请求按事件 seq 排序。`run.guidance_applied`：`{request_seq}`，引用同 Run 的请求并至多消费一次，与引入该指令的游标同事务提交。回放按 applied 事件的位置插入用户消息，待消费请求不是模型输入。
 - 指导在既有工具调用组完成后、下一次模型生成前生效；不会改写已提出或待批的调用，不会自动续跑暂停或待批的 Run，不构成工具授权。Run 终止、达到预算或失去认领权时仍可能存在未消费的指导，界面应区分提交和生效。
+
+
+## C3：模型路由绑定
+
+显式选档的 Run 增加一条 `run.model_route` v1，与开始和入队同事务提交。载荷为 `{format_version:1, requested, selected, config}`；`requested` 是 1–4 个互异的有序档案名，`selected` 必须属于该列表。`config` 是封闭非密钥配置，要求 `mode`、`model_name`、`base_url`、`credential_backend`，可选仅用于 Responses 的 `allow_image_attachments`。使用线上模式时保存实际冻结的端点，禁止端点含凭据、查询或 fragment。凭据本体不进事件，驱动时从既有凭据接口读取。
+
+仅在任何请求派发前按候选顺序进行本地配置与凭据就绪检查。若有图片附件，候选还必须明确支持图片。选定后，本 Run 以及它的恢复固定该绑定，不因配置被改、凭据失效或模型故障而换路。追问另开 Run，由用户决定是否沿用档案。没有路由事件的历史运行保持旧的模型解析行为。
