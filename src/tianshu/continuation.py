@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +31,31 @@ CONTINUATION_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+
+COMPACTION_REF_VERSION = "1.1"
+COMPACTION_SCHEMA = copy.deepcopy(CONTINUATION_SCHEMA)
+COMPACTION_SCHEMA["properties"]["schema_version"]["const"] = COMPACTION_REF_VERSION
+COMPACTION_SCHEMA["properties"]["output_items"].update({
+    "minItems": 1,
+    "prefixItems": [{
+        "type": "object",
+        "required": ["type", "id", "encrypted_content"],
+        "properties": {
+            "type": {"type": "string", "const": "compaction"},
+            "id": {"type": "string", "pattern": r"\S"},
+            "encrypted_content": {"type": "string", "pattern": r"\S"},
+            "status": {"type": "string", "const": "completed"},
+        },
+    }],
+})
+
+
+def validate_compact_threshold(value: Any, *, responses: bool) -> int | None:
+    if value is not None and (not responses or type(value) is not int
+                              or not 1024 <= value <= 2_000_000):
+        raise ValueError("Responses 压缩阈值须为 1024–2000000 的整数，或为空")
+    return value
 
 
 def normalize_endpoint(url: str) -> str:
@@ -79,7 +105,7 @@ def _same_json(left: Any, right: Any) -> bool:
 
 
 def project_output(
-    items: Any,
+    items: Any, *, compaction: bool = False,
 ) -> tuple[str, list[dict[str, Any]], bool, bool, bool]:
     """验证公开文本/函数/reasoning items，并给出中立投影。
 
@@ -95,11 +121,12 @@ def project_output(
     refusal = False
     complete = True
     visible = False
-    for item in items:
+    compacted = False
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
             raise ValueError("Responses output item 必须是对象")
         kind = item.get("type")
-        if kind not in ("reasoning", "message", "function_call"):
+        if kind not in ("reasoning", "message", "function_call", "compaction"):
             raise ValueError("Responses output item 类型不受支持")
         item_id = item.get("id")
         if "id" in item or kind != "function_call":
@@ -111,7 +138,12 @@ def project_output(
             if status not in ("completed", "incomplete", "in_progress"):
                 raise ValueError("Responses item status 非法")
             complete = complete and status == "completed"
-        if kind == "reasoning":
+        if kind == "compaction":
+            if (not compaction or index != 0 or status not in (None, "completed")
+                    or not _text(item.get("encrypted_content"), nonempty=True)):
+                raise ValueError("Responses compaction 必须是有密文的首个输出项")
+            compacted = True
+        elif kind == "reasoning":
             if not _text(item.get("encrypted_content"), nonempty=True):
                 raise ValueError("Responses reasoning 缺少加密续接内容")
             summary = item.get("summary")
@@ -166,6 +198,8 @@ def project_output(
                 "call_id": call_id, "name": name,
                 "arguments": parsed if isinstance(parsed, dict) else args,
             })
+    if compaction and not compacted:
+        raise ValueError("Responses 缺少承诺的 compaction 边界")
     return "".join(text), calls, refusal, complete, visible
 
 
@@ -175,13 +209,16 @@ class ContinuationRef:
 
     _encoded: str
     _scope: tuple[str, str, str]
+    _has_compaction: bool
 
     def __init__(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict) or set(payload) != set(
             CONTINUATION_SCHEMA["required"]
         ):
             raise ValueError("ContinuationRef 字段不完整或含未知字段")
-        if payload["schema_version"] != "1.0" or payload["adapter"] != "openai-responses":
+        version = payload["schema_version"]
+        if (version not in ("1.0", COMPACTION_REF_VERSION)
+                or payload["adapter"] != "openai-responses"):
             raise ValueError("ContinuationRef 版本或 adapter 不受支持")
         if not _text(payload["model"], nonempty=True):
             raise ValueError("ContinuationRef model 必须显式指定")
@@ -191,10 +228,11 @@ class ContinuationRef:
         try:
             encoded = json.dumps({**payload, "endpoint": endpoint}, allow_nan=False)
             detached = json.loads(encoded)
-            project_output(detached["output_items"])
+            project_output(detached["output_items"], compaction=version == COMPACTION_REF_VERSION)
         except (TypeError, ValueError, RecursionError):
             raise ValueError("ContinuationRef output_items 不满足续接契约") from None
         object.__setattr__(self, "_encoded", encoded)
+        object.__setattr__(self, "_has_compaction", version == COMPACTION_REF_VERSION)
         object.__setattr__(self, "_scope", (payload["adapter"], endpoint, payload["model"]))
 
     @classmethod
@@ -205,6 +243,10 @@ class ContinuationRef:
     def scope(self) -> tuple[str, str, str]:
         return self._scope
 
+    @property
+    def has_compaction(self) -> bool:
+        return self._has_compaction
+
     def to_payload(self) -> dict[str, Any]:
         return json.loads(self._encoded)
 
@@ -213,13 +255,16 @@ class ContinuationRef:
 
     def validate_projection(self, payload: dict[str, Any]) -> None:
         content, calls, refusal, complete, visible = project_output(
-            self.to_payload()["output_items"]
+            self.to_payload()["output_items"], compaction=self.has_compaction,
         )
         if content != payload.get("content", "") or not _same_json(
             calls, payload.get("tool_calls") or [],
         ):
             raise ValueError("ContinuationRef 与规范化文本/函数提案不一致")
         finish = payload.get("finish_reason")
+        if self.has_compaction and (not complete or refusal
+                                    or finish not in (None, "tool_use", "end_turn")):
+            raise ValueError("未完整结束的 Responses 回合不能成为压缩边界")
         if finish == "tool_use" and (not calls or refusal or not complete):
             raise ValueError("未完成的 Responses 输出不能成为可派发提案")
         if finish == "end_turn" and (calls or refusal or not complete or not visible):

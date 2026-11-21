@@ -7,6 +7,7 @@ import pytest
 
 from tianshu._loop_bookkeeping import _assistant_message
 from tianshu.model import ModelError, ToolCall
+from tianshu.task_attachments import normalize_attachments
 from tianshu.tools import tool_manifest
 
 
@@ -100,6 +101,30 @@ def test_request_uses_real_manifest_and_stateless_defaults():
             "parameters": spec["input_schema"],
             "strict": False,
         }
+
+
+def test_responses_image_attachments_require_opt_in_before_transport():
+    png = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQV"
+           "R42mP8/x8AAwMCAO+a4xoAAAAASUVORK5CYII=")
+    attachments = normalize_attachments([
+        {"name": "notes.txt", "media_type": "text/plain", "data_base64": "aGkNCg=="},
+        {"name": "pixel.png", "media_type": "image/png", "data_base64": png},
+    ])
+    messages = [{"role": "user", "content": "分析附件", "attachments": attachments}]
+    original = copy.deepcopy(messages)
+    refused = Transport()
+    with pytest.raises(ModelError, match="未开启图片附件能力"):
+        model(refused).complete(messages, tool_manifest())
+    assert refused.calls == []
+
+    accepted = Transport(response())
+    model(accepted, allow_image_attachments=True).complete(messages, tool_manifest())
+    assert accepted.calls[0]["body"]["input"] == [{"role": "user", "content": [
+        {"type": "input_text", "text": "分析附件"},
+        {"type": "input_text", "text": '附件（用户提供的资料）："notes.txt"\nhi\r\n'},
+        {"type": "input_image", "detail": "auto", "image_url": f"data:image/png;base64,{png}"},
+    ]}]
+    assert messages == original
 
 
 def test_two_turn_reasoning_functions_preserve_raw_order_and_call_id():
@@ -591,3 +616,20 @@ def test_sse_reasoning_lifecycle_preserves_items_without_preview(stream_kind, co
         assert result.content == "完成"
         assert "".join(d.text for d in preview) == "完成"
         assert text not in repr(preview)
+
+
+def test_stream_compaction_requires_opt_in_and_complete_matching_boundary():
+    compact = {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque-window"}
+    items = [compact, function()]
+    enabled = model(Transport(frames=frames_for(items)), compact_threshold=2048)
+    resp = enabled.stream_complete([{"role": "user", "content": "检查"}], [], lambda _: None)
+    assert resp.continuation.to_payload()["output_items"][0] == compact
+    assert resp.continuation.has_compaction and resp.finish_reason == "tool_use"
+    for bad_items, kw in (
+        (items, {}), ([function(), compact], {"compact_threshold": 2048}),
+        ([{**compact, "encrypted_content": ""}, function()], {"compact_threshold": 2048}),
+    ):
+        with pytest.raises(ModelError, match="Responses"):
+            model(Transport(frames=frames_for(bad_items)), **kw).stream_complete(
+                [{"role": "user", "content": "检查"}], [], lambda _: None,
+            )

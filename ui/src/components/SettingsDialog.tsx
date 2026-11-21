@@ -5,6 +5,8 @@ import type {
   CredentialStatusView,
   DiagnosticManifestView,
   McpOverviewView,
+  ScheduleInput,
+  ScheduleTrigger,
   ScheduleView,
   SettingsApi,
   SettingsView,
@@ -96,6 +98,26 @@ const POSE_OPTIONS: ReadonlyArray<{ key: WelcomePetStatus; label: string }> = [
   { key: "sleeping", label: "休眠" },
 ];
 
+const SCHEDULE_KINDS = [
+  { value: "interval", label: "固定间隔" },
+  { value: "calendar", label: "按日历" },
+  { value: "file_arrival", label: "目录新增文件" },
+  { value: "event", label: "本机事件" },
+] as const;
+
+const WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"];
+
+function scheduleLabel(item: ScheduleView): string {
+  const trigger = item.trigger;
+  switch (trigger.kind) {
+    case "interval": return `每 ${item.interval_seconds} 秒`;
+    case "calendar":
+      return `周${trigger.weekdays.map((day) => WEEKDAY_NAMES[day - 1]).join("、")} ${trigger.time}（${trigger.timezone}）`;
+    case "file_arrival": return "目录新增文件";
+    case "event": return "等待本机事件";
+  }
+}
+
 export function SettingsDialog({
   open,
   api = null,
@@ -120,6 +142,10 @@ export function SettingsDialog({
   const [notice, setNotice] = useState<string | null>(null);
 
   // Model & Credentials state (real backend RPCs; secret input cleared immediately on save)
+  const [allowImages, setAllowImages] = useState(false);
+  const [compactThreshold, setCompactThreshold] = useState("");
+  const [profileName, setProfileName] = useState("");
+  const [profileNames, setProfileNames] = useState<string[]>([]);
   const [mode, setMode] = useState("scripted");
   const [modelName, setModelName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -133,6 +159,11 @@ export function SettingsDialog({
   const [schedGoal, setSchedGoal] = useState("");
   const [schedWorkspace, setSchedWorkspace] = useState("");
   const [schedInterval, setSchedInterval] = useState("3600");
+  const [schedKind, setSchedKind] = useState<ScheduleTrigger["kind"]>("interval");
+  const [schedTime, setSchedTime] = useState("09:00");
+  const [schedZone, setSchedZone] = useState("UTC");
+  const [schedDays, setSchedDays] = useState("1,2,3,4,5");
+  const [schedDirectory, setSchedDirectory] = useState("");
 
   // Budget, MCP & Diagnostics state
   const [budget, setBudget] = useState<BudgetOverviewView | null>(null);
@@ -177,6 +208,9 @@ export function SettingsDialog({
           setBaseUrl(s.model.base_url);
           setCredBackend(s.model.credential_backend);
           setCredentials(s.credentials);
+          setAllowImages(s.model.allow_image_attachments === true);
+          setCompactThreshold(s.model.compact_threshold?.toString() ?? "");
+          setProfileNames(Object.keys(s.profiles ?? {}));
         } else if (target === "schedule") {
           const list = await api.listSchedules();
           if (!cancelled.current) setSchedules(list);
@@ -231,6 +265,35 @@ export function SettingsDialog({
       streamStatus === "reconnecting" ||
       streamStatus === "polling");
 
+  const modelInput = () => ({
+    mode,
+    model_name: mode === "scripted" ? "" : modelName.trim(),
+    base_url: baseUrl.trim(),
+    credential_backend: credBackend,
+    ...(mode === "openai-responses" && allowImages ? { allow_image_attachments: true } : {}),
+    ...(mode === "openai-responses" && compactThreshold.trim() !== ""
+      ? { compact_threshold: Number(compactThreshold) } : {}),
+  });
+
+  const updateProfiles = async (remove?: string): Promise<void> => {
+    if (!api) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = remove === undefined
+        ? await api.saveModelProfile?.(profileName.trim(), modelInput())
+        : await api.removeModelProfile?.(remove);
+      if (!updated) return;
+      setProfileNames(Object.keys(updated.profiles ?? {}));
+      setProfileName("");
+      onSettingsSaved?.(updated.model.summary, updated);
+    } catch (caught) {
+      setError(humanizeHostError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSaveModel = async (): Promise<void> => {
     if (api === null) return;
     if (mode === "openai-responses" && modelName.trim() === "") {
@@ -245,17 +308,14 @@ export function SettingsDialog({
     setError(null);
     setNotice(null);
     try {
-      const updated = await api.configureModel({
-        mode,
-        model_name: mode === "scripted" ? "" : modelName.trim(),
-        base_url: baseUrl.trim(),
-        credential_backend: credBackend,
-      });
+      const updated = await api.configureModel(modelInput());
       setMode(updated.model.mode);
       setModelName(updated.model.model_name);
       setBaseUrl(updated.model.base_url);
       setCredBackend(updated.model.credential_backend);
       setCredentials(updated.credentials);
+      setAllowImages(updated.model.allow_image_attachments === true);
+      setCompactThreshold(updated.model.compact_threshold?.toString() ?? "");
       setNotice(`已保存并切换当前模型：${updated.model.summary}`);
       onSettingsSaved?.(updated.model.summary, updated);
     } catch (caught) {
@@ -304,28 +364,47 @@ export function SettingsDialog({
 
   const handleCreateSchedule = async (): Promise<void> => {
     if (api === null) return;
-    const interval = Number.parseInt(schedInterval, 10);
-    if (schedGoal.trim() === "") {
+    const common = { goal: schedGoal.trim(), workspace: schedWorkspace.trim() };
+    if (common.goal === "") {
       setError("请填写定时任务的目标描述。");
       return;
     }
-    if (!Number.isFinite(interval) || interval < 1) {
-      setError("触发间隔必须是大于等于 1 的整数秒。");
-      return;
+    let input: ScheduleInput;
+    if (schedKind === "interval") {
+      const interval = Number(schedInterval);
+      if (!Number.isSafeInteger(interval) || interval < 1) {
+        setError("触发间隔必须是大于等于 1 的整数秒。");
+        return;
+      }
+      input = { ...common, interval_seconds: interval };
+    } else if (schedKind === "calendar") {
+      const weekdays = schedDays.split(/[,，]/u).map((day) => Number(day.trim()));
+      if (!schedTime || !schedZone.trim() || weekdays.some((day) => !Number.isInteger(day) || day < 1 || day > 7)
+          || new Set(weekdays).size !== weekdays.length) {
+        setError("请填写时间、时区和不重复的星期。星期一为 1，星期日为 7，用逗号分隔。");
+        return;
+      }
+      input = { ...common, trigger: { kind: "calendar", time: schedTime, timezone: schedZone.trim(), weekdays } };
+    } else if (schedKind === "file_arrival") {
+      const directory = schedDirectory.trim();
+      if (!directory) {
+        setError("请填写监听目录的绝对路径。");
+        return;
+      }
+      input = { ...common, trigger: { kind: "file_arrival", directory } };
+    } else {
+      input = { ...common, trigger: { kind: "event" } };
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      await api.createSchedule({
-        goal: schedGoal.trim(),
-        workspace: schedWorkspace.trim(),
-        interval_seconds: interval,
-      });
+      await api.createSchedule(input);
       setSchedGoal("");
       setSchedWorkspace("");
+      setSchedDirectory("");
       setSchedules(await api.listSchedules());
-      setNotice("定时任务已创建，守护进程到期会自动创建任务并入队运行。");
+      setNotice("定时任务已创建，触发后会自动创建任务并入队运行。");
     } catch (caught) {
       setError(humanizeHostError(caught));
     } finally {
@@ -555,7 +634,11 @@ export function SettingsDialog({
                         className="input"
                         aria-label="模型协议"
                         value={mode}
-                        onChange={(e) => setMode(e.target.value)}
+                        onChange={(e) => {
+                          setMode(e.target.value);
+                          setAllowImages(false);
+                          setCompactThreshold("");
+                        }}
                         disabled={busy}
                       >
                         <option value="scripted">离线演示脚本模型（不联网、不计费）</option>
@@ -577,7 +660,11 @@ export function SettingsDialog({
                               mode === "anthropic" ? "必填，例如 claude-sonnet-4-5"
                                 : mode === "openai-responses" ? "必填：显式模型 ID" : "默认 gpt-4o-mini"
                             }
-                            onChange={(e) => setModelName(e.target.value)}
+                            onChange={(e) => {
+                              setModelName(e.target.value);
+                              setAllowImages(false);
+                              setCompactThreshold("");
+                            }}
                             disabled={busy}
                           />
                         </label>
@@ -589,10 +676,34 @@ export function SettingsDialog({
                             type="text"
                             value={baseUrl}
                             placeholder="留空使用官方默认端点，例如 https://api.openai.com/v1"
-                            onChange={(e) => setBaseUrl(e.target.value)}
+                            onChange={(e) => {
+                              setBaseUrl(e.target.value);
+                              setAllowImages(false);
+                              setCompactThreshold("");
+                            }}
                             disabled={busy}
                           />
                         </label>
+
+                        {mode === "openai-responses" ? (
+                          <>
+                            <label className="field">
+                              <span className="field-label">
+                                <input type="checkbox" checked={allowImages} disabled={busy}
+                                  onChange={(event) => setAllowImages(event.target.checked)} />
+                                此模型支持 PNG 和 JPEG 图片附件
+                              </span>
+                            </label>
+                            <label className="field">
+                              <span className="field-label">自动压缩阈值（令牌）</span>
+                              <input className="input" type="number" min="1024" max="2000000"
+                                value={compactThreshold} placeholder="留空关闭"
+                                onChange={(event) => setCompactThreshold(event.target.value)}
+                                disabled={busy} />
+                              <span className="field-hint">仅在所选 Responses 端点支持自动压缩时开启。</span>
+                            </label>
+                          </>
+                        ) : null}
 
                         <label className="field">
                           <span className="field-label">凭据读取来源</span>
@@ -622,6 +733,21 @@ export function SettingsDialog({
                       <span className="pill pill-success">零前端驻留</span>
                     </div>
                   </div>
+
+                  {api.saveModelProfile ? (
+                    <section className="setting-card" aria-label="运行模型档案">
+                      <div className="setting-title">运行模型档案</div>
+                      <label className="field"><span className="field-label">档案名</span>
+                        <input className="input" value={profileName} maxLength={32} disabled={busy}
+                          placeholder="例如 Research" onChange={(e) => setProfileName(e.target.value)} />
+                      </label>
+                      <button type="button" className="chip-btn" disabled={busy || !profileName.trim()}
+                        onClick={() => void updateProfiles()}>将上方配置存为档案</button>
+                      {profileNames.map((name) => <p key={name}>{name} <button type="button"
+                        className="link-btn" disabled={busy}
+                        onClick={() => void updateProfiles(name)} aria-label={`删除档案 ${name}`}>删除</button></p>)}
+                    </section>
+                  ) : null}
 
                   <section className="setting-card" aria-label="系统钥匙串凭据管理">
                     <div className="setting-title">系统钥匙串（Keychain）API Key</div>
@@ -772,7 +898,7 @@ export function SettingsDialog({
               <div className="settings-head">
                 <div>
                   <h2>定时任务</h2>
-                  <p>按固定秒级间隔自动创建任务并入队运行，仍严格遵循执行侧审批与工作区边界</p>
+                  <p>按时间、文件到达或本机事件触发任务。运行时仍需遵守工作区和审批设置。</p>
                 </div>
                 {closeButton}
               </div>
@@ -793,6 +919,46 @@ export function SettingsDialog({
                         disabled={busy}
                       />
                     </label>
+                    <label className="field">
+                      <span className="field-label">触发方式</span>
+                      <select className="input" value={schedKind} disabled={busy}
+                        onChange={(e) => {
+                          const kind = SCHEDULE_KINDS.find((choice) => choice.value === e.target.value);
+                          if (kind) setSchedKind(kind.value);
+                        }}>
+                        {SCHEDULE_KINDS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+                      </select>
+                    </label>
+                    {schedKind === "calendar" ? (
+                      <div className="setting-inline-form">
+                        <label className="field">
+                          <span className="field-label">当地时间</span>
+                          <input className="input" type="time" value={schedTime}
+                            onChange={(e) => setSchedTime(e.target.value)} disabled={busy} />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">时区</span>
+                          <input className="input" placeholder="UTC+08:00" value={schedZone}
+                            onChange={(e) => setSchedZone(e.target.value)} disabled={busy} />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">星期（周一 1，周日 7）</span>
+                          <input className="input" value={schedDays}
+                            onChange={(e) => setSchedDays(e.target.value)} disabled={busy} />
+                        </label>
+                      </div>
+                    ) : null}
+                    {schedKind === "file_arrival" ? (
+                      <label className="field">
+                        <span className="field-label">监听目录绝对路径（只读）</span>
+                        <input className="input" value={schedDirectory}
+                          onChange={(e) => setSchedDirectory(e.target.value)} disabled={busy} />
+                        <span className="field-hint">只检查直接子文件。新建时已有的文件不会触发。</span>
+                      </label>
+                    ) : null}
+                    {schedKind === "event" ? (
+                      <p className="field-hint">本机脚本可运行 <code>tianshu schedule signal SCHEDULE_ID EVENT_ID</code>，同一事件只入队一次。</p>
+                    ) : null}
                     <div className="setting-inline-form">
                       <input
                         className="input setting-grow-input"
@@ -803,7 +969,7 @@ export function SettingsDialog({
                         onChange={(e) => setSchedWorkspace(e.target.value)}
                         disabled={busy}
                       />
-                      <input
+                      {schedKind === "interval" ? <input
                         className="input setting-interval-input"
                         type="number"
                         min={1}
@@ -811,7 +977,7 @@ export function SettingsDialog({
                         value={schedInterval}
                         onChange={(e) => setSchedInterval(e.target.value)}
                         disabled={busy}
-                      />
+                      /> : null}
                       <button
                         type="button"
                         className="btn btn-primary btn-sm"
@@ -832,9 +998,15 @@ export function SettingsDialog({
                           <div className="setting-list-head">
                             <strong>{item.goal}</strong>
                             <span className="pill">
-                              {item.enabled ? "已启用" : "已停用"} · 每 {item.interval_seconds}s
+                              {item.enabled ? "已启用" : "已停用"} · {scheduleLabel(item)}
                             </span>
                           </div>
+                          {item.trigger.kind === "file_arrival" ? (
+                            <p className="field-hint">监听：{item.trigger.directory}</p>
+                          ) : null}
+                          {item.trigger.kind === "event" ? (
+                            <p className="field-hint">调度 ID：<code>{item.schedule_id}</code></p>
+                          ) : null}
                           {item.last_error !== "" ? (
                             <p className="field-hint text-danger">上次触发异常：{item.last_error}</p>
                           ) : null}
@@ -925,7 +1097,7 @@ export function SettingsDialog({
               <div className="settings-head">
                 <div>
                   <h2>MCP 服务</h2>
-                  <p>只读查看受控 stdio MCP 服务状态、准入工具与被拒工具诊断</p>
+                  <p>只读查看受控 stdio 和 HTTPS MCP 服务状态、准入工具与被拒工具诊断</p>
                 </div>
                 {closeButton}
               </div>

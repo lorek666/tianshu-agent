@@ -416,7 +416,7 @@ ToolDefinition {
 - `MCP` 的 `idempotentHint / readOnlyHint` 只是提示，不参与授权或幂等
 - JSON-RPC 协议错误 与 `isError=true` 执行错误分开映射
 
-受限表单提交拟由 `browser.navigate` 2.0 描述同源静态表单、`browser.submit` 1.0 一次性批准并外发；边界见[浏览器表单契约](agent-browser-form-contract.md)。
+受限表单提交由 `browser.navigate` 2.0 描述同源静态表单、`browser.submit` 1.0 一次性批准并外发；边界见[浏览器表单契约](agent-browser-form-contract.md)。
 
 #### 5.2.1 记忆工具（F10，v1.1）
 
@@ -640,7 +640,7 @@ Event {
 
 族的定义是**机械的**：`type` 的第一个 `.` 之前就是族名（唯一例外是裸类型 `receipt`）。新增一个前缀等于新增一个族，必须同时改本节、`EVENT_TYPES` 与 `schemas/c3/event.json`。
 
-`receipt.backend` 的现有封闭集是 `local_fs`、`memfs`、`memory`、`mcp`。受限表单拟增 `network`，只用于已确认的 POST；凭据绑定意图、目标、参数摘要、HTTP 状态与正文内容引用。
+`receipt.backend` 的封闭集是 `local_fs`、`memfs`、`memory`、`mcp`、`network`。`network` 只用于已确认的表单 POST；凭据绑定意图、目标、参数摘要、HTTP 状态与正文内容引用。
 
 | 族 | 语义 | 具体类型 |
 |---|---|---|
@@ -726,6 +726,10 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 `run.end` 货币成本汇总按 [CONTRACT-W4-W12-2026-11-18.md](CONTRACT-W4-W12-2026-11-18.md) §3 升为精确 payload `v2`：新增 `cost_total_micros`（`integer|null`，未知单价不伪装成 `0`）与 `cost_unknown_calls`（`integer >= 0`），保留历史 `v0/v1` 的 schema 与只读解释不变。
 
 **模型用量契约（2026-11-20 决定；2026-11-21 本地实现候选已离线定向验证）**：仅 `model.result` / `run.model_turn` 的新写采用精确 payload `v2`，允许 C1 已定义的两个可选缓存用量字段；usage 仍封闭，缓存不并入 input_tokens，未知金额不记零。两事件旧 `v0/v1` 的 schema/读取解释不变，其他事件不升版；本次不沿用发布前 optional 沿 v1 的历史例外，不全局废除该例外。版本旁表、旧基线拒新及回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)；本段仅更新本地实施状态，不宣称最终整合全量、独立复审、新 CI 或真实复验已通过。
+
+**表单 Receipt**：经确认的 `browser.submit` 写入精确 payload v2，限定 `backend="network"`
+和 `tool_id="browser.submit"`。既有 Receipt 的 v0/v1 schema 保持原样，其他工具继续写 v1。
+确认与核验范围见[受限表单契约](agent-browser-form-contract.md)。
 
 ### 5.4 C4 Permission / Approval
 

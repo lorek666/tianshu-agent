@@ -2,7 +2,7 @@
   "$id": "https://tianshu-agent/schemas/c3/event.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start / run.end / model.result / run.model_turn 当前 v2，其余 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start / run.end / model.result / run.model_turn 当前 v2，其余默认 v1；仅网络 receipt 使用 `$defs.networkReceiptPayload` v2）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
   "properties": {
     "actor": {
       "additionalProperties": false,
@@ -100,15 +100,22 @@
         "recovery.object_blocked",
         "recovery.object_unblocked",
         "recovery.unblocked",
+        "run.attachments",
         "run.control",
+        "run.conversation",
         "run.cursor",
         "run.effect",
         "run.end",
         "run.fenced",
         "run.finish",
+        "run.guidance_applied",
+        "run.guidance_requested",
+        "run.model_route",
         "run.model_turn",
         "run.start",
         "run.state",
+        "run.workflow",
+        "run.workflow_request",
         "subtask.finished",
         "subtask.spawned",
         "task.created",
@@ -2918,6 +2925,257 @@
           "control_run",
           "error"
         ]
+      },
+      "run.attachments": {
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "data_base64": {
+                  "type": "string"
+                },
+                "format_version": {
+                  "const": 1,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "enum": [
+                    "text/plain",
+                    "image/png",
+                    "image/jpeg"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "format_version",
+                "name",
+                "media_type",
+                "data_base64",
+                "sha256"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "attachments"
+        ],
+        "type": "object"
+      },
+      "run.conversation": {
+        "additionalProperties": false,
+        "properties": {
+          "turns": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "answer": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "source_run_id": {
+                  "type": "string"
+                },
+                "source_seq": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "source_run_id",
+                "source_seq",
+                "answer",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "turns"
+        ],
+        "type": "object"
+      },
+      "run.guidance_applied": {
+        "additionalProperties": false,
+        "properties": {
+          "request_seq": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_seq"
+        ],
+        "type": "object"
+      },
+      "run.guidance_requested": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "run.model_route": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "additionalProperties": false,
+            "properties": {
+              "allow_image_attachments": {
+                "type": "boolean"
+              },
+              "base_url": {
+                "type": "string"
+              },
+              "compact_threshold": {
+                "minimum": 1024,
+                "type": "integer"
+              },
+              "credential_backend": {
+                "enum": [
+                  "keychain",
+                  "env"
+                ],
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "scripted",
+                  "openai",
+                  "anthropic",
+                  "openai-responses"
+                ],
+                "type": "string"
+              },
+              "model_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "model_name",
+              "base_url",
+              "credential_backend"
+            ],
+            "type": "object"
+          },
+          "format_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "requested": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "selected": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "requested",
+          "selected",
+          "config"
+        ],
+        "type": "object"
+      },
+      "run.workflow": {
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "const": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "plan",
+              "compact",
+              "execute"
+            ],
+            "type": "string"
+          },
+          "request_id": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "type": "string"
+          },
+          "source_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_goal": {
+            "type": "string"
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_seqs": {
+            "items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "source_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "mode",
+          "request_id",
+          "source_run_id",
+          "source_text",
+          "source_seqs",
+          "source_digest",
+          "source_goal"
+        ],
+        "type": "object"
+      },
+      "run.workflow_request": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])",
+            "type": "string"
+          },
+          "requested_source_run_id": {
+            "pattern": "^.+$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "requested_source_run_id"
+        ],
+        "type": "object"
       }
     },
     "legacyPayload": {
@@ -5534,6 +5792,458 @@
         ],
         "type": "object"
       }
+    },
+    "modelResultCompactionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "continuation": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": {
+              "enum": [
+                "openai-responses"
+              ],
+              "type": "string"
+            },
+            "endpoint": {
+              "pattern": "^https?://[^?#]+/responses$",
+              "type": "string"
+            },
+            "model": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "output_items": {
+              "items": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "reasoning",
+                      "message",
+                      "function_call"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "encrypted_content": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "id": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "status": {
+                      "const": "completed",
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "compaction",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "encrypted_content"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "type": "array"
+            },
+            "schema_version": {
+              "const": "1.1",
+              "type": "string"
+            }
+          },
+          "required": [
+            "schema_version",
+            "adapter",
+            "endpoint",
+            "model",
+            "output_items"
+          ],
+          "type": "object"
+        },
+        "cost": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": {
+              "type": "string"
+            },
+            "cost": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unit_price_ver": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "units": {
+              "additionalProperties": false,
+              "properties": {
+                "input_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "output_tokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "input_tokens",
+                "output_tokens"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "adapter",
+            "model",
+            "units",
+            "unit_price_ver",
+            "cost",
+            "currency"
+          ],
+          "type": "object"
+        },
+        "finish_reason": {
+          "enum": [
+            "cancelled",
+            "checkpoint",
+            "content_filtered",
+            "end_turn",
+            "guardrail_intervened",
+            "interrupt",
+            "limit_output_tokens",
+            "limit_structured_output_attempts",
+            "limit_total_tokens",
+            "limit_turns",
+            "max_tokens",
+            "stop_sequence",
+            "tool_use"
+          ],
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": {},
+              "call_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "name",
+              "arguments"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "additionalProperties": false,
+          "properties": {
+            "cache_creation_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cache_read_input_tokens": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "input_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "output_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "request_id",
+        "content",
+        "finish_reason",
+        "tool_calls",
+        "usage",
+        "cost",
+        "continuation"
+      ],
+      "type": "object"
+    },
+    "networkReceiptPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "read",
+            "create",
+            "overwrite",
+            "delete",
+            "exec",
+            "fetch",
+            "delegate"
+          ],
+          "type": "string"
+        },
+        "after_state": {
+          "type": "string"
+        },
+        "args_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "backend": {
+          "enum": [
+            "network"
+          ],
+          "type": "string"
+        },
+        "before_state": {
+          "type": "string"
+        },
+        "blob_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "effect_state": {
+          "enum": [
+            "applied",
+            "none_applied",
+            "partial",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "absent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_ref": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deleted": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "deleted_bytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "result",
+                  "intent",
+                  "blob",
+                  "memory",
+                  "memory_erasure",
+                  "mcp_call"
+                ],
+                "type": "string"
+              },
+              "memory_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "request_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retained_by": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "seq": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "server": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tool": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "intent_seq": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "issued_at": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "receipt_id": {
+          "pattern": "^rcpt_[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "tool_id": {
+          "enum": [
+            "browser.submit"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "call_id",
+        "tool_id",
+        "action",
+        "args_hash",
+        "effect_state",
+        "backend",
+        "issuer",
+        "issued_at",
+        "root",
+        "resource",
+        "before_state",
+        "after_state",
+        "intent_seq",
+        "blob_ref",
+        "evidence"
+      ],
+      "type": "object"
     }
   }
 }

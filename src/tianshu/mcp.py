@@ -1,4 +1,4 @@
-"""MCP 客户端（stdio）：把「用户配置的 MCP server」变成「进程 + 一次调用」。
+"""MCP 客户端：发现用户配置的工具，并把一次已授权调用交给对应传输。
 
 ## 这一层只做一件事：与外部 MCP server 说清楚话
 
@@ -29,7 +29,7 @@
 - 协议形状按 MCP 2025-06-18 的已知口径实现（stdio、`initialize`、`tools/list`、
   `tools/call`、`notifications/cancelled`），**未在官方页面逐条复核**；认不出的
   版本/形状一律拒绝，真实第三方 server 兼容性**未验证**。
-- 只支持 stdio；HTTP/SSE、OAuth、`resources/*`、`prompts/*`、`sampling/*`、
+- HTTPS Streamable HTTP 的子集见 `mcp_http.py`；OAuth、`resources/*`、`prompts/*`、`sampling/*`、
   `roots/*`、`list_changed` 都不做。
 - 同一 server 的请求**串行**（每 server 一把请求锁）：协议允许并发，但 v1 的
   调用方是单线程主循环，串行能把"响应配对错误"变成不可能。
@@ -51,7 +51,10 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .mcp_http import HttpServer
 
 from .errors import TianshuError
 
@@ -123,6 +126,8 @@ _MAX_NAME = 64
 _SERVER_CONFIG_KEYS = frozenset(
     {
         "command",
+        "url",
+        "bearer_token_env",
         "cwd",
         "env",
         "handshake_timeout_ms",
@@ -214,13 +219,15 @@ class McpServerConfig:
     """一个 MCP server 的用户配置（不可变，构造期校验）。"""
 
     name: str
-    command: tuple[str, ...]
+    command: tuple[str, ...] = ()
     cwd: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
     handshake_timeout_ms: int = MCP_HANDSHAKE_TIMEOUT_MS
     call_timeout_ms: int = MCP_CALL_TIMEOUT_MS
     max_result_bytes: int = MCP_DEFAULT_MAX_RESULT_BYTES
     max_tools: int = MCP_DEFAULT_MAX_TOOLS
+    url: str = ""
+    bearer_token_env: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _NAME_RE.match(self.name):
@@ -229,9 +236,21 @@ class McpServerConfig:
                 f"{self.name!r}"
             )
         command = tuple(self.command)
-        if not command or not all(isinstance(part, str) and part for part in command):
-            raise McpConfigError(f"server {self.name!r} 的 command 必须是非空字符串数组")
-        _require_absolute(command[0], server=self.name)
+        if self.url:
+            from .mcp_http import endpoint_for
+
+            if command or self.cwd or self.env:
+                raise McpConfigError("远程 MCP 不接受 command / cwd / env")
+            endpoint = endpoint_for(self.url)
+            object.__setattr__(self, "url", endpoint.origin + endpoint.path)
+        else:
+            if not command or not all(isinstance(part, str) and part for part in command):
+                raise McpConfigError(f"server {self.name!r} 的 command 必须是非空字符串数组")
+            _require_absolute(command[0], server=self.name)
+        if not isinstance(self.bearer_token_env, str) or (self.bearer_token_env and (
+            not self.url or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]{0,127}", self.bearer_token_env)
+        )):
+            raise McpConfigError("远程 MCP bearer_token_env 必须是环境变量名")
         if self.cwd:
             if not isinstance(self.cwd, str) or not os.path.isabs(self.cwd):
                 raise McpConfigError(
@@ -264,10 +283,12 @@ class McpServerConfig:
             )
 
     def to_dict(self) -> dict[str, Any]:
+        transport = (
+            {"url": self.url, "bearer_token_env": self.bearer_token_env} if self.url
+            else {"command": list(self.command), "cwd": self.cwd, "env": dict(self.env)}
+        )
         return {
-            "command": list(self.command),
-            "cwd": self.cwd,
-            "env": dict(self.env),
+            **transport,
             "handshake_timeout_ms": self.handshake_timeout_ms,
             "call_timeout_ms": self.call_timeout_ms,
             "max_result_bytes": self.max_result_bytes,
@@ -282,9 +303,12 @@ class McpServerConfig:
         if unknown:
             raise McpConfigError(
                 f"server {name!r} 含不认识的字段 {sorted(unknown)}"
-                f"（只认 {sorted(_SERVER_CONFIG_KEYS)}；配置里不许写 shell/URL/传输）"
+                f"（只认 {sorted(_SERVER_CONFIG_KEYS)}；配置里不许写 shell）"
             )
-        command = raw.get("command")
+        if "url" in raw and (not isinstance(raw["url"], str) or not raw["url"]
+                             or set(raw) & {"command", "cwd", "env"}):
+            raise McpConfigError("远程 MCP 必须只指定非空 url，不接受 command / cwd / env")
+        command = raw.get("command", () if "url" in raw else None)
         if not isinstance(command, (list, tuple)):
             raise McpConfigError(f"server {name!r} 的 command 必须是字符串数组")
         env = raw.get("env", {})
@@ -303,7 +327,8 @@ class McpServerConfig:
         ):
             if key in raw:
                 kwargs[key] = raw[key]
-        return cls(**kwargs)
+        return cls(**kwargs, url=raw.get("url", ""),
+                   bearer_token_env=raw.get("bearer_token_env", ""))
 
 
 def parse_mcp_config(raw: Any) -> dict[str, McpServerConfig]:
@@ -494,7 +519,142 @@ def _clip_blocks(
 # ---------------------------------------------------------------- 进程
 
 
-class StdioServer:
+class _ToolClient:
+    config: McpServerConfig
+    _last_request_id: int
+    _tools_truncated: bool
+    _tools: tuple[McpTool, ...]
+
+    @property
+    def name(self) -> str:
+        return self.config.name
+
+    def request(
+        self, method: str, params: dict[str, Any] | None, *, timeout_ms: int
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def call_tool(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        timeout_ms: int | None = None,
+        call_id: str = "",
+    ) -> McpCallResult:
+        """执行一次工具。`McpCallError` / `McpTimeout` / `McpClosed` 由调用方翻译。"""
+        limit = self.config.call_timeout_ms if timeout_ms is None else timeout_ms
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise McpError(f"timeout_ms 必须是正整数：{limit!r}")
+        started = time.monotonic()
+        request_method = "tools/call"
+        params = {"name": tool, "arguments": arguments}
+        if call_id:
+            # MCP 的 `_meta` 是可选的透传位；我们只放自己的 call_id 便于日志对齐。
+            params["_meta"] = {"tianshu/call_id": call_id}
+        result = self.request(request_method, params, timeout_ms=limit)
+        content = result.get("content")
+        if not isinstance(content, list):
+            raise McpProtocolError(
+                f"server {self.name!r} 的 tools/call 结果 content 不是数组"
+            )
+        for item in content:
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/call content 含非法内容块"
+                )
+            if item["type"] == "text" and not isinstance(item.get("text"), str):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/call text 不是文本"
+                )
+        is_error = result.get("isError", False)
+        if not isinstance(is_error, bool):
+            raise McpProtocolError(
+                f"server {self.name!r} 的 tools/call isError 不是布尔值"
+            )
+        blocks = tuple(content)
+        structured = result.get("structuredContent")
+        kept, total_bytes, kept_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
+            blocks, limit=self.config.max_result_bytes
+        )
+        # `structuredContent` 也是结果正文：它同样受 `max_result_bytes` 约束。
+        # 只统计文本会让"结果上限"名不副实（一个 5 MB 的 structuredContent 能
+        # 原样通过）；这里把它按紧凑 JSON 的字节数计入同一份预算。
+        if structured is not None:
+            try:
+                encoded = json.dumps(
+                    structured, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            except (TypeError, ValueError):  # pragma: no cover - 服务端给了不可序列化对象
+                encoded = b""
+                structured = None
+            total_bytes += len(encoded)
+            room = self.config.max_result_bytes - kept_bytes
+            if encoded and len(encoded) <= room:
+                kept_bytes += len(encoded)
+            elif encoded:
+                dropped_bytes += len(encoded)
+                structured = None
+        dropped = dropped_bytes > 0 or dropped_blocks > 0
+        return McpCallResult(
+            request_id=self._last_request_id,
+            content=kept,
+            is_error=is_error,
+            structured=structured,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            bytes=total_bytes,
+            truncated=dropped,
+            dropped_bytes=dropped_bytes,
+            dropped_blocks=dropped_blocks,
+        )
+
+    def _discover_tools(self) -> None:
+        tools: list[McpTool] = []
+        cursor: str | None = None
+        pages = 0
+        while True:
+            stopped_mid_page = False
+            params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
+            result = self.request(
+                "tools/list", params, timeout_ms=self.config.handshake_timeout_ms
+            )
+            page = result.get("tools")
+            if page is None:
+                page = []
+            if not isinstance(page, list):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/list 结果 tools 不是数组"
+                )
+            for item in page:
+                if len(tools) >= self.config.max_tools:
+                    # 配置说最多几个就最多几个：多出来的不建对象、也不问下一页。
+                    # 只有"页内还有剩余"才算截断——恰好装满且没有下一页时，
+                    # server 确实就只有这么多工具，不能谎报截断（那会让准入层
+                    # 生成一条假的 `<truncated>` 拒绝行）。
+                    stopped_mid_page = True
+                    self._tools_truncated = True
+                    break
+                tools.append(McpTool.from_raw(item))
+            pages += 1
+            next_cursor = None if stopped_mid_page else result.get("nextCursor")
+            if stopped_mid_page or (len(tools) >= self.config.max_tools and next_cursor):
+                # 满了且**确实还有更多**（页内剩余或 nextCursor 非空）才算截断。
+                self._tools_truncated = True
+                break
+            if not next_cursor:
+                break
+            if not isinstance(next_cursor, str):
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 nextCursor 不是字符串：{next_cursor!r}"
+                )
+            if pages >= MCP_MAX_LIST_PAGES:
+                raise McpProtocolError(
+                    f"server {self.name!r} 的 tools/list 翻了 {pages} 页还没到底"
+                )
+            cursor = next_cursor
+        self._tools = tuple(tools)
+
+class StdioServer(_ToolClient):
     """一个 stdio MCP server：进程 + 读线程 + 请求/响应配对。
 
     生命周期：`start()` → `request()` / `call_tool()` → `close()`。
@@ -804,80 +964,6 @@ class StdioServer:
         except McpError:
             pass
 
-    def call_tool(
-        self,
-        tool: str,
-        arguments: dict[str, Any],
-        *,
-        timeout_ms: int | None = None,
-        call_id: str = "",
-    ) -> McpCallResult:
-        """执行一次工具。`McpCallError` / `McpTimeout` / `McpClosed` 由调用方翻译。"""
-        limit = self.config.call_timeout_ms if timeout_ms is None else timeout_ms
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
-            raise McpError(f"timeout_ms 必须是正整数：{limit!r}")
-        started = time.monotonic()
-        request_method = "tools/call"
-        params = {"name": tool, "arguments": arguments}
-        if call_id:
-            # MCP 的 `_meta` 是可选的透传位；我们只放自己的 call_id 便于日志对齐。
-            params["_meta"] = {"tianshu/call_id": call_id}
-        result = self.request(request_method, params, timeout_ms=limit)
-        content = result.get("content")
-        if not isinstance(content, list):
-            raise McpProtocolError(
-                f"server {self.name!r} 的 tools/call 结果 content 不是数组"
-            )
-        for item in content:
-            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
-                raise McpProtocolError(
-                    f"server {self.name!r} 的 tools/call content 含非法内容块"
-                )
-            if item["type"] == "text" and not isinstance(item.get("text"), str):
-                raise McpProtocolError(
-                    f"server {self.name!r} 的 tools/call text 不是文本"
-                )
-        is_error = result.get("isError", False)
-        if not isinstance(is_error, bool):
-            raise McpProtocolError(
-                f"server {self.name!r} 的 tools/call isError 不是布尔值"
-            )
-        blocks = tuple(content)
-        structured = result.get("structuredContent")
-        kept, total_bytes, kept_bytes, dropped_bytes, dropped_blocks = _clip_blocks(
-            blocks, limit=self.config.max_result_bytes
-        )
-        # `structuredContent` 也是结果正文：它同样受 `max_result_bytes` 约束。
-        # 只统计文本会让"结果上限"名不副实（一个 5 MB 的 structuredContent 能
-        # 原样通过）；这里把它按紧凑 JSON 的字节数计入同一份预算。
-        if structured is not None:
-            try:
-                encoded = json.dumps(
-                    structured, ensure_ascii=False, separators=(",", ":")
-                ).encode("utf-8")
-            except (TypeError, ValueError):  # pragma: no cover - 服务端给了不可序列化对象
-                encoded = b""
-                structured = None
-            total_bytes += len(encoded)
-            room = self.config.max_result_bytes - kept_bytes
-            if encoded and len(encoded) <= room:
-                kept_bytes += len(encoded)
-            elif encoded:
-                dropped_bytes += len(encoded)
-                structured = None
-        dropped = dropped_bytes > 0 or dropped_blocks > 0
-        return McpCallResult(
-            request_id=self._last_request_id,
-            content=kept,
-            is_error=is_error,
-            structured=structured,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            bytes=total_bytes,
-            truncated=dropped,
-            dropped_bytes=dropped_bytes,
-            dropped_blocks=dropped_blocks,
-        )
-
     def cancel(self, request_id: int, reason: str = "cancelled by client") -> None:
         """发取消通知（**只是请求**：server 可以不理会）。"""
         try:
@@ -921,52 +1007,6 @@ class StdioServer:
         capabilities = result.get("capabilities")
         self._capabilities = capabilities if isinstance(capabilities, dict) else {}
         self.notify("notifications/initialized", {})
-
-    def _discover_tools(self) -> None:
-        tools: list[McpTool] = []
-        cursor: str | None = None
-        pages = 0
-        while True:
-            stopped_mid_page = False
-            params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
-            result = self.request(
-                "tools/list", params, timeout_ms=self.config.handshake_timeout_ms
-            )
-            page = result.get("tools")
-            if page is None:
-                page = []
-            if not isinstance(page, list):
-                raise McpProtocolError(
-                    f"server {self.name!r} 的 tools/list 结果 tools 不是数组"
-                )
-            for item in page:
-                if len(tools) >= self.config.max_tools:
-                    # 配置说最多几个就最多几个：多出来的不建对象、也不问下一页。
-                    # 只有"页内还有剩余"才算截断——恰好装满且没有下一页时，
-                    # server 确实就只有这么多工具，不能谎报截断（那会让准入层
-                    # 生成一条假的 `<truncated>` 拒绝行）。
-                    stopped_mid_page = True
-                    self._tools_truncated = True
-                    break
-                tools.append(McpTool.from_raw(item))
-            pages += 1
-            next_cursor = None if stopped_mid_page else result.get("nextCursor")
-            if stopped_mid_page or (len(tools) >= self.config.max_tools and next_cursor):
-                # 满了且**确实还有更多**（页内剩余或 nextCursor 非空）才算截断。
-                self._tools_truncated = True
-                break
-            if not next_cursor:
-                break
-            if not isinstance(next_cursor, str):
-                raise McpProtocolError(
-                    f"server {self.name!r} 的 nextCursor 不是字符串：{next_cursor!r}"
-                )
-            if pages >= MCP_MAX_LIST_PAGES:
-                raise McpProtocolError(
-                    f"server {self.name!r} 的 tools/list 翻了 {pages} 页还没到底"
-                )
-            cursor = next_cursor
-        self._tools = tuple(tools)
 
     # ---- 读写
 
@@ -1168,7 +1208,8 @@ class McpClients:
         self._configs = dict(configs)
         self._default_cwd = default_cwd
         self._environ = environ
-        self._servers: dict[str, StdioServer] = {}
+        self._servers: dict[str, StdioServer | HttpServer] = {}
+        self._remote_lock = threading.Lock()
         self._failures: dict[str, str] = {}
         self._started = False
         atexit.register(self.close_all)
@@ -1226,11 +1267,43 @@ class McpClients:
                 self._servers[name] = server
 
         for name, config in self._configs.items():
+            if config.url:
+                continue
             thread = threading.Thread(target=boot, args=(name, config), name=f"mcp-boot-{name}")
             thread.start()
             threads.append(thread)
         for thread in threads:
             thread.join()
+
+    def start_remotes(self, names: tuple[str, ...]) -> bool:
+        """Discover only task-selected remote servers; never replace a live or failed session."""
+        from .mcp_http import HttpServer
+
+        changed = False
+        with self._remote_lock:
+            for name in dict.fromkeys(names):
+                config = self._configs.get(name)
+                if (config is None or not config.url or name in self._servers
+                        or name in self._failures):
+                    continue
+                server = HttpServer(config, environ=self._environ)
+                try:
+                    server.start()
+                except McpServerUnavailable as exc:
+                    self._failures[name] = str(exc)
+                else:
+                    self._servers[name] = server
+                    changed = True
+        return changed
+
+    def remote_identity(self, name: str) -> str:
+        config = self._configs.get(name)
+        if config is None or not config.url:
+            return ""
+        from .mcp_http import HttpServer
+
+        server = self._servers.get(name)
+        return server.identity if isinstance(server, HttpServer) else ""
 
     def close_all(self) -> None:
         for server in list(self._servers.values()):
@@ -1239,7 +1312,7 @@ class McpClients:
 
     # ---- 查询
 
-    def server(self, name: str) -> StdioServer | None:
+    def server(self, name: str) -> StdioServer | HttpServer | None:
         return self._servers.get(name)
 
     def ready_names(self) -> tuple[str, ...]:
@@ -1267,11 +1340,12 @@ class McpClients:
             reason = self._failures.get(name, "")
             if server is not None and not reason:
                 reason = server.diagnostics()
+            inactive = "任务选择后才连接" if self._configs[name].url else "未启动"
             rows.append(
                 McpServerState(
                     name=name,
                     status="unavailable",
-                    diagnostics=(reason,) if reason else ("未启动",),
+                    diagnostics=(reason or inactive,),
                     pid=None if server is None else server.pid,
                 )
             )

@@ -33,6 +33,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -48,6 +49,8 @@ from .credentials import (
     register_secret,
 )
 from .errors import TianshuError
+from .http_framing import HttpFramingError, chunk_lines, read_chunks, response_length
+from .task_attachments import AttachmentError, plain_messages
 
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
 FinishReason = str
@@ -333,7 +336,14 @@ class Transport(Protocol):
 class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
     """模型凭据绑定配置的源；响应不能选择另一个凭据接收方。"""
 
+    def __init__(self, *, allow_redirects: bool) -> None:
+        self._allow_redirects = allow_redirects
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not self._allow_redirects:
+            fp.close()
+            raise ModelError("模型端点重定向已拒绝", kind="protocol")
+
         def origin(url):
             parsed = urlsplit(url)
             if parsed.username is not None or parsed.password is not None:
@@ -355,8 +365,108 @@ class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _CompleteResponseHead:
+    def __init__(self, stream):
+        self._stream = stream
+
+    def readline(self, size: int) -> bytes:
+        line = self._stream.readline(size)
+        if not line.endswith(b"\r\n"):
+            raise HttpFramingError("模型响应状态行或头部不完整")
+        return line
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+class _CompleteResponse(http.client.HTTPResponse):
+    def begin(self) -> None:
+        stream = self.fp
+        assert stream is not None
+        self.fp = _CompleteResponseHead(stream)
+        try:
+            super().begin()
+            response_length(self)
+        finally:
+            self.fp = stream
+
+
+class _CompleteHTTPConnection(http.client.HTTPConnection):
+    response_class = _CompleteResponse
+
+
+class _CompleteHTTPSConnection(http.client.HTTPSConnection):
+    response_class = _CompleteResponse
+
+
+class _CompleteHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_CompleteHTTPConnection, req)
+
+
+class _CompleteHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_CompleteHTTPSConnection, req, context=self._context)
+
+
+_MAX_MODEL_RESPONSE_BYTES = 64 * 1024 * 1024
+_MAX_MODEL_CHUNK_METADATA = 1024 * 1024
+
+
+def _complete_chunks(response: http.client.HTTPResponse) -> Iterator[bytes]:
+    return read_chunks(
+        response, _MAX_MODEL_RESPONSE_BYTES, max_metadata=_MAX_MODEL_CHUNK_METADATA,
+    )
+
+
+def _read_model_body(response: http.client.HTTPResponse) -> bytes:
+    if response.chunked:
+        return b"".join(_complete_chunks(response))
+    limit = _MAX_MODEL_RESPONSE_BYTES
+    if response.length is not None and response.length > limit:
+        raise HttpFramingError("模型响应超出字节上限")
+    raw = response.read(limit + 1)
+    if len(raw) > limit or response.length:
+        raise HttpFramingError("模型响应超出上限或正文截断")
+    return raw
+
+
+def _complete_sse_lines(response: http.client.HTTPResponse) -> Iterator[bytes]:
+    if response.chunked:
+        yield from chunk_lines(_complete_chunks(response))
+        return
+    remaining = _MAX_MODEL_RESPONSE_BYTES
+    while line := response.readline(remaining + 1):
+        remaining -= len(line)
+        if remaining < 0:
+            raise HttpFramingError("模型 SSE 响应超出字节上限")
+        yield line
+    if response.length:
+        raise HttpFramingError("模型 SSE 响应正文截断")
+
+
 class UrllibTransport:
     """stdlib 实现。零第三方依赖是这个项目的一条硬线（PRD §7.3）。"""
+
+    def __init__(self, *, allow_redirects: bool = True, strict_framing: bool = False) -> None:
+        self._allow_redirects = allow_redirects
+        self._strict_framing = strict_framing
+
+    @contextmanager
+    def _open(
+        self, req: urllib.request.Request, timeout: float,
+    ) -> Iterator[http.client.HTTPResponse]:
+        handlers = [_SameOriginRedirect(allow_redirects=self._allow_redirects)]
+        if self._strict_framing:
+            handlers.extend((_CompleteHTTPHandler(), _CompleteHTTPSHandler()))
+        try:
+            opener = urllib.request.build_opener(*handlers)
+            with opener.open(req, timeout=timeout) as response:
+                yield response
+        except urllib.error.HTTPError as exc:
+            with exc:
+                raw = _read_model_body(exc.fp) if self._strict_framing else exc.read()
+            raise ModelError.from_http(exc.code, raw.decode("utf-8", "replace")[:400]) from exc
 
     def post(
         self, url: str, *, body: dict[str, Any], headers: dict[str, str], timeout: float
@@ -368,12 +478,8 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            opener = urllib.request.build_opener(_SameOriginRedirect())
-            with opener.open(req, timeout=timeout) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-            raise ModelError.from_http(exc.code, detail) from exc
+            with self._open(req, timeout) as resp:
+                raw = _read_model_body(resp) if self._strict_framing else resp.read()
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError):
@@ -426,14 +532,14 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            opener = urllib.request.build_opener(_SameOriginRedirect())
-            with opener.open(req, timeout=timeout) as resp:
-                yield from _iter_sse_frames(resp)
+            with self._open(req, timeout) as resp:
+                lines = _complete_sse_lines(resp) if self._strict_framing else resp
+                yield from _iter_sse_frames(lines, strict=self._strict_framing)
+                # HTTPResponse.readline() can reach EOF without checking Content-Length.
+                if not self._strict_framing and resp.length:
+                    raise ModelError("SSE 响应正文截断", kind="transport")
         except ModelError:
             raise
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-            raise ModelError.from_http(exc.code, detail) from exc
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, TimeoutError):
@@ -455,7 +561,7 @@ class UrllibTransport:
             ) from exc
 
 
-def _iter_sse_frames(byte_lines: Any) -> Iterator[tuple[str, str]]:
+def _iter_sse_frames(byte_lines: Any, *, strict: bool = False) -> Iterator[tuple[str, str]]:
     """将字节行迭代器解析为标准 SSE `(event, data)` 帧。"""
     event_name = "message"
     data_lines: list[str] = []
@@ -468,6 +574,8 @@ def _iter_sse_frames(byte_lines: Any) -> Iterator[tuple[str, str]]:
             )
         except UnicodeDecodeError as exc:
             raise ModelError(f"SSE 流包含非法 UTF-8 字节：{exc}", kind="protocol") from exc
+        if strict and not line.endswith("\n"):
+            raise ModelError("SSE 响应行未结束", kind="protocol")
         line = line.rstrip("\r\n")
         if line == "":
             if data_lines:
@@ -487,6 +595,8 @@ def _iter_sse_frames(byte_lines: Any) -> Iterator[tuple[str, str]]:
         elif field_name == "data":
             data_lines.append(value)
     if data_lines:
+        if strict:
+            raise ModelError("SSE 响应事件未以空行结束", kind="protocol")
         yield (event_name, "\n".join(data_lines))
 
 
@@ -579,6 +689,13 @@ def _reject_continuation(messages: list[dict[str, Any]]) -> None:
     try:
         require_scope(messages, None)
     except ValueError as exc:
+        raise ModelError(str(exc), kind="protocol", retryable=False) from None
+
+
+def _provider_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        return plain_messages(messages)
+    except AttachmentError as exc:
         raise ModelError(str(exc), kind="protocol", retryable=False) from None
 
 
@@ -746,7 +863,7 @@ class OpenAICompatibleModel(_HttpModel):
         _reject_continuation(messages)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _provider_text_messages(messages),
             "temperature": 0,
         }
         if tools:
@@ -1017,7 +1134,7 @@ class AnthropicMessagesModel(_HttpModel):
 
     def _request(self, messages, tools):
         _reject_continuation(messages)
-        system, converted = to_anthropic_messages(messages)
+        system, converted = to_anthropic_messages(_provider_text_messages(messages))
         body: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,

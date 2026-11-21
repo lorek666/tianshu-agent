@@ -46,6 +46,7 @@ from .jobs import JobClaim, JobLost
 from .leases import GuardTimeout, LeaseLost
 from .permissions import ACTION_EXEC, ActionRequest, ApprovalError
 from .receipt import (
+    build_browser_form_receipt,
     build_exec_receipt,
     build_mcp_receipt,
     build_memory_receipt,
@@ -885,6 +886,11 @@ class _DispatcherLedgerMixin:
             else:
                 # propose 是候选草稿，不产凭据（F10 §7）。
                 receipt = None
+        elif is_network and request.tool_id == "browser.submit":
+            receipt = build_browser_form_receipt(
+                run_id=request.run_id, call_id=request.call_id, args_hash=request.args_hash,
+                result=result, resource=target.uri, intent_seq=intent_seq,
+            )
         elif is_network or is_subtask:
             # 网络与委派都没有本地文件副作用、也没有可撤销内容：不产凭据。
             # （凭据回答"改了什么文件"；"发了什么 / 派了什么"在 tool.result 里。）

@@ -130,24 +130,31 @@ M5 不重新发明一套。
 | `hello` | 见上 | `welcome` | 必调，且必须是第一条 |
 | `state` | — | `{tasks, runs, approvals, event_seq_head, daemon, tasks_truncated, runs_truncated, approvals_truncated}` | 首屏；`runs` = 全部非终态 + 最近 20 个终态/fence。`daemon = {daemon_version, instance_id, pid, data_root, started_at}`。三个 `*_truncated` 截断标记（2026-11-15 W3 起新增；加字段不升版本，旧 daemon 不发、旧客户端忽略）：响应对应预算装填（帧上限 8MiB 的一半，tasks/runs/approvals 按份额顺序装填），某节放不下就按条停并置标记，**条目文本不截断**；单条目自身超预算抛 `internal`（设计与不变量见 SPEC-STATE-RESPONSE-BOUND-2026-11-15.md） |
 | `task.list` | `{limit?}` | `{tasks}` | 按更新时间倒序 |
-| `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?}` | `{task}` | 建任务不建 Run |
+| `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?, outbound_allow?, mcp_servers?, max_subtasks?}` | `{task}` | 建任务不建 Run。工具范围复用 CLI 的任务级校验；缺省不启用，实际出网、MCP 调用和委派仍由执行侧单独审批。 |
 | `task.revise` | `{task_id, goal}` | `{task}` | 改目标 → `goal_revision+1`，旧 Run 被 fence |
-| `run.start` | `{task_id, out_name?}` | `{run}` | **只入队**，立即返回；执行由 Daemon 驱动 |
+| `run.start` | `{task_id, out_name?, mode?, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | **只入队**，立即返回；执行由 Daemon 驱动 |
+| `run.follow_up` | `{task_id, source_run_id, message, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | 从同一任务和同一目标版本下已成功运行的提交回答开始新 Run |
+| `run.guide` | `{run_id,text}` | `{request_seq}` | 补充要求在下一次模型调用前生效，已提出的工具动作继续按原参数审批 |
+| `run.answer_clarification` | `{task_id,source_run_id,message,request_id,attachments?,model_profile?,fallback_profiles?}` | `{run}` | 回复有待澄清问题的只读计划，新建只读运行 |
+| `plan.execute` | `{plan_run_id,goal_revision,model_profile?,fallback_profiles?}` | `{run}` | 显式确认当前计划后新建执行 Run；工具仍逐次审批 |
 | `run.list` | `{task_id}` | `{runs}` | 失败不覆盖，历史全在 |
 | `run.status` | `{run_id}` | `{run}` | |
 | `run.pause` / `run.resume` / `run.cancel` | `{run_id}` | `{run}` | 控制请求与生效状态分开（PRD §4.3）。`run.resume` 只对 `paused` / `waiting_approval` / `reconciling` 入队；`created`/`queued`/`running`/`cancelling` 是 no-op（已经在跑或在队里，再塞会和 owner 抢 claim） |
 | `approvals.list` | `{run_id?}` | `{approvals}` | 过期的先清再列（批了也不会执行的不该留在队列里） |
 | `approvals.decide` | `{approval_id, decision:"approve"\|"reject", reason?}` | `{approval, resumed}` | `resumed=true` 只表示"已交给驱动线程"，**不表示已经跑起来**（续跑可能失败并被丢弃）。`reason` 目前不进库：审批记录没有自由文本字段，改了就要动 `schemas/m2/approval.json`；它只用于 UI 展示 |
 | `events.run` | `{run_id, after_seq?, limit?}` | `{events, seq_head, has_more}` | 事件日志是唯一事实源 |
+| `artifact.list` | `{run_id}` | `{artifacts, truncated}` | 从本次运行的成功写入事件与凭据核对文本产物 |
+| `artifact.preview` | `{run_id, artifact_id}` | `{artifact}` | 返回核对后的运行时文本；最多 64 KiB，未知或跨 Run ID 返回 `not_found` |
 | `subscribe` | `{since_seq}` | `{subscribed:true, from_seq}` | 之后服务端先补历史再推增量 |
 | `undo.plan` | `{run_id}` | `{changes:[{path, kind, reason?}]}` | 只读 |
 | `undo.apply` | `{run_id}` | `{applied: bool, refused?: [str]}` | 走既有"还原也经审批"的派发路径；前置拒绝抛 `refused`（含原因列表），执行期异常抛 `undo_failed`，不吞 |
 | `settings.get` | — | `{model, credentials}` | 首日配置只读视图；`credentials` 只返回各后端布尔 `configured` 与可写能力，**绝不回显任何密钥字符** |
-| `model.configure` | `{mode, model_name?, base_url?, credential_backend?}` | `{model, credentials}` | 原子写入 `<data_root>/model_config.json`（`0o600`，不含密钥）并热切换当前运行模型槽位 |
+| `model.configure` | `{mode, model_name?, base_url?, credential_backend?, allow_image_attachments?, compact_threshold?}` | `{model, credentials}` | 原子写入 `<data_root>/model_config.json`（`0o600`，不含密钥）并热切换当前运行模型槽位 |
 | `credential.set` / `credential.delete` | `{provider, secret?, backend?}` | `{credentials}` | 对接系统钥匙串（macOS Keychain）；只读 `env` 或平台未实现时明确返回 `unsupported`，不静默降级 |
-| `schedule.list` / `schedule.create` / `schedule.set_enabled` / `schedule.remove` | 对应 schedule 参数 | `{schedules}` / `{schedule}` / `{removed}` | 与 `tianshu schedule` 共用同一 `Scheduler` 存储；触发仍由 Daemon 驱动线程同事务执行 |
+| `schedule.list` / `schedule.create` / `schedule.set_enabled` / `schedule.remove` | 对应 schedule 参数 | `{schedules}` / `{schedule}` / `{removed}` | 与 `tianshu schedule` 共用存储；时间与目录触发由 Daemon 驱动线程检查 |
+| `schedule.signal` | `{schedule_id,event_id}` | `{accepted,run_id}` | 只启动已启用的本机事件调度；重复事件返回原 Run。见[本机任务触发](changelog/2026-11-21-local-schedule-triggers.md) |
 | `budget.view` | `{run_id?}` | `{dimensions, run_account, accounts, unsettled_count}` | 暴露账户级上限、已结算用量与未决预占笔数（未知用量保持占位不记零） |
-| `mcp.list` | — | `{configured, reason?, servers, tools, rejected_tools}` | 与 `tianshu mcp list` 同口径只读探查 MCP server 与准入结论 |
+| `mcp.list` | — | `{configured, reason?, servers, tools, rejected_tools}` | 与 `tianshu mcp list` 同口径展示 MCP 及工具准入结论；远程配置只展示，任务选中后才握手 |
 | `diagnostics.preview` | `{sections?}` | `{manifest}` | 只读生成本地默认脱敏诊断包内容清单（不落盘；控制面强制 `redact_sensitive=true`） |
 | `diagnostics.export` | `{out_dir, sections?}` | `{ok, archive_path, manifest}` | 在本地 `out_dir`（禁止位于 `data_root` 内，`O_EXCL` 防覆盖）写出默认脱敏 `.zip` 诊断包；控制面拒绝关闭脱敏 |
 | `shutdown` | `{reason}` | `{ok}` | Host 显式退出时调。`reason` **进 Daemon 日志（stderr），不进事件日志**：事件日志是 run 作用域的（每条事件挂 `run_id`），而 C3 是封闭集合，为一个进程生命周期事件新增类型会同时改 schema 与回放口径，代价大于收益（见 §10 第 1 条） |
@@ -180,6 +187,25 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 `RunView.started_at` 是 `run.start` 落库时间（`runs.created_at`），回答的是"这个 Run
 什么时候被要求开始"，**不声称**"第一轮模型调用发生在那一刻"——投影里没有后者这个
 字段，编一个出来只会让排障时对不上时间线。
+
+桌面新建任务和发起追问可以附带最多 4 个文件，原始字节合计不超过 240 KiB。附件随本次
+运行提交，支持 UTF-8 文本；仅在所选 Responses 模型明确开启图片输入时支持 PNG、JPEG。
+Daemon 校验原始字节并计算摘要；运行重放读取持久化内容，不重开上传前的本地路径。
+时间线只显示附件的文件名和媒体类型，不包含附件数据。新一轮追问不会自动携带旧附件。
+
+「查看文件产物」列出本次运行中已生效且有凭据的 `create_report`、`modify_text` 文本写入。
+历史预览将原始正文与凭据中的写后摘要核对；文件后续修改或删除不会改变运行时版本。
+此入口不列举工作区文件、命令写入或其他二进制产物。
+
+在任务首页「工具范围」里可以声明外发源、MCP 服务和委派额度。搜索需要 SearXNG JSON 端点；
+网页导航给出同源链接，只解析公开 HTML，每次请求都需审批，不加载脚本、资源或已登录会话。
+远程 MCP 配置由 `TIANSHU_MCP_CONFIG` 提供，支持固定 HTTPS endpoint 和环境变量 Bearer 凭据。
+审批会显示端点。切换会话后旧审批不可用。
+
+`/plan <任务>` 启动只读计划，可回复澄清问题或让模型修订，再明确确认执行。
+`/compact` 将已完成的对话整理为新 Run 可用的明文交接摘要。
+Responses 的「自动压缩阈值」另行设置；只有兼容端点返回已提交的加密压缩项才收缩同一 Run 的上下文，
+不与其他 Run 的交接摘要混用。模型档案可在开始时指定；后备只在准入时选，不在请求发出后切换。
 
 ### 3.5 推送与游标
 
@@ -255,6 +281,9 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 
 - **Daemon 驱动线程**：循环 `worker.run_once()`（认领 → resume → 结算/挂起）；
   空闲时 50ms 轮询；不依赖任何客户端。
+- **离线演示**：默认启动和从设置切回离线时使用同一无状态模型，连续任务各自有回答。
+  在工具可用时演示列目录；不生成报告，也不调用真实模型。一次性 CLI `run --out`
+  保留写占位报告的演示。
 - **审批决定后自动续跑**：`approvals.decide` 成功且 Run 在 `waiting_approval` 时，
   Daemon 立刻把作业重新入队并由驱动线程接手（`resumed=true`）。人点完"允许"，
   任务应当继续，而不是要人再点一次"继续"。

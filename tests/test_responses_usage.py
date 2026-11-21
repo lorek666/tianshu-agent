@@ -18,9 +18,10 @@ from tianshu.replay import replay
 @pytest.mark.parametrize("event_type", ["model.result", "run.model_turn"])
 @pytest.mark.parametrize("key", ["cache_read_input_tokens", "cache_creation_input_tokens"])
 @pytest.mark.parametrize("value", [None, 0, 3])
-def test_both_usage_events_preserve_new_cache_fields_only_at_v2(event_type, key, value):
+def test_both_usage_events_preserve_cache_fields_on_the_normal_v2_path(event_type, key, value):
     assert event_schema.current_version(event_type) == 2
-    assert event_schema.known_versions(event_type) == {0, 1, 2}
+    versions = {0, 1, 2, 3} if event_type == "model.result" else {0, 1, 2}
+    assert event_schema.known_versions(event_type) == versions
     p = event_schema.minimal_payload(event_type)
     p["usage"][key] = value
     assert not event_schema.payload_errors(event_type, p, 2)

@@ -247,6 +247,7 @@ class _Authority:
     bindings: list[WorkspaceBinding]
     resources: list[ResourceIdentity]
     lease_paths: list[str]
+    form_body: bytes | None = None
 
 
 @dataclass(frozen=True)

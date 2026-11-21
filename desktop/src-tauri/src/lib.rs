@@ -940,7 +940,7 @@ mod tests {
     #[cfg(unix)]
     use std::fs;
     #[cfg(unix)]
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     #[cfg(unix)]
     use std::net::TcpListener;
     #[cfg(unix)]
@@ -977,6 +977,101 @@ mod tests {
             commit: release.commit,
             target: release.target,
         }
+    }
+
+    #[cfg(unix)]
+    fn publish_host_info(path: &Path, write: impl FnOnce(&mut fs::File)) {
+        // Match Python Host publication: concurrent readers see complete records.
+        let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+        write(file.as_file_mut());
+        file.as_file().sync_all().unwrap();
+        file.persist(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_info_fixture_publication_hides_partial_replacement() {
+        const WRITER_PATH: &str = "TIANSHU_TEST_HOST_INFO_PUBLISH_PATH";
+        if let Some(path) = std::env::var_os(WRITER_PATH) {
+            let replacement =
+                br#"{"pid":43,"port":43123,"token":"takeover_token_123","started_at":2,"ui_dir":""}"#;
+            publish_host_info(Path::new(&path), |file| {
+                file.write_all(&replacement[..1]).unwrap();
+                println!("HOST_INFO_PARTIAL={}", std::process::id());
+                std::io::stdout().flush().unwrap();
+                let mut resume = [0_u8; 1];
+                std::io::stdin().read_exact(&mut resume).unwrap();
+                assert_eq!(resume, [1]);
+                file.write_all(&replacement[1..]).unwrap();
+            });
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("run")).unwrap();
+        let path = host_info_path(root);
+        fs::write(
+            &path,
+            br#"{"pid":41,"port":43123,"token":"secret_secret_secret","started_at":1,"ui_dir":""}"#,
+        )
+        .unwrap();
+        let (partial_tx, partial_rx) = std::sync::mpsc::sync_channel(1);
+        let mut writer = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::host_info_fixture_publication_hides_partial_replacement",
+                "--nocapture",
+            ])
+            .env(WRITER_PATH, &path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let writer_pid = writer.id();
+        let output = writer.stdout.take().unwrap();
+        let reader = thread::spawn(move || {
+            let mut output_lines = Vec::new();
+            for line in std::io::BufReader::new(output).lines() {
+                let line = line.unwrap();
+                if let Some((_, pid)) = line.split_once("HOST_INFO_PARTIAL=") {
+                    partial_tx.send(pid.parse::<u32>().unwrap()).unwrap();
+                }
+                output_lines.push(line);
+            }
+            output_lines.join("\n")
+        });
+
+        let partial_write = partial_rx.recv_timeout(Duration::from_secs(5));
+        let during_write = read_host_endpoint(root);
+        let resumed = writer.stdin.take().unwrap().write_all(&[1]);
+        let status = writer.wait().unwrap();
+        let output = reader.join().unwrap();
+        assert!(status.success(), "{output}");
+        assert_eq!(partial_write.unwrap(), writer_pid);
+        assert_ne!(writer_pid, std::process::id());
+        resumed.unwrap();
+
+        assert_eq!(
+            during_write.unwrap(),
+            HostEndpoint {
+                pid: 41,
+                port: 43123,
+                token: "secret_secret_secret".to_string(),
+                started_at: 1,
+                release: None,
+            }
+        );
+        assert_eq!(
+            read_host_endpoint(root).unwrap(),
+            HostEndpoint {
+                pid: 43,
+                port: 43123,
+                token: "takeover_token_123".to_string(),
+                started_at: 2,
+                release: None,
+            }
+        );
     }
 
     #[test]
@@ -1735,13 +1830,13 @@ mod tests {
                     drop(stream);
                     fs::remove_file(&host_lock_for_server).unwrap();
                     thread::sleep(Duration::from_millis(60));
-                    fs::write(
-                        &host_lock_for_server,
-                        format!(
+                    publish_host_info(&host_lock_for_server, |file| {
+                        write!(
+                            file,
                             r#"{{"pid":43,"port":{port},"token":"takeover_token_123","started_at":2,"ui_dir":""}}"#
-                        ),
-                    )
-                    .unwrap();
+                        )
+                        .unwrap();
+                    });
                 }
             }
         });

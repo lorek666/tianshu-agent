@@ -110,6 +110,14 @@ export function ModelStatusControl({
         model_name: draftMode === "scripted" ? "" : trimmedName,
         base_url: model?.base_url ?? "",
         credential_backend: model?.credential_backend ?? "keychain",
+        ...(draftMode === "openai-responses" && model?.mode === draftMode &&
+          model.model_name === trimmedName && model.allow_image_attachments === true
+          ? { allow_image_attachments: true }
+          : {}),
+        ...(draftMode === "openai-responses" && model?.mode === draftMode &&
+          model.model_name === trimmedName && model.compact_threshold !== undefined
+          ? { compact_threshold: model.compact_threshold }
+          : {}),
       });
       onModelUpdated?.(updated);
       setOpen(false);

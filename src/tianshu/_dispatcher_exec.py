@@ -20,6 +20,8 @@ from ._dispatcher_types import (
     _NetworkTarget,
     _SubtaskTarget,
 )
+from .browser_forms import SUBMIT_TOOL
+from .browser_navigation import BROWSER_TOOL, page_snapshot
 from .contents import make_ref
 from .errors import (
     BudgetCancelled,
@@ -40,7 +42,14 @@ from .mcp import (
     McpProtocolError,
     McpTimeout,
 )
-from .net import NetCancelled, NetError, NetLimits
+from .net import (
+    FormSubmitError,
+    NetCancelled,
+    NetError,
+    NetLimits,
+    require_public_target,
+    submit_form,
+)
 from .net import summary_page as net_summary_page
 from .permissions import ActionRequest, ApprovalError
 from .resources import MemoryScope, parse_memory_uri
@@ -55,6 +64,7 @@ from .tasks import (
 )
 from .tool_registry import ToolRegistry
 from .tools import AdmittedCall, ToolResult
+from .web_search import SEARCH_TOOL, search_hits
 from .workspace import WorkspaceBinding
 
 
@@ -245,6 +255,14 @@ class _DispatcherExecMixin:
                 sent=False,
             )
         binding = self.registry.mcp_binding(target.tool_id)
+        if server.config.url and (binding is None or binding.tool_version != request.tool_version
+                                  or binding.remote_identity
+                                  != clients.remote_identity(target.server)):
+            return self._fail_unknown(
+                request, dispatch_id, target,
+                DispatchDenied("远程 MCP 会话与审批版本不匹配", "dispatch.mcp_server_unavailable"),
+                sent=False,
+            )
         spawn = {
             "via_exec_backend": False,
             "pid": server.pid,
@@ -261,7 +279,9 @@ class _DispatcherExecMixin:
                 "spawn": spawn,
             }
         }
-        # 外发边界：请求一旦写进 server 的 stdin，"这次调用到底发没发出去"在本机
+        if server.config.url:
+            base_output["mcp"]["endpoint"] = server.config.url
+        # 外发边界：请求一旦发给 MCP server，"这次调用到底发没发出去"在本机
         # 就再也没法证明了。所以写之前先把派发行从 `intent` 推到 `executing`——
         # 这一行同时是**撤销与发送的分界线**：
         #   - 撤销先到（行已 revoked/rejected）→ 推进不上，这次不发；
@@ -449,6 +469,9 @@ class _DispatcherExecMixin:
             else replace(self._net_limits, max_bytes=effective_max_bytes)
         )
 
+        if request.tool_id in (SEARCH_TOOL, BROWSER_TOOL):
+            call_limits = replace(call_limits, max_redirects=0)
+
         # 与撤销/改目标共用守卫；取消/暂停与此处共用同库写事务。
         # 所有资格和预算在执行开始标记前复核，提交后才允许请求越界。
         try:
@@ -456,7 +479,7 @@ class _DispatcherExecMixin:
                 self._require_data_root(), timeout_ms=self._guard_timeout_ms
             ):
                 with self._log.transaction():
-                    self._verify_resource_execution(admitted)
+                    auth = self._verify_resource_execution(admitted)
                     reservation = self._reserve_network_bytes(request, args=net_args)
                     self._start_resource_execution(request, dispatch_id)
         except (DispatchDenied, GuardTimeout, ApprovalError, JobLost, RunFenced) as exc:
@@ -470,8 +493,15 @@ class _DispatcherExecMixin:
                 DispatchDenied(str(exc), "dispatch.budget_refused"),
             )
 
-        # 3) 发包。
+        if request.tool_id == SUBMIT_TOOL:
+            return self._send_browser_form(
+                request, dispatch_id, target, intent_seq, auth.form_body, call_limits, reservation,
+            )
+
+        # 3) 发包。公开工具不继承原有抓取工具的私网字面量例外。
         try:
+            if request.tool_id in (SEARCH_TOOL, BROWSER_TOOL):
+                require_public_target(target.target)
             fetched = net_fetch(
                 target.target,
                 limits=call_limits,
@@ -533,6 +563,9 @@ class _DispatcherExecMixin:
             else self._net_limits.summary_bytes
         )
         try:
+            hits = search_hits(fetched) if request.tool_id == SEARCH_TOOL else None
+            page = (page_snapshot(target.target, fetched)
+                    if request.tool_id == BROWSER_TOOL else None)
             summary, page_bytes, next_offset, clipped = net_summary_page(
                 fetched, offset=page_offset, length=page_length
             )
@@ -576,6 +609,11 @@ class _DispatcherExecMixin:
             "page_bytes": page_bytes,
             "next_offset": next_offset,
         }
+        if hits is not None:
+            output["results"] = hits
+        if page is not None:
+            output["browser"] = {"links": page["links"], "forms": page["forms"]}
+            output["summary"] = page["text"]
         if not fetched.is_text:
             output["binary"] = True
         result = ToolResult("succeeded", "none_applied", output)
@@ -583,6 +621,43 @@ class _DispatcherExecMixin:
         try:
             self._commit_result(request, dispatch_id, result, target, intent_seq)
         except Exception as exc:  # noqa: BLE001 - 结果事务失败：按未知收束
+            return self._fail_unknown(request, dispatch_id, target, exc)
+        failpoint("after_result")
+        return result
+
+    def _send_browser_form(
+        self, request: ActionRequest, dispatch_id: str, target: _NetworkTarget,
+        intent_seq: int, body: bytes | None, limits: NetLimits, reservation: object | None,
+    ) -> ToolResult:
+        failpoint = sys.modules["tianshu.dispatcher"].failpoint
+        try:
+            if body is None:
+                raise DispatchError("表单没有执行侧核验过的正文")
+            failpoint("browser_form.before_send")
+            try:
+                fetched = submit_form(
+                    target.target, body, limits=limits,
+                    cancel=lambda: self._cancel_requested(request.run_id),
+                )
+            except FormSubmitError as exc:
+                self._settle_network_bytes(reservation, None if exc.sent else 0)
+                result = ToolResult(
+                    "failed", "unknown" if exc.sent else "none_applied",
+                    {"error": str(exc), "reason": exc.reason, "url": target.uri},
+                )
+                self._commit_result(request, dispatch_id, result, target, intent_seq)
+                return result
+
+            failpoint("browser_form.after_ack")
+            self._settle_network_bytes(reservation, len(fetched.body))
+            with self._log.transaction():
+                ref = self._write_content(request, fetched.body)
+                result = ToolResult("succeeded", "applied", {
+                    "url": fetched.uri, "status": fetched.status, "method": "POST",
+                    "bytes": len(fetched.body), "ref": ref, "acknowledged": True,
+                })
+                self._commit_result(request, dispatch_id, result, target, intent_seq)
+        except Exception as exc:  # noqa: BLE001 - interrupted request or result commit
             return self._fail_unknown(request, dispatch_id, target, exc)
         failpoint("after_result")
         return result
@@ -1044,30 +1119,68 @@ class _DispatcherExecMixin:
         if problems:
             raise AuthorityWriteFailed("；".join(problems))
 
-    def prepare_run(self, task_id: str, execution_policy: RunExecutionPolicyV1) -> None:
+    def prepare_run(
+        self, task_id: str, execution_policy: RunExecutionPolicyV1, *,
+        discover_mcp: bool = True, discover_remote: bool = True,
+    ) -> None:
         task = self._tasks.get_task(task_id)
         if task is None:
             raise DispatchError(f"task 不存在：{task_id}")
+        isolated = task.exec_policy is not None and task.exec_policy.isolation_requires
         self._prepare_new_run(execution_policy, tuple(
             Path(b.root_path) for b in task.workspaces if b.can_write
-        ))
+        ), remote_names=() if isolated or not discover_remote else task.mcp_servers,
+            discover_mcp=discover_mcp)
 
     def _prepare_new_run(self, execution_policy: RunExecutionPolicyV1,
-                         roots: tuple[Path, ...]) -> None:
+                         roots: tuple[Path, ...], *, remote_names: tuple[str, ...] = (),
+                         discover_mcp: bool = True) -> None:
         if execution_policy != PURE_ONLY:
             self._tasks.disk_admission.assert_stores(
                 self._log, snapshots=self._snapshots, memory=self._memory,
                 contents=self._contents, data_root=self._data_root,
             )
         self._tasks.require_new_run(execution_policy, writable_roots=roots)
-        if execution_policy != PURE_ONLY and self._mcp_clients is not None:
-            from .tool_registry import build_registry, set_registry
+        if discover_mcp and execution_policy != PURE_ONLY and self._mcp_clients is not None:
+            self._discover_mcp(remote_names)
 
-            if not self._mcp_prepared:
-                self._mcp_clients.start_all()
-                self._mcp_prepared = True
-                self._registry = build_registry(self._mcp_clients)
-                set_registry(self._registry)
+    def _discover_mcp(self, remote_names: tuple[str, ...]) -> None:
+        from .tool_registry import build_registry, set_registry
+
+        if self._mcp_clients is None:
+            return
+        initialized = not self._mcp_prepared
+        if initialized:
+            self._mcp_clients.start_all()
+            self._mcp_prepared = True
+        remote_changed = bool(remote_names) and self._mcp_clients.start_remotes(remote_names)
+        if initialized or remote_changed:
+            self._registry = build_registry(self._mcp_clients)
+            set_registry(self._registry)
+
+    def prepare_model_mcp(self, claim: JobClaim, *, queued_desktop: bool) -> None:
+        """Connector discovery is optional; it must not block an existing read or model turn."""
+        if (self._mcp_clients is None
+                or self._tasks.run_execution_policy(claim.run_id) != EFFECTS):
+            return
+        run = self._tasks.assert_current(claim.run_id)
+        task = self._tasks.get_task(run.task_id)
+        if task is None or (task.exec_policy is not None and task.exec_policy.isolation_requires):
+            return
+        configs = self._mcp_clients.configs
+        selected = tuple(name for name in task.mcp_servers if name in configs)
+        remotes = tuple(name for name in selected if configs[name].url)
+        if not remotes and (not queued_desktop or self._mcp_prepared or not selected):
+            return
+        self._claims.assert_claim(claim)
+        if self._cancel_requested(claim.run_id):
+            return
+        self._tasks.disk_admission.assert_stores(
+            self._log, snapshots=self._snapshots, memory=self._memory,
+            contents=self._contents, data_root=self._data_root,
+        )
+        self._tasks.require_effect_space(claim.run_id, targets=(), data_root=self._data_root)
+        self._discover_mcp(remotes)
 
     def prepare_pending_mcp(
         self, run_id: str, claim: JobClaim, request_id: str | None,

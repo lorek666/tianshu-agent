@@ -10,15 +10,23 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
+import unicodedata
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
-from tianshu import daemon, ipc
+from tianshu import cli, daemon, ipc
+from tianshu.control import ControlPlane
+from tianshu.credentials import EnvCredentialStore
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
 from tianshu.execpolicy import ExecPolicy
@@ -294,6 +302,268 @@ def test_enabled_only_accepts_closed_values(env: Env) -> None:
     assert raw in (0, 1)
 
 
+
+def _ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso).replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def test_calendar_fires_on_weekdays_and_catches_up_once(env: Env) -> None:
+    env.clock.now_ms = _ms("2026-11-20T02:00")  # Friday 10:00 UTC+8
+    calendar = {"kind": "calendar", "time": "09:00", "timezone": "UTC+08:00",
+                "weekdays": [1, 2, 3, 4, 5]}
+    row = env.scheduler.create("工作日检查", [], trigger=calendar)
+    assert row["interval_seconds"] is None
+    assert row["trigger"] == calendar
+    assert row["next_fire_at"] == _ms("2026-11-23T01:00")
+    env.clock.now_ms = _ms("2026-11-23T00:59:59.999")
+    assert env.scheduler.tick() == []
+    env.clock.now_ms = _ms("2026-11-25T03:00")
+    assert len(env.scheduler.tick()) == 1
+    assert env.scheduler.tick() == []
+    assert env.scheduler.get(row["schedule_id"])["next_fire_at"] == _ms("2026-11-26T01:00")
+
+
+def test_calendar_skips_gap_and_fires_once_in_fold(env: Env) -> None:
+    try:
+        ZoneInfo("America/New_York")
+    except ZoneInfoNotFoundError:
+        pytest.skip("主机没有 IANA 时区数据，固定 UTC 偏移另有跨平台测试")
+    env.clock.now_ms = _ms("2026-03-07T08:00")
+    spring = env.scheduler.create("夏令时跳过不存在的时刻", [], trigger={
+        "kind": "calendar", "time": "02:30", "timezone": "America/New_York",
+        "weekdays": [7],
+    })
+    assert spring["next_fire_at"] == _ms("2026-03-15T06:30")
+    env.scheduler.remove(spring["schedule_id"])
+    env.clock.now_ms = _ms("2026-10-31T08:00")
+    autumn = env.scheduler.create("夏令时重复时刻只触发一次", [], trigger={
+        "kind": "calendar", "time": "01:30", "timezone": "America/New_York",
+        "weekdays": [7],
+    })
+    assert autumn["next_fire_at"] == _ms("2026-11-01T05:30")
+    env.clock.now_ms = _ms("2026-11-01T05:30")
+    assert len(env.scheduler.tick()) == 1
+    env.clock.now_ms = _ms("2026-11-01T06:30")
+    assert env.scheduler.tick() == []
+    assert env.scheduler.get(autumn["schedule_id"])["next_fire_at"] == _ms("2026-11-08T06:30")
+
+
+@pytest.mark.parametrize("trigger", [
+    {"kind": "calendar", "time": "24:00", "timezone": "UTC", "weekdays": [1]},
+    {"kind": "calendar", "time": "09:00", "timezone": "UTC+24:00", "weekdays": [1]},
+    {"kind": "calendar", "time": "09:00", "timezone": "UTC", "weekdays": [True]},
+    {"kind": "calendar", "time": "09:00", "timezone": "../../secret", "weekdays": [1]},
+    {"kind": "webhook"},
+    {"kind": "event", "goal": "替换用户任务"},
+])
+def test_schedule_rejects_invalid_trigger_instead_of_downgrading(env: Env, trigger) -> None:
+    with pytest.raises(TianshuError):
+        env.scheduler.create("无效触发器", [], trigger=trigger)
+    assert env.scheduler.list() == []
+
+
+def test_file_arrival_batches_new_files_and_reuses_baseline_after_reopen(
+    tmp_path: Path,
+) -> None:
+    env = Env(tmp_path)
+    inbox = env.data_root / "inbox"
+    inbox.mkdir()
+    (inbox / "old.txt").write_text("existing", encoding="utf-8")
+    try:
+        row = env.scheduler.create(
+            "处理收件目录", [{"root_path": str(inbox), "mode": "readonly"}],
+            trigger={"kind": "file_arrival", "directory": str(inbox)},
+        )
+        ident = row["schedule_id"]
+        assert row["trigger"] == {"kind": "file_arrival", "directory": str(inbox.resolve())}
+        env.clock.now_ms = row["next_fire_at"]
+        assert env.scheduler.tick() == []
+    finally:
+        env.close()
+
+    (inbox / "a.txt").write_text("new one", encoding="utf-8")
+    (inbox / "b.txt").write_text("new two", encoding="utf-8")
+    reopened = Env(tmp_path)
+    try:
+        scheduler = reopened.scheduler
+        reopened.clock.now_ms = scheduler.get(ident)["next_fire_at"]
+        fired = scheduler.tick()
+        assert len(fired) == 1
+        run = reopened.stack.tasks.get_run(fired[0])
+        task = reopened.stack.tasks.get_task(run.task_id)
+        assert task.goal == "处理收件目录"  # 未受信任的文件名不拼进用户目标
+        assert reopened.stack.claims.job_for_run(fired[0]) is not None
+        reopened.clock.now_ms = scheduler.get(ident)["next_fire_at"]
+        assert scheduler.tick() == []
+
+        (inbox / "a.txt").unlink()
+        reopened.clock.now_ms = scheduler.get(ident)["next_fire_at"]
+        assert scheduler.tick() == []
+        (inbox / "a.txt").write_text("arrived again", encoding="utf-8")
+        reopened.clock.now_ms = scheduler.get(ident)["next_fire_at"]
+        assert len(scheduler.tick()) == 1
+    finally:
+        reopened.close()
+
+
+def test_event_schedule_dedup_persists_across_connection_restart(tmp_path: Path) -> None:
+    first = Env(tmp_path)
+    try:
+        row = first.scheduler.create("按已有配置运行", [], trigger={"kind": "event"})
+        assert row["next_fire_at"] is None
+        first.clock.advance_s(3600)
+        assert first.scheduler.tick() == []
+        ident = row["schedule_id"]
+        accepted = first.scheduler.signal(ident, "source:42")
+        assert accepted["accepted"] is True
+        run_id = accepted["run_id"]
+        assert first.stack.claims.job_for_run(run_id) is not None
+    finally:
+        first.close()
+
+    reopened = Env(tmp_path)
+    try:
+        assert reopened.scheduler.signal(ident, "source:42") == {
+            "accepted": False, "run_id": run_id,
+        }
+        assert reopened.run_start_count() == 1
+        second = reopened.scheduler.signal(ident, "source:43")
+        assert second["accepted"] is True and second["run_id"] != run_id
+        assert reopened.run_start_count() == 2
+        assert reopened.scheduler.get(ident)["next_fire_at"] is None
+    finally:
+        reopened.close()
+
+
+def test_event_schedule_rolls_back_dedup_when_enqueue_fails(env: Env, monkeypatch) -> None:
+    row = env.scheduler.create("入队失败后重试", [], trigger={"kind": "event"})
+    ident = row["schedule_id"]
+    enqueue = env.stack.claims.enqueue
+
+    def fail_after_enqueue(run_id: str) -> None:
+        enqueue(run_id)
+        raise RuntimeError("入队中断")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.stack.claims, "enqueue", fail_after_enqueue)
+        with pytest.raises(RuntimeError, match="入队中断"):
+            env.scheduler.signal(ident, "source:42")
+    assert env.run_start_count() == 0
+    assert env.task_created_count() == 0
+    assert env.scheduler.get(ident)["last_fired_at"] is None
+    assert env.scheduler.signal(ident, "source:42")["accepted"] is True
+    assert env.run_start_count() == 1
+
+
+def test_file_arrival_must_be_inside_readonly_workspace(env: Env) -> None:
+    inbox = env.data_root / "inbox"
+    inbox.mkdir()
+    trigger = {"kind": "file_arrival", "directory": str(inbox)}
+    with pytest.raises(TianshuError):
+        env.scheduler.create("工作区外", [], trigger=trigger)
+    with pytest.raises(TianshuError):
+        env.scheduler.create("自触发", [str(inbox)], trigger=trigger)
+    assert env.scheduler.list() == []
+
+
+def test_file_arrival_rejects_writable_unicode_alias(env: Env) -> None:
+    inbox = env.data_root / "réception"
+    inbox.mkdir()
+    alternate = inbox.with_name(unicodedata.normalize("NFD", inbox.name))
+    if not alternate.is_dir() or not inbox.samefile(alternate):
+        pytest.skip("测试文件系统不把 NFC / NFD 视为同一个目录")
+    bindings = [{"root_path": str(inbox), "mode": "readonly"}, str(alternate)]
+    with pytest.raises(TianshuError, match="不能与监听目录重叠"):
+        env.scheduler.create("不允许自触发", bindings, trigger={
+            "kind": "file_arrival", "directory": str(inbox),
+        })
+
+
+def test_file_arrival_does_not_follow_replaced_root(env: Env) -> None:
+    inbox = env.data_root / "inbox"
+    inbox.mkdir()
+    row = env.scheduler.create(
+        "监听固定目录", [{"root_path": str(inbox), "mode": "readonly"}],
+        trigger={"kind": "file_arrival", "directory": str(inbox)},
+    )
+    inbox.rename(env.data_root / "original_inbox")
+    inbox.mkdir()
+    (inbox / "new.txt").write_text("in replacement directory", encoding="utf-8")
+    env.clock.now_ms = row["next_fire_at"]
+    assert env.scheduler.tick() == []
+    assert env.scheduler.get(row["schedule_id"])["last_error"]
+    assert env.run_start_count() == 0
+
+
+
+def test_existing_scheduler_cannot_fire_a_new_trigger(env: Env) -> None:
+    env.scheduler.create("旧程序可执行", [], interval_seconds=1)
+    env.scheduler.create("旧程序不认识", [], trigger={
+        "kind": "calendar", "time": "09:00", "timezone": "UTC", "weekdays": [1],
+    })
+    # Previous releases run this exact predicate against the original table.
+    old_rows = env.log.conn.execute(
+        "SELECT goal FROM schedules WHERE enabled = 1 AND next_fire_at <= ?",
+        (env.clock() + 30 * 86_400_000,),
+    ).fetchall()
+    assert [row["goal"] for row in old_rows] == ["旧程序可执行"]
+
+
+def test_calendar_is_created_via_desktop_rpc_and_cli(env: Env, capsys) -> None:
+    plane = ControlPlane(env.stack, model=ScriptedModel([]),
+                         credential_stores={"env": EnvCredentialStore({})}, mcp_configs={})
+    try:
+        calendar = {"kind": "calendar", "time": "09:00", "timezone": "UTC-05:00",
+                    "weekdays": [1, 2, 3, 4, 5]}
+        created = plane.handle("schedule.create", {"goal": "桌面日历", "trigger": calendar})[
+            "schedule"
+        ]
+        assert created["trigger"] == calendar
+        assert plane.handle("schedule.list", {})["schedules"] == [created]
+        db = env.data_root / "events.db"
+        assert cli.main([
+            "schedule", "create", "--db", str(db), "--goal", "CLI 日历",
+            "--at", "09:00", "--timezone", "UTC-05:00", "--weekdays", "1,2,3,4,5", "--json",
+        ]) == 0
+        assert env.scheduler.list()[-1]["trigger"] == calendar
+        assert "CLI 日历" in capsys.readouterr().out
+    finally:
+        # ControlPlane owns and closes the log; the env fixture closes it again.
+        plane.close()
+
+
+def test_file_trigger_skips_links_and_retries_after_run_enqueue_rolls_back(
+    env: Env, monkeypatch,
+) -> None:
+    inbox = env.data_root / "inbox"
+    inbox.mkdir()
+    row = env.scheduler.create(
+        "监听新增文件", [{"root_path": str(inbox), "mode": "readonly"}],
+        trigger={"kind": "file_arrival", "directory": str(inbox)},
+    )
+    outside = env.data_root / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (inbox / "link.txt").symlink_to(outside)
+    except OSError:
+        pytest.skip("此测试环境不能创建符号链接")
+    ident = row["schedule_id"]
+    env.clock.now_ms = row["next_fire_at"]
+    assert env.scheduler.tick() == []
+    (inbox / "new.txt").write_text("arrival", encoding="utf-8")
+    env.clock.now_ms = env.scheduler.get(ident)["next_fire_at"]
+    def fail_enqueue(_run_id):
+        raise TianshuError("排队失败")
+    with monkeypatch.context() as patch:
+        patch.setattr(env.stack.claims, "enqueue", fail_enqueue)
+        assert env.scheduler.tick() == []
+    assert env.task_created_count() == 0 and env.run_start_count() == 0
+    assert "排队失败" in env.scheduler.get(ident)["last_error"]
+    env.clock.now_ms = env.scheduler.get(ident)["next_fire_at"]
+    assert len(env.scheduler.tick()) == 1
+    assert env.task_created_count() == 1
+
+
 # --------------------------------------------------------------------------- daemon 集成
 
 
@@ -440,6 +710,96 @@ def test_daemon_fires_due_schedule_and_worker_drives_it(tmp_path: Path) -> None:
         assert sched["last_error"] == ""
     finally:
         harness.stop_and_wait()
+
+
+def test_schedule_signal_through_authenticated_daemon_and_cli(tmp_path: Path, capsys) -> None:
+    root = _short_data_root(tmp_path)
+    harness = _Harness(root).start()
+    try:
+        with ipc.Client(root, timeout=5) as client:
+            interval = client.call("schedule.create", {
+                "goal": "周期任务", "interval_seconds": 3600,
+            })["schedule"]
+            created = client.call("schedule.create", {
+                "goal": "固定事件任务", "trigger": {"kind": "event"},
+            })
+            ident = created["schedule"]["schedule_id"]
+            for payload, error in (
+                ({"schedule_id": ident, "event_id": "ok", "goal": "恶意改写"}, "bad_params"),
+                ({"schedule_id": ident, "event_id": "x" * 129}, "bad_params"),
+                ({"schedule_id": "missing", "event_id": "ok"}, "not_found"),
+                ({"schedule_id": interval["schedule_id"], "event_id": "ok"}, "conflict"),
+            ):
+                with pytest.raises(ipc.RemoteError) as exc:
+                    client.call("schedule.signal", payload)
+                assert exc.value.code == error
+            client.call("schedule.set_enabled", {"schedule_id": ident, "enabled": False})
+            with pytest.raises(ipc.RemoteError) as exc:
+                client.call("schedule.signal", {"schedule_id": ident, "event_id": "source:7"})
+            assert exc.value.code == "conflict"
+            client.call("schedule.set_enabled", {"schedule_id": ident, "enabled": True})
+
+        assert cli.main([
+            "schedule", "signal", ident, "source:7", "--data-root", str(root), "--json",
+        ]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["accepted"] is True
+        with ipc.Client(root, timeout=5) as client:
+            replay = client.call("schedule.signal", {"schedule_id": ident, "event_id": "source:7"})
+            assert replay == {"accepted": False, "run_id": result["run_id"]}
+        assert _count_task_created(root / "events.db", "固定事件任务") == 1
+    finally:
+        assert harness.stop_and_wait()
+
+
+def test_event_signal_from_two_processes_creates_one_run(tmp_path: Path) -> None:
+    root = _short_data_root(tmp_path)
+    harness = _Harness(root).start()
+    children = []
+    try:
+        with ipc.Client(root, timeout=5) as client:
+            created = client.call("schedule.create", {
+                "goal": "两个客户端发同一事件", "trigger": {"kind": "event"},
+            })
+        ident = created["schedule"]["schedule_id"]
+        code = """
+import json
+import sys
+from pathlib import Path
+from tianshu import ipc
+with ipc.Client(Path(sys.argv[1]), timeout=10) as client:
+    print('ready', flush=True)
+    if sys.stdin.readline().strip() != 'go':
+        raise SystemExit(2)
+    print(json.dumps(client.call('schedule.signal', {
+        'schedule_id': sys.argv[2], 'event_id': 'test:concurrent',
+    })), flush=True)
+"""
+        for _ in range(2):
+            child = subprocess.Popen(
+                [sys.executable, "-c", code, str(root), ident],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            children.append(child)
+        for child in children:
+            assert child.stdout.readline().strip() == "ready"
+        for child in children:
+            child.stdin.write("go\n")
+            child.stdin.flush()
+        outcomes = []
+        for child in children:
+            out, err = child.communicate(timeout=15)
+            assert child.returncode == 0, err
+            outcomes.append(json.loads(out))
+        assert sorted(outcome["accepted"] for outcome in outcomes) == [False, True]
+        assert outcomes[0]["run_id"] == outcomes[1]["run_id"]
+        assert _count_task_created(root / "events.db", "两个客户端发同一事件") == 1
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
+        assert harness.stop_and_wait()
 
 
 def test_daemon_restart_schedule_survives_and_catches_up(tmp_path: Path) -> None:

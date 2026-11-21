@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,7 @@ from ._dispatcher_types import (
     precondition_rule_id,
     resolve_scheme_resource,
 )
+from .browser_forms import SUBMIT_TOOL
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmissionError
 from .errors import (
@@ -578,6 +580,15 @@ class Dispatcher(
             approval = None
 
         if approval is None:
+            if request.tool_id == SUBMIT_TOOL:
+                fields = json.dumps(args["fields"], ensure_ascii=False)
+                decision = replace(
+                    decision, reason=f"POST {request.resources[0]} · 完整字段：{fields}",
+                )
+            if isinstance(target, _McpTarget) and self._mcp_clients is not None:
+                config = self._mcp_clients.configs.get(target.server)
+                if config is not None and config.url:
+                    decision = replace(decision, reason=f"{decision.reason} · 端点：{config.url}")
             approval = self._approvals.request(
                 request, decision, isolation=isolation
             )

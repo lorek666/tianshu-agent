@@ -16,6 +16,13 @@
 工具从真实 `tool_manifest()` 翻译为扁平 function schema，显式 `strict:false`。
 函数结果通过 `call_id` 配对，不使用 output item `id` 代替。
 
+JSON 和 SSE 共用同一重试边界。客户端按当前 Run 的尝试上限重试完整收到的 HTTP 429。
+传输状态不明、正文截断、超时和 HTTP 5xx 结束本次调用并保留未决用量。
+HTTP 重定向直接拒绝，使重试依据始终来自配置的 POST 端点。
+接收侧要求 HTTP 头部完整，拒绝冲突的长度声明；按 `Content-Length` 读满，或校验分块及尾部闭合。
+允许以连接关闭定界的完整响应。正文上限为 64 MiB。SSE 事件须以空行结束；即使已经解析到
+`response.completed`，也须等传输完整收束后才持久化结果与结算用量。
+
 ## 2. C1 ContinuationRef
 
 `ModelResponse` 与内部 assistant 消息可选增加 `continuation`：

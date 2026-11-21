@@ -211,6 +211,37 @@ def test_model_configure_refuses_unimplemented_credential_backend(
         plane.close()
 
 
+def test_image_attachments_require_explicit_responses_opt_in_and_survive_restart(tmp_path: Path):
+    config = {"mode": "openai-responses", "model_name": "vision-test", "credential_backend": "env"}
+    plane = _make_plane(tmp_path)
+    try:
+        initial = plane.handle("model.configure", config)["model"]
+        assert initial.get("allow_image_attachments") is not True
+        for refused in [
+            {**config, "mode": "openai", "allow_image_attachments": True},
+            {**config, "allow_image_attachments": "true"},
+        ]:
+            with pytest.raises(ControlError) as error:
+                plane.handle("model.configure", refused)
+            assert error.value.code == "bad_params"
+        saved = plane.handle("model.configure", {**config, "allow_image_attachments": True})
+        assert saved["model"]["allow_image_attachments"] is True
+    finally:
+        plane.close()
+
+    reopened = _make_plane(tmp_path, env_map={"TIANSHU_API_KEY": "sk-local-image-test-only"})
+    try:
+        assert reopened.handle("settings.get", {})["model"]["allow_image_attachments"] is True
+        frozen = reopened._model_slot.snapshot()
+        assert frozen.supports_image_attachments is True
+        assert frozen._resolve_active_model().supports_image_attachments is True
+        reopened.handle("model.configure", config)
+        assert reopened._model_slot.supports_image_attachments is False
+        assert frozen.supports_image_attachments is True
+    finally:
+        reopened.close()
+
+
 def test_schedule_budget_and_mcp_control_plane_rpcs(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()

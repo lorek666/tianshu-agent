@@ -94,8 +94,13 @@
 
 - **结构封套不冒充发布者信任（2026-11-20）**：最终 macOS App 只执行 `codesign --sign - --timestamp=none`，不 force/deep 签名、不清 xattr、不使用证书或修改 Gatekeeper 策略；已有封套拒绝，其他非 linker 签名由 no-force 原生语义拒绝。只允许主程序与精确新封套变化，原资源/Info.plist/权限不变；原生 strict 验证必须覆盖归档恢复副本。此局部修复不改 C1–C5、T1 成本/信任政策、schema、索引 `signed: false` 或原生启动/数据/凭据验收门禁。静态可选封套兼容不等于生成路径可省略原生检查。
 
+- **本机任务触发（2026-11-21 实现分支）**：间隔沿用原表；日历、目录和本机事件单独持久化，旧程序不会消费。目录仅监听只读工作区中的直属普通文件；事件入口仅接受认证本机客户端提供的任务 ID 和事件 ID。基线或去重记录与入队同事务提交。具体用法、系统时区数据要求及轮询边界见[本机任务触发](changelog/2026-11-21-local-schedule-triggers.md)。
+
+- **事件 Webhook 接收器（2026-11-21 实现分支）**：显式启动的独立进程只监听 IPv4 回环，每个实例绑定一条既有事件日程；签名绑定日程、时间戳、原始正文。请求头和正文共享一个接收期限。验签后使用认证 IPC 交给原调度器；HTTP 重试使用同一事件 ID。部署和验证边界见[本机 Webhook 接收器](changelog/2026-11-21-schedule-webhook.md)。
+
 - **Responses 接入（2026-11-20 契约，2026-11-21 已入主干）**：独立 adapter、无状态加密 reasoning 续接、scope 绑定与 `ctx-responses-v1` 完整上下文；保留旧模式，凭据复用 openai 域。模型步骤固定配置快照，result/turn/cursor 同事务提交；已提交终态在崩溃或暂停后直接收尾，丢失的 Responses cursor/turn 可从事件重建。PR209 已合入 `f27a1bfe03140e918cdcaa249d3c5c0863638d28`；本地新整合 `f88e2bd` 已完成自身限定独立复核、受影响/UI 与 source 全量门禁，但不等于 hosted CI、产品或线上验收通过。实际门禁与未验证范围见[实施记录](changelog/2026-11-21-openai-responses.md)及[续接契约](openai-responses-contract.md)。
 
+- **组合候选的外发边界**：Responses JSON/SSE 只按尝试上限重试完整的 HTTP 429。即使已收到模型终态，也要等 HTTP 正文完整、SSE 事件闭合才写入结果；截断、超时和 HTTP 5xx 保留未决用量。受限表单的网络 Receipt 使用独立 payload v2，普通回执及历史 v0/v1 保留原定义。见[组合候选记录](changelog/2026-11-21-agent-product-capabilities.md)。
 - **模型缓存用量逐事件 v2（2026-11-20 契约，2026-11-21 实现）**：C1 已允许的可选缓存用量完整保存在 `model.result` / `run.model_turn` 新写精确 payload v2；保留旧 v0/v1 原解释，新 v2 usage 仍封闭，不升级全局版本常量。不沿用发布前 optional 沿 v1 的历史例外，也不全局废除该例外；缓存不重复计入 input_tokens，未知金额不伪装为零。旧基线 a073 的准入拒新与回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)，Responses 实现验证见[实施记录](changelog/2026-11-21-openai-responses.md)。原本地组合 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）的 source 全量与静态门禁 exit0，仅归属该冻结；其独立附加 DB 探针在 SQLite 打开前被审阅守卫阻断，不称独立 DB 通过。新整合 `f88e2bd` 已取得自身受影响/UI、限定独立复核及 source 全量证据，不套用旧绿；真实复评仍待验，不改判既有真实评测，不自动重放已持久化模型回合；契约与实现分开 PR。
 
 - **首次 Apple Silicon 限定预览取消 soak 时长门禁（2026-11-20）**：按维护者决定，仅取消首次 `macos-arm64` 限定预览的强制 ≥10h soak，不设替代时长；工具、测试和 `soak_limits` 保留为可选、非阻断诊断，四目标正式发行原长稳要求不变。长时稳定性未验证，不造完成证据；候选 SLO、原生启动/runtime smoke、Keychain/核心任务、数据完整性、进程崩溃恢复、升级/回退/备份、required CI 与受保护 PR 均不降低，可选诊断发现这些必过项失败仍阻断。权威范围见 [PRD §10.6 / §11.1](PRD-v1.md)。
@@ -164,6 +169,7 @@
 
 ### M5 实现决策（踩出来的，不是偏好）
 
+- **常驻离线演示不能共享可耗尽的响应列表**：旧启动路径的第二个 Run 显示成功但没有最终回答。Daemon 启动和设置切回 `scripted` 时共用无状态演示模型；每个 Run 按自己的消息历史决定下一步。用真实子进程和 `events.run` 核对两次终态都提交了非空回答。
 - **驱动线程的 SQLite 连接必须 `cross_thread=True`**：连接在 serve 线程建、驱动线程用；默认 `check_same_thread=True` 会抛 `ProgrammingError`，表现是 Run 永远停在 `created`（本分支修过两次：先是连接归线程，再是跨线程复用）。`EventLog(cross_thread=True)` 只给"连接建在一处、只在该线程用"的通道用，不是免检通行证。
 - **SSE 用 `fetch` 读流，不用浏览器 `EventSource`**：契约要求每个请求带 `X-Tianshu-Token`，而 `EventSource` 天生带不了自定义 header，也没有自定义重连游标；用 fetch 流能达到同样的协议与「带 `since_seq` 重连」语义。
 - **token 只进页面 `<meta>` 与请求头，不进 URL**：URL 会进浏览器历史、shell 历史、聊天记录和截图；`UiBridge.url` 刻意不带 token（`src/tianshu/host.py` 的 `url` 属性注释写明了理由）。
@@ -224,6 +230,7 @@
 
 - **两道门，两道都在 `prepare()` 里走完**：任务级白名单（`outbound_allow`，源级、创建时定死）+ 逐次人工批准（`c4.outbound`）。白名单不通过时**不弹批准**——"批了也发不出去"的批准会白占一次人工决定。白名单是**源**（transport+host+port），路径/查询一律拒绝：允许写路径会让人以为"只许访问 /docs"，而执行侧只按源判，那是一条假保证。
 - **外发面靠"请求里没有别的数据"来收口**：只用 `http.client`，不读代理环境变量、不发 Cookie / `Referer` / `Authorization`、不转发凭据、GET 无请求体，请求头只有固定几项。这让「私有内容未经外发许可不发包」在执行面**可被核对**——但它证明的是"请求里没有内容"，不是"没有别的泄露通道"。
+- **Agent 能力候选的公开目标边界**：网页搜索、只读导航和 HTTPS MCP 在拨号前拒绝非全局 IP 字面量，DNS 仍走既有全结果集校验和端点固定。旧 `network.fetch` 的显式私网白名单语义保持原样。
 - **重定向只许同源**：批准的是"这个源上的这个 URL"；靠 302 把包发到另一个源等于绕过批准。跨源/换端口/https→http 一律拒绝，需要时让模型重新发起、重新拿批准。
 - **字节账本用可验证上界**：发送前按 `max_bytes` 预占（本次最多读这么多），读完后按实际字节结算；`prepare()` 先做一次非预占的额度预检，额度不够在弹批准之前就拒（`dispatch.budget_refused`）。未知用量（超时/读断）**保留预占**，不记零。
 - **取消有两层**：派发前查 + 执行器每跳/每块之前查。单独去掉任一层两个判据仍绿（另一层兜住了），两处都去掉才真的发包——冗余是**证明过**的，不是声明的。
@@ -276,6 +283,11 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **接管夹具须匹配产品的原子发布（2026-11-22）**：[#213 候选](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 的 macOS Rust 用例在接管写入期间读到非法 Host 元数据。产品 Python Host 已经通过同目录临时文件原子替换发布，测试却直接截断写目标文件。仅将 Rust `cfg(test)` 内的接管夹具改为原子发布，并用真实子进程在半写屏障处调用真实读取器：旧发布方式确定性失败，原子发布保留完整旧记录，放行后读取完整新记录。原接管拒绝、Daemon 锁字节保留与未停机断言不变；不得为夹具竞态吞掉损坏元数据错误。产品 Rust 前缀及 Python 发布实现未改。
+
+- **Windows 分片须核对完整耗时分布（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 触及 25 分钟上限；双向修正少量文件后，[后续候选](https://github.com/lorek666/tianshu-agent/actions/runs/44939541307) 仍在约 91% 被取消。两轮缺件都使 required 汇总正确失败。日志对账显示中等文件误差会累积，runner 速度也有明显波动；后续覆盖完整已测 collection，并让真实任务的证据检查复用各场景三次实跑的深拷贝。每项断言保留，负控不能污染共享样本；变输入、失败与忘记路径仍独立实跑。对应权重含保留工作量的推算，不冒充新 Windows 实测。两个隔离 pytest 进程的回归和历史回算用于核对分配，两个独立 runner、完整覆盖汇总、诊断与时间上限不变。
+  候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片作业分别在 20 分 04 秒、20 分 08 秒完成，Windows required 汇总通过；下载的两份原始报告已再次核验实际 checkout、完整有序 collection、互斥全集及各阶段覆盖。该轮整体仍因上述 macOS Rust 夹具失败而为红，不用 Windows 通过替代新冻结的完整门禁。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 
@@ -388,6 +400,7 @@
 - **「CI 红了」先分家，而且必须按用例名逐条对账**：收尾轮 Windows 从 35 failed → 8（#87）→ 6（#88），每一轮都逐条读了失败用例名，才发现四条本轮新模块的真缺陷（`os.fsync` 对只读句柄 `EBADF`、`time.monotonic()` 分辨率、Windows `_pid_alive` 恒 `None`、隔离网络探针在 runner 上应记 `unknown` 而不是硬编码结论），以及两条只在 CI 时序下暴露的并发缺陷（握手期裸 `EOFError`、指标半行）。教训：**不要用「#50 家族」一句话结案**——按用例名对账，否则新缺陷会被旧标签盖住；本轮就曾把 #87 之前新模块的缺陷写成「既有族」，是错的，PR #87/#88 的正文与本文已按实测改正。
 - **「本机连续绿」对并发窗口没有证明力**：握手 EOF 与指标半行在同一提交上 macOS 本机跑两遍全绿，只在 CI 的慢 runner 上才撞到。并发/时序缺陷的判据要能**确定性构造**窗口（假对端只 listen 不握手、手写半行再补齐），而不是多跑几遍碰运气。
 - **`EOFError` 不是 `OSError`**：`except (OSError, ...)` 捕不到 `multiprocessing.connection` 握手期抛的 `EOFError`。凡是「连不上」的封装，都要显式把 `EOFError` 算进去并映射成自己的域错误；否则调用方按契约只捕 `(IpcError, OSError)`，收到的是契约外的崩溃。
+- **JSON 能解析不能证明 HTTP 响应完整**：CPython 的有界 `HTTPResponse.read(n)` 遇到过早断流可返回短串；默认分块读取也可能接受错误的块分隔符或缺少终止空行的尾部字段。远程 MCP 在核对完整 JSON 分帧后才记为确认成功。分块 SSE 先核对事件所用的块，在收到完整匹配事件后返回，无须等待后续通知或流关闭。
 - **自审有盲区**：PR #7 自写自审自合，第二读者十分钟找出 13 项缺陷、5 项高危。作者知道自己的意图，所以看不出实现没兑现意图。→ 高危改动必须独立复审（见 §6）。
 - **测试证据会造假**：曾用「同进程两条连接」冒充两个进程、用 `sleep(0.05)` 猜时序、用手写替身盖住真洞。→ 并发要真子进程 + 屏障，时序用注入时钟，契约断言用真实 `tool_manifest()` / 真实 schema。
 - **文档会说假话**：README/PRD/复审报告多次与代码漂移，出现专门「修假话 / 对账」的提交。→ 改代码同步改文档；复审报告写错归因要按事实重写。
@@ -463,6 +476,9 @@
 
 - **旧预览的原生封套失败仍为失败（2026-11-20）**：旧 `0.1.0` 下载资产在本机 codesign/spctl 均因缺失资源封套失败；后者是操作失败，不能解读成 Gatekeeper 放行或拒绝的有效策略结论。独立实验副本和本轮 tiny-C 结构回归不改写旧资产，也不等于新产品 build、真实安装或原生 runtime 通过。本次 roundtrip 的 fd-relative 无链接提取仅约束私有新目录；源树扫描/归档的同 uid TOCTOU 与原有 runtime provenance 边界仍保留。未做 Intel Mac、其他 macOS 版本或 Windows 用户设备验证。
 
+- **受限网页表单候选（2026-11-21）**：支持同一次运行中已保存的同源静态表单，经逐次批准执行一次无凭据 HTTPS POST。确认收到完整响应时落网络 Receipt；传输不明不自动重发。没有脚本执行、登录态或文件上传，见[本轮记录](changelog/2026-11-21-browser-form.md)。
+- **产品能力补齐候选（2026-11-21）**：网页导航限于公开 HTML 和本 Run 的同源链接；没有通用浏览器自动化。Webhook 接收器只监听回环，公网 HTTPS 代理尚未部署或验收。HTTPS MCP 只支持固定端点的 JSON/SSE 请求响应，不支持 OAuth 和自动重连。Responses 自动压缩须模型端点显式支持；本地超过预算时若没有可用的已提交压缩边界，会停止而不会裁剪密文。真实模型、真实第三方 MCP 服务和用户设备未验。实施与使用边界见[本轮记录](changelog/2026-11-21-agent-product-capabilities.md)。
+
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
 - **非标准材料路径的保留名祖先误识别（2026-11-20，未修）**：标准材料域检测沿祖先识别 `artifacts`、`blobs`、`memory_blobs`。非标准数据库或异根 data_root 所用的私有 materials 布局若又位于这些保留名祖先下，可能被误认为另一个标准材料域，因所有者数据库不匹配而 fail-closed 拒写。默认 `events.db` / AgentOS 布局不受此已复现组合影响；这不是首次 Apple Silicon 限定预览的阻断项，但一般自定义 `--db` 兼容限制仍未修。将 pytest 临时根移出这些祖先只消除了本次测试布局碰撞，不是产品修复，也不构成任意数据库/材料路径均受支持的声明。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
@@ -503,7 +519,7 @@
 
 - **Windows 分片 C1 整改候选（2026-11-14）**：独立读者用同一真实fixture证明原 wrapper 收集错误 exit2、v1分片 exit3；作者新增精确对照又复现收集晚期 `KeyboardInterrupt` 被改成3。v2在已有收集失败时保留原生流程，不对部分collection分组；未进入分组的收集中断也不触发最终列表异常。失败报告仍不满足session0/完整覆盖，汇总拒绝；无错误时空集合/空片/晚过滤守卫保留。作者71项定向已过；第二读者12个真实受影响场景已确认C1已修、部分修/未修/内容未决均0，正常覆盖及空片/晚过滤/缺阶段/失败拒绝守卫仍在。最终537文件组合lock/full/ruff通过（2987 passed / 8 skipped），正式SHA绑定与新原生CI另核，不将“非零即可”当退出码保留证据。
 
-- **Windows 分片按节点数均分也可能超时**：[#216 的主干 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44907705179) 与 [#213 的候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44911274075) 都在分片 0 完成 pytest 后触及 25 分钟上限；`pytest_session_exit=0` 和已上传报告不能覆盖 job 取消。分组为实测特别耗时的文件设置固定权重下限；两个 runner 与汇总仍从同一个算法、完整收集和精确 SHA 核验覆盖。历史耗时回算仅用来选择权重，新 runner 上的结果以实际 CI 为准。
+- **Windows 分片按节点数均分也可能超时**：[#216 的主干 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44907705179) 与 [#213 的候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44911274075) 都在分片 0 完成 pytest 后触及 25 分钟上限；`pytest_session_exit=0` 和已上传报告不能覆盖 job 取消。分组对已校准文件使用固定实测估计，允许同时纠正高估与低估；两个 runner 与汇总仍从同一个算法、完整收集和精确 SHA 核验覆盖。历史耗时回算仅用来选择权重，新 runner 上的结果以实际 CI 为准。
 
 - **PR #137 Windows 整套仍未通过（2026-11-14）**：H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 run43474954367 attempt1 仍在25分钟取消，另三项绿；三个 CLI 已通过，2765 PASS / 31 SKIP 只是部分输出。双独立 runner 文件分片是后续基础设施候选，新原生 CI、完整覆盖、独立实施复审与实际耗时仍待核；节点数平衡不保证25分钟完成。不得加时、移除 required 或借本机绿色合并；输出窗口不足以判定性能根因。Windows Server runner 也不代替 Windows 用户设备、ARM64 或安装体验验证。
 

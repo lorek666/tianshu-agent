@@ -662,6 +662,15 @@ export function humanizeEvent(event: EventView): TimelineEntry {
       );
     }
 
+    case "run.guidance_requested":
+      return toTimelineEntry(event, text ? `已提交补充要求：${truncate(text, 140)}` : "已提交补充要求", "info");
+
+    case "run.guidance_applied":
+      return toTimelineEntry(event, "补充要求已加入本次运行", "info");
+
+    case "run.attachments":
+      return toTimelineEntry(event, "已附加用户提供的文件", "info");
+
     case "run.effect": {
       const effect = readString(payload, "effect_state", "effect", "state");
       return toTimelineEntry(

@@ -111,7 +111,11 @@ export class DemoHostClient implements HostClient {
         return envelope as T;
       }
 
+      case "run.follow_up":
       case "run.start": {
+        if (params.mode === "plan") {
+          throw new HostRpcError("unsupported", "计划模式需要连接真实守护进程，演示模式暂不支持。");
+        }
         const envelope: RunEnvelope = {
           run: clone(
             world.startRun(
@@ -122,6 +126,10 @@ export class DemoHostClient implements HostClient {
         };
         return envelope as T;
       }
+
+      case "run.compact":
+      case "plan.execute":
+        throw new HostRpcError("unsupported", "压缩与计划确认需要连接真实守护进程，演示模式暂不支持。");
 
       case "run.list": {
         const taskId = stringParam(params, "task_id");

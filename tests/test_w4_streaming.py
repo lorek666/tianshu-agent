@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -307,6 +308,55 @@ def test_openai_and_anthropic_stream_complete_emit_deltas_and_reject_truncated_s
         ).stream_complete([{"role": "user", "content": "hi"}], [], lambda _d: None)
 
 
+@pytest.mark.parametrize("truncated", [False, True], ids=["complete", "truncated"])
+@pytest.mark.parametrize("adapter", [OpenAICompatibleModel, AnthropicMessagesModel])
+def test_legacy_sse_requires_the_declared_content_length(adapter, truncated):
+    if adapter is OpenAICompatibleModel:
+        events = [
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+    else:
+        events = [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 1}}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        ]
+        if not truncated:
+            events.append({"type": "message_stop"})
+    body = b"".join(f"data: {json.dumps(event)}\n\n".encode() for event in events)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body) + (14 if truncated else 0)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        try:
+            model = adapter(
+                "test-model", base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key="test-only", timeout=2,
+            )
+            messages = [{"role": "user", "content": "test"}]
+            if truncated:
+                with pytest.raises(ModelError) as error:
+                    model.stream_complete(messages, [], lambda _: None)
+                assert error.value.kind == "transport" and error.value.retryable is True
+            else:
+                result = model.stream_complete(messages, [], lambda _: None)
+                assert result.finish_reason == "end_turn"
+        finally:
+            thread.join(timeout=5)
+
+
 def test_urllib_transport_maps_incomplete_read_and_bad_status_line_with_redaction(
     tmp_path: Path,
 ) -> None:
@@ -504,7 +554,7 @@ def test_daemon_and_host_forward_transient_model_stream_over_sse(
     """Daemon → IPC `model_stream` → Host `/events` SSE 端到端推送实时增量。"""
     ws = tmp_path / "ws"
     ws.mkdir()
-    base_dir = None if os.name == "nt" else "/tmp"
+    base_dir = None if os.name == "nt" else os.environ.get("TIANSHU_TEST_TMP_ROOT", "/tmp")
     data_root = Path(tempfile.mkdtemp(prefix="tsw4-", dir=base_dir))
     ui_dir = tmp_path / "ui"
     (ui_dir / "assets").mkdir(parents=True)

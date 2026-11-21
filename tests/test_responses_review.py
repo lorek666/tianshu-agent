@@ -257,7 +257,7 @@ def test_rebuilt_saved_cursor_does_not_absorb_later_tool_result(opened):
     result_index = next(i for i, event in enumerate(events) if event.type == "tool.result")
     prefix = events[: result_index + 1]
     saved = next(event for event in reversed(prefix) if event.type == "run.cursor")
-    cursor, _, _ = rebuild_responses_progress(prefix)
+    cursor, _, _ = rebuild_responses_progress(log, prefix)
     assert (
         hashlib.sha256(canonical_bytes(cursor.to_dict())).hexdigest()
         == saved.payload["payload_hash"]

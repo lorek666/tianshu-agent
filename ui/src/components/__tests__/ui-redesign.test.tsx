@@ -9,6 +9,7 @@ import type {
   ApprovalDecisionResult,
   ApprovalView,
   EventsResult,
+  EventView,
   RunEnvelope,
   RunView,
   StateView,
@@ -111,6 +112,8 @@ class RedesignFakeHost implements HostClient {
     base_url: "",
     credential_backend: "keychain",
     summary: "演示脚本模型（离线）",
+    allow_image_attachments: false,
+    compact_threshold: undefined as number | undefined,
   };
 
   readonly rpc = vi.fn(async (method: string, params: RpcParams = {}) => {
@@ -129,6 +132,9 @@ class RedesignFakeHost implements HostClient {
         base_url: String(params.base_url ?? ""),
         credential_backend: String(params.credential_backend ?? "keychain"),
         summary: nextMode === "scripted" ? "演示脚本模型（离线）" : `${nextMode} · ${nextName}`,
+        allow_image_attachments: params.allow_image_attachments === true,
+        compact_threshold: typeof params.compact_threshold === "number"
+          ? params.compact_threshold : undefined,
       };
       return {
         model: { ...this.modelConfig },
@@ -147,7 +153,7 @@ class RedesignFakeHost implements HostClient {
       this.state.tasks.unshift(created);
       return { task: structuredClone(created) } satisfies TaskEnvelope;
     }
-    if (method === "run.start") {
+    if (["run.start", "run.follow_up", "run.answer_clarification"].includes(method)) {
       const runId = `run_new_${this.state.runs.length + 1}`;
       const started = makeRun({
         run_id: runId,
@@ -167,7 +173,15 @@ class RedesignFakeHost implements HostClient {
       return { run: structuredClone(found ?? makeRun()) };
     }
     if (method === "events.run") {
-      return { events: [], seq_head: this.state.event_seq_head, has_more: false } satisfies EventsResult;
+      return { events: this.events, seq_head: this.state.event_seq_head, has_more: false } satisfies EventsResult;
+    }
+    if (method === "run.compact" || method === "plan.execute") {
+      const started = makeRun({
+        run_id: "workflow_new", task_id: "task_alpha", state: "created",
+      });
+      this.state.runs.unshift(started);
+      this.state.tasks[0]!.active_run_id = started.run_id;
+      return { run: started };
     }
     if (method === "approvals.decide") {
       const target = this.state.approvals.find(
@@ -186,6 +200,8 @@ class RedesignFakeHost implements HostClient {
     }
     return {};
   }) as unknown as HostClient["rpc"];
+
+  events: EventView[] = [];
 
   constructor(initial: StateView = makeState()) {
     this.state = structuredClone(initial);
@@ -319,6 +335,88 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
     expect(container?.querySelector(".ts-sidebar.is-collapsed")).not.toBeNull();
   });
 
+  it("/plan 新任务命令进入真实计划运行且不会把命令写进目标", async () => {
+    const host = new RedesignFakeHost(makeState());
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector(".composer-textarea") !== null);
+    const input = container!.querySelector<HTMLTextAreaElement>(".composer-textarea")!;
+    await inputValue(input, "/plan 先分析登录模块再给方案");
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="composer-send-btn"]')!);
+    await waitFor(() => host.state.runs.length === 1);
+    expect(host.state.tasks[0]?.goal).toBe("先分析登录模块再给方案");
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.find(([method]) => method === "run.start")?.[1]).toMatchObject({ mode: "plan" });
+  });
+
+  it("/compact 触发压缩 RPC，且不会改写任务目标", async () => {
+    const task = makeTask({ active_run_id: null });
+    const run = makeRun({ state: "succeeded", outcome: "noop" });
+    const host = new RedesignFakeHost(makeState([task], [run]));
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="followup-input"]') !== null);
+    await inputValue(container!.querySelector<HTMLInputElement>('[data-testid="followup-input"]')!, "/compact");
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="followup-send-btn"]')!);
+    await settle();
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some(([method]) => method === "run.compact")).toBe(true);
+    expect(calls.some(([method]) => method === "task.revise")).toBe(false);
+    expect(host.state.tasks[0]?.goal).toBe("重构登录状态机");
+  });
+
+  it("显示持久化计划正文并在确认后调用绑定的执行入口", async () => {
+    const task = makeTask({ active_run_id: null });
+    const plan: RunView = {
+      ...makeRun({ state: "succeeded", outcome: "noop" }),
+      workflow: { mode: "plan", source_run_id: null },
+    };
+    const host = new RedesignFakeHost(makeState([task], [plan]));
+    host.events = [{
+      seq: 42, type: "model.result", run_id: plan.run_id, task_id: task.task_id,
+      ts: Date.now(), actor_kind: "core",
+      payload: { content: "先检查认证边界，再修改登录状态机。", finish_reason: "end_turn" },
+    }];
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.textContent?.includes("先检查认证边界，再修改登录状态机。") === true);
+    const button = container!.querySelector<HTMLButtonElement>('[data-testid="execute-plan-btn"]');
+    expect(button).not.toBeNull();
+    await click(button!);
+    await settle();
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.find(([method]) => method === "plan.execute")?.[1]).toMatchObject({
+      plan_run_id: "run_alpha", goal_revision: 1,
+    });
+  });
+
+  it("计划等待澄清时不显示确认按钮，回答仍请求只读计划", async () => {
+    const task = makeTask({ active_run_id: null });
+    const plan: RunView = {
+      ...makeRun({ state: "succeeded", outcome: "noop" }),
+      workflow: { mode: "plan", source_run_id: null },
+      clarification: { question: "报告给哪类读者？" },
+    };
+    const host = new RedesignFakeHost(makeState([task], [plan]));
+    host.events = [{
+      seq: 42, type: "model.result", run_id: plan.run_id, task_id: task.task_id,
+      ts: Date.now(), actor_kind: "core",
+      payload: { content: "TIANSHU_QUESTION: 报告给哪类读者？", finish_reason: "end_turn" },
+    }];
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="clarification-question"]') != null);
+    expect(container!.querySelector('[data-testid="execute-plan-btn"]')).toBeNull();
+    await inputValue(container!.querySelector('[data-testid="followup-input"]')!, "新同事");
+    await click(container!.querySelector('[data-testid="followup-send-btn"]')!);
+    await waitFor(() => rpcCalls(host, "run.answer_clarification").length === 1);
+    expect(rpcCalls(host, "run.answer_clarification")[0]).toMatchObject({
+      source_run_id: plan.run_id, message: "新同事", mode: "plan", request_id: expect.any(String),
+    });
+    expect(rpcCalls(host, "plan.execute")).toEqual([]);
+    expect(rpcCalls(host, "task.revise")).toEqual([]);
+  });
+
   it("非项目新建任务默认留空工作区并允许直接提交 workspaces: []；点击项目工作区自动带入项目路径", async () => {
     const existing = makeTask();
     const host = new RedesignFakeHost(makeState([existing], [makeRun()]));
@@ -376,6 +474,138 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
       goal: "补充登录模块边界单测",
       workspaces: [{ root_path: "/Volumes/Work/proj-alpha", mode: "writable" }],
     });
+  });
+
+  it("桌面只将用户填写的工具范围用于本次新任务", async () => {
+    const host = new RedesignFakeHost(makeState([], []));
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector(".welcome-view") !== null);
+    const field = (id: string) =>
+      container!.querySelector<HTMLInputElement>(`[data-testid="${id}"]`)!;
+    await inputValue(container!.querySelector<HTMLTextAreaElement>(
+      '[data-testid="composer-textarea"]',
+    )!, "调查组件文档");
+    expect(field("task-tools-toggle")).not.toBeNull();
+    await click(field("task-tools-toggle"));
+    expect(field("task-outbound-sources")).not.toBeNull();
+    await inputValue(field("task-outbound-sources"), "network://https/example.com");
+    await inputValue(field("task-mcp-servers"), "local-docs");
+    await inputValue(field("task-subtask-limit"), "2");
+    await click(field("composer-send-btn"));
+    await waitFor(() => rpcCalls(host, "task.create").length === 1);
+    expect(rpcCalls(host, "task.create")[0]).toEqual({
+      goal: "调查组件文档", workspaces: [],
+      outbound_allow: ["network://https/example.com"],
+      mcp_servers: ["local-docs"], max_subtasks: 2,
+    });
+  });
+
+  it("将用户选中的附件按原字节交给首次运行，不写入任务目标", async () => {
+    const host = new RedesignFakeHost();
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="composer-textarea"]') !== null);
+    const picker = container?.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(picker).toBeInstanceOf(HTMLInputElement);
+    const contents = "验收材料\r\n";
+    const file = new File([contents], "notes.txt", { type: "text/plain" });
+    Object.defineProperty(picker, "files", { configurable: true, value: [file] });
+    await act(async () => picker?.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(container?.textContent).toContain("notes.txt");
+    await inputValue(container!.querySelector('[data-testid="composer-textarea"]')!, "阅读附件");
+    await click(container!.querySelector('[data-testid="composer-send-btn"]')!);
+    await waitFor(() => vi.mocked(host.rpc).mock.calls.some(([method]) => method === "run.start"));
+    const calls = vi.mocked(host.rpc).mock.calls;
+    expect(calls.find(([method]) => method === "task.create")?.[1]).toEqual({
+      goal: "阅读附件", workspaces: [],
+    });
+    expect(calls.find(([method]) => method === "run.start")?.[1]?.attachments).toEqual([{
+      name: "notes.txt", media_type: "text/plain",
+      data_base64: "6aqM5pS25p2Q5paZDQo=",
+    }]);
+  });
+
+  it("只在 Responses 模型显式支持图片后发送 PNG 附件", async () => {
+    const host = new RedesignFakeHost();
+    host.modelConfig = { ...host.modelConfig, mode: "openai-responses", model_name: "vision-test" };
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('input[type="file"]') !== null);
+    const picker = container!.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(picker.accept).not.toContain("image/png");
+
+    const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4xoAAAAASUVORK5CYII=";
+    const bytes = new Uint8Array([...atob(base64)].map((char) => char.charCodeAt(0)));
+    const image = new File([bytes], "image.png", { type: "image/png" });
+    Object.defineProperty(picker, "files", { configurable: true, value: [image] });
+    await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(container?.textContent).toContain("所选模型没有开启图片附件");
+
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="open-settings-btn"]')!);
+    const label = Array.from(container!.querySelectorAll("label")).find(
+      (item) => item.textContent?.includes("此模型支持 PNG 和 JPEG"),
+    );
+    expect(label).toBeDefined();
+    await act(async () => label!.querySelector("input")!.click());
+    const save = Array.from(container!.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "保存模型设置",
+    );
+    await click(save!);
+    expect(rpcCalls(host, "model.configure").at(-1)?.allow_image_attachments).toBe(true);
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="close-settings-btn"]')!);
+    expect(picker.accept).toContain("image/png");
+    await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+    await inputValue(container!.querySelector('[data-testid="composer-textarea"]')!, "描述图片");
+    await click(container!.querySelector('[data-testid="composer-send-btn"]')!);
+    await waitFor(() => rpcCalls(host, "run.start").length > 0);
+    expect(rpcCalls(host, "run.start").at(-1)?.attachments).toEqual([{
+      name: "image.png", media_type: "image/png", data_base64: base64,
+    }]);
+  });
+
+  it("保存 Responses 自动压缩阈值并用空值关闭", async () => {
+    const host = new RedesignFakeHost();
+    host.modelConfig = { ...host.modelConfig, mode: "openai-responses", model_name: "fixture" };
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="open-settings-btn"]')!);
+    const field = Array.from(container!.querySelectorAll("label")).find(
+      (label) => label.textContent?.includes("自动压缩阈值"),
+    )?.querySelector("input");
+    expect(field).toBeDefined();
+    const save = Array.from(container!.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "保存模型设置",
+    );
+    await inputValue(field!, "8192");
+    await click(save!);
+    expect(rpcCalls(host, "model.configure").at(-1)?.compact_threshold).toBe(8192);
+    await inputValue(field!, "");
+    await click(save!);
+    expect(rpcCalls(host, "model.configure").at(-1)).not.toHaveProperty("compact_threshold");
+  });
+
+  it("追问引用所选的已完成运行，不修改任务目标", async () => {
+    const task = makeTask({ active_run_id: null });
+    const run = makeRun({ state: "succeeded", goal_revision: task.goal_revision });
+    const host = new RedesignFakeHost(makeState([task], [run]));
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="followup-input"]') !== null);
+    const picker = container!.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(picker).toBeInstanceOf(HTMLInputElement);
+    const attachment = new File(["new info"], "details.txt", { type: "text/plain" });
+    Object.defineProperty(picker, "files", { configurable: true, value: [attachment] });
+    await act(async () => picker!.dispatchEvent(new Event("change", { bubbles: true })));
+    const input = container!.querySelector<HTMLInputElement>('[data-testid="followup-input"]')!;
+    await inputValue(input, "请扩写第二点");
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="followup-send-btn"]')!);
+    await waitFor(() => rpcCalls(host, "run.follow_up").length === 1);
+    expect(rpcCalls(host, "run.follow_up")[0]).toMatchObject({
+      task_id: task.task_id, source_run_id: run.run_id, message: "请扩写第二点",
+      attachments: [{ name: "details.txt", media_type: "text/plain", data_base64: "bmV3IGluZm8=" }],
+    });
+    expect(rpcCalls(host, "task.revise")).toEqual([]);
   });
 
   it("权限菜单提供每次询问、自动审批、完全访问与仅读取与对话，未接入后端的档位诚实置灰标注", async () => {
