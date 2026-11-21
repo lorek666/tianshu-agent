@@ -1,14 +1,14 @@
 """同一套 C1 验收对三个真实协议适配器执行，不用替代 schema。"""
 
-import io
-import urllib.error
-import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
 import pytest
 from test_model_contract import MESSAGES, FakeTransport, _model, _payload
 from test_responses_model import function, model, response
 
-from tianshu.model import ModelError
+from tianshu.model import AnthropicMessagesModel, ModelError, OpenAICompatibleModel
+from tianshu.openai_responses import OpenAIResponsesModel
 from tianshu.tools import tool_manifest
 
 VENDORS = ["openai", "anthropic", "openai-responses"]
@@ -56,17 +56,35 @@ def test_all_adapters_preserve_unknown_usage(vendor):
 
 @pytest.mark.parametrize("vendor", VENDORS)
 @pytest.mark.parametrize("status,kind", [(401, "auth"), (429, "rate_limit"), (500, "http_status")])
-def test_all_adapters_use_shared_http_error_semantics(vendor, status, kind, monkeypatch):
-    m = make(vendor, None)
-    monkeypatch.setattr(
-        urllib.request.OpenerDirector,
-        "open",
-        lambda self, req, timeout=None: (_ for _ in ()).throw(
-            urllib.error.HTTPError(req.full_url, status, "error", {}, io.BytesIO(b"bad"))
-        ),
-    )
-    with pytest.raises(ModelError) as caught:
-        m.complete(list(MESSAGES), [])
+def test_all_adapters_use_shared_http_error_semantics(vendor, status, kind):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(status)
+            self.send_header("Content-Length", "3")
+            self.end_headers()
+            self.wfile.write(b"bad")
+
+        def log_message(self, *_):
+            pass
+
+    adapters = {
+        "openai": OpenAICompatibleModel,
+        "anthropic": AnthropicMessagesModel,
+        "openai-responses": OpenAIResponsesModel,
+    }
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        try:
+            m = adapters[vendor](
+                "test-model", base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key="test-only", timeout=2,
+            )
+            with pytest.raises(ModelError) as caught:
+                m.complete(list(MESSAGES), [])
+        finally:
+            thread.join(timeout=5)
     assert caught.value.kind == kind
     assert caught.value.status_code == status
 

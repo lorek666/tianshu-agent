@@ -100,7 +100,8 @@ class OpenAIResponsesModel(_HttpModel):
             api_key=api_key if api_key is not None else _credential_for("openai"),
             env_key="TIANSHU_API_KEY", timeout=timeout,
             transport=(
-                transport if transport is not None else UrllibTransport(allow_redirects=False)
+                transport if transport is not None
+                else UrllibTransport(allow_redirects=False, strict_framing=True)
             ),
         )
         self._endpoint = endpoint
