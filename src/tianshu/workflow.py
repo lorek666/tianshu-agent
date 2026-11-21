@@ -24,7 +24,12 @@ if TYPE_CHECKING:
 WORKFLOW_MODES = ("plan", "compact", "execute")
 SOURCE_BYTES = 64 * 1024
 SUMMARY_BYTES = 8 * 1024
+WORKFLOW_REQUEST = "run.workflow_request"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class WorkflowRequestConflict(TianshuError):
+    """请求编号已接受，当前调用无法证明是同一个请求。"""
 
 
 def text_digest(text: str) -> str:
@@ -83,6 +88,10 @@ class WorkflowV1:
     source_seqs: list[int]
     source_digest: str
     source_goal: str
+
+    @property
+    def is_plan_confirmation(self) -> bool:
+        return self.mode == "execute" and self.source_run_id is not None and not self.source_goal
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -243,24 +252,52 @@ def workflow_runs(tasks: TaskStore, log: EventLog, task_id: str):
         yield run, workflow_for(log, run.run_id)
 
 
+def _request_sources(
+    log: EventLog, run: Run, workflow: WorkflowV1,
+) -> dict[str, str | None]:
+    """校验请求身份附录与原 Run 的不可变绑定；不参与上下文编译。"""
+    if workflow.mode != "compact" and not workflow.is_plan_confirmation:
+        return {}
+    facts = log.read_run(run.run_id, event_types=("run.workflow", WORKFLOW_REQUEST))
+    origin = facts[0]
+    bindings: dict[str, str | None] = {}
+    for event in facts[1:]:
+        request_id = event.payload["request_id"]
+        source = event.payload["requested_source_run_id"]
+        if (origin.type != "run.workflow" or event.type != WORKFLOW_REQUEST
+                or event.task_id != run.task_id or event.actor_kind != "human"
+                or not _REQUEST_ID.fullmatch(request_id) or request_id in bindings
+                or (workflow.mode == "compact" and (
+                    request_id != workflow.request_id
+                    or (source is not None and source != workflow.source_run_id)
+                ))
+                or (workflow.is_plan_confirmation and (
+                    request_id == workflow.request_id or source != workflow.source_run_id
+                ))):
+            raise TianshuError("工作流请求身份与原 Run 的绑定不一致")
+        bindings[request_id] = source
+    return bindings
+
+
 def prior_request(
     tasks: TaskStore, log: EventLog, task: Task, *, request_id: str, mode: str,
-    source_run_id: str | None = None, out_name: str | None = None,
-    execution_policy: Any = None, confirmed_plan: bool = False,
+    source_run_id: str | None = None, confirmed_plan: bool = False,
 ) -> Run | None:
     for run, workflow in workflow_runs(tasks, log, task.task_id):
-        if workflow.request_id != request_id:
+        bindings = _request_sources(log, run, workflow)
+        if workflow.request_id != request_id and request_id not in bindings:
             continue
-        was_plan_confirmation = (
-            workflow.mode == "execute" and workflow.source_run_id is not None
-            and not workflow.source_goal
-        )
         if (workflow.mode != mode or run.goal_revision != task.goal_revision
-                or was_plan_confirmation != confirmed_plan
-                or (source_run_id is not None and workflow.source_run_id != source_run_id)
-                or tasks.run_payload(run.run_id).get("out", "") != (out_name or "")
-                or tasks.run_execution_policy(run.run_id) != execution_policy):
-            raise TianshuError("request_id 已用于不同的工作流参数")
+                or workflow.is_plan_confirmation != confirmed_plan):
+            raise WorkflowRequestConflict("request_id 已用于不同的工作流参数")
+        if mode == "compact":
+            if request_id not in bindings:
+                raise WorkflowRequestConflict("旧压缩的 request_id 无法核对选源方式，请使用新编号")
+            recorded_source = bindings[request_id]
+        else:
+            recorded_source = workflow.source_run_id if confirmed_plan else None
+        if recorded_source != source_run_id:
+            raise WorkflowRequestConflict("request_id 已用于不同的工作流来源参数")
         return run
     return None
 

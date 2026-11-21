@@ -508,6 +508,13 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
         required=("format_version", "mode", "request_id", "source_run_id",
                   "source_text", "source_seqs", "source_digest", "source_goal"),
     ),
+    "run.workflow_request": _obj(
+        {
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "requested_source_run_id": _opt(_s(pattern=r"^.+$")),
+        },
+        required=("request_id", "requested_source_run_id"),
+    ),
     "approval.consumed": _obj(
         {
             "approval_id": _s(),
@@ -1188,7 +1195,7 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
 
 V1_ONLY_EVENTS = frozenset({
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
-    "run.model_route", "run.workflow",
+    "run.model_route", "run.workflow", "run.workflow_request",
 })
 
 

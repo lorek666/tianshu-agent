@@ -122,6 +122,46 @@ def test_execute_cannot_reuse_a_plan_confirmation_request_id(env):
     assert stack.log.seq_head() == before
 
 
+def test_plan_confirmation_alias_is_bound_after_reopening_event_log(env):
+    plane, stack, task, _ = env
+    plan = start(plane, task)
+    finish(stack, plan["run_id"])
+    run = confirm(plane, task, plan["run_id"])
+    finish(stack, run["run_id"])
+    before_alias = stack.log.seq_head()
+    assert confirm(plane, task, plan["run_id"], "alias")["run_id"] == run["run_id"]
+    assert [e.type for e in stack.log.read_after(before_alias)] == ["run.workflow_request"]
+
+    root = stack.tasks.data_root
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    try:
+        reopened = stack_for(log, data_root=root)
+        second = ControlPlane(reopened, model=ScriptedModel([]))
+        before = log.seq_head()
+        assert confirm(second, task, plan["run_id"], "alias")["run_id"] == run["run_id"]
+        with pytest.raises(ControlError, match="request_id"):
+            start(second, task, "execute", "alias")
+        assert log.seq_head() == before
+        assert len(reopened.tasks.list_runs(task.task_id)) == 2
+        assert replay(log, run["run_id"]).ok
+    finally:
+        log.close()
+
+
+def test_plan_confirmation_cannot_alias_a_different_output(env):
+    plane, stack, task, _ = env
+    plan = start(plane, task)
+    finish(stack, plan["run_id"])
+    confirm(plane, task, plan["run_id"])
+    before = stack.log.seq_head()
+    with pytest.raises(ControlError, match="request_id"):
+        plane.handle("plan.execute", {
+            "plan_run_id": plan["run_id"], "goal_revision": task.goal_revision,
+            "request_id": "different-output", "out_name": "other.md",
+        })
+    assert stack.log.seq_head() == before
+
+
 def test_confirm_rejects_unfinished_or_stale_plan_without_new_job(env):
     plane, stack, task, _ = env
     plan = start(plane, task)
@@ -227,6 +267,53 @@ def test_summary_does_not_return_after_replaced_goal_is_retyped(env):
     run = start(plane, restored, "execute", "fresh")
     model = finish(stack, run["run_id"])
     assert SUMMARY not in model.inputs[0][0][1]["content"]
+
+
+@pytest.mark.parametrize("first_explicit", [True, False], ids=["explicit", "automatic"])
+def test_compact_request_binds_source_selection_before_resolving(env, first_explicit):
+    plane, stack, task, _ = env
+    source = start(plane, task, "execute", "old")
+    finish(stack, source["run_id"], "旧进展")
+    params = {"task_id": task.task_id, "request_id": "compact-id"}
+    explicit = {**params, "source_run_id": source["run_id"]}
+    original, changed = (explicit, params) if first_explicit else (params, explicit)
+    first = plane.handle("run.compact", original)["run"]
+    finish(stack, first["run_id"], SUMMARY)
+    newer = start(plane, task, "execute", "new")
+    finish(stack, newer["run_id"], "新进展")
+    before = stack.log.seq_head()
+    assert plane.handle("run.compact", original)["run"]["run_id"] == first["run_id"]
+    with pytest.raises(ControlError, match="request_id"):
+        plane.handle("run.compact", changed)
+    assert stack.log.seq_head() == before
+    fresh = plane.handle("run.compact", {**params, "request_id": "fresh"})["run"]
+    assert fresh["workflow"]["source_run_id"] == newer["run_id"]
+
+
+def test_legacy_compact_replays_but_ambiguous_request_id_cannot_be_reused(env):
+    from tianshu.workflow import prepare_workflow
+
+    plane, stack, task, _ = env
+    source = start(plane, task, "execute", "old")
+    finish(stack, source["run_id"], "旧进展")
+    workflow = prepare_workflow(
+        stack.tasks, stack.log, task, mode="compact", request_id="legacy-compact",
+    )
+    # 旧写入只有 v1 工作流，与后补的请求身份事件无关。
+    old = stack.tasks.start_run(
+        task.task_id, payload={"task": task.goal, "out": "", "tools": []},
+        execution_policy=PURE_ONLY, workflow=workflow,
+    )
+    finish(stack, old.run_id, SUMMARY)
+    assert replay(stack.log, old.run_id).ok
+    before = stack.log.seq_head()
+    for requested in ({}, {"source_run_id": source["run_id"]}):
+        with pytest.raises(ControlError, match="request_id") as caught:
+            plane.handle("run.compact", {
+                "task_id": task.task_id, "request_id": "legacy-compact", **requested,
+            })
+        assert caught.value.code == "conflict"
+    assert stack.log.seq_head() == before
 
 
 def test_compact_rejects_cross_task_and_active_source(env):

@@ -115,6 +115,7 @@
         "run.start",
         "run.state",
         "run.workflow",
+        "run.workflow_request",
         "subtask.finished",
         "subtask.spawned",
         "task.created",
@@ -3153,6 +3154,27 @@
           "source_seqs",
           "source_digest",
           "source_goal"
+        ],
+        "type": "object"
+      },
+      "run.workflow_request": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "type": "string"
+          },
+          "requested_source_run_id": {
+            "pattern": "^.+$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "requested_source_run_id"
         ],
         "type": "object"
       }

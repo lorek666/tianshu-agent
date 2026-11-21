@@ -11,6 +11,10 @@
       "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
       "source_goal": "x"
     },
+    "run.workflow_request": {
+      "request_id": "x",
+      "requested_source_run_id": "x"
+    },
     "approval.consumed": {
       "approval_id": "x",
       "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
