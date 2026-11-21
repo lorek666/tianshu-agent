@@ -531,8 +531,10 @@ def _fixture_lines() -> list[dict]:
 def test_legacy_fixture_covers_every_type_and_is_readable(tmp_path):
     """45 个类型逐个可读：旧形状按"本来就没有"读取，不按新版补值。"""
     rows = _fixture_lines()
-    assert {r["type"] for r in rows} == set(EVENT_TYPES)
-    assert len(rows) == len(EVENT_TYPES)
+    # run.workflow 是此历史数据集冻结后引入的类型，不能伪造 v0 历史事件。
+    historical_types = set(EVENT_TYPES) - {"run.workflow"}
+    assert {r["type"] for r in rows} == historical_types
+    assert len(rows) == len(historical_types)
     # 注意：注释里"无已知历史形状差异"也含"历史形状"四个字——只用子串判定会把
     # 45 行全算成 drift，`>= 5` 就永远成立（这条判据自己变成摆设）。必须排除
     # "无已知"，当前真实 drift 是 7 个类型。

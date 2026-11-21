@@ -9,6 +9,7 @@ import type {
   ApprovalDecisionResult,
   ApprovalView,
   EventsResult,
+  EventView,
   RunEnvelope,
   RunView,
   StateView,
@@ -167,7 +168,15 @@ class RedesignFakeHost implements HostClient {
       return { run: structuredClone(found ?? makeRun()) };
     }
     if (method === "events.run") {
-      return { events: [], seq_head: this.state.event_seq_head, has_more: false } satisfies EventsResult;
+      return { events: this.events, seq_head: this.state.event_seq_head, has_more: false } satisfies EventsResult;
+    }
+    if (method === "run.compact" || method === "plan.execute") {
+      const started = makeRun({
+        run_id: "workflow_new", task_id: "task_alpha", state: "created",
+      });
+      this.state.runs.unshift(started);
+      this.state.tasks[0]!.active_run_id = started.run_id;
+      return { run: started };
     }
     if (method === "approvals.decide") {
       const target = this.state.approvals.find(
@@ -186,6 +195,8 @@ class RedesignFakeHost implements HostClient {
     }
     return {};
   }) as unknown as HostClient["rpc"];
+
+  events: EventView[] = [];
 
   constructor(initial: StateView = makeState()) {
     this.state = structuredClone(initial);
@@ -317,6 +328,61 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
     expect(collapseBtn).not.toBeNull();
     await click(collapseBtn!);
     expect(container?.querySelector(".ts-sidebar.is-collapsed")).not.toBeNull();
+  });
+
+  it("/plan 新任务命令进入真实计划运行且不会把命令写进目标", async () => {
+    const host = new RedesignFakeHost(makeState());
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector(".composer-textarea") !== null);
+    const input = container!.querySelector<HTMLTextAreaElement>(".composer-textarea")!;
+    await inputValue(input, "/plan 先分析登录模块再给方案");
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="composer-send-btn"]')!);
+    await waitFor(() => host.state.runs.length === 1);
+    expect(host.state.tasks[0]?.goal).toBe("先分析登录模块再给方案");
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.find(([method]) => method === "run.start")?.[1]).toMatchObject({ mode: "plan" });
+  });
+
+  it("/compact 触发压缩 RPC，且不会改写任务目标", async () => {
+    const task = makeTask({ active_run_id: null });
+    const run = makeRun({ state: "succeeded", outcome: "noop" });
+    const host = new RedesignFakeHost(makeState([task], [run]));
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.querySelector('[data-testid="followup-input"]') !== null);
+    await inputValue(container!.querySelector<HTMLInputElement>('[data-testid="followup-input"]')!, "/compact");
+    await click(container!.querySelector<HTMLButtonElement>('[data-testid="followup-send-btn"]')!);
+    await settle();
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.some(([method]) => method === "run.compact")).toBe(true);
+    expect(calls.some(([method]) => method === "task.revise")).toBe(false);
+    expect(host.state.tasks[0]?.goal).toBe("重构登录状态机");
+  });
+
+  it("显示持久化计划正文并在确认后调用绑定的执行入口", async () => {
+    const task = makeTask({ active_run_id: null });
+    const plan: RunView = {
+      ...makeRun({ state: "succeeded", outcome: "noop" }),
+      workflow: { mode: "plan", source_run_id: null },
+    };
+    const host = new RedesignFakeHost(makeState([task], [plan]));
+    host.events = [{
+      seq: 42, type: "model.result", run_id: plan.run_id, task_id: task.task_id,
+      ts: Date.now(), actor_kind: "core",
+      payload: { content: "先检查认证边界，再修改登录状态机。", finish_reason: "end_turn" },
+    }];
+    mocked.host = host;
+    await act(async () => root?.render(<App />));
+    await waitFor(() => container?.textContent?.includes("先检查认证边界，再修改登录状态机。") === true);
+    const button = container!.querySelector<HTMLButtonElement>('[data-testid="execute-plan-btn"]');
+    expect(button).not.toBeNull();
+    await click(button!);
+    await settle();
+    const calls = (host.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.find(([method]) => method === "plan.execute")?.[1]).toMatchObject({
+      plan_run_id: "run_alpha", goal_revision: 1,
+    });
   });
 
   it("非项目新建任务默认留空工作区并允许直接提交 workspaces: []；点击项目工作区自动带入项目路径", async () => {

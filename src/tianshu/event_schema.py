@@ -474,6 +474,20 @@ _SUBTASK_USAGE = _obj(
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "run.workflow": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "mode": _enum("plan", "compact", "execute"),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+            "source_text": _s(),
+            "source_seqs": _arr(_i(minimum=1)),
+            "source_digest": _SHA256,
+            "source_goal": _s(),
+        },
+        required=("format_version", "mode", "request_id", "source_run_id",
+                  "source_text", "source_seqs", "source_digest", "source_goal"),
+    ),
     "approval.consumed": _obj(
         {
             "approval_id": _s(),

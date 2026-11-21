@@ -95,6 +95,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "recovery.object_unblocked",
         # Run 生命周期
         "run.start",
+        "run.workflow",
         "run.state",
         "run.control",
         "run.cursor",

@@ -15,6 +15,7 @@ import type { StreamStatus } from "../api/stream";
 import type { ModelConfigView, SettingsApi, SettingsView } from "../api/settings";
 import type { TimelineEntry } from "../lib/humanize";
 import type { CostSummary } from "../lib/timeline";
+import { parseComposerCommand } from "../lib/commands";
 import {
   formatClock,
   formatDuration,
@@ -77,6 +78,7 @@ export interface TaskWorkspaceViewProps {
   busy: string | null;
   now: number;
   executionPolicy: RunExecutionPolicyV1;
+  defaultMode?: "execute" | "plan";
   enablePet: boolean;
   reduceMotion: boolean;
   modelConfig?: ModelConfigView | null;
@@ -84,9 +86,10 @@ export interface TaskWorkspaceViewProps {
   onModelUpdated?: (settings: SettingsView) => void;
   onSelectRun: (runId: string) => void;
   onExecutionPolicyChange: (taskId: string, policy: RunExecutionPolicyV1) => void;
-  onStartRun: (taskId: string, policy: RunExecutionPolicyV1) => void;
+  onStartRun: (taskId: string, policy: RunExecutionPolicyV1, mode?: "execute" | "plan") => void | Promise<void>;
   onRevise: (taskId: string, goal: string) => Promise<void>;
-  onFollowUpSubmit: (task: TaskView, text: string, policy: RunExecutionPolicyV1) => Promise<void>;
+  onFollowUpSubmit: (task: TaskView, text: string, policy: RunExecutionPolicyV1, mode?: "execute" | "plan") => Promise<void>;
+  onWorkflowCommand?: (action: "compact" | "execute", task: TaskView, run: RunView | null) => Promise<void>;
   onPause: (run: RunView) => void;
   onResume: (run: RunView) => void;
   onRequestCancel: (run: RunView) => void;
@@ -145,6 +148,7 @@ export function TaskWorkspaceView({
   busy,
   now,
   executionPolicy,
+  defaultMode = "execute",
   enablePet,
   reduceMotion,
   modelConfig = null,
@@ -155,6 +159,7 @@ export function TaskWorkspaceView({
   onStartRun,
   onRevise,
   onFollowUpSubmit,
+  onWorkflowCommand,
   onPause,
   onResume,
   onRequestCancel,
@@ -170,13 +175,20 @@ export function TaskWorkspaceView({
   const [reviseError, setReviseError] = useState<string | null>(null);
   const [followUpText, setFollowUpText] = useState("");
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">(defaultMode);
+  const [commandError, setCommandError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraftGoal(task.goal);
     setEditingGoal(false);
     setReviseError(null);
     setFollowUpText("");
+    setCommandError(null);
   }, [task.task_id, task.goal_revision, task.goal]);
+
+  useEffect(() => {
+    setInteractionMode(defaultMode);
+  }, [task.task_id, defaultMode]);
 
   const taskApprovals = approvals
     .filter((approval) => approval.task_id === task.task_id && isOpenApproval(approval.state))
@@ -223,14 +235,47 @@ export function TaskWorkspaceView({
   const submitFollowUp = async (): Promise<void> => {
     const trimmed = followUpText.trim();
     if (trimmed === "" || followUpSubmitting) return;
+    const command = parseComposerCommand(trimmed);
+    setCommandError(null);
+    if (command.kind === "error") {
+      setCommandError(command.text);
+      return;
+    }
+    if (command.kind === "plan" && command.text === "") {
+      setInteractionMode("plan");
+      setFollowUpText("");
+      return;
+    }
     setFollowUpSubmitting(true);
     try {
-      await onFollowUpSubmit(task, trimmed, executionPolicy);
+      if (command.kind === "compact" || command.kind === "execute") {
+        if (onWorkflowCommand === undefined) throw new Error("当前连接不支持此命令。");
+        await onWorkflowCommand(command.kind, task, selectedRun);
+      } else {
+        await onFollowUpSubmit(
+          task, command.text, executionPolicy, command.kind === "plan" ? "plan" : interactionMode,
+        );
+      }
       setFollowUpText("");
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : "提交失败，请重试。");
     } finally {
       setFollowUpSubmitting(false);
     }
   };
+
+  const workflowMode = selectedRun?.workflow?.mode;
+  const lastResult = [...events].reverse().find(
+    (event) => event.run_id === selectedRun?.run_id && event.type === "model.result",
+  )?.payload;
+  const workflowText = lastResult?.finish_reason === "end_turn"
+    && !((lastResult.tool_calls as unknown[] | undefined)?.length)
+    && typeof lastResult.content === "string" ? lastResult.content : "";
+  const latestPlan = taskRuns.find((run) => run.workflow?.mode === "plan");
+  const canExecutePlan = workflowMode === "plan" && selectedRun?.state === "succeeded"
+    && selectedRun.goal_revision === task.goal_revision && activeRun === null
+    && (latestPlan === undefined || latestPlan.run_id === selectedRun.run_id)
+    && workflowText.trim() !== "" && onWorkflowCommand !== undefined;
 
   const connectionAlert = connectionLost || streamStatus === "disconnected";
   const companionPose = deriveCompanionStatus(
@@ -504,11 +549,16 @@ export function TaskWorkspaceView({
                   <button
                     type="button"
                     className="btn btn-primary btn-sm"
-                    onClick={() => onStartRun(task.task_id, executionPolicy)}
+                    onClick={() => {
+                      void Promise.resolve(onStartRun(task.task_id, executionPolicy, interactionMode))
+                        .catch((error: unknown) => setCommandError(
+                          error instanceof Error ? error.message : "启动失败，请重试。",
+                        ));
+                    }}
                     disabled={starting}
                   >
                     <IconPlay size={13} />
-                    {starting ? "正在启动…" : "开始运行"}
+                    {starting ? "正在启动…" : interactionMode === "plan" ? "生成计划" : "开始运行"}
                   </button>
                 </div>
               ) : null}
@@ -532,6 +582,37 @@ export function TaskWorkspaceView({
 
             {/* 效果状态强提醒（partial / unknown / applied / none_applied） */}
             {selectedRun !== null ? <EffectNotice run={selectedRun} /> : null}
+
+            {workflowMode === "plan" || workflowMode === "compact" ? (
+              <section className="workflow-result-card" aria-label={workflowMode === "plan" ? "实施计划" : "上下文压缩"}>
+                <strong>{workflowMode === "plan" ? "实施计划" : "上下文压缩"}</strong>
+                {selectedRun?.state === "succeeded" ? (
+                  <>
+                    <p className="subtle">
+                      {workflowMode === "plan" ? "计划已生成。确认后创建执行运行，具体修改仍须按规则审批。"
+                        : "压缩已完成，后续运行将使用这份摘要继续。原始记录已保留。"}
+                    </p>
+                    <pre className="workflow-result-text">{workflowText || "正在读取正文…"}</pre>
+                    {canExecutePlan ? (
+                      <button type="button" className="btn btn-primary btn-sm"
+                        data-testid="execute-plan-btn" disabled={busy !== null || followUpSubmitting}
+                        onClick={() => {
+                          setCommandError(null);
+                          void onWorkflowCommand!("execute", task, selectedRun).catch((error: unknown) =>
+                            setCommandError(error instanceof Error ? error.message : "确认失败，请重试。"));
+                        }}>
+                        确认计划并执行
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="subtle">
+                    {terminal ? `${workflowMode === "plan" ? "计划" : "压缩"}未完成，请查看下方运行详情。`
+                      : workflowMode === "plan" ? "正在只读调查并生成计划…" : "正在生成交接摘要…"}
+                  </p>
+                )}
+              </section>
+            ) : null}
 
             {/* 运行事件时间线 */}
             {selectedRun !== null ? (
@@ -558,6 +639,7 @@ export function TaskWorkspaceView({
 
         {/* 会话底部追问输入栏（无「回车发送」提示；发送按钮左侧放置模型状态胶囊） */}
         <div className="followup-bar">
+          {commandError !== null ? <p role="alert" className="text-danger">{commandError}</p> : null}
           <form
             className="followup-form"
             onSubmit={(event) => {
@@ -577,6 +659,13 @@ export function TaskWorkspaceView({
               onChange={(event) => setFollowUpText(event.target.value)}
               disabled={followUpSubmitting || savingGoal}
             />
+
+            <select aria-label="任务模式" data-testid="followup-mode-select"
+              className="chip-btn" value={interactionMode} disabled={followUpSubmitting}
+              onChange={(event) => setInteractionMode(event.target.value as "execute" | "plan")}>
+              <option value="execute">执行任务</option>
+              <option value="plan">计划模式</option>
+            </select>
 
             <ModelStatusControl
               testId="followup-model-btn"

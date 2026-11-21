@@ -38,7 +38,7 @@ uv run --frozen ruff check .      # lint
 | 子命令 | 作用 |
 |---|---|
 | `task` | 创建 / 查看 / 改目标或绑定 |
-| `run` | 跑一次任务；或用 `start` / `status` / `pause` / `resume` / `cancel` 控制已有 Run |
+| `run` | 跑一次任务；`plan` / `compact` / `execute-plan` 管理计划与手动压缩；`start` / `status` / `pause` / `resume` / `cancel` 控制运行 |
 | `approvals` | 审批队列：`list` / `approve` / `reject` / `revoke` |
 | `undo` | 撤销某次 Run 的文件变更（不带 `--approve` 只预演） |
 | `recover` | 核对并补全一次被打断的 Run |
@@ -67,6 +67,13 @@ uv run tianshu run cancel --run-id run_xxxx
 # 低盘或只想读写分离时，显式新建一个仅读取与对话的 Run
 uv run tianshu run start --task-id task_xxxx --execution-mode pure_only --out summary.md
 
+# 先只读调查并生成计划，审阅后另开执行 Run
+uv run --frozen tianshu run plan --task-id task_xxxx --model openai-compatible
+uv run --frozen tianshu run execute-plan --run-id run_plan_xxxx --goal-revision 1 --model openai-compatible
+
+# 空闲任务手动压缩；可用 --run-id 指定同任务的已结束来源
+uv run --frozen tianshu run compact --task-id task_xxxx --model openai-compatible
+
 # 人工审批（覆盖、删除、执行命令都不会被自动执行）
 uv run tianshu approvals list
 uv run tianshu approvals approve appr_xxxx
@@ -93,6 +100,14 @@ uv run tianshu host run --data-root /tmp/ts-data
 调用真实有副作用的工具，但不能把 workspace 的 `readonly` / `writable` 绑定改成权限，
 也不能把已经创建的 Run 原地升级成 `effects`。已有 Run 的 `status` / `pause` / `resume` /
 `cancel` 不接受该参数；需要另一资格时新开 Run。低盘原因会明确返回，入口不会静默降级。
+
+`run plan` 强制 `pure_only`；`run compact` 额外禁用所有工具。计划成功后，命令行会打印
+计划正文及绑定 Run、目标修订的确认命令。`execute-plan` 创建新的 `effects` Run，
+继续执行逐项工具审批；目标已变、计划未成功或已被替换时拒绝确认。
+工作流重试可传同一 `--request-id`，服务端按请求参数去重，不能改参数复用标识。
+这些命令沿用相同数据库、数据根和模型参数；不指定真实模型时，默认脚本模型不构成真实
+计划能力验收。来源、预算及恢复边界见[工作流契约](compact-plan-contract.md)和
+[手动压缩说明](context-summaries.md#9-手动压缩与计划模式)。
 
 `replay` 与 `evaluate` 不是同一个东西：前者只读历史日志做审计，后者换模型重跑。
 PRD §6 红线 10 明令不得混称——安全门槛是硬门槛，不能被其它分数抵消。

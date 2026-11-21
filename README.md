@@ -93,6 +93,30 @@ uv run tianshu host run --data-root /tmp/ts-data            # 桌面外壳，打
 批准的是「**那个动作**」，不是「那个进程」；改目标 / 改参数会让批准作废。
 内核子命令默认用当前目录的 `.tianshu/`，桌面用平台应用目录；加 `--desktop` 可让 CLI 直接操作桌面库。
 
+## 计划模式与手动压缩
+
+桌面输入区可选择「计划模式」，或输入 `/plan 需要分析的任务`。Agent 只做只读调查，
+将实施计划显示出来；可以继续补充要求重新规划，也可以点击「确认计划并执行」
+（或在该计划下输入 `/execute`）。确认会另建执行 Run，具体工具操作仍按原规则审批。
+
+任务空闲时发送 `/compact`，后台模型会把最近一次运行整理为交接摘要，后续同任务
+运行使用该摘要续接。原始事件保留；压缩失败不会覆盖既有摘要。执行中或暂停中的
+任务须先结束或取消，再压缩。压缩本身会调用模型并记入费用账本。
+
+CLI 对应入口（真实模型的密钥与参数配置见 [CLI 说明](docs/cli.md)）：
+
+```bash
+uv run --frozen tianshu run plan --task-id task_xxxx --model openai-compatible
+uv run --frozen tianshu run execute-plan --run-id run_plan_xxxx --goal-revision 1 --model openai-compatible
+uv run --frozen tianshu run compact --task-id task_xxxx --model openai-compatible
+```
+
+沿用同一组 `--db` / `--data-root` / 模型参数；`--goal-revision` 取计划对应的目标修订，
+CLI 生成计划后会打印确认命令。重试同一次请求时可用 `--request-id` 复用请求标识。
+计划已过期、目标已变或来源不完整时，执行侧拒绝确认。详见
+[工作流契约](docs/compact-plan-contract.md)与[压缩边界](docs/context-summaries.md#9-手动压缩与计划模式)。
+`?demo=1` 的内存演示暂不支持这些工作流，会明确提示连接真实守护进程。
+
 ## 架构一句话
 
 **唯一事实源是事件日志**（SQLite WAL、append-only，触发器禁止 `UPDATE` / `DELETE`），

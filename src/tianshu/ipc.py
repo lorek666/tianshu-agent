@@ -758,7 +758,13 @@ class _MessageReader:
                 return None
             # 与 CPython Connection._recv 使用同一个单次 OS read；每次前都
             # poll，读到目前可用的部分就重新检查期限，不进入整帧阻塞循环。
-            chunk = conn._read(conn.fileno(), min(end - len(self._buffer), 65536))
+            # poll 后可能已被 abort/close；取 fd 与单次 read 必须和 close 串行，
+            # 否则旧 fd 被新连接复用时，挂起的 reader 会截走新连接的认证帧头。
+            # 不持锁等待 poll；就绪后的单次 read 结束后，close 才能释放 fd。
+            with self._state_lock:
+                if self._closed:
+                    raise OSError("IPC 读取已关闭")
+                chunk = conn._read(conn.fileno(), min(end - len(self._buffer), 65536))
             if not chunk:
                 raise EOFError("对端在消息结束前关闭")
             self._buffer.extend(chunk)

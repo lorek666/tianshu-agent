@@ -41,6 +41,7 @@ export interface RunView {
   n_applied: number;
   n_unknown: number;
   undoable: boolean;
+  workflow?: { mode: "execute" | "plan" | "compact"; source_run_id: string | null } | null;
 }
 
 export interface ModelStreamDeltaView {
@@ -185,6 +186,7 @@ export interface CreateTaskInput {
   workspaces: WorkspaceView[];
   /** 只随创建后的首次 run.start 发送；不写进 Task 或 workspace 能力。 */
   execution_policy: RunExecutionPolicyV1;
+  mode?: "execute" | "plan";
 }
 
 /** 界面会调用的方法名。字符串常量集中在这里，避免各处手写拼错。 */
@@ -194,6 +196,8 @@ export const RPC = {
   taskCreate: "task.create",
   taskRevise: "task.revise",
   runStart: "run.start",
+  runCompact: "run.compact",
+  planExecute: "plan.execute",
   runList: "run.list",
   runStatus: "run.status",
   runPause: "run.pause",

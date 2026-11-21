@@ -109,6 +109,7 @@
         "run.model_turn",
         "run.start",
         "run.state",
+        "run.workflow",
         "subtask.finished",
         "subtask.spawned",
         "task.created",
@@ -2840,6 +2841,61 @@
           "control_run",
           "error"
         ]
+      },
+      "run.workflow": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "compact",
+              "execute"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_text": {
+            "type": "string"
+          },
+          "source_seqs": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "source_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_goal": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "format_version",
+          "mode",
+          "request_id",
+          "source_run_id",
+          "source_text",
+          "source_seqs",
+          "source_digest",
+          "source_goal"
+        ]
       }
     },
     "legacyPayload": {
@@ -5158,6 +5214,53 @@
             "type": "string"
           },
           "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [],
+        "description": "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；读取旧事件时按字段“本来就没有”处理。"
+      },
+      "run.workflow": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "compact",
+              "execute"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_text": {
+            "type": "string"
+          },
+          "source_seqs": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "source_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_goal": {
             "type": "string"
           }
         },

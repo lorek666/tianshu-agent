@@ -24,6 +24,11 @@
 
 ## 2. 当前状态速览
 
+- **手动压缩与计划模式候选（2026-11-21，尚未合入）**：桌面 `/compact`、`/plan`、
+  `/execute` 与模式选择、计划正文和确认按钮已接入控制面；CLI 提供
+  `run plan|compact|execute-plan`。计划/压缩使用独立 `pure_only` Run，确认另建
+  `effects` Run，工具审批保持原语义。实现与验证对象见
+  [本轮记录](changelog/2026-11-21-compact-plan-mode.md)，不能视为主干或发行版已交付。
 - **里程碑与主干进展**：
   - **M0–M5 内核与三进程桌面闭环**、**G0 可信评测**、**G1 通用执行基础**、**G2 网络 / MCP / 记忆（L1–L3 + 面板 + 外部 embedding gate + L2 冲突裁决）/ 子代理（含 W10 写声明与子任务面板）**、**W1 macOS Keychain**、**W2 网络连接重试与速率限制**、**W3 `state` 8MiB 响应预算**、**W5 最小定时调度器**、**低磁盘准入**、**恢复 B 的 T0 契约与 T1 平台身份锁底座**、**R0–R3 桌面发行构建与校验链（`desktop/` + `scripts/*release*` + `.github/workflows/release.yml`）** 均已合入 `main`。
   - **动态规模核验口径**（不写死静态数字）：Python 模块见 `src/tianshu/`，后端测试集见 `uv run --frozen pytest --collect-only -q`，前端测试见 `pnpm --dir ui run test`，Rust 桌面壳测试见 `cargo test --locked`（`desktop/src-tauri`），跨平台权威结果以对应 `main` 提交的 GitHub Actions CI 为准。
@@ -46,7 +51,7 @@
   |---|---|---|
   | C1 | Model I/O | 两个线上协议各一个 adapter；结束原因是封闭集，越界抛 `ModelError` |
   | C2 | Tool | **23 个 `ToolSpec`、19 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
-  | C3 | Event | **已封闭**：45 个事件类型，写入侧拒未登记类型，且逐类型 payload 有 v1 契约（`event_schema.py` + `schemas/c3/event.json`）；声明了但从未发射的类型 **0** 个 |
+  | C3 | Event | **已封闭**：事件类型以 `events.EVENT_TYPES` 与 `schemas/c3/event.json` 的一致性测试为准，写入侧拒未登记类型，逐类型 payload 有 v1 契约（`event_schema.py`）；新增工作流事件的落库路径由真实控制面测试覆盖 |
   | C4 | Permission/Approval | **rule id 已封闭**：低磁盘 T1–T3 两项空间拒绝与纯读资格拒绝已合入主干，并补齐 W10 可写子任务创建门与控制面/UI F14 人话映射（见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)）。当前代码/schema/PRD 清单共 78 项，写入前校验。非拒绝判定 10 个（`c4.auto` / `c4.overwrite` / `c4.delete` / `c4.exec` / `c4.mcp_call` / `c4.memory_scope` / `c4.outbound` / `c4.outside_workspace` / `c4.subtask_spawn` / `c4.subtask_cancel`）+ 保留未使用 3 个（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`）；`c4.approval_rejected` 是 issue #40「否决即终局」新增的拒绝原因；记忆组 6 条（N1 起）见 PRD §5.4.1。审批/凭据见 PRD §5.4 |
   | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离，评测套件 `m4.6`（判据按目标作用域化后逐版本不可比，见 [M4-verification.md](M4-verification.md) §7.4） |
 - **封闭集落在三处**：代码里的集合（`events.EVENT_TYPES` / `rules.RULE_IDS`）、`schemas/` 下的 enum（`schemas/c3/event.json`、`schemas/c4/rules.json`）、PRD 对应小节；测试把前两者绑在一起，改一处忘另一处会红。
@@ -81,6 +86,8 @@
     执行结果/事件带 `output.isolation`；口径见
     [F2-sandbox-policy.md](F2-sandbox-policy.md)
   - **F5 上下文编译** → `context.py`（纯函数、按字节预算、丢弃只记账不摘要）
+  - **手动压缩 / 计划工作流** → `workflow.py`（版本化 `run.workflow`、来源快照、续接、
+    计划确认绑定），`control.py` 只入队，`loop.py` 执行与中断恢复。
   - **F9a 模型准入** → `capability.py`（能力声明与准入，只用于路由，不用于授权）
   - **F12 凭据** → `credentials.py`（分域查找 + 全链路脱敏；Keychain 后端 **macOS 已落地**——`keychain_macos.py` SecItem 直调、仅 darwin 加载，W1 交付并经 #151 独立复审；其余平台仍如实报 `unsupported`）
   - **F13 成本** → `pricing.py`（整数微美元；未知价格记 `None` 并单独计数）
@@ -216,6 +223,18 @@
 - **默认上限 3 次是产品选择**：它防"每轮一次"的费用失控；很长的 Run 后段仍会回落确定性裁剪（设计取舍，不是 bug）。
 
 
+### 手动压缩与计划工作流的实现决策（2026-11-21，候选）
+
+- **与自动摘要分开**：`/compact` 是用户显式创建的新模型 Run，不修改旧 Run 的游标或
+  事件，也不打开默认关闭的 `summary_mode`。其来源材料快照保存在版本化
+  `run.workflow` 中；自动摘要仍按前节的独立记录层保存正文。
+- **计划模式是执行资格**：计划与压缩都强制 `pure_only`；压缩还将工具清单置空并在
+  驱动恢复路径拒绝所有工具提案。提示词只说明交付物，不承担授权。
+- **确认是新动作**：确认绑定最新成功计划、任务与目标修订，以新 `effects` Run 执行；
+  事务内校验与入队，重复请求/双进程确认不会重复建 Run。工具审批不能被计划确认替代。
+- **结果先落库再消费**：计划/压缩的已提交最终响应在重启后直接收尾；只有 intent、
+  没有可核验结果时标失败并保留未知账目，不重新发送。缺失游标时明确拒绝续跑。
+
 ### G2 网络阶段的实现决策（2026-11-11，PR #110 / #112）
 
 - **两道门，两道都在 `prepare()` 里走完**：任务级白名单（`outbound_allow`，源级、创建时定死）+ 逐次人工批准（`c4.outbound`）。白名单不通过时**不弹批准**——"批了也发不出去"的批准会白占一次人工决定。白名单是**源**（transport+host+port），路径/查询一律拒绝：允许写路径会让人以为"只许访问 /docs"，而执行侧只按源判，那是一条假保证。
@@ -272,6 +291,19 @@
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
 ## 5. 踩坑教训（别再踩）
+
+- **IPC 就绪不等于 fd 生命周期仍有效（2026-11-21）**：旧 reader 在 `poll` 后取出 fd，
+  若另一线程先 close、accept 又自然复用该 fd，旧 read 会消费新连接的认证帧头。
+  就绪后的二次 closed 检查、取 fd 和单次 read 须与 reader close 共用状态锁；
+  不能持锁等待 poll。真实 spawn 客户端与屏障回归覆盖两种调度，不用握手重试掩盖
+  错读。首次全量的原现场已清理，确定性复现证明该机制存在，不证明那次 EOF 必由此触发。
+- **历史来源不能依赖当前事件尾部（2026-11-21）**：Run 结束后仍可合法追加
+  `undo.completed`。工作流校验须先核验完整来源链，再按 `run.workflow.seq` 截取历史，
+  不能用来源 Run 今天的最后 seq 否定昨天的摘要。真实创建文件、压缩、撤销的回归同时
+  检查回放与 `state`，避免局部校验错误拖垮整个控制面视图。
+- **维护操作不代表模式切换（2026-11-21）**：启动失败与 `/compact` 都不能把计划模式
+  静默降为执行模式。真实 App 测试必须继续发送下一条补充要求并断言 RPC 的 `mode`，
+  还要覆盖重新打开页面后的模式恢复；只断言下拉框或命令解析不足以证明执行入口正确。
 
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
 - **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。
@@ -448,6 +480,13 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **手动压缩与计划模式边界（2026-11-21，候选）**：压缩只在任务空闲时接受，材料按
+  64 KiB 预算编译，摘要最多 8 KiB UTF-8，不保证摘要质量或必然更省费用。目标替换不
+  复用旧摘要；UI 追加要求可带摘要续接。计划不授予 shell、网络或其他非 pure 工具能力。
+  模型仅用可控传输替身完成工作流验收，真实付费模型与桌面设备体验待单独实测；
+  `?demo=1` 的内存演示对新工作流明确返回不支持，需连接真实守护进程；
+  全量测试/复审/远端门禁状态以[本轮记录](changelog/2026-11-21-compact-plan-mode.md)为准。
 
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 

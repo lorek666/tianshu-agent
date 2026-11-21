@@ -351,6 +351,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._veto_open = False
 
     def _run_tool_manifest(self, run_id: str) -> list[dict[str, Any]]:
+        from .workflow import workflow_for
+
+        workflow = workflow_for(self._log, run_id)
+        if workflow is not None and workflow.mode == "compact":
+            return []
         manifest = tool_manifest()
         if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
             from .tool_registry import current_registry
@@ -403,7 +408,10 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         execution_policy: RunExecutionPolicyV1 = EFFECTS,
     ) -> RunResult:
         """新建一个 Run 并立刻驱动它。"""
+        import uuid
+
         from .tool_registry import current_registry
+        from .workflow import prepare_workflow, workflow_messages
 
         task = self._task(task_id)
         if execution_policy != PURE_ONLY:
@@ -422,18 +430,29 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             "tools": [t for t in current_registry().ids() if execution_policy != PURE_ONLY
                       or current_registry().spec(t).side_effect_level == "pure"],
         }
-        run = self._tasks.start_run(task.task_id, run_id=run_id, payload=payload,
-                                    execution_policy=execution_policy)
+        with self._log.transaction():
+            task = self._task(task_id)
+            payload["task"] = task.goal
+            workflow = prepare_workflow(
+                self._tasks, self._log, task, mode="execute", request_id=uuid.uuid4().hex,
+            )
+            run = self._tasks.start_run(
+                task.task_id, run_id=run_id, payload=payload, execution_policy=execution_policy,
+                workflow=workflow if workflow.source_text else None,
+            )
+            job = self._claims.enqueue(run.run_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if execution_policy == PURE_ONLY:
             writable = []
         if writable:
             self._acquire_leases(writable, run.run_id, task.task_id)
-        job = self._claims.enqueue(run.run_id)
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
         self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
         progress = _fresh_progress(task.goal, out_name)
+        progress.messages = workflow_messages(
+            progress.messages, workflow if workflow.source_text else None,
+        )
         self._tasks.save_cursor(run.run_id, progress.to_cursor(), claim)
         return self._drive(run.run_id, claim, progress)
 
@@ -466,6 +485,13 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             raise TianshuError(
                 f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run"
             )
+        from .workflow import workflow_for, workflow_messages
+
+        workflow = workflow_for(self._log, run_id)
+        stored = self._tasks.load_cursor(run_id)
+        if (workflow is not None and stored is None
+                and any(e.type == "model.intent" for e in self._log.read_run(run_id))):
+            raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
         task = self._task(run.task_id)
         claim = self._claim_for_resume(run)
         if claim is None:
@@ -494,14 +520,18 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         if run.parent_run_id:
             self._tasks.mark_subtask_running(run_id)
 
-        stored = self._tasks.load_cursor(run_id)
         if stored is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
             out_name = self._tasks.run_payload(run_id).get("out") or None
             progress = _fresh_progress(task.goal, out_name)
+            progress.messages = workflow_messages(
+                progress.messages, workflow,
+            )
         else:
             progress = _Progress.of(stored[0])
+        if workflow is not None and stored is None:
+            self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
         return self._drive(run_id, claim, progress)
@@ -572,7 +602,15 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         error: str | None = None
 
         try:
+            from .workflow import response_error, workflow_for
+
+            workflow = workflow_for(self._log, run_id)
             while True:
+                if workflow is not None and workflow.mode == "compact" and progress.pending:
+                    return self._finish(
+                        run_id, claim, progress, outcome="failed",
+                        error="压缩响应包含工具调用，未执行；原上下文保留",
+                    )
                 action = self._safe_point(run_id, claim, progress)
                 if action is not None:
                     return self._result(
@@ -581,6 +619,40 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                         state=self._state_of(run_id),
                         error=None if action == CONTROL_PAUSE else CANCEL_REASON,
                     )
+
+                # 特殊工作流在 result 提交后崩溃，也必须消费已保存正文，不能重问模型。
+                if workflow is not None and workflow.mode in ("plan", "compact"):
+                    workflow_events = self._log.read_run(run_id)
+                    results = [e.payload for e in workflow_events
+                               if e.type == "model.result"]
+                    intents = [e for e in workflow_events if e.type == "model.intent"
+                               and not e.payload["request_id"].startswith("summary#")]
+                    if intents and not any(
+                        e.type in ("model.result", "model.error") and e.seq > intents[-1].seq
+                        and e.payload.get("request_id") == intents[-1].payload["request_id"]
+                        for e in workflow_events
+                    ):
+                        progress.model_attempts = max(progress.model_attempts, len(intents))
+                        progress.unknown_usage_calls = max(progress.unknown_usage_calls, 1)
+                        progress.unknown_cost_calls = max(progress.unknown_cost_calls, 1)
+                        return self._finish(
+                            run_id, claim, progress, outcome="failed",
+                            error="上次工作流模型调用结果未知，未重新发送；原上下文保留",
+                        )
+                    last = results[-1] if results else None
+                    if last is not None and (
+                        last["finish_reason"] != "tool_use"
+                        or (workflow.mode == "compact" and last.get("tool_calls"))
+                    ):
+                        invalid = (
+                            last["finish_reason"] != "end_turn" or last.get("tool_calls")
+                            or progress.tokens > self._limits.max_total_tokens
+                            or response_error(workflow.mode, last)
+                        )
+                        return self._finish(
+                            run_id, claim, progress, outcome="failed" if invalid else "noop",
+                            error="计划或压缩响应无效；原上下文保留" if invalid else None,
+                        )
 
                 if not progress.pending:
                     step, message = self._model_step(
@@ -844,6 +916,13 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         if resp is None:
             return "stop", stop_reason
 
+        from .crashpoint import failpoint
+        from .workflow import workflow_for
+
+        special = workflow_for(self._log, run_id)
+        failpoint("workflow-after-call", only_if=special is not None
+                  and special.mode in ("plan", "compact"))
+
         inp = resp.usage.get("input_tokens")
         outp = resp.usage.get("output_tokens")
         if inp is None or outp is None:
@@ -990,10 +1069,23 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             self._tasks.commit_model_turn(run_id, turn, claim)
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
 
+        failpoint("workflow-after-result", only_if=special is not None
+                  and special.mode in ("plan", "compact"))
+
         if progress.tokens > self._limits.max_total_tokens:
             return "stop", (
                 f"token 预算耗尽（{progress.tokens} > {self._limits.max_total_tokens}）"
             )
+
+        from .workflow import response_error
+
+        if special is not None and special.mode in ("compact", "plan"):
+            invalid = response_error(special.mode, resp.to_payload())
+            if invalid is not None:
+                # 结果已持久化，但不可消费的响应不能成功或派发工具。
+                progress.pending = []
+                self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
+                return "stop", invalid
 
         if resp.finish_reason != "tool_use" or not resp.tool_calls:
             if resp.finish_reason == "end_turn":

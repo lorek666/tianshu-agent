@@ -25,6 +25,7 @@ import {
   IconX,
 } from "./Icons";
 import { ModelStatusControl } from "./ModelStatusControl";
+import { parseComposerCommand } from "../lib/commands";
 import type { ProjectWorkspace } from "./Sidebar";
 import { basenameOfPath } from "./Sidebar";
 import { WelcomePet } from "./WelcomePet";
@@ -91,6 +92,7 @@ export function WelcomeComposer({
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">("execute");
 
   const toolbarRef = useRef<HTMLDivElement | null>(null);
 
@@ -181,14 +183,30 @@ export function WelcomeComposer({
       setError("请先描述你想让天枢完成的任务或对话内容。");
       return;
     }
+    const command = parseComposerCommand(trimmedGoal);
+    if (command.kind === "error") {
+      setError(command.text);
+      return;
+    }
+    if (command.kind === "compact" || command.kind === "execute") {
+      setError("请先打开已有任务，再使用压缩或确认执行命令。");
+      return;
+    }
+    if (command.kind === "plan" && command.text === "") {
+      setInteractionMode("plan");
+      setGoal("");
+      setError(null);
+      return;
+    }
     setError(null);
     setOpenMenu(null);
     setSubmitting(true);
     try {
       await onSubmit({
-        goal: trimmedGoal,
+        goal: command.text,
         workspaces: committedWorkspaces,
         execution_policy: executionPolicy,
+        mode: command.kind === "plan" ? "plan" : interactionMode,
       });
       setGoal("");
     } catch (caught) {
@@ -584,6 +602,17 @@ export function WelcomeComposer({
 
             {/* 右侧：模型切换器紧邻在蓝色发送按钮正左侧 */}
             <div className="composer-right-controls">
+              <select
+                className="chip-btn"
+                aria-label="任务模式"
+                data-testid="composer-mode-select"
+                value={interactionMode}
+                disabled={pending}
+                onChange={(event) => setInteractionMode(event.target.value === "plan" ? "plan" : "execute")}
+              >
+                <option value="execute">执行任务</option>
+                <option value="plan">计划模式</option>
+              </select>
               <ModelStatusControl
                 testId="composer-model-btn"
                 model={modelConfig}
