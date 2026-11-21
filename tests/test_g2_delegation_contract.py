@@ -46,7 +46,8 @@ M2_TASK = REPO / "schemas" / "m2" / "task.json"
 #:
 #: 事件类型 43 → 45：对象级阻断新增 `recovery.object_blocked` /
 #: `recovery.object_unblocked`（MCP 后续工单 §5-8）。
-EXPECTED_EVENT_TYPES = 45
+#: 手动压缩与计划工作流再登记 `run.workflow`，逐项镜像仍须完全一致。
+EXPECTED_EVENT_TYPES = 46
 EXPECTED_TOOL_IDS = 23
 EXPECTED_RULE_IDS = 78
 
@@ -181,7 +182,7 @@ def test_task_created_schema_declares_the_parent_chain(tmp_path):
 
 
 def test_event_schema_mirror():
-    """事件类型 45 + 逐类型契约与 `schemas/c3/event.json` 逐字一致。
+    """事件封闭集及逐类型契约与 `schemas/c3/event.json` 逐字一致。
 
     事件类型是封闭集合，"多了两个类型"必须在代码、schema 文件、PRD §5.3.2
     三处同时成立；这里把前两处绑死（PRD 由 `test_rule_ids` 之外的文档对账覆盖）。

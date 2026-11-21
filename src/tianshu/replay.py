@@ -172,6 +172,12 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
             else start_text,
         },
     ]
+    from .workflow import workflow_for, workflow_messages
+
+    try:
+        messages = workflow_messages(messages, workflow_for(log, run_id))
+    except TianshuError as exc:
+        problems.append(f"工作流来源无法核验：{exc}")
 
     verified = 0
     turns = 0

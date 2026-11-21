@@ -320,6 +320,8 @@ class ControlPlane:
             "task.create": self._task_create,
             "task.revise": self._task_revise,
             "run.start": self._run_start,
+            "run.compact": self._run_compact,
+            "plan.execute": self._plan_execute,
             "run.list": self._run_list,
             "run.status": self._run_status,
             "run.pause": self._run_pause,
@@ -595,7 +597,42 @@ class ControlPlane:
         `tools`）：`run.start` 事件是回放的输入，少了这些字段，`replay` 就无法
         仅凭日志重建首轮提示消息。
         """
+        mode = params.get("mode", "execute")
+        if mode not in ("plan", "execute") or "source_run_id" in params:
+            raise ControlError("bad_params", "run.start 仅接受 plan/execute；来源由服务端绑定")
+        return self._queue_workflow(params, mode=mode)
+
+    def _run_compact(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._queue_workflow(params, mode="compact")
+
+    def _plan_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        plan = self._require_run(_require_str(params, "plan_run_id"))
+        revision = params.get("goal_revision")
+        task = self._tasks.get_task(plan.task_id)
+        if (type(revision) is not int or task is None
+                or revision != task.goal_revision or revision != plan.goal_revision):
+            raise ControlError("conflict", "目标已改变，请重新生成并确认计划")
+        return self._queue_workflow(
+            {**params, "task_id": plan.task_id, "source_run_id": plan.run_id},
+            mode="execute", confirmed_plan=True,
+        )
+
+    def _queue_workflow(
+        self, params: dict[str, Any], *, mode: str, confirmed_plan: bool = False,
+    ) -> dict[str, Any]:
+        import uuid
+
+        from .workflow import prepare_workflow, prior_request, workflow_runs
+
+        if mode not in ("execute", "plan", "compact"):
+            raise ControlError("bad_params", f"未知运行模式：{mode!r}")
         task_id = _require_str(params, "task_id")
+        request_id = params.get("request_id", uuid.uuid4().hex)
+        source_run_id = params.get("source_run_id")
+        if not isinstance(request_id, str):
+            raise ControlError("bad_params", "request_id 必须为字符串")
+        if source_run_id is not None and not isinstance(source_run_id, str):
+            raise ControlError("bad_params", "source_run_id 必须为字符串")
         if "execution_policy" not in params:
             execution_policy = EFFECTS
         else:
@@ -605,32 +642,55 @@ class ControlPlane:
                 )
             except TianshuError as exc:
                 raise ControlError("bad_params", str(exc)) from exc
+        if mode in ("plan", "compact"):
+            execution_policy = PURE_ONLY
+        if confirmed_plan and execution_policy != EFFECTS:
+            raise ControlError("bad_params", "确认计划必须新建 effects Run，工具审批仍单独进行")
         out_name = params.get("out_name")
         if out_name is not None and not isinstance(out_name, str):
             raise ControlError("bad_params", "out_name 必须是字符串")
-        task = self._tasks.get_task(task_id)
-        if task is None:
-            raise ControlError("not_found", f"task 不存在：{task_id}")
-
-        self._stack.dispatcher.prepare_run(task_id, execution_policy)
-        payload = {
-            "task": task.goal,
-            "out": out_name or "",
-            "limits": {
-                "max_turns": self._limits.max_turns,
-                "max_total_tokens": self._limits.max_total_tokens,
-            },
-            "tools": _exposed_tool_ids(execution_policy),
-        }
-        run = self._tasks.start_run(
-            task.task_id,
-            payload=payload,
-            execution_policy=execution_policy,
-        )
-        # 作业进队列；认领者（daemon 驱动线程）负责 created → queued → running。
         if self._claims is None:
             raise ControlError("internal", "Stack 未配置 JobStore，无法入队")
-        self._claims.enqueue(run.run_id)
+        # 幂等判定、来源绑定、建 Run 与入队共用一个写事务，双客户端不能抢过检查。
+        with self._log.transaction():
+            task = self._tasks.get_task(task_id)
+            if task is None:
+                raise ControlError("not_found", f"task 不存在：{task_id}")
+            prior = prior_request(
+                self._tasks, self._log, task, request_id=request_id, mode=mode,
+                source_run_id=source_run_id, out_name=out_name,
+                execution_policy=execution_policy,
+            )
+            if prior is not None:
+                return {"run": self._run_view(prior)}
+            workflow = prepare_workflow(
+                self._tasks, self._log, task, mode=mode, request_id=request_id,
+                source_run_id=source_run_id, confirmed_plan=confirmed_plan,
+            )
+            if confirmed_plan:
+                for prior, old in workflow_runs(self._tasks, self._log, task_id):
+                    if old.mode == "execute" and old.source_run_id == source_run_id:
+                        return {"run": self._run_view(prior)}
+            self._stack.dispatcher.prepare_run(task_id, execution_policy)
+            payload = {
+                "task": task.goal,
+                "out": out_name or "",
+                "limits": {
+                    "max_turns": self._limits.max_turns,
+                    "max_total_tokens": self._limits.max_total_tokens,
+                },
+                "tools": [] if mode == "compact" else _exposed_tool_ids(execution_policy),
+            }
+            # 旧调用没有续接材料时不产生新事件，保证历史视图与默认路径兼容。
+            use_workflow = (
+                mode != "execute" or workflow.source_text
+                or "mode" in params or "request_id" in params or confirmed_plan
+            )
+            run = self._tasks.start_run(
+                task_id, payload=payload, execution_policy=execution_policy,
+                workflow=workflow if use_workflow else None,
+            )
+            self._claims.enqueue(run.run_id)
         return {"run": self._run_view(run)}
 
     def _run_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -703,7 +763,7 @@ class ControlPlane:
             # 清单损坏不该让整个首屏打不开：这一条的"能不能撤销"回答不了就
             # 说 false，真正的错误在 `undo.plan` 时会带出来给人看。
             undoable = False
-        return {
+        result = {
             "run_id": run.run_id,
             "task_id": run.task_id,
             "state": run.state,
@@ -721,6 +781,14 @@ class ControlPlane:
             "n_unknown": counts.n_unknown,
             "undoable": undoable,
         }
+        from .workflow import workflow_for
+
+        workflow = workflow_for(self._log, run.run_id)
+        if workflow is not None:
+            result["workflow"] = {
+                "mode": workflow.mode, "source_run_id": workflow.source_run_id,
+            }
+        return result
 
     def _list_recent_runs(self) -> list[Any]:
         """非终态（按开始顺序）+ 最近 20 个终态/被 fence 的（新的在前）。"""

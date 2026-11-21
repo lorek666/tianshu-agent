@@ -1,6 +1,16 @@
 {
   "dataset": "minimal-v1",
   "events": {
+    "run.workflow": {
+      "format_version": 1,
+      "mode": "plan",
+      "request_id": "x",
+      "source_run_id": "x",
+      "source_text": "x",
+      "source_seqs": [],
+      "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "source_goal": "x"
+    },
     "approval.consumed": {
       "approval_id": "x",
       "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
