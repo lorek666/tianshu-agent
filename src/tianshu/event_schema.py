@@ -1130,6 +1130,21 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     for name, schema in CURRENT_SCHEMAS.items()
 }
 
+# 在 legacy 构造之后冻结完整 v1；不得原地扩张共享 _MODEL_USAGE。
+MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
+RUN_MODEL_TURN_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.model_turn"])
+_MODEL_USAGE_V2 = copy.deepcopy(_MODEL_USAGE)
+_MODEL_USAGE_V2["properties"].update({
+    "cache_read_input_tokens": _opt(_i(minimum=0)),
+    "cache_creation_input_tokens": _opt(_i(minimum=0)),
+})
+for _usage_event in ("model.result", "run.model_turn"):
+    CURRENT_SCHEMAS[_usage_event]["properties"]["usage"] = (
+        _opt(copy.deepcopy(_MODEL_USAGE_V2))
+        if _usage_event == "run.model_turn"
+        else copy.deepcopy(_MODEL_USAGE_V2)
+    )
+
 # v0/v1 保持原始解释；run.start 与 run.end 的新写采用 v2。
 RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
 CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
@@ -1159,6 +1174,8 @@ _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
 }
 _RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
 _RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["run.model_turn"] = frozenset({0, 1, 2})
 
 
 # ---------------------------------------------------------------- 注册时校验
@@ -1253,10 +1270,13 @@ for _name, _schema in CURRENT_SCHEMAS.items():
     _check_registry_schema(
         _name,
         _schema,
-        2 if _name in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION,
+        2 if _name in ("run.start", "run.end", "model.result", "run.model_turn")
+        else CURRENT_PAYLOAD_VERSION,
     )
 _check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
 _check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
+_check_registry_schema("model.result", MODEL_RESULT_V1_SCHEMA, 1)
+_check_registry_schema("run.model_turn", RUN_MODEL_TURN_V1_SCHEMA, 1)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
 
@@ -1290,7 +1310,8 @@ def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
 def current_version(event_type: str) -> int:
     if event_type not in CURRENT_SCHEMAS:
         return 0
-    return 2 if event_type in ("run.start", "run.end") else CURRENT_PAYLOAD_VERSION
+    return (2 if event_type in ("run.start", "run.end", "model.result", "run.model_turn")
+            else CURRENT_PAYLOAD_VERSION)
 
 
 def known_versions(event_type: str) -> frozenset[int]:
@@ -1308,6 +1329,10 @@ def schema_for(event_type: str, version: int) -> dict[str, Any]:
         return RUN_START_V1_SCHEMA
     if event_type == "run.end" and version == 1:
         return RUN_END_V1_SCHEMA
+    if event_type == "model.result" and version == 1:
+        return MODEL_RESULT_V1_SCHEMA
+    if event_type == "run.model_turn" and version == 1:
+        return RUN_MODEL_TURN_V1_SCHEMA
     if version == LEGACY_PAYLOAD_VERSION:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(
@@ -1399,6 +1424,15 @@ def payload_errors(
     schema = schema_for(event_type, version)
     errors: list[str] = []
     _check_value(schema, payload, "$", errors, event_type)
+    if not errors and event_type in ("model.result", "run.model_turn") and version == 2:
+        # JSON integer 包括 2.0；仅补足新 v2 缓存字段的 minimum，
+        # 不改变历史 schema 或其他字段既有的数值校验语义。
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                value = usage.get(key)
+                if isinstance(value, float) and value < 0:
+                    errors.append(f"$.usage.{key}：{value} < minimum 0")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
