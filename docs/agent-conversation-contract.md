@@ -35,3 +35,7 @@
 - OpenAI Responses 模型可显式配置 `compact_threshold`（令牌，整数 1024–2000000）。默认关闭。开启时在同一个 `POST /responses` 请求中启用 `context_management`；仍 `store=false`、不使用 `previous_response_id`，不另发计费调用。模型档案若被显式选用，阈值随 Run 路由冻结。
 - 已完成的输出回合可在前缀位置携带 `compaction` 加密项。无压缩项时沿用 `ContinuationRef` 1.0 / `model.result` v2；有压缩项时使用 `ContinuationRef` 1.1 / `model.result` v3。仅接受有唯一 ID、非空密文的单一压缩项，位置在本回合任何文本或工具提案之前；未知项或矛盾的流帧拒绝整组。新记录与旧记录按各自精确版本读取。
 - `ctx-responses-compact-v1` 只在已有已提交压缩项时，用最后一个压缩边界替换旧输入前缀，保留系统指令、该回合压缩项及后续本轮输出和实际工具结果。完整事件/游标不删除；回放以相同策略核对消息摘要及来源。没有新边界且超过本地预算时如实停止。密文继续只允许原 adapter、规范端点、模型使用，不进入用户可见文本、明文摘要或其他 Run。
+
+## 只读网页导航（C2/C4）
+
+`browser.navigate@1.0` 打开用户在任务中明确允许的 HTTPS 站点，或跟随本 Run 已提交页面的同源链接。每次 GET 单独绑定规范目标和参数审批，复用字节预算、内容引用、收据和发送边界。跟随链接时，`from_call` 和 `link_index` 须与本 Run 已落盘结果及精确 `url` 一致；新 Run 不能借用旧页面。只解析完整 HTML 取得文本和链接，不执行脚本、不载入子资源、不跟随重定向、不接登录态、不填表或提交网页。这个接口交付的是只读网页浏览，不声明支持通用 Chromium 自动化。
