@@ -20,7 +20,7 @@ import measure_slo as slo  # noqa: E402
 
 def test_state_diagnostic_uses_live_pressure_in_real_children() -> None:
     report, exit_code = slo.run_state_pressure_diagnostic(repeats=2)
-    assert exit_code == 0, report
+    assert exit_code == 0, json.dumps(report, sort_keys=True, ensure_ascii=False, indent=2)
     assert report["schema_version"] == "slo-state-pressure-dev-v1"
     assert report["scope"] == "diagnostic_pre_threshold"
     assert "verdict" not in report
