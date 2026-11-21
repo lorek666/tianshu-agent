@@ -73,7 +73,7 @@ def connector(monkeypatch):
                 }
             response = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
             framing = behavior.get("framing", "sse") if method == "tools/call" else "fixed"
-            use_sse = framing in {"sse", "sse-open"}
+            use_sse = framing in {"sse", "sse-open", "chunked-sse-open", "chunked-sse-bad"}
             if use_sse:
                 response = b": heartbeat\r\ndata: " + response + b"\r\n\r\n"
             self.send_response(200)
@@ -92,7 +92,15 @@ def connector(monkeypatch):
                     end = b"0\r\nX-Fixture: trailer\r\n"
                 delimiter = b"xx" if framing == "chunked-bad-delimiter" else b"\r\n"
                 extension = ";fixture=yes" if framing == "chunked-trailers" else ""
-                response = f"{len(response):X}{extension}\r\n".encode() + response + delimiter + end
+                def chunk(data, separator=b"\r\n", params=""):
+                    return f"{len(data):X}{params}\r\n".encode() + data + separator
+
+                if use_sse:
+                    middle = len(response) // 2
+                    first_delimiter = b"xx" if framing == "chunked-sse-bad" else b"\r\n"
+                    response = chunk(response[:middle], first_delimiter) + chunk(response[middle:])
+                else:
+                    response = chunk(response, delimiter, extension) + end
             elif framing != "close-delimited":
                 length = len(response)
                 if framing in {"fixed-short", "sse-open"}:
@@ -104,7 +112,7 @@ def connector(monkeypatch):
                 self.send_header("Content-Length", str(length))
             self.end_headers()
             self.wfile.write(response)
-            if framing == "sse-open":
+            if framing in {"sse-open", "chunked-sse-open", "chunked-sse-bad"}:
                 self.wfile.flush()
                 behavior["released_before_close"] = behavior["close_stream"].wait(timeout=15)
 
@@ -164,6 +172,8 @@ def test_rejects_untrusted_endpoint_configuration(url):
     (200, "chunked-short-trailer", "unknown"),
     (200, "chunked-bad-delimiter", "unknown"),
     (200, "chunked-conflict", "unknown"),
+    (200, "chunked-sse-open", "applied"),
+    (200, "chunked-sse-bad", "unknown"),
 ])
 def test_remote_tool_requires_approval_and_complete_result(
     tmp_path, connector, status, framing, expected_effect,
@@ -234,7 +244,7 @@ def test_remote_tool_requires_approval_and_complete_result(
             assert verify_receipts(log, run_id) == []
         else:
             assert result_row["status"] == "failed" and not receipts
-        if framing == "sse-open":
+        if framing in {"sse-open", "chunked-sse-open", "chunked-sse-bad"}:
             assert "released_before_close" not in behavior, "SSE waited for the stream to close"
     finally:
         close_stream.set()
