@@ -79,6 +79,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     signal.add_argument("--data-root", type=Path, help="daemon 数据目录；默认使用桌面端目录")
     signal.add_argument("--json", action="store_true")
 
+    webhook = commands.add_parser("webhook-serve", help="启动绑定一条本机事件日程的 webhook 接收器")
+    webhook.add_argument("schedule_id")
+    webhook.add_argument("--port", type=int, default=8793, help="仅监听 127.0.0.1；0 为自动选择")
+    webhook.add_argument("--data-root", type=Path, help="daemon 数据目录")
+    webhook.add_argument("--secret-env", required=True, help="签名密钥的环境变量名")
+
     for action, help_text, with_id in (
         ("list", "列出全部定时任务", False),
         ("show", "查看一条定时任务", True),
@@ -100,6 +106,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.schedule_action == "webhook-serve":
+        from . import ipc
+        from .schedule_webhook import serve
+
+        return serve(args.data_root or ipc.default_data_root(), args.schedule_id,
+                     port=args.port, secret_env=args.secret_env)
     if args.schedule_action == "signal":
         from . import ipc
 
