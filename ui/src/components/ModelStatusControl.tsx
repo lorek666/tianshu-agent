@@ -23,6 +23,7 @@ function conciseModelLabel(model: ModelConfigView | null | undefined): string {
 const MODE_OPTIONS = [
   { key: "scripted", label: "离线演示" },
   { key: "openai", label: "OpenAI 兼容" },
+  { key: "openai-responses", label: "OpenAI Responses" },
   { key: "anthropic", label: "Anthropic" },
 ] as const;
 
@@ -93,6 +94,10 @@ export function ModelStatusControl({
       return;
     }
     const trimmedName = draftModelName.trim();
+    if (draftMode === "openai-responses" && trimmedName === "") {
+      setError("Responses 模式必须显式填写模型名称。");
+      return;
+    }
     if (draftMode === "anthropic" && trimmedName === "") {
       setError("Anthropic 模式必须填写模型名称（例如 claude-sonnet-4-5）。");
       return;
@@ -179,7 +184,8 @@ export function ModelStatusControl({
                 data-testid={`${testId}-model-input`}
                 value={draftModelName}
                 placeholder={
-                  draftMode === "anthropic" ? "例如 claude-sonnet-4-5" : "默认 gpt-4o-mini"
+                  draftMode === "anthropic" ? "例如 claude-sonnet-4-5"
+                    : draftMode === "openai-responses" ? "必填：显式模型 ID" : "默认 gpt-4o-mini"
                 }
                 onChange={(event) => setDraftModelName(event.target.value)}
                 disabled={saving}

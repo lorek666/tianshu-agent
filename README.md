@@ -37,7 +37,7 @@
 | ↩️ | **默认可撤销** | 写前快照 + 可独立核对的凭据（Receipt）；撤销前核对内容哈希，被外部改过就拒绝；撤销本身也走审批 |
 | 🧯 | **崩溃可判定** | `applied` / `none_applied` / `unknown` 三态**不合并**，未知绝不盲目重放 |
 | 🧵 | **不重复执行** | 跨进程租约 + fencing：防同用户双实例，旧 worker 不得覆盖新 owner |
-| 🪶 | **零运行时依赖** | 纯 Python 标准库；换 provider 主循环零改动（OpenAI-compatible / Anthropic 两套协议） |
+| 🪶 | **零运行时依赖** | 纯 Python 标准库；独立适配 Chat Completions / Responses / Anthropic Messages |
 
 还有受控出网、受控 MCP、默认只读的子任务、带 React 面板的记忆、定时任务和整数微美元成本账。能力和边界见 [docs/limitations.md](docs/limitations.md)。
 
@@ -77,6 +77,9 @@ uv run python scripts/demo_m5.py --data-root /tmp/m5-demo --auto
 ```
 
 接真实模型、桌面三进程、UI 构建、退出码与数据目录维护，见 **[docs/cli.md](docs/cli.md)**。
+OpenAI Responses 使用独立的 `--provider openai-responses`，需显式填写 `--model-name`；
+支持文本、函数工具和加密 reasoning 续接。官方服务与网关的真实付费 smoke 尚未执行，
+协议与恢复边界见 [Responses 续接契约](docs/openai-responses-contract.md)。
 
 ## 常用命令
 

@@ -277,8 +277,8 @@ def test_real_loop_commit_failure_rolls_back_pair_turn_and_cursor(tmp_path, monk
         task = stack.tasks.create_task("offline", [str(ws)])
         result = engine_for(stack, model, limits=Limits(3, 1000)).start(task.task_id)
         assert result.state == "failed"
-        assert result.model_attempts == 1 and result.turns == 1 and result.tokens == 18
-        assert result.cost_total_micros == 0 and result.unknown_cost_calls == 1
+        assert result.model_attempts == 1 and result.turns == 0 and result.tokens == 0
+        assert result.cost_total_micros == 0 and result.unknown_cost_calls == 0
         assert "injected" in result.error
         assert len(transport.calls) == 1
         events = log.read_run(result.run_id)
@@ -328,7 +328,7 @@ def test_historical_payload_hash_and_version_roundtrip(tmp_path, kind):
 
 
 @pytest.mark.parametrize("vendor", VENDORS)
-def test_null_cache_normalizes_to_absence_without_inventing_zero(vendor):
+def test_null_cache_preserves_explicit_unknown_without_inventing_zero(vendor):
     usage = {
         "input_tokens": 11,
         "output_tokens": 7,
@@ -337,7 +337,7 @@ def test_null_cache_normalizes_to_absence_without_inventing_zero(vendor):
     }
     model, transport = _response(vendor, usage)
     response = model.complete([{"role": "user", "content": "offline"}], tool_manifest())
-    assert response.usage == {"input_tokens": 11, "output_tokens": 7}
+    assert response.usage == usage
     assert len(transport.calls) == 1
 
 

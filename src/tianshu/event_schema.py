@@ -29,6 +29,7 @@ import copy
 import re
 from typing import Any
 
+from .continuation import CONTINUATION_SCHEMA, ContinuationRef
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
 from .run_policy import RunExecutionPolicyV1
@@ -1130,22 +1131,19 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     for name, schema in CURRENT_SCHEMAS.items()
 }
 
-# 在 legacy 构造之后冻结完整 v1；不得原地扩张共享 _MODEL_USAGE。
+# 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
 MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
 RUN_MODEL_TURN_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.model_turn"])
-_MODEL_USAGE_V2 = copy.deepcopy(_MODEL_USAGE)
-_MODEL_USAGE_V2["properties"].update({
-    "cache_read_input_tokens": _opt(_i(minimum=0)),
-    "cache_creation_input_tokens": _opt(_i(minimum=0)),
-})
-for _usage_event in ("model.result", "run.model_turn"):
-    CURRENT_SCHEMAS[_usage_event]["properties"]["usage"] = (
-        _opt(copy.deepcopy(_MODEL_USAGE_V2))
-        if _usage_event == "run.model_turn"
-        else copy.deepcopy(_MODEL_USAGE_V2)
-    )
+for _model_event in ("model.result", "run.model_turn"):
+    CURRENT_SCHEMAS[_model_event] = copy.deepcopy(CURRENT_SCHEMAS[_model_event])
+    _usage_v2 = CURRENT_SCHEMAS[_model_event]["properties"]["usage"]
+    for _cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        _usage_v2["properties"][_cache_key] = _opt(_i(minimum=0))
+CURRENT_SCHEMAS["model.result"]["properties"]["continuation"] = copy.deepcopy(
+    CONTINUATION_SCHEMA
+)
 
-# v0/v1 保持原始解释；run.start 与 run.end 的新写采用 v2。
+# v0/v1 保持原始解释；这些事件的新写逐类型采用 v2。
 RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
 CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
     {"format_version": {
@@ -1310,8 +1308,9 @@ def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
 def current_version(event_type: str) -> int:
     if event_type not in CURRENT_SCHEMAS:
         return 0
-    return (2 if event_type in ("run.start", "run.end", "model.result", "run.model_turn")
-            else CURRENT_PAYLOAD_VERSION)
+    return 2 if event_type in (
+        "run.start", "run.end", "model.result", "run.model_turn",
+    ) else CURRENT_PAYLOAD_VERSION
 
 
 def known_versions(event_type: str) -> frozenset[int]:
@@ -1424,20 +1423,24 @@ def payload_errors(
     schema = schema_for(event_type, version)
     errors: list[str] = []
     _check_value(schema, payload, "$", errors, event_type)
-    if not errors and event_type in ("model.result", "run.model_turn") and version == 2:
-        # JSON integer 包括 2.0；仅补足新 v2 缓存字段的 minimum，
-        # 不改变历史 schema 或其他字段既有的数值校验语义。
-        usage = payload.get("usage")
-        if isinstance(usage, dict):
-            for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
-                value = usage.get(key)
-                if isinstance(value, float) and value < 0:
-                    errors.append(f"$.usage.{key}：{value} < minimum 0")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
         except TianshuError as exc:
             errors.append(f"$.execution_policy：{exc}")
+    if not errors and version == 2 and event_type in ("model.result", "run.model_turn"):
+        # 只补充新 cache 字段的语义，不改变旧 schema/其他事件对整数值 float
+        # 的既有校验。JSON Schema 镜像本身也带 minimum。
+        usage = payload.get("usage") or {}
+        for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and value < 0:
+                errors.append(f"$.usage.{key}：缓存用量不能为负")
+        if event_type == "model.result" and "continuation" in payload:
+            try:
+                ContinuationRef.from_payload(payload["continuation"]).validate_projection(payload)
+            except ValueError:
+                errors.append("$.continuation：续接值或规范化投影不满足契约")
     return errors
 
 

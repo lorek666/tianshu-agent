@@ -607,3 +607,36 @@ class _TaskCursorRebuildMixin:
                     " :parent_run_id,:subtask_id,:created_at,:ended_at)",
                     r,
                 )
+                self._rebuild_responses_cursor(r["run_id"])
+
+    def restore_responses_cursor(self, run_id: str) -> tuple[RunCursor, dict[str, Any]] | None:
+        """仅恢复可从事件识别的 Responses 派生行，不追加事实或调用模型。"""
+        with self._log.transaction():
+            self._rebuild_responses_cursor(run_id)
+        return self.load_cursor(run_id)
+
+    def _rebuild_responses_cursor(self, run_id: str) -> None:
+        from ._responses_rebuild import rebuild_responses_progress
+
+        rebuilt = rebuild_responses_progress(self._log.read_run(run_id))
+        if rebuilt is None:
+            return
+        cursor, turns, saved = rebuilt
+        run = self.get_run(run_id)
+        assert run is not None
+        self._conn.execute("DELETE FROM run_turns WHERE run_id=?", (run_id,))
+        for ev, turn in turns:
+            self._conn.execute(
+                "INSERT INTO run_turns (run_id, turn_id, seq, payload, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (run_id, turn["turn_id"], ev.payload["seq"],
+                 canonical_bytes(turn).decode("utf-8"), ev.ts),
+            )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO run_cursors"
+            " (run_id, task_id, goal_revision, lease_epoch, claim_epoch, payload, updated_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (run_id, run.task_id, run.goal_revision, run.lease_epoch,
+             saved.payload.get("claim_epoch", 0),
+             canonical_bytes(cursor.to_dict()).decode("utf-8"), saved.ts),
+        )

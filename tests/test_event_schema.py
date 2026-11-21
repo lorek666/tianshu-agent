@@ -613,7 +613,7 @@ def test_replay_still_passes_after_contract_upgrade(tmp_path):
         assert report.ok, report.problems
         assert report.problems == []
         versions = {e.payload_version for e in log.read_run(result.run_id)}
-        assert versions == {1, 2}, "四个逐事件 current 使用 v2，其余新写入为 v1"
+        assert versions == {1, 2}, "run.start/run.end/model.result/run.model_turn 使用各自 v2"
     finally:
         log.close()
 
