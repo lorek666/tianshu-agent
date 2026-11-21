@@ -21,7 +21,9 @@ from tianshu.tools import tool_manifest
 ROOT = Path(__file__).resolve().parents[1]
 TYPES = ("model.result", "run.model_turn")
 CACHE_KEYS = ("cache_read_input_tokens", "cache_creation_input_tokens")
-FIXED = json.loads((ROOT / "tests/fixtures/events/model_usage_historical.json").read_text())
+FIXED = json.loads(
+    (ROOT / "tests/fixtures/events/model_usage_historical.json").read_text(encoding="utf-8")
+)
 USAGES = [
     pytest.param({"input_tokens": 11, "output_tokens": 7}, id="absent"),
     pytest.param(
@@ -234,7 +236,7 @@ def test_exact_historical_schemas_and_new_versions_only():
     assert (
         hashlib.sha256(canonical_bytes(unchanged)).hexdigest() == FIXED["unaffected_current_sha256"]
     )
-    doc = json.loads((ROOT / "schemas/c3/event.json").read_text())
+    doc = json.loads((ROOT / "schemas/c3/event.json").read_text(encoding="utf-8"))
     assert doc["$defs"]["payload"] == event_schema.CURRENT_SCHEMAS
     assert doc["$defs"]["legacyPayload"] == event_schema.LEGACY_SCHEMAS
     for kind in TYPES:
@@ -420,7 +422,7 @@ def test_pause_resume_keeps_paid_turn_before_dispatch_and_never_reissues_it(
         done = engine.resume_run(rid)
         assert done.state == "succeeded", done.error
         assert len(transport.calls) == 2 and len(observed) == 1
-        assert (ws / "once.md").read_text() == "once"
+        assert (ws / "once.md").read_text(encoding="utf-8") == "once"
         assert done.turns == 2 and done.tokens == 36 and done.unknown_cost_calls == 2
         events = log.read_run(rid)
         assert len([e for e in events if e.type == "receipt"]) == 1
