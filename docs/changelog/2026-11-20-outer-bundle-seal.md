@@ -9,7 +9,8 @@
 
 本修复只改[打包脚本](../../scripts/package_app.py)与[静态 verifier](../../scripts/verify_release.py)，
 不改 C1–C5、T1 成本/信任政策、schema、报告字段、索引 `signed: false`、安装器、
-权限或凭据逻辑。没有新增版本身份、产品 build、公开发行或远端写入。
+权限或凭据逻辑。该局部修复阶段没有新增版本身份、产品 build、公开发行或远端写入；
+后续 PR210 合并与新 `0.1.1` 发行归档的实际验证见下文。
 
 ## 实现
 
@@ -60,9 +61,11 @@
 - 本机结构实验不等于新产品 archive、原生启动、Gatekeeper 或安装验收；
   未运行旧资产中的 Python、桌面壳、Host/Daemon 或 GUI，未触及生产 Keychain/数据。
 
-## 尚待门禁与边界
+## 合入、发行观察与待验边界
 
-当前仍是本地未合入候选：`2c5a1dd` 的局部代码/测试独立第二读者预审已通过；
+本修复已随 [PR #210](https://github.com/lorek666/tianshu-agent/pull/210) 正常合入
+`e87a38cbf62876a0e25451d60401f5fdb11f6e0b`（tree `6a49ca05d3512d7202c8544dde47d23f42796de1`）。
+以下为各自冻结的历史证据：`2c5a1dd` 的局部代码/测试独立第二读者预审已通过；
 原组合候选的精确 `1c63e8297020dad51f72494a9db3230ffc61ec4f`
 （tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）source 全量绿保持原归属。
 本地正常合并主干 `f27a1bf` 的 Responses 实现后，新冻结为
@@ -74,7 +77,16 @@
 source full 绿及 PR210 首轮 Windows collection RED 均保留；最小测试编码修复、
 独立 DB 探针受阻等复审限制、完整证据绑定与后处理错误保留见[组合修复记录](2026-11-21-preview-release-repair.md)。
 源码全量、tiny-C 归档结构及 source/source-copy 收据不是新产品 App/原生用户/发行 PASS；
-新 hosted required CI、新产品 App 与原生验收仍待完成，不能继承其他 SHA 的绿色结论。
+新 [ready CI 44887615950](https://github.com/lorek666/tianshu-agent/actions/runs/44887615950)
+与 e87 的 [main CI 44890059535](https://github.com/lorek666/tianshu-agent/actions/runs/44890059535)
+均 attempt1 全部 job success，原25分钟上限未改。
+精确 e87 的 [release 44892061206](https://github.com/lorek666/tianshu-agent/actions/runs/44892061206)
+已生成未公开的 `0.1.1` draft；原 validator 完整 CLI 单次 exit0，下载归档
+SHA256 为 `f832c8ea2c37b456f77c711e1a1705a98ce272d08918f1b359d27b6bc0b98a98`。
+该归档受限提取后的新 App 副本在本机 macOS 26.6.2（25G83）/arm64 于
+2026-11-21 18:57（UTC+08:00）单次 codesign deep/strict 验证 exit0，
+而单次 spctl assess exit3/rejected；这实证了新归档副本的结构封套修复，
+不是 Developer ID、公证、Gatekeeper 放行或 App 运行通过。完整命令、hash 与待验范围见[组合修复记录](2026-11-21-preview-release-repair.md)。
 
 免费结构封套不提供认证发布者身份、公证或系统策略放行，也不取消
 原生启动/runtime smoke、Keychain、核心任务、SLO、进程恢复、升级/回退/备份门禁。

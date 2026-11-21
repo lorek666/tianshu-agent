@@ -1,6 +1,6 @@
 # 0.1.1 组合修复：模型用量精确版本与发行身份
 
-日期：2026-11-21。状态：**本地已正常合并含 Responses 实现的主干 `f27a1bf`，新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`）自身的限定独立复核、受影响回归、UI 门禁、授权 source 全量与即时复制/静态核验已完成；新 hosted required CI、产品 App 原生验收和真实模型复评仍待完成**。原 `1c63e82` 的绿色证据保持原冻结归属；PR210 首轮 Windows collection RED 保留。这不是发行或真实评测通过声明。
+日期：2026-11-21。状态：**组合修复已由 PR210 正常合入 `e87a38cbf62876a0e25451d60401f5fdb11f6e0b`（tree `6a49ca05d3512d7202c8544dde47d23f42796de1`）；新 ready/main CI 与 `0.1.1` 预览发行实跑已完成，draft 尚未公开。新归档 App 副本 codesign strict 验证通过、spctl 策略拒绝；真实源码 scripted control 退出90，仍暂停，产品原生用户验收仍未完成、真实模型复评未获通过**。各轮 source/UI 绿只归属其精确冻结；PR210 首轮 Windows collection RED 与既有真实评测结论保留，不因后续 CI 或结构验证改判。
 
 ## 原因与范围
 
@@ -61,6 +61,14 @@ C1 合法缓存用量不能通过 C3 v1 封闭 usage，真实模型响应后会�
 
 本次 source 全量与即刻捕获沿用默认临时目录和逐例隔离，不预载父 startup、不新增 hook/plugin/CI identity/basetemp。空 key 与 env 后端不等于默认 urllib 代理/重定向零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；导入不等于实际取密钥。collector 正向收据不替代 full 退出码、辅助原件矩阵或当前 PID 活性证明；旧独立 DB/FFI 阻断保持，不扫描旧临时根、查询旧 UNKNOWN 组或重造夹具。
 
-## 仍待门禁与边界
+## PR210 合并、精确新发行与本机静态观察
 
-新 required CI、产品 App build/发行实跑、原生用户验收与真实模型复评仍待完成，不能继承其他 SHA 的绿色结论。原真实首组 unsafe、失败、未知金额及未运行组不改判。旧 `0.1.0` 的原生 RED 不因本地封套结构探针或 source 全量绿变成 PASS；原生启动、Keychain、核心任务、SLO、安装、升级/回退、备份恢复等原门禁保持。[Responses 续接契约](../openai-responses-contract.md)的运行时已由主干 `f27a1bf` 实现，本组合自身的 source/UI 门禁已按上述精确冻结完成，但尚未取得新 hosted required CI 或产品 App 验收；官方与网关真实付费 smoke 仍为 NOT_RUN，不能宣称线上兼容或产品发行通过。
+- [PR #210](https://github.com/lorek666/tianshu-agent/pull/210) 已按保护规则正常 merge 为 `e87a38cbf62876a0e25451d60401f5fdb11f6e0b`（tree `6a49ca05d3512d7202c8544dde47d23f42796de1`），没有直推或绕过保护。[ready CI 44887615950](https://github.com/lorek666/tianshu-agent/actions/runs/44887615950) attempt1 的 head 为 `e2ae5acd4d0f5ab06d8b619d5753118cd5c2f81a`，实际 PR 合成 checkout 为 `999070a43078d6bfd10e81c7072dedb9ed7b3379`，与 merge 的 tree 相同；随后 e87 自身的 [main push CI 44890059535](https://github.com/lorek666/tianshu-agent/actions/runs/44890059535) attempt1 也九项 job 全部 success。两轮四项 required 齐全，原25分钟上限未改；旧 Windows collection RED 与主干超时不被覆盖。
+- 精确 e87 的 [release 44892061206](https://github.com/lorek666/tianshu-agent/actions/runs/44892061206) attempt1 的 preflight、`build macos-arm64`、assemble 三项 job success，生成 `0.1.1` prerelease draft（453596814，尚未公开）。两份 workflow artifact ZIP 与六份 draft asset 各只下载一次，原 validator 完整 CLI 单次 exit0；归档 `Tianshu-Agent-0.1.1-macos-arm64.app.tar.gz` 的 SHA256 为 `f832c8ea2c37b456f77c711e1a1705a98ce272d08918f1b359d27b6bc0b98a98`。这是新发行构建及校验链的证据，不是 GUI/安装或用户任务验收；旧 `0.1.0` 对象未修补、未覆盖。
+- 新归档受限提取成功，逐项核对935个节点（863个普通文件、71个显式目录及隐式 App 根）；App 根0700仅为私有提取容器权限，不是归档记录或安装目录模式。2026-11-21 18:57（UTC+08:00），在 macOS 26.6.2（25G83）/arm64 上，对该精确新副本单次执行 `codesign --verify --deep --strict --verbose=4`，实际 exit0，输出 `valid on disk` 与 `satisfies its Designated Requirement`；stderr SHA256 为 `fd4120c9a29b3b7d45f96ec47888c47c8834527a99ccf0f936e7daedb0872b55`。随后单次 `spctl --assess --type execute --verbose=4 --ignore-cache --no-cache` 实际 exit3、`rejected`，stderr SHA256 为 `54b4a138e304c42f6babf3ff35e9c490f755bdd7d10b3db66a374cd723be1f7f`。这次是明确的系统策略拒绝，与旧资产资源封套操作错误分账；没有运行 App、重签或修改系统策略，前后副本字节与模式不变。结构封套修复不提供 Developer ID、公证或 Gatekeeper 放行，也不引入新的付费签名门槛。
+
+## 新复评控制组暂停与仍待门禁
+
+新 harness 的 synthetic suite 单次通过只覆盖假产品夹具，不证明真实源码的磁盘准入可用。2026-11-21 18:43（UTC+08:00）新 scripted control 的真实源码 crash child 记录 `DiskAdmissionError`，parent 记录 `crash_guard_invalid`，worker/controller 均退出90，未通过 control。原记录仅保存异常类，没有当时 rule、path 或 free 值，不能确定是 low 还是 unknown 分支；18:44 的事后可用空间观察为931012608 bytes，只支持低空间推断，不是事发时证明。原2GiB门槛未改，不注入空间、不移根或降门槛；现暂停、不重试、不进入 paid、不读 key。旧真实首组 unsafe、51次失败调用、旧进程组 UNKNOWN、未知费用及未运行组均不改判、不恢复重跑。
+
+GUI/原生启动、安装、Keychain、核心任务、候选 SLO、进程恢复、升级/回退及备份恢复等原验收仍未完成；同账户控制面入口与 TOCTOU/provenance 等安全边界不变，不以第二 OS 账户或任何替代 soak 时长增加首发条件。首次 Apple Silicon 限定预览取消强制≥10小时 soak、无替代时长的原决定保持，长时稳定性仍未验证。上述 CI、发行校验、静态原生观察与 synthetic suite 均不能替代这些验收。[Responses 续接契约](../openai-responses-contract.md)的运行时已由主干实现，但本轮固定真实模型 job 仍走 Chat/OpenAICompatibleModel，不构成 Responses 线上覆盖；Responses 协议的官方与网关真实付费 smoke 仍为 NOT_RUN，不能宣称线上兼容或产品发行通过。
