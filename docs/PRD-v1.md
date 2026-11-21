@@ -716,7 +716,7 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 
 `run.end` 货币成本汇总按 [CONTRACT-W4-W12-2026-11-18.md](CONTRACT-W4-W12-2026-11-18.md) §3 升为精确 payload `v2`：新增 `cost_total_micros`（`integer|null`，未知单价不伪装成 `0`）与 `cost_unknown_calls`（`integer >= 0`），保留历史 `v0/v1` 的 schema 与只读解释不变。
 
-**模型用量契约草案（2026-11-20，待实现）**：仅 `model.result` / `run.model_turn` 的新写采用精确 payload `v2`，允许 C1 已定义的两个可选缓存用量字段；usage 仍封闭，缓存不并入 input_tokens，未知金额不记零。两事件旧 `v0/v1` 的 schema/读取解释不变，其他事件不升版；本次不沿用发布前 optional 沿 v1 的历史例外，不全局废除该例外。版本旁表、旧基线拒新及回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)；本段不宣称实现或真实复验已通过。
+**模型用量契约（2026-11-20 决定；2026-11-21 本地实现候选已离线定向验证）**：仅 `model.result` / `run.model_turn` 的新写采用精确 payload `v2`，允许 C1 已定义的两个可选缓存用量字段；usage 仍封闭，缓存不并入 input_tokens，未知金额不记零。两事件旧 `v0/v1` 的 schema/读取解释不变，其他事件不升版；本次不沿用发布前 optional 沿 v1 的历史例外，不全局废除该例外。版本旁表、旧基线拒新及回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)；本段仅更新本地实施状态，不宣称最终整合全量、独立复审、新 CI 或真实复验已通过。
 
 ### 5.4 C4 Permission / Approval
 
@@ -1446,7 +1446,7 @@ apply 向量 upsert）也会把记忆正文送端点，外发授权来源是批�
 
 **G3 首发范围（2026-11-20）：macOS Apple Silicon（`macos-arm64`）限定预览。**
 
-- 首发 `v0.x.y` 仅分发 `macos-arm64` 安装产物。维护者可在**同一台 Apple Silicon 实机**上，用干净的标准用户测试账户和隔离的测试数据完成验收。发行说明记录经实测的 macOS 版本；编译最低版本、CI runner 和能下载制品均不构成用户支持证据，不笼统承诺“macOS 13+”。
+- 首发 `v0.x.y` 仅分发 `macos-arm64` 安装产物。维护者可在**同一台 Apple Silicon 实机**上，使用隔离的测试数据和工作区完成验收，不要求新建或切换 OS 测试账户；不得触碰现有生产数据或凭据，不能安全隔离的原生验收项仍记为未验证。发行说明记录经实测的 macOS 版本；编译最低版本、CI runner 和能下载制品均不构成用户支持证据，不笼统承诺“macOS 13+”。
 - macOS Intel、Windows x64/ARM64 和 Linux 不在首发支持范围。Intel Mac 和 Windows 的安装产物与客户端实机验收、Windows SmartScreen 验收均留待对应目标开放；四目标正式发行仍须各自记录制品、原生启动与关键用户任务证据。Windows IPC 等工程稳定性问题仍须按原要求定位、修复并在 required CI 回归；不能拿 runner 代替客户端实测，也不能用重试覆盖已知失败。
 - 物理断电实测不作为此限定预览的前置条件，未取得证据前不承诺掉电级持久性。进程中断、备份完整性、历史数据升级、备份恢复与应用/数据回退仍按 §5.3.5 / §8.5 和相关契约验收；进程级故障注入不算物理断电证据。
 

@@ -11,7 +11,8 @@ import stat
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 
 TAURI_CLI = "@tauri-apps/cli@2.12.4"
 TARGET_TRIPLE = {
@@ -207,6 +208,199 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _macos_app_state(app: Path) -> dict[str, tuple[str, int, int, str]]:
+    """Closed ordinary-file tree; hashes/modes, not Apple signature validation."""
+    app = _validated_directory(app, "Tauri macOS 发行物")
+    _validate_resource_tree(app, "Tauri macOS 发行物")
+    state: dict[str, tuple[str, int, int, str]] = {}
+    folded: set[str] = set()
+    for path in [app, *sorted(app.rglob("*"))]:
+        name = path.relative_to(app).as_posix()
+        parts = PurePosixPath(name).parts
+        if "\\" in name or any(part in {"", ".", ".."} for part in parts):
+            raise PackageError(f"macOS 应用路径不规范：{name}")
+        if name.casefold() in folded:
+            raise PackageError(f"macOS 应用路径大小写冲突：{name}")
+        folded.add(name.casefold())
+        metadata = path.lstat()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISDIR(metadata.st_mode):
+            state[name] = ("dir", mode, 0, "")
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            state[name] = ("file", mode, metadata.st_size, _sha256(path))
+        else:
+            raise PackageError(f"macOS 应用包含链接或非普通文件：{name}")
+    return state
+
+
+def _require_macos_envelope(app: Path) -> None:
+    directory = app / "Contents" / "_CodeSignature"
+    _validated_directory(directory, "macOS 资源封套目录")
+    envelope = directory / "CodeResources"
+    _require_regular_file(envelope, "macOS CodeResources")
+    if envelope.stat().st_size == 0 or set(directory.iterdir()) != {envelope}:
+        raise PackageError("macOS 资源封套必须只含非空普通 CodeResources")
+
+
+def _run_codesign(arguments: list[str], app: Path) -> None:
+    # No identity lookup, --force, recursive signing, xattr cleanup or retry.
+    command = ["/usr/bin/codesign", *arguments, str(app)]
+    try:
+        result = subprocess.run(command, check=False, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PackageError(f"codesign 无法完成：{command!r}；{exc}") from exc
+    if result.returncode != 0:
+        raise PackageError(f"codesign 失败，exit={result.returncode}：{command!r}")
+
+
+def _verify_macos_app(app: Path) -> None:
+    _require_macos_envelope(app)
+    _run_codesign(["--verify", "--deep", "--strict", "--verbose=4"], app)
+
+
+def _seal_macos_app(app: Path) -> None:
+    before = _macos_app_state(app)
+    directory = "Contents/_CodeSignature"
+    envelope = f"{directory}/CodeResources"
+    main = "Contents/MacOS/tianshu-desktop"
+    if any(
+        name.casefold() == directory.casefold()
+        or name.casefold().startswith(directory.casefold() + "/")
+        for name in before
+    ):
+        raise PackageError("拒绝重签已有 macOS 资源封套的 App")
+    if main not in before or before[main][0] != "file" or before[main][2] == 0:
+        raise PackageError("macOS 应用缺少非空普通主程序")
+    # codesign accepts unsigned code and the documented linker-signed exception.
+    # Other existing signatures fail without --force; never parse one CPU's flags
+    # as a universal macOS input contract or fall back to recursive re-signing.
+    _run_codesign(["--sign", "-", "--timestamp=none"], app)
+    after = _macos_app_state(app)
+    if set(after) != set(before) | {directory, envelope}:
+        raise PackageError("codesign 修改了允许范围外的 macOS 应用条目")
+    for name, entry in before.items():
+        if name == main:
+            if after[name][:2] != entry[:2] or after[name][2] == 0:
+                raise PackageError("codesign 修改了主程序类型/权限")
+        elif after[name] != entry:
+            raise PackageError(f"codesign 修改了封套以外的应用资源/权限：{name}")
+    _verify_macos_app(app)
+    if _macos_app_state(app) != after:
+        raise PackageError("codesign 验证期间 macOS 应用发生变化")
+
+
+def _restore_macos_archive(
+    archive_path: Path,
+    private_root: Path,
+    expected: dict[str, tuple[str, int, int, str]],
+) -> Path:
+    """Extract only the complete known tree, using POSIX no-follow dirfds.
+
+    The writer historically omits the App root. Its 0700 restore container is
+    local isolation, not an archived root-mode claim. Never use extractall().
+    """
+    root_name = "Tianshu Agent.app"
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members: dict[str, tarfile.TarInfo] = {}
+        folded: set[str] = set()
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if (
+                path.is_absolute() or "\\" in member.name
+                or path.as_posix() != member.name
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or len(path.parts) < 2 or path.parts[0] != root_name
+                or not (member.isfile() or member.isdir())
+                or member.mode != stat.S_IMODE(member.mode)
+            ):
+                raise PackageError(f"macOS roundtrip 归档含非法路径/类型：{member.name!r}")
+            name = PurePosixPath(*path.parts[1:]).as_posix()
+            if name in members or name.casefold() in folded:
+                raise PackageError(f"macOS roundtrip 归档含重复/大小写冲突：{name}")
+            members[name] = member
+            folded.add(name.casefold())
+            entry = expected.get(name)
+            kind = "file" if member.isfile() else "dir"
+            if entry is None or (kind, member.mode, member.size) != entry[:3]:
+                raise PackageError(f"macOS roundtrip 归档条目/权限/大小不同：{name}")
+        if set(members) != set(expected) - {"."}:
+            raise PackageError("macOS roundtrip 归档文件/目录闭包不同")
+        for name in members:
+            for parent in PurePosixPath(name).parents:
+                if parent.as_posix() != "." and expected[parent.as_posix()][0] != "dir":
+                    raise PackageError(f"macOS roundtrip 归档祖先不是目录：{name}")
+
+        app = private_root / root_name
+        app.mkdir(mode=0o700)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(app, flags)
+
+        def parent_fd(name: str) -> int:
+            fd = os.dup(root_fd)
+            try:
+                for component in PurePosixPath(name).parts[:-1]:
+                    child_fd = os.open(component, flags, dir_fd=fd)
+                    os.close(fd)
+                    fd = child_fd
+                return fd
+            except BaseException:
+                os.close(fd)
+                raise
+
+        # This command-line packager is single-threaded; restore the process
+        # umask even on failure. Only fresh paths under the private 0700 root
+        # receive archived modes; no original App mode/xattr is repaired.
+        old_umask = os.umask(0)
+        try:
+            for name in sorted(members, key=lambda value: (len(PurePosixPath(value).parts), value)):
+                member = members[name]
+                fd = parent_fd(name)
+                try:
+                    leaf = PurePosixPath(name).name
+                    if member.isdir():
+                        os.mkdir(leaf, member.mode, dir_fd=fd)
+                    else:
+                        output_fd = os.open(
+                            leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            member.mode, dir_fd=fd,
+                        )
+                        with os.fdopen(output_fd, "wb") as output:
+                            source = archive.extractfile(member)
+                            if source is None:
+                                raise PackageError(f"macOS roundtrip 归档文件不可读：{name}")
+                            with source:
+                                shutil.copyfileobj(source, output)
+                finally:
+                    os.close(fd)
+        finally:
+            os.umask(old_umask)
+            os.close(root_fd)
+    restored = _macos_app_state(app)
+    if {k: v for k, v in restored.items() if k != "."} != {
+        k: v for k, v in expected.items() if k != "."
+    }:
+        raise PackageError("macOS roundtrip 恢复文件字节/权限/闭包不同")
+    return app
+
+
+def _verify_macos_roundtrip(
+    app: Path,
+    artifact: Path,
+    expected: dict[str, tuple[str, int, int, str]] | None = None,
+) -> None:
+    expected = _macos_app_state(app) if expected is None else expected
+    private_root = Path(tempfile.mkdtemp(prefix=".macos-roundtrip-", dir=artifact.parent))
+    try:
+        restored = _restore_macos_archive(artifact, private_root, expected)
+        restored_before = _macos_app_state(restored)
+        _verify_macos_app(restored)
+        if _macos_app_state(restored) != restored_before or _macos_app_state(app) != expected:
+            raise PackageError("macOS roundtrip 验证期间应用发生变化")
+    except (OSError, ValueError, tarfile.TarError, PackageError) as exc:
+        raise PackageError(f"macOS roundtrip 失败；保留现场 {private_root}：{exc}") from exc
+    shutil.rmtree(private_root)
+
+
 def _write_macos_archive(app: Path, destination: Path) -> None:
     app = _validated_directory(app, "Tauri macOS 发行物")
     _validate_resource_tree(app, "Tauri macOS 发行物")
@@ -249,6 +443,8 @@ def release_artifact(
         raise PackageError(f"Tauri Windows 发行物不存在或不是文件：{bundled}")
     if target.startswith("macos"):
         _validate_resource_tree(bundled, "Tauri macOS 发行物")
+        if _validate_path_chain(out_dir, "发行输出目录").is_relative_to(bundled):
+            raise PackageError("macOS 发行输出目录不得位于待归档 App 内")
     out_dir = _prepare_output_directory(Path(out_dir))
     if target.startswith("macos"):
         destination = out_dir / f"Tianshu-Agent-{version}-{target}.app.tar.gz"
@@ -262,7 +458,18 @@ def release_artifact(
     for output in (destination, checksum, manifest_output):
         _require_safe_output_path(output)
     if target.startswith("macos"):
-        _write_macos_archive(bundled, destination)
+        _verify_macos_app(bundled)  # direct callers must supply an already sealed App
+        before_archive = _macos_app_state(bundled)
+        staging = Path(tempfile.mkdtemp(prefix=".macos-package-", dir=out_dir))
+        staged_archive = staging / destination.name
+        try:
+            _write_macos_archive(bundled, staged_archive)
+            _verify_macos_roundtrip(bundled, staged_archive, before_archive)
+            _require_safe_output_path(destination)
+            os.replace(staged_archive, destination)
+        except (OSError, ValueError, tarfile.TarError, PackageError) as exc:
+            raise PackageError(f"macOS 归档未发布；保留现场 {staging}：{exc}") from exc
+        staging.rmdir()
     else:
         shutil.copyfile(bundled, destination)
     checksum.write_bytes(
@@ -366,6 +573,8 @@ def package_app(
             f"候选：{present}"
         )
     bundled = expected
+    if target.startswith("macos"):
+        _seal_macos_app(bundled)
     if out_dir is not None:
         return release_artifact(
             bundled=bundled,
