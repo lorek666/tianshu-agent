@@ -30,7 +30,10 @@ DEST = ORIGIN + "/submit"
 HTML = b'<form method="post" action="/submit"><input name="message"></form>'
 
 
-@pytest.mark.parametrize("mode", ["accepted", "uncertain", "changed-source", "no-budget"])
+@pytest.mark.parametrize("mode", [
+    "accepted", "uncertain", "truncated-204", "truncated-zero-length",
+    "changed-source", "no-budget",
+])
 def test_scoped_form_submits_only_after_approval_and_never_repeats(tmp_path, monkeypatch, mode):
     received = []
     database = tmp_path / "events.db"
@@ -52,6 +55,14 @@ def test_scoped_form_submits_only_after_approval_and_never_repeats(tmp_path, mon
             body = self.rfile.read(int(self.headers["Content-Length"]))
             received.append((self.path, body, state))
             if mode == "uncertain":
+                self.close_connection = True
+                return
+            if mode == "truncated-204":
+                self.wfile.write(b"HTTP/1.1 204 No Content\r\n")
+                self.close_connection = True
+                return
+            if mode == "truncated-zero-length":
+                self.wfile.write(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n")
                 self.close_connection = True
                 return
             self.send_response(201)
@@ -139,9 +150,10 @@ def test_scoped_form_submits_only_after_approval_and_never_repeats(tmp_path, mon
                         "/submit", b"message=%E4%B8%AD%E6%96%87+%26+action", ("executing",),
                     )]
                     effect = "applied" if mode == "accepted" else "unknown"
-                    assert outputs["submit"]["effect_state"] == effect
                     receipts = [event.payload for event in events if event.type == "receipt"]
-                    assert len(receipts) == (1 if mode == "accepted" else 0)
+                    assert (outputs["submit"]["effect_state"], len(receipts)) == (
+                        effect, 1 if mode == "accepted" else 0,
+                    )
                     assert verify_receipts(log, run.run_id) == []
                     assert replay(log, run.run_id).ok
                     assert len(received) == 1

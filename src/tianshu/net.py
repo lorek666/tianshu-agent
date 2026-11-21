@@ -63,7 +63,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urljoin, urlsplit
 
 from .errors import TianshuError
@@ -801,6 +801,29 @@ def fetch(
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")  # pragma: no cover
 
 
+class _FormResponseHead:
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+
+    def readline(self, size: int) -> bytes:
+        line = self._stream.readline(size)
+        if not line.endswith(b"\r\n"):
+            raise NetError("表单响应的状态行或头部不完整", reason="net.form_response")
+        return line
+
+
+class _FormResponse(http.client.HTTPResponse):
+    def begin(self) -> None:
+        # The stdlib accepts EOF as the end of a header block. For a POST
+        # acknowledgement require the actual blank line, even for an empty body.
+        stream = self.fp
+        self.fp = _FormResponseHead(stream)
+        try:
+            super().begin()
+        finally:
+            self.fp = stream
+
+
 def submit_form(
     target: NetworkTarget,
     body: bytes,
@@ -824,6 +847,7 @@ def submit_form(
             _LAST_FETCH_START = started
         deadline = started + limits.timeout_ms / 1000
         conn = _connect(target, _remaining(deadline))
+        conn.response_class = _FormResponse
         _check_cancel(cancel)
         _remaining(deadline)
         conn.connect()
