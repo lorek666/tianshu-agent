@@ -61,9 +61,10 @@ accept 自然复用后，旧 read 截走新连接认证帧头 `00000028`，新�
 后续两次 main 同步均只增加文档，非文档代码树与该验证对象一致，不重跑相同代码的全量。
 原始完整日志、定向复跑、探针错误、此前中断套件与定向红测均保留于本地忽略目录
 `.omc/artifacts/compact-plan/`，没有用新绿覆盖旧红。
-契约 PR [#207](https://github.com/lorek666/tianshu-agent/pull/207) 已建立；远端 required CI
-的旧候选 run `44858922013` 已全部 success；同步 Responses 契约后的新候选需重新取得
-完整结果。最终绑定与实时状态以对应 PR 正文及 Actions 记录为准。
+契约 PR [#207](https://github.com/lorek666/tianshu-agent/pull/207) 与实现 PR
+[#208](https://github.com/lorek666/tianshu-agent/pull/208) 已分别建立。
+远端 required CI 的旧契约候选 run `44858922013` 已全部 success，但不代替后续候选结果。
+两个 PR 的最终 head/base、合成 merge、CI run 与完整结果以对应 PR 正文及 Actions 记录为准。
 
 ## 边界
 

@@ -5,7 +5,7 @@
 
 ## 结论与绑定
 
-**非文档代码树的独立探针复审 PASS**，绑定 `d161e060ceefe240a930bc5cbef8d775ca8eb4b6`。工作流原限定范围的已修证据保持有效；作者后续本机全量 exit 1 后，第二读者另确定性复现的 IPC fd 生命周期 P1，已通过同契约红转绿、恢复旧实现重新变红及受影响域回归。最终文档回填仍须另核对，作者新候选全量及 GitHub required CI 另由各自门禁负责；不把定向通过冒充全量或平台实测。
+**非文档代码树的独立探针复审 PASS**，绑定 `d161e060ceefe240a930bc5cbef8d775ca8eb4b6`。工作流原限定范围的已修证据保持有效；作者后续本机全量 exit 1 后，第二读者另确定性复现的 IPC fd 生命周期 P1，已通过同契约红转绿、恢复旧实现重新变红及受影响域回归。最终纯文档增量与作者新全量日志已完成追加审计，见附录；GitHub required CI 仍须绑定各自最终候选，不把定向通过、作者运行或旧契约 CI 冒充第二读者独立全量及新候选远端通过。
 
 - 基础提交：`2c62128ff071ea1d348acaf422734fbf47ce4626`。
 - 首轮冻结 tree：`c6193a7749cc3b036c8df010dbd5c34c2740e041`。
@@ -171,3 +171,26 @@ git write-tree
 ```
 
 负控命令预期且实际 exit 1，其余命令均 exit 0；`git write-tree` 为 `d161e060ceefe240a930bc5cbef8d775ca8eb4b6`。日志分别为 `compact-plan-review-ipc-fd-green.log`、`compact-plan-review-ipc-fd-negative.log`、`compact-plan-review-ipc-domain-green.log`、`compact-plan-review-ipc-lock.log`、`compact-plan-review-ipc-ruff.log`、`compact-plan-review-ipc-diff-check.log`，均保留在独立树 `.omc/artifacts/`。
+
+## 附录：最终纯文档与作者全量证据审计
+
+2026-11-21，第二读者追加审计 **PASS**。已审非文档冻结对象仍为 `d161e060ceefe240a930bc5cbef8d775ca8eb4b6`；本次文档候选 tree 为 `a121f6a16eba3ba3613e4fd496e2961e293c7d8b`，对应实现提交 `b9b7b46b57c7b51d31b7d1e551863d57e39c408a`。第二读者在独立树完整应用两者差异，`git write-tree` 与文档候选精确一致，已跟踪工作区对索引零差异。增量仅包含：
+
+- `docs/KNOWLEDGE.md`
+- `docs/PRD-v1.md`
+- `docs/REVIEW-COMPACT-PLAN-2026-11-21.md`
+- `docs/changelog/2026-11-21-compact-plan-mode.md`
+- `docs/openai-responses-contract.md`
+- `docs/superpowers/plans/2026-11-20-compact-plan-mode.md`
+
+非文档 diff 为空，`src`、`tests`、`schemas`、`ui` 子树与前述 IPC 修复对象逐字相同。两次 main 同步分别为模型用量契约 `53424e3…` 和 Responses 契约 `71eb57e…`，契约分支 merge 分别为 `34777d1…` 和 `93ba90e…`，均仅增加文档。`event-payload-contract.md`、`model-usage-v2-contract.md` 与 `openai-responses-contract.md` 的最终 blob 均与已合入的 `71eb57e…` 一致，PRD 中工作流、用量 v2 与 Responses 的独立决定均保留；后两项明确标注待实现，没有将契约冻结写成运行时支持。
+
+作者的最终 `uv run --frozen pytest` 结果经第二读者读回日志与配套退出状态文件核对：`.omc/artifacts/compact-plan/pytest-full-d161e06.log` 含完整 `[100%]` 及成功终态，配套 `.exit` 内容为 `0`，未发现失败或中断终态。第二读者另在独立树仅执行默认 `tests` 的 collection，排除未跟踪的独立探针，实时收集范围与作者日志中的通过及跳过结果总和一致。收集不是执行测试体；第二读者没有重跑或冒称亲自执行作者全量。本次复用产品探针与全量对象的理由为非文档代码树零变化，而不是忽略此前真实红测。
+
+已逐项核对变更文档及 README、CLI、上下文说明中的本地相对链接目标路径，无悬空路径；新增链接无章节 fragment。Changelog 如实保留首次全量 exit 1、定向复跑不计修复、IPC 机制确定但原现场同因未确定、探针自身 EOF 断言错误、最终新树全量 exit 0。计划仅勾选已完成的本地门禁与独立复审，提交/实现 PR 收尾项尚未勾选。`uv lock --check`、`uv run --frozen ruff check .`、`git diff --cached --check` 与工作区差异检查在本次文档树再次 exit 0。
+
+第二读者于本次审计亲自通过 GitHub API 核对：契约 PR #207 的旧 head `34777d1b1872db1dbd04a65fe1728c2dc3e3dc58` 对应 run `44858922013` 已 completed/success，全部 job success。该旧结果不是同步后的新 head 或实现候选 CI 证据。PR 当前 head 为 `93ba90e89378a9aec37c1b7b626761f5611eb904`，base 为 `71eb57ef1544d126cc929b9172f5463a14999359`，合成 merge 为 `0a3e3d4fea2aa74f4a2d523caf410fab1d5f5df1`；run `44862021454` 在审计时仍 in_progress，未计通过。最终 required checks 仍以对应候选后续完整结果为准。
+
+审计原始记录为独立树 `.omc/artifacts/compact-plan-review-doc-final-audit.json`，其中保留被审日志 SHA-256、默认 collection 对账、本地链接检查及 CI 精确绑定；原始 GitHub API 响应与 collection 日志同目录保留，均未提交。作者 ignored `precommit-evidence.json` 曾有旧的 running 状态，现已读回确认为 exit 0 并补全当前文档路径；未把旧过程台账当作最终证据。
+
+本附录只证明所列文档与既有实现、日志及审计时远端状态一致。真实付费模型、摘要质量及费用收益、用户设备体验、未测试架构仍未验收；原始全量 EOF 是否同因的边界继续保留。本附录回填若只改变报告或台账文档，可在核对非文档 diff 仍为空后复用既有产品验证，不形成重复全量循环。

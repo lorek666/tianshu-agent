@@ -60,4 +60,9 @@
 - [x] 更新能力边界与使用说明，核对链接和事实。
 - [x] 冻结代码树，执行 `uv lock --check`、ruff、全量 pytest 与 UI 全套。
 - [x] 按 Tier 1 要求，由独立第二读者执行负控与探针复审（IPC P1 修复后已重新绑定）。
-- [ ] 分别提交契约与实现，推送独立 PR；精确记录实际通过与未决门禁。
+- [x] 分别提交契约与实现，推送独立 PR；精确记录实际通过与未决门禁。
+
+契约为 [PR #207](https://github.com/lorek666/tianshu-agent/pull/207)，实现为
+[PR #208](https://github.com/lorek666/tianshu-agent/pull/208)，实现以契约分支为 base。
+本机门禁与独立复审已完成；远端最终候选的 SHA、合成 merge、CI run 及实际结果
+统一记在对应 PR 正文中，未完成或旧候选的检查不计作最终通过。本计划不包含合并或发布。
