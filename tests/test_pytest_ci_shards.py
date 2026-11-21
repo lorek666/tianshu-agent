@@ -143,6 +143,34 @@ def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_
     assert abs(costs[0] - costs[1]) < 60, costs
 
 
+@pytest.mark.parametrize("fast_file,fast_nodes,fast_seconds", [
+    ("tests/test_assemble_release.py", 148, 5),
+    ("tests/test_restore_contract.py", 119, 2),
+])
+def test_windows_weights_correct_fast_parameterized_files_and_slow_small_files(
+    tmp_path, fast_file, fast_nodes, fast_seconds,
+):
+    # Complete-file intervals from run 44927917869, rounded up to whole seconds.
+    # Each large, fast file must not outweigh four smaller integration files.
+    observed = {
+        fast_file: (fast_nodes, fast_seconds),
+        "tests/test_data_migration_cli.py": (30, 37),
+        "tests/test_host_cleanup.py": (32, 38),
+        "tests/test_integration_m5.py": (16, 34),
+        "tests/test_slow_subscriber.py": (4, 29),
+    }
+    files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
+             for file, (count, _) in observed.items()}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 15, costs
+
+
 def phase_source(phase, action, *, mark=""):
     prefix = "import pytest\n"
     if phase == "call":

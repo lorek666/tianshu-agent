@@ -15,22 +15,30 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-# Whole-file weights use ~0.5s per node as a rough proxy. Keep earlier floors from
-# Windows runs 44907705179 and 44911274075. From 44914005246 and 44916124972,
-# raise estimates understated by at least 30s using the larger complete file
-# interval between pytest result timestamps, rounded up to 5s in node units.
+# Unmeasured files use ~0.5s per node as a rough proxy. Keep earlier estimates
+# from Windows runs 44907705179, 44911274075, 44914005246 and 44916124972.
+# From run 44927917869, correct four files underestimated by over 20s and the
+# two fast parameterized files overestimated by over 50s. Use complete file
+# intervals between pytest result timestamps, rounded up to 5s in node units.
+# Measured weights may be below node counts; a floor preserves overestimates.
 # These are fixed scheduling hints, not acceptance limits or runner guarantees.
-_FILE_WEIGHT_FLOORS = {
+_FILE_WEIGHTS = {
+    "tests/test_assemble_release.py": 10,
     "tests/test_data_binding.py": 230,
+    "tests/test_data_migration_cli.py": 80,
     "tests/test_eval_four_dimensions.py": 110,
     "tests/test_eval_harness.py": 160,
     "tests/test_eval_real_tasks.py": 680,
     "tests/test_eval_scoped_checks.py": 100,
     "tests/test_eval_separation.py": 260,
+    "tests/test_host_cleanup.py": 80,
+    "tests/test_integration_m5.py": 70,
     "tests/test_low_disk_execution.py": 210,
     "tests/test_m2_acceptance.py": 140,
     "tests/test_pytest_ci_shards.py": 140,
     "tests/test_recovery.py": 280,
+    "tests/test_restore_contract.py": 10,
+    "tests/test_slow_subscriber.py": 60,
     "tests/test_slo_and_soak.py": 120,
     "tests/test_w15_safe_gc.py": 140,
 }
@@ -56,8 +64,7 @@ def partition(full, count):
                 and node.split("::", 1)[0] == file, "invalid collection path")
     require(len({node for node, _ in full}) == len(full), "duplicate node ID")
     sizes, owners, totals = Counter(file for _, file in full), {}, [0] * count
-    weights = {file: max(size, _FILE_WEIGHT_FLOORS.get(file, 0))
-               for file, size in sizes.items()}
+    weights = {file: _FILE_WEIGHTS.get(file, size) for file, size in sizes.items()}
     for file in sorted(weights, key=lambda file: (-weights[file], file)):
         index = min(range(count), key=lambda index: (totals[index], index))
         owners[file] = index

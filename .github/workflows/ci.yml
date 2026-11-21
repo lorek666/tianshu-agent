@@ -154,7 +154,7 @@ jobs:
           test "$DESKTOP_RESULT" = success
 
   # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
-  # 节点数和固定的高耗时文件权重下限只用于分组，不改变25分钟上限或验收。
+  # 节点数和固定的实测文件权重只用于分组，不改变25分钟上限或验收。
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
     runs-on: windows-latest

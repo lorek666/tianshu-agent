@@ -284,6 +284,8 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **Windows 分片须双向校准耗时（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 在接近结束时触及 25 分钟上限，分片 1 已完成；缺少报告使 required 汇总正确失败。仅给慢文件增加权重下限会保留对快速参数化文件的高估，累积后仍可偏载。分组改用已校准文件的固定实测估计，未校准文件仍按节点数；两个隔离 pytest 进程的缩小 collection 回归和原 collection 耗时回算用于核对分配，不是新 Windows runner 通过或耗时保证。两个独立 runner、完整覆盖汇总、诊断与时间上限不变。
+
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 
 - **跨平台 fixture 与 metadata 文本必须显式 UTF-8（2026-11-21）**：仓库按 UTF-8 保存的 fixture、schema 与 TOML/JSON/lock 元数据，读取时须显式 `encoding="utf-8"`，不能依赖本机默认编码。PR210 首轮 Windows CI 在 fixture 收集读取处真实失败；只修该 import 还会遗漏后续 schema 与发行身份读取。修复只给两份新增测试的八处读取补编码，不改历史字节或全局 UTF-8/locale。Mac 上精确限定输入路径的 CP1252 对照只是窄路径模拟，不是 Windows 实测，也不代替新候选的 hosted CI；详见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
@@ -514,7 +516,7 @@
 
 - **Windows 分片 C1 整改候选（2026-11-14）**：独立读者用同一真实fixture证明原 wrapper 收集错误 exit2、v1分片 exit3；作者新增精确对照又复现收集晚期 `KeyboardInterrupt` 被改成3。v2在已有收集失败时保留原生流程，不对部分collection分组；未进入分组的收集中断也不触发最终列表异常。失败报告仍不满足session0/完整覆盖，汇总拒绝；无错误时空集合/空片/晚过滤守卫保留。作者71项定向已过；第二读者12个真实受影响场景已确认C1已修、部分修/未修/内容未决均0，正常覆盖及空片/晚过滤/缺阶段/失败拒绝守卫仍在。最终537文件组合lock/full/ruff通过（2987 passed / 8 skipped），正式SHA绑定与新原生CI另核，不将“非零即可”当退出码保留证据。
 
-- **Windows 分片按节点数均分也可能超时**：[#216 的主干 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44907705179) 与 [#213 的候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44911274075) 都在分片 0 完成 pytest 后触及 25 分钟上限；`pytest_session_exit=0` 和已上传报告不能覆盖 job 取消。分组为实测特别耗时的文件设置固定权重下限；两个 runner 与汇总仍从同一个算法、完整收集和精确 SHA 核验覆盖。历史耗时回算仅用来选择权重，新 runner 上的结果以实际 CI 为准。
+- **Windows 分片按节点数均分也可能超时**：[#216 的主干 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44907705179) 与 [#213 的候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44911274075) 都在分片 0 完成 pytest 后触及 25 分钟上限；`pytest_session_exit=0` 和已上传报告不能覆盖 job 取消。分组对已校准文件使用固定实测估计，允许同时纠正高估与低估；两个 runner 与汇总仍从同一个算法、完整收集和精确 SHA 核验覆盖。历史耗时回算仅用来选择权重，新 runner 上的结果以实际 CI 为准。
 
 - **PR #137 Windows 整套仍未通过（2026-11-14）**：H3 `e324edeb9c57cd9e8fe851a2657da8420e7838a2` 的 run43474954367 attempt1 仍在25分钟取消，另三项绿；三个 CLI 已通过，2765 PASS / 31 SKIP 只是部分输出。双独立 runner 文件分片是后续基础设施候选，新原生 CI、完整覆盖、独立实施复审与实际耗时仍待核；节点数平衡不保证25分钟完成。不得加时、移除 required 或借本机绿色合并；输出窗口不足以判定性能根因。Windows Server runner 也不代替 Windows 用户设备、ARM64 或安装体验验证。
 
