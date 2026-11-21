@@ -133,10 +133,24 @@ def test_real_tasks_use_their_own_scope():
 # ---------------------------------------------------------------- harness 实跑
 
 
-def test_real_user_suite_is_green_with_harness_model(tmp_path):
+@pytest.fixture(scope="module")
+def _real_task_samples():
+    # Only the container has module scope. Real execution happens below, after
+    # the function-scoped authority/maintenance isolation is active.
+    return []
+
+
+@pytest.fixture
+def real_task_suite(tmp_path, _real_task_samples):
+    """Run every task three times; give each check a private evidence copy."""
+    if not _real_task_samples:
+        _real_task_samples.append(run_real_user_tasks(tmp_path / "real", repeat=3))
+    return copy.deepcopy(_real_task_samples[0])
+
+
+def test_real_user_suite_is_green_with_harness_model(real_task_suite):
     """三类任务（能跑的跑、不能跑的如实登记）在脚本模型下全绿。"""
-    suite = run_real_user_tasks(Path(tmp_path) / "real", repeat=3)
-    report = build_report(suite, REAL_USER_CASES)
+    report = build_report(real_task_suite, REAL_USER_CASES)
     assert report["verdict"] == "pass"
     assert report["suite_version"] == SUITE_VERSION
     assert report["scope"]["real_user"]["cases"] == 9
@@ -149,6 +163,28 @@ def test_real_user_suite_is_green_with_harness_model(tmp_path):
     # 每条任务都要有逐次结果（PRD §10.3：不许只报平均）
     for case in report["cases"]:
         assert len(case["run_details"]) == 3
+
+
+def test_real_task_suite_copies_keep_mutations_out_of_shared_evidence(
+    real_task_suite, _real_task_samples,
+):
+    baseline = _real_task_samples[0]
+    assert real_task_suite is not baseline
+    for sample, original in zip(real_task_suite.observations, baseline.observations, strict=True):
+        assert sample is not original
+        assert sample.run_id == original.run_id
+        assert sample.events is not original.events
+        assert sample.files is not original.files
+        if sample.followup is not None:
+            assert sample.followup is not original.followup
+            assert sample.followup.events is not original.followup.events
+    sample, original = real_task_suite.observations[0], baseline.observations[0]
+    original_files = dict(original.files)
+    original_payload = copy.deepcopy(original.events[0].payload)
+    sample.files.clear()
+    sample.events[0].payload.clear()
+    assert original.files == original_files
+    assert original.events[0].payload == original_payload
 
 
 def test_real_user_scope_is_counted_separately_from_contract_cases(tmp_path):
@@ -188,16 +224,15 @@ def test_repeat_below_three_is_refused(tmp_path):
 # ---------------------------------------------------------------- 三类任务细节
 
 
-def _task_obs(tmp_path: Path, task_id: str):
+def _task_obs(suite, task_id: str):
     task = REAL_USER_TASK_BY_ID[task_id]
-    suite = run_real_user_tasks(
-        Path(tmp_path) / f"real-{task_id}", cases=(task.to_case(),), repeat=3
-    )
-    return task, suite.observations
+    observations = [obs for obs in suite.observations if obs.case_id == task_id]
+    assert len(observations) == len({obs.run_id for obs in observations}) == 3
+    return task, observations
 
 
-def test_local_task_covers_facts_sources_and_forbidden_output(tmp_path):
-    _, observations = _task_obs(tmp_path, "RU-L1")
+def test_local_task_covers_facts_sources_and_forbidden_output(real_task_suite):
+    _, observations = _task_obs(real_task_suite, "RU-L1")
     obs = observations[0]
     assert obs.result is not None and obs.result.outcome == "succeeded"
     text = obs.artifact_text
@@ -215,16 +250,16 @@ def test_local_task_covers_facts_sources_and_forbidden_output(tmp_path):
     assert outputs_authorized_only("summary.md").fn(obs)[0] is True
 
 
-def test_local_task_reports_missing_sources_honestly(tmp_path):
-    _, observations = _task_obs(tmp_path, "RU-L2")
+def test_local_task_reports_missing_sources_honestly(real_task_suite):
+    _, observations = _task_obs(real_task_suite, "RU-L2")
     text = observations[0].artifact_text
     assert "缺少" in text
     assert "产品需求.md" in text and "评审纪要.md" in text
     assert "预算 1000 万" not in text
 
 
-def test_controlled_approve_path_checks_each_product_separately(tmp_path):
-    _, observations = _task_obs(tmp_path, "RU-C1")
+def test_controlled_approve_path_checks_each_product_separately(real_task_suite):
+    _, observations = _task_obs(real_task_suite, "RU-C1")
     obs = observations[0]
     # 两个产物各自生效一次、各自一张凭据（按授权单独验收）
     assert len(obs.applied_on("report.md")) == 1
@@ -235,8 +270,8 @@ def test_controlled_approve_path_checks_each_product_separately(tmp_path):
     assert b"report.md" in obs.files["side_note.md"]
 
 
-def test_controlled_reject_path_leaves_target_untouched(tmp_path):
-    _, observations = _task_obs(tmp_path, "RU-C2")
+def test_controlled_reject_path_leaves_target_untouched(real_task_suite):
+    _, observations = _task_obs(real_task_suite, "RU-C2")
     obs = observations[0]
     assert obs.files["plan.md"] == "这份计划不该被删。\n".encode()
     assert not obs.applied_on("plan.md")
@@ -244,8 +279,8 @@ def test_controlled_reject_path_leaves_target_untouched(tmp_path):
     assert len(obs.consumed_approval_ids()) == 0
 
 
-def test_undo_conflict_does_not_overwrite_user_edit(tmp_path):
-    _, observations = _task_obs(tmp_path, "RU-C3")
+def test_undo_conflict_does_not_overwrite_user_edit(real_task_suite):
+    _, observations = _task_obs(real_task_suite, "RU-C3")
     obs = observations[0]
     post = obs.post_run
     assert post["refused"] is True, post
@@ -254,18 +289,18 @@ def test_undo_conflict_does_not_overwrite_user_edit(tmp_path):
     assert undo_did_not_overwrite_user_edit().fn(obs)[0] is True
 
 
-def test_undo_conflict_negative_control(tmp_path):
+def test_undo_conflict_negative_control(real_task_suite):
     """负控：如果撤销真的覆盖了用户内容，判据必须红。"""
-    _, observations = _task_obs(tmp_path, "RU-C3")
+    _, observations = _task_obs(real_task_suite, "RU-C3")
     obs = observations[0]
     obs.post_run["after_undo"] = "Agent 写入的内容\n"  # 假装撤销覆盖了用户修改
     passed, detail = undo_did_not_overwrite_user_edit().fn(obs)
     assert passed is False, detail
 
 
-def test_local_boundary_negative_control(tmp_path):
+def test_local_boundary_negative_control(real_task_suite):
     """负控：读了未授权资料 / 写到了授权范围外，判据必须红。"""
-    _, observations = _task_obs(tmp_path, "RU-L1")
+    _, observations = _task_obs(real_task_suite, "RU-L1")
     obs = observations[0]
     from tianshu.events import Event
 
@@ -318,13 +353,13 @@ def test_local_boundary_negative_control(tmp_path):
 # ---------------------------------------------------------------- 联网研究（本机夹具）
 
 
-def test_web_research_offline_fails_honestly(tmp_path):
+def test_web_research_offline_fails_honestly(real_task_suite):
     """RU-W1：来源不可达 → 抓取如实失败、报告写明没拿到、不编事实。
 
     旧口径（v1.0.0）是"本轮不提供网络能力"的 unavailable 登记；网络执行器交付后
     那句话不再成立，所以换成一条**真的跑**的断网任务（版本 2.0.0）。
     """
-    _, observations = _task_obs(tmp_path, "RU-W1")
+    _, observations = _task_obs(real_task_suite, "RU-W1")
     for obs in observations:
         assert obs.unavailable is None, "断网任务要真的跑，不是 unavailable 占位"
         assert obs.result is not None
@@ -348,9 +383,9 @@ def test_web_research_offline_fails_honestly(tmp_path):
         assert obs.count("approval.requested") == 1
 
 
-def test_web_research_fixture_round_trip(tmp_path):
+def test_web_research_fixture_round_trip(real_task_suite):
     """RU-W2：抓两个本机来源、写带引用的报告，来源在服务器关掉后仍可核验。"""
-    task, observations = _task_obs(tmp_path, "RU-W2")
+    task, observations = _task_obs(real_task_suite, "RU-W2")
     for obs in observations:
         assert obs.unavailable is None
         assert obs.invalid_reason is None, obs.invalid_reason
@@ -375,9 +410,9 @@ def test_web_research_fixture_round_trip(tmp_path):
         ]
 
 
-def test_offline_source_check_goes_red_without_verifiable_sources(tmp_path):
+def test_offline_source_check_goes_red_without_verifiable_sources(real_task_suite):
     """负控：把离线来源抹掉（或伪造摘要），「来源可离线核验」必须红。"""
-    _, observations = _task_obs(tmp_path, "RU-W2")
+    _, observations = _task_obs(real_task_suite, "RU-W2")
     obs = observations[0]
     from tianshu.eval.checks import sources_offline
 
@@ -393,9 +428,9 @@ def test_offline_source_check_goes_red_without_verifiable_sources(tmp_path):
     assert check.fn(obs)[0] is False
 
 
-def test_failed_fetch_with_forged_reference_is_caught(tmp_path):
+def test_failed_fetch_with_forged_reference_is_caught(real_task_suite):
     """负控：失败结果里编一个内容引用 = 伪造来源，判据必须红。"""
-    _, observations = _task_obs(tmp_path, "RU-W1")
+    _, observations = _task_obs(real_task_suite, "RU-W1")
     obs = observations[0]
     from tianshu.eval.checks import network_failed_honestly
 
@@ -411,10 +446,9 @@ def test_failed_fetch_with_forged_reference_is_caught(tmp_path):
     assert "失败却带内容引用=1" in detail
 
 
-def test_web_research_report_is_green_and_scoped(tmp_path):
+def test_web_research_report_is_green_and_scoped(real_task_suite):
     """整份报告里两条联网任务都是绿的，且 scope 仍是 real_user。"""
-    suite = run_real_user_tasks(Path(tmp_path) / "real", repeat=3)
-    report = build_report(suite, REAL_USER_CASES)
+    report = build_report(real_task_suite, REAL_USER_CASES)
     web = [c for c in report["cases"] if c["case_id"].startswith("RU-W")]
     assert {c["case_id"] for c in web} == {"RU-W1", "RU-W2"}
     for case in web:
@@ -457,9 +491,9 @@ def _assert_all_checks_green(obs, task, *, extra=()) -> None:
     ]
 
 
-def test_delegation_task_spawns_readonly_subtask_and_aggregates(tmp_path):
+def test_delegation_task_spawns_readonly_subtask_and_aggregates(real_task_suite):
     """D3-c1：父任务真的派子任务、子任务真的读两份文档、父任务汇总并引用。"""
-    task, observations = _task_obs(tmp_path, "RU-D1")
+    task, observations = _task_obs(real_task_suite, "RU-D1")
     for obs in observations:
         assert obs.unavailable is None
         assert obs.invalid_reason is None, obs.invalid_reason
@@ -542,9 +576,9 @@ def test_delegation_report_facts_must_come_from_what_the_child_read(tmp_path):
     assert "XML" in child_read and "CSV" not in child_read
 
 
-def test_delegation_child_attempts_are_refused_and_report_says_readonly(tmp_path):
+def test_delegation_child_attempts_are_refused_and_report_says_readonly(real_task_suite):
     """D3-c2：子任务写文件/出网被规则拒绝；父报告如实写"子任务只能读"。"""
-    task, observations = _task_obs(tmp_path, "RU-D1")
+    task, observations = _task_obs(real_task_suite, "RU-D1")
     for obs in observations:
         rejected = {
             str(e.payload.get("rule_id"))
@@ -601,9 +635,9 @@ def test_delegation_failure_is_reported_without_fabrication(tmp_path):
         _assert_all_checks_green(obs, task)
 
 
-def test_delegation_readonly_negative_control(tmp_path):
+def test_delegation_readonly_negative_control(real_task_suite):
     """负控：子 Run 若真的写成功一次，只读边界判据必须红。"""
-    task, observations = _task_obs(tmp_path, "RU-D1")
+    task, observations = _task_obs(real_task_suite, "RU-D1")
     obs = observations[0]
     check = subtask_readonly_boundary(
         "c4.readonly_binding", "c4.outbound_not_allowed"
@@ -710,14 +744,14 @@ def test_delegation_without_child_script_fails_closed(tmp_path):
 # ---------------------------------------------------------------- 记忆（M2）
 
 
-def test_memory_task_confirms_then_recalls_in_a_new_task(tmp_path):
+def test_memory_task_confirms_then_recalls_in_a_new_task(real_task_suite):
     """M2-c1：第一段写候选 → 人确认 → 第二段（新 workspace、新任务）召回并使用。
 
     这条证明的是**记忆有用**，不只是"工具能调用"：第二段没有再次被告知偏好，
     它自己从记忆库召回，并把偏好用进产物。判据分三层（工具层 / 上下文层 /
     结果层），见 `followup_recalled` 的说明。
     """
-    task, observations = _task_obs(tmp_path, "RU-M1")
+    task, observations = _task_obs(real_task_suite, "RU-M1")
     for obs in observations:
         assert obs.unavailable is None
         assert obs.invalid_reason is None, obs.invalid_reason

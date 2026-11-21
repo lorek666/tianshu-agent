@@ -121,10 +121,12 @@ def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
 
 
 def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_path):
-    # Node counts and rounded elapsed seconds for these complete files in run 44916124972.
+    # Complete-file costs from run 44916124972, except real_tasks: its new
+    # three-run sample reuse projects <=205s from retained work in 44939541307.
+    # This is scheduling input, not a claim that the new Windows run passed.
     observed = {
         "tests/test_eval_harness.py": (19, 75),
-        "tests/test_eval_real_tasks.py": (35, 339),
+        "tests/test_eval_real_tasks.py": (36, 205),
         "tests/test_low_disk_execution.py": (96, 101),
         "tests/test_m2_acceptance.py": (45, 66),
         "tests/test_recovery.py": (16, 95),
@@ -158,6 +160,33 @@ def test_windows_weights_correct_fast_parameterized_files_and_slow_small_files(
         "tests/test_host_cleanup.py": (32, 38),
         "tests/test_integration_m5.py": (16, 34),
         "tests/test_slow_subscriber.py": (4, 29),
+    }
+    files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
+             for file, (count, _) in observed.items()}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 15, costs
+
+
+def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_path):
+    # Complete-file intervals from runs 44927917869 and 44939541307, rounded up.
+    # These files have comparable node counts but very different execution costs.
+    observed = {
+        "tests/test_data_binding.py": (76, 63),
+        "tests/test_data_state.py": (52, 1),
+        "tests/test_eval_report.py": (33, 1),
+        "tests/test_model_contract.py": (77, 3),
+        "tests/test_model_usage_v2.py": (73, 8),
+        "tests/test_mcp_crash.py": (24, 50),
+        "tests/test_round2_data_integrity.py": (39, 52),
+        "tests/test_network_fetch.py": (24, 29),
+        "tests/test_host_memory.py": (18, 23),
+        "tests/test_isolation.py": (13, 20),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}

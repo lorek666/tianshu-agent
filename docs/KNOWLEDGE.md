@@ -284,7 +284,7 @@
 
 ## 5. 踩坑教训（别再踩）
 
-- **Windows 分片须双向校准耗时（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 在接近结束时触及 25 分钟上限，分片 1 已完成；缺少报告使 required 汇总正确失败。仅给慢文件增加权重下限会保留对快速参数化文件的高估，累积后仍可偏载。分组改用已校准文件的固定实测估计，未校准文件仍按节点数；两个隔离 pytest 进程的缩小 collection 回归和原 collection 耗时回算用于核对分配，不是新 Windows runner 通过或耗时保证。两个独立 runner、完整覆盖汇总、诊断与时间上限不变。
+- **Windows 分片须核对完整耗时分布（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 触及 25 分钟上限；双向修正少量文件后，[后续候选](https://github.com/lorek666/tianshu-agent/actions/runs/44939541307) 仍在约 91% 被取消。两轮缺件都使 required 汇总正确失败。日志对账显示中等文件误差会累积，runner 速度也有明显波动；后续覆盖完整已测 collection，并让真实任务的证据检查复用各场景三次实跑的深拷贝。每项断言保留，负控不能污染共享样本；变输入、失败与忘记路径仍独立实跑。对应权重含保留工作量的推算，不冒充新 Windows 实测。两个隔离 pytest 进程的回归和历史回算用于核对分配，两个独立 runner、完整覆盖汇总、诊断与时间上限不变。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 
