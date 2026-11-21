@@ -63,10 +63,11 @@
 ## 尚待门禁与边界
 
 当前仍是本地未合入候选：`2c5a1dd` 的局部代码/测试独立第二读者预审已通过；
-组合候选已完成限定独立整合预审及精确 `e59415f1243122b9f31f3bc0612c32269d067518`
-的授权 source 全量（exit0）、lock/Ruff/diff 与即刻复制留证。原 `2b91bfc` 全量 RED 保留，
-仅补齐遗漏的旧精确版本测试后形成新冻结回归；独立 DB 探针受阻等预审限制、
-完整证据绑定与后处理错误保留见[组合修复记录](2026-11-21-preview-release-repair.md)。
+组合候选已完成限定独立整合预审及精确 `1c63e8297020dad51f72494a9db3230ffc61ec4f`
+（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）的授权 source 全量（exit0）、
+lock/Ruff/diff 与即刻复制留证。原 `2b91bfc` 全量 RED、前次 `e59415f` source full 绿及
+PR210 首轮 Windows collection RED 均保留；最小测试编码修复、新冻结全量、独立 DB
+探针受阻等预审限制、完整证据绑定与后处理错误保留见[组合修复记录](2026-11-21-preview-release-repair.md)。
 这只接受源码全量及结构夹具证据，不是新产品 App/原生用户/发行 PASS；
 新 hosted required CI、新产品 App 与原生验收仍待完成，不能继承其他 SHA 的绿色结论。
 
