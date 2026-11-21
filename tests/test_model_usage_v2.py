@@ -213,12 +213,18 @@ def test_exact_historical_schemas_and_new_versions_only():
     for kind in event_schema.CURRENT_SCHEMAS:
         expected = 2 if kind in (*TYPES, "run.start", "run.end") else 1
         assert event_schema.current_version(kind) == expected
-        assert event_schema.known_versions(kind) == frozenset(range(expected + 1))
+        if kind in event_schema.V1_ONLY_EVENTS:
+            versions = {1}
+        elif kind == "model.result":
+            versions = {0, 1, 2, 3}
+        else:
+            versions = set(range(expected + 1))
+        assert event_schema.known_versions(kind) == versions
     for kind in TYPES:
         for version in (0, 1):
             assert event_schema.schema_for(kind, version) == FIXED["schemas"][kind][str(version)]
         with pytest.raises(event_schema.UnknownPayloadVersion):
-            event_schema.schema_for(kind, 3)
+            event_schema.schema_for(kind, max(event_schema.known_versions(kind)) + 1)
         payload = copy.deepcopy(FIXED["payloads"][kind])
         payload["usage"] = {"input_tokens": -1.0, "output_tokens": None}
         event_schema.validate_payload(kind, payload, 1)  # no base-field tightening
@@ -232,7 +238,8 @@ def test_exact_historical_schemas_and_new_versions_only():
         hashlib.sha256(canonical_bytes(event_schema.LEGACY_SCHEMAS)).hexdigest()
         == FIXED["legacy_all_sha256"]
     )
-    unchanged = {k: v for k, v in event_schema.CURRENT_SCHEMAS.items() if k not in TYPES}
+    unchanged = {k: v for k, v in event_schema.CURRENT_SCHEMAS.items()
+                 if k not in TYPES and k not in event_schema.V1_ONLY_EVENTS}
     assert (
         hashlib.sha256(canonical_bytes(unchanged)).hexdigest() == FIXED["unaffected_current_sha256"]
     )
@@ -376,7 +383,8 @@ def test_pause_resume_keeps_paid_turn_before_dispatch_and_never_reissues_it(
         OpenAICompatibleModel("gpt-4o-mini", api_key="offline-test", transport=transport)
         if vendor == "openai"
         else AnthropicMessagesModel(
-            "claude-sonnet-4-5", api_key="offline-test", transport=transport
+            "claude-sonnet-4-5", base_url="https://api.anthropic.com",
+            api_key="offline-test", transport=transport,
         )
     )
     observed = []
@@ -457,7 +465,8 @@ def test_unknown_usage_event_version_or_side_table_is_not_guessed(tmp_path, kind
     try:
         seq = log.append("new", kind, event_schema.minimal_payload(kind))
         if fault == "future":
-            log.conn.execute("UPDATE event_versions SET version=3 WHERE seq=?", (seq,))
+            version = max(event_schema.known_versions(kind)) + 1
+            log.conn.execute("UPDATE event_versions SET version=? WHERE seq=?", (version, seq))
             expected = event_schema.UnknownPayloadVersion
         elif fault == "wrong_type":
             from tianshu.data_state import AdmissionRefused
