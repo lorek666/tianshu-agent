@@ -576,6 +576,9 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
   遵循红线 8 将 `network.fetch`（`1.0` → `2.0`，增可选 `offset >= 0`、`length` `1..65536`、`max_bytes` `1..1048576` 及输出 `offset`/`next_offset`/`page_bytes`）与 `read_content`（`1.0` → `2.0`，增可选 `encoding ∈ {"utf-8", "utf-8-replace", "latin-1", "base64"}`）同步升版；并在初始连接与每一跳重定向前强制单次 DNS 解析 + 非全局地址拦截（`net.private_address_blocked`，记已知 `0` 字节）+ Socket 字面量 IP 钉死直连（完整保留原 `Host` 请求头、TLS SNI `server_hostname` 与 X.509 主机名核验；判据见 `tests/test_w9_network_depth.py`）。
 
 
+**公开网页搜索（待实现）**：拟新增 `network.search` 1.0，按[搜索工具契约](agent-web-search-contract.md)
+复用现有 `fetch` 审批与执行链，既有 `network.fetch` 版本保持不变。
+
 ### 5.3 C3 Event
 
 ```
