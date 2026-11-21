@@ -89,6 +89,19 @@ def test_signed_webhook_is_bound_to_one_schedule_and_deduplicates(tmp_path, monk
                 assert post(port, schedule_id, b" " * 1025)[0] == 413
                 assert post(port, schedule_id, body, path="/v1/webhook?x=1")[0] == 404
                 assert post(port, schedule_id, body, path="//v1/webhook")[0] == 404
+                stamp = str(int(time.time()))
+                malformed = (
+                    "POST /v1/webhook HTTP/1.0\r\n"
+                    f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n"
+                    f"X-Tianshu-Timestamp: {stamp}\r\n"
+                    f"X-Tianshu-Signature: {signature(schedule_id, stamp, body)}\r\n"
+                    "X-Missing-Colon\r\n\r\n"
+                ).encode("ascii")
+                with socket.create_connection(("127.0.0.1", port), timeout=8) as sock:
+                    sock.sendall(malformed + body)
+                    with http.client.HTTPResponse(sock) as response:
+                        response.begin()
+                        assert response.status == 400
                 assert _count_task_created(root / "events.db", "固定 Webhook 任务") == 0
                 assert post(port, schedule_id, body) == (202, {"accepted": True})
                 assert post(port, schedule_id, body) == (202, {"accepted": False})

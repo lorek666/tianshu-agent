@@ -96,6 +96,10 @@ def _handler(root: Path, schedule_id: str, secret: bytes):
             return values[0] if len(values) == 1 else ""
 
         def do_POST(self) -> None:  # noqa: N802
+            # The stdlib parser can return a partial header block with a defect.
+            if self.headers.defects:
+                self._reply(400, {"error": "invalid_request"})
+                return
             # BaseHTTPRequestHandler normalizes a leading "//" in self.path.
             if self.requestline.split()[1] != _PATH:
                 self._reply(404, {"error": "not_found"})
