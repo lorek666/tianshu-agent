@@ -10,7 +10,7 @@ import secrets
 import socket
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
@@ -116,13 +116,13 @@ def _response_length(response: http.client.HTTPResponse) -> int | None:
     return response.length if lengths else None
 
 
-def _read_chunked_json(response: http.client.HTTPResponse) -> bytes:
+def _read_chunks(response: http.client.HTTPResponse) -> Iterator[bytes]:
     # CPython 3.12's chunk reader discards the payload delimiter without checking it
-    # and treats EOF in the trailers as success. JSON needs a complete HTTP message.
+    # and treats EOF in the trailers as success. Yield only fully validated chunks.
     stream = response.fp
     if stream is None:
         raise McpProtocolError("远程 MCP HTTP 响应流已关闭")
-    data = bytearray()
+    remaining = MCP_MAX_MESSAGE_BYTES
     overhead = _CHUNK_METADATA_BYTES
 
     def read_line() -> bytes:
@@ -141,19 +141,46 @@ def _read_chunked_json(response: http.client.HTTPResponse) -> bytes:
         size = int(chunk[1], 16)
         if size == 0:
             break
-        if size > MCP_MAX_MESSAGE_BYTES - len(data) or overhead < 2:
+        if size > remaining or overhead < 2:
             raise McpProtocolError("远程 MCP 分块响应超出上限")
         block = stream.read(size + 2)
         if len(block) != size + 2 or block[-2:] != b"\r\n":
             raise McpProtocolError("远程 MCP HTTP 分块不完整")
         overhead -= 2
-        data.extend(block[:-2])
+        remaining -= size
+        yield block[:-2]
 
     while (line := read_line()) != b"\r\n":
         trailer = _TRAILER.fullmatch(line)
         if trailer is None or trailer[1].lower() in {b"content-length", b"transfer-encoding"}:
             raise McpProtocolError("远程 MCP HTTP 尾部字段无效")
-    return bytes(data)
+
+
+def _sse_lines(response: http.client.HTTPResponse) -> Iterator[bytes]:
+    if not response.chunked:
+        remaining = MCP_MAX_MESSAGE_BYTES
+        while remaining > 0:
+            line = response.readline(remaining + 1)
+            remaining -= len(line)
+            if remaining < 0 or not line.endswith(b"\n"):
+                return
+            yield line
+        return
+
+    # One SSE line can cross any number of HTTP chunks. Check the containing
+    # chunk's delimiter before interpreting its bytes, but don't await the next chunk.
+    prefix = bytearray()
+    for chunk in _read_chunks(response):
+        start = 0
+        while (end := chunk.find(b"\n", start)) != -1:
+            if prefix:
+                prefix.extend(chunk[start:end + 1])
+                yield bytes(prefix)
+                prefix.clear()
+            else:
+                yield chunk[start:end + 1]
+            start = end + 1
+        prefix.extend(chunk[start:])
 
 
 def _read_result(response: http.client.HTTPResponse, request_id: int) -> dict[str, Any]:
@@ -161,7 +188,7 @@ def _read_result(response: http.client.HTTPResponse, request_id: int) -> dict[st
     content_type = response.headers.get_content_type()
     if content_type == "application/json":
         if response.chunked:
-            data = _read_chunked_json(response)
+            data = b"".join(_read_chunks(response))
         else:
             if length is None or length > MCP_MAX_MESSAGE_BYTES:
                 raise McpProtocolError("远程 MCP JSON 响应缺少明确的有界长度")
@@ -172,13 +199,8 @@ def _read_result(response: http.client.HTTPResponse, request_id: int) -> dict[st
             return result
     elif content_type == "text/event-stream":
         # Stop at the matching result, even if the peer keeps the event stream open.
-        remaining = MCP_MAX_MESSAGE_BYTES
         data_lines: list[bytes] = []
-        while remaining > 0:
-            line = response.readline(remaining + 1)
-            remaining -= len(line)
-            if not line or remaining < 0 or not line.endswith(b"\n"):
-                break
+        for line in _sse_lines(response):
             line = line.rstrip(b"\r\n")
             if not line:
                 if data_lines:
