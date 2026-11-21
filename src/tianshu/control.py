@@ -780,7 +780,7 @@ class ControlPlane:
             prior = prior_request(
                 self._tasks, self._log, task, request_id=request_id, mode=mode,
                 source_run_id=source_run_id, out_name=out_name,
-                execution_policy=execution_policy,
+                execution_policy=execution_policy, confirmed_plan=confirmed_plan,
             )
             if prior is not None:
                 from .model_route import model_route_fact

@@ -412,6 +412,16 @@ def _validate_resolved_ip(
     return ip
 
 
+def require_public_target(target: NetworkTarget) -> None:
+    """Apply the DNS address policy to explicit IPs in public-only tools.
+
+    Hostnames are checked as part of the single, pinned resolution in `_connect`.
+    Legacy `network.fetch` continues to allow explicitly approved private IPs.
+    """
+    if _parse_ip_literal(target.host) is not None:
+        _validate_resolved_ip(target.host.removeprefix("[").removesuffix("]"))
+
+
 def _resolve_host(host: str, port: int) -> list[tuple[Any, ...]]:
     """可注入的单次主机解析入口（每跳最多调用一次）。"""
     return list(

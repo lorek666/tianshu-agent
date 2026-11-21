@@ -110,6 +110,18 @@ def test_confirm_plan_creates_new_bound_run_once(env):
     assert replay(stack.log, run["run_id"]).ok
 
 
+def test_execute_cannot_reuse_a_plan_confirmation_request_id(env):
+    plane, stack, task, _ = env
+    plan = start(plane, task)
+    finish(stack, plan["run_id"])
+    run = confirm(plane, task, plan["run_id"], "shared")
+    assert confirm(plane, task, plan["run_id"], "shared")["run_id"] == run["run_id"]
+    before = stack.log.seq_head()
+    with pytest.raises(ControlError, match="request_id"):
+        start(plane, task, "execute", "shared")
+    assert stack.log.seq_head() == before
+
+
 def test_confirm_rejects_unfinished_or_stale_plan_without_new_job(env):
     plane, stack, task, _ = env
     plan = start(plane, task)
@@ -181,6 +193,40 @@ def test_compact_is_background_model_work_without_tools_and_reuses_summary(env):
     assert "接着检查标题" in prompt
     assert "过程细节。" not in prompt
     assert replay(stack.log, next_run["run_id"]).ok
+    stack.tasks.revise_task(task.task_id, goal="另一个目标")
+    assert replay(stack.log, next_run["run_id"]).ok
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_compact_cannot_copy_history_from_a_replaced_goal(env, explicit):
+    plane, stack, task, _ = env
+    source = start(plane, task, "execute", "source")
+    finish(stack, source["run_id"], "旧目标私有资料")
+    updated = stack.tasks.revise_task(task.task_id, goal="回答独立的新问题")
+    before = stack.log.seq_head()
+    params = {"task_id": task.task_id, "request_id": "compact"}
+    if explicit:
+        params["source_run_id"] = source["run_id"]
+    with pytest.raises(ControlError):
+        plane.handle("run.compact", params)
+    assert stack.log.seq_head() == before
+
+    following = start(plane, updated, "execute", "new-goal")
+    model = finish(stack, following["run_id"], "新回答")
+    assert "旧目标私有资料" not in model.inputs[0][0][1]["content"]
+
+
+def test_summary_does_not_return_after_replaced_goal_is_retyped(env):
+    plane, stack, task, _ = env
+    source = start(plane, task, "execute", "source")
+    finish(stack, source["run_id"])
+    compact = plane.handle("run.compact", {"task_id": task.task_id})["run"]
+    finish(stack, compact["run_id"], SUMMARY)
+    stack.tasks.revise_task(task.task_id, goal="独立的新问题")
+    restored = stack.tasks.revise_task(task.task_id, goal=task.goal)
+    run = start(plane, restored, "execute", "fresh")
+    model = finish(stack, run["run_id"])
+    assert SUMMARY not in model.inputs[0][0][1]["content"]
 
 
 def test_compact_rejects_cross_task_and_active_source(env):

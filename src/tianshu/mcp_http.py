@@ -266,6 +266,7 @@ class HttpServer(_ToolClient):
         conn = response = timer = None
         interrupted = threading.Event()
         try:
+            net.require_public_target(self._endpoint)
             conn = net._connect(self._endpoint, net._remaining(deadline))
             net._remaining(deadline)
             conn.connect()

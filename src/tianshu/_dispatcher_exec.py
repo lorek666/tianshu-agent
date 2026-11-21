@@ -41,7 +41,7 @@ from .mcp import (
     McpProtocolError,
     McpTimeout,
 )
-from .net import NetCancelled, NetError, NetLimits
+from .net import NetCancelled, NetError, NetLimits, require_public_target
 from .net import summary_page as net_summary_page
 from .permissions import ActionRequest, ApprovalError
 from .resources import MemoryScope, parse_memory_uri
@@ -485,8 +485,10 @@ class _DispatcherExecMixin:
                 DispatchDenied(str(exc), "dispatch.budget_refused"),
             )
 
-        # 3) 发包。
+        # 3) 发包。公开工具不继承原有抓取工具的私网字面量例外。
         try:
+            if request.tool_id in (SEARCH_TOOL, BROWSER_TOOL):
+                require_public_target(target.target)
             fetched = net_fetch(
                 target.target,
                 limits=call_limits,

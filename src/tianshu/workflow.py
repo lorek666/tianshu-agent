@@ -48,6 +48,31 @@ def response_error(mode: str, result: dict[str, Any]) -> str | None:
     return None
 
 
+def _retains_goal(
+    log: EventLog, task_id: str, source_revision: int, source_goal: str,
+    revision: int, goal: str,
+) -> bool:
+    if not source_goal or source_revision > revision:
+        return False
+    if source_revision == revision:
+        return source_goal == goal
+    # Compare the whole chain: replacing a goal and retyping it later must not
+    # resurrect its earlier summary. Only actual additions carry history forward.
+    current = source_goal
+    for event in log.read_run("", event_types=("task.revised",)):
+        new_revision = event.payload["goal_revision"]
+        if event.task_id != task_id or not source_revision < new_revision <= revision:
+            continue
+        updated = event.payload["goal"]
+        if new_revision != source_revision + 1 or not updated.startswith(
+            current + "\n\n补充要求："
+        ):
+            return False
+        current = updated
+        source_revision = new_revision
+    return source_revision == revision and current == goal
+
+
 @dataclass(frozen=True)
 class WorkflowV1:
     format_version: int
@@ -105,6 +130,23 @@ def workflow_for(log: EventLog, run_id: str, *, events=None) -> WorkflowV1 | Non
         if (not source or source[0].type != "run.start"
                 or source[0].task_id != events[0].task_id):
             raise TianshuError("工作流来源不存在、跨任务或不是已结束的历史")
+        source_start, target_start = source[0].payload, events[0].payload
+        source_revision, target_revision = (
+            source_start["goal_revision"], target_start["goal_revision"],
+        )
+        automatic_summary = workflow.mode == "execute" and bool(workflow.source_goal)
+        if automatic_summary:
+            source_workflows = [e for e in source if e.type == "run.workflow"]
+            if (len(source_workflows) != 1 or source_workflows[0].payload["mode"] != "compact"
+                    or workflow.source_goal != source_start.get("task")
+                    or not _retains_goal(
+                        log, events[0].task_id, source_revision, workflow.source_goal,
+                        target_revision, target_start.get("task", ""),
+                    )):
+                raise TianshuError("压缩摘要不属于当前目标的追加修订链")
+        elif (source_revision != target_revision
+              or (workflow.mode == "compact" and workflow.source_goal != target_start.get("task"))):
+            raise TianshuError("工作流来源不属于当前目标修订")
         by_seq = {e.seq: e for e in source}
         if (not workflow.source_seqs
                 or any(seq not in by_seq for seq in workflow.source_seqs)):
@@ -204,12 +246,17 @@ def workflow_runs(tasks: TaskStore, log: EventLog, task_id: str):
 def prior_request(
     tasks: TaskStore, log: EventLog, task: Task, *, request_id: str, mode: str,
     source_run_id: str | None = None, out_name: str | None = None,
-    execution_policy: Any = None,
+    execution_policy: Any = None, confirmed_plan: bool = False,
 ) -> Run | None:
     for run, workflow in workflow_runs(tasks, log, task.task_id):
         if workflow.request_id != request_id:
             continue
+        was_plan_confirmation = (
+            workflow.mode == "execute" and workflow.source_run_id is not None
+            and not workflow.source_goal
+        )
         if (workflow.mode != mode or run.goal_revision != task.goal_revision
+                or was_plan_confirmation != confirmed_plan
                 or (source_run_id is not None and workflow.source_run_id != source_run_id)
                 or tasks.run_payload(run.run_id).get("out", "") != (out_name or "")
                 or tasks.run_execution_policy(run.run_id) != execution_policy):
@@ -304,13 +351,17 @@ def prepare_workflow(
             raise TianshuError("任务仍有活跃运行，请等待结束或取消后再压缩")
         if source_run_id is None:
             rows = tasks.conn.execute(
-                "SELECT run_id FROM events WHERE task_id=? AND type='run.start' "
-                "ORDER BY seq DESC LIMIT 1", (task.task_id,),
+                "SELECT e.run_id FROM events e JOIN runs r ON r.run_id=e.run_id "
+                "WHERE e.task_id=? AND e.type='run.start' AND r.goal_revision=? "
+                "AND r.state IN ('succeeded','failed','cancelled') ORDER BY e.seq DESC LIMIT 1",
+                (task.task_id, task.goal_revision),
             ).fetchall()
             source_run_id = rows[0]["run_id"] if rows else None
         source = tasks.get_run(source_run_id or "")
         if source is None or source.task_id != task.task_id:
             raise TianshuError("压缩来源不存在或不属于此任务")
+        if source.goal_revision != task.goal_revision:
+            raise TianshuError("压缩来源不属于当前目标修订")
         if source.state not in ("succeeded", "failed", "cancelled"):
             raise TianshuError("压缩来源仍在运行")
         messages, seqs = _history(log, source.run_id)
@@ -333,7 +384,8 @@ def prepare_workflow(
             if old.mode != "compact" or candidate.state != "succeeded":
                 continue
             prefix = old.source_goal
-            if task.goal != prefix and not task.goal.startswith(prefix + "\n\n补充要求："):
+            if not _retains_goal(log, task.task_id, candidate.goal_revision, prefix,
+                                 task.goal_revision, task.goal):
                 continue
             source_text = final_text(log, candidate)
             source_run_id = candidate.run_id
