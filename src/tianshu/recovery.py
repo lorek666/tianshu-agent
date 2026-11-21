@@ -11,7 +11,7 @@
 - 有证据 → 用证据里的 before/after 对磁盘做三方比对 → applied / none_applied / unknown
 
 其余一律 unknown，绝不编造 before_state，绝不生成成功凭据。
-命令与 MCP 不遵循文件快照协议：只允许用派发边界证明尚未执行，越界后未知。
+命令、MCP 与外发表单不遵循文件快照协议：只允许用派发边界证明尚未执行，越界后未知。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Any
 
 from . import authority
 from .authority import AuthorityUnavailable, AuthorityWriteFailed
+from .browser_forms import SUBMIT_TOOL
 from .errors import EventLogCorrupt, SnapshotCorrupt, TianshuError, WorkspaceViolation
 from .events import EventLog
 from .guard import (
@@ -275,7 +276,7 @@ def assess_run(
         mcp_never_sent = _read_mcp_never_sent(log, run_id, pending)
         exec_not_started = {
             cid: _dispatch_not_started(_dispatch_row_states(log, run_id, cid))
-            for cid, ev in pending.items() if ev.payload["tool_id"] == "run_command"
+            for cid, ev in pending.items() if ev.payload["tool_id"] in {"run_command", SUBMIT_TOOL}
         }
     except EventLogCorrupt as exc:
         return RunAssessment(
@@ -313,6 +314,9 @@ def assess_run(
                 none_applied.append(call_id)
             else:
                 unresolved.append(call_id)
+            continue
+        if tool_id == SUBMIT_TOOL:
+            (none_applied if exec_not_started[call_id] else unresolved).append(call_id)
             continue
         if tool_id == "run_command":
             # 命令没有受控文件写前证据；空清单不能证明进程没有执行。
@@ -568,6 +572,9 @@ def _recover_run(
             for call_id, ev in pending.items():
                 payload = ev.payload
                 tool_id = payload["tool_id"]
+                if tool_id == SUBMIT_TOOL:
+                    _settle_form_pending(log, report, run_id, call_id, payload)
+                    continue
                 spec = SPECS.get(tool_id)
                 roots = _unresolved_roots(
                     log, run_id, call_id,
@@ -622,6 +629,9 @@ def _recover_run(
     for call_id, ev in pending.items():
         payload = ev.payload
         tool_id = payload["tool_id"]
+        if tool_id == SUBMIT_TOOL:
+            _settle_form_pending(log, report, run_id, call_id, payload)
+            continue
         spec = SPECS.get(tool_id)
         roots = _unresolved_roots(
             log, run_id, call_id,
@@ -904,7 +914,7 @@ def _repair_orphan_recovery_blocks(
             continue
         tool_id = intent.payload["tool_id"]
         spec = SPECS.get(tool_id)
-        if tool_id in MEMORY_TOOL_IDS or tool_id in SUBTASK_TOOL_IDS:
+        if tool_id in MEMORY_TOOL_IDS or tool_id in SUBTASK_TOOL_IDS or tool_id == SUBMIT_TOOL:
             continue
         if spec is not None and spec.side_effect_level == "pure":
             continue
@@ -1603,6 +1613,21 @@ def _dispatch_not_started(rows: list[tuple[str, int]] | None) -> bool:
     return all(
         protocol >= BOUNDARY_PROTOCOL and state in proven
         for state, protocol in rows
+    )
+
+
+def _settle_form_pending(log: EventLog, report: RecoveryReport, run_id: str,
+                         call_id: str, payload: dict) -> None:
+    not_started = _dispatch_not_started(_dispatch_row_states(log, run_id, call_id))
+    result = (
+        ToolResult("failed", "none_applied", {"error": "表单尚未越过外发边界", "recovered": True})
+        if not_started else ToolResult("unknown", "unknown", {
+            "error": "表单可能已发送，需人工核对，禁止自动重发", "recovered": True,
+        })
+    )
+    _settle(
+        log, report, run_id, call_id, SUBMIT_TOOL, payload, result,
+        bucket=report.none_applied if not_started else report.unresolved,
     )
 
 

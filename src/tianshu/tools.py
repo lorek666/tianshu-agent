@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import toolschema
+from .browser_forms import FIELD_LIMIT, FORM_LIMIT, SUBMIT_TOOL
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmissionError
 from .errors import (
@@ -702,7 +703,7 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
 #: 有网络执行器的工具。网络不是文件、也不是记忆：它没有本地目录、没有写前
 #: 状态；派发层据此把请求分到 `Dispatcher` 的网络分支（见 `dispatcher.py`）。
 NETWORK_TOOL_IDS: frozenset[str] = frozenset({
-    "network.fetch", "network.search", "browser.navigate",
+    "network.fetch", "network.search", "browser.navigate", SUBMIT_TOOL,
 })
 
 #: 有**委派执行器**的工具（G2 子代理 D1）。
@@ -1113,11 +1114,12 @@ SPECS: dict[str, ToolSpec] = {
     ),
 
     "browser.navigate": ToolSpec(
-        tool_id="browser.navigate", version="1.0",
+        tool_id="browser.navigate", version="2.0",
         description=(
             "只读浏览任务允许的公开 HTTPS 网页。url 使用 network://https/ 规范形。"
             "跟随网页结果中的同源链接时，提供产出页面的 from_call、链接序号 link_index"
-            "（从 0 开始）和原样 url。每次导航单独审批；不执行脚本、登录或提交表单。"
+            "（从 0 开始）和原样 url。每次导航单独审批；不执行脚本或登录。"
+            "受支持的表单会在 browser.forms 中列出，导航本身不提交。"
         ),
         input_schema={
             "type": "object",
@@ -1127,6 +1129,36 @@ SPECS: dict[str, ToolSpec] = {
                 "link_index": {"type": "integer", "minimum": 0, "maximum": 23},
             },
             "required": ["url"], "additionalProperties": False,
+        },
+        side_effect_level="non_idempotent", exec_model="E3", action=ACTION_FETCH,
+    ),
+    SUBMIT_TOOL: ToolSpec(
+        tool_id=SUBMIT_TOOL, version="1.0",
+        description=(
+            "提交本次运行成功导航结果中列出的一个同源静态表单。提供 from_call、"
+            "从 0 开始的 form_index、原样 url，和按原顺序填写的全部字段。"
+            "一次 POST，须人工看到并批准完整参数；不支持凭据或登录，结果不明时不要重试。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "from_call": {"type": "string", "minLength": 1, "maxLength": 256},
+                "form_index": {"type": "integer", "minimum": 0, "maximum": FORM_LIMIT - 1},
+                "fields": {
+                    "type": "array", "minItems": 1, "maxItems": FIELD_LIMIT,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$"},
+                            "value": {"type": "string", "maxLength": 512},
+                        },
+                        "required": ["name", "value"], "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["url", "from_call", "form_index", "fields"],
+            "additionalProperties": False,
         },
         side_effect_level="non_idempotent", exec_model="E3", action=ACTION_FETCH,
     ),

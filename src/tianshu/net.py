@@ -55,6 +55,7 @@ import http.client
 import ipaddress
 import math
 import os
+import re
 import socket
 import ssl
 import sys
@@ -62,7 +63,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urljoin, urlsplit
 
 from .errors import TianshuError
@@ -78,6 +79,7 @@ NET_MAX_REDIRECTS = 3
 NET_SUMMARY_BYTES = 4_096
 #: 每次从 socket 读多少（同时是取消检查的粒度）。
 NET_CHUNK = 65_536
+FORM_POST_MAX_BYTES = 4096
 #: 固定 User-Agent：不随任务/内容变化，避免把它当成一条外发通道。
 NET_USER_AGENT = "tianshu-agent/1 net-fetch"
 
@@ -121,6 +123,14 @@ class NetError(TianshuError):
     def __init__(self, message: str, *, reason: str = "net.error") -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class FormSubmitError(NetError):
+    """Once request writing begins, a failed response cannot establish non-delivery."""
+
+    def __init__(self, message: str, *, reason: str, sent: bool) -> None:
+        super().__init__(message, reason=reason)
+        self.sent = sent
 
 
 class NetCancelled(TianshuError):
@@ -789,6 +799,120 @@ def fetch(
                 raise
             last_connect_error = exc
     raise NetError("重定向次数超过上限", reason="net.redirect_limit")  # pragma: no cover
+
+
+class _FormResponseHead:
+    def __init__(self, stream: BinaryIO) -> None:
+        self._stream = stream
+
+    def readline(self, size: int) -> bytes:
+        line = self._stream.readline(size)
+        if not line.endswith(b"\r\n"):
+            raise NetError("表单响应的状态行或头部不完整", reason="net.form_response")
+        return line
+
+
+class _FormResponse(http.client.HTTPResponse):
+    def begin(self) -> None:
+        # The stdlib accepts EOF as the end of a header block. For a POST
+        # acknowledgement require the actual blank line, even for an empty body.
+        stream = self.fp
+        self.fp = _FormResponseHead(stream)
+        try:
+            super().begin()
+        finally:
+            self.fp = stream
+
+
+def submit_form(
+    target: NetworkTarget,
+    body: bytes,
+    *,
+    limits: NetLimits | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> Fetched:
+    """Send exactly one credential-free HTTPS POST; only a complete 2xx acknowledges it."""
+    global _LAST_FETCH_START
+    if target.transport != "https" or target.query or not 0 < len(body) <= FORM_POST_MAX_BYTES:
+        raise FormSubmitError("表单不是有界 HTTPS POST", reason="net.form_request", sent=False)
+    limits = limits or NetLimits()
+    conn = response = timer = None
+    sent = False
+    interrupted = threading.Event()
+    try:
+        require_public_target(target)
+        with _FETCH_STATE_LOCK:
+            _wait_for_rate_slot(time.monotonic, _LAST_FETCH_START, limits.min_interval_s, cancel)
+            started = time.monotonic()
+            _LAST_FETCH_START = started
+        deadline = started + limits.timeout_ms / 1000
+        conn = _connect(target, _remaining(deadline))
+        conn.response_class = _FormResponse
+        _check_cancel(cancel)
+        _remaining(deadline)
+        conn.connect()
+        sock = conn.sock
+
+        def interrupt() -> None:
+            interrupted.set()
+            if sock is not None:
+                try:
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        timer = threading.Timer(_remaining(deadline), interrupt)
+        timer.daemon = True
+        timer.start()
+        _check_cancel(cancel)
+        _remaining(deadline, interrupted)
+        # Do not infer non-delivery from an exception in HTTPConnection.request().
+        sent = True
+        conn.request("POST", target.path, body=body, headers={
+            "User-Agent": NET_USER_AGENT,
+            "Accept-Encoding": "identity",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Connection": "close",
+        })
+        response = conn.getresponse()
+        if not 200 <= response.status < 300:
+            raise NetError(f"表单接收方返回 HTTP {response.status}", reason="net.form_response")
+        lengths = response.headers.get_all("Content-Length", [])
+        if response.headers.defects or response.headers.get_all("Transfer-Encoding"):
+            raise NetError("表单响应的头或分帧不受支持", reason="net.form_response")
+        if response.status == 204 and not lengths:
+            expected = 0
+        elif (response.status != 204 and len(lengths) == 1
+              and re.fullmatch(r"[0-9]{1,10}", lengths[0])):
+            expected = int(lengths[0])
+        else:
+            # EOF alone cannot distinguish a complete reply from a broken connection.
+            raise NetError("表单响应缺少明确长度", reason="net.form_response")
+        if expected > limits.max_bytes:
+            raise NetError("表单响应超过字节上限", reason="net.form_response")
+        data = response.read(expected)
+        _remaining(deadline, interrupted)
+        if len(data) != expected:
+            raise NetError("未收到完整的有界表单响应", reason="net.form_response")
+        return Fetched(target.to_uri(), response.status, response.getheader("Content-Type", ""),
+                       data, False, (), int((time.monotonic() - started) * 1000))
+    except (NetError, NetCancelled, OSError, http.client.HTTPException) as exc:
+        if interrupted.is_set() or isinstance(exc, TimeoutError):
+            reason = "net.timeout"
+        elif isinstance(exc, NetError):
+            reason = exc.reason
+        elif isinstance(exc, NetCancelled):
+            reason = "net.cancelled"
+        else:
+            reason = "net.form_transport"
+        raise FormSubmitError("表单提交未得到确认", reason=reason, sent=sent) from exc
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if response is not None:
+            response.close()
+        if conn is not None:
+            conn.close()
 
 
 def _fetch_once(

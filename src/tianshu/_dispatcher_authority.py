@@ -27,7 +27,8 @@ from ._dispatcher_types import (
     _Target,
     resolve_scheme_resource,
 )
-from .browser_navigation import BROWSER_TOOL, verify_navigation
+from .browser_forms import SUBMIT_TOOL
+from .browser_navigation import BROWSER_TOOL, verify_navigation, verify_submission
 from .disk_admission import DiskAdmissionError
 from .errors import (
     RunFenced,
@@ -788,7 +789,15 @@ class _DispatcherAuthorityMixin:
                 f"（允许：{list(declared)}），拒绝出网",
                 "c4.outbound_not_allowed",
             )
-        return _Authority(run, task, bindings, [], [])
+        form_body = None
+        if request.tool_id == SUBMIT_TOOL:
+            try:
+                form_body = verify_submission(
+                    self._log, self._contents, run.run_id, task.task_id, args, ref.uri
+                )
+            except ToolArgumentError as exc:
+                raise DispatchDenied(str(exc), "dispatch.network_resource_mismatch") from exc
+        return _Authority(run, task, bindings, [], [], form_body=form_body)
 
     def _authority_mcp(
         self,

@@ -36,8 +36,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .browser_forms import SUBMIT_TOOL
+from .contents import parse_ref
 from .errors import TianshuError
-from .permissions import ACTION_CREATE, ACTION_DELETE, ACTION_EXEC, ACTION_OVERWRITE
+from .events import canonical_bytes, sha256_hex
+from .permissions import ACTION_CREATE, ACTION_DELETE, ACTION_EXEC, ACTION_FETCH, ACTION_OVERWRITE
 from .sandbox import FileBackend, current_backend
 from .snapshot import ABSENT
 from .tools import ToolResult
@@ -390,6 +393,67 @@ def build_mcp_receipt(
 
 
 
+def _form_ack_digest(out: dict[str, Any], target: str, args_hash: str) -> str:
+    if (out.get("url") != target or out.get("method") != "POST"
+            or out.get("acknowledged") is not True or type(out.get("status")) is not int
+            or not 200 <= out["status"] < 300 or type(out.get("bytes")) is not int
+            or out["bytes"] < 0):
+        raise ValueError("表单响应不是完整的 POST 接收确认")
+    return "network:" + sha256_hex(canonical_bytes({
+        "method": "POST", "target": target, "args_hash": args_hash,
+        "status": out["status"], "sha256": parse_ref(out.get("ref")), "bytes": out["bytes"],
+    }))
+
+
+def build_browser_form_receipt(
+    *, run_id: str, call_id: str, args_hash: str, result: ToolResult,
+    resource: str, intent_seq: int,
+) -> Receipt | None:
+    if result.effect_state != "applied":
+        return None
+    return Receipt(
+        receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}", run_id=run_id, call_id=call_id,
+        tool_id=SUBMIT_TOOL, action=ACTION_FETCH, args_hash=args_hash, root="", resource=resource,
+        effect_state="applied", before_state="unknown", backend="network", intent_seq=intent_seq,
+        after_state=_form_ack_digest(result.output, resource, args_hash),
+        evidence=_evidence_refs(call_id=call_id, intent_seq=intent_seq, blob_ref=None,
+                                before_state="unknown"),
+        issued_at=int(time.time() * 1000),
+    )
+
+
+def _verify_form_ack(log, payload, result, intent, label: str) -> list[str]:
+    from .restore_access import default_material_paths, ensure_path_not_held
+
+    out = result["output"]
+    try:
+        target = payload["resource"]
+        if (payload["tool_id"] != SUBMIT_TOOL or payload["backend"] != "network"
+                or payload["action"] != ACTION_FETCH or payload["effect_state"] != "applied"
+                or payload["before_state"] != "unknown" or payload["root"] != ""
+                or payload["blob_ref"] is not None or result["status"] != "succeeded"
+                or intent is None or intent.seq != payload["intent_seq"]
+                or intent.payload["tool_id"] != SUBMIT_TOOL
+                or intent.payload["args"].get("url") != target
+                or sha256_hex(canonical_bytes(intent.payload["args"])) != payload["args_hash"]
+                or _form_ack_digest(out, target, payload["args_hash"]) != payload["after_state"]):
+            raise ValueError("表单凭据与意图或接收确认不一致")
+        digest = parse_ref(out["ref"])
+        default_root = default_material_paths(log.db_path, log.data_root)[0] / "blobs"
+        path = default_root / digest
+        if not path.exists() and log.blob_dir is not None:
+            path = log.blob_dir / digest
+        ensure_path_not_held(path)
+        with path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            size = stream.tell()
+        if actual != digest or size != out["bytes"]:
+            raise ValueError("表单响应正文摘要或大小不符")
+    except (ValueError, TianshuError, OSError, KeyError, TypeError) as exc:
+        return [f"凭据 {label} 无法核对 POST：{exc}"]
+    return []
+
+
 def build_memory_receipt(
     *,
     run_id: str,
@@ -717,7 +781,7 @@ def verify_receipts(log, run_id: str) -> list[str]:
             or out.get("after_state")
             or (nested_mcp.get("after_state") if isinstance(nested_mcp, dict) else None)
         )
-        if actual_after != p.get("after_state"):
+        if p.get("backend") != "network" and actual_after != p.get("after_state"):
             problems.append(
                 f"凭据 {label} 的 after_state 与工具结果哈希不一致"
             )
@@ -726,7 +790,12 @@ def verify_receipts(log, run_id: str) -> list[str]:
                 f"凭据 {label} 的 tool_id 与工具结果不一致："
                 f"{p.get('tool_id')!r} ≠ {res.get('tool_id')!r}"
             )
-        if str(p.get("tool_id") or "").startswith("memory."):
+        if p.get("backend") == "network" or res.get("tool_id") == SUBMIT_TOOL:
+            problems.extend(_verify_evidence(
+                p, label, by_seq=by_seq, intents=intents, required=("result", "intent"),
+            ))
+            problems.extend(_verify_form_ack(log, p, res, intents.get(call_id), label))
+        elif str(p.get("tool_id") or "").startswith("memory."):
             # 记忆没有磁盘可核对：它的写后状态是投影里的
             # `memory:<id>:<status>:rev<N>`。核对三件事：结果字段、
             # 证据引用（result + intent + memory）、以及凭据的 memory_id
