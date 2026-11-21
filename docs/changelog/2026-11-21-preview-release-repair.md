@@ -1,6 +1,6 @@
 # 0.1.1 组合修复：模型用量精确版本与发行身份
 
-日期：2026-11-21。状态：**本地实现及定向门禁已完成，最终整合预审、全量、required CI 和原生/真实模型验收尚待完成**。这不是发行或真实评测通过声明。
+日期：2026-11-21。状态：**本地实现、限定独立整合预审及精确 `e59415f` 的授权 source 全量、静态门禁与即刻复制留证已完成；新 required CI、产品 App 原生验收和真实模型复评仍待完成**。这不是发行或真实评测通过声明。
 
 ## 原因与范围
 
@@ -29,8 +29,17 @@ C1 合法缓存用量不能通过 C3 v1 封闭 usage，真实模型响应后会�
 - 首轮金额负控错返 int，类型错误不能证明账目 detector；原件保留。改用实际 Cost 零对象后，未知占用断言准确失败。分别回退任一事件、镜像漂移、旧 schema 污染、丢缓存、开放 extras、删除 float minimum、重放多发请求也都被实际断言捕获。
 - 新 source-copy 版本门禁通过；`cargo fmt --check`、`cargo test --locked`、`cargo clippy --locked --all-targets -- -D warnings` 单次完整完成。仅普通测试编译，不是产品 App build/启动/安装验收。
 
-定向命令沿用[贡献流程](../../CONTRIBUTING.md)的 source-only 父进程入口：清空测试锁/registry 注入变量，设工作树私有数据/权威根、`PYTHONPATH="$PWD/src"`、`PYTHONDONTWRITEBYTECODE=1`、`TIANSHU_CREDENTIAL_BACKEND=env`、`PYTEST_ADDOPTS=''`；`uv run --offline --frozen pytest -o addopts='' -q -rs` 后显式选受影响文件。没有自定义 basetemp、父 startup hook 或真实凭据。`uv lock --offline --check`、冻结 Ruff 和 diff 检查也通过。实际日志与各轮 code/test tree 摘要按协调记录保留，不用本文静态测试总数代替日志。
+早期离线定向命令沿用[贡献流程](../../CONTRIBUTING.md)的 source-only 父进程入口：清空测试锁/registry 注入变量，设工作树私有数据/权威根、`PYTHONPATH="$PWD/src"`、`PYTHONDONTWRITEBYTECODE=1`、`TIANSHU_CREDENTIAL_BACKEND=env`、`PYTEST_ADDOPTS=''`；`uv run --offline --frozen pytest -o addopts='' -q -rs` 后显式选受影响文件。没有自定义 basetemp、父 startup hook 或真实凭据。`uv lock --offline --check`、冻结 Ruff 和 diff 检查也通过。实际日志与各轮 code/test tree 摘要按协调记录保留，不用本文静态测试总数代替日志。
 
-## 尚未完成
+## 限定整合预审与冻结全量
 
-最终整合 code/test tree 仍须独立预审后按授权执行唯一全量，再绑定新 required CI。原真实首组 unsafe、失败、未知金额及未运行组不改判；新候选真实复评尚未执行。旧 `0.1.0` 的原生 RED 不因本地封套结构探针或 CI 绿变成 PASS；原生启动、Keychain、核心任务、安装、升级/回退、备份恢复等原门禁保持。
+- 独立第二读者完成整合静态审查及精确冻结增量复核，结论为未发现已确认代码阻断。其独立 schema/getter/history/alias/cache 动态探针 53 项实际通过；另 8 个真实 DB 探针在 SQLite 打开前被审阅守卫阻断，一次 FFI 加载尝试被拒，独立变异负控未执行。真实 DB/事务/恢复/重放的动态证据来自作者测试及本轮 source 全量，不能写成全功能独立 DB PASS；这些阻断与未执行边界均保留。
+- 原冻结 `2b91bfc79fa7b0888a82cf1d015aa89735c0b034` 的组合全量实际 exit1，旧[精确版本测试](../../tests/test_low_disk_run_creation.py)遗漏了两个已批准的模型 v2 事件。仅补充这两个 current==2 断言及精确排除集，仍严格要求所有其他事件为 v1，保留原 run.start/end、历史 schema 与实际 append/version 断言；未改生产源码或机器 schema。受影响域回归通过，原 full RED 不改判。
+- 正常同步主干待实现 Responses 契约后，精确新冻结 `e59415f1243122b9f31f3bc0612c32269d067518`（tree `1db617754594d4a42876c23de97df17f7a418107`）获准执行一次新的 source 全量，实际 exit0。命令为 `uv run --frozen pytest -o addopts='' -q -rs`，沿用上述 source-only 私有根，逐名 presence-only 核空真实模型 key 环境，仅在测试子进程移除无关继承 key；没有 `--offline`、自定义 basetemp 或父启动预载。跳过项目与动态总计以该次原始日志为准。随后 collector、`uv lock --check`、`uv run --frozen ruff check .`、`git diff --check` 均实际 exit0。
+- full 自然结束后立即执行 copy-only collector，留存 tiny-C 原生结构矩阵、两份真实归档及 source/source-copy 的包路径、PID/private roots 收据，缺失记录仍为 false。后续点查发现部分原始 pytest 临时路径已不存在，留存副本重新对照 at-time 收据核 hash/size，归档只读核成员与模式，不扫描其他临时目录、不重造夹具。初版附加后处理错误要求原路径持续存在而 exit1，原错误和诊断保留；获准后仅修正只读索引，不重跑 full 或原生夹具。
+
+本次 source full 原始日志 SHA256 为 `7c499f4b78d48b6f60c7aea566411abae381f9bfabfbccc6872bc001a1553879`；即刻 collector 收据为 `a89fe3e568e8e0cc5101acdef29ad39ab6b4409f380377f4825318160e1b53b2`；留存证据索引为 `1049aa3eef24b799f020241819cd9efcc61a850a9d7d83986945545e922817c7`，按协调记录保存。复制收据只证明当时测试来源与留存内容，不证明当前进程已退出、零孤儿或未修改产品 App 的原生行为。
+
+## 仍待门禁与边界
+
+新 required CI、产品 App build/发行实跑、原生用户验收与真实模型复评仍待完成，不能继承其他 SHA 的绿色结论。原真实首组 unsafe、失败、未知金额及未运行组不改判。旧 `0.1.0` 的原生 RED 不因本地封套结构探针或 source 全量绿变成 PASS；原生启动、Keychain、核心任务、SLO、安装、升级/回退、备份恢复等原门禁保持。新合入的 [Responses 续接契约](../openai-responses-contract.md)仍为待实现目标，本轮没有交付或宣称 Responses 运行时支持。
