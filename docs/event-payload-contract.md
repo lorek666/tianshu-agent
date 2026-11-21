@@ -220,6 +220,12 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
 - **`tool.intent.args` / `tool.result.output` 仍是开放对象**：MCP 的参数与结果形状由
   各 server 的 schema 决定，不在 C3 复制第二份契约。
 
+## 6.3 模型缓存用量的逐事件 v2（2026-11-20，契约草案待实现）
+
+[模型用量 v2 契约](model-usage-v2-contract.md) 仅将 `model.result` / `run.model_turn` 的新写升为精确 payload v2：封闭 usage 在原必填双键外允许 C1 已定义的可选 `cache_read_input_tokens` / `cache_creation_input_tokens`（`integer|null`，非负），不补缺席值、不把缓存并入 input_tokens、不将未知金额记零。两事件完整 v1 与原 v0 映射保持不变（`run.model_turn` v0 的 usage 原本允许 `object|null`）；精确版本仍由事件/`event_versions` 同事务记录，其他事件不随之升版，不改变全局版本常量。
+
+本次明确不沿用 §6.1 / §12 的发布前 optional 沿 v1 例外，以区分既有精确草稿/归档对象；不全局废除例外。新读取器支持这两个事件 0/1/2，旧基线 a073 的全库版本准入及读取路径拒绝新 v2，不能泛称所有旧 `0.1.0` 二进制可安全回退。连接已建立等边界、JSON current/v1/v0 副本同步及离线验收要求见独立契约。**这里是待实现决定，不改写本文历史切片的验收结论。**
+
 ## 7 仍冻结不了的字段（与原因）
 
 | 位置 | 现状 | 原因 / 边界 |
