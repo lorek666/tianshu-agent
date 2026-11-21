@@ -15,15 +15,24 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-# Whole-file weights use ~0.5s per node as a rough proxy. These four files each
-# took over 90s in at least one Windows run (44907705179 and 44911274075).
-# Use the higher observed file time rounded up to 5s, converted to node units.
+# Whole-file weights use ~0.5s per node as a rough proxy. Keep earlier floors from
+# Windows runs 44907705179 and 44911274075. From 44914005246 and 44916124972,
+# raise estimates understated by at least 30s using the larger complete file
+# interval between pytest result timestamps, rounded up to 5s in node units.
 # These are fixed scheduling hints, not acceptance limits or runner guarantees.
 _FILE_WEIGHT_FLOORS = {
     "tests/test_data_binding.py": 230,
-    "tests/test_eval_real_tasks.py": 580,
+    "tests/test_eval_four_dimensions.py": 110,
+    "tests/test_eval_harness.py": 160,
+    "tests/test_eval_real_tasks.py": 680,
+    "tests/test_eval_scoped_checks.py": 100,
     "tests/test_eval_separation.py": 260,
+    "tests/test_low_disk_execution.py": 210,
+    "tests/test_m2_acceptance.py": 140,
+    "tests/test_pytest_ci_shards.py": 140,
     "tests/test_recovery.py": 280,
+    "tests/test_slo_and_soak.py": 120,
+    "tests/test_w15_safe_gc.py": 140,
 }
 
 

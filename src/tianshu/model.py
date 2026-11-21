@@ -334,7 +334,14 @@ class Transport(Protocol):
 class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
     """模型凭据绑定配置的源；响应不能选择另一个凭据接收方。"""
 
+    def __init__(self, *, allow_redirects: bool) -> None:
+        self._allow_redirects = allow_redirects
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not self._allow_redirects:
+            fp.close()
+            raise ModelError("模型端点重定向已拒绝", kind="protocol")
+
         def origin(url):
             parsed = urlsplit(url)
             if parsed.username is not None or parsed.password is not None:
@@ -359,6 +366,9 @@ class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
 class UrllibTransport:
     """stdlib 实现。零第三方依赖是这个项目的一条硬线（PRD §7.3）。"""
 
+    def __init__(self, *, allow_redirects: bool = True) -> None:
+        self._allow_redirects = allow_redirects
+
     def post(
         self, url: str, *, body: dict[str, Any], headers: dict[str, str], timeout: float
     ) -> dict[str, Any]:
@@ -369,7 +379,9 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            opener = urllib.request.build_opener(_SameOriginRedirect())
+            opener = urllib.request.build_opener(
+                _SameOriginRedirect(allow_redirects=self._allow_redirects),
+            )
             with opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
@@ -427,9 +439,14 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            opener = urllib.request.build_opener(_SameOriginRedirect())
+            opener = urllib.request.build_opener(
+                _SameOriginRedirect(allow_redirects=self._allow_redirects),
+            )
             with opener.open(req, timeout=timeout) as resp:
                 yield from _iter_sse_frames(resp)
+                # HTTPResponse.readline() can reach EOF without checking Content-Length.
+                if resp.length:
+                    raise ModelError("SSE 响应正文截断", kind="transport")
         except ModelError:
             raise
         except urllib.error.HTTPError as exc:

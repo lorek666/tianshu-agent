@@ -107,6 +107,7 @@ def test_schema_json_mirrors_python_contract():
     assert legacy == event_schema.LEGACY_SCHEMAS
     assert doc["$defs"]["modelResultCompactionPayload"] == event_schema.MODEL_RESULT_V3_SCHEMA
     assert event_schema.schema_for("model.result", 3) == event_schema.MODEL_RESULT_V3_SCHEMA
+    assert doc["$defs"]["networkReceiptPayload"] == event_schema.schema_for("receipt", 2)
 
 
 def test_registry_is_complete_and_bidirectional():
@@ -193,7 +194,10 @@ def test_code_constants_bound_to_schema_enums():
     assert re.fullmatch(pattern, "mcp__server__tool") is not None
     assert re.fullmatch(pattern, "rename_everything") is not None
     assert re.fullmatch(pattern, "Bad Tool Id!") is None
-    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory", "mcp", "network"}
+    assert _enum_of("receipt", "backend") == {"local_fs", "memfs", "memory", "mcp"}
+    network_receipt = event_schema.schema_for("receipt", 2)["properties"]
+    assert network_receipt["backend"]["enum"] == ["network"]
+    assert network_receipt["tool_id"]["enum"] == ["browser.submit"]
     exec_policy_fields = set(ExecPolicy.__dataclass_fields__)
     assert set(_prop("task.created", "exec_policy")["properties"]) == exec_policy_fields
     binding = _prop("task.created", "workspaces")["items"]

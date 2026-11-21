@@ -2,7 +2,7 @@
   "$id": "https://tianshu-agent/schemas/c3/event.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start / run.end / model.result / run.model_turn 当前 v2，其余 v1）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
+  "description": "C3 事件（docs/PRD-v1.md §5.3 / §5.3.5）。信封字段固定；**逐类型 payload 契约**见 `$defs.payload`（run.start / run.end / model.result / run.model_turn 当前 v2，其余默认 v1；仅网络 receipt 使用 `$defs.networkReceiptPayload` v2）与 `$defs.legacyPayload`（冻结前旧版 v0），权威实现是 src/tianshu/event_schema.py，tests/test_event_schema.py 把两边逐字绑定。`type.enum` 与 src/tianshu/events.py 的 EVENT_TYPES 由 tests/test_events.py 绑定，改一处忘另一处会红。",
   "properties": {
     "actor": {
       "additionalProperties": false,
@@ -1528,8 +1528,7 @@
               "local_fs",
               "memfs",
               "memory",
-              "mcp",
-              "network"
+              "mcp"
             ]
           },
           "issuer": {
@@ -4395,8 +4394,7 @@
               "local_fs",
               "memfs",
               "memory",
-              "mcp",
-              "network"
+              "mcp"
             ]
           },
           "issuer": {
@@ -6037,6 +6035,213 @@
         "usage",
         "cost",
         "continuation"
+      ],
+      "type": "object"
+    },
+    "networkReceiptPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "read",
+            "create",
+            "overwrite",
+            "delete",
+            "exec",
+            "fetch",
+            "delegate"
+          ],
+          "type": "string"
+        },
+        "after_state": {
+          "type": "string"
+        },
+        "args_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "backend": {
+          "enum": [
+            "network"
+          ],
+          "type": "string"
+        },
+        "before_state": {
+          "type": "string"
+        },
+        "blob_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "effect_state": {
+          "enum": [
+            "applied",
+            "none_applied",
+            "partial",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "absent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_ref": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deleted": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "deleted_bytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "result",
+                  "intent",
+                  "blob",
+                  "memory",
+                  "memory_erasure",
+                  "mcp_call"
+                ],
+                "type": "string"
+              },
+              "memory_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "request_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retained_by": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "seq": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "server": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tool": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "intent_seq": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "issued_at": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "receipt_id": {
+          "pattern": "^rcpt_[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "tool_id": {
+          "enum": [
+            "browser.submit"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "run_id",
+        "call_id",
+        "tool_id",
+        "action",
+        "args_hash",
+        "effect_state",
+        "backend",
+        "issuer",
+        "issued_at",
+        "root",
+        "resource",
+        "before_state",
+        "after_state",
+        "intent_seq",
+        "blob_ref",
+        "evidence"
       ],
       "type": "object"
     }

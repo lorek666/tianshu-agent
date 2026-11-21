@@ -217,6 +217,8 @@ def test_exact_historical_schemas_and_new_versions_only():
             versions = {1}
         elif kind == "model.result":
             versions = {0, 1, 2, 3}
+        elif kind == "receipt":
+            versions = {0, 1, 2}
         else:
             versions = set(range(expected + 1))
         assert event_schema.known_versions(kind) == versions

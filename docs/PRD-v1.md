@@ -727,6 +727,10 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 
 **模型用量契约（2026-11-20 决定；2026-11-21 本地实现候选已离线定向验证）**：仅 `model.result` / `run.model_turn` 的新写采用精确 payload `v2`，允许 C1 已定义的两个可选缓存用量字段；usage 仍封闭，缓存不并入 input_tokens，未知金额不记零。两事件旧 `v0/v1` 的 schema/读取解释不变，其他事件不升版；本次不沿用发布前 optional 沿 v1 的历史例外，不全局废除该例外。版本旁表、旧基线拒新及回退边界见[模型用量 v2 契约](model-usage-v2-contract.md)；本段仅更新本地实施状态，不宣称最终整合全量、独立复审、新 CI 或真实复验已通过。
 
+**表单 Receipt**：经确认的 `browser.submit` 写入精确 payload v2，限定 `backend="network"`
+和 `tool_id="browser.submit"`。既有 Receipt 的 v0/v1 schema 保持原样，其他工具继续写 v1。
+确认与核验范围见[受限表单契约](agent-browser-form-contract.md)。
+
 ### 5.4 C4 Permission / Approval
 
 `Grant` 与 `Approval` 必须在同一份契约里——共享 digest、共享状态机，拆开必然产生"权限过了但审批没记录"的缝。

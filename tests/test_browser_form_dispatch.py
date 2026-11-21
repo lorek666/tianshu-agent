@@ -14,7 +14,7 @@ from threading import Thread
 import pytest
 from support import approve_pending, engine_for, stack_for
 
-from tianshu import net
+from tianshu import event_schema, net
 from tianshu.events import EventLog
 from tianshu.loop import Limits
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
@@ -150,7 +150,7 @@ def test_scoped_form_submits_only_after_approval_and_never_repeats(tmp_path, mon
                         "/submit", b"message=%E4%B8%AD%E6%96%87+%26+action", ("executing",),
                     )]
                     effect = "applied" if mode == "accepted" else "unknown"
-                    receipts = [event.payload for event in events if event.type == "receipt"]
+                    receipts = [event for event in events if event.type == "receipt"]
                     assert (outputs["submit"]["effect_state"], len(receipts)) == (
                         effect, 1 if mode == "accepted" else 0,
                     )
@@ -158,6 +158,20 @@ def test_scoped_form_submits_only_after_approval_and_never_repeats(tmp_path, mon
                     assert replay(log, run.run_id).ok
                     assert len(received) == 1
                     if mode == "accepted":
+                        [receipt] = receipts
+                        assert receipt.payload_version == 2
+                        for version in (0, 1):
+                            with pytest.raises(event_schema.PayloadContractError, match="backend"):
+                                event_schema.validate_payload("receipt", receipt.payload, version)
+                        with pytest.raises(event_schema.PayloadContractError, match="backend"):
+                            event_schema.validate_payload(
+                                "receipt", {**receipt.payload, "backend": "local_fs"}, 2,
+                            )
+                        with closing(EventLog(database, blob_dir=blobs)) as reopened:
+                            assert reopened.read_run(
+                                run.run_id, event_types=("receipt",),
+                            ) == receipts
+                            assert verify_receipts(reopened, run.run_id) == []
                         blob = stack.contents.blob_dir / hashlib.sha256(b"ok").hexdigest()
                         blob.write_bytes(b"no")
                         assert any("正文摘要" in p for p in verify_receipts(log, run.run_id))
@@ -185,7 +199,7 @@ import sys
 from pathlib import Path
 
 from support import approve_pending, engine_for, stack_for
-from tianshu import net
+from tianshu import event_schema, net
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 

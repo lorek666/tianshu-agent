@@ -120,6 +120,29 @@ def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
+def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_path):
+    # Node counts and rounded elapsed seconds for these complete files in run 44916124972.
+    observed = {
+        "tests/test_eval_harness.py": (19, 75),
+        "tests/test_eval_real_tasks.py": (35, 339),
+        "tests/test_low_disk_execution.py": (96, 101),
+        "tests/test_m2_acceptance.py": (45, 66),
+        "tests/test_recovery.py": (16, 95),
+        "tests/test_slo_and_soak.py": (5, 58),
+        "tests/test_w15_safe_gc.py": (43, 69),
+    }
+    files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
+             for file, (count, _) in observed.items()}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 60, costs
+
+
 def phase_source(phase, action, *, mark=""):
     prefix = "import pytest\n"
     if phase == "call":

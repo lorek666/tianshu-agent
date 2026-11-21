@@ -249,6 +249,8 @@ def test_model_tool_surface_has_no_run_start():
         "network.fetch",
         "network.search",
         "browser.navigate",
+        # 静态表单是经执行侧单次批准的 HTTPS 外发，没有 Run 控制面入口。
+        "browser.submit",
         # G2 子代理 D1：四个工具派生/查询/取消**子任务**，不是新建 Run。
         # `subtask.spawn` 建的是子 Task + 子 Run + 子 Job（由 Dispatcher 的
         # 委派分支在事务里做），模型拿不到 `TaskStore.start_run`；子 Run 由

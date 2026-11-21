@@ -22,6 +22,7 @@ from .model import (
     ModelStreamDelta,
     ToolCall,
     Transport,
+    UrllibTransport,
     _credential_for,
     _HttpModel,
 )
@@ -31,6 +32,16 @@ from .task_attachments import AttachmentError, text_attachment, validated_attach
 def _protocol() -> ModelError:
     # 不把不可信 response、SSE 或回显的加密输入放进异常 / 事件。
     return ModelError("Responses 响应不满足公开文本/函数续接协议", kind="protocol")
+
+
+def _request_error(exc: ModelError) -> ModelError:
+    # Stateless conversation transport does not make a POST safe to replay. urllib
+    # cannot prove an ambiguous transport error occurred before the request was sent.
+    return ModelError(
+        "Responses 调用失败（响应细节已隐藏）", kind=exc.kind,
+        status_code=exc.status_code,
+        retryable=exc.retryable and exc.kind == "rate_limit" and exc.status_code == 429,
+    )
 
 
 def _count(value: Any) -> int | None:
@@ -87,7 +98,10 @@ class OpenAIResponsesModel(_HttpModel):
         super().__init__(
             model, base_url=endpoint.removesuffix("/responses"),
             api_key=api_key if api_key is not None else _credential_for("openai"),
-            env_key="TIANSHU_API_KEY", timeout=timeout, transport=transport,
+            env_key="TIANSHU_API_KEY", timeout=timeout,
+            transport=(
+                transport if transport is not None else UrllibTransport(allow_redirects=False)
+            ),
         )
         self._endpoint = endpoint
         self.compact_threshold = validate_compact_threshold(compact_threshold, responses=True)
@@ -214,10 +228,7 @@ class OpenAIResponsesModel(_HttpModel):
             data = self._transport.post(url, body=body, headers=headers, timeout=self.timeout)
             return self._parse(data)
         except ModelError as exc:
-            raise ModelError(
-                "Responses 调用失败（响应细节已隐藏）", kind=exc.kind,
-                status_code=exc.status_code, retryable=exc.retryable,
-            ) from None
+            raise _request_error(exc) from None
         except Exception:  # noqa: BLE001 - 不反射不可信传输对象
             raise _protocol() from None
 
@@ -237,10 +248,7 @@ class OpenAIResponsesModel(_HttpModel):
                 raise _protocol()
             return self._parse(stream.terminal)
         except ModelError as exc:
-            raise ModelError(
-                "Responses 流调用失败（响应细节已隐藏）", kind=exc.kind,
-                status_code=exc.status_code, retryable=exc.retryable,
-            ) from None
+            raise _request_error(exc) from None
         except Exception:  # noqa: BLE001 - 包括畸形 JSON，禁止密文进入错误事件
             raise _protocol() from None
 

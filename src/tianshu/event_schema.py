@@ -766,7 +766,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "action": _ACTION,
             "args_hash": _SHA256,
             "effect_state": _EFFECT_STATE,
-            "backend": _enum("local_fs", "memfs", "memory", "mcp", "network"),
+            "backend": _enum("local_fs", "memfs", "memory", "mcp"),
             "issuer": _s(),
             "issued_at": _i(minimum=0),
             "root": _s(),
@@ -1246,6 +1246,11 @@ CURRENT_SCHEMAS["run.end"]["required"].extend(
 LEGACY_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0))
 LEGACY_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
 
+# Only network Receipts use v2. Keep both the v1 default and the v0 read schema.
+NETWORK_RECEIPT_V2_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["receipt"])
+NETWORK_RECEIPT_V2_SCHEMA["properties"]["backend"] = _enum("network")
+NETWORK_RECEIPT_V2_SCHEMA["properties"]["tool_id"] = _enum("browser.submit")
+
 _RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
     name: (frozenset({CURRENT_PAYLOAD_VERSION}) if name in V1_ONLY_EVENTS
            else frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION}))
@@ -1255,6 +1260,7 @@ _RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
 _RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
 _RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2, 3})
 _RECOGNISED_VERSIONS["run.model_turn"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["receipt"] = frozenset({0, 1, 2})
 
 
 # ---------------------------------------------------------------- 注册时校验
@@ -1366,6 +1372,7 @@ _check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
 _check_registry_schema("model.result", MODEL_RESULT_V1_SCHEMA, 1)
 _check_registry_schema("model.result", MODEL_RESULT_V3_SCHEMA, 3)
 _check_registry_schema("run.model_turn", RUN_MODEL_TURN_V1_SCHEMA, 1)
+_check_registry_schema("receipt", NETWORK_RECEIPT_V2_SCHEMA, 2)
 for _name, _schema in LEGACY_SCHEMAS.items():
     _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
 
@@ -1425,6 +1432,8 @@ def schema_for(event_type: str, version: int) -> dict[str, Any]:
         return MODEL_RESULT_V3_SCHEMA
     if event_type == "run.model_turn" and version == 1:
         return RUN_MODEL_TURN_V1_SCHEMA
+    if event_type == "receipt" and version == 2:
+        return NETWORK_RECEIPT_V2_SCHEMA
     if version == LEGACY_PAYLOAD_VERSION and event_type in LEGACY_SCHEMAS:
         return LEGACY_SCHEMAS[event_type]
     raise UnknownPayloadVersion(
@@ -1593,6 +1602,7 @@ def detect_version(
       校验，通过则返回 0；两边都不合法仍拒绝。只给夹具/历史播种/迁移测试用，
       生产调用点一律不许传。
 
+    逐形状注册的例外是压缩后的 model.result v3 和网络 receipt v2。
     事件行会用旁表记下实际版本，读取时不会假装它是新版。
     """
     if event_type == "model.result" and isinstance(payload, dict):
@@ -1600,6 +1610,13 @@ def detect_version(
         if isinstance(ref, dict) and ref.get("schema_version") == COMPACTION_REF_VERSION:
             validate_payload(event_type, payload, 3)
             return 3
+    if (
+        event_type == "receipt"
+        and isinstance(payload, dict)
+        and payload.get("backend") == "network"
+    ):
+        validate_payload(event_type, payload, 2)
+        return 2
     version = current_version(event_type)
     if not payload_errors(event_type, payload, version):
         return version

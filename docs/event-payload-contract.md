@@ -72,7 +72,7 @@
 | `model.intent` | v1 | `request_id`, `attempt`, `messages_hash`, `context` | 历史形状差异（v0 放宽） |
 | `model.result` | v1 | `request_id`, `content`, `finish_reason`, `tool_calls`, `usage`, `cost` | 无已知形状差异 |
 | `policy.denied` | v1 | `request_id`, `request_digest`, `action`, `resources`, `rule_id`, `reason` | 无已知形状差异 |
-| `receipt` | v1 | `receipt_id`, `run_id`, `call_id`, `tool_id`, `action`, `args_hash`, `effect_state`, `backend`, `issuer`, `issued_at`, `root`, `resource`, `before_state`, `after_state`, `intent_seq`, `blob_ref`, `evidence` | 历史形状差异（v0 放宽） |
+| `receipt` | v1，受限表单用 v2 | `receipt_id`, `run_id`, `call_id`, `tool_id`, `action`, `args_hash`, `effect_state`, `backend`, `issuer`, `issued_at`, `root`, `resource`, `before_state`, `after_state`, `intent_seq`, `blob_ref`, `evidence` | 历史形状差异（v0 放宽）。v2 专用于 `browser.submit` 的网络回执，v0/v1 保留原定义。 |
 | `recovery.blocked` | v1 | `workspace`, `call_ids`, `reason` | 无已知形状差异（目录阻断） |
 | `recovery.object_blocked` | v1 | `object`, `call_ids`, `reason` | 无已知形状差异（**对象**阻断：`mcp://server/tool` / `mcp://server`；对象键不是路径，与 `recovery.blocked` 的目录是两种对象模型） |
 | `recovery.object_unblocked` | v1 | `object`, `reason` | 无已知形状差异（解除对象阻断；**不**解除目录阻断，反之亦然） |
