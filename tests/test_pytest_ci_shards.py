@@ -109,6 +109,17 @@ def test_independent_runners_cover_every_file_once_in_original_collection_order(
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
+def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
+    heavy = "tests/test_eval_real_tasks.py"
+    evidence, env, results, docs = shards(tmp_path, {**FILES, heavy: "def test_case(): pass\n"})
+    assert [result.returncode for result in results] == [0, 0]
+    assert docs[0]["selected"] == [f"{heavy}::test_case"]
+    assert docs[1]["selected"] == [node for node, file in docs[1]["full_collection"]
+                                   if file != heavy]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+
 def phase_source(phase, action, *, mark=""):
     prefix = "import pytest\n"
     if phase == "call":

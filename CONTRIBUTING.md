@@ -99,7 +99,7 @@ uv run --frozen ruff check .
 uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=2 --ci-shard-report=REPORT -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
 ```
 
-每片从同一 checkout SHA 做真实完整 collection，按文件节点数确定性分组，同文件不拆、组内保持原收集顺序；节点数只是平衡启发式，不代表耗时或性能改善。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
+每片从同一 checkout SHA 做真实完整 collection，按文件权重确定性分组，同文件不拆、组内保持原收集顺序。权重默认采用节点数；历史 Windows CI 中耗时特别高的文件使用节点数和固定权重下限中的较大值（见 `scripts/pytest_ci_shards.py`）。权重只用于分组，实际耗时以对应 Windows job 为准。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
 
 Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，且汇总硬要求两个 Windows job 整体 `success`。汇总只下载本 run/attempt 的两份独立报告，核对实际/预期 SHA、完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报或重复均拒绝。报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。两片及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
 
