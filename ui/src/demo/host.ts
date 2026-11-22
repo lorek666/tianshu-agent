@@ -75,6 +75,15 @@ export class DemoHostClient implements HostClient {
   async rpc<T = unknown>(method: string, params: RpcParams = {}): Promise<T> {
     const world = this.world;
     switch (method) {
+      case "skill.list":
+        return {
+          format_version: 1, skills: [],
+          issues: [{ path: "演示模式", message: "演示模式不读取本机技能，请连接真实 Host。" }],
+        } as T;
+
+      case "skill.prepare":
+        throw new HostRpcError("unsupported", "演示模式不读取或执行本机技能");
+
       case "state":
         return world.snapshot() as T;
 

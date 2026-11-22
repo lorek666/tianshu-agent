@@ -21,6 +21,8 @@ import type {
 import { EFFECTS_RUN_POLICY, RPC } from "./api/types";
 import { createRealHostClient } from "./api/host";
 import type { HostClient } from "./api/host";
+import { createSkillsApi } from "./api/skills";
+import type { SkillsApi } from "./api/skills";
 import { createDemoHostClient } from "./demo/host";
 import { isDemoRequested, readHostToken } from "./api/token";
 import {
@@ -145,6 +147,7 @@ export function App() {
   const demoMode = useMemo(() => isDemoRequested(), []);
   const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
   const [settingsApi, setSettingsApi] = useState<SettingsApi | null>(null);
+  const [skillsApi, setSkillsApi] = useState<SkillsApi | null>(null);
   const now = useNow(10_000);
   const systemDark = useSystemDarkScheme();
 
@@ -518,6 +521,7 @@ export function App() {
         hostRef.current = host;
         setMemoryApi((previous) => previous ?? createMemoryApi(host));
         setSettingsApi((previous) => previous ?? nextSettingsApi);
+        setSkillsApi(createSkillsApi(host));
         setModelSettings(initialSettings);
         setState(next);
         stateRef.current = next;
@@ -540,6 +544,7 @@ export function App() {
         hostRef.current = null;
         setMemoryApi(null);
         setSettingsApi(null);
+        setSkillsApi(null);
         setModelSettings(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
@@ -1293,6 +1298,7 @@ export function App() {
               busy={busy === "create-task"}
               modelConfig={modelSettings?.model ?? null}
               settingsApi={settingsApi}
+              skillsApi={skillsApi}
               onModelUpdated={handleModelUpdated}
               onJumpToPendingApproval={() => {
                 const target = openApprovals[0];
@@ -1335,6 +1341,7 @@ export function App() {
               modelConfig={modelSettings?.model ?? null}
               settingsApi={settingsApi}
               profiles={modelSettings?.profiles}
+              skillsApi={skillsApi}
               onModelUpdated={handleModelUpdated}
               onSelectRun={handleSelectRun}
               onExecutionPolicyChange={handleExecutionPolicyChange}

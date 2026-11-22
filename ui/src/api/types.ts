@@ -212,6 +212,8 @@ export const RPC = {
   taskList: "task.list",
   taskCreate: "task.create",
   taskRevise: "task.revise",
+  skillList: "skill.list",
+  skillPrepare: "skill.prepare",
   runStart: "run.start",
   runFollowUp: "run.follow_up",
   runAnswerClarification: "run.answer_clarification",

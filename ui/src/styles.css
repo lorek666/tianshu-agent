@@ -3268,6 +3268,96 @@ pre,
   padding: 8px 0;
 }
 
+.skill-composer {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-composer .followup-input {
+  width: 100%;
+}
+
+.skill-command-menu {
+  position: absolute;
+  z-index: 40;
+  bottom: calc(100% + 10px);
+  left: 0;
+  width: min(520px, calc(100vw - 48px));
+  max-height: min(360px, 55vh);
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--composer-shadow);
+  text-align: left;
+}
+
+.skill-command-heading {
+  padding: 4px 8px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.skill-command-option {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.skill-command-option[aria-selected="true"],
+.skill-command-option:focus-visible {
+  background: var(--surface-3);
+  outline: 1px solid var(--accent-border);
+}
+
+.skill-command-option span,
+.skill-command-option small,
+.skill-command-menu p,
+.skill-command-menu summary {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.skill-command-option small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-command-menu p,
+.skill-command-menu details {
+  margin: 6px 8px;
+}
+
+.skill-command-hint {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .skill-command-menu {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: 76px;
+    width: auto;
+  }
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;

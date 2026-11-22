@@ -100,7 +100,7 @@ class FakeHost implements HostClient {
       const envelope: TaskEnvelope = { task: structuredClone(created) };
       return envelope;
     }
-    if (method === "run.start") {
+    if (method === "run.start" || method === "run.follow_up") {
       if (this.failuresRemaining > 0) {
         this.failuresRemaining -= 1;
         throw new HostRpcError("internal", "dispatch.disk_space_low: 可用空间低于 2 GiB");
@@ -285,9 +285,9 @@ describe("独立第二读者：计划模式续接", () => {
     await click(container?.querySelector<HTMLButtonElement>(
       '[data-testid="followup-send-btn"]',
     ) as HTMLButtonElement);
-    await waitFor(() => rpcCalls(host, "run.start").length === 1);
-    console.log("review compact mode/start:", afterCompactMode, rpcCalls(host, "run.start")[0]);
-    expect(rpcCalls(host, "run.start")[0]?.mode).toBe("plan");
+    await waitFor(() => rpcCalls(host, "run.follow_up").length === 1);
+    console.log("review compact mode/follow-up:", afterCompactMode, rpcCalls(host, "run.follow_up")[0]);
+    expect(rpcCalls(host, "run.follow_up")[0]?.mode).toBe("plan");
   });
   it("计划启动失败后的详情重试保留计划模式和请求标识", async () => {
     const host = await mount(state(), 1);

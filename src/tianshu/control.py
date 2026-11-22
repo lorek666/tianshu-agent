@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import memory_control, settings_control
+from . import memory_control, settings_control, skills
 from .conversation import (
     GUIDANCE_EVENTS,
     GUIDANCE_REQUESTED,
@@ -305,6 +305,7 @@ class ControlPlane:
         model_slot: settings_control.RuntimeModelSlot | None = None,
         credential_stores: Mapping[str, Any] | None = None,
         mcp_configs: Mapping[str, Any] | None = None,
+        skills_root: Path | None = None,
     ) -> None:
         self._stack = stack
         self._model = model
@@ -322,6 +323,7 @@ class ControlPlane:
             )
         )
         self._mcp_configs = mcp_configs
+        self._skills_root = skills_root
         self._limits = limits or Limits()
         self._tasks = stack.tasks
         self._claims = stack.claims
@@ -344,6 +346,8 @@ class ControlPlane:
             "task.list": self._task_list,
             "task.create": self._task_create,
             "task.revise": self._task_revise,
+            "skill.list": self._skill_list,
+            "skill.prepare": self._skill_prepare,
             "run.start": self._run_start,
             "run.follow_up": self._run_follow_up,
             "run.answer_clarification": self._run_answer_clarification,
@@ -631,6 +635,19 @@ class ControlPlane:
             raise ControlError("not_found", f"task 不存在：{task_id}")
         task = self._tasks.revise_task(task_id, goal=goal)
         return {"task": task_view(task)}
+
+    def _skill_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return skills.list_skills(
+            params.get("workspace_roots", []), user_root=self._skills_root,
+        )
+
+    def _skill_prepare(self, params: dict[str, Any]) -> dict[str, Any]:
+        return skills.prepare_skill(
+            params.get("workspace_roots", []),
+            _require_str(params, "skill"),
+            params.get("input"),
+            user_root=self._skills_root,
+        )
 
     # ------------------------------------------------------------------ run
 

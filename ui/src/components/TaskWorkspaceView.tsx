@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   EFFECTS_RUN_POLICY,
   PURE_ONLY_RUN_POLICY,
@@ -20,6 +20,9 @@ import { encodeAttachments } from "../lib/attachments";
 import type { TimelineEntry } from "../lib/humanize";
 import type { CostSummary } from "../lib/timeline";
 import { parseComposerCommand } from "../lib/commands";
+import { prepareComposerText } from "../api/skills";
+import type { SkillsApi } from "../api/skills";
+import { SkillCommandMenu } from "./SkillCommandMenu";
 import {
   formatClock,
   formatDuration,
@@ -92,6 +95,7 @@ export interface TaskWorkspaceViewProps {
   reduceMotion: boolean;
   modelConfig?: ModelConfigView | null;
   settingsApi?: SettingsApi | null;
+  skillsApi?: SkillsApi | null;
   onModelUpdated?: (settings: SettingsView) => void;
   onSelectRun: (runId: string) => void;
   onExecutionPolicyChange: (taskId: string, policy: RunExecutionPolicyV1) => void;
@@ -173,6 +177,7 @@ export function TaskWorkspaceView({
   reduceMotion,
   modelConfig = null,
   settingsApi = null,
+  skillsApi = null,
   onModelUpdated,
   onSelectRun,
   onExecutionPolicyChange,
@@ -201,6 +206,17 @@ export function TaskWorkspaceView({
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
   const [interactionMode, setInteractionMode] = useState<"execute" | "plan">(defaultMode);
   const [commandError, setCommandError] = useState<string | null>(null);
+
+  const submissionGeneration = useRef(0);
+  const submissionContext = JSON.stringify([
+    task.task_id, task.goal_revision, task.goal, task.workspaces, task.active_run_id,
+    executionPolicy, interactionMode, followUpText,
+  ]);
+  useEffect(() => {
+    submissionGeneration.current += 1;
+    setFollowUpSubmitting(false);
+    return () => { submissionGeneration.current += 1; };
+  }, [submissionContext, skillsApi]);
 
   useEffect(() => {
     setDraftGoal(task.goal);
@@ -288,6 +304,10 @@ export function TaskWorkspaceView({
       setCommandError(command.text);
       return;
     }
+    if (command.kind === "skills") {
+      setFollowUpText("/");
+      return;
+    }
     if (command.kind === "plan" && command.text === "") {
       setInteractionMode("plan");
       setFollowUpText("");
@@ -295,28 +315,38 @@ export function TaskWorkspaceView({
     }
     setFollowUpSubmitting(true);
     setFollowUpError(null);
+    const generation = submissionGeneration.current;
     try {
       if (command.kind === "compact" || command.kind === "execute") {
         if (onWorkflowCommand === undefined) throw new Error("当前连接不支持此命令。");
         await onWorkflowCommand(command.kind, task, selectedRun);
-      } else if (guidanceTarget !== null && onGuide !== undefined) {
-        if (command.kind === "plan") throw new Error("请先结束当前运行，再生成计划。");
-        await onGuide(guidanceTarget, command.text);
-      } else if (followUpSource !== null) {
-        const attachments = await encodeAttachments(followUpFiles, canAttachImages);
-        await onFollowUpSubmit(
-          task, followUpSource, command.text, executionPolicy, modelSelection, attachments,
-          command.kind === "plan" ? "plan" : interactionMode,
-        );
-        setFollowUpFiles([]);
       } else {
-        throw new Error("请选择已完成的运行，或开始新运行。");
+        const text = await prepareComposerText(
+          command, skillsApi, task.workspaces.map((workspace) => workspace.root_path),
+        );
+        if (generation !== submissionGeneration.current) return;
+        if (guidanceTarget !== null && onGuide !== undefined) {
+          if (command.kind === "plan") throw new Error("请先结束当前运行，再生成计划。");
+          await onGuide(guidanceTarget, text);
+        } else if (followUpSource !== null) {
+          const attachments = await encodeAttachments(followUpFiles, canAttachImages);
+          if (generation !== submissionGeneration.current) return;
+          await onFollowUpSubmit(
+            task, followUpSource, text, executionPolicy, modelSelection, attachments,
+            command.kind === "plan" ? "plan" : interactionMode,
+          );
+          if (generation === submissionGeneration.current) setFollowUpFiles([]);
+        } else {
+          throw new Error("请选择已完成的运行，或开始新运行。");
+        }
       }
-      setFollowUpText("");
+      if (generation === submissionGeneration.current) setFollowUpText("");
     } catch (error) {
-      setFollowUpError(error instanceof Error ? error.message : "提交失败，请重试。");
+      if (generation === submissionGeneration.current) {
+        setCommandError(error instanceof Error ? error.message : "提交失败，请重试。");
+      }
     } finally {
-      setFollowUpSubmitting(false);
+      if (generation === submissionGeneration.current) setFollowUpSubmitting(false);
     }
   };
 
@@ -737,6 +767,9 @@ export function TaskWorkspaceView({
               void submitFollowUp();
             }}
           >
+            <SkillCommandMenu value={followUpText} onChange={setFollowUpText}
+              workspaceRoots={task.workspaces.map((workspace) => workspace.root_path)}
+              api={skillsApi}>
             <input
               className="followup-input"
               data-testid="followup-input"
@@ -753,6 +786,7 @@ export function TaskWorkspaceView({
               onChange={(event) => setFollowUpText(event.target.value)}
               disabled={followUpSubmitting || savingGoal || !canSend}
             />
+            </SkillCommandMenu>
 
             <select aria-label="任务模式" data-testid="followup-mode-select"
               className="chip-btn" value={interactionMode} disabled={followUpSubmitting}
