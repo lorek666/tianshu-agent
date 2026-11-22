@@ -25,7 +25,9 @@ from .model import (
     UrllibTransport,
     _credential_for,
     _HttpModel,
+    _native_cache_usage,
 )
+from .prompt_cache import responses_breakpoints, routing_key, stable_tools
 from .task_attachments import AttachmentError, text_attachment, validated_attachments
 
 
@@ -60,15 +62,10 @@ def _usage(raw: Any) -> dict[str, int | None]:
     usage = {k: _count(raw.get(k)) for k in ("input_tokens", "output_tokens")}
     details = raw.get("input_tokens_details")
     if details is not None:
-        if not isinstance(details, dict):
-            raise _protocol()
-        if "cached_tokens" in details:
-            cached = _count(details["cached_tokens"])
-            if cached is not None and (
-                usage["input_tokens"] is None or cached > usage["input_tokens"]
-            ):
-                raise _protocol()
-            usage["cache_read_input_tokens"] = cached
+        try:
+            _native_cache_usage(usage, details, require_total=True)
+        except ModelError:
+            raise _protocol() from None
     # reasoning_tokens 已含在 output_tokens 中，不做第二次相加。
     return usage
 
@@ -89,6 +86,7 @@ class OpenAIResponsesModel(_HttpModel):
         transport: Transport | None = None,
         allow_image_attachments: bool = False,
         compact_threshold: int | None = None,
+        cache_policy: str | None = None,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("Responses 必须显式指定 model")
@@ -103,6 +101,7 @@ class OpenAIResponsesModel(_HttpModel):
                 transport if transport is not None
                 else UrllibTransport(allow_redirects=False, strict_framing=True)
             ),
+            cache_policy=cache_policy,
         )
         self._endpoint = endpoint
         self.compact_threshold = validate_compact_threshold(compact_threshold, responses=True)
@@ -112,6 +111,7 @@ class OpenAIResponsesModel(_HttpModel):
         return self.ADAPTER, self._endpoint, self.model
 
     def _request(self, messages, tools):
+        tools = stable_tools(tools, self.cache_policy)
         try:
             require_scope(messages, self.continuation_scope())
             items: list[dict[str, Any]] = []
@@ -180,6 +180,13 @@ class OpenAIResponsesModel(_HttpModel):
             body["context_management"] = [
                 {"type": "compaction", "compact_threshold": self.compact_threshold}
             ]
+        if self.cache_policy != "off":
+            body["prompt_cache_key"] = routing_key(
+                adapter=self.ADAPTER, endpoint=self._endpoint, model=self.model,
+                policy=self.cache_policy, messages=messages, tools=tools,
+            )
+        if self.cache_policy == "responses-explicit-v1":
+            responses_breakpoints(body)
         return self._endpoint, body, {"Authorization": f"Bearer {self.api_key}"}
 
     def _parse(self, data):

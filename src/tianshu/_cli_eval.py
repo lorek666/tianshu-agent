@@ -56,6 +56,8 @@ def add_evaluate_parser(sub: argparse._SubParsersAction) -> None:
     ev.add_argument("--baseline", type=Path, default=None,
                     help="基线报告 JSON；给了就做可比性检查与退化/改进归因")
     ev.add_argument("--out", type=Path, default=None, help="把报告 JSON 写到这个路径")
+    ev.add_argument("--cache-report", type=Path, default=None,
+                    help="另存缓存用量/上下文条件/C5 质量旁路报告，不增加模型调用")
     ev.add_argument("--json", action="store_true")
 
 
@@ -113,6 +115,13 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "子集报告的安全门槛只覆盖选中的几条，拿它当'可比分数'是假证据；"
             "正式评测请跑完整 20 条。"
         )
+    cache_path = args.cache_report
+    if cache_path is not None:
+        if cache_path.is_dir() or any(
+            other is not None and other.resolve() == cache_path.resolve()
+            for other in (args.out, args.baseline)
+        ):
+            raise TianshuError("--cache-report 必须是独立文件，不能覆盖主报告或基线")
     workdir = args.workdir or _default_eval_workdir()
     if workdir.exists() and any(workdir.iterdir()):
         raise TianshuError(
@@ -170,6 +179,18 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         },
     )
     report["workspace_retained"] = bool(args.keep)
+    if cache_path is not None:
+        from .cache_metrics import build_cache_report
+
+        cache = build_cache_report(
+            suite, report, policy=(
+                "off" if real_model is None else getattr(real_model, "cache_policy", "unknown")
+            ),
+        )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
     comparison = None
     if args.baseline is not None:
         baseline = json.loads(args.baseline.read_bytes().decode("utf-8"))

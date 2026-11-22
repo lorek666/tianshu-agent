@@ -50,6 +50,12 @@ from .credentials import (
 )
 from .errors import TianshuError
 from .http_framing import HttpFramingError, chunk_lines, read_chunks, response_length
+from .prompt_cache import (
+    anthropic_breakpoints,
+    resolve_policy,
+    routing_key,
+    stable_tools,
+)
 from .task_attachments import AttachmentError, plain_messages
 
 # PRD §5.5：模型侧的结束原因，13 值封闭集合。
@@ -271,14 +277,52 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
                 raise ModelError(f"usage.{src} 必须是非负整数", kind="protocol")
             out[dst] = v
     for src, dst in _USAGE_OPTIONAL.items():
-        v = raw.get(src)
-        if src in raw and v is None:
-            out[dst] = None
-        if isinstance(v, int) and not isinstance(v, bool):
-            if v < 0:
-                raise ModelError(f"usage.{src} 必须是非负整数", kind="protocol")
-            out[dst] = v
+        if src not in raw:
+            continue
+        value = raw[src]
+        if value is not None and (type(value) is not int or value < 0):
+            raise ModelError(f"usage.{src} 必须是非负整数或 null", kind="protocol")
+        out[dst] = value
     return out
+
+
+def _chat_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
+    """Chat 原生缓存读取是 prompt_tokens 的子集，保留缺失/null 与最终快照。"""
+    usage = normalize_usage(raw)
+    if not isinstance(raw, dict) or raw.get("prompt_tokens_details") is None:
+        return usage
+    return _native_cache_usage(usage, raw["prompt_tokens_details"])
+
+
+def _native_cache_usage(
+    usage: dict[str, int | None], details: Any, *, require_total: bool = False,
+) -> dict[str, int | None]:
+    """OpenAI 原生 read/write 都是总输入的子集；只投影实际出现的字段。"""
+    if not isinstance(details, dict):
+        raise ModelError("usage token details 必须是对象", kind="protocol")
+    total = usage["input_tokens"]
+    for source, target in (
+        ("cached_tokens", "cache_read_input_tokens"),
+        ("cache_write_tokens", "cache_creation_input_tokens"),
+    ):
+        if source not in details:
+            continue
+        value = details[source]
+        if value is not None and (type(value) is not int or value < 0):
+            raise ModelError(f"usage.{source} 必须是非负整数或 null", kind="protocol")
+        if value is not None and (
+            (require_total and total is None) or (total is not None and value > total)
+        ):
+            raise ModelError(f"usage.{source} 超过已知输入", kind="protocol")
+        if target in usage and usage[target] != value:
+            raise ModelError("usage 缓存字段冲突", kind="protocol")
+        usage[target] = value
+    known_cache = [usage.get(key) for key in (
+        "cache_read_input_tokens", "cache_creation_input_tokens",
+    )]
+    if total is not None and sum(value or 0 for value in known_cache) > total:
+        raise ModelError("usage 缓存读写之和超过输入", kind="protocol")
+    return usage
 
 
 class Model(Protocol):
@@ -770,6 +814,7 @@ class _HttpModel:
         env_key: str,
         timeout: float,
         transport: Transport | None,
+        cache_policy: str | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -780,6 +825,9 @@ class _HttpModel:
         register_secret(api_key)
         self.timeout = timeout
         self._transport = transport or UrllibTransport()
+        self.cache_policy = resolve_policy(
+            cache_policy, adapter=self.ADAPTER, endpoint=self.base_url,
+        )
         if not self.api_key:
             # 缺 key 是配置问题，不是"模型这一轮怎么结束的"，所以不走
             # finish_reason；抛错让 CLI 直接说清楚要设哪个环境变量。
@@ -848,6 +896,7 @@ class OpenAICompatibleModel(_HttpModel):
         api_key: str | None = None,
         timeout: float = 60.0,
         transport: Transport | None = None,
+        cache_policy: str | None = None,
     ) -> None:
         super().__init__(
             model,
@@ -857,10 +906,12 @@ class OpenAICompatibleModel(_HttpModel):
             env_key="TIANSHU_API_KEY",
             timeout=timeout,
             transport=transport,
+            cache_policy=cache_policy,
         )
 
     def _request(self, messages, tools):
         _reject_continuation(messages)
+        tools = stable_tools(tools, self.cache_policy)
         body: dict[str, Any] = {
             "model": self.model,
             "messages": _provider_text_messages(messages),
@@ -873,6 +924,11 @@ class OpenAICompatibleModel(_HttpModel):
             # 静默丢掉——模型于是只看得见工具名和描述，参数全靠猜。
             # 这条漏翻从 M0 就在，直到接第二个协议做对照才被发现。
             body["tools"] = [_openai_tool(t) for t in tools]
+        if self.cache_policy != "off":
+            body["prompt_cache_key"] = routing_key(
+                adapter=self.ADAPTER, endpoint=self.base_url, model=self.model,
+                policy=self.cache_policy, messages=messages, tools=tools,
+            )
         return (
             f"{self.base_url}/chat/completions",
             body,
@@ -936,7 +992,7 @@ class OpenAICompatibleModel(_HttpModel):
             finish_reason=finish,
             content=content,
             tool_calls=calls,
-            usage=normalize_usage(data.get("usage")),
+            usage=_chat_usage(data.get("usage")),
         )
 
     def stream_complete(
@@ -949,6 +1005,8 @@ class OpenAICompatibleModel(_HttpModel):
             return self.complete(messages, tools)
         url, body, headers = self._request(messages, tools)
         body = {**body, "stream": True}
+        if self.cache_policy != "off":
+            body["stream_options"] = {"include_usage": True}
         content_parts: list[str] = []
         tool_acc: dict[int, dict[str, str]] = {}
         notified_tools: set[int] = set()
@@ -1113,6 +1171,7 @@ class AnthropicMessagesModel(_HttpModel):
         timeout: float = 60.0,
         max_tokens: int = 4096,
         transport: Transport | None = None,
+        cache_policy: str | None = None,
     ) -> None:
         super().__init__(
             model,
@@ -1128,12 +1187,14 @@ class AnthropicMessagesModel(_HttpModel):
             env_key="ANTHROPIC_API_KEY",
             timeout=timeout,
             transport=transport,
+            cache_policy=cache_policy,
         )
         # Messages API 里 max_tokens 是**必填**的（OpenAI 那边是可选）。
         self.max_tokens = max_tokens
 
     def _request(self, messages, tools):
         _reject_continuation(messages)
+        tools = stable_tools(tools, self.cache_policy)
         system, converted = to_anthropic_messages(_provider_text_messages(messages))
         body: dict[str, Any] = {
             "model": self.model,
@@ -1146,6 +1207,8 @@ class AnthropicMessagesModel(_HttpModel):
         if tools:
             # 本项目的 C2 投影已经是 {name, description, input_schema}
             body["tools"] = [dict(t) for t in tools]
+        if self.cache_policy != "off":
+            anthropic_breakpoints(body)
         return (
             f"{self.base_url}/messages",
             body,
