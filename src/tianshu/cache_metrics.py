@@ -129,6 +129,36 @@ def _requests(events) -> tuple[list[dict], int, int]:
     return samples, sum(map(len, intents.values())) - paired, duplicates
 
 
+def _auxiliary_requests(records: list[dict], run_ids: set[str]) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for record in records:
+        request = record["request"]
+        if request["run_id"] not in run_ids:
+            raise ValueError("辅助调用不属于当前观察的 Run")
+        key = request["summary_id"]
+        if key in seen and seen[key] != record:
+            raise ValueError("同一摘要存在冲突的辅助遥测")
+        seen[key] = record
+    samples = []
+    for record in seen.values():
+        request, response = record["request"], record["response"]
+        samples.append({
+            "run_id": request["run_id"], "request_id": request["attempt_id"],
+            "summary_id": request["summary_id"], "material_id": request["material_id"],
+            "messages_hash": request["messages_hash"], "policy": request["policy"],
+            "request_hash": record["request_hash"], "response_hash": record["response_hash"],
+            "condition": "semantic_summary_generation",
+            "provider": request["provider"], "adapter": request["adapter"],
+            "model": request["model"],
+            "cost": response["cost"]["cost"] if response is not None else None,
+            **cache_usage(
+                response["usage"] if response is not None else {},
+                vendor=request["provider"], adapter=request["adapter"],
+            ),
+        })
+    return samples
+
+
 def build_cache_report(
     suite: SuiteRun, quality_report: dict, *, policy: str,
 ) -> dict[str, Any]:
@@ -140,7 +170,7 @@ def build_cache_report(
         (case["case_id"], run["run_id"], run["run_index"]): (case, run)
         for case in quality_report["cases"] for run in case["run_details"]
     }
-    runs, requests = [], []
+    runs, requests, auxiliary_requests = [], [], []
     for observation in suite.observations:
         case, checked = quality[(observation.case_id, observation.run_id, observation.run_index)]
         events = [*observation.events, *observation.subtask_events]
@@ -151,6 +181,16 @@ def build_cache_report(
         samples, unpaired, duplicates = _requests(
             sorted(unique.values(), key=lambda event: event.seq)
         )
+        root_ids = {observation.run_id}
+        if observation.followup is not None:
+            root_ids.add(observation.followup.run_id)
+        auxiliary_samples = _auxiliary_requests(
+            observation.auxiliary_model_calls, root_ids | {event.run_id for event in events},
+        )
+        auxiliary_requests.extend({
+            **sample, "case_id": observation.case_id, "scope": case["scope"],
+            "run_index": observation.run_index,
+        } for sample in auxiliary_samples)
         requests.extend({**sample, "case_id": observation.case_id, "scope": case["scope"],
                          "run_index": observation.run_index} for sample in samples)
         workflows = {
@@ -166,13 +206,10 @@ def build_cache_report(
             root_results.append(observation.followup.result)
         auxiliary = None
         if all(result is not None and result.model_attempts_known for result in root_results):
-            root_ids = {observation.run_id}
-            if observation.followup is not None:
-                root_ids.add(observation.followup.run_id)
             auxiliary = max(0, sum(result.model_attempts for result in root_results) - sum(
                 event.type == "model.intent" and event.run_id in root_ids
                 for event in unique.values()
-            ))
+            ) - sum(sample["run_id"] in root_ids for sample in auxiliary_samples))
         runs.append({
             "case_id": observation.case_id, "scope": case["scope"], "run_id": observation.run_id,
             "run_index": observation.run_index, "fixture_digest": case["fixture_digest"],
@@ -189,15 +226,27 @@ def build_cache_report(
             "attempts_without_result": unpaired,
             "duplicate_results": duplicates,
             "auxiliary_attempts_without_cache_telemetry": auxiliary,
+            "auxiliary_telemetry_error": observation.auxiliary_telemetry_error,
+            "auxiliary_attempts_without_result": sum(
+                sample["response_hash"] is None for sample in auxiliary_samples
+            ),
             **{name: checked[name] for name in (
                 "elapsed_ms", "turns", "tokens", "cost_total_micros", "unknown_cost_calls",
             )},
             "usage": summarize_usage(samples),
+            "auxiliary_usage": summarize_usage(auxiliary_samples),
+            "all_usage": summarize_usage([*samples, *auxiliary_samples]),
         })
     usage_groups: dict[tuple, list] = defaultdict(list)
+    auxiliary_groups: dict[tuple, list] = defaultdict(list)
     quality_groups: dict[tuple[str, str], list] = defaultdict(list)
     for request in requests:
         usage_groups[(
+            request["scope"], request["provider"], request["adapter"],
+            request["model"], request["condition"],
+        )].append(request)
+    for request in auxiliary_requests:
+        auxiliary_groups[(
             request["scope"], request["provider"], request["adapter"],
             request["model"], request["condition"],
         )].append(request)
@@ -221,10 +270,18 @@ def build_cache_report(
             "厂商不明的兼容端点保留计数但不推断官方分母；没有长度估算。",
             "baseline_or_spilled 无已记录的摘要/裁剪/记忆，不证明工具输出从未 spill。",
             "mixed 样本不把整项任务成功归因于单个请求；条件间不是随机对照实验。",
-            "语义摘要辅助调用未保存缓存 usage，单列缺口；总成本以 C5 报告/账本为准。",
+            "辅助摘要单列统计；无最终回执仍为未知，旧库可能缺少辅助遥测；"
+            "总成本以 C5 报告/账本为准。",
             "策略是本次调用方配置，不是历史事件中的逐请求策略事实。",
         ],
         "usage": summarize_usage(requests),
+        "auxiliary_usage": summarize_usage(auxiliary_requests),
+        "all_usage": summarize_usage([*requests, *auxiliary_requests]),
+        "auxiliary_usage_by_provider_condition": [
+            {"scope": key[0], "provider": key[1], "adapter": key[2],
+             "model": key[3], "condition": key[4], **summarize_usage(samples)}
+            for key, samples in sorted(auxiliary_groups.items(), key=lambda item: str(item[0]))
+        ],
         "usage_by_provider_condition": [
             {"scope": key[0], "provider": key[1], "adapter": key[2],
              "model": key[3], "condition": key[4],
@@ -246,5 +303,5 @@ def build_cache_report(
              "safety_failed": sum(run["safety_failed"] is True for run in group)}
             for (scope, condition), group in sorted(quality_groups.items())
         ],
-        "runs": runs, "requests": requests,
+        "runs": runs, "requests": requests, "auxiliary_requests": auxiliary_requests,
     }

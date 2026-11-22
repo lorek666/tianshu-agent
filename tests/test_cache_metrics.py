@@ -16,6 +16,151 @@ def metrics_module():
     return cache_metrics
 
 
+def test_auxiliary_summary_usage_has_separate_and_combined_denominators(tmp_path):
+    from test_summary_cache_telemetry import CachedSummaryModel, calls
+    from test_summary_loop import _run
+
+    from tianshu.eval.checks import Observation
+    from tianshu.eval.runner import SuiteRun
+
+    case = select_cases(["N1"])[0]
+    observations = []
+    summary_count = 0
+    for index in range(3):
+        result, _, log = _run(tmp_path / f"run{index}", CachedSummaryModel(), summary_mode="model")
+        recorded = calls(log)
+        summary_count += len(recorded)
+        observations.append(Observation(
+            case_id=case.case_id, category=case.category, run_index=index,
+            run_id=result.run_id, out_name=case.out_name,
+            result=result, events=log.read_run(result.run_id),
+            auxiliary_model_calls=recorded + recorded,  # 重叠取证不增加调用。
+        ))
+        log.close()
+    suite = SuiteRun(
+        observations, tmp_path, 0,
+        {"adapter": "openai-compatible", "vendor": "openai", "model": "gpt-4o"},
+        "m4.6", 3,
+    )
+    quality = build_report(suite, (case,))
+    report = metrics_module().build_cache_report(suite, quality, policy="prefix-v1")
+    assert report["usage"]["calls"] == 21
+    assert len(report["auxiliary_requests"]) == summary_count > 0
+    assert report["auxiliary_usage"]["calls"] == summary_count
+    assert report["auxiliary_usage"]["observed_token_read_fraction"] == pytest.approx(2 / 3)
+    assert report["all_usage"]["calls"] == 21 + summary_count
+    assert report["all_usage"]["incomplete_calls"] == 21
+    assert report["quality_verdict"] == quality["verdict"] != "pass"
+    assert all(run["auxiliary_attempts_without_cache_telemetry"] == 0 for run in report["runs"])
+    assert all(request["condition"] == "semantic_summary_generation"
+               and request["request_hash"] and request["response_hash"]
+               for request in report["auxiliary_requests"])
+
+
+def test_eval_collector_keeps_auxiliary_evidence_before_removing_case_database(
+    tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+
+    from test_summary_cache_telemetry import CachedSummaryModel
+    from test_summary_loop import BUDGET_BYTES, CONSTRAINT
+
+    from tianshu.eval import runner
+    from tianshu.loop import Limits
+
+    case = replace(
+        select_cases(["N1"])[0],
+        fixture={"notes.md": CONSTRAINT + "\n" + "正文。" * 120,
+                 "body.md": "后续正文。" * 120},
+    )
+    # 只替换配置构造；真正 loop、摘要、SQL 和取证仍走产品路径。
+    monkeypatch.setattr(runner, "Limits", lambda *args: Limits(
+        *args, context_budget_bytes=BUDGET_BYTES, summary_mode="model",
+    ))
+    suite = run_suite(
+        (case,), model_for=lambda _: CachedSummaryModel(), repeat=3,
+        workdir=tmp_path / "eval",
+    )
+    assert not (tmp_path / "eval" / "N1").exists()
+    assert all(obs.auxiliary_model_calls for obs in suite.observations), [
+        (obs.error, obs.invalid_reason, obs.result.summary_calls,
+         [(e.payload["context"].get("dropped_seqs"), e.payload["context"].get("summaries"))
+          for e in obs.events if e.type == "model.intent"]) for obs in suite.observations
+    ]
+    report = metrics_module().build_cache_report(
+        suite, build_report(suite, (case,)), policy="prefix-v1",
+    )
+    assert report["auxiliary_usage"]["complete_calls"] > 0
+
+
+def test_pending_auxiliary_summary_call_is_incomplete_not_a_cache_miss(tmp_path):
+    from test_summary_cache_telemetry import calls
+    from test_summary_loop import ConstraintModel, _run
+
+    from tianshu.eval.checks import Observation
+    from tianshu.eval.runner import SuiteRun
+    from tianshu.model import ModelError
+
+    class FailingSummary(ConstraintModel):
+        def complete(self, messages, tools):
+            if not tools:
+                raise ModelError("no final usage", kind="auth")
+            return super().complete(messages, tools)
+
+    case = select_cases(["N1"])[0]
+    observations = []
+    total = 0
+    for index in range(3):
+        result, _, log = _run(tmp_path / f"run{index}", FailingSummary(), summary_mode="model")
+        total += result.summary_calls
+        observations.append(Observation(
+            case_id="N1", category=case.category, run_index=index,
+            run_id=result.run_id, out_name=case.out_name, result=result,
+            events=log.read_run(result.run_id), auxiliary_model_calls=calls(log),
+        ))
+        log.close()
+    suite = SuiteRun(
+        observations, tmp_path, 0,
+        {"adapter": "fake", "vendor": "acme", "model": "constraint-model"}, "m4.6", 3,
+    )
+    report = metrics_module().build_cache_report(
+        suite, build_report(suite, (case,)), policy="off",
+    )
+    assert report["auxiliary_usage"]["calls"] == total > 0
+    assert report["auxiliary_usage"]["complete_calls"] == 0
+    assert report["auxiliary_usage"]["observed_request_hit_fraction"] is None
+    assert sum(run["auxiliary_attempts_without_result"] for run in report["runs"]) == total
+    assert report["runs"][0]["auxiliary_attempts_without_cache_telemetry"] == 0
+
+
+def test_auxiliary_collection_error_cannot_hide_a_c5_safety_failure(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from tianshu.errors import TianshuError
+    from tianshu.eval import runner
+    from tianshu.eval.checks import Check
+
+    def corrupted(_log):
+        raise TianshuError("摘要缓存遥测损坏")
+
+    monkeypatch.setattr(runner, "read_calls", corrupted)
+    base = select_cases(["N1"])[0]
+    case = replace(base, checks=(*base.checks, Check(
+        "injected.safety", safety=True, metric=False,
+        fn=lambda _: (False, "安全门槛负控"),
+    )))
+    suite = run_suite(
+        (case,), model_for=lambda c: ScriptedModel(list(c.script)),
+        repeat=3, workdir=tmp_path / "eval",
+    )
+    quality = build_report(suite, (case,))
+    report = metrics_module().build_cache_report(suite, quality, policy="off")
+    assert quality["verdict"] == report["quality_verdict"] == "unsafe"
+    assert all(obs.valid for obs in suite.observations)
+    assert all(run["auxiliary_telemetry_error"] for run in report["runs"])
+    assert report["quality_by_condition"][0]["safety_failed"] == 3
+
+
 @pytest.mark.parametrize("vendor,adapter,expected", [
     ("openai", "openai-compatible", 100),
     ("openai", "openai-responses", 100),

@@ -100,7 +100,7 @@ macOS/Windows 再折叠大小写，拒绝等价拼写及其父子路径冲突。
 - 未配对的 intent、重复 result 和缺少缓存遥测的辅助调用；
 - suite、fixture、主报告 SHA256 与本次主模型策略配置。
 
-仅统计 `model.result`，不再把同一调用的 `run.model_turn` 算一次。
+主调用仅统计 `model.result`，不再把同一调用的 `run.model_turn` 算一次。
 未知厂商的兼容端点保留原始计数，分母未知；没有回执的调用不算零用量或未命中。
 策略配置不是历史事件中逐请求的策略证明。
 质量分组保持 `scope × 上下文条件`；脚本恢复任务的通过不能计入被评测模型的任务成功率。
@@ -113,8 +113,27 @@ macOS/Windows 再折叠大小写，拒绝等价拼写及其父子路径冲突。
 
 这是一份观测报告，不能自动证明因果。真实对照需固定模型/端点/任务/工具/判据，
 分别收集原始、压缩、记忆和语义摘要条件，每条件至少三次，并保留冷/热顺序及间隔。
-语义摘要辅助调用尚未保存缓存明细，报告单列缺口；总调用、总费用以 C5 和账本为准，
-不得只报压缩后请求的命中率来掩盖压缩开销。
+语义摘要辅助调用的缓存明细保存在同库的追加式 `summary_model_calls` /
+`summary_model_usage`，绑定摘要、材料、Run、attempt、模型身份、消息哈希和调用方策略。
+发送前提交调用身份，返回后保存最终 usage；正文不合格仍保留实际用量。
+模型异常或返回结果持久化前中断保持未知，不重发。记录不含 prompt 正文或凭据。
+这些记录不进入主对话事件，不改变回放消息和共享预算结算。
+
+`requests` / `usage` / `usage_by_provider_condition` 继续仅表示主调用；新增
+`auxiliary_requests` / `auxiliary_usage` / `auxiliary_usage_by_provider_condition`
+单列摘要生成开销，`all_usage` 合并两类已记录调用。辅助调用条件明确标为
+`semantic_summary_generation`，不混进摘要应用后的质量归因。相同摘要取证去重，
+无回执的辅助调用计入未知覆盖；旧库仍可能缺少遥测，报告保留缺口字段。
+旁路取证损坏单列 `auxiliary_telemetry_error`，不能把 C5 安全失败变成无效样本。
+评测器关库前收集同库根、子和 followup 证据，并复用产品共享预算装配。
+总调用、总费用以 C5 和账本为准，不得只报压缩后请求命中率来掩盖摘要/压缩开销。
+
+这补齐了观测链路，尚未完成付费 A/B。当前 `evaluate` 默认关闭模型摘要，也没有
+自动组织固定任务的原始/compact/记忆/语义摘要随机对照；启用摘要与控制实验条件
+仍需要显式实验装配。实际端点、模型、可用凭据与最高花费明确后才能开展付费实验。
+未取得相应实测结果前，命中率、成本和质量的改善均为未验证。
 
 设计与验收依据见[spec](superpowers/specs/2026-11-22-prompt-cache-design.md)，
-实施状态见[变更记录](changelog/2026-11-22-prompt-cache.md)。
+摘要遥测增量见[补充 spec](superpowers/specs/2026-11-23-summary-cache-telemetry.md)，
+实施状态见[变更记录](changelog/2026-11-22-prompt-cache.md)与
+[摘要遥测记录](changelog/2026-11-23-summary-cache-telemetry.md)。

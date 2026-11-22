@@ -22,10 +22,11 @@
 
 ## 与事件的关系
 
-**不新增事件类型**（`EVENT_TYPES` 仍 41 个）。摘要调用的审计面是三处，各有单一
+**不新增事件类型**。摘要调用的审计面如下，各有单一
 职责、不重复存正文：
 
 - 本模块的表：摘要正文、来源、模型 / prompt / 摘要版本、实际 usage、`attempt_id`；
+- `summary_model_calls` / `summary_model_usage`：追加式调用身份与最终缓存 usage；
 - 预算账本的 `budget_reservations` / `budget_counters`：这次调用预占与结算了多少；
 - `model.intent.payload.context.summaries`：这一轮**实际引用**了哪几个版本；
 - `RunResult.summary_calls`：这个 Run 一共做了几次摘要调用（resume 不丢）。
@@ -49,6 +50,7 @@ from typing import Any
 
 from .canonical import jcs_sha256
 from .errors import TianshuError
+from .summary_telemetry import SCHEMA as TELEMETRY_SCHEMA
 
 #: 材料渲染格式版本。改了渲染规则必须改它：否则同一批来源会算出同一个
 #: `material_id`，而渲染文本不同，"同材料同摘要"的判定就失效了。
@@ -469,7 +471,7 @@ class SummaryStore:
     def ensure_schema(self) -> None:
         if self._schema_ready:
             return
-        self._conn.executescript(SCHEMA)
+        self._conn.executescript(SCHEMA + TELEMETRY_SCHEMA)
         self._schema_ready = True
 
     def _require_schema(self) -> None:
