@@ -61,7 +61,7 @@ Goal 关闭不修改 Task 或 Run 历史，也不回滚已生效的副作用。
 
 新增三种当前 v1 事件，`actor_kind=human`：
 
-- `goal.created`：Task scope（`run_id=task`），封闭 payload：
+- `goal.created`：既有 Task scope（`run_id=""`），封闭 payload：
   `format_version=1, goal_id, goal_revision, request_id, criteria[],
   max_rounds, execution_policy`。
 - `goal.round_started`：本轮 Run scope，封闭 payload：
