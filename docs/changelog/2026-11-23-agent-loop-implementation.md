@@ -1,8 +1,10 @@
 # Agent 主循环：本地集成与验收
 
 日期：2026-11-23。分支：`codex/agent-loop-implementation`。
-状态：主循环本地候选已实现，完整本地回归与最终增量独立复审已通过；
-最终 PR 的 required CI 单独核验，尚未合入或发布。
+状态：主循环本地候选已实现；首轮完整原生 CI 失败已留证，
+修复候选 `b7f0f13` 的独立增量复审通过后，全量发现新增诊断测试资源串扰；
+最新 `94fd94e` 已通过新的完整本机回归及一文件独立增量复审。
+新候选仍须完整 required CI，尚未合入或发布。
 规格见 [Agent 主循环](../SPEC-AGENT-LOOP-2026-11-22.md)，
 计划见[实施计划](../superpowers/plans/2026-11-22-agent-loop.md)。
 契约为 [PR #223](https://github.com/lorek666/tianshu-agent/pull/223)，
@@ -125,7 +127,7 @@ Skill 只作为本轮输入，不自动安装或执行引用脚本。
 修复后的受影响域、SLO/短时浸泡、Mission/MCP、执行准入、有限授权和材料回归
 均已退出 0；修复中间出现的测试夹具错误也保留原件，不冒充成功。
 
-## 当前验证与版本绑定
+## 前轮验证与版本绑定
 
 本地原始证据保存在 ignored `.omc/artifacts/agent-loop-implementation/`；
 独立原件保存在独立工作树的 `.omc/artifacts/agent-loop-final-review/`。
@@ -155,6 +157,101 @@ Skill 只作为本轮输入，不自动安装或执行引用脚本。
   与 `m4.6` 等旧报告不可比，详见 [M4 验证记录](../M4-verification.md) §7.5。
 - `b3d485d..ac02f34` 的新代码增量独立复审已通过；最终候选的 GitHub required CI
   尚待完成。不能用其他 PR、较老 SHA、本机绿或 draft 跳过记录替代。
+
+## 首轮原生 CI 失败与修复候选
+
+首轮完整 run `45051156861` 已结束。Ubuntu Python、UI 及 macOS/Windows Rust
+成功；macOS Python、Windows 两个 Python 分片及其 required 汇总失败。
+原件、失败退出码及中间失败均保留，不取消其他平台或以重试覆盖。
+该轮绑定 head `1610c7bee8cbe28b5feac5bc1c840f4d964138c7`、
+base `bd3c88cdf71326bef3f3ae93d465a15801e4a76b`；
+合成 merge 及已核验的 UI 实际 checkout 为
+`b2903e90f6b6dae3072a47ee5665461d8e98022b`，其 tree 与该 head 相同。
+PR #225 已退回 draft。
+
+失败原因及修复：
+
+- NTFS 的 `st_dev/st_ino` 可能超过 JCS 安全整数范围。仅在指纹哈希输入中，
+  将超范围身份无损编码为十进制字符串；安全整数保留原表示，不截断或浮点化，
+  不放宽 canonical 对越界 JSON 数字的拒绝。
+- 中文夹具与历史 JSON 不再依赖系统默认文本编码，改用 UTF-8 字节。
+  独立进程的 cp1252 探针保留修复前失败与修复后通过原件。
+- POSIX IPC 在并发关闭后可能使用已被复用的描述符。真实 socket、子进程与
+  屏障已复现旧读取偷走 metrics 文件前四字节，以及旧发送覆盖其他文件。
+  生命周期锁内复制私有 I/O Connection，阻塞期间释放锁；close/abort 借用原
+  socket 做 shutdown 后 detach，再关闭原连接，不在关闭时申请新描述符。
+  已关闭句柄和描述符耗尽的清理缺陷亦经红绿修复；metrics 坏行检查没有放宽。
+  Windows 原生 AF_PIPE pending/cancel 分支未改，不能据此声称其 HANDLE
+  复用竞态也已修复，原生结果仍须新 CI。
+- soak 的在线订阅改由单独线程独占连接并持续消费，不等 effects 终态再读。
+  真实 Host/Daemon 屏障探针验证完成前已消费模型流，断线和缺流负控必须失败；
+  线程无法收尾也必须非零。B4 故意慢订阅、严格游标补读和 watchdog 保持原样。
+  首轮 Windows 日志未提供 drop reason，不把延后消费的已复现机制冒充该次
+  `send_stall` 的直接诊断。
+
+修复代码冻结为 `b7f0f133f3080c5aa9565343504bd8cfd5e3bb3f`，
+tree `bf4685aa2e0e01a36586965ef08222ebc0303291`，
+非文档清单 SHA-256
+`0a90fc48b9f3bbcacccfc068d632fba7d8d18ed9e1a0ca418f412f3d28c0db34`。
+本轮 IPC/共享连接/慢订阅/metrics、SLO/soak、Plan/Verification/Goal/Control
+受影响域及 cp1252 探针已退出 0；lock/Ruff/diff 已退出 0。
+完整本地回归 `full-b7f0f13.log/.exit` 已真实退出 1，原因见下节。独立第二读者
+`/root/agent_loop_incremental_review` 已完成正式窄增量复审，结论已修 / PASS，
+范围内无新增阻断；父会话已逐字节核对报告、绑定、全部证据、真实旧源码负控退出码、
+最终绿色、原始 diff、工作树身份及非文档清单。
+安全整数旧字节、各目录/文件身份分量、关闭幂等、线程收尾异常及 B4 保持性均有
+独立探针；完整工作区仅绑定文件内容而不绑定文件 inode 的既有范围被明确保留，
+对应跳过没有算作通过。
+报告 `incremental-b7f0f13-review.md` 的 SHA-256 为
+`c1af2504eef80b85f781916ba3ac78d66804cfa56273151729ecdc05e328976e`；
+绑定 `incremental-b7f0f13-binding.json` 的 SHA-256 为
+`bfd44bb25726c5c346e9401e565e88427c7b6757e12f4819e3fc12b44f788a20`。
+旧 `ac02f34` 的全量/独立 PASS 不覆盖该新树。
+本轮红绿及静态原件哈希收录在 ignored `ci-repair-b7f0f13-evidence.json`。
+
+### 全量发现诊断测试资源串扰
+
+`b7f0f13` 全量仅在新增在线 soak 的成功臂失败，日志 SHA-256 为
+`2b9459ae6da78f76a87b54c80a30058d241e6cd5c6eab4d66ac9eb1fdf4de74e`。
+原始诊断报告、采样及状态已即时复制留证：失败是
+`runner_open_fds_max_exceeded: 743 > 512`，FD 增长为 0，
+Host/Daemon 及全部工作负载通过。测试直接在长寿命 pytest 进程运行诊断，
+把此前用例累计的描述符算进了 runner 的绝对上限，不能把该全量写成通过。
+
+新增真实父进程描述符噪声回归，先在原测试结构下复现失败；
+再将在线探针放入独立 Python 解释器，关闭继承描述符。
+真实 Host/Daemon、流消费屏障、断线/缺流负控及全部诊断资源检查均保留。
+没有提高上限、主动 GC、删断言或更改生产脚本。
+`ci-soak-runner-isolation-red.log/.exit` 为退出 1 原件；
+修复后完整 SLO/soak 域和 lock/Ruff/diff 均退出 0。
+
+新测试树冻结为 `94fd94e5b07d937ea8ac04e3ce34e2aa41578ee7`，
+tree `da8081a0cbf817ea91399341d7c24e2bf78906cf`，
+非文档清单 SHA-256
+`96d9f3235c753a525e4180a83d99e6b5b23d42922110b40ee8d4e1b52b9b708c`。
+产品代码相对 `b7f0f13` 未改，但测试树已变化，因此不沿用其全量或增量复审结论；
+新完整回归 `full-94fd94e.log/.exit` 已真实退出 0，日志 SHA-256 为
+`169913a2f09c12194b9286c362190a7d3a8f831728a4984b3f67ea37a37f1acd`。
+`full-94fd94e.binding.json` 已记录实际退出码和结束时的非文档清单核对；
+执行期间仅上述普通 Markdown 文档变化。lock、Ruff、diff 和文档本地链接检查
+均退出 0；后续仅文档提交须再核对非文档清单相等，远端 CI 仍绑定最终 PR 对象。
+
+独立第二读者 `/root/agent_loop_incremental_review` 对 `b7f0f13..94fd94e`
+的一文件正式窄审已通过，范围内结论为已修 / PASS，无新增阻断。父会话已重新读取并
+逐字节核对全部证据、命令日志、历史失败副本、旧版冻结回执、原始 diff、
+复审工作树 HEAD/tree/clean 和非文档清单，接受回执为
+`94fd94e-independent-review-parent-verification.json`。
+旧 wrapper 父进程 FD 污染、真实子进程执行旧 soak、子进程自身 FD 超限和关闭
+`close_fds` 后继承哨兵的负控均真实退出 1；最终独立探针、受影响域及静态检查退出 0。
+本轮独立探针最初的 AST 引号比较错误已保留失败原件，仅修正探针的结构比较后
+重做负控和最终验证，没有修改产品以迎合探针。
+报告 `incremental-94fd94e-review.md` 的 SHA-256 为
+`fdab9ebfc65223dea35e095edaf418288d0217d993ae16f1771e211dfbf883dc`；
+绑定 `incremental-94fd94e-binding.json` 为
+`dbd6d6b14fd5ce676fba61667afd1f8e1782c6847457567ab1901317ddb3ad37`；
+重读校验回执 `incremental-94fd94e-artifact-verification.json` 为
+`cac33a1529f4500945ab50c8aed0eb835e2c7a23c27c62916b1deedbd2433cd5`。
+该窄审不代替本机全量和 hosted CI；Windows 原生运行仍未评估。
 
 ## 未交付与未验证
 
