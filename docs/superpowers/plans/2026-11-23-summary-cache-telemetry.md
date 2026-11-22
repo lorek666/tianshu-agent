@@ -92,3 +92,33 @@ The exact candidate result is maintained in
 [PR #222](https://github.com/lorek666/tianshu-agent/pull/222), rather than
 predeclaring a future CI result in this plan. No merge or release is part of
 this plan.
+
+### Task 4: Repair the failed native candidate
+
+The initial checks above bind only `ebb47ff` and its unchanged code/test tree.
+Candidate `0144efa` failed in run `45050478841`: a real backup/GC assertion
+failure preceded the Windows shard timeout. Preserve that RED result.
+
+- Ruling: finish the backup source's ordinary SQLite lifecycle before static GC,
+  and exercise preview separately on POSIX and Windows — do not weaken GC or
+  remove companion files by hand.
+- Ruling: calibrate only the three changed/affected cache evaluation file hints
+  from completed native log intervals — retain the existing partitioner,
+  diagnostic wrapper, full-coverage verifier and 25-minute limit.
+- Ruling: test scheduling with all files changed by the cache batch plus the
+  affected evaluation assembly — the four-file subset cannot represent their
+  complete workload and must not be used to reverse-tune measured hints.
+
+- [x] Reproduce the static preview failure without a platform mock.
+- [x] Close the source normally and retain preview/approved coverage.
+- [x] Record native timing sources and add a real-process scheduling regression.
+- [x] Pass the affected lifecycle, sharding, wrapper and workflow regressions.
+- [ ] Freeze all repairs, pass full local pytest and lock/Ruff/diff checks.
+- [ ] Bind the independent review to the corrected code/test tree.
+- [ ] Push the complete repair once and verify one new complete candidate CI.
+
+The remaining boxes describe the repair's pre-freeze state; final freeze and
+hosted results are maintained in
+[PR #222](https://github.com/lorek666/tianshu-agent/pull/222) and ignored evidence.
+Paid-provider A/B remains unrun; this repair supplies no measured cache, cost
+or task-quality improvement.

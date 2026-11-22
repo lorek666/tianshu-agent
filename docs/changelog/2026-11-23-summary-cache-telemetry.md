@@ -23,7 +23,10 @@
 设计见[spec](../superpowers/specs/2026-11-23-summary-cache-telemetry.md)，执行见
 [计划](../superpowers/plans/2026-11-23-summary-cache-telemetry.md)。
 
-## 验证状态
+## 初始冻结验证
+
+以下本机全量与独立复审只绑定初始实现冻结；不覆盖下述 CI 红后修改的测试与
+调度代码。修正后的候选须重新冻结、全量验证并由第二读者绑定。
 
 本轮定向红绿覆盖真实摘要调用、拒绝正文、模型异常、发送后硬退出及恢复不重发、
 关库重开、记录不可覆盖与损坏负控、报告去重与分母、C5 安全失败保真、
@@ -48,10 +51,41 @@
 
 原始日志、冻结清单、独立探针与提交绑定保存在 ignored
 `.omc/artifacts/summary-cache-20261123/`。后续纯 Markdown 回填须与上述冻结
-非 Markdown 清单逐字节一致，才可复用本机全量与代码复审结论。
+非 Markdown 清单逐字节一致，才可复用该初始冻结的本机全量与代码复审结论。
 最终候选的托管 CI head/base、合成 merge checkout、run/attempt 和 artifact
 核验结果以 [PR #222](https://github.com/lorek666/tianshu-agent/pull/222)
 正文及检查为准；本机验证不证明托管 CI，上一冻结 `0b8aa51` 的绿也不覆盖本增量。
+
+## 原生 CI 红与修正
+
+候选 `0144efa325df366167fcc5f904c1344e4c13ecc2`（tree
+`352e99307eb60b8b08e587e79d9f8d7c9f4da7d8`）的 ready run
+[45050478841](https://github.com/lorek666/tianshu-agent/actions/runs/45050478841)
+真实失败：Windows 分片 1 触及原有 25 分钟上限，未产出完整报告，required 汇总正确
+拒绝。取消前日志还明确出现辅助摘要备份/GC 用例 `FAILED`，不能仅归因于 runner 慢，
+也不能把未打印最终 traceback 当作断言通过。该轮实际合成 merge 为
+`2fe4ad18463958485122a2554eb1ec01a466fb0b`，base 为
+`7665e8684f5a124fe789f21909ee54325edc556b`，attempt 为 `1`。
+原始日志 ZIP SHA256：
+`453804fdbbb9781905ae96490f687a61fe1fae61e0070b8ba00353a31a0868d5`。
+
+- **备份夹具生命周期**：只读备份源连接可能留下空 WAL 与 SHM，后续静态 GC preview
+  应报 `incompatible`。原用例在 POSIX 仅跑 approved，掩盖了 preview 前提不成立。
+  修正用例经真实 `EventLog` 正常打开/关闭源库，严格断言无旁文件，再分别测试 preview
+  和 approved；Windows 保留 preview，approved 仍按既有目录 fsync 边界跳过。
+  无平台 mock 的 POSIX preview 已先复现错误退出码，再验证正常生命周期收尾后通过；
+  不手动删除旁文件、不改产品 GC 或其零写入前提。
+- **新增工作量的调度估算**：仅校准缓存指标、辅助摘要遥测、受影响评测装配三份文件。
+  上述红 run 的完整文件区间分别约为 `45.900s`、`31.877s`、`152.750s`，
+  按既有半秒单位向上取整得到 `92`、`64`、`306`。完成区间只是调度证据，
+  不代表该文件断言全绿。回归使用本缓存批次全部变更测试文件及受影响评测装配，
+  经两个真实隔离 pytest 子进程和既有 verifier 核对分配与完整覆盖。
+  文件分片算法、诊断包装器、缺件拒绝、required 名称和 25 分钟上限均未改。
+
+旧红原件及修正红绿保存在 ignored `candidate-0144efa/`，独立复核原件在 `review/`。
+修正候选的新冻结、本机全量、独立复审和托管 CI 身份/产物核验统一在
+[PR #222](https://github.com/lorek666/tianshu-agent/pull/222) 正文收口，旧红仍保留。
+历史耗时回算不保证未来 runner 按时完成，也不构成产品死锁已修的证据。
 
 ## 未完成的真实实验
 

@@ -297,7 +297,13 @@ def test_call_storage_failure_does_not_send_or_consume_reserved_budget(tmp_path,
     log.close()
 
 
-def test_backup_database_roundtrip_and_gc_preserve_auxiliary_facts(tmp_path):
+@pytest.mark.parametrize("approve_gc", [
+    False,
+    pytest.param(True, marks=pytest.mark.skipif(
+        os.name != "posix", reason="Approved file GC requires directory fsync (#200)",
+    )),
+])
+def test_backup_database_roundtrip_and_gc_preserve_auxiliary_facts(tmp_path, approve_gc):
     from support import engine_for, stack_for
 
     from tianshu.backup import create_backup, verify_backup
@@ -325,10 +331,17 @@ def test_backup_database_roundtrip_and_gc_preserve_auxiliary_facts(tmp_path):
     reopened = EventLog(roundtrip)
     assert calls(reopened) == recorded
     reopened.close()
+    # 在线备份的只读源连接可能留下 WAL/SHM。通过正常 SQLite 生命周期
+    # 完成源库关闭，不手动删除旁文件，也不放宽 GC 的零写入预演前置条件。
+    source = EventLog(
+        root / "events.db", blob_dir=root / "artifacts" / "blobs", data_root=root,
+    )
+    source.close()
+    assert not any((root / f"events.db{suffix}").exists()
+                   for suffix in ("-wal", "-shm", "-journal"))
     # GC 只删除其封闭允许集；新表即使已过保留期仍保留。
-    approved = os.name == "posix"
-    report, code = run_data_gc(root, approve=approved, clock=lambda: 10**14)
-    assert code == (0 if approved else 3), report
+    report, code = run_data_gc(root, approve=approve_gc, clock=lambda: 10**14)
+    assert code == (0 if approve_gc else 3), report
     after = EventLog(root / "events.db")
     assert calls(after) == recorded
     after.close()
