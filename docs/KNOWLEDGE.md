@@ -24,12 +24,20 @@
 
 ## 2. 当前状态速览
 
+- **Agent 主循环本地候选（2026-11-23，尚未合入）**：已集成通用 Mission、
+  结构化 Plan、独立 Verification、Goal V2 的手动/有限自动推进、累计请求预算、
+  无进展与阻断恢复、有限人类授权及命令/MCP 执行准入。桌面可创建 V2 目标、
+  确认图、人工验收、暂停/恢复和撤销有限授权。冻结代码的完整本地回归与最终增量
+  独立复审已通过，最终 PR 的 required CI 单独核验；不代表主干、发行版或完整
+  跨平台自主执行已交付。
+  精确验证、入口与 P0-E 未决范围见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
 - **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
   派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
   `7665e8684f5a124fe789f21909ee54325edc556b`；规格见
   [Goal 设计](SPEC-GOAL-MODE-2026-11-22.md)，验证和待验边界见
-  [交付记录](changelog/2026-11-22-goal-mode.md)。自动连续推进仍属于未交付的 G2。
+  [交付记录](changelog/2026-11-22-goal-mode.md)。G1 保持手动语义；
+  有限自动推进由新的 V2 契约提供，不能用旧 G1 关闭入口绕过 V2 验收。
 - **本地 Skill 命令候选（2026-11-22，尚未合入）**：新建与追问输入框支持
   `/`、`/skills`、`/skill <名称或版本标识> [要求]` 和 `/<技能名> [要求]`。
   只读发现用户与所选工作区的 `.agents/skills`，将选中技能全文保存为本轮输入；
@@ -44,7 +52,7 @@
 - **整合基线与新候选状态（2026-11-21）**：原 PR [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的 ready CI [44670311820](https://github.com/lorek666/tianshu-agent/actions/runs/44670311820) 真实失败原件保留；修复后的精确 head `314e987ea5c8d1179caff6a4bcdf488c055f577f` 已通过新 ready CI [44678467012](https://github.com/lorek666/tianshu-agent/actions/runs/44678467012)，按保护规则合入 `a0732d9881247998df24db7af9f1c7989c1ae7a4`，该 main 的 push CI [44681321379](https://github.com/lorek666/tianshu-agent/actions/runs/44681321379) 也全部成功。旧红不被后续绿覆盖。本地 `0.1.1` 组合候选整合资源封套、模型用量 v2 和统一身份修复；原冻结 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）已完成限定独立整合预审、授权 source 全量与静态/复制证据门禁。本地已正常合并含 PR209 Responses 实现的 `f27a1bfe03140e918cdcaa249d3c5c0863638d28`，形成精确新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`）。该组合自身的限定独立整合复核及提交绑定附录、受影响回归、UI install/typecheck/test/build、授权 source 全量与即时 collector、lock/Ruff/diff 均已完成并核验；全量原始日志 SHA256 为 `c76631831b0191d71fe7c4d9eb6e41fceb6c09c385d23f28d43224ab8a60aa8f`，动态总计及跳过原因以原件为准，不能沿用旧冻结的绿。原 `2b91bfc` 全量 RED、PR210 首轮 Windows collection RED 与各自后续最小修复证据均保留。新 required CI、产品 App 原生验收与真实复评仍待验，不能套用旧绿；详见[本轮记录](changelog/2026-11-21-preview-release-repair.md)及[首轮 CI 红与修复证据](changelog/2026-11-20-integration-ci-repair.md)。
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
   - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。精确 a073 已由 [44731411389](https://github.com/lorek666/tianshu-agent/actions/runs/44731411389) 实跑并生成未发布的 `0.1.0` draft；但下载归档 App 的原生 codesign 校验失败，原对象保留、不修补。新候选仍须重新绑定发行与原生验收，并用同一台 Apple Silicon Mac 验收安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
-  - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
+  - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，本地主循环候选通过独立「有限范围授权」面板接入执行侧授权；原权限下拉的泛化「自动审批」「完全访问」仍置灰，不承诺无范围放行。
   - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。旧候选验收与原生 CI 历史见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)，本次组合须绑定新对象验证。当前 G3 仍需候选冻结 SLO 实测。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
   - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
@@ -59,12 +67,14 @@
   | ID | 名称 | 当前状态（只写可核实的） |
   |---|---|---|
   | C1 | Model I/O | Chat Completions / Responses / Anthropic Messages 各有独立 adapter；结束原因是封闭集，越界抛 `ModelError`。Responses 实现分支与验证范围见[实施记录](changelog/2026-11-21-openai-responses.md) |
-  | C2 | Tool | **23 个 `ToolSpec`、19 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
-  | C3 | Event | **已封闭**：45 个事件类型，写入侧拒未登记类型，且逐类型 payload 有 v1 契约（`event_schema.py` + `schemas/c3/event.json`）；声明了但从未发射的类型 **0** 个 |
-  | C4 | Permission/Approval | **rule id 已封闭**：低磁盘 T1–T3 两项空间拒绝与纯读资格拒绝已合入主干，并补齐 W10 可写子任务创建门与控制面/UI F14 人话映射（见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)）。当前代码/schema/PRD 清单共 78 项，写入前校验。非拒绝判定 10 个（`c4.auto` / `c4.overwrite` / `c4.delete` / `c4.exec` / `c4.mcp_call` / `c4.memory_scope` / `c4.outbound` / `c4.outside_workspace` / `c4.subtask_spawn` / `c4.subtask_cancel`）+ 保留未使用 3 个（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`）；`c4.approval_rejected` 是 issue #40「否决即终局」新增的拒绝原因；记忆组 6 条（N1 起）见 PRD §5.4.1。审批/凭据见 PRD §5.4 |
-  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离，评测套件 `m4.6`（判据按目标作用域化后逐版本不可比，见 [M4-verification.md](M4-verification.md) §7.4） |
+  | C2 | Tool | `tool_manifest()` 与工具注册表声明身份、暴露面和参数要求；控制面专属工具保持 `exposed=False`。精确集合及规模以真实 manifest 和契约测试为准 |
+  | C3 | Event | 类型与逐版本 payload 封闭，写入侧拒绝未登记值；本地候选新增 Mission/Plan/Verification/Goal V2/Consent/Execution 事件族。精确集合见 `events.EVENT_TYPES`、`event_schema.py` 与 `schemas/c3/event.json` |
+  | C4 | Permission/Approval | rule id 封闭，写入前校验。低磁盘、只读资格、W10 子任务创建门及否决终局保持；本地候选增加 `c4.scoped_consent` 与 `dispatch.consent_unusable`。精确集合由代码、schema、PRD 及真实契约测试对账，见 PRD §5.4 |
+  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离；本地候选套件 `m4.7`、`RU-D1@1.1.0` 接受严格绑定的只读 Mission 路由拒绝，与旧版报告不可直接比较，见 [M4-verification.md](M4-verification.md) §7.5 |
 - **封闭集落在三处**：代码里的集合（`events.EVENT_TYPES` / `rules.RULE_IDS`）、`schemas/` 下的 enum（`schemas/c3/event.json`、`schemas/c4/rules.json`）、PRD 对应小节；测试把前两者绑在一起，改一处忘另一处会红。
-- **两个「未」不是一回事**：C3 的「声明未发射」是 **0**（没有登记了却不发射的事件类型）；C4 的「保留未使用」是 **3**（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`，防御性兜底或历史归档，登记为合法但没有产生路径）。别把这两个数字混着写。
+- **两个「未」不是一回事**：C3 的「声明未发射」检查登记事件是否存在产生路径；
+  C4 的「保留未使用」则是合法但保留的规则编号。两者分别由各自契约测试检查，
+  不能把保留编号当成事件覆盖证据。
 - **十一条红线**（与功能冲突时以红线为准，每条能被一条测试打红）：
   1. 事件日志 append-only，无 UPDATE/DELETE
   2. 副作用执行前已持久化 intent，执行后必须写 result
@@ -88,7 +98,7 @@
   - **F1 执行原语** → `exec.py`（argv 模式，非 shell；超时/截断/进程组）
   - **F2 执行策略与沙箱接缝** → `execpolicy.py`（声明式、默认全拒、deny 优先）、
     `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|landlock|auto` 与 `preferred_exec_backend()`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
-    `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱，`macos-arm64` 四边界实测全 `enforced`）、
+    `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱；历史 W14 探针结论不覆盖脱组后代，新 subject 探针暴露 `process_tree` 未满足，见 §7）、
     `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
     `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v2"` 四边界实测探针 + 门 +
     `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`），
@@ -104,6 +114,18 @@
 
 ## 4. 关键决策（D1–D7）与硬约束
 
+- **主循环权威分离（2026-11-23，本地候选）**：Mission 只固定任务输入和工具
+  路由，不授权；Plan 只提出依赖与检查；Verification 产生独立证据；
+  Goal 依据事件与有效证据推进，模型自述不能关闭目标。跨阶段和子任务共享
+  Goal 预算父链，到限后不再额外调用模型解释。子审批否决沿真实父链阻断 Goal；
+  人工改变决定前，必须先持久取消旧父子 Run 并等其安全终结，再显式 CAS 恢复。
+- **验收输入闭包与材料完整性（2026-11-23，本地候选）**：文件检查绑定目标及
+  祖先/工作区/修订，使无关步骤写入不误废旧结果；命令与人工验收仍绑定整个
+  工作区。读取结论时重核 Evidence、嵌套观察、事件及完整日志；缺失即失效或拒绝。
+  Mission/pending 正文纳入 GC 和备份保护，缺材料不能发布备份。
+- **有限授权恢复保守失效（2026-11-23，本地候选）**：消费和撤销从事件重建；
+  V1 issued 事件无单调期限锚点，投影全丢后恢复账面余额但原授权过期，
+  不从墙钟重新计算一段可用 TTL。有限规则仍须由人签发且只绑定单个 Run。
 - **Mission 的 MCP 身份与执行 Session 分离（2026-11-22，本地候选）**：
   Mission 以 schema、描述和稳定 server 身份固定路由；审批、Grant 与 Receipt
   继续使用含 generation 的执行版本。显式选择 MCP 的新 effects Run 在 claim 后、
@@ -549,11 +571,13 @@
   必须另行绑定，不沿用本分支定向回归。历史无 Mission/pending 的 Run 不补写，
   已含 generation 的历史身份也不放宽。
 
-- **Agent 主循环 P0 设计草案（2026-11-22，待批准、未实施）**：
-  [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md)提出统一 Mission、结构化 Plan、
-  独立验证、Goal V2 受控推进、有限授权和执行对象隔离准入，复用现有事件、
-  Run/Job、Dispatcher 与预算账本。本文档不改变现行契约或 G1 能力；
-  各批契约、实现、原生平台及交付证据仍须分别完成。
+- **Agent 主循环已实现范围与未决范围（2026-11-23，本地候选）**：
+  [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md) A–D 已形成运行时实现与桌面入口，
+  完整冻结的门禁状态见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+  P0-E 的 Windows 原生隔离和完整跨平台对象验收尚未交付，
+  由[工单 #224](https://github.com/lorek666/tianshu-agent/issues/224)跟踪；
+  macOS 脱组后代负控使自动四边界准入确定性拒绝。完全访问仍禁用，
+  不以“本地功能已实现”替代最终 CI、真实付费模型或用户设备验收。
 
 - **Goal G1 不是自动执行模式（2026-11-22，本地候选）**：每轮手动继续、人工逐项
   验收；没有自动循环、机器验收器、累计目标预算、期限或 Goal CLI。失败或未知结果
@@ -732,7 +756,7 @@
 - ~~**issue #40**~~：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
 - **#145 / #147 已关闭**。锁忙与审批后删除的回归修复随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入，见 §2。
 - **#200 继续跟踪 Windows 目录持久化**。在现有屏障能力下，受管恢复写入及含文件候选的 W15 批次会拒绝执行。参见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
-- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。当前 `SUITE_VERSION` 为 `m4.6`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
+- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。本地候选当前 `SUITE_VERSION` 为 `m4.7`、`RU-D1@1.1.0`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4/§7.5 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
 - ~~**issue #57**~~ 已随 PR #68 关闭。该轮引入 `Check.kind`（completion/safety）、作用域化的判据和完成度/安全分栏，套件当时升到 `m4.5`。
 - ~~**issue #58**~~：**已修（2026-11-11，PR #67）**：`RunResult.model_attempts`（真发一次请求才 +1，含超时/失败/重试）+ `cli._cost_note` 统一口径；全失败时打印「0 个完成轮次 / 3 次尝试（费用未知）」，不再说"没有模型调用"。
 - ~~**issue #53 / #54**~~：**已销账（2026-11-11）**。疑点 1 不成立（模型无法启动 Run，写成设计前提 + 三层钉子）；疑点 2 三条路径探针成立；delete 注入矩阵补齐并暴露一个真 bug（见 §5）。
