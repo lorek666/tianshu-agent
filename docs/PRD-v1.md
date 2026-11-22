@@ -585,6 +585,13 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 ### 5.3 C3 Event
 
+**Agent 主循环增量（2026-11-22，实施契约，尚非发行能力）**：
+采用 [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md) §5–§12 的版本化 Mission、
+Plan/Verification、Goal V2、有限授权及执行对象准入契约。新增事件须逐类型登记
+代码/schema 并保留旧版本读取；Goal G1 不自动升级。Mission/Plan 只约束提示、
+工具候选和验收，不授权。历史无 Mission 的 Run 保留原输入，不回填或改写 replay。
+按[实施计划](superpowers/plans/2026-11-22-agent-loop.md)分批落实；未验证对象不宣称交付。
+
 ```
 Event {
   seq          uint64       # 单调递增，主键，不可跳号
@@ -733,6 +740,16 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 确认与核验范围见[受限表单契约](agent-browser-form-contract.md)。
 
 ### 5.4 C4 Permission / Approval
+
+**有限授权增量（2026-11-22，实施契约）**：允许经认证本机人类控制面签发
+`ScopedConsentV1`，仅匹配明确目录覆盖或精确 argv 命令，绑定 Task、Run、
+Mission/Plan、工作区、工具/参数范围、有限次数、到期时间及进程会话。
+它不是 worker 可直接使用的执行票据；Dispatcher 仍先做 deny、否决、租约、
+预算与隔离检查，再于同事务消费范围次数、生成/消费单动作 Grant 和记录 intent。
+最终守卫重新核验；撤销以持守卫提交 `execution.started` 为界，越界后仅尽力取消，
+不承诺 OS 执行与 SQLite 原子发生。重启不继承未开始的范围授权。
+完整封闭字段及匹配限制见[规格 §9](SPEC-AGENT-LOOP-2026-11-22.md#9-有限授权减少重复点击不扩大模型权威)；
+未匹配仍走原有逐次审批，默认策略不变，完整访问不在本批交付范围。
 
 `Grant` 与 `Approval` 必须在同一份契约里——共享 digest、共享状态机，拆开必然产生"权限过了但审批没记录"的缝。
 
