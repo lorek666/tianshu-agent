@@ -1,8 +1,9 @@
 # 2026-11-22 · Prompt Cache 策略与观测候选
 
 基线为 `7665e8684f5a124fe789f21909ee54325edc556b`，工作分支为
-`codex/prompt-cache-policy`。当前为本地候选；候选 CI、真实付费端点命中率与任务质量
-对照尚未执行，不沿用上一批功能的 CI 或独立复审结论。
+`codex/prompt-cache-policy`。本记录保存代码冻结、本机门禁与独立复审证据；
+托管 CI 结果以本 PR 最终 head/base、合成 merge SHA 及对应运行记录为准。
+真实付费端点命中率与任务质量对照尚未执行，不沿用上一批功能的验证结论。
 
 ## 源码核对与实现
 
@@ -37,7 +38,7 @@ PRD §7 的本地策略清单、独立 JSON Schema 和代码枚举共同维护�
 定向覆盖三协议 JSON/SSE 一致、真实 manifest、递归对象键排序、
 输入不可变、稳定 key 与正文变更、最多四断点、opaque 保真、
 原生读写 usage、真实主循环落库/重放/重建、未知分母、质量失败和安全门槛。
-最终本机全量、lock/Ruff、独立第二读者及精确提交绑定待本轮冻结后回填。
+最终本机全量、lock/Ruff、独立第二读者及精确提交绑定见下文。
 不在文档手写易过期测试总数，以原始执行日志为准。
 
 ## 独立复审发现与修复
@@ -65,7 +66,7 @@ Responses 初始任务与动态尾部误识别、相邻轮历史查找断点丢�
 `review-edges-green.log`、`independent-all-probes-after-edges.log`。
 路径预检现复用完整路径的保守比较键，保留既有硬链接检查；
 第三方用量始终校验数值及别名冲突，官方 Chat 和 Responses 保留严格总量检查。
-本次实质增量须由同一第二读者重新绑定，之后再执行最终全量与候选 CI。
+该次实质增量由同一第二读者重新绑定，后续验证记录如下。
 
 第三轮第二读者已将 `840d148460c10e6d9066fc5d4d72a31a071ac11c`
 （tree `7751217cad3acbaa4e57d4e3b9d1b311f41f9d88`）的上述阻断判为**已修**。
@@ -73,7 +74,29 @@ Responses 初始任务与动态尾部误识别、相邻轮历史查找断点丢�
 旁路报告的文本独占写入违反既有跨平台字节 I/O 约定。原件保留为
 `failed-first-completed-full-*`，不计作最终通过。定向复现见
 `binary-sidecar-red.log`；改为 `xb` 并显式 UTF-8 编码，保持 LF 与独占创建语义，
-未修改或放宽原守卫。新增 CLI 原始字节断言，修后须重绑独立复审与最终全量。
+未修改或放宽原守卫。新增 CLI 原始字节断言，修后已重绑独立复审与最终全量。
+
+## 最终代码冻结与验证
+
+代码冻结为 `a6f5fa50c9a3109b50a5aa84e47dd60e8d6a497f`，
+tree 为 `8f68afea48afc3116ea5f40b4e5427185e96dc98`。
+同一第二读者 `prompt_cache_independent_review` 亲自检查增量并重跑原探针、
+Windows I/O 守卫与缓存报告回归，结论为**已修（fixed）**。原报告
+`independent-binary/REVIEW-a6f5fa5.md` 的 SHA256 为
+`273a28c087a6d49b18fee86be68c0fbd6181ea09a0c314d6a76a5f6f281bd353`。
+
+该冻结的 `uv run --frozen pytest` 于 2026-11-22 19:12:32（UTC+08:00）
+完整结束，退出码为 0。原日志 `final-full-pytest.log` 的 SHA256 为
+`e70148901b74d8cb561934f154ba3eb2bd15237dbc95ffd686791bd3172df36b`，
+命令、起止时间、head/tree/base 与退出码见 `final-full-binding.json`。
+`uv lock --check`、`uv run --frozen ruff check .`、`git diff --check`
+及修改文档的本地链接检查均通过，原件位于上述 ignored 证据目录。
+
+后续只回填 Markdown 证据；逐路径比较 Git tree 中所有非 `.md` 文件，
+相对该冻结零变化。该清单 SHA256 为
+`0889a069a0cbaad2135388501f9922587a70da9784aac68fbc29f642ba8549ef`。
+因此复用同一代码树的本机全量与代码复审，文档增量另行核对；
+所有代码及证据冻结后统一启动候选完整 CI，不以旧绿或部分重跑替代。
 
 ## 保留边界
 
