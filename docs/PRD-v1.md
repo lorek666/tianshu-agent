@@ -663,7 +663,7 @@ Event {
 | `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state`。拟增：`run.attachments` / `run.conversation` / `run.guidance_applied` / `run.guidance_requested` / `run.model_route` / `run.workflow` / `run.workflow_request` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
-| `goal` | 当前任务修订上的目标配置、逐轮推进与人工关闭 | `goal.created` / `goal.round_started` / `goal.closed`（新增契约；交付以 [Goal 规格](SPEC-GOAL-MODE-2026-11-22.md)及交付记录为准） |
+| `goal` | 当前任务修订上的目标配置、逐轮推进与人工关闭 | G1：`goal.created` / `goal.round_started` / `goal.closed`；V2 独立类型：`goal.v2_created` / `goal.v2_advance_requested` / `goal.v2_phase_started` / `goal.v2_transitioned` / `goal.v2_assessed` / `goal.v2_recovered` / `goal.v2_closed` / `goal.v2_admission_refused`。V2 payload schema 为 v1；assessed 内部 `format_version=1`，其余内部为 2。精确字段与 actor 见[主循环规格 §11](SPEC-AGENT-LOOP-2026-11-22.md#11-事件与控制面契约增量)，不升级或改释 G1。交付仍以对应验证及交付记录为准。 |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
 | `undo` | 撤销：完成与中断 | `undo.completed` / `undo.failed` |
 

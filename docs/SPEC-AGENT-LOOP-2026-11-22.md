@@ -394,6 +394,7 @@ replan_policy = confirm | bounded
 max_rounds, deadline_ms, budget_limits, budget_bound
 max_no_progress_rounds
 execution_policy, isolation_requirements
+predecessor_goal_id
 ```
 
 默认 `manual / human / confirm`。用户显式选择 `bounded_auto` 才自动续轮。
@@ -471,7 +472,7 @@ isolation_unavailable|effect_unknown|usage_unknown|protocol_error|recovery_requi
   具体动作、工具版本/schema/描述、参数、内容前置条件及 policy/Mission 摘要，
   不含 Run、call/attempt、claim 或租约代际等可轮换身份。
   它只提供拒绝约束，不替代旧 Approval 的动作摘要或执行 Grant。
-  人明确改变决定时，由 `goal.recovered` 绑定该否决及精确内容摘要，
+  人明确改变决定时，由 `goal.v2_recovered` 绑定该否决及精确内容摘要，
   只允许后续新动作重新走授权；旧 Run 的否决记录和结果不改写。
 - `pause` 阻止后续阶段和预占，向活跃 Run 传递暂停；确认安全点前状态显示
   “正在暂停”。`cancel` 传播到子任务和进程，对已发送请求不承诺退款或撤销。
@@ -628,13 +629,43 @@ data_root_digest, isolation_profile_digest`。
   执行身份及结果；命令副作用另有原有 intent/result/Receipt，不用新事件替代。
 - `verification.decided` v1：真实 human actor 对 §7.3 精确绑定的验收请求作出决定；
   core 据此生成 human 检查结果，不接受客户端自填 `VerificationResultV1`。
-- `goal.created` v2：保存 §8 配置；人创建。旧 v1 保持原封闭字段及解释。
-- `goal.round_started` v2：绑定轮次、Plan、步骤、协调 epoch 与阶段 Run；
-  人触发或 core 按已持久化的自动模式推进，如实区分 actor。
-- `goal.transition`、`goal.round_evaluated`、`goal.recovered` v1：
-  分别保存状态/阶段和修订、§8.3 评估、人工恢复及其来源阻断。
-- `goal.closed` v2：保存完成策略、最终证据集合及人工确认引用；
-  `completed` 只能在完成门通过后写，取消不伪造验收。
+- Goal V2 使用以下独立类型，均为 payload schema v1；除 assessment 的内部
+  `format_version=1` 外，其余内部 `format_version=2`。
+  不新增 G1 `goal.created/round_started/closed` 的 payload 版本。`state` 封闭字段为
+  `status, phase, round, phase_run_id, plan_id, plan_digest, step_id,
+  execution_run_id, verification_run_id, no_progress_streak,
+  satisfied_criterion_ids, completed_step_ids, baseline_step_ids,
+  last_assessed_round, progress_fingerprint, blocker, orchestration_epoch,
+  clock_wall_ms, deadline_remaining_ms, clock_monotonic_ms,
+  deadline_monotonic_ms, runtime_session_id, denied_content_digests,
+  recovered_denial_digests`。`blocker` 为 null 或
+  `category, source_event_seq, safe_retry, available_actions,
+  denied_content_digest`；`available_actions` 只允许 `cancel|recover`。
+  以下字段列表均另含 `format_version`：
+  - `goal.v2_created`：`config, mission_ref, request_id, request_digest, state`；
+    human 创建，`config` 为 §8.1 配置，Mission 使用内容引用。
+  - `goal.v2_advance_requested`：`goal_id, request_id, request_digest`；
+    human 显式推进或 core 请求的准入事实，摘要绑定请求的 CAS 参数与推进模式；
+    与其引起的状态、Run、预算和入队同事务提交。相同请求编号不同参数必须冲突，
+    即使首次请求没有导致状态变化也保留该绑定。
+  - `goal.v2_phase_started`：`goal_id, expected_state_revision,
+    orchestration_epoch, phase, round, mission_digest, plan_id, plan_digest,
+    step_id, request_id, budget_account_id`；core 绑定真实阶段 Run，
+    `run_id` 使用事件信封，不由客户端指定。
+  - `goal.v2_transitioned`：`goal_id, expected_state_revision,
+    orchestration_epoch, request_id, cause, state`；core 推进或 human 控制。
+  - `goal.v2_assessed`：§8.3 的 `RoundAssessmentV1` 全部字段，内部
+    `format_version=1`；core 生成，不接收模型自填完成状态。
+  - `goal.v2_recovered`：迁移字段外增加
+    `expected_block_event_seq, resolution, evidence_refs, denied_content_digest`；
+    human 恢复，`resolution` 封闭为
+    `retry|replan|reconciled|new_observation|change_decision`。
+  - `goal.v2_closed`：与迁移字段相同；human 关闭或 core 按明确完成策略关闭，
+    最终证据引用沿 §8.3 assessment 和 Plan/Verification 事实核对。
+    `completed` 只能在完成门通过后写，取消不伪造验收。
+  - `goal.v2_admission_refused`：`goal_id, category, source, request_id`；
+    core 按实际准入错误记录 §8.4 的阻断类别，`source=model|summary|dispatch`，
+    不通过异常字符串猜测预算或期限原因。
 - `consent.issued/used/revoked` v1：人签发或撤销；core 兑现。
   过期由时间及生命周期事实派生，重启失效须记录其原因。
 - `execution.admitted/ended` v1：绑定实际执行 subject、隔离证据、生命周期身份、
@@ -649,7 +680,9 @@ data_root_digest, isolation_profile_digest`。
 - `verification.get/request`：读取或入队对已确认检查的验证，不接受客户端结果。
 - `verification.decide`：仅人类控制面决定待审 human attempt；请求、CAS、
   幂等及证据绑定遵守 §7.3，不能决定其他检查类型。
-- `goal.v2.create/get/start/pause/resume/recover/close`：V2 独立入口。
+- `goal.v2.create/get/advance/pause/resume/recover/close`：V2 独立入口；
+  `advance` 可绑定 `expected_state_revision, orchestration_epoch`，
+  `recover` 必须绑定 §8.4 的两项期望修订及恢复决定。
 - `consent.create/list/revoke`：仅人类控制面，不暴露为模型工具。
 
 所有变更 RPC 使用版本化封闭请求、`request_id` 和必要的 `expected_revision`。
