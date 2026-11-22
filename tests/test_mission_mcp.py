@@ -126,7 +126,7 @@ def connected(tmp_path):
         clients.close_all()
 
 
-@pytest.mark.parametrize("entry", ["direct", "queued"])
+@pytest.mark.parametrize("entry", ["direct", "queued", "goal"])
 def test_new_selected_mcp_run_finalizes_after_real_discovery_outside_transaction(
     connected, monkeypatch, entry,
 ):
@@ -151,8 +151,20 @@ def test_new_selected_mcp_run_finalizes_after_real_discovery_outside_transaction
     engine = engine_for(stack, model)
     if entry == "direct":
         result = engine.start(task.task_id)
-    else:
+    elif entry == "queued":
         rid = plane.handle("run.start", {"task_id": task.task_id})["run"]["run_id"]
+        assert starts == []
+        assert any(e.type == "run.mission_pending" for e in stack.log.read_run(rid))
+        result = engine.resume_run(rid)
+    else:
+        goal = plane.handle("goal.create", {
+            "task_id": task.task_id, "goal_revision": task.goal_revision,
+            "criteria": ["结果可核对"], "request_id": "create-g1",
+            "execution_policy": EFFECTS.to_dict(),
+        })["goal"]
+        rid = plane.handle("goal.advance", {
+            "goal_id": goal["goal_id"], "request_id": "advance-g1",
+        })["run"]["run_id"]
         assert starts == []
         assert any(e.type == "run.mission_pending" for e in stack.log.read_run(rid))
         result = engine.resume_run(rid)

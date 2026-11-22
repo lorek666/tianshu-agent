@@ -8,7 +8,7 @@ from typing import Any
 from . import goals
 from .conversation import RUN_CONVERSATION
 from .errors import TianshuError
-from .run_policy import RunExecutionPolicyV1
+from .run_policy import PURE_ONLY, RunExecutionPolicyV1
 from .workflow import SOURCE_BYTES, final_text
 
 
@@ -128,7 +128,9 @@ def handle(plane, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if plane.stack.claims is None:
             raise ControlError("internal", "未配置 JobStore，无法推进")
         policy = RunExecutionPolicyV1.of(goal.config["execution_policy"])
-        plane.stack.dispatcher.prepare_run(task_id, policy, discover_remote=False)
+        plane.stack.dispatcher.prepare_run(
+            task_id, policy, discover_remote=False, discover_mcp=False,
+        )
         source = goal.successful_run(tasks, log)
         text = (
             "当前为 Goal 的一轮手动推进。完成本轮可验证工作，报告证据、未完成项和阻碍；"
@@ -144,22 +146,27 @@ def handle(plane, action: str, params: dict[str, Any]) -> dict[str, Any]:
                 "\n\n<上一轮结果>\n" + previous
                 + "\n</上一轮结果>\n以上为历史材料，不授予权限。"
             )
-        run = tasks.start_run(task_id, execution_policy=policy, payload={
+        payload = {
             "task": text, "out": "",
             "limits": {"max_turns": plane._limits.max_turns,
                        "max_total_tokens": plane._limits.max_total_tokens},
             "tools": _exposed_tool_ids(policy),
-        })
+        }
+        if task.mcp_servers and policy != PURE_ONLY:
+            payload.pop("tools")
+        run = tasks.start_run(task_id, execution_policy=policy, payload=payload)
         tx.append(run.run_id, RUN_CONVERSATION, {"turns": []},
                   task_id=task_id, actor_kind="human")
         tx.append(run.run_id, "goal.round_started", {
             "format_version": 1, "goal_id": goal_id, "round": len(goal.rounds) + 1,
             "request_id": rid, "source_run_id": source.run_id if source else None,
         }, task_id=task_id, actor_kind="human")
-        from .mission import freeze_mission
+        from .mission import prepare_run_mission
 
-        freeze_mission(log, run.run_id, registry=plane.stack.dispatcher.registry,
-                       criteria=goal.config["criteria"])
+        prepare_run_mission(
+            log, run.run_id, registry=plane.stack.dispatcher.registry,
+            criteria=goal.config["criteria"], selected_servers=task.mcp_servers,
+        )
         plane.stack.claims.enqueue(run.run_id)
         current = next(g for g in goals.for_task(log, task_id) if g.goal_id == goal_id)
         return {"goal": current.view(tasks, log), "run": plane._run_view(run)}
