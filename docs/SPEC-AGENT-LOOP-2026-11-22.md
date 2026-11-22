@@ -681,8 +681,13 @@ data_root_digest, isolation_profile_digest`。
 - `verification.decide`：仅人类控制面决定待审 human attempt；请求、CAS、
   幂等及证据绑定遵守 §7.3，不能决定其他检查类型。
 - `goal.v2.create/get/advance/pause/resume/recover/close`：V2 独立入口；
-  `advance` 可绑定 `expected_state_revision, orchestration_epoch`，
-  `recover` 必须绑定 §8.4 的两项期望修订及恢复决定。
+  除 create 使用已有 `goal_revision`、get 为只读外，其余入口必须绑定
+  `expected_state_revision`；`advance` 还必须绑定 `orchestration_epoch`，
+  `recover` 还必须绑定 §8.4 的 `expected_block_event_seq` 及恢复决定。
+  CAS 编号必须是 `[1, 2**63-1]` 内的整数，布尔值、缺省、null、负数、0、
+  浮点和字符串一律拒绝，不在服务端刷新为当前修订。内部 core `tick_all` 根据
+  事务内现状推进，不使用客户端 CAS；相同请求重试仍提交第一次读取的原参数。
+  `get` 必须且只能指定 `goal_id` 或 `task_id` 之一。
 - `consent.create/list/revoke`：仅人类控制面，不暴露为模型工具。
 
 所有变更 RPC 使用版本化封闭请求、`request_id` 和必要的 `expected_revision`。
