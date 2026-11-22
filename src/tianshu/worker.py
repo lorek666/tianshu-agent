@@ -273,8 +273,7 @@ class Worker:
             self.errors.append(f"{type(exc).__name__}: {exc}")
         finally:
             self._settle(claim, requeue=requeue)
-            if close_inactive:
-                close_inactive()
+            self.stack.dispatcher.close_inactive_mcp()
             self._tick_goals()
         return True
 
