@@ -3,8 +3,9 @@
 日期：2026-11-23。分支：`codex/agent-loop-implementation`。
 状态：主循环本地候选已实现；首轮完整原生 CI 失败已留证，
 修复候选 `b7f0f13` 的独立增量复审通过后，全量发现新增诊断测试资源串扰；
-最新 `94fd94e` 已通过新的完整本机回归及一文件独立增量复审。
-新候选仍须完整 required CI，尚未合入或发布。
+`94fd94e` 通过新的完整本机回归及独立增量复审后，其纯文档候选 `c8ee765`
+的完整 CI 又因 Windows 分片累计超时失败。新修复冻结 `ccce3e3` 已通过新的本机
+全量与独立增量复审；完整 required CI 结果由最终 PR 对象的检查单独证明，尚未合入或发布。
 规格见 [Agent 主循环](../SPEC-AGENT-LOOP-2026-11-22.md)，
 计划见[实施计划](../superpowers/plans/2026-11-22-agent-loop.md)。
 契约为 [PR #223](https://github.com/lorek666/tianshu-agent/pull/223)，
@@ -252,6 +253,69 @@ tree `da8081a0cbf817ea91399341d7c24e2bf78906cf`，
 重读校验回执 `incremental-94fd94e-artifact-verification.json` 为
 `cac33a1529f4500945ab50c8aed0eb835e2c7a23c27c62916b1deedbd2433cd5`。
 该窄审不代替本机全量和 hosted CI；Windows 原生运行仍未评估。
+
+## Windows 累计超时与评测材料复用
+
+纯文档候选 `c8ee7658e8015fff0f2fa7bb9ae15306392a106d` 的完整 run
+[45058496468](https://github.com/lorek666/tianshu-agent/actions/runs/45058496468)
+已自然结束，整体结论 `cancelled`。Ubuntu/macOS Python、Windows 分片 1、
+UI 和两项 Rust 检查成功；Windows 分片 0 触及原有 25 分钟上限被自动取消，
+缺少分片报告，因此 Windows required 汇总正确失败。PR 随后退回 draft。
+旧红保留，没有取消其他未完成平台、减测或增加时限。
+
+独立诊断将完整 collection 与原始节点日志逐项对齐。旧权重的两个估计总量
+相等，但新 Goal 和在线 soak 等文件成本发生偏移，造成累计失衡。
+截断前仍在逐项通过；最后一个节点刚开始就被 runner 取消，不能据此断言
+该单例卡死。最新 workflow 文件只有部分结果，不作为完整测量校准权重。
+
+本轮只修改开发脚本与测试，产品 `src/`、CI workflow、两个独立 Windows runner、
+原包装器、fatal handler、线程栈诊断、25 分钟上限和严格报告验收均不变：
+
+- 用完整 Windows 文件日志区间重新校准固定权重；workflow 保留前轮完整样本。
+  调度仍按整文件分组并保持 collection 顺序，估计值不保证后续 runner 耗时。
+- 报告断言复用完整真实三次评测的独立深拷贝。只有空容器为 session 级，
+  实际评测在函数级 authority/backend/maintenance/registry 隔离生效后惰性执行，
+  成功返回才写缓存。故障样本和每次独立 Run 均保留。
+- CLI 对比保留一次新的完整真实 `evaluate --repeat 3 --baseline --out --json`。
+  旧基线来自上述真实材料；逐项核对新旧 Run 身份互斥、基线字节未变，以及
+  新输出文件恰为报告本体。每片首个消费者仍须生成 corpus，权重只近似其局部性。
+
+真实子 pytest 的分组结果按原生日志成本重算后，旧权重失衡断言退出 1；
+重复实跑结构在新复用断言下、直接共享及浅拷贝负控也各自退出 1。
+受影响完整 eval 域、分片/包装器/workflow 域与
+lock/Ruff/diff 均退出 0。初次调度域回归因使用已过时的历史耗时样本退出 1，
+原件保留；改用本轮完整原生日志数据后通过，阈值和覆盖断言未变。
+跨平台参数 ID 含 socket 常量和线程超时上限，collection 核对保留原始 ID，
+按测试函数及样本重数对账，确认只新增回归、未删除原用例。
+
+新冻结 `ccce3e3848bc86287881aeb121257b309d2d6a76`，
+tree `95487f4365ed4d8744e9af2664296cb9df728419`，
+非文档清单 SHA-256
+`a663ad6d6e81165217502cb391b84f173e5c2330bbf7617b715d601703b9d981`。
+新的完整 `uv run --frozen pytest` 已真实退出 0，原始日志
+`full-ccce3e3.log` SHA-256 为
+`a82f1716ecfcb57b3f52832744bbe33ad542e4b36c12d5ba1c8a9ef0c5a35c82`。
+`full-ccce3e3.binding.json` 记录实际退出码，并核对运行结束时非文档清单未变、
+工作树仅含普通 Markdown 回填。不沿用 `94fd94e` 的绿。
+
+独立第二读者对 `c8ee765..ccce3e3` 的窄增量复审 PASS，范围内无新增阻断。
+真实 corpus/CLI 和调度探针通过；六类反事实负控在目标断言处真实退出 1。
+父会话重新读取并核验全部冻结证据、命令日志与退出码、历史原件、源码、
+原始 diff、非文档清单及复审树 HEAD/tree/clean，接受记录为
+`ccce3e3-independent-review-parent-verification.json`。
+独立三原件及 SHA-256：
+
+- `incremental-ccce3e3-review.md`：
+  `0b679939f4d226051f7f41ccd8a9694a9f21192244d762d063ea7e4960950969`。
+- `incremental-ccce3e3-binding.json`：
+  `08d0a9f53d72e5a2d9748f7af6760856098c1e9fe49e31e1d4a034f204f16729`。
+- `incremental-ccce3e3-artifact-verification.json`：
+  `53b1118b00d5319f3d8cab462858f00fea8bede7d3c6e6f153b1c6d93d05da82`。
+
+该复审将 Windows 耗时/稳定性列为部分修复，原生完整 CI 仍须实际验证；
+优化后 separation 的权重是估计，不是新的 Windows 实测。
+完整 hosted CI 结果由最终 PR head 的检查单独证明，
+日志权重模拟或本机通过均不能代替该结果。#224、#226 仍未修。
 
 ## 未交付与未验证
 

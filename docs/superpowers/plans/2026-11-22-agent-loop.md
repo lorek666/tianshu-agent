@@ -12,8 +12,8 @@ Plan/Verification 保存可核对状态，Goal 协调器串行驱动阶段；授
 **Spec:** [Agent 主循环规格](../../SPEC-AGENT-LOOP-2026-11-22.md)
 
 **执行状态（2026-11-23）：** Task 1–5 已集成本地实现及定向红绿；
-Task 6 的 UI、dist 及前轮本地门禁已完成，但首轮完整原生 CI 真实失败。
-修复候选 `94fd94e` 已通过新的完整本机回归、独立增量复审及文档对账，
+Task 6 的 UI、dist 及前轮本地门禁已完成，但前两轮完整原生 CI 真实失败。
+Windows 累计超时修复 `ccce3e3` 已通过新的完整本机回归与独立增量复审，
 required CI 绑定新的最终 PR 对象单独验收。
 勾选表示该施工项的本地证据，不代表合入、发布或 P0-E 的完整平台隔离通过。
 精确冻结和未决范围见[实施记录](../../changelog/2026-11-23-agent-loop-implementation.md)。

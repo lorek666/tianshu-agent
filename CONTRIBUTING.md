@@ -103,6 +103,12 @@ uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-sh
 
 Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，且汇总硬要求两个 Windows job 整体 `success`。汇总只下载本 run/attempt 的两份独立报告，核对实际/预期 SHA、完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报或重复均拒绝。报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。两片及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
 
+后续完整 run [45058496468](https://github.com/lorek666/tianshu-agent/actions/runs/45058496468)
+因 Windows 分片累计超时失败，旧绿不覆盖该候选。新的权重使用该轮完整文件日志区间，
+截断的 workflow 文件保留此前完整测量。报告断言可复用真实三次评测材料的独立深拷贝；
+缓存只在函数级隔离生效后生成，每片首个消费者仍需实跑，CLI 对比保留一次全新完整执行。
+这种局部复用及固定权重只是成本估计，完整原生 CI 仍须在最终冻结上验证。
+
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
 候选冻结按以下顺序执行，避免“改一处、提交一次、跑整套、再改一处”：
