@@ -19,6 +19,7 @@ from tianshu.consent import (
     workspace_binding_digest,
 )
 from tianshu.dispatcher import Dispatcher, DispatchError, build_request
+from tianshu.errors import TianshuError
 from tianshu.permissions import HumanIdentity
 from tianshu.workspace import ResourceIdentity
 
@@ -182,6 +183,173 @@ def test_runtime_restart_expires_scope_and_records_fact(env):
     assert [e.type for e in env.log.read_run(env.run.run_id)].count("consent.expired") == 1
     _, _, decision = _prepare(env)
     assert decision.kind == "waiting"
+
+
+def _rebuild(e, *, runtime="session-a", drop=False):
+    if drop:
+        with e.log.transaction():
+            e.log.conn.execute("DROP TABLE consent_selections")
+            e.log.conn.execute("DROP TABLE scoped_consents")
+    e.tasks.rebuild_from_events()
+    return ConsentStore(
+        e.log, tasks=e.tasks, data_root=e.dispatcher._data_root,
+        runtime_session_id=runtime, binding_resolver=lambda _: e.binding[0],
+        clock=lambda: e.now[0], monotonic=lambda: e.mono[0],
+    )
+
+
+def test_consumed_scope_rebuild_restores_quota_and_used_selection(env):
+    scope = _issue(env, uses=2)
+    request, args, decision = _prepare(env)
+    assert decision.kind == "admitted"
+    assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "applied"
+    before = env.log.seq_head()
+    rebuilt = _rebuild(env, drop=True)
+    rows = rebuilt.list(run_id=env.run.run_id)
+    assert len(rows) == 1
+    assert rows[0]["consent_id"] == scope.consent_id
+    assert rows[0]["remaining_uses"] == 1 and rows[0]["used_bytes"] == 3
+    assert rebuilt.selected(request) == scope.consent_id
+    assert env.log.conn.execute(
+        "SELECT used FROM consent_selections WHERE request_id=?", (request.request_id,),
+    ).fetchone()["used"] == 1
+    with pytest.raises(ConsentError), env.log.transaction():
+        rebuilt.consume(request, args=args)
+    assert _rebuild(env).list(run_id=env.run.run_id) == rows
+    assert env.log.seq_head() == before
+
+
+@pytest.mark.parametrize("terminal", ["revoked", "expired", "exhausted"])
+def test_rebuild_never_revives_terminal_or_consumed_scope(env, terminal):
+    scope = _issue(env, uses=1)
+    if terminal == "revoked":
+        env.consent.revoke(scope.consent_id, actor=HumanIdentity.local_cli(), request_id="revoke")
+    elif terminal == "expired":
+        _rebuild(env, runtime="other-session")
+    else:
+        request, _, _ = _prepare(env)
+        assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "applied"
+    rebuilt = _rebuild(env, drop=True)
+    row = rebuilt.list(run_id=env.run.run_id)[0]
+    if terminal != "exhausted":
+        assert row["state"] == terminal
+    assert row["remaining_uses"] == (0 if terminal == "exhausted" else 1)
+    request, args = _request(env, call="after-rebuild")
+    assert rebuilt.select(request, args=args) is None
+
+
+def test_rebuild_preserves_original_monotonic_deadline(env):
+    _issue(env)
+    env.now[0] -= 50_000
+    env.mono[0] += 599_999
+    rebuilt = _rebuild(env)
+    request, args = _request(env, call="before-monotonic-expiry")
+    assert rebuilt.select(request, args=args) == "scope-human-issue"
+    env.mono[0] += 2
+    assert _rebuild(env).list(run_id=env.run.run_id)[0]["state"] == "expired"
+
+
+def test_missing_projection_cannot_restart_scope_ttl_after_wall_rollback(env):
+    _issue(env)
+    env.now[0] -= 50_000
+    env.mono[0] += 600_001
+    rebuilt = _rebuild(env, drop=True)
+    assert rebuilt.list(run_id=env.run.run_id)[0]["state"] == "expired"
+    request, args = _request(env, call="past-original-ttl")
+    assert rebuilt.select(request, args=args) is None
+
+
+def test_lost_prepared_selection_cannot_choose_another_scope_after_rebuild(env):
+    first = _issue(env)
+    request, args, decision = _prepare(env)
+    assert decision.kind == "admitted"
+    _issue(env, request_id="replacement")
+    env.consent.revoke(first.consent_id, actor=HumanIdentity.local_cli(), request_id="revoke")
+    env.log.conn.execute("DELETE FROM consent_selections")
+    rebuilt = _rebuild(env)
+    with pytest.raises(ConsentError, match="来源"):
+        rebuilt.select(request, args=args)
+    assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "none_applied"
+    assert not env.log.read_types(("consent.used",))
+
+
+def test_rebuild_replaces_refilled_projection_with_consumed_facts(env):
+    _issue(env, uses=2)
+    request, _, _ = _prepare(env)
+    assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "applied"
+    with env.log.transaction():
+        env.log.conn.execute("UPDATE scoped_consents SET remaining_uses=2,used_bytes=0")
+        env.log.conn.execute("UPDATE consent_selections SET used=0")
+    row = _rebuild(env).list(run_id=env.run.run_id)[0]
+    assert row["remaining_uses"] == 1 and row["used_bytes"] == 3
+    assert env.log.conn.execute(
+        "SELECT used FROM consent_selections WHERE request_id=?", (request.request_id,),
+    ).fetchone()["used"] == 1
+
+
+@pytest.mark.parametrize("change", ["remaining", "bytes", "task", "duplicate"])
+def test_rebuild_rejects_inconsistent_consumption_history(env, change):
+    _issue(env, uses=2)
+    request, _, _ = _prepare(env)
+    assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "applied"
+    used = env.log.read_types(("consent.used",))[0]
+    payload = {**used.payload, "request_id": "another-request", "remaining_uses": 0}
+    task_id = used.task_id
+    if change == "remaining":
+        payload["remaining_uses"] = 2
+    elif change == "bytes":
+        payload["bytes"] = 151
+    elif change == "task":
+        task_id = "other-task"
+    else:
+        payload = used.payload
+    env.log.append(used.run_id, "consent.used", payload, task_id=task_id)
+    with pytest.raises(TianshuError):
+        _rebuild(env)
+
+
+@pytest.mark.parametrize("invalid", ["future_event", "matcher", "state", "selection"])
+def test_rebuild_refuses_unknown_history_and_projection_values(env, invalid):
+    from tianshu.canonical import jcs_bytes
+
+    _issue(env)
+    if invalid in ("future_event", "matcher"):
+        import hashlib
+
+        issued = env.log.read_types(("consent.issued",))[0]
+        payload = json.loads(json.dumps(issued.payload))
+        if invalid == "matcher":
+            payload["matcher"]["kind"] = "future_matcher"
+        raw = jcs_bytes(payload)
+        kind = "consent.future" if invalid == "future_event" else "consent.issued"
+        row = env.log.conn.execute(
+            "INSERT INTO events(run_id,task_id,type,ts,actor_kind,actor_id,payload,payload_hash)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (issued.run_id, issued.task_id, kind, issued.ts, "human", "cli:local",
+             raw.decode(), hashlib.sha256(raw).hexdigest()),
+        )
+        env.log.conn.execute(
+            "INSERT INTO event_versions VALUES (?,?,?)", (row.lastrowid, kind, 1),
+        )
+    elif invalid == "state":
+        env.log.conn.execute("UPDATE scoped_consents SET state='unknown'")
+    else:
+        _prepare(env)
+        env.log.conn.execute("UPDATE consent_selections SET used=2")
+    with pytest.raises(TianshuError):
+        _rebuild(env)
+
+
+def test_explicit_rebuild_updates_existing_store_from_events(env):
+    _issue(env)
+    request, _, _ = _prepare(env)
+    assert env.dispatcher.dispatch(request.request_id, env.claim).effect_state == "applied"
+    env.log.conn.execute("UPDATE scoped_consents SET remaining_uses=2,used_bytes=0")
+    before = env.log.seq_head()
+    env.consent.rebuild_from_events()
+    row = env.consent.list(run_id=env.run.run_id)[0]
+    assert row["remaining_uses"] == 1 and row["used_bytes"] == 3
+    assert env.log.seq_head() == before
 
 
 def test_directory_identity_and_recursion_are_enforced(env):

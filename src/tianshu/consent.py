@@ -145,12 +145,21 @@ class ConsentStore:
         self._clock, self._monotonic = clock, monotonic
         self._guard_timeout_ms = guard_timeout_ms
         self._conn.executescript(_SCHEMA)
+        self.rebuild_from_events()
+
+    def rebuild_from_events(self) -> None:
+        """重建签发/消费/终结事实；缺少 V1 时钟锚点的授权保守失效。"""
+        from ._consent_rebuild import rebuild_projection
+
+        if self._log.in_transaction:
+            raise ConsentError("有限授权重建必须先取得执行守卫")
         # 新 runtime 不继承旧 Scope；与执行的开始线性化点使用同一把守卫。
-        with execution_guard(self._data_root, timeout_ms=guard_timeout_ms):
-            with log.transaction():
+        with execution_guard(self._data_root, timeout_ms=self._guard_timeout_ms):
+            with self._log.transaction():
+                rebuild_projection(self._log)
                 for row in self._conn.execute(
                     "SELECT * FROM scoped_consents WHERE state='active'"
-                    " AND runtime_session_id != ?", (runtime_session_id,),
+                    " AND runtime_session_id != ?", (self._runtime,),
                 ).fetchall():
                     self._expire(row, "runtime_restarted")
 
@@ -354,6 +363,10 @@ class ConsentStore:
             "SELECT * FROM consent_selections WHERE request_id=?", (request.request_id,),
         ).fetchone()
         if row is None:
+            prior = self._log.read_run(request.run_id, event_types=("dispatch.requested",))
+            if any(event.payload["request_id"] == request.request_id
+                   and event.payload.get("rule_id") == "c4.scoped_consent" for event in prior):
+                raise ConsentError("已准备动作的有限授权来源丢失，不能重新选择规则")
             return None
         if row["request_digest"] != request.digest():
             raise ConsentError("有限授权绑定的请求摘要不符")
