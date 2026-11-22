@@ -20,6 +20,7 @@ function queryFor(value: string): string | null {
 }
 
 const BUILTINS = [
+  { name: "goal", description: "建立目标与验收条件，每轮手动推进" },
   { name: "plan", description: "先生成计划，确认后再执行" },
   { name: "compact", description: "压缩当前任务的上下文" },
   { name: "execute", description: "确认执行已有计划" },

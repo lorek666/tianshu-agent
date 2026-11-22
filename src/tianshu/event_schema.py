@@ -494,6 +494,41 @@ _SUBTASK_USAGE = _obj(
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "goal.created": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "goal_revision": _i(minimum=1),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "criteria": _arr(_s()), "max_rounds": _enum(*range(1, 11)),
+            "execution_policy": _obj(
+                {"format_version": {"type": "integer", "const": 1},
+                 "mode": _enum("effects", "pure_only")},
+                required=("format_version", "mode"),
+            ),
+        },
+        required=("format_version", "goal_id", "goal_revision", "request_id",
+                  "criteria", "max_rounds", "execution_policy"),
+    ),
+    "goal.round_started": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "round": _enum(*range(1, 11)),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+        },
+        required=("format_version", "goal_id", "round", "request_id", "source_run_id"),
+    ),
+    "goal.closed": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "outcome": _enum("completed", "cancelled"),
+            "confirmed_criteria": _arr(_i(minimum=0)),
+        },
+        required=("format_version", "goal_id", "request_id", "outcome",
+                  "confirmed_criteria"),
+    ),
     "run.workflow": _obj(
         {
             "format_version": {"type": "integer", "const": 1},
@@ -1194,6 +1229,7 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
 
 
 V1_ONLY_EVENTS = frozenset({
+    "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
 })

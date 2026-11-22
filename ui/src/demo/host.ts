@@ -75,6 +75,12 @@ export class DemoHostClient implements HostClient {
   async rpc<T = unknown>(method: string, params: RpcParams = {}): Promise<T> {
     const world = this.world;
     switch (method) {
+      case "goal.get":
+        return { goal: null } as T;
+      case "goal.create":
+      case "goal.advance":
+      case "goal.close":
+        throw new HostRpcError("unsupported", "演示模式不支持持久化目标操作，请连接真实 Host。");
       case "skill.list":
         return {
           format_version: 1, skills: [],

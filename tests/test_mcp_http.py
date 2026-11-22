@@ -285,7 +285,8 @@ def test_remote_session_generation_cannot_reuse_approval(tmp_path, connector, mo
         log.close()
 
 
-def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connector):
+@pytest.mark.parametrize("mode", ["run", "goal"])
+def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connector, mode):
     from tianshu.control import ControlPlane
 
     requests, _, _ = connector
@@ -293,8 +294,11 @@ def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connect
     control_log = EventLog(db, blob_dir=tmp_path / "blobs")
     driver_log = EventLog(db, blob_dir=tmp_path / "blobs")
     clients = McpClients({"web": config()})
+    control_clients = McpClients({"web": config()})
     try:
-        control_stack = build_stack(control_log, data_root=tmp_path / "data")
+        control_stack = build_stack(
+            control_log, data_root=tmp_path / "data", mcp_clients=control_clients,
+        )
         driver_stack = build_stack(driver_log, data_root=tmp_path / "data", mcp_clients=clients)
 
         class ChoosingModel(ScriptedModel):
@@ -309,7 +313,17 @@ def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connect
         ])
         plane = ControlPlane(control_stack, model=model, mcp_configs={"web": config()})
         task = plane.handle("task.create", {"goal": "使用工具", "mcp_servers": ["web"]})["task"]
-        rid = plane.handle("run.start", {"task_id": task["task_id"]})["run"]["run_id"]
+        if mode == "goal":
+            goal = plane.handle("goal.create", {
+                "task_id": task["task_id"], "goal_revision": task["goal_revision"],
+                "criteria": ["工具结果可核对"], "request_id": "create",
+                "execution_policy": EFFECTS.to_dict(),
+            })["goal"]
+            rid = plane.handle("goal.advance", {
+                "goal_id": goal["goal_id"], "request_id": "advance",
+            })["run"]["run_id"]
+        else:
+            rid = plane.handle("run.start", {"task_id": task["task_id"]})["run"]["run_id"]
         assert requests == []
         engine = engine_for(driver_stack, model)
         assert engine.resume_run(rid).state == "waiting_approval"
@@ -318,6 +332,7 @@ def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connect
         assert engine.resume_run(rid).terminal
         assert len(requests) == 4
     finally:
+        control_clients.close_all()
         clients.close_all()
         driver_log.close()
         control_log.close()

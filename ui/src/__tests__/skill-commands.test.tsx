@@ -248,7 +248,8 @@ it("列表按描述过滤，方向键选中技能，Shift+Enter 不选择", asyn
   )));
   expect(input().value).toBe("/检查");
   await type("/");
-  for (let i = 0; i < 3; i += 1) {
+  // 四个内置命令（Goal/计划/压缩/执行）之后才是本地技能。
+  for (let i = 0; i < 4; i += 1) {
     await act(async () => input().dispatchEvent(new KeyboardEvent(
       "keydown", { key: "ArrowDown", bubbles: true, cancelable: true },
     )));

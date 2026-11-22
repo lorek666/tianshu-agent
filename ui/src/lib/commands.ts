@@ -2,6 +2,7 @@
 export type ComposerCommand =
   | { kind: "message"; text: string }
   | { kind: "plan"; text: string }
+  | { kind: "goal"; text: string }
   | { kind: "compact" }
   | { kind: "execute" }
   | { kind: "skills" }
@@ -26,6 +27,7 @@ export function parseComposerCommand(value: string): ComposerCommand {
     return { kind: "skill", skill: selected[1]!, text: (selected[2] ?? "").trim() };
   }
   if (command === "plan") return { kind: "plan", text: argument };
+  if (command === "goal") return { kind: "goal", text: argument };
   if (command === "compact" || command === "execute") {
     return argument === ""
       ? { kind: command }

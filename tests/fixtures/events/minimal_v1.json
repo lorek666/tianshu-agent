@@ -407,6 +407,32 @@
       "run_id": "x",
       "control_run": "x",
       "error": "x"
+    },
+    "goal.created": {
+      "format_version": 1,
+      "goal_id": "x",
+      "goal_revision": 1,
+      "request_id": "x",
+      "criteria": [],
+      "max_rounds": 1,
+      "execution_policy": {
+        "format_version": 1,
+        "mode": "effects"
+      }
+    },
+    "goal.round_started": {
+      "format_version": 1,
+      "goal_id": "x",
+      "round": 1,
+      "request_id": "x",
+      "source_run_id": "x"
+    },
+    "goal.closed": {
+      "format_version": 1,
+      "goal_id": "x",
+      "request_id": "x",
+      "outcome": "completed",
+      "confirmed_criteria": []
     }
   },
   "generated_by": "event_schema.minimal_payload"

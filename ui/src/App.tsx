@@ -23,6 +23,8 @@ import { createRealHostClient } from "./api/host";
 import type { HostClient } from "./api/host";
 import { createSkillsApi } from "./api/skills";
 import type { SkillsApi } from "./api/skills";
+import { createGoalsApi } from "./api/goals";
+import type { GoalConfig, GoalsApi } from "./api/goals";
 import { createDemoHostClient } from "./demo/host";
 import { isDemoRequested, readHostToken } from "./api/token";
 import {
@@ -148,6 +150,8 @@ export function App() {
   const [memoryApi, setMemoryApi] = useState<MemoryApi | null>(null);
   const [settingsApi, setSettingsApi] = useState<SettingsApi | null>(null);
   const [skillsApi, setSkillsApi] = useState<SkillsApi | null>(null);
+  const [goalsApi, setGoalsApi] = useState<GoalsApi | null>(null);
+  const [goalDrafts, setGoalDrafts] = useState<Record<string, GoalConfig>>({});
   const now = useNow(10_000);
   const systemDark = useSystemDarkScheme();
 
@@ -522,6 +526,7 @@ export function App() {
         setMemoryApi((previous) => previous ?? createMemoryApi(host));
         setSettingsApi((previous) => previous ?? nextSettingsApi);
         setSkillsApi(createSkillsApi(host));
+        setGoalsApi(createGoalsApi(host));
         setModelSettings(initialSettings);
         setState(next);
         stateRef.current = next;
@@ -545,6 +550,7 @@ export function App() {
         setMemoryApi(null);
         setSettingsApi(null);
         setSkillsApi(null);
+        setGoalsApi(null);
         setModelSettings(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
@@ -702,7 +708,13 @@ export function App() {
   const handleCreateTask = useCallback(
     async (input: CreateTaskInput): Promise<void> => {
       const host = requireHost();
-      const { execution_policy, attachments, model_profile, fallback_profiles, mode, ...taskInput } = input;
+      const {
+        execution_policy, attachments, model_profile, fallback_profiles, mode, goal_config,
+        ...taskInput
+      } = input;
+      if (goal_config !== undefined && (attachments?.length || model_profile !== undefined)) {
+        throw new Error("目标模式首版暂不支持附件和单次模型档案，请移除附件并选择当前默认模型。");
+      }
       setBusy("create-task");
       try {
         let created: TaskView | null;
@@ -716,6 +728,9 @@ export function App() {
           throw new Error("任务创建成功，但守护进程返回的数据无法识别。");
         }
         const task = created;
+        if (input.goal_config !== undefined) {
+          setGoalDrafts((previous) => ({ ...previous, [task.task_id]: input.goal_config! }));
+        }
         composingNewTaskRef.current = false;
         setComposingNewTask(false);
         setActiveProject(null);
@@ -738,7 +753,7 @@ export function App() {
           [task.task_id]: mode ?? "execute",
         }));
         selectRun(null);
-        showToast("任务已创建，正在启动后台运行", "success");
+        showToast(input.goal_config ? "任务已创建，正在保存目标" : "任务已创建，正在启动后台运行", "success");
 
         if (attachments?.length || model_profile) {
           unsentAttachments.current.set(task.task_id, {
@@ -747,6 +762,21 @@ export function App() {
           });
         }
         try {
+          if (input.goal_config !== undefined) {
+            const key = `goal-create:${task.task_id}:${task.goal_revision}`;
+            await createGoalsApi(host).create(
+              task, input.goal_config, input.execution_policy, requestIdFor(key),
+            );
+            workflowRequests.current.delete(key);
+            setGoalDrafts((previous) => {
+              const next = { ...previous };
+              delete next[task.task_id];
+              return next;
+            });
+            showToast("目标已保存；点击「推进一轮」开始", "success");
+            await refreshSnapshot(host);
+            return;
+          }
           const key = `start:${task.task_id}:${task.goal_revision}:${mode ?? "execute"}:${input.execution_policy.mode}`;
           const runEnvelope = await host.rpc<RunEnvelope>(RPC.runStart, {
             task_id: task.task_id,
@@ -767,7 +797,9 @@ export function App() {
           if (run !== null) await refreshRun(host, run.run_id);
         } catch (error) {
           setErrorBanner(
-            `任务已创建，但启动运行失败：${humanizeHostError(error)}。可以在任务详情里点「开始运行」重试。`,
+            input.goal_config
+              ? `任务已创建，但保存目标失败：${humanizeHostError(error)}。验收条件已保留，可在目标面板重试。`
+              : `任务已创建，但启动运行失败：${humanizeHostError(error)}。可以在任务详情里点「开始运行」重试。`,
           );
           await refreshSnapshot(host);
         }
@@ -1350,6 +1382,14 @@ export function App() {
               onFollowUpSubmit={handleFollowUpSubmit}
               onGuide={demoMode ? undefined : handleGuide}
               onWorkflowCommand={handleWorkflowCommand}
+              goalsApi={goalsApi}
+              initialGoalConfig={goalDrafts[selectedTask.task_id]}
+              onGoalRunStarted={async (run) => {
+                selectRun(run);
+                const host = requireHost();
+                await refreshSnapshot(host);
+                await refreshRun(host, run.run_id);
+              }}
               onPause={(run) => handleControl("pause", run)}
               onResume={(run) => handleControl("resume", run)}
               onRequestCancel={requestCancel}

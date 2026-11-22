@@ -84,6 +84,9 @@
         "dispatch.requested",
         "dispatch.revoked",
         "execution.started",
+        "goal.closed",
+        "goal.created",
+        "goal.round_started",
         "grant.consumed",
         "grant.issued",
         "job.claimed",
@@ -3176,6 +3179,161 @@
           "requested_source_run_id"
         ],
         "type": "object"
+      },
+      "goal.created": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_rounds": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "execution_policy": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "effects",
+                  "pure_only"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "mode"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "format_version",
+          "goal_id",
+          "goal_revision",
+          "request_id",
+          "criteria",
+          "max_rounds",
+          "execution_policy"
+        ]
+      },
+      "goal.round_started": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "round": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "format_version",
+          "goal_id",
+          "round",
+          "request_id",
+          "source_run_id"
+        ]
+      },
+      "goal.closed": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "cancelled"
+            ]
+          },
+          "confirmed_criteria": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "format_version",
+          "goal_id",
+          "request_id",
+          "outcome",
+          "confirmed_criteria"
+        ]
       }
     },
     "legacyPayload": {

@@ -70,6 +70,9 @@ import { SubtaskPanel } from "./SubtaskPanel";
 import { WelcomePet } from "./WelcomePet";
 import type { WelcomePetStatus } from "./WelcomePet";
 
+import type { GoalConfig, GoalsApi } from "../api/goals";
+import { GoalPanel } from "./GoalPanel";
+
 export interface TaskWorkspaceViewProps {
   task: TaskView;
   artifactHost?: HostClient | null;
@@ -96,6 +99,9 @@ export interface TaskWorkspaceViewProps {
   modelConfig?: ModelConfigView | null;
   settingsApi?: SettingsApi | null;
   skillsApi?: SkillsApi | null;
+  goalsApi?: GoalsApi | null;
+  initialGoalConfig?: GoalConfig;
+  onGoalRunStarted?: (run: RunView) => void | Promise<void>;
   onModelUpdated?: (settings: SettingsView) => void;
   onSelectRun: (runId: string) => void;
   onExecutionPolicyChange: (taskId: string, policy: RunExecutionPolicyV1) => void;
@@ -178,6 +184,9 @@ export function TaskWorkspaceView({
   modelConfig = null,
   settingsApi = null,
   skillsApi = null,
+  goalsApi = null,
+  initialGoalConfig,
+  onGoalRunStarted,
   onModelUpdated,
   onSelectRun,
   onExecutionPolicyChange,
@@ -206,6 +215,9 @@ export function TaskWorkspaceView({
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
   const [interactionMode, setInteractionMode] = useState<"execute" | "plan">(defaultMode);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [goalRequest, setGoalRequest] = useState<{
+    taskId: string; revision: number; nonce: number; text: string;
+  } | null>(null);
 
   const submissionGeneration = useRef(0);
   const submissionContext = JSON.stringify([
@@ -310,6 +322,14 @@ export function TaskWorkspaceView({
     }
     if (command.kind === "plan" && command.text === "") {
       setInteractionMode("plan");
+      setFollowUpText("");
+      return;
+    }
+    if (command.kind === "goal") {
+      setGoalRequest({
+        taskId: task.task_id, revision: task.goal_revision,
+        nonce: Date.now(), text: command.text,
+      });
       setFollowUpText("");
       return;
     }
@@ -723,6 +743,14 @@ export function TaskWorkspaceView({
                 )}
               </section>
             ) : null}
+
+            <GoalPanel key={`${task.task_id}:${task.goal_revision}`}
+              api={goalsApi} task={task} eventSeqHead={eventSeqHead}
+              executionPolicy={executionPolicy} initialConfig={initialGoalConfig}
+              openRequest={goalRequest?.taskId === task.task_id
+                && goalRequest.revision === task.goal_revision ? goalRequest : null}
+              onRunStarted={onGoalRunStarted ?? (() => undefined)}
+              onChanged={onRefresh} onSelectRun={onSelectRun} />
 
             {/* 运行事件时间线 */}
             {selectedRun !== null ? (

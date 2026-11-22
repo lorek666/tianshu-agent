@@ -518,10 +518,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         from .workflow import workflow_for
 
         workflow = workflow_for(self._log, run_id)
+        goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
             stored = self._tasks.restore_responses_cursor(run_id)
-        if (workflow is not None and stored is None
+        if ((workflow is not None or goal_round) and stored is None
                 and any(e.type == "model.intent" for e in self._log.read_run(run_id))):
             raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
         task = self._task(run.task_id)
@@ -569,7 +570,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         progress.model_attempts += sum(
             e.type == "model.intent" and e.seq > saved_seq for e in events
         )
-        if workflow is not None and stored is None:
+        if (workflow is not None or goal_round) and stored is None:
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
@@ -644,6 +645,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             from .workflow import response_error, workflow_for
 
             workflow = workflow_for(self._log, run_id)
+            goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
+            result_mode = workflow.mode if workflow is not None else "goal" if goal_round else None
             while True:
                 if workflow is not None and workflow.mode == "compact" and progress.pending:
                     return self._finish(
@@ -660,7 +663,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                     )
 
                 # 特殊工作流在 result 提交后崩溃，也必须消费已保存正文，不能重问模型。
-                if workflow is not None and workflow.mode in ("plan", "compact"):
+                if result_mode in ("plan", "compact", "goal"):
                     workflow_events = self._log.read_run(run_id)
                     intents = [e for e in workflow_events if e.type == "model.intent"
                                and not e.payload["request_id"].startswith("summary#")]
@@ -1037,6 +1040,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         from .workflow import workflow_for
 
         special = workflow_for(self._log, run_id)
+        goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
+        failpoint("goal-after-call", only_if=goal_round)
         failpoint("workflow-after-call", only_if=special is not None
                   and special.mode in ("plan", "compact"))
 
@@ -1194,6 +1199,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         failpoint("workflow-after-result", only_if=special is not None
                   and special.mode in ("plan", "compact"))
+        failpoint("goal-after-result", only_if=goal_round)
 
         return self._model_turn_outcome(progress, turn)
 

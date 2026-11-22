@@ -113,6 +113,10 @@ EVENT_TYPES: frozenset[str] = frozenset(
         # Task
         "task.created",
         "task.revised",
+        # Goal：人触发的目标配置、单轮入队及验收，不是执行授权。
+        "goal.created",
+        "goal.round_started",
+        "goal.closed",
         # 子任务（G2 委派）：父 Run 侧的委派审计
         "subtask.spawned",
         "subtask.finished",
@@ -642,14 +646,20 @@ class EventLog:
             for r in rows
         ]
 
-    def read_types(self, types: Iterable[str]) -> list[Event]:
+    def read_types(
+        self, types: Iterable[str], *, task_id: str | None = None,
+    ) -> list[Event]:
         """按类型读事件（跨 run）。投影重建用。"""
         wanted = list(types)
         if not wanted:
             return []
         marks = ",".join("?" * len(wanted))
+        where = f"type IN ({marks})"
+        if task_id is not None:
+            where += " AND task_id=?"
+            wanted.append(task_id)
         rows = self._conn.execute(
-            f"SELECT * FROM events WHERE type IN ({marks}) ORDER BY seq", wanted
+            f"SELECT * FROM events WHERE {where} ORDER BY seq", wanted
         ).fetchall()
         versions = self._versions_for([int(r["seq"]) for r in rows])
         return [

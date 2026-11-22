@@ -35,6 +35,7 @@ FAMILIES = frozenset(
         "dispatch",
         "execution",
         "grant",
+        "goal",
         "job",
         "model",
         "policy",

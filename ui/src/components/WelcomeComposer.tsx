@@ -16,9 +16,11 @@ import type { ModelConfigView, ModelProfileInput, SettingsApi, SettingsView } fr
 import { encodeAttachments } from "../lib/attachments";
 import { prepareComposerText } from "../api/skills";
 import type { SkillsApi } from "../api/skills";
+import { criteriaFromText } from "../api/goals";
 import { workspaceModeLabel } from "../lib/humanize";
 import { streamStatusText } from "./AppHeader";
 import { AttachmentPicker } from "./AttachmentPicker";
+import { GoalFields } from "./GoalFields";
 import {
   IconCheck,
   IconChevronDown,
@@ -113,7 +115,9 @@ export function WelcomeComposer({
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">("execute");
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan" | "goal">("execute");
+  const [goalCriteria, setGoalCriteria] = useState("");
+  const [goalMaxRounds, setGoalMaxRounds] = useState(3);
 
   const toolbarRef = useRef<HTMLDivElement | null>(null);
 
@@ -182,6 +186,7 @@ export function WelcomeComposer({
   const submissionGeneration = useRef(0);
   const submissionContext = JSON.stringify([
     activeProject, goal, committedWorkspaces, executionPolicy, interactionMode,
+    goalCriteria, goalMaxRounds,
   ]);
   useEffect(() => {
     submissionGeneration.current += 1;
@@ -239,6 +244,18 @@ export function WelcomeComposer({
       setError(null);
       return;
     }
+    if (command.kind === "goal") {
+      setInteractionMode("goal");
+      setGoal(command.text);
+      setError(null);
+      // 切换模式只打开配置，由用户填好条件后再发送。
+      return;
+    }
+    if (interactionMode === "goal" && command.kind !== "plan"
+        && (files.length > 0 || modelSelection.model_profile !== undefined)) {
+      setError("目标模式首版暂不支持附件和单次模型档案，请移除附件并选择当前默认模型。");
+      return;
+    }
     const sources = outboundSources.trim().split(/\s+/).filter(Boolean);
     const servers = mcpServers.trim().split(/\s+/).filter(Boolean);
     const limit = Number(subtaskLimit);
@@ -256,6 +273,8 @@ export function WelcomeComposer({
         command, skillsApi, committedWorkspaces.map((workspace) => workspace.root_path),
       );
       if (generation !== submissionGeneration.current) return;
+      const goalConfig = interactionMode === "goal" && command.kind !== "plan"
+        ? { criteria: criteriaFromText(goalCriteria), max_rounds: goalMaxRounds } : undefined;
       await onSubmit({
         goal: text,
         workspaces: committedWorkspaces,
@@ -265,7 +284,8 @@ export function WelcomeComposer({
         ...(servers.length ? { mcp_servers: servers } : {}),
         ...(limit ? { max_subtasks: limit } : {}),
         ...(attachments.length ? { attachments } : {}),
-        mode: command.kind === "plan" ? "plan" : interactionMode,
+        mode: command.kind === "plan" ? "plan" : interactionMode === "goal" ? "execute" : interactionMode,
+        ...(goalConfig === undefined ? {} : { goal_config: goalConfig }),
       });
       if (generation === submissionGeneration.current) {
         setGoal("");
@@ -390,6 +410,9 @@ export function WelcomeComposer({
             disabled={pending}
           />
           </SkillCommandMenu>
+          {interactionMode === "goal" ? <GoalFields criteria={goalCriteria}
+            maxRounds={goalMaxRounds} disabled={pending} onCriteriaChange={setGoalCriteria}
+            onMaxRoundsChange={setGoalMaxRounds} /> : null}
 
           <AttachmentPicker files={files} onChange={setFiles} disabled={pending}
             allowImages={canAttachImages} />
@@ -716,10 +739,13 @@ export function WelcomeComposer({
                 data-testid="composer-mode-select"
                 value={interactionMode}
                 disabled={pending}
-                onChange={(event) => setInteractionMode(event.target.value === "plan" ? "plan" : "execute")}
+                onChange={(event) => setInteractionMode(
+                  event.target.value as "execute" | "plan" | "goal",
+                )}
               >
                 <option value="execute">执行任务</option>
                 <option value="plan">计划模式</option>
+                <option value="goal">目标模式</option>
               </select>
               <ModelStatusControl
                 testId="composer-model-btn"

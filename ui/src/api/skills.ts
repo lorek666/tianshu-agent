@@ -80,7 +80,9 @@ export function createSkillsApi(host: HostClient): SkillsApi {
 export async function prepareComposerText(
   command: ComposerCommand, api: SkillsApi | null, workspaceRoots: string[],
 ): Promise<string> {
-  if (command.kind === "message" || command.kind === "plan") return command.text;
+  if (command.kind === "message" || command.kind === "plan" || command.kind === "goal") {
+    return command.text;
+  }
   if (command.kind !== "skill") throw new Error("请先选择命令或技能");
   if (api === null) throw new Error("当前连接不支持技能，请更新天枢后重试");
   return (await api.prepare(command.skill, command.text, workspaceRoots)).goal;
