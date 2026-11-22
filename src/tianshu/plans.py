@@ -27,13 +27,14 @@ def closed(value: Any, fields: set[str], name: str) -> None:
 
 
 def bounded_text(value, name, maximum=8192):
-    if not isinstance(value, str) or not value.strip() or len(value.encode()) > maximum:
+    if (not isinstance(value, str) or not value.strip() or "\x00" in value
+            or len(value.encode()) > maximum):
         raise ValueError(f"{name} 必须为有界非空文本")
 
 
-def unique_ids(values, name, *, maximum=64, empty=True):
+def unique_ids(values, name, *, maximum=64, empty=True, pattern=ID):
     if (not isinstance(values, list) or len(values) > maximum or (not empty and not values)
-            or any(not isinstance(i, str) or ID.fullmatch(i) is None for i in values)
+            or any(not isinstance(i, str) or pattern.fullmatch(i) is None for i in values)
             or len(values) != len(set(values))):
         raise ValueError(f"{name} 必须是有界且不重复的 ID 列表")
 
@@ -65,8 +66,12 @@ def read_material(stack, task_id, ref):
 
 
 def validate_graph(mission, document, manifest):
+    from .agent_documents import PLAN_SCHEMA, validate_document
+    from .mission import MissionSpecV1
     from .verification import validate_manifest
 
+    MissionSpecV1.of(mission)
+    validate_document(PLAN_SCHEMA, document, "Plan")
     closed(document, {
         "format_version", "plan_id", "revision", "mission_id", "mission_digest",
         "previous_digest", "verification_manifest", "steps",
@@ -74,6 +79,10 @@ def validate_graph(mission, document, manifest):
     if (type(document["format_version"]) is not int or document["format_version"] != 1
             or type(document["revision"]) is not int or document["revision"] < 1):
         raise ValueError("Plan 版本/修订无效")
+    if (document["previous_digest"] is not None
+            and (not isinstance(document["previous_digest"], str)
+                 or re.fullmatch(r"[0-9a-f]{64}", document["previous_digest"]) is None)):
+        raise ValueError("Plan 前修订摘要无效")
     unique_ids([document["plan_id"]], "plan_id")
     if (document["mission_id"] != mission["mission_id"]
             or document["mission_digest"] != jcs_sha256(mission)):
@@ -100,7 +109,8 @@ def validate_graph(mission, document, manifest):
         bounded_text(step["title"], "步骤标题", 256)
         bounded_text(step["instruction"], "步骤说明")
         unique_ids(step["depends_on"], "依赖", maximum=63)
-        unique_ids(step["criterion_ids"], "条件", empty=False)
+        unique_ids(step["criterion_ids"], "条件", empty=False,
+                   pattern=re.compile(r"[A-Za-z0-9_.-]{1,128}"))
         unique_ids(step["verification_ids"], "检查", maximum=16, empty=False)
         if (set(step["depends_on"]) - set(ids) or step["step_id"] in step["depends_on"]
                 or set(step["criterion_ids"]) - criteria.keys()
@@ -113,6 +123,12 @@ def validate_graph(mission, document, manifest):
             if artifact["kind"] not in ("file", "content", "source"):
                 raise ValueError("产物类型无效")
             bounded_text(artifact["locator"], "产物定位", 4096)
+            if artifact["kind"] == "file":
+                from .verification import relative_file
+                relative_file(artifact["locator"])
+            else:
+                from .contents import parse_ref
+                parse_ref(artifact["locator"])
             artifacts.append(artifact["artifact_id"])
         for criterion_id in step["criterion_ids"]:
             matched = [checks[i] for i in step["verification_ids"]
@@ -307,10 +323,21 @@ class PlanStore:
 
     def change_step(self, plan_id, step_id, state, *, run_id=None, reason="",
                     evidence_refs=(), request_id):
+        checked_request_id(request_id)
         if state not in STEP_STATES:
             raise ValueError("未知步骤状态")
         with self.log.transaction() as tx:
             view = self.get(plan_id)
+            for event in self._events(plan_id):
+                p = event.payload
+                if event.type != "plan.step_changed" or p["request_id"] != request_id:
+                    continue
+                if (p["revision"] != view["revision"] or p["step_id"] != step_id
+                        or p["state"] != state or p["reason_code"] != reason
+                        or p["evidence_refs"] != list(evidence_refs)
+                        or event.run_id != (run_id or "")):
+                    raise ValueError("步骤请求编号已绑定不同迁移")
+                return view
             step = next((s for s in view["steps"] if s["step_id"] == step_id), None)
             if step is None or not view["confirmed"]:
                 raise ValueError("步骤不存在或计划未确认")
@@ -321,6 +348,11 @@ class PlanStore:
             }
             if state not in allowed.get(step["state"], set()):
                 raise ValueError("非法步骤迁移")
+            if run_id is not None:
+                run = self.stack.tasks.get_run(run_id)
+                if (run is None or run.task_id != view["task_id"]
+                        or run.goal_revision != view["mission"]["goal_revision"]):
+                    raise ValueError("步骤 Run 不属于当前任务修订")
             if state == "satisfied":
                 from .verification import step_verified
                 if not step_verified(self.stack, view, step_id):

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan",
+  "$ref": "#/$defs/plan",
+  "$defs": {
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mission_id": {
+          "type": "string"
+        },
+        "mission_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "previous_digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verification_manifest": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "content_ref": {
+              "type": "string",
+              "pattern": "^content://sha256:[0-9a-f]{64}$"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "content_ref",
+            "digest"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "step_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "instruction": {
+                "type": "string"
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                },
+                "minItems": 0
+              },
+              "criterion_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                },
+                "minItems": 1
+              },
+              "expected_artifacts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "file",
+                        "content",
+                        "source"
+                      ]
+                    },
+                    "locator": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "artifact_id",
+                    "kind",
+                    "locator"
+                  ]
+                },
+                "minItems": 0
+              },
+              "verification_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "step_id",
+              "title",
+              "instruction",
+              "depends_on",
+              "criterion_ids",
+              "expected_artifacts",
+              "verification_ids"
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "format_version",
+        "plan_id",
+        "revision",
+        "mission_id",
+        "mission_digest",
+        "previous_digest",
+        "verification_manifest",
+        "steps"
+      ]
+    }
+  }
+}

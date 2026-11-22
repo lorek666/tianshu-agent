@@ -10,6 +10,7 @@ from support import stack_for
 
 from tianshu.canonical import jcs_sha256
 from tianshu.events import EventLog
+from tianshu.mission import prepare_mission
 
 
 @pytest.fixture
@@ -19,10 +20,9 @@ def env(tmp_path):
     log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     stack = stack_for(log, data_root=tmp_path)
     task = stack.tasks.create_task("生成一份可核对的报告", [str(ws)])
-    mission = {
-        "mission_id": "mission_test", "task_id": task.task_id, "goal_revision": 1,
-        "criteria": [{"criterion_id": "report", "description": "报告存在", "mode": "machine"}],
-    }
+    mission = prepare_mission(stack.tasks, task.task_id, criteria=[
+        {"criterion_id": "report", "description": "报告存在", "mode": "machine"},
+    ]).to_dict()
     manifest = {
         "format_version": 1, "mission_id": mission["mission_id"],
         "mission_digest": jcs_sha256(mission),
@@ -267,3 +267,85 @@ def test_partial_replan_carries_only_unchanged_fresh_evidence(env):
     (ws / "report.md").write_bytes(b"changed")
     assert not step_verified(stack, latest, "write")
     assert plans.get(view["plan_id"])["steps"][1]["state"] != "ready"
+
+
+def test_plan_rejects_incomplete_mission(env):
+    stack, task, _, mission, document, manifest = env
+    del mission["prompt"]
+    manifest["mission_digest"] = document["mission_digest"] = jcs_sha256(mission)
+    document["verification_manifest"] = {
+        "digest": jcs_sha256(manifest), "content_ref": "content://sha256:" + jcs_sha256(manifest),
+    }
+    with pytest.raises(Exception, match="Mission"):
+        store(env).create(task.task_id, mission, document, manifest, request_id="create")
+    assert not stack.log.read_types(("plan.created",))
+
+
+@pytest.mark.parametrize("inputs", [
+    {"workspace_binding_id": True},
+    {"workspace_binding_id": "-1"},
+    {"workspace_binding_id": "00"},
+    {"relative_path": "."},
+    {"relative_path": "report\x00.md"},
+])
+def test_manifest_rejects_invalid_file_binding(env, inputs):
+    from tianshu.verification import validate_manifest
+    _, _, _, mission, _, manifest = env
+    manifest["checks"][0]["inputs"].update(inputs)
+    with pytest.raises(ValueError):
+        validate_manifest(mission, manifest)
+
+
+def test_step_transition_is_idempotent_and_checks_run_ownership(env):
+    stack, task, ws, mission, document, manifest = env
+    plans = store(env)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm")
+    other = stack.tasks.create_task("其他任务", [str(ws)])
+    foreign = stack.tasks.start_run(other.task_id)
+    with pytest.raises(ValueError):
+        plans.change_step(view["plan_id"], "write", "running",
+                          run_id=foreign.run_id, request_id="foreign")
+    running = plans.change_step(view["plan_id"], "write", "running", request_id="running")
+    assert plans.change_step(
+        view["plan_id"], "write", "running", request_id="running") == running
+    with pytest.raises(ValueError):
+        plans.change_step(view["plan_id"], "write", "blocked", request_id="running")
+
+
+def test_source_reference_reads_raw_content_and_exact_event_reference(env):
+    from tianshu.contents import make_ref
+    from tianshu.event_schema import minimal_payload
+    from tianshu.fsutil import atomic_write_bytes
+    from tianshu.verification import observe_check
+    stack, task, _, _, _, manifest = env
+    raw = b"plain source\r\n\xff"
+    digest = hashlib.sha256(raw).hexdigest()
+    ref = make_ref(digest)
+    atomic_write_bytes(stack.contents.blob_dir / digest, raw)
+    stack.contents.record(digest, raw, task_id=task.task_id)
+    run = stack.tasks.start_run(task.task_id)
+    payload = minimal_payload("tool.result")
+    payload["output"] = {"source": {"ref": ref}}
+    seq = stack.log.append(run.run_id, "tool.result", payload, task_id=task.task_id)
+    check = {**manifest["checks"][0], "kind": "source_reference", "inputs": {
+        "content_ref": ref, "source_event_seq": seq, "cited_digest": digest,
+        "locator": "paragraph 1",
+    }}
+    assert observe_check(stack, task.task_id, check)["result"] == "passed"
+    payload["output"] = {"text": "unbound prefix" + ref}
+    seq = stack.log.append(run.run_id, "tool.result", payload, task_id=task.task_id)
+    check["inputs"]["source_event_seq"] = seq
+    assert observe_check(stack, task.task_id, check)["result"] == "inconclusive"
+
+
+def test_document_schemas_match_runtime_contracts():
+    import json
+    from pathlib import Path
+
+    from tianshu.agent_documents import EVIDENCE_SCHEMA, MANIFEST_SCHEMA, PLAN_SCHEMA
+    root = Path(__file__).parents[1] / "schemas"
+    for name, schema in (("plan", PLAN_SCHEMA), ("verification", MANIFEST_SCHEMA),
+                         ("evidence", EVIDENCE_SCHEMA)):
+        assert json.loads((root / f"{name}.json").read_text())["$defs"][name] == schema

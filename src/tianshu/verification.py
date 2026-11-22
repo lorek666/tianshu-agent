@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import uuid
 from pathlib import Path
 
 from .canonical import jcs_bytes, jcs_sha256
+from .contents import parse_ref
 from .errors import TianshuError
 from .permissions import HumanIdentity
 from .plans import bounded_text, closed, unique_ids
@@ -29,7 +31,25 @@ MAX_INPUT_FILES = 8192
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 
 
+def sha256_digest(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def workspace_id(value):
+    if not isinstance(value, str) or re.fullmatch(r"0|[1-9][0-9]{0,3}", value) is None:
+        raise ValueError("工作区绑定必须为规范非负索引")
+
+
+def relative_file(value):
+    bounded_text(value, "相对路径", 4096)
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts or str(path) == ".":
+        raise ValueError("文件检查只允许工作区内普通文件")
+
+
 def validate_manifest(mission, manifest):
+    from .agent_documents import MANIFEST_SCHEMA, validate_document
+    validate_document(MANIFEST_SCHEMA, manifest, "检查清单")
     closed(manifest, {"format_version", "mission_id", "mission_digest", "checks"}, "检查清单")
     if (type(manifest["format_version"]) is not int or manifest["format_version"] != 1
             or manifest["mission_id"] != mission["mission_id"]
@@ -47,18 +67,19 @@ def validate_manifest(mission, manifest):
         if (check["format_version"] != 1 or type(check["format_version"]) is not int
                 or check["required"] is not True or check["kind"] not in CHECK_INPUTS):
             raise ValueError("检查类型/版本无效或非必需")
-        unique_ids(check["criterion_ids"], "检查条件", empty=False)
+        unique_ids(check["criterion_ids"], "检查条件", empty=False,
+                   pattern=re.compile(r"[A-Za-z0-9_.-]{1,128}"))
         if set(check["criterion_ids"]) - criteria:
             raise ValueError("检查引用其他使命条件")
         inputs = check["inputs"]
         closed(inputs, CHECK_INPUTS[check["kind"]], "检查参数")
         if check["kind"] in ("file_exists", "file_hash"):
-            bounded_text(inputs["relative_path"], "相对路径", 4096)
-            path = Path(inputs["relative_path"])
-            if path.is_absolute() or ".." in path.parts or inputs["file_kind"] != "regular":
+            workspace_id(inputs["workspace_binding_id"])
+            relative_file(inputs["relative_path"])
+            if inputs["file_kind"] != "regular":
                 raise ValueError("文件检查只允许工作区内普通文件")
             if check["kind"] == "file_hash" and (
-                inputs["algorithm"] != "sha256" or len(inputs["expected_digest"]) != 64
+                inputs["algorithm"] != "sha256" or not sha256_digest(inputs["expected_digest"])
             ):
                 raise ValueError("文件摘要参数无效")
         elif check["kind"] == "human":
@@ -67,12 +88,29 @@ def validate_manifest(mission, manifest):
             unique_ids(inputs["required_check_ids"], "验收检查", maximum=256)
         elif check["kind"] == "command_exit":
             if (not isinstance(inputs["argv"], list)
-                    or any(not isinstance(a, str) or "\x00" in a for a in inputs["argv"])
+                    or not 1 <= len(inputs["argv"]) <= 256
+                    or any(not isinstance(a, str) or "\x00" in a or len(a.encode()) > 8192
+                           for a in inputs["argv"])
                     or type(inputs["timeout_ms"]) is not int or inputs["timeout_ms"] <= 0
                     or not isinstance(inputs["expected_exit_codes"], list)
-                    or not inputs["expected_exit_codes"]
-                    or any(type(n) is not int for n in inputs["expected_exit_codes"])):
+                    or not 1 <= len(inputs["expected_exit_codes"]) <= 256
+                    or any(type(n) is not int or not -(2**31) <= n < 2**31
+                           for n in inputs["expected_exit_codes"])):
                 raise ValueError("命令检查参数无效")
+            workspace_id(inputs["cwd_binding_id"])
+            bounded_text(inputs["executable"], "可执行文件", 4096)
+            if (not Path(inputs["executable"]).is_absolute()
+                    or inputs["argv"][0] != inputs["executable"]
+                    or len(set(inputs["expected_exit_codes"])) != len(inputs["expected_exit_codes"])
+                    or any(not sha256_digest(inputs[k]) for k in (
+                        "executable_digest", "env_profile_digest", "isolation_profile_digest"))):
+                raise ValueError("命令检查身份绑定无效")
+        elif check["kind"] == "source_reference":
+            bounded_text(inputs["locator"], "来源定位", 4096)
+            if (type(inputs["source_event_seq"]) is not int or inputs["source_event_seq"] < 1
+                    or not sha256_digest(inputs["cited_digest"])
+                    or inputs["content_ref"] != "content://sha256:" + inputs["cited_digest"]):
+                raise ValueError("来源引用绑定无效")
     graph = {c["check_id"]: (c["inputs"]["required_check_ids"] if c["kind"] == "human" else [])
              for c in checks}
     visited, active = set(), set()
@@ -162,13 +200,15 @@ def observe_check(stack, task_id, check):
             result.update(result="passed" if passed else "failed",
                           reason_code="verification.match" if passed else "verification.mismatch")
         elif kind == "source_reference":
-            from .plans import read_material
-            material = read_material(stack, task_id, inputs["content_ref"])
+            # ContentStore 原始字节摘要复核和任务可见性，不能以 JSON 重编码替代来源。
+            stack.contents.read(inputs["content_ref"], task_id=task_id,
+                                length=1, encoding="base64")
             source = next((e for e in stack.log.read_after(inputs["source_event_seq"] - 1, limit=1)
                            if e.seq == inputs["source_event_seq"] and e.task_id == task_id), None)
-            if source is None or jcs_sha256(material) != inputs["cited_digest"]:
+            if (source is None or source.type != "tool.result"
+                    or parse_ref(inputs["content_ref"]) != inputs["cited_digest"]):
                 raise ValueError("来源归属或摘要无效")
-            if inputs["content_ref"] not in str(source.payload):
+            if not contains_ref(source.payload.get("output"), inputs["content_ref"]):
                 raise ValueError("来源事件未绑定引用")
             result.update(result="passed", reason_code="verification.source_bound",
                           evidence={"kind": "source_snapshot", **inputs})
@@ -183,6 +223,16 @@ def observe_check(stack, task_id, check):
     except (ValueError, OSError, IndexError, TianshuError):
         result.update(result="inconclusive", reason_code="verification.input_unverifiable")
     return result
+
+
+def contains_ref(value, ref):
+    if isinstance(value, str):
+        return value == ref
+    if isinstance(value, dict):
+        return any(contains_ref(v, ref) for v in value.values())
+    if isinstance(value, list):
+        return any(contains_ref(v, ref) for v in value)
+    return False
 
 
 def step_verified(stack, view, step_id):
@@ -262,6 +312,8 @@ def request_check(stack, view, step_id, check_id, *, run_id, request_id):
                     "artifacts": artifacts, "checks": checks}
         evidence["event_seqs"] = [r["event_seq"] for r in checks]
     evidence["content_refs"] = [put_material(stack, view["task_id"], material, run_id=run_id)]
+    from .agent_documents import EVIDENCE_SCHEMA, validate_document
+    validate_document(EVIDENCE_SCHEMA, evidence, "证据")
     if observation["input_fingerprint"] != input_fingerprint(stack, view["task_id"]):
         raise ValueError("冻结待验材料期间输入改变")
     with stack.log.transaction() as tx:

@@ -7,6 +7,7 @@ from support import stack_for
 
 from tianshu.canonical import jcs_sha256
 from tianshu.events import EventLog
+from tianshu.mission import prepare_mission
 from tianshu.model import ScriptedModel
 from tianshu.plans import PlanStore
 from tianshu.worker import Worker
@@ -19,9 +20,9 @@ def env(tmp_path):
     log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     stack = stack_for(log, data_root=tmp_path)
     task = stack.tasks.create_task("检查产物", [str(ws)])
-    mission = {"mission_id": "mission_test", "task_id": task.task_id, "goal_revision": 1,
-               "criteria": [{"criterion_id": "report", "description": "文件存在",
-                             "mode": "machine"}]}
+    mission = prepare_mission(stack.tasks, task.task_id, criteria=[
+        {"criterion_id": "report", "description": "文件存在", "mode": "machine"},
+    ]).to_dict()
     check = {"format_version": 1, "check_id": "exists", "criterion_ids": ["report"],
              "required": True, "kind": "file_exists",
              "inputs": {"workspace_binding_id": "0", "relative_path": "report.md",
@@ -91,9 +92,9 @@ def test_verification_command_waits_for_real_approval_and_checks_exit_code(env):
         argv_allowlist=(executable,), cwd_roots=(ws,), timeout_ms=2000,
         max_output_bytes=4096,
     ))
-    mission = {"mission_id": "mission_command", "task_id": task.task_id, "goal_revision": 1,
-               "criteria": [{"criterion_id": "report", "description": "命令退出值正确",
-                             "mode": "machine"}]}
+    mission = prepare_mission(stack.tasks, task.task_id, criteria=[
+        {"criterion_id": "report", "description": "命令退出值正确", "mode": "machine"},
+    ]).to_dict()
     _, _, base = env
     check = copy.deepcopy(base["manifest"]["checks"][0])
     check.update(kind="command_exit", inputs={
