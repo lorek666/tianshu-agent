@@ -126,6 +126,113 @@ def connected(tmp_path):
         clients.close_all()
 
 
+def test_goal_v2_rejects_missing_selected_mcp_identity_without_discovery(connected):
+    plane, stack, task, clients, workspace = connected
+    before = stack.log.seq_head()
+    with pytest.raises(ControlError, match="MCP"):
+        plane.handle("goal.v2.create", {
+            "task_id": task.task_id, "goal_revision": task.goal_revision,
+            "criteria": ["完成任务"], "execution_policy": EFFECTS.to_dict(),
+            "request_id": "missing_mcp",
+        })
+    assert stack.log.seq_head() == before
+    assert clients.ready_names() == ()
+    assert not (workspace / "unselected-started").exists()
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_goal_v2_preserves_discovered_mcp_routes_in_fresh_stack(connected, drift):
+    from test_goal_v2 import candidate, drive
+
+    from tianshu.goal_v2 import GoalCoordinator
+    from tianshu.plans import PlanStore
+
+    _, stack, task, clients, workspace = connected
+    discovered = engine_for(stack, RecordingModel()).start(task.task_id, out_name="")
+    assert discovered.state == "succeeded"
+    fresh_clients = McpClients(clients.configs)
+    fresh = build_stack(stack.log, data_root=stack.dispatcher._data_root,
+                        mcp_clients=fresh_clients)
+    plane = ControlPlane(fresh, model=ScriptedModel([]))
+    try:
+        assert fresh.dispatcher.registry.mcp_binding("mcp__selected__echo") is None
+        goal = plane.handle("goal.v2.create", {
+            "task_id": task.task_id, "goal_revision": task.goal_revision,
+            "criteria": [{"criterion_id": "report", "description": "报告存在", "mode": "machine"}],
+            "execution_policy": EFFECTS.to_dict(), "request_id": "known_mcp",
+        })["goal"]
+        mission = GoalCoordinator(fresh).mission(goal["goal_id"])
+        assert "mcp__selected__echo" in {t["tool_id"] for t in mission["tool_allowlist"]}
+        assert fresh_clients.ready_names() == ()
+        if drift:
+            changed = copy.deepcopy(TOOL)
+            changed["inputSchema"]["properties"]["message"] = {"type": "integer"}
+            (workspace / "tools.json").write_text(json.dumps([changed]), encoding="utf-8")
+        plane.handle("goal.v2.advance", {
+            "goal_id": goal["goal_id"], "request_id": "plan_mcp",
+            "expected_state_revision": goal["state_revision"],
+            "orchestration_epoch": goal["orchestration_epoch"],
+        })
+        drive(fresh, json.dumps(candidate(mission)))
+        goal = plane.handle("goal.v2.get", {"goal_id": goal["goal_id"]})["goal"]
+        plan = PlanStore(fresh).get(goal["plan_id"])
+        PlanStore(fresh).confirm(plan["plan_id"], expected_revision=1,
+                                document_digest=plan["document_digest"], request_id="confirm")
+        started = plane.handle("goal.v2.advance", {
+            "goal_id": goal["goal_id"], "request_id": "execute_mcp",
+            "expected_state_revision": goal["state_revision"],
+            "orchestration_epoch": goal["orchestration_epoch"],
+        })["goal"]
+        facts = fresh.log.read_run(started["phase_run_id"])
+        assert "mcp__selected__echo" in facts[0].payload["tools"]
+        frozen = next(e.payload for e in facts if e.type == "run.mission")
+        assert "mcp__selected__echo" in {t["tool_id"] for t in frozen["effective_tools"]}
+        model = RecordingModel([
+            ModelResponse("tool_use", tool_calls=[
+                ToolCall("goal_mcp", "mcp__selected__echo", {"message": "from goal"}),
+            ]) if not drift else ModelResponse("end_turn", content="工具身份已改变"),
+            ModelResponse("end_turn", content="已调用"),
+        ])
+        engine = engine_for(fresh, model)
+        result = engine.resume_run(started["phase_run_id"])
+        if drift:
+            assert result.terminal
+            assert "mcp__selected__echo" not in {t["name"] for t in model.requests[0][1]}
+            assert not (workspace / "calls.jsonl").exists()
+            return
+        assert result.state == "waiting_approval"
+        assert approve_pending(fresh, result.run_id)
+        result = engine.resume_run(result.run_id)
+        assert result.state == "succeeded"
+        assert (workspace / "calls.jsonl").read_text().count("from goal") == 1
+        assert not (workspace / "unselected-started").exists()
+    finally:
+        fresh_clients.close_all()
+
+
+def test_goal_v2_does_not_reuse_mcp_snapshot_from_old_task_revision(connected):
+    _, stack, task, clients, workspace = connected
+    assert engine_for(stack, RecordingModel()).start(task.task_id, out_name="").terminal
+    revised = stack.tasks.revise_goal(task.task_id, "核对新的报告")
+    fresh_clients = McpClients(clients.configs)
+    fresh = build_stack(stack.log, data_root=stack.dispatcher._data_root,
+                        mcp_clients=fresh_clients)
+    plane = ControlPlane(fresh, model=ScriptedModel([]))
+    try:
+        before = stack.log.seq_head()
+        with pytest.raises(ControlError, match="MCP"):
+            plane.handle("goal.v2.create", {
+                "task_id": task.task_id, "goal_revision": revised.goal_revision,
+                "criteria": ["新报告满足要求"], "execution_policy": EFFECTS.to_dict(),
+                "request_id": "old_mcp_revision",
+            })
+        assert stack.log.seq_head() == before
+        assert fresh_clients.ready_names() == ()
+        assert not (workspace / "unselected-started").exists()
+    finally:
+        fresh_clients.close_all()
+
+
 @pytest.mark.parametrize("entry", ["direct", "queued", "goal"])
 def test_new_selected_mcp_run_finalizes_after_real_discovery_outside_transaction(
     connected, monkeypatch, entry,

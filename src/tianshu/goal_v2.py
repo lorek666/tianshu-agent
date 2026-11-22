@@ -300,7 +300,6 @@ class GoalCoordinator:
         return self.get(view["goal_id"])
 
     def create(self, params):
-        from .mission import prepare_mission
         request = checked_request_id(params["request_id"])
         if type(params["goal_revision"]) is not int:
             raise ValueError("goal_revision 必须为整数")
@@ -330,10 +329,7 @@ class GoalCoordinator:
             for previous in self.log.read_types(("goal.v2_created",), task_id=task.task_id):
                 if self.get(previous.payload["config"]["goal_id"])["status"] not in STOPPED:
                     raise GoalConflict("当前任务已经有未关闭的 Goal V2")
-            shared = prepare_mission(
-                self.tasks, task.task_id, registry=self.stack.dispatcher.registry,
-                criteria=params["criteria"],
-            )
+            shared = self._creation_mission(task, params)
             mission = shared.to_dict()
             if not 1 <= len(mission["criteria"]) <= 64:
                 raise ValueError("Goal 必须具有 1–64 项可验收条件")
@@ -380,6 +376,43 @@ class GoalCoordinator:
                 "state": initial_state(now, config["deadline_ms"], self.runtime, self.monotonic()),
             }, task_id=task.task_id, actor_kind="human")
         return self.get(goal_id)
+
+    def _creation_mission(self, task, params):
+        from .mission import MissionSpecV1, mission_for, prepare_mission
+        from .tool_registry import tool_id_for_server
+
+        registry = self.stack.dispatcher.registry
+        value = prepare_mission(
+            self.tasks, task.task_id, registry=registry, criteria=params["criteria"],
+        ).to_dict()
+        selected = task.mcp_servers
+        value["tool_allowlist"] = [
+            tool for tool in value["tool_allowlist"]
+            if (binding := registry.mcp_binding(tool["tool_id"])) is None
+            or binding.server in selected
+        ]
+        if selected and RunExecutionPolicyV1.of(params["execution_policy"]) == EFFECTS:
+            # 重启后注册表可能尚未发现MCP；只复用当前Task修订的真实冻结事实。
+            for event in reversed(self.log.read_types(("run.mission",), task_id=task.task_id)):
+                run = self.tasks.get_run(event.run_id)
+                if (run is None or run.goal_revision != task.goal_revision
+                        or self.tasks.run_execution_policy(run.run_id) != EFFECTS):
+                    continue
+                previous = mission_for(self.log, event.run_id)
+                known = {t["tool_id"] for t in value["tool_allowlist"]}
+                value["tool_allowlist"].extend(
+                    tool for tool in previous.tool_allowlist
+                    if tool["tool_id"] not in known and registry.spec(tool["tool_id"]) is None
+                    and any(tool["tool_id"].startswith(tool_id_for_server(server, ""))
+                            for server in selected)
+                )
+                break
+            if any(not any(
+                tool["tool_id"].startswith(tool_id_for_server(server, ""))
+                for tool in value["tool_allowlist"]
+            ) for server in selected):
+                raise GoalConflict("所选 MCP 缺少真实工具身份，请先通过普通运行完成受管发现")
+        return MissionSpecV1.of(value)
 
     def _isolation(self, config, task):
         if config["mode"] != "bounded_auto":
@@ -573,6 +606,8 @@ class GoalCoordinator:
             view["config"]["execution_policy"])
         tools = _exposed_tool_ids(policy)
         mission = self.mission(view["goal_id"])
+        if phase == "execute" and policy == EFFECTS:
+            tools = [t["tool_id"] for t in mission["tool_allowlist"]]
         if phase in ("plan", "replan"):
             prompt = (
                 "为以下固定 Mission 生成结构化任务图。仅输出一个封闭 JSON 对象，"
