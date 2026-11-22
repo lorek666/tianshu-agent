@@ -585,6 +585,26 @@ memory.erase       { memory_id: string, revision: integer }        required: mem
 
 ### 5.3 C3 Event
 
+**Agent 主循环增量（2026-11-22，实施契约，尚非发行能力）**：
+采用 [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md) §5–§12 的版本化 Mission、
+Plan/Verification、Goal V2、有限授权及执行对象准入契约。新增事件须逐类型登记
+代码/schema 并保留旧版本读取；Goal G1 不自动升级。Mission/Plan 只约束提示、
+工具候选和验收，不授权。历史无 Mission 的 Run 保留原输入，不回填或改写 replay。
+按[实施计划](superpowers/plans/2026-11-22-agent-loop.md)分批落实；未验证对象不宣称交付。
+
+**Mission / MCP 发现接缝增量**：新增仅 payload v1 的 `run.mission_pending`。
+未提供共享 Mission 且显式选择 MCP 的 effects Run 可先保存候选配置、已知工具身份、
+server 范围及首轮输入材料；claim 后在 SQLite 写事务外发现，首游标和首次
+`model.intent` 前固定唯一 `run.mission`。新发现只可补入选中 server、profile 与
+显式工具限制交集中的未知工具，已知身份变化不自动升级，共享 Mission 不扩充。
+Mission 路由使用不含 Session generation 的稳定语义版本，执行侧继续核验具体
+Session 版本。历史无 pending 的 Run 不补写，已有精确快照不放宽；字段约束见
+[主循环规格 §5.3](SPEC-AGENT-LOOP-2026-11-22.md#53-固定恢复与回放)。
+共享 Mission 的 `effective_tools` 是冻结的路由上限，不表示工具当前在线或已获授权：
+effects Run 可保留来自 Task 明确选择 server、但当前注册表尚未发现的固定 MCP 身份；
+实际提供或派发时始终再与当前真实注册表身份及 Run 资格取交集，不加入新候选，
+不接受 schema 漂移，也不将未知 MCP 作为 pure 工具。
+
 ```
 Event {
   seq          uint64       # 单调递增，主键，不可跳号
@@ -656,6 +676,7 @@ Event {
 | `run` | Run 生命周期：开始、状态迁移、控制、游标、模型回合、效果、结束、fencing | `run.control` / `run.cursor` / `run.effect` / `run.end` / `run.fenced` / `run.finish` / `run.model_turn` / `run.start` / `run.state`。拟增：`run.attachments` / `run.conversation` / `run.guidance_applied` / `run.guidance_requested` / `run.model_route` / `run.workflow` / `run.workflow_request` |
 | `subtask` | 子任务：父 Run 侧的委派审计（G2 子代理 D1） | `subtask.finished` / `subtask.spawned` |
 | `task` | Task：创建与改目标（goal_revision 推进） | `task.created` / `task.revised` |
+| `goal` | 当前任务修订上的目标配置、逐轮推进与人工关闭 | G1：`goal.created` / `goal.round_started` / `goal.closed`；V2 独立类型：`goal.v2_created` / `goal.v2_advance_requested` / `goal.v2_phase_started` / `goal.v2_transitioned` / `goal.v2_assessed` / `goal.v2_recovered` / `goal.v2_closed` / `goal.v2_admission_refused`。V2 payload schema 为 v1；assessed 内部 `format_version=1`，其余内部为 2。精确字段与 actor 见[主循环规格 §11](SPEC-AGENT-LOOP-2026-11-22.md#11-事件与控制面契约增量)，不升级或改释 G1。交付仍以对应验证及交付记录为准。 |
 | `tool` | 工具调用：intent、result、未派发（C2） | `tool.intent` / `tool.not_dispatched` / `tool.result` |
 | `undo` | 撤销：完成与中断 | `undo.completed` / `undo.failed` |
 
@@ -732,6 +753,16 @@ CLI、daemon IPC 与 App 入口；逐项证据见[低磁盘交付记录](LOW-DIS
 确认与核验范围见[受限表单契约](agent-browser-form-contract.md)。
 
 ### 5.4 C4 Permission / Approval
+
+**有限授权增量（2026-11-22，实施契约）**：允许经认证本机人类控制面签发
+`ScopedConsentV1`，仅匹配明确目录覆盖或精确 argv 命令，绑定 Task、Run、
+Mission/Plan、工作区、工具/参数范围、有限次数、到期时间及进程会话。
+它不是 worker 可直接使用的执行票据；Dispatcher 仍先做 deny、否决、租约、
+预算与隔离检查，再于同事务消费范围次数、生成/消费单动作 Grant 和记录 intent。
+最终守卫重新核验；撤销以持守卫提交 `execution.started` 为界，越界后仅尽力取消，
+不承诺 OS 执行与 SQLite 原子发生。重启不继承未开始的范围授权。
+完整封闭字段及匹配限制见[规格 §9](SPEC-AGENT-LOOP-2026-11-22.md#9-有限授权减少重复点击不扩大模型权威)；
+未匹配仍走原有逐次审批，默认策略不变，完整访问不在本批交付范围。
 
 `Grant` 与 `Approval` 必须在同一份契约里——共享 digest、共享状态机，拆开必然产生"权限过了但审批没记录"的缝。
 
