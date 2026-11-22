@@ -40,6 +40,7 @@ from .continuation import (
 from .conversation import validate_guidance, validate_turns
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
+from .goal_contracts import GOAL_V2_SCHEMAS
 from .mission import MISSION_EVENT_SCHEMA
 from .model_route import ModelRouteV1
 from .run_policy import RunExecutionPolicyV1
@@ -1280,10 +1281,12 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
 
 
 CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
+CURRENT_SCHEMAS.update(GOAL_V2_SCHEMAS)
 
 V1_ONLY_EVENTS = frozenset({
     "execution.admitted", "execution.ended",
     *CONSENT_EVENT_SCHEMAS,
+    *GOAL_V2_SCHEMAS,
     "run.mission",
     "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",

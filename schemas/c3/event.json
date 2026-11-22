@@ -93,6 +93,14 @@
         "goal.closed",
         "goal.created",
         "goal.round_started",
+        "goal.v2_admission_refused",
+        "goal.v2_advance_requested",
+        "goal.v2_assessed",
+        "goal.v2_closed",
+        "goal.v2_created",
+        "goal.v2_phase_started",
+        "goal.v2_recovered",
+        "goal.v2_transitioned",
         "grant.consumed",
         "grant.issued",
         "job.claimed",
@@ -4626,6 +4634,1523 @@
           "process_tree",
           "pid",
           "birth_identity"
+        ]
+      },
+      "goal.v2_created": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 2
+              },
+              "goal_id": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "goal_revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "mission_id": {
+                "type": "string"
+              },
+              "mission_digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "bounded_auto"
+                ]
+              },
+              "completion_policy": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "verified"
+                ]
+              },
+              "replan_policy": {
+                "type": "string",
+                "enum": [
+                  "confirm",
+                  "bounded"
+                ]
+              },
+              "max_rounds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "deadline_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "budget_limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "tokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "micros": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "requests": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "subtasks": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "budget_bound": {
+                "type": "string",
+                "enum": [
+                  "estimate",
+                  "upper"
+                ]
+              },
+              "max_no_progress_rounds": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "execution_policy": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "pure_only",
+                      "effects"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "mode"
+                ]
+              },
+              "isolation_requirements": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "credentials",
+                    "files_authority",
+                    "network",
+                    "process_tree"
+                  ]
+                }
+              },
+              "predecessor_goal_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "format_version",
+              "goal_id",
+              "task_id",
+              "goal_revision",
+              "mission_id",
+              "mission_digest",
+              "mode",
+              "completion_policy",
+              "replan_policy",
+              "max_rounds",
+              "deadline_ms",
+              "budget_limits",
+              "budget_bound",
+              "max_no_progress_rounds",
+              "execution_policy",
+              "isolation_requirements",
+              "predecessor_goal_id"
+            ]
+          },
+          "mission_ref": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "state": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "active",
+                  "awaiting_input",
+                  "awaiting_review",
+                  "paused",
+                  "blocked",
+                  "completed",
+                  "cancelled",
+                  "stale"
+                ]
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "plan",
+                  "execute",
+                  "verify",
+                  "ask",
+                  "replan",
+                  "finish"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "phase_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "step_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "no_progress_streak": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "satisfied_criterion_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "completed_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "baseline_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "last_assessed_round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "progress_fingerprint": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "blocker": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "verification_failed",
+                          "execution_failed",
+                          "policy_denied",
+                          "approval_denied",
+                          "budget_exhausted",
+                          "deadline_exceeded",
+                          "round_limit",
+                          "no_progress",
+                          "isolation_unavailable",
+                          "effect_unknown",
+                          "usage_unknown",
+                          "protocol_error",
+                          "recovery_required"
+                        ]
+                      },
+                      "source_event_seq": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "safe_retry": {
+                        "type": "boolean"
+                      },
+                      "available_actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "cancel",
+                            "recover"
+                          ]
+                        }
+                      },
+                      "denied_content_digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "source_event_seq",
+                      "safe_retry",
+                      "available_actions",
+                      "denied_content_digest"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "orchestration_epoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_wall_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_remaining_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "runtime_session_id": {
+                "type": "string"
+              },
+              "denied_content_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recovered_denial_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "status",
+              "phase",
+              "round",
+              "phase_run_id",
+              "plan_id",
+              "plan_digest",
+              "step_id",
+              "execution_run_id",
+              "verification_run_id",
+              "no_progress_streak",
+              "satisfied_criterion_ids",
+              "completed_step_ids",
+              "baseline_step_ids",
+              "last_assessed_round",
+              "progress_fingerprint",
+              "blocker",
+              "orchestration_epoch",
+              "clock_wall_ms",
+              "deadline_remaining_ms",
+              "clock_monotonic_ms",
+              "deadline_monotonic_ms",
+              "runtime_session_id",
+              "denied_content_digests",
+              "recovered_denial_digests"
+            ]
+          }
+        },
+        "required": [
+          "format_version",
+          "config",
+          "mission_ref",
+          "request_id",
+          "request_digest",
+          "state"
+        ]
+      },
+      "goal.v2_transitioned": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "expected_state_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orchestration_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "cause": {
+            "type": "string"
+          },
+          "state": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "active",
+                  "awaiting_input",
+                  "awaiting_review",
+                  "paused",
+                  "blocked",
+                  "completed",
+                  "cancelled",
+                  "stale"
+                ]
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "plan",
+                  "execute",
+                  "verify",
+                  "ask",
+                  "replan",
+                  "finish"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "phase_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "step_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "no_progress_streak": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "satisfied_criterion_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "completed_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "baseline_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "last_assessed_round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "progress_fingerprint": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "blocker": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "verification_failed",
+                          "execution_failed",
+                          "policy_denied",
+                          "approval_denied",
+                          "budget_exhausted",
+                          "deadline_exceeded",
+                          "round_limit",
+                          "no_progress",
+                          "isolation_unavailable",
+                          "effect_unknown",
+                          "usage_unknown",
+                          "protocol_error",
+                          "recovery_required"
+                        ]
+                      },
+                      "source_event_seq": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "safe_retry": {
+                        "type": "boolean"
+                      },
+                      "available_actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "cancel",
+                            "recover"
+                          ]
+                        }
+                      },
+                      "denied_content_digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "source_event_seq",
+                      "safe_retry",
+                      "available_actions",
+                      "denied_content_digest"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "orchestration_epoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_wall_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_remaining_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "runtime_session_id": {
+                "type": "string"
+              },
+              "denied_content_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recovered_denial_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "status",
+              "phase",
+              "round",
+              "phase_run_id",
+              "plan_id",
+              "plan_digest",
+              "step_id",
+              "execution_run_id",
+              "verification_run_id",
+              "no_progress_streak",
+              "satisfied_criterion_ids",
+              "completed_step_ids",
+              "baseline_step_ids",
+              "last_assessed_round",
+              "progress_fingerprint",
+              "blocker",
+              "orchestration_epoch",
+              "clock_wall_ms",
+              "deadline_remaining_ms",
+              "clock_monotonic_ms",
+              "deadline_monotonic_ms",
+              "runtime_session_id",
+              "denied_content_digests",
+              "recovered_denial_digests"
+            ]
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "expected_state_revision",
+          "orchestration_epoch",
+          "request_id",
+          "cause",
+          "state"
+        ]
+      },
+      "goal.v2_closed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "expected_state_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orchestration_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "cause": {
+            "type": "string"
+          },
+          "state": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "active",
+                  "awaiting_input",
+                  "awaiting_review",
+                  "paused",
+                  "blocked",
+                  "completed",
+                  "cancelled",
+                  "stale"
+                ]
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "plan",
+                  "execute",
+                  "verify",
+                  "ask",
+                  "replan",
+                  "finish"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "phase_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "step_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "no_progress_streak": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "satisfied_criterion_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "completed_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "baseline_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "last_assessed_round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "progress_fingerprint": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "blocker": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "verification_failed",
+                          "execution_failed",
+                          "policy_denied",
+                          "approval_denied",
+                          "budget_exhausted",
+                          "deadline_exceeded",
+                          "round_limit",
+                          "no_progress",
+                          "isolation_unavailable",
+                          "effect_unknown",
+                          "usage_unknown",
+                          "protocol_error",
+                          "recovery_required"
+                        ]
+                      },
+                      "source_event_seq": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "safe_retry": {
+                        "type": "boolean"
+                      },
+                      "available_actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "cancel",
+                            "recover"
+                          ]
+                        }
+                      },
+                      "denied_content_digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "source_event_seq",
+                      "safe_retry",
+                      "available_actions",
+                      "denied_content_digest"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "orchestration_epoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_wall_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_remaining_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "runtime_session_id": {
+                "type": "string"
+              },
+              "denied_content_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recovered_denial_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "status",
+              "phase",
+              "round",
+              "phase_run_id",
+              "plan_id",
+              "plan_digest",
+              "step_id",
+              "execution_run_id",
+              "verification_run_id",
+              "no_progress_streak",
+              "satisfied_criterion_ids",
+              "completed_step_ids",
+              "baseline_step_ids",
+              "last_assessed_round",
+              "progress_fingerprint",
+              "blocker",
+              "orchestration_epoch",
+              "clock_wall_ms",
+              "deadline_remaining_ms",
+              "clock_monotonic_ms",
+              "deadline_monotonic_ms",
+              "runtime_session_id",
+              "denied_content_digests",
+              "recovered_denial_digests"
+            ]
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "expected_state_revision",
+          "orchestration_epoch",
+          "request_id",
+          "cause",
+          "state"
+        ]
+      },
+      "goal.v2_recovered": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "expected_state_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orchestration_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "cause": {
+            "type": "string"
+          },
+          "state": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "active",
+                  "awaiting_input",
+                  "awaiting_review",
+                  "paused",
+                  "blocked",
+                  "completed",
+                  "cancelled",
+                  "stale"
+                ]
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "plan",
+                  "execute",
+                  "verify",
+                  "ask",
+                  "replan",
+                  "finish"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "phase_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan_digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "step_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verification_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "no_progress_streak": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "satisfied_criterion_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "completed_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "baseline_step_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "last_assessed_round": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "progress_fingerprint": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "blocker": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "verification_failed",
+                          "execution_failed",
+                          "policy_denied",
+                          "approval_denied",
+                          "budget_exhausted",
+                          "deadline_exceeded",
+                          "round_limit",
+                          "no_progress",
+                          "isolation_unavailable",
+                          "effect_unknown",
+                          "usage_unknown",
+                          "protocol_error",
+                          "recovery_required"
+                        ]
+                      },
+                      "source_event_seq": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "safe_retry": {
+                        "type": "boolean"
+                      },
+                      "available_actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "cancel",
+                            "recover"
+                          ]
+                        }
+                      },
+                      "denied_content_digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "source_event_seq",
+                      "safe_retry",
+                      "available_actions",
+                      "denied_content_digest"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "orchestration_epoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_wall_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_remaining_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clock_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadline_monotonic_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "runtime_session_id": {
+                "type": "string"
+              },
+              "denied_content_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "recovered_denial_digests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "status",
+              "phase",
+              "round",
+              "phase_run_id",
+              "plan_id",
+              "plan_digest",
+              "step_id",
+              "execution_run_id",
+              "verification_run_id",
+              "no_progress_streak",
+              "satisfied_criterion_ids",
+              "completed_step_ids",
+              "baseline_step_ids",
+              "last_assessed_round",
+              "progress_fingerprint",
+              "blocker",
+              "orchestration_epoch",
+              "clock_wall_ms",
+              "deadline_remaining_ms",
+              "clock_monotonic_ms",
+              "deadline_monotonic_ms",
+              "runtime_session_id",
+              "denied_content_digests",
+              "recovered_denial_digests"
+            ]
+          },
+          "expected_block_event_seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "retry",
+              "replan",
+              "reconciled",
+              "new_observation",
+              "change_decision"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "denied_content_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "expected_state_revision",
+          "orchestration_epoch",
+          "request_id",
+          "cause",
+          "state",
+          "expected_block_event_seq",
+          "resolution",
+          "evidence_refs",
+          "denied_content_digest"
+        ]
+      },
+      "goal.v2_phase_started": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "expected_state_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orchestration_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "execute",
+              "verify",
+              "ask",
+              "replan",
+              "finish"
+            ]
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mission_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "budget_account_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "expected_state_revision",
+          "orchestration_epoch",
+          "phase",
+          "round",
+          "mission_digest",
+          "plan_id",
+          "plan_digest",
+          "step_id",
+          "request_id",
+          "budget_account_id"
+        ]
+      },
+      "goal.v2_assessed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mission_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "plan_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_criterion_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verification_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "satisfied_criterion_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "completed_step_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remaining_step_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "blocker": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "verification_failed",
+                      "execution_failed",
+                      "policy_denied",
+                      "approval_denied",
+                      "budget_exhausted",
+                      "deadline_exceeded",
+                      "round_limit",
+                      "no_progress",
+                      "isolation_unavailable",
+                      "effect_unknown",
+                      "usage_unknown",
+                      "protocol_error",
+                      "recovery_required"
+                    ]
+                  },
+                  "source_event_seq": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "safe_retry": {
+                    "type": "boolean"
+                  },
+                  "available_actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "cancel",
+                        "recover"
+                      ]
+                    }
+                  },
+                  "denied_content_digest": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "category",
+                  "source_event_seq",
+                  "safe_retry",
+                  "available_actions",
+                  "denied_content_digest"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "no_progress_streak": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "round",
+          "mission_digest",
+          "plan_digest",
+          "target_criterion_ids",
+          "execution_run_id",
+          "verification_run_id",
+          "satisfied_criterion_ids",
+          "completed_step_ids",
+          "remaining_step_ids",
+          "evidence_refs",
+          "blocker",
+          "progress_fingerprint",
+          "no_progress_streak"
+        ]
+      },
+      "goal.v2_admission_refused": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "verification_failed",
+              "execution_failed",
+              "policy_denied",
+              "approval_denied",
+              "budget_exhausted",
+              "deadline_exceeded",
+              "round_limit",
+              "no_progress",
+              "isolation_unavailable",
+              "effect_unknown",
+              "usage_unknown",
+              "protocol_error",
+              "recovery_required"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "model",
+              "summary",
+              "dispatch"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "category",
+          "source",
+          "request_id"
+        ]
+      },
+      "goal.v2_advance_requested": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 2
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "request_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "format_version",
+          "goal_id",
+          "request_id",
+          "request_digest"
         ]
       }
     },

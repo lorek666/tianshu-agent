@@ -237,6 +237,8 @@ class Worker:
     _startup_reconciled: bool = False
 
     def __post_init__(self) -> None:
+        from .agent_control import ensure_consents
+        ensure_consents(self.stack)
         self._claims = self.claims or self.stack.claims
         self._tasks = self.stack.tasks
         self._side: _SideChannel | None = None
@@ -247,6 +249,7 @@ class Worker:
         """认领一个作业并推进它。返回"这次有没有活干"。"""
         self.stack.dispatcher.close_inactive_mcp()
         self._reconcile_subtask_state()
+        self._tick_goals()
         claim = self._claims.claim_next(ttl_ms=self.ttl_ms)
         if claim is None:
             return False
@@ -270,6 +273,9 @@ class Worker:
             self.errors.append(f"{type(exc).__name__}: {exc}")
         finally:
             self._settle(claim, requeue=requeue)
+            if close_inactive:
+                close_inactive()
+            self._tick_goals()
         return True
 
     def drain(self, *, max_jobs: int = MAX_JOBS_PER_DRAIN) -> list[str]:
@@ -329,6 +335,12 @@ class Worker:
 
     # ---- 内部 ----
 
+    def _tick_goals(self):
+        from .goal_v2 import GoalCoordinator
+        if not self.stack.log.read_types(("goal.v2_created",)):
+            return
+        GoalCoordinator(self.stack, model=self.model, limits=self.limits).tick_all()
+
     def _reconcile_subtask_state(self) -> None:
         """G2 委派 D2：worker 启动时先按证据修子任务状态，再认领作业。
 
@@ -360,6 +372,7 @@ class Worker:
     def _engine(self, claim: JobClaim) -> AgentLoop:
         if self.engine_factory is not None:
             return self.engine_factory(claim)
+        from .goal_v2 import limits_for_phase
         return AgentLoop(
             tasks=self.stack.tasks,
             leases=self.stack.leases,
@@ -368,7 +381,7 @@ class Worker:
             approvals=self.stack.approvals,
             snapshots=self.stack.snapshots,
             model=self.model,
-            limits=self.limits or Limits(),
+            limits=limits_for_phase(self.stack.log, claim.run_id, self.limits or Limits()),
             ttl_ms=self.ttl_ms,
             # 必须复用装配里的同一个投影：不传的话 AgentLoop 会自己
             # `open_memory()` 另开一个。默认 blob 目录碰巧一样时看不出来，

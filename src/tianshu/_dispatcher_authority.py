@@ -570,6 +570,22 @@ class _DispatcherAuthorityMixin:
         args: dict[str, Any] | None = None,
         mcp_discovery: bool = False,
     ) -> _Authority:
+        from .goal_v2 import (
+            GoalAdmissionRefused,
+            action_denied,
+            phase_admission,
+            record_admission_refused,
+        )
+        category = phase_admission(
+            self._log, request.run_id, clock=self._clock,
+            runtime=self._leases.identity.instance_id)
+        if category:
+            record_admission_refused(
+                self._log, request.run_id, GoalAdmissionRefused(category),
+                source="dispatch", request_id=request.request_id)
+            raise DispatchDenied("Goal 当前不允许新的副作用：" + category, "dispatch.run_fenced")
+        if action_denied(self._log, request):
+            raise DispatchDenied("Goal 内该具体动作已被人否决", "c4.approval_rejected")
         if claim.run_id != request.run_id:
             raise DispatchDenied(
                 f"claim 属于另一个 Run：claim.run_id={claim.run_id}，"

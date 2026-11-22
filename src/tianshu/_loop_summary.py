@@ -184,6 +184,12 @@ class _LoopSummaryMixin:
         都不拒发。这不是"账本关着"——关着的话 §5.6 第 4 / 7 条（尝试过但全失败
         不许显示没有调用、恢复先核对未决预占）在默认路径上没有任何事实可核。
         """
+        from .goal_v2 import ensure_phase_budget
+        if ensure_phase_budget(
+            self._log, self._budget, run_id, self._limits.budget_limits,
+            self._limits.budget_bound, runtime=self._leases.identity.instance_id,
+        ):
+            return
         if self._budget is None:
             return
         self._budget.create_account(
@@ -195,6 +201,10 @@ class _LoopSummaryMixin:
         )
 
     def _reserve_attempt(self, run_id: str, request_id: str, attempt: int, view):
+        with self._log.transaction():
+            return self._reserve_attempt_locked(run_id, request_id, attempt, view)
+
+    def _reserve_attempt_locked(self, run_id: str, request_id: str, attempt: int, view):
         """发送前预占。返回预占凭据；没有账本时返回 None。
 
         `estimate` 与 `upper` 两种口径的差别不是"保守程度"，是**性质**：前者是
@@ -430,6 +440,8 @@ class _LoopSummaryMixin:
         try:
             reservation = self._reserve_summary(material, attempt_id, run_id)
         except (BudgetRefused, BudgetCancelled, BudgetConfigError) as exc:
+            from .goal_v2 import record_admission_refused
+            record_admission_refused(self._log, run_id, exc, source="summary")
             self._fail_summary(record, f"预算拒绝：{exc}")
             return None
         except TianshuError as exc:
@@ -467,6 +479,10 @@ class _LoopSummaryMixin:
             return None
 
     def _reserve_summary(self, material: Any, attempt_id: str, run_id: str) -> Any:
+        with self._log.transaction():
+            return self._reserve_summary_locked(material, attempt_id, run_id)
+
+    def _reserve_summary_locked(self, material: Any, attempt_id: str, run_id: str) -> Any:
         """摘要调用的账本预占：口径与主调用一致（estimate / upper 两种）。"""
         if self._budget is None:
             return None
@@ -651,6 +667,9 @@ class _LoopSummaryMixin:
                     run_id, request_id, attempt, view
                 )
             except BudgetConfigError as exc:
+                from .goal_v2 import record_admission_refused
+                record_admission_refused(
+                    self._log, run_id, exc, source="model", request_id=request_id)
                 # 配置立不住 ≠ 这次额度不够：不发请求，也不重试（重试还是同一个配置）。
                 reason = f"预算配置拒绝，不再调用模型：{exc}"
                 self._log.append(
@@ -666,6 +685,9 @@ class _LoopSummaryMixin:
                 )
                 return None, reason
             except (BudgetRefused, BudgetCancelled) as exc:
+                from .goal_v2 import record_admission_refused
+                record_admission_refused(
+                    self._log, run_id, exc, source="model", request_id=request_id)
                 reason = f"预算账本拒绝，不再调用模型：{exc}"
                 self._log.append(
                     run_id,

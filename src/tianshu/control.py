@@ -357,6 +357,7 @@ class ControlPlane:
             "goal.create": lambda p: goal_control.handle(self, "create", p),
             "goal.advance": lambda p: goal_control.handle(self, "advance", p),
             "goal.close": lambda p: goal_control.handle(self, "close", p),
+            **self._goal_v2_methods(),
             "plan.graph.get": lambda p: agent_control.handle(self, "get", p),
             "plan.graph.confirm": lambda p: agent_control.handle(self, "confirm", p),
             "plan.graph.replan": lambda p: agent_control.handle(self, "replan", p),
@@ -444,6 +445,14 @@ class ControlPlane:
         self._log.close()
 
     # ------------------------------------------------------------------ 入口
+
+    def _goal_v2_methods(self):
+        from . import goal_v2_control
+        return {
+            "goal.v2." + action: (
+                lambda p, action=action: goal_v2_control.handle(self, action, p))
+            for action in ("create", "get", "advance", "pause", "resume", "recover", "close")
+        }
 
     def handle(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """执行一个 RPC 方法。所有失败都抛 `ControlError`（daemon 转成 fail 帧）。"""
@@ -695,6 +704,15 @@ class ControlPlane:
         if answering != (question is not None):
             raise ControlError("conflict", "请选择对应的澄清答复或普通追问入口")
         conversation = build_follow_up(source_id, events, message)
+        from .goal_v2 import GoalCoordinator, phase_for
+        if phase_for(self._log, source_id):
+            if not answering:
+                raise ControlError("conflict", "Goal 阶段只接受待决澄清的答复")
+            coordinator = GoalCoordinator(self.stack, model=self._model, limits=self._limits)
+            run_id = coordinator.answer(source_id, message, _require_str(params, "request_id"))
+            if run_id is None:
+                raise ControlError("conflict", "Goal 边界不允许新的澄清调用")
+            return {"run": self._run_view(self._require_run(run_id))}
         from .workflow import workflow_for
 
         old = workflow_for(self._log, source_id)

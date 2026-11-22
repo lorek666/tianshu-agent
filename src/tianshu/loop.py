@@ -528,7 +528,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         workflow = workflow_for(self._log, run_id)
         frozen_messages = mission_messages(self._log, run_id)
-        goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
+        goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                         for e in self._log.read_run(run_id))
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
             stored = self._tasks.restore_responses_cursor(run_id)
@@ -588,7 +589,13 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
-        return self._drive(run_id, claim, progress)
+        from .goal_v2 import limits_for_phase
+        original_limits = self._limits
+        self._limits = limits_for_phase(self._log, run_id, original_limits)
+        try:
+            return self._drive(run_id, claim, progress)
+        finally:
+            self._limits = original_limits
 
     # ---------------------------------------------------------------- 控制
 
@@ -664,7 +671,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             from .workflow import response_error, workflow_for
 
             workflow = workflow_for(self._log, run_id)
-            goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
+            goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                             for e in self._log.read_run(run_id))
             result_mode = workflow.mode if workflow is not None else "goal" if goal_round else None
             while True:
                 if workflow is not None and workflow.mode == "compact" and progress.pending:
@@ -1062,7 +1070,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         from .workflow import workflow_for
 
         special = workflow_for(self._log, run_id)
-        goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
+        goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                         for e in self._log.read_run(run_id))
         failpoint("goal-after-call", only_if=goal_round)
         failpoint("workflow-after-call", only_if=special is not None
                   and special.mode in ("plan", "compact"))
