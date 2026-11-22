@@ -115,8 +115,33 @@ base `7665e8684f5a124fe789f21909ee54325edc556b`，实际合成 merge checkout �
 schema 和 PRD 读取显式指定 UTF-8；原断言、产品实现及 Windows 守卫不变。
 同一 CP1252 探针下的定向与受影响回归通过，见 `windows-cp1252-green-*.log`。
 
-PR 已恢复 draft；测试树变化后的完整本机门禁、独立增量复审及候选 CI 须重新绑定。
-修复与证据冻结后再统一启动新候选完整矩阵，不对旧失败作业直接重跑。
+修复期间 PR 恢复 draft。测试树变化后重新冻结并绑定完整本机门禁与独立增量复审，
+再统一启动修正候选的完整矩阵；没有对旧失败作业直接重跑。
+
+## 修正候选冻结与验证
+
+测试编码修复冻结为 `61839baebdb11227f10e9dbaeb429d8fd542d575`，
+tree 为 `1908403f55c497bea11c87e757dab9a79609202d`。
+同一第二读者对该增量结论为**已修（fixed）**，亲自复现旧用例的 CP1252 失败，
+并在相同探针下核验修复、缓存回归和原独立探针。产品代码、原断言、运行器与 CI
+均未改变。原报告 `independent-windows-encoding/REVIEW-61839ba.md` 的 SHA256 为
+`a6e5033540ed3dca05e536a3022564b431da9d401b5d2bccd7f9ae901e90a18c`。
+
+该冻结重新执行的完整 `uv run --frozen pytest` 于
+2026-11-22 20:04:21（UTC+08:00）结束，退出码为 0；开始和结束的 head 相同。
+原日志 `post-ci-full-pytest.log` 的 SHA256 为
+`ec975a569d9b22ba7e33a02f7a2ba4c991080ee277c05917fe8033c198fad0d5`，
+精确命令与 head/tree/base 见 `post-ci-full-binding.json`。
+`uv lock --check`、`uv run --frozen ruff check .`、`git diff --check`
+及修改文档的本地链接检查通过，未以首轮冻结的全量替代本次验证。
+
+后续仅回填 Markdown 证据；所有非 `.md` Git tree 条目须与该冻结逐路径一致。
+非 Markdown 清单 SHA256 为
+`f74effc7e8119ea4270aeb69cf6df0de28d3d151876e1863e57359e1b7c61873`。
+文档增量由同一第二读者复核后，复用这一代码树的本机全量与代码复审。
+托管结果继续以 [PR #222](https://github.com/lorek666/tianshu-agent/pull/222)
+最终 head/base、实际合成 merge SHA 和对应完整 CI 为准；
+本机 CP1252 探针不替代原生 Windows，旧红、draft 跳过与部分绿均不计作新候选通过。
 
 ## 保留边界
 
