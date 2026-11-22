@@ -673,11 +673,11 @@ export function WelcomeComposer({
                     >
                       <div className="popover-item-main">
                         <div className="popover-item-title">
-                          <span>自动审批</span>
-                          <span className="popover-tag">待后端授权契约接入</span>
+                          <span>自动审批（有限范围授权）</span>
+                          <span className="popover-tag">创建运行后设置</span>
                         </div>
                         <div className="popover-item-desc">
-                          自动放行已绑定工作区内的常规修改（当前保持执行侧逐次确认）
+                          在运行的「有限范围授权」面板预览并签发精确范围、次数和期限
                         </div>
                       </div>
                     </button>

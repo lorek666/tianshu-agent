@@ -4324,3 +4324,68 @@ pre,
   gap: 8px;
   overflow-wrap: anywhere;
 }
+
+.agent-goal-panel label,
+.agent-consent-panel label {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.agent-goal-panel input:not([type="checkbox"]),
+.agent-consent-panel input:not([type="checkbox"]),
+.agent-goal-panel textarea,
+.agent-goal-panel select,
+.agent-consent-panel select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.agent-bound-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 14px;
+}
+
+.agent-goal-panel .agent-review-check,
+.agent-consent-panel .agent-review-check {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+}
+
+.agent-digest,
+.agent-digest code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.agent-plan-review,
+.agent-human-review,
+.agent-consent-list,
+.agent-consent-preview,
+.agent-plan-step,
+.agent-blocker {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.agent-check {
+  margin: 12px 0;
+}
+
+.agent-goal-panel .workflow-result-text,
+.agent-consent-panel .workflow-result-text {
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

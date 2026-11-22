@@ -14,6 +14,7 @@ interface Props {
   onRunStarted: (run: RunView) => void | Promise<void>;
   onChanged: () => void;
   onSelectRun: (runId: string) => void;
+  historyOnly?: boolean;
 }
 const labels: Record<GoalView["status"], string> = {
   ready: "等待推进", running: "本轮进行中", awaiting_review: "等待验收或继续",
@@ -25,6 +26,7 @@ const labels: Record<GoalView["status"], string> = {
 export function GoalPanel({
   task, api, eventSeqHead, executionPolicy, openRequest = null, initialConfig,
   onRunStarted, onChanged, onSelectRun,
+  historyOnly = false,
 }: Props) {
   const [goal, setGoal] = useState<GoalView | null>(null);
   const [editing, setEditing] = useState(initialConfig !== undefined);
@@ -140,12 +142,13 @@ export function GoalPanel({
   }
 
   if (api === null) return null;
+  if (historyOnly && goal === null) return null;
   const idle = task.active_run_id === null;
-  const newAllowed = goal === null || ["completed", "cancelled", "stale"].includes(goal.status);
+  const newAllowed = !historyOnly && (goal === null || ["completed", "cancelled", "stale"].includes(goal.status));
   const canReview = goal !== null && ["awaiting_review", "exhausted"].includes(goal.status);
   return <section className="goal-panel" aria-label="目标模式" data-testid="goal-panel">
     <div className="goal-panel-heading">
-      <strong>目标模式</strong>
+      <strong>{historyOnly ? "旧版目标（G1）" : "目标模式"}</strong>
       <span className="subtle">每轮手动继续</span>
       {goal !== null ? <span>{labels[goal.status]} · {goal.rounds_started} / {goal.max_rounds} 轮</span> : null}
       {newAllowed && !editing ? <button type="button" className="btn btn-sm"

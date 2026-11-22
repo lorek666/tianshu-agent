@@ -24,6 +24,8 @@ import type { HostClient } from "./api/host";
 import { createSkillsApi } from "./api/skills";
 import type { SkillsApi } from "./api/skills";
 import { createGoalsApi } from "./api/goals";
+import { createAgentApi } from "./api/agent";
+import type { AgentApi } from "./api/agent";
 import type { GoalConfig, GoalsApi } from "./api/goals";
 import { createDemoHostClient } from "./demo/host";
 import { isDemoRequested, readHostToken } from "./api/token";
@@ -151,6 +153,7 @@ export function App() {
   const [settingsApi, setSettingsApi] = useState<SettingsApi | null>(null);
   const [skillsApi, setSkillsApi] = useState<SkillsApi | null>(null);
   const [goalsApi, setGoalsApi] = useState<GoalsApi | null>(null);
+  const [agentApi, setAgentApi] = useState<AgentApi | null>(null);
   const [goalDrafts, setGoalDrafts] = useState<Record<string, GoalConfig>>({});
   const now = useNow(10_000);
   const systemDark = useSystemDarkScheme();
@@ -527,6 +530,7 @@ export function App() {
         setSettingsApi((previous) => previous ?? nextSettingsApi);
         setSkillsApi(createSkillsApi(host));
         setGoalsApi(createGoalsApi(host));
+        setAgentApi(createAgentApi(host));
         setModelSettings(initialSettings);
         setState(next);
         stateRef.current = next;
@@ -551,6 +555,7 @@ export function App() {
         setSettingsApi(null);
         setSkillsApi(null);
         setGoalsApi(null);
+        setAgentApi(null);
         setModelSettings(null);
         setBootError(humanizeHostError(error));
         setPhase("unreachable");
@@ -764,7 +769,7 @@ export function App() {
         try {
           if (input.goal_config !== undefined) {
             const key = `goal-create:${task.task_id}:${task.goal_revision}`;
-            await createGoalsApi(host).create(
+            await createAgentApi(host).createGoal(
               task, input.goal_config, input.execution_policy, requestIdFor(key),
             );
             workflowRequests.current.delete(key);
@@ -773,7 +778,7 @@ export function App() {
               delete next[task.task_id];
               return next;
             });
-            showToast("目标已保存；点击「推进一轮」开始", "success");
+            showToast("目标已保存；审阅配置后点击「继续推进」开始", "success");
             await refreshSnapshot(host);
             return;
           }
@@ -1383,6 +1388,7 @@ export function App() {
               onGuide={demoMode ? undefined : handleGuide}
               onWorkflowCommand={handleWorkflowCommand}
               goalsApi={goalsApi}
+              agentApi={agentApi}
               initialGoalConfig={goalDrafts[selectedTask.task_id]}
               onGoalRunStarted={async (run) => {
                 selectRun(run);

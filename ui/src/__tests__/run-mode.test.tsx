@@ -36,6 +36,7 @@ vi.mock("../api/token", () => ({
 }));
 
 import { App } from "../App";
+import { loopGoal } from "./agent-loop-fixtures";
 
 const EFFECTS = { format_version: 1, mode: "effects" } as const;
 const PURE_ONLY = { format_version: 1, mode: "pure_only" } as const;
@@ -92,6 +93,23 @@ class FakeHost implements HostClient {
   readonly state: StateView;
   readonly rpc = vi.fn(async (method: string, params: RpcParams = {}) => {
     if (method === "goal.get") return { goal: structuredClone(this.goal) };
+    if (method === "goal.v2.get") return { goal: structuredClone(this.agentGoal) };
+    if (method === "goal.v2.create") {
+      if (this.goalFailuresRemaining > 0) {
+        this.goalFailuresRemaining -= 1;
+        throw new HostRpcError("internal", "目标保存暂时失败");
+      }
+      this.agentGoal = {
+        ...structuredClone(loopGoal), task_id: String(params.task_id),
+        config: {
+          ...structuredClone(loopGoal.config), task_id: String(params.task_id),
+          goal_revision: Number(params.goal_revision), max_rounds: Number(params.max_rounds),
+          execution_policy: params.execution_policy as typeof loopGoal.config.execution_policy,
+        },
+      };
+      this.state.event_seq_head += 1;
+      return { goal: structuredClone(this.agentGoal) };
+    }
     if (method === "goal.create") {
       if (this.goalFailuresRemaining > 0) {
         this.goalFailuresRemaining -= 1;
@@ -162,6 +180,7 @@ class FakeHost implements HostClient {
   failuresRemaining = 0;
   goalFailuresRemaining = 0;
   goal: GoalView | null = null;
+  agentGoal: typeof loopGoal | null = null;
 
   constructor(initial: StateView) {
     this.state = structuredClone(initial);
@@ -283,21 +302,22 @@ describe("Run 执行模式的真实 UI 入口", () => {
       "[data-testid='goal-criteria']",
     )!, "包含中文摘要\n包含来源");
     await click(container!.querySelector<HTMLButtonElement>("[data-testid='composer-send-btn']")!);
-    await waitFor(() => rpcCalls(host, "goal.create").length === 1);
+    await waitFor(() => rpcCalls(host, "goal.v2.create").length === 1);
     await settle();
     expect(rpcCalls(host, "run.start")).toHaveLength(0);
     expect(rpcCalls(host, "task.create")).toHaveLength(1);
     expect(rpcCalls(host, "task.create")[0]).not.toHaveProperty("goal_config");
-    expect(rpcCalls(host, "goal.create")[0]?.criteria).toEqual(["包含中文摘要", "包含来源"]);
+    expect(rpcCalls(host, "goal.v2.create")[0]?.criteria).toEqual(["包含中文摘要", "包含来源"]);
+    expect(rpcCalls(host, "goal.create")).toHaveLength(0);
     if (failure) {
-      await waitFor(() => container!.querySelector("[data-testid='goal-criteria']") !== null);
-      expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='goal-criteria']")!.value)
+      await waitFor(() => container!.querySelector("[data-testid='agent-criteria']") !== null);
+      expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='agent-criteria']")!.value)
         .toBe("包含中文摘要\n包含来源");
-      await click(container!.querySelector<HTMLButtonElement>("[data-testid='goal-create']")!);
-      await waitFor(() => rpcCalls(host, "goal.create").length === 2);
+      await click(container!.querySelector<HTMLButtonElement>("[data-testid='agent-create']")!);
+      await waitFor(() => rpcCalls(host, "goal.v2.create").length === 2);
       expect(rpcCalls(host, "task.create")).toHaveLength(1);
     }
-    expect(host.goal?.status).toBe("ready");
+    expect(host.agentGoal?.status).toBe("ready");
   });
 
   it("已有任务 /goal 打开配置，不修订目标也不启动运行", async () => {
@@ -307,7 +327,7 @@ describe("Run 执行模式的真实 UI 入口", () => {
       "[data-testid='followup-input']",
     )!, "/goal 包含来源");
     await click(container!.querySelector<HTMLButtonElement>("[data-testid='followup-send-btn']")!);
-    expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='goal-criteria']")!.value)
+    expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='agent-criteria']")!.value)
       .toBe("包含来源");
     expect(rpcCalls(host, "task.revise")).toHaveLength(0);
     expect(rpcCalls(host, "run.start")).toHaveLength(0);

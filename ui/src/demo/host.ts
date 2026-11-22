@@ -76,10 +76,22 @@ export class DemoHostClient implements HostClient {
     const world = this.world;
     switch (method) {
       case "goal.get":
+      case "goal.v2.get":
         return { goal: null } as T;
+      case "consent.list":
+        return { consents: [] } as T;
       case "goal.create":
       case "goal.advance":
       case "goal.close":
+      case "goal.v2.create":
+      case "goal.v2.advance":
+      case "goal.v2.pause":
+      case "goal.v2.resume":
+      case "goal.v2.recover":
+      case "goal.v2.close":
+      case "consent.prepare":
+      case "consent.issue":
+      case "consent.revoke":
         throw new HostRpcError("unsupported", "演示模式不支持持久化目标操作，请连接真实 Host。");
       case "skill.list":
         return {

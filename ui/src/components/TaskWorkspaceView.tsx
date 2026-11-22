@@ -72,6 +72,9 @@ import type { WelcomePetStatus } from "./WelcomePet";
 
 import type { GoalConfig, GoalsApi } from "../api/goals";
 import { GoalPanel } from "./GoalPanel";
+import type { AgentApi } from "../api/agent";
+import { AgentGoalPanel } from "./AgentGoalPanel";
+import { ScopedConsentPanel } from "./ScopedConsentPanel";
 
 export interface TaskWorkspaceViewProps {
   task: TaskView;
@@ -100,6 +103,7 @@ export interface TaskWorkspaceViewProps {
   settingsApi?: SettingsApi | null;
   skillsApi?: SkillsApi | null;
   goalsApi?: GoalsApi | null;
+  agentApi?: AgentApi | null;
   initialGoalConfig?: GoalConfig;
   onGoalRunStarted?: (run: RunView) => void | Promise<void>;
   onModelUpdated?: (settings: SettingsView) => void;
@@ -185,6 +189,7 @@ export function TaskWorkspaceView({
   settingsApi = null,
   skillsApi = null,
   goalsApi = null,
+  agentApi = null,
   initialGoalConfig,
   onGoalRunStarted,
   onModelUpdated,
@@ -638,9 +643,9 @@ export function TaskWorkspaceView({
                       type="button"
                       className="segmented-item"
                       disabled
-                      title="待后端授权契约接入"
+                      title="在运行下方的「有限范围授权」中预览并签发"
                     >
-                      自动审批
+                      自动审批（有限范围授权）
                     </button>
                     <button
                       type="button"
@@ -744,10 +749,21 @@ export function TaskWorkspaceView({
               </section>
             ) : null}
 
+            <AgentGoalPanel api={agentApi} task={task} eventSeqHead={eventSeqHead}
+              executionPolicy={executionPolicy} initialConfig={initialGoalConfig}
+              hasUncertainEffects={taskRuns.some((run) => ["unknown", "partial"].includes(run.effect_state ?? "")
+                || run.n_unknown > 0)}
+              openRequest={goalRequest?.taskId === task.task_id
+                && goalRequest.revision === task.goal_revision ? goalRequest : null}
+              onChanged={onRefresh} onSelectRun={onSelectRun} />
+            <ScopedConsentPanel api={agentApi} task={task}
+              runId={selectedRun?.goal_revision === task.goal_revision ? selectedRun.run_id : task.active_run_id}
+              eventSeqHead={eventSeqHead} />
             <GoalPanel key={`${task.task_id}:${task.goal_revision}`}
               api={goalsApi} task={task} eventSeqHead={eventSeqHead}
-              executionPolicy={executionPolicy} initialConfig={initialGoalConfig}
-              openRequest={goalRequest?.taskId === task.task_id
+              executionPolicy={executionPolicy} historyOnly={agentApi !== null}
+              initialConfig={agentApi === null ? initialGoalConfig : undefined}
+              openRequest={agentApi === null && goalRequest?.taskId === task.task_id
                 && goalRequest.revision === task.goal_revision ? goalRequest : null}
               onRunStarted={onGoalRunStarted ?? (() => undefined)}
               onChanged={onRefresh} onSelectRun={onSelectRun} />
