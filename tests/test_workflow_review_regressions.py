@@ -212,8 +212,10 @@ def test_compact_pending_pure_tool_gate_negative_control(review_env, monkeypatch
         found = original(log, run_id)
         return replace(found, mode="plan") if found and found.mode == "compact" else found
 
-    # 只在本用例把 compact 误当 plan；应能看见仅读工具被实际执行，证明零派发断言有效。
+    # 只在本用例把 compact 误当 plan，并旁路新增的 Mission 固定交集；
+    # 两道工具门都移除后应实际执行仅读工具，证明零派发断言仍能抓住失守。
     monkeypatch.setattr("tianshu.workflow.workflow_for", bypass_compact_gate)
+    monkeypatch.setattr("tianshu.mission.effective_manifest", lambda _log, _rid, _reg, rows: rows)
     model = ScriptedModel([
         ModelResponse("tool_use", tool_calls=[
             ToolCall("should-not-read", "read_text", {"path": "protected.txt"}),

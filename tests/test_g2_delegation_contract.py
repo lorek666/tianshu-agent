@@ -22,6 +22,7 @@ import pytest
 
 from tianshu import event_schema
 from tianshu.events import EVENT_TYPES, EventLog
+from tianshu.restore_access import default_material_paths
 from tianshu.rules import (
     DECISION_RULE_IDS,
     DECLARED_UNUSED_RULE_IDS,
@@ -50,7 +51,8 @@ EXPECTED_RULE_IDS = 78
 
 
 def _stack(tmp_path: Path):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     from support import stack_for
 
     return log, stack_for(log, data_root=tmp_path / "data")
@@ -137,7 +139,8 @@ def test_legacy_task_created_without_max_subtasks_reads_as_v0(tmp_path):
     conn.execute("ALTER TABLE tasks DROP COLUMN depth")
     conn.commit()
     conn.close()
-    log2 = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log2 = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     try:
         store = TaskStore(log2)
         old = store.get_task(task.task_id)

@@ -1,0 +1,334 @@
+"""Mission 的真实入口、不可变输入与执行侧路由；历史 Run 保持原解释。"""
+
+from __future__ import annotations
+
+import copy
+import json
+from contextlib import closing
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from support import approve_pending, engine_for, stack_for
+
+from tianshu.control import ControlError, ControlPlane
+from tianshu.errors import TianshuError
+from tianshu.events import EventLog
+from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.replay import replay
+from tianshu.run_policy import PURE_ONLY
+from tianshu.tool_registry import ToolRegistry
+from tianshu.tools import SPECS
+
+
+class RecordingModel(ScriptedModel):
+    def __init__(self, responses=None):
+        super().__init__(responses or [ModelResponse("end_turn", content="已完成文字答复。")])
+        self.requests = []
+
+    def complete(self, messages, tools):
+        self.requests.append((copy.deepcopy(messages), copy.deepcopy(tools)))
+        return super().complete(messages, tools)
+
+
+@pytest.fixture
+def env(tmp_path):
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    stack = stack_for(log, data_root=tmp_path)
+    task = stack.tasks.create_task("解释这段观点，不需要文件工作区。")
+    yield ControlPlane(stack, model=ScriptedModel([])), stack, task
+    log.close()
+
+
+def test_new_direct_run_freezes_generic_input_before_first_intent(env):
+    _, stack, task = env
+    model = RecordingModel()
+    result = engine_for(stack, model).start(task.task_id)
+    events = stack.log.read_run(result.run_id)
+    facts = [e for e in events if e.type == "run.mission"]
+    assert len(facts) == 1
+    assert facts[0].seq < next(e.seq for e in events if e.type == "model.intent")
+    assert "Markdown 与纯文本" not in model.requests[0][0][0]["content"]
+    assert replay(stack.log, result.run_id).ok
+
+
+def test_desktop_freezes_attachments_and_conversation_with_template(env, monkeypatch):
+    from tianshu import mission
+
+    plane, stack, task = env
+    run_id = plane.handle("run.start", {
+        "task_id": task.task_id, "attachments": [{
+            "name": "note.txt", "media_type": "text/plain", "data_base64": "aGVsbG8=",
+        }],
+    })["run"]["run_id"]
+    initial = mission.mission_messages(stack.log, run_id)
+    monkeypatch.setattr(mission, "SYSTEM_PROMPT", "changed after the run was created")
+    model = RecordingModel()
+    engine_for(stack, model).resume_run(run_id)
+    assert model.requests[0][0] == initial
+    assert initial[-1]["attachments"][0]["data_base64"] == "aGVsbG8="
+    assert replay(stack.log, run_id).ok
+
+
+def test_historical_run_without_mission_keeps_legacy_prompt(env):
+    from tianshu.loop import SYSTEM_PROMPT
+
+    _, stack, task = env
+    run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""})
+    stack.claims.enqueue(run.run_id)
+    model = RecordingModel()
+    engine_for(stack, model).resume_run(run.run_id)
+    assert not any(e.type == "run.mission" for e in stack.log.read_run(run.run_id))
+    assert model.requests[0][0][0]["content"] == SYSTEM_PROMPT
+    assert replay(stack.log, run.run_id).ok
+
+
+def test_missing_snapshot_blob_blocks_resume_even_with_saved_cursor(env):
+    from tianshu.mission import mission_for
+
+    plane, stack, task = env
+    rid = plane.handle("run.start", {"task_id": task.task_id})["run"]["run_id"]
+    assert mission_for(stack.log, rid) is not None
+    class PausingModel(RecordingModel):
+        def complete(self, messages, tools):
+            response = super().complete(messages, tools)
+            stack.tasks.request_pause(rid)
+            return response
+
+    assert engine_for(stack, PausingModel()).resume_run(rid).state == "paused"
+    assert stack.tasks.load_cursor(rid) is not None
+    event = next(e for e in stack.log.read_run(rid) if e.type == "run.mission")
+    digest = event.payload["messages_ref"].split(":")[-1]
+    (stack.log.blob_dir / digest).unlink()
+    model = RecordingModel()
+    with pytest.raises(TianshuError, match="Mission|使命|快照"):
+        engine_for(stack, model).resume_run(rid)
+    assert model.requests == []
+    assert not replay(stack.log, rid).ok
+
+
+def test_research_route_cannot_dispatch_forged_write(env, tmp_path):
+    from tianshu.mission import mission_for
+
+    plane, stack, task = env
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = stack.tasks.create_task("整理研究资料", [str(workspace)])
+    rid = plane.handle("run.start", {
+        "task_id": task.task_id, "task_kind": "research",
+    })["run"]["run_id"]
+    model = RecordingModel([
+        ModelResponse("tool_use", tool_calls=[
+            ToolCall("fake", "create_report", {"name": "bad.md", "content": "bad"}),
+        ]),
+        ModelResponse("end_turn", content="已报告不能执行此工具。"),
+    ])
+    engine_for(stack, model).resume_run(rid)
+    assert mission_for(stack.log, rid).task_kind == "research"
+    assert "create_report" not in {t["name"] for t in model.requests[0][1]}
+    assert not (workspace / "bad.md").exists()
+    events = stack.log.read_run(rid)
+    assert not any(e.type == "tool.intent" for e in events)
+    assert any(e.type == "tool.not_dispatched" and "Mission" in e.payload["reason"] for e in events)
+    assert replay(stack.log, rid).ok
+
+
+def test_reused_mission_keeps_identity_but_intersects_each_run_policy(env):
+    from tianshu.mission import freeze_mission, mission_for, prepare_mission
+
+    _, stack, task = env
+    spec = prepare_mission(stack.tasks, task.task_id, criteria=["由人确认答复内容"])
+    assert spec.to_dict()["criteria"] == [{
+        "criterion_id": "criterion_1", "description": "由人确认答复内容", "mode": "human",
+    }]
+    run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""},
+                                execution_policy=PURE_ONLY)
+    assert freeze_mission(stack.log, run.run_id, mission=spec).digest == spec.digest
+    assert freeze_mission(stack.log, run.run_id, mission=spec).digest == spec.digest
+    assert mission_for(stack.log, run.run_id).mission_id == spec.mission_id
+    event = next(e for e in stack.log.read_run(run.run_id) if e.type == "run.mission")
+    assert all(SPECS[t["tool_id"]].side_effect_level == "pure"
+               for t in event.payload["effective_tools"])
+    assert any(SPECS[t["tool_id"]].side_effect_level != "pure" for t in spec.tool_allowlist)
+    assert len([e for e in stack.log.read_run(run.run_id) if e.type == "run.mission"]) == 1
+
+
+def test_shared_mission_keeps_distinct_stage_text_across_runs(env):
+    from tianshu.mission import freeze_mission, mission_for, prepare_mission
+
+    _, stack, task = env
+    spec = prepare_mission(stack.tasks, task.task_id, criteria=["由人确认结果"])
+    for phase in ("提出计划", "执行确认的步骤", "核查结果"):
+        run = stack.tasks.start_run(
+            task.task_id, payload={"task": phase, "out": ""}, execution_policy=PURE_ONLY,
+        )
+        freeze_mission(stack.log, run.run_id, mission=spec)
+        stack.claims.enqueue(run.run_id)
+        model = RecordingModel()
+        assert engine_for(stack, model).resume_run(run.run_id).terminal
+        assert model.requests[0][0][1]["content"].startswith(phase)
+        assert mission_for(stack.log, run.run_id).digest == spec.digest
+        assert replay(stack.log, run.run_id).ok
+
+
+def test_mission_rejects_changed_target_and_closed_fields(env):
+    from tianshu.mission import MissionSpecV1, freeze_mission, prepare_mission
+
+    _, stack, task = env
+    spec = prepare_mission(stack.tasks, task.task_id)
+    for changed in ({"task_kind": "unknown"}, {"extra": True}, {"format_version": True}):
+        with pytest.raises(TianshuError):
+            MissionSpecV1.of({**spec.to_dict(), **changed})
+    with pytest.raises(TianshuError, match="条件|criterion"):
+        prepare_mission(stack.tasks, task.task_id, criteria=[
+            {"criterion_id": "same", "description": "一", "mode": "human"},
+            {"criterion_id": "same", "description": "二", "mode": "human"},
+        ])
+    stack.tasks.revise_task(task.task_id, goal="不同目标")
+    run = stack.tasks.start_run(task.task_id, payload={"task": "不同目标", "out": ""})
+    with pytest.raises(TianshuError, match="修订|目标|绑定"):
+        freeze_mission(stack.log, run.run_id, mission=spec)
+    assert not any(e.type == "run.mission" for e in stack.log.read_run(run.run_id))
+
+
+def test_same_mission_identity_cannot_name_different_content_across_runs(env):
+    from tianshu.mission import MissionSpecV1, freeze_mission, prepare_mission
+
+    _, stack, task = env
+    spec = prepare_mission(stack.tasks, task.task_id)
+    first = engine_for(stack, RecordingModel()).start(task.task_id, mission=spec)
+    altered = spec.to_dict()
+    altered["criteria"] = [{"criterion_id": "new", "description": "新要求", "mode": "human"}]
+    run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""})
+    with pytest.raises(TianshuError, match="Mission|身份"):
+        freeze_mission(stack.log, run.run_id, mission=MissionSpecV1.of(altered))
+    assert replay(stack.log, first.run_id).ok
+
+
+def test_new_phase_rejects_changed_profile_renderer(env, monkeypatch):
+    from tianshu import mission
+
+    _, stack, task = env
+    spec = mission.prepare_mission(stack.tasks, task.task_id, task_kind="coding")
+    monkeypatch.setitem(mission._METHODS, "coding", "a different method")
+    run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""})
+    with pytest.raises(TianshuError, match="配置|profile|模板"):
+        mission.freeze_mission(stack.log, run.run_id, mission=spec)
+
+
+def test_fixed_tool_identity_intersection_rejects_registry_drift(env):
+    from tianshu.mission import effective_manifest, freeze_mission, prepare_mission
+
+    _, stack, task = env
+    spec = prepare_mission(stack.tasks, task.task_id, tool_ids=["read_text"])
+    run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""})
+    freeze_mission(stack.log, run.run_id, mission=spec)
+    registry = ToolRegistry(base={**SPECS, "read_text": replace(
+        SPECS["read_text"], description="changed description",
+    )})
+    assert effective_manifest(stack.log, run.run_id, registry, registry.manifest()) == []
+
+
+def test_request_retry_cannot_silently_change_mission_kind(env):
+    plane, _, task = env
+    params = {"task_id": task.task_id, "request_id": "kind", "task_kind": "research"}
+    plane.handle("run.start", params)
+    with pytest.raises(ControlError, match="Mission|使命|request_id"):
+        plane.handle("run.start", {**params, "task_kind": "coding"})
+
+
+def test_request_retry_cannot_silently_change_mission_tools(env):
+    plane, stack, task = env
+    params = {"task_id": task.task_id, "request_id": "tools", "tool_ids": ["read_text"]}
+    rid = plane.handle("run.start", params)["run"]["run_id"]
+    with pytest.raises(ControlError, match="Mission|使命|request_id"):
+        plane.handle("run.start", {**params, "tool_ids": ["create_report"]})
+    assert len([e for e in stack.log.read_run(rid) if e.type == "run.mission"]) == 1
+
+
+@pytest.mark.parametrize("invalid", [[], "not-a-mission", 1])
+def test_invalid_mission_input_is_rejected_without_partial_run(env, invalid):
+    plane, stack, task = env
+    before = stack.log.read_after(0)
+    with pytest.raises(ControlError, match="Mission"):
+        plane.handle("run.start", {"task_id": task.task_id, "mission": invalid})
+    assert stack.log.read_after(0) == before
+
+
+def test_cli_start_freezes_selected_mission(tmp_path, monkeypatch, capsys):
+    from tianshu import cli
+
+    model = RecordingModel()
+    monkeypatch.setattr(cli, "_model_from", lambda args: model)
+    db = tmp_path / "events.db"
+    base = ["--db", str(db), "--data-root", str(tmp_path), "--json"]
+    assert cli.main(["task", "create", "--goal", "研究概念", *base]) == 0
+    task = json.loads(capsys.readouterr().out)["task"]["task_id"]
+    assert cli.main(["run", "start", "--task-id", task, "--task-kind", "research", *base]) == 0
+    rid = json.loads(capsys.readouterr().out)["run"]["run_id"]
+    from tianshu.restore_access import default_material_paths
+
+    with closing(EventLog(db, blob_dir=default_material_paths(db, tmp_path)[1])) as log:
+        fact = next(e for e in log.read_run(rid) if e.type == "run.mission")
+        assert fact.payload["mission"]["task_kind"] == "research"
+        assert replay(log, rid).ok
+
+
+def test_goal_g1_round_freezes_human_criteria(env):
+    from tianshu.mission import mission_for
+
+    plane, stack, task = env
+    goal = plane.handle("goal.create", {
+        "task_id": task.task_id, "goal_revision": 1, "criteria": ["人确认内容"],
+        "max_rounds": 2, "execution_policy": PURE_ONLY.to_dict(), "request_id": "goal",
+    })["goal"]
+    rid = plane.handle("goal.advance", {
+        "goal_id": goal["goal_id"], "request_id": "round",
+    })["run"]["run_id"]
+    spec = mission_for(stack.log, rid)
+    assert spec.user_goal == task.goal
+    assert spec.to_dict()["criteria"][0]["mode"] == "human"
+    model = RecordingModel()
+    engine_for(stack, model).resume_run(rid)
+    assert "人确认内容" in model.requests[0][0][1]["content"]
+    assert replay(stack.log, rid).ok
+
+
+def test_spawned_child_freezes_generic_mission_before_worker_execution(env):
+    from tianshu.mission import mission_for
+
+    _, stack, _ = env
+    task = stack.tasks.create_task("调查观点，再整合子任务结果。", max_subtasks=1)
+    parent = engine_for(stack, RecordingModel([
+        ModelResponse("tool_use", tool_calls=[ToolCall(
+            "spawn-reader", "subtask.spawn",
+            {"subtask_id": "reader", "goal": "解释观点中的因果关系。"},
+        )]),
+        ModelResponse("end_turn", content="等待子任务结果。"),
+    ]))
+    result = parent.start(task.task_id)
+    assert result.state == "waiting_approval"
+    assert approve_pending(stack, result.run_id)
+    assert parent.resume_run(result.run_id).state == "running"
+    (child,) = stack.tasks.list_subtasks(result.run_id)
+    spec = mission_for(stack.log, child.child_run_id)
+    assert spec is not None
+    assert spec.task_kind == "general"
+    assert spec.user_goal == "解释观点中的因果关系。"
+    facts = [e for e in stack.log.read_run(child.child_run_id) if e.type == "run.mission"]
+    assert len(facts) == 1
+    assert not any(e.type == "model.intent" for e in stack.log.read_run(child.child_run_id))
+    model = RecordingModel()
+    assert engine_for(stack, model).resume_run(child.child_run_id).state == "succeeded"
+    assert "Markdown 与纯文本" not in model.requests[0][0][0]["content"]
+    assert model.requests[0][0][1]["content"].startswith(spec.user_goal)
+    assert replay(stack.log, child.child_run_id).ok
+
+
+def test_schema_matches_versioned_mission_contract():
+    from tianshu.mission import MISSION_SCHEMA, TASK_KINDS
+
+    schema = json.loads((Path(__file__).resolve().parents[1] / "schemas/mission.json").read_text())
+    assert schema.get("$ref") == "#/$defs/mission"
+    assert schema["$defs"]["mission"] == MISSION_SCHEMA
+    assert set(MISSION_SCHEMA["properties"]["task_kind"]["enum"]) == set(TASK_KINDS)

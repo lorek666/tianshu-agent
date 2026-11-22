@@ -156,6 +156,10 @@ def handle(plane, action: str, params: dict[str, Any]) -> dict[str, Any]:
             "format_version": 1, "goal_id": goal_id, "round": len(goal.rounds) + 1,
             "request_id": rid, "source_run_id": source.run_id if source else None,
         }, task_id=task_id, actor_kind="human")
+        from .mission import freeze_mission
+
+        freeze_mission(log, run.run_id, registry=plane.stack.dispatcher.registry,
+                       criteria=goal.config["criteria"])
         plane.stack.claims.enqueue(run.run_id)
         current = next(g for g in goals.for_task(log, task_id) if g.goal_id == goal_id)
         return {"goal": current.view(tasks, log), "run": plane._run_view(run)}

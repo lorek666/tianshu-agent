@@ -22,6 +22,7 @@ from support import approve_pending, engine_for, stack_for
 from tianshu.dispatcher import DispatchDenied, build_request
 from tianshu.events import EventLog, sha256_hex
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.restore_access import default_material_paths
 from tianshu.tasks import (
     RUN_RUNNING,
     SUBTASK_DEADLINE_MS,
@@ -37,7 +38,8 @@ SUBTASK_SPAWNED = "subtask.spawned"
 
 
 def _stack(tmp_path: Path):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     return log, stack_for(log, data_root=tmp_path / "data")
 
 

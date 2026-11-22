@@ -83,7 +83,6 @@ from .conversation import (
     GUIDANCE_EVENTS,
     GuidanceHistory,
     checked_conversation,
-    seed_messages,
 )
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmission, DiskAdmissionError, RunStorageContext
@@ -271,13 +270,13 @@ def _fresh_progress(
     task: str, out_name: str | None, conversation: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     workflow=None,
+    frozen_messages=None,
 ) -> _Progress:
     """新 Run 的初始进度：首轮提示 + 与它平行的 seq 归因。"""
-    from .workflow import workflow_messages
+    from .mission import compile_initial_messages
 
-    messages = seed_messages(
-        workflow_messages(initial_messages(task, out_name), workflow), conversation, attachments,
-        general=workflow is None or (workflow.mode == "execute" and not workflow.source_text),
+    messages = frozen_messages if frozen_messages is not None else compile_initial_messages(
+        task, out_name, conversation=conversation, attachments=attachments, workflow=workflow,
     )
     return _Progress(
         messages=messages, message_seqs=[RUN_START_SEQ] * len(messages)
@@ -374,6 +373,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._veto_open = False
 
     def _run_tool_manifest(self, run_id: str) -> list[dict[str, Any]]:
+        from .mission import effective_manifest
         from .workflow import workflow_for
 
         workflow = workflow_for(self._log, run_id)
@@ -394,7 +394,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                     manifest.remove(spec)
         if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
             manifest = [t for t in manifest if registry.spec(t["name"]).side_effect_level == "pure"]
-        return manifest
+        return effective_manifest(self._log, run_id, registry, manifest)
 
     # ---------------------------------------------------------------- 启动
 
@@ -437,10 +437,14 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         out_name: str | None = None,
         run_id: str | None = None,
         execution_policy: RunExecutionPolicyV1 = EFFECTS,
+        task_kind: str = "general",
+        criteria=(),
+        mission=None,
     ) -> RunResult:
         """新建一个 Run 并立刻驱动它。"""
         import uuid
 
+        from .mission import freeze_mission, mission_messages
         from .tool_registry import current_registry
         from .workflow import prepare_workflow
 
@@ -471,6 +475,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 task.task_id, run_id=run_id, payload=payload, execution_policy=execution_policy,
                 workflow=workflow if workflow.source_text else None,
             )
+            freeze_mission(self._log, run.run_id, mission=mission,
+                           registry=self._dispatcher.registry, task_kind=task_kind,
+                           criteria=criteria)
             job = self._claims.enqueue(run.run_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if execution_policy == PURE_ONLY:
@@ -482,6 +489,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
         progress = _fresh_progress(
             task.goal, out_name, workflow=workflow if workflow.source_text else None,
+            frozen_messages=mission_messages(self._log, run.run_id),
         )
         self._tasks.save_cursor(run.run_id, progress.to_cursor(), claim)
         return self._drive(run.run_id, claim, progress)
@@ -515,9 +523,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             raise TianshuError(
                 f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run"
             )
+        from .mission import mission_messages
         from .workflow import workflow_for
 
         workflow = workflow_for(self._log, run_id)
+        frozen_messages = mission_messages(self._log, run_id)
         goal_round = any(e.type == "goal.round_started" for e in self._log.read_run(run_id))
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
@@ -561,9 +571,13 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             progress = _fresh_progress(
                 payload.get("task", task.goal), payload.get("out") or None,
                 checked_conversation(self._log, events), attachments_fact(events), workflow,
+                frozen_messages=frozen_messages,
             )
         else:
             progress = _Progress.of(stored[0])
+            if (frozen_messages is not None
+                    and progress.messages[:len(frozen_messages)] != frozen_messages):
+                raise TianshuError("Mission 快照与保存游标的首轮消息不一致")
         # intent 可以领先最后一次游标提交；恢复不能把已发送的尝试漏掉。
         events = self._log.read_run(run_id)
         saved_seq = max((e.seq for e in events if e.type == "run.cursor"), default=0)
@@ -1088,6 +1102,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         undispatched: list[dict[str, Any]] = []
         for call in resp.tool_calls:
             ok, reason = _dispatchable(resp, call)
+            if ok and call.name not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+                ok, reason = False, "工具不在此 Run 的 Mission 固定路由或执行资格交集中"
             if special is not None and special.mode == "compact":
                 ok, reason = False, "压缩响应包含工具调用，未执行"
             if not ok:
@@ -1255,6 +1271,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         # 恢复后补出第二条一模一样的工具消息，replay 立刻对不上。
         recorded = self._results.get(call_id)
         if recorded is None and proposal.get("kind") == "read":
+            if tool_id not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+                raise TianshuError("Mission 固定路由不包含此待执行工具")
             recorded = self._record_read(run_id, task, proposal)
             self._record_result(run_id, proposal, recorded)
             recorded = self._results[call_id]
@@ -1302,6 +1320,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             ))
             self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
             return "done"
+        if tool_id not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+            raise TianshuError("Mission 固定路由不包含此待派发工具")
 
         # 2) 正常路径：目标路径 → 请求 → 判定 → 派发
         try:

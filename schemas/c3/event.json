@@ -120,6 +120,7 @@
         "run.finish",
         "run.guidance_applied",
         "run.guidance_requested",
+        "run.mission",
         "run.model_route",
         "run.model_turn",
         "run.start",
@@ -4083,6 +4084,237 @@
           "decision",
           "reason"
         ]
+      },
+      "run.mission": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "mission": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "mission_id": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "goal_revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "task_kind": {
+                "type": "string",
+                "enum": [
+                  "general",
+                  "coding",
+                  "research",
+                  "project_ops",
+                  "summarize"
+                ]
+              },
+              "user_goal": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "digest"
+                ],
+                "additionalProperties": false
+              },
+              "criteria": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "criterion_id": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "machine",
+                        "human"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "criterion_id",
+                    "description",
+                    "mode"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "tool_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool_id": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "schema_hash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "description_hash": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "tool_id",
+                    "version",
+                    "schema_hash",
+                    "description_hash"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "prompt": {
+                "type": "object",
+                "properties": {
+                  "template_id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "content_ref": {
+                    "type": "string",
+                    "pattern": "^content://sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "template_id",
+                  "version",
+                  "digest",
+                  "content_ref"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "format_version",
+              "mission_id",
+              "task_id",
+              "goal_revision",
+              "task_kind",
+              "user_goal",
+              "profile",
+              "criteria",
+              "tool_allowlist",
+              "prompt"
+            ],
+            "additionalProperties": false
+          },
+          "mission_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "renderer_version": {
+            "type": "string",
+            "const": "mission-input-v1"
+          },
+          "template_content": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "messages_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "messages_ref": {
+            "type": "string",
+            "pattern": "^content://sha256:[0-9a-f]{64}$"
+          },
+          "material_storage": {
+            "type": "string",
+            "enum": [
+              "blob",
+              "inline"
+            ]
+          },
+          "effective_tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool_id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "schema_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "description_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "tool_id",
+                "version",
+                "schema_hash",
+                "description_hash"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "format_version",
+          "mission",
+          "mission_digest",
+          "renderer_version",
+          "template_content",
+          "messages",
+          "messages_digest",
+          "messages_ref",
+          "material_storage",
+          "effective_tools"
+        ],
+        "additionalProperties": false
       }
     },
     "legacyPayload": {

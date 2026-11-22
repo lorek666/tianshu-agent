@@ -206,6 +206,10 @@ def event_view(event: Any) -> dict[str, Any]:
             {"name": record["name"], "media_type": record["media_type"]}
             for record in payload["attachments"]
         ]}
+    if event.type == "run.mission":
+        # 冻结的完整消息仅供内核恢复/回放；订阅视图不再复制附件字节或历史正文。
+        payload = {key: value for key, value in payload.items()
+                   if key not in ("messages", "template_content")}
     return {
         "seq": int(event.seq),
         "type": event.type,
@@ -830,10 +834,26 @@ class ControlPlane:
                 "request_id": request_id, "requested_source_run_id": source_run_id,
             }
             if prior is not None:
+                from .mission import MissionSpecV1, freeze_mission, mission_for
                 from .model_route import model_route_fact
 
                 prior_events = self._log.read_run(prior.run_id)
                 old_route = model_route_fact(prior_events)
+                old_mission = mission_for(self._log, prior.run_id, events=prior_events)
+                requested_mission = params.get("mission")
+                if requested_mission is not None:
+                    requested_mission = MissionSpecV1.of(requested_mission)
+                if old_mission is not None:
+                    try:
+                        freeze_mission(
+                            self._log, prior.run_id, mission=requested_mission,
+                            task_kind=params.get("task_kind", "general"),
+                            criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                        )
+                    except TianshuError as exc:
+                        raise ControlError(
+                            "conflict", "request_id 与已有 Mission 使命不一致",
+                        ) from exc
                 if (prior_events[0].payload.get("out", "") != (out_name or "")
                         or self._tasks.run_execution_policy(prior.run_id) != execution_policy
                         or list(profile_names or ()) != (old_route or {}).get("requested", [])
@@ -887,6 +907,14 @@ class ControlPlane:
             if route is not None:
                 tx.append(run.run_id, RUN_MODEL_ROUTE, route.to_payload(),
                           task_id=task_id, actor_kind="core")
+            from .mission import freeze_mission
+
+            if not task.is_control:
+                freeze_mission(
+                    self._log, run.run_id, registry=self._stack.dispatcher.registry,
+                    mission=params.get("mission"), task_kind=params.get("task_kind", "general"),
+                    criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                )
             # 认领者（daemon 驱动线程）负责 created → queued → running。
             self._claims.enqueue(run.run_id)
         return {"run": self._run_view(run)}

@@ -19,6 +19,7 @@ from .tools import SUBTASK_TOOL_IDS
 def rebuild_responses_progress(log: EventLog, events: list[Event]):
     # Loop 初始化函数没有 I/O；局部导入避开 TaskStore/Loop 装配环。
     from .loop import _fresh_progress
+    from .mission import mission_messages
     from .workflow import workflow_for
 
     if not any(
@@ -34,6 +35,7 @@ def rebuild_responses_progress(log: EventLog, events: list[Event]):
     progress = _fresh_progress(
         start.payload["task"], start.payload.get("out") or None,
         checked_conversation(log, events), attachments_fact(events), workflow,
+        frozen_messages=mission_messages(log, start.run_id, events=events),
     )
     turns: list[tuple[Event, dict[str, Any]]] = []
     result: dict[str, Any] | None = None

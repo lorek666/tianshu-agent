@@ -40,6 +40,7 @@ from .continuation import (
 from .conversation import validate_guidance, validate_turns
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
+from .mission import MISSION_EVENT_SCHEMA
 from .model_route import ModelRouteV1
 from .run_policy import RunExecutionPolicyV1
 from .task_attachments import (
@@ -497,6 +498,7 @@ _SUBTASK_USAGE = _obj(
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
     **CONSENT_EVENT_SCHEMAS,
+    "run.mission": copy.deepcopy(MISSION_EVENT_SCHEMA),
     "goal.created": _obj(
         {
             "format_version": {"type": "integer", "const": 1},
@@ -1235,6 +1237,7 @@ CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
 
 V1_ONLY_EVENTS = frozenset({
     *CONSENT_EVENT_SCHEMAS,
+    "run.mission",
     "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
@@ -1603,6 +1606,13 @@ def payload_errors(
             validate_turns(payload["turns"])
         except ValueError as exc:
             errors.append(f"$.turns：{exc}")
+    if not errors and event_type == "run.mission":
+        from .mission import validate_snapshot
+
+        try:
+            validate_snapshot(payload)
+        except TianshuError as exc:
+            errors.append(f"$：{exc}")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
@@ -1684,6 +1694,7 @@ _SAMPLE_STRINGS = (
     "c4.auto",
     "end_turn",
     "applied",
+    "content://sha256:" + "0" * 64,
 )
 
 
@@ -1733,5 +1744,27 @@ def minimal_payload(event_type: str) -> dict[str, Any]:
         payload["attachments"] = normalize_attachments([
             {"name": "x", "media_type": "text/plain", "data_base64": ""},
         ])
+    if event_type == "run.mission":
+        from .mission import (
+            SYSTEM_PROMPT,
+            MissionSpecV1,
+            _bytes,
+            _content_ref,
+            _digest,
+            _make_mission,
+        )
+
+        spec = _make_mission(
+            "task_x", 1, "x", registry=None, task_kind="general", criteria=(), tool_ids=[],
+        ).to_dict()
+        mission = MissionSpecV1.of({**spec, "mission_id": "mission_x"})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "x"}]
+        payload = {
+            "format_version": 1, "mission": mission.to_dict(), "mission_digest": mission.digest,
+            "renderer_version": "mission-input-v1", "template_content": SYSTEM_PROMPT,
+            "messages": messages, "messages_digest": _digest(_bytes(messages)),
+            "messages_ref": _content_ref(_bytes(messages)), "material_storage": "inline",
+            "effective_tools": [],
+        }
     validate_payload(event_type, payload)
     return payload
