@@ -243,15 +243,22 @@ def test_unavailable_server_is_rejected_before_approval(tmp_path):
         clients.close_all()
 
 
-def test_isolation_requires_makes_mcp_unproven(tmp_path):
-    log, stack, clients = _stack(tmp_path)
+def test_isolation_requires_refuses_mcp_before_discovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("TIANSHU_EXEC_BACKEND", "local")
+    marker = tmp_path / "must-not-start"
+    log, stack, clients = _stack(tmp_path, configs={"fake": McpServerConfig(
+        name="fake",
+        command=(sys.executable, "-c", f"open({str(marker)!r}, 'w').write('bad')"),
+    )})
     try:
         task = _task(stack, ws=_ws(tmp_path), isolation=("files_authority",))
         engine = engine_for(stack, _script(("mcp__fake__echo", {"message": "hi"})))
         result = engine.start(task.task_id, out_name="out.md")
         assert result.state != "waiting_approval"
-        rules = [row["rule_id"] for row in _rejected(log, result.run_id)]
-        assert rules == ["c4.mcp_isolation_unproven"]
+        assert not marker.exists()
+        assert stack.dispatcher._mcp_clients.ready_names() == ()
+        assert "隔离" in stack.dispatcher._mcp_clients.diagnostics()[0]
+        assert not stack.approvals.pending(run_id=result.run_id)
     finally:
         clients.close_all()
 

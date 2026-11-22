@@ -255,6 +255,14 @@ class _DispatcherExecMixin:
                 sent=False,
             )
         binding = self.registry.mcp_binding(target.tool_id)
+        generation = "" if clients is None else clients.server_generation(target.server)
+        if generation and (binding is None or binding.server_generation != generation):
+            return self._fail_unknown(
+                request, dispatch_id, target,
+                DispatchDenied("本地 MCP generation 与审批版本不匹配",
+                               "dispatch.mcp_server_unavailable"),
+                sent=False,
+            )
         if server.config.url and (binding is None or binding.tool_version != request.tool_version
                                   or binding.remote_identity
                                   != clients.remote_identity(target.server)):
@@ -264,12 +272,14 @@ class _DispatcherExecMixin:
                 sent=False,
             )
         spawn = {
-            "via_exec_backend": False,
+            "via_exec_backend": bool(generation),
             "pid": server.pid,
             "argv0": server.config.command[0] if server.config.command else "",
             "cwd": server.config.cwd,
             "env_keys": sorted(server.config.env),
         }
+        if generation:
+            spawn["session"] = server.session_snapshot()
         base_output: dict[str, Any] = {
             "mcp": {
                 "server": target.server,
@@ -1127,10 +1137,12 @@ class _DispatcherExecMixin:
         if task is None:
             raise DispatchError(f"task 不存在：{task_id}")
         isolated = task.exec_policy is not None and task.exec_policy.isolation_requires
+        if not isolated:
+            self._restore_unscoped_mcp()
         self._prepare_new_run(execution_policy, tuple(
             Path(b.root_path) for b in task.workspaces if b.can_write
         ), remote_names=() if isolated or not discover_remote else task.mcp_servers,
-            discover_mcp=discover_mcp)
+            discover_mcp=discover_mcp and not bool(isolated))
 
     def _prepare_new_run(self, execution_policy: RunExecutionPolicyV1,
                          roots: tuple[Path, ...], *, remote_names: tuple[str, ...] = (),
@@ -1158,6 +1170,61 @@ class _DispatcherExecMixin:
             self._registry = build_registry(self._mcp_clients)
             set_registry(self._registry)
 
+    def _scope_run_mcp(self, task, run_id: str) -> None:
+        from .execpolicy import PolicyUnsupported
+        from .execution_admission import assert_no_unresolved_executions
+
+        policy = task.exec_policy
+        if policy is None or not policy.isolation_requires:
+            self._restore_unscoped_mcp()
+            return
+        if (self._mcp_clients is None
+                or getattr(self, "_mcp_scope_run_id", "") == run_id):
+            return
+        roots = [Path(binding.root_path) for binding in task.workspaces]
+        if not roots or self._data_root is None:
+            raise DispatchDenied(
+                "本地 MCP 隔离准入需要明确工作区与数据根",
+                "c4.mcp_isolation_unproven",
+            )
+        try:
+            assert_no_unresolved_executions(self._log, workspace=roots[0], run_id=run_id)
+        except PolicyUnsupported as exc:
+            raise DispatchDenied(str(exc), "c4.mcp_isolation_unproven") from exc
+        source = getattr(self, "_mcp_source_clients", self._mcp_clients)
+        if self._mcp_clients is source:
+            self._mcp_source_prepared = self._mcp_prepared
+        self._mcp_source_clients = source
+
+        def record(event_type, payload):
+            self._log.append(run_id, event_type, payload, task_id=task.task_id)
+
+        self._mcp_clients = source.for_run(
+            task.task_id, run_id, workspace=roots[0], data_root=self._data_root,
+            exec_backend=self._exec_backend, policy=policy,
+            required_boundaries=tuple(policy.isolation_requires),
+            server_names=tuple(task.mcp_servers), on_event=record,
+        )
+        self._mcp_scope_run_id = run_id
+        self._mcp_prepared = False
+
+    def _restore_unscoped_mcp(self) -> None:
+        source = getattr(self, "_mcp_source_clients", None)
+        if source is None or self._mcp_clients is source:
+            return
+        from .tool_registry import build_registry, set_registry
+
+        self._mcp_clients = source
+        self._mcp_scope_run_id = ""
+        self._mcp_prepared = self._mcp_source_prepared
+        self._registry = build_registry(source)
+        set_registry(self._registry)
+
+    def close_run_mcp(self, run_id: str) -> None:
+        """仅关闭该 Run 专属会话；unknown 不因进程停止变为已知效果。"""
+        if getattr(self, "_mcp_scope_run_id", "") == run_id and self._mcp_clients is not None:
+            self._mcp_clients.close_all()
+
     def prepare_model_mcp(self, claim: JobClaim, *, queued_desktop: bool) -> None:
         """Connector discovery is optional; it must not block an existing read or model turn."""
         if (self._mcp_clients is None
@@ -1165,12 +1232,16 @@ class _DispatcherExecMixin:
             return
         run = self._tasks.assert_current(claim.run_id)
         task = self._tasks.get_task(run.task_id)
-        if task is None or (task.exec_policy is not None and task.exec_policy.isolation_requires):
+        if task is None:
             return
+        self._scope_run_mcp(task, claim.run_id)
         configs = self._mcp_clients.configs
         selected = tuple(name for name in task.mcp_servers if name in configs)
         remotes = tuple(name for name in selected if configs[name].url)
-        if not remotes and (not queued_desktop or self._mcp_prepared or not selected):
+        isolated = bool(task.exec_policy is not None and task.exec_policy.isolation_requires)
+        if not remotes and (
+            not queued_desktop and not isolated or self._mcp_prepared or not selected
+        ):
             return
         self._claims.assert_claim(claim)
         if self._cancel_requested(claim.run_id):
@@ -1189,6 +1260,10 @@ class _DispatcherExecMixin:
         """只为已有的真实待派发 MCP 请求恢复发现；读/模型不以此为前提。"""
         if not tool_id.startswith("mcp__"):
             return
+        run = self._tasks.get_run(run_id)
+        task = None if run is None else self._tasks.get_task(run.task_id)
+        if task is not None:
+            self._scope_run_mcp(task, run_id)
         stored = self.get_request(request_id) if request_id else None
         if stored is None and self._mcp_prepared:
             return  # 当前模型刚提出的新调用，随后完整 prepare 判定。

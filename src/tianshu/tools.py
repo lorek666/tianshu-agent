@@ -616,14 +616,31 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             isolation_report = probe_backend_cached(
                 backend, workspace=target, data_root=ctx.data_root
             )
-        result = backend.spawn(
-            argv,
-            cwd=target,
-            env=child_env,
-            policy=policy,
-            blob_dir=ctx.blob_dir,
-            pty=pty,
-        )
+        if policy.isolation_requires:
+            from .execution_admission import PreparedExecution, assert_no_unresolved_executions
+
+            request = None if ctx.admitted is None else ctx.admitted.request
+            task_id = "" if request is None else request.task_id
+            if ctx.log is not None:
+                assert_no_unresolved_executions(ctx.log, workspace=target, run_id=ctx.run_id)
+
+            def record_execution(event_type, payload):
+                if ctx.log is not None:
+                    ctx.log.append(ctx.run_id, event_type, payload, task_id=task_id)
+
+            with PreparedExecution(
+                backend, kind="command", task_id=task_id, run_id=ctx.run_id,
+                argv=argv, cwd=target, env=child_env, policy=policy,
+                workspace=target, data_root=ctx.data_root, on_event=record_execution,
+            ) as execution:
+                execution.admit(policy.isolation_requires)
+                isolation_report = execution.report
+                result = execution.run(blob_dir=ctx.blob_dir, pty=pty)
+        else:
+            result = backend.spawn(
+                argv, cwd=target, env=child_env, policy=policy,
+                blob_dir=ctx.blob_dir, pty=pty,
+            )
     except PolicyDenied as exc:
         return ToolResult(
             "rejected",
@@ -653,7 +670,11 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             },
         )
 
-    status = "succeeded" if result.exit_code == 0 and not result.timed_out else "failed"
+    unknown_tree = bool(policy.isolation_requires and result.descendants_may_survive)
+    status = (
+        "succeeded" if result.exit_code == 0 and not result.timed_out and not unknown_tree
+        else "failed"
+    )
     digest = _sha(
         "\x00".join(
             [
@@ -668,7 +689,7 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     )
     return ToolResult(
         status,
-        "applied",
+        "unknown" if unknown_tree else "applied",
         {
             "path": rel,
             "cwd": rel,

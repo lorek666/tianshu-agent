@@ -21,8 +21,8 @@
   server 标成 `unavailable`，并留下原因；**不**偷偷换版本、不换启动命令。
 - **不做授权判断**：没有 `allowed` 之类的东西。这里的每一次 `tools/call` 都假定
   调用方（派发层）已经完成授权；本层不提供"跳过审批"的入口。
-- **不做沙箱**：进程以当前用户权限运行。`via_exec_backend=False` 是如实标注，
-  不是"后端覆盖不到它但没关系"。
+- 人工受信任入口以当前用户权限运行，`via_exec_backend=False` 如实标注。
+  自动 Run 的本地 Session 则在初始化前经过 `PreparedExecution` 现场隔离准入。
 
 ## 诚实边界
 
@@ -48,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -667,6 +668,7 @@ class StdioServer(_ToolClient):
         *,
         default_cwd: str | Path | None = None,
         environ: Mapping[str, str] | None = None,
+        execution_scope: dict[str, Any] | None = None,
     ):
         self.config = config
         self._default_cwd = str(default_cwd) if default_cwd is not None else ""
@@ -695,6 +697,10 @@ class StdioServer(_ToolClient):
         self._capabilities: dict[str, Any] = {}
         self._tools: tuple[McpTool, ...] = ()
         self._notifications = 0
+        self._execution_scope = execution_scope
+        self._execution: Any = None
+        self._pending_unknown = False
+        self._session_id = uuid.uuid4().hex
 
     # ---- 属性
 
@@ -779,16 +785,39 @@ class StdioServer(_ToolClient):
                 server=self.name,
             )
         try:
-            self._proc = subprocess.Popen(
-                list(self.config.command),
-                cwd=cwd,
-                env=self.child_env(),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-            )
-        except OSError as exc:
+            if self._execution_scope is not None:
+                from .execpolicy import ExecPolicy
+                from .execution_admission import PreparedExecution
+
+                scope = self._execution_scope
+                env = self.child_env()
+                policy = ExecPolicy(
+                    argv_allowlist=(self.config.command[0],),
+                    cwd_roots=(Path(scope["workspace"]),),
+                    env_allowlist=tuple(env),
+                    timeout_ms=self.config.call_timeout_ms,
+                    max_output_bytes=self.config.max_result_bytes,
+                    isolation_requires=scope["required_boundaries"],
+                )
+                self._execution = PreparedExecution(
+                    scope["exec_backend"], kind="local_mcp",
+                    task_id=scope["task_id"], run_id=scope["run_id"],
+                    argv=self.config.command, cwd=cwd or scope["workspace"], env=env,
+                    policy=policy, workspace=scope["workspace"], data_root=scope["data_root"],
+                    config=self.config.to_dict(), on_event=scope.get("on_event"),
+                )
+                self._execution.__enter__()
+                self._execution.admit(scope["required_boundaries"])
+                self._proc = self._execution.open_stdio()
+            else:
+                self._proc = subprocess.Popen(
+                    list(self.config.command), cwd=cwd, env=self.child_env(),
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=os.name == "posix", bufsize=0,
+                )
+        except (OSError, TianshuError) as exc:
+            if self._execution is not None:
+                self._execution.__exit__(None, None, None)
             raise McpServerUnavailable(
                 f"server {self.name!r} 拉不起来：{type(exc).__name__}: {exc}",
                 server=self.name,
@@ -826,6 +855,15 @@ class StdioServer(_ToolClient):
         """尽力回收：关 stdin → terminate → 宽限 → kill。幂等。"""
         self._closed = True
         proc = self._proc
+        if self._execution is not None:
+            self._execution.__exit__(None, None, None)
+        elif proc is not None and os.name == "posix":
+            import signal
+
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if proc is not None:
             stream = proc.stdin
             if stream is not None:
@@ -851,10 +889,66 @@ class StdioServer(_ToolClient):
             except subprocess.TimeoutExpired:
                 pass
         for thread in (self._reader, self._stderr_reader):
-            if thread is not None and thread.is_alive():
+            if (thread is not None and thread is not threading.current_thread()
+                    and thread.is_alive()):
                 thread.join(timeout=1.0)
         # 唤醒可能在等的调用方
         self._responses.put((None, {}))
+
+    def session_snapshot(self) -> dict[str, Any]:
+        scope = self._execution_scope or {}
+        execution = self._execution
+        return {
+            "format_version": 1, "session_id": self._session_id,
+            "generation": self._session_id, "task_id": scope.get("task_id", ""),
+            "run_id": scope.get("run_id", ""), "pending_unknown": self._pending_unknown,
+            "protocol_version": self._protocol_version,
+            "subject": None if execution is None else execution.subject.to_dict(),
+            "admission": None if execution is None or execution.admission is None
+            else execution.admission.to_dict(),
+            "lifecycle": None if execution is None else execution.lifecycle(),
+        }
+
+    def reconcile(self) -> dict[str, Any]:
+        if self._execution is None:
+            return {"process_tree": "unknown", "pending_unknown": self._pending_unknown}
+        return {**self._execution.reconcile(), "pending_unknown": self._pending_unknown}
+
+    def call_tool(self, tool, arguments, *, timeout_ms=None, call_id="") -> McpCallResult:
+        if self._pending_unknown:
+            raise McpClosed("会话有未知调用结果；禁止新调用或自动重发")
+        execution = self._execution
+        if execution is not None:
+            try:
+                execution.check_current()
+            except TianshuError as exc:
+                self.close()
+                raise McpClosed(f"会话隔离绑定已失效：{exc}") from exc
+            execution.record_stage("call_pending", call_id=call_id, request_id=self._next_id)
+        try:
+            result = super().call_tool(
+                tool, arguments, timeout_ms=timeout_ms, call_id=call_id,
+            )
+        except McpCallError as exc:
+            if execution is not None:
+                if exc.protocol_rejection:
+                    execution.record_stage(
+                        "call_completed", call_id=call_id, request_id=self._last_request_id,
+                    )
+                else:
+                    self._pending_unknown = True
+                    self.close()
+            raise
+        except (McpTimeout, McpClosed, McpProtocolError):
+            if execution is not None:
+                self._pending_unknown = True
+                self.close()
+            raise
+        if execution is not None:
+            execution.record_stage(
+                "call_completed", call_id=call_id, request_id=result.request_id,
+            )
+        return result
 
     # ---- 请求
 
@@ -869,6 +963,14 @@ class StdioServer(_ToolClient):
     def request(
         self, method: str, params: dict[str, Any] | None, *, timeout_ms: int
     ) -> dict[str, Any]:
+        if self._pending_unknown:
+            raise McpClosed("会话有未知调用结果；禁止新调用或自动重发")
+        if self._execution is not None:
+            try:
+                self._execution.check_current()
+            except TianshuError as exc:
+                self.close()
+                raise McpClosed(f"会话隔离绑定已失效：{exc}") from exc
         if not self.is_alive:
             raise McpClosed(f"server {self.name!r} 已失效：{self._failure or 'closed'}")
         deadline = time.monotonic() + timeout_ms / 1000
@@ -963,6 +1065,9 @@ class StdioServer(_ToolClient):
             )
         except McpError:
             pass
+        if self._execution_scope is not None and method == "tools/call":
+            self._pending_unknown = True
+            self.close()
 
     def cancel(self, request_id: int, reason: str = "cancelled by client") -> None:
         """发取消通知（**只是请求**：server 可以不理会）。"""
@@ -1173,6 +1278,9 @@ class StdioServer(_ToolClient):
         if first:
             self._failure = reason
             proc = self._proc
+            if self._execution is not None:
+                self._execution.stop(record=False)
+                return
             if proc is not None and proc.poll() is None:
                 try:
                     proc.terminate()
@@ -1212,6 +1320,8 @@ class McpClients:
         self._remote_lock = threading.Lock()
         self._failures: dict[str, str] = {}
         self._started = False
+        self._execution_scope: dict[str, Any] | None = None
+        self._scoped_clients: dict[tuple[str, str], McpClients] = {}
         atexit.register(self.close_all)
 
     # ---- 构造
@@ -1245,6 +1355,49 @@ class McpClients:
     def configs(self) -> dict[str, McpServerConfig]:
         return dict(self._configs)
 
+    def for_run(
+        self, task_id: str, run_id: str, *, workspace, data_root, exec_backend,
+        policy=None, automatic: bool = False, required_boundaries=None, on_event=None,
+        server_names=None,
+    ) -> McpClients:
+        """每个 Task/Run 独占会话；同一 Run 只取回原对象，不重启未知调用。"""
+        from .execpolicy import ISOLATION_BOUNDARIES
+
+        required = tuple(
+            ISOLATION_BOUNDARIES if automatic else
+            (() if policy is None else policy.isolation_requires)
+        ) if required_boundaries is None else tuple(required_boundaries)
+        if automatic and set(required) != set(ISOLATION_BOUNDARIES):
+            raise McpError("自动 MCP 必须核对全部现场隔离边界，不能降低 required_boundaries")
+        key = (task_id, run_id)
+        names = tuple(sorted(self._configs if server_names is None else set(server_names)))
+        scope = {
+            "task_id": task_id, "run_id": run_id, "workspace": str(Path(workspace).resolve()),
+            "data_root": str(Path(data_root).resolve()), "exec_backend": exec_backend,
+            "required_boundaries": required, "on_event": on_event,
+            "server_names": names,
+        }
+        existing = self._scoped_clients.get(key)
+        if existing is not None:
+            previous = existing._execution_scope
+            if (
+                previous is None
+                or previous["exec_backend"] is not exec_backend
+                or any(
+                    previous[field] != scope[field]
+                    for field in scope if field not in ("on_event", "exec_backend")
+                )
+            ):
+                raise McpError("Run 的 MCP 启动配置已经固定，禁止借用不同 scope")
+            return existing
+        scoped = McpClients(
+            {name: self._configs[name] for name in names if name in self._configs},
+            default_cwd=workspace, environ=self._environ,
+        )
+        scoped._execution_scope = scope
+        self._scoped_clients[key] = scoped
+        return scoped
+
     def start_all(self) -> None:
         """并发启动全部 server（每个 server 各自超时，互不阻塞）。"""
         if self._started:
@@ -1255,7 +1408,8 @@ class McpClients:
 
         def boot(name: str, config: McpServerConfig) -> None:
             server = StdioServer(
-                config, default_cwd=self._default_cwd, environ=self._environ
+                config, default_cwd=self._default_cwd, environ=self._environ,
+                execution_scope=self._execution_scope,
             )
             try:
                 server.start()
@@ -1268,6 +1422,9 @@ class McpClients:
 
         for name, config in self._configs.items():
             if config.url:
+                continue
+            if self._execution_scope is not None:
+                boot(name, config)
                 continue
             thread = threading.Thread(target=boot, args=(name, config), name=f"mcp-boot-{name}")
             thread.start()
@@ -1285,6 +1442,13 @@ class McpClients:
                 config = self._configs.get(name)
                 if (config is None or not config.url or name in self._servers
                         or name in self._failures):
+                    continue
+                if (self._execution_scope is not None
+                        and self._execution_scope["required_boundaries"]):
+                    self._failures[name] = (
+                        "远程 MCP 仅有 HTTP 传输边界；没有当前任务的传输准入证据，"
+                        "不能借本机进程隔离报告授权"
+                    )
                     continue
                 server = HttpServer(config, environ=self._environ)
                 try:
@@ -1305,10 +1469,17 @@ class McpClients:
         server = self._servers.get(name)
         return server.identity if isinstance(server, HttpServer) else ""
 
+    def server_generation(self, name: str) -> str:
+        server = self._servers.get(name)
+        if isinstance(server, StdioServer) and server._execution_scope is not None:
+            return server.session_snapshot()["generation"]
+        return ""
+
     def close_all(self) -> None:
+        for scoped in tuple(self._scoped_clients.values()):
+            scoped.close_all()
         for server in list(self._servers.values()):
             server.close()
-        self._servers.clear()
 
     # ---- 查询
 

@@ -613,6 +613,55 @@
       "messages_ref": "content://sha256:409848bc5df7d2c8cfd95f685c9fb87c33d9812df7a73bdce3f67a9c3000a016",
       "material_storage": "inline",
       "effective_tools": []
+    },
+    "execution.admitted": {
+      "subject": {
+        "format_version": 1,
+        "subject_id": "0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": "command",
+        "task_id": "x",
+        "run_id": "x",
+        "config_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "executable_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "environment_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "workspace_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "data_root_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "isolation_profile_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "admission": {
+        "format_version": 1,
+        "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "backend": "x",
+        "backend_identity": "x",
+        "platform": "x",
+        "architecture": "x",
+        "probe_version": "x",
+        "workspace": "x",
+        "data_root": "x",
+        "required_boundaries": [],
+        "boundaries": {
+          "files_authority": "enforced",
+          "network": "enforced",
+          "credentials": "enforced",
+          "process_tree": "enforced"
+        },
+        "evidence_refs": [],
+        "lifecycle_id": "x"
+      },
+      "lifecycle": {
+        "lifecycle_id": "x",
+        "pid": 1,
+        "birth_identity": "x"
+      },
+      "stage": "prepared",
+      "probe_findings": []
+    },
+    "execution.ended": {
+      "subject_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "lifecycle_id": "x",
+      "process_tree": "exited",
+      "pid": 1,
+      "birth_identity": "x"
     }
   },
   "generated_by": "event_schema.minimal_payload"

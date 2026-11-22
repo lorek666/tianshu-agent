@@ -139,7 +139,9 @@
         "verification.decided",
         "verification.requested",
         "verification.result",
-        "verification.run_started"
+        "verification.run_started",
+        "execution.admitted",
+        "execution.ended"
       ],
       "type": "string"
     }
@@ -4315,6 +4317,316 @@
           "effective_tools"
         ],
         "additionalProperties": false
+      },
+      "execution.admitted": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "subject_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "command",
+                  "local_mcp",
+                  "remote_mcp"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "config_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "executable_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "environment_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "workspace_binding_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "data_root_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "isolation_profile_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "subject_id",
+              "kind",
+              "task_id",
+              "run_id",
+              "config_digest",
+              "executable_digest",
+              "environment_digest",
+              "workspace_binding_digest",
+              "data_root_digest",
+              "isolation_profile_digest"
+            ]
+          },
+          "admission": {
+            "type": "object",
+            "properties": {
+              "format_version": {
+                "type": "integer",
+                "const": 1
+              },
+              "subject_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "backend_identity": {
+                "type": "string"
+              },
+              "platform": {
+                "type": "string"
+              },
+              "architecture": {
+                "type": "string"
+              },
+              "probe_version": {
+                "type": "string"
+              },
+              "workspace": {
+                "type": "string"
+              },
+              "data_root": {
+                "type": "string"
+              },
+              "required_boundaries": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
+                }
+              },
+              "boundaries": {
+                "type": "object",
+                "properties": {
+                  "files_authority": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "network": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  },
+                  "process_tree": {
+                    "type": "string",
+                    "enum": [
+                      "enforced",
+                      "not_enforced",
+                      "unknown"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "files_authority",
+                  "network",
+                  "credentials",
+                  "process_tree"
+                ]
+              },
+              "evidence_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "lifecycle_id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "format_version",
+              "subject_digest",
+              "backend",
+              "backend_identity",
+              "platform",
+              "architecture",
+              "probe_version",
+              "workspace",
+              "data_root",
+              "required_boundaries",
+              "boundaries",
+              "evidence_refs",
+              "lifecycle_id"
+            ]
+          },
+          "lifecycle": {
+            "type": "object",
+            "properties": {
+              "lifecycle_id": {
+                "type": "string"
+              },
+              "pid": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "birth_identity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "lifecycle_id",
+              "pid",
+              "birth_identity"
+            ]
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "prepared",
+              "started",
+              "call_pending",
+              "call_completed"
+            ]
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "probe_findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "boundary": {
+                  "type": "string",
+                  "enum": [
+                    "files_authority",
+                    "network",
+                    "credentials",
+                    "process_tree"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "enforced",
+                    "not_enforced",
+                    "unknown"
+                  ]
+                },
+                "evidence": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "boundary",
+                "status",
+                "evidence"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "subject",
+          "admission",
+          "lifecycle",
+          "stage",
+          "probe_findings"
+        ]
+      },
+      "execution.ended": {
+        "type": "object",
+        "properties": {
+          "subject_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "lifecycle_id": {
+            "type": "string"
+          },
+          "process_tree": {
+            "type": "string",
+            "enum": [
+              "exited",
+              "unknown"
+            ]
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "birth_identity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "subject_digest",
+          "lifecycle_id",
+          "process_tree",
+          "pid",
+          "birth_identity"
+        ]
       }
     },
     "legacyPayload": {

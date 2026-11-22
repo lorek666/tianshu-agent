@@ -74,6 +74,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "dispatch.revoked",
         # 执行守卫
         "execution.started",
+        "execution.admitted",
+        "execution.ended",
         # 票据
         "grant.issued",
         "grant.consumed",

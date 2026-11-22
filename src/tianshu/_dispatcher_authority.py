@@ -836,14 +836,21 @@ class _DispatcherAuthorityMixin:
             )
         policy = task.exec_policy
         if policy is not None and tuple(policy.isolation_requires):
-            # 隔离实测报告来自 exec backend 的一次性探针，测的不是这个长连接
-            # server 进程；跨对象作证不可接受，所以非空要求一律拒绝（SPEC §3.1）。
-            raise DispatchDenied(
-                "任务声明了 isolation_requires，但 MCP server 进程不经过 exec 后端"
-                f"（现有实测报告测的不是它），拒绝调用 {ref.uri}"
-                "：等 MCP 专属探针/后端接缝落地",
-                "c4.mcp_isolation_unproven",
-            )
+            clients = self._mcp_clients
+            server = None if clients is None else clients.server(target.server)
+            scope = None if server is None else getattr(server, "_execution_scope", None)
+            execution = None if server is None else getattr(server, "_execution", None)
+            if (scope is None or execution is None
+                    or scope.get("task_id") != task.task_id
+                    or scope.get("run_id") != run.run_id):
+                raise DispatchDenied(
+                    "当前 MCP 没有绑定本 Task/Run 的本地隔离准入",
+                    "c4.mcp_isolation_unproven",
+                )
+            try:
+                execution.check_current()
+            except TianshuError as exc:
+                raise DispatchDenied(str(exc), "c4.mcp_isolation_unproven") from exc
         self._refuse_blocked_mcp_object(target.server, target.tool)
         if discovery:
             return _Authority(run, task, bindings, [], [])
