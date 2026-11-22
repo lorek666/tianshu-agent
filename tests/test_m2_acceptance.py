@@ -89,7 +89,7 @@ class Env:
         不换 store 就会出现"半新半旧"的装配——真实进程不会这样，测试也不该。
         """
         self.log.close()
-        self.log = EventLog(self.db, blob_dir=self.root / "blobs")
+        self.log = EventLog(self.db, blob_dir=self.data / "blobs")
         self.stack = build_stack(self.log, data_root=self.data)
 
     def events(self, run_id: str) -> list[str]:
@@ -128,8 +128,8 @@ def env(tmp_path):
     (read_only / "src.md").write_text("只读\n", encoding="utf-8")
     data = tmp_path / "authority"
     data.mkdir()
-    db = tmp_path / "events.db"
-    log = EventLog(db, blob_dir=tmp_path / "blobs")
+    db = data / "events.db"
+    log = EventLog(db, blob_dir=data / "blobs")
     stack = build_stack(log, data_root=data)
     e = Env(
         root=tmp_path, ws=ws, data=data, db=db, log=log, stack=stack,
@@ -384,7 +384,7 @@ def test_claim_next_takes_over_dead_owner_without_waiting_for_ttl(env):
     """
     dead_pid = _dead_pid()
     run_id, _, job_id = env.enqueue()
-    dead_log = EventLog(env.db, blob_dir=env.root / "blobs")
+    dead_log = EventLog(env.db, blob_dir=env.data / "blobs")
     dead = JobStore(
         dead_log,
         identity=ProcessIdentity(
@@ -929,7 +929,7 @@ def _diagnose_worker_failure(test):
 
 def _steal_attempt(env: Env) -> bool:
     """从**另一条连接**（相当于另一个进程）试着认领一次：抢得到就是 True。"""
-    log = EventLog(env.db, blob_dir=env.root / "blobs")
+    log = EventLog(env.db, blob_dir=env.data / "blobs")
     try:
         return JobStore(
             log, identity=ProcessIdentity.mint()
@@ -949,7 +949,7 @@ class _ProbeModel(_SlowModel):
 
     def complete(self, messages, tools):  # noqa: ARG002
         result = super().complete(messages, tools)  # 先阻塞一段，再探
-        log = EventLog(self._env.db, blob_dir=self._env.root / "blobs")
+        log = EventLog(self._env.db, blob_dir=self._env.data / "blobs")
         try:
             jobs = JobStore(log, identity=ProcessIdentity.mint()).list_jobs()
             now = int(time.time() * 1000)
@@ -2061,7 +2061,7 @@ def test_worker_requeues_after_claim_lost_to_a_takeover(env):
     original = worker._drive
 
     def steal_then_drive(claim):
-        log2 = EventLog(env.db, blob_dir=env.root / "blobs")
+        log2 = EventLog(env.db, blob_dir=env.data / "blobs")
         other = JobStore(log2, identity=ProcessIdentity.mint())
         taken.append(other)
         # 明确的"接管"：默认 claim 会拒绝从活着的 owner 手里抢
