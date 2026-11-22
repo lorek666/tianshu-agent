@@ -198,12 +198,59 @@ def input_fingerprint(stack, task_id):
                        "inputs": first, "excluded": [".git", ".git/"]})
 
 
+def check_input_fingerprint(stack, task_id, check):
+    """文件观察只依赖声明的文件；命令和人工检查仍固定完整工作区。"""
+    if check["kind"] not in ("file_exists", "file_hash"):
+        return input_fingerprint(stack, task_id)
+    task = stack.tasks.get_task(task_id)
+    if task is None:
+        raise ValueError("任务不存在")
+    inputs = check["inputs"]
+    workspace_id(inputs["workspace_binding_id"])
+    relative_file(inputs["relative_path"])
+    binding = task.workspaces[int(inputs["workspace_binding_id"])]
+    root = Path(binding.root_path).resolve(strict=True)
+
+    def snapshot():
+        identity = root.lstat()
+        if not stat.S_ISDIR(identity.st_mode):
+            raise ValueError("输入工作区身份改变")
+        rows = [[".", identity.st_dev, identity.st_ino]]
+        target = root
+        parts = Path(inputs["relative_path"]).parts
+        for index, part in enumerate(parts):
+            target /= part
+            try:
+                identity = target.lstat()
+            except FileNotFoundError:
+                rows.append(["missing", target.relative_to(root).as_posix()])
+                return rows
+            if stat.S_ISLNK(identity.st_mode):
+                raise ValueError("文件观察不能包含符号链接")
+            if index < len(parts) - 1 and not stat.S_ISDIR(identity.st_mode):
+                raise ValueError("输入路径祖先不是目录")
+            rows.append([target.relative_to(root).as_posix(),
+                         identity.st_dev, identity.st_ino])
+        path = Workspace(root).resolve(inputs["relative_path"])
+        rows.append(["sha256", hashlib.sha256(_file_bytes(path)).hexdigest()])
+        return rows
+
+    first = snapshot()
+    if first != snapshot():
+        raise ValueError("核对期间文件输入发生变化")
+    return jcs_sha256({
+        "scope": "declared-file-v1", "task_id": task_id, "revision": task.goal_revision,
+        "workspace_binding": binding.to_dict(), "check_digest": jcs_sha256(check),
+        "canonical_root": str(root), "inputs": first,
+    })
+
+
 def observe_check(stack, task_id, check):
     """只读检查；command_exit 必须由阶段 Run 经过 Dispatcher 执行。"""
     result = {"result": "inconclusive", "reason_code": "verification.inconclusive",
               "input_fingerprint": "0" * 64, "evidence": {}}
     try:
-        before = input_fingerprint(stack, task_id)
+        before = check_input_fingerprint(stack, task_id, check)
         result["input_fingerprint"] = before
         kind, inputs = check["kind"], check["inputs"]
         if kind in ("file_exists", "file_hash"):
@@ -237,7 +284,7 @@ def observe_check(stack, task_id, check):
             result.update(result="blocked", reason_code="verification.human_required")
         else:
             result.update(result="blocked", reason_code="verification.command_requires_run")
-        if before != input_fingerprint(stack, task_id):
+        if before != check_input_fingerprint(stack, task_id, check):
             raise ValueError("检查期间输入改变")
     except FileNotFoundError:
         result.update(result="failed", reason_code="verification.file_missing")
@@ -261,11 +308,12 @@ def step_verified(stack, view, step_id):
     events = [e for e in stack.log.read_types(VERIFICATION_EVENTS, task_id=view["task_id"])
               if e.payload["plan_id"] == view["plan_id"]
               and e.payload["revision"] == view["revision"] and e.payload["step_id"] == step_id]
-    try:
-        current = input_fingerprint(stack, view["task_id"])
-    except (ValueError, OSError):
-        return False
     for check_id in step["verification_ids"]:
+        check = next(c for c in view["manifest"]["checks"] if c["check_id"] == check_id)
+        try:
+            current = check_input_fingerprint(stack, view["task_id"], check)
+        except (ValueError, OSError, IndexError, TianshuError):
+            return False
         requests = [e for e in events if e.type == "verification.requested"
                     and e.payload["check_id"] == check_id]
         if not requests:
@@ -328,15 +376,16 @@ def request_check(stack, view, step_id, check_id, *, run_id, request_id):
     material = observation["evidence"]
     if check["kind"] == "human":
         evidence["kind"] = "human_decision"
-        artifacts, checks = _human_material(
-            stack, current, check, observation["input_fingerprint"])
+        artifacts, checks = _human_material(stack, current, check)
         material = {"kind": "human_review_material", "question": check["inputs"]["question"],
                     "artifacts": artifacts, "checks": checks}
         evidence["event_seqs"] = [r["event_seq"] for r in checks]
     evidence["content_refs"] = [put_material(stack, view["task_id"], material, run_id=run_id)]
     from .agent_documents import EVIDENCE_SCHEMA, validate_document
     validate_document(EVIDENCE_SCHEMA, evidence, "证据")
-    if observation["input_fingerprint"] != input_fingerprint(stack, view["task_id"]):
+    if observation["input_fingerprint"] != check_input_fingerprint(
+        stack, view["task_id"], check
+    ):
         raise ValueError("冻结待验材料期间输入改变")
     with stack.log.transaction() as tx:
         if PlanStore(stack).get(view["plan_id"])["state_revision"] != view["state_revision"]:
@@ -368,7 +417,7 @@ def request_check(stack, view, step_id, check_id, *, run_id, request_id):
         return p
 
 
-def _human_material(stack, view, check, fingerprint):
+def _human_material(stack, view, check):
     """解析本次确切产物和依赖结果，不能让缺产物的空对象成为待审证据。"""
     from .plans import put_material
     artifacts = {a["artifact_id"]: a for s in view["document"]["steps"]
@@ -406,6 +455,8 @@ def _human_material(stack, view, check, fingerprint):
     events = stack.log.read_types(VERIFICATION_EVENTS, task_id=view["task_id"])
     results = []
     for check_id in check["inputs"]["required_check_ids"]:
+        dependency = next(c for c in view["manifest"]["checks"] if c["check_id"] == check_id)
+        fingerprint = check_input_fingerprint(stack, view["task_id"], dependency)
         request = next((e for e in reversed(events)
                         if e.type == "verification.requested"
                         and e.payload["plan_id"] == view["plan_id"]

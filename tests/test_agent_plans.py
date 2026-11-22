@@ -125,6 +125,50 @@ def test_file_check_rejects_symlink_outside_workspace(env, tmp_path):
     assert "private" not in str(result)
 
 
+@pytest.mark.parametrize("kind", ["file_exists", "file_hash"])
+def test_independent_step_outputs_preserve_fresh_file_observations(env, kind):
+    from tianshu.verification import request_check
+
+    stack, task, ws, mission, document, manifest = env
+    first = manifest["checks"][0]
+    first["kind"] = kind
+    if kind == "file_hash":
+        first["inputs"].update(algorithm="sha256",
+                               expected_digest=hashlib.sha256(b"report").hexdigest())
+    second = copy.deepcopy(first)
+    second["check_id"] = "second_exists"
+    second["inputs"]["relative_path"] = "second.md"
+    manifest["checks"].append(second)
+    document["steps"].append({
+        "step_id": "second", "title": "写入第二份产物", "instruction": "创建 second.md",
+        "depends_on": ["write"], "criterion_ids": ["report"], "expected_artifacts": [],
+        "verification_ids": ["second_exists"],
+    })
+    document["verification_manifest"] = {
+        "content_ref": "content://sha256:" + jcs_sha256(manifest),
+        "digest": jcs_sha256(manifest),
+    }
+    plans = store(env)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm")
+    for step_id, filename, check_id in (
+        ("write", "report.md", "exists"), ("second", "second.md", "second_exists"),
+    ):
+        plans.change_step(view["plan_id"], step_id, "running", request_id=step_id + "_running")
+        (ws / filename).write_bytes(b"report")
+        view = plans.change_step(view["plan_id"], step_id, "verifying",
+                                 request_id=step_id + "_verifying")
+        request_check(stack, view, step_id, check_id, run_id="",
+                      request_id=step_id + "_check")
+        view = plans.change_step(view["plan_id"], step_id, "satisfied",
+                                 request_id=step_id + "_satisfied")
+    assert [s["state"] for s in view["steps"]] == ["satisfied", "satisfied"]
+    (ws / "report.md").write_bytes(b"changed")
+    refreshed = plans.get(view["plan_id"])
+    assert [s["state"] for s in refreshed["steps"]] == ["invalidated", "satisfied"]
+
+
 def test_plan_revision_preserves_history_and_invalidates_changed_step(env):
     _, task, _, mission, document, manifest = env
     plans = store(env)
